@@ -546,6 +546,14 @@ export interface PluginHost {
 	 *  200 条，单条截断 500 字符），设置面板“界面插件”页按需拉取查看；
 	 *  error 级同时走 console.error（既有行为保留）。 */
 	log(level?: string, ...args: unknown[]): void;
+	/** 登记一条**自建**的可逆副作用（event 监听 / setInterval / WebSocket / 自建 cache…）：
+	 *  返回的注销函数与反激活**都会**调 dispose。宿主自己的每个注册面已在内部走同一
+	 *  个栈，插件侧只需把「宿主管不到的那些」挂进来：activate → deactivate 后自己没留
+	 *  任何孤儿，热重载不会叠加定时器/监听器。
+	 *
+	 *  dispose 幂等由调用方保证（宿主可能先经返回值撤一次、再在反激活时逆序回卷一次）；
+	 *  dispose 抛错只记一条诊断，不阻断其它清理。 */
+	effect(label: string, dispose: () => void): () => void;
 }
 
 /** 插件运行时 UI 注册（host.ui.*）——与 manifest 基线合并后随 plugins 清单下发。 */
@@ -570,10 +578,94 @@ interface GateRecord {
 	legacyWarned?: boolean;
 }
 
+/**
+ * per-plugin 可逆副作用栈（effect 栈）。
+ *
+ * 宿主每个注册面（事件订阅 / AI 工具 / 命令 / HTTP 路由 / 反向代理 / fs.watch /
+ * 定时任务 / 后台任务 / UI 条目 / 设置回调…）在内部 `add(label, dispose)` 登记一条
+ * disposer，反激活时**逆序**回卷 —— 插件不必记得注销，也不会因为漏掉一处就留下
+ * 孤儿订阅、定时器、路由或事件处理器（热重载后事件双触发、定时器叠加、watcher
+ * 堆积都是这个漏法的症状）。
+ *
+ * 与「每个注册函数自己返回注销函数」（插件主动调用）是**同一件事的两面**：
+ * 返回给插件的注销函数 = `remove(item)`（只撤这一条、幂等），反激活 = `release()`。
+ * 插件自建的副作用（自己的 setInterval、EventEmitter 监听…）可经 `host.effect()`
+ * 挂进来，同样享受逆序回卷 + 泄漏归因。
+ */
+export class PluginEffectStack {
+	private readonly items: PluginEffect[] = [];
+	private released = false;
+
+	constructor(
+		readonly pluginId: string,
+		/** 记录一条诊断（cleanup 抛错时调用；不抛错、不阻断回卷）。 */
+		private readonly diag?: (msg: string) => void,
+	) {}
+
+	/** 登记一条副作用；返回「只撤这一条」的注销函数（幂等，重复调用无副作用）。 */
+	add(label: string, dispose: () => void): () => void {
+		const item: PluginEffect = { label, dispose };
+		this.items.push(item);
+		return () => this.remove(item);
+	}
+
+	/** 当前未回卷的副作用数（单测断言「activate → deactivate 后栈空」）。 */
+	get size(): number {
+		return this.items.length;
+	}
+
+	/** 未回卷的副作用标签（按登记顺序，排障用）。 */
+	labels(): string[] {
+		return this.items.map((i) => i.label);
+	}
+
+	/** 撤销单条：先从栈里摘掉，再跑它的 dispose（幂等 —— 摘不到说明已撤过）。 */
+	private remove(item: PluginEffect): void {
+		const i = this.items.indexOf(item);
+		if (i < 0) return;
+		this.items.splice(i, 1);
+		try {
+			item.dispose();
+		} catch (err) {
+			this.report(item.label, err);
+		}
+	}
+
+	/** 逆序回卷全部副作用；返回**失败**（dispose 抛错）的标签列表，绝不抛出。 */
+	release(): string[] {
+		if (this.released) return [];
+		this.released = true;
+		const failed: string[] = [];
+		while (this.items.length > 0) {
+			const item = this.items.pop()!;
+			try {
+				item.dispose();
+			} catch (err) {
+				failed.push(item.label);
+				this.report(item.label, err);
+			}
+		}
+		return failed;
+	}
+
+	private report(label: string, err: unknown): void {
+		console.warn(`[plugin:${this.pluginId}] effect "${label}" cleanup failed:`, err);
+		this.diag?.(`effect "${label}" cleanup failed: ${(err as Error)?.message ?? String(err)}`);
+	}
+}
+
+/** 一条已登记的副作用：label 用于排障（谁没清干净），dispose 幂等由调用方保证。 */
+export interface PluginEffect {
+	label: string;
+	dispose: () => void;
+}
+
 interface LoadedPlugin {
 	info: UiPluginInfo;
 	/** deactivate() if the entry provided one. */
 	deactivate?: () => void;
+	/** 该插件的可逆副作用栈（反激活时逆序回卷；激活失败/版本门占位行没有）。 */
+	effects?: PluginEffectStack;
 	toolHandlers: Set<(ev: PluginToolEvent) => void>;
 	/** 运行轨迹事件订阅（host.onRunEvent）。 */
 	runHandlers: Set<(ev: PluginRunEvent) => void>;
@@ -583,20 +675,6 @@ interface LoadedPlugin {
 	attachHandlers: Set<(clientId: string) => void>;
 	/** onCwdChange 钩子（工作区切换时逐个回调）。 */
 	cwdHandlers: Set<(cwd: string) => void>;
-	/** 该插件注册的全部 AI 工具注销函数（反激活时逐个调用）。 */
-	agentToolUnsubscribers?: Array<() => void>;
-	/** 该插件注册的全部斜杠命令注销函数。 */
-	commandUnsubscribers?: Array<() => void>;
-	/** 该插件的 fs.watch 取消函数（反激活时逐个调用）。 */
-	watchUnsubscribers?: Array<() => void>;
-	/** 该插件的 schedule 取消函数（反激活时逐个 clearInterval）。 */
-	scheduleUnsubscribers?: Array<() => void>;
-	/** 该插件的 events.on 取消函数（反激活时清理全部总线订阅）。 */
-	busUnsubscribers?: Array<() => void>;
-	/** 该插件的 onStats 取消函数（反激活时从管理器集合摘除）。 */
-	statsUnsubscribers?: Array<() => void>;
-	/** 该插件的 onStreaming 取消函数（反激活时从管理器集合摘除）。 */
-	streamingUnsubscribers?: Array<() => void>;
 	/** 该插件挂载的 HTTP 路由表："METHOD /path" → handler。 */
 	httpRoutes: Map<string, (req: Request, res: Response) => void>;
 	/** manifest.permissions 原始声明（空/缺省 = 未声明，旧全权模式）。错误路径占位可缺省。 */
@@ -2210,29 +2288,21 @@ export class PluginManager {
 		});
 	}
 
-	/** 反激活清理：把该插件名下全部订阅/注册一次收完（工具/命令/watch/定时/
-	 *  总线/stats/流式——参考 agentToolUnsubscribers 模式，新增订阅一律走这里）。 */
+	/** 反激活清理：把该插件名下全部订阅/注册一次收完。
+	 *
+	 *  两段：① 副作用栈逆序回卷（插件注册的全部可逆副作用都在里面 —— 工具/命令/路由/
+	 *  代理/watch/定时/后台任务/事件订阅/UI 条目…；跑不干净的记一条诊断）；
+	 *  ② 兜底回收全局表里按 pluginId 索引的残留（老宿主激活的实例没有栈、或
+	 *  插件绕过 host 自己往表里塞过东西：代理前缀按 id 过滤清一遍，幂等）。 */
 	private releaseEntry(p: LoadedPlugin): void {
-		// 该插件注册的代理前缀随反激活一起回收（全局表按 pluginId 过滤；
+		// ① 逆序回卷。失败项已在栈内打过诊断，这里不再重复。
+		const failed = p.effects?.release() ?? [];
+		if (failed.length > 0)
+			console.warn(`[plugin:${p.info.id}] ${failed.length} effect(s) failed to clean up: ${failed.join(", ")}`);
+		// ② 兜底：代理前缀随反激活一起回收（全局表按 pluginId 过滤；
 		// Map 迭代中删除是良定义的：删过的条目不会再被访问到）。
 		for (const [prefix, hit] of this.proxyRoutes) {
 			if (hit.pluginId === p.info.id) this.proxyRoutes.delete(prefix);
-		}
-		// eslint-disable-next-line unicorn/no-useless-spread -- snapshot: handlers may unsubscribe mid-emit
-		for (const off of [
-			...(p.agentToolUnsubscribers ?? []),
-			...(p.commandUnsubscribers ?? []),
-			...(p.watchUnsubscribers ?? []),
-			...(p.scheduleUnsubscribers ?? []),
-			...(p.busUnsubscribers ?? []),
-			...(p.statsUnsubscribers ?? []),
-			...(p.streamingUnsubscribers ?? []),
-		]) {
-			try {
-				off();
-			} catch {
-				/* already gone */
-			}
 		}
 	}
 
@@ -2268,16 +2338,25 @@ export class PluginManager {
 		console.log(`[plugin:${id}] removed`);
 	}
 
-	/** 关机时反激活全部插件。 */
+	/** 关机 / reload 时反激活全部插件（dispose 后 loaded 为空，后续 releaseEntry 是 no-op）。 */
 	dispose(): void {
+		const pluginIds = new Set<string>();
 		for (const [id, p] of this.loaded) {
+			pluginIds.add(id);
 			try {
 				p.deactivate?.();
 			} catch (err) {
 				console.error(`[plugin:${id}] deactivate failed:`, err);
 			}
-			this.releaseEntry(p);
-			// 反激活时停掉它注册的常驻后台任务（轮询器等），不留孤儿计时器。
+		}
+		// ① 先回卷全部 effect 栈（含 bgTask 停表、工具/命令/路由/watch/UI 条目注销），
+		//    并把 loaded 清掉 —— 之后逐个走 releaseEntry 的兜底回收。
+		for (const [id, p] of this.loaded) {
+			p.effects?.release();
+			this.loaded.delete(id);
+		}
+		// ② 兜底：停掉任何没经 effect 栈登记的常驻后台任务，不留孤儿计时器。
+		for (const id of pluginIds) {
 			for (const t of this.pluginBgTasks.get(id)?.values() ?? []) {
 				try {
 					t.stop?.();
@@ -2285,6 +2364,10 @@ export class PluginManager {
 					// best-effort：反激活清理，单个任务失败不阻断。
 				}
 			}
+		}
+		// ③ 兜底：清掉插件名下的代理前缀（该插件名下但未经栈登记的残留）。
+		for (const prefix of [...this.proxyRoutes.keys()]) {
+			if (pluginIds.has(this.proxyRoutes.get(prefix)!.pluginId)) this.proxyRoutes.delete(prefix);
 		}
 		this.pluginBgTasks.clear();
 		this.loaded.clear();
@@ -2502,10 +2585,13 @@ export class PluginManager {
 		const attachHandlers = new Set<(clientId: string) => void>();
 		const cwdHandlers = new Set<(cwd: string) => void>();
 		const httpRoutes = new Map<string, (req: Request, res: Response) => void>();
-		const unregisterTools: Array<() => void> = [];
-		const unregisterCommands: Array<() => void> = [];
 		const bgTaskTable = new Map<string, PluginBgTask>();
 		const settingsHandlers = new Set<(values: Record<string, unknown>) => void>();
+		// 可逆副作用栈：本插件的全部注册面（工具/命令/路由/代理/watch/定时/后台任务/
+		// UI 条目/事件订阅…）都经 effects.add 登记，反激活时**逆序**回卷 —— 插件忘写
+		// 注销也不会留下孤儿订阅/定时器/路由（热重载后事件双触发、定时器叠加、watcher
+		// 堆积都是这个漏法的症状）。cleanup 抛错只记诊断，不阻断回卷。
+		const effects = new PluginEffectStack(info.id, (m) => this.pushRuntimeDiag(info.id, m));
 		// 宿主 API 版本协商：插件要的比宿主新 → 明确拒绝（而不是让它在运行期
 		// 撞 undefined 接口莫名其妙地坏）。与激活失败同一处理：error 字段 + 置灰。
 		let apiVersion = 1;
@@ -2586,12 +2672,7 @@ export class PluginManager {
 				this.pushRuntimeDiag(info.id, `peer plugin missing: ${peer} (warn only, activation continues)`);
 			}
 		}
-		// 新增订阅的取消函数（反激活时经 releaseEntry 统一释放）。
-		const watchSubs: Array<() => void> = [];
-		const scheduleSubs: Array<() => void> = [];
-		const busSubs: Array<() => void> = [];
-		const statsSubs: Array<() => void> = [];
-		const streamingSubs: Array<() => void> = [];
+		// 新增订阅的取消函数（反激活时经 effects 栈统一逆序释放）。
 		// 出站网络白名单（scan 解析的 manifest netAllowlist 快照）。
 		const netAllow = info.netAllowlist ?? [];
 		// 每插件的私有设施：KV 存储 + 加密 secrets + 依赖自动补装（单飞）。
@@ -2928,12 +3009,7 @@ export class PluginManager {
 			},
 			registerCommand: (cmd) => {
 				const off = this.registerCommand(info.id, cmd);
-				unregisterCommands.push(off);
-				return () => {
-					const i = unregisterCommands.indexOf(off);
-					if (i >= 0) unregisterCommands.splice(i, 1);
-					off();
-				};
+				return effects.add(`command:/${String(cmd?.name ?? "?").replace(/^\/+/, "")}`, off);
 			},
 			storage,
 			secrets,
@@ -2954,8 +3030,9 @@ export class PluginManager {
 					);
 					return () => {};
 				}
-				httpRoutes.set(`${m} ${path}`, handler);
-				return () => httpRoutes.delete(`${m} ${path}`);
+				const key = `${m} ${path}`;
+				httpRoutes.set(key, handler);
+				return effects.add(`route:${key}`, () => httpRoutes.delete(key));
 			},
 			registerProxy: (prefix, target) => {
 				if (!can("http")) return () => {};
@@ -2968,20 +3045,15 @@ export class PluginManager {
 					);
 					return () => {};
 				}
-				return () => {
+				return effects.add(`proxy:${p}`, () => {
 					self.unregisterProxy(info.id, p);
-				};
+				});
 			},
 			// 包一层：插件反激活时自动注销它注册的全部 AI 工具，不留悬挂项。
 			registerAgentTool: (tool) => {
 				if (!can("tools")) return () => {};
 				const off = this.registerAgentTool(info.id, tool);
-				unregisterTools.push(off);
-				return () => {
-					const i = unregisterTools.indexOf(off);
-					if (i >= 0) unregisterTools.splice(i, 1);
-					off();
-				};
+				return effects.add(`agentTool:${String(tool?.name ?? "?")}`, off);
 			},
 			dir,
 			dataDir: this.dataDir,
@@ -3049,8 +3121,7 @@ export class PluginManager {
 							/* already closed */
 						}
 					};
-					watchSubs.push(off);
-					return off;
+					return effects.add(`watch:${String(relPath)}`, off);
 				},
 			},
 			project: {
@@ -3098,6 +3169,12 @@ export class PluginManager {
 					}
 				};
 				fire();
+				effects.add(`bgTask:${id}`, () => {
+					if (bgTaskTable.delete(id)) {
+						if (bgTaskTable.size === 0) self.pluginBgTasks.delete(info.id);
+						fire();
+					}
+				});
 				return {
 					update: (next) => {
 						if (!bgTaskTable.has(id)) return;
@@ -3151,11 +3228,11 @@ export class PluginManager {
 						added.push(parsed.id);
 					}
 					if (added.length) void self.pushToAll().catch(() => {});
-					return () => {
+					return effects.add(`ui:register(${added.join(",") || "none"})`, () => {
 						if (!added.length) return;
 						for (const id of added) self.removeUiItem(info.id, id);
 						void self.pushToAll().catch(() => {});
-					};
+					});
 				},
 				update: (id, patch) => {
 					if (!can("ui")) return;
@@ -3440,7 +3517,7 @@ export class PluginManager {
 					}
 				};
 				// 反激活只停表、不断持久化：下次 activate 重调 schedule() 即按落盘声明重建。
-				scheduleSubs.push(cancelTimer);
+				effects.add(`schedule:${sid}`, cancelTimer);
 				return off;
 			},
 			models: {
@@ -3462,27 +3539,15 @@ export class PluginManager {
 			},
 			onStats: (h) => {
 				self.statsHandlers.add(h);
-				const off = (): void => {
+				return effects.add("onStats", () => {
 					self.statsHandlers.delete(h);
-				};
-				statsSubs.push(off);
-				return () => {
-					const i = statsSubs.indexOf(off);
-					if (i >= 0) statsSubs.splice(i, 1);
-					off();
-				};
+				});
 			},
 			onStreaming: (h) => {
 				self.streamingHandlers.add(h);
-				const off = (): void => {
+				return effects.add("onStreaming", () => {
 					self.streamingHandlers.delete(h);
-				};
-				streamingSubs.push(off);
-				return () => {
-					const i = streamingSubs.indexOf(off);
-					if (i >= 0) streamingSubs.splice(i, 1);
-					off();
-				};
+				});
 			},
 			net: {
 				fetch: async (url, init) => {
@@ -3552,16 +3617,10 @@ export class PluginManager {
 					let set = self.busHandlers.get(t);
 					if (!set) self.busHandlers.set(t, (set = new Set()));
 					set.add(handler);
-					const off = (): void => {
+					return effects.add(`bus:${t}`, () => {
 						set.delete(handler);
 						if (set.size === 0) self.busHandlers.delete(t);
-					};
-					busSubs.push(off);
-					return () => {
-						const i = busSubs.indexOf(off);
-						if (i >= 0) busSubs.splice(i, 1);
-						off();
-					};
+					});
 				},
 			},
 			log: (levelOrArg, ...args) => {
@@ -3575,6 +3634,14 @@ export class PluginManager {
 				else if (level === "warn") console.warn(line);
 				else if (level === "debug") console.debug(line);
 				else console.log(line);
+			},
+			effect: (label, dispose) => {
+				if (typeof dispose !== "function") return () => {};
+				const name =
+					String(label ?? "")
+						.trim()
+						.slice(0, 64) || "anonymous";
+				return effects.add(`plugin:${name}`, dispose);
 			},
 		};
 		try {
@@ -3599,13 +3666,7 @@ export class PluginManager {
 				convChangeHandlers,
 				attachHandlers,
 				cwdHandlers,
-				agentToolUnsubscribers: unregisterTools,
-				commandUnsubscribers: unregisterCommands,
-				watchUnsubscribers: watchSubs,
-				scheduleUnsubscribers: scheduleSubs,
-				busUnsubscribers: busSubs,
-				statsUnsubscribers: statsSubs,
-				streamingUnsubscribers: streamingSubs,
+				effects,
 				httpRoutes,
 				permsDeclared,
 				permFamilies,
@@ -3619,9 +3680,17 @@ export class PluginManager {
 			// 用户装前可见、日常启动不打扰。
 			void this.maybeConsentNotice(info, dir, permsDeclared);
 		} catch (err) {
+			// 激活失败：先把这一轮已经登记的可逆副作用逆序回卷（半途注册的工具/路由/
+			// 定时器不能留着 —— 插件已经坏了，谁也不会来撤它们），再留一条错误占位行。
+			const failed = effects.release();
 			httpRoutes.clear();
 			self.activatingGates.delete(info.id);
 			this.pushRuntimeDiag(info.id, `activate failed: ${(err as Error).message}`);
+			if (failed.length > 0)
+				this.pushRuntimeDiag(
+					info.id,
+					`activate failed with ${failed.length} effect(s) not cleaned: ${failed.join(", ")}`,
+				);
 			this.loaded.set(info.id, {
 				info: { ...info, error: (err as Error).message, diagnostics: this.diagnosticsOf(info.id) },
 				toolHandlers,
