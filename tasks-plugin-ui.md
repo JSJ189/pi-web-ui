@@ -208,8 +208,26 @@ npx vitest run     186 文件 / 2289 用例（2284 过 · 1 跳过 · 4 失败�
 - 右栏多根的合并视图（现在只支持切换根）；
 - 设置面板里直接管理「额外工作区根」（现在只能从文件树右键加减）；
 - `kind="organizer"` 目前只在协议词表与 `UI_KINDS` 里存在，各渲染层无专门处理；
-- 插件条目/内置条目的**冲突检测**与**教学式错误**（现在未知 slot / 重复 id 都是静默丢弃；
-  见 `tasks-plugin-ui.md` §9 的 P0-1）。
+- ~~插件条目/内置条目的冲突检测与教学式错误~~ → **已做**（§10 的 P0-1）；
+- 服务端 `parseUiItem` 的丢弃点仍只产 diagnostics（不下发到 UI）——前端合并层的
+  诊断（§10 P0-1）已经覆盖「注册了但界面上没有」的主诉；服务端那批留给「插件作者
+  看设置面板」时再看（现成字段 `UiPluginInfo.diagnostics` 已经在）。
+
+---
+
+## 4.5 本轮 DSH 对照升级（2026-09-22，见 §10）
+
+**做完了「如果只做三件事」里的两件 + 一件**，都在分支 `feat/plugin-system-dsh-upgrade`：
+
+| 条目 | 状态 | 主要落点 |
+|---|---|---|
+| §10.1【P0-1】失败不许静默（布局诊断 + per-entry ErrorBoundary） | ✅ | `web/src/ui-slots.ts`（`diagnostics[]`）、`components/SlotErrorBoundary.tsx`、`SettingsModal` 布局页横幅、`App.tsx` console.warn |
+| §10.2【P0-2】统一的可逆副作用（effect 栈） | ✅ | `server/plugins.ts`（`PluginEffectStack` + `host.effect`） |
+| §10.3【P0-3】安装前先读 spec（引导式安装） | ✅ | `server/plugin-install-spec.ts`、`plugin-installer.ts#inspectInstallSpec`、协议 `plugin_install_inspect*`、设置面板市场页 |
+| §10.4【P1-4】slot 语义化（cardinality + chain） | ⬜ 未做 | — |
+| §10.5【P1-5】拦截扩展点（类型化 Decision） | ⬜ 未做（依赖 10.2 已就位） | — |
+| §10.6【P1-6】manifest schema 校验失败即拒 | ⬜ 未做 | — |
+| §10.7–10.9【P2】注册面目录 / 依赖声明 / 层式组合 | ⬜ 未做 | — |
 
 ---
 
@@ -522,3 +540,96 @@ DSH 直接跑现有 Claude Code / Codex 的 `hooks.json`（可阻断 prompt 与�
 | 拦截 Decision 五阶段 | `.agents/notes/implemented/feature/2026-06-30-interception-extension-points.zh.md` |
 | 客户端半加载模型 | `.agents/notes/implemented/architecture/2026-07-23-client-plugin-loading-model.md` |
 | 注册面目录生成器 | `scripts/gen-client-catalog.ts` |
+
+---
+
+## 10. 【已落地】DSH 对照升级 —— 只做三件事（2026-09-22）
+
+> 分支 `feat/plugin-system-dsh-upgrade`。§9.12 说「如果只做三件事」= 9.3 / 9.1 / 9.2；
+> 本次**三条全做**（顺序按 §9.12 的建议：先检查闭环、再地基、最后安装引导 ——
+> 实际提交顺序是 P0-2 → P0-3 → P0-1，互不依赖）。每条都带单测；跑过的门见文末。
+> 三件事做完，§10.4 / §10.5 才有安全的地基（改它们时不用先补隔离与 disposer）。
+
+### 10.1【P0-2 ✅】统一的可逆副作用（effect 栈）
+
+- **新增 `PluginEffectStack`**（`server/plugins.ts`，导出供单测）：`add(label, dispose)` /
+  `remove`（幂等单条撤销）/ `release()`（逆序回卷，返回失败标签）/ `size` / `labels()`；
+  cleanup 抛错只记一条诊断（`pushRuntimeDiag`），**不阻断**其它清理。
+- **宿主每个注册面都改走它**：`registerAgentTool` / `registerCommand` / `route` /
+  `registerProxy` / `fs.watch` / `schedule` / `registerBackgroundTask` / `ui.register` /
+  `events.on` / `onStats` / `onStreaming` / `onAttach` / `onCwdChange`…（返回给插件的
+  注销函数 = 栈里那一项，语义不变）。
+- **新 API `host.effect(label, dispose)`**：插件自建的副作用（自建 interval / 监听器 /
+  WebSocket）也挂进同一个栈。SDK 的 `index.d.ts` + `createMockHost` 已同步（mock 只记
+  调用 + 返回可撤）。
+- **删掉** `LoadedPlugin` 的一堆 `*Unsubscribers` 数组（`agentTool/command/watch/schedule/
+  bus/stats/streaming`）——它们的作用被一个 `effects` 栈取代；`releaseEntry` 只剩兜底
+  （清按 pluginId 索引的代理前缀）。
+- **激活失败也回卷**：`activate()` 抛错时先把这一轮已登记的 side effect 逆序撤掉（半途
+  注册的工具/路由/定时器不能留给一个已经坏掉的插件），再落错误占位行。
+- **验收（单测 `tests/unit/plugin-effects-install-spec.test.ts`）**：逆序回卷顺序、单条撤销
+  幂等、cleanup 抛错隔离与归因、`release` 幂等；真实 `PluginManager` 激活一个插件后反激活，
+  断言工具/命令/路由（404）/总线订阅/自建 effect 全部回收，`effects.size` 归零。
+
+### 10.2【P0-3 ✅】安装前先读 spec（引导式安装）
+
+- **新增 `server/plugin-install-spec.ts`**（纯函数、不联网、不写盘）：
+  `parseInstallSpec` 把来源分成 **npm / github / url / path / invalid**（GitHub 的
+  `owner/repo[/sub][#ref]` 与网页 URL 都归 github，能抽 owner/repo/ref/subpath）；
+  `inspectLocalInstallSpec` 做本地判定（形状 + 已装 `<dataDir>/plugins/<id>`）；
+  `manifestCandidateUrls` 拼 raw.githubusercontent 候选；`suggestPluginId` 死心塌地与
+  CLI 同规则（manifest.id > 子目录末段 > 仓库名）。
+- **`plugin-installer.ts#inspectInstallSpec`**：本地检查后，本地路径源直接读它的
+  manifest.json；GitHub 源用一次 `fetch`（6s 超时，可注入替身）探远端 manifest，
+  归到**七种 problem**：`invalid-spec` / `already-installed` / `not-found` /
+  `not-a-package` / `not-a-bundle` / `network` / `unknown`。**`network` 不阻塞安装**
+  （探测失败只是没核实，不该挡住能装的）。
+- **协议**：`plugin_install_inspect`（客户端上行，带 requestId/explicitId/force）→
+  `plugin_install_inspect_result`（kind/suggestedId/installed/problem/detail/manifest）。
+- **界面**：市场「添加插件」输入框下面一句话（**防抖 500ms 自动查**，来源或 id 变了重查）：
+  已装 / 形状错 / 远端不是插件各给一条本地化提示；探到的 manifest 顺带展示（name /
+  version / description）让用户确认装的是什么。
+- **i18n**：4 个前端 key（zh + en + 8 语言包）：`pluginInspectAlreadyInstalled` /
+  `pluginInspectInvalid` / `pluginInspectNotPlugin` / `pluginInspectNetwork`。
+
+### 10.3【P0-1 ✅】失败不许静默（布局诊断 + per-entry 隔离）
+
+- **`buildUiSlots` 新增可选 `diagnostics?: UiDiagnostic[]`**（不传 = 行为与原来**逐字一致**，
+  纯函数契约不变）：未知 slot / 未知 kind / 宿主不认识的 when / arrange 目标不存在 /
+  同一插件重复声明同 id / 插件被禁用或激活失败，各产出一条带 `pluginId` + `entryId` +
+  `slot` 归因的记录。
+- **布局页顶部横幅**：可折叠（有 error 级默认展开），逐条列出 `pluginId` `entryId` 与原因
+  + 一句「改好插件后重扫」。`App.tsx` 同时 `console.warn` 一条（两处都不吞）。
+- **`SlotErrorBoundary`**（新组件）：`slot-toolbar` 的每个条目独立包一层 —— 插件条目（尤其
+  自定义 view）渲染抛错时**只丢那一条**并就地置灰（点它 console.error 出细节 + 组件栈），
+  不再一个坏条目炸掉整条顶栏/底栏/右栏；key 用条目稳定 id，换条目即重置错误态。
+- **验收**：`tests/unit/ui-slots.test.ts` 新增 6 个 diagnostics 用例；
+  `tests/ui-layout-ui-test.mjs` 新增 2 个检查（横幅出现 + 点名插件与目标 id）。
+
+### 10.4 尚未做的（按 §9 优先级）
+
+- 【P1-4】slot cardinality（single/list）+ 同格冲突检测（**低风险，建议下一轮先做**）；
+  chain 选举（中高风险，想清楚再动）。
+- 【P1-5】拦截扩展点（工具 pre/post 两阶段 Decision）—— 前置 P0-2 已就位，可以开工；
+  约束不变：先只覆盖 `bash` / `read` 这类**已接管**的工具，别照搬 DSH 五阶段。
+- 【P1-6】manifest schema 校验失败即拒。
+- 【P2-7/8/9】注册面目录 / 依赖声明 / 层式组合。
+
+### 10.5 本轮验证（实测）
+
+```
+npm run typecheck   ✅ 五套 tsc 全过
+npm run lint        ✅ 基线 17 warnings（无新增；新增的 warning 已顺手修掉）
+npx vitest run      ✅ 217 文件 / 2483 过 · 1 跳过（含本轮新增 18+6 用例）
+npm run build       ✅
+node tests/plugin-jobs-test.mjs    14 checks（含 inspect 相关的协议层未破坏）
+node tests/plugin-test.mjs / plugin-command / plugin-http / plugin-proxy / plugin-cwd /
+     plugin-settings / plugin-update / plugin-grants / workspace-roots /
+     plugin-catalog-cli  ✅
+node tests/plugin-bgtask-test.mjs   ✅（effect 栈接管后台任务后仍随反激活移除）
+node tests/ui-layout-ui-test.mjs    48 checks（46 原有 + 2 新增；「Esc 后溢出菜单收起」
+                                    在 HEAD 上就失败，属既有问题，非本轮引入）
+```
+
+**测试端口冲突提醒**：`run-smoke.mjs` 并行跑多个 `*-test.mjs` 时会撞端口（`plugin-jobs-test` /
+`plugin-cwd-test` 在并行批次里偶发假红）——单跑都过。要并行请给 `freePort` 加锁或串行。

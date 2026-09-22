@@ -264,6 +264,7 @@ export function createMockHost(overrides) {
 	const routeStore = [];
 	const proxyStore = [];
 	const scheduleStore = [];
+	const effectStore = [];
 	// 注册类：存定义体 + 返回只摘除本次注册的注销函数（与宿主同语义）。
 	const remember = (store, entry) => {
 		if (entry !== undefined) store.push(entry);
@@ -421,6 +422,12 @@ export function createMockHost(overrides) {
 			on: sub("events.on", 1),
 		},
 		log: logImpl,
+		// effect 栈：mock 里只记调用 + 返回可撤函数（真实宿主在反激活时逆序回卷）。
+		// 单测里测试 dispose 真跑的写法：拿到 off() 后调它，或断言 host.calls 里有 effect。
+		effect: (label, dispose) => {
+			const entry = { label, dispose };
+			return remember(effectStore, entry);
+		},
 		// 浏览器桥兼容（client 侧逻辑单测也能用同一个 mock）：无注入回退语义。
 		dialogs: {
 			select: async () => ({ ok: false }),

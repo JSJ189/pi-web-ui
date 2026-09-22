@@ -219,6 +219,11 @@ export interface PluginHost {
 	 *  200 条，单条截断 500 字符，不落盘）；error 级同时走 console.error。
 	 *  用户在设置面板“界面插件”页点某插件的“日志”按需查看（级别过滤 + 清空）。 */
 	log(level?: "debug" | "info" | "warn" | "error", ...args: unknown[]): void;
+	/** 登记一条**自建**的可逆副作用（自建 setInterval / event 监听 / WebSocket…）：
+	 *  返回的注销函数与插件反激活**都会**调 dispose。宿主自己的每个注册面已在内部
+	 *  走同一个 effect 栈，这里只用于「宿主管不到的那些」—— 挂进来就不怕漏注销
+	 *  （热重载后定时器叠加、监听器堆积都是这个漏法的症状）。dispose 请写成幂等的。 */
+	effect(label: string, dispose: () => void): () => void;
 	/** 无头调用：把外部通道文本投给 agent（要 "chat" 能力；宿主未接 chatProvider
 	 *  时 reject（由 chatWait 包成 {ok:false}，插件侧用 chatWait 更省心）。 */
 	chat(req: { text: string; accountId?: string }): Promise<{

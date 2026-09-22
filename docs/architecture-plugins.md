@@ -141,6 +141,37 @@
 - `net` + `netAllowlist`：permissions 含 `net` 才可出站；manifest.netAllowlist 逐主机判定（全等或点号后缀，见 `tests/unit/plugin-extensions.test.ts` 的 hostMatches）；缺表/空表 = 全拒，未命中即拒。
 - `dom:anchor`：仅限 anchors 挂载点的范围 DOM（免用户授权）；完整 `document` 仍需 `dom` + 用户授权（见「特权 DOM 访问」）——两者是「范围」与「整页」之别。
 
+## 可逆副作用（effect 栈，DSH 对照 P0-2）
+
+插件注册的一切都是**可逆副作用**。宿主内部的 `PluginEffectStack`（`server/plugins.ts`，
+导出供单测）在插件激活期间收集每条注册/订阅的 disposer（带 label），反激活（禁用 / 卸载 /
+`plugins_reload` / 关机）时**逆序回卷**：
+
+| 注册面 | 栈里记的 label |
+| --- | --- |
+| `host.registerAgentTool` | `agentTool:<name>` |
+| `host.registerCommand` | `command:/<name>` |
+| `host.route` | `route:<METHOD> <path>` |
+| `host.registerProxy` | `proxy:<prefix>` |
+| `host.fs.watch` | `watch:<relPath>` |
+| `host.schedule` | `schedule:<id>` |
+| `host.registerBackgroundTask` | `bgTask:<id>` |
+| `host.ui.register` | `ui:register(<ids>)` |
+| `host.events.on` / `onStats` / `onStreaming` / `onSettingsChanged` / `onMessage` / `onToolEvent` / `onRunEvent` / `onAttach` / `onCwdChange` / `onConversationChanged` | 对应方法名 |
+| `host.effect(label, dispose)` | `plugin:<label>`（插件**自建**的副作用：自建 interval / 监听器 / WebSocket） |
+
+语义细节：
+
+- 插件调用**返回的注销函数** = 只撤这一条（幂等）；不调用也无所谓 —— 反激活会兜底。
+- `release()` 逆序跑，**cleanup 抛错只记一条诊断**（`pushRuntimeDiag`），不阻断其它清理；
+  返回失败标签列表供日志。
+- **激活中途失败**（`activate()` 抛错）时，这一轮已登记的副作用先逆序撤干净，再落错误占位行
+  —— 半途注册的工具/路由/定时器不会留给一个已经坏掉的插件。
+- `dispose()`（关机 / `reload()`）对每个插件先回卷 effect 栈、再兜底清按 pluginId 索引的
+  代理前缀与后台任务，最后清空全局表。
+- 单测：`tests/unit/plugin-effects-install-spec.test.ts`（逆序 / 幂等 / 抛错隔离 / 真实
+  `PluginManager` 反激活后工具·命令·路由·总线订阅·自建 effect 全回收，`effects.size` 归零）。
+
 ## manifest 可选字段
 
 - `icon`（emoji/单字符，顶栏 tab 替代通用拼图图标）
@@ -306,6 +337,21 @@ custom 文件 + notice 回显）。内置条目不可经 UI 移除。
 （http(s)）或本地绝对路径，一键走服务端现成的 `plugin_catalog_sync` 通道（与插件
 `host.reloadCatalog` 同一条：同校验、同原子写盘；可选同步后安装全部条目 / 整体替换，
 回执就地回显）。成功同步过的 URL 记浏览器 localStorage（最近 8 个），一点即重同步 ——
+**安装前先读 spec**（DSH 对照 P0-3，`server/plugin-install-spec.ts` + `PluginInstaller.inspectInstallSpec`）：
+在「添加插件」输入框填来源时，前端防抖 500ms 发 `plugin_install_inspect`，服务端在**动 CLI 之前**
+做一次可解释的检查 —— ① 形状分类（`npm` / `github` / `url` / `path` / `invalid`）；② 本地已装判定
+（`<dataDir>/plugins/<推导 id>` 存在 → 转成「更新」）；③ 本地路径源直接读它的 `manifest.json`；
+④ GitHub 源用一次 `raw.githubusercontent` 探测（6s 超时，失败**不阻塞安装**）。结果归到七种
+`problem`（`invalid-spec` / `already-installed` / `not-found` / `not-a-package` / `not-a-bundle` /
+`network` / `unknown`），各带一句可读 detail 与 `suggestedId`，经 `plugin_install_inspect_result`
+回到面板，在输入框下就地显示（探到 manifest 时顺带展示 name/version/description 供确认）。
+`server/plugin-install-spec.ts` 本身是纯函数（不联网、不写盘），`server/plugin-catalog.ts` 的
+宽松校验保持不变 —— 它只是**引导**，不是硬门禁。
+
+**从目录同步**（issue #165）：市场头部「从目录同步」按钮展开同步框 —— 填目录文档 URL
+（http(s)）或本地绝对路径，一键走服务端现成的 `plugin_catalog_sync` 通道（与插件
+`host.reloadCatalog` 同一条：同校验、同原子写盘；可选同步后安装全部条目 / 整体替换，
+回执就地回显）。成功同步过的 URL 记浏览器 localStorage（最近 8 个），一点即重同步 ——
 第三方仓库不再需要为同步专门发一个占位插件。headless/预置场景另有两条同语义入口：
 CLI `install --catalog <url>`（同步列表 + 逐条安装/更新，已安装默认跳过，`--force` 更新，
 `--replace` 整体替换）与环境变量 `PI_WEB_PLUGIN_CATALOG_URL`（服务端启动时自动同步一次并
@@ -318,6 +364,14 @@ CLI `install --catalog <url>`（同步列表 + 逐条安装/更新，已安装�
 `UiContribution` / `UiArrangeOp` / `UiPluginUi` / `UiLayoutPrefs`），服务端解析与运行时注册在
 `server/plugins.ts`（`parseUiItem` / `parseUiContributions` / `parseUiArrange` / `UI_SLOTS` /
 `UI_SLOT_ALIASES`），前端合并引擎是 `web/src/ui-slots.ts` 的 `buildUiSlots()`（纯函数，有单测）。
+
+**失败不静默（DSH 对照 P0-1）**：`buildUiSlots(..., { diagnostics })` 可收集合并过程中的诊断
+（未知 slot / 未知 kind / 宿主不认识的 `when` / arrange 目标不存在 / 同一插件重复声明同 id /
+插件被禁用或激活失败），每条带 `pluginId` + `entryId` + `slot` 归因；不传 `diagnostics` 时行为
+与原来**逐字一致**。App 把它们 `console.warn` 出来，设置面板「界面布局」页顶部同时渲染一个可
+折叠横幅（`uiLayoutDiagTitle` / `uiLayoutDiagHint`）——以前这些情况是静默丢弃，表现为「注册了但
+界面上没有」，最难排查。渲染层另配 `web/src/components/SlotErrorBoundary.tsx`：每个条目**独立**
+包一层，某条目渲染抛错只丢它自己并就地置灰，不炸掉整条工具栏。
 
 > 别和**插件视图 tab** 混起来：安装后出现在顶栏的 🧩 视图 tab（`plugin:<id>`）由 `plugins` 清单经
 > `withPluginViewItems` 合成 `kind="view"` 条目（`<id>:__view`）后走 slot 框架，与宿主三连同流渲染
@@ -707,6 +761,7 @@ const res = await host.openSession({ roots: ["/repo/a", "/repo/b"], prompt: "先
 
 | 测试文件                              | 端口        | 说明                                                                                                                                                                                                                                                                                                                                                                                                                                                           |
 | ------------------------------------- | ----------- | -------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `ui-layout-ui-test.mjs`               | 随机        | 布局不变量 E2E（真 Chrome，48 checks）：插件 arrange 藏宿主条目 / 插件条目与宿主同排 / 右栏 tab 顺序 / 勾掉与 ↑↓ 真的生效 / 隐藏的菜单型条目在溢出菜单里还能用 / 消息工具条整条不画 / **布局诊断横幅出现且点名插件与目标 id（P0-1）**（缺 Chrome 自动 SKIP，不入 run-smoke） |
 | `plugin-topbar-ui-test.mjs`           | 随机        | 插件顶栏条目（#146）+ 设置面板内后台卸载（#152）E2E：`ui.topbar` 声明的按钮渲染 / 点击按需加载 bundle 并命中宿主动作处理器（用旧名别名 `host.onTopbarAction` 注册）/ 设置面板出现「界面布局」管理段与「源码构建」勾选项 / 卸载走 plugin_job 且**面板全程不关** / 页面无 JS 报错（缺 Chrome 自动 SKIP，不入 run-smoke）。实测 **10 checks 全过**                                                                                                                                         |
 | `plugin-jobs-test.mjs`                | 随机        | 插件后台作业（#152）+ 市场目录同步（#148）：非法来源即时拒绝 / 真卸载成功（成功后重推列表）/ 卸载不存在→失败回执带输出尾部 / 本地 JSON 同步→原子写盘+推新条目 / 坏 JSON 不覆盖旧目录                                                                                                                                                                                                                                                                           |
 | `plugin-settings-page-test.mjs`       | 随机        | `settings.pages` 插件页 E2E（真 Chrome，12 checks）：manifest 声明的页进设置面板导航 / `hidden:true` 的默认不在导航里 / `mount()` 渲染进画布 / 切走即卸载并调 cleanup / 再点回来重新挂载 / 布局页列出它并可隐藏（隐藏后当前分区回落默认页、不留空白）/ 页面无 JS 报错（缺 Chrome 自动 SKIP）                                                                                                                                                                   |
@@ -731,7 +786,8 @@ const res = await host.openSession({ roots: ["/repo/a", "/repo/b"], prompt: "先
 | `legado-web-explore-test.mjs`         | 8998/8999   | legado-web 发现页：收藏书源（下拉「⭐ 常用」分组 + 常用快捷行 + `prefs.json`）/ 直接搜这个源 / 分类浏览与搜索共用列表容器互不串味（缺 Chrome 自动 SKIP）                                                                                                                                                                                                                                                                                                       |
 | `legado-web-storage-test.mjs`         | 8997        | legado-web 存储契约：数据只落数据目录文件——1.8MB 书源 + 3000 章书架不报 QuotaExceededError / localStorage 无 `legado.*` 键 / 刷新后仍在 / 老浏览器数据一次性迁移 / 书源页搜索与 ⭐ 置顶落 `prefs.json`（缺 Chrome 自动 SKIP）                                                                                                                                                                                                                                  |
 | 单测 `plugin-host.test.ts`            | —           | 宿主动作桥：startChat 时序（等 cwd/等新对话才发 prompt）/ 未就绪拒绝 / newChat=false / compose 不依赖连接就绪                                                                                                                                                                                                                                                                                                                                                  |
-| 单测 `ui-slots.test.ts`               | —           | slot 合并引擎：内置条目表自检（id 前缀、文案 key 存在、`settings.pages` 不列内置）/ 四级优先级逐层覆盖（含同 id 覆盖但位置不变、arrange 只改已存在并留痕、用户偏好最高）/ `splitOverflow` 不重排不丢 / 恢复语义（单条清干净、不留空壳）                                                                                                                                                                                                                        |
+| 单测 `plugin-effects-install-spec.test.ts` | —      | **effect 栈**（逆序回卷 / 单条撤销幂等 / cleanup 抛错隔离与归因 / release 幂等；真实 `PluginManager` 反激活后工具·命令·路由·文件监听·总线订阅·自建 effect 全回收，`effects.size` 归零）+ **安装前 inspect**（`parseInstallSpec` 形状分类 / `inspectLocalInstallSpec` 已装与路径判定 / `inspectInstallSpec` 远端探测四种 problem，fetch 替身零网络） |
+| 单测 `ui-slots.test.ts`               | —           | slot 合并引擎（含 **diagnostics** 6 例：未知 slot / 未知 kind / 未知 when / arrange 目标不存在 / 插件禁用或激活失败 / 重复声明的诊断与不误报）：内置条目表自检（id 前缀、文案 key 存在、`settings.pages` 不列内置）/ 四级优先级逐层覆盖（含同 id 覆盖但位置不变、arrange 只改已存在并留痕、用户偏好最高）/ `splitOverflow` 不重排不丢 / 恢复语义（单条清干净、不留空壳）                                                                                                                                                                                                                        |
 | 单测 `plugin-ui-manifest.test.ts`     | —           | manifest `ui` 解析（39 例）：两种形状与混写、6 个别名映射、非法条目 / 重复 id / 非枚举 slot 丢弃、children 只一层、文本截断、arrange 形态与上限；`host.ui.*` 运行时注册（同 id 覆盖 manifest、注销、update 只改已存在、remove 不复活、单次上限、能力门控三态）                                                                                                                                                                                                 |
 | 单测 `context-menu.test.ts`           | —           | 右键菜单纯函数：坐标钳制、hidden 跳过与 divider 保留、分组聚类与稳定排序、置灰判定（`disabled` / `!` 前缀）、键盘环形导航与越界处理                                                                                                                                                                                                                                                                                                                            |
 | 单测 `plugin-grants.test.ts`          | —           | 授权表：父目录覆盖子目录（按分段边界，`/proj` 不覆盖 `/project`）、反向不成立、win32 折大小写但存储保原形式、坏文件视为空表且不被改写、三种撤销粒度、非法 pluginId/相对路径拒绝                                                                                                                                                                                                                                                                                |
