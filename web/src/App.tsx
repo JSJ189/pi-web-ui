@@ -33,7 +33,7 @@ import {
 	installPluginHostApi,
 	triggerPluginUiAction,
 } from "./plugin-host";
-import { buildUiSlots, withPluginViewItems, type UiSlotEntry } from "./ui-slots";
+import { buildUiSlots, withPluginViewItems, type UiDiagnostic, type UiSlotEntry } from "./ui-slots";
 import { renderSlotToolbar } from "./slot-toolbar";
 import { ContextMenu } from "./components/ContextMenu";
 import { BannerContainer } from "./components/BannerContainer";
@@ -311,17 +311,22 @@ export function App() {
 	// 面板隐藏或调序（偏好 per-client 持久化）。顺序与设置面板里看到的一致。
 	// 宿主 UI 扩展点全量计算（issue #146 完整版）：内置条目 + 插件贡献 + 插件 arrange
 	// + 用户偏好（最高优先级）→ 每个 slot 的最终条目。渲染层只负责摆位置。
-	const uiSlots = useMemo(
-		() =>
-			buildUiSlots(withPluginViewItems(chat.plugins), {
-				locale,
-				// Translate 的 key 是字面量联合类型，ui-slots 收的是 (key: string) => string
-				t: (key: string) => t(key as Parameters<typeof t>[0]),
-				disabledPlugins: chat.settings?.disabledPlugins ?? [],
-				layout: chat.settings?.uiLayout,
-			}),
-		[chat.plugins, chat.settings?.disabledPlugins, chat.settings?.uiLayout, locale, t],
-	);
+	const uiSlots = useMemo(() => {
+		// 合并诊断（P0-1：失败不许静默）：未知 slot / 未知 kind / arrange 目标不存在 /
+		// 插件被禁用或激活失败 → 带归因的 diagnostics，这里 console.warn 一条，
+		// 设置面板「界面布局」页再展示给用户（同一份数据，两处都不吞）。
+		const diagnostics: UiDiagnostic[] = [];
+		const slots = buildUiSlots(withPluginViewItems(chat.plugins), {
+			locale,
+			// Translate 的 key 是字面量联合类型，ui-slots 收的是 (key: string) => string
+			t: (key: string) => t(key as Parameters<typeof t>[0]),
+			disabledPlugins: chat.settings?.disabledPlugins ?? [],
+			layout: chat.settings?.uiLayout,
+			diagnostics,
+		});
+		for (const d of diagnostics) console.warn(`[ui-slot] ${d.pluginId ? `[${d.pluginId}] ` : ""}${d.message}`);
+		return slots;
+	}, [chat.plugins, chat.settings?.disabledPlugins, chat.settings?.uiLayout, locale, t]);
 	// 顶栏：主栏 = 非 hidden 的 topbar.primary；溢出 = hidden 的 primary + topbar.overflow。
 	// 这样插件把宿主条目 hide 掉之后，它仍在溢出菜单/布局页里找得回来（锁不死用户）。
 	const uiPrimary = useMemo(() => uiSlots["topbar.primary"].filter((e) => !e.hidden), [uiSlots]);

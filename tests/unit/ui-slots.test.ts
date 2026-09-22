@@ -22,6 +22,7 @@ import {
 	setPluginViewOrder,
 	splitOverflow,
 	withPluginViewItems,
+	type UiDiagnostic,
 } from "../../web/src/ui-slots.js";
 import type { UiPluginInfo, UiSlotId } from "../../server/protocol.js";
 import { zh } from "../../web/src/i18n.js";
@@ -983,5 +984,120 @@ describe("插件视图的钉住开关（pluginViewItemId / setPluginViewPinned /
 		prefs = setPluginViewPinned(prefs, "mail", false);
 		prefs = setPluginViewPinned(prefs, "mail", true);
 		expect(prefs).toEqual({ hidden: [], shown: ["mail:__view"] });
+	});
+});
+
+// ---------------------------------------------------------------------------
+// P0-1：失败不许静默 —— buildUiSlots 的 diagnostics
+// ---------------------------------------------------------------------------
+
+describe("buildUiSlots —— diagnostics（P0-1）", () => {
+	/** 造一个最小插件对象（默认合法贡献）。 */
+	const plug = (id: string, ui?: UiPluginInfo["ui"], extra: Partial<UiPluginInfo> = {}): UiPluginInfo => ({
+		id,
+		name: id,
+		hasClient: true,
+		...(ui ? { ui } : {}),
+		...extra,
+	});
+
+	it("不传 diagnostics 时行为与原来完全一致（纯函数，零副作用）", () => {
+		const before = build([plug("p", { items: [{ id: "a", slot: "topbar.primary", label: "A" }], arrange: [] })]);
+		const diagnostics: UiDiagnostic[] = [];
+		const after = build([plug("p", { items: [{ id: "a", slot: "topbar.primary", label: "A" }], arrange: [] })], {
+			diagnostics,
+		});
+		expect(ids(after["topbar.primary"])).toEqual(ids(before["topbar.primary"]));
+		expect(diagnostics).toEqual([]);
+	});
+
+	it("未知 slot / 未知 kind / 未知 when 各产出一条带归因的诊断", () => {
+		const diagnostics: UiDiagnostic[] = [];
+		build(
+			[
+				plug("p", {
+					items: [
+						{ id: "bad-slot", slot: "nope.nope" as never, label: "X" },
+						{ id: "bad-kind", slot: "topbar.primary", label: "K", kind: "sparkle" as never },
+						{ id: "bad-when", slot: "topbar.primary", label: "W", when: ["message.hasSelection", "totally.made.up"] },
+					],
+					arrange: [],
+				}),
+			],
+			{ diagnostics },
+		);
+		expect(diagnostics.some((d) => d.entryId === "bad-slot" && d.message.includes("unknown slot"))).toBe(true);
+		expect(diagnostics.some((d) => d.entryId === "bad-kind" && d.message.includes('unknown kind "sparkle"'))).toBe(
+			true,
+		);
+		expect(diagnostics.some((d) => d.entryId === "bad-when" && d.message.includes("totally.made.up"))).toBe(true);
+		// 已知的 when 值不诊断（只报不认识的）。
+		expect(diagnostics.some((d) => d.message.includes("message.hasSelection"))).toBe(false);
+		// 全部诊断都带 pluginId 归因。
+		expect(diagnostics.every((d) => d.pluginId === "p")).toBe(true);
+	});
+
+	it("arrange 目标不存在 → 诊断（不再静默忽略）", () => {
+		const diagnostics: UiDiagnostic[] = [];
+		build([plug("p", { items: [], arrange: [{ id: "host:does-not-exist", hide: true }] })], { diagnostics });
+		expect(diagnostics.some((d) => d.entryId === "host:does-not-exist" && d.message.includes("does not exist"))).toBe(
+			true,
+		);
+	});
+
+	it("arrange 目标存在 → 不产诊断", () => {
+		const diagnostics: UiDiagnostic[] = [];
+		build([plug("p", { items: [], arrange: [{ id: "host:settings", order: 5 }] })], { diagnostics });
+		expect(diagnostics.filter((d) => d.message.includes("does not exist"))).toEqual([]);
+	});
+
+	it("插件被禁用 / 激活失败 → 各一条诊断（说明为什么没渲染）", () => {
+		const diagnostics: UiDiagnostic[] = [];
+		build(
+			[
+				plug("disabled-one", { items: [{ id: "a", slot: "topbar.primary", label: "A" }], arrange: [] }),
+				plug(
+					"broken-one",
+					{ items: [{ id: "b", slot: "topbar.primary", label: "B" }], arrange: [] },
+					{ error: "boom" },
+				),
+			],
+			{ diagnostics, disabledPlugins: ["disabled-one"] },
+		);
+		expect(diagnostics.some((d) => d.pluginId === "disabled-one" && d.message.includes("disabled by the user"))).toBe(
+			true,
+		);
+		expect(diagnostics.some((d) => d.pluginId === "broken-one" && d.level === "error")).toBe(true);
+	});
+
+	it("同 id 重复声明 → 诊断；跨插件同 itemId 不误报", () => {
+		// 跨插件：全局 id 带插件前缀（<pluginId>:<itemId>），不同插件同 itemId 不该告警。
+		const cross: UiDiagnostic[] = [];
+		build(
+			[
+				plug("first", { items: [{ id: "shared", slot: "topbar.primary", label: "1st" }], arrange: [] }),
+				plug("second", { items: [{ id: "shared", slot: "topbar.primary", label: "2nd" }], arrange: [] }),
+			],
+			{ diagnostics: cross },
+		);
+		expect(cross.filter((d) => d.message.includes("declared more than once"))).toEqual([]);
+
+		// 同一插件重复声明同一 id（manifest 基线 + 运行时注册合并后的常见形态）→ 一条诊断。
+		const same: UiDiagnostic[] = [];
+		build(
+			[
+				plug("one", {
+					items: [
+						{ id: "dup", slot: "topbar.primary", label: "1st" },
+						{ id: "dup", slot: "topbar.primary", label: "2nd" },
+					],
+					arrange: [],
+				}),
+			],
+			{ diagnostics: same },
+		);
+		expect(same.some((d) => d.pluginId === "one" && d.entryId === "dup" && d.message.includes("more than once"))).toBe(
+			true,
+		);
 	});
 });

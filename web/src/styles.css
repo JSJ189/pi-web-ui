@@ -11560,6 +11560,78 @@ button.source-default-toggle {
 	white-space: nowrap;
 	max-width: 100%;
 }
+/* 「安装前先读 spec」的一句话提示（DSH P0-3）：输入框下就地给出形状/已装/远端结论。 */
+/* 布局诊断横幅（P0-1）：列出「没出现在界面上」的条目与原因，默认折叠。 */
+.set-ui-diag {
+	margin: 4px 0 8px;
+	padding: 8px 10px;
+	border-radius: 8px;
+	border: 1px solid var(--border, rgb(255 255 255 / 0.12));
+	background: rgb(255 255 255 / 0.03);
+	font-size: 12px;
+}
+.set-ui-diag > summary {
+	cursor: pointer;
+	color: var(--amber);
+	font-weight: 600;
+}
+.set-ui-diag-list {
+	margin: 6px 0 0;
+	padding-left: 18px;
+	display: flex;
+	flex-direction: column;
+	gap: 4px;
+}
+.set-ui-diag-item {
+	line-height: 1.5;
+	overflow-wrap: anywhere;
+	color: var(--text-dim, #b9bcc4);
+}
+.set-ui-diag-item.error {
+	color: var(--red);
+}
+.set-ui-diag-item code {
+	margin-right: 6px;
+	padding: 0 4px;
+	border-radius: 4px;
+	background: rgb(0 0 0 / 0.25);
+	font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+	font-size: 11px;
+}
+.set-ui-diag-hint {
+	margin-top: 6px;
+	opacity: 0.75;
+	line-height: 1.5;
+}
+/* 单个 slot 条目崩溃时的就地占位（P0-1：坏条目只丢自己，不炸整片）。 */
+.slot-error {
+	display: inline-flex;
+	align-items: center;
+	gap: 4px;
+	padding: 2px 6px;
+	border-radius: 6px;
+	border: 1px dashed var(--red, #e5534b);
+	background: transparent;
+	color: var(--red, #e5534b);
+	font: inherit;
+	cursor: pointer;
+	opacity: 0.85;
+}
+
+.set-catalog-hint {
+	margin: -2px 0 4px;
+	font-size: 12px;
+	line-height: 1.5;
+	color: var(--text-dim, #b9bcc4);
+	overflow-wrap: anywhere;
+}
+.set-catalog-hint.warn {
+	color: var(--red);
+}
+.set-catalog-hint.ok {
+	color: var(--green);
+}
+
 .set-catalog-job-out {
 	flex: 1 0 100%;
 	margin: 4px 0 0;

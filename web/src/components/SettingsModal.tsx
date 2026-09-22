@@ -70,9 +70,10 @@ import {
 	restoreAllUi,
 	restoreUiItem,
 	withPluginViewItems,
+	type UiDiagnostic,
 	type UiSlotEntry,
 } from "../ui-slots";
-import type { CatalogSyncState, PluginJobState } from "../use-chat";
+import type { CatalogSyncState, PluginInstallInspectState, PluginJobState } from "../use-chat";
 import { appSend, useAppGlobals } from "../app-globals";
 import { countPluginPhases, pluginPhase, type PluginPhase } from "../plugin-phase";
 import {
@@ -128,6 +129,8 @@ interface SettingsModalProps {
 		pluginJobs: Record<string, PluginJobState>;
 		/** 最近一次目录同步的回执（issue #165「从目录同步」框展示用）。 */
 		catalogSync: CatalogSyncState | null;
+		/** 最近一次「安装前先读 spec」的检查结果（DSH P0-3）。 */
+		installInspect: PluginInstallInspectState | null;
 		/** 插件重载纪元：作为插件 client bundle URL 的 ?e= 缓存击穿参数传给插件页（#146）。 */
 		pluginsEpoch: number;
 		/** 插件目录授权表（设置面板列出 + 可撤销）。 */
@@ -603,11 +606,15 @@ export function SettingsModal({ chat, terminal, initialSection, onSwitchToTermin
 	 *  刻意放在 tabs 之前（也就跑在上面的 `if (!settings) return null` 之前）：插件自定义页
 	 *  （settings.pages）也是导航的一项，得先算出来；而引用它的回落 effect 是 hook，
 	 *  不能写在条件 return 之后。 */
+	// 合并诊断（P0-1）：未知 slot / 未知 kind / arrange 目标不存在 / 插件被禁用或激活
+	// 失败都产出一条带归因的记录，布局页顶部横幅展示（按 pluginId 分组，可折叠）。
+	const uiDiagnostics: UiDiagnostic[] = [];
 	const uiSlots = buildUiSlots(withPluginViewItems(chat.plugins), {
 		locale,
 		t: (key: string) => t(key as Parameters<typeof t>[0]),
 		disabledPlugins: chat.settings?.disabledPlugins ?? [],
 		layout: chat.settings?.uiLayout,
+		diagnostics: uiDiagnostics,
 	});
 
 	/** `settings.pages` 里可渲染的插件页（导航一项 = 一页）。跳过：宿主条目（该槽位按契约是
@@ -932,6 +939,46 @@ export function SettingsModal({ chat, terminal, initialSection, onSwitchToTermin
 		return best;
 	};
 
+	/** 「安装前先读 spec」的一句话提示（DSH P0-3）：形状不对 / 已装 / 远端无 manifest
+	 *  都在输入框下就地告知，不阻塞填写；探到的 manifest 顺带展示给用户确认。 */
+	const inspectHint = (r: PluginInstallInspectState | null) => {
+		if (!r) return null;
+		if (r.problem === "already-installed")
+			return (
+				<div className="set-catalog-hint warn" data-problem={r.problem}>
+					{t("pluginInspectAlreadyInstalled", { id: r.suggestedId })}
+				</div>
+			);
+		if (r.problem === "network")
+			return (
+				<div className="set-catalog-hint" data-problem={r.problem}>
+					{t("pluginInspectNetwork")}
+				</div>
+			);
+		if (r.problem === "invalid-spec")
+			return (
+				<div className="set-catalog-hint warn" data-problem={r.problem}>
+					{t("pluginInspectInvalid")}
+				</div>
+			);
+		if (r.problem === "not-found" || r.problem === "not-a-package" || r.problem === "not-a-bundle")
+			return (
+				<div className="set-catalog-hint warn" data-problem={r.problem}>
+					{t("pluginInspectNotPlugin")}
+				</div>
+			);
+		if (r.problem) return <div className="set-catalog-hint warn">{r.detail}</div>;
+		if (!r.manifest) return null;
+		return (
+			<div className="set-catalog-hint ok" data-problem="ok">
+				<span aria-hidden>✓ </span>
+				{r.manifest.name ?? r.manifest.id ?? r.suggestedId}
+				{r.manifest.version ? ` v${r.manifest.version}` : ""}
+				{r.manifest.description ? ` · ${r.manifest.description}` : ""}
+			</div>
+		);
+	};
+
 	/** 就地显示作业状态：进行中（带最后一行输出）/ 成功 / 失败（带输出尾部）。 */
 	const renderJobStatus = (pluginId: string) => {
 		const job = jobFor(pluginId);
@@ -1111,6 +1158,33 @@ export function SettingsModal({ chat, terminal, initialSection, onSwitchToTermin
 			...(catSyncReplace ? { replace: true } : {}),
 		});
 	};
+
+	/** 「安装前先读 spec」：来源变了（防抖 500ms）自动查一次 —— 输入框下面就地显示
+	 *  形状/已装/远端有没有 manifest，不用等 CLI 跑完再猜（DSH P0-3）。 */
+	const [catInspectReq, setCatInspectReq] = useState("");
+	useEffect(() => {
+		const source = catSource.trim();
+		if (!source) {
+			setCatInspectReq("");
+			return;
+		}
+		const timer = setTimeout(() => {
+			const requestId = randomUuid();
+			setCatInspectReq(requestId);
+			appSend({
+				type: "plugin_install_inspect",
+				requestId,
+				source,
+				...(catId.trim() ? { explicitId: catId.trim() } : {}),
+			});
+		}, 500);
+		return () => clearTimeout(timer);
+		// eslint-disable-next-line react-hooks/exhaustive-deps
+	}, [catSource, catId]);
+	/** 与当前输入对齐的那次检查结果：requestId 对得上、且来源与输入框一致
+	 *  （值变了、新结果还没回来时不展示旧结论，免得说错话）。 */
+	const insp = chat.installInspect;
+	const catInspect = insp && insp.requestId === catInspectReq && insp.source === catSource.trim() ? insp : null;
 
 	/** 正在等的那次同步的回执（requestId 对上才展示；别人的/插件的同步不掺和）。 */
 	const syncReceipt = chat.catalogSync && chat.catalogSync.requestId === catSyncReq ? chat.catalogSync : null;
@@ -2384,6 +2458,21 @@ export function SettingsModal({ chat, terminal, initialSection, onSwitchToTermin
 									</button>
 								</div>
 								<div className="set-note">{t("uiLayoutHint")}</div>
+								{uiDiagnostics.length > 0 && (
+									<details className="set-ui-diag" open={uiDiagnostics.some((d) => d.level === "error")}>
+										<summary>⚠ {t("uiLayoutDiagTitle", { n: uiDiagnostics.length })}</summary>
+										<ul className="set-ui-diag-list">
+											{uiDiagnostics.map((d, i) => (
+												<li key={`${d.pluginId ?? "host"}:${d.entryId ?? i}`} className={`set-ui-diag-item ${d.level}`}>
+													{d.pluginId ? <code>{d.pluginId}</code> : null}
+													{d.entryId ? <code>{d.entryId}</code> : null}
+													<span>{d.message}</span>
+												</li>
+											))}
+										</ul>
+										<div className="set-ui-diag-hint">{t("uiLayoutDiagHint")}</div>
+									</details>
+								)}
 								<input
 									className="set-ui-filter"
 									value={uiLayoutFilter}
@@ -2807,6 +2896,7 @@ export function SettingsModal({ chat, terminal, initialSection, onSwitchToTermin
 											value={catSource}
 											onChange={(ev) => setCatSource(ev.target.value)}
 										/>
+										{inspectHint(catInspect)}
 										<input
 											className="set-input"
 											placeholder={t("pluginCatalogId")}

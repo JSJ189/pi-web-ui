@@ -32,6 +32,53 @@ import type {
 	UiSlotId,
 } from "./types";
 
+/**
+ * 合并过程中的一条**诊断**（P0-1：失败不许静默）。与「静默丢弃」相对：未知 slot /
+ * 未知 kind / 非法 when / arrange 目标不存在 / 重复 id 覆盖 / 插件被禁用或激活失败，
+ * 都产出一条带归因（pluginId / entryId / slot）的记录，供布局页横幅 + console.warn 展示。
+ * 诊断只做可观测性，**不改变**合并结果与隔离/权限语义。
+ */
+export interface UiDiagnostic {
+	level: UiDiagnosticLevel;
+	/** 相关插件 id（host 侧的诊断没有这个字段）。 */
+	pluginId?: string;
+	/** 相关条目 id（形如 `host:settings` 或 `<pluginId>:<itemId>`，或 arrange 的目标 id）。 */
+	entryId?: string;
+	/** 相关槽位（若知道）。 */
+	slot?: UiSlotId;
+	/** 英文短句（面向插件作者；布局页原样展示，不做翻译——诊断是给开发者看的）。 */
+	message: string;
+}
+
+export type UiDiagnosticLevel = "warn" | "error";
+
+/** 协议里的全部 kind（与 server/protocol.ts 的 UiItemKind 同口径；未知值只诊断不丢弃）。 */
+const UI_ITEM_KINDS: ReadonlySet<string> = new Set([
+	"view",
+	"action",
+	"badge",
+	"menu",
+	"page",
+	"organizer",
+	"divider",
+	"toggle",
+	"input",
+	"progress",
+	"select",
+]);
+
+/** 宿主认识的 when 词表（与 web/src/context-menu-state.ts 的求值口径一致；其余值不报错、
+ *  只诊断——它们是「保留但暂不求值」的槽位条件，未来可能被支持）。 */
+const KNOWN_WHEN_VALUES: ReadonlySet<string> = new Set([
+	"disabled",
+	"always",
+	"never",
+	"file.isDir",
+	"file.isFile",
+	"session.isRunning",
+	"message.hasSelection",
+]);
+
 /** 宿主内置条目（宿主的既有入口；插件可经 arrange 整理，用户可经偏好覆盖）。 */
 export interface BuiltinUiItem {
 	/** 全局 id，形如 `host:settings`（用户偏好与 arrange 的 key 就是它）。 */
@@ -1527,11 +1574,21 @@ export function buildUiSlots(
 		disabledPlugins?: string[];
 		/** 用户偏好（最高优先级）。 */
 		layout?: UiLayoutPrefs;
+		/** 诊断收集（P0-1：失败不许静默）。传了数组就把「为什么没出现」逐条 push 进去
+		 *  （未知 slot / 未知 kind / 非法 when / arrange 目标不存在 / 重复 id 覆盖 …），
+		 *  由调用方（布局页顶部横幅 + console.warn）展示给用户与插件作者。不传则行为与
+		 *  原来完全一致（纯函数、无副作用）。 */
+		diagnostics?: UiDiagnostic[];
 	},
 ): Record<UiSlotId, UiSlotEntry[]> {
 	const zh = opts.locale === "zh";
 	const disabled = new Set(opts.disabledPlugins ?? []);
 	const layout = migrateBrandLayout(opts.layout ?? {});
+	// 诊断收集（可选）：每条带 pluginId / slot / entryId 归因，布局页据此告诉用户
+	// 「哪个插件的哪个条目为什么没出现」。不传 diagnostics 时 diag() 是空操作。
+	const diag = (d: Omit<UiDiagnostic, "level"> & { level?: UiDiagnosticLevel }): void => {
+		opts.diagnostics?.push({ level: d.level ?? "warn", ...d });
+	};
 
 	// 声明序号：新增条目时自增。同 id 覆盖（后声明的插件赢）**复用**原序号 —— 覆盖的是
 	// 「条目内容」，位置仍以首次声明为准；否则某个插件重声明一次就会无理由地把自己挪到
@@ -1562,14 +1619,72 @@ export function buildUiSlots(
 
 	// ---- 第 2 层：插件贡献 ----
 	for (const plugin of plugins) {
-		if (plugin.error || disabled.has(plugin.id)) continue;
+		if (disabled.has(plugin.id)) {
+			diag({
+				pluginId: plugin.id,
+				message: `plugin "${plugin.id}" is disabled by the user — its ${plugin.ui?.items?.length ?? 0} UI item(s) are not rendered`,
+			});
+			continue;
+		}
+		if (plugin.error) {
+			diag({
+				level: "error",
+				pluginId: plugin.id,
+				message: `plugin "${plugin.id}" failed to activate (${plugin.error}) — its UI items are not rendered`,
+			});
+			continue;
+		}
 		const source = `plugin:${plugin.id}` as const;
 		for (const item of plugin.ui?.items ?? []) {
 			// slot 只信任枚举成员：manifest 解析已经过滤过一遍，这里再兜一层，
 			// 脏数据只会丢条目，不会污染结果对象的 key。
-			if (!isSlotId(item.slot)) continue;
+			if (!isSlotId(item.slot)) {
+				diag({
+					pluginId: plugin.id,
+					entryId: item.id,
+					message: `item "${plugin.id}:${item.id}" declares unknown slot "${String(item.slot)}" — dropped (valid slots: see docs/architecture-plugins.md)`,
+				});
+				continue;
+			}
+			if (item.kind && !UI_ITEM_KINDS.has(item.kind)) {
+				diag({
+					pluginId: plugin.id,
+					entryId: item.id,
+					slot: item.slot,
+					message: `item "${plugin.id}:${item.id}" declares unknown kind "${item.kind}" — the render layer falls back to a plain button`,
+				});
+			}
+			if (Array.isArray(item.when)) {
+				for (const w of item.when) {
+					if (!KNOWN_WHEN_VALUES.has(w))
+						diag({
+							pluginId: plugin.id,
+							entryId: item.id,
+							slot: item.slot,
+							message: `item "${plugin.id}:${item.id}" declares when:"${w}" which the host does not know — it is ignored (the item still renders)`,
+						});
+				}
+			} else if (item.when !== undefined) {
+				diag({
+					pluginId: plugin.id,
+					entryId: item.id,
+					slot: item.slot,
+					message: `item "${plugin.id}:${item.id}" has a non-array "when" — ignored`,
+				});
+			}
 			const id = `${plugin.id}:${item.id}`;
 			const prev = byId.get(id);
+			if (prev) {
+				// 全局 id 带插件前缀，跨插件不会撞；能撞的只有**同一插件重复声明同一个
+				// item id**（manifest 基线 + 运行时 host.ui.register 合并后可能重复）。
+				// 后者覆盖前者（后声明赢），位置沿用首次声明 —— 值得说一声。
+				diag({
+					pluginId: plugin.id,
+					entryId: item.id,
+					slot: item.slot,
+					message: `item id "${item.id}" is declared more than once — the later declaration wins (order/visibility are inherited from the first)`,
+				});
+			}
 			byId.set(id, toWorkingEntry(id, item.slot, source, item, zh, prev?.seq ?? seq++));
 		}
 	}
@@ -1577,7 +1692,16 @@ export function buildUiSlots(
 	// ---- 第 3 层：插件 arrange（只能改已存在的条目） ----
 	for (const plugin of plugins) {
 		if (plugin.error || disabled.has(plugin.id)) continue;
-		for (const op of plugin.ui?.arrange ?? []) applyArrange(byId, op, plugin.id);
+		for (const op of plugin.ui?.arrange ?? []) {
+			const before = byId.get(op.id);
+			applyArrange(byId, op, plugin.id);
+			if (!before)
+				diag({
+					pluginId: plugin.id,
+					entryId: op.id,
+					message: `arrange target "${op.id}" does not exist — op ignored (is the providing plugin installed / not disabled?)`,
+				});
+		}
 	}
 
 	// ---- 第 4 层：用户偏好（最高） ----
