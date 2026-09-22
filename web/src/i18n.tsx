@@ -1223,6 +1223,10 @@ export const zh = {
 	pluginCatalogIcon: "图标 emoji（可选）",
 	pluginCatalogDesc: "简介（可选）",
 	pluginCatalogAddSubmit: "添加到列表",
+	pluginInspectAlreadyInstalled: "已安装同名插件「{id}」—— 用「更新」覆盖，或换个 id",
+	pluginInspectInvalid: "认不出这个来源 —— 应为 owner/repo、owner/repo/子目录[#ref]、GitHub 链接或 npm 包名",
+	pluginInspectNotPlugin: "远端没找到 manifest.json —— 这不是 pi-web-ui 插件（或仓库/子目录/分支写错了）",
+	pluginInspectNetwork: "没能连上远端核对（不影响安装）—— 网络/代理正常时可再试",
 	noPluginCatalog: "列表为空 —— 点「添加插件」把第三方插件填进列表",
 	pluginInstalled: "已安装",
 	pluginCatalogCustom: "自定义",
@@ -1247,6 +1251,9 @@ export const zh = {
 	uiLayoutTitle: "界面布局",
 	uiLayoutHint:
 		"插件可以调整这里的条目（包括宿主内置入口）；你随时能改回来：取消勾选＝隐藏，↑/↓ 调顺序，改过的条目会显示「恢复」。隐藏的条目仍能在顶栏溢出菜单里点到。",
+	uiLayoutDiagTitle: "布局诊断（{n} 条）",
+	uiLayoutDiagHint:
+		"这些条目没有出现在界面上。原因见上；多半是插件的 manifest/注册写错了 slot、kind 或 arrange 目标。改好插件后重扫即可。",
 	pluginTopbarMore: "更多插件按钮",
 	pluginMenuTitle: "插件",
 	pluginMenuPin: "钉到顶栏",
@@ -2808,6 +2815,14 @@ const en: Record<keyof typeof zh, string> = {
 	pluginCatalogIcon: "Icon emoji (optional)",
 	pluginCatalogDesc: "Description (optional)",
 	pluginCatalogAddSubmit: "Add to list",
+	pluginInspectAlreadyInstalled:
+		'A plugin named "{id}" is already installed — use Update to replace it, or pick another id',
+	pluginInspectInvalid:
+		"Unrecognized source — expected owner/repo, owner/repo/subdir[#ref], a GitHub URL, or an npm package name",
+	pluginInspectNotPlugin:
+		"No manifest.json at the remote source — not a pi-web-ui plugin (or the repo/subdir/ref is wrong)",
+	pluginInspectNetwork:
+		"Could not reach the remote to verify (install still works) — retry when the network/proxy is fine",
 	noPluginCatalog: 'List is empty — click "Add plugin" to drop a third-party plugin in',
 	pluginInstalled: "Installed",
 	pluginCatalogCustom: "custom",
@@ -2833,6 +2848,9 @@ const en: Record<keyof typeof zh, string> = {
 	uiLayoutTitle: "Interface layout",
 	uiLayoutHint:
 		"Plugins can rearrange these entries (built-in ones included). You can always change them back: uncheck to hide, ↑/↓ to reorder; changed rows offer “Restore”. Hidden entries stay reachable from the top-bar overflow menu.",
+	uiLayoutDiagTitle: "Layout diagnostics ({n})",
+	uiLayoutDiagHint:
+		"These entries never made it to the UI. The reason is listed above — usually a plugin manifest/registration with a wrong slot, kind or arrange target. Fix the plugin and rescan.",
 	pluginTopbarMore: "More plugin buttons",
 	pluginMenuTitle: "Plugins",
 	pluginMenuPin: "Pin to top bar",

@@ -843,6 +843,11 @@ export type ClientMessage =
 	/** Cancel a running plugin job (kills its process tree; finished jobs are
 	 *  unaffected). */
 	| { type: "plugin_job_cancel"; jobId: string }
+	/** 安装前先读 spec（DSH 对照 P0-3 引导式安装）：在动 CLI 之前做形状分类 +
+	 *  本地已装判定 + （GitHub 源）一次远端 manifest 探测，把失败归到七种 problem
+	 *  之一。`requestId` 回显在 plugin_install_inspect_result 上。
+	 *  `explicitId` = 用户填的落盘 id（缺省由来源推导）；`force` = 已装不再是问题。 */
+	| { type: "plugin_install_inspect"; requestId: string; source: string; explicitId?: string; force?: boolean }
 	/** 用户对「插件请求访问工作区外目录」的答复（id 回显 plugin_path_request.id）。
 	 *  remember=true 时把授权记进 <dataDir>/plugin-grants.json（下次不再问）。 */
 	| { type: "plugin_path_response"; id: string; ok: boolean; remember?: boolean }
@@ -2474,6 +2479,21 @@ export type ServerMessage =
 			error?: string;
 			/** phase="done": output tail (bounded), for inline details. */
 			output?: string;
+	  }
+	/** 安装前先读 spec 的回执（plugin_install_inspect 的响应，requestId 回显）。
+	 *  `problem` 非空 = 装了也是白装（先把这一条修掉）；`installed` = 已装（UI 转成「更新」）。
+	 *  `manifest` = 远端/本地探到的展示字段（让用户确认装的是什么）。 */
+	| {
+			type: "plugin_install_inspect_result";
+			requestId: string;
+			source: string;
+			kind: "npm" | "github" | "url" | "path" | "invalid";
+			suggestedId: string;
+			installed: boolean;
+			problem?:
+				"invalid-spec" | "already-installed" | "not-found" | "not-a-package" | "not-a-bundle" | "network" | "unknown";
+			detail?: string;
+			manifest?: { id?: string; name?: string; version?: string; description?: string; permissions?: string[] };
 	  }
 	/** 插件请求访问工作区外的目录：宿主弹确认（文案按 kind 本地化），用户答复经
 	 *  plugin_path_response 回传。未答复超时视为拒绝。 */

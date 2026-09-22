@@ -58,7 +58,7 @@ import {
 	type PluginConversationSnapshot,
 	type PluginRunEvent,
 } from "./plugins.js";
-import { PluginInstaller } from "./plugin-installer.js";
+import { inspectInstallSpec, PluginInstaller } from "./plugin-installer.js";
 import { syncPluginCatalog } from "./plugin-catalog-sync.js";
 import type { ServerLang } from "./i18n.js";
 import { McpBridge } from "./mcp-bridge.js";
@@ -2374,6 +2374,30 @@ wss.on("connection", (ws) => {
 			case "plugin_job_cancel":
 				pluginInstaller.cancel(String(msg.jobId ?? ""));
 				break;
+			// 安装前先读 spec（DSH P0-3）：不联网也能查（形状/已装），GitHub 源再探一次
+			// raw manifest。结果只作引导（UI 把 problem 渲染成输入框下的一句话），不阻塞安装。
+			case "plugin_install_inspect": {
+				const requestId = String(msg.requestId ?? "");
+				const source = String(msg.source ?? "");
+				void inspectInstallSpec(source, {
+					pluginsDir: pluginMgr.pluginsDir,
+					...(typeof msg.explicitId === "string" && msg.explicitId.trim() ? { explicitId: msg.explicitId.trim() } : {}),
+					force: msg.force === true,
+				}).then((r) => {
+					send({
+						type: "plugin_install_inspect_result",
+						requestId,
+						source,
+						kind: r.spec.kind,
+						suggestedId: r.suggestedId,
+						installed: r.installed,
+						...(r.problem ? { problem: r.problem } : {}),
+						...(r.detail ? { detail: r.detail } : {}),
+						...(r.manifest ? { manifest: r.manifest } : {}),
+					});
+				});
+				break;
+			}
 			// -- 插件目录授权（issue #146）------------------------------------------
 			case "plugin_path_response": {
 				const pending = pendingPathRequests.get(String(msg.id ?? ""));

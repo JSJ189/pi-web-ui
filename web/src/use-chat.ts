@@ -135,6 +135,20 @@ export interface CatalogSyncState {
 	receivedAt: number;
 }
 
+/** 「安装前先读 spec」结果（DSH P0-3）：形状分类 + 已装判定 + 远端 manifest 探测。
+ *  由 `plugin_install_inspect_result` 驱动；problem 非空时设置面板在输入框下显示一句话。 */
+export interface PluginInstallInspectState {
+	requestId: string;
+	source: string;
+	kind: "npm" | "github" | "url" | "path" | "invalid";
+	suggestedId: string;
+	installed: boolean;
+	problem?:
+		"invalid-spec" | "already-installed" | "not-found" | "not-a-package" | "not-a-bundle" | "network" | "unknown";
+	detail?: string;
+	manifest?: { id?: string; name?: string; version?: string; description?: string; permissions?: string[] };
+}
+
 export interface ChatState {
 	status: ConnStatus;
 	/** True once the server confirmed the agent session is ready (hello processed). */
@@ -343,6 +357,8 @@ export interface ChatState {
 	pluginJobs: Record<string, PluginJobState>;
 	/** 最近一次目录同步的回执（设置面板「从目录同步」框展示用；刷新即丢）。 */
 	catalogSync: CatalogSyncState | null;
+	/** 最近一次「安装前先读 spec」的检查结果（设置面板输入框下展示；刷新即丢）。 */
+	installInspect: PluginInstallInspectState | null;
 	/** 插件目录授权表（issue #146）：设置面板列出 + 可撤销。 */
 	pluginGrants: { pluginId: string; paths: string[] }[];
 	/** 插件能力授权表（动态授权）：设置面板列出 + 可撤销；session 授权只在本次运行有效。 */
@@ -530,6 +546,7 @@ type Action =
 	/** 插件后台作业进度（安装/更新/卸载）：line 为该次新增的一行输出。 */
 	| { type: "plugin_job"; job: Omit<PluginJobState, "lines" | "startedAt">; line?: string }
 	| { type: "plugin_catalog_sync_result"; result: Omit<CatalogSyncState, "receivedAt"> }
+	| { type: "plugin_install_inspect_result"; result: PluginInstallInspectState }
 	/** 插件目录授权表（服务端推）。 */
 	| { type: "plugin_grants"; grants: { pluginId: string; paths: string[] }[] }
 	/** 插件能力授权表（服务端推；session 授权只在本次运行有效）。 */
@@ -939,6 +956,9 @@ function reducer(state: ChatState, action: Action): ChatState {
 		}
 		case "plugin_catalog_sync_result":
 			return { ...state, catalogSync: { ...action.result, receivedAt: Date.now() } };
+		case "plugin_install_inspect_result":
+			// 只留最近一次（输入框下面的那一句话），旧的直接丢掉。
+			return { ...state, installInspect: action.result };
 		case "dsh_patches":
 			return { ...state, dshPatches: { patchDir: action.patchDir, files: action.files } };
 		case "dsh_presets":
@@ -1118,6 +1138,7 @@ export function useChat() {
 		pluginCatalogEpoch: 0,
 		pluginJobs: {},
 		catalogSync: null,
+		installInspect: null,
 		pluginGrants: [],
 		pluginPermissions: [],
 		pathRequests: [],
@@ -1769,6 +1790,21 @@ export function useChat() {
 							...(msg.output ? { output: msg.output } : {}),
 						},
 						...(msg.line ? { line: msg.line } : {}),
+					});
+					break;
+				case "plugin_install_inspect_result":
+					dispatch({
+						type: "plugin_install_inspect_result",
+						result: {
+							requestId: String(msg.requestId ?? ""),
+							source: String(msg.source ?? ""),
+							kind: msg.kind,
+							suggestedId: String(msg.suggestedId ?? ""),
+							installed: msg.installed === true,
+							...(msg.problem ? { problem: msg.problem } : {}),
+							...(msg.detail ? { detail: msg.detail } : {}),
+							...(msg.manifest ? { manifest: msg.manifest } : {}),
+						},
 					});
 					break;
 				case "plugin_catalog_sync_result":

@@ -22,6 +22,13 @@ import { existsSync } from "node:fs";
 import { join } from "node:path";
 import { pick, type ServerLang } from "./i18n.js";
 import { isValidSource } from "./plugin-catalog.js";
+import {
+	inspectLocalInstallSpec,
+	manifestCandidateUrls,
+	readLocalManifest,
+	suggestPluginId,
+	type InstallInspect,
+} from "./plugin-install-spec.js";
 import { killPidTree } from "./process-utils.js";
 import type { ServerMessage } from "./protocol.js";
 
@@ -93,6 +100,84 @@ export function buildPluginJobArgs(
 	if (spec.build) args.push("--build");
 	else if (spec.noBuild) args.push("--no-build");
 	return { args };
+}
+
+/** 安装前的 spec 检查（DSH P0-3 引导式安装）。
+ *
+ * 三层：① 形状分类（parseInstallSpec）+ 本地已装判定（inspectLocalInstallSpec）；
+ * ② 本地路径源：直接读它的 manifest.json；
+ * ③ 远端 GitHub 源：一次 raw.githubusercontent 探测（超时 6s，失败不阻断）——
+ *    拿到 manifest 就归到 not-found / not-a-package / not-a-bundle 之一，
+ *    拿不到（网络/代理问题）回 network 但**不阻塞安装**（problem 只作提示）。
+ *
+ * 通一不联网：测试时传 fetchImpl 替身；生产走全局 fetch。
+ */
+export async function inspectInstallSpec(
+	rawSpec: string,
+	deps: {
+		pluginsDir: string;
+		explicitId?: string;
+		force?: boolean;
+		timeoutMs?: number;
+		fetchImpl?: typeof fetch;
+	},
+): Promise<InstallInspect> {
+	const local = inspectLocalInstallSpec(rawSpec, deps);
+	// 形状就不对 / 本地路径不存在 / 已装（且没 force）：本地已经能给出结论，不再联网。
+	if (local.problem || local.spec.kind === "npm" || local.spec.kind === "url") {
+		// npm/url 不在本检查的覆盖范围（CLI/注册表自己会报）——原样返回，让 CLI 说话。
+		return local;
+	}
+	if (local.spec.kind === "path") {
+		const manifest = readLocalManifest(local.spec.normalized);
+		if (!manifest)
+			return {
+				...local,
+				problem: "not-a-package",
+				detail: `No manifest.json found in ${local.spec.normalized} — this is not a pi-web-ui plugin.`,
+			};
+		return { ...local, manifest, suggestedId: suggestPluginId(local.spec, deps.explicitId ?? manifest.id) };
+	}
+	// github 简写：远端探测 best-effort（失败只补一条提示，不挡安装）。
+	for (const url of manifestCandidateUrls(local.spec)) {
+		try {
+			const res = await (deps.fetchImpl ?? fetch)(url, { signal: AbortSignal.timeout(deps.timeoutMs ?? 6000) });
+			if (res.status === 404) continue;
+			if (!res.ok) return { ...local, problem: "network", detail: `Remote probe failed: HTTP ${res.status}` };
+			const manifest = pickManifest(local, await res.json());
+			if (!manifest)
+				return {
+					...local,
+					problem: "not-a-bundle",
+					detail: "The remote manifest.json is not a valid plugin manifest (missing id/name).",
+				};
+			return { ...local, manifest, suggestedId: suggestPluginId(local.spec, deps.explicitId ?? manifest.id) };
+		} catch {
+			return { ...local, problem: "network", detail: "Could not reach the remote repository to verify the plugin." };
+		}
+	}
+	// 连 manifest 都没探到 —— 仓库/子目录/分支不存在，或根本不是插件包。
+	return {
+		...local,
+		problem: "not-found",
+		detail: `No manifest.json at the remote source — check the repo/subdirectory and the #ref.`,
+	};
+}
+
+function pickManifest(local: InstallInspect, raw: unknown): NonNullable<InstallInspect["manifest"]> | null {
+	if (!raw || typeof raw !== "object") return null;
+	const o = raw as Record<string, unknown>;
+	if (typeof o.id !== "string" && typeof o.name !== "string") return null;
+	void local;
+	return {
+		...(typeof o.id === "string" ? { id: o.id } : {}),
+		...(typeof o.name === "string" ? { name: o.name } : {}),
+		...(typeof o.version === "string" ? { version: o.version } : {}),
+		...(typeof o.description === "string" ? { description: o.description } : {}),
+		...(Array.isArray(o.permissions)
+			? { permissions: o.permissions.filter((x): x is string => typeof x === "string").slice(0, 32) }
+			: {}),
+	};
 }
 
 export interface PluginJobHooks {
