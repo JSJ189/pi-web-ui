@@ -54,18 +54,18 @@ type ImageBlockLike = {
  */
 function imageBlockToUi(b: unknown, cap = Number.POSITIVE_INFINITY): UiImageBlock | undefined {
 	const img = b as unknown as ImageBlockLike;
+	const src = img.source;
+	if (typeof src?.url === "string" && src.url) return { type: "image", dataUrl: src.url };
 	if (typeof img.data === "string" && img.data.length > 0) {
 		const dataUrl = `data:${img.mimeType ?? "image/png"};base64,${img.data}`;
 		if (dataUrl.length > cap) return undefined;
 		return { type: "image", dataUrl, mimeType: img.mimeType };
 	}
-	const src = img.source;
 	if (src?.type === "base64" && src.data) {
 		const dataUrl = `data:${src.mediaType ?? "image/png"};base64,${src.data}`;
 		if (dataUrl.length > cap) return undefined;
 		return { type: "image", dataUrl, mimeType: src.mediaType };
 	}
-	if (typeof src?.url === "string" && src.url) return { type: "image", dataUrl: src.url };
 	return undefined;
 }
 
@@ -251,6 +251,17 @@ export function serializeMessage(m: AgentMessage, seq: number): UiMessage | null
 				timestamp: m.timestamp,
 				tokensBefore: (m as { tokensBefore?: unknown }).tokensBefore as number | undefined,
 			};
+		}
+
+		case "system": {
+			// SDK 的 system 消息是 prompt sections 的内部差量
+			// (content 空串 + sections 结构化内存)、compaction 的
+			// systemMessage 等——从来不面向用户。不过滤的话
+			// 会掉进 default 分支被序列化成 content: []
+			// 的空气泡、前端顶着 system 标题白显示一条
+			// (对话结束后底部冒出的空 SYSTEM 气泡就是它)。
+			// LLM 上下文不受影响——这里只决定浏览器看到什么。
+			return null;
 		}
 
 		default:

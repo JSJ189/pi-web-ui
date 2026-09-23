@@ -5,6 +5,22 @@ import { hoverCapable } from "../tip-position";
 import { HoverDetail } from "./HoverDetail";
 import { Markdown } from "./Markdown";
 
+interface QuestionItem {
+	id: string;
+	question: string;
+	detail?: string;
+	header?: string;
+	options?: { label: string; description?: string; preview?: string }[];
+	multiSelect?: boolean;
+	/** 级联依赖（Waterfall）：仅当指定 questionId 选中了特定值（未给 value 则表示只要已作答）时本题才展示；不满足则跳过。 */
+	dependsOn?: {
+		questionId: string;
+		value?: string | string[];
+	};
+	/** 动态级联选项映射：根据前序依赖题的所选值动态提供候选选项列表。 */
+	optionsMap?: Record<string, { label: string; description?: string; preview?: string }[]>;
+}
+
 interface DshQuestionDialogProps {
 	question: {
 		id: string;
@@ -12,14 +28,7 @@ interface DshQuestionDialogProps {
 		deadline?: number;
 		conversationId?: string;
 		conversationTitle?: string;
-		questions: {
-			id: string;
-			question: string;
-			detail?: string;
-			header?: string;
-			options?: { label: string; description?: string; preview?: string }[];
-			multiSelect?: boolean;
-		}[];
+		questions: QuestionItem[];
 	};
 	/** 跨页作答时持有方会话 id：答案转交过去（question_answer 带 owner）。 */
 	owner?: string;
@@ -91,9 +100,31 @@ export function DshQuestionDialog({ question, owner, conversationTitle }: DshQue
 		// eslint-disable-next-line react-hooks/exhaustive-deps
 	}, [question.id]);
 
-	const total = question.questions.length;
-	const q = question.questions[step];
+	const isQuestionVisible = (qq: QuestionItem, sel: Record<string, string[]>): boolean => {
+		if (!qq.dependsOn) return true;
+		const depSelected = sel[qq.dependsOn.questionId] ?? [];
+		if (qq.dependsOn.value === undefined) return depSelected.length > 0;
+		const expected = Array.isArray(qq.dependsOn.value) ? qq.dependsOn.value : [qq.dependsOn.value];
+		return depSelected.some((ans) => expected.includes(ans));
+	};
+
+	const visibleQuestions = question.questions.filter((qq) => isQuestionVisible(qq, selections));
+	const total = visibleQuestions.length;
+	const currentStep = Math.min(step, Math.max(0, total - 1));
+	const q = visibleQuestions[currentStep];
 	if (!q) return null;
+
+	/** 当前题目的有效选项：如果定义了 optionsMap，根据前序依赖题所选动态取对应候选 */
+	const effectiveOptions = (() => {
+		if (!q) return [];
+		if (q.optionsMap && q.dependsOn) {
+			const depAnswers = selections[q.dependsOn.questionId] ?? [];
+			for (const ans of depAnswers) {
+				if (q.optionsMap[ans]) return q.optionsMap[ans];
+			}
+		}
+		return q.options ?? [];
+	})();
 
 	/** 把（可能刚更新、尚未落 state 的）选中结果连同全部题的答案一并提交。 */
 	const submitSelections = (sel: Record<string, string[]>) => {
@@ -127,17 +158,18 @@ export function DshQuestionDialog({ question, owner, conversationTitle }: DshQue
 		}
 		const sel = { ...selections, [qid]: [label] };
 		setSelections(sel);
-		if (step === total - 1) {
+		const nextVisible = question.questions.filter((qq) => isQuestionVisible(qq, sel));
+		if (currentStep >= nextVisible.length - 1) {
 			submitSelections(sel);
 		} else {
-			setStep(step + 1);
+			setStep(currentStep + 1);
 		}
 	};
 
 	/** 「下一步/提交」：供多选、自由文本题推进；最后一题提交。 */
 	const onNext = () => {
-		if (step === total - 1) submitSelections(selections);
-		else setStep(step + 1);
+		if (currentStep >= total - 1) submitSelections(selections);
+		else setStep(currentStep + 1);
 	};
 
 	/** 当前题是否可提交：
@@ -145,12 +177,12 @@ export function DshQuestionDialog({ question, owner, conversationTitle }: DshQue
 	 *  - 无选项（纯自由文本/可跳过）：无需任何输入即可提交，空提交 = 跳过。 */
 	const answered = (qid: string) => {
 		const qq = question.questions.find((x) => x.id === qid);
-		if ((qq?.options?.length ?? 0) === 0) return true;
+		if (effectiveOptions.length === 0 && (qq?.options?.length ?? 0) === 0) return true;
 		return (selections[qid]?.length ?? 0) > 0 || (customs[qid] ?? "").trim() !== "";
 	};
 
 	/** 已选中且带 `preview` 的选项预览（当前题；多选选中多个则逐个叠加）。 */
-	const previews = (q.options ?? [])
+	const previews = effectiveOptions
 		.filter((o) => (selections[q.id] ?? []).includes(o.label) && o.preview)
 		.map((o) => o.preview as string);
 
@@ -163,7 +195,7 @@ export function DshQuestionDialog({ question, owner, conversationTitle }: DshQue
 						{convTitle}
 					</span>
 				)}
-				{total > 1 && <span className="question-progress">{t("questionStep", { cur: step + 1, total })}</span>}
+				{total > 1 && <span className="question-progress">{t("questionStep", { cur: currentStep + 1, total })}</span>}
 				{remainSec >= 0 && (
 					<span className="question-timer">
 						{remainSec > 0 ? t("questionTimeout", { s: remainSec }) : t("questionTimeoutExpired")}
@@ -174,7 +206,7 @@ export function DshQuestionDialog({ question, owner, conversationTitle }: DshQue
 				</button>
 			</div>
 			<div className="set-section" key={q.id}>
-				<div className="set-section-title">{q.header ?? `${t("modelQuestion")} ${step + 1}`}</div>
+				<div className="set-section-title">{q.header ?? `${t("modelQuestion")} ${currentStep + 1}`}</div>
 				<div className="question-head">
 					<Markdown text={q.question} rawHtml />
 				</div>
@@ -183,9 +215,9 @@ export function DshQuestionDialog({ question, owner, conversationTitle }: DshQue
 						<Markdown text={q.detail} rawHtml />
 					</div>
 				)}
-				{(q.options?.length ?? 0) > 0 && (
+				{effectiveOptions.length > 0 && (
 					<div className="set-list">
-						{q.options!.map((o) => {
+						{effectiveOptions.map((o) => {
 							const active = (selections[q.id] ?? []).includes(o.label);
 							return (
 								<QuestionOption
@@ -229,11 +261,16 @@ export function DshQuestionDialog({ question, owner, conversationTitle }: DshQue
 					{t("cancel")}
 				</button>
 				<div className="dialog-nav-right">
-					<button type="button" className="dialog-prev" disabled={step === 0} onClick={() => setStep(step - 1)}>
+					<button
+						type="button"
+						className="dialog-prev"
+						disabled={currentStep === 0}
+						onClick={() => setStep(currentStep - 1)}
+					>
 						{t("previous")}
 					</button>
 					<button type="button" className="dialog-submit" disabled={!answered(q.id)} onClick={onNext}>
-						{step === total - 1 ? t("modelQuestionSubmit") : t("next")}
+						{currentStep === total - 1 ? t("modelQuestionSubmit") : t("next")}
 					</button>
 				</div>
 			</div>

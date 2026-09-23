@@ -32,6 +32,8 @@
 | `host.notify(level, text)`           | 发系统通知条（notice，前端 toast）                                                                                                                                                                                                                                                                                                 |
 | `host.sendTo(clientId, payload)`     | 定向发给单个 socket                                                                                                                                                                                                                                                                                                                |
 | `host.onToolEvent(h)`                | 订阅 SDK 工具执行事件（phase:start\|end, toolName, conversationId?, toolCallId?, durationMs?, isError?）                                                                                                                                                                                                                           |
+| `host.onToolPre(h)`                  | 工具 pre 拦截（仅 bash/read）：allow/deny（含原因给模型看）/ask（暂按拒绝执行）；首个阻断胜出，抛错/超时弃权；要 tools 族 |
+| `host.onToolPost(h)`                 | 工具 post 编辑（仅 bash/read）：回 content 换正文（脱敏/改写）、additionalContext 补上下文；逐个合并，抛错跳过；要 tools 族 |
 | `host.onRunEvent(h)`                 | 订阅运行轨迹事件（run_start/message/tool_start/tool_end/turn_*/run_end，pi 引擎；轨迹/时间线插件聚合「任务→思考→工具→文件→结果」用，payload 已截断封顶）                                                                                                                                                                           |
 | `host.getActiveConversation()`       | 读取当前打开对话的快照（标题/消息/流式消息/统计——轨迹视图直接显示打开对话的时间线；只读引用，广播前必须抽摘要，禁止原样下发）                                                                                                                                                                                                      |
 | `host.onConversationChanged(h)`      | 订阅「当前打开对话变了」（切历史会话/切 running 对话/新对话/切项目——轨迹类插件靠它重拉时间线，不等轮询）                                                                                                                                                                                                                           |
@@ -181,6 +183,7 @@
 - `apiVersion`（与 `PLUGIN_API_VERSION` 比较，> 则拒绝激活并提示升级）
 - `permissions`（能力声明数组）
 - `settings`（声明式设置 schema → ⚙ 面板自动渲染表单）
+- 用户 overlay（P2-9，不在 manifest 里）：`<dataDir>/plugin-overrides/<id>.json` 的 `settings` 节——三层合并 schema 默认 < overlay < 面板保存值。overlay 是用户钉住的新默认值（不 fork 改官方默认，更新不丢）；面板保存永远最高；secret 永不来自 overlay；坏键警告进诊断（`settingsSources` 标注每键来源 default/override/stored）
 - `view`（布尔，缺省 `true`）：是否有独立视图 tab。**纯 renderer 插件写 `false`**，
   前端不会急着加载它的 bundle，只在消息里命中围栏时才懒加载
 - `preload`（布尔，缺省 `false`）：`view:false` 时仍**每次进页预加载** client bundle。
@@ -196,6 +199,7 @@
 - `netAllowlist`（字符串数组）：出站主机白名单（permissions 含 `net` 时生效，未命中即拒，空 = 全拒）
 - `engines`（对象，如 `{"pi-web-ui": ">=1.2.0"}`）：引擎约束，不满足即拒绝激活；范围支持 `>=`/`^`/精确，非法 range 放行（语义见 `tests/unit/plugin-extensions.test.ts` 的 satisfiesEngines）
 - `peerPlugins`（字符串数组）：对等依赖的其它插件 id，缺失只警告不断活
+- `requires`（对象，P2-8 硬依赖）：`{ hostApi?, families?, plugins? }`，任一条不满足即拒绝激活+教学式错误——`hostApi` 是宿主 API 下限（超前请升级）、`families` 须是已知族且须同时在自家 `permissions` 里声明、`plugins` 须已安装且激活成功。`ensureLoaded` 按依赖拓扑排序激活（环直接拒），提供方被删/失败后消费方一并反激活+留占位（级联一轮收敛，reload 重算刷新）
 
 ## 插件 AI 工具的可见性与开关
 
@@ -361,7 +365,7 @@ CLI `install --catalog <url>`（同步列表 + 逐条安装/更新，已安装�
 
 插件对宿主 UI 的贡献走**声明式挂载点（slot）**：插件只声明「有什么条目、想放哪儿」，渲染 / 排序 /
 溢出 / 可访问性全部归宿主，**插件不碰 DOM**。契约在 `server/protocol.ts`（`UiSlotId` /
-`UiContribution` / `UiArrangeOp` / `UiPluginUi` / `UiLayoutPrefs`），服务端解析与运行时注册在
+`UiContribution` / `UiArrangeOp` / `UiPluginUi` / `UiLayoutPrefs` / `UiSlotSpec`），服务端解析与运行时注册在
 `server/plugins.ts`（`parseUiItem` / `parseUiContributions` / `parseUiArrange` / `UI_SLOTS` /
 `UI_SLOT_ALIASES`），前端合并引擎是 `web/src/ui-slots.ts` 的 `buildUiSlots()`（纯函数，有单测）。
 
@@ -378,6 +382,12 @@ CLI `install --catalog <url>`（同步列表 + 逐条安装/更新，已安装�
 > （报错插件的 tab 由 TopBar 兜底置灰保留，因合并引擎会整份丢弃它的贡献）。
 
 ### 22 个挂载点
+
+每个挂载点都有宿主定义的 `UiSlotSpec`：`cardinality` 为 `list` 时多个条目并列渲染，
+为 `single` 时合并引擎按最终排序选出第一个可见条目，其余可见候选会被置为隐藏并产出布局诊断。
+当前这 22 个已有挂载点全部是 `list`，因为它们都表达工具栏、菜单、tab 或页面入口的并列集合；
+`modal.dialog` 的“同一时刻只开一个”是打开状态机约束，不是 slot cardinality。未来新增独占挂载点只需
+在 `web/src/ui-slots.ts` 的 `UI_SLOT_SPECS` 标成 `single`，无需改变插件 manifest 形状。
 
 | slot                   | 位置                                                                                                         |
 | ---------------------- | ------------------------------------------------------------------------------------------------------------ |
@@ -740,6 +750,10 @@ const res = await host.openSession({ roots: ["/repo/a", "/repo/b"], prompt: "先
 | ---------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
 | `list()`   | `{ id, title, cwd, kind, isStreaming? }` 数组：**本客户端运行中的对话**（`kind:"running"`，id = conversationId，cwd 各自带）＋ **当前项目的历史会话**（`kind:"history"`，id = session 文件路径，cwd = 当前 cwd —— 服务端的历史会话列表就是按 cwd 扫的）       |
 | `open(id)` | 跨项目先切 cwd（同一套目录授权；不切就找不到目标文件）→ `running` 用 `switch_conversation`、`history` 用 `switch_session` → 等 activeId 变化；返回 `{ ok: true, sessionId }` 或 `{ ok: false, error }`（未连接 / 找不到 id / 切换超时都走这条回执，不抛异常） |
+
+## 注册面目录（机器可读，P2-7）
+
+类型唯一事实源 `server/protocol.ts#PluginApiCatalog`，装配 `server/plugin-api-catalog.ts`（静态 slot 例子+宿主方法表，单测锁住与源码同口径），占用者由 `PluginManager.getApiCatalog()` 现算（manifest 基线+运行时注册合并计数，只含条目数不含内容）。下发走 WS 只读查询 `plugin_api_catalog` → `plugin_api_catalog_result`（`requestId` 回显，不进快照/清单，按需拉）。给将来「AI 写插件」铺路（能力发现与执行分离，先查真实 API 再写码）；当前消费方是插件作者与后面的设置面板目录页。回归：`tests/unit/plugin-api-catalog.test.ts` + `tests/plugin-api-catalog-test.mjs`（已进 run-smoke）。
 
 ## 真实插件
 

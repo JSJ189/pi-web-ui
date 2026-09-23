@@ -78,7 +78,7 @@ describe("matchAtToken", () => {
 				{ path: "", name: "x", type: "file" },
 			]);
 			expect(out).toHaveLength(2);
-			expect(out[0]).toMatchObject({ providerId: "host:files", title: "a.ts", text: "a.ts" });
+			expect(out[0]).toMatchObject({ providerId: "host:files", title: "a.ts", text: "@a.ts" });
 			expect(out[0]?.attachments?.[0]).toMatchObject({ path: "src/a.ts", mode: "reference" });
 			expect(out[0]?.attachments?.[0]).not.toHaveProperty("isDir");
 			expect(out[1]?.attachments?.[0]).toMatchObject({ isDir: true });

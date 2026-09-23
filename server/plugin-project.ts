@@ -249,24 +249,55 @@ async function runGit(
 		child.stderr?.on("data", (chunk: Buffer) => stderr.push(chunk));
 
 		let timedOut = false;
-		const timer = setTimeout(() => {
-			timedOut = true;
-			if (typeof child.pid === "number" && child.pid > 0) killPidTree(child.pid);
-			else child.kill("SIGKILL");
-		}, opts.timeoutMs);
-
+		let settled = false;
+		let graceTimer: NodeJS.Timeout | undefined;
 		let spawnError: string | undefined;
-		child.on("error", (err) => {
-			spawnError = `无法启动 git（${bin}）：${errMessage(err)}`;
-		});
-		child.on("close", (code) => {
+		const finish = (code: number | null) => {
+			if (settled) return;
+			settled = true;
 			clearTimeout(timer);
+			if (graceTimer) clearTimeout(graceTimer);
 			stdout.flush();
 			stderr.flush();
 			let tail = stderrLines.join("\n");
 			if (tail.length > MAX_STDERR_TAIL) tail = `…${tail.slice(-MAX_STDERR_TAIL)}`;
 			settle({ code: code ?? -1, timedOut, stderrTail: tail, ...(spawnError ? { spawnError } : {}) });
+		};
+		const timer = setTimeout(() => {
+			timedOut = true;
+			if (typeof child.pid === "number" && child.pid > 0) {
+				void killPidTree(child.pid);
+				// On Windows taskkill is asynchronous and a child may not emit close
+				// promptly. Directly kill the git process too, then force settlement
+				// after a short grace period so callers never hang on close.
+				try {
+					child.kill("SIGKILL");
+				} catch {
+					/* already dead */
+				}
+			} else {
+				try {
+					child.kill("SIGKILL");
+				} catch {
+					/* already dead */
+				}
+			}
+			graceTimer = setTimeout(() => {
+				try {
+					child.stdout?.destroy();
+					child.stderr?.destroy();
+				} catch {
+					/* already closed */
+				}
+				finish(-1);
+			}, 500);
+		}, opts.timeoutMs);
+
+		child.on("error", (err) => {
+			spawnError = `无法启动 git（${bin}）：${errMessage(err)}`;
+			if (timedOut) finish(-1);
 		});
+		child.on("close", (code) => finish(code));
 	});
 }
 

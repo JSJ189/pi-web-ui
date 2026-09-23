@@ -874,6 +874,14 @@ export const LeftPanel = memo(function LeftPanel({
 															) : (
 																<span className="session-title">
 																	{c.isSubagent && <span className="subagent-badge">{t("subagentBadge")}</span>}
+																	{c.forkFrom && (
+																		<span
+																			className="preset-badge fork-badge"
+																			title={`${t("forkBadgeTip")}: ${c.forkFrom.title ?? c.forkFrom.conversationId}`}
+																		>
+																			🌿 {t("forkBadge")}
+																		</span>
+																	)}
 																	{c.agentPreset && (
 																		<span className="preset-badge" title={c.agentPreset}>
 																			{presetNames?.[c.agentPreset] ?? c.agentPreset}

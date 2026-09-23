@@ -205,6 +205,8 @@ interface DshSettings {
 	editSoftEnabled: boolean;
 	/** 问卷提问（ask_user_question）开关（默认开）。关 → 模型不再弹问卷。 */
 	questionnaireEnabled: boolean;
+	/** 工具执行审批总开关（默认开；DSH 无内置高危检测/审批桥，只做持久化位与面板回显）。 */
+	toolApprovalEnabled: boolean;
 	/** 同项目并行提醒开关（默认开）。关 → 同项目并行时不发 notice、不注 AI、不通知对端。 */
 	parallelReminderEnabled: boolean;
 	/** 目标模式（目标条 + 调研向导 + 审查循环）总开关（默认开）。 */
@@ -264,6 +266,7 @@ const DEFAULT_SETTINGS: DshSettings = {
 	toolWatchdogTimeoutMs: 20 * 60_000,
 	editSoftEnabled: false,
 	questionnaireEnabled: true,
+	toolApprovalEnabled: true,
 	goalModeEnabled: true,
 	parallelReminderEnabled: true,
 	thinkingWrap: false,
@@ -441,6 +444,7 @@ export class DshClientSession {
 				toolWatchdogTimeoutMs: savedSettings.toolWatchdogTimeoutMs ?? 20 * 60_000,
 				editSoftEnabled: savedSettings.editSoftEnabled,
 				questionnaireEnabled: savedSettings.questionnaireEnabled ?? true,
+				toolApprovalEnabled: savedSettings.toolApprovalEnabled ?? true,
 				goalModeEnabled: savedSettings.goalModeEnabled ?? true,
 				parallelReminderEnabled: savedSettings.parallelReminderEnabled ?? true,
 				thinkingWrap: savedSettings.thinkingWrap,
@@ -2028,82 +2032,51 @@ export class DshClientSession {
 					});
 				}
 			} else if (resolved) {
-				if (a.mode === "inline" || a.mode === undefined) {
-					// 内联文本（小文件直接读内容）。
+				// 一律只给路径引用：不再把文件内容注入 prompt（小文件也一样），模型用
+				// 自己的读取工具按需读。行范围模式带上行号提示。
+				// 工作区图片文件仍走 attachment store → 真 image 块（模型可看图）。
+				const refText =
+					pick(lang, `\n[文件引用: ${resolved.rel}]`, `\n[File reference: ${resolved.rel}]`, "dsh.attach.file.ref", {
+						"resolved.rel": resolved.rel,
+					}) +
+					(a.mode === "lines" && a.lines
+						? pick(lang, `（第 ${a.lines.start}-${a.lines.end} 行）`, ` (lines ${a.lines.start}-${a.lines.end})`)
+						: "");
+				let isImage = false;
+				try {
+					const st = statSync(resolved.abs);
+					isImage = st.isFile() && st.size > 0 && st.size <= 512 * 1024 && previewKind(resolved.abs) === "image";
+				} catch {
+					/* 不存在/不可读 → 照样给路径引用，读取工具会自己报错 */
+				}
+				if (isImage) {
 					try {
-						const st = statSync(resolved.abs);
-						if (st.size <= 512 * 1024) {
-							const buf = readFileSync(resolved.abs);
-							const kind = previewKind(resolved.abs);
-							if (kind === "image") {
-								// 工作区图片文件 → attachment store → 真 image 块。
-								try {
-									const ext = (resolved.rel.match(/\.([a-z0-9]+)$/iu)?.[1] ?? "png").toLowerCase();
-									const mediaType =
-										ext === "jpg" || ext === "jpeg"
-											? "image/jpeg"
-											: ext === "webp"
-												? "image/webp"
-												: ext === "gif"
-													? "image/gif"
-													: "image/png";
-									const saved = await this.runtime.attachmentSave(mediaType, buf.toString("base64"), resolved.rel);
-									blocks.push({ type: "image", attachment: saved.ref });
-								} catch {
-									blocks.push({
-										type: "text",
-										text: pick(
-											lang,
-											`\n[图片附件: ${resolved.rel}]`,
-											`\n[Image attachment: ${resolved.rel}]`,
-											"dsh.attach.image.ref",
-											{ "resolved.rel": resolved.rel },
-										),
-									});
-								}
-							} else {
-								const enc = this.decodeText(buf);
-								const capped = enc.length > 100_000 ? `${enc.slice(0, 100_000)}\n… [truncated]` : enc;
-								blocks.push({
-									type: "text",
-									text: `\n<file path="${resolved.rel}">\n${capped}\n</file>`,
-								});
-							}
-						} else {
-							blocks.push({
-								type: "text",
-								text: pick(
-									lang,
-									`\n[文件引用: ${resolved.rel}（大文件，请用读取工具查看）]`,
-									`\n[File reference: ${resolved.rel} (large file, use the read tool to view it)]`,
-									"dsh.attach.file.large",
-									{ "resolved.rel": resolved.rel },
-								),
-							});
-						}
+						const buf = readFileSync(resolved.abs);
+						const ext = (resolved.rel.match(/\.([a-z0-9]+)$/iu)?.[1] ?? "png").toLowerCase();
+						const mediaType =
+							ext === "jpg" || ext === "jpeg"
+								? "image/jpeg"
+								: ext === "webp"
+									? "image/webp"
+									: ext === "gif"
+										? "image/gif"
+										: "image/png";
+						const saved = await this.runtime.attachmentSave(mediaType, buf.toString("base64"), resolved.rel);
+						blocks.push({ type: "image", attachment: saved.ref });
 					} catch {
 						blocks.push({
 							type: "text",
 							text: pick(
 								lang,
-								`\n[文件引用: ${resolved.rel}]`,
-								`\n[File reference: ${resolved.rel}]`,
-								"dsh.attach.file.ref.fallback",
+								`\n[图片附件: ${resolved.rel}]`,
+								`\n[Image attachment: ${resolved.rel}]`,
+								"dsh.attach.image.ref",
 								{ "resolved.rel": resolved.rel },
 							),
 						});
 					}
 				} else {
-					blocks.push({
-						type: "text",
-						text: pick(
-							lang,
-							`\n[文件引用: ${resolved.rel}]`,
-							`\n[File reference: ${resolved.rel}]`,
-							"dsh.attach.file.ref",
-							{ "resolved.rel": resolved.rel },
-						),
-					});
+					blocks.push({ type: "text", text: refText });
 				}
 			} else if (a.name) {
 				blocks.push({
@@ -2113,18 +2086,6 @@ export class DshClientSession {
 			}
 		}
 		return blocks;
-	}
-
-	private decodeText(buf: Buffer): string {
-		try {
-			return new TextDecoder("utf-8", { fatal: true }).decode(buf);
-		} catch {
-			try {
-				return new TextDecoder("gbk").decode(buf);
-			} catch {
-				return buf.toString("latin1");
-			}
-		}
 	}
 
 	/** 中止：kill 运行时进程树（所有 conversation 的运行停止）→ 自动重启保持可用。 */
@@ -2908,6 +2869,10 @@ export class DshClientSession {
 			softCapTokens: 0,
 			softCapByModel: {},
 			questionnaireEnabled: this.settings.questionnaireEnabled,
+			toolApprovalEnabled: this.settings.toolApprovalEnabled !== false,
+			// DSH 无审批弹窗，策略恒为空（保协议完整）。
+			approvalPolicy: { allowAll: false, categories: [] },
+			approvalRules: [],
 			goalModeEnabled: this.settings.goalModeEnabled,
 			parallelReminderEnabled: this.settings.parallelReminderEnabled,
 			thinkingWrap: this.settings.thinkingWrap,
@@ -2967,6 +2932,7 @@ export class DshClientSession {
 		toolWatchdogTimeoutMs?: number;
 		editSoftEnabled?: boolean;
 		questionnaireEnabled?: boolean;
+		toolApprovalEnabled?: boolean;
 		goalModeEnabled?: boolean;
 		parallelReminderEnabled?: boolean;
 		thinkingWrap?: boolean;
@@ -2996,6 +2962,7 @@ export class DshClientSession {
 			this.settings.toolWatchdogTimeoutMs = normalizeToolWatchdogTimeoutMs(partial.toolWatchdogTimeoutMs);
 		if (partial.editSoftEnabled !== undefined) this.settings.editSoftEnabled = partial.editSoftEnabled;
 		if (partial.questionnaireEnabled !== undefined) this.settings.questionnaireEnabled = partial.questionnaireEnabled;
+		if (partial.toolApprovalEnabled !== undefined) this.settings.toolApprovalEnabled = partial.toolApprovalEnabled;
 		if (partial.goalModeEnabled !== undefined) this.settings.goalModeEnabled = partial.goalModeEnabled;
 		if (partial.parallelReminderEnabled !== undefined)
 			this.settings.parallelReminderEnabled = partial.parallelReminderEnabled;
@@ -3029,6 +2996,7 @@ export class DshClientSession {
 			softCapTokens: 0,
 			softCapByModel: {},
 			questionnaireEnabled: this.settings.questionnaireEnabled,
+			toolApprovalEnabled: this.settings.toolApprovalEnabled !== false,
 			goalModeEnabled: this.settings.goalModeEnabled,
 			parallelReminderEnabled: this.settings.parallelReminderEnabled,
 			thinkingWrap: this.settings.thinkingWrap,

@@ -39,6 +39,14 @@ export interface GoalConversation {
 	goalGeneration: number;
 	goalReviewGeneration: number;
 	goal: GoalStatus;
+	/** 连续无文件改动/无进展轮数 */
+	stagnantRounds?: number;
+	/** 上一轮的 git diff 快照 */
+	lastDiff?: string;
+	/** 上一轮的错误特征 */
+	lastErrorSnippet?: string;
+	/** 连续相同错误轮数 */
+	sameErrorRounds?: number;
 }
 
 /** ClientSession 提供给本服务的宿主能力（窄接口）。 */
@@ -234,6 +242,10 @@ export class GoalService {
 			locked: goal.locked,
 		});
 		// Reset the loop for a freshly-set goal (single-shot goals start at 0).
+		conv.stagnantRounds = 0;
+		conv.lastDiff = undefined;
+		conv.lastErrorSnippet = undefined;
+		conv.sameErrorRounds = 0;
 		goal.round = 0;
 		goal.reviewing = false;
 		goal.verdict = "pending";
@@ -764,6 +776,10 @@ export class GoalService {
 	async clearGoal(): Promise<void> {
 		const conv = this.host.activeConv();
 		conv.goalGeneration += 1;
+		conv.stagnantRounds = 0;
+		conv.lastDiff = undefined;
+		conv.lastErrorSnippet = undefined;
+		conv.sameErrorRounds = 0;
 		const goal = conv.goal;
 		goal.reviewing = false;
 		goal.conversationId = null;
@@ -804,6 +820,10 @@ export class GoalService {
 		if (aborted) {
 			if (g.goal && g.conversationId === conv.id) {
 				conv.goalGeneration += 1;
+				conv.stagnantRounds = 0;
+				conv.lastDiff = undefined;
+				conv.lastErrorSnippet = undefined;
+				conv.sameErrorRounds = 0;
 				g.conversationId = null;
 				g.goal = null;
 				g.reviewing = false;
@@ -842,6 +862,36 @@ export class GoalService {
 		spec: string;
 	} | null {
 		return parseModelSpec(spec);
+	}
+
+	/** 提取会话最近产生的错误特征，用于停滞与相同报错检测。 */
+	private extractErrorSnippet(session: AgentSession, text: string): string | undefined {
+		try {
+			const messages = session.agent?.state?.messages;
+			if (Array.isArray(messages)) {
+				for (let i = messages.length - 1; i >= 0 && i >= messages.length - 6; i--) {
+					const m = messages[i];
+					if (m.role === "toolResult" && m.isError) {
+						const errText = m.content
+							?.map((c) => (c.type === "text" ? c.text : ""))
+							.join(" ")
+							.trim();
+						if (errText) return errText.slice(0, 300);
+					}
+					if (m.role === "bashExecution" && m.exitCode && m.exitCode !== 0) {
+						const snippet = m.output?.trim().slice(-300);
+						if (snippet) return `bash exit ${m.exitCode}: ${snippet}`;
+					}
+				}
+			}
+		} catch {
+			// Ignore
+		}
+		const errMatch = text.match(/(?:(?:Error|Exception|Fail|Fatal):[^\n]+)/i);
+		if (errMatch) {
+			return errMatch[0].trim().slice(0, 300);
+		}
+		return undefined;
 	}
 
 	/**
@@ -973,7 +1023,7 @@ export class GoalService {
 			return;
 		}
 
-		let reviewerVerdict: "pass" | "fail" = "fail";
+		let reviewerVerdict: "pass" | "fail" | "blocked" = "fail";
 		let reviewerFeedback = pick(
 			this.lang(),
 			"（审查无法完成）",
@@ -981,72 +1031,148 @@ export class GoalService {
 			"goal.review.incomplete",
 		);
 
-		try {
-			const rmSpec = this.resolveReviewModel(g.reviewModel);
-			const services = await createAgentSessionServices({
-				cwd: mainConv.cwd,
-				agentDir: this.host.agentDir,
-				// The reviewer has its own skill allow/deny list. It deliberately does
-				// not reuse the main session's disabledSkills setting.
-				resourceLoaderOptions: {
-					skillsOverride: (res) => ({
-						...res,
-						skills: res.skills.filter((s) => !reviewDisabledSkills.has(s.name)),
-					}),
-				},
-				// A FRESH ModelRuntime for the reviewer — isolated from the shared
-				// one used by the main conversations, so its model choice is its own.
-				modelRuntime: await ModelRuntime.create({
-					authPath: join(this.host.agentDir, "auth.json"),
-					modelsPath: join(this.host.agentDir, "models.json"),
-				}),
-			});
+		// 停滞与错误检测分析（DSH 风格防死循环与停滞检测）：
+		const currentError = this.extractErrorSnippet(mainSession, finalText);
+		const prevError = conv.lastErrorSnippet;
+		if (
+			currentError &&
+			prevError &&
+			(currentError === prevError || currentError.includes(prevError) || prevError.includes(currentError))
+		) {
+			conv.sameErrorRounds = (conv.sameErrorRounds ?? 0) + 1;
+		} else {
+			conv.sameErrorRounds = currentError ? 1 : 0;
+		}
+		conv.lastErrorSnippet = currentError;
 
-			// Model resolution: explicit reviewer model, else the main session's
-			// current model (so a goal works even when no reviewer model is given).
-			let model;
-			if (rmSpec) {
-				model = services.modelRuntime.getModel(rmSpec.provider, rmSpec.id);
-			}
-			if (!model) {
-				const mainModel = mainSession.model as { provider?: string; id?: string } | undefined;
-				if (mainModel?.provider && mainModel.id) {
-					model = services.modelRuntime.getModel(mainModel.provider, mainModel.id);
-				}
-			}
+		const trimmedDiff = diff.trim();
+		const prevDiff = conv.lastDiff;
+		const isNoDiffChange = trimmedDiff === "" || (prevDiff !== undefined && trimmedDiff === prevDiff);
+		if (isNoDiffChange) {
+			conv.stagnantRounds = (conv.stagnantRounds ?? 0) + 1;
+		} else {
+			conv.stagnantRounds = 0;
+		}
+		conv.lastDiff = trimmedDiff;
 
-			const srv = await createAgentSessionFromServices({
-				services,
-				sessionManager: SessionManager.inMemory(mainConv.cwd),
-				...(model ? { model } : {}),
-			});
-			const reviewCap = g.locked && g.maxRounds > 0 ? g.maxRounds : 0; // 0 = no cap
-			const reviewer = srv.session;
-			await reviewer.prompt(this.reviewerPrompt(goalText, g.round, reviewCap, finalText, diff, reviewPrompt));
-
-			// Parse the reviewer's final output (expected to be a JSON object).
-			const raw = reviewer.getLastAssistantText() ?? "";
-			const m = raw.match(/\{\s*"verdict"\s*:\s*"(pass|fail)"[^}]*\}/);
-			if (m) {
-				reviewerVerdict = m[1] as "pass" | "fail";
-				const fm = raw.match(/"feedback"\s*:\s*"([^"]*)"/);
-				reviewerFeedback = fm?.[1] ?? "";
+		const isAutonomous = !g.reviewModel;
+		if (isAutonomous) {
+			// DSH 风格自主轮次驱动（免拉起独立审查会话，省 token + 零启动延迟）：
+			// 检查模型自身是否在输出中表明目标已达成
+			const completionRegex =
+				/【目标(?:已)?(?:达成|完成)】|GOAL(?:[:：_]|\s+)*(?:IS\s+)?(?:COMPLETED|PASSED)|目标已达成|目标已完成/i;
+			const isCompleted = completionRegex.test(finalText);
+			if (isCompleted) {
+				reviewerVerdict = "pass";
+				reviewerFeedback = pick(
+					this.lang(),
+					"模型自主验证：目标已达成",
+					"Model autonomous evaluation: Goal completed",
+					"goal.autonomous.pass",
+				);
+			} else if ((conv.sameErrorRounds ?? 0) >= 2 || (conv.stagnantRounds ?? 0) >= 2) {
+				// 触发防死循环与停滞熔断（Blocked）
+				reviewerVerdict = "blocked";
+				const blockedReason =
+					(conv.sameErrorRounds ?? 0) >= 2
+						? `连续 ${conv.sameErrorRounds} 轮出现相同错误：${currentError}`
+						: `连续 ${conv.stagnantRounds} 轮未检测到有效文件修改或实质进展`;
+				const blockedReasonEn =
+					(conv.sameErrorRounds ?? 0) >= 2
+						? `Identical error across ${conv.sameErrorRounds} consecutive rounds: ${currentError}`
+						: `No effective file modifications or progress across ${conv.stagnantRounds} consecutive rounds`;
+				reviewerFeedback = pick(
+					this.lang(),
+					`【目标防死循环保护：执行受阻（Blocked）】\n\n` +
+						`• 停滞原因：${blockedReason}\n` +
+						`• 当前轮次：第 ${g.round} 轮\n` +
+						`• 诊断分析：智能体在自主推进中连续轮次未产生有效进展或反复遭遇相同错误，已自动熔断以防止无谓消耗 token。\n` +
+						`• 建议措施：请检查相关代码、工具权限或手动调整提示词，排查阻碍后再继续。`,
+					`[Goal Infinite-Loop Protection: Blocked]\n\n` +
+						`• Cause: ${blockedReasonEn}\n` +
+						`• Current round: Round ${g.round}\n` +
+						`• Diagnosis: Agent made no progress or encountered identical errors across consecutive rounds. Circuit breaker tripped to prevent token waste.\n` +
+						`• Recommendation: Please check code, tool permissions, or refine prompt before proceeding.`,
+					"goal.review.blocked",
+					{ blockedReason, blockedReasonEn, round: g.round },
+				);
 			} else {
-				// No JSON — assume fail with the raw output as feedback.
 				reviewerVerdict = "fail";
-				reviewerFeedback = raw.slice(0, 2000);
+				reviewerFeedback = pick(
+					this.lang(),
+					"目标尚未完成，自主推进下一轮迭代验证。",
+					"Goal not yet completed; continuing to next iteration.",
+					"goal.autonomous.continue",
+				);
 			}
-			await srv.session.dispose();
-		} catch (err) {
-			const reviewErrMsg = (err as Error).message;
-			reviewerVerdict = "fail";
-			reviewerFeedback = pick(
-				this.lang(),
-				`审查过程中出错：${reviewErrMsg}`,
-				`Error during review: ${reviewErrMsg}`,
-				"goal.review.error",
-				{ reviewErrMsg: reviewErrMsg },
-			);
+		} else {
+			try {
+				const rmSpec = this.resolveReviewModel(g.reviewModel);
+				const services = await createAgentSessionServices({
+					cwd: mainConv.cwd,
+					agentDir: this.host.agentDir,
+					// The reviewer has its own skill allow/deny list. It deliberately does
+					// not reuse the main session's disabledSkills setting.
+					resourceLoaderOptions: {
+						skillsOverride: (res) => ({
+							...res,
+							skills: res.skills.filter((s) => !reviewDisabledSkills.has(s.name)),
+						}),
+					},
+					// A FRESH ModelRuntime for the reviewer — isolated from the shared
+					// one used by the main conversations, so its model choice is its own.
+					modelRuntime: await ModelRuntime.create({
+						authPath: join(this.host.agentDir, "auth.json"),
+						modelsPath: join(this.host.agentDir, "models.json"),
+					}),
+				});
+
+				// Model resolution: explicit reviewer model, else the main session's
+				// current model (so a goal works even when no reviewer model is given).
+				let model;
+				if (rmSpec) {
+					model = services.modelRuntime.getModel(rmSpec.provider, rmSpec.id);
+				}
+				if (!model) {
+					const mainModel = mainSession.model as { provider?: string; id?: string } | undefined;
+					if (mainModel?.provider && mainModel.id) {
+						model = services.modelRuntime.getModel(mainModel.provider, mainModel.id);
+					}
+				}
+
+				const srv = await createAgentSessionFromServices({
+					services,
+					sessionManager: SessionManager.inMemory(mainConv.cwd),
+					...(model ? { model } : {}),
+				});
+				const reviewCap = g.locked && g.maxRounds > 0 ? g.maxRounds : 0; // 0 = no cap
+				const reviewer = srv.session;
+				await reviewer.prompt(this.reviewerPrompt(goalText, g.round, reviewCap, finalText, diff, reviewPrompt));
+
+				// Parse the reviewer's final output (expected to be a JSON object).
+				const raw = reviewer.getLastAssistantText() ?? "";
+				const m = raw.match(/\{\s*"verdict"\s*:\s*"(pass|fail)"[^}]*\}/);
+				if (m) {
+					reviewerVerdict = m[1] as "pass" | "fail";
+					const fm = raw.match(/"feedback"\s*:\s*"([^"]*)"/);
+					reviewerFeedback = fm?.[1] ?? "";
+				} else {
+					// No JSON — assume fail with the raw output as feedback.
+					reviewerVerdict = "fail";
+					reviewerFeedback = raw.slice(0, 2000);
+				}
+				await srv.session.dispose();
+			} catch (err) {
+				const reviewErrMsg = (err as Error).message;
+				reviewerVerdict = "fail";
+				reviewerFeedback = pick(
+					this.lang(),
+					`审查过程中出错：${reviewErrMsg}`,
+					`Error during review: ${reviewErrMsg}`,
+					"goal.review.error",
+					{ reviewErrMsg: reviewErrMsg },
+				);
+			}
 		}
 
 		// The user may have switched chats or replaced/cleared the goal while the
@@ -1092,6 +1218,36 @@ export class GoalService {
 			} catch {
 				// Best-effort.
 			}
+			this.host.flushSnapshot();
+			return;
+		}
+
+		if (verdict === "blocked") {
+			g.status = "⚠️ 目标受阻（停滞熔断）";
+			g.statusEn = "⚠️ Goal blocked (stagnation circuit break)";
+			this.host.emit({
+				type: "notice",
+				level: "warning",
+				text: "⚠️ 目标执行受阻：检测到停滞或相同报错，已自动暂停",
+				textEn: "⚠️ Goal execution blocked: stagnation or repeated error detected, auto-loop paused",
+			});
+			try {
+				const blockedText = pick(
+					this.lang(),
+					`⚠️ 目标执行受阻（第 ${round} 轮已触发停滞熔断）。\n\n目标：${goalText}\n\n${feedback}\n\n（目标模式已暂停，请在排查问题后重新设定目标或手动继续。）`,
+					`⚠️ Goal execution blocked (stagnation circuit breaker at round ${round}).\n\nGoal: ${goalText}\n\n${feedback}\n\n(Goal mode paused — please investigate and reset goal or continue manually.)`,
+					"goal.review.blocked_msg",
+					{ round, goalText, feedback },
+				);
+				await mainSession.sendUserMessage(blockedText, {
+					deliverAs: mainSession.isStreaming ? "steer" : "followUp",
+				});
+			} catch {
+				// Best-effort.
+			}
+			g.conversationId = null;
+			g.goal = null; // loop blocked — clear the active goal
+			this.emitGoalStatus();
 			this.host.flushSnapshot();
 			return;
 		}

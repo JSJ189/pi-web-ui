@@ -80,6 +80,10 @@ export interface SubagentSnapshot {
 	parentId?: string;
 	/** 是否为持久化会话（落盘到 session 文件，非仅内存会话）。 */
 	persisted?: boolean;
+	/** 同行协作交接给的目标子代理 convId 列表（该子代理交接给谁）。 */
+	handoffTo?: string[];
+	/** 同行协作接收自的来源子代理 convId 列表（谁交接给该子代理）。 */
+	handoffFrom?: string[];
 }
 
 /**
@@ -127,6 +131,8 @@ export interface SubagentToolHost {
 	getWatchdogTimeoutMs?(): number;
 	/** 检查某个模板名是否可用于派生子代理（存在且 enabled）。 */
 	isTemplateUsable(name: string): boolean;
+	/** 将任务产物或指令从一个子代理直接交接给另一个同行子代理（对等协作路由）。 */
+	handoffSubagent(fromRunId: string, toRunId: string, payload: string): Promise<void>;
 	/** 可选语言（主会话按客户端 locale 提供 getLang；缺省英文）。 */
 	lang?: () => ServerLang;
 }
@@ -151,6 +157,7 @@ export function withSubagentOwner(host: SubagentToolHost, ownerId: string): Suba
 		...host,
 		spawnSubagent: (prompt, type, cwd, templateName, model, _parentId, persist) =>
 			host.spawnSubagent(prompt, type, cwd, templateName, model, ownerId, persist),
+		handoffSubagent: (fromRunId, toRunId, payload) => host.handoffSubagent(fromRunId || ownerId, toRunId, payload),
 	};
 }
 
@@ -779,6 +786,87 @@ export function makeSubagentTools(
 						{ firstTemplateName: firstTemplateName, templateLines: templateLines },
 					),
 				);
+			},
+		}),
+		defineTool({
+			name: "subagent_handoff",
+			label: "Hand off to peer subagent",
+			description: bilingual(
+				"Hand off task artifacts, context, or results directly to another peer subagent (peer-to-peer routing), " +
+					"without routing through the parent conversation. Enables direct multi-agent pipeline collaboration.",
+				"将任务产物、上下文或分析结果直接交接给另一个同行子代理（对等消息路由），" +
+					"无需通过主会话中转，实现多智能体同行流水线协作。",
+			),
+			promptSnippet: "hand off task artifacts or results directly to another peer subagent",
+			parameters: Type.Object({
+				toRunId: Type.String({
+					description: bilingual(
+						"Target peer subagent convId (from subagent_list).",
+						"目标同行子代理 convId（通过 subagent_list 获取）。",
+					),
+				}),
+				payload: Type.String({
+					description: bilingual(
+						"The artifact, analysis result, or instruction to hand off to the peer subagent.",
+						"要交接给同行子代理的产物、分析结果或后续任务指令。",
+					),
+				}),
+				fromRunId: Type.Optional(
+					Type.String({
+						description: bilingual(
+							"Source subagent convId. Optional: defaults to the current calling subagent.",
+							"来源子代理 convId。可选：默认自动使用当前调用的子代理。",
+						),
+					}),
+				),
+			}),
+			execute: async (_id, p) => {
+				const fromId = p.fromRunId || selfConvId || "unknown";
+				if (fromId === p.toRunId) {
+					return text(
+						pick(
+							getLang(),
+							`交接失败：不能交接给自身（${shortId(fromId)}）。请指定其他同行子代理。`,
+							`Handoff failed: cannot hand off to oneself (${shortId(fromId)}). Please specify a different peer subagent.`,
+							"subagents.handoff.self",
+							{ id: shortId(fromId) },
+						),
+					);
+				}
+				const target = host.getSubagent(p.toRunId);
+				if (!target) {
+					const missingId = shortId(p.toRunId);
+					return text(
+						pick(
+							getLang(),
+							`未找到目标子代理 ${missingId}（可能已移出或不存在）。请用 subagent_list 确认可用的子代理。`,
+							`Target subagent ${missingId} not found (may have been dismissed or non-existent). Use subagent_list to check available subagents.`,
+							"subagents.handoff.not.found",
+							{ missingId },
+						),
+					);
+				}
+
+				try {
+					await host.handoffSubagent(fromId, p.toRunId, p.payload);
+					const fromShort = shortId(fromId);
+					const toShort = shortId(p.toRunId);
+					return text(
+						pick(
+							getLang(),
+							`已成功将产物交接给同行子代理 ${toShort}（${target.type}），协同路由已建立并开始执行。`,
+							`Successfully handed off payload to peer subagent ${toShort} (${target.type}); peer routing established and executing.`,
+							"subagents.handoff.success",
+							{ from: fromShort, to: toShort, type: target.type },
+						),
+						{ fromRunId: fromId, toRunId: p.toRunId, timestamp: Date.now() },
+					);
+				} catch (err) {
+					const msg = err instanceof Error ? err.message : String(err);
+					return text(
+						pick(getLang(), `交接失败：${msg}`, `Handoff failed: ${msg}`, "subagents.handoff.failed", { error: msg }),
+					);
+				}
 			},
 		}),
 	];

@@ -33,6 +33,7 @@ import { PROTOCOL_VERSION } from "./protocol-version.js";
 import { AgentService, workspacePath, QuiesceRejectedError } from "./agent-service.js";
 import { WS_MAX_PAYLOAD_BYTES, isAbsoluteWirePath, wireToAbs } from "./files-service.js";
 import { registerFileTransferRoutes } from "./file-transfer-routes.js";
+import { initAttachmentStore, readAttachment } from "./attachment-store.js";
 import { isAudioFile, previewKind } from "./text-sniff.js";
 import { startControlServer } from "./control-socket.js";
 import { scheduleUploadCleanup } from "./uploads.js";
@@ -58,6 +59,7 @@ import {
 	type PluginConversationSnapshot,
 	type PluginRunEvent,
 } from "./plugins.js";
+import type { GuardedToolName, ToolPostRequest, ToolPreRequest } from "./plugin-tool-guard.js";
 import { inspectInstallSpec, PluginInstaller } from "./plugin-installer.js";
 import { syncPluginCatalog } from "./plugin-catalog-sync.js";
 import type { ServerLang } from "./i18n.js";
@@ -70,6 +72,7 @@ import { buildPiWebTokenCookie, decodeCookieToken, isTlsRequest } from "./auth-c
 import type {
 	BgServer,
 	ClientMessage,
+	UiApprovalRule,
 	UiLayoutPrefs,
 	CommandDef,
 	PromptAttachment,
@@ -344,6 +347,27 @@ app.get("/api/health", (_req, res) => {
 		pid: process.pid,
 		engine: ENGINE,
 	});
+});
+
+/**
+ * 基于 SHA-256 内容寻址的附件静态服务：
+ * 永久强缓存（immutable），支持图片和文件读取。
+ */
+app.get("/api/attachment/:hash", async (req, res) => {
+	try {
+		const hash = String(req.params.hash ?? "").trim();
+		const hit = await readAttachment(hash);
+		if (!hit) {
+			res.status(404).end("attachment not found");
+			return;
+		}
+		res.setHeader("Content-Type", hit.mimeType);
+		res.setHeader("Content-Length", hit.buffer.length);
+		res.setHeader("Cache-Control", "public, max-age=31536000, immutable");
+		res.end(hit.buffer);
+	} catch (err) {
+		res.status(500).end((err as Error).message);
+	}
 });
 
 /**
@@ -973,6 +997,7 @@ export interface DispatchSession {
 	 *  preset = DSH Agent 预设（pi 引擎忽略）。 */
 	newChat(preset?: string): Promise<boolean | void>;
 	editMessage(messageId: string, text: string, attachments?: PromptAttachment[]): Promise<void>;
+	forkSession?(messageId: string, position?: "before" | "at", targetConvId?: string): Promise<void>;
 	cycleModel(): Promise<void>;
 	cycleThinking(): void;
 	flushSnapshot(forceFull?: boolean): void;
@@ -989,6 +1014,7 @@ export interface DispatchSession {
 	renameConversation(id: string, name: string): Promise<void>;
 	dismissConversation(id: string, withFinishedSubagents?: boolean, force?: boolean): Promise<void>;
 	dismissFinishedSubagents(parentId?: string): Promise<void>;
+	handoffSubagent?(fromRunId: string, toRunId: string, payload: string): Promise<void>;
 	persistConversation?(id: string): Promise<void>;
 	switchSession(path: string): Promise<void>;
 	switchConversation(id: string): Promise<void>;
@@ -1045,6 +1071,13 @@ export interface DispatchSession {
 	activateProviderKey(provider: string, keyName: string): Promise<void>;
 	removeProviderKey(provider: string, keyName: string): Promise<void>;
 	fetchModelsList(reqId: number, baseUrl: string, apiKey?: string, authHeader?: boolean, api?: string): Promise<void>;
+	testModelConnection?(
+		reqId: number,
+		baseUrl: string,
+		apiKey?: string,
+		authHeader?: boolean,
+		api?: string,
+	): Promise<void>;
 	refreshProviderModels(providerId: string, reqId: number): Promise<void>;
 	refreshBuiltinModels(reqId: number): Promise<void>;
 	appendBuiltinModel(providerId: string, model: unknown, reqId: number): Promise<void>;
@@ -1106,11 +1139,28 @@ export interface DispatchSession {
 	/** 浏览器页面调用回包（browser_page 工具，pi 引擎专有；DSH 无页面桥，
 	 *  方法缺失时 dispatch 侧的 `?.` 直接忽略这条消息）。 */
 	resolvePageCall?(id: string, ok: boolean, result?: unknown, error?: string): void;
+	forkSession?(messageId: string, position?: "before" | "at", conversationId?: string): Promise<void>;
+	rollbackSession?(messageId: string, conversationId?: string, restoreWorkspace?: boolean): Promise<void>;
+	resolveToolApproval?(
+		id: string,
+		decision: "approve" | "deny" | "edit",
+		editedParams?: unknown,
+		reason?: string,
+		/** "category" = 顺带记住本对话的该同类档位；"all" = 本对话后续全部允许。 */
+		scope?: "once" | "category" | "all",
+	): boolean;
+	/** 设置当前对话的审批放行策略（设置面板撤销区；纯内存态）。 */
+	setApprovalPolicy?(partial: { conversationId?: string; allowAll?: boolean; categories?: string[] }): void;
+	updatePlan?(steps: import("./protocol.js").PlanStep[], activeStepId?: string | null, conversationId?: string): void;
 	savePreset(name: string): Promise<void>;
 	applyPreset(name: string): Promise<void>;
 	deletePreset(name: string): Promise<void>;
 	/** Upsert 一个子代理模板（全局共享）。 */
 	saveSubagentTemplate(template: UiSubagentTemplate): Promise<void>;
+	saveApprovalRule?(rule: UiApprovalRule): Promise<void>;
+	saveApprovalRules?(rules: UiApprovalRule[]): Promise<void>;
+	deleteApprovalRule?(id: string): Promise<void>;
+	resetBuiltinApprovalRule?(id: string): Promise<void>;
 	/** 当前客户端的服务端语言（issue #91 v2：归一化 UI 代码，zh/EN/ja/…）。 */
 	getLang(): string;
 	/** Browser UI locale report (hello.locale / set_locale) — persist per
@@ -1179,6 +1229,25 @@ export interface EngineService {
 				isError?: boolean;
 		  }) => void)
 		| undefined;
+	/** bash/read 插件拦截（P1-5，pi 引擎；dsh 引擎无 customTool 注册面，不接）。 */
+	toolGuard?:
+		| {
+				pre: (
+					req: ToolPreRequest,
+					lang: string,
+				) => Promise<{
+					verdict:
+						| { decision: "allow" }
+						| { decision: "deny"; reason?: string; reasonEn?: string }
+						| { decision: "ask"; reason?: string; reasonEn?: string };
+					pluginId?: string;
+				}>;
+				post: (
+					req: ToolPostRequest,
+					lang: string,
+				) => Promise<{ content?: Array<{ type: string; text?: string }>; pluginIds: string[] } | undefined>;
+		  }
+		| undefined;
 	/** 运行轨迹事件转发（pi 引擎发射；dsh 引擎暂不发射，插件收不到即无轨迹）。 */
 	onRunEvent?: ((ev: PluginRunEvent) => void) | undefined;
 	/** 对话切换通知（切历史会话/切 running 对话/新对话/切项目，pi 引擎）。 */
@@ -1206,6 +1275,7 @@ const service: EngineService =
 
 // Server-string tables (issue #91 v2): packs' `serverStrings` sections feed
 // pick() lookup for non-zh/en UI languages (missing key → English fallback).
+initAttachmentStore(DATA_DIR);
 loadServerStrings(DATA_DIR);
 // Optional UI plugins (<dataDir>/plugins/<id>/): scanned on every client
 // attach so freshly dropped plugins appear without a server restart.
@@ -1536,6 +1606,12 @@ void mcpBridge.load().then(() => {
 });
 // 插件扩展点：SDK 工具执行事件（bash/读文件等 start+end）转发给已注册的插件。
 service.onToolEvent = (ev) => pluginMgr.emitToolEvent(ev);
+// 插件扩展点（P1-5）：bash/read 执行前后的拦截（pre 拒/问即拦、post 脱敏补上下文；
+// 只覆盖已接管的这两处，DSH 引擎无 customTool 注册面不接）。
+service.toolGuard = {
+	pre: (req, lang) => pluginMgr.evaluateToolPre(req, lang),
+	post: (req, lang) => pluginMgr.evaluateToolPost(req, lang),
+};
 service.onRunEvent = (ev) => pluginMgr.emitRunEvent(ev);
 // 插件扩展点：对话切换通知（轨迹视图切会话后即重拉；dsh 引擎暂无）。
 service.onConversationChanged = () => pluginMgr.emitConversationChanged();
@@ -1877,6 +1953,12 @@ wss.on("connection", (ws) => {
 			case "edit_message":
 				void cs.editMessage(msg.messageId, msg.text, msg.attachments);
 				break;
+			case "fork_session":
+				void cs.forkSession?.(msg.messageId, msg.position, msg.conversationId);
+				break;
+			case "rollback_session":
+				void cs.rollbackSession?.(msg.messageId, msg.conversationId, msg.restoreWorkspace);
+				break;
 			case "cycle_model":
 				void cs.cycleModel();
 				break;
@@ -1929,6 +2011,9 @@ wss.on("connection", (ws) => {
 				break;
 			case "dismiss_finished_subagents":
 				void cs.dismissFinishedSubagents(msg.parentId);
+				break;
+			case "subagent_handoff":
+				void cs.handoffSubagent?.(msg.fromRunId, msg.toRunId, msg.payload);
 				break;
 			case "switch_session":
 				void cs.switchSession(msg.path);
@@ -2142,6 +2227,9 @@ wss.on("connection", (ws) => {
 			case "fetch_models":
 				void cs.fetchModelsList(msg.reqId, msg.baseUrl, msg.apiKey, msg.authHeader, msg.api);
 				break;
+			case "test_model_connection":
+				void cs.testModelConnection?.(msg.reqId, msg.baseUrl, msg.apiKey, msg.authHeader, msg.api);
+				break;
 			case "refresh_provider_models":
 				void cs.refreshProviderModels(msg.providerId, msg.reqId);
 				break;
@@ -2264,6 +2352,7 @@ wss.on("connection", (ws) => {
 					terminalBashIdleMs: msg.terminalBashIdleMs,
 					toolWatchdogTimeoutMs: (msg as { toolWatchdogTimeoutMs?: number }).toolWatchdogTimeoutMs,
 					readDirEnabled: (msg as { readDirEnabled?: boolean }).readDirEnabled,
+					toolApprovalEnabled: (msg as { toolApprovalEnabled?: boolean }).toolApprovalEnabled,
 					editSoftEnabled: (msg as { editSoftEnabled?: boolean }).editSoftEnabled,
 					questionnaireEnabled: (msg as { questionnaireEnabled?: boolean }).questionnaireEnabled,
 					parallelReminderEnabled: (msg as { parallelReminderEnabled?: boolean }).parallelReminderEnabled,
@@ -2374,6 +2463,12 @@ wss.on("connection", (ws) => {
 			case "plugin_job_cancel":
 				pluginInstaller.cancel(String(msg.jobId ?? ""));
 				break;
+			// 注册面目录（DSH P2-7）：只读装配（slot/工具/宿主方法表+当前占用者），按需拉取。
+			case "plugin_api_catalog": {
+				const requestId = String(msg.requestId ?? "");
+				send({ type: "plugin_api_catalog_result", requestId, catalog: pluginMgr.getApiCatalog() });
+				break;
+			}
 			// 安装前先读 spec（DSH P0-3）：不联网也能查（形状/已装），GitHub 源再探一次
 			// raw manifest。结果只作引导（UI 把 problem 渲染成输入框下的一句话），不阻塞安装。
 			case "plugin_install_inspect": {
@@ -2538,6 +2633,19 @@ wss.on("connection", (ws) => {
 					void cs.answerQuestion?.(msg.id, msg.answers, msg.cancelled);
 				}
 				break;
+			case "tool_approval_response":
+				cs.resolveToolApproval?.(msg.id, msg.decision, msg.editedParams, msg.reason, msg.scope);
+				break;
+			case "set_approval_policy":
+				cs.setApprovalPolicy?.({
+					conversationId: msg.conversationId,
+					allowAll: msg.allowAll,
+					categories: msg.categories,
+				});
+				break;
+			case "plan_update":
+				cs.updatePlan?.(msg.steps, msg.activeStepId, msg.conversationId);
+				break;
 			case "page_response":
 				// 浏览器（page-picker 扩展经前端）对 browser_page 的回包：恢复挂起的
 				// pageCall；id 不匹配（超时后迟到/页面刷新）由 resolvePageCall 静默忽略。
@@ -2551,6 +2659,18 @@ wss.on("connection", (ws) => {
 				break;
 			case "delete_subagent_template":
 				void cs.deleteSubagentTemplate(msg.name);
+				break;
+			case "save_approval_rule":
+				void cs.saveApprovalRule?.(msg.rule);
+				break;
+			case "save_approval_rules":
+				void cs.saveApprovalRules?.(msg.rules);
+				break;
+			case "delete_approval_rule":
+				void cs.deleteApprovalRule?.(msg.id);
+				break;
+			case "reset_builtin_approval_rule":
+				void cs.resetBuiltinApprovalRule?.(msg.id);
 				break;
 			case "apply_preset":
 				void cs.applyPreset(msg.name);

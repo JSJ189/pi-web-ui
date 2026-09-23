@@ -211,18 +211,20 @@ export function createMockHost(overrides) {
 	// 订阅类：存 handler + 返回注销函数（调用本身由外层统一记进 calls）。
 	// handler 缺省取首参；fs.watch(path, handler) / events.on(topic, handler) /
 	// shortcuts.register(key, handler) 这类回调在第二参，用 sub(method, 1)。
-	const sub = (method, argIndex = 0) => (...args) => {
-		const handler = args[argIndex];
-		if (typeof handler === "function") handlersOf(method).push(handler);
-		let done = false;
-		return () => {
-			if (done) return;
-			done = true;
-			const arr = handlersOf(method);
-			const i = arr.indexOf(handler);
-			if (i >= 0) arr.splice(i, 1);
+	const sub =
+		(method, argIndex = 0) =>
+		(...args) => {
+			const handler = args[argIndex];
+			if (typeof handler === "function") handlersOf(method).push(handler);
+			let done = false;
+			return () => {
+				if (done) return;
+				done = true;
+				const arr = handlersOf(method);
+				const i = arr.indexOf(handler);
+				if (i >= 0) arr.splice(i, 1);
+			};
 		};
-	};
 	const logImpl = (levelOrArg, ...args) => {
 		const levels = ["debug", "info", "warn", "error"];
 		const level = levels.includes(levelOrArg) ? levelOrArg : "info";
@@ -243,12 +245,16 @@ export function createMockHost(overrides) {
 			try {
 				console.error("[mock-host]", text);
 			} catch {
-			/* 打印失败不影响单测 */
+				/* 打印失败不影响单测 */
 			}
 		}
 	};
 	const statImpl = (p) => ({
-		name: String(p ?? "").split(/[\\/]/).filter(Boolean).pop() ?? "",
+		name:
+			String(p ?? "")
+				.split(/[\\/]/)
+				.filter(Boolean)
+				.pop() ?? "",
 		type: "file",
 		size: 0,
 		mtime: 0,
@@ -284,6 +290,8 @@ export function createMockHost(overrides) {
 		sendTo: noop,
 		onAttach: sub("onAttach"),
 		onToolEvent: sub("onToolEvent"),
+		onToolPre: sub("onToolPre"),
+		onToolPost: sub("onToolPost"),
 		onRunEvent: sub("onRunEvent"),
 		getActiveConversation: () => null,
 		chat: async () => okFalse("chatProvider（无头调用未接入）"),
@@ -314,8 +322,7 @@ export function createMockHost(overrides) {
 				const list = Array.isArray(items) ? items : [items];
 				const added = [];
 				for (const raw of list.slice(0, 32)) {
-					const id =
-						raw && typeof raw.id === "string" && raw.id ? raw.id : `mock-${++uiAutoId}`;
+					const id = raw && typeof raw.id === "string" && raw.id ? raw.id : `mock-${++uiAutoId}`;
 					uiItems.set(id, isPlainObject(raw) ? { ...raw, id } : { id });
 					added.push(id);
 				}
@@ -534,10 +541,12 @@ export function createMockHost(overrides) {
 		}
 	}
 	// 记录层：所有 host 方法（mock/reset 除外）先记 calls 再委托。
-	const record = (method, fn) => (...args) => {
-		calls.push({ method, args, seq: calls.length });
-		return fn(...args);
-	};
+	const record =
+		(method, fn) =>
+		(...args) => {
+			calls.push({ method, args, seq: calls.length });
+			return fn(...args);
+		};
 	for (const [key, value] of Object.entries(host)) {
 		if (key === "calls" || key === "logs" || key === "mock" || key === "reset") continue;
 		if (typeof value === "function") {

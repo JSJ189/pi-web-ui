@@ -3,6 +3,8 @@ import {
 	FiAlertTriangle,
 	FiArchive,
 	FiBox,
+	FiChevronDown,
+	FiChevronUp,
 	FiClock,
 	FiCpu,
 	FiDownload,
@@ -40,6 +42,7 @@ import type {
 	DshPermissionOption,
 	SchedulerTaskView,
 	UiAgentPreset,
+	UiApprovalRule,
 	UiExtensionInfo,
 	UiLayoutPrefs,
 	UiSlotId,
@@ -88,6 +91,8 @@ import { QUICK_PHRASE_DEFAULTS } from "../quick-phrases";
 import { DEFAULT_PROMPT_TEMPLATE, PROMPT_TOKENS, isReadonlyPromptSource } from "../../../server/prompt-composer.js";
 import {
 	AGENT_TOOL_CATALOG,
+	filterToolsByPreset,
+	presetShowsSkillCatalog,
 	MARKERS_LIST_TOOL_NAME,
 	SUBAGENT_TOOL_NAMES,
 	TERMINAL_TOOL_NAMES,
@@ -219,6 +224,7 @@ function ToggleRow({
 	enabled,
 	onToggle,
 	action,
+	disabled,
 }: {
 	title: React.ReactNode;
 	subtitle?: string;
@@ -228,6 +234,8 @@ function ToggleRow({
 	onToggle: () => void;
 	/** Optional extra control rendered left of the switch (e.g. uninstall). */
 	action?: React.ReactNode;
+	/** 被默认预设过滤时禁用开关（展示实效 off，底层禁用名单原样保留）。 */
+	disabled?: boolean;
 }) {
 	const t = useT();
 	return (
@@ -245,8 +253,9 @@ function ToggleRow({
 				className={`set-switch ${enabled ? "on" : ""}`}
 				role="switch"
 				aria-checked={enabled}
+				disabled={disabled}
 				title={enabled ? t("settingsEnabled") : t("settingsDisabled")}
-				onClick={onToggle}
+				onClick={disabled ? undefined : onToggle}
 			>
 				<span className="set-switch-knob" />
 			</button>
@@ -368,6 +377,7 @@ type SettingsTab =
 	| "prompt-history"
 	| "scheduler"
 	| "tools"
+	| "approval-rules"
 	| "question"
 	| "display"
 	| "quick"
@@ -388,6 +398,8 @@ export function SettingsModal({ chat, terminal, initialSection, onSwitchToTermin
 	// {{token}} 元数据文案键是动态的（promptTok_<token>[,_desc]），用 tt 跳过字面量类型。
 	const tt = (k: string) => t(k as Parameters<typeof t>[0]);
 	const settings = chat.settings;
+	// 审批放行策略（仅内存、随对话走；审批弹窗的「允许同类 / 全部允许」在这里撤销）。
+	const approvalPolicy = settings?.approvalPolicy;
 	// 全局运行态（引擎 / 受管）：不再从 App 一路传进来，见 web/src/app-globals.ts。
 	const { engine, managed } = useAppGlobals();
 	// DSH 引擎：无 pi 扩展/技能体系与视觉桥概念 —— 隐藏对应分区/改占位说明。
@@ -443,6 +455,13 @@ export function SettingsModal({ chat, terminal, initialSection, onSwitchToTermin
 	const [tplIsNew, setTplIsNew] = useState(false);
 	// 删除子代理模板的两步确认。
 	const [confirmTplDelete, setConfirmTplDelete] = useState<string | null>(null);
+	// 正在编辑的审批规则草稿。
+	const [ruleDraft, setRuleDraft] = useState<UiApprovalRule | null>(null);
+	const [ruleIsNew, setRuleIsNew] = useState(false);
+	const [ruleToolsText, setRuleToolsText] = useState("");
+	const [ruleError, setRuleError] = useState<string | null>(null);
+	const [confirmRuleDelete, setConfirmRuleDelete] = useState<string | null>(null);
+	const [confirmRuleReset, setConfirmRuleReset] = useState<string | null>(null);
 	// Read-only viewer for the FULL system prompt actually in effect.
 	const [showFullPrompt, setShowFullPrompt] = useState(false);
 	const [showToolsSchema, setShowToolsSchema] = useState(false);
@@ -646,6 +665,32 @@ export function SettingsModal({ chat, terminal, initialSection, onSwitchToTermin
 	const disabledTools = new Set(settings.disabledAgentTools ?? []);
 	const disabledToolsCount = disabledTools.size;
 
+	// pi 引擎默认预设的二次过滤（server/tool-manager.ts filterToolsByPreset）：预设是
+	// 禁用名单之外的第二层门控。默认预设为极简/代码/只读/纯对话时，大批开关看似开着
+	// 实则对新对话不生效——此处算出实效，被过滤的行置灰并在顶部挂横幅（一键切回全功能）。
+	const piPresetId = isDsh ? null : (chat.dshPresets?.defaultPreset ?? null);
+	const piPresetFiltering = !!piPresetId && piPresetId !== "standard";
+	const piPresetAllowed: Set<string> = piPresetFiltering
+		? new Set(
+				filterToolsByPreset(
+					[...AGENT_TOOL_CATALOG.map((e) => e.name), "bash", "read", "edit", "write"],
+					piPresetId ?? undefined,
+				),
+			)
+		: new Set(AGENT_TOOL_CATALOG.map((e) => e.name));
+	const piPresetName = chat.dshPresets?.presets.find((pp) => pp.id === piPresetId)?.name ?? piPresetId ?? "";
+	const isBlockedByPreset = (name: string) => piPresetFiltering && !piPresetAllowed.has(name);
+	const blockedPresetCount = piPresetFiltering
+		? AGENT_TOOL_CATALOG.filter((e) => !piPresetAllowed.has(e.name)).length
+		: 0;
+	// 非 standard 预设下插件工具一律不可用（见 tool-manager.ts 语义总表）：
+	// 横幅计数把「实际被拦的已启用插件工具」也算上，行级开关同步置灰。
+	const blockedPluginCount = piPresetFiltering
+		? chat.plugins
+				.flatMap((pp) => pp.agentTools ?? [])
+				.filter((pt) => !(settings.disabledPluginTools ?? []).includes(pt.name)).length
+		: 0;
+
 	const tabs: {
 		id: SettingsTab;
 		icon: React.ReactNode;
@@ -685,6 +730,12 @@ export function SettingsModal({ chat, terminal, initialSection, onSwitchToTermin
 						icon: <FiTool />,
 						label: t("settingsTools"),
 						count: disabledToolsCount + (settings.disabledMarkers?.length ?? 0) || undefined,
+					},
+					{
+						id: "approval-rules" as const,
+						icon: <FiShield />,
+						label: t("settingsApprovalRules"),
+						count: (settings.approvalRules ?? []).length || undefined,
 					},
 				]),
 		{ id: "display", icon: <FiMessageSquare />, label: t("settingsMessageDisplay") },
@@ -755,6 +806,8 @@ export function SettingsModal({ chat, terminal, initialSection, onSwitchToTermin
 		toolWatchdogTimeoutMs?: number;
 		/** read 工具读目录开关（默认开；行为开关，live 生效无需 reload，见 server/read-tool.ts）。 */
 		readDirEnabled?: boolean;
+		/** 工具执行审批总开关（默认开；纯运行开关，live 生效无需 reload）。 */
+		toolApprovalEnabled?: boolean;
 		editSoftEnabled?: boolean;
 		questionnaireEnabled?: boolean;
 		goalModeEnabled?: boolean;
@@ -1747,12 +1800,82 @@ export function SettingsModal({ chat, terminal, initialSection, onSwitchToTermin
 									<FiTool className="set-section-icon" />
 									{t("settingsTools")}
 								</div>
+								{piPresetFiltering && (
+									<p className="set-catalog-hint warn">
+										{t("toolsPresetBanner", { name: piPresetName, count: blockedPresetCount + blockedPluginCount })}{" "}
+										<button
+											type="button"
+											className="chip"
+											onClick={() => appSend({ type: "dsh_preset_default", preset: "standard" })}
+										>
+											{t("toolsBackToStandard")}
+										</button>
+									</p>
+								)}
 								<ToggleRow
 									title={t("readDirEnabled")}
 									tip={t("readDirEnabledDesc")}
 									enabled={settings.readDirEnabled !== false}
 									onToggle={() => setPartial({ readDirEnabled: settings.readDirEnabled === false })}
 								/>
+								<ToggleRow
+									title={t("toolApprovalEnabled")}
+									tip={t("toolApprovalEnabledDesc")}
+									enabled={settings.toolApprovalEnabled !== false}
+									onToggle={() => setPartial({ toolApprovalEnabled: settings.toolApprovalEnabled === false })}
+									action={
+										!isDsh ? (
+											<button
+												type="button"
+												className="tpl-chip"
+												onClick={() => setTab("approval-rules")}
+												title={t("settingsApprovalRulesDesc")}
+											>
+												<FiShield /> {t("manageApprovalRules")}
+											</button>
+										) : undefined
+									}
+								/>
+								{/* 已记住的放行（本对话）：只存内存，撤销就在设置里（审批弹窗本身不再出现） */}
+								{approvalPolicy?.allowAll || (approvalPolicy?.categories.length ?? 0) > 0 ? (
+									<div className="set-field" style={{ marginTop: 8 }}>
+										<div className="set-field-label">
+											{t("toolApprovalPolicyTitle")}
+											<HintTip text={t("toolApprovalPolicyHint")} />
+										</div>
+										{approvalPolicy?.allowAll && (
+											<div className="set-row">
+												<span className="set-hint">{t("toolApprovalPolicyAllowAll")}</span>
+												<button
+													type="button"
+													className="btn"
+													onClick={() => appSend({ type: "set_approval_policy", allowAll: false })}
+												>
+													{t("toolApprovalPolicyRevoke")}
+												</button>
+											</div>
+										)}
+										{(approvalPolicy?.categories ?? []).map((c) => (
+											<div className="set-row" key={c.id}>
+												<span className="set-hint">{locale === "zh" ? c.label : c.labelEn}</span>
+												<button
+													type="button"
+													className="btn"
+													onClick={() =>
+														appSend({
+															type: "set_approval_policy",
+															categories: (approvalPolicy?.categories ?? [])
+																.filter((x) => x.id !== c.id)
+																.map((x) => x.id),
+														})
+													}
+												>
+													{t("toolApprovalPolicyRevoke")}
+												</button>
+											</div>
+										))}
+									</div>
+								) : null}
 								<FieldRow
 									label={t("toolWatchdogTimeout")}
 									tip={t("toolWatchdogTimeoutDesc")}
@@ -1782,15 +1905,20 @@ export function SettingsModal({ chat, terminal, initialSection, onSwitchToTermin
 									/>
 								</FieldRow>
 								<div className="set-field-label">{t("toolsSectionTerminal")}</div>
-								{TERMINAL_TOOL_NAMES.map((n) => (
-									<ToggleRow
-										key={n}
-										title={n}
-										tip={t("settingsTerminalToolsDesc")}
-										enabled={!disabledTools.has(n)}
-										onToggle={() => toggleAgentTool(n)}
-									/>
-								))}
+								{TERMINAL_TOOL_NAMES.map((n) => {
+									const blocked = isBlockedByPreset(n);
+									return (
+										<ToggleRow
+											key={n}
+											title={n}
+											tip={t("settingsTerminalToolsDesc")}
+											subtitle={blocked ? t("toolsBlockedByPreset", { name: piPresetName }) : undefined}
+											enabled={!blocked && !disabledTools.has(n)}
+											disabled={blocked}
+											onToggle={() => toggleAgentTool(n)}
+										/>
+									);
+								})}
 								<ToggleRow
 									title={t("terminalBashTakeover")}
 									tip={t("terminalBashTakeoverDesc")}
@@ -1820,15 +1948,20 @@ export function SettingsModal({ chat, terminal, initialSection, onSwitchToTermin
 								<div className="set-field-label">
 									{t("toolsSectionSubagent")} <HintTip text={t("toolsSubagentDepHint")} />
 								</div>
-								{SUBAGENT_TOOL_NAMES.map((n) => (
-									<ToggleRow
-										key={n}
-										title={n}
-										tip={SUBAGENT_TOOL_TIPS[n]}
-										enabled={!disabledTools.has(n)}
-										onToggle={() => toggleAgentTool(n)}
-									/>
-								))}
+								{SUBAGENT_TOOL_NAMES.map((n) => {
+									const blocked = isBlockedByPreset(n);
+									return (
+										<ToggleRow
+											key={n}
+											title={n}
+											tip={SUBAGENT_TOOL_TIPS[n]}
+											subtitle={blocked ? t("toolsBlockedByPreset", { name: piPresetName }) : undefined}
+											enabled={!blocked && !disabledTools.has(n)}
+											disabled={blocked}
+											onToggle={() => toggleAgentTool(n)}
+										/>
+									);
+								})}
 								<div className="set-field-label">
 									{t("settingsMarkers")}
 									<HintTip text={`${t("settingsMarkersDesc")}\n${t("markerRenameTip")}`} />
@@ -1865,19 +1998,30 @@ export function SettingsModal({ chat, terminal, initialSection, onSwitchToTermin
 								<ToggleRow
 									title={MARKERS_LIST_TOOL_NAME}
 									tip={`${t("todoListEnabledDesc")}\n${t("todoListOffHint")}`}
-									enabled={!disabledTools.has(MARKERS_LIST_TOOL_NAME)}
+									subtitle={
+										isBlockedByPreset(MARKERS_LIST_TOOL_NAME)
+											? t("toolsBlockedByPreset", { name: piPresetName })
+											: undefined
+									}
+									enabled={!isBlockedByPreset(MARKERS_LIST_TOOL_NAME) && !disabledTools.has(MARKERS_LIST_TOOL_NAME)}
+									disabled={isBlockedByPreset(MARKERS_LIST_TOOL_NAME)}
 									onToggle={() => toggleAgentTool(MARKERS_LIST_TOOL_NAME)}
 								/>
 								<div className="set-field-label">{t("toolsSectionOther")}</div>
-								{OTHER_AGENT_TOOLS.map((tool) => (
-									<ToggleRow
-										key={tool.name}
-										title={tool.name}
-										tip={`${tt(tool.descKey ?? tool.name)}\n${tt(tool.offHintKey ?? tool.name)}`}
-										enabled={!disabledTools.has(tool.name)}
-										onToggle={() => toggleAgentTool(tool.name)}
-									/>
-								))}
+								{OTHER_AGENT_TOOLS.map((tool) => {
+									const blocked = isBlockedByPreset(tool.name);
+									return (
+										<ToggleRow
+											key={tool.name}
+											title={tool.name}
+											tip={`${tt(tool.descKey ?? tool.name)}\n${tt(tool.offHintKey ?? tool.name)}`}
+											subtitle={blocked ? t("toolsBlockedByPreset", { name: piPresetName }) : undefined}
+											enabled={!blocked && !disabledTools.has(tool.name)}
+											disabled={blocked}
+											onToggle={() => toggleAgentTool(tool.name)}
+										/>
+									);
+								})}
 								<div className="set-field-label">
 									{t("toolsSectionPlugin")}
 									<HintTip text={t("toolsPluginHint")} />
@@ -1898,7 +2042,9 @@ export function SettingsModal({ chat, terminal, initialSection, onSwitchToTermin
 													tip={
 														tool.description ? `${tool.description}\n${t("pluginToolOffHint")}` : t("pluginToolOffHint")
 													}
-													enabled={!disabledPluginTools.has(tool.name)}
+													subtitle={piPresetFiltering ? t("toolsBlockedByPreset", { name: piPresetName }) : undefined}
+													enabled={!piPresetFiltering && !disabledPluginTools.has(tool.name)}
+													disabled={piPresetFiltering}
 													onToggle={() => togglePluginTool(tool.name)}
 												/>
 											))}
@@ -2360,6 +2506,9 @@ export function SettingsModal({ chat, terminal, initialSection, onSwitchToTermin
 									<HintTip text={`${t("skillFullTextLabel")}：${t("skillFullTextDesc")}`} />
 									<span className="set-count">{settings.skills.length}</span>
 								</div>
+								{!isDsh && piPresetFiltering && !presetShowsSkillCatalog(piPresetId ?? undefined) && (
+									<p className="set-catalog-hint warn">{t("skillsHiddenByPreset", { name: piPresetName })}</p>
+								)}
 								{settings.skills.length === 0 ? (
 									<p className="set-empty">{isDsh ? t("dshSkillsNote") : t("noSkills")}</p>
 								) : (
@@ -3384,7 +3533,7 @@ export function SettingsModal({ chat, terminal, initialSection, onSwitchToTermin
 							</div>
 						)}
 
-						{tab === "presets" && isDsh && chat.dshPresets && chat.dshPresets.presets.length > 0 && (
+						{tab === "presets" && chat.dshPresets && chat.dshPresets.presets.length > 0 && (
 							<div className="set-section">
 								<div className="set-section-title">
 									<FiCpu className="set-section-icon" />
@@ -3428,7 +3577,7 @@ export function SettingsModal({ chat, terminal, initialSection, onSwitchToTermin
 								<p className="set-hint">{t("dshPresetUserNote")}</p>
 							</div>
 						)}
-						{tab === "presets" && isDsh && chat.dshPermission && chat.dshPermission.options.length > 0 && (
+						{tab === "presets" && chat.dshPermission && chat.dshPermission.options.length > 0 && (
 							<div className="set-section">
 								<div className="set-section-title">
 									<FiShield className="set-section-icon" />
@@ -3863,6 +4012,380 @@ export function SettingsModal({ chat, terminal, initialSection, onSwitchToTermin
 												</div>
 											</div>
 										))}
+									</div>
+								)}
+							</div>
+						)}
+
+						{/* ---- approval rules（全局共享；DSH 引擎隐藏该分区） ---------- */}
+						{tab === "approval-rules" && !isDsh && (
+							<div className="set-section">
+								<div className="set-section-title">
+									<FiShield className="set-section-icon" />
+									{t("settingsApprovalRules")}
+									<HintTip text={t("settingsApprovalRulesDesc")} />
+									<span className="set-count">{settings.approvalRules?.length ?? 0}</span>
+									<button
+										type="button"
+										className="set-save-btn"
+										title={t("approvalRuleNew")}
+										onClick={() => {
+											setRuleDraft({
+												id: `custom.${randomUuid().slice(0, 8)}`,
+												enabled: true,
+												tools: ["bash"],
+												field: "command",
+												match: "regex",
+												value: "",
+												action: "ask",
+												label: "",
+												labelEn: "",
+												reason: "",
+												reasonEn: "",
+											});
+											setRuleToolsText("bash");
+											setRuleIsNew(true);
+											setRuleError(null);
+										}}
+									>
+										<FiPlus /> {t("approvalRuleNew")}
+									</button>
+								</div>
+
+								{/* ---- 编辑 / 新建表单 ---------- */}
+								{ruleDraft && (
+									<div className="rule-editor">
+										<div className="set-section-title" style={{ fontSize: 13, marginBottom: 4 }}>
+											{ruleIsNew ? t("approvalRuleNew") : `${t("approvalRuleEdit")} · ${ruleDraft.label}`}
+										</div>
+										<FieldRow label={t("approvalRuleLabel")}>
+											<input
+												className="set-input"
+												value={ruleDraft.label}
+												placeholder="例如：拦截 Docker 危险操作"
+												onChange={(e) => setRuleDraft({ ...ruleDraft, label: e.target.value })}
+											/>
+										</FieldRow>
+										<FieldRow label={t("approvalRuleLabelEn")}>
+											<input
+												className="set-input"
+												value={ruleDraft.labelEn ?? ""}
+												placeholder="e.g. Block dangerous Docker commands"
+												onChange={(e) => setRuleDraft({ ...ruleDraft, labelEn: e.target.value })}
+											/>
+										</FieldRow>
+										<FieldRow label={t("approvalRuleTools")} tip={t("approvalRuleToolsTip")}>
+											<input
+												className="set-input"
+												value={ruleToolsText}
+												placeholder="bash, write, edit (或 * 通配)"
+												onChange={(e) => {
+													setRuleToolsText(e.target.value);
+													const arr = e.target.value
+														.split(",")
+														.map((x) => x.trim().toLowerCase())
+														.filter(Boolean);
+													setRuleDraft({ ...ruleDraft, tools: arr.length > 0 ? arr : ["*"] });
+												}}
+											/>
+										</FieldRow>
+										<div style={{ display: "flex", gap: 10, flexWrap: "wrap" }}>
+											<div style={{ flex: 1, minWidth: 160 }}>
+												<FieldRow label={t("approvalRuleField")}>
+													<select
+														className="set-select"
+														value={ruleDraft.field}
+														onChange={(e) =>
+															setRuleDraft({
+																...ruleDraft,
+																field: e.target.value as "command" | "path" | "params",
+															})
+														}
+													>
+														<option value="command">{t("approvalRuleFieldCommand")}</option>
+														<option value="path">{t("approvalRuleFieldPath")}</option>
+														<option value="params">{t("approvalRuleFieldParams")}</option>
+													</select>
+												</FieldRow>
+											</div>
+											<div style={{ flex: 1, minWidth: 160 }}>
+												<FieldRow label={t("approvalRuleMatch")}>
+													<select
+														className="set-select"
+														value={ruleDraft.match}
+														onChange={(e) =>
+															setRuleDraft({
+																...ruleDraft,
+																match: e.target.value as "regex" | "glob" | "contains" | "prefix" | "outside_workspace",
+															})
+														}
+													>
+														<option value="regex">{t("approvalRuleMatchRegex")}</option>
+														<option value="glob">{t("approvalRuleMatchGlob")}</option>
+														<option value="contains">{t("approvalRuleMatchContains")}</option>
+														<option value="prefix">{t("approvalRuleMatchPrefix")}</option>
+														<option value="outside_workspace">{t("approvalRuleMatchOutsideWs")}</option>
+													</select>
+												</FieldRow>
+											</div>
+											<div style={{ flex: 1, minWidth: 160 }}>
+												<FieldRow label="命中动作">
+													<select
+														className="set-select"
+														value={ruleDraft.action}
+														onChange={(e) =>
+															setRuleDraft({
+																...ruleDraft,
+																action: e.target.value as "ask" | "deny" | "allow",
+															})
+														}
+													>
+														<option value="ask">{t("approvalRuleActionAsk")}</option>
+														<option value="deny">{t("approvalRuleActionDeny")}</option>
+														<option value="allow">{t("approvalRuleActionAllow")}</option>
+													</select>
+												</FieldRow>
+											</div>
+										</div>
+										{ruleDraft.match !== "outside_workspace" && (
+											<FieldRow label={t("approvalRuleValue")} tip={t("approvalRuleValueTip")}>
+												<input
+													className="set-input"
+													value={ruleDraft.value}
+													placeholder="匹配表达式或关键字…"
+													onChange={(e) => setRuleDraft({ ...ruleDraft, value: e.target.value })}
+												/>
+											</FieldRow>
+										)}
+										<FieldRow label={t("approvalRuleReason")}>
+											<input
+												className="set-input"
+												value={ruleDraft.reason ?? ""}
+												placeholder="例如：检测到删除镜像或容器操作"
+												onChange={(e) => setRuleDraft({ ...ruleDraft, reason: e.target.value })}
+											/>
+										</FieldRow>
+										<FieldRow label={t("approvalRuleReasonEn")}>
+											<input
+												className="set-input"
+												value={ruleDraft.reasonEn ?? ""}
+												placeholder="e.g. Detected docker image/container removal"
+												onChange={(e) => setRuleDraft({ ...ruleDraft, reasonEn: e.target.value })}
+											/>
+										</FieldRow>
+										<div className="set-row">
+											<label
+												className="set-checkbox-label"
+												style={{ display: "inline-flex", alignItems: "center", gap: 6 }}
+											>
+												<input
+													type="checkbox"
+													checked={ruleDraft.enabled}
+													onChange={(e) => setRuleDraft({ ...ruleDraft, enabled: e.target.checked })}
+												/>
+												{t("approvalRuleEnabled")}
+											</label>
+										</div>
+										{ruleError && <div style={{ color: "var(--red, #ef4444)", fontSize: 12 }}>{ruleError}</div>}
+										<div style={{ display: "flex", justifyContent: "flex-end", gap: 8, marginTop: 4 }}>
+											<button
+												type="button"
+												className="btn"
+												onClick={() => {
+													setRuleDraft(null);
+													setRuleError(null);
+												}}
+											>
+												{t("cancel")}
+											</button>
+											<button
+												type="button"
+												className="btn btn-primary"
+												onClick={() => {
+													if (!ruleDraft.label.trim()) {
+														setRuleError("请填写规则名称");
+														return;
+													}
+													if (ruleDraft.match === "regex") {
+														try {
+															new RegExp(ruleDraft.value);
+														} catch (err) {
+															setRuleError(`正则表达式非法：${(err as Error).message}`);
+															return;
+														}
+													}
+													appSend({ type: "save_approval_rule", rule: ruleDraft });
+													setRuleDraft(null);
+													setRuleError(null);
+												}}
+											>
+												{t("save")}
+											</button>
+										</div>
+									</div>
+								)}
+
+								{/* ---- 规则列表 ---------- */}
+								{(settings.approvalRules ?? []).length === 0 ? (
+									<p className="set-hint">{t("approvalRuleEmpty")}</p>
+								) : (
+									<div className="set-list set-list-flat">
+										{(settings.approvalRules ?? []).map((rule, idx) => {
+											const isBuiltin = rule.builtin === true;
+											return (
+												<div
+													className={`set-row${rule.enabled ? "" : " rule-row-disabled"}`}
+													key={rule.id}
+													style={{ alignItems: "flex-start", padding: "12px 0" }}
+												>
+													<div className="set-row-info">
+														<div
+															className="set-row-name"
+															style={{ display: "flex", alignItems: "center", flexWrap: "wrap", gap: 6 }}
+														>
+															<span className={`rule-badge ${rule.action}`}>
+																{rule.action === "deny"
+																	? t("approvalRuleActionDeny")
+																	: rule.action === "allow"
+																		? t("approvalRuleActionAllow")
+																		: t("approvalRuleActionAsk")}
+															</span>
+															<strong style={{ fontSize: 13 }}>
+																{locale === "zh" ? rule.label : rule.labelEn || rule.label}
+															</strong>
+															{isBuiltin && <span className="tpl-badge">{t("approvalRuleBuiltin")}</span>}
+															<span className="rule-meta-code">{rule.tools.join(", ")}</span>
+														</div>
+														<div
+															className="set-hint"
+															style={{ marginTop: 6, display: "flex", flexDirection: "column", gap: 3 }}
+														>
+															<div style={{ display: "flex", alignItems: "baseline", gap: 6, flexWrap: "wrap" }}>
+																<span style={{ opacity: 0.85, fontSize: 11, fontFamily: "var(--mono)" }}>
+																	[{rule.field} · {rule.match}]
+																</span>
+																{rule.match !== "outside_workspace" && (
+																	<code className="rule-pattern-code">{rule.value}</code>
+																)}
+															</div>
+															{(rule.reason || rule.reasonEn) && (
+																<div style={{ opacity: 0.75, fontSize: 11 }}>
+																	{locale === "zh" ? rule.reason : rule.reasonEn || rule.reason}
+																</div>
+															)}
+														</div>
+													</div>
+													<div className="set-row-actions" style={{ marginLeft: 12, flexShrink: 0 }}>
+														{/* 启用/停用开关 */}
+														<button
+															type="button"
+															className={`set-switch${rule.enabled ? " on" : ""}`}
+															role="switch"
+															aria-checked={rule.enabled}
+															title={rule.enabled ? t("settingsEnabled") : t("settingsDisabled")}
+															onClick={() =>
+																appSend({
+																	type: "save_approval_rule",
+																	rule: { ...rule, enabled: !rule.enabled },
+																})
+															}
+														>
+															<span className="set-switch-knob" />
+														</button>
+														{/* 排序上移下移（自定义规则） */}
+														{!isBuiltin && idx > 0 && (
+															<button
+																type="button"
+																className="set-icon-btn"
+																title={t("approvalRuleMoveUp")}
+																onClick={() => {
+																	const list = [...(settings.approvalRules ?? [])];
+																	const temp = list[idx - 1];
+																	list[idx - 1] = list[idx];
+																	list[idx] = temp;
+																	appSend({ type: "save_approval_rules", rules: list });
+																}}
+															>
+																<FiChevronUp />
+															</button>
+														)}
+														{!isBuiltin && idx < (settings.approvalRules?.length ?? 0) - 1 && (
+															<button
+																type="button"
+																className="set-icon-btn"
+																title={t("approvalRuleMoveDown")}
+																onClick={() => {
+																	const list = [...(settings.approvalRules ?? [])];
+																	const temp = list[idx + 1];
+																	list[idx + 1] = list[idx];
+																	list[idx] = temp;
+																	appSend({ type: "save_approval_rules", rules: list });
+																}}
+															>
+																<FiChevronDown />
+															</button>
+														)}
+														{isBuiltin &&
+															(confirmRuleReset === rule.id ? (
+																<button
+																	type="button"
+																	className="set-uninstall confirm"
+																	onClick={() => {
+																		appSend({ type: "reset_builtin_approval_rule", id: rule.id });
+																		setConfirmRuleReset(null);
+																	}}
+																>
+																	{t("uninstallConfirm")}
+																</button>
+															) : (
+																<button
+																	type="button"
+																	className="set-icon-btn"
+																	title={t("approvalRuleReset")}
+																	onClick={() => setConfirmRuleReset(rule.id)}
+																>
+																	<FiRefreshCw />
+																</button>
+															))}
+														<button
+															type="button"
+															className="set-icon-btn"
+															title={t("approvalRuleEdit")}
+															onClick={() => {
+																setRuleDraft({ ...rule });
+																setRuleToolsText(rule.tools.join(", "));
+																setRuleIsNew(false);
+																setRuleError(null);
+															}}
+														>
+															<FiEdit3 />
+														</button>
+														{!isBuiltin &&
+															(confirmRuleDelete === rule.id ? (
+																<button
+																	type="button"
+																	className="set-uninstall confirm"
+																	onClick={() => {
+																		appSend({ type: "delete_approval_rule", id: rule.id });
+																		setConfirmRuleDelete(null);
+																	}}
+																>
+																	{t("uninstallConfirm")}
+																</button>
+															) : (
+																<button
+																	type="button"
+																	className="set-icon-btn danger"
+																	title={t("approvalRuleDelete")}
+																	onClick={() => setConfirmRuleDelete(rule.id)}
+																>
+																	<FiTrash2 />
+																</button>
+															))}
+													</div>
+												</div>
+											);
+										})}
 									</div>
 								)}
 							</div>

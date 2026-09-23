@@ -12,7 +12,11 @@
  *   在文件里找一段连续行，其核心序列与 oldText 完全一致（仅唯一匹配才写）。
  * - 命中后按「整行替换」写入 newText **原样**（AI 给的缩进就是最终缩进），
  *   只做必要的行尾换行平衡。
- * - 若不支持片段（oldText 不是完整行）会在严格匹配阶段返回错误提示。
+ * - 若不支持片段（oldText 不是完整行）会返回错误提示：
+ *     • 多行 oldText 跨行但首/尾未对齐行边界 → 直接拒绝（否则会吃掉行首/行尾残留、
+ *       写出粘连内容）；
+ *     • 宽松阶段整块对不上、且首/尾行只是某行的一部分 → 报「片段」错而非笼统的「找不到」；
+ *     • 单行片段（如 `b();`）不改变行结构，仍照旧支持。
  *
  * 开关：设置面板「编辑」页 `editSoftEnabled`（默认关）。关闭时该工具从活跃集移除。
  */
@@ -175,6 +179,47 @@ export function oldTextCores(oldTextLF: string): string[] {
 	return parts.map((p) => p.trim());
 }
 
+/**
+ * 判断 oldText 的首行/末行是否只是「片段」（某文件行的一部分）。
+ * 宽松匹配要求每行都是完整行；当整块对不上时，若首/末行的核心确实出现在文件的
+ * **行中部**（既不在行首也不在行尾），则极可能是模型漏抄了行首/行尾。
+ *
+ * 仅在「整块核心序列一次都没命中」后才调用，因此只作诊断，不影响正常匹配。
+ */
+export function fragmentLineEnds(cores: string[], units: LineUnit[]): number[] {
+	const isMidLineFragment = (core: string): boolean => {
+		if (core === "") return false;
+		// 先看有没有任意一行与它整行相同：有 → 不是片段（只是缩进/上下文不对）。
+		if (units.some((u) => u.core === core)) return false;
+		// 再看它是否出现在某行的中部（前后都还有内容）→ 是片段。
+		return units.some((u) => {
+			const idx = u.raw.indexOf(core);
+			return idx > 0 && idx + core.length < u.raw.length;
+		});
+	};
+	const ends: number[] = [];
+	if (cores.length > 0 && isMidLineFragment(cores[0])) ends.push(0);
+	if (cores.length > 1 && isMidLineFragment(cores[cores.length - 1])) ends.push(1);
+	return ends;
+}
+
+/**
+ * 判断一段**精确命中**是否为「跨行但未对齐整行」的非法片段。
+ *
+ * 只包含单行的 oldText（如 `const x = 1;  `）是安全的：替换不会改动行结构。
+ * 但若 oldText 跨越了换行、且首/尾没落在行边界（既不在行首/行尾，也没包含整行），
+ * 直接子串替换会吃掉行首/行尾的残留，写出粘连内容——例如在
+ * `foo(a);\nfoo(b);` 上把 `a);\nfoo(` 换成 `z();` 会得到 `foo(z();b);`。
+ * 这几乎总是模型漏抄行首/行尾所致，因此报错而不静默写坏。
+ */
+export function isMisalignedMultilineFragment(content: string, start: number, oldTextLF: string): boolean {
+	if (!oldTextLF.includes("\n")) return false; // 单行片段：不影响行结构，允许
+	const end = start + oldTextLF.length;
+	const startsAtLineStart = start === 0 || content[start - 1] === "\n";
+	const endsAtLineBoundary = end === content.length || content[end] === "\n" || content[end - 1] === "\n";
+	return !(startsAtLineStart && endsAtLineBoundary);
+}
+
 interface Replacement {
 	start: number;
 	end: number;
@@ -214,7 +259,12 @@ function locateReplacement(
 
 	// 1) 精确子串匹配（等价普通 edit，支持片段）
 	const exactIdx = normalizedContent.indexOf(oldTextLF);
-	if (exactIdx !== -1) {
+	// 非法片段防御：多行 oldText 若未对齐整行边界，精确子串替换会吃掉行首/行尾
+	// 残留、写出粘连内容（如 `foo(a);\nfoo(b);` 把 `a);\nfoo(` 换成 `z();` →
+	// `foo(z();b);`）。这种命中一律不走精确路径，改为交给下面的「整行宽松匹配」；
+	// 只有当整行也匹配不上时才报错拒绝（避免误伤「首行省略缩进」等合法情况）。
+	const exactMisaligned = exactIdx !== -1 && isMisalignedMultilineFragment(normalizedContent, exactIdx, oldTextLF);
+	if (exactIdx !== -1 && !exactMisaligned) {
 		// 唯一性：精确匹配出现多次 → 报错（模型应提供更多上下文）
 		const occurrences = normalizedContent.split(oldTextLF).length - 1;
 		if (occurrences > 1) {
@@ -258,6 +308,22 @@ function locateReplacement(
 		if (ok) starts.push(i);
 	}
 	if (starts.length === 0) {
+		// 非法片段诊断：宽松匹配要求 oldText 的每一行都是**完整行**。若首/尾行只是
+		// 某文件行的一部分（模型漏抄了行首/行尾，例如只给了 `a);` 而非 `foo(a);`），
+		// 逐行核心永远对不上；这里给出针对性提示，而不是笼统的「找不到」。
+		// exactMisaligned 说明精确子串能命中、但跨行且未对齐整行（会写出粘连内容），
+		// 而整行匹配又对不上 —— 这种命中绝对不能走精确路径。
+		if (exactMisaligned || fragmentLineEnds(cores, units).length > 0) {
+			throw new SoftEditMatchError(
+				pick(
+					lang,
+					`在 ${path} 中找不到该文本：edits[${editIndex}].oldText 跨越多行但首/尾没有落在行边界上（首行或末行只是文件中某行的一部分），而本工具按**整行**匹配。请让 oldText 的每一行都是完整行——行首缩进可以省略，但行内容必须完整。`,
+					`Could not find the text in ${path}: edits[${editIndex}].oldText spans multiple lines but its start/end do not fall on line boundaries (its first or last line is only part of a file line), and this tool matches whole lines. Make every line of oldText a complete line — leading indentation may be omitted, but the line content must be complete.`,
+					"editsoft.fragment.not.supported",
+					{ path, editIndex },
+				),
+			);
+		}
 		throw new SoftEditMatchError(
 			pick(
 				lang,
@@ -318,10 +384,14 @@ export function applySoftEdits(
 			);
 		}
 	}
-	// 逆序应用，保持左侧偏移稳定
+	// 逆序应用，保持左侧偏移稳定。
+	// 关键：必须按**位置升序**（前面的 `sorted`）再逆序应用，不能按 edits 的传入
+	// 顺序逆序——模型若把靠后的 edit 写在前面，未排序的逆序应用会让后面的替换先
+	// 改变长度，前面的偏移随即串位，写出错乱内容（历史 bug：protocol.ts /
+	// use-chat.ts / ChatInput.tsx 被写坏）。内置 edit 同样先按 matchIndex 排序，此为对齐语义。
 	let result = normalizedContent;
-	for (let i = replacements.length - 1; i >= 0; i--) {
-		const r = replacements[i];
+	for (let i = sorted.length - 1; i >= 0; i--) {
+		const r = sorted[i];
 		result = result.slice(0, r.start) + r.insertText + result.slice(r.end);
 	}
 	if (result === normalizedContent) {

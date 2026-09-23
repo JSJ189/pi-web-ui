@@ -35,15 +35,15 @@
 
 `web/src/app-globals.ts` 是模块级单例 store，放「**整棵树都要知道**」的少量运行态：服务端身份/能力（整个连接内只变一次）+ 连接态与当前工作目录（低频变化，靠单字段订阅隔离）：
 
-| 字段 | 来源 | 谁在用 |
-| --- | --- | --- |
-| `engine`（`"pi"` / `"dsh"`） | `ready.engine`（老服务端不传 → 回落 `"pi"`） | FooterBar 引擎图标、GoalBar/SettingsModal/ChatInput 的 DSH gating（无审查模型 / 无插件市场 / 无 mid-run steering） |
-| `managed`（`PI_WEB_MANAGED=1`） | `ready.managed` | TopBar 更新入口、PiSetupModal 安装引导、SettingsModal 插件市场 |
-| `tabs`（`PI_WEB_TABS`） | `ready.tabs` | 顶栏视图 tab 白名单（undefined = 全部） |
-| `service`（被哪个平台服务托管） | `ready.service`（`server/launch-origin.ts` 探测） | TopBar 更新面板的「重启服务」按钮（缺省 = 前台/dev/Docker → 不画按钮，服务端也拒绝 `restart_service`） |
-| `appVersion` / `serverVersion` | `ready` | TopBar 版本号 |
-| `status` / `ready` | useChat 的 reducer（`status` 动作 / hello+快照） | 左栏（能不能拉清单）、ChatInput（输入框能不能用）、TopBar / FooterBar 的连接点 |
-| `cwd`（当前对话的工作目录） | `chat.state?.cwd` | 左栏分组与「当前」标记、右栏路径拼接、全局搜索的当前项目标记、底栏目录选择器 |
+| 字段                            | 来源                                              | 谁在用                                                                                                             |
+| ------------------------------- | ------------------------------------------------- | ------------------------------------------------------------------------------------------------------------------ |
+| `engine`（`"pi"` / `"dsh"`）    | `ready.engine`（老服务端不传 → 回落 `"pi"`）      | FooterBar 引擎图标、GoalBar/SettingsModal/ChatInput 的 DSH gating（无审查模型 / 无插件市场 / 无 mid-run steering） |
+| `managed`（`PI_WEB_MANAGED=1`） | `ready.managed`                                   | TopBar 更新入口、PiSetupModal 安装引导、SettingsModal 插件市场                                                     |
+| `tabs`（`PI_WEB_TABS`）         | `ready.tabs`                                      | 顶栏视图 tab 白名单（undefined = 全部）                                                                            |
+| `service`（被哪个平台服务托管） | `ready.service`（`server/launch-origin.ts` 探测） | TopBar 更新面板的「重启服务」按钮（缺省 = 前台/dev/Docker → 不画按钮，服务端也拒绝 `restart_service`）             |
+| `appVersion` / `serverVersion`  | `ready`                                           | TopBar 版本号                                                                                                      |
+| `status` / `ready`              | useChat 的 reducer（`status` 动作 / hello+快照）  | 左栏（能不能拉清单）、ChatInput（输入框能不能用）、TopBar / FooterBar 的连接点                                     |
+| `cwd`（当前对话的工作目录）     | `chat.state?.cwd`                                 | 左栏分组与「当前」标记、右栏路径拼接、全局搜索的当前项目标记、底栏目录选择器                                       |
 
 写入点两处，都是单一来源、只镜像不复制：`use-chat.ts` 收到 `ready` 时写身份/能力（**在 dispatch 之前**同步落地，不闪一帧 `pi`）；另一个 effect 把 `ready` / `status` / `cwd` 镜像过来（值就是 reducer 里的真值，最多晚一帧 —— 对应默认值只会是「未就绪 / 未连接 / 空目录」，看不出来）。非 React 代码用 `getAppGlobals()` / `subscribeAppGlobals()`。
 
@@ -130,6 +130,38 @@
 
 **豁免 `ask_user_question`**：问卷阻塞等的是「人类回答」，不是挂死的工具——arm 前按工具名跳过（`tool_execution_start` 里 `event.toolName !== ASK_USER_QUESTION_TOOL_NAME`）。它的收场自有路子：用户回答/取消、会话 dispose（`cancelPendingQuestions`），**不限时**（标准 pi 引擎；DSH 引擎无此看门狗，提问走 `PI_WEB_DSH_QUESTION_TIMEOUT_MS` 自己的 10 分钟）。同理，问卷挂着也不算「失联」——stall 检查（`startStallTimer`，默认 180s 无 SDK 事件告警）对 `isWaitingOnUser(conv.id)` 的对话跳过。回归：`tests/question-bridge-test.mjs`（`PI_WEB_TOOL_TIMEOUT_MS=2000` 挂着不答超过阈值仍不终止）。
 
+### 审批三档放行与自定义规则库
+
+人机协同审批（`tool_approval_pending`）原先只有「批准 / 拒绝 / 修改并放行」三个单次选项，同一类高危操作反复出现时每次都要点。现在的审批系统分为**规则评估引擎**与**放行策略**两个层次：
+
+#### 1. 自定义规则库与匹配引擎（`<dataDir>/approval-rules.json`）
+规则由 `server/approval-rules.ts` 的 `ApprovalRulesStore` 持久化，所有客户端全局共享。规则在设置面板「审批规则」页可视化编辑与排序，按列表顺序自顶向下匹配，首个命中生效：
+- **适用工具**（tools）：支持单工具（如 `bash`）、多工具组合（如 `["write", "edit", "edit_soft"]`）或通配 `*`；
+- **检查字段**（field）：`command`（命令字符串）、`path`（目标文件路径）、`params`（完整参数 JSON 字符串）；
+- **匹配模式**（match）：
+  - `regex`：大小写不敏感正则表达式匹配；
+  - `glob`：路径通配符（支持 `*` 单段、`**` 跨目录跨段，统一归一化正反斜杠）；
+  - `contains`：包含子串匹配；
+  - `prefix`：前缀开头匹配；
+  - `outside_workspace`：工作区外写入越界检测（基于当前工作区 cwd 与额外 roots 物理路径判定）；
+- **命中动作**（action）：
+  - `ask`：触发人机协同审批（弹窗让用户决定，支持就地编辑参数与允许同类）；
+  - `deny`：直接拒绝阻断执行并向模型回传错误（不弹窗、不产生待审批 pending）；
+  - `allow`：免审直接放行（白名单，跳过后续规则与内置检测，直接执行工具）。
+- **内置规则转化**：原硬编码的 10 项内置高危检测（`rm -rf`、Windows `del /s /q`、磁盘格式化、破坏性 Git、危险 `chmod`、系统目录重定向、敏感配置 `.env`/SSH/Shell 以及越界写入）全部转换为默认内置规则（`builtin: true`），用户可自由停用、调整动作或一键恢复默认。
+
+#### 2. 三档放行策略（运行时快速免问）
+门禁统一在 `ClientSession.askApproval` 入口（纯函数 `approvalSuppressionReason(policy, enabled, categoryId)`，`server/tool-approval.ts`，单测 `tests/unit/tool-approval.test.ts`）：
+1. **全局关**：设置 →「工具」页的「工具执行审批」总开关（`ClientSettings.toolApprovalEnabled`，默认开，纯运行开关不进预设）。关掉后一切审批都不弹——内置高危检测直接放行、插件 pre guard 的 `ask` 也按放行处理（`withToolGuard` 的 `ask` 分支只改 `needApproval`，最终都经 `askApproval` 定夺）；开关被关掉的那一刻，挂着的待审批项由 `autoApprovePendingApprovals` 全部按批准放行（不让人对着弹窗干等）。
+2. **本对话全部允许**（弹窗按钮，`tool_approval_response.scope = "all"`）：该对话后续任何高危操作都不再询问。
+3. **本对话允许同类**（弹窗按钮，`scope = "category"`，仅在本次命中规则档位时出现）：只放行同一档位。档位 = `UiApprovalCategory{ id, label, labelEn }`，id 稳定不许改名：`bash.rm-rf` / `bash.win-del` / `bash.disk` / `bash.git-destructive` / `bash.chmod` / `bash.system-redirect` / `file.sensitive.env` / `file.sensitive.ssh` / `file.sensitive.shell` / `file.outside-workspace` / `plugin:<pluginId>`（插件 pre guard 的 `ask` 按插件分档）。无档位的拦截（自定义 reason）只受前两档影响。
+
+**策略挂在哪**：`Conversation.approvalPolicy = { allowAll, categories: Map<id, UiApprovalCategory> }`，**仅内存**（不落 client-state），且挂在对话对象上而不是 ClientSession——手动过户搬的就是对话本体，策略跟着走；重启服务 / 新对话即恢复询问。记住后同对话内**已被新策略覆盖的其它待审批项一并放行**（`approveCoveredPending`），并给一句回执 notice。
+
+**撤销**：设置 →「工具」页列出当前对话已记住的放行（`UiSettingsState.approvalPolicy`，服务端 `approvalPolicyState()` 现取），逐条「撤销」走客户端 `set_approval_policy`（`allowAll` 赋值 + `categories` 作保留名单整体替换；纯内存态，不走 `set_settings`）。弹窗本身在策略生效后就不再出现，所以撤销入口必须留在设置里。
+
+回归：`tests/approval-policy-test.mjs`（协议面：开关持久化 / 策略推回面板 / 垃圾消息 no-op）、`tests/approval-rules-test.mjs`（自定义规则协议面）、`tests/unit/approval-rules.test.ts`（匹配引擎单测）、`tests/unit/tool-approval.test.ts`（档位与三档判定）。
+
 ### 待答问卷进快照（重连恢复对话框）
 
 `question_pending` 是即时通道：只推给「提问那一刻在线」的连接，刷新页面 / WS 重连 / 新标签页都收不到那条历史消息，而服务端还在阻塞等人回答——面板会凭空消失（`DshQuestionDialog` 没有别的入口）。因此待答问卷同时挂在快照上（`UiState.pendingQuestion`，标准引擎按对话过滤：`pendingQuestionForSnapshot()` 只带当前对话的那张，切回原对话会重推快照；DSH 的提问桥是 runtime 级的，不分对话）。前端 `use-chat.ts` 收到 `snapshot` / `snapshot_delta` 时用纯函数 `web/src/pending-question.ts` 的 `resolvePendingQuestion` 决定面板去留：快照有待答问卷就恢复（已答过的 id 跳过——回答消息与在途快照会交错），但只有「由快照恢复出来的」面板才接受快照收起（避免一张回答之前的旧快照把刚由即时通道弹出的面板闪掉）。单测 `tests/unit/pending-question.test.ts`。
@@ -151,6 +183,10 @@ bash 工具卡片运行中显示「停止」→ 发 `{ type: "abort_bash" }` →
 ### 独立宽松编辑工具 edit_soft（不覆盖内置 edit）
 
 内置 `edit` 要求 oldText 与文件恰好匹配（含缩进/空白）。对缩进非语法意义的语言（如 JS/JSON），模型给出的 oldText 常与文件差几个空格/制表符而导致编辑失败。pi-web-ui 经 `customTools` 注入一个**不覆盖**内置 `edit` 的独立工具 `edit_soft`（`server/edit-soft-tool.ts`）：先用精确子串匹配，失败后按「逐行核心（trim）序列一致」做宽松匹配（忽略行首/行尾空白差异），命中后**整行原样写入 newText**（缩进即最终缩进）。仅唯一匹配才写，重叠 edit 报错，并参与同一个 per-file 变异队列（`withFileMutationQueue`）。
+
+**多 edit 必须按位置排序再逆序应用**（`applySoftEdits`）：所有 edit 都相对同一份原内容定位，得到各自的 `start/end` 后要**先按位置升序排**、再逆序套用，左侧偏移才稳定。早期实现漏了排序，直接按 edits 的传入顺序逆序应用 —— 模型若把靠后的 edit 写在前面，后面的替换先改变长度，前面的偏移随即串位，写出错乱内容（历史 bug：`protocol.ts` / `use-chat.ts` / `ChatInput.tsx` 被写坏）。内置 `edit` 同样是先按 `matchIndex` 排序（`edit-diff.js`），此处对齐。回归测试覆盖全部 6 种排列。
+
+**非法片段防御**：宽松匹配要求 oldText 每行都是完整行。（a）精确命中若跨多行却首/尾未落在行边界（如 `a);\nfoo(`），直接子串替换会吃掉行首/行尾残留写出粘连内容（`foo(z();b);`）→ 拒绝并提示按整行给；（b）宽松阶段整块对不上、且首/尾行只是某行的一部分时，报「片段」错而非笼统的「找不到」；（c）单行片段（如 `b();`）不改行结构，照旧支持。
 
 开关走统一工具管理（`server/tool-manager.ts` 的 `disabledAgentTools`，默认关）：关闭时该工具从活跃集移除（`applyAgentToolsGating` 经 `setActiveToolsByName`，与终端/子代理工具同一机制，live 生效无需 reload），不会出现在 Available tools 段。DSH 引擎无该工具，设置面板无「工具」分区。
 

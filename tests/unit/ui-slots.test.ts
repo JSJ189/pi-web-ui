@@ -12,6 +12,8 @@
 import { describe, expect, it } from "vitest";
 import {
 	BUILTIN_UI_ITEMS,
+	UI_SLOT_SPECS,
+	applyUiSlotCardinality,
 	PLUGIN_VIEW_ITEM_ID,
 	buildUiSlots,
 	isPluginViewItem,
@@ -49,6 +51,50 @@ function build(plugins: UiPluginInfo[], opts?: Partial<Parameters<typeof buildUi
 }
 
 const ids = (entries: { id: string }[]) => entries.map((e) => e.id);
+
+describe("UI slot cardinality（P1-4）", () => {
+	it("所有现有挂载点都有显式 list 规格，新增 single 不会改变现有入口语义", () => {
+		expect(UI_SLOT_SPECS).toHaveLength(22);
+		expect(UI_SLOT_SPECS.every((spec) => spec.cardinality === "list")).toBe(true);
+		expect(new Set(UI_SLOT_SPECS.map((spec) => spec.slot)).size).toBe(UI_SLOT_SPECS.length);
+	});
+
+	it("list 保留条目，返回新数组且不修改输入", () => {
+		const input = [
+			{ id: "a", hidden: false },
+			{ id: "b", hidden: true },
+		];
+		const result = applyUiSlotCardinality(input, "list");
+		expect(result.entries).toEqual(input);
+		expect(result.entries).not.toBe(input);
+		expect(result.conflicts).toEqual([]);
+	});
+
+	it("single 选择排序后的第一个可见条目，保留隐藏候选并置隐藏其它可见条目", () => {
+		const input = [
+			{ id: "winner", hidden: false },
+			{ id: "hidden", hidden: true },
+			{ id: "loser", hidden: false },
+		];
+		const result = applyUiSlotCardinality(input, "single");
+		expect(result.winner?.id).toBe("winner");
+		expect(result.conflicts.map((entry) => entry.id)).toEqual(["loser"]);
+		expect(result.entries).toEqual([
+			{ id: "winner", hidden: false },
+			{ id: "hidden", hidden: true },
+			{ id: "loser", hidden: true },
+		]);
+		expect(input[2]?.hidden).toBe(false);
+	});
+
+	it("single 没有可见候选时不选举、不产生冲突", () => {
+		const input = [
+			{ id: "a", hidden: true },
+			{ id: "b", hidden: true },
+		];
+		expect(applyUiSlotCardinality(input, "single")).toEqual({ entries: input, conflicts: [] });
+	});
+});
 
 describe("BUILTIN_UI_ITEMS（宿主默认）", () => {
 	it("id 全局唯一、都以 host: 开头", () => {
@@ -815,7 +861,6 @@ describe("面板 chrome 宿主条目（file.preview / goalbar / scm / terminal /
 			"host:fp-edit",
 			"host:fp-wrap",
 			"host:fp-zoom",
-			"host:fp-inline",
 			"host:fp-ref",
 			"host:fp-full",
 			"host:fp-close",

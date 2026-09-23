@@ -24,6 +24,8 @@
 import type {
 	UiAlign,
 	UiArrangeOp,
+	UiSlotCardinality,
+	UiSlotSpec,
 	UiContribution,
 	UiItemKind,
 	UiLayoutPrefs,
@@ -140,6 +142,39 @@ const SLOT_IDS: UiSlotId[] = [
 	"settings.pages",
 	"modal.dialog",
 ];
+
+/**
+ * 每个挂载点的组合语义。当前已有挂载点都是并列入口，因此全部是 list；
+ * 未来新增独占位置只需在这里声明 single，合并与诊断逻辑无需改动。
+ */
+export const UI_SLOT_SPECS: readonly UiSlotSpec[] = SLOT_IDS.map((slot) => ({
+	slot,
+	cardinality: "list" as const,
+}));
+
+/** 读取宿主定义的挂载点语义；未知值不应进入结果，但仍安全回落为 list。 */
+export function uiSlotCardinality(slot: UiSlotId): UiSlotCardinality {
+	return UI_SLOT_SPECS.find((spec) => spec.slot === slot)?.cardinality ?? "list";
+}
+
+/**
+ * 应用挂载点的 cardinality。list 保留所有条目；single 保留隐藏候选，
+ * 但只让排序后的第一个可见条目可见，其余可见条目被置为 hidden。
+ * 这是纯函数，供合并器和单测共同使用。
+ */
+export function applyUiSlotCardinality<T extends { id: string; hidden: boolean }>(
+	entries: readonly T[],
+	cardinality: UiSlotCardinality,
+): { entries: T[]; winner?: T; conflicts: T[] } {
+	if (cardinality === "list") return { entries: [...entries], conflicts: [] };
+	const winnerIndex = entries.findIndex((entry) => !entry.hidden);
+	if (winnerIndex < 0) return { entries: [...entries], conflicts: [] };
+	const conflicts = entries.filter((entry, index) => index !== winnerIndex && !entry.hidden);
+	const resolved = entries.map((entry, index) =>
+		index === winnerIndex || entry.hidden ? entry : { ...entry, hidden: true },
+	);
+	return { entries: resolved, winner: entries[winnerIndex], conflicts };
+}
 
 /**
  * 宿主内置条目 —— **逐项对应代码里真实存在的入口**（不臆造）：
@@ -510,6 +545,22 @@ export const BUILTIN_UI_ITEMS: BuiltinUiItem[] = [
 		kind: "action",
 		order: 10,
 	},
+	{
+		id: "host:msg-fork",
+		slot: "message.actions",
+		labelKey: "forkSession",
+		icon: "branch",
+		kind: "action",
+		order: 15,
+	},
+	{
+		id: "host:msg-rollback",
+		slot: "message.actions",
+		labelKey: "rollbackSession",
+		icon: "undo",
+		kind: "action",
+		order: 16,
+	},
 	{ id: "host:msg-copy", slot: "message.actions", labelKey: "copyMessage", icon: "copy", kind: "action", order: 20 },
 	// 整条消息一键复制三件套（issue #228）：纯文本 / Markdown 原文 / 长图 PNG。
 	// 落点在消息 hover 工具条（Message.tsx 内置处理），与按块复制的 host:msg-copy 并存。
@@ -620,14 +671,6 @@ export const BUILTIN_UI_ITEMS: BuiltinUiItem[] = [
 	{ id: "host:fp-edit", slot: "file.preview.toolbar", labelKey: "editFile", icon: "edit", kind: "action", order: 30 },
 	{ id: "host:fp-wrap", slot: "file.preview.toolbar", labelKey: "enableWrap", icon: "wrap", kind: "action", order: 40 },
 	{ id: "host:fp-zoom", slot: "file.preview.toolbar", labelKey: "zoomIn", icon: "zoom", kind: "action", order: 50 },
-	{
-		id: "host:fp-inline",
-		slot: "file.preview.toolbar",
-		labelKey: "attachInlineTip",
-		icon: "plus",
-		kind: "action",
-		order: 60,
-	},
 	{
 		id: "host:fp-ref",
 		slot: "file.preview.toolbar",
@@ -1021,16 +1064,6 @@ export const BUILTIN_UI_ITEMS: BuiltinUiItem[] = [
 		context: "file",
 		order: 24,
 		group: "new",
-	},
-	{
-		id: "host:file-attach-inline",
-		slot: "contextmenu.file",
-		labelKey: "attachInlineTip",
-		icon: "plus",
-		kind: "action",
-		context: "file",
-		order: 31,
-		group: "chat",
 	},
 	{
 		id: "host:file-attach-ref",
@@ -1768,7 +1801,19 @@ export function buildUiSlots(
 	for (const id of SLOT_IDS) {
 		const sorted = sortEntries(buckets.get(id) ?? [], rank);
 		const placed = id === "topbar.primary" ? placeTopbarPluginViews(sorted) : sorted;
-		out[id] = placed.map((entry) => toSlotEntry(entry, overrides.get(entry.id) ?? []));
+		const resolved = applyUiSlotCardinality(placed, uiSlotCardinality(id));
+		if (resolved.winner && resolved.conflicts.length > 0) {
+			for (const conflict of resolved.conflicts) {
+				diag({
+					level: "error",
+					pluginId: conflict.source.startsWith("plugin:") ? conflict.source.slice("plugin:".length) : undefined,
+					entryId: conflict.id,
+					slot: id,
+					message: `slot "${id}" is single-cardinality; "${resolved.winner.id}" won and "${conflict.id}" was hidden`,
+				});
+			}
+		}
+		out[id] = resolved.entries.map((entry) => toSlotEntry(entry, overrides.get(entry.id) ?? []));
 	}
 	return out;
 }

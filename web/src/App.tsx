@@ -39,8 +39,9 @@ import { ContextMenu } from "./components/ContextMenu";
 import { BannerContainer } from "./components/BannerContainer";
 import { showBanner, dismissBanner, dismissBannersWhere } from "./banner-notice";
 import { ensurePluginViewLoaded } from "./plugin-loader";
-import { registerAttachmentSink } from "./composer-bridge";
+import { registerAttachmentSink, insertTextAtCursor, removeMentionFromComposer } from "./composer-bridge";
 import { appendDraftAttachments } from "./composer-draft";
+import { useComposerSessionReset } from "./use-composer-session";
 import {
 	syncPluginViews,
 	subscribeLoadedPluginViews,
@@ -48,11 +49,16 @@ import {
 	type LoadedPluginView,
 } from "./plugin-loader";
 import { setFenceSend, syncFenceRenderers, syncMessageWidgets } from "./plugin-fence";
+import { findFileHandler, syncFileHandlers, type FileHandlerPlugin } from "./plugin-file-handlers";
 import { PiSetupModal } from "./components/PiSetupModal";
 import { ModelConfigModal } from "./components/ModelConfigModal";
 
 import { SettingsModal } from "./components/SettingsModal";
 import { BgTasksModal } from "./components/BgTasksModal";
+import { RollbackDialog } from "./components/RollbackDialog";
+import { openRollbackDialog } from "./rollback-state";
+import { ToolApprovalDialog } from "./components/ToolApprovalDialog";
+import { PlanBoard } from "./components/PlanBoard";
 // 工具定义说明弹窗（工具卡右键 → 「显示工具详细信息」）：状态在 tool-info-state.ts 的模块级 store 里，
 // 这里只挂一份渲染（触发点在消息流里的每张工具卡）。
 import { ToolInfoDialog } from "./components/ToolInfoDialog";
@@ -60,6 +66,7 @@ import { GlobalSearchModal } from "./components/GlobalSearchModal";
 import { PluginModal } from "./components/PluginModal";
 import { TemplateProvider } from "./components/PromptTemplates";
 import { FilePreview, type PreviewFile } from "./components/FilePreview";
+import { PluginFilePreview } from "./components/PluginFilePreview";
 import { useChat } from "./use-chat";
 import { appUrl } from "./base-url";
 import type { ClientMessage, CommandDef, PromptAttachment, UiMessage } from "./types";
@@ -84,8 +91,11 @@ export interface PendingAttachment {
 	/** "page" = 已授权给 AI 的网页（page-picker 扩展）：path 是页面 origin，
 	 *  name 是页面标题，不会被当工作区路径处理。
 	 *  "conversation" = 引用的另一个对话：path 不用，引用走 conversationId
-	 *  （运行中，含子代理）或 sessionPath（历史转录），AI 经 conversation_read 读取。 */
-	mode: "inline" | "reference" | "lines" | "page" | "conversation";
+	 *  （运行中，含子代理）或 sessionPath（历史转录），AI 经 conversation_read 读取。
+	 *  "reference"/"lines" = 工作区路径引用（文件内容不进 prompt）。
+	 *  "inline" = 旧版「全文注入」的遗留值（服务端按 reference 处理）；粘贴图片 /
+	 *  上传文件没有 mode（path 为空，模式对它们无意义）。 */
+	mode?: "inline" | "reference" | "lines" | "page" | "conversation";
 	/** mode "conversation" + 引用运行中对话的 id（如 "c3"）。 */
 	conversationId?: string;
 	/** mode "conversation" + 引用历史会话的转录文件 path。 */
@@ -267,20 +277,37 @@ export function App() {
 		return () => registerAttachmentSink(null);
 	}, []);
 	const [previewFile, setPreviewFile] = useState<PreviewFile | null>(null);
+	const [pluginFile, setPluginFile] = useState<{
+		file: PreviewFile;
+		plugin: FileHandlerPlugin;
+		declaration: import("./plugin-file-handlers").FileHandlerDeclaration;
+	} | null>(null);
 	// 文件预览桥（present_files 卡片 → 预览弹窗）：弹窗的开关状态在本组件，
 	// 而调用方在消息流最深处的工具卡片，中间隔好几层。同 composer-bridge 的做法，
 	// 只走一个模块级 sink；ref 给 isOpen 用，避免 effect 依赖 previewFile 而反复重注册。
 	const previewOpenRef = useRef(false);
+	const pluginFileOpenRef = useRef<typeof pluginFile>(null);
 	useEffect(() => {
 		previewOpenRef.current = previewFile !== null;
-	}, [previewFile]);
+		pluginFileOpenRef.current = pluginFile;
+	}, [previewFile, pluginFile]);
+	const openFile = useCallback((path: string, name: string) => {
+		const entry = findFileHandler(name);
+		if (entry) {
+			setPreviewFile(null);
+			setPluginFile({ file: { path, name }, plugin: entry.plugin, declaration: entry.declaration });
+			return;
+		}
+		setPluginFile(null);
+		setPreviewFile({ path, name });
+	}, []);
 	useEffect(() => {
 		registerFilePreviewHost({
-			open: (f) => setPreviewFile({ path: f.path, name: f.name }),
-			isOpen: () => previewOpenRef.current,
+			open: (f) => openFile(f.path, f.name),
+			isOpen: () => previewOpenRef.current || pluginFileOpenRef.current !== null,
 		});
 		return () => registerFilePreviewHost(null);
-	}, []);
+	}, [openFile]);
 	/** Full-window file drag in progress (issue #19) — shows the app-wide
 	 *  drop overlay; drop anywhere attaches, the input bar keeps priority via
 	 *  its own stopPropagation handlers. */
@@ -355,6 +382,18 @@ export function App() {
 	 *  kind="select" 的渲染层把选中的 value 经第二个参数传进来，转给插件 handler。 */
 	const onUiAction = useCallback(
 		(item: UiSlotEntry, value?: string, target?: { id: string; kind?: string; label?: string }) => {
+			if (item.id === "host:msg-fork") {
+				if (target?.id) {
+					send({ type: "fork_session", messageId: target.id, position: "before" });
+				}
+				return;
+			}
+			if (item.id === "host:msg-rollback") {
+				if (target?.id) {
+					openRollbackDialog({ messageId: target.id });
+				}
+				return;
+			}
 			const action = (item.action ?? "").trim();
 			// kind="view"（或缺省 action）：宿主自己切视图。
 			if (item.kind === "view" || ((!action || action === "view") && item.source !== "host")) {
@@ -414,6 +453,7 @@ export function App() {
 		setFenceSend(send);
 		syncFenceRenderers(enabledPlugins, chat.pluginsEpoch);
 		syncMessageWidgets(enabledPlugins, chat.pluginsEpoch);
+		syncFileHandlers(enabledPlugins, chat.pluginsEpoch);
 		void syncPluginViews(enabledPlugins, chat.pluginsEpoch);
 	}, [enabledPlugins, chat.pluginsEpoch, send]);
 	// 插件宿主动作桥（window.__piWebUiHost）：插件 client bundle 拿不到 React 实例，
@@ -928,6 +968,7 @@ export function App() {
 		mode: "inline" | "reference" | "lines" | "page",
 		isDir = false,
 		lines?: { start: number; end: number },
+		silent = false,
 	) => {
 		// Dedupe on path + mode + line range so the same file can be attached
 		// multiple ways (e.g. full content AND a line range) without doubling.
@@ -937,16 +978,30 @@ export function App() {
 				? prev
 				: [...prev, { path, name, mode, isDir, ...(lines ? { lines } : {}) }],
 		);
+		// 联动在输入框光标处插入 @提及（文件/目录/页签等所有带名引用统一行为）。
+		// silent（@ 选单 acceptAt）：正文已由 ChatInput 亲自插好，这里不再插；
+		// 重复点同一文件：ChatInput 的 insert sink 会判正文已有该 @提及而跳过。
+		if (!silent && name) {
+			insertTextAtCursor(`@${name} `);
+		}
 	};
-	const removeAttachment = (pathOrKey: string) =>
+	const removeAttachment = (pathOrKey: string) => {
+		let removedName = "";
 		setAttachments((prev) =>
 			prev.filter((a) => {
-				if (a.key) return a.key !== pathOrKey;
-				// 对话引用 chip 的 path 为空：按引用身份比对（与 ChatInput 的 key 口径一致）。
-				if (a.mode === "conversation") return `conv|${a.conversationId ?? ""}|${a.sessionPath ?? ""}` !== pathOrKey;
-				return a.path !== pathOrKey;
+				const isHit = a.key
+					? a.key === pathOrKey
+					: a.mode === "conversation"
+						? `conv|${a.conversationId ?? ""}|${a.sessionPath ?? ""}` === pathOrKey
+						: a.path === pathOrKey;
+				if (isHit && !removedName) removedName = a.name;
+				return !isHit;
 			}),
 		);
+		if (removedName) {
+			removeMentionFromComposer(`@${removedName}`);
+		}
+	};
 
 	// Side panels live in mobile drawers — any action inside them (session
 	// switch, cwd change, file list…) should close the drawer. Stable wrapper
@@ -1044,7 +1099,6 @@ export function App() {
 				path: "",
 				key,
 				name: img.name,
-				mode: "inline",
 				imageData: img.data,
 				mimeType: img.mimeType,
 			},
@@ -1090,7 +1144,6 @@ export function App() {
 				path: "",
 				key,
 				name: f.name,
-				mode: "inline",
 				fileData: base64,
 				size: f.size,
 				mimeType: f.type || undefined,
@@ -1147,6 +1200,13 @@ export function App() {
 	// would break their shallow prop comparison every render).
 	const openManageModels = useCallback(() => setManageModelsOpen(true), []);
 	const clearAttachments = useCallback(() => setAttachments([]), []);
+	// 待发附件跟会话走：会话身份一变（新建对话 / 切对话 / 过户 / 切项目）就清空，
+	// 与正文草稿同口径 —— 正文是按 sessionId 存的（切会话即清空再恢复该会话的草稿），
+	// 附件只在内存里；不清就会「正文已被新对话清掉、chips 还挂着旧对话的文件」，
+	// 且那排 chips 会随下一条消息一起发出去。
+	// 判定：composer-draft.ts 的 advanceComposerSession；接线：use-composer-session.ts
+	//（两者都有单测，空 sessionId 的瞬时态不清）。
+	useComposerSessionReset(chat.state?.sessionId ?? "", clearAttachments);
 	const removeAttachmentCb = useCallback(removeAttachment, []);
 	const addImageFilesCb = useCallback(addImageFiles, [addImageFiles]);
 	const addLocalFilesCb = useCallback(addLocalFiles, [addLocalFiles]);
@@ -1162,7 +1222,8 @@ export function App() {
 			mode?: "inline" | "reference" | "lines" | "page";
 			isDir?: boolean;
 			lines?: { start: number; end: number };
-		}) => attach(a.path, a.name, a.mode ?? "reference", a.isDir ?? false, a.lines),
+			silent?: boolean;
+		}) => attach(a.path, a.name, a.mode ?? "reference", a.isDir ?? false, a.lines, a.silent ?? false),
 		// eslint-disable-next-line react-hooks/exhaustive-deps -- attach 只用 setAttachments（稳定），跟随其余 Cb 同口径
 		[],
 	);
@@ -1799,6 +1860,8 @@ export function App() {
 									}
 								/>
 							)}
+							{/* 任务执行看板 (Plan Mode) */}
+							<PlanBoard plan={chat.state?.plan} />
 							<ChatInput
 								composerLeading={uiSlots["composer.leading"]}
 								composerActions={uiSlots["composer.actions"]}
@@ -1824,12 +1887,12 @@ export function App() {
 								quickPhrases={chat.settings?.quickPhrases ?? []}
 								quickPhrasesEnabled={chat.settings?.quickPhrasesEnabled ?? true}
 								recallDrafts={recallDrafts}
-								dshPermCurrent={chat.engine === "dsh" ? (chat.state?.permission ?? null) : undefined}
-								dshPermOptions={chat.engine === "dsh" ? (chat.dshPermission?.options ?? undefined) : undefined}
-								dshPermDefault={chat.engine === "dsh" ? chat.dshPermission?.defaultPreset : undefined}
-								dshPreset={chat.engine === "dsh" ? (chat.state?.agentPreset ?? null) : undefined}
-								dshPresets={chat.engine === "dsh" ? (chat.dshPresets?.presets ?? undefined) : undefined}
-								dshPresetDefault={chat.engine === "dsh" ? chat.dshPresets?.defaultPreset : undefined}
+								dshPermCurrent={chat.state?.permission ?? null}
+								dshPermOptions={chat.dshPermission?.options ?? undefined}
+								dshPermDefault={chat.dshPermission?.defaultPreset}
+								dshPreset={chat.state?.agentPreset ?? null}
+								dshPresets={chat.dshPresets?.presets ?? undefined}
+								dshPresetDefault={chat.dshPresets?.defaultPreset}
 								dshBlank={(chat.state?.messages?.length ?? 0) === 0}
 								conversationId={chat.activeConversationId || chat.state?.conversationId || ""}
 								sessionDraft={chat.engine === "pi" ? (chat.state?.draft ?? null) : null}
@@ -1855,7 +1918,7 @@ export function App() {
 								}}
 								onPreview={(path, name) => {
 									setDrawer(null);
-									setPreviewFile({ path, name });
+									openFile(path, name);
 								}}
 								onNotice={(level, text) => pushNotice(level, text)}
 								/* 宿主 UI 扩展点（issue #146）：右栏 tab 条（插件 tab）、文件右键菜单条目
@@ -1920,6 +1983,20 @@ export function App() {
 					onUiAction={onUiAction}
 				/>
 			)}
+			{pluginFile && (
+				<PluginFilePreview
+					file={pluginFile.file}
+					plugin={pluginFile.plugin}
+					declaration={pluginFile.declaration}
+					epoch={chat.pluginsEpoch}
+					send={send}
+					onClose={() => setPluginFile(null)}
+					onFallback={() => {
+						setPluginFile(null);
+						setPreviewFile(pluginFile.file);
+					}}
+				/>
+			)}
 			{chat.ready && chat.state && chat.state.piConfigured === false && !setupDismissed && !manageModelsOpen && (
 				<PiSetupModal
 					piConfigured={chat.state.piConfigured}
@@ -1939,11 +2016,13 @@ export function App() {
 					providerOAuthFlows={chat.providerOAuthFlows}
 					providerOAuthResults={chat.providerOAuthResults}
 					fetchModelsResult={chat.fetchModelsResult}
+					testModelConnectionResult={chat.testModelConnectionResult}
 					enrichModelsResult={chat.enrichModelsResult}
 					enrichModelsProgress={chat.enrichModelsProgress}
 					refreshBuiltinResult={chat.refreshBuiltinResult}
 					appendBuiltinResult={chat.appendBuiltinResult}
 					cloneProviderResult={chat.cloneProviderResult}
+					defaultModel={chat.defaultModel}
 					onClose={() => setManageModelsOpen(false)}
 				/>
 			)}
@@ -1959,6 +2038,10 @@ export function App() {
 			{bgTasksOpen && <BgTasksModal servers={chat.bgServers} onClose={() => setBgTasksOpen(false)} />}
 			{/* 工具定义说明弹窗（工具卡右键菜单 host:tool-info）：自己订阅 store，无 props。 */}
 			<ToolInfoDialog />
+			{/* 会话回滚确认弹窗（Dual-State Rollback） */}
+			<RollbackDialog />
+			{/* 人机协同拦截与「改写执行」审批弹窗 */}
+			<ToolApprovalDialog approval={chat.approval} />
 			{/* 插件弹窗（modal.dialog 槽位）：action 点即分发 + 关弹窗，view 挂插件视图。 */}
 			{openModalEntry && (
 				<PluginModal
@@ -1987,7 +2070,7 @@ export function App() {
 					void send({ type: "set_cwd", path });
 				}}
 				onPreviewFile={(path, name) => {
-					setPreviewFile({ path, name });
+					openFile(path, name);
 				}}
 			/>
 			<BannerContainer />

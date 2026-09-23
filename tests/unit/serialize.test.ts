@@ -143,3 +143,14 @@ describe("serializeMessage: toolResult 的图片", () => {
 		expect(texts.map((b) => (b as { text: string }).text).join("\n")).toBe("[image result]\n[image result]");
 	});
 });
+
+describe("serializeMessage: system 消息不进快照", () => {
+	it("system role 返回 null", () => {
+		const sys = {
+			role: "system",
+			content: "",
+			timestamp: 789,
+		} as unknown as Parameters<typeof serializeMessage>[0];
+		expect(serializeMessage(sys, 0)).toBeNull();
+	});
+});

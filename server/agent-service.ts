@@ -19,14 +19,16 @@ import { createHash, randomUUID } from "node:crypto";
 import { createRequire } from "node:module";
 import { appendFileSync, existsSync, readFileSync, rmSync, statSync, mkdirSync, watch, writeFileSync } from "node:fs";
 import { homedir } from "node:os";
-import { basename, delimiter, dirname, join, resolve, sep } from "node:path";
+import { basename, delimiter, dirname, isAbsolute, join, resolve, sep } from "node:path";
 import { fileURLToPath } from "node:url";
 import {
 	createAgentSessionFromServices,
 	createAgentSessionRuntime,
 	createAgentSessionServices,
 	createBashToolDefinition,
+	createEditToolDefinition,
 	createLocalBashOperations,
+	createWriteToolDefinition,
 	getAgentDir,
 	SessionManager,
 	VERSION,
@@ -72,6 +74,13 @@ import type {
 	PluginToolEvent,
 } from "./plugins.js";
 import { syncPluginToolsIntoSession } from "./plugins.js";
+import {
+	denialText,
+	type GuardedToolName,
+	type ToolPostEdit,
+	type ToolPostRequest,
+	type ToolPreRequest,
+} from "./plugin-tool-guard.js";
 import { SettingsService } from "./settings-service.js";
 import { GoalService } from "./goal-service.js";
 import { MarkerService } from "./marker-service.js";
@@ -91,7 +100,19 @@ import {
 } from "./client-state.js";
 import { bilingual, pick, resolveServerLang, type ServerLang } from "./i18n.js";
 import { SubagentTemplatesStore, pickTemplatePrompt, type SubagentTemplate } from "./subagent-templates.js";
+import { ApprovalRulesStore, type ApprovalRule } from "./approval-rules.js";
 import { ComposerDraftsStore } from "./composer-drafts.js";
+import { createWorkspaceSnapshot, restoreWorkspaceSnapshot } from "./workspace-snapshot.js";
+import {
+	approvalSuppressionReason,
+	checkDangerousToolCall,
+	isApprovalPolicyEmpty,
+	pluginApprovalCategory,
+	type ApprovalPolicy,
+	type PendingApprovalEntry,
+	type ToolApprovalResolution,
+} from "./tool-approval.js";
+import { PlanManager } from "./plan-manager.js";
 
 import {
 	applyHeadTail,
@@ -108,16 +129,31 @@ import {
 	isAgentToolEnabled,
 	isTerminalGuidanceOn,
 	MARKERS_LIST_TOOL_NAME,
+	PI_AGENT_PRESETS,
+	PI_PERMISSION_OPTIONS,
+	PLAN_UPDATE_TOOL_NAME,
 	PRESENT_FILES_TOOL_NAME,
+	presetAllowsPluginTools,
+	presetHasQuestionnaire,
+	presetShowsSkillCatalog,
 } from "./tool-manager.js";
 import { WebUIContext } from "./webui-context.js";
 import { DEFAULT_COMPACTION_RESERVE_TOKENS, effectiveSoftCap, softCapToReserve } from "./soft-cap.js";
+import { pruneContextHierarchically } from "./context-budget.js";
 import { decodeText } from "./text-sniff.js";
 import { makeEditSoftTool } from "./edit-soft-tool.js";
 // 覆盖 SDK 内置 read：路径是目录时列出目录条目（行为开关 readDirEnabled，默认开）。
 import { makeReadDirTool } from "./read-tool.js";
 // 展示文件给用户（present_files）：图片/视频内联、文本开预览弹窗、本地打开按钮。
 import { makePresentFilesTool } from "./present-files-tool.js";
+// 主动压缩上下文工具（compact_context）：AI 主动根据当前问题精简上下文并自主控制范围。
+import {
+	makeCompactContextTool,
+	buildCompactionInstructions,
+	DEFAULT_KEEP_RECENT_TOKENS,
+	type CompactContextHost,
+	type PendingCompaction,
+} from "./compact-context-tool.js";
 // 工具定义说明的归一化（工具卡右键 → 「显示工具详细信息」，见 getToolInfo）。
 import { normalizeToolInfo, type RawToolDefinition } from "./tool-info.js";
 import {
@@ -166,6 +202,9 @@ import type {
 	QuestionAnswer,
 	ServerMessage,
 	SessionSummary,
+	UiApprovalCategory,
+	UiApprovalPolicyState,
+	UiApprovalRule,
 	UiMessage,
 	UiQuestion,
 	UiServiceInfo,
@@ -388,6 +427,643 @@ export function makeAdaptiveBashTool(
 }
 
 /**
+ * 插件工具拦截钩子（P1-5）：index.ts 注入，把 bash/read 的 pre/post 决策委托给
+ *  PluginManager（evaluateToolPre/evaluateToolPost）。未注入时零开销直通。
+ */
+export interface ToolGuardHook {
+	pre: (
+		req: ToolPreRequest,
+		lang: string,
+	) => Promise<{
+		verdict:
+			| { decision: "allow" }
+			| { decision: "deny"; reason?: string; reasonEn?: string }
+			| { decision: "ask"; reason?: string; reasonEn?: string };
+		pluginId?: string;
+	}>;
+	post: (
+		req: ToolPostRequest,
+		lang: string,
+	) => Promise<{ content?: Array<{ type: string; text?: string }>; pluginIds: string[] } | undefined>;
+}
+
+/** 人机协同审批回调（第 7 参数 = 命中的规则档位，供「允许同类」记忆）。 */
+export type AskApprovalFn = (
+	toolCallId: string,
+	toolName: string,
+	params: unknown,
+	reason?: string,
+	reasonEn?: string,
+	conversationId?: string,
+	category?: UiApprovalCategory,
+) => Promise<ToolApprovalResolution>;
+
+/**
+ * 给已接管工具（bash/read）包上拦截守卫与人机协同审批：
+ * 1. pre guard 命中 deny → 直接阻断；
+ * 2. pre guard 命中 ask 或内置高危操作检测（rm -rf / 敏感文件覆盖等） →
+ *    触发 tool_approval_pending 等待用户审批；
+ *    - 用户选择 approve: 放行执行
+ *    - 用户选择 edit: 使用用户修改后的参数执行（Edit & Run）
+ *    - 用户选择 deny: 阻断并告知模型
+ * 3. post guard 合并（脱敏/补上下文）。
+ */
+export function withToolGuard(
+	def: ToolDefinition,
+	opts: {
+		toolName: GuardedToolName;
+		guard?: ToolGuardHook;
+		conversationId?: () => string | undefined;
+		getLang: () => ServerLang;
+		cwd?: string;
+		getRoots?: () => string[];
+		askApproval?: AskApprovalFn;
+		getRules?: () => ApprovalRule[];
+	},
+): ToolDefinition {
+	const guard = opts.guard;
+	const toolName = opts.toolName;
+	if (!guard && !opts.askApproval) return def;
+
+	return {
+		...def,
+		execute: (async (toolCallId: string, params: unknown, signal: unknown, onUpdate: unknown, ctx: unknown) => {
+			const lang = opts.getLang();
+			const conversationId = opts.conversationId?.();
+			let pre: Awaited<ReturnType<ToolGuardHook["pre"]>> | undefined;
+			if (guard) {
+				try {
+					pre = await guard.pre({ toolName, params, conversationId }, lang);
+				} catch {
+					pre = { verdict: { decision: "allow" } };
+				}
+			}
+
+			// 检查是否需要人工协同审批（Human-in-the-Loop）
+			let needApproval = false;
+			let approvalReason: string | undefined;
+			let approvalReasonEn: string | undefined;
+			let approvalCategory: UiApprovalCategory | undefined;
+
+			if (pre?.verdict.decision === "deny") {
+				const text = denialText(pre.verdict, pre.pluginId ?? "plugin", lang);
+				return {
+					content: [{ type: "text", text }],
+					details: { guardDenied: true, decision: pre.verdict.decision, pluginId: pre.pluginId },
+				} as never;
+			} else if (pre?.verdict.decision === "ask") {
+				needApproval = true;
+				approvalReason = pre.verdict.reason ?? "插件要求确认本次操作";
+				approvalReasonEn = pre.verdict.reasonEn ?? "Plugin requested confirmation for this operation";
+				// 插件档位按插件 id 分：用户可以「允许同类」= 该插件的确认以后不再问。
+				approvalCategory = pluginApprovalCategory(pre.pluginId ?? "plugin");
+			}
+
+			// 内置高危操作检测（如 bash 破坏性命令等）与自定义审批规则
+			if (!needApproval && opts.cwd && opts.askApproval) {
+				const danger = checkDangerousToolCall(toolName, params, opts.cwd, opts.getRoots?.() ?? [], opts.getRules?.());
+				if (danger.denied) {
+					const reasonText = danger.reason ? ` 原因：${danger.reason}` : "";
+					const reasonTextEn = danger.reasonEn ? ` Reason: ${danger.reasonEn}` : "";
+					const text = pick(
+						lang,
+						`【工具执行被审批规则直接阻断】${reasonText}`,
+						`[Tool execution blocked by approval rule]${reasonTextEn}`,
+					);
+					return {
+						content: [{ type: "text", text }],
+						details: { guardDenied: true, ruleDenied: true, reason: danger.reason },
+						isError: true,
+					} as never;
+				}
+				if (danger.dangerous) {
+					needApproval = true;
+					approvalReason = danger.reason;
+					approvalReasonEn = danger.reasonEn;
+					approvalCategory = danger.category;
+				}
+			}
+
+			let effectiveParams = params;
+			let userEdited = false;
+			if (needApproval && opts.askApproval) {
+				const res = await opts.askApproval(
+					toolCallId,
+					toolName,
+					params,
+					approvalReason,
+					approvalReasonEn,
+					conversationId,
+					approvalCategory,
+				);
+				if (res.decision === "deny") {
+					const reasonText = res.reason ? ` 原因：${res.reason}` : "";
+					const reasonTextEn = res.reason ? ` Reason: ${res.reason}` : "";
+					return {
+						content: [
+							{
+								type: "text",
+								text: pick(lang, `【操作被用户拒绝】${reasonText}`, `[Operation denied by user]${reasonTextEn}`),
+							},
+						],
+						details: { guardDenied: true, userDenied: true, reason: res.reason },
+						isError: true,
+					} as never;
+				} else if (res.decision === "edit") {
+					effectiveParams = res.editedParams ?? params;
+					userEdited = true;
+				}
+			} else if (pre?.verdict.decision === "ask") {
+				// 无审批通道时回落至原先的阻断行为
+				const text = denialText(pre.verdict, pre.pluginId ?? "plugin", lang);
+				return {
+					content: [{ type: "text", text }],
+					details: { guardDenied: true, decision: pre.verdict.decision, pluginId: pre.pluginId },
+				} as never;
+			}
+
+			const result = (await (def.execute as (...a: never[]) => Promise<unknown>)(
+				toolCallId as never,
+				effectiveParams as never,
+				signal as never,
+				onUpdate as never,
+				ctx as never,
+			)) as {
+				content?: Array<{ type: string; text?: string }>;
+				details?: Record<string, unknown>;
+				[k: string]: unknown;
+			};
+
+			if (userEdited && result && typeof result === "object") {
+				result.details = {
+					...(result.details ?? {}),
+					userEdited: true,
+					originalParams: params,
+					executedParams: effectiveParams,
+				};
+			}
+
+			if (guard) {
+				let post: ToolPostEdit | undefined | { content?: Array<{ type: string; text?: string }>; pluginIds: string[] };
+				try {
+					post = await guard.post({ toolName, params: effectiveParams, result, conversationId }, lang);
+				} catch {
+					post = undefined;
+				}
+				if (post?.content) return { ...result, content: post.content } as never;
+			}
+			return result as never;
+		}) as never,
+	} as ToolDefinition;
+}
+
+/** 校验目标路径是否在工作区（或多根工作区）内。 */
+function isInsideWorkspaceRoots(targetPath: string, cwd: string, roots: string[] = []): boolean {
+	const abs = isAbsolute(targetPath) ? targetPath : resolve(cwd, targetPath);
+	const allRoots = [resolve(cwd), ...roots.map((r) => resolve(r))];
+	return allRoots.some((r) => abs === r || abs.startsWith(r + sep));
+}
+
+/** 为 write 工具包装会话级权限沙箱与人机协同审批。 */
+function wrapWriteToolWithPermission(
+	cwd: string,
+	getPermission: () => string,
+	getRoots: () => string[],
+	getLang: () => ServerLang,
+	askApproval?: AskApprovalFn,
+	getConversationId?: () => string | undefined,
+	getRules?: () => ApprovalRule[],
+): ToolDefinition {
+	const base = createWriteToolDefinition(cwd);
+	return {
+		...base,
+		execute: async (toolCallId, params, signal, onUpdate, ctx) => {
+			const perm = getPermission();
+			if (perm === "read-only") {
+				return {
+					content: [
+						{
+							type: "text",
+							text: pick(
+								getLang(),
+								"【权限被拒绝】当前会话处于「只读模式」（read-only），禁止写入文件。若需修改请切换权限预设。",
+								"[Permission Denied] The current session is in 'read-only' mode; writing files is forbidden. Switch permission preset if needed.",
+							),
+						},
+					],
+					isError: true,
+				} as never;
+			}
+			if (perm === "workspace-write-never") {
+				const p = (params as { path?: string })?.path ?? "";
+				if (!isInsideWorkspaceRoots(p, cwd, getRoots())) {
+					return {
+						content: [
+							{
+								type: "text",
+								text: pick(
+									getLang(),
+									`【权限被拒绝】当前会话处于「工作区内修改」（workspace-write-never）模式，禁止修改工作区外部文件（"${p}"）。若需修改请切换至「完全权限」。`,
+									`[Permission Denied] The current session is in 'workspace-write-never' mode; writing files outside the workspace ("${p}") is forbidden. Switch to 'danger-full-access' if needed.`,
+								),
+							},
+						],
+						isError: true,
+					} as never;
+				}
+			}
+
+			// 高危写操作人机协同审批拦截（如敏感配置修改）与规则匹配
+			let effectiveParams = params;
+			let userEdited = false;
+			if (askApproval) {
+				const danger = checkDangerousToolCall("write", params, cwd, getRoots(), getRules?.());
+				if (danger.denied) {
+					return {
+						content: [
+							{
+								type: "text",
+								text: pick(
+									getLang(),
+									`【文件写入被审批规则直接阻断】${danger.reason ? ` 原因：${danger.reason}` : ""}`,
+									`[File write blocked by approval rule]${danger.reason ? ` Reason: ${danger.reason}` : ""}`,
+								),
+							},
+						],
+						details: { guardDenied: true, ruleDenied: true, reason: danger.reason },
+						isError: true,
+					} as never;
+				}
+				if (danger.dangerous) {
+					const res = await askApproval(
+						toolCallId,
+						"write",
+						params,
+						danger.reason,
+						danger.reasonEn,
+						getConversationId?.(),
+						danger.category,
+					);
+					if (res.decision === "deny") {
+						return {
+							content: [
+								{
+									type: "text",
+									text: pick(
+										getLang(),
+										`【文件写入被用户拒绝】${res.reason ? ` 原因：${res.reason}` : ""}`,
+										`[File write denied by user]${res.reason ? ` Reason: ${res.reason}` : ""}`,
+									),
+								},
+							],
+							details: { guardDenied: true, userDenied: true, reason: res.reason },
+							isError: true,
+						} as never;
+					} else if (res.decision === "edit") {
+						effectiveParams = res.editedParams ?? params;
+						userEdited = true;
+					}
+				}
+			}
+
+			const result = (await base.execute(toolCallId, effectiveParams as never, signal, onUpdate, ctx)) as unknown as {
+				details?: Record<string, unknown>;
+				[k: string]: unknown;
+			};
+			if (userEdited && result && typeof result === "object") {
+				result.details = {
+					...(result.details ?? {}),
+					userEdited: true,
+					originalParams: params,
+					executedParams: effectiveParams,
+				};
+			}
+			return result as never;
+		},
+	} as ToolDefinition;
+}
+
+/** 为 edit 工具包装会话级权限沙箱与人机协同审批。 */
+function wrapEditToolWithPermission(
+	cwd: string,
+	getPermission: () => string,
+	getRoots: () => string[],
+	getLang: () => ServerLang,
+	askApproval?: AskApprovalFn,
+	getConversationId?: () => string | undefined,
+	getRules?: () => ApprovalRule[],
+): ToolDefinition {
+	const base = createEditToolDefinition(cwd);
+	return {
+		...base,
+		execute: async (toolCallId, params, signal, onUpdate, ctx) => {
+			const perm = getPermission();
+			if (perm === "read-only") {
+				return {
+					content: [
+						{
+							type: "text",
+							text: pick(
+								getLang(),
+								"【权限被拒绝】当前会话处于「只读模式」（read-only），禁止编辑文件。若需修改请切换权限预设。",
+								"[Permission Denied] The current session is in 'read-only' mode; editing files is forbidden. Switch permission preset if needed.",
+							),
+						},
+					],
+					isError: true,
+				} as never;
+			}
+			if (perm === "workspace-write-never") {
+				const p = (params as { path?: string })?.path ?? "";
+				if (!isInsideWorkspaceRoots(p, cwd, getRoots())) {
+					return {
+						content: [
+							{
+								type: "text",
+								text: pick(
+									getLang(),
+									`【权限被拒绝】当前会话处于「工作区内修改」（workspace-write-never）模式，禁止修改工作区外部文件（"${p}"）。若需修改请切换至「完全权限」。`,
+									`[Permission Denied] The current session is in 'workspace-write-never' mode; editing files outside the workspace ("${p}") is forbidden. Switch to 'danger-full-access' if needed.`,
+								),
+							},
+						],
+						isError: true,
+					} as never;
+				}
+			}
+
+			// 高危修改人机协同审批拦截与规则匹配
+			let effectiveParams = params;
+			let userEdited = false;
+			if (askApproval) {
+				const danger = checkDangerousToolCall("edit", params, cwd, getRoots(), getRules?.());
+				if (danger.denied) {
+					return {
+						content: [
+							{
+								type: "text",
+								text: pick(
+									getLang(),
+									`【文件编辑被审批规则直接阻断】${danger.reason ? ` 原因：${danger.reason}` : ""}`,
+									`[File edit blocked by approval rule]${danger.reason ? ` Reason: ${danger.reason}` : ""}`,
+								),
+							},
+						],
+						details: { guardDenied: true, ruleDenied: true, reason: danger.reason },
+						isError: true,
+					} as never;
+				}
+				if (danger.dangerous) {
+					const res = await askApproval(
+						toolCallId,
+						"edit",
+						params,
+						danger.reason,
+						danger.reasonEn,
+						getConversationId?.(),
+						danger.category,
+					);
+					if (res.decision === "deny") {
+						return {
+							content: [
+								{
+									type: "text",
+									text: pick(
+										getLang(),
+										`【文件编辑被用户拒绝】${res.reason ? ` 原因：${res.reason}` : ""}`,
+										`[File edit denied by user]${res.reason ? ` Reason: ${res.reason}` : ""}`,
+									),
+								},
+							],
+							details: { guardDenied: true, userDenied: true, reason: res.reason },
+							isError: true,
+						} as never;
+					} else if (res.decision === "edit") {
+						effectiveParams = res.editedParams ?? params;
+						userEdited = true;
+					}
+				}
+			}
+
+			const result = (await base.execute(toolCallId, effectiveParams as never, signal, onUpdate, ctx)) as unknown as {
+				details?: Record<string, unknown>;
+				[k: string]: unknown;
+			};
+			if (userEdited && result && typeof result === "object") {
+				result.details = {
+					...(result.details ?? {}),
+					userEdited: true,
+					originalParams: params,
+					executedParams: effectiveParams,
+				};
+			}
+			return result as never;
+		},
+	} as ToolDefinition;
+}
+
+/** 为 edit_soft 工具包装会话级权限沙箱与人机协同审批。 */
+function wrapEditSoftToolWithPermission(
+	tool: ToolDefinition,
+	cwd: string,
+	getPermission: () => string,
+	getRoots: () => string[],
+	getLang: () => ServerLang,
+	askApproval?: AskApprovalFn,
+	getConversationId?: () => string | undefined,
+	getRules?: () => ApprovalRule[],
+): ToolDefinition {
+	return {
+		...tool,
+		execute: async (toolCallId, params, signal, onUpdate, ctx) => {
+			const perm = getPermission();
+			if (perm === "read-only") {
+				return {
+					content: [
+						{
+							type: "text",
+							text: pick(
+								getLang(),
+								"【权限被拒绝】当前会话处于「只读模式」（read-only），禁止编辑文件。若需修改请切换权限预设。",
+								"[Permission Denied] The current session is in 'read-only' mode; editing files is forbidden. Switch permission preset if needed.",
+							),
+						},
+					],
+					isError: true,
+				} as never;
+			}
+			if (perm === "workspace-write-never") {
+				const p = (params as { path?: string })?.path ?? "";
+				if (!isInsideWorkspaceRoots(p, cwd, getRoots())) {
+					return {
+						content: [
+							{
+								type: "text",
+								text: pick(
+									getLang(),
+									`【权限被拒绝】当前会话处于「工作区内修改」（workspace-write-never）模式，禁止修改工作区外部文件（"${p}"）。若需修改请切换至「完全权限」。`,
+									`[Permission Denied] The current session is in 'workspace-write-never' mode; editing files outside the workspace ("${p}") is forbidden. Switch to 'danger-full-access' if needed.`,
+								),
+							},
+						],
+						isError: true,
+					} as never;
+				}
+			}
+
+			// 高危修改人机协同审批拦截与规则匹配
+			let effectiveParams = params;
+			let userEdited = false;
+			if (askApproval) {
+				const danger = checkDangerousToolCall("edit_soft", params, cwd, getRoots(), getRules?.());
+				if (danger.denied) {
+					return {
+						content: [
+							{
+								type: "text",
+								text: pick(
+									getLang(),
+									`【文件编辑被审批规则直接阻断】${danger.reason ? ` 原因：${danger.reason}` : ""}`,
+									`[File edit blocked by approval rule]${danger.reason ? ` Reason: ${danger.reason}` : ""}`,
+								),
+							},
+						],
+						details: { guardDenied: true, ruleDenied: true, reason: danger.reason },
+						isError: true,
+					} as never;
+				}
+				if (danger.dangerous) {
+					const res = await askApproval(
+						toolCallId,
+						"edit_soft",
+						params,
+						danger.reason,
+						danger.reasonEn,
+						getConversationId?.(),
+						danger.category,
+					);
+					if (res.decision === "deny") {
+						return {
+							content: [
+								{
+									type: "text",
+									text: pick(
+										getLang(),
+										`【文件编辑被用户拒绝】${res.reason ? ` 原因：${res.reason}` : ""}`,
+										`[File edit denied by user]${res.reason ? ` Reason: ${res.reason}` : ""}`,
+									),
+								},
+							],
+							details: { guardDenied: true, userDenied: true, reason: res.reason },
+							isError: true,
+						} as never;
+					} else if (res.decision === "edit") {
+						effectiveParams = res.editedParams ?? params;
+						userEdited = true;
+					}
+				}
+			}
+
+			const result = (await tool.execute(toolCallId, effectiveParams as never, signal, onUpdate, ctx)) as unknown as {
+				details?: Record<string, unknown>;
+				[k: string]: unknown;
+			};
+			if (userEdited && result && typeof result === "object") {
+				result.details = {
+					...(result.details ?? {}),
+					userEdited: true,
+					originalParams: params,
+					executedParams: effectiveParams,
+				};
+			}
+			return result as never;
+		},
+	};
+}
+
+/**
+ * 结构化任务执行计划更新工具（plan_update）— Plan Mode / Step State Machine。
+ */
+function makePlanUpdateTool(
+	planManager: PlanManager,
+	getActiveConvId: () => string,
+	emit: (msg: ServerMessage) => void,
+	flushSnapshot: () => void,
+): ToolDefinition {
+	return {
+		name: PLAN_UPDATE_TOOL_NAME,
+		label: "plan_update",
+		description:
+			"Update the structured task execution plan / step state machine (Plan Mode). Use it for non-trivial tasks to break down work into steps, track live progress, and update status (pending -> in_progress -> done/failed).\n更新结构化任务执行计划（步骤状态机）。用于复杂工程任务拆解与实时进度推进。",
+		parameters: Type.Object({
+			steps: Type.Array(
+				Type.Object({
+					id: Type.String({ description: "Unique step ID, e.g. '1', 'step-1'" }),
+					title: Type.String({ description: "Short step title" }),
+					status: Type.Optional(
+						Type.Union(
+							[Type.Literal("pending"), Type.Literal("in_progress"), Type.Literal("done"), Type.Literal("failed")],
+							{ description: "Step status: pending | in_progress | done | failed (default: pending)" },
+						),
+					),
+					description: Type.Optional(
+						Type.String({ description: "Optional detailed description or acceptance criteria" }),
+					),
+				}),
+				{ description: "List of plan steps" },
+			),
+			activeStepId: Type.Optional(Type.String({ description: "ID of the step currently being executed" })),
+		}),
+		execute: async (toolCallId: string, params: unknown) => {
+			const convId = getActiveConvId();
+			const p = params as { steps: import("./protocol.js").PlanStep[]; activeStepId?: string | null };
+			const plan = planManager.setPlan(convId, p.steps, p.activeStepId);
+			emit({
+				type: "plan_updated",
+				conversationId: convId,
+				plan,
+			});
+			flushSnapshot();
+			const summary = planManager.describePlan(convId);
+			return {
+				content: [{ type: "text", text: `Plan updated successfully.\n\n${summary}` }],
+				details: { plan },
+			};
+		},
+	};
+}
+
+/** 为 bash 工具包装只读拦截。 */
+function wrapBashToolWithPermission(
+	tool: ToolDefinition,
+	getPermission: () => string,
+	getLang: () => ServerLang,
+): ToolDefinition {
+	return {
+		...tool,
+		execute: async (toolCallId, params, signal, onUpdate, ctx) => {
+			const perm = getPermission();
+			if (perm === "read-only") {
+				return {
+					content: [
+						{
+							type: "text",
+							text: pick(
+								getLang(),
+								"【权限被拒绝】当前会话处于「只读模式」（read-only），禁止执行终端命令。若需执行请切换权限预设。",
+								"[Permission Denied] The current session is in 'read-only' mode; running shell commands is forbidden. Switch permission preset if needed.",
+							),
+						},
+					],
+					isError: true,
+				} as never;
+			}
+			return tool.execute(toolCallId, params as never, signal, onUpdate, ctx);
+		},
+	};
+}
+
+/**
  * 任务列表只读查询工具（todo_list）— 读操作仍走真工具。
  */
 function makeMarkersListTool(
@@ -465,6 +1141,23 @@ export function makeAskUserQuestionTool(
 		header: Type.Optional(Type.String({ description: "Optional short header for this question" })),
 		options: Type.Optional(Type.Array(QuestionOptionSchema, { description: "Available options to choose from" })),
 		multiSelect: Type.Optional(Type.Boolean({ description: "Allow selecting multiple options (default: false)" })),
+		dependsOn: Type.Optional(
+			Type.Object({
+				questionId: Type.String({ description: "ID of the prior question this question depends on" }),
+				value: Type.Optional(
+					Type.Union([Type.String(), Type.Array(Type.String())], {
+						description:
+							"Show this question only when the prior question's answer matches this value (or any in the array). Omit to show whenever answered.",
+					}),
+				),
+			}),
+		),
+		optionsMap: Type.Optional(
+			Type.Record(Type.String(), Type.Array(QuestionOptionSchema), {
+				description:
+					"Dynamic options based on prior question's chosen value: e.g. { 'React': [opts...], 'Vue': [opts...] }",
+			}),
+		),
 	});
 	return {
 		name: "ask_user_question",
@@ -930,6 +1623,10 @@ export interface Conversation {
 	subagentError?: string;
 	/** 已就当前 subagentError 向主对话发过 notice 的错误文本（去重；文本变化时重置）。 */
 	subagentErrorNotified?: string;
+	/** 同行协作交接给的目标子代理 convId 列表（该子代理交接给谁）。 */
+	peerHandoffTo?: string[];
+	/** 同行协作接收自的来源子代理 convId 列表（谁交接给该子代理）。 */
+	peerHandoffFrom?: string[];
 	runtime: AgentSessionRuntime;
 	session: AgentSession;
 	cwd: string;
@@ -953,6 +1650,22 @@ export interface Conversation {
 	 *  model-stall watchdog (#7): a run that produces no events at all for
 	 *  STALL_NOTIFY_MS is probably a half-open API connection. */
 	lastSdkEventAt: number;
+	/** Agent 预设 id（standard/minimal/code/reader/ask；默认 standard）。 */
+	agentPreset?: string;
+	/** 预设已锁定（首轮用户发言后；空白会话可切换）。 */
+	presetLocked?: boolean;
+	/** 权限预设值（read-only/workspace-write-never/danger-full-access）。 */
+	permissionPreset?: string;
+	/** 本对话的审批放行策略（仅内存，不落盘）：allowAll = 「本对话全部允许」，
+	 *  categories = 「允许同类」记住的规则档位。放在对话对象上而非 ClientSession：
+	 *  手动过户搬的就是对话本体，策略跟着走；重启/新对话即恢复询问。 */
+	approvalPolicy?: ApprovalPolicy;
+	/** 派生源信息（若本会话是从另一会话的消息派生而来）。 */
+	forkFrom?: {
+		conversationId: string;
+		messageId?: string;
+		title?: string;
+	};
 	/** Set once the stall notice has been sent for the current silent period;
 	 *  cleared on every SDK event and on each new prompt. */
 	stallNoticed: boolean;
@@ -992,6 +1705,8 @@ export interface Conversation {
 	 *  assistant 消息（重试成功则用户永远看不到，耗尽才永久标红），前端改显
 	 *  温和的「正在重试」条，而非一闪而过的红色报错。 */
 	retryState?: { attempt: number; maxAttempts: number; delayMs: number; errorMessage: string } | null;
+	/** AI 主动调 compact_context 登记的压缩请求（agent_settled 结算时执行）。 */
+	pendingCompaction?: PendingCompaction | null;
 	/** 上下文压缩进行中（compaction_start 已到、compaction_end 未到）。置位期间
 	 *  快照携带 compaction 字段，前端在消息区常驻「压缩中…」进度条（toast 会
 	 *  自动消失，而摘要 LLM 调用可能持续数十秒）；结束/失败/取消时清除。 */
@@ -1010,6 +1725,10 @@ export interface Conversation {
 	/** #280：转录链悬空标记——forceReset 后修复没落盘（文件被删/只读）时置位，
 	 *  后续 prompt 响亮拒绝而不是静默黑洞；修复成功即清除。 */
 	transcriptBlocked?: boolean;
+	/** 工作区版本影子快照记录（Dual-State Rollback：时间戳/entryId -> snapshotRef）。 */
+	workspaceSnapshots: Array<{ entryId?: string; timestamp: number; snapshotRef: string }>;
+	/** 当前正在启动中（读取附件、视觉桥、快照准备等）的 prompt 取消控制器 */
+	activePromptAc?: AbortController;
 }
 
 /** 轨迹事件 payload 封顶（可直接广播/持久化，不撑爆 storage.json）。 */
@@ -1354,7 +2073,7 @@ export class ClientSession {
 		emit: (msg) => this.emit(msg),
 		isDisposed: () => this.disposed,
 		getCwd: () => this.cwd,
-		getActiveCwd: () => this.conv?.cwd ?? this.cwd,
+		getActiveCwd: () => this.convs.get(this.activeId)?.cwd ?? this.cwd,
 		// issue #91：文件服务错误文案按客户端 UI 语言出中英（英文默认）。
 		getLang: () => this.getLang(),
 	});
@@ -1369,6 +2088,9 @@ export class ClientSession {
 	/** index.ts 注入（经 AgentService 拷贝到每个新会话）：把 SDK 工具执行事件转发给
 	 *  插件（PluginManager.emitToolEvent）。未设置时不做任何事。 */
 	onToolEvent: ((ev: PluginToolEvent) => void) | undefined = undefined;
+	/** index.ts 注入（P1-5，经 AgentService 拷贝到每个新会话）：bash/read 执行前后的
+	 *  插件拦截（PluginManager.evaluateToolPre/evaluateToolPost）。未设置时直通。 */
+	toolGuard: ToolGuardHook | undefined = undefined;
 	/** index.ts 注入：把运行轨迹事件转发给插件（PluginManager.emitRunEvent，
 	 *  轨迹视图插件靠它聚合时间线）。未设置时不做任何事。 */
 	onRunEvent: ((ev: PluginRunEvent) => void) | undefined = undefined;
@@ -1410,11 +2132,11 @@ export class ClientSession {
 	}
 
 	getTerminalManager(conversationId?: string): TerminalManager | undefined {
-		return (conversationId ? this.convs.get(conversationId) : this.conv)?.terminals;
+		return (conversationId ? this.convs.get(conversationId) : this.convs.get(this.activeId))?.terminals;
 	}
 
 	getTerminalCwd(conversationId?: string): string {
-		return (conversationId ? this.convs.get(conversationId) : this.conv)?.cwd ?? this.cwd;
+		return (conversationId ? this.convs.get(conversationId) : this.convs.get(this.activeId))?.cwd ?? this.cwd;
 	}
 
 	private makeTerminalManager(conversationId: string, cwd: string): TerminalManager {
@@ -1724,6 +2446,8 @@ export class ClientSession {
 			output: conv.session.getLastAssistantText() ?? "",
 			parentId: conv.parentId,
 			persisted: isPersisted,
+			handoffTo: conv.peerHandoffTo ? [...conv.peerHandoffTo] : undefined,
+			handoffFrom: conv.peerHandoffFrom ? [...conv.peerHandoffFrom] : undefined,
 		};
 	}
 
@@ -1884,7 +2608,7 @@ export class ClientSession {
 		try {
 			const sess = this.session;
 			if (!sess) return undefined;
-			const cwd = this.conv?.cwd ?? this.cwd;
+			const cwd = this.convs.get(this.activeId)?.cwd ?? this.cwd;
 			const active = sess.getActiveToolNames();
 			const snippets: Record<string, string> = {};
 			const guidelines: string[] = [];
@@ -1943,6 +2667,105 @@ export class ClientSession {
 	 * 历史/resume 列表）、listed=true 出现在左栏「运行的对话」并向用户可见——
 	 * 切换查看 / 输入补充（steer）/ 中止（abort）/ 移出全部复用现有对话机制。
 	 */
+	private subagentHandoffs: Array<{ fromRunId: string; toRunId: string; timestamp: number }> = [];
+
+	/**
+	 * 多智能体同行协作与直接交接（Peer-to-Peer Subagents & Hand-off）：
+	 * 将任务产物、分析结果或后续指令直接从一个子代理路由至另一个同行子代理，
+	 * 无需主会话反复充当传声筒消耗双倍 token。
+	 */
+	async handoffSubagent(fromRunId: string, toRunId: string, payload: string): Promise<void> {
+		if (fromRunId === toRunId) {
+			throw new Error("Cannot hand off to oneself");
+		}
+		const toConv = this.convs.get(toRunId);
+		if (!toConv) {
+			throw new Error(`Target subagent ${toRunId} not found`);
+		}
+		const fromConv = this.convs.get(fromRunId);
+		const fromType = fromConv?.subagentType ?? "peer";
+		const toType = toConv.subagentType ?? "peer";
+
+		const handoffMessage = `[Peer Hand-off from ${fromType} subagent (${fromRunId.slice(0, 8)})]:\n\n${payload}`;
+
+		const record = { fromRunId, toRunId, timestamp: Date.now() };
+		this.subagentHandoffs.push(record);
+		if (!fromConv?.peerHandoffTo) {
+			if (fromConv) fromConv.peerHandoffTo = [];
+		}
+		fromConv?.peerHandoffTo?.push(toRunId);
+		if (!toConv.peerHandoffFrom) toConv.peerHandoffFrom = [];
+		toConv.peerHandoffFrom.push(fromRunId);
+
+		// 向目标子代理注入对等交接消息
+		await toConv.session.sendUserMessage(
+			handoffMessage,
+			toConv.session.isStreaming ? { deliverAs: "steer" } : undefined,
+		);
+
+		// 广播交接事件
+		this.emit({
+			type: "subagent_handoff",
+			fromRunId,
+			toRunId,
+			payload,
+			timestamp: record.timestamp,
+		});
+
+		// 向主会话推送通知
+		this.emit({
+			type: "notice",
+			level: "info",
+			text: `子代理 ${fromRunId.slice(0, 8)}（${fromType}）已向同行子代理 ${toRunId.slice(0, 8)}（${toType}）直接交接`,
+			textEn: `Subagent ${fromRunId.slice(0, 8)} (${fromType}) handed off directly to ${toRunId.slice(0, 8)} (${toType})`,
+		});
+
+		this.emitConversations();
+		this.flushSnapshot();
+	}
+
+	/**
+	 * 多级分层上下文预算裁剪（Hierarchical Context Budgeting）：
+	 * 当上下文达到预警水位（例如 70%）时，自动执行第一级（远期工具输出裁剪）和
+	 * 第二级（已完成步骤折叠），推迟触发全量 LLM 压缩，保留近期关键代码的细节。
+	 */
+	applyContextBudgetPruning(conv: Conversation): void {
+		if (!conv?.session) return;
+		try {
+			const contextWindow = contextWindowOf(conv.session);
+			if (!contextWindow || contextWindow <= 0) return;
+			const s = this.settingsSvc.current;
+			const modelId = modelKeyOf(conv.session);
+			const cap = effectiveSoftCap(s.softCapTokens, s.softCapByModel, modelId);
+			const reserve = softCapToReserve(contextWindow, cap) ?? DEFAULT_COMPACTION_RESERVE_TOKENS;
+
+			const messages = conv.session.agent.state.messages;
+			if (!messages || messages.length === 0) return;
+
+			const result = pruneContextHierarchically(messages, {
+				contextWindow,
+				reserveTokens: reserve,
+				softCap: cap > 0 ? cap : null,
+			});
+
+			if (result.tier1.trimmedCount > 0 || result.tier2.foldedCount > 0) {
+				conv.session.agent.state.messages = result.messages;
+				const saved = result.tokensBefore - result.tokensAfter;
+				this.emit({
+					type: "notice",
+					level: "info",
+					text: `分层上下文预算裁剪生效：已释放约 ${saved.toLocaleString()} tokens（裁剪远期工具输出/折叠已完成步骤），推迟全量压缩`,
+					textEn: `Hierarchical context pruning active: freed ~${saved.toLocaleString()} tokens (trimmed tool outputs / folded steps), deferring full compaction`,
+				});
+				if (conv.id === this.conv.id) {
+					this.flushSnapshot();
+				}
+			}
+		} catch {
+			/* 预算裁剪尽力而为，不阻断主流程 */
+		}
+	}
+
 	private subagentHost: SubagentToolHost = {
 		spawnSubagent: (prompt, type, cwd, templateName, model, parentId, persist) => {
 			// 模板：存在且启用时应用；传了名字但不可用 → 抛错让工具转给 AI。
@@ -1963,6 +2786,9 @@ export class ClientSession {
 		},
 		getSubagent: (convId) => this.getSubagentSnapshot(convId),
 		listSubagents: (scope) => this.listSubagentSnapshots(scope),
+		handoffSubagent: async (fromRunId, toRunId, payload) => {
+			await this.handoffSubagent(fromRunId, toRunId, payload);
+		},
 		steerSubagent: async (convId, message) => {
 			const conv = this.convs.get(convId);
 			if (!conv?.session) return;
@@ -2143,6 +2969,120 @@ export class ClientSession {
 		};
 	}
 
+	/** compact_context 工具的数据宿主：提供消息统计用于预检，以及注册 pending 压缩请求。
+	 *  ownerId 语义同 skill / claimFiles（本 runtime 所属会话，不是派发瞬间 active）。 */
+	private compactContextHost(ownerId?: string): CompactContextHost {
+		const target = (): Conversation | undefined => {
+			try {
+				return (ownerId ?? "").trim() !== "" ? this.convs.get(ownerId!.trim()) : this.convs.get(this.activeId);
+			} catch {
+				return undefined;
+			}
+		};
+		return {
+			conversationId: () => target()?.id ?? this.activeId,
+			getContextStats: () => {
+				const conv = target();
+				if (!conv) return { messageCount: 0, estimatedTokens: 0 };
+				let messages: AgentMessage[] = [];
+				try {
+					messages = conv.session.messages;
+				} catch {
+					messages = [];
+				}
+				let totalChars = 0;
+				for (const m of messages) {
+					if (m && typeof m === "object" && "content" in m) {
+						const content = (m as { content?: unknown }).content;
+						if (Array.isArray(content)) {
+							for (const c of content) {
+								if (
+									c &&
+									typeof c === "object" &&
+									"type" in c &&
+									(c as { type: unknown }).type === "text" &&
+									typeof (c as { text?: unknown }).text === "string"
+								) {
+									totalChars += (c as { text: string }).text.length;
+								}
+							}
+						} else if (typeof content === "string") {
+							totalChars += content.length;
+						}
+					}
+				}
+				return {
+					messageCount: messages.length,
+					estimatedTokens: Math.ceil(totalChars / 4),
+				};
+			},
+			scheduleCompaction: (pending) => {
+				const conv = target();
+				if (conv) {
+					conv.pendingCompaction = pending;
+				}
+			},
+		};
+	}
+
+	/** 执行由 AI 调用 compact_context 安排的上下文压缩（在 agent_settled 阶段调用）。 */
+	private async executePendingCompaction(conv: Conversation, pending: PendingCompaction): Promise<void> {
+		const instructions = buildCompactionInstructions(pending.focus, pending.summary);
+		const session = conv.session;
+		const model = session.model;
+
+		let originalKeepRecent: number | undefined;
+		try {
+			originalKeepRecent = session.settingsManager.getCompactionSettings(model).keepRecentTokens;
+		} catch {
+			originalKeepRecent = undefined;
+		}
+
+		try {
+			if (pending.keepRecentTokens && pending.keepRecentTokens > 0) {
+				session.settingsManager.applyOverrides({
+					compaction: {
+						keepRecentTokens: pending.keepRecentTokens,
+					},
+				});
+			}
+
+			await session.compact(instructions || undefined);
+
+			const retainTokens = pending.keepRecentTokens ?? DEFAULT_KEEP_RECENT_TOKENS;
+			this.emit({
+				type: "notice",
+				level: "info",
+				text: `AI 已主动根据当前问题完成上下文压缩（保留 ~${retainTokens.toLocaleString()} tokens 近期上下文，重点保留当前问题相关内容）`,
+				textEn: `Context compacted proactively based on current issue (retained ~${retainTokens.toLocaleString()} tokens, focused on current task)`,
+			});
+		} catch (err) {
+			const msg = err instanceof Error ? err.message : String(err);
+			this.emit({
+				type: "notice",
+				level: "warning",
+				text: `主动上下文压缩未完成：${msg}`,
+				textEn: `Proactive context compaction did not finish: ${msg}`,
+			});
+		} finally {
+			if (pending.keepRecentTokens && pending.keepRecentTokens > 0) {
+				try {
+					if (originalKeepRecent !== undefined) {
+						session.settingsManager.applyOverrides({
+							compaction: {
+								keepRecentTokens: originalKeepRecent,
+							},
+						});
+					}
+				} catch {
+					// best effort
+				}
+			}
+			this.applyCompactionOverrides();
+			this.flushSnapshot();
+		}
+	}
+
 	/** skill 工具的数据宿主：读所属会话 loader 的实时技能表 + 主会话禁用集过滤
 	 * （与 skillsOverride 主会话语义一致）。ownerId 语义同 browser_page（本
 	 * runtime 所属会话，不是派发瞬间的 active）。失败回空目录，不抛错。 */
@@ -2241,6 +3181,8 @@ export class ClientSession {
 
 	/** 子代理模板库（全局共享，<dataDir>/subagent-templates.json）。 */
 	private readonly subagentTemplates: SubagentTemplatesStore;
+	/** 审批规则库（全局共享，<dataDir>/approval-rules.json）。 */
+	private readonly approvalRules: ApprovalRulesStore;
 	/** 未发送输入框草稿（全局共享，<dataDir>/composer-drafts.json，按 sessionId 键入，见 server/composer-drafts.ts）。 */
 	private readonly drafts: ComposerDraftsStore;
 	/** 内置标记服务（todo/notify/svc/rename 等，可全局/分组开关）。 */
@@ -2259,6 +3201,12 @@ export class ClientSession {
 		string,
 		{ resolve: (value: QuestionAnswer[] | null) => void; questions: UiQuestion[]; conversationId?: string }
 	>();
+
+	/** 任务计划管理器（Plan Mode / Step State Machine）。 */
+	private planManager = new PlanManager();
+	private approvalSeq = 0;
+	/** 待审批高危工具调用（Human-in-the-Loop: Edit & Run）。 */
+	private pendingApprovals = new Map<string, PendingApprovalEntry>();
 
 	// -----------------------------------------------------------------------
 	// 浏览器页面桥（标准 pi 引擎的 browser_page customTool）：模型调工具 → 发
@@ -2292,6 +3240,7 @@ export class ClientSession {
 		this.stateStore = stateStore;
 		this.roots = stateStore.getWorkspaceRoots(clientId, cwd);
 		this.subagentTemplates = new SubagentTemplatesStore(join(stateStore.dataDir, "subagent-templates.json"));
+		this.approvalRules = new ApprovalRulesStore(join(stateStore.dataDir, "approval-rules.json"));
 		this.drafts = new ComposerDraftsStore(join(stateStore.dataDir, "composer-drafts.json"));
 		this.markerSvc = new MarkerService({
 			clientId,
@@ -2351,8 +3300,10 @@ export class ClientSession {
 					disabledMarkers: [...this.markerSvc.current.disabledMarkers],
 					markers: this.markerSvc.listForUi(),
 				}),
+				getApprovalPolicy: () => this.approvalPolicyState(),
 			},
 			this.subagentTemplates,
+			this.approvalRules,
 		);
 		this.goalSvc = new GoalService({
 			clientId,
@@ -2537,7 +3488,10 @@ export class ClientSession {
 							// GBK 老中文文件让模型改用终端按正确编码读（iconv/chcp/Get-Content）。
 							out.push(WINDOWS_PERSONA);
 						}
-						if (isTerminalGuidanceOn(effectiveDisabledAgentTools(this.settingsSvc.current))) {
+						// 终端引导只教「开关开着且预设下仍可用」的工具（见 tool-manager.ts 语义总表）。
+						const presetForGuidance =
+							this.convs.get(ownerId ?? "")?.agentPreset ?? this.settingsSvc.current.defaultAgentPreset ?? "standard";
+						if (isTerminalGuidanceOn(effectiveDisabledAgentTools(this.settingsSvc.current), presetForGuidance)) {
 							// 终端工具使用引导（全平台）：告诉模型什么场景该用持久终端
 							// 而不是一次性 bash——没有这段模型几乎从不主动选终端工具。
 							// 组内工具全关时不注入（不教 AI 用不存在的工具）。
@@ -2549,12 +3503,17 @@ export class ClientSession {
 						if (markerGuidance) out.push(markerGuidance);
 						return out;
 					},
-					// 技能：模板非空白名单时只启用白名单里的；否则按主会话禁用集过滤。
+					// 技能：模板非空白名单时只启用白名单里的（显式配置优先于预设）；
+					// 否则按主会话禁用集过滤。预设拿掉 skill 加载器时（minimal/code/ask）
+					// 名录同步隐藏——列出来但调不动只是噪音（见 tool-manager.ts 语义总表）。
 					skillsOverride: (res) => {
 						if (apply && apply.enabledSkills.length > 0) {
 							const set = new Set(apply.enabledSkills);
 							return { ...res, skills: res.skills.filter((s) => set.has(s.name)) };
 						}
+						const preset =
+							this.convs.get(ownerId ?? "")?.agentPreset ?? this.settingsSvc.current.defaultAgentPreset ?? "standard";
+						if (!presetShowsSkillCatalog(preset)) return { ...res, skills: [] };
 						return {
 							...res,
 							skills: res.skills.filter((s) => !this.settingsSvc.current.disabledSkills.includes(s.name)),
@@ -2680,33 +3639,109 @@ export class ClientSession {
 				// 「默认 bash 覆盖」开关（terminalBash）关 → 原生 SDK bash（纯进程、不开终端）；
 				// 开 → 终端接管 bash（persist 决定一次性/持久，可静默自动转后台）。
 				customTools: [
-					makeAdaptiveBashTool(
-						// issue #91：bash 返回按客户端 UI 语言出中英（英文默认）。
-						makeKillableBashTool(effectiveCwd, this.bashKills, () => this.getLang()),
-						makeTerminalBashTool(terminals, {
-							cwd: effectiveCwd,
-							// 设置开 = 用终端；此分支里 persist 未显式给时默认一次性（false）。
-							defaultPersist: () => false,
-							idleMs: () => Math.max(0, Math.floor(this.settingsSvc.current.terminalBashIdleMs) || 0),
-							kills: this.bashKills,
-							notifyBackgroundDone: (info) => this.notifyTerminalBashDone(terminals, info),
-							// issue #91：bash 返回按客户端 UI 语言出中英（英文默认）。
-							lang: () => this.getLang(),
-						}),
-						// 设置关 → 原生 bash；开 → 终端 bash。
-						() => this.settingsSvc.current.terminalBash,
+					// P1-5：bash/read 包插件拦截（pre 拒/问即拦、post 脱敏补上下文；
+					// 未注入 toolGuard 时 withToolGuard 原样返回，零开销）。
+					// 权限沙箱拦截（只读模式拦截终端执行）。
+					wrapBashToolWithPermission(
+						withToolGuard(
+							makeAdaptiveBashTool(
+								// issue #91：bash 返回按客户端 UI 语言出中英（英文默认）。
+								makeKillableBashTool(effectiveCwd, this.bashKills, () => this.getLang()),
+								makeTerminalBashTool(terminals, {
+									cwd: effectiveCwd,
+									// 设置开 = 用终端；此分支里 persist 未显式给时默认一次性（false）。
+									defaultPersist: () => false,
+									idleMs: () => Math.max(0, Math.floor(this.settingsSvc.current.terminalBashIdleMs) || 0),
+									kills: this.bashKills,
+									notifyBackgroundDone: (info) => this.notifyTerminalBashDone(terminals, info),
+									// issue #91：bash 返回按客户端 UI 语言出中英（英文默认）。
+									lang: () => this.getLang(),
+								}),
+								// 设置关 → 原生 bash；开 → 终端 bash。
+								() => this.settingsSvc.current.terminalBash,
+							),
+							{
+								toolName: "bash",
+								guard: this.toolGuard,
+								conversationId: () => ownerId,
+								getLang: () => this.getLang(),
+								cwd: effectiveCwd,
+								getRoots: () => this.roots,
+								askApproval: (toolCallId, toolName, params, reason, reasonEn, convId, category) =>
+									this.askApproval(toolCallId, toolName, params, reason, reasonEn, convId, category),
+								getRules: () => this.approvalRules.list(),
+							},
+						),
+						() =>
+							(ownerId ? this.convs.get(ownerId)?.permissionPreset : undefined) ??
+							this.settingsSvc.current.defaultPermissionPreset ??
+							"workspace-write-never",
+						() => this.getLang(),
 					),
 					...makePersistentTerminalTools(terminals, effectiveCwd, () => this.getLang()),
 					// 覆盖 SDK 内置 read（customTools 按 name 覆盖）：路径是目录时列出目录
 					// 条目（复用 SDK ls 的排序/`/` 后缀/截断口径），其余情况原样转发内置实现。
 					// 开关是行为开关（read 本体不可关），每次调用实时读设置——不进
 					// tool-manager 的 ActiveSet 目录。DSH 引擎无 customTool 注册面，不接。
-					makeReadDirTool(effectiveCwd, {
-						dirEnabled: () => this.settingsSvc.current.readDirEnabled !== false,
-						getLang: () => this.getLang(),
-					}),
-					// 不覆盖内置 edit 的独立宽松编辑工具（缩进不敏感匹配；开关看设置）。
-					makeEditSoftTool(effectiveCwd, () => this.getLang()),
+					withToolGuard(
+						makeReadDirTool(effectiveCwd, {
+							dirEnabled: () => this.settingsSvc.current.readDirEnabled !== false,
+							getLang: () => this.getLang(),
+						}),
+						{
+							toolName: "read",
+							guard: this.toolGuard,
+							conversationId: () => ownerId,
+							getLang: () => this.getLang(),
+							cwd: effectiveCwd,
+							getRoots: () => this.roots,
+							askApproval: (toolCallId, toolName, params, reason, reasonEn, convId, category) =>
+								this.askApproval(toolCallId, toolName, params, reason, reasonEn, convId, category),
+							getRules: () => this.approvalRules.list(),
+						},
+					),
+					// 覆盖 SDK 内置 write / edit，并在执行层注入会话级三档权限沙箱门禁与人机协同审批。
+					wrapWriteToolWithPermission(
+						effectiveCwd,
+						() =>
+							(ownerId ? this.convs.get(ownerId)?.permissionPreset : undefined) ??
+							this.settingsSvc.current.defaultPermissionPreset ??
+							"workspace-write-never",
+						() => this.roots,
+						() => this.getLang(),
+						(toolCallId, toolName, params, reason, reasonEn, convId, category) =>
+							this.askApproval(toolCallId, toolName, params, reason, reasonEn, convId, category),
+						() => ownerId,
+						() => this.approvalRules.list(),
+					),
+					wrapEditToolWithPermission(
+						effectiveCwd,
+						() =>
+							(ownerId ? this.convs.get(ownerId)?.permissionPreset : undefined) ??
+							this.settingsSvc.current.defaultPermissionPreset ??
+							"workspace-write-never",
+						() => this.roots,
+						() => this.getLang(),
+						(toolCallId, toolName, params, reason, reasonEn, convId, category) =>
+							this.askApproval(toolCallId, toolName, params, reason, reasonEn, convId, category),
+						() => ownerId,
+						() => this.approvalRules.list(),
+					),
+					// 不覆盖内置 edit 的独立宽松编辑工具（缩进不敏感匹配；开关看设置；带权限沙箱拦截与人机协同）。
+					wrapEditSoftToolWithPermission(
+						makeEditSoftTool(effectiveCwd, () => this.getLang()),
+						effectiveCwd,
+						() =>
+							(ownerId ? this.convs.get(ownerId)?.permissionPreset : undefined) ??
+							this.settingsSvc.current.defaultPermissionPreset ??
+							"workspace-write-never",
+						() => this.roots,
+						() => this.getLang(),
+						(toolCallId, toolName, params, reason, reasonEn, convId, category) =>
+							this.askApproval(toolCallId, toolName, params, reason, reasonEn, convId, category),
+						() => ownerId,
+						() => this.approvalRules.list(),
+					),
 					// 插件注册的 AI 工具（创建时刻的实时快照，已按 disabledPluginTools 过滤；
 					// 后续注册经 refreshPluginTools 动态补入已有会话）。
 					// 子代理模板带非空扩展白名单时不注入：插件/MCP 工具没有 SDK extensionKey
@@ -2731,6 +3766,13 @@ export class ClientSession {
 						: [makeDelegateTaskTool(this.subagentHost)]),
 					// 内置标记只读查询工具（todo/svc 状态查询，写操作走内联标记）。
 					makeMarkersListTool(() => this.activeId, this.markerSvc),
+					// 结构化任务计划更新（Plan Mode / Step State Machine）。
+					makePlanUpdateTool(
+						this.planManager,
+						() => ownerId ?? this.activeId,
+						(msg) => this.emit(msg),
+						() => this.flushSnapshot(),
+					),
 					// 标准引擎的 ask_user_question：模型调用 → 浏览器富渲染问卷（复用 DSH
 					// 的 question_pending/question_answer 协议，前端 DshQuestionDialog）。
 					// DSH 引擎不经此（它走 goal-rpc 的 userQuestions provider）。
@@ -2772,6 +3814,9 @@ export class ClientSession {
 					// 子代理会话同样注册（owner 即真正派发的父对话，读该会话 loader）。
 					// DSH 引擎无 customTool 注册面，不接。开关走统一工具 tab。
 					makeSkillTool(this.skillToolHost(ownerId), () => this.getLang()),
+					// 主动压缩上下文工具（compact_context）：AI 主动根据当前问题精简上下文。
+					// 开关走统一工具 tab（ActiveSet 门控）。DSH 引擎无 customTool 注册面，不接。
+					makeCompactContextTool(this.compactContextHost(ownerId), () => this.getLang()),
 					// 定时唤醒三件套（schedule_task/list/cancel，issue #193）：默认绑定
 					// 发起对话（ownerId，无则活动对话），到期 steer 语义唤醒它；子代理
 					// 会话同样注册（owner 即真正派发的父对话）。开关走统一工具 tab。
@@ -2813,6 +3858,9 @@ export class ClientSession {
 			session: runtime.session,
 			cwd: runtime.cwd,
 			createdAt: Date.now(),
+			agentPreset: this.settingsSvc.current.defaultAgentPreset ?? "standard",
+			presetLocked: false,
+			permissionPreset: this.settingsSvc.current.defaultPermissionPreset ?? "workspace-write-never",
 			// A brand-new conversation is not yet LISTED — it enters the running
 			// list only when it is displaced to the background while still
 			// streaming (its runtime is what `listed` protects). A blank chat is
@@ -2840,6 +3888,7 @@ export class ClientSession {
 			queueFollowUp: [],
 			toolStartTimes: new Map(),
 			toolWatchdogs: new Map(),
+			workspaceSnapshots: [],
 		};
 	}
 
@@ -2949,6 +3998,9 @@ export class ClientSession {
 		// Reconnect: push the global default model (the picker's ★ marker +
 		// "set as global default" button state).
 		this.pushDefaultModel();
+		// Reconnect: push agent presets and permission presets (align with DSH).
+		this.refreshAgentPresets();
+		this.refreshPermission();
 		// PTYs are conversation-owned and survive a socket reconnect.
 		this.pushTerminals();
 	}
@@ -3741,6 +4793,24 @@ export class ClientSession {
 				} catch {
 					// sidecar 只是加速 + 防压缩丢失，失败了下次重算
 				}
+				// AI 主动上下文压缩：若本轮调过 compact_context，在回合结算后异步执行压缩
+				if (!event.willRetry && !aborted && conv.pendingCompaction && !this.disposed) {
+					const pending = conv.pendingCompaction;
+					conv.pendingCompaction = null;
+					setTimeout(() => {
+						if (!this.disposed) {
+							void this.executePendingCompaction(conv, pending);
+						}
+					}, 50);
+				}
+				break;
+			}
+			case "agent_settled": {
+				if (conv.pendingCompaction && !this.disposed) {
+					const pending = conv.pendingCompaction;
+					conv.pendingCompaction = null;
+					void this.executePendingCompaction(conv, pending);
+				}
 				break;
 			}
 			case "entry_appended": {
@@ -4067,6 +5137,19 @@ export class ClientSession {
 			retry: conv.retryState ?? null,
 			compaction: conv.compactionState ?? null,
 			pendingQuestion: this.pendingQuestionForSnapshot(),
+			pendingApproval: this.pendingApprovalForSnapshot(),
+			plan: this.planManager.getPlan(this.activeId),
+			subagentHandoffs: this.subagentHandoffs.length > 0 ? [...this.subagentHandoffs] : undefined,
+			agentPreset: conv
+				? {
+						id: conv.agentPreset ?? "standard",
+						name: PI_AGENT_PRESETS.find((p) => p.id === conv.agentPreset)?.name ?? "全功能",
+						locked: conv.presetLocked || !this.isBlankConversation(conv),
+					}
+				: null,
+			permission: conv
+				? (conv.permissionPreset ?? this.settingsSvc.current.defaultPermissionPreset ?? "workspace-write-never")
+				: null,
 			// 未发送草稿只跟全量快照走（切会话/new_chat/get_state）：增量 delta 里
 			// 这个 key 必须整个缺席（不能是显式的 undefined——前端 delta 合并是
 			// {...ui, ...d.state} 整批覆盖，显式 undefined 会把上次全量带回的草稿洗掉）。
@@ -4253,6 +5336,9 @@ export class ClientSession {
 		for (const p of this.pendingQuestions.values()) {
 			if (p.conversationId === undefined || p.conversationId === conversationId) return true;
 		}
+		for (const a of this.pendingApprovals.values()) {
+			if (a.conversationId === undefined || a.conversationId === conversationId) return true;
+		}
 		return false;
 	}
 
@@ -4300,6 +5386,238 @@ export class ClientSession {
 			questions: q.questions,
 			...(q.conversationTitle ? { conversationTitle: q.conversationTitle } : {}),
 		});
+	}
+
+	// -----------------------------------------------------------------------
+	// 人机协同工具审批桥（Tool Approval: Human-in-the-Loop Edit & Run）
+	// -----------------------------------------------------------------------
+
+	/**
+	 * 弹审批（Human-in-the-Loop）。**三档放行门禁在入口**（策略纯函数见
+	 * server/tool-approval.ts 的 approvalSuppressionReason）：
+	 * - 全局开关关（设置 →「工具」页）→ 直接批准（不弹）；
+	 * - 本对话「全部允许」/ 已记住该同类 → 直接批准（不弹）。
+	 * 门禁都返回已 resolve 的 Promise，调用方（withToolGuard / 三个权限包装）
+	 * 无需关心是否真的弹过窗。
+	 */
+	askApproval(
+		toolCallId: string,
+		toolName: string,
+		params: unknown,
+		reason?: string,
+		reasonEn?: string,
+		conversationId?: string,
+		category?: UiApprovalCategory,
+	): Promise<ToolApprovalResolution> {
+		return new Promise((resolve) => {
+			if (this.disposed) {
+				resolve({ decision: "deny", reason: "会话已关闭" });
+				return;
+			}
+			const id = `appr-${++this.approvalSeq}`;
+			const conv = conversationId ? this.convs.get(conversationId) : this.conv;
+			const suppression = approvalSuppressionReason(
+				conv?.approvalPolicy,
+				this.settingsSvc.current.toolApprovalEnabled !== false,
+				category?.id,
+			);
+			if (suppression) {
+				// 放行但不弹窗：不记 pending，不发消息，模型继续跑。
+				resolve({ decision: "approve" });
+				return;
+			}
+			const conversationTitle = conv?.title;
+			const entry: PendingApprovalEntry = {
+				id,
+				toolCallId,
+				toolName,
+				params: params as Record<string, unknown>,
+				reason,
+				reasonEn,
+				...(category ? { category } : {}),
+				conversationId,
+				conversationTitle,
+				resolve,
+				createdAt: Date.now(),
+			};
+			this.pendingApprovals.set(id, entry);
+			this.emit({
+				type: "tool_approval_pending",
+				id,
+				toolCallId,
+				toolName,
+				params: params as Record<string, unknown>,
+				reason,
+				reasonEn,
+				...(category ? { category } : {}),
+				...(conversationId !== undefined ? { conversationId } : {}),
+				...(conversationTitle ? { conversationTitle } : {}),
+			});
+			this.flushSnapshot();
+		});
+	}
+
+	/**
+	 * 审批答复。scope（仅 approve 有效）是「不再问」的两档记忆：
+	 * - "category"：记住本对话的该同类档位；
+	 * - "all"：本对话后续全部允许。
+	 * 记住后，同一对话里**已被覆盖的其它待审批项一并放行**（否则用户点了
+	 * 「全部允许」却还有几张弹窗挂着等点），并推一次设置面板（撤销区）。
+	 */
+	resolveToolApproval(
+		id: string,
+		decision: "approve" | "deny" | "edit",
+		editedParams?: unknown,
+		reason?: string,
+		scope?: "once" | "category" | "all",
+	): boolean {
+		const pending = this.pendingApprovals.get(id);
+		if (!pending) return false;
+		const convId = pending.conversationId ?? this.activeId;
+		const conv = this.convs.get(convId);
+		this.pendingApprovals.delete(id);
+		pending.resolve({ decision, editedParams, reason });
+		this.emit({ type: "tool_approval_resolved", id });
+		if (decision === "approve" && scope && scope !== "once" && conv) {
+			const policy = this.ensureApprovalPolicy(conv);
+			if (scope === "all") policy.allowAll = true;
+			else if (pending.category) policy.categories.set(pending.category.id, pending.category);
+			this.emitApprovalPolicyNotice(scope, pending.category, this.approveCoveredPending(convId, policy));
+			this.settingsSvc.push();
+		}
+		this.flushSnapshot();
+		return true;
+	}
+
+	/** 取出（或建出）对话的审批策略对象。 */
+	private ensureApprovalPolicy(conv: Conversation): ApprovalPolicy {
+		if (!conv.approvalPolicy) conv.approvalPolicy = { allowAll: false, categories: new Map() };
+		return conv.approvalPolicy;
+	}
+
+	/** 把某对话里已被策略覆盖的其它待审批项一并放行，返回放行条数。 */
+	private approveCoveredPending(convId: string, policy: ApprovalPolicy): number {
+		let n = 0;
+		// eslint-disable-next-line unicorn/no-useless-spread -- 快照：循环里会从 map 删项（迭代中改集合）
+		for (const [oid, o] of [...this.pendingApprovals]) {
+			if ((o.conversationId ?? this.activeId) !== convId) continue;
+			if (!approvalSuppressionReason(policy, true, o.category?.id)) continue;
+			this.pendingApprovals.delete(oid);
+			o.resolve({ decision: "approve" });
+			this.emit({ type: "tool_approval_resolved", id: oid });
+			n++;
+		}
+		return n;
+	}
+
+	/** 记住策略后给用户一句回执（文本双语，前端按 locale 自选）。 */
+	private emitApprovalPolicyNotice(scope: "category" | "all", category?: UiApprovalCategory, auto = 0): void {
+		const tailZh = auto > 0 ? `，并已自动放行另外 ${auto} 项待审批` : "";
+		const tailEn = auto > 0 ? ` (auto-approved ${auto} other pending request(s))` : "";
+		if (scope === "all") {
+			this.emit({
+				type: "notice",
+				level: "info",
+				text: `本对话已允许全部工具审批，后续高危操作不再询问${tailZh}；可在 设置 →「工具」页撤销。`,
+				textEn: `All tool approvals are now allowed in this conversation${tailEn}; revoke it under Settings → Tools.`,
+			});
+			return;
+		}
+		const label = category?.label ?? "同类";
+		const labelEn = category?.labelEn ?? "this category";
+		this.emit({
+			type: "notice",
+			level: "info",
+			text: `本对话已允许「${label}」类操作，后续同类不再询问${tailZh}；可在 设置 →「工具」页撤销。`,
+			textEn: `Allowed "${labelEn}" in this conversation${tailEn}; revoke it under Settings → Tools.`,
+		});
+	}
+
+	/** 全局审批开关被关掉时：挂着的待审批全部按批准放行（否则弹窗还在等人点）。 */
+	autoApprovePendingApprovals(reasonZh: string, reasonEn: string): void {
+		if (this.pendingApprovals.size === 0) return;
+		let n = 0;
+		// eslint-disable-next-line unicorn/no-useless-spread -- 快照：循环里会从 map 删项（迭代中改集合）
+		for (const [oid, o] of [...this.pendingApprovals]) {
+			this.pendingApprovals.delete(oid);
+			o.resolve({ decision: "approve" });
+			this.emit({ type: "tool_approval_resolved", id: oid });
+			n++;
+		}
+		this.emit({
+			type: "notice",
+			level: "info",
+			text: `${reasonZh}，已自动放行 ${n} 项待审批。`,
+			textEn: `${reasonEn} — auto-approved ${n} pending request(s).`,
+		});
+		this.flushSnapshot();
+	}
+
+	/**
+	 * 设置面板撤销区用：当前对话的审批策略（allowAll + 已记住的同类档位）。
+	 * 只回当前对话——撤销本来就是「在这里关掉这里的东西」，别的对话要撤销
+	 * 就切过去（策略跟对话走，见 Conversation.approvalPolicy）。
+	 */
+	approvalPolicyState(): UiApprovalPolicyState {
+		const conv = this.convs.get(this.activeId);
+		const policy = conv?.approvalPolicy;
+		return {
+			conversationId: this.activeId,
+			allowAll: policy?.allowAll ?? false,
+			categories: policy ? [...policy.categories.values()] : [],
+		};
+	}
+
+	/**
+	 * 设置某对话的审批策略（设置面板撤销用）。只应用给出的字段：allowAll 直接赋值；
+	 * categories 给出时作为保留名单整体替换（空数组 = 清掉全部同类记忆）。
+	 */
+	setApprovalPolicy(partial: { conversationId?: string; allowAll?: boolean; categories?: string[] }): void {
+		const convId = partial.conversationId ?? this.activeId;
+		const conv = this.convs.get(convId);
+		if (!conv) return;
+		const cur = conv.approvalPolicy;
+		const next: ApprovalPolicy = {
+			allowAll: partial.allowAll ?? cur?.allowAll ?? false,
+			categories: new Map(cur?.categories ?? []),
+		};
+		if (partial.categories) {
+			const keep = new Set(partial.categories);
+			// eslint-disable-next-line unicorn/no-useless-spread -- 快照：循环里会从 map 删项（迭代中改集合）
+			for (const key of [...next.categories.keys()]) if (!keep.has(key)) next.categories.delete(key);
+		}
+		conv.approvalPolicy = isApprovalPolicyEmpty(next) ? undefined : next;
+		this.settingsSvc.push();
+		this.flushSnapshot();
+	}
+
+	private pendingApprovalForSnapshot(): UiState["pendingApproval"] {
+		for (const [id, p] of this.pendingApprovals) {
+			if (p.conversationId !== undefined && p.conversationId !== this.activeId) continue;
+			return {
+				id,
+				toolCallId: p.toolCallId,
+				toolName: p.toolName,
+				params: p.params,
+				reason: p.reason,
+				reasonEn: p.reasonEn,
+				...(p.category ? { category: p.category } : {}),
+				conversationId: p.conversationId,
+				conversationTitle: p.conversationTitle,
+			};
+		}
+		return null;
+	}
+
+	updatePlan(steps: import("./protocol.js").PlanStep[], activeStepId?: string | null, conversationId?: string): void {
+		const convId = conversationId ?? this.activeId;
+		const plan = this.planManager.setPlan(convId, steps, activeStepId);
+		this.emit({
+			type: "plan_updated",
+			conversationId: convId,
+			plan,
+		});
+		this.flushSnapshot();
 	}
 
 	/** 关闭所有挂起提问（dispose 时清理）：以「取消」解析，避免模型挂死。 */
@@ -4670,7 +5988,7 @@ export class ClientSession {
 		}
 		try {
 			const targets = collectTargets(this.agentDir, ClientSession.currentAppVersion(), undefined, {
-				projectCwd: this.conv?.cwd ?? this.cwd,
+				projectCwd: this.convs.get(this.activeId)?.cwd ?? this.cwd,
 			});
 			const items = sortUpdateItems(
 				await checkAllUpdates(targets, undefined, () => this.getLang(), resolveNpmRegistry(this.agentDir)),
@@ -4908,6 +6226,16 @@ export class ClientSession {
 	}
 	fetchModelsList(reqId: number, baseUrl: string, apiKey?: string, authHeader?: boolean, api?: string): Promise<void> {
 		return this.modelAdmin.fetchModelsList(reqId, baseUrl, apiKey, authHeader, api, () => this.getLang());
+	}
+
+	testModelConnection(
+		reqId: number,
+		baseUrl: string,
+		apiKey?: string,
+		authHeader?: boolean,
+		api?: string,
+	): Promise<void> {
+		return this.modelAdmin.testConnection(reqId, baseUrl, apiKey, authHeader, api, () => this.getLang());
 	}
 	refreshProviderModels(providerId: string, reqId: number): Promise<void> {
 		return this.modelAdmin.refreshProviderModels(providerId, reqId, () => this.getLang());
@@ -5204,6 +6532,11 @@ export class ClientSession {
 			markerChanged = true;
 		}
 		await this.settingsSvc.set(rest as never);
+		// 审批总开关被关掉 → 挂着的待审批全部按批准放行（否则弹窗还在等人点，
+		// 而用户已经明确表示「不要再问我了」）。
+		if ((rest as { toolApprovalEnabled?: unknown }).toolApprovalEnabled === false) {
+			this.autoApprovePendingApprovals("审批已全局关闭", "Tool approval was disabled globally");
+		}
 		if ((rest as { disabledPluginTools?: unknown }).disabledPluginTools !== undefined) {
 			this.refreshPluginTools();
 			this.flushSnapshot();
@@ -5254,6 +6587,26 @@ export class ClientSession {
 		return this.settingsSvc.saveTemplate(template);
 	}
 
+	/** 保存一条审批规则（全局共享）。 */
+	async saveApprovalRule(rule: UiApprovalRule): Promise<void> {
+		return this.settingsSvc.saveApprovalRule(rule);
+	}
+
+	/** 批量保存审批规则（全局共享）。 */
+	async saveApprovalRules(rules: UiApprovalRule[]): Promise<void> {
+		return this.settingsSvc.saveApprovalRules(rules);
+	}
+
+	/** 删除一条自定义审批规则。 */
+	async deleteApprovalRule(id: string): Promise<void> {
+		return this.settingsSvc.deleteApprovalRule(id);
+	}
+
+	/** 恢复某条内置审批规则到系统默认。 */
+	async resetBuiltinApprovalRule(id: string): Promise<void> {
+		return this.settingsSvc.resetBuiltinApprovalRule(id);
+	}
+
 	/** 删除一个子代理模板。 */
 	async deleteSubagentTemplate(name: string): Promise<void> {
 		return this.settingsSvc.deleteTemplate(name);
@@ -5264,13 +6617,23 @@ export class ClientSession {
 		return this.settingsSvc.applyRuntime();
 	}
 
+	/** 按会话对象反查所属对话的预设（创建早期对话还没进 map 时返回 undefined，
+	 *  调用方回落默认预设；比按 activeId 猜更准——后台对话的门控不再吃当前页的预设）。 */
+	private presetOfSession(session: AgentSession): string | undefined {
+		for (const c of this.convs.values()) if (c.session === session) return c.agentPreset;
+		return undefined;
+	}
+
 	/** 统一工具门控（tool_manage 唯一落点）：按 disabledAgentTools 把目录内工具
 	 *  逐个加回/剔除活跃集（工具仍留在注册表，重开可直接加回；live 生效无需
-	 *  reload）。session.reload() 与新会话创建都会把 custom 工具加回活跃集，
+	 *  reload）。支持按当前会话预设（preset）进行工具过滤。
+	 *  session.reload() 与新会话创建都会把 custom 工具加回活跃集，
 	 *  所以这两条路径之后都要重放本方法（见 reloadSession/创建处）。 */
-	private applyToolGating(session: AgentSession): void {
-		applyAgentToolsGating(session, effectiveDisabledAgentTools(this.settingsSvc.current));
-		this.syncPluginTools(session);
+	private applyToolGating(session: AgentSession, preset?: string): void {
+		const targetPreset =
+			preset ?? this.presetOfSession(session) ?? this.settingsSvc.current.defaultAgentPreset ?? "standard";
+		applyAgentToolsGating(session, effectiveDisabledAgentTools(this.settingsSvc.current), targetPreset);
+		this.syncPluginTools(session, targetPreset);
 		// SDK 的 setActiveToolsByName 只改 agent.state.tools，不派发任何事件——门控后
 		// 主动推一次快照，否则快照里的 tools 要等下一个 SDK 事件才对齐（会话空闲时永远
 		// 等不到；回归：tests/terminal-smoke-test.mjs「agent exposes persistent terminal tools」）。
@@ -5279,9 +6642,145 @@ export class ClientSession {
 		if (active && active.session === session) this.flushSnapshot();
 	}
 
+	/** 判断是否为空白对话（无消息、无队列、未在流式生成）。 */
+	isBlankConversation(c: Conversation): boolean {
+		try {
+			return (
+				c.session.state.messages.length === 0 &&
+				c.queueSteering.length === 0 &&
+				c.queueFollowUp.length === 0 &&
+				!c.session.isStreaming
+			);
+		} catch {
+			return false;
+		}
+	}
+
+	/** 推送 Agent 预设名录（UI 预设条用）。 */
+	async refreshAgentPresets(): Promise<void> {
+		this.emit({
+			type: "dsh_presets",
+			presets: PI_AGENT_PRESETS,
+			defaultPreset: this.settingsSvc.current.defaultAgentPreset ?? "standard",
+		});
+	}
+
+	/** 切换当前空白会话的预设。 */
+	async selectAgentPreset(preset: string): Promise<void> {
+		const conv = this.conv;
+		if (conv.presetLocked || !this.isBlankConversation(conv)) {
+			conv.presetLocked = true;
+			this.emit({
+				type: "notice",
+				level: "warning",
+				text: `会话已开始，预设锁定为「${PI_AGENT_PRESETS.find((p) => p.id === conv.agentPreset)?.name ?? conv.agentPreset}」（空白会话可切换）`,
+				textEn: `Session already started; preset locked to "${conv.agentPreset}" (only blank sessions can switch)`,
+			});
+			this.flushSnapshot();
+			return;
+		}
+		const hit = PI_AGENT_PRESETS.find((p) => p.id === preset);
+		if (!hit) {
+			this.emit({
+				type: "notice",
+				level: "warning",
+				text: `未知预设「${preset}」`,
+				textEn: `Unknown preset "${preset}"`,
+			});
+			return;
+		}
+		conv.agentPreset = hit.id;
+		this.applyToolGating(conv.session, hit.id);
+		// 技能名录段/终端引导是按 run 组装的提示词：重载 resourceLoader 让新预设
+		// 即时生效（只有空白会话能切到这里，无历史可丢）。
+		try {
+			await conv.session.resourceLoader.reload();
+		} catch {
+			// loader 未就绪——首轮 run 组装时自然读到新预设。
+		}
+		this.emit({
+			type: "notice",
+			level: "info",
+			text: `已切换为「${hit.name}」预设`,
+			textEn: `Switched to preset "${hit.name}"`,
+		});
+		this.flushSnapshot();
+	}
+
+	/** 设置新会话默认预设。 */
+	async setDefaultAgentPreset(preset: string): Promise<void> {
+		const hit = PI_AGENT_PRESETS.find((p) => p.id === preset);
+		if (!hit) {
+			this.emit({
+				type: "notice",
+				level: "warning",
+				text: `未知预设「${preset}」，默认预设未改`,
+				textEn: `Unknown preset "${preset}"; default preset unchanged`,
+			});
+			return;
+		}
+		this.settingsSvc.current.defaultAgentPreset = hit.id;
+		this.stateStore.saveSettings(this.clientId, { defaultAgentPreset: hit.id });
+		this.pushSettings();
+		this.refreshAgentPresets();
+		this.flushSnapshot();
+	}
+
+	/** 推送权限选项表 + 默认权限。 */
+	async refreshPermission(): Promise<void> {
+		this.emit({
+			type: "dsh_permission",
+			options: PI_PERMISSION_OPTIONS,
+			defaultPreset: this.settingsSvc.current.defaultPermissionPreset ?? "workspace-write-never",
+		});
+	}
+
+	/** 切换当前会话的权限预设（热生效）。 */
+	async setPermissionPreset(preset: string): Promise<void> {
+		const hit = PI_PERMISSION_OPTIONS.find((p) => p.value === preset);
+		if (!hit) {
+			this.emit({
+				type: "notice",
+				level: "warning",
+				text: `未知权限预设「${preset}」`,
+				textEn: `Unknown permission preset "${preset}"`,
+			});
+			return;
+		}
+		this.conv.permissionPreset = hit.value;
+		this.emit({
+			type: "notice",
+			level: "info",
+			text: `当前会话权限已切换为「${hit.name}」`,
+			textEn: `Current session permission switched to "${hit.name}"`,
+		});
+		this.flushSnapshot();
+	}
+
+	/** 设置新会话默认权限预设。 */
+	async setDefaultPermissionPreset(preset: string): Promise<void> {
+		const hit = PI_PERMISSION_OPTIONS.find((p) => p.value === preset);
+		if (!hit) {
+			this.emit({
+				type: "notice",
+				level: "warning",
+				text: `未知权限预设「${preset}」，默认未改`,
+				textEn: `Unknown permission preset "${preset}"; default unchanged`,
+			});
+			return;
+		}
+		this.settingsSvc.current.defaultPermissionPreset = hit.value;
+		this.stateStore.saveSettings(this.clientId, { defaultPermissionPreset: hit.value });
+		this.refreshPermission();
+		this.flushSnapshot();
+	}
+
 	/** 当前启用的插件 AI 工具定义（provider 快照按 disabledPluginTools 过滤；
-	 *  未知/已卸载插件的禁用条目保留但不影响现有工具）。 */
-	private enabledPluginToolDefs(): ToolDefinition[] {
+	 *  未知/已卸载插件的禁用条目保留但不影响现有工具）。
+	 *  预设是第二层门控（见 tool-manager.ts 语义总表）：非 standard 预设下插件工具
+	 *  一律不可用（读写未知，保守处理），此时返回空表，调用方负责从会话移除。 */
+	private enabledPluginToolDefs(preset?: string): ToolDefinition[] {
+		if (!presetAllowsPluginTools(preset)) return [];
 		const off = new Set(normalizeDisabledPluginTools(this.settingsSvc.current.disabledPluginTools));
 		return (this.pluginToolsProvider?.() ?? []).filter((t) => !off.has(t.name)).map(pluginToolToDefinition);
 	}
@@ -5290,16 +6789,25 @@ export class ClientSession {
 	 *  实际 diff 逻辑在 plugins.ts 的 syncPluginToolsIntoSession（可单测）。
 	 *  模板白名单的子代理（subagentBarsPluginTools）跳过：工厂期就没注册，这里
 	 *  不回补，否则白名单等于没关门。 */
-	private syncPluginTools(session: AgentSession): void {
+	private syncPluginTools(session: AgentSession, preset?: string): void {
+		let targetPreset = preset;
 		for (const conv of this.convs.values()) {
-			if (conv.session === session && conv.subagentBarsPluginTools) return;
+			if (conv.session !== session) continue;
+			if (conv.subagentBarsPluginTools) return;
+			targetPreset ??= conv.agentPreset;
 		}
 		try {
-			const defs = this.enabledPluginToolDefs();
+			const defs = this.enabledPluginToolDefs(targetPreset);
+			// 移除口径 = 已同步过的 ∪ 全量插件宇宙：创建时工厂直接注册进
+			// _customTools 的工具不在 applied 表里，首轮同步（defs 为空时）否则删不掉。
+			const universe = new Set([
+				...this.appliedPluginToolNames,
+				...(this.pluginToolsProvider?.() ?? []).map((t) => t.name),
+			]);
 			const next = syncPluginToolsIntoSession(
 				session as unknown as Parameters<typeof syncPluginToolsIntoSession>[0],
 				defs as unknown as Parameters<typeof syncPluginToolsIntoSession>[1],
-				this.appliedPluginToolNames,
+				universe,
 			);
 			if (next) this.appliedPluginToolNames = new Set(next);
 		} catch (err) {
@@ -5561,6 +7069,7 @@ export class ClientSession {
 		text: string,
 		attachments?: {
 			path: string;
+			/** "inline" is a legacy alias of "reference"（见 protocol.ts 的 PromptAttachment）。 */
 			mode?: "inline" | "reference" | "lines";
 			lines?: { start: number; end: number };
 			/** Raw pasted/dropped/uploaded image (base64) — bypasses workspace path. */
@@ -5584,6 +7093,8 @@ export class ClientSession {
 		// switch/new_chat while prompt() is in flight must never target a
 		// different conversation.
 		const conv = this.conv;
+		const promptAc = new AbortController();
+		conv.activePromptAc = promptAc;
 		// 输入框内容被消费（发送/斜杠执行）→ 清掉该会话存过的草稿（best-effort）。
 		// 快捷短语发送（不碰输入框）同样清：客户端发送成功后会把当前草稿重存回来。
 		// clear() 同时记录 clear 时间戳水位：清掉之后才 landing 的旧 draft_update
@@ -5607,6 +7118,9 @@ export class ClientSession {
 			// even while quiesced. Everything that reaches the SDK is NEW work and
 			// is refused until admission reopens.
 			if (this.quiesceBlocked()) return;
+
+			// 首轮用户发言后锁定当前会话的预设（对齐 DSH 预设语义）
+			conv.presetLocked = true;
 			// #280：悬空 toolCall 守卫——转录尾是「有调用、无结果」时直接 prompt
 			// 会把非法链喂给 provider（有发起迹象但零落盘、零报错的黑洞）。
 			// 非流式时先补合成结果再继续；补不上则响亮拒绝。
@@ -5653,6 +7167,14 @@ export class ClientSession {
 						}
 						if (healed === dangling.length && healed > 0) {
 							conv.transcriptBlocked = false;
+							try {
+								await s.reload();
+								this.applyRetryOverrides();
+								this.applyCompactionOverrides();
+								this.applyToolGating(s, conv.agentPreset);
+							} catch {
+								// reload 失败兜底
+							}
 							this.emit({
 								type: "notice",
 								level: "warning",
@@ -5797,16 +7319,25 @@ export class ClientSession {
 						.filter((r) => r.hits.length > 0);
 					const extNoteEn = externalRunners.length > 0 ? ` Touched files of external run(s) are unknown.` : "";
 					const extNoteZh = externalRunners.length > 0 ? `外部运行的文件触碰未知。` : "";
+					// 预设拿掉问卷工具时（minimal/code/ask），提醒文案不点不存在的工具名，
+					// 改走正文提问（见 tool-manager.ts 语义总表；认领信息本身照常有用）。
+					const canAsk = presetHasQuestionnaire(
+						conv.agentPreset ?? this.settingsSvc.current.defaultAgentPreset ?? "standard",
+					);
+					const askClauseEn = canAsk
+						? "use ask_user_question when unsure "
+						: "ask the user in your reply text when unsure ";
+					const askClauseZh = canAsk ? "拿不准就用 ask_user_question 让用户选择：" : "拿不准就在回复正文里直接问用户：";
 					let aiReminder: string;
 					if (clashes.length === 0 && myClaimed.length === 0) {
 						aiReminder =
 							`(System reminder: ${aiItems.length} other run(s) [${aiItems.join("; ")}] ` +
 							`are currently running in the same project directory. No file written by both you and them was detected, ` +
 							`so working on different files in parallel is fine; before writing the same files or running project-wide ` +
-							`commands, assess the conflict risk first, and use ask_user_question when unsure ` +
+							`commands, assess the conflict risk first, and ${askClauseEn}` +
 							`(continue in parallel / wait / watch read-only).${extNoteEn}${claimsSummaryEn})\n` +
 							`（系统提醒：同一项目另有 ${aiItems.length} 处运行（${shown}${more}）。未发现双方都写过的文件，` +
-							`改不同文件可并行；动同一文件或跑全局命令前先评估冲突，拿不准就用 ask_user_question 让用户选择：` +
+							`改不同文件可并行；动同一文件或跑全局命令前先评估冲突，${askClauseZh}` +
 							`并行 / 等它跑完 / 只读围观。${extNoteZh}${claimsSummaryZh}）`;
 					} else {
 						// 有交集档：每处 ≤3 条完整路径 + 计数（路径永不截断，见 conversation-touches）。
@@ -5825,10 +7356,10 @@ export class ClientSession {
 						aiReminder =
 							`(System reminder: ${aiItems.length} other run(s) [${aiItems.join("; ")}] ` +
 							`are currently running in the same project directory. ⚠ ${clashEn} — re-read these files before ` +
-							`touching them again, and use ask_user_question when unsure ` +
+							`touching them again, and ${askClauseEn}` +
 							`(continue in parallel / wait / watch read-only).${extNoteEn})\n` +
 							`（系统提醒：同一项目另有 ${aiItems.length} 处运行（${shown}${more}）。` +
-							`${clashZh} —— 再动这些文件前先读最新内容，拿不准就用 ask_user_question 让用户选择：` +
+							`${clashZh} —— 再动这些文件前先读最新内容，${askClauseZh}` +
 							`并行 / 等它跑完 / 只读围观。${extNoteZh}）`;
 					}
 					try {
@@ -5885,9 +7416,34 @@ export class ClientSession {
 				},
 				attachments,
 			);
-			for (const aside of asides) {
-				await s.sendCustomMessage(aside.message, { deliverAs: "nextTurn" });
+			if (promptAc.signal.aborted) {
+				conv.activePromptAc = undefined;
+				return;
 			}
+			for (const aside of asides) {
+				if (s.isStreaming) {
+					await s.sendCustomMessage(aside.message, { deliverAs: "nextTurn" });
+				} else {
+					await s.sendCustomMessage(aside.message);
+				}
+			}
+			// 附件处理完毕后立即刷新快照，让引用的文件卡片在等待模型首字前瞬间出现在界面上
+			if (asides.length > 0) {
+				this.flushSnapshot();
+			}
+			// 创建工作区版本影子快照（Dual-State Rollback）
+			let snapshotRef: string | null = null;
+			try {
+				snapshotRef = await createWorkspaceSnapshot(conv.cwd);
+			} catch {
+				// best-effort
+			}
+			if (promptAc.signal.aborted) {
+				conv.activePromptAc = undefined;
+				return;
+			}
+			conv.activePromptAc = undefined;
+
 			if (s.isStreaming) {
 				// queue=true (补充 button) → followUp: the message is delivered only
 				// after the whole run finishes — the agent finishes what it started,
@@ -5905,7 +7461,30 @@ export class ClientSession {
 			} else {
 				await s.prompt(text);
 			}
+
+			// 关联快照与本次 prompt 产生的用户消息 entry
+			if (snapshotRef) {
+				try {
+					const entries = conv.session.sessionManager.buildContextEntries();
+					const lastUserEntry = [...entries]
+						.reverse()
+						.find(
+							(e) => e.type === "message" && (e as unknown as { message?: { role?: string } }).message?.role === "user",
+						);
+					conv.workspaceSnapshots.push({
+						entryId: lastUserEntry?.id,
+						timestamp: Date.now(),
+						snapshotRef,
+					});
+					if (conv.workspaceSnapshots.length > 50) {
+						conv.workspaceSnapshots.shift();
+					}
+				} catch {
+					// best-effort
+				}
+			}
 		} catch (err) {
+			conv.activePromptAc = undefined;
 			this.emit({
 				type: "notice",
 				level: "error",
@@ -5928,15 +7507,12 @@ export class ClientSession {
 	/**
 	 * Turn attached files into custom-message payloads.
 	 *
-	 * Text files are size-aware: small files are inlined into the message so the
-	 * model sees them immediately; large files are passed as a <file path="...">
-	 * reference and the model reads them on demand with its read tool (which has
-	 * built-in truncation). Images are always passed as image content. Mode
-	 * "lines" inlines only a 1-based inclusive line range of the file. Raw
-	 * pasted/dropped/uploaded images (attachment.imageData) skip the workspace
-	 * path entirely and go straight to the model as image content. Raw uploaded
-	 * files (attachment.fileData) are persisted under <dataDir>/uploads/ and
-	 * attached as absolute-path references (small text ones are inlined).
+	 * 一律只给路径引用：文本文件（无论大小）都只发 `<file path="..." />`，模型用
+	 * 自己的 read 工具按需读（自带截断/分页）——文件内容永不进 prompt。行范围模式
+	 * （mode "lines"）在引用上带 lines 属性，告诉模型用户选的是哪几行。
+	 * 图片始终作为 image 内容发送。粘贴/拖入/上传的原始图片（attachment.imageData）
+	 * 不走工作区路径，直接进模型；上传文件（attachment.fileData）落在
+	 * <dataDir>/uploads/ 下，以绝对路径引用。
 	 */
 
 	/**
@@ -5948,6 +7524,15 @@ export class ClientSession {
 	 * overnight. The notice fires only on the forced-reset path.
 	 */
 	async abort(): Promise<void> {
+		if (this.conv.activePromptAc) {
+			this.conv.activePromptAc.abort();
+			this.conv.activePromptAc = undefined;
+		}
+		const isRunning = this.conversationStreaming(this.conv) || !this.conv.session.isIdle;
+		if (!isRunning) {
+			this.flushSnapshot();
+			return;
+		}
 		// 只停止智能体运行本身；AI 在后台启动的服务由「后台任务」面板单独
 		// 管理（可逐个停止或全部关闭），不会在停止对话时被连带杀掉。
 		await this.interruptRun(this.conv, "已停止");
@@ -6209,6 +7794,9 @@ export class ClientSession {
 
 	/** Interrupt a run: abort, with a force-reset fallback on timeout. */
 	private async interruptRun(conv: Conversation, reason: string): Promise<void> {
+		if (!this.conversationStreaming(conv) && conv.session.isIdle) {
+			return;
+		}
 		// The run is only truly stopped when its agent_end event arrives:
 		// session.abort() can return without stopping anything when the run is
 		// stuck before the agent even started (e.g. a model stream that never
@@ -6243,14 +7831,14 @@ export class ClientSession {
 				textEn: `Abort failed: ${(err as Error).message}`,
 			});
 		}
-		// 3) abort returned but no agent_end within the settle window → the
-		//    run was stuck before it started; force-reset to recover.
-		if (!ended) {
+		// 3) abort returned but no agent_end within the settle window:
+		//    仅在 session 依然处于非 idle 状态（即真正卡住）时才等待并强制重置
+		if (!ended && !conv.session.isIdle) {
 			await new Promise((r) => setTimeout(r, ClientSession.HARD_ABORT_SETTLE_MS));
 		}
 		clearTimeout(abortTimer);
 		off();
-		if (!ended) force();
+		if (!ended && !conv.session.isIdle) force();
 	}
 
 	/** Force-reset a conversation: dispose the stuck runtime (kills the hung
@@ -6345,7 +7933,6 @@ export class ClientSession {
 	 *  新对话（准入关闭 / 同项目对话数达上限 / runtime 创建失败），此时照发会把
 	 *  首条提示投进用户原本正在用的那个对话里。 */
 	async newChat(_preset?: string): Promise<boolean> {
-		// _preset: DSH Agent 预设（pi 引擎无此概念，忽略；wire 统一见 protocol new_chat）。
 		if (this.quiesceBlocked()) return false;
 		// Reuse an already-open blank conversation instead of piling up new ones
 		// on every click: if the active chat has no messages it IS the new chat
@@ -6362,14 +7949,16 @@ export class ClientSession {
 		};
 		const active = this.conv;
 		if (active && isBlank(active)) {
-			this.flushSnapshot();
+			if (_preset) await this.selectAgentPreset(_preset);
+			else this.flushSnapshot();
 			return true;
 		}
 		for (const conv of this.convs.values()) {
 			if (conv.id === this.activeId) continue;
 			if (isBlank(conv)) {
 				await this.switchConversation(conv.id);
-				this.flushSnapshot();
+				if (_preset) await this.selectAgentPreset(_preset);
+				else this.flushSnapshot();
 				return true;
 			}
 		}
@@ -6407,8 +7996,25 @@ export class ClientSession {
 				},
 			);
 			const conv = this.makeConversation(runtime, conversationId, terminals);
+			if (_preset) {
+				const hit = PI_AGENT_PRESETS.find((p) => p.id === _preset);
+				if (hit) conv.agentPreset = hit.id;
+			}
+			// 创建即按归属预设门控：工厂内只能按 active/默认兜底（conv 还没进 map），
+			// 默认预设非 standard 时那个结果是错的，这里用 conv 自身预设显式重放一次。
+			// conv 尚未进 map，preset 必须显式传，插件同步才能正确剥离。
+			this.applyToolGating(conv.session, conv.agentPreset);
 			this.convs.set(conv.id, conv);
 			this.activeId = conv.id;
+			if (_preset && conv.agentPreset !== (this.settingsSvc.current.defaultAgentPreset ?? "standard")) {
+				// 显式预设与默认不一致：工厂组装提示词时用的是默认视图，重载一次对齐
+				// （技能名录/终端引导；此时 conv 已进 map，override 能读到归属预设）。
+				try {
+					await conv.session.resourceLoader.reload();
+				} catch {
+					// loader 未就绪——首轮 run 组装时自然对齐。
+				}
+			}
 			if (displaced) this.removeConversation(displaced.id);
 			await this.bindSession();
 			// A fresh transcript appeared in the sessions dir — the next listing
@@ -7035,6 +8641,7 @@ export class ClientSession {
 					return pq ? { hasQuestion: true as const, questionId: pq.id, questionTitle: pq.title } : {};
 				})(),
 				parentId: conv.parentId,
+				...(conv.forkFrom ? { forkFrom: conv.forkFrom } : {}),
 			});
 		}
 		// issue #145：流式集合签名变化 → 通知其他客户端重推（左栏「另一处正在运行」近实时）。
@@ -7999,6 +9606,299 @@ export class ClientSession {
 	}
 
 	/**
+	 * Map any rendered message id (u-*, a-*, t-*, b-*, c-*, or raw entry id)
+	 * back to its append-only session entry in the given conversation.
+	 */
+	private resolveMessageEntry(
+		conv: Conversation,
+		messageId: string,
+	): import("@earendil-works/pi-coding-agent").SessionEntry | null {
+		const userSeqByTs = new Map<number, number>();
+		const assistantSeqByTs = new Map<number, number>();
+		let globalSeq = 0;
+
+		const entries = conv.session.sessionManager.buildContextEntries();
+		for (const entry of entries) {
+			globalSeq += 1;
+			if (entry.id === messageId) return entry;
+			if (entry.type === "message") {
+				const m = (entry as unknown as { message?: AgentMessage }).message;
+				if (!m) continue;
+				let uiId = "";
+				if (m.role === "user") {
+					const ts = m.timestamp ?? 0;
+					const seq = (userSeqByTs.get(ts) ?? 0) + 1;
+					userSeqByTs.set(ts, seq);
+					uiId = `u-${ts}-${seq}`;
+				} else if (m.role === "assistant") {
+					const ts = m.timestamp ?? 0;
+					const seq = (assistantSeqByTs.get(ts) ?? 0) + 1;
+					assistantSeqByTs.set(ts, seq);
+					uiId = `a-${ts}-${seq}`;
+				} else if (m.role === "toolResult") {
+					uiId = `t-${m.toolCallId}`;
+				} else if (m.role === "bashExecution") {
+					uiId = `b-${m.timestamp}-${globalSeq}`;
+				}
+				if (uiId === messageId) return entry;
+			} else if (entry.type === "custom_message") {
+				const ts = entry.timestamp ? new Date(entry.timestamp).getTime() : 0;
+				const uiId = `c-${ts}-${globalSeq}`;
+				if (uiId === messageId) return entry;
+			}
+		}
+		// 兜底：getEntry 查整棵树
+		return conv.session.sessionManager.getEntry(messageId) ?? null;
+	}
+
+	/**
+	 * Fork a NEW branch conversation from a specific historical message position.
+	 * Truncates the transcript before (or at) that message as the context of the
+	 * new conversation, allowing the user to explore alternative lines of thought
+	 * without affecting the original conversation.
+	 */
+	async forkSession(messageId: string, position: "before" | "at" = "before", targetConvId?: string): Promise<void> {
+		if (this.quiesceBlocked()) return;
+		const targetConv = (targetConvId ? this.convs.get(targetConvId) : this.conv) ?? this.conv;
+		const entry = this.resolveMessageEntry(targetConv, messageId);
+		if (!entry) {
+			this.emit({
+				type: "notice",
+				level: "error",
+				text: "找不到指定的消息节点（可能已被压缩或不在当前分支）",
+				textEn: "Message node to fork from not found (may have been compacted or is on another branch)",
+			});
+			this.flushSnapshot();
+			return;
+		}
+
+		const targetLeafId = position === "at" ? entry.id : entry.parentId;
+
+		try {
+			const currentSessionFile = targetConv.session.sessionFile;
+			const isPersisted =
+				targetConv.session.sessionManager.isPersisted() && currentSessionFile && existsSync(currentSessionFile);
+
+			const prevModel = targetConv.session.agent.state.model ?? null;
+			const prevThinking = targetConv.session.thinkingLevel ?? null;
+			const conversationId = this.nextConversationId();
+			const terminals = this.makeTerminalManager(conversationId, targetConv.cwd);
+
+			let forkedManager: SessionManager;
+			if (isPersisted) {
+				const sessionDir = targetConv.session.sessionManager.getSessionDir();
+				let forkedSessionPath: string | undefined;
+				if (!targetLeafId) {
+					const sm = SessionManager.create(targetConv.cwd, sessionDir);
+					sm.newSession({ parentSession: currentSessionFile });
+					forkedSessionPath = sm.getSessionFile();
+				} else {
+					const sm = SessionManager.open(currentSessionFile, sessionDir);
+					forkedSessionPath = sm.createBranchedSession(targetLeafId);
+				}
+				if (!forkedSessionPath) {
+					throw new Error("Failed to create forked session file");
+				}
+				forkedManager = SessionManager.open(forkedSessionPath, sessionDir);
+			} else {
+				forkedManager = SessionManager.create(targetConv.cwd);
+				if (targetLeafId) {
+					const branch = targetConv.session.sessionManager.getBranch(targetLeafId);
+					for (const e of branch) {
+						if (e.type === "message") {
+							try {
+								forkedManager.appendMessage(
+									(e as unknown as { message: Parameters<SessionManager["appendMessage"]>[0] }).message,
+								);
+							} catch {
+								// skip malformed/unsupported message entries in memory mode
+							}
+						}
+					}
+				}
+			}
+
+			const runtime = await createAgentSessionRuntime(
+				this.makeRuntimeFactory(terminals, undefined, conversationId, prevModel ?? undefined),
+				{
+					cwd: targetConv.cwd,
+					agentDir: this.agentDir,
+					sessionManager: forkedManager,
+				},
+			);
+
+			const newConv = this.makeConversation(runtime, conversationId, terminals);
+			if (targetConv.agentPreset) newConv.agentPreset = targetConv.agentPreset;
+			if (targetConv.permissionPreset) newConv.permissionPreset = targetConv.permissionPreset;
+			newConv.forkFrom = {
+				conversationId: targetConv.id,
+				messageId,
+				title: targetConv.title,
+			};
+
+			this.convs.set(conversationId, newConv);
+			this.activeId = conversationId;
+			await this.bindSession();
+
+			if (prevModel && this.sharedModelRuntime) {
+				try {
+					const pm = prevModel as unknown as { provider: string; id: string };
+					await this.restoreKeyForModel(`${pm.provider}/${pm.id}`, targetConv.cwd);
+					await this.session.setModel(prevModel);
+				} catch {
+					// keep default
+				}
+			}
+			if (prevThinking) {
+				try {
+					this.session.setThinkingLevel(prevThinking as Parameters<AgentSession["setThinkingLevel"]>[0]);
+				} catch {
+					// keep default
+				}
+			}
+
+			this.emit({
+				type: "notice",
+				level: "info",
+				text: "🌱 已派生新分支会话并自动切换（原对话保持不变）",
+				textEn: "🌱 Forked new branch session and switched to it (original preserved)",
+			});
+		} catch (err) {
+			this.emit({
+				type: "notice",
+				level: "error",
+				text: `派生分支会话失败：${(err as Error).message}`,
+				textEn: `Failed to fork branch session: ${(err as Error).message}`,
+			});
+		}
+		this.flushSnapshot();
+	}
+
+	/**
+	 * 回滚会话至指定消息检查点（Checkpoint Rollback）：
+	 * 丢弃该消息之后的所有内容，并就地重置 session 状态，用户可直接在此继续提问。
+	 */
+	async rollbackSession(messageId: string, targetConvId?: string, restoreWorkspace?: boolean): Promise<void> {
+		if (this.quiesceBlocked()) return;
+		const targetConv = (targetConvId ? this.convs.get(targetConvId) : this.conv) ?? this.conv;
+		const entry = this.resolveMessageEntry(targetConv, messageId);
+		if (!entry) {
+			this.emit({
+				type: "notice",
+				level: "error",
+				text: "找不到指定的回滚检查点（可能已被压缩或不存在）",
+				textEn: "Rollback checkpoint not found (may have been compacted or not exist)",
+			});
+			this.flushSnapshot();
+			return;
+		}
+
+		try {
+			if (targetConv.session.isStreaming) {
+				await targetConv.session.abort();
+			}
+
+			// 重置分支 leaf 到目标 entry.id
+			targetConv.session.sessionManager.branch(entry.id);
+			const branchedContext = targetConv.session.sessionManager.buildSessionContext();
+			targetConv.session.agent.state.messages = [...branchedContext.messages];
+			if (branchedContext.thinkingLevel) {
+				try {
+					targetConv.session.setThinkingLevel(
+						branchedContext.thinkingLevel as Parameters<AgentSession["setThinkingLevel"]>[0],
+					);
+				} catch {
+					// ignore
+				}
+			}
+			await targetConv.session.reload();
+
+			// 重新应用设置和门控
+			this.applyRetryOverrides();
+			this.applyCompactionOverrides();
+			this.applyToolGating(targetConv.session, targetConv.agentPreset);
+
+			// 清理该会话的 UI 消息缓存和序列化映射
+			targetConv.uiMessageCache.clear();
+			targetConv.msgIds.clear();
+			targetConv.userSeqByTs.clear();
+			targetConv.nextMsgId = 1;
+			targetConv.lastMessagesSig = "";
+			targetConv.lastMessagesArray = [];
+			targetConv.queueSteering = [];
+			targetConv.queueFollowUp = [];
+			try {
+				targetConv.session.clearQueue?.();
+			} catch {
+				// best effort
+			}
+
+			// 联动还原物理工作区文件（Dual-State Rollback）
+			let workspaceRestored = false;
+			if (restoreWorkspace) {
+				const entryTs =
+					(entry as unknown as { message?: { timestamp?: number }; timestamp?: number }).message?.timestamp ??
+					(entry as unknown as { timestamp?: number }).timestamp ??
+					0;
+
+				// 查找最贴近该 entry 的快照（按 entryId 或 <= entryTs 的最后一份快照）
+				const snapshots = targetConv.workspaceSnapshots ?? [];
+				let matched = snapshots.find((s) => s.entryId === entry.id);
+				if (!matched) {
+					const eligible = snapshots.filter((s) => entryTs === 0 || s.timestamp <= entryTs + 2000);
+					matched = eligible[eligible.length - 1];
+				}
+				if (!matched && snapshots.length > 0) {
+					matched = snapshots[0];
+				}
+
+				if (matched) {
+					const res = await restoreWorkspaceSnapshot(targetConv.cwd, matched.snapshotRef);
+					if (res.success) {
+						workspaceRestored = true;
+					} else {
+						this.emit({
+							type: "notice",
+							level: "warning",
+							text: `会话已回滚，但工作区物理文件还原失败：${res.error}`,
+							textEn: `Session rolled back, but workspace file restore failed: ${res.error}`,
+						});
+					}
+				} else {
+					this.emit({
+						type: "notice",
+						level: "warning",
+						text: "未找到对应检查点的工作区快照（可能非 Git 仓库或尚未记录），工作区文件未改动。",
+						textEn:
+							"No workspace snapshot found for this checkpoint (not a Git repo or snapshot unavailable); files left untouched.",
+					});
+				}
+			}
+
+			this.emit({
+				type: "notice",
+				level: "info",
+				text: workspaceRestored
+					? "已回滚至选定消息，工作区物理文件已联动还原至该检查点时刻。"
+					: "已回滚至选定消息，后续内容已丢弃，可直接继续对话。",
+				textEn: workspaceRestored
+					? "Rolled back to selected message; workspace physical files restored to checkpoint state."
+					: "Rolled back to selected message; subsequent content discarded, ready to continue.",
+			});
+			this.emittedMessages = null;
+			this.emitConversations();
+			this.flushSnapshot(true);
+		} catch (err) {
+			this.emit({
+				type: "notice",
+				level: "error",
+				text: `回滚失败：${(err as Error).message}`,
+				textEn: `Rollback failed: ${(err as Error).message}`,
+			});
+		}
+	}
+
+	/**
 	 * Edit a past user question and re-ask it: forks a NEW session file that
 	 * keeps everything up to (but not including) that question, then sends the
 	 * edited text there. The original thread is untouched and stays in the
@@ -8227,7 +10127,7 @@ export class ClientSession {
 	 */
 	async scmGenCommitMessage(reqId: number): Promise<void> {
 		const lang = this.getLang();
-		const cwd = this.conv?.cwd ?? this.cwd;
+		const cwd = this.convs.get(this.activeId)?.cwd ?? this.cwd;
 		const reply = (ok: boolean, extra: { text?: string; error?: string }) => {
 			this.emit({ type: "scm_data", reqId, kind: "commitmsg", ok, ...extra });
 		};
@@ -8981,6 +10881,8 @@ export function checkPluginCwd(cwd: string): { ok: boolean; abs?: string; error?
 export class AgentService {
 	/** index.ts 注入：SDK 工具执行事件的插件转发钩子，attach 时拷贝到每个新会话。 */
 	onToolEvent: ((ev: PluginToolEvent) => void) | undefined = undefined;
+	/** index.ts 注入：bash/read 插件拦截钩子，attach 时拷贝到每个新会话。 */
+	toolGuard: ToolGuardHook | undefined = undefined;
 	/** index.ts 注入：运行轨迹事件的插件转发钩子，attach 时拷贝到每个新会话。 */
 	onRunEvent: ((ev: PluginRunEvent) => void) | undefined = undefined;
 	/** index.ts 注入：对话切换通知钩子，attach 时拷贝到每个新会话。 */
@@ -9885,6 +11787,7 @@ export class AgentService {
 		// Forward hooks (set once by index.ts) to every session.
 		cs.onQuit = this.onQuit;
 		cs.onToolEvent = this.onToolEvent;
+		cs.toolGuard = this.toolGuard;
 		cs.onRunEvent = this.onRunEvent;
 		cs.onConversationChanged = () => this.onConversationChanged?.();
 		cs.pluginToolsProvider = this.pluginToolsProvider;

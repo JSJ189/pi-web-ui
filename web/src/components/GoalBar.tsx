@@ -329,13 +329,15 @@ export const GoalBar = memo(function GoalBar({
 						</span>
 					) : (
 						<span
-							className={`goalbar-chip ${goal.verdict === "pass" ? "pass" : goal.verdict === "fail" ? "fail" : ""}`}
+							className={`goalbar-chip ${goal.verdict === "pass" ? "pass" : goal.verdict === "fail" ? "fail" : goal.verdict === "blocked" ? "blocked" : ""}`}
 						>
 							{goal.verdict === "pass"
 								? t("goalBarPassed")
 								: goal.verdict === "fail"
 									? t("goalBarFailed")
-									: `${t("goalBarRound", { n: goal.round || 1 })} · ${goal.locked ? t("goalBarLocked") : t("goalBarUnlocked")}`}
+									: goal.verdict === "blocked"
+										? t("goalBarBlocked")
+										: `${t("goalBarRound", { n: goal.round || 1 })} · ${goal.locked ? t("goalBarLocked") : t("goalBarUnlocked")}`}
 						</span>
 					)}
 					<span className="goalbar-detail">{goalDetail}</span>

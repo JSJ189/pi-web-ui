@@ -12,19 +12,40 @@
 
 ### Added
 
+- **审批规则可自定义（规则引擎 + 设置面板管理）** — 支持在设置面板「审批规则」页自由添加、编辑、启用/停用、排序和删除审批拦截规则，规则持久化于全局 `<dataDir>/approval-rules.json`（对所有会话实时生效）。支持多工具匹配（bash / write / edit / edit_soft / 通配 *）、多字段检测（命令 command / 路径 path / 完整参数 JSON params）以及五种匹配模式（正则 regex / 通配符 glob / 包含 contains / 前缀 prefix / 工作区外写入 outside_workspace）；命中动作支持「需审批」(ask)、「直接拒绝」(deny，向模型报错且不弹窗) 与「免审放行」(allow，白名单直接执行)。内置高危规则（rm -rf / 破坏性 git / 格式化 / chmod / 敏感文件 / 越界写入等）均转化为可自定义规则，可独立停用、修改动作或一键恢复默认。
+- **审批不再一次次弹（三档放行）** — 人机协同审批弹窗现在有三条「别再问我」的路：① **全局关**（设置 →「工具」页的「工具执行审批」总开关，默认开）——关掉后一切审批都不弹（内置高危检测直接放行，插件 pre guard 的 `ask` 也按放行处理）；② 弹窗里的「**本对话全部允许**」——本对话后续高危操作都不再询问；③ 弹窗里的「**本对话允许同类**」——只对同一规则档位生效（`rm -rf` 类删除 / 破坏性 git / 磁盘写入 / 危险 chmod / 写入系统目录 / 敏感文件 `.env`·SSH·shell 配置 / 工作区外写入 / 每个插件各自一档），弹窗里会写明本次命中的档位。记住后同对话内已被覆盖的其它待审批项一并放行；撤销入口在设置 →「工具」页（列出当前对话已记住的放行，逐条「撤销」）。策略**只存内存**且跟对话走（手动过户一起搬），重启服务或新对话即恢复询问；全局开关被关掉时挂着的弹窗也自动放行，不让人对着窗口干等。
 - **插件安装前先读 spec（引导式安装）** — 在设置面板「插件市场 → 添加插件」填来源时，输入框下方就地给出结论（防抖 500ms 自动检查，不必等 CLI 跑完再猜）：来源形状分类（npm / GitHub 仓库 / URL / 本地路径）、是否已装同名插件、以及 GitHub 源的远端有没有 `manifest.json`；探到 manifest 时顺带展示插件名 / 版本 / 简介供确认。失败归到七种原因（形状不对 / 已装 / 远端找不到 / 不是插件包 / manifest 不合法 / 连不上远端 / 未知），各给一句人话与修复建议。远端探测失败只作提示，**不阻塞安装**。
 - **插件副作用统一回收（effect 栈）** — 宿主的每个插件注册面（AI 工具 / 斜杠命令 / HTTP 路由 / 反向代理 / 文件监听 / 定时任务 / 后台任务 / UI 条目 / 事件订阅 / 统计与流式订阅）现在都在插件内部登记为可逆副作用，插件被禁用、卸载或热重载时**逆序回卷**；插件忘记调用返回的注销函数也不会再留下孤儿订阅、定时器、路由或文件监听（这些正是热重载后事件双触发、定时器叠加、watcher 堆积的根因）。插件自建的副作用可用新 API `host.effect(label, dispose)` 挂进同一个栈。插件激活中途失败时，已注册的东西也会被撤干净。
 - **界面布局诊断（失败不再静默）** — 插件声明了宿主不认识的挂载点 / 条目种类 / `when` 条件，或整理意图（arrange）指向了不存在的条目，或插件被禁用 / 激活失败时，设置面板「界面 ☰ → 界面布局」页顶部会出现可折叠的「布局诊断」横幅，逐条点名**哪个插件的哪个条目、为什么没出现在界面上**（同时控制台留一条）。以前这些情况是静默丢弃，表现为「注册了但界面上没有」，最难排查。
 - **单个条目崩溃不再炸掉整条工具栏** — 每个挂载点条目独立包一层错误边界：某个插件条目渲染抛错时只丢它自己并就地置一个可点的灰色占位（点开在控制台看细节），顶栏 / 底栏 / 右栏的其余条目照常工作。
+- **插件设置 overlay（层式组合）** — `<dataDir>/plugin-overrides/<id>.json` 的 `settings` 节：三层合并 schema 默认 < overlay < 面板保存值。overlay 是用户钉住的新默认值（不 fork 改官方默认，更新不丢）；面板保存永远最高；secret 永不来自 overlay；坏键警告进诊断；每键来源标在 `settingsSources`（default/override/stored）。
+- **机器可读的注册面目录（WS 只读查询）** — `plugin_api_catalog` → `plugin_api_catalog_result`：22 个 slot（别名/kind/可抄例子）+ 工具目录 + 宿主方法表（需要族+最小例子）+ 当前占用者（现算，只含条目数）。类型在 `protocol.ts#PluginApiCatalog`，装配 `server/plugin-api-catalog.ts`，单测锁住与源码同口径。给将来「AI 写插件」铺路。
+- **插件硬依赖声明（manifest.requires）** — `{ hostApi?, families?, plugins? }`：任一条不满足即拒绝激活+教学式错误（区别于 `peerPlugins` 的缺失只警告）。`ensureLoaded` 按依赖拓扑排序激活（被依赖者先行，环直接拒），提供方被删/失败后消费方一并反激活+留占位。决定启动时机的是依赖，不是目录顺序。
+- **插件可拦截工具执行（pre/post 两阶段，仅 bash/read）** — 插件经 `host.onToolPre` 在危险命令执行前拒掉（`deny` 带原因给模型看，`ask` 待确认暂按拒绝执行），经 `host.onToolPost` 给输出脱敏/改写或补 `additionalContext`。首个阻断胜出，守卫抛错/超时按弃权（不挂住工具调用）。注册要 `tools` 能力；只覆盖已接管的 `bash`/`read`（DSH 引擎无 customTool 注册面不接）。
+- **Office 文档随处可看** — 内置文件预览现在能打开 `.docx` / `.xlsx` / `.xlsm`：服务端零依赖解析（zip 解包 + 提文本，15MB 文件上限 / 64MB 解包上限防 zip 炸弹）转成 Markdown 下发，预览弹窗直接渲染表格与段落（协议未动，仍走 `file_content kind:text`）。文件树、附件、中文名/括号文件名都走同一条链路；Office 文件在预览里**不可编辑**（防把文本写回二进制）。表格表头固定为 A/B/C…列标（不拿第一行数据冒充，避免通知类首行被染成紫色表头），每表最多 500 行、全文 20 万字符，超出截断并按实际行数提示（复用 `previewLinesTruncated`，不新增文案 key）。预览样式走 `.fp-office` 独立作用域：紧凑行高（杀掉格子内 `<p>` 边距、空格子占位防塌）、横向滚动条常驻、表头吸顶。实现在 `server/office-parse.ts`（与 `plugins/office-preview` 的解析器互为镜像，改一处请同步另一处），单测 `tests/unit/office-parse.test.ts`（另用 headless Chrome 对 1.4MB 真文件做过渲染截图回归：行高/常驻滚动条/吸顶表头/零 JS 报错）。
+
+### Changed
+
+- **插件 manifest 校验失败即拒（P1-6）** — 坏 manifest 不再带病启动：`id` 非法/与目录名不一致、`apiVersion` 非法、未知能力拼写、`engines`/`permissions`/`ui` 坏形状、v2 不声明 `permissions`、有 `ui` 声明却无 `ui` 能力，都会拒绝激活（scan 置红 + 诊断随清单下发，activate 重判）。以前其中两类（v2 无能力声明、只有别的能力却写 `ui`）是"激活成功但 ui 静默忽略"，现在是明确拒绝；纯警告（坏文本字段/坏数组字段/截断）仍不阻断。未来版本（`apiVersion` 大于宿主）仍走版本门出"请升级"，校验层不抢错。
 
 ### Fixed
 
 - **工具看门狗强制重置不再留下悬空 toolCall（#280）** — 流式卡死 → 看门狗 abort 无效 → `forceResetConversation` 从磁盘重建时，内存里未落盘的工具结果蒸发，文件尾留下「有调用、无结果」的悬空 toolCall；重建后继续 prompt 会把非法转录链喂给 provider（请求有发起迹象但零落盘、零报错）。现三处修复：① 重建前向**本次对话自己的会话文件**补一条合成 toolResult（append-only，历史字节不动），重建后弹提示建议重执行工具；② 重建改回**同文件**（`SessionManager.open(ownFile)`），不再按 cwd 取最近（多会话会接错文件）；③ 发送前/打开历史会话时复查转录尾，残留悬空即自动补合成结果，补不上则响亮拒绝发送（不再静默黑洞）。另：重建后旧扩展 ctx 的 `stale` 警告是 SDK 侧对已替换会话的预期失效（旧钩子不再可用），非数据丢失原因。
+- **`edit_soft` 多 edit 不再串位（会写坏文件的 bug）** — 一次调用带多个 edit 且**按降序给出**（靠后的区域写在前面）时，旧实现按 edits 的传入顺序逆序应用而不先按位置排序 → 后面的替换先改变长度、前面的偏移串位，写出错乱/粘连内容（历史 bug：`protocol.ts`、`use-chat.ts`、`ChatInput.tsx` 被写坏）。现改为按位置升序再逆序应用（与内置 `edit` 先按 `matchIndex` 排序一致），任意给出顺序结果都一致；补了覆盖全部 6 种排列的回归测试。
+- **`edit_soft` 拒绝跨行未对齐的非法片段** — oldText 跨多行但首/尾未落在行边界（如 `a);\nfoo(`）时，旧的精确子串替换会吃掉行首/行尾残留、写出粘连内容（`foo(z();b);`）；现直接拒绝并提示按整行给出。另：宽松匹配整块对不上、且首/尾行只是某行一部分时，报针对性的「片段」错而非笼统的「找不到」。单行片段仍照旧支持。
+- **任务执行看板与对话列等宽** — Plan Mode 的任务执行看板（`PlanBoard`）此前写死左右各 16px 外边距，没走 `.main` 的列 token（`--chat-inset`）：桌面 / 宽屏聊天列下比消息列与输入框宽一截、手机上又比它们窄一点，左右边缘始终对不齐。现改为同一条列 token（`.plan-board` 落进 `styles.css`，与 `.goalbar` / 问卷面板同口径），任何视口宽度与「宽屏聊天列」开关下都与输入框严格齐平。回归：`tests/chat-column-align-test.mjs` 新增看板条目。
 
 ### i18n
 
 <!-- auto-i18n:start -->
-- 前端新增 key（6）：`uiLayoutDiagTitle`、`uiLayoutDiagHint`、`pluginInspectAlreadyInstalled`、`pluginInspectInvalid`、`pluginInspectNotPlugin`、`pluginInspectNetwork`
+### i18n
+
+- 前端新增 key（89）：`forkSession`、`forkSessionTip`、`rollbackSession`、`rollbackSessionTip`、`rollbackConfirm`、`rollbackRestoreWorkspace`、`rollbackRestoreWorkspaceTip`、`toolApprovalTitle`、`toolApprovalApprove`、`toolApprovalDeny`、`toolApprovalEditAndRun`、`toolApprovalRiskAlert`、`toolApprovalCommand`、`toolApprovalParams`、`toolApprovalEditPlaceholder`、`toolApprovalReason`、`toolApprovalCategory`、`toolApprovalAllowCategory`、`toolApprovalAllowCategoryHint`、`toolApprovalAllowConversation`、`toolApprovalAllowConversationHint`、`toolApprovalEnabled`、`toolApprovalEnabledDesc`、`toolApprovalPolicyTitle`、`toolApprovalPolicyAllowAll`、`toolApprovalPolicyRevoke`、`toolApprovalPolicyHint`、`settingsApprovalRules`、`settingsApprovalRulesDesc`、`manageApprovalRules`、`approvalRuleNew`、`approvalRuleEdit`、`approvalRuleDelete`、`approvalRuleReset`、`approvalRuleResetConfirm`、`approvalRuleDeleteConfirm`、`approvalRuleActionAsk`、`approvalRuleActionDeny`、`approvalRuleActionAllow`、`approvalRuleTools`、`approvalRuleToolsTip`、`approvalRuleField`、`approvalRuleFieldCommand`、`approvalRuleFieldPath`、`approvalRuleFieldParams`、`approvalRuleMatch`、`approvalRuleMatchRegex`、`approvalRuleMatchGlob`、`approvalRuleMatchContains`、`approvalRuleMatchPrefix`、`approvalRuleMatchOutsideWs`、`approvalRuleValue`、`approvalRuleValueTip`、`approvalRuleLabel`、`approvalRuleLabelEn`、`approvalRuleReason`、`approvalRuleReasonEn`、`approvalRuleEnabled`、`approvalRuleBuiltin`、`approvalRuleEmpty`、`approvalRuleMoveUp`、`approvalRuleMoveDown`、`planBoardTitle`、`planBoardSteps`、`planBoardProgress`、`planBoardNoPlan`、`planBoardCompleted`、`planBoardInProgress`、`planBoardPending`、`planBoardFailed`、`clear`、`confirm`、`forkBadge`、`forkBadgeTip`、`goalBarBlocked`、`toolsPresetBanner`、`toolsBackToStandard`、`toolsBlockedByPreset`、`skillsHiddenByPreset`、`pluginInspectAlreadyInstalled`、`pluginInspectInvalid`、`pluginInspectNotPlugin`、`pluginInspectNetwork`、`uiLayoutDiagTitle`、`uiLayoutDiagHint`、`planUpdateEnabledDesc`、`planUpdateOffHint`、`compactContextEnabledDesc`、`compactContextOffHint`
+- 前端删除 key（1）：`attachInlineTip`
+- 前端中文变更（1）：`noPresets`
+- 前端英文变更（1）：`noPresets`
+- 服务端新增 key（12）：`editsoft.fragment.not.supported`、`goal.autonomous.pass`、`goal.review.blocked`、`goal.autonomous.continue`、`goal.review.blocked_msg`、`plugins.requires.cycle`、`plugins.manifest.invalid`、`plugins.requires.cascade`、`subagents.handoff.self`、`subagents.handoff.not.found`、`subagents.handoff.success`、`subagents.handoff.failed`
+- 服务端删除 key（2）：`dsh.attach.file.large`、`dsh.attach.file.ref.fallback`
 <!-- auto-i18n:end -->
 
 ## [0.94.1] — 2026-09-22
@@ -56,11 +77,13 @@
 - **复制为图片浅色主题色差（#273）** — html-to-image 把 `color-mix(...)` / 半透明 `rgba` 画到默认黑画布上，浅色气泡变成深紫、深字叠黑底。导出前把计算色拍成不透明 rgb，画布底用主题 `--card-bg`/`--bg` 实底，并去掉 `backdrop-filter`（否则 SVG 里会变成黑罩）。
 
 <!-- auto-i18n:start -->
+
 ### i18n
 
 - 前端新增 key（13）：`saveAsImage`、`copyImageBtn`、`savingImage`、`imageTitle`、`imageTitlePlaceholder`、`imageBorder`、`imageWatermark`、`imageWatermarkPlaceholder`、`exportSelectHint`、`exportTooLong`、`exportSelectedCount`、`exportIncludeTools`、`exportIncludeThinking`
 - 前端中文变更（2）：`softCapHint`、`softCapOff`
 - 前端英文变更（2）：`softCapHint`、`softCapOff`
+
 <!-- auto-i18n:end -->
 
 ## [0.93.0] — 2026-09-21
@@ -97,6 +120,7 @@
 - **文件行右键也能「上传文件到当前目录」** —— 上传入口原先只对**目录**行显示，右键一个文件时菜单里根本没有这一项（想往当前目录传文件只能去右键空白处）。现在文件行也给，落点是它所在的目录：当前目录里的文件显示「上传文件到当前目录」，子目录里的文件显示「上传文件到文件夹」；只有机器根（不能往盘符根写）仍然隐藏，文件树右键菜单的其余条目不变。
 
 <!-- auto-i18n:start -->
+
 ### i18n
 
 - 前端新增 key（34）：`themeLight`、`themeDark`、`quickPhrasesSendTip`、`persistSubagent`、`toolImages`、`toolImagesDesc`、`toolImageZoom`、`toolWatchdogTimeout`、`toolWatchdogTimeoutDesc`、`toolWatchdogOff`、`uiLayoutContextToolcall`、`pluginSettingsTitle`、`pluginSettingsShow`、`pluginSettingsHide`、`claimFilesEnabledDesc`、`claimFilesOffHint`、`toolInfoMenuLabel`、`toolInfoTitle`、`toolInfoLoading`、`toolInfoUnsupported`、`toolInfoMissing`、`toolInfoActive`、`toolInfoInactive`、`toolInfoSource`、`toolInfoDescription`、`toolInfoNoDescription`、`toolInfoPromptSnippet`、`toolInfoGuidelines`、`toolInfoParams`、`toolInfoParamsNone`、`toolInfoSchemaDropped`、`toolInfoRawSchema`、`toolInfoRequired`、`toolInfoFootnote`
@@ -104,6 +128,7 @@
 - 前端英文变更（1）：`elsewhereTip`
 - 服务端新增 key（1）：`agent.conv.limit.reached`
 - 服务端文案变更（2）：`subagents.spawn.started`、`subagents.list.empty`
+
 <!-- auto-i18n:end -->
 
 ## [0.92.0] — 2026-09-20

@@ -33,9 +33,12 @@ const ALL = [
 	"plugin-jobs-test",
 	// 插件目录授权的**接线**（request → 浏览器确认 → 落表 → 插件读得到 → 撤销）。
 	"plugin-grants-test",
+	// 注册面目录的 WS 往返（P2-7：plugin_api_catalog → 22 slot+别名+工具表+方法表+占用者）。
+	"plugin-api-catalog-test",
 	"provider-oauth-test",
 	"provider-keys-test",
 	"db-client-test",
+	"chat-abort-attachments-rollback-test",
 	"dsh-smoke-test",
 	"dsh-stats-test",
 	"fetch-models-test",
@@ -67,6 +70,10 @@ const ALL = [
 	// Express 5 *splat 多段数组回归（issue #225）：嵌套文件 HTTP 预览（__abs__/相对）。
 	"preview-http-test",
 	"quiesce-test",
+	// 审批三档放行的协议面（全局开关持久化 / 本对话策略 / 垃圾消息 no-op；门禁纯函数见单测）。
+	"approval-policy-test",
+	// 自定义审批规则协议面（规则增删改查 / 批量重排 / 内置规则重置 / 持久化播种）。
+	"approval-rules-test",
 	"question-bridge-test",
 	"recursive-watch-test",
 	"refresh-models-test",
