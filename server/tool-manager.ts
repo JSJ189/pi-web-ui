@@ -16,6 +16,8 @@
  * （vite 构建不断），单测零开销。
  */
 
+import type { UiAgentPreset, DshPermissionOption } from "./protocol.js";
+
 /** 持久终端工具（定义见 terminals.ts，工具名在此唯一登记）。 */
 export const TERMINAL_TOOL_NAMES = [
 	"terminal_create",
@@ -36,6 +38,7 @@ export const SUBAGENT_TOOL_NAMES = [
 	"subagent_stop",
 	"subagent_wait_all",
 	"subagent_templates",
+	"subagent_handoff",
 ] as const;
 
 /** 独立宽松编辑工具（定义见 edit-soft-tool.ts）。 */
@@ -67,6 +70,10 @@ export const PRESENT_FILES_TOOL_NAME = "present_files";
 /** 文件认领工具（定义见 claim-files-tool.ts）：声明要改哪些文件，让同项目的
  *  并行对话绕行（纯建议，不拦编辑）。 */
 export const CLAIM_FILES_TOOL_NAME = "claim_files";
+/** 任务计划看板更新工具（定义见 plan-manager.ts，Plan Mode / 步骤状态机）。 */
+export const PLAN_UPDATE_TOOL_NAME = "plan_update";
+/** 主动上下文压缩工具（定义见 compact-context-tool.ts）。 */
+export const COMPACT_CONTEXT_TOOL_NAME = "compact_context";
 /** 旧工具名（持久化迁移用；新代码一律用 MARKERS_LIST_TOOL_NAME）。 */
 export const LEGACY_MARKERS_LIST_TOOL_NAME = "markers_list";
 
@@ -157,6 +164,15 @@ export const AGENT_TOOL_CATALOG: AgentToolEntry[] = [
 		descKey: "claimFilesEnabledDesc",
 		offHintKey: "claimFilesOffHint",
 	},
+	// 结构化任务计划更新（Plan Mode / Step State Machine），默认开。
+	{
+		name: PLAN_UPDATE_TOOL_NAME,
+		group: "other",
+		defaultOn: true,
+		dshVisible: true,
+		descKey: "planUpdateEnabledDesc",
+		offHintKey: "planUpdateOffHint",
+	},
 	// 展示文件给用户（图片/视频内联、文本开预览弹窗、本地打开按钮）：默认开，
 	// 不打开模型根本不知道能“给用户看”；DSH 引擎没有该 customTool（走 shipped preset）。
 	{
@@ -202,6 +218,16 @@ export const AGENT_TOOL_CATALOG: AgentToolEntry[] = [
 		dshVisible: false,
 		descKey: "scheduleTaskEnabledDesc",
 		offHintKey: "scheduleTaskOffHint",
+	},
+	// 主动上下文压缩：默认开（让 AI 可以根据当前问题主动精简上下文）。
+	// DSH 引擎无 customTool 注册面，不接。
+	{
+		name: COMPACT_CONTEXT_TOOL_NAME,
+		group: "other",
+		defaultOn: true,
+		dshVisible: false,
+		descKey: "compactContextEnabledDesc",
+		offHintKey: "compactContextOffHint",
 	},
 	// todo_list 唯一例外：行不在「其他」组，固定在上面的 markers 分区（设置页循环
 	// 跳过它，见 OTHER_AGENT_TOOLS；文案 key 照给，万一哪天搬家不用补）。
@@ -289,9 +315,10 @@ export function setAgentToolsEnabled(session: ActiveToolSet, names: readonly str
 /**
  * 全量重放（创建会话 / reload 后 / 设置变更后调）：按禁用名单把目录内工具
  * 逐个加回或剔除；目录外的工具（bash/SDK 内置/插件工具）原样不动。
+ * 支持传入 preset（预设 id），按预设白名单做二次过滤。
  * Session 未就绪时静默跳过（下次创建/reload 会再应用）。
  */
-export function applyAgentToolsGating(session: ActiveToolSet, disabled: readonly string[]): void {
+export function applyAgentToolsGating(session: ActiveToolSet, disabled: readonly string[], preset?: string): void {
 	try {
 		const off = new Set(disabled);
 		const names = new Set(session.getActiveToolNames());
@@ -299,10 +326,157 @@ export function applyAgentToolsGating(session: ActiveToolSet, disabled: readonly
 			if (off.has(t.name)) names.delete(t.name);
 			else names.add(t.name);
 		}
-		session.setActiveToolsByName([...names]);
+		const filtered = filterToolsByPreset(names, preset);
+		session.setActiveToolsByName(filtered);
 	} catch {
 		// Session 未就绪——下次创建/reload 会再应用。
 	}
+}
+
+/** pi 引擎内置 Agent 预设名录（对齐 DSH 预设体系，会话级工具白名单）。 */
+export const PI_AGENT_PRESETS: UiAgentPreset[] = [
+	{
+		id: "standard",
+		trust: "system",
+		isDefault: true,
+		name: "全功能",
+		description: "提供全部可用工具与扩展能力（默认）",
+		order: 0,
+	},
+	{
+		id: "minimal",
+		trust: "system",
+		isDefault: false,
+		name: "极简模式",
+		description: "仅保留 bash 与 read；插件工具、技能名录与终端引导同步隐藏",
+		order: 1,
+	},
+	{
+		id: "code",
+		trust: "system",
+		isDefault: false,
+		name: "代码开发",
+		description: "专注于代码读写与执行（bash, read, edit, write, edit_soft）；插件工具与技能名录同步隐藏",
+		order: 2,
+	},
+	{
+		id: "reader",
+		trust: "system",
+		isDefault: false,
+		name: "只读分析",
+		description: "仅保留只读工具，禁止写操作；插件工具同步隐藏（读写未知，保守处理）",
+		order: 3,
+	},
+	{
+		id: "ask",
+		trust: "system",
+		isDefault: false,
+		name: "纯对话",
+		description: "无工具问答模式，模型不调用任何工具；插件工具与技能名录同步隐藏",
+		order: 4,
+	},
+];
+
+/** pi 引擎权限预设选项（三档沙箱策略）。 */
+export const PI_PERMISSION_OPTIONS: DshPermissionOption[] = [
+	{
+		value: "read-only",
+		name: "只读模式",
+		description: "禁止所有文件修改（write/edit/edit_soft）及任何非只读操作",
+	},
+	{
+		value: "workspace-write-never",
+		name: "工作区内修改",
+		description: "仅允许在当前工作区目录下修改文件，工作区外写操作一律拒绝",
+	},
+	{
+		value: "danger-full-access",
+		name: "完全权限",
+		description: "允许修改任意目录文件及执行全量操作（需要二次确认）",
+	},
+];
+
+/** 按预设过滤活跃工具名。 */
+export function filterToolsByPreset(tools: Iterable<string>, preset?: string): string[] {
+	const all = Array.from(tools);
+	if (!preset || preset === "standard") return all;
+	if (preset === "ask") return [];
+	if (preset === "minimal") {
+		return all.filter((n) => n === "bash" || n === "read");
+	}
+	if (preset === "code") {
+		const codeSet = new Set(["bash", "read", "edit", "write", "edit_soft"]);
+		return all.filter((n) => codeSet.has(n));
+	}
+	if (preset === "reader") {
+		const writeTools = new Set([
+			"write",
+			"edit",
+			"edit_soft",
+			"bash",
+			"terminal_create",
+			"terminal_input",
+			"terminal_close",
+			"terminal_key",
+		]);
+		return all.filter((n) => !writeTools.has(n));
+	}
+	return all;
+}
+
+/**
+ * pi 预设语义总表（唯一事实源，本文件是唯一定义处）：
+ *
+ * 预设是「禁用名单之外」的第二层门控，按会话生效（conv.agentPreset），新对话
+ * 取默认预设、首轮发言后锁定。标准预设不过滤；其余预设同时约束四处：
+ *
+ * - 目录/内置工具（ActiveSet）：filterToolsByPreset 直接过滤活跃集
+ *   （standard 全留 / ask 全拔 / minimal 仅 bash+read /
+ *   code 仅 bash+read+edit+write+edit_soft / reader 拔写类）。
+ * - 插件工具（registerAgentTool 动态注册）：presetAllowsPluginTools —— 只有
+ *   standard 保留，其余已知预设一律拔掉。插件工具读写性质未知，保守按最严处理
+ *   （minimal/code/ask 是白名单语义本来就过不去；reader 是 deny 名单，
+ *   未知工具同样不放行；未知预设 id 按不过滤，与 filterToolsByPreset 同口径）。
+ * - 技能名录段（{{skills}} 名录＋全文注入）：presetShowsSkillCatalog —— 与
+ *   skill 加载工具同进退（minimal/code/ask 下 loader 不在，列出来只是噪音；
+ *   reader 下 loader 可用，保留）。子代理模板的技能白名单是显式配置，
+ *   优先级高于预设，不参与此门控。
+ * - 终端引导（TERMINAL_TOOLS_GUIDANCE）：isTerminalGuidanceOn(disabled, preset) ——
+ *   只教「开关开着且预设下仍可用」的终端工具，不教不存在的工具。
+ * - 并行提醒（parallel-work-reminder）：信息层，不按预设开关（只看
+ *   parallelReminderEnabled 开关）；但文案里的问卷指引按
+ *   presetHasQuestionnaire 切换措辞——有问卷工具时调工具，否则正文提问。
+ *   认领信息是事实层，照常展示（store 是按项目全局的）。
+ *
+ * 显式配置永远优先于预设：disabledAgentTools / disabledPluginTools /
+ * disabledSkills / 子代理模板白名单照常生效，预设只做减法不做加法
+ * （开关关掉的东西，standard 也不会加回来）。
+ */
+
+/**
+ * 预设是否允许插件工具（动态注册，读写未知）：只有 standard 允许；
+ * 其余已知预设一律拒绝。未知 id 按不过滤（与 filterToolsByPreset 同口径，
+ * 防手写脏配置把插件工具全灭）。
+ */
+export function presetAllowsPluginTools(preset?: string): boolean {
+	if (!preset || preset === "standard") return true;
+	return !PI_AGENT_PRESETS.some((p) => p.id === preset);
+}
+
+/**
+ * 预设下是否展示技能名录段（与 skill 加载工具同进退，由 filterToolsByPreset
+ * 单源推导，不另维护名单：minimal/code/ask 藏，standard/reader 留）。
+ */
+export function presetShowsSkillCatalog(preset?: string): boolean {
+	return filterToolsByPreset([SKILL_TOOL_NAME], preset).includes(SKILL_TOOL_NAME);
+}
+
+/**
+ * 预设下问卷工具是否可用（并行提醒等服务端文案用：有则指引调工具，
+ * 无则指引正文提问——不教不存在的工具）。同样单源推导。
+ */
+export function presetHasQuestionnaire(preset?: string): boolean {
+	return filterToolsByPreset([ASK_USER_QUESTION_TOOL_NAME], preset).includes(ASK_USER_QUESTION_TOOL_NAME);
 }
 
 // ---------------------------------------------------------------------------
@@ -376,7 +550,13 @@ export function effectiveDisabledAgentTools(s: LegacyToolSwitches): string[] {
 	return [...next];
 }
 
-/** 终端使用引导是否注入（组内有任一工具启用才教 AI 用，否则就是教不存在的工具）。 */
-export function isTerminalGuidanceOn(disabled: readonly string[]): boolean {
-	return TERMINAL_TOOL_NAMES.some((n) => !disabled.includes(n));
+/**
+ * 终端使用引导是否注入：组内有任一工具「开关开着且预设下仍可用」才教 AI 用，
+ * 否则就是教不存在的工具（preset 缺省/standard = 只看开关，保持旧语义）。
+ */
+export function isTerminalGuidanceOn(disabled: readonly string[], preset?: string): boolean {
+	const on = TERMINAL_TOOL_NAMES.filter((n) => !disabled.includes(n));
+	if (on.length === 0) return false;
+	if (!preset || preset === "standard") return true;
+	return filterToolsByPreset(on, preset).length > 0;
 }

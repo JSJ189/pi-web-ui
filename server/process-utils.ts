@@ -100,16 +100,22 @@ export async function snapshotProcessParents(): Promise<Map<number, number> | un
 	}
 }
 
-/** Kill a pid and its whole process tree (cross-platform). */
-export function killPidTree(pid: number): void {
+/** Kill a pid and its whole process tree (cross-platform).
+ *
+ * The returned promise is only meaningful on Windows, where taskkill is itself
+ * asynchronous. Existing callers may continue to ignore it for best-effort
+ * background cleanup; callers that own a deadline can await completion. */
+export async function killPidTree(pid: number): Promise<void> {
 	try {
 		if (process.platform === "win32") {
-			void import("node:child_process").then(({ spawn }) => {
-				spawn("taskkill", ["/F", "/T", "/PID", String(pid)], {
+			const { spawn } = await import("node:child_process");
+			await new Promise<void>((resolve) => {
+				const killer = spawn("taskkill", ["/F", "/T", "/PID", String(pid)], {
 					stdio: "ignore",
-					detached: true,
 					windowsHide: true,
-				}).unref();
+				});
+				killer.once("error", () => resolve());
+				killer.once("close", () => resolve());
 			});
 		} else {
 			process.kill(-pid, "SIGKILL");

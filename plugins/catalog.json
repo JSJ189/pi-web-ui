@@ -110,6 +110,16 @@
 		"homepage": "https://github.com/xing-shuyin/pi-web-ui/tree/main/plugins/notes"
 	},
 	{
+		"id": "desktop-use",
+		"name": "桌面控制",
+		"icon": "🖱️",
+		"iconSvg": "<svg xmlns=\"http://www.w3.org/2000/svg\" viewBox=\"0 0 24 24\" fill=\"none\" stroke=\"currentColor\" stroke-width=\"2\" stroke-linecap=\"round\" stroke-linejoin=\"round\"><rect x=\"5\" y=\"2\" width=\"14\" height=\"20\" rx=\"7\"/><line x1=\"12\" y1=\"6\" x2=\"12\" y2=\"10\"/></svg>",
+		"description": "让 AI 操作 Windows 桌面：按元素名查控件坐标（UI Automation，无需截图）→ 点击 / 输入（含中文粘贴）/ 按键 / 聚焦窗口。输入库缺失时自动安装，卸载时连带删除。",
+		"descriptionEn": "Let the AI drive the Windows desktop: find controls by name via UI Automation (no screenshots) → click / type (CJK via paste) / hotkeys / focus windows. The input library auto-installs on activate and is removed with the plugin.",
+		"source": "xing-shuyin/pi-web-ui/plugins/desktop-use",
+		"homepage": "https://github.com/xing-shuyin/pi-web-ui/tree/main/plugins/desktop-use"
+	},
+	{
 		"id": "pi-web-multigit",
 		"name": "multi-git",
 		"icon": "🌿",
@@ -118,5 +128,15 @@
 		"descriptionEn": "Multi-repo Git overview: changes, diffs, history, branches, stashes, cross-repo search and a timeline for every repository in the workspace, plus a workspace-wide branch view, Fetch/Pull and an optional terminal.",
 		"source": "EinErste/pi-web-multigit",
 		"homepage": "https://github.com/EinErste/pi-web-multigit"
+	},
+	{
+		"id": "reconnect",
+		"name": "重连",
+		"icon": "🔄",
+		"iconSvg": "<svg xmlns=\"http://www.w3.org/2000/svg\" viewBox=\"0 0 24 24\" fill=\"none\" stroke=\"currentColor\" stroke-width=\"2\" stroke-linecap=\"round\" stroke-linejoin=\"round\"><path d=\"M3 12a9 9 0 0 1 9-9 9.75 9.75 0 0 1 6.74 2.74L21 8\"/><path d=\"M21 3v5h-5\"/><path d=\"M21 12a9 9 0 0 1-9 9 9.75 9.75 0 0 1-6.74-2.74L3 16\"/><path d=\"M3 21v-5h5\"/></svg>",
+		"description": "断连恢复：查看网页服务与重启守护状态，一键重新连接或重启网页服务（支持单服务/全服务重启，配套可选独立守护进程）。",
+		"descriptionEn": "Reconnection & service recovery: inspect web service and companion watchdog health, reconnect or restart services in one click (supports multi-service restarts with companion watchdog).",
+		"source": "xieweimo/pi-web-ui-reconnect-watchdog/reconnect-plugin",
+		"homepage": "https://github.com/xieweimo/pi-web-ui-reconnect-watchdog"
 	}
 ]

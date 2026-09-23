@@ -11,6 +11,7 @@ import { resolve, relative, sep } from "node:path";
 import type { ServerMessage, FileEntry, FileSearchResult } from "./protocol.js";
 import { pick, type ServerLang } from "./i18n.js";
 import { previewKind, looksLikeText, decodeText, hexDump, countLines } from "./text-sniff.js";
+import { extractOfficeText, isOfficeFile, OFFICE_MAX_FILE_BYTES } from "./office-parse.js";
 import { gitDirOf, isNotRepoError, scmStatus, scmHistory, scmFileDiff, scmCommitDetail } from "./scm.js";
 
 export const IS_WIN32 = process.platform === "win32";
@@ -783,6 +784,30 @@ export class FilesService {
 				return;
 			}
 			const name = relPath.split(/[\\/]/).pop() ?? relPath;
+			// Office 文档（docx/xlsx/xlsm）：转 Markdown 文本下发，前端按 Markdown
+			// 渲染表格/段落——文件树、附件、预览弹窗随处可看。失败回落到底下旧分支。
+			if (isOfficeFile(name) && stat.size <= OFFICE_MAX_FILE_BYTES) {
+				try {
+					const data = await fs.readFile(abs);
+					const office = extractOfficeText(name, data);
+					if (office) {
+						this.host.emit({
+							type: "file_content",
+							path: rel,
+							name,
+							text: office.text,
+							truncated: office.truncated || data.length < stat.size,
+							binary: false,
+							kind: "text",
+							lines: countLines(Buffer.from(office.text)),
+							size: stat.size,
+						});
+						return;
+					}
+				} catch {
+					/* 解析失败（加密/损坏/非预期结构）→ 回落旧的二进制嗅探分支 */
+				}
+			}
 			const kind = previewKind(name);
 			// Media previews stream over the /api/file HTTP endpoint, so only
 			// metadata is sent here — the raw bytes never touch the socket.

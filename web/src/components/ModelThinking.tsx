@@ -191,28 +191,8 @@ export const ModelThinking = memo(function ModelThinking({
 		el?.scrollIntoView({ block: "nearest" });
 	}, [modelOpen, currentModelId, models.length]);
 
-	const modelPicker = (
-		<Dropdown
-			trigger={
-				<>
-					<FiCpu />
-					<span className="chip-model">{model ? model.name : t("selectModel")}</span>
-					{!compact && model?.vision && (
-						<span className="chip-vision" title={t("vision")}>
-							🖼
-						</span>
-					)}
-					{!compact && model && <span className="chip-sub">{model.provider}</span>}
-				</>
-			}
-			open={modelOpen}
-			onOpenChange={setModelOpen}
-			align="left"
-			menuClassName="dd-menu-model"
-			menuRef={menuRef}
-			menuStyle={menuWidth != null ? { width: menuWidth } : undefined}
-			direction="up"
-		>
+	const modelMenuContent = (
+		<>
 			<div className="dd-header">{t("availableModels")}</div>
 			<div className="dd-search-row">
 				<FiSearch />
@@ -266,6 +246,7 @@ export const ModelThinking = memo(function ModelThinking({
 					{displayRows.map((row) => {
 						const m = row.model;
 						const isActive = currentModelId === m.id && (!row.key || row.key.active);
+						const isDefault = defaultModel !== undefined && defaultModel === m.id;
 						return (
 							<DropdownItem
 								key={row.key ? `${m.id}::${row.key.name}` : m.id}
@@ -296,19 +277,31 @@ export const ModelThinking = memo(function ModelThinking({
 										{(usage[m.id] ?? 0) > 0 && (
 											<span className="dd-model-usage">{t("modelUsedCount", { n: usage[m.id] })}</span>
 										)}
-										{(m.reasoning || m.vision || (defaultModel !== undefined && defaultModel === m.id)) && (
+										{(m.reasoning || m.vision) && (
 											<span className="dd-model-badges">
-												{defaultModel !== undefined && defaultModel === m.id && (
-													<span className="dd-model-badge" title={t("globalDefaultBadge")}>
-														★
-													</span>
-												)}
 												{m.reasoning && <span className="dd-model-badge">{t("reasoning")}</span>}
 												{m.vision && <span className="dd-model-badge">{t("vision")}</span>}
 											</span>
 										)}
 									</span>
 								</span>
+								{defaultModel !== undefined && (
+									<button
+										type="button"
+										className={`dd-star-btn ${isDefault ? "active" : ""}`}
+										title={isDefault ? "当前全局默认模型（点击取消默认）" : "设为全局默认模型"}
+										onClick={(e) => {
+											e.stopPropagation();
+											if (isDefault) {
+												appSend({ type: "clear_default_model" });
+											} else {
+												appSend({ type: "set_default_model", modelId: m.id });
+											}
+										}}
+									>
+										{isDefault ? "★" : "☆"}
+									</button>
+								)}
 							</DropdownItem>
 						);
 					})}
@@ -316,6 +309,26 @@ export const ModelThinking = memo(function ModelThinking({
 			</div>
 			{/* Fixed footer — refresh / manage never scroll away. */}
 			<div className="dd-footer">
+				{/* 全局默认模型状态条 */}
+				{defaultModel !== undefined && defaultModel && (
+					<div className="dd-default-banner">
+						<div className="dd-default-banner-left">
+							<span className="dd-default-banner-star">★</span>
+							<span className="dd-default-banner-label">默认模型</span>
+							<span className="dd-default-banner-name" title={`默认模型: ${defaultModel}`}>
+								{defaultModel.split("/").slice(1).join("/")}
+							</span>
+						</div>
+						<button
+							type="button"
+							className="dd-default-banner-clear"
+							title="清除全局默认模型"
+							onClick={() => appSend({ type: "clear_default_model" })}
+						>
+							✕ 清除
+						</button>
+					</div>
+				)}
 				<button type="button" className="dd-refresh" onClick={() => appSend({ type: "list_models" })}>
 					{t("refreshModels")}
 				</button>
@@ -329,27 +342,55 @@ export const ModelThinking = memo(function ModelThinking({
 				>
 					{t("manageModels")}
 				</button>
-				{/* 全局默认模型：当前即默认则取消，否则把当前设为默认（DSH 下隐藏）。 */}
-				{defaultModel !== undefined &&
-					(currentModelId !== null && currentModelId === defaultModel ? (
-						<button type="button" className="dd-refresh" onClick={() => appSend({ type: "clear_default_model" })}>
-							{t("clearGlobalDefault")}
-						</button>
-					) : (
-						<button
-							type="button"
-							className="dd-refresh"
-							disabled={currentModelId === null}
-							onClick={() => {
-								if (currentModelId !== null) {
-									appSend({ type: "set_default_model", modelId: currentModelId });
-								}
-							}}
-						>
-							{t("setGlobalDefault")}
-						</button>
-					))}
 			</div>
+		</>
+	);
+
+	const thinkingMenuContent = (
+		<>
+			<div className="dd-header">{t("thinkingLevel")}</div>
+			{thinkingLevels.map((l) => (
+				<DropdownItem
+					key={l.value}
+					active={state?.thinkingLevel === l.value}
+					disabled={!l.supported}
+					title={l.supported ? undefined : t("thinkingUnsupported")}
+					onClick={() => {
+						if (state?.thinkingLevel !== l.value) {
+							appSend({ type: "set_thinking", level: l.value });
+						}
+						setThinkingOpen(false);
+					}}
+				>
+					{l.label}
+				</DropdownItem>
+			))}
+		</>
+	);
+
+	const modelPicker = (
+		<Dropdown
+			trigger={
+				<>
+					<FiCpu />
+					<span className="chip-model">{model ? model.name : t("selectModel")}</span>
+					{!compact && model?.vision && (
+						<span className="chip-vision" title={t("vision")}>
+							🖼
+						</span>
+					)}
+					{!compact && model && <span className="chip-sub">{model.provider}</span>}
+				</>
+			}
+			open={modelOpen}
+			onOpenChange={setModelOpen}
+			align="left"
+			menuClassName="dd-menu-model"
+			menuRef={menuRef}
+			menuStyle={menuWidth != null ? { width: menuWidth } : undefined}
+			direction="up"
+		>
+			{modelMenuContent}
 		</Dropdown>
 	);
 	const thinkingPicker = (
@@ -369,31 +410,55 @@ export const ModelThinking = memo(function ModelThinking({
 			align="left"
 			direction="up"
 		>
-			<div className="dd-header">{t("thinkingLevel")}</div>
-			{thinkingLevels.map((l) => (
-				<DropdownItem
-					key={l.value}
-					active={state?.thinkingLevel === l.value}
-					disabled={!l.supported}
-					title={l.supported ? undefined : t("thinkingUnsupported")}
-					onClick={() => {
-						if (state?.thinkingLevel !== l.value) {
-							appSend({ type: "set_thinking", level: l.value });
-						}
-						setThinkingOpen(false);
-					}}
-				>
-					{l.label}
-				</DropdownItem>
-			))}
+			{thinkingMenuContent}
 		</Dropdown>
 	);
 	if (only === "model") return modelPicker;
 	if (only === "thinking") return thinkingPicker;
+
+	const isThinkingOn = state?.thinkingLevel && state.thinkingLevel !== "off";
+
 	return (
-		<>
-			{modelPicker}
-			{thinkingPicker}
-		</>
+		<div className="model-thinking-capsule">
+			<Dropdown
+				trigger={
+					<>
+						<FiCpu />
+						<span className="capsule-model-name">{model ? model.name : t("selectModel")}</span>
+						{!compact && model?.vision && (
+							<span className="chip-vision" title={t("vision")}>
+								🖼
+							</span>
+						)}
+					</>
+				}
+				triggerClassName="capsule-segment capsule-model"
+				open={modelOpen}
+				onOpenChange={setModelOpen}
+				align="left"
+				menuClassName="dd-menu-model"
+				menuRef={menuRef}
+				menuStyle={menuWidth != null ? { width: menuWidth } : undefined}
+				direction="up"
+			>
+				{modelMenuContent}
+			</Dropdown>
+			<div className="capsule-divider" />
+			<Dropdown
+				trigger={
+					<>
+						<span className={`thinking-pulse-dot ${isThinkingOn ? "on" : ""}`} />
+						<span className="capsule-thinking-text">{state ? thinkingLabel(state.thinkingLevel) : "—"}</span>
+					</>
+				}
+				triggerClassName="capsule-segment capsule-thinking"
+				open={thinkingOpen}
+				onOpenChange={setThinkingOpen}
+				align="left"
+				direction="up"
+			>
+				{thinkingMenuContent}
+			</Dropdown>
+		</div>
 	);
 });

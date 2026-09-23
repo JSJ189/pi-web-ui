@@ -10,6 +10,7 @@ import {
 	FiCopy,
 	FiEdit3,
 	FiFileText,
+	FiGitBranch,
 	FiImage,
 	FiRefreshCw,
 	FiX,
@@ -37,7 +38,9 @@ import { openContextMenu } from "../context-menu-state";
 import { messageMarkdown, messagePlainText } from "../copy-text";
 import { openExportImage, toggleExportImageSelect, useExportImage } from "../export-image-state";
 import { hasMessageWidget } from "../plugin-fence";
+import { openRollbackDialog } from "../rollback-state";
 import type { UiSlotEntry } from "../ui-slots";
+import { appSend } from "../app-globals";
 
 /** 编辑重问编辑器里直接拖入/粘贴文件的上限（与服务端 MAX_UPLOAD_BYTES 一致）。 */
 const MAX_EDIT_UPLOAD_BYTES = 20 * 1024 * 1024;
@@ -111,6 +114,7 @@ function editAttLabel(att: PromptAttachment, t: Translate): string {
 const SLOT_ICONS: Record<string, ReactNode> = {
 	edit: <FiEdit3 />,
 	copy: <FiCopy />,
+	branch: <FiGitBranch />,
 	text: <FiFileText />,
 	markdown: <FiCode />,
 	image: <FiImage />,
@@ -245,6 +249,9 @@ export const Message = memo(function Message({
 	// toolResult content is rendered inside its toolCall card — never standalone
 	// (otherwise the same output shows twice: formatted card + plain text).
 	if (message.role === "toolResult") return null;
+	// system 消息(prompt sections 内部差量)不同步到浏览器——服务端已过滤，
+	// 这里是兑底：旧快照/缓存里残留的也不画空泡。
+	if (message.role === "system") return null;
 	// Compaction summaries get a distinct collapsible card (the CLI's
 	// CompactionSummaryMessageComponent counterpart): a long summary dumped as
 	// a plain bubble buries what the compaction actually produced.
@@ -514,6 +521,42 @@ export const Message = memo(function Message({
 				if (!canEdit) return;
 				nodes.push(
 					<button key={key} type="button" className="msg-action" title={t("editReaskTip")} onClick={startEdit}>
+						{slotIcon(entry.icon)} {label}
+					</button>,
+				);
+				return;
+			}
+			// 内置「派生分支」：不在流式/编辑态时出现
+			if (entry.id === "host:msg-fork") {
+				if (streaming || editing) return;
+				nodes.push(
+					<button
+						key={key}
+						type="button"
+						className="msg-action"
+						title={t("forkSessionTip")}
+						aria-label={label}
+						onClick={() => appSend({ type: "fork_session", messageId: message.id, position: "before" })}
+					>
+						{slotIcon(entry.icon)} {label}
+					</button>,
+				);
+				return;
+			}
+			// 内置「回滚到此」：不在流式/编辑态时出现
+			if (entry.id === "host:msg-rollback") {
+				if (streaming || editing) return;
+				nodes.push(
+					<button
+						key={key}
+						type="button"
+						className="msg-action"
+						title={t("rollbackSessionTip")}
+						aria-label={label}
+						onClick={() => {
+							openRollbackDialog({ messageId: message.id });
+						}}
+					>
 						{slotIcon(entry.icon)} {label}
 					</button>,
 				);

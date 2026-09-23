@@ -1,3 +1,5 @@
+@import "./model-management.css";
+
 /* pi-web-ui — dark theme, pi-flavored */
 
 /* File manager archive / folder transfer dialog. Native dialog traps focus. */
@@ -1649,16 +1651,6 @@ body.rp-resizing .rp-sash.dragging::after {
    菜单里一律退回原生 title（菜单行里本来就有完整的文字标签）。 */
 .plugin-topbar-menu.portal [data-tip]:hover::after {
 	display: none;
-}
-
-/* + : inline file content */
-.file-attach.inline {
-	background: var(--accent-soft);
-	color: var(--accent);
-}
-.file-attach.inline:hover {
-	background: var(--accent);
-	color: #fff;
 }
 
 /* download icon : save the file (any kind, incl. binary/archives) */
@@ -8524,6 +8516,16 @@ div.chead[role="button"]:focus-visible,
 	}
 }
 
+/* ------------------------------------------------------------- plan board */
+
+/* 任务执行看板（Plan Mode，PlanBoard.tsx）：渲染在 .main 里、输入框上方。
+ * 与消息列 / 输入框 / goalbar 完全同宽齐平 —— 左右内缩走同一条列 token
+ * （--chat-inset，见 .main 的「中央列几何」），不再自写固定 margin（曾写死
+ * 16px：宽屏聊天列 / 窄屏下都比对话列宽一截，边缘对不齐）。 */
+.plan-board {
+	margin: 0 var(--chat-inset) 8px;
+}
+
 /* ---------------------------------------------------------------- goalbar */
 
 /* DSH Agent 预设条（输入框上方，goalbar 同列宽；只在 dsh 引擎 + 名录可用时渲染） */
@@ -8827,6 +8829,11 @@ div.chead[role="button"]:focus-visible,
 
 .goalbar-chip.fail {
 	background: var(--red);
+	color: #fff;
+}
+
+.goalbar-chip.blocked {
+	background: var(--amber);
 	color: #fff;
 }
 
@@ -10220,6 +10227,41 @@ div.chead[role="button"]:focus-visible,
 	border-top: 1px solid var(--border-soft);
 	margin: 8px 0;
 }
+
+/* 文件类型插件的查看器容器：插件只管理 host 的子树，宿主负责弹窗尺寸与滚动。 */
+.modal.plugin-file-preview {
+	width: min(1100px, calc(100vw - 32px));
+	height: min(780px, calc(100vh - 32px));
+	max-height: 92vh;
+	padding: 0;
+	gap: 0;
+	overflow: hidden;
+}
+.plugin-file-preview-body {
+	display: flex;
+	flex-direction: column;
+	min-height: 0;
+	height: 100%;
+	padding: 0 20px 20px;
+}
+.plugin-file-preview-file {
+	flex: 0 0 auto;
+	padding: 0 0 8px;
+	color: var(--muted);
+	font-size: 12px;
+	white-space: nowrap;
+	overflow: hidden;
+	text-overflow: ellipsis;
+}
+.plugin-file-preview-host {
+	flex: 1 1 auto;
+	min-height: 0;
+	overflow: auto;
+}
+.plugin-file-preview-error {
+	padding: 12px;
+	color: var(--red);
+}
 .model-modal > .modal-close {
 	flex-shrink: 0;
 }
@@ -10455,6 +10497,7 @@ div.chead[role="button"]:focus-visible,
 	position: relative;
 	padding: 10px 2px;
 	min-height: 40px;
+	flex-shrink: 0;
 }
 .settings-modal .set-catalog-row + .set-catalog-row {
 	margin-top: 0;
@@ -11250,6 +11293,7 @@ button.source-default-toggle {
 	background: var(--bg-elev2);
 	border: 1px solid var(--border-soft);
 	border-radius: 8px;
+	flex-shrink: 0;
 }
 
 .set-row-info {
@@ -11567,6 +11611,78 @@ button.source-default-toggle {
 	white-space: nowrap;
 	max-width: 100%;
 }
+/* 「安装前先读 spec」的一句话提示（DSH P0-3）：输入框下就地给出形状/已装/远端结论。 */
+/* 布局诊断横幅（P0-1）：列出「没出现在界面上」的条目与原因，默认折叠。 */
+.set-ui-diag {
+	margin: 4px 0 8px;
+	padding: 8px 10px;
+	border-radius: 8px;
+	border: 1px solid var(--border, rgb(255 255 255 / 0.12));
+	background: rgb(255 255 255 / 0.03);
+	font-size: 12px;
+}
+.set-ui-diag > summary {
+	cursor: pointer;
+	color: var(--amber);
+	font-weight: 600;
+}
+.set-ui-diag-list {
+	margin: 6px 0 0;
+	padding-left: 18px;
+	display: flex;
+	flex-direction: column;
+	gap: 4px;
+}
+.set-ui-diag-item {
+	line-height: 1.5;
+	overflow-wrap: anywhere;
+	color: var(--text-dim, #b9bcc4);
+}
+.set-ui-diag-item.error {
+	color: var(--red);
+}
+.set-ui-diag-item code {
+	margin-right: 6px;
+	padding: 0 4px;
+	border-radius: 4px;
+	background: rgb(0 0 0 / 0.25);
+	font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+	font-size: 11px;
+}
+.set-ui-diag-hint {
+	margin-top: 6px;
+	opacity: 0.75;
+	line-height: 1.5;
+}
+/* 单个 slot 条目崩溃时的就地占位（P0-1：坏条目只丢自己，不炸整片）。 */
+.slot-error {
+	display: inline-flex;
+	align-items: center;
+	gap: 4px;
+	padding: 2px 6px;
+	border-radius: 6px;
+	border: 1px dashed var(--red, #e5534b);
+	background: transparent;
+	color: var(--red, #e5534b);
+	font: inherit;
+	cursor: pointer;
+	opacity: 0.85;
+}
+
+.set-catalog-hint {
+	margin: -2px 0 4px;
+	font-size: 12px;
+	line-height: 1.5;
+	color: var(--text-dim, #b9bcc4);
+	overflow-wrap: anywhere;
+}
+.set-catalog-hint.warn {
+	color: var(--red);
+}
+.set-catalog-hint.ok {
+	color: var(--green);
+}
+
 .set-catalog-job-out {
 	flex: 1 0 100%;
 	margin: 4px 0 0;
@@ -11766,6 +11882,64 @@ button.source-default-toggle {
 	color: var(--accent);
 	border-color: var(--accent);
 	background: color-mix(in srgb, var(--accent) 10%, transparent);
+}
+
+/* ---- 审批规则（设置面板） ------------------------------------------- */
+.rule-editor {
+	border: 1px solid var(--border-soft);
+	border-radius: 10px;
+	padding: 12px;
+	margin-bottom: 12px;
+	display: flex;
+	flex-direction: column;
+	gap: 10px;
+	background: var(--bg-elev);
+}
+.rule-badge {
+	display: inline-block;
+	padding: 1px 7px;
+	border-radius: 999px;
+	font-size: 11px;
+	font-weight: 500;
+	margin-right: 6px;
+	vertical-align: 1px;
+}
+.rule-badge.ask {
+	color: var(--amber);
+	border: 1px solid color-mix(in srgb, var(--amber) 40%, transparent);
+	background: color-mix(in srgb, var(--amber) 12%, transparent);
+}
+.rule-badge.deny {
+	color: var(--red);
+	border: 1px solid color-mix(in srgb, var(--red) 40%, transparent);
+	background: color-mix(in srgb, var(--red) 12%, transparent);
+}
+.rule-badge.allow {
+	color: var(--green);
+	border: 1px solid color-mix(in srgb, var(--green) 40%, transparent);
+	background: color-mix(in srgb, var(--green) 12%, transparent);
+}
+.rule-meta-code {
+	font-family: var(--mono);
+	font-size: 11px;
+	padding: 2px 6px;
+	border-radius: 4px;
+	background: var(--bg-elev2);
+	color: var(--text-dim);
+}
+.rule-pattern-code {
+	font-family: var(--mono);
+	font-size: 11px;
+	padding: 2px 6px;
+	border-radius: 4px;
+	background: var(--bg-elev2);
+	color: var(--text-dim);
+	word-break: break-all;
+	display: inline-block;
+	max-width: 100%;
+}
+.rule-row-disabled {
+	opacity: 0.55;
 }
 
 .set-row-actions {
@@ -12619,11 +12793,6 @@ button.source-default-toggle {
 	color: var(--text-dim);
 	cursor: pointer;
 }
-.fp-attach.inline:hover {
-	background: var(--accent);
-	border-color: var(--accent);
-	color: #fff;
-}
 .fp-attach.ref:hover {
 	background: var(--amber);
 	border-color: var(--amber);
@@ -12990,6 +13159,36 @@ button.source-default-toggle {
 }
 .fp-markdown tbody tr:hover {
 	background: rgba(139, 92, 246, 0.07);
+}
+/* Office 预览（docx/xlsx 转 Markdown 下发）：表格是主体，紧凑排布。
+ * Markdown 会在每个格子里包一层 <p>（自带 0.8em 边距），不杀掉行高直接翻倍。 */
+.fp-office h2 {
+	font-size: 15px;
+	margin: 0.4em 0 0.6em;
+}
+.fp-office table {
+	margin: 0.6em 0 1em;
+	overflow-x: scroll;
+}
+.fp-office th,
+.fp-office td {
+	min-width: 48px;
+	padding: 4px 10px;
+	line-height: 1.5;
+}
+.fp-office th p,
+.fp-office td p {
+	margin: 0;
+	line-height: inherit;
+}
+/* 全空格子也撑一行高度，避免塌成细条 */
+.fp-office td:empty::after {
+	content: "\00a0";
+}
+.fp-office thead th {
+	position: sticky;
+	top: 0;
+	background: var(--bg-elev, #16161d);
 }
 .fp-markdown code {
 	font-family: var(--mono);
@@ -14133,4 +14332,56 @@ button.source-default-toggle {
 	.saveimg-copy {
 		margin-left: auto;
 	}
+}
+
+/* ---- Inline File Pill (正文内联文件微标) ---- */
+.file-pill {
+	display: inline-flex;
+	align-items: center;
+	gap: 4px;
+	vertical-align: baseline;
+	margin: 0 3px;
+	padding: 1px 7px;
+	border-radius: 6px;
+	background: var(--bg-elev2);
+	border: 1px solid var(--border);
+	color: var(--accent, #60a5fa);
+	font-family: var(--mono, ui-monospace, monospace);
+	font-size: 0.88em;
+	font-weight: 500;
+	line-height: 1.4;
+	cursor: pointer;
+	text-decoration: none;
+	user-select: none;
+	transition:
+		background-color 0.15s ease,
+		border-color 0.15s ease,
+		color 0.15s ease,
+		transform 0.1s ease;
+}
+
+.file-pill:hover {
+	background: var(--bg-elev3);
+	border-color: var(--accent, #60a5fa);
+	color: var(--accent, #93c5fd);
+	transform: translateY(-1px);
+}
+
+.file-pill:active {
+	transform: translateY(0);
+}
+
+.file-pill-icon {
+	display: inline-block;
+	font-size: 0.9em;
+	line-height: 1;
+	opacity: 0.85;
+}
+
+.file-pill-name {
+	display: inline-block;
+	white-space: nowrap;
+	max-width: 280px;
+	overflow: hidden;
+	text-overflow: ellipsis;
 }

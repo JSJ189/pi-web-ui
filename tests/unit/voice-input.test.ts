@@ -44,7 +44,7 @@ describe("voice-input manifest", () => {
 		// fs:read 是 transcribe_audio 读工作区文件的前提（缺它 host.fs.read 直接拒）。
 		expect(manifest.permissions).toContain("fs:read");
 		// tools 是 host.registerAgentTool 的硬门控（缺它注册点直接 return，transcribe_audio
-		// 永远不注册）。这条以前没断言，所以缺声明时测试是绿的 —— 见 tasks-plugin-ui.md §4.3。
+		// 永远不注册）。这条以前没断言，所以缺声明时测试是绿的（issue #146 收口时补的断言）。
 		expect(manifest.permissions).toContain("tools");
 	});
 

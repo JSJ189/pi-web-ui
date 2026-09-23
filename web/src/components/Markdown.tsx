@@ -1,4 +1,4 @@
-import { memo, useEffect, useRef, useState, useSyncExternalStore, type ReactNode } from "react";
+import { memo, useEffect, useMemo, useRef, useState, useSyncExternalStore, type ReactNode } from "react";
 import type { JSX } from "react";
 import ReactMarkdown from "react-markdown";
 import type { PluggableList } from "unified";
@@ -22,6 +22,7 @@ import {
 } from "../plugin-fence";
 import type { FenceRenderContext } from "../plugin-loader";
 import { PluginFenceBlock } from "./PluginFenceBlock";
+import { openFilePreview } from "../file-preview-bridge";
 
 interface MarkdownProps {
 	text: string;
@@ -49,6 +50,26 @@ export const rehypePlugins: PluggableList = [
 	[rehypeHighlight, { detect: true, ignoreMissing: true }],
 ];
 
+/**
+ * 把正文中的 @file.ext 提及安全转换为 pi-file:// 链接，供 MdLink 渲染为小药丸微标。
+ * - 仅在非代码段生效（严格跳过 ``` 代码围栏与 ` 行内代码）；
+ * - 排除邮箱（a@b.com）与推特类无扩展名用户名（@alice）；
+ * - 支持工作区相对路径，如 @src/App.tsx、@package.json。
+ */
+export function linkifyFileMentions(text: string): string {
+	if (!text || !text.includes("@")) return text;
+	const segments = text.split(new RegExp("(```[\\s\\S]*?```|`[^`\\r\\n]+`)", "g"));
+	const fileRegex = /(^|[\s(（“"'[])@((?:[\w.-]+\/)*[\w.-]+\.(?:[a-zA-Z0-9]{1,10}))(?=[)\s\],.;:!?，。！？’”"']|$)/g;
+	for (let i = 0; i < segments.length; i += 2) {
+		if (segments[i]) {
+			segments[i] = segments[i].replace(fileRegex, (match, prefix, path) => {
+				return prefix + "[" + "@" + path + "](pi-file://" + encodeURIComponent(path) + ")";
+			});
+		}
+	}
+	return segments.join("");
+}
+
 export function MarkdownBody({
 	text,
 	rawHtml = false,
@@ -61,13 +82,14 @@ export function MarkdownBody({
 	// rawHtml 时在 highlight 之前插入 rehype-raw：先把它内嵌的原始 HTML 解析成
 	// hast 节点，再统一交给 highlight 做代码高亮，顺序不可颠倒。
 	const rh: PluggableList = rawHtml ? [rehypeRaw, ...rehypePlugins] : rehypePlugins;
+	const processedText = useMemo(() => linkifyFileMentions(text), [text]);
 	return (
 		<ReactMarkdown
 			remarkPlugins={hardBreaks ? remarkPluginsHardBreaks : remarkPlugins}
 			rehypePlugins={rh}
 			components={{ pre: PreWithCopy, a: MdLink }}
 		>
-			{text}
+			{processedText}
 		</ReactMarkdown>
 	);
 }
@@ -90,6 +112,34 @@ export const Markdown = memo(function Markdown({ text, rawHtml = false, hardBrea
  * 路径不动：它们本来就是应用内导航。 */
 function MdLink({ href, children, ...rest }: JSX.IntrinsicElements["a"]) {
 	const target = String(href ?? "");
+	if (target.startsWith("pi-file://")) {
+		const rawPath = target.slice("pi-file://".length);
+		let filePath = rawPath;
+		try {
+			filePath = decodeURIComponent(rawPath);
+		} catch {
+			filePath = rawPath;
+		}
+		const fileName =
+			typeof children === "string" && children.trim() ? children.trim() : (filePath.split("/").pop() ?? filePath);
+		return (
+			<button
+				type="button"
+				className="file-pill"
+				title={"点击预览文件: " + filePath}
+				onClick={(e) => {
+					e.preventDefault();
+					e.stopPropagation();
+					openFilePreview({ path: filePath, name: fileName.replace(/^@/, "") });
+				}}
+			>
+				<span className="file-pill-icon" aria-hidden="true">
+					📄
+				</span>
+				<span className="file-pill-name">{fileName}</span>
+			</button>
+		);
+	}
 	if (!/^(https?:|mailto:|tel:)/i.test(target)) {
 		return (
 			<a href={href} {...rest}>

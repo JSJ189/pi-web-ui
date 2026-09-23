@@ -7,6 +7,7 @@ import {
 	AGENT_TOOL_CATALOG,
 	ASK_USER_QUESTION_TOOL_NAME,
 	CLAIM_FILES_TOOL_NAME,
+	COMPACT_CONTEXT_TOOL_NAME,
 	CONVERSATION_READ_TOOL_NAME,
 	PRESENT_FILES_TOOL_NAME,
 	SKILL_TOOL_NAME,
@@ -20,6 +21,10 @@ import {
 	isTerminalGuidanceOn,
 	legacyToDisabled,
 	normalizeDisabledAgentTools,
+	filterToolsByPreset,
+	presetAllowsPluginTools,
+	presetHasQuestionnaire,
+	presetShowsSkillCatalog,
 	setAgentToolEnabled,
 	setAgentToolsEnabled,
 	SUBAGENT_TOOL_NAMES,
@@ -39,10 +44,10 @@ function fakeSet(initial: string[] = []) {
 }
 
 describe("catalog", () => {
-	it("共 26 个可开关工具（终端 7＋子代理 7＋其他 12）", () => {
-		expect(AGENT_TOOL_CATALOG).toHaveLength(26);
+	it("共 29 个可开关工具（终端 7＋子代理 8＋其他 14）", () => {
+		expect(AGENT_TOOL_CATALOG).toHaveLength(29);
 		expect(TERMINAL_TOOL_NAMES).toHaveLength(7);
-		expect(SUBAGENT_TOOL_NAMES).toHaveLength(7);
+		expect(SUBAGENT_TOOL_NAMES).toHaveLength(8);
 	});
 
 	it("默认：终端组/edit_soft 关，其余开（与改动前行为一致）", () => {
@@ -61,6 +66,8 @@ describe("catalog", () => {
 		expect(off.has(PRESENT_FILES_TOOL_NAME)).toBe(false);
 		// 文件认领（事前打招呼，纯 advisory）默认开：不打开 AI 不知道能认领。
 		expect(off.has(CLAIM_FILES_TOOL_NAME)).toBe(false);
+		// 主动上下文压缩默认开：让 AI 可根据当前任务主动压缩精简上下文。
+		expect(off.has(COMPACT_CONTEXT_TOOL_NAME)).toBe(false);
 	});
 });
 
@@ -171,5 +178,48 @@ describe("tool_manage 出入口", () => {
 			AGENT_TOOL_CATALOG.map((t) => t.name),
 		);
 		expect(s2.peek()).toEqual(["bash"]);
+	});
+});
+
+describe("预设语义总表（见 tool-manager.ts 语义注释）", () => {
+	it("插件工具：只有 standard 允许，其余预设一律拒绝（读写未知，保守）", () => {
+		expect(presetAllowsPluginTools(undefined)).toBe(true);
+		expect(presetAllowsPluginTools("standard")).toBe(true);
+		for (const p of ["minimal", "code", "reader", "ask"]) expect(presetAllowsPluginTools(p)).toBe(false);
+		// 未知预设 id 按不过滤处理（filterToolsByPreset 同口径，防脏配置全灭）。
+		expect(presetAllowsPluginTools("nope")).toBe(true);
+	});
+
+	it("技能名录与 skill 加载器同进退（单源推导，不另维护名单）", () => {
+		expect(presetShowsSkillCatalog(undefined)).toBe(true);
+		expect(presetShowsSkillCatalog("standard")).toBe(true);
+		expect(presetShowsSkillCatalog("reader")).toBe(true);
+		for (const p of ["minimal", "code", "ask"]) expect(presetShowsSkillCatalog(p)).toBe(false);
+		// 与 filterToolsByPreset 的 skill 去留一致（改白名单只改一处）。
+		for (const p of [undefined, "standard", "minimal", "code", "reader", "ask"]) {
+			expect(presetShowsSkillCatalog(p)).toBe(filterToolsByPreset([SKILL_TOOL_NAME], p).includes(SKILL_TOOL_NAME));
+		}
+	});
+
+	it("问卷可用性：standard/reader 有，minimal/code/ask 无（单源推导）", () => {
+		expect(presetHasQuestionnaire(undefined)).toBe(true);
+		expect(presetHasQuestionnaire("standard")).toBe(true);
+		expect(presetHasQuestionnaire("reader")).toBe(true);
+		for (const p of ["minimal", "code", "ask"]) expect(presetHasQuestionnaire(p)).toBe(false);
+		expect(presetHasQuestionnaire("nope")).toBe(true);
+	});
+
+	it("终端引导：开关全关不教；预设拿掉终端工具也不教（不教不存在的工具）", () => {
+		expect(isTerminalGuidanceOn([])).toBe(true);
+		expect(isTerminalGuidanceOn([], "minimal")).toBe(false);
+		expect(isTerminalGuidanceOn([], "code")).toBe(false);
+		expect(isTerminalGuidanceOn([], "ask")).toBe(false);
+		// reader 下 list/read/wait 仍在，引导保留（与「组内任一可用」同口径）。
+		expect(isTerminalGuidanceOn([], "reader")).toBe(true);
+		// 开关全关时预设也救不回来。
+		expect(isTerminalGuidanceOn([...TERMINAL_TOOL_NAMES], "standard")).toBe(false);
+		expect(isTerminalGuidanceOn([...TERMINAL_TOOL_NAMES], "reader")).toBe(false);
+		// 缺省 preset = 只看开关（旧语义不变）。
+		expect(isTerminalGuidanceOn([TERMINAL_TOOL_NAMES[0]])).toBe(true);
 	});
 });

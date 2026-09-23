@@ -95,7 +95,7 @@ export function mapFileHits(providerLabel: string, raw: unknown, limit = 10): At
 			providerLabel,
 			title: o.name,
 			hint: o.path,
-			text: o.name,
+			text: `@${o.name}`,
 			attachments: [
 				{
 					path: o.path,

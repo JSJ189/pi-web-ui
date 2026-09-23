@@ -1299,6 +1299,33 @@ export class ModelAdminService {
 	}
 
 	/**
+	 * Lightweight connectivity and auth probe for a provider endpoint.
+	 * Measures latency in ms and returns ok/error.
+	 */
+	async testConnection(
+		reqId: number,
+		baseUrl: string,
+		apiKey?: string,
+		authHeader?: boolean,
+		api?: string,
+		lang?: () => ServerLang,
+	): Promise<void> {
+		const start = Date.now();
+		try {
+			await ModelAdminService.probeModelsEndpoint(baseUrl, apiKey, authHeader, api, undefined, lang);
+			const latencyMs = Date.now() - start;
+			this.host.emit({ type: "test_model_connection_result", reqId, ok: true, latencyMs });
+		} catch (err) {
+			this.host.emit({
+				type: "test_model_connection_result",
+				reqId,
+				ok: false,
+				error: (err as Error).message,
+			});
+		}
+	}
+
+	/**
 	 * Probe a custom provider's model-list endpoint (OpenAI-compatible /models
 	 * with a /v1 retry; Google {models:[…]} shape supported). Throws Error with
 	 * a user-facing message on any failure; returns deduped+sorted entries.

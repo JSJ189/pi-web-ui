@@ -248,7 +248,9 @@ export function MessageList({
 	 * question-attachments.ts (unit-tested).
 	 */
 	const questionAttachments = useMemo(() => collectQuestionAttachments(state.messages), [state.messages]);
-	const lastId = messages.length > 0 ? messages[messages.length - 1].id : null;
+	// system 消息不进渲染(见 serialize.ts)：去掉后再取末尾，否则空 SYSTEM 占住 isLast。
+	const lastVisible = [...messages].reverse().find((m) => m.role !== "system");
+	const lastId = lastVisible ? lastVisible.id : null;
 	// Only the last KEEP_RECENT persisted messages are fully rendered; older
 	// ones collapse to summary rows (unless the user expanded them).
 	const recentStart = state.messages.length > COLLAPSE_MIN ? Math.max(0, state.messages.length - KEEP_RECENT) : 0;
@@ -823,6 +825,8 @@ export function MessageList({
 					</div>
 				)}
 				{state.messages.map((m, i) => {
+					// system 不占位——旧快照残留的空 SYSTEM 气泡直接丢掉，不进折叠行也不进 LazyMount。
+					if (m.role === "system") return null;
 					const isOld = i < recentStart;
 					const isExpandedOld = isOld && expanded.has(m.id);
 					if (isOld && !isExpandedOld) {

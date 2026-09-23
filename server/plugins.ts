@@ -25,6 +25,8 @@ import type {
 	UiMessage,
 	UiPluginAgentTool,
 	UiPluginInfo,
+	PluginRequires,
+	PluginApiCatalog,
 	UiContribution,
 	UiAlign,
 	UiArrangeOp,
@@ -51,6 +53,23 @@ import { readCatalog, addCustomEntry, removeCustomEntry, type CatalogAddInput } 
 import { PluginGrantsStore, normalizeGrantPath } from "./plugin-grants.js";
 import { normalizeIconSvg } from "./icon-svg.js";
 import { PluginDomConsent, declarationWantsDom } from "./plugin-dom.js";
+import { validatePluginManifest, formatManifestIssue, isKnownPermission } from "./plugin-manifest-validate.js";
+import { buildPluginApiCatalog } from "./plugin-api-catalog.js";
+import { AGENT_TOOL_CATALOG } from "./tool-manager.js";
+import {
+	applyPostEdit,
+	denialText,
+	freezeParams,
+	isBlockingDecision,
+	normalizePostEdit,
+	normalizePreDecision,
+	withGuardTimeout,
+	type ToolPostEdit,
+	type ToolPostHandler,
+	type ToolPostRequest,
+	type ToolPreHandler,
+	type ToolPreRequest,
+} from "./plugin-tool-guard.js";
 // 工作区根的归一化与 client-state 共用一份（同一份语义：只收绝对路径 / 去重 / 上限）。
 import { normalizeWorkspaceRoots } from "./client-state.js";
 import { createProject, type ProjectCreateSpec, type ProjectCreateResult } from "./plugin-project.js";
@@ -282,6 +301,14 @@ export interface PluginHost {
 	onAttach(handler: (clientId: string) => void): () => void;
 	/** 订阅智能体的工具执行事件（bash/读写文件等，start+end 成对）；返回注销函数。 */
 	onToolEvent(handler: (ev: PluginToolEvent) => void): () => void;
+	/** 注册工具 pre 拦截守卫（只对 bash/read 生效）：allow 放行、deny 拒绝（带原因
+	 *  给模型看）、ask 待确认（暂按拒绝执行，审批 UI 以后再加）。首个非 allow 胜出；
+	 *  抛错/超时按弃权。需要能力 tools。返回注销函数。 */
+	onToolPre(handler: ToolPreHandler): () => void;
+	/** 注册工具 post 编辑守卫（只对 bash/read 生效）：回 content 整体换掉结果正文
+	 *  （脱敏/改写）、additionalContext 给模型补上下文。逐个顺序合并，抛错跳过。
+	 *  需要能力 tools。返回注销函数。 */
+	onToolPost(handler: ToolPostHandler): () => void;
 	/** 订阅智能体的运行轨迹事件（run_start/message/tool_start/tool_end/run_end…
 	 *  —— 轨迹/时间线类插件用它聚合「任务 → 思考 → 工具 → 文件改动 → 结果」。
 	 *  返回注销函数）。 */
@@ -546,6 +573,14 @@ export interface PluginHost {
 	 *  200 条，单条截断 500 字符），设置面板“界面插件”页按需拉取查看；
 	 *  error 级同时走 console.error（既有行为保留）。 */
 	log(level?: string, ...args: unknown[]): void;
+	/** 登记一条**自建**的可逆副作用（event 监听 / setInterval / WebSocket / 自建 cache…）：
+	 *  返回的注销函数与反激活**都会**调 dispose。宿主自己的每个注册面已在内部走同一
+	 *  个栈，插件侧只需把「宿主管不到的那些」挂进来：activate → deactivate 后自己没留
+	 *  任何孤儿，热重载不会叠加定时器/监听器。
+	 *
+	 *  dispose 幂等由调用方保证（宿主可能先经返回值撤一次、再在反激活时逆序回卷一次）；
+	 *  dispose 抛错只记一条诊断，不阻断其它清理。 */
+	effect(label: string, dispose: () => void): () => void;
 }
 
 /** 插件运行时 UI 注册（host.ui.*）——与 manifest 基线合并后随 plugins 清单下发。 */
@@ -570,11 +605,99 @@ interface GateRecord {
 	legacyWarned?: boolean;
 }
 
+/**
+ * per-plugin 可逆副作用栈（effect 栈）。
+ *
+ * 宿主每个注册面（事件订阅 / AI 工具 / 命令 / HTTP 路由 / 反向代理 / fs.watch /
+ * 定时任务 / 后台任务 / UI 条目 / 设置回调…）在内部 `add(label, dispose)` 登记一条
+ * disposer，反激活时**逆序**回卷 —— 插件不必记得注销，也不会因为漏掉一处就留下
+ * 孤儿订阅、定时器、路由或事件处理器（热重载后事件双触发、定时器叠加、watcher
+ * 堆积都是这个漏法的症状）。
+ *
+ * 与「每个注册函数自己返回注销函数」（插件主动调用）是**同一件事的两面**：
+ * 返回给插件的注销函数 = `remove(item)`（只撤这一条、幂等），反激活 = `release()`。
+ * 插件自建的副作用（自己的 setInterval、EventEmitter 监听…）可经 `host.effect()`
+ * 挂进来，同样享受逆序回卷 + 泄漏归因。
+ */
+export class PluginEffectStack {
+	private readonly items: PluginEffect[] = [];
+	private released = false;
+
+	constructor(
+		readonly pluginId: string,
+		/** 记录一条诊断（cleanup 抛错时调用；不抛错、不阻断回卷）。 */
+		private readonly diag?: (msg: string) => void,
+	) {}
+
+	/** 登记一条副作用；返回「只撤这一条」的注销函数（幂等，重复调用无副作用）。 */
+	add(label: string, dispose: () => void): () => void {
+		const item: PluginEffect = { label, dispose };
+		this.items.push(item);
+		return () => this.remove(item);
+	}
+
+	/** 当前未回卷的副作用数（单测断言「activate → deactivate 后栈空」）。 */
+	get size(): number {
+		return this.items.length;
+	}
+
+	/** 未回卷的副作用标签（按登记顺序，排障用）。 */
+	labels(): string[] {
+		return this.items.map((i) => i.label);
+	}
+
+	/** 撤销单条：先从栈里摘掉，再跑它的 dispose（幂等 —— 摘不到说明已撤过）。 */
+	private remove(item: PluginEffect): void {
+		const i = this.items.indexOf(item);
+		if (i < 0) return;
+		this.items.splice(i, 1);
+		try {
+			item.dispose();
+		} catch (err) {
+			this.report(item.label, err);
+		}
+	}
+
+	/** 逆序回卷全部副作用；返回**失败**（dispose 抛错）的标签列表，绝不抛出。 */
+	release(): string[] {
+		if (this.released) return [];
+		this.released = true;
+		const failed: string[] = [];
+		while (this.items.length > 0) {
+			const item = this.items.pop()!;
+			try {
+				item.dispose();
+			} catch (err) {
+				failed.push(item.label);
+				this.report(item.label, err);
+			}
+		}
+		return failed;
+	}
+
+	private report(label: string, err: unknown): void {
+		console.warn(`[plugin:${this.pluginId}] effect "${label}" cleanup failed:`, err);
+		this.diag?.(`effect "${label}" cleanup failed: ${(err as Error)?.message ?? String(err)}`);
+	}
+}
+
+/** 一条已登记的副作用：label 用于排障（谁没清干净），dispose 幂等由调用方保证。 */
+export interface PluginEffect {
+	label: string;
+	dispose: () => void;
+}
+
 interface LoadedPlugin {
 	info: UiPluginInfo;
 	/** deactivate() if the entry provided one. */
 	deactivate?: () => void;
+	/** 该插件的可逆副作用栈（反激活时逆序回卷；激活失败/版本门占位行没有）。 */
+	effects?: PluginEffectStack;
 	toolHandlers: Set<(ev: PluginToolEvent) => void>;
+	/** 工具 pre 拦截守卫（host.onToolPre，仅 bash/read 生效；错误占位行可缺省）。 */
+	preGuards?: Set<ToolPreHandler>;
+	/** 工具 post 编辑守卫（host.onToolPost，仅 bash/read 生效；错误占位行可缺省）。 */
+	postGuards?: Set<ToolPostHandler>;
 	/** 运行轨迹事件订阅（host.onRunEvent）。 */
 	runHandlers: Set<(ev: PluginRunEvent) => void>;
 	/** 对话切换订阅（host.onConversationChanged）。 */
@@ -583,20 +706,6 @@ interface LoadedPlugin {
 	attachHandlers: Set<(clientId: string) => void>;
 	/** onCwdChange 钩子（工作区切换时逐个回调）。 */
 	cwdHandlers: Set<(cwd: string) => void>;
-	/** 该插件注册的全部 AI 工具注销函数（反激活时逐个调用）。 */
-	agentToolUnsubscribers?: Array<() => void>;
-	/** 该插件注册的全部斜杠命令注销函数。 */
-	commandUnsubscribers?: Array<() => void>;
-	/** 该插件的 fs.watch 取消函数（反激活时逐个调用）。 */
-	watchUnsubscribers?: Array<() => void>;
-	/** 该插件的 schedule 取消函数（反激活时逐个 clearInterval）。 */
-	scheduleUnsubscribers?: Array<() => void>;
-	/** 该插件的 events.on 取消函数（反激活时清理全部总线订阅）。 */
-	busUnsubscribers?: Array<() => void>;
-	/** 该插件的 onStats 取消函数（反激活时从管理器集合摘除）。 */
-	statsUnsubscribers?: Array<() => void>;
-	/** 该插件的 onStreaming 取消函数（反激活时从管理器集合摘除）。 */
-	streamingUnsubscribers?: Array<() => void>;
 	/** 该插件挂载的 HTTP 路由表："METHOD /path" → handler。 */
 	httpRoutes: Map<string, (req: Request, res: Response) => void>;
 	/** manifest.permissions 原始声明（空/缺省 = 未声明，旧全权模式）。错误路径占位可缺省。 */
@@ -739,7 +848,7 @@ const SETTING_OPTIONS_FROM = new Set(["models", "thinkingLevels"]);
  * 不认识的 slot / kind / when 直接丢弃（旧宿主读到新字段也不会崩，新宿主读到旧字段同理）。
  * 归属由宿主决定：全局 id = `<pluginId>:<itemId>`。
  */
-const UI_SLOTS: ReadonlySet<string> = new Set([
+export const UI_SLOTS: ReadonlySet<string> = new Set([
 	"topbar.primary",
 	"topbar.overflow",
 	"bottombar",
@@ -765,7 +874,7 @@ const UI_SLOTS: ReadonlySet<string> = new Set([
 ]);
 
 /** manifest 里可以写更自然的简写（作者少踩坑）：解析时映射到完整 slot 名。 */
-const UI_SLOT_ALIASES: Readonly<Record<string, string>> = {
+export const UI_SLOT_ALIASES: Readonly<Record<string, string>> = {
 	topbar: "topbar.primary",
 	"topbar.more": "topbar.overflow",
 	composer: "composer.actions",
@@ -776,7 +885,7 @@ const UI_SLOT_ALIASES: Readonly<Record<string, string>> = {
 };
 
 /** 合法的条目种类（缺省 action；settings.pages 缺省 page）。 */
-const UI_KINDS: ReadonlySet<string> = new Set([
+export const UI_KINDS: ReadonlySet<string> = new Set([
 	"view",
 	"action",
 	"badge",
@@ -1088,6 +1197,65 @@ export function parseUiArrange(raw: unknown, diagnostics?: string[]): UiArrangeO
 	return out;
 }
 
+/** 解析 manifest.requires → 归一化硬依赖声明（P2-8，坏形状宽容忽略：
+ *  形状错在 P1-6 校验层已拒，这里只管把合法部分抽出来供展示 + activate 判定）。 */
+export function parseRequires(raw: unknown): PluginRequires | undefined {
+	if (!raw || typeof raw !== "object" || Array.isArray(raw)) return undefined;
+	const o = raw as Record<string, unknown>;
+	const out: PluginRequires = {};
+	if (typeof o.hostApi === "number" && Number.isInteger(o.hostApi) && o.hostApi >= 1) out.hostApi = o.hostApi;
+	if (Array.isArray(o.families)) {
+		const fams = o.families
+			.filter((x): x is string => typeof x === "string" && x.trim().length > 0)
+			.map((x) => x.trim())
+			.slice(0, 8);
+		if (fams.length) out.families = fams;
+	}
+	if (Array.isArray(o.plugins)) {
+		const deps = o.plugins
+			.filter((x): x is string => typeof x === "string" && ID_RE.test(x.trim()))
+			.map((x) => x.trim())
+			.slice(0, 16);
+		if (deps.length) out.plugins = deps;
+	}
+	return out.hostApi !== undefined || out.families !== undefined || out.plugins !== undefined ? out : undefined;
+}
+
+/** 依赖拓扑排序（P2-8）：按 requires.plugins 把被依赖者排前面；同层保持扫描顺序。
+ *  返回 { order }（可激活顺序）+ { cyclic }（环/挂在环上的，调用方直接拒）。
+ *  边只连「本次扫描里存在」的对等端；缺失的对端由 activate 判定点名拒绝。 */
+export function sortByRequires(ids: string[], depsOf: (id: string) => string[]): { order: string[]; cyclic: string[] } {
+	const indeg = new Map<string, number>();
+	const edges = new Map<string, string[]>();
+	const idSet = new Set(ids);
+	for (const id of ids) {
+		indeg.set(id, 0);
+		edges.set(id, []);
+	}
+	for (const id of ids) {
+		const seen = new Set<string>();
+		for (const dep of depsOf(id)) {
+			if (!idSet.has(dep) || dep === id || seen.has(dep)) continue;
+			seen.add(dep);
+			edges.get(dep)!.push(id);
+			indeg.set(id, (indeg.get(id) ?? 0) + 1);
+		}
+	}
+	const queue = ids.filter((id) => (indeg.get(id) ?? 0) === 0);
+	const order: string[] = [];
+	while (queue.length) {
+		const cur = queue.shift()!;
+		order.push(cur);
+		for (const next of edges.get(cur) ?? []) {
+			const d = (indeg.get(next) ?? 1) - 1;
+			indeg.set(next, d);
+			if (d === 0) queue.push(next);
+		}
+	}
+	const ordered = new Set(order);
+	return { order, cyclic: ids.filter((id) => !ordered.has(id)) };
+}
+
 /** 合并 manifest 基线与运行时注册：运行时同 id 覆盖，removed 里的删除；arrange 追加。 */
 function mergeUiPluginUi(base: UiPluginUi | undefined, rt: UiRuntimeUi | undefined): UiPluginUi | undefined {
 	const items = new Map<string, UiContribution>();
@@ -1136,33 +1304,132 @@ function parseSettingsSchema(raw: unknown): UiPluginSettingField[] {
 function secretSettingKey(key: string): string {
 	return `setting:${key}`;
 }
+/** 用户 overlay 原文件（P2-9）：`<dataDir>/plugin-overrides/<id>.json` 的 settings 节。
+ *  缺文件 = 没写（不警告）；坏形状 → 警告并整体忽略（用户自己的文件，不连坐插件）。
+ *  顶层未知键忽略（前向兼容）；每键校验在 cleanOverlaySettings 里按 schema 做。 */
+function readSettingsOverlayFile(
+	dataDir: string,
+	pluginId: string,
+): { raw: Record<string, unknown>; warnings: string[] } {
+	const empty = { raw: {}, warnings: [] as string[] };
+	if (!ID_RE.test(pluginId)) return empty;
+	let parsed: unknown;
+	try {
+		parsed = JSON.parse(readFileSync(join(dataDir, "plugin-overrides", `${pluginId}.json`), "utf8"));
+	} catch {
+		return empty;
+	}
+	if (!parsed || typeof parsed !== "object" || Array.isArray(parsed)) {
+		return { raw: {}, warnings: [`settings override ignored: ${pluginId}.json must be an object`] };
+	}
+	const o = parsed as Record<string, unknown>;
+	if (o.settings === undefined) return empty;
+	if (!o.settings || typeof o.settings !== "object" || Array.isArray(o.settings)) {
+		return { raw: {}, warnings: [`settings override ignored: ${pluginId}.json settings must be an object`] };
+	}
+	return { raw: o.settings as Record<string, unknown>, warnings: [] };
+}
+
+/** 按 schema 清洗 overlay 值（P2-9）：secret 一律拒绝（明文永不进加密 store）+
+ *  诊断；类型不对/越界/非法候选 → 警告并丢该键；schema 外的键 → 警告并忽略（拼写检查）。 */
+function cleanOverlaySettings(
+	schema: UiPluginSettingField[],
+	raw: Record<string, unknown>,
+	lang: ServerLang,
+): { values: Record<string, unknown>; warnings: string[] } {
+	const values: Record<string, unknown> = {};
+	const warnings: string[] = [];
+	const byKey = new Map(schema.map((f) => [f.key, f]));
+	for (const [k, v] of Object.entries(raw)) {
+		const f = byKey.get(k);
+		if (!f) {
+			warnings.push(`settings override ignored: unknown key "${k.slice(0, 64)}"`);
+			continue;
+		}
+		if (f.type === "secret") {
+			warnings.push(`settings override ignored: secret "${k.slice(0, 64)}" never comes from overlay`);
+			continue;
+		}
+		const r = cleanNonSecretSettingsField(f, v, lang);
+		if (r.error) {
+			warnings.push(`settings override ignored: "${k.slice(0, 64)}": ${r.error}`);
+			continue;
+		}
+		values[k] = r.value;
+	}
+	return { values, warnings };
+}
+
+/** 三层合并（P2-9）：schema 默认 < overlay（用户钉住的新默认，不 fork）< storage.json
+ *  （面板保存，最高）。stored 不清洗（保存路径已洗过，可信）；overlay 已预洗。
+ *  secret 走加密 store，overlay 永不参与。 */
+function resolveSettingsValues(
+	schema: UiPluginSettingField[],
+	stored: Record<string, unknown>,
+	overlay: Record<string, unknown>,
+	secrets?: { has?: (k: string) => boolean; get?: (k: string) => string | undefined },
+): { values: Record<string, unknown>; sources: Record<string, "default" | "override" | "stored"> } {
+	const values: Record<string, unknown> = {};
+	const sources: Record<string, "default" | "override" | "stored"> = {};
+	for (const f of schema) {
+		if (f.type === "secret") {
+			if (secrets?.get) {
+				const got = secrets.get(secretSettingKey(f.key));
+				values[f.key] = got ?? f.default ?? "";
+				sources[f.key] = got !== undefined ? "stored" : "default";
+			} else if (secrets?.has) {
+				const has = secrets.has(secretSettingKey(f.key));
+				values[f.key] = has;
+				sources[f.key] = has ? "stored" : "default";
+			} else {
+				values[f.key] = false;
+				sources[f.key] = "default";
+			}
+			continue;
+		}
+		const s = stored[f.key];
+		if (s !== undefined && s !== null) {
+			values[f.key] = s;
+			sources[f.key] = "stored";
+		} else if (f.key in overlay) {
+			values[f.key] = overlay[f.key];
+			sources[f.key] = "override";
+		} else {
+			values[f.key] = f.default;
+			sources[f.key] = "default";
+		}
+	}
+	return { values, sources };
+}
+
 /** 从 <pluginDir>/storage.json 读 settings 存值，按 schema 并默认值。
  *  secret 字段不返回明文：有 secrets 时返回有无（布尔），调用方是浏览器；
  *  插件运行时要真值请用 runtimeSettingsValues。 */
-function storedSettingsValues(
-	dir: string,
-	schema: UiPluginSettingField[],
-	secrets?: Pick<PluginSecrets, "has">,
-): Record<string, unknown> {
-	const out: Record<string, unknown> = {};
-	let stored: Record<string, unknown> = {};
+function readStoredSettings(dir: string): Record<string, unknown> {
 	try {
 		const parsed = JSON.parse(readFileSync(join(dir, "storage.json"), "utf8")) as Record<string, unknown>;
 		if (parsed && typeof parsed === "object" && parsed.settings && typeof parsed.settings === "object") {
-			stored = parsed.settings as Record<string, unknown>;
+			return parsed.settings as Record<string, unknown>;
 		}
 	} catch {
 		/* 无存储文件 = 全默认 */
 	}
-	for (const f of schema) {
-		if (f.type === "secret") {
-			// 浏览器侧只看到有无（布尔），明文永不下发；无 secrets 上下文（如单测）回落 false。
-			out[f.key] = secrets ? secrets.has(secretSettingKey(f.key)) : false;
-			continue;
-		}
-		out[f.key] = stored[f.key] ?? f.default;
-	}
-	return out;
+	return {};
+}
+
+function storedSettingsValues(
+	dir: string,
+	schema: UiPluginSettingField[],
+	secrets?: Pick<PluginSecrets, "has">,
+	overlay: Record<string, unknown> = {},
+): Record<string, unknown> {
+	// 浏览器侧 secret 只看到有无（布尔），明文永不下发；无 secrets 上下文（如单测）回落 false。
+	return resolveSettingsValues(
+		schema,
+		readStoredSettings(dir),
+		overlay,
+		secrets ? { has: (k) => secrets.has(k) } : undefined,
+	).values;
 }
 
 /** 插件运行时视角的设置值：非 secret 与 storedSettingsValues 同口径；secret 返回真值
@@ -1171,25 +1438,56 @@ function runtimeSettingsValues(
 	dir: string,
 	schema: UiPluginSettingField[],
 	secrets: Pick<PluginSecrets, "get">,
+	overlay: Record<string, unknown> = {},
 ): Record<string, unknown> {
-	const out: Record<string, unknown> = {};
-	let stored: Record<string, unknown> = {};
-	try {
-		const parsed = JSON.parse(readFileSync(join(dir, "storage.json"), "utf8")) as Record<string, unknown>;
-		if (parsed && typeof parsed === "object" && parsed.settings && typeof parsed.settings === "object") {
-			stored = parsed.settings as Record<string, unknown>;
+	return resolveSettingsValues(schema, readStoredSettings(dir), overlay, { get: (k) => secrets.get(k) }).values;
+}
+
+/** 清洗单个非 secret 设置值（P2-9 抽出：保存路径与 overlay 复用同一套口径）。
+ *  v === undefined → 回落 schema 默认；类型不对/越界/非法候选 → error（调用方丢弃该键）。
+ *  secret 字段不在这里处理（overlay 直接拒绝，明文永不进加密 store）。 */
+function cleanNonSecretSettingsField(
+	f: UiPluginSettingField,
+	v: unknown,
+	lang: ServerLang,
+): { error?: string; value?: unknown } {
+	if (f.type === "number") {
+		const n = v === undefined ? Number(f.default ?? 0) : Number(v);
+		if (!Number.isFinite(n) || (f.min !== undefined && n < f.min) || (f.max !== undefined && n > f.max)) {
+			return {
+				error: pick(lang, `${f.label} 超出范围`, `${f.label} out of range`, "plugins.settings.out.of.range", {
+					"f.label": f.label,
+				}),
+			};
 		}
-	} catch {
-		/* 无存储文件 = 全默认 */
+		return { value: n };
 	}
-	for (const f of schema) {
-		if (f.type === "secret") {
-			out[f.key] = secrets.get(secretSettingKey(f.key)) ?? f.default ?? "";
-			continue;
+	if (f.type === "boolean") {
+		return { value: v === undefined ? Boolean(f.default) : Boolean(v) };
+	}
+	if (f.type === "select") {
+		const s = v === undefined ? "" : String(v);
+		// optionsFrom（宿主数据源）：候选值在浏览器侧现算，服务端无从校验，
+		// 只做个长度护栏；非法值由用的时候（如 host.chat 切模型）报错。
+		if (f.optionsFrom) {
+			if (s.length > 200) {
+				return {
+					error: pick(lang, `${f.label} 过长`, `${f.label} too long`, "plugins.settings.too.long", {
+						"f.label": f.label,
+					}),
+				};
+			}
+			return { value: v === undefined ? (f.default ?? "") : s };
 		}
-		out[f.key] = stored[f.key] ?? f.default;
+		if (v !== undefined && !f.options?.includes(s))
+			return {
+				error: pick(lang, `${f.label} 值非法`, `Invalid value for ${f.label}`, "plugins.settings.invalid.value", {
+					"f.label": f.label,
+				}),
+			};
+		return { value: v === undefined ? f.default : s };
 	}
-	return out;
+	return { value: v === undefined ? (f.default ?? "") : String(v) };
 }
 
 /** 校验并写回 settings（storage.json 的 settings 键，原子写）；返回错误信息或 null。
@@ -1207,43 +1505,10 @@ function saveSettingsValues(
 	const clean: Record<string, unknown> = {};
 	for (const f of schema) {
 		const v = values?.[f.key];
-		if (f.type === "number") {
-			const n = v === undefined ? Number(f.default ?? 0) : Number(v);
-			if (!Number.isFinite(n) || (f.min !== undefined && n < f.min) || (f.max !== undefined && n > f.max)) {
-				return {
-					error: pick(l, `${f.label} 超出范围`, `${f.label} out of range`, "plugins.settings.out.of.range", {
-						"f.label": f.label,
-					}),
-					clean,
-				};
-			}
-			clean[f.key] = n;
-		} else if (f.type === "boolean") {
-			clean[f.key] = v === undefined ? Boolean(f.default) : Boolean(v);
-		} else if (f.type === "select") {
-			const s = v === undefined ? "" : String(v);
-			// optionsFrom（宿主数据源）：候选值在浏览器侧现算，服务端无从校验，
-			// 只做个长度护栏；非法值由用的时候（如 host.chat 切模型）报错。
-			if (f.optionsFrom) {
-				if (s.length > 200) {
-					return {
-						error: pick(l, `${f.label} 过长`, `${f.label} too long`, "plugins.settings.too.long", {
-							"f.label": f.label,
-						}),
-						clean,
-					};
-				}
-				clean[f.key] = v === undefined ? (f.default ?? "") : s;
-				continue;
-			}
-			if (v !== undefined && !f.options?.includes(s))
-				return {
-					error: pick(l, `${f.label} 值非法`, `Invalid value for ${f.label}`, "plugins.settings.invalid.value", {
-						"f.label": f.label,
-					}),
-					clean,
-				};
-			clean[f.key] = v === undefined ? f.default : s;
+		if (f.type !== "secret") {
+			const r = cleanNonSecretSettingsField(f, v, l);
+			if (r.error) return { error: r.error, clean };
+			clean[f.key] = r.value;
 		} else if (f.type === "secret") {
 			// 空串/缺省 = 不改（浏览器侧回显的本来就是有无布尔，前端把“没碰”发成空串）。
 			if (v === undefined || v === "") {
@@ -1771,6 +2036,102 @@ export class PluginManager {
 		}
 	}
 
+	/** agent-service 调（P1-5）：bash/read 执行前的守卫求值。首个 deny/ask 胜出；
+	 *  守卫抛错/超时一律按弃权（不阻断）。无守卫时回 allow，调用方可直接放行。 */
+	async evaluateToolPre(
+		req: ToolPreRequest,
+		lang: string = "en",
+	): Promise<{
+		verdict:
+			| { decision: "allow" }
+			| { decision: "deny"; reason?: string; reasonEn?: string }
+			| { decision: "ask"; reason?: string; reasonEn?: string };
+		pluginId?: string;
+	}> {
+		const frozen: ToolPreRequest = {
+			toolName: req.toolName,
+			params: freezeParams(req.params),
+			conversationId: req.conversationId,
+		};
+		for (const p of this.loaded.values()) {
+			for (const h of p.preGuards ?? []) {
+				let raw: unknown;
+				try {
+					raw = await withGuardTimeout(Promise.resolve().then(() => (h as ToolPreHandler)(frozen)));
+				} catch (err) {
+					console.error(`[plugin:${p.info.id}] tool-pre guard failed (abstained):`, err);
+					this.pushRuntimeDiag(p.info.id, `tool-pre guard threw, abstained (${req.toolName})`);
+					continue;
+				}
+				if (raw === undefined) continue;
+				const d = normalizePreDecision(raw);
+				if (!isBlockingDecision(d)) continue;
+				this.pushRuntimeDiag(p.info.id, `tool-pre ${d.decision} ${req.toolName} (by ${p.info.id})`);
+				return { verdict: d, pluginId: p.info.id };
+			}
+		}
+		return { verdict: { decision: "allow" } };
+	}
+
+	/** agent-service 调（P1-5）：bash/read 执行后的守卫合并。逐个顺序合进结果；
+	 *  抛错/超时的那个被跳过（其余继续）。返回合并后的 content（无编辑回 undefined）。 */
+	async evaluateToolPost(
+		req: ToolPostRequest,
+		lang: string = "en",
+	): Promise<{ content?: Array<{ type: string; text?: string }>; pluginIds: string[] } | undefined> {
+		let content = Array.isArray((req.result as { content?: unknown } | null)?.content)
+			? ([...(req.result as { content: Array<{ type: string; text?: string }> }).content] as Array<{
+					type: string;
+					text?: string;
+				}>)
+			: undefined;
+		const base = { ...(req.result as Record<string, unknown>), ...(content ? { content: [...content] } : {}) } as {
+			content?: Array<{ type: string; text?: string }>;
+			[k: string]: unknown;
+		};
+		let touched = false;
+		const pluginIds: string[] = [];
+		const frozenReq: ToolPostRequest = {
+			toolName: req.toolName,
+			params: freezeParams(req.params),
+			result: req.result,
+			conversationId: req.conversationId,
+		};
+		for (const p of this.loaded.values()) {
+			for (const h of p.postGuards ?? []) {
+				let raw: unknown;
+				try {
+					raw = await withGuardTimeout(Promise.resolve().then(() => (h as ToolPostHandler)(frozenReq)));
+				} catch (err) {
+					console.error(`[plugin:${p.info.id}] tool-post guard failed (skipped):`, err);
+					this.pushRuntimeDiag(p.info.id, `tool-post guard threw, skipped (${req.toolName})`);
+					continue;
+				}
+				const edit = normalizePostEdit(raw);
+				if (!edit) continue;
+				const merged = applyPostEdit(base, edit, lang);
+				base.content = merged.content;
+				Object.assign(base, merged);
+				touched = true;
+				pluginIds.push(p.info.id);
+				this.pushRuntimeDiag(p.info.id, `tool-post edited ${req.toolName} (by ${p.info.id})`);
+			}
+		}
+		if (!touched) return undefined;
+		return { content: base.content, pluginIds };
+	}
+
+	/** 阻断时给模型看的一句话（pre 守卫命中后由 agent-service 取用）。 */
+	guardDenialText(
+		verdict:
+			| { decision: "deny"; reason?: string; reasonEn?: string }
+			| { decision: "ask"; reason?: string; reasonEn?: string },
+		pluginId: string,
+		lang: string = "en",
+	): string {
+		return denialText(verdict, pluginId, lang);
+	}
+
 	/** index.ts 注入：读取当前打开对话的快照（轨迹类插件经 host.getActiveConversation 调用）。 */
 	conversationProvider: (() => PluginConversationSnapshot | null) | undefined = undefined;
 	/** index.ts 注入：插件无头调用 agent（微信通道等经 host.chat 调用）。 */
@@ -2180,13 +2541,64 @@ export class PluginManager {
 		return this.scan(lang);
 	}
 
+	/** 机器可读的注册面目录（P2-7）：slot 别名/kind/例子 + 工具目录 +
+	 *  宿主方法表 + 当前占用者（现算）。只读装配，无副作用。 */
+	getApiCatalog(): PluginApiCatalog {
+		const counts = new Map<string, Map<string, number>>();
+		const add = (pluginId: string, slot: string): void => {
+			let m = counts.get(slot);
+			if (!m) counts.set(slot, (m = new Map()));
+			m.set(pluginId, (m.get(pluginId) ?? 0) + 1);
+		};
+		for (const [pid, base] of this.uiBase) for (const it of base.items ?? []) add(pid, it.slot);
+		for (const [pid, rt] of this.uiRuntime) for (const it of rt.items.values()) add(pid, it.slot);
+		return buildPluginApiCatalog({
+			slots: [...UI_SLOTS],
+			aliases: { ...UI_SLOT_ALIASES },
+			kinds: [...UI_KINDS],
+			agentTools: AGENT_TOOL_CATALOG.map((t) => ({
+				name: t.name,
+				group: t.group,
+				defaultOn: t.defaultOn,
+				dshVisible: t.dshVisible,
+			})),
+			occupantsOf: (slot) => {
+				const m = counts.get(slot);
+				if (!m) return [];
+				return [...m].map(([pluginId, items]) => ({ pluginId, items }));
+			},
+		});
+	}
+
 	/**
 	 * attach 时调用：重扫目录 + 激活尚未加载的新插件。
 	 * 返回给浏览器的目录（含激活失败的条目，前端显示为不可用）。
 	 */
 	async ensureLoaded(lang?: () => ServerLang): Promise<UiPluginInfo[]> {
+		const l = lang?.() ?? "en";
 		const found = await this.scan(lang);
-		for (const info of found) {
+		const byId = new Map(found.map((f) => [f.id, f]));
+		const scannedIds = new Set(byId.keys());
+		// P2-8：依赖拓扑排序激活（被依赖者先行；决定启动时机的是依赖，不是目录顺序）。
+		// 边只连本次扫描里存在的对端；缺失的对端由 activate 点名拒绝。环上节点直接拒。
+		const { order, cyclic } = sortByRequires(
+			found.map((f) => f.id),
+			(id) => (byId.get(id)?.requires?.plugins ?? []).filter((d) => scannedIds.has(d)),
+		);
+		for (const cycId of cyclic) {
+			const info = byId.get(cycId)!;
+			if (this.loaded.has(info.id) || this.attempted.has(info.id)) continue;
+			const msg = pick(
+				l,
+				`插件 requires 存在循环依赖（${cycId}）—— 请先解环再激活`,
+				`Plugin has cyclic requires (${cycId}) — break the cycle first`,
+				"plugins.requires.cycle",
+				{ id: cycId },
+			);
+			this.setFrozenRefusal(info, msg, `cyclic requires (${cycId})`);
+		}
+		for (const id of order) {
+			const info = byId.get(id)!;
 			if (this.loaded.has(info.id) || this.attempted.has(info.id)) continue;
 			if (!existsSync(join(this.pluginsDir, info.id, "index.mjs"))) continue; // 纯前端插件
 			await this.activate(info, lang);
@@ -2198,6 +2610,8 @@ export class PluginManager {
 				this.deactivateEntry(id, p);
 			}
 		}
+		// P2-8 级联：提供方刚坏（被删/失败/被拒）→ 仍在跑的消费方一并反激活 + 教学占位。
+		this.cascadeRequiresRefusals(found, lang);
 		return found.map((f) => {
 			const base = this.loaded.get(f.id)?.info ?? f;
 			// 运行相位（设置面板清单用）：宿主持有实例即 active（含激活失败的占位行；
@@ -2210,29 +2624,21 @@ export class PluginManager {
 		});
 	}
 
-	/** 反激活清理：把该插件名下全部订阅/注册一次收完（工具/命令/watch/定时/
-	 *  总线/stats/流式——参考 agentToolUnsubscribers 模式，新增订阅一律走这里）。 */
+	/** 反激活清理：把该插件名下全部订阅/注册一次收完。
+	 *
+	 *  两段：① 副作用栈逆序回卷（插件注册的全部可逆副作用都在里面 —— 工具/命令/路由/
+	 *  代理/watch/定时/后台任务/事件订阅/UI 条目…；跑不干净的记一条诊断）；
+	 *  ② 兜底回收全局表里按 pluginId 索引的残留（老宿主激活的实例没有栈、或
+	 *  插件绕过 host 自己往表里塞过东西：代理前缀按 id 过滤清一遍，幂等）。 */
 	private releaseEntry(p: LoadedPlugin): void {
-		// 该插件注册的代理前缀随反激活一起回收（全局表按 pluginId 过滤；
+		// ① 逆序回卷。失败项已在栈内打过诊断，这里不再重复。
+		const failed = p.effects?.release() ?? [];
+		if (failed.length > 0)
+			console.warn(`[plugin:${p.info.id}] ${failed.length} effect(s) failed to clean up: ${failed.join(", ")}`);
+		// ② 兜底：代理前缀随反激活一起回收（全局表按 pluginId 过滤；
 		// Map 迭代中删除是良定义的：删过的条目不会再被访问到）。
 		for (const [prefix, hit] of this.proxyRoutes) {
 			if (hit.pluginId === p.info.id) this.proxyRoutes.delete(prefix);
-		}
-		// eslint-disable-next-line unicorn/no-useless-spread -- snapshot: handlers may unsubscribe mid-emit
-		for (const off of [
-			...(p.agentToolUnsubscribers ?? []),
-			...(p.commandUnsubscribers ?? []),
-			...(p.watchUnsubscribers ?? []),
-			...(p.scheduleUnsubscribers ?? []),
-			...(p.busUnsubscribers ?? []),
-			...(p.statsUnsubscribers ?? []),
-			...(p.streamingUnsubscribers ?? []),
-		]) {
-			try {
-				off();
-			} catch {
-				/* already gone */
-			}
 		}
 	}
 
@@ -2268,16 +2674,25 @@ export class PluginManager {
 		console.log(`[plugin:${id}] removed`);
 	}
 
-	/** 关机时反激活全部插件。 */
+	/** 关机 / reload 时反激活全部插件（dispose 后 loaded 为空，后续 releaseEntry 是 no-op）。 */
 	dispose(): void {
+		const pluginIds = new Set<string>();
 		for (const [id, p] of this.loaded) {
+			pluginIds.add(id);
 			try {
 				p.deactivate?.();
 			} catch (err) {
 				console.error(`[plugin:${id}] deactivate failed:`, err);
 			}
-			this.releaseEntry(p);
-			// 反激活时停掉它注册的常驻后台任务（轮询器等），不留孤儿计时器。
+		}
+		// ① 先回卷全部 effect 栈（含 bgTask 停表、工具/命令/路由/watch/UI 条目注销），
+		//    并把 loaded 清掉 —— 之后逐个走 releaseEntry 的兜底回收。
+		for (const [id, p] of this.loaded) {
+			p.effects?.release();
+			this.loaded.delete(id);
+		}
+		// ② 兜底：停掉任何没经 effect 栈登记的常驻后台任务，不留孤儿计时器。
+		for (const id of pluginIds) {
 			for (const t of this.pluginBgTasks.get(id)?.values() ?? []) {
 				try {
 					t.stop?.();
@@ -2285,6 +2700,10 @@ export class PluginManager {
 					// best-effort：反激活清理，单个任务失败不阻断。
 				}
 			}
+		}
+		// ③ 兜底：清掉插件名下的代理前缀（该插件名下但未经栈登记的残留）。
+		for (const prefix of [...this.proxyRoutes.keys()]) {
+			if (pluginIds.has(this.proxyRoutes.get(prefix)!.pluginId)) this.proxyRoutes.delete(prefix);
 		}
 		this.pluginBgTasks.clear();
 		this.loaded.clear();
@@ -2324,11 +2743,13 @@ export class PluginManager {
 					netAllowlist?: unknown;
 					engines?: unknown;
 					peerPlugins?: unknown;
+					requires?: unknown;
 					settings?: unknown;
 					renderers?: unknown;
 					messageWidgets?: unknown;
 					attachmentCards?: unknown;
 					composerProviders?: unknown;
+					fileHandlers?: unknown;
 					view?: unknown;
 					preload?: unknown;
 					ui?: unknown;
@@ -2337,6 +2758,49 @@ export class PluginManager {
 				this.domWants.set(name, wantsDom);
 				// 本轮 manifest 解析的诊断（重算覆盖；运行时诊断另存在 runtimeDiags）。
 				const uiDiags: string[] = [];
+				// P1-6：manifest 本体先校验，失败即拒（坏配置不进运行时）。
+				const mv = validatePluginManifest(m, name);
+				for (const w of mv.warnings) uiDiags.push(formatManifestIssue(w));
+				if (mv.errors.length > 0) {
+					for (const e of mv.errors) uiDiags.push(formatManifestIssue(e));
+					const first = mv.errors[0]!;
+					const msg = pick(
+						l,
+						`manifest 校验失败：${first.message}（${name}/）—— 修复后点“重新扫描”`,
+						`manifest validation failed: ${first.messageEn} (${name}/) — fix it, then hit Rescan`,
+						"plugins.manifest.invalid",
+						{ name, path: first.path },
+					);
+					console.error(`[plugin:${name}] ${msg}`);
+					this.manifestDiags.set(name, uiDiags);
+					const refused = [...uiDiags, ...(this.runtimeDiags.get(name) ?? [])].slice(0, 100);
+					out.push({
+						id: name,
+						name: typeof m.name === "string" && m.name ? m.name : name,
+						hasClient: existsSync(join(dir, "client", "entry.mjs")),
+						error: msg,
+						view: false,
+						...(refused.length ? { diagnostics: refused } : {}),
+					});
+					const lpRefused = this.loaded.get(name);
+					if (lpRefused) {
+						if (refused.length) lpRefused.info.diagnostics = [...refused];
+						else delete lpRefused.info.diagnostics;
+					}
+					continue;
+				}
+				// P2-9：声明式设置的三层合并（schema 默认 < 用户 overlay < 面板保存值）。
+				// overlay 先读先洗，警告进诊断（英文短句，随清单下发）；secret 永不来自 overlay。
+				const settingsSchemaForScan = parseSettingsSchema(m.settings);
+				const overlayFileForScan = readSettingsOverlayFile(this.dataDir, name);
+				const overlayForScan = cleanOverlaySettings(settingsSchemaForScan, overlayFileForScan.raw, "en");
+				for (const w of [...overlayFileForScan.warnings, ...overlayForScan.warnings]) uiDiags.push(`override: ${w}`);
+				const resolvedSettingsForScan = resolveSettingsValues(
+					settingsSchemaForScan,
+					readStoredSettings(dir),
+					overlayForScan.values,
+					{ has: (k) => new PluginSecrets(this.dataDir, dir).has(k) },
+				);
 				out.push({
 					id: name,
 					name: typeof m.name === "string" && m.name ? m.name : name,
@@ -2370,6 +2834,9 @@ export class PluginManager {
 					peerPlugins: Array.isArray(m.peerPlugins)
 						? m.peerPlugins.filter((x): x is string => typeof x === "string" && ID_RE.test(x)).slice(0, 16)
 						: undefined,
+					// 硬依赖声明（manifest "requires"，P2-8）：形状坏的在 P1-6 校验层已拒，
+					// 这里只做宽容解析供展示 + activate 语义判定（缺失/失败/环/版本/能力即拒）。
+					requires: parseRequires(m.requires),
 					// 特权 DOM：permissions 含 dom 族 → bundle 默认 403，需用户逐个授权。
 					// wantsDom 缓进 domWants（静态门禁查它，不必每次 readdir）；error 在未授权时
 					// 直接写明原因（tab 置灰 + 设置行提示），授权后下次 scan 自动清除。
@@ -2385,12 +2852,9 @@ export class PluginManager {
 							}
 						: {}),
 					// 声明式设置 schema + 当前存值（⚙ 面板自动渲染表单用）
-					settingsSchema: parseSettingsSchema(m.settings),
-					settingsValues: storedSettingsValues(
-						dir,
-						parseSettingsSchema(m.settings),
-						new PluginSecrets(this.dataDir, dir),
-					),
+					settingsSchema: settingsSchemaForScan,
+					settingsValues: resolvedSettingsForScan.values,
+					settingsSources: resolvedSettingsForScan.sources,
 					// 可渲染的 fenced-code 语言（manifest "renderers"）——前端据此按需加载
 					renderers: Array.isArray(m.renderers)
 						? m.renderers.filter((r): r is string => typeof r === "string" && r.length > 0).slice(0, 32)
@@ -2405,6 +2869,39 @@ export class PluginManager {
 					composerProviders: Array.isArray(m.composerProviders)
 						? m.composerProviders.filter((r): r is string => typeof r === "string" && r.length > 0).slice(0, 32)
 						: undefined,
+					// 文件单击查看器声明：只下发扩展名/处理器 id/优先级，实际 DOM
+					// 渲染仍由客户端 bundle 提供，避免 manifest 携带可执行内容。
+					fileHandlers: (() => {
+						if (!Array.isArray(m.fileHandlers)) return undefined;
+						const rows = m.fileHandlers
+							.filter((x): x is Record<string, unknown> => Boolean(x) && typeof x === "object" && !Array.isArray(x))
+							.slice(0, 32)
+							.map((x) => {
+								const extensions = Array.isArray(x.extensions)
+									? x.extensions
+											.filter(
+												(e): e is string => typeof e === "string" && /^\.[A-Za-z0-9][A-Za-z0-9._-]*$/.test(e.trim()),
+											)
+											.map((e) => e.trim().toLowerCase())
+											.slice(0, 32)
+									: [];
+								if (!extensions.length) return null;
+								const id = typeof x.id === "string" && /^[A-Za-z0-9_-]+$/.test(x.id) ? x.id : "default";
+								return {
+									id,
+									extensions: [...new Set(extensions)],
+									priority: Number.isFinite(Number(x.priority))
+										? Math.max(-1000, Math.min(1000, Number(x.priority)))
+										: 0,
+									...(typeof x.label === "string" && x.label.trim() ? { label: x.label.trim().slice(0, 120) } : {}),
+									...(typeof x.labelEn === "string" && x.labelEn.trim()
+										? { labelEn: x.labelEn.trim().slice(0, 120) }
+										: {}),
+								};
+							})
+							.filter((x): x is NonNullable<typeof x> => x !== null);
+						return rows.length ? rows : undefined;
+					})(),
 					// 是否有独立视图 tab（manifest "view"，缺省 true）；纯 renderer 插件写 false
 					view: typeof m.view === "boolean" ? m.view : true,
 					// 客户端 bundle 是否常驻加载（manifest "preload"，缺省 false）：无视图
@@ -2490,22 +2987,119 @@ export class PluginManager {
 		return out;
 	}
 
+	/** 非 activate 上下文的拒绝占位（P2-8 环/级联）：空集合 + error + 诊断，
+	 *  与各门控的占位行同形（ensureLoaded 照例跳过，reload 重算刷新）。 */
+	private setFrozenRefusal(info: UiPluginInfo, msg: string, diagEn: string): void {
+		console.error(`[plugin:${info.id}] ${msg}`);
+		this.pushRuntimeDiag(info.id, diagEn);
+		this.loaded.set(info.id, {
+			info: { ...info, error: msg, diagnostics: this.diagnosticsOf(info.id) },
+			toolHandlers: new Set(),
+			runHandlers: new Set(),
+			convChangeHandlers: new Set(),
+			attachHandlers: new Set(),
+			cwdHandlers: new Set(),
+			httpRoutes: new Map(),
+			settingsHandlers: new Set(),
+		});
+	}
+
+	/** 级联（P2-8）：提供方刚坏掉（被删/失败/被拒）→ 仍在跑的消费方一并反激活 +
+	 *  留教学占位。循环直到一轮无变化（链式依赖一轮收敛），返回受影响的 id。
+	 *  hostApi/families 运行时不变，这里只查 plugins 对端（目录在 + 后端 peer 激活成功）。 */
+	private cascadeRequiresRefusals(found: UiPluginInfo[], lang?: () => ServerLang): string[] {
+		const l = lang?.() ?? "en";
+		const byId = new Map(found.map((f) => [f.id, f]));
+		const hit: string[] = [];
+		for (;;) {
+			let changed = false;
+			for (const [id, p] of [...this.loaded]) {
+				if (p.info.error) continue;
+				const req = byId.get(id)?.requires ?? p.info.requires;
+				if (!req?.plugins?.length) continue;
+				for (const dep of req.plugins) {
+					let why = "";
+					let whyEn = "";
+					if (dep === id) {
+						why = `插件 requires 依赖了自己（${dep}）—— 请删掉这条自依赖`;
+						whyEn = `Plugin requires itself (${dep}) — remove the self-dependency`;
+					} else if (!byId.has(dep)) {
+						why = `插件 requires 对等插件「${dep}」但它已不在（被删/被拒）—— 装回来或去掉这条依赖`;
+						whyEn = `Plugin requires peer "${dep}" which is gone (removed or refused) — reinstall it or drop the dependency`;
+					} else if (existsSync(join(this.pluginsDir, dep, "index.mjs"))) {
+						const peer = this.loaded.get(dep);
+						if (!peer || peer.info.error) {
+							why = `插件 requires 对等插件「${dep}」但它已失败/停止：${peer?.info.error ?? "未激活"}—— 修好它或去掉这条依赖`;
+							whyEn = `Plugin requires peer "${dep}" which failed/stopped: ${peer?.info.error ?? "inactive"} — fix it or drop the dependency`;
+						}
+					}
+					if (!why) continue;
+					const msg = pick(l, why, whyEn, "plugins.requires.cascade", { dep });
+					this.deactivateEntry(id, p);
+					this.setFrozenRefusal(byId.get(id) ?? p.info, msg, whyEn);
+					hit.push(id);
+					changed = true;
+					break;
+				}
+			}
+			if (!changed) break;
+		}
+		return hit;
+	}
+
 	private async activate(info: UiPluginInfo, lang?: () => ServerLang): Promise<void> {
 		const l = lang?.() ?? "en";
 		this.attempted.add(info.id);
 		const dir = join(this.pluginsDir, info.id);
+		// P1-6：manifest 本体失败即拒（scan 缓存可能过期，这里重读重判，半途注册的副作用不留）。
+		try {
+			const rawManifest = readFileSync(join(dir, "manifest.json"), "utf8");
+			const parsedManifest: unknown = JSON.parse(rawManifest);
+			const mvActivate = validatePluginManifest(parsedManifest, info.id);
+			if (mvActivate.errors.length > 0) {
+				const first = mvActivate.errors[0]!;
+				const msg = pick(
+					l,
+					`manifest 校验失败：${first.message} —— 修复后点“重新扫描”`,
+					`manifest validation failed: ${first.messageEn} — fix it, then hit Rescan`,
+					"plugins.manifest.invalid",
+					{ name: info.id, path: first.path },
+				);
+				console.error(`[plugin:${info.id}] ${msg}`);
+				for (const e of mvActivate.errors) this.pushRuntimeDiag(info.id, formatManifestIssue(e));
+				for (const w of mvActivate.warnings) this.pushRuntimeDiag(info.id, formatManifestIssue(w));
+				this.loaded.set(info.id, {
+					info: { ...info, error: msg, diagnostics: this.diagnosticsOf(info.id) },
+					toolHandlers: new Set(),
+					runHandlers: new Set(),
+					convChangeHandlers: new Set(),
+					attachHandlers: new Set(),
+					cwdHandlers: new Set(),
+					httpRoutes: new Map(),
+					settingsHandlers: new Set(),
+				});
+				return;
+			}
+		} catch {
+			// 读不到/解析失败 → 走原有的 broken 占位逻辑（scan 里已产出，不在这里重复拒绝）。
+		}
 		const handlers = new Set<(payload: unknown) => void>();
 		this.messageHandlers.set(info.id, handlers);
 		const toolHandlers = new Set<(ev: PluginToolEvent) => void>();
+		const preGuards = new Set<ToolPreHandler>();
+		const postGuards = new Set<ToolPostHandler>();
 		const runHandlers = new Set<(ev: PluginRunEvent) => void>();
 		const convChangeHandlers = new Set<() => void>();
 		const attachHandlers = new Set<(clientId: string) => void>();
 		const cwdHandlers = new Set<(cwd: string) => void>();
 		const httpRoutes = new Map<string, (req: Request, res: Response) => void>();
-		const unregisterTools: Array<() => void> = [];
-		const unregisterCommands: Array<() => void> = [];
 		const bgTaskTable = new Map<string, PluginBgTask>();
 		const settingsHandlers = new Set<(values: Record<string, unknown>) => void>();
+		// 可逆副作用栈：本插件的全部注册面（工具/命令/路由/代理/watch/定时/后台任务/
+		// UI 条目/事件订阅…）都经 effects.add 登记，反激活时**逆序**回卷 —— 插件忘写
+		// 注销也不会留下孤儿订阅/定时器/路由（热重载后事件双触发、定时器叠加、watcher
+		// 堆积都是这个漏法的症状）。cleanup 抛错只记诊断，不阻断回卷。
+		const effects = new PluginEffectStack(info.id, (m) => this.pushRuntimeDiag(info.id, m));
 		// 宿主 API 版本协商：插件要的比宿主新 → 明确拒绝（而不是让它在运行期
 		// 撞 undefined 接口莫名其妙地坏）。与激活失败同一处理：error 字段 + 置灰。
 		let apiVersion = 1;
@@ -2544,6 +3138,109 @@ export class PluginManager {
 		const permsDeclared = (info.permissions ?? []).slice();
 		const strict = permsDeclared.length > 0 || apiVersion >= 2;
 		const permFamilies = new Set(permsDeclared.map((x) => x.split(":")[0]!));
+		// 硬依赖声明（manifest "requires"，P2-8）：任一条不满足即拒绝激活 + 教学式错误
+		// （peerPlugins 仍是缺失只警告的软依赖）。形状坏的在 P1-6 校验层已提前拒，
+		// 这里只做语义判定：hostApi 下限、能力族已知+已声明、对等插件已安装且激活成功。
+		const req = info.requires;
+		if (req) {
+			const refuseRequires = (zh: string, en: string, key: string, vars?: Record<string, unknown>): boolean => {
+				const msg = pick(l, zh, en, key, vars);
+				console.error(`[plugin:${info.id}] ${msg}`);
+				this.pushRuntimeDiag(info.id, en);
+				this.loaded.set(info.id, {
+					info: { ...info, error: msg, diagnostics: this.diagnosticsOf(info.id) },
+					toolHandlers,
+					runHandlers,
+					convChangeHandlers,
+					attachHandlers,
+					cwdHandlers,
+					httpRoutes,
+					settingsHandlers: new Set(),
+				});
+				return true;
+			};
+			if (req.hostApi !== undefined && req.hostApi > PLUGIN_API_VERSION) {
+				refuseRequires(
+					`插件要求宿主 API v${req.hostApi}+，当前宿主 v${PLUGIN_API_VERSION} —— 请升级 pi-web-ui`,
+					`Plugin requires host API v${req.hostApi}+ but the host is v${PLUGIN_API_VERSION} — please upgrade pi-web-ui`,
+					"plugins.requires.hostapi",
+					{ hostApi: req.hostApi, PLUGIN_API_VERSION },
+				);
+				return;
+			}
+			let refused = false;
+			for (const f of req.families ?? []) {
+				if (!isKnownPermission(f)) {
+					refuseRequires(
+						`插件 requires 声明了未知能力族「${f}」（拼写？或需要更新 pi-web-ui）—— 请修正 manifest.requires.families`,
+						`Plugin requires unknown family "${f}" (typo? or needs newer pi-web-ui) — fix manifest.requires.families`,
+						"plugins.requires.family.unknown",
+						{ family: f },
+					);
+					refused = true;
+					break;
+				}
+				const fam = f.split(":")[0]!;
+				if (!permFamilies.has(fam)) {
+					refuseRequires(
+						`插件 requires 需要「${fam}」族，但 permissions 里没声明 —— 加上它，否则运行时必被门控拒绝`,
+						`Plugin requires family "${fam}" but does not declare it in permissions — add it, otherwise every call will be denied`,
+						"plugins.requires.family.undeclared",
+						{ family: fam },
+					);
+					refused = true;
+					break;
+				}
+			}
+			if (refused) return;
+			for (const dep of req.plugins ?? []) {
+				if (dep === info.id) {
+					refuseRequires(
+						`插件 requires 依赖了自己（${dep}）—— 请删掉这条自依赖`,
+						`Plugin requires itself (${dep}) — remove the self-dependency`,
+						"plugins.requires.self",
+						{ dep },
+					);
+					refused = true;
+					break;
+				}
+				if (!existsSync(join(this.pluginsDir, dep, "manifest.json"))) {
+					refuseRequires(
+						`插件 requires 对等插件「${dep}」但它没安装（plugins/${dep}/ 缺失）—— 先装上它`,
+						`Plugin requires peer "${dep}" which is not installed (plugins/${dep}/ missing) — install it first`,
+						"plugins.requires.peer.missing",
+						{ dep },
+					);
+					refused = true;
+					break;
+				}
+				if (existsSync(join(this.pluginsDir, dep, "index.mjs"))) {
+					const peer = this.loaded.get(dep);
+					if (!peer) {
+						refuseRequires(
+							`插件 requires 对等插件「${dep}」但它尚未激活 —— 请先解决它的问题`,
+							`Plugin requires peer "${dep}" which is not active yet — fix it first`,
+							"plugins.requires.peer.inactive",
+							{ dep },
+						);
+						refused = true;
+						break;
+					}
+					if (peer.info.error) {
+						refuseRequires(
+							`插件 requires 对等插件「${dep}」但它激活失败：${peer.info.error}`,
+							`Plugin requires peer "${dep}" which failed to activate: ${peer.info.error}`,
+							"plugins.requires.peer.failed",
+							{ dep },
+						);
+						refused = true;
+						break;
+					}
+				}
+				// 纯前端对等端（无 index.mjs）：目录存在即满足，它没有激活态。
+			}
+			if (refused) return;
+		}
 		// 引擎约束（manifest engines["pi-web-ui"]）：不满足即拒绝激活（与 apiVersion 超前同级处理）。
 		// 解析失败 → 警告放行不阻断；对等依赖缺失 → 只警告不断活。
 		const enginesReq = info.engines?.["pi-web-ui"];
@@ -2586,12 +3283,7 @@ export class PluginManager {
 				this.pushRuntimeDiag(info.id, `peer plugin missing: ${peer} (warn only, activation continues)`);
 			}
 		}
-		// 新增订阅的取消函数（反激活时经 releaseEntry 统一释放）。
-		const watchSubs: Array<() => void> = [];
-		const scheduleSubs: Array<() => void> = [];
-		const busSubs: Array<() => void> = [];
-		const statsSubs: Array<() => void> = [];
-		const streamingSubs: Array<() => void> = [];
+		// 新增订阅的取消函数（反激活时经 effects 栈统一逆序释放）。
 		// 出站网络白名单（scan 解析的 manifest netAllowlist 快照）。
 		const netAllow = info.netAllowlist ?? [];
 		// 每插件的私有设施：KV 存储 + 加密 secrets + 依赖自动补装（单飞）。
@@ -2738,6 +3430,16 @@ export class PluginManager {
 			onToolEvent: (h) => {
 				toolHandlers.add(h);
 				return () => toolHandlers.delete(h);
+			},
+			onToolPre: (h) => {
+				if (!can("tools")) return () => {};
+				preGuards.add(h);
+				return () => preGuards.delete(h);
+			},
+			onToolPost: (h) => {
+				if (!can("tools")) return () => {};
+				postGuards.add(h);
+				return () => postGuards.delete(h);
 			},
 			onRunEvent: (h) => {
 				runHandlers.add(h);
@@ -2928,12 +3630,7 @@ export class PluginManager {
 			},
 			registerCommand: (cmd) => {
 				const off = this.registerCommand(info.id, cmd);
-				unregisterCommands.push(off);
-				return () => {
-					const i = unregisterCommands.indexOf(off);
-					if (i >= 0) unregisterCommands.splice(i, 1);
-					off();
-				};
+				return effects.add(`command:/${String(cmd?.name ?? "?").replace(/^\/+/, "")}`, off);
 			},
 			storage,
 			secrets,
@@ -2954,8 +3651,9 @@ export class PluginManager {
 					);
 					return () => {};
 				}
-				httpRoutes.set(`${m} ${path}`, handler);
-				return () => httpRoutes.delete(`${m} ${path}`);
+				const key = `${m} ${path}`;
+				httpRoutes.set(key, handler);
+				return effects.add(`route:${key}`, () => httpRoutes.delete(key));
 			},
 			registerProxy: (prefix, target) => {
 				if (!can("http")) return () => {};
@@ -2968,20 +3666,15 @@ export class PluginManager {
 					);
 					return () => {};
 				}
-				return () => {
+				return effects.add(`proxy:${p}`, () => {
 					self.unregisterProxy(info.id, p);
-				};
+				});
 			},
 			// 包一层：插件反激活时自动注销它注册的全部 AI 工具，不留悬挂项。
 			registerAgentTool: (tool) => {
 				if (!can("tools")) return () => {};
 				const off = this.registerAgentTool(info.id, tool);
-				unregisterTools.push(off);
-				return () => {
-					const i = unregisterTools.indexOf(off);
-					if (i >= 0) unregisterTools.splice(i, 1);
-					off();
-				};
+				return effects.add(`agentTool:${String(tool?.name ?? "?")}`, off);
 			},
 			dir,
 			dataDir: this.dataDir,
@@ -3049,8 +3742,7 @@ export class PluginManager {
 							/* already closed */
 						}
 					};
-					watchSubs.push(off);
-					return off;
+					return effects.add(`watch:${String(relPath)}`, off);
 				},
 			},
 			project: {
@@ -3098,6 +3790,12 @@ export class PluginManager {
 					}
 				};
 				fire();
+				effects.add(`bgTask:${id}`, () => {
+					if (bgTaskTable.delete(id)) {
+						if (bgTaskTable.size === 0) self.pluginBgTasks.delete(info.id);
+						fire();
+					}
+				});
 				return {
 					update: (next) => {
 						if (!bgTaskTable.has(id)) return;
@@ -3151,11 +3849,11 @@ export class PluginManager {
 						added.push(parsed.id);
 					}
 					if (added.length) void self.pushToAll().catch(() => {});
-					return () => {
+					return effects.add(`ui:register(${added.join(",") || "none"})`, () => {
 						if (!added.length) return;
 						for (const id of added) self.removeUiItem(info.id, id);
 						void self.pushToAll().catch(() => {});
-					};
+					});
 				},
 				update: (id, patch) => {
 					if (!can("ui")) return;
@@ -3187,7 +3885,13 @@ export class PluginManager {
 				},
 				list: () => self.uiOf(info.id) ?? { items: [], arrange: [] },
 			},
-			getSettings: () => runtimeSettingsValues(dir, info.settingsSchema ?? [], secrets),
+			getSettings: () => {
+				// P2-9：运行时视角同样走三层合并（警告已在 scan 落诊断，这里静默用值）。
+				const schema = info.settingsSchema ?? [];
+				const overlayFile = readSettingsOverlayFile(self.dataDir, info.id);
+				const overlay = cleanOverlaySettings(schema, overlayFile.raw, "en");
+				return runtimeSettingsValues(dir, schema, secrets, overlay.values);
+			},
 			onSettingsChanged: (h) => {
 				settingsHandlers.add(h);
 				return () => settingsHandlers.delete(h);
@@ -3440,7 +4144,7 @@ export class PluginManager {
 					}
 				};
 				// 反激活只停表、不断持久化：下次 activate 重调 schedule() 即按落盘声明重建。
-				scheduleSubs.push(cancelTimer);
+				effects.add(`schedule:${sid}`, cancelTimer);
 				return off;
 			},
 			models: {
@@ -3462,27 +4166,15 @@ export class PluginManager {
 			},
 			onStats: (h) => {
 				self.statsHandlers.add(h);
-				const off = (): void => {
+				return effects.add("onStats", () => {
 					self.statsHandlers.delete(h);
-				};
-				statsSubs.push(off);
-				return () => {
-					const i = statsSubs.indexOf(off);
-					if (i >= 0) statsSubs.splice(i, 1);
-					off();
-				};
+				});
 			},
 			onStreaming: (h) => {
 				self.streamingHandlers.add(h);
-				const off = (): void => {
+				return effects.add("onStreaming", () => {
 					self.streamingHandlers.delete(h);
-				};
-				streamingSubs.push(off);
-				return () => {
-					const i = streamingSubs.indexOf(off);
-					if (i >= 0) streamingSubs.splice(i, 1);
-					off();
-				};
+				});
 			},
 			net: {
 				fetch: async (url, init) => {
@@ -3552,16 +4244,10 @@ export class PluginManager {
 					let set = self.busHandlers.get(t);
 					if (!set) self.busHandlers.set(t, (set = new Set()));
 					set.add(handler);
-					const off = (): void => {
+					return effects.add(`bus:${t}`, () => {
 						set.delete(handler);
 						if (set.size === 0) self.busHandlers.delete(t);
-					};
-					busSubs.push(off);
-					return () => {
-						const i = busSubs.indexOf(off);
-						if (i >= 0) busSubs.splice(i, 1);
-						off();
-					};
+					});
 				},
 			},
 			log: (levelOrArg, ...args) => {
@@ -3575,6 +4261,14 @@ export class PluginManager {
 				else if (level === "warn") console.warn(line);
 				else if (level === "debug") console.debug(line);
 				else console.log(line);
+			},
+			effect: (label, dispose) => {
+				if (typeof dispose !== "function") return () => {};
+				const name =
+					String(label ?? "")
+						.trim()
+						.slice(0, 64) || "anonymous";
+				return effects.add(`plugin:${name}`, dispose);
 			},
 		};
 		try {
@@ -3595,17 +4289,13 @@ export class PluginManager {
 				info: { ...info, ...(combined ? { diagnostics: combined } : {}) },
 				deactivate: typeof ret === "function" ? ret : undefined,
 				toolHandlers,
+				preGuards,
+				postGuards,
 				runHandlers,
 				convChangeHandlers,
 				attachHandlers,
 				cwdHandlers,
-				agentToolUnsubscribers: unregisterTools,
-				commandUnsubscribers: unregisterCommands,
-				watchUnsubscribers: watchSubs,
-				scheduleUnsubscribers: scheduleSubs,
-				busUnsubscribers: busSubs,
-				statsUnsubscribers: statsSubs,
-				streamingUnsubscribers: streamingSubs,
+				effects,
 				httpRoutes,
 				permsDeclared,
 				permFamilies,
@@ -3619,9 +4309,17 @@ export class PluginManager {
 			// 用户装前可见、日常启动不打扰。
 			void this.maybeConsentNotice(info, dir, permsDeclared);
 		} catch (err) {
+			// 激活失败：先把这一轮已经登记的可逆副作用逆序回卷（半途注册的工具/路由/
+			// 定时器不能留着 —— 插件已经坏了，谁也不会来撤它们），再留一条错误占位行。
+			const failed = effects.release();
 			httpRoutes.clear();
 			self.activatingGates.delete(info.id);
 			this.pushRuntimeDiag(info.id, `activate failed: ${(err as Error).message}`);
+			if (failed.length > 0)
+				this.pushRuntimeDiag(
+					info.id,
+					`activate failed with ${failed.length} effect(s) not cleaned: ${failed.join(", ")}`,
+				);
 			this.loaded.set(info.id, {
 				info: { ...info, error: (err as Error).message, diagnostics: this.diagnosticsOf(info.id) },
 				toolHandlers,

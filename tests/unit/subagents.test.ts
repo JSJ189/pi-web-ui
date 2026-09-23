@@ -15,6 +15,7 @@ function makeHostSpies() {
 		listSubagents: vi.fn(() => []),
 		steerSubagent: vi.fn(async () => {}),
 		stopSubagent: vi.fn(async () => {}),
+		handoffSubagent: vi.fn(async () => {}),
 		listTemplates: vi.fn(() => [{ name: "reviewer", description: "只读审查" }]),
 		isTemplateUsable: vi.fn((name: string) => name === "reviewer"),
 	};
@@ -22,7 +23,7 @@ function makeHostSpies() {
 }
 
 describe("subagents tools", () => {
-	it("注册 7 个 subagent_* 工具", () => {
+	it("注册 8 个 subagent_* 工具", () => {
 		const host = makeHostSpies();
 		const tools = makeSubagentTools(host);
 		expect(tools.map((t) => t.name)).toEqual([
@@ -33,6 +34,7 @@ describe("subagents tools", () => {
 			"subagent_stop",
 			"subagent_wait_all",
 			"subagent_templates",
+			"subagent_handoff",
 		]);
 		// 全部有 description + 参数 schema。
 		for (const tool of tools) {

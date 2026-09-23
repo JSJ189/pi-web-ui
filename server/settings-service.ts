@@ -12,6 +12,8 @@ import { fileURLToPath } from "node:url";
 import type { AgentSession } from "@earendil-works/pi-coding-agent";
 import type {
 	ServerMessage,
+	UiApprovalPolicyState,
+	UiApprovalRule,
 	UiExtensionInfo,
 	UiLayoutPrefs,
 	UiSettingsState,
@@ -33,6 +35,7 @@ import { normalizeSoftCapByModel, normalizeSoftCapTokens } from "./soft-cap.js";
 import { findVisionModels, SYSTEM_PROMPT } from "./vision-bridge.js";
 import { COMMITMSG_SYSTEM_PROMPT } from "./scm-commitmsg.js";
 import { DEFAULT_TEMPLATES, type SubagentTemplatesStore } from "./subagent-templates.js";
+import type { ApprovalRulesStore } from "./approval-rules.js";
 import { deriveLegacy, foldLegacyIntoDisabled, normalizeDisabledAgentTools } from "./tool-manager.js";
 
 /** ClientSession 提供给本服务的宿主能力（窄接口，便于独立测试）。 */
@@ -74,6 +77,9 @@ export interface SettingsHost {
 	promptSnapshot: () => { full: string; texts: Record<string, string>; toolsSchema: string };
 	/** 可选：内置标记状态（设置面板展示用）。 */
 	getMarkerState?: () => MarkerStateForSettings;
+	/** 可选：当前对话的审批放行策略（「本对话全部允许 / 允许同类」的撤销区用；
+	 *  纯内存态，见 server/tool-approval.ts 的 ApprovalPolicy）。 */
+	getApprovalPolicy?: () => UiApprovalPolicyState;
 }
 
 export class SettingsService {
@@ -88,6 +94,8 @@ export class SettingsService {
 		private readonly host: SettingsHost,
 		/** 全局子代理模板库（所有客户端共享；模板改动无需 reload runtime）。 */
 		private readonly templates: SubagentTemplatesStore,
+		/** 全局审批规则库（所有客户端共享；修改实时生效无需 reload runtime）。 */
+		private readonly approvalRules?: ApprovalRulesStore,
 	) {
 		this.settings = host.stateStore.getSettings(host.clientId);
 		this.presets = host.stateStore.getPresets(host.clientId);
@@ -338,6 +346,9 @@ export class SettingsService {
 				terminalBashIdleMs: this.settings.terminalBashIdleMs,
 				toolWatchdogTimeoutMs: this.settings.toolWatchdogTimeoutMs,
 				readDirEnabled: this.settings.readDirEnabled !== false,
+				toolApprovalEnabled: this.settings.toolApprovalEnabled !== false,
+				approvalPolicy: this.host.getApprovalPolicy?.() ?? { allowAll: false, categories: [] },
+				approvalRules: this.approvalRules?.list() ?? [],
 				editSoftEnabled: legacyTools.editSoftEnabled,
 				questionnaireEnabled: legacyTools.questionnaireEnabled,
 				parallelReminderEnabled: this.settings.parallelReminderEnabled ?? true,
@@ -453,6 +464,8 @@ export class SettingsService {
 		/** read 工具读目录开关（默认开；见 server/read-tool.ts）。运行时无需重载，
 		 *  覆盖定义每次调用实时读取。 */
 		readDirEnabled?: boolean;
+		/** 工具执行审批总开关（默认开；纯运行开关，每次审批实时读取，无需 reload）。 */
+		toolApprovalEnabled?: boolean;
 		editSoftEnabled?: boolean;
 		questionnaireEnabled?: boolean;
 		/** 同项目并行提醒开关（默认开；纯运行开关，下一轮即生效，无需 reload）。 */
@@ -565,6 +578,10 @@ export class SettingsService {
 		// read 读目录开关：覆盖定义每次调用实时读取，改动即时生效，无需 reload。
 		if (partial.readDirEnabled !== undefined) {
 			this.settings.readDirEnabled = partial.readDirEnabled;
+		}
+		// 工具执行审批总开关：审批入口每次实时读取（askApproval 顶部门禁），无需 reload。
+		if (partial.toolApprovalEnabled !== undefined) {
+			this.settings.toolApprovalEnabled = partial.toolApprovalEnabled;
 		}
 		// 目标模式总开关：运行时无需重载（goal bar / 服务端入口实时读取）。
 		if (partial.goalModeEnabled !== undefined) {
@@ -738,6 +755,8 @@ export class SettingsService {
 			terminalBashIdleMs: p.terminalBashIdleMs ?? this.settings.terminalBashIdleMs,
 			// read 读目录是纯运行行为开关，不进预设——保留当前值。
 			readDirEnabled: this.settings.readDirEnabled !== false,
+			// 工具审批总开关同样是纯运行开关，不进预设——保留当前值。
+			toolApprovalEnabled: this.settings.toolApprovalEnabled !== false,
 			// toolWatchdogTimeoutMs 是纯运行行为参数，不进预设——保留当前值。
 			toolWatchdogTimeoutMs: this.settings.toolWatchdogTimeoutMs,
 			editSoftEnabled: presetLegacy.editSoftEnabled,
@@ -830,6 +849,94 @@ export class SettingsService {
 			level: "info",
 			text: `子代理模板已删除：${name}`,
 			textEn: `Subagent template deleted: ${name}`,
+		});
+	}
+
+	/** Upsert 一条审批规则（全局共享）。 */
+	async saveApprovalRule(rule: UiApprovalRule): Promise<void> {
+		if (!this.approvalRules) return;
+		const err = this.approvalRules.upsert(rule);
+		if (err) {
+			this.host.emit({
+				type: "notice",
+				level: "error",
+				text: `审批规则保存失败：${err}`,
+				textEn: `Failed to save approval rule: ${err}`,
+			});
+			return;
+		}
+		this.push();
+		this.host.emit({
+			type: "notice",
+			level: "info",
+			text: `审批规则已保存：${rule.label}`,
+			textEn: `Approval rule saved: ${rule.labelEn || rule.label}`,
+		});
+	}
+
+	/** 批量更新审批规则列表（重排或批量保存，全局共享）。 */
+	async saveApprovalRules(rules: UiApprovalRule[]): Promise<void> {
+		if (!this.approvalRules) return;
+		const err = this.approvalRules.saveAll(rules);
+		if (err) {
+			this.host.emit({
+				type: "notice",
+				level: "error",
+				text: `审批规则列表保存失败：${err}`,
+				textEn: `Failed to save approval rules: ${err}`,
+			});
+			return;
+		}
+		this.push();
+		this.host.emit({
+			type: "notice",
+			level: "info",
+			text: "审批规则列表已更新",
+			textEn: "Approval rules updated",
+		});
+	}
+
+	/** 删除一条自定义审批规则。 */
+	async deleteApprovalRule(id: string): Promise<void> {
+		if (!this.approvalRules) return;
+		const ok = this.approvalRules.remove(id);
+		if (!ok) {
+			this.host.emit({
+				type: "notice",
+				level: "error",
+				text: "审批规则删除失败（内置规则不可删除）",
+				textEn: "Failed to delete approval rule (built-in rules cannot be deleted)",
+			});
+			return;
+		}
+		this.push();
+		this.host.emit({
+			type: "notice",
+			level: "info",
+			text: "审批规则已删除",
+			textEn: "Approval rule deleted",
+		});
+	}
+
+	/** 恢复某条内置审批规则到系统默认设定。 */
+	async resetBuiltinApprovalRule(id: string): Promise<void> {
+		if (!this.approvalRules) return;
+		const ok = this.approvalRules.resetBuiltin(id);
+		if (!ok) {
+			this.host.emit({
+				type: "notice",
+				level: "error",
+				text: "恢复默认失败：未找到对应内置规则",
+				textEn: "Failed to reset: built-in rule not found",
+			});
+			return;
+		}
+		this.push();
+		this.host.emit({
+			type: "notice",
+			level: "info",
+			text: "内置规则已恢复默认",
+			textEn: "Built-in rule reset to default",
 		});
 	}
 

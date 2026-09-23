@@ -9,7 +9,6 @@ import {
 	FiLink,
 	FiMaximize,
 	FiMinimize,
-	FiPlus,
 	FiSave,
 	FiX,
 	FiZoomIn,
@@ -39,8 +38,8 @@ interface FilePreviewProps {
 	content: FileContent | null;
 	/** Add the selected line range as a "lines" attachment to the chat input. */
 	onAddLines: (path: string, name: string, start: number, end: number) => void;
-	/** Attach the whole file (inline content / path reference) like the row buttons. */
-	onAttach: (path: string, name: string, mode: "inline" | "reference") => void;
+	/** Attach the whole file as a path reference like the row buttons. */
+	onAttach: (path: string, name: string, mode: "reference") => void;
 	onClose: () => void;
 	/** 文件预览工具条（file.preview.toolbar 槽位：纯插件新增位，无条目时不渲染）。 */
 	uiFilePreviewToolbar?: UiSlotEntry[];
@@ -188,7 +187,8 @@ export function FilePreview({
 		addedTimer.current = setTimeout(() => setAdded(false), 1400);
 	};
 
-	const canEdit = loaded !== null && loaded.kind === "text" && !loaded.binary && !loaded.truncated;
+	const canEdit =
+		loaded !== null && loaded.kind === "text" && !loaded.binary && !loaded.truncated && !isOfficeFile(file.name);
 
 	const cancelEditing = () => {
 		setDraft(loaded?.text ?? "");
@@ -244,7 +244,7 @@ export function FilePreview({
 	// Preview category from the server ("text" while loading). Media kinds are
 	// streamed over the /api/file HTTP endpoint; "none" is never previewable.
 	const kind = loaded?.kind ?? "text";
-	const isMarkdown = isMarkdownFile(file.name);
+	const isMarkdown = isMarkdownFile(file.name) || isOfficeFile(file.name);
 	const isHtml = isHtmlFile(file.name);
 	const showMarkdown = isMarkdown && markdownPreview && !editing && kind === "text" && !isBinary;
 	const showHtml = isHtml && htmlPreview && !editing && kind === "text" && !isBinary;
@@ -324,17 +324,6 @@ export function FilePreview({
 					</button>
 				</span>
 			) : null,
-		"host:fp-inline":
-			kind !== "video" && kind !== "none" ? (
-				<button
-					type="button"
-					className="fp-attach inline"
-					data-tip={t("attachInlineTip")}
-					onClick={() => onAttach(file.path, file.name, "inline")}
-				>
-					<FiPlus />
-				</button>
-			) : null,
 		"host:fp-ref": (
 			<button
 				type="button"
@@ -370,7 +359,6 @@ export function FilePreview({
 					"host:fp-edit",
 					"host:fp-wrap",
 					"host:fp-zoom",
-					"host:fp-inline",
 					"host:fp-ref",
 					"host:fp-full",
 					"host:fp-close",
@@ -419,7 +407,11 @@ export function FilePreview({
 					</span>
 				</div>
 
-				{truncated && kind === "text" && !isBinary && <div className="fp-notice">{t("previewTruncated")}</div>}
+				{truncated && kind === "text" && !isBinary && (
+					<div className="fp-notice">
+						{isOfficeFile(file.name) ? t("previewLinesTruncated", { n: lines.length }) : t("previewTruncated")}
+					</div>
+				)}
 
 				{loading && !loaded && <div className="fp-empty">{t("loading")}</div>}
 
@@ -470,7 +462,7 @@ export function FilePreview({
 				)}
 
 				{!loading && showMarkdown && loaded && (
-					<div className="fp-markdown msg-text">
+					<div className={isOfficeFile(file.name) ? "fp-markdown msg-text fp-office" : "fp-markdown msg-text"}>
 						<div className="fp-markdown-zoom">
 							<Markdown text={loaded.text} />
 						</div>
@@ -599,6 +591,12 @@ export function FilePreview({
 function isMarkdownFile(name: string): boolean {
 	const lower = name.toLowerCase();
 	return lower.endsWith(".md") || lower.endsWith(".markdown");
+}
+
+/** Office 文档：服务端已转成 Markdown 文本下发，这里按 Markdown 渲染即可随处可看。 */
+function isOfficeFile(name: string): boolean {
+	const lower = name.toLowerCase();
+	return lower.endsWith(".docx") || lower.endsWith(".xlsx") || lower.endsWith(".xlsm");
 }
 
 function isHtmlFile(name: string): boolean {
