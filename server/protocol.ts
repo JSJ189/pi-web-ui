@@ -2724,6 +2724,13 @@ export type ServerMessage =
 				/** git-extension only: `host/path` shorthand (prepend `git:` for the `pi update` command). */
 				source?: string;
 			}[];
+			/** issue #321: pi SDK 副本状态快照，随每次 update_status_all 下发。
+			 *  `running` = 本进程实际加载的版本（可能是自带副本，也可能是跟随的全局副本）；
+			 *  `bundledInUse` = 加载的是随包自带那份（未跟随机器上的全局副本）；
+			 *  `newerInstalled` = 机器上比 running 更新的 pi 版本（全局 pi CLI / 被遮蔽副本），
+			 *  没有则 null —— 更新面板的 pi-core 行探测的是全局 CLI（`npm i -g` 更新的那份），
+			 *  会话实际跑哪份此前在 UI 里不可见，#321 即由此而来。 */
+			piSdk?: { running: string; bundledInUse: boolean; newerInstalled: string | null };
 	  }
 	// -- goal / review -------------------------------------------------------
 	/** Goal status pushed whenever it changes (set / review start-end / verdict).

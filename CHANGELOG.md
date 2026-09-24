@@ -10,6 +10,12 @@
 
 ## [Unreleased]
 
+<!-- auto-i18n:start -->
+### i18n
+
+- 前端新增 key（5）：`piCoreSplitRun`、`piSdkSplitNote`、`piSdkBundledNote`、`installGlobalEngineBtn`、`installGlobalEngineTabTitle`
+<!-- auto-i18n:end -->
+
 ## [0.95.0] — 2026-09-24
 
 ### Added

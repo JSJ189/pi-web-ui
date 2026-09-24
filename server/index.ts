@@ -2980,13 +2980,12 @@ httpServer.listen(PORT, HOST, () => {
 	console.log(`    session dir : ${SESSION_DIR_ROOT}`);
 	console.log(`    pi SDK      : v${VERSION}`);
 	// issue #260：全局那份 pi SDK 不是服务在用的那份（自带副本赢在 Node 解析顺序上）。
-	// 不提示的话，用户会以为 `npm i -g @earendil-works/pi-coding-agent@latest` 生效了。
+	// #321 起默认已反转（resolve-global-sdk 自动跟随更新的那份），这条提示只在
+	// 「进程没跟上」（升级发生在启动后 / 旧构建没注入钩子）或显式 PI_WEB_SDK=bundled
+	// 钉死自带副本时出现。
 	const sdkNote = sdkOriginNote(sdkCopies(), VERSION);
 	if (sdkNote) {
 		console.log(`    pi SDK note : ${sdkNote}`);
-		console.log(
-			`                  Upgrading the global pi CLI does not change this server — upgrade pi-web-ui instead.`,
-		);
 	}
 	console.log(`    bind        : ${HOST}:${PORT}`);
 	console.log("");

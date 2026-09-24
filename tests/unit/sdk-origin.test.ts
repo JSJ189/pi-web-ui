@@ -7,7 +7,7 @@ import { describe, expect, it, afterEach } from "vitest";
 import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { compareVersions, sdkCopies, sdkOriginNote } from "../../server/sdk-origin.js";
+import { compareVersions, isBundledInUse, sdkCopies, sdkOriginNote } from "../../server/sdk-origin.js";
 
 const PKG = "@earendil-works/pi-coding-agent";
 const roots: string[] = [];
@@ -124,5 +124,29 @@ describe("sdkOriginNote：只在「被遮蔽的副本更新」时提示", () => 
 			),
 		).toBeNull();
 		expect(sdkOriginNote([{ path: "a", version: "0.86.1" }], "0.86.1")).toBeNull();
+	});
+});
+
+describe("isBundledInUse (issue #321)", () => {
+	it("running == copies[0] → 自带在用；跟随祖先副本 → 不是；copies 为空 → 按自带算", () => {
+		expect(
+			isBundledInUse(
+				[
+					{ path: "a", version: "0.87.1" },
+					{ path: "b", version: "0.86.1" },
+				],
+				"0.87.1",
+			),
+		).toBe(true);
+		expect(
+			isBundledInUse(
+				[
+					{ path: "a", version: "0.86.1" },
+					{ path: "b", version: "0.95.0" },
+				],
+				"0.95.0",
+			),
+		).toBe(false);
+		expect(isBundledInUse([], "0.87.1")).toBe(true);
 	});
 });

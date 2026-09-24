@@ -48,6 +48,16 @@ import { useFloatingPanel } from "../use-floating-panel";
 import { isDesktopShell } from "../desktop";
 import { desktopReleasesUrl, useDesktopUpdater } from "../desktop-updater";
 
+/** 「安装全局引擎」按钮的目标（issue #321）：buildUpdateCommand 对 pi-core 生成
+ *  `npm i -g <name>@latest`，装完重启服务即由 resolve-global-sdk 自动切到更新的那份。 */
+const PI_CORE_ITEM: UpdateAllItem = {
+	name: "@earendil-works/pi-coding-agent",
+	kind: "pi-core",
+	current: "",
+	latest: null,
+	upToDate: false,
+};
+
 /**
  * 顶栏「⋯」溢出菜单（issue #162）：portal 到 document.body + `position: fixed`。
  *
@@ -491,6 +501,20 @@ export function TopBar({
 
 	// Shared by the desktop update dropdown and the mobile "⋯" panel.
 	const allUpdates = chat.updatesAll ?? [];
+	// issue #321：pi SDK 副本状态（服务随 update_status_all 下发）。
+	// pi-core 行显示的是全局 CLI 的版本 —— 「已是最新」只对那份成立；会话实际跑哪份
+	// （自带 or 跟随的全局）由此处下发，行和面板都要把差距说出来。
+	const sdkInfo = chat.updatesSdk;
+	const sdkSplit =
+		sdkInfo && sdkInfo.newerInstalled ? { running: sdkInfo.running, installed: sdkInfo.newerInstalled } : null;
+	// 本进程跑的是随包自带那份 → 面板亮「安装全局引擎并切换」入口。
+	const bundledInUse = sdkInfo?.bundledInUse === true;
+	// 入口只在有行动价值时出现：没装全局 pi（没有 pi-core 行），或全局比 npm 最新版旧
+	// （pi-core 行有更新）。全局与自带同版本且都最新时完全安静 —— 此时安装全局带不来
+	// 任何切换，提了是噪音；行级「更新」按钮（同一条 npm i -g）已覆盖另一情形。
+	const coreRow = allUpdates.find((i) => i.kind === "pi-core" && !i.error);
+	const bundledRelevant = bundledInUse && (!coreRow || !coreRow.upToDate);
+	const bundledButton = bundledRelevant && !coreRow;
 	// Pure errors don't count as "updates" — they're shown as failed rows.
 	const updatesCount = allUpdates.filter((i) => !i.upToDate && !i.error).length;
 	// Packages (+ the pi core) with a real newer version — targets of the
@@ -528,67 +552,92 @@ export function TopBar({
 				<div className="dd-note">{t("updatesAllUpToDate")}</div>
 			) : (
 				<ul className="dd-all-list">
-					{allUpdates.map((item) => (
-						<li
-							key={`${item.kind}:${item.name}`}
-							className={`dd-all-item${item.error ? " err" : item.upToDate ? "" : " warn"}`}
-						>
-							{item.kind !== "webui" && !item.upToDate && !item.error && (
-								<button
-									type="button"
-									className="dd-update-btn"
-									onClick={() => runPkgUpdate([item], t("updatePkgTabTitle", { name: item.name }))}
-								>
-									{t("updateBtn")}
-								</button>
-							)}
-							<span className="dd-all-name" title={gitNameTitle(item)}>
-								{gitDisplayName(item)}
-							</span>
-							<span className="dd-all-meta">
-								<span className="dd-all-kind">
-									{item.kind === "webui"
-										? t("kindWebUi")
-										: item.kind === "pi-core"
-											? t("kindPiCore")
-											: item.kind === "git-extension"
-												? t("kindGitExtension")
-												: t("kindPackage")}
+					{allUpdates.map((item) => {
+						// pi-core 行在分裂时即使「已是最新」也亮警示：行里的版本是全局 CLI 的，
+						// 不是会话实际加载的那份。
+						const splitRow = sdkSplit != null && item.kind === "pi-core";
+						const warn = !item.error && (!item.upToDate || splitRow);
+						return (
+							<li
+								key={`${item.kind}:${item.name}`}
+								className={`dd-all-item${item.error ? " err" : warn ? " warn" : ""}`}
+							>
+								{item.kind !== "webui" && !item.upToDate && !item.error && (
+									<button
+										type="button"
+										className="dd-update-btn"
+										onClick={() => runPkgUpdate([item], t("updatePkgTabTitle", { name: item.name }))}
+									>
+										{t("updateBtn")}
+									</button>
+								)}
+								<span className="dd-all-name" title={gitNameTitle(item)}>
+									{gitDisplayName(item)}
 								</span>
-								<span
-									className="dd-all-vers"
-									title={
-										item.error
-											? item.error
-											: item.kind === "git-extension"
-												? item.upToDate
-													? item.current
-													: `${item.current} → ${item.latest}`
-												: undefined
-									}
-								>
-									{item.error ? (
-										t("updateCheckFailed")
-									) : item.kind === "git-extension" ? (
-										item.upToDate ? (
-											stripGitSha(item.current)
+								<span className="dd-all-meta">
+									<span className="dd-all-kind">
+										{item.kind === "webui"
+											? t("kindWebUi")
+											: item.kind === "pi-core"
+												? t("kindPiCore")
+												: item.kind === "git-extension"
+													? t("kindGitExtension")
+													: t("kindPackage")}
+									</span>
+									<span
+										className="dd-all-vers"
+										title={
+											item.error
+												? item.error
+												: item.kind === "git-extension"
+													? item.upToDate
+														? item.current
+														: `${item.current} → ${item.latest}`
+													: undefined
+										}
+									>
+										{item.error ? (
+											t("updateCheckFailed")
+										) : item.kind === "git-extension" ? (
+											item.upToDate ? (
+												stripGitSha(item.current)
+											) : (
+												shortGitRange(item.current, item.latest)
+											)
+										) : item.upToDate ? (
+											`v${item.current}`
 										) : (
-											shortGitRange(item.current, item.latest)
-										)
-									) : item.upToDate ? (
-										`v${item.current}`
-									) : (
-										<>
-											v{item.current} → v{item.latest}
-										</>
+											<>
+												v{item.current} → v{item.latest}
+											</>
+										)}
+									</span>
+									{splitRow && !item.error && (
+										<span className="dd-split-run">{t("piCoreSplitRun", { running: sdkSplit.running })}</span>
 									)}
 								</span>
-							</span>
-						</li>
-					))}
+							</li>
+						);
+					})}
 				</ul>
 			)}
+			{sdkSplit && (
+				<div className="dd-note warn">
+					{t("piSdkSplitNote", { running: sdkSplit.running, installed: sdkSplit.installed })}
+				</div>
+			)}
+			{bundledRelevant && <div className="dd-note">{t("piSdkBundledNote", { running: sdkInfo!.running })}</div>}
 			<div className="dd-actions">
+				{bundledButton && (
+					<button
+						type="button"
+						className="dd-refresh accent"
+						style={{ flex: 1 }}
+						onClick={() => runPkgUpdate([PI_CORE_ITEM], t("installGlobalEngineTabTitle"))}
+					>
+						{t("installGlobalEngineBtn")}
+					</button>
+				)}
 				{updatable.length > 0 && (
 					<button
 						type="button"

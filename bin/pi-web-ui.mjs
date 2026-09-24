@@ -55,9 +55,9 @@ import { fileURLToPath } from "node:url";
 const BIN_DIR = dirname(fileURLToPath(import.meta.url));
 /** <pkg>/dist/server/index.js — the actual server entry. */
 const SERVER_ENTRY = join(BIN_DIR, "..", "dist", "server", "index.js");
-/** 可选的「优先用全局/祖先那份 pi SDK」解析钩子（issue #260，`PI_WEB_SDK=global` 才生效）。
+/** 「机器上有更新的 pi 副本就跟随它」解析钩子（issue #260；#321 起默认启用）。
  *  必须早于任何 SDK 静态 import 加载 —— 所以每条启动路径都把它当 `--import` 传进去；
- *  默认不启用时它自己什么都不做（见 server/resolve-global-sdk.ts）。 */
+ *  PI_WEB_SDK=bundled 显式钉死自带副本（见 server/resolve-global-sdk.ts）。 */
 const SDK_HOOK = join(BIN_DIR, "..", "dist", "server", "resolve-global-sdk.js");
 /** dist 可能是旧构建（没有这个钩子文件）—— 只有文件在才注入：`--import <missing>` 会让
  *  CLI/服务直接起不来，那比少个开关严重得多。 */

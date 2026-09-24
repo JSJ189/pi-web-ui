@@ -14002,6 +14002,15 @@ button.source-default-toggle {
 	color: inherit;
 }
 
+/* issue #321：pi-core 行的「服务运行 vX」小标注 —— 行里的大版本号是全局 pi CLI
+ * 的，不是本服务实际加载的自带副本；两者有差距时摆在一起说清楚。 */
+.dd-split-run {
+	flex-shrink: 0;
+	font-family: var(--mono);
+	font-size: 10.5px;
+	opacity: 0.75;
+}
+
 /* Per-row "update" button (plugins + the pi core, not the web UI itself). */
 .dd-update-btn {
 	flex-shrink: 0;

@@ -12,6 +12,7 @@ import {
 	collectTargets,
 	compareVersions,
 	defaultCheckGitExtension,
+	detectPiSdkSplit,
 	formatGitVersion,
 	isGitExtensionCheckEnabled,
 	listGitExtensions,
@@ -27,6 +28,7 @@ import {
 	type GitCheckFn,
 	type LocalPackage,
 } from "../../server/update-check.js";
+import type { SdkCopy } from "../../server/sdk-origin.js";
 
 function makeFetcher(latest: Record<string, string>, fail: string[] = []): { fetcher: Fetcher; calls: string[] } {
 	const calls: string[] = [];
@@ -311,6 +313,44 @@ describe("collectTargets", () => {
 		} finally {
 			rmSync(dir, { recursive: true, force: true });
 		}
+	});
+});
+
+describe("detectPiSdkSplit (issue #321)", () => {
+	const copy = (path: string, version: string): SdkCopy => ({ path, version });
+
+	it("probe newer than running → split", () => {
+		expect(detectPiSdkSplit("0.85.1", () => "0.86.1", [])).toEqual({ running: "0.85.1", installed: "0.86.1" });
+	});
+
+	it("probe same version or older → no split", () => {
+		expect(detectPiSdkSplit("0.86.1", () => "0.86.1", [])).toBeNull();
+		expect(detectPiSdkSplit("0.86.1", () => "0.85.1", [])).toBeNull();
+	});
+
+	it("probe null → shadowed ancestor copy is the fallback detector", () => {
+		const copies = [
+			copy("/pkg/node_modules/@earendil-works/pi-coding-agent/package.json", "0.85.1"),
+			copy("/global/node_modules/@earendil-works/pi-coding-agent/package.json", "0.86.1"),
+		];
+		expect(detectPiSdkSplit("0.85.1", () => null, copies)).toEqual({ running: "0.85.1", installed: "0.86.1" });
+	});
+
+	it("probe and copies both hit → newest wins", () => {
+		const copies = [
+			copy("/pkg/node_modules/@earendil-works/pi-coding-agent/package.json", "0.85.1"),
+			copy("/global/node_modules/@earendil-works/pi-coding-agent/package.json", "0.87.0"),
+		];
+		expect(detectPiSdkSplit("0.85.1", () => "0.86.1", copies)).toEqual({ running: "0.85.1", installed: "0.87.0" });
+		expect(detectPiSdkSplit("0.85.1", () => "0.88.0", copies)).toEqual({ running: "0.85.1", installed: "0.88.0" });
+	});
+
+	it("nothing newer anywhere → null (also when running is already the newest copy)", () => {
+		const copies = [
+			copy("/pkg/node_modules/@earendil-works/pi-coding-agent/package.json", "0.88.0"),
+			copy("/global/node_modules/@earendil-works/pi-coding-agent/package.json", "0.85.1"),
+		];
+		expect(detectPiSdkSplit("0.88.0", () => null, copies)).toBeNull();
 	});
 });
 

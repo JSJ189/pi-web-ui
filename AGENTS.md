@@ -135,7 +135,7 @@ npm publish
 | `PI_WEB_HOST` | `127.0.0.1` | 监听地址（默认 loopback） |
 | `PI_WEB_CWD` | `process.cwd()` | 智能体工作区 |
 | `PI_WEB_DATA_DIR` | `~/.pi-web` | 数据目录 |
-| `PI_WEB_SDK` | `bundled` | `bundled`=自带副本；`global`=祖先链有更新版时改用（升级全局 pi CLI 不改变运行中 SDK） |
+| `PI_WEB_SDK` | `global` | #321 起默认跟随：机器上有**更新**的 pi 副本（祖先链，如全局 pi CLI）就用它（多份取最高），没有或更旧回落自带副本；`bundled`/off/0/false/no = 强制自带（可复现，报 bug 用）。升级全局 pi 后**重启服务**即生效；更新面板会亮「运行中 vs 机器上」差距并提供「安装全局引擎」入口 |
 | `PI_WEB_TOKEN` | 空 | 共享口令鉴权 |
 | `PI_WEB_PLUGIN_CATALOG_URL` | 官方清单 | 市场目录来源；空/`off`/`0`/`false`/`no` 关闭；`PI_WEB_PLUGIN_CATALOG_INSTALL=1` 才开机自动安装 |
 | `PI_WEB_TOOL_TIMEOUT_MS` | 20 分钟 | 看门狗超时（`ask_user_question` 豁免） |

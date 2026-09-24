@@ -109,9 +109,10 @@ async function startServerSidecar(): Promise<string> {
 	console.log(`[desktop] spawning server on 127.0.0.1:${port} (data: ${dataDir})`);
 	// ELECTRON_RUN_AS_NODE=1：让 Electron 二进制退化成纯 Node 跑 server，
 	// 无需额外捆一个 node，也不用改 server/index.ts。
-	// --import：可选的「优先用全局 pi SDK」钩子（issue #260，默认关；见 server/resolve-global-sdk.ts）。
-	// dist 可能是旧构建（没这个文件）—— 只有存在才注入，别让桌面版起不来。
-	// 桌面版通常没有祖先 node_modules，所以它实际上总是回落自带那份。
+	// --import：「机器上有更新的 pi 副本就跟随它」钩子（issue #260；#321 起默认启用，
+	// 见 server/resolve-global-sdk.ts）。dist 可能是旧构建（没这个文件）—— 只有存在才
+	// 注入，别让桌面版起不来。桌面版通常没有祖先 node_modules，所以一般回落自带那份；
+	// 用户机器上恰好有全局 pi 时桌面版也会跟随（与浏览器/服务模式一致）。
 	const sdkHook = join(dirname(entry), "resolve-global-sdk.js");
 	serverProc = spawn(
 		process.execPath,

@@ -381,6 +381,13 @@ export const zh = {
 	updateAllBtn: "全部更新",
 	updatePkgTabTitle: "更新 {name}",
 	updateAllTabTitle: "更新全部组件",
+	piCoreSplitRun: "服务运行 v{running}",
+	piSdkSplitNote:
+		"本服务运行的是 pi v{running}；机器上装有更新的全局 pi v{installed}。重启服务即可跟上（默认自动选用更新的那份）；设了 PI_WEB_SDK=bundled 时会一直用自带副本，升级 pi-web-ui 也可让自带副本跟上。",
+	piSdkBundledNote:
+		"当前使用随包自带的 pi 引擎 v{running}（随 pi-web-ui 更新）。安装全局引擎后重启服务即可自动切换（服务默认跟随版本更高的那份）。",
+	installGlobalEngineBtn: "安装全局引擎",
+	installGlobalEngineTabTitle: "安装全局 pi 引擎",
 	restartService: "重启服务",
 	restartingService: "重启中…",
 	restartServiceTip:
@@ -2052,6 +2059,13 @@ const en: Record<keyof typeof zh, string> = {
 	updateAllBtn: "Update all",
 	updatePkgTabTitle: "Update {name}",
 	updateAllTabTitle: "Update all components",
+	piCoreSplitRun: "service runs v{running}",
+	piSdkSplitNote:
+		"This service runs pi v{running}; a newer global pi v{installed} is installed. Restart the service to catch up (the newest copy is followed by default); PI_WEB_SDK=bundled pins the bundled copy — upgrading pi-web-ui refreshes it too.",
+	piSdkBundledNote:
+		"Currently using the bundled pi engine v{running} (updated with pi-web-ui). Install the global engine and restart the service to switch to it (the newest copy is followed by default).",
+	installGlobalEngineBtn: "Install global engine",
+	installGlobalEngineTabTitle: "Install global pi engine",
 	restartService: "Restart service",
 	restartingService: "Restarting…",
 	restartServiceTip:

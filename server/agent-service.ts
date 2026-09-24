@@ -46,10 +46,12 @@ import {
 	checkAll as checkAllUpdates,
 	collectTargets,
 	compareVersions as compareSemver,
+	detectPiSdkSplit,
 	resolveNpmRegistry,
 	sortUpdateItems,
 	type UpdateItem,
 } from "./update-check.js";
+import { isBundledInUse, sdkCopies } from "./sdk-origin.js";
 import { hasActiveSubagentRun, hasPendingWaitSubscription, shouldRetainActive } from "./wait-subscription-scan.js";
 import {
 	COMPACTION_PENDING_TYPE,
@@ -6055,10 +6057,20 @@ export class ClientSession {
 	 * within UPDATE_ALL_CACHE_MS; pass force=true (explicit refresh) to bypass.
 	 */
 	async checkUpdatesAll(force = false): Promise<void> {
+		// issue #321：pi SDK 副本状态随结果下发（运行中是哪份 / 是否自带 / 机器上有没有
+		// 更新的），UI 据此在更新面板亮「重启跟上」与「安装全局引擎并切换」入口。
+		// 缓存命中也现算：用户升级全局 pi 不经本服务，缓存的 items 不影响这个判据，
+		// 探针本身有 10s memoize，重算便宜。
+		const piSdk = {
+			running: VERSION,
+			bundledInUse: isBundledInUse(sdkCopies(), VERSION),
+			newerInstalled: detectPiSdkSplit(VERSION)?.installed ?? null,
+		};
 		if (!force && this.updatesAllCache && Date.now() - this.updatesAllCache.at < ClientSession.UPDATE_ALL_CACHE_MS) {
 			this.emit({
 				type: "update_status_all",
 				items: this.updatesAllCache.items,
+				piSdk,
 			});
 			return;
 		}
@@ -6070,7 +6082,7 @@ export class ClientSession {
 				await checkAllUpdates(targets, undefined, () => this.getLang(), resolveNpmRegistry(this.agentDir)),
 			);
 			this.updatesAllCache = { at: Date.now(), items };
-			this.emit({ type: "update_status_all", items });
+			this.emit({ type: "update_status_all", items, piSdk });
 		} catch (err) {
 			// checkAll degrades per-item; only local enumeration blowing up lands
 			// here — still report a usable (webui-only) error item.

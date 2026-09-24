@@ -13,6 +13,7 @@ import { readdirSync, readFileSync, realpathSync, existsSync } from "node:fs";
 import { delimiter, dirname, join } from "node:path";
 import { promisify } from "node:util";
 import { pick, type ServerLang } from "./i18n.js";
+import { sdkCopies, type SdkCopy } from "./sdk-origin.js";
 
 const PI_CORE_PACKAGE = "@earendil-works/pi-coding-agent";
 
@@ -465,6 +466,38 @@ export function defaultProbePiCore(): string | null {
 	const version = readPiCoreVersionFromDisk();
 	piCoreProbe = { at: now, version };
 	return version;
+}
+
+/**
+ * issue #321 — detect "a newer pi is installed on this machine than the one
+ * this process actually loaded". The panel's pi-core row probes the GLOBAL pi
+ * CLI (what `npm i -g` updates), but the server loads its own bundled copy
+ * (nested beats ancestor in Node resolution, issue #260) — so after upgrading
+ * the global pi the panel reads "up to date" while conversations still run the
+ * old SDK. That invisible split is exactly what #321 reports; this turns it
+ * into data the UI can explain.
+ *
+ * Two detectors, unioned (newest wins): the CLI probe (standard global
+ * install) and the ancestor-chain copies (fallback when the probe finds
+ * nothing — different npm prefix, bun, …). Pure — tests inject both.
+ * Returns null when nothing newer than `runningVersion` is found.
+ */
+export function detectPiSdkSplit(
+	runningVersion: string,
+	probePiCore: () => string | null = defaultProbePiCore,
+	copies: SdkCopy[] = sdkCopies(),
+): { running: string; installed: string } | null {
+	let installed = probePiCore();
+	for (const copy of copies) {
+		if (
+			compareVersions(copy.version, runningVersion) > 0 &&
+			(!installed || compareVersions(copy.version, installed) > 0)
+		) {
+			installed = copy.version;
+		}
+	}
+	if (!installed || compareVersions(installed, runningVersion) <= 0) return null;
+	return { running: runningVersion, installed };
 }
 
 /**
