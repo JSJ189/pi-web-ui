@@ -3,7 +3,7 @@ import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { pathToFileURL } from "node:url";
-import { makeLspTool, LSP_TOOL_NAME, globalLspPool, LspClient } from "../../server/lsp-tool.js";
+import { makeLspTool, LSP_TOOL_NAME, globalLspPool, LspClient, resolveBinary } from "../../server/lsp-tool.js";
 
 describe("Native LSP Tool", () => {
 	let tempDir: string;
@@ -197,6 +197,19 @@ function handleMessage(msg) {
 		expect(diags[0].code).toBe(2304);
 
 		await client.shutdown();
+	});
+
+	it("resolves binary with local node_modules/.bin priority and proper executable extensions", () => {
+		const binDir = join(tempDir, "node_modules", ".bin");
+		const { mkdirSync } = require("node:fs");
+		mkdirSync(binDir, { recursive: true });
+		const isWin = process.platform === "win32";
+		const testBin = join(binDir, isWin ? "custom-lsp.cmd" : "custom-lsp");
+		writeFileSync(testBin, "#!/bin/sh\necho ok\n");
+
+		const found = resolveBinary("custom-lsp", tempDir);
+		expect(found).toBeTruthy();
+		expect(found).toBe(testBin);
 	});
 
 	it("returns error cleanly when path attempts traversal outside workspace", async () => {

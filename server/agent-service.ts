@@ -3052,7 +3052,10 @@ export class ClientSession {
 
 		let originalKeepRecent: number | undefined;
 		try {
-			originalKeepRecent = session.settingsManager.getCompactionSettings(model).keepRecentTokens;
+			originalKeepRecent =
+				(session.settingsManager.getCompactionSettings as unknown as (m?: unknown) => { keepRecentTokens?: number })(
+					model,
+				)?.keepRecentTokens ?? session.settingsManager.getCompactionSettings().keepRecentTokens;
 		} catch {
 			originalKeepRecent = undefined;
 		}

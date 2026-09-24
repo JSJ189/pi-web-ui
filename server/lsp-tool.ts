@@ -14,8 +14,9 @@
  */
 
 import { spawn, execSync, type ChildProcess } from "node:child_process";
-import { existsSync, readFileSync } from "node:fs";
-import { dirname, extname, isAbsolute, relative, resolve, sep } from "node:path";
+import { existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
+import { homedir } from "node:os";
+import { delimiter, dirname, extname, isAbsolute, join, relative, resolve, sep } from "node:path";
 import { pathToFileURL, fileURLToPath } from "node:url";
 import { defineTool } from "@earendil-works/pi-coding-agent";
 import { Type } from "typebox";
@@ -45,7 +46,7 @@ interface LspLocation {
 
 interface LanguageServerConfig {
 	languageId: string;
-	commands: Array<{ bin: string; args: string[]; installHint: string }>;
+	commands: Array<{ bin: string; args: string[]; installHint: string; npmPackage?: string }>;
 }
 
 const LANGUAGE_SERVER_CATALOG: Record<string, LanguageServerConfig> = {
@@ -53,28 +54,45 @@ const LANGUAGE_SERVER_CATALOG: Record<string, LanguageServerConfig> = {
 		languageId: "typescript",
 		commands: [
 			{
+				bin: "vtsls",
+				args: ["--stdio"],
+				installHint: "npm install -g @vtsls/language-server",
+				npmPackage: "@vtsls/language-server typescript",
+			},
+			{
 				bin: "typescript-language-server",
 				args: ["--stdio"],
 				installHint: "npm install -g typescript-language-server typescript",
+				npmPackage: "typescript-language-server typescript",
 			},
-			{ bin: "vtsls", args: ["--stdio"], installHint: "npm install -g @vtsls/language-server" },
 		],
 	},
 	js: {
 		languageId: "javascript",
 		commands: [
 			{
+				bin: "vtsls",
+				args: ["--stdio"],
+				installHint: "npm install -g @vtsls/language-server",
+				npmPackage: "@vtsls/language-server typescript",
+			},
+			{
 				bin: "typescript-language-server",
 				args: ["--stdio"],
 				installHint: "npm install -g typescript-language-server typescript",
+				npmPackage: "typescript-language-server typescript",
 			},
-			{ bin: "vtsls", args: ["--stdio"], installHint: "npm install -g @vtsls/language-server" },
 		],
 	},
 	py: {
 		languageId: "python",
 		commands: [
-			{ bin: "pyright-langserver", args: ["--stdio"], installHint: "npm install -g pyright" },
+			{
+				bin: "pyright-langserver",
+				args: ["--stdio"],
+				installHint: "npm install -g pyright",
+				npmPackage: "pyright",
+			},
 			{ bin: "pyright", args: ["--stdio"], installHint: "pip install pyright" },
 			{ bin: "pylsp", args: [], installHint: "pip install python-lsp-server" },
 		],
@@ -109,41 +127,108 @@ function getLanguageForPath(filePath: string): { langKey: string; config: Langua
 	return null;
 }
 
-/** 探测二进制是否可在当前系统执行（PATH 或 workspace node_modules/.bin） */
-function resolveBinary(cmd: string, cwd: string): string | null {
+/** 探测二进制是否可在当前系统执行（优先项目本地、Pi 生态共享目录、用户态托管目录、系统 PATH） */
+export function resolveBinary(cmd: string, cwd: string): string | null {
 	const isWin = process.platform === "win32";
-	const candidates: string[] = [];
+	const exts = isWin ? [".cmd", ".exe", ".bat", ""] : [""];
 
 	if (isAbsolute(cmd)) {
-		candidates.push(cmd);
-	} else {
-		// 1. 本地 node_modules/.bin
-		const localBin = resolve(cwd, "node_modules", ".bin", cmd);
-		candidates.push(localBin);
+		if (existsSync(cmd)) return cmd;
 		if (isWin) {
-			candidates.push(`${localBin}.cmd`);
-			candidates.push(`${localBin}.exe`);
+			for (const ext of exts) {
+				if (ext && existsSync(cmd + ext)) return cmd + ext;
+			}
 		}
-		// 2. 系统 PATH 候选
-		candidates.push(cmd);
-		if (isWin) {
-			candidates.push(`${cmd}.cmd`);
-			candidates.push(`${cmd}.exe`);
+		return null;
+	}
+
+	// 1. 本地 workspace node_modules/.bin 优先
+	const localBinDir = resolve(cwd, "node_modules", ".bin");
+	for (const ext of exts) {
+		const target = join(localBinDir, cmd + ext);
+		if (existsSync(target)) return target;
+	}
+
+	// 2. Pi 生态工具与用户态目录（pi-lens / pi-web 用户态托管，零权限直接复用）
+	const home = homedir();
+	const sharedDirs = [
+		join(home, ".pi-lens", "tools", "node_modules", ".bin"),
+		join(home, ".pi-web", "lsp-servers", "node_modules", ".bin"),
+		join(home, ".pi", "agent", "tools", "node_modules", ".bin"),
+	];
+	for (const sharedDir of sharedDirs) {
+		for (const ext of exts) {
+			const target = join(sharedDir, cmd + ext);
+			if (existsSync(target)) return target;
 		}
 	}
 
-	for (const cand of candidates) {
-		if (isAbsolute(cand) && existsSync(cand)) return cand;
+	// 3. 遍历系统 PATH 目录（纯文件系统检查，零子进程开销、杜绝 Windows cmd.exe 引号卡死）
+	const pathDirs = (process.env.PATH || "").split(delimiter);
+	for (const dir of pathDirs) {
+		if (!dir) continue;
+		for (const ext of exts) {
+			const target = join(dir, cmd + ext);
+			if (existsSync(target)) return target;
+		}
 	}
-
-	// 尝试 where / which 嗅探
-	try {
-		const checkCmd = isWin ? `where "${cmd}"` : `which "${cmd}"`;
-		const out = execSync(checkCmd, { stdio: ["ignore", "pipe", "ignore"], encoding: "utf8" }).trim();
-		if (out) return out.split(/\r?\n/)[0];
-	} catch {}
 
 	return null;
+}
+
+const installTasks = new Map<string, Promise<boolean>>();
+
+/**
+ * 在用户专属目录（~/.pi-web/lsp-servers）执行无侵入、免 sudo/root 的语言服务包按需安装
+ */
+export async function autoInstallLanguageServer(pkg: string): Promise<boolean> {
+	const existing = installTasks.get(pkg);
+	if (existing) return existing;
+
+	const task = (async () => {
+		try {
+			const userLspDir = join(homedir(), ".pi-web", "lsp-servers");
+			mkdirSync(userLspDir, { recursive: true });
+			const pkgJson = join(userLspDir, "package.json");
+			if (!existsSync(pkgJson)) {
+				writeFileSync(pkgJson, JSON.stringify({ name: "pi-web-lsp-servers", private: true }) + "\n");
+			}
+
+			const pkgs = pkg.split(/\s+/).filter(Boolean);
+			const isWin = process.platform === "win32";
+			const npmCmd = isWin ? "npm.cmd" : "npm";
+
+			await new Promise<void>((resolve, reject) => {
+				const proc = spawn(npmCmd, ["install", "--no-audit", "--no-fund", "--save-dev", ...pkgs], {
+					cwd: userLspDir,
+					stdio: ["ignore", "ignore", "ignore"],
+					shell: isWin,
+				});
+				const timer = setTimeout(() => {
+					proc.kill();
+					reject(new Error("npm install timed out"));
+				}, 120_000);
+				proc.on("error", (err) => {
+					clearTimeout(timer);
+					reject(err);
+				});
+				proc.on("exit", (code) => {
+					clearTimeout(timer);
+					if (code === 0) resolve();
+					else reject(new Error(`npm install exited with code ${code}`));
+				});
+			});
+			return true;
+		} catch (err) {
+			console.warn(`[LSP] Auto-install failed for ${pkg}: ${(err as Error).message}`);
+			return false;
+		} finally {
+			installTasks.delete(pkg);
+		}
+	})();
+
+	installTasks.set(pkg, task);
+	return task;
 }
 
 // ----------------------------------------------------------------------------
@@ -179,7 +264,7 @@ export class LspClient {
 		this.proc = spawn(this.binPath, this.binArgs, {
 			cwd: this.projectCwd,
 			stdio: ["pipe", "pipe", "pipe"],
-			shell: process.platform === "win32" && this.binPath.endsWith(".cmd"),
+			shell: process.platform === "win32" && /\.(cmd|bat)$/i.test(this.binPath),
 		});
 
 		this.proc.stdout?.on("data", (chunk: Buffer) => this.handleData(chunk));
@@ -442,6 +527,7 @@ class LspServerPool {
 			let resolvedBin: string | null = null;
 			let resolvedArgs: string[] = [];
 			let hint = "";
+			let autoPkg: string | undefined = undefined;
 
 			for (const cmd of langInfo.config.commands) {
 				const found = resolveBinary(cmd.bin, projectCwd);
@@ -451,6 +537,22 @@ class LspServerPool {
 					break;
 				}
 				hint = cmd.installHint;
+				if (!autoPkg && cmd.npmPackage) autoPkg = cmd.npmPackage;
+			}
+
+			// 若本地与生态均未发现语言服务，且具备用户态托管安装包名，尝试在用户目录无侵入自动就绪
+			if (!resolvedBin && autoPkg) {
+				const ok = await autoInstallLanguageServer(autoPkg);
+				if (ok) {
+					for (const cmd of langInfo.config.commands) {
+						const found = resolveBinary(cmd.bin, projectCwd);
+						if (found) {
+							resolvedBin = found;
+							resolvedArgs = cmd.args;
+							break;
+						}
+					}
+				}
 			}
 
 			if (!resolvedBin) {
