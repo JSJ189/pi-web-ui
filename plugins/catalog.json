@@ -138,5 +138,15 @@
 		"descriptionEn": "Reconnection & service recovery: inspect web service and companion watchdog health, reconnect or restart services in one click (supports multi-service restarts with companion watchdog).",
 		"source": "xieweimo/pi-web-ui-reconnect-watchdog/reconnect-plugin",
 		"homepage": "https://github.com/xieweimo/pi-web-ui-reconnect-watchdog"
+	},
+	{
+		"id": "sol-savings",
+		"name": "SoL-Pi 状态",
+		"icon": "⚡",
+		"iconSvg": "<svg xmlns=\"http://www.w3.org/2000/svg\" viewBox=\"0 0 24 24\" fill=\"none\" stroke=\"currentColor\" stroke-width=\"2\" stroke-linecap=\"round\" stroke-linejoin=\"round\"><polygon points=\"13 2 3 14 12 14 11 22 21 10 12 10 13 2\"/></svg>",
+		"description": "SoL-Pi 会话节省统计与规划底栏：实时追踪大工具输出打包（Observation Pack）节省的上下文 Token 与在线计划（Plan）进度，借鉴 pi-sol-plan-footer 在底栏显示。",
+		"descriptionEn": "SoL-Pi session savings and plan status in the footer bar: real-time tracking of context tokens saved by Observation Pack and active Plan progress, inspired by pi-sol-plan-footer.",
+		"source": "xing-shuyin/pi-web-ui/plugins/sol-savings",
+		"homepage": "https://github.com/xing-shuyin/pi-web-ui/tree/main/plugins/sol-savings"
 	}
 ]
