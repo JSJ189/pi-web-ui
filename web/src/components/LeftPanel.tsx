@@ -181,6 +181,7 @@ export const LeftPanel = memo(function LeftPanel({
 	const currentCwd = cwd;
 	const [projectPickerOpen, setProjectPickerOpen] = useState(false);
 	const [confirmDel, setConfirmDel] = useState<string | null>(null);
+	const [confirmTakeover, setConfirmTakeover] = useState<string | null>(null);
 	const [renaming, setRenaming] = useState<string | null>(null);
 	const [renameDraft, setRenameDraft] = useState("");
 	const [collapseProjects, toggleProjects] = useCollapsed(LS_COLLAPSE_PROJECTS, false);
@@ -320,12 +321,14 @@ export const LeftPanel = memo(function LeftPanel({
 					return scopeId
 						? { ...entry, ...(armed ? { label: t("forceDismissConfirm") } : {}) }
 						: { ...entry, hidden: true };
-				// 固化子代理为普通对话：只在运行中的内存子代理（未落盘或 isSubagent）行显示
+				// 固化子代理/临时对话为普通对话：只在内存会话（未落盘、isSubagent 或临时）行显示
 				if (entry.id === "host:conv-persist") {
 					if (!scopeId) return { ...entry, hidden: true };
 					const targetConv = conversations.find((c) => c.id === scopeId);
 					const canPersist = Boolean(targetConv && (targetConv.isSubagent || !targetConv.sessionFile));
-					return canPersist ? entry : { ...entry, hidden: true };
+					if (!canPersist) return { ...entry, hidden: true };
+					// 临时对话用「保存为正式对话」而非「固化子代理」措辞（用户视角不是子代理）。
+					return targetConv?.isEphemeral ? { ...entry, label: t("saveEphemeral") } : entry;
 				}
 				// 对话引用三件套：复制 id 运行中对话行与「另一处」行都有（后者是对方会话内的
 				// convId）；复制路径历史行恒有、运行中仅落盘的有（inMemory 子代理没有文件，
@@ -788,26 +791,55 @@ export const LeftPanel = memo(function LeftPanel({
 										for (const orphan of g.convs) append(orphan, 0);
 										return rows.map(({ c, depth }) => {
 											if ((c as RowConv).elsewhere) {
+												const elseOwner = (c as RowConv).owner;
+												const elseConvId = (c as RowConv).convId;
+												// issue #290：可过户（有 owner + convId）时本行可点击，两段确认。
+												const canTakeover = Boolean(elseOwner && elseConvId);
+												const confirming = confirmTakeover === c.id;
 												return (
 													<div
 														className="lp-row"
 														key={c.id}
+														onMouseLeave={() => setConfirmTakeover((k) => (k === c.id ? null : k))}
 														// 「另一处」行右键：过户到本页（含等答复的问卷）。
 														onContextMenu={(e) =>
 															openSessionMenu(e, {
-																id: (c as RowConv).convId ?? c.id,
+																id: elseConvId ?? c.id,
 																kind: "elsewhere",
 																label: c.title,
-																...((c as RowConv).owner ? { owner: (c as RowConv).owner } : {}),
+																...(elseOwner ? { owner: elseOwner } : {}),
 															})
 														}
 													>
-														<div className="session-item elsewhere-item" title={`${t("elsewhereTip")}\n${c.cwd}`}>
+														{/* 「另一处」行本体：可过户时当按钮用（第一次点 = 确认，第二次点 = 过户）。
+    不可过户（旧条目无 owner/convId）时保持只读，无 onClick。 */}
+														<button
+															type="button"
+															className={`session-item elsewhere-item${canTakeover ? "" : " elsewhere-static"}${confirming ? " confirm" : ""}`}
+															title={confirming ? t("takeoverConfirm") : `${t("elsewhereTip")}\n${c.cwd}`}
+															tabIndex={canTakeover ? 0 : -1}
+															onClick={
+																canTakeover
+																	? () => {
+																			if (!confirming) {
+																				setConfirmTakeover(c.id);
+																				return;
+																			}
+																			setConfirmTakeover(null);
+																			panelSend({
+																				type: "take_over_conversation",
+																				owner: elseOwner as string,
+																				id: elseConvId as string,
+																			});
+																		}
+																	: undefined
+															}
+														>
 															<FiMessageSquare className="session-icon" />
 															<span className="session-info">
 																<span className="session-title">
 																	<span className="elsewhere-badge">{t("elsewhereBadge")}</span>
-																	{(c as RowConv).hasQuestion && (c as RowConv).owner && (c as RowConv).convId && (
+																	{c.hasQuestion && elseOwner && elseConvId && (
 																		<span
 																			className="question-badge clickable"
 																			title={t("takeoverHasQuestion")}
@@ -816,20 +848,20 @@ export const LeftPanel = memo(function LeftPanel({
 																				// 点 `?` 直接把问卷拉到本页作答（不搬迁对话）。
 																				panelSend({
 																					type: "peek_elsewhere_question",
-																					owner: (c as RowConv).owner as string,
-																					id: (c as RowConv).convId as string,
+																					owner: elseOwner,
+																					id: elseConvId,
 																				});
 																			}}
 																		>
 																			?
 																		</span>
 																	)}
-																	{c.title}
+																	{confirming ? t("takeoverConfirm") : c.title}
 																</span>
 																<span className="session-sub">{projectName(c.cwd)}</span>
 															</span>
 															{c.isStreaming && <span className="conv-streaming" title={t("streaming")} />}
-														</div>
+														</button>
 														{/* 触屏没有右键（contextmenu 不可靠）：给「另一处」行一个可见的操作钮，点开与右键同一个会话菜单
 															（过户 / 抢答问卷 / 复制 id）；槽位暂无可显示条目时不渲染（同右键路径的让路口径）。 */}
 														{sessionMenuAvailable && (
@@ -843,10 +875,10 @@ export const LeftPanel = memo(function LeftPanel({
 																	// 坐标按按钮矩形锚定（触屏 click 的 clientX/Y 不可靠），clampMenuPosition 会自行钳进视口。
 																	const r = e.currentTarget.getBoundingClientRect();
 																	showSessionMenu(r.left, r.bottom + 4, {
-																		id: (c as RowConv).convId ?? c.id,
+																		id: elseConvId ?? c.id,
 																		kind: "elsewhere",
 																		label: c.title,
-																		...((c as RowConv).owner ? { owner: (c as RowConv).owner } : {}),
+																		...(elseOwner ? { owner: elseOwner } : {}),
 																	});
 																}}
 															>
@@ -898,6 +930,7 @@ export const LeftPanel = memo(function LeftPanel({
 															) : (
 																<span className="session-title">
 																	{c.isSubagent && <span className="subagent-badge">{t("subagentBadge")}</span>}
+																	{c.isEphemeral && <span className="ephemeral-badge">{t("ephemeralBadge")}</span>}
 																	{c.forkFrom && (
 																		<span
 																			className="preset-badge fork-badge"

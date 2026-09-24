@@ -42,6 +42,8 @@ const ALL = [
 	"provider-keys-test",
 	"db-client-test",
 	"chat-abort-attachments-rollback-test",
+	// 临时对话（issue #285）：inMemory 不落盘 + 左栏 isEphemeral 标记 + 转正落盘（对照组验普通对话真落盘）。
+	"ephemeral-chat-test",
 	"dsh-smoke-test",
 	"dsh-stats-test",
 	"fetch-models-test",
@@ -103,6 +105,8 @@ const ALL = [
 	"idle-takeover-test",
 	// 跨页作答：点 elsewhere 行的 `?` 把问卷拉到本页回答，不搬迁对话。
 	"remote-answer-test",
+	// elsewhere 生命周期（#291）：断连残骸不入列表、删定时任务回收伪客户端。
+	"elsewhere-lifecycle-test",
 	"terminal-smoke-test",
 	// 全局主机采样经心跳推送，不调用模型。
 	"host-metrics-test",

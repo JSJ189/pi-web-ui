@@ -39,7 +39,7 @@ import {
 } from "../ui-slots";
 import { fitTopbar, MOBILE_ASIDE_TOPBAR_IDS, sortOverflowMenuItems } from "../topbar-fit";
 import { openContextMenu } from "../context-menu-state";
-import { appSend, useAppField, useAppGlobals, useIsManaged, useServiceInfo } from "../app-globals";
+import { appSend, useAppField, useAppGlobals, useIsDsh, useIsManaged, useServiceInfo } from "../app-globals";
 import { ProjectPicker } from "./ProjectPicker";
 import { PluginMenu } from "./PluginMenu";
 import { LocaleModal } from "./LocaleModal";
@@ -226,6 +226,9 @@ export function TopBar({
 	const [pluginMenuAnchor, setPluginMenuAnchor] = useState<{ rect: DOMRect; el: HTMLElement } | null>(null);
 	const cwd = useAppField("cwd");
 	const workspaceRoots = useAppField("workspaceRoots");
+	/* 临时会话是 pi 引擎专有能力（SessionManager.inMemory）：DSH 的 newChat 忽略该标志，
+	   画出来只会得到一个普通持久对话，因此 DSH 下不提供该入口。 */
+	const isDsh = useIsDsh();
 	// 溢出菜单触发按钮：portal 菜单按它的视口矩形锚定（issue #162）。
 	const moreBtnRef = useRef<HTMLButtonElement>(null);
 	/* PI_WEB_TABS: an instance can be set up to offer only some tabs — the
@@ -287,6 +290,7 @@ export function TopBar({
 		"host:update",
 		"host:github",
 		"host:new-chat",
+		"host:new-ephemeral-chat",
 		"host:files",
 	];
 	const topEntries: { id: string; entry: UiSlotEntry | null }[] =
@@ -336,6 +340,11 @@ export function TopBar({
 			case "host:new-chat":
 				onViewChange("chat");
 				appSend({ type: "new_chat" });
+				focusComposer();
+				return true;
+			case "host:new-ephemeral-chat":
+				onViewChange("chat");
+				appSend({ type: "new_chat", ephemeral: true });
 				focusComposer();
 				return true;
 			case "host:open-project":
@@ -824,6 +833,24 @@ export function TopBar({
 				<span>{t("newChat")}</span>
 			</button>
 		) : null,
+		"host:new-ephemeral-chat": isDsh ? null : (
+			<button
+				type="button"
+				className="chip newchat ephemeral-chat-btn"
+				data-tip={t("newChatEphemeralTip")}
+				onClick={() => {
+					onViewChange("chat");
+					appSend({ type: "new_chat", ephemeral: true });
+					focusComposer();
+				}}
+			>
+				{/* emoji 也是图标：必须带 .chip-emoji，否则顶栏「只显示图标」模式下会被
+				    `.topbar.no-labels .chip > span` 连同文字标签一起藏掉，按钮变成空方块
+				    （溢出菜单 portal 在 body 下不受影响 —— 所以是「折叠进 ⋯ 才看得见」）。 */}
+				<span className="chip-emoji">🎭</span>
+				<span>{t("newChatEphemeral")}</span>
+			</button>
+		),
 		"host:chat": (
 			<button
 				type="button"

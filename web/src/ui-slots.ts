@@ -286,7 +286,17 @@ export const BUILTIN_UI_ITEMS: BuiltinUiItem[] = [
 		kind: "action",
 		order: 96,
 		group: "primary",
-		// 缺省落右区工具组之尾；位置完全由 slot 顺序定（旧版 pin-tail 语义的数据化），用户 ↑↓ 可调。
+		align: "end",
+	},
+	{
+		id: "host:new-ephemeral-chat",
+		slot: "topbar.primary",
+		labelKey: "newChatEphemeral",
+		icon: "plus",
+		kind: "action",
+		order: 96.5,
+		group: "primary",
+		// 缺省落右区工具组之尾（紧接「新对话」）；位置完全由 slot 顺序定，用户 ↑↓ 可调。
 		align: "end",
 	},
 	// 视图切换三连：同组 + 连号权重 → 顺序就是 TopBar 里 tab 的顺序（chat/terminal/git）。

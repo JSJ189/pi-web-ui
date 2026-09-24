@@ -1117,10 +1117,19 @@ function serviceOptions(opts) {
 	if (!/^\d{1,5}$/.test(port) || Number(port) < 1 || Number(port) > 65535) {
 		fail(ZH ? `无效端口: ${port}` : `Invalid port: ${port}`);
 	}
-	// 服务默认以用户主目录为工作目录：安装命令的当前目录不可靠（例如 Windows 提权提示符
-	// 默认在 C:\WINDOWS\system32），主目录跨平台可预期；前台启动仍默认当前目录。
-	const cwd = resolve(opts.cwd ?? process.env.PI_WEB_CWD ?? homedir());
-	if (!existsSync(cwd)) fail(ZH ? `工作目录不存在: ${cwd}` : `Working directory does not exist: ${cwd}`);
+	// 服务默认工作区（issue #295）：安装命令的当前目录不可靠（例如 Windows 提权提示符
+	// 默认在 C:\WINDOWS\system32），且直接拿用户主目录当 agent cwd 会让 SDK 的
+	// resourceLoader.reload 等同步目录扫描落在 $HOME 上 —— 家目录下的 iCloud 占位符、
+	// 外部/网络卷坏挂载会让 scandir/open 在内核里挂起，整个事件循环假死（hello 后永远
+	// 收不到 ready）。默认落到干净的 ~/pi-web-ui 子目录（不存在即建）；显式 --cwd /
+	// PI_WEB_CWD 保持原语义（不存在则报错）。前台启动仍默认当前目录。
+	const explicitCwd = opts.cwd ?? process.env.PI_WEB_CWD;
+	const cwd = resolve(explicitCwd ?? join(homedir(), "pi-web-ui"));
+	if (explicitCwd) {
+		if (!existsSync(cwd)) fail(ZH ? `工作目录不存在: ${cwd}` : `Working directory does not exist: ${cwd}`);
+	} else if (!existsSync(cwd)) {
+		mkdirSync(cwd, { recursive: true });
+	}
 	let dataDir;
 	if (opts.dataDir) {
 		dataDir = resolve(opts.dataDir);

@@ -1477,35 +1477,49 @@ export function App() {
 								</div>
 							)}
 							{chat.state ? (
-								<MessageList
-									uiMessageActions={uiSlots["message.actions"]}
-									uiContextMessage={uiSlots["contextmenu.message"]}
-									/* 工具调用卡片的工具名右键菜单（contextmenu.toolcall）：条目已合并好，
-									   工具卡只管开菜单 + 分派它自己的 host:tool-info。 */
-									uiContextToolCall={uiSlots["contextmenu.toolcall"]}
-									uiChatEmpty={uiChatEmpty}
-									onUiAction={onUiAction}
-									key={chat.state.conversationId ?? "boot"}
-									state={chat.state}
-									liveOutputs={chat.liveOutputs}
-									toolStatuses={chat.toolStatuses}
-									onEdit={onEditMessage}
-									onKillBash={() => send({ type: "abort_bash" })}
-									onRetry={() => {
-										// 重试沿用当前模型续跑上一轮请求，同样算一次模型使用（下拉按次数排序）。
-										if (send({ type: "retry_last" })) {
-											const m = chat.state?.model;
-											if (m) recordModelUsage(`${m.provider}/${m.id}`);
-										}
-									}}
-									onRemoveQueued={onRemoveQueued}
-									onRecallQueued={onRecallQueued}
-									thinkingWrap={chat.settings?.thinkingWrap ?? true}
-									toolsWrap={chat.settings?.toolsWrap ?? true}
-									toolImages={chat.settings?.toolImagesEnabled ?? true}
-									jumpTarget={searchJump}
-									onJumpDone={() => setSearchJump(null)}
-								/>
+								<>
+									{chat.state.isEphemeral && (
+										<div className="ephemeral-banner">
+											<span>🎭 {t("ephemeralBannerText")}</span>
+											<button
+												type="button"
+												className="ephemeral-save"
+												onClick={() => send({ type: "persist_conversation", id: activeConvId })}
+											>
+												💾 {t("saveEphemeral")}
+											</button>
+										</div>
+									)}
+									<MessageList
+										uiMessageActions={uiSlots["message.actions"]}
+										uiContextMessage={uiSlots["contextmenu.message"]}
+										/* 工具调用卡片的工具名右键菜单（contextmenu.toolcall）：条目已合并好，
+										   工具卡只管开菜单 + 分派它自己的 host:tool-info。 */
+										uiContextToolCall={uiSlots["contextmenu.toolcall"]}
+										uiChatEmpty={uiChatEmpty}
+										onUiAction={onUiAction}
+										key={chat.state.conversationId ?? "boot"}
+										state={chat.state}
+										liveOutputs={chat.liveOutputs}
+										toolStatuses={chat.toolStatuses}
+										onEdit={onEditMessage}
+										onKillBash={() => send({ type: "abort_bash" })}
+										onRetry={() => {
+											// 重试沿用当前模型续跑上一轮请求，同样算一次模型使用（下拉按次数排序）。
+											if (send({ type: "retry_last" })) {
+												const m = chat.state?.model;
+												if (m) recordModelUsage(`${m.provider}/${m.id}`);
+											}
+										}}
+										onRemoveQueued={onRemoveQueued}
+										onRecallQueued={onRecallQueued}
+										thinkingWrap={chat.settings?.thinkingWrap ?? true}
+										toolsWrap={chat.settings?.toolsWrap ?? true}
+										toolImages={chat.settings?.toolImagesEnabled ?? true}
+										jumpTarget={searchJump}
+										onJumpDone={() => setSearchJump(null)}
+									/>
+								</>
 							) : (
 								<div className="boot-wait">{chat.ready ? t("loadingSession") : t("connectingServer")}</div>
 							)}

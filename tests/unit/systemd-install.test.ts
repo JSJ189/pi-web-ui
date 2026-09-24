@@ -33,9 +33,15 @@ interface Cli {
 	installSystemd(opts: Options): void;
 	buildUnit(cwd: string, env: Record<string, string>): string;
 }
-function harness(env: Env = {}, uid = 1000, failure?: { status: number | null; error?: Error }) {
+function harness(
+	env: Env = {},
+	uid = 1000,
+	failure?: { status: number | null; error?: Error },
+	missing: string[] = [],
+) {
 	const calls: Invocation[] = [];
 	const output: string[] = [];
+	const mkdirCalls: Array<[string, unknown]> = [];
 	const writtenFiles = new Map<string, { content: string; options?: unknown }>();
 	const removedFiles: string[] = [];
 	const names = [
@@ -73,7 +79,10 @@ function harness(env: Env = {}, uid = 1000, failure?: { status: number | null; e
 				removedFiles.push(path);
 			},
 			resolve: posix.resolve,
-			existsSync: () => true,
+			existsSync: (p: string) => !missing.includes(p),
+			mkdirSync: (p: string, opts?: unknown) => {
+				mkdirCalls.push([p, opts]);
+			},
 			isWin: false,
 			NODE: "/home/installer/node/bin/node",
 			SERVER_ENTRY: "/home/installer/pkg/dist/server/index.js",
@@ -90,7 +99,7 @@ function harness(env: Env = {}, uid = 1000, failure?: { status: number | null; e
 			},
 		},
 	) as Cli;
-	return { cli, calls, output, writtenFiles, removedFiles };
+	return { cli, calls, output, writtenFiles, removedFiles, mkdirCalls };
 }
 
 function environment(unit: string): Record<string, string> {
@@ -155,7 +164,9 @@ describe("Linux systemd installation", () => {
 			PI_WEB_PORT: port,
 			PI_WEB_HOST: "0.0.0.0",
 			PI_WEB_TOKEN: "test-only-token",
-			PI_WEB_CWD: "/home/installer",
+			// issue #295：服务默认工作区不再是家目录本身（同步扫描落在 $HOME 上会被
+			// 坏挂载挂起整个事件循环），而是干净的 ~/pi-web-ui 子目录。
+			PI_WEB_CWD: "/home/installer/pi-web-ui",
 		});
 		expect(h.calls).toEqual([]); // --print never elevates or changes a service.
 	});
@@ -165,6 +176,19 @@ describe("Linux systemd installation", () => {
 		expect(h.output[0]).not.toContain("Capabilities=");
 		expect(h.output[0]).not.toContain("CapabilityBoundingSet=");
 		expect(environment(h.output[0])).not.toHaveProperty("PI_WEB_TOKEN");
+	});
+	it("默认工作区为 ~/pi-web-ui 且不存在即建（issue #295）", () => {
+		const h = harness({}, 1000, undefined, ["/home/installer/pi-web-ui"]);
+		h.cli.installSystemd({ print: true });
+		expect(environment(h.output[0])).toMatchObject({ PI_WEB_CWD: "/home/installer/pi-web-ui" });
+		expect(h.mkdirCalls).toEqual([["/home/installer/pi-web-ui", { recursive: true }]]);
+	});
+	it("显式 --cwd 不存在则报错、不建目录（issue #295）", () => {
+		const h = harness({}, 1000, undefined, ["/srv/nowhere"]);
+		expect(() => h.cli.installSystemd({ print: true, cwd: "/srv/nowhere" })).toThrow(
+			/工作目录不存在|Working directory does not exist/,
+		);
+		expect(h.mkdirCalls).toEqual([]);
 	});
 	it("honors flags over environment values", () => {
 		const h = harness({ PI_WEB_PORT: "80", PI_WEB_HOST: "0.0.0.0" });

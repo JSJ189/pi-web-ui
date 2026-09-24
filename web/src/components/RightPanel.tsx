@@ -557,7 +557,7 @@ export const RightPanel = memo(function RightPanel({
 					if (tg?.kind === "file") downloadEntry(tg.id, tg.label);
 					break;
 				case "host:file-reveal":
-					if (tg && (tg.kind !== "list" || tg.id !== MACHINE_ROOT)) panelSend({ type: "file_reveal", path: tg.id });
+					if (tg) panelSend({ type: "file_reveal", path: tg.id });
 					break;
 				case "host:file-open-default":
 					if (tg?.kind === "file") panelSend({ type: "file_open_default", path: tg.id });
@@ -684,7 +684,7 @@ export const RightPanel = memo(function RightPanel({
 					case "host:file-attach-ref":
 						return isFile ? entry : { ...entry, hidden: true };
 					case "host:file-reveal":
-						return !onMachineRoot ? entry : { ...entry, hidden: true };
+						return !onMachineRoot && target.id !== MACHINE_ROOT ? entry : { ...entry, hidden: true };
 					case "host:file-enter":
 					case "host:file-attach-folder":
 						return isDir ? entry : { ...entry, hidden: true };

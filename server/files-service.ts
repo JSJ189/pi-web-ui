@@ -1320,27 +1320,22 @@ export class FilesService {
 		const err = (text: string, textEn?: string) => this.host.emit({ type: "notice", level: "warning", text, textEn });
 		try {
 			const fsp = await import("node:fs/promises");
-			const { dirname, basename: pathBasename } = await import("node:path");
-			const wire = normWirePath(path.trim());
-			let abs: string;
-			if (!wire) {
-				abs = resolve(this.host.getCwd());
-			} else {
-				const t = this.resolveOpTarget(path);
-				if (!t) {
-					err("此处不可定位：" + path, "Cannot reveal here: " + path);
-					return;
-				}
-				abs = t.abs;
+			const { dirname } = await import("node:path");
+			const trimmed = path.trim();
+			const t = !trimmed ? { abs: resolve(this.host.getCwd()) } : this.resolveOpTarget(trimmed);
+			if (!t) {
+				err("此处不可定位：" + path, "Cannot reveal here: " + path);
+				return;
 			}
+			const abs = t.abs;
 			const st = await fsp.stat(abs).catch(() => null);
 			if (!st) {
 				err("文件不存在：" + path, "Not found: " + path);
 				return;
 			}
 			const isDir = st.isDirectory();
-			const segs = path.split("/");
-			const base = !wire ? pathBasename(abs) || "workspace" : (segs[segs.length - 1] ?? path);
+			const segs = trimmed.split("/");
+			const base = !trimmed ? t.abs.split(/[\\/]/).pop() || t.abs : (segs[segs.length - 1] ?? trimmed);
 			if (process.platform === "win32") {
 				// /select, 与路径分两个 argv 传（explorer 对此格式稳定支持，路径含空格也无碍）。
 				// 目录传 /n, 强制打开新窗口，防止若该目录已在后台打开时被 Windows 静默复用且因反抢焦点机制不置顶。

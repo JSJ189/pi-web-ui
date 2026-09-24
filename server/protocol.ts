@@ -122,6 +122,10 @@ export interface UiState {
 	desktopDir?: string;
 	/** Id of the ACTIVE conversation (see `conversations` message). */
 	conversationId: string;
+	/** 当前对话是临时对话（inMemory、不落盘、关闭即销毁；issue #285）。
+	 *  提示条与「保存为正式对话」按钮读它 —— 不能改读 `conversations` 列表，
+	 *  因为空白的临时对话不在那个列表里（刚新建时提示条必须就能看到）。 */
+	isEphemeral?: boolean;
 	/** Monotonic snapshot revision — increments on every snapshot/snapshot_delta
 	 *  emission. snapshot_delta.baseRev must equal the client's current rev;
 	 *  a mismatch means the client missed an update and must get_state resync. */
@@ -485,7 +489,7 @@ export type ClientMessage =
 	 *  Answered exactly once by an scm_data with kind "commitmsg" — text
 	 *  carries the generated single-line message; ok:false on any failure. */
 	| { type: "scm_commitmsg"; reqId: number }
-	| { type: "new_chat"; preset?: string }
+	| { type: "new_chat"; preset?: string; ephemeral?: boolean }
 	/** Edit a past user question and re-ask it (forks a new session at that point). */
 	| {
 			type: "edit_message";
@@ -2047,6 +2051,8 @@ export interface ConversationSummary {
 	questionId?: string;
 	/** 等答复问卷的简短标题/题目（首题 header 或 question 文本），供横幅与列表展示。 */
 	questionTitle?: string;
+	/** 临时会话（不落盘、关闭即销毁、不进历史；不占持久会话名额）。 */
+	isEphemeral?: boolean;
 	/** 派生源信息（若本会话是从另一会话的消息派生而来）。 */
 	forkFrom?: {
 		conversationId: string;

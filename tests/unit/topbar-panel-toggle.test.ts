@@ -1,5 +1,8 @@
 // @vitest-environment jsdom
 import { afterEach, describe, expect, it } from "vitest";
+import { readFileSync } from "node:fs";
+import { dirname, join } from "node:path";
+import { fileURLToPath } from "node:url";
 import { createElement } from "react";
 import { createRoot, type Root } from "react-dom/client";
 import { act } from "react-dom/test-utils";
@@ -22,6 +25,9 @@ import { setAppSend, setAppGlobals, resetAppGlobals } from "../../web/src/app-gl
  *
  * 零 token / 零端口：真 jsdom + 真 React 渲染，只断言 DOM 结构与回调。
  */
+
+// 锚到仓库根（不用 process.cwd()）：静态守卫要读 web/src/styles.css。
+const ROOT = join(dirname(fileURLToPath(import.meta.url)), "..", "..");
 
 // TopBar 只读 chat 的这几个字段（其余快照流内容用不到），stub 到「已连接」即可。
 const chatStub = {
@@ -201,6 +207,23 @@ describe("TopBar 是单一扁直流（无按种类包裹的容器、无贴边例
 		expect(container.querySelector(".brand-name")).toBeTruthy();
 		const files = container.querySelector(".topbar-flow .panel-toggle.has-label");
 		expect(files?.querySelector("span")).toBeTruthy();
+	});
+
+	it("用 emoji 当图标的顶栏按钮带 .chip-emoji（免被「只显示图标」的 span 隐藏规则误杀）", () => {
+		// 回归：临时对话按钮的图标是 `<span>🎭</span>`，与文字标签同为直接子 span；
+		// 没有 .chip-emoji 时会被 `.topbar.no-labels .chip > span` 一起 display:none，
+		// 按钮在顶栏变成一个空方块，而溢出菜单（portal 到 body，不在 .topbar 内）里正常
+		// —— 表现为「折叠进 ⋯ 才看得见图标」。
+		const { container } = mount("chat", undefined, undefined, undefined, {
+			settings: { uiLayout: { topbarText: false } },
+		});
+		const glyph = container.querySelector(".topbar-flow .chip-emoji");
+		expect(glyph).toBeTruthy();
+		expect((glyph?.textContent ?? "").trim().length).toBeGreaterThan(0);
+		// 静态锁：豁免必须写在 no-labels 的隐藏规则里（改了 CSS 忘了加 :not 就会红）。
+		const css = readFileSync(join(ROOT, "web", "src", "styles.css"), "utf8");
+		const rule = css.match(/\.topbar\.no-labels[\s\S]{0,600}?\.brand-name/);
+		expect(rule?.[0]).toContain(":not(.chip-emoji)");
 	});
 
 	it("顶栏所有可点控件都带 data-tip（悬浮即时说明），唯品牌徽标例外", () => {

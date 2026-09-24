@@ -126,6 +126,20 @@ try {
 } catch (err) {
 	console.warn(`[data] 无法创建数据目录 ${DATA_DIR}: ${(err as Error).message}`);
 }
+// issue #295：工作区直接就是家目录时，SDK 初始化期的同步目录扫描会落在 $HOME 上
+// （iCloud 占位符/外部卷坏挂载 → scandir/open 内核挂起 → 事件循环假死，hello 后无
+// ready）。新装服务默认已是 ~/pi-web-ui（见 bin/pi-web-ui.mjs serviceOptions）；
+// 老服务若仍指着家目录，在此提示一次，`server install` 重装即迁移。
+try {
+	if (resolve(CWD) === resolve(homedir())) {
+		console.warn(
+			`[ws] 工作区为用户主目录 ${CWD}：目录扫描可能因外部卷/同步盘挂载而长时间阻塞，` +
+				`建议用 \`pi-web-ui server install --cwd <项目目录>\` 重装迁移。`,
+		);
+	}
+} catch {
+	/* 路径比较失败不影响启动 */
+}
 // Dev-no-cache setting read without a ClientStateStore instance (the index.html
 // route runs before any client attaches). Reads the same global settings blob.
 function readDevNoCacheSetting(): boolean | undefined {
@@ -996,7 +1010,7 @@ export interface DispatchSession {
 	/** 返回值语义见 SlashHost.newChat：布尔值 = 是否落在一个可接收首条的空白
 	 *  新对话（/new <prompt> 用）。此处只管转发，返回值被丢弃，故允许 void。
 	 *  preset = DSH Agent 预设（pi 引擎忽略）。 */
-	newChat(preset?: string): Promise<boolean | void>;
+	newChat(preset?: string, ephemeral?: boolean): Promise<boolean | void>;
 	editMessage(messageId: string, text: string, attachments?: PromptAttachment[]): Promise<void>;
 	forkSession?(messageId: string, position?: "before" | "at", targetConvId?: string): Promise<void>;
 	cycleModel(): Promise<void>;
@@ -1557,6 +1571,16 @@ const scheduler = new SchedulerStore(DATA_DIR, {
 	},
 	onChange: () => pushSchedulerTasks(),
 	notify: (level, text, textEn) => pushNoticeToAll(level, text, textEn ?? text),
+	// issue #291：任务删除（含单次任务跑完自删）后回收其伪客户端，
+	// 否则 scheduler:<taskId> 会话会永久占据其他客户端的 elsewhere 列表。
+	onTaskRemoved: (taskId) => {
+		const svc = service as unknown as { releaseSchedulerClient?: (id: string) => void };
+		try {
+			svc.releaseSchedulerClient?.(taskId);
+		} catch {
+			// 回收失败不影响任务删除
+		}
+	},
 });
 scheduler.start();
 /** 把调度器任务列表推给所有在线客户端（设置面板展示 + 变更后刷新）。 */
@@ -1820,6 +1844,10 @@ const SNAPSHOT_BACKPRESSURE_FACTOR = 3;
 const SNAPSHOT_BACKPRESSURE_MIN_BYTES = 262_144;
 /** 背压丢弃后的延迟重发间隔。 */
 const SNAPSHOT_RETRY_MS = 250;
+/** issue #295：attach（会话初始化）超过此时长未完成，先给浏览器一句可见提示，
+ *  避免界面永久停在「正在连接」而用户不知发生了什么。attach 本体继续等（不取消），
+ *  完成后照常走快照流程。 */
+const ATTACH_SLOW_NOTICE_MS = 8_000;
 
 /**
  * Multi-tab serialization sharing: emit() hands the SAME message object to
@@ -1950,7 +1978,7 @@ wss.on("connection", (ws) => {
 				void cs.listBgServers();
 				break;
 			case "new_chat":
-				void cs.newChat(msg.preset);
+				void cs.newChat(msg.preset, msg.ephemeral);
 				break;
 			case "edit_message":
 				void cs.editMessage(msg.messageId, msg.text, msg.attachments);
@@ -2760,25 +2788,41 @@ wss.on("connection", (ws) => {
 		if (msg.type === "hello") {
 			const cid = msg.clientId || randomUUID();
 			clientId = cid;
+			// issue #295：ready 先行 —— 传输握手不等待会话初始化。attach 会进 SDK 的
+			// resourceLoader.reload 等同步目录扫描，坏挂载/家目录下可能阻塞数十秒；
+			// ready 在握手里先发，前端立刻离开「正在连接」（快照随后到）。
+			if (!closed) {
+				send({
+					type: "ready",
+					clientId: cid,
+					serverVersion: VERSION,
+					protocolVersion: PROTOCOL_VERSION,
+					engine: ENGINE,
+					// This package's own version. `serverVersion` is the pi SDK's,
+					// and the client used to learn ours from the update check —
+					// which a managed instance never runs.
+					appVersion: appVersion(),
+					buildId: buildId(),
+					managed: MANAGED,
+					tabs: TABS ? [...TABS] : undefined,
+					service: SERVICE_INFO ?? undefined,
+				});
+			}
+			// attach 慢提示：本体继续等，不取消；完成后照常走快照流程。
+			const slowTimer = setTimeout(() => {
+				if (closed) return;
+				send({
+					type: "notice",
+					level: "warning",
+					text: "会话初始化耗时较长（可能在扫描工作区目录），请稍候…",
+					textEn: "Session init is taking a while (possibly scanning the workspace) — hang on…",
+				});
+			}, ATTACH_SLOW_NOTICE_MS);
 			service
 				.attach(cid, send)
 				.then((cs) => {
+					clearTimeout(slowTimer);
 					if (closed) return;
-					send({
-						type: "ready",
-						clientId: cid,
-						serverVersion: VERSION,
-						protocolVersion: PROTOCOL_VERSION,
-						engine: ENGINE,
-						// This package's own version. `serverVersion` is the pi SDK's,
-						// and the client used to learn ours from the update check —
-						// which a managed instance never runs.
-						appVersion: appVersion(),
-						buildId: buildId(),
-						managed: MANAGED,
-						tabs: TABS ? [...TABS] : undefined,
-						service: SERVICE_INFO ?? undefined,
-					});
 					// Plugin catalog: re-scan + activate new dirs on every attach so
 					// freshly dropped plugins show up without a server restart.
 					pluginMgr
@@ -2831,6 +2875,7 @@ wss.on("connection", (ws) => {
 					// Admission refused (quiesce): close the socket so the browser
 					// reconnect loop keeps retrying until admission reopens. Do NOT
 					// leave a half-alive connection that can only show an error.
+					clearTimeout(slowTimer);
 					if (err instanceof QuiesceRejectedError) {
 						closed = true;
 						if (ws.readyState === WebSocket.OPEN) {

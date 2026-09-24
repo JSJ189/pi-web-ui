@@ -1661,6 +1661,8 @@ export interface Conversation {
 	presetLocked?: boolean;
 	/** 权限预设值（read-only/workspace-write-never/danger-full-access）。 */
 	permissionPreset?: string;
+	/** 临时会话（inMemory，不落盘、不进历史、不占持久会话名额）。 */
+	isEphemeral?: boolean;
 	/** 本对话的审批放行策略（仅内存，不落盘）：allowAll = 「本对话全部允许」，
 	 *  categories = 「允许同类」记住的规则档位。放在对话对象上而非 ClientSession：
 	 *  手动过户搬的就是对话本体，策略跟着走；重启/新对话即恢复询问。 */
@@ -5175,6 +5177,12 @@ export class ClientSession {
 			sessionId: this.session.sessionId,
 			sessionFile: this.session.sessionFile,
 			conversationId: this.activeId,
+			// 临时对话标记（issue #285）：提示条/转正按钮跟当前对话走。
+			// 不能只靠 conversations 列表 —— 空白的临时对话不在运行列表里（shownInRunningList
+			// 只列有内容的），刚新建时列表里查不到它，提示条就永远不出现。
+			// 必须**恒存在**（不能只在 true 时展开）：转正后它由 true→false，而增量快照是
+			// `{...ui, ...d.state}` 浅合并，缺字段会把 true 残留下来。
+			isEphemeral: !!this.conv?.isEphemeral,
 			rev,
 			streamingMessage,
 			isStreaming: this.session.isStreaming,
@@ -7992,7 +8000,7 @@ export class ClientSession {
 	 *  空白新对话」——/new <prompt> 只在 true 时投递首条提示；false 表示没能进入
 	 *  新对话（准入关闭 / 同项目对话数达上限 / runtime 创建失败），此时照发会把
 	 *  首条提示投进用户原本正在用的那个对话里。 */
-	async newChat(_preset?: string): Promise<boolean> {
+	async newChat(_preset?: string, ephemeral?: boolean): Promise<boolean> {
 		if (this.quiesceBlocked()) return false;
 		// Reuse an already-open blank conversation instead of piling up new ones
 		// on every click: if the active chat has no messages it IS the new chat
@@ -8008,32 +8016,38 @@ export class ClientSession {
 			}
 		};
 		const active = this.conv;
-		if (active && isBlank(active)) {
+		if (!ephemeral && active && isBlank(active)) {
 			if (_preset) await this.selectAgentPreset(_preset);
 			else this.flushSnapshot();
 			return true;
 		}
-		for (const conv of this.convs.values()) {
-			if (conv.id === this.activeId) continue;
-			if (isBlank(conv)) {
-				await this.switchConversation(conv.id);
-				if (_preset) await this.selectAgentPreset(_preset);
-				else this.flushSnapshot();
-				return true;
+		if (!ephemeral) {
+			for (const conv of this.convs.values()) {
+				if (conv.id === this.activeId) continue;
+				if (isBlank(conv)) {
+					await this.switchConversation(conv.id);
+					if (_preset) await this.selectAgentPreset(_preset);
+					else this.flushSnapshot();
+					return true;
+				}
 			}
 		}
 		// Cap is per project — conversations of other projects keep their own
 		// lists and don't consume this project's slots. Subagents don't count
-		// (inMemory 后台任务，不占位）。
-		const openInProject = [...this.convs.values()].filter((c) => c.cwd === this.cwd && !c.isSubagent).length;
-		if (openInProject >= MAX_OPEN_CONVERSATIONS) {
-			this.emit({
-				type: "notice",
-				level: "warning",
-				text: `当前项目运行的对话已达上限（${MAX_OPEN_CONVERSATIONS} 个），请先打开某个对话并离开（不继续对话）以移出列表`,
-				textEn: `This project already has the max open conversations (${MAX_OPEN_CONVERSATIONS}). Open one and leave it (without continuing) to remove it from the list.`,
-			});
-			return false;
+		// (inMemory 后台任务，不占位）。临时会话也不占名额。
+		if (!ephemeral) {
+			const openInProject = [...this.convs.values()].filter(
+				(c) => c.cwd === this.cwd && !c.isSubagent && !c.isEphemeral,
+			).length;
+			if (openInProject >= MAX_OPEN_CONVERSATIONS) {
+				this.emit({
+					type: "notice",
+					level: "warning",
+					text: `当前项目运行的对话已达上限（${MAX_OPEN_CONVERSATIONS} 个），请先打开某个对话并离开（不继续对话）以移出列表`,
+					textEn: `This project already has the max open conversations (${MAX_OPEN_CONVERSATIONS}). Open one and leave it (without continuing) to remove it from the list.`,
+				});
+				return false;
+			}
 		}
 		// The outgoing conversation is left behind — apply the running-list
 		// lifecycle. Removal is deferred until the new chat exists so the active
@@ -8052,10 +8066,11 @@ export class ClientSession {
 				{
 					cwd: this.cwd,
 					agentDir: this.agentDir,
-					sessionManager: SessionManager.create(this.cwd),
+					sessionManager: ephemeral ? SessionManager.inMemory(this.cwd) : SessionManager.create(this.cwd),
 				},
 			);
 			const conv = this.makeConversation(runtime, conversationId, terminals);
+			if (ephemeral) conv.isEphemeral = true;
 			if (_preset) {
 				const hit = PI_AGENT_PRESETS.find((p) => p.id === _preset);
 				if (hit) conv.agentPreset = hit.id;
@@ -8693,6 +8708,7 @@ export class ClientSession {
 				messageCount,
 				isStreaming,
 				isSubagent: !!conv.isSubagent,
+				...(conv.isEphemeral ? { isEphemeral: true as const } : {}),
 				// 落盘会话才有文件（inMemory 子代理缺省）：右键复制路径 / AI 按 path 读历史时用。
 				...(() => {
 					try {
@@ -9051,8 +9067,8 @@ export class ClientSession {
 	}
 
 	/**
-	 * 将内存子代理（inMemory）固化为普通持久化对话：
-	 * 写入磁盘 .jsonl 会话文件，清除 isSubagent 标记，使它进入历史会话列表并长久保留。
+	 * 将内存会话（inMemory 子代理 / 临时对话）固化为普通持久化对话：
+	 * 写入磁盘 .jsonl 会话文件，清除 isSubagent / isEphemeral 标记，使它进入历史会话列表并长久保留。
 	 */
 	async persistConversation(id: string): Promise<void> {
 		const conv = this.convs.get(id);
@@ -9066,7 +9082,7 @@ export class ClientSession {
 			return;
 		}
 		const sm = (conv.session as unknown as { sessionManager?: SessionManager }).sessionManager;
-		if (!conv.isSubagent && sm?.isPersisted?.()) {
+		if (!conv.isSubagent && !conv.isEphemeral && sm?.isPersisted?.()) {
 			this.emit({
 				type: "notice",
 				level: "info",
@@ -9075,6 +9091,8 @@ export class ClientSession {
 			});
 			return;
 		}
+		// 固化对象是临时对话时文案换一套（用户看到的是「临时对话」而非「子代理」）。
+		const wasEphemeral = !!conv.isEphemeral;
 		try {
 			const cwd = conv.cwd || this.cwd;
 			const sampleSm = SessionManager.create(cwd);
@@ -9110,6 +9128,7 @@ export class ClientSession {
 				(sm as unknown as { flushed: boolean }).flushed = true;
 			}
 			conv.isSubagent = false;
+			conv.isEphemeral = false;
 
 			this.emitConversations();
 			await this.pushProjects();
@@ -9118,16 +9137,20 @@ export class ClientSession {
 			this.emit({
 				type: "notice",
 				level: "info",
-				text: `已将子代理「${conv.title}」固化为普通对话，并保存至历史记录`,
-				textEn: `Solidified subagent "${conv.title}" into a regular conversation saved to history`,
+				text: wasEphemeral
+					? `已将临时对话「${conv.title}」保存为正式对话，并存入历史记录`
+					: `已将子代理「${conv.title}」固化为普通对话，并保存至历史记录`,
+				textEn: wasEphemeral
+					? `Saved ephemeral conversation "${conv.title}" as a regular conversation in history`
+					: `Solidified subagent "${conv.title}" into a regular conversation saved to history`,
 			});
 		} catch (err) {
 			const msg = err instanceof Error ? err.message : String(err);
 			this.emit({
 				type: "notice",
 				level: "error",
-				text: `固化子代理失败：${msg}`,
-				textEn: `Failed to persist subagent: ${msg}`,
+				text: `固化失败：${msg}`,
+				textEn: `Failed to persist conversation: ${msg}`,
 			});
 		}
 	}
@@ -11267,12 +11290,28 @@ export class AgentService {
 		const out: ElsewhereRunning[] = [];
 		for (const [clientId, cs] of this.clients) {
 			if (clientId === excludeClientId) continue;
+			// issue #291：跳过无浏览器连接的残骸（非伪客户端 sinkCount=0 = 断连留存）。
+			// 伪客户端（scheduler:/plugin:）不走浏览器，sinkCount 永远为 0，保留。
+			if (!AgentService.isPseudoClientId(clientId) && cs.sinkCount() === 0) continue;
 			for (const r of cs.streamingSummariesAll()) out.push({ ...r, owner: clientId });
 		}
 		return out;
 	}
 
-	/** issue #145：某客户端流式集合变化 → 其他客户端重推 conversations。 */
+	/** issue #291：删除定时任务后回收对应伪客户端，避免残留在 elsewhere 列表。 */
+	releaseSchedulerClient(taskId: string): void {
+		const safe = String(taskId ?? "").replace(/[^A-Za-z0-9_-]/g, "") || "task";
+		const clientId = `scheduler:${safe}`;
+		const cs = this.clients.get(clientId);
+		if (!cs) return;
+		// 伪客户端常驻一个 noop sink（chatFromScheduler 的 attach），所以不能按
+		// sinkCount 判断「有没有浏览器」—— 它永远为 1。这里就是它的回收点。
+		this.clients.delete(clientId);
+		// 通知其他客户端刷新 elsewhere 列表。
+		this.pokeExternalRunning(clientId);
+	}
+
+	/** issue #145: 某客户端流式集合变化 → 其他客户端重推 conversations。 */
 	pokeExternalRunning(excludeClientId: string): void {
 		for (const [clientId, cs] of this.clients) {
 			if (clientId === excludeClientId) continue;
@@ -11806,9 +11845,13 @@ export class AgentService {
 					const saved = this.stateStore.get(clientId);
 					if (saved.lastCwd && saved.lastCwd !== this.cwd) {
 						try {
-							if (statSync(saved.lastCwd).isDirectory()) cwd = saved.lastCwd;
+							// issue #295：异步 stat —— 同步 stat 落在坏挂载（已卸载的外部卷/
+							// autofs 触发点）上会在内核里挂起，冻住整个事件循环（含控制
+							// socket 与其他客户端的心跳）；异步版本只挡本连接，超时提示照发。
+							const { stat } = await import("node:fs/promises");
+							if ((await stat(saved.lastCwd)).isDirectory()) cwd = saved.lastCwd;
 						} catch {
-							// gone (unmounted drive / deleted) — fall back to the default
+							// gone (unmounted drive / deleted / hanging mount) — fall back to the default
 						}
 					}
 					// Sessions use the SDK default per-project dir — no per-client dir.
@@ -11913,7 +11956,14 @@ export class AgentService {
 
 	/** Remove a socket from a client's broadcast set (called on socket close). */
 	detach(clientId: string, send: (msg: ServerMessage) => void): void {
-		this.clients.get(clientId)?.detachSink(send);
+		const cs = this.clients.get(clientId);
+		cs?.detachSink(send);
+		// issue #291：最后一个 sink 断开 = 该客户端不再在线 → 它的对话不该再出现在
+		// 别人的 elsewhere 列表（listExternalRunning 已跳过 sinkCount=0 的非伪客户端，
+		// 但列表是推过去的，得让其他客户端重推一次才能立刻消失）。
+		if (cs && !AgentService.isPseudoClientId(clientId) && cs.sinkCount() === 0) {
+			this.pokeExternalRunning(clientId);
+		}
 	}
 
 	get(clientId: string): ClientSession | undefined {
