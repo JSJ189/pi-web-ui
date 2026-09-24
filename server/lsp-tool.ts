@@ -24,7 +24,14 @@ import { Type } from "typebox";
 export const LSP_TOOL_NAME = "lsp";
 
 export type LspAction =
-	"definition" | "references" | "hover" | "diagnostics" | "documentSymbol" | "read_symbol" | "workspaceSymbol";
+	| "definition"
+	| "references"
+	| "hover"
+	| "diagnostics"
+	| "documentSymbol"
+	| "read_symbol"
+	| "workspaceSymbol"
+	| "cascade";
 
 export const LSP_SYMBOL_KINDS: Record<number, string> = {
 	1: "File",
@@ -838,6 +845,7 @@ Supported actions:
 - \`documentSymbol\`: Get hierarchical symbol outline (classes, functions, methods with line spans) for \`path\`.
 - \`read_symbol\`: Read exact implementation body of \`symbol\` in \`path\` (e.g. symbol="parseConfig" or "Server.start").
 - \`workspaceSymbol\`: Search symbols across the workspace matching \`query\`.
+- \`cascade\`: Impact check for \`path\` — find files that reference it (via LSP references on its exported symbols, or the symbol at \`line\`/\`character\` when provided) and report their current diagnostics, so breakages caused by an edit surface immediately.
 Note: Line numbers are 1-indexed.`,
 		parameters: Type.Object({
 			action: Type.Union(
@@ -849,6 +857,7 @@ Note: Line numbers are 1-indexed.`,
 					Type.Literal("documentSymbol"),
 					Type.Literal("read_symbol"),
 					Type.Literal("workspaceSymbol"),
+					Type.Literal("cascade"),
 				],
 				{
 					description: "The LSP operation to perform.",
@@ -1312,6 +1321,169 @@ Note: Line numbers are 1-indexed.`,
 							},
 						],
 						details: { ok: true, count: locs.length, symbols: cappedLocs, truncated: isTruncated },
+					};
+				}
+
+				if (action === "cascade") {
+					// 影响级联（Impact Cascade）：找出引用本文件（或本文件某个符号）的工作区文件，
+					// 聚合它们的实时诊断——让"改了签名/导出，下游编译炸了"在编辑当轮就暴露，
+					// 而不是等到构建或提交时才发现。
+					const MAX_SEEDS = 20;
+					const MAX_DEPENDENTS = 25;
+					const DIAGS_BUDGET_MS = 1500;
+					const normalizePath = (p: string) => (process.platform === "win32" ? p.toLowerCase() : p);
+
+					// 1. 收集种子位置：给了 line/character 就只查那个符号；否则查全部顶层符号。
+					const seeds: Array<{ line: number; character: number }> = [];
+					if (typeof params.line === "number") {
+						seeds.push({ line: line - 1, character: character - 1 });
+					} else {
+						const symResult = await client.request("textDocument/documentSymbol", { textDocument: { uri } }, timeoutMs);
+						const topSymbols: any[] = Array.isArray(symResult) ? symResult : [];
+						for (const sym of topSymbols.slice(0, MAX_SEEDS)) {
+							const pos = sym.selectionRange?.start ?? sym.range?.start ?? sym.location?.range?.start;
+							if (pos && typeof pos.line === "number") {
+								seeds.push({ line: pos.line, character: pos.character ?? 0 });
+							}
+						}
+					}
+
+					if (seeds.length === 0) {
+						return {
+							content: [{ type: "text", text: `No symbols to trace in ${targetPath} — nothing to cascade.` }],
+							details: { ok: true, impacted: [], clean: [], notReported: [], referencedFiles: [] },
+						};
+					}
+
+					// 2. 对每个种子查 references（不含声明处），汇总工作区内的引用方文件。
+					const selfNorm = normalizePath(absPath);
+					const depPaths = new Set<string>();
+					const seedResults = await Promise.allSettled(
+						seeds.map((pos) =>
+							client.request(
+								"textDocument/references",
+								{ textDocument: { uri }, position: pos, context: { includeDeclaration: false } },
+								timeoutMs,
+							),
+						),
+					);
+					for (const r of seedResults) {
+						if (r.status !== "fulfilled" || !Array.isArray(r.value)) continue;
+						for (const loc of r.value as LspLocation[]) {
+							const refUri: string = loc?.uri ?? "";
+							if (!refUri.startsWith("file:")) continue;
+							let refPath: string;
+							try {
+								refPath = fileURLToPath(refUri);
+							} catch {
+								continue;
+							}
+							if (normalizePath(refPath) === selfNorm) continue; // 排除自身
+							const relRef = relative(cwd, refPath);
+							if (relRef === ".." || relRef.startsWith(".." + sep) || relRef.startsWith("../") || isAbsolute(relRef)) {
+								continue; // 只看工作区内
+							}
+							if (relRef.split(sep).includes("node_modules")) continue;
+							depPaths.add(refPath);
+						}
+					}
+
+					const dependents = [...depPaths].sort().slice(0, MAX_DEPENDENTS);
+					if (dependents.length === 0) {
+						return {
+							content: [
+								{
+									type: "text",
+									text: `No referencing files found for ${targetPath} — no impact cascade needed.`,
+								},
+							],
+							details: { ok: true, impacted: [], clean: [], notReported: [], referencedFiles: [] },
+						};
+					}
+
+					// 3. 逐个 didOpen/didChange 触发服务器分析，轮询等待 publishDiagnostics 回流。
+					const depUris: string[] = [];
+					for (const dep of dependents) {
+						try {
+							depUris.push(await client.syncDocument(dep));
+						} catch {
+							depUris.push("");
+						}
+					}
+					const pending = new Set(depUris.filter(Boolean));
+					const deadline = Date.now() + DIAGS_BUDGET_MS;
+					while (pending.size > 0 && Date.now() < deadline) {
+						await new Promise((r) => setTimeout(r, 120));
+						const known = client.getAllDiagnostics();
+						for (const u of [...pending]) {
+							if (known.has(u)) pending.delete(u);
+						}
+					}
+
+					// 4. 聚合输出：有错误的排前面，其次警告，clean 与未上报的折叠列出。
+					const impacted: Array<{ path: string; errors: number; warnings: number; diagnostics: LspDiagnostic[] }> = [];
+					const clean: string[] = [];
+					const notReported: string[] = [];
+					const knownFinal = client.getAllDiagnostics();
+					for (let i = 0; i < dependents.length; i++) {
+						const dep = dependents[i];
+						const depUri = depUris[i];
+						const depRel = relative(cwd, dep).replace(/\\/g, "/");
+						if (!depUri) {
+							notReported.push(depRel);
+							continue;
+						}
+						const diags = client.getDiagnostics(depUri);
+						const errors = diags.filter((d) => d.severity === 1).length;
+						const warnings = diags.filter((d) => d.severity === 2).length;
+						if (errors + warnings > 0) {
+							impacted.push({ path: depRel, errors, warnings, diagnostics: diags.slice(0, 10) });
+						} else if (diags.length === 0 && !knownFinal.has(depUri)) {
+							notReported.push(depRel); // 预算内服务器未上报（可能仍在分析）
+						} else {
+							clean.push(depRel);
+						}
+					}
+
+					impacted.sort((a, b) => b.errors - a.errors || b.warnings - a.warnings);
+
+					const out: string[] = [];
+					out.push(
+						`Impact cascade for ${targetPath}: ${dependents.length} referencing file(s), ${impacted.length} with findings.`,
+					);
+					for (const item of impacted) {
+						out.push(`• ${item.path} — ${item.errors} error(s), ${item.warnings} warning(s)`);
+						for (const d of item.diagnostics.slice(0, 5)) {
+							const sev = d.severity === 1 ? "ERROR" : d.severity === 2 ? "WARN" : "INFO";
+							const code = d.code ? ` [${d.code}]` : "";
+							const msg = String(d.message).split("\n")[0];
+							out.push(`    [${sev}] line ${d.range.start.line + 1}:${d.range.start.character + 1}${code} - ${msg}`);
+						}
+					}
+					if (clean.length > 0) {
+						const shown = clean
+							.slice(0, 10)
+							.map((p) => `• ${p}`)
+							.join("\n");
+						out.push(
+							`Clean (${clean.length}):\n${shown}${clean.length > 10 ? `\n... and ${clean.length - 10} more` : ""}`,
+						);
+					}
+					if (notReported.length > 0) {
+						out.push(
+							`Diagnostics not reported in time (${notReported.length}, server may still be analyzing): ${notReported.slice(0, 5).join(", ")}${notReported.length > 5 ? ", ..." : ""}`,
+						);
+					}
+
+					return {
+						content: [{ type: "text", text: out.join("\n") }],
+						details: {
+							ok: true,
+							impacted,
+							clean,
+							notReported,
+							referencedFiles: dependents.map((p) => relative(cwd, p).replace(/\\/g, "/")),
+						},
 					};
 				}
 
