@@ -108,6 +108,7 @@ import { ApprovalRulesStore, type ApprovalRule } from "./approval-rules.js";
 import { ComposerDraftsStore } from "./composer-drafts.js";
 import { readPermissionFromSession } from "./permission-preset.js";
 import { createWorkspaceSnapshot, restoreWorkspaceSnapshot } from "./workspace-snapshot.js";
+import { isPathInsideRoot } from "./approval-rules.js";
 import {
 	approvalSuppressionReason,
 	checkDangerousToolCall,
@@ -514,23 +515,10 @@ export function withToolGuard(
 			let approvalReasonEn: string | undefined;
 			let approvalCategory: UiApprovalCategory | undefined;
 
-			if (pre?.verdict.decision === "deny") {
-				const text = denialText(pre.verdict, pre.pluginId ?? "plugin", lang);
-				return {
-					content: [{ type: "text", text }],
-					details: { guardDenied: true, decision: pre.verdict.decision, pluginId: pre.pluginId },
-				} as never;
-			} else if (pre?.verdict.decision === "ask") {
-				needApproval = true;
-				approvalReason = pre.verdict.reason ?? "插件要求确认本次操作";
-				approvalReasonEn = pre.verdict.reasonEn ?? "Plugin requested confirmation for this operation";
-				// 插件档位按插件 id 分：用户可以「允许同类」= 该插件的确认以后不再问。
-				approvalCategory = pluginApprovalCategory(pre.pluginId ?? "plugin");
-			}
-
-			// 内置高危操作检测（如 bash 破坏性命令等）与自定义审批规则
-			if (!needApproval && opts.cwd && opts.askApproval) {
-				const danger = checkDangerousToolCall(toolName, params, opts.cwd, opts.getRoots?.() ?? [], opts.getRules?.());
+			// 1. 系统核心安全：内置高危操作检测与自定义审批规则先行（优先级最高，防短路）
+			let danger: ReturnType<typeof checkDangerousToolCall> | undefined;
+			if (opts.cwd && opts.askApproval) {
+				danger = checkDangerousToolCall(toolName, params, opts.cwd, opts.getRoots?.() ?? [], opts.getRules?.());
 				if (danger.denied) {
 					const reasonText = danger.reason ? ` 原因：${danger.reason}` : "";
 					const reasonTextEn = danger.reasonEn ? ` Reason: ${danger.reasonEn}` : "";
@@ -545,12 +533,30 @@ export function withToolGuard(
 						isError: true,
 					} as never;
 				}
-				if (danger.dangerous) {
-					needApproval = true;
-					approvalReason = danger.reason;
-					approvalReasonEn = danger.reasonEn;
-					approvalCategory = danger.category;
-				}
+			}
+
+			// 2. 插件前置守卫 deny 拦截（带 isError 标记）
+			if (pre?.verdict.decision === "deny") {
+				const text = denialText(pre.verdict, pre.pluginId ?? "plugin", lang);
+				return {
+					content: [{ type: "text", text }],
+					details: { guardDenied: true, decision: pre.verdict.decision, pluginId: pre.pluginId },
+					isError: true,
+				} as never;
+			}
+
+			// 3. 决定是否需要弹窗审批（系统高危 ask 优先于插件通用 ask，防止恶意或低危插件掩盖高危告警）
+			if (danger?.dangerous) {
+				needApproval = true;
+				approvalReason = danger.reason;
+				approvalReasonEn = danger.reasonEn;
+				approvalCategory = danger.category;
+			} else if (pre?.verdict.decision === "ask") {
+				needApproval = true;
+				approvalReason = pre.verdict.reason ?? "插件要求确认本次操作";
+				approvalReasonEn = pre.verdict.reasonEn ?? "Plugin requested confirmation for this operation";
+				// 插件档位按插件 id 分：用户可以「允许同类」= 该插件的确认以后不再问。
+				approvalCategory = pluginApprovalCategory(pre.pluginId ?? "plugin");
 			}
 
 			let effectiveParams = params;
@@ -626,11 +632,11 @@ export function withToolGuard(
 	} as ToolDefinition;
 }
 
-/** 校验目标路径是否在工作区（或多根工作区）内。 */
+/** 校验目标路径是否在工作区（或多根工作区）内。严格规范化防止 ".." 逃逸与 Windows 盘符大小写不一致。 */
 function isInsideWorkspaceRoots(targetPath: string, cwd: string, roots: string[] = []): boolean {
-	const abs = isAbsolute(targetPath) ? targetPath : resolve(cwd, targetPath);
+	const abs = resolve(cwd, targetPath);
 	const allRoots = [resolve(cwd), ...roots.map((r) => resolve(r))];
-	return allRoots.some((r) => abs === r || abs.startsWith(r + sep));
+	return allRoots.some((r) => isPathInsideRoot(abs, r));
 }
 
 /** 为 write 工具包装会话级权限沙箱与人机协同审批。 */
