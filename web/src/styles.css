@@ -9658,6 +9658,20 @@ div.chead[role="button"]:focus-visible,
 	flex-direction: column;
 	gap: 8px;
 }
+.dialog-custom-row {
+	display: flex;
+	gap: 8px;
+	margin-top: 4px;
+}
+.dialog-custom-row .dialog-input {
+	flex: 1;
+	font-size: 13px;
+	padding: 7px 10px;
+}
+.dialog-custom-row .btn {
+	padding: 6px 14px;
+	font-size: 13px;
+}
 
 .dialog-option {
 	display: block;
