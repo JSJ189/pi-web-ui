@@ -23,7 +23,37 @@ import { Type } from "typebox";
 
 export const LSP_TOOL_NAME = "lsp";
 
-export type LspAction = "definition" | "references" | "hover" | "diagnostics";
+export type LspAction =
+	"definition" | "references" | "hover" | "diagnostics" | "documentSymbol" | "read_symbol" | "workspaceSymbol";
+
+export const LSP_SYMBOL_KINDS: Record<number, string> = {
+	1: "File",
+	2: "Module",
+	3: "Namespace",
+	4: "Package",
+	5: "Class",
+	6: "Method",
+	7: "Property",
+	8: "Field",
+	9: "Constructor",
+	10: "Enum",
+	11: "Interface",
+	12: "Function",
+	13: "Variable",
+	14: "Constant",
+	15: "String",
+	16: "Number",
+	17: "Boolean",
+	18: "Array",
+	19: "Object",
+	20: "Key",
+	21: "Null",
+	22: "EnumMember",
+	23: "Struct",
+	24: "Event",
+	25: "Operator",
+	26: "TypeParameter",
+};
 
 interface LspDiagnostic {
 	range: {
@@ -678,6 +708,111 @@ export async function getLiveLspDiagnostics(absPath: string, cwd: string): Promi
 	return `⚠️ Post-edit Diagnostics (${errors.length} error${errors.length > 1 ? "s" : ""}):\n${lines.join("\n")}`;
 }
 
+/**
+ * 递归格式化 DocumentSymbol 列表为缩进的符号大纲树（做条数上限保护）
+ */
+function formatDocumentSymbols(symbols: any[], indent = "", lines: string[] = []): string[] {
+	for (const sym of symbols) {
+		if (lines.length >= 300) {
+			lines.push(`${indent}• ... [Truncated: outline exceeds 300 symbols]`);
+			break;
+		}
+		const kind = LSP_SYMBOL_KINDS[sym.kind] || `Kind(${sym.kind})`;
+		const range = sym.range || sym.location?.range;
+		const startLine = range ? range.start.line + 1 : "?";
+		const endLine = range ? range.end.line + 1 : "?";
+		const lineSpan = startLine === endLine ? `line ${startLine}` : `lines ${startLine}-${endLine}`;
+		const detail = sym.detail ? ` (${sym.detail})` : "";
+		lines.push(`${indent}• [${kind}] ${sym.name}${detail} (${lineSpan})`);
+		if (Array.isArray(sym.children) && sym.children.length > 0) {
+			formatDocumentSymbols(sym.children, indent + "  ", lines);
+		}
+	}
+	return lines;
+}
+
+/**
+ * 递归单趟查找符号（两遍扫描：先严格精确匹配，未命中再执行大小写忽略回退，避免遮蔽后续精确符号；支持 containerName 点分路径）
+ */
+function findSymbolPass(
+	symbols: any[],
+	target: string,
+	mode: "exact" | "ci",
+	parentName = "",
+): { symbol: any; fullName: string } | null {
+	const targetLower = target.toLowerCase();
+	for (const sym of symbols) {
+		const qualifiedName = sym.containerName
+			? `${sym.containerName}.${sym.name}`
+			: parentName
+				? `${parentName}.${sym.name}`
+				: sym.name;
+
+		if (mode === "exact") {
+			if (sym.name === target || qualifiedName === target) {
+				return { symbol: sym, fullName: qualifiedName };
+			}
+		} else {
+			if (sym.name.toLowerCase() === targetLower || qualifiedName.toLowerCase() === targetLower) {
+				return { symbol: sym, fullName: qualifiedName };
+			}
+		}
+
+		if (Array.isArray(sym.children) && sym.children.length > 0) {
+			const found = findSymbolPass(sym.children, target, mode, qualifiedName);
+			if (found) return found;
+		}
+	}
+	return null;
+}
+
+function findSymbol(symbols: any[], target: string): { symbol: any; fullName: string } | null {
+	return findSymbolPass(symbols, target, "exact") ?? findSymbolPass(symbols, target, "ci");
+}
+
+/**
+ * 收集文件内可用的顶层符号全名清单（最多收集 50 条，供找不到符号时提供备选提示）
+ */
+function collectSymbolNames(symbols: any[], prefix = "", names: string[] = []): string[] {
+	for (const sym of symbols) {
+		if (names.length >= 50) break;
+		const current = sym.containerName
+			? `${sym.containerName}.${sym.name}`
+			: prefix
+				? `${prefix}.${sym.name}`
+				: sym.name;
+		const kind = LSP_SYMBOL_KINDS[sym.kind] || "Symbol";
+		names.push(`${current} [${kind}]`);
+		if (Array.isArray(sym.children) && sym.children.length > 0) {
+			collectSymbolNames(sym.children, current, names);
+		}
+	}
+	return names;
+}
+
+/**
+ * 当未传 path 且执行工作区级操作（如 workspaceSymbol）时，寻找工作区默认主文件以定位语言服务
+ */
+function findDefaultSourceFileForLsp(cwd: string): string | null {
+	const candidates = [
+		"src/index.ts",
+		"src/main.ts",
+		"src/app.ts",
+		"index.ts",
+		"main.ts",
+		"app.ts",
+		"server.ts",
+		"main.py",
+		"app.py",
+		"main.go",
+		"src/main.rs",
+	];
+	for (const c of candidates) {
+		if (existsSync(join(cwd, c))) return c;
+	}
+	return null;
+}
+
 // ----------------------------------------------------------------------------
 // 导出给 AI Agent 的工具对象
 // ----------------------------------------------------------------------------
@@ -700,17 +835,41 @@ Supported actions:
 - \`references\`: Find all workspace references/usages of the symbol at \`line\` & \`character\` in \`path\`.
 - \`hover\`: Get type signature and documentation (Docstring/Markdown) for symbol at \`line\` & \`character\`.
 - \`diagnostics\`: Get compiler/type errors and warnings for \`path\` (or pass no line to check whole file).
+- \`documentSymbol\`: Get hierarchical symbol outline (classes, functions, methods with line spans) for \`path\`.
+- \`read_symbol\`: Read exact implementation body of \`symbol\` in \`path\` (e.g. symbol="parseConfig" or "Server.start").
+- \`workspaceSymbol\`: Search symbols across the workspace matching \`query\`.
 Note: Line numbers are 1-indexed.`,
 		parameters: Type.Object({
 			action: Type.Union(
-				[Type.Literal("definition"), Type.Literal("references"), Type.Literal("hover"), Type.Literal("diagnostics")],
+				[
+					Type.Literal("definition"),
+					Type.Literal("references"),
+					Type.Literal("hover"),
+					Type.Literal("diagnostics"),
+					Type.Literal("documentSymbol"),
+					Type.Literal("read_symbol"),
+					Type.Literal("workspaceSymbol"),
+				],
 				{
 					description: "The LSP operation to perform.",
 				},
 			),
-			path: Type.String({
-				description: "Workspace-relative or absolute path to the target source file.",
-			}),
+			path: Type.Optional(
+				Type.String({
+					description:
+						"Workspace-relative or absolute path to the target source file (required for all actions except workspaceSymbol).",
+				}),
+			),
+			symbol: Type.Optional(
+				Type.String({
+					description: "Symbol name to read for 'read_symbol' action (e.g. 'functionName' or 'ClassName.methodName').",
+				}),
+			),
+			query: Type.Optional(
+				Type.String({
+					description: "Search query for 'workspaceSymbol' action.",
+				}),
+			),
 			line: Type.Optional(
 				Type.Number({
 					description: "1-indexed line number in the source file.",
@@ -737,7 +896,9 @@ Note: Line numbers are 1-indexed.`,
 			_callId,
 			params: {
 				action: LspAction;
-				path: string;
+				path?: string;
+				symbol?: string;
+				query?: string;
 				line?: number;
 				character?: number;
 				timeout?: number;
@@ -748,7 +909,29 @@ Note: Line numbers are 1-indexed.`,
 			_ctx,
 		) {
 			const action = params.action;
-			const targetPath = params.path;
+			let targetPath = params.path;
+			if (!targetPath && action === "workspaceSymbol") {
+				targetPath = findDefaultSourceFileForLsp(cwd) ?? undefined;
+				if (!targetPath) {
+					return {
+						content: [
+							{
+								type: "text",
+								text: `Error: Could not automatically detect a primary project source file to route language server. Please provide 'path' (pointing to any source file in the project, e.g. path='src/index.ts') to select the language server.`,
+							},
+						],
+						details: { ok: false, error: "Missing path: cannot route language server" },
+					};
+				}
+			}
+
+			if (!targetPath) {
+				return {
+					content: [{ type: "text", text: `Error: 'path' parameter is required for action '${action}'.` }],
+					details: { ok: false, error: "Missing path parameter" },
+				};
+			}
+
 			const absPath = isAbsolute(targetPath) ? targetPath : resolve(cwd, targetPath);
 			const line = typeof params.line === "number" ? Math.max(1, params.line) : 1;
 			const character = typeof params.character === "number" ? Math.max(1, params.character) : 1;
@@ -772,6 +955,30 @@ Note: Line numbers are 1-indexed.`,
 				return {
 					content: [{ type: "text", text: `Error: File not found: ${targetPath}` }],
 					details: { ok: false, error: "File not found" },
+				};
+			}
+
+			if (action === "read_symbol" && !params.symbol?.trim()) {
+				return {
+					content: [
+						{
+							type: "text",
+							text: `Error: 'symbol' parameter is required for 'read_symbol' action (e.g. symbol="parseConfig" or "ClassName.methodName").`,
+						},
+					],
+					details: { ok: false, error: "Missing symbol parameter" },
+				};
+			}
+
+			if (action === "workspaceSymbol" && !(params.query ?? "").trim()) {
+				return {
+					content: [
+						{
+							type: "text",
+							text: `Error: 'query' parameter cannot be empty for 'workspaceSymbol' action. Please provide a search term (e.g. query='User' or 'Router').`,
+						},
+					],
+					details: { ok: false, error: "Empty query parameter" },
 				};
 			}
 
@@ -935,6 +1142,176 @@ Note: Line numbers are 1-indexed.`,
 							},
 						],
 						details: { ok: true, diagnostics: diags },
+					};
+				}
+
+				if (action === "documentSymbol") {
+					const result = await client.request("textDocument/documentSymbol", { textDocument: { uri } }, timeoutMs);
+					const symbols: any[] = Array.isArray(result) ? result : [];
+
+					if (symbols.length === 0) {
+						return {
+							content: [{ type: "text", text: `No symbols found in ${targetPath}` }],
+							details: { ok: true, symbols: [] },
+						};
+					}
+
+					const lines = formatDocumentSymbols(symbols);
+					return {
+						content: [
+							{
+								type: "text",
+								text: `Symbols in ${targetPath} (${symbols.length} top-level):\n${lines.join("\n")}`,
+							},
+						],
+						details: { ok: true, count: symbols.length, symbols },
+					};
+				}
+
+				if (action === "read_symbol") {
+					const targetSymbol = params.symbol?.trim();
+					if (!targetSymbol) {
+						return {
+							content: [
+								{
+									type: "text",
+									text: `Error: 'symbol' parameter is required for 'read_symbol' action (e.g. symbol="parseConfig" or "ClassName.methodName").`,
+								},
+							],
+							details: { ok: false, error: "Missing symbol parameter" },
+						};
+					}
+
+					const result = await client.request("textDocument/documentSymbol", { textDocument: { uri } }, timeoutMs);
+					const symbols: any[] = Array.isArray(result) ? result : [];
+
+					const match = findSymbol(symbols, targetSymbol);
+					if (!match) {
+						const available = collectSymbolNames(symbols);
+						const listSnippet =
+							available.length > 0
+								? `\nAvailable symbols in ${targetPath}:\n${available
+										.slice(0, 30)
+										.map((s) => `• ${s}`)
+										.join("\n")}${available.length > 30 ? `\n... and ${available.length - 30} more` : ""}`
+								: "";
+						return {
+							content: [
+								{
+									type: "text",
+									text: `Symbol '${targetSymbol}' not found in ${targetPath}.${listSnippet}`,
+								},
+							],
+							details: { ok: false, error: "Symbol not found", availableSymbols: available },
+						};
+					}
+
+					const range = match.symbol.range || match.symbol.location?.range;
+					if (!range) {
+						return {
+							content: [
+								{
+									type: "text",
+									text: `Symbol '${targetSymbol}' found, but no range information was provided by language server.`,
+								},
+							],
+							details: { ok: false, error: "Missing range" },
+						};
+					}
+
+					let startLine = range.start.line; // 0-indexed
+					let endLine = range.end.line; // 0-indexed
+					// 针对行尾排他边界（end.character === 0 且跨行时）避免多读末尾空行
+					if (range.end.character === 0 && endLine > startLine) {
+						endLine -= 1;
+					}
+
+					const fileLines = readFileSync(absPath, "utf8").split(/\r?\n/);
+					const totalSymbolLines = Math.max(0, endLine - startLine + 1);
+					const MAX_SYMBOL_READ_LINES = 400;
+					const isTruncated = totalSymbolLines > MAX_SYMBOL_READ_LINES;
+					const sliceEndLine = isTruncated ? startLine + MAX_SYMBOL_READ_LINES - 1 : endLine;
+					const symbolLines = fileLines.slice(startLine, sliceEndLine + 1);
+
+					let formattedSnippet = symbolLines.map((l, idx) => `${startLine + idx + 1}: ${l}`).join("\n");
+					if (isTruncated) {
+						formattedSnippet += `\n// ... [Truncated: symbol body has ${totalSymbolLines} lines, showing first ${MAX_SYMBOL_READ_LINES} lines. Use 'documentSymbol' to inspect nested methods/members and read them individually]`;
+					}
+
+					const kind = LSP_SYMBOL_KINDS[match.symbol.kind] || `Kind(${match.symbol.kind})`;
+
+					return {
+						content: [
+							{
+								type: "text",
+								text: `// Symbol: ${match.fullName} [${kind}]\n// File:   ${rel}:${startLine + 1}-${endLine + 1}\n\`\`\`\n${formattedSnippet}\n\`\`\``,
+							},
+						],
+						details: {
+							ok: true,
+							symbol: match.symbol,
+							fullName: match.fullName,
+							startLine: startLine + 1,
+							endLine: endLine + 1,
+							code: symbolLines.join("\n"),
+							totalLines: totalSymbolLines,
+							truncated: isTruncated,
+						},
+					};
+				}
+
+				if (action === "workspaceSymbol") {
+					const query = (params.query ?? "").trim();
+					if (!query) {
+						return {
+							content: [
+								{
+									type: "text",
+									text: `Error: 'query' parameter cannot be empty for 'workspaceSymbol' action. Please provide a search term (e.g. query='User' or 'Router').`,
+								},
+							],
+							details: { ok: false, error: "Empty query parameter" },
+						};
+					}
+
+					const result = await client.request("workspace/symbol", { query }, timeoutMs);
+					const locs: any[] = Array.isArray(result) ? result : [];
+
+					if (locs.length === 0) {
+						return {
+							content: [{ type: "text", text: `No symbols found across workspace matching '${query}'` }],
+							details: { ok: true, symbols: [] },
+						};
+					}
+
+					const MAX_WORKSPACE_SYMBOLS = 100;
+					const isTruncated = locs.length > MAX_WORKSPACE_SYMBOLS;
+					const cappedLocs = isTruncated ? locs.slice(0, MAX_WORKSPACE_SYMBOLS) : locs;
+
+					const formatted = locs.slice(0, 30).map((sym: any) => {
+						const targetUri: string = sym.location?.uri || sym.uri || "";
+						let filePath = targetUri;
+						try {
+							if (targetUri.startsWith("file:")) filePath = fileURLToPath(targetUri);
+						} catch {}
+						const fileRel = filePath.startsWith(cwd) ? filePath.slice(cwd.length).replace(/^[/\\]/, "") : filePath;
+						const range = sym.location?.range || sym.range;
+						const lineNum = range ? range.start.line + 1 : 1;
+						const kind = LSP_SYMBOL_KINDS[sym.kind] || `Kind(${sym.kind})`;
+						const container = sym.containerName ? ` in ${sym.containerName}` : "";
+						return `• [${kind}] ${sym.name}${container} (${fileRel}:${lineNum})`;
+					});
+
+					const tail = locs.length > 30 ? `\n... and ${locs.length - 30} more symbols` : "";
+
+					return {
+						content: [
+							{
+								type: "text",
+								text: `Found ${locs.length} symbol${locs.length > 1 ? "s" : ""} matching '${query}' (via ${rel}):\n${formatted.join("\n")}${tail}`,
+							},
+						],
+						details: { ok: true, count: locs.length, symbols: cappedLocs, truncated: isTruncated },
 					};
 				}
 
