@@ -1094,6 +1094,20 @@ function writeLastCwd(cwd: string): void {
 	}
 }
 
+/** 当用户移出最近项目时，若与上次记忆目录匹配，则同步清除该记忆，避免重启后自动切回并复活墓碑。 */
+export function clearLastCwdIfMatches(path: string): void {
+	try {
+		const current = localStorage.getItem(LAST_CWD_KEY);
+		if (!current) return;
+		const norm = (s: string) => s.trim().replace(/[\\/]+$/, "").toLowerCase();
+		if (current === path || norm(current) === norm(path)) {
+			localStorage.removeItem(LAST_CWD_KEY);
+		}
+	} catch {
+		/* ignore */
+	}
+}
+
 /** Resolve the WebSocket URL: same host when served by the backend, or the Vite proxy in dev. */
 function wsUrl(): string {
 	const proto = location.protocol === "https:" ? "wss:" : "ws:";
