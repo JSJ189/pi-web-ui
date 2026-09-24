@@ -12,6 +12,7 @@
  * 结构化子集 GoalConversation 传入（真实 Conversation 满足该结构），会话创建/对话框
  * 取消/git diff 等宿主能力走回调，便于独立测试。UI 文案直接中文（服务端 notice 约定）。
  */
+import { mkdirSync, rmSync } from "node:fs";
 import { join } from "node:path";
 import { Type } from "typebox";
 import {
@@ -472,6 +473,7 @@ export class GoalService {
 		);
 
 		let refinedGoal = "";
+		let goalEphemeralDir: string | undefined;
 		try {
 			const wmSpec = opts?.wizardModel ? this.resolveReviewModel(opts.wizardModel) : null; // reuse the honest "provider/id" parser
 			const services = await createAgentSessionServices({
@@ -654,9 +656,16 @@ export class GoalService {
 				},
 			});
 
+			const sm = SessionManager.inMemory(this.host.cwd());
+			goalEphemeralDir = join(services.agentDir, "goal-sessions", `wizard-${Date.now()}`);
+			try {
+				mkdirSync(goalEphemeralDir, { recursive: true });
+				(sm as unknown as { sessionDir: string }).sessionDir = goalEphemeralDir;
+			} catch {}
+
 			const srv = await createAgentSessionFromServices({
 				services,
-				sessionManager: SessionManager.inMemory(this.host.cwd()),
+				sessionManager: sm,
 				customTools: [goalAsk],
 				...(model ? { model } : {}),
 			});
@@ -708,6 +717,11 @@ export class GoalService {
 			wgoal.wizard.status = "";
 			wgoal.wizard.statusEn = "";
 			this.wizardSession = null;
+			if (goalEphemeralDir) {
+				try {
+					rmSync(goalEphemeralDir, { recursive: true, force: true });
+				} catch {}
+			}
 			this.emitGoalStatus();
 		}
 

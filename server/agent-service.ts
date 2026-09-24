@@ -4100,7 +4100,9 @@ export class ClientSession {
 		await conv.session.bindExtensions({
 			mode: "rpc",
 			uiContext: this.webUi,
-			onError: this.makeExtensionErrorReporter(),
+			onError: this.makeExtensionErrorReporter(
+				conv.isEphemeral ? { text: `临时对话 ${conv.id}：`, textEn: `Ephemeral chat ${conv.id}: ` } : undefined,
+			),
 		});
 		conv.unsubscribe = conv.session.subscribe((event) => this.onEvent(conv, event));
 		// 新会话 / 切换会话 / 强杀重建的必经之路：刚创建的 runtime 用的是 SDK
@@ -8081,12 +8083,25 @@ export class ClientSession {
 		try {
 			const conversationId = this.nextConversationId();
 			const terminals = this.makeTerminalManager(conversationId, this.cwd);
+			let sessionManager: SessionManager;
+			if (ephemeral) {
+				sessionManager = SessionManager.inMemory(this.cwd);
+				// 为无痕临时会话提供隔离的临时运行目录（供 SoL-Pi 等依赖 getSessionDir 的扩展正常放置缓存），
+				// 但保持 persist = false（不写 .jsonl 对话文件、不污染历史记录）
+				const ephemeralDir = join(this.agentDir, "ephemeral-sessions", conversationId);
+				try {
+					mkdirSync(ephemeralDir, { recursive: true });
+					(sessionManager as unknown as { sessionDir: string }).sessionDir = ephemeralDir;
+				} catch {}
+			} else {
+				sessionManager = SessionManager.create(this.cwd);
+			}
 			const runtime = await createAgentSessionRuntime(
 				this.makeRuntimeFactory(terminals, undefined, conversationId, prevModel ?? undefined),
 				{
 					cwd: this.cwd,
 					agentDir: this.agentDir,
-					sessionManager: ephemeral ? SessionManager.inMemory(this.cwd) : SessionManager.create(this.cwd),
+					sessionManager,
 				},
 			);
 			const conv = this.makeConversation(runtime, conversationId, terminals);
@@ -8454,6 +8469,12 @@ export class ClientSession {
 		conv.unsubscribe = undefined;
 		if (conv.isSubagent) {
 			const ephemeralDir = join(this.agentDir, "subagent-sessions", conv.id);
+			try {
+				rmSync(ephemeralDir, { recursive: true, force: true });
+			} catch {}
+		}
+		if (conv.isEphemeral) {
+			const ephemeralDir = join(this.agentDir, "ephemeral-sessions", conv.id);
 			try {
 				rmSync(ephemeralDir, { recursive: true, force: true });
 			} catch {}
@@ -9149,6 +9170,12 @@ export class ClientSession {
 			}
 			conv.isSubagent = false;
 			conv.isEphemeral = false;
+			if (wasEphemeral) {
+				const ephemeralDir = join(this.agentDir, "ephemeral-sessions", conv.id);
+				try {
+					rmSync(ephemeralDir, { recursive: true, force: true });
+				} catch {}
+			}
 
 			this.emitConversations();
 			await this.pushProjects();
