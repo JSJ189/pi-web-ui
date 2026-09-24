@@ -35,31 +35,26 @@ describe("Terminal & Eval Sandbox Security Enhancements (#339)", () => {
 			noteAgentActivity: vi.fn(),
 		};
 
-		const tools = makePersistentTerminalTools(
-			mockTerminals as any,
-			"/workspace",
-			() => "en",
-			{
-				checkSafety: (cmd) => {
-					if (cmd.includes("rm -rf /")) {
-						return { blocked: true, reason: "Dangerous rm -rf / blocked" };
-					}
-					return {};
-				},
+		const tools = makePersistentTerminalTools(mockTerminals as any, "/workspace", () => "en", {
+			checkSafety: (cmd) => {
+				if (cmd.includes("rm -rf /")) {
+					return { blocked: true, reason: "Dangerous rm -rf / blocked" };
+				}
+				return {};
 			},
-		);
+		});
 
 		const inputTool = tools.find((t) => t.name === "terminal_input");
 		expect(inputTool).toBeDefined();
 
 		// 输入普通文本（无换行）不触发拦截
 		await expect(
-			inputTool!.execute("call-safe", { terminalId: "term-1", data: "ls -la" }, undefined, undefined, {}),
+			inputTool!.execute("call-safe", { terminalId: "term-1", data: "ls -la" }, undefined, undefined, {} as any),
 		).resolves.toBeDefined();
 
 		// 输入危险破坏性命令（带换行提交）直接抛错阻断
 		await expect(
-			inputTool!.execute("call-danger", { terminalId: "term-1", data: "rm -rf /\n" }, undefined, undefined, {}),
+			inputTool!.execute("call-danger", { terminalId: "term-1", data: "rm -rf /\n" }, undefined, undefined, {} as any),
 		).rejects.toThrow("Dangerous rm -rf / blocked");
 
 		expect(mockTerminals.inputChecked).toHaveBeenCalledWith("term-1", "ls -la");

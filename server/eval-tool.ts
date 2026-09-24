@@ -218,11 +218,33 @@ interface PendingRequest {
  */
 export function sanitizeEvalEnv(sourceEnv: NodeJS.ProcessEnv): NodeJS.ProcessEnv {
 	const allowedKeys = new Set([
-		"path", "pathext", "systemroot", "windir", "temp", "tmp", "tmpdir",
-		"home", "userprofile", "lang", "lc_all", "term", "shell", "comspec",
-		"os", "number_of_processors", "processor_architecture", "appdata",
-		"localappdata", "homedrive", "homepath", "systemdrive", "programdata",
-		"programfiles", "programfiles(x86)", "commonprogramfiles", "node_env"
+		"path",
+		"pathext",
+		"systemroot",
+		"windir",
+		"temp",
+		"tmp",
+		"tmpdir",
+		"home",
+		"userprofile",
+		"lang",
+		"lc_all",
+		"term",
+		"shell",
+		"comspec",
+		"os",
+		"number_of_processors",
+		"processor_architecture",
+		"appdata",
+		"localappdata",
+		"homedrive",
+		"homepath",
+		"systemdrive",
+		"programdata",
+		"programfiles",
+		"programfiles(x86)",
+		"commonprogramfiles",
+		"node_env",
 	]);
 	const cleanEnv: Record<string, string> = {};
 	for (const [key, value] of Object.entries(sourceEnv)) {
