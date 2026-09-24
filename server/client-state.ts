@@ -479,6 +479,16 @@ export interface ClientState {
 	locale?: string;
 }
 
+/** 跨平台（尤其是 Windows）路径归一化键：统一转绝对路径，并在 Windows 下转小写以消除大小写与正反斜杠差异。 */
+export function normalizePathKey(p: string): string {
+	try {
+		const resolved = resolve(p);
+		return process.platform === "win32" ? resolved.toLowerCase() : resolved;
+	} catch {
+		return process.platform === "win32" ? p.toLowerCase() : p;
+	}
+}
+
 /**
  * Persists which workspace each browser client last used + which workspaces it
  * has opened, so a server restart / page reload restores the same project and
@@ -512,6 +522,26 @@ export class ClientStateStore {
 		} catch {
 			this.cache = {};
 		}
+		// 历史数据迁移：老版本将 removedProjects 仅记在各自临时 clientId 下，升级后新标签页无法继承。
+		// 启动/加载时自动将所有老 client 的墓碑合并到全局 __settings__，避免重启或新标签页后已删项目复活。
+		let migrated = false;
+		const globalState = (this.cache[ClientStateStore.GLOBAL_SETTINGS_KEY] ??= { projects: [] });
+		const globalSet = new Set((globalState.removedProjects ?? []).map(normalizePathKey));
+		for (const [id, cState] of Object.entries(this.cache)) {
+			if (id !== ClientStateStore.GLOBAL_SETTINGS_KEY && cState.removedProjects?.length) {
+				for (const p of cState.removedProjects) {
+					const key = normalizePathKey(p);
+					if (!globalSet.has(key)) {
+						globalSet.add(key);
+						(globalState.removedProjects ??= []).push(p);
+						migrated = true;
+					}
+				}
+			}
+		}
+		if (migrated) {
+			this.save();
+		}
 		return this.cache;
 	}
 
@@ -539,11 +569,15 @@ export class ClientStateStore {
 		const state = (all[clientId] ??= { projects: [] });
 		state.lastCwd = cwd;
 		const now = Date.now();
-		state.projects = [{ path: cwd, lastUsed: now }, ...state.projects.filter((p) => p.path !== cwd)].slice(0, 30);
+		const targetKey = normalizePathKey(cwd);
+		state.projects = [
+			{ path: cwd, lastUsed: now },
+			...state.projects.filter((p) => normalizePathKey(p.path) !== targetKey),
+		].slice(0, 30);
 		// Opening the workspace again clears its removal tombstone across all clients and global settings.
 		for (const cState of Object.values(all)) {
 			if (cState.removedProjects?.length) {
-				cState.removedProjects = cState.removedProjects.filter((p) => p !== cwd);
+				cState.removedProjects = cState.removedProjects.filter((p) => normalizePathKey(p) !== targetKey);
 			}
 		}
 		this.save();
@@ -557,21 +591,22 @@ export class ClientStateStore {
 	 *  explicitly opens that project again. */
 	removeProject(clientId: string, cwd: string): void {
 		const all = this.load();
+		const targetKey = normalizePathKey(cwd);
 		const state = (all[clientId] ??= { projects: [] });
-		state.projects = state.projects.filter((p) => p.path !== cwd);
-		if (state.lastCwd === cwd) delete state.lastCwd;
-		const removed = new Set(state.removedProjects ?? []);
-		removed.add(cwd);
-		state.removedProjects = [...removed];
+		state.projects = state.projects.filter((p) => normalizePathKey(p.path) !== targetKey);
+		if (state.lastCwd && normalizePathKey(state.lastCwd) === targetKey) delete state.lastCwd;
+		const removed = (state.removedProjects ?? []).filter((p) => normalizePathKey(p) !== targetKey);
+		removed.push(cwd);
+		state.removedProjects = removed;
 
 		const globalState = (all[ClientStateStore.GLOBAL_SETTINGS_KEY] ??= { projects: [] });
-		const globalRemoved = new Set(globalState.removedProjects ?? []);
-		globalRemoved.add(cwd);
-		globalState.removedProjects = [...globalRemoved];
+		const globalRemoved = (globalState.removedProjects ?? []).filter((p) => normalizePathKey(p) !== targetKey);
+		globalRemoved.push(cwd);
+		globalState.removedProjects = globalRemoved;
 
 		for (const [id, cState] of Object.entries(all)) {
 			if (id !== ClientStateStore.GLOBAL_SETTINGS_KEY && cState.projects) {
-				cState.projects = cState.projects.filter((p) => p.path !== cwd);
+				cState.projects = cState.projects.filter((p) => normalizePathKey(p.path) !== targetKey);
 			}
 		}
 		this.save();
@@ -585,7 +620,16 @@ export class ClientStateStore {
 		const globalRemoved = all[ClientStateStore.GLOBAL_SETTINGS_KEY]?.removedProjects ?? [];
 		if (globalRemoved.length === 0) return clientRemoved;
 		if (clientRemoved.length === 0) return globalRemoved;
-		return [...new Set([...clientRemoved, ...globalRemoved])];
+		const seen = new Set<string>();
+		const result: string[] = [];
+		for (const p of [...clientRemoved, ...globalRemoved]) {
+			const key = normalizePathKey(p);
+			if (!seen.has(key)) {
+				seen.add(key);
+				result.push(p);
+			}
+		}
+		return result;
 	}
 
 	/** Last-used goal/review prefs for a client, or undefined if never set. */

@@ -94,6 +94,7 @@ import {
 	isExtensionDisabled,
 	isExtensionEnabled,
 	normalizeDisabledPluginTools,
+	normalizePathKey,
 	normalizeRetryMaxAttempts,
 	normalizeSkillList,
 	type PromptMode,
@@ -10128,7 +10129,7 @@ export class ClientSession {
 		const run: Promise<ProjectSummary[] | null> = (async () => {
 			try {
 				const saved = this.stateStore.get(this.clientId);
-				const removedProjects = new Set(this.stateStore.getRemovedProjects(this.clientId));
+				const removedProjects = new Set(this.stateStore.getRemovedProjects(this.clientId).map(normalizePathKey));
 				const map = new Map<string, number>();
 				for (const p of saved.projects) map.set(p.path, p.lastUsed);
 				const all = await SessionManager.listAll(piSessionsRoot());
@@ -10143,7 +10144,7 @@ export class ClientSession {
 				// is useless in the picker. Tombstoned entries (explicitly removed by
 				// the user) stay hidden even though session files still mention them.
 				const projects: ProjectSummary[] = [...map.entries()]
-					.filter(([path]) => !removedProjects.has(path) && existsSync(path))
+					.filter(([path]) => !removedProjects.has(normalizePathKey(path)) && existsSync(path))
 					.map(([path, lastUsed]) => ({ path, lastUsed }))
 					.sort((a, b) => b.lastUsed - a.lastUsed)
 					.slice(0, 20);
@@ -10162,11 +10163,17 @@ export class ClientSession {
 	}
 
 	/** 缓存命中时把当前 cwd 并进去：命中则刷新 lastUsed 重排，未命中则补到首位
-	 *  （remember 刚写入的新项目在 TTL 窗口内也可见，不必等下一次扫盘）。 */
+	 *  （remember 刚写入的新项目在 TTL 窗口内也可见，不必等下一次扫盘）。
+	 *  若当前工作区已被显式移出，则不强行塞回最近列表。 */
 	private withCurrentCwd(projects: ProjectSummary[], now: number): ProjectSummary[] {
-		if (projects.some((p) => p.path === this.cwd)) {
+		const currentKey = normalizePathKey(this.cwd);
+		const removedKeys = new Set(this.stateStore.getRemovedProjects(this.clientId).map(normalizePathKey));
+		if (removedKeys.has(currentKey)) {
+			return projects;
+		}
+		if (projects.some((p) => normalizePathKey(p.path) === currentKey)) {
 			return projects
-				.map((p) => (p.path === this.cwd && p.lastUsed < now ? { ...p, lastUsed: now } : p))
+				.map((p) => (normalizePathKey(p.path) === currentKey && p.lastUsed < now ? { ...p, lastUsed: now } : p))
 				.sort((a, b) => b.lastUsed - a.lastUsed);
 		}
 		return [{ path: this.cwd, lastUsed: now }, ...projects].slice(0, 20);

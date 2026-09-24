@@ -30,7 +30,12 @@ import { basename, dirname, join, resolve, sep } from "node:path";
 import { randomUUID } from "node:crypto";
 import { homedir } from "node:os";
 import { BgServerTracker } from "../bg-servers.js";
-import { ClientStateStore, DEFAULT_RETRY_MAX_ATTEMPTS, normalizeToolWatchdogTimeoutMs } from "../client-state.js";
+import {
+	ClientStateStore,
+	DEFAULT_RETRY_MAX_ATTEMPTS,
+	normalizePathKey,
+	normalizeToolWatchdogTimeoutMs,
+} from "../client-state.js";
 import { normalizeUiLayout } from "../client-state.js";
 import { FilesService, workspacePath, desktopDirWire } from "../files-service.js";
 import { QuiesceRejectedError } from "../agent-service.js";
@@ -2525,9 +2530,10 @@ export class DshClientSession {
 
 	async pushProjects(): Promise<void> {
 		const saved = this.stateStore.get(this.clientId);
+		const removedKeys = new Set(this.stateStore.getRemovedProjects(this.clientId).map(normalizePathKey));
 		const projects = new Map<string, number>();
 		for (const p of saved.projects ?? []) {
-			if (!(saved.removedProjects ?? []).includes(p.path)) {
+			if (!removedKeys.has(normalizePathKey(p.path))) {
 				projects.set(p.path, p.lastUsed);
 			}
 		}
@@ -2539,14 +2545,16 @@ export class DshClientSession {
 			for (const e of entries) {
 				if (e.isDirectory()) {
 					const cwd = this.decodeProjectKey(e.name);
-					if (cwd && !projects.has(cwd)) cwdProjects.add(cwd);
+					if (cwd && !projects.has(cwd) && !removedKeys.has(normalizePathKey(cwd))) cwdProjects.add(cwd);
 				}
 			}
 		} catch {
 			/* best effort */
 		}
 		for (const cwd of cwdProjects) projects.set(cwd, Date.now());
-		projects.set(this.cwd, Date.now());
+		if (!removedKeys.has(normalizePathKey(this.cwd))) {
+			projects.set(this.cwd, Date.now());
+		}
 		const list: ProjectSummary[] = [...projects.entries()]
 			.map(([path, lastUsed]) => ({ path, lastUsed }))
 			.sort((a, b) => b.lastUsed - a.lastUsed)
