@@ -519,8 +519,16 @@ function winIcoPath() {
 	return join(winServiceDir(), APP_ICO_NAME);
 }
 
-/** Full path to Windows PowerShell 5.1. */
+/** Full path to Windows PowerShell. Prefers pwsh.exe (PowerShell 7) when it is
+ * resolvable on PATH: some machines ship Windows PowerShell 5.1 as a broken
+ * stub whose launch fails silently, so probe for a working shell first and
+ * fall back to the built-in path. */
 function winPowershell() {
+	const which = spawnSync("where.exe", ["pwsh.exe"], { encoding: "utf8" });
+	if (which.status === 0) {
+		const first = (which.stdout ?? "").trim().split(/\r?\n/)[0];
+		if (first) return first;
+	}
 	return join(process.env.SystemRoot ?? "C:\\Windows", "System32", "WindowsPowerShell", "v1.0", "powershell.exe");
 }
 
