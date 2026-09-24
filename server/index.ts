@@ -1876,6 +1876,10 @@ wss.on("connection", (ws) => {
 	let lastSnapshotBytes = 0;
 	/** Commands received while the session is still being created — replayed after attach. */
 	let pending: ClientMessage[] = [];
+	/** attach 完成（含插件链 + 首快照）前一律排队（见 hello 分支的 replayQueued）：
+	 *  ready 先行后，ready 只代表传输通，插件命令目录/首快照都还没好，直接分发
+	 *  会撞「未知命令」/ rev 链断裂。 */
+	let attachDone = false;
 	/** 背压丢快照后的延迟重发定时器（去重：一次只排一个）。 */
 	let snapshotRetryTimer: ReturnType<typeof setTimeout> | null = null;
 
@@ -1935,8 +1939,8 @@ wss.on("connection", (ws) => {
 			return;
 		}
 		const cs = service.get(clientId);
-		if (!cs) {
-			// Session not ready yet (hello processing) — hold the command.
+		if (!cs || !attachDone) {
+			// Session not ready yet (hello processing / plugin chain) — hold the command.
 			pending.push(msg);
 			return;
 		}
@@ -2856,20 +2860,30 @@ wss.on("connection", (ws) => {
 							} catch {
 								/* 推送失败不挡快照 */
 							}
+							replayQueued();
 						})
 						.catch(() => {
 							if (closed) return;
 							// ensureLoaded 失败（如磁盘读错）不能卡死快照——前端 30s 无消息
 							// 会重连，重连又失败会陷入循环。至少把状态推下去。
 							cs.flushSnapshot();
+							replayQueued();
 						});
 					// hello may carry the UI locale — persist it before replaying
 					// anything queued during startup (issue #91).
 					if (msg.locale) void service.setLocale(cid, msg.locale);
-					// Replay anything that arrived while the session was starting.
-					const queued = pending;
-					pending = [];
-					for (const m of queued) dispatch(m);
+					// attach 期间收到的命令先排队（dispatch 里的 pending），必须等插件链
+					// 就绪后再重放：prompt 里可能是插件命令（/probe-grant 等），目录由
+					// 下面的 applyPluginCommandCatalog 同步；提前重放会撞上「未知命令」。
+					// ready 先行（issue #295）之前，客户端收到 ready 时 attach 已完成，
+					// 首条命令天然落在插件加载之后；现在 ready 与 attach 脱钩，不等就重放
+					// 等于把竞态窗口从一个 RTT 放大到整个插件扫描期（CI 必现 grant 超时）。
+					const replayQueued = (): void => {
+						attachDone = true;
+						const queued = pending;
+						pending = [];
+						for (const m of queued) dispatch(m);
+					};
 				})
 				.catch((err: unknown) => {
 					// Admission refused (quiesce): close the socket so the browser
@@ -2879,13 +2893,35 @@ wss.on("connection", (ws) => {
 					if (err instanceof QuiesceRejectedError) {
 						closed = true;
 						if (ws.readyState === WebSocket.OPEN) {
-							ws.close(4403, "quiesced");
+							// 先发 4403 关闭帧，等它刷出去再真正撕连接：close 后立刻
+							// terminate 会把关闭握手一起掐掉，客户端只能看到 1006
+							// （quiesce-test 的 brand-new client 断言 4403）。
+							try {
+								ws.close(4403, "quiesced");
+							} catch {
+								/* already closing */
+							}
+							setTimeout(() => {
+								try {
+									if (ws.readyState !== WebSocket.CLOSED) ws.terminate?.();
+								} catch {
+									/* ignore */
+								}
+							}, 500);
+						} else {
+							try {
+								ws.terminate?.();
+							} catch {
+								/* ignore */
+							}
 						}
-						ws.terminate?.();
 						return;
 					}
 					// Real init failure (bad agent dir etc.) — keep the connection
 					// open so the user can see the error and fix it.
+					// 排队的命令此时无会话可服务，直接丢弃（否则 attachDone 永 false，
+					// 队列越积越深；用户修好后重连会重发 get_state）。
+					pending = [];
 					send({
 						type: "notice",
 						level: "error",
