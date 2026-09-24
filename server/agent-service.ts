@@ -103,6 +103,7 @@ import { bilingual, pick, resolveServerLang, type ServerLang } from "./i18n.js";
 import { SubagentTemplatesStore, pickTemplatePrompt, type SubagentTemplate } from "./subagent-templates.js";
 import { ApprovalRulesStore, type ApprovalRule } from "./approval-rules.js";
 import { ComposerDraftsStore } from "./composer-drafts.js";
+import { readPermissionFromSession } from "./permission-preset.js";
 import { createWorkspaceSnapshot, restoreWorkspaceSnapshot } from "./workspace-snapshot.js";
 import {
 	approvalSuppressionReason,
@@ -3052,7 +3053,10 @@ export class ClientSession {
 
 		let originalKeepRecent: number | undefined;
 		try {
-			originalKeepRecent = session.settingsManager.getCompactionSettings(model).keepRecentTokens;
+			originalKeepRecent =
+				(session.settingsManager.getCompactionSettings as unknown as (m?: unknown) => { keepRecentTokens?: number })(
+					model,
+				)?.keepRecentTokens ?? session.settingsManager.getCompactionSettings().keepRecentTokens;
 		} catch {
 			originalKeepRecent = undefined;
 		}
@@ -3892,7 +3896,10 @@ export class ClientSession {
 			createdAt: Date.now(),
 			agentPreset: this.settingsSvc.current.defaultAgentPreset ?? "standard",
 			presetLocked: false,
-			permissionPreset: this.settingsSvc.current.defaultPermissionPreset ?? "workspace-write-never",
+			permissionPreset:
+				readPermissionFromSession(runtime.session.sessionManager) ??
+				this.settingsSvc.current.defaultPermissionPreset ??
+				"workspace-write-never",
 			// A brand-new conversation is not yet LISTED — it enters the running
 			// list only when it is displaced to the background while still
 			// streaming (its runtime is what `listed` protects). A blank chat is
@@ -6814,7 +6821,19 @@ export class ClientSession {
 			});
 			return;
 		}
+		if (this.conv.permissionPreset === hit.value) {
+			return;
+		}
 		this.conv.permissionPreset = hit.value;
+		try {
+			// 持久会话：将权限变更写入会话转录日志，切会话/切项目重载时不丢失
+			const sm = this.conv.session.sessionManager as unknown as {
+				appendCustomEntry?: (customType: string, data: unknown) => void;
+			};
+			sm?.appendCustomEntry?.("permission/preset", { preset: hit.value });
+		} catch {
+			// best effort for in-memory sessions
+		}
 		this.emit({
 			type: "notice",
 			level: "info",
