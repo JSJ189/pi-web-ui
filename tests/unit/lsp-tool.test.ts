@@ -1,9 +1,16 @@
 import { describe, it, expect, beforeEach, afterEach, afterAll } from "vitest";
-import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { pathToFileURL } from "node:url";
-import { makeLspTool, LSP_TOOL_NAME, globalLspPool, LspClient } from "../../server/lsp-tool.js";
+import {
+	makeLspTool,
+	LSP_TOOL_NAME,
+	globalLspPool,
+	LspClient,
+	resolveBinary,
+	clearResolveBinaryCache,
+} from "../../server/lsp-tool.js";
 
 describe("Native LSP Tool", () => {
 	let tempDir: string;
@@ -197,6 +204,38 @@ function handleMessage(msg) {
 		expect(diags[0].code).toBe(2304);
 
 		await client.shutdown();
+	});
+
+	it("resolves binary with local node_modules/.bin priority and proper executable extensions", () => {
+		const binDir = join(tempDir, "node_modules", ".bin");
+		mkdirSync(binDir, { recursive: true });
+		const isWin = process.platform === "win32";
+		const testBin = join(binDir, isWin ? "custom-lsp.cmd" : "custom-lsp");
+		writeFileSync(testBin, "#!/bin/sh\necho ok\n");
+
+		const found = resolveBinary("custom-lsp", tempDir);
+		expect(found).toBeTruthy();
+		expect(found).toBe(testBin);
+	});
+
+	it("does not auto-install without explicit allowInstall (user consent gate)", async () => {
+		const savedPath = process.env.PATH;
+		process.env.PATH = "";
+		try {
+			clearResolveBinaryCache();
+			const res = await globalLspPool.getClient(tempDir, join(tempDir, "sample.ts"));
+			if ("error" in res) {
+				// 未授权时不得联网安装：返回安装指引 + allowInstall 重试提示
+				expect(res.error).toContain("allowInstall");
+			} else {
+				// 该机器生态目录里已有语言服务：门禁未触发，直接释放
+				await res.client.shutdown();
+			}
+		} finally {
+			if (savedPath === undefined) delete process.env.PATH;
+			else process.env.PATH = savedPath;
+			clearResolveBinaryCache();
+		}
 	});
 
 	it("returns error cleanly when path attempts traversal outside workspace", async () => {
