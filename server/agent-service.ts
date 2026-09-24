@@ -2252,7 +2252,7 @@ export class ClientSession {
 			const baseCwdForLimit = parentId ? (this.convs.get(parentId)?.cwd ?? this.cwd) : this.cwd;
 			const resolvedCwdForLimit = cwd ? resolve(baseCwdForLimit, cwd) : baseCwdForLimit;
 			const openInProject = [...this.convs.values()].filter(
-				(c) => c.cwd === resolvedCwdForLimit && !c.isSubagent,
+				(c) => c.cwd === resolvedCwdForLimit && !c.isSubagent && !c.isEphemeral,
 			).length;
 			if (openInProject >= MAX_OPEN_CONVERSATIONS) {
 				throw new Error(
@@ -7976,16 +7976,23 @@ export class ClientSession {
 					// best-effort：修不好就按原路径重建，下面的守卫会在 prompt 前再拦。
 				}
 			}
-			// #235：转录链损坏时修一次再试（见 openManagerAndRuntime）。
+			// #280 & #335：转录链损坏时修一次再试（见 openManagerAndRuntime）。
+			// 严禁在 ownFile 不存在时回退到 continueRecent(conv.cwd) 或按 mtime list 历史文件，
+			// 否则会直接接错并顶替同项目的其它历史会话，污染别人的转录记录。
 			const opened = await this.openManagerAndRuntime(
-				() => (ownFile && existsSync(ownFile) ? SessionManager.open(ownFile) : SessionManager.continueRecent(conv.cwd)),
+				() => {
+					if (ownFile && existsSync(ownFile)) {
+						return SessionManager.open(ownFile);
+					}
+					return conv.isEphemeral ? SessionManager.inMemory(conv.cwd) : SessionManager.create(conv.cwd);
+				},
 				(m) =>
 					createAgentSessionRuntime(this.makeRuntimeFactory(conv.terminals, undefined, conv.id), {
 						cwd: conv.cwd,
 						agentDir: this.agentDir,
 						sessionManager: m,
 					}),
-				async () => (ownFile && existsSync(ownFile) ? ownFile : (await SessionManager.list(conv.cwd))[0]?.path),
+				async () => (ownFile && existsSync(ownFile) ? ownFile : undefined),
 			);
 			const runtime = opened.runtime;
 			if (opened.repair) {
@@ -8504,13 +8511,14 @@ export class ClientSession {
 	}
 
 	/** 过户用的对话摘要（AgentService 拼移动集合 + 容量检查用）。 */
-	takeoverBriefs(): { id: string; title: string; cwd: string; parentId?: string; isSubagent: boolean }[] {
+	takeoverBriefs(): { id: string; title: string; cwd: string; parentId?: string; isSubagent: boolean; isEphemeral?: boolean }[] {
 		return [...this.convs.values()].map((c) => ({
 			id: c.id,
 			title: c.title,
 			cwd: c.cwd,
 			...(c.parentId ? { parentId: c.parentId } : {}),
 			isSubagent: c.isSubagent,
+			isEphemeral: !!c.isEphemeral,
 		}));
 	}
 
@@ -9675,9 +9683,9 @@ export class ClientSession {
 			const oldListed = this.conv.listed;
 			const displaced = this.displaceActive();
 			const openInProject =
-				[...this.convs.values()].filter((c) => c.cwd === targetCwd && !c.isSubagent).length +
+				[...this.convs.values()].filter((c) => c.cwd === targetCwd && !c.isSubagent && !c.isEphemeral).length +
 				1 -
-				(displaced?.cwd === targetCwd && !displaced?.isSubagent ? 1 : 0);
+				(displaced?.cwd === targetCwd && !displaced?.isSubagent && !displaced?.isEphemeral ? 1 : 0);
 			if (openInProject > MAX_OPEN_CONVERSATIONS) {
 				// displaceActive() may have promoted a streaming conversation into the
 				// running list. Roll that presentation-only mutation back because no
@@ -11761,10 +11769,10 @@ export class AgentService {
 		}
 		const moveIds = [convId, ...collectSubagentDescendantIds(briefs, convId)];
 		const moveSet = new Set(moveIds);
-		// 容量：与 switchSession 同口径（目标项目非子代理 8 个）。
-		const movedMains = briefs.filter((b) => moveSet.has(b.id) && !b.isSubagent).length;
+		// 容量：与 switchSession 同口径（目标项目非子代理且非临时会话 8 个）。
+		const movedMains = briefs.filter((b) => moveSet.has(b.id) && !b.isSubagent && !b.isEphemeral).length;
 		const openInProject =
-			target.takeoverBriefs().filter((b) => b.cwd === main.cwd && !b.isSubagent).length + movedMains;
+			target.takeoverBriefs().filter((b) => b.cwd === main.cwd && !b.isSubagent && !b.isEphemeral).length + movedMains;
 		if (openInProject > MAX_OPEN_CONVERSATIONS) {
 			fail(
 				`目标项目运行的对话已达上限（${MAX_OPEN_CONVERSATIONS} 个），请先打开某个对话并离开（不继续对话）以移出列表`,
