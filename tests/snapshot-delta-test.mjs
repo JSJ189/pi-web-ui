@@ -67,9 +67,11 @@ try {
 	const stream = [];
 	const lastRevOf = (m) => (m.type === "snapshot" ? m.state.rev : m.rev);
 	let sawReady = false;
+	let sawSchedulerTasks = false;
 	ws.on("message", (data) => {
 		const msg = JSON.parse(data.toString());
 		if (msg.type === "ready") sawReady = true;
+		if (msg.type === "scheduler_tasks") sawSchedulerTasks = true;
 		if (msg.type === "snapshot" || msg.type === "snapshot_delta") stream.push(msg);
 	});
 
@@ -80,6 +82,16 @@ try {
 	ws.send(JSON.stringify({ type: "hello", clientId: "snapdelta-test" }));
 	for (let i = 0; i < 100 && !sawReady; i++) await sleep(50);
 	check("ready received with protocolVersion=2", sawReady);
+
+	// attach 余波排空：ready 只代表传输通（issue #295），会话初始化（插件链 +
+	// 首快照 + rev2 空 delta + 各面板推送）还在后头。插件链末尾固定以
+	// scheduler_tasks 收尾（见 server/index.ts attach 流程），等它到了再静置
+	// 500ms，保证后面的 get_state / prompt 断言跑在干净的 rev 基线上，不跟
+	// attach 余波交错（CI 曾稳定复现 delta baseRev 3 vs 前一条 rev 1）。
+	for (let i = 0; i < 200 && !sawSchedulerTasks; i++) await sleep(50);
+	check("attach burst settled (scheduler_tasks arrived)", sawSchedulerTasks);
+	await sleep(500);
+	stream.length = 0;
 
 	const fullCount = () => stream.filter((m) => m.type === "snapshot").length;
 
