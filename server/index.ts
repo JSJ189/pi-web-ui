@@ -68,6 +68,7 @@ import { createMcpHotReload } from "./mcp-hot-reload.js";
 import { createHostMetricsSampler } from "./host-metrics.js";
 import { SchedulerStore } from "./scheduler-tasks.js";
 import { initHttpProxy } from "./http-proxy.js";
+import { globalLspPool } from "./lsp-tool.js";
 import { buildPiWebTokenCookie, decodeCookieToken, isTlsRequest } from "./auth-cookie.js";
 import type {
 	BgServer,
@@ -1106,6 +1107,7 @@ export interface DispatchSession {
 		terminalToolsEnabled?: boolean;
 		terminalBash?: boolean;
 		terminalBashIdleMs?: number;
+		terminalBashMaxForegroundMs?: number;
 		editSoftEnabled?: boolean;
 		thinkingWrap?: boolean;
 		toolsWrap?: boolean;
@@ -2350,6 +2352,7 @@ wss.on("connection", (ws) => {
 					terminalToolsEnabled: msg.terminalToolsEnabled,
 					terminalBash: msg.terminalBash,
 					terminalBashIdleMs: msg.terminalBashIdleMs,
+					terminalBashMaxForegroundMs: (msg as { terminalBashMaxForegroundMs?: number }).terminalBashMaxForegroundMs,
 					toolWatchdogTimeoutMs: (msg as { toolWatchdogTimeoutMs?: number }).toolWatchdogTimeoutMs,
 					readDirEnabled: (msg as { readDirEnabled?: boolean }).readDirEnabled,
 					toolApprovalEnabled: (msg as { toolApprovalEnabled?: boolean }).toolApprovalEnabled,
@@ -2580,7 +2583,8 @@ wss.on("connection", (ws) => {
 						customCatalogPath: pluginMgr.customCatalogPath,
 						pluginsDir: join(DATA_DIR, "plugins"),
 						installer: pluginInstaller,
-						afterWrite: () => reloadPluginsAndPush(syncLang),
+						// 只更新市场列表时无需重启已激活插件，避免重复广播工作目录。
+						afterWrite: () => (msg.install === true ? reloadPluginsAndPush(syncLang) : pluginMgr.pushCatalog()),
 						lang: syncLang,
 					},
 				).then((r) => {
@@ -2931,7 +2935,8 @@ if (!bootCatalogDisabled) {
 			customCatalogPath: pluginMgr.customCatalogPath,
 			pluginsDir: join(DATA_DIR, "plugins"),
 			installer: pluginInstaller,
-			afterWrite: () => reloadPluginsAndPush(),
+			// 默认仅同步市场列表；重载插件会重复触发其激活广播。
+			afterWrite: () => (autoInstall ? reloadPluginsAndPush() : pluginMgr.pushCatalog()),
 		},
 	).then((r) => {
 		if (!r.ok) {
@@ -3025,6 +3030,7 @@ async function shutdown(signal: "SIGINT" | "SIGTERM" = "SIGINT"): Promise<void> 
 		pluginInstaller.dispose();
 		mcpHotReload.dispose();
 		mcpBridge.dispose();
+		await globalLspPool.shutdownAll();
 		await service.disposeAll();
 		// Don't let dead browsers hold the exit open: half-open WebSocket /
 		// keep-alive HTTP connections (e.g. test clients killed without

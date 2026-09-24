@@ -36,6 +36,7 @@ import {
 	type AgentSessionEvent,
 	type AgentSessionRuntime,
 	type CreateAgentSessionRuntimeFactory,
+	type ExtensionError,
 	type SessionInfo,
 	type ToolDefinition,
 } from "@earendil-works/pi-coding-agent";
@@ -154,6 +155,8 @@ import {
 	type CompactContextHost,
 	type PendingCompaction,
 } from "./compact-context-tool.js";
+// 持久代码求值沙箱（eval）：Python / Node.js 沙箱内核。
+import { disposeAllEvalKernels, disposeEvalSession, makeEvalTool } from "./eval-tool.js";
 // 工具定义说明的归一化（工具卡右键 → 「显示工具详细信息」，见 getToolInfo）。
 import { normalizeToolInfo, type RawToolDefinition } from "./tool-info.js";
 import {
@@ -178,6 +181,8 @@ import { ClaimStore, matchClaims, mergeTouchSidecar, readTouchSidecar, removeTou
 import { makeClaimFilesTool, type ClaimFilesHost } from "./claim-files-tool.js";
 import { makeSkillTool, type SkillToolHost } from "./skill-tool.js";
 import { makeScheduleTools, type ScheduleToolHost } from "./schedule-agent-tool.js";
+import { makePatchTool } from "./patch-tool.js";
+import { makeLspTool } from "./lsp-tool.js";
 import { sameSessionFile, type SchedulerStore } from "./scheduler-tasks.js";
 import { buildAttachmentMessages, parseModelSpec } from "./attachments.js";
 import { buildVisionBridgePrompt, findVisionModels, transcribeImages } from "./vision-bridge.js";
@@ -2279,6 +2284,15 @@ export class ClientSession {
 		const conversationId = persist ? `conv-${randomUUID().slice(0, 8)}` : `sa-${randomUUID().slice(0, 8)}`;
 		const terminals = this.makeTerminalManager(conversationId, resolvedCwd);
 		const sessionManager = persist ? SessionManager.create(resolvedCwd) : SessionManager.inMemory(resolvedCwd);
+		if (!persist) {
+			// 为内存子代理提供隔离的临时运行目录（供 SoL-Pi 等依赖 getSessionDir 的扩展正常放置缓存），
+			// 但保持 persist = false（不写 .jsonl 对话文件、不污染历史记录）
+			const ephemeralDir = join(this.agentDir, "subagent-sessions", conversationId);
+			try {
+				mkdirSync(ephemeralDir, { recursive: true });
+				(sessionManager as unknown as { sessionDir: string }).sessionDir = ephemeralDir;
+			} catch {}
+		}
 		const runtime = await createAgentSessionRuntime(this.makeRuntimeFactory(terminals, apply, conversationId), {
 			cwd: resolvedCwd,
 			agentDir: this.agentDir,
@@ -2316,7 +2330,10 @@ export class ClientSession {
 				// 局部 mock 缺失而崩），但它是 headless 的：UI 输出全部丢弃、弹窗按取消返回，
 				// 因此既不与主对话的 widget/status 串台，也不会让扩展卡在永远无人应答的弹窗上。
 				uiContext: WebUIContext.headless(),
-				onError: (err) => this.emit({ type: "notice", level: "error", text: err.error, textEn: err.error }),
+				onError: this.makeExtensionErrorReporter({
+					text: `子代理 ${conversationId}：`,
+					textEn: `Subagent ${conversationId}: `,
+				}),
 			});
 		} catch {
 			// 绑定失败不阻断运行。
@@ -3652,6 +3669,8 @@ export class ClientSession {
 									// 设置开 = 用终端；此分支里 persist 未显式给时默认一次性（false）。
 									defaultPersist: () => false,
 									idleMs: () => Math.max(0, Math.floor(this.settingsSvc.current.terminalBashIdleMs) || 0),
+									maxForegroundMs: () =>
+										Math.max(0, Math.floor(this.settingsSvc.current.terminalBashMaxForegroundMs) || 0),
 									kills: this.bashKills,
 									notifyBackgroundDone: (info) => this.notifyTerminalBashDone(terminals, info),
 									// issue #91：bash 返回按客户端 UI 语言出中英（英文默认）。
@@ -3822,6 +3841,17 @@ export class ClientSession {
 					// 会话同样注册（owner 即真正派发的父对话）。开关走统一工具 tab。
 					// DSH 引擎无 customTool 注册面，不接。
 					...makeScheduleTools(this.scheduleToolHost(), ownerId, () => this.getLang()),
+					// 持久代码求值沙箱（eval）：开关走统一工具 tab（ActiveSet 门控，默认关）。
+					// ownerId 绑定当前会话；DSH 引擎无 customTool 注册面，不接。
+					makeEvalTool({
+						cwd: effectiveCwd,
+						ownerId,
+						lang: () => this.getLang(),
+					}),
+					// 高可靠行补丁工具（patch，基于内容哈希与语法块级替换）。
+					makePatchTool({ cwd: effectiveCwd, ownerId }),
+					// 原生语言服务器工具（lsp，定义跳转/引用/悬停/诊断）。
+					makeLspTool({ cwd: effectiveCwd, ownerId }),
 				],
 			});
 			// 桥接工具归属锚点：SDK 会话对象在本 runtime 生命周期内稳定，过户只搬对话
@@ -4022,6 +4052,36 @@ export class ClientSession {
 		for (const sink of [...this.sinks]) sink(msg);
 	}
 
+	/** 扩展错误上报器：同一会话内「扩展 + 事件 + 错误文本」只提示一次，且全量落服务端日志。
+	 *
+	 *  SDK 的 `ExtensionRunner.emitContext()` 在**每次 provider 请求**前都会跑一遍
+	 *  扩展的 `context` hook，并对每个 handler 的报错回调 `onError`。in-memory 会话
+	 *  （子代理 / 无痕会话）取不到会话目录（`SessionManager.inMemory(cwd)` 的
+	 *  `getSessionDir()` 返回空串），于是「会话目录依赖型」扩展（如 SoL-Pi 的
+	 *  `runtimeRoot()`）每轮都抛同一个错——原样广播就等于按轮数刷屏（issue #298）。
+	 *
+	 *  `prefix` 给 notice 带上会话归属：用户一眼能看出是后台会话的问题，
+	 *  而不是当前对话坏了（与同函数内其它子代理通知的口径一致）。 */
+	private makeExtensionErrorReporter(prefix?: { text: string; textEn: string }): (err: ExtensionError) => void {
+		const seen = new Set<string>();
+		return (err) => {
+			const message = err?.error ?? String(err);
+			const where = [err?.extensionPath, err?.event].filter(Boolean).join(" · ");
+			console.error(
+				`[extension] ${prefix?.text ?? "当前对话"}${where ? ` (${where})` : ""}: ${message}${err?.stack ? `\n${err.stack}` : ""}`,
+			);
+			const key = `${err?.extensionPath ?? ""}|${err?.event ?? ""}|${message}`;
+			if (seen.has(key)) return;
+			seen.add(key);
+			this.emit({
+				type: "notice",
+				level: "error",
+				text: prefix ? `${prefix.text}扩展报错：${message}` : message,
+				textEn: prefix ? `${prefix.textEn} Extension error: ${message}` : message,
+			});
+		};
+	}
+
 	/** (Re)attach event plumbing to the ACTIVE conversation's session. */
 	private async bindSession(): Promise<void> {
 		const conv = this.conv;
@@ -4030,9 +4090,7 @@ export class ClientSession {
 		await conv.session.bindExtensions({
 			mode: "rpc",
 			uiContext: this.webUi,
-			onError: (err) => {
-				this.emit({ type: "notice", level: "error", text: err.error, textEn: err.error });
-			},
+			onError: this.makeExtensionErrorReporter(),
 		});
 		conv.unsubscribe = conv.session.subscribe((event) => this.onEvent(conv, event));
 		// 新会话 / 切换会话 / 强杀重建的必经之路：刚创建的 runtime 用的是 SDK
@@ -6486,6 +6544,7 @@ export class ClientSession {
 		terminalToolsEnabled?: boolean;
 		terminalBash?: boolean;
 		terminalBashIdleMs?: number;
+		terminalBashMaxForegroundMs?: number;
 		toolWatchdogTimeoutMs?: number;
 		/** read 工具读目录开关（默认开；见 server/read-tool.ts）。 */
 		readDirEnabled?: boolean;
@@ -7861,6 +7920,7 @@ export class ClientSession {
 			conv.unsubscribe = undefined;
 			this.clearAllToolWatchdogs(conv);
 			conv.toolStartTimes.clear();
+			disposeEvalSession(conv.id);
 			await conv.runtime.dispose();
 			// #280：dispose 丢弃了内存里的在飞状态（未落盘的工具结果蒸发），
 			// 文件尾可能留下一个悬空 toolCall——先补合成 toolResult 再重建，
@@ -8351,9 +8411,18 @@ export class ClientSession {
 		}
 		this.convs.delete(id);
 		this.clearAllToolWatchdogs(conv);
+		// 关对话 → 连它的 eval 内核（Python/Node 子进程 + 临时沙箱目录）一起回收：
+		// 这些进程是 detached 进程组，父进程退出不会自动带走它们。
+		disposeEvalSession(id);
 		conv.terminals.killAll();
 		conv.unsubscribe?.();
 		conv.unsubscribe = undefined;
+		if (conv.isSubagent) {
+			const ephemeralDir = join(this.agentDir, "subagent-sessions", conv.id);
+			try {
+				rmSync(ephemeralDir, { recursive: true, force: true });
+			} catch {}
+		}
 		void conv.runtime.dispose().catch(() => {});
 	}
 
@@ -10835,6 +10904,8 @@ export class ClientSession {
 		this.bg.stop();
 		for (const conv of this.convs.values()) {
 			this.clearAllToolWatchdogs(conv);
+			// 逐个对话回收 eval 内核；下面的兜底再清一次表（含已 delete 的残留）。
+			disposeEvalSession(conv.id);
 			conv.unsubscribe?.();
 			try {
 				await conv.runtime.dispose();
@@ -10842,6 +10913,7 @@ export class ClientSession {
 				// best effort
 			}
 		}
+		disposeAllEvalKernels();
 	}
 }
 

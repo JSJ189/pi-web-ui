@@ -23,8 +23,12 @@ import { fileURLToPath } from "node:url";
 const __dirname = dirname(fileURLToPath(import.meta.url));
 const BIN = resolve(__dirname, "../bin/pi-web-ui.mjs");
 
+// The CLI picks zh/en from LC_ALL/LC_MESSAGES/LANG; the assertions below match the Chinese output.
+const { LC_ALL: _lcAll, LC_MESSAGES: _lcMessages, ...baseEnv } = process.env;
+const ZH_ENV = { ...baseEnv, LANG: "zh_CN.UTF-8" };
+
 function cli(args) {
-	const r = spawnSync(process.execPath, [BIN, ...args], { encoding: "utf8" });
+	const r = spawnSync(process.execPath, [BIN, ...args], { encoding: "utf8", env: ZH_ENV });
 	return { status: r.status ?? 1, out: (r.stdout ?? "") + (r.stderr ?? "") };
 }
 function must(cond, msg) {

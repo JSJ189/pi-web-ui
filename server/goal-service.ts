@@ -31,6 +31,8 @@ import type { WebUIContext } from "./webui-context.js";
 /** ClientSession 私有 Conversation 中 goal 家族会触碰的字段（结构化子集）。 */
 export interface GoalConversation {
 	id: string;
+	/** Display title (used in notices that name the conversation). */
+	title: string;
 	cwd: string;
 	session: AgentSession;
 	/** 调研进行中（互斥审查触发）。 */
@@ -184,6 +186,12 @@ export class GoalService {
 	 * Set (or clear) the active goal. `goal === ""` clears it. The goal is
 	 * applied to the CURRENT active conversation of this project; reviews check
 	 * whatever run finishes next (agent_end).
+	 *
+	 * `opts.targetConvId` retargets the write to a specific conversation — used by
+	 * the goal wizard, which runs in the background while the user may have
+	 * switched away: the refined goal must land in the conversation that LAUNCHED
+	 * the survey (issue #292), not in whatever conversation happens to be active
+	 * and not be thrown away.
 	 */
 	async setGoal(
 		goalText: string,
@@ -191,6 +199,8 @@ export class GoalService {
 			reviewModel?: string;
 			maxRounds?: number;
 			locked?: boolean;
+			/** Apply the goal to this conversation instead of the active one. */
+			targetConvId?: string;
 			/** Kick the main agent into generating as soon as the goal is set.
 			 *  Default true (set from the goal bar). The wizard passes false — it
 			 *  kicks off its own generation after auto-setting the refined goal. */
@@ -211,11 +221,23 @@ export class GoalService {
 			});
 			return;
 		}
-		// A goal is scoped to the conversation that is active when it is set.
-		// This prevents an agent_end from a newly-created/switched conversation
+		// A goal is scoped to the conversation it is set on (default: the active
+		// one). This prevents an agent_end from a newly-created/switched conversation
 		// from consuming the previous conversation's goal.
-		const conv = this.host.activeConv();
-		const goalConversationId = this.host.activeConvId();
+		const targetConv = opts?.targetConvId ? this.host.getConv(opts.targetConvId) : undefined;
+		if (opts?.targetConvId && !targetConv) {
+			// The targeted conversation is gone (closed / disposed) — refuse loudly
+			// instead of silently landing the goal somewhere else.
+			this.host.emit({
+				type: "notice",
+				level: "warning",
+				text: `目标未设置：发起目标调研的对话已关闭。`,
+				textEn: `Goal not set: the conversation that started the survey is gone.`,
+			});
+			return;
+		}
+		const conv = targetConv ?? this.host.activeConv();
+		const goalConversationId = conv.id;
 		conv.goalGeneration += 1;
 		const goal = conv.goal;
 		goal.reviewing = false;
@@ -319,6 +341,9 @@ export class GoalService {
 		// new active conversation while the wizard is still finishing.
 		const wizardConversationId = this.host.activeConvId();
 		const wizardConversation = this.host.activeConv();
+		// Human-readable name for notices that must say WHICH conversation the survey
+		// belongs to (issue #292: the user is expected to switch away mid-survey).
+		const wizardConversationTitle = wizardConversation.title;
 		if (wizardConversation.wizardRunning || this.wizardOwnerId !== null) {
 			this.host.emit({
 				type: "notice",
@@ -433,6 +458,18 @@ export class GoalService {
 
 		// The main conversation to show wizard progress cards in.
 		const mainSession = wizardConversation.session;
+		// The raw draft gets its own read-only card BEFORE the first question, so the
+		// flow starts from a visible anchor. If the survey is interrupted (idle/total
+		// timeout, ✗, or the user switching away and never coming back), the original
+		// requirement is still readable and copyable in THIS conversation instead of
+		// having to be retyped (issue #292).
+		await this.pushWizardCard(
+			mainSession,
+			pick(this.lang(), `🎯 原始目标草案：${draft}`, `🎯 Initial goal draft: ${draft}`, "goal.wizard.draft.card", {
+				draft,
+			}),
+			{ draft },
+		);
 
 		let refinedGoal = "";
 		try {
@@ -674,17 +711,19 @@ export class GoalService {
 			this.emitGoalStatus();
 		}
 
-		// Aborted externally (✗ / clear_goal / idle-timeout): do NOT set a goal.
+		// Aborted externally (✗ / clear_goal / idle-timeout): do NOT set a goal. The raw
+		// draft card stays in the launching conversation's flow, so the user can read
+		// it back (and retry) instead of having to retype it (issue #292).
 		if (ac.signal.aborted || this.wizardCancelled) {
 			this.host.emit({
 				type: "notice",
 				level: "info",
-				text: `目标调研已取消${
-					ac.signal.reason ? `：${String((ac.signal.reason as Error)?.message ?? ac.signal.reason)}` : ""
-				}`,
-				textEn: `Goal survey cancelled${
-					ac.signal.reason ? `: ${String((ac.signal.reason as Error)?.message ?? ac.signal.reason)}` : ""
-				}`,
+				text:
+					`目标调研已取消${ac.signal.reason ? `：${String((ac.signal.reason as Error)?.message ?? ac.signal.reason)}` : ""}` +
+					`。原始目标草案已保留在会话「${wizardConversationTitle}」的消息流中，可复制后重新发起。`,
+				textEn:
+					`Goal survey cancelled${ac.signal.reason ? `: ${String((ac.signal.reason as Error)?.message ?? ac.signal.reason)}` : ""}` +
+					`. The initial goal draft is preserved in the conversation "${wizardConversationTitle}" — copy it and start over.`,
 			});
 			this.wizardAbort = null;
 			return;
@@ -693,20 +732,26 @@ export class GoalService {
 			this.host.emit({
 				type: "notice",
 				level: "warning",
-				text: "调研未产出有效目标，请重试",
-				textEn: "The survey produced no usable goal — retry",
+				text: `调研未产出有效目标，请重试（原始目标草案在会话「${wizardConversationTitle}」的消息流中）`,
+				textEn: `The survey produced no usable goal — retry (the initial draft is in the conversation "${wizardConversationTitle}")`,
 			});
 			return;
 		}
-		if (this.host.activeConvId() !== wizardConversationId) {
+		// The survey belongs to the conversation that launched it. The user is EXPECTED
+		// to switch away while the questions are being answered (check code, read docs),
+		// so "active ≠ launcher" is the normal case, not an error: land the refined goal
+		// on the launcher instead of discarding the work (issue #292).
+		const targetConv = this.host.getConv(wizardConversationId);
+		if (!targetConv) {
 			this.host.emit({
 				type: "notice",
-				level: "info",
-				text: "已切换对话，目标调研结果已丢弃",
-				textEn: "Switched conversations; the survey result was discarded",
+				level: "warning",
+				text: `目标调研完成，但发起会话「${wizardConversationTitle}」已关闭，结果未应用（可在新会话里重新发起）。`,
+				textEn: `The survey finished, but the conversation that started it ("${wizardConversationTitle}") is gone — the result was not applied. Start a new survey.`,
 			});
 			return;
 		}
+		const switchedAway = this.host.activeConvId() !== wizardConversationId;
 		// Auto-set the refined goal. The wizard workflow implies "set a goal and
 		// work until it passes", so default LOCKED=true unless the user explicitly
 		// turned the lock off (a lock lets the review loop keep revising to pass;
@@ -716,6 +761,9 @@ export class GoalService {
 			reviewModel: wgoal.reviewModel ?? undefined,
 			maxRounds: opts?.maxRounds,
 			locked: wantLocked,
+			// Land the goal on the conversation that launched the survey, even if the
+			// user is looking at another one right now (issue #292).
+			targetConvId: wizardConversationId,
 			// The wizard kicks off generation itself below — avoid a double kick.
 			autoStart: false,
 		});
@@ -724,8 +772,12 @@ export class GoalService {
 		this.host.emit({
 			type: "notice",
 			level: "info",
-			text: `🎯 调研完成，目标已设为：${refinedGoal.slice(0, 80)}${refinedGoal.length > 80 ? "…" : ""}`,
-			textEn: `🎯 Survey done, goal set: ${refinedGoal.slice(0, 80)}${refinedGoal.length > 80 ? "…" : ""}`,
+			text: switchedAway
+				? `🎯 会话「${wizardConversationTitle}」目标调研完成，目标已设为：${refinedGoal.slice(0, 80)}${refinedGoal.length > 80 ? "…" : ""}（已切回该会话开始生成）`
+				: `🎯 调研完成，目标已设为：${refinedGoal.slice(0, 80)}${refinedGoal.length > 80 ? "…" : ""}`,
+			textEn: switchedAway
+				? `🎯 Survey done in "${wizardConversationTitle}", goal set: ${refinedGoal.slice(0, 80)}${refinedGoal.length > 80 ? "…" : ""} (switch back to that conversation to watch it generate)`
+				: `🎯 Survey done, goal set: ${refinedGoal.slice(0, 80)}${refinedGoal.length > 80 ? "…" : ""}`,
 		});
 		// Kick the main agent into generating right away (no manual "开始吧").
 		// The kick-off is a user message so it appears in the flow and triggers a
@@ -935,7 +987,7 @@ export class GoalService {
 	private async pushWizardCard(
 		sess: AgentSession,
 		text: string,
-		details?: { question?: string; answer?: string },
+		details?: { question?: string; answer?: string; draft?: string },
 	): Promise<void> {
 		try {
 			await sess.sendCustomMessage({

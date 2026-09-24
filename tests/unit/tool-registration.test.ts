@@ -23,7 +23,10 @@ import {
 	CONVERSATION_READ_TOOL_NAME,
 	DELEGATE_TASK_TOOL_NAME,
 	EDIT_SOFT_TOOL_NAME,
+	EVAL_TOOL_NAME,
+	LSP_TOOL_NAME,
 	MARKERS_LIST_TOOL_NAME,
+	PATCH_TOOL_NAME,
 	PLAN_UPDATE_TOOL_NAME,
 	PRESENT_FILES_TOOL_NAME,
 	SCHEDULE_CANCEL_TOOL_NAME,
@@ -59,6 +62,9 @@ const FACTORY_TOOLS: Record<string, string[]> = {
 	makeSkillTool: [SKILL_TOOL_NAME],
 	makeCompactContextTool: [COMPACT_CONTEXT_TOOL_NAME],
 	makeScheduleTools: [SCHEDULE_TASK_TOOL_NAME, SCHEDULE_LIST_TOOL_NAME, SCHEDULE_CANCEL_TOOL_NAME],
+	makeEvalTool: [EVAL_TOOL_NAME],
+	makePatchTool: [PATCH_TOOL_NAME],
+	makeLspTool: [LSP_TOOL_NAME],
 };
 
 /** agent-service.ts 里实际调用的工厂（去注释、防定义行，只认 `makeXxxTool(` 调用）。 */

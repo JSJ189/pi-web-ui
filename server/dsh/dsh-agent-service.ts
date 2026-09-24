@@ -201,6 +201,7 @@ interface DshSettings {
 	terminalToolsEnabled: boolean;
 	terminalBash: boolean;
 	terminalBashIdleMs: number;
+	terminalBashMaxForegroundMs: number;
 	toolWatchdogTimeoutMs: number;
 	editSoftEnabled: boolean;
 	/** 问卷提问（ask_user_question）开关（默认开）。关 → 模型不再弹问卷。 */
@@ -263,6 +264,7 @@ const DEFAULT_SETTINGS: DshSettings = {
 	terminalToolsEnabled: false,
 	terminalBash: false,
 	terminalBashIdleMs: 15_000,
+	terminalBashMaxForegroundMs: 60_000,
 	toolWatchdogTimeoutMs: 20 * 60_000,
 	editSoftEnabled: false,
 	questionnaireEnabled: true,
@@ -441,6 +443,7 @@ export class DshClientSession {
 				terminalToolsEnabled: savedSettings.terminalToolsEnabled,
 				terminalBash: savedSettings.terminalBash,
 				terminalBashIdleMs: savedSettings.terminalBashIdleMs,
+				terminalBashMaxForegroundMs: savedSettings.terminalBashMaxForegroundMs ?? 60_000,
 				toolWatchdogTimeoutMs: savedSettings.toolWatchdogTimeoutMs ?? 20 * 60_000,
 				editSoftEnabled: savedSettings.editSoftEnabled,
 				questionnaireEnabled: savedSettings.questionnaireEnabled ?? true,
@@ -2859,6 +2862,7 @@ export class DshClientSession {
 			terminalToolsEnabled: this.settings.terminalToolsEnabled,
 			terminalBash: this.settings.terminalBash,
 			terminalBashIdleMs: this.settings.terminalBashIdleMs,
+			terminalBashMaxForegroundMs: this.settings.terminalBashMaxForegroundMs,
 			toolWatchdogTimeoutMs: this.settings.toolWatchdogTimeoutMs,
 			// DSH 引擎无 customTool 注册面（工具来自 shipped preset），read 目录覆盖面不存在。
 			readDirEnabled: true,
@@ -2929,6 +2933,7 @@ export class DshClientSession {
 		terminalToolsEnabled?: boolean;
 		terminalBash?: boolean;
 		terminalBashIdleMs?: number;
+		terminalBashMaxForegroundMs?: number;
 		toolWatchdogTimeoutMs?: number;
 		editSoftEnabled?: boolean;
 		questionnaireEnabled?: boolean;
@@ -2958,6 +2963,8 @@ export class DshClientSession {
 		if (partial.terminalToolsEnabled !== undefined) this.settings.terminalToolsEnabled = partial.terminalToolsEnabled;
 		if (partial.terminalBash !== undefined) this.settings.terminalBash = partial.terminalBash;
 		if (partial.terminalBashIdleMs !== undefined) this.settings.terminalBashIdleMs = partial.terminalBashIdleMs;
+		if (partial.terminalBashMaxForegroundMs !== undefined)
+			this.settings.terminalBashMaxForegroundMs = partial.terminalBashMaxForegroundMs;
 		if (partial.toolWatchdogTimeoutMs !== undefined)
 			this.settings.toolWatchdogTimeoutMs = normalizeToolWatchdogTimeoutMs(partial.toolWatchdogTimeoutMs);
 		if (partial.editSoftEnabled !== undefined) this.settings.editSoftEnabled = partial.editSoftEnabled;
@@ -2989,6 +2996,7 @@ export class DshClientSession {
 			terminalToolsEnabled: this.settings.terminalToolsEnabled,
 			terminalBash: this.settings.terminalBash,
 			terminalBashIdleMs: this.settings.terminalBashIdleMs,
+			terminalBashMaxForegroundMs: this.settings.terminalBashMaxForegroundMs,
 			editSoftEnabled: this.settings.editSoftEnabled,
 			// DSH 无独立重试配置（pi 引擎才暴露），保持默认。
 			retryMaxAttempts: DEFAULT_RETRY_MAX_ATTEMPTS,
@@ -3315,6 +3323,7 @@ export class DshClientSession {
 			terminalToolsEnabled: this.settings.terminalToolsEnabled,
 			terminalBash: this.settings.terminalBash,
 			terminalBashIdleMs: this.settings.terminalBashIdleMs,
+			terminalBashMaxForegroundMs: this.settings.terminalBashMaxForegroundMs,
 			editSoftEnabled: this.settings.editSoftEnabled,
 			// DSH 无独立重试配置，预设沿用默认值。
 			// DSH 无 skill 全文注入概念，给空保预设类型完整。
@@ -3359,6 +3368,8 @@ export class DshClientSession {
 		this.settings.terminalToolsEnabled = preset.terminalToolsEnabled;
 		this.settings.terminalBash = preset.terminalBash;
 		this.settings.terminalBashIdleMs = preset.terminalBashIdleMs;
+		this.settings.terminalBashMaxForegroundMs =
+			preset.terminalBashMaxForegroundMs ?? this.settings.terminalBashMaxForegroundMs;
 		this.settings.editSoftEnabled = preset.editSoftEnabled ?? this.settings.editSoftEnabled;
 		this.settings.reviewPrompt = preset.reviewPrompt ?? "";
 		this.stateStore.saveSettings(this.clientId, {
@@ -3369,6 +3380,7 @@ export class DshClientSession {
 			terminalToolsEnabled: this.settings.terminalToolsEnabled,
 			terminalBash: this.settings.terminalBash,
 			terminalBashIdleMs: this.settings.terminalBashIdleMs,
+			terminalBashMaxForegroundMs: this.settings.terminalBashMaxForegroundMs,
 			editSoftEnabled: this.settings.editSoftEnabled,
 			thinkingWrap: this.settings.thinkingWrap,
 			toolsWrap: this.settings.toolsWrap,

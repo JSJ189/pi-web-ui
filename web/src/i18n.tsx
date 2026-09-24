@@ -1270,6 +1270,9 @@ export const zh = {
 	terminalBashIdleMs: "静默转后台阈值（毫秒）",
 	terminalBashIdleMsDesc:
 		"持久终端模式下，命令连续无输出达到该时长即不再阻塞等待，转入后台继续运行并通知 AI；0 = 一直等到命令结束（默认 15000）",
+	terminalBashMaxForegroundMs: "前台最长等待（毫秒）",
+	terminalBashMaxForegroundMsDesc:
+		"接管模式下，命令在前台执行的总时长达到该值后，无论是否有输出，均自动转入后台继续执行并解阻模型；0 = 不限（默认 60000）",
 	readDirEnabled: "read 读目录",
 	readDirEnabledDesc:
 		"开启：read 工具传目录路径时列出目录条目（一行一项、目录带 / 后缀，此时 limit 是条目上限）；关闭：目录参数原样交给内置 read（报 EISDIR，看目录得用 bash 的 ls）。DSH 引擎没有该覆盖，仅 pi 引擎生效",
@@ -1626,6 +1629,15 @@ export const zh = {
 	compactContextEnabledDesc:
 		"根据当前问题主动压缩上下文：允许 AI 自主指定压缩重点、保留与当前任务相关的核心上下文并去除无关历史细节，自主控制保留范围并在回合后生效。",
 	compactContextOffHint: "已关闭：AI 不能主动调用上下文压缩工具（仍可用 /compact 命令或触发软上限自动压缩）",
+	evalEnabledDesc:
+		"在隔离的代码求值沙箱中执行 Python 或 JavaScript/TypeScript 代码，变量状态跨调用保持；适用于即时数学计算、数据处理与算法验证（默认关闭，防工具挤占）。",
+	evalOffHint: "已关闭：AI 不能使用持久代码求值沙箱（可使用 bash 工具运行临时脚本）",
+	patchToolEnabledDesc:
+		"高可靠结构化行补丁工具（Hashline）：基于内容哈希锚点与语法块（AST Block）替换代码，支持剪切/粘贴寄存器；文件被外部改动时自动执行三方合并（3-Way Merge）冲突自愈，避免大文件编辑幻觉与行号漂移。",
+	patchToolOffHint: "已关闭：AI 只能使用基础 edit 工具进行纯文本精确字符串替换",
+	lspToolEnabledDesc:
+		"原生语言服务器协议（LSP）工具：为 AI 提供 IDE 级的代码语义智能（支持定义跳转 definition、引用查询 references、类型悬停 hover、编译诊断 diagnostics），多子代理共享项目后台守护进程，零外部插件开箱即用。",
+	lspToolOffHint: "已关闭：AI 将无法主动调用 LSP 语义工具，依赖全局搜索或文本匹配定位符号",
 	/* 工具定义说明弹窗（工具卡右键 → 显示工具详细信息；定义走 get_tool_info 现取） */
 	toolInfoMenuLabel: "显示工具详细信息",
 	toolInfoTitle: "工具详细信息",
@@ -2953,6 +2965,9 @@ const en: Record<keyof typeof zh, string> = {
 	terminalBashIdleMs: "Silence-to-background threshold (ms)",
 	terminalBashIdleMsDesc:
 		"In persistent-terminal mode, when a command produces no output for this long, stop blocking and let it keep running in the background; the AI is notified when it finishes. 0 = always wait until completion (default 15000)",
+	terminalBashMaxForegroundMs: "Max foreground wait (ms)",
+	terminalBashMaxForegroundMsDesc:
+		"In terminal-takeover mode, when a command's total foreground runtime reaches this threshold, it is automatically moved to the background regardless of output activity, unblocking the model. 0 = unlimited (default 60000)",
 	readDirEnabled: "read a directory",
 	readDirEnabledDesc:
 		"On: passing a directory path to read lists its entries (one per line, directories end with '/'; limit then caps the entry count); Off: a directory path goes to the built-in read unchanged (EISDIR — use bash ls to browse). DSH engine has no such override; pi engine only",
@@ -3330,6 +3345,15 @@ const en: Record<keyof typeof zh, string> = {
 		"Proactively compact context based on the current issue: allows AI to independently specify compression focus, retain core task context, drop irrelevant history, and control retention scope.",
 	compactContextOffHint:
 		"Disabled: AI cannot proactively invoke context compaction (you can still use /compact or trigger auto-compaction)",
+	evalEnabledDesc:
+		"Execute Python or JavaScript/TypeScript code in an isolated sandbox with persistent variables; ideal for calculations, data analysis, and algorithm verification (default-off to prevent tool crowding-out).",
+	evalOffHint: "Disabled: the AI cannot use the persistent code sandbox (can still run scripts via bash)",
+	patchToolEnabledDesc:
+		"High-reliability structural patch tool (Hashline): line-anchored editing with 4-hex content hashes, syntactic AST block matching, and clipboard registers. Automatically attempts 3-way merge conflict recovery if files diverged.",
+	patchToolOffHint: "Disabled: AI falls back to basic string replacement via edit",
+	lspToolEnabledDesc:
+		"Native Language Server Protocol (LSP) tool: provides IDE-grade semantic code intelligence (definition jump, references, hover docstrings, and diagnostics) with cross-subagent daemon pooling.",
+	lspToolOffHint: "Disabled: AI cannot query LSP semantics and falls back to text search",
 	/* Tool definition dialog (tool-card right-click → show tool details; the definition comes from get_tool_info) */
 	toolInfoMenuLabel: "Show tool details",
 	toolInfoTitle: "Tool details",

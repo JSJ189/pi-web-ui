@@ -46,7 +46,7 @@ pi-web-ui/
 │   ├── settings-service.ts     # 设置面板状态机
 │   ├── goal-service.ts         # 目标/审查循环/调研向导
 │   ├── i18n.ts                 # 服务端语言协商 + 翻译表注册（resolveServerLang/pick/bilingual/getServerBlock；v2 见下）
-│   ├── tool-manager.ts         # ★ Agent 工具统一开关：AGENT_TOOL_CATALOG（终端 7＋子代理 8＋其他 14：edit_soft/delegate_task/ask_user_question/todo_list/browser_page/conversation_read/skill/schedule_task/schedule_list/schedule_cancel/present_files/claim_files/plan_update/compact_context；合计 29）＋ tool_manage 出入口（setAgentToolEnabled/applyAgentToolsGating），持久化只有 disabledAgentTools，遗留三开关双向同步
+│   ├── tool-manager.ts         # ★ Agent 工具统一开关：AGENT_TOOL_CATALOG（终端 7＋子代理 8＋其他 17：edit_soft/delegate_task/ask_user_question/todo_list/browser_page/conversation_read/skill/schedule_task/schedule_list/schedule_cancel/present_files/claim_files/plan_update/compact_context/patch/lsp/eval；合计 32）＋ tool_manage 出入口（setAgentToolEnabled/applyAgentToolsGating），持久化只有 disabledAgentTools，遗留三开关双向同步
 │   ├── approval-rules.ts       # ★ 审批规则库与匹配引擎（ApprovalRulesStore：<dataDir>/approval-rules.json，多工具/多字段/多模式规则；ask/deny/allow 三种动作；纯函数评估）
 │   ├── compact-context-tool.ts # ★ 主动压缩上下文工具（compact_context）：AI 主动根据当前任务精简上下文，自主控制保留范围并在回合后生效
 │   ├── edit-soft-tool.ts       # 独立宽松编辑工具 edit_soft（行核心匹配，忽略缩进差异；开关走统一工具 tab）

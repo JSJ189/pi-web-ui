@@ -98,6 +98,7 @@ try {
 			PI_WEB_PORT: String(PORT),
 			PI_WEB_DATA_DIR: dataDir,
 			PI_WEB_CWD: dirA,
+			PI_WEB_PLUGIN_CATALOG_URL: process.env.PI_WEB_PLUGIN_CATALOG_URL ?? "",
 		},
 		stdio: ["ignore", "pipe", "pipe"],
 	});

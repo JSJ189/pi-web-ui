@@ -52,4 +52,6 @@ jobs:
 
       # 零 token 协议冒烟（每个测试自起隔离 server：独立端口 + 临时 data-dir）
       - name: Protocol smoke tests
+        env:
+          PI_WEB_PLUGIN_CATALOG_URL: ""
         run: node tests/run-smoke.mjs

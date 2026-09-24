@@ -9,12 +9,16 @@ import {
 	CLAIM_FILES_TOOL_NAME,
 	COMPACT_CONTEXT_TOOL_NAME,
 	CONVERSATION_READ_TOOL_NAME,
+	LSP_TOOL_NAME,
+	PATCH_TOOL_NAME,
+	PLAN_UPDATE_TOOL_NAME,
 	PRESENT_FILES_TOOL_NAME,
 	SKILL_TOOL_NAME,
 	applyAgentToolsGating,
 	defaultDisabledAgentTools,
 	deriveLegacy,
 	effectiveDisabledAgentTools,
+	EVAL_TOOL_NAME,
 	foldLegacyIntoDisabled,
 	isAgentToolEnabled,
 	isKnownAgentTool,
@@ -44,16 +48,19 @@ function fakeSet(initial: string[] = []) {
 }
 
 describe("catalog", () => {
-	it("共 29 个可开关工具（终端 7＋子代理 8＋其他 14）", () => {
-		expect(AGENT_TOOL_CATALOG).toHaveLength(29);
+	it("共 32 个可开关工具（终端 7＋子代理 8＋其他 17）", () => {
+		expect(AGENT_TOOL_CATALOG).toHaveLength(32);
 		expect(TERMINAL_TOOL_NAMES).toHaveLength(7);
 		expect(SUBAGENT_TOOL_NAMES).toHaveLength(8);
 	});
 
-	it("默认：终端组/edit_soft 关，其余开（与改动前行为一致）", () => {
+	it("默认：终端组/edit_soft/eval 关，其余开（与改动前行为一致）", () => {
 		const off = new Set(defaultDisabledAgentTools());
 		for (const n of TERMINAL_TOOL_NAMES) expect(off.has(n)).toBe(true);
 		expect(off.has("edit_soft")).toBe(true);
+		expect(off.has(EVAL_TOOL_NAME)).toBe(true);
+		expect(off.has(LSP_TOOL_NAME)).toBe(true);
+		expect(off.has(PATCH_TOOL_NAME)).toBe(false);
 		for (const n of SUBAGENT_TOOL_NAMES) expect(off.has(n)).toBe(false);
 		expect(off.has("delegate_task")).toBe(false);
 		expect(off.has(ASK_USER_QUESTION_TOOL_NAME)).toBe(false);
@@ -66,6 +73,8 @@ describe("catalog", () => {
 		expect(off.has(PRESENT_FILES_TOOL_NAME)).toBe(false);
 		// 文件认领（事前打招呼，纯 advisory）默认开：不打开 AI 不知道能认领。
 		expect(off.has(CLAIM_FILES_TOOL_NAME)).toBe(false);
+		// 结构化任务计划更新默认开。
+		expect(off.has(PLAN_UPDATE_TOOL_NAME)).toBe(false);
 		// 主动上下文压缩默认开：让 AI 可根据当前任务主动压缩精简上下文。
 		expect(off.has(COMPACT_CONTEXT_TOOL_NAME)).toBe(false);
 	});

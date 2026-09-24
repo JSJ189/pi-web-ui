@@ -344,6 +344,7 @@ export class SettingsService {
 				terminalToolsEnabled: legacyTools.terminalToolsEnabled,
 				terminalBash: this.settings.terminalBash,
 				terminalBashIdleMs: this.settings.terminalBashIdleMs,
+				terminalBashMaxForegroundMs: this.settings.terminalBashMaxForegroundMs,
 				toolWatchdogTimeoutMs: this.settings.toolWatchdogTimeoutMs,
 				readDirEnabled: this.settings.readDirEnabled !== false,
 				toolApprovalEnabled: this.settings.toolApprovalEnabled !== false,
@@ -460,6 +461,7 @@ export class SettingsService {
 		terminalToolsEnabled?: boolean;
 		terminalBash?: boolean;
 		terminalBashIdleMs?: number;
+		terminalBashMaxForegroundMs?: number;
 		toolWatchdogTimeoutMs?: number;
 		/** read 工具读目录开关（默认开；见 server/read-tool.ts）。运行时无需重载，
 		 *  覆盖定义每次调用实时读取。 */
@@ -571,6 +573,9 @@ export class SettingsService {
 		}
 		if (partial.terminalBashIdleMs !== undefined) {
 			this.settings.terminalBashIdleMs = Math.max(0, Math.floor(partial.terminalBashIdleMs) || 0);
+		}
+		if (partial.terminalBashMaxForegroundMs !== undefined) {
+			this.settings.terminalBashMaxForegroundMs = Math.max(0, Math.floor(partial.terminalBashMaxForegroundMs) || 0);
 		}
 		if (partial.toolWatchdogTimeoutMs !== undefined) {
 			this.settings.toolWatchdogTimeoutMs = normalizeToolWatchdogTimeoutMs(partial.toolWatchdogTimeoutMs);
@@ -701,6 +706,7 @@ export class SettingsService {
 			terminalToolsEnabled: this.settings.terminalToolsEnabled,
 			terminalBash: this.settings.terminalBash,
 			terminalBashIdleMs: this.settings.terminalBashIdleMs,
+			terminalBashMaxForegroundMs: this.settings.terminalBashMaxForegroundMs,
 			editSoftEnabled: this.settings.editSoftEnabled,
 			retryMaxAttempts: this.settings.retryMaxAttempts,
 			softCapTokens: this.settings.softCapTokens,
@@ -753,6 +759,7 @@ export class SettingsService {
 			// 终端接管偏好随预设走；旧预设缺字段时保留当前值。
 			terminalBash: p.terminalBash ?? this.settings.terminalBash,
 			terminalBashIdleMs: p.terminalBashIdleMs ?? this.settings.terminalBashIdleMs,
+			terminalBashMaxForegroundMs: p.terminalBashMaxForegroundMs ?? this.settings.terminalBashMaxForegroundMs,
 			// read 读目录是纯运行行为开关，不进预设——保留当前值。
 			readDirEnabled: this.settings.readDirEnabled !== false,
 			// 工具审批总开关同样是纯运行开关，不进预设——保留当前值。

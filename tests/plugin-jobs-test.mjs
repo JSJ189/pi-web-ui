@@ -24,6 +24,7 @@ const dataDir = mkdtempSync(join(tmpdir(), "piweb-pjob-data-"));
 process.env.PI_WEB_PORT = String(PORT);
 process.env.PI_WEB_CWD = workdir;
 process.env.PI_WEB_DATA_DIR = dataDir;
+process.env.PI_WEB_PLUGIN_CATALOG_URL = process.env.PI_WEB_PLUGIN_CATALOG_URL ?? "";
 
 const NODE = process.execPath;
 const REPO = fileURLToPath(new URL("../", import.meta.url));

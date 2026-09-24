@@ -65,6 +65,7 @@ function makeCtx(opts: {
 			terminalToolsEnabled: true,
 			terminalBash: false,
 			terminalBashIdleMs: 15000,
+			terminalBashMaxForegroundMs: 60_000,
 			toolWatchdogTimeoutMs: 1_200_000,
 			readDirEnabled: true,
 			toolApprovalEnabled: true,
