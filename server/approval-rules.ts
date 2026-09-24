@@ -31,7 +31,7 @@
  */
 
 import { existsSync, mkdirSync, readFileSync, renameSync, statSync, writeFileSync } from "node:fs";
-import { dirname, isAbsolute, resolve, sep } from "node:path";
+import { dirname, resolve, sep } from "node:path";
 import type { UiApprovalCategory } from "./protocol.js";
 
 /** 工具调用审批命中动作：需审批 / 直接拒绝 / 直接放行（白名单）。 */
@@ -54,9 +54,7 @@ export function isPathInsideRoot(target: string, root: string): boolean {
 		const lowerTarget = normTarget.toLowerCase();
 		const lowerRoot = normRoot.toLowerCase();
 		return (
-			lowerTarget === lowerRoot ||
-			lowerTarget.startsWith(lowerRoot + sep) ||
-			lowerTarget.startsWith(lowerRoot + "/")
+			lowerTarget === lowerRoot || lowerTarget.startsWith(lowerRoot + sep) || lowerTarget.startsWith(lowerRoot + "/")
 		);
 	}
 	return normTarget === normRoot || normTarget.startsWith(normRoot + sep);

@@ -94,7 +94,13 @@ describe("Approval System Security Bypass & Path Traversal Fixes (#333)", () => 
 				getRules: () => [denyRule],
 			});
 
-			const result = (await guardedTool.execute("call-1", { command: "echo danger" }, undefined, undefined, {})) as any;
+			const result = (await guardedTool.execute(
+				"call-1",
+				{ command: "echo danger" },
+				undefined,
+				undefined,
+				{} as any,
+			)) as any;
 
 			// 验证：直接被 deny 阻断，没有被插件的 ask 覆盖，也没有调 askApproval
 			expect(askCalled).toBe(false);
@@ -135,7 +141,7 @@ describe("Approval System Security Bypass & Path Traversal Fixes (#333)", () => 
 				getRules: () => DEFAULT_APPROVAL_RULES,
 			});
 
-			await guardedTool.execute("call-2", { command: "rm -rf /" }, undefined, undefined, {});
+			await guardedTool.execute("call-2", { command: "rm -rf /" }, undefined, undefined, {} as any);
 
 			// 验证：弹窗审批原因为系统的高危删除原因，而非被插件的 harmless note 覆盖
 			expect(askedReason).toContain("递归/强制删除");
