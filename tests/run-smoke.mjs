@@ -12,6 +12,8 @@
  *
  * 用法：node tests/run-smoke.mjs [name1 name2 …]   # 无参 = 全量
  *       node tests/run-smoke.mjs --core          # PR 快检子集（CORE，见下）
+ *       node tests/run-smoke.mjs --jobs=4         # 并行（默认 4 worker；--jobs=1 串行）
+ *       node tests/run-smoke.mjs --retry-once     # 首轮失败重跑一次（标 FLAKY）
  *
  * 分层策略（CI 提速：PR 只跑 CORE，push main + nightly 跑全量）：
  * - CORE = 协议/快照/安全/审批/插件接线/并发代表，~20 个，2~4 分钟；
@@ -184,28 +186,69 @@ for (const c of CORE) {
 }
 const results = [];
 
-async function runOne(name) {
-	const file = join(here, `${name}.mjs`);
-	process.stdout.write(`\n▶ ${name}\n`);
+async function runOne(name, port) {
+	// 并行时每个 worker 拿固定分配端口（argv[2] 契约：读 argv[2] 的测试用它，
+	// 不读的走各自默认固定端口——全仓已扫过，ALL 内默认端口两两不撞）。
+	const args = port === undefined ? [] : [String(port)];
 	return await new Promise((resolveRun) => {
-		const child = spawn(process.execPath, [file], {
+		const child = spawn(process.execPath, [join(here, `${name}.mjs`), ...args], {
 			// 测试脚本内相对路径（如 dist/server/index.js）以仓库根为基准
 			cwd: dirname(here),
-			stdio: "inherit",
 			env: process.env,
 		});
-		child.on("exit", (code) => resolveRun(code === 0));
-		child.on("error", () => resolveRun(false));
+		// 并行时输出各自缓存，结束后再整段打印，否则多进程日志搅成一团。
+		let out = "";
+		child.stdout.on("data", (d) => (out += d));
+		child.stderr.on("data", (d) => (out += d));
+		child.on("exit", (code) => resolveRun({ ok: code === 0, out }));
+		child.on("error", (err) => resolveRun({ ok: false, out: out + String(err) }));
 	});
 }
 
+// 并行 worker 槽位端口：9100 + 槽位*20（+1..+9 留给 mock/第二 server；
+// 随机端口测试用 20000+/30000+ 段，固定端口测试用 87xx~89xx，均不撞）。
+const slotPort = (slot) => 9100 + slot * 20;
+
+const jobsArg = rawArgs.find((a) => a.startsWith("--jobs="));
+const jobs = Math.max(1, Number((jobsArg ?? "").split("=")[1] ?? 4) || 4);
+if (jobs > 1) console.log(`ℹ 并行模式：${jobs} worker（串行用 --jobs=1；各 worker 端口见 ▶ 行）`);
+
+// win32 跳过名单先落定（不占 worker）。
+const queue = [];
 for (const name of targets) {
 	if (process.platform === "win32" && WIN32_KNOWN_ENV_FAIL.has(name) && named.length === 0) {
 		results.push({ name, ok: true, skipped: true });
 		console.log(`\n⏭ ${name} — Windows 环境已知噪音（node-pty/libuv），跳过；ubuntu CI 正常跑`);
 		continue;
 	}
-	results.push({ name, ok: await runOne(name) });
+	queue.push(name);
+}
+
+if (jobs <= 1) {
+	for (const name of queue) {
+		process.stdout.write(`\n▶ ${name}\n`);
+		const r = await runOne(name);
+		process.stdout.write(r.out);
+		results.push({ name, ok: r.ok });
+	}
+} else {
+	// 定长 worker 池：每个 worker 跑完一个立刻领下一个（慢测试不堵快测试）。
+	let next = 0;
+	const worker = async (slot) => {
+		for (;;) {
+			const i = next++;
+			if (i >= queue.length) return;
+			const name = queue[i];
+			const port = slotPort(slot);
+			process.stdout.write(`\n▶ ${name}（worker${slot} :${port}）\n`);
+			const r = await runOne(name, port);
+			process.stdout.write(`\n----- ${name} 输出开始 -----\n${r.out}----- ${name} 输出结束 -----\n`);
+			results.push({ name, ok: r.ok });
+		}
+	};
+	await Promise.all(Array.from({ length: Math.min(jobs, queue.length) }, (_, s) => worker(s)));
+	// 并行完成顺序不定，汇总前按 targets 原序排回来。
+	results.sort((a, b) => targets.indexOf(a.name) - targets.indexOf(b.name));
 }
 
 // 失败重跑一次：只救「偶发红」（慢机时序），真回归重跑也挂，不掩盖。
@@ -214,9 +257,11 @@ if (wantRetry) {
 	if (failed.length > 0) {
 		console.log(`\n↻ 首轮 ${failed.length} 个失败，重跑一次确认是否为偶发：${failed.map((r) => r.name).join(", ")}`);
 		for (const r of failed) {
-			const ok2 = await runOne(r.name);
-			r.flaky = ok2; // 重跑过 = 偶发（标 FLAKY）；还挂 = 真失败
-			r.ok = ok2;
+			// 重跑串行逐个来（并行已证过有问题，再并行没有意义），端口用槽位 0。
+			const r2 = await runOne(r.name, slotPort(0));
+			process.stdout.write(r2.out);
+			r.flaky = r2.ok; // 重跑过 = 偶发（标 FLAKY）；还挂 = 真失败
+			r.ok = r2.ok;
 		}
 	}
 }

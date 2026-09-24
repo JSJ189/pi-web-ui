@@ -22,7 +22,7 @@ import { setTimeout as sleep } from "node:timers/promises";
 /* eslint-env node */
 
 const REPO_ROOT = fileURLToPath(new globalThis.URL("../", import.meta.url));
-const PORT = 8955;
+const PORT = Number(process.argv[2] || 8955);
 const CID = "approval-policy-client";
 
 let failures = 0;

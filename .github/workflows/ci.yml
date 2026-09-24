@@ -59,10 +59,10 @@ jobs:
         if: github.event_name == 'pull_request'
         env:
           PI_WEB_PLUGIN_CATALOG_URL: ""
-        run: node tests/run-smoke.mjs --core --retry-once
+        run: node tests/run-smoke.mjs --core --retry-once --jobs=4
 
       - name: Protocol smoke tests (full)
         if: github.event_name != 'pull_request'
         env:
           PI_WEB_PLUGIN_CATALOG_URL: ""
-        run: node tests/run-smoke.mjs --retry-once
+        run: node tests/run-smoke.mjs --retry-once --jobs=4

@@ -17,7 +17,7 @@ import { join } from "node:path";
 import { setTimeout as sleep } from "node:timers/promises";
 
 const REPO_ROOT = fileURLToPath(new globalThis.URL("../", import.meta.url));
-const PORT = 8967;
+const PORT = Number(process.argv[2] || 8967);
 const URL = `ws://localhost:${PORT}/ws`;
 
 let failures = 0;
