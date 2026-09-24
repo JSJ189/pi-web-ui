@@ -543,12 +543,13 @@ function winWscript() {
  * Resolve the real node binary. fnm/volta/nvm shims (e.g. fnm_multishells)
  * point into temp dirs that vanish when the installing shell exits — the
  * baked-in launcher scripts must use the stable real path instead.
+ * Also applies resolveNode() so Bun-hosted pi never bakes in pi.exe.
  */
 function realNode() {
 	try {
-		return realpathSync(process.execPath);
+		return realpathSync(resolveNode());
 	} catch {
-		return process.execPath;
+		return resolveNode();
 	}
 }
 
