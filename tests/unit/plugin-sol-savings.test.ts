@@ -43,7 +43,7 @@ describe("SoL-Pi Savings 插件与底栏统计", () => {
 		const stats = analyzeSolSavings(mockMessages);
 		expect(stats.packedCount).toBe(1);
 		expect(stats.totalOriginalBytes).toBe(51200);
-		expect(stats.toolBreakdown.bash).toBe(1);
+		expect((stats.toolBreakdown as Record<string, number>).bash).toBe(1);
 		// 每次请求节省 (12000 - 80) = 11920，后续有 2 轮 assistant，共节省 11920 * 2 = 23840
 		expect(stats.totalSavedTokens).toBe(23840);
 	});
