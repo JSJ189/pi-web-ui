@@ -2005,6 +2005,9 @@ export function makePersistentTerminalTools(
 	cwd: string,
 	/** per-call 返回文本的服务端语言（默认英文）；工具 definition 走 bilingual 内联双语。 */
 	lang?: () => ServerLang,
+	options?: {
+		checkSafety?: (cmd: string) => { blocked?: boolean; reason?: string };
+	},
 ): ToolDefinition[] {
 	const getLang: () => ServerLang = lang ?? (() => "en");
 	const result = (
@@ -2104,6 +2107,20 @@ export function makePersistentTerminalTools(
 			parameters: Type.Object({ terminalId: Type.String(), data: Type.String() }),
 			execute: async (_id, p) => {
 				const lang = getLang();
+				if (options?.checkSafety && (p.data.includes("\n") || p.data.includes("\r"))) {
+					const safety = options.checkSafety(p.data.trim());
+					if (safety.blocked) {
+						throw new Error(
+							pick(
+								lang,
+								`【终端输入命令被安全规则阻断】${safety.reason ? ` 原因：${safety.reason}` : ""}`,
+								`[Terminal command blocked by safety rule]${safety.reason ? ` Reason: ${safety.reason}` : ""}`,
+								"terminals.command.blocked",
+								{ reason: safety.reason ?? "" },
+							),
+						);
+					}
+				}
 				failIf(terminals.inputChecked(p.terminalId, p.data));
 				// AI 发了输入 = 在等结果，重开一个静默纪元。
 				terminals.noteAgentActivity(p.terminalId);

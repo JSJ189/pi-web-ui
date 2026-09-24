@@ -3706,7 +3706,37 @@ export class ClientSession {
 							"workspace-write-never",
 						() => this.getLang(),
 					),
-					...makePersistentTerminalTools(terminals, effectiveCwd, () => this.getLang()),
+					...makePersistentTerminalTools(terminals, effectiveCwd, () => this.getLang(), {
+						checkSafety: (cmd) => {
+							const perm =
+								(ownerId ? this.convs.get(ownerId)?.permissionPreset : undefined) ??
+								this.settingsSvc.current.defaultPermissionPreset ??
+								"workspace-write-never";
+							if (perm === "read-only") {
+								const danger = checkDangerousToolCall(
+									"bash",
+									{ command: cmd },
+									effectiveCwd,
+									this.roots,
+									this.approvalRules.list(),
+								);
+								if (danger.denied || danger.dangerous) {
+									return { blocked: true, reason: danger.reason || "只读模式禁止执行高危/破坏性命令" };
+								}
+							}
+							const danger = checkDangerousToolCall(
+								"bash",
+								{ command: cmd },
+								effectiveCwd,
+								this.roots,
+								this.approvalRules.list(),
+							);
+							if (danger.denied) {
+								return { blocked: true, reason: danger.reason || "命中系统阻断规则" };
+							}
+							return {};
+						},
+					}),
 					// 覆盖 SDK 内置 read（customTools 按 name 覆盖）：路径是目录时列出目录
 					// 条目（复用 SDK ls 的排序/`/` 后缀/截断口径），其余情况原样转发内置实现。
 					// 开关是行为开关（read 本体不可关），每次调用实时读设置——不进
