@@ -894,10 +894,13 @@ export class GoalService {
 		// Goal review hook: after the run finished normally, if a goal is
 		// active (and it belonged to the ACTIVE conversation) and we're not
 		// already mid-review, spawn the isolated reviewer.
+		// Only run when verdict is pending — failed/blocked terminal goals must not
+		// re-trigger reviews on subsequent unrelated conversational turns.
 		if (
 			g.goal &&
 			g.conversationId === conv.id &&
 			!g.reviewing &&
+			g.verdict === "pending" &&
 			!conv.wizardRunning &&
 			!this.host.isDisposed() &&
 			this.goalEnabled()
@@ -1297,8 +1300,7 @@ export class GoalService {
 			} catch {
 				// Best-effort.
 			}
-			g.conversationId = null;
-			g.goal = null; // loop blocked — clear the active goal
+			g.reviewing = false;
 			this.emitGoalStatus();
 			this.host.flushSnapshot();
 			return;
@@ -1310,6 +1312,8 @@ export class GoalService {
 		if (!isLastRound) {
 			g.status = `本轮不通过，正在把意见交给 agent 修改（${roundsZh}）…`;
 			g.statusEn = `Round failed, sending feedback to the agent (${roundsEn})…`;
+			// 注入修改意见后保持 verdict 为 pending，让 agent 下一次答完后继续下一轮审查
+			g.verdict = "pending";
 			this.host.emit({
 				type: "notice",
 				level: "warning",
@@ -1374,8 +1378,7 @@ export class GoalService {
 			text: "目标未通过审查（已达最大轮数）",
 			textEn: "Goal failed review (max rounds reached)",
 		});
-		g.conversationId = null;
-		g.goal = null; // loop exhausted — clear the active goal
+		g.reviewing = false; // 审查结束：保留 g.goal 与 g.conversationId，让用户看到未通过的目标，不丢弃目标文本
 		this.emitGoalStatus();
 		this.host.flushSnapshot();
 	}

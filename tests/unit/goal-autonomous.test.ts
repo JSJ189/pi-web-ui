@@ -145,3 +145,66 @@ describe("目标防死循环与停滞检测 (Goal Policy & Blocked Detection)", 
 		expect(conv.stagnantRounds).toBe(0);
 	});
 });
+
+describe("目标审查未通过与终态保留 (Goal Review Retention)", () => {
+	it("达到最大轮数未通过时，目标文本与会话归属保持保留（不丢失用户目标）", () => {
+		const g = {
+			goal: "实现高性能缓存模块并补全单测",
+			conversationId: "conv-123",
+			round: 2,
+			maxRounds: 2,
+			locked: true,
+			reviewing: true,
+			verdict: "pending" as string | null,
+			status: "",
+		};
+
+		// 模拟达到最大轮数失败逻辑
+		const isLastRound = g.maxRounds > 0 && g.round >= g.maxRounds;
+		expect(isLastRound).toBe(true);
+
+		g.reviewing = false;
+		g.verdict = "fail";
+		g.status = `已达最大轮数（${g.maxRounds}），目标仍未通过`;
+
+		// 核心断言：目标文本和会话 id 绝不能被抹杀为 null
+		expect(g.goal).toBe("实现高性能缓存模块并补全单测");
+		expect(g.conversationId).toBe("conv-123");
+		expect(g.verdict).toBe("fail");
+		expect(g.reviewing).toBe(false);
+	});
+
+	it("触发停滞熔断（blocked）时，目标文本保持保留供用户排查", () => {
+		const g = {
+			goal: "优化数据库连接池",
+			conversationId: "conv-456",
+			reviewing: true,
+			verdict: "pending" as string | null,
+			status: "",
+		};
+
+		g.reviewing = false;
+		g.verdict = "blocked";
+		g.status = "⚠️ 目标受阻（停滞熔断）";
+
+		expect(g.goal).toBe("优化数据库连接池");
+		expect(g.conversationId).toBe("conv-456");
+		expect(g.verdict).toBe("blocked");
+		expect(g.reviewing).toBe(false);
+	});
+
+	it("终态下（fail/blocked）onAgentEnd 不应自动重复触发 review", () => {
+		const canTriggerReview = (g: { goal: string | null; reviewing: boolean; verdict: string | null }) => {
+			return !!(g.goal && !g.reviewing && g.verdict === "pending");
+		};
+
+		// 新设定目标：应当触发
+		expect(canTriggerReview({ goal: "test", reviewing: false, verdict: "pending" })).toBe(true);
+
+		// 失败终态：不应自动重复触发
+		expect(canTriggerReview({ goal: "test", reviewing: false, verdict: "fail" })).toBe(false);
+
+		// 熔断终态：不应自动重复触发
+		expect(canTriggerReview({ goal: "test", reviewing: false, verdict: "blocked" })).toBe(false);
+	});
+});

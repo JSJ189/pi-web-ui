@@ -352,8 +352,9 @@ export const GoalBar = memo(function GoalBar({
 									title={t("goalBarClear")}
 									disabled={goal.reviewing}
 									onClick={() => {
+										if (goal.goal) setText(goal.goal);
 										appSend({ type: "clear_goal" });
-										setCollapsed(true);
+										setCollapsed(false);
 									}}
 								>
 									<FiX />
