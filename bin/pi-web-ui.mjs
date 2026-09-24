@@ -519,8 +519,16 @@ function winIcoPath() {
 	return join(winServiceDir(), APP_ICO_NAME);
 }
 
-/** Full path to Windows PowerShell 5.1. */
+/** Full path to Windows PowerShell. Prefers pwsh.exe (PowerShell 7) when it is
+ * resolvable on PATH: some machines ship Windows PowerShell 5.1 as a broken
+ * stub whose launch fails silently, so probe for a working shell first and
+ * fall back to the built-in path. */
 function winPowershell() {
+	const which = spawnSync("where.exe", ["pwsh.exe"], { encoding: "utf8" });
+	if (which.status === 0) {
+		const first = (which.stdout ?? "").trim().split(/\r?\n/)[0];
+		if (first) return first;
+	}
 	return join(process.env.SystemRoot ?? "C:\\Windows", "System32", "WindowsPowerShell", "v1.0", "powershell.exe");
 }
 
@@ -682,7 +690,11 @@ function buildWinHiddenVbs(ps1Path) {
 function installWinShortcut(opts) {
 	const { name, port, cwd, dataDir, engine, host, agentDir } = serviceOptions(opts);
 	const env = serviceEnv(port, cwd, dataDir, engine, host, agentDir);
-	const url = `http://localhost:${port}`;
+	// The server binds 127.0.0.1 by default; PowerShell 7's Invoke-WebRequest
+	// resolves `localhost` to ::1 first and hangs until TimeoutSec when nothing
+	// listens on IPv6, making the health probe misfire ("server not running").
+	// Pin the probe (and the opened URL) to the IPv4 loopback the server uses.
+	const url = `http://127.0.0.1:${port}`;
 	const ps1Path = winShortcutPs1Path(name);
 	const ps1 = buildWinShortcutPs1(env, cwd, name, url, winLogPath(name), winPidFilePath(name));
 	if (opts.print) {
