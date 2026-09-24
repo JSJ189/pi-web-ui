@@ -1099,7 +1099,11 @@ export function clearLastCwdIfMatches(path: string): void {
 	try {
 		const current = localStorage.getItem(LAST_CWD_KEY);
 		if (!current) return;
-		const norm = (s: string) => s.trim().replace(/[\\/]+$/, "").toLowerCase();
+		const norm = (s: string) =>
+			s
+				.trim()
+				.replace(/[\\/]+$/, "")
+				.toLowerCase();
 		if (current === path || norm(current) === norm(path)) {
 			localStorage.removeItem(LAST_CWD_KEY);
 		}

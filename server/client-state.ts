@@ -570,7 +570,10 @@ export class ClientStateStore {
 		state.lastCwd = cwd;
 		const now = Date.now();
 		const targetKey = normalizePathKey(cwd);
-		state.projects = [{ path: cwd, lastUsed: now }, ...state.projects.filter((p) => normalizePathKey(p.path) !== targetKey)].slice(0, 30);
+		state.projects = [
+			{ path: cwd, lastUsed: now },
+			...state.projects.filter((p) => normalizePathKey(p.path) !== targetKey),
+		].slice(0, 30);
 		// Opening the workspace again clears its removal tombstone across all clients and global settings.
 		for (const cState of Object.values(all)) {
 			if (cState.removedProjects?.length) {

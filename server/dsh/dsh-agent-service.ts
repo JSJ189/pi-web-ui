@@ -30,7 +30,12 @@ import { basename, dirname, join, resolve, sep } from "node:path";
 import { randomUUID } from "node:crypto";
 import { homedir } from "node:os";
 import { BgServerTracker } from "../bg-servers.js";
-import { ClientStateStore, DEFAULT_RETRY_MAX_ATTEMPTS, normalizePathKey, normalizeToolWatchdogTimeoutMs } from "../client-state.js";
+import {
+	ClientStateStore,
+	DEFAULT_RETRY_MAX_ATTEMPTS,
+	normalizePathKey,
+	normalizeToolWatchdogTimeoutMs,
+} from "../client-state.js";
 import { normalizeUiLayout } from "../client-state.js";
 import { FilesService, workspacePath, desktopDirWire } from "../files-service.js";
 import { QuiesceRejectedError } from "../agent-service.js";
