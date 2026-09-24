@@ -39,6 +39,7 @@ function harness(env: Env = {}, uid = 1000, failure?: { status: number | null; e
 	const writtenFiles = new Map<string, { content: string; options?: unknown }>();
 	const removedFiles: string[] = [];
 	const names = [
+		"isZhLang",
 		"systemdQuote",
 		"systemdPath",
 		"buildUnit",
@@ -49,42 +50,46 @@ function harness(env: Env = {}, uid = 1000, failure?: { status: number | null; e
 		"runSystemdRoot",
 		"installSystemd",
 	];
-	const cli = runInNewContext(`${names.map(functionSource).join("\n")}\n({ installSystemd, buildUnit })`, {
-		process: {
-			env: { PATH: "/home/installer/bin:/usr/bin", LANG: "C.UTF-8", ...env },
-			pid: 1000,
-			getuid: () => uid,
-			exit: (code: number) => {
-				throw new Error(`exit:${code}`);
+	const cli = runInNewContext(
+		`${names.map(functionSource).join("\n")}\nconst ZH = isZhLang();
+({ installSystemd, buildUnit })`,
+		{
+			process: {
+				env: { PATH: "/home/installer/bin:/usr/bin", LANG: "C.UTF-8", ...env },
+				pid: 1000,
+				getuid: () => uid,
+				exit: (code: number) => {
+					throw new Error(`exit:${code}`);
+				},
+			},
+			userInfo: () => ({ username: uid === 0 ? "root" : "installer" }),
+			homedir: () => "/home/installer",
+			tmpdir: () => "/tmp",
+			join: posix.join,
+			writeFileSync: (path: string, content: string, options?: unknown) => {
+				writtenFiles.set(path, { content, options });
+			},
+			rmSync: (path: string) => {
+				removedFiles.push(path);
+			},
+			resolve: posix.resolve,
+			existsSync: () => true,
+			isWin: false,
+			NODE: "/home/installer/node/bin/node",
+			SERVER_ENTRY: "/home/installer/pkg/dist/server/index.js",
+			// 「优先用全局 pi SDK」钩子（issue #260）——buildUnit 会把它当 --import 写进 ExecStart。
+			SDK_HOOK: "/home/installer/pkg/dist/server/resolve-global-sdk.js",
+			HAS_SDK_HOOK: true,
+			console: { log: (value: string) => output.push(value) },
+			fail: (message: string) => {
+				throw new Error(message);
+			},
+			spawnSync: (command: string, args: string[], options: Invocation["options"]) => {
+				calls.push({ command, args: Array.from(args), options });
+				return failure ?? { status: 0 };
 			},
 		},
-		userInfo: () => ({ username: uid === 0 ? "root" : "installer" }),
-		homedir: () => "/home/installer",
-		tmpdir: () => "/tmp",
-		join: posix.join,
-		writeFileSync: (path: string, content: string, options?: unknown) => {
-			writtenFiles.set(path, { content, options });
-		},
-		rmSync: (path: string) => {
-			removedFiles.push(path);
-		},
-		resolve: posix.resolve,
-		existsSync: () => true,
-		isWin: false,
-		NODE: "/home/installer/node/bin/node",
-		SERVER_ENTRY: "/home/installer/pkg/dist/server/index.js",
-		// 「优先用全局 pi SDK」钩子（issue #260）——buildUnit 会把它当 --import 写进 ExecStart。
-		SDK_HOOK: "/home/installer/pkg/dist/server/resolve-global-sdk.js",
-		HAS_SDK_HOOK: true,
-		console: { log: (value: string) => output.push(value) },
-		fail: (message: string) => {
-			throw new Error(message);
-		},
-		spawnSync: (command: string, args: string[], options: Invocation["options"]) => {
-			calls.push({ command, args: Array.from(args), options });
-			return failure ?? { status: 0 };
-		},
-	}) as Cli;
+	) as Cli;
 	return { cli, calls, output, writtenFiles, removedFiles };
 }
 

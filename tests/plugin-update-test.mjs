@@ -18,8 +18,12 @@ const GIT = "git";
 function git(...args) {
 	return execFileSync(GIT, args, { encoding: "utf8" });
 }
+// The CLI picks zh/en from LC_ALL/LC_MESSAGES/LANG; the assertions below match the Chinese output.
+const { LC_ALL: _lcAll, LC_MESSAGES: _lcMessages, ...baseEnv } = process.env;
+const ZH_ENV = { ...baseEnv, LANG: "zh_CN.UTF-8" };
+
 function cli(args) {
-	const r = spawnSync(process.execPath, [BIN, ...args], { encoding: "utf8" });
+	const r = spawnSync(process.execPath, [BIN, ...args], { encoding: "utf8", env: ZH_ENV });
 	if (r.status !== 0) throw new Error(`CLI 失败(${args[0]}): ${r.stderr || r.stdout}`);
 	return r.stdout;
 }
