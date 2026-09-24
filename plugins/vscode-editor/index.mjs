@@ -21,6 +21,7 @@ import { promises as fs } from "node:fs";
 import os from "node:os";
 import path from "node:path";
 import { spawn } from "node:child_process";
+import { Duplex } from "node:stream";
 import { createRequire } from "node:module";
 
 /** 列目录时跳过的噪音条目名 */
@@ -44,14 +45,46 @@ function toWire(p) {
 	return p.split(path.sep).join("/");
 }
 
-/** 解析 ~/.ssh/config，产出可导入候选 [{ alias, host, port, username, privateKeyPath }]。
- * 语义对齐 OpenSSH：同块内先出现的值优先；`Host *` 纯通配块只充当默认值继承
- * （全局 IdentityFile 会成为各主机的默认私钥路径），不产出候选；别名含通配符的不产出。
- * IdentityFile 只取第一个，`~` 保持原样（连接时 resolveKeyFile 展开）。
- * 纯函数（单独导出供单测），issue #149。 */
-export function parseSshConfig(text) {
-	const blocks = []; // { patterns, hostname, user, port, identityfile }
+/** OpenSSH config 通配匹配（ssh_config(5)：`*`/`?` 通配，`!` 前缀取反）。
+ * 纯函数，单独导出供单测。 */
+export function sshPatternMatches(pattern, host) {
+	let negated = false;
+	let pat = pattern;
+	if (pat.startsWith("!")) { negated = true; pat = pat.slice(1); }
+	let re = "";
+	for (const c of pat) {
+		if (c === "*") re += ".*";
+		else if (c === "?") re += ".";
+		else if ("\\^$.|+()[]{}".includes(c)) re += "\\" + c;
+		else re += c;
+	}
+	const hit = new RegExp(`^${re}$`).test(host);
+	return negated ? !hit : hit;
+}
+
+/** 某 Host 块是否匹配给定的别名：patterns 全部按 OpenSSH 语义依次判定
+ * （含 `!` 否定：后面的肯定也救不回，见 ssh_config(5)）。 */
+export function sshBlockMatches(patterns, alias) {
+	let matched = false;
+	for (const p of patterns) {
+		if (p.startsWith("!")) {
+			if (sshPatternMatches(p.slice(1), alias)) return false;
+		} else if (sshPatternMatches(p, alias)) matched = true;
+	}
+	return matched;
+}
+
+/** 解析单份 ssh config 文本为块数组（含 Include 原始值，调用方展开）。
+ * 语义对齐 OpenSSH：关键字大小写不敏感、`=` 与空白等价、同块同键首值优先。
+ * 纯函数，单独导出供单测。 */
+export function parseSshConfigBlocks(text) {
+	const blocks = [];
 	let cur = null;
+	const stripQuote = (v) => {
+		v = v.trim();
+		if (v.length >= 2 && ((v.startsWith('"') && v.endsWith('"')) || (v.startsWith("'") && v.endsWith("'")))) return v.slice(1, -1);
+		return v;
+	};
 	for (const raw of String(text ?? "").split(/\r?\n/)) {
 		const line = raw.trim();
 		if (!line || line.startsWith("#")) continue;
@@ -59,41 +92,72 @@ export function parseSshConfig(text) {
 		if (sp < 0) continue;
 		const key = line.slice(0, sp).trim().toLowerCase();
 		let val = line.slice(sp).trim().replace(/^=\s*/, "").trim();
-		const quoted = val.length >= 2
-			&& ((val.startsWith('"') && val.endsWith('"')) || (val.startsWith("'") && val.endsWith("'")));
-		if (quoted) val = val.slice(1, -1);
 		if (key === "host") {
-			cur = { patterns: val.split(/\s+/).filter(Boolean), hostname: null, user: null, port: null, identityfile: null };
+			cur = { patterns: val.split(/\s+/).filter(Boolean), hostname: null, user: null, port: null, identityfiles: [], proxyjump: null, proxycommand: null, forwardagent: null, includes: [] };
 			blocks.push(cur);
+		} else if (key === "include" && val) {
+			// Include 可出现在文件顶层（VSCode Remote-SSH 常见写法），归入当前块以便顺序展开；
+			// 顶层（cur 为空）时挂到一个零 patterns 的伪块，展开时无条件生效。
+			const parts = val.split(/\s+/).filter(Boolean).map(stripQuote);
+			if (!cur) { cur = { patterns: [], hostname: null, user: null, port: null, identityfiles: [], proxyjump: null, proxycommand: null, forwardagent: null, includes: [] }; blocks.push(cur); }
+			cur.includes.push(...parts);
 		} else if (cur) {
-			if (key === "hostname" && cur.hostname === null && val) cur.hostname = val;
-			else if (key === "user" && cur.user === null && val) cur.user = val;
-			else if (key === "port" && cur.port === null && val) cur.port = val;
-			else if (key === "identityfile" && cur.identityfile === null && val) {
-				cur.identityfile = quoted ? val : val.split(/\s+/)[0];
-			}
+			if (key === "hostname" && cur.hostname === null && val) cur.hostname = stripQuote(val).split(/\s+/)[0];
+			else if (key === "user" && cur.user === null && val) cur.user = stripQuote(val).split(/\s+/)[0];
+			else if (key === "port" && cur.port === null && val) cur.port = stripQuote(val).split(/\s+/)[0];
+			else if (key === "identityfile" && val) cur.identityfiles.push(stripQuote(val).split(/\s+/)[0]);
+			else if (key === "proxyjump" && cur.proxyjump === null && val) cur.proxyjump = stripQuote(val);
+			else if (key === "proxycommand" && cur.proxycommand === null && val) cur.proxycommand = stripQuote(val);
+			else if (key === "forwardagent" && cur.forwardagent === null && val) cur.forwardagent = stripQuote(val).split(/\s+/)[0];
 		}
 	}
-	// 全局默认：patterns 仅为 ["*"] 的块（多个则依次继承、已有值不覆盖）
-	const defaults = { user: null, port: null, identityfile: null };
-	for (const b of blocks) {
-		if (b.patterns.length === 1 && b.patterns[0] === "*") {
-			if (defaults.user === null) defaults.user = b.user;
-			if (defaults.port === null) defaults.port = b.port;
-			if (defaults.identityfile === null) defaults.identityfile = b.identityfile;
-		}
+	return blocks;
+}
+
+/** 按 OpenSSH `ssh -G alias` 语义求别名的生效配置：文件顺序遍历所有匹配块，
+ * 首个出现的值获胜（first-obtained-wins）；IdentityFile 可多值累积。
+ * 纯函数，单独导出供单测。 */
+export function resolveSshAlias(alias, blocks) {
+	const eff = { hostname: null, user: null, port: null, identityfiles: [], proxyjump: null, proxycommand: null, forwardagent: null };
+	for (const b of (blocks ?? [])) {
+		if (!b.patterns?.length) continue; // 纯 Include 伪块不参与匹配
+		if (!sshBlockMatches(b.patterns, alias)) continue;
+		if (eff.hostname === null && b.hostname) eff.hostname = b.hostname;
+		if (eff.user === null && b.user) eff.user = b.user;
+		if (eff.port === null && b.port) eff.port = b.port;
+		if (eff.proxyjump === null && b.proxyjump) eff.proxyjump = b.proxyjump;
+		if (eff.proxycommand === null && b.proxycommand) eff.proxycommand = b.proxycommand;
+		if (eff.forwardagent === null && b.forwardagent) eff.forwardagent = b.forwardagent;
+		for (const f of b.identityfiles ?? []) if (!eff.identityfiles.includes(f)) eff.identityfiles.push(f);
 	}
+	return eff;
+}
+
+/** 解析 ~/.ssh/config 文本，产出可导入/直连候选 [{ alias, host, port, username, privateKeyPath, ... }]。
+ * 语义对齐 OpenSSH `ssh -G`：通配块（含 `Host *`）只充当默认值继承不产出候选；
+ * 别名含通配符的不产出；`~` 保持原样（连接时 resolveKeyFile 展开）。
+ * privateKeyPath = 首个 IdentityFile（兼容旧字段），identityFiles = 全量，
+ * proxyJump/proxyCommand/forwardAgent 透出供直连使用。纯函数，issue #149。 */
+export function parseSshConfig(text) {
+	const blocks = parseSshConfigBlocks(text);
 	const out = [];
+	const seen = new Set();
 	for (const b of blocks) {
-		if (b.patterns.length === 1 && b.patterns[0] === "*") continue; // 纯默认值块
 		for (const alias of b.patterns) {
-			if (!alias || alias === "*" || /[*?!]/.test(alias)) continue;
+			if (!alias || alias.startsWith("!") || /[*?]/.test(alias)) continue;
+			if (seen.has(alias)) continue;
+			seen.add(alias);
+			const eff = resolveSshAlias(alias, blocks);
 			out.push({
 				alias,
-				host: b.hostname ?? alias,
-				port: Number(b.port ?? defaults.port) || 22,
-				username: b.user ?? defaults.user ?? "root",
-				privateKeyPath: b.identityfile ?? defaults.identityfile ?? "",
+				host: eff.hostname ?? alias,
+				port: Number(eff.port) || 22,
+				username: eff.user ?? "root",
+				privateKeyPath: eff.identityfiles[0] ?? "",
+				identityFiles: eff.identityfiles,
+				proxyJump: eff.proxyjump ?? "",
+				proxyCommand: eff.proxycommand ?? "",
+				forwardAgent: eff.forwardagent ?? "",
 			});
 		}
 	}
@@ -766,11 +830,100 @@ export default {
 			};
 		}
 
+		// ---- ~/.ssh/config 自动加载（与 VSCode Remote-SSH 同源） ------------------
+		// state 下发的 configHosts 每次都走缓存：`state` action 与 onAttach 先刷新，
+		// 广播用缓存（文件几 KB，直读也便宜；缓存只为保住同步的 publicSshState 签名）。
+		const SSH_CONFIG_FILE = path.join(os.homedir(), ".ssh", "config");
+		let sshConfigCache = { at: 0, blocks: [], list: [] };
+
+		/** 展开一条 Include 模式：相对 ~/.ssh/ 解析，支持 glob（`*?[]`）。 */
+		async function expandSshInclude(pattern) {
+			let p = String(pattern ?? "").trim();
+		if (!p) return [];
+		if (p === "~") p = os.homedir();
+		else if (p.startsWith("~/")) p = path.join(os.homedir(), p.slice(2));
+		else if (!path.isAbsolute(p)) p = path.join(path.dirname(SSH_CONFIG_FILE), p);
+		if (!/[*?\[]/.test(p)) {
+			try { await fs.access(p); return [p]; } catch { return []; }
+		}
+		const dir = path.dirname(p);
+		const base = path.basename(p);
+		let entries;
+		try { entries = await fs.readdir(dir); } catch { return []; }
+		const re = new RegExp("^" + [...base].map((ch) =>
+			ch === "*" ? ".*" : ch === "?" ? "." : "\\^$.|+()[]{}".includes(ch) ? "\\" + ch : ch).join("") + "$");
+		return entries.filter((n) => re.test(n)).sort().map((n) => path.join(dir, n));
+	}
+
+		/** 递归加载主 config + 所有 Include（深度/数量封顶防循环），返回合并后的块数组。 */
+		async function loadSshConfigBlocks() {
+		const out = [];
+		const seenFiles = new Set();
+		let fileCount = 0;
+		await async function loadFile(file, depth) {
+			if (depth > 8 || fileCount > 64) return;
+			let real;
+			try { real = path.resolve(file); } catch { return; }
+			if (seenFiles.has(real)) return;
+			seenFiles.add(real);
+			fileCount++;
+			let text;
+			try { text = await fs.readFile(real, "utf8"); } catch { return; }
+			const blocks = parseSshConfigBlocks(text);
+			for (const b of blocks) {
+				out.push(b);
+				// Include 按出现顺序就地展开（OpenSSH 语义：被包含内容如同写在这个位置）
+				if (b.includes?.length) {
+					for (const pat of b.includes) {
+						for (const f of await expandSshInclude(pat)) await loadFile(f, depth + 1);
+					}
+					b.includes = [];
+				}
+			}
+		}
+		await loadFile(SSH_CONFIG_FILE, 0);
+		return out;
+	}
+
+		async function refreshSshConfigCache() {
+			try {
+				const blocks = await loadSshConfigBlocks();
+			const list = parseSshConfig(""); // 占位（真值下面按 blocks 重算，保持单源）
+			void list;
+			const out = [];
+			const seen = new Set();
+			for (const b of blocks) {
+				for (const alias of b.patterns) {
+					if (!alias || alias.startsWith("!") || /[*?]/.test(alias) || seen.has(alias)) continue;
+					seen.add(alias);
+					const eff = resolveSshAlias(alias, blocks);
+					out.push({
+						alias,
+						host: eff.hostname ?? alias,
+						port: Number(eff.port) || 22,
+						username: eff.user ?? "root",
+						privateKeyPath: eff.identityfiles[0] ?? "",
+						identityFiles: eff.identityfiles,
+						proxyJump: eff.proxyjump ?? "",
+						proxyCommand: eff.proxycommand ?? "",
+						forwardAgent: eff.forwardagent ?? "",
+					});
+				}
+			}
+			sshConfigCache = { at: Date.now(), blocks, list: out };
+		} catch {
+			sshConfigCache = { at: Date.now(), blocks: [], list: [] };
+		}
+		return sshConfigCache;
+	}
+
 		function publicSshState() {
 			return {
 				depsReady: syncDeps.ok,
 				depsInstalling: syncDeps.installing,
 				hosts: (sshCfgs?.hosts ?? []).map(publicSshHost),
+				configHosts: sshConfigCache.list,
+				configPath: "~/.ssh/config",
 				conns: [...sshConns.values()].map((c) => ({
 					connId: c.connId, hostId: c.hostId, label: c.label, status: c.status,
 				})),
@@ -793,16 +946,14 @@ export default {
 			for (const [, stream] of c.streams) { try { stream.end(); } catch {} }
 			c.streams.clear();
 			try { c.client.end(); } catch {}
+			for (const j of c.jumps ?? []) { try { j.end(); } catch {} }
+			for (const p of c.procs ?? []) { try { p.kill(); } catch {} }
 			host.sendTo(c.ownerId, { event: "conn_closed", connId: c.connId, reason: reason ?? "" });
 			broadcastSshState();
 		}
 
 		async function readSshConfigCandidates() {
-			const file = path.join(os.homedir(), ".ssh", "config");
-			let text;
-			try { text = await fs.readFile(file, "utf8"); }
-			catch { throw new Error("未找到 ~/.ssh/config"); }
-			const list = parseSshConfig(text);
+			const { list } = await refreshSshConfigCache();
 			if (!list.length) throw new Error("~/.ssh/config 里没有可导入的主机");
 			await ensureSshCfgs();
 			const exists = new Set();
@@ -814,6 +965,34 @@ export default {
 				...c,
 				imported: exists.has(`${c.host}:${c.port}:${c.username}`) || exists.has(`name:${c.alias}`),
 			}));
+		}
+
+		/** config 别名 → 可直连候选（自动加载用；找不到抛错）。 */
+		async function resolveConfigAlias(alias) {
+			const { list } = await refreshSshConfigCache();
+			const c = list.find((x) => x.alias === String(alias ?? ""));
+			if (!c) throw new Error(`~/.ssh/config 里没有主机「${alias}」（VSCode 侧改完 config 刷新即生效）`);
+			return c;
+	}
+
+		/** 打开 ~/.ssh/config 原文（前端「编辑 ssh config」弹层用）。 */
+		async function readSshConfigRaw() {
+			try { return await fs.readFile(SSH_CONFIG_FILE, "utf8"); }
+			catch { return ""; }
+		}
+
+		/** 保存 ~/.ssh/config 原文（先备份 config.bak，权限 600）。 */
+		async function writeSshConfigRaw(text) {
+			const t = String(text ?? "");
+			if (t.length > 512 * 1024) throw new Error("config 过大（512KB 上限），拒绝写入");
+			await fs.mkdir(path.dirname(SSH_CONFIG_FILE), { recursive: true, mode: 0o700 });
+			try {
+				const prev = await fs.readFile(SSH_CONFIG_FILE, "utf8");
+				await fs.writeFile(`${SSH_CONFIG_FILE}.bak`, prev, "utf8");
+			} catch {}
+			await fs.writeFile(SSH_CONFIG_FILE, t, { encoding: "utf8", mode: 0o600 });
+			await refreshSshConfigCache();
+			broadcastSshState();
 		}
 
 		/** 组装 ssh2 连接参数（密码 / 私钥路径(~ 展开) / 内联私钥 / agent 四选一；不足抛错）。
@@ -847,6 +1026,97 @@ export default {
 			return opts;
 		}
 
+		/** config 直连的认证组装（OpenSSH 默认行为）：IdentityFile 全部试读（~ 展开），
+		 * 读不到时回退默认私钥 + SSH_AUTH_SOCK（与 `ssh alias` 一致，免手动填）。 */
+		async function buildConfigAuth(candidate) {
+			const files = [...(candidate.identityFiles ?? []), ...(candidate.privateKeyPath ? [candidate.privateKeyPath] : [])];
+			const keys = [];
+			for (const f of files) {
+				if (!f || keys.includes(f)) continue;
+				try { keys.push({ path: f, pem: await fs.readFile(resolveKeyFile(String(f).trim()), "utf8") }); }
+				catch { /* 跳过不可读的 key，下一个 */ }
+			}
+			if (!keys.length) {
+				for (const d of ["id_ed25519", "id_ecdsa", "id_rsa"]) {
+					const p = path.join(os.homedir(), ".ssh", d);
+					try { keys.push({ path: p, pem: await fs.readFile(p, "utf8") }); break; }
+					catch {}
+				}
+			}
+			const agentSock = process.env.SSH_AUTH_SOCK || "";
+			return { keys, agentSock };
+		}
+
+		/** 解析 ProxyJump 值（`[user@]host[:port][,...]`，逗号分隔多跳）。 */
+		function parseProxyJump(spec, blocks) {
+			const hops = [];
+			for (const part of String(spec ?? "").split(",").map((s) => s.trim()).filter(Boolean)) {
+				if (/^none$/i.test(part)) continue;
+				const m = part.match(/^(?:([^@]+)@)?([^:]+)(?::(\d+))?$/);
+				if (!m) continue;
+				const alias = m[2];
+				const eff = resolveSshAlias(alias, blocks);
+				const hasBlock = blocks.some((b) => b.patterns?.length && sshBlockMatches(b.patterns, alias));
+				hops.push({
+					host: eff.hostname ?? alias,
+					port: Number(eff.port) || Number(m[3]) || 22,
+					username: m[1] ?? eff.user ?? "root",
+					identityFiles: eff.identityfiles,
+				});
+				void hasBlock;
+			}
+			return hops;
+		}
+
+		/** 经跳板机逐跳建连，返回 { sock, jumps }（jumps 随连接存活，断开时一起关）。 */
+		async function dialViaJumps(mod, hops, targetHost, targetPort, auth) {
+			const jumps = [];
+			try {
+				let prevStream = null;
+				for (const hop of hops) {
+					const hopAuth = await buildConfigAuth({ identityFiles: hop.identityFiles });
+						void auth;
+					const jc = new mod.Client();
+					const jopts = {
+						host: hop.host, port: hop.port, username: hop.username,
+						readyTimeout: CONN_TIMEOUT_MS, keepaliveInterval: 10000, keepaliveCountMax: 3,
+					};
+					if (prevStream) jopts.sock = prevStream;
+					if (hopAuth.keys[0]) jopts.privateKey = hopAuth.keys[0].pem;
+					if (hopAuth.agentSock) jopts.agent = hopAuth.agentSock;
+					await new Promise((resolve, reject) => {
+						jc.on("ready", resolve).on("error", reject).connect(jopts);
+					});
+					jumps.push(jc);
+					const isLast = hop === hops[hops.length - 1];
+					const dstHost = isLast ? targetHost : hops[hops.indexOf(hop) + 1].host;
+					const dstPort = isLast ? targetPort : hops[hops.indexOf(hop) + 1].port;
+					prevStream = await new Promise((resolve, reject) => {
+						jc.forwardOut("127.0.0.1", 0, dstHost, dstPort, (err, stream) => (err ? reject(err) : resolve(stream)));
+					});
+				}
+				return { sock: prevStream, jumps };
+			} catch (err) {
+				for (const j of jumps) { try { j.end(); } catch {} }
+				throw err;
+			}
+		}
+
+		/** ProxyCommand 建连：本地起命令，stdio 作传输 sock（OpenSSH 同语义，`%h/%p` 展开）。 */
+		function dialViaProxyCommand(spec, targetHost, targetPort) {
+			const cmd = String(spec).replace(/%h/g, targetHost).replace(/%p/g, String(targetPort));
+			// eslint-disable-next-line node/no-unsupported-features -- spawn shell 复用系统 ssh 做传输
+			const child = spawn(cmd, { shell: true, stdio: ["pipe", "pipe", "inherit"] });
+			const sock = new Duplex({
+				read() {},
+				write(chunk, _enc, cb) { child.stdin.write(chunk, cb); },
+			});
+			child.stdout.on("data", (d) => sock.push(d));
+			child.on("exit", () => sock.destroy());
+			sock.on("close", () => { try { child.kill(); } catch {} });
+			return { sock, procs: [child] };
+		}
+
 		async function connectSshHost(cfg, clientId, reqId) {
 			try {
 				const mod = await ensureSshMod();
@@ -855,7 +1125,7 @@ export default {
 				const c = {
 					connId, client: new mod.Client(), ownerId: clientId, hostId: cfg.id,
 					label: cfg.name || `${cfg.username}@${cfg.host}`,
-					status: "connecting", streams: new Map(), nextShell: 1, sftp: null,
+					status: "connecting", streams: new Map(), nextShell: 1, sftp: null, jumps: [], procs: [],
 				};
 				sshConns.set(connId, c);
 				broadcastSshState();
@@ -879,6 +1149,66 @@ export default {
 				c.client.connect(opts);
 			} catch (err) {
 				host.sendTo(clientId, { res: true, reqId, ok: false, action: "connect", error: err?.message ?? String(err) });
+			}
+		}
+
+		/** config 别名直连（免导入，与 VSCode Remote-SSH 同源）：认证走 OpenSSH 默认
+		 * （IdentityFile 全试 + 默认私钥 + ssh-agent），ProxyJump/ProxyCommand 透传建连。 */
+		async function connectConfigAlias(alias, clientId, reqId, action = "config_connect") {
+			try {
+				const mod = await ensureSshMod();
+				if (!mod?.Client) throw new Error("ssh2 依赖未就绪，稍候再试");
+				const candidate = await resolveConfigAlias(alias);
+				const { keys, agentSock } = await buildConfigAuth(candidate);
+				if (!keys.length && !agentSock) {
+					throw new Error(`主机「${alias}」没有可用认证：config 未配 IdentityFile，本机也没有默认私钥/~/.ssh 下的 key 与 ssh-agent（VSCode 里能连通常是因为 agent 或 key，服务端没跑 agent 时请先配 IdentityFile）`);
+				}
+				const connId = `c${nextSshConn++}`;
+				const c = {
+					connId, client: new mod.Client(), ownerId: clientId, hostId: null,
+					label: `${candidate.alias}（${candidate.username}@${candidate.host}）`,
+					status: "connecting", streams: new Map(), nextShell: 1, sftp: null, jumps: [], procs: [],
+				};
+				sshConns.set(connId, c);
+				broadcastSshState();
+				const opts = {
+					host: candidate.host, port: candidate.port, username: candidate.username,
+					readyTimeout: CONN_TIMEOUT_MS, keepaliveInterval: 10000, keepaliveCountMax: 3,
+				};
+				if (keys[0]) opts.privateKey = keys[0].pem;
+				if (agentSock) opts.agent = agentSock;
+				// 跳板 / 代理命令（OpenSSH 同语义；跳板认证同样走本机 key/agent）
+				if (candidate.proxyCommand) {
+					const via = dialViaProxyCommand(candidate.proxyCommand, candidate.host, candidate.port);
+					opts.sock = via.sock;
+					c.procs.push(...via.procs);
+				} else if (candidate.proxyJump) {
+					const hops = parseProxyJump(candidate.proxyJump, sshConfigCache.blocks);
+					if (!hops.length) throw new Error(`ProxyJump 解析失败：${candidate.proxyJump}`);
+					const via = await dialViaJumps(mod, hops, candidate.host, candidate.port);
+					opts.sock = via.sock;
+					c.jumps.push(...via.jumps);
+				}
+				c.client
+					.on("ready", () => {
+						c.status = "connected";
+						host.sendTo(clientId, { res: true, reqId, ok: true, action, connId, label: c.label });
+						broadcastSshState();
+					})
+					.on("error", (err) => {
+						const m = err?.level ? `[${err.level}] ${err.message}` : err?.message ?? String(err);
+						if (c.status === "connecting") {
+							sshConns.delete(connId);
+							for (const j of c.jumps) { try { j.end(); } catch {} }
+							for (const p of c.procs) { try { p.kill(); } catch {} }
+							broadcastSshState();
+							host.sendTo(clientId, { res: true, reqId, ok: false, action, error: m });
+						} else dropSshConn(c, m);
+					})
+					.on("close", () => dropSshConn(c, "连接已关闭"));
+				c.client.connect(opts);
+			} catch (err) {
+				host.sendTo(clientId, { res: true, reqId, ok: false, action, error: err?.message ?? String(err) });
 			}
 		}
 
@@ -1438,8 +1768,9 @@ export default {
 					// ----------------------------------------------------------------
 					// SSH 远程主机管理
 					// ----------------------------------------------------------------
-					case "state": // 插件状态：主机列表 / 连接列表 / ssh2 依赖状态（脱敏）
+					case "state": // 插件状态：主机列表 / config 自动加载 / 连接列表 / ssh2 依赖状态（脱敏）
 						await ensureSshCfgs();
+						await refreshSshConfigCache(); // 与 VSCode 同源：每次拉 state 都重读 ~/.ssh/config（含 Include）
 						host.sendTo(clientId, { res: true, reqId, ok: true, action, state: publicSshState() });
 						break;
 					case "deps_install":
@@ -1454,6 +1785,21 @@ export default {
 					case "sshconfig_list": { // 解析 ~/.ssh/config，候选主机（已导入的标 imported）
 						const list = await readSshConfigCandidates();
 						host.sendTo(clientId, { res: true, reqId, ok: true, action, hosts: list });
+						break;
+					}
+					case "config_connect": { // config 别名直连（免导入，与 VSCode Remote-SSH 同源）
+						if (!msg.alias) throw new Error("缺少 alias");
+						void connectConfigAlias(String(msg.alias), clientId, reqId); // ready/error 异步回复
+						return;
+					}
+					case "sshconfig_get": { // 读 ~/.ssh/config 原文（前端弹层编辑用）
+						host.sendTo(clientId, { res: true, reqId, ok: true, action,
+							text: await readSshConfigRaw(), path: SSH_CONFIG_FILE });
+						break;
+					}
+					case "sshconfig_save": { // 存 ~/.ssh/config 原文（自动备份 .bak + 刷新自动加载）
+						await writeSshConfigRaw(msg.text);
+						host.sendTo(clientId, { res: true, reqId, ok: true, action });
 						break;
 					}
 					case "sshconfig_import": { // 批量导入：凭据存 privateKeyPath 引用，不读私钥内容
@@ -1538,7 +1884,7 @@ export default {
 		// host.onAttach 在旧版宿主（<0.35）上不存在——可选链兼容，客户端仍有
 		// 带 reqId 的拉取兑底。
 		const offAttach = host.onAttach?.((clientId) => {
-			void ensureSshCfgs().then(() => {
+			void ensureSshCfgs().then(() => refreshSshConfigCache()).then(() => {
 				host.sendTo(clientId, { kind: "state", state: publicSshState() });
 			});
 		});
@@ -1561,6 +1907,60 @@ export default {
 
 		/** AI 用的拨号：与 UI 的 connectSshHost 同参数规则，成功 resolve 连接记录。
 		 *  ownerId 留空——无头调用没有浏览器，conn_closed 等推送经 sendTo 空转丢弃。 */
+		/** AI 用的 config 别名直连（Promise 化，与 dialSshHost 同返回）。 */
+		async function dialConfigAlias(alias) {
+			const mod = await ensureSshMod();
+			if (!mod?.Client) throw new Error("ssh2 依赖未就绪，稍候再试");
+			const candidate = await resolveConfigAlias(alias);
+			const { keys, agentSock } = await buildConfigAuth(candidate);
+			if (!keys.length && !agentSock) throw new Error(`主机「${alias}」没有可用认证（config 未配 IdentityFile，本机也无默认私钥/ssh-agent）`);
+			const connId = `c${nextSshConn++}`;
+			const c = {
+				connId, client: new mod.Client(), ownerId: "", hostId: null,
+				label: `${candidate.alias}（${candidate.username}@${candidate.host}）`,
+				status: "connecting", streams: new Map(), nextShell: 1, sftp: null, jumps: [], procs: [],
+			};
+			sshConns.set(connId, c);
+			broadcastSshState();
+			const opts = {
+				host: candidate.host, port: candidate.port, username: candidate.username,
+				readyTimeout: CONN_TIMEOUT_MS, keepaliveInterval: 10000, keepaliveCountMax: 3,
+			};
+			if (keys[0]) opts.privateKey = keys[0].pem;
+			if (agentSock) opts.agent = agentSock;
+			if (candidate.proxyCommand) {
+				const via = dialViaProxyCommand(candidate.proxyCommand, candidate.host, candidate.port);
+				opts.sock = via.sock;
+				c.procs.push(...via.procs);
+			} else if (candidate.proxyJump) {
+				const hops = parseProxyJump(candidate.proxyJump, sshConfigCache.blocks);
+				const via = await dialViaJumps(mod, hops, candidate.host, candidate.port);
+				opts.sock = via.sock;
+				c.jumps.push(...via.jumps);
+			}
+			try {
+				await new Promise((resolve, reject) => {
+					c.client.on("ready", () => { c.status = "connected"; resolve(); });
+					c.client.on("error", (err) => { if (c.status === "connecting") reject(err); });
+					c.client.on("close", () => {
+						if (c.status === "connecting") reject(new Error("连接已关闭"));
+						else dropSshConn(c, "连接已关闭");
+					});
+					c.client.connect(opts);
+				});
+			} catch (err) {
+				sshConns.delete(connId);
+				try { c.client.end(); } catch {}
+				for (const j of c.jumps) { try { j.end(); } catch {} }
+				for (const p of c.procs) { try { p.kill(); } catch {} }
+				broadcastSshState();
+				const m = err?.level ? `[${err.level}] ${err.message}` : err?.message ?? String(err);
+				throw new Error(m);
+			}
+			broadcastSshState();
+			return c;
+		}
+
 		async function dialSshHost(cfg) {
 			const mod = await ensureSshMod();
 			if (!mod?.Client) throw new Error("ssh2 依赖未就绪，稍候再试");
@@ -1717,16 +2117,23 @@ export default {
 			{
 				name: "vsc_ssh_hosts",
 				label: "列出 SSH 主机",
-				description: "列出已保存的 SSH 主机（凭据脱敏）与当前存活连接（含 connId，供远端文件/命令工具使用）。ssh2 依赖状态也一并返回。",
+				description: "列出已保存的 SSH 主机（凭据脱敏）、~/.ssh/config 自动加载的主机（与 VSCode Remote-SSH 同源，免导入直连）与当前存活连接（含 connId）。",
 				parameters: { type: "object", properties: {} },
 				execute: async () => {
 					await ensureSshCfgs();
+					await refreshSshConfigCache();
 					const st = publicSshState();
 					const lines = [];
 					if (!st.hosts.length) lines.push("尚未保存任何 SSH 主机（用 vsc_ssh_save 新建）。");
 					for (const h of st.hosts) {
 						const conn = st.conns.find((c) => c.hostId === h.id);
 						lines.push(`- ${h.name}（id=${h.id}）：${h.username}@${h.host}:${h.port}，凭据：${[h.hasPass && "密码", h.hasKey && "私钥", h.agent && `agent(${h.agent})`].filter(Boolean).join("/") || "无"}${conn ? `，【已连接 connId=${conn.connId}】` : ""}`);
+					}
+					if (st.configHosts?.length) {
+						lines.push(`~/.ssh/config 自动加载（${st.configHosts.length} 台，与 VSCode 同源，vsc_ssh_connect 传 alias 直连）：`);
+						for (const c of st.configHosts) {
+							lines.push(`- ${c.alias}：${c.username}@${c.host}:${c.port}${c.proxyJump ? `（经跳板 ${c.proxyJump}）` : ""}${c.proxyCommand ? "（ProxyCommand）" : ""}`);
+						}
 					}
 					for (const c of st.conns) {
 						if (!st.hosts.some((h) => h.id === c.hostId)) lines.push(`- 临时连接 connId=${c.connId}（${c.label}）`);
@@ -1762,16 +2169,19 @@ export default {
 			{
 				name: "vsc_ssh_connect",
 				label: "连接 SSH 主机",
-				description: "按主机 id 建立 SSH 连接，返回 connId（后续 vsc_ssh_exec / vsc_remote_* 都用它）。已连接的主机直接用 vsc_ssh_hosts 里的 connId，不必重复连接。",
+				description: "建立 SSH 连接，返回 connId（后续 vsc_ssh_exec / vsc_remote_* 都用它）。id=手动保存的主机；alias=~/.ssh/config 里的主机别名（与 VSCode Remote-SSH 同名直连，免导入）。已连接的直接用 vsc_ssh_hosts 里的 connId。",
 				parameters: {
 					type: "object",
-					properties: { id: { type: "string", description: "主机 id（vsc_ssh_hosts / vsc_ssh_save 返回）" } },
-					required: ["id"],
+					properties: { id: { type: "string", description: "主机 id（vsc_ssh_hosts / vsc_ssh_save 返回）" }, alias: { type: "string", description: "~/.ssh/config 主机别名（与 VSCode 侧同名）" } },
 				},
 				execute: async (_id, p) => {
+					if (p.alias) {
+						const c = await dialConfigAlias(String(p.alias));
+						return `已连接 ${c.label}（connId=${c.connId}）。远端文件操作与命令都用这个 connId。`;
+					}
 					await ensureSshCfgs();
 					const cfg = sshCfgs.hosts.find((x) => x.id === String(p.id ?? ""));
-					if (!cfg) throw new Error("主机不存在（用 vsc_ssh_hosts 查看）");
+					if (!cfg) throw new Error("主机不存在（用 vsc_ssh_hosts 查看；config 别名改传 alias 参数）");
 					const c = await dialSshHost(cfg);
 					return `已连接 ${c.label}（connId=${c.connId}）。远端文件操作与命令都用这个 connId。`;
 				},
@@ -1899,7 +2309,7 @@ export default {
 		const aiToolOffs = AI_TOOLS.map((t) => host.registerAgentTool(t));
 		host.log(`AI 工具已注册 ${aiToolOffs.length} 个（vsc_sftp_*/vsc_ssh_*/vsc_remote_*）`);
 
-		void ensureSshCfgs().then(() => ensureSshMod()); // 预热：迁移旧 ssh 插件配置 + 预载/自动补装 ssh2（完成后广播 state）
+		void ensureSshCfgs().then(() => refreshSshConfigCache()).then(() => ensureSshMod()); // 预热：迁移旧配置 + 重读 ~/.ssh/config + 预载 ssh2
 		return () => {
 			off();
 			for (const u of aiToolOffs) { try { u(); } catch {} }
