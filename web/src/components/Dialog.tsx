@@ -64,6 +64,29 @@ export function Dialog({ dialog }: DialogProps) {
 						</button>
 					))}
 					{options.length === 0 && <div className="dialog-hint">{t("noOptions")}</div>}
+					<div className="dialog-custom-row">
+						<input
+							className="dialog-input"
+							value={inputValue}
+							placeholder={t("modelQuestionCustom")}
+							onChange={(e) => setInputValue(e.target.value)}
+							onKeyDown={(e) => {
+								if (e.key === "Enter" && !e.nativeEvent.isComposing && inputValue.trim()) {
+									respond(inputValue.trim());
+								}
+							}}
+						/>
+						<button
+							type="button"
+							className="btn primary"
+							disabled={!inputValue.trim()}
+							onClick={() => {
+								if (inputValue.trim()) respond(inputValue.trim());
+							}}
+						>
+							{t("ok")}
+						</button>
+					</div>
 				</div>
 			)}
 

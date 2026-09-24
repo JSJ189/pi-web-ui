@@ -128,6 +128,17 @@ export function stripTransientRetryErrors(messages: UiMessage[], retryActive: bo
 }
 
 export function serializeMessage(m: AgentMessage, seq: number): UiMessage | null {
+	// SDK 的 system 消息是 prompt sections 的内部差量
+	// (content 空串 + sections 结构化内存)、compaction 的
+	// systemMessage 等——从来不面向用户。不过滤的话
+	// 会掉进 default 分支被序列化成 content: []
+	// 的空气泡、前端顶着 system 标题白显示一条
+	// (对话结束后底部冒出的空 SYSTEM 气泡就是它)。
+	// LLM 上下文不受影响——这里只决定浏览器看到什么。
+	if ((m as { role?: string }).role === "system") {
+		return null;
+	}
+
 	switch (m.role) {
 		case "user":
 			return {
@@ -251,17 +262,6 @@ export function serializeMessage(m: AgentMessage, seq: number): UiMessage | null
 				timestamp: m.timestamp,
 				tokensBefore: (m as { tokensBefore?: unknown }).tokensBefore as number | undefined,
 			};
-		}
-
-		case "system": {
-			// SDK 的 system 消息是 prompt sections 的内部差量
-			// (content 空串 + sections 结构化内存)、compaction 的
-			// systemMessage 等——从来不面向用户。不过滤的话
-			// 会掉进 default 分支被序列化成 content: []
-			// 的空气泡、前端顶着 system 标题白显示一条
-			// (对话结束后底部冒出的空 SYSTEM 气泡就是它)。
-			// LLM 上下文不受影响——这里只决定浏览器看到什么。
-			return null;
 		}
 
 		default:
