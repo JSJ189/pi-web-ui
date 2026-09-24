@@ -682,7 +682,11 @@ function buildWinHiddenVbs(ps1Path) {
 function installWinShortcut(opts) {
 	const { name, port, cwd, dataDir, engine, host, agentDir } = serviceOptions(opts);
 	const env = serviceEnv(port, cwd, dataDir, engine, host, agentDir);
-	const url = `http://localhost:${port}`;
+	// The server binds 127.0.0.1 by default; PowerShell 7's Invoke-WebRequest
+	// resolves `localhost` to ::1 first and hangs until TimeoutSec when nothing
+	// listens on IPv6, making the health probe misfire ("server not running").
+	// Pin the probe (and the opened URL) to the IPv4 loopback the server uses.
+	const url = `http://127.0.0.1:${port}`;
 	const ps1Path = winShortcutPs1Path(name);
 	const ps1 = buildWinShortcutPs1(env, cwd, name, url, winLogPath(name), winPidFilePath(name));
 	if (opts.print) {
