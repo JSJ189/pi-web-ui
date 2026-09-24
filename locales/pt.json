@@ -1,7 +1,7 @@
 {
 	"code": "pt",
 	"nativeName": "Português",
-	"version": "0.94.1",
+	"version": "0.95.0",
 	"strings": {
 		"docTitle": "pi-web-ui — agente de codificação pi",
 		"cancel": "Cancelar",
