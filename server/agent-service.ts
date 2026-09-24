@@ -103,6 +103,7 @@ import { bilingual, pick, resolveServerLang, type ServerLang } from "./i18n.js";
 import { SubagentTemplatesStore, pickTemplatePrompt, type SubagentTemplate } from "./subagent-templates.js";
 import { ApprovalRulesStore, type ApprovalRule } from "./approval-rules.js";
 import { ComposerDraftsStore } from "./composer-drafts.js";
+import { readPermissionFromSession } from "./permission-preset.js";
 import { createWorkspaceSnapshot, restoreWorkspaceSnapshot } from "./workspace-snapshot.js";
 import {
 	approvalSuppressionReason,
@@ -3883,24 +3884,6 @@ export class ClientSession {
 		return `c${++this.convSeq}`;
 	}
 
-	/** 从会话 entries 回放恢复最后设定的权限预设（若从未设定则返回 undefined）。 */
-	private readPermissionFromSession(sm: unknown): string | undefined {
-		try {
-			const mgr = sm as { getEntries?: () => unknown[] };
-			if (typeof mgr?.getEntries !== "function") return undefined;
-			const entries = mgr.getEntries();
-			for (let i = entries.length - 1; i >= 0; i--) {
-				const e = entries[i] as { type?: string; customType?: string; data?: { preset?: string } } | undefined;
-				if (e?.type === "custom" && e.customType === "permission/preset" && typeof e.data?.preset === "string") {
-					return e.data.preset;
-				}
-			}
-		} catch {
-			// ignore
-		}
-		return undefined;
-	}
-
 	/** Wrap a fresh runtime as a new conversation record. */
 	private makeConversation(runtime: AgentSessionRuntime, id: string, terminals: TerminalManager): Conversation {
 		return {
@@ -3914,7 +3897,7 @@ export class ClientSession {
 			agentPreset: this.settingsSvc.current.defaultAgentPreset ?? "standard",
 			presetLocked: false,
 			permissionPreset:
-				this.readPermissionFromSession(runtime.session.sessionManager) ??
+				readPermissionFromSession(runtime.session.sessionManager) ??
 				this.settingsSvc.current.defaultPermissionPreset ??
 				"workspace-write-never",
 			// A brand-new conversation is not yet LISTED — it enters the running
@@ -6836,6 +6819,9 @@ export class ClientSession {
 				text: `未知权限预设「${preset}」`,
 				textEn: `Unknown permission preset "${preset}"`,
 			});
+			return;
+		}
+		if (this.conv.permissionPreset === hit.value) {
 			return;
 		}
 		this.conv.permissionPreset = hit.value;

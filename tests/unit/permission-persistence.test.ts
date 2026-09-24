@@ -3,6 +3,7 @@ import { mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { SessionManager } from "@earendil-works/pi-coding-agent";
+import { readPermissionFromSession } from "../../server/permission-preset.js";
 
 describe("Conversation Permission Persistence", () => {
 	let tempDir: string;
@@ -18,23 +19,6 @@ describe("Conversation Permission Persistence", () => {
 			// ignore cleanup error
 		}
 	});
-
-	function readPermissionFromSession(sm: unknown): string | undefined {
-		try {
-			const mgr = sm as { getEntries?: () => unknown[] };
-			if (typeof mgr?.getEntries !== "function") return undefined;
-			const entries = mgr.getEntries();
-			for (let i = entries.length - 1; i >= 0; i--) {
-				const e = entries[i] as { type?: string; customType?: string; data?: { preset?: string } } | undefined;
-				if (e?.type === "custom" && e.customType === "permission/preset" && typeof e.data?.preset === "string") {
-					return e.data.preset;
-				}
-			}
-		} catch (_err) {
-			// ignore
-		}
-		return undefined;
-	}
 
 	it("returns undefined when session has no permission entry", () => {
 		const sm = SessionManager.create(tempDir);
