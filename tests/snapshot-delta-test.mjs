@@ -13,6 +13,7 @@
  * Runs against the compiled server on a dedicated port (8943).
  */
 import { portUp, freePort } from "./lib/port-utils.mjs";
+import { waitAttachSettled } from "./lib/attach-settle.mjs";
 import { fileURLToPath } from "node:url";
 import { spawn } from "node:child_process";
 import { mkdtempSync } from "node:fs";
@@ -83,14 +84,11 @@ try {
 	for (let i = 0; i < 100 && !sawReady; i++) await sleep(50);
 	check("ready received with protocolVersion=2", sawReady);
 
-	// attach 余波排空：ready 只代表传输通（issue #295），会话初始化（插件链 +
-	// 首快照 + rev2 空 delta + 各面板推送）还在后头。插件链末尾固定以
-	// scheduler_tasks 收尾（见 server/index.ts attach 流程），等它到了再静置
-	// 500ms，保证后面的 get_state / prompt 断言跑在干净的 rev 基线上，不跟
-	// attach 余波交错（CI 曾稳定复现 delta baseRev 3 vs 前一条 rev 1）。
-	for (let i = 0; i < 200 && !sawSchedulerTasks; i++) await sleep(50);
-	check("attach burst settled (scheduler_tasks arrived)", sawSchedulerTasks);
-	await sleep(500);
+	// attach 余波排空见 tests/lib/attach-settle.mjs：ready 只代表传输通，插件链 +
+	// 首快照 + rev2 空 delta + 面板推送还在后头；以 scheduler_tasks 为标记等排空，
+	// 否则 get_state / prompt 断言会跟余波交错（CI 曾稳定复现 baseRev 3 vs rev 1）。
+	const settled = await waitAttachSettled({ sawReady: () => sawReady, sawMarker: () => sawSchedulerTasks });
+	check("attach burst settled (scheduler_tasks arrived)", settled);
 	stream.length = 0;
 
 	const fullCount = () => stream.filter((m) => m.type === "snapshot").length;
