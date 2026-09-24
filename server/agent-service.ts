@@ -3052,7 +3052,10 @@ export class ClientSession {
 
 		let originalKeepRecent: number | undefined;
 		try {
-			originalKeepRecent = session.settingsManager.getCompactionSettings(model).keepRecentTokens;
+			originalKeepRecent =
+				(session.settingsManager.getCompactionSettings as unknown as (m?: unknown) => { keepRecentTokens?: number })(
+					model,
+				)?.keepRecentTokens ?? session.settingsManager.getCompactionSettings().keepRecentTokens;
 		} catch {
 			originalKeepRecent = undefined;
 		}
@@ -3880,6 +3883,24 @@ export class ClientSession {
 		return `c${++this.convSeq}`;
 	}
 
+	/** 从会话 entries 回放恢复最后设定的权限预设（若从未设定则返回 undefined）。 */
+	private readPermissionFromSession(sm: unknown): string | undefined {
+		try {
+			const mgr = sm as { getEntries?: () => unknown[] };
+			if (typeof mgr?.getEntries !== "function") return undefined;
+			const entries = mgr.getEntries();
+			for (let i = entries.length - 1; i >= 0; i--) {
+				const e = entries[i] as { type?: string; customType?: string; data?: { preset?: string } } | undefined;
+				if (e?.type === "custom" && e.customType === "permission/preset" && typeof e.data?.preset === "string") {
+					return e.data.preset;
+				}
+			}
+		} catch {
+			// ignore
+		}
+		return undefined;
+	}
+
 	/** Wrap a fresh runtime as a new conversation record. */
 	private makeConversation(runtime: AgentSessionRuntime, id: string, terminals: TerminalManager): Conversation {
 		return {
@@ -3892,7 +3913,10 @@ export class ClientSession {
 			createdAt: Date.now(),
 			agentPreset: this.settingsSvc.current.defaultAgentPreset ?? "standard",
 			presetLocked: false,
-			permissionPreset: this.settingsSvc.current.defaultPermissionPreset ?? "workspace-write-never",
+			permissionPreset:
+				this.readPermissionFromSession(runtime.session.sessionManager) ??
+				this.settingsSvc.current.defaultPermissionPreset ??
+				"workspace-write-never",
 			// A brand-new conversation is not yet LISTED — it enters the running
 			// list only when it is displaced to the background while still
 			// streaming (its runtime is what `listed` protects). A blank chat is
@@ -6815,6 +6839,15 @@ export class ClientSession {
 			return;
 		}
 		this.conv.permissionPreset = hit.value;
+		try {
+			// 持久会话：将权限变更写入会话转录日志，切会话/切项目重载时不丢失
+			const sm = this.conv.session.sessionManager as unknown as {
+				appendCustomEntry?: (customType: string, data: unknown) => void;
+			};
+			sm?.appendCustomEntry?.("permission/preset", { preset: hit.value });
+		} catch {
+			// best effort for in-memory sessions
+		}
 		this.emit({
 			type: "notice",
 			level: "info",

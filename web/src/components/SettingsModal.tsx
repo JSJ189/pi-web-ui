@@ -1841,6 +1841,27 @@ export function SettingsModal({ chat, terminal, initialSection, onSwitchToTermin
 										) : undefined
 									}
 								/>
+								{chat.dshPermission && chat.dshPermission.options.length > 0 && (
+									<div className="set-mode-row" style={{ marginTop: 8, marginBottom: 8 }}>
+										<label className="set-field-label">
+											{t("dshPermDefault")}
+											<HintTip text={t("dshPermDefaultDesc")} />
+										</label>
+										<select
+											className="set-select"
+											value={chat.dshPermission.defaultPreset}
+											onChange={(e) => appSend({ type: "dsh_permission_default", preset: e.target.value })}
+										>
+											{DSH_PERMISSION_ORDER.filter((v) => chat.dshPermission!.options.some((o) => o.value === v)).map(
+												(v) => (
+													<option key={v} value={v}>
+														{t(permLabelKey(v))}
+													</option>
+												),
+											)}
+										</select>
+									</div>
+								)}
 								{/* 已记住的放行（本对话）：只存内存，撤销就在设置里（审批弹窗本身不再出现） */}
 								{approvalPolicy?.allowAll || (approvalPolicy?.categories.length ?? 0) > 0 ? (
 									<div className="set-field" style={{ marginTop: 8 }}>
