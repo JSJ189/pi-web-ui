@@ -993,7 +993,7 @@ function wrapEditSoftToolWithPermission(
 /**
  * 结构化任务执行计划更新工具（plan_update）— Plan Mode / Step State Machine。
  */
-function makePlanUpdateTool(
+export function makePlanUpdateTool(
 	planManager: PlanManager,
 	getActiveConvId: () => string,
 	emit: (msg: ServerMessage) => void,
@@ -1003,7 +1003,21 @@ function makePlanUpdateTool(
 		name: PLAN_UPDATE_TOOL_NAME,
 		label: "plan_update",
 		description:
-			"Update the structured task execution plan / step state machine (Plan Mode). Use it for non-trivial tasks to break down work into steps, track live progress, and update status (pending -> in_progress -> done/failed).\n更新结构化任务执行计划（步骤状态机）。用于复杂工程任务拆解与实时进度推进。",
+			"Update the structured task execution plan / step state machine (Plan Mode). Use it for non-trivial tasks to break down work into decision-ready steps, track live progress, and update status (pending -> in_progress -> done/failed).\n更新结构化任务执行计划（步骤状态机）。用于复杂工程任务拆解与实时进度推进。建议在计划与步骤描述中界定排查发现（Discovery）、受影响文件清单（File Touch List）与风险回滚预案（Risks & Rollback）。",
+		promptSnippet: bilingual(
+			"update structured task execution plan with decision-ready steps, touch list, and live status",
+			"更新结构化任务执行计划：决策就绪型步骤拆解、文件受影响清单与实时状态推进",
+		),
+		promptGuidelines: [
+			bilingual(
+				"When executing non-trivial tasks, use plan_update early to outline decision-ready steps before coding: specify discovery conclusions, explicitly list files to be touched (File Touch List), and note potential rollback strategies.",
+				"执行复杂工程任务时，在动代码前尽早调用 plan_update 进行决策就绪型规划：明确排查发现、显式锁定受影响文件清单（File Touch List）并注明潜在回滚策略。",
+			),
+			bilingual(
+				"Keep step status updated as work progresses (pending -> in_progress -> done/failed) so the user and supervisor have real-time visibility.",
+				"随工作推进实时更新步骤状态（pending -> in_progress -> done/failed），确保用户与审查器拥有清晰的实时可见度。",
+			),
+		],
 		parameters: Type.Object({
 			steps: Type.Array(
 				Type.Object({
@@ -1016,7 +1030,9 @@ function makePlanUpdateTool(
 						),
 					),
 					description: Type.Optional(
-						Type.String({ description: "Optional detailed description or acceptance criteria" }),
+						Type.String({
+							description: "Optional detailed description, acceptance criteria, file touch list, or rollback note.",
+						}),
 					),
 				}),
 				{ description: "List of plan steps" },
@@ -1134,8 +1150,13 @@ export function makeAskUserQuestionTool(
 	ownerId?: string,
 ): ToolDefinition {
 	const QuestionOptionSchema = Type.Object({
-		label: Type.String({ description: "Display label for the option" }),
-		description: Type.Optional(Type.String({ description: "Optional description shown below label" })),
+		label: Type.String({ description: "Display label for the option (1-5 words)" }),
+		description: Type.Optional(
+			Type.String({
+				description:
+					"One short sentence explaining the impact or tradeoff if selected. 选中该方案的潜在影响、利弊或代偿说明（一句短句）。",
+			}),
+		),
 		preview: Type.Optional(
 			Type.String({
 				description:
@@ -1144,11 +1165,18 @@ export function makeAskUserQuestionTool(
 		),
 	});
 	const QuestionSchema = Type.Object({
-		id: Type.String({ description: "Unique identifier for this question" }),
+		id: Type.String({ description: "Unique identifier for this question (snake_case)" }),
 		question: Type.String({ description: "The full question text to display (markdown/HTML ok)" }),
 		detail: Type.Optional(Type.String({ description: "Optional detail/context shown under the question" })),
 		header: Type.Optional(Type.String({ description: "Optional short header for this question" })),
-		options: Type.Optional(Type.Array(QuestionOptionSchema, { description: "Available options to choose from" })),
+		options: Type.Optional(
+			Type.Array(QuestionOptionSchema, {
+				description:
+					"2-4 mutually exclusive choices. Put the recommended option first when there is a clear default. 提供 2~4 个互斥选项，推荐方案置顶。",
+				minItems: 2,
+				maxItems: 4,
+			}),
+		),
 		multiSelect: Type.Optional(Type.Boolean({ description: "Allow selecting multiple options (default: false)" })),
 		dependsOn: Type.Optional(
 			Type.Object({
@@ -1172,15 +1200,15 @@ export function makeAskUserQuestionTool(
 		name: "ask_user_question",
 		label: "Ask the user",
 		description:
-			"Ask the user focused questions to pin down ambiguous requirements. Use for clarifying the task, confirming decisions, or getting preferences. Each question renders a browser dialog with markdown/HTML rich text; options may carry a `preview`. Submit or cancel to resume.",
+			"Ask the user focused questions to clarify ambiguous requirements. Strictly ask 1 to 3 questions per call (prefer 1, max 3). Provide 2 to 4 mutually exclusive options with the recommended option first, and explain impact/tradeoff in description. Each question renders a browser dialog with markdown/HTML rich text; options may carry a `preview`. Submit or cancel to resume.\n向用户提问以澄清含糊的需求。单次严格限制 1~3 个核心问题（优先 1 个，最多 3 个）；提供 2~4 个互斥选项且推荐选项置顶，选项 description 中说明影响与权衡；支持 markdown/HTML 与 preview 预览。",
 		promptSnippet: bilingual(
-			"ask the user focused questions to clarify ambiguous requirements (browser dialog with options/preview)",
-			"向用户提问以澄清含糊的需求（浏览器对话框，支持选项/预览）",
+			"ask the user 1-3 focused questions with recommended options and tradeoffs to clarify requirements",
+			"向用户提出 1~3 个带推荐选项与影响权衡的收敛型问题以澄清需求",
 		),
 		promptGuidelines: [
 			bilingual(
-				"When requirements are ambiguous, use ask_user_question to ask the user instead of guessing; prefer multiple-choice options, each option may carry a preview",
-				"需求含糊时用 ask_user_question 向用户提问而不是猜测；优先给多选选项，选项可带 preview 预览",
+				"When requirements are ambiguous, use ask_user_question to clarify instead of guessing: ask 1 to 3 focused questions (prefer 1, max 3), provide 2-4 mutually exclusive options with the recommended option first, and explain impact/tradeoff in description.",
+				"需求含糊时用 ask_user_question 向用户提问而不是猜测：单次提问严格限制 1~3 个核心问题（优先 1 个，最多 3 个），提供 2~4 个互斥选项且推荐选项置顶，在 description 中一句话说明选择该项的影响或权衡代偿。",
 			),
 			bilingual(
 				"A cancelled question comes back as a tool error — respect it and continue without re-asking immediately",
@@ -1188,12 +1216,21 @@ export function makeAskUserQuestionTool(
 			),
 		],
 		parameters: Type.Object({
-			questions: Type.Array(QuestionSchema, { description: "Questions to ask the user" }),
+			questions: Type.Array(QuestionSchema, {
+				description: "Questions to ask the user (strictly 1 to 3 questions). 提问 1~3 道题（最多 3 题）。",
+				minItems: 1,
+				maxItems: 3,
+			}),
 		}),
 		execute: async (_id: string, params: unknown, signal: AbortSignal | undefined): Promise<unknown> => {
 			const qs = (params as { questions: UiQuestion[] }).questions;
 			if (!Array.isArray(qs) || qs.length === 0) {
 				throw new Error("ask_user_question requires at least one question");
+			}
+			if (qs.length > 3) {
+				throw new Error(
+					"ask_user_question allows at most 3 questions per call to prevent question fatigue (单次提问最多不得超过 3 个问题)",
+				);
 			}
 			const answers = await clientSession.askUser(
 				qs,
