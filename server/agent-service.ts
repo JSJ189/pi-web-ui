@@ -8511,7 +8511,14 @@ export class ClientSession {
 	}
 
 	/** 过户用的对话摘要（AgentService 拼移动集合 + 容量检查用）。 */
-	takeoverBriefs(): { id: string; title: string; cwd: string; parentId?: string; isSubagent: boolean; isEphemeral?: boolean }[] {
+	takeoverBriefs(): {
+		id: string;
+		title: string;
+		cwd: string;
+		parentId?: string;
+		isSubagent: boolean;
+		isEphemeral?: boolean;
+	}[] {
 		return [...this.convs.values()].map((c) => ({
 			id: c.id,
 			title: c.title,
