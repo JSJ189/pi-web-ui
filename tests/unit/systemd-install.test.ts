@@ -32,6 +32,7 @@ interface Invocation {
 interface Cli {
 	installSystemd(opts: Options): void;
 	buildUnit(cwd: string, env: Record<string, string>): string;
+	serviceName(opts: { name?: string }): string;
 }
 function harness(
 	env: Env = {},
@@ -51,6 +52,7 @@ function harness(
 		"buildUnit",
 		"systemdUnitPath",
 		"effectivePort",
+		"serviceName",
 		"serviceOptions",
 		"serviceEnv",
 		"runSystemdRoot",
@@ -58,7 +60,7 @@ function harness(
 	];
 	const cli = runInNewContext(
 		`${names.map(functionSource).join("\n")}\nconst ZH = isZhLang();
-({ installSystemd, buildUnit })`,
+({ installSystemd, buildUnit, serviceName })`,
 		{
 			process: {
 				env: { PATH: "/home/installer/bin:/usr/bin", LANG: "C.UTF-8", ...env },
@@ -276,5 +278,29 @@ describe("Linux systemd installation", () => {
 		const h = harness({}, 1000, { status: null, error: new Error("ENOENT") });
 		expect(() => h.cli.installSystemd({})).toThrow("ENOENT");
 		expect(h.calls).toHaveLength(1);
+	});
+});
+
+describe("service name validation (--name)", () => {
+	it("defaults to pi-web-ui and accepts alphanumeric/dash/underscore names up to 64 chars", () => {
+		const h = harness();
+		expect(h.cli.serviceName({})).toBe("pi-web-ui");
+		expect(h.cli.serviceName({ name: "custom" })).toBe("custom");
+		expect(h.cli.serviceName({ name: "A-1_z" })).toBe("A-1_z");
+		expect(h.cli.serviceName({ name: "a".repeat(64) })).toBe("a".repeat(64));
+	});
+	// name 被拼进 systemd unit 文件名 / Windows 脚本路径 / HKCU Run 键值名：
+	// 路径分隔符、引号、空白、越界长度都必须在入口被拒。
+	it.each(["", "-lead", "_lead", "has space", "has/slash", "..\\evil", 'q"uote', "a".repeat(65), "pi\nweb", "名前"])(
+		"rejects service name %j that could inject into unit paths or registry value names",
+		(bad) => {
+			const h = harness();
+			expect(() => h.cli.serviceName({ name: bad })).toThrow(/无效服务名|Invalid service name/);
+		},
+	);
+	it("refuses to install with an invalid name before running any privileged command", () => {
+		const h = harness();
+		expect(() => h.cli.installSystemd({ name: "../evil" })).toThrow(/无效服务名|Invalid service name/);
+		expect(h.calls).toEqual([]);
 	});
 });
