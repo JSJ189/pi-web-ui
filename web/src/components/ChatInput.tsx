@@ -15,7 +15,15 @@ import { isRasterImage } from "../image-paste";
 import { recordModelUsage } from "../model-usage";
 import { loadPromptHistory, pushPromptHistory } from "../prompt-history";
 import { filterSlashCommands } from "../slash-filter";
-import { mapFileHits, mapPageHits, matchAtToken, normalizeAtHits, type AtHit } from "../at-mention";
+import {
+	mapFileHits,
+	mapPageHits,
+	mapSkillHits,
+	matchAtToken,
+	mergeAtHits,
+	normalizeAtHits,
+	type AtHit,
+} from "../at-mention";
 import { getLastBrowserControlPages, pokeBrowserControl } from "../browser-control";
 import { getPluginComposerProvider, listPluginComposerProviders } from "../plugin-host";
 import { detectTouchFirstDevice } from "../touch-device";
@@ -584,14 +592,23 @@ export const ChatInput = memo(function ChatInput({
 		// 内置页面提供方（page-picker 已授权页）：读缓存同步出结果，后台节流刷新
 		// （扩展在线才会问，桌面壳/未装扩展时缓存恒空，零打扰）。
 		pokeBrowserControl();
+		const immediatePages = mapPageHits(t("browserControl"), getLastBrowserControlPages(), query);
 		jobs.push({
 			id: "host:pages",
 			label: t("browserControl"),
-			run: () => Promise.resolve(mapPageHits(t("browserControl"), getLastBrowserControlPages(), query)),
+			run: () => Promise.resolve(immediatePages),
 		});
 		if (jobs.length === 0) {
 			setMenu(null);
 			return;
+		}
+		const skillItems = mapSkillHits(t("slashSkill"), slashCommands, query, 15, slashDesc);
+		const eagerItems = mergeAtHits({ pages: immediatePages, skills: skillItems }, query, 30);
+		let eagerRendered = false;
+		if (eagerItems.length > 0) {
+			eagerRendered = true;
+			setMenu({ kind: "at", start, items: eagerItems });
+			setMenuIndex(0);
 		}
 		void Promise.allSettled(
 			jobs.map((j) =>
@@ -602,18 +619,25 @@ export const ChatInput = memo(function ChatInput({
 			),
 		).then((results) => {
 			if (atReqRef.current !== req || menuTextRef.current !== snapshot) return;
-			// 页面置顶：`@page` 一打全是页面在前，不用记标题，文件与插件结果跟在后面。
 			const pageItems: AtHit[] = [];
-			const restItems: AtHit[] = [];
+			const fileItems: AtHit[] = [];
+			const pluginItems: AtHit[] = [];
 			results.forEach((r, i) => {
-				if (r.status !== "fulfilled" || pageItems.length + restItems.length >= 30) return;
+				if (r.status !== "fulfilled") return;
 				if (jobs[i].id === "host:pages" && Array.isArray(r.value)) pageItems.push(...(r.value as AtHit[]));
-				else if (jobs[i].id === "host:files") restItems.push(...mapFileHits(jobs[i].label, r.value));
-				else restItems.push(...normalizeAtHits(jobs[i].id, jobs[i].label, r.value));
+				else if (jobs[i].id === "host:files") fileItems.push(...mapFileHits(jobs[i].label, r.value));
+				else pluginItems.push(...normalizeAtHits(jobs[i].id, jobs[i].label, r.value));
 			});
-			const items = [...pageItems, ...restItems].slice(0, 30);
+			const items = mergeAtHits(
+				{ pages: pageItems, skills: skillItems, files: fileItems, plugins: pluginItems },
+				query,
+				30,
+			);
 			setMenu(items.length > 0 ? { kind: "at", start, items } : null);
-			setMenuIndex(0);
+			// 仅在初次渲染浮层时重置高亮；若已展示过 eager 结果，保留用户已有键盘/鼠标选项目
+			if (!eagerRendered && items.length > 0) {
+				setMenuIndex(0);
+			}
 		});
 	};
 
@@ -754,7 +778,7 @@ export const ChatInput = memo(function ChatInput({
 				title={h.hint ?? h.title}
 			>
 				<span className="slash-name">@{h.title}</span>
-				<span className="slash-source plugin">{h.providerLabel}</span>
+				<span className={`slash-source ${h.providerId === "host:skills" ? "skill" : "plugin"}`}>{h.providerLabel}</span>
 				{h.hint && <span className="slash-desc">{h.hint}</span>}
 			</button>
 		));
