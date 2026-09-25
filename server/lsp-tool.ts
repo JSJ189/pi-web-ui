@@ -693,14 +693,12 @@ export function makeLspTool(options: LspToolOptions) {
 	return defineTool({
 		name: LSP_TOOL_NAME,
 		label: "LSP code intelligence",
-		description: `Query language intelligence from Language Server Protocol (LSP) across the workspace.
-Provides IDE-grade semantic analysis to prevent guessing and hallucinating symbol references.
-Supported actions:
-- \`definition\`: Jump to definition of the symbol at \`line\` & \`character\` in \`path\` (returns file, line, and code snippet).
-- \`references\`: Find all workspace references/usages of the symbol at \`line\` & \`character\` in \`path\`.
-- \`hover\`: Get type signature and documentation (Docstring/Markdown) for symbol at \`line\` & \`character\`.
-- \`diagnostics\`: Get compiler/type errors and warnings for \`path\` (or pass no line to check whole file).
-Note: Line numbers are 1-indexed.`,
+		description: `Query IDE-grade semantic analysis (LSP) across the workspace — prevents guessing symbol references. Actions:
+- \`definition\`: definition of the symbol at \`line\`/\`character\` in \`path\` (file, line, snippet).
+- \`references\`: all workspace usages of that symbol.
+- \`hover\`: type signature and docs for that symbol.
+- \`diagnostics\`: compiler/type errors and warnings for \`path\` (whole file).
+Lines are 1-indexed.`,
 		parameters: Type.Object({
 			action: Type.Union(
 				[Type.Literal("definition"), Type.Literal("references"), Type.Literal("hover"), Type.Literal("diagnostics")],
@@ -729,7 +727,7 @@ Note: Line numbers are 1-indexed.`,
 			allowInstall: Type.Optional(
 				Type.Boolean({
 					description:
-						"Allow installing the missing language server into ~/.pi-web/lsp-servers (user-space, no sudo). Defaults to false; when false and no server is found, the tool returns an installHint instead.",
+						"Install the missing language server into ~/.pi-web/lsp-servers (user-space, no sudo). Default false: the tool returns an installHint instead.",
 				}),
 			),
 		}),

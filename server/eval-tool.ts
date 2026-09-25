@@ -23,7 +23,7 @@ import { join } from "node:path";
 import readline from "node:readline";
 import { defineTool, type ToolDefinition } from "@earendil-works/pi-coding-agent";
 import { Type } from "typebox";
-import { bilingual, pick, type ServerLang } from "./i18n.js";
+import { pick, type ServerLang } from "./i18n.js";
 import { EVAL_TOOL_NAME } from "./tool-manager.js";
 
 export { EVAL_TOOL_NAME };
@@ -467,57 +467,35 @@ export function makeEvalTool(opts: { cwd: string; ownerId?: string; lang?: () =>
 	return defineTool({
 		name: EVAL_TOOL_NAME,
 		label: "Execute code in persistent sandbox",
-		description: bilingual(
+		description:
 			"Execute Python or JavaScript/TypeScript code in an isolated evaluation sandbox. " +
-				"Variables and imported modules persist across calls within the conversation. " +
-				"Ideal for quick calculations, data transformations, algorithm verification, and inspecting outputs without creating temporary script files.",
-			"在隔离的代码求值沙箱中执行 Python 或 JavaScript/TypeScript 代码。" +
-				"变量与导入的模块在会话内的多次调用间持续保留。" +
-				"适用于无需创建临时文件的即时计算、数据转换、算法验证与推演。",
-		),
-		promptSnippet: bilingual(
-			"evaluate Python or JS/TS code with persistent state (default-off sandbox)",
-			"在保持变量状态的沙箱中执行 Python 或 JS/TS 代码（默认关闭）",
-		),
+			"Variables and imported modules persist across calls within the conversation. " +
+			"Ideal for quick calculations, data transformations, algorithm verification, and inspecting outputs without creating temporary script files.",
+		promptSnippet: "evaluate Python or JS/TS code with persistent state (default-off sandbox)",
 		parameters: Type.Object({
 			code: Type.String({
-				description: bilingual(
-					"The code snippet to evaluate. Top-level variables and functions are preserved across calls.",
-					"要执行的代码片段。顶层变量和函数会在后续调用中持续保留。",
-				),
+				description: "The code snippet to evaluate. Top-level variables and functions are preserved across calls.",
 			}),
 			language: Type.Optional(
 				Type.Union([Type.Literal("py"), Type.Literal("js"), Type.Literal("ts")], {
-					description: bilingual(
-						'Target language: "py" for Python (default), "js" or "ts" for Node.js sandbox.',
-						'目标语言："py" 为 Python（默认），"js" 或 "ts" 为 Node.js 沙箱。',
-					),
+					description: 'Target language: "py" for Python (default), "js" or "ts" for Node.js sandbox.',
 				}),
 			),
 			title: Type.Optional(
 				Type.String({
-					description: bilingual(
-						'Optional short label for this step (e.g. "Calculate metrics", "Parse payload").',
-						'可选的简短标题（例如 "计算指标"、"解析数据"）。',
-					),
+					description: 'Optional short label for this step (e.g. "Calculate metrics", "Parse payload").',
 				}),
 			),
 			timeout: Type.Optional(
 				Type.Integer({
 					minimum: 1,
 					maximum: MAX_TIMEOUT_SECONDS,
-					description: bilingual(
-						`Execution timeout in seconds (default: ${DEFAULT_TIMEOUT_SECONDS}, maximum: ${MAX_TIMEOUT_SECONDS}).`,
-						`执行超时秒数（默认 ${DEFAULT_TIMEOUT_SECONDS}，最大 ${MAX_TIMEOUT_SECONDS}）。`,
-					),
+					description: `Execution timeout in seconds (default: ${DEFAULT_TIMEOUT_SECONDS}, maximum: ${MAX_TIMEOUT_SECONDS}).`,
 				}),
 			),
 			reset: Type.Optional(
 				Type.Boolean({
-					description: bilingual(
-						"Whether to reset the sandbox environment before executing (clears all previous variables).",
-						"是否在执行前重置沙箱环境（清空之前的所有变量）。",
-					),
+					description: "Whether to reset the sandbox environment before executing (clears all previous variables).",
 				}),
 			),
 		}),

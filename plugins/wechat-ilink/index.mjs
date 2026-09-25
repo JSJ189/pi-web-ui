@@ -654,12 +654,12 @@ export default {
 				st.toolOff = host.registerAgentTool({
 					name: "wechat_send",
 					label: "发微信消息",
-					description: "经微信通道发一条文本消息（只能发给已配对的用户）。",
+					description: "Send a text message over the WeChat channel (only to users who have been paired).",
 					parameters: {
 						type: "object",
 						properties: {
-							to: { type: "string", description: "微信用户 ID（视图收件箱里可见）" },
-							text: { type: "string", description: "文本内容" },
+							to: { type: "string", description: "WeChat user ID (visible in the view's inbox)" },
+							text: { type: "string", description: "Message text" },
 						},
 						required: ["to", "text"],
 					},

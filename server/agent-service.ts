@@ -102,7 +102,7 @@ import {
 	type PromptMode,
 	ClientStateStore,
 } from "./client-state.js";
-import { bilingual, pick, resolveServerLang, type ServerLang } from "./i18n.js";
+import { pick, resolveServerLang, type ServerLang } from "./i18n.js";
 import { SubagentTemplatesStore, pickTemplatePrompt, type SubagentTemplate } from "./subagent-templates.js";
 import { ApprovalRulesStore, type ApprovalRule } from "./approval-rules.js";
 import { ComposerDraftsStore } from "./composer-drafts.js";
@@ -336,7 +336,7 @@ Many legacy Chinese text files (.html/.txt/.md/.log, exported documents) are GBK
 export function makeKillableBashTool(
 	cwd: string,
 	kills: Set<AbortController>,
-	/** per-call 返回文本的服务端语言（默认英文）；工具 definition 走 bilingual 内联双语。 */
+	/** per-call 返回文本的服务端语言（默认英文）；工具 definition 为纯英文。 */
 	lang: () => ServerLang = () => "en",
 ): ToolDefinition {
 	const base = createLocalBashOperations();
@@ -362,7 +362,7 @@ export function makeKillableBashTool(
 		name: tool.name,
 		label: tool.label,
 		description:
-			"Run a shell command natively (process spawn, no terminal) and return its full output plus exit code — the SDK's plain bash tool. persist is ignored here (no terminal); use head/tail to trim the returned output.",
+			"Run a shell command natively (process spawn, no terminal); returns full output plus exit code. persist is ignored here; use head/tail to trim returned output.",
 		parameters: Type.Object({
 			command: Type.String({ description: "The shell command to run" }),
 			timeout: Type.Optional(Type.Number({ description: "Optional timeout in seconds" })),
@@ -420,9 +420,9 @@ export function makeAdaptiveBashTool(
 		...killable,
 		description:
 			"Run a shell command and return its full output plus exit code. Behavior depends on the「default bash override」setting (terminalBash):\n" +
-			"Setting OFF → runs natively (process spawn, no terminal) — the SDK's plain bash tool. persist has no effect.\n" +
-			"Setting ON → runs in a visible terminal. persist=true keeps that terminal alive ('ai-bash': shell state such as cd/venv/ssh retained across calls, silent commands move to the background and notify when done); persist=false (default in terminal mode) creates a one-shot terminal that exits when the command finishes while its output stays for review.\n" +
-			"Run the bare command — do NOT pipe through head/tail/more/less (use the head/tail parameters to trim the returned output instead; piping also hides live progress in the visible terminal). For interactive commands (REPLs, prompts, installers asking y/n) set persist=true (terminal mode) and drive them with terminal_input / terminal_key.",
+			"OFF → runs natively (process spawn, no terminal); persist has no effect.\n" +
+			"ON → runs in a visible terminal. persist=true keeps the 'ai-bash' terminal alive (shell state cd/venv/ssh retained across calls); persist=false (default) is a one-shot terminal whose output stays viewable.\n" +
+			"Run the bare command — never pipe through head/tail/more/less (use the head/tail params; pipes hide live progress). For interactive commands (REPLs, y/n prompts) set persist=true and drive them with terminal_input / terminal_key.",
 		promptSnippet: "run shell commands",
 		execute: (id, params, signal, onUpdate, ctx) => {
 			const p = params as { persist?: boolean };
@@ -605,7 +605,7 @@ export function withToolGuard(
 
 			if (userEdited && result && typeof result === "object") {
 				result.details = {
-					...(result.details ?? {}),
+					...result.details,
 					userEdited: true,
 					originalParams: params,
 					executedParams: effectiveParams,
@@ -741,7 +741,7 @@ function wrapWriteToolWithPermission(
 			};
 			if (userEdited && result && typeof result === "object") {
 				result.details = {
-					...(result.details ?? {}),
+					...result.details,
 					userEdited: true,
 					originalParams: params,
 					executedParams: effectiveParams,
@@ -860,7 +860,7 @@ function wrapEditToolWithPermission(
 			};
 			if (userEdited && result && typeof result === "object") {
 				result.details = {
-					...(result.details ?? {}),
+					...result.details,
 					userEdited: true,
 					originalParams: params,
 					executedParams: effectiveParams,
@@ -979,7 +979,7 @@ function wrapEditSoftToolWithPermission(
 			};
 			if (userEdited && result && typeof result === "object") {
 				result.details = {
-					...(result.details ?? {}),
+					...result.details,
 					userEdited: true,
 					originalParams: params,
 					executedParams: effectiveParams,
@@ -1003,7 +1003,7 @@ function makePlanUpdateTool(
 		name: PLAN_UPDATE_TOOL_NAME,
 		label: "plan_update",
 		description:
-			"Update the structured task execution plan / step state machine (Plan Mode). Use it for non-trivial tasks to break down work into steps, track live progress, and update status (pending -> in_progress -> done/failed).\n更新结构化任务执行计划（步骤状态机）。用于复杂工程任务拆解与实时进度推进。",
+			"Update the structured task plan / step state machine (Plan Mode): break non-trivial work into steps and track progress (pending -> in_progress -> done/failed).",
 		parameters: Type.Object({
 			steps: Type.Array(
 				Type.Object({
@@ -1086,14 +1086,13 @@ function makeMarkersListTool(
 		name: MARKERS_LIST_TOOL_NAME,
 		label: "List marker state",
 		description:
-			"Read-only query of inline marker state. All WRITE operations must use inline markers ([[todo:new:...]] etc.) in the reply body — never use this tool for writes.\n只读查询内联标记状态。状态【写】操作请一律用内联标记（[[todo:new:...]] 等）写在回答正文里，不要调用本工具做写操作。",
+			"Read-only query of inline marker state. All WRITE operations must use inline markers ([[todo:new:...]] etc.) in the reply body — never this tool.",
 		parameters: Type.Object({
 			action: Type.Unsafe<string>({ enum: ["list"] }),
 			tool: Type.Optional(Type.Literal("todo")),
 			includeDeleted: Type.Optional(
 				Type.Boolean({
-					description:
-						"Whether to include deleted tasks (tombstones, todo only).\n是否包含已删除任务（tombstone，仅 todo）。",
+					description: "Include deleted tasks (tombstones, todo only).",
 				}),
 			),
 		}),
@@ -1156,7 +1155,7 @@ export function makeAskUserQuestionTool(
 				value: Type.Optional(
 					Type.Union([Type.String(), Type.Array(Type.String())], {
 						description:
-							"Show this question only when the prior question's answer matches this value (or any in the array). Omit to show whenever answered.",
+							"Show only when the prior answer equals this value (or is in the array). Omit to show whenever answered.",
 					}),
 				),
 			}),
@@ -1172,20 +1171,14 @@ export function makeAskUserQuestionTool(
 		name: "ask_user_question",
 		label: "Ask the user",
 		description:
-			"Ask the user focused questions to pin down ambiguous requirements. Use for clarifying the task, confirming decisions, or getting preferences. Each question renders a browser dialog with markdown/HTML rich text; options may carry a `preview`. Submit or cancel to resume.",
-		promptSnippet: bilingual(
+			"Ask the user focused questions to pin down ambiguous requirements (clarify the task, confirm decisions, get preferences). " +
+			"Each question renders a browser dialog with markdown/HTML rich text; options may carry a `preview`. Submit or cancel to resume.",
+		promptSnippet:
 			"ask the user focused questions to clarify ambiguous requirements (browser dialog with options/preview)",
-			"向用户提问以澄清含糊的需求（浏览器对话框，支持选项/预览）",
-		),
 		promptGuidelines: [
-			bilingual(
-				"When requirements are ambiguous, use ask_user_question to ask the user instead of guessing; prefer multiple-choice options, each option may carry a preview",
-				"需求含糊时用 ask_user_question 向用户提问而不是猜测；优先给多选选项，选项可带 preview 预览",
-			),
-			bilingual(
-				"A cancelled question comes back as a tool error — respect it and continue without re-asking immediately",
-				"用户取消提问会以工具错误返回——尊重取消决定，不要马上重复追问",
-			),
+			"When requirements are ambiguous, use ask_user_question to ask the user instead of guessing; " +
+				"prefer multiple-choice options, each option may carry a preview",
+			"A cancelled question comes back as a tool error — respect it and continue without re-asking immediately",
 		],
 		parameters: Type.Object({
 			questions: Type.Array(QuestionSchema, { description: "Questions to ask the user" }),
@@ -1326,8 +1319,8 @@ export function makeBrowserPageTool(
 		name: BROWSER_PAGE_TOOL_NAME,
 		label: "Browser page",
 		description: [
-			'Read or act on a page in the USER\'S OWN browser through the pi-web-ui page-picker extension (the extension talks to this page; the server only forwards the request). Only pages the user has explicitly allowed/paired in that extension can be touched. Call it with op:"pages" first to see which pages are currently available, and use it ONLY when the user asked you to read or operate a web page — never click/type on their pages on your own initiative.',
-			"ops (forwarded to the extension as-is, the server does not interpret them):",
+			'Read or act on a page in the USER\'S OWN browser via the pi-web-ui page-picker extension (the server only forwards). Only pages the user explicitly allowed/paired can be touched. Start with op:"pages" to list available pages, and use ONLY when the user asked you to read or operate a page — never click/type on their pages unprompted.',
+			"ops (forwarded to the extension as-is):",
 			"  pages  — no args; lists the pages you may act on",
 			'  read   — { what?: "text" | "html" | "title" | "url" | "query", selector?, all? }',
 			"  click  — { selector, index? }",
@@ -1338,19 +1331,12 @@ export function makeBrowserPageTool(
 			"  eval   — { code } runs JS inside the page (extension-side switch, off by default)",
 			"Op options that are not fields of this tool (e.g. read's `limit`) fall back to the extension's defaults. `target` selects the page by origin when more than one is allowed; `timeoutMs` is how long the SERVER waits for the browser (1000-120000, default 30000) before failing the call.",
 		].join("\n"),
-		promptSnippet: bilingual(
-			"read or operate a page in the user's browser (page-picker extension; allowed pages only)",
-			"读取/操作用户浏览器里已授权的页面（page-picker 扩展，仅限已授权页面）",
-		),
+		promptSnippet: "read or operate a page in the user's browser (page-picker extension; allowed pages only)",
 		promptGuidelines: [
-			bilingual(
-				"Only use browser_page when the user asked you to read or act on a page in their browser; never click or type on their pages on your own initiative",
-				"只在用户明确要求读取/操作浏览器页面时才用 browser_page；不要自作主张去点用户的页面",
-			),
-			bilingual(
-				'Start with op:"pages" to see which pages are available; the target page must already be allowed in the page-picker extension — when it fails, tell the user what to enable instead of retrying blindly',
-				'先用 op:"pages" 看有哪些可操作页面；目标页面必须已在 page-picker 扩展里授权——失败时把需要开什么告诉用户，不要盲目重试',
-			),
+			"Only use browser_page when the user asked you to read or act on a page in their browser; " +
+				"never click or type on their pages on your own initiative",
+			'Start with op:"pages" to see which pages are available; ' +
+				"the target page must already be allowed in the page-picker extension — when it fails, tell the user what to enable instead of retrying blindly",
 		],
 		parameters: Type.Object({
 			op: Type.String({

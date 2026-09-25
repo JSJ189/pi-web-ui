@@ -25,7 +25,7 @@ import { spawn, type IPty } from "node-pty";
 import { defineTool, type ToolDefinition } from "@earendil-works/pi-coding-agent";
 import { Type } from "typebox";
 import type { CommandDef, ServerMessage, TerminalInfo } from "./protocol.js";
-import { bilingual, pick, type ServerLang } from "./i18n.js";
+import { pick, type ServerLang } from "./i18n.js";
 
 // ---------------------------------------------------------------------------
 // .pi/commands.json
@@ -1676,7 +1676,7 @@ export function makeTerminalBashTool(
 		kills: Set<AbortController>;
 		/** 后台命令最终结束时的宿主通知（exitCode null = 终端被关闭）。 */
 		notifyBackgroundDone: (info: { terminalId: string; command: string; exitCode: number | null }) => void;
-		/** per-call 返回文本的服务端语言（默认英文）；工具 definition 走 bilingual 内联双语。 */
+		/** per-call 返回文本的服务端语言（默认英文）；工具 definition 为纯英文。 */
 		lang?: () => ServerLang;
 	},
 ): ToolDefinition {
@@ -1685,49 +1685,38 @@ export function makeTerminalBashTool(
 	return defineTool({
 		name: "bash",
 		label: "Run bash command",
-		description: bilingual(
-			"Run a shell command and return its full output plus exit code. Commands run in a visible terminal.\n" +
-				"persist=false (default, one-shot): a fresh terminal is created per call, run to completion, then the shell exits (the process ends) while its output stays in the terminal list for later review — like a normal bash call, but each command also leaves a viewable terminal record.\n" +
-				"persist=true: commands run in the PERSISTENT visible terminal 'ai-bash' — shell state such as cd, venv activation or ssh sessions is retained across calls; you can use terminal_wait to re-block on a backgrounded command, or terminal_read / terminal_input / terminal_key on 'ai-bash' to observe or interact anytime.\n" +
-				"Run the bare command — do NOT pipe through head/tail/more/less (output is returned complete anyway, and pipes hide live progress in the terminal). Use the head/tail parameters instead to trim the returned output. For interactive commands (REPLs, prompts, installers asking y/n) set persist=true and drive them with terminal_input / terminal_key.",
-			"运行 shell 命令并返回完整输出与退出码。命令在可见终端中运行。\n" +
-				"persist=false（默认，一次性）：每次调用新建一个终端，运行至结束，然后 shell 退出（进程结束），输出保留在终端列表中供稍后查看——如同普通 bash 调用，但每条命令都会留下一条可查看的终端记录。\n" +
-				"persist=true：命令在常驻可见终端 'ai-bash' 中运行——cd、venv 激活、ssh 会话等 shell 状态跨调用保留；可用 terminal_wait 重新阻塞等待后台命令，或随时用 terminal_read / terminal_input / terminal_key 观察或交互。\n" +
-				"直接运行裸命令——不要经 head/tail/more/less 管道（反正会返回完整输出，管道还会挡住终端里的实时进度）。用 head/tail 参数截断返回的输出。交互式命令（REPL、提示符、问 y/n 的安装程序）请设 persist=true 并用 terminal_input / terminal_key 驱动。",
-		),
-		promptSnippet: bilingual(
-			"run shell commands (persist=true keeps the terminal alive across calls)",
-			"运行 shell 命令（persist=true 让终端跨调用保持存活）",
-		),
+		description:
+			"Run a shell command in a visible terminal; returns full output and exit code. " +
+			"persist=false (default): a fresh one-shot terminal per call; the shell exits after the command but its output stays viewable. " +
+			"persist=true: runs in the persistent 'ai-bash' terminal — shell state (cd/venv/ssh) is retained across calls; " +
+			"terminal_read/terminal_input/terminal_key observe or interact; terminal_wait blocks on backgrounded commands. " +
+			"Run the bare command — never pipe through head/tail/more/less (output is returned complete; pipes hide live progress); use the head/tail params instead. " +
+			"For interactive commands (REPLs, y/n prompts) set persist=true and drive them with terminal_input / terminal_key.",
+		promptSnippet: "run shell commands (persist=true keeps the terminal alive across calls)",
 		parameters: Type.Object({
-			command: Type.String({ description: bilingual("The shell command to run", "要运行的 shell 命令") }),
-			timeout: Type.Optional(Type.Number({ description: bilingual("Optional timeout in seconds", "可选的超时秒数") })),
+			command: Type.String({ description: "The shell command to run" }),
+			timeout: Type.Optional(Type.Number({ description: "Optional timeout in seconds" })),
 			persist: Type.Optional(
 				Type.Boolean({
-					description: bilingual(
-						"Keep the terminal alive after the command (default: false → a one-shot terminal that exits when the command finishes while its output is retained for review). true runs in the persistent 'ai-bash' terminal so shell state (cd/venv/ssh) is retained across calls and the terminal stays interactive.",
-						"运行后保持终端存活（默认 false → 命令结束时退出的、输出保留供查看的一次性终端）。true 则在常驻 'ai-bash' 终端中运行，shell 状态（cd/venv/ssh）跨调用保留、终端保持可交互。",
-					),
+					description:
+						"true → run in the persistent 'ai-bash' terminal: shell state (cd/venv/ssh) is retained across calls. " +
+						"false (default) → one-shot terminal that exits when the command finishes; output stays viewable.",
 				}),
 			),
 			head: Type.Optional(
 				Type.Integer({
 					minimum: 1,
 					maximum: 5000,
-					description: bilingual(
-						"Only return the FIRST N lines of output (like `| head -N`). Use this for verbose commands instead of piping through head.",
-						"只返回输出的前 N 行（如 `| head -N`）。输出冗长的命令请用它，而不要经 head 管道。",
-					),
+					description:
+						"Only return the FIRST N lines of output (like `| head -N`); prefer this over piping through head.",
 				}),
 			),
 			tail: Type.Optional(
 				Type.Integer({
 					minimum: 1,
 					maximum: 5000,
-					description: bilingual(
-						"Only return the LAST N lines of output (like `| tail -N`). Use this for verbose commands instead of piping through tail.",
-						"只返回输出的后 N 行（如 `| tail -N`）。输出冗长的命令请用它，而不要经 tail 管道。",
-					),
+					description:
+						"Only return the LAST N lines of output (like `| tail -N`); prefer this over piping through tail.",
 				}),
 			),
 		}),
@@ -1993,17 +1982,17 @@ export { TERMINAL_TOOL_NAMES } from "./tool-manager.js";
 /** System-prompt guidance teaching the model WHEN to prefer the terminal tools
  *  over one-shot bash. Without it models almost never pick them — bash returns
  *  complete output in a single call, so it always wins on convenience. */
-export const TERMINAL_TOOLS_GUIDANCE = `Persistent interactive terminal tools are available (terminal_create / terminal_list / terminal_close / terminal_input / terminal_key / terminal_read / terminal_wait). The bash tool stays the DEFAULT for ordinary commands - it runs in a visible terminal and returns the full output (persist=false, one-shot terminal that exits when the command finishes). Switch to the bash tool's persist=true, or to the terminal tools, when:
-- The program is interactive or TUI-based (REPLs like python/node, vim/htop, installers asking y/n, anything waiting on stdin). For these, prefer bash({ persist: true }) which runs it in the persistent 'ai-bash' terminal and returns immediately; then drive it with terminal_input / terminal_key (and terminal_read) on terminalId='ai-bash'.
-- You start a long-running server or watcher and want to keep watching its output (terminal_read with waitMs), send keys to it later (e.g. interrupt via terminal_key with Ctrl+c), or block until a backgrounded command finishes without polling (terminal_wait).
-- The user explicitly asks you to work in the visible terminal panel.
-Liveness watchdog: terminals you touched (create/input/key) are monitored - if one goes silent with no new output while you are working (default 15s), an automatic system reminder is injected into the conversation. Treat it as a prompt to check that terminal (terminal_read), respond to an input prompt (terminal_input / terminal_key), or close it (terminal_close) if it is no longer needed.`;
+export const TERMINAL_TOOLS_GUIDANCE = `Persistent interactive terminal tools are available (terminal_create / terminal_list / terminal_close / terminal_input / terminal_key / terminal_read / terminal_wait). The bash tool stays the DEFAULT for ordinary commands. Switch to bash({persist:true}) or the terminal tools when:
+- The program is interactive or TUI-based (REPLs, vim/htop, y/n installers, anything waiting on stdin): prefer bash({persist:true}), which runs it in the persistent 'ai-bash' terminal and returns immediately; then drive it with terminal_input / terminal_key / terminal_read on terminalId='ai-bash'.
+- You start a long-running server or watcher and want to watch its output (terminal_read with waitMs), send keys later (e.g. Ctrl+c via terminal_key), or block until a backgrounded command finishes without polling (terminal_wait).
+- The user asks you to work in the visible terminal panel.
+Liveness watchdog: terminals you touched are monitored — if one goes silent while you are working (default 15s), a system reminder prompts you to check it (terminal_read), answer its input prompt, or close it (terminal_close) if no longer needed.`;
 
 /** Build the agent-facing persistent terminal tools for one conversation. */
 export function makePersistentTerminalTools(
 	terminals: TerminalManager,
 	cwd: string,
-	/** per-call 返回文本的服务端语言（默认英文）；工具 definition 走 bilingual 内联双语。 */
+	/** per-call 返回文本的服务端语言（默认英文）；工具 definition 为纯英文。 */
 	lang?: () => ServerLang,
 ): ToolDefinition[] {
 	const getLang: () => ServerLang = lang ?? (() => "en");
@@ -2022,17 +2011,15 @@ export function makePersistentTerminalTools(
 		defineTool({
 			name: "terminal_create",
 			label: "Create terminal",
-			description: bilingual(
-				"Create a named persistent interactive PTY in the current workspace. Use terminal_input or terminal_key to interact with it and terminal_read to inspect incremental output. Prefer this over bash when the program is interactive/TUI-based (REPLs, vim/htop, y/n prompts), when starting a long-running server you want to keep observing or interrupt, or when the user asks to work in the visible terminal. For simple one-shot commands use bash instead.",
-				"在当前工作区创建具名常驻交互式 PTY。用 terminal_input 或 terminal_key 与之交互，用 terminal_read 查看增量输出。程序是交互式/TUI（REPL、vim/htop、y/n 提示）、要启动长驻服务并持续观察或中断、或用户明确要求在可见终端里操作时，优先用它而非 bash。简单的一次性命令请用 bash。",
-			),
-			promptSnippet: bilingual(
-				"run interactive programs or long-running servers in a persistent visible PTY (multi-step: create → input/key → read)",
-				"在常驻可见 PTY 中运行交互式程序或长驻服务（多步：create → input/key → read）",
-			),
+			description:
+				"Create a named persistent interactive PTY. Interact via terminal_input / terminal_key, inspect output via terminal_read. " +
+				"Prefer bash for one-shot commands; use this (or bash persist=true) for interactive/TUI programs (REPLs, vim/htop, y/n prompts) or long-running servers to observe or interrupt.",
+			promptSnippet:
+				"run interactive programs or long-running servers in a persistent visible PTY (multi-step: " +
+				"create → input/key → read)",
 			parameters: Type.Object({
-				terminalId: Type.String({ description: bilingual("Stable terminal name", "稳定的终端名称") }),
-				cwd: Type.Optional(Type.String({ description: bilingual("Workspace-relative directory", "工作区相对目录") })),
+				terminalId: Type.String({ description: "Stable terminal name" }),
+				cwd: Type.Optional(Type.String({ description: "Workspace-relative directory" })),
 				cols: Type.Optional(Type.Integer({ minimum: 2, maximum: 500 })),
 				rows: Type.Optional(Type.Integer({ minimum: 2, maximum: 200 })),
 			}),
@@ -2061,18 +2048,15 @@ export function makePersistentTerminalTools(
 		defineTool({
 			name: "terminal_list",
 			label: "List terminals",
-			description: bilingual(
-				"List all persistent PTY terminals owned by this conversation.",
-				"列出本对话拥有的全部常驻 PTY 终端。",
-			),
-			promptSnippet: bilingual("list persistent terminals", "列出常驻终端"),
+			description: "List all persistent PTY terminals owned by this conversation.",
+			promptSnippet: "list persistent terminals",
 			parameters: Type.Object({}),
 			execute: async () => result(JSON.stringify(terminals.list()), terminals.list()),
 		}),
 		defineTool({
 			name: "terminal_close",
 			label: "Close terminal",
-			description: bilingual("Close a persistent PTY and terminate its process tree.", "关闭常驻 PTY 并终止其进程树。"),
+			description: "Close a persistent PTY and terminate its process tree.",
 			parameters: Type.Object({ terminalId: Type.String() }),
 			execute: async (_id, p) => {
 				const lang = getLang();
@@ -2097,10 +2081,7 @@ export function makePersistentTerminalTools(
 		defineTool({
 			name: "terminal_input",
 			label: "Send terminal input",
-			description: bilingual(
-				"Send arbitrary text to a persistent PTY. Include newline when a command should be submitted.",
-				"向常驻 PTY 发送任意文本。需要提交命令时带上换行。",
-			),
+			description: "Send arbitrary text to a persistent PTY. Include newline when a command should be submitted.",
 			parameters: Type.Object({ terminalId: Type.String(), data: Type.String() }),
 			execute: async (_id, p) => {
 				const lang = getLang();
@@ -2121,14 +2102,11 @@ export function makePersistentTerminalTools(
 		defineTool({
 			name: "terminal_key",
 			label: "Send terminal key",
-			description: bilingual(
-				"Send Enter, Tab, arrows, function keys, or Ctrl/Alt combinations to a persistent PTY.",
-				"向常驻 PTY 发送 Enter、Tab、方向键、功能键或 Ctrl/Alt 组合键。",
-			),
+			description: "Send Enter, Tab, arrows, function keys, or Ctrl/Alt combinations to a persistent PTY.",
 			parameters: Type.Object({
 				terminalId: Type.String(),
 				key: Type.String({
-					description: bilingual("Enter, Tab, ArrowUp, c, etc.", "按键名，如 Enter、Tab、ArrowUp、c 等"),
+					description: "Enter, Tab, ArrowUp, c, etc.",
 				}),
 				modifiers: Type.Optional(
 					Type.Object({
@@ -2157,10 +2135,10 @@ export function makePersistentTerminalTools(
 		defineTool({
 			name: "terminal_read",
 			label: "Read terminal output",
-			description: bilingual(
-				"Read incremental output from a persistent PTY. Keep the returned cursor and pass it on the next read; optionally wait for new output or process exit.",
-				"从常驻 PTY 读取增量输出。保留返回的 cursor，下次读取时传回；可选择等待新输出或进程退出。",
-			),
+			description:
+				"Read incremental output from a persistent PTY. " +
+				"Keep the returned cursor and pass it on the next read; " +
+				"optionally wait for new output or process exit.",
 			parameters: Type.Object({
 				terminalId: Type.String(),
 				cursor: Type.Optional(Type.Integer({ minimum: 0 })),
@@ -2188,30 +2166,24 @@ export function makePersistentTerminalTools(
 		defineTool({
 			name: "terminal_wait",
 			label: "Wait for terminal command",
-			description: bilingual(
-				"Block until a command started THROUGH THE BASH TOOL finishes (its exit marker appears) or the timeout expires — no polling needed. Only applies to terminals with a pending bash-tool command; terminals driven manually via terminal_input (e.g. interactive programs) have no completion marker — use terminal_read(waitMs=…) to observe those instead. Returns {finished, exitCode} plus the output produced while waiting; finished=false means it is STILL running (call again to keep waiting).",
-				"阻塞等待经 BASH 工具启动的命令结束（出现退出标记）或超时——无需轮询。仅适用于有待决 bash 工具命令的终端；经 terminal_input 手动驱动的终端（如交互式程序）没有完成标记——观察它们请用 terminal_read(waitMs=…)。返回 {finished, exitCode} 及等待期间产生的输出；finished=false 表示仍在运行（可再次调用继续等）。",
-			),
-			promptSnippet: bilingual(
-				"block until a terminal's current command finishes (no polling)",
-				"阻塞等待终端当前命令结束（无需轮询）",
-			),
+			description:
+				"Block until a command started through the BASH TOOL finishes (exit marker appears) or timeout — no polling. " +
+				"Only applies to bash-tool commands; commands sent via terminal_input have no completion marker — use terminal_read(waitMs=…) for those. " +
+				"Returns {finished, exitCode} plus output produced while waiting; finished=false means still running (call again).",
+			promptSnippet: "block until a terminal's current command finishes (no polling)",
 			parameters: Type.Object({
 				terminalId: Type.String(),
 				cursor: Type.Optional(
 					Type.Integer({
 						minimum: 0,
-						description: bilingual(
-							"Ignore exit markers before this absolute offset (default: now)",
-							"忽略该绝对偏移之前的退出标记（默认：现在）",
-						),
+						description: "Ignore exit markers before this absolute offset (default: now)",
 					}),
 				),
 				maxWaitMs: Type.Optional(
 					Type.Integer({
 						minimum: 100,
 						maximum: 600000,
-						description: bilingual("Max wait in ms (default 300000)", "最长等待毫秒数（默认 300000）"),
+						description: "Max wait in ms (default 300000)",
 					}),
 				),
 			}),
