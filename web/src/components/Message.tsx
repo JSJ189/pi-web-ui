@@ -1,4 +1,4 @@
-import { memo, useRef, useState, type ReactNode } from "react";
+import { memo, useEffect, useRef, useState, type ReactNode } from "react";
 import {
 	FiArchive,
 	FiBookOpen,
@@ -13,6 +13,8 @@ import {
 	FiGitBranch,
 	FiImage,
 	FiRefreshCw,
+	FiSquare,
+	FiVolume2,
 	FiX,
 	FiZap,
 } from "react-icons/fi";
@@ -36,6 +38,16 @@ import { parseSkillBlock, type SkillBlock } from "../skill-block";
 import { isRasterImage, fileToProcessedImage } from "../image-paste";
 import { openContextMenu } from "../context-menu-state";
 import { messageMarkdown, messagePlainText } from "../copy-text";
+import {
+	isSpeaking,
+	isTtsAvailable,
+	loadTtsSettings,
+	onSpeakingChange,
+	speak,
+	speakingSourceId,
+	stopSpeaking,
+	stripMarkdownForSpeech,
+} from "../tts";
 import { openExportImage, toggleExportImageSelect, useExportImage } from "../export-image-state";
 import { hasMessageWidget } from "../plugin-fence";
 import { openRollbackDialog } from "../rollback-state";
@@ -118,6 +130,7 @@ const SLOT_ICONS: Record<string, ReactNode> = {
 	text: <FiFileText />,
 	markdown: <FiCode />,
 	image: <FiImage />,
+	volume: <FiVolume2 />,
 	x: <FiX />,
 };
 
@@ -407,6 +420,43 @@ export const Message = memo(function Message({
 	 *  回落角色名 —— 菜单的定位信息（读屏 aria-label、宿主排障）不该是空的。 */
 	const ctxLabel = truncateText(messagePlainText(message.content), 40) || roleLabel(message.role, t);
 
+	// ---- 本地 TTS：消息工具条「朗读」按钮（host:msg-speak，复制三件套旁边） ----
+	// speaking 状态是浏览器级单例（tts.ts），这里只订阅；sourceId = 消息 id，
+	// 让「停止」只落在正在读的这一条上 —— 读着 A 时点 B 是改读 B，不是停止。
+	const [ttsSpeaking, setTtsSpeaking] = useState(isSpeaking());
+	useEffect(() => onSpeakingChange(setTtsSpeaking), []);
+	const canSpeak =
+		message.role === "assistant" &&
+		messagePlainText(message.content).trim().length > 0 &&
+		!streaming &&
+		isTtsAvailable();
+	const speakActive = canSpeak && speakingSourceId() === message.id;
+	const toggleSpeak = () => {
+		if (speakActive) {
+			stopSpeaking();
+			return;
+		}
+		// 手动朗读是明确意图，不受设置里 enabled 门控；但沿用语音/语速偏好。
+		speak(
+			stripMarkdownForSpeech(messagePlainText(message.content)),
+			{ ...loadTtsSettings(), enabled: true },
+			message.id,
+		);
+	};
+	const speakNode = (key: string): ReactNode =>
+		canSpeak ? (
+			<button
+				key={key}
+				type="button"
+				className={`msg-action${speakActive ? " msg-action-speaking" : ""}`}
+				title={speakActive ? t("stopSpeakingMsg") : t("speakMsg")}
+				aria-label={speakActive ? t("stopSpeakingMsg") : t("speakMsg")}
+				onClick={toggleSpeak}
+			>
+				{speakActive ? <FiSquare /> : <FiVolume2 />} {speakActive ? t("stopSpeakingMsg") : t("speakMsg")}
+			</button>
+		) : null;
+
 	/** 该槽位当前有没有可显示的东西：一条都没有就别抢浏览器菜单
 	 *  （弹个空菜单比不弹更糟，还会顺手废掉「检查元素 / 复制」）。
 	 *  判定与 contextMenuItems 同口径：hidden 跳过、divider 不算内容。 */
@@ -474,7 +524,8 @@ export const Message = memo(function Message({
 	const renderMessageActions = () => {
 		if (!uiMessageActions) {
 			const fallback = wholeCopyNodes("fb:");
-			if (!canEdit && fallback.length === 0) return null;
+			const speakFallback = speakNode("fb-speak");
+			if (!canEdit && fallback.length === 0 && !speakFallback) return null;
 			return (
 				<div className="msg-actions">
 					{canEdit && (
@@ -483,6 +534,7 @@ export const Message = memo(function Message({
 						</button>
 					)}
 					{fallback}
+					{speakFallback}
 				</div>
 			);
 		}
@@ -514,6 +566,13 @@ export const Message = memo(function Message({
 						{ok ? <FiCheckCircle /> : slotIcon(entry.icon)} {label}
 					</button>,
 				);
+				return;
+			}
+			// 内置「朗读」（本地 TTS，issue #288）：只对有文本的助手消息出现，
+			// 与复制三件套同一条 hover 工具条；点击在「读这条 / 停止」间切换。
+			if (entry.id === "host:msg-speak") {
+				const node = speakNode(key);
+				if (node) nodes.push(node);
 				return;
 			}
 			// 内置「编辑重问」：只对用户消息、且不在流式/编辑态时出现（与旧逻辑同判据）。

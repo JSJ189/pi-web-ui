@@ -78,6 +78,8 @@ import { fileToProcessedImage, isRasterImage, type ProcessedImage } from "./imag
 import { randomUuid } from "./uuid";
 import { recordModelUsage } from "./model-usage";
 import { loadSoundSettings, playSound, saveSoundSettings, type SoundKind, type SoundSettings } from "./sounds";
+import { assistantPlainText, loadTtsSettings, saveTtsSettings, speak, stopSpeaking, type TtsSettings } from "./tts";
+import { shouldSuppressNotify, currentPresence } from "./notify";
 import { useWideChat } from "./chat-width-settings";
 import { registerFilePreviewHost } from "./file-preview-bridge";
 import { projectNameFromCwd, useProjectTitle } from "./title-settings";
@@ -763,6 +765,8 @@ export function App() {
 
 	// -- sound notifications --------------------------------------------------
 	const [sound, setSound] = useState<SoundSettings>(loadSoundSettings);
+	// -- local TTS announcements (Settings → Sound & Voice) -------------------
+	const [tts, setTts] = useState<TtsSettings>(loadTtsSettings);
 	// -- theme (whole stylesheet swap) ---------------------------------------
 	const { themes, theme, switchTheme, reloadThemes } = useTheme();
 	// -- chat wallpaper (message-list background image, issue #100) -------------
@@ -838,6 +842,7 @@ export function App() {
 	const prevQuestionId = useRef<string | null>(null);
 	const prevRemoteQuestionId = useRef<string | null>(null);
 	const prevQuestionConvs = useRef<Set<string>>(new Set());
+	const prevApprovalId = useRef<string | null>(null);
 	const lastErrorNotice = useRef(0);
 	// Remembers a terminal-view click made before the WebSocket is ready.
 	const terminalOpenRequested = useRef(false);
@@ -847,6 +852,10 @@ export function App() {
 	useEffect(() => {
 		saveSoundSettings(sound);
 	}, [sound]);
+
+	useEffect(() => {
+		saveTtsSettings(tts);
+	}, [tts]);
 
 	// Maintenance watcher: when a `pi remove …` / `pi-web-ui install|uninstall …`
 	// command tab transitions running → exited, re-discover extensions/skills
@@ -884,8 +893,19 @@ export function App() {
 			playSound("done", sound);
 			// OS/PWA notification for when the user stepped away (not focused).
 			void notify(t("notifyDoneTitle"), t("notifyDoneBody"));
+			// TTS (issue #288)：只在用户不在看页面时出声（与 notify 同哲学，提示音已覆盖在看场景）。
+			// 朗读正文优先于固定播报；正文为空（纯工具轮）时回落到 announce 固定句。
+			if (tts.enabled && !shouldSuppressNotify(currentPresence())) {
+				if (tts.readReplies) {
+					const body = assistantPlainText(chat.state?.messages);
+					if (body) speak(body, tts);
+					else if (tts.announce) speak(t("ttsAnnounceDone"), tts);
+				} else if (tts.announce) {
+					speak(t("ttsAnnounceDone"), tts);
+				}
+			}
 		}
-	}, [chat.state?.isStreaming, sound]);
+	}, [chat.state?.isStreaming, chat.state?.messages, sound, tts, t]);
 
 	// Questionnaire cue — each new dialog id + each new DSH question id.
 	// dialog = 扩展 select/confirm/input；question = ask_user_question 问卷。
@@ -895,9 +915,10 @@ export function App() {
 		if (id !== null && id !== prevDialogId.current) {
 			playSound("question", sound);
 			void notify(t("notifyQuestionTitle"), t("notifyQuestionBody"));
+			if (tts.enabled && tts.announce && !shouldSuppressNotify(currentPresence())) speak(t("ttsAnnounceQuestion"), tts);
 		}
 		prevDialogId.current = id;
-	}, [chat.dialog, sound]);
+	}, [chat.dialog, sound, tts, t]);
 
 	useEffect(() => {
 		const qid = chat.question?.id ?? null;
@@ -905,11 +926,13 @@ export function App() {
 		if (qid !== null && qid !== prevQuestionId.current) {
 			playSound("question", sound);
 			void notify(t("notifyQuestionTitle"), t("notifyQuestionBody"));
+			if (tts.enabled && tts.announce && !shouldSuppressNotify(currentPresence())) speak(t("ttsAnnounceQuestion"), tts);
 		}
 		if (rid !== null && rid !== prevRemoteQuestionId.current) {
 			// 跨页问卷到了本页：同样响铃 + 通知（这正是手机端要的提醒）。
 			playSound("question", sound);
 			void notify(t("notifyQuestionTitle"), t("notifyQuestionBody"));
+			if (tts.enabled && tts.announce && !shouldSuppressNotify(currentPresence())) speak(t("ttsAnnounceQuestion"), tts);
 		}
 		prevQuestionId.current = qid;
 		prevRemoteQuestionId.current = rid;
@@ -920,9 +943,25 @@ export function App() {
 		if (newBgQuestion && qid === null) {
 			playSound("question", sound);
 			void notify(t("notifyQuestionTitle"), t("notifyQuestionBody"));
+			if (tts.enabled && tts.announce && !shouldSuppressNotify(currentPresence())) speak(t("ttsAnnounceQuestion"), tts);
 		}
 		prevQuestionConvs.current = qConvs;
-	}, [chat.question, chat.remoteQuestion, chat.conversations, sound]);
+	}, [chat.question, chat.remoteQuestion, chat.conversations, sound, tts, t]);
+
+	// Tool-approval cue (issue #288)：高危操作等待用户批准 —— 此前是唯一静默的
+	// 拦截事件（done/question/error 都有提示音 + 桌面通知，唯独审批没有），AI 会
+	// 在后台干等。补齐同款三通道：提示音 + 桌面通知 + TTS 播报。
+	useEffect(() => {
+		const approval = chat.approval;
+		const id = approval?.id ?? null;
+		if (id !== null && id !== prevApprovalId.current) {
+			playSound("approval", sound);
+			const tool = typeof approval?.toolName === "string" ? approval.toolName : "";
+			void notify(t("notifyApprovalTitle"), tool ? t("notifyApprovalBodyTool", { tool }) : t("notifyApprovalBody"));
+			if (tts.enabled && tts.announce && !shouldSuppressNotify(currentPresence())) speak(t("ttsAnnounceApproval"), tts);
+		}
+		prevApprovalId.current = id;
+	}, [chat.approval, sound, tts, t]);
 
 	// Error cue — new error notices only.
 	useEffect(() => {
@@ -931,8 +970,9 @@ export function App() {
 			lastErrorNotice.current = err.id;
 			playSound("error", sound);
 			void notify(t("notifyErrorTitle"), t("notifyErrorBody"));
+			if (tts.enabled && tts.announce && !shouldSuppressNotify(currentPresence())) speak(t("ttsAnnounceError"), tts);
 		}
-	}, [chat.notices, sound]);
+	}, [chat.notices, sound, tts, t]);
 	// live-preview 工具的自动开页：工具结果末尾的确定性链接行即标记（渲染出来本身
 	// 也是可点兜底）。消息 id 去重（重连重放不二次开）；多标签页只让当前聚焦的开，
 	// 没焦点/弹窗被拦时推一条带地址的 notice（聊天里的链接照样可点）。
@@ -2047,6 +2087,10 @@ export function App() {
 					initialSection={settingsInitialSection}
 					onSwitchToTerminal={() => setView("terminal")}
 					onClose={() => setSettingsOpen(false)}
+					sound={sound}
+					onSoundChange={setSound}
+					tts={tts}
+					onTtsChange={setTts}
 				/>
 			)}
 			{bgTasksOpen && <BgTasksModal servers={chat.bgServers} onClose={() => setBgTasksOpen(false)} />}

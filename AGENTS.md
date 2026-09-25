@@ -166,6 +166,7 @@ npm publish
 - **新对话三连**：经 `focusComposer()` 自动聚焦输入框（触屏豁免）；非 chat 视图先切回 chat；待发附件 chips 随会话清空（`advanceComposerSession`，判据 `UiState.sessionId`；空 sessionId 瞬时态不清）。单测：`composer-draft.test.ts`。
 - **DSH 三规则**：shipped 预设用 `preset-clones.ts` 的 file: 克隆（`file:` 指文件不是目录；roster 以 clone 为唯一 system 根，关 `includeShippedRoot`）；问卷 answerer 与技能过滤钩子挂每次会话 `setup()` 的 agent scope；底栏统计吃直播帧（wrapper `{global:true}` 转 `assistant.stream`）+ `assistant/message.usage`，纯映射 `dsh-usage.ts`。回归：`preset-clones.test.ts`、`dsh-smoke-test.mjs` §2.5、`dsh-stats-test.mjs`。
 - **`i18n.tsx` value 只许字符串字面量**（`+` 续行可）：`scripts/i18n-diff.mjs` 手写解析器只认这个；改完文案跑 `npm run changelog:i18n` 验证。
+- **PR 提交前必须三连验（防 CI 失败铁律）**：① `npx prettier --write <改动文件>`（CI 第一道硬门禁，漏掉直接首步挂掉）；② `npm run typecheck`（Vitest 运行时只管执行、默认不阻断类型错误，必须显式全量编译确保 5 个 tsconfig 零错误；编写单测时 mock context 必须传 `{} as any`，严禁传裸 `{}` 触发 TS2740 阻断）；③ `npx vitest run <单测>`。严禁未跑格式化与全量类型校验直接提交 PR。
 
 ---
 

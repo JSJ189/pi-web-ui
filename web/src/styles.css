@@ -6105,6 +6105,12 @@ body:not(.has-wallpaper)::after {
 	color: var(--accent);
 	background: var(--bg-elev2);
 }
+/* 朗读中：这条消息的「停止朗读」按钮保持可见 + 高亮（即使用户鼠标已移开）。 */
+.msg-action.msg-action-speaking {
+	opacity: 1;
+	color: var(--accent);
+	background: var(--bg-elev2);
+}
 
 /* ------------------------------------------------------- plugin slot entries */
 /* 插件槽位按钮（terminal/scm/goalbar 工具条、通知区、会话行）：复用 .btn 基调，只补尺寸。 */
@@ -12819,6 +12825,26 @@ button.source-default-toggle {
 	color: var(--text-faint);
 	min-width: 34px;
 	text-align: right;
+}
+
+/* TTS block (Settings → Sound & Voice) reuses the sound-menu rows. */
+.tts-unavailable {
+	padding: 6px 10px 2px;
+	color: var(--text-faint);
+}
+.tts-voice-select {
+	flex: 1;
+	max-width: 220px;
+	font-size: 12px;
+	padding: 3px 6px;
+}
+.tts-preview {
+	margin-left: auto;
+	padding: 4px 12px;
+}
+.tts-preview:disabled {
+	opacity: 0.4;
+	cursor: default;
 }
 
 /* ------------------------------------------------------------ file preview modal */
