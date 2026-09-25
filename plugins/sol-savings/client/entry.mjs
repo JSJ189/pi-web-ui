@@ -122,30 +122,59 @@ function showModal(content, statusInfo) {
 	body.appendChild(statsBox);
 
 	// 2. SoL-Pi 扩展与配置状态区
-	const configBox = document.createElement("div");
-	configBox.style.cssText = `
-		border: 1px solid var(--border, #333);
-		border-radius: 6px;
-		padding: 14px;
-		display: flex;
-		flex-direction: column;
-		gap: 10px;
-		background: rgba(0, 0, 0, 0.2);
-	`;
-
 	const isInstalled = statusInfo?.installed ?? false;
 	const hasConfig = statusInfo?.hasConfig ?? false;
 	const config = statusInfo?.config;
 
-	configBox.innerHTML = `
-		<div style="font-weight: 600; font-size: 14px; display: flex; align-items: center; gap: 8px;">
-			<span>⚙️ SoL-Pi 扩展运行状态</span>
+	// 已安装且已配置时默认折叠详情，避免占用弹窗主要空间；未安装或未配置时展开提示用户操作
+	const detailsContainer = document.createElement("details");
+	detailsContainer.style.cssText = `
+		border: 1px solid var(--border, #333);
+		border-radius: 6px;
+		background: rgba(0, 0, 0, 0.2);
+		overflow: hidden;
+	`;
+	if (!isInstalled || !hasConfig) {
+		detailsContainer.open = true;
+	}
+
+	const summary = document.createElement("summary");
+	summary.style.cssText = `
+		padding: 10px 14px;
+		font-weight: 600;
+		font-size: 13px;
+		display: flex;
+		align-items: center;
+		justify-content: space-between;
+		cursor: pointer;
+		user-select: none;
+		list-style: none;
+	`;
+	// 针对不同浏览器的 summary 箭头样式隐藏
+	summary.innerHTML = `
+		<div style="display: flex; align-items: center; gap: 8px;">
+			<span>⚙️ SoL-Pi 运行与配置</span>
 			<span style="font-size: 11px; padding: 1px 6px; border-radius: 4px; background: ${
 				isInstalled ? "var(--green, #10b981)" : "var(--amber, #f59e0b)"
 			}; color: #000; font-weight: bold;">
 				${isInstalled ? "扩展已安装" : "未安装扩展"}
 			</span>
 		</div>
+		<span style="font-size: 11px; color: var(--text-dim, #888); font-weight: normal;">▶ 展开/收起</span>
+	`;
+
+	const configBox = document.createElement("div");
+	configBox.style.cssText = `
+		padding: 0 14px 14px 14px;
+		display: flex;
+		flex-direction: column;
+		gap: 10px;
+		border-top: 1px solid rgba(255, 255, 255, 0.05);
+		margin-top: 4px;
+		padding-top: 10px;
+	`;
+
+	configBox.innerHTML = `
 		<div style="font-size: 12px; color: var(--text-dim, #aaa);">
 			${
 				!isInstalled
@@ -228,7 +257,9 @@ function showModal(content, statusInfo) {
 	}
 
 	configBox.appendChild(btnRow);
-	body.appendChild(configBox);
+	detailsContainer.appendChild(summary);
+	detailsContainer.appendChild(configBox);
+	body.appendChild(detailsContainer);
 
 	const footer = document.createElement("div");
 	footer.style.cssText = `
