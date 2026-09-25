@@ -95,7 +95,7 @@ import {
 	type ToolPreRequest,
 } from "./plugin-tool-guard.js";
 import { SettingsService } from "./settings-service.js";
-import { GoalService } from "./goal-service.js";
+import { GoalService, buildDiffFingerprint } from "./goal-service.js";
 import { MarkerService } from "./marker-service.js";
 import { SlashCommandsService, parseSlash } from "./slash-commands.js";
 import { ModelAdminService } from "./model-admin.js";
@@ -11177,13 +11177,27 @@ export class ClientSession {
 		return this.goalSvc.clearGoal();
 	}
 
-	/** Run a git diff (unstaged + staged) in a conversation's workspace, or
-	 * "" when not a repo. */
+	/**
+	 * Run a git diff (unstaged + staged) in a conversation's workspace, or
+	 * "" when not a repo.
+	 *
+	 * 返回值是 goal 审查用的「变更指纹」，构造规则（截断与等值比较的相互作用）
+	 * 见 buildDiffFingerprint：diff 为空时以排序后的 `git status --porcelain`
+	 * 兜底（未跟踪文件也算变更），diff 非空时正文截断后拼 [diff-meta] 尾段，
+	 * 避免大 diff 截断后两轮前缀相同被误判成停滞。
+	 */
 	private async gitDiff(cwd: string): Promise<string> {
 		try {
 			const { code, out } = await this.runAsync("git", ["diff", "HEAD"], 10_000, cwd);
 			if (code !== 0) return "";
-			return out.slice(0, 60_000);
+			let status = "";
+			try {
+				const st = await this.runAsync("git", ["status", "--porcelain"], 10_000, cwd);
+				if (st.code === 0) status = st.out;
+			} catch {
+				// status 拍不到 → 指纹退化为纯 diff，行为与旧版一致
+			}
+			return buildDiffFingerprint(out, status);
 		} catch {
 			return "";
 		}

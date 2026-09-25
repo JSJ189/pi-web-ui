@@ -86,7 +86,11 @@ function serializeAssistantContent(content: Extract<AgentMessage, { role: "assis
 			return { type: "text", text, truncated };
 		}
 		if (b.type === "thinking") {
-			return { type: "thinking", thinking: b.thinking };
+			// thinking 也走 TEXT_CAP：思维链没有长度保证（长任务能刷出远超正文的
+			// 体量），不截断会把快照推送撑爆。UiThinkingBlock 没有 truncated 字段
+			// （protocol 不动），截断语义靠 truncate 自带的 "… [truncated]" 尾标。
+			const { text } = truncate(b.thinking, TEXT_CAP);
+			return { type: "thinking", thinking: text };
 		}
 		if (b.type === "toolCall") {
 			if (b.arguments === undefined) {
@@ -233,14 +237,25 @@ export function serializeMessage(m: AgentMessage, seq: number): UiMessage | null
 				return null;
 			}
 			const content = serializeUserContent(m.content);
-			return {
+			const msg: UiMessage = {
 				id: `c-${m.timestamp}-${seq}`,
 				role: "custom",
 				content,
 				customType: m.customType,
-				details: (m as { details?: unknown }).details,
 				timestamp: m.timestamp,
 			};
+			// custom details 与 toolResult 的 details 同一闸门（TOOL_DETAILS_CAP）：
+			// details 随每 60ms 一发的快照推送，扩展塞进来的大对象不能无节制；
+			// 超限/序列化失败整丢（截断后的 JSON 不可解析，前端还得写容错）。
+			const rawDetails = (m as { details?: unknown }).details;
+			if (rawDetails !== undefined) {
+				try {
+					if (JSON.stringify(rawDetails).length <= TOOL_DETAILS_CAP) msg.details = rawDetails;
+				} catch {
+					// 循环引用等序列化不了的值：details 是附加信息，丢掉不影响消息本体。
+				}
+			}
+			return msg;
 		}
 
 		case "branchSummary": {
