@@ -157,12 +157,22 @@ const PANEL_DEFAULT = 240;
 type PanelSide = "left" | "right";
 const panelWidthKey = (side: PanelSide) => `pi-web-ui:${side}-panel-width`;
 function readPanelWidth(side: PanelSide): number {
-	const v = Number(localStorage.getItem(panelWidthKey(side)));
-	return Number.isFinite(v) && v >= PANEL_MIN && v <= PANEL_MAX ? v : PANEL_DEFAULT;
+	try {
+		const v = Number(localStorage.getItem(panelWidthKey(side)));
+		return Number.isFinite(v) && v >= PANEL_MIN && v <= PANEL_MAX ? v : PANEL_DEFAULT;
+	} catch {
+		// storage 不可用（隐私模式等）：回默认宽度。这两个读在 useState 初始化器里，
+		// 抛错会让整个 App 首帧白屏 —— 与 use-chat.ts/theme.ts 的兜底风格一致。
+		return PANEL_DEFAULT;
+	}
 }
 const panelCollapsedKey = (side: PanelSide) => `pi-web-ui:${side}-panel-collapsed`;
 function readPanelCollapsed(side: PanelSide): boolean {
-	return localStorage.getItem(panelCollapsedKey(side)) === "1";
+	try {
+		return localStorage.getItem(panelCollapsedKey(side)) === "1";
+	} catch {
+		return false;
+	}
 }
 
 /** 面板与主区之间的拖拽分隔条：拖动改宽度，双击复位。 */
@@ -184,7 +194,11 @@ function ResizeHandle({ side, width, onResize }: { side: PanelSide; width: numbe
 				window.removeEventListener("pointermove", move);
 				window.removeEventListener("pointerup", up);
 				document.body.classList.remove("panel-resizing");
-				localStorage.setItem(panelWidthKey(side), String(last));
+				try {
+					localStorage.setItem(panelWidthKey(side), String(last));
+				} catch {
+					/* storage 不可用：本次拖拽照常生效，只是不持久化 */
+				}
 			};
 			window.addEventListener("pointermove", move);
 			window.addEventListener("pointerup", up);
@@ -220,23 +234,46 @@ type ViewName = "chat" | "terminal" | "git" | `plugin:${string}`;
  * 插件项目会话的目录授权（issue #146）：插件经 host.openSession 打开一个新目录的会话前，
  * 宿主必须先让用户点头；确认过的目录记在这里（localStorage，按浏览器），下次不再问。
  * 已在「最近项目」里的目录视为用户自己用过的，也不问。
+ *
+ * 键按插件隔离：旧版所有插件共用一个全局键，A 插件拿到的授权对 B 插件天然生效（一次
+ * 确认全网通行）。带 pluginId 的读写走 `pi-web-ui:plugin-path-grants:<pluginId>`；
+ * 该插件首读且只有旧全局键时，把旧记录**迁移**到它名下（保住升级前「确认过不再问」的
+ * 体验，之后各插件的授权各自演化）；宿主桥归因不了调用方时回退旧全局键（见
+ * plugin-host.ts 的 pluginApiCaller）。
  */
 const PLUGIN_PATH_GRANTS_KEY = "pi-web-ui:plugin-path-grants";
+const pluginPathGrantsKey = (pluginId?: string) =>
+	pluginId ? `${PLUGIN_PATH_GRANTS_KEY}:${pluginId}` : PLUGIN_PATH_GRANTS_KEY;
 
-function readPluginPathGrants(): string[] {
+function parseGrants(raw: string | null): string[] {
+	if (raw === null) return [];
 	try {
-		const raw = localStorage.getItem(PLUGIN_PATH_GRANTS_KEY);
-		const arr = raw ? (JSON.parse(raw) as unknown) : [];
+		const arr = JSON.parse(raw) as unknown;
 		return Array.isArray(arr) ? arr.filter((x): x is string => typeof x === "string") : [];
 	} catch {
 		return [];
 	}
 }
 
-function addPluginPathGrant(path: string): void {
+function readPluginPathGrants(pluginId?: string): string[] {
 	try {
-		const next = [...new Set([...readPluginPathGrants(), path])];
-		localStorage.setItem(PLUGIN_PATH_GRANTS_KEY, JSON.stringify(next));
+		const key = pluginPathGrantsKey(pluginId);
+		if (localStorage.getItem(key) !== null) return parseGrants(localStorage.getItem(key));
+		if (!pluginId) return [];
+		// 迁移：该插件还没有自己的授权记录时，接管旧全局键（升级前所有插件共用），
+		// 用户在旧版确认过的目录不因升级重新弹框。
+		const grants = parseGrants(localStorage.getItem(PLUGIN_PATH_GRANTS_KEY));
+		localStorage.setItem(key, JSON.stringify(grants));
+		return grants;
+	} catch {
+		return [];
+	}
+}
+
+function addPluginPathGrant(path: string, pluginId?: string): void {
+	try {
+		const next = [...new Set([...readPluginPathGrants(pluginId), path])];
+		localStorage.setItem(pluginPathGrantsKey(pluginId), JSON.stringify(next));
 	} catch {
 		/* 隐私模式等：授权只在本次会话内有效 */
 	}
@@ -611,13 +648,21 @@ export function App() {
 	const [rightCollapsed, setRightCollapsed] = useState(() => readPanelCollapsed("right"));
 	const toggleLeft = useCallback(() => {
 		setLeftCollapsed((v) => {
-			localStorage.setItem(panelCollapsedKey("left"), v ? "0" : "1");
+			try {
+				localStorage.setItem(panelCollapsedKey("left"), v ? "0" : "1");
+			} catch {
+				/* storage 不可用（隐私模式等）：折叠照常，只是不持久化 */
+			}
 			return !v;
 		});
 	}, []);
 	const toggleRight = useCallback(() => {
 		setRightCollapsed((v) => {
-			localStorage.setItem(panelCollapsedKey("right"), v ? "0" : "1");
+			try {
+				localStorage.setItem(panelCollapsedKey("right"), v ? "0" : "1");
+			} catch {
+				/* storage 不可用（隐私模式等）：折叠照常，只是不持久化 */
+			}
 			return !v;
 		});
 	}, []);
@@ -985,7 +1030,9 @@ export function App() {
 			let url = "";
 			for (const b of m.content ?? []) {
 				if ((b as { type?: string }).type !== "text") continue;
-				const hit = /🔗 已自动在浏览器打开\]\((\/[^)\s]+)\)/.exec((b as { text?: string }).text ?? "");
+				// (\/(?!\/) 拒绝 // 开头：协议相对 URL（//evil.com/x）会被浏览器按当前
+				// 协议解析成站外地址，根部署下 appUrl 又原样返回，挡不住跳站外。
+				const hit = /🔗 已自动在浏览器打开\]\((\/(?!\/)[^)\s]+)\)/.exec((b as { text?: string }).text ?? "");
 				if (hit?.[1]) {
 					url = hit[1];
 					break;
@@ -994,7 +1041,12 @@ export function App() {
 			if (!url) continue;
 			let opened: Window | null = null;
 			try {
-				if (document.hasFocus()) opened = window.open(appUrl(url), "_blank", "noopener");
+				// 打开前再校验最终 URL 与应用同源（第二道闸）：不同源一律不自动开，
+				// 只推带地址的 notice —— 聊天里的链接照样可点，用户自己决定去不去。
+				const finalUrl = new URL(appUrl(url), window.location.href);
+				if (finalUrl.origin === window.location.origin && document.hasFocus()) {
+					opened = window.open(finalUrl.href, "_blank", "noopener");
+				}
 			} catch {
 				opened = null;
 			}
@@ -1121,86 +1173,102 @@ export function App() {
 	// -- pasted / dropped / uploaded images (no workspace path) ---------------
 	const pasteImageId = useRef(0);
 	const lastVisionWarn = useRef(0);
-	const attachImage = (img: ProcessedImage) => {
-		// Warn when the current model can't see images — the image would still
-		// be attached but silently ignored by the provider. Throttled so adding
-		// several images at once produces one notice, not a stack.
-		const now = Date.now();
-		if (chat.state?.model && !chat.state.model.vision) {
-			if (now - lastVisionWarn.current > 10000) {
-				lastVisionWarn.current = now;
-				pushNotice("warning", t("imageNotSupported"));
+	// 以下四个函数都要作为 props 传给 memo 化的 ChatInput：流式重渲染期间引用必须
+	// 稳定，否则 shallow 比较失效、输入框整棵重渲染。之前用 useCallback(fn, [fn])
+	// 包普通函数 —— 依赖每次渲染都是新的，包装形同虚设；这里改成依赖正确的
+	// useCallback（deps 里的 chat.state?.model 是服务端跨快照复用的稳定引用）。
+	const attachImage = useCallback(
+		(img: ProcessedImage) => {
+			// Warn when the current model can't see images — the image would still
+			// be attached but silently ignored by the provider. Throttled so adding
+			// several images at once produces one notice, not a stack.
+			const now = Date.now();
+			if (chat.state?.model && !chat.state.model.vision) {
+				if (now - lastVisionWarn.current > 10000) {
+					lastVisionWarn.current = now;
+					pushNotice("warning", t("imageNotSupported"));
+				}
 			}
-		}
-		const key = `paste-${++pasteImageId.current}`;
-		setAttachments((prev) => [
-			...prev,
-			{
-				path: "",
-				key,
-				name: img.name,
-				imageData: img.data,
-				mimeType: img.mimeType,
-			},
-		]);
-	};
-	const addImageFiles = async (files: File[]) => {
-		for (const f of files) {
-			const img = await fileToProcessedImage(f);
-			if (!img) {
-				pushNotice("error", t("imageLoadFailed", { name: f.name }));
-				continue;
+			const key = `paste-${++pasteImageId.current}`;
+			setAttachments((prev) => [
+				...prev,
+				{
+					path: "",
+					key,
+					name: img.name,
+					imageData: img.data,
+					mimeType: img.mimeType,
+				},
+			]);
+		},
+		[chat.state?.model, pushNotice, t],
+	);
+	const addImageFiles = useCallback(
+		async (files: File[]) => {
+			for (const f of files) {
+				const img = await fileToProcessedImage(f);
+				if (!img) {
+					pushNotice("error", t("imageLoadFailed", { name: f.name }));
+					continue;
+				}
+				attachImage(img);
 			}
-			attachImage(img);
-		}
-	};
+		},
+		[attachImage, pushNotice, t],
+	);
 
 	// -- dropped / uploaded files (any type, no workspace path) ---------------
 	/** Keep in sync with MAX_UPLOAD_BYTES in agent-service.ts. */
 	const MAX_UPLOAD_BYTES = 20 * 1024 * 1024;
 	const uploadId = useRef(0);
-	const attachLocalFile = async (f: File) => {
-		if (f.size > MAX_UPLOAD_BYTES) {
-			pushNotice("warning", t("fileTooLarge", { name: f.name, size: MAX_UPLOAD_BYTES / 1024 / 1024 }));
-			return;
-		}
-		let base64: string;
-		try {
-			const dataUrl = await new Promise<string>((res, rej) => {
-				const r = new FileReader();
-				r.onload = () => res(r.result as string);
-				r.onerror = () => rej(r.error ?? new Error("read failed"));
-				r.readAsDataURL(f);
-			});
-			base64 = dataUrl.replace(/^data:[^;]*;base64,/, "");
-		} catch {
-			pushNotice("error", t("fileLoadFailed", { name: f.name }));
-			return;
-		}
-		const key = `upload-${++uploadId.current}`;
-		setAttachments((prev) => [
-			...prev,
-			{
-				path: "",
-				key,
-				name: f.name,
-				fileData: base64,
-				size: f.size,
-				mimeType: f.type || undefined,
-			},
-		]);
-	};
-	const addLocalFiles = async (files: File[]) => {
-		for (const f of files) {
-			// Raster images go through the resize/encode pipeline (vision content);
-			// everything else — including SVG — is uploaded raw and attached by path.
-			if (isRasterImage(f.type)) {
-				await addImageFiles([f]);
-			} else {
-				await attachLocalFile(f);
+	const attachLocalFile = useCallback(
+		async (f: File) => {
+			if (f.size > MAX_UPLOAD_BYTES) {
+				pushNotice("warning", t("fileTooLarge", { name: f.name, size: MAX_UPLOAD_BYTES / 1024 / 1024 }));
+				return;
 			}
-		}
-	};
+			let base64: string;
+			try {
+				const dataUrl = await new Promise<string>((res, rej) => {
+					const r = new FileReader();
+					r.onload = () => res(r.result as string);
+					r.onerror = () => rej(r.error ?? new Error("read failed"));
+					r.readAsDataURL(f);
+				});
+				base64 = dataUrl.replace(/^data:[^;]*;base64,/, "");
+			} catch {
+				pushNotice("error", t("fileLoadFailed", { name: f.name }));
+				return;
+			}
+			const key = `upload-${++uploadId.current}`;
+			setAttachments((prev) => [
+				...prev,
+				{
+					path: "",
+					key,
+					name: f.name,
+					fileData: base64,
+					size: f.size,
+					mimeType: f.type || undefined,
+				},
+			]);
+		},
+		[MAX_UPLOAD_BYTES, pushNotice, t],
+	);
+	const addLocalFiles = useCallback(
+		async (files: File[]) => {
+			for (const f of files) {
+				// Raster images go through the resize/encode pipeline (vision content);
+				// everything else — including SVG — is uploaded raw and attached by path.
+				if (isRasterImage(f.type)) {
+					await addImageFiles([f]);
+				} else {
+					await attachLocalFile(f);
+				}
+			}
+		},
+		[addImageFiles, attachLocalFile],
+	);
 
 	// Edit-and-re-ask: the server forks a new session at that message and re-asks
 	// the edited text there (stable callback — Message is memoized). Attachments
@@ -1248,8 +1316,10 @@ export function App() {
 	//（两者都有单测，空 sessionId 的瞬时态不清）。
 	useComposerSessionReset(chat.state?.sessionId ?? "", clearAttachments);
 	const removeAttachmentCb = useCallback(removeAttachment, []);
-	const addImageFilesCb = useCallback(addImageFiles, [addImageFiles]);
-	const addLocalFilesCb = useCallback(addLocalFiles, [addLocalFiles]);
+	// addImageFiles/addLocalFiles 本体已是依赖正确的 useCallback（见上），引用在
+	// 流式重渲染期间稳定，直接传给 memo 化的 ChatInput，无需再包一层。
+	const addImageFilesCb = addImageFiles;
+	const addLocalFilesCb = addLocalFiles;
 	const searchFilesCb = useCallback(
 		(reqId: number, query: string) => send({ type: "search_files", reqId, query }),
 		[send],
