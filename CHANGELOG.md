@@ -17,6 +17,7 @@
 
 ### Fixed
 
+- **悬空工具调用修复收紧分支与上线检查（#332）** —— `healDanglingToolCallFile` 与 `findDanglingToolCalls` 现在严格过滤 `stopReason` 为 `error` 或 `aborted` 的 assistant（不上线幽灵调用，避免在文件尾补合成结果构造出孤儿 `role: "tool"` 导致 DeepSeek/OpenAI 400 报错），且文件落盘修复仅沿活跃分支 `lastId` 向上回溯当前尾部生效 assistant，彻底跳过老分支遗留的悬空调用，防止跨分支污染。
 - **微信通道插件问题修复（#345）** —— 微信回包自动剥离内部控制标记（如 `[[plan:...]]`、`[[todo:...]]`、`[[conv:...]]`、`[[notify:...]]` 等），仅向微信发送用户可见正文；按微信用户 ID 隔离 `accountId`（`wx_${hash}`），为每个用户分配独立的伪客户端与会话，防止上下文串扰与关闭冲突；增加 `earlyRuns` 机制妥善承接极快完成的运行事件，消除回包竞态。
 - **SoL-Pi 节能看板弹窗展示优化** —— 扩展运行与配置区域默认采用折叠组件收拢，避免未折叠时挤占弹窗主视区。
 
