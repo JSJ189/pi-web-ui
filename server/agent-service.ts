@@ -17,7 +17,17 @@ import "./patch-remote-catalog.js";
 import { spawn } from "node:child_process";
 import { createHash, randomUUID } from "node:crypto";
 import { createRequire } from "node:module";
-import { appendFileSync, existsSync, readFileSync, rmSync, statSync, mkdirSync, watch, writeFileSync } from "node:fs";
+import {
+	appendFileSync,
+	existsSync,
+	readFileSync,
+	renameSync,
+	rmSync,
+	statSync,
+	mkdirSync,
+	watch,
+	writeFileSync,
+} from "node:fs";
 import { homedir } from "node:os";
 import { basename, delimiter, dirname, join, resolve, sep } from "node:path";
 import { fileURLToPath } from "node:url";
@@ -1661,6 +1671,10 @@ export interface Conversation {
 	/** 子代理模板带非空扩展白名单时为 true：插件/MCP 工具不进该会话（工厂期不注
 	 *  册、refreshPluginTools 不补），与 skills/extensionsOverride 的白名单语义对齐。 */
 	subagentBarsPluginTools?: boolean;
+	/** 子代理派发时套用的模板快照（runtime factory 的 apply 参数）。forceReset
+	 *  重建 runtime 时必须原样复用 —— 否则被看门狗强杀的子代理重建后会回落主
+	 *  会话的 system prompt/技能/扩展白名单（模板形同虚设）。 */
+	subagentTemplate?: SubagentTemplate;
 	/** 子代理最近一次运行报错的文本（快照 error 字段的只读缓存位），消息内容不变 /
 	 *  会话重建时保留，避免重复向主对话发 notice（subagentErrorNotified 是去重键）。 */
 	subagentError?: string;
@@ -1807,6 +1821,31 @@ function previewToolResult(result: unknown): string {
 	}
 }
 
+/**
+ * 转录整文件重写的原子落盘：先写同目录临时文件再 rename。转录是 append-only
+ * 的唯一事实源，compaction 收尾/清理的整文件重写若中途被打断（进程被杀/断电），
+ * 原地 writeFileSync 会留下截断的 JSONL；同目录 rename 是原子的，最坏情况是
+ * 旧文件原样保留，绝不会出现半份转录。Windows 下目标被外部占用（阅读器/杀软
+ * 锁）时 rename 可能 EPERM —— 退回原地写保住功能（旧行为），不因小概率锁失败丢更新。
+ */
+function atomicWriteFileSync(file: string, data: string): void {
+	const tmp = `${file}.${process.pid}.${Date.now()}.tmp`;
+	try {
+		writeFileSync(tmp, data);
+		try {
+			renameSync(tmp, file);
+		} catch {
+			writeFileSync(file, data);
+		}
+	} finally {
+		try {
+			rmSync(tmp, { force: true });
+		} catch {
+			// 临时文件清不掉只能留给下次（同目录 .tmp，不影响转录本身）
+		}
+	}
+}
+
 /** Cap on simultaneously open NON-subagent conversations of ONE project (each keeps a full
  *  runtime alive; conversations of other projects keep their own lists).
  *  子代理不计入：子代理是 inMemory 后台任务，不参与此上限，既不占位也不被此上限拦截。 */
@@ -1885,12 +1924,19 @@ function messageSearchText(m: { content?: unknown }): string {
 	return parts.join("\n");
 }
 
+/** 转录全文扫描/整读的大小上限（16MB，与 readHistorySession 一致）：
+ *  超限文件同步 readFileSync 会卡事件循环数百毫秒起，搜索不值得。 */
+const MAX_TRANSCRIPT_SCAN_BYTES = 16 * 1024 * 1024;
+
 /** 扫描一个会话转录文件，收集文本命中查询的消息锚点（role + timestamp，
- *  按转录顺序，最多 cap 个）。仅 user/assistant 消息参与，与搜索范围一致。 */
+ *  按转录顺序，最多 cap 个）。仅 user/assistant 消息参与，与搜索范围一致。
+ *  超过大小上限的转录直接跳过（stat 先行，不整读）—— 全局搜索逐会话同步
+ *  扫描，无上限时一个大转录就能冻住整个事件循环。 */
 function collectSessionAnchors(filePath: string, q: string, cap = 10): MessageAnchor[] {
 	const anchors: MessageAnchor[] = [];
 	if (!q) return anchors;
 	try {
+		if (statSync(filePath).size > MAX_TRANSCRIPT_SCAN_BYTES) return anchors;
 		const lines = readFileSync(filePath, "utf8").split("\n");
 		for (const line of lines) {
 			if (!line.trim()) continue;
@@ -2045,11 +2091,26 @@ export interface TakeoverPageCall {
 	conversationId: string;
 }
 
-/** 手动过户载荷：对话对象（含 runtime/终端/队列/缓存）整体搬迁 + 桥接中的问卷/页调用. */
+/** 手动过户时跟着对话一起搬走的待审批（id 在目标会话重排）. */
+export interface TakeoverApproval {
+	resolve: (res: ToolApprovalResolution) => void;
+	toolCallId: string;
+	toolName: string;
+	params: Record<string, unknown> | unknown;
+	reason?: string;
+	reasonEn?: string;
+	category?: UiApprovalCategory;
+	conversationId: string;
+	conversationTitle?: string;
+	createdAt: number;
+}
+
+/** 手动过户载荷：对话对象（含 runtime/终端/队列/缓存）整体搬迁 + 桥接中的问卷/页调用/待审批. */
 export interface TakeoverPayload {
 	convs: Conversation[];
 	questions: TakeoverQuestion[];
 	pageCalls: TakeoverPageCall[];
+	approvals: TakeoverApproval[];
 }
 
 /** 同项目判定（纯函数）：调度视口回退与 id 唤醒的 cwd 护栏用。
@@ -2065,6 +2126,45 @@ export function sameCwd(a: string, b: string): boolean {
 	} catch {
 		return false;
 	}
+}
+
+/**
+ * 超时杀进程树的决策（纯函数，可单测）。runAsync 的超时兜底用：
+ * - win32：shell:true 实际起的是 cmd.exe，p.kill() 只杀 cmd 本身，npm/git 的
+ *   孙进程照活 —— 必须走 `taskkill /PID <pid> /T /F` 才能整树带走；
+ * - posix：配合 spawn 的 detached:true，向负 pid（整组）发 SIGTERM。
+ * 返回决策而不是直接执行，执行留在调用方（便于注入/测试）。
+ */
+export function processTreeKillPlan(
+	platform: NodeJS.Platform,
+	pid: number | undefined,
+):
+	| { kind: "taskkill"; cmd: string; args: string[] }
+	| { kind: "group-signal"; signal: NodeJS.Signals }
+	| { kind: "none" } {
+	if (!pid || pid <= 0) return { kind: "none" };
+	if (platform === "win32") return { kind: "taskkill", cmd: "taskkill", args: ["/PID", String(pid), "/T", "/F"] };
+	return { kind: "group-signal", signal: "SIGTERM" };
+}
+
+/**
+ * /cwd 目标解析（纯函数，可单测）：
+ * - 相对路径以**当前会话 cwd** 为基准（/cwd src = 当前项目的 src），不按 server
+ *   进程 cwd 解析 —— 两者经常不同，按进程 cwd 切必错位。绝对路径不受基准影响
+ *   （resolve 遇到绝对段会丢弃前面的基准）。
+ * - win32 裸盘符（"C:"）：resolve 会按该盘当前目录解析，必须显式指到盘根；仅
+ *   win32 生效——posix 下 "C:" 仍是普通相对路径，避免误伤同名目录。
+ */
+export function resolveCwdTarget(
+	raw: string,
+	sessionCwd: string,
+	platform: NodeJS.Platform = process.platform,
+): string {
+	const trimmed = String(raw ?? "").trim();
+	if (platform === "win32" && /^[A-Za-z]:$/.test(trimmed)) {
+		return `${trimmed.toUpperCase()}\\`;
+	}
+	return resolve(sessionCwd, trimmed);
 }
 
 export class ClientSession {
@@ -2346,6 +2446,9 @@ export class ClientSession {
 		conv.parentId = parentId ?? this.activeId ?? undefined;
 		conv.subagentType = type;
 		conv.subagentPrompt = prompt;
+		// 模板快照留在对话上：forceReset 重建 runtime 时工厂要按同一模板组装
+		// （system prompt/技能/扩展白名单），否则重建后回落主会话设置。
+		conv.subagentTemplate = apply;
 		// 插件工具门与模板扩展白名单对齐：白名单非空时插件/MCP 工具（无 SDK
 		// extensionKey 身份）不进该会话。工厂期 customTools 不注册 + 下面的
 		// syncPluginTools 不回补，模板热改不影响已运行的子代理（与 prompt/技能一致）。
@@ -2986,10 +3089,17 @@ export class ClientSession {
 			},
 			readHistorySession: async (path) => {
 				const all = await SessionManager.listAll(piSessionsRoot());
-				const hit = all.find((s) => resolve(s.path) === resolve(path));
+				// win32 路径大小写不敏感：客户端回传的盘符/目录大小写常与服务端
+				// 列表不一致，严格相等会把合法请求误判为“不在白名单”。大小写
+				// 归一后再比（posix 不受影响）。
+				const norm = (p: string): string => {
+					const r = resolve(p);
+					return process.platform === "win32" ? r.toLowerCase() : r;
+				};
+				const hit = all.find((s) => norm(s.path) === norm(path));
 				if (!hit) return undefined;
 				try {
-					if (statSync(hit.path).size > 16 * 1024 * 1024) return undefined;
+					if (statSync(hit.path).size > MAX_TRANSCRIPT_SCAN_BYTES) return undefined;
 					const text = readFileSync(hit.path, "utf8");
 					return {
 						title: hit.name || hit.firstMessage,
@@ -4015,7 +4125,7 @@ export class ClientSession {
 					textEn: `Restart interrupted "${r.title}" — reopening it and continuing automatically.`,
 				});
 				await this.switchSession(r.sessionFile!);
-				await this.prompt(continueText);
+				await this.promptResumedConversation(r.sessionFile!, continueText);
 			} catch {
 				// switchSession/prompt already surface failures as notices;
 				// one bad session must not block the rest.
@@ -4030,6 +4140,48 @@ export class ClientSession {
 		} catch {
 			/* staying on the last resumed session is a fine fallback */
 		}
+	}
+
+	/** 找持有指定转录文件的本地对话 id（找不到 = 已被关闭/搬走/还没建好）。 */
+	private conversationIdBySessionFile(file: string): string | null {
+		let abs: string;
+		try {
+			abs = resolve(file);
+		} catch {
+			return null;
+		}
+		for (const c of this.convs.values()) {
+			try {
+				const f = c.session.sessionFile;
+				if (f && resolve(f) === abs) return c.id;
+			} catch {
+				// session 被替换中 —— 跳过
+			}
+		}
+		return null;
+	}
+
+	/**
+	 * 恢复流程的「继续」投递（resumeInterrupted 专用）。
+	 * 读码结论：prompt() 在**调用时刻**同步捕获 active 对话（进入函数第一行取
+	 * this.conv，先于任何 await），调用之后发生的切换不影响投递目标。唯一的错投
+	 * 窗口在 switchSession 内部：activeId 置位后还要 await bindSession/恢复模型，
+	 * 期间用户的并发切换会把 active 挪走 —— 恢复循环接着调 prompt 就会把「继续」
+	 * 投进用户当前对话。因此投递前把目标对话修回 active，并在同一同步执行段内
+	 * （上一个 await 恢复点之后、无新 await 处）核对 activeId 后才调用 prompt；
+	 * 修不回（再次被抢）就放弃自动继续 —— 宁可少投，不投错对话。
+	 */
+	private async promptResumedConversation(sessionFile: string, text: string): Promise<void> {
+		for (let attempt = 0; attempt < 2; attempt++) {
+			const targetId = this.conversationIdBySessionFile(sessionFile);
+			if (!targetId) return; // 目标对话已没了（被关/被过户），不投
+			if (this.activeId === targetId) {
+				await this.prompt(text);
+				return;
+			}
+			await this.switchConversation(targetId);
+		}
+		// 两次都没能稳定拿回 active：放弃自动继续，用户可手动点开那条对话。
 	}
 
 	/** Add a socket to this client's broadcast set; flushes buffered startup notices. */
@@ -5732,6 +5884,20 @@ export class ClientSession {
 		this.pendingQuestions.clear();
 	}
 
+	/** 关闭所有挂起审批（dispose 时清理）：以「拒绝」解析，避免等答复的
+	 *  Promise 与对应 runtime 泄漏（会话没了，审批弹窗永远不会有人点）。 */
+	cancelPendingApprovals(): void {
+		for (const [id, a] of this.pendingApprovals) {
+			this.pendingApprovals.delete(id);
+			try {
+				a.resolve({ decision: "deny", reason: "会话已关闭" });
+			} catch {
+				// 单个 resolve 异常不影响其余清理
+			}
+			this.emit({ type: "tool_approval_resolved", id });
+		}
+	}
+
 	// -----------------------------------------------------------------------
 	// 浏览器页面桥（标准 pi 引擎 browser_page customTool）
 	// -----------------------------------------------------------------------
@@ -5938,6 +6104,10 @@ export class ClientSession {
 					// Windows: npm and friends are .cmd shims — Node can only exec
 					// them through the shell (otherwise spawn npm → ENOENT).
 					shell: process.platform === "win32",
+					// posix 下让子进程自成进程组：超时时能整组杀掉（孙进程不残留）。
+					// 代价是父进程退出后子进程可能短暂存活——这些都是带超时的短命令，
+					// 可接受；win32 不需要（走 taskkill /T）。
+					detached: process.platform !== "win32",
 				});
 			} catch (err) {
 				resolve({ code: -1, out: String(err) });
@@ -5951,7 +6121,24 @@ export class ClientSession {
 				clearTimeout(t);
 				resolve({ code, out: text ?? out });
 			};
-			const t = setTimeout(() => p.kill(), timeoutMs);
+			const t = setTimeout(() => {
+				// 只 p.kill() 杀不掉整棵树（win32 下杀的是 cmd.exe 壳，posix 下
+				// 杀不到孙进程）—— 按平台走整树杀，失败再退回 p.kill 兜底。
+				const plan = processTreeKillPlan(process.platform, p.pid);
+				try {
+					if (plan.kind === "taskkill") {
+						// taskkill 独立进程执行：父 cmd 死活不影响命中目标树。
+						spawn(plan.cmd, plan.args, { stdio: "ignore", windowsHide: true });
+					} else if (plan.kind === "group-signal") {
+						process.kill(-p.pid!, plan.signal);
+					} else {
+						p.kill();
+					}
+				} catch {
+					// 进程组已不在（正常退出竞态）等 —— 退回直接杀。
+					p.kill();
+				}
+			}, timeoutMs);
 			p.stdout?.on("data", (d: Buffer) => (out += d.toString()));
 			p.stderr?.on("data", (d: Buffer) => (out += d.toString()));
 			p.on("error", (err) => done(-1, String(err)));
@@ -8085,7 +8272,9 @@ export class ClientSession {
 					return conv.isEphemeral ? SessionManager.inMemory(conv.cwd) : SessionManager.create(conv.cwd);
 				},
 				(m) =>
-					createAgentSessionRuntime(this.makeRuntimeFactory(conv.terminals, undefined, conv.id), {
+					// 子代理带模板时按原模板重建（conv.subagentTemplate 是派发时工厂
+					// 用的同一快照）；普通对话 undefined，行为不变。
+					createAgentSessionRuntime(this.makeRuntimeFactory(conv.terminals, conv.subagentTemplate, conv.id), {
 						cwd: conv.cwd,
 						agentDir: this.agentDir,
 						sessionManager: m,
@@ -8398,7 +8587,7 @@ export class ClientSession {
 				};
 				lines[idx] = JSON.stringify(done);
 			}
-			writeFileSync(file, lines.join("\n"));
+			atomicWriteFileSync(file, lines.join("\n"));
 		} catch {
 			// Best-effort, same as the write path.
 		}
@@ -8417,7 +8606,7 @@ export class ClientSession {
 			const raw = readFileSync(file, "utf8");
 			if (!raw.includes('"pi-web-ui/compaction-pending"')) return;
 			const kept = raw.split("\n").filter((line) => !line.includes("pi-web-ui/compaction-pending"));
-			writeFileSync(file, kept.join("\n"));
+			atomicWriteFileSync(file, kept.join("\n"));
 			this.emitCompactionInterruptedNotice();
 		} catch {
 			// Best-effort, same as the write path.
@@ -8678,9 +8867,30 @@ export class ClientSession {
 				pageCalls.push({ resolve: p.resolve, req: p.req, timeoutMs: p.timeoutMs, conversationId: p.conversationId });
 			}
 		}
+		// 待审批跟对话走：留在源会话就是幽灵弹窗（id 失效点不动，runtime 已搬走，
+		// 永远等不到答复）。只搬归属明确的（conversationId 对得上，与问卷/页调用
+		// 同一规则）；目标侧按新 id 重发弹窗，等待中的 Promise 原样过户不 resolve。
+		const approvals: TakeoverApproval[] = [];
+		for (const [aid, a] of this.pendingApprovals) {
+			if (a.conversationId !== undefined && set.has(a.conversationId)) {
+				this.pendingApprovals.delete(aid);
+				approvals.push({
+					resolve: a.resolve,
+					toolCallId: a.toolCallId,
+					toolName: a.toolName,
+					params: a.params,
+					reason: a.reason,
+					reasonEn: a.reasonEn,
+					...(a.category ? { category: a.category } : {}),
+					conversationId: a.conversationId,
+					...(a.conversationTitle ? { conversationTitle: a.conversationTitle } : {}),
+					createdAt: a.createdAt,
+				});
+			}
+		}
 		this.emitConversations();
 		this.flushSnapshot();
-		return { ok: true, payload: { convs, questions, pageCalls } };
+		return { ok: true, payload: { convs, questions, pageCalls, approvals } };
 	}
 
 	/**
@@ -8760,7 +8970,64 @@ export class ClientSession {
 				timeoutMs: p.timeoutMs,
 			});
 		}
+		// 迁入的待审批按新 id 重新挂上（等待中的 Promise 未动，模型还在等）。
+		// 主对话的立即弹窗（子代理的靠角标与快照呈现，与问卷同一口径）。
+		for (const a of payload.approvals) {
+			const nid = `appr-${++this.approvalSeq}`;
+			const aConvId = fix(a.conversationId);
+			this.pendingApprovals.set(nid, {
+				id: nid,
+				toolCallId: a.toolCallId,
+				toolName: a.toolName,
+				params: a.params,
+				reason: a.reason,
+				reasonEn: a.reasonEn,
+				...(a.category ? { category: a.category } : {}),
+				conversationId: aConvId,
+				...(a.conversationTitle ? { conversationTitle: a.conversationTitle } : {}),
+				resolve: a.resolve,
+				createdAt: a.createdAt,
+			});
+			if (aConvId === mainId) {
+				this.emit({
+					type: "tool_approval_pending",
+					id: nid,
+					toolCallId: a.toolCallId,
+					toolName: a.toolName,
+					params: a.params as Record<string, unknown>,
+					reason: a.reason,
+					reasonEn: a.reasonEn,
+					...(a.category ? { category: a.category } : {}),
+					conversationId: aConvId,
+					...(a.conversationTitle ? { conversationTitle: a.conversationTitle } : {}),
+				});
+			}
+		}
 		return mainId;
+	}
+
+	/**
+	 * 切到新工作目录后的“跟随面”刷新（roots / 插件钩子 / 最近项目 / 历史列表 /
+	 * 文件树 / 命令目录）。调用方先把 this.cwd 改好再调本函数。
+	 * switchConversation 跨项目切换、set_cwd、switchSession 打开别项目的历史
+	 * 会话三处共用 —— 之前 switchSession 只改了 cwd 没同步 roots，文件树/
+	 * 工作区插件/历史列表都还停在旧项目。集中一处避免再漏。
+	 */
+	private applyCwdSideEffects(abs: string): void {
+		this.roots = this.stateStore.getWorkspaceRoots(this.clientId, abs);
+		// 工作区跟随型插件（编辑器文件树等）同步切根。
+		try {
+			this.onCwdChanged?.(abs, this.roots);
+		} catch {
+			/* 钩子异常不影响主流程 */
+		}
+		// Remember the new workspace (restore target + recent-project entry).
+		this.stateStore.remember(this.clientId, abs);
+		void this.pushProjects();
+		this.refreshSessionsOnSwitch();
+		void this.listFiles(undefined);
+		// Commands are per-project (.pi/commands.json in the current cwd).
+		void this.listCommands();
 	}
 
 	/** Switch the ACTIVE conversation without interrupting any other chat. */
@@ -8785,7 +9052,6 @@ export class ClientSession {
 		void this.pushSlashCommands();
 		if (cwdChanged) {
 			this.cwd = newCwd;
-			this.roots = this.stateStore.getWorkspaceRoots(this.clientId, newCwd);
 			// 模型/key 恢复不挡快照：后台做，带代际 guard（用户又切走就跳过），
 			// 做完补一次 flush 刷新模型栏。
 			{
@@ -8804,16 +9070,7 @@ export class ClientSession {
 			}
 			// Mirror set_cwd's project-switch side-effects so the whole UI follows
 			// the new workspace, not just the chat pane.
-			try {
-				this.onCwdChanged?.(newCwd, this.roots);
-			} catch {
-				/* hook failure must not break the switch */
-			}
-			this.stateStore.remember(this.clientId, newCwd);
-			void this.pushProjects();
-			this.refreshSessionsOnSwitch();
-			void this.listFiles(undefined);
-			void this.listCommands();
+			this.applyCwdSideEffects(newCwd);
 		}
 		// 当前打开对话变了 → 插件重拉（轨迹视图切会话后即刷新，不等轮询）。
 		this.notifyConversationChanged();
@@ -9115,6 +9372,23 @@ export class ClientSession {
 					});
 					return;
 				}
+			}
+			// #145 同款守卫：删之前查一遍其他客户端是否持有这份转录 ——
+			// 对端 runtime 还开着时硬删等于把文件从活 writer 身下抽走（跑着时
+			// 更是两支并发写）。被持有就拒绝删除；本客户端自己的持有已在上面处理。
+			const otherOwner = this.findSessionOwner?.(abs);
+			if (otherOwner) {
+				this.emit({
+					type: "notice",
+					level: "warning",
+					text: otherOwner.isStreaming
+						? `该对话正在另一处运行中（「${otherOwner.title}」），已停止删除；请先回到原窗口停止或关闭它`
+						: `该对话在另一处仍开着（「${otherOwner.title}」），已停止删除；请先在原窗口关闭它再删`,
+					textEn: otherOwner.isStreaming
+						? `This conversation is running in another window ("${otherOwner.title}"); delete aborted — stop or close it there first`
+						: `This conversation is still open in another window ("${otherOwner.title}"); delete aborted — close it there first`,
+				});
+				return;
 			}
 			rmSync(abs, { force: true });
 			// 转录删了，sidecar 再留着就是孤儿，一起清掉（不存在不报错）。
@@ -9826,6 +10100,9 @@ export class ClientSession {
 			if (displaced) this.removeConversation(displaced.id);
 			await this.bindSession();
 			this.cwd = targetCwd;
+			// 打开的历史会话可能属于另一个项目 —— 工作区跟随面（roots/文件树/
+			// 历史列表/命令目录/最近项目）必须跟着切，否则 UI 停在旧项目。
+			this.applyCwdSideEffects(targetCwd);
 			await this.restoreProjectProviderKeysForCwd(targetCwd);
 			await this.restoreProjectModelForCwd(targetCwd);
 			this.conv.lastActiveAt = Date.now();
@@ -10006,8 +10283,34 @@ export class ClientSession {
 				title: targetConv.title,
 			};
 
+			// 与 newChat/switchSession 同一护栏：fork 出的对话也占项目名额，被换下
+			// 的旧 active 也要走运行列表生命周期（该保留的保留、该释放的释放）。
+			// 之前两者皆无 —— 可以无限 fork 堆爆名额，旧对话也永远留在列表里。
+			// 顺序照 switchSession：新 runtime 建好才 displace，失败不伤现有对话。
+			const oldListed = this.conv.listed;
+			const displaced = this.displaceActive();
+			const openInProject =
+				[...this.convs.values()].filter((c) => c.cwd === targetConv.cwd && !c.isSubagent && !c.isEphemeral).length +
+				1 -
+				(displaced?.cwd === targetConv.cwd && !displaced?.isSubagent && !displaced?.isEphemeral ? 1 : 0);
+			if (openInProject > MAX_OPEN_CONVERSATIONS) {
+				// displaceActive() 可能只是把旧对话标成后台展示（presentation-only）；
+				// 没有切换发生时回滚该标记，新 fork 的 runtime/终端直接释放。
+				this.conv.listed = oldListed;
+				terminals.killAll();
+				await runtime.dispose();
+				this.emit({
+					type: "notice",
+					level: "warning",
+					text: `当前项目运行的对话已达上限（${MAX_OPEN_CONVERSATIONS} 个），请先打开某个对话并离开（不继续对话）以移出列表`,
+					textEn: `This project already has the max open conversations (${MAX_OPEN_CONVERSATIONS}). Open one and leave it (without continuing) to remove it from the list.`,
+				});
+				return;
+			}
+
 			this.convs.set(conversationId, newConv);
 			this.activeId = conversationId;
+			if (displaced) this.removeConversation(displaced.id);
 			await this.bindSession();
 
 			if (prevModel && this.sharedModelRuntime) {
@@ -10625,7 +10928,7 @@ export class ClientSession {
 
 	async setCwd(newCwd: string): Promise<void> {
 		try {
-			const { resolve, sep } = await import("node:path");
+			const { resolve } = await import("node:path");
 			this.files.unwatchGit(); // stale repo's watcher must not fire across projects
 			const fs = await import("node:fs/promises");
 			const trimmed = newCwd.trim();
@@ -10639,12 +10942,9 @@ export class ClientSession {
 				});
 				return;
 			}
-			// Windows 裸盘符（"C:"）：resolve 会按该盘当前目录解析，必须显式指到盘根；
-			// 仅 win32 生效——posix 下 "C:" 仍是普通相对路径，避免误伤同名目录。
-			const abs =
-				process.platform === "win32" && /^[A-Za-z]:$/.test(trimmed)
-					? `${trimmed.toUpperCase()}${sep}`
-					: resolve(trimmed);
+			// Windows 裸盘符（"C:"）与相对路径基准的处理收敛到 resolveCwdTarget
+			// （纯函数，含 win32/posix 差异说明与单测）。
+			const abs = resolveCwdTarget(trimmed, this.cwd);
 			const st = await fs.stat(abs);
 			if (!st.isDirectory()) {
 				throw new Error("路径不是目录");
@@ -10760,7 +11060,6 @@ export class ClientSession {
 			this.conv.promptedSinceActive = false;
 			this.conv.lastActiveAt = Date.now();
 			this.cwd = abs;
-			this.roots = this.stateStore.getWorkspaceRoots(this.clientId, abs);
 			// 模型/key 恢复不挡快照：后台做，带切换代际 guard（用户又切走就跳过，
 			// 否则会把旧项目的 key 套到新对话上），做完补一次 flush 刷新模型栏。
 			{
@@ -10777,15 +11076,7 @@ export class ClientSession {
 					}
 				})();
 			}
-			// 工作区跟随型插件（编辑器文件树等）同步切根。
-			try {
-				this.onCwdChanged?.(abs, this.roots);
-			} catch {
-				/* 钩子异常不影响主流程 */
-			}
-			// Remember the new workspace (restore target + recent-project entry).
-			this.stateStore.remember(this.clientId, abs);
-			void this.pushProjects();
+			this.applyCwdSideEffects(abs);
 			this.webUi.refresh();
 			this.emitConversations();
 			this.goalSvc.emitGoalStatus();
@@ -10797,10 +11088,6 @@ export class ClientSession {
 				text: `已切换到工作目录：${abs}`,
 				textEn: `Switched to directory: ${abs}`,
 			});
-			this.refreshSessionsOnSwitch();
-			void this.listFiles(undefined);
-			// Commands are per-project (.pi/commands.json in the current cwd).
-			void this.listCommands();
 			// 切项目即换了当前打开对话 → 插件重拉。
 			this.notifyConversationChanged();
 			this.pushSettings();
@@ -11109,6 +11396,8 @@ export class ClientSession {
 		this.cancelPendingQuestions();
 		// 同理关闭挂起的页面调用（以失败解析：对面是扩展，没有答可等）。
 		this.cancelPendingPageCalls();
+		// 挂起的工具审批一并清掉（以「拒绝」解析，防 Promise/runtime 泄漏）。
+		this.cancelPendingApprovals();
 		this.bg.stop();
 		for (const conv of this.convs.values()) {
 			this.clearAllToolWatchdogs(conv);
@@ -11492,6 +11781,11 @@ export class AgentService {
 		// 伪客户端常驻一个 noop sink（chatFromScheduler 的 attach），所以不能按
 		// sinkCount 判断「有没有浏览器」—— 它永远为 1。这里就是它的回收点。
 		this.clients.delete(clientId);
+		// 先摘出 map 再异步 dispose：只删 map 的话，对话的 runtime/终端/看门狗
+		// 计时器全都留在内存里（泄漏），转录还挂着活 writer（同文件双写者风险）。
+		void cs.dispose().catch(() => {
+			// 回收失败不拦主流程：尽力而为，进程退出时 OS 兜底
+		});
 		// 通知其他客户端刷新 elsewhere 列表。
 		this.pokeExternalRunning(clientId);
 	}
@@ -12004,7 +12298,9 @@ export class AgentService {
 				// 流式增量经尾部 attachSink 直接推给新 socket）。
 				// 有其他在线标签时不认领（issue #10 隔离优先）；quiesce 排空期也放行
 				// （这是重连既有工作，不是新工作）。本段无 await，并发 attach 原子。
-				const orphan = this.findAdoptableOrphan(clientId);
+				// 伪客户端（scheduler:/plugin:，定时任务/插件的无头调用）绝不认领：
+				// 否则无头会话会改键劫持用户关浏览器留下的残会话。
+				const orphan = AgentService.isPseudoClientId(clientId) ? null : this.findAdoptableOrphan(clientId);
 				if (orphan) {
 					this.clients.delete(orphan.oldId);
 					this.clients.set(clientId, orphan.cs);
