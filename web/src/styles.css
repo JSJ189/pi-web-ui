@@ -8647,7 +8647,10 @@ div.chead[role="button"]:focus-visible,
 .dd-preset-name {
 	display: flex;
 	align-items: center;
-	gap: 6px;
+	flex-wrap: wrap;
+	gap: 4px 6px;
+	font-weight: 600;
+	color: var(--text);
 }
 .dd-preset-tag {
 	font-size: 10px;
@@ -8665,8 +8668,24 @@ div.chead[role="button"]:focus-visible,
 .dd-preset-desc {
 	display: block;
 	font-size: 11px;
+	line-height: 1.55;
 	color: var(--text-dim);
 	white-space: normal;
+}
+/* 带说明的预设/权限项：上下堆叠（名称一行、说明另起一行占满宽），
+   不跟 .dd-item 的单行左右布局抢横向空间；✓ 改绝对定位到右上角，
+   免得把说明文字挤成窄条。 */
+.dd-item:has(.dd-preset-desc) {
+	flex-direction: column;
+	align-items: stretch;
+	gap: 3px;
+	position: relative;
+	padding-right: 28px;
+}
+.dd-item:has(.dd-preset-desc).active::after {
+	position: absolute;
+	right: 10px;
+	top: 9px;
 }
 
 /* 左栏会话行的预设徽标（口径同 .subagent-badge） */

@@ -23,13 +23,12 @@
 // 它的 conversation 体系）、以及注册给每个会话的 subagent_* 工具。真正创建
 // conversation / 跑 prompt 全部在 agent-service.ts 的 spawnSubagent 里完成。
 //
-// 双语约定（issue #91）：工具 definition 描述走 bilingual(en, zh) 内联双语
-// （英文在前）；per-call 返回文本按 lang 取 pick(lang, zh, en)。
+// 返回文本按 lang 取 pick(lang, zh, en)。
 // ---------------------------------------------------------------------------
 
 import { defineTool, type ToolDefinition } from "@earendil-works/pi-coding-agent";
 import { Type } from "typebox";
-import { bilingual, pick, type ServerLang } from "./i18n.js";
+import { pick, type ServerLang } from "./i18n.js";
 
 /** 子代理的状态（由 conversation 派生的轻量视图）。 */
 export type SubagentState = "running" | "queued" | "done" | "canceled";
@@ -186,80 +185,46 @@ export function makeSubagentTools(
 		defineTool({
 			name: "subagent_spawn",
 			label: "Spawn subagent",
-			description: bilingual(
-				"Spawn an independent background subagent conversation for a self-contained deliverable task " +
-					'(research/implement/review, etc.). Subagents appear in the left "Running conversations" list with a ' +
-					"subagent badge; the user can open, supplement, or stop them. The main agent may spawn several in parallel: " +
-					"use subagent_wait_all to wait for all at once (no polling), subagent_list for live status, " +
-					"subagent_get_result for results, subagent_steer to redirect mid-run, subagent_stop to stop. " +
-					"Good for: long-running exploration, parallel research, delegating independent subtasks. Optional template " +
-					"param: use a subagent template configured in the settings panel " +
-					"(role system prompt + skills/extensions whitelist + optional model + optional thinking level); optional model " +
-					"param: explicitly set " +
-					'the subagent model (provider/id, e.g. "anthropic/claude-opus-4-5"), which overrides the template and panel ' +
-					"default; omit both = follow the main conversation's model and thinking level.",
-				"在后台启动一个独立的子代理对话，用一个明确的指令去完成一项可独立交付的工作（调研/实现/审查等）。" +
-					"子代理会出现在左栏「运行的对话」列表（带子代理标识），用户可点开查看、补充、中止。主 agent 可并行派发多个：" +
-					"用 subagent_wait_all 一次性等全部完成（不用轮询）、subagent_list 查看运行态、subagent_get_result 取结果、" +
-					"subagent_steer 中途改向、subagent_stop 停止。" +
-					"适合：长耗时探索、并行调研、独立子任务委派。可选 template 参数：使用设置面板配置的子代理模板" +
-					"（角色系统提示词 + 技能/扩展白名单 + 可选模型 + 可选思考强度）；可选 model 参数：显式指定子代理模型（provider/id 格式，" +
-					'如 "anthropic/claude-opus-4-5"），优先级高于模板与设置面板的默认模型；都不传 = 跟随主对话当前模型与思考强度。',
-			),
+			description:
+				"Spawn an independent background subagent conversation for a self-contained deliverable task (research/implement/review). " +
+				"Subagents appear in the running-conversations list; the user can open, supplement, or stop them. Several may run in parallel — " +
+				"subagent_wait_all waits for all (no polling), subagent_get_result fetches a result, subagent_list shows status, subagent_steer redirects, subagent_stop stops. " +
+				"Good for long-running exploration, parallel research, and independent subtasks.",
 			promptSnippet: "spawn an independent background subagent for a deliverable task (parallel work)",
 			parameters: Type.Object({
 				prompt: Type.String({
-					description: bilingual(
-						"Full instructions for the subagent (goal + constraints + expected output).",
-						"交给子代理的完整指令（要达成的目标 + 约束 + 期望产出）。",
-					),
+					description: "Full instructions for the subagent (goal + constraints + expected output).",
 				}),
 				type: Type.Optional(
 					Type.String({
-						description: bilingual(
-							"Subagent type/role name (e.g. explore/implement/review), for display. Default general.",
-							"子代理类型/角色名（如 explore/implement/review），用于展示。默认 general。",
-						),
+						description: "Subagent type/role name (e.g. explore/implement/review), for display. Default general.",
 					}),
 				),
 				template: Type.Optional(
 					Type.String({
-						description: bilingual(
-							"Optional: subagent template name (a preset configured under Settings → Subagent Templates, see the " +
-								"subagent_templates tool). Template = role system prompt + skills/extensions whitelist + optional " +
-								"model + optional thinking level; omit = run with the main session defaults.",
-							"可选：子代理模板名（设置面板「子代理模板」配置的预设，见 subagent_templates 工具）。" +
-								"模板 = 角色系统提示词 + 技能/扩展白名单 + 可选模型 + 可选思考强度；不传 = 不使用模板，按主会话默认配置运行。",
-						),
+						description:
+							"Subagent template name (preset from Settings → Subagent Templates; see subagent_templates): " +
+							"role system prompt + skills/extensions whitelist + optional model/thinking level. " +
+							"Omit to run with the main session defaults.",
 					}),
 				),
 				model: Type.Optional(
 					Type.String({
-						description: bilingual(
-							'Optional: subagent model "provider/id" (e.g. "anthropic/claude-opus-4-5") for this run; overrides the ' +
-								"template model and the settings-panel default; omit = template model → panel default → follow the " +
-								"main conversation model.",
-							'可选：子代理模型 "provider/id"（如 "anthropic/claude-opus-4-5"），显式指定本次子代理的模型，' +
-								"优先级高于模板自带模型与设置面板默认模型；不传 = 模板模型 → 设置面板默认模型 → 跟随主对话当前模型。",
-						),
+						description:
+							'Subagent model "provider/id" (e.g. "anthropic/claude-opus-4-5") for this run; ' +
+							"overrides template model then panel default. Omit = template model → panel default → main conversation model.",
 					}),
 				),
 				cwd: Type.Optional(
 					Type.String({
-						description: bilingual(
-							"Subagent working directory (relative/absolute). Defaults to the main session's cwd.",
-							"子代理工作目录（相对/绝对）。默认继承主会话工作目录。",
-						),
+						description: "Subagent working directory (relative/absolute). Defaults to the main session's cwd.",
 					}),
 				),
 				persist: Type.Optional(
 					Type.Boolean({
-						description: bilingual(
-							"Optional: persist this conversation to disk as a regular session (saved in history, resumable). " +
-								"Default false (lightweight in-memory subagent). Use true for tasks that need long-term retention or human follow-up.",
-							"可选：是否将该对话持久化落盘为普通对话（保存在历史会话中，可随时回顾与继续）。" +
-								"默认 false（轻量内存子代理）。需要长期留存或后续人工跟进的任务建议设为 true。",
-						),
+						description:
+							"Persist this conversation to disk as a regular session (saved in history, resumable). " +
+							"Default false (lightweight in-memory subagent); use true for tasks needing long-term retention or human follow-up.",
 					}),
 				),
 			}),
@@ -334,18 +299,15 @@ export function makeSubagentTools(
 		defineTool({
 			name: "subagent_get_result",
 			label: "Get subagent result",
-			description: bilingual(
-				"Fetch a subagent's result or current progress. If not finished yet, returns the current status and partial " +
-					"output; runtime errors (e.g. provider 400) are surfaced here as explicit errors.",
-				"取一个子代理的结果或当前运行态。若尚未完成，返回当前状态与已产出的文本；运行报错（如 provider 400）会在这里明确标出错误。",
-			),
+			description:
+				"Fetch a subagent's result or current progress. " +
+				"If not finished yet, returns the current status and partial output; " +
+				"runtime errors (e.g. provider 400) are surfaced here as explicit errors.",
 			promptSnippet: "fetch a subagent's result / current progress",
 			parameters: Type.Object({
 				runId: Type.String({
-					description: bilingual(
+					description:
 						"ConvId returned by subagent_spawn. Clicking the same conversation in the left panel opens it directly.",
-						"subagent_spawn 返回的 convId。左栏点击同名对话可直接查看。",
-					),
 				}),
 			}),
 			execute: async (_id, p) => {
@@ -395,17 +357,15 @@ export function makeSubagentTools(
 		defineTool({
 			name: "subagent_steer",
 			label: "Steer subagent",
-			description: bilingual(
+			description:
 				"Inject a message into a subagent to redirect or supplement its work (same as the user sending a message in its conversation).",
-				"向一个子代理注入一条消息，重定向/补充它的工作方向（等同用户在它的对话里发消息）。",
-			),
 			promptSnippet: "inject a message into a running subagent to redirect its work",
 			parameters: Type.Object({
 				runId: Type.String({
-					description: bilingual("Target subagent convId.", "目标子代理 convId。"),
+					description: "Target subagent convId.",
 				}),
 				message: Type.String({
-					description: bilingual("Redirect / supplementary info to inject.", "要注入的方向调整/补充信息。"),
+					description: "Redirect / supplementary info to inject.",
 				}),
 			}),
 			execute: async (_id, p) => {
@@ -437,19 +397,17 @@ export function makeSubagentTools(
 		defineTool({
 			name: "subagent_list",
 			label: "List subagents",
-			description: bilingual(
-				"List all subagents and managed conversations with their live status: convId, type, state, title, message count (errors/aborts are marked in the state).",
-				"列出全部子代理及受控对话的运行态：convId、类型、状态、标题、消息数（报错/中止的会在状态里标出）。",
-			),
+			description:
+				"List all subagents and managed conversations with their live status: " +
+				"convId, type, state, title, message count (errors/aborts are marked in the state).",
 			promptSnippet: "list all subagents and their live status",
 			parameters: Type.Object({
 				kind: Type.Optional(
 					Type.String({
 						enum: ["all", "subagent", "persistent"],
-						description: bilingual(
-							"Filter: all (default) = all managed tasks; subagent = only ephemeral in-memory subagents; persistent = only persistent conversations.",
-							"过滤类型：all（默认）= 全部受控对话；subagent = 仅临时内存子代理；persistent = 仅持久化普通对话。",
-						),
+						description:
+							"Filter: all (default) = all managed tasks; " +
+							"subagent = only ephemeral in-memory subagents; persistent = only persistent conversations.",
 					}),
 				),
 			}),
@@ -478,14 +436,13 @@ export function makeSubagentTools(
 		defineTool({
 			name: "subagent_stop",
 			label: "Stop subagent",
-			description: bilingual(
-				"Stop a running subagent (same as the user aborting it in its conversation). Already-finished ones are unaffected.",
-				"停止一个运行中的子代理（等同用户在它的对话里点中止）。已完成的不受影响。",
-			),
+			description:
+				"Stop a running subagent (same as the user aborting it in its conversation). " +
+				"Already-finished ones are unaffected.",
 			promptSnippet: "stop a running subagent",
 			parameters: Type.Object({
 				runId: Type.String({
-					description: bilingual("Target subagent convId.", "目标子代理 convId。"),
+					description: "Target subagent convId.",
 				}),
 			}),
 			execute: async (_id, p) => {
@@ -517,40 +474,25 @@ export function makeSubagentTools(
 		defineTool({
 			name: "subagent_wait_all",
 			label: "Wait for subagents",
-			description: bilingual(
-				"Wait for multiple subagents to finish at once (blocks this round until all reach a terminal state or time out), " +
-					"then summarize each result/error — no need to poll subagent_get_result. Pass runIds for specific subagents " +
-					"(convIds returned by subagent_spawn); omit = wait for own descendant subagents when called from a subagent, " +
-					"else all currently running ones. The calling session itself and its ancestors are never waited on " +
-					"(a subagent calling this without runIds won't deadlock on itself or its parent). " +
-					"Descendants spawned during the wait are picked up automatically. " +
-					"On timeout or abort of this round, returns the remaining unfinished list; call again to continue waiting. " +
-					"Good for: collecting parallel subagents.",
-				"一次性等待多个子代理全部完成（阻塞本回合直到它们都到达终态或超时），然后汇总返回每个的结果/错误——" +
-					"不用反复调 subagent_get_result 轮询。传 runIds 指定要等的子代理（subagent_spawn 返回的 convId）；" +
-					"不传 = 子代理调用时只等自己的后代，主对话调用时等当前全部运行中的子代理。调用者自身与祖先永不计入等待" +
-					"（子代理不传 runIds 时不会等自己或父级，避免父子互等到超时）。等待期间新派生的后代会自动纳入。" +
-					"超时或本轮被中止时返回剩余未完成名单，可再次调用继续等。" +
-					"适合：并行派发多个子代理后收口。",
-			),
+			description:
+				"Wait for multiple subagents to finish (blocks until all reach a terminal state or time out), then summarizes each result/error — no polling. " +
+				"Pass runIds for specific subagents; omit = own descendant subagents when called from a subagent, else all currently running. " +
+				"The calling session and its ancestors are never waited on (no self-deadlock); descendants spawned during the wait are picked up automatically. " +
+				"On timeout returns the remaining unfinished list — call again to keep waiting.",
 			promptSnippet: "wait for multiple subagents to finish (no polling) and get all results",
 			parameters: Type.Object({
 				runIds: Type.Optional(
 					Type.Array(
 						Type.String({
-							description: bilingual(
-								"ConvId of a subagent to wait for (returned by subagent_spawn). Omit = wait for all currently running.",
-								"要等待的子代理 convId（subagent_spawn 返回值）。缺省 = 等当前全部运行中的。",
-							),
+							description:
+								"ConvId of a subagent to wait for (returned by subagent_spawn). " +
+								"Omit = wait for all currently running.",
 						}),
 					),
 				),
 				timeoutSeconds: Type.Optional(
 					Type.Integer({
-						description: bilingual(
-							`Max wait in seconds (default 600, cap ~${Math.floor(WAIT_CAP_MS / 1000)} — must stay below the tool watchdog; on timeout returns the unfinished list so you can call again).`,
-							`最多等待秒数（默认 600，上限约 ${Math.floor(WAIT_CAP_MS / 1000)}——必须低于工具看门狗，超时返回未完成名单可再调）。`,
-						),
+						description: `Max wait in seconds (default 600, cap ~${Math.floor(WAIT_CAP_MS / 1000)} — stays below the tool watchdog; on timeout returns the unfinished list so you can call again).`,
 						minimum: 1,
 						maximum: Math.floor(WAIT_CAP_MS / 1000),
 					}),
@@ -729,13 +671,9 @@ export function makeSubagentTools(
 		defineTool({
 			name: "subagent_templates",
 			label: "List subagent templates",
-			description: bilingual(
-				"List the configurable subagent templates (role system prompt + skills/extensions whitelist + optional model " +
-					"and thinking level presets) for the subagent_spawn template param. Disabled templates never appear here. " +
-					"Empty list = no templates configured; subagents run with defaults.",
-				"列出设置面板「子代理模板」配置的可用模板（角色系统提示词 + 技能/扩展白名单 + 可选模型与思考强度 的组合预设），" +
-					"供 subagent_spawn 的 template 参数选用。已停用的模板不会出现在这里。list 为空 = 未配置模板，子代理按默认配置运行。",
-			),
+			description:
+				"List the configurable subagent templates (role system prompt + skills/extensions whitelist + optional model/thinking level) usable via the subagent_spawn template param. " +
+				"Disabled templates never appear; empty list = subagents run with defaults.",
 			promptSnippet: "list configurable subagent templates (role prompt + skills/extensions whitelist presets)",
 			parameters: Type.Object({}),
 			execute: async () => {
@@ -791,32 +729,19 @@ export function makeSubagentTools(
 		defineTool({
 			name: "subagent_handoff",
 			label: "Hand off to peer subagent",
-			description: bilingual(
-				"Hand off task artifacts, context, or results directly to another peer subagent (peer-to-peer routing), " +
-					"without routing through the parent conversation. Enables direct multi-agent pipeline collaboration.",
-				"将任务产物、上下文或分析结果直接交接给另一个同行子代理（对等消息路由），" +
-					"无需通过主会话中转，实现多智能体同行流水线协作。",
-			),
+			description:
+				"Hand off artifacts, context, or results directly to a peer subagent (peer-to-peer, bypassing the parent conversation).",
 			promptSnippet: "hand off task artifacts or results directly to another peer subagent",
 			parameters: Type.Object({
 				toRunId: Type.String({
-					description: bilingual(
-						"Target peer subagent convId (from subagent_list).",
-						"目标同行子代理 convId（通过 subagent_list 获取）。",
-					),
+					description: "Target peer subagent convId (from subagent_list).",
 				}),
 				payload: Type.String({
-					description: bilingual(
-						"The artifact, analysis result, or instruction to hand off to the peer subagent.",
-						"要交接给同行子代理的产物、分析结果或后续任务指令。",
-					),
+					description: "The artifact, analysis result, or instruction to hand off to the peer subagent.",
 				}),
 				fromRunId: Type.Optional(
 					Type.String({
-						description: bilingual(
-							"Source subagent convId. Optional: defaults to the current calling subagent.",
-							"来源子代理 convId。可选：默认自动使用当前调用的子代理。",
-						),
+						description: "Source subagent convId. Optional: defaults to the current calling subagent.",
 					}),
 				),
 			}),

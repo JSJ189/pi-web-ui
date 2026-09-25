@@ -6,8 +6,19 @@
  *     与 Online Context Compact（在线边界压缩）规避的上下文 Token 总量；
  *  2. 借鉴 atfa/pi-sol-plan-footer 解析 SoL-Pi 规划（Plan）状态与进度；
  *  3. 将节省指标与计划徽标实时展示在 pi-web-ui 底部状态栏（bottombar）；
- *  4. 点击底栏徽标即可弹出详细节省清单与工具分类统计。
+ *  4. 点击底栏徽标即可弹出详细节省清单与工具分类统计，并支持一键检测/写入配置与安装。
  */
+import { existsSync, readFileSync, writeFileSync } from "node:fs";
+import { exec } from "node:child_process";
+import { homedir } from "node:os";
+import { join } from "node:path";
+import { promisify } from "node:util";
+
+const execAsync = promisify(exec);
+
+function getAgentDir() {
+	return process.env.PI_CODING_AGENT_DIR || join(homedir(), ".pi", "agent");
+}
 
 function formatTokens(count) {
 	const n = Number(count) || 0;
@@ -134,7 +145,63 @@ export function formatPlanSummary(plan) {
 	};
 }
 
-export default function solSavingsPlugin(host) {
+export function checkSolPiStatus() {
+	const agentDir = getAgentDir();
+	const configPath = join(agentDir, "sol-pi.json");
+	const settingsPath = join(agentDir, "settings.json");
+
+	let installed = false;
+	try {
+		if (existsSync(settingsPath)) {
+			const settings = JSON.parse(readFileSync(settingsPath, "utf8"));
+			const pkgs = Array.isArray(settings?.packages) ? settings.packages : [];
+			installed = pkgs.some((p) => typeof p === "string" && p.toLowerCase().includes("sol-pi"));
+		}
+	} catch {
+		/* ignore */
+	}
+
+	if (!installed) {
+		const gitPkgDir = join(agentDir, "git", "github.com", "NVlabs", "SoL-Pi");
+		if (existsSync(gitPkgDir)) installed = true;
+	}
+
+	let hasConfig = false;
+	let config = null;
+	if (existsSync(configPath)) {
+		try {
+			config = JSON.parse(readFileSync(configPath, "utf8"));
+			hasConfig = true;
+		} catch {
+			/* ignore */
+		}
+	}
+
+	return {
+		installed,
+		hasConfig,
+		configPath,
+		config,
+	};
+}
+
+export function writeSolPiConfig(customPatch = {}) {
+	const agentDir = getAgentDir();
+	const configPath = join(agentDir, "sol-pi.json");
+	const recommended = {
+		version: 1,
+		observationPack: true,
+		onlineContextCompact: true,
+		actionFusion: false,
+		evidencePreservingReducer: false,
+		cacheWriteReadRatio: 12.5,
+		...customPatch,
+	};
+	writeFileSync(configPath, JSON.stringify(recommended, null, 2), "utf8");
+	return recommended;
+}
+
+export function solSavingsPlugin(host) {
 	let cachedStats = null;
 
 	function refreshFooter() {
@@ -229,6 +296,31 @@ export default function solSavingsPlugin(host) {
 		host.notify("info", textZh, textEn);
 	}
 
+	// 注册 HTTP 路由供前端弹窗查询状态与一键配置/安装
+	host.route?.("GET", "/status", (_req, res) => {
+		res.json(checkSolPiStatus());
+	});
+
+	host.route?.("POST", "/action", async (req, res) => {
+		const action = req.body?.action;
+		try {
+			if (action === "write_config") {
+				const config = writeSolPiConfig();
+				res.json({ ok: true, config });
+			} else if (action === "install") {
+				// 执行 pi install git:github.com/NVlabs/SoL-Pi
+				await execAsync("pi install git:github.com/NVlabs/SoL-Pi");
+				// 自动写默认推荐配置
+				const config = writeSolPiConfig();
+				res.json({ ok: true, config });
+			} else {
+				res.status(400).json({ ok: false, error: "unknown action" });
+			}
+		} catch (err) {
+			res.status(500).json({ ok: false, error: err?.message || String(err) });
+		}
+	});
+
 	// 注册 UI 动作与消息监听
 	host.onMessage((msg) => {
 		if (msg && typeof msg === "object" && msg.action === "sol-savings:details") {
@@ -237,8 +329,9 @@ export default function solSavingsPlugin(host) {
 	});
 
 	// 监听运行与连接事件，适时刷新
-	host.onAttach(() => refreshFooter());
-	host.onRunEvent((ev) => {
+	host.onAttach?.(() => refreshFooter());
+	host.onConversationChanged?.(() => refreshFooter());
+	host.onRunEvent?.((ev) => {
 		if (ev.type === "tool_end" || ev.type === "turn_end" || ev.type === "run_end" || ev.type === "message") {
 			refreshFooter();
 		}
@@ -247,3 +340,11 @@ export default function solSavingsPlugin(host) {
 	// 初始刷新
 	refreshFooter();
 }
+
+Object.assign(solSavingsPlugin, {
+	activate(host) {
+		return solSavingsPlugin(host);
+	},
+});
+
+export default solSavingsPlugin;
