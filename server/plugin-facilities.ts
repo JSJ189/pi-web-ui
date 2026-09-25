@@ -29,6 +29,9 @@ import {
 import { dirname, join, relative, resolve } from "node:path";
 import { createRequire } from "node:module";
 import { spawnSync } from "node:child_process";
+// 与 plugin-project 共用同一套 realpath 越界复核（isInsideRoot / realPathOfNearest），
+// 避免「同一个安全语义、两份实现」漂移。
+import { isInsideRoot, realPathOfNearest } from "./plugin-project.js";
 
 /** tmp+rename 原子写（错误由调用方隔离——插件设施的 IO 一律尽力而为）。 */
 function atomicWrite(file: string, data: string): void {
@@ -36,6 +39,54 @@ function atomicWrite(file: string, data: string): void {
 	const tmp = `${file}.tmp-${process.pid}`;
 	writeFileSync(tmp, data);
 	renameSync(tmp, file);
+}
+
+// ---------------------------------------------------------------------------
+// storage.json 的进程内「读-改-写」互斥
+// ---------------------------------------------------------------------------
+
+/** 按文件路径的 RMW 互斥链（key = resolve 后的绝对路径）。 */
+const rmwChains = new Map<string, Promise<unknown>>();
+
+/**
+ * 进程内「读-改-写」互斥（按文件路径的 promise 链锁）。
+ *
+ * storage.json 有两个读-改-写者：PluginStorage（插件 KV）与宿主 settings 面板的
+ * saveSettingsValues（plugins.ts，直写同一文件的 settings 键）。两段 RMW 必须互斥
+ * —— 现在两段关键区都是同步的（单线程下本就不会交错），但只要将来任何一处把
+ * 「读」和「写」之间插进 await，就会退回「旧快照整份回写、抹掉对方刚写的键」的
+ * 丢更新。两处统一收进这把锁：
+ *  - 空链 + 同步 fn：原地直跑（不引入微任务延迟，set() 后同步 get() 立即可见，
+ *    语义与未加锁完全一致）；fn 若返回 promise（异步写者）则占住链尾，后续排队；
+ *  - 链忙：挂到链尾串行（前一个成功/失败都放行下一个）。
+ * Map 不主动清理：键数量 = 有 storage.json 的插件数，天然有界。
+ */
+export function withFileRmwLock<T>(file: string, fn: () => T): T | Promise<T> {
+	const key = resolve(file);
+	const prev = rmwChains.get(key);
+	if (prev) {
+		const queued = prev.then(fn, fn) as Promise<T>;
+		rmwChains.set(
+			key,
+			queued.then(
+				() => undefined,
+				() => undefined,
+			),
+		);
+		return queued;
+	}
+	const result = fn();
+	if (result instanceof Promise) {
+		const tail = result.then(
+			() => undefined,
+			() => undefined,
+		);
+		rmwChains.set(key, tail);
+		void tail.then(() => {
+			if (rmwChains.get(key) === tail) rmwChains.delete(key);
+		});
+	}
+	return result;
 }
 
 // ---------------------------------------------------------------------------
@@ -97,27 +148,35 @@ export class PluginStorage {
 
 	set(key: string, value: unknown): void {
 		if (!key) throw new Error("storage.set: key 不能为空");
-		// 写前必重读磁盘：宿主 settings 面板的 saveSettingsValues 直写同一文件的
-		// settings 键（不经过本缓存），拿旧快照整份回写会把它抹掉。写是低频路径，
-		// 重读的代价可忽略；mtime 粒度即使同毫秒也抹不掉（这里是无条件重读）。
-		const store = this.readFromDisk();
-		store[key] = value;
-		try {
-			atomicWrite(this.file, JSON.stringify(store));
-		} catch (err) {
-			console.error(`[plugin-storage] 写入失败 (${this.file}):`, err);
-		}
+		// 与宿主 saveSettingsValues 同一把按文件路径的 RMW 锁（见 withFileRmwLock）：
+		// 两段「读-改-写」互斥，谁也不会拿旧快照抹掉对方刚写的键。当前关键区是同步的
+		// （空链直跑），set() 后同步 get() 立即可见，行为与未加锁一致。
+		void withFileRmwLock(this.file, () => {
+			// 写前必重读磁盘：宿主 settings 面板的 saveSettingsValues 直写同一文件的
+			// settings 键（不经过本缓存），拿旧快照整份回写会把它抹掉。写是低频路径，
+			// 重读的代价可忽略；mtime 粒度即使同毫秒也抹不掉（这里是无条件重读）。
+			const store = this.readFromDisk();
+			store[key] = value;
+			try {
+				atomicWrite(this.file, JSON.stringify(store));
+			} catch (err) {
+				console.error(`[plugin-storage] 写入失败 (${this.file}):`, err);
+			}
+		});
 	}
 
 	delete(key: string): void {
-		const store = this.readFromDisk(); // 同 set：写前重读，不拿旧快照回写
-		if (!(key in store)) return;
-		delete store[key];
-		try {
-			atomicWrite(this.file, JSON.stringify(store));
-		} catch (err) {
-			console.error(`[plugin-storage] 写入失败 (${this.file}):`, err);
-		}
+		// 同 set：写前重读 + RMW 锁，不拿旧快照回写。
+		void withFileRmwLock(this.file, () => {
+			const store = this.readFromDisk();
+			if (!(key in store)) return;
+			delete store[key];
+			try {
+				atomicWrite(this.file, JSON.stringify(store));
+			} catch (err) {
+				console.error(`[plugin-storage] 写入失败 (${this.file}):`, err);
+			}
+		});
 	}
 }
 
@@ -418,6 +477,24 @@ export class WorkspaceFS {
 		return target;
 	}
 
+	/**
+	 * 写类操作（write/append/mkdir/remove）的 realpath 复核：abs() 是纯字符串
+	 * 比较，工作区里的符号链接/junction 能把写入（或递归删除）引到工作区之外。
+	 * 取目标最近已存在祖先的 realpath，复核它仍在「活根」的 realpath 内。
+	 * 读/list/stat/glob 保持字符串校验（高频路径；读不存在「把内容写到别处」
+	 * 的风险，性能优先 —— 有意的取舍）。
+	 */
+	private assertRealInsideRoot(rel: unknown): void {
+		const target = this.abs(rel); // 字符串越界先拒绝（错误文案不变）
+		const targetReal = realPathOfNearest(target);
+		if (!targetReal) throw new Error(`路径越界：无法解析真实路径 ${String(rel)}`);
+		const rootDir = resolve(this.root());
+		const rootReal = realPathOfNearest(rootDir) ?? rootDir;
+		if (!isInsideRoot(rootReal, targetReal)) {
+			throw new Error(`路径越界（符号链接指向工作区之外）：${String(rel)}`);
+		}
+	}
+
 	/** 单层目录列表（浅层；深度遍历请插件自行递归）。 */
 	async list(relDir = ""): Promise<WsEntry[]> {
 		try {
@@ -444,6 +521,7 @@ export class WorkspaceFS {
 
 	/** 写文件（自动补父目录；注意相对路径锚定当前项目——切换 cwd 后写进新项目）。 */
 	async write(relPath: string, data: string | Uint8Array): Promise<void> {
+		this.assertRealInsideRoot(relPath);
 		const target = this.abs(relPath);
 		await fspMkdir(dirname(target), { recursive: true });
 		await fspWriteFile(target, data);
@@ -451,6 +529,7 @@ export class WorkspaceFS {
 
 	/** 追加写文件（日志/队列场景；父目录自动补；越界拒绝与 write 同口径）。 */
 	async append(relPath: string, data: string | Uint8Array): Promise<void> {
+		this.assertRealInsideRoot(relPath);
 		const target = this.abs(relPath);
 		await fspMkdir(dirname(target), { recursive: true });
 		await fspAppendFile(target, data);
@@ -458,6 +537,7 @@ export class WorkspaceFS {
 
 	/** 建目录（递归；已存在幂等成功；越界拒绝与 write 同口径）。 */
 	async mkdir(relDir: string): Promise<void> {
+		this.assertRealInsideRoot(relDir);
 		await fspMkdir(this.abs(relDir), { recursive: true });
 	}
 
@@ -516,6 +596,8 @@ export class WorkspaceFS {
 
 	/** 删除文件/目录（递归；只允许删工作区内的路径）。 */
 	async remove(relPath: string): Promise<void> {
+		// remove 同样做 realpath 复核：递归删除跟着目录链接走，比写文件更危险。
+		this.assertRealInsideRoot(relPath);
 		await fspRm(this.abs(relPath), { recursive: true, force: false });
 	}
 }

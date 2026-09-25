@@ -1971,6 +1971,13 @@ export interface UiPluginCatalogEntry {
 	/** true = from the shipped catalog; false = user added in the UI
 	 *  (only custom entries can be removed). */
 	builtin: boolean;
+	/** true = a custom entry whose id replaced a shipped-catalog entry with the
+	 *  same id: the display fields (name/icon/description) come from a
+	 *  user-supplied source and may imitate the official entry, so surfaces
+	 *  should mark it as user-supplied. The source field always keeps the real
+	 *  (custom) install source — it cannot impersonate the official one.
+	 *  Optional, purely additive; derived at merge time, not persisted. */
+	overridesBuiltin?: boolean;
 	/** Optional project/homepage URL. */
 	homepage?: string;
 }

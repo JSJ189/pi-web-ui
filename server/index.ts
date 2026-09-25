@@ -63,7 +63,7 @@ import {
 	type PluginRunEvent,
 } from "./plugins.js";
 import type { GuardedToolName, ToolPostRequest, ToolPreRequest } from "./plugin-tool-guard.js";
-import { inspectInstallSpec, PluginInstaller } from "./plugin-installer.js";
+import { buildPluginJobArgs, inspectInstallSpec, PluginInstaller } from "./plugin-installer.js";
 import { syncPluginCatalog } from "./plugin-catalog-sync.js";
 import type { ServerLang } from "./i18n.js";
 import { McpBridge } from "./mcp-bridge.js";
@@ -1511,6 +1511,25 @@ function findDomConsentById(id: string): PendingDomConsent | undefined {
 	return undefined;
 }
 
+// ---------------------------------------------------------------------------
+// 插件安装的用户确认门（P0）：plugin_catalog_sync 的 install:true 与 plugin_job
+// 的 install/update 在真正动安装器之前必须拿到用户确认。第三方页面脚本可以直发
+// 这两类消息，没有这道门就能借 WS 静默安装任意插件。复用 permissionRequester
+// 的同一条「plugin_permission_request 弹窗 + 120s 超时视为拒绝」管线 —— 不新增
+// 协议消息，将安装清单放在 reason 里展示；这里直接调 requester（不写授权表，
+// remember 标志被忽略）。拒绝 / 超时 / 未接弹窗设施（无头 DSH）一律 fail-closed。
+// ---------------------------------------------------------------------------
+async function confirmPluginInstall(items: Array<{ id: string; source: string }>): Promise<boolean> {
+	const ask = pluginMgr.permissionRequester;
+	if (!ask) return false;
+	const list = items.map((x) => `${x.id} ← ${x.source}`).join("\n");
+	const ans = await ask("plugin-installer", {
+		family: "net",
+		reason: `安装确认：将安装/更新以下插件（id ← source）：\n${list}\n拒绝或 120 秒未确认则不安装。`,
+	});
+	return ans.ok === true;
+}
+
 // 内置定时任务（issue #184）：全局 <dataDir>/scheduler-tasks.json，TTL 与
 // client-state 同级；Agent 工具建的任务优先唤醒发起对话（issue #193：
 // wakeConversation steer 投递，不切用户当前对话），原对话不在先回落同项目
@@ -2571,16 +2590,54 @@ wss.on("connection", (ws) => {
 				const jobLang = () => cs?.getLang() ?? "en";
 				const jobId = String(msg.jobId ?? "");
 				const pluginId = String(msg.id ?? "");
-				const started = pluginInstaller.start(
-					{
+				// function 声明会提升、TS 对 msg 判别联合的收窄进不了闭包 —— 先拍平成常量。
+				const jobAction = msg.action;
+				const jobSpec = {
+					jobId,
+					action: jobAction,
+					id: pluginId,
+					source: msg.source,
+					build: msg.build === true,
+					noBuild: msg.noBuild === true,
+				};
+				const jobDone = (ok: boolean, error?: string) => {
+					send({
+						type: "plugin_job",
 						jobId,
-						action: msg.action,
-						id: pluginId,
-						source: msg.source,
-						build: msg.build === true,
-						noBuild: msg.noBuild === true,
-					},
-					{
+						action: jobAction,
+						pluginId,
+						phase: "done",
+						ok,
+						...(error ? { error } : {}),
+						output: "",
+					});
+				};
+				// 参数静态校验：参数非法直接拒绝，避免向客户端发起无意义/恶意的确认弹窗。
+				const argCheck = buildPluginJobArgs(jobSpec, DATA_DIR, jobLang);
+				if ("error" in argCheck) {
+					jobDone(false, argCheck.error);
+					break;
+				}
+				// 安装确认门（P0）：install/update 先经用户确认。第三方页面脚本可以直发
+				// plugin_job；拒绝/超时直接回一条 done，让面板上的作业就地结束（不占
+				// 安装锁、不弹「失败」之外的噪音）。卸载不在本门范围内（由面板本身发起）。
+				if (jobAction === "install" || jobAction === "update") {
+					void confirmPluginInstall([{ id: pluginId, source: String(msg.source ?? "") }])
+						.then((confirmed) => {
+							if (!confirmed) {
+								jobDone(false, "用户未确认安装（拒绝或 120 秒超时）");
+								return;
+							}
+							startPluginJob();
+						})
+						.catch(() => jobDone(false, "安装确认流程异常"));
+					break;
+				}
+				startPluginJob();
+				// 真正派发作业（确认门通过后走这里）：被拒（忙 / 托管实例 / 参数非法）也要回
+				// 一条 done，让面板上的作业就地结束。
+				function startPluginJob(): void {
+					const started = pluginInstaller.start(jobSpec, {
 						lang: jobLang,
 						emit: (m) => send(m),
 						done: async (ok, info) => {
@@ -2590,20 +2647,8 @@ wss.on("connection", (ws) => {
 								cs?.emitNotice("error", `插件操作失败：${info.error}`, `Plugin operation failed: ${info.error}`);
 							}
 						},
-					},
-				);
-				if (!started.ok) {
-					// 被拒（忙 / 托管实例 / 参数非法）也要回一条 done，让面板上的作业就地结束。
-					send({
-						type: "plugin_job",
-						jobId,
-						action: msg.action,
-						pluginId,
-						phase: "done",
-						ok: false,
-						error: started.error,
-						output: "",
 					});
+					if (!started.ok) jobDone(false, started.error);
 				}
 				break;
 			}
@@ -2758,8 +2803,19 @@ wss.on("connection", (ws) => {
 						// 只更新市场列表时无需重启已激活插件，避免重复广播工作目录。
 						afterWrite: () => (msg.install === true ? reloadPluginsAndPush(syncLang) : pluginMgr.pushCatalog()),
 						lang: syncLang,
+						// 本地文件来源只允许工作区内（防任意路径文件探测 oracle）。
+						workspaceRoot: cs?.cwd ?? CWD,
+						// 安装确认门（P0）：拒绝/超时只写目录不安装。
+						confirmInstall: (items) => confirmPluginInstall(items),
 					},
 				).then((r) => {
+					if (r.installRefused) {
+						cs?.emitNotice(
+							"warning",
+							"目录已同步，但安装未获用户确认（拒绝或超时），未安装任何插件",
+							"Catalog synced, but installation was not confirmed (denied or timed out) — nothing was installed",
+						);
+					}
 					send({
 						type: "plugin_catalog_sync_result",
 						requestId,
