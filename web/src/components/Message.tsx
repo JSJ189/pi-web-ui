@@ -255,9 +255,18 @@ export const Message = memo(function Message({
 	// Transient inline notice for the editor (oversized/unreadable dropped
 	// files) — Message has no toast access, so it renders under the chips.
 	const [editNotice, setEditNotice] = useState<string | null>(null);
+	const editNoticeTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
+	// 卸载时清掉未触发的复位定时器，避免组件销毁后还回调 setState。
+	useEffect(
+		() => () => {
+			if (editNoticeTimer.current) clearTimeout(editNoticeTimer.current);
+		},
+		[],
+	);
 	const pushEditNotice = (msg: string) => {
 		setEditNotice(msg);
-		window.setTimeout(() => setEditNotice((cur) => (cur === msg ? null : cur)), 4000);
+		if (editNoticeTimer.current) clearTimeout(editNoticeTimer.current);
+		editNoticeTimer.current = setTimeout(() => setEditNotice((cur) => (cur === msg ? null : cur)), 4000);
 	};
 	// toolResult content is rendered inside its toolCall card — never standalone
 	// (otherwise the same output shows twice: formatted card + plain text).
@@ -997,6 +1006,9 @@ function AttachmentCard({ message, forceOpen = false }: { message: UiMessage; fo
 	const isBridged = details.mode === "bridged";
 	const isPage = details.mode === "page";
 	const isConversation = details.mode === "conversation";
+	// href 协议白名单（审查 #3）：网页附件的链接只放行 http/https，
+	// javascript:/data:/vbscript: 等危险 scheme 一律回落纯文本渲染。
+	const safePageHref = details.path && /^https?:\/\//i.test(details.path.trim()) ? details.path.trim() : null;
 
 	const text = message.content
 		.filter((b): b is { type: "text"; text: string } => b.type === "text")
@@ -1034,8 +1046,8 @@ function AttachmentCard({ message, forceOpen = false }: { message: UiMessage; fo
 				</span>
 				<span className="chead-title attachcard-name">{name}</span>
 				{details.path &&
-					(isPage ? (
-						<a className="attachcard-path attachcard-link" href={details.path} target="_blank" rel="noreferrer">
+					(isPage && safePageHref ? (
+						<a className="attachcard-path attachcard-link" href={safePageHref} target="_blank" rel="noreferrer">
 							{details.path}
 						</a>
 					) : (

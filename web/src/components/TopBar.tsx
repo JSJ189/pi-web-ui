@@ -1287,6 +1287,16 @@ export function TopBar({
 	/** 直流子节点（已滤掉 spacer）就是按这个顺序排的，宽度缓存必须按它一一对应 ——
 	 *  按 slot 顺序对应会在混排时把别人的宽度记到自己名下。 */
 	const keptVisual = visualAll.filter((it) => !droppedIds.has(it.id));
+	// 审查 #6：measure 被 ResizeObserver 的 effect 捕获（只在 measureKey 变化时重建），
+	// 闭包里的 visualAll/keptVisual 会过期。条目集挂 ref，measure 一律读 ref ——
+	// RO 回调永远量到当前渲染的条目（ref 同步声明在 measure 的 layout effect 之前，
+	// 保证同一次提交里先更新再测量）。
+	const visualAllRef = useRef(visualAll);
+	const keptVisualRef = useRef(keptVisual);
+	useLayoutEffect(() => {
+		visualAllRef.current = visualAll;
+		keptVisualRef.current = keptVisual;
+	});
 	const measure = () => {
 		const flow = flowRef.current;
 		// jsdom / 未挂载（没有 ResizeObserver）：不丢任何条目 —— 宁可全画，也不清空顶栏。
@@ -1294,15 +1304,16 @@ export function TopBar({
 		const kids = Array.from(flow.children).filter((el) => !el.classList.contains("tb-spacer"));
 		// 每个条目恰好渲染一个元素（宿主条目都是单根元素）；数量对不上就不猜了 —— 全保留。
 		// 手机端固定位（📁）挂在直流外面：只比对直流内的条目数（keptVisual）。
-		if (kids.length === keptVisual.length) {
-			keptVisual.forEach((it, i) => widthCacheRef.current.set(it.id, (kids[i] as HTMLElement).offsetWidth));
+		const kept = keptVisualRef.current;
+		if (kids.length === kept.length) {
+			kept.forEach((it, i) => widthCacheRef.current.set(it.id, (kids[i] as HTMLElement).offsetWidth));
 		}
 		const gap = Number.parseFloat(getComputedStyle(flow).columnGap) || 0;
 		// 「⋯」按钮是流容器的**兄弟**节点：flex 已经把它占的宽度从 clientWidth 里扣掉了，
 		// 所以这里不用为它预留（reserve = 0）。没有 slot 元数据的条目（回退模式）不参与溢出
 		// （宽度传 0 = 不可丢），否则菜单里会出现画不出来的幽灵项。
 		// 极窄屏下放不下的视觉尾部条目退进溢出，而不是把顶栏撑成两行。
-		const fitInput = visualAll;
+		const fitInput = visualAllRef.current;
 		const next = fitTopbar(
 			fitInput.map((it) => ({ id: it.id, width: it.entry ? (widthCacheRef.current.get(it.id) ?? 0) : 0 })),
 			flow.clientWidth,

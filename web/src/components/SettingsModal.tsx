@@ -413,6 +413,72 @@ type SettingsTab =
 	| "subagent-templates"
 	| `plugin-page:${string}`;
 
+/** set_settings 允许的字段（原 setPartial 内联类型提出为具名类型，供乐观合并层复用）。 */
+interface SettingsPatch {
+	promptMode?: "append" | "replace";
+	customSystemPrompt?: string;
+	promptTemplate?: string;
+	promptOverrides?: Record<string, string>;
+	disabledSkills?: string[];
+	disabledExtensions?: string[];
+	disabledPlugins?: string[];
+	/** 宿主 UI 布局偏好（插件 UI 贡献 + 内置条目的隐藏/排序/分组；纯 UI，per-client）。 */
+	uiLayout?: UiLayoutPrefs;
+	/** 统一工具禁用名单（工具 tab 逐工具开关；遗留单开关仍可用，会折回此名单）。 */
+	disabledAgentTools?: string[];
+	/** 插件 AI 工具禁用名单（工具名；live 生效无需 reload）。 */
+	disabledPluginTools?: string[];
+	terminalToolsEnabled?: boolean;
+	terminalBash?: boolean;
+	terminalBashIdleMs?: number;
+	terminalBashMaxForegroundMs?: number;
+	toolWatchdogTimeoutMs?: number;
+	/** read 工具读目录开关（默认开；行为开关，live 生效无需 reload，见 server/read-tool.ts）。 */
+	readDirEnabled?: boolean;
+	/** 工具执行审批总开关（默认开；纯运行开关，live 生效无需 reload）。 */
+	toolApprovalEnabled?: boolean;
+	editSoftEnabled?: boolean;
+	questionnaireEnabled?: boolean;
+	goalModeEnabled?: boolean;
+	parallelReminderEnabled?: boolean;
+	thinkingWrap?: boolean;
+	toolsWrap?: boolean;
+	toolImagesEnabled?: boolean;
+	devNoCache?: boolean;
+	autoReload?: boolean;
+	skillsFullText?: string[];
+	quickPhrases?: string[];
+	quickPhrasesEnabled?: boolean;
+	visionBridgeEnabled?: boolean;
+	visionBridgeModel?: string | null;
+	visionBridgePromptMode?: "append" | "replace";
+	visionBridgePrompt?: string;
+	scmCommitMsgPromptMode?: "append" | "replace";
+	scmCommitMsgPrompt?: string;
+	subagentDefaultModel?: string | null;
+	retryMaxAttempts?: number;
+	softCapTokens?: number;
+	softCapByModel?: Record<string, number>;
+	reviewPrompt?: string;
+	reviewDisabledSkills?: string[];
+	markersEnabled?: boolean;
+	disabledMarkers?: string[];
+}
+
+/** 结构相等（乐观补丁对账用）：同值或 JSON 形态一致（覆盖数组/对象字段）。 */
+function looseEqual(a: unknown, b: unknown): boolean {
+	if (a === b) return true;
+	try {
+		return JSON.stringify(a) === JSON.stringify(b);
+	} catch {
+		return false;
+	}
+}
+
+/** 未确认补丁的最长存活时间：超过后以服务端为准落层（服务端会归一化部分字段，
+ *  或同值被另一端覆盖 —— 乐观值不能永久遮蔽真实状态）。 */
+const PENDING_MAX_AGE_MS = 10_000;
+
 export function SettingsModal({
 	chat,
 	terminal,
@@ -428,7 +494,35 @@ export function SettingsModal({
 	const { locale } = useI18n();
 	// {{token}} 元数据文案键是动态的（promptTok_<token>[,_desc]），用 tt 跳过字面量类型。
 	const tt = (k: string) => t(k as Parameters<typeof t>[0]);
-	const settings = chat.settings;
+	// 审查 #2：服务端快照是异步回程的，快速连续操作时（如连点两个技能开关）第二次
+	// 点击若直接从旧快照计算全量新值，会把第一次的修改覆盖回去（丢更新）。这里维护
+	// 一层「未确认补丁」：组件内所有显示与计算统一走 `settings` = 最新快照 + 补丁
+	// （原始快照留作 serverSettings 供对账）。
+	const serverSettings = chat.settings;
+	const [pendingSettings, setPendingSettings] = useState<Record<string, { value: unknown; at: number }>>({});
+	const settings = useMemo<UiSettingsState | null>(() => {
+		if (!serverSettings) return null;
+		if (Object.keys(pendingSettings).length === 0) return serverSettings;
+		const merged = { ...serverSettings } as UiSettingsState & Record<string, unknown>;
+		for (const [k, { value }] of Object.entries(pendingSettings)) merged[k] = value;
+		return merged;
+	}, [serverSettings, pendingSettings]);
+	// 快照回程 rebase：补丁值被服务端确认（原始快照追平）即落层；超过
+	// PENDING_MAX_AGE_MS 仍未追平的也落层 —— 服务端会归一化部分字段（trim/钳制/
+	// 去重）或值已被他端改写，以服务端为准，避免乐观值永久遮蔽真实状态。
+	useEffect(() => {
+		if (!serverSettings) return;
+		setPendingSettings((prev) => {
+			if (Object.keys(prev).length === 0) return prev;
+			const next: Record<string, { value: unknown; at: number }> = {};
+			const now = Date.now();
+			for (const [k, { value, at }] of Object.entries(prev)) {
+				const confirmed = looseEqual((serverSettings as unknown as Record<string, unknown>)[k], value);
+				if (!confirmed && now - at < PENDING_MAX_AGE_MS) next[k] = { value, at };
+			}
+			return Object.keys(next).length === Object.keys(prev).length ? prev : next;
+		});
+	}, [serverSettings]);
 	// 审批放行策略（仅内存、随对话走；审批弹窗的「允许同类 / 全部允许」在这里撤销）。
 	const approvalPolicy = settings?.approvalPolicy;
 	// 全局运行态（引擎 / 受管）：不再从 App 一路传进来，见 web/src/app-globals.ts。
@@ -850,56 +944,18 @@ export function SettingsModal({
 	const disabledSkills = new Set(settings.disabledSkills);
 	const disabledExts = new Set(settings.disabledExtensions);
 
-	const setPartial = (patch: {
-		promptMode?: "append" | "replace";
-		customSystemPrompt?: string;
-		promptTemplate?: string;
-		promptOverrides?: Record<string, string>;
-		disabledSkills?: string[];
-		disabledExtensions?: string[];
-		disabledPlugins?: string[];
-		/** 宿主 UI 布局偏好（插件 UI 贡献 + 内置条目的隐藏/排序/分组；纯 UI，per-client）。 */
-		uiLayout?: UiLayoutPrefs;
-		/** 统一工具禁用名单（工具 tab 逐工具开关；遗留单开关仍可用，会折回此名单）。 */
-		disabledAgentTools?: string[];
-		/** 插件 AI 工具禁用名单（工具名；live 生效无需 reload）。 */
-		disabledPluginTools?: string[];
-		terminalToolsEnabled?: boolean;
-		terminalBash?: boolean;
-		terminalBashIdleMs?: number;
-		terminalBashMaxForegroundMs?: number;
-		toolWatchdogTimeoutMs?: number;
-		/** read 工具读目录开关（默认开；行为开关，live 生效无需 reload，见 server/read-tool.ts）。 */
-		readDirEnabled?: boolean;
-		/** 工具执行审批总开关（默认开；纯运行开关，live 生效无需 reload）。 */
-		toolApprovalEnabled?: boolean;
-		editSoftEnabled?: boolean;
-		questionnaireEnabled?: boolean;
-		goalModeEnabled?: boolean;
-		parallelReminderEnabled?: boolean;
-		thinkingWrap?: boolean;
-		toolsWrap?: boolean;
-		toolImagesEnabled?: boolean;
-		devNoCache?: boolean;
-		autoReload?: boolean;
-		skillsFullText?: string[];
-		quickPhrases?: string[];
-		quickPhrasesEnabled?: boolean;
-		visionBridgeEnabled?: boolean;
-		visionBridgeModel?: string | null;
-		visionBridgePromptMode?: "append" | "replace";
-		visionBridgePrompt?: string;
-		scmCommitMsgPromptMode?: "append" | "replace";
-		scmCommitMsgPrompt?: string;
-		subagentDefaultModel?: string | null;
-		retryMaxAttempts?: number;
-		softCapTokens?: number;
-		softCapByModel?: Record<string, number>;
-		reviewPrompt?: string;
-		reviewDisabledSkills?: string[];
-		markersEnabled?: boolean;
-		disabledMarkers?: string[];
-	}) => appSend({ type: "set_settings", ...patch });
+	const setPartial = (patch: SettingsPatch) => {
+		// 审查 #2：先把补丁盖进本地未确认层（显示立即生效，下一次点击的「全量新值」
+		// 计算也基于它），再原样发服务端（服务端只合并给出的字段）。快照回程后由
+		// 上方 rebase effect 对账落层。
+		const now = Date.now();
+		setPendingSettings((prev) => {
+			const stamped = { ...prev };
+			for (const [k, v] of Object.entries(patch)) stamped[k] = { value: v, at: now };
+			return stamped;
+		});
+		appSend({ type: "set_settings", ...patch });
+	};
 
 	/** 提交快捷短语行内编辑（空 = 取消；与原值相同 = 无操作；其余走服务端归一化）。 */
 	const commitQuickEdit = () => {
