@@ -8,6 +8,7 @@ import remarkMath from "remark-math";
 import rehypeHighlight from "rehype-highlight";
 import rehypeKatex from "rehype-katex";
 import rehypeRaw from "rehype-raw";
+import rehypeSanitize from "rehype-sanitize";
 import "katex/dist/katex.min.css";
 import { CopyButton } from "./copy-button";
 import { splitCodeLines } from "../code-lines";
@@ -81,7 +82,12 @@ export function MarkdownBody({
 }) {
 	// rawHtml 时在 highlight 之前插入 rehype-raw：先把它内嵌的原始 HTML 解析成
 	// hast 节点，再统一交给 highlight 做代码高亮，顺序不可颠倒。
-	const rh: PluggableList = rawHtml ? [rehypeRaw, ...rehypePlugins] : rehypePlugins;
+	// rehype-raw 之后紧接 rehype-sanitize（GitHub 式默认白名单）：rawHtml 的来源
+	// （提问对话框等）信任模型再宽也是"模型输出"，script/事件属性/iframe 一律剥掉，
+	// 常用标签与 markdown 生成的结构（含 language-* 类名，KaTeX 的 language-math
+	// 走同一前缀）保留。sanitize 必须在 katex/highlight 之前：它们后续添加的
+	// class/元素不会被白名单误伤。非 rawHtml 路径本来就没有原始 HTML，不接 sanitize。
+	const rh: PluggableList = rawHtml ? [rehypeRaw, rehypeSanitize, ...rehypePlugins] : rehypePlugins;
 	const processedText = useMemo(() => linkifyFileMentions(text), [text]);
 	return (
 		<ReactMarkdown
@@ -110,7 +116,9 @@ export const Markdown = memo(function Markdown({ text, rawHtml = false, hardBrea
  * 转给系统浏览器 —— 而裸 `href` 会触发同帧导航把应用窗口带走（issue #154，
  * 桌面壳另有 `will-navigate` 守卫兜底脚本发起的跳转）。站内锚点（`#…`）与相对
  * 路径不动：它们本来就是应用内导航。 */
-function MdLink({ href, children, ...rest }: JSX.IntrinsicElements["a"]) {
+function MdLink({ node: _node, href, children, ...rest }: JSX.IntrinsicElements["a"] & { node?: unknown }) {
+	// node 是 react-markdown 塞进 props 的内部 hast 节点（运行时存在、类型里没有），
+	// 必须在这里截下：透传给 <a> 会渲染成 node="[object Object]" 垃圾属性。
 	const target = String(href ?? "");
 	if (target.startsWith("pi-file://")) {
 		const rawPath = target.slice("pi-file://".length);
@@ -148,7 +156,10 @@ function MdLink({ href, children, ...rest }: JSX.IntrinsicElements["a"]) {
 		);
 	}
 	return (
-		<a href={href} target="_blank" rel="noreferrer noopener" {...rest}>
+		// {...rest} 放在安全默认之前：rest 来自渲染内容（rawHtml 时是模型给的
+		// 属性），不可信 —— target/rel 后置才能保证 `_blank` + noreferrer noopener
+		// 不会被 `<a target="_self">` 之类的输入覆盖掉。
+		<a {...rest} href={href} target="_blank" rel="noreferrer noopener">
 			{children}
 		</a>
 	);
