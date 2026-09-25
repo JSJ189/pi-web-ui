@@ -61,6 +61,7 @@ import {
 	sortUpdateItems,
 	type UpdateItem,
 } from "./update-check.js";
+import { checkPluginUpdates } from "./plugin-updater.js";
 import { isBundledInUse, sdkCopies } from "./sdk-origin.js";
 import { hasActiveSubagentRun, hasPendingWaitSubscription, shouldRetainActive } from "./wait-subscription-scan.js";
 import {
@@ -233,6 +234,7 @@ import type {
 	UiApprovalPolicyState,
 	UiApprovalRule,
 	UiMessage,
+	UiPluginUpdateInfo,
 	UiQuestion,
 	UiServiceInfo,
 	UiState,
@@ -6263,10 +6265,92 @@ export class ClientSession {
 	/** Cache window for the all-source check: 30 minutes. */
 	static UPDATE_ALL_CACHE_MS = 30 * 60_000;
 	private updatesAllCache: { at: number; items: UpdateItem[] } | null = null;
+	private notifiedPluginUpdates = new Set<string>();
+	private lastPluginUpdates: UiPluginUpdateInfo[] = [];
+
+	/**
+	 * 主动检查已安装界面插件（<dataDir>/plugins）的更新状态并向客户端推送。
+	 */
+	async checkPluginUpdates(manual = false): Promise<void> {
+		const lang = () => this.getLang();
+		try {
+			const updates = await checkPluginUpdates(this.stateStore.dataDir, undefined, lang);
+			const list: UiPluginUpdateInfo[] = updates.map((p) => ({
+				id: p.id,
+				name: p.name,
+				version: p.version,
+				latestVersion: p.latestVersion ?? null,
+				source: p.source,
+				localSha: p.localSha,
+				remoteSha: p.remoteSha,
+				updatable: p.updatable,
+				builtin: p.builtin,
+				error: p.error,
+			}));
+			this.lastPluginUpdates = list;
+			this.emit({ type: "plugin_updates", updates: list });
+
+			const updatableBuiltins = list.filter((p) => p.builtin && p.updatable);
+			if (manual) {
+				if (updatableBuiltins.length > 0) {
+					const names = updatableBuiltins.map((p) => p.name || p.id).join(", ");
+					this.emit({
+						type: "notice",
+						level: "info",
+						text: `发现 ${updatableBuiltins.length} 个内置插件有更新：${names}`,
+						textEn: `Update available for ${updatableBuiltins.length} built-in plugin(s): ${names}`,
+					});
+				} else {
+					const allUpdatable = list.filter((p) => p.updatable);
+					if (allUpdatable.length > 0) {
+						const names = allUpdatable.map((p) => p.name || p.id).join(", ");
+						this.emit({
+							type: "notice",
+							level: "info",
+							text: `发现 ${allUpdatable.length} 个插件有更新：${names}`,
+							textEn: `Update available for ${allUpdatable.length} plugin(s): ${names}`,
+						});
+					} else {
+						this.emit({
+							type: "notice",
+							level: "info",
+							text: "所有插件均为最新版本。",
+							textEn: "All plugins are up to date.",
+						});
+					}
+				}
+			} else {
+				const newUpdatables = updatableBuiltins.filter((p) => {
+					const key = `${p.id}@${p.latestVersion || p.remoteSha || "upd"}`;
+					if (this.notifiedPluginUpdates.has(key)) return false;
+					this.notifiedPluginUpdates.add(key);
+					return true;
+				});
+				if (newUpdatables.length > 0) {
+					const names = newUpdatables.map((p) => p.name || p.id).join(", ");
+					this.emit({
+						type: "notice",
+						level: "info",
+						text: `发现 ${newUpdatables.length} 个内置插件有更新可用：${names}，可前往设置或更新面板中更新。`,
+						textEn: `Update available for ${newUpdatables.length} built-in plugin(s): ${names}. You can update in Settings or the Updates panel.`,
+					});
+				}
+			}
+		} catch (err) {
+			if (manual) {
+				this.emit({
+					type: "notice",
+					level: "error",
+					text: `检查插件更新失败：${(err as Error).message}`,
+					textEn: `Failed to check plugin updates: ${(err as Error).message}`,
+				});
+			}
+		}
+	}
 
 	/**
 	 * All-source update check: pi-web-ui + the pi core + direct pi extensions
-	 * from the agent manifest (fallback: raw walk). Re-emits the cached list
+	 * from the agent manifest (fallback: raw walk) + installed UI plugins. Re-emits the cached list
 	 * within UPDATE_ALL_CACHE_MS; pass force=true (explicit refresh) to bypass.
 	 */
 	async checkUpdatesAll(force = false): Promise<void> {
@@ -6285,17 +6369,72 @@ export class ClientSession {
 				items: this.updatesAllCache.items,
 				piSdk,
 			});
+			if (this.lastPluginUpdates.length > 0) {
+				this.emit({ type: "plugin_updates", updates: this.lastPluginUpdates });
+			}
 			return;
 		}
 		try {
 			const targets = collectTargets(this.agentDir, ClientSession.currentAppVersion(), undefined, {
 				projectCwd: this.convs.get(this.activeId)?.cwd ?? this.cwd,
 			});
-			const items = sortUpdateItems(
-				await checkAllUpdates(targets, undefined, () => this.getLang(), resolveNpmRegistry(this.agentDir)),
-			);
-			this.updatesAllCache = { at: Date.now(), items };
-			this.emit({ type: "update_status_all", items, piSdk });
+			const items = await checkAllUpdates(targets, undefined, () => this.getLang(), resolveNpmRegistry(this.agentDir));
+
+			let pluginItems: UpdateItem[] = [];
+			try {
+				const pluginUpdates = await checkPluginUpdates(this.stateStore.dataDir, undefined, () => this.getLang());
+				const list: UiPluginUpdateInfo[] = pluginUpdates.map((p) => ({
+					id: p.id,
+					name: p.name,
+					version: p.version,
+					latestVersion: p.latestVersion ?? null,
+					source: p.source,
+					localSha: p.localSha,
+					remoteSha: p.remoteSha,
+					updatable: p.updatable,
+					builtin: p.builtin,
+					error: p.error,
+				}));
+				this.lastPluginUpdates = list;
+				this.emit({ type: "plugin_updates", updates: list });
+
+				pluginItems = pluginUpdates.map((p) => ({
+					name: p.name ? `${p.name} (${p.id})` : p.id,
+					kind: "plugin" as const,
+					current: p.version ? `v${p.version}` : (p.localSha ?? "unknown"),
+					latest: p.latestVersion ? `v${p.latestVersion}` : (p.remoteSha ?? null),
+					latestPublishedAt: null,
+					upToDate: !p.updatable,
+					error: p.error,
+					source: p.source,
+					pluginId: p.id,
+					builtin: p.builtin,
+				}));
+
+				const newUpdatables = pluginUpdates
+					.filter((p) => p.builtin && p.updatable)
+					.filter((p) => {
+						const key = `${p.id}@${p.latestVersion || p.remoteSha || "upd"}`;
+						if (this.notifiedPluginUpdates.has(key)) return false;
+						this.notifiedPluginUpdates.add(key);
+						return true;
+					});
+				if (newUpdatables.length > 0) {
+					const names = newUpdatables.map((p) => p.name || p.id).join(", ");
+					this.emit({
+						type: "notice",
+						level: "info",
+						text: `发现 ${newUpdatables.length} 个内置插件有更新可用：${names}，可前往设置或更新面板中更新。`,
+						textEn: `Update available for ${newUpdatables.length} built-in plugin(s): ${names}. You can update in Settings or the Updates panel.`,
+					});
+				}
+			} catch (err) {
+				console.warn("[agent-service] 检查插件更新失败:", err);
+			}
+
+			const allItems = sortUpdateItems([...items, ...pluginItems]);
+			this.updatesAllCache = { at: Date.now(), items: allItems };
+			this.emit({ type: "update_status_all", items: allItems, piSdk });
 		} catch (err) {
 			// checkAll degrades per-item; only local enumeration blowing up lands
 			// here — still report a usable (webui-only) error item.

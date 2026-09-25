@@ -12,6 +12,7 @@ import { existsSync, mkdirSync, readdirSync, readFileSync, rmSync, cpSync, write
 import { join } from "node:path";
 import { execFile } from "node:child_process";
 import { pick, type ServerLang } from "./i18n.js";
+import { parseInstallSpec, manifestCandidateUrls } from "./plugin-install-spec.js";
 
 const PLUGIN_ID_RE = /^[A-Za-z0-9_-]+$/;
 /** 保留的备份份数（超出删除最旧的）。 */
@@ -147,22 +148,92 @@ export interface PluginUpdateInfo {
 	id: string;
 	name?: string;
 	version?: string;
+	latestVersion?: string | null;
 	source: string;
 	/** 本地安装时记录的 sha（.pi-git-sha）。 */
 	localSha: string | null;
 	/** 远端 HEAD sha（null = 无法检查：非 git 源 / git 不可用 / 网络失败）。 */
 	remoteSha: string | null;
-	/** localSha 与 remoteSha 都存在且不同。 */
+	/** localSha 与 remoteSha 都存在且不同，或远端版本号大于本地版本号。 */
 	updatable: boolean;
+	/** 是否为内置插件（在官方内置目录 plugins/catalog.json 中定义，或源指向官方仓库）。 */
+	builtin?: boolean;
 	error?: string;
 }
 
-/** 扫描全部已装插件，对比本地 sha 与远端 sha，报告更新状态。 */
+export type PluginManifestFetcher = (
+	url: string,
+	init?: { signal?: AbortSignal },
+) => Promise<{ ok: boolean; status?: number; json: () => Promise<unknown> }>;
+
+export interface CheckPluginUpdatesOptions {
+	/** 随包发布的内置插件市场清单路径（<pkgRoot>/plugins/catalog.json）。 */
+	builtinCatalogPath?: string;
+	/** 宿主包根目录（本地开发时直接对比 <pkgRoot>/plugins/<id> 的最新源码）。 */
+	pkgRoot?: string;
+	/** 远端 manifest 探测器（默认全局 fetch；单测可注入 fake 实现零网络）。 */
+	fetcher?: PluginManifestFetcher;
+}
+
+/** 简易数字 semver 比较：>0 代表 a 比 b 新。 */
+export function compareVersions(a: string, b: string): number {
+	const pa = a.split(".").map((n) => parseInt(n, 10) || 0);
+	const pb = b.split(".").map((n) => parseInt(n, 10) || 0);
+	for (let i = 0; i < 3; i++) {
+		const x = pa[i] ?? 0;
+		const y = pb[i] ?? 0;
+		if (x !== y) return x - y;
+	}
+	return 0;
+}
+
+/** 判断某个插件是否属于随包维护的内置插件（官方插件）。 */
+export function isBuiltinPlugin(id: string, source?: string, builtinCatalogPath?: string): boolean {
+	if (source && /xing-shuyin\/pi-web-ui\/plugins\//i.test(source)) return true;
+	if (builtinCatalogPath && existsSync(builtinCatalogPath)) {
+		try {
+			const raw = JSON.parse(readFileSync(builtinCatalogPath, "utf8")) as unknown[];
+			if (Array.isArray(raw)) {
+				return raw.some((e) => (e as { id?: string })?.id === id);
+			}
+		} catch {
+			/* ignore parse errors */
+		}
+	}
+	return false;
+}
+
+/** 探测远端 manifest 中的版本号（通过 raw.githubusercontent.com 或注入的 fetcher）。 */
+async function fetchRemoteVersion(source: string, fetcher?: PluginManifestFetcher): Promise<string | null> {
+	const spec = parseInstallSpec(source);
+	const urls = manifestCandidateUrls(spec);
+	if (urls.length === 0) return null;
+	const fetchImpl = fetcher ?? (typeof fetch === "function" ? (fetch as unknown as PluginManifestFetcher) : null);
+	if (!fetchImpl) return null;
+	for (const url of urls) {
+		try {
+			const ctrl = new AbortController();
+			const timer = setTimeout(() => ctrl.abort(), 6000);
+			const res = await fetchImpl(url, { signal: ctrl.signal }).finally(() => clearTimeout(timer));
+			if (!res.ok) continue;
+			const data = (await res.json()) as { version?: unknown };
+			if (typeof data?.version === "string" && data.version.trim()) {
+				return data.version.trim();
+			}
+		} catch {
+			// 单个 URL 失败继续尝试下一个候选
+		}
+	}
+	return null;
+}
+
+/** 扫描全部已装插件，对比本地 sha/version 与远端 sha/version，报告更新状态。 */
 export async function checkPluginUpdates(
 	dataDir: string,
 	exec: Exec = execGit,
 	/** error 字段文案语言（默认英文）；调用方可传 () => getLang() 实现跟随。 */
 	lang?: () => ServerLang,
+	opts?: CheckPluginUpdatesOptions,
 ): Promise<PluginUpdateInfo[]> {
 	const l = lang?.() ?? "en";
 	const pluginsDir = join(dataDir, "plugins");
@@ -186,21 +257,6 @@ export async function checkPluginUpdates(
 			} catch {
 				localSha = null; // 无 sha 记录 → 保守认为可更新（不知道装了哪个版本）
 			}
-			let remoteSha: string | null = null;
-			let error: string | undefined;
-			try {
-				remoteSha = await resolveRemoteSha(source, exec);
-			} catch (err) {
-				error = err instanceof Error ? err.message : String(err);
-				remoteSha = null;
-			}
-			if (!remoteSha && !error)
-				error = pick(
-					l,
-					"无法检查（非 git 源或 git 不可用）",
-					"Cannot check (non-git source or git unavailable)",
-					"pluginupdate.cannot.check",
-				);
 			let name: string | undefined;
 			let version: string | undefined;
 			try {
@@ -213,15 +269,76 @@ export async function checkPluginUpdates(
 			} catch {
 				/* 坏 manifest：仍报告 */
 			}
-			const updatable = !!remoteSha && (!localSha || localSha !== remoteSha);
+
+			const builtin = isBuiltinPlugin(n, source, opts?.builtinCatalogPath);
+			let latestVersion: string | null = null;
+
+			// 本地开发模式下，如果宿主包自带 plugins/<id>/manifest.json，可直接读本地最新版本号
+			if (opts?.pkgRoot) {
+				const localPkgManifest = join(opts.pkgRoot, "plugins", n, "manifest.json");
+				if (existsSync(localPkgManifest)) {
+					try {
+						const rawPkg = JSON.parse(readFileSync(localPkgManifest, "utf8")) as { version?: string };
+						if (typeof rawPkg?.version === "string" && rawPkg.version.trim()) {
+							latestVersion = rawPkg.version.trim();
+						}
+					} catch {
+						/* ignore */
+					}
+				}
+			}
+
+			// 若本地未取到最新版本号，则尝试通过 fetcher 探测远端 manifest.json
+			if (!latestVersion) {
+				try {
+					latestVersion = await fetchRemoteVersion(source, opts?.fetcher);
+				} catch {
+					latestVersion = null;
+				}
+			}
+
+			let remoteSha: string | null = null;
+			let error: string | undefined;
+			try {
+				remoteSha = await resolveRemoteSha(source, exec);
+			} catch (err) {
+				error = err instanceof Error ? err.message : String(err);
+				remoteSha = null;
+			}
+			if (!remoteSha && !latestVersion && !error)
+				error = pick(
+					l,
+					"无法检查（非 git 源或 git 不可用）",
+					"Cannot check (non-git source or git unavailable)",
+					"pluginupdate.cannot.check",
+				);
+
+			let updatable = false;
+			if (latestVersion && version) {
+				const cmp = compareVersions(latestVersion, version);
+				if (cmp > 0) {
+					updatable = true;
+				} else if (cmp === 0 && remoteSha && localSha) {
+					updatable = localSha !== remoteSha;
+				} else if (cmp === 0 && remoteSha && !localSha) {
+					updatable = true;
+				}
+			} else if (remoteSha) {
+				updatable = !localSha || localSha !== remoteSha;
+			} else if (latestVersion && !version) {
+				updatable = true;
+			}
+
 			out.push({
 				id: n,
 				name,
 				version,
+				latestVersion,
 				source,
 				localSha,
 				remoteSha,
 				updatable,
+				builtin,
 				error,
 			});
 		} catch {

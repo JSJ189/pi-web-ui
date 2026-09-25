@@ -29,10 +29,11 @@
 <!-- auto-i18n:start -->
 ### i18n
 
-- 前端新增 key（7）：`piCoreSplitRun`、`piSdkSplitNote`、`piSdkBundledNote`、`installGlobalEngineBtn`、`installGlobalEngineTabTitle`、`settingsViewPromptTokens`、`settingsPromptContextTotal`
+- 前端新增 key（39）：`kindPlugin`、`pluginCheckUpdates`、`pluginCheckUpdatesHint`、`pluginUpdateAvailableBadge`、`pluginUpdateAvailableDetail`、`pluginAllUpToDate`、`piCoreSplitRun`、`piSdkSplitNote`、`piSdkBundledNote`、`installGlobalEngineBtn`、`installGlobalEngineTabTitle`、`notifyApprovalTitle`、`notifyApprovalBody`、`notifyApprovalBodyTool`、`sound.approval`、`sound.approval.desc`、`settingsSoundVoice`、`ttsHeader`、`ttsEnable`、`ttsEnableDesc`、`ttsAnnounce`、`ttsAnnounceDesc`、`ttsReadReplies`、`ttsReadRepliesDesc`、`ttsRate`、`ttsVoice`、`ttsVoiceAuto`、`ttsVoiceOnline`、`ttsUnavailable`、`ttsPreviewLine`、`ttsAnnounceDone`、`ttsAnnounceQuestion`、`ttsAnnounceError`、`ttsAnnounceApproval`、`speakMsg`、`stopSpeakingMsg`、`apiKeySavedHint`、`settingsViewPromptTokens`、`settingsPromptContextTotal`
 - 前端中文变更（2）：`settingsViewToolsSchema`、`lspToolEnabledDesc`
 - 前端英文变更（2）：`settingsViewToolsSchema`、`lspToolEnabledDesc`
-- 服务端新增 key（1）：`terminals.command.blocked`
+- 服务端新增 key（2）：`plugincatalog.sync.doc.invalid`、`terminals.command.blocked`
+- 服务端删除 key（2）：`plugincatalog.sync.source.invalid`、`plugincatalog.sync.read.failed`
 <!-- auto-i18n:end -->
 
 ## [0.95.0] — 2026-09-24

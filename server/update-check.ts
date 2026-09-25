@@ -65,7 +65,7 @@ export function parsePiVersionOutput(stdout: string): string | null {
 	return stdout.match(/\d+\.\d+\.\d+/)?.[0] ?? null;
 }
 
-export type UpdateItemKind = "webui" | "pi-core" | "package" | "git-extension";
+export type UpdateItemKind = "webui" | "pi-core" | "package" | "git-extension" | "plugin";
 
 export interface UpdateItem {
 	name: string;
@@ -77,6 +77,10 @@ export interface UpdateItem {
 	error?: string;
 	/** git-extension only: `host/path` shorthand (prepend `git:` for the `pi update` command). */
 	source?: string;
+	/** plugin only: directory/install id, matches pluginId. */
+	pluginId?: string;
+	/** plugin only: whether this is a shipped built-in plugin. */
+	builtin?: boolean;
 }
 
 export interface LocalPackage {
@@ -747,7 +751,7 @@ export async function checkAll(
  *  up-to-date ones, errors last. Stable within each bucket (Array.sort is
  *  stable) so registry order survives ties. */
 export function sortUpdateItems(items: UpdateItem[]): UpdateItem[] {
-	const kindRank = (k: UpdateItemKind): number => (k === "webui" ? 0 : k === "pi-core" ? 1 : 2);
+	const kindRank = (k: UpdateItemKind): number => (k === "webui" ? 0 : k === "pi-core" ? 1 : k === "plugin" ? 2 : 3);
 	return [...items].sort((a, b) => {
 		const ka = kindRank(a.kind);
 		const kb = kindRank(b.kind);

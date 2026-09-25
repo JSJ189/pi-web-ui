@@ -1117,6 +1117,7 @@ export interface DispatchSession {
 	makeDir(path: string, setAsCwd?: boolean): Promise<void>;
 	checkUpdate(): Promise<void>;
 	checkUpdatesAll(force?: boolean): Promise<void>;
+	checkPluginUpdates?(manual?: boolean): Promise<void>;
 	resolveDialog(id: number, value: string | boolean | null): void;
 	installPiAgent(): Promise<void>;
 	setProviderApiKey(provider: string, apiKey: string): Promise<void>;
@@ -2312,6 +2313,11 @@ wss.on("connection", (ws) => {
 				break;
 			case "check_updates_all":
 				void cs.checkUpdatesAll(msg.force === true);
+				break;
+			case "check_plugin_updates":
+				if (typeof cs.checkPluginUpdates === "function") {
+					void cs.checkPluginUpdates(true);
+				}
 				break;
 			case "restart_service": {
 				// Same effect as `pi-web-ui server restart`: this process exits and its

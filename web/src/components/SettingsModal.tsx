@@ -49,6 +49,7 @@ import type {
 	UiSlotId,
 	UiPluginCatalogEntry,
 	UiPluginInfo,
+	UiPluginUpdateInfo,
 	UiSettingsState,
 	UiSkillInfo,
 	UiSubagentTemplate,
@@ -139,6 +140,10 @@ interface SettingsModalProps {
 		plugins: UiPluginInfo[];
 		/** Installable-plugin list (marketplace) — one-click install candidates. */
 		pluginCatalog: UiPluginCatalogEntry[];
+		/** 插件更新状态表，key = pluginId。 */
+		pluginUpdates?: Record<string, UiPluginUpdateInfo> | null;
+		/** 是否正在检查插件更新。 */
+		checkingPluginUpdates?: boolean;
 		/** 插件后台作业（安装/更新/卸载）的实时状态，key = jobId（issue #152）。 */
 		pluginJobs: Record<string, PluginJobState>;
 		/** 最近一次目录同步的回执（issue #165「从目录同步」框展示用）。 */
@@ -736,12 +741,19 @@ export function SettingsModal({
 				.filter((pt) => !(settings.disabledPluginTools ?? []).includes(pt.name)).length
 		: 0;
 
+	// 界面插件更新检查状态
+	const pluginUpdates = chat.pluginUpdates;
+	const hasBuiltinPluginUpdate = Object.values(pluginUpdates ?? {}).some((u) => u.updatable && (u.builtin ?? false));
+	const hasAnyPluginUpdate = Object.values(pluginUpdates ?? {}).some((u) => u.updatable);
+
 	const tabs: {
 		id: SettingsTab;
 		icon: React.ReactNode;
 		label: string;
 		/** 有计数徽标（与各区块标题里的 set-count 同源）。 */
 		count?: number;
+		/** 状态指示红点（如存在内置插件更新）。 */
+		dot?: boolean;
 		/** 插件自定义页：内容交给 PluginPage 渲染（内置分区没有这一项）。 */
 		pluginPage?: { plugin: UiPluginInfo; entry: UiSlotEntry };
 		/** 悬浮提示（插件条目的 `hint`）。 */
@@ -788,7 +800,13 @@ export function SettingsModal({
 		{ id: "quick", icon: <FiSend />, label: t("quickPhrases"), count: settings.quickPhrases.length },
 		{ id: "skills", icon: <FiCpu />, label: t("settingsSkills"), count: settings.skills.length },
 		{ id: "extensions", icon: <FiPackage />, label: t("settingsExtensions"), count: settings.extensions.length },
-		{ id: "plugins", icon: <FiBox />, label: t("settingsUiPlugins"), count: chat.plugins.length },
+		{
+			id: "plugins",
+			icon: <FiBox />,
+			label: t("settingsUiPlugins"),
+			count: chat.plugins.length,
+			dot: hasBuiltinPluginUpdate || hasAnyPluginUpdate,
+		},
 		{ id: "layout", icon: <FiSliders />, label: t("uiLayoutTitle") },
 		{ id: "review", icon: <FiZap />, label: t("settingsReview"), count: settings.reviewSkills.length },
 		// DSH：无视觉桥概念（真图片直通 vision 模型），隐藏该分区。
@@ -1374,6 +1392,7 @@ export function SettingsModal({
 								<span className="settings-tab-icon">{tb.icon}</span>
 								<span className="settings-tab-label">{tb.label}</span>
 								{tb.count !== undefined && <span className="set-count">{tb.count}</span>}
+								{tb.dot && <span className="update-dot" style={{ marginLeft: 4 }} />}
 							</button>
 						))}
 					</nav>
@@ -2922,8 +2941,12 @@ export function SettingsModal({
 										bodyRef.current?.scrollTo({ top: 0 });
 									}}
 								>
+									<FiBox />
 									{t("pluginListTab")}
 									<span className="set-count">{chat.plugins.length}</span>
+									{(hasBuiltinPluginUpdate || hasAnyPluginUpdate) && (
+										<span className="update-dot" style={{ marginLeft: 4 }} />
+									)}
 								</button>
 							</div>
 						)}
@@ -3223,6 +3246,8 @@ export function SettingsModal({
 									<div className="set-list set-list-flat">
 										{chat.pluginCatalog.map((e) => {
 											const installed = installedPluginIds.has(e.id);
+											const upd = chat.pluginUpdates?.[e.id];
+											const isUpdatable = installed && upd?.updatable === true;
 											return (
 												<div key={e.id} className="set-catalog-row">
 													<div className="set-catalog-main">
@@ -3232,6 +3257,19 @@ export function SettingsModal({
 															</span>
 															{installed && <span className="set-catalog-installed">{t("pluginInstalled")}</span>}
 															{!e.builtin && <span className="set-catalog-custom">{t("pluginCatalogCustom")}</span>}
+															{isUpdatable && (
+																<span
+																	className="set-catalog-update-badge"
+																	title={
+																		upd?.latestVersion
+																			? `${upd?.version ?? ""} → v${upd.latestVersion}`
+																			: (upd?.remoteSha ?? "")
+																	}
+																>
+																	{t("pluginUpdateAvailableBadge")}
+																	{upd?.latestVersion ? ` v${upd.latestVersion}` : ""}
+																</span>
+															)}
 														</div>
 														{e.description && <div className="set-catalog-desc">{e.description}</div>}
 														<div className="set-catalog-source">{e.source}</div>
@@ -3242,8 +3280,12 @@ export function SettingsModal({
 															<>
 																<button
 																	type="button"
-																	className="set-uninstall"
-																	title={t("pluginUpdateHint")}
+																	className={`set-uninstall${isUpdatable ? " accent" : ""}`}
+																	title={
+																		isUpdatable && upd?.latestVersion
+																			? t("pluginUpdateAvailableDetail", { version: `v${upd.latestVersion}` })
+																			: t("pluginUpdateHint")
+																	}
 																	onClick={() => runUiPluginUpdate(e.id, e.source)}
 																>
 																	<FiRefreshCw />
@@ -3310,6 +3352,16 @@ export function SettingsModal({
 									<button
 										type="button"
 										className="set-uninstall"
+										title={t("pluginCheckUpdatesHint")}
+										disabled={chat.checkingPluginUpdates}
+										onClick={() => appSend({ type: "check_plugin_updates" })}
+									>
+										<FiRefreshCw className={chat.checkingPluginUpdates ? "spin" : ""} />
+										{chat.checkingPluginUpdates ? t("checkingUpdate") : t("pluginCheckUpdates")}
+									</button>
+									<button
+										type="button"
+										className="set-uninstall"
 										title={t("pluginRescanHint")}
 										onClick={() => appSend({ type: "plugins_reload" })}
 									>
@@ -3324,164 +3376,185 @@ export function SettingsModal({
 									<p className="set-empty">{t("noUiPlugins")}</p>
 								) : (
 									<div className="set-list set-list-flat">
-										{chat.plugins.map((p) => (
-											<Fragment key={p.id}>
-												<ToggleRow
-													key={p.id}
-													title={
-														<>
-															<InvDot
-																phase={pluginPhase(p, disabledPlugins.has(p.id))}
-																label={tt(phaseLabelKey(pluginPhase(p, disabledPlugins.has(p.id))))}
-															/>
-															<PluginIcon icon={p.icon} iconSvg={p.iconSvg} /> {p.name}
-														</>
-													}
-													subtitle={
-														(p.error
-															? `${p.id} · ${p.error}`
-															: p.source
-																? `${p.id} · ${p.source}`
-																: `${p.id} · ${t("uiPluginNoSource")}`) +
-														(p.permissions?.length ? ` · ${t("uiPluginPerms")}: ${p.permissions.join(", ")}` : "")
-													}
-													enabled={!disabledPlugins.has(p.id) && !p.error}
-													onToggle={() => !p.error && togglePlugin(p)}
-													action={
-														<div className="set-row-actions">
-															{p.source && (
-																<button
-																	type="button"
-																	className="set-uninstall"
-																	title={t("pluginUpdateHint")}
-																	onClick={() => runUiPluginUpdate(p.id, p.source!)}
-																>
-																	<FiRefreshCw />
-																	{t("pluginUpdate")}
+										{chat.plugins.map((p) => {
+											const upd = chat.pluginUpdates?.[p.id];
+											const isUpdatable = upd?.updatable === true;
+											return (
+												<Fragment key={p.id}>
+													<ToggleRow
+														key={p.id}
+														title={
+															<>
+																<InvDot
+																	phase={pluginPhase(p, disabledPlugins.has(p.id))}
+																	label={tt(phaseLabelKey(pluginPhase(p, disabledPlugins.has(p.id))))}
+																/>
+																<PluginIcon icon={p.icon} iconSvg={p.iconSvg} /> {p.name}
+																{isUpdatable && (
+																	<span
+																		className="set-catalog-update-badge"
+																		title={
+																			upd?.latestVersion
+																				? `v${p.version ?? "0.0.0"} → v${upd.latestVersion}`
+																				: (upd?.remoteSha ?? "")
+																		}
+																	>
+																		{t("pluginUpdateAvailableBadge")}
+																		{upd?.latestVersion ? ` v${upd.latestVersion}` : ""}
+																	</span>
+																)}
+															</>
+														}
+														subtitle={
+															(p.error
+																? `${p.id} · ${p.error}`
+																: p.source
+																	? `${p.id} · ${p.source}`
+																	: `${p.id} · ${t("uiPluginNoSource")}`) +
+															(p.permissions?.length ? ` · ${t("uiPluginPerms")}: ${p.permissions.join(", ")}` : "")
+														}
+														enabled={!disabledPlugins.has(p.id) && !p.error}
+														onToggle={() => !p.error && togglePlugin(p)}
+														action={
+															<div className="set-row-actions">
+																{p.source && (
+																	<button
+																		type="button"
+																		className={`set-uninstall${isUpdatable ? " accent" : ""}`}
+																		title={
+																			isUpdatable && upd?.latestVersion
+																				? t("pluginUpdateAvailableDetail", { version: `v${upd.latestVersion}` })
+																				: t("pluginUpdateHint")
+																		}
+																		onClick={() => runUiPluginUpdate(p.id, p.source!)}
+																	>
+																		<FiRefreshCw />
+																		{t("pluginUpdate")}
+																	</button>
+																)}
+																{confirmUiUninstall === p.id ? (
+																	<button
+																		type="button"
+																		className="set-uninstall confirm"
+																		title={t("pluginUninstallHint")}
+																		onClick={() => runUiPluginUninstall(p.id)}
+																	>
+																		{t("uninstallConfirm")}
+																	</button>
+																) : (
+																	<button
+																		type="button"
+																		className="set-uninstall"
+																		title={t("pluginUninstallHint")}
+																		onClick={() => setConfirmUiUninstall(p.id)}
+																	>
+																		<FiTrash2 />
+																		{t("uninstallExt")}
+																	</button>
+																)}
+															</div>
+														}
+													/>
+													{/* 注册的 AI 工具开关统一收口到「工具」tab 汇总区，这里只保留一行入口（免得已装列表太长；DSH 无工具 tab 则不显示） */}
+													{p.agentTools && p.agentTools.length > 0 && !isDsh && (
+														<div className="set-row" title={t("pluginToolOffHint")}>
+															<span className="set-ui-source">
+																{t("pluginToolsSection")} ({p.agentTools.length})
+																{p.agentTools.some((tool) => disabledPluginTools.has(tool.name))
+																	? ` · ${t("settingsDisabled")}`
+																	: ""}
+															</span>
+															<div className="set-row-actions">
+																<button type="button" className="set-uninstall" onClick={() => setTab("tools")}>
+																	{t("settingsTools")} →
 																</button>
-															)}
-															{confirmUiUninstall === p.id ? (
-																<button
-																	type="button"
-																	className="set-uninstall confirm"
-																	title={t("pluginUninstallHint")}
-																	onClick={() => runUiPluginUninstall(p.id)}
-																>
-																	{t("uninstallConfirm")}
-																</button>
-															) : (
-																<button
-																	type="button"
-																	className="set-uninstall"
-																	title={t("pluginUninstallHint")}
-																	onClick={() => setConfirmUiUninstall(p.id)}
-																>
-																	<FiTrash2 />
-																	{t("uninstallExt")}
-																</button>
-															)}
+															</div>
 														</div>
-													}
-												/>
-												{/* 注册的 AI 工具开关统一收口到「工具」tab 汇总区，这里只保留一行入口（免得已装列表太长；DSH 无工具 tab 则不显示） */}
-												{p.agentTools && p.agentTools.length > 0 && !isDsh && (
-													<div className="set-row" title={t("pluginToolOffHint")}>
-														<span className="set-ui-source">
-															{t("pluginToolsSection")} ({p.agentTools.length})
-															{p.agentTools.some((tool) => disabledPluginTools.has(tool.name))
-																? ` · ${t("settingsDisabled")}`
-																: ""}
-														</span>
-														<div className="set-row-actions">
-															<button type="button" className="set-uninstall" onClick={() => setTab("tools")}>
-																{t("settingsTools")} →
-															</button>
-														</div>
-													</div>
-												)}
-												{/* 运行时日志：host.log 分级缓冲，按需拉取（不进快照），与诊断互不干扰 */}
-												<div className="set-row set-log-row">
-													<button
-														type="button"
-														className="set-diag-toggle"
-														onClick={() => {
-															if (logOpen === p.id) setLogOpen(null);
-															else {
-																setLogOpen(p.id);
-																appSend(pluginLogsFetch(p.id));
-															}
-														}}
-													>
-														<FiFileText />
-														{t("pluginLogTitle")} ({getPluginLogs(p.id).length}) ·{" "}
-														{logOpen === p.id ? t("pluginLogHide") : t("pluginLogShow")}
-													</button>
-													{logOpen === p.id && <PluginLogView pluginId={p.id} />}
-												</div>
-												{/* 诊断记录：manifest/ui 解析丢弃原因 + 运行时 warning/error 摘要 */}
-												{p.diagnostics && p.diagnostics.length > 0 && (
-													<div className="set-row set-diag-row">
+													)}
+													{/* 运行时日志：host.log 分级缓冲，按需拉取（不进快照），与诊断互不干扰 */}
+													<div className="set-row set-log-row">
 														<button
 															type="button"
 															className="set-diag-toggle"
-															onClick={() => setDiagOpen(diagOpen === p.id ? null : p.id)}
+															onClick={() => {
+																if (logOpen === p.id) setLogOpen(null);
+																else {
+																	setLogOpen(p.id);
+																	appSend(pluginLogsFetch(p.id));
+																}
+															}}
 														>
-															<FiAlertTriangle />
-															{t("pluginDiagTitle")} ({p.diagnostics.length}) ·{" "}
-															{diagOpen === p.id ? t("pluginDiagHide") : t("pluginDiagShow")}
+															<FiFileText />
+															{t("pluginLogTitle")} ({getPluginLogs(p.id).length}) ·{" "}
+															{logOpen === p.id ? t("pluginLogHide") : t("pluginLogShow")}
 														</button>
-														{diagOpen === p.id && (
-															<ul className="set-diag-list">
-																{p.diagnostics.map((d, i) => (
-																	<li key={`${p.id}-${i}`}>{d}</li>
-																))}
-															</ul>
-														)}
+														{logOpen === p.id && <PluginLogView pluginId={p.id} />}
 													</div>
-												)}
-												{/* 特权 DOM：声明了 dom 能力的插件，bundle 默认 403，需用户逐个授权 */}
-												{p.wantsDom && (
-													<div className="set-row" title={t("pluginDomDesc")}>
-														<span className="set-ui-source">
-															{p.domGranted ? t("pluginDomGranted") : t("pluginDomNeed")}
-														</span>
-														<div className="set-row-actions">
+													{/* 诊断记录：manifest/ui 解析丢弃原因 + 运行时 warning/error 摘要 */}
+													{p.diagnostics && p.diagnostics.length > 0 && (
+														<div className="set-row set-diag-row">
 															<button
 																type="button"
-																className={`set-uninstall${p.domGranted ? "" : " confirm"}`}
-																title={t("pluginDomDesc")}
-																onClick={() =>
-																	appSend({
-																		type: "plugin_dom_consent",
-																		pluginId: p.id,
-																		granted: !p.domGranted,
-																	})
-																}
+																className="set-diag-toggle"
+																onClick={() => setDiagOpen(diagOpen === p.id ? null : p.id)}
 															>
-																{p.domGranted ? t("pluginDomRevoke") : t("pluginDomGrant")}
+																<FiAlertTriangle />
+																{t("pluginDiagTitle")} ({p.diagnostics.length}) ·{" "}
+																{diagOpen === p.id ? t("pluginDiagHide") : t("pluginDiagShow")}
 															</button>
+															{diagOpen === p.id && (
+																<ul className="set-diag-list">
+																	{p.diagnostics.map((d, i) => (
+																		<li key={`${p.id}-${i}`}>{d}</li>
+																	))}
+																</ul>
+															)}
 														</div>
-													</div>
-												)}
-												{/* 声明式设置：manifest settings schema → 自动渲染表单（可折叠，默认折叠） */}
-												{p.settingsSchema && p.settingsSchema.length > 0 && (
-													<div className="set-row set-settings-row">
-														<button
-															type="button"
-															className="set-diag-toggle"
-															onClick={() => setSettingsOpen((prev) => ({ ...prev, [p.id]: !prev[p.id] }))}
-														>
-															<FiSliders />
-															{t("pluginSettingsTitle")} ({p.settingsSchema.length}) ·{" "}
-															{settingsOpen[p.id] ? t("pluginSettingsHide") : t("pluginSettingsShow")}
-														</button>
-														{settingsOpen[p.id] && (
-															<PluginSettingsForm plugin={p} models={settings?.subagentModels ?? []} />
-														)}
-													</div>
-												)}
-											</Fragment>
-										))}
+													)}
+													{/* 特权 DOM：声明了 dom 能力的插件，bundle 默认 403，需用户逐个授权 */}
+													{p.wantsDom && (
+														<div className="set-row" title={t("pluginDomDesc")}>
+															<span className="set-ui-source">
+																{p.domGranted ? t("pluginDomGranted") : t("pluginDomNeed")}
+															</span>
+															<div className="set-row-actions">
+																<button
+																	type="button"
+																	className={`set-uninstall${p.domGranted ? "" : " confirm"}`}
+																	title={t("pluginDomDesc")}
+																	onClick={() =>
+																		appSend({
+																			type: "plugin_dom_consent",
+																			pluginId: p.id,
+																			granted: !p.domGranted,
+																		})
+																	}
+																>
+																	{p.domGranted ? t("pluginDomRevoke") : t("pluginDomGrant")}
+																</button>
+															</div>
+														</div>
+													)}
+													{/* 声明式设置：manifest settings schema → 自动渲染表单（可折叠，默认折叠） */}
+													{p.settingsSchema && p.settingsSchema.length > 0 && (
+														<div className="set-row set-settings-row">
+															<button
+																type="button"
+																className="set-diag-toggle"
+																onClick={() => setSettingsOpen((prev) => ({ ...prev, [p.id]: !prev[p.id] }))}
+															>
+																<FiSliders />
+																{t("pluginSettingsTitle")} ({p.settingsSchema.length}) ·{" "}
+																{settingsOpen[p.id] ? t("pluginSettingsHide") : t("pluginSettingsShow")}
+															</button>
+															{settingsOpen[p.id] && (
+																<PluginSettingsForm plugin={p} models={settings?.subagentModels ?? []} />
+															)}
+														</div>
+													)}
+												</Fragment>
+											);
+										})}
 									</div>
 								)}
 							</div>

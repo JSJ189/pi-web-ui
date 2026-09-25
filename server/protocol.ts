@@ -592,6 +592,8 @@ export type ClientMessage =
 	/** Check the npm registry for a newer pi-web-ui version. */
 	| { type: "check_update" }
 	| { type: "check_updates_all"; force?: true } // webui + direct pi extensions (manifest)
+	/** Check updates for installed UI plugins (<dataDir>/plugins). */
+	| { type: "check_plugin_updates" }
 	/** Restart the supervised service (same effect as `pi-web-ui server restart`:
 	 *  this process exits and its supervisor brings it back). The server refuses
 	 *  when no supervisor manages this instance (foreground / dev / Docker). */
@@ -1487,6 +1489,19 @@ export interface UiProviderConfig {
 // ---------------------------------------------------------------------------
 // Plugins (optional UI components dropped into <dataDir>/plugins/<id>/)
 // ---------------------------------------------------------------------------
+
+export interface UiPluginUpdateInfo {
+	id: string;
+	name?: string;
+	version?: string;
+	latestVersion?: string | null;
+	source: string;
+	localSha: string | null;
+	remoteSha: string | null;
+	updatable: boolean;
+	builtin?: boolean;
+	error?: string;
+}
 
 /** One installed pi-web-ui plugin (see server/plugins.ts). A plugin is a
  *  directory under <dataDir>/plugins/<id>/ with a manifest.json and optional
@@ -2739,7 +2754,7 @@ export type ServerMessage =
 			type: "update_status_all";
 			items: {
 				name: string;
-				kind: "webui" | "pi-core" | "package" | "git-extension";
+				kind: "webui" | "pi-core" | "package" | "git-extension" | "plugin";
 				current: string;
 				latest: string | null;
 				latestPublishedAt?: string | null;
@@ -2747,6 +2762,10 @@ export type ServerMessage =
 				error?: string;
 				/** git-extension only: `host/path` shorthand (prepend `git:` for the `pi update` command). */
 				source?: string;
+				/** plugin only: directory/install id, matches pluginId. */
+				pluginId?: string;
+				/** plugin only: whether this is a shipped built-in plugin. */
+				builtin?: boolean;
 			}[];
 			/** issue #321: pi SDK 副本状态快照，随每次 update_status_all 下发。
 			 *  `running` = 本进程实际加载的版本（可能是自带副本，也可能是跟随的全局副本）；
@@ -2773,6 +2792,9 @@ export type ServerMessage =
 	 *  reload; the frontend uses it as an import-cache buster so changed
 	 *  bundles are actually re-fetched. */
 	| { type: "plugins"; plugins: UiPluginInfo[]; epoch: number }
+	/** Result of a check_plugin_updates run or an all-source update check
+	 *  containing UI plugins. Broadcast to all clients so plugin badges stay in sync. */
+	| { type: "plugin_updates"; updates: UiPluginUpdateInfo[] }
 	/** Installable-plugin list (marketplace). Pushed on attach and after every
 	 *  plugin_catalog_add/remove. Merges the shipped catalog
 	 *  (<pkgRoot>/plugins/catalog.json) with user-added entries
