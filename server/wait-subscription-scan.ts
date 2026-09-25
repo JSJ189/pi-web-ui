@@ -25,7 +25,7 @@
 // conversation switches. See the Chinese block above for the persistence layout
 // and the fail-open vs fail-closed rationale.
 
-import { readdirSync, readFileSync, statSync } from "node:fs";
+import { readdirSync, readFileSync } from "node:fs";
 import { homedir, tmpdir, userInfo } from "node:os";
 import path from "node:path";
 
@@ -134,11 +134,10 @@ export function resolveAsyncRunsDir(env: NodeJS.ProcessEnv = process.env): strin
 }
 
 /**
- * 活跃 run marker 的最长可信存活期：对齐 pi-subagents
- * active-run-index.ts 的 DEFAULT_STALE_TERMINAL_ACTIVE_MARKER_MS（24h）。
- * 崩溃遗留的 marker 超过该时长即视为孤儿，不阻止运行时释放（保留自限）。
+ * 【已废弃】按 marker mtime 的 24h 孤儿守卫（原 DEFAULT_STALE_ACTIVE_MARKER_MS）
+ * 已移除：run 是否终结改由 status.json 的 state 判定（见 hasActiveSubagentRun）。
+ * mtime 只能说明「marker 很久没动」，对 >24h 的超长 run 会误杀活跃证据。
  */
-export const DEFAULT_STALE_ACTIVE_MARKER_MS = 24 * 60 * 60 * 1000;
 
 /** 活跃 marker 索引目录名，与 pi-subagents 的 ACTIVE_RUN_INDEX_DIR 一致。 */
 const ACTIVE_RUN_INDEX_DIR = ".active-runs";
@@ -154,24 +153,29 @@ export interface ActiveRunScanOptions {
 	asyncRunsDir?: string;
 	/** 会话标识 = AsyncStatus.sessionId = session .jsonl 绝对路径。 */
 	sessionId?: string;
-	now?: () => number;
-	/** marker 超过该时长视为崩溃孤儿，不保留。默认 24h（对齐上游）。 */
-	staleMarkerMs?: number;
 	/** I/O 警告出口（测试可静音）。默认 console.warn。 */
 	warn?: (message: string, error: unknown) => void;
 }
 
 /**
  * 磁盘扫描：该会话是否还有活跃（queued/running）的 pi-subagents 异步 run。
- * 任何 I/O / 解析 / 过期错误都按「无证据」处理（fail-open，见文件头说明）。
+ * 任何 I/O / 解析错误都按「无证据」处理（fail-open，见文件头说明）。
  * ENOENT（目录/文件尚不存在、marker 刚被清掉）保持静默；其余 I/O 错误
  * console.warn 一次（与 hasPendingWaitSubscription 对齐）。
+ *
+ * run 是否已终结的廉价判据是 status.json 的 state 字段——它本来就在同一循环
+ * 里逐 marker 读取，零额外 I/O。孤儿清理因此只作用于「已终结 run」的遗留
+ * marker（终结态在下方无条件判为无证据）；曾按 marker mtime 超 24h 一律
+ * 跳过的旧守卫已移除：它同样命中「超长 run（>24h 仍在跑）」的活跃 marker，
+ * 会把正常运行误杀成孤儿、提前释放运行时，父会话永远等不到 wake。与上游
+ * pi-subagents 的 DEFAULT_STALE_TERMINAL_ACTIVE_MARKER_MS 语义对齐——24h
+ * 自限只该管 terminal marker，不该管还声称存活的 run。代价：进程崩溃遗留
+ * 的 queued/running status 不再随 mtime 过期自动失效，其代价（多保留一个
+ * 空闲运行时）远小于误杀超长 run 的静默停滞。
  */
 export function hasActiveSubagentRun(options: ActiveRunScanOptions): boolean {
 	const sessionId = options.sessionId;
 	if (!sessionId) return false;
-	const now = options.now ?? Date.now;
-	const staleMarkerMs = options.staleMarkerMs ?? DEFAULT_STALE_ACTIVE_MARKER_MS;
 	const warn = options.warn ?? ((message: string, error: unknown) => console.warn(message, error));
 	const isNotFound = (error: unknown): boolean =>
 		typeof error === "object" &&
@@ -189,15 +193,6 @@ export function hasActiveSubagentRun(options: ActiveRunScanOptions): boolean {
 	}
 	for (const runId of markers) {
 		if (runId.startsWith(".")) continue; // 不把隐藏文件当 run 证据
-		const markerFile = path.join(indexDir, runId);
-		// 孤儿防护：marker 太久没被 touch（崩溃遗留，run 早已不在）→ 无证据。
-		try {
-			const ageMs = now() - statSync(markerFile).mtimeMs;
-			if (ageMs > staleMarkerMs) continue;
-		} catch (error) {
-			if (!isNotFound(error)) warn(`Failed to stat active-run marker '${markerFile}':`, error);
-			continue; // ENOENT（刚被清除的竞态）→ 无证据
-		}
 		let status: unknown;
 		try {
 			status = JSON.parse(readFileSync(path.join(runsDir, runId, "status.json"), "utf-8"));
@@ -209,7 +204,9 @@ export function hasActiveSubagentRun(options: ActiveRunScanOptions): boolean {
 		if (!status || typeof status !== "object" || Array.isArray(status)) continue;
 		const probe = status as AsyncStatusProbe;
 		if (probe.sessionId !== sessionId) continue; // 别的会话的 run
-		if (probe.state !== "queued" && probe.state !== "running") continue; // 已结束
+		// 终结态（complete/failed/stopped/…）→ run 已结束：遗留 marker 按孤儿
+		// 清理对待，无条件不算证据；只有 queued/running 才是活跃证据。
+		if (probe.state !== "queued" && probe.state !== "running") continue;
 		return true;
 	}
 	return false;

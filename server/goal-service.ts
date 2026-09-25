@@ -76,6 +76,103 @@ export interface GoalHost {
 	goalModeEnabled: () => boolean;
 }
 
+/**
+ * 自主模式完成标记（与注入对话的【目标…】约定严格一致）：
+ *  - 【目标已达成】/【目标完成】/【目标达成】——必须带全角括号；
+ *  - GOAL 后必须跟至少一个分隔符（冒号/下划线/空白）且 COMPLETED/PASSED 为整词。
+ * 刻意不收裸子串（如「目标已达成」不带括号）：模型在计划、复述目标或假设句里
+ * 也会写出这些字样（"如果测试全绿则目标已达成"），裸匹配会把中间轮误判成 pass。
+ */
+const GOAL_COMPLETION_RE =
+	/【目标(?:已)?(?:达成|完成)】|(?<![A-Za-z])GOAL(?:[:：_]|\s+)+(?:IS\s+)?(?:COMPLETED|PASSED)(?![A-Za-z])/i;
+
+/** 自主轮次完成信号判定（纯函数，供 runGoalReview 与单测共用）。 */
+export function isGoalCompletionSignal(finalText: string): boolean {
+	return GOAL_COMPLETION_RE.test(finalText);
+}
+
+/** 提取 raw 中第一个括号平衡的 {...} 子串（字符串字面量内的引号/转义/花括号不参与配对）。 */
+function firstBalancedJsonObject(raw: string): string | undefined {
+	const start = raw.indexOf("{");
+	if (start < 0) return undefined;
+	let depth = 0;
+	let inString = false;
+	let escaped = false;
+	for (let i = start; i < raw.length; i++) {
+		const ch = raw[i];
+		if (inString) {
+			if (escaped) escaped = false;
+			else if (ch === "\\") escaped = true;
+			else if (ch === '"') inString = false;
+			continue;
+		}
+		if (ch === '"') inString = true;
+		else if (ch === "{") depth++;
+		else if (ch === "}") {
+			depth--;
+			if (depth === 0) return raw.slice(start, i + 1);
+		}
+	}
+	return undefined;
+}
+
+/**
+ * 解析审查模型的 verdict 输出（纯函数）。优先取第一个平衡 {...} 做 JSON.parse：
+ * 模型常包 markdown 围栏或前后闲话，feedback 里也可能有 \" 转义与嵌套引号，
+ * 这些由 JSON 语义天然处理；整体解析失败（单引号/尾逗号等）再退回旧的宽松
+ * 正则逐字段抠。两者都失败返回 undefined，调用方按「无 JSON」处理。
+ */
+export function parseReviewerVerdict(raw: string): { verdict: "pass" | "fail"; feedback: string } | undefined {
+	const json = firstBalancedJsonObject(raw);
+	if (json !== undefined) {
+		try {
+			const value = JSON.parse(json) as { verdict?: unknown; feedback?: unknown };
+			if (value && typeof value === "object" && !Array.isArray(value)) {
+				if (value.verdict === "pass" || value.verdict === "fail") {
+					return { verdict: value.verdict, feedback: typeof value.feedback === "string" ? value.feedback : "" };
+				}
+			}
+		} catch {
+			// 不是合法 JSON（围栏残留/单引号/尾逗号）→ 落到正则兜底
+		}
+	}
+	const m = raw.match(/\{\s*"verdict"\s*:\s*"(pass|fail)"[^}]*\}/);
+	if (m) {
+		const fm = raw.match(/"feedback"\s*:\s*"([^"]*)"/);
+		return { verdict: m[1] as "pass" | "fail", feedback: fm?.[1] ?? "" };
+	}
+	return undefined;
+}
+
+/** diff 正文进审查 prompt 的截断上限（完整规模信息走 [diff-meta] 尾段）。 */
+export const GIT_DIFF_CAP = 60_000;
+
+/**
+ * 由 git 原始输出构造「变更指纹」（纯函数，供 AgentService.gitDiff 与单测共用）。
+ *  - diff 正文非空 → 截断正文 + [diff-meta] 尾段（完整字符数 + 排序后的 status
+ *    指纹）。尾段永不参与截断：大 diff 两轮的前 60_000 字符可能完全相同（改动
+ *    落在截断线之后），只比截断正文会把持续推进误判成停滞；对内容变化敏感的
+ *    完整字符数让 prevDiff 等值比较能区分「真没变」与「变了但被截断」。
+ *  - diff 正文为空 → 排序后的 `git status --porcelain` 指纹（未跟踪文件不进
+ *    diff，却是新工作区最常见的实际进展）；两段都空（返回 ""）才算真停滞。
+ *  - status 输出为空/拍不到 → 对应段省略，退化为旧版纯 diff 行为。
+ */
+export function buildDiffFingerprint(diffOut: string, statusOut: string): string {
+	let status = "";
+	if (statusOut.trim() !== "") {
+		// porcelain 不承诺输出有序，显式排序保证指纹逐轮稳定可比。
+		status = statusOut
+			.split("\n")
+			.filter((line) => line.trim() !== "")
+			.sort()
+			.join("\n")
+			.slice(0, 20_000);
+	}
+	if (diffOut.trim() === "") return status;
+	const meta = `\n[diff-meta] chars=${diffOut.length}${status ? `\n[git-status]\n${status}` : ""}`;
+	return diffOut.slice(0, GIT_DIFF_CAP) + meta;
+}
+
 /** System prompt for the goal-wizard session. The wizard asks the user a few
  *  questions (via its goal_ask tool) to scope a raw requirement into a precise,
  *  reviewable goal, then emits ONLY the final goal text as its last message. */
@@ -1134,10 +1231,8 @@ export class GoalService {
 		const isAutonomous = !g.reviewModel;
 		if (isAutonomous) {
 			// DSH 风格自主轮次驱动（免拉起独立审查会话，省 token + 零启动延迟）：
-			// 检查模型自身是否在输出中表明目标已达成
-			const completionRegex =
-				/【目标(?:已)?(?:达成|完成)】|GOAL(?:[:：_]|\s+)*(?:IS\s+)?(?:COMPLETED|PASSED)|目标已达成|目标已完成/i;
-			const isCompleted = completionRegex.test(finalText);
+			// 检查模型自身是否在输出中表明目标已达成（只认约定标记，见 GOAL_COMPLETION_RE）
+			const isCompleted = isGoalCompletionSignal(finalText);
 			if (isCompleted) {
 				reviewerVerdict = "pass";
 				reviewerFeedback = pick(
@@ -1227,11 +1322,10 @@ export class GoalService {
 
 				// Parse the reviewer's final output (expected to be a JSON object).
 				const raw = reviewer.getLastAssistantText() ?? "";
-				const m = raw.match(/\{\s*"verdict"\s*:\s*"(pass|fail)"[^}]*\}/);
-				if (m) {
-					reviewerVerdict = m[1] as "pass" | "fail";
-					const fm = raw.match(/"feedback"\s*:\s*"([^"]*)"/);
-					reviewerFeedback = fm?.[1] ?? "";
+				const parsed = parseReviewerVerdict(raw);
+				if (parsed) {
+					reviewerVerdict = parsed.verdict;
+					reviewerFeedback = parsed.feedback;
 				} else {
 					// No JSON — assume fail with the raw output as feedback.
 					reviewerVerdict = "fail";

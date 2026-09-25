@@ -36,12 +36,13 @@ export type SubagentState = "running" | "queued" | "done" | "canceled";
 /**
  * subagent_wait_all 的最长阻塞时间：必须短暂低于工具看门狗（默认 20 分钟，
  * PI_WEB_TOOL_TIMEOUT_MS 可调），否则看门狗会先中止整个会话而不是让 wait
- * 干净地超时返回。留 20% 余量。
+ * 干净地超时返回。取 0.8×看门狗并以 60s 封顶、5s 兜底：看门狗调小（如 <75s）
+ * 时 60s 下限会反超看门狗造成本末倒置，此时随看门狗缩短，但不低于 5s。
  */
 const WAIT_CAP_MS = (() => {
 	const v = Number(process.env.PI_WEB_TOOL_TIMEOUT_MS);
 	const watchdog = Number.isFinite(v) && v > 0 ? v : 20 * 60_000;
-	return Math.max(60_000, Math.floor(watchdog * 0.8));
+	return Math.max(Math.min(60_000, Math.floor(watchdog * 0.8)), 5_000);
 })();
 
 /** 子代理是否已到终态（运行结束、被中止或出错）。wait 工具据此判断
@@ -588,8 +589,9 @@ export function makeSubagentTools(
 					);
 				}
 				const currentWatchdogMs = host.getWatchdogTimeoutMs?.() ?? WAIT_CAP_MS;
+				// 同 WAIT_CAP_MS：0.8×看门狗、60s 封顶、5s 兜底，wait 必须先于看门狗干净超时。
 				const currentWaitCapMs =
-					currentWatchdogMs > 0 ? Math.max(60_000, Math.floor(currentWatchdogMs * 0.8)) : 3600_000;
+					currentWatchdogMs > 0 ? Math.max(Math.min(60_000, Math.floor(currentWatchdogMs * 0.8)), 5_000) : 3600_000;
 				const timeoutMs = Math.min(Math.max(p.timeoutSeconds ?? 600, 1), Math.floor(currentWaitCapMs / 1000)) * 1000;
 				const waitStart = Date.now();
 				const deadline = waitStart + timeoutMs;
