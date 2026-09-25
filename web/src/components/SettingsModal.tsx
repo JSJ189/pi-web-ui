@@ -22,6 +22,7 @@ import {
 	FiSend,
 	FiSettings,
 	FiShield,
+	FiVolume2,
 	FiSliders,
 	FiTool,
 	FiTrash2,
@@ -53,6 +54,9 @@ import type {
 	UiSubagentTemplate,
 } from "../types";
 import { SchedulerPanel } from "./SchedulerPanel";
+import { SoundSettingsPanel, TtsSettingsPanel } from "./SoundSettings";
+import { playSound, type SoundSettings } from "../sounds";
+import { speak, type TtsSettings } from "../tts";
 import {
 	clearPromptHistory,
 	loadPromptHistory,
@@ -174,6 +178,12 @@ interface SettingsModalProps {
 	/** Switch the top-level view to the terminal (uninstall runs there). */
 	onSwitchToTerminal: () => void;
 	onClose: () => void;
+	/** Sound cue + TTS settings — state lives in App (localStorage-backed),
+	 *  shared with the TopBar sound dropdown via props. */
+	sound: SoundSettings;
+	onSoundChange: (settings: SoundSettings) => void;
+	tts: TtsSettings;
+	onTtsChange: (settings: TtsSettings) => void;
 }
 
 /** A row with an enable/disable switch (skill / extension). */
@@ -380,6 +390,7 @@ type SettingsTab =
 	| "approval-rules"
 	| "question"
 	| "display"
+	| "sound"
 	| "quick"
 	| "markers"
 	| "skills"
@@ -392,7 +403,17 @@ type SettingsTab =
 	| "subagent-templates"
 	| `plugin-page:${string}`;
 
-export function SettingsModal({ chat, terminal, initialSection, onSwitchToTerminal, onClose }: SettingsModalProps) {
+export function SettingsModal({
+	chat,
+	terminal,
+	initialSection,
+	onSwitchToTerminal,
+	onClose,
+	sound,
+	onSoundChange,
+	tts,
+	onTtsChange,
+}: SettingsModalProps) {
 	const t = useT();
 	const { locale } = useI18n();
 	// {{token}} 元数据文案键是动态的（promptTok_<token>[,_desc]），用 tt 跳过字面量类型。
@@ -743,6 +764,7 @@ export function SettingsModal({ chat, terminal, initialSection, onSwitchToTermin
 					},
 				]),
 		{ id: "display", icon: <FiMessageSquare />, label: t("settingsMessageDisplay") },
+		{ id: "sound", icon: <FiVolume2 />, label: t("settingsSoundVoice") },
 		{ id: "quick", icon: <FiSend />, label: t("quickPhrases"), count: settings.quickPhrases.length },
 		{ id: "skills", icon: <FiCpu />, label: t("settingsSkills"), count: settings.skills.length },
 		{ id: "extensions", icon: <FiPackage />, label: t("settingsExtensions"), count: settings.extensions.length },
@@ -2406,6 +2428,26 @@ export function SettingsModal({ chat, terminal, initialSection, onSwitchToTermin
 										</div>
 									)}
 								</div>
+							</div>
+						)}
+
+						{/* ---- 声音与语音（提示音事件开关 + 本地 TTS 播报，issue #288） ---- */}
+						{tab === "sound" && (
+							<div className="set-section">
+								<div className="set-section-title">
+									<FiVolume2 className="set-section-icon" />
+									{t("settingsSoundVoice")}
+								</div>
+								<SoundSettingsPanel
+									settings={sound}
+									onChange={onSoundChange}
+									onPreview={(kind) => playSound(kind, sound)}
+								/>
+								<TtsSettingsPanel
+									settings={tts}
+									onChange={onTtsChange}
+									onPreview={() => speak(t("ttsPreviewLine"), { ...tts, enabled: true })}
+								/>
 							</div>
 						)}
 
