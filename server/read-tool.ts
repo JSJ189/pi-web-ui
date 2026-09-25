@@ -16,7 +16,7 @@
  * ActiveSet 开关（read 本体不可关，关了 agent 就残了），因此不进
  * tool-manager 的 AGENT_TOOL_CATALOG；每次调用实时读设置，改动即时生效。
  *
- * 双语约定（issue #91）：definition 走 bilingual(en, zh) 内联双语；per-call
+ * 文案约定：工具 definition（description/promptSnippet/promptGuidelines）为纯英文；per-call
  * 返回文本（目录头）按 lang 取 pick(lang, zh, en, key)，缺表回落英文内联。
  *
  * DSH 引擎无 customTool 注册面（工具来自 shipped preset），本覆盖只服务 pi 引擎。
@@ -33,7 +33,7 @@ import {
 	defineTool,
 } from "@earendil-works/pi-coding-agent";
 import { Type, type Static } from "typebox";
-import { bilingual, pick, type ServerLang } from "./i18n.js";
+import { pick, type ServerLang } from "./i18n.js";
 
 const UNICODE_SPACES = /[\u00A0\u2000-\u200A\u202F\u205F\u3000]/g;
 
@@ -80,30 +80,21 @@ interface ReadDirInput {
 const readDirSchema = Type.Object(
 	{
 		path: Type.String({
-			description: bilingual(
-				"Path to the file (or directory) to read (relative or absolute)",
-				"要读取的文件（或目录）路径（相对或绝对）",
-			),
+			description: "Path to the file (or directory) to read (relative or absolute)",
 		}),
 		file_path: Type.Optional(
 			Type.String({
-				description: bilingual(
-					"Alias of `path` — some clients/models emit file_path; if both are given, `path` wins",
-					"`path` 的别名 —— 部分客户端/模型习惯发 file_path；两者都给时以 `path` 为准",
-				),
+				description: "Alias of `path` — some clients/models emit file_path; if both are given, `path` wins",
 			}),
 		),
 		offset: Type.Optional(
 			Type.Number({
-				description: bilingual("Line number to start reading from (1-indexed)", "从第几行开始读（从 1 起算）"),
+				description: "Line number to start reading from (1-indexed)",
 			}),
 		),
 		limit: Type.Optional(
 			Type.Number({
-				description: bilingual(
-					"Maximum number of lines to read (for a directory path: maximum number of entries)",
-					"最多读多少行（路径是目录时 = 最多列多少条目）",
-				),
+				description: "Maximum number of lines to read (for a directory path: maximum number of entries)",
 			}),
 		),
 	},
@@ -136,20 +127,13 @@ export function makeReadDirTool(fallbackCwd: string, options: ReadDirToolOptions
 
 	return defineTool({
 		...base,
-		description: bilingual(
-			`${base.description} Also accepts \`file_path\` as an alias of \`path\`. If the path is a directory, its entries are listed instead of file contents (one entry per line, directories suffixed with '/'); in that case \`limit\` caps the number of entries and \`offset\` is ignored.`,
-			`读取文件内容。支持文本文件与图片（jpg, png, gif, webp, bmp），图片作为附件发出。文本输出截断到 ${DEFAULT_MAX_LINES} 行或 ${DEFAULT_MAX_BYTES / 1024}KB（先到者为准），大文件用 offset/limit 续读。路径也可用 \`file_path\` 传（path 的别名，两者都给时以 path 为准）。路径是目录时改为列出目录条目（一行一项，目录带 '/' 后缀；此时 limit 是条目上限，offset 忽略）。`,
-		),
-		promptSnippet: bilingual(
-			"Read file contents (a directory path lists its entries)",
-			"读取文件内容（传目录则列出其条目）",
-		),
+		description:
+			`${base.description} Also accepts \`file_path\` as an alias of \`path\`. ` +
+			"If the path is a directory, its entries are listed instead (one per line, directories suffixed with '/'); `limit` caps the entries and `offset` is ignored.",
+		promptSnippet: "Read file contents (a directory path lists its entries)",
 		promptGuidelines: [
 			...(base.promptGuidelines ?? []),
-			bilingual(
-				"Use read on a directory to list its entries — no need to shell out to `ls`",
-				"要看目录内容直接把目录路径交给 read，不必再走 bash 的 ls",
-			),
+			"Use read on a directory to list its entries — no need to shell out to `ls`",
 		],
 		parameters: readDirSchema,
 		prepareArguments: prepareReadArguments,

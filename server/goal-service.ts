@@ -25,7 +25,7 @@ import {
 } from "@earendil-works/pi-coding-agent";
 import type { GoalStatus, ServerMessage } from "./protocol.js";
 import type { ClientStateStore } from "./client-state.js";
-import { bilingual, pick, type ServerLang } from "./i18n.js";
+import { pick, type ServerLang } from "./i18n.js";
 import { parseModelSpec } from "./attachments.js";
 import type { WebUIContext } from "./webui-context.js";
 
@@ -504,12 +504,12 @@ export class GoalService {
 			const goalAsk = defineTool({
 				name: "goal_ask",
 				label: "Ask the user",
-				description: bilingual(
-					"Ask the user ONE question at a time to scope down the goal. Provide a clear question and 2-4 concise options; or ask an open question. Returns the user's chosen answer.",
-					"一次只向用户提一个问题，以明确目标范围。给出清晰的问题和 2-4 个简洁选项；或提开放式问题。返回用户选择的答案。",
-				),
+				description:
+					"Ask the user ONE question at a time to scope down the goal. " +
+					"Provide a clear question and 2-4 concise options; " +
+					"or ask an open question. Returns the user's chosen answer.",
 				parameters: Type.Object({
-					question: Type.String({ description: bilingual("The question to ask", "要问的问题") }),
+					question: Type.String({ description: "The question to ask" }),
 					options: Type.Optional(Type.Array(Type.String())),
 				}),
 				// ONE question at a time. Sequential execution prevents the agent from

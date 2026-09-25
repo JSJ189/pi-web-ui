@@ -23,7 +23,7 @@ import { join } from "node:path";
 import readline from "node:readline";
 import { defineTool, type ToolDefinition } from "@earendil-works/pi-coding-agent";
 import { Type } from "typebox";
-import { bilingual, pick, type ServerLang } from "./i18n.js";
+import { pick, type ServerLang } from "./i18n.js";
 import { EVAL_TOOL_NAME } from "./tool-manager.js";
 
 export { EVAL_TOOL_NAME };
@@ -212,6 +212,61 @@ interface PendingRequest {
 	reject: (err: Error) => void;
 }
 
+/**
+ * 净化 Eval 子进程环境变量：仅保留操作系统基础变量，剥离所有包含 key/token/secret/auth/cred 等敏感环境变量，
+ * 杜绝沙箱脚本窃取宿主云凭据与 API Key。
+ */
+export function sanitizeEvalEnv(sourceEnv: NodeJS.ProcessEnv): NodeJS.ProcessEnv {
+	const allowedKeys = new Set([
+		"path",
+		"pathext",
+		"systemroot",
+		"windir",
+		"temp",
+		"tmp",
+		"tmpdir",
+		"home",
+		"userprofile",
+		"lang",
+		"lc_all",
+		"term",
+		"shell",
+		"comspec",
+		"os",
+		"number_of_processors",
+		"processor_architecture",
+		"appdata",
+		"localappdata",
+		"homedrive",
+		"homepath",
+		"systemdrive",
+		"programdata",
+		"programfiles",
+		"programfiles(x86)",
+		"commonprogramfiles",
+		"node_env",
+	]);
+	const cleanEnv: Record<string, string> = {};
+	for (const [key, value] of Object.entries(sourceEnv)) {
+		if (value === undefined) continue;
+		const lowerKey = key.toLowerCase();
+		if (
+			lowerKey.includes("key") ||
+			lowerKey.includes("token") ||
+			lowerKey.includes("secret") ||
+			lowerKey.includes("auth") ||
+			lowerKey.includes("pass") ||
+			lowerKey.includes("cred")
+		) {
+			continue;
+		}
+		if (allowedKeys.has(lowerKey) || lowerKey.startsWith("npm_") || lowerKey.startsWith("python")) {
+			cleanEnv[key] = value;
+		}
+	}
+	return cleanEnv;
+}
+
 /** 单个持久内核工作进程包装。 */
 class EvalKernel {
 	private proc: ChildProcess | null = null;
@@ -241,7 +296,7 @@ class EvalKernel {
 			stdio: ["pipe", "pipe", "pipe"] as ["pipe", "pipe", "pipe"],
 			detached: process.platform !== "win32",
 			env: {
-				...process.env,
+				...sanitizeEvalEnv(process.env),
 				PI_EVAL_WORKDIR: this.workdir,
 				PI_EVAL_PROJECT_DIR: this.cwd,
 			},
@@ -467,57 +522,35 @@ export function makeEvalTool(opts: { cwd: string; ownerId?: string; lang?: () =>
 	return defineTool({
 		name: EVAL_TOOL_NAME,
 		label: "Execute code in persistent sandbox",
-		description: bilingual(
+		description:
 			"Execute Python or JavaScript/TypeScript code in an isolated evaluation sandbox. " +
-				"Variables and imported modules persist across calls within the conversation. " +
-				"Ideal for quick calculations, data transformations, algorithm verification, and inspecting outputs without creating temporary script files.",
-			"在隔离的代码求值沙箱中执行 Python 或 JavaScript/TypeScript 代码。" +
-				"变量与导入的模块在会话内的多次调用间持续保留。" +
-				"适用于无需创建临时文件的即时计算、数据转换、算法验证与推演。",
-		),
-		promptSnippet: bilingual(
-			"evaluate Python or JS/TS code with persistent state (default-off sandbox)",
-			"在保持变量状态的沙箱中执行 Python 或 JS/TS 代码（默认关闭）",
-		),
+			"Variables and imported modules persist across calls within the conversation. " +
+			"Ideal for quick calculations, data transformations, algorithm verification, and inspecting outputs without creating temporary script files.",
+		promptSnippet: "evaluate Python or JS/TS code with persistent state (default-off sandbox)",
 		parameters: Type.Object({
 			code: Type.String({
-				description: bilingual(
-					"The code snippet to evaluate. Top-level variables and functions are preserved across calls.",
-					"要执行的代码片段。顶层变量和函数会在后续调用中持续保留。",
-				),
+				description: "The code snippet to evaluate. Top-level variables and functions are preserved across calls.",
 			}),
 			language: Type.Optional(
 				Type.Union([Type.Literal("py"), Type.Literal("js"), Type.Literal("ts")], {
-					description: bilingual(
-						'Target language: "py" for Python (default), "js" or "ts" for Node.js sandbox.',
-						'目标语言："py" 为 Python（默认），"js" 或 "ts" 为 Node.js 沙箱。',
-					),
+					description: 'Target language: "py" for Python (default), "js" or "ts" for Node.js sandbox.',
 				}),
 			),
 			title: Type.Optional(
 				Type.String({
-					description: bilingual(
-						'Optional short label for this step (e.g. "Calculate metrics", "Parse payload").',
-						'可选的简短标题（例如 "计算指标"、"解析数据"）。',
-					),
+					description: 'Optional short label for this step (e.g. "Calculate metrics", "Parse payload").',
 				}),
 			),
 			timeout: Type.Optional(
 				Type.Integer({
 					minimum: 1,
 					maximum: MAX_TIMEOUT_SECONDS,
-					description: bilingual(
-						`Execution timeout in seconds (default: ${DEFAULT_TIMEOUT_SECONDS}, maximum: ${MAX_TIMEOUT_SECONDS}).`,
-						`执行超时秒数（默认 ${DEFAULT_TIMEOUT_SECONDS}，最大 ${MAX_TIMEOUT_SECONDS}）。`,
-					),
+					description: `Execution timeout in seconds (default: ${DEFAULT_TIMEOUT_SECONDS}, maximum: ${MAX_TIMEOUT_SECONDS}).`,
 				}),
 			),
 			reset: Type.Optional(
 				Type.Boolean({
-					description: bilingual(
-						"Whether to reset the sandbox environment before executing (clears all previous variables).",
-						"是否在执行前重置沙箱环境（清空之前的所有变量）。",
-					),
+					description: "Whether to reset the sandbox environment before executing (clears all previous variables).",
 				}),
 			),
 		}),
@@ -559,14 +592,18 @@ export function makeEvalTool(opts: { cwd: string; ownerId?: string; lang?: () =>
 					text = text.slice(0, MAX_OUTPUT_CHARS) + `\n… [${text.length - MAX_OUTPUT_CHARS} chars truncated]`;
 				}
 
+				const maxDetailChars = MAX_OUTPUT_CHARS;
+				const truncateDetail = (s: string) =>
+					s && s.length > maxDetailChars ? s.slice(0, maxDetailChars) + `\n… [truncated]` : s;
+
 				return {
 					content: [{ type: "text", text }],
 					details: {
 						language,
 						durationMs,
 						ok: res.ok,
-						stdout: res.stdout,
-						stderr: res.stderr,
+						stdout: truncateDetail(res.stdout),
+						stderr: truncateDetail(res.stderr),
 						result: res.result,
 						error: res.error,
 						reset: params.reset ?? false,

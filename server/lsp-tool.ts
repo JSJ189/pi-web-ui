@@ -835,18 +835,16 @@ export function makeLspTool(options: LspToolOptions) {
 	return defineTool({
 		name: LSP_TOOL_NAME,
 		label: "LSP code intelligence",
-		description: `Query language intelligence from Language Server Protocol (LSP) across the workspace.
-Provides IDE-grade semantic analysis to prevent guessing and hallucinating symbol references.
-Supported actions:
-- \`definition\`: Jump to definition of the symbol at \`line\` & \`character\` in \`path\` (returns file, line, and code snippet).
-- \`references\`: Find all workspace references/usages of the symbol at \`line\` & \`character\` in \`path\`.
-- \`hover\`: Get type signature and documentation (Docstring/Markdown) for symbol at \`line\` & \`character\`.
-- \`diagnostics\`: Get compiler/type errors and warnings for \`path\` (or pass no line to check whole file).
-- \`documentSymbol\`: Get hierarchical symbol outline (classes, functions, methods with line spans) for \`path\`.
-- \`read_symbol\`: Read exact implementation body of \`symbol\` in \`path\` (e.g. symbol="parseConfig" or "Server.start").
-- \`workspaceSymbol\`: Search symbols across the workspace matching \`query\`.
-- \`cascade\`: Impact check for \`path\` — find files that reference it (via LSP references on its exported symbols, or the symbol at \`line\`/\`character\` when provided) and report their current diagnostics, so breakages caused by an edit surface immediately.
-Note: Line numbers are 1-indexed.`,
+		description: `IDE-grade semantic analysis (LSP) across the workspace. Actions:
+- \`definition\`: definition of the symbol at \`line\`/\`character\` in \`path\` (file, line, snippet).
+- \`references\`: all workspace usages of that symbol.
+- \`hover\`: type signature and docs for that symbol.
+- \`diagnostics\`: compiler/type errors and warnings for \`path\` (whole file).
+- \`documentSymbol\`: hierarchical symbol outline with line spans for \`path\`.
+- \`read_symbol\`: read the body of \`symbol\` in \`path\` (e.g. "parseConfig").
+- \`workspaceSymbol\`: search symbols across the workspace by \`query\`.
+- \`cascade\`: impact check for \`path\` — report diagnostics of files referencing it.
+Lines are 1-indexed.`,
 		parameters: Type.Object({
 			action: Type.Union(
 				[
@@ -897,7 +895,7 @@ Note: Line numbers are 1-indexed.`,
 			allowInstall: Type.Optional(
 				Type.Boolean({
 					description:
-						"Allow installing the missing language server into ~/.pi-web/lsp-servers (user-space, no sudo). Defaults to false; when false and no server is found, the tool returns an installHint instead.",
+						"Install the missing language server into ~/.pi-web/lsp-servers (user-space, no sudo). Default false: the tool returns an installHint instead.",
 				}),
 			),
 		}),
@@ -1166,6 +1164,8 @@ Note: Line numbers are 1-indexed.`,
 					}
 
 					const lines = formatDocumentSymbols(symbols);
+					// details 随会话持久且整体 ≤64KB（超限整条丢弃）：symbols 与文本大纲同口径截断
+					const detailsSymbols = symbols.length > 300 ? symbols.slice(0, 300) : symbols;
 					return {
 						content: [
 							{
@@ -1173,7 +1173,7 @@ Note: Line numbers are 1-indexed.`,
 								text: `Symbols in ${targetPath} (${symbols.length} top-level):\n${lines.join("\n")}`,
 							},
 						],
-						details: { ok: true, count: symbols.length, symbols },
+						details: { ok: true, count: symbols.length, symbols: detailsSymbols },
 					};
 				}
 
