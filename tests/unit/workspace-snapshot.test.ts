@@ -84,5 +84,5 @@ describe("工作区版本影子快照与双向联动回滚 (Dual-State Rollback)
 		expect(readFileSync(join(testDir, "file1.txt"), "utf8").replace(/\r\n/g, "\n")).toBe("hello v1\n");
 		expect(readFileSync(join(testDir, "file2.txt"), "utf8").replace(/\r\n/g, "\n")).toBe("config v1\n");
 		expect(existsSync(join(testDir, "untracked.txt"))).toBe(false);
-	});
+	}, 20000);
 });

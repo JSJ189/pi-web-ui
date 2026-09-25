@@ -72,7 +72,7 @@ function showModal(content, statusInfo) {
 
 	const dialog = document.createElement("div");
 	dialog.style.cssText = `
-		background: var(--bg-panel, #1e1e24);
+		background: var(--bg-elev, #1e1e24);
 		border: 1px solid var(--border, #333);
 		border-radius: 10px;
 		width: 100%;
@@ -111,7 +111,7 @@ function showModal(content, statusInfo) {
 	// 1. 会话实时节省统计区
 	const statsBox = document.createElement("div");
 	statsBox.style.cssText = `
-		background: var(--bg-hover, rgba(255,255,255,0.03));
+		background: var(--bg-elev2, rgba(255,255,255,0.03));
 		border: 1px solid var(--border, #333);
 		border-radius: 6px;
 		padding: 12px 14px;
@@ -236,7 +236,7 @@ function showModal(content, statusInfo) {
 		border-top: 1px solid var(--border, #333);
 		display: flex;
 		justify-content: flex-end;
-		background: var(--bg-hover, rgba(255,255,255,0.03));
+		background: var(--bg-elev2, rgba(255,255,255,0.03));
 	`;
 	const closeBtn = document.createElement("button");
 	closeBtn.textContent = "关闭";
