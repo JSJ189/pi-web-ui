@@ -154,3 +154,75 @@ describe("serializeMessage: system 消息不进快照", () => {
 		expect(serializeMessage(sys, 0)).toBeNull();
 	});
 });
+
+describe("serializeMessage: assistant thinking 与 custom details 的体积闸门", () => {
+	it("thinking 走 TEXT_CAP：超长思维链被截断并带 [truncated] 尾标", () => {
+		const msg = serializeMessage(
+			{
+				role: "assistant",
+				content: [{ type: "thinking", thinking: "x".repeat(200_001) }],
+				timestamp: 1,
+			} as unknown as Parameters<typeof serializeMessage>[0],
+			0,
+		);
+		const block = msg?.content[0] as { type: string; thinking: string };
+		expect(block.type).toBe("thinking");
+		expect(block.thinking.startsWith("x".repeat(1000))).toBe(true);
+		expect(block.thinking.length).toBeLessThan(200_100);
+		expect(block.thinking.endsWith("[truncated]")).toBe(true);
+	});
+
+	it("thinking 未超限时原样下发", () => {
+		const msg = serializeMessage(
+			{
+				role: "assistant",
+				content: [{ type: "thinking", thinking: "短思维链" }],
+				timestamp: 1,
+			} as unknown as Parameters<typeof serializeMessage>[0],
+			0,
+		);
+		expect(msg?.content[0]).toEqual({ type: "thinking", thinking: "短思维链" });
+	});
+
+	it("custom details 超 TOOL_DETAILS_CAP → 整丢（与 toolResult details 同一口径）", () => {
+		const msg = serializeMessage(
+			{
+				role: "custom",
+				customType: "my-widget",
+				content: [{ type: "text", text: "hi" }],
+				details: { blob: "x".repeat(70_000) },
+				timestamp: 2,
+			} as unknown as Parameters<typeof serializeMessage>[0],
+			0,
+		);
+		expect(msg).not.toHaveProperty("details");
+	});
+
+	it("custom details 未超限原样下发；循环引用也不炸", () => {
+		const cyc: Record<string, unknown> = {};
+		cyc.self = cyc;
+		const cycMsg = serializeMessage(
+			{
+				role: "custom",
+				customType: "my-widget",
+				content: [],
+				details: cyc,
+				timestamp: 3,
+			} as unknown as Parameters<typeof serializeMessage>[0],
+			0,
+		);
+		expect(cycMsg).not.toHaveProperty("details");
+		const details = { fileName: "a.png" };
+		const okMsg = serializeMessage(
+			{
+				role: "custom",
+				customType: "attachment",
+				content: [],
+				details,
+				timestamp: 4,
+			} as unknown as Parameters<typeof serializeMessage>[0],
+			0,
+		);
+		expect(okMsg?.details).toEqual(details);
+	});
+});

@@ -1630,7 +1630,10 @@ export class DshClientSession {
 		const active = this.conv;
 		if (active.messages.length === 0 && active.terminals.list().length === 0) {
 			if (preset) await this.selectAgentPreset(preset);
-			else this.flushSnapshot();
+			else {
+				this.pushSettings();
+				this.flushSnapshot();
+			}
 			return true;
 		}
 		for (const conv of this.convs.values()) {
@@ -1661,6 +1664,7 @@ export class DshClientSession {
 		this.emitConversations();
 		this.emitGoalStatus();
 		this.pushTerminals();
+		this.pushSettings();
 		this.flushSnapshot();
 		void this.refreshActivePermission().catch(() => {});
 		return true;
@@ -1695,6 +1699,7 @@ export class DshClientSession {
 		this.emitConversations();
 		this.emitGoalStatus();
 		this.pushTerminals();
+		this.pushSettings();
 		this.flushSnapshot(true);
 		// 切会话带上权限值（cwd 变化走运行时重启，onStarted 会重拉）。
 		void this.refreshActivePermission().catch(() => {});
@@ -2451,6 +2456,7 @@ export class DshClientSession {
 			this.activeId = conv.id;
 			this.emitConversations();
 			this.pushTerminals();
+			this.pushSettings();
 			this.flushSnapshot(true);
 		} catch (err) {
 			this.emit({
@@ -3174,6 +3180,7 @@ export class DshClientSession {
 			}
 			conv.agentPreset = res.preset ?? target;
 			this.emitConversations();
+			this.pushSettings();
 			this.flushSnapshot();
 		} catch (err) {
 			this.emit({
@@ -4472,6 +4479,7 @@ export class DshClientSession {
 			// 文件树跟随新项目（服务端原生 watcher 自动重挂）。
 			void this.listFiles(undefined);
 			this.pushTerminals();
+			this.pushSettings();
 			this.flushSnapshot(true);
 		} catch (err) {
 			this.emit({

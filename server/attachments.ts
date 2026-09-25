@@ -20,8 +20,20 @@ import { saveAttachment } from "./attachment-store.js";
 import type { ClientSettings } from "./client-state.js";
 
 /** 跨快照的视觉转写缓存：批次 hash（名称 + base64 头 + 提示词）→ 转写文本。
- *  编辑重问重发相同图片不再重复耗视觉 token。进程级共享即可。 */
+ *  编辑重问重发相同图片不再重复耗视觉 token。进程级共享即可。
+ *  长驻进程下无界 Map 会随图片种类缓慢吃内存（单条转写可达数十 KB），
+ *  超过 VISION_BRIDGE_CACHE_MAX 按插入序 FIFO 淘汰最旧。 */
+const VISION_BRIDGE_CACHE_MAX = 256;
 const visionBridgeCache = new Map<string, string>();
+
+function cacheVisionTranscript(key: string, value: string): void {
+	visionBridgeCache.set(key, value);
+	if (visionBridgeCache.size > VISION_BRIDGE_CACHE_MAX) {
+		// Map 迭代序 = 插入序，第一个 key 即最旧。
+		const oldest = visionBridgeCache.keys().next().value;
+		if (oldest !== undefined) visionBridgeCache.delete(oldest);
+	}
+}
 
 /** "provider/id" 解析；非法格式返回 null。 */
 export function parseModelSpec(spec?: string | null): {
@@ -264,7 +276,7 @@ export async function buildAttachmentMessages(
 								lang: vLang,
 							},
 						);
-						visionBridgeCache.set(batchHash, transcript);
+						cacheVisionTranscript(batchHash, transcript);
 						ctx.emit({
 							type: "notice",
 							level: "info",
@@ -479,7 +491,21 @@ export async function buildAttachmentMessages(
 			// Uploaded files live in a GLOBAL per-user dir (not inside the project
 			// or the per-client session store) so browsing a repo never picks up
 			// uploaded junk: <dataDir>/uploads/<clientId>/（保留期自动清理，见 uploads.ts）。
-			const { abs, displayName: safeName } = saveUpload(ctx.clientId, att.name ?? "file", buf);
+			// saveUpload 对非法 clientId/displayName 抛错（消毒失败整条拒绝，绝不
+			// 落到别的目录）—— 这里报错跳过该附件，不让一条坏附件中断整条消息。
+			let saved: { abs: string; displayName: string };
+			try {
+				saved = saveUpload(ctx.clientId, att.name ?? "file", buf);
+			} catch (err) {
+				ctx.emit({
+					type: "notice",
+					level: "error",
+					text: `上传文件保存失败，已跳过：${(err as Error).message}`,
+					textEn: `Failed to save uploaded file, skipped: ${(err as Error).message}`,
+				});
+				continue;
+			}
+			const { abs, displayName: safeName } = saved;
 			// Wire format: forward-slash absolute path (the read tool accepts
 			// absolute paths; Windows uses "C:/..." — safe inside the XML-ish tag).
 			const wirePath = abs.split(sep).join("/");

@@ -8,9 +8,9 @@
  *  - 避免快照和消息列表随会话进行出现数兆字节 base64 的膨胀。
  */
 
-import { createHash } from "node:crypto";
+import { createHash, randomUUID } from "node:crypto";
 import { mkdirSync, existsSync, readdirSync } from "node:fs";
-import { readFile, writeFile, stat } from "node:fs/promises";
+import { readFile, rename, rm, writeFile, stat } from "node:fs/promises";
 import { join, extname } from "node:path";
 
 let storeDir = "";
@@ -74,7 +74,20 @@ export async function saveAttachment(
 	const filePath = join(storeDir, fileName);
 
 	if (!existsSync(filePath)) {
-		await writeFile(filePath, buffer);
+		// 原地 writeFile 有两个问题：a) 同 hash 并发写时两个 writeFileSync
+		// 交错会留下半个文件；b) 读方（/api/attachment/:hash）可能在写完前就命中。
+		// 因此先写私有 tmp 再 rename（同目录内原子生效）。POSIX rename 原子覆盖；
+		// Windows 目标已存在时报 EEXIST/EPERM —— 内容寻址同 hash 即同内容，
+		// 并发对手落盘视为成功。tmp 命名带 uuid，绝不与真实附件名冲突。
+		const tmpPath = `${filePath}.${randomUUID()}.tmp`;
+		try {
+			await writeFile(tmpPath, buffer);
+			await rename(tmpPath, filePath);
+		} catch (err) {
+			await rm(tmpPath, { force: true }).catch(() => {});
+			const code = (err as NodeJS.ErrnoException).code;
+			if (code !== "EEXIST" && code !== "EPERM") throw err;
+		}
 	}
 
 	return {
@@ -97,7 +110,9 @@ export async function findAttachment(hash: string): Promise<AttachmentRecord | n
 
 	try {
 		const files = readdirSync(storeDir);
-		const match = files.find((f) => f.startsWith(hash));
+		// 跳过原子写（tmp + rename）崩溃时可能残留的 .tmp —— 前缀同为 hash，
+		// 若被命中会拿到错误的后缀与 MIME。
+		const match = files.find((f) => f.startsWith(hash) && !f.endsWith(".tmp"));
 		if (!match) return null;
 
 		const filePath = join(storeDir, match);

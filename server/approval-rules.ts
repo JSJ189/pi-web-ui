@@ -137,6 +137,21 @@ export function globToRegex(pattern: string): RegExp {
 }
 
 /**
+ * 从工具参数里取「这次调用动的是哪个文件」。SDK 内置 read/write/edit 用 `path`，read 还有
+ * `file_path` 别名，部分扩展（如 pi-better-edit 的 edit）用 `file` —— 三种都认，否则叠在
+ * 扩展实现之上的权限沙箱与审批规则会静默放行（取不到 → 空串 → 被判成工作区内）。
+ */
+export function extractTargetPath(params: unknown): string {
+	if (!params || typeof params !== "object") return "";
+	const obj = params as Record<string, unknown>;
+	for (const key of ["path", "file_path", "file"]) {
+		const value = obj[key];
+		if (typeof value === "string" && value.trim()) return value;
+	}
+	return "";
+}
+
+/**
  * 从工具参数对象中提取待检查文本。
  */
 export function extractRuleFieldValue(field: ApprovalRuleField, toolName: string, params: unknown): string {
@@ -148,7 +163,7 @@ export function extractRuleFieldValue(field: ApprovalRuleField, toolName: string
 		return String(obj.command ?? "");
 	}
 	if (field === "path") {
-		return String(obj.path ?? "");
+		return extractTargetPath(params);
 	}
 	if (field === "params") {
 		try {
@@ -608,6 +623,21 @@ export class ApprovalRulesStore {
 			if (ids.has(r.id)) return `规则 id 冲突: ${r.id}`;
 			ids.add(r.id);
 			normalized.push(r);
+		}
+
+		// 内置规则是安全底线：整表替换绝不能把它们裁掉（旧客户端 / 并发竞态都
+		// 可能送来缺内置规则的清单）。缺失的按默认定义补种、追加到队尾——与
+		// load/resetBuiltin 同口径；插队首会改变用户 allow 规则的 first-match
+		// 语义。id 命中内置定义的一律强制 builtin 标记（同 upsert 的保护），
+		// 防止 remove() 的内置不可删保护被绕过。
+		for (const def of DEFAULT_APPROVAL_RULES) {
+			if (!ids.has(def.id)) {
+				normalized.push({ ...def, tools: [...def.tools] });
+				ids.add(def.id);
+			} else {
+				const i = normalized.findIndex((r) => r.id === def.id);
+				normalized[i].builtin = true;
+			}
 		}
 
 		this.rules = normalized;

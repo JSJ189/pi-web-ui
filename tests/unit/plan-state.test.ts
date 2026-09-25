@@ -47,6 +47,33 @@ describe("结构化任务计划状态机与看板管理 (PlanManager / Plan Mode
 		expect(updated2?.activeStepId).toBe("step-2");
 	});
 
+	it("updateStep 剥掉 patch 里的 id，title/description 与 setPlan 同口径截断", () => {
+		const pm = new PlanManager();
+		pm.setPlan("conv-1", [{ id: "step-1", title: "原标题", status: "in_progress", description: "原描述" }]);
+
+		// patch 带 id：不允许改 id（activeStepId 的锚点，改了会悬空）
+		const patched = pm.updateStep("conv-1", "step-1", {
+			id: "hijacked",
+			title: "新标题",
+			status: "in_progress",
+		});
+		expect(patched?.steps[0].id).toBe("step-1");
+		expect(patched?.activeStepId).toBe("step-1");
+		expect(patched?.steps[0].title).toBe("新标题");
+
+		// 超长截断：title ≤200、description ≤1000（与 setPlan 一致）
+		const long = pm.updateStep("conv-1", "step-1", {
+			title: "T".repeat(500),
+			description: "D".repeat(2000),
+		});
+		expect(long?.steps[0].title.length).toBe(200);
+		expect(long?.steps[0].description?.length).toBe(1000);
+
+		// patch 不带 description 时保留旧值；显式空串清除
+		expect(pm.updateStep("conv-1", "step-1", { status: "pending" })?.steps[0].description).toBeDefined();
+		expect(pm.updateStep("conv-1", "step-1", { description: "" })?.steps[0].description).toBeUndefined();
+	});
+
 	it("格式化计划文本供模型上下文使用", () => {
 		const pm = new PlanManager();
 		pm.setPlan("conv-1", [

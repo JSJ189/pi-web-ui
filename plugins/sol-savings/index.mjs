@@ -65,7 +65,7 @@ export function analyzeSolSavings(messages = []) {
 			if (!text.includes("[large tool result replaced")) continue;
 
 			const match = text.match(
-				/\[large tool result replaced after its first \d+ provider requests\][\s\S]*?id:\s*([^\n\r]+)[\s\S]*?tool:\s*([^\n\r]+)[\s\S]*?original_bytes:\s*(\d+)[\s\S]*?estimated_tokens:\s*(\d+)/i,
+				/\[large tool result replaced after its first \d+ provider requests\][\s\S]*?id:\s*["']?([^"'\n\r,]+)["']?[\s\S]*?tool:\s*["']?([^"'\n\r,]+)["']?[\s\S]*?original_bytes:\s*["']?(\d+)["']?[\s\S]*?estimated_tokens:\s*["']?(\d+)["']?/i,
 			);
 			if (match) {
 				const id = match[1].trim();
@@ -226,7 +226,7 @@ export function solSavingsPlugin(host) {
 
 		if (stats.totalSavedTokens > 0) {
 			const savedFmt = formatTokens(stats.totalSavedTokens);
-			badgeText = planInfo ? `${savedFmt} · ${planInfo.progress} ${planInfo.marker}` : `${savedFmt} 省`;
+			badgeText = planInfo ? `省 ${savedFmt} · ${planInfo.progress} ${planInfo.marker}` : `省 ${savedFmt}`;
 		} else if (planInfo) {
 			badgeText = `Plan ${planInfo.badge}`;
 		}
@@ -305,13 +305,28 @@ export function solSavingsPlugin(host) {
 		const action = req.body?.action;
 		try {
 			if (action === "write_config") {
+				// 已有配置时拒绝静默覆写（用户的自定义配置会被推荐值洗掉）；
+				// 确要覆盖必须带显式 overwrite:"true"。
+				const overwrite = String(req.body?.overwrite ?? "") === "true";
+				const status = checkSolPiStatus();
+				if (status.hasConfig && !overwrite) {
+					res.status(409).json({ ok: false, error: '已存在 sol-pi.json，拒绝覆盖（如确需覆盖请带 overwrite:"true"）' });
+					return;
+				}
 				const config = writeSolPiConfig();
 				res.json({ ok: true, config });
 			} else if (action === "install") {
-				// 执行 pi install git:github.com/NVlabs/SoL-Pi
-				await execAsync("pi install git:github.com/NVlabs/SoL-Pi");
-				// 自动写默认推荐配置
-				const config = writeSolPiConfig();
+				// 确认门：install 会从远端拉取并安装第三方扩展，必须带显式
+				// confirm:"install"（客户端弹确认框后才发），防误触/跨站盲装。
+				if (req.body?.confirm !== "install") {
+					res.status(400).json({ ok: false, error: '缺少 confirm:"install" 确认参数' });
+					return;
+				}
+				// 执行 pi install git:github.com/NVlabs/SoL-Pi（120s 超时防挂死）
+				await execAsync("pi install git:github.com/NVlabs/SoL-Pi", { timeout: 120_000 });
+				// 自动写默认推荐配置；用户已有配置时不覆盖
+				const status = checkSolPiStatus();
+				const config = status.hasConfig ? status.config : writeSolPiConfig();
 				res.json({ ok: true, config });
 			} else {
 				res.status(400).json({ ok: false, error: "unknown action" });

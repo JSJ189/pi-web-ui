@@ -22,6 +22,7 @@ import {
 	FiSend,
 	FiSettings,
 	FiShield,
+	FiVolume2,
 	FiSliders,
 	FiTool,
 	FiTrash2,
@@ -48,11 +49,15 @@ import type {
 	UiSlotId,
 	UiPluginCatalogEntry,
 	UiPluginInfo,
+	UiPluginUpdateInfo,
 	UiSettingsState,
 	UiSkillInfo,
 	UiSubagentTemplate,
 } from "../types";
 import { SchedulerPanel } from "./SchedulerPanel";
+import { SoundSettingsPanel, TtsSettingsPanel } from "./SoundSettings";
+import { playSound, type SoundSettings } from "../sounds";
+import { speak, type TtsSettings } from "../tts";
 import {
 	clearPromptHistory,
 	loadPromptHistory,
@@ -88,7 +93,12 @@ import {
 	type PluginLogLevel,
 } from "../plugin-logs";
 import { QUICK_PHRASE_DEFAULTS } from "../quick-phrases";
-import { DEFAULT_PROMPT_TEMPLATE, PROMPT_TOKENS, isReadonlyPromptSource } from "../../../server/prompt-composer.js";
+import {
+	DEFAULT_PROMPT_TEMPLATE,
+	PROMPT_TOKENS,
+	estimatePromptTokens,
+	isReadonlyPromptSource,
+} from "../../../server/prompt-composer.js";
 import {
 	AGENT_TOOL_CATALOG,
 	filterToolsByPreset,
@@ -130,6 +140,10 @@ interface SettingsModalProps {
 		plugins: UiPluginInfo[];
 		/** Installable-plugin list (marketplace) — one-click install candidates. */
 		pluginCatalog: UiPluginCatalogEntry[];
+		/** 插件更新状态表，key = pluginId。 */
+		pluginUpdates?: Record<string, UiPluginUpdateInfo> | null;
+		/** 是否正在检查插件更新。 */
+		checkingPluginUpdates?: boolean;
 		/** 插件后台作业（安装/更新/卸载）的实时状态，key = jobId（issue #152）。 */
 		pluginJobs: Record<string, PluginJobState>;
 		/** 最近一次目录同步的回执（issue #165「从目录同步」框展示用）。 */
@@ -174,6 +188,12 @@ interface SettingsModalProps {
 	/** Switch the top-level view to the terminal (uninstall runs there). */
 	onSwitchToTerminal: () => void;
 	onClose: () => void;
+	/** Sound cue + TTS settings — state lives in App (localStorage-backed),
+	 *  shared with the TopBar sound dropdown via props. */
+	sound: SoundSettings;
+	onSoundChange: (settings: SoundSettings) => void;
+	tts: TtsSettings;
+	onTtsChange: (settings: TtsSettings) => void;
 }
 
 /** A row with an enable/disable switch (skill / extension). */
@@ -380,6 +400,7 @@ type SettingsTab =
 	| "approval-rules"
 	| "question"
 	| "display"
+	| "sound"
 	| "quick"
 	| "markers"
 	| "skills"
@@ -458,7 +479,17 @@ function looseEqual(a: unknown, b: unknown): boolean {
  *  或同值被另一端覆盖 —— 乐观值不能永久遮蔽真实状态）。 */
 const PENDING_MAX_AGE_MS = 10_000;
 
-export function SettingsModal({ chat, terminal, initialSection, onSwitchToTerminal, onClose }: SettingsModalProps) {
+export function SettingsModal({
+	chat,
+	terminal,
+	initialSection,
+	onSwitchToTerminal,
+	onClose,
+	sound,
+	onSoundChange,
+	tts,
+	onTtsChange,
+}: SettingsModalProps) {
 	const t = useT();
 	const { locale } = useI18n();
 	// {{token}} 元数据文案键是动态的（promptTok_<token>[,_desc]），用 tt 跳过字面量类型。
@@ -519,6 +550,11 @@ export function SettingsModal({ chat, terminal, initialSection, onSwitchToTermin
 		}
 	}, [tab, isDsh]);
 
+	// 打开设置面板或当前工作区/会话切换时，主动拉取一次最新设置快照（确保 {{context}}、生效提示词与 token 估算为当前项目最新值）。
+	useEffect(() => {
+		appSend({ type: "get_settings" });
+	}, [chat.state?.cwd, chat.activeConversationId]);
+
 	// Compose prompt — 组合模板（{{token}} 自由拼装）+ 各来源覆盖。本地草稿：
 	// 模板聚焦中不覆盖；某个来源的覆盖框聚焦中不覆盖该 key（防回显打断输入）。
 	const [promptTemplateDraft, setPromptTemplateDraft] = useState("");
@@ -559,6 +595,16 @@ export function SettingsModal({ chat, terminal, initialSection, onSwitchToTermin
 	// Read-only viewer for the FULL system prompt actually in effect.
 	const [showFullPrompt, setShowFullPrompt] = useState(false);
 	const [showToolsSchema, setShowToolsSchema] = useState(false);
+	// 当前生效提示词与工具 schema 的 token 占用（估算值，非精确分词）。
+	const promptTokenEstimate = useMemo(
+		() => estimatePromptTokens(settings?.effectiveSystemPrompt ?? ""),
+		[settings?.effectiveSystemPrompt],
+	);
+	const toolsSchemaTokenEstimate = useMemo(
+		() => estimatePromptTokens(settings?.toolsSchema ?? ""),
+		[settings?.toolsSchema],
+	);
+	const totalContextTokenEstimate = promptTokenEstimate + toolsSchemaTokenEstimate;
 	// 宽屏聊天列开关（纯前端 localStorage，见 chat-width-settings.ts）。
 	const wideChat = useWideChat();
 	// present_files 卡片：AI 标了「先看这个」时要不要自动弹预览窗（纯前端偏好，localStorage）。
@@ -789,12 +835,19 @@ export function SettingsModal({ chat, terminal, initialSection, onSwitchToTermin
 				.filter((pt) => !(settings.disabledPluginTools ?? []).includes(pt.name)).length
 		: 0;
 
+	// 界面插件更新检查状态
+	const pluginUpdates = chat.pluginUpdates;
+	const hasBuiltinPluginUpdate = Object.values(pluginUpdates ?? {}).some((u) => u.updatable && (u.builtin ?? false));
+	const hasAnyPluginUpdate = Object.values(pluginUpdates ?? {}).some((u) => u.updatable);
+
 	const tabs: {
 		id: SettingsTab;
 		icon: React.ReactNode;
 		label: string;
 		/** 有计数徽标（与各区块标题里的 set-count 同源）。 */
 		count?: number;
+		/** 状态指示红点（如存在内置插件更新）。 */
+		dot?: boolean;
 		/** 插件自定义页：内容交给 PluginPage 渲染（内置分区没有这一项）。 */
 		pluginPage?: { plugin: UiPluginInfo; entry: UiSlotEntry };
 		/** 悬浮提示（插件条目的 `hint`）。 */
@@ -837,10 +890,17 @@ export function SettingsModal({ chat, terminal, initialSection, onSwitchToTermin
 					},
 				]),
 		{ id: "display", icon: <FiMessageSquare />, label: t("settingsMessageDisplay") },
+		{ id: "sound", icon: <FiVolume2 />, label: t("settingsSoundVoice") },
 		{ id: "quick", icon: <FiSend />, label: t("quickPhrases"), count: settings.quickPhrases.length },
 		{ id: "skills", icon: <FiCpu />, label: t("settingsSkills"), count: settings.skills.length },
 		{ id: "extensions", icon: <FiPackage />, label: t("settingsExtensions"), count: settings.extensions.length },
-		{ id: "plugins", icon: <FiBox />, label: t("settingsUiPlugins"), count: chat.plugins.length },
+		{
+			id: "plugins",
+			icon: <FiBox />,
+			label: t("settingsUiPlugins"),
+			count: chat.plugins.length,
+			dot: hasBuiltinPluginUpdate || hasAnyPluginUpdate,
+		},
 		{ id: "layout", icon: <FiSliders />, label: t("uiLayoutTitle") },
 		{ id: "review", icon: <FiZap />, label: t("settingsReview"), count: settings.reviewSkills.length },
 		// DSH：无视觉桥概念（真图片直通 vision 模型），隐藏该分区。
@@ -1388,6 +1448,7 @@ export function SettingsModal({ chat, terminal, initialSection, onSwitchToTermin
 								<span className="settings-tab-icon">{tb.icon}</span>
 								<span className="settings-tab-label">{tb.label}</span>
 								{tb.count !== undefined && <span className="set-count">{tb.count}</span>}
+								{tb.dot && <span className="update-dot" style={{ marginLeft: 4 }} />}
 							</button>
 						))}
 					</nav>
@@ -1400,6 +1461,71 @@ export function SettingsModal({ chat, terminal, initialSection, onSwitchToTermin
 									{t("settingsSystemPrompt")}
 									<HintTip text={`${t("promptComposeHint")}\n${t("promptComposeDesc")}`} />
 								</div>
+								<div className="set-prompt-view-triggers">
+									<button
+										type="button"
+										className="set-view-prompt-btn"
+										aria-expanded={showFullPrompt}
+										onClick={() => setShowFullPrompt((v) => !v)}
+									>
+										<span>{t("settingsViewPrompt")}</span>
+										{promptTokenEstimate > 0 && (
+											<span className="set-prompt-token-est">
+												{t("settingsViewPromptTokens", { n: promptTokenEstimate.toLocaleString() })}
+											</span>
+										)}
+										<span>{showFullPrompt ? "▴" : "▾"}</span>
+									</button>
+									<button
+										type="button"
+										className="set-view-prompt-btn"
+										aria-expanded={showToolsSchema}
+										onClick={() => setShowToolsSchema((v) => !v)}
+									>
+										<span>{t("settingsViewToolsSchema")}</span>
+										{toolsSchemaTokenEstimate > 0 && (
+											<span className="set-prompt-token-est">
+												{t("settingsViewPromptTokens", { n: toolsSchemaTokenEstimate.toLocaleString() })}
+											</span>
+										)}
+										<span>{showToolsSchema ? "▴" : "▾"}</span>
+									</button>
+									{totalContextTokenEstimate > 0 && (
+										<span className="set-prompt-total-est">
+											{t("settingsPromptContextTotal", { n: totalContextTokenEstimate.toLocaleString() })}
+										</span>
+									)}
+								</div>
+								{showFullPrompt && (
+									<div className="set-prompt-view">
+										<div className="set-prompt-view-head">
+											<span>{t("settingsViewPrompt")}</span>
+											<HintTip text={t("settingsViewPromptHint")} />
+											<CopyButton text={settings.effectiveSystemPrompt} />
+										</div>
+										{settings.effectiveSystemPrompt ? (
+											<pre className="set-prompt-view-text">{settings.effectiveSystemPrompt}</pre>
+										) : (
+											<p className="set-empty">{t("settingsViewPromptEmpty")}</p>
+										)}
+									</div>
+								)}
+								{showToolsSchema && (
+									<div className="set-prompt-view">
+										<div className="set-prompt-tools">
+											<div className="set-prompt-view-head">
+												<span>{t("settingsViewToolsSchema")}</span>
+												<HintTip text={t("settingsViewToolsSchemaHint")} />
+												<CopyButton text={settings.toolsSchema} />
+											</div>
+											{settings.toolsSchema ? (
+												<pre className="set-prompt-view-text">{settings.toolsSchema}</pre>
+											) : (
+												<p className="set-empty">{t("settingsViewToolsSchemaEmpty")}</p>
+											)}
+										</div>
+									</div>
+								)}
 								<div className="set-field">
 									<label className="set-field-label">{t("promptTemplateLabel")}</label>
 									<textarea
@@ -1642,52 +1768,6 @@ export function SettingsModal({ chat, terminal, initialSection, onSwitchToTermin
 										</button>
 									</div>
 								</div>
-								<button
-									type="button"
-									className="set-view-prompt-btn"
-									aria-expanded={showFullPrompt}
-									onClick={() => setShowFullPrompt((v) => !v)}
-								>
-									{t("settingsViewPrompt")} {showFullPrompt ? "▴" : "▾"}
-								</button>
-								{showFullPrompt && (
-									<div className="set-prompt-view">
-										<div className="set-prompt-view-head">
-											<span>{t("settingsViewPrompt")}</span>
-											<HintTip text={t("settingsViewPromptHint")} />
-											<CopyButton text={settings.effectiveSystemPrompt} />
-										</div>
-										{settings.effectiveSystemPrompt ? (
-											<pre className="set-prompt-view-text">{settings.effectiveSystemPrompt}</pre>
-										) : (
-											<p className="set-empty">{t("settingsViewPromptEmpty")}</p>
-										)}
-									</div>
-								)}
-								<button
-									type="button"
-									className="set-view-prompt-btn"
-									aria-expanded={showToolsSchema}
-									onClick={() => setShowToolsSchema((v) => !v)}
-								>
-									{t("settingsViewToolsSchema")} {showToolsSchema ? "▴" : "▾"}
-								</button>
-								{showToolsSchema && (
-									<div className="set-prompt-view">
-										<div className="set-prompt-tools">
-											<div className="set-prompt-view-head">
-												<span>{t("settingsViewToolsSchema")}</span>
-												<HintTip text={t("settingsViewToolsSchemaHint")} />
-												<CopyButton text={settings.toolsSchema} />
-											</div>
-											{settings.toolsSchema ? (
-												<pre className="set-prompt-view-text">{settings.toolsSchema}</pre>
-											) : (
-												<p className="set-empty">{t("settingsViewToolsSchemaEmpty")}</p>
-											)}
-										</div>
-									</div>
-								)}
 							</div>
 						)}
 
@@ -2465,6 +2545,26 @@ export function SettingsModal({ chat, terminal, initialSection, onSwitchToTermin
 							</div>
 						)}
 
+						{/* ---- 声音与语音（提示音事件开关 + 本地 TTS 播报，issue #288） ---- */}
+						{tab === "sound" && (
+							<div className="set-section">
+								<div className="set-section-title">
+									<FiVolume2 className="set-section-icon" />
+									{t("settingsSoundVoice")}
+								</div>
+								<SoundSettingsPanel
+									settings={sound}
+									onChange={onSoundChange}
+									onPreview={(kind) => playSound(kind, sound)}
+								/>
+								<TtsSettingsPanel
+									settings={tts}
+									onChange={onTtsChange}
+									onPreview={() => speak(t("ttsPreviewLine"), { ...tts, enabled: true })}
+								/>
+							</div>
+						)}
+
 						{/* ---- 快捷短语（输入框上方一键发送） ------------------------------ */}
 						{tab === "quick" && (
 							<div className="set-section">
@@ -2897,8 +2997,12 @@ export function SettingsModal({ chat, terminal, initialSection, onSwitchToTermin
 										bodyRef.current?.scrollTo({ top: 0 });
 									}}
 								>
+									<FiBox />
 									{t("pluginListTab")}
 									<span className="set-count">{chat.plugins.length}</span>
+									{(hasBuiltinPluginUpdate || hasAnyPluginUpdate) && (
+										<span className="update-dot" style={{ marginLeft: 4 }} />
+									)}
 								</button>
 							</div>
 						)}
@@ -3198,6 +3302,8 @@ export function SettingsModal({ chat, terminal, initialSection, onSwitchToTermin
 									<div className="set-list set-list-flat">
 										{chat.pluginCatalog.map((e) => {
 											const installed = installedPluginIds.has(e.id);
+											const upd = chat.pluginUpdates?.[e.id];
+											const isUpdatable = installed && upd?.updatable === true;
 											return (
 												<div key={e.id} className="set-catalog-row">
 													<div className="set-catalog-main">
@@ -3207,6 +3313,19 @@ export function SettingsModal({ chat, terminal, initialSection, onSwitchToTermin
 															</span>
 															{installed && <span className="set-catalog-installed">{t("pluginInstalled")}</span>}
 															{!e.builtin && <span className="set-catalog-custom">{t("pluginCatalogCustom")}</span>}
+															{isUpdatable && (
+																<span
+																	className="set-catalog-update-badge"
+																	title={
+																		upd?.latestVersion
+																			? `${upd?.version ?? ""} → v${upd.latestVersion}`
+																			: (upd?.remoteSha ?? "")
+																	}
+																>
+																	{t("pluginUpdateAvailableBadge")}
+																	{upd?.latestVersion ? ` v${upd.latestVersion}` : ""}
+																</span>
+															)}
 														</div>
 														{e.description && <div className="set-catalog-desc">{e.description}</div>}
 														<div className="set-catalog-source">{e.source}</div>
@@ -3217,8 +3336,12 @@ export function SettingsModal({ chat, terminal, initialSection, onSwitchToTermin
 															<>
 																<button
 																	type="button"
-																	className="set-uninstall"
-																	title={t("pluginUpdateHint")}
+																	className={`set-uninstall${isUpdatable ? " accent" : ""}`}
+																	title={
+																		isUpdatable && upd?.latestVersion
+																			? t("pluginUpdateAvailableDetail", { version: `v${upd.latestVersion}` })
+																			: t("pluginUpdateHint")
+																	}
 																	onClick={() => runUiPluginUpdate(e.id, e.source)}
 																>
 																	<FiRefreshCw />
@@ -3285,6 +3408,16 @@ export function SettingsModal({ chat, terminal, initialSection, onSwitchToTermin
 									<button
 										type="button"
 										className="set-uninstall"
+										title={t("pluginCheckUpdatesHint")}
+										disabled={chat.checkingPluginUpdates}
+										onClick={() => appSend({ type: "check_plugin_updates" })}
+									>
+										<FiRefreshCw className={chat.checkingPluginUpdates ? "spin" : ""} />
+										{chat.checkingPluginUpdates ? t("checkingUpdate") : t("pluginCheckUpdates")}
+									</button>
+									<button
+										type="button"
+										className="set-uninstall"
 										title={t("pluginRescanHint")}
 										onClick={() => appSend({ type: "plugins_reload" })}
 									>
@@ -3299,164 +3432,185 @@ export function SettingsModal({ chat, terminal, initialSection, onSwitchToTermin
 									<p className="set-empty">{t("noUiPlugins")}</p>
 								) : (
 									<div className="set-list set-list-flat">
-										{chat.plugins.map((p) => (
-											<Fragment key={p.id}>
-												<ToggleRow
-													key={p.id}
-													title={
-														<>
-															<InvDot
-																phase={pluginPhase(p, disabledPlugins.has(p.id))}
-																label={tt(phaseLabelKey(pluginPhase(p, disabledPlugins.has(p.id))))}
-															/>
-															<PluginIcon icon={p.icon} iconSvg={p.iconSvg} /> {p.name}
-														</>
-													}
-													subtitle={
-														(p.error
-															? `${p.id} · ${p.error}`
-															: p.source
-																? `${p.id} · ${p.source}`
-																: `${p.id} · ${t("uiPluginNoSource")}`) +
-														(p.permissions?.length ? ` · ${t("uiPluginPerms")}: ${p.permissions.join(", ")}` : "")
-													}
-													enabled={!disabledPlugins.has(p.id) && !p.error}
-													onToggle={() => !p.error && togglePlugin(p)}
-													action={
-														<div className="set-row-actions">
-															{p.source && (
-																<button
-																	type="button"
-																	className="set-uninstall"
-																	title={t("pluginUpdateHint")}
-																	onClick={() => runUiPluginUpdate(p.id, p.source!)}
-																>
-																	<FiRefreshCw />
-																	{t("pluginUpdate")}
+										{chat.plugins.map((p) => {
+											const upd = chat.pluginUpdates?.[p.id];
+											const isUpdatable = upd?.updatable === true;
+											return (
+												<Fragment key={p.id}>
+													<ToggleRow
+														key={p.id}
+														title={
+															<>
+																<InvDot
+																	phase={pluginPhase(p, disabledPlugins.has(p.id))}
+																	label={tt(phaseLabelKey(pluginPhase(p, disabledPlugins.has(p.id))))}
+																/>
+																<PluginIcon icon={p.icon} iconSvg={p.iconSvg} /> {p.name}
+																{isUpdatable && (
+																	<span
+																		className="set-catalog-update-badge"
+																		title={
+																			upd?.latestVersion
+																				? `v${p.version ?? "0.0.0"} → v${upd.latestVersion}`
+																				: (upd?.remoteSha ?? "")
+																		}
+																	>
+																		{t("pluginUpdateAvailableBadge")}
+																		{upd?.latestVersion ? ` v${upd.latestVersion}` : ""}
+																	</span>
+																)}
+															</>
+														}
+														subtitle={
+															(p.error
+																? `${p.id} · ${p.error}`
+																: p.source
+																	? `${p.id} · ${p.source}`
+																	: `${p.id} · ${t("uiPluginNoSource")}`) +
+															(p.permissions?.length ? ` · ${t("uiPluginPerms")}: ${p.permissions.join(", ")}` : "")
+														}
+														enabled={!disabledPlugins.has(p.id) && !p.error}
+														onToggle={() => !p.error && togglePlugin(p)}
+														action={
+															<div className="set-row-actions">
+																{p.source && (
+																	<button
+																		type="button"
+																		className={`set-uninstall${isUpdatable ? " accent" : ""}`}
+																		title={
+																			isUpdatable && upd?.latestVersion
+																				? t("pluginUpdateAvailableDetail", { version: `v${upd.latestVersion}` })
+																				: t("pluginUpdateHint")
+																		}
+																		onClick={() => runUiPluginUpdate(p.id, p.source!)}
+																	>
+																		<FiRefreshCw />
+																		{t("pluginUpdate")}
+																	</button>
+																)}
+																{confirmUiUninstall === p.id ? (
+																	<button
+																		type="button"
+																		className="set-uninstall confirm"
+																		title={t("pluginUninstallHint")}
+																		onClick={() => runUiPluginUninstall(p.id)}
+																	>
+																		{t("uninstallConfirm")}
+																	</button>
+																) : (
+																	<button
+																		type="button"
+																		className="set-uninstall"
+																		title={t("pluginUninstallHint")}
+																		onClick={() => setConfirmUiUninstall(p.id)}
+																	>
+																		<FiTrash2 />
+																		{t("uninstallExt")}
+																	</button>
+																)}
+															</div>
+														}
+													/>
+													{/* 注册的 AI 工具开关统一收口到「工具」tab 汇总区，这里只保留一行入口（免得已装列表太长；DSH 无工具 tab 则不显示） */}
+													{p.agentTools && p.agentTools.length > 0 && !isDsh && (
+														<div className="set-row" title={t("pluginToolOffHint")}>
+															<span className="set-ui-source">
+																{t("pluginToolsSection")} ({p.agentTools.length})
+																{p.agentTools.some((tool) => disabledPluginTools.has(tool.name))
+																	? ` · ${t("settingsDisabled")}`
+																	: ""}
+															</span>
+															<div className="set-row-actions">
+																<button type="button" className="set-uninstall" onClick={() => setTab("tools")}>
+																	{t("settingsTools")} →
 																</button>
-															)}
-															{confirmUiUninstall === p.id ? (
-																<button
-																	type="button"
-																	className="set-uninstall confirm"
-																	title={t("pluginUninstallHint")}
-																	onClick={() => runUiPluginUninstall(p.id)}
-																>
-																	{t("uninstallConfirm")}
-																</button>
-															) : (
-																<button
-																	type="button"
-																	className="set-uninstall"
-																	title={t("pluginUninstallHint")}
-																	onClick={() => setConfirmUiUninstall(p.id)}
-																>
-																	<FiTrash2 />
-																	{t("uninstallExt")}
-																</button>
-															)}
+															</div>
 														</div>
-													}
-												/>
-												{/* 注册的 AI 工具开关统一收口到「工具」tab 汇总区，这里只保留一行入口（免得已装列表太长；DSH 无工具 tab 则不显示） */}
-												{p.agentTools && p.agentTools.length > 0 && !isDsh && (
-													<div className="set-row" title={t("pluginToolOffHint")}>
-														<span className="set-ui-source">
-															{t("pluginToolsSection")} ({p.agentTools.length})
-															{p.agentTools.some((tool) => disabledPluginTools.has(tool.name))
-																? ` · ${t("settingsDisabled")}`
-																: ""}
-														</span>
-														<div className="set-row-actions">
-															<button type="button" className="set-uninstall" onClick={() => setTab("tools")}>
-																{t("settingsTools")} →
-															</button>
-														</div>
-													</div>
-												)}
-												{/* 运行时日志：host.log 分级缓冲，按需拉取（不进快照），与诊断互不干扰 */}
-												<div className="set-row set-log-row">
-													<button
-														type="button"
-														className="set-diag-toggle"
-														onClick={() => {
-															if (logOpen === p.id) setLogOpen(null);
-															else {
-																setLogOpen(p.id);
-																appSend(pluginLogsFetch(p.id));
-															}
-														}}
-													>
-														<FiFileText />
-														{t("pluginLogTitle")} ({getPluginLogs(p.id).length}) ·{" "}
-														{logOpen === p.id ? t("pluginLogHide") : t("pluginLogShow")}
-													</button>
-													{logOpen === p.id && <PluginLogView pluginId={p.id} />}
-												</div>
-												{/* 诊断记录：manifest/ui 解析丢弃原因 + 运行时 warning/error 摘要 */}
-												{p.diagnostics && p.diagnostics.length > 0 && (
-													<div className="set-row set-diag-row">
+													)}
+													{/* 运行时日志：host.log 分级缓冲，按需拉取（不进快照），与诊断互不干扰 */}
+													<div className="set-row set-log-row">
 														<button
 															type="button"
 															className="set-diag-toggle"
-															onClick={() => setDiagOpen(diagOpen === p.id ? null : p.id)}
+															onClick={() => {
+																if (logOpen === p.id) setLogOpen(null);
+																else {
+																	setLogOpen(p.id);
+																	appSend(pluginLogsFetch(p.id));
+																}
+															}}
 														>
-															<FiAlertTriangle />
-															{t("pluginDiagTitle")} ({p.diagnostics.length}) ·{" "}
-															{diagOpen === p.id ? t("pluginDiagHide") : t("pluginDiagShow")}
+															<FiFileText />
+															{t("pluginLogTitle")} ({getPluginLogs(p.id).length}) ·{" "}
+															{logOpen === p.id ? t("pluginLogHide") : t("pluginLogShow")}
 														</button>
-														{diagOpen === p.id && (
-															<ul className="set-diag-list">
-																{p.diagnostics.map((d, i) => (
-																	<li key={`${p.id}-${i}`}>{d}</li>
-																))}
-															</ul>
-														)}
+														{logOpen === p.id && <PluginLogView pluginId={p.id} />}
 													</div>
-												)}
-												{/* 特权 DOM：声明了 dom 能力的插件，bundle 默认 403，需用户逐个授权 */}
-												{p.wantsDom && (
-													<div className="set-row" title={t("pluginDomDesc")}>
-														<span className="set-ui-source">
-															{p.domGranted ? t("pluginDomGranted") : t("pluginDomNeed")}
-														</span>
-														<div className="set-row-actions">
+													{/* 诊断记录：manifest/ui 解析丢弃原因 + 运行时 warning/error 摘要 */}
+													{p.diagnostics && p.diagnostics.length > 0 && (
+														<div className="set-row set-diag-row">
 															<button
 																type="button"
-																className={`set-uninstall${p.domGranted ? "" : " confirm"}`}
-																title={t("pluginDomDesc")}
-																onClick={() =>
-																	appSend({
-																		type: "plugin_dom_consent",
-																		pluginId: p.id,
-																		granted: !p.domGranted,
-																	})
-																}
+																className="set-diag-toggle"
+																onClick={() => setDiagOpen(diagOpen === p.id ? null : p.id)}
 															>
-																{p.domGranted ? t("pluginDomRevoke") : t("pluginDomGrant")}
+																<FiAlertTriangle />
+																{t("pluginDiagTitle")} ({p.diagnostics.length}) ·{" "}
+																{diagOpen === p.id ? t("pluginDiagHide") : t("pluginDiagShow")}
 															</button>
+															{diagOpen === p.id && (
+																<ul className="set-diag-list">
+																	{p.diagnostics.map((d, i) => (
+																		<li key={`${p.id}-${i}`}>{d}</li>
+																	))}
+																</ul>
+															)}
 														</div>
-													</div>
-												)}
-												{/* 声明式设置：manifest settings schema → 自动渲染表单（可折叠，默认折叠） */}
-												{p.settingsSchema && p.settingsSchema.length > 0 && (
-													<div className="set-row set-settings-row">
-														<button
-															type="button"
-															className="set-diag-toggle"
-															onClick={() => setSettingsOpen((prev) => ({ ...prev, [p.id]: !prev[p.id] }))}
-														>
-															<FiSliders />
-															{t("pluginSettingsTitle")} ({p.settingsSchema.length}) ·{" "}
-															{settingsOpen[p.id] ? t("pluginSettingsHide") : t("pluginSettingsShow")}
-														</button>
-														{settingsOpen[p.id] && (
-															<PluginSettingsForm plugin={p} models={settings?.subagentModels ?? []} />
-														)}
-													</div>
-												)}
-											</Fragment>
-										))}
+													)}
+													{/* 特权 DOM：声明了 dom 能力的插件，bundle 默认 403，需用户逐个授权 */}
+													{p.wantsDom && (
+														<div className="set-row" title={t("pluginDomDesc")}>
+															<span className="set-ui-source">
+																{p.domGranted ? t("pluginDomGranted") : t("pluginDomNeed")}
+															</span>
+															<div className="set-row-actions">
+																<button
+																	type="button"
+																	className={`set-uninstall${p.domGranted ? "" : " confirm"}`}
+																	title={t("pluginDomDesc")}
+																	onClick={() =>
+																		appSend({
+																			type: "plugin_dom_consent",
+																			pluginId: p.id,
+																			granted: !p.domGranted,
+																		})
+																	}
+																>
+																	{p.domGranted ? t("pluginDomRevoke") : t("pluginDomGrant")}
+																</button>
+															</div>
+														</div>
+													)}
+													{/* 声明式设置：manifest settings schema → 自动渲染表单（可折叠，默认折叠） */}
+													{p.settingsSchema && p.settingsSchema.length > 0 && (
+														<div className="set-row set-settings-row">
+															<button
+																type="button"
+																className="set-diag-toggle"
+																onClick={() => setSettingsOpen((prev) => ({ ...prev, [p.id]: !prev[p.id] }))}
+															>
+																<FiSliders />
+																{t("pluginSettingsTitle")} ({p.settingsSchema.length}) ·{" "}
+																{settingsOpen[p.id] ? t("pluginSettingsHide") : t("pluginSettingsShow")}
+															</button>
+															{settingsOpen[p.id] && (
+																<PluginSettingsForm plugin={p} models={settings?.subagentModels ?? []} />
+															)}
+														</div>
+													)}
+												</Fragment>
+											);
+										})}
 									</div>
 								)}
 							</div>

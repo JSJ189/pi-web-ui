@@ -273,11 +273,13 @@ export default {
 			return { ok: false, error: `${kind} not found` };
 		}
 
-		/** 跑一个操作并处理落盘/唤醒（op 里声明过 changed=false 的不重复落盘）。 */
+		/** 跑一个操作并处理落盘/唤醒（op 里声明过 changed=false 的不重复落盘）。
+		 *  提醒的定时触发由每分钟 cron 巡检（host.schedule）负责，commitChange
+		 *  不接收任何「是否重建定时」参数——refreshNearTimers 只是近处的快速路径。 */
 		function apply(op, payload) {
 			const out = runOp(op, payload);
 			const changed = out.changed ?? out.ok;
-			if (out.ok && changed) commitChange(out.schedules === true);
+			if (out.ok && changed) commitChange();
 			return out;
 		}
 

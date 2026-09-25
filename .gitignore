@@ -25,6 +25,10 @@ plugins/*/storage/
 # Scratch/test temp files
 tests/scratch/
 
+# Local editor and backup files
+.zcodeignore
+*.bak
+
 # pi-web-ui Electron 桌面版构建产物
 release/
 

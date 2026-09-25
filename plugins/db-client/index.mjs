@@ -1302,10 +1302,42 @@ export default {
 		// ------------------------------------------------------------------
 		// 消息路由
 		// ------------------------------------------------------------------
+		/** 写/危险操作（按 connId 动连接的）——每次都留审计日志。
+		 *  归属校验的边界：ownerId 来自客户端 hello 自报的 clientId（服务端不认证），
+		 *  多标签共享口令下既可仿冒、且运行时池本来就是全标签共享的（publicState 广播
+		 *  所有 connId 给每个标签页），做 owner 相等拦截会打断正常跨标签使用——
+		 *  故退化为「connId 存在性校验（getRuntime 抛错）+ 写操作审计日志」。 */
+		const MUTATING_ACTIONS = new Set([
+			"disconnect",
+			"query_exec",
+			"row_update",
+			"row_insert",
+			"row_delete",
+			"doc_save",
+			"doc_insert",
+			"doc_delete",
+			"redis_del",
+			"redis_key_set",
+			"redis_cmd",
+		]);
+
 		const off = host.onMessage(async (payload, clientId) => {
 			await ensureReady();
 			const msg = payload ?? {};
 			const { action, reqId } = msg;
+
+			if (MUTATING_ACTIONS.has(action)) {
+				const runtime = typeof msg.connId === "string" ? st.runtime.get(msg.connId) : undefined;
+				const detail =
+					action === "query_exec"
+						? String(msg.sql ?? "").slice(0, 200)
+						: action === "redis_cmd"
+							? String(msg.cmd ?? "").slice(0, 200)
+							: "";
+				host.log(
+					`db-client 审计：${action} conn=${msg.connId ?? "-"} owner=${runtime?.ownerId ?? "-"} by=${clientId}${detail ? ` detail=${detail}` : ""}`,
+				);
+			}
 
 			const reply = (err, extra) =>
 				err ? fail(action, reqId, clientId, err) : respond(action, reqId, clientId, extra ?? {});

@@ -6105,6 +6105,12 @@ body:not(.has-wallpaper)::after {
 	color: var(--accent);
 	background: var(--bg-elev2);
 }
+/* 朗读中：这条消息的「停止朗读」按钮保持可见 + 高亮（即使用户鼠标已移开）。 */
+.msg-action.msg-action-speaking {
+	opacity: 1;
+	color: var(--accent);
+	background: var(--bg-elev2);
+}
 
 /* ------------------------------------------------------- plugin slot entries */
 /* 插件槽位按钮（terminal/scm/goalbar 工具条、通知区、会话行）：复用 .btn 基调，只补尺寸。 */
@@ -11114,7 +11120,14 @@ button.source-default-toggle {
 	background: var(--bg-elev2);
 }
 
-/* 查看当前完整系统提示词（只读） */
+/* 查看当前完整系统提示词与工具 schema（只读） */
+.set-prompt-view-triggers {
+	display: flex;
+	flex-wrap: wrap;
+	align-items: center;
+	gap: 12px;
+	margin-bottom: 8px;
+}
 .set-view-prompt-btn {
 	align-self: flex-start;
 	background: none;
@@ -11124,8 +11137,19 @@ button.source-default-toggle {
 	padding: 2px 0;
 	cursor: pointer;
 }
-.set-view-prompt-btn:hover {
+.set-view-prompt-btn:hover > span:first-child {
 	text-decoration: underline;
+}
+/* 提示词 / 工具 schema token 占用估算（预览按钮内，弱化展示） */
+.set-prompt-token-est {
+	color: var(--text-dim);
+	margin-left: 6px;
+}
+.set-prompt-total-est {
+	font-size: 12px;
+	color: var(--text-dim);
+	padding-left: 4px;
+	border-left: 1px solid var(--border);
 }
 .set-prompt-view {
 	display: flex;
@@ -11455,6 +11479,17 @@ button.source-default-toggle {
 	color: var(--red);
 	border-color: var(--red);
 	font-weight: 600;
+}
+.set-uninstall.accent {
+	color: var(--accent);
+	border-color: var(--accent);
+	background: rgb(139 92 246 / 0.1);
+	font-weight: 600;
+}
+.set-uninstall.accent:hover {
+	color: var(--accent);
+	border-color: var(--accent);
+	filter: brightness(1.1);
 }
 
 /* Plugin diagnostics (manifest/ui parse drops + runtime warnings, read-only) */
@@ -11902,6 +11937,18 @@ button.source-default-toggle {
 	border: 1px solid rgb(52 199 89 / 0.45);
 	border-radius: 999px;
 	padding: 1px 8px;
+}
+.set-catalog-update-badge {
+	font-size: 11px;
+	font-weight: 500;
+	color: var(--amber);
+	border: 1px solid rgb(251 191 36 / 0.45);
+	background: rgb(251 191 36 / 0.12);
+	border-radius: 999px;
+	padding: 1px 8px;
+	display: inline-flex;
+	align-items: center;
+	gap: 4px;
 }
 .set-catalog-custom {
 	font-size: 11px;
@@ -12801,6 +12848,26 @@ button.source-default-toggle {
 	color: var(--text-faint);
 	min-width: 34px;
 	text-align: right;
+}
+
+/* TTS block (Settings → Sound & Voice) reuses the sound-menu rows. */
+.tts-unavailable {
+	padding: 6px 10px 2px;
+	color: var(--text-faint);
+}
+.tts-voice-select {
+	flex: 1;
+	max-width: 220px;
+	font-size: 12px;
+	padding: 3px 6px;
+}
+.tts-preview {
+	margin-left: auto;
+	padding: 4px 12px;
+}
+.tts-preview:disabled {
+	opacity: 0.4;
+	cursor: default;
 }
 
 /* ------------------------------------------------------------ file preview modal */

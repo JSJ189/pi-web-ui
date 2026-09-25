@@ -591,6 +591,14 @@ export const BUILTIN_UI_ITEMS: BuiltinUiItem[] = [
 		kind: "action",
 		order: 23,
 	},
+	{
+		id: "host:msg-speak",
+		slot: "message.actions",
+		labelKey: "speakMsg",
+		icon: "volume",
+		kind: "action",
+		order: 24,
+	},
 
 	// ---- 输入框动作区（ChatInput.tsx 的 .composer-tools；顺序与可见性全部数据驱动） ----
 	// 权重给插件默认位（100）让路：无 order 的插件动作按 100 落在上传(10)之后、

@@ -19,6 +19,12 @@ const MAX_FILE_BYTES = 15 * 1024 * 1024;
 const MAX_TEXT_CHARS = 20_000;
 const MAX_ROWS = 200;
 const MAX_COLS = 20;
+/** 解析前硬上限（对照 server/office-parse.ts 的 MAX_PARSE_ROWS/COLS 口径）：
+ *  越界的行/列直接丢弃，不做无边界预分配（防恶意 xlsx 巨大行号吃爆内存）。 */
+const MAX_PARSE_ROWS = 1000;
+const MAX_PARSE_COLS = 100;
+/** 解包后总量上限（防 zip 炸弹：小包解出巨量内容，与 server 版一致）。 */
+const MAX_UNCOMPRESSED_BYTES = 64 * 1024 * 1024;
 
 const OFFICE_EXT = new Set([".docx", ".xlsx", ".xlsm", ".csv"]);
 
@@ -51,23 +57,28 @@ function unzipFiles(buf, wanted) {
 	const eocd = findEocd(buf);
 	const cdCount = buf.readUInt16LE(eocd + 10);
 	const cdOffset = buf.readUInt32LE(eocd + 16);
-	const files = new Map(); // name → { method, compSize, localOffset }
+	const files = new Map(); // name → { method, compSize, flag, localOffset, uncompSize }
 	let p = cdOffset;
 	for (let i = 0; i < cdCount; i++) {
 		if (buf.readUInt32LE(p) !== 0x02014b50) throw new Error("zip 中央目录损坏");
 		const flag = buf.readUInt16LE(p + 8);
 		const method = buf.readUInt16LE(p + 10);
 		const compSize = buf.readUInt32LE(p + 20);
+		const uncompSize = buf.readUInt32LE(p + 24);
 		const nameLen = buf.readUInt16LE(p + 28);
 		const extraLen = buf.readUInt16LE(p + 30);
 		const commentLen = buf.readUInt16LE(p + 32);
 		const localOffset = buf.readUInt32LE(p + 42);
 		const name = buf.toString("utf8", p + 46, p + 46 + nameLen);
-		if (want.has(name)) files.set(name, { method, compSize, flag, localOffset });
+		if (want.has(name)) files.set(name, { method, compSize, flag, localOffset, uncompSize });
 		p += 46 + nameLen + extraLen + commentLen;
 	}
+	// 与 server/office-parse.ts 同口径：inflate 传 maxOutputLength（按剩余配额），
+	// 并按实际解出量累计，超总量上限即判 zip 炸弹拒绝。
+	let totalUncomp = 0;
 	const out = new Map();
 	for (const [name, meta] of files) {
+		if (meta.uncompSize > MAX_UNCOMPRESSED_BYTES) throw new Error("解包后内容过大（疑似 zip 炸弹），拒绝解析");
 		const lp = meta.localOffset;
 		if (buf.readUInt32LE(lp) !== 0x04034b50) throw new Error(`zip 局部头损坏：${name}`);
 		const lMethod = buf.readUInt16LE(lp + 8);
@@ -77,9 +88,23 @@ function unzipFiles(buf, wanted) {
 		const raw = buf.subarray(dataStart, dataStart + meta.compSize);
 		if (meta.flag & 0x1) throw new Error(`不支持加密 zip 条目：${name}`);
 		const method = lMethod || meta.method;
-		if (method === 0) out.set(name, Buffer.from(raw));
-		else if (method === 8) out.set(name, Buffer.from(inflateRawSync(raw)));
-		else throw new Error(`不支持的压缩方式 ${method}：${name}`);
+		let decompressed;
+		if (method === 0) decompressed = Buffer.from(raw);
+		else if (method === 8) {
+			const remainingQuota = MAX_UNCOMPRESSED_BYTES - totalUncomp;
+			if (remainingQuota <= 0) throw new Error("解包后内容过大（疑似 zip 炸弹），拒绝解析");
+			try {
+				decompressed = Buffer.from(inflateRawSync(raw, { maxOutputLength: remainingQuota }));
+			} catch (err) {
+				if (err?.code === "ERR_BUFFER_TOO_LARGE" || String(err?.message ?? "").includes("maxOutputLength")) {
+					throw new Error("解包后内容过大（疑似 zip 炸弹），拒绝解析");
+				}
+				throw err;
+			}
+		} else throw new Error(`不支持的压缩方式 ${method}：${name}`);
+		totalUncomp += decompressed.length;
+		if (totalUncomp > MAX_UNCOMPRESSED_BYTES) throw new Error("解包后内容过大（疑似 zip 炸弹），拒绝解析");
+		out.set(name, decompressed);
 	}
 	return out;
 }
@@ -160,10 +185,18 @@ function parseSharedStrings(xml) {
 }
 
 function parseSheet(xml, shared) {
+	// 对照 server/office-parse.ts 的已修口径：巨大行/列号不做无边界预分配，
+	// 只计入 nRows/nCols 总量（越界丢弃），防恶意文件把服务进程吃爆。
 	const rows = [];
+	let maxRowSeen = 0;
+	let maxColSeen = 0;
 	for (const m of xml.matchAll(/<row[^>]*>([\s\S]*?)<\/row>/g)) {
 		const rowAttr = m[0].slice(0, m[0].indexOf(">"));
-		const rNum = Number(/r="(\d+)"/.exec(rowAttr)?.[1] ?? rows.length + 1) - 1;
+		const rawRNum = /r="(\d+)"/.exec(rowAttr)?.[1];
+		const rNum = rawRNum ? Number(rawRNum) - 1 : rows.length;
+		if (!Number.isFinite(rNum) || rNum < 0) continue;
+		maxRowSeen = Math.max(maxRowSeen, rNum + 1);
+		if (rNum >= MAX_PARSE_ROWS) continue; // 防 OOM：巨大行号不预分配
 		while (rows.length <= rNum) rows.push([]);
 		const row = rows[rNum];
 		for (const c of m[1].matchAll(/<c\b([^>]*)>([\s\S]*?)<\/c>/g)) {
@@ -171,7 +204,9 @@ function parseSheet(xml, shared) {
 			const ref = /r="([^"]+)"/.exec(attrs)?.[1];
 			const t = /t="([^"]+)"/.exec(attrs)?.[1];
 			const pos = splitCellRef(ref);
-			if (!pos) continue;
+			if (!pos || pos.col < 0) continue;
+			maxColSeen = Math.max(maxColSeen, pos.col + 1);
+			if (pos.col >= MAX_PARSE_COLS) continue; // 防 OOM：巨大列号不空串填充
 			const inner = c[2];
 			let val = "";
 			if (t === "inlineStr") {
@@ -190,7 +225,11 @@ function parseSheet(xml, shared) {
 			row[pos.col] = val;
 		}
 	}
-	return rows;
+	return {
+		rows,
+		nRows: Math.max(rows.length, maxRowSeen),
+		nCols: Math.max(Math.max(0, ...rows.map((r) => r.length)), maxColSeen),
+	};
 }
 
 function parseXlsx(buf) {
@@ -220,8 +259,9 @@ function parseXlsx(buf) {
 	const shared = parseSharedStrings(files.get("xl/sharedStrings.xml")?.toString("utf8"));
 	const sheets = targets.map((t) => {
 		const xml = files.get(t.file)?.toString("utf8");
-		const all = xml ? parseSheet(xml, shared) : [];
-		const nCols = Math.min(MAX_COLS, Math.max(0, ...all.map((r) => r.length)));
+		const parsed = xml ? parseSheet(xml, shared) : { rows: [], nRows: 0, nCols: 0 };
+		const all = parsed.rows;
+		const nCols = Math.min(MAX_COLS, parsed.nCols);
 		const cut = all.slice(0, MAX_ROWS).map((r) => {
 			const row = r.slice(0, MAX_COLS);
 			while (row.length < nCols) row.push("");
@@ -229,10 +269,10 @@ function parseXlsx(buf) {
 		});
 		return {
 			name: t.name,
-			nRows: all.length,
-			nCols: Math.max(0, ...all.map((r) => r.length)),
+			nRows: parsed.nRows,
+			nCols: parsed.nCols,
 			rows: cut,
-			truncated: all.length > MAX_ROWS || Math.max(0, ...all.map((r) => r.length)) > MAX_COLS,
+			truncated: parsed.nRows > MAX_ROWS || parsed.nCols > MAX_COLS,
 		};
 	});
 	return sheets;
@@ -327,10 +367,37 @@ function parseBuffer(filename, buf) {
 	throw new Error(`不支持的格式（只支持 .docx / .xlsx / .csv）：${ext || "(无扩展名)"}`);
 }
 
+/** 读上传体：收包循环内实时累计，超过单文件上限立即停收并 413，不全量缓存完再查。 */
 async function readBody(req) {
-	const chunks = [];
-	for await (const c of req) chunks.push(Buffer.isBuffer(c) ? c : Buffer.from(c));
-	return Buffer.concat(chunks);
+	const tooLarge = () =>
+		Object.assign(new Error(`文件太大（上限 ${MAX_FILE_BYTES / 1048576} MB）`), { statusCode: 413 });
+	if (Buffer.isBuffer(req.body)) {
+		if (req.body.length > MAX_FILE_BYTES) throw tooLarge();
+		return req.body;
+	}
+	return new Promise((resolve, reject) => {
+		const chunks = [];
+		let total = 0;
+		let done = false;
+		const finish = (err, val) => {
+			if (done) return;
+			done = true;
+			if (err) {
+				req.pause(); // 停收（不销毁）：让 413 先送出去，路由再掐断
+				req.removeListener("data", onData);
+				reject(err);
+			} else resolve(val);
+		};
+		const onData = (c) => {
+			const chunk = Buffer.isBuffer(c) ? c : Buffer.from(c);
+			total += chunk.length;
+			if (total > MAX_FILE_BYTES) return finish(tooLarge());
+			chunks.push(chunk);
+		};
+		req.on("data", onData);
+		req.on("end", () => finish(null, Buffer.concat(chunks)));
+		req.on("error", (err) => finish(err));
+	});
 }
 
 /** 表格 → Markdown（AI 工具与复制文本用）。 */
@@ -411,7 +478,14 @@ export default {
 				if (buf.length === 0) return void res.status(400).json({ ok: false, error: "上传内容为空" });
 				res.json(parseBuffer(filename, buf));
 			} catch (err) {
-				res.status(500).json({ ok: false, error: String(err?.message ?? err) });
+				const status = Number(err?.statusCode ?? 500);
+				if (!res.headersSent)
+					res
+						.status(status >= 400 && status < 600 ? status : 500)
+						.json({ ok: false, error: String(err?.message ?? err) });
+				else res.end();
+				// 体超限（413）：响应已写回，再销毁读端停止继续上传
+				if (status === 413) req.destroy();
 			}
 		});
 

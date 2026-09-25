@@ -254,23 +254,55 @@ export default {
 				try {
 					await handler(req, res);
 				} catch (err) {
+					const status = Number(err?.statusCode ?? 500);
 					const msg = err instanceof Error ? err.message : String(err);
 					host.log(`voice-input ${method} ${path} 失败:`, err);
-					if (!res.headersSent) res.status(500).json({ error: msg || "internal error" });
+					if (!res.headersSent)
+						res.status(status >= 400 && status < 600 ? status : 500).json({ error: msg || "internal error" });
 					else res.end();
+					// 体超限（413）：响应已写回，再销毁读端停止继续上传
+					if (status === 413) req.destroy();
 				}
 			});
 
-		/** 读原始请求体（JSON 小包或二进制大包，抄 image-toolkit 的 readBody）。 */
+		/** 读原始请求体（JSON 小包或二进制大包，抄 image-toolkit 的 readBody）。
+		 *  收包循环内实时累计，超过远端转写上限立即停收并 413，不全量缓存完再查。 */
 		async function readRaw(req) {
+			const tooLarge = () =>
+				Object.assign(new Error(`录音超过 ${MAX_REMOTE_AUDIO_BYTES / 1048576}MB 上限`), { statusCode: 413 });
 			const b = req.body;
 			if (b && typeof b === "object" && typeof b.dataBase64 === "string") {
-				return Buffer.from(b.dataBase64, "base64");
+				const buf = Buffer.from(b.dataBase64, "base64");
+				if (buf.length > MAX_REMOTE_AUDIO_BYTES) throw tooLarge();
+				return buf;
 			}
-			if (Buffer.isBuffer(b)) return b;
-			const chunks = [];
-			for await (const c of req) chunks.push(Buffer.isBuffer(c) ? c : Buffer.from(c));
-			return Buffer.concat(chunks);
+			if (Buffer.isBuffer(b)) {
+				if (b.length > MAX_REMOTE_AUDIO_BYTES) throw tooLarge();
+				return b;
+			}
+			return new Promise((resolve, reject) => {
+				const chunks = [];
+				let total = 0;
+				let done = false;
+				const finish = (err, val) => {
+					if (done) return;
+					done = true;
+					if (err) {
+						req.pause(); // 停收（不销毁）：让 413 先送出去，safe() 再掐断
+						req.removeListener("data", onData);
+						reject(err);
+					} else resolve(val);
+				};
+				const onData = (c) => {
+					const chunk = Buffer.isBuffer(c) ? c : Buffer.from(c);
+					total += chunk.length;
+					if (total > MAX_REMOTE_AUDIO_BYTES) return finish(tooLarge());
+					chunks.push(chunk);
+				};
+				req.on("data", onData);
+				req.on("end", () => finish(null, Buffer.concat(chunks)));
+				req.on("error", (err) => finish(err));
+			});
 		}
 
 		/* ---------------- 本地引擎：装 / 状态 / 卸 ---------------- */

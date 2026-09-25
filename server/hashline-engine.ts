@@ -344,6 +344,10 @@ export function parseHashlinePatch(patchText: string): PatchSection[] {
 // ----------------------------------------------------------------------------
 
 export class HashlineSnapshotStore {
+	/** 单个文件保留的快照代数上限（LRU）：全局单例会跨整个会话存活，反复编辑
+	 *  同一文件会让快照按编辑次数无界增长，必须驱逐最旧一代。 */
+	private static readonly MAX_PER_FILE = 200;
+
 	private snapshots = new Map<string, Map<string, string>>(); // path -> (hash -> content)
 
 	record(filePath: string, text: string): string {
@@ -353,12 +357,28 @@ export class HashlineSnapshotStore {
 			fileMap = new Map();
 			this.snapshots.set(filePath, fileMap);
 		}
+		// 先删后插：覆盖同代快照的同时把访问序刷到尾部（Map 插入序即 LRU 序）
+		fileMap.delete(hash);
 		fileMap.set(hash, text);
+		while (fileMap.size > HashlineSnapshotStore.MAX_PER_FILE) {
+			const oldest = fileMap.keys().next().value;
+			if (oldest === undefined) break;
+			fileMap.delete(oldest);
+		}
 		return hash;
 	}
 
 	get(filePath: string, hash: string): string | undefined {
-		return this.snapshots.get(filePath)?.get(hash.toUpperCase());
+		const fileMap = this.snapshots.get(filePath);
+		if (!fileMap) return undefined;
+		const key = hash.toUpperCase();
+		const hit = fileMap.get(key);
+		if (hit !== undefined) {
+			// get 命中即 refresh：重插到尾部，正在参与三方合并的快照不被 LRU 驱逐
+			fileMap.delete(key);
+			fileMap.set(key, hit);
+		}
+		return hit;
 	}
 }
 
@@ -667,7 +687,16 @@ export function applyHashlinePatch(
 
 		const replacementSpans: Array<{ start: number; end: number }> = [];
 		for (const h of sec.hunks) {
-			if (
+			let s: number;
+			let e: number;
+			if (h.kind === "insert_before" || h.kind === "insert_after") {
+				// insert 类 hunk 也纳入重叠校验（锚点单行）：执行时按行号降序 splice，
+				// 若锚点行被同补丁的 replace/cut 覆盖删除、或与其它 insert 锚点重合，
+				// 插入位置会随前面的改动串位，产出与模型意图不符的内容。保守策略：
+				// 锚点行与任何 replace span / 其它 insert 锚点重叠即报错。
+				s = h.lineStart === -1 ? lines.length : (h.lineStart ?? 1);
+				e = s;
+			} else if (
 				h.kind === "put_range" ||
 				h.kind === "put_block" ||
 				h.kind === "cut_range" ||
@@ -675,20 +704,22 @@ export function applyHashlinePatch(
 				h.kind === "paste_over_range" ||
 				h.kind === "paste_over_block"
 			) {
-				const s = h.lineStart === -1 ? lines.length : (h.lineStart ?? 1);
-				const e = h.lineEnd ?? s;
-				for (const prev of replacementSpans) {
-					if (!(e < prev.start || s > prev.end)) {
-						return {
-							ok: false,
-							summary: `补丁段存在重叠的行范围：${sec.filePath}（行 ${s}-${e} 与行 ${prev.start}-${prev.end} 发生重叠）。请合并为一个连续的修改块。`,
-							results: [],
-							error: `Overlapping hunks in ${sec.filePath} (${s}-${e} overlaps with ${prev.start}-${prev.end})`,
-						};
-					}
-				}
-				replacementSpans.push({ start: s, end: e });
+				s = h.lineStart === -1 ? lines.length : (h.lineStart ?? 1);
+				e = h.lineEnd ?? s;
+			} else {
+				continue;
 			}
+			for (const prev of replacementSpans) {
+				if (!(e < prev.start || s > prev.end)) {
+					return {
+						ok: false,
+						summary: `补丁段存在重叠的行范围：${sec.filePath}（行 ${s}-${e} 与行 ${prev.start}-${prev.end} 发生重叠）。请合并为一个连续的修改块。`,
+						results: [],
+						error: `Overlapping hunks in ${sec.filePath} (${s}-${e} overlaps with ${prev.start}-${prev.end})`,
+					};
+				}
+			}
+			replacementSpans.push({ start: s, end: e });
 		}
 
 		// 按行号从大到小排序执行，避免前方修改引起后续行号错位

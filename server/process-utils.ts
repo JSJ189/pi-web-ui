@@ -106,6 +106,9 @@ export async function snapshotProcessParents(): Promise<Map<number, number> | un
  * asynchronous. Existing callers may continue to ignore it for best-effort
  * background cleanup; callers that own a deadline can await completion. */
 export async function killPidTree(pid: number): Promise<void> {
+	// pid 下界防护：pid<=1（init / Windows System 级 pid）或自身 pid 绝不能杀 ——
+	// POSIX 的 -pid 是进程组语义，误传 0/1/自身 pid 会杀掉整组无辜进程甚至本进程。
+	if (!(pid > 1 && pid !== process.pid)) return;
 	try {
 		if (process.platform === "win32") {
 			const { spawn } = await import("node:child_process");

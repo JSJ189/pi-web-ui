@@ -76,7 +76,7 @@ CI：`ci.yml`（协议同步→typecheck→build→vitest→冒烟）· `release
 | 多对话并发            | 同上                               | 每对话独立 runtime，上限 8/项目（子代理不计）；运行列表口径 listed ∪ 有内容的当前对话；clientId 存 sessionStorage，每标签页独立                                         |
 | 附件/预览             | `docs/architecture-attachments.md` | 只给路径引用（`reference`/`lines`，内容不注入）；预览 512KB 上限+嗅探+GBK 回退；媒体走 HTTP Range；下载绕 Safe Browsing                                                 |
 | 终端/SCM              | `docs/architecture-terminal.md`    | 每 Conversation 一个 TerminalManager；`terminalBash` 开关分流（`persist` 决定一次性/ai-bash 持久）；SCM 只读走 execFile，写操作走可见终端                               |
-| 工具开关/read 目录    | `docs/architecture-core.md`        | `AGENT_TOOL_CATALOG` 唯一事实源；`read` 覆盖目录走 ls 口径（`readDirEnabled` 是行为开关，不入目录；仅 pi 引擎）                                                         |
+| 工具开关/read 目录    | `docs/architecture-core.md`        | `AGENT_TOOL_CATALOG` 唯一事实源；`read` 覆盖目录走 ls 口径（`readDirEnabled` 是行为开关，不入目录；仅 pi 引擎）；`read`/`write`/`edit` 三处覆盖与第三方扩展同名工具的共存（基底 = 扩展实现优先）见 `server/tool-overrides.ts` |
 | 审批                  | `server/tool-approval.ts`          | 规则库 `<dataDir>/approval-rules.json`（ask/deny/allow）；三档放行：全局关→本对话全部允许→允许同类；记忆只在内存，随过户搬                                              |
 | 问卷/草稿进快照       | `docs/architecture-core.md`        | `UiState.pendingQuestion`（刷新恢复）+ `UiState.draft`（只跟全量快照，`draft_update` 自带 sessionId）                                                                   |
 | 临时对话              | `server/agent-service.ts`          | `new_chat {ephemeral:true}`→内存不落盘；`UiState.isEphemeral` 恒存在于 light state；`persist_conversation` 一键转正（id 不变）                                          |
@@ -152,7 +152,7 @@ npm publish
 
 - **服务活着时禁 `npm run build` / `npm install`**：build 会清空 `web/dist` 致黑屏（中招后给黑页标签 Unregister SW 再重载）；install 会新旧 SDK 混装（`The requested module ./text.js does not provide an export…`，看 `/api/health` 的 piVersion 与 piSdkCopies 是否一致）。姿势：先停服务再操作再启动。
 - **`details` ≤64KB 超限整丢**：`serialize.ts` 下发+随会话持久；新工具别塞大块内容（自封顶，见 `present-files-tool.ts` 摘录预算）；前端渲染不许依赖 details（参数解析+可选合并，见 `present-items.ts`）。
-- **新增可开关工具动三处**：`tool-manager.ts` 的 `AGENT_TOOL_CATALOG`（唯一事实源；工具名字符串只在此定义，模块 import+re-export）＋ `agent-service.ts` 的 customTools 注册（DSH 无注册面除外）＋ `tests/unit/tool-registration.test.ts` 的 FACTORY_TOOLS。两道 CI 守卫：注册→目录、目录→设置行（`OTHER_AGENT_TOOLS` 循环渲染，不手写行；`todo_list` 固定 markers 分区；bash/read 永不入目录）。
+- **新增可开关工具动三处**：`tool-manager.ts` 的 `AGENT_TOOL_CATALOG`（唯一事实源；工具名字符串只在此定义，模块 import+re-export）＋ `agent-service.ts` 的 customTools 注册（DSH 无注册面除外）＋ `tests/unit/tool-registration.test.ts` 的 FACTORY_TOOLS。**对 SDK 内置工具的覆盖（read/write/edit）不进创建时的 customTools** —— 那会静默顶掉第三方扩展注册的同名工具，要走 `server/tool-overrides.ts`（基底 = 扩展实现优先，见 `docs/architecture-core.md`「覆盖与第三方扩展同名工具共存」）。两道 CI 守卫：注册→目录、目录→设置行（`OTHER_AGENT_TOOLS` 循环渲染，不手写行；`todo_list` 固定 markers 分区；bash/read 永不入目录）。
 - **服务端 URL 必须 `appUrl()` 包一层**（`/ws`、`/api/*`、`/plugins/*`、`/themes/*`），否则 nginx 子路径部署 404；排查先看请求带没带应用根前缀。
 - **elsewhere/过户**：`take_over_conversation` 搬 runtime 本体（单 writer）；`ask_user_question`/`browser_page` 在调用瞬间按 runtime 身份解析持有方（`bridgeTarget`+`findConversationHome`，锚点是 `created.session` 对象不是 conv id）；跨页作答 `question_answer` 带 `owner`；「另一处」行左键两段确认；elsewhere 只列 live 会话。回归：`takeover-test`/`idle-takeover-test`/`remote-answer-test`/`elsewhere-lifecycle-test`。
 - **远期 cron 别交给 `host.schedule`**：Node 超 2^31-1ms 的 setTimeout 截断成 1ms → 死循环；远期用 `armDelay` 分片（≤6h）+ `nextCronFire` 回 null（「不再触发」）；notes 式需求挂一条 `* * * * *` 巡检、自带 `nextDue` 落库。回归：`plugin-cron-overflow-test.mjs`。

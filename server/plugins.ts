@@ -39,7 +39,7 @@ import type {
 	PluginStats,
 } from "./protocol.js";
 import { pick, type ServerLang } from "./i18n.js";
-import { PluginStorage, PluginSecrets, ensurePluginDeps, WorkspaceFS } from "./plugin-facilities.js";
+import { PluginStorage, PluginSecrets, ensurePluginDeps, WorkspaceFS, withFileRmwLock } from "./plugin-facilities.js";
 import {
 	parseCronSpec,
 	armDelay,
@@ -72,7 +72,13 @@ import {
 } from "./plugin-tool-guard.js";
 // 工作区根的归一化与 client-state 共用一份（同一份语义：只收绝对路径 / 去重 / 上限）。
 import { normalizeWorkspaceRoots } from "./client-state.js";
-import { createProject, type ProjectCreateSpec, type ProjectCreateResult } from "./plugin-project.js";
+import {
+	createProject,
+	isInsideRoot,
+	realPathOfNearest,
+	type ProjectCreateSpec,
+	type ProjectCreateResult,
+} from "./plugin-project.js";
 import type { Request, Response } from "express";
 import { createHash } from "node:crypto";
 import { execFile } from "node:child_process";
@@ -554,7 +560,9 @@ export interface PluginHost {
 	onStreaming(handler: (ev: { conversationId?: string; delta: string }) => void): () => void;
 	/** 出站网络（globalThis.fetch + 15s 超时）：permissions 必须含 "net" 否则
 	 *  直接 {ok:false}；URL 主机必须命中 manifest netAllowlist（相等或 .后缀，
-	 *  空表即全拒）；body 上限 1MB。失败一律 {ok:false,error}，绝不抛错。 */
+	 *  空表即全拒）——重定向用 manual 手动循环，每一跳的目标主机同样过白名单
+	 *  （至多 5 跳，超限/未授权即 {ok:false}）；body 上限 1MB。失败一律
+	 *  {ok:false,error}，绝不抛错。 */
 	net: {
 		fetch(
 			url: string,
@@ -1541,15 +1549,19 @@ function saveSettingsValues(
 		const persist: Record<string, unknown> = {};
 		for (const [k, v] of Object.entries(clean)) if (!secretKeys.has(k)) persist[k] = v;
 		const file = join(dir, "storage.json");
-		let existing: Record<string, unknown> = {};
-		try {
-			existing = JSON.parse(readFileSync(file, "utf8")) as Record<string, unknown>;
-		} catch {
-			/* 首次 */
-		}
-		const tmp = `${file}.tmp-${process.pid}`;
-		writeFileSync(tmp, JSON.stringify({ ...existing, settings: persist }));
-		renameSync(tmp, file);
+		// 与 PluginStorage.set/delete 同一把按文件路径的 RMW 锁（见 plugin-facilities.ts
+		// 的 withFileRmwLock）：两个「读-改-写」者串行，谁也不会拿旧快照抹掉对方刚写的键。
+		withFileRmwLock(file, () => {
+			let existing: Record<string, unknown> = {};
+			try {
+				existing = JSON.parse(readFileSync(file, "utf8")) as Record<string, unknown>;
+			} catch {
+				/* 首次 */
+			}
+			const tmp = `${file}.tmp-${process.pid}`;
+			writeFileSync(tmp, JSON.stringify({ ...existing, settings: persist }));
+			renameSync(tmp, file);
+		});
 	} catch (err) {
 		console.error(`[plugins] settings persist failed (${dir}):`, err);
 	}
@@ -1819,6 +1831,17 @@ export class PluginManager {
 		return () => this.senders.delete(s);
 	}
 
+	/** 当前在线（hello 过）的 clientId 去重集合。插件授权弹窗广播后按它做应答
+	 *  来源绑定——广播后才连上的端没见过弹窗，不许代答（index.ts 三类授权应答校验）。 */
+	onlineClientIds(): string[] {
+		const out = new Set<string>();
+		for (const s of this.senders) {
+			const cid = s.cid();
+			if (cid) out.add(cid);
+		}
+		return [...out];
+	}
+
 	/** 客户端上行：路由给对应插件的处理器；未知/未激活的插件静默丢弃。
 	 *  插件代码不可信——同步抛错与返回的 Promise rejection 都必须隔离在
 	 *  这里，绝不能炸主进程。 */
@@ -1976,6 +1999,12 @@ export class PluginManager {
 	isDomBundleBlocked(pluginId: string): boolean {
 		if (!this.domWants.get(pluginId)) return false;
 		return !this.domConsentStore.has(pluginId);
+	}
+
+	/** plugin_dom_consent 两步握手的预检（index.ts 用）：只有声明了 dom 能力的
+	 *  插件才允许生成在途 consent 请求——任意 pluginId 进不来，在途表不膨胀。 */
+	isDomPlugin(pluginId: string): boolean {
+		return this.domWants.get(pluginId) === true;
 	}
 
 	/** 特权 DOM 授权/撤销（设置面板 plugin_dom_consent）。
@@ -2283,12 +2312,33 @@ export class PluginManager {
 
 	/** 当前打开对话的快照（无提供者/暂无对话时返回 null）。 */
 	getActiveConversation(): PluginConversationSnapshot | null {
+		let snap: PluginConversationSnapshot | null;
 		try {
-			return this.conversationProvider?.() ?? null;
+			snap = this.conversationProvider?.() ?? null;
 		} catch (err) {
 			console.error("[plugins] conversationProvider failed:", err);
 			return null;
 		}
+		if (!snap) return null;
+		// 交给插件前做防御性拷贝：provider 回的是快照管线的**活引用** —— messages
+		// 数组与元素对象都被 60ms 推送管线缓存复用（lastMessagesArray / uiMessageCache），
+		// 插件原地改一个字段/挪一个元素，污染的就是推给真实客户端的快照。浅拷数组 +
+		// 元素对象 structuredClone；元素是纯 JSON 结构（details 已过 JSON.stringify 闸），
+		// structuredClone 不会失败，JSON 往返只是万一携带不可克隆值时的兜底。
+		return {
+			...snap,
+			messages: snap.messages.map((m) => {
+				try {
+					return structuredClone(m);
+				} catch {
+					try {
+						return JSON.parse(JSON.stringify(m)) as typeof m;
+					} catch {
+						return { ...m }; // 连 JSON 往返都失败（循环引用）：至少不共享顶层对象
+					}
+				}
+			}),
+		};
 	}
 
 	/** agent-service 调：当前打开对话变了（切历史会话/切 running 对话/新对话）——
@@ -2362,12 +2412,22 @@ export class PluginManager {
 		for (const table of [...this.agentTools.values()].sort()) out.push(...table.values());
 		return out;
 	}
-	/** 注册一个供 AI 调用的工具；重名拒绝并返回空操作注销函数。 */
+	/** 注册一个供 AI 调用的工具；重名拒绝并返回空操作注销函数。
+	 *  跨插件重名同样拒绝（与 registerCommand 同口径）：工具进会话时按名字合入
+	 *  （syncPluginToolsIntoSession 的 byName 覆盖），重名意味着后注册者静默抢注
+	 *  前者的工具，必须在这里挡下。 */
 	private registerAgentTool(pluginId: string, tool: PluginAgentTool): () => void {
 		if (!tool || typeof tool.execute !== "function" || !tool.name || !tool.description) {
 			console.error(`[plugin:${pluginId}] registerAgentTool: 缺少 name/description/execute，忽略`);
 			this.pushRuntimeDiag(pluginId, "registerAgentTool: missing name/description/execute, ignored");
 			return () => {};
+		}
+		for (const [pid, other] of this.agentTools) {
+			if (pid !== pluginId && other.has(tool.name)) {
+				console.error(`[plugin:${pluginId}] AI 工具 "${tool.name}" 已被插件 ${pid} 注册，忽略重复`);
+				this.pushRuntimeDiag(pluginId, `agent tool "${tool.name}": already registered by plugin ${pid}, ignored`);
+				return () => {};
+			}
 		}
 		let table = this.agentTools.get(pluginId);
 		if (!table) this.agentTools.set(pluginId, (table = new Map()));
@@ -3300,6 +3360,21 @@ export class PluginManager {
 			if (self.isInsideWorkspace(abs) || self.grants.has(info.id, abs)) return abs;
 			throw new Error(`目录未授权：先 await host.fs.requestAccess(dir)（${abs}）`);
 		};
+		/** 写类操作（write/remove）的 realpath 复核：allowAbs 是纯字符串判定，
+		 *  授权目录里的符号链接/junction 能把写入/递归删除引到授权范围之外。
+		 *  取目标最近已存在祖先的 realpath，要求它仍落在（工作区或该插件任一
+		 *  已授权目录）的 realpath 内。读/list/stat 保持字符串校验（高频路径，
+		 *  且读不存在「把内容写到别处」的风险）。 */
+		const assertRealInsideGrant = async (abs: string): Promise<void> => {
+			const targetReal = realPathOfNearest(abs);
+			if (!targetReal) throw new Error(`无法解析真实路径：${abs}`);
+			const granted = self.grants.list().find((g) => g.pluginId === info.id)?.paths ?? [];
+			for (const r of [self.cwdValue, ...granted]) {
+				const rootReal = realPathOfNearest(resolve(r)) ?? resolve(r);
+				if (isInsideRoot(rootReal, targetReal)) return;
+			}
+			throw new Error(`路径越界（符号链接指向授权范围之外）：${abs}`);
+		};
 		const crossDirFs = {
 			list: async (absDir: string) => {
 				const abs = allowAbs(absDir);
@@ -3314,11 +3389,13 @@ export class PluginManager {
 			},
 			write: async (absPath: string, data: string | Uint8Array) => {
 				const abs = allowAbs(absPath);
+				await assertRealInsideGrant(abs);
 				await mkdir(dirname(abs), { recursive: true });
 				await writeFile(abs, data);
 			},
 			remove: async (absPath: string) => {
 				const abs = allowAbs(absPath);
+				await assertRealInsideGrant(abs);
 				await rm(abs, { recursive: true, force: true });
 			},
 			stat: async (absPath: string) => {
@@ -3864,8 +3941,23 @@ export class PluginManager {
 						self.pushRuntimeDiag(info.id, `ui.update: unknown id "${String(id).slice(0, 32)}", ignored`);
 						return;
 					}
-					const merged: UiContribution = { ...base, ...(patch as Partial<UiContribution>), id, slot: base.slot };
-					self.uiRuntimeFor(info.id).items.set(id, merged);
+					// 与注册同一条校验管线：patch 合进 base 后整体过 parseUiItem，
+					// 非法字段按 parse 语义丢弃/回落（未知键清掉、iconSvg 重新归一化、
+					// 超长截断、progress 夹取），id 与 slot 不可被 patch 改写。
+					const diags: string[] = [];
+					const mergedRaw =
+						typeof patch === "object" && patch !== null && !Array.isArray(patch)
+							? { ...base, ...(patch as Record<string, unknown>), id, slot: base.slot }
+							: { ...base, id, slot: base.slot };
+					const parsed = parseUiItem(mergedRaw, base.slot, diags);
+					for (const m of diags) self.pushRuntimeDiag(info.id, `ui.update: ${m}`);
+					if (!parsed) {
+						// 合并结果不合法（典型：patch 把 label 改成空）——按现有 parse 语义
+						// 视为无效更新，保留原条目。
+						self.pushRuntimeDiag(info.id, `ui.update: merged item invalid, update ignored`);
+						return;
+					}
+					self.uiRuntimeFor(info.id).items.set(id, parsed);
 					void self.pushToAll().catch(() => {});
 				},
 				remove: (id) => {
@@ -4179,36 +4271,14 @@ export class PluginManager {
 			net: {
 				fetch: async (url, init) => {
 					if (!can("net")) return { ok: false, error: '插件未声明能力 "net"（manifest.permissions）——请求被拒' };
-					try {
-						const u = new URL(String(url));
-						if (u.protocol !== "http:" && u.protocol !== "https:") {
-							return { ok: false, error: `net: 不支持的协议 ${u.protocol}` };
-						}
+					return pluginNetFetch(url, init, {
 						// 白名单：主机相等或 .后缀匹配；空表即全拒（fail-closed）。
 						// 用户动态批准的主机（host.requestPermission）同样放行，免改 manifest 重装。
-						const hostname = u.hostname.toLowerCase();
-						const allowed =
+						hostAllowed: (hostname) =>
 							netAllow.some((entry) => hostname === entry || hostname.endsWith(`.${entry}`)) ||
-							self.permGrants.has(info.id, "net", { host: hostname });
-						if (!allowed)
-							return {
-								ok: false,
-								error: `net: 主机 ${u.hostname} 未授权（manifest.netAllowlist 或 host.requestPermission 申请）`,
-							};
-						if (init?.body !== undefined && Buffer.byteLength(String(init.body), "utf8") > 1024 * 1024) {
-							return { ok: false, error: "net: body 超过 1MB 上限" };
-						}
-						const res = await globalThis.fetch(String(url), {
-							method: init?.method ?? "GET",
-							...(init?.headers ? { headers: init.headers } : {}),
-							...(init?.body !== undefined ? { body: init.body } : {}),
-							signal: AbortSignal.timeout(15_000),
-						});
-						const text = (await res.text()).slice(0, 512 * 1024);
-						return { ok: true, status: res.status, text };
-					} catch (err) {
-						return { ok: false, error: (err as Error).message };
-					}
+							self.permGrants.has(info.id, "net", { host: hostname }),
+						fetchImpl: (input, reqInit) => globalThis.fetch(input, reqInit),
+					});
 				},
 			},
 			events: {
@@ -4437,4 +4507,122 @@ export function syncPluginToolsIntoSession(
 	session._customTools = [...byName.values()];
 	session._refreshToolRegistry();
 	return new Set(defs.map((d) => d.name));
+}
+
+/** net.fetch 的手动重定向跳数上限。 */
+const NET_FETCH_MAX_REDIRECTS = 5;
+
+/** host.net.fetch 的 init 形状（与 PluginHost 接口一致，抽出便于单测）。 */
+export interface PluginNetFetchInit {
+	method?: string;
+	headers?: Record<string, string>;
+	body?: string;
+}
+
+export type PluginNetFetchResult = { ok: true; status: number; text: string } | { ok: false; error: string };
+
+/** 全局 fetch 的 Response 形状（plugins.ts 里 express 的 Response 遮蔽了全局名）。 */
+type FetchResponse = Awaited<ReturnType<typeof globalThis.fetch>>;
+/** net.fetch 的 fetch 实现形状（与 globalThis.fetch 一致，单测用替身注入）。 */
+type FetchLike = (input: string, init?: RequestInit) => Promise<FetchResponse>;
+
+/**
+ * net.fetch 的白名单 + 手动重定向循环（抽出为纯可注入函数，vitest 直测）。
+ *
+ * 为什么不用 redirect:"follow"：跟随重定向不复查白名单，会把「只授权了 A 主机」
+ * 变成「A 主机一跳把你带到任意主机/内网地址」（经典白名单绕过跳板）。所以：
+ *  - 每一跳（含首次）的目标 host 都重新过 allowHost（manifest 白名单 + 用户动态批准）；
+ *  - redirect:"manual"，至多 NET_FETCH_MAX_REDIRECTS 跳；
+ *  - 跨宿主重定向剥掉 authorization/cookie 头（浏览器同款语义，防凭据外带）；
+ *  - 303 一律转 GET 并丢 body；其余 3xx 保持原 method/body（307/308 语义）；
+ *  - 响应文本整体回给插件的现状保留（512KB 截断不变）；
+ *  - timeout 是整条请求链（含所有跳）共享的墙钟预算（与原实现 15s 同量级）。
+ */
+export async function pluginNetFetch(
+	url: string,
+	init: PluginNetFetchInit | undefined,
+	deps: {
+		/** 目标主机是否在白名单/授权表内（每一跳都要过）。 */
+		hostAllowed: (hostname: string) => boolean;
+		/** fetch 实现（单测替身注入）。 */
+		fetchImpl: FetchLike;
+		/** 整条请求链的墙钟上限毫秒（默认 15000）。 */
+		timeoutMs?: number;
+	},
+): Promise<PluginNetFetchResult> {
+	const deadline = Date.now() + Math.max(1000, Number(deps.timeoutMs ?? 15_000));
+	let current = String(url ?? "");
+	let method = init?.method;
+	let headers: Record<string, string> | undefined = init?.headers;
+	let body = init?.body;
+	for (let hop = 0; ; hop++) {
+		let u: URL;
+		try {
+			u = new URL(current);
+		} catch {
+			return { ok: false, error: `net: 无效 URL ${current}` };
+		}
+		if (u.protocol !== "http:" && u.protocol !== "https:") {
+			return { ok: false, error: `net: 不支持的协议 ${u.protocol}` };
+		}
+		// 白名单：主机相等或 .后缀匹配；空表即全拒（fail-closed）。每一跳都查。
+		if (!deps.hostAllowed(u.hostname.toLowerCase())) {
+			return {
+				ok: false,
+				error: `net: 主机 ${u.hostname} 未授权（manifest.netAllowlist 或 host.requestPermission 申请）`,
+			};
+		}
+		if (body !== undefined && Buffer.byteLength(String(body), "utf8") > 1024 * 1024) {
+			return { ok: false, error: "net: body 超过 1MB 上限" };
+		}
+		let res: FetchResponse;
+		try {
+			res = await deps.fetchImpl(current, {
+				...(method ? { method } : {}),
+				...(headers ? { headers } : {}),
+				...(body !== undefined ? { body } : {}),
+				redirect: "manual",
+				signal: AbortSignal.timeout(Math.max(1000, deadline - Date.now())),
+			});
+		} catch (err) {
+			return { ok: false, error: (err as Error).message };
+		}
+		// 3xx 且带 location → 手动跳下一跳（目标 host 重新过上面的白名单）。
+		if (res.status >= 300 && res.status < 400) {
+			const loc = res.headers.get("location");
+			if (loc) {
+				if (hop >= NET_FETCH_MAX_REDIRECTS) {
+					return { ok: false, error: `net: 重定向超过 ${NET_FETCH_MAX_REDIRECTS} 跳上限` };
+				}
+				let next: URL;
+				try {
+					next = new URL(loc, u);
+				} catch {
+					return { ok: false, error: `net: 重定向目标无效 ${loc}` };
+				}
+				if (next.hostname.toLowerCase() !== u.hostname.toLowerCase() && headers) {
+					// 跨宿主：凭据类头不外带。
+					const stripped: Record<string, string> = {};
+					for (const [k, v] of Object.entries(headers)) {
+						const key = k.toLowerCase();
+						if (key === "authorization" || key === "cookie") continue;
+						stripped[k] = v;
+					}
+					headers = stripped;
+				}
+				if (res.status === 303) {
+					method = "GET";
+					body = undefined;
+				}
+				current = next.toString();
+				continue;
+			}
+		}
+		try {
+			const text = (await res.text()).slice(0, 512 * 1024);
+			return { ok: true, status: res.status, text };
+		} catch (err) {
+			return { ok: false, error: (err as Error).message };
+		}
+	}
 }

@@ -4,6 +4,16 @@
 
 const ACTION_DETAILS = "sol-savings:details";
 
+/** innerHTML 插值转义：configPath 是服务端文件路径，进 HTML 前必须过一遍。 */
+function esc(s) {
+	return String(s ?? "")
+		.replace(/&/g, "&amp;")
+		.replace(/</g, "&lt;")
+		.replace(/>/g, "&gt;")
+		.replace(/"/g, "&quot;")
+		.replace(/'/g, "&#39;");
+}
+
 function hostApi() {
 	try {
 		return window.__piWebUiHost ?? null;
@@ -122,37 +132,66 @@ function showModal(content, statusInfo) {
 	body.appendChild(statsBox);
 
 	// 2. SoL-Pi 扩展与配置状态区
-	const configBox = document.createElement("div");
-	configBox.style.cssText = `
-		border: 1px solid var(--border, #333);
-		border-radius: 6px;
-		padding: 14px;
-		display: flex;
-		flex-direction: column;
-		gap: 10px;
-		background: rgba(0, 0, 0, 0.2);
-	`;
-
 	const isInstalled = statusInfo?.installed ?? false;
 	const hasConfig = statusInfo?.hasConfig ?? false;
 	const config = statusInfo?.config;
 
-	configBox.innerHTML = `
-		<div style="font-weight: 600; font-size: 14px; display: flex; align-items: center; gap: 8px;">
-			<span>⚙️ SoL-Pi 扩展运行状态</span>
+	// 已安装且已配置时默认折叠详情，避免占用弹窗主要空间；未安装或未配置时展开提示用户操作
+	const detailsContainer = document.createElement("details");
+	detailsContainer.style.cssText = `
+		border: 1px solid var(--border, #333);
+		border-radius: 6px;
+		background: rgba(0, 0, 0, 0.2);
+		overflow: hidden;
+	`;
+	if (!isInstalled || !hasConfig) {
+		detailsContainer.open = true;
+	}
+
+	const summary = document.createElement("summary");
+	summary.style.cssText = `
+		padding: 10px 14px;
+		font-weight: 600;
+		font-size: 13px;
+		display: flex;
+		align-items: center;
+		justify-content: space-between;
+		cursor: pointer;
+		user-select: none;
+		list-style: none;
+	`;
+	// 针对不同浏览器的 summary 箭头样式隐藏
+	summary.innerHTML = `
+		<div style="display: flex; align-items: center; gap: 8px;">
+			<span>⚙️ SoL-Pi 运行与配置</span>
 			<span style="font-size: 11px; padding: 1px 6px; border-radius: 4px; background: ${
 				isInstalled ? "var(--green, #10b981)" : "var(--amber, #f59e0b)"
 			}; color: #000; font-weight: bold;">
 				${isInstalled ? "扩展已安装" : "未安装扩展"}
 			</span>
 		</div>
+		<span style="font-size: 11px; color: var(--text-dim, #888); font-weight: normal;">▶ 展开/收起</span>
+	`;
+
+	const configBox = document.createElement("div");
+	configBox.style.cssText = `
+		padding: 0 14px 14px 14px;
+		display: flex;
+		flex-direction: column;
+		gap: 10px;
+		border-top: 1px solid rgba(255, 255, 255, 0.05);
+		margin-top: 4px;
+		padding-top: 10px;
+	`;
+
+	configBox.innerHTML = `
 		<div style="font-size: 12px; color: var(--text-dim, #aaa);">
 			${
 				!isInstalled
 					? "• 未检测到 SoL-Pi 扩展包 (NVlabs/SoL-Pi)。"
 					: hasConfig
-					? `• 配置文件生效中: <code>${statusInfo.configPath}</code>`
-					: "• 扩展已安装，但尚未配置 <code>sol-pi.json</code>，特性未激活。"
+						? `• 配置文件生效中: <code>${esc(statusInfo.configPath)}</code>`
+						: "• 扩展已安装，但尚未配置 <code>sol-pi.json</code>，特性未激活。"
 			}
 		</div>
 	`;
@@ -175,9 +214,14 @@ function showModal(content, statusInfo) {
 			font-weight: 500;
 		`;
 		installBtn.onclick = async () => {
+			// 安装会从远端拉取并运行第三方扩展，必须先弹确认框（服务端也要 confirm:"install"）
+			const okToInstall = window.confirm(
+				"确认安装 SoL-Pi 扩展？\n\n将从网络执行：pi install git:github.com/NVlabs/SoL-Pi\n（已有配置不会被覆盖）",
+			);
+			if (!okToInstall) return;
 			installBtn.disabled = true;
 			installBtn.textContent = "⏳ 正在安装...";
-			const res = await postAction("install");
+			const res = await postAction("install", { confirm: "install" });
 			if (res.ok) {
 				alert("✅ SoL-Pi 扩展安装成功！已同时自动写入推荐开启配置。");
 				close();
@@ -208,7 +252,9 @@ function showModal(content, statusInfo) {
 			enableBtn.textContent = "⏳ 配置写入中...";
 			const res = await postAction("write_config");
 			if (res.ok) {
-				alert("✅ 已成功写入 sol-pi.json (开启了 observationPack 与 onlineContextCompact)！\n提示：重启或新开会话即可生效。");
+				alert(
+					"✅ 已成功写入 sol-pi.json (开启了 observationPack 与 onlineContextCompact)！\n提示：重启或新开会话即可生效。",
+				);
 				close();
 			} else {
 				alert("❌ 写入配置失败: " + (res.error || "未知错误"));
@@ -228,7 +274,9 @@ function showModal(content, statusInfo) {
 	}
 
 	configBox.appendChild(btnRow);
-	body.appendChild(configBox);
+	detailsContainer.appendChild(summary);
+	detailsContainer.appendChild(configBox);
+	body.appendChild(detailsContainer);
 
 	const footer = document.createElement("div");
 	footer.style.cssText = `

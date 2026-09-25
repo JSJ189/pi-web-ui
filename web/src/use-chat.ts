@@ -31,6 +31,7 @@ import type {
 	UiPendingQuestion,
 	UiPluginCatalogEntry,
 	UiPluginInfo,
+	UiPluginUpdateInfo,
 	UiProviderConfig,
 	UiQuestion,
 	UiServiceInfo,
@@ -79,14 +80,16 @@ export const UI_LOCALE_EVENT = "pi-web-ui:locale";
 /** One component in an all-source update check (update_status_all). */
 export interface UpdateAllItem {
 	name: string;
-	kind: "webui" | "pi-core" | "package" | "git-extension";
+	kind: "webui" | "pi-core" | "package" | "git-extension" | "plugin";
 	current: string;
 	latest: string | null;
 	latestPublishedAt?: string | null;
 	upToDate: boolean;
 	error?: string;
-	/** git-extension only: `host/path` shorthand (prepend `git:` for the `pi update` command). */
+	/** git-extension / plugin only: `host/path` shorthand (prepend `git:` for the `pi update` command). */
 	source?: string;
+	pluginId?: string;
+	builtin?: boolean;
 }
 
 export interface Notice {
@@ -362,6 +365,10 @@ export interface ChatState {
 	plugins: UiPluginInfo[];
 	/** Server-side plugin reload counter (import-cache buster, see plugins msg). */
 	pluginsEpoch: number;
+	/** 已装插件的更新状态（key = pluginId）。 */
+	pluginUpdates: Record<string, UiPluginUpdateInfo> | null;
+	/** 正在检查插件更新 */
+	checkingPluginUpdates: boolean;
 	/** Installable-plugin list (marketplace): shipped catalog + user-added
 	 *  entries, each a one-click install candidate (see plugin_catalog msg). */
 	pluginCatalog: UiPluginCatalogEntry[];
@@ -569,6 +576,8 @@ type Action =
 	| { type: "bg_servers"; servers: BgServer[] }
 	| { type: "scheduler_tasks"; tasks: SchedulerTaskView[] }
 	| { type: "plugins"; plugins: UiPluginInfo[]; epoch: number }
+	| { type: "plugin_updates"; updates: UiPluginUpdateInfo[] }
+	| { type: "plugin_updates_check_started" }
 	| { type: "plugin_catalog"; entries: UiPluginCatalogEntry[]; epoch: number }
 	/** 插件后台作业进度（安装/更新/卸载）：line 为该次新增的一行输出。 */
 	| { type: "plugin_job"; job: Omit<PluginJobState, "lines" | "startedAt">; line?: string }
@@ -955,6 +964,15 @@ function reducer(state: ChatState, action: Action): ChatState {
 			return { ...state, schedulerTasks: action.tasks };
 		case "plugins":
 			return { ...state, plugins: action.plugins, pluginsEpoch: action.epoch };
+		case "plugin_updates_check_started":
+			return { ...state, checkingPluginUpdates: true };
+		case "plugin_updates": {
+			const map: Record<string, UiPluginUpdateInfo> = {};
+			for (const u of action.updates) {
+				map[u.id] = u;
+			}
+			return { ...state, pluginUpdates: map, checkingPluginUpdates: false };
+		}
 		case "plugin_catalog":
 			return { ...state, pluginCatalog: action.entries, pluginCatalogEpoch: action.epoch };
 		case "plugin_grants":
@@ -977,6 +995,17 @@ function reducer(state: ChatState, action: Action): ChatState {
 			return { ...state, permRequests: state.permRequests.filter((r) => r.id !== action.id) };
 		case "plugin_job": {
 			// 插件后台作业的进度（安装/更新/卸载）——即时通道，不进快照。
+			const { pluginId, phase, ok, action: jobAction } = action.job;
+			let nextUpdates = state.pluginUpdates;
+			if (jobAction === "update" && phase === "done" && ok && state.pluginUpdates?.[pluginId]) {
+				nextUpdates = {
+					...state.pluginUpdates,
+					[pluginId]: {
+						...state.pluginUpdates[pluginId],
+						updatable: false,
+					},
+				};
+			}
 			const prev = state.pluginJobs[action.job.jobId];
 			const lines = action.line ? [...(prev?.lines ?? []), action.line].slice(-40) : (prev?.lines ?? []);
 			const next: PluginJobState = {
@@ -985,7 +1014,11 @@ function reducer(state: ChatState, action: Action): ChatState {
 				lines,
 				startedAt: prev?.startedAt ?? Date.now(),
 			};
-			return { ...state, pluginJobs: { ...state.pluginJobs, [action.job.jobId]: next } };
+			return {
+				...state,
+				pluginUpdates: nextUpdates,
+				pluginJobs: { ...state.pluginJobs, [action.job.jobId]: next },
+			};
 		}
 		case "plugin_catalog_sync_result":
 			return { ...state, catalogSync: { ...action.result, receivedAt: Date.now() } };
@@ -1188,6 +1221,8 @@ export function useChat() {
 		scmDirty: 0,
 		plugins: [],
 		pluginsEpoch: 0,
+		pluginUpdates: null,
+		checkingPluginUpdates: false,
 		pluginCatalog: [],
 		pluginCatalogEpoch: 0,
 		pluginJobs: {},
@@ -1275,6 +1310,9 @@ export function useChat() {
 			// state renders instead of the cached list.
 			if (msg.type === "check_updates_all" && msg.force === true) {
 				dispatch({ type: "updates_check_started" });
+			}
+			if (msg.type === "check_plugin_updates") {
+				dispatch({ type: "plugin_updates_check_started" });
 			}
 			ws.send(JSON.stringify(msg));
 			// 提交/取消模型提问后立即收起对话框：服务端只 resolve 模型侧 Promise，
@@ -1829,6 +1867,9 @@ export function useChat() {
 				case "plugins":
 					dispatch({ type: "plugins", plugins: msg.plugins, epoch: msg.epoch });
 					break;
+				case "plugin_updates":
+					dispatch({ type: "plugin_updates", updates: msg.updates });
+					break;
 				case "plugin_catalog":
 					dispatch({ type: "plugin_catalog", entries: msg.entries, epoch: msg.epoch });
 					break;
@@ -1864,6 +1905,21 @@ export function useChat() {
 							...(msg.reason ? { reason: msg.reason } : {}),
 						},
 					});
+					break;
+				case "plugin_dom_consent_request":
+					// DOM 授权两步握手（协议 v20）：grant 由服务端生成在途请求并广播；
+					// 只有发起端（from === 自己的 clientId）自动确认——用户在设置面板
+					// 点一下的体验不变，其他端不是发起人不代答（服务端也只接受广播时
+					// 在线端的应答，陌生连接无从插手）。
+					if (msg.from === getClientId()) {
+						ws.send(
+							JSON.stringify({
+								type: "plugin_dom_consent_response",
+								id: msg.id,
+								ok: true,
+							} satisfies ClientMessage),
+						);
+					}
 					break;
 				case "plugin_job":
 					dispatch({

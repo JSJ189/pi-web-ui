@@ -582,7 +582,9 @@ export function TopBar({
 												? t("kindPiCore")
 												: item.kind === "git-extension"
 													? t("kindGitExtension")
-													: t("kindPackage")}
+													: item.kind === "plugin"
+														? t("kindPlugin")
+														: t("kindPackage")}
 									</span>
 									<span
 										className="dd-all-vers"
@@ -601,6 +603,16 @@ export function TopBar({
 										) : item.kind === "git-extension" ? (
 											item.upToDate ? (
 												stripGitSha(item.current)
+											) : (
+												shortGitRange(item.current, item.latest)
+											)
+										) : item.kind === "plugin" ? (
+											item.upToDate ? (
+												item.current.startsWith("v") ? (
+													item.current
+												) : (
+													stripGitSha(item.current)
+												)
 											) : (
 												shortGitRange(item.current, item.latest)
 											)

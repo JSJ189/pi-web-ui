@@ -209,7 +209,10 @@ interface Draft {
 	name: string;
 	api: string;
 	baseUrl: string;
+	/** 输入缓冲：服务端不再下发明文 apiKey，非空才随 save_model_config 上送。 */
 	apiKey: string;
+	/** 服务端是否已保存密钥（决定 placeholder 与留空语义：留空 = 保持不变）。 */
+	hasApiKey: boolean;
 	authHeader: boolean;
 	models: DraftModel[];
 }
@@ -229,6 +232,7 @@ const emptyDraft = (): Draft => ({
 	api: "openai-completions",
 	baseUrl: "",
 	apiKey: "",
+	hasApiKey: false,
 	authHeader: true,
 	models: [emptyModel()],
 });
@@ -239,7 +243,8 @@ function toDraft(p: UiProviderConfig): Draft {
 		name: p.name ?? "",
 		api: p.api ?? "openai-completions",
 		baseUrl: p.baseUrl ?? "",
-		apiKey: p.apiKey ?? "",
+		apiKey: "",
+		hasApiKey: p.hasApiKey ?? false,
 		authHeader: p.authHeader ?? false,
 		models: (p.models.length ? p.models : [emptyModel()]).map((m) => ({
 			id: m.id,
@@ -648,12 +653,13 @@ export function ModelConfigModal({
 		if (cloneProviderResult.ok) {
 			const cs = (cloneProviderResult as { configs?: UiProviderConfig[] }).configs;
 			if (cs && cs.length > 1) {
-				setBatch(cs.map((c) => toDraft({ ...c, apiKey: "" })));
+				// 克隆草稿不带凭据（服务端保证），apiKey 缓冲天然为空、hasApiKey=false。
+				setBatch(cs.map((c) => toDraft(c)));
 				setBatchKey("");
 				return;
 			}
 			if (cloneProviderResult.config) {
-				setAddKeyDraft(toDraft({ ...cloneProviderResult.config, apiKey: "" }));
+				setAddKeyDraft(toDraft(cloneProviderResult.config));
 			}
 		}
 	}, [cloneProviderResult]);
@@ -675,6 +681,8 @@ export function ModelConfigModal({
 			reqId,
 			baseUrl: base,
 			apiKey: editing.apiKey.trim() || undefined,
+			// 留空且已存有密钥：带上 providerId 让服务端用保存的密钥探测
+			...(editing.apiKey.trim() ? {} : editing.hasApiKey ? { providerId: editing.providerId.trim() } : {}),
 			authHeader: editing.authHeader,
 			api: editing.api,
 		});
@@ -698,6 +706,8 @@ export function ModelConfigModal({
 			reqId,
 			baseUrl: base,
 			apiKey: editing.apiKey.trim() || undefined,
+			// 留空且已存有密钥：带上 providerId 让服务端用保存的密钥探测
+			...(editing.apiKey.trim() ? {} : editing.hasApiKey ? { providerId: editing.providerId.trim() } : {}),
 			authHeader: editing.authHeader,
 			api: editing.api,
 		});
@@ -761,6 +771,7 @@ export function ModelConfigModal({
 				api: preset.api,
 				baseUrl: preset.baseUrl,
 				apiKey: prev?.apiKey || "",
+				hasApiKey: prev?.hasApiKey ?? false,
 				authHeader: preset.authHeader,
 				models: prev?.models.length ? prev.models : [emptyModel()],
 			};
@@ -789,7 +800,9 @@ export function ModelConfigModal({
 			name: editing.name.trim() || undefined,
 			api: editing.api.trim() || undefined,
 			baseUrl: editing.baseUrl.trim() || undefined,
-			apiKey: editing.apiKey.trim() || undefined,
+			// 明文只在用户真的输入了新值时上送；留空 = 不带字段 = 服务端保留旧值
+			//（协议层面显式空串仍是"清除"，但表单留空语义是"保持不变"）。
+			...(editing.apiKey.trim() ? { apiKey: editing.apiKey.trim() } : {}),
 			authHeader: editing.authHeader || undefined,
 			models,
 		};
@@ -1200,7 +1213,8 @@ export function ModelConfigModal({
 											type="password"
 											value={editing.apiKey}
 											onChange={(e) => setEditing({ ...editing, apiKey: e.target.value })}
-											placeholder={t("apiKeyHint")}
+											// 明文不再回显：已保存时留空 = 保持不变
+											placeholder={editing.hasApiKey ? t("apiKeySavedHint") : t("apiKeyHint")}
 										/>
 									</label>
 									<label className="field check" style={{ alignSelf: "center", paddingTop: 16 }}>

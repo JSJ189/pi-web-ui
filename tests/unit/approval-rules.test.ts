@@ -7,6 +7,7 @@ import {
 	DEFAULT_APPROVAL_RULES,
 	evaluateApprovalRules,
 	extractRuleFieldValue,
+	extractTargetPath,
 	globToRegex,
 	matchApprovalRule,
 	normalizeApprovalRule,
@@ -45,6 +46,35 @@ describe("审批规则引擎纯函数与匹配逻辑 (Approval Rules Engine)", (
 
 		it("提取 path", () => {
 			expect(extractRuleFieldValue("path", "write", { path: "src/index.ts" })).toBe("src/index.ts");
+		});
+
+		it("path 字段认三种写法：path / file_path / file（扩展实现如 pi-better-edit 的 edit 用 file）", () => {
+			expect(extractTargetPath({ path: "a.ts" })).toBe("a.ts");
+			expect(extractTargetPath({ file_path: "b.ts" })).toBe("b.ts");
+			expect(extractTargetPath({ file: "c.ts" })).toBe("c.ts");
+			expect(extractTargetPath({ path: "a.ts", file: "c.ts" })).toBe("a.ts");
+			expect(extractTargetPath({ path: "  ", file: "c.ts" })).toBe("c.ts");
+			expect(extractTargetPath({})).toBe("");
+			expect(extractTargetPath(null)).toBe("");
+			expect(extractTargetPath("nonsense")).toBe("");
+			expect(extractTargetPath({ path: 42 })).toBe("");
+			expect(extractRuleFieldValue("path", "edit", { file: "c.ts" })).toBe("c.ts");
+		});
+
+		it("按 path 匹配的规则对用 file 的扩展实现同样生效", () => {
+			const rule: ApprovalRule = {
+				id: "custom.env",
+				enabled: true,
+				tools: ["edit"],
+				field: "path",
+				match: "glob",
+				value: "**/.env",
+				action: "ask",
+				label: "改 .env 先问",
+			};
+			expect(matchApprovalRule(rule, "edit", { path: "app/.env" }, cwd)).toBe(true);
+			expect(matchApprovalRule(rule, "edit", { file: "app/.env" }, cwd)).toBe(true);
+			expect(matchApprovalRule(rule, "edit", { file: "app/.env.local" }, cwd)).toBe(false);
 		});
 
 		it("提取 params 完整 JSON", () => {
@@ -309,5 +339,56 @@ describe("ApprovalRulesStore 持久化库与播种机制", () => {
 		expect(err).toBeNull();
 		const current = store.list();
 		expect(current[0].id).toBe(reversed[0].id);
+	});
+
+	it("saveAll 不含内置规则的清单 → 内置规则被补种且追加队尾", () => {
+		const store = new ApprovalRulesStore(storePath);
+		const err = store.saveAll([
+			{
+				id: "custom.only-one",
+				enabled: true,
+				tools: ["bash"],
+				field: "command",
+				match: "contains",
+				value: "danger-cmd",
+				action: "deny",
+				label: "唯一自定义规则",
+			},
+		]);
+		expect(err).toBeNull();
+
+		const list = store.list();
+		// 全部内置规则仍在
+		for (const def of DEFAULT_APPROVAL_RULES) {
+			expect(list.find((r) => r.id === def.id)).toBeDefined();
+		}
+		// 自定义规则保持在队首（用户排序不被动），补种的内置规则追加在队尾
+		expect(list[0].id).toBe("custom.only-one");
+		expect(list.length).toBe(1 + DEFAULT_APPROVAL_RULES.length);
+		const last = list[list.length - 1];
+		expect(last.builtin).toBe(true);
+		expect(DEFAULT_APPROVAL_RULES.some((d) => d.id === last.id)).toBe(true);
+	});
+
+	it("saveAll 送来 builtin:false 的内置规则 → builtin 标记被强制保留", () => {
+		const store = new ApprovalRulesStore(storePath);
+		const err = store.saveAll([
+			{
+				id: "builtin.bash.rm-rf",
+				enabled: true,
+				tools: ["bash"],
+				field: "command",
+				match: "prefix",
+				value: "rm -rf",
+				action: "deny",
+				label: "魔改内置",
+				builtin: false, // 伪造标记以绕过 remove() 的内置保护
+			},
+		]);
+		expect(err).toBeNull();
+		const item = store.list().find((r) => r.id === "builtin.bash.rm-rf");
+		expect(item?.builtin).toBe(true);
+		// 保护未被绕过
+		expect(store.remove("builtin.bash.rm-rf")).toBe(false);
 	});
 });

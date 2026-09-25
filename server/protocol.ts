@@ -592,6 +592,8 @@ export type ClientMessage =
 	/** Check the npm registry for a newer pi-web-ui version. */
 	| { type: "check_update" }
 	| { type: "check_updates_all"; force?: true } // webui + direct pi extensions (manifest)
+	/** Check updates for installed UI plugins (<dataDir>/plugins). */
+	| { type: "check_plugin_updates" }
 	/** Restart the supervised service (same effect as `pi-web-ui server restart`:
 	 *  this process exits and its supervisor brings it back). The server refuses
 	 *  when no supervisor manages this instance (foreground / dev / Docker). */
@@ -659,6 +661,9 @@ export type ClientMessage =
 			authHeader?: boolean;
 			/** api type: openai-completions / openai-responses / anthropic-messages / google-generative-ai. */
 			api?: string;
+			/** 正在编辑的服务商 id：apiKey 留空时服务端按它回落到已保存的密钥
+			 *  （明文不再下发浏览器，编辑存量服务商的探测靠这个保持可用）。 */
+			providerId?: string;
 	  }
 	/** Lightweight connectivity and auth probe for a provider endpoint.
 	 *  Runs SERVER-side and returns latencyMs or error in test_model_connection_result. */
@@ -669,6 +674,8 @@ export type ClientMessage =
 			apiKey?: string;
 			authHeader?: boolean;
 			api?: string;
+			/** 同 fetch_models：apiKey 留空时按它回落到已保存的密钥。 */
+			providerId?: string;
 	  }
 	/** Re-probe a SAVED provider's /models endpoint and merge the result into
 	 *  its models.json entry. Credentials stay server-side (the browser never
@@ -841,9 +848,15 @@ export type ClientMessage =
 	 *  ones, bump the epoch and re-push the catalog. Same spirit as
 	 *  extensions_reload but for pi-web-ui's own UI plugins. */
 	| { type: "plugins_reload" }
-	/** 特权 DOM 访问授权（wantsDom 插件）：granted=true 即写入 <dataDir>/plugin-dom.json
-	 *  并 epoch+1 重推清单（浏览器按新 epoch 重拉 bundle）；false = 撤销。 */
+	/** 特权 DOM 访问授权（wantsDom 插件）：granted=true 走两步握手——服务端生成
+	 *  在途 consent 请求（plugin_dom_consent_request 广播），收到绑定来源的
+	 *  plugin_dom_consent_response 才写入 <dataDir>/plugin-dom.json 并 epoch+1
+	 *  重推清单（浏览器按新 epoch 重拉 bundle）；granted=false = 撤销，单步直达
+	 *  （降权方向不值得拖 120s 窗口）。 */
 	| { type: "plugin_dom_consent"; pluginId: string; granted: boolean }
+	/** plugin_dom_consent 两步握手的应答：id 回显 plugin_dom_consent_request.id。
+	 *  服务端校验应答连接属于请求广播时的在线端才落盘（防陌生连接代答）。 */
+	| { type: "plugin_dom_consent_response"; id: string; ok: boolean }
 	/** Save the CURRENT settings as a named preset (overwrites if it exists). */
 	| { type: "save_preset"; name: string }
 	/** Upsert 一个子代理模板（同名覆盖；全局共享，所有客户端一致）。停用标记
@@ -1460,7 +1473,13 @@ export interface UiProviderConfig {
 	/** api type: openai-completions / openai-responses / anthropic-messages / google-generative-ai. */
 	api?: string;
 	baseUrl?: string;
+	/** 【只写】save_model_config 提交的新 apiKey；服务端下发（models_config /
+	 *  clone_provider_result）时**永不填充**——明文不回传浏览器。留缺 = 保留
+	 *  已存旧值，显式空串 = 清除。 */
 	apiKey?: string;
+	/** 【只读】服务端下发的"是否已保存 apiKey"，与 headers 一样是单向字段：
+	 *  客户端保存时无需也不应携带。 */
+	hasApiKey?: boolean;
 	authHeader?: boolean;
 	/** headers are NOT returned to the browser — they can contain Authorization
 	 *  / API-key values; saveModelConfig preserves them server-side. */
@@ -1470,6 +1489,19 @@ export interface UiProviderConfig {
 // ---------------------------------------------------------------------------
 // Plugins (optional UI components dropped into <dataDir>/plugins/<id>/)
 // ---------------------------------------------------------------------------
+
+export interface UiPluginUpdateInfo {
+	id: string;
+	name?: string;
+	version?: string;
+	latestVersion?: string | null;
+	source: string;
+	localSha: string | null;
+	remoteSha: string | null;
+	updatable: boolean;
+	builtin?: boolean;
+	error?: string;
+}
 
 /** One installed pi-web-ui plugin (see server/plugins.ts). A plugin is a
  *  directory under <dataDir>/plugins/<id>/ with a manifest.json and optional
@@ -1954,6 +1986,13 @@ export interface UiPluginCatalogEntry {
 	/** true = from the shipped catalog; false = user added in the UI
 	 *  (only custom entries can be removed). */
 	builtin: boolean;
+	/** true = a custom entry whose id replaced a shipped-catalog entry with the
+	 *  same id: the display fields (name/icon/description) come from a
+	 *  user-supplied source and may imitate the official entry, so surfaces
+	 *  should mark it as user-supplied. The source field always keeps the real
+	 *  (custom) install source — it cannot impersonate the official one.
+	 *  Optional, purely additive; derived at merge time, not persisted. */
+	overridesBuiltin?: boolean;
 	/** Optional project/homepage URL. */
 	homepage?: string;
 }
@@ -2715,7 +2754,7 @@ export type ServerMessage =
 			type: "update_status_all";
 			items: {
 				name: string;
-				kind: "webui" | "pi-core" | "package" | "git-extension";
+				kind: "webui" | "pi-core" | "package" | "git-extension" | "plugin";
 				current: string;
 				latest: string | null;
 				latestPublishedAt?: string | null;
@@ -2723,6 +2762,10 @@ export type ServerMessage =
 				error?: string;
 				/** git-extension only: `host/path` shorthand (prepend `git:` for the `pi update` command). */
 				source?: string;
+				/** plugin only: directory/install id, matches pluginId. */
+				pluginId?: string;
+				/** plugin only: whether this is a shipped built-in plugin. */
+				builtin?: boolean;
 			}[];
 			/** issue #321: pi SDK 副本状态快照，随每次 update_status_all 下发。
 			 *  `running` = 本进程实际加载的版本（可能是自带副本，也可能是跟随的全局副本）；
@@ -2749,6 +2792,9 @@ export type ServerMessage =
 	 *  reload; the frontend uses it as an import-cache buster so changed
 	 *  bundles are actually re-fetched. */
 	| { type: "plugins"; plugins: UiPluginInfo[]; epoch: number }
+	/** Result of a check_plugin_updates run or an all-source update check
+	 *  containing UI plugins. Broadcast to all clients so plugin badges stay in sync. */
+	| { type: "plugin_updates"; updates: UiPluginUpdateInfo[] }
 	/** Installable-plugin list (marketplace). Pushed on attach and after every
 	 *  plugin_catalog_add/remove. Merges the shipped catalog
 	 *  (<pkgRoot>/plugins/catalog.json) with user-added entries
@@ -2801,6 +2847,10 @@ export type ServerMessage =
 	/** 插件请求访问工作区外的目录：宿主弹确认（文案按 kind 本地化），用户答复经
 	 *  plugin_path_response 回传。未答复超时视为拒绝。 */
 	| { type: "plugin_path_request"; id: string; pluginId: string; path: string; reason?: string }
+	/** DOM 授权两步握手的在途请求（设置面板的授权点击触发服务端生成并广播）：
+	 *  id 供 plugin_dom_consent_response 回显；from = 发起端 clientId（前端只自动
+	 *  应答自己发起的授权）。120s 未应答视为拒绝。 */
+	| { type: "plugin_dom_consent_request"; id: string; pluginId: string; from: string }
 	/** 插件目录授权表（设置面板展示 + 撤销后刷新）。 */
 	| { type: "plugin_grants"; grants: { pluginId: string; paths: string[] }[] }
 	/** 插件请求能力授权（net 主机 / llm 模型作用域）：宿主弹确认，用户答复经
