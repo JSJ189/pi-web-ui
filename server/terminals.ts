@@ -223,8 +223,11 @@ export function terminalIdleNotifyLines(): number {
  *  因此不会误匹配回显里的 printf 格式串 `[pi-exit:%s]`。 */
 const BASH_SENTINEL_RE = /\[pi-exit:(\d+)\]/g;
 
+/** bash 阻塞循环 collected 的累积上限：超限丢最旧一半（见 bash 工具执行循环）。 */
+const BASH_COLLECT_MAX = 2 * 1024 * 1024;
+
 /**
- * 把任意命令（含多行脚本）构造成「一行」交互 shell 命令：执行 + 捕获退出码。
+ * 把任意命令（含多行脚本）构造成一行交互 shell 命令：执行 + 捕获退出码。
  *
  * 单行很关键：整行先被 shell 完整解析再执行，命令中途读 stdin 也不会吃掉
  * 后续哨兵；也避开交互 shell 的 bracketed-paste 对多行输入的特殊处理。
@@ -232,15 +235,6 @@ const BASH_SENTINEL_RE = /\[pi-exit:(\d+)\]/g;
  */
 export function buildTerminalBashLine(command: string, tailFile?: { file: string; lines: number }): string {
 	const trimmed = command.replace(/\s+$/, "");
-	let body = trimmed;
-	if (trimmed.includes("\n")) {
-		body = `eval $'${trimmed
-			.replace(/\\/g, "\\\\")
-			.replace(/'/g, "\\'")
-			.replace(/\r/g, "\\r")
-			.replace(/\n/g, "\\n")
-			.replace(/\t/g, "\\t")}'`;
-	}
 	// 退出码取【第一个】命令（真正干活的那个）而非管道末尾命令：`head`/`grep`/`tail`
 	// 在管道末尾会把退出码吞成自己的（head 恒 0、grep 无命恒 1）。`${PIPESTATUS:-$?}`
 	// 在 bash 里取 PIPESTATUS[0]（首命令），busybox ash/dash 无 PIPESTATUS 时退化为 `$?`。
@@ -248,12 +242,82 @@ export function buildTerminalBashLine(command: string, tailFile?: { file: string
 	// 留下的 141 不是真失败，而是“按要求截断=成功”。只有恰好 141 才转 0，真失败照报。
 	// tailFile：`cmd > log 2>&1 | tail -N`——拆掉 tail 后 stdout 进文件、终端为空；
 	// 在哨兵前补一个 `tail -N log` 让模型看到日志尾部，退出码仍是底层命令的。
-	// eslint-disable-next-line no-useless-escape -- \$? must reach the shell literally
-	const rcGuard = `__pi_rc=\${PIPESTATUS:-\$?}; [ "$__pi_rc" -eq 141 ] && __pi_rc=0`;
 	const tailPart = tailFile
 		? `; tail -n ${Math.max(1, Math.floor(tailFile.lines))} -- '${tailFile.file.replace(/'/g, `'\\''`)}'`
 		: "";
-	return `${body}; ${rcGuard}${tailPart}; printf '\\n[pi-exit:%s]\\n' "$__pi_rc"`;
+	// eslint-disable-next-line no-useless-escape -- \$? must reach the shell literally
+	const sentinel = `__pi_rc=\${PIPESTATUS:-\$?}; [ "$__pi_rc" -eq 141 ] && __pi_rc=0${tailPart}; printf '\\n[pi-exit:%s]\\n' "$__pi_rc"`;
+
+	if (trimmed.includes("\n")) {
+		// 多行路径（行为保持）：$'...' 转义后是一行物理输入，引号/换行全部字面化，
+		// 以 `'` 收尾——`; ` 同行拼接哨兵不会被尾注释/尾管道/续行吞掉。
+		const body = `eval $'${trimmed
+			.replace(/\\/g, "\\\\")
+			.replace(/'/g, "\\'")
+			.replace(/\r/g, "\\r")
+			.replace(/\n/g, "\\n")
+			.replace(/\t/g, "\\t")}'`;
+		return `${body}; ${sentinel}`;
+	}
+
+	// 单行路径：哨兵独占一行追加。行内 `; ` 拼接会被常见形态吞掉——
+	// 尾注释（`cmd # note; printf…` 整段进注释）、尾管道（`cmd |; …` 语法错误）。
+	// 独占一行后这两类安全；尾随续行符/未闭合引号仍会把哨兵行并入命令或吞进
+	// 字符串——这类形态无法安全续行，直接拒注入（调用方按无退出码模式执行并注明）。
+	if (sentinelUnsafeReason(trimmed)) return trimmed;
+	return `${trimmed}\n${sentinel}`;
+}
+
+/**
+ * 判定命令能否安全追加「独占一行的退出码哨兵」；返回拒注入原因或 null（可注入）。
+ *
+ * - 尾随续行符 `\`：下一行被并入本命令，哨兵行成为命令的一部分。
+ * - 未闭合引号：哨兵行被吞进字符串字面量，永远不会作为代码执行。
+ * - 多行命令：经 `$'...'` 转义单行化后引号/换行全部字面化，总是安全 → null。
+ *
+ * 扫描按 POSIX 引号语义跟踪 `'`/`"`/`` ` `` 三种引号与转义；`$'...'`（ANSI-C
+ * 引号）内 `\'` 不闭合引号，也一并识别。
+ */
+export function sentinelUnsafeReason(command: string): "trailing_backslash" | "unclosed_quote" | null {
+	const trimmed = command.replace(/\s+$/, "");
+	if (trimmed.includes("\n")) return null;
+	let quote: "'" | '"' | "`" | null = null;
+	// 当前单引号是否 $' 开头（ANSI-C 引号，内含转义语义）
+	let ansiC = false;
+	let escaped = false;
+	for (let i = 0; i < trimmed.length; i++) {
+		const ch = trimmed[i];
+		if (quote) {
+			if (escaped) {
+				escaped = false;
+				continue;
+			}
+			// POSIX 单引号内 `\` 是普通字符；ANSI-C/双引号/反引号内 `\` 转义下一字符
+			if (ch === "\\" && (quote !== "'" || ansiC)) {
+				escaped = true;
+				continue;
+			}
+			if (ch === quote) quote = null;
+			continue;
+		}
+		if (escaped) {
+			// 引号外的转义：被转义字符原样跳过（`\"` 不开引号等）
+			escaped = false;
+			continue;
+		}
+		if (ch === "\\") {
+			escaped = true;
+			continue;
+		}
+		if (ch === "'" || ch === '"' || ch === "`") {
+			quote = ch;
+			ansiC = ch === "'" && i > 0 && trimmed[i - 1] === "$";
+		}
+	}
+	if (quote !== null) return "unclosed_quote";
+	// 扫描结束仍在转义态 = 最后一个字符是引号外的 `\`（尾随续行符）
+	if (escaped) return "trailing_backslash";
+	return null;
 }
 
 /** 顶层（引号/反引号/转义外）按 `|` 拆分的管道元素。 */
@@ -310,6 +374,10 @@ function parseTailLines(rest: string): number | null {
 export function detectTrailingLimiter(
 	command: string,
 ): { base: string; kind: LimiterKind; lines: number | null; segment: string } | null {
+	// 含命令替换（$() / 反引号）的命令保守跳过拆管：splitTopLevelPipes 只跟踪引号
+	// 与顶层 `|`，不解析括号嵌套——`cmd $(x | y)` 里替换内的管道会被误判为顶层
+	// 管道段，拆掉后直接破坏命令语义。保守正确优先，宁可少优化。
+	if (/\$\(|`/.test(command)) return null;
 	const parts = splitTopLevelPipes(command);
 	if (parts.length < 2) return null;
 	// 管道分隔处可能在 `|` 后留前导空白（`| tail`），trim 掉再匹配。
@@ -1509,31 +1577,45 @@ export class TerminalManager {
 	 * Kill the native PTY (issue #215：Windows ConPTY 关机死锁；issue #269：MSYS2 控制台耗尽死锁）。
 	 *
 	 * Windows 下：
-	 * 1. 若进程已经退出（entry.exited）：绝不可再调用 Node 的 process.kill(pid)，
-	 *    直接调 pty.kill() 释放 HPCON 句柄（子进程已死、管道见 EOF，绝不会死锁）。
-	 * 2. 若进程尚未退出（!entry.exited）：
-	 *    先尝试优雅关闭（向 PTY 写入 \x03exit\r），让 bash 正常触发清理钩子；
-	 *    若仍未退出才以 process.kill(pid)（TerminateProcess）强制兜底。
-	 * 3. 关机（shutdown=true）：跳过 pty.kill()，由 OS 回收。
-	 * 非 Windows 原样直调 pty.kill()。
+	 * 1. 若进程已经退出（entry.exited）：直接调 pty.kill() 释放 HPCON 句柄
+	 *    （子进程已死、管道见 EOF，绝不会死锁）；关机路径跳过，由 OS 回收。
+	 * 2. 若进程尚未退出（!entry.exited）：先向 PTY 写入 \x03exit\r 优雅关闭（让
+	 *    bash 正常触发清理钩子），300ms 后仍活着再调 pty.kill() 兜底——node-pty 在
+	 *    Windows 上走 console-process-list 做**全树**清理。不再使用裸
+	 *    process.kill(pid)（TerminateProcess）：它只杀 ConPTY 附着的单一进程，
+	 *    且从拿到 pid 到调用之间隔着一个 PID 复用误杀窗口。
+	 * 3. 关机（shutdown=true）：只做优雅写，跳过 pty.kill() 与 300ms 兜底，由 OS
+	 *    回收（保持 50ms 内退出的关机预算）。
+	 * 非 Windows 原样直调 pty.kill()（POSIX 下 shell 是直接子进程，pty.kill 足够，
+	 * 保持既有行为不做额外延迟）。
 	 */
 	private killNative(entry: TermEntry, shutdown = false): void {
 		if (process.platform === "win32") {
-			if (!entry.exited) {
-				const pid = (entry.pty as { pid?: number }).pid;
-				if (typeof pid === "number") {
+			if (entry.exited) {
+				if (!shutdown) {
 					try {
-						// 优雅关闭：先发 Ctrl+C，再发 exit\r
-						entry.pty.write("\x03exit\r");
-					} catch {}
-					try {
-						process.kill(pid);
+						entry.pty.kill();
 					} catch {
 						// already dead
 					}
 				}
+				return;
 			}
+			// 优雅关闭：先发 Ctrl+C，再发 exit\r
+			try {
+				entry.pty.write("\x03exit\r");
+			} catch {}
 			if (shutdown) return;
+			const t = setTimeout(() => {
+				if (entry.exited) return;
+				try {
+					entry.pty.kill();
+				} catch {
+					// already dead
+				}
+			}, 300);
+			t.unref?.();
+			return;
 		}
 		try {
 			entry.pty.kill();
@@ -1796,8 +1878,20 @@ export function makeTerminalBashTool(
 				let collected = "";
 				let cursor = start;
 				let lastDataAt = Date.now();
+				// 尾随续行符/未闭合引号的命令无法安全注入哨兵（哨兵行会被并入命令或
+				// 吞进字符串）：按无退出码模式执行，靠静默/超时/总时长解阻收尾并注明。
+				const sentinelUnsafe = sentinelUnsafeReason(runCommand);
+				const sentinelNote = sentinelUnsafe
+					? pick(
+							lang,
+							`\n[注：命令以${sentinelUnsafe === "trailing_backslash" ? "续行符 \\" : "未闭合引号"}结尾，无法注入退出码哨兵——已按无退出码模式执行，拿不到真实 exit code。建议拆分成更简单的单行命令重试。]`,
+							`\n[Note: the command ends with ${sentinelUnsafe === "trailing_backslash" ? "a line-continuation backslash" : "an unclosed quote"}; the exit-code sentinel could not be injected — it ran without exit-code detection. Prefer splitting it into simpler single-line commands.]`,
+							"terminals.bash.nosentinel.note",
+						)
+					: "";
 				// 标记「有哨兵命令在跑」：terminal_wait 据此区分等待与空闲。
-				terminals.setSentinelPending(termId, true);
+				// 无哨兵命令没有可等待的哨兵，标记反而误导 terminal_wait。
+				if (!sentinelUnsafe) terminals.setSentinelPending(termId, true);
 				const inputErr = terminals.inputChecked(termId, buildTerminalBashLine(runCommand, tailFile) + "\r");
 				if (inputErr) throw new Error(inputErr);
 				for (;;) {
@@ -1814,6 +1908,12 @@ export function makeTerminalBashTool(
 						collected += read.data;
 						cursor = read.cursor;
 						lastDataAt = Date.now();
+						// 长跑/刷屏命令的累积无上限会拖爆服务进程内存。哨兵判定只看尾部
+						// 8KB（lastSentinel），超限丢最旧一半、保留近期输出即可；
+						// 命令结束后的 cleanBashOutput 语义不受影响。
+						if (collected.length > BASH_COLLECT_MAX) {
+							collected = collected.slice(collected.length - BASH_COLLECT_MAX / 2);
+						}
 					}
 					const m = lastSentinel(collected);
 					if (m) {
@@ -1838,8 +1938,8 @@ export function makeTerminalBashTool(
 						throw new Error(
 							pick(
 								lang,
-								`Command timed out after ${p.timeout}s（已发 Ctrl+C；已有输出：${timeoutPartial}）`,
-								`Command timed out after ${p.timeout}s (sent Ctrl+C; partial output: ${timeoutPartial})`,
+								`Command timed out after ${p.timeout}s（已发 Ctrl+C；已有输出：${timeoutPartial}）${sentinelNote}`,
+								`Command timed out after ${p.timeout}s (sent Ctrl+C; partial output: ${timeoutPartial})${sentinelNote}`,
 								"terminals.bash.timeout",
 								{ "p.timeout": p.timeout, timeoutPartial },
 							),
@@ -1851,7 +1951,7 @@ export function makeTerminalBashTool(
 							terminals,
 							opts,
 							runCommand,
-							applyHeadTail(cleanBashOutput(collected), p.head, effectiveTail, lang),
+							applyHeadTail(cleanBashOutput(collected), p.head, effectiveTail, lang) + sentinelNote,
 							Math.round((Date.now() - lastDataAt) / 1000),
 							lang,
 							termId,
@@ -1865,7 +1965,7 @@ export function makeTerminalBashTool(
 							terminals,
 							opts,
 							runCommand,
-							applyHeadTail(cleanBashOutput(collected), p.head, effectiveTail, lang),
+							applyHeadTail(cleanBashOutput(collected), p.head, effectiveTail, lang) + sentinelNote,
 							Math.round((Date.now() - startTime) / 1000),
 							lang,
 							termId,

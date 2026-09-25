@@ -112,35 +112,64 @@ export function unzipFiles(buf: Buffer, wanted: string[]): Map<string, Buffer> {
 	return out;
 }
 
+const NAMED_ENTITIES: Record<string, string> = { lt: "<", gt: ">", amp: "&", quot: '"', apos: "'" };
+
+/**
+ * 单轮解码命名实体与十/十六进制数字实体（一次扫描同时匹配三类）。
+ *
+ * 旧实现分三段 replace：`&amp;#60;` 会先被命名段解码成 `&#60;`、再被数字段
+ * 解码成 `<`——双重解码让转义文本"逃出"字面量（可注入标签）。单轮扫描把
+ * `&…;` 整体消费、解码产物不参与后续匹配：`&amp;#60;` 正确地得到 `&#60;`。
+ */
 function decodeEntities(s: string): string {
-	return String(s ?? "")
-		.replace(
-			/&(lt|gt|amp|quot|apos);/g,
-			(_, e: string) => ({ lt: "<", gt: ">", amp: "&", quot: '"', apos: "'" })[e] as string,
-		)
-		.replace(/&#(\d+);/g, (_, n: string) => {
-			try {
-				return String.fromCodePoint(Number(n));
-			} catch {
-				return "";
+	return String(s ?? "").replace(
+		/&(?:#([0-9]+);|#x([0-9a-fA-F]+);|([a-zA-Z]+);)/g,
+		(_whole, dec: string | undefined, hex: string | undefined, name: string | undefined) => {
+			if (dec !== undefined) {
+				try {
+					return String.fromCodePoint(Number(dec));
+				} catch {
+					return "";
+				}
 			}
-		})
-		.replace(/&#x([0-9a-fA-F]+);/g, (_, h: string) => {
-			try {
-				return String.fromCodePoint(Number.parseInt(h, 16));
-			} catch {
-				return "";
+			if (hex !== undefined) {
+				try {
+					return String.fromCodePoint(Number.parseInt(hex, 16));
+				} catch {
+					return "";
+				}
 			}
-		});
+			// 未知的命名实体保留原文（与旧实现一致，不臆造映射）
+			return NAMED_ENTITIES[name ?? ""] ?? _whole;
+		},
+	);
 }
 
 const stripTags = (s: string): string => decodeEntities(String(s ?? "").replace(/<[^>]+>/g, ""));
+
+/** document.xml 解压后的字节上限：超大 XML 会让段落正则扫描退化成秒级卡顿（同步事件循环被挂死）。 */
+const DOCX_MAX_XML_BYTES = 20 * 1024 * 1024;
 
 /** docx → 段落数组。 */
 export function parseDocxParagraphs(buf: Buffer): string[] {
 	const files = unzipFiles(buf, ["word/document.xml"]);
 	const xml = files.get("word/document.xml")?.toString("utf8");
 	if (!xml) throw new Error("docx 里找不到 word/document.xml");
+	// 预检 1：解压后过大的 document.xml 在下面的正则扫描里代价爆炸（一次性物化
+	// 全部段落、非贪婪匹配最坏回溯到文本末尾），直接友好报错而不是挂住进程。
+	if (xml.length > DOCX_MAX_XML_BYTES) {
+		throw new Error(
+			`文档内容过大（document.xml 解压后 ${(xml.length / 1048576).toFixed(1)} MB，上限 20 MB），拒绝预览`,
+		);
+	}
+	// 预检 2：正常文档的段落闭合标签与开标签同量级。"只有开标签、没有闭标签"
+	// 的恶意结构会让非贪婪正则在每个候选起点都回溯扫描到文本末尾（O(n²)），
+	// 同步挂死事件循环——开标签远多于闭标签（>2 倍）且闭标签为 0 时直接报错。
+	const opens = xml.match(/<w:p[\s>]/g)?.length ?? 0;
+	const closes = xml.match(/<\/w:p>/g)?.length ?? 0;
+	if (opens > 0 && closes === 0) {
+		throw new Error("文档结构异常（段落标签大量未闭合），疑似恶意文档，拒绝预览");
+	}
 	const paragraphs: string[] = [];
 	for (const m of xml.matchAll(/<w:p[\s>][\s\S]*?<\/w:p>/g)) {
 		const pXml = m[0];

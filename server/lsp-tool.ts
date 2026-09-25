@@ -269,7 +269,21 @@ export async function autoInstallLanguageServer(pkg: string): Promise<boolean> {
 					shell: isWin,
 				});
 				const timer = setTimeout(() => {
-					proc.kill();
+					if (isWin) {
+						// shell:true 时 proc.pid 只是 cmd.exe 的 PID——proc.kill() 只杀得到
+						// cmd.exe，npm/node 整棵子进程树会残留。taskkill /T 连树强杀。
+						if (typeof proc.pid === "number") {
+							const killer = spawn("taskkill", ["/PID", String(proc.pid), "/T", "/F"], { stdio: "ignore" });
+							killer.on("error", () => {});
+						}
+					} else {
+						// POSIX：npm 由非 shell 直接 spawn，kill 其主进程即可让安装流程终止
+						//（取 SIGKILL 而非 detached 进程组方案：不改变子进程组语义，安装
+						// 超时本身是罕见路径，残余 node 子进程随 npm 主进程退出被回收）。
+						try {
+							proc.kill("SIGKILL");
+						} catch {}
+					}
 					reject(new Error("npm install timed out"));
 				}, 120_000);
 				proc.stderr?.on("data", (chunk: Buffer) => {
@@ -328,7 +342,8 @@ export class LspClient {
 		public readonly binPath: string,
 		public readonly binArgs: string[],
 		public readonly languageId: string,
-		private readonly onIdleEvict: () => void,
+		/** 客户端不可用（空闲回收 / 进程退出 / spawn 失败）时从池移除的回调 */
+		private readonly onEvict: () => void,
 	) {}
 
 	async start(): Promise<void> {
@@ -344,9 +359,27 @@ export class LspClient {
 			// 可选记录 debug 日志，不干扰输出
 		});
 
+		// spawn 失败（ENOENT/EACCES 等）只触发 'error'，进程从未启动时不会触发
+		// 'exit'——不监听会让 initialize 等请求挂到超时，客户端还留在池里被误判存活。
+		this.proc.on("error", (err: Error) => {
+			this.proc = null;
+			this.rejectAllPending(new Error(`Language server failed to start: ${err.message}`));
+			this.onEvict();
+		});
+
+		// stdin 写错误（对端退出后的 EPIPE 等）在 stream 上异步 emit，不监听会以
+		// uncaughtException 崩掉整个服务进程。这里统一兜底：标记死亡 + 清理挂起请求。
+		this.proc.stdin?.on("error", (err: Error) => {
+			this.proc = null;
+			this.rejectAllPending(new Error(`Language server stdin error: ${err.message}`));
+			this.onEvict();
+		});
+
 		this.proc.on("exit", (code) => {
 			this.proc = null;
 			this.rejectAllPending(new Error(`Language server exited with code ${code}`));
+			// 进程退出即从池移除，防止后续请求命中死客户端
+			this.onEvict();
 		});
 
 		try {
@@ -391,7 +424,7 @@ export class LspClient {
 		this.idleTimer = setTimeout(
 			() => {
 				this.shutdown().catch(() => {});
-				this.onIdleEvict();
+				this.onEvict();
 			},
 			15 * 60 * 1000,
 		);
@@ -473,7 +506,15 @@ export class LspClient {
 			}, timeoutMs);
 
 			this.pendingRequests.set(id, { resolve: res, reject: rej, timer });
-			this.proc!.stdin!.write(wire);
+			try {
+				this.proc!.stdin!.write(wire);
+			} catch (err) {
+				// 同步写失败（stream 已销毁等）：撤销挂起请求；异步 EPIPE 由 start() 里的
+				// stdin 'error' 监听兜底，这里只需保证 promise 被 reject 而非向上抛。
+				clearTimeout(timer);
+				this.pendingRequests.delete(id);
+				rej(new Error(`Language server stdin write failed: ${(err as Error).message}`));
+			}
 		});
 	}
 
@@ -482,7 +523,11 @@ export class LspClient {
 		if (!this.proc || !this.proc.stdin) return;
 		const payload = JSON.stringify({ jsonrpc: "2.0", method, params });
 		const wire = `Content-Length: ${Buffer.byteLength(payload, "utf8")}\r\n\r\n${payload}`;
-		this.proc.stdin.write(wire);
+		try {
+			this.proc.stdin.write(wire);
+		} catch {
+			// 通知写失败只影响状态同步，不值得打断调用链；异步 EPIPE 由 stdin 'error' 监听兜底
+		}
 	}
 
 	async syncDocument(absPath: string): Promise<string> {
@@ -589,8 +634,13 @@ class LspServerPool {
 		const poolKey = `${projectCwd}::${langInfo.langKey}`;
 		const client = this.pool.get(poolKey);
 		if (client) {
-			client.touch();
-			return { client };
+			// 池命中必须复检存活：进程退出事件与请求之间有竞态窗口（exit 回调排队、
+			// spawn error 未触发 exit），死客户端留在池里会让所有请求挂到超时。
+			if (client.isAlive()) {
+				client.touch();
+				return { client };
+			}
+			this.pool.delete(poolKey);
 		}
 
 		const pending = this.inFlight.get(poolKey);
@@ -652,6 +702,8 @@ class LspServerPool {
 					}
 				},
 			);
+			// 启动失败时客户端尚在 start() 内部、池里没有它，onEvict 是空操作；
+			// 成功后再退出/回收才会真正从池移除。
 
 			try {
 				await newClient.start();
@@ -1022,7 +1074,10 @@ Lines are 1-indexed.`,
 						};
 					}
 
-					const formatted = locs.map((loc: any) => {
+					// 与 references(:25) 同口径：每个位置都要整读一次目标文件拼 snippet，
+					// 无上限的 definition 列表会放大成几十次同步 IO 拖死请求。
+					const MAX_DEFS = 25;
+					const formatted = locs.slice(0, MAX_DEFS).map((loc: any) => {
 						const targetUri: string = loc.targetUri || loc.uri || "";
 						let defPath = targetUri;
 						try {
@@ -1050,8 +1105,15 @@ Lines are 1-indexed.`,
 						return `• ${defRel}:${defLine}:${defCol}\n\`\`\`\n${snippet}\n\`\`\``;
 					});
 
+					const defTail = locs.length > MAX_DEFS ? `\n\n... and ${locs.length - MAX_DEFS} more definitions` : "";
+
 					return {
-						content: [{ type: "text", text: `Definitions (${locs.length}):\n\n${formatted.join("\n\n")}` }],
+						content: [
+							{
+								type: "text",
+								text: `Definitions (${locs.length}):\n\n${formatted.join("\n\n")}${defTail}`,
+							},
+						],
 						details: { ok: true, locations: locs },
 					};
 				}
