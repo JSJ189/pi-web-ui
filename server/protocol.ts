@@ -841,9 +841,15 @@ export type ClientMessage =
 	 *  ones, bump the epoch and re-push the catalog. Same spirit as
 	 *  extensions_reload but for pi-web-ui's own UI plugins. */
 	| { type: "plugins_reload" }
-	/** 特权 DOM 访问授权（wantsDom 插件）：granted=true 即写入 <dataDir>/plugin-dom.json
-	 *  并 epoch+1 重推清单（浏览器按新 epoch 重拉 bundle）；false = 撤销。 */
+	/** 特权 DOM 访问授权（wantsDom 插件）：granted=true 走两步握手——服务端生成
+	 *  在途 consent 请求（plugin_dom_consent_request 广播），收到绑定来源的
+	 *  plugin_dom_consent_response 才写入 <dataDir>/plugin-dom.json 并 epoch+1
+	 *  重推清单（浏览器按新 epoch 重拉 bundle）；granted=false = 撤销，单步直达
+	 *  （降权方向不值得拖 120s 窗口）。 */
 	| { type: "plugin_dom_consent"; pluginId: string; granted: boolean }
+	/** plugin_dom_consent 两步握手的应答：id 回显 plugin_dom_consent_request.id。
+	 *  服务端校验应答连接属于请求广播时的在线端才落盘（防陌生连接代答）。 */
+	| { type: "plugin_dom_consent_response"; id: string; ok: boolean }
 	/** Save the CURRENT settings as a named preset (overwrites if it exists). */
 	| { type: "save_preset"; name: string }
 	/** Upsert 一个子代理模板（同名覆盖；全局共享，所有客户端一致）。停用标记
@@ -2801,6 +2807,10 @@ export type ServerMessage =
 	/** 插件请求访问工作区外的目录：宿主弹确认（文案按 kind 本地化），用户答复经
 	 *  plugin_path_response 回传。未答复超时视为拒绝。 */
 	| { type: "plugin_path_request"; id: string; pluginId: string; path: string; reason?: string }
+	/** DOM 授权两步握手的在途请求（设置面板的授权点击触发服务端生成并广播）：
+	 *  id 供 plugin_dom_consent_response 回显；from = 发起端 clientId（前端只自动
+	 *  应答自己发起的授权）。120s 未应答视为拒绝。 */
+	| { type: "plugin_dom_consent_request"; id: string; pluginId: string; from: string }
 	/** 插件目录授权表（设置面板展示 + 撤销后刷新）。 */
 	| { type: "plugin_grants"; grants: { pluginId: string; paths: string[] }[] }
 	/** 插件请求能力授权（net 主机 / llm 模型作用域）：宿主弹确认，用户答复经
