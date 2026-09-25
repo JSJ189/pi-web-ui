@@ -8,7 +8,8 @@
  * protocol.ts 零改动——和浏览器访问远端 server 是同一条路。
  *
  * 运行前先 `npm run build`（需要 dist/server + web/dist）。
- * 开发联调：PI_WEB_DESKTOP_URL=http://localhost:5173 可让窗口指到 vite。
+ * 开发联调：PI_WEB_DESKTOP_URL=http://localhost:5173 可让窗口指到 vite
+ * （仅开发模式生效，打包版忽略该 override —— 见 startServerSidecar）。
  */
 import { app, BrowserWindow, ipcMain, shell } from "electron";
 import { spawn, type ChildProcess } from "node:child_process";
@@ -99,7 +100,13 @@ console.log("[desktop] main started, waiting for app ready…");
 
 async function startServerSidecar(): Promise<string> {
 	const override = process.env.PI_WEB_DESKTOP_URL;
-	if (override) return override; // 指向 vite(:5173) 联调，前提是另起 dev:server
+	if (override) {
+		// 仅开发模式允许 override（指向 vite(:5173) 联调，前提是另起 dev:server）。
+		// 打包版一律忽略：这是唯一能让应用窗口指向任意 URL 的入口（appOrigin、
+		// will-navigate 守卫都从返回值推导），打包后放行等于把窗口交给环境变量。
+		if (!app.isPackaged) return override;
+		console.warn(`[desktop] 打包版忽略 PI_WEB_DESKTOP_URL=${override}（仅开发模式允许）`);
+	}
 	const entry = resolveServerEntry();
 	resolveWebDir();
 	console.log(`[desktop] server entry: ${entry}`);
