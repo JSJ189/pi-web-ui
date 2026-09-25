@@ -886,6 +886,7 @@
 		"apiType": "Tipo de API",
 		"baseUrlHint": "(endpoint compatible con OpenAI)",
 		"apiKeyHint": "sk-… (opcional, se usa la clave de auth.json)",
+		"apiKeySavedHint": "Guardado; déjelo vacío para no modificarlo",
 		"authHeader": "Añadir automáticamente la cabecera Authorization",
 		"modelsTitle": "Modelos",
 		"modelIdReq": "ID de modelo (obligatorio)",

@@ -824,8 +824,15 @@ export class ClientStateStore {
 			toolImagesEnabled: settings.toolImagesEnabled ?? cur.toolImagesEnabled ?? true,
 			skillsFullText: normalizeSkillList(settings.skillsFullText ?? cur.skillsFullText),
 			visionBridgeEnabled: settings.visionBridgeEnabled ?? cur.visionBridgeEnabled ?? true,
-			visionBridgeModel: settings.visionBridgeModel ?? cur.visionBridgeModel ?? null,
-			subagentDefaultModel: settings.subagentDefaultModel ?? cur.subagentDefaultModel ?? null,
+			// 按键存在性合并：null 是合法值（清除语义），`null ?? cur` 会把旧值
+			// 复活到磁盘（设置面板清空后重启又回来）。settings-service 持久化
+			// 时传全量对象，键总在；其他调用方传 partial，键缺 = 保持旧值。
+			visionBridgeModel:
+				"visionBridgeModel" in settings ? (settings.visionBridgeModel ?? null) : (cur.visionBridgeModel ?? null),
+			subagentDefaultModel:
+				"subagentDefaultModel" in settings
+					? (settings.subagentDefaultModel ?? null)
+					: (cur.subagentDefaultModel ?? null),
 			retryMaxAttempts: normalizeRetryMaxAttempts(
 				settings.retryMaxAttempts ?? cur.retryMaxAttempts ?? DEFAULT_RETRY_MAX_ATTEMPTS,
 			),

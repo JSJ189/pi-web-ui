@@ -886,6 +886,7 @@
 		"apiType": "API-Typ",
 		"baseUrlHint": "(OpenAI-kompatibler Endpunkt)",
 		"apiKeyHint": "sk-… (optional – verwendet den Schlüssel aus auth.json)",
+		"apiKeySavedHint": "Gespeichert – leer lassen, um unverändert zu belassen",
 		"authHeader": "Authorization-Anfrageheader automatisch hinzufügen",
 		"modelsTitle": "Modelle",
 		"modelIdReq": "Modell-ID (erforderlich)",

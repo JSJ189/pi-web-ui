@@ -610,6 +610,21 @@ export class ApprovalRulesStore {
 			normalized.push(r);
 		}
 
+		// 内置规则是安全底线：整表替换绝不能把它们裁掉（旧客户端 / 并发竞态都
+		// 可能送来缺内置规则的清单）。缺失的按默认定义补种、追加到队尾——与
+		// load/resetBuiltin 同口径；插队首会改变用户 allow 规则的 first-match
+		// 语义。id 命中内置定义的一律强制 builtin 标记（同 upsert 的保护），
+		// 防止 remove() 的内置不可删保护被绕过。
+		for (const def of DEFAULT_APPROVAL_RULES) {
+			if (!ids.has(def.id)) {
+				normalized.push({ ...def, tools: [...def.tools] });
+				ids.add(def.id);
+			} else {
+				const i = normalized.findIndex((r) => r.id === def.id);
+				normalized[i].builtin = true;
+			}
+		}
+
 		this.rules = normalized;
 		this.persist();
 		return null;

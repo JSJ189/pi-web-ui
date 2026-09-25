@@ -886,6 +886,7 @@
 		"apiType": "API 유형",
 		"baseUrlHint": "(OpenAI 호환 엔드포인트)",
 		"apiKeyHint": "sk-… (비워 두어도 돼요. auth.json의 키를 사용해요)",
+		"apiKeySavedHint": "저장됨. 비워 두면 변경되지 않아요",
 		"authHeader": "Authorization 요청 헤더를 자동으로 추가해요",
 		"modelsTitle": "model",
 		"modelIdReq": "model ID (필수)",
