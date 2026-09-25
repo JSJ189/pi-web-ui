@@ -32,12 +32,18 @@ export function ToolApprovalDialog({ approval }: ToolApprovalDialogProps) {
 
 	useEffect(() => {
 		if (approval) {
-			try {
-				setParamsText(JSON.stringify(approval.params ?? {}, null, 2));
-				setParseError(null);
-			} catch {
-				setParamsText(String(approval.params ?? ""));
+			// 审查 #8：显示与提交保持同一形态 —— 对象参数 pretty JSON（提交时 parse），
+			// 空/缺失参数统一显示 "{}"（提交即 {}），字符串等原始值原样展示（提交时
+			// 原样回传），避免 JSON.stringify 给字符串套引号造成「看到的不等于提交的」。
+			const p = approval.params;
+			if (p !== null && p !== undefined && typeof p === "object") {
+				setParamsText(JSON.stringify(p, null, 2));
+			} else if (p === null || p === undefined) {
+				setParamsText("{}");
+			} else {
+				setParamsText(String(p));
 			}
+			setParseError(null);
 		}
 	}, [approval]);
 
@@ -63,8 +69,15 @@ export function ToolApprovalDialog({ approval }: ToolApprovalDialogProps) {
 
 	const handleEditAndRun = () => {
 		try {
+			// 审查 #8：提交形态与显示形态一一对应。服务端把 editedParams 当 unknown
+			// 直接作为 effectiveParams 执行（server/agent-service.ts `res.editedParams ?? params`），
+			// 字符串原样回传、空参数提交 {} 均兼容。
+			const p = approval.params;
 			let edited: unknown;
-			if (typeof approval.params === "object" && approval.params !== null) {
+			if (p !== null && p !== undefined && typeof p === "object") {
+				edited = JSON.parse(paramsText);
+			} else if (p === null || p === undefined) {
+				// 显示为 "{}"（JSON 对象），未改动提交即 {}；用户改动按解析结果提交。
 				edited = JSON.parse(paramsText);
 			} else {
 				edited = paramsText;

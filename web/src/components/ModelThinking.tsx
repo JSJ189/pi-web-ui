@@ -173,15 +173,25 @@ export const ModelThinking = memo(function ModelThinking({
 	const thinkingLabel = (level: string): string => thinkingLevels.find((l) => l.value === level)?.label ?? level;
 
 	// Lazily fetch the model list when the dropdown opens for the first time.
+	// 审查 #4：发不出去（未连接/未装配发送器）立即复位 reqLoading，否则下拉永远
+	// 转圈；requestedRef 每次打开只尝试一次 —— 空列表应答到达后靠下方 effect 复位
+	// 显示「暂无可用模型」，而不是再次自动重发形成请求循环。
+	const requestedRef = useRef(false);
 	useEffect(() => {
-		if (modelOpen && models.length === 0 && !reqLoading && !modelsLoading) {
-			setReqLoading(true);
-			appSend({ type: "list_models" });
+		if (!modelOpen) {
+			requestedRef.current = false;
+			return;
 		}
-	}, [modelOpen, models.length, reqLoading, modelsLoading]);
+		if (requestedRef.current || models.length > 0 || modelsLoading) return;
+		requestedRef.current = true;
+		setReqLoading(true);
+		if (!appSend({ type: "list_models" })) setReqLoading(false);
+	}, [modelOpen, models.length, modelsLoading]);
+	// 审查 #4 兜底：models 更新到达（哪怕空列表，如 list_models 失败应答）就复位
+	// reqLoading，不复位会把「加载中」永久挂住。
 	useEffect(() => {
-		if (models.length > 0) setReqLoading(false);
-	}, [models.length]);
+		setReqLoading(false);
+	}, [models]);
 
 	// 打开时自动把当前选择的模型滚入可视区域（聚焦选择中的模型）。列表可能
 	// 在打开后才到达（首次 list_models 尚未返回），故也监听 models.length。

@@ -1,7 +1,8 @@
-import { useEffect, useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import { createPortal } from "react-dom";
 import { FiAlertTriangle, FiCheck, FiX } from "react-icons/fi";
 import { useT } from "../i18n";
+import { useEscapeKey } from "../shortcut-stack";
 import { closeRollbackDialog, confirmRollback, useRollbackState } from "../rollback-state";
 
 /**
@@ -13,6 +14,7 @@ export function RollbackDialog() {
 	const t = useT();
 	const req = useRollbackState();
 	const [restoreWorkspace, setRestoreWorkspace] = useState(true);
+	const dialogRef = useRef<HTMLDivElement>(null);
 
 	// 弹窗打开时重置默认勾选态
 	useEffect(() => {
@@ -21,16 +23,23 @@ export function RollbackDialog() {
 		}
 	}, [req]);
 
-	// Esc 取消，Enter 确认
+	// 审查 #12：Esc 走 shortcut-stack 分层栈（与 Modal 同一调度）。
+	useEscapeKey(() => {
+		if (req) closeRollbackDialog();
+	}, Boolean(req));
+
+	// 审查 #11：Enter 确认仅当焦点在弹窗内（target 是 body —— 无聚焦元素兜底 ——
+	// 或弹窗包含 target）。document 级裸监听会把「在输入框里打回车发消息」
+	// 误触成破坏性回滚。
 	useEffect(() => {
 		if (!req) return;
 		const onKeyDown = (e: KeyboardEvent) => {
-			if (e.key === "Escape") {
-				closeRollbackDialog();
-			} else if (e.key === "Enter" && !e.shiftKey && !e.ctrlKey && !e.metaKey) {
-				e.preventDefault();
-				confirmRollback(restoreWorkspace);
-			}
+			if (e.key !== "Enter" || e.shiftKey || e.ctrlKey || e.metaKey) return;
+			const target = e.target as Node | null;
+			const inDialog = !target || target === document.body || dialogRef.current?.contains(target);
+			if (!inDialog) return;
+			e.preventDefault();
+			confirmRollback(restoreWorkspace);
 		};
 		document.addEventListener("keydown", onKeyDown);
 		return () => document.removeEventListener("keydown", onKeyDown);
@@ -41,6 +50,7 @@ export function RollbackDialog() {
 	return createPortal(
 		<div className="modal-backdrop" onClick={closeRollbackDialog}>
 			<div
+				ref={dialogRef}
 				className="tool-info-modal rollback-modal"
 				role="dialog"
 				aria-modal="true"

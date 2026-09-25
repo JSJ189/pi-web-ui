@@ -474,6 +474,30 @@ export function ModelConfigModal({
 	const [addKeys, setAddKeys] = useState<Record<string, string>>({});
 	const [addKeyNames, setAddKeyNames] = useState<Record<string, string>>({});
 	const [addKeyBusy, setAddKeyBusy] = useState<string | null>(null);
+	// 审查 #13：添加密钥改为事件驱动收尾 —— 服务端 addProviderKey 成功后会主动
+	// listProviders()/listProviderKeys()（见 server/model-admin.ts），providerKeys
+	// 回包里对应 provider 的键列表引用变化即视为确认；1.5s 盲刷既有竞态（慢时
+	// 提前收尾丢更新）也从不校验结果。定时器只作 10s 超时兜底（复位 busy、
+	// 保留输入供重试，重复密钥/失败时服务端不推新列表正好落到这里）。
+	const addKeyPrevKeysRef = useRef(providerKeys);
+	const addKeyTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+	useEffect(() => {
+		const busy = addKeyBusy;
+		if (busy && providerKeys[busy] !== addKeyPrevKeysRef.current[busy]) {
+			setAddKeyBusy(null);
+			setAddKeys((k) => ({ ...k, [busy]: "" }));
+			setAddKeyNames((n) => ({ ...n, [busy]: "" }));
+			if (addKeyTimerRef.current) clearTimeout(addKeyTimerRef.current);
+		}
+		addKeyPrevKeysRef.current = providerKeys;
+	}, [providerKeys, addKeyBusy]);
+	// 卸载清理兜底定时器（审查 #5 同源）。
+	useEffect(
+		() => () => {
+			if (addKeyTimerRef.current) clearTimeout(addKeyTimerRef.current);
+		},
+		[],
+	);
 
 	// 获取模型列表状态
 	const [fetching, setFetching] = useState(false);
@@ -808,13 +832,12 @@ export function ModelConfigModal({
 			apiKey: key,
 			name: (addKeyNames[p.id] ?? "").trim() || undefined,
 		});
-		setTimeout(() => {
-			setAddKeyBusy(null);
-			setAddKeys((k) => ({ ...k, [p.id]: "" }));
-			setAddKeyNames((n) => ({ ...n, [p.id]: "" }));
-			appSend({ type: "list_providers" });
-			appSend({ type: "list_provider_keys" });
-		}, 1500);
+		// 10s 超时兜底：正常收尾由 providerKeys 回包驱动（见上方 effect）；
+		// 超时只复位 busy，不清输入 —— 用户可直接重试。
+		if (addKeyTimerRef.current) clearTimeout(addKeyTimerRef.current);
+		addKeyTimerRef.current = setTimeout(() => {
+			setAddKeyBusy((cur) => (cur === p.id ? null : cur));
+		}, 10000);
 	};
 
 	const activateKey = (providerId: string, keyName: string) => {

@@ -294,6 +294,10 @@ export const ChatInput = memo(function ChatInput({
 	}, []);
 
 	// 宿主触发在光标处插入文本（文件树/预览点击「引用路径」联动插入 @文件名）
+	// 审查 #15：正文走 textRef（effect 每键重注册会让宿主桥反复解绑/挂载，
+	// 且错过注册窗口的插入会丢）。textRef 在每次渲染同步最新正文，effect 依赖 []。
+	const textRef = useRef("");
+	textRef.current = text;
 	useEffect(() => {
 		registerInsertSink((textToInsert) => {
 			// 第二道防线：正文里已有同一 @提及（重复点同一文件等）→ 跳过不重复插。
@@ -306,7 +310,7 @@ export const ChatInput = memo(function ChatInput({
 					.map((ch) => (specials.has(ch) ? "\\" + ch : ch))
 					.join("");
 				const re = new RegExp("(^|[\\s(（\"'“‘[【])" + esc + "(?=[\\s,.;:!?，。！？)\\]】」]|$)");
-				if (core && re.test(text)) return;
+				if (core && re.test(textRef.current)) return;
 			}
 			const ta = taRef.current;
 			if (!ta) {
@@ -317,9 +321,9 @@ export const ChatInput = memo(function ChatInput({
 				});
 				return;
 			}
-			const start = ta.selectionStart ?? text.length;
-			const end = ta.selectionEnd ?? text.length;
-			const current = text;
+			const start = ta.selectionStart ?? textRef.current.length;
+			const end = ta.selectionEnd ?? textRef.current.length;
+			const current = textRef.current;
 			const needsPrefixSpace = start > 0 && !/[\s([{]$/.test(current.slice(0, start));
 			const prefix = needsPrefixSpace ? " " : "";
 			const insert = prefix + textToInsert;
@@ -333,7 +337,7 @@ export const ChatInput = memo(function ChatInput({
 			});
 		});
 		return () => registerInsertSink(null);
-	}, [text]);
+	}, []);
 
 	// 宿主触发移除特定提及（用户点击附件 chip 的 ✕ 时联动从正文中删除对应的 @文件名）
 	useEffect(() => {
