@@ -27,6 +27,8 @@ const BACKOFF_MAX_MS = 60000;
 const INBOX_CAP = 100;
 const PENDING_PEER_CAP = 50;
 const PENDING_RUN_CAP = 50;
+/** peerLastAt（peer 最近来消息时刻）上限：陌生 peer 会无界增长，FIFO 淘汰最旧的。 */
+const PEER_LASTAT_CAP = 500;
 /** 回包文本上限。 */
 const REPLY_CAP = 4000;
 /** 陌生人配对提示节流：每 peer 每小时最多一条。 */
@@ -445,6 +447,15 @@ export default {
 		});
 
 		// ---- 入站 ----------------------------------------------------------
+		/** 记 peer 最近来消息时刻：Map 增长有界（上限 PEER_LASTAT_CAP，FIFO 淘汰最旧的），
+		 *  与 pendingPeers/peerCtx 的既有上限风格一致，防陌生 peer 无限堆积。 */
+		function touchPeerLastAt(peer, at) {
+			st.peerLastAt[peer] = at;
+			const keys = Object.keys(st.peerLastAt);
+			if (keys.length <= PEER_LASTAT_CAP) return;
+			for (const k of keys.slice(0, keys.length - PEER_LASTAT_CAP)) delete st.peerLastAt[k];
+		}
+
 		async function handleInbound(m) {
 			try {
 				if (!m || typeof m !== "object") return;
@@ -458,7 +469,7 @@ export default {
 					save();
 				}
 				const text = inboundTextOf(m.item_list);
-				st.peerLastAt[peer] = Date.now();
+				touchPeerLastAt(peer, Date.now());
 				pushInbox({ dir: "in", peer, text: cut(text || "(空消息)", 500), at: Date.now() });
 				if (!text) return;
 				if (!isAllowed(peer)) {

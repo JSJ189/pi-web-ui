@@ -137,17 +137,28 @@ try {
       Out-Ok @{ keys = $Keys }
     }
     "paste" {
-      # 中文/长文本走剪贴板（keybd 发不出 CJK），调用前应已聚焦目标
-      Set-Clipboard -Value $Text
-      Start-Sleep -Milliseconds 80
-      Send-Vk 0x11 $false
-      Start-Sleep -Milliseconds 20
-      Send-Vk 0x56 $false
-      Start-Sleep -Milliseconds 40
-      Send-Vk 0x56 $true
-      Start-Sleep -Milliseconds 20
-      Send-Vk 0x11 $true
-      Out-Ok @{ chars = $Text.Length }
+      # 中文/长文本走剪贴板（keybd 发不出 CJK），调用前应已聚焦目标。
+      # 先保存原剪贴板内容，粘贴完在 finally 里恢复——不洗掉用户自己复制的东西。
+      # （只能保文字：原内容是图片/文件等非文本时 Get-Clipboard 拿不到，放弃恢复）
+      $prevText = $null
+      try {
+        try { $prevText = Get-Clipboard -Raw } catch { $prevText = $null }
+        Set-Clipboard -Value $Text
+        Start-Sleep -Milliseconds 80
+        Send-Vk 0x11 $false
+        Start-Sleep -Milliseconds 20
+        Send-Vk 0x56 $false
+        Start-Sleep -Milliseconds 40
+        Send-Vk 0x56 $true
+        Start-Sleep -Milliseconds 20
+        Send-Vk 0x11 $true
+        Out-Ok @{ chars = $Text.Length }
+      } finally {
+        if ($null -ne $prevText) {
+          try { Set-Clipboard -Value $prevText } catch { # 恢复失败不掩盖主流程结果
+          }
+        }
+      }
     }
     "focus" {
       $found = $null

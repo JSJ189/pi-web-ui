@@ -4,6 +4,16 @@
 
 const ACTION_DETAILS = "sol-savings:details";
 
+/** innerHTML 插值转义：configPath 是服务端文件路径，进 HTML 前必须过一遍。 */
+function esc(s) {
+	return String(s ?? "")
+		.replace(/&/g, "&amp;")
+		.replace(/</g, "&lt;")
+		.replace(/>/g, "&gt;")
+		.replace(/"/g, "&quot;")
+		.replace(/'/g, "&#39;");
+}
+
 function hostApi() {
 	try {
 		return window.__piWebUiHost ?? null;
@@ -151,8 +161,8 @@ function showModal(content, statusInfo) {
 				!isInstalled
 					? "• 未检测到 SoL-Pi 扩展包 (NVlabs/SoL-Pi)。"
 					: hasConfig
-					? `• 配置文件生效中: <code>${statusInfo.configPath}</code>`
-					: "• 扩展已安装，但尚未配置 <code>sol-pi.json</code>，特性未激活。"
+						? `• 配置文件生效中: <code>${esc(statusInfo.configPath)}</code>`
+						: "• 扩展已安装，但尚未配置 <code>sol-pi.json</code>，特性未激活。"
 			}
 		</div>
 	`;
@@ -175,9 +185,14 @@ function showModal(content, statusInfo) {
 			font-weight: 500;
 		`;
 		installBtn.onclick = async () => {
+			// 安装会从远端拉取并运行第三方扩展，必须先弹确认框（服务端也要 confirm:"install"）
+			const okToInstall = window.confirm(
+				"确认安装 SoL-Pi 扩展？\n\n将从网络执行：pi install git:github.com/NVlabs/SoL-Pi\n（已有配置不会被覆盖）",
+			);
+			if (!okToInstall) return;
 			installBtn.disabled = true;
 			installBtn.textContent = "⏳ 正在安装...";
-			const res = await postAction("install");
+			const res = await postAction("install", { confirm: "install" });
 			if (res.ok) {
 				alert("✅ SoL-Pi 扩展安装成功！已同时自动写入推荐开启配置。");
 				close();
@@ -208,7 +223,9 @@ function showModal(content, statusInfo) {
 			enableBtn.textContent = "⏳ 配置写入中...";
 			const res = await postAction("write_config");
 			if (res.ok) {
-				alert("✅ 已成功写入 sol-pi.json (开启了 observationPack 与 onlineContextCompact)！\n提示：重启或新开会话即可生效。");
+				alert(
+					"✅ 已成功写入 sol-pi.json (开启了 observationPack 与 onlineContextCompact)！\n提示：重启或新开会话即可生效。",
+				);
 				close();
 			} else {
 				alert("❌ 写入配置失败: " + (res.error || "未知错误"));
