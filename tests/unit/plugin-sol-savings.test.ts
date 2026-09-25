@@ -106,7 +106,39 @@ describe("SoL-Pi Savings 插件与底栏统计", () => {
 		expect(updates.length).toBeGreaterThan(0);
 		const lastUpdate = updates[updates.length - 1];
 		expect(lastUpdate.id).toBe("sol-savings-badge");
-		expect(lastUpdate.patch.badge).toContain("k");
+		expect(lastUpdate.patch.badge).toBe("省 2.4k");
 		expect(lastUpdate.patch.hint).toContain("SoL-Pi");
+	});
+
+	it("防范并清洗序列化占位符中的引号与逗号脏字符", () => {
+		const mockMessages = [
+			{
+				role: "user",
+				content: [{ type: "text", text: "测试" }],
+			},
+			{
+				role: "tool_result",
+				content: [
+					{
+						type: "text",
+						text: [
+							"[large tool result replaced after its first 2 provider requests]",
+							'id: "obs_test_escaped",',
+							'tool: "bash",',
+							'original_bytes: "2048",',
+							'estimated_tokens: "500",',
+						].join("\n"),
+					},
+				],
+			},
+			{
+				role: "assistant",
+				content: [{ type: "text", text: "完成" }],
+			},
+		];
+
+		const stats = analyzeSolSavings(mockMessages);
+		expect((stats.toolBreakdown as Record<string, number>).bash).toBe(1);
+		expect(stats.totalOriginalBytes).toBe(2048);
 	});
 });
