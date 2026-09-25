@@ -1009,10 +1009,8 @@ export function makePlanUpdateTool(
 		name: PLAN_UPDATE_TOOL_NAME,
 		label: "plan_update",
 		description:
-		description:
 			"Update the structured task plan / step state machine (Plan Mode): break non-trivial work into decision-ready steps and track progress (pending -> in_progress -> done/failed). Prefer steps that note discovery conclusions, files to be touched, and a rollback strategy.",
-		promptSnippet:
-			"update structured task plan with decision-ready steps, file touch list, and live status",
+		promptSnippet: "update structured task plan with decision-ready steps, file touch list, and live status",
 		promptGuidelines: [
 			"When executing non-trivial tasks, use plan_update early to outline decision-ready steps before coding: " +
 				"specify discovery conclusions, explicitly list files to be touched (File Touch List), and note potential rollback strategies",
@@ -1152,8 +1150,7 @@ export function makeAskUserQuestionTool(
 		label: Type.String({ description: "Display label for the option (1-5 words)" }),
 		description: Type.Optional(
 			Type.String({
-				description:
-					"One short sentence explaining the impact or tradeoff if selected.",
+				description: "One short sentence explaining the impact or tradeoff if selected.",
 			}),
 		),
 		preview: Type.Optional(
@@ -1170,8 +1167,7 @@ export function makeAskUserQuestionTool(
 		header: Type.Optional(Type.String({ description: "Optional short header for this question" })),
 		options: Type.Optional(
 			Type.Array(QuestionOptionSchema, {
-				description:
-					"2-4 mutually exclusive choices. Put the recommended option first when there is a clear default.",
+				description: "2-4 mutually exclusive choices. Put the recommended option first when there is a clear default.",
 				minItems: 2,
 				maxItems: 4,
 			}),
@@ -1199,13 +1195,11 @@ export function makeAskUserQuestionTool(
 		name: "ask_user_question",
 		label: "Ask the user",
 		description:
-		description:
 			"Ask the user focused questions to clarify ambiguous requirements (clarify the task, confirm decisions, get preferences). " +
 			"Strictly ask 1 to 3 questions per call (prefer 1, max 3); provide 2 to 4 mutually exclusive options with the " +
 			"recommended option first, and explain impact/tradeoff in each option description. " +
 			"Each question renders a browser dialog with markdown/HTML rich text; options may carry a `preview`. Submit or cancel to resume.",
-		promptSnippet:
-			"ask the user 1-3 focused questions with recommended options and tradeoffs to clarify requirements",
+		promptSnippet: "ask the user 1-3 focused questions with recommended options and tradeoffs to clarify requirements",
 		promptGuidelines: [
 			"When requirements are ambiguous, use ask_user_question to clarify instead of guessing: " +
 				"ask 1 to 3 focused questions (prefer 1, max 3), provide 2-4 mutually exclusive options with the " +
