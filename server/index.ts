@@ -1135,13 +1135,21 @@ export interface DispatchSession {
 	addProviderKey(provider: string, apiKey: string, name?: string): Promise<void>;
 	activateProviderKey(provider: string, keyName: string): Promise<void>;
 	removeProviderKey(provider: string, keyName: string): Promise<void>;
-	fetchModelsList(reqId: number, baseUrl: string, apiKey?: string, authHeader?: boolean, api?: string): Promise<void>;
+	fetchModelsList(
+		reqId: number,
+		baseUrl: string,
+		apiKey?: string,
+		authHeader?: boolean,
+		api?: string,
+		providerId?: string,
+	): Promise<void>;
 	testModelConnection?(
 		reqId: number,
 		baseUrl: string,
 		apiKey?: string,
 		authHeader?: boolean,
 		api?: string,
+		providerId?: string,
 	): Promise<void>;
 	refreshProviderModels(providerId: string, reqId: number): Promise<void>;
 	refreshBuiltinModels(reqId: number): Promise<void>;
@@ -2363,10 +2371,10 @@ wss.on("connection", (ws) => {
 				void cs.listProviders();
 				break;
 			case "fetch_models":
-				void cs.fetchModelsList(msg.reqId, msg.baseUrl, msg.apiKey, msg.authHeader, msg.api);
+				void cs.fetchModelsList(msg.reqId, msg.baseUrl, msg.apiKey, msg.authHeader, msg.api, msg.providerId);
 				break;
 			case "test_model_connection":
-				void cs.testModelConnection?.(msg.reqId, msg.baseUrl, msg.apiKey, msg.authHeader, msg.api);
+				void cs.testModelConnection?.(msg.reqId, msg.baseUrl, msg.apiKey, msg.authHeader, msg.api, msg.providerId);
 				break;
 			case "refresh_provider_models":
 				void cs.refreshProviderModels(msg.providerId, msg.reqId);

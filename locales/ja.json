@@ -911,6 +911,7 @@
 		"apiType": "API タイプ",
 		"baseUrlHint": "（OpenAI 互換エンドポイント）",
 		"apiKeyHint": "sk-…（空でも可。auth.json のキーを使います）",
+		"apiKeySavedHint": "保存済み。空欄のままなら変更されません",
 		"authHeader": "Authorization リクエストヘッダーを自動付与します",
 		"modelsTitle": "モデル",
 		"modelIdReq": "モデル ID（必須）",

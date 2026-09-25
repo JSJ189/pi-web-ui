@@ -340,4 +340,55 @@ describe("ApprovalRulesStore 持久化库与播种机制", () => {
 		const current = store.list();
 		expect(current[0].id).toBe(reversed[0].id);
 	});
+
+	it("saveAll 不含内置规则的清单 → 内置规则被补种且追加队尾", () => {
+		const store = new ApprovalRulesStore(storePath);
+		const err = store.saveAll([
+			{
+				id: "custom.only-one",
+				enabled: true,
+				tools: ["bash"],
+				field: "command",
+				match: "contains",
+				value: "danger-cmd",
+				action: "deny",
+				label: "唯一自定义规则",
+			},
+		]);
+		expect(err).toBeNull();
+
+		const list = store.list();
+		// 全部内置规则仍在
+		for (const def of DEFAULT_APPROVAL_RULES) {
+			expect(list.find((r) => r.id === def.id)).toBeDefined();
+		}
+		// 自定义规则保持在队首（用户排序不被动），补种的内置规则追加在队尾
+		expect(list[0].id).toBe("custom.only-one");
+		expect(list.length).toBe(1 + DEFAULT_APPROVAL_RULES.length);
+		const last = list[list.length - 1];
+		expect(last.builtin).toBe(true);
+		expect(DEFAULT_APPROVAL_RULES.some((d) => d.id === last.id)).toBe(true);
+	});
+
+	it("saveAll 送来 builtin:false 的内置规则 → builtin 标记被强制保留", () => {
+		const store = new ApprovalRulesStore(storePath);
+		const err = store.saveAll([
+			{
+				id: "builtin.bash.rm-rf",
+				enabled: true,
+				tools: ["bash"],
+				field: "command",
+				match: "prefix",
+				value: "rm -rf",
+				action: "deny",
+				label: "魔改内置",
+				builtin: false, // 伪造标记以绕过 remove() 的内置保护
+			},
+		]);
+		expect(err).toBeNull();
+		const item = store.list().find((r) => r.id === "builtin.bash.rm-rf");
+		expect(item?.builtin).toBe(true);
+		// 保护未被绕过
+		expect(store.remove("builtin.bash.rm-rf")).toBe(false);
+	});
 });

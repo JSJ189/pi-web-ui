@@ -65,11 +65,19 @@ export class PlanManager {
 		const currentStep = current.steps[idx];
 		const nextStatus = patch.status && VALID_STATUSES.has(patch.status) ? patch.status : currentStep.status;
 
+		// patch 里剥掉 id：步骤 id 是 activeStepId / first-match 推进的锚点，
+		// 被改掉会让 activeStepId 悬空（指向不存在的步骤）。
+		const { id: _ignored, ...rest } = patch;
 		const nextStep: PlanStep = {
 			...currentStep,
-			...patch,
+			...rest,
 			status: nextStatus,
+			// title/description 与 setPlan 同口径截断（200/1000），防超长内容撑爆快照。
+			title: String(rest.title ?? currentStep.title ?? "").slice(0, 200),
 		};
+		const description = String(rest.description ?? currentStep.description ?? "").slice(0, 1000);
+		if (description) nextStep.description = description;
+		else delete nextStep.description;
 
 		const nextSteps = [...current.steps];
 		nextSteps[idx] = nextStep;

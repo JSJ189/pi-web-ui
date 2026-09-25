@@ -659,6 +659,9 @@ export type ClientMessage =
 			authHeader?: boolean;
 			/** api type: openai-completions / openai-responses / anthropic-messages / google-generative-ai. */
 			api?: string;
+			/** 正在编辑的服务商 id：apiKey 留空时服务端按它回落到已保存的密钥
+			 *  （明文不再下发浏览器，编辑存量服务商的探测靠这个保持可用）。 */
+			providerId?: string;
 	  }
 	/** Lightweight connectivity and auth probe for a provider endpoint.
 	 *  Runs SERVER-side and returns latencyMs or error in test_model_connection_result. */
@@ -669,6 +672,8 @@ export type ClientMessage =
 			apiKey?: string;
 			authHeader?: boolean;
 			api?: string;
+			/** 同 fetch_models：apiKey 留空时按它回落到已保存的密钥。 */
+			providerId?: string;
 	  }
 	/** Re-probe a SAVED provider's /models endpoint and merge the result into
 	 *  its models.json entry. Credentials stay server-side (the browser never
@@ -1466,7 +1471,13 @@ export interface UiProviderConfig {
 	/** api type: openai-completions / openai-responses / anthropic-messages / google-generative-ai. */
 	api?: string;
 	baseUrl?: string;
+	/** 【只写】save_model_config 提交的新 apiKey；服务端下发（models_config /
+	 *  clone_provider_result）时**永不填充**——明文不回传浏览器。留缺 = 保留
+	 *  已存旧值，显式空串 = 清除。 */
 	apiKey?: string;
+	/** 【只读】服务端下发的"是否已保存 apiKey"，与 headers 一样是单向字段：
+	 *  客户端保存时无需也不应携带。 */
+	hasApiKey?: boolean;
 	authHeader?: boolean;
 	/** headers are NOT returned to the browser — they can contain Authorization
 	 *  / API-key values; saveModelConfig preserves them server-side. */
