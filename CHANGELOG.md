@@ -10,7 +10,7 @@
 
 ## [Unreleased]
 
-### Added
+### Changed
 
 - **输入框 `@` 提及支持技能（skills）自动补全** —— 在消息文本任意位置键入 `@` 或 `@skill:` 即可弹出技能候选列表（名称匹配优先于描述匹配，支持中英文双语描述检索与 `@page` 页面置顶防挤占）；点选后自动在光标处插入 `@skill:<name>` 词元，与 Pi 运行时的技能提升扩展无缝联动。
 
@@ -18,6 +18,135 @@
 ### i18n
 
 - 前端新增 key（5）：`piCoreSplitRun`、`piSdkSplitNote`、`piSdkBundledNote`、`installGlobalEngineBtn`、`installGlobalEngineTabTitle`
+<!-- auto-i18n:end -->
+
+## [0.95.0] — 2026-09-24
+
+### Added
+
+- **临时对话（🎭 无痕会话，issue #285）** — 顶栏「新对话」旁新增 **🎭 临时对话** 按钮：新开的对话**只活在内存里**（`SessionManager.inMemory`，不落盘、不进历史会话列表、不计入每项目 8 个的持久对话名额），关闭即销毁，用来跑连通性探测、随手一问、或临时分析不想留档的敏感内容。临时对话在左栏「运行的对话」里带紫色「临时」徽标，对话流顶部常驻一条提示条（🎭 当前为临时对话…）并附「💾 保存为正式对话」按钮 —— 这就是**一键转正**：点一下即把内存里的全部消息落盘成 `.jsonl`、清掉临时标记、登记进历史（对话 id 与内容原地保留，不丢上下文）；不想点按钮也可以右键该行选同一动作。转正后与普通对话完全一致（可继续、可派生分支、可被 AI 按 path 读）。DSH 引擎不提供该入口（其 `newChat` 无 inMemory 分流，画出来只会得到普通持久对话）。回归：`tests/ephemeral-chat-test.mjs`（含「普通新对话确实落盘」的对照组）。
+
+- **审批规则可自定义（规则引擎 + 设置面板管理）** — 支持在设置面板「审批规则」页自由添加、编辑、启用/停用、排序和删除审批拦截规则，规则持久化于全局 `<dataDir>/approval-rules.json`（对所有会话实时生效）。支持多工具匹配（bash / write / edit / edit_soft / 通配 *）、多字段检测（命令 command / 路径 path / 完整参数 JSON params）以及五种匹配模式（正则 regex / 通配符 glob / 包含 contains / 前缀 prefix / 工作区外写入 outside_workspace）；命中动作支持「需审批」(ask)、「直接拒绝」(deny，向模型报错且不弹窗) 与「免审放行」(allow，白名单直接执行)。内置高危规则（rm -rf / 破坏性 git / 格式化 / chmod / 敏感文件 / 越界写入等）均转化为可自定义规则，可独立停用、修改动作或一键恢复默认。
+- **审批不再一次次弹（三档放行）** — 人机协同审批弹窗现在有三条「别再问我」的路：① **全局关**（设置 →「工具」页的「工具执行审批」总开关，默认开）——关掉后一切审批都不弹（内置高危检测直接放行，插件 pre guard 的 `ask` 也按放行处理）；② 弹窗里的「**本对话全部允许**」——本对话后续高危操作都不再询问；③ 弹窗里的「**本对话允许同类**」——只对同一规则档位生效（`rm -rf` 类删除 / 破坏性 git / 磁盘写入 / 危险 chmod / 写入系统目录 / 敏感文件 `.env`·SSH·shell 配置 / 工作区外写入 / 每个插件各自一档），弹窗里会写明本次命中的档位。记住后同对话内已被覆盖的其它待审批项一并放行；撤销入口在设置 →「工具」页（列出当前对话已记住的放行，逐条「撤销」）。策略**只存内存**且跟对话走（手动过户一起搬），重启服务或新对话即恢复询问；全局开关被关掉时挂着的弹窗也自动放行，不让人对着窗口干等。
+- **插件安装前先读 spec（引导式安装）** — 在设置面板「插件市场 → 添加插件」填来源时，输入框下方就地给出结论（防抖 500ms 自动检查，不必等 CLI 跑完再猜）：来源形状分类（npm / GitHub 仓库 / URL / 本地路径）、是否已装同名插件、以及 GitHub 源的远端有没有 `manifest.json`；探到 manifest 时顺带展示插件名 / 版本 / 简介供确认。失败归到七种原因（形状不对 / 已装 / 远端找不到 / 不是插件包 / manifest 不合法 / 连不上远端 / 未知），各给一句人话与修复建议。远端探测失败只作提示，**不阻塞安装**。
+- **插件副作用统一回收（effect 栈）** — 宿主的每个插件注册面（AI 工具 / 斜杠命令 / HTTP 路由 / 反向代理 / 文件监听 / 定时任务 / 后台任务 / UI 条目 / 事件订阅 / 统计与流式订阅）现在都在插件内部登记为可逆副作用，插件被禁用、卸载或热重载时**逆序回卷**；插件忘记调用返回的注销函数也不会再留下孤儿订阅、定时器、路由或文件监听（这些正是热重载后事件双触发、定时器叠加、watcher 堆积的根因）。插件自建的副作用可用新 API `host.effect(label, dispose)` 挂进同一个栈。插件激活中途失败时，已注册的东西也会被撤干净。
+- **界面布局诊断（失败不再静默）** — 插件声明了宿主不认识的挂载点 / 条目种类 / `when` 条件，或整理意图（arrange）指向了不存在的条目，或插件被禁用 / 激活失败时，设置面板「界面 ☰ → 界面布局」页顶部会出现可折叠的「布局诊断」横幅，逐条点名**哪个插件的哪个条目、为什么没出现在界面上**（同时控制台留一条）。以前这些情况是静默丢弃，表现为「注册了但界面上没有」，最难排查。
+- **单个条目崩溃不再炸掉整条工具栏** — 每个挂载点条目独立包一层错误边界：某个插件条目渲染抛错时只丢它自己并就地置一个可点的灰色占位（点开在控制台看细节），顶栏 / 底栏 / 右栏的其余条目照常工作。
+- **插件设置 overlay（层式组合）** — `<dataDir>/plugin-overrides/<id>.json` 的 `settings` 节：三层合并 schema 默认 < overlay < 面板保存值。overlay 是用户钉住的新默认值（不 fork 改官方默认，更新不丢）；面板保存永远最高；secret 永不来自 overlay；坏键警告进诊断；每键来源标在 `settingsSources`（default/override/stored）。
+- **机器可读的注册面目录（WS 只读查询）** — `plugin_api_catalog` → `plugin_api_catalog_result`：22 个 slot（别名/kind/可抄例子）+ 工具目录 + 宿主方法表（需要族+最小例子）+ 当前占用者（现算，只含条目数）。类型在 `protocol.ts#PluginApiCatalog`，装配 `server/plugin-api-catalog.ts`，单测锁住与源码同口径。给将来「AI 写插件」铺路。
+- **插件硬依赖声明（manifest.requires）** — `{ hostApi?, families?, plugins? }`：任一条不满足即拒绝激活+教学式错误（区别于 `peerPlugins` 的缺失只警告）。`ensureLoaded` 按依赖拓扑排序激活（被依赖者先行，环直接拒），提供方被删/失败后消费方一并反激活+留占位。决定启动时机的是依赖，不是目录顺序。
+- **插件可拦截工具执行（pre/post 两阶段，仅 bash/read）** — 插件经 `host.onToolPre` 在危险命令执行前拒掉（`deny` 带原因给模型看，`ask` 待确认暂按拒绝执行），经 `host.onToolPost` 给输出脱敏/改写或补 `additionalContext`。首个阻断胜出，守卫抛错/超时按弃权（不挂住工具调用）。注册要 `tools` 能力；只覆盖已接管的 `bash`/`read`（DSH 引擎无 customTool 注册面不接）。
+- **Office 文档随处可看** — 内置文件预览现在能打开 `.docx` / `.xlsx` / `.xlsm`：服务端零依赖解析（zip 解包 + 提文本，15MB 文件上限 / 64MB 解包上限防 zip 炸弹）转成 Markdown 下发，预览弹窗直接渲染表格与段落（协议未动，仍走 `file_content kind:text`）。文件树、附件、中文名/括号文件名都走同一条链路；Office 文件在预览里**不可编辑**（防把文本写回二进制）。表格表头固定为 A/B/C…列标（不拿第一行数据冒充，避免通知类首行被染成紫色表头），每表最多 500 行、全文 20 万字符，超出截断并按实际行数提示（复用 `previewLinesTruncated`，不新增文案 key）。预览样式走 `.fp-office` 独立作用域：紧凑行高（杀掉格子内 `<p>` 边距、空格子占位防塌）、横向滚动条常驻、表头吸顶。实现在 `server/office-parse.ts`（与 `plugins/office-preview` 的解析器互为镜像，改一处请同步另一处），单测 `tests/unit/office-parse.test.ts`（另用 headless Chrome 对 1.4MB 真文件做过渲染截图回归：行高/常驻滚动条/吸顶表头/零 JS 报错）。
+- **受控的持久代码求值沙箱工具 `eval`（opt-in，默认关）** — 新第一方 customTool：在隔离子进程中执行 Python（`py`）或 JavaScript/TypeScript（`js`/`ts`），变量与导入跨调用保持，顶层表达式自动求值回显（省掉以往 `write` 临时脚本 → `bash` 跑 → 删文件的三步流程）。设计要点：① 默认关（`AGENT_TOOL_CATALOG` 里 `defaultOn: false`），关掉 AI 不知道有它，杜绝「什么问题都塞进内核」的工具挤占；② 每个会话一个独立内核进程 + 独立临时目录（cwd 不落在项目里，项目路径经 `PROJECT_DIR` 变量显式引用），关对话 / 停服务即回收进程树（Windows `taskkill /F /T`，Unix `SIGKILL` 进程组），不留孤儿；③ 单请求默认 15s、上限 120s 硬超时，超时杀进程树后内核自动重启，不会把会话拖死；④ 驱动协议串行排队，并行 `eval` 调用不会互相覆盖 resolver；⑤ stderr 持续排空，避免原生扩展写满管道缓冲造成假超时。DSH 引擎无 customTool 注册面，不接。
+
+### Changed
+- **插件 manifest 校验失败即拒（P1-6）** — 坏 manifest 不再带病启动：`id` 非法/与目录名不一致、`apiVersion` 非法、未知能力拼写、`engines`/`permissions`/`ui` 坏形状、v2 不声明 `permissions`、有 `ui` 声明却无 `ui` 能力，都会拒绝激活（scan 置红 + 诊断随清单下发，activate 重判）。以前其中两类（v2 无能力声明、只有别的能力却写 `ui`）是"激活成功但 ui 静默忽略"，现在是明确拒绝；纯警告（坏文本字段/坏数组字段/截断）仍不阻断。未来版本（`apiVersion` 大于宿主）仍走版本门出"请升级"，校验层不抢错。
+
+### Fixed
+- **目标调研向导：切会话不再丢弃调研成果，且消息流里有「原始目标草案」卡片（#292）** — 两处修复：① `setGoal` 新增 `targetConvId`，调研收敛后把目标写到**发起调研的那个对话**（原来是硬读 `activeConv` 再一刀切丢：「已切换对话，目标调研结果已丢弃」——用户在向导问答期间切去看代码/文档是常态，多轮问答瞬间白做）；发起会话已关闭时响亮拒绝而不是静默丢。完成通知随之改成点名会话（`🎯 会话「title」目标调研完成，目标已设为…`），取消/无结果时也告诉用户草案还在哪儿。② 调研开始先往发起对话推一张只读「🎯 原始目标草案」卡片，排在所有提问之前——调研被超时/取消打断后，用户至少能把自己最初写的那段需求读回来、复制重试，而不是面对一片空白。
+- **子代理（in-memory 会话）的扩展错误不再按轮数刷屏（#298）** — `SessionManager.inMemory(cwd)` 建出来的子代理会话取不到会话目录（`getSessionDir()` 返回空串），而 SDK 的 `ExtensionRunner.emitContext()` 在**每次 provider 请求**前都会跑一遍扩展的 `context` hook，于是「会话目录依赖型」扩展（如 SoL-Pi 的 `runtimeRoot()`）每轮都抛同一个错。原 `bindExtensions` 的 `onError` 把错误原样广播成 notice：不去重、不带会话归属、不落服务端日志，一个子代理跑 N 轮就弹 N 条，且看不出是哪个会话出的问题。现改为共享的 `makeExtensionErrorReporter()`：① 同一会话内「扩展 + 事件 + 错误文本」只提示一次；② 子代理的 notice 带 `子代理 <conversationId>：` 前缀（与同函数内其它子代理通知口径一致）；③ 全量错误（含 extensionPath / event / stack）始终 `console.error` 落服务端日志。主对话（持久会话）行为不变，只是多了去重与日志。
+- **插件市场仅同步列表时保留已激活插件实例（#296，感谢 @StarryJia）** — 启动预同步和手动目录同步不再重载插件，避免重新激活时重复广播当前工作目录。
+- **浅色主题通知配色修复（#296，感谢 @StarryJia）** — 修复 9 个浅色主题下 notice 的背景和边框配色，使用动态基色混合提升文本对比度。
+
+- **macOS 服务版开页不再永久卡「正在连接」（#295）** — `server install` 的默认工作区从用户主目录改为干净的 `~/pi-web-ui`（不存在即建；显式 `--cwd`/`PI_WEB_CWD` 保持原语义）：SDK 初始化期的同步目录扫描不再落在 `$HOME` 上（iCloud 占位符/外部卷坏挂载曾让 `scandir/open` 在内核挂起、整个事件循环假死，`hello` 后永远收不到 `ready`，连 `server status` 控制通道一起超时）。另两道保险：① `hello` 后服务端先回 `ready`（传输握手不再等会话初始化，快照随后到），`attach` 超过 8s 未完成先给一句可见提示；② `attach` 里恢复上次工作目录的 `statSync` 改异步，坏挂载只挡本连接、不冻事件循环。老服务仍指着家目录时启动日志会提示重装迁移。回归：`systemd-install` 单测对齐新默认 + `plugin-proxy-test` 的插件路由判活改按真实内容（此前按 HTTP 200 判活会被 SPA catch-all 误导）。
+- **工具看门狗强制重置不再留下悬空 toolCall（#280）** — 流式卡死 → 看门狗 abort 无效 → `forceResetConversation` 从磁盘重建时，内存里未落盘的工具结果蒸发，文件尾留下「有调用、无结果」的悬空 toolCall；重建后继续 prompt 会把非法转录链喂给 provider（请求有发起迹象但零落盘、零报错）。现三处修复：① 重建前向**本次对话自己的会话文件**补一条合成 toolResult（append-only，历史字节不动），重建后弹提示建议重执行工具；② 重建改回**同文件**（`SessionManager.open(ownFile)`），不再按 cwd 取最近（多会话会接错文件）；③ 发送前/打开历史会话时复查转录尾，残留悬空即自动补合成结果，补不上则响亮拒绝发送（不再静默黑洞）。另：重建后旧扩展 ctx 的 `stale` 警告是 SDK 侧对已替换会话的预期失效（旧钩子不再可用），非数据丢失原因。
+- **`edit_soft` 多 edit 不再串位（会写坏文件的 bug）** — 一次调用带多个 edit 且**按降序给出**（靠后的区域写在前面）时，旧实现按 edits 的传入顺序逆序应用而不先按位置排序 → 后面的替换先改变长度、前面的偏移串位，写出错乱/粘连内容（历史 bug：`protocol.ts`、`use-chat.ts`、`ChatInput.tsx` 被写坏）。现改为按位置升序再逆序应用（与内置 `edit` 先按 `matchIndex` 排序一致），任意给出顺序结果都一致；补了覆盖全部 6 种排列的回归测试。
+- **`edit_soft` 拒绝跨行未对齐的非法片段** — oldText 跨多行但首/尾未落在行边界（如 `a);\nfoo(`）时，旧的精确子串替换会吃掉行首/行尾残留、写出粘连内容（`foo(z();b);`）；现直接拒绝并提示按整行给出。另：宽松匹配整块对不上、且首/尾行只是某行一部分时，报针对性的「片段」错而非笼统的「找不到」。单行片段仍照旧支持。
+- **任务执行看板与对话列等宽** — Plan Mode 的任务执行看板（`PlanBoard`）此前写死左右各 16px 外边距，没走 `.main` 的列 token（`--chat-inset`）：桌面 / 宽屏聊天列下比消息列与输入框宽一截、手机上又比它们窄一点，左右边缘始终对不齐。现改为同一条列 token（`.plan-board` 落进 `styles.css`，与 `.goalbar` / 问卷面板同口径），任何视口宽度与「宽屏聊天列」开关下都与输入框严格齐平。回归：`tests/chat-column-align-test.mjs` 新增看板条目。
+
+<!-- auto-i18n:start -->
+### i18n
+
+- 前端新增 key（104）：`newChatEphemeral`、`newChatEphemeralTip`、`ephemeralBadge`、`ephemeralBannerText`、`elsewhereActions`、`takeoverConfirm`、`saveEphemeral`、`forkSession`、`forkSessionTip`、`rollbackSession`、`rollbackSessionTip`、`rollbackConfirm`、`rollbackRestoreWorkspace`、`rollbackRestoreWorkspaceTip`、`toolApprovalTitle`、`toolApprovalApprove`、`toolApprovalDeny`、`toolApprovalEditAndRun`、`toolApprovalRiskAlert`、`toolApprovalCommand`、`toolApprovalParams`、`toolApprovalEditPlaceholder`、`toolApprovalReason`、`toolApprovalCategory`、`toolApprovalAllowCategory`、`toolApprovalAllowCategoryHint`、`toolApprovalAllowConversation`、`toolApprovalAllowConversationHint`、`toolApprovalEnabled`、`toolApprovalEnabledDesc`、`toolApprovalPolicyTitle`、`toolApprovalPolicyAllowAll`、`toolApprovalPolicyRevoke`、`toolApprovalPolicyHint`、`settingsApprovalRules`、`settingsApprovalRulesDesc`、`manageApprovalRules`、`approvalRuleNew`、`approvalRuleEdit`、`approvalRuleDelete`、`approvalRuleReset`、`approvalRuleResetConfirm`、`approvalRuleDeleteConfirm`、`approvalRuleActionAsk`、`approvalRuleActionDeny`、`approvalRuleActionAllow`、`approvalRuleTools`、`approvalRuleToolsTip`、`approvalRuleField`、`approvalRuleFieldCommand`、`approvalRuleFieldPath`、`approvalRuleFieldParams`、`approvalRuleMatch`、`approvalRuleMatchRegex`、`approvalRuleMatchGlob`、`approvalRuleMatchContains`、`approvalRuleMatchPrefix`、`approvalRuleMatchOutsideWs`、`approvalRuleValue`、`approvalRuleValueTip`、`approvalRuleLabel`、`approvalRuleLabelEn`、`approvalRuleReason`、`approvalRuleReasonEn`、`approvalRuleEnabled`、`approvalRuleBuiltin`、`approvalRuleEmpty`、`approvalRuleMoveUp`、`approvalRuleMoveDown`、`planBoardTitle`、`planBoardSteps`、`planBoardProgress`、`planBoardNoPlan`、`planBoardCompleted`、`planBoardInProgress`、`planBoardPending`、`planBoardFailed`、`clear`、`confirm`、`forkBadge`、`forkBadgeTip`、`goalBarBlocked`、`toolsPresetBanner`、`toolsBackToStandard`、`toolsBlockedByPreset`、`skillsHiddenByPreset`、`terminalBashMaxForegroundMs`、`terminalBashMaxForegroundMsDesc`、`pluginInspectAlreadyInstalled`、`pluginInspectInvalid`、`pluginInspectNotPlugin`、`pluginInspectNetwork`、`uiLayoutDiagTitle`、`uiLayoutDiagHint`、`planUpdateEnabledDesc`、`planUpdateOffHint`、`compactContextEnabledDesc`、`compactContextOffHint`、`evalEnabledDesc`、`evalOffHint`、`patchToolEnabledDesc`、`patchToolOffHint`、`lspToolEnabledDesc`、`lspToolOffHint`
+- 前端删除 key（1）：`attachInlineTip`
+- 前端中文变更（2）：`hostResourcesTip`、`noPresets`
+- 前端英文变更（2）：`hostResourcesTip`、`noPresets`
+- 服务端新增 key（14）：`editsoft.fragment.not.supported`、`goal.wizard.draft.card`、`goal.autonomous.pass`、`goal.review.blocked`、`goal.autonomous.continue`、`goal.review.blocked_msg`、`plugins.requires.cycle`、`plugins.manifest.invalid`、`plugins.requires.cascade`、`subagents.handoff.self`、`subagents.handoff.not.found`、`subagents.handoff.success`、`subagents.handoff.failed`、`terminals.bash.background.elapsed`
+- 服务端文案变更（1）：`terminals.bash.background.running`
+- 服务端删除 key（2）：`dsh.attach.file.large`、`dsh.attach.file.ref.fallback`
+<!-- auto-i18n:end -->
+
+## [0.94.1] — 2026-09-22
+
+### Fixed
+
+- **HTTP 代理的 `undici` 提升为直接依赖 + 懒加载** — `undici` 从传递依赖提升为 `dependencies` 直接依赖（`^8.9.0`），版本漂移不再悄悄改变代理行为；`server/http-proxy.ts` 改为运行时懒加载，缺失时只告警并停用代理，不再崩溃服务端启动。
+
+### Changed
+
+- **深青（dark-teal）主题微调（PR #277，感谢 @A5Kush）** — 深色下粗体改用主题青（`--text-strong`）更显眼，`--bg-elev2` 提亮，品牌渐变与部分描边换成符合主题的青色。
+- **主题机制文档修正** — 主题是完整样式表（可覆盖 `:root` 变量 / 任意选择器 / 布局改动 / 自带新 token），`styles.css` 只是共享基线；之前文档里「主题 = 纯 `:root` 调色板、改布局永不碰主题」的说法已过时（`AGENTS.md` / `docs/architecture-core.md` 同步）。
+
+## [0.94.0] — 2026-09-22
+
+### Added
+
+- **复制为图片：预览面板 + 标题 / 边框 / 水印 + 多轮勾选拼接（#274）** — 点「复制为图片」打开右侧停靠面板（不挡对话）。可选标题、边框、自定义水印（默认 `pi-web-ui`）；对话里勾选多条消息，按时间线从早到晚竖排拼成一张 2x PNG。面板提供「包含工具调用 / 包含思考过程」两个开关（默认关），勾上后把对应块加进图并强制展开，不改对话里原有折叠状态。超长则降到 1x 或拒绝复制，避免黑图。
+- **压缩软上限（Soft Cap）支持人性化 tokens 单位输入与纯数字智能识别** — 设置「消息显示」页与按模型覆盖的压缩阈值输入框全面支持人类习惯的缩写（如 `300k`、`1.5M`、`300,000`、`300_000`）；纯数字且 `<= 1000`（如 `300`、`128`、`64`）自动智能识别为 K tokens（`300` → `300,000`），回显自动格式化为整千/整百万可读缩写，避免手滑漏输 0。
+- **全局跨标签页/重启共享的项目模型与 Provider Key 记忆** — 将项目绑定的模型与服务商密钥提升至全局持久化层（`GLOBAL_SETTINGS_KEY`）。新开标签页、切换工作区或重启浏览器时，确定恢复该项目最后使用的模型与密钥；全新空白会话创建时提前解析并注入目标模型，且在 `setModel` 前优先恢复对应的 provider key，彻底解决新对话鉴权失败与回退内置硬编码模型的问题。
+
+### Changed
+
+- **官方插件清单内置为默认来源（`PI_WEB_PLUGIN_CATALOG_URL`）** —— 服务端启动时未配置该环境变量时，自动拉取官方社区清单 `https://xing-shuyin.github.io/pi-web-ui-plugins/catalog.json` 并同步进插件市场列表（**仅更新列表供用户按需安装，不自动安装插件**）；显式设为空串或 `off`/`0`/`false`/`no` 可关闭；仅当显式设置 `PI_WEB_PLUGIN_CATALOG_INSTALL=1` 时才在开机时顺手自动安装全部插件（headless/容器预置镜像场景）。
+- **界面交互防选区干扰与遮罩层重绘优化** —— 侧边栏（会话列表、项目列表、文件树）、顶栏、右键菜单、消息头部及技能卡片头部等不可交互文本区域增加 `user-select: none`，防止高频双击或拖拽时意外选中文本；弹窗与文件预览遮罩层移除 `backdrop-filter: blur` 改用纯色半透明实底，并添加 `overscroll-behavior: contain` 与硬件加速，消除滚动穿透并显著降低大消息流时的重绘负担。
+
+### Fixed
+
+- **复制为图片浅色主题色差（#273）** — html-to-image 把 `color-mix(...)` / 半透明 `rgba` 画到默认黑画布上，浅色气泡变成深紫、深字叠黑底。导出前把计算色拍成不透明 rgb，画布底用主题 `--card-bg`/`--bg` 实底，并去掉 `backdrop-filter`（否则 SVG 里会变成黑罩）。
+
+<!-- auto-i18n:start -->
+
+### i18n
+
+- 前端新增 key（13）：`saveAsImage`、`copyImageBtn`、`savingImage`、`imageTitle`、`imageTitlePlaceholder`、`imageBorder`、`imageWatermark`、`imageWatermarkPlaceholder`、`exportSelectHint`、`exportTooLong`、`exportSelectedCount`、`exportIncludeTools`、`exportIncludeThinking`
+- 前端中文变更（2）：`softCapHint`、`softCapOff`
+- 前端英文变更（2）：`softCapHint`、`softCapOff`
+
+<!-- auto-i18n:end -->
+
+## [0.93.0] — 2026-09-21
+
+### Added
+
+- **支持 HTTP 代理配置传导（`httpProxy`）** —— 服务端启动时自动读取 pi agent 配置（`~/.pi/agent`）中的 `httpProxy` 设置，并与环境变量 `HTTP_PROXY` / `HTTPS_PROXY` 结合，自动设置 Node.js 内置 fetch 及 undici 的全局代理调度器，确保所有出网 HTTP 请求（模型调用、插件下载等）在代理环境下稳定工作。
+- **可配置的单工具看门狗超时（`toolWatchdogTimeoutMs`）** —— 设置「工具」页新增单工具超时配置，支持自定义单次工具调用的看门狗超时毫秒数（0 表示禁用看门狗；`PI_WEB_TOOL_TIMEOUT_MS` 环境变量只作为默认值；工具自身声明的更长超时如 bash `timeout` 仍获尊重）。
+- **子代理会话持久化落盘（`persist_conversation`）** —— 支持将原本仅存在于内存中的临时子代理会话持久化保存为常规历史会话，方便后续长期回顾与复盘。
+- **工具输出图片查看增强与开关** —— 工具结果中的图片支持点击放大查看，设置「消息显示」页新增「工具图片」开关（`toolImagesEnabled`），可按需控制工具结果中图片的内联显示。
+- **社区插件 multi-git 与社区插件收录机制（PR #271）** —— 插件市场首次收录外部独立维护的社区插件 `multi-git`（多仓库 Git 总览，来源 `EinErste/pi-web-multigit`）；文档（README / README.zh-CN）同步增加社区插件章节，规范外部来源声明与安装流程。
+- **社区需求与投票墙插件（`feature-board`）** —— 官方插件库新增 `feature-board` 插件及配套 Cloudflare Worker 后端代码，支持社区用户查看热门功能建议、提交新需求以及投票交互。
+- **工具调用卡片的工具名上右键，就能看这个工具的「定义说明」** —— 在工具卡头部（工具名那一行）右键，选「显示工具详细信息」：弹窗里给出它的说明、系统提示词里的摘要与要点、来源（SDK 内置 / 扩展 / 插件）与当前是否启用，以及**参数表**（参数名 / 类型 / 必填 / 说明，嵌套对象按层级缩进）＋ 可折叠的原始 JSON Schema。定义是静态大对象（不进快照、不占上下文），点开时按名现取一次；DSH 引擎拿不到工具定义时明确写「当前引擎不支持」，而不是给一个空窗。右键工具卡不抢浏览器菜单（点在代码块/输入框上、或页面里已选中文字时照旧给系统菜单），也不会顶掉整条消息的右键菜单；新槽位 `contextmenu.toolcall` 同样进了设置 → 「界面布局」页（可隐藏 / 调序），插件也能往这个菜单里加自己的条目。
+
+- **read 工具可直接读目录 + 接受 `file_path`** —— 模型把目录路径交给 read 时不再报 `EISDIR`，改为列出目录条目（一行一项、目录带 `/` 后缀，`limit` 此时是条目上限），看目录不必再走 bash 的 `ls`；read 同时也接受 `file_path`（`path` 的别名，两者都给时 `path` 为准）。实现是覆盖内置 read（同名 customTool），文件/图片/不存在的路径行为与原来完全一致；设置 → 工具页新增「read 读目录」开关（默认开），关掉即恢复内置行为。仅 pi 引擎生效（DSH 引擎的工具来自预设，无此覆盖面）。
+
+### Fixed
+
+- **Windows 下开启 terminalBash 长期运行不再导致 MSYS2 控制台耗尽死锁（issue #269）** —— 在 Windows 下开启「终端接管 bash」（`terminalBash: true`）时，之前每一次一次性命令（`persist=false`）都会自增创建新的 ConPTY 终端；不仅启动极慢（每次约 1.3s），且子进程退出或异常关闭时通过 Win32 `TerminateProcess` 硬杀会跳过 MSYS2 清理钩子，导致内核命名共享内存 `\cygwin.shared` 中的控制台设备 slot（上限 128）永久泄漏，累积约 128 次后报错 `fatal error - console device allocation failure - too many consoles in use, max consoles is 128` 并导致后续所有 bash 工具全面瘫痪。现在做了三重修复：① Windows 平台开启 `terminalBash` 时，一次性命令（`persist !== true`）自动分流走原生 SDK bash（纯进程基于 pipe，极速 20ms、零控制台设备分配），只有明确需要持久交互（`persist === true`）时才进入常驻可见终端 `ai-bash`（始终复用单个终端，只占 1 个 slot）；② 改进伪终端退出机制：子进程已退出时绝不再调 `process.kill(pid)`，直接释放 PTY 句柄；运行中被关闭时先写 `\x03exit\r` 尝试优雅退出再兜底强杀；终端自然 exit、history 淘汰和 `killAll` 时一律安全释放底层 ConPTY 句柄；③ 为 node-pty 的 `conpty_console_list_agent` 增加 try-catch 补丁，进程已死时 `AttachConsole` 失败不再抛出未捕获异常。
+- **流式回复期间不再每帧重算整份会话统计（issue #259）** —— SDK 的 `session.getSessionStats()` 要遍历整份转写，而 `message_delta` 之前**每个流式帧**都调它一次（只为填 `usage`）。实测 6000 条转写的会话跑 6002 帧时，这一条链吃掉了流式阶段 **27.6%** 的 CPU（2123ms）。现在按 250ms 做短缓存（并按键到 session 实例，切换对话不会拿到上一份的读数）：实测流式 CPU **4.859s → 1.328s（3.7×）**，快照字节数完全不变。长会话（尤其并行子代理 × 长转写）下卡顿的主因之一。
+- **长会话快照与折叠消息列表不再随子代理并发退化（issue #259）** —— 服务端不再让后台对话的 `tool_execution_end` / `agent_end` 给当前激活对话白刷快照；超过 4096 条转写时，序列化缓存改为只回收已不在当前转写里的死条目，保持消息对象引用稳定，让 `snapshot_delta` 继续生效。客户端折叠摘要行启用 `content-visibility: auto` 并固定占位高度，展开箭头改为纯 CSS，避免每行挂一个 SVG + polyline。6000 条历史消息 + 8 个子代理 × 5 次 bash 的实测：全量快照 **3 条 / 14.925MB → 0 条 / 0MB**，增量快照 **0 条 → 3 条 / 4KB**；折叠行内 SVG/polyline **3990/3990 → 0/0**，`.messages` 内元素约减少 22%。
+- **pi SDK 依赖范围不再把 0.86.x 挡在门外，并说清「服务跑的是自带副本」（issue #260）** —— `package.json` 里 SDK 的范围原本是 `^0.85.1`，而 `^` 对 0.x 的语义是 `>=0.85.1 <0.86.0`：上游发到 0.86.1 也永远装不进来，只会一直用自带的 0.85.1 副本；而 npm 全局安装**不 hoist**（实测），Node 又「嵌套优先于祖先」，所以用户 `npm i -g @earendil-works/pi-coding-agent@latest` 改的是全局那份，服务加载的仍是自带那份 —— 表现为「升了 0.86.1，横幅和 `/api/health` 还显示 0.85.1」。现在范围放宽到 `>=0.85.1 <0.87.0`，并新增 `server/sdk-origin.ts`：启动横幅在检测到「有更新的副本被遮蔽」时给出提示，`/api/health` 新增 `piSdkCopies` 列出所有可解析到的副本（第一项 = 实际生效），README 也写明「升级全局 pi CLI 不会改变本服务运行的 SDK」。**另提供显式开关**：`PI_WEB_SDK=global` 时（issue #260 的另一半诉求）改用祖先链上**更新**的那份副本，否则回落自带副本 —— 默认仍是自带副本，因为不同机器跑不同 SDK 会让 bug 无法复现。
+- **设了 `PI_CODING_AGENT_SESSION_DIR` 的用户不再「历史列得出来、却点不开」** —— 历史/最近项目从这个额外会话根扫盘，而打开 / 删除 / 改名的守卫只认 `<agentDir>/sessions/` 一个根：一点就报「路径不在允许范围内」，删不掉也改不了名。现在打开类操作与**列表同口径**（两个根都认），守卫的意图（只许开会话转录、不许开任意文件）没有放宽 —— 仍然必须是某个会话根下的转录。
+- **`voice-input` 插件补上 `tools` 能力声明** —— 它的 manifest `permissions` 里少了 `tools`，而它要注册 `transcribe_audio` 工具；宿主对工具注册点是**硬门控**（未声明 `tools` 即拒绝注册），所以这个 AI 工具实际上**永远不会出现**在工具列表里，只在插件诊断里留一句话。其余所有注册 AI 工具的插件都声明了它；单测也补上了这条断言（以前没断言，所以缺声明时测试照绿）。输入框旁的 🎤 / 📷 不受影响（那两个走的是界面动作，不是 AI 工具）。
+
+- **跨会话弹窗污染** —— 修复了当后台运行的子代理或其他会话触发提问（`ask_user_question`）时，问卷弹窗会无视当前正浏览的对话、强行在全局弹出的问题。现在问卷对话框只会在属于它的会话里弹出（其他会话只会正常出现「?」角标），切换到其他会话时会自动收起，切回原会话时也会自动恢复显示弹窗（仅 pi 引擎，DSH 引擎提问无会话归属保持原状）。
+- **Android / Termux 上的文件面板与「选择目录」能用了（issue #262，PR #263）** —— 三处都是同一个原因的不同表现：① **目录符号链接在所有平台都按目标分类**（原来只有 Windows 分支跟随符号链接，posix 下 `~/storage/shared` 这类链接被判成「文件」）：文件树里能进去、不再显示成文件，只列目录的选择对话框也不再是一片空白；② **机器根（「此电脑」）在 `readdir("/")` 被拒时回落**到 `$HOME` 与 `/storage/emulated/0`（Android 上 `ls /` 本身就失败，原来点进去是死路）；③ **路径栏支持 `~` 展开**（`completePath` / `makeDir` 早就这么做，`listFiles` 漏了，于是 `~/storage/shared` 被当成工作区相对路径、静默变成空列表）。断链仍回落成文件；搜索的深度上限兼作环保护，Linux / macOS / Windows 行为不变。
+- **`PI_WEB_TOKEN` 含 `=` 等特殊字符时不再「进得去、用不了」（issue #261）** —— 口令里带 `=`（base64 尾巴上最常见）、`+`、空格或非 ASCII 时，浏览器经 `?token=…` 进去那一次是 200，之后**每个资源请求都 401**（页面停在背景色）：服务端把口令按 `encodeURIComponent` 写进 cookie（RFC 6265 的 cookie-value 只允许 ASCII，`=` 必须转义），读取时却拿转义后的 `%3D` 去和原文的 `=` 比，永远不相等。现在读取 cookie 时先解码再比（新增 `decodeCookieToken`，脏值解不开就原样返回、不会把请求打成 500），手写 / 旧客户端的明文 cookie 仍然接受；`tests/token-auth-test.mjs` 增加整个特殊字符口令的场景（`?token=` → 仅凭 cookie 导航 → WS 凭 cookie 连接 → 明文 cookie），把修复撤掉即变红。
+- **插件 bundle 的加载作用域不再互相覆盖（issue #268 里定位到的一条真实竞态）** —— 加载插件 bundle 时，「设插件作用域 + import」是**并发**跑的，而作用域是模块级变量：两个 bundle 求值交错时，后启动的那个会把全局作用域改成自己的 id，前一个插件在顶层 / 异步回调（如 notes 插件的 `whenBridge`）里注册的动作就落到**别人**名下（键从 `notes:notes:toggle` 变成 `<别的插件>:notes:toggle`）。宿主派发时按自己的 id 与裸名都查不到 → `kind: "action"` 的条目一点就弹「插件没有接管这个动作」（`kind: "view"` 的条目走视图分支、不过这张表，所以只有 action 中招）。现在两者串成一条闸门（`createScopedImporter`，导出以便单测），单个插件加载失败也不会卡住后面的插件。
+- **认领工具（`claim_files`）补进工具目录 + 设置页开关** —— 之前它是常驻注册、不进 `AGENT_TOOL_CATALOG` 的例外，所以设置 → 工具页里根本找不到它（想关都关不掉）。现在按新增可开关工具的三处走：目录项（默认开，纯 advisory，关掉只少一路事前提醒、事后触碰集照常工作）＋ 设置页「其他」组开关行（紧跟「读取别的对话」）＋ 中英文案与 8 个语言包同步；工具目录 25→26。仅 pi 引擎（DSH 引擎无 customTool 注册面，提醒里照样能看到认领）。
+
+### Changed
+
+- **文件行右键也能「上传文件到当前目录」** —— 上传入口原先只对**目录**行显示，右键一个文件时菜单里根本没有这一项（想往当前目录传文件只能去右键空白处）。现在文件行也给，落点是它所在的目录：当前目录里的文件显示「上传文件到当前目录」，子目录里的文件显示「上传文件到文件夹」；只有机器根（不能往盘符根写）仍然隐藏，文件树右键菜单的其余条目不变。
+
+<!-- auto-i18n:start -->
+
+### i18n
+
+- 前端新增 key（34）：`themeLight`、`themeDark`、`quickPhrasesSendTip`、`persistSubagent`、`toolImages`、`toolImagesDesc`、`toolImageZoom`、`toolWatchdogTimeout`、`toolWatchdogTimeoutDesc`、`toolWatchdogOff`、`uiLayoutContextToolcall`、`pluginSettingsTitle`、`pluginSettingsShow`、`pluginSettingsHide`、`claimFilesEnabledDesc`、`claimFilesOffHint`、`toolInfoMenuLabel`、`toolInfoTitle`、`toolInfoLoading`、`toolInfoUnsupported`、`toolInfoMissing`、`toolInfoActive`、`toolInfoInactive`、`toolInfoSource`、`toolInfoDescription`、`toolInfoNoDescription`、`toolInfoPromptSnippet`、`toolInfoGuidelines`、`toolInfoParams`、`toolInfoParamsNone`、`toolInfoSchemaDropped`、`toolInfoRawSchema`、`toolInfoRequired`、`toolInfoFootnote`
+- 前端中文变更（1）：`elsewhereTip`
+- 前端英文变更（1）：`elsewhereTip`
+- 服务端新增 key（1）：`agent.conv.limit.reached`
+- 服务端文案变更（2）：`subagents.spawn.started`、`subagents.list.empty`
+
 <!-- auto-i18n:end -->
 
 ## [0.92.0] — 2026-09-20
