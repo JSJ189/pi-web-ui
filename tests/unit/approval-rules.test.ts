@@ -7,6 +7,7 @@ import {
 	DEFAULT_APPROVAL_RULES,
 	evaluateApprovalRules,
 	extractRuleFieldValue,
+	extractTargetPath,
 	globToRegex,
 	matchApprovalRule,
 	normalizeApprovalRule,
@@ -45,6 +46,35 @@ describe("审批规则引擎纯函数与匹配逻辑 (Approval Rules Engine)", (
 
 		it("提取 path", () => {
 			expect(extractRuleFieldValue("path", "write", { path: "src/index.ts" })).toBe("src/index.ts");
+		});
+
+		it("path 字段认三种写法：path / file_path / file（扩展实现如 pi-better-edit 的 edit 用 file）", () => {
+			expect(extractTargetPath({ path: "a.ts" })).toBe("a.ts");
+			expect(extractTargetPath({ file_path: "b.ts" })).toBe("b.ts");
+			expect(extractTargetPath({ file: "c.ts" })).toBe("c.ts");
+			expect(extractTargetPath({ path: "a.ts", file: "c.ts" })).toBe("a.ts");
+			expect(extractTargetPath({ path: "  ", file: "c.ts" })).toBe("c.ts");
+			expect(extractTargetPath({})).toBe("");
+			expect(extractTargetPath(null)).toBe("");
+			expect(extractTargetPath("nonsense")).toBe("");
+			expect(extractTargetPath({ path: 42 })).toBe("");
+			expect(extractRuleFieldValue("path", "edit", { file: "c.ts" })).toBe("c.ts");
+		});
+
+		it("按 path 匹配的规则对用 file 的扩展实现同样生效", () => {
+			const rule: ApprovalRule = {
+				id: "custom.env",
+				enabled: true,
+				tools: ["edit"],
+				field: "path",
+				match: "glob",
+				value: "**/.env",
+				action: "ask",
+				label: "改 .env 先问",
+			};
+			expect(matchApprovalRule(rule, "edit", { path: "app/.env" }, cwd)).toBe(true);
+			expect(matchApprovalRule(rule, "edit", { file: "app/.env" }, cwd)).toBe(true);
+			expect(matchApprovalRule(rule, "edit", { file: "app/.env.local" }, cwd)).toBe(false);
 		});
 
 		it("提取 params 完整 JSON", () => {
