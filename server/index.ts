@@ -23,7 +23,7 @@ import { createConnection } from "node:net";
 import { basename, delimiter, dirname, join, resolve, sep } from "node:path";
 import { homedir } from "node:os";
 import { fileURLToPath } from "node:url";
-import { randomUUID } from "node:crypto";
+import { createHash, randomUUID, timingSafeEqual } from "node:crypto";
 import express from "express";
 import compression from "compression";
 import { WebSocket, WebSocketServer } from "ws";
@@ -32,6 +32,7 @@ import { sdkCopies, sdkOriginNote } from "./sdk-origin.js";
 import { PROTOCOL_VERSION } from "./protocol-version.js";
 import { AgentService, workspacePath, QuiesceRejectedError } from "./agent-service.js";
 import { WS_MAX_PAYLOAD_BYTES, isAbsoluteWirePath, wireToAbs } from "./files-service.js";
+import { httpHostAllowed } from "./host-guard.js";
 import { registerFileTransferRoutes } from "./file-transfer-routes.js";
 import { initAttachmentStore, readAttachment } from "./attachment-store.js";
 import { isAudioFile, previewKind } from "./text-sniff.js";
@@ -235,6 +236,21 @@ if (process.platform === "win32") {
 }
 
 const app = express();
+// Host 白名单（防 DNS rebinding，审查 #352）：无 token 部署下 HTTP 路由此前
+// 不校验 Host，恶意网页让自己的域名解析到 127.0.0.1 即可打满全部 API。
+// 显式白名单走 PI_WEB_ALLOW_HOSTS（与 WS 侧同 env）；设置了 PI_WEB_TOKEN 则
+// 由 token 鉴权兜底，不再限制 Host。WS 升级侧同规则见 originAllowed()。
+app.use((req, res, next) => {
+	const hostHeader = req.headers.host;
+	if (
+		typeof hostHeader === "string" &&
+		!httpHostAllowed(hostHeader, { allowHosts: ALLOW_HOSTS, hasAuthToken: Boolean(AUTH_TOKEN) })
+	) {
+		res.status(403).end("host not allowed");
+		return;
+	}
+	next();
+});
 app.use(express.json({ limit: "10mb" }));
 
 /** 从请求中提取候选 token：头 / 查询参数 / cookie（浏览器导航场景靠 cookie 续命）。 */
@@ -267,8 +283,16 @@ function requestTokens(req: { headers: IncomingMessage["headers"]; url?: string 
 	return out.filter(Boolean);
 }
 
+/** 口令比较用常时时间：先哈希到定长再 timingSafeEqual（长度差异被摘要抹平），
+ *  消除逐字节短路比较的时序侧信道（审查 #352：纵深防御，远程可利用性低）。 */
+function sameSecret(candidate: string): boolean {
+	const a = createHash("sha256").update(candidate).digest();
+	const b = createHash("sha256").update(AUTH_TOKEN).digest();
+	return timingSafeEqual(a, b);
+}
+
 function tokenOk(req: Parameters<typeof requestTokens>[0]): boolean {
-	return requestTokens(req).includes(AUTH_TOKEN);
+	return requestTokens(req).some(sameSecret);
 }
 
 /** 请求携带的 pi_web_token cookie 的**口令值**（未带/损坏时为空串）。
@@ -310,7 +334,7 @@ if (AUTH_TOKEN) {
 			// cookieToken 已解码成原文（issue #261），所以直接和原始口令比 ——
 			// 以前拿 `encodeURIComponent(AUTH_TOKEN)` 比，含 `=` / 非 ASCII 的口令
 			// 永远不相等（于是每个请求都重发 cookie，且带 cookie 的请求反而 401）。
-			if (cookie !== AUTH_TOKEN) {
+			if (!sameSecret(cookie)) {
 				res.setHeader("Set-Cookie", buildPiWebTokenCookie(encodeURIComponent(AUTH_TOKEN), 31536000, secure));
 			}
 		} else if (cookie) {
@@ -352,14 +376,14 @@ const TABS = parseTabs();
 registerFileTransferRoutes(app, (clientId) => service.get(clientId)?.cwd);
 
 app.get("/api/health", (_req, res) => {
+	// 审查 #352：该端点对未鉴权开放（监控探针需要），故只保留版本/引擎与 SDK
+	// 副本诊断信息，不再暴露 cwd（工作区路径披露）与 pid（指纹/信息收集面）。
 	res.json({
 		ok: true,
 		piVersion: VERSION,
 		// issue #260：服务实际加载的是自带副本，不是全局 pi CLI 那份。这里把两份都报出来，
 		// 用户就不用猜「为什么升了全局 SDK 不生效」。（纯新增字段，piVersion 语义不变。）
 		piSdkCopies: sdkCopies(),
-		cwd: CWD,
-		pid: process.pid,
 		engine: ENGINE,
 	});
 });
@@ -379,6 +403,15 @@ app.get("/api/attachment/:hash", async (req, res) => {
 		res.setHeader("Content-Type", hit.mimeType);
 		res.setHeader("Content-Length", hit.buffer.length);
 		res.setHeader("Cache-Control", "public, max-age=31536000, immutable");
+		if (hit.mimeType === "image/svg+xml") {
+			// SVG 以文档形态打开（顶层导航/iframe）时内嵌 <script> 会在本应用
+			// origin 执行——附件内容可来自剪贴板/工作区文件，等同存储型 XSS
+			// （审查 #352 P0-1）。sandbox CSP 让文档形态降级到不透明 origin；
+			// <img> 引用不受影响（子资源响应的 CSP 不作用于引用页，且
+			// SVG-as-image 本就不执行脚本）。
+			res.setHeader("Content-Security-Policy", "sandbox");
+			res.setHeader("X-Content-Type-Options", "nosniff");
+		}
 		res.end(hit.buffer);
 	} catch (err) {
 		res.status(500).end((err as Error).message);
@@ -444,6 +477,8 @@ app.get("/api/file", async (req, res) => {
 			// dotfiles: allow — issue #223：Express 5 的 send 默认 dotfiles=ignore，
 			// 工作区/数据目录常位于隐藏目录下（如 ~/.pi-web），绝对路径含点号段会被判 404。
 			// 路径已由上方的 workspacePath/isAbsoluteWirePath 做工作区 containment 校验，放行安全。
+			// 注：绝对 wire 路径分支是机器浏览设计（whole-machine browsing），
+			// 不受工作区约束——别被注释误导（审查 #352）。
 			res.download(abs, name, { dotfiles: "allow" });
 		} else {
 			if (isHtmlPreview) {
@@ -458,6 +493,11 @@ app.get("/api/file", async (req, res) => {
 				// no top-navigation. NEVER add allow-same-origin here.
 				const allowJs = req.query.allowJs === "1";
 				res.setHeader("Content-Security-Policy", allowJs ? "sandbox allow-scripts" : "sandbox");
+				res.setHeader("X-Content-Type-Options", "nosniff");
+			} else if (lower.endsWith(".svg")) {
+				// 与 /api/attachment 同理：SVG 文档形态的 <script> 沙箱化
+				// （审查 #352 P0-1），<img> 内嵌用法不受影响。
+				res.setHeader("Content-Security-Policy", "sandbox");
 				res.setHeader("X-Content-Type-Options", "nosniff");
 			}
 			res.sendFile(abs, { dotfiles: "allow" });
@@ -522,6 +562,9 @@ app.get("/api/preview/*splat", async (req, res) => {
 		if (lower.endsWith(".html") || lower.endsWith(".htm") || lower.endsWith(".xhtml")) {
 			const allowJs = req.query.allowJs === "1";
 			res.setHeader("Content-Security-Policy", allowJs ? "sandbox allow-scripts" : "sandbox");
+		} else if (lower.endsWith(".svg")) {
+			// 与 /api/attachment 同理：SVG 文档形态的 <script> 沙箱化（审查 #352 P0-1）。
+			res.setHeader("Content-Security-Policy", "sandbox");
 		}
 		res.sendFile(abs, { dotfiles: "allow" });
 	} catch {
@@ -841,8 +884,13 @@ function parseAuthority(a: string): { hostname: string; port: string } {
 }
 
 function originAllowed(req: IncomingMessage): boolean {
-	const hostHeader = (req.headers.host ?? "").toLowerCase();
-	const host = parseAuthority(hostHeader);
+	const hostHeader = req.headers.host ?? "";
+	// Host 白名单与 HTTP 侧同规则（审查 #352）：rebinding 下 Origin 会与
+	// 攻击者 Host 自比相等，必须先把非本机/私网的 Host 挡掉。
+	if (!httpHostAllowed(hostHeader, { allowHosts: ALLOW_HOSTS, hasAuthToken: Boolean(AUTH_TOKEN) })) {
+		return false;
+	}
+	const host = parseAuthority(hostHeader.toLowerCase());
 	if (ALLOW_HOSTS.length > 0 && !ALLOW_HOSTS.includes(host.hostname)) {
 		return false;
 	}
