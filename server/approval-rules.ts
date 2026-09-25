@@ -137,6 +137,21 @@ export function globToRegex(pattern: string): RegExp {
 }
 
 /**
+ * 从工具参数里取「这次调用动的是哪个文件」。SDK 内置 read/write/edit 用 `path`，read 还有
+ * `file_path` 别名，部分扩展（如 pi-better-edit 的 edit）用 `file` —— 三种都认，否则叠在
+ * 扩展实现之上的权限沙箱与审批规则会静默放行（取不到 → 空串 → 被判成工作区内）。
+ */
+export function extractTargetPath(params: unknown): string {
+	if (!params || typeof params !== "object") return "";
+	const obj = params as Record<string, unknown>;
+	for (const key of ["path", "file_path", "file"]) {
+		const value = obj[key];
+		if (typeof value === "string" && value.trim()) return value;
+	}
+	return "";
+}
+
+/**
  * 从工具参数对象中提取待检查文本。
  */
 export function extractRuleFieldValue(field: ApprovalRuleField, toolName: string, params: unknown): string {
@@ -148,7 +163,7 @@ export function extractRuleFieldValue(field: ApprovalRuleField, toolName: string
 		return String(obj.command ?? "");
 	}
 	if (field === "path") {
-		return String(obj.path ?? "");
+		return extractTargetPath(params);
 	}
 	if (field === "params") {
 		try {

@@ -104,7 +104,7 @@ import {
 } from "./client-state.js";
 import { pick, resolveServerLang, type ServerLang } from "./i18n.js";
 import { SubagentTemplatesStore, pickTemplatePrompt, type SubagentTemplate } from "./subagent-templates.js";
-import { ApprovalRulesStore, type ApprovalRule } from "./approval-rules.js";
+import { ApprovalRulesStore, extractTargetPath, type ApprovalRule } from "./approval-rules.js";
 import { ComposerDraftsStore } from "./composer-drafts.js";
 import { readPermissionFromSession } from "./permission-preset.js";
 import { createWorkspaceSnapshot, restoreWorkspaceSnapshot } from "./workspace-snapshot.js";
@@ -149,7 +149,14 @@ import { pruneContextHierarchically } from "./context-budget.js";
 import { decodeText } from "./text-sniff.js";
 import { makeEditSoftTool } from "./edit-soft-tool.js";
 // 覆盖 SDK 内置 read：路径是目录时列出目录条目（行为开关 readDirEnabled，默认开）。
-import { makeReadDirTool } from "./read-tool.js";
+// 覆盖定义与「与扩展同名工具共存」的注入辅助分在两个文件（后者的依据见 tool-overrides.ts）。
+import { makeReadDirTool, withReadDirSupport, type ReadDirToolOptions } from "./read-tool.js";
+import {
+	installToolOverrides,
+	type AnyToolDefinition,
+	type OverrideSessionLike,
+	type ToolOverrideSpec,
+} from "./tool-overrides.js";
 // 展示文件给用户（present_files）：图片/视频内联、文本开预览弹窗、本地打开按钮。
 import { makePresentFilesTool } from "./present-files-tool.js";
 // 主动压缩上下文工具（compact_context）：AI 主动根据当前问题精简上下文并自主控制范围。
@@ -639,7 +646,11 @@ function isInsideWorkspaceRoots(targetPath: string, cwd: string, roots: string[]
 	return allRoots.some((r) => isPathInsideRoot(abs, r));
 }
 
-/** 为 write 工具包装会话级权限沙箱与人机协同审批。 */
+/**
+ * 为 write 工具包装会话级权限沙箱与人机协同审批。
+ * `base` = 覆盖基底：第三方扩展注册的同名 write 优先（见 tool-overrides.ts），
+ * 省略则是 SDK 内置实现 —— 于是权限门禁叠在扩展实现之上，而不是把它顶掉。
+ */
 function wrapWriteToolWithPermission(
 	cwd: string,
 	getPermission: () => string,
@@ -648,8 +659,8 @@ function wrapWriteToolWithPermission(
 	askApproval?: AskApprovalFn,
 	getConversationId?: () => string | undefined,
 	getRules?: () => ApprovalRule[],
+	base: AnyToolDefinition = createWriteToolDefinition(cwd),
 ): ToolDefinition {
-	const base = createWriteToolDefinition(cwd);
 	return {
 		...base,
 		execute: async (toolCallId, params, signal, onUpdate, ctx) => {
@@ -670,7 +681,7 @@ function wrapWriteToolWithPermission(
 				} as never;
 			}
 			if (perm === "workspace-write-never") {
-				const p = (params as { path?: string })?.path ?? "";
+				const p = extractTargetPath(params);
 				if (!isInsideWorkspaceRoots(p, cwd, getRoots())) {
 					return {
 						content: [
@@ -758,7 +769,9 @@ function wrapWriteToolWithPermission(
 	} as ToolDefinition;
 }
 
-/** 为 edit 工具包装会话级权限沙箱与人机协同审批。 */
+/**
+ * 为 edit 工具包装会话级权限沙箱与人机协同审批（基底语义同 write）。
+ */
 function wrapEditToolWithPermission(
 	cwd: string,
 	getPermission: () => string,
@@ -767,8 +780,8 @@ function wrapEditToolWithPermission(
 	askApproval?: AskApprovalFn,
 	getConversationId?: () => string | undefined,
 	getRules?: () => ApprovalRule[],
+	base: AnyToolDefinition = createEditToolDefinition(cwd),
 ): ToolDefinition {
-	const base = createEditToolDefinition(cwd);
 	return {
 		...base,
 		execute: async (toolCallId, params, signal, onUpdate, ctx) => {
@@ -789,7 +802,7 @@ function wrapEditToolWithPermission(
 				} as never;
 			}
 			if (perm === "workspace-write-never") {
-				const p = (params as { path?: string })?.path ?? "";
+				const p = extractTargetPath(params);
 				if (!isInsideWorkspaceRoots(p, cwd, getRoots())) {
 					return {
 						content: [
@@ -3758,54 +3771,9 @@ export class ClientSession {
 							return {};
 						},
 					}),
-					// 覆盖 SDK 内置 read（customTools 按 name 覆盖）：路径是目录时列出目录
-					// 条目（复用 SDK ls 的排序/`/` 后缀/截断口径），其余情况原样转发内置实现。
-					// 开关是行为开关（read 本体不可关），每次调用实时读设置——不进
-					// tool-manager 的 ActiveSet 目录。DSH 引擎无 customTool 注册面，不接。
-					withToolGuard(
-						makeReadDirTool(effectiveCwd, {
-							dirEnabled: () => this.settingsSvc.current.readDirEnabled !== false,
-							getLang: () => this.getLang(),
-						}),
-						{
-							toolName: "read",
-							guard: this.toolGuard,
-							conversationId: () => ownerId,
-							getLang: () => this.getLang(),
-							cwd: effectiveCwd,
-							getRoots: () => this.roots,
-							askApproval: (toolCallId, toolName, params, reason, reasonEn, convId, category) =>
-								this.askApproval(toolCallId, toolName, params, reason, reasonEn, convId, category),
-							getRules: () => this.approvalRules.list(),
-						},
-					),
-					// 覆盖 SDK 内置 write / edit，并在执行层注入会话级三档权限沙箱门禁与人机协同审批。
-					wrapWriteToolWithPermission(
-						effectiveCwd,
-						() =>
-							(ownerId ? this.convs.get(ownerId)?.permissionPreset : undefined) ??
-							this.settingsSvc.current.defaultPermissionPreset ??
-							"workspace-write-never",
-						() => this.roots,
-						() => this.getLang(),
-						(toolCallId, toolName, params, reason, reasonEn, convId, category) =>
-							this.askApproval(toolCallId, toolName, params, reason, reasonEn, convId, category),
-						() => ownerId,
-						() => this.approvalRules.list(),
-					),
-					wrapEditToolWithPermission(
-						effectiveCwd,
-						() =>
-							(ownerId ? this.convs.get(ownerId)?.permissionPreset : undefined) ??
-							this.settingsSvc.current.defaultPermissionPreset ??
-							"workspace-write-never",
-						() => this.roots,
-						() => this.getLang(),
-						(toolCallId, toolName, params, reason, reasonEn, convId, category) =>
-							this.askApproval(toolCallId, toolName, params, reason, reasonEn, convId, category),
-						() => ownerId,
-						() => this.approvalRules.list(),
-					),
+					// read / write / edit 三处覆盖**不在这里注册**：创建时的 customTools 恒胜、与
+					// 扩展加载顺序无关，直接塞进来会静默顶掉第三方扩展注册的同名工具（见
+					// tool-overrides.ts）；它们改在会话建好后由 installToolOverrides 注入。
 					// 不覆盖内置 edit 的独立宽松编辑工具（缩进不敏感匹配；开关看设置；带权限沙箱拦截与人机协同）。
 					wrapEditSoftToolWithPermission(
 						makeEditSoftTool(effectiveCwd, () => this.getLang()),
@@ -3917,6 +3885,13 @@ export class ClientSession {
 			// 桥接工具归属锚点：SDK 会话对象在本 runtime 生命周期内稳定，过户只搬对话
 			// 不改它（见 ClientSession.findConversationHome）。
 			bridgeAnchor.session = created.session;
+			// read / write / edit 三处覆盖在会话建好后注入（见 tool-overrides.ts）：SDK 的合并链是
+			// [...扩展工具, ...customTools] 后写赢 ⇒ 创建时塞进 customTools 会**恒定顶掉**第三方
+			// 扩展注册的同名工具（官方 docs/extensions.md 明写扩展可覆盖 read/write/edit）。
+			installToolOverrides(
+				created.session as unknown as OverrideSessionLike,
+				this.toolOverrideSpecs(ownerId, effectiveCwd),
+			);
 			// 终端工具开关从创建起就生效（工具始终注册进注册表，只调活跃集）。
 			this.applyToolGating(created.session);
 			return {
@@ -6762,6 +6737,69 @@ export class ClientSession {
 	private presetOfSession(session: AgentSession): string | undefined {
 		for (const c of this.convs.values()) if (c.session === session) return c.agentPreset;
 		return undefined;
+	}
+
+	/**
+	 * read / write / edit 三处覆盖的注入规格：基底 = 扩展注册的同名工具优先，否则 SDK 内置实现
+	 * （见 tool-overrides.ts —— 这三处覆盖不能塞进创建时的 `customTools`，那会静默顶掉扩展的
+	 * 同名工具，而官方 docs/extensions.md 明写扩展可覆盖 read/write/edit）。
+	 */
+	private toolOverrideSpecs(ownerId: string | undefined, cwd: string): ToolOverrideSpec[] {
+		const currentPermission = (): string =>
+			(ownerId ? this.convs.get(ownerId)?.permissionPreset : undefined) ??
+			this.settingsSvc.current.defaultPermissionPreset ??
+			"workspace-write-never";
+		const approve: AskApprovalFn = (toolCallId, toolName, params, reason, reasonEn, convId, category) =>
+			this.askApproval(toolCallId, toolName, params, reason, reasonEn, convId, category);
+		// 行为开关（read 本体不可关）：每次调用实时读设置 —— 不进 tool-manager 的 ActiveSet 目录。
+		const readDirOptions: ReadDirToolOptions = {
+			dirEnabled: (): boolean => this.settingsSvc.current.readDirEnabled !== false,
+			getLang: (): ServerLang => this.getLang(),
+		};
+		const readGuardOptions: Parameters<typeof withToolGuard>[1] = {
+			toolName: "read",
+			guard: this.toolGuard,
+			conversationId: () => ownerId,
+			getLang: () => this.getLang(),
+			cwd,
+			getRoots: () => this.roots,
+			askApproval: approve,
+			getRules: () => this.approvalRules.list(),
+		};
+		// 写/编的权限沙箱包装：同一个函数，有扩展同名工具时把它的定义当基底（末参）。
+		const composeWrite = (base?: AnyToolDefinition): ToolDefinition =>
+			wrapWriteToolWithPermission(
+				cwd,
+				currentPermission,
+				() => this.roots,
+				() => this.getLang(),
+				approve,
+				() => ownerId,
+				() => this.approvalRules.list(),
+				base,
+			);
+		const composeEdit = (base?: AnyToolDefinition): ToolDefinition =>
+			wrapEditToolWithPermission(
+				cwd,
+				currentPermission,
+				() => this.roots,
+				() => this.getLang(),
+				approve,
+				() => ownerId,
+				() => this.approvalRules.list(),
+				base,
+			);
+		return [
+			{
+				name: "read",
+				// 没有扩展 read：完整覆盖（内置基底 + 英文描述 + file_path 别名）。
+				fallback: () => withToolGuard(makeReadDirTool(cwd, readDirOptions), readGuardOptions),
+				// 有扩展 read：只叠「目录列条目」，它的锚协议/独有参数/渲染全保留（行为委托它）。
+				composeWith: (base) => withToolGuard(withReadDirSupport(base, cwd, readDirOptions), readGuardOptions),
+			},
+			{ name: "write", fallback: () => composeWrite(), composeWith: (base) => composeWrite(base) },
+			{ name: "edit", fallback: () => composeEdit(), composeWith: (base) => composeEdit(base) },
+		];
 	}
 
 	/** 统一工具门控（tool_manage 唯一落点）：按 disabledAgentTools 把目录内工具
