@@ -31,7 +31,7 @@
  */
 
 import { existsSync, mkdirSync, readFileSync, renameSync, statSync, writeFileSync } from "node:fs";
-import { dirname, isAbsolute, resolve, sep } from "node:path";
+import { dirname, resolve, sep } from "node:path";
 import type { UiApprovalCategory } from "./protocol.js";
 
 /** 工具调用审批命中动作：需审批 / 直接拒绝 / 直接放行（白名单）。 */
@@ -42,6 +42,23 @@ export type ApprovalRuleField = "command" | "path" | "params";
 
 /** 匹配方式。 */
 export type ApprovalRuleMatchKind = "regex" | "glob" | "contains" | "prefix" | "outside_workspace";
+
+/**
+ * 跨平台判定 target 路径是否严格位于 root 目录内部或就是 root 本身。
+ * 针对 Windows 盘符大小写不敏感及正反斜杠统一进行规范化，防止 .. 路径穿越逃逸。
+ */
+export function isPathInsideRoot(target: string, root: string): boolean {
+	const normTarget = resolve(target);
+	const normRoot = resolve(root);
+	if (process.platform === "win32") {
+		const lowerTarget = normTarget.toLowerCase();
+		const lowerRoot = normRoot.toLowerCase();
+		return (
+			lowerTarget === lowerRoot || lowerTarget.startsWith(lowerRoot + sep) || lowerTarget.startsWith(lowerRoot + "/")
+		);
+	}
+	return normTarget === normRoot || normTarget.startsWith(normRoot + sep);
+}
 
 /** 审批规则定义（也与 wire 协议 UiApprovalRule 同形）。 */
 export interface ApprovalRule {
@@ -164,9 +181,10 @@ export function matchApprovalRule(
 	if (rule.match === "outside_workspace") {
 		const targetPath = extractRuleFieldValue("path", toolName, params);
 		if (!targetPath) return false;
-		const abs = isAbsolute(targetPath) ? targetPath : resolve(cwd, targetPath);
+		// 无论相对或绝对路径，统一经 resolve(cwd, targetPath) 规范化并消除 ".."
+		const abs = resolve(cwd, targetPath);
 		const allRoots = [resolve(cwd), ...workspaceRoots.map((r) => resolve(r))];
-		const inside = allRoots.some((r) => abs === r || abs.startsWith(r + sep));
+		const inside = allRoots.some((r) => isPathInsideRoot(abs, r));
 		return !inside;
 	}
 
@@ -242,7 +260,8 @@ export const DEFAULT_APPROVAL_RULES: ApprovalRule[] = [
 		tools: ["bash"],
 		field: "command",
 		match: "regex",
-		value: "\\brm\\s+-[a-zA-Z0-9]*[rf][a-zA-Z0-9]*\\s+((\\/)|(~)|(\\.\\.)|(\\*)|(\\.\\/))",
+		value:
+			"\\brm\\s+((-[a-zA-Z0-9]*[rf][a-zA-Z0-9]*|--recursive|--force)\\s+)+(((\\/)|(~)|(\\.\\.)|(\\*)|(\\.\\/))|[a-zA-Z]:[\\\\/])",
 		action: "ask",
 		label: "递归/强制删除 (rm -rf)",
 		labelEn: "Recursive/force delete (rm -rf)",
@@ -257,12 +276,12 @@ export const DEFAULT_APPROVAL_RULES: ApprovalRule[] = [
 		tools: ["bash"],
 		field: "command",
 		match: "regex",
-		value: "\\b(del|rmdir)\\s+\\/[fsq]",
+		value: "\\b(del|rmdir|rd)\\s+[/\\-][fsq]",
 		action: "ask",
-		label: "Windows 强制删除 (del/rmdir)",
-		labelEn: "Windows force delete (del/rmdir)",
-		reason: "检测到高风险的 Windows 强制/递归删除目录命令 (del/rmdir /s /q)",
-		reasonEn: "Detected high-risk Windows force/recursive deletion command (del/rmdir /s /q)",
+		label: "Windows 强制删除 (del/rmdir/rd)",
+		labelEn: "Windows force delete (del/rmdir/rd)",
+		reason: "检测到高风险的 Windows 强制/递归删除目录命令 (del/rmdir/rd /s /q)",
+		reasonEn: "Detected high-risk Windows force/recursive deletion command (del/rmdir/rd /s /q)",
 		categoryId: "bash.win-del",
 		builtin: true,
 	},
