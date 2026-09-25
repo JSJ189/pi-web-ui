@@ -419,12 +419,12 @@ export default {
 			name: "office_read",
 			label: "读取 Office 文件",
 			description:
-				"读取工作区内的 docx / xlsx / csv 文件并返回文本预览（Word 段落、表格转 Markdown），path 为工作区相对路径。",
+				"Read a docx / xlsx / csv file inside the workspace and return a text preview (Word paragraphs, tables converted to Markdown). path is workspace-relative.",
 			parameters: {
 				type: "object",
 				properties: {
-					path: { type: "string", description: "工作区相对路径，如 docs/报告.docx" },
-					maxChars: { type: "number", description: "最多返回字符数，默认 6000" },
+					path: { type: "string", description: "Workspace-relative path, e.g. docs/report.docx" },
+					maxChars: { type: "number", description: "Maximum characters to return, default 6000" },
 				},
 				required: ["path"],
 			},

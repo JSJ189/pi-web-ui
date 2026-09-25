@@ -25,7 +25,7 @@ import {
 } from "@earendil-works/pi-coding-agent";
 import type { GoalStatus, ServerMessage } from "./protocol.js";
 import type { ClientStateStore } from "./client-state.js";
-import { bilingual, pick, type ServerLang } from "./i18n.js";
+import { pick, type ServerLang } from "./i18n.js";
 import { parseModelSpec } from "./attachments.js";
 import type { WebUIContext } from "./webui-context.js";
 
@@ -507,18 +507,15 @@ export class GoalService {
 			const goalAsk = defineTool({
 				name: "goal_ask",
 				label: "Ask the user",
-				description: bilingual(
-					"Ask the user ONE focused question at a time to scope down the goal. Provide 2-4 mutually exclusive options with recommended option first, or ask an open question. Returns the user's chosen answer.",
-					"一次只向用户提一个收敛型问题，以明确目标范围。给出 2-4 个互斥选项且推荐选项置顶，或提开放式问题。返回用户选择的答案。",
-				),
+				description:
+					"Ask the user ONE focused question at a time to scope down the goal. " +
+					"Provide 2-4 mutually exclusive options with the recommended option first, " +
+					"briefly noting its impact or tradeoff; or ask an open question. Returns the user's chosen answer.",
 				parameters: Type.Object({
-					question: Type.String({ description: bilingual("The question to ask", "要问的问题") }),
+					question: Type.String({ description: "The question to ask" }),
 					options: Type.Optional(
 						Type.Array(Type.String(), {
-							description: bilingual(
-								"2-4 mutually exclusive options (recommended option first)",
-								"2-4 个互斥选项（推荐选项置顶）",
-							),
+							description: "2-4 mutually exclusive options (recommended option first)",
 						}),
 					),
 				}),

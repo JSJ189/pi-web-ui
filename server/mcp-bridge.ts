@@ -18,7 +18,6 @@ import { spawn, type ChildProcess } from "node:child_process";
 import { readFileSync } from "node:fs";
 import { join } from "node:path";
 import type { PluginAgentTool } from "./plugins.js";
-import { bilingual } from "./i18n.js";
 
 /** JSON-RPC 2.0 over stdio：每行一条 JSON。 */
 export interface McpServerSpec {
@@ -411,12 +410,7 @@ function adaptMcpTool(serverName: string, mcpTool: McpToolDefinition, client: Mc
 	return {
 		name,
 		label: `${serverName} · ${mcpTool.name}`,
-		description:
-			mcpTool.description ??
-			bilingual(
-				`Tool ${mcpTool.name} provided by MCP server "${serverName}"`,
-				`从 MCP 服务器「${serverName}」提供的工具 ${mcpTool.name}`,
-			),
+		description: mcpTool.description ?? `Tool ${mcpTool.name} provided by MCP server "${serverName}"`,
 		parameters: mcpTool.inputSchema ?? {},
 		execute: async (_toolCallId: string, params: Record<string, unknown>, _signal?: AbortSignal) => {
 			return client.call(mcpTool.name, params ?? {});

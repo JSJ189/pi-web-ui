@@ -35,21 +35,15 @@ export function makePatchTool(options: PatchToolOptions) {
 	return defineTool({
 		name: PATCH_TOOL_NAME,
 		label: "Apply Hashline patch",
-		description: `Apply high-reliability, content-hashed, line-anchored patches to files in the workspace.
-Designed to prevent stale edits, line-drift, and indentation hallucination.
-Each file section starts with \`[path#TAG]\` (or \`[path]\` if hash is not yet known).
-Supports:
-- \`PUT N.=M:\` replace original inclusive lines N to M with following \`+TEXT\` lines.
-- \`PUT N*:\` replace entire syntactic block starting at line N (closing brace/indentation resolved automatically).
-- \`PUT <N:\` insert lines before line N (\`PUT <1:\` = head of file).
-- \`PUT >N:\` insert lines after line N (\`PUT >$:\` = end of file).
-- \`CUT N.=M [@name]\` / \`CUT N* [@name]\` delete lines and save to register.
-- \`PUT <N @name\` / \`PUT >N @name\` paste register.
-- \`REM\` delete file.
-- \`MV dest/path\` move/rename file.
-- Body rows under \`:\` headers MUST start with \`+\` (\`+TEXT\`, \`+\` for blank line).
-If file content diverged, the engine attempts automatic 3-way merge recovery.
-After successful patch, the tool returns the next anchor tag and live LSP diagnostics for subsequent edits.`,
+		description: `Apply content-hashed, line-anchored patches to workspace files — prevents stale edits, line drift, and indentation hallucination.
+Each file section starts with \`[path#TAG]\` (or \`[path]\` if the hash is unknown yet). Operations:
+- \`PUT N.=M:\` replace lines N..M (inclusive) with the following \`+TEXT\` lines.
+- \`PUT N*:\` replace the whole syntactic block starting at line N (closing brace/indent auto-resolved).
+- \`PUT <N:\` insert before line N (\`<1\` = head of file); \`PUT >N:\` insert after (\`>$\` = end).
+- \`CUT N.=M [@name]\` / \`CUT N* [@name]\` delete lines and save to register; \`PUT <N @name\` / \`PUT >N @name\` paste it.
+- \`REM\` delete file; \`MV dest/path\` move/rename file.
+- Body rows under \`:\` headers MUST start with \`+\` (\`+\` alone = blank line).
+On divergence the engine attempts a 3-way merge. After success the tool returns the next anchor tag and live LSP diagnostics.`,
 		parameters: Type.Object({
 			patch: Type.String({
 				description:

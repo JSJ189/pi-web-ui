@@ -19,7 +19,7 @@ import { createHash, randomUUID } from "node:crypto";
 import { createRequire } from "node:module";
 import { appendFileSync, existsSync, readFileSync, rmSync, statSync, mkdirSync, watch, writeFileSync } from "node:fs";
 import { homedir } from "node:os";
-import { basename, delimiter, dirname, isAbsolute, join, resolve, sep } from "node:path";
+import { basename, delimiter, dirname, join, resolve, sep } from "node:path";
 import { fileURLToPath } from "node:url";
 import {
 	createAgentSessionFromServices,
@@ -102,12 +102,13 @@ import {
 	type PromptMode,
 	ClientStateStore,
 } from "./client-state.js";
-import { bilingual, pick, resolveServerLang, type ServerLang } from "./i18n.js";
+import { pick, resolveServerLang, type ServerLang } from "./i18n.js";
 import { SubagentTemplatesStore, pickTemplatePrompt, type SubagentTemplate } from "./subagent-templates.js";
 import { ApprovalRulesStore, type ApprovalRule } from "./approval-rules.js";
 import { ComposerDraftsStore } from "./composer-drafts.js";
 import { readPermissionFromSession } from "./permission-preset.js";
 import { createWorkspaceSnapshot, restoreWorkspaceSnapshot } from "./workspace-snapshot.js";
+import { isPathInsideRoot } from "./approval-rules.js";
 import {
 	approvalSuppressionReason,
 	checkDangerousToolCall,
@@ -336,7 +337,7 @@ Many legacy Chinese text files (.html/.txt/.md/.log, exported documents) are GBK
 export function makeKillableBashTool(
 	cwd: string,
 	kills: Set<AbortController>,
-	/** per-call 返回文本的服务端语言（默认英文）；工具 definition 走 bilingual 内联双语。 */
+	/** per-call 返回文本的服务端语言（默认英文）；工具 definition 为纯英文。 */
 	lang: () => ServerLang = () => "en",
 ): ToolDefinition {
 	const base = createLocalBashOperations();
@@ -362,7 +363,7 @@ export function makeKillableBashTool(
 		name: tool.name,
 		label: tool.label,
 		description:
-			"Run a shell command natively (process spawn, no terminal) and return its full output plus exit code — the SDK's plain bash tool. persist is ignored here (no terminal); use head/tail to trim the returned output.",
+			"Run a shell command natively (process spawn, no terminal); returns full output plus exit code. persist is ignored here; use head/tail to trim returned output.",
 		parameters: Type.Object({
 			command: Type.String({ description: "The shell command to run" }),
 			timeout: Type.Optional(Type.Number({ description: "Optional timeout in seconds" })),
@@ -420,9 +421,9 @@ export function makeAdaptiveBashTool(
 		...killable,
 		description:
 			"Run a shell command and return its full output plus exit code. Behavior depends on the「default bash override」setting (terminalBash):\n" +
-			"Setting OFF → runs natively (process spawn, no terminal) — the SDK's plain bash tool. persist has no effect.\n" +
-			"Setting ON → runs in a visible terminal. persist=true keeps that terminal alive ('ai-bash': shell state such as cd/venv/ssh retained across calls, silent commands move to the background and notify when done); persist=false (default in terminal mode) creates a one-shot terminal that exits when the command finishes while its output stays for review.\n" +
-			"Run the bare command — do NOT pipe through head/tail/more/less (use the head/tail parameters to trim the returned output instead; piping also hides live progress in the visible terminal). For interactive commands (REPLs, prompts, installers asking y/n) set persist=true (terminal mode) and drive them with terminal_input / terminal_key.",
+			"OFF → runs natively (process spawn, no terminal); persist has no effect.\n" +
+			"ON → runs in a visible terminal. persist=true keeps the 'ai-bash' terminal alive (shell state cd/venv/ssh retained across calls); persist=false (default) is a one-shot terminal whose output stays viewable.\n" +
+			"Run the bare command — never pipe through head/tail/more/less (use the head/tail params; pipes hide live progress). For interactive commands (REPLs, y/n prompts) set persist=true and drive them with terminal_input / terminal_key.",
 		promptSnippet: "run shell commands",
 		execute: (id, params, signal, onUpdate, ctx) => {
 			const p = params as { persist?: boolean };
@@ -514,23 +515,10 @@ export function withToolGuard(
 			let approvalReasonEn: string | undefined;
 			let approvalCategory: UiApprovalCategory | undefined;
 
-			if (pre?.verdict.decision === "deny") {
-				const text = denialText(pre.verdict, pre.pluginId ?? "plugin", lang);
-				return {
-					content: [{ type: "text", text }],
-					details: { guardDenied: true, decision: pre.verdict.decision, pluginId: pre.pluginId },
-				} as never;
-			} else if (pre?.verdict.decision === "ask") {
-				needApproval = true;
-				approvalReason = pre.verdict.reason ?? "插件要求确认本次操作";
-				approvalReasonEn = pre.verdict.reasonEn ?? "Plugin requested confirmation for this operation";
-				// 插件档位按插件 id 分：用户可以「允许同类」= 该插件的确认以后不再问。
-				approvalCategory = pluginApprovalCategory(pre.pluginId ?? "plugin");
-			}
-
-			// 内置高危操作检测（如 bash 破坏性命令等）与自定义审批规则
-			if (!needApproval && opts.cwd && opts.askApproval) {
-				const danger = checkDangerousToolCall(toolName, params, opts.cwd, opts.getRoots?.() ?? [], opts.getRules?.());
+			// 1. 系统核心安全：内置高危操作检测与自定义审批规则先行（优先级最高，防短路）
+			let danger: ReturnType<typeof checkDangerousToolCall> | undefined;
+			if (opts.cwd && opts.askApproval) {
+				danger = checkDangerousToolCall(toolName, params, opts.cwd, opts.getRoots?.() ?? [], opts.getRules?.());
 				if (danger.denied) {
 					const reasonText = danger.reason ? ` 原因：${danger.reason}` : "";
 					const reasonTextEn = danger.reasonEn ? ` Reason: ${danger.reasonEn}` : "";
@@ -545,12 +533,30 @@ export function withToolGuard(
 						isError: true,
 					} as never;
 				}
-				if (danger.dangerous) {
-					needApproval = true;
-					approvalReason = danger.reason;
-					approvalReasonEn = danger.reasonEn;
-					approvalCategory = danger.category;
-				}
+			}
+
+			// 2. 插件前置守卫 deny 拦截（带 isError 标记）
+			if (pre?.verdict.decision === "deny") {
+				const text = denialText(pre.verdict, pre.pluginId ?? "plugin", lang);
+				return {
+					content: [{ type: "text", text }],
+					details: { guardDenied: true, decision: pre.verdict.decision, pluginId: pre.pluginId },
+					isError: true,
+				} as never;
+			}
+
+			// 3. 决定是否需要弹窗审批（系统高危 ask 优先于插件通用 ask，防止恶意或低危插件掩盖高危告警）
+			if (danger?.dangerous) {
+				needApproval = true;
+				approvalReason = danger.reason;
+				approvalReasonEn = danger.reasonEn;
+				approvalCategory = danger.category;
+			} else if (pre?.verdict.decision === "ask") {
+				needApproval = true;
+				approvalReason = pre.verdict.reason ?? "插件要求确认本次操作";
+				approvalReasonEn = pre.verdict.reasonEn ?? "Plugin requested confirmation for this operation";
+				// 插件档位按插件 id 分：用户可以「允许同类」= 该插件的确认以后不再问。
+				approvalCategory = pluginApprovalCategory(pre.pluginId ?? "plugin");
 			}
 
 			let effectiveParams = params;
@@ -605,7 +611,7 @@ export function withToolGuard(
 
 			if (userEdited && result && typeof result === "object") {
 				result.details = {
-					...(result.details ?? {}),
+					...result.details,
 					userEdited: true,
 					originalParams: params,
 					executedParams: effectiveParams,
@@ -626,11 +632,11 @@ export function withToolGuard(
 	} as ToolDefinition;
 }
 
-/** 校验目标路径是否在工作区（或多根工作区）内。 */
+/** 校验目标路径是否在工作区（或多根工作区）内。严格规范化防止 ".." 逃逸与 Windows 盘符大小写不一致。 */
 function isInsideWorkspaceRoots(targetPath: string, cwd: string, roots: string[] = []): boolean {
-	const abs = isAbsolute(targetPath) ? targetPath : resolve(cwd, targetPath);
+	const abs = resolve(cwd, targetPath);
 	const allRoots = [resolve(cwd), ...roots.map((r) => resolve(r))];
-	return allRoots.some((r) => abs === r || abs.startsWith(r + sep));
+	return allRoots.some((r) => isPathInsideRoot(abs, r));
 }
 
 /** 为 write 工具包装会话级权限沙箱与人机协同审批。 */
@@ -741,7 +747,7 @@ function wrapWriteToolWithPermission(
 			};
 			if (userEdited && result && typeof result === "object") {
 				result.details = {
-					...(result.details ?? {}),
+					...result.details,
 					userEdited: true,
 					originalParams: params,
 					executedParams: effectiveParams,
@@ -860,7 +866,7 @@ function wrapEditToolWithPermission(
 			};
 			if (userEdited && result && typeof result === "object") {
 				result.details = {
-					...(result.details ?? {}),
+					...result.details,
 					userEdited: true,
 					originalParams: params,
 					executedParams: effectiveParams,
@@ -979,7 +985,7 @@ function wrapEditSoftToolWithPermission(
 			};
 			if (userEdited && result && typeof result === "object") {
 				result.details = {
-					...(result.details ?? {}),
+					...result.details,
 					userEdited: true,
 					originalParams: params,
 					executedParams: effectiveParams,
@@ -1003,20 +1009,14 @@ export function makePlanUpdateTool(
 		name: PLAN_UPDATE_TOOL_NAME,
 		label: "plan_update",
 		description:
-			"Update the structured task execution plan / step state machine (Plan Mode). Use it for non-trivial tasks to break down work into decision-ready steps, track live progress, and update status (pending -> in_progress -> done/failed).\n更新结构化任务执行计划（步骤状态机）。用于复杂工程任务拆解与实时进度推进。建议在计划与步骤描述中界定排查发现（Discovery）、受影响文件清单（File Touch List）与风险回滚预案（Risks & Rollback）。",
-		promptSnippet: bilingual(
-			"update structured task execution plan with decision-ready steps, touch list, and live status",
-			"更新结构化任务执行计划：决策就绪型步骤拆解、文件受影响清单与实时状态推进",
-		),
+		description:
+			"Update the structured task plan / step state machine (Plan Mode): break non-trivial work into decision-ready steps and track progress (pending -> in_progress -> done/failed). Prefer steps that note discovery conclusions, files to be touched, and a rollback strategy.",
+		promptSnippet:
+			"update structured task plan with decision-ready steps, file touch list, and live status",
 		promptGuidelines: [
-			bilingual(
-				"When executing non-trivial tasks, use plan_update early to outline decision-ready steps before coding: specify discovery conclusions, explicitly list files to be touched (File Touch List), and note potential rollback strategies.",
-				"执行复杂工程任务时，在动代码前尽早调用 plan_update 进行决策就绪型规划：明确排查发现、显式锁定受影响文件清单（File Touch List）并注明潜在回滚策略。",
-			),
-			bilingual(
-				"Keep step status updated as work progresses (pending -> in_progress -> done/failed) so the user and supervisor have real-time visibility.",
-				"随工作推进实时更新步骤状态（pending -> in_progress -> done/failed），确保用户与审查器拥有清晰的实时可见度。",
-			),
+			"When executing non-trivial tasks, use plan_update early to outline decision-ready steps before coding: " +
+				"specify discovery conclusions, explicitly list files to be touched (File Touch List), and note potential rollback strategies",
+			"Keep step status updated as work progresses (pending -> in_progress -> done/failed) so the user has real-time visibility",
 		],
 		parameters: Type.Object({
 			steps: Type.Array(
@@ -1102,14 +1102,13 @@ function makeMarkersListTool(
 		name: MARKERS_LIST_TOOL_NAME,
 		label: "List marker state",
 		description:
-			"Read-only query of inline marker state. All WRITE operations must use inline markers ([[todo:new:...]] etc.) in the reply body — never use this tool for writes.\n只读查询内联标记状态。状态【写】操作请一律用内联标记（[[todo:new:...]] 等）写在回答正文里，不要调用本工具做写操作。",
+			"Read-only query of inline marker state. All WRITE operations must use inline markers ([[todo:new:...]] etc.) in the reply body — never this tool.",
 		parameters: Type.Object({
 			action: Type.Unsafe<string>({ enum: ["list"] }),
 			tool: Type.Optional(Type.Literal("todo")),
 			includeDeleted: Type.Optional(
 				Type.Boolean({
-					description:
-						"Whether to include deleted tasks (tombstones, todo only).\n是否包含已删除任务（tombstone，仅 todo）。",
+					description: "Include deleted tasks (tombstones, todo only).",
 				}),
 			),
 		}),
@@ -1154,7 +1153,7 @@ export function makeAskUserQuestionTool(
 		description: Type.Optional(
 			Type.String({
 				description:
-					"One short sentence explaining the impact or tradeoff if selected. 选中该方案的潜在影响、利弊或代偿说明（一句短句）。",
+					"One short sentence explaining the impact or tradeoff if selected.",
 			}),
 		),
 		preview: Type.Optional(
@@ -1172,7 +1171,7 @@ export function makeAskUserQuestionTool(
 		options: Type.Optional(
 			Type.Array(QuestionOptionSchema, {
 				description:
-					"2-4 mutually exclusive choices. Put the recommended option first when there is a clear default. 提供 2~4 个互斥选项，推荐方案置顶。",
+					"2-4 mutually exclusive choices. Put the recommended option first when there is a clear default.",
 				minItems: 2,
 				maxItems: 4,
 			}),
@@ -1184,7 +1183,7 @@ export function makeAskUserQuestionTool(
 				value: Type.Optional(
 					Type.Union([Type.String(), Type.Array(Type.String())], {
 						description:
-							"Show this question only when the prior question's answer matches this value (or any in the array). Omit to show whenever answered.",
+							"Show only when the prior answer equals this value (or is in the array). Omit to show whenever answered.",
 					}),
 				),
 			}),
@@ -1200,24 +1199,22 @@ export function makeAskUserQuestionTool(
 		name: "ask_user_question",
 		label: "Ask the user",
 		description:
-			"Ask the user focused questions to clarify ambiguous requirements. Strictly ask 1 to 3 questions per call (prefer 1, max 3). Provide 2 to 4 mutually exclusive options with the recommended option first, and explain impact/tradeoff in description. Each question renders a browser dialog with markdown/HTML rich text; options may carry a `preview`. Submit or cancel to resume.\n向用户提问以澄清含糊的需求。单次严格限制 1~3 个核心问题（优先 1 个，最多 3 个）；提供 2~4 个互斥选项且推荐选项置顶，选项 description 中说明影响与权衡；支持 markdown/HTML 与 preview 预览。",
-		promptSnippet: bilingual(
+		description:
+			"Ask the user focused questions to clarify ambiguous requirements (clarify the task, confirm decisions, get preferences). " +
+			"Strictly ask 1 to 3 questions per call (prefer 1, max 3); provide 2 to 4 mutually exclusive options with the " +
+			"recommended option first, and explain impact/tradeoff in each option description. " +
+			"Each question renders a browser dialog with markdown/HTML rich text; options may carry a `preview`. Submit or cancel to resume.",
+		promptSnippet:
 			"ask the user 1-3 focused questions with recommended options and tradeoffs to clarify requirements",
-			"向用户提出 1~3 个带推荐选项与影响权衡的收敛型问题以澄清需求",
-		),
 		promptGuidelines: [
-			bilingual(
-				"When requirements are ambiguous, use ask_user_question to clarify instead of guessing: ask 1 to 3 focused questions (prefer 1, max 3), provide 2-4 mutually exclusive options with the recommended option first, and explain impact/tradeoff in description.",
-				"需求含糊时用 ask_user_question 向用户提问而不是猜测：单次提问严格限制 1~3 个核心问题（优先 1 个，最多 3 个），提供 2~4 个互斥选项且推荐选项置顶，在 description 中一句话说明选择该项的影响或权衡代偿。",
-			),
-			bilingual(
-				"A cancelled question comes back as a tool error — respect it and continue without re-asking immediately",
-				"用户取消提问会以工具错误返回——尊重取消决定，不要马上重复追问",
-			),
+			"When requirements are ambiguous, use ask_user_question to clarify instead of guessing: " +
+				"ask 1 to 3 focused questions (prefer 1, max 3), provide 2-4 mutually exclusive options with the " +
+				"recommended option first, and explain impact/tradeoff in description",
+			"A cancelled question comes back as a tool error — respect it and continue without re-asking immediately",
 		],
 		parameters: Type.Object({
 			questions: Type.Array(QuestionSchema, {
-				description: "Questions to ask the user (strictly 1 to 3 questions). 提问 1~3 道题（最多 3 题）。",
+				description: "Questions to ask the user (strictly 1 to 3 questions; prefer 1).",
 				minItems: 1,
 				maxItems: 3,
 			}),
@@ -1363,8 +1360,8 @@ export function makeBrowserPageTool(
 		name: BROWSER_PAGE_TOOL_NAME,
 		label: "Browser page",
 		description: [
-			'Read or act on a page in the USER\'S OWN browser through the pi-web-ui page-picker extension (the extension talks to this page; the server only forwards the request). Only pages the user has explicitly allowed/paired in that extension can be touched. Call it with op:"pages" first to see which pages are currently available, and use it ONLY when the user asked you to read or operate a web page — never click/type on their pages on your own initiative.',
-			"ops (forwarded to the extension as-is, the server does not interpret them):",
+			'Read or act on a page in the USER\'S OWN browser via the pi-web-ui page-picker extension (the server only forwards). Only pages the user explicitly allowed/paired can be touched. Start with op:"pages" to list available pages, and use ONLY when the user asked you to read or operate a page — never click/type on their pages unprompted.',
+			"ops (forwarded to the extension as-is):",
 			"  pages  — no args; lists the pages you may act on",
 			'  read   — { what?: "text" | "html" | "title" | "url" | "query", selector?, all? }',
 			"  click  — { selector, index? }",
@@ -1375,19 +1372,12 @@ export function makeBrowserPageTool(
 			"  eval   — { code } runs JS inside the page (extension-side switch, off by default)",
 			"Op options that are not fields of this tool (e.g. read's `limit`) fall back to the extension's defaults. `target` selects the page by origin when more than one is allowed; `timeoutMs` is how long the SERVER waits for the browser (1000-120000, default 30000) before failing the call.",
 		].join("\n"),
-		promptSnippet: bilingual(
-			"read or operate a page in the user's browser (page-picker extension; allowed pages only)",
-			"读取/操作用户浏览器里已授权的页面（page-picker 扩展，仅限已授权页面）",
-		),
+		promptSnippet: "read or operate a page in the user's browser (page-picker extension; allowed pages only)",
 		promptGuidelines: [
-			bilingual(
-				"Only use browser_page when the user asked you to read or act on a page in their browser; never click or type on their pages on your own initiative",
-				"只在用户明确要求读取/操作浏览器页面时才用 browser_page；不要自作主张去点用户的页面",
-			),
-			bilingual(
-				'Start with op:"pages" to see which pages are available; the target page must already be allowed in the page-picker extension — when it fails, tell the user what to enable instead of retrying blindly',
-				'先用 op:"pages" 看有哪些可操作页面；目标页面必须已在 page-picker 扩展里授权——失败时把需要开什么告诉用户，不要盲目重试',
-			),
+			"Only use browser_page when the user asked you to read or act on a page in their browser; " +
+				"never click or type on their pages on your own initiative",
+			'Start with op:"pages" to see which pages are available; ' +
+				"the target page must already be allowed in the page-picker extension — when it fails, tell the user what to enable instead of retrying blindly",
 		],
 		parameters: Type.Object({
 			op: Type.String({
@@ -2289,7 +2279,7 @@ export class ClientSession {
 			const baseCwdForLimit = parentId ? (this.convs.get(parentId)?.cwd ?? this.cwd) : this.cwd;
 			const resolvedCwdForLimit = cwd ? resolve(baseCwdForLimit, cwd) : baseCwdForLimit;
 			const openInProject = [...this.convs.values()].filter(
-				(c) => c.cwd === resolvedCwdForLimit && !c.isSubagent,
+				(c) => c.cwd === resolvedCwdForLimit && !c.isSubagent && !c.isEphemeral,
 			).length;
 			if (openInProject >= MAX_OPEN_CONVERSATIONS) {
 				throw new Error(
@@ -3743,7 +3733,37 @@ export class ClientSession {
 							"workspace-write-never",
 						() => this.getLang(),
 					),
-					...makePersistentTerminalTools(terminals, effectiveCwd, () => this.getLang()),
+					...makePersistentTerminalTools(terminals, effectiveCwd, () => this.getLang(), {
+						checkSafety: (cmd) => {
+							const perm =
+								(ownerId ? this.convs.get(ownerId)?.permissionPreset : undefined) ??
+								this.settingsSvc.current.defaultPermissionPreset ??
+								"workspace-write-never";
+							if (perm === "read-only") {
+								const danger = checkDangerousToolCall(
+									"bash",
+									{ command: cmd },
+									effectiveCwd,
+									this.roots,
+									this.approvalRules.list(),
+								);
+								if (danger.denied || danger.dangerous) {
+									return { blocked: true, reason: danger.reason || "只读模式禁止执行高危/破坏性命令" };
+								}
+							}
+							const danger = checkDangerousToolCall(
+								"bash",
+								{ command: cmd },
+								effectiveCwd,
+								this.roots,
+								this.approvalRules.list(),
+							);
+							if (danger.denied) {
+								return { blocked: true, reason: danger.reason || "命中系统阻断规则" };
+							}
+							return {};
+						},
+					}),
 					// 覆盖 SDK 内置 read（customTools 按 name 覆盖）：路径是目录时列出目录
 					// 条目（复用 SDK ls 的排序/`/` 后缀/截断口径），其余情况原样转发内置实现。
 					// 开关是行为开关（read 本体不可关），每次调用实时读设置——不进
@@ -8013,16 +8033,23 @@ export class ClientSession {
 					// best-effort：修不好就按原路径重建，下面的守卫会在 prompt 前再拦。
 				}
 			}
-			// #235：转录链损坏时修一次再试（见 openManagerAndRuntime）。
+			// #280 & #335：转录链损坏时修一次再试（见 openManagerAndRuntime）。
+			// 严禁在 ownFile 不存在时回退到 continueRecent(conv.cwd) 或按 mtime list 历史文件，
+			// 否则会直接接错并顶替同项目的其它历史会话，污染别人的转录记录。
 			const opened = await this.openManagerAndRuntime(
-				() => (ownFile && existsSync(ownFile) ? SessionManager.open(ownFile) : SessionManager.continueRecent(conv.cwd)),
+				() => {
+					if (ownFile && existsSync(ownFile)) {
+						return SessionManager.open(ownFile);
+					}
+					return conv.isEphemeral ? SessionManager.inMemory(conv.cwd) : SessionManager.create(conv.cwd);
+				},
 				(m) =>
 					createAgentSessionRuntime(this.makeRuntimeFactory(conv.terminals, undefined, conv.id), {
 						cwd: conv.cwd,
 						agentDir: this.agentDir,
 						sessionManager: m,
 					}),
-				async () => (ownFile && existsSync(ownFile) ? ownFile : (await SessionManager.list(conv.cwd))[0]?.path),
+				async () => (ownFile && existsSync(ownFile) ? ownFile : undefined),
 			);
 			const runtime = opened.runtime;
 			if (opened.repair) {
@@ -8541,13 +8568,21 @@ export class ClientSession {
 	}
 
 	/** 过户用的对话摘要（AgentService 拼移动集合 + 容量检查用）。 */
-	takeoverBriefs(): { id: string; title: string; cwd: string; parentId?: string; isSubagent: boolean }[] {
+	takeoverBriefs(): {
+		id: string;
+		title: string;
+		cwd: string;
+		parentId?: string;
+		isSubagent: boolean;
+		isEphemeral?: boolean;
+	}[] {
 		return [...this.convs.values()].map((c) => ({
 			id: c.id,
 			title: c.title,
 			cwd: c.cwd,
 			...(c.parentId ? { parentId: c.parentId } : {}),
 			isSubagent: c.isSubagent,
+			isEphemeral: !!c.isEphemeral,
 		}));
 	}
 
@@ -9712,9 +9747,9 @@ export class ClientSession {
 			const oldListed = this.conv.listed;
 			const displaced = this.displaceActive();
 			const openInProject =
-				[...this.convs.values()].filter((c) => c.cwd === targetCwd && !c.isSubagent).length +
+				[...this.convs.values()].filter((c) => c.cwd === targetCwd && !c.isSubagent && !c.isEphemeral).length +
 				1 -
-				(displaced?.cwd === targetCwd && !displaced?.isSubagent ? 1 : 0);
+				(displaced?.cwd === targetCwd && !displaced?.isSubagent && !displaced?.isEphemeral ? 1 : 0);
 			if (openInProject > MAX_OPEN_CONVERSATIONS) {
 				// displaceActive() may have promoted a streaming conversation into the
 				// running list. Roll that presentation-only mutation back because no
@@ -11798,10 +11833,10 @@ export class AgentService {
 		}
 		const moveIds = [convId, ...collectSubagentDescendantIds(briefs, convId)];
 		const moveSet = new Set(moveIds);
-		// 容量：与 switchSession 同口径（目标项目非子代理 8 个）。
-		const movedMains = briefs.filter((b) => moveSet.has(b.id) && !b.isSubagent).length;
+		// 容量：与 switchSession 同口径（目标项目非子代理且非临时会话 8 个）。
+		const movedMains = briefs.filter((b) => moveSet.has(b.id) && !b.isSubagent && !b.isEphemeral).length;
 		const openInProject =
-			target.takeoverBriefs().filter((b) => b.cwd === main.cwd && !b.isSubagent).length + movedMains;
+			target.takeoverBriefs().filter((b) => b.cwd === main.cwd && !b.isSubagent && !b.isEphemeral).length + movedMains;
 		if (openInProject > MAX_OPEN_CONVERSATIONS) {
 			fail(
 				`目标项目运行的对话已达上限（${MAX_OPEN_CONVERSATIONS} 个），请先打开某个对话并离开（不继续对话）以移出列表`,

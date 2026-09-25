@@ -547,9 +547,10 @@ export function applyHashlinePatch(
 		let workingText = currentText;
 		let isRecovered = false;
 
-		// 哈希校验与三方冲突自愈
+		// 哈希校验与三方冲突自愈（快照按绝对路径优先隔离，兼容相对路径回退）
+		const absFilePath = resolve(cwd, sec.filePath);
 		if (sec.expectedHash && sec.expectedHash !== liveHash) {
-			const snapshot = store.get(sec.filePath, sec.expectedHash);
+			const snapshot = store.get(absFilePath, sec.expectedHash) ?? store.get(sec.filePath, sec.expectedHash);
 			if (snapshot) {
 				const recovery = tryRecoverEdits(snapshot, currentText, sec.hunks, sec.filePath);
 				if (recovery.success && recovery.remappedHunks) {
@@ -766,13 +767,16 @@ export function applyHashlinePatch(
 	}
 
 	// ===== 阶段 2: 全部校验通过，统一落盘 =====
-	for (const p of plannedDeletes) {
-		remove(p);
-	}
+	// 先执行所有写入，确保新文件与移动目标成功落盘，避免先删后写异常时永久丢失源文件
 	for (const [p, content] of plannedWrites.entries()) {
 		write(p, content);
-		// 记住新快照
-		store.record(p, content);
+		// 记住新快照（统一采用绝对路径隔离多工作区）
+		store.record(resolve(cwd, p), content);
+	}
+	for (const p of plannedDeletes) {
+		if (!plannedWrites.has(p)) {
+			remove(p);
+		}
 	}
 
 	const summaryParts = results.map((r) => {
