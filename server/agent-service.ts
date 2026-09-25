@@ -999,7 +999,7 @@ function wrapEditSoftToolWithPermission(
 /**
  * 结构化任务执行计划更新工具（plan_update）— Plan Mode / Step State Machine。
  */
-function makePlanUpdateTool(
+export function makePlanUpdateTool(
 	planManager: PlanManager,
 	getActiveConvId: () => string,
 	emit: (msg: ServerMessage) => void,
@@ -1009,7 +1009,13 @@ function makePlanUpdateTool(
 		name: PLAN_UPDATE_TOOL_NAME,
 		label: "plan_update",
 		description:
-			"Update the structured task plan / step state machine (Plan Mode): break non-trivial work into steps and track progress (pending -> in_progress -> done/failed).",
+			"Update the structured task plan / step state machine (Plan Mode): break non-trivial work into decision-ready steps and track progress (pending -> in_progress -> done/failed). Prefer steps that note discovery conclusions, files to be touched, and a rollback strategy.",
+		promptSnippet: "update structured task plan with decision-ready steps, file touch list, and live status",
+		promptGuidelines: [
+			"When executing non-trivial tasks, use plan_update early to outline decision-ready steps before coding: " +
+				"specify discovery conclusions, explicitly list files to be touched (File Touch List), and note potential rollback strategies",
+			"Keep step status updated as work progresses (pending -> in_progress -> done/failed) so the user has real-time visibility",
+		],
 		parameters: Type.Object({
 			steps: Type.Array(
 				Type.Object({
@@ -1022,7 +1028,9 @@ function makePlanUpdateTool(
 						),
 					),
 					description: Type.Optional(
-						Type.String({ description: "Optional detailed description or acceptance criteria" }),
+						Type.String({
+							description: "Optional detailed description, acceptance criteria, file touch list, or rollback note.",
+						}),
 					),
 				}),
 				{ description: "List of plan steps" },
@@ -1139,8 +1147,12 @@ export function makeAskUserQuestionTool(
 	ownerId?: string,
 ): ToolDefinition {
 	const QuestionOptionSchema = Type.Object({
-		label: Type.String({ description: "Display label for the option" }),
-		description: Type.Optional(Type.String({ description: "Optional description shown below label" })),
+		label: Type.String({ description: "Display label for the option (1-5 words)" }),
+		description: Type.Optional(
+			Type.String({
+				description: "One short sentence explaining the impact or tradeoff if selected.",
+			}),
+		),
 		preview: Type.Optional(
 			Type.String({
 				description:
@@ -1149,11 +1161,17 @@ export function makeAskUserQuestionTool(
 		),
 	});
 	const QuestionSchema = Type.Object({
-		id: Type.String({ description: "Unique identifier for this question" }),
+		id: Type.String({ description: "Unique identifier for this question (snake_case)" }),
 		question: Type.String({ description: "The full question text to display (markdown/HTML ok)" }),
 		detail: Type.Optional(Type.String({ description: "Optional detail/context shown under the question" })),
 		header: Type.Optional(Type.String({ description: "Optional short header for this question" })),
-		options: Type.Optional(Type.Array(QuestionOptionSchema, { description: "Available options to choose from" })),
+		options: Type.Optional(
+			Type.Array(QuestionOptionSchema, {
+				description: "2-4 mutually exclusive choices. Put the recommended option first when there is a clear default.",
+				minItems: 2,
+				maxItems: 4,
+			}),
+		),
 		multiSelect: Type.Optional(Type.Boolean({ description: "Allow selecting multiple options (default: false)" })),
 		dependsOn: Type.Optional(
 			Type.Object({
@@ -1177,22 +1195,33 @@ export function makeAskUserQuestionTool(
 		name: "ask_user_question",
 		label: "Ask the user",
 		description:
-			"Ask the user focused questions to pin down ambiguous requirements (clarify the task, confirm decisions, get preferences). " +
+			"Ask the user focused questions to clarify ambiguous requirements (clarify the task, confirm decisions, get preferences). " +
+			"Strictly ask 1 to 3 questions per call (prefer 1, max 3); provide 2 to 4 mutually exclusive options with the " +
+			"recommended option first, and explain impact/tradeoff in each option description. " +
 			"Each question renders a browser dialog with markdown/HTML rich text; options may carry a `preview`. Submit or cancel to resume.",
-		promptSnippet:
-			"ask the user focused questions to clarify ambiguous requirements (browser dialog with options/preview)",
+		promptSnippet: "ask the user 1-3 focused questions with recommended options and tradeoffs to clarify requirements",
 		promptGuidelines: [
-			"When requirements are ambiguous, use ask_user_question to ask the user instead of guessing; " +
-				"prefer multiple-choice options, each option may carry a preview",
+			"When requirements are ambiguous, use ask_user_question to clarify instead of guessing: " +
+				"ask 1 to 3 focused questions (prefer 1, max 3), provide 2-4 mutually exclusive options with the " +
+				"recommended option first, and explain impact/tradeoff in description",
 			"A cancelled question comes back as a tool error — respect it and continue without re-asking immediately",
 		],
 		parameters: Type.Object({
-			questions: Type.Array(QuestionSchema, { description: "Questions to ask the user" }),
+			questions: Type.Array(QuestionSchema, {
+				description: "Questions to ask the user (strictly 1 to 3 questions; prefer 1).",
+				minItems: 1,
+				maxItems: 3,
+			}),
 		}),
 		execute: async (_id: string, params: unknown, signal: AbortSignal | undefined): Promise<unknown> => {
 			const qs = (params as { questions: UiQuestion[] }).questions;
 			if (!Array.isArray(qs) || qs.length === 0) {
 				throw new Error("ask_user_question requires at least one question");
+			}
+			if (qs.length > 3) {
+				throw new Error(
+					"ask_user_question allows at most 3 questions per call to prevent question fatigue (单次提问最多不得超过 3 个问题)",
+				);
 			}
 			const answers = await clientSession.askUser(
 				qs,

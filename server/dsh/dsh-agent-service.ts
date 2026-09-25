@@ -3771,7 +3771,7 @@ export class DshClientSession {
 			`# User's raw requirement`,
 			draft,
 			``,
-			`Use the ask_user_question tool to ask the user focused questions to pin down the essential, ambiguous details. Ask ONE question at a time, usually 2 to 4 questions total: what exactly to build/do, scope boundaries (what NOT to do), acceptance criteria / done-definition, and any constraints (style, performance, environment). Prefer multiple-choice questions (options) when you can offer clear choices.`,
+			`Use the ask_user_question tool to ask the user focused questions to pin down the essential, ambiguous details. Ask ONE question at a time, strictly 1 to 3 questions total: what exactly to build/do, scope boundaries (what NOT to do), acceptance criteria / done-definition, and any constraints (style, performance, environment). Prefer 2 to 4 mutually exclusive options with the recommended choice placed FIRST, and explain the tradeoff in description.`,
 			`Once you have enough to write an unambiguous, reviewable goal, STOP asking and reply with EXACTLY this format and nothing else (no preamble, no bullets):`,
 			`GOAL: <one concrete, verifiable sentence describing the deliverable and its acceptance criteria>`,
 			`Do NOT call create_goal or update_goal — just output the GOAL: line. If the user cancels or stops answering, still produce a sensible best-effort GOAL from what you already know.`,
