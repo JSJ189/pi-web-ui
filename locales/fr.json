@@ -520,6 +520,7 @@
 		"ttsRate": "Vitesse",
 		"ttsVoice": "Voix",
 		"ttsVoiceAuto": "Auto (suit la langue de l'interface)",
+		"ttsVoiceOnline": "en ligne",
 		"ttsUnavailable": "La synthèse vocale n'est pas prise en charge dans ce navigateur",
 		"ttsPreviewLine": "Bonjour, ceci est l'aperçu vocal de pi-web-ui.",
 		"ttsAnnounceDone": "Tâche terminée",

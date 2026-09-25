@@ -520,6 +520,7 @@
 		"ttsRate": "Скорость",
 		"ttsVoice": "Голос",
 		"ttsVoiceAuto": "Авто (как язык интерфейса)",
+		"ttsVoiceOnline": "онлайн",
 		"ttsUnavailable": "Синтез речи не поддерживается в этом браузере",
 		"ttsPreviewLine": "Привет, это проверка голосовых объявлений pi-web-ui.",
 		"ttsAnnounceDone": "Задача завершена",

@@ -100,13 +100,21 @@ interface TtsSettingsProps {
 	onPreview: () => void;
 }
 
-/** Chrome populates getVoices() asynchronously; this hook re-reads on the change event. */
-function useVoices(): { voiceURI: string; lang: string; name: string }[] {
-	const [voices, setVoices] = useState<{ voiceURI: string; lang: string; name: string }[]>([]);
+/** Chrome populates getVoices() asynchronously; this hook re-reads on the change event.
+ *  localService=false → the voice is synthesized remotely (needs network, e.g. Edge
+ *  "Natural" voices); true → fully offline OS speech. Surfaced in the dropdown so
+ *  users can tell the two apart. */
+function useVoices(): { voiceURI: string; lang: string; name: string; localService: boolean }[] {
+	const [voices, setVoices] = useState<{ voiceURI: string; lang: string; name: string; localService: boolean }[]>([]);
 	useEffect(() => {
 		if (!isTtsAvailable()) return;
 		const synth = window.speechSynthesis;
-		const read = () => setVoices(synth.getVoices().map((v) => ({ voiceURI: v.voiceURI, lang: v.lang, name: v.name })));
+		const read = () =>
+			setVoices(
+				synth
+					.getVoices()
+					.map((v) => ({ voiceURI: v.voiceURI, lang: v.lang, name: v.name, localService: v.localService })),
+			);
 		read();
 		synth.addEventListener?.("voiceschanged", read);
 		return () => synth.removeEventListener?.("voiceschanged", read);
@@ -191,7 +199,7 @@ export function TtsSettingsPanel({ settings, onChange, onPreview }: TtsSettingsP
 					<option value="">{t("ttsVoiceAuto")}</option>
 					{voices.map((v) => (
 						<option key={v.voiceURI} value={v.voiceURI}>
-							{v.name} ({v.lang})
+							{v.name} ({v.lang}){v.localService ? "" : ` · ${t("ttsVoiceOnline")}`}
 						</option>
 					))}
 				</select>

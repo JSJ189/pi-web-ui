@@ -520,6 +520,7 @@
 		"ttsRate": "속도",
 		"ttsVoice": "음성",
 		"ttsVoiceAuto": "자동 (UI 언어 따름)",
+		"ttsVoiceOnline": "온라인",
 		"ttsUnavailable": "이 브라우저는 음성 합성을 지원하지 않습니다",
 		"ttsPreviewLine": "안녕하세요, pi-web-ui 음성 알림 미리듣기입니다.",
 		"ttsAnnounceDone": "작업이 완료되었습니다",

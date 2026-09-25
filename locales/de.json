@@ -520,6 +520,7 @@
 		"ttsRate": "Geschwindigkeit",
 		"ttsVoice": "Stimme",
 		"ttsVoiceAuto": "Automatisch (folgt der Oberflächensprache)",
+		"ttsVoiceOnline": "online",
 		"ttsUnavailable": "Sprachsynthese wird in diesem Browser nicht unterstützt",
 		"ttsPreviewLine": "Hallo, dies ist die Sprachansagen-Vorschau von pi-web-ui.",
 		"ttsAnnounceDone": "Aufgabe abgeschlossen",

@@ -520,6 +520,7 @@
 		"ttsRate": "速度",
 		"ttsVoice": "音声",
 		"ttsVoiceAuto": "自動（UI言語に従う）",
+		"ttsVoiceOnline": "オンライン",
 		"ttsUnavailable": "このブラウザは音声合成に対応していません",
 		"ttsPreviewLine": "こんにちは、pi-web-ui の音声読み上げのテストです。",
 		"ttsAnnounceDone": "タスクが完了しました",
