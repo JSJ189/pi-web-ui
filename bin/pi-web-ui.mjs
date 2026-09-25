@@ -2149,7 +2149,7 @@ function buildPluginSource(pluginRoot, tmpDir, manifest) {
  * installOnePlugin 二次把关 —— 交互 TTY 且用户输入 y 才跑，否则跳过并警告。
  * --no-build 保留旧的“装个空目录”行为（脚本化镜像/检查用），并明确打印跳过原因。
  */
-function decideBuildAction({ pluginRoot, manifest, build, noBuild }) {
+function decideBuildAction({ pluginRoot, manifest, build, noBuild, isCatalog = false }) {
 	if (build && noBuild)
 		throw new Error(
 			ZH ? "--build 与 --no-build 不能同时用（二选一）" : "--build and --no-build cannot be used together (pick one)",
@@ -2158,12 +2158,14 @@ function decideBuildAction({ pluginRoot, manifest, build, noBuild }) {
 	const artifactsMissing =
 		!existsSync(join(pluginRoot, "index.mjs")) && !existsSync(join(pluginRoot, "client", "entry.mjs"));
 	if (build) {
-		if (!plan)
+		if (!plan) {
+			if (isCatalog) return { mode: "none", plan };
 			throw new Error(
 				ZH
 					? "插件没有声明构建方式：请在 manifest.json 里加 build.command（或 package.json 的 scripts.build），或去掉 --build"
 					: "Plugin has no build declaration: add build.command to manifest.json (or scripts.build in package.json), or remove --build",
 			);
+		}
 		return { mode: "explicit", plan };
 	}
 	if (plan && artifactsMissing) {
@@ -2197,7 +2199,7 @@ async function confirmSourceBuild(plan) {
  * 覆盖（备份+保留 config.json）→ 落盘 → 记录来源/sha。
  * 失败抛 Error（目录模式逐条 try/catch 继续下一条，单源模式由调用方转 fail）。
  */
-async function installOnePlugin({ rawSpec, name, force, build, noBuild, dataDir }) {
+async function installOnePlugin({ rawSpec, name, force, build, noBuild, dataDir, isCatalog = false }) {
 	const pluginsDir = join(dataDir, "plugins");
 	const localCandidate = resolve(rawSpec.replace(/^file:\/\//, ""));
 	const isLocal = existsSync(localCandidate);
@@ -2224,7 +2226,13 @@ async function installOnePlugin({ rawSpec, name, force, build, noBuild, dataDir 
 		}
 		// 构建决策（issue #150 的 --build + issue #165 的自动推断）：构建在临时目录里完成，
 		// 成功后才进入覆盖流程——构建失败 = 目标目录完全没被动过（上一版插件照常可用）。
-		const decision = decideBuildAction({ pluginRoot, manifest, build: build === true, noBuild: noBuild === true });
+		const decision = decideBuildAction({
+			pluginRoot,
+			manifest,
+			build: build === true,
+			noBuild: noBuild === true,
+			isCatalog,
+		});
 		// 授权把关（审计修复）：--build 显式传参行为不变；mode=auto 的构建命令来自
 		// 远端 manifest/package.json 且经 shell:true 执行 —— 非交互环境绝不自动跑
 		// （跳过并警告），交互 TTY 也要用户显式输入 y 才执行。
@@ -2549,6 +2557,7 @@ async function installCatalogCmd(opts) {
 				build: opts.build === true,
 				noBuild: opts.noBuild === true,
 				dataDir,
+				isCatalog: true,
 			});
 			console.log(ZH ? `✔ ${e.id} 安装成功` : `✔ ${e.id} installed`);
 			okCount++;
