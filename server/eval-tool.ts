@@ -212,6 +212,61 @@ interface PendingRequest {
 	reject: (err: Error) => void;
 }
 
+/**
+ * 净化 Eval 子进程环境变量：仅保留操作系统基础变量，剥离所有包含 key/token/secret/auth/cred 等敏感环境变量，
+ * 杜绝沙箱脚本窃取宿主云凭据与 API Key。
+ */
+export function sanitizeEvalEnv(sourceEnv: NodeJS.ProcessEnv): NodeJS.ProcessEnv {
+	const allowedKeys = new Set([
+		"path",
+		"pathext",
+		"systemroot",
+		"windir",
+		"temp",
+		"tmp",
+		"tmpdir",
+		"home",
+		"userprofile",
+		"lang",
+		"lc_all",
+		"term",
+		"shell",
+		"comspec",
+		"os",
+		"number_of_processors",
+		"processor_architecture",
+		"appdata",
+		"localappdata",
+		"homedrive",
+		"homepath",
+		"systemdrive",
+		"programdata",
+		"programfiles",
+		"programfiles(x86)",
+		"commonprogramfiles",
+		"node_env",
+	]);
+	const cleanEnv: Record<string, string> = {};
+	for (const [key, value] of Object.entries(sourceEnv)) {
+		if (value === undefined) continue;
+		const lowerKey = key.toLowerCase();
+		if (
+			lowerKey.includes("key") ||
+			lowerKey.includes("token") ||
+			lowerKey.includes("secret") ||
+			lowerKey.includes("auth") ||
+			lowerKey.includes("pass") ||
+			lowerKey.includes("cred")
+		) {
+			continue;
+		}
+		if (allowedKeys.has(lowerKey) || lowerKey.startsWith("npm_") || lowerKey.startsWith("python")) {
+			cleanEnv[key] = value;
+		}
+	}
+	return cleanEnv;
+}
+
 /** 单个持久内核工作进程包装。 */
 class EvalKernel {
 	private proc: ChildProcess | null = null;
@@ -241,7 +296,7 @@ class EvalKernel {
 			stdio: ["pipe", "pipe", "pipe"] as ["pipe", "pipe", "pipe"],
 			detached: process.platform !== "win32",
 			env: {
-				...process.env,
+				...sanitizeEvalEnv(process.env),
 				PI_EVAL_WORKDIR: this.workdir,
 				PI_EVAL_PROJECT_DIR: this.cwd,
 			},
@@ -537,14 +592,18 @@ export function makeEvalTool(opts: { cwd: string; ownerId?: string; lang?: () =>
 					text = text.slice(0, MAX_OUTPUT_CHARS) + `\n… [${text.length - MAX_OUTPUT_CHARS} chars truncated]`;
 				}
 
+				const maxDetailChars = MAX_OUTPUT_CHARS;
+				const truncateDetail = (s: string) =>
+					s && s.length > maxDetailChars ? s.slice(0, maxDetailChars) + `\n… [truncated]` : s;
+
 				return {
 					content: [{ type: "text", text }],
 					details: {
 						language,
 						durationMs,
 						ok: res.ok,
-						stdout: res.stdout,
-						stderr: res.stderr,
+						stdout: truncateDetail(res.stdout),
+						stderr: truncateDetail(res.stderr),
 						result: res.result,
 						error: res.error,
 						reset: params.reset ?? false,
