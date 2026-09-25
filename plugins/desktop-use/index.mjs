@@ -73,7 +73,9 @@ function runPs(script, args = [], { timeout = UIA_TIMEOUT_MS, signal } = {}) {
 			(err, stdout, stderr) => {
 				if (err) {
 					const tail = decode(stderr).trim().slice(-500);
-					reject(new Error(`powershell ${script.split(/[\\/]/).pop()} 失败：${err.message}${tail ? `（${tail}）` : ""}`));
+					reject(
+						new Error(`powershell ${script.split(/[\\/]/).pop()} 失败：${err.message}${tail ? `（${tail}）` : ""}`),
+					);
 					return;
 				}
 				const text = decode(stdout);
@@ -150,8 +152,8 @@ export default {
 			lastProbeAt: 0,
 			installer: null,
 			dumps: new Map(), // dumpKey -> { at, byId: Map(id -> {x,y,w,h,name,hwnd?}) }
-shotSeq: 0,
-shots: new Map(), // shotKey -> { at, winX, winY, winW, winH, imgW, imgH }
+			shotSeq: 0,
+			shots: new Map(), // shotKey -> { at, winX, winY, winW, winH, imgW, imgH }
 			dumpSeq: 0,
 			offs: [],
 		};
@@ -201,15 +203,15 @@ shots: new Map(), // shotKey -> { at, winX, winY, winW, winH, imgW, imgH }
 						process.kill(pid, 0);
 						return true; // 还活着：真有人在装
 					} catch {
-					try {
-						rmSync(join(host.dir, INSTALL_LOCK), { force: true });
-					} catch {
-						/* ignore */
+						try {
+							rmSync(join(host.dir, INSTALL_LOCK), { force: true });
+						} catch {
+							/* ignore */
+						}
+						host.log("info", "desktop-use: 回收 stale 安装锁（持有进程已死）");
+						return false;
 					}
-					host.log("info", "desktop-use: 回收 stale 安装锁（持有进程已死）");
-					return false;
 				}
-			}
 				return true;
 			} catch {
 				return false;
@@ -314,9 +316,7 @@ shots: new Map(), // shotKey -> { at, winX, winY, winW, winH, imgW, imgH }
 				finish(ok, why + (lastErr ? `：${lastErr}` : ""));
 			};
 			child.on("error", (err) => once(false, err.message));
-			child.on("exit", (code, signal) =>
-				once(code === 0, signal ? `npm 被终止（${signal}）` : `npm exit ${code}`),
-			);
+			child.on("exit", (code, signal) => once(code === 0, signal ? `npm 被终止（${signal}）` : `npm exit ${code}`));
 		}
 
 		// ---- 输入后端：nut-js 主用，PowerShell 兜底 ----
@@ -331,12 +331,10 @@ shots: new Map(), // shotKey -> { at, winX, winY, winW, winH, imgW, imgH }
 		function nutReadyOrThrow() {
 			if (st.nut) return true;
 			if (st.depsInstalling) {
-				throw new Error(
-					"输入依赖正在安装（约 1～3 分钟），稍后重试；只读的元素查询（desktop_elements）不受影响。",
-				);
+				throw new Error("输入依赖正在安装（约 1～3 分钟），稍后重试；只读的元素查询（desktop_elements）不受影响。");
 			}
 			// 自愈：上次探活失败超过 60 秒就后台重探一次（npm 刚装完时的瞬时锁/杀软扫描会导致误判，
-				// 重启后模块其实已经可用，不必重装也不必重启服务）
+			// 重启后模块其实已经可用，不必重装也不必重启服务）
 			if (!st.depsOk && Date.now() - st.lastProbeAt > 60_000) {
 				probeNut().then((ok2) => {
 					if (ok2 && !st.dead) {
@@ -366,7 +364,8 @@ shots: new Map(), // shotKey -> { at, winX, winY, winW, winH, imgW, imgH }
 				try {
 					if (Point) await mouse.setPosition(new Point(Math.round(x), Math.round(y)));
 					else if (mouse.move) await mouse.move({ x, y });
-					const b = String(button) === "right" ? Button?.RIGHT : String(button) === "middle" ? Button?.MIDDLE : Button?.LEFT;
+					const b =
+						String(button) === "right" ? Button?.RIGHT : String(button) === "middle" ? Button?.MIDDLE : Button?.LEFT;
 					if (double && typeof mouse.doubleClick === "function") {
 						await mouse.doubleClick(b);
 					} else if (typeof mouse.click === "function") {
@@ -457,26 +456,26 @@ shots: new Map(), // shotKey -> { at, winX, winY, winW, winH, imgW, imgH }
 		}
 
 		// ---- dump 缓存：id 只在 90 秒内有效 ----
-function rememberShot(info) {
-const key = `s${++st.shotSeq}`;
-st.shots.set(key, { at: Date.now(), ...info });
-if (st.shots.size > 8) st.shots.delete(st.shots.keys().next().value);
-return key;
-}
-function rememberDump(nodes) {
+		function rememberShot(info) {
+			const key = `s${++st.shotSeq}`;
+			st.shots.set(key, { at: Date.now(), ...info });
+			if (st.shots.size > 8) st.shots.delete(st.shots.keys().next().value);
+			return key;
+		}
+		function rememberDump(nodes) {
 			const key = `d${++st.dumpSeq}`;
 			const byId = new Map();
-for (const n of nodes) {
-if (n?.id && n?.rect) {
-const rec = {
-x: n.rect.x + n.rect.w / 2,
-y: n.rect.y + n.rect.h / 2,
-name: n.name ?? "",
-};
-if (n.hwnd) rec.hwnd = n.hwnd;
-byId.set(n.id, rec);
-}
-}
+			for (const n of nodes) {
+				if (n?.id && n?.rect) {
+					const rec = {
+						x: n.rect.x + n.rect.w / 2,
+						y: n.rect.y + n.rect.h / 2,
+						name: n.name ?? "",
+					};
+					if (n.hwnd) rec.hwnd = n.hwnd;
+					byId.set(n.id, rec);
+				}
+			}
 			st.dumps.set(key, { at: Date.now(), byId });
 			if (st.dumps.size > 8) {
 				const first = st.dumps.keys().next().value;
@@ -485,47 +484,52 @@ byId.set(n.id, rec);
 			return key;
 		}
 
-function resolvePoint({ dump, id, x, y, shot, text }) {
-	// 截图坐标优先：shot 快照 + 图内像素/文字匹配 → 屏幕坐标（自绘界面唯一可靠的点法）
-	if (shot !== undefined && shot !== null && String(shot) !== "") {
-		const s = st.shots.get(String(shot));
-		if (!s) throw new Error("没有这张截图：先调 desktop_screenshot，再用它返回的 shot + 图内坐标或文字点。");
-		if (Date.now() - s.at > DUMP_TTL_MS) throw new Error("截图已过期（>90s，窗口可能挪走）：重截一张再点。");
+		function resolvePoint({ dump, id, x, y, shot, text }) {
+			// 截图坐标优先：shot 快照 + 图内像素/文字匹配 → 屏幕坐标（自绘界面唯一可靠的点法）
+			if (shot !== undefined && shot !== null && String(shot) !== "") {
+				const s = st.shots.get(String(shot));
+				if (!s) throw new Error("没有这张截图：先调 desktop_screenshot，再用它返回的 shot + 图内坐标或文字点。");
+				if (Date.now() - s.at > DUMP_TTL_MS) throw new Error("截图已过期（>90s，窗口可能挪走）：重截一张再点。");
 
-		let imgX = x;
-		let imgY = y;
-		let viaText = "";
+				let imgX = x;
+				let imgY = y;
+				let viaText = "";
 
-		// 如果指定了 text，优先从 OCR 结果匹配文字坐标
-		if (text !== undefined && text !== null && String(text).trim() !== "") {
-			const q = String(text).trim();
-			const ocrList = s.ocr ?? [];
-			if (ocrList.length === 0) {
-				throw new Error(`截图 ${shot} 中未识别到文字或 OCR 未启用，请改传图内像素坐标 x+y。`);
+				// 如果指定了 text，优先从 OCR 结果匹配文字坐标
+				if (text !== undefined && text !== null && String(text).trim() !== "") {
+					const q = String(text).trim();
+					const ocrList = s.ocr ?? [];
+					if (ocrList.length === 0) {
+						throw new Error(`截图 ${shot} 中未识别到文字或 OCR 未启用，请改传图内像素坐标 x+y。`);
+					}
+					const qNoSpace = q.replace(/\s+/g, "").toLowerCase();
+					// 匹配优先级：精确匹配 > 去除空格精确匹配 > 包含匹配 > 忽略大小写包含
+					let hit = ocrList.find((it) => it.text === q);
+					if (!hit) hit = ocrList.find((it) => it.text.replace(/\s+/g, "").toLowerCase() === qNoSpace);
+					if (!hit) hit = ocrList.find((it) => it.text.toLowerCase().includes(q.toLowerCase()));
+					if (!hit) hit = ocrList.find((it) => q.toLowerCase().includes(it.text.toLowerCase()));
+					if (!hit) {
+						const cands = ocrList
+							.slice(0, 10)
+							.map((it) => `「${it.text}」`)
+							.join("、");
+						throw new Error(
+							`截图 ${shot} 的 OCR 结果中未找到文字「${q}」（图内文字如：${cands}${ocrList.length > 10 ? " 等" : ""}），请传 x+y 像素坐标或换关键词。`,
+						);
+					}
+					imgX = hit.cx;
+					imgY = hit.cy;
+					viaText = `OCR文字「${hit.text}」中心(${hit.cx},${hit.cy}) `;
+				}
+
+				if (typeof imgX !== "number" || typeof imgY !== "number") {
+					throw new Error("shot 模式要给图内像素坐标 x+y，或传 text 按文字定位（左上角为原点）。");
+				}
+				const sx = Math.round(s.winX + (imgX * s.winW) / s.imgW);
+				const sy = Math.round(s.winY + (imgY * s.winH) / s.imgH);
+				return { x: sx, y: sy, via: `截图 ${shot} ${viaText}图内(${imgX},${imgY})→屏幕(${sx},${sy})` };
 			}
-			const qNoSpace = q.replace(/\s+/g, "").toLowerCase();
-			// 匹配优先级：精确匹配 > 去除空格精确匹配 > 包含匹配 > 忽略大小写包含
-			let hit = ocrList.find((it) => it.text === q);
-			if (!hit) hit = ocrList.find((it) => it.text.replace(/\s+/g, "").toLowerCase() === qNoSpace);
-			if (!hit) hit = ocrList.find((it) => it.text.toLowerCase().includes(q.toLowerCase()));
-			if (!hit) hit = ocrList.find((it) => q.toLowerCase().includes(it.text.toLowerCase()));
-			if (!hit) {
-				const cands = ocrList.slice(0, 10).map((it) => `「${it.text}」`).join("、");
-				throw new Error(`截图 ${shot} 的 OCR 结果中未找到文字「${q}」（图内文字如：${cands}${ocrList.length > 10 ? " 等" : ""}），请传 x+y 像素坐标或换关键词。`);
-			}
-			imgX = hit.cx;
-			imgY = hit.cy;
-			viaText = `OCR文字「${hit.text}」中心(${hit.cx},${hit.cy}) `;
-		}
-
-		if (typeof imgX !== "number" || typeof imgY !== "number") {
-			throw new Error("shot 模式要给图内像素坐标 x+y，或传 text 按文字定位（左上角为原点）。");
-		}
-		const sx = Math.round(s.winX + (imgX * s.winW) / s.imgW);
-		const sy = Math.round(s.winY + (imgY * s.winH) / s.imgH);
-		return { x: sx, y: sy, via: `截图 ${shot} ${viaText}图内(${imgX},${imgY})→屏幕(${sx},${sy})` };
-	}
-	if (id !== undefined && id !== null && String(id) !== "") {
+			if (id !== undefined && id !== null && String(id) !== "") {
 				const d = dump ? st.dumps.get(String(dump)) : [...st.dumps.values()].pop();
 				if (!d) throw new Error("没有可用的元素快照：先调 desktop_elements 查一遍，再用它返回的 dump+id 点。");
 				if (Date.now() - d.at > DUMP_TTL_MS) {
@@ -535,10 +539,10 @@ function resolvePoint({ dump, id, x, y, shot, text }) {
 				if (!hit) throw new Error(`快照里没有 id=${id}：用 desktop_elements 返回的 id，不要猜。`);
 				return { x: hit.x, y: hit.y, via: `id ${id}（${hit.name || "未命名"}）` };
 			}
-if (typeof x === "number" && typeof y === "number") {
-return { x, y, via: "raw 屏幕坐标（非快照元素，点错风险自负）" };
-}
-throw new Error("给 shot+x+y（截图点，自绘界面用）或 dump+id（UIA 元素）或 x+y 屏幕坐标。");
+			if (typeof x === "number" && typeof y === "number") {
+				return { x, y, via: "raw 屏幕坐标（非快照元素，点错风险自负）" };
+			}
+			throw new Error("给 shot+x+y（截图点，自绘界面用）或 dump+id（UIA 元素）或 x+y 屏幕坐标。");
 		}
 
 		const fmtNodes = (nodes) =>
@@ -546,20 +550,20 @@ throw new Error("给 shot+x+y（截图点，自绘界面用）或 dump+id（UIA 
 				.slice(0, LIST_TEXT_CAP)
 				.map((n) => {
 					const r = n.rect;
-const label = n.name ? `「${n.name}」` : "(未命名)";
-const owner = n.proc ? ` <${n.proc}${n.cls ? `:${n.cls}` : ""}>` : "";
-return `- id=${n.id} [${n.type}] ${label}${owner} @(${r.x},${r.y},${r.w}x${r.h})`;
+					const label = n.name ? `「${n.name}」` : "(未命名)";
+					const owner = n.proc ? ` <${n.proc}${n.cls ? `:${n.cls}` : ""}>` : "";
+					return `- id=${n.id} [${n.type}] ${label}${owner} @(${r.x},${r.y},${r.w}x${r.h})`;
 				})
 				.join("\n");
 
-const GUIDELINES = [
-	"先 desktop_elements 查元素，再用返回的 dump+id 点/输：不要猜坐标，不要复用 90 秒前的 id",
-	"自绘界面（微信/QQ/游戏：elements 只有空壳）走截图流：desktop_screenshot 自动 OCR 提取文字与确切坐标 → 可直接传 text='文字' 或 (cx, cy) 点击，无需猜坐标",
-	"自绘界面输入文字时：微信/QQ 等输入框在窗口激活时默认聚焦，优先 desktop_window(focus) + desktop_type(text)（走剪贴板粘贴），避免盲传坐标误点失焦；若需定位点击输入，传 shot+click_text 或 shot+x+y+text 一步完成",
-	"跨回合/用户确认后前台必然切到浏览器：任何按键/输入前，必须先 desktop_window(action='focus') 把目标应用顶回前台再操作（如回车发送）",
-	"关闭/删除/提交/付款/发消息这类不可逆操作，先用一句话向用户确认目标，再动手",
-	"一次只点一个元素；点完用 desktop_elements 或 desktop_screenshot 复查结果，不要连点；常见软件操作范式见 docs/app-playbook.md",
-];
+		const GUIDELINES = [
+			"Query with desktop_elements first, then click/type using the returned dump+id: never guess coordinates, never reuse ids older than 90 seconds",
+			"Self-drawn UIs (WeChat/QQ/games: elements returns empty shells) use the screenshot flow: desktop_screenshot auto-OCRs text with exact coords — pass text='...' or (cx, cy) to desktop_click, no coordinate guessing",
+			"Typing into self-drawn UIs: WeChat/QQ input boxes are focused when the window is active — prefer desktop_window(focus) + desktop_type(text) (clipboard paste); to click-focus the input, pass shot+click_text or shot+x+y+text in one call",
+			"Across turns / after user confirmation the foreground always switches to the browser: before any key/type, first desktop_window(action='focus') to bring the target app forward (e.g. before Enter to send)",
+			"For irreversible actions (close/delete/submit/pay/send message), confirm the target with the user in one sentence before acting",
+			"Click one element at a time; verify with desktop_elements or desktop_screenshot after each click, no rapid-fire; see docs/app-playbook.md for common app patterns",
+		];
 
 		// ---- 工具注册 ----
 		const tools = [
@@ -567,9 +571,8 @@ const GUIDELINES = [
 				name: "desktop_elements",
 				label: "查桌面元素",
 				description:
-					"无截图枚举 Windows 控件（UI Automation 系统接口）：返回元素 id/类型/名字/矩形。做任何点击/输入之前先调它，用返回的 dump+id 定位。\n" +
 					"List Windows controls without screenshots (UI Automation): returns element id/type/name/rect. Call this before any click/type and locate targets with the returned dump+id.",
-				promptSnippet: "desktop_elements — 无截图查桌面控件坐标（先查后点）",
+				promptSnippet: "desktop_elements — list desktop controls without screenshots (query before click)",
 				promptGuidelines: GUIDELINES,
 				parameters: {
 					type: "object",
@@ -577,12 +580,21 @@ const GUIDELINES = [
 						scope: {
 							type: "string",
 							enum: ["foreground", "desktop", "window"],
-							description: "foreground = 当前前台窗口（默认）; desktop = 整个桌面（只取顶层窗口）; window = 按 title/process 找窗口。",
+							description:
+								"foreground = current foreground window (default); desktop = whole desktop (top-level windows only); window = find by title/process.",
 						},
-						title: { type: "string", description: "scope=window 时的窗口标题子串（标题易变的应用不可靠，优先用 process）。" },
-process: { type: "string", description: "scope=window 时的进程名子串（如 Weixin / WeChat / chrome）。标题是昵称、每次都变的应用（微信）用这个。" },
-						query: { type: "string", description: "按名字/类型/AutomationId 过滤（如 查地址栏 query=地址）。" },
-						max_nodes: { type: "number", description: "最多返回节点数（默认 200，上限 800）。" },
+						title: {
+							type: "string",
+							description:
+								"Window title substring when scope=window (unreliable for apps with volatile titles; prefer process).",
+						},
+						process: {
+							type: "string",
+							description:
+								"Process name substring when scope=window (e.g. Weixin / WeChat / chrome). Use this for apps whose title changes every launch (e.g. WeChat).",
+						},
+						query: { type: "string", description: "Filter by name/type/AutomationId (e.g. the address bar)." },
+						max_nodes: { type: "number", description: "Max nodes returned (default 200, cap 800)." },
 					},
 				},
 				async execute(_id, params, signal) {
@@ -594,9 +606,9 @@ process: { type: "string", description: "scope=window 时的进程名子串（�
 					const r = await runPs(
 						UIA_PS1,
 						psArgs({
-Scope: scope,
-Title: p.title ?? "",
-Process: p.process ?? "",
+							Scope: scope,
+							Title: p.title ?? "",
+							Process: p.process ?? "",
 							Query: p.query ?? "",
 							MaxNodes: maxNodes,
 							// Chromium 系控件嵌套深（地址栏常在 8 层左右），默认 8 层；desktop 只取顶层窗口
@@ -609,28 +621,43 @@ Process: p.process ?? "",
 					const head =
 						`快照 ${dump}（${r.count} 个元素${r.truncated ? "，已截断" : ""}，90 秒内有效，root=${r.root ?? "?"}）：\n` +
 						fmtNodes(r.nodes ?? []);
-					return { content: [{ type: "text", text: head }], details: { dump, count: r.count, truncated: !!r.truncated } };
+					return {
+						content: [{ type: "text", text: head }],
+						details: { dump, count: r.count, truncated: !!r.truncated },
+					};
 				},
 			},
 			{
 				name: "desktop_click",
 				label: "点桌面元素",
 				description:
-					"点击：① desktop_screenshot 截图流（自绘界面用）：传 shot + 图内像素 x+y，或传 shot + text 直接按识别出的文字点击（自动对齐 OCR 中心点）；② dump+id（UIA 元素，点矩形中心）；③ raw 屏幕 x+y（不推荐）。\n" +
-					"Click: ① shot + in-image x/y or shot + text (OCR text match for self-drawn UIs); ② dump+id (UIA element center); ③ raw screen x/y (discouraged).",
-				promptSnippet: "desktop_click — 按截图坐标/文字/元素id点击",
+					"Click: (1) screenshot flow for self-drawn UIs — pass shot + in-image pixel x/y, or shot + text to click by recognized OCR text (auto-centered); (2) dump+id (UIA element center); (3) raw screen x/y (discouraged).",
+				promptSnippet: "desktop_click — click by screenshot coords/text or element id",
 				promptGuidelines: GUIDELINES,
 				parameters: {
 					type: "object",
 					properties: {
-						shot: { type: "string", description: "desktop_screenshot 返回的截图 key（截图流点法，配合 x+y 或 text 使用）。" },
-						text: { type: "string", description: "可选：按截图上的文字内容定位点击（需配合 shot 使用，自动匹配 OCR 文本中心点，免猜坐标）。" },
-						dump: { type: "string", description: "desktop_elements 返回的快照 key。" },
-						id: { type: "string", description: "元素 id（如 0.2.1）。" },
-						x: { type: "number", description: "shot 模式=图内像素 X（传 text 时可省略）；无 shot/id=raw 屏幕 X。" },
-						y: { type: "number", description: "shot 模式=图内像素 Y（传 text 时可省略）；无 shot/id=raw 屏幕 Y。" },
-						button: { type: "string", enum: ["left", "right", "middle"], description: "默认 left。" },
-						double: { type: "boolean", description: "双击，默认 false。" },
+						shot: {
+							type: "string",
+							description: "Screenshot key returned by desktop_screenshot (screenshot flow; use with x+y or text).",
+						},
+						text: {
+							type: "string",
+							description:
+								"Optional: click by text on the screenshot (requires shot; auto-matches the OCR text center — no coordinate guessing).",
+						},
+						dump: { type: "string", description: "Snapshot key returned by desktop_elements." },
+						id: { type: "string", description: "Element id (e.g. 0.2.1)." },
+						x: {
+							type: "number",
+							description: "shot mode = in-image pixel X (omit when text given); raw screen X when no shot/id.",
+						},
+						y: {
+							type: "number",
+							description: "shot mode = in-image pixel Y (omit when text given); raw screen Y when no shot/id.",
+						},
+						button: { type: "string", enum: ["left", "right", "middle"], description: "Defaults to left." },
+						double: { type: "boolean", description: "Double-click, default false." },
 					},
 				},
 				async execute(_id, params, signal) {
@@ -645,19 +672,31 @@ Process: p.process ?? "",
 				name: "desktop_screenshot",
 				label: "窗口截图",
 				description:
-					"截指定窗口（PrintWindow，被遮挡也能截；失败报 blank）：返回截图 + 窗口左上角屏幕坐标与缩放比 + 图内文字识别（OCR），图里会画出当前鼠标指针并附带其图内/屏幕坐标。在图里找到元素后，把图内像素坐标 {x,y} 传给 desktop_click（带 shot），或直接传 shot+text 匹配文字点击——自绘界面（微信/QQ/游戏）就靠这条链路交互。\n" +
-					"Screenshot a window (PrintWindow, works occluded): returns image + window top-left + scale + OCR text with pixel coords, with live mouse cursor drawn into image. Pass in-image coords {x,y} or text to desktop_click with shot — the way to drive self-drawn UIs.",
-				promptSnippet: "desktop_screenshot — 窗口截图+文字OCR识别+鼠标位置",
+					"Screenshot a window (PrintWindow, works even when occluded): returns image + window top-left screen coords + scale + OCR text with in-image pixel coords; the live mouse cursor is drawn into the image with its coords. Find the target in the image, then pass in-image {x,y} to desktop_click (with shot), or shot+text to click by text — the way to drive self-drawn UIs (WeChat/QQ/games).",
+				promptSnippet: "desktop_screenshot — window screenshot + OCR text + mouse position",
 				promptGuidelines: GUIDELINES,
 				parameters: {
 					type: "object",
 					properties: {
-						dump: { type: "string", description: "可选：desktop_elements 快照 key（配 id 精确定到那扇窗）。" },
-						id: { type: "string", description: "可选：快照里的窗口 id（type=Window 的那条）。" },
-						title: { type: "string", description: "窗口标题子串（标题易变的不靠谱，优先 process/dump+id）。" },
-						process: { type: "string", description: "进程名子串（如 Weixin / msedge）。" },
-						max_width: { type: "number", description: "截图下发宽度上限 px（默认 1280，越小越省 token，坐标照换算）。" },
-						ocr: { type: "boolean", description: "是否自动识别图内文字及坐标（默认 true）。开启后返回每个文字的图内精确像素坐标与中心点。" },
+						dump: {
+							type: "string",
+							description: "Optional: desktop_elements snapshot key (with id to target that exact window).",
+						},
+						id: { type: "string", description: "Optional: window id from the snapshot (the type=Window entry)." },
+						title: {
+							type: "string",
+							description: "Window title substring (unreliable for volatile titles; prefer process or dump+id).",
+						},
+						process: { type: "string", description: "Process name substring (e.g. Weixin / msedge)." },
+						max_width: {
+							type: "number",
+							description: "Max delivered image width in px (default 1280; smaller saves tokens, coords still scale).",
+						},
+						ocr: {
+							type: "boolean",
+							description:
+								"Auto OCR of in-image text and coords (default true); returns precise pixel coords and center for each text.",
+						},
 					},
 				},
 				async execute(_id, params, signal) {
@@ -669,7 +708,10 @@ Process: p.process ?? "",
 						const d = p.dump ? st.dumps.get(String(p.dump)) : [...st.dumps.values()].pop();
 						const hit = d?.byId.get(String(p.id));
 						if (hit?.hwnd) hwnd = hit.hwnd;
-						else throw new Error("该 id 没有窗口句柄（只有 type=Window 的节点能截图）：用窗口那条的 id，或改传 process/title。");
+						else
+							throw new Error(
+								"该 id 没有窗口句柄（只有 type=Window 的节点能截图）：用窗口那条的 id，或改传 process/title。",
+							);
 					}
 					const maxWidth = Math.min(1920, Math.max(320, Math.floor(Number(p.max_width) || 1280)));
 					const ocrEnabled = p.ocr !== false ? 1 : 0;
@@ -681,29 +723,58 @@ Process: p.process ?? "",
 					try {
 						r = await runPs(SHOT_PS1, psArgs(args), { timeout: 60000, signal });
 					} finally {
-						if (!r?.out) { try { rmSync(outFile, { force: true }); } catch {} }
+						if (!r?.out) {
+							try {
+								rmSync(outFile, { force: true });
+							} catch {}
+						}
 					}
 					if (!r?.ok) throw new Error(`截图失败：${r?.error ?? "unknown"}`);
-					if (r.blank) throw new Error(`截出来是空白（窗口最小化/被保护？）：先 desktop_window focus 到前台再截。窗口左上角=(${r.x},${r.y})，${r.hint ?? ""}`);
+					if (r.blank)
+						throw new Error(
+							`截出来是空白（窗口最小化/被保护？）：先 desktop_window focus 到前台再截。窗口左上角=(${r.x},${r.y})，${r.hint ?? ""}`,
+						);
 					let png;
 					try {
 						png = readFileSync(r.out);
 					} finally {
-						try { rmSync(r.out, { force: true }); } catch {}
+						try {
+							rmSync(r.out, { force: true });
+						} catch {}
 					}
 					if (!png || png.length < 1000) throw new Error("截图文件异常（太小），重试一次。");
 					const ocrList = Array.isArray(r.ocr) ? r.ocr : [];
-					const key = rememberShot({ winX: r.x, winY: r.y, winW: r.w, winH: r.h, imgW: r.imgW, imgH: r.imgH, ocr: ocrList });
+					const key = rememberShot({
+						winX: r.x,
+						winY: r.y,
+						winW: r.w,
+						winH: r.h,
+						imgW: r.imgW,
+						imgH: r.imgH,
+						ocr: ocrList,
+					});
 					let cursorLine = "鼠标光标在窗口外（cursor outside window），图里看不到指针。";
 					if (r.cursorInWin) {
-						const drawNote = r.cursorDrawn ? "已画进图里" : (r.cursorMarker ? "指针正隐藏（打字中），已用红圈标记位置" : "在窗口内但绘制失败，以坐标为准");
+						const drawNote = r.cursorDrawn
+							? "已画进图里"
+							: r.cursorMarker
+								? "指针正隐藏（打字中），已用红圈标记位置"
+								: "在窗口内但绘制失败，以坐标为准";
 						cursorLine = `鼠标光标（${drawNote}）：图内坐标=(${r.cursorImgX},${r.cursorImgY})，屏幕坐标=(${r.cursorX},${r.cursorY})——可据此确认上次点击落点；文本插入符（输入框竖线）是闪烁的，截图时可能正好熄灭，以鼠标位置+输入框聚焦态为准。`;
 					}
 					let ocrSection = "";
 					if (ocrList.length > 0) {
 						const showCount = 80;
-						const lines = ocrList.slice(0, showCount).map((item) => `- 「${item.text}」 @(${item.x},${item.y},${item.w}x${item.h}) → 中心 (${item.cx},${item.cy})`);
-						const more = ocrList.length > showCount ? `\n...（还有 ${ocrList.length - showCount} 处文字省略，完整见 details.ocr）` : "";
+						const lines = ocrList
+							.slice(0, showCount)
+							.map(
+								(item) =>
+									`- 「${item.text}」 @(${item.x},${item.y},${item.w}x${item.h}) → 中心 (${item.cx},${item.cy})`,
+							);
+						const more =
+							ocrList.length > showCount
+								? `\n...（还有 ${ocrList.length - showCount} 处文字省略，完整见 details.ocr）`
+								: "";
 						ocrSection = `\n图内文字定位（OCR，共 ${ocrList.length} 处）：\n${lines.join("\n")}${more}\n`;
 					}
 					const caption =
@@ -718,7 +789,24 @@ Process: p.process ?? "",
 							{ type: "text", text: caption },
 							{ type: "image", data: png.toString("base64"), mimeType: "image/png" },
 						],
-						details: { shot: key, x: r.x, y: r.y, w: r.w, h: r.h, imgW: r.imgW, imgH: r.imgH, method: r.method, cursorDrawn: !!r.cursorDrawn, cursorMarker: !!r.cursorMarker, cursorInWin: !!r.cursorInWin, cursorX: r.cursorX, cursorY: r.cursorY, cursorImgX: r.cursorImgX, cursorImgY: r.cursorImgY, ocr: ocrList },
+						details: {
+							shot: key,
+							x: r.x,
+							y: r.y,
+							w: r.w,
+							h: r.h,
+							imgW: r.imgW,
+							imgH: r.imgH,
+							method: r.method,
+							cursorDrawn: !!r.cursorDrawn,
+							cursorMarker: !!r.cursorMarker,
+							cursorInWin: !!r.cursorInWin,
+							cursorX: r.cursorX,
+							cursorY: r.cursorY,
+							cursorImgX: r.cursorImgX,
+							cursorImgY: r.cursorImgY,
+							ocr: ocrList,
+						},
 					};
 				},
 			},
@@ -726,20 +814,33 @@ Process: p.process ?? "",
 				name: "desktop_type",
 				label: "向桌面输入",
 				description:
-					"向输入框打字：英文走键盘，中文/emoji 走剪贴板粘贴。支持直接传 shot+x+y（截图流，自绘界面强烈推荐）或 shot+click_text（按文字定位点击）或 dump+id（UIA 元素）自动先点聚焦再输入，避免分两步调用因跨回合窗口失焦导致输入丢失。单次限 2000 字符。\n" +
-					"Type into an input: English via keyboard, Chinese/emoji via clipboard paste. Supports shot+x+y or shot+click_text (self-drawn UIs) or dump+id (UIA) to auto-click and focus before typing. 2000 chars max per call.",
-				promptSnippet: "desktop_type — 打字/粘贴中文（支持先点再输）",
+					"Type into an input: English via keyboard, Chinese/emoji via clipboard paste. Pass shot+x+y, shot+click_text (self-drawn UIs) or dump+id to auto-click and focus first, avoiding lost input from cross-turn focus loss. 2000 chars max per call.",
+				promptSnippet: "desktop_type — type/paste text (can click-focus first)",
 				promptGuidelines: GUIDELINES,
 				parameters: {
 					type: "object",
 					properties: {
-						text: { type: "string", description: "要输入的文本。" },
-						click_text: { type: "string", description: "可选：先按截图上的文字内容定位点击聚焦（需配合 shot 使用，自动匹配 OCR 文本中心点）。" },
-						shot: { type: "string", description: "可选：desktop_screenshot 返回的截图 key（自绘界面推荐，与 x+y 或 click_text 配合先点聚焦再输入）。" },
-						dump: { type: "string", description: "可选：先点快照里的 id 聚焦。" },
-						id: { type: "string", description: "可选：元素 id（先点它再输）。" },
-						x: { type: "number", description: "shot 模式=图内像素 X（传 click_text 时可省略）；无 shot/id=raw 屏幕 X。" },
-						y: { type: "number", description: "shot 模式=图内像素 Y（传 click_text 时可省略）；无 shot/id=raw 屏幕 Y。" },
+						text: { type: "string", description: "Text to type." },
+						click_text: {
+							type: "string",
+							description:
+								"Optional: first click-focus by text on the screenshot (requires shot; auto-matches the OCR text center).",
+						},
+						shot: {
+							type: "string",
+							description:
+								"Optional: screenshot key from desktop_screenshot (recommended for self-drawn UIs; use with x+y or click_text to click-focus first).",
+						},
+						dump: { type: "string", description: "Optional: snapshot key to click an id first for focus." },
+						id: { type: "string", description: "Optional: element id (clicked first, then types)." },
+						x: {
+							type: "number",
+							description: "shot mode = in-image pixel X (omit when click_text given); raw screen X when no shot/id.",
+						},
+						y: {
+							type: "number",
+							description: "shot mode = in-image pixel Y (omit when click_text given); raw screen Y when no shot/id.",
+						},
 					},
 					required: ["text"],
 				},
@@ -747,7 +848,12 @@ Process: p.process ?? "",
 					requireWin();
 					const p = params ?? {};
 					let via = "";
-					if (p.shot !== undefined || p.id !== undefined || (typeof p.x === "number" && typeof p.y === "number") || p.click_text !== undefined) {
+					if (
+						p.shot !== undefined ||
+						p.id !== undefined ||
+						(typeof p.x === "number" && typeof p.y === "number") ||
+						p.click_text !== undefined
+					) {
 						const pt = resolvePoint({ ...p, text: p.click_text });
 						via = `，已先聚焦 ${pt.via}`;
 						await doClick(pt.x, pt.y, {}, signal);
@@ -760,15 +866,13 @@ Process: p.process ?? "",
 			{
 				name: "desktop_key",
 				label: "按键/快捷键",
-				description:
-					'按键或组合键：keys 如 "enter" / "esc" / "tab" / "ctrl+c" / "alt+F4" / "win+r" / "F5"。\n' +
-					'Press keys/combos: e.g. "enter", "esc", "ctrl+c", "alt+F4", "win+r".',
-				promptSnippet: "desktop_key — 按键/快捷键",
+				description: 'Press a key or combo: keys like "enter" / "esc" / "tab" / "ctrl+c" / "alt+F4" / "win+r" / "F5".',
+				promptSnippet: "desktop_key — press keys/shortcuts",
 				promptGuidelines: GUIDELINES,
 				parameters: {
 					type: "object",
 					properties: {
-						keys: { type: "string", description: '按键，如 "enter" / "ctrl+c" / "alt+F4"。' },
+						keys: { type: "string", description: 'Keys, e.g. "enter" / "ctrl+c" / "alt+F4".' },
 					},
 				},
 				async execute(_id, params, signal) {
@@ -782,15 +886,14 @@ Process: p.process ?? "",
 				name: "desktop_window",
 				label: "窗口列表/聚焦",
 				description:
-					"列出顶层窗口（action=list）或把窗口顶到前台（action=focus + title 子串）。操作某应用前先 focus 它，再 desktop_elements 查。\n" +
-					"List top-level windows or focus one by title substring. Focus the app first, then desktop_elements.",
-				promptSnippet: "desktop_window — 列窗口/聚焦",
+					"List top-level windows (action=list) or bring one to the foreground (action=focus + title substring). Focus the app before operating on it, then desktop_elements.",
+				promptSnippet: "desktop_window — list/focus windows",
 				promptGuidelines: GUIDELINES,
 				parameters: {
 					type: "object",
 					properties: {
-						action: { type: "string", enum: ["list", "focus"], description: "list 或 focus。" },
-						title: { type: "string", description: "focus 时的窗口标题子串。" },
+						action: { type: "string", enum: ["list", "focus"], description: "list or focus." },
+						title: { type: "string", description: "Window title substring for focus." },
 					},
 				},
 				async execute(_id, params, signal) {
@@ -807,15 +910,16 @@ Process: p.process ?? "",
 						await new Promise((r2) => setTimeout(r2, 400));
 						return `已聚焦：${r.title}`;
 					}
-					const r = await runPs(
-						UIA_PS1,
-						psArgs({ Scope: "desktop", MaxNodes: 120, MaxDepth: 1 }),
-						{ signal },
-					);
+					const r = await runPs(UIA_PS1, psArgs({ Scope: "desktop", MaxNodes: 120, MaxDepth: 1 }), { signal });
 					if (!r?.ok) throw new Error(`窗口枚举失败：${r?.error ?? "unknown"}`);
 					const wins = (r.nodes ?? []).filter((n) => n.type === "Window" && n.name);
 					if (wins.length === 0) return "没有可见顶层窗口。";
-					return `顶层窗口（${wins.length}，标题易变的认进程名）：\n` + wins.map((w) => `- 「${w.name}」${w.proc ? ` (${w.proc}.exe${w.cls ? ` / ${w.cls}` : ""})` : ""}`).join("\n");
+					return (
+						`顶层窗口（${wins.length}，标题易变的认进程名）：\n` +
+						wins
+							.map((w) => `- 「${w.name}」${w.proc ? ` (${w.proc}.exe${w.cls ? ` / ${w.cls}` : ""})` : ""}`)
+							.join("\n")
+					);
 				},
 			},
 		];

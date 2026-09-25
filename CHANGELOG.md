@@ -10,10 +10,24 @@
 
 ## [Unreleased]
 
+### Added
+
+- **内置 LSP 工具新增四个语义动作（#331 Phase 1）** —— `documentSymbol`（分层符号大纲，带行跨度与 300 条防洪截断）、`read_symbol`（按符号名/点分路径精准读取实现体，双遍扫描精确匹配优先、400 行截断、未命中时自愈提示可用符号）、`workspaceSymbol`（工作区全局符号搜索，100 条上限，可不传 `path` 自动探测主文件路由语言服务）、`cascade`（编辑影响级联：查引用方文件并聚合其编译诊断，改坏签名当轮即暴露）。提示词开销保持 ~350 tokens；设置页工具说明中英文同步。
+
+### Changed
+
+- **输入框 `@` 提及支持技能（skills）自动补全** —— 在消息文本任意位置键入 `@` 或 `@skill:` 即可弹出技能候选列表（名称匹配优先于描述匹配，支持中英文双语描述检索与 `@page` 页面置顶防挤占）；点选后自动在光标处插入 `@skill:<name>` 词元，与 Pi 运行时的技能提升扩展无缝联动。
+- **收敛型澄清提问与决策就绪型计划规范（#330）** —— `ask_user_question` 现在单次严格限制 1~3 个问题（优先 1 个，超过 3 个直接报错阻断，防止问卷轰炸），选项 schema 收紧为 2~4 个互斥选项且推荐方案置顶，选项 description 要求一句话说明影响与权衡；`plan_update` 提示词升级为「决策就绪型」规划：动代码前先在步骤中落实排查发现（Discovery）、受影响文件清单（File Touch List）与风险回滚预案（Rollback），并随执行实时流转步骤状态。目标向导（`goal_ask` / wizardPrompt）与 DSH 澄清提示词同步对齐收敛型交互。
+
 <!-- auto-i18n:start -->
+
 ### i18n
 
 - 前端新增 key（5）：`piCoreSplitRun`、`piSdkSplitNote`、`piSdkBundledNote`、`installGlobalEngineBtn`、`installGlobalEngineTabTitle`
+- 前端中文变更（1）：`lspToolEnabledDesc`
+- 前端英文变更（1）：`lspToolEnabledDesc`
+- 服务端新增 key（1）：`terminals.command.blocked`
+
 <!-- auto-i18n:end -->
 
 ## [0.95.0] — 2026-09-24
@@ -36,9 +50,11 @@
 - **受控的持久代码求值沙箱工具 `eval`（opt-in，默认关）** — 新第一方 customTool：在隔离子进程中执行 Python（`py`）或 JavaScript/TypeScript（`js`/`ts`），变量与导入跨调用保持，顶层表达式自动求值回显（省掉以往 `write` 临时脚本 → `bash` 跑 → 删文件的三步流程）。设计要点：① 默认关（`AGENT_TOOL_CATALOG` 里 `defaultOn: false`），关掉 AI 不知道有它，杜绝「什么问题都塞进内核」的工具挤占；② 每个会话一个独立内核进程 + 独立临时目录（cwd 不落在项目里，项目路径经 `PROJECT_DIR` 变量显式引用），关对话 / 停服务即回收进程树（Windows `taskkill /F /T`，Unix `SIGKILL` 进程组），不留孤儿；③ 单请求默认 15s、上限 120s 硬超时，超时杀进程树后内核自动重启，不会把会话拖死；④ 驱动协议串行排队，并行 `eval` 调用不会互相覆盖 resolver；⑤ stderr 持续排空，避免原生扩展写满管道缓冲造成假超时。DSH 引擎无 customTool 注册面，不接。
 
 ### Changed
+
 - **插件 manifest 校验失败即拒（P1-6）** — 坏 manifest 不再带病启动：`id` 非法/与目录名不一致、`apiVersion` 非法、未知能力拼写、`engines`/`permissions`/`ui` 坏形状、v2 不声明 `permissions`、有 `ui` 声明却无 `ui` 能力，都会拒绝激活（scan 置红 + 诊断随清单下发，activate 重判）。以前其中两类（v2 无能力声明、只有别的能力却写 `ui`）是"激活成功但 ui 静默忽略"，现在是明确拒绝；纯警告（坏文本字段/坏数组字段/截断）仍不阻断。未来版本（`apiVersion` 大于宿主）仍走版本门出"请升级"，校验层不抢错。
 
 ### Fixed
+
 - **目标调研向导：切会话不再丢弃调研成果，且消息流里有「原始目标草案」卡片（#292）** — 两处修复：① `setGoal` 新增 `targetConvId`，调研收敛后把目标写到**发起调研的那个对话**（原来是硬读 `activeConv` 再一刀切丢：「已切换对话，目标调研结果已丢弃」——用户在向导问答期间切去看代码/文档是常态，多轮问答瞬间白做）；发起会话已关闭时响亮拒绝而不是静默丢。完成通知随之改成点名会话（`🎯 会话「title」目标调研完成，目标已设为…`），取消/无结果时也告诉用户草案还在哪儿。② 调研开始先往发起对话推一张只读「🎯 原始目标草案」卡片，排在所有提问之前——调研被超时/取消打断后，用户至少能把自己最初写的那段需求读回来、复制重试，而不是面对一片空白。
 - **子代理（in-memory 会话）的扩展错误不再按轮数刷屏（#298）** — `SessionManager.inMemory(cwd)` 建出来的子代理会话取不到会话目录（`getSessionDir()` 返回空串），而 SDK 的 `ExtensionRunner.emitContext()` 在**每次 provider 请求**前都会跑一遍扩展的 `context` hook，于是「会话目录依赖型」扩展（如 SoL-Pi 的 `runtimeRoot()`）每轮都抛同一个错。原 `bindExtensions` 的 `onError` 把错误原样广播成 notice：不去重、不带会话归属、不落服务端日志，一个子代理跑 N 轮就弹 N 条，且看不出是哪个会话出的问题。现改为共享的 `makeExtensionErrorReporter()`：① 同一会话内「扩展 + 事件 + 错误文本」只提示一次；② 子代理的 notice 带 `子代理 <conversationId>：` 前缀（与同函数内其它子代理通知口径一致）；③ 全量错误（含 extensionPath / event / stack）始终 `console.error` 落服务端日志。主对话（持久会话）行为不变，只是多了去重与日志。
 - **插件市场仅同步列表时保留已激活插件实例（#296，感谢 @StarryJia）** — 启动预同步和手动目录同步不再重载插件，避免重新激活时重复广播当前工作目录。
@@ -51,6 +67,7 @@
 - **任务执行看板与对话列等宽** — Plan Mode 的任务执行看板（`PlanBoard`）此前写死左右各 16px 外边距，没走 `.main` 的列 token（`--chat-inset`）：桌面 / 宽屏聊天列下比消息列与输入框宽一截、手机上又比它们窄一点，左右边缘始终对不齐。现改为同一条列 token（`.plan-board` 落进 `styles.css`，与 `.goalbar` / 问卷面板同口径），任何视口宽度与「宽屏聊天列」开关下都与输入框严格齐平。回归：`tests/chat-column-align-test.mjs` 新增看板条目。
 
 <!-- auto-i18n:start -->
+
 ### i18n
 
 - 前端新增 key（104）：`newChatEphemeral`、`newChatEphemeralTip`、`ephemeralBadge`、`ephemeralBannerText`、`elsewhereActions`、`takeoverConfirm`、`saveEphemeral`、`forkSession`、`forkSessionTip`、`rollbackSession`、`rollbackSessionTip`、`rollbackConfirm`、`rollbackRestoreWorkspace`、`rollbackRestoreWorkspaceTip`、`toolApprovalTitle`、`toolApprovalApprove`、`toolApprovalDeny`、`toolApprovalEditAndRun`、`toolApprovalRiskAlert`、`toolApprovalCommand`、`toolApprovalParams`、`toolApprovalEditPlaceholder`、`toolApprovalReason`、`toolApprovalCategory`、`toolApprovalAllowCategory`、`toolApprovalAllowCategoryHint`、`toolApprovalAllowConversation`、`toolApprovalAllowConversationHint`、`toolApprovalEnabled`、`toolApprovalEnabledDesc`、`toolApprovalPolicyTitle`、`toolApprovalPolicyAllowAll`、`toolApprovalPolicyRevoke`、`toolApprovalPolicyHint`、`settingsApprovalRules`、`settingsApprovalRulesDesc`、`manageApprovalRules`、`approvalRuleNew`、`approvalRuleEdit`、`approvalRuleDelete`、`approvalRuleReset`、`approvalRuleResetConfirm`、`approvalRuleDeleteConfirm`、`approvalRuleActionAsk`、`approvalRuleActionDeny`、`approvalRuleActionAllow`、`approvalRuleTools`、`approvalRuleToolsTip`、`approvalRuleField`、`approvalRuleFieldCommand`、`approvalRuleFieldPath`、`approvalRuleFieldParams`、`approvalRuleMatch`、`approvalRuleMatchRegex`、`approvalRuleMatchGlob`、`approvalRuleMatchContains`、`approvalRuleMatchPrefix`、`approvalRuleMatchOutsideWs`、`approvalRuleValue`、`approvalRuleValueTip`、`approvalRuleLabel`、`approvalRuleLabelEn`、`approvalRuleReason`、`approvalRuleReasonEn`、`approvalRuleEnabled`、`approvalRuleBuiltin`、`approvalRuleEmpty`、`approvalRuleMoveUp`、`approvalRuleMoveDown`、`planBoardTitle`、`planBoardSteps`、`planBoardProgress`、`planBoardNoPlan`、`planBoardCompleted`、`planBoardInProgress`、`planBoardPending`、`planBoardFailed`、`clear`、`confirm`、`forkBadge`、`forkBadgeTip`、`goalBarBlocked`、`toolsPresetBanner`、`toolsBackToStandard`、`toolsBlockedByPreset`、`skillsHiddenByPreset`、`terminalBashMaxForegroundMs`、`terminalBashMaxForegroundMsDesc`、`pluginInspectAlreadyInstalled`、`pluginInspectInvalid`、`pluginInspectNotPlugin`、`pluginInspectNetwork`、`uiLayoutDiagTitle`、`uiLayoutDiagHint`、`planUpdateEnabledDesc`、`planUpdateOffHint`、`compactContextEnabledDesc`、`compactContextOffHint`、`evalEnabledDesc`、`evalOffHint`、`patchToolEnabledDesc`、`patchToolOffHint`、`lspToolEnabledDesc`、`lspToolOffHint`
@@ -60,6 +77,7 @@
 - 服务端新增 key（14）：`editsoft.fragment.not.supported`、`goal.wizard.draft.card`、`goal.autonomous.pass`、`goal.review.blocked`、`goal.autonomous.continue`、`goal.review.blocked_msg`、`plugins.requires.cycle`、`plugins.manifest.invalid`、`plugins.requires.cascade`、`subagents.handoff.self`、`subagents.handoff.not.found`、`subagents.handoff.success`、`subagents.handoff.failed`、`terminals.bash.background.elapsed`
 - 服务端文案变更（1）：`terminals.bash.background.running`
 - 服务端删除 key（2）：`dsh.attach.file.large`、`dsh.attach.file.ref.fallback`
+
 <!-- auto-i18n:end -->
 
 ## [0.94.1] — 2026-09-22

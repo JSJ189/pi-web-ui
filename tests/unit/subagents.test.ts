@@ -795,12 +795,12 @@ describe("subagents language (issue #91)", () => {
 		expect((r2.content?.[0] as { text: string }).text).toContain("No subagent templates");
 	});
 
-	it("工具 definition 中英内联（英文在前）", () => {
+	it("工具 definition 为纯英文（无双语内联）", () => {
 		const host = makeHostSpies();
 		const [spawn] = makeSubagentTools(host);
 		expect(spawn.description).toContain("subagent");
-		// 中文半句仍在（zh 会话行为不变）
-		expect(spawn.description).toContain("子代理");
+		// 纯英文精简约定：definition 不再携带中文半句
+		expect(spawn.description).not.toMatch(/[\u4e00-\u9fff]/);
 	});
 });
 

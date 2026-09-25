@@ -12,7 +12,7 @@
 
 import { defineTool, type ToolDefinition } from "@earendil-works/pi-coding-agent";
 import { Type, type Static } from "typebox";
-import { bilingual, pick, type ServerLang } from "./i18n.js";
+import { pick, type ServerLang } from "./i18n.js";
 import { COMPACT_CONTEXT_TOOL_NAME } from "./tool-manager.js";
 
 /** 工具名（唯一登记在 tool-manager.ts，在此 re-export 供外部模块引用）。 */
@@ -86,18 +86,18 @@ export function buildCompactionInstructions(focus: string, customSummary?: strin
 export const CompactContextParams = Type.Object({
 	focus: Type.String({
 		description:
-			"Specific focus and requirements for context compaction based on the current issue or task. Clearly specify: 1) The active problem/goal being solved; 2) Crucial context to PRESERVE (key architectural decisions, code changes, conventions, user constraints); 3) Distractions or historical details to REMOVE or aggressively condense (failed attempts, resolved debugging outputs, off-topic discussions).\n根据当前问题/任务制定的上下文压缩重点。请指明：1) 当前正在解决的核心任务或问题；2) 必须保留的核心上下文（架构决策、已确认修改、约定规范等）；3) 应当丢弃或极简概括的无关历史（错误尝试、冗长排查、其他不相关讨论等）。",
+			"Compression focus and requirements for the current issue/task. State: 1) the active problem/goal; 2) context to PRESERVE (key decisions, code changes, conventions, user constraints); 3) what to REMOVE or condense (failed attempts, resolved debugging, off-topic history).",
 	}),
 	keepRecentTokens: Type.Optional(
 		Type.Number({
 			description:
-				"Optional scope of recent tokens to keep uncompacted (e.g. 1000 - 64000). Smaller values (e.g. 3000-8000) compact more aggressively, retaining only immediate context. Larger values retain more recent history. If omitted, the system automatically calculates a reasonable retention scope based on session size.\n可选的近期不压缩保留 token 范围（1000 - 64000）。较小值（如 3000-8000）压缩更彻底，只保留紧贴当前的上下文；较大值保留更多近期操作。不传时系统会根据当前会话规模自动计算合理的保留范围。",
+				"Recent tokens to keep uncompacted (1000-64000). Smaller values (e.g. 3000-8000) compact more aggressively. Omit = auto-calculated from session size.",
 		}),
 	),
 	summary: Type.Optional(
 		Type.String({
 			description:
-				"Optional custom structured summary text written directly by you. If provided, this summary will be used as the core basis for the compaction entry.\n可选由你自主直接编写的精炼结构化摘要正文。若提供，系统将以此摘要为核心作为压缩总结。",
+				"Custom structured summary written by you; used as the core basis for the compaction entry if provided.",
 		}),
 	),
 });
@@ -110,10 +110,9 @@ export function makeCompactContextTool(host: CompactContextHost, lang?: () => Se
 	return defineTool<typeof CompactContextParams, Record<string, unknown>>({
 		name: COMPACT_CONTEXT_TOOL_NAME,
 		label: "Compact conversation context based on current issue",
-		description: bilingual(
-			"Compress/compact the conversation context based on the current task or problem. You can specify what context to preserve (key decisions, code structure, requirements related to the current issue) and what to drop or summarize heavily (unrelated explorations, verbose tool outputs, resolved debugging steps). You can also control the compaction scope by setting how many recent tokens to keep untouched. Compaction executes when the current turn/run settles, refreshing the context for subsequent turns.",
-			"根据当前任务或问题主动压缩上下文。你可以自主指定需要保留的关键信息（与当前问题相关的决策、代码结构、核心规范）以及需要丢弃或深度压缩的无关内容（无关探索、冗长输出、已解决的历史排查）。还可以通过指定保留最近的 token 数量来控制压缩范围。压缩将在本轮结束后立即执行，并在后续对话中生效。",
-		),
+		description:
+			"Compress/compact the conversation context around the current task: specify what to preserve (key decisions, code structure, active requirements) and what to drop or heavily summarize (unrelated exploration, verbose outputs, resolved debugging). " +
+			"Optionally control how many recent tokens stay untouched. Compaction executes when the current turn settles, refreshing context for subsequent turns.",
 		promptSnippet: "proactively compact conversation context focusing on the current issue",
 		promptGuidelines: [
 			"Use compact_context when the conversation has grown long, or after extensive debugging/exploration, to focus context strictly on the current problem.",

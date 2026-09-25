@@ -31,7 +31,7 @@ import {
 	generateUnifiedPatch,
 	withFileMutationQueue,
 } from "@earendil-works/pi-coding-agent";
-import { bilingual, pick, type ServerLang } from "./i18n.js";
+import { pick, type ServerLang } from "./i18n.js";
 
 import { EDIT_SOFT_TOOL_NAME } from "./tool-manager.js";
 /** 独立宽松编辑工具名（唯一登记见 tool-manager.ts；此处别名保兼容）。 */
@@ -40,16 +40,12 @@ export const SOFT_EDIT_TOOL_NAME = EDIT_SOFT_TOOL_NAME;
 const replaceEditSchema = Type.Object(
 	{
 		oldText: Type.String({
-			description: bilingual(
-				"Text to replace. Loose matching: the content of each non-empty line (trimmed of leading/trailing whitespace) must match the corresponding file lines; leading-indentation (spaces/tabs) differences are ignored. Prefer whole lines/blocks.",
-				"要替换的文本。宽松匹配：每个非空行的内容（去掉首尾空白）需与文件中对应行一致；行首缩进（空格/制表符）的差异会被忽略。建议按整行/整块提供。",
-			),
+			description:
+				"Text to replace. Loose matching: the content of each non-empty line (trimmed of leading/trailing whitespace) must match the corresponding file lines; " +
+				"leading-indentation (spaces/tabs) differences are ignored. Prefer whole lines/blocks.",
 		}),
 		newText: Type.String({
-			description: bilingual(
-				"Replacement text (written verbatim; the indentation you provide is final).",
-				"替换后的文本（原样写入，缩进即最终缩进）。",
-			),
+			description: "Replacement text (written verbatim; the indentation you provide is final).",
 		}),
 	},
 	{},
@@ -58,13 +54,12 @@ const replaceEditSchema = Type.Object(
 const editSoftSchema = Type.Object(
 	{
 		path: Type.String({
-			description: bilingual("Path of the file to edit (relative or absolute).", "要编辑的文件路径（相对或绝对）"),
+			description: "Path of the file to edit (relative or absolute).",
 		}),
 		edits: Type.Array(replaceEditSchema, {
-			description: bilingual(
-				"One or more targeted replacements. Each edit matches against the original file (not incrementally); do not include overlapping/nested edits; merge edits touching the same block or nearby lines into one.",
-				"一个或多个定向替换。每个 edit 相对原文件匹配（非增量）；不要包含重叠/嵌套的 edit；同一块或相邻行请合并成一个 edit。",
-			),
+			description:
+				"One or more targeted replacements. Each edit matches against the original file (not incrementally); " +
+				"do not include overlapping/nested edits; merge edits touching the same block or nearby lines into one.",
 		}),
 	},
 	{},
@@ -417,31 +412,15 @@ export function makeEditSoftTool(fallbackCwd: string, getLang?: () => ServerLang
 	return defineTool({
 		name: SOFT_EDIT_TOOL_NAME,
 		label: "Edit (indentation-insensitive)",
-		description: bilingual(
-			"Edit a single file using text replacement that is tolerant of indentation. Every edits[].oldText is matched to the file by line content: leading whitespace (spaces/tabs) differences between your oldText and the file are ignored, so an edit does not fail just because the indentation differs. Use this when the built-in edit tool rejects your oldText due to a whitespace mismatch (common in JS/JSON/etc.). Prefer whole-line/whole-block oldText. newText is written exactly as provided.",
-			"用对缩进不敏感的文本替换编辑单个文件。每个 edits[].oldText 按行内容与文件匹配：oldText 与文件之间的行首空白（空格/制表符）差异会被忽略，因此不会仅因缩进不同而失败。当内置 edit 工具因空白不匹配拒绝你的 oldText 时使用本工具（常见于 JS/JSON 等）。oldText 尽量按整行/整块提供。newText 按原样写入。",
-		),
-		promptSnippet: bilingual(
-			"edit a file tolerating indentation differences (whitespace-insensitive match)",
-			"编辑文件，容忍缩进差异（空白不敏感匹配）",
-		),
+		description:
+			"Edit a single file with text replacement tolerant of indentation: oldText is matched by line content, ignoring leading-whitespace differences, so edits don't fail on indentation mismatch. " +
+			"Use when the built-in edit rejects oldText due to whitespace (common in JS/JSON). Prefer whole-line/whole-block oldText; newText is written exactly as provided.",
+		promptSnippet: "edit a file tolerating indentation differences (whitespace-insensitive match)",
 		promptGuidelines: [
-			bilingual(
-				"Use edit_soft when edit fails because the oldText indentation/spacing differs from the file",
-				"当 edit 因 oldText 缩进/空白与文件不一致而失败时，使用 edit_soft",
-			),
-			bilingual(
-				"Each edits[].oldText is matched to whole lines by trimmed content; leading whitespace is ignored",
-				"每个 edits[].oldText 按去首尾空白后的内容匹配到整行；行首空白会被忽略",
-			),
-			bilingual(
-				"newText is written verbatim — the indentation you provide is the final indentation in the file",
-				"newText 按原样写入——你提供的缩进就是文件中的最终缩进",
-			),
-			bilingual(
-				"Keep edits[].oldText as small as possible while still being unique; merge nearby changes into one edit",
-				"edits[].oldText 在保持唯一的前提下尽量小；相邻改动合并为一个 edit",
-			),
+			"Use edit_soft when edit fails because the oldText indentation/spacing differs from the file",
+			"Each edits[].oldText is matched to whole lines by trimmed content; leading whitespace is ignored",
+			"newText is written verbatim — the indentation you provide is the final indentation in the file",
+			"Keep edits[].oldText as small as possible while still being unique; " + "merge nearby changes into one edit",
 		],
 		parameters: editSoftSchema,
 		prepareArguments: prepareSoftEditArguments,

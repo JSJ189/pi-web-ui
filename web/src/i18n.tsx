@@ -1649,7 +1649,7 @@ export const zh = {
 		"高可靠结构化行补丁工具（Hashline）：基于内容哈希锚点与语法块（AST Block）替换代码，支持剪切/粘贴寄存器；文件被外部改动时自动执行三方合并（3-Way Merge）冲突自愈，避免大文件编辑幻觉与行号漂移。",
 	patchToolOffHint: "已关闭：AI 只能使用基础 edit 工具进行纯文本精确字符串替换",
 	lspToolEnabledDesc:
-		"原生语言服务器协议（LSP）工具：为 AI 提供 IDE 级的代码语义智能（支持定义跳转 definition、引用查询 references、类型悬停 hover、编译诊断 diagnostics），多子代理共享项目后台守护进程，零外部插件开箱即用。",
+		"原生语言服务器协议（LSP）工具：为 AI 提供 IDE 级的代码语义智能（支持定义跳转、引用查询、类型悬停、编译诊断、符号大纲 documentSymbol、精确符号代码切片 read_symbol、工作区全局符号搜索 workspaceSymbol、编辑影响级联诊断 cascade），多子代理共享进程池与闲置休眠，免外部插件开箱即用。",
 	lspToolOffHint: "已关闭：AI 将无法主动调用 LSP 语义工具，依赖全局搜索或文本匹配定位符号",
 	/* 工具定义说明弹窗（工具卡右键 → 显示工具详细信息；定义走 get_tool_info 现取） */
 	toolInfoMenuLabel: "显示工具详细信息",
@@ -3379,7 +3379,7 @@ const en: Record<keyof typeof zh, string> = {
 		"High-reliability structural patch tool (Hashline): line-anchored editing with 4-hex content hashes, syntactic AST block matching, and clipboard registers. Automatically attempts 3-way merge conflict recovery if files diverged.",
 	patchToolOffHint: "Disabled: AI falls back to basic string replacement via edit",
 	lspToolEnabledDesc:
-		"Native Language Server Protocol (LSP) tool: provides IDE-grade semantic code intelligence (definition jump, references, hover docstrings, and diagnostics) with cross-subagent daemon pooling.",
+		"Native Language Server Protocol (LSP) tool: IDE-grade semantic code intelligence (definition, references, hover, diagnostics, documentSymbol outline, read_symbol precise slicing, workspaceSymbol search, and cascade impact diagnostics). Multi-agent shared process pool with idle sleep, zero external dependencies.",
 	lspToolOffHint: "Disabled: AI cannot query LSP semantics and falls back to text search",
 	/* Tool definition dialog (tool-card right-click → show tool details; the definition comes from get_tool_info) */
 	toolInfoMenuLabel: "Show tool details",

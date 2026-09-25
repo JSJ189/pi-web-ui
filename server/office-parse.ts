@@ -71,8 +71,9 @@ export function unzipFiles(buf: Buffer, wanted: string[]): Map<string, Buffer> {
 	let totalUncomp = 0;
 	const out = new Map<string, Buffer>();
 	for (const [name, meta] of files) {
-		totalUncomp += meta.uncompSize;
-		if (totalUncomp > OFFICE_MAX_UNCOMPRESSED_BYTES) throw new Error("解包后内容过大（疑似 zip 炸弹），拒绝预览");
+		if (meta.uncompSize > OFFICE_MAX_UNCOMPRESSED_BYTES) {
+			throw new Error("解包后内容过大（疑似 zip 炸弹），拒绝预览");
+		}
 		const lp = meta.localOffset;
 		if (buf.readUInt32LE(lp) !== 0x04034b50) throw new Error(`zip 局部头损坏：${name}`);
 		const lMethod = buf.readUInt16LE(lp + 8);
@@ -82,9 +83,31 @@ export function unzipFiles(buf: Buffer, wanted: string[]): Map<string, Buffer> {
 		const raw = buf.subarray(dataStart, dataStart + meta.compSize);
 		if (meta.flag & 0x1) throw new Error(`不支持加密 zip 条目：${name}`);
 		const method = lMethod || meta.method;
-		if (method === 0) out.set(name, Buffer.from(raw));
-		else if (method === 8) out.set(name, Buffer.from(inflateRawSync(raw)));
-		else throw new Error(`不支持的压缩方式 ${method}：${name}`);
+		let decompressed: Buffer;
+		if (method === 0) {
+			decompressed = Buffer.from(raw);
+		} else if (method === 8) {
+			const remainingQuota = OFFICE_MAX_UNCOMPRESSED_BYTES - totalUncomp;
+			if (remainingQuota <= 0) throw new Error("解包后内容过大（疑似 zip 炸弹），拒绝预览");
+			try {
+				decompressed = Buffer.from(inflateRawSync(raw, { maxOutputLength: remainingQuota }));
+			} catch (err) {
+				if (
+					(err as Error).message?.includes("maxOutputLength") ||
+					(err as { code?: string }).code === "ERR_BUFFER_TOO_LARGE"
+				) {
+					throw new Error("解包后内容过大（疑似 zip 炸弹），拒绝预览");
+				}
+				throw err;
+			}
+		} else {
+			throw new Error(`不支持的压缩方式 ${method}：${name}`);
+		}
+		totalUncomp += decompressed.length;
+		if (totalUncomp > OFFICE_MAX_UNCOMPRESSED_BYTES) {
+			throw new Error("解包后内容过大（疑似 zip 炸弹），拒绝预览");
+		}
+		out.set(name, decompressed);
 	}
 	return out;
 }
@@ -170,11 +193,23 @@ export interface XlsxSheet {
 	truncated: boolean;
 }
 
-function parseSheet(xml: string, shared: string[]): string[][] {
+const MAX_PARSE_ROWS = 1000;
+const MAX_PARSE_COLS = 100;
+
+function parseSheet(xml: string, shared: string[]): { rows: string[][]; nRows: number; nCols: number } {
 	const rows: string[][] = [];
+	let maxRowSeen = 0;
+	let maxColSeen = 0;
 	for (const m of xml.matchAll(/<row[^>]*>([\s\S]*?)<\/row>/g)) {
 		const rowAttr = m[0].slice(0, m[0].indexOf(">"));
-		const rNum = Number(/r="(\d+)"/.exec(rowAttr)?.[1] ?? rows.length + 1) - 1;
+		const rawRNum = /r="(\d+)"/.exec(rowAttr)?.[1];
+		const rNum = rawRNum ? Number(rawRNum) - 1 : rows.length;
+		if (!Number.isFinite(rNum) || rNum < 0) continue;
+		maxRowSeen = Math.max(maxRowSeen, rNum + 1);
+
+		// 防 OOM：巨大行号不进行无边界预分配，仅计入总量
+		if (rNum >= MAX_PARSE_ROWS) continue;
+
 		while (rows.length <= rNum) rows.push([]);
 		const row = rows[rNum];
 		for (const c of m[1].matchAll(/<c\b([^>]*)>([\s\S]*?)<\/c>/g)) {
@@ -182,7 +217,12 @@ function parseSheet(xml: string, shared: string[]): string[][] {
 			const ref = /r="([^"]+)"/.exec(attrs)?.[1];
 			const t = /t="([^"]+)"/.exec(attrs)?.[1];
 			const pos = splitCellRef(ref ?? "");
-			if (!pos) continue;
+			if (!pos || pos.col < 0) continue;
+			maxColSeen = Math.max(maxColSeen, pos.col + 1);
+
+			// 防 OOM：巨大列号不进行无边界空字符串 push
+			if (pos.col >= MAX_PARSE_COLS) continue;
+
 			const inner = c[2];
 			let val = "";
 			if (t === "inlineStr") {
@@ -200,7 +240,11 @@ function parseSheet(xml: string, shared: string[]): string[][] {
 			row[pos.col] = val;
 		}
 	}
-	return rows;
+	return {
+		rows,
+		nRows: Math.max(rows.length, maxRowSeen),
+		nCols: Math.max(Math.max(0, ...rows.map((r) => r.length)), maxColSeen),
+	};
 }
 
 /** xlsx/xlsm → sheet 数组（名按 workbook 还原，取不到时回落 sheetN）。 */
@@ -230,20 +274,21 @@ export function parseXlsxSheets(buf: Buffer): XlsxSheet[] {
 	const shared = parseSharedStrings(files.get("xl/sharedStrings.xml")?.toString("utf8"));
 	return targets.map((t) => {
 		const xml = files.get(t.file)?.toString("utf8");
-		const all = xml ? parseSheet(xml, shared) : [];
-		const fullCols = Math.max(0, ...all.map((r) => r.length));
+		const parsed = xml ? parseSheet(xml, shared) : { rows: [], nRows: 0, nCols: 0 };
+		const fullCols = parsed.nCols;
+		const fullRows = parsed.nRows;
 		const nCols = Math.min(MAX_COLS, fullCols);
-		const cut = all.slice(0, MAX_ROWS).map((r) => {
+		const cut = parsed.rows.slice(0, MAX_ROWS).map((r) => {
 			const row = r.slice(0, MAX_COLS);
 			while (row.length < nCols) row.push("");
 			return row;
 		});
 		return {
 			name: t.name,
-			nRows: all.length,
+			nRows: fullRows,
 			nCols: fullCols,
 			rows: cut,
-			truncated: all.length > MAX_ROWS || fullCols > MAX_COLS,
+			truncated: fullRows > MAX_ROWS || fullCols > MAX_COLS,
 		};
 	});
 }

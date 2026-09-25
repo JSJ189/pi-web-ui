@@ -23,7 +23,44 @@ import { Type } from "typebox";
 
 export const LSP_TOOL_NAME = "lsp";
 
-export type LspAction = "definition" | "references" | "hover" | "diagnostics";
+export type LspAction =
+	| "definition"
+	| "references"
+	| "hover"
+	| "diagnostics"
+	| "documentSymbol"
+	| "read_symbol"
+	| "workspaceSymbol"
+	| "cascade";
+
+export const LSP_SYMBOL_KINDS: Record<number, string> = {
+	1: "File",
+	2: "Module",
+	3: "Namespace",
+	4: "Package",
+	5: "Class",
+	6: "Method",
+	7: "Property",
+	8: "Field",
+	9: "Constructor",
+	10: "Enum",
+	11: "Interface",
+	12: "Function",
+	13: "Variable",
+	14: "Constant",
+	15: "String",
+	16: "Number",
+	17: "Boolean",
+	18: "Array",
+	19: "Object",
+	20: "Key",
+	21: "Null",
+	22: "EnumMember",
+	23: "Struct",
+	24: "Event",
+	25: "Operator",
+	26: "TypeParameter",
+};
 
 interface LspDiagnostic {
 	range: {
@@ -678,6 +715,111 @@ export async function getLiveLspDiagnostics(absPath: string, cwd: string): Promi
 	return `⚠️ Post-edit Diagnostics (${errors.length} error${errors.length > 1 ? "s" : ""}):\n${lines.join("\n")}`;
 }
 
+/**
+ * 递归格式化 DocumentSymbol 列表为缩进的符号大纲树（做条数上限保护）
+ */
+function formatDocumentSymbols(symbols: any[], indent = "", lines: string[] = []): string[] {
+	for (const sym of symbols) {
+		if (lines.length >= 300) {
+			lines.push(`${indent}• ... [Truncated: outline exceeds 300 symbols]`);
+			break;
+		}
+		const kind = LSP_SYMBOL_KINDS[sym.kind] || `Kind(${sym.kind})`;
+		const range = sym.range || sym.location?.range;
+		const startLine = range ? range.start.line + 1 : "?";
+		const endLine = range ? range.end.line + 1 : "?";
+		const lineSpan = startLine === endLine ? `line ${startLine}` : `lines ${startLine}-${endLine}`;
+		const detail = sym.detail ? ` (${sym.detail})` : "";
+		lines.push(`${indent}• [${kind}] ${sym.name}${detail} (${lineSpan})`);
+		if (Array.isArray(sym.children) && sym.children.length > 0) {
+			formatDocumentSymbols(sym.children, indent + "  ", lines);
+		}
+	}
+	return lines;
+}
+
+/**
+ * 递归单趟查找符号（两遍扫描：先严格精确匹配，未命中再执行大小写忽略回退，避免遮蔽后续精确符号；支持 containerName 点分路径）
+ */
+function findSymbolPass(
+	symbols: any[],
+	target: string,
+	mode: "exact" | "ci",
+	parentName = "",
+): { symbol: any; fullName: string } | null {
+	const targetLower = target.toLowerCase();
+	for (const sym of symbols) {
+		const qualifiedName = sym.containerName
+			? `${sym.containerName}.${sym.name}`
+			: parentName
+				? `${parentName}.${sym.name}`
+				: sym.name;
+
+		if (mode === "exact") {
+			if (sym.name === target || qualifiedName === target) {
+				return { symbol: sym, fullName: qualifiedName };
+			}
+		} else {
+			if (sym.name.toLowerCase() === targetLower || qualifiedName.toLowerCase() === targetLower) {
+				return { symbol: sym, fullName: qualifiedName };
+			}
+		}
+
+		if (Array.isArray(sym.children) && sym.children.length > 0) {
+			const found = findSymbolPass(sym.children, target, mode, qualifiedName);
+			if (found) return found;
+		}
+	}
+	return null;
+}
+
+function findSymbol(symbols: any[], target: string): { symbol: any; fullName: string } | null {
+	return findSymbolPass(symbols, target, "exact") ?? findSymbolPass(symbols, target, "ci");
+}
+
+/**
+ * 收集文件内可用的顶层符号全名清单（最多收集 50 条，供找不到符号时提供备选提示）
+ */
+function collectSymbolNames(symbols: any[], prefix = "", names: string[] = []): string[] {
+	for (const sym of symbols) {
+		if (names.length >= 50) break;
+		const current = sym.containerName
+			? `${sym.containerName}.${sym.name}`
+			: prefix
+				? `${prefix}.${sym.name}`
+				: sym.name;
+		const kind = LSP_SYMBOL_KINDS[sym.kind] || "Symbol";
+		names.push(`${current} [${kind}]`);
+		if (Array.isArray(sym.children) && sym.children.length > 0) {
+			collectSymbolNames(sym.children, current, names);
+		}
+	}
+	return names;
+}
+
+/**
+ * 当未传 path 且执行工作区级操作（如 workspaceSymbol）时，寻找工作区默认主文件以定位语言服务
+ */
+function findDefaultSourceFileForLsp(cwd: string): string | null {
+	const candidates = [
+		"src/index.ts",
+		"src/main.ts",
+		"src/app.ts",
+		"index.ts",
+		"main.ts",
+		"app.ts",
+		"server.ts",
+		"main.py",
+		"app.py",
+		"main.go",
+		"src/main.rs",
+	];
+	for (const c of candidates) {
+		if (existsSync(join(cwd, c))) return c;
+	}
+	return null;
+}
+
 // ----------------------------------------------------------------------------
 // 导出给 AI Agent 的工具对象
 // ----------------------------------------------------------------------------
@@ -693,24 +835,48 @@ export function makeLspTool(options: LspToolOptions) {
 	return defineTool({
 		name: LSP_TOOL_NAME,
 		label: "LSP code intelligence",
-		description: `Query language intelligence from Language Server Protocol (LSP) across the workspace.
-Provides IDE-grade semantic analysis to prevent guessing and hallucinating symbol references.
-Supported actions:
-- \`definition\`: Jump to definition of the symbol at \`line\` & \`character\` in \`path\` (returns file, line, and code snippet).
-- \`references\`: Find all workspace references/usages of the symbol at \`line\` & \`character\` in \`path\`.
-- \`hover\`: Get type signature and documentation (Docstring/Markdown) for symbol at \`line\` & \`character\`.
-- \`diagnostics\`: Get compiler/type errors and warnings for \`path\` (or pass no line to check whole file).
-Note: Line numbers are 1-indexed.`,
+		description: `IDE-grade semantic analysis (LSP) across the workspace. Actions:
+- \`definition\`: definition of the symbol at \`line\`/\`character\` in \`path\` (file, line, snippet).
+- \`references\`: all workspace usages of that symbol.
+- \`hover\`: type signature and docs for that symbol.
+- \`diagnostics\`: compiler/type errors and warnings for \`path\` (whole file).
+- \`documentSymbol\`: hierarchical symbol outline with line spans for \`path\`.
+- \`read_symbol\`: read the body of \`symbol\` in \`path\` (e.g. "parseConfig").
+- \`workspaceSymbol\`: search symbols across the workspace by \`query\`.
+- \`cascade\`: impact check for \`path\` — report diagnostics of files referencing it.
+Lines are 1-indexed.`,
 		parameters: Type.Object({
 			action: Type.Union(
-				[Type.Literal("definition"), Type.Literal("references"), Type.Literal("hover"), Type.Literal("diagnostics")],
+				[
+					Type.Literal("definition"),
+					Type.Literal("references"),
+					Type.Literal("hover"),
+					Type.Literal("diagnostics"),
+					Type.Literal("documentSymbol"),
+					Type.Literal("read_symbol"),
+					Type.Literal("workspaceSymbol"),
+					Type.Literal("cascade"),
+				],
 				{
 					description: "The LSP operation to perform.",
 				},
 			),
-			path: Type.String({
-				description: "Workspace-relative or absolute path to the target source file.",
-			}),
+			path: Type.Optional(
+				Type.String({
+					description:
+						"Workspace-relative or absolute path to the target source file (required for all actions except workspaceSymbol).",
+				}),
+			),
+			symbol: Type.Optional(
+				Type.String({
+					description: "Symbol name to read for 'read_symbol' action (e.g. 'functionName' or 'ClassName.methodName').",
+				}),
+			),
+			query: Type.Optional(
+				Type.String({
+					description: "Search query for 'workspaceSymbol' action.",
+				}),
+			),
 			line: Type.Optional(
 				Type.Number({
 					description: "1-indexed line number in the source file.",
@@ -729,7 +895,7 @@ Note: Line numbers are 1-indexed.`,
 			allowInstall: Type.Optional(
 				Type.Boolean({
 					description:
-						"Allow installing the missing language server into ~/.pi-web/lsp-servers (user-space, no sudo). Defaults to false; when false and no server is found, the tool returns an installHint instead.",
+						"Install the missing language server into ~/.pi-web/lsp-servers (user-space, no sudo). Default false: the tool returns an installHint instead.",
 				}),
 			),
 		}),
@@ -737,7 +903,9 @@ Note: Line numbers are 1-indexed.`,
 			_callId,
 			params: {
 				action: LspAction;
-				path: string;
+				path?: string;
+				symbol?: string;
+				query?: string;
 				line?: number;
 				character?: number;
 				timeout?: number;
@@ -748,7 +916,29 @@ Note: Line numbers are 1-indexed.`,
 			_ctx,
 		) {
 			const action = params.action;
-			const targetPath = params.path;
+			let targetPath = params.path;
+			if (!targetPath && action === "workspaceSymbol") {
+				targetPath = findDefaultSourceFileForLsp(cwd) ?? undefined;
+				if (!targetPath) {
+					return {
+						content: [
+							{
+								type: "text",
+								text: `Error: Could not automatically detect a primary project source file to route language server. Please provide 'path' (pointing to any source file in the project, e.g. path='src/index.ts') to select the language server.`,
+							},
+						],
+						details: { ok: false, error: "Missing path: cannot route language server" },
+					};
+				}
+			}
+
+			if (!targetPath) {
+				return {
+					content: [{ type: "text", text: `Error: 'path' parameter is required for action '${action}'.` }],
+					details: { ok: false, error: "Missing path parameter" },
+				};
+			}
+
 			const absPath = isAbsolute(targetPath) ? targetPath : resolve(cwd, targetPath);
 			const line = typeof params.line === "number" ? Math.max(1, params.line) : 1;
 			const character = typeof params.character === "number" ? Math.max(1, params.character) : 1;
@@ -772,6 +962,30 @@ Note: Line numbers are 1-indexed.`,
 				return {
 					content: [{ type: "text", text: `Error: File not found: ${targetPath}` }],
 					details: { ok: false, error: "File not found" },
+				};
+			}
+
+			if (action === "read_symbol" && !params.symbol?.trim()) {
+				return {
+					content: [
+						{
+							type: "text",
+							text: `Error: 'symbol' parameter is required for 'read_symbol' action (e.g. symbol="parseConfig" or "ClassName.methodName").`,
+						},
+					],
+					details: { ok: false, error: "Missing symbol parameter" },
+				};
+			}
+
+			if (action === "workspaceSymbol" && !(params.query ?? "").trim()) {
+				return {
+					content: [
+						{
+							type: "text",
+							text: `Error: 'query' parameter cannot be empty for 'workspaceSymbol' action. Please provide a search term (e.g. query='User' or 'Router').`,
+						},
+					],
+					details: { ok: false, error: "Empty query parameter" },
 				};
 			}
 
@@ -935,6 +1149,341 @@ Note: Line numbers are 1-indexed.`,
 							},
 						],
 						details: { ok: true, diagnostics: diags },
+					};
+				}
+
+				if (action === "documentSymbol") {
+					const result = await client.request("textDocument/documentSymbol", { textDocument: { uri } }, timeoutMs);
+					const symbols: any[] = Array.isArray(result) ? result : [];
+
+					if (symbols.length === 0) {
+						return {
+							content: [{ type: "text", text: `No symbols found in ${targetPath}` }],
+							details: { ok: true, symbols: [] },
+						};
+					}
+
+					const lines = formatDocumentSymbols(symbols);
+					// details 随会话持久且整体 ≤64KB（超限整条丢弃）：symbols 与文本大纲同口径截断
+					const detailsSymbols = symbols.length > 300 ? symbols.slice(0, 300) : symbols;
+					return {
+						content: [
+							{
+								type: "text",
+								text: `Symbols in ${targetPath} (${symbols.length} top-level):\n${lines.join("\n")}`,
+							},
+						],
+						details: { ok: true, count: symbols.length, symbols: detailsSymbols },
+					};
+				}
+
+				if (action === "read_symbol") {
+					const targetSymbol = params.symbol?.trim();
+					if (!targetSymbol) {
+						return {
+							content: [
+								{
+									type: "text",
+									text: `Error: 'symbol' parameter is required for 'read_symbol' action (e.g. symbol="parseConfig" or "ClassName.methodName").`,
+								},
+							],
+							details: { ok: false, error: "Missing symbol parameter" },
+						};
+					}
+
+					const result = await client.request("textDocument/documentSymbol", { textDocument: { uri } }, timeoutMs);
+					const symbols: any[] = Array.isArray(result) ? result : [];
+
+					const match = findSymbol(symbols, targetSymbol);
+					if (!match) {
+						const available = collectSymbolNames(symbols);
+						const listSnippet =
+							available.length > 0
+								? `\nAvailable symbols in ${targetPath}:\n${available
+										.slice(0, 30)
+										.map((s) => `• ${s}`)
+										.join("\n")}${available.length > 30 ? `\n... and ${available.length - 30} more` : ""}`
+								: "";
+						return {
+							content: [
+								{
+									type: "text",
+									text: `Symbol '${targetSymbol}' not found in ${targetPath}.${listSnippet}`,
+								},
+							],
+							details: { ok: false, error: "Symbol not found", availableSymbols: available },
+						};
+					}
+
+					const range = match.symbol.range || match.symbol.location?.range;
+					if (!range) {
+						return {
+							content: [
+								{
+									type: "text",
+									text: `Symbol '${targetSymbol}' found, but no range information was provided by language server.`,
+								},
+							],
+							details: { ok: false, error: "Missing range" },
+						};
+					}
+
+					let startLine = range.start.line; // 0-indexed
+					let endLine = range.end.line; // 0-indexed
+					// 针对行尾排他边界（end.character === 0 且跨行时）避免多读末尾空行
+					if (range.end.character === 0 && endLine > startLine) {
+						endLine -= 1;
+					}
+
+					const fileLines = readFileSync(absPath, "utf8").split(/\r?\n/);
+					const totalSymbolLines = Math.max(0, endLine - startLine + 1);
+					const MAX_SYMBOL_READ_LINES = 400;
+					const isTruncated = totalSymbolLines > MAX_SYMBOL_READ_LINES;
+					const sliceEndLine = isTruncated ? startLine + MAX_SYMBOL_READ_LINES - 1 : endLine;
+					const symbolLines = fileLines.slice(startLine, sliceEndLine + 1);
+
+					let formattedSnippet = symbolLines.map((l, idx) => `${startLine + idx + 1}: ${l}`).join("\n");
+					if (isTruncated) {
+						formattedSnippet += `\n// ... [Truncated: symbol body has ${totalSymbolLines} lines, showing first ${MAX_SYMBOL_READ_LINES} lines. Use 'documentSymbol' to inspect nested methods/members and read them individually]`;
+					}
+
+					const kind = LSP_SYMBOL_KINDS[match.symbol.kind] || `Kind(${match.symbol.kind})`;
+
+					return {
+						content: [
+							{
+								type: "text",
+								text: `// Symbol: ${match.fullName} [${kind}]\n// File:   ${rel}:${startLine + 1}-${endLine + 1}\n\`\`\`\n${formattedSnippet}\n\`\`\``,
+							},
+						],
+						details: {
+							ok: true,
+							symbol: match.symbol,
+							fullName: match.fullName,
+							startLine: startLine + 1,
+							endLine: endLine + 1,
+							code: symbolLines.join("\n"),
+							totalLines: totalSymbolLines,
+							truncated: isTruncated,
+						},
+					};
+				}
+
+				if (action === "workspaceSymbol") {
+					const query = (params.query ?? "").trim();
+					if (!query) {
+						return {
+							content: [
+								{
+									type: "text",
+									text: `Error: 'query' parameter cannot be empty for 'workspaceSymbol' action. Please provide a search term (e.g. query='User' or 'Router').`,
+								},
+							],
+							details: { ok: false, error: "Empty query parameter" },
+						};
+					}
+
+					const result = await client.request("workspace/symbol", { query }, timeoutMs);
+					const locs: any[] = Array.isArray(result) ? result : [];
+
+					if (locs.length === 0) {
+						return {
+							content: [{ type: "text", text: `No symbols found across workspace matching '${query}'` }],
+							details: { ok: true, symbols: [] },
+						};
+					}
+
+					const MAX_WORKSPACE_SYMBOLS = 100;
+					const isTruncated = locs.length > MAX_WORKSPACE_SYMBOLS;
+					const cappedLocs = isTruncated ? locs.slice(0, MAX_WORKSPACE_SYMBOLS) : locs;
+
+					const formatted = locs.slice(0, 30).map((sym: any) => {
+						const targetUri: string = sym.location?.uri || sym.uri || "";
+						let filePath = targetUri;
+						try {
+							if (targetUri.startsWith("file:")) filePath = fileURLToPath(targetUri);
+						} catch {}
+						const fileRel = filePath.startsWith(cwd) ? filePath.slice(cwd.length).replace(/^[/\\]/, "") : filePath;
+						const range = sym.location?.range || sym.range;
+						const lineNum = range ? range.start.line + 1 : 1;
+						const kind = LSP_SYMBOL_KINDS[sym.kind] || `Kind(${sym.kind})`;
+						const container = sym.containerName ? ` in ${sym.containerName}` : "";
+						return `• [${kind}] ${sym.name}${container} (${fileRel}:${lineNum})`;
+					});
+
+					const tail = locs.length > 30 ? `\n... and ${locs.length - 30} more symbols` : "";
+
+					return {
+						content: [
+							{
+								type: "text",
+								text: `Found ${locs.length} symbol${locs.length > 1 ? "s" : ""} matching '${query}' (via ${rel}):\n${formatted.join("\n")}${tail}`,
+							},
+						],
+						details: { ok: true, count: locs.length, symbols: cappedLocs, truncated: isTruncated },
+					};
+				}
+
+				if (action === "cascade") {
+					// 影响级联（Impact Cascade）：找出引用本文件（或本文件某个符号）的工作区文件，
+					// 聚合它们的实时诊断——让"改了签名/导出，下游编译炸了"在编辑当轮就暴露，
+					// 而不是等到构建或提交时才发现。
+					const MAX_SEEDS = 20;
+					const MAX_DEPENDENTS = 25;
+					const DIAGS_BUDGET_MS = 1500;
+					const normalizePath = (p: string) => (process.platform === "win32" ? p.toLowerCase() : p);
+
+					// 1. 收集种子位置：给了 line/character 就只查那个符号；否则查全部顶层符号。
+					const seeds: Array<{ line: number; character: number }> = [];
+					if (typeof params.line === "number") {
+						seeds.push({ line: line - 1, character: character - 1 });
+					} else {
+						const symResult = await client.request("textDocument/documentSymbol", { textDocument: { uri } }, timeoutMs);
+						const topSymbols: any[] = Array.isArray(symResult) ? symResult : [];
+						for (const sym of topSymbols.slice(0, MAX_SEEDS)) {
+							const pos = sym.selectionRange?.start ?? sym.range?.start ?? sym.location?.range?.start;
+							if (pos && typeof pos.line === "number") {
+								seeds.push({ line: pos.line, character: pos.character ?? 0 });
+							}
+						}
+					}
+
+					if (seeds.length === 0) {
+						return {
+							content: [{ type: "text", text: `No symbols to trace in ${targetPath} — nothing to cascade.` }],
+							details: { ok: true, impacted: [], clean: [], notReported: [], referencedFiles: [] },
+						};
+					}
+
+					// 2. 对每个种子查 references（不含声明处），汇总工作区内的引用方文件。
+					const selfNorm = normalizePath(absPath);
+					const depPaths = new Set<string>();
+					const seedResults = await Promise.allSettled(
+						seeds.map((pos) =>
+							client.request(
+								"textDocument/references",
+								{ textDocument: { uri }, position: pos, context: { includeDeclaration: false } },
+								timeoutMs,
+							),
+						),
+					);
+					for (const r of seedResults) {
+						if (r.status !== "fulfilled" || !Array.isArray(r.value)) continue;
+						for (const loc of r.value as LspLocation[]) {
+							const refUri: string = loc?.uri ?? "";
+							if (!refUri.startsWith("file:")) continue;
+							let refPath: string;
+							try {
+								refPath = fileURLToPath(refUri);
+							} catch {
+								continue;
+							}
+							if (normalizePath(refPath) === selfNorm) continue; // 排除自身
+							const relRef = relative(cwd, refPath);
+							if (relRef === ".." || relRef.startsWith(".." + sep) || relRef.startsWith("../") || isAbsolute(relRef)) {
+								continue; // 只看工作区内
+							}
+							if (relRef.split(sep).includes("node_modules")) continue;
+							depPaths.add(refPath);
+						}
+					}
+
+					const dependents = [...depPaths].sort().slice(0, MAX_DEPENDENTS);
+					if (dependents.length === 0) {
+						return {
+							content: [
+								{
+									type: "text",
+									text: `No referencing files found for ${targetPath} — no impact cascade needed.`,
+								},
+							],
+							details: { ok: true, impacted: [], clean: [], notReported: [], referencedFiles: [] },
+						};
+					}
+
+					// 3. 逐个 didOpen/didChange 触发服务器分析，轮询等待 publishDiagnostics 回流。
+					const depUris: string[] = [];
+					for (const dep of dependents) {
+						try {
+							depUris.push(await client.syncDocument(dep));
+						} catch {
+							depUris.push("");
+						}
+					}
+					const pending = new Set(depUris.filter(Boolean));
+					const deadline = Date.now() + DIAGS_BUDGET_MS;
+					while (pending.size > 0 && Date.now() < deadline) {
+						await new Promise((r) => setTimeout(r, 120));
+						const known = client.getAllDiagnostics();
+						for (const u of [...pending]) {
+							if (known.has(u)) pending.delete(u);
+						}
+					}
+
+					// 4. 聚合输出：有错误的排前面，其次警告，clean 与未上报的折叠列出。
+					const impacted: Array<{ path: string; errors: number; warnings: number; diagnostics: LspDiagnostic[] }> = [];
+					const clean: string[] = [];
+					const notReported: string[] = [];
+					const knownFinal = client.getAllDiagnostics();
+					for (let i = 0; i < dependents.length; i++) {
+						const dep = dependents[i];
+						const depUri = depUris[i];
+						const depRel = relative(cwd, dep).replace(/\\/g, "/");
+						if (!depUri) {
+							notReported.push(depRel);
+							continue;
+						}
+						const diags = client.getDiagnostics(depUri);
+						const errors = diags.filter((d) => d.severity === 1).length;
+						const warnings = diags.filter((d) => d.severity === 2).length;
+						if (errors + warnings > 0) {
+							impacted.push({ path: depRel, errors, warnings, diagnostics: diags.slice(0, 10) });
+						} else if (diags.length === 0 && !knownFinal.has(depUri)) {
+							notReported.push(depRel); // 预算内服务器未上报（可能仍在分析）
+						} else {
+							clean.push(depRel);
+						}
+					}
+
+					impacted.sort((a, b) => b.errors - a.errors || b.warnings - a.warnings);
+
+					const out: string[] = [];
+					out.push(
+						`Impact cascade for ${targetPath}: ${dependents.length} referencing file(s), ${impacted.length} with findings.`,
+					);
+					for (const item of impacted) {
+						out.push(`• ${item.path} — ${item.errors} error(s), ${item.warnings} warning(s)`);
+						for (const d of item.diagnostics.slice(0, 5)) {
+							const sev = d.severity === 1 ? "ERROR" : d.severity === 2 ? "WARN" : "INFO";
+							const code = d.code ? ` [${d.code}]` : "";
+							const msg = String(d.message).split("\n")[0];
+							out.push(`    [${sev}] line ${d.range.start.line + 1}:${d.range.start.character + 1}${code} - ${msg}`);
+						}
+					}
+					if (clean.length > 0) {
+						const shown = clean
+							.slice(0, 10)
+							.map((p) => `• ${p}`)
+							.join("\n");
+						out.push(
+							`Clean (${clean.length}):\n${shown}${clean.length > 10 ? `\n... and ${clean.length - 10} more` : ""}`,
+						);
+					}
+					if (notReported.length > 0) {
+						out.push(
+							`Diagnostics not reported in time (${notReported.length}, server may still be analyzing): ${notReported.slice(0, 5).join(", ")}${notReported.length > 5 ? ", ..." : ""}`,
+						);
+					}
+
+					return {
+						content: [{ type: "text", text: out.join("\n") }],
+						details: {
+							ok: true,
+							impacted,
+							clean,
+							notReported,
+							referencedFiles: dependents.map((p) => relative(cwd, p).replace(/\\/g, "/")),
+						},
 					};
 				}
 

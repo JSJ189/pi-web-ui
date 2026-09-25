@@ -106,7 +106,7 @@ npm run test:smoke   # 零 token 冒烟
 
 约定：缩进 Tab；样式全在 `styles.css`；协议消息只改 `protocol.ts`（§4）；服务端 URL 一律 `appUrl()` 包一层（§9）。
 i18n：前端 `useT()`，核心 `zh`/`en`（新 key 两处都加，`tests/unit/locales.test.ts` 锁对齐；语言包 `locales/*.json` 缺 key 回落英文）；
-服务端 `pick(lang,zh,en,key?)`（key 全局唯一 `<模块>.<slug>`；多行 `getServerBlock`；tool 定义 `bilingual(en,zh)`）；notice 推 UI 用 `text`+`textEn` 双字段。
+服务端 `pick(lang,zh,en,key?)`（key 全局唯一 `<模块>.<slug>`；多行 `getServerBlock`）；**工具定义提示词（description/promptSnippet/promptGuidelines）纯英文精简**，守卫 `tests/unit/tool-prompt-hygiene.test.ts`；notice 推 UI 用 `text`+`textEn` 双字段。
 测试：端口 ≥8900 隔离；data-dir `mkdtempSync` 隔离；精确清理自己进程；**禁 `pkill -f`**。
 Playwright：Chrome 路径走 `tests/lib/chrome.mjs`（`PI_WEB_CHROME` 可覆盖）；仓库根用 `fileURLToPath(new URL("..", import.meta.url))`（Windows 下 `URL.pathname` 会 ENOENT）；win32 清理走 `tests/lib/port-utils.mjs` 的 `freePort`。
 
