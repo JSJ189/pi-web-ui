@@ -137,7 +137,7 @@
 #### 1. 自定义规则库与匹配引擎（`<dataDir>/approval-rules.json`）
 规则由 `server/approval-rules.ts` 的 `ApprovalRulesStore` 持久化，所有客户端全局共享。规则在设置面板「审批规则」页可视化编辑与排序，按列表顺序自顶向下匹配，首个命中生效：
 - **适用工具**（tools）：支持单工具（如 `bash`）、多工具组合（如 `["write", "edit", "edit_soft"]`）或通配 `*`；
-- **检查字段**（field）：`command`（命令字符串）、`path`（目标文件路径）、`params`（完整参数 JSON 字符串）；
+- **检查字段**（field）：`command`（命令字符串）、`path`（目标文件路径：认 `path` / `file_path` / `file` 三种写法，见 `extractTargetPath()`，扩展实现如 pi-better-edit 的 `edit` 用 `file`）、`params`（完整参数 JSON 字符串）；
 - **匹配模式**（match）：
   - `regex`：大小写不敏感正则表达式匹配；
   - `glob`：路径通配符（支持 `*` 单段、`**` 跨目录跨段，统一归一化正反斜杠）；
@@ -197,6 +197,23 @@ SDK 内置 `read` 只处理文件（`read("server")` 直接 `EISDIR: illegal ope
 开关 `readDirEnabled`（设置 → 工具页首行，默认开）：这是**行为开关**（read 本体不可关，关了 agent 就残），不是 ActiveSet 开关 —— 因此不进 `tool-manager.ts` 的 `AGENT_TOOL_CATALOG`，覆盖定义每次调用实时读设置（改动即时生效、无需 reload），也不进设置预设。DSH 引擎无 customTool 注册面（工具来自 shipped preset），不支持该覆盖，快照里恒为 true。
 
 参数上额外接受 `file_path` 作为 `path` 的别名（部分客户端/模型习惯发 `file_path`）：schema 里 `path` 仍必填，靠 `prepareArguments` 在校验前把只有 `file_path` 的调用归一成 `path`（两者都给时 `path` 为准），转发内置实现时也带上归一后的 `path`。前端工具卡头的路径提示（`web/src/tool-args.ts`）本来就同时认这两个名（SDK 自带 renderers 亦然）。
+
+**基底也可能是第三方扩展注册的 `read`**：SDK 的合并链是 `[...扩展注册的工具, ...customTools]` 逐个后写赢，所以覆盖层若直接进创建时的 `customTools` 就会**静默顶掉**扩展的同名工具 —— 而官方 `docs/extensions.md` §Overriding Built-in Tools 明写扩展可以覆盖 `read`/`edit`/`write` 等（逐个列出了 `read`）。因此 `read` / `write` / `edit` 三处覆盖**不在创建时注册**，改由 `server/tool-overrides.ts` 在会话建好后注入，基底优先取扩展实现 —— 详见下一节「覆盖与第三方扩展同名工具共存」。
+
+### 覆盖与第三方扩展同名工具共存（`server/tool-overrides.ts`）
+
+pi-web-ui 覆盖了 SDK 内置 `read` / `write` / `edit`（bash 覆盖是另一个先例）。SDK 的注册表合并链是 `allCustomTools = [...扩展注册的工具, ...customTools]` 再逐个 `definitionRegistry.set(name, …)` —— **后写赢**：创建时把覆盖塞进 `customTools`，等于让 `docs/extensions.md`「扩展可覆盖内置工具」那句承诺失效（第三方扩展的同名工具永远轮不到，且症状会伪装：覆盖层转发内置实现 ⇒ 读文件/图片/目录都正常，只有扩展特有的能力没有，例如 `pi-better-edit` 的 read 不出 `HASH│content` 锚、它的 `edit` 随后一律 `E_UNKNOWN_ANCHOR`）。
+
+现在的做法：这三处覆盖在**会话建好后**由 `installToolOverrides(session, specs)` 注入 —— 逐个按名字从 `session.extensionRunner.getAllRegisteredTools()` 取扩展实现当基底（取不到才用 pi-web-ui 自己的完整实现），交给 `composeWith` 装饰后**前置**写回 `session._customTools` 并 `_refreshToolRegistry()`（与插件工具同步 `syncPluginToolsIntoSession` 同一手法）：
+
+- `read`：有扩展 read → `withReadDirSupport(扩展定义)` —— 基底的 name/label/描述/参数 schema/`prepareArguments`/render 槽位全部原样保留，只补一句目录说明、一条目录指引与目录分支（目录分支仍复用 SDK `ls` 的排序/`/` 后缀/截断口径）；没有 → `makeReadDirTool()`（内置基底 + 英文描述 + `file_path` 别名）。转发基底时**不改写扩展的参数**（`file_path` 归一只属于内置那份，扩展自带 `prepareArguments`）。
+- `write` / `edit`：有扩展同名工具 → 把它的定义当权限沙箱包装的**基底**（执行时先过只读 / 工作区外拦截与审批，再委托扩展实现）；没有 → 包装 SDK 内置实现。
+
+四条不变量：① 扩展那份实现的 schema / 描述 / prompt 指引 / 渲染不被替换（扩展独有参数如 better-edit 的 `windows` 照旧可用）；② 覆盖项前置 ⇒ pi-web-ui **插件**注册的同名工具（也是 customTools、比覆盖层后写）仍是最后赢家，与改动前的相对顺序一致；③ 重复注入幂等（同名先剔除再前置）；④ 会话对象形状不符（SDK 改私有字段名）返回 `null`，按「覆盖没装上」降级（等价改动前行为，不会更差）；`extensionRunner` 缺失时同样退回内置基底。
+
+`extractTargetPath()`（`server/approval-rules.ts`）：权限沙箱与审批规则要按「目标文件」判定，必须认三种写法 —— SDK 内置用 `path`、`read` 有 `file_path` 别名、部分扩展（`pi-better-edit` 的 `edit`）用 `file`；只认 `path` 会在叠上扩展实现后取到空串、被判成工作区内而**静默放行**。规则引擎的 `path` 字段走同一个函数。
+
+开关仍是行为开关（`readDirEnabled`），不进 `tool-manager.ts` 的 `AGENT_TOOL_CATALOG`；DSH 引擎无 customTool 注册面，不接。工具定义提示词遵循纯英文约定（`tests/unit/tool-prompt-hygiene.test.ts`）。回归：`tests/unit/tool-overrides.test.ts`（基底解析 / 前置顺序 / 幂等 / 降级）、`tests/unit/read-dir.test.ts`（`withReadDirSupport` 的 schema、描述、转发与目录分支）、`tests/unit/approval-rules.test.ts`（`extractTargetPath` 与规则字段）。
 
 ### 模型操作浏览器页面（`browser_page` 工具）
 
