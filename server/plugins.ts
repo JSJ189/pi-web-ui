@@ -1819,6 +1819,17 @@ export class PluginManager {
 		return () => this.senders.delete(s);
 	}
 
+	/** 当前在线（hello 过）的 clientId 去重集合。插件授权弹窗广播后按它做应答
+	 *  来源绑定——广播后才连上的端没见过弹窗，不许代答（index.ts 三类授权应答校验）。 */
+	onlineClientIds(): string[] {
+		const out = new Set<string>();
+		for (const s of this.senders) {
+			const cid = s.cid();
+			if (cid) out.add(cid);
+		}
+		return [...out];
+	}
+
 	/** 客户端上行：路由给对应插件的处理器；未知/未激活的插件静默丢弃。
 	 *  插件代码不可信——同步抛错与返回的 Promise rejection 都必须隔离在
 	 *  这里，绝不能炸主进程。 */
@@ -1976,6 +1987,12 @@ export class PluginManager {
 	isDomBundleBlocked(pluginId: string): boolean {
 		if (!this.domWants.get(pluginId)) return false;
 		return !this.domConsentStore.has(pluginId);
+	}
+
+	/** plugin_dom_consent 两步握手的预检（index.ts 用）：只有声明了 dom 能力的
+	 *  插件才允许生成在途 consent 请求——任意 pluginId 进不来，在途表不膨胀。 */
+	isDomPlugin(pluginId: string): boolean {
+		return this.domWants.get(pluginId) === true;
 	}
 
 	/** 特权 DOM 授权/撤销（设置面板 plugin_dom_consent）。

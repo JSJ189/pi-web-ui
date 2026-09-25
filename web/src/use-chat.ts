@@ -1865,6 +1865,21 @@ export function useChat() {
 						},
 					});
 					break;
+				case "plugin_dom_consent_request":
+					// DOM 授权两步握手（协议 v20）：grant 由服务端生成在途请求并广播；
+					// 只有发起端（from === 自己的 clientId）自动确认——用户在设置面板
+					// 点一下的体验不变，其他端不是发起人不代答（服务端也只接受广播时
+					// 在线端的应答，陌生连接无从插手）。
+					if (msg.from === getClientId()) {
+						ws.send(
+							JSON.stringify({
+								type: "plugin_dom_consent_response",
+								id: msg.id,
+								ok: true,
+							} satisfies ClientMessage),
+						);
+					}
+					break;
 				case "plugin_job":
 					dispatch({
 						type: "plugin_job",
