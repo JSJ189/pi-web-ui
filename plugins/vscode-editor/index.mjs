@@ -314,9 +314,45 @@ export default {
 			return { text: decodeBuf(buf), encoding: "utf-8", size: stat.size };
 		}
 
+		/**
+		 * 写前 symlink 防穿出：safeResolve 是纯词法校验，路径里任何一级是符号链接
+		 * （指向工作区外）都能绕过它。这里从最近的已存在祖先开始取 realpath，确认
+		 * 已存在部分的真实落点仍在工作区根内；目标本身存在时还要求不是符号链接。
+		 * 不存在的那段是本次新建的名字，词法上已被 safeResolve 保证在 root 内。
+		 * 返回 null = 校验不通过（存在检查与写入之间的 TOCTOU 窗口不在能力范围内）。
+		 */
+		async function safeWriteTarget(abs) {
+			// 边界用 realpath 后的工作区根（root 自身可能在符号链接路径下/大小写不同）
+			let rootReal;
+			try {
+				rootReal = await fs.realpath(root);
+			} catch {
+				rootReal = root;
+			}
+			let anchor = abs;
+			for (let guard = 0; guard < 64; guard++) {
+				try {
+					const real = await fs.realpath(anchor);
+					if (real !== rootReal && !real.startsWith(rootReal + path.sep)) return null;
+					if (anchor === abs) {
+						const st = await fs.lstat(abs);
+						if (st.isSymbolicLink()) return null;
+					}
+					return abs;
+				} catch {
+					const parent = path.dirname(anchor);
+					if (parent === anchor) return null; // 一路到根都没 realpath 成功（异常）
+					anchor = parent;
+				}
+			}
+			return null;
+		}
+
 		async function writeFile(rel, text) {
 			const abs = safeResolve(rel);
 			if (!abs || abs === root) throw new Error("非法路径");
+			// 写前先做 symlink 防穿出校验（mkdir/写文件都会跟随符号链接）
+			if (!(await safeWriteTarget(abs))) throw new Error("路径含符号链接或越界，拒绝写入");
 			await fs.mkdir(path.dirname(abs), { recursive: true });
 			// 原子写：tmp + rename，防半截内容
 			const tmp = abs + ".vsc-tmp-" + process.pid;
@@ -327,6 +363,7 @@ export default {
 		async function createEntry(rel, kind) {
 			const abs = safeResolve(rel);
 			if (!abs || abs === root) throw new Error("非法路径");
+			if (!(await safeWriteTarget(abs))) throw new Error("路径含符号链接或越界，拒绝创建");
 			try {
 				if (kind === "dir") await fs.mkdir(abs);
 				else {
@@ -744,8 +781,15 @@ export default {
 			return new Promise((resolve, reject) => sftp[method](...args, (err, r) => (err ? reject(err) : resolve(r))));
 		}
 
+		/** SFTP readdir 的 filename 正常只是名字；异常/恶意服务器可能回带路径分隔符
+		 *  或 ".." 的条目——拼进 rel 后落盘会穿出工作区根。这类名字一律拒收。 */
+		function isSuspiciousRemoteName(name) {
+			return !name || name.includes("/") || name.includes("\\") || name.includes("..") || name === ".";
+		}
+
 		async function collectRemote(sftp, remoteBase, relBase, cfg) {
-			const out = [];
+			const files = [];
+			const skipped = []; // 可疑远端名（不拼 rel、不落盘，回传给调用方注明）
 			async function walk(rdir, relDir) {
 				let list;
 				try {
@@ -754,14 +798,18 @@ export default {
 					return;
 				} // 目录不存在视为空
 				for (const f of list) {
+					if (isSuspiciousRemoteName(f.filename)) {
+						skipped.push(relDir ? `${relDir}/${f.filename}` : f.filename);
+						continue;
+					}
 					const rel = relDir ? `${relDir}/${f.filename}` : f.filename;
 					if (isSyncExcluded(rel, cfg)) continue;
 					if (f.attrs.isDirectory()) await walk(`${rdir}/${f.filename}`, rel);
-					else if (f.attrs.isFile()) out.push(rel);
+					else if (f.attrs.isFile()) files.push(rel);
 				}
 			}
 			await walk(remoteBase, relBase || "");
-			return out;
+			return { files, skipped };
 		}
 
 		async function mkdirpRemote(sftp, rpath) {
@@ -777,15 +825,20 @@ export default {
 		async function runSyncTransfer(cfg, direction, scope, targetRel, onProgress) {
 			const sftp = await getSyncSftp(cfg);
 			let rels;
+			let skippedRemote = [];
 			if (scope === "file") {
 				rels = [targetRel];
 				if (isSyncExcluded(targetRel, cfg)) throw new Error(`「${targetRel}」在排除规则内`);
 			} else {
 				const baseRel = scope === "tree" ? String(targetRel || "") : "";
-				rels =
-					direction === "up"
-						? await collectLocal(baseRel, cfg)
-						: await collectRemote(sftp, posixJoin(cfg.remoteRoot || "/", baseRel), baseRel, cfg);
+				if (direction === "up") {
+					rels = await collectLocal(baseRel, cfg);
+				} else {
+					// 远端清单里的可疑文件名已在 collectRemote 里剔除，这里拿到的是干净 rel
+					const remote = await collectRemote(sftp, posixJoin(cfg.remoteRoot || "/", baseRel), baseRel, cfg);
+					rels = remote.files;
+					skippedRemote = remote.skipped;
+				}
 			}
 			const failed = [];
 			let done = 0;
@@ -794,9 +847,13 @@ export default {
 					if (direction === "up") {
 						const rp = posixJoin(cfg.remoteRoot || "/", rel);
 						await mkdirpRemote(sftp, rp.split("/").slice(0, -1).join("/"));
-						await sftpCall(sftp, "writeFile", rp, await fs.readFile(path.resolve(root, rel)));
+						const srcAbs = safeResolve(rel);
+						if (!srcAbs || srcAbs === root) throw new Error("非法路径（本地源越界）");
+						await sftpCall(sftp, "writeFile", rp, await fs.readFile(srcAbs));
 					} else {
-						const lp = path.resolve(root, rel);
+						// 落盘前 rel 再过一次本地 safeResolve 式检查：远端来的路径绝不能穿出工作区根
+						const lp = safeResolve(rel);
+						if (!lp || lp === root) throw new Error("非法路径（落盘目标越界）");
 						await fs.mkdir(path.dirname(lp), { recursive: true });
 						await fs.writeFile(lp, await sftpCall(sftp, "readFile", posixJoin(cfg.remoteRoot || "/", rel)));
 					}
@@ -806,7 +863,10 @@ export default {
 				done++;
 				onProgress(done, rels.length, rel);
 			}
-			return { total: rels.length, failed };
+			// skipped 注进结果：用户能看到哪些远端条目因名字可疑被跳过
+			return skippedRemote.length
+				? { total: rels.length, failed, skipped: skippedRemote }
+				: { total: rels.length, failed };
 		}
 
 		// ------------------------------------------------------------------
