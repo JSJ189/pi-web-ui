@@ -86,8 +86,11 @@ function wizardPrompt(draft: string): string {
 		`# User's raw requirement`, // eslint-disable-line no-regex-spaces
 		draft,
 		``,
-		`Use your goal_ask tool to ask the user focused questions to pin down the essential, ambiguous details. Keep it concise — usually 2 to 4 questions: what exactly to build/do, scope boundaries (what NOT to do), acceptance criteria / done-definition, and any constraints (style, performance, environment).`, // eslint-disable-line max-len
-		`Prefer multiple-choice (goal_ask with options) when you can offer clear choices; use open questions only for things that genuinely need free text.`, // eslint-disable-line max-len
+		`Use your goal_ask tool to ask the user focused questions to pin down the essential, ambiguous details.`,
+		`Convergence guidelines:`,
+		`- Ask ONE question at a time, strictly 1 to 3 questions total: what exactly to build/do, scope boundaries (what NOT to do), acceptance criteria / done-definition, and any constraints (style, performance, environment).`, // eslint-disable-line max-len
+		`- Prefer multiple-choice with 2-4 mutually exclusive options and place your recommended choice FIRST.`,
+		`- In each option, concisely explain the impact or tradeoff. Use open questions only for things that genuinely need free text.`, // eslint-disable-line max-len
 		`Once you have enough to write an unambiguous, reviewable goal, STOP asking and reply with EXACTLY this format and nothing else (no preamble, no bullets):`, // eslint-disable-line max-len
 		`GOAL: <one concrete, verifiable sentence describing the deliverable and its acceptance criteria>`, // eslint-disable-line max-len
 		`If the user cancels or stops answering (the tool reports a cancellation), still produce a sensible best-effort goal from what you already know.`, // eslint-disable-line max-len
@@ -505,12 +508,16 @@ export class GoalService {
 				name: "goal_ask",
 				label: "Ask the user",
 				description:
-					"Ask the user ONE question at a time to scope down the goal. " +
-					"Provide a clear question and 2-4 concise options; " +
-					"or ask an open question. Returns the user's chosen answer.",
+					"Ask the user ONE focused question at a time to scope down the goal. " +
+					"Provide 2-4 mutually exclusive options with the recommended option first, " +
+					"briefly noting its impact or tradeoff; or ask an open question. Returns the user's chosen answer.",
 				parameters: Type.Object({
 					question: Type.String({ description: "The question to ask" }),
-					options: Type.Optional(Type.Array(Type.String())),
+					options: Type.Optional(
+						Type.Array(Type.String(), {
+							description: "2-4 mutually exclusive options (recommended option first)",
+						}),
+					),
 				}),
 				// ONE question at a time. Sequential execution prevents the agent from
 				// firing parallel goal_ask calls whose dialogs would overwrite each other
