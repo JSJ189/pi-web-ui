@@ -6882,6 +6882,7 @@ export class ClientSession {
 			text: `已切换为「${hit.name}」预设`,
 			textEn: `Switched to preset "${hit.name}"`,
 		});
+		this.pushSettings();
 		this.flushSnapshot();
 	}
 
@@ -8148,7 +8149,10 @@ export class ClientSession {
 		const active = this.conv;
 		if (!ephemeral && active && isBlank(active)) {
 			if (_preset) await this.selectAgentPreset(_preset);
-			else this.flushSnapshot();
+			else {
+				this.pushSettings();
+				this.flushSnapshot();
+			}
 			return true;
 		}
 		if (!ephemeral) {
@@ -8276,6 +8280,7 @@ export class ClientSession {
 			void this.pushSlashCommands();
 			// 新对话即当前打开 → 插件重拉（轨迹视图跟随）。
 			this.notifyConversationChanged();
+			this.pushSettings();
 			ready = true;
 		} catch (err) {
 			this.emit({
@@ -8804,6 +8809,7 @@ export class ClientSession {
 		}
 		// 当前打开对话变了 → 插件重拉（轨迹视图切会话后即刷新，不等轮询）。
 		this.notifyConversationChanged();
+		this.pushSettings();
 		this.flushSnapshot();
 	}
 
@@ -9823,6 +9829,7 @@ export class ClientSession {
 			void this.pushSlashCommands();
 			// 切历史会话成功 → 插件重拉（轨迹视图立即显示该会话时间线）。
 			this.notifyConversationChanged();
+			this.pushSettings();
 		} catch (err) {
 			openedTerminals?.killAll();
 			if (openedRuntime) await openedRuntime.dispose().catch(() => {});
@@ -10788,6 +10795,7 @@ export class ClientSession {
 			void this.listCommands();
 			// 切项目即换了当前打开对话 → 插件重拉。
 			this.notifyConversationChanged();
+			this.pushSettings();
 		} catch (err) {
 			this.emit({
 				type: "notice",

@@ -13,6 +13,12 @@
 ### Added
 
 - **内置 LSP 工具新增四个语义动作（#331 Phase 1）** —— `documentSymbol`（分层符号大纲，带行跨度与 300 条防洪截断）、`read_symbol`（按符号名/点分路径精准读取实现体，双遍扫描精确匹配优先、400 行截断、未命中时自愈提示可用符号）、`workspaceSymbol`（工作区全局符号搜索，100 条上限，可不传 `path` 自动探测主文件路由语言服务）、`cascade`（编辑影响级联：查引用方文件并聚合其编译诊断，改坏签名当轮即暴露）。提示词开销保持 ~350 tokens；设置页工具说明中英文同步。
+- **系统提示词与工具 schema token 占用实时估算** —— 设置面板「系统提示词」支持直接查看当前会话实际生效的完整系统提示词与工具 schema 定义，并展示粗略 token 估算值与上下文总占用；工作区与活跃会话切换时主动同步最新设置快照，避免提示词上下文陈旧。
+
+### Fixed
+
+- **微信通道插件问题修复（#345）** —— 微信回包自动剥离内部控制标记（如 `[[plan:...]]`、`[[todo:...]]`、`[[conv:...]]`、`[[notify:...]]` 等），仅向微信发送用户可见正文；按微信用户 ID 隔离 `accountId`（`wx_${hash}`），为每个用户分配独立的伪客户端与会话，防止上下文串扰与关闭冲突；增加 `earlyRuns` 机制妥善承接极快完成的运行事件，消除回包竞态。
+- **SoL-Pi 节能看板弹窗展示优化** —— 扩展运行与配置区域默认采用折叠组件收拢，避免未折叠时挤占弹窗主视区。
 
 ### Changed
 
@@ -20,14 +26,12 @@
 - **收敛型澄清提问与决策就绪型计划规范（#330）** —— `ask_user_question` 现在单次严格限制 1~3 个问题（优先 1 个，超过 3 个直接报错阻断，防止问卷轰炸），选项 schema 收紧为 2~4 个互斥选项且推荐方案置顶，选项 description 要求一句话说明影响与权衡；`plan_update` 提示词升级为「决策就绪型」规划：动代码前先在步骤中落实排查发现（Discovery）、受影响文件清单（File Touch List）与风险回滚预案（Rollback），并随执行实时流转步骤状态。目标向导（`goal_ask` / wizardPrompt）与 DSH 澄清提示词同步对齐收敛型交互。
 
 <!-- auto-i18n:start -->
-
 ### i18n
 
-- 前端新增 key（5）：`piCoreSplitRun`、`piSdkSplitNote`、`piSdkBundledNote`、`installGlobalEngineBtn`、`installGlobalEngineTabTitle`
-- 前端中文变更（1）：`lspToolEnabledDesc`
-- 前端英文变更（1）：`lspToolEnabledDesc`
+- 前端新增 key（7）：`piCoreSplitRun`、`piSdkSplitNote`、`piSdkBundledNote`、`installGlobalEngineBtn`、`installGlobalEngineTabTitle`、`settingsViewPromptTokens`、`settingsPromptContextTotal`
+- 前端中文变更（2）：`settingsViewToolsSchema`、`lspToolEnabledDesc`
+- 前端英文变更（2）：`settingsViewToolsSchema`、`lspToolEnabledDesc`
 - 服务端新增 key（1）：`terminals.command.blocked`
-
 <!-- auto-i18n:end -->
 
 ## [0.95.0] — 2026-09-24

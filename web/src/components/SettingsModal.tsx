@@ -1,4 +1,4 @@
-import { Fragment, useEffect, useRef, useState } from "react";
+import { Fragment, useEffect, useMemo, useRef, useState } from "react";
 import {
 	FiAlertTriangle,
 	FiArchive,
@@ -88,7 +88,12 @@ import {
 	type PluginLogLevel,
 } from "../plugin-logs";
 import { QUICK_PHRASE_DEFAULTS } from "../quick-phrases";
-import { DEFAULT_PROMPT_TEMPLATE, PROMPT_TOKENS, isReadonlyPromptSource } from "../../../server/prompt-composer.js";
+import {
+	DEFAULT_PROMPT_TEMPLATE,
+	PROMPT_TOKENS,
+	estimatePromptTokens,
+	isReadonlyPromptSource,
+} from "../../../server/prompt-composer.js";
 import {
 	AGENT_TOOL_CATALOG,
 	filterToolsByPreset,
@@ -425,6 +430,11 @@ export function SettingsModal({ chat, terminal, initialSection, onSwitchToTermin
 		}
 	}, [tab, isDsh]);
 
+	// 打开设置面板或当前工作区/会话切换时，主动拉取一次最新设置快照（确保 {{context}}、生效提示词与 token 估算为当前项目最新值）。
+	useEffect(() => {
+		appSend({ type: "get_settings" });
+	}, [chat.state?.cwd, chat.activeConversationId]);
+
 	// Compose prompt — 组合模板（{{token}} 自由拼装）+ 各来源覆盖。本地草稿：
 	// 模板聚焦中不覆盖；某个来源的覆盖框聚焦中不覆盖该 key（防回显打断输入）。
 	const [promptTemplateDraft, setPromptTemplateDraft] = useState("");
@@ -465,6 +475,16 @@ export function SettingsModal({ chat, terminal, initialSection, onSwitchToTermin
 	// Read-only viewer for the FULL system prompt actually in effect.
 	const [showFullPrompt, setShowFullPrompt] = useState(false);
 	const [showToolsSchema, setShowToolsSchema] = useState(false);
+	// 当前生效提示词与工具 schema 的 token 占用（估算值，非精确分词）。
+	const promptTokenEstimate = useMemo(
+		() => estimatePromptTokens(settings?.effectiveSystemPrompt ?? ""),
+		[settings?.effectiveSystemPrompt],
+	);
+	const toolsSchemaTokenEstimate = useMemo(
+		() => estimatePromptTokens(settings?.toolsSchema ?? ""),
+		[settings?.toolsSchema],
+	);
+	const totalContextTokenEstimate = promptTokenEstimate + toolsSchemaTokenEstimate;
 	// 宽屏聊天列开关（纯前端 localStorage，见 chat-width-settings.ts）。
 	const wideChat = useWideChat();
 	// present_files 卡片：AI 标了「先看这个」时要不要自动弹预览窗（纯前端偏好，localStorage）。
@@ -1344,6 +1364,71 @@ export function SettingsModal({ chat, terminal, initialSection, onSwitchToTermin
 									{t("settingsSystemPrompt")}
 									<HintTip text={`${t("promptComposeHint")}\n${t("promptComposeDesc")}`} />
 								</div>
+								<div className="set-prompt-view-triggers">
+									<button
+										type="button"
+										className="set-view-prompt-btn"
+										aria-expanded={showFullPrompt}
+										onClick={() => setShowFullPrompt((v) => !v)}
+									>
+										<span>{t("settingsViewPrompt")}</span>
+										{promptTokenEstimate > 0 && (
+											<span className="set-prompt-token-est">
+												{t("settingsViewPromptTokens", { n: promptTokenEstimate.toLocaleString() })}
+											</span>
+										)}
+										<span>{showFullPrompt ? "▴" : "▾"}</span>
+									</button>
+									<button
+										type="button"
+										className="set-view-prompt-btn"
+										aria-expanded={showToolsSchema}
+										onClick={() => setShowToolsSchema((v) => !v)}
+									>
+										<span>{t("settingsViewToolsSchema")}</span>
+										{toolsSchemaTokenEstimate > 0 && (
+											<span className="set-prompt-token-est">
+												{t("settingsViewPromptTokens", { n: toolsSchemaTokenEstimate.toLocaleString() })}
+											</span>
+										)}
+										<span>{showToolsSchema ? "▴" : "▾"}</span>
+									</button>
+									{totalContextTokenEstimate > 0 && (
+										<span className="set-prompt-total-est">
+											{t("settingsPromptContextTotal", { n: totalContextTokenEstimate.toLocaleString() })}
+										</span>
+									)}
+								</div>
+								{showFullPrompt && (
+									<div className="set-prompt-view">
+										<div className="set-prompt-view-head">
+											<span>{t("settingsViewPrompt")}</span>
+											<HintTip text={t("settingsViewPromptHint")} />
+											<CopyButton text={settings.effectiveSystemPrompt} />
+										</div>
+										{settings.effectiveSystemPrompt ? (
+											<pre className="set-prompt-view-text">{settings.effectiveSystemPrompt}</pre>
+										) : (
+											<p className="set-empty">{t("settingsViewPromptEmpty")}</p>
+										)}
+									</div>
+								)}
+								{showToolsSchema && (
+									<div className="set-prompt-view">
+										<div className="set-prompt-tools">
+											<div className="set-prompt-view-head">
+												<span>{t("settingsViewToolsSchema")}</span>
+												<HintTip text={t("settingsViewToolsSchemaHint")} />
+												<CopyButton text={settings.toolsSchema} />
+											</div>
+											{settings.toolsSchema ? (
+												<pre className="set-prompt-view-text">{settings.toolsSchema}</pre>
+											) : (
+												<p className="set-empty">{t("settingsViewToolsSchemaEmpty")}</p>
+											)}
+										</div>
+									</div>
+								)}
 								<div className="set-field">
 									<label className="set-field-label">{t("promptTemplateLabel")}</label>
 									<textarea
@@ -1586,52 +1671,6 @@ export function SettingsModal({ chat, terminal, initialSection, onSwitchToTermin
 										</button>
 									</div>
 								</div>
-								<button
-									type="button"
-									className="set-view-prompt-btn"
-									aria-expanded={showFullPrompt}
-									onClick={() => setShowFullPrompt((v) => !v)}
-								>
-									{t("settingsViewPrompt")} {showFullPrompt ? "▴" : "▾"}
-								</button>
-								{showFullPrompt && (
-									<div className="set-prompt-view">
-										<div className="set-prompt-view-head">
-											<span>{t("settingsViewPrompt")}</span>
-											<HintTip text={t("settingsViewPromptHint")} />
-											<CopyButton text={settings.effectiveSystemPrompt} />
-										</div>
-										{settings.effectiveSystemPrompt ? (
-											<pre className="set-prompt-view-text">{settings.effectiveSystemPrompt}</pre>
-										) : (
-											<p className="set-empty">{t("settingsViewPromptEmpty")}</p>
-										)}
-									</div>
-								)}
-								<button
-									type="button"
-									className="set-view-prompt-btn"
-									aria-expanded={showToolsSchema}
-									onClick={() => setShowToolsSchema((v) => !v)}
-								>
-									{t("settingsViewToolsSchema")} {showToolsSchema ? "▴" : "▾"}
-								</button>
-								{showToolsSchema && (
-									<div className="set-prompt-view">
-										<div className="set-prompt-tools">
-											<div className="set-prompt-view-head">
-												<span>{t("settingsViewToolsSchema")}</span>
-												<HintTip text={t("settingsViewToolsSchemaHint")} />
-												<CopyButton text={settings.toolsSchema} />
-											</div>
-											{settings.toolsSchema ? (
-												<pre className="set-prompt-view-text">{settings.toolsSchema}</pre>
-											) : (
-												<p className="set-empty">{t("settingsViewToolsSchemaEmpty")}</p>
-											)}
-										</div>
-									</div>
-								)}
 							</div>
 						)}
 

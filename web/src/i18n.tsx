@@ -1129,13 +1129,15 @@ export const zh = {
 	promptTok_cwd: "工作目录行",
 	promptTok_cwd_desc: "Current working directory 行",
 	settingsViewPrompt: "查看当前完整提示词",
+	settingsViewPromptTokens: "≈ {n} tokens",
 	settingsViewPromptHint:
 		"当前会话实际生效的完整系统提示词（含自定义追加/替换内容、项目上下文、技能说明与工具引导），只读。",
 	settingsViewPromptEmpty: "会话尚未就绪，暂无系统提示词。",
-	settingsViewToolsSchema: "工具 schema",
+	settingsViewToolsSchema: "查看工具 schema",
 	settingsViewToolsSchemaHint:
 		"发给模型的 function-calling 工具定义（name / description / parameters），与系统提示词正文拼成完整初始上下文，只读。",
 	settingsViewToolsSchemaEmpty: "会话尚未就绪，暂无工具 schema。",
+	settingsPromptContextTotal: "合计: ≈ {n} tokens",
 	settingsSkills: "技能",
 	settingsReview: "目标审查",
 	settingsReviewDesc: "为独立的目标审查会话配置额外提示词和技能；不会改变主会话设置。",
@@ -2821,13 +2823,15 @@ const en: Record<keyof typeof zh, string> = {
 	promptTok_cwd: "Working dir line",
 	promptTok_cwd_desc: "the Current working directory line",
 	settingsViewPrompt: "View the current full prompt",
+	settingsViewPromptTokens: "≈ {n} tokens",
 	settingsViewPromptHint:
 		"The full system prompt actually in effect for this conversation (custom append/replace text, project context, skills and tool guidance). Read-only.",
 	settingsViewPromptEmpty: "Session not ready yet — no system prompt available.",
-	settingsViewToolsSchema: "Tools schema",
+	settingsViewToolsSchema: "View tools schema",
 	settingsViewToolsSchemaHint:
 		"The function-calling tool definitions sent to the model (name / description / parameters), combining with the system prompt text to form the full initial context. Read-only.",
 	settingsViewToolsSchemaEmpty: "Session not ready yet — no tools schema available.",
+	settingsPromptContextTotal: "Total: ≈ {n} tokens",
 	settingsSkills: "Skills",
 	settingsReview: "Goal review",
 	settingsReviewDesc:
