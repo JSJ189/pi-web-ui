@@ -1365,7 +1365,7 @@ export function TopBar({
 				{segCenter.map((it) => (
 					<Fragment key={it.id}>{it.node}</Fragment>
 				))}
-				{segEnd.length > 0 && <span className="tb-spacer" aria-hidden="true" />}
+				{segCenter.length > 0 && <span className="tb-spacer" aria-hidden="true" />}
 				{segEnd.map((it) => (
 					<Fragment key={it.id}>{it.node}</Fragment>
 				))}

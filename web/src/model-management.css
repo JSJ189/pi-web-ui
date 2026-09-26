@@ -444,10 +444,10 @@
 .capsule-segment {
 	display: inline-flex;
 	align-items: center;
-	gap: 5px;
-	padding: 3px 8px;
+	gap: 6px;
+	padding: 4px 10px;
 	border-radius: 16px;
-	font-size: 12px;
+	font-size: 13px;
 	color: var(--text);
 	cursor: pointer;
 	transition: background 0.12s;

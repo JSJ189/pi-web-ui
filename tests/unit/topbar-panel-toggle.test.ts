@@ -173,6 +173,21 @@ describe("TopBar 是单一扁直流（无按种类包裹的容器、无贴边例
 		expect(spacerIndexes(container)).toEqual([]);
 	});
 
+	it("全部条目设为居中时，条目两侧各有一个 spacer（平分空间，真正居中而非偏右）", () => {
+		const { container } = mount("chat", [
+			{ ...hostEntry("host:chat"), align: "center" },
+			{ ...hostEntry("host:terminal"), align: "center" },
+		]);
+		const [sp1, sp2] = spacerIndexes(container);
+		expect(sp1).toBe(0);
+		expect(sp2).toBe(3);
+		const kids = flowKids(container);
+		expect(kids[0].classList.contains("tb-spacer")).toBe(true);
+		expect(kids[1].classList.contains("tb-tab")).toBe(true);
+		expect(kids[2].classList.contains("tb-tab")).toBe(true);
+		expect(kids[3].classList.contains("tb-spacer")).toBe(true);
+	});
+
 	it("☰/📁 不再是贴边例外：位置只由 slot 顺序决定，点击仍开对侧抽屉", () => {
 		// files 排在 chat 之前 → 它就是第一个条目（旧版无论如何都钉在顶栏最右）
 		const { container, opened } = mount("chat", [

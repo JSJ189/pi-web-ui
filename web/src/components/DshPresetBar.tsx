@@ -1,5 +1,5 @@
 import { memo, useEffect, useState } from "react";
-import { FiCpu, FiLock, FiPlus } from "react-icons/fi";
+import { FiLock, FiPlus, FiSliders } from "react-icons/fi";
 import type { UiAgentPreset } from "../types";
 import { useT } from "../i18n";
 import { appSend } from "../app-globals";
@@ -74,7 +74,7 @@ export const DshPresetBar = memo(function DshPresetBar({
 			<Dropdown
 				trigger={
 					<>
-						<FiCpu />
+						<FiSliders />
 						<span className="chip-sub" title={locked ? `${title}（${t("dshPresetLocked")}）` : title}>
 							{current?.name ?? current?.id ?? preset?.name ?? t("dshPreset")}
 							{locked && <FiLock style={{ marginLeft: 3 }} />}
@@ -110,7 +110,7 @@ export const DshPresetBar = memo(function DshPresetBar({
 	return (
 		<div className="dsh-presetbar" data-testid="dsh-presetbar">
 			<span className="dsh-preset-label">
-				<FiCpu />
+				<FiSliders />
 				{t("dshPreset")}
 			</span>
 			<Dropdown

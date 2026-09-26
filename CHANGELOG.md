@@ -10,6 +10,26 @@
 
 ## [Unreleased]
 
+## [0.96.1] — 2026-09-26
+
+### Fixed
+
+- **插件安装审批弹窗层级提升与进度反馈补齐（#382）** —— 将能力与目录访问审批弹窗提升至高于设置弹窗的顶层浮层（`z-index: 350`），无需关闭设置页；修复「记住并允许」未持久化问题，授权写入 `plugin-permissions.json` 并在再次安装时直接放行；点击安装即刻反馈等待确认/执行中状态，已安装列表补挂进度条，关闭弹窗后主界面提供全局进度指示。
+- **顶栏全部居中对齐时偏右修复** —— 修复当顶栏条目全部设为居中时，因右侧缺失占位弹簧（`tb-spacer`）导致条目被左侧单个弹簧推向最右侧的问题，确保中间条目精准水平居中。
+- **设置保存回执时序修复** —— 确保 `set_settings` 在触发 `needsReload` 重启前先行持久化并推送状态回执。
+
+### Changed
+
+- **朱批与朱批·夜主题界面精细化** —— 顶栏控件全面素色化（透明底、无边框，悬停现 hairline）；消息折叠条内边距清零，折叠指示三角光学对齐左侧墨线；输入框边框微调，发送/停止按钮微调为圆形；输入框底部模型选择、思考强度、预设等按钮去边框透明底，悬停显示细边框。
+- **输入框与顶栏控件排版微调** —— 顶栏 chip 统一幽灵化；输入框底部模型与思考强度 chip 尺寸微调收紧；思考强度 Chip 文案精简为 `{level}`，保留 tooltip 说明；预设选择器图标优化为 `FiSliders`。
+
+<!-- auto-i18n:start -->
+### i18n
+
+- 前端中文变更（1）：`thinkingChip`
+- 前端英文变更（1）：`thinkingChip`
+<!-- auto-i18n:end -->
+
 ## [0.96.0] — 2026-09-26
 
 ### Added
@@ -1293,7 +1313,8 @@ when?, children?}`，也收 `topbar` / `settings` 这类简写别名）；宿主
 - 0.35.1（2026-08-27）：编辑重问保留附件（#18）+ 全窗口拖放（#19）。
 - 0.29.0（2026-08-23）：全局搜索弹窗（Ctrl+K）+ 消息列表惰性窗口化。
 
-[Unreleased]: https://github.com/xing-shuyin/pi-web-ui/compare/v0.96.0...main
+[Unreleased]: https://github.com/xing-shuyin/pi-web-ui/compare/v0.96.1...main
+[0.96.1]: https://github.com/xing-shuyin/pi-web-ui/releases/tag/v0.96.1
 [0.96.0]: https://github.com/xing-shuyin/pi-web-ui/releases/tag/v0.96.0
 [0.95.0]: https://github.com/xing-shuyin/pi-web-ui/releases/tag/v0.95.0
 [0.94.1]: https://github.com/xing-shuyin/pi-web-ui/releases/tag/v0.94.1

@@ -149,11 +149,13 @@ body,
 	letter-spacing: 0.06em;
 }
 
-/* 顶栏控件全部素色化：无底无框，hover 才现 hairline */
-.topbar .chip,
-.topbar .tb-tab,
-.topbar .panel-toggle,
-.topbar .plugin-topbar-item {
+/* 顶栏控件全部素色化：无底无框，hover 才现 hairline。兜底所有 button /
+ * [role=button]——不管类名是谁（基线 chip / 插件注入 / capsule 等），顶栏里
+ * 一律裸图标，dropdown 触发器不许再带盒子。 */
+.topbar button,
+.topbar [role="button"],
+.topbar a.chip,
+.topbar .chip {
 	background: transparent !important;
 	border: 1px solid transparent !important;
 	border-radius: 3px !important;
@@ -163,12 +165,18 @@ body,
 		color 0.15s ease !important;
 }
 
-.topbar .chip:hover,
-.topbar .tb-tab:hover,
-.topbar .panel-toggle:hover,
-.topbar .plugin-topbar-item:hover {
+.topbar button:hover,
+.topbar [role="button"]:hover,
+.topbar a.chip:hover,
+.topbar .chip:hover {
 	border-color: var(--border) !important;
 	background: transparent !important;
+}
+
+.topbar .dropdown {
+	background: transparent !important;
+	border: none !important;
+	box-shadow: none !important;
 }
 
 /* ---- 2. 消息区：左缘墨线活动脊 + 文档化排版 ----
@@ -469,6 +477,12 @@ div.chead[role="button"]:hover,
 	border-bottom: 1px dotted var(--border-soft) !important;
 	border-radius: 0 !important;
 	box-shadow: none !important;
+	padding-left: 0 !important;
+	padding-right: 0 !important;
+}
+
+.msg-collapsed-action::before {
+	margin-left: 0 !important;
 }
 
 .msg-error {
@@ -487,7 +501,7 @@ div.chead[role="button"]:hover,
 
 .inputbox {
 	background: var(--inputbox-bg) !important;
-	border: 1px solid var(--border) !important;
+	border: none !important;
 	border-radius: 3px !important;
 	box-shadow: inset 3px 0 0 0 rgba(224, 90, 53, 0.4) !important;
 	transition:
@@ -496,14 +510,14 @@ div.chead[role="button"]:hover,
 }
 
 .inputbox:focus-within {
-	border-color: var(--accent) !important;
+	border: none !important;
 	box-shadow: inset 3px 0 0 0 var(--accent) !important;
 }
 
 .btn.send {
 	background: var(--send-blue) !important;
 	color: #131313 !important;
-	border-radius: 3px !important;
+	border-radius: 50% !important;
 	box-shadow: none !important;
 	font-weight: 600;
 }
@@ -515,7 +529,54 @@ div.chead[role="button"]:hover,
 .btn.stop {
 	background: var(--stop-red) !important;
 	color: #131313 !important;
+	border-radius: 50% !important;
+}
+
+/* 输入框底部模型选择、思考强度、预设等按钮：去边框、透明底，hover 现 hairline */
+.composer-tools {
+	border-top: none !important;
+}
+
+.composer-tools .chip,
+.composer-tools .capsule-segment {
+	font-size: 13px !important;
+	padding: 4px 10px !important;
+	gap: 6px !important;
+	background: transparent !important;
+	border: 1px solid transparent !important;
+	box-shadow: none !important;
 	border-radius: 3px !important;
+	transition:
+		border-color 0.15s ease,
+		background 0.15s ease !important;
+}
+
+.composer-tools .model-thinking-capsule {
+	background: transparent !important;
+	border: none !important;
+	box-shadow: none !important;
+	padding: 0 !important;
+}
+
+.composer-tools .model-thinking-capsule .capsule-divider {
+	display: none !important;
+}
+
+.composer-tools .chip:hover,
+.composer-tools .capsule-segment:hover {
+	border-color: var(--border) !important;
+	background: transparent !important;
+}
+
+.composer-tools-left {
+	gap: 6px !important;
+}
+
+.composer-tools .chip-model,
+.composer-tools .chip-sub,
+.composer-tools .capsule-model-name,
+.composer-tools .capsule-thinking-text {
+	font-size: 12.5px !important;
 }
 
 /* ---- 9. 底栏 / 状态栏：hairline 收边 ---- */
@@ -606,8 +667,7 @@ div.chead[role="button"]:hover,
 		0 16px 40px -12px rgba(0, 0, 0, 0.55) !important;
 }
 
-.dd-menu,
-.dropdown {
+.dd-menu {
 	background: var(--menu-bg) !important;
 	border: 1px solid var(--border) !important;
 	border-radius: 4px !important;

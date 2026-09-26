@@ -5028,6 +5028,19 @@ body.panel-resizing .scm-divider::after {
 	background: var(--accent-soft);
 }
 
+/* 顶栏里的 chip 统一裸幽灵化（主题下拉 / 声音 / 语言 / GitHub / 新对话…）：
+ * 与 tb-tab 图标键同规格——无底无框，悬停才现 hairline。否则顶栏里
+ * 「裸图标 + 盒子 chip」混排（下拉触发器尤其突兀）。主题可再整体重排。 */
+.topbar .chip {
+	background: transparent;
+	border-color: transparent;
+}
+
+.topbar .chip:hover {
+	background: transparent;
+	border-color: var(--border);
+}
+
 .chip-model {
 	max-width: 220px;
 	overflow: hidden;
@@ -9362,7 +9375,7 @@ div.chead[role="button"]:focus-visible,
 .composer-tools-left {
 	display: flex;
 	align-items: center;
-	gap: 4px;
+	gap: 6px;
 	min-width: 0;
 	flex-wrap: wrap;
 }
@@ -9393,10 +9406,13 @@ div.chead[role="button"]:focus-visible,
 }
 /* 工具条里的模型/思考 chip 跟着收紧（只作用于输入框内，别处 chip 不动）。 */
 .composer-tools .chip {
-	padding: 3px 8px;
-	font-size: 12px;
-	gap: 4px;
+	padding: 4px 10px;
+	font-size: 13px;
+	gap: 6px;
 	border-radius: 8px;
+}
+.composer-tools .chip-sub {
+	font-size: 12px;
 }
 .composer-tools .chip > span.chip-model,
 .composer-tools .chip > span.chip-sub {

@@ -415,6 +415,7 @@ export const ModelThinking = memo(function ModelThinking({
 					</span>
 				</>
 			}
+			tip={t("thinkingLevel")}
 			open={thinkingOpen}
 			onOpenChange={setThinkingOpen}
 			align="left"
