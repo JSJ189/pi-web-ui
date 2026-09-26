@@ -101,8 +101,10 @@ export interface AgentToolEntry {
 	offHintKey?: string;
 }
 
-/** 可开关的 Agent 工具总目录（共 27 个；bash 本体与 SDK 内置 edit/read
- *  不进目录——关了 agent 就残了，不给关）。 */
+/** 可开关的 Agent 工具总目录（共 27 个）。核心内置工具 bash/read/edit/write 不进
+ *  目录——目录条目 = OTHER_AGENT_TOOLS 自动渲染的设置行，而这四个在设置页
+ *  「核心工具」区单独开关（见 SettingsModal 的 CORE_BUILTIN_TOOL_NAMES 区块），
+ *  禁用名单同样接受它们（normalizeDisabledAgentTools）。 */
 export const AGENT_TOOL_CATALOG: AgentToolEntry[] = [
 	...TERMINAL_TOOL_NAMES.map((name): AgentToolEntry => ({
 		name,
@@ -273,6 +275,15 @@ export const AGENT_TOOL_CATALOG: AgentToolEntry[] = [
 	},
 ];
 
+/** SDK 核心内置工具名（可被门控显式禁用或被预设白名单过滤）。 */
+export const CORE_BUILTIN_TOOL_NAMES = ["bash", "read", "edit", "write"] as const;
+
+export type CoreBuiltinToolName = (typeof CORE_BUILTIN_TOOL_NAMES)[number];
+
+export function isCoreBuiltinTool(name: string): name is CoreBuiltinToolName {
+	return (CORE_BUILTIN_TOOL_NAMES as readonly string[]).includes(name);
+}
+
 const KNOWN_NAMES = new Set(AGENT_TOOL_CATALOG.map((t) => t.name));
 
 /** 是否为本表登记的可开关工具（未知名一律 false，不抛错）。 */
@@ -281,14 +292,16 @@ export function isKnownAgentTool(name: string): boolean {
 }
 
 /** 归一化禁用名单：非数组回落默认（= 默认关的那些）；数组则只保留已知工具名
- *  （去重；未知名丢弃，防旧文件/手写脏数据污染）。 */
+ *  （去重；未知名丢弃，防旧文件/手写脏数据污染）。支持登记核心内置工具。 */
 export function normalizeDisabledAgentTools(v: unknown): string[] {
 	if (!Array.isArray(v)) return defaultDisabledAgentTools();
 	const out: string[] = [];
 	for (const x of v) {
 		// 旧名迁移：markers_list → todo_list（改名前已关闭的用户保持关闭）。
 		const name = x === LEGACY_MARKERS_LIST_TOOL_NAME ? MARKERS_LIST_TOOL_NAME : x;
-		if (typeof name === "string" && KNOWN_NAMES.has(name) && !out.includes(name)) out.push(name);
+		if (typeof name === "string" && (KNOWN_NAMES.has(name) || isCoreBuiltinTool(name)) && !out.includes(name)) {
+			out.push(name);
+		}
 	}
 	return out;
 }
@@ -307,6 +320,9 @@ export function isAgentToolEnabled(name: string, disabled: readonly string[]): b
 export interface ActiveToolSet {
 	getActiveToolNames(): string[];
 	setActiveToolsByName(names: string[]): void;
+	/** 全量工具基线（含被禁用的）。SDK 会话自带；没有它就无法区分「从未有过」
+	 *  与「被禁用」，门控复原会失真，因此必选。 */
+	getAllTools(): Array<{ name: string }>;
 }
 
 /**
@@ -345,18 +361,25 @@ export function setAgentToolsEnabled(session: ActiveToolSet, names: readonly str
 }
 
 /**
- * 全量重放（创建会话 / reload 后 / 设置变更后调）：按禁用名单把目录内工具
- * 逐个加回或剔除；目录外的工具（bash/SDK 内置/插件工具）原样不动。
+ * 全量重放（创建会话 / reload 后 / 设置变更后调）：按禁用名单把目录内工具与
+ * 核心内置工具（bash/read/edit/write，禁用名单接受它们）逐个加回或剔除；
+ * 基线之外的工具（插件工具等）原样不动。
  * 支持传入 preset（预设 id），按预设白名单做二次过滤。
+ * 复原基线取 session.getAllTools()（全集，含被禁用的）——基线里没有的工具不会凭空发明。
  * Session 未就绪时静默跳过（下次创建/reload 会再应用）。
  */
 export function applyAgentToolsGating(session: ActiveToolSet, disabled: readonly string[], preset?: string): void {
 	try {
 		const off = new Set(disabled);
-		const names = new Set(session.getActiveToolNames());
+		const allNames = session.getAllTools().map((t) => t.name);
+		const names = new Set(allNames);
 		for (const t of AGENT_TOOL_CATALOG) {
 			if (off.has(t.name)) names.delete(t.name);
 			else names.add(t.name);
+		}
+		for (const core of CORE_BUILTIN_TOOL_NAMES) {
+			if (off.has(core)) names.delete(core);
+			else if (allNames.includes(core)) names.add(core);
 		}
 		const filtered = filterToolsByPreset(names, preset);
 		session.setActiveToolsByName(filtered);

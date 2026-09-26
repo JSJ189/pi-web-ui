@@ -1,5 +1,5 @@
 import { Fragment, useEffect, useRef, useState, type ReactNode } from "react";
-import { FiFolder } from "react-icons/fi";
+import { FiFolder, FiX } from "react-icons/fi";
 import type { ChatState } from "../use-chat";
 import { useT } from "../i18n";
 import { appSend, useAppField, useAppGlobals } from "../app-globals";
@@ -145,7 +145,7 @@ export function FooterBar({ chat, bottombarItems, onUiAction }: FooterBarProps) 
 			: null;
 	const ctxText =
 		context.tokens !== null && ctxPercent !== null
-			? `${context.estimated ? "~" : ""}${formatTokens(context.tokens)} / ${formatTokens(effectiveMax)}`
+			? `${formatTokens(context.tokens)} / ${formatTokens(effectiveMax)}`
 			: "—";
 	const ctxBarClass = ctxPercent === null ? "" : ctxPercent >= 80 ? "warn" : ctxPercent >= 50 ? "mid" : "ok";
 
@@ -244,7 +244,7 @@ export function FooterBar({ chat, bottombarItems, onUiAction }: FooterBarProps) 
 			);
 		})(),
 		"host:cost": (
-			<span className="status-item" title={t("cumulativeCost")}>
+			<span className="status-item status-cost" title={t("cumulativeCost")}>
 				${formatCost(s.cost)}
 			</span>
 		),
@@ -377,6 +377,15 @@ export function FooterBar({ chat, bottombarItems, onUiAction }: FooterBarProps) 
 								</button>
 							);
 						})()}
+						<button
+							type="button"
+							className="cwd-close"
+							title={t("close")}
+							aria-label={t("close")}
+							onClick={() => setEditing(false)}
+						>
+							<FiX />
+						</button>
 					</div>
 					<div className="cwd-picker-row">
 						<input

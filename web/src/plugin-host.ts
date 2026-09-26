@@ -459,7 +459,10 @@ async function waitForPageBridge(timeoutMs = 3000): Promise<PageBridgeLike | nul
  * 首拍也推迟到微任务之后。
  */
 let startChatGate: Promise<void> = Promise.resolve();
-let startChatGateBusy = false;
+// 已受理但尚未落定的序列数。busy 布尔不够用：排队分支若不置 busy，第三个并发会
+// 在排队者运行期间误判空闲插队；若置了，上一个任务的落定回调又会把标志清掉。
+// 计数器由每个序列自己的落定回调递减，谁受理谁持有，中间落定不会放跑排队者。
+let startChatPending = 0;
 
 export function createPluginHostApi(deps: PluginHostDeps): PluginHostApi {
 	const pollMs = Math.max(1, Number(deps.pollMs ?? 100));
@@ -536,21 +539,21 @@ export function createPluginHostApi(deps: PluginHostDeps): PluginHostApi {
 			if (model && !isKnownModel(model)) return false;
 			const exec = (): Promise<void> => run(prompt, opts ?? { prompt });
 			let task: Promise<void>;
-			if (startChatGateBusy) {
-				// 已有序列在跑：排队等它落定（含 prompt 发出）再启动，防 new_chat 插队串话。
+			if (startChatPending > 0) {
+				// 已有序列在跑或排队：链到队尾（含 prompt 发出）再启动，防 new_chat 插队串话。
 				task = startChatGate.then(exec);
 			} else {
 				// 闸门空闲：同步启动，保住「受理即发 set_cwd/new_chat」的既有时序。
-				startChatGateBusy = true;
 				task = exec();
 			}
+			startChatPending++;
 			// 闸门自身不因一次失败卡死（失败也不抛到调用方，fire-and-forget）。
 			startChatGate = task.then(
 				() => {
-					startChatGateBusy = false;
+					startChatPending--;
 				},
 				() => {
-					startChatGateBusy = false;
+					startChatPending--;
 				},
 			);
 			void task.catch(() => {

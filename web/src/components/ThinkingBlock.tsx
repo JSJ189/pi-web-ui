@@ -1,4 +1,4 @@
-import { useState } from "react";
+import { useState, type ReactNode } from "react";
 import { FiCheckCircle, FiChevronDown, FiChevronRight, FiCopy, FiCpu } from "react-icons/fi";
 import { useT } from "../i18n";
 
@@ -18,9 +18,13 @@ interface ThinkingBlockProps {
 	/** 会话内搜索打开时强制展开（折叠内容不在 DOM，搜索索引搜到的词会
 	 *  “展开后看不到”）。不改变用户的 open 状态，关闭搜索自动恢复。 */
 	forceOpen?: boolean;
+	/** 消息操作按钮（复制/编辑/朗读，由 Message 传入）：渲染在 head 行内、
+	 *  行内复制按钮旁。默认主题经 styles.css 的 .chead-actions 隐藏，只有
+	 *  选择启用的主题（themes/zhupi*.css）显示。 */
+	headExtra?: ReactNode;
 }
 
-export function ThinkingBlock({ thinking, streaming, wrap = true, forceOpen = false }: ThinkingBlockProps) {
+export function ThinkingBlock({ thinking, streaming, wrap = true, forceOpen = false, headExtra }: ThinkingBlockProps) {
 	const t = useT();
 	// null = 未手动点过 → 跟随开关：wrap=true（开）→ 完整展开；wrap=false（关）→ 折叠。
 	// 流式与结束后行为一致——不再出现「流式折叠、结束后又自动展开」的跳动。
@@ -82,18 +86,29 @@ export function ThinkingBlock({ thinking, streaming, wrap = true, forceOpen = fa
 						t("thinkingPreview", { preview })
 					)}
 				</span>
-				<button
-					type="button"
-					className="chead-copy toolcall-copy thinking-copy"
-					title={copied ? t("copied") : t("copyMessage")}
-					aria-label={t("copyMessage")}
-					onClick={(e) => {
-						e.stopPropagation();
-						copyThinking();
-					}}
-				>
-					{copied ? <FiCheckCircle /> : <FiCopy />}
-				</button>
+				{/* 挂了消息操作簇（headExtra）时不再渲染自己的复制键——群组里的
+				    消息复制就在旁边，两个复制图标并排是重复。 */}
+				{headExtra == null && (
+					<button
+						type="button"
+						className={`chead-copy toolcall-copy thinking-copy${copied ? " copied" : ""}`}
+						title={copied ? t("copied") : t("copyMessage")}
+						aria-label={t("copyMessage")}
+						onClick={(e) => {
+							e.stopPropagation();
+							copyThinking();
+						}}
+					>
+						{copied ? <FiCheckCircle /> : <FiCopy />}
+					</button>
+				)}
+				{headExtra != null && (
+					// stopPropagation：head 本身是折叠开关（role=button），行内操作
+					// 按钮的点击不能冒泡成展开/折叠。
+					<span className="chead-actions" onClick={(e) => e.stopPropagation()}>
+						{headExtra}
+					</span>
+				)}
 			</div>
 			{shown && <div className="thinking-body">{thinking}</div>}
 		</div>

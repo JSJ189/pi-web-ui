@@ -162,6 +162,10 @@ export function assistantPlainText(messages: SpeechLikeMessage[] | undefined | n
  */
 let speakingActive = false;
 let speakingSource: string | null = null;
+// 最近一次真正提交给 synth.speak 的词条。被 cancel 的旧词条其 onend/onerror 在多数
+// 浏览器是异步触发的，可能晚于新词条开播 —— 用引用比对守卫，避免旧词条的回调把
+// 新词条的 speaking 标志误清（按钮态错乱、isSpeaking 失真）。
+let speakingUtter: SpeechSynthesisUtterance | null = null;
 const speakingListeners = new Set<(speaking: boolean) => void>();
 
 function setSpeaking(active: boolean, source: string | null = null): void {
@@ -215,12 +219,20 @@ export function speak(text: string, settings: TtsSettings = loadTtsSettings(), s
 		if (voice) utter.voice = voice as SpeechSynthesisVoice;
 		// End/error paths both clear the flag; onerror is intentionally silent:
 		// a blocked/failed voice must never surface as an error notice — speech
-		// is a best-effort channel.
-		utter.onend = () => setSpeaking(false);
-		utter.onerror = () => setSpeaking(false);
+		// is a best-effort channel. Both are guarded by the utterance reference:
+		// a cancelled predecessor's async callback must not clear the successor's
+		// speaking state.
+		utter.onend = () => {
+			if (speakingUtter === utter) setSpeaking(false);
+		};
+		utter.onerror = () => {
+			if (speakingUtter === utter) setSpeaking(false);
+		};
+		speakingUtter = utter;
 		setSpeaking(true, sourceId ?? null);
 		synth.speak(utter);
 	} catch {
+		speakingUtter = null;
 		setSpeaking(false);
 	}
 }
@@ -233,5 +245,7 @@ export function stopSpeaking(): void {
 	} catch {
 		// ignore
 	}
+	// 主动取消后清引用：旧词条迟到的 onend 不会也无需再动 speaking 状态。
+	speakingUtter = null;
 	setSpeaking(false);
 }

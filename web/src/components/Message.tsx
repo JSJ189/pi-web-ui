@@ -1,4 +1,4 @@
-import { memo, useEffect, useRef, useState, type ReactNode } from "react";
+import { Fragment, memo, useEffect, useRef, useState, type ReactNode } from "react";
 import {
 	FiArchive,
 	FiBookOpen,
@@ -13,6 +13,7 @@ import {
 	FiGitBranch,
 	FiImage,
 	FiRefreshCw,
+	FiRotateCcw,
 	FiSquare,
 	FiVolume2,
 	FiX,
@@ -36,7 +37,7 @@ import { ToolCallBlock, type ToolView } from "./ToolCallBlock";
 import { useT, type Translate } from "../i18n";
 import { parseSkillBlock, type SkillBlock } from "../skill-block";
 import { isRasterImage, fileToProcessedImage } from "../image-paste";
-import { openContextMenu } from "../context-menu-state";
+import { contextMenuItems, openContextMenu } from "../context-menu-state";
 import { messageMarkdown, messagePlainText } from "../copy-text";
 import {
 	isSpeaking,
@@ -51,7 +52,7 @@ import {
 import { openExportImage, toggleExportImageSelect, useExportImage } from "../export-image-state";
 import { hasMessageWidget } from "../plugin-fence";
 import { openRollbackDialog } from "../rollback-state";
-import type { UiSlotEntry } from "../ui-slots";
+import { BUILTIN_UI_ITEMS, type UiSlotEntry } from "../ui-slots";
 import { appSend } from "../app-globals";
 
 /** 编辑重问编辑器里直接拖入/粘贴文件的上限（与服务端 MAX_UPLOAD_BYTES 一致）。 */
@@ -130,7 +131,9 @@ const SLOT_ICONS: Record<string, ReactNode> = {
 	text: <FiFileText />,
 	markdown: <FiCode />,
 	image: <FiImage />,
+	undo: <FiRotateCcw />,
 	volume: <FiVolume2 />,
+	refresh: <FiRefreshCw />,
 	x: <FiX />,
 };
 
@@ -360,6 +363,21 @@ export const Message = memo(function Message({
 		}
 		if (imgs.length > 0) await addEditImageFiles(imgs);
 	};
+	const directReask = () => {
+		const text = skillBlock
+			? "/skill:" + skillBlock.name + (skillBlock.userMessage ? " " + skillBlock.userMessage : "")
+			: message.content
+					.map((b) => asText(b)?.text ?? "")
+					.filter(Boolean)
+					.join("\n");
+		const trimmed = text.trim();
+		if (!trimmed) return;
+		onEdit?.(
+			message.id,
+			trimmed,
+			questionAttachments && questionAttachments.length > 0 ? questionAttachments : undefined,
+		);
+	};
 	const startEdit = () => {
 		setDraft(
 			skillBlock
@@ -432,7 +450,7 @@ export const Message = memo(function Message({
 	// ---- 本地 TTS：消息工具条「朗读」按钮（host:msg-speak，复制三件套旁边） ----
 	// speaking 状态是浏览器级单例（tts.ts），这里只订阅；sourceId = 消息 id，
 	// 让「停止」只落在正在读的这一条上 —— 读着 A 时点 B 是改读 B，不是停止。
-	const [ttsSpeaking, setTtsSpeaking] = useState(isSpeaking());
+	const [_ttsSpeaking, setTtsSpeaking] = useState(isSpeaking());
 	useEffect(() => onSpeakingChange(setTtsSpeaking), []);
 	const canSpeak =
 		message.role === "assistant" &&
@@ -452,6 +470,28 @@ export const Message = memo(function Message({
 			message.id,
 		);
 	};
+	// 下拉复制菜单展开状态（点击外部或 Esc 关闭）
+	const [copyDropdownOpen, setCopyDropdownOpen] = useState(false);
+	const copyGroupRef = useRef<HTMLDivElement>(null);
+
+	useEffect(() => {
+		if (!copyDropdownOpen) return;
+		const onDocClick = (e: MouseEvent) => {
+			if (copyGroupRef.current && !copyGroupRef.current.contains(e.target as Node)) {
+				setCopyDropdownOpen(false);
+			}
+		};
+		const onKey = (e: KeyboardEvent) => {
+			if (e.key === "Escape") setCopyDropdownOpen(false);
+		};
+		document.addEventListener("mousedown", onDocClick);
+		document.addEventListener("keydown", onKey);
+		return () => {
+			document.removeEventListener("mousedown", onDocClick);
+			document.removeEventListener("keydown", onKey);
+		};
+	}, [copyDropdownOpen]);
+
 	const speakNode = (key: string): ReactNode =>
 		canSpeak ? (
 			<button
@@ -462,139 +502,262 @@ export const Message = memo(function Message({
 				aria-label={speakActive ? t("stopSpeakingMsg") : t("speakMsg")}
 				onClick={toggleSpeak}
 			>
-				{speakActive ? <FiSquare /> : <FiVolume2 />} {speakActive ? t("stopSpeakingMsg") : t("speakMsg")}
+				{speakActive ? <FiSquare /> : <FiVolume2 />}{" "}
+				<span className="msg-action-label">{speakActive ? t("stopSpeakingMsg") : t("speakMsg")}</span>
 			</button>
 		) : null;
 
-	/** 该槽位当前有没有可显示的东西：一条都没有就别抢浏览器菜单
-	 *  （弹个空菜单比不弹更糟，还会顺手废掉「检查元素 / 复制」）。
-	 *  判定与 contextMenuItems 同口径：hidden 跳过、divider 不算内容。 */
-	const ctxMenuAvailable = (uiContextMessage ?? []).some((e) => e && e.hidden !== true && e.kind !== "divider");
+	/** 右键菜单兜底条目：直接取 BUILTIN_UI_ITEMS 的 contextmenu.message 内置清单
+	 *  （单源，勿在此手抄）——slot 数据未接线时也能弹出与正常路径一致的菜单。 */
+	const msgCtxFallback = (): UiSlotEntry[] =>
+		BUILTIN_UI_ITEMS.filter((b) => b.slot === "contextmenu.message").map((b) => ({
+			id: b.id,
+			slot: b.slot,
+			source: "host" as const,
+			label: t(b.labelKey as Parameters<typeof t>[0]),
+			labelKey: b.labelKey,
+			icon: b.icon,
+			kind: b.kind,
+			group: b.group,
+			order: b.order ?? 100,
+			align: b.align ?? "start",
+			hidden: b.hidden ?? false,
+			userOverrides: [],
+			arrangedBy: [],
+		}));
 
 	/**
-	 * 右键消息 → 宿主的通用右键菜单（ContextMenu 实例由 App 渲染，这里只发请求）。
-	 *
-	 * 「不打扰」的三种取舍（一律交回浏览器默认菜单）：
-	 *  1. 点在 `pre` / `code` / `a` / `input` / `textarea` / contenteditable 上 —— 代码要复制、
-	 *     链接要「在新标签打开 / 另存」、输入框要系统菜单（拼写检查、粘贴），抢了是净损失。
-	 *  2. 页面里已有选中的文本 —— 用户正在选字准备复制，此时右键的意图是复制/搜索。
-	 *  3. 该槽位没有可用条目 —— 没有菜单可给，就别 preventDefault 了。
-	 * 其余情况一律 preventDefault：消息级操作菜单是宿主给的，不该再冒出第二个菜单。
+	 * 右键消息 → 宿主的通用右键菜单（ContextMenu 实例由 App 渲染，这里负责准备 entries + onHostAction）。
+	 * 点在链接 / 输入框 或有文本选中时交回系统原生菜单（pre / code 不让路：整条复制与
+	 * 重问对代码块同样有用）；其余弹出消息操作菜单。
 	 */
 	const onMsgContextMenu = (e: React.MouseEvent<HTMLDivElement>) => {
-		if (!ctxMenuAvailable) return;
 		const el = e.target;
-		if (el instanceof Element && el.closest("pre, code, a, input, textarea, [contenteditable='true']")) return;
+		if (el instanceof Element && el.closest("a, input, textarea, [contenteditable='true']")) return;
 		const sel = window.getSelection?.();
 		if (sel && !sel.isCollapsed && sel.toString().trim().length > 0) return;
+
+		const rawEntries: UiSlotEntry[] =
+			uiContextMessage && uiContextMessage.length > 0 ? uiContextMessage : msgCtxFallback();
+
+		const entries = rawEntries.map((entry) => {
+			if (entry.source !== "host") return entry;
+			switch (entry.id) {
+				case "host:msg-ctx-copy-markdown":
+				case "host:msg-ctx-copy-text":
+				case "host:msg-ctx-copy-image":
+					return canCopyWhole ? entry : { ...entry, hidden: true };
+				case "host:msg-ctx-reask":
+				case "host:msg-ctx-edit-reask":
+					return canEdit ? entry : { ...entry, hidden: true };
+				case "host:msg-ctx-fork":
+				case "host:msg-ctx-rollback":
+					return !streaming && !editing ? entry : { ...entry, hidden: true };
+				case "host:msg-ctx-speak":
+					if (!canSpeak) return { ...entry, hidden: true };
+					return speakActive ? { ...entry, label: t("stopSpeakingMsg"), icon: "square" } : entry;
+				default:
+					return entry;
+			}
+		});
+
+		if (contextMenuItems(entries).length === 0) return;
+
 		e.preventDefault();
 		openContextMenu({
 			x: e.clientX,
 			y: e.clientY,
 			slot: "contextmenu.message",
 			target: { id: message.id, kind: "message", label: ctxLabel },
-			entries: uiContextMessage ?? [],
+			entries,
+			onHostAction: (entry) => {
+				switch (entry.id) {
+					case "host:msg-ctx-copy-markdown":
+						void doWholeCopy("host:msg-copy-markdown");
+						return undefined;
+					case "host:msg-ctx-copy-text":
+						void doWholeCopy("host:msg-copy-text");
+						return undefined;
+					case "host:msg-ctx-copy-image":
+						void doWholeCopy("host:msg-copy-image");
+						return undefined;
+					case "host:msg-ctx-reask":
+						directReask();
+						return undefined;
+					case "host:msg-ctx-edit-reask":
+						startEdit();
+						return undefined;
+					case "host:msg-ctx-fork":
+						appSend({ type: "fork_session", messageId: message.id, position: "before" });
+						return undefined;
+					case "host:msg-ctx-rollback":
+						openRollbackDialog({ messageId: message.id });
+						return undefined;
+					case "host:msg-ctx-speak":
+						toggleSpeak();
+						return undefined;
+					default:
+						onUiAction?.(entry);
+						return undefined;
+				}
+			},
 		});
 	};
 
 	/**
-	 * 消息 hover 工具条（`message.actions` 槽位）。
-	 *  - 宿主没传 entries：回落到内置硬编码的「编辑重问」（App 未接线时行为不变）。
-	 *  - 传了 entries（哪怕空数组）：完全数据驱动 —— 顺序 = 数组顺序（宿主已排好）、
-	 *    `hidden === true` 跳过、内置条目走本组件的内置处理、其余条目点击交回 onUiAction。
-	 *  - 一条可渲染的都没有 → 整个 `.msg-actions` 容器都不画（不留空壳）。
-	 *  - 分隔线按传入位置照画（宿主已排好；这里不替它做「首尾去线」的优化）。
+	 * 聚合复制按钮（下拉格式：Markdown / 纯文本 / 长图 PNG）。
+	 * 点击主按钮直接复制最常用的 Markdown；点击小箭头展开下拉菜单选择其他格式。
 	 */
-	/** 整条复制三件套的工具条按钮（数据驱动与无宿主回落共用）。 */
-	const wholeCopyNodes = (keyPrefix: string): ReactNode[] => {
-		if (!canCopyWhole) return [];
+	const renderCopyDropdown = (key: string, availableEntries?: UiSlotEntry[]): ReactNode => {
+		if (!canCopyWhole) return null;
 		const defs = [
-			{ id: "host:msg-copy-text", label: t("copyText"), icon: "text" },
-			{ id: "host:msg-copy-markdown", label: t("copyMarkdown"), icon: "markdown" },
-			{ id: "host:msg-copy-image", label: t("copyImage"), icon: "image" },
+			{ id: "host:msg-copy-markdown", label: t("copyMarkdown"), icon: <FiCode /> },
+			{ id: "host:msg-copy-text", label: t("copyText"), icon: <FiFileText /> },
+			{ id: "host:msg-copy-image", label: t("copyImage"), icon: <FiImage /> },
 		] as const;
-		return defs.map((d) => {
-			const active = copyState?.id === d.id;
-			const ok = active && copyState.ok;
-			return (
-				<button
-					key={`${keyPrefix}${d.id}`}
-					type="button"
-					className="msg-action"
-					title={ok ? t("copied") : active ? t("copyFailed") : d.label}
-					aria-label={d.label}
-					onClick={() => void doWholeCopy(d.id)}
-				>
-					{ok ? <FiCheckCircle /> : slotIcon(d.icon)} {d.label}
-				</button>
-			);
+		const activeItems = defs.filter((d) => {
+			if (!availableEntries) return true;
+			const entry = availableEntries.find((e) => e.id === d.id);
+			return !entry || entry.hidden !== true;
 		});
+		if (activeItems.length === 0) return null;
+
+		const active = copyState !== null;
+		const ok = copyState?.ok;
+		const isFailed = active && !ok;
+
+		return (
+			<div key={key} ref={copyGroupRef} className={`msg-copy-group${copyDropdownOpen ? " has-open-dropdown" : ""}`}>
+				<button
+					type="button"
+					className={`msg-action msg-copy-main-btn${ok ? " msg-copy-success" : ""}`}
+					title={ok ? t("copied") : isFailed ? t("copyFailed") : t("copyMarkdown")}
+					aria-label={t("copyMarkdown")}
+					onClick={() => void doWholeCopy("host:msg-copy-markdown")}
+				>
+					{ok ? <FiCheckCircle /> : <FiCopy />}
+					<span className="msg-action-label">{ok ? t("copied") : t("copy")}</span>
+				</button>
+				<button
+					type="button"
+					className={`msg-action msg-copy-caret-btn${copyDropdownOpen ? " active" : ""}`}
+					title={t("copyMessage")}
+					aria-label={t("copyMessage")}
+					aria-expanded={copyDropdownOpen}
+					onClick={(e) => {
+						e.stopPropagation();
+						setCopyDropdownOpen((prev) => !prev);
+					}}
+				>
+					<FiChevronDown className={`msg-copy-caret-icon${copyDropdownOpen ? " open" : ""}`} />
+				</button>
+				{copyDropdownOpen && (
+					<div className="msg-copy-dropdown" role="menu">
+						{activeItems.map((item) => (
+							<button
+								key={item.id}
+								type="button"
+								className="msg-copy-menu-item"
+								role="menuitem"
+								onClick={() => {
+									setCopyDropdownOpen(false);
+									void doWholeCopy(item.id);
+								}}
+							>
+								{item.icon}
+								<span>{item.label}</span>
+							</button>
+						))}
+					</div>
+				)}
+			</div>
+		);
 	};
-	const renderMessageActions = () => {
+
+	const renderActionsChildren = (): ReactNode[] | null => {
 		if (!uiMessageActions) {
-			const fallback = wholeCopyNodes("fb:");
+			const fallbackCopy = renderCopyDropdown("fb-copy");
 			const speakFallback = speakNode("fb-speak");
-			if (!canEdit && fallback.length === 0 && !speakFallback) return null;
-			return (
-				<div className="msg-actions">
-					{canEdit && (
-						<button type="button" className="msg-action" title={t("editReaskTip")} onClick={startEdit}>
-							<FiEdit3 /> {t("editReask")}
+			if (!canEdit && !fallbackCopy && !speakFallback) return null;
+			const children: ReactNode[] = [];
+			if (canEdit) {
+				children.push(
+					<Fragment key="fb-reask">
+						<button
+							type="button"
+							className="msg-action"
+							title={t("reaskDirectlyTip")}
+							aria-label={t("reaskDirectly")}
+							onClick={directReask}
+						>
+							<FiRefreshCw /> <span className="msg-action-label">{t("reaskDirectly")}</span>
 						</button>
-					)}
-					{fallback}
-					{speakFallback}
-				</div>
-			);
+						<button
+							type="button"
+							className="msg-action"
+							title={t("editReaskTip")}
+							aria-label={t("editReask")}
+							onClick={startEdit}
+						>
+							<FiEdit3 /> <span className="msg-action-label">{t("editReask")}</span>
+						</button>
+					</Fragment>,
+				);
+			}
+			if (fallbackCopy) children.push(fallbackCopy);
+			if (speakFallback) children.push(speakFallback);
+			return children;
 		}
 		const nodes: ReactNode[] = [];
+		let copyDropdownRendered = false;
 		uiMessageActions.forEach((entry, i) => {
 			if (!entry || entry.hidden === true) return;
-			// 复制键的真实落点是文本块上的 .msg-text-copy（见 copyAllowed），工具条里跳过它。
 			if (entry.id === "host:msg-copy") return;
 			const key = `${entry.id}#${i}`;
 			const label = entry.label || entry.id;
-			// 整条一键复制三件套（issue #228）：内置处理，不交回插件。
+			// 一键复制三件套：聚合为单个下拉按钮（首次遇到时渲染，其余跳过）。
 			if (
 				entry.id === "host:msg-copy-text" ||
 				entry.id === "host:msg-copy-markdown" ||
 				entry.id === "host:msg-copy-image"
 			) {
-				if (!canCopyWhole) return;
-				const active = copyState?.id === entry.id;
-				const ok = active && copyState.ok;
-				nodes.push(
-					<button
-						key={key}
-						type="button"
-						className="msg-action"
-						title={ok ? t("copied") : active ? t("copyFailed") : label}
-						aria-label={label}
-						onClick={() => void doWholeCopy(entry.id)}
-					>
-						{ok ? <FiCheckCircle /> : slotIcon(entry.icon)} {label}
-					</button>,
-				);
+				if (!copyDropdownRendered) {
+					copyDropdownRendered = true;
+					const node = renderCopyDropdown("copy-dropdown", uiMessageActions);
+					if (node) nodes.push(node);
+				}
 				return;
 			}
-			// 内置「朗读」（本地 TTS，issue #288）：只对有文本的助手消息出现，
-			// 与复制三件套同一条 hover 工具条；点击在「读这条 / 停止」间切换。
 			if (entry.id === "host:msg-speak") {
 				const node = speakNode(key);
 				if (node) nodes.push(node);
 				return;
 			}
-			// 内置「编辑重问」：只对用户消息、且不在流式/编辑态时出现（与旧逻辑同判据）。
-			if (entry.id === "host:msg-edit-reask") {
+			if (entry.id === "host:msg-reask") {
 				if (!canEdit) return;
 				nodes.push(
-					<button key={key} type="button" className="msg-action" title={t("editReaskTip")} onClick={startEdit}>
-						{slotIcon(entry.icon)} {label}
+					<button
+						key={key}
+						type="button"
+						className="msg-action"
+						title={t("reaskDirectlyTip")}
+						aria-label={label}
+						onClick={directReask}
+					>
+						{slotIcon(entry.icon)} <span className="msg-action-label">{label}</span>
 					</button>,
 				);
 				return;
 			}
-			// 内置「派生分支」：不在流式/编辑态时出现
+			if (entry.id === "host:msg-edit-reask") {
+				if (!canEdit) return;
+				nodes.push(
+					<button key={key} type="button" className="msg-action" title={t("editReaskTip")} onClick={startEdit}>
+						{slotIcon(entry.icon)} <span className="msg-action-label">{label}</span>
+					</button>,
+				);
+				return;
+			}
 			if (entry.id === "host:msg-fork") {
 				if (streaming || editing) return;
 				nodes.push(
@@ -606,12 +769,11 @@ export const Message = memo(function Message({
 						aria-label={label}
 						onClick={() => appSend({ type: "fork_session", messageId: message.id, position: "before" })}
 					>
-						{slotIcon(entry.icon)} {label}
+						{slotIcon(entry.icon)} <span className="msg-action-label">{label}</span>
 					</button>,
 				);
 				return;
 			}
-			// 内置「回滚到此」：不在流式/编辑态时出现
 			if (entry.id === "host:msg-rollback") {
 				if (streaming || editing) return;
 				nodes.push(
@@ -625,7 +787,7 @@ export const Message = memo(function Message({
 							openRollbackDialog({ messageId: message.id });
 						}}
 					>
-						{slotIcon(entry.icon)} {label}
+						{slotIcon(entry.icon)} <span className="msg-action-label">{label}</span>
 					</button>,
 				);
 				return;
@@ -635,7 +797,6 @@ export const Message = memo(function Message({
 				return;
 			}
 			if (entry.kind === "badge") {
-				// badge = 只读文本/角标，不可点（与右键菜单里的 badge 同语义）。
 				nodes.push(
 					<span key={key} className="msg-action-badge" title={label}>
 						{entry.badge ?? label}
@@ -643,9 +804,6 @@ export const Message = memo(function Message({
 				);
 				return;
 			}
-			// 其余（action / view / menu / page / organizer）一律画成按钮：工具条只有一行，
-			// 不做二级菜单 —— 带 children 的 menu 条目也整条交回宿主，由宿主自己展开。
-			// kind="select" 落成小下拉（切换回插件，附带选中的 value）。
 			if (entry.kind === "select" && entry.options?.length) {
 				nodes.push(
 					<select
@@ -676,13 +834,19 @@ export const Message = memo(function Message({
 					aria-label={label}
 					onClick={() => onUiAction?.(entry)}
 				>
-					{slotIcon(entry.icon)} {label}
+					{slotIcon(entry.icon)} <span className="msg-action-label">{label}</span>
 					{entry.badge ? <span className="msg-action-count">{entry.badge}</span> : null}
 				</button>,
 			);
 		});
 		if (nodes.length === 0) return null;
-		return <div className="msg-actions">{nodes}</div>;
+		return nodes;
+	};
+
+	const renderMessageActions = () => {
+		const children = renderActionsChildren();
+		if (!children) return null;
+		return <div className={`msg-actions${copyDropdownOpen ? " has-open-dropdown" : ""}`}>{children}</div>;
 	};
 
 	// Goal-review verdict cards (server customType "goal-review") and wizard
@@ -709,10 +873,20 @@ export const Message = memo(function Message({
 	const exportForceThinking = exportSelected && exportImage.includeThinking;
 	const exportForceTools = exportSelected && exportImage.includeTools;
 
+	// 消息操作按钮的宿主：第一个思考/工具 head 行（Block → headExtra 插槽，
+	// 与行内复制按钮并排）。没有可宿主的 head（用户消息 / 纯文本回复）时
+	// headActionsNode 为 null，回退到消息底部的 .msg-actions 行。
+	const actionsChildren = editing ? null : renderActionsChildren();
+	const headHostIndex =
+		actionsChildren && !editing ? message.content.findIndex((b) => asThinking(b) || asToolCall(b)) : -1;
+	const headActionsNode = headHostIndex >= 0 ? actionsChildren : null;
+
 	return (
 		<div
 			ref={cardRef}
-			className={`msg msg-${message.role}${isGoalReview ? " msg-goal-review" : ""}${exportSelected ? " msg-export-selected" : ""}`}
+			className={`msg msg-${message.role}${isGoalReview ? " msg-goal-review" : ""}${
+				headActionsNode ? " msg-head-actions" : ""
+			}${exportSelected ? " msg-export-selected" : ""}`}
 			data-role={message.role}
 			data-msg-id={message.id}
 			onContextMenu={onMsgContextMenu}
@@ -965,6 +1139,7 @@ export const Message = memo(function Message({
 									showCopy={copyAllowed}
 									uiContextToolCall={uiContextToolCall}
 									onUiAction={onUiAction}
+									headActions={i === headHostIndex ? headActionsNode : undefined}
 								/>
 							))
 						)}
@@ -978,7 +1153,7 @@ export const Message = memo(function Message({
 					</>
 				)}
 			</div>
-			{!editing && renderMessageActions()}
+			{!editing && !headActionsNode && renderMessageActions()}
 		</div>
 	);
 });
@@ -1300,6 +1475,7 @@ function Block({
 	showCopy,
 	uiContextToolCall,
 	onUiAction,
+	headActions,
 }: {
 	block: UiContentBlock;
 	toolResults: ReadonlyMap<string, UiMessage>;
@@ -1320,6 +1496,8 @@ function Block({
 	forceThinking?: boolean;
 	/** 导出图勾了「包含工具」且本条被选中。 */
 	forceTools?: boolean;
+	/** 消息操作按钮群组：渲染进本块 head 行（仅第一个思考/工具块收到）。 */
+	headActions?: ReactNode;
 	/** 消息角色 — assistant/user 的纯文本块显示复制按钮。 */
 	role?: UiMessage["role"];
 	/** 是否画文本块上的复制键（false = 宿主在布局里隐藏了 `host:msg-copy`）。 */
@@ -1362,7 +1540,7 @@ function Block({
 				{copyable ? (
 					<button
 						type="button"
-						className="msg-text-copy"
+						className={`msg-text-copy${copied ? " copied" : ""}`}
 						title={copied ? t("copied") : t("copyMessage")}
 						aria-label={t("copyMessage")}
 						onClick={() => {
@@ -1386,6 +1564,7 @@ function Block({
 				streaming={streaming && isLast}
 				wrap={thinkingWrap}
 				forceOpen={searchActive || forceThinking}
+				headExtra={headActions}
 			/>
 		);
 	}
@@ -1410,6 +1589,7 @@ function Block({
 				forceOpen={searchActive || forceTools}
 				uiContextToolCall={uiContextToolCall}
 				onUiAction={onUiAction}
+				headExtra={headActions}
 			/>
 		);
 	}

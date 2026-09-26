@@ -215,6 +215,7 @@ import {
 	BUILTIN_SOUL,
 	DEFAULT_PROMPT_TEMPLATE,
 	buildToolsSchemaText,
+	estimatePromptTokens,
 	renderPromptTemplate,
 	resolveSectionTexts,
 	type PromptComposerInputs,
@@ -242,10 +243,12 @@ import type {
 } from "./protocol.js";
 import { launchOrigin, toServiceInfo } from "./launch-origin.js";
 import {
+	findEntryByUiId,
 	serializeMessage,
 	serializeStreamingMessage,
 	stripTransientRetryErrors,
 	type AgentMessage,
+	type UiIdEntryLike,
 } from "./serialize.js";
 import { loadCommands, saveCommandsFile, TerminalManager } from "./terminals.js";
 
@@ -1774,7 +1777,7 @@ export interface Conversation {
 	compactionState?: { reason: string; startedAt: number } | null;
 	/** 最近一次压缩成功的 estimatedTokensAfter（SDK 自算的压缩后上下文大小）。
 	 *  压缩后 SDK getContextUsage() 故意报 null（压缩前的 usage 不可信），
-	 *  下轮模型响应前快照用此值回填并标 estimated；开始下一次压缩时清掉。 */
+	 *  下轮模型响应前快照用此值回填；开始下一次压缩时清掉。 */
 	lastCompactionTokens?: number | null;
 	/** 下一轮 agent_start 消费的用户任务文本（prompt() 暂存，轨迹插件的 run_start 用；
 	 *  steer/内部续跑无暂存时为空，由插件回退为「继续执行」）。 */
@@ -1790,6 +1793,9 @@ export interface Conversation {
 	workspaceSnapshots: Array<{ entryId?: string; timestamp: number; snapshotRef: string }>;
 	/** 当前正在启动中（读取附件、视觉桥、快照准备等）的 prompt 取消控制器 */
 	activePromptAc?: AbortController;
+	/** 最近一次 LLM 响应定稿时的 Base Tokens（生效提示词 + 工具 Schema 占用）。
+	 *  用于在对话中途切换预设或开关工具时计算上下文增量补偿。 */
+	lastTurnBaseTokens?: number;
 }
 
 /** 轨迹事件 payload 封顶（可直接广播/持久化，不撑爆 storage.json）。 */
@@ -2689,10 +2695,14 @@ export class ClientSession {
 		toolGuidelines: string[];
 		contextFiles: { path: string; content: string }[];
 		skills: { name: string; description: string; filePath: string }[];
+		preset?: string;
 	}): PromptComposerInputs {
+		const preset = src.preset ?? this.conv?.agentPreset ?? this.settingsSvc.current.defaultAgentPreset ?? "standard";
 		// 技能名录指纹观测（只打日志，不干预组装；预览与 run 共用此入口，
 		// 变化才记一行，首轮静默）。用未注文的目录（fill 前），全文注入不影响指纹。
 		this.noteSkillCatalogDigest(src.skills);
+		const showSkills = presetShowsSkillCatalog(preset);
+		const effectiveSkills = showSkills ? this.fillSkillContents(src.skills) : [];
 		return {
 			cwd: src.cwd,
 			systemPromptFile: this.lastBaseSystemPrompt || undefined,
@@ -2705,15 +2715,15 @@ export class ClientSession {
 			piExamples: PI_DOC_PATHS.examples,
 			appendFiles: this.lastSdkAppendFiles,
 			windowsPersona: process.platform === "win32" ? WINDOWS_PERSONA : "",
-			terminalGuidance: isTerminalGuidanceOn(effectiveDisabledAgentTools(this.settingsSvc.current))
+			terminalGuidance: isTerminalGuidanceOn(effectiveDisabledAgentTools(this.settingsSvc.current), preset)
 				? TERMINAL_TOOLS_GUIDANCE
 				: "",
 			markersGuidance: this.markerSvc.buildGuidance(),
 			// issue #91：组合模板各来源段按客户端 UI 语言渲染（英文默认）。
 			lang: this.getLang(),
 			contextFiles: src.contextFiles,
-			skills: this.fillSkillContents(src.skills),
-			skillsFullText: normalizeSkillList(this.settingsSvc.current.skillsFullText),
+			skills: effectiveSkills,
+			skillsFullText: showSkills ? normalizeSkillList(this.settingsSvc.current.skillsFullText) : [],
 		};
 	}
 
@@ -2740,8 +2750,9 @@ export class ClientSession {
 		});
 	}
 
-	/** 渲染当前组合模板。模板为空且无任何覆盖时返回 undefined（用 SDK 默认拼装，
-	 *  零开销且与原始行为逐字节一致）。 */
+	/** 渲染当前组合模板。当存在自定义模板/覆盖，或者当前会话预设非 standard（如 code/minimal/ask/reader），
+	 *  或者存在被禁用的工具时，必须渲染完整系统提示词，保证工具门控、技能隐藏与 Guidelines 严格对齐当前预设；
+	 *  仅在完全默认且全功能 standard 状态下返回 undefined 让 SDK 拼装。 */
 	private renderMainCompose(src: {
 		cwd: string;
 		selectedTools: string[];
@@ -2749,18 +2760,24 @@ export class ClientSession {
 		toolGuidelines: string[];
 		contextFiles: { path: string; content: string }[];
 		skills: { name: string; description: string; filePath: string }[];
+		preset?: string;
 	}): string | undefined {
 		const tpl = (this.settingsSvc.current.promptTemplate ?? "").trim();
 		const ovs = this.settingsSvc.current.promptOverrides ?? {};
 		const hasOverride = Object.values(ovs).some((v) => typeof v === "string" && v.trim());
-		if (!tpl && !hasOverride) return undefined;
+		const preset = src.preset ?? this.conv?.agentPreset ?? this.settingsSvc.current.defaultAgentPreset ?? "standard";
+		const isCustomized =
+			!!tpl || hasOverride || preset !== "standard" || effectiveDisabledAgentTools(this.settingsSvc.current).length > 0;
+		if (!isCustomized) return undefined;
 		const texts = resolveSectionTexts(this.composeInputs(src));
-		return renderPromptTemplate(tpl || DEFAULT_PROMPT_TEMPLATE, texts, ovs);
+		return renderPromptTemplate(tpl || DEFAULT_PROMPT_TEMPLATE, texts, hasOverride ? ovs : undefined);
 	}
 
-	/** 从活动会话收集工具/资源快照 → 一次算出 ①各来源默认(自动)内容 ②实际生效的
-	 *  完整提示词。会话未就绪（或出错）返回 undefined，调用方给空值。 */
-	private sessionPromptSnapshot():
+	/** 从指定会话（缺省 = 活跃会话）收集工具/资源快照 → 一次算出 ①各来源默认(自动)
+	 *  内容 ②实际生效的完整提示词。会话未就绪（或出错）返回 undefined，调用方给空值。
+	 *  注意必须传目标 conv：preset/工具 schema 都是按会话走的，拿活跃会话的快照
+	 *  算后台会话的基线会串账（lastTurnBaseTokens 跨会话污染）。 */
+	private sessionPromptSnapshot(target?: Conversation):
 		| {
 				texts: Record<string, string>;
 				full: string;
@@ -2768,9 +2785,10 @@ export class ClientSession {
 		  }
 		| undefined {
 		try {
-			const sess = this.session;
-			if (!sess) return undefined;
-			const cwd = this.convs.get(this.activeId)?.cwd ?? this.cwd;
+			const conv = target ?? this.convs.get(this.activeId);
+			if (!conv) return undefined;
+			const sess = conv.session;
+			const cwd = conv.cwd;
 			const active = sess.getActiveToolNames();
 			const snippets: Record<string, string> = {};
 			const guidelines: string[] = [];
@@ -2787,6 +2805,7 @@ export class ClientSession {
 				});
 			}
 			const loader = sess.resourceLoader;
+			const preset = conv?.agentPreset ?? this.settingsSvc.current.defaultAgentPreset ?? "standard";
 			const texts = resolveSectionTexts(
 				this.composeInputs({
 					cwd,
@@ -2799,15 +2818,15 @@ export class ClientSession {
 						description: s.description ?? "",
 						filePath: (s as { filePath?: string }).filePath ?? "",
 					})),
+					preset,
 				}),
 			);
-			// 模板/覆盖渲染（无则保持 SDK 默认拼装，与 renderMainCompose 同规则）。
+			// 模板/覆盖渲染（无自定义模板时用默认模板渲染完整提示词，确保与真实 run 规则一致且包含预设过滤）。
 			const tpl = (this.settingsSvc.current.promptTemplate ?? "").trim();
 			const ovs = this.settingsSvc.current.promptOverrides ?? {};
 			const hasOverride = Object.values(ovs).some((v) => typeof v === "string" && v.trim());
-			const rendered =
-				!tpl && !hasOverride ? undefined : renderPromptTemplate(tpl || DEFAULT_PROMPT_TEMPLATE, texts, ovs);
-			return { texts, full: rendered ?? sess.systemPrompt, toolsSchema: buildToolsSchemaText(schemaEntries) };
+			const rendered = renderPromptTemplate(tpl || DEFAULT_PROMPT_TEMPLATE, texts, hasOverride ? ovs : undefined);
+			return { texts, full: rendered, toolsSchema: buildToolsSchemaText(schemaEntries) };
 		} catch {
 			// Session not ready yet.
 			return undefined;
@@ -2818,6 +2837,32 @@ export class ClientSession {
 	 *  + 各来源默认（自动）内容。会话未就绪时给空值，面板保持可编辑但不预览。 */
 	private promptSnapshot(): { full: string; texts: Record<string, string>; toolsSchema: string } {
 		return this.sessionPromptSnapshot() ?? { full: "", texts: {}, toolsSchema: "" };
+	}
+
+	/** 会话级 Base Tokens 缓存（避免在节流快照热路径上重复计算正则）。 */
+	private cachedBaseTokens: { at: number; convId: string; tokens: number } | null = null;
+
+	/** 指定会话（缺省 = 活跃会话）系统提示词 + 工具 schema 的基础 token 开销
+	 *  （与设置面板中的「合计」完全一致）。会话未就绪返回 null——调用方必须区分
+	 *  null 与 0：把 0 写进 lastTurnBaseTokens 会让后续轮次双计全额 base。 */
+	private currentBaseTokens(target?: Conversation): number | null {
+		const conv = target ?? this.convs.get(this.activeId);
+		if (!conv) return null;
+		const now = Date.now();
+		if (
+			this.cachedBaseTokens &&
+			this.cachedBaseTokens.convId === conv.id &&
+			now - this.cachedBaseTokens.at < STATS_CACHE_MS
+		) {
+			return this.cachedBaseTokens.tokens;
+		}
+		const snap = this.sessionPromptSnapshot(conv);
+		if (!snap) return null;
+		const prompt = estimatePromptTokens(snap.full);
+		const schema = estimatePromptTokens(snap.toolsSchema);
+		const tokens = prompt + schema;
+		this.cachedBaseTokens = { at: now, convId: conv.id, tokens };
+		return tokens;
 	}
 
 	/** Web-facing extension UI context (widgets, notifications). */
@@ -3459,13 +3504,13 @@ export class ClientSession {
 					// （含重试次数覆盖）——依次重放：重试覆盖 → 软上限覆盖 → 终端门控。
 					this.applyRetryOverrides();
 					this.applyCompactionOverrides();
-					// reload() 会把 custom 工具重新加回活跃集——重放终端开关。
-					this.applyToolGating(this.session);
+					// reload() 会把 custom 工具重新加回活跃集——重放当前会话归属预设门控。
+					this.applyToolGating(this.session, this.conv?.agentPreset);
 					await this.pushSlashCommands();
 				},
 				applyRetryOverrides: () => this.applyRetryOverrides(),
 				applyCompactionOverrides: () => this.applyCompactionOverrides(),
-				applyToolGating: () => this.applyToolGating(this.session),
+				applyToolGating: () => this.applyToolGating(this.session, this.conv?.agentPreset),
 				promptSnapshot: () => this.promptSnapshot(),
 				getMarkerState: () => ({
 					markersEnabled: this.markerSvc.current.markersEnabled,
@@ -3617,6 +3662,7 @@ export class ClientSession {
 		apply?: SubagentTemplate,
 		ownerId?: string,
 		initialModel?: Parameters<AgentSession["setModel"]>[0],
+		targetPreset?: string,
 	): CreateAgentSessionRuntimeFactory {
 		return async ({ cwd: effectiveCwd, sessionManager }) => {
 			const services = await createAgentSessionServices({
@@ -3738,7 +3784,27 @@ export class ClientSession {
 										const swapped = tplPrompt + event.systemPrompt.slice(boundary);
 										return swapped === event.systemPrompt ? undefined : { systemPrompt: swapped };
 									}
-									// 主会话：组合模板渲染（模板为空且无覆盖时返回 undefined = 用 SDK 默认）。
+									// 主会话：按当前会话归属预设与真正活跃的工具列表组装系统提示词
+									const conv = this.convs.get(ownerId ?? this.activeId) ?? this.conv;
+									const sess = conv?.session;
+									const activeToolNames = sess ? sess.getActiveToolNames() : [];
+									const activeSet = new Set(activeToolNames);
+									const activeSnippets: Record<string, string> = {};
+									const activeGuidelines: string[] = [];
+									if (sess) {
+										for (const name of activeSet) {
+											const def = sess.getToolDefinition(name);
+											if (!def) continue;
+											if (def.promptSnippet && def.promptSnippet.trim()) {
+												activeSnippets[name] = def.promptSnippet.trim();
+											}
+											if (def.promptGuidelines) {
+												activeGuidelines.push(...def.promptGuidelines);
+											}
+										}
+									}
+									const currentPreset =
+										conv?.agentPreset ?? targetPreset ?? this.settingsSvc.current.defaultAgentPreset ?? "standard";
 									const opts = event.systemPromptOptions as
 										| {
 												cwd?: string;
@@ -3750,16 +3816,17 @@ export class ClientSession {
 										  }
 										| undefined;
 									const rendered = this.renderMainCompose({
-										cwd: typeof opts?.cwd === "string" ? opts.cwd : this.cwd,
-										selectedTools: opts?.selectedTools ?? [],
-										toolSnippets: opts?.toolSnippets ?? {},
-										toolGuidelines: opts?.promptGuidelines ?? [],
+										cwd: typeof opts?.cwd === "string" ? opts.cwd : (conv?.cwd ?? effectiveCwd ?? this.cwd),
+										selectedTools: activeToolNames.length > 0 ? activeToolNames : (opts?.selectedTools ?? []),
+										toolSnippets: activeSnippets,
+										toolGuidelines: activeGuidelines,
 										contextFiles: opts?.contextFiles ?? [],
 										skills: (opts?.skills ?? []).map((s) => ({
 											name: s.name,
 											description: s.description ?? "",
 											filePath: s.filePath ?? "",
 										})),
+										preset: currentPreset,
 									});
 									return rendered ? { systemPrompt: rendered } : undefined;
 								});
@@ -4004,8 +4071,8 @@ export class ClientSession {
 				created.session as unknown as OverrideSessionLike,
 				this.toolOverrideSpecs(ownerId, effectiveCwd),
 			);
-			// 终端工具开关从创建起就生效（工具始终注册进注册表，只调活跃集）。
-			this.applyToolGating(created.session);
+			// 终端工具开关与预设门控从创建起就生效（工具始终注册进注册表，只调活跃集）。
+			this.applyToolGating(created.session, targetPreset);
 			return {
 				...created,
 				services,
@@ -4993,6 +5060,7 @@ export class ClientSession {
 					if (stopNotice) {
 						this.emit({ type: "notice", level: "warning", text: stopNotice.text, textEn: stopNotice.textEn });
 					}
+					this.emitConversations();
 					break;
 				}
 				// 子代理运行报错（provider 400 / 超时等）→ 通知主对话，让用户/AI 知道
@@ -5055,9 +5123,17 @@ export class ClientSession {
 						}
 					}, 50);
 				}
+				// 本轮真正结束且不再重试：立即向客户端广播最新会话状态（流式状态及时复位）
+				if (!event.willRetry) {
+					this.emitConversations();
+				}
 				break;
 			}
 			case "agent_settled": {
+				// 记录本会话自己的 Base 基线：currentBaseTokens 必须传 conv（否则串成
+				// 活跃会话的基线）；快照未就绪时保持 undefined，宁可少补偿也不把 0 钉死。
+				const settledBaseTokens = this.currentBaseTokens(conv);
+				if (settledBaseTokens != null) conv.lastTurnBaseTokens = settledBaseTokens;
 				if (conv.pendingCompaction && !this.disposed) {
 					const pending = conv.pendingCompaction;
 					conv.pendingCompaction = null;
@@ -5336,14 +5412,42 @@ export class ClientSession {
 							tokens: conv.lastCompactionTokens,
 							contextWindow: cu.contextWindow,
 							percent: (conv.lastCompactionTokens / cu.contextWindow) * 100,
-							estimated: true,
+							estimated: false,
 							softCap: this.activeSoftCap(cu.contextWindow),
 						};
 					}
+					// 展示用兜底 0（会话未就绪时旧行为也是 0）；落账 lastTurnBaseTokens 的路径
+					// 在 agent_settled 处对 null 跳过，不受此兜底影响。
+					const baseTokens = this.currentBaseTokens(conv) ?? 0;
+					// 空白会话（尚未发言，SDK 报 0 或 null）：真实反映当前模式/工具配置下的 Base 开销。
+					if (cu.contextWindow > 0 && (this.isBlankConversation(conv) || cu.tokens == null || cu.tokens === 0)) {
+						return {
+							tokens: baseTokens,
+							contextWindow: cu.contextWindow,
+							percent: (baseTokens / cu.contextWindow) * 100,
+							estimated: false,
+							softCap: this.activeSoftCap(cu.contextWindow),
+						};
+					}
+					// 首轮对话中（尚未有定稿 assistant 消息，SDK cu.tokens 仅为当前消息估算）：叠加 Base 开销
+					if (conv.lastTurnBaseTokens == null && cu.contextWindow > 0) {
+						const total = baseTokens + (cu.tokens ?? 0);
+						return {
+							tokens: total,
+							contextWindow: cu.contextWindow,
+							percent: (total / cu.contextWindow) * 100,
+							estimated: false,
+							softCap: this.activeSoftCap(cu.contextWindow),
+						};
+					}
+					// 已有多轮对话历史：若在对话间歇切预设或开关工具，叠加当前 Base 开销相比上一轮定稿时的差额
+					const baseDelta = baseTokens - (conv.lastTurnBaseTokens ?? baseTokens);
+					const effectiveTokens = Math.max(0, (cu.tokens ?? 0) + baseDelta);
 					return {
-						tokens: cu.tokens,
+						tokens: effectiveTokens,
 						contextWindow: cu.contextWindow,
-						percent: cu.percent,
+						percent: cu.contextWindow > 0 ? (effectiveTokens / cu.contextWindow) * 100 : cu.percent,
+						estimated: false,
 						softCap: this.activeSoftCap(cu.contextWindow),
 					};
 				})(),
@@ -6570,7 +6674,7 @@ export class ClientSession {
 			// /reload 同样重读磁盘 settings.json——重放重试覆盖 + 软上限覆盖 + 终端门控。
 			this.applyRetryOverrides();
 			this.applyCompactionOverrides();
-			this.applyToolGating(this.session);
+			this.applyToolGating(this.session, this.conv?.agentPreset);
 		},
 		pluginCommands: () => this.pluginCommandsProvider?.() ?? [],
 		execPluginCommand: async (name, args) => {
@@ -7000,7 +7104,7 @@ export class ClientSession {
 					await this.session.reload();
 					this.applyRetryOverrides();
 					this.applyCompactionOverrides();
-					this.applyToolGating(this.session);
+					this.applyToolGating(this.session, this.conv?.agentPreset);
 					await this.pushSlashCommands();
 					this.pushSettings();
 				} catch (err) {
@@ -7146,6 +7250,8 @@ export class ClientSession {
 			preset ?? this.presetOfSession(session) ?? this.settingsSvc.current.defaultAgentPreset ?? "standard";
 		applyAgentToolsGating(session, effectiveDisabledAgentTools(this.settingsSvc.current), targetPreset);
 		this.syncPluginTools(session, targetPreset);
+		this.sessionStatsCache = null;
+		this.cachedBaseTokens = null;
 		// SDK 的 setActiveToolsByName 只改 agent.state.tools，不派发任何事件——门控后
 		// 主动推一次快照，否则快照里的 tools 要等下一个 SDK 事件才对齐（会话空闲时永远
 		// 等不到；回归：tests/terminal-smoke-test.mjs「agent exposes persistent terminal tools」）。
@@ -7203,6 +7309,8 @@ export class ClientSession {
 		}
 		conv.agentPreset = hit.id;
 		this.applyToolGating(conv.session, hit.id);
+		this.sessionStatsCache = null;
+		this.cachedBaseTokens = null;
 		// 技能名录段/终端引导是按 run 组装的提示词：重载 resourceLoader 让新预设
 		// 即时生效（只有空白会话能切到这里，无历史可丢）。
 		try {
@@ -8545,7 +8653,7 @@ export class ClientSession {
 				sessionManager = SessionManager.create(this.cwd);
 			}
 			const runtime = await createAgentSessionRuntime(
-				this.makeRuntimeFactory(terminals, undefined, conversationId, prevModel ?? undefined),
+				this.makeRuntimeFactory(terminals, undefined, conversationId, prevModel ?? undefined, _preset),
 				{
 					cwd: this.cwd,
 					agentDir: this.agentDir,
@@ -10299,42 +10407,20 @@ export class ClientSession {
 		conv: Conversation,
 		messageId: string,
 	): import("@earendil-works/pi-coding-agent").SessionEntry | null {
-		const userSeqByTs = new Map<number, number>();
-		const assistantSeqByTs = new Map<number, number>();
-		let globalSeq = 0;
-
+		// The matcher re-derives rendered ids with the SAME derivation
+		// serializeCachedFor() used to hand them to the browser (uiMessageId +
+		// the counter below). Historically this recomputed ids with its own
+		// numbering (per-timestamp assistant seq, branch-entry global seq),
+		// which never matched what was rendered — fork/rollback on any
+		// assistant bubble failed 100% of the time (issue #381).
 		const entries = conv.session.sessionManager.buildContextEntries();
-		for (const entry of entries) {
-			globalSeq += 1;
-			if (entry.id === messageId) return entry;
-			if (entry.type === "message") {
-				const m = (entry as unknown as { message?: AgentMessage }).message;
-				if (!m) continue;
-				let uiId = "";
-				if (m.role === "user") {
-					const ts = m.timestamp ?? 0;
-					const seq = (userSeqByTs.get(ts) ?? 0) + 1;
-					userSeqByTs.set(ts, seq);
-					uiId = `u-${ts}-${seq}`;
-				} else if (m.role === "assistant") {
-					const ts = m.timestamp ?? 0;
-					const seq = (assistantSeqByTs.get(ts) ?? 0) + 1;
-					assistantSeqByTs.set(ts, seq);
-					uiId = `a-${ts}-${seq}`;
-				} else if (m.role === "toolResult") {
-					uiId = `t-${m.toolCallId}`;
-				} else if (m.role === "bashExecution") {
-					uiId = `b-${m.timestamp}-${globalSeq}`;
-				}
-				if (uiId === messageId) return entry;
-			} else if (entry.type === "custom_message") {
-				const ts = entry.timestamp ? new Date(entry.timestamp).getTime() : 0;
-				const uiId = `c-${ts}-${globalSeq}`;
-				if (uiId === messageId) return entry;
-			}
-		}
+		const found = findEntryByUiId(
+			entries as (UiIdEntryLike & import("@earendil-works/pi-coding-agent").SessionEntry)[],
+			messageId,
+			(m) => this.uiMessageKey(conv, m).n,
+		);
 		// 兜底：getEntry 查整棵树
-		return conv.session.sessionManager.getEntry(messageId) ?? null;
+		return found ?? conv.session.sessionManager.getEntry(messageId) ?? null;
 	}
 
 	/**

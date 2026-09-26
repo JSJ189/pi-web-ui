@@ -74,6 +74,7 @@ import { sanitizeWallpaperUrl, fileToWallpaperUrl, saveWallpaperSettings, useWal
 import { useT, useI18n } from "../i18n";
 import {
 	buildUiSlots,
+	HIDDEN_FROM_LAYOUT_ITEM_IDS,
 	REQUIRED_TOPBAR_ITEM_IDS,
 	restoreAllUi,
 	restoreUiItem,
@@ -101,6 +102,7 @@ import {
 } from "../../../server/prompt-composer.js";
 import {
 	AGENT_TOOL_CATALOG,
+	CORE_BUILTIN_TOOL_NAMES,
 	filterToolsByPreset,
 	presetShowsSkillCatalog,
 	MARKERS_LIST_TOOL_NAME,
@@ -1011,6 +1013,13 @@ export function SettingsModal({
 		subagent_wait_all: t("toolDescSubagentWaitAll"),
 		subagent_templates: t("toolDescSubagentTemplates"),
 	};
+	// 核心内置工具的「?」说明（key 与 tool-manager.ts 的 CORE_BUILTIN_TOOL_NAMES 对齐）。
+	const CORE_TOOL_TIPS: Record<string, string> = {
+		bash: t("toolCoreBashDesc"),
+		read: t("toolCoreReadDesc"),
+		edit: t("toolCoreEditDesc"),
+		write: t("toolCoreWriteDesc"),
+	};
 	// 统一工具开关（工具 tab 逐工具；与 toggleSkill 同模式）。
 	const toggleAgentTool = (name: string) => {
 		const next = new Set(disabledTools);
@@ -1204,8 +1213,9 @@ export function SettingsModal({
 		{ slot: "modal.dialog", labelKey: "uiLayoutModal" },
 	];
 	/** 渲染层真正按 align 分区的槽位（其余槽位的 align 存了也无处生效，布局页就不提供了）。
-	 *  顶栏与底栏/输入框动作区同口径：顶栏现在**每个**条目的 align 都生效（贴边例外已取消，
-	 *  ☰/📁 也是普通条目：顺序、对齐、显隐全部可改，手机上它们默认就是最左/最右）。 */
+	 *  顶栏与底栏/输入框动作区同口径：顶栏可受管条目的 align 均生效（手机端特有的对话折叠
+	 *  按钮 host:history 与文件列表折叠按钮 host:files 是两侧列表的唯一入口，不可被管理显示，
+	 *  已从设置页中去掉）。 */
 	const uiAlignSlots: UiSlotId[] = ["bottombar", "composer.actions", "topbar.primary"];
 	const [uiLayoutFilter, setUiLayoutFilter] = useState("");
 	/** 槽位 id → 布局页分区标题（movedFrom「移自哪」的显示用）。 */
@@ -2066,6 +2076,24 @@ export function SettingsModal({
 										}}
 									/>
 								</FieldRow>
+								<div className="set-field-label">
+									{t("toolsSectionCore")}
+									<HintTip text={t("toolsCoreHint")} />
+								</div>
+								{CORE_BUILTIN_TOOL_NAMES.map((n) => {
+									const blocked = isBlockedByPreset(n);
+									return (
+										<ToggleRow
+											key={n}
+											title={n}
+											tip={CORE_TOOL_TIPS[n]}
+											subtitle={blocked ? t("toolsBlockedByPreset", { name: piPresetName }) : undefined}
+											enabled={!blocked && !disabledTools.has(n)}
+											disabled={blocked}
+											onToggle={() => toggleAgentTool(n)}
+										/>
+									);
+								})}
 								<div className="set-field-label">{t("toolsSectionTerminal")}</div>
 								{TERMINAL_TOOL_NAMES.map((n) => {
 									const blocked = isBlockedByPreset(n);
@@ -2837,7 +2865,9 @@ export function SettingsModal({
 								/>
 								{uiLayoutSections.map(({ slot, labelKey }) => {
 									const entries = (uiSlots[slot] ?? []).filter(
-										(e) => isDsh || (e.id !== "host:composer-dsh-perm" && e.id !== "host:composer-dsh-preset"),
+										(e) =>
+											(isDsh || (e.id !== "host:composer-dsh-perm" && e.id !== "host:composer-dsh-preset")) &&
+											!HIDDEN_FROM_LAYOUT_ITEM_IDS.has(e.id),
 									);
 									const q = uiLayoutFilter.trim().toLowerCase();
 									// 按实际界面分组展示：顶栏/底栏/输入框动作区在界面上按对齐段

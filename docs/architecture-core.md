@@ -194,7 +194,7 @@ bash 工具卡片运行中显示「停止」→ 发 `{ type: "abort_bash" }` →
 
 SDK 内置 `read` 只处理文件（`read("server")` 直接 `EISDIR: illegal operation on a directory`），SDK 自带的 `ls` 又不在默认活跃集（`["read","bash","edit","write"]`）里，模型要看一眼目录只能改用 bash。pi-web-ui 因此经 `customTools` **按名覆盖**内置 `read`（bash 覆盖是先例）：用 `createReadToolDefinition(cwd)` 拿原实现当基底，`execute` 里先判路径是不是目录 —— 是目录就分流到 SDK 的 `createLsToolDefinition(cwd)`（一行一项、目录带 `/` 后缀、排序与条目/字节截断口径与 SDK `ls` 完全一致），正文前置一行 `[Directory: <path>]`；其余情况（文件、图片、路径不存在、读取报错）原样转发基底，行为与内置一致。目录分支里 `limit` 是条目上限、`offset` 忽略。
 
-开关 `readDirEnabled`（设置 → 工具页首行，默认开）：这是**行为开关**（read 本体不可关，关了 agent 就残），不是 ActiveSet 开关 —— 因此不进 `tool-manager.ts` 的 `AGENT_TOOL_CATALOG`，覆盖定义每次调用实时读设置（改动即时生效、无需 reload），也不进设置预设。DSH 引擎无 customTool 注册面（工具来自 shipped preset），不支持该覆盖，快照里恒为 true。
+开关 `readDirEnabled`（设置 → 工具页首行，默认开）：这是**行为开关**（read 本体的开/关在设置页「核心工具」区，走 ActiveSet；这里管的是覆盖层列举目录的行为，与 read 工具本体是否启用无关），不是 ActiveSet 开关 —— 因此不进 `tool-manager.ts` 的 `AGENT_TOOL_CATALOG`，覆盖定义每次调用实时读设置（改动即时生效、无需 reload），也不进设置预设。DSH 引擎无 customTool 注册面（工具来自 shipped preset），不支持该覆盖，快照里恒为 true。
 
 参数上额外接受 `file_path` 作为 `path` 的别名（部分客户端/模型习惯发 `file_path`）：schema 里 `path` 仍必填，靠 `prepareArguments` 在校验前把只有 `file_path` 的调用归一成 `path`（两者都给时 `path` 为准），转发内置实现时也带上归一后的 `path`。前端工具卡头的路径提示（`web/src/tool-args.ts`）本来就同时认这两个名（SDK 自带 renderers 亦然）。
 

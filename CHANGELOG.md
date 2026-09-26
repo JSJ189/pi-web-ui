@@ -10,13 +10,21 @@
 
 ## [Unreleased]
 
+## [0.96.0] — 2026-09-26
+
 ### Added
 
 - **内置 LSP 工具新增四个语义动作（#331 Phase 1）** —— `documentSymbol`（分层符号大纲，带行跨度与 300 条防洪截断）、`read_symbol`（按符号名/点分路径精准读取实现体，双遍扫描精确匹配优先、400 行截断、未命中时自愈提示可用符号）、`workspaceSymbol`（工作区全局符号搜索，100 条上限，可不传 `path` 自动探测主文件路由语言服务）、`cascade`（编辑影响级联：查引用方文件并聚合其编译诊断，改坏签名当轮即暴露）。提示词开销保持 ~350 tokens；设置页工具说明中英文同步。
 - **系统提示词与工具 schema token 占用实时估算** —— 设置面板「系统提示词」支持直接查看当前会话实际生效的完整系统提示词与工具 schema 定义，并展示粗略 token 估算值与上下文总占用；工作区与活跃会话切换时主动同步最新设置快照，避免提示词上下文陈旧。
+- **核心内置工具独立开关与运行时门控** —— 设置页新增「核心工具」配置区，支持独立开启/禁用 `bash`、`read`、`edit`、`write` 原生核心工具；工具禁用状态随会话即时生效，并在系统提示词与 tools schema 中同步过滤与剔除，杜绝无效工具调用。
+- **新增内置主题** —— 新增三款内置现代与古典主题：赛博科幻暗色 HUD 风格「以太座舱 (Aetheris HUD)」、古籍朱印浅色风「朱批 (Vermilion Manuscript)」与深色夜读风「朱批·夜 (Vermilion Night)」。
+- **消息气泡复制菜单与直接重问增强** —— 消息底栏复制按钮升级为下拉菜单，支持一键复制 Markdown、纯文本或生成长图 PNG；新增「直接重问」快捷按钮，无需重新聚焦编辑框即可立即复用上一条指令；消息气泡增加右键上下文菜单，支持快速复制、编辑/直接重问、派生分支、回滚到此与语音朗读。
+- **TTS 语音朗读与流式生成提示音** —— 助手消息气泡支持单条 TTS 语音朗读与停止；新增流式开始与完成提示音，后台生成完毕及时提醒。
 
 ### Fixed
 
+- **非全功能预设（如代码开发/极简/纯对话）下提示词泄露已禁用工具指南修复** —— `before_agent_start` 提示词组装现在严格按会话当前真正处于活跃状态的工具集合（`activeTools`）过滤 Guidelines 与 Snippets，防止未启用的工具（如 `plan_update`、`ask_user_question`、`subagent_*` 等）的提示词指南被无差别注入到给模型的系统提示词中；彻底解决在「代码开发」预设下 AI 因收到动代码前调用 `plan_update` 的硬性指令而误调用未激活工具导致报错无效的问题；会话创建（`makeRuntimeFactory`）与重载（`reloadSession`）全生命周期对齐当前会话预设门控。
+- **助手气泡 Fork / 回滚无法解析修复（#381）** —— 统一 `server/serialize.ts` 的 `uiMessageId` 与 `findEntryByUiId` 算法为单一事实源，彻底修复从助手气泡触发分支派生（Fork）或回滚到此消息时因 ID 生成算法漂移导致的解析失败问题。
 - **悬空工具调用修复收紧分支与上线检查（#332）** —— `healDanglingToolCallFile` 与 `findDanglingToolCalls` 现在严格过滤 `stopReason` 为 `error` 或 `aborted` 的 assistant（不上线幽灵调用，避免在文件尾补合成结果构造出孤儿 `role: "tool"` 导致 DeepSeek/OpenAI 400 报错），且文件落盘修复仅沿活跃分支 `lastId` 向上回溯当前尾部生效 assistant，彻底跳过老分支遗留的悬空调用，防止跨分支污染。
 - **微信通道插件问题修复（#345）** —— 微信回包自动剥离内部控制标记（如 `[[plan:...]]`、`[[todo:...]]`、`[[conv:...]]`、`[[notify:...]]` 等），仅向微信发送用户可见正文；按微信用户 ID 隔离 `accountId`（`wx_${hash}`），为每个用户分配独立的伪客户端与会话，防止上下文串扰与关闭冲突；增加 `earlyRuns` 机制妥善承接极快完成的运行事件，消除回包竞态。
 - **SoL-Pi 节能看板弹窗展示优化** —— 扩展运行与配置区域默认采用折叠组件收拢，避免未折叠时挤占弹窗主视区。
@@ -29,7 +37,7 @@
 <!-- auto-i18n:start -->
 ### i18n
 
-- 前端新增 key（41）：`kindPlugin`、`pluginCheckUpdates`、`pluginCheckUpdatesHint`、`pluginUpdateAvailableBadge`、`pluginUpdateAvailableDetail`、`pluginAllUpToDate`、`piCoreSplitRun`、`piSdkSplitNote`、`piSdkBundledNote`、`installGlobalEngineBtn`、`installGlobalEngineTabTitle`、`saveResultUnknown`、`questionNoneAvailable`、`notifyApprovalTitle`、`notifyApprovalBody`、`notifyApprovalBodyTool`、`sound.approval`、`sound.approval.desc`、`settingsSoundVoice`、`ttsHeader`、`ttsEnable`、`ttsEnableDesc`、`ttsAnnounce`、`ttsAnnounceDesc`、`ttsReadReplies`、`ttsReadRepliesDesc`、`ttsRate`、`ttsVoice`、`ttsVoiceAuto`、`ttsVoiceOnline`、`ttsUnavailable`、`ttsPreviewLine`、`ttsAnnounceDone`、`ttsAnnounceQuestion`、`ttsAnnounceError`、`ttsAnnounceApproval`、`speakMsg`、`stopSpeakingMsg`、`apiKeySavedHint`、`settingsViewPromptTokens`、`settingsPromptContextTotal`
+- 前端新增 key（49）：`reaskDirectly`、`reaskDirectlyTip`、`kindPlugin`、`pluginCheckUpdates`、`pluginCheckUpdatesHint`、`pluginUpdateAvailableBadge`、`pluginUpdateAvailableDetail`、`pluginAllUpToDate`、`piCoreSplitRun`、`piSdkSplitNote`、`piSdkBundledNote`、`installGlobalEngineBtn`、`installGlobalEngineTabTitle`、`saveResultUnknown`、`questionNoneAvailable`、`notifyApprovalTitle`、`notifyApprovalBody`、`notifyApprovalBodyTool`、`sound.approval`、`sound.approval.desc`、`settingsSoundVoice`、`ttsHeader`、`ttsEnable`、`ttsEnableDesc`、`ttsAnnounce`、`ttsAnnounceDesc`、`ttsReadReplies`、`ttsReadRepliesDesc`、`ttsRate`、`ttsVoice`、`ttsVoiceAuto`、`ttsVoiceOnline`、`ttsUnavailable`、`ttsPreviewLine`、`ttsAnnounceDone`、`ttsAnnounceQuestion`、`ttsAnnounceError`、`ttsAnnounceApproval`、`speakMsg`、`stopSpeakingMsg`、`apiKeySavedHint`、`settingsViewPromptTokens`、`settingsPromptContextTotal`、`toolsSectionCore`、`toolsCoreHint`、`toolCoreBashDesc`、`toolCoreReadDesc`、`toolCoreEditDesc`、`toolCoreWriteDesc`
 - 前端中文变更（2）：`settingsViewToolsSchema`、`lspToolEnabledDesc`
 - 前端英文变更（2）：`settingsViewToolsSchema`、`lspToolEnabledDesc`
 - 服务端新增 key（3）：`plugincatalog.sync.doc.invalid`、`terminals.bash.nosentinel.note`、`terminals.command.blocked`
@@ -1285,7 +1293,9 @@ when?, children?}`，也收 `topbar` / `settings` 这类简写别名）；宿主
 - 0.35.1（2026-08-27）：编辑重问保留附件（#18）+ 全窗口拖放（#19）。
 - 0.29.0（2026-08-23）：全局搜索弹窗（Ctrl+K）+ 消息列表惰性窗口化。
 
-[Unreleased]: https://github.com/xing-shuyin/pi-web-ui/compare/v0.93.0...main
+[Unreleased]: https://github.com/xing-shuyin/pi-web-ui/compare/v0.96.0...main
+[0.96.0]: https://github.com/xing-shuyin/pi-web-ui/releases/tag/v0.96.0
+[0.95.0]: https://github.com/xing-shuyin/pi-web-ui/releases/tag/v0.95.0
 [0.94.1]: https://github.com/xing-shuyin/pi-web-ui/releases/tag/v0.94.1
 [0.94.0]: https://github.com/xing-shuyin/pi-web-ui/releases/tag/v0.94.0
 [0.93.0]: https://github.com/xing-shuyin/pi-web-ui/releases/tag/v0.93.0

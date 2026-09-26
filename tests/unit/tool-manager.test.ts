@@ -35,11 +35,12 @@ import {
 	TERMINAL_TOOL_NAMES,
 } from "../../server/tool-manager.js";
 
-/** 假 ActiveSet（只记录名字集合，不碰 SDK）。 */
+/** 假 ActiveSet（只记录名字集合，不碰 SDK；getAllTools 与活跃集同源 = 初始全集）。 */
 function fakeSet(initial: string[] = []) {
 	let names = [...initial];
 	return {
 		getActiveToolNames: () => [...names],
+		getAllTools: () => [...initial].map((name) => ({ name })),
 		setActiveToolsByName: (next: string[]) => {
 			names = [...next];
 		},
@@ -158,6 +159,9 @@ describe("tool_manage 出入口", () => {
 		expect(setAgentToolEnabled(s, "nope", true)).toBe(false);
 		const broken = {
 			getActiveToolNames: () => {
+				throw new Error("not ready");
+			},
+			getAllTools: () => {
 				throw new Error("not ready");
 			},
 			setActiveToolsByName: () => {},

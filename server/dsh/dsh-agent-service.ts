@@ -542,6 +542,7 @@ export class DshClientSession {
 			// 直播帧能力跟着运行时进程走：重启后重新探测（换运行时版本也能回落到持久 assistant/chunk）。
 			conv.liveChunks = false;
 		}
+		this.emitConversations();
 		const now = Date.now();
 		if (now - this.runtimeRestart.windowStart > DshClientSession.RUNTIME_RESTART_WINDOW_MS) {
 			this.runtimeRestart.windowStart = now;
@@ -1342,6 +1343,7 @@ export class DshClientSession {
 			conv.streaming = null;
 			this.refreshConversationTitle(conv);
 			this.scheduleSessionsRefresh();
+			this.emitConversations();
 		}
 		this.flushSnapshot();
 	}
@@ -2107,6 +2109,7 @@ export class DshClientSession {
 		const conv = this.conv;
 		conv.isStreaming = false;
 		conv.streaming = null;
+		this.emitConversations();
 		// 手动停止 → 清当前会话的 DSH 原生目标（半成品运行不该继续被轮次驱动）。
 		// 旧进程还活着，先 goal/clear 落盘，再重启运行时。
 		if (conv.dsGoal || conv.goal.goal) {

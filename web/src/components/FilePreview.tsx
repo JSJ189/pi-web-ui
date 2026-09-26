@@ -392,13 +392,9 @@ export function FilePreview({
 				{fullscreen ? <FiMinimize /> : <FiMaximize />}
 			</button>
 		),
-		"host:fp-close": (
-			<button type="button" className="fp-close" title={t("close")} onClick={handleClose}>
-				<FiX />
-			</button>
-		),
+		"host:fp-close": null,
 	};
-	/** 头栏顺序：接线时（App 传全量）宿主+插件按槽位顺序交错；未接线回落旧硬编码顺序。 */
+	/** 头栏顺序：接线时（App 传全量）宿主+插件按槽位顺序交错；未接线回落旧硬编码顺序。关闭按钮统一固定在头栏最右侧，不占工具条流动位。 */
 	const fpEntries: UiSlotEntry[] =
 		uiFilePreviewToolbar === undefined
 			? [
@@ -409,9 +405,8 @@ export function FilePreview({
 					"host:fp-zoom",
 					"host:fp-ref",
 					"host:fp-full",
-					"host:fp-close",
 				].map((id) => ({ id, source: "host" }) as UiSlotEntry)
-			: uiFilePreviewToolbar.filter((e) => !e.hidden);
+			: uiFilePreviewToolbar.filter((e) => !e.hidden && e.id !== "host:fp-close");
 	// /api/file resolves against the requesting client's workspace (the opened
 	// project), not the server's startup cwd — pass clientId so they can differ.
 	const mediaUrl = (p: string) =>
@@ -453,6 +448,9 @@ export function FilePreview({
 						{/* 宿主 chrome + 插件条目按槽位顺序交错（显隐/顺序走布局页，类型条件见 fpHostNodes）。 */}
 						{renderMergedToolbar(fpEntries, fpHostNodes, onUiAction)}
 					</span>
+					<button type="button" className="fp-close" title={t("close")} aria-label={t("close")} onClick={handleClose}>
+						<FiX />
+					</button>
 				</div>
 
 				{truncated && kind === "text" && !isBinary && (

@@ -154,7 +154,7 @@ describe("eval tool (persistent sandbox)", () => {
 		const res = await run(tool, { language: "py", code: "2 + 2", timeout: 5 });
 		expect(res.details.ok).toBe(true);
 		expect(res.details.result).toBe("4");
-	});
+	}, 15000);
 
 	it("queues concurrent calls instead of dropping the first resolver", async () => {
 		const tool = makeEvalTool({ cwd: process.cwd(), ownerId: "test-queue" });

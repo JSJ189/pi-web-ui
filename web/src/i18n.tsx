@@ -251,6 +251,8 @@ export const zh = {
 	emptyChat: "空对话",
 
 	/* message edit */
+	reaskDirectly: "直接重问",
+	reaskDirectlyTip: "直接从这里重新提问（不修改内容，新建分支对话，原对话保留）",
 	editReask: "编辑重问",
 	editReaskTip: "修改此问题，并从这里重新提问（会新建一个分支对话，原对话保留）",
 	forkSession: "派生分支",
@@ -1165,7 +1167,7 @@ export const zh = {
 	promptTok_cwd: "工作目录行",
 	promptTok_cwd_desc: "Current working directory 行",
 	settingsViewPrompt: "查看当前完整提示词",
-	settingsViewPromptTokens: "≈ {n} tokens",
+	settingsViewPromptTokens: "{n} tokens",
 	settingsViewPromptHint:
 		"当前会话实际生效的完整系统提示词（含自定义追加/替换内容、项目上下文、技能说明与工具引导），只读。",
 	settingsViewPromptEmpty: "会话尚未就绪，暂无系统提示词。",
@@ -1173,7 +1175,7 @@ export const zh = {
 	settingsViewToolsSchemaHint:
 		"发给模型的 function-calling 工具定义（name / description / parameters），与系统提示词正文拼成完整初始上下文，只读。",
 	settingsViewToolsSchemaEmpty: "会话尚未就绪，暂无工具 schema。",
-	settingsPromptContextTotal: "合计: ≈ {n} tokens",
+	settingsPromptContextTotal: "合计: {n} tokens",
 	settingsSkills: "技能",
 	settingsReview: "目标审查",
 	settingsReviewDesc: "为独立的目标审查会话配置额外提示词和技能；不会改变主会话设置。",
@@ -1270,6 +1272,13 @@ export const zh = {
 	attachPage: "网页引用：{name}（AI 已获授权操作这个页面）",
 	attachPageShort: "网页",
 	settingsTools: "工具",
+	toolsSectionCore: "核心工具",
+	toolsCoreHint:
+		"bash / read / edit / write 是模型干活的基本盘，不在下方目录开关里。关闭后模型无法执行对应操作：关 bash 不能跑命令，关 read 不能读文件，关 edit / write 不能改文件。",
+	toolCoreBashDesc: "执行 shell 命令。关闭后模型不能跑命令、装依赖、跑测试。",
+	toolCoreReadDesc: "读取文件与目录。关闭后模型只能靠对话里已有的内容干活。",
+	toolCoreEditDesc: "精确编辑文件。关闭后模型不能局部修改代码。",
+	toolCoreWriteDesc: "新建或整写文件。关闭后模型不能创建、覆盖文件。",
 	toolsSectionTerminal: "持久终端",
 	toolsSectionSubagent: "子代理",
 	toolsSectionOther: "其他工具",
@@ -1961,6 +1970,8 @@ const en: Record<keyof typeof zh, string> = {
 	emptyChat: "Empty chat",
 
 	/* message edit */
+	reaskDirectly: "Re-ask",
+	reaskDirectlyTip: "Re-ask from here directly without editing (forks a new conversation; original kept)",
 	editReask: "Edit & re-ask",
 	editReaskTip: "Edit this question and re-ask from here (forks a new conversation; the original is kept)",
 	forkSession: "Fork branch",
@@ -2895,7 +2906,7 @@ const en: Record<keyof typeof zh, string> = {
 	promptTok_cwd: "Working dir line",
 	promptTok_cwd_desc: "the Current working directory line",
 	settingsViewPrompt: "View the current full prompt",
-	settingsViewPromptTokens: "≈ {n} tokens",
+	settingsViewPromptTokens: "{n} tokens",
 	settingsViewPromptHint:
 		"The full system prompt actually in effect for this conversation (custom append/replace text, project context, skills and tool guidance). Read-only.",
 	settingsViewPromptEmpty: "Session not ready yet — no system prompt available.",
@@ -2903,7 +2914,7 @@ const en: Record<keyof typeof zh, string> = {
 	settingsViewToolsSchemaHint:
 		"The function-calling tool definitions sent to the model (name / description / parameters), combining with the system prompt text to form the full initial context. Read-only.",
 	settingsViewToolsSchemaEmpty: "Session not ready yet — no tools schema available.",
-	settingsPromptContextTotal: "Total: ≈ {n} tokens",
+	settingsPromptContextTotal: "Total: {n} tokens",
 	settingsSkills: "Skills",
 	settingsReview: "Goal review",
 	settingsReviewDesc:
@@ -3008,6 +3019,15 @@ const en: Record<keyof typeof zh, string> = {
 	attachPage: "Page reference: {name} (the AI is granted access to this page)",
 	attachPageShort: "page",
 	settingsTools: "Tools",
+	toolsSectionCore: "Core tools",
+	toolsCoreHint:
+		"bash / read / edit / write are the model's basic toolkit and are not part of the catalog toggles below. Turning one off removes that ability: no bash = no command execution, no read = no file reading, no edit / write = no file modification.",
+	toolCoreBashDesc:
+		"Run shell commands. When off, the model cannot execute commands, install dependencies, or run tests.",
+	toolCoreReadDesc:
+		"Read files and directories. When off, the model can only work with content already in the conversation.",
+	toolCoreEditDesc: "Make precise file edits. When off, the model cannot modify code in place.",
+	toolCoreWriteDesc: "Create or overwrite files. When off, the model cannot create or overwrite files.",
 	toolsSectionTerminal: "Persistent terminal",
 	toolsSectionSubagent: "Subagents",
 	toolsSectionOther: "Other tools",

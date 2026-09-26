@@ -12,6 +12,7 @@
 import { describe, expect, it } from "vitest";
 import {
 	BUILTIN_UI_ITEMS,
+	HIDDEN_FROM_LAYOUT_ITEM_IDS,
 	UI_SLOT_SPECS,
 	applyUiSlotCardinality,
 	PLUGIN_VIEW_ITEM_ID,
@@ -140,8 +141,8 @@ describe("BUILTIN_UI_ITEMS（宿主默认）", () => {
 		);
 		expect(bySlot("contextmenu.session").length).toBeGreaterThan(0);
 		expect(bySlot("contextmenu.file").length).toBeGreaterThan(0);
-		// 消息区今天没有右键菜单 → 一条都不登记（宁缺勿造）；设置页是插件专属。
-		expect(bySlot("contextmenu.message")).toEqual([]);
+		// 消息区右键菜单登记宿主操作项（复制/编辑/分支/回滚/朗读）
+		expect(bySlot("contextmenu.message").length).toBeGreaterThan(0);
 		expect(bySlot("settings.pages")).toEqual([]);
 	});
 });
@@ -450,6 +451,26 @@ describe("buildUiSlots / 第 3 层：插件 arrange", () => {
 		const settings = build([p])["topbar.primary"].find((e) => e.id === "host:settings");
 		expect(settings?.hidden).toBe(false);
 		expect(settings?.slot).toBe("topbar.primary");
+	});
+
+	it("手机端抽屉入口（host:history / host:files）不能被插件或偏好移走或隐藏", () => {
+		const p = plugin("p", {
+			items: [],
+			arrange: [
+				{ id: "host:history", slot: "topbar.overflow", hide: true },
+				{ id: "host:files", slot: "topbar.overflow", hide: true },
+			],
+		});
+		const slots = build([p], { layout: { hidden: ["host:history", "host:files"] } });
+		for (const id of ["host:history", "host:files"]) {
+			const entry = slots["topbar.primary"].find((e) => e.id === id);
+			expect(entry?.hidden).toBe(false);
+			expect(entry?.slot).toBe("topbar.primary");
+		}
+	});
+
+	it("HIDDEN_FROM_LAYOUT_ITEM_IDS 锁定手机端抽屉按钮不进入布局设置", () => {
+		expect([...HIDDEN_FROM_LAYOUT_ITEM_IDS].sort()).toEqual(["host:files", "host:history"]);
 	});
 
 	it("undefined 的字段 = 不动（hide 缺省不会把条目藏起来）", () => {

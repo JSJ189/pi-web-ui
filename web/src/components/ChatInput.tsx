@@ -1,5 +1,5 @@
 import { Fragment, memo, useEffect, useMemo, useRef, useState, type ReactNode } from "react";
-import { FiList, FiSquare, FiPaperclip, FiArrowUp, FiGrid, FiMic, FiCamera } from "react-icons/fi";
+import { FiList, FiSquare, FiPaperclip, FiArrowUp, FiBookOpen, FiMic, FiCamera } from "react-icons/fi";
 import type { FileSearchResult, ModelInfo, ProviderKeyInfo, SlashCommandInfo, UiMessage, UiState } from "../types";
 import { useT, useI18n } from "../i18n";
 import { appSend, useAppField, useIsDsh } from "../app-globals";
@@ -1387,7 +1387,7 @@ export const ChatInput = memo(function ChatInput({
 		),
 		"host:composer-templates": (
 			<button type="button" className="btn tpl-open" title={t("tpl.openPicker")} onClick={openPicker}>
-				<FiGrid />
+				<FiBookOpen />
 			</button>
 		),
 		"host:composer-model": (
@@ -1718,7 +1718,7 @@ export const ChatInput = memo(function ChatInput({
 								{/* 插件输入框动作（start 组）：紧跟文件上传右侧，与上传同一组线条图标风格。 */}
 								{pluginActions.start.map(renderPluginAction)}
 								<button type="button" className="btn tpl-open" title={t("tpl.openPicker")} onClick={openPicker}>
-									<FiGrid />
+									<FiBookOpen />
 								</button>
 								<ModelThinking
 									state={modelState}

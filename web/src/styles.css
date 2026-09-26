@@ -13,6 +13,39 @@
 	max-height: 85vh;
 	overflow: auto;
 }
+.file-transfer-head {
+	display: flex;
+	align-items: center;
+	justify-content: space-between;
+	gap: 12px;
+	margin-bottom: 8px;
+}
+.file-transfer-head h3 {
+	margin: 0;
+	font-size: 16px;
+	font-weight: 600;
+}
+.file-transfer-close {
+	flex-shrink: 0;
+	display: inline-flex;
+	align-items: center;
+	justify-content: center;
+	width: 28px;
+	height: 28px;
+	padding: 0;
+	border: 1px solid var(--border-soft);
+	border-radius: 6px;
+	background: var(--bg-elev2);
+	color: var(--text-dim);
+	cursor: pointer;
+	font-size: 14px;
+	transition: all 0.12s ease;
+}
+.file-transfer-close:hover:not(:disabled) {
+	color: var(--text);
+	border-color: var(--border);
+	background: var(--bg-elev3);
+}
 .file-transfer-dialog::backdrop {
 	background: #0008;
 }
@@ -3767,6 +3800,11 @@ body.panel-resizing .scm-divider::after {
 	color: var(--red);
 }
 
+/* 累计成本 */
+.status-cost {
+	font-variant-numeric: tabular-nums;
+}
+
 /* 实时生成速率 (tokens/sec) */
 .status-rate {
 	color: var(--accent);
@@ -3990,6 +4028,29 @@ body.panel-resizing .scm-divider::after {
 .cwd-up:disabled {
 	opacity: 0.45;
 	cursor: default;
+}
+
+.cwd-close {
+	flex-shrink: 0;
+	display: inline-flex;
+	align-items: center;
+	justify-content: center;
+	width: 24px;
+	height: 24px;
+	padding: 0;
+	border: 1px solid var(--border);
+	border-radius: 5px;
+	background: var(--bg-elev);
+	color: var(--text-dim);
+	cursor: pointer;
+	font-size: 13px;
+	transition: all 0.12s ease;
+	margin-left: auto;
+}
+.cwd-close:hover {
+	color: var(--red);
+	border-color: rgba(248, 113, 113, 0.4);
+	background: var(--red-soft);
 }
 
 .cwd-picker-row {
@@ -6072,44 +6133,210 @@ body:not(.has-wallpaper)::after {
 
 .msg-actions {
 	display: flex;
+	align-items: center;
 	justify-content: flex-end;
-	gap: 8px;
-	margin-top: 2px;
+	gap: 6px;
+	margin-top: 4px;
 	-webkit-user-select: none;
 	user-select: none;
 	-webkit-touch-callout: none;
 }
 
+/* head 行内的消息操作宿主（.chead-actions，Message 把操作按钮作为 headExtra
+ * 传进第一个思考/工具 head，DOM 上与行内复制按钮 .chead-copy 并排）。
+ * 绝对定位钉在 head 行右缘、行内复制按钮（28px）的左侧，垂直居中——
+ * 行内常驻复制按钮恒在右缘一条垂直线上，操作簇显隐不挤动任何元素；
+ * 悬停整条消息才浮现，离开即隐。主题可整体重排（themes/zhupi*.css 有示例）。 */
+.chead-actions {
+	position: absolute;
+	right: 32px;
+	top: 50%;
+	transform: translateY(-50%);
+	display: flex;
+	align-items: center;
+	gap: 2px;
+	opacity: 0;
+	pointer-events: none;
+	transition: opacity 0.12s ease;
+}
+
+/* 宿主是思考行时该行没有自己的复制键（去重，见 ThinkingBlock），
+ * 操作簇直接贴右缘补位 */
+.thinking-head .chead-actions {
+	right: 0;
+}
+
+.msg:hover .chead-actions,
+.chead-actions.has-open-dropdown,
+.chead-actions:focus-within {
+	opacity: 1;
+	pointer-events: auto;
+}
+
+.chead-actions .msg-action {
+	width: 28px;
+	height: 28px;
+}
+
+.chead-actions .msg-action-select {
+	width: auto;
+}
+
+/* 复制成功的反馈统一为印绿（head 复制键 / 正文复制键） */
+.chead-copy.copied,
+.msg-text-copy.copied {
+	color: var(--green) !important;
+}
+
+/* 消息底部的操作纯按钮：统一为大一些的纯图标按钮，居中、清爽、易点 */
 .msg-action {
 	display: inline-flex;
 	align-items: center;
-	gap: 4px;
+	justify-content: center;
+	width: 32px;
+	height: 32px;
+	padding: 0;
+	margin: 0;
 	border: none;
 	background: transparent;
 	color: var(--text-faint);
-	font-size: 11.5px;
+	font-size: 16px;
 	cursor: pointer;
-	padding: 3px 8px;
-	border-radius: 6px;
+	border-radius: 8px;
 	opacity: 0;
+	flex: none;
 	transition:
 		opacity 0.15s ease,
 		color 0.15s ease,
-		background 0.15s ease;
+		background 0.15s ease,
+		transform 0.1s ease;
 }
+
+/* 纯按钮模式：默认隐藏文字标签，只留清晰大图标 */
+.msg-action-label {
+	display: none !important;
+}
+
+.msg-action > svg {
+	width: 16px;
+	height: 16px;
+	flex: none;
+}
+
 .msg:hover .msg-action,
 .msg-action:focus-visible {
 	opacity: 1;
 }
+
 .msg-action:hover {
-	color: var(--accent);
+	color: var(--text);
 	background: var(--bg-elev2);
 }
+
+.msg-action:active {
+	transform: scale(0.92);
+}
+
 /* 朗读中：这条消息的「停止朗读」按钮保持可见 + 高亮（即使用户鼠标已移开）。 */
 .msg-action.msg-action-speaking {
 	opacity: 1;
 	color: var(--accent);
 	background: var(--bg-elev2);
+}
+
+/* 聚合复制按钮与下拉菜单 */
+.msg-actions.has-open-dropdown .msg-action {
+	opacity: 1;
+}
+
+.msg-copy-group {
+	position: relative;
+	display: inline-flex;
+	align-items: center;
+	height: 32px;
+	border-radius: 8px;
+}
+
+.msg-copy-main-btn {
+	width: 32px;
+	height: 32px;
+	border-top-right-radius: 0;
+	border-bottom-right-radius: 0;
+}
+
+.msg-copy-caret-btn {
+	width: 18px;
+	height: 32px;
+	border-top-left-radius: 0;
+	border-bottom-left-radius: 0;
+	margin-left: -1px;
+}
+
+.msg-copy-caret-btn.active,
+.msg-copy-caret-btn:hover {
+	color: var(--text);
+	background: var(--bg-elev2);
+}
+
+.msg-copy-caret-icon {
+	font-size: 10px;
+	transition: transform 0.15s ease;
+}
+
+.msg-copy-caret-icon.open {
+	transform: rotate(180deg);
+}
+
+.msg-copy-main-btn.msg-copy-success {
+	color: var(--green);
+}
+
+.msg-copy-dropdown {
+	position: absolute;
+	top: calc(100% + 4px);
+	right: 0;
+	min-width: 140px;
+	background: var(--menu-bg, var(--bg-elev2));
+	border: 1px solid var(--border-soft);
+	border-radius: 8px;
+	box-shadow: 0 6px 20px rgba(0, 0, 0, 0.4);
+	padding: 4px;
+	z-index: 50;
+	display: flex;
+	flex-direction: column;
+	gap: 2px;
+}
+
+.msg-copy-menu-item {
+	display: flex;
+	align-items: center;
+	gap: 8px;
+	padding: 7px 10px;
+	border: none;
+	background: transparent;
+	color: var(--text);
+	font-size: 12.5px;
+	border-radius: 6px;
+	cursor: pointer;
+	text-align: left;
+	white-space: nowrap;
+	transition:
+		background 0.15s ease,
+		color 0.15s ease;
+}
+
+.msg-copy-menu-item:hover {
+	background: var(--bg-elev);
+	color: var(--accent);
+}
+
+.msg-copy-menu-item svg {
+	font-size: 14px;
+	color: var(--text-faint);
+}
+
+.msg-copy-menu-item:hover svg {
+	color: var(--accent);
 }
 
 /* ------------------------------------------------------- plugin slot entries */
@@ -7182,6 +7409,8 @@ span.msg-editor-hint svg {
 	background: transparent;
 	color: var(--text);
 	font-size: 12.5px;
+	/* 行内操作簇（.chead-actions）以本行为定位基准，钉在复制按钮列左侧 */
+	position: relative;
 	-webkit-user-select: none;
 	user-select: none;
 	-webkit-touch-callout: none;
@@ -7519,6 +7748,31 @@ div.chead[role="button"]:focus-visible,
 	max-width: calc(100vw - 48px);
 	max-height: calc(100vh - 48px);
 	border-radius: 8px;
+}
+.img-lightbox-close {
+	position: fixed;
+	top: 16px;
+	right: 16px;
+	z-index: 501;
+	display: inline-flex;
+	align-items: center;
+	justify-content: center;
+	width: 40px;
+	height: 40px;
+	border-radius: 50%;
+	border: 1px solid rgba(255, 255, 255, 0.25);
+	background: rgba(0, 0, 0, 0.65);
+	color: #ffffff;
+	font-size: 20px;
+	cursor: pointer;
+	backdrop-filter: blur(4px);
+	-webkit-backdrop-filter: blur(4px);
+	transition: all 0.15s ease;
+}
+.img-lightbox-close:hover {
+	background: rgba(0, 0, 0, 0.9);
+	border-color: rgba(255, 255, 255, 0.5);
+	transform: scale(1.06);
 }
 
 .toolcall-waiting {
@@ -12916,7 +13170,7 @@ button.source-default-toggle {
 .fp-head {
 	display: flex;
 	align-items: center;
-	gap: 10px;
+	gap: 8px;
 	padding: 10px 14px;
 	border-bottom: 1px solid var(--border-soft);
 	flex-shrink: 0;
@@ -12929,6 +13183,10 @@ button.source-default-toggle {
 	font-weight: 700;
 	color: var(--text);
 	white-space: nowrap;
+	overflow: hidden;
+	text-overflow: ellipsis;
+	min-width: 0;
+	flex-shrink: 1;
 }
 
 .fp-path {
@@ -12953,7 +13211,15 @@ button.source-default-toggle {
 	display: flex;
 	align-items: center;
 	gap: 6px;
-	flex-shrink: 0;
+	min-width: 0;
+	flex-shrink: 1;
+	overflow-x: auto;
+	overflow-y: hidden;
+	scrollbar-width: none;
+	margin-left: auto;
+}
+.fp-head-actions::-webkit-scrollbar {
+	display: none;
 }
 
 /* 文件预览工具条（file.preview.toolbar 槽位）：跟在关闭按钮后，无条目时不渲染。 */
@@ -13058,10 +13324,11 @@ button.source-default-toggle {
 	height: 26px;
 	border: 1px solid var(--border);
 	border-radius: 6px;
-	background: transparent;
+	background: var(--bg-elev);
 	color: var(--text-dim);
 	cursor: pointer;
 	margin-left: 2px;
+	flex-shrink: 0;
 }
 .fp-close:hover {
 	color: var(--red);
@@ -13920,9 +14187,108 @@ button.source-default-toggle {
 		height: min(420px, calc(100vh - 80px));
 	}
 
-	/* ---- footer: phones show connection dot / context / cache-hit / rate / cwd on one line ----
-	 * 引擎徽标、成本、消息数、插件状态在手机上不显示（省宽度）；
-	 * 连接状态仅保留圆点隐藏文字；缓存命中率与实时速率保留，上下文只剩数字，
+	/* 移动端弹窗通用关闭按钮强化：小屏幕下扩大触控面积，显式背景，防误触，防止被背景覆盖 */
+	.modal-close {
+		width: 36px;
+		height: 36px;
+		font-size: 16px;
+		margin-bottom: -46px;
+		background: var(--bg-elev);
+		border: 1px solid var(--border-soft);
+		border-radius: 8px;
+		color: var(--text);
+		z-index: 10;
+		box-shadow: 0 2px 8px rgba(0, 0, 0, 0.2);
+		flex-shrink: 0;
+	}
+	.modal-close:hover,
+	.modal-close:active {
+		background: var(--bg-elev2);
+		color: var(--text);
+	}
+	.cwd-close {
+		width: 30px;
+		height: 30px;
+		font-size: 15px;
+	}
+	.file-transfer-close {
+		width: 36px;
+		height: 36px;
+		font-size: 16px;
+	}
+	.template-modal-close {
+		width: 36px;
+		height: 36px;
+		font-size: 16px;
+	}
+	.gs-close {
+		width: 34px;
+		height: 34px;
+		display: inline-flex;
+		align-items: center;
+		justify-content: center;
+		font-size: 16px;
+		color: var(--text);
+	}
+	/* ---- file preview: phones hide secondary actions/info to prioritize core tools & guarantee close button ----
+	 * 像状态栏一样，手机端隐藏路径、元信息、大号缩放控件和引用按钮；
+	 * 关闭按钮独立在最右侧并放大，保证任何窄屏下绝不被挤出屏幕。 */
+	.fp-head {
+		padding: 8px 10px;
+		gap: 6px;
+	}
+	.fp-path,
+	.fp-meta,
+	.fp-zoom,
+	.fp-attach.ref {
+		display: none;
+	}
+	.fp-close {
+		width: 34px;
+		height: 34px;
+		font-size: 16px;
+		background: var(--bg-elev);
+		border-color: var(--border-soft);
+		color: var(--text);
+		flex-shrink: 0;
+		margin-left: 4px;
+	}
+	@media (max-width: 480px) {
+		.fp-attach.full {
+			display: none;
+		}
+	}
+	.tool-info-head .btn,
+	.bg-task-head .btn {
+		min-width: 34px;
+		min-height: 34px;
+		display: inline-flex;
+		align-items: center;
+		justify-content: center;
+		padding: 0 8px;
+		flex-shrink: 0;
+	}
+	.tool-info-title,
+	.tool-info-name {
+		min-width: 0;
+		overflow: hidden;
+		text-overflow: ellipsis;
+		white-space: nowrap;
+	}
+	.dialog-dismiss {
+		min-width: 32px;
+		min-height: 32px;
+		display: inline-flex;
+		align-items: center;
+		justify-content: center;
+		font-size: 15px;
+		background: var(--bg-elev);
+		border-radius: 6px;
+	}
+
+	/* ---- footer: phones show connection dot / context / cost / cache-hit / rate / cwd on one line ----
+	 * 引擎徽标、消息数、插件状态在手机上不显示（省宽度）；
+	 * 连接状态仅保留圆点隐藏文字；成本、缓存命中率与实时速率保留，上下文只剩数字，
 	 * 路径不够宽时自己截断。 */
 	.statusbar {
 		flex-wrap: nowrap;
@@ -13931,16 +14297,17 @@ button.source-default-toggle {
 		font-size: 10.5px;
 	}
 	.status-sep,
-	.status-item:not(.status-conn):not(.status-ctx):not(.status-cache):not(.status-rate):not(.status-host-metrics):not(
-			.status-cwd
-		) {
+	.status-item:not(.status-conn):not(.status-ctx):not(.status-cost):not(.status-cache):not(.status-rate):not(
+			.status-host-metrics
+		):not(.status-cwd) {
 		display: none;
 	}
 	.status-conn .status-conn-label {
 		display: none;
 	}
-	/* 三项信息各自固定宽度，不参与压缩（内容被截断会读不出来）。 */
+	/* 信息项各自固定宽度，不参与压缩（内容被截断会读不出来）。 */
 	.status-ctx,
+	.status-cost,
 	.status-cache,
 	.status-rate {
 		flex-shrink: 0;
@@ -14139,6 +14506,11 @@ button.source-default-toggle {
 	.msg-collapsed-action {
 		font-size: 0;
 		gap: 0;
+	}
+	/* 移动端/窄屏：消息底部纯图标按钮紧凑排布，杜绝换行 */
+	.msg-actions {
+		gap: 6px;
+		flex-wrap: nowrap;
 	}
 }
 /* 触屏：复制键常显（无 hover）。 */

@@ -54,6 +54,8 @@ const ALL = [
 	"chat-abort-attachments-rollback-test",
 	// 临时对话（issue #285）：inMemory 不落盘 + 左栏 isEphemeral 标记 + 转正落盘（对照组验普通对话真落盘）。
 	"ephemeral-chat-test",
+	// issue #381 回归：助手气泡上的 fork/rollback 必须解析成功（mock LLM，tsx 起源码）。
+	"fork-assistant-bubble-test",
 	"dsh-smoke-test",
 	"dsh-stats-test",
 	"fetch-models-test",

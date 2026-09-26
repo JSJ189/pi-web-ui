@@ -18,6 +18,7 @@ import {
 	FiTerminal,
 	FiVolume2,
 } from "react-icons/fi";
+import { LuMessageSquareDashed } from "react-icons/lu";
 import type { ChatState, UpdateAllItem } from "../use-chat";
 import type { CommandDef } from "../types";
 import { buildUpdateCommand } from "../update-command";
@@ -905,10 +906,7 @@ export function TopBar({
 					focusComposer();
 				}}
 			>
-				{/* emoji 也是图标：必须带 .chip-emoji，否则顶栏「只显示图标」模式下会被
-				    `.topbar.no-labels .chip > span` 连同文字标签一起藏掉，按钮变成空方块
-				    （溢出菜单 portal 在 body 下不受影响 —— 所以是「折叠进 ⋯ 才看得见」）。 */}
-				<span className="chip-emoji">🎭</span>
+				<LuMessageSquareDashed />
 				<span>{t("newChatEphemeral")}</span>
 			</button>
 		),

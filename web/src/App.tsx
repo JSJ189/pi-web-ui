@@ -78,12 +78,13 @@ import { fileToProcessedImage, isRasterImage, type ProcessedImage } from "./imag
 import { randomUuid } from "./uuid";
 import { recordModelUsage } from "./model-usage";
 import { loadSoundSettings, playSound, saveSoundSettings, type SoundKind, type SoundSettings } from "./sounds";
-import { assistantPlainText, loadTtsSettings, saveTtsSettings, speak, stopSpeaking, type TtsSettings } from "./tts";
+import { assistantPlainText, loadTtsSettings, saveTtsSettings, speak, type TtsSettings } from "./tts";
 import { shouldSuppressNotify, currentPresence } from "./notify";
 import { useWideChat } from "./chat-width-settings";
 import { registerFilePreviewHost } from "./file-preview-bridge";
 import { projectNameFromCwd, useProjectTitle } from "./title-settings";
 import { notify } from "./notify";
+import { diffStreamingCues } from "./streaming-cues";
 import { useTheme } from "./theme";
 import { useWallpaperEffect } from "./wallpaper";
 
@@ -882,12 +883,13 @@ export function App() {
 		}, 8000);
 		return () => clearTimeout(timer);
 	}, [pluginNotify]);
-	const prevStreaming = useRef<boolean | null>(null);
-	const prevDialogId = useRef<number | null>(null);
-	const prevQuestionId = useRef<string | null>(null);
-	const prevRemoteQuestionId = useRef<string | null>(null);
-	const prevQuestionConvs = useRef<Set<string>>(new Set());
-	const prevApprovalId = useRef<string | null>(null);
+	const prevStreamingMapRef = useRef<Map<string, boolean> | null>(null);
+	const prevActiveIdRef = useRef<string | null>(null);
+	const latestMessagesRef = useRef(chat.state?.messages);
+	latestMessagesRef.current = chat.state?.messages;
+	const notifiedDialogIds = useRef<Set<number>>(new Set());
+	const notifiedQuestionIds = useRef<Set<string>>(new Set());
+	const notifiedApprovalIds = useRef<Set<string>>(new Set());
 	const lastErrorNotice = useRef(0);
 	// Remembers a terminal-view click made before the WebSocket is ready.
 	const terminalOpenRequested = useRef(false);
@@ -928,84 +930,128 @@ export function App() {
 	}, [chat.terminals, send]);
 
 	// Run start / end cues (streaming edge transitions).
+	// 按会话 id 独立跟踪状态跳变，彻底杜绝切换对话时将其他会话的状态误判为本会话的 start/done，
+	// 并在后台对话完成时及时提示（issue：切换对话误报完成、后台对话延迟到切换才提醒）。
 	useEffect(() => {
-		const streaming = chat.state?.isStreaming ?? false;
-		const prev = prevStreaming.current;
-		prevStreaming.current = streaming;
-		if (prev === null) return; // first observation — don't cue
-		if (!prev && streaming) playSound("start", sound);
-		else if (prev && !streaming) {
+		const activeId = chat.state?.conversationId ?? null;
+		const cues = diffStreamingCues(
+			prevStreamingMapRef.current,
+			activeId,
+			chat.state?.isStreaming ?? false,
+			chat.conversations,
+			prevActiveIdRef.current,
+		);
+		prevStreamingMapRef.current = cues.nextMap;
+		prevActiveIdRef.current = activeId;
+
+		if (cues.startCue) {
+			playSound("start", sound);
+		}
+
+		if (cues.finishedConvs.length > 0) {
 			playSound("done", sound);
-			// OS/PWA notification for when the user stepped away (not focused).
-			void notify(t("notifyDoneTitle"), t("notifyDoneBody"));
-			// TTS (issue #288)：只在用户不在看页面时出声（与 notify 同哲学，提示音已覆盖在看场景）。
-			// 朗读正文优先于固定播报；正文为空（纯工具轮）时回落到 announce 固定句。
-			if (tts.enabled && !shouldSuppressNotify(currentPresence())) {
-				if (tts.readReplies) {
-					const body = assistantPlainText(chat.state?.messages);
-					if (body) speak(body, tts);
-					else if (tts.announce) speak(t("ttsAnnounceDone"), tts);
-				} else if (tts.announce) {
-					speak(t("ttsAnnounceDone"), tts);
+
+			const activeFinished = cues.finishedConvs.find((c) => c.isActive);
+			if (activeFinished) {
+				// 前台活动对话完成
+				void notify(t("notifyDoneTitle"), t("notifyDoneBody"));
+				if (tts.enabled && !shouldSuppressNotify(currentPresence())) {
+					if (tts.readReplies) {
+						const body = assistantPlainText(latestMessagesRef.current);
+						if (body) speak(body, tts);
+						else if (tts.announce) speak(t("ttsAnnounceDone"), tts);
+					} else if (tts.announce) {
+						speak(t("ttsAnnounceDone"), tts);
+					}
 				}
 			}
+			// 后台对话完成（可能与其他会话同批）：逐条弹通知带标题；TTS 只播报一次，
+			// 且前台完成时让位给正文朗读，不叠加固定句。
+			for (const bg of cues.finishedConvs.filter((c) => !c.isActive)) {
+				const body = bg.title ? `${bg.title}：${t("notifyDoneBody")}` : t("notifyDoneBody");
+				void notify(t("notifyDoneTitle"), body);
+			}
+			if (!activeFinished && tts.enabled && tts.announce && !shouldSuppressNotify(currentPresence())) {
+				speak(t("ttsAnnounceDone"), tts);
+			}
 		}
-	}, [chat.state?.isStreaming, chat.state?.messages, sound, tts, t]);
+	}, [chat.state?.conversationId, chat.state?.isStreaming, chat.conversations, sound, tts, t]);
 
 	// Questionnaire cue — each new dialog id + each new DSH question id.
 	// dialog = 扩展 select/confirm/input；question = ask_user_question 问卷。
-	// 之前只监听了 dialog，问卷出来没有提示音（issue：当前问卷出来没有问卷的提示音）。
+	// 按 ID 集合去重，彻底避免在不同对话间切换时重复响铃和弹通知。
 	useEffect(() => {
 		const id = chat.dialog?.id ?? null;
-		if (id !== null && id !== prevDialogId.current) {
+		if (id !== null && !notifiedDialogIds.current.has(id)) {
+			notifiedDialogIds.current.add(id);
+			if (notifiedDialogIds.current.size > 64) {
+				const oldest = notifiedDialogIds.current.values().next().value;
+				if (oldest !== undefined) notifiedDialogIds.current.delete(oldest);
+			}
 			playSound("question", sound);
 			void notify(t("notifyQuestionTitle"), t("notifyQuestionBody"));
 			if (tts.enabled && tts.announce && !shouldSuppressNotify(currentPresence())) speak(t("ttsAnnounceQuestion"), tts);
 		}
-		prevDialogId.current = id;
 	}, [chat.dialog, sound, tts, t]);
 
 	useEffect(() => {
 		const qid = chat.question?.id ?? null;
 		const rid = chat.remoteQuestion ? `${chat.remoteQuestion.owner}:${chat.remoteQuestion.id}` : null;
-		if (qid !== null && qid !== prevQuestionId.current) {
-			playSound("question", sound);
-			void notify(t("notifyQuestionTitle"), t("notifyQuestionBody"));
-			if (tts.enabled && tts.announce && !shouldSuppressNotify(currentPresence())) speak(t("ttsAnnounceQuestion"), tts);
+		let shouldCue = false;
+
+		if (qid !== null && !notifiedQuestionIds.current.has(qid)) {
+			notifiedQuestionIds.current.add(qid);
+			shouldCue = true;
 		}
-		if (rid !== null && rid !== prevRemoteQuestionId.current) {
-			// 跨页问卷到了本页：同样响铃 + 通知（这正是手机端要的提醒）。
-			playSound("question", sound);
-			void notify(t("notifyQuestionTitle"), t("notifyQuestionBody"));
-			if (tts.enabled && tts.announce && !shouldSuppressNotify(currentPresence())) speak(t("ttsAnnounceQuestion"), tts);
+		if (rid !== null && !notifiedQuestionIds.current.has(rid)) {
+			notifiedQuestionIds.current.add(rid);
+			shouldCue = true;
 		}
-		prevQuestionId.current = qid;
-		prevRemoteQuestionId.current = rid;
 
 		// 后台会话的问卷：弹窗不跨会话打扰，但提示音与系统通知照旧（避免只剩静默角标）。
-		const qConvs = new Set(chat.conversations.filter((c) => c.hasQuestion).map((c) => c.id));
-		const newBgQuestion = [...qConvs].some((id) => !prevQuestionConvs.current.has(id));
-		if (newBgQuestion && qid === null) {
+		// 遇到新的后台问卷时，将其 ID 记入已提醒 Set，防止用户切入该会话时二次响铃。
+		for (const c of chat.conversations) {
+			if (!c.hasQuestion) continue;
+			const qKey = c.questionId ? `q:${c.questionId}` : `conv-q:${c.id}`;
+			if (!notifiedQuestionIds.current.has(qKey)) {
+				notifiedQuestionIds.current.add(qKey);
+				if (c.questionId) notifiedQuestionIds.current.add(c.questionId);
+				if (qid !== c.questionId) {
+					shouldCue = true;
+				}
+			}
+		}
+
+		if (notifiedQuestionIds.current.size > 64) {
+			const oldest = notifiedQuestionIds.current.values().next().value;
+			if (oldest !== undefined) notifiedQuestionIds.current.delete(oldest);
+		}
+
+		if (shouldCue) {
 			playSound("question", sound);
 			void notify(t("notifyQuestionTitle"), t("notifyQuestionBody"));
 			if (tts.enabled && tts.announce && !shouldSuppressNotify(currentPresence())) speak(t("ttsAnnounceQuestion"), tts);
 		}
-		prevQuestionConvs.current = qConvs;
 	}, [chat.question, chat.remoteQuestion, chat.conversations, sound, tts, t]);
 
 	// Tool-approval cue (issue #288)：高危操作等待用户批准 —— 此前是唯一静默的
 	// 拦截事件（done/question/error 都有提示音 + 桌面通知，唯独审批没有），AI 会
 	// 在后台干等。补齐同款三通道：提示音 + 桌面通知 + TTS 播报。
+	// 按 ID 集合去重，切换会话核对代码后再切回时绝不重复响铃。
 	useEffect(() => {
 		const approval = chat.approval;
 		const id = approval?.id ?? null;
-		if (id !== null && id !== prevApprovalId.current) {
+		if (id !== null && !notifiedApprovalIds.current.has(id)) {
+			notifiedApprovalIds.current.add(id);
+			if (notifiedApprovalIds.current.size > 64) {
+				const oldest = notifiedApprovalIds.current.values().next().value;
+				if (oldest !== undefined) notifiedApprovalIds.current.delete(oldest);
+			}
 			playSound("approval", sound);
 			const tool = typeof approval?.toolName === "string" ? approval.toolName : "";
 			void notify(t("notifyApprovalTitle"), tool ? t("notifyApprovalBodyTool", { tool }) : t("notifyApprovalBody"));
 			if (tts.enabled && tts.announce && !shouldSuppressNotify(currentPresence())) speak(t("ttsAnnounceApproval"), tts);
 		}
-		prevApprovalId.current = id;
 	}, [chat.approval, sound, tts, t]);
 
 	// Error cue — new error notices only.

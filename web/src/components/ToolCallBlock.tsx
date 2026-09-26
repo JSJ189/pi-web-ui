@@ -1,4 +1,4 @@
-import { memo, useEffect, useMemo, useRef, useState } from "react";
+import { memo, useEffect, useMemo, useRef, useState, type ReactNode } from "react";
 import { createPortal } from "react-dom";
 import {
 	FiArrowRight,
@@ -66,6 +66,7 @@ export const ToolCallBlock = memo(function ToolCallBlock({
 	forceOpen = false,
 	uiContextToolCall,
 	onUiAction,
+	headExtra,
 }: {
 	block: UiToolCallBlock;
 	view: ToolView;
@@ -86,6 +87,10 @@ export const ToolCallBlock = memo(function ToolCallBlock({
 	uiContextToolCall?: UiSlotEntry[];
 	/** 插件条目的动作分发（view 切视图 / action 交给插件）。 */
 	onUiAction?: (item: UiSlotEntry, value?: string) => void;
+	/** 消息操作按钮（复制/编辑/朗读，由 Message 传入）：渲染在 head 行内、
+	 *  行内复制按钮旁。默认主题经 styles.css 的 .chead-actions 隐藏，只有
+	 *  选择启用的主题（themes/zhupi*.css）显示。 */
+	headExtra?: ReactNode;
 }) {
 	const t = useT();
 	// null = 未手动点过 → 跟随开关：wrap=true（开）→ 全部展开；wrap=false（关）→ 全部折叠。
@@ -341,7 +346,7 @@ export const ToolCallBlock = memo(function ToolCallBlock({
 				)}
 				<button
 					type="button"
-					className="chead-copy toolcall-copy"
+					className={`chead-copy toolcall-copy${copied ? " copied" : ""}`}
 					title={t("copyArgs")}
 					onClick={(e) => {
 						e.stopPropagation();
@@ -350,6 +355,13 @@ export const ToolCallBlock = memo(function ToolCallBlock({
 				>
 					{copied ? <FiCheckCircle /> : <FiCopy />}
 				</button>
+				{headExtra != null && (
+					// stopPropagation：head 是可点击行（展开/折叠、右键菜单），行内
+					// 操作按钮的点击不能冒泡成展开/折叠。
+					<span className="chead-actions" onClick={(e) => e.stopPropagation()}>
+						{headExtra}
+					</span>
+				)}
 			</div>
 			{resultImages.length > 0 && (
 				<div className="toolcall-images">
@@ -373,6 +385,18 @@ export const ToolCallBlock = memo(function ToolCallBlock({
 			{zoomed &&
 				createPortal(
 					<div className="img-lightbox" role="dialog" aria-label={t("toolImageZoom")} onClick={() => setZoomed(null)}>
+						<button
+							type="button"
+							className="img-lightbox-close"
+							title={t("close")}
+							aria-label={t("close")}
+							onClick={(e) => {
+								e.stopPropagation();
+								setZoomed(null);
+							}}
+						>
+							<FiX />
+						</button>
 						<img src={zoomed} alt="tool result preview" />
 					</div>,
 					document.body,

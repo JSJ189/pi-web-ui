@@ -131,6 +131,87 @@ export function stripTransientRetryErrors(messages: UiMessage[], retryActive: bo
 	return end === messages.length ? messages : messages.slice(0, end);
 }
 
+/**
+ * Single source for rendered message ids. Both serializeMessage (下发) and
+ * resolveMessageEntry (解析) must derive ids through this function — recomputing
+ * the format anywhere else is how the two sides drifted apart and fork/rollback
+ * on assistant bubbles stopped resolving (issue #381).
+ */
+export function uiMessageId(m: AgentMessage, seq: number): string {
+	switch (m.role) {
+		case "user":
+			return `u-${m.timestamp}-${seq}`;
+		case "assistant":
+			return `a-${m.timestamp}-${seq}`;
+		case "toolResult":
+			return `t-${m.toolCallId}`;
+		case "bashExecution":
+			return `b-${m.timestamp}-${seq}`;
+		case "custom":
+			return `c-${m.timestamp}-${seq}`;
+		case "branchSummary":
+			return `bs-${m.timestamp}-${seq}`;
+		case "compactionSummary":
+			return `cs-${m.timestamp}-${seq}`;
+		default:
+			return `x-${seq}`;
+	}
+}
+
+/** Structural subset of SessionManager entries the matcher below needs
+ *  (compatible with buildContextEntries() output without importing the SDK). */
+export interface UiIdEntryLike {
+	id: string;
+	type: string;
+	message?: AgentMessage;
+	timestamp?: string;
+	content?: unknown;
+	display?: boolean;
+}
+
+/**
+ * Find the session entry a rendered message id points at, by re-deriving each
+ * entry's rendered id through uiMessageId() — the same function serializeMessage
+ * used to hand ids to the browser. `seqOf` supplies the per-message seq; the
+ * caller injects its counter there (agent-service passes uiMessageKey().n, which
+ * is exactly the counter serialization drew from — issue #381).
+ */
+export function findEntryByUiId<T extends UiIdEntryLike>(
+	entries: T[],
+	messageId: string,
+	seqOf: (m: AgentMessage) => number,
+): T | null {
+	const userSeqByTs = new Map<number, number>();
+	for (const entry of entries) {
+		if (entry.id === messageId) return entry;
+		if (entry.type === "message" && entry.message) {
+			const m = entry.message;
+			let seq: number;
+			if (m.role === "user") {
+				// User ids count messages sharing a timestamp — mirrors the
+				// special-case in serializeCachedFor() (see its comment).
+				const ts = m.timestamp ?? 0;
+				seq = (userSeqByTs.get(ts) ?? 0) + 1;
+				userSeqByTs.set(ts, seq);
+			} else {
+				seq = seqOf(m);
+			}
+			if (uiMessageId(m, seq) === messageId) return entry;
+		} else if (entry.type === "custom_message" && entry.display !== false) {
+			// Custom messages carry content/timestamp on the entry itself (no
+			// message object); rebuild the shape uiMessageId()/seqOf() key on —
+			// the same conversion createCustomMessage() uses on reload.
+			const m = {
+				role: "custom",
+				content: entry.content,
+				timestamp: entry.timestamp ? new Date(entry.timestamp).getTime() : 0,
+			} as AgentMessage;
+			if (uiMessageId(m, seqOf(m)) === messageId) return entry;
+		}
+	}
+	return null;
+}
+
 export function serializeMessage(m: AgentMessage, seq: number): UiMessage | null {
 	// SDK 的 system 消息是 prompt sections 的内部差量
 	// (content 空串 + sections 结构化内存)、compaction 的
@@ -143,10 +224,12 @@ export function serializeMessage(m: AgentMessage, seq: number): UiMessage | null
 		return null;
 	}
 
+	const id = uiMessageId(m, seq);
+
 	switch (m.role) {
 		case "user":
 			return {
-				id: `u-${m.timestamp}-${seq}`,
+				id,
 				role: "user",
 				content: serializeUserContent(m.content),
 				timestamp: m.timestamp,
@@ -154,7 +237,7 @@ export function serializeMessage(m: AgentMessage, seq: number): UiMessage | null
 
 		case "assistant":
 			return {
-				id: `a-${m.timestamp}-${seq}`,
+				id,
 				role: "assistant",
 				content: serializeAssistantContent(m.content),
 				timestamp: m.timestamp,
@@ -190,7 +273,7 @@ export function serializeMessage(m: AgentMessage, seq: number): UiMessage | null
 			const content: UiContentBlock[] =
 				raw || images.length === 0 ? [{ type: "text", text, truncated }, ...images] : [...images];
 			const msg: UiMessage = {
-				id: `t-${m.toolCallId}`,
+				id,
 				role: "toolResult",
 				content,
 				toolCallId: m.toolCallId,
@@ -214,7 +297,7 @@ export function serializeMessage(m: AgentMessage, seq: number): UiMessage | null
 		case "bashExecution": {
 			const { text, truncated } = truncate(m.output, TOOL_OUTPUT_CAP);
 			return {
-				id: `b-${m.timestamp}-${seq}`,
+				id,
 				role: "bashExecution",
 				content: [
 					{
@@ -238,7 +321,7 @@ export function serializeMessage(m: AgentMessage, seq: number): UiMessage | null
 			}
 			const content = serializeUserContent(m.content);
 			const msg: UiMessage = {
-				id: `c-${m.timestamp}-${seq}`,
+				id,
 				role: "custom",
 				content,
 				customType: m.customType,
@@ -261,7 +344,7 @@ export function serializeMessage(m: AgentMessage, seq: number): UiMessage | null
 		case "branchSummary": {
 			const { text, truncated } = truncate(m.summary, TEXT_CAP);
 			return {
-				id: `bs-${m.timestamp}-${seq}`,
+				id,
 				role: "branchSummary",
 				content: [{ type: "text", text, truncated }],
 				timestamp: m.timestamp,
@@ -271,7 +354,7 @@ export function serializeMessage(m: AgentMessage, seq: number): UiMessage | null
 		case "compactionSummary": {
 			const { text, truncated } = truncate(m.summary, TEXT_CAP);
 			return {
-				id: `cs-${m.timestamp}-${seq}`,
+				id,
 				role: "compactionSummary",
 				content: [{ type: "text", text, truncated }],
 				timestamp: m.timestamp,
@@ -281,7 +364,7 @@ export function serializeMessage(m: AgentMessage, seq: number): UiMessage | null
 
 		default:
 			return {
-				id: `x-${seq}`,
+				id,
 				role: String((m as { role?: unknown }).role ?? "unknown"),
 				content: [],
 				timestamp: (m as { timestamp?: number }).timestamp,

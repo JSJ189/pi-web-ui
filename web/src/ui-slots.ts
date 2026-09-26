@@ -292,7 +292,7 @@ export const BUILTIN_UI_ITEMS: BuiltinUiItem[] = [
 		id: "host:new-ephemeral-chat",
 		slot: "topbar.primary",
 		labelKey: "newChatEphemeral",
-		icon: "plus",
+		icon: "chat",
 		kind: "action",
 		order: 96.5,
 		group: "primary",
@@ -547,6 +547,14 @@ export const BUILTIN_UI_ITEMS: BuiltinUiItem[] = [
 	},
 
 	// ---- 消息 hover 工具条（Message.tsx 的 .msg-actions / 卡片复制按钮） ----
+	{
+		id: "host:msg-reask",
+		slot: "message.actions",
+		labelKey: "reaskDirectly",
+		icon: "refresh",
+		kind: "action",
+		order: 9,
+	},
 	{
 		id: "host:msg-edit-reask",
 		slot: "message.actions",
@@ -1194,6 +1202,88 @@ export const BUILTIN_UI_ITEMS: BuiltinUiItem[] = [
 		group: "danger",
 	},
 
+	// ---- 消息右键菜单（contextmenu.message，渲染与分派见 Message.tsx）----
+	{
+		id: "host:msg-ctx-copy-markdown",
+		slot: "contextmenu.message",
+		labelKey: "copyMarkdown",
+		icon: "markdown",
+		kind: "action",
+		context: "message",
+		order: 10,
+		group: "copy",
+	},
+	{
+		id: "host:msg-ctx-copy-text",
+		slot: "contextmenu.message",
+		labelKey: "copyText",
+		icon: "text",
+		kind: "action",
+		context: "message",
+		order: 11,
+		group: "copy",
+	},
+	{
+		id: "host:msg-ctx-copy-image",
+		slot: "contextmenu.message",
+		labelKey: "copyImage",
+		icon: "image",
+		kind: "action",
+		context: "message",
+		order: 12,
+		group: "copy",
+	},
+	{
+		id: "host:msg-ctx-reask",
+		slot: "contextmenu.message",
+		labelKey: "reaskDirectly",
+		icon: "refresh",
+		kind: "action",
+		context: "message",
+		order: 19,
+		group: "action",
+	},
+	{
+		id: "host:msg-ctx-edit-reask",
+		slot: "contextmenu.message",
+		labelKey: "editReask",
+		icon: "edit",
+		kind: "action",
+		context: "message",
+		order: 20,
+		group: "action",
+	},
+	{
+		id: "host:msg-ctx-fork",
+		slot: "contextmenu.message",
+		labelKey: "forkSession",
+		icon: "branch",
+		kind: "action",
+		context: "message",
+		order: 21,
+		group: "action",
+	},
+	{
+		id: "host:msg-ctx-rollback",
+		slot: "contextmenu.message",
+		labelKey: "rollbackSession",
+		icon: "undo",
+		kind: "action",
+		context: "message",
+		order: 22,
+		group: "action",
+	},
+	{
+		id: "host:msg-ctx-speak",
+		slot: "contextmenu.message",
+		labelKey: "speakMsg",
+		icon: "volume",
+		kind: "action",
+		context: "message",
+		order: 23,
+		group: "action",
+	},
+
 	// ---- 工具调用卡片的工具名右键菜单（contextmenu.toolcall，渲染与分派见 ToolCallBlock.tsx）----
 	// 今天只有一条：显示工具的定义说明（描述 + 参数 schema）。弹窗内容走 get_tool_info
 	// 按需取（定义不进快照）。插件可往本槽位加自己的条目（如「复制为 curl」），
@@ -1228,8 +1318,13 @@ export const LP_SECTION_ENTRY_IDS: ReadonlySet<string> = new Set([
 /** 插件视图 tab 的合成条目 id（`<pluginId>:__view`，`__view` 为保留字）。 */
 export const PLUGIN_VIEW_ITEM_ID = "__view";
 
-/** 宿主必须常驻顶栏的入口：不能被插件 arrange 或用户布局偏好隐藏。 */
-export const REQUIRED_TOPBAR_ITEM_IDS: ReadonlySet<string> = new Set(["host:settings"]);
+/** 宿主必须常驻顶栏的入口：不能被插件 arrange 或用户布局偏好隐藏。
+ *  - host:settings：用户找回其它入口与布局的最后通道；
+ *  - host:history / host:files：手机端左侧历史与右侧文件抽屉的唯一入口，不能被隐藏。 */
+export const REQUIRED_TOPBAR_ITEM_IDS: ReadonlySet<string> = new Set(["host:settings", "host:history", "host:files"]);
+
+/** 不在设置「界面布局」页中供用户管理的顶栏入口（手机端两侧列表唯一入口，直接去掉其设置）。 */
+export const HIDDEN_FROM_LAYOUT_ITEM_IDS: ReadonlySet<string> = new Set(["host:history", "host:files"]);
 
 /** 某个插件的视图条目全局 id（`<pluginId>:__view`）—— 顶栏与布局偏好的 key。 */
 export function pluginViewItemId(pluginId: string): string {
@@ -1796,6 +1891,7 @@ export function buildUiSlots(
 		mark(id, "label");
 	}
 	// 设置是用户找回其它入口与布局的最后通道，必须留在顶栏。
+	// 手机端历史对话与文件抽屉是两侧列表的唯一入口，必须常驻顶栏，不能被隐藏。
 	for (const id of REQUIRED_TOPBAR_ITEM_IDS) {
 		const entry = byId.get(id);
 		if (entry) {

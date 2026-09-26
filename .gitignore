@@ -34,3 +34,6 @@ release/
 
 # 独立社区插件清单仓库工作区
 plugin-registry/
+
+# 本地临时调试截图
+dev/wechat-shot*.png
