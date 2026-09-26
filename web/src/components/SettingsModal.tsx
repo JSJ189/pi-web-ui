@@ -3334,6 +3334,7 @@ export function SettingsModal({
 											const installed = installedPluginIds.has(e.id);
 											const upd = chat.pluginUpdates?.[e.id];
 											const isUpdatable = installed && upd?.updatable === true;
+											const isRunning = Boolean(jobFor(e.id) && jobFor(e.id)?.phase !== "done");
 											return (
 												<div key={e.id} className="set-catalog-row">
 													<div className="set-catalog-main">
@@ -3367,6 +3368,7 @@ export function SettingsModal({
 																<button
 																	type="button"
 																	className={`set-uninstall${isUpdatable ? " accent" : ""}`}
+																	disabled={isRunning}
 																	title={
 																		isUpdatable && upd?.latestVersion
 																			? t("pluginUpdateAvailableDetail", { version: `v${upd.latestVersion}` })
@@ -3374,13 +3376,14 @@ export function SettingsModal({
 																	}
 																	onClick={() => runUiPluginUpdate(e.id, e.source)}
 																>
-																	<FiRefreshCw />
-																	{t("pluginUpdate")}
+																	<FiRefreshCw className={isRunning ? "set-job-spin" : ""} />
+																	{isRunning ? t("pluginJobRunning") : t("pluginUpdate")}
 																</button>
 																{confirmUiUninstall === e.id ? (
 																	<button
 																		type="button"
 																		className="set-uninstall confirm"
+																		disabled={isRunning}
 																		title={t("pluginUninstallHint")}
 																		onClick={() => runUiPluginUninstall(e.id)}
 																	>
@@ -3390,6 +3393,7 @@ export function SettingsModal({
 																	<button
 																		type="button"
 																		className="set-uninstall"
+																		disabled={isRunning}
 																		title={t("pluginUninstallHint")}
 																		onClick={() => setConfirmUiUninstall(e.id)}
 																	>
@@ -3403,10 +3407,20 @@ export function SettingsModal({
 																type="button"
 																className="set-uninstall"
 																title={t("pluginInstallHint")}
+																disabled={isRunning}
 																onClick={() => runCatalogInstall(e)}
 															>
-																<FiDownload />
-																{t("pluginInstall")}
+																{isRunning ? (
+																	<>
+																		<FiRefreshCw className="set-job-spin" />
+																		{t("pluginJobRunning")}
+																	</>
+																) : (
+																	<>
+																		<FiDownload />
+																		{t("pluginInstall")}
+																	</>
+																)}
 															</button>
 														)}
 														{!e.builtin && (
@@ -3465,6 +3479,7 @@ export function SettingsModal({
 										{chat.plugins.map((p) => {
 											const upd = chat.pluginUpdates?.[p.id];
 											const isUpdatable = upd?.updatable === true;
+											const isRunning = Boolean(jobFor(p.id) && jobFor(p.id)?.phase !== "done");
 											return (
 												<Fragment key={p.id}>
 													<ToggleRow
@@ -3507,6 +3522,7 @@ export function SettingsModal({
 																	<button
 																		type="button"
 																		className={`set-uninstall${isUpdatable ? " accent" : ""}`}
+																		disabled={isRunning}
 																		title={
 																			isUpdatable && upd?.latestVersion
 																				? t("pluginUpdateAvailableDetail", { version: `v${upd.latestVersion}` })
@@ -3514,14 +3530,15 @@ export function SettingsModal({
 																		}
 																		onClick={() => runUiPluginUpdate(p.id, p.source!)}
 																	>
-																		<FiRefreshCw />
-																		{t("pluginUpdate")}
+																		<FiRefreshCw className={isRunning ? "set-job-spin" : ""} />
+																		{isRunning ? t("pluginJobRunning") : t("pluginUpdate")}
 																	</button>
 																)}
 																{confirmUiUninstall === p.id ? (
 																	<button
 																		type="button"
 																		className="set-uninstall confirm"
+																		disabled={isRunning}
 																		title={t("pluginUninstallHint")}
 																		onClick={() => runUiPluginUninstall(p.id)}
 																	>
@@ -3531,6 +3548,7 @@ export function SettingsModal({
 																	<button
 																		type="button"
 																		className="set-uninstall"
+																		disabled={isRunning}
 																		title={t("pluginUninstallHint")}
 																		onClick={() => setConfirmUiUninstall(p.id)}
 																	>
@@ -3541,6 +3559,7 @@ export function SettingsModal({
 															</div>
 														}
 													/>
+													{renderJobStatus(p.id)}
 													{/* 注册的 AI 工具开关统一收口到「工具」tab 汇总区，这里只保留一行入口（免得已装列表太长；DSH 无工具 tab 则不显示） */}
 													{p.agentTools && p.agentTools.length > 0 && !isDsh && (
 														<div className="set-row" title={t("pluginToolOffHint")}>

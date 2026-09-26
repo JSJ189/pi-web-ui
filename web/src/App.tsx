@@ -15,6 +15,7 @@ import { RightPanel } from "./components/RightPanel";
 import { MessageList } from "./components/MessageList";
 import { ChatInput } from "./components/ChatInput";
 import { GoalBar } from "./components/GoalBar";
+import { FiRefreshCw } from "react-icons/fi";
 
 import { FooterBar } from "./components/FooterBar";
 import { Dialog } from "./components/Dialog";
@@ -1874,142 +1875,6 @@ export function App() {
 									)}
 								</div>
 							)}
-							{pendingPermRequest && (
-								<div className="dialog-inline" data-dialog-kind="confirm">
-									<div className="dialog-head">
-										<span className="dialog-badge">{t("pluginRequest")}</span>
-										<span className="dialog-title">{t("pluginPermTitle")}</span>
-										<button
-											type="button"
-											className="dialog-dismiss"
-											title={t("cancel")}
-											onClick={() => answerPermRequest(pendingPermRequest.id, false)}
-										>
-											✕
-										</button>
-									</div>
-									<div className="dialog-body">
-										{pendingPermRequest.family === "net"
-											? t("pluginPermBodyNet")
-													.replace("{plugin}", pendingPermRequest.pluginId)
-													.replace("{hosts}", (pendingPermRequest.hosts ?? []).join(", "))
-											: t("pluginPermBodyLlm")
-													.replace("{plugin}", pendingPermRequest.pluginId)
-													.replace(
-														"{models}",
-														(pendingPermRequest.models ?? []).length > 0
-															? ` ${(pendingPermRequest.models ?? []).join(", ")}`
-															: "",
-													)}
-										{pendingPermRequest.reason && <div className="dialog-hint">{pendingPermRequest.reason}</div>}
-										<div className="dialog-actions">
-											<button
-												type="button"
-												className="btn"
-												onClick={() => answerPermRequest(pendingPermRequest.id, false)}
-											>
-												{t("pluginGrantDeny")}
-											</button>
-											<button
-												type="button"
-												className="btn"
-												onClick={() => answerPermRequest(pendingPermRequest.id, true)}
-											>
-												{t("pluginPermOnce")}
-											</button>
-											<button
-												type="button"
-												className="btn primary"
-												onClick={() => answerPermRequest(pendingPermRequest.id, true, true)}
-											>
-												{t("pluginPermAlways")}
-											</button>
-										</div>
-									</div>
-								</div>
-							)}
-							{pendingPathRequest && (
-								<div className="dialog-inline" data-dialog-kind="confirm">
-									<div className="dialog-head">
-										<span className="dialog-badge">{t("pluginRequest")}</span>
-										<span className="dialog-title">{t("pluginGrantRequestTitle")}</span>
-										<button
-											type="button"
-											className="dialog-dismiss"
-											title={t("cancel")}
-											onClick={() => answerPathRequest(pendingPathRequest.id, false)}
-										>
-											✕
-										</button>
-									</div>
-									<div className="dialog-body">
-										{t("pluginGrantRequestBody")
-											.replace("{plugin}", pendingPathRequest.pluginId)
-											.replace("{path}", pendingPathRequest.path)}
-										{pendingPathRequest.reason && <div className="dialog-hint">{pendingPathRequest.reason}</div>}
-										<div className="dialog-actions">
-											<button
-												type="button"
-												className="btn"
-												onClick={() => answerPathRequest(pendingPathRequest.id, false)}
-											>
-												{t("pluginGrantDeny")}
-											</button>
-											<button
-												type="button"
-												className="btn primary"
-												onClick={() => answerPathRequest(pendingPathRequest.id, true)}
-											>
-												{t("pluginGrantAllow")}
-											</button>
-										</div>
-									</div>
-								</div>
-							)}
-							{pluginPathConfirm && (
-								<div className="dialog-inline" data-dialog-kind="confirm">
-									<div className="dialog-head">
-										<span className="dialog-badge">{t("pluginRequest")}</span>
-										<span className="dialog-title">{t("pluginSessionGrantTitle")}</span>
-										<button
-											type="button"
-											className="dialog-dismiss"
-											title={t("cancel")}
-											onClick={() => {
-												pluginPathConfirm.resolve(false);
-												setPluginPathConfirm(null);
-											}}
-										>
-											✕
-										</button>
-									</div>
-									<div className="dialog-body">
-										{t("pluginSessionGrantBody").replace("{path}", pluginPathConfirm.path)}
-										<div className="dialog-actions">
-											<button
-												type="button"
-												className="btn"
-												onClick={() => {
-													pluginPathConfirm.resolve(false);
-													setPluginPathConfirm(null);
-												}}
-											>
-												{t("cancel")}
-											</button>
-											<button
-												type="button"
-												className="btn primary"
-												onClick={() => {
-													pluginPathConfirm.resolve(true);
-													setPluginPathConfirm(null);
-												}}
-											>
-												{t("ok")}
-											</button>
-										</div>
-									</div>
-								</div>
-							)}
 							{chat.question && (
 								<DshQuestionDialog
 									question={chat.question}
@@ -2247,6 +2112,160 @@ export function App() {
 					openFile(path, name);
 				}}
 			/>
+			{/* 插件能力授权 / 目录访问确认顶层浮层：必须高于设置等弹窗（z-index > 300），确保安装插件或跨视图调用时无需叉掉设置页 */}
+			{(pendingPermRequest || pendingPathRequest || pluginPathConfirm) && (
+				<div className="modal-backdrop perm-modal-backdrop">
+					{pendingPermRequest && (
+						<div className="dialog-inline perm-dialog-card" data-dialog-kind="confirm">
+							<div className="dialog-head">
+								<span className="dialog-badge">{t("pluginRequest")}</span>
+								<span className="dialog-title">{t("pluginPermTitle")}</span>
+								<button
+									type="button"
+									className="dialog-dismiss"
+									title={t("cancel")}
+									onClick={() => answerPermRequest(pendingPermRequest.id, false)}
+								>
+									✕
+								</button>
+							</div>
+							<div className="dialog-body">
+								{pendingPermRequest.family === "net"
+									? t("pluginPermBodyNet")
+											.replace("{plugin}", pendingPermRequest.pluginId)
+											.replace("{hosts}", (pendingPermRequest.hosts ?? []).join(", "))
+									: t("pluginPermBodyLlm")
+											.replace("{plugin}", pendingPermRequest.pluginId)
+											.replace(
+												"{models}",
+												(pendingPermRequest.models ?? []).length > 0
+													? ` ${(pendingPermRequest.models ?? []).join(", ")}`
+													: "",
+											)}
+								{pendingPermRequest.reason && <div className="dialog-hint">{pendingPermRequest.reason}</div>}
+								<div className="dialog-actions">
+									<button type="button" className="btn" onClick={() => answerPermRequest(pendingPermRequest.id, false)}>
+										{t("pluginGrantDeny")}
+									</button>
+									<button type="button" className="btn" onClick={() => answerPermRequest(pendingPermRequest.id, true)}>
+										{t("pluginPermOnce")}
+									</button>
+									<button
+										type="button"
+										className="btn primary"
+										onClick={() => answerPermRequest(pendingPermRequest.id, true, true)}
+									>
+										{t("pluginPermAlways")}
+									</button>
+								</div>
+							</div>
+						</div>
+					)}
+					{pendingPathRequest && (
+						<div className="dialog-inline perm-dialog-card" data-dialog-kind="confirm">
+							<div className="dialog-head">
+								<span className="dialog-badge">{t("pluginRequest")}</span>
+								<span className="dialog-title">{t("pluginGrantRequestTitle")}</span>
+								<button
+									type="button"
+									className="dialog-dismiss"
+									title={t("cancel")}
+									onClick={() => answerPathRequest(pendingPathRequest.id, false)}
+								>
+									✕
+								</button>
+							</div>
+							<div className="dialog-body">
+								{t("pluginGrantRequestBody")
+									.replace("{plugin}", pendingPathRequest.pluginId)
+									.replace("{path}", pendingPathRequest.path)}
+								{pendingPathRequest.reason && <div className="dialog-hint">{pendingPathRequest.reason}</div>}
+								<div className="dialog-actions">
+									<button type="button" className="btn" onClick={() => answerPathRequest(pendingPathRequest.id, false)}>
+										{t("pluginGrantDeny")}
+									</button>
+									<button
+										type="button"
+										className="btn primary"
+										onClick={() => answerPathRequest(pendingPathRequest.id, true)}
+									>
+										{t("pluginGrantAllow")}
+									</button>
+								</div>
+							</div>
+						</div>
+					)}
+					{pluginPathConfirm && (
+						<div className="dialog-inline perm-dialog-card" data-dialog-kind="confirm">
+							<div className="dialog-head">
+								<span className="dialog-badge">{t("pluginRequest")}</span>
+								<span className="dialog-title">{t("pluginSessionGrantTitle")}</span>
+								<button
+									type="button"
+									className="dialog-dismiss"
+									title={t("cancel")}
+									onClick={() => {
+										pluginPathConfirm.resolve(false);
+										setPluginPathConfirm(null);
+									}}
+								>
+									✕
+								</button>
+							</div>
+							<div className="dialog-body">
+								{t("pluginSessionGrantBody").replace("{path}", pluginPathConfirm.path)}
+								<div className="dialog-actions">
+									<button
+										type="button"
+										className="btn"
+										onClick={() => {
+											pluginPathConfirm.resolve(false);
+											setPluginPathConfirm(null);
+										}}
+									>
+										{t("cancel")}
+									</button>
+									<button
+										type="button"
+										className="btn primary"
+										onClick={() => {
+											pluginPathConfirm.resolve(true);
+											setPluginPathConfirm(null);
+										}}
+									>
+										{t("ok")}
+									</button>
+								</div>
+							</div>
+						</div>
+					)}
+				</div>
+			)}
+			{/* 当设置面板关闭但在后台有插件正在安装/更新/卸载时，在界面右上角提示轻量进度条，点击可重新打开设置面板 */}
+			{!settingsOpen && Object.values(chat.pluginJobs ?? {}).some((j) => j.phase !== "done") && (
+				<div
+					className="active-plugin-jobs-bar"
+					onClick={() => {
+						setSettingsInitialSection("plugins");
+						setSettingsOpen(true);
+					}}
+					title={t("pluginJobRunning")}
+				>
+					<FiRefreshCw className="spin" />
+					<span className="active-plugin-jobs-title">
+						{t("pluginJobRunning")}:{" "}
+						{Object.values(chat.pluginJobs ?? {})
+							.filter((j) => j.phase !== "done")
+							.map((j) => j.pluginId)
+							.join(", ")}
+					</span>
+					{(() => {
+						const firstRunning = Object.values(chat.pluginJobs ?? {}).find((j) => j.phase !== "done");
+						const lastLine = firstRunning?.lines[firstRunning.lines.length - 1];
+						return lastLine ? <span className="active-plugin-jobs-line">{lastLine}</span> : null;
+					})()}
+				</div>
+			)}
 			<BannerContainer />
 		</div>
 	);
