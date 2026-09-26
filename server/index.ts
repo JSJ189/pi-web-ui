@@ -63,7 +63,7 @@ import {
 	type PluginRunEvent,
 } from "./plugins.js";
 import type { GuardedToolName, ToolPostRequest, ToolPreRequest } from "./plugin-tool-guard.js";
-import { buildPluginJobArgs, inspectInstallSpec, PluginInstaller } from "./plugin-installer.js";
+import { buildPluginJobArgs, confirmPluginInstall, inspectInstallSpec, PluginInstaller } from "./plugin-installer.js";
 import { syncPluginCatalog } from "./plugin-catalog-sync.js";
 import type { ServerLang } from "./i18n.js";
 import { McpBridge } from "./mcp-bridge.js";
@@ -1514,21 +1514,14 @@ function findDomConsentById(id: string): PendingDomConsent | undefined {
 
 // ---------------------------------------------------------------------------
 // 插件安装的用户确认门（P0）：plugin_catalog_sync 的 install:true 与 plugin_job
-// 的 install/update 在真正动安装器之前必须拿到用户确认。第三方页面脚本可以直发
-// 这两类消息，没有这道门就能借 WS 静默安装任意插件。复用 permissionRequester
-// 的同一条「plugin_permission_request 弹窗 + 120s 超时视为拒绝」管线 —— 不新增
-// 协议消息，将安装清单放在 reason 里展示；这里直接调 requester（不写授权表，
-// remember 标志被忽略）。拒绝 / 超时 / 未接弹窗设施（无头 DSH）一律 fail-closed。
+// 的 install/update 在真正动安装器之前必须拿到用户确认。
 // ---------------------------------------------------------------------------
-async function confirmPluginInstall(items: Array<{ id: string; source: string }>): Promise<boolean> {
-	const ask = pluginMgr.permissionRequester;
-	if (!ask) return false;
-	const list = items.map((x) => `${x.id} ← ${x.source}`).join("\n");
-	const ans = await ask("plugin-installer", {
-		family: "net",
-		reason: `安装确认：将安装/更新以下插件（id ← source）：\n${list}\n拒绝或 120 秒未确认则不安装。`,
+async function confirmPluginInstallHelper(items: Array<{ id: string; source: string }>): Promise<boolean> {
+	return confirmPluginInstall(items, {
+		permGrants: pluginMgr.permGrants,
+		permissionRequester: pluginMgr.permissionRequester,
+		onGrantsChanged: pushPluginPermissions,
 	});
-	return ans.ok === true;
 }
 
 // 内置定时任务（issue #184）：全局 <dataDir>/scheduler-tasks.json，TTL 与
@@ -2628,15 +2621,38 @@ wss.on("connection", (ws) => {
 				// plugin_job；拒绝/超时直接回一条 done，让面板上的作业就地结束（不占
 				// 安装锁、不弹「失败」之外的噪音）。卸载不在本门范围内（由面板本身发起）。
 				if (jobAction === "install" || jobAction === "update") {
-					void confirmPluginInstall([{ id: pluginId, source: String(msg.source ?? "") }])
+					const alreadyGranted = pluginMgr.permGrants.has("plugin-installer", "net", { host: "github.com" });
+					if (!alreadyGranted) {
+						send({
+							type: "plugin_job",
+							jobId,
+							action: jobAction,
+							pluginId,
+							phase: "start",
+						});
+						send({
+							type: "plugin_job",
+							jobId,
+							action: jobAction,
+							pluginId,
+							phase: "log",
+							line: jobLang() === "zh" ? "等待确认安装授权…" : "Waiting for install confirmation…",
+						});
+					}
+					void confirmPluginInstallHelper([{ id: pluginId, source: String(msg.source ?? "") }])
 						.then((confirmed) => {
 							if (!confirmed) {
-								jobDone(false, "用户未确认安装（拒绝或 120 秒超时）");
+								jobDone(
+									false,
+									jobLang() === "zh"
+										? "用户未确认安装（拒绝或 120 秒超时）"
+										: "Installation not confirmed (rejected or timed out after 120s)",
+								);
 								return;
 							}
 							startPluginJob();
 						})
-						.catch(() => jobDone(false, "安装确认流程异常"));
+						.catch(() => jobDone(false, jobLang() === "zh" ? "安装确认流程异常" : "Installation confirmation error"));
 					break;
 				}
 				startPluginJob();
@@ -2649,6 +2665,24 @@ wss.on("connection", (ws) => {
 						done: async (ok, info) => {
 							if (ok) {
 								await reloadPluginsAndPush(jobLang);
+								const isZh = jobLang() === "zh";
+								const actionLabel =
+									jobAction === "uninstall"
+										? isZh
+											? "卸载"
+											: "uninstalled"
+										: jobAction === "update"
+											? isZh
+												? "更新"
+												: "updated"
+											: isZh
+												? "安装"
+												: "installed";
+								cs?.emitNotice(
+									"info",
+									`插件「${pluginId}」${actionLabel}完成`,
+									`Plugin "${pluginId}" ${actionLabel} successfully`,
+								);
 							} else if (info.error) {
 								cs?.emitNotice("error", `插件操作失败：${info.error}`, `Plugin operation failed: ${info.error}`);
 							}
@@ -2812,7 +2846,7 @@ wss.on("connection", (ws) => {
 						// 本地文件来源只允许工作区内（防任意路径文件探测 oracle）。
 						workspaceRoot: cs?.cwd ?? CWD,
 						// 安装确认门（P0）：拒绝/超时只写目录不安装。
-						confirmInstall: (items) => confirmPluginInstall(items),
+						confirmInstall: (items) => confirmPluginInstallHelper(items),
 					},
 				).then((r) => {
 					if (r.installRefused) {

@@ -412,3 +412,49 @@ export class PluginInstaller {
 		this.currentJobId = null;
 	}
 }
+
+/** 插件安装确认门参数依赖（便于单测与解耦）。 */
+export interface PluginInstallConfirmationDeps {
+	permGrants?: {
+		has: (pluginId: string, family: "net", scope?: { host?: string }) => boolean;
+		grant: (pluginId: string, family: "net", opts?: { hosts?: string[]; reason?: string; remember?: boolean }) => void;
+	};
+	permissionRequester?: (
+		pluginId: string,
+		req: { family: "net"; hosts?: string[]; reason?: string },
+	) => Promise<{ ok: boolean; remember?: boolean }>;
+	onGrantsChanged?: () => void;
+}
+
+/**
+ * 插件安装的用户确认门（P0）：plugin_catalog_sync 的 install:true 与 plugin_job
+ * 的 install/update 在真正动安装器之前必须拿到用户确认。
+ *
+ * 用户若选择「记住并允许」，授权存入 plugin-permissions.json（后续同类操作自动放行，
+ * 设置面板「能力授权」页可审计与撤销）。拒绝 / 超时 / 未接弹窗设施（无头 DSH）一律 fail-closed。
+ */
+export async function confirmPluginInstall(
+	items: Array<{ id: string; source: string }>,
+	deps: PluginInstallConfirmationDeps,
+): Promise<boolean> {
+	if (deps.permGrants?.has("plugin-installer", "net", { host: "github.com" })) {
+		return true;
+	}
+	const ask = deps.permissionRequester;
+	if (!ask) return false;
+	const list = items.map((x) => `${x.id} ← ${x.source}`).join("\n");
+	const ans = await ask("plugin-installer", {
+		family: "net",
+		hosts: ["github.com"],
+		reason: `安装确认：将安装/更新以下插件（id ← source）：\n${list}\n拒绝或 120 秒未确认则不安装。`,
+	});
+	if (ans.ok && ans.remember && deps.permGrants) {
+		deps.permGrants.grant("plugin-installer", "net", {
+			hosts: ["github.com"],
+			reason: "插件安装/更新确认",
+			remember: true,
+		});
+		deps.onGrantsChanged?.();
+	}
+	return ans.ok === true;
+}
