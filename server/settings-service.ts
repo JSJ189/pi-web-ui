@@ -677,10 +677,10 @@ export class SettingsService {
 		// 统一工具开关 live 生效（ActiveSet 加减；失败静默，下次创建/reload 重放）。
 		// 必须在 this.push() 前生效，保证 promptSnapshot 收集到的是最新的活跃工具集与完整提示词！
 		if (toolGatingChanged) this.host.applyToolGating();
-		if (needsReload) await this.applyRuntime();
 		this.host.stateStore.saveSettings(this.host.clientId, this.settings);
 		this.push();
 		this.host.flushSnapshot();
+		if (needsReload) await this.applyRuntime();
 	}
 
 	/** Save the CURRENT settings as a named preset (overwrites if exists). */
