@@ -1719,6 +1719,19 @@ export class DshClientSession {
 	// -----------------------------------------------------------------------
 
 	async prompt(text: string, attachments?: PromptAttachment[], queue = false): Promise<void> {
+		const trimmedText = (text ?? "").trim();
+		const hasAttachments = Boolean(attachments && attachments.length > 0);
+		if (!trimmedText && !hasAttachments) {
+			this.emit({
+				type: "notice",
+				level: "warning",
+				text: "发送已忽略：提示词为空且未附带文件或上下文引用。",
+				textEn: "Prompt ignored: text is empty and no attachments were provided.",
+			});
+			this.flushSnapshot();
+			return;
+		}
+
 		// 斜杠命令拦截（内置 NATIVE + 插件 registerCommand）；带附件时不拦截。
 		const parsed = parseSlash(text);
 		if (parsed && !attachments?.length) {

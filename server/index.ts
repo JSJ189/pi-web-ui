@@ -2093,9 +2093,20 @@ wss.on("connection", (ws) => {
 			return;
 		}
 		switch (msg.type) {
-			case "prompt":
+			case "prompt": {
+				const hasAttach = Boolean(msg.attachments && msg.attachments.length > 0);
+				if (!msg.text?.trim() && !hasAttach) {
+					send({
+						type: "notice",
+						level: "warning",
+						text: "发送已忽略：提示词为空且未附带文件或上下文引用。",
+						textEn: "Prompt ignored: text is empty and no attachments were provided.",
+					});
+					break;
+				}
 				void cs.prompt(msg.text, msg.attachments, msg.queue);
 				break;
+			}
 			case "queue_remove":
 				cs.removeQueued(msg.kind, msg.text, msg.index);
 				break;
