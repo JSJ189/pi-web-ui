@@ -62,6 +62,8 @@ const ALL = [
 	"global-search-test",
 	"goal-prefs-test",
 	"goal-test",
+	// 目标模式 2.0「委托执行」（Plan A）：角色对话接线（拉起/左栏可见/清目标收回，零 token）。
+	"goal-delegated-test",
 	"left-panel-delete-test",
 	"legado-web-engine-test",
 	"legado-web-test",

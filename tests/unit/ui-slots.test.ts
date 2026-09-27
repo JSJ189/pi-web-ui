@@ -895,7 +895,9 @@ describe("面板 chrome 宿主条目（file.preview / goalbar / scm / terminal /
 			"host:goal-lock",
 			"host:goal-collapse",
 			"host:goal-model",
+			"host:goal-execmodel",
 			"host:goal-rounds",
+			"host:goal-openrole",
 			"host:goal-clear",
 		]);
 		expect(ids(slots["scm.toolbar"])).toEqual([

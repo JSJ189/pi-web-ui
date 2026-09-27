@@ -1350,6 +1350,12 @@ export function TopBar({
 		(id) => slotRank.get(id) ?? 999999,
 	);
 
+	/** 溢出菜单行首的图标字：只认「非拉丁字母」的（emoji / 符号）—— 拉丁词表名
+	 *  （如 "mic"）当图标画出来是乱码，直接当标签文字用。抽成函数是因为 select 行
+	 *  与扁平行两处都要判，且要拿到同一个字形去渲染成独立的图标格（见菜单里的
+	 *  「图标槽」CSS：图标独占一格，文字左缘才对得齐）。 */
+	const menuIcon = (it: UiSlotEntry): string | null => (it.icon && !/[a-z]/i.test(it.icon) ? it.icon : null);
+
 	// 顶栏按钮文字总开关（设置 → 界面布局 → 顶栏，默认开）：关掉后顶栏只剩图标
 	// （数字角标保留；溢出菜单里仍带文字；实现见 styles.css 的 .topbar.no-labels）。
 	const hideTopbarText = chat.settings?.uiLayout?.topbarText === false;
@@ -1438,11 +1444,11 @@ export function TopBar({
 							// kind="select" 在溢出菜单里同样落成下拉（label + select 一行）。
 							if (it.kind === "select" && it.options?.length) {
 								return (
-									<label key={it.id} className="plugin-topbar-overflow-select" title={it.hint ?? it.label}>
-										<span>
-											{it.icon && !/[a-z]/i.test(it.icon) ? `${it.icon} ` : ""}
-											{it.label}
-										</span>
+									<label key={it.id} className="plugin-topbar-overflow-select tb-row" title={it.hint ?? it.label}>
+										{/* 图标独占一格（.plugin-icon-glyph）；没有图标时由 CSS ::before 补同宽占位，
+									    文字左缘才能和带图标的行对齐（见 styles.css「菜单行的图标槽」）。 */}
+										{menuIcon(it) ? <span className="plugin-icon-glyph">{menuIcon(it)}</span> : null}
+										<span className="tb-row-text">{it.label}</span>
 										<select
 											aria-label={it.label}
 											value={it.options.some((o) => o.value === it.value) ? (it.value as string) : it.options[0]!.value}
@@ -1465,6 +1471,7 @@ export function TopBar({
 									key={it.id}
 									type="button"
 									role="menuitem"
+									className="tb-row"
 									title={it.hint ?? it.label}
 									onClick={() => {
 										setTopbarMenuOpen(false);
@@ -1472,8 +1479,8 @@ export function TopBar({
 										if (!dispatchHostOverflow(it)) onUiAction?.(it);
 									}}
 								>
-									{it.icon && !/[a-z]/i.test(it.icon) ? `${it.icon} ` : ""}
-									{it.label}
+									{menuIcon(it) ? <span className="plugin-icon-glyph">{menuIcon(it)}</span> : null}
+									<span className="tb-row-text">{it.label}</span>
 								</button>
 							);
 						})}

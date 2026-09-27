@@ -945,8 +945,17 @@ export function MessageList({
 				))}
 			</div>
 			{!stickBottom && (
-				<button type="button" className="scroll-bottom" onClick={scrollToBottom}>
-					<FiArrowDown /> {t("backToBottom")}
+				<button
+					type="button"
+					className="scroll-bottom"
+					title={t("backToBottom")}
+					aria-label={t("backToBottom")}
+					onClick={scrollToBottom}
+				>
+					<FiArrowDown />
+					{/* 文字包 span：窄屏（≤380px）只藏它退成纯图标（.scroll-bottom-label），
+					    藏的是标签而不是整块，按钮本体的点击区与 title/aria 都在。 */}
+					<span className="scroll-bottom-label">{t("backToBottom")}</span>
 				</button>
 			)}
 			<SearchBar

@@ -1681,15 +1681,19 @@ export function App() {
 								<div className="boot-wait">{chat.ready ? t("loadingSession") : t("connectingServer")}</div>
 							)}
 
+							{/* 目标条宿主槽：只包 GoalBar。折叠态时槽高 0（药丸脱离文档流），
+							    展开态就是原来那一条（.goalbar 自带 margin）。 */}
 							{chat.settings?.goalModeEnabled !== false && (
-								<GoalBar
-									goal={chat.goal}
-									models={chat.models}
-									modelsLoading={chat.modelsLoading}
-									activeConversationId={chat.activeConversationId}
-									uiGoalbarActions={uiGoalbarActions}
-									onUiAction={onUiAction}
-								/>
+								<div className="goalbar-slot">
+									<GoalBar
+										goal={chat.goal}
+										models={chat.models}
+										modelsLoading={chat.modelsLoading}
+										activeConversationId={chat.activeConversationId}
+										uiGoalbarActions={uiGoalbarActions}
+										onUiAction={onUiAction}
+									/>
+								</div>
 							)}
 							{/* 扩展问卷：非模态内联面板，插在输入框上方，对话内容保持可见 */}
 							{/* 通用右键菜单（contextmenu.* 槽位）：各处的 onContextMenu 打开它。 */}

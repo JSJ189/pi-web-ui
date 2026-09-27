@@ -1,5 +1,5 @@
 import { Fragment, memo, useEffect, useState, type ReactNode } from "react";
-import { FiTarget, FiLock, FiUnlock, FiX, FiChevronUp } from "react-icons/fi";
+import { FiTarget, FiLock, FiUnlock, FiX, FiChevronUp, FiArrowUpRight, FiSquare } from "react-icons/fi";
 import type { GoalStatus, ModelInfo } from "../types";
 import { useT, useI18n } from "../i18n";
 import { appSend, useIsDsh } from "../app-globals";
@@ -9,7 +9,14 @@ import { renderMergedToolbar } from "../slot-toolbar";
 
 /** Messages this component sends. */
 export type GoalBarMsg =
-	| { type: "set_goal"; goal: string; reviewModel?: string; maxRounds: number; locked: boolean }
+	| {
+			type: "set_goal";
+			goal: string;
+			reviewModel?: string;
+			maxRounds: number;
+			locked: boolean;
+			execModel?: string;
+	  }
 	| { type: "clear_goal" }
 	| { type: "start_goal_wizard"; text: string; wizardModel?: string; maxRounds?: number; locked?: boolean }
 	| {
@@ -17,6 +24,7 @@ export type GoalBarMsg =
 			reviewModel?: string;
 			maxRounds?: number;
 			locked?: boolean;
+			execModel?: string;
 	  }
 	| { type: "list_models" };
 
@@ -47,7 +55,7 @@ export const GoalBar = memo(function GoalBar({
 	const { locale } = useI18n();
 	const goalDetail = locale !== "zh" && goal.statusEn ? goal.statusEn : goal.status || "";
 	const wizardDetail = locale !== "zh" && goal.wizard?.statusEn ? goal.wizard.statusEn : goal.wizard?.status || "";
-	// DSH：无独立审查模型 —— 隐藏 reviewModel 下拉（轮次上限仍然有效）。
+	// DSH：不接目标模式 2.0 的执行对话（隐藏执行模型下拉；轮次上限仍然有效）。
 	// engine 走全局（web/src/app-globals.ts），不再从 App 一路传下来。
 	const isDsh = useIsDsh();
 	// Goals belong to the conversation that created them. The server keeps the
@@ -55,13 +63,22 @@ export const GoalBar = memo(function GoalBar({
 	// goal, but never show another conversation's goal as active.
 	const goalBelongsToActiveConversation = !goal.conversationId || goal.conversationId === activeConversationId;
 	const active = goal.goal !== null && goalBelongsToActiveConversation;
+	// 目标模式 2.0：委托执行者的对话 id（有它才能「一键打开执行对话」）。
+	const execRoleConvId = goalBelongsToActiveConversation ? goal.roles?.executor?.convId : undefined;
+	// 目标模式 2.0 加固：pi 引擎的新后端在**任何** goal_status 里都带 execModel
+	// （makeGoalStatus 一定赋值）；旧后端（进程没重启）把未知字段丢掉，于是这里是
+	// undefined。不静默：「新界面 + 旧后端」这种混合态必须当场说出来。
+	const staleBackend = !isDsh && goal.execModel === undefined;
 
 	// Draft fields (only meaningful while editing a new goal).
 	const [text, setText] = useState("");
 	const [reviewModel, setReviewModel] = useState<string>(goal.reviewModel ?? "");
 	const [maxRounds, setMaxRounds] = useState(goal.maxRounds);
 	const [locked, setLocked] = useState(goal.locked);
+	// 目标模式 2.0：执行者模型（空 = 跟随主对话）。
+	const [execModel, setExecModel] = useState<string>(goal.execModel ?? "");
 	const [modelOpen, setModelOpen] = useState(false);
+	const [execModelOpen, setExecModelOpen] = useState(false);
 	const [reqLoading, setReqLoading] = useState(false);
 	// Collapsed by default: idle shows only a compact pill so the bar never
 	// occupies vertical space until the user actually wants to set a goal.
@@ -77,8 +94,9 @@ export const GoalBar = memo(function GoalBar({
 		setReviewModel(goal.reviewModel ?? "");
 		setMaxRounds(goal.maxRounds || 0);
 		setLocked(goal.locked);
+		setExecModel(goal.execModel ?? "");
 		// eslint-disable-next-line react-hooks/exhaustive-deps
-	}, [goal.goal, goal.reviewModel, goal.maxRounds, goal.locked]);
+	}, [goal.goal, goal.reviewModel, goal.maxRounds, goal.locked, goal.execModel]);
 
 	// Lazily fetch the model list when the review-model dropdown opens.
 	useEffect(() => {
@@ -95,6 +113,10 @@ export const GoalBar = memo(function GoalBar({
 		if (!reviewModel) return t("goalBarUseMainModel");
 		return models.find((m) => m.id === reviewModel)?.name ?? reviewModel;
 	};
+	const execModelName = (): string => {
+		if (!execModel) return t("goalBarUseMainModel");
+		return models.find((m) => m.id === execModel)?.name ?? execModel;
+	};
 
 	const set = () => {
 		const trimmed = text.trim();
@@ -105,6 +127,7 @@ export const GoalBar = memo(function GoalBar({
 			...(reviewModel ? { reviewModel } : {}),
 			maxRounds,
 			locked,
+			...(execModel ? { execModel } : {}),
 		});
 		setText("");
 		setCollapsed(false);
@@ -137,7 +160,9 @@ export const GoalBar = memo(function GoalBar({
 		"host:goal-lock",
 		"host:goal-collapse",
 		"host:goal-model",
+		"host:goal-execmodel",
 		"host:goal-rounds",
+		"host:goal-openrole",
 		"host:goal-clear",
 	];
 	const allGoalEntries: UiSlotEntry[] =
@@ -201,8 +226,11 @@ export const GoalBar = memo(function GoalBar({
 		) : (
 			<Dropdown
 				trigger={
-					<span className="goalbar-opt">
-						{t("goalBarReviewModel")}: <b>{reviewModelName()}</b>
+					// 标签与值拆成两层：窄屏并排两个下拉时，标签钉死不缩、值省略号收着
+					// （整块挤成一个空盒子 = 模型选谁完全看不见）。title 给全名。
+					<span className="goalbar-opt" title={`${t("goalBarReviewModel")}: ${reviewModelName()}`}>
+						<span className="goalbar-opt-label">{`${t("goalBarReviewModel")}:`}</span>
+						<b>{reviewModelName()}</b>
 					</span>
 				}
 				open={modelOpen}
@@ -273,6 +301,56 @@ export const GoalBar = memo(function GoalBar({
 				/>
 			</label>
 		),
+		// 执行者模型（空 = 跟随主对话）。
+		"host:goal-execmodel": isDsh ? null : (
+			<Dropdown
+				trigger={
+					<span
+						className="goalbar-opt"
+						title={`${t("goalBarExecModel")}: ${execModelName()} · ${t("goalBarExecModelTip")}`}
+					>
+						<span className="goalbar-opt-label">{`${t("goalBarExecModel")}:`}</span>
+						<b>{execModelName()}</b>
+					</span>
+				}
+				open={execModelOpen}
+				onOpenChange={setExecModelOpen}
+				direction="up"
+			>
+				<div className="dd-header">{t("goalBarExecModel")}</div>
+				{(reqLoading || modelsLoading) && <div className="dd-loading">{t("loading")}</div>}
+				{models.length === 0 && !reqLoading && !modelsLoading && <div className="dd-loading">{t("noModels")}</div>}
+				<DropdownItem
+					active={execModel === ""}
+					onClick={() => {
+						setExecModel("");
+						setExecModelOpen(false);
+						appSend({ type: "set_goal_prefs", execModel: "" });
+					}}
+				>
+					{t("goalBarUseMainModel")}
+				</DropdownItem>
+				{models.map((m) => (
+					<DropdownItem
+						key={m.id}
+						active={execModel === m.id}
+						onClick={() => {
+							setExecModel(m.id);
+							setExecModelOpen(false);
+							appSend({ type: "set_goal_prefs", execModel: m.id });
+						}}
+					>
+						<span className="dd-model-cell">
+							<span className="dd-model-name">{m.name}</span>
+							<span className="dd-model-meta">
+								<span className="dd-model-provider">{m.provider}</span>
+								<span className="dd-model-id">{m.id.split("/").slice(1).join("/")}</span>
+							</span>
+						</span>
+					</DropdownItem>
+				))}
+			</Dropdown>
+		),
 	};
 	const wizardActive = (goal.wizard?.active ?? false) && goalBelongsToActiveConversation;
 
@@ -341,23 +419,34 @@ export const GoalBar = memo(function GoalBar({
 						</span>
 					)}
 					<span className="goalbar-detail">{goalDetail}</span>
+					{staleBackend && <span className="goalbar-stale">{t("goalBarStaleBackend")}</span>}
 					{renderMergedToolbar(
-						goalZone(["host:goal-clear"]),
+						goalZone(["host:goal-openrole", "host:goal-clear"]),
 						{
 							...goalHostNodes,
+							// 目标模式 2.0：委托执行下把「执行对话」一键打开（左栏同样可点）。
+							"host:goal-openrole": execRoleConvId ? (
+								<button
+									type="button"
+									className="goalbar-icon-btn"
+									title={t("goalBarOpenExecTip")}
+									onClick={() => appSend({ type: "switch_conversation", id: execRoleConvId })}
+								>
+									<FiArrowUpRight />
+								</button>
+							) : null,
 							"host:goal-clear": (
 								<button
 									type="button"
-									className="goalbar-x"
-									title={t("goalBarClear")}
-									disabled={goal.reviewing}
+									className={`goalbar-x${goal.reviewing ? " stopping" : ""}`}
+									title={goal.reviewing ? t("goalBarStop") : t("goalBarClear")}
 									onClick={() => {
 										if (goal.goal) setText(goal.goal);
 										appSend({ type: "clear_goal" });
 										setCollapsed(false);
 									}}
 								>
-									<FiX />
+									{goal.reviewing ? <FiSquare /> : <FiX />}
 								</button>
 							),
 						},
@@ -368,13 +457,18 @@ export const GoalBar = memo(function GoalBar({
 		);
 	}
 
-	// Inactive, collapsed — a single compact pill aligned LEFT (not a centered
-	// full-width strip). A discreet 🎯 chip; click to open the editor.
+	// Inactive, collapsed — a single compact pill floating in the CENTER of the
+	// chat column (not a full-width panel). A discreet 🎯 chip; click to open the editor.
 	if (collapsed) {
 		// pill 藏掉且无插件条目时整条不占位（布局页「恢复」可找回）。
 		const pillBar = renderMergedToolbar(goalZone(["host:goal-pill"]), goalHostNodes, onUiAction);
 		if (!pillBar) return null;
-		return <div className="goalbar goalbar-collapsed">{pillBar}</div>;
+		// 折叠态**刻意不带 `.goalbar` 类**：那一套是「整条面板」的皮（边框/底色/
+		// 圆角/内边距），主题还会用 `.goalbar { border-top: … !important }` 画一条
+		// 通栏细线 —— 收起时它就是一条横跨整列的带子，正好横在最后一条消息上把它
+		// 切断（用户实报「折叠时一整行遮挡底部消息」）。折叠态只是消息区与输入框
+		// 之间的一枚小药丸：自带一个 flex 行、整行水平居中、不多占高度。
+		return <div className="goalbar-collapsed">{pillBar}</div>;
 	}
 
 	return (
@@ -387,6 +481,7 @@ export const GoalBar = memo(function GoalBar({
 					className="goalbar-input"
 					value={text}
 					placeholder={t("goalBarPlaceholder")}
+					title={t("goalBarPlaceholder")}
 					onChange={(e) => setText(e.target.value)}
 					onKeyDown={(e) => {
 						if (e.key === "Enter") set();
@@ -399,13 +494,14 @@ export const GoalBar = memo(function GoalBar({
 				)}
 			</div>
 			<div className="goalbar-opts">
-				{goalZone(["host:goal-model", "host:goal-rounds"])
+				{goalZone(["host:goal-mode", "host:goal-model", "host:goal-execmodel", "host:goal-rounds"])
 					.filter((e) => e.source === "host")
 					.map((e) => (
 						<Fragment key={e.id}>{goalHostNodes[e.id]}</Fragment>
 					))}
 
 				<span className="goalbar-lock-hint">{locked ? t("goalBarLocked") : t("goalBarUnlocked")}</span>
+				{staleBackend && <span className="goalbar-stale">{t("goalBarStaleBackend")}</span>}
 			</div>
 		</div>
 	);

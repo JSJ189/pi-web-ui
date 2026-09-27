@@ -39,7 +39,8 @@ pi-web-ui/
 ├── dev/                        # 本地开发辅助（notice/search 预览等，不入 npm 包）
 ├── Dockerfile / docker-compose.yml
 ├── docs/                       # 详细文档（architecture-core / architecture-attachments / architecture-terminal /
-│                               #   architecture-plugins / architecture-system-prompt / development / release /
+│                               #   architecture-plugins / architecture-system-prompt / goal-conversation-design /
+│                               #   development / release /
 │                               #   deployment / dsh-engine / antigravity-proxy / env-vars ＋ 本文件）
 └── tsconfig.server.json / tsconfig.extensions.json / tsconfig.tests.json / web/tsconfig.json
 ```
@@ -245,57 +246,57 @@ web/src/
 
 ## web/src/components/
 
-| 组件 | 职责 |
-| ---- | ---- |
-| `FilePreview.tsx` | 文件预览弹窗：行号、点选/拖拽/Shift 选区、添加到对话；Markdown 预览可切换原文；可编辑保存 |
-| `PluginFilePreview.tsx` | 插件提供的文件预览器宿主 |
-| `PresentedFiles.tsx` | `present_files` 工具卡片正文：图片/视频/音频内联显示/播放，文本开头摘录 + 「预览」按钮；每行「预览/本地打开/在文件夹中显示/下载/复制路径」；`focus` 条目按偏好自动弹预览窗（三道闸） |
-| `ToolInfoDialog.tsx` | 「工具详细信息」弹窗（工具卡右键）：展示工具**定义**（说明/参数 schema 表格+原始 JSON），点开现取不进快照；portal 到 body（消息流祖先有 overflow/transform） |
-| `ToolApprovalDialog.tsx` | 审批弹窗（ask 规则命中时的人机协同拦截 + 改写执行） |
-| `LeftPanel.tsx` | 左栏：最近项目、运行的对话、历史对话（含删除） |
-| `RightPanel.tsx` | 文件树浏览（list_files），文件名点击→预览，🔗 引用路径（仅路径，无内容注入）/👁 预览/⬇ 下载等按钮；服务端原生递归 watcher |
-| `ChatInput.tsx` | 输入框 + 附件 chips（引用/行范围/图片/上传/网页/对话多彩）；全窗口拖放目标；followUp 排队/steer 插队；斜杠命令选择器 |
-| `Message.tsx` / `MessageList.tsx` | 消息渲染（附件卡片、流式光标、tool 结果关联）；编辑重问保留原附件；技能卡片折叠；惰性窗口化；问题导航双通道；流式 StreamMarkdown |
-| `StreamMarkdown.tsx` | 流式 Markdown 渲染组件（配 stream-markdown.ts） |
-| `ToolCallBlock.tsx` / `ThinkingBlock.tsx` / `BashBlock` | 工具调用卡片（卡头关键参数提示 `.toolcall-path`/`.toolcall-timeout`，脏参数静默不显示）、思考块、bash 输出 |
-| `TerminalPanel.tsx` / `TermXterm.tsx` | 终端视图 + xterm 实例桥接 |
-| `SCMPanel.tsx` | 源代码管理（Git）视图：status/branch/diff；提交/推送/拉取/切换分支；左栏宽度可拖分隔条调、双击复位、宽度存 localStorage（#139） |
-| `BrowserControl.tsx` | 顶栏「浏览器操作」入口 + 状态面板；已授权页面一键「引用到对话」（单页面时按钮直接变页面标题） |
-| `TopBar.tsx` / `FooterBar.tsx` | 顶栏（模型/思考强度/后台任务/声音/新对话/视图切换）、底栏（上下文/成本/工作目录）；单一扁平流，slot 顺序直排 + `hostNodes` |
-| `Dialog.tsx` | 扩展 `ui.select/confirm/input` → 浏览器弹窗（正文/选项走 `Markdown(rawHtml)` 富渲染） |
-| `Modal.tsx` | 通用弹窗壳 |
-| `DshQuestionDialog.tsx` | 模型提问对话框（`question_pending`，DSH 经 goal-rpc / pi 经 `ask_user_question` 共用）：单选/多选/自定义文本 + 选项 `preview` 富文本；挂 `UiState.pendingQuestion`，刷新后恢复 |
-| `DshPresetBar.tsx` | DSH Agent 预设条（模式切换 + 首轮锁定） |
-| `DshPermissionBar.tsx` | DSH 权限提示条 |
-| `ModelConfigModal.tsx` / `PiSetupModal.tsx` | models.json 管理 / 首次配置引导 |
-| `ProviderOAuthControls.tsx` | 服务商 OAuth 授权控件 |
-| `SettingsModal.tsx` | 设置面板（侧边栏分页：提示词/工具/消息显示/技能/插件/界面插件/目标审查/视觉桥/预设/子代理模板；DSH 另有问卷页、无工具页） |
-| `PluginSettingsForm.tsx` | 插件声明式设置表单（schema 驱动） |
-| `PromptTemplates.tsx` | 提示词模板管理 |
-| `GoalBar.tsx` | 输入框上方目标条：设目标/清除/AI 提炼/轮数下拉 |
-| `PlanBoard.tsx` | 结构化任务计划看板（配 plan-manager.ts） |
-| `BgTasksModal.tsx` | 后台任务弹窗：AI 启动的监听端口进程列表 |
-| `SchedulerPanel.tsx` | 定时任务面板（配 scheduler-tasks.ts） |
-| `ModelThinking.tsx` | 模型 + 思考强度下拉（按服务商筛选 + 顶部搜索） |
-| `GlobalSearchModal.tsx` | 全局搜索弹窗（Ctrl+K）：搜历史对话/最近项目/工作区文件名 |
-| `ProjectPicker.tsx` | 项目选择器 |
-| `LocaleModal.tsx` | 语言切换弹窗 |
-| `PluginView.tsx` | 插件视图宿主：薄 React 壳 + 动态 import client bundle |
-| `PluginViewFallback.tsx` | 插件视图加载失败兜底 |
-| `PluginFenceBlock.tsx` | fenced-code 渲染插件块（配 plugin-fence.ts） |
-| `PluginMenu.tsx` | 插件菜单面板（浮层，走 useFloatingPanel） |
-| `PluginModal.tsx` | 插件弹窗宿主（host.openModal） |
-| `SlotTabs.tsx` | slot 驱动的 tab 容器（`rightpanel.tabs` 与设置面板共用）：除当前选中项一律不挂载，切走即 cleanup；选中态存 localStorage |
-| `SlotErrorBoundary.tsx` | slot 内容错误边界 |
-| `ContextMenu.tsx` | 通用右键菜单渲染层（`contextmenu.*` 槽位）：portal + fixed + 先渲染再实测尺寸钳制；只渲染，点条目交回宿主 `onAction` |
-| `PluginPage.tsx` | 插件自定义设置页宿主（`settings.pages` 槽位）：随选中项挂载/卸载；容器子节点只由插件写 |
-| `CollapsedMessage.tsx` / `LazyMount.tsx` | 消息折叠摘要行 / 消息级惰性挂载包装 |
-| `SearchBar.tsx` | 会话内搜索栏（Ctrl+F，CSS Custom Highlight API 高亮） |
-| `HoverDetail.tsx` | 悬浮详情（? 提示内容体，配 HintTip 定位） |
-| `RollbackDialog.tsx` | 工作区回滚确认（配 workspace-snapshot.ts） |
-| `SaveImageDialog.tsx` | 图片保存对话框 |
-| `FileTransferDialog.tsx` | 文件传输对话框（配 file-transfer.ts） |
-| `BannerContainer.tsx` | 公告条容器（配 banner-notice.ts） |
-| `NotifyToggle.tsx` | 声音/通知开关（含隐藏的通知诊断面板 `SHOW_NOTIFY_TEST_PANEL`） |
-| `Markdown.tsx` / `Dropdown.tsx` / `copy-button.tsx` / `HintTip.tsx` / `SoundSettings.tsx` | 通用件（HintTip：`?` 悬浮提示 portal 顶层渲染） |
-| `mermaid.ts` / `scroll-classify.ts` | 非组件辅助（mermaid 渲染 / 滚动分类，与组件同目录存放） |
+| 组件                                                                                      | 职责                                                                                                                                                                                 |
+| ----------------------------------------------------------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------ |
+| `FilePreview.tsx`                                                                         | 文件预览弹窗：行号、点选/拖拽/Shift 选区、添加到对话；Markdown 预览可切换原文；可编辑保存                                                                                            |
+| `PluginFilePreview.tsx`                                                                   | 插件提供的文件预览器宿主                                                                                                                                                             |
+| `PresentedFiles.tsx`                                                                      | `present_files` 工具卡片正文：图片/视频/音频内联显示/播放，文本开头摘录 + 「预览」按钮；每行「预览/本地打开/在文件夹中显示/下载/复制路径」；`focus` 条目按偏好自动弹预览窗（三道闸） |
+| `ToolInfoDialog.tsx`                                                                      | 「工具详细信息」弹窗（工具卡右键）：展示工具**定义**（说明/参数 schema 表格+原始 JSON），点开现取不进快照；portal 到 body（消息流祖先有 overflow/transform）                         |
+| `ToolApprovalDialog.tsx`                                                                  | 审批弹窗（ask 规则命中时的人机协同拦截 + 改写执行）                                                                                                                                  |
+| `LeftPanel.tsx`                                                                           | 左栏：最近项目、运行的对话、历史对话（含删除）                                                                                                                                       |
+| `RightPanel.tsx`                                                                          | 文件树浏览（list_files），文件名点击→预览，🔗 引用路径（仅路径，无内容注入）/👁 预览/⬇ 下载等按钮；服务端原生递归 watcher                                                             |
+| `ChatInput.tsx`                                                                           | 输入框 + 附件 chips（引用/行范围/图片/上传/网页/对话多彩）；全窗口拖放目标；followUp 排队/steer 插队；斜杠命令选择器                                                                 |
+| `Message.tsx` / `MessageList.tsx`                                                         | 消息渲染（附件卡片、流式光标、tool 结果关联）；编辑重问保留原附件；技能卡片折叠；惰性窗口化；问题导航双通道；流式 StreamMarkdown                                                     |
+| `StreamMarkdown.tsx`                                                                      | 流式 Markdown 渲染组件（配 stream-markdown.ts）                                                                                                                                      |
+| `ToolCallBlock.tsx` / `ThinkingBlock.tsx` / `BashBlock`                                   | 工具调用卡片（卡头关键参数提示 `.toolcall-path`/`.toolcall-timeout`，脏参数静默不显示）、思考块、bash 输出                                                                           |
+| `TerminalPanel.tsx` / `TermXterm.tsx`                                                     | 终端视图 + xterm 实例桥接                                                                                                                                                            |
+| `SCMPanel.tsx`                                                                            | 源代码管理（Git）视图：status/branch/diff；提交/推送/拉取/切换分支；左栏宽度可拖分隔条调、双击复位、宽度存 localStorage（#139）                                                      |
+| `BrowserControl.tsx`                                                                      | 顶栏「浏览器操作」入口 + 状态面板；已授权页面一键「引用到对话」（单页面时按钮直接变页面标题）                                                                                        |
+| `TopBar.tsx` / `FooterBar.tsx`                                                            | 顶栏（模型/思考强度/后台任务/声音/新对话/视图切换）、底栏（上下文/成本/工作目录）；单一扁平流，slot 顺序直排 + `hostNodes`                                                           |
+| `Dialog.tsx`                                                                              | 扩展 `ui.select/confirm/input` → 浏览器弹窗（正文/选项走 `Markdown(rawHtml)` 富渲染）                                                                                                |
+| `Modal.tsx`                                                                               | 通用弹窗壳                                                                                                                                                                           |
+| `DshQuestionDialog.tsx`                                                                   | 模型提问对话框（`question_pending`，DSH 经 goal-rpc / pi 经 `ask_user_question` 共用）：单选/多选/自定义文本 + 选项 `preview` 富文本；挂 `UiState.pendingQuestion`，刷新后恢复       |
+| `DshPresetBar.tsx`                                                                        | DSH Agent 预设条（模式切换 + 首轮锁定）                                                                                                                                              |
+| `DshPermissionBar.tsx`                                                                    | DSH 权限提示条                                                                                                                                                                       |
+| `ModelConfigModal.tsx` / `PiSetupModal.tsx`                                               | models.json 管理 / 首次配置引导                                                                                                                                                      |
+| `ProviderOAuthControls.tsx`                                                               | 服务商 OAuth 授权控件                                                                                                                                                                |
+| `SettingsModal.tsx`                                                                       | 设置面板（侧边栏分页：提示词/工具/消息显示/技能/插件/界面插件/目标审查/视觉桥/预设/子代理模板；DSH 另有问卷页、无工具页）                                                            |
+| `PluginSettingsForm.tsx`                                                                  | 插件声明式设置表单（schema 驱动）                                                                                                                                                    |
+| `PromptTemplates.tsx`                                                                     | 提示词模板管理                                                                                                                                                                       |
+| `GoalBar.tsx`                                                                             | 输入框上方目标条：设目标/清除/AI 提炼/轮数下拉                                                                                                                                       |
+| `PlanBoard.tsx`                                                                           | 结构化任务计划看板（配 plan-manager.ts）                                                                                                                                             |
+| `BgTasksModal.tsx`                                                                        | 后台任务弹窗：AI 启动的监听端口进程列表                                                                                                                                              |
+| `SchedulerPanel.tsx`                                                                      | 定时任务面板（配 scheduler-tasks.ts）                                                                                                                                                |
+| `ModelThinking.tsx`                                                                       | 模型 + 思考强度下拉（按服务商筛选 + 顶部搜索）                                                                                                                                       |
+| `GlobalSearchModal.tsx`                                                                   | 全局搜索弹窗（Ctrl+K）：搜历史对话/最近项目/工作区文件名                                                                                                                             |
+| `ProjectPicker.tsx`                                                                       | 项目选择器                                                                                                                                                                           |
+| `LocaleModal.tsx`                                                                         | 语言切换弹窗                                                                                                                                                                         |
+| `PluginView.tsx`                                                                          | 插件视图宿主：薄 React 壳 + 动态 import client bundle                                                                                                                                |
+| `PluginViewFallback.tsx`                                                                  | 插件视图加载失败兜底                                                                                                                                                                 |
+| `PluginFenceBlock.tsx`                                                                    | fenced-code 渲染插件块（配 plugin-fence.ts）                                                                                                                                         |
+| `PluginMenu.tsx`                                                                          | 插件菜单面板（浮层，走 useFloatingPanel）                                                                                                                                            |
+| `PluginModal.tsx`                                                                         | 插件弹窗宿主（host.openModal）                                                                                                                                                       |
+| `SlotTabs.tsx`                                                                            | slot 驱动的 tab 容器（`rightpanel.tabs` 与设置面板共用）：除当前选中项一律不挂载，切走即 cleanup；选中态存 localStorage                                                              |
+| `SlotErrorBoundary.tsx`                                                                   | slot 内容错误边界                                                                                                                                                                    |
+| `ContextMenu.tsx`                                                                         | 通用右键菜单渲染层（`contextmenu.*` 槽位）：portal + fixed + 先渲染再实测尺寸钳制；只渲染，点条目交回宿主 `onAction`                                                                 |
+| `PluginPage.tsx`                                                                          | 插件自定义设置页宿主（`settings.pages` 槽位）：随选中项挂载/卸载；容器子节点只由插件写                                                                                               |
+| `CollapsedMessage.tsx` / `LazyMount.tsx`                                                  | 消息折叠摘要行 / 消息级惰性挂载包装                                                                                                                                                  |
+| `SearchBar.tsx`                                                                           | 会话内搜索栏（Ctrl+F，CSS Custom Highlight API 高亮）                                                                                                                                |
+| `HoverDetail.tsx`                                                                         | 悬浮详情（? 提示内容体，配 HintTip 定位）                                                                                                                                            |
+| `RollbackDialog.tsx`                                                                      | 工作区回滚确认（配 workspace-snapshot.ts）                                                                                                                                           |
+| `SaveImageDialog.tsx`                                                                     | 图片保存对话框                                                                                                                                                                       |
+| `FileTransferDialog.tsx`                                                                  | 文件传输对话框（配 file-transfer.ts）                                                                                                                                                |
+| `BannerContainer.tsx`                                                                     | 公告条容器（配 banner-notice.ts）                                                                                                                                                    |
+| `NotifyToggle.tsx`                                                                        | 声音/通知开关（含隐藏的通知诊断面板 `SHOW_NOTIFY_TEST_PANEL`）                                                                                                                       |
+| `Markdown.tsx` / `Dropdown.tsx` / `copy-button.tsx` / `HintTip.tsx` / `SoundSettings.tsx` | 通用件（HintTip：`?` 悬浮提示 portal 顶层渲染）                                                                                                                                      |
+| `mermaid.ts` / `scroll-classify.ts`                                                       | 非组件辅助（mermaid 渲染 / 滚动分类，与组件同目录存放）                                                                                                                              |

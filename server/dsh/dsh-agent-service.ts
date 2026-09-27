@@ -3546,6 +3546,8 @@ export class DshClientSession {
 			reviewModel?: string;
 			maxRounds?: number;
 			locked?: boolean;
+			/** 目标模式 2.0 的委托执行仅 pi 引擎支持，DSH 忽略这个字段。 */
+			execModel?: string;
 		},
 	): Promise<void> {
 		if (goal.trim() === "") {
@@ -3799,7 +3801,13 @@ export class DshClientSession {
 		return "";
 	}
 
-	async setGoalPrefs(opts?: { reviewModel?: string; maxRounds?: number; locked?: boolean }): Promise<void> {
+	async setGoalPrefs(opts?: {
+		reviewModel?: string;
+		maxRounds?: number;
+		locked?: boolean;
+		/** 目标模式 2.0 的委托执行仅 pi 引擎支持，DSH 忽略（GoalBar 对 DSH 隐藏该控件）。 */
+		execModel?: string;
+	}): Promise<void> {
 		const g = this.conv.goal;
 		if (opts?.reviewModel !== undefined) g.reviewModel = opts.reviewModel;
 		if (opts?.maxRounds !== undefined) g.maxRounds = opts.maxRounds;

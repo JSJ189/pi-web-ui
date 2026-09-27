@@ -124,6 +124,9 @@ export function PlanBoard({ plan }: PlanBoardProps) {
 				/* 左右内缩与宽度交给 .plan-board（同 .goalbar 的列 token），
 				   别在这里写固定 margin —— 固定值在宽屏聊天列/窄屏下都比对话列宽一截。 */
 				padding: "10px 14px",
+				/* 列向 flex 子项默认 min-width:auto，长英文单词（无空格）会把看板撑破容器。 */
+				minWidth: 0,
+				maxWidth: "100%",
 				borderRadius: 8,
 				backgroundColor: "var(--bg-elev, #18202f)",
 				border: "1px solid var(--border-subtle, rgba(255, 255, 255, 0.1))",
@@ -131,57 +134,28 @@ export function PlanBoard({ plan }: PlanBoardProps) {
 				fontSize: 13,
 			}}
 		>
-			{/* 顶部概要栏 */}
-			<div
-				style={{
-					display: "flex",
-					justifyContent: "space-between",
-					alignItems: "center",
-					cursor: "pointer",
-					userSelect: "none",
-				}}
-				onClick={() => setExpanded(!expanded)}
-			>
-				<div style={{ display: "flex", alignItems: "center", gap: 8, flex: 1, minWidth: 0 }}>
-					<FiList style={{ color: "var(--accent, #38bdf8)", flexShrink: 0 }} />
-					<span style={{ fontWeight: 600, color: "var(--text, #f1f5f9)" }}>{t("planBoardTitle")}</span>
-					<span style={{ fontSize: 12, color: "var(--text-dim, #9aa1b4)", marginLeft: 4 }}>
+			{/* 顶部概要栏。排版全在 styles.css（.plan-board-head 系列）：窄屏下
+			    标题/计数钉死不收缩、当前步骤 chip 放不下就整块换行，避免 CJK 竖排。 */}
+			<div className="plan-board-head" onClick={() => setExpanded(!expanded)}>
+				<div className="plan-board-head-main">
+					<FiList className="plan-board-icon" />
+					<span className="plan-board-title">{t("planBoardTitle")}</span>
+					<span className="plan-board-count">
 						{doneCount}/{totalCount} ({percent}%)
 					</span>
 					{/* 紧凑模式下显示当前进行中步骤 */}
 					{!expanded && activeStep && (
-						<span
-							style={{
-								marginLeft: 8,
-								fontSize: 12,
-								padding: "2px 8px",
-								borderRadius: 4,
-								backgroundColor: "rgba(56, 189, 248, 0.12)",
-								color: "var(--accent, #38bdf8)",
-								whiteSpace: "nowrap",
-								overflow: "hidden",
-								textOverflow: "ellipsis",
-								maxWidth: 260,
-							}}
-						>
+						<span className="plan-board-active" title={activeStep.title}>
 							{activeStep.title}
 						</span>
 					)}
 				</div>
 
-				<div style={{ display: "flex", alignItems: "center", gap: 8 }}>
+				<div className="plan-board-actions">
 					<button
 						type="button"
-						className="btn-icon"
+						className="plan-board-iconbtn"
 						title={t("clear")}
-						style={{
-							background: "none",
-							border: "none",
-							color: "var(--text-dim, #9aa1b4)",
-							cursor: "pointer",
-							padding: 4,
-							display: "inline-flex",
-						}}
 						onClick={(e) => {
 							e.stopPropagation();
 							handleClearPlan();
@@ -191,15 +165,8 @@ export function PlanBoard({ plan }: PlanBoardProps) {
 					</button>
 					<button
 						type="button"
-						className="btn-icon"
-						style={{
-							background: "none",
-							border: "none",
-							color: "var(--text-dim, #9aa1b4)",
-							cursor: "pointer",
-							padding: 4,
-							display: "inline-flex",
-						}}
+						className="plan-board-iconbtn"
+						title={expanded ? t("collapseSection") : t("expandSection")}
 					>
 						{expanded ? <FiChevronUp /> : <FiChevronDown />}
 					</button>
@@ -226,9 +193,11 @@ export function PlanBoard({ plan }: PlanBoardProps) {
 				/>
 			</div>
 
-			{/* 展开的完整步骤清单 */}
+			{/* 展开的完整步骤清单：限高 + 内部滚动（.plan-board-steps）。
+			    条目一多就把整条 .main 撑得比视口高，输入框、顶栏乃至状态栏跟着
+			    整页滚走 —— 这里自己滚，看板高度封顶在视口比例内。 */}
 			{expanded && (
-				<div style={{ marginTop: 10, display: "flex", flexDirection: "column", gap: 8 }}>
+				<div className="plan-board-steps" style={{ marginTop: 10, display: "flex", flexDirection: "column", gap: 8 }}>
 					{steps.map((step, idx) => {
 						const isCurrent = step.id === plan.activeStepId || step.status === "in_progress";
 						return (
@@ -238,14 +207,18 @@ export function PlanBoard({ plan }: PlanBoardProps) {
 									display: "flex",
 									alignItems: "flex-start",
 									justifyContent: "space-between",
+									/* 窄屏时状态徽标换行到下一行，别和标题抢最后几个像素。 */
+									flexWrap: "wrap",
+									rowGap: 4,
+									minWidth: 0,
 									padding: "6px 10px",
 									borderRadius: 6,
 									backgroundColor: isCurrent ? "rgba(56, 189, 248, 0.08)" : "var(--bg-elev2, rgba(0, 0, 0, 0.2))",
 									border: isCurrent ? "1px solid rgba(56, 189, 248, 0.25)" : "1px solid transparent",
 								}}
 							>
-								<div style={{ flex: 1, minWidth: 0, paddingRight: 10 }}>
-									<div style={{ display: "flex", alignItems: "center", gap: 6 }}>
+								<div style={{ flex: "1 1 180px", minWidth: 0, paddingRight: 10 }}>
+									<div style={{ display: "flex", alignItems: "flex-start", gap: 6, minWidth: 0 }}>
 										<span
 											style={{
 												fontSize: 11,
@@ -261,6 +234,10 @@ export function PlanBoard({ plan }: PlanBoardProps) {
 												fontWeight: isCurrent ? 600 : 500,
 												color: step.status === "done" ? "var(--text-dim, #9aa1b4)" : "var(--text, #f1f5f9)",
 												textDecoration: step.status === "done" ? "line-through" : "none",
+												/* 标题是模型原文：长英文单词/长标识符必须能在窄屏内断行 */
+												minWidth: 0,
+												overflowWrap: "anywhere",
+												wordBreak: "break-word",
 											}}
 										>
 											{step.title}
@@ -274,6 +251,8 @@ export function PlanBoard({ plan }: PlanBoardProps) {
 												marginTop: 2,
 												paddingLeft: 22,
 												lineHeight: 1.4,
+												overflowWrap: "anywhere",
+												wordBreak: "break-word",
 											}}
 										>
 											{step.description}

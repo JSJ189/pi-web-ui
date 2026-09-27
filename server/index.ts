@@ -1162,10 +1162,24 @@ export interface DispatchSession {
 	getTerminalCwd(conversationId?: string): string;
 	listCommands(): Promise<void>;
 	saveCommands(commands: CommandDef[]): Promise<void>;
-	setGoal(goal: string, opts?: { reviewModel?: string; maxRounds?: number; locked?: boolean }): Promise<void>;
+	setGoal(
+		goal: string,
+		opts?: {
+			reviewModel?: string;
+			maxRounds?: number;
+			locked?: boolean;
+			/** 目标模式 2.0：执行者模型（DSH 引擎不接委托执行，忽略）。 */
+			execModel?: string;
+		},
+	): Promise<void>;
 	clearGoal(): Promise<void>;
 	startGoalWizard(text: string, opts?: { wizardModel?: string; maxRounds?: number; locked?: boolean }): Promise<void>;
-	setGoalPrefs(opts?: { reviewModel?: string; maxRounds?: number; locked?: boolean }): Promise<void>;
+	setGoalPrefs(opts?: {
+		reviewModel?: string;
+		maxRounds?: number;
+		locked?: boolean;
+		execModel?: string;
+	}): Promise<void>;
 	pushSettings(): void;
 	setSettings(partial: {
 		promptMode?: "append" | "replace";
@@ -2477,6 +2491,7 @@ wss.on("connection", (ws) => {
 					reviewModel: msg.reviewModel,
 					maxRounds: msg.maxRounds,
 					locked: msg.locked,
+					execModel: msg.execModel,
 				});
 				break;
 			case "clear_goal":
@@ -2494,6 +2509,7 @@ wss.on("connection", (ws) => {
 					reviewModel: msg.reviewModel,
 					maxRounds: msg.maxRounds,
 					locked: msg.locked,
+					execModel: msg.execModel,
 				});
 				break;
 			case "get_settings":

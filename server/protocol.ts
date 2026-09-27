@@ -720,13 +720,26 @@ export type ClientMessage =
 			reqId?: number;
 	  }
 	// -- goal / review -------------------------------------------------------
-	/** Set (or clear) the active goal. When set, each finished agent run is
-	 *  reviewed by an isolated reviewer agent; a failing review steers the main
-	 *  session to revise until `maxRounds` runs out. `locked: true` keeps the
-	 *  goal active across every subsequent turn; `false` clears it after the
-	 *  next turn (single-shot). `reviewModel` ("provider/id", optional) selects
-	 *  a different model for the reviewer. */
-	| { type: "set_goal"; goal: string; reviewModel?: string; maxRounds: number; locked: boolean }
+	/** Set (or clear) the active goal. When set, the SERVER drives the loop
+	 *  (goal mode 2.0, the only path): it spawns a persistent executor
+	 *  conversation, and the MAIN conversation plays the reviewer — it gets a
+	 *  read-only verify prompt each round and answers with
+	 *  `{"verdict":"pass|fail","feedback":…}`, which the server turns into
+	 *  pass / another round / circuit-break. Rounds are capped by `maxRounds`
+	 *  (0 = unlimited). `locked: true` keeps the goal active across every
+	 *  subsequent turn; `false` clears it after the next turn (single-shot).
+	 *  `reviewModel` ("provider/id", optional) is remembered as the goal WIZARD
+	 *  model; the reviewer is the main conversation itself (no separate model).
+	 *  `execModel` ("provider/id", optional) picks the executor's model. */
+	| {
+			type: "set_goal";
+			goal: string;
+			reviewModel?: string;
+			maxRounds: number;
+			locked: boolean;
+			/** 执行者模型（"provider/id"；空 = 跟随主对话）。 */
+			execModel?: string;
+	  }
 	| { type: "clear_goal" }
 	/** Start the collaborative target wizard: a user requirement goes into an
 	 *  ISOLATED wizard session which questions the user (multiple-choice + free
@@ -744,6 +757,8 @@ export type ClientMessage =
 			reviewModel?: string;
 			maxRounds?: number;
 			locked?: boolean;
+			/** 执行者模型偏好（"provider/id"；空 = 跟随），全局记忆。 */
+			execModel?: string;
 	  }
 	// -- settings (system prompt / skills / extensions / presets) ------------
 	/** Request the current settings state (also pushed automatically on attach). */
@@ -1379,13 +1394,21 @@ export interface ModelInfo {
 // Goal / review status (server -> client snapshot)
 // ---------------------------------------------------------------------------
 
+/** 目标模式下的一个「角色对话」（只有执行者槽：审查者就是主对话本身）。 */
+export interface GoalRoleRef {
+	/** 承载该角色的对话 id（左栏可点开）。 */
+	convId: string;
+	/** true = 服务端拉起的角色对话（落盘普通对话，完成/清目标时可移出）。 */
+	spawned: boolean;
+}
+
 /** Current state of the goal-review loop, shown in the goal bar UI. */
 export interface GoalStatus {
 	/** Conversation that owns this goal; null when no goal is set. */
 	conversationId: string | null;
 	/** Active goal text; null when no goal is set. */
 	goal: string | null;
-	/** Reviewer model id ("provider/id"), or null to use the main model. */
+	/** 模型 id ("provider/id")；pi 引擎语义为**调研（向导）模型**记忆位，DSH 仍用它选审查模型。 */
 	reviewModel: string | null;
 	/** Maximum number of review rounds per goal run. */
 	maxRounds: number;
@@ -1407,6 +1430,12 @@ export interface GoalStatus {
 	 *  The wizard turns a raw user requirement into a refined goal by asking
 	 *  questions, then auto-sets the goal. */
 	wizard: WizardStatus;
+	/** 2.0：循环相位。 */
+	phase?: "idle" | "executing" | "reviewing" | "blocked";
+	/** 2.0：执行者模型（"provider/id"；null = 跟随主对话）。 */
+	execModel?: string | null;
+	/** 2.0：角色对话（审查者就是主对话，故这里只有 executor）。 */
+	roles?: { executor?: GoalRoleRef };
 }
 
 /** Progress of the collaborative target wizard (see GoalStatus.wizard). */

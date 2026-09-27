@@ -10,6 +10,21 @@
 
 ## [Unreleased]
 
+### Fixed
+
+- **任务看板 / 目标条窄屏排版协调** — 手机宽度下任务看板的「任务看板」「0/6 (0%)」被当前步骤挤成逐字竖排（行内 flex 子项默认 `min-width: auto` 且允许收缩，CJK 逐字断行），目标条的「最大轮数」标签同样竖排、「锁定：应用到后续所有回合」被挤成两行。现改为：看板标题与计数钉死不收缩、当前步骤 chip 放不下就整块换到第二行（宽屏仍同行）；目标条输入框独占一行、按钮组换行右对齐，偏好行允许整块换行、模型长 id 断行不外溢，锁定说明与标签不再被压扁。回归：`tests/unit/text-wrap.test.ts`、`tests/unit/css-tokens.test.ts`、`tests/chat-column-align-test.mjs`。
+
+<!-- auto-i18n:start -->
+
+### i18n
+
+- 前端新增 key（9）：`goalBarMode`、`goalBarModeSelf`、`goalBarModeDelegated`、`goalBarModeSelfTip`、`goalBarModeDelegatedTip`、`goalBarExecModel`、`goalBarExecModelTip`、`goalBarOpenExec`、`goalBarOpenExecTip`
+- 前端中文变更（1）：`planBoardTitle`
+- 前端英文变更（1）：`planBoardTitle`
+- 服务端新增 key（5）：`agent.role.stop`、`goal.role.blocked`、`goal.role.exec`、`goal.role.review`、`goal.role.review.retry`
+
+<!-- auto-i18n:end -->
+
 ## [0.96.1] — 2026-09-26
 
 ### Fixed
@@ -24,10 +39,12 @@
 - **输入框与顶栏控件排版微调** —— 顶栏 chip 统一幽灵化；输入框底部模型与思考强度 chip 尺寸微调收紧；思考强度 Chip 文案精简为 `{level}`，保留 tooltip 说明；预设选择器图标优化为 `FiSliders`。
 
 <!-- auto-i18n:start -->
+
 ### i18n
 
 - 前端中文变更（1）：`thinkingChip`
 - 前端英文变更（1）：`thinkingChip`
+
 <!-- auto-i18n:end -->
 
 ## [0.96.0] — 2026-09-26
@@ -55,6 +72,7 @@
 - **收敛型澄清提问与决策就绪型计划规范（#330）** —— `ask_user_question` 现在单次严格限制 1~3 个问题（优先 1 个，超过 3 个直接报错阻断，防止问卷轰炸），选项 schema 收紧为 2~4 个互斥选项且推荐方案置顶，选项 description 要求一句话说明影响与权衡；`plan_update` 提示词升级为「决策就绪型」规划：动代码前先在步骤中落实排查发现（Discovery）、受影响文件清单（File Touch List）与风险回滚预案（Rollback），并随执行实时流转步骤状态。目标向导（`goal_ask` / wizardPrompt）与 DSH 澄清提示词同步对齐收敛型交互。
 
 <!-- auto-i18n:start -->
+
 ### i18n
 
 - 前端新增 key（49）：`reaskDirectly`、`reaskDirectlyTip`、`kindPlugin`、`pluginCheckUpdates`、`pluginCheckUpdatesHint`、`pluginUpdateAvailableBadge`、`pluginUpdateAvailableDetail`、`pluginAllUpToDate`、`piCoreSplitRun`、`piSdkSplitNote`、`piSdkBundledNote`、`installGlobalEngineBtn`、`installGlobalEngineTabTitle`、`saveResultUnknown`、`questionNoneAvailable`、`notifyApprovalTitle`、`notifyApprovalBody`、`notifyApprovalBodyTool`、`sound.approval`、`sound.approval.desc`、`settingsSoundVoice`、`ttsHeader`、`ttsEnable`、`ttsEnableDesc`、`ttsAnnounce`、`ttsAnnounceDesc`、`ttsReadReplies`、`ttsReadRepliesDesc`、`ttsRate`、`ttsVoice`、`ttsVoiceAuto`、`ttsVoiceOnline`、`ttsUnavailable`、`ttsPreviewLine`、`ttsAnnounceDone`、`ttsAnnounceQuestion`、`ttsAnnounceError`、`ttsAnnounceApproval`、`speakMsg`、`stopSpeakingMsg`、`apiKeySavedHint`、`settingsViewPromptTokens`、`settingsPromptContextTotal`、`toolsSectionCore`、`toolsCoreHint`、`toolCoreBashDesc`、`toolCoreReadDesc`、`toolCoreEditDesc`、`toolCoreWriteDesc`
@@ -63,6 +81,7 @@
 - 服务端新增 key（3）：`plugincatalog.sync.doc.invalid`、`terminals.bash.nosentinel.note`、`terminals.command.blocked`
 - 服务端文案变更（1）：`terminals.bash.timeout`
 - 服务端删除 key（2）：`plugincatalog.sync.source.invalid`、`plugincatalog.sync.read.failed`
+
 <!-- auto-i18n:end -->
 
 ## [0.95.0] — 2026-09-24

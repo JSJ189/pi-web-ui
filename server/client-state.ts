@@ -431,6 +431,8 @@ export interface ClientState {
 		reviewModel: string | null;
 		maxRounds: number;
 		locked: boolean;
+		/** 目标模式 2.0：执行者模型（"provider/id"；null/缺省 = 跟随）。 */
+		execModel?: string | null;
 	};
 	/** Settings-panel state (system prompt mode/text + disabled skills/
 	 *  extensions) so toggles survive a reload. */
@@ -640,6 +642,7 @@ export class ClientStateStore {
 			reviewModel: s.goalPrefs.reviewModel ?? null,
 			maxRounds: s.goalPrefs.maxRounds ?? 0,
 			locked: s.goalPrefs.locked ?? true,
+			execModel: s.goalPrefs.execModel ?? null,
 		};
 	}
 
@@ -684,6 +687,7 @@ export class ClientStateStore {
 			reviewModel: prefs?.reviewModel ?? null,
 			maxRounds: prefs?.maxRounds ?? 0,
 			locked: prefs?.locked ?? true,
+			execModel: prefs?.execModel ?? null,
 		};
 		this.save();
 	}

@@ -258,7 +258,7 @@ export function FooterBar({ chat, bottombarItems, onUiAction }: FooterBarProps) 
 					input: formatTokens(cache.totalInput),
 				})}
 			>
-				{t("cacheHit")}
+				<span className="status-cache-label">{t("cacheHit")}</span>
 				<b className={`cache-pct ${hitClass}`}>{hitText}</b>
 			</span>
 		),

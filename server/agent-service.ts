@@ -96,7 +96,12 @@ import {
 	type ToolPreRequest,
 } from "./plugin-tool-guard.js";
 import { SettingsService } from "./settings-service.js";
-import { GoalService, buildDiffFingerprint } from "./goal-service.js";
+import {
+	GoalService,
+	buildDiffFingerprint,
+	extractErrorSnippetFromSession,
+	type RoleWaitOutcome,
+} from "./goal-service.js";
 import { MarkerService } from "./marker-service.js";
 import { SlashCommandsService, parseSlash } from "./slash-commands.js";
 import { ModelAdminService } from "./model-admin.js";
@@ -1782,6 +1787,9 @@ export interface Conversation {
 	/** 下一轮 agent_start 消费的用户任务文本（prompt() 暂存，轨迹插件的 run_start 用；
 	 *  steer/内部续跑无暂存时为空，由插件回退为「继续执行」）。 */
 	pendingTask?: string;
+	/** 子代理首回合的投递 Promise（spawn 里 fire-and-forget 的 sendUserMessage）。
+	 *  目标模式「等本回合结束」必须先等它落定，否则会把「还没开跑」误判成「已跑完」。 */
+	kickoff?: Promise<unknown>;
 	/** tool_call watchdog timers keyed by toolCallId — a tool that runs past
 	 *  TOOL_WATCHDOG_TIMEOUT_MS gets the session aborted instead of hanging
 	 *  the conversation forever (the SDK bash tool has no default timeout). */
@@ -2198,6 +2206,9 @@ export class ClientSession {
 	 *  top bar applies to every chat, not just the one that set it. Seeded by
 	 *  the first conversation and reused by later ones. */
 	private sharedModelRuntime: Awaited<ReturnType<typeof createAgentSessionServices>>["modelRuntime"] | undefined;
+	/** 目标模式「委托执行」（Plan A）的「本轮结束」等待者：convId → 回调集合。
+	 *  agent_end 到达时唤醒（事件驱动，绝不轮询）；对话被移出时按 gone 收。 */
+	private turnEndWaiters = new Map<string, Set<(o: RoleWaitOutcome) => void>>();
 
 	// -----------------------------------------------------------------------
 	// Goal / review / wizard —— 自包含模块，见 goal-service.ts。每个对话有独立
@@ -2548,8 +2559,9 @@ export class ClientSession {
 				});
 			}
 		}
-		// 触发回合（后台执行；失败转识为通知）。
-		void conv.session.sendUserMessage(prompt).catch((err) => {
+		// 触发回合（后台执行；失败转识为通知）。把 Promise 挂在对话上：目标模式的
+		// 「等本回合结束」要先等它落定，才能区分「还没开跑」与「已跑完」。
+		conv.kickoff = conv.session.sendUserMessage(prompt).catch((err) => {
 			this.emit({
 				type: "notice",
 				level: "error",
@@ -2644,6 +2656,82 @@ export class ClientSession {
 			// session being replaced — treat as no outcome yet
 		}
 		return {};
+	}
+
+	/**
+	 * 事件驱动地等某对话「当前回合结束」（目标模式委托执行用）。
+	 * 若当前并未在跑则立即返回既有结局；超时返回 "timeout"；对话已消失返回 "gone"。
+	 * 不轮询：靠 agent_end 的 notifyTurnEnd / removeConversation 唤醒。
+	 */
+	private async waitConversationTurnEnd(convId: string, timeoutMs: number): Promise<RoleWaitOutcome> {
+		const isStreaming = (c: Conversation): boolean => {
+			try {
+				return c.session.isStreaming;
+			} catch {
+				return false;
+			}
+		};
+		let conv = this.convs.get(convId);
+		if (!conv) return Promise.resolve("gone");
+		// spawn 的首回合是 fire-and-forget 投递的：先等它落定，否则「还没开跑」会被
+		// 误判成「已跑完」（空取样 → 下一轮派活撞在一起）。
+		if (conv.kickoff) {
+			await conv.kickoff.catch(() => {});
+			conv = this.convs.get(convId);
+			if (!conv) return "gone";
+		}
+		// 极短的启动宽限：投递刚返回时 isStreaming 可能还差一拍。只在这里等，
+		// 一旦开跑就交给事件驱动（agent_end），不是长轮询。
+		if (!isStreaming(conv)) {
+			const graceEnd = Date.now() + Math.min(3000, Math.max(0, timeoutMs));
+			while (!isStreaming(conv) && Date.now() < graceEnd) {
+				await new Promise((resolve) => setTimeout(resolve, 50));
+				const again = this.convs.get(convId);
+				if (!again) return "gone";
+				conv = again;
+			}
+		}
+		if (!isStreaming(conv)) return this.roleOutcomeOf(conv);
+		return new Promise<RoleWaitOutcome>((resolve) => {
+			const set = this.turnEndWaiters.get(convId) ?? new Set<(o: RoleWaitOutcome) => void>();
+			this.turnEndWaiters.set(convId, set);
+			let settled = false;
+			let timer: ReturnType<typeof setTimeout> | undefined;
+			const finish = (o: RoleWaitOutcome): void => {
+				if (settled) return;
+				settled = true;
+				if (timer) clearTimeout(timer);
+				set.delete(finish);
+				if (set.size === 0) this.turnEndWaiters.delete(convId);
+				resolve(o);
+			};
+			timer = setTimeout(() => finish("timeout"), Math.max(1000, timeoutMs));
+			timer.unref?.();
+			set.add(finish);
+			// 注册后复检：agent_end 可能恰好在 isStreaming 检查与注册之间到达。
+			const still = this.convs.get(convId);
+			if (!still) {
+				finish("gone");
+				return;
+			}
+			if (!isStreaming(still)) finish(this.roleOutcomeOf(still));
+		});
+	}
+
+	/** 对话结局 → 角色轮结局（报错 > 中止 > 正常）。 */
+	private roleOutcomeOf(conv: Conversation): RoleWaitOutcome {
+		const { error, canceled } = this.subagentRunOutcome(conv);
+		if (error) return "error";
+		if (canceled) return "canceled";
+		return "done";
+	}
+
+	/** 某对话回合结束 → 唤醒它的等待者（agent_end / 中止路径都调）。 */
+	private notifyTurnEnd(conv: Conversation): void {
+		const set = this.turnEndWaiters.get(conv.id);
+		if (!set || set.size === 0) return;
+		const outcome = this.roleOutcomeOf(conv);
+		for (const fn of set) fn(outcome);
 	}
 
 	private emitTerminal(conversationId: string, msg: ServerMessage): void {
@@ -3539,8 +3627,78 @@ export class ClientSession {
 			activeConv: () => this.conv,
 			getConv: (id) => this.convs.get(id),
 			cwd: () => this.cwd,
-			reviewSettings: () => this.settingsSvc.reviewPrefs,
 			gitDiff: (dir) => this.gitDiff(dir),
+			// ---- 目标模式 2.0 的角色对话桥（唯一审查/执行路径）----
+			// 复用子代理通道（同一套模板/模型/思考强度/配额/左栏展示），但角色对话**落盘**
+			// （persist=true）：转录进历史、服务重启后仍可打开回看。
+			// 代价：落盘对话 isSubagent=false → 占「每项目 8 个普通对话」名额之一
+			// （spawnSubagentConversation 满员时抛错 → GoalService 降级回 self 并提示），
+			// 且左栏不再有「子代理」徽标 —— 故给它一个带前缀的标题保持可辨识。
+			spawnRoleAgent: async ({ role, prompt, cwd, model, parentId, title }) => {
+				const baseCwd = cwd || (parentId ? this.convs.get(parentId)?.cwd : undefined) || this.cwd;
+				const convId = await this.spawnSubagentConversation(
+					prompt,
+					role === "executor" ? "goal-executor" : "goal-reviewer",
+					baseCwd,
+					undefined,
+					model ?? null,
+					parentId,
+					true,
+				);
+				if (title) {
+					const conv = this.convs.get(convId);
+					if (conv) conv.title = title;
+				}
+				return convId;
+			},
+			waitRoleAgent: (convId, timeoutMs) => this.waitConversationTurnEnd(convId, timeoutMs),
+			sendRoleAgent: async (convId, message, deliverAs) => {
+				const conv = this.convs.get(convId);
+				if (!conv?.session) return false;
+				await conv.session.sendUserMessage(
+					message,
+					deliverAs ? { deliverAs } : conv.session.isStreaming ? { deliverAs: "steer" } : undefined,
+				);
+				return true;
+			},
+			readRoleAgent: (convId) => {
+				const conv = this.convs.get(convId);
+				if (!conv?.session) return undefined;
+				let text = "";
+				try {
+					text = conv.session.getLastAssistantText() ?? "";
+				} catch {
+					text = "";
+				}
+				return { text, errorSnippet: extractErrorSnippetFromSession(conv.session, text) };
+			},
+			stopRoleAgent: async (convId) => {
+				const conv = this.convs.get(convId);
+				if (!conv) return;
+				try {
+					if (conv.session.isStreaming || !conv.session.isIdle) {
+						await this.interruptRun(
+							conv,
+							pick(this.getLang(), "目标模式停止角色对话", "Goal mode stopped a role conversation", "agent.role.stop"),
+						);
+					}
+				} catch {
+					// best-effort
+				}
+			},
+			dismissRoleAgent: async (convId) => {
+				const conv = this.convs.get(convId);
+				if (!conv) return;
+				// 用户正看着这个角色对话时不要把他弹走（对话留着，用户可自行关闭）。
+				if (convId === this.activeId) return;
+				try {
+					await this.dismissConversation(convId, true, true);
+				} catch {
+					// best-effort
+				}
+			},
+			hasConv: (convId) => this.convs.has(convId),
+			roleDeadlineMs: () => this.getBaseToolWatchdogTimeoutMs(),
 		});
 
 		this.modelAdmin = new ModelAdminService({
@@ -5056,6 +5214,8 @@ export class ClientSession {
 					return a.role === "assistant" && a.stopReason === "aborted";
 				});
 				if (aborted) {
+					// 角色轮等待者先唤醒（中止也算「本轮结束」），再让 GoalService 作废目标。
+					this.notifyTurnEnd(conv);
 					const stopNotice = this.goalSvc.onAgentEnd(conv, true);
 					if (stopNotice) {
 						this.emit({ type: "notice", level: "warning", text: stopNotice.text, textEn: stopNotice.textEn });
@@ -5083,6 +5243,9 @@ export class ClientSession {
 					this.emitConversations();
 				}
 				// Goal review hook lives in GoalService.onAgentEnd(conv, false).
+				// 先唤醒角色轮等待者：委托执行（Plan A）下服务端正阻塞在「等主对话给 verdict」
+				// 或「等对话空闲」上，而 onAgentEnd 随后会把它需要的 verdict 交回。
+				this.notifyTurnEnd(conv);
 				this.goalSvc.onAgentEnd(conv, false);
 				// Deferred settings reload: settings (system prompt / skills /
 				// extensions) changed while the run was streaming — applying now
@@ -9009,6 +9172,13 @@ export class ClientSession {
 	private removeConversation(id: string): void {
 		const conv = this.convs.get(id);
 		if (!conv || id === this.activeId) return;
+		// 角色轮等待者：对话被移出 → 等它的循环收到 gone（否则要等到超时）。
+		const waiters = this.turnEndWaiters.get(id);
+		if (waiters) {
+			this.turnEndWaiters.delete(id);
+			// 先摘表再逐个唤醒：回调里的自删不会弄脏迭代。
+			for (const fn of waiters) fn("gone");
+		}
 		// 对话真关闭（dismiss/释放）→ 放掉它的认领。过户不走这里（对话换个会话
 		// 继续，owner 不变，认领继续有效），所以只在此处释放。
 		try {
@@ -11377,6 +11547,8 @@ export class ClientSession {
 			reviewModel?: string;
 			maxRounds?: number;
 			locked?: boolean;
+			/** 目标模式 2.0：执行者模型。 */
+			execModel?: string;
 			autoStart?: boolean;
 		},
 	): Promise<void> {
@@ -11394,7 +11566,12 @@ export class ClientSession {
 		return this.goalSvc.startGoalWizard(text, opts);
 	}
 
-	async setGoalPrefs(opts?: { reviewModel?: string; maxRounds?: number; locked?: boolean }): Promise<void> {
+	async setGoalPrefs(opts?: {
+		reviewModel?: string;
+		maxRounds?: number;
+		locked?: boolean;
+		execModel?: string;
+	}): Promise<void> {
 		return this.goalSvc.setGoalPrefs(opts);
 	}
 

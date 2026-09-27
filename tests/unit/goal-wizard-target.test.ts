@@ -33,9 +33,15 @@ const bootHost: GoalHost = {
 	activeConv: () => ({}) as GoalConversation,
 	getConv: () => undefined,
 	cwd: () => "/tmp/proj",
-	reviewSettings: () => ({ reviewPrompt: "", reviewDisabledSkills: [] }),
 	gitDiff: async () => "",
 	goalModeEnabled: () => true,
+	// 目标模式 2.0：setGoal 在动目标状态前先查角色对话桥（缺桥 = 拒绝设目标），
+	// 所以这两个只做落点测试的 fake 也得把桥补上。
+	spawnRoleAgent: async () => "sa-exec",
+	waitRoleAgent: async () => "done",
+	sendRoleAgent: async () => true,
+	readRoleAgent: () => ({ text: "" }),
+	hasConv: () => true,
 };
 const bootSvc = new GoalService(bootHost);
 
@@ -77,9 +83,14 @@ function makeService(): { svc: GoalService; convs: Map<string, GoalConversation>
 		activeConv: () => convs.get("conv-a")!,
 		getConv: (id) => convs.get(id),
 		cwd: () => "/tmp/proj",
-		reviewSettings: () => ({ reviewPrompt: "", reviewDisabledSkills: [] }),
 		gitDiff: async () => "",
 		goalModeEnabled: () => true,
+		// 同上：补角色对话桥，否则 setGoal 会在落点前就拒绝（那正是新语义）。
+		spawnRoleAgent: async () => "sa-exec",
+		waitRoleAgent: async () => "done",
+		sendRoleAgent: async () => true,
+		readRoleAgent: () => ({ text: "" }),
+		hasConv: () => true,
 	};
 	return { svc: new GoalService(host), convs };
 }

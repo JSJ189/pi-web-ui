@@ -1,4 +1,4 @@
-import { Fragment, memo, useEffect, useRef, useState, type ReactNode } from "react";
+import { Fragment, memo, useEffect, useMemo, useRef, useState, type ReactNode } from "react";
 import {
 	FiArchive,
 	FiBookOpen,
@@ -873,20 +873,31 @@ export const Message = memo(function Message({
 	const exportForceThinking = exportSelected && exportImage.includeThinking;
 	const exportForceTools = exportSelected && exportImage.includeTools;
 
-	// 消息操作按钮的宿主：第一个思考/工具 head 行（Block → headExtra 插槽，
-	// 与行内复制按钮并排）。没有可宿主的 head（用户消息 / 纯文本回复）时
-	// headActionsNode 为 null，回退到消息底部的 .msg-actions 行。
-	const actionsChildren = editing ? null : renderActionsChildren();
-	const headHostIndex =
-		actionsChildren && !editing ? message.content.findIndex((b) => asThinking(b) || asToolCall(b)) : -1;
-	const headActionsNode = headHostIndex >= 0 ? actionsChildren : null;
+	// 消息级操作按钮（`.msg-actions`）只给「有正文的助手消息」与「用户消息」两种：
+	//   · 卡片头（思考 / 工具 / 附件 / 技能 / 压缩摘要）**一律只留自己的复制键**
+	//     （chead-copy：复制思考 / 复制参数）—— 不再挂整排消息级按钮，于是同一条
+	//     回复里两张 bash 卡长得一模一样，窄屏上右端按钮数也永远一致。
+	//   · 没有正文的消息（纯工具调用 / 纯思考 / 附件卡 / 插件消息）不渲染底部行：
+	//     `canCopyWhole`（整条复制三件套要正文）与 `canSpeak` 本来就为假，那一行
+	//     只剩「派生分支 / 回滚」这类对卡片无意义的按钮，而复制已在卡头。
+	const showMessageActions = !editing && (message.role === "user" || canCopyWhole);
+
+	// 按钮行锚点：助手消息把它插在**最后一个正文块之后**，而不是整条消息末尾 ——
+	// 模型常常「先说话、再发工具」，挂在末尾时按钮会被工具卡隔开，看着像属于工具卡
+	// （窄屏实报）。没有正文块 → anchorIndex = -1，退回消息末尾。
+	// 用户消息不锚：`.msg-user .msg-body` 是紫色气泡，插进去会坐到气泡里面。
+	const anchorIndex = useMemo(() => {
+		if (message.role !== "assistant") return -1;
+		for (let i = message.content.length - 1; i >= 0; i--) if (asText(message.content[i])) return i;
+		return -1;
+	}, [message.role, message.content]);
 
 	return (
 		<div
 			ref={cardRef}
 			className={`msg msg-${message.role}${isGoalReview ? " msg-goal-review" : ""}${
-				headActionsNode ? " msg-head-actions" : ""
-			}${exportSelected ? " msg-export-selected" : ""}`}
+				exportSelected ? " msg-export-selected" : ""
+			}`}
 			data-role={message.role}
 			data-msg-id={message.id}
 			onContextMenu={onMsgContextMenu}
@@ -1120,27 +1131,28 @@ export const Message = memo(function Message({
 							</PluginWidgetBlock>
 						) : (
 							message.content.map((block, i) => (
-								<Block
-									key={`${message.id}-${i}`}
-									block={block}
-									toolResults={toolResults}
-									liveOutputs={liveOutputs}
-									toolStatuses={toolStatuses}
-									streaming={streaming}
-									isLast={isLast}
-									onKillBash={onKillBash}
-									toolsWrap={toolsWrap}
-									toolImages={toolImages}
-									thinkingWrap={thinkingWrap}
-									searchActive={searchActive}
-									forceThinking={exportForceThinking}
-									forceTools={exportForceTools}
-									role={message.role}
-									showCopy={copyAllowed}
-									uiContextToolCall={uiContextToolCall}
-									onUiAction={onUiAction}
-									headActions={i === headHostIndex ? headActionsNode : undefined}
-								/>
+								<Fragment key={`${message.id}-${i}`}>
+									<Block
+										block={block}
+										toolResults={toolResults}
+										liveOutputs={liveOutputs}
+										toolStatuses={toolStatuses}
+										streaming={streaming}
+										isLast={isLast}
+										onKillBash={onKillBash}
+										toolsWrap={toolsWrap}
+										toolImages={toolImages}
+										thinkingWrap={thinkingWrap}
+										searchActive={searchActive}
+										forceThinking={exportForceThinking}
+										forceTools={exportForceTools}
+										role={message.role}
+										showCopy={copyAllowed}
+										uiContextToolCall={uiContextToolCall}
+										onUiAction={onUiAction}
+									/>
+									{i === anchorIndex && showMessageActions && renderMessageActions()}
+								</Fragment>
 							))
 						)}
 						{isEmptyStreaming && (
@@ -1153,7 +1165,7 @@ export const Message = memo(function Message({
 					</>
 				)}
 			</div>
-			{!editing && !headActionsNode && renderMessageActions()}
+			{showMessageActions && anchorIndex < 0 && renderMessageActions()}
 		</div>
 	);
 });
@@ -1475,7 +1487,6 @@ function Block({
 	showCopy,
 	uiContextToolCall,
 	onUiAction,
-	headActions,
 }: {
 	block: UiContentBlock;
 	toolResults: ReadonlyMap<string, UiMessage>;
@@ -1496,8 +1507,6 @@ function Block({
 	forceThinking?: boolean;
 	/** 导出图勾了「包含工具」且本条被选中。 */
 	forceTools?: boolean;
-	/** 消息操作按钮群组：渲染进本块 head 行（仅第一个思考/工具块收到）。 */
-	headActions?: ReactNode;
 	/** 消息角色 — assistant/user 的纯文本块显示复制按钮。 */
 	role?: UiMessage["role"];
 	/** 是否画文本块上的复制键（false = 宿主在布局里隐藏了 `host:msg-copy`）。 */
@@ -1527,31 +1536,40 @@ function Block({
 			) : (
 				<Markdown text={text.text} />
 			);
+		/** 复制键：多行时排在正文**前面**（触屏下它是 float:right，浮动元素必须
+		 *  是块级兄弟的前一个节点，正文的行盒才会绕开它 —— 见 styles.css 的
+		 *  `@media (hover: none)`）。桌面端它是绝对定位，DOM 顺序无视觉影响。
+		 *  单行时保持在正文后面（`.msg-text.single` 走流内 flex 的既有排法）。 */
+		const copyBtn = copyable ? (
+			<button
+				key="msg-text-copy"
+				type="button"
+				className={`msg-text-copy${copied ? " copied" : ""}`}
+				title={copied ? t("copied") : t("copyMessage")}
+				aria-label={t("copyMessage")}
+				onClick={() => {
+					void navigator.clipboard.writeText(text.text);
+					setCopied(true);
+					window.setTimeout(() => setCopied(false), 1200);
+				}}
+			>
+				{copied ? <FiCheckCircle /> : <FiCopy />}
+			</button>
+		) : null;
 		return (
 			<div className={`msg-text${oneLiner ? " single" : ""}`}>
 				{oneLiner ? (
-					<div className="msg-text-main">{body}</div>
+					<>
+						<div className="msg-text-main">{body}</div>
+						{copyBtn}
+					</>
 				) : (
 					<>
+						{copyBtn}
 						{body}
 						{text.truncated && <div className="trunc-note">{t("truncated")}</div>}
 					</>
 				)}
-				{copyable ? (
-					<button
-						type="button"
-						className={`msg-text-copy${copied ? " copied" : ""}`}
-						title={copied ? t("copied") : t("copyMessage")}
-						aria-label={t("copyMessage")}
-						onClick={() => {
-							void navigator.clipboard.writeText(text.text);
-							setCopied(true);
-							window.setTimeout(() => setCopied(false), 1200);
-						}}
-					>
-						{copied ? <FiCheckCircle /> : <FiCopy />}
-					</button>
-				) : null}
 			</div>
 		);
 	}
@@ -1564,7 +1582,6 @@ function Block({
 				streaming={streaming && isLast}
 				wrap={thinkingWrap}
 				forceOpen={searchActive || forceThinking}
-				headExtra={headActions}
 			/>
 		);
 	}
@@ -1589,7 +1606,6 @@ function Block({
 				forceOpen={searchActive || forceTools}
 				uiContextToolCall={uiContextToolCall}
 				onUiAction={onUiAction}
-				headExtra={headActions}
 			/>
 		);
 	}

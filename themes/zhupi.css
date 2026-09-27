@@ -205,8 +205,8 @@ body,
 	padding: 2px 0 10px;
 }
 
-/* 操作按钮：行内簇已提升为基线默认（.chead-actions，随消息悬停显隐、
-   与行内复制按钮并排），主题里不再需要任何覆盖。 */
+/* 操作按钮：卡头只有自己的复制键（.chead-copy），消息级按钮全在底部
+   .msg-actions ——主题里不再需要针对「行内操作簇」的任何覆盖。 */
 
 /* 兜底路径（用户消息 / 纯文本回复，无 head 可宿主）：底部操作行改为悬停
    浮牌，钉在消息右上角的空纸面上 */
@@ -235,6 +235,27 @@ body,
 	pointer-events: auto;
 }
 
+/* 触屏没有 hover：这张浮牌会**永远隐形**（容器 opacity:0 压过按钮的
+   opacity:1，子元素救不回来）且 pointer-events:none 点不动 —— 手机上等于
+   整条操作行消失（基线的 `@media (hover:none)` 只抬按钮的 opacity，
+   抬不动容器）。改为回归基线的**流内右对齐工具行**，同时撤掉浮牌的
+   底色/边框/阴影：常驻的浮牌会正好压住 meta 行右侧的时间。
+   主题在基线之后加载，同权重直接压过基线的 .msg-actions。 */
+@media (hover: none) {
+	.msg-actions {
+		position: static;
+		opacity: 1;
+		pointer-events: auto;
+		justify-content: flex-end;
+		margin-top: 4px;
+		padding: 0;
+		background: transparent !important;
+		border: 0 !important;
+		border-radius: 0 !important;
+		box-shadow: none !important;
+	}
+}
+
 /* 角色行：书目式小标 */
 .msg-meta {
 	margin-bottom: 4px;
@@ -252,7 +273,8 @@ body,
 	margin-left: -6px;
 }
 
-/* 正文块上的单一复制键同样去重：消息复制已在 head 行的操作簇里 */
+/* 正文块上的单一复制键去重：卡头现在只有自己的复制键，消息级复制
+   （纯文本 / Markdown / 长图三件套）统一在底部 .msg-actions 悬停浮牌里。 */
 .msg-text-copy {
 	display: none !important;
 }

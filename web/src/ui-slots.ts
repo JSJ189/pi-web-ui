@@ -751,6 +751,23 @@ export const BUILTIN_UI_ITEMS: BuiltinUiItem[] = [
 		kind: "action",
 		order: 60,
 	},
+	// 目标模式 2.0：执行者模型 + 打开执行对话。
+	{
+		id: "host:goal-execmodel",
+		slot: "goalbar.actions",
+		labelKey: "goalBarExecModel",
+		icon: "cpu",
+		kind: "action",
+		order: 55,
+	},
+	{
+		id: "host:goal-openrole",
+		slot: "goalbar.actions",
+		labelKey: "goalBarOpenExec",
+		icon: "search",
+		kind: "action",
+		order: 65,
+	},
 	{ id: "host:goal-clear", slot: "goalbar.actions", labelKey: "goalBarClear", icon: "x", kind: "action", order: 70 },
 
 	// ---- SCM（SCMPanel.tsx：头栏簇 + 分支行簇分别排序，插件条目落头栏） ----
