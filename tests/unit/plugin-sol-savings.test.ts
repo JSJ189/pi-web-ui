@@ -2,7 +2,12 @@ import { mkdirSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { describe, expect, it, vi } from "vitest";
-import { analyzeSolSavings, formatPlanSummary, getSavingsFromLedger } from "../../plugins/sol-savings/index.mjs";
+import {
+	analyzeSolSavings,
+	formatPlanSummary,
+	getSavingsFromLedger,
+	resolveSessionId,
+} from "../../plugins/sol-savings/index.mjs";
 import solSavingsPlugin from "../../plugins/sol-savings/index.mjs";
 
 describe("SoL-Pi Savings 插件与底栏统计", () => {
@@ -387,11 +392,11 @@ describe("SoL-Pi Savings 插件与底栏统计", () => {
 		const ledgerDir = join(projDir, "sol-pi", targetSid, "observation-pack");
 		mkdirSync(ledgerDir, { recursive: true });
 
-		const msgTsIso = "2026-09-28T12:00:00.123Z";
-		const msgTsMs = Date.parse(msgTsIso);
+		const msgTsMs = Date.now() - 60 * 60 * 1000; // 相对时间，避免与 mtime 预筛产生时钟耦合
+		const msgTsIso = new Date(msgTsMs).toISOString();
 
 		// 写入包含该时间戳的 session.jsonl 文件
-		const sessionFileName = `2026-09-28T12-00-00-000Z_${targetSid}.jsonl`;
+		const sessionFileName = `${msgTsIso.replace(/[:.]/g, "-")}_${targetSid}.jsonl`;
 		const sessionFileContent = [
 			JSON.stringify({ type: "session", id: targetSid }),
 			JSON.stringify({
@@ -432,5 +437,80 @@ describe("SoL-Pi Savings 插件与底栏统计", () => {
 		} finally {
 			rmSync(tempDir, { recursive: true, force: true });
 		}
+	});
+
+	it("resolveSessionId 扫描记忆化：负结果不重扫，证据翻倍后才重扫", () => {
+		const tempDir = join(tmpdir(), `sol-memo-${Date.now()}-${Math.random().toString(36).slice(2)}`);
+		const projDir = join(tempDir, "sessions", "test-project");
+		const targetSid = "01a0-memo-uuid-test";
+		const ledgerDir = join(projDir, "sol-pi", targetSid, "observation-pack");
+		mkdirSync(ledgerDir, { recursive: true });
+
+		const msgTsMs = Date.now() - 60 * 60 * 1000; // 1 小时前，确保 mtime 预筛不误伤
+		const msgTsIso = new Date(msgTsMs).toISOString();
+		const msgs1 = [{ id: `u-${msgTsMs}-1`, role: "user", content: [{ type: "text", text: "探测" }] }];
+
+		try {
+			// 第一次扫描：尚无物理 session 文件 → 负结果
+			expect(resolveSessionId("c-memo", msgs1, tempDir)).toBeNull();
+
+			// 扫描之后才出现该会话的物理文件（含证据时间戳）与账本
+			writeFileSync(
+				join(projDir, `${msgTsIso.replace(/[:.]/g, "-")}_${targetSid}.jsonl`),
+				JSON.stringify({ type: "message", timestamp: msgTsIso, message: { role: "user", content: "探测" } }),
+				"utf8",
+			);
+			writeFileSync(join(ledgerDir, "ledger.jsonl"), JSON.stringify({ event: "archive" }), "utf8");
+
+			// 同一会话重复调用：命中负缓存不得重扫（重扫就会扫到刚写入的文件）
+			expect(resolveSessionId("c-memo", msgs1, tempDir)).toBeNull();
+
+			// 证据翻倍（消息量 ×2）后允许重扫 → 命中真实 sessionId
+			const msgs2 = [...msgs1, { id: `u-${msgTsMs + 1000}-2`, role: "assistant", content: [] }];
+			expect(resolveSessionId("c-memo", msgs2, tempDir)).toBe(targetSid);
+		} finally {
+			rmSync(tempDir, { recursive: true, force: true });
+		}
+	});
+
+	it("运行事件拖尾合并刷新：500ms 窗口至多一次，轮次/运行边界立即刷新", async () => {
+		const updates: Array<{ id: string; patch: Record<string, unknown> }> = [];
+		let onRunCb: ((ev: { type: string }) => void) | undefined;
+		const mockHost = {
+			getActiveConversation: vi.fn().mockReturnValue({
+				id: "conv-debounce",
+				messages: [
+					{ role: "user", content: [{ type: "text", text: "hi" }] },
+					{ role: "assistant", content: [{ type: "text", text: "ok" }] },
+				],
+			}),
+			ui: {
+				update: vi.fn((id, patch) => {
+					updates.push({ id, patch });
+				}),
+			},
+			onAttach: vi.fn(),
+			onConversationChanged: vi.fn(),
+			onRunEvent: vi.fn((cb) => {
+				onRunCb = cb;
+			}),
+			onMessage: vi.fn(),
+			notify: vi.fn(),
+		};
+
+		solSavingsPlugin(mockHost);
+		const baseline = updates.length;
+
+		// 连发 5 个高频事件：同步阶段不得触发任何刷新
+		for (let i = 0; i < 5; i++) onRunCb?.({ type: "tool_end" });
+		expect(updates.length).toBe(baseline);
+
+		// 拖尾窗口结束后恰好补一次
+		await new Promise((r) => setTimeout(r, 600));
+		expect(updates.length).toBe(baseline + 1);
+
+		// 轮次/运行边界立即刷新，不受拖尾窗口影响
+		onRunCb?.({ type: "run_end" });
+		expect(updates.length).toBe(baseline + 2);
 	});
 });
