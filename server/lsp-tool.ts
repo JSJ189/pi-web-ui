@@ -886,6 +886,7 @@ export function makeLspTool(options: LspToolOptions) {
 
 	return defineTool({
 		name: LSP_TOOL_NAME,
+		promptSnippet: "IDE-grade semantic analysis (LSP) across the workspace: definition, references, hover, diagnostics, symbols, impact check",
 		label: "LSP code intelligence",
 		description: `IDE-grade semantic analysis (LSP) across the workspace. Actions:
 - \`definition\`: definition of the symbol at \`line\`/\`character\` in \`path\` (file, line, snippet).
