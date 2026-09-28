@@ -34,7 +34,8 @@ export function makePatchTool(options: PatchToolOptions) {
 
 	return defineTool({
 		name: PATCH_TOOL_NAME,
-		promptSnippet: "apply content-hashed, line-anchored patches to workspace files (prevents stale edits, line drift, and indentation hallucination)",
+		promptSnippet:
+			"apply content-hashed, line-anchored patches to workspace files (prevents stale edits, line drift, and indentation hallucination)",
 		label: "Apply Hashline patch",
 		description: `Apply content-hashed, line-anchored patches to workspace files — prevents stale edits, line drift, and indentation hallucination.
 Each file section starts with \`[path#TAG]\` (or \`[path]\` if the hash is unknown yet). Operations:
