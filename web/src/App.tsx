@@ -20,6 +20,7 @@ import { FiRefreshCw } from "react-icons/fi";
 import { FooterBar } from "./components/FooterBar";
 import { Dialog } from "./components/Dialog";
 import { DshQuestionDialog } from "./components/DshQuestionDialog";
+import { presetText } from "./components/DshPresetBar";
 // 终端视图懒加载：xterm.js 体积大且只在切到终端时才需要，拆出主包
 const TerminalPanel = lazy(() => import("./components/TerminalPanel").then((m) => ({ default: m.TerminalPanel })));
 import { ScmPanel } from "./components/SCMPanel";
@@ -411,11 +412,13 @@ export function App() {
 	const uiChatHeader = useMemo(() => uiSlots["chat.header"].filter((e) => !e.hidden), [uiSlots]);
 	const uiChatEmpty = useMemo(() => uiSlots["chat.empty"].filter((e) => !e.hidden), [uiSlots]);
 	const uiFilePreviewToolbar = useMemo(() => uiSlots["file.preview.toolbar"].filter((e) => !e.hidden), [uiSlots]);
-	// DSH 预设名录 id→显示名（左栏徽标；dshPresets 对象不变时引用稳定，不破坏 LeftPanel memo）。
+	// 预设名录 id→显示名（左栏徽标；dshPresets 对象不变时引用稳定，不破坏 LeftPanel memo）。
+	// 徽标文案随界面语言定（内置五档走 i18n，其余取服务端 nameEn ?? name）——locale 进
+	// 依赖：切语言要重算，否则徽标留着上一种语言的文案。
 	const presetNames = useMemo(
-		() => Object.fromEntries((chat.dshPresets?.presets ?? []).map((p) => [p.id, p.name ?? p.id])),
+		() => Object.fromEntries((chat.dshPresets?.presets ?? []).map((p) => [p.id, presetText(p, locale, t).name])),
 		// eslint-disable-next-line react-hooks/exhaustive-deps
-		[chat.dshPresets],
+		[chat.dshPresets, locale],
 	);
 	const uiNoticeActions = useMemo(() => uiSlots["notice.actions"].filter((e) => !e.hidden), [uiSlots]);
 	/** 点一个插件顶栏条目：缺省 action（或 "view"）由宿主切成插件视图；其余交给插件

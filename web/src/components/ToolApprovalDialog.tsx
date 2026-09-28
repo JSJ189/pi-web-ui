@@ -135,7 +135,10 @@ export function ToolApprovalDialog({ approval }: ToolApprovalDialogProps) {
 							}}
 						>
 							<div style={{ fontWeight: 600, marginBottom: 2 }}>{t("toolApprovalRiskAlert")}:</div>
-							<div>{approval.reason || approval.reasonEn}</div>
+							{/* 文案随界面语言定：服务端两种语言都带（reason/reasonEn），中文界面用
+							    reason、其它语言用 reasonEn。之前写的是 `reason || reasonEn`，
+							    reason 恒存在 → 非中文界面也显示中文风险说明。 */}
+							<div>{locale === "zh" ? approval.reason || approval.reasonEn : approval.reasonEn || approval.reason}</div>
 							{approval.category && (
 								<div style={{ marginTop: 6, fontSize: 12, opacity: 0.85 }}>
 									{t("toolApprovalCategory")}：{locale === "zh" ? approval.category.label : approval.category.labelEn}
