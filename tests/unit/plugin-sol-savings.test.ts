@@ -379,4 +379,58 @@ describe("SoL-Pi Savings 插件与底栏统计", () => {
 		expect(fallbackStats.totalSavedTokens).toBe(720); // (800 - 80) * 1
 		expect((fallbackStats.toolBreakdown as Record<string, number>).eval).toBe(1);
 	});
+
+	it("当 conversationId 为内部序号（如 c1/c2）时，通过 resolveSessionId 从消息时间戳逆向命中物理会话账本", () => {
+		const tempDir = join(tmpdir(), `sol-reverse-${Date.now()}-${Math.random().toString(36).slice(2)}`);
+		const projDir = join(tempDir, "sessions", "test-project");
+		const targetSid = "01a0-reverse-uuid-test";
+		const ledgerDir = join(projDir, "sol-pi", targetSid, "observation-pack");
+		mkdirSync(ledgerDir, { recursive: true });
+
+		const msgTsIso = "2026-09-28T12:00:00.123Z";
+		const msgTsMs = Date.parse(msgTsIso);
+
+		// 写入包含该时间戳的 session.jsonl 文件
+		const sessionFileName = `2026-09-28T12-00-00-000Z_${targetSid}.jsonl`;
+		const sessionFileContent = [
+			JSON.stringify({ type: "session", id: targetSid }),
+			JSON.stringify({
+				type: "message",
+				id: "msg_1",
+				timestamp: msgTsIso,
+				message: { role: "user", content: "测试会话" },
+			}),
+		].join("\n");
+		writeFileSync(join(projDir, sessionFileName), sessionFileContent, "utf8");
+
+		// 写入该会话的 ledger.jsonl
+		const ledgerContent = JSON.stringify({
+			timestamp: "2026-09-28T12:05:00.000Z",
+			event: "placeholder",
+			id: "obs_rev_1",
+			tool: "read",
+			originalBytes: 12000,
+			originalTokens: 3000,
+			removedTokens: 2900,
+		});
+		writeFileSync(join(ledgerDir, "ledger.jsonl"), ledgerContent, "utf8");
+
+		try {
+			// 前端传来的 conv 只有 c12（内部序号）和携带时间戳的消息
+			const mockConvMessages = [
+				{
+					id: `u-${msgTsMs}-1`,
+					role: "user",
+					content: [{ type: "text", text: "测试会话" }],
+				},
+			];
+
+			const stats = analyzeSolSavings(mockConvMessages, "c12", tempDir);
+			expect(stats.totalSavedTokens).toBe(2900);
+			expect(stats.packedCount).toBe(1);
+			expect((stats.toolBreakdown as Record<string, number>).read).toBe(1);
+		} finally {
+			rmSync(tempDir, { recursive: true, force: true });
+		}
+	});
 });

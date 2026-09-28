@@ -38,53 +38,155 @@ function formatBytes(bytes) {
 const PLACEHOLDER_TOKENS_EST = 80;
 
 /**
+ * 尝试解析会话的真实持久化 sessionId（UUID）。
+ * 优先取显式 sessionId；若为客户端内部序号（c1/c2），则根据消息时间戳与工具调用 ID 映射到物理 session 文件。
+ * @param {string | null} [conversationId]
+ * @param {any[]} [messages]
+ * @param {string} [agentDir]
+ */
+export function resolveSessionId(conversationId = null, messages = [], agentDir = getAgentDir()) {
+	if (!conversationId) return null;
+	if (typeof conversationId === "string" && conversationId.length > 20 && conversationId.includes("-")) {
+		return conversationId;
+	}
+
+	const sessBase = join(agentDir, "sessions");
+	if (!existsSync(sessBase)) return null;
+
+	const msgTimestamps = new Set();
+	const toolCallIds = new Set();
+	for (const m of messages) {
+		if (m && typeof m.id === "string") {
+			const parts = m.id.split("-");
+			if (parts.length >= 2) {
+				const ts = parseInt(parts[1], 10);
+				if (ts > 1000000000000) msgTimestamps.add(ts);
+			}
+			if (parts[0] === "t" && parts.slice(1).join("-")) {
+				toolCallIds.add(parts.slice(1).join("-"));
+			}
+		}
+		if (m && m.timestamp) msgTimestamps.add(Number(m.timestamp));
+		if (m && m.toolCallId) toolCallIds.add(String(m.toolCallId));
+	}
+
+	if (msgTimestamps.size === 0 && toolCallIds.size === 0) return null;
+
+	try {
+		for (const proj of readdirSync(sessBase)) {
+			const projDir = join(sessBase, proj);
+			const solDir = join(projDir, "sol-pi");
+			if (!existsSync(solDir)) continue;
+
+			let files = [];
+			try {
+				files = readdirSync(projDir).filter((f) => f.endsWith(".jsonl"));
+			} catch {
+				continue;
+			}
+
+			for (const file of files) {
+				const parts = file.slice(0, -6).split("_");
+				const sid = parts.length >= 2 ? parts[parts.length - 1] : null;
+				if (!sid) continue;
+
+				const candidate = join(solDir, sid, "observation-pack", "ledger.jsonl");
+				if (!existsSync(candidate)) continue;
+
+				try {
+					const content = readFileSync(join(projDir, file), "utf8");
+					for (const ts of msgTimestamps) {
+						const iso = new Date(ts).toISOString();
+						if (content.includes(iso)) return sid;
+					}
+					for (const tid of toolCallIds) {
+						if (content.includes(tid)) return sid;
+					}
+				} catch {}
+			}
+		}
+	} catch {}
+
+	return null;
+}
+
+/**
  * 从 SoL-Pi 的物理账本 ledger.jsonl 中直接读取真实的节省数据。
  * SoL-Pi 在 API 请求投影层（pi.on("context")）动态替换大输出，绝不就地改写会话历史 messages，
  * 真实的打包截断与 Token 削减全部记录在 <sessionDir>/sol-pi/<sessionId>/observation-pack/ledger.jsonl 中。
  * @param {string | null} [conversationId]
  * @param {string} [agentDir]
+ * @param {any[]} [messages]
  */
-export function getSavingsFromLedger(conversationId = null, agentDir = getAgentDir()) {
+export function getSavingsFromLedger(conversationId = null, agentDir = getAgentDir(), messages = []) {
 	if (!conversationId) return null;
 	const sessBase = join(agentDir, "sessions");
 	if (!existsSync(sessBase)) return null;
+
+	let targetSid = conversationId;
+	let candidatePath = null;
 	try {
 		for (const proj of readdirSync(sessBase)) {
-			const candidate = join(sessBase, proj, "sol-pi", conversationId, "observation-pack", "ledger.jsonl");
-			if (existsSync(candidate)) {
-				let totalSavedTokens = 0;
-				let totalOriginalBytes = 0;
-				let packedCount = 0;
-				const toolBreakdown = {};
-				const packedList = [];
-				const lines = readFileSync(candidate, "utf8").split("\n");
-				for (const line of lines) {
-					if (!line.trim()) continue;
-					try {
-						const ev = JSON.parse(line);
-						if (ev.event === "placeholder") {
-							const saved = ev.removedTokens || 0;
-							const bytes = ev.originalBytes || 0;
-							const tool = ev.tool || "unknown";
-							totalSavedTokens += saved;
-							totalOriginalBytes += bytes;
-							packedCount++;
-							toolBreakdown[tool] = (toolBreakdown[tool] || 0) + 1;
-							packedList.push({
-								id: ev.id,
-								tool,
-								bytes,
-								tokens: ev.originalTokens || 0,
-								savedTokens: saved,
-								sends: ev.sendNumber || 1,
-							});
-						}
-					} catch {}
-				}
-				return { totalSavedTokens, totalOriginalBytes, packedCount, toolBreakdown, packedList };
+			const cand = join(sessBase, proj, "sol-pi", targetSid, "observation-pack", "ledger.jsonl");
+			if (existsSync(cand)) {
+				candidatePath = cand;
+				break;
 			}
 		}
 	} catch {}
+
+	// 若未直接命中（说明 conversationId 为客户端序号 c1/c2 等），通过 messages 逆向解析真实 sessionId
+	if (!candidatePath && Array.isArray(messages) && messages.length > 0) {
+		const resolved = resolveSessionId(conversationId, messages, agentDir);
+		if (resolved) {
+			targetSid = resolved;
+			try {
+				for (const proj of readdirSync(sessBase)) {
+					const cand = join(sessBase, proj, "sol-pi", targetSid, "observation-pack", "ledger.jsonl");
+					if (existsSync(cand)) {
+						candidatePath = cand;
+						break;
+					}
+				}
+			} catch {}
+		}
+	}
+
+	if (!candidatePath) return null;
+
+	try {
+		let totalSavedTokens = 0;
+		let totalOriginalBytes = 0;
+		let packedCount = 0;
+		const toolBreakdown = {};
+		const packedList = [];
+		const lines = readFileSync(candidatePath, "utf8").split("\n");
+		for (const line of lines) {
+			if (!line.trim()) continue;
+			try {
+				const ev = JSON.parse(line);
+				if (ev.event === "placeholder") {
+					const saved = ev.removedTokens || 0;
+					const bytes = ev.originalBytes || 0;
+					const tool = ev.tool || "unknown";
+					totalSavedTokens += saved;
+					totalOriginalBytes += bytes;
+					packedCount++;
+					toolBreakdown[tool] = (toolBreakdown[tool] || 0) + 1;
+					packedList.push({
+						id: ev.id,
+						tool,
+						bytes,
+						tokens: ev.originalTokens || 0,
+						savedTokens: saved,
+						sends: ev.sendNumber || 1,
+					});
+				}
+			} catch {}
+		}
+		return { totalSavedTokens, totalOriginalBytes, packedCount, toolBreakdown, packedList };
+	} catch {}
+
 	return null;
 }
 
@@ -122,7 +224,7 @@ export function analyzeSolSavings(messages = [], conversationId = null, agentDir
 
 	// 优先从 SoL-Pi 权威物理账本 ledger.jsonl 读取（SoL-Pi 不污染内存历史消息）
 	if (conversationId) {
-		const fromLedger = getSavingsFromLedger(conversationId, agentDir);
+		const fromLedger = getSavingsFromLedger(conversationId, agentDir, messages);
 		if (fromLedger && fromLedger.totalSavedTokens > 0) {
 			return {
 				...fromLedger,
@@ -283,7 +385,8 @@ export function solSavingsPlugin(host) {
 			return;
 		}
 
-		const stats = analyzeSolSavings(conv.messages, conv.conversationId || conv.id);
+		const sid = conv.sessionId || conv.conversationId || conv.id;
+		const stats = analyzeSolSavings(conv.messages, sid);
 		cachedStats = stats;
 
 		const planInfo = formatPlanSummary(stats.plan);
@@ -369,7 +472,8 @@ export function solSavingsPlugin(host) {
 	// 注册 HTTP 路由供前端弹窗查询状态与一键配置/安装
 	host.route?.("GET", "/status", (_req, res) => {
 		const conv = host.getActiveConversation?.();
-		const stats = conv && Array.isArray(conv.messages) ? analyzeSolSavings(conv.messages, conv.conversationId || conv.id) : null;
+		const sid = conv?.sessionId || conv?.conversationId || conv?.id || null;
+		const stats = conv && Array.isArray(conv.messages) ? analyzeSolSavings(conv.messages, sid) : null;
 		res.json({
 			...checkSolPiStatus(),
 			conversationId: conv?.conversationId || conv?.id || null,

@@ -4688,6 +4688,9 @@ export class ClientSession {
 			const modelId = curModel ? `${curModel.provider}/${curModel.id}` : undefined;
 			return {
 				conversationId: target.id,
+				sessionId: target.session.sessionId,
+				sessionFile: target.session.sessionFile,
+				sessionDir: target.session.sessionManager?.getSessionDir?.(),
 				title: target.title,
 				model: modelId,
 				at: target.lastActiveAt,
