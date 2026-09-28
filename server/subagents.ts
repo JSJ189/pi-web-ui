@@ -493,7 +493,7 @@ export function makeSubagentTools(
 				),
 				timeoutSeconds: Type.Optional(
 					Type.Integer({
-						description: `Max wait in seconds (default 600, cap ~${Math.floor(WAIT_CAP_MS / 1000)} — stays below the tool watchdog; on timeout returns the unfinished list so you can call again).`,
+						description: `Max wait in seconds (default: the cap, ~${Math.floor(WAIT_CAP_MS / 1000)}s — stays below the tool watchdog; on timeout returns the unfinished list so you can call again).`,
 						minimum: 1,
 						maximum: Math.floor(WAIT_CAP_MS / 1000),
 					}),
@@ -592,7 +592,10 @@ export function makeSubagentTools(
 				// 同 WAIT_CAP_MS：0.8×看门狗、60s 封顶、5s 兜底，wait 必须先于看门狗干净超时。
 				const currentWaitCapMs =
 					currentWatchdogMs > 0 ? Math.max(Math.min(60_000, Math.floor(currentWatchdogMs * 0.8)), 5_000) : 3600_000;
-				const timeoutMs = Math.min(Math.max(p.timeoutSeconds ?? 600, 1), Math.floor(currentWaitCapMs / 1000)) * 1000;
+				// 默认直接取有效 cap（60s 封顶、随看门狗缩放）：旧默认 600 恒被 cap 截断，
+				// 属于永远不会生效的死值，还会让模型误以为不传参能等 10 分钟（#404）。
+				const timeoutSeconds = p.timeoutSeconds ?? Math.floor(currentWaitCapMs / 1000);
+				const timeoutMs = Math.min(Math.max(timeoutSeconds, 1), Math.floor(currentWaitCapMs / 1000)) * 1000;
 				const waitStart = Date.now();
 				const deadline = waitStart + timeoutMs;
 				// 已到终态的、（或已被移出找不到的）直接归位；剩下的阻塞轮询到
