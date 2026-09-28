@@ -1280,11 +1280,12 @@ export const zh = {
 	settingsTools: "工具",
 	toolsSectionCore: "核心工具",
 	toolsCoreHint:
-		"bash / read / edit / write 是模型干活的基本盘，不在下方目录开关里。关闭后模型无法执行对应操作：关 bash 不能跑命令，关 read 不能读文件，关 edit / write 不能改文件。",
+		"bash / read / edit / write / powershell 是模型干活的基本盘，不在下方目录开关里。关闭后模型无法执行对应操作：关 bash 不能跑命令，关 read 不能读文件，关 edit / write 不能改文件，关 powershell 不能跑 PowerShell 命令（仅 Windows）。",
 	toolCoreBashDesc: "执行 shell 命令。关闭后模型不能跑命令、装依赖、跑测试。",
 	toolCoreReadDesc: "读取文件与目录。关闭后模型只能靠对话里已有的内容干活。",
 	toolCoreEditDesc: "精确编辑文件。关闭后模型不能局部修改代码。",
 	toolCoreWriteDesc: "新建或整写文件。关闭后模型不能创建、覆盖文件。",
+	toolCorePowershellDesc: "执行 PowerShell 命令（仅 Windows 有效）。关闭后模型不能运行 PowerShell 命令。",
 	toolsSectionTerminal: "持久终端",
 	toolsSectionSubagent: "子代理",
 	toolsSectionOther: "其他工具",
@@ -3034,13 +3035,15 @@ const en: Record<keyof typeof zh, string> = {
 	settingsTools: "Tools",
 	toolsSectionCore: "Core tools",
 	toolsCoreHint:
-		"bash / read / edit / write are the model's basic toolkit and are not part of the catalog toggles below. Turning one off removes that ability: no bash = no command execution, no read = no file reading, no edit / write = no file modification.",
+		"bash / read / edit / write / powershell are the model's basic toolkit and are not part of the catalog toggles below. Turning one off removes that ability: no bash = no command execution, no read = no file reading, no edit / write = no file modification, no powershell = no PowerShell command execution (Windows only).",
 	toolCoreBashDesc:
 		"Run shell commands. When off, the model cannot execute commands, install dependencies, or run tests.",
 	toolCoreReadDesc:
 		"Read files and directories. When off, the model can only work with content already in the conversation.",
 	toolCoreEditDesc: "Make precise file edits. When off, the model cannot modify code in place.",
 	toolCoreWriteDesc: "Create or overwrite files. When off, the model cannot create or overwrite files.",
+	toolCorePowershellDesc:
+		"Run PowerShell commands (Windows only). When off, the model cannot execute PowerShell commands.",
 	toolsSectionTerminal: "Persistent terminal",
 	toolsSectionSubagent: "Subagents",
 	toolsSectionOther: "Other tools",
