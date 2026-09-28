@@ -8,7 +8,7 @@
  *  3. 将节省指标与计划徽标实时展示在 pi-web-ui 底部状态栏（bottombar）；
  *  4. 点击底栏徽标即可弹出详细节省清单与工具分类统计，并支持一键检测/写入配置与安装。
  */
-import { existsSync, readFileSync, writeFileSync } from "node:fs";
+import { existsSync, readdirSync, readFileSync, writeFileSync } from "node:fs";
 import { exec } from "node:child_process";
 import { homedir } from "node:os";
 import { join } from "node:path";
@@ -38,9 +38,100 @@ function formatBytes(bytes) {
 const PLACEHOLDER_TOKENS_EST = 80;
 
 /**
- * 从当前对话消息快照中分析 SoL-Pi 节省情况。
+ * 从 SoL-Pi 的物理账本 ledger.jsonl 中直接读取真实的节省数据。
+ * SoL-Pi 在 API 请求投影层（pi.on("context")）动态替换大输出，绝不就地改写会话历史 messages，
+ * 真实的打包截断与 Token 削减全部记录在 <sessionDir>/sol-pi/<sessionId>/observation-pack/ledger.jsonl 中。
+ * @param {string | null} [conversationId]
+ * @param {string} [agentDir]
  */
-export function analyzeSolSavings(messages = []) {
+export function getSavingsFromLedger(conversationId = null, agentDir = getAgentDir()) {
+	if (!conversationId) return null;
+	const sessBase = join(agentDir, "sessions");
+	if (!existsSync(sessBase)) return null;
+	try {
+		for (const proj of readdirSync(sessBase)) {
+			const candidate = join(sessBase, proj, "sol-pi", conversationId, "observation-pack", "ledger.jsonl");
+			if (existsSync(candidate)) {
+				let totalSavedTokens = 0;
+				let totalOriginalBytes = 0;
+				let packedCount = 0;
+				const toolBreakdown = {};
+				const packedList = [];
+				const lines = readFileSync(candidate, "utf8").split("\n");
+				for (const line of lines) {
+					if (!line.trim()) continue;
+					try {
+						const ev = JSON.parse(line);
+						if (ev.event === "placeholder") {
+							const saved = ev.removedTokens || 0;
+							const bytes = ev.originalBytes || 0;
+							const tool = ev.tool || "unknown";
+							totalSavedTokens += saved;
+							totalOriginalBytes += bytes;
+							packedCount++;
+							toolBreakdown[tool] = (toolBreakdown[tool] || 0) + 1;
+							packedList.push({
+								id: ev.id,
+								tool,
+								bytes,
+								tokens: ev.originalTokens || 0,
+								savedTokens: saved,
+								sends: ev.sendNumber || 1,
+							});
+						}
+					} catch {}
+				}
+				return { totalSavedTokens, totalOriginalBytes, packedCount, toolBreakdown, packedList };
+			}
+		}
+	} catch {}
+	return null;
+}
+
+/**
+ * 从当前对话消息快照或 SoL-Pi 账本中分析 SoL-Pi 节省情况。
+ * @param {any[]} [messages]
+ * @param {string | null} [conversationId]
+ * @param {string} [agentDir]
+ */
+export function analyzeSolSavings(messages = [], conversationId = null, agentDir = getAgentDir()) {
+	// 查找可能存在的 SoL-Pi 规划（Plan）
+	let latestPlan = null;
+	for (let i = messages.length - 1; i >= 0; i--) {
+		const m = messages[i];
+		const contents = Array.isArray(m?.content) ? m.content : [];
+		for (const c of contents) {
+			const text = typeof c === "string" ? c : typeof c?.text === "string" ? c.text : "";
+			if (text.includes("sol-pi-online-context-state-v1") || text.includes('"plan":')) {
+				try {
+					const jsonMatch = text.match(/\{[\s\S]*"plan"\s*:\s*\[[\s\S]*\][\s\S]*\}/);
+					if (jsonMatch) {
+						const parsed = JSON.parse(jsonMatch[0]);
+						if (Array.isArray(parsed.plan) && parsed.plan.length > 0) {
+							latestPlan = parsed.plan;
+							break;
+						}
+					}
+				} catch {
+					/* ignore parse error */
+				}
+			}
+		}
+		if (latestPlan) break;
+	}
+
+	// 优先从 SoL-Pi 权威物理账本 ledger.jsonl 读取（SoL-Pi 不污染内存历史消息）
+	if (conversationId) {
+		const fromLedger = getSavingsFromLedger(conversationId, agentDir);
+		if (fromLedger && fromLedger.totalSavedTokens > 0) {
+			return {
+				...fromLedger,
+				plan: latestPlan,
+			};
+		}
+	}
+
+	// 回退：从消息快照中做启发式正则匹配（用于单测或 mock 场景）
 	let totalSavedTokens = 0;
 	let totalOriginalBytes = 0;
 	let packedCount = 0;
@@ -91,31 +182,6 @@ export function analyzeSolSavings(messages = []) {
 				});
 			}
 		}
-	}
-
-	// 查找可能存在的 SoL-Pi 规划（Plan）
-	let latestPlan = null;
-	for (let i = messages.length - 1; i >= 0; i--) {
-		const m = messages[i];
-		const contents = Array.isArray(m?.content) ? m.content : [];
-		for (const c of contents) {
-			const text = typeof c === "string" ? c : typeof c?.text === "string" ? c.text : "";
-			if (text.includes("sol-pi-online-context-state-v1") || text.includes('"plan":')) {
-				try {
-					const jsonMatch = text.match(/\{[\s\S]*"plan"\s*:\s*\[[\s\S]*\][\s\S]*\}/);
-					if (jsonMatch) {
-						const parsed = JSON.parse(jsonMatch[0]);
-						if (Array.isArray(parsed.plan) && parsed.plan.length > 0) {
-							latestPlan = parsed.plan;
-							break;
-						}
-					}
-				} catch {
-					/* ignore parse error */
-				}
-			}
-		}
-		if (latestPlan) break;
 	}
 
 	return {
@@ -217,7 +283,7 @@ export function solSavingsPlugin(host) {
 			return;
 		}
 
-		const stats = analyzeSolSavings(conv.messages);
+		const stats = analyzeSolSavings(conv.messages, conv.conversationId || conv.id);
 		cachedStats = stats;
 
 		const planInfo = formatPlanSummary(stats.plan);
@@ -303,7 +369,7 @@ export function solSavingsPlugin(host) {
 	// 注册 HTTP 路由供前端弹窗查询状态与一键配置/安装
 	host.route?.("GET", "/status", (_req, res) => {
 		const conv = host.getActiveConversation?.();
-		const stats = conv && Array.isArray(conv.messages) ? analyzeSolSavings(conv.messages) : null;
+		const stats = conv && Array.isArray(conv.messages) ? analyzeSolSavings(conv.messages, conv.conversationId || conv.id) : null;
 		res.json({
 			...checkSolPiStatus(),
 			conversationId: conv?.conversationId || conv?.id || null,

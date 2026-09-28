@@ -1,5 +1,8 @@
+import { mkdirSync, rmSync, writeFileSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
 import { describe, expect, it, vi } from "vitest";
-import { analyzeSolSavings, formatPlanSummary } from "../../plugins/sol-savings/index.mjs";
+import { analyzeSolSavings, formatPlanSummary, getSavingsFromLedger } from "../../plugins/sol-savings/index.mjs";
 import solSavingsPlugin from "../../plugins/sol-savings/index.mjs";
 
 describe("SoL-Pi Savings 插件与底栏统计", () => {
@@ -268,5 +271,112 @@ describe("SoL-Pi Savings 插件与底栏统计", () => {
 		// 恢复会话 1 的数据
 		lastUpdate = updates[updates.length - 1];
 		expect(lastUpdate.patch.badge).toBe("省 23.8k");
+	});
+
+	it("正确从 SoL-Pi 物理账本 ledger.jsonl 读取权威截断数据", () => {
+		const tempDir = join(tmpdir(), `sol-test-${Date.now()}-${Math.random().toString(36).slice(2)}`);
+		const convId = "conv-sol-ledger-123";
+		const ledgerDir = join(tempDir, "sessions", "test-project", "sol-pi", convId, "observation-pack");
+		mkdirSync(ledgerDir, { recursive: true });
+
+		const ledgerContent = [
+			JSON.stringify({
+				timestamp: "2026-09-28T07:00:13.221Z",
+				event: "placeholder",
+				id: "obs_001",
+				request: 5,
+				sendNumber: 3,
+				tool: "read",
+				originalBytes: 16000,
+				originalLines: 100,
+				originalTokens: 2500,
+				removedTokens: 2300,
+			}),
+			JSON.stringify({
+				timestamp: "2026-09-28T07:01:13.221Z",
+				event: "placeholder",
+				id: "obs_002",
+				request: 6,
+				sendNumber: 2,
+				tool: "grep",
+				originalBytes: 8000,
+				originalLines: 50,
+				originalTokens: 1200,
+				removedTokens: 1100,
+			}),
+			// 模拟混入损坏行或非 placeholder 事件，验证容错
+			"{ bad json",
+			JSON.stringify({ event: "archive", id: "obs_003" }),
+		].join("\n");
+
+		writeFileSync(join(ledgerDir, "ledger.jsonl"), ledgerContent, "utf8");
+
+		try {
+			const ledgerStats = getSavingsFromLedger(convId, tempDir);
+			expect(ledgerStats).not.toBeNull();
+			expect(ledgerStats?.totalSavedTokens).toBe(3400); // 2300 + 1100
+			expect(ledgerStats?.totalOriginalBytes).toBe(24000); // 16000 + 8000
+			expect(ledgerStats?.packedCount).toBe(2);
+			expect((ledgerStats?.toolBreakdown as Record<string, number>).read).toBe(1);
+			expect((ledgerStats?.toolBreakdown as Record<string, number>).grep).toBe(1);
+
+			// 测试 analyzeSolSavings 优先读取 ledger.jsonl 并合并 messages 中的 Plan
+			const mockMessagesWithPlan = [
+				{
+					role: "assistant",
+					content: [
+						{
+							type: "text",
+							text: JSON.stringify({
+								state: "sol-pi-online-context-state-v1",
+								plan: [
+									{ id: "1", goal: "提取物理账本", status: "completed" },
+									{ id: "2", goal: "计算节省总数", status: "in_progress" },
+								],
+							}),
+						},
+					],
+				},
+			];
+
+			const combinedStats = analyzeSolSavings(mockMessagesWithPlan, convId, tempDir);
+			expect(combinedStats.totalSavedTokens).toBe(3400);
+			expect(combinedStats.plan).toHaveLength(2);
+			expect(combinedStats.plan?.[0].goal).toBe("提取物理账本");
+		} finally {
+			rmSync(tempDir, { recursive: true, force: true });
+		}
+	});
+
+	it("在未找到物理账本或非法会话 ID 时优雅回退至消息正则分析", () => {
+		const mockMessages = [
+			{
+				role: "tool_result",
+				content: [
+					{
+						type: "text",
+						text: [
+							"[large tool result replaced after its first 2 provider requests]",
+							"id: obs_fallback",
+							"tool: eval",
+							"original_bytes: 4000",
+							"original_lines: 30",
+							"estimated_tokens: 800",
+						].join("\n"),
+					},
+				],
+			},
+			{
+				role: "assistant",
+				content: [{ type: "text", text: "回退成功" }],
+			},
+		];
+
+		// 不存在的 conversationId
+		const fallbackStats = analyzeSolSavings(mockMessages, "non-existent-conv-id");
+		expect(fallbackStats.packedCount).toBe(1);
+		expect(fallbackStats.totalOriginalBytes).toBe(4000);
+		expect(fallbackStats.totalSavedTokens).toBe(720); // (800 - 80) * 1
+		expect((fallbackStats.toolBreakdown as Record<string, number>).eval).toBe(1);
 	});
 });
