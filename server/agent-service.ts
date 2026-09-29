@@ -2516,6 +2516,7 @@ export class ClientSession {
 		model?: string | null,
 		parentId?: string,
 		persist?: boolean,
+		title?: string,
 	): Promise<string> {
 		// 数量上限先行：每个子代理都是完整 runtime + TerminalManager，无上限时一次
 		// 并行派发几十个会把服务进程拖垮。持久化普通对话则受项目会话上限限制。
@@ -2591,7 +2592,7 @@ export class ClientSession {
 		// syncPluginTools 不回补，模板热改不影响已运行的子代理（与 prompt/技能一致）。
 		conv.subagentBarsPluginTools = !!apply && apply.enabledExtensions.length > 0;
 		conv.listed = true;
-		conv.title = subagentTitle(prompt);
+		conv.title = title ?? subagentTitle(prompt);
 		this.convs.set(conv.id, conv);
 		// 子代理会话同样订阅 SDK 事件：否则 onEvent 永不触发，点开查看时没有
 		// message_delta 流式增量、快照也不刷新，只能靠切走切回时的 flushSnapshot
@@ -3780,6 +3781,7 @@ export class ClientSession {
 					model ?? null,
 					parentId,
 					true,
+					title,
 				);
 				if (title) {
 					const conv = this.convs.get(convId);
@@ -7923,6 +7925,7 @@ export class ClientSession {
 					null,
 					conv.id,
 					true,
+					pick(this.getLang(), "委派执行", "Delegate executor"),
 				);
 				const execConv = this.convs.get(execId);
 				if (execConv) execConv.title = pick(this.getLang(), "委派执行", "Delegate executor");

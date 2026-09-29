@@ -89,7 +89,10 @@ try {
 		maxRounds: 1,
 		locked: true,
 	});
-	await waitFor(() => goalStatus?.goal === "把 README 的安装说明补全", "goal_status");
+	await waitFor(
+		() => goalStatus?.goal === "把 README 的安装说明补全" && !!goalStatus?.roles?.executor?.convId,
+		"goal_status with executor",
+	);
 
 	check(
 		"reviewMode 已从协议移除（只剩一条路径）",
