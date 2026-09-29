@@ -1529,6 +1529,18 @@ export const zh = {
 	dshDefaultPreset: "默认预设",
 	dshDefaultPresetDesc: "新对话使用的预设；空白会话可随时切换，首轮发言后锁定",
 	dshPresetUserNote: "自建预设来自用户预设目录（与 shell 同等信任）；用裸包名的自建组合在此无法挂载（已知限制）",
+	/* pi 引擎内置五档预设：文案随界面语言定，译文不再由服务端单方面下发。
+	   键名与预设 id 同名（非内置预设回落服务端文案 nameEn ?? name）。 */
+	"preset.standard": "全功能",
+	"preset.minimal": "极简模式",
+	"preset.code": "代码开发",
+	"preset.reader": "只读分析",
+	"preset.ask": "纯对话",
+	"preset.standardDesc": "提供全部可用工具与扩展能力（默认）",
+	"preset.minimalDesc": "仅保留 bash 与 read；插件工具、技能名录与终端引导同步隐藏",
+	"preset.codeDesc": "专注于代码读写与执行（bash, read, edit, write, edit_soft）；插件工具与技能名录同步隐藏",
+	"preset.readerDesc": "仅保留只读工具，禁止写操作；插件工具同步隐藏（读写未知，保守处理）",
+	"preset.askDesc": "无工具问答模式，模型不调用任何工具；插件工具与技能名录同步隐藏",
 	dshPerm: "权限",
 	dshPermReadOnly: "仅可查看",
 	dshPermReadOnlyDesc: "只能读文件、跑只读命令；写操作一律拒绝，不弹确认",
@@ -3337,6 +3349,18 @@ const en: Record<keyof typeof zh, string> = {
 	dshDefaultPresetDesc: "Preset for new chats; blank sessions can switch anytime, locked after the first message",
 	dshPresetUserNote:
 		"Custom presets come from the user preset directory (trusted like shell access); compositions using bare package names cannot mount here (known limitation)",
+	"preset.standard": "Full access",
+	"preset.minimal": "Minimal",
+	"preset.code": "Code development",
+	"preset.reader": "Read-only analysis",
+	"preset.ask": "Chat only",
+	"preset.standardDesc": "All available tools and extension capabilities (default)",
+	"preset.minimalDesc": "Keeps only bash and read; plugin tools, skill catalog and terminal guidance are hidden too",
+	"preset.codeDesc":
+		"Focused on reading, writing and running code (bash, read, edit, write, edit_soft); plugin tools and skill catalog are hidden too",
+	"preset.readerDesc":
+		"Keeps only read-only tools and forbids writes; plugin tools are hidden too (read/write unknown, handled conservatively)",
+	"preset.askDesc": "No-tools Q&A: the model never calls a tool; plugin tools and skill catalog are hidden too",
 	dshPerm: "Permissions",
 	dshPermReadOnly: "Read Only",
 	dshPermReadOnlyDesc: "Read files and run read-only commands; writes are always denied, no prompts",

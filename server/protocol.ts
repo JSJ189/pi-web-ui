@@ -2208,8 +2208,13 @@ export interface UiAgentPreset {
 	id: string;
 	trust: "system" | "user";
 	isDefault: boolean;
+	/** 文案（服务端默认语言，pi 内置五档为中文）。非中文界面取 *En ?? *。 */
 	name?: string;
 	description?: string;
+	/** 非中文界面的文案（与审批规则的 labelEn/reasonEn 同一约定）：
+	 *  服务端把两种语言都带上，界面按当前语言取，不再把中文硬塞给英文用户。 */
+	nameEn?: string;
+	descriptionEn?: string;
 	order?: number;
 	broken?: string;
 }
@@ -2218,8 +2223,12 @@ export interface UiAgentPreset {
 export interface DshPermissionOption {
 	/** 预设值（read-only/workspace-write(-never)/danger-full-access/custom）。 */
 	value: string;
+	/** 文案（服务端默认语言）；非中文界面取 nameEn ?? name。 */
 	name: string;
 	description?: string;
+	/** 非中文界面的文案（见 UiAgentPreset.nameEn）。 */
+	nameEn?: string;
+	descriptionEn?: string;
 }
 
 // ---------------------------------------------------------------------------

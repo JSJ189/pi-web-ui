@@ -34,7 +34,7 @@ import {
 import { CopyButton } from "./copy-button";
 import { PluginIcon } from "../plugin-icon";
 import { HintTip } from "./HintTip";
-import { sortAgentPresets } from "./DshPresetBar";
+import { sortAgentPresets, presetText } from "./DshPresetBar";
 import { DSH_PERMISSION_ORDER, permDescKey, permLabelKey } from "./DshPermissionBar";
 import { PluginPage } from "./PluginPage";
 import { PluginSettingsForm } from "./PluginSettingsForm";
@@ -840,7 +840,15 @@ export function SettingsModal({
 				),
 			)
 		: new Set(AGENT_TOOL_CATALOG.map((e) => e.name));
-	const piPresetName = chat.dshPresets?.presets.find((pp) => pp.id === piPresetId)?.name ?? piPresetId ?? "";
+	const piPresetName = presetText(
+		chat.dshPresets?.presets.find((pp) => pp.id === piPresetId) ?? {
+			id: piPresetId ?? "",
+			trust: "system",
+			isDefault: false,
+		},
+		locale,
+		t,
+	).name;
 	const isBlockedByPreset = (name: string) => piPresetFiltering && !piPresetAllowed.has(name);
 	const blockedPresetCount = piPresetFiltering
 		? AGENT_TOOL_CATALOG.filter((e) => !piPresetAllowed.has(e.name)).length
@@ -3933,29 +3941,32 @@ export function SettingsModal({
 									>
 										{sortAgentPresets(chat.dshPresets.presets).map((p) => (
 											<option key={p.id} value={p.id} disabled={!!p.broken}>
-												{p.name ?? p.id}
+												{presetText(p, locale, t).name}
 												{p.trust === "user" ? ` · ${t("dshPresetUser")}` : ""}
 											</option>
 										))}
 									</select>
 								</div>
 								<div className="set-list">
-									{sortAgentPresets(chat.dshPresets.presets).map((p) => (
-										<div className="set-row" key={p.id}>
-											<div className="set-row-info">
-												<div className="set-row-name">
-													{p.name ?? p.id}
-													{p.trust === "user" && <span className="dd-preset-tag">{t("dshPresetUser")}</span>}
-													{p.id === chat.dshPresets!.defaultPreset && (
-														<span className="dd-preset-tag">{t("dshPresetDefaultTag")}</span>
-													)}
-													{p.broken && <span className="dd-preset-tag warn">{t("dshPresetBroken")}</span>}
+									{sortAgentPresets(chat.dshPresets.presets).map((p) => {
+										const text = presetText(p, locale, t);
+										return (
+											<div className="set-row" key={p.id}>
+												<div className="set-row-info">
+													<div className="set-row-name">
+														{text.name}
+														{p.trust === "user" && <span className="dd-preset-tag">{t("dshPresetUser")}</span>}
+														{p.id === chat.dshPresets!.defaultPreset && (
+															<span className="dd-preset-tag">{t("dshPresetDefaultTag")}</span>
+														)}
+														{p.broken && <span className="dd-preset-tag warn">{t("dshPresetBroken")}</span>}
+													</div>
+													{text.description && !p.broken && <div className="set-row-desc">{text.description}</div>}
+													{p.broken && <div className="set-row-desc">{p.broken}</div>}
 												</div>
-												{p.description && !p.broken && <div className="set-row-desc">{p.description}</div>}
-												{p.broken && <div className="set-row-desc">{p.broken}</div>}
 											</div>
-										</div>
-									))}
+										);
+									})}
 								</div>
 								<p className="set-hint">{t("dshPresetUserNote")}</p>
 							</div>

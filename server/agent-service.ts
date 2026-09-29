@@ -158,6 +158,7 @@ import {
 	effectiveDisabledAgentTools,
 	isAgentToolEnabled,
 	isTerminalGuidanceOn,
+	localizedName,
 	MARKERS_LIST_TOOL_NAME,
 	PI_AGENT_PRESETS,
 	PI_PERMISSION_OPTIONS,
@@ -5897,7 +5898,11 @@ export class ClientSession {
 			agentPreset: conv
 				? {
 						id: conv.agentPreset ?? "standard",
-						name: PI_AGENT_PRESETS.find((p) => p.id === conv.agentPreset)?.name ?? "全功能",
+						name: localizedName(
+							PI_AGENT_PRESETS.find((p) => p.id === conv.agentPreset),
+							this.getLang(),
+							"全功能",
+						),
 						locked: conv.presetLocked || !this.isBlankConversation(conv),
 					}
 				: null,
@@ -7757,8 +7762,8 @@ export class ClientSession {
 		this.emit({
 			type: "notice",
 			level: "info",
-			text: `已切换为「${hit.name}」预设`,
-			textEn: `Switched to preset "${hit.name}"`,
+			text: `已切换为「${localizedName(hit, this.getLang())}」预设`,
+			textEn: `Switched to preset "${localizedName(hit, this.getLang())}"`,
 		});
 		this.pushSettings();
 		this.flushSnapshot();
@@ -7820,8 +7825,8 @@ export class ClientSession {
 		this.emit({
 			type: "notice",
 			level: "info",
-			text: `当前会话权限已切换为「${hit.name}」`,
-			textEn: `Current session permission switched to "${hit.name}"`,
+			text: `当前会话权限已切换为「${localizedName(hit, this.getLang())}」`,
+			textEn: `Current session permission switched to "${localizedName(hit, this.getLang())}"`,
 		});
 		this.flushSnapshot();
 	}

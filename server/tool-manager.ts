@@ -395,7 +395,9 @@ export const PI_AGENT_PRESETS: UiAgentPreset[] = [
 		trust: "system",
 		isDefault: true,
 		name: "全功能",
+		nameEn: "Full access",
 		description: "提供全部可用工具与扩展能力（默认）",
+		descriptionEn: "All available tools and extension capabilities (default)",
 		order: 0,
 	},
 	{
@@ -403,7 +405,9 @@ export const PI_AGENT_PRESETS: UiAgentPreset[] = [
 		trust: "system",
 		isDefault: false,
 		name: "极简模式",
+		nameEn: "Minimal",
 		description: "仅保留 bash 与 read；插件工具、技能名录与终端引导同步隐藏",
+		descriptionEn: "Keeps only bash and read; plugin tools, skill catalog and terminal guidance are hidden too",
 		order: 1,
 	},
 	{
@@ -411,7 +415,10 @@ export const PI_AGENT_PRESETS: UiAgentPreset[] = [
 		trust: "system",
 		isDefault: false,
 		name: "代码开发",
+		nameEn: "Code development",
 		description: "专注于代码读写与执行（bash, read, edit, write, edit_soft）；插件工具与技能名录同步隐藏",
+		descriptionEn:
+			"Focused on reading, writing and running code (bash, read, edit, write, edit_soft); plugin tools and skill catalog are hidden too",
 		order: 2,
 	},
 	{
@@ -419,7 +426,10 @@ export const PI_AGENT_PRESETS: UiAgentPreset[] = [
 		trust: "system",
 		isDefault: false,
 		name: "只读分析",
+		nameEn: "Read-only analysis",
 		description: "仅保留只读工具，禁止写操作；插件工具同步隐藏（读写未知，保守处理）",
+		descriptionEn:
+			"Keeps only read-only tools and forbids writes; plugin tools are hidden too (read/write unknown, handled conservatively)",
 		order: 3,
 	},
 	{
@@ -427,7 +437,9 @@ export const PI_AGENT_PRESETS: UiAgentPreset[] = [
 		trust: "system",
 		isDefault: false,
 		name: "纯对话",
+		nameEn: "Chat only",
 		description: "无工具问答模式，模型不调用任何工具；插件工具与技能名录同步隐藏",
+		descriptionEn: "No-tools Q&A: the model never calls a tool; plugin tools and skill catalog are hidden too",
 		order: 4,
 	},
 ];
@@ -437,19 +449,52 @@ export const PI_PERMISSION_OPTIONS: DshPermissionOption[] = [
 	{
 		value: "read-only",
 		name: "只读模式",
+		nameEn: "Read Only",
 		description: "禁止所有文件修改（write/edit/edit_soft）及任何非只读操作",
+		descriptionEn: "Forbids all file modification (write/edit/edit_soft) and any non-read-only operation",
 	},
 	{
 		value: "workspace-write-never",
 		name: "工作区内修改",
+		nameEn: "Workspace Write",
 		description: "仅允许在当前工作区目录下修改文件，工作区外写操作一律拒绝",
+		descriptionEn: "Only files under the current workspace may be modified; writes outside it are always denied",
 	},
 	{
 		value: "danger-full-access",
 		name: "完全权限",
+		nameEn: "Full access",
 		description: "允许修改任意目录文件及执行全量操作（需要二次确认）",
+		descriptionEn: "Allows modifying files anywhere and running any operation (needs a second confirmation)",
 	},
 ];
+
+/**
+ * 预设/权限文案随界面语言落定：中文界面用服务端默认文案，其它语言用
+ * nameEn ?? name（与审批规则的 labelEn/reasonEn、插件的 label/labelEn 同一约定；
+ * 其它语言包同理回落英文）。服务端 notice 的 textEn 也走这里，否则英文界面会看到
+ * `Switched to preset "全功能"`。
+ *
+ * lang 是 ServerLang（resolveServerLang 的产物）：只有 "zh" 算中文。
+ * 本文件保持零依赖，故直接比字符串而不 import server/i18n.js。
+ */
+export function localizedName(
+	item: { name?: string; nameEn?: string } | undefined,
+	lang: string,
+	fallback = "",
+): string {
+	if (!item) return fallback;
+	return lang === "zh" ? (item.name ?? item.nameEn ?? fallback) : (item.nameEn ?? item.name ?? fallback);
+}
+
+/** localizedName 的描述版本（description 两边都可缺省 → undefined）。 */
+export function localizedDescription(
+	item: { description?: string; descriptionEn?: string } | undefined,
+	lang: string,
+): string | undefined {
+	if (!item) return undefined;
+	return lang === "zh" ? (item.description ?? item.descriptionEn) : (item.descriptionEn ?? item.description);
+}
 
 /** 按预设过滤活跃工具名。 */
 export function filterToolsByPreset(tools: Iterable<string>, preset?: string): string[] {
