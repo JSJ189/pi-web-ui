@@ -117,6 +117,7 @@ import {
 	normalizePathKey,
 	normalizeRetryMaxAttempts,
 	normalizeSkillList,
+	type ClientSettings,
 	type PromptMode,
 	ClientStateStore,
 } from "./client-state.js";
@@ -1816,6 +1817,11 @@ export interface Conversation {
 	 *  model-stall watchdog (#7): a run that produces no events at all for
 	 *  STALL_NOTIFY_MS is probably a half-open API connection. */
 	lastSdkEventAt: number;
+	/** 上次重放软上限覆盖时的会话模型 key（"provider/id"）——软上限 reserve
+	 *  按注入那一刻的模型窗口换算，模型在 pi-web-ui 之外被换（SDK 从会话
+	 *  历史恢复、/model 命令）时必须重算，否则大窗口算出的 reserve 泄漏到
+	 *  小窗口模型上，压缩触发点被压成负数。undefined = 还没见过任何事件。 */
+	lastModelKey?: string | null;
 	/** Agent 预设 id（standard/minimal/code/reader/ask；默认 standard）。 */
 	agentPreset?: string;
 	/** 预设已锁定（首轮用户发言后；空白会话可切换）。 */
@@ -5168,6 +5174,11 @@ export class ClientSession {
 		// Any SDK event proves the run is alive — feeds the stall watchdog below.
 		conv.lastSdkEventAt = Date.now();
 		conv.stallNoticed = false;
+		// 模型可能在 pi-web-ui 之外被换（SDK 从会话历史恢复、/model 命令等），
+		// 而软上限 reserve 是按注入那一刻的窗口换算的固定值——模型一变必须重算，
+		// 否则大窗口算出的 reserve 泄漏到小窗口模型上，触发点被压成负数，
+		// 上下文刚过几万 token 就反复触发压缩。热路径只做一次字符串比对。
+		this.reapplySoftCapIfModelChanged(conv);
 		switch (event.type) {
 			case "bash_execution_update": {
 				if (event.id) {
@@ -7370,21 +7381,46 @@ export class ClientSession {
 	 *  合并视图，SDK 每次自动压缩检查前都重读 getCompactionSettings()，
 	 *  无需 reload；软上限关闭时回填 SDK 默认 reserve（不让旧覆盖泄漏）。
 	 *  窗口未知（会话未就绪/无模型）的会话跳过——创建/就绪/换模型路径
-	 *  会重放（见各 applyRetryOverrides 调用点）。 */
+	 *  会重放（见各 applyRetryOverrides 调用点）；此外 onEvent 按模型
+	 *  key 变化兜底重放（reapplySoftCapIfModelChanged），保证会话模型
+	 *  在 pi-web-ui 之外被换（如 SDK 从会话历史恢复）后覆盖不泄漏。 */
 	applyCompactionOverrides(): void {
 		const s = this.settingsSvc.current;
 		for (const c of this.convs.values()) {
 			try {
-				const modelId = modelKeyOf(c.session);
-				const contextWindow = contextWindowOf(c.session);
-				const cap = effectiveSoftCap(s.softCapTokens, s.softCapByModel, modelId);
-				const reserve = softCapToReserve(contextWindow, cap);
-				c.session.settingsManager.applyOverrides({
-					compaction: { reserveTokens: reserve ?? DEFAULT_COMPACTION_RESERVE_TOKENS },
-				});
+				this.applyCompactionOverrideForConv(c, s);
 			} catch {
 				// 会话未就绪或已释放 → 其 runtime 创建时统一注入。
 			}
+		}
+	}
+
+	/** 单会话换算并注入软上限 reserve（applyCompactionOverrides 的循环体；
+	 *  reapplySoftCapIfModelChanged 单会话重放也复用）。抛错交调用方处置。 */
+	private applyCompactionOverrideForConv(c: Conversation, s: ClientSettings): void {
+		const modelId = modelKeyOf(c.session);
+		const contextWindow = contextWindowOf(c.session);
+		const cap = effectiveSoftCap(s.softCapTokens, s.softCapByModel, modelId);
+		const reserve = softCapToReserve(contextWindow, cap);
+		c.session.settingsManager.applyOverrides({
+			compaction: { reserveTokens: reserve ?? DEFAULT_COMPACTION_RESERVE_TOKENS },
+		});
+	}
+
+	/** 会话模型变化时重放该会话的软上限覆盖。SDK 恢复历史会话的模型
+	 *  （findInitialModel）与 /model 命令都不经过 pi-web-ui 的 setModel
+	 *  路径，注入过的 reserve 会停留在旧模型窗口的换算值上——例如默认
+	 *  模型（1M 窗口）算出 748576，泄漏到 500K 窗口的会话后压缩触发点
+	 *  变成负数，上下文几万 token 就被反复压缩。onEvent 每个事件比对
+	 *  一次 model key（O(1) 字符串比较），变化才重放。 */
+	private reapplySoftCapIfModelChanged(conv: Conversation): void {
+		try {
+			const key = modelKeyOf(conv.session);
+			if (conv.lastModelKey === key) return;
+			conv.lastModelKey = key;
+			if (key) this.applyCompactionOverrideForConv(conv, this.settingsSvc.current);
+		} catch {
+			// 会话未就绪或已释放 → 留给创建/换模型路径与后续事件重试。
 		}
 	}
 
