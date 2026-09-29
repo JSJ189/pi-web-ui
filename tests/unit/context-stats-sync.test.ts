@@ -10,28 +10,33 @@ import {
 
 describe("上下文统计与工具门控同步", () => {
 	it("核心内置工具识别正确", () => {
-		expect(CORE_BUILTIN_TOOL_NAMES).toEqual(["bash", "read", "edit", "write", "powershell"]);
+		expect(CORE_BUILTIN_TOOL_NAMES).toEqual(["bash", "read", "edit", "write", "powershell", "ls", "grep", "find"]);
 		expect(isCoreBuiltinTool("bash")).toBe(true);
 		expect(isCoreBuiltinTool("read")).toBe(true);
 		expect(isCoreBuiltinTool("edit")).toBe(true);
 		expect(isCoreBuiltinTool("write")).toBe(true);
 		expect(isCoreBuiltinTool("powershell")).toBe(true);
+		expect(isCoreBuiltinTool("ls")).toBe(true);
+		expect(isCoreBuiltinTool("grep")).toBe(true);
+		expect(isCoreBuiltinTool("find")).toBe(true);
 		expect(isCoreBuiltinTool("custom_tool")).toBe(false);
 		expect(isKnownAgentTool("bash")).toBe(false);
 		expect(isKnownAgentTool("read")).toBe(false);
+		expect(isKnownAgentTool("ls")).toBe(false);
 	});
 
 	it("normalizeDisabledAgentTools 保留核心内置工具", () => {
-		const res = normalizeDisabledAgentTools(["bash", "read", "invalid_xyz", "edit_soft", "powershell"]);
+		const res = normalizeDisabledAgentTools(["bash", "read", "invalid_xyz", "edit_soft", "powershell", "ls"]);
 		expect(res).toContain("bash");
 		expect(res).toContain("read");
 		expect(res).toContain("edit_soft");
 		expect(res).toContain("powershell");
+		expect(res).toContain("ls");
 		expect(res).not.toContain("invalid_xyz");
 	});
 
 	it("applyAgentToolsGating 能够禁用核心内置工具并正确复原", () => {
-		const fullToolSet = ["bash", "read", "edit", "write", "delegate_task"];
+		const fullToolSet = ["bash", "read", "edit", "write", "powershell", "ls", "grep", "find", "delegate_task"];
 		let active = [...fullToolSet];
 		const fakeSession = {
 			getActiveToolNames: () => active,
@@ -41,16 +46,22 @@ describe("上下文统计与工具门控同步", () => {
 			getAllTools: () => fullToolSet.map((name) => ({ name })),
 		};
 
-		// 显式禁用 bash
-		applyAgentToolsGating(fakeSession, ["bash"]);
+		// 显式禁用 bash, ls 与 powershell
+		applyAgentToolsGating(fakeSession, ["bash", "ls", "powershell"]);
 		expect(active).not.toContain("bash");
+		expect(active).not.toContain("ls");
+		expect(active).not.toContain("powershell");
 		expect(active).toContain("read");
 		expect(active).toContain("write");
 		expect(active).toContain("edit");
+		expect(active).toContain("grep");
+		expect(active).toContain("find");
 
-		// 恢复启用 bash
+		// 恢复启用全部
 		applyAgentToolsGating(fakeSession, []);
 		expect(active).toContain("bash");
+		expect(active).toContain("ls");
+		expect(active).toContain("powershell");
 		expect(active).toContain("read");
 	});
 

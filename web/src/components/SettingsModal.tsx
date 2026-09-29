@@ -1044,6 +1044,9 @@ export function SettingsModal({
 		edit: t("toolCoreEditDesc"),
 		write: t("toolCoreWriteDesc"),
 		powershell: t("toolCorePowershellDesc"),
+		ls: t("toolCoreLsDesc"),
+		grep: t("toolCoreGrepDesc"),
+		find: t("toolCoreFindDesc"),
 	};
 	// 统一工具开关（工具 tab 逐工具；与 toggleSkill 同模式）。
 	const toggleAgentTool = (name: string) => {

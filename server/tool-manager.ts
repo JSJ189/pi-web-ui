@@ -276,7 +276,7 @@ export const AGENT_TOOL_CATALOG: AgentToolEntry[] = [
 ];
 
 /** SDK 核心内置工具名（可被门控显式禁用或被预设白名单过滤）。 */
-export const CORE_BUILTIN_TOOL_NAMES = ["bash", "read", "edit", "write", "powershell"] as const;
+export const CORE_BUILTIN_TOOL_NAMES = ["bash", "read", "edit", "write", "powershell", "ls", "grep", "find"] as const;
 
 export type CoreBuiltinToolName = (typeof CORE_BUILTIN_TOOL_NAMES)[number];
 

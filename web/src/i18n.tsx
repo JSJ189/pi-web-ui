@@ -1317,6 +1317,9 @@ export const zh = {
 	toolCoreEditDesc: "精确编辑文件。关闭后模型不能局部修改代码。",
 	toolCoreWriteDesc: "新建或整写文件。关闭后模型不能创建、覆盖文件。",
 	toolCorePowershellDesc: "执行 PowerShell 命令（仅 Windows 有效）。关闭后模型不能运行 PowerShell 命令。",
+	toolCoreLsDesc: "列出目录内容。关闭后模型无法调用 ls 列目录（可被 read 目录模式完全替代）。",
+	toolCoreGrepDesc: "正则搜索文件内容，返回匹配行与行号。关闭后模型不能直接调 grep（可用 bash 命令替代）。",
+	toolCoreFindDesc: "按 glob 规则搜索文件名与相对路径。关闭后模型不能直接调 find（可用 bash 命令替代）。",
 	toolsSectionTerminal: "持久终端",
 	toolsSectionSubagent: "子代理",
 	toolsSectionOther: "其他工具",
@@ -3126,6 +3129,12 @@ export const en: Record<keyof typeof zh, string> = {
 	toolCoreWriteDesc: "Create or overwrite files. When off, the model cannot create or overwrite files.",
 	toolCorePowershellDesc:
 		"Run PowerShell commands (Windows only). When off, the model cannot execute PowerShell commands.",
+	toolCoreLsDesc:
+		"List directory contents. When off, the model cannot call ls (fully substituted by read directory mode).",
+	toolCoreGrepDesc:
+		"Search file contents by regex. When off, the model cannot call grep (substitutable by bash commands).",
+	toolCoreFindDesc:
+		"Search files by glob pattern. When off, the model cannot call find (substitutable by bash commands).",
 	toolsSectionTerminal: "Persistent terminal",
 	toolsSectionSubagent: "Subagents",
 	toolsSectionOther: "Other tools",
