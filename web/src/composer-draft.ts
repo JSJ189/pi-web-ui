@@ -131,3 +131,18 @@ export function appendDraftAttachments(current: DraftAttachment[], incoming: Dra
 	}
 	return out;
 }
+
+/**
+ * 当会话切换时，判断是否应将上一个会话尚未发送的打字内容结转到新会话中：
+ * 仅当新会话为完全空白的对话（无任何历史消息）且新会话自身没有任何草稿时，才承接上一会话的输入。
+ */
+export function shouldCarryOverDraft(
+	pendingCarry: string | null | undefined,
+	targetMessageCount: number,
+	hasExistingDraftOnTarget: boolean,
+): boolean {
+	if (!pendingCarry || !pendingCarry.trim()) return false;
+	if (targetMessageCount > 0) return false;
+	if (hasExistingDraftOnTarget) return false;
+	return true;
+}

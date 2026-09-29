@@ -3,7 +3,7 @@ import { FiList, FiSquare, FiPaperclip, FiArrowUp, FiBookOpen, FiMic, FiCamera }
 import type { FileSearchResult, ModelInfo, ProviderKeyInfo, SlashCommandInfo, UiMessage, UiState } from "../types";
 import { useT, useI18n } from "../i18n";
 import { appSend, useAppField, useIsDsh } from "../app-globals";
-import { mergeRecalledDraft, selectDraftToRestore } from "../composer-draft";
+import { mergeRecalledDraft, selectDraftToRestore, shouldCarryOverDraft } from "../composer-draft";
 import {
 	registerDraftSink,
 	registerFocusSink,
@@ -392,6 +392,7 @@ export const ChatInput = memo(function ChatInput({
 	const appliedDraftTsRef = useRef(0);
 	const draftTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
 	const draftScopeRef = useRef<string | null>(null);
+	const pendingCarryOverRef = useRef<string | null>(null);
 	/** 最近一次 IME compositionend 的时间戳（issue #248：macOS 中文输入法下敲英文字母按 Enter 上屏时，
 	 *  浏览器会先派发 compositionend 再派发 keydown(Enter, isComposing=false)，需通过时间差拦截误发送）。 */
 	const compositionEndTimeRef = useRef(0);
@@ -470,7 +471,7 @@ export const ChatInput = memo(function ChatInput({
 	};
 
 	// 切会话（conversationId/sessionId 任一变）：旧会话 timer 里没发出去的先刷掉
-	//（cleanup 闭包里还是旧 sid/旧文本，key 不会写错），再清空输入框等恢复。
+	//（cleanup 闭包里还是旧 sid/旧文本，key 不会写错），并记下未发出的打字内容。
 	useEffect(() => {
 		const scope = draftSessionKey;
 		const sid = sessionId;
@@ -480,21 +481,44 @@ export const ChatInput = memo(function ChatInput({
 				clearTimeout(draftTimerRef.current);
 				draftTimerRef.current = null;
 			}
-			if (touchedRef.current && scope && sid && localKey && textMirrorRef.current.trim()) {
-				persistComposerDraft(sid, localKey, textMirrorRef.current, lastEditTsRef.current);
+			if (touchedRef.current && textMirrorRef.current.trim()) {
+				if (scope && sid && localKey) {
+					persistComposerDraft(sid, localKey, textMirrorRef.current, lastEditTsRef.current);
+				}
+				pendingCarryOverRef.current = textMirrorRef.current;
+			} else {
+				pendingCarryOverRef.current = null;
 			}
 		};
 		// eslint-disable-next-line react-hooks/exhaustive-deps
 	}, [draftSessionKey]);
 
-	// 新会话就绪：重置追踪并清空（恢复 effect 在后面，同一 commit 内按声明顺序跑）。
+	// 新会话就绪：若切到全新空会话（messages 为空）且新会话无自身草稿，保留并承接用户未提交的正在输入内容。
 	useEffect(() => {
 		draftScopeRef.current = draftSessionKey;
-		touchedRef.current = false;
-		appliedDraftTsRef.current = 0;
-		textMirrorRef.current = "";
-		lastEditTsRef.current = 0;
-		setText("");
+		const carry = pendingCarryOverRef.current;
+		pendingCarryOverRef.current = null;
+
+		const existingLocal = draftLocalKey ? readLocalDraft(draftLocalKey) : null;
+		const hasExistingDraft = Boolean(
+			(sessionDraft && sessionDraft.text?.trim() && sessionDraft.ts > 0) ||
+				(existingLocal && existingLocal.text?.trim()),
+		);
+
+		if (shouldCarryOverDraft(carry, messages.length, hasExistingDraft) && draftLocalKey && sessionId) {
+			touchedRef.current = true;
+			appliedDraftTsRef.current = Date.now();
+			textMirrorRef.current = carry;
+			lastEditTsRef.current = appliedDraftTsRef.current;
+			setText(carry);
+			persistComposerDraft(sessionId, draftLocalKey, carry, lastEditTsRef.current);
+		} else {
+			touchedRef.current = false;
+			appliedDraftTsRef.current = 0;
+			textMirrorRef.current = "";
+			lastEditTsRef.current = 0;
+			setText("");
+		}
 		setMenu(null);
 		historyIndexRef.current = -1;
 	}, [draftSessionKey]);
@@ -704,6 +728,7 @@ export const ChatInput = memo(function ChatInput({
 		const next = `/${pick.name} ${rest}`;
 		menuTextRef.current = next;
 		setText(next);
+		noteComposerEdit(next);
 		setMenu(null);
 		taRef.current?.focus();
 	};
@@ -728,6 +753,7 @@ export const ChatInput = memo(function ChatInput({
 		const next = `${text.slice(0, at)}${insert}${text.slice(cursor)}`;
 		menuTextRef.current = next;
 		setText(next);
+		noteComposerEdit(next);
 		setMenu(null);
 		for (const a of atts) {
 			try {
@@ -970,8 +996,8 @@ export const ChatInput = memo(function ChatInput({
 
 	const submit = (queue = false) => {
 		const trimmed = text.trim();
-		const hasRawAttach = attachments.some((a) => a.imageData || a.fileData || a.mode === "conversation");
-		if (!trimmed && !hasRawAttach) return;
+		const hasAttach = attachments.length > 0;
+		if (!trimmed && !hasAttach) return;
 		if (!connected) {
 			// 输入框在断连时不禁用（只有发送按钮禁用），Enter 仍进 submit：
 			// 别静默吞掉，文本保留并给出可见提示供重连后重发。
