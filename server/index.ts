@@ -1071,6 +1071,8 @@ export interface DispatchSession {
 	 *  pi 与 dsh 都实现了；缺失时 dispatch 回 `unsupported`（不静默 —— 否则点开弹窗
 	 *  会永远停在「读取中」）。 */
 	getToolInfo?(name: string): void | Promise<void>;
+	/** 查询被某个压缩卡片折叠的历史消息（按需惰性加载，issue #398）。 */
+	getCompactedMessages?(compactionMessageId: string, targetConvId?: string): void | Promise<void>;
 	refreshSessions(): Promise<void>;
 	pushProjects(): Promise<void>;
 	removeProject(path: string): Promise<void>;
@@ -2170,6 +2172,9 @@ wss.on("connection", (ws) => {
 				} else {
 					send({ type: "tool_info", name: msg.name, found: false, unsupported: true });
 				}
+				break;
+			case "get_compacted_messages":
+				void cs.getCompactedMessages?.(msg.compactionMessageId, msg.conversationId);
 				break;
 			case "list_sessions":
 				void cs.refreshSessions();

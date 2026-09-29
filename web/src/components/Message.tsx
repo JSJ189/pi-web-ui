@@ -6,6 +6,7 @@ import {
 	FiChevronDown,
 	FiChevronRight,
 	FiChevronUp,
+	FiClock,
 	FiCode,
 	FiCopy,
 	FiEdit3,
@@ -35,6 +36,7 @@ import { StreamMarkdown } from "./StreamMarkdown";
 import { ThinkingBlock } from "./ThinkingBlock";
 import { ToolCallBlock, type ToolView } from "./ToolCallBlock";
 import { useT, type Translate } from "../i18n";
+import { fetchCompactedHistory, useCompactedHistory } from "../compacted-history-state";
 import { parseSkillBlock, type SkillBlock } from "../skill-block";
 import { isRasterImage, fileToProcessedImage } from "../image-paste";
 import { contextMenuItems, openContextMenu } from "../context-menu-state";
@@ -216,6 +218,8 @@ interface MessageProps {
 	/** 点一个插件条目的回调（宿主按 kind 分发 view/action）。内置条目（host:msg-*）由本
 	 *  组件自己处理，不会走这里 —— 避免「宿主与组件都处理一遍」的双分发。 */
 	onUiAction?: (item: UiSlotEntry, value?: string) => void;
+	/** 只读模式（被折叠历史流渲染时使用）：隐藏编辑重问、回滚等操作。 */
+	readOnly?: boolean;
 }
 
 export const Message = memo(function Message({
@@ -243,6 +247,7 @@ export const Message = memo(function Message({
 	uiContextMessage,
 	uiContextToolCall,
 	onUiAction,
+	readOnly = false,
 }: MessageProps) {
 	const t = useT();
 	// Inline edit-and-re-ask editor (user messages only).
@@ -304,7 +309,7 @@ export const Message = memo(function Message({
 	// visible “thinking…” placeholder instead of an invisible empty bubble.
 	const isEmptyStreaming = streaming && isLast && message.content.length === 0;
 
-	const canEdit = message.role === "user" && !streaming && !isEmptyStreaming && !!onEdit;
+	const canEdit = !readOnly && message.role === "user" && !streaming && !isEmptyStreaming && !!onEdit;
 	/** Paste/drop handler inside the edit composer — same downscale pipeline
 	 *  as the main input bar so payloads stay under the server's cap. */
 	const addEditImageFiles = async (files: File[]) => {
@@ -775,7 +780,7 @@ export const Message = memo(function Message({
 				return;
 			}
 			if (entry.id === "host:msg-rollback") {
-				if (streaming || editing) return;
+				if (readOnly || streaming || editing) return;
 				nodes.push(
 					<button
 						key={key}
@@ -897,7 +902,7 @@ export const Message = memo(function Message({
 			ref={cardRef}
 			className={`msg msg-${message.role}${isGoalReview ? " msg-goal-review" : ""}${
 				exportSelected ? " msg-export-selected" : ""
-			}`}
+			}${readOnly ? " msg-readonly" : ""}`}
 			data-role={message.role}
 			data-msg-id={message.id}
 			onContextMenu={onMsgContextMenu}
@@ -1349,6 +1354,18 @@ function CompactionCard({
 		if (autoExpand) setExpanded(true);
 	}
 	const shown = expanded || forceOpen;
+	const historyState = useCompactedHistory(message.id);
+	const [historyOpen, setHistoryOpen] = useState(false);
+	const toggleHistory = () => {
+		if (!historyOpen) {
+			setHistoryOpen(true);
+			if (historyState.status === "idle") {
+				fetchCompactedHistory(message.id);
+			}
+		} else {
+			setHistoryOpen(false);
+		}
+	};
 	const text = message.content
 		.map((b) => asText(b)?.text ?? "")
 		.filter(Boolean)
@@ -1404,8 +1421,88 @@ function CompactionCard({
 					<div className="compaction-body">
 						<Markdown text={text} />
 						<div className="compaction-hint">{t("compactionKeptHint")}</div>
+						<div className="compacted-history-action">
+							<button
+								type="button"
+								className="compacted-history-toggle-btn"
+								onClick={toggleHistory}
+								aria-expanded={historyOpen}
+							>
+								<span className="compacted-history-chevron">
+									{historyOpen ? <FiChevronDown /> : <FiChevronRight />}
+								</span>
+								<FiClock className="compacted-history-clock-icon" />
+								<span className="compacted-history-btn-text">
+									{historyOpen ? t("hideCompactedHistory") : t("viewCompactedHistory")}
+								</span>
+								{historyState.status === "ready" && historyState.messages.length > 0 && (
+									<span className="compacted-history-count-pill">
+										{t("compactedHistoryTurns", { count: historyState.messages.length })}
+									</span>
+								)}
+							</button>
+						</div>
+						{historyOpen && (
+							<div className="compacted-history-panel">
+								{historyState.status === "loading" && (
+									<div className="compacted-history-loading">
+										<span className="compact-pulse" />
+										<span>{t("compactedHistoryLoading")}</span>
+									</div>
+								)}
+								{historyState.status === "error" && (
+									<div className="compacted-history-error">
+										<span>{historyState.error || t("compactedHistoryEmpty")}</span>
+									</div>
+								)}
+								{historyState.status === "ready" && historyState.messages.length === 0 && (
+									<div className="compacted-history-empty">{t("compactedHistoryEmpty")}</div>
+								)}
+								{historyState.status === "ready" && historyState.messages.length > 0 && (
+									<CompactedHistoryStream messages={historyState.messages} />
+								)}
+							</div>
+						)}
 					</div>
 				)}
+			</div>
+		</div>
+	);
+}
+
+function CompactedHistoryStream({ messages }: { messages: UiMessage[] }) {
+	const t = useT();
+	const toolResults = useMemo(() => {
+		const m = new Map<string, UiMessage>();
+		for (const msg of messages) {
+			if (msg.role === "toolResult" && msg.toolCallId) m.set(msg.toolCallId, msg);
+		}
+		return m;
+	}, [messages]);
+
+	const emptyMap = useMemo(() => new Map(), []);
+
+	return (
+		<div className="compacted-history-stream">
+			<div className="compacted-history-stream-header">
+				<span className="compacted-history-badge">
+					<FiArchive /> {t("compactedHistoryBadge")}
+				</span>
+				<span className="compacted-history-count">{t("compactedHistoryTurns", { count: messages.length })}</span>
+			</div>
+			<div className="compacted-history-messages">
+				{messages.map((m) => (
+					<Message
+						key={m.id}
+						message={m}
+						toolResults={toolResults}
+						liveOutputs={emptyMap}
+						toolStatuses={emptyMap}
+						streaming={false}
+						isLast={false}
+						readOnly={true}
+					/>
+				))}
 			</div>
 		</div>
 	);

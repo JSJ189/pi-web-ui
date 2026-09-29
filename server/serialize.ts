@@ -207,6 +207,15 @@ export function findEntryByUiId<T extends UiIdEntryLike>(
 				timestamp: entry.timestamp ? new Date(entry.timestamp).getTime() : 0,
 			} as AgentMessage;
 			if (uiMessageId(m, seqOf(m)) === messageId) return entry;
+		} else if (entry.type === "compaction") {
+			const ts = entry.timestamp ? new Date(entry.timestamp).getTime() : 0;
+			const m = {
+				role: "compactionSummary",
+				summary: (entry as { summary?: string }).summary ?? "",
+				tokensBefore: (entry as { tokensBefore?: number }).tokensBefore,
+				timestamp: ts,
+			} as AgentMessage;
+			if (uiMessageId(m, seqOf(m)) === messageId) return entry;
 		}
 	}
 	return null;

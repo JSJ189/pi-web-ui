@@ -1110,7 +1110,14 @@ export type ClientMessage =
 	/** Manually trigger a task once right now (does not shift its next fire). */
 	| { type: "schedule_run"; id: string }
 	/** Enable / disable a scheduled task (re-arms its next fire). */
-	| { type: "schedule_toggle"; id: string; enabled: boolean };
+	| { type: "schedule_toggle"; id: string; enabled: boolean }
+	// -- compacted history retrieval (issue #398) ----------------------------
+	/** 查询被某个上下文压缩卡片折叠的历史消息（按需惰性加载，issue #398）。 */
+	| {
+			type: "get_compacted_messages";
+			compactionMessageId: string;
+			conversationId?: string;
+	  };
 
 // ---------------------------------------------------------------------------
 // Server -> Client
@@ -3081,4 +3088,13 @@ export type ServerMessage =
 	// -- scheduled tasks (issue #184) ----------------------------------------
 	/** Built-in scheduler task list (global, all projects). Pushed on attach,
 	 *  on request (schedule_list) and on every change (save/delete/toggle/run). */
-	| { type: "scheduler_tasks"; tasks: SchedulerTaskView[] };
+	| { type: "scheduler_tasks"; tasks: SchedulerTaskView[] }
+	// -- compacted history retrieval (issue #398) ----------------------------
+	/** 响应被压缩卡片折叠的历史消息查询（issue #398）。 */
+	| {
+			type: "compacted_messages_result";
+			compactionMessageId: string;
+			conversationId: string;
+			messages: UiMessage[];
+			error?: string;
+	  };

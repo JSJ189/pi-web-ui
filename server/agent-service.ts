@@ -217,6 +217,7 @@ import { extractTouches, formatTouchesCompact, intersectTouches } from "./conver
 import { ClaimStore, matchClaims, mergeTouchSidecar, readTouchSidecar, removeTouchSidecar } from "./claim-store.js";
 import { makeClaimFilesTool, type ClaimFilesHost } from "./claim-files-tool.js";
 import { makeSkillTool, type SkillToolHost } from "./skill-tool.js";
+import { getCompactedMessages, type SessionManagerLike } from "./compacted-history.js";
 import { makeScheduleTools, type ScheduleToolHost } from "./schedule-agent-tool.js";
 import { makePatchTool } from "./patch-tool.js";
 import { makeLspTool } from "./lsp-tool.js";
@@ -11131,6 +11132,23 @@ export class ClientSession {
 		);
 		// 兜底：getEntry 查整棵树
 		return found ?? conv.session.sessionManager.getEntry(messageId) ?? null;
+	}
+
+	/**
+	 * 获取被某个压缩卡片折叠的历史消息（issue #398，按需惰性加载）。
+	 */
+	getCompactedMessages(compactionMessageId: string, targetConvId?: string): void {
+		const targetConv = (targetConvId ? this.convs.get(targetConvId) : this.conv) ?? this.conv;
+		const sm = targetConv.session.sessionManager as SessionManagerLike;
+		const result = getCompactedMessages(sm, compactionMessageId, (m) => this.uiMessageKey(targetConv, m).n);
+
+		this.emit({
+			type: "compacted_messages_result",
+			compactionMessageId,
+			conversationId: targetConv.id,
+			messages: result.messages,
+			error: result.error,
+		});
 	}
 
 	/**

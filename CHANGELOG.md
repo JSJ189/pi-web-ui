@@ -12,6 +12,8 @@
 
 ### Added
 
+- **上下文压缩后支持展开/查看被折叠的历史对话（#398）** —— 严格解耦「UI 展示流」与「LLM 推理视窗」：触发压缩（Compaction）后，在 `CompactionCard` 底部提供「展开查看被折叠的历史」操作栏，按需（On-demand）从会话 DAG 祖先链中还原被该节点折叠的原始历史消息（含提问、回答与工具输出），并以只读流视窗呈现，不占用后续推理 Token，解决长对话截断后无法回溯方案与日志的痛点。回归：`tests/unit/compacted-history.test.ts`。
+
 - **粘贴任意文件直接附加** —— 在输入框粘贴从文件管理器复制的文件（文本、PDF、压缩包等）会像拖拽一样变成待发附件，不再只能贴图片：粘贴与拖拽现在共用同一条分流逻辑（图片走视觉管线并保留 text-only 模型的拦截，其余走 fileData 上传，20MB 上限同口径），纯文本粘贴完全不受影响。回归：`tests/unit/clipboard-files.test.ts` + `tests/file-paste-browser-test.mjs`。
 
 - **语音输入可主动选识别方式（#383）** —— 麦克风浮层新增常驻的「切换识别方式」面板（浏览器联网识别 / 本地 Whisper / 远端接口），选中即用并写回插件设置，下次点 🎤 直接走这一档；「转写引擎」设为本地或远端时，点 🎤 直接走对应引擎（本地没装就直接弹一键安装，不必再干等浏览器联网失败几秒）。
@@ -27,9 +29,9 @@
 
 ### i18n
 
-- 前端新增 key（27）：`planImplementBtn`、`planImplementTip`、`planImplementRequest`、`planMode`、`planActionBtn`、`planActionTip`、`planModeTip`、`planModeTipOn`、`goalBarExecModel`、`goalBarExecModelTip`、`goalBarOpenExec`、`goalBarOpenExecTip`、`goalBarStaleBackend`、`goalBarStop`、`goalBarExecuting`、`goalHistory`、`delegateMode`、`delegateModeDesc`、`delegateModeOffHint`、`delegateModeBadge`、`delegateModeBadgeTip`、`delegateModeOpenTip`、`planModePromptSettingsTitle`、`planModePromptSettingsDesc`、`planModePromptMode`、`planModePromptPlaceholder`、`planModePromptSettingsHint`
-- 前端中文变更（6）：`planBoardTitle`、`goalBarPlaceholder`、`goalBarSet`、`goalBarReviewModel`、`goalBarMaxRoundsTip`、`goalWizardBtn`
-- 前端英文变更（6）：`planBoardTitle`、`goalBarPlaceholder`、`goalBarSet`、`goalBarReviewModel`、`goalBarMaxRoundsTip`、`goalWizardBtn`
+- 前端新增 key（44）：`planImplementBtn`、`planImplementTip`、`planImplementRequest`、`viewCompactedHistory`、`hideCompactedHistory`、`compactedHistoryLoading`、`compactedHistoryEmpty`、`compactedHistoryBadge`、`compactedHistoryTurns`、`planMode`、`planActionBtn`、`planActionTip`、`planModeTip`、`planModeTipOn`、`goalBarExecModel`、`goalBarExecModelTip`、`goalBarOpenExec`、`goalBarOpenExecTip`、`goalBarStaleBackend`、`goalBarStop`、`goalBarExecuting`、`goalHistory`、`delegateMode`、`delegateModeDesc`、`delegateModeOffHint`、`delegateModeBadge`、`delegateModeBadgeTip`、`delegateModeOpenTip`、`toolCorePowershellDesc`、`planModePromptSettingsTitle`、`planModePromptSettingsDesc`、`planModePromptMode`、`planModePromptPlaceholder`、`planModePromptSettingsHint`、`preset.standard`、`preset.minimal`、`preset.code`、`preset.reader`、`preset.ask`、`preset.standardDesc`、`preset.minimalDesc`、`preset.codeDesc`、`preset.readerDesc`、`preset.askDesc`
+- 前端中文变更（7）：`planBoardTitle`、`goalBarPlaceholder`、`goalBarSet`、`goalBarReviewModel`、`goalBarMaxRoundsTip`、`goalWizardBtn`、`toolsCoreHint`
+- 前端英文变更（7）：`planBoardTitle`、`goalBarPlaceholder`、`goalBarSet`、`goalBarReviewModel`、`goalBarMaxRoundsTip`、`goalWizardBtn`、`toolsCoreHint`
 - 服务端新增 key（8）：`agent.role.stop`、`goal.role.blocked`、`goal.role.conv_title`、`goal.role.exec`、`goal.role.card.start`、`goal.role.card.result`、`goal.role.review`、`goal.role.review.retry`
 - 服务端删除 key（9）：`goal.set.kick`、`goal.wizard.kick`、`goal.review.incomplete`、`goal.autonomous.pass`、`goal.review.blocked`、`goal.autonomous.continue`、`goal.review.error`、`goal.review.blocked_msg`、`goal.review.revise`
 
