@@ -107,6 +107,12 @@ export interface PluginToolEvent {
  */
 export interface PluginConversationSnapshot {
 	conversationId: string;
+	/** 底层 Pi 会话的持久化 UUID（如 "01a0e6cd-00a5-7068-b3f2-1c62e7dd180f"；inMemory 为 undefined）。 */
+	sessionId?: string;
+	/** 会话持久化 JSONL 文件绝对路径。 */
+	sessionFile?: string;
+	/** 会话所属物理目录（即 <agentDir>/sessions/<encodedCwd>）。 */
+	sessionDir?: string;
 	title: string;
 	/** 当前对话选中模型的 canonical id（如 "openai-codex/gpt-5"；未选/无为 undefined）。 */
 	model?: string;
