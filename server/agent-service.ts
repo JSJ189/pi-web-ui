@@ -1229,6 +1229,7 @@ function makeMarkersListTool(
 ): ToolDefinition {
 	return {
 		name: MARKERS_LIST_TOOL_NAME,
+		promptSnippet: "list current inline-marker tasks (read-only — writes go through [[todo:...]] inline markers)",
 		label: "List marker state",
 		description:
 			"Read-only query of inline marker state. All WRITE operations must use inline markers ([[todo:new:...]] etc.) in the reply body — never this tool.",

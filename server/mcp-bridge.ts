@@ -453,11 +453,24 @@ function adaptMcpTool(serverName: string, mcpTool: McpToolDefinition, client: Mc
 		name,
 		label: `${serverName} · ${mcpTool.name}`,
 		description: mcpTool.description ?? `Tool ${mcpTool.name} provided by MCP server "${serverName}"`,
+		// 无 snippet 的工具不会进系统提示词的「Available tools」清单（SDK 只列有
+		// snippet 的工具），MCP 工具会变成 schema-only：模型读清单以为自己没有
+		// 这个能力（#403）。这里从 description 提取首句做极简 snippet。
+		promptSnippet: firstSentenceSnippet(mcpTool.description) ?? `MCP tool ${mcpTool.name} (server: ${serverName})`,
 		parameters: mcpTool.inputSchema ?? {},
 		execute: async (_toolCallId: string, params: Record<string, unknown>, _signal?: AbortSignal) => {
 			return client.call(mcpTool.name, params ?? {});
 		},
 	};
+}
+
+/** 从 MCP 工具 description 提取首句做 promptSnippet（≤100 字符）；空描述返回 undefined。 */
+function firstSentenceSnippet(description: string | undefined): string | undefined {
+	const text = (description ?? "").replace(/\s+/g, " ").trim();
+	if (!text) return undefined;
+	const cut = text.search(/[.。!?！?]/);
+	const head = cut > 0 ? text.slice(0, cut + 1) : text;
+	return head.length > 100 ? `${head.slice(0, 99)}…` : head;
 }
 
 /** 工具名必须是 [A-Za-z0-9_-]+（与插件工具同规则），MCP 可能含冒号/斜杠 — 归一化。 */
