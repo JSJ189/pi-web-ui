@@ -2208,6 +2208,9 @@ export interface ElsewhereRunning {
 	hasQuestion?: boolean;
 	/** 等答复问卷的简短标题/题目，供横幅与列表展示。 */
 	questionTitle?: string;
+	/** 是否为无头伪客户端（定时任务 scheduler: / 插件 plugin:）。
+	 *  无头会话不支持过户与跨页作答，前端降级为只读状态展示。 */
+	pseudo?: boolean;
 }
 
 /** DSH Agent 预设名录行（字段以运行时树为准；broken = 名录可见但不可挂载）。 */

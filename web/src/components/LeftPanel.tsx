@@ -99,6 +99,7 @@ type SessionMenuTarget = {
 	kind: "running" | "history" | "section" | "elsewhere";
 	label: string;
 	owner?: string;
+	pseudo?: boolean;
 };
 
 /** 右键落点是不是「输入类」元素：重命名输入框里的右键要留给浏览器（复制 / 粘贴 /
@@ -310,9 +311,9 @@ export const LeftPanel = memo(function LeftPanel({
 				// （与悬停 ✎ 铅笔同一套内嵌输入框，见 dispatchHostSessionEntry）。
 				if (entry.id === "host:conv-rename")
 					return target.kind === "running" || target.kind === "history" ? entry : { ...entry, hidden: true };
-				// 过户：只在「另一处」行出现（无 owner/convId 的旧条目同样隐藏）。
+				// 过户：只在「另一处」行出现（无 owner/convId 的旧条目与无头伪客户端条目同样隐藏）。
 				if (entry.id === "host:conv-takeover")
-					return isElsewhere && takeId && target.owner ? entry : { ...entry, hidden: true };
+					return isElsewhere && takeId && target.owner && !target.pseudo ? entry : { ...entry, hidden: true };
 				// 关闭类是本会话口径，「另一处」行不适用。
 				if (isElsewhere && (entry.id === "host:conv-dismiss-subagents" || entry.id === "host:conv-force-dismiss"))
 					return { ...entry, hidden: true };
@@ -540,7 +541,13 @@ export const LeftPanel = memo(function LeftPanel({
 		[sessionMenuAvailable, showSessionMenu],
 	);
 
-	type RowConv = ConversationSummary & { elsewhere?: boolean; owner?: string; convId?: string; hasQuestion?: boolean };
+	type RowConv = ConversationSummary & {
+		elsewhere?: boolean;
+		owner?: string;
+		convId?: string;
+		hasQuestion?: boolean;
+		pseudo?: boolean;
+	};
 	const panelRef = useRef<HTMLElement>(null);
 	const [weights, setWeights] = useState<LpWeights>(() => loadLpWeights());
 	useEffect(() => {
@@ -560,6 +567,7 @@ export const LeftPanel = memo(function LeftPanel({
 			isStreaming: w.isStreaming,
 			isSubagent: false as const,
 			elsewhere: true as const,
+			pseudo: Boolean(w.pseudo),
 			// 过户目标定位（无则沿用旧行为：只读行，无过户入口）。
 			...(w.owner && w.convId ? { owner: w.owner, convId: w.convId } : {}),
 			...(w.hasQuestion ? { hasQuestion: true as const } : {}),
@@ -795,9 +803,16 @@ export const LeftPanel = memo(function LeftPanel({
 											if ((c as RowConv).elsewhere) {
 												const elseOwner = (c as RowConv).owner;
 												const elseConvId = (c as RowConv).convId;
+												const isPseudo = Boolean((c as RowConv).pseudo);
 												// issue #290：可过户（有 owner + convId）时本行可点击，两段确认。
-												const canTakeover = Boolean(elseOwner && elseConvId);
+												// issue #426：无头伪客户端（定时任务/插件）不支持过户，降级为只读行。
+												const canTakeover = Boolean(elseOwner && elseConvId) && !isPseudo;
 												const confirming = confirmTakeover === c.id;
+												const tooltip = confirming
+													? t("takeoverConfirm")
+													: isPseudo
+														? `${t("elsewherePseudoTip")}\n${c.cwd}`
+														: `${t("elsewhereTip")}\n${c.cwd}`;
 												return (
 													<div
 														className="lp-row"
@@ -810,6 +825,7 @@ export const LeftPanel = memo(function LeftPanel({
 																kind: "elsewhere",
 																label: c.title,
 																...(elseOwner ? { owner: elseOwner } : {}),
+																...(isPseudo ? { pseudo: true } : {}),
 															})
 														}
 													>
@@ -818,7 +834,7 @@ export const LeftPanel = memo(function LeftPanel({
 														<button
 															type="button"
 															className={`session-item elsewhere-item${canTakeover ? "" : " elsewhere-static"}${confirming ? " confirm" : ""}`}
-															title={confirming ? t("takeoverConfirm") : `${t("elsewhereTip")}\n${c.cwd}`}
+															title={tooltip}
 															tabIndex={canTakeover ? 0 : -1}
 															onClick={
 																canTakeover
@@ -840,8 +856,10 @@ export const LeftPanel = memo(function LeftPanel({
 															<FiMessageSquare className="session-icon" />
 															<span className="session-info">
 																<span className="session-title">
-																	<span className="elsewhere-badge">{t("elsewhereBadge")}</span>
-																	{c.hasQuestion && elseOwner && elseConvId && (
+																	<span className="elsewhere-badge">
+																		{isPseudo ? t("elsewherePseudoBadge") : t("elsewhereBadge")}
+																	</span>
+																	{c.hasQuestion && elseOwner && elseConvId && !isPseudo && (
 																		<span
 																			className="question-badge clickable"
 																			title={t("takeoverHasQuestion")}
@@ -881,6 +899,7 @@ export const LeftPanel = memo(function LeftPanel({
 																		kind: "elsewhere",
 																		label: c.title,
 																		...(elseOwner ? { owner: elseOwner } : {}),
+																		...(isPseudo ? { pseudo: true } : {}),
 																	});
 																}}
 															>

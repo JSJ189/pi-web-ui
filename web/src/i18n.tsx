@@ -205,7 +205,9 @@ export const zh = {
 	recentProjects: "最近项目",
 	runningConversations: "运行的对话",
 	elsewhereBadge: "另一处",
+	elsewherePseudoBadge: "无头任务",
 	elsewhereTip: "在其他标签页 / 设备上打开的对话（运行中或已结束未关闭，右键可过户到本页查看）",
+	elsewherePseudoTip: "定时任务/插件正在后台会话中执行，报告会自动落回绑定的对话；不支持过户到当前页面",
 	elsewhereActions: "操作（过户到本页 / 复制 id…）",
 	takeoverConversation: "过户到当前页面",
 	takeoverConfirm: "确认过户到当前页面？",
@@ -1986,8 +1988,11 @@ export const en: Record<keyof typeof zh, string> = {
 	recentProjects: "Recent projects",
 	runningConversations: "Running chats",
 	elsewhereBadge: "Elsewhere",
+	elsewherePseudoBadge: "Background task",
 	elsewhereTip:
 		"Conversation open in another tab / device (running, or finished but still held there; right-click to take over and view it here)",
+	elsewherePseudoTip:
+		"A scheduler/plugin background task is running here. Reports are saved to the bound conversation automatically; this session cannot be taken over",
 	elsewhereActions: "Actions (take over here, copy id…)",
 	takeoverConversation: "Take over to this page",
 	takeoverConfirm: "Confirm take over to this page?",

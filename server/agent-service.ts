@@ -12431,7 +12431,13 @@ export function checkPluginCwd(cwd: string): { ok: boolean; abs?: string; error?
 	return { ok: true, abs };
 }
 
+/** 插件/调度伪客户端：sink 常驻（fire-and-forget 的空函数），不能按浏览器存活判断。 */
+export function isPseudoClientId(id: string): boolean {
+	return id.startsWith("plugin:") || id.startsWith("scheduler:");
+}
+
 export class AgentService {
+	static isPseudoClientId = isPseudoClientId;
 	/** index.ts 注入：SDK 工具执行事件的插件转发钩子，attach 时拷贝到每个新会话。 */
 	onToolEvent: ((ev: PluginToolEvent) => void) | undefined = undefined;
 	/** index.ts 注入：bash/read 插件拦截钩子，attach 时拷贝到每个新会话。 */
@@ -12750,8 +12756,15 @@ export class AgentService {
 			if (clientId === excludeClientId) continue;
 			// issue #291：跳过无浏览器连接的残骸（非伪客户端 sinkCount=0 = 断连留存）。
 			// 伪客户端（scheduler:/plugin:）不走浏览器，sinkCount 永远为 0，保留。
-			if (!AgentService.isPseudoClientId(clientId) && cs.sinkCount() === 0) continue;
-			for (const r of cs.streamingSummariesAll()) out.push({ ...r, owner: clientId });
+			const isPseudo = AgentService.isPseudoClientId(clientId);
+			if (!isPseudo && cs.sinkCount() === 0) continue;
+			for (const r of cs.streamingSummariesAll()) {
+				out.push({
+					...r,
+					owner: clientId,
+					...(isPseudo ? { pseudo: true } : {}),
+				});
+			}
 		}
 		return out;
 	}
@@ -13036,10 +13049,7 @@ export class AgentService {
 		};
 	}
 
-	/** 插件/调度伪客户端：sink 常驻（fire-and-forget 的空函数），不能按浏览器存活判断。 */
-	private static isPseudoClientId(id: string): boolean {
-		return id.startsWith("plugin:") || id.startsWith("scheduler:");
-	}
+	// （原 private static isPseudoClientId 已抽到模块级导出并挂为 static 属性）
 
 	/**
 	 * 浏览器重启认领：给 fresh clientId 找一个可接管的断开残留会话（返回旧 id）。
@@ -13131,7 +13141,10 @@ export class AgentService {
 			return;
 		}
 		if (AgentService.isPseudoClientId(ownerId)) {
-			fail("定时任务/插件会话不支持过户", "Scheduler/plugin sessions cannot be taken over.");
+			fail(
+				"定时任务/插件会话不支持过户 —— 报告会自动落回绑定的对话，可在后台任务面板查看进度",
+				"Scheduler/plugin sessions cannot be taken over — reports are saved to the bound conversation automatically; check progress in the Background Tasks panel.",
+			);
 			return;
 		}
 		const source = this.clients.get(ownerId);
@@ -13222,8 +13235,8 @@ export class AgentService {
 		if (ownerId === targetId) return; // 自己的问卷走本地通道，不需要预告
 		if (AgentService.isPseudoClientId(ownerId)) {
 			fail(
-				"定时任务/插件会话的问卷不支持跨页作答",
-				"Scheduler/plugin session questions cannot be answered cross-page.",
+				"定时任务/插件会话的问卷不支持跨页作答 —— 报告会自动落回绑定的对话，可在后台任务面板查看进度",
+				"Scheduler/plugin session questions cannot be answered cross-page — reports are saved to the bound conversation automatically; check progress in the Background Tasks panel.",
 			);
 			return;
 		}

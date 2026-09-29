@@ -236,6 +236,7 @@ try {
 	// 正向对照：A 在线时，B 必须能看到 A 的行。
 	const liveRow = await waitElsewhere(clientB, (w) => w.owner === deadId, "A live row");
 	check("A 在线时 B 能看到其 elsewhere 行（正向对照）", !!liveRow, `owner=${liveRow.owner}`);
+	check("普通客户端 elsewhere 条目 pseudo 为 false/undefined（#426）", !liveRow.pseudo);
 	await clientA.waitForState((s) => s.isStreaming === false, 30000).catch(() => {});
 
 	// 断开 A（不 detach 回收 → 模拟「关浏览器留下的残骸」）。
@@ -268,6 +269,16 @@ try {
 	// 正向对照：伪客户端跑起来后应出现在 elsewhere。
 	const schedRow = await waitElsewhere(clientB, (w) => w.owner === `scheduler:${taskId}`, "scheduler row", 30000);
 	check("定时任务伪客户端出现在 elsewhere（正向对照）", !!schedRow, `owner=${schedRow.owner}`);
+	check("定时任务伪客户端 elsewhere 条目标记为 pseudo（#426）", schedRow.pseudo === true);
+
+	// #426：尝试请求过户伪客户端会话，应被拒并提示引导去处
+	clientB.send({ type: "take_over_conversation", owner: schedRow.owner, id: schedRow.convId });
+	const rejectNotice = await clientB.waitForType(
+		"notice",
+		(m) => m.text?.includes("定时任务/插件会话不支持过户"),
+		10000,
+	);
+	check("请求过户伪客户端时被拒并给出后台任务引导（#426）", rejectNotice.text.includes("后台任务面板"));
 
 	// 删除任务 → 伪客户端应被回收。
 	clientB.send({ type: "schedule_delete", id: taskId });
