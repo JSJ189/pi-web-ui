@@ -900,7 +900,16 @@ Lines are 1-indexed.`,
 		parameters: Type.Object({
 			action: Type.Unsafe<LspAction>({
 				type: "string",
-				enum: ["definition", "references", "hover", "diagnostics", "documentSymbol", "read_symbol", "workspaceSymbol", "cascade"],
+				enum: [
+					"definition",
+					"references",
+					"hover",
+					"diagnostics",
+					"documentSymbol",
+					"read_symbol",
+					"workspaceSymbol",
+					"cascade",
+				],
 				description: "The LSP operation to perform.",
 			}),
 			path: Type.Optional(
