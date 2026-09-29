@@ -1640,7 +1640,7 @@
 		"markers.todo.dep.invalid.dependencies": "todo:dep で不正な依存関係 {badList} を検出しました（存在しないか自己参照）",
 		"markers.todo.dep.invalid.id": "todo:dep の id が無効です: \"{rawId}\"",
 		"markers.todo.dep.task.missing": "todo:dep タスク #{id} が存在しません",
-		"markers.todo.guidance": "# インライン マーカー ツール（ステータスの変更は返答テキスト内でインラインで表現してください。ツールを呼ばないでください）\n- マーカー構文: [[todo:new:<サブジェクト>]] で作成；[[todo:set:<id>,completed|in_progress|pending]] でステータス変更；[[todo:remove:<id>]] で削除；[[todo:dep:<id>,blocks=<依存 id, カンマ区切り>]] で依存関係設定。\n- ステータスの変更はすべて上記の [[todo:...]] インライン マーカーで表現し、返答は中断されず、結果の待ち受けも不要です。\n- タスク一覧を表示したい場合のみ `todo_list` ツールを使用してください（読み取りパスはツールを経由します）。\n- 存在しないタスク id を捏造しないでください。id は [[todo:new:...]] で割り当てられ、初めての割り当ては増加する整数です。",
+		"markers.todo.guidance": "- マーカー構文: [[todo:new:<サブジェクト>]] で作成；[[todo:set:<id>,completed|in_progress|pending]] でステータス変更；[[todo:remove:<id>]] で削除；[[todo:dep:<id>,blocks=<依存 id, カンマ区切り>]] で依存関係設定。\n- ステータスの変更はすべて上記の [[todo:...]] インライン マーカーで表現し、返答は中断されず、結果の待ち受けも不要です。\n- タスク一覧を表示したい場合のみ `todo_list` ツールを使用してください（読み取りパスはツールを経由します）。\n- 存在しないタスク id を捏造しないでください。id は [[todo:new:...]] で割り当てられ、初めての割り当ては増加する整数です。",
 		"markers.todo.list.empty": "[todo] （空）",
 		"markers.todo.new.created": "#{id} を作成しました: {subject}（pending）",
 		"markers.todo.new.requires.subject": "todo:new にはサブジェクト引数が必要です [[todo:new:<サブジェクト>]]",
