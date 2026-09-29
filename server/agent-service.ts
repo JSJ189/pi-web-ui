@@ -1157,10 +1157,11 @@ export function makePlanUpdateTool(
 					id: Type.String({ description: "Unique step ID, e.g. '1', 'step-1'" }),
 					title: Type.String({ description: "Short step title" }),
 					status: Type.Optional(
-						Type.Union(
-							[Type.Literal("pending"), Type.Literal("in_progress"), Type.Literal("done"), Type.Literal("failed")],
-							{ description: "Step status: pending | in_progress | done | failed (default: pending)" },
-						),
+						Type.Unsafe<"pending" | "in_progress" | "done" | "failed">({
+							type: "string",
+							enum: ["pending", "in_progress", "done", "failed"],
+							description: "Step status: pending | in_progress | done | failed (default: pending)",
+						}),
 					),
 					description: Type.Optional(
 						Type.String({
