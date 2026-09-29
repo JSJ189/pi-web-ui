@@ -514,6 +514,7 @@ export function filterToolsByPreset(tools: Iterable<string>, preset?: string): s
 			"edit",
 			"edit_soft",
 			"bash",
+			"powershell",
 			"terminal_create",
 			"terminal_input",
 			"terminal_close",

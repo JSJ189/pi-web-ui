@@ -31,7 +31,17 @@ describe("pi 引擎 Agent 预设（Agent Presets）", () => {
 	});
 
 	it("filterToolsByPreset: reader 过滤掉所有写/执行工具", () => {
-		const tools = ["bash", "read", "edit", "write", "edit_soft", "terminal_create", "office_read", "notes_list"];
+		const tools = [
+			"bash",
+			"powershell",
+			"read",
+			"edit",
+			"write",
+			"edit_soft",
+			"terminal_create",
+			"office_read",
+			"notes_list",
+		];
 		const filtered = filterToolsByPreset(tools, "reader");
 		expect(filtered).toEqual(["read", "office_read", "notes_list"]);
 	});
