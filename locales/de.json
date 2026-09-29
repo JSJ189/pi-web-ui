@@ -1188,6 +1188,7 @@
 		"delegateTaskOffHint": "Deaktiviert: Die KI kann nicht per delegate_task delegieren (freie Delegation per subagent_spawn funktioniert weiterhin, ohne Sechs-Abschnitte-Validierung).",
 		"todoListEnabledDesc": "Schreibgeschützte Abfrage der aktuellen Aufgabenliste (gelöschte Einträge brauchen ein explizites Flag); Schreibvorgänge laufen nie über Tools — Inline-Marker verwenden.",
 		"todoListOffHint": "Deaktiviert: Die KI kann das Abfragetool nicht mehr aufrufen (Inline-Marker-Schreibvorgänge sind nicht betroffen).",
+		"toolDescSubagent": "Verwaltung von Hintergrund-Subagenten-Unterhaltungen (links sichtbar): vereint spawn (Start), wait_all (Warten), get_result (Ergebnis prüfen), steer (Anweisungen senden), stop (Abbrechen), list (Status), templates (Vorlagen) und handoff (Peer-Zusammenarbeit).",
 		"toolDescSubagentSpawn": "Startet eine unabhängige Hintergrund-Subagent-Unterhaltung (links sichtbar) für eine abgeschlossene Aufgabe; mehrere können parallel laufen.",
 		"toolDescSubagentGetResult": "Holt das Ergebnis oder den aktuellen Fortschritt eines einzelnen Subagenten; unfertige liefern Status plus Teilausgabe.",
 		"toolDescSubagentSteer": "Schleust eine Nachricht in einen laufenden Subagenten ein, um ihn umzulenken oder zu ergänzen.",

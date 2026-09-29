@@ -1336,12 +1336,14 @@ export const zh = {
 	pluginDisabledInPlugins: "插件已禁用",
 	skillsHiddenByPreset: "技能名录被默认预设「{name}」隐藏（skill 加载工具不可用时不同步展示），切回全功能恢复",
 	toolsSubagentDepHint:
-		"逐个开关：关闭 subagent_spawn 后其余（等待/查询/改向/停止）无会话可管，只会返回空列表或“未找到”；delegate_task 走 spawn 通道，spawn 关了它也派不出去。",
+		"子代理统一入口：合并 spawn/wait/get/steer/stop/list/templates/handoff；delegate_task 走 spawn 通道，关闭子代理后 delegate_task 也无法派单。",
 	delegateTaskEnabledDesc:
 		"把定义清楚的任务派给 specialist 子代理模板：六段派单（TASK/EXPECTED OUTCOME/REQUIRED TOOLS/MUST DO/MUST NOT DO/CONTEXT）在服务端校验，缺段或含糊直接报错打回。执行体复用子代理 spawn 通道。",
-	delegateTaskOffHint: "已关闭：AI 无法使用 delegate_task 派单（可用 subagent_spawn 自由派单，不带六段校验）",
+	delegateTaskOffHint: "已关闭：AI 无法使用 delegate_task 派单（可用 subagent 自由派单，不带六段校验）",
 	todoListEnabledDesc: "只读查询当前任务列表，删除项需显式传参；写操作不走工具，直接写内联标记。",
 	todoListOffHint: "已关闭：AI 不能再调查询工具（内联标记的写入不受影响）",
+	toolDescSubagent:
+		"后台子代理对话管理（左栏可见）：统一支持 spawn（派发）、wait_all（等待收口）、get_result（查询结果）、steer（改向追加）、stop（中止）、list（运行态）、templates（模板名录）、handoff（同行协作）。",
 	toolDescSubagentSpawn: "后台起独立子代理对话（左栏可见），做可独立交付的任务；可并行多个。",
 	toolDescSubagentGetResult: "取单个子代理的结果或当前进度；未完成返回现状和部分输出。",
 	toolDescSubagentSteer: "向运行中的子代理注入消息，改向或补充要求。",
@@ -3154,14 +3156,16 @@ export const en: Record<keyof typeof zh, string> = {
 	skillsHiddenByPreset:
 		"Skill catalog hidden by default preset “{name}” (not shown while the skill loader is unavailable); switch back to full features to restore",
 	toolsSubagentDepHint:
-		"Toggled individually: with subagent_spawn off, the rest (wait/get/steer/stop) have no sessions to manage and only return empty lists or “not found”; delegate_task rides the spawn channel, so it cannot dispatch with spawn off.",
+		"Unified subagent entrypoint combining spawn/wait/get/steer/stop/list/templates/handoff; delegate_task rides the spawn channel, so it cannot dispatch if subagents are disabled.",
 	delegateTaskEnabledDesc:
 		"Delegate a well-defined task to a specialist subagent template: the six-section brief (TASK/EXPECTED OUTCOME/REQUIRED TOOLS/MUST DO/MUST NOT DO/CONTEXT) is validated server-side; missing or vague sections are rejected. Runs on the subagent spawn channel.",
 	delegateTaskOffHint:
-		"Disabled: the AI cannot delegate via delegate_task (free-form delegation via subagent_spawn still works, without six-section validation)",
+		"Disabled: the AI cannot delegate via delegate_task (free-form delegation via subagent still works, without six-section validation)",
 	todoListEnabledDesc:
 		"Read-only query of the current task list (deleted items need an explicit flag); writes never go through tools — use inline markers.",
 	todoListOffHint: "Disabled: the AI can no longer call the query tool (inline-marker writes are unaffected)",
+	toolDescSubagent:
+		"Background subagent management (visible in the left panel): unifies spawn (dispatch), wait_all (collect), get_result (inspect), steer (redirect), stop (abort), list (status), templates (catalog), and handoff (peer collaboration).",
 	toolDescSubagentSpawn:
 		"Spawn an independent background subagent conversation (visible on the left) for a self-contained task; several may run in parallel.",
 	toolDescSubagentGetResult:

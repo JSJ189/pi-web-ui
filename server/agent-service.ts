@@ -1284,47 +1284,44 @@ export function makeAskUserQuestionTool(
 	ownerId?: string,
 ): ToolDefinition {
 	const QuestionOptionSchema = Type.Object({
-		label: Type.String({ description: "Display label for the option (1-5 words)" }),
+		label: Type.String({ description: "Display label (1-5 words)" }),
 		description: Type.Optional(
 			Type.String({
-				description: "One short sentence explaining the impact or tradeoff if selected.",
+				description: "Short explanation of impact/tradeoff",
 			}),
 		),
 		preview: Type.Optional(
 			Type.String({
-				description:
-					"Optional preview rendered below when this option is selected (markdown or HTML — use for mockups/code/config).",
+				description: "Optional preview (markdown/HTML/code)",
 			}),
 		),
 	});
 	const QuestionSchema = Type.Object({
-		id: Type.String({ description: "Unique identifier for this question (snake_case)" }),
-		question: Type.String({ description: "The full question text to display (markdown/HTML ok)" }),
-		detail: Type.Optional(Type.String({ description: "Optional detail/context shown under the question" })),
-		header: Type.Optional(Type.String({ description: "Optional short header for this question" })),
+		id: Type.String({ description: "Unique identifier (snake_case)" }),
+		question: Type.String({ description: "Question text (markdown/HTML ok)" }),
+		detail: Type.Optional(Type.String({ description: "Optional context under question" })),
+		header: Type.Optional(Type.String({ description: "Optional short header" })),
 		options: Type.Optional(
 			Type.Array(QuestionOptionSchema, {
-				description: "2-4 mutually exclusive choices. Put the recommended option first when there is a clear default.",
+				description: "2-4 choices (recommended option first)",
 				minItems: 2,
 				maxItems: 4,
 			}),
 		),
-		multiSelect: Type.Optional(Type.Boolean({ description: "Allow selecting multiple options (default: false)" })),
+		multiSelect: Type.Optional(Type.Boolean({ description: "Allow multiple choices (default: false)" })),
 		dependsOn: Type.Optional(
 			Type.Object({
-				questionId: Type.String({ description: "ID of the prior question this question depends on" }),
+				questionId: Type.String({ description: "Prior question ID" }),
 				value: Type.Optional(
 					Type.Union([Type.String(), Type.Array(Type.String())], {
-						description:
-							"Show only when the prior answer equals this value (or is in the array). Omit to show whenever answered.",
+						description: "Show when prior answer matches",
 					}),
 				),
 			}),
 		),
 		optionsMap: Type.Optional(
 			Type.Record(Type.String(), Type.Array(QuestionOptionSchema), {
-				description:
-					"Dynamic options based on prior question's chosen value: e.g. { 'React': [opts...], 'Vue': [opts...] }",
+				description: "Dynamic options keyed by prior answer",
 			}),
 		),
 	});
@@ -1332,20 +1329,18 @@ export function makeAskUserQuestionTool(
 		name: "ask_user_question",
 		label: "Ask the user",
 		description:
-			"Ask the user focused questions to clarify ambiguous requirements (clarify the task, confirm decisions, get preferences). " +
-			"Strictly ask 1 to 3 questions per call (prefer 1, max 3); provide 2 to 4 mutually exclusive options with the " +
-			"recommended option first, and explain impact/tradeoff in each option description. " +
-			"Each question renders a browser dialog with markdown/HTML rich text; options may carry a `preview`. Submit or cancel to resume.",
+			"Ask the user 1-3 focused questions to clarify requirements, confirm decisions, or choose options. " +
+			"Provide 2-4 choices (recommended first) with concise tradeoffs. " +
+			"Renders a rich browser dialog; resumes on submit or cancel.",
 		promptSnippet: "ask the user 1-3 focused questions with recommended options and tradeoffs to clarify requirements",
 		promptGuidelines: [
-			"When requirements are ambiguous, use ask_user_question to clarify instead of guessing: " +
-				"ask 1 to 3 focused questions (prefer 1, max 3), provide 2-4 mutually exclusive options with the " +
-				"recommended option first, and explain impact/tradeoff in description",
-			"A cancelled question comes back as a tool error — respect it and continue without re-asking immediately",
+			"When requirements are ambiguous, use ask_user_question to clarify: " +
+				"strictly 1 to 3 focused questions (prefer 1), 2-4 choices with recommended option first, and explain impact/tradeoff concisely",
+			"A cancelled question comes back as a tool error — respect it without immediately re-asking",
 		],
 		parameters: Type.Object({
 			questions: Type.Array(QuestionSchema, {
-				description: "Questions to ask the user (strictly 1 to 3 questions; prefer 1).",
+				description: "1-3 questions to ask (prefer 1)",
 				minItems: 1,
 				maxItems: 3,
 			}),

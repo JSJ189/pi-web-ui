@@ -49,10 +49,10 @@ function fakeSet(initial: string[] = []) {
 }
 
 describe("catalog", () => {
-	it("共 32 个可开关工具（终端 7＋子代理 8＋其他 17）", () => {
-		expect(AGENT_TOOL_CATALOG).toHaveLength(32);
+	it("共 25 个可开关工具（终端 7＋子代理 1＋其他 17）", () => {
+		expect(AGENT_TOOL_CATALOG).toHaveLength(25);
 		expect(TERMINAL_TOOL_NAMES).toHaveLength(7);
-		expect(SUBAGENT_TOOL_NAMES).toHaveLength(8);
+		expect(SUBAGENT_TOOL_NAMES).toHaveLength(1);
 	});
 
 	it("默认：终端组/edit_soft/eval 关，其余开（与改动前行为一致）", () => {
@@ -93,7 +93,7 @@ describe("normalize", () => {
 	});
 
 	it("isKnownAgentTool / isAgentToolEnabled", () => {
-		expect(isKnownAgentTool("subagent_spawn")).toBe(true);
+		expect(isKnownAgentTool("subagent")).toBe(true);
 		expect(isKnownAgentTool("bash")).toBe(false);
 		expect(isAgentToolEnabled("edit_soft", ["edit_soft"])).toBe(false);
 		expect(isAgentToolEnabled("edit_soft", [])).toBe(true);
@@ -123,10 +123,10 @@ describe("legacy sync", () => {
 	});
 
 	it("foldLegacyIntoDisabled 只动覆盖的组", () => {
-		const cur = ["edit_soft", "subagent_spawn"];
+		const cur = ["edit_soft", "subagent"];
 		expect(foldLegacyIntoDisabled(cur, { terminalToolsEnabled: false })).toEqual([
 			"edit_soft",
-			"subagent_spawn",
+			"subagent",
 			...TERMINAL_TOOL_NAMES,
 		]);
 		// true = 移出该组；未传的组不动。
@@ -185,7 +185,7 @@ describe("tool_manage 出入口", () => {
 		expect(names).toContain("read");
 		for (const t of AGENT_TOOL_CATALOG) expect(names).toContain(t.name);
 		// 全部禁用：目录内剔除，目录外不动。
-		const s2 = fakeSet(["bash", "edit_soft", "subagent_spawn"]);
+		const s2 = fakeSet(["bash", "edit_soft", "subagent"]);
 		applyAgentToolsGating(
 			s2,
 			AGENT_TOOL_CATALOG.map((t) => t.name),

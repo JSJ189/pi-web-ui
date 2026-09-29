@@ -32,6 +32,9 @@ describe("目标审查闸门 goalReviewDenial", () => {
 		]) {
 			expect(goalReviewDenial(name, {}), name).toBeUndefined();
 		}
+		expect(goalReviewDenial("subagent", { action: "get_result" })).toBeUndefined();
+		expect(goalReviewDenial("subagent", { action: "list" })).toBeUndefined();
+		expect(goalReviewDenial("subagent", { action: "templates" })).toBeUndefined();
 	});
 
 	it("只读 bash 放行（跑测试/看 diff），写命令拒绝", () => {
@@ -61,6 +64,8 @@ describe("目标审查闸门 goalReviewDenial", () => {
 	});
 
 	it("派发类工具一律拒（D6：轮次由服务端控制）", () => {
+		expect(goalReviewDenial("subagent", { action: "spawn" })?.kind).toBe("dispatch-tool");
+		expect(goalReviewDenial("subagent", { action: "wait_all" })?.kind).toBe("dispatch-tool");
 		for (const name of [
 			"subagent_spawn",
 			"subagent_steer",

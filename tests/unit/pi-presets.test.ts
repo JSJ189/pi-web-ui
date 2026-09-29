@@ -67,7 +67,7 @@ describe("pi 引擎 Agent 预设（Agent Presets）", () => {
 		expect(current).toEqual(["bash", "read"]);
 
 		// 代码开发模式：只留代码读写与执行工具，排除了 plan_update 等规划工具
-		const fullWithPlan = ["bash", "read", "edit", "write", "edit_soft", "plan_update", "subagent_spawn"];
+		const fullWithPlan = ["bash", "read", "edit", "write", "edit_soft", "plan_update", "subagent"];
 		let currentCode = [...fullWithPlan];
 		const mockCodeSession: ActiveToolSet = {
 			getActiveToolNames: () => [...currentCode],

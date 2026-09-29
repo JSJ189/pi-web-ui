@@ -1188,6 +1188,7 @@
 		"delegateTaskOffHint": "비활성화됨: AI가 delegate_task로 위임할 수 없습니다(subagent_spawn을 이용한 자유형식 위임은 계속 가능, 6개 섹션 검증 없음).",
 		"todoListEnabledDesc": "현재 작업 목록의 읽기 전용 조회(삭제된 항목은 명시적 플래그 필요). 쓰기는 도구를 거치지 않고 인라인 마커로 직접 작성.",
 		"todoListOffHint": "비활성화됨: AI가 조회 도구를 호출할 수 없습니다(인라인 마커 쓰기는 영향 없음)",
+		"toolDescSubagent": "백그라운드 서브에이전트 대화 관리(왼쪽 패널에 표시): spawn(시작), wait_all(대기), get_result(결과 확인), steer(지시 추가), stop(중지), list(상태 목록), templates(템플릿), handoff(피어 협업) 통합 관리.",
 		"toolDescSubagentSpawn": "독립적인 백그라운드 서브에이전트 대화를 시작합니다(왼쪽에 표시). 완결형 작업용. 여러 개 병렬 가능.",
 		"toolDescSubagentGetResult": "개별 서브에이전트의 결과 또는 진행 상황을 가져옵니다. 미완료는 상태와 부분 출력만 반환합니다.",
 		"toolDescSubagentSteer": "실행 중인 서브에이전트에 메시지를 주입하여 방향을 전환하거나 보완합니다.",

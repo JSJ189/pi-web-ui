@@ -22,13 +22,13 @@ function makeMockHost(subagents: Record<string, SubagentSnapshot> = {}): Subagen
 }
 
 describe("subagent_handoff (Peer-to-Peer Hand-off)", () => {
-	it("SUBAGENT_TOOL_NAMES 和 makeSubagentTools 包含 subagent_handoff", () => {
-		expect(SUBAGENT_TOOL_NAMES).toContain("subagent_handoff");
+	it("SUBAGENT_TOOL_NAMES 和 makeSubagentTools 包含 subagent 工具", () => {
+		expect(SUBAGENT_TOOL_NAMES).toContain("subagent");
 		const host = makeMockHost();
 		const tools = makeSubagentTools(host, () => "zh", "sa-source-1111");
-		const handoffTool = tools.find((t) => t.name === "subagent_handoff");
-		expect(handoffTool).toBeDefined();
-		expect(handoffTool?.label).toBe("Hand off to peer subagent");
+		const tool = tools.find((t) => t.name === "subagent");
+		expect(tool).toBeDefined();
+		expect(tool?.label).toBe("Subagent manager");
 	});
 
 	it("不能交接给自身，交接给自身时应拒绝并返回错误提示", async () => {
@@ -45,11 +45,12 @@ describe("subagent_handoff (Peer-to-Peer Hand-off)", () => {
 			},
 		});
 		const tools = makeSubagentTools(host, () => "zh", "sa-self-1111");
-		const handoffTool = tools.find((t) => t.name === "subagent_handoff")!;
+		const tool = tools.find((t) => t.name === "subagent")!;
 
-		const result = (await handoffTool.execute(
+		const result = (await tool.execute(
 			"call-1",
 			{
+				action: "handoff",
 				toRunId: "sa-self-1111",
 				payload: "My analysis results",
 			},
@@ -65,11 +66,12 @@ describe("subagent_handoff (Peer-to-Peer Hand-off)", () => {
 	it("目标子代理不存在时，应返回未找到提示", async () => {
 		const host = makeMockHost({});
 		const tools = makeSubagentTools(host, () => "zh", "sa-source-1111");
-		const handoffTool = tools.find((t) => t.name === "subagent_handoff")!;
+		const tool = tools.find((t) => t.name === "subagent")!;
 
-		const result = (await handoffTool.execute(
+		const result = (await tool.execute(
 			"call-2",
 			{
+				action: "handoff",
 				toRunId: "sa-nonexistent",
 				payload: "Some payload",
 			},
@@ -96,11 +98,12 @@ describe("subagent_handoff (Peer-to-Peer Hand-off)", () => {
 			},
 		});
 		const tools = makeSubagentTools(host, () => "zh", "sa-source-1111");
-		const handoffTool = tools.find((t) => t.name === "subagent_handoff")!;
+		const tool = tools.find((t) => t.name === "subagent")!;
 
-		const result = (await handoffTool.execute(
+		const result = (await tool.execute(
 			"call-3",
 			{
+				action: "handoff",
 				toRunId: "sa-dev-2222",
 				payload: "Architecture design completed. Implement module X.",
 			},

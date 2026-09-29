@@ -137,7 +137,7 @@ const spawnCall = (index, template, prompt) => ({
 	index,
 	id: `call_${template}`,
 	type: "function",
-	function: { name: "subagent_spawn", arguments: JSON.stringify({ prompt, type: template, template }) },
+	function: { name: "subagent", arguments: JSON.stringify({ action: "spawn", prompt, type: template, template }) },
 });
 
 const mock = createServer(async (req, res) => {

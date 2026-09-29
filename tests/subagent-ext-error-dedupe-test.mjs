@@ -121,7 +121,7 @@ const mock = createServer(async (req, res) => {
 		return;
 	}
 	// 主对话第一回合（有 subagent 工具、还没有工具结果）→ 派一个子代理。
-	const hasSubagentTool = (payload.tools ?? []).some((t) => t?.function?.name === "subagent_spawn");
+	const hasSubagentTool = (payload.tools ?? []).some((t) => t?.function?.name === "subagent");
 	const hasToolResult = messages.some((m) => m.role === "tool");
 	if (hasSubagentTool && !hasToolResult) {
 		sse(res, [
@@ -132,8 +132,8 @@ const mock = createServer(async (req, res) => {
 						id: "call_spawn",
 						type: "function",
 						function: {
-							name: "subagent_spawn",
-							arguments: JSON.stringify({ prompt: "SUBAGENT_RUN", type: "probe" }),
+							name: "subagent",
+							arguments: JSON.stringify({ action: "spawn", prompt: "SUBAGENT_RUN", type: "probe" }),
 						},
 					},
 				],

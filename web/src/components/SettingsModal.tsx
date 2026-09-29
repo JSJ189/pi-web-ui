@@ -1029,6 +1029,7 @@ export function SettingsModal({
 
 	// 子代理各工具的「?」说明（key 与 tool-manager.ts 的 SUBAGENT_TOOL_NAMES 对齐）。
 	const SUBAGENT_TOOL_TIPS: Record<string, string> = {
+		subagent: t("toolDescSubagent"),
 		subagent_spawn: t("toolDescSubagentSpawn"),
 		subagent_get_result: t("toolDescSubagentGetResult"),
 		subagent_steer: t("toolDescSubagentSteer"),

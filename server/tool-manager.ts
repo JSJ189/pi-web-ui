@@ -29,8 +29,12 @@ export const TERMINAL_TOOL_NAMES = [
 	"terminal_wait",
 ] as const;
 
-/** 第一方子代理工具（定义见 subagents.ts，逐个可关）。 */
-export const SUBAGENT_TOOL_NAMES = [
+/** 第一方子代理工具（定义见 subagents.ts，统一为单 action 工具）。 */
+export const SUBAGENT_TOOL_NAME = "subagent";
+export const SUBAGENT_TOOL_NAMES = [SUBAGENT_TOOL_NAME] as const;
+
+/** 旧版 8 个独立子代理工具名（持久化配置迁移用）。 */
+export const LEGACY_SUBAGENT_TOOL_NAMES = [
 	"subagent_spawn",
 	"subagent_get_result",
 	"subagent_steer",
@@ -298,7 +302,11 @@ export function normalizeDisabledAgentTools(v: unknown): string[] {
 	const out: string[] = [];
 	for (const x of v) {
 		// 旧名迁移：markers_list → todo_list（改名前已关闭的用户保持关闭）。
-		const name = x === LEGACY_MARKERS_LIST_TOOL_NAME ? MARKERS_LIST_TOOL_NAME : x;
+		let name = x === LEGACY_MARKERS_LIST_TOOL_NAME ? MARKERS_LIST_TOOL_NAME : x;
+		// 旧版子代理工具迁移：任意旧 subagent_* 关闭均迁移为关闭 subagent 工具。
+		if (typeof name === "string" && (LEGACY_SUBAGENT_TOOL_NAMES as readonly string[]).includes(name)) {
+			name = SUBAGENT_TOOL_NAME;
+		}
 		if (typeof name === "string" && (KNOWN_NAMES.has(name) || isCoreBuiltinTool(name)) && !out.includes(name)) {
 			out.push(name);
 		}

@@ -1188,6 +1188,7 @@
 		"delegateTaskOffHint": "無効化中：AI は delegate_task で委任できません（subagent_spawn による自由形式の委任は引き続き利用可能、6 セクション検証なし）",
 		"todoListEnabledDesc": "現在のタスク一覧の読み取り専用クエリ（削除済みは明示フラグが必要）。書き込みはツールを経由せず、インラインマーカーで直接記述。",
 		"todoListOffHint": "無効化中：AI はクエリツールを呼べなくなります（インラインマーカーの書き込みは影響なし）",
+		"toolDescSubagent": "バックグラウンドのサブエージェント会話管理（左欄に表示）：spawn（開始）、wait_all（待機）、get_result（結果取得）、steer（指示追加）、stop（停止）、list（実行状態）、templates（テンプレート）、handoff（ピア連携）を統合。",
 		"toolDescSubagentSpawn": "独立したバックグラウンドのサブエージェント会話を開始します（左欄に表示）。完結したタスク用。複数並列可。",
 		"toolDescSubagentGetResult": "個々のサブエージェントの結果または進捗を取得。未完了は状態と部分出力のみ返します。",
 		"toolDescSubagentSteer": "実行中のサブエージェントにメッセージを注入し、方向転換や補足を行います。",

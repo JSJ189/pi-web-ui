@@ -1188,6 +1188,7 @@
 		"delegateTaskOffHint": "Desactivado: la IA no puede delegar mediante delegate_task (la delegación libre con subagent_spawn sigue funcionando, sin validación de seis secciones).",
 		"todoListEnabledDesc": "Consulta de solo lectura de la lista de tareas actual (los elementos eliminados requieren un flag explícito); las escrituras nunca pasan por herramientas: usa marcadores inline.",
 		"todoListOffHint": "Desactivado: la IA ya no puede llamar a la herramienta de consulta (las escrituras con marcadores inline no se ven afectadas).",
+		"toolDescSubagent": "Gestión de subagentes en segundo plano (visible en el panel izquierdo): unifica spawn (iniciar), wait_all (esperar), get_result (ver resultado), steer (redirigir), stop (detener), list (estado), templates (plantillas) y handoff (colaboración entre pares).",
 		"toolDescSubagentSpawn": "Inicia una conversación de subagente independiente en segundo plano (visible a la izquierda) para una tarea autocontenida; varios pueden ejecutarse en paralelo.",
 		"toolDescSubagentGetResult": "Obtiene el resultado o el progreso actual de un subagente; los sin terminar devuelven estado más salida parcial.",
 		"toolDescSubagentSteer": "Inyecta un mensaje en un subagente en ejecución para redirigirlo o complementar.",

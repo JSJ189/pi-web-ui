@@ -161,645 +161,680 @@ export function withSubagentOwner(host: SubagentToolHost, ownerId: string): Suba
 	};
 }
 
+export const SUBAGENT_TOOL_NAME = "subagent";
+
+export const SUBAGENT_ACTIONS = [
+	"spawn",
+	"get_result",
+	"steer",
+	"list",
+	"stop",
+	"wait_all",
+	"templates",
+	"handoff",
+] as const;
+
+export type SubagentAction = (typeof SUBAGENT_ACTIONS)[number];
+
 /**
- * 子代理工具集（注册进每个会话的 customTools，供主 agent 驱动子代理）。
- * 用 `subagent_*` 前缀命名，避免与第三方 pi-subagents 的
- * `Agent`/`get_subagent_result`/`steer_subagent` 冲突。
+ * 单 action 子代理总工具（注册进每个会话的 customTools，供主 agent 驱动子代理）。
+ * 合并原 subagent_* 8 个工具为一个统一入口，节省会话上下文 token。
  *
- * `selfConvId`（可选）：这套工具所注册进的会话 convId。`subagent_wait_all`
- * 永远排除调用者自身——子代理会话上同样注册了全套工具，不传 runIds 时
+ * `selfConvId`（可选）：这套工具所注册进的会话 convId。`wait_all`
+ * 永远排除调用者自身——子代理会话上同样注册了该工具，不传 runIds 时
  * 「全部」会含它自己，而它正在执行本工具（streaming=true），不排除就是
  * 自己等自己、永远到超时（self-wait deadlock）。主会话调用时传它自己的
  * 普通对话 id 即可（不在子代理列表里，delete 是 no-op）。
+ */
+export function makeSubagentTool(host: SubagentToolHost, lang?: () => ServerLang, selfConvId?: string): ToolDefinition {
+	const getLang: () => ServerLang = lang ?? host.lang ?? (() => "en");
+	const text = (t: string, details: unknown = {}): { content: { type: "text"; text: string }[]; details: unknown } => ({
+		content: [{ type: "text", text: t }],
+		details,
+	});
+
+	const currentWaitCapMs =
+		typeof host.getWatchdogTimeoutMs === "function"
+			? Math.max(Math.min(60_000, Math.floor(host.getWatchdogTimeoutMs() * 0.8)), 5_000)
+			: WAIT_CAP_MS;
+	const capSeconds = Math.floor(currentWaitCapMs / 1000);
+
+	return defineTool({
+		name: SUBAGENT_TOOL_NAME,
+		label: "Subagent manager",
+		description:
+			"Manage background subagent conversations for parallel delegation, research, and execution. Actions:\n" +
+			"- `spawn`: start a subagent with `prompt` (optional `template`, `type`, `model`, `cwd`, `persist`).\n" +
+			"- `get_result`: inspect status/output with `runId`.\n" +
+			"- `steer`: inject a `message` into a running subagent with `runId`.\n" +
+			"- `list`: list managed subagents (optional `kind`).\n" +
+			"- `stop`: abort a running subagent with `runId`.\n" +
+			"- `wait_all`: block until subagents finish (optional `runIds`, `timeoutSeconds`).\n" +
+			"- `templates`: list available subagent templates.\n" +
+			"- `handoff`: transfer `payload` to peer subagent with `toRunId` (optional `fromRunId`).",
+		promptSnippet: "manage background subagents: spawn, get_result, steer, list, stop, wait_all, templates, handoff",
+		parameters: Type.Object({
+			action: Type.Unsafe<SubagentAction>({
+				type: "string",
+				enum: [...SUBAGENT_ACTIONS],
+				description: "The subagent action to perform.",
+			}),
+			prompt: Type.Optional(
+				Type.String({
+					description: "spawn: instructions for the subagent (goal, constraints, expected output).",
+				}),
+			),
+			runId: Type.Optional(
+				Type.String({
+					description: "get_result/steer/stop: target subagent conversation ID.",
+				}),
+			),
+			runIds: Type.Optional(
+				Type.Array(Type.String(), {
+					description: "wait_all: subagent conversation IDs to wait for (omit for all active).",
+				}),
+			),
+			message: Type.Optional(
+				Type.String({
+					description: "steer: follow-up instruction to inject into the subagent.",
+				}),
+			),
+			payload: Type.Optional(
+				Type.String({
+					description: "handoff: artifact, data, or instructions to transfer to peer subagent.",
+				}),
+			),
+			toRunId: Type.Optional(
+				Type.String({
+					description: "handoff: target peer subagent conversation ID.",
+				}),
+			),
+			fromRunId: Type.Optional(
+				Type.String({
+					description: "handoff: source subagent ID (defaults to current subagent).",
+				}),
+			),
+			type: Type.Optional(
+				Type.String({
+					description: "spawn: role/type name (e.g. explore/implement/review, default: general).",
+				}),
+			),
+			template: Type.Optional(
+				Type.String({
+					description: "spawn: subagent template name (see action=templates).",
+				}),
+			),
+			model: Type.Optional(
+				Type.String({
+					description: 'spawn: model override "provider/id".',
+				}),
+			),
+			cwd: Type.Optional(
+				Type.String({
+					description: "spawn: working directory (defaults to current cwd).",
+				}),
+			),
+			persist: Type.Optional(
+				Type.Boolean({
+					description: "spawn: persist as a regular session instead of ephemeral subagent.",
+				}),
+			),
+			kind: Type.Optional(
+				Type.String({
+					enum: ["all", "subagent", "persistent"],
+					description: "list: filter subagents by kind (default: all).",
+				}),
+			),
+			timeoutSeconds: Type.Optional(
+				Type.Integer({
+					description: `wait_all: max wait in seconds (1-${capSeconds}, default: ${capSeconds}s).`,
+					minimum: 1,
+					maximum: capSeconds,
+				}),
+			),
+		}),
+		execute: async (_id, p, signal, _onUpdate, ctx) => {
+			const action = (p.action ?? "").trim().toLowerCase();
+			if (!action) {
+				return text(
+					pick(
+						getLang(),
+						"subagent 工具缺少 action 参数（可选：spawn, get_result, steer, list, stop, wait_all, templates, handoff）。",
+						"subagent tool requires an action parameter (one of: spawn, get_result, steer, list, stop, wait_all, templates, handoff).",
+						"subagents.action.missing",
+					),
+				);
+			}
+
+			switch (action) {
+				case "spawn": {
+					if (!p.prompt || typeof p.prompt !== "string" || !p.prompt.trim()) {
+						return text(
+							pick(
+								getLang(),
+								'subagent(action="spawn") 缺少 prompt 参数。',
+								'subagent(action="spawn") requires prompt parameter.',
+								"subagents.spawn.missing.prompt",
+							),
+						);
+					}
+					if (p.template && !host.isTemplateUsable(p.template)) {
+						return text(
+							pick(
+								getLang(),
+								`子代理模板不可用：${p.template}（不存在或已停用）。用 subagent(action="templates") 查看当前可用模板清单；不传 template 则按默认配置运行。`,
+								`Subagent template unavailable: ${p.template} (missing or disabled). Use subagent(action="templates") to list available templates; omit template to run with defaults.`,
+								"subagents.spawn.template.unavailable",
+								{ "p.template": p.template },
+							),
+						);
+					}
+					let convId: string;
+					try {
+						convId = await host.spawnSubagent(
+							p.prompt,
+							p.type ?? "general",
+							p.cwd ?? ctx.cwd,
+							p.template,
+							p.model,
+							undefined,
+							p.persist,
+						);
+					} catch (err) {
+						const msg = err instanceof Error ? err.message : String(err);
+						return text(
+							pick(getLang(), `子代理启动失败：${msg}`, `Failed to start subagent: ${msg}`, "subagents.spawn.failed", {
+								error: msg,
+							}),
+						);
+					}
+					const subagentType = p.type ?? "general";
+					const subagentTitleText = subagentTitle(p.prompt);
+					const templateLineZh = p.template ? `\n模板：${p.template}` : "";
+					const templateLineEn = p.template ? `\nTemplate: ${p.template}` : "";
+					const modelLineZh = p.model ? `\n模型：${p.model}` : "";
+					const modelLineEn = p.model ? `\nModel: ${p.model}` : "";
+					const kindLabelZh = p.persist ? "普通持久化对话" : "子代理";
+					const kindLabelEn = p.persist ? "Persistent conversation" : "Subagent";
+					return text(
+						pick(
+							getLang(),
+							`${kindLabelZh}已启动（运行列表可见）：${convId}\n类型：${subagentType} · 标题：${subagentTitleText}${templateLineZh}${modelLineZh}` +
+								`\n用 subagent(action="wait_all") 一次等全部完成（不用轮询），subagent(action="get_result") 取单个结果，subagent(action="list") 看运行态，subagent(action="steer") 改向，subagent(action="stop") 停止。`,
+							`${kindLabelEn} started (visible in the running list): ${convId}\nType: ${subagentType} · Title: ${subagentTitleText}${templateLineEn}${modelLineEn}` +
+								`\nUse subagent(action="wait_all") to wait for all at once (no polling), subagent(action="get_result") for a single result, subagent(action="list") for live status, subagent(action="steer") to redirect, subagent(action="stop") to stop.`,
+							"subagents.spawn.started",
+							{
+								convId,
+								subagentType,
+								subagentTitleText,
+								"p.template": p.template,
+								"p.model": p.model,
+								templateLineZh,
+								templateLineEn,
+								modelLineZh,
+								modelLineEn,
+							},
+						),
+						{ convId, template: p.template, model: p.model, persisted: !!p.persist },
+					);
+				}
+
+				case "get_result": {
+					if (!p.runId || typeof p.runId !== "string" || !p.runId.trim()) {
+						return text(
+							pick(
+								getLang(),
+								'subagent(action="get_result") 缺少 runId 参数。',
+								'subagent(action="get_result") requires runId parameter.',
+								"subagents.get.missing.runId",
+							),
+						);
+					}
+					const r = host.getSubagent(p.runId);
+					const missingId = shortId(p.runId);
+					if (!r)
+						return text(
+							pick(
+								getLang(),
+								`未找到子代理 ${missingId}（可能已移出）。`,
+								`Subagent ${missingId} not found (may have been dismissed).`,
+								"subagents.get.not.found",
+								{ missingId },
+							),
+							undefined,
+						);
+					const verdict = subagentVerdict(r, getLang());
+					const doneId = shortId(r.convId);
+					const doneDetail = verdictText(r, getLang());
+					const doneOutput = r.output || (getLang() === "zh" ? "（无结果）" : "(no result)");
+					if (r.streaming || r.state === "running") {
+						const runningId = shortId(r.convId);
+						const runningOutput = r.output || (getLang() === "zh" ? "（暂无输出）" : "(no output yet)");
+						return text(
+							pick(
+								getLang(),
+								`子代理 ${runningId}（${r.type}）仍在运行（状态 ${r.state}）。\n当前输出：\n${runningOutput}`,
+								`Subagent ${runningId} (${r.type}) is still running (state ${r.state}).\nCurrent output:\n${runningOutput}`,
+								"subagents.get.running",
+								{ runningId, "r.type": r.type, "r.state": r.state, runningOutput },
+							),
+							r,
+						);
+					}
+					return text(
+						pick(
+							getLang(),
+							`子代理 ${doneId}（${r.type}）状态：${verdict}\n${doneDetail}\n${doneOutput}`,
+							`Subagent ${doneId} (${r.type}) status: ${verdict}\n${doneDetail}\n${doneOutput}`,
+							"subagents.get.done",
+							{ doneId, "r.type": r.type, verdict, doneDetail, doneOutput },
+						),
+						r,
+					);
+				}
+
+				case "steer": {
+					if (!p.runId || typeof p.runId !== "string" || !p.runId.trim()) {
+						return text(
+							pick(
+								getLang(),
+								'subagent(action="steer") 缺少 runId 参数。',
+								'subagent(action="steer") requires runId parameter.',
+								"subagents.steer.missing.runId",
+							),
+						);
+					}
+					if (typeof p.message !== "string" || !p.message.trim()) {
+						return text(
+							pick(
+								getLang(),
+								'subagent(action="steer") 缺少 message 参数。',
+								'subagent(action="steer") requires message parameter.',
+								"subagents.steer.missing.message",
+							),
+						);
+					}
+					if (!host.getSubagent(p.runId)) {
+						const missingSteerId = shortId(p.runId);
+						return text(
+							pick(
+								getLang(),
+								`未找到子代理 ${missingSteerId}（可能已移出），消息未注入。请用 subagent(action="list") 确认仍在运行的子代理。`,
+								`Subagent ${missingSteerId} not found (may have been dismissed); message not injected. Use subagent(action="list") to confirm running subagents.`,
+								"subagents.steer.not.found",
+								{ missingSteerId },
+							),
+						);
+					}
+					await host.steerSubagent(p.runId, p.message);
+					const steerId = shortId(p.runId);
+					return text(
+						pick(
+							getLang(),
+							`已向子代理 ${steerId} 注入消息。`,
+							`Message injected into subagent ${steerId}.`,
+							"subagents.steer.injected",
+							{ steerId },
+						),
+					);
+				}
+
+				case "list": {
+					const list = host.listSubagents(p.kind as "all" | "subagent" | "persistent" | undefined);
+					if (list.length === 0)
+						return text(
+							pick(
+								getLang(),
+								"当前没有运行中的对话/子代理。",
+								"No managed conversations or subagents running.",
+								"subagents.list.empty",
+							),
+						);
+					const tLang = getLang();
+					const lines = list.map((r) => {
+						const tag = r.persisted
+							? tLang === "zh"
+								? "持久化"
+								: "persistent"
+							: tLang === "zh"
+								? "子代理"
+								: "subagent";
+						return (
+							`- ${r.convId} · ${r.type} · ${subagentVerdict(r, tLang)} · ${r.title}` +
+							(tLang === "zh" ? `（${tag} · msg: ${r.messageCount}）` : ` (${tag} · msg: ${r.messageCount})`)
+						);
+					});
+					return text(lines.join("\n"));
+				}
+
+				case "stop": {
+					if (!p.runId || typeof p.runId !== "string" || !p.runId.trim()) {
+						return text(
+							pick(
+								getLang(),
+								'subagent(action="stop") 缺少 runId 参数。',
+								'subagent(action="stop") requires runId parameter.',
+								"subagents.stop.missing.runId",
+							),
+						);
+					}
+					if (!host.getSubagent(p.runId)) {
+						const missingStopId = shortId(p.runId);
+						return text(
+							pick(
+								getLang(),
+								`未找到子代理 ${missingStopId}（可能已移出或已结束），无需停止。请用 subagent(action="list") 确认仍在运行的子代理。`,
+								`Subagent ${missingStopId} not found (may have been dismissed or already finished); nothing to stop. Use subagent(action="list") to confirm running subagents.`,
+								"subagents.stop.not.found",
+								{ missingStopId },
+							),
+						);
+					}
+					await host.stopSubagent(p.runId);
+					const stopId = shortId(p.runId);
+					return text(
+						pick(
+							getLang(),
+							`已请求停止子代理 ${stopId}。`,
+							`Stop requested for subagent ${stopId}.`,
+							"subagents.stop.requested",
+							{ stopId },
+						),
+					);
+				}
+
+				case "wait_all": {
+					const ancestorIdsOf = (selfId: string): Set<string> => {
+						const out = new Set<string>();
+						const seen = new Set<string>([selfId]);
+						let cur = host.getSubagent(selfId)?.parentId;
+						while (cur && !seen.has(cur)) {
+							seen.add(cur);
+							out.add(cur);
+							cur = host.getSubagent(cur)?.parentId;
+						}
+						return out;
+					};
+					const expandDescendants = (roots: Set<string> | string[]): string[] => {
+						if (roots instanceof Set ? roots.size === 0 : (roots as string[]).length === 0) return [];
+						const rootSet = roots instanceof Set ? roots : new Set(roots);
+						const all = host.listSubagents();
+						const out: string[] = [];
+						for (const s of all) {
+							if (rootSet.has(s.convId)) continue;
+							let curParent = s.parentId;
+							const seen = new Set<string>();
+							while (curParent) {
+								if (rootSet.has(curParent)) {
+									out.push(s.convId);
+									break;
+								}
+								if (seen.has(curParent)) break;
+								seen.add(curParent);
+								curParent = host.getSubagent(curParent)?.parentId;
+							}
+						}
+						return out;
+					};
+
+					const explicit = p.runIds && p.runIds.length > 0;
+					const wanted = new Set<string>();
+					const selfAncestorIds = selfConvId ? ancestorIdsOf(selfConvId) : new Set<string>();
+
+					if (explicit) {
+						const seedRoots: string[] = [];
+						for (const id of p.runIds!) {
+							if (selfConvId && id === selfConvId) continue;
+							if (selfAncestorIds.has(id)) continue;
+							wanted.add(id);
+							seedRoots.push(id);
+						}
+						for (const descId of expandDescendants(seedRoots)) {
+							if (selfConvId && descId === selfConvId) continue;
+							if (selfAncestorIds.has(descId)) continue;
+							wanted.add(descId);
+						}
+					} else if (selfConvId) {
+						for (const descId of expandDescendants(new Set([selfConvId]))) {
+							if (descId === selfConvId) continue;
+							if (selfAncestorIds.has(descId)) continue;
+							wanted.add(descId);
+						}
+					} else {
+						for (const r of host.listSubagents()) {
+							wanted.add(r.convId);
+						}
+					}
+					if (selfConvId) wanted.delete(selfConvId);
+					for (const ancId of selfAncestorIds) wanted.delete(ancId);
+
+					if (wanted.size === 0) {
+						return text(
+							pick(
+								getLang(),
+								"没有需要等待的子代理（调用者自身与其祖先永不计入等待；子代理无参数调用时只等待属于它自己的后代）。",
+								"No subagents to wait for (the calling session itself and its ancestors are never waited on; a subagent without runIds only waits for its own descendants).",
+								"subagents.wait.empty",
+							),
+						);
+					}
+
+					const timeoutMs = Math.min(Math.max(p.timeoutSeconds ?? capSeconds, 1), capSeconds) * 1000;
+					const startedAt = Date.now();
+					const POLL_INTERVAL_MS = 250;
+
+					while (!signal?.aborted && Date.now() - startedAt < timeoutMs) {
+						for (const descId of expandDescendants(wanted)) {
+							if (selfConvId && descId === selfConvId) continue;
+							if (selfAncestorIds.has(descId)) continue;
+							wanted.add(descId);
+						}
+						const allDone = Array.from(wanted).every((id) => {
+							const r = host.getSubagent(id);
+							return isSubagentTerminal(r);
+						});
+						if (allDone) break;
+						await new Promise((resolve) => setTimeout(resolve, POLL_INTERVAL_MS));
+					}
+
+					const tLang = getLang();
+					const waitedSecs = Math.max(1, Math.round((Date.now() - startedAt) / 1000));
+					const timeoutSecs = Math.round(timeoutMs / 1000);
+					const lines = Array.from(wanted)
+						.map((id) => {
+							const r = host.getSubagent(id);
+							const sId = shortId(id);
+							if (!r) {
+								return pick(
+									tLang,
+									`- ${sId}：已移出或不存在`,
+									`- ${sId}: dismissed or not found`,
+									"subagents.wait.item.missing",
+									{ sId },
+								);
+							}
+							const verdict = subagentVerdict(r, tLang);
+							const detail = verdictText(r, tLang);
+							const out = clipSubagentOutput(r.output || (tLang === "zh" ? "（无输出）" : "(no output)"), tLang);
+							return `- ${sId}（${r.type} · ${verdict} · ${r.title}）${detail ? ` · ${detail}` : ""}:\n${out}`;
+						})
+						.join("\n\n");
+
+					const remaining = Array.from(wanted).filter((id) => {
+						const r = host.getSubagent(id);
+						return !isSubagentTerminal(r);
+					});
+
+					const head =
+						remaining.length === 0
+							? pick(
+									tLang,
+									`全部 ${wanted.size} 个子代理已收口：`,
+									`All ${wanted.size} subagent(s) collected:`,
+									"subagents.wait.collected",
+									{ "wanted.size": wanted.size },
+								)
+							: signal?.aborted
+								? pick(
+										tLang,
+										`本轮被中止，${remaining.length} 个仍在运行：`,
+										`This round was aborted, ${remaining.length} still running:`,
+										"subagents.wait.aborted",
+										{ "remaining.length": remaining.length },
+									)
+								: pick(
+										tLang,
+										`等待超过 ${timeoutSecs}s 超时（实际等待 ${waitedSecs}s），${remaining.length} 个仍在运行：`,
+										`Wait timed out after ${timeoutSecs}s (actually waited ${waitedSecs}s), ${remaining.length} still running:`,
+										"subagents.wait.timeout",
+										{ timeoutSecs, waitedSecs, "remaining.length": remaining.length },
+									);
+					return text(`${head}\n${lines}\n` + promptRemaining(remaining, tLang));
+				}
+
+				case "templates": {
+					const list = host.listTemplates();
+					const tLang = getLang();
+					if (list.length === 0) {
+						return text(
+							pick(
+								tLang,
+								"当前没有可用的子代理模板（设置面板 → 子代理模板 添加后可用）。子代理默认按主会话配置运行。",
+								"No subagent templates available (add some under Settings → Subagent Templates). Subagents run with the main session defaults.",
+								"subagents.templates.empty",
+							),
+						);
+					}
+					const lines = list.map((t) => {
+						const desc = tLang === "zh" ? t.description : t.descriptionEn || t.description;
+						const modelPart =
+							tLang === "zh"
+								? t.model
+									? `模型：${t.model}`
+									: "跟随主对话模型"
+								: t.model
+									? `model: ${t.model}`
+									: "follows the main conversation model";
+						const thinkingPart =
+							tLang === "zh"
+								? t.thinkingLevel
+									? `思考强度：${t.thinkingLevel}`
+									: "跟随主对话思考强度"
+								: t.thinkingLevel
+									? `thinking: ${t.thinkingLevel}`
+									: "follows the main conversation thinking level";
+						return (
+							(tLang === "zh" ? `- ${t.name}${desc ? `：${desc}` : ""}` : `- ${t.name}${desc ? `: ${desc}` : ""}`) +
+							(tLang === "zh" ? `（${modelPart}，${thinkingPart}）` : ` (${modelPart}, ${thinkingPart})`)
+						);
+					});
+					const firstTemplateName = list[0]?.name;
+					const templateLines = lines.join("\n");
+					return text(
+						pick(
+							getLang(),
+							`可用的子代理模板（subagent 的 template 参数传名字，如 subagent(action="spawn", template="${firstTemplateName}"))：\n${templateLines}`,
+							`Available subagent templates (pass the name as subagent's template param, e.g. subagent(action="spawn", template="${firstTemplateName}")):\n${templateLines}`,
+							"subagents.templates.list",
+							{ firstTemplateName, templateLines },
+						),
+					);
+				}
+
+				case "handoff": {
+					const fromId = p.fromRunId || selfConvId || "unknown";
+					if (!p.toRunId || typeof p.toRunId !== "string" || !p.toRunId.trim()) {
+						return text(
+							pick(
+								getLang(),
+								'subagent(action="handoff") 缺少 toRunId 参数。',
+								'subagent(action="handoff") requires toRunId parameter.',
+								"subagents.handoff.missing.toRunId",
+							),
+						);
+					}
+					if (typeof p.payload !== "string" || !p.payload.trim()) {
+						return text(
+							pick(
+								getLang(),
+								'subagent(action="handoff") 缺少 payload 参数。',
+								'subagent(action="handoff") requires payload parameter.',
+								"subagents.handoff.missing.payload",
+							),
+						);
+					}
+					if (fromId === p.toRunId) {
+						return text(
+							pick(
+								getLang(),
+								`交接失败：不能交接给自身（${shortId(fromId)}）。请指定其他同行子代理。`,
+								`Handoff failed: cannot hand off to oneself (${shortId(fromId)}). Please specify a different peer subagent.`,
+								"subagents.handoff.self",
+								{ id: shortId(fromId) },
+							),
+						);
+					}
+					const target = host.getSubagent(p.toRunId);
+					if (!target) {
+						const missingId = shortId(p.toRunId);
+						return text(
+							pick(
+								getLang(),
+								`未找到目标子代理 ${missingId}（可能已移出或不存在）。请用 subagent(action="list") 确认可用的子代理。`,
+								`Target subagent ${missingId} not found (may have been dismissed or non-existent). Use subagent(action="list") to check available subagents.`,
+								"subagents.handoff.not.found",
+								{ missingId },
+							),
+						);
+					}
+
+					try {
+						await host.handoffSubagent(fromId, p.toRunId, p.payload);
+						const fromShort = shortId(fromId);
+						const toShort = shortId(p.toRunId);
+						return text(
+							pick(
+								getLang(),
+								`已成功将产物交接给同行子代理 ${toShort}（${target.type}），协同路由已建立并开始执行。`,
+								`Successfully handed off payload to peer subagent ${toShort} (${target.type}); peer routing established and executing.`,
+								"subagents.handoff.success",
+								{ from: fromShort, to: toShort, type: target.type },
+							),
+							{ fromRunId: fromId, toRunId: p.toRunId, timestamp: Date.now() },
+						);
+					} catch (err) {
+						const msg = err instanceof Error ? err.message : String(err);
+						return text(
+							pick(getLang(), `交接失败：${msg}`, `Handoff failed: ${msg}`, "subagents.handoff.failed", { error: msg }),
+						);
+					}
+				}
+
+				default:
+					return text(
+						pick(
+							getLang(),
+							`未知 action：${action}。支持的 action：spawn, get_result, steer, list, stop, wait_all, templates, handoff。`,
+							`Unknown action: ${action}. Supported actions: spawn, get_result, steer, list, stop, wait_all, templates, handoff.`,
+							"subagents.action.unknown",
+							{ action },
+						),
+					);
+			}
+		},
+	});
+}
+
+/**
+ * 保持数组签名的子代理工具导出，兼容原有调用点与批处理包装。
  */
 export function makeSubagentTools(
 	host: SubagentToolHost,
 	lang?: () => ServerLang,
 	selfConvId?: string,
 ): ToolDefinition[] {
-	const getLang: () => ServerLang = lang ?? host.lang ?? (() => "en");
-	const text = (t: string, details: unknown = {}): { content: { type: "text"; text: string }[]; details: unknown } => ({
-		content: [{ type: "text", text: t }],
-		details,
-	});
-	return [
-		defineTool({
-			name: "subagent_spawn",
-			label: "Spawn subagent",
-			description:
-				"Spawn an independent background subagent conversation for a self-contained deliverable task (research/implement/review). " +
-				"Subagents appear in the running-conversations list; the user can open, supplement, or stop them. Several may run in parallel — " +
-				"subagent_wait_all waits for all (no polling), subagent_get_result fetches a result, subagent_list shows status, subagent_steer redirects, subagent_stop stops. " +
-				"Good for long-running exploration, parallel research, and independent subtasks.",
-			promptSnippet: "spawn an independent background subagent for a deliverable task (parallel work)",
-			parameters: Type.Object({
-				prompt: Type.String({
-					description: "Full instructions for the subagent (goal + constraints + expected output).",
-				}),
-				type: Type.Optional(
-					Type.String({
-						description: "Subagent type/role name (e.g. explore/implement/review), for display. Default general.",
-					}),
-				),
-				template: Type.Optional(
-					Type.String({
-						description:
-							"Subagent template name (preset from Settings → Subagent Templates; see subagent_templates): " +
-							"role system prompt + skills/extensions whitelist + optional model/thinking level. " +
-							"Omit to run with the main session defaults.",
-					}),
-				),
-				model: Type.Optional(
-					Type.String({
-						description:
-							'Subagent model "provider/id" (e.g. "anthropic/claude-opus-4-5") for this run; ' +
-							"overrides template model then panel default. Omit = template model → panel default → main conversation model.",
-					}),
-				),
-				cwd: Type.Optional(
-					Type.String({
-						description: "Subagent working directory (relative/absolute). Defaults to the main session's cwd.",
-					}),
-				),
-				persist: Type.Optional(
-					Type.Boolean({
-						description:
-							"Persist this conversation to disk as a regular session (saved in history, resumable). " +
-							"Default false (lightweight in-memory subagent); use true for tasks needing long-term retention or human follow-up.",
-					}),
-				),
-			}),
-			execute: async (_id, p, _signal, _onUpdate, ctx) => {
-				if (p.template && !host.isTemplateUsable(p.template)) {
-					return text(
-						pick(
-							getLang(),
-							`子代理模板不可用：${p.template}（不存在或已停用）。用 subagent_templates 查看当前可用模板清单；不传 template 则按默认配置运行。`,
-							`Subagent template unavailable: ${p.template} (missing or disabled). Use subagent_templates to list available templates; omit template to run with defaults.`,
-							"subagents.spawn.template.unavailable",
-							{ "p.template": p.template },
-						),
-					);
-				}
-				// spawn 通道是唯一的失败面（数量上限 / runtime 创建失败 / 坏 cwd 都经由
-				// host 抛错）：转成返回文本而不是直接抛，让 AI 能读到原因并调整重试。
-				let convId: string;
-				try {
-					convId = await host.spawnSubagent(
-						p.prompt,
-						p.type ?? "general",
-						p.cwd ?? ctx.cwd,
-						p.template,
-						p.model,
-						undefined,
-						p.persist,
-					);
-				} catch (err) {
-					const msg = err instanceof Error ? err.message : String(err);
-					return text(
-						pick(getLang(), `子代理启动失败：${msg}`, `Failed to start subagent: ${msg}`, "subagents.spawn.failed", {
-							error: msg,
-						}),
-					);
-				}
-				const subagentType = p.type ?? "general";
-				const subagentTitleText = subagentTitle(p.prompt);
-				// Optional segments are pre-rendered per language (translators pick
-				// the Zh/En variant through the vars table; inline ternaries would
-				// leak source syntax into packs that copy them verbatim).
-				const templateLineZh = p.template ? `\n模板：${p.template}` : "";
-				const templateLineEn = p.template ? `\nTemplate: ${p.template}` : "";
-				const modelLineZh = p.model ? `\n模型：${p.model}` : "";
-				const modelLineEn = p.model ? `\nModel: ${p.model}` : "";
-				const kindLabelZh = p.persist ? "普通持久化对话" : "子代理";
-				const kindLabelEn = p.persist ? "Persistent conversation" : "Subagent";
-				return text(
-					pick(
-						getLang(),
-						`${kindLabelZh}已启动（运行列表可见）：${convId}\n类型：${subagentType} · 标题：${subagentTitleText}${templateLineZh}${modelLineZh}` +
-							`\n用 subagent_wait_all 一次等全部完成（不用轮询），subagent_get_result 取单个结果，subagent_list 看运行态，subagent_steer 改向，subagent_stop 停止。`,
-						`${kindLabelEn} started (visible in the running list): ${convId}\nType: ${subagentType} · Title: ${subagentTitleText}${templateLineEn}${modelLineEn}` +
-							`\nUse subagent_wait_all to wait for all at once (no polling), subagent_get_result for a single result, subagent_list for live status, subagent_steer to redirect, subagent_stop to stop.`,
-						"subagents.spawn.started",
-						{
-							convId: convId,
-							subagentType: subagentType,
-							subagentTitleText: subagentTitleText,
-							"p.template": p.template,
-							"p.model": p.model,
-							templateLineZh: templateLineZh,
-							templateLineEn: templateLineEn,
-							modelLineZh: modelLineZh,
-							modelLineEn: modelLineEn,
-						},
-					),
-					{ convId, template: p.template, model: p.model, persisted: !!p.persist },
-				);
-			},
-		}),
-		defineTool({
-			name: "subagent_get_result",
-			label: "Get subagent result",
-			description:
-				"Fetch a subagent's result or current progress. " +
-				"If not finished yet, returns the current status and partial output; " +
-				"runtime errors (e.g. provider 400) are surfaced here as explicit errors.",
-			promptSnippet: "fetch a subagent's result / current progress",
-			parameters: Type.Object({
-				runId: Type.String({
-					description:
-						"ConvId returned by subagent_spawn. Clicking the same conversation in the left panel opens it directly.",
-				}),
-			}),
-			execute: async (_id, p) => {
-				const r = host.getSubagent(p.runId);
-				const missingId = shortId(p.runId);
-				if (!r)
-					return text(
-						pick(
-							getLang(),
-							`未找到子代理 ${missingId}（可能已移出）。`,
-							`Subagent ${missingId} not found (may have been dismissed).`,
-							"subagents.get.not.found",
-							{ missingId: missingId },
-						),
-						undefined,
-					);
-				const verdict = subagentVerdict(r, getLang());
-				const doneId = shortId(r.convId);
-				const doneDetail = verdictText(r, getLang());
-				const doneOutput = r.output || (getLang() === "zh" ? "（无结果）" : "(no result)");
-				if (r.streaming || r.state === "running") {
-					const runningId = shortId(r.convId);
-					const runningOutput = r.output || (getLang() === "zh" ? "（暂无输出）" : "(no output yet)");
-					return text(
-						pick(
-							getLang(),
-							`子代理 ${runningId}（${r.type}）仍在运行（状态 ${r.state}）。\n当前输出：\n${runningOutput}`,
-							`Subagent ${runningId} (${r.type}) is still running (state ${r.state}).\nCurrent output:\n${runningOutput}`,
-							"subagents.get.running",
-							{ runningId: runningId, "r.type": r.type, "r.state": r.state, runningOutput: runningOutput },
-						),
-						r,
-					);
-				}
-				return text(
-					pick(
-						getLang(),
-						`子代理 ${doneId}（${r.type}）状态：${verdict}\n${doneDetail}\n${doneOutput}`,
-						`Subagent ${doneId} (${r.type}) status: ${verdict}\n${doneDetail}\n${doneOutput}`,
-						"subagents.get.done",
-						{ doneId: doneId, "r.type": r.type, verdict: verdict, doneDetail: doneDetail, doneOutput: doneOutput },
-					),
-					r,
-				);
-			},
-		}),
-		defineTool({
-			name: "subagent_steer",
-			label: "Steer subagent",
-			description:
-				"Inject a message into a subagent to redirect or supplement its work (same as the user sending a message in its conversation).",
-			promptSnippet: "inject a message into a running subagent to redirect its work",
-			parameters: Type.Object({
-				runId: Type.String({
-					description: "Target subagent convId.",
-				}),
-				message: Type.String({
-					description: "Redirect / supplementary info to inject.",
-				}),
-			}),
-			execute: async (_id, p) => {
-				if (!host.getSubagent(p.runId)) {
-					const missingSteerId = shortId(p.runId);
-					return text(
-						pick(
-							getLang(),
-							`未找到子代理 ${missingSteerId}（可能已移出），消息未注入。请用 subagent_list 确认仍在运行的子代理。`,
-							`Subagent ${missingSteerId} not found (may have been dismissed); message not injected. Use subagent_list to confirm running subagents.`,
-							"subagents.steer.not.found",
-							{ missingSteerId: missingSteerId },
-						),
-					);
-				}
-				await host.steerSubagent(p.runId, p.message);
-				const steerId = shortId(p.runId);
-				return text(
-					pick(
-						getLang(),
-						`已向子代理 ${steerId} 注入消息。`,
-						`Message injected into subagent ${steerId}.`,
-						"subagents.steer.injected",
-						{ steerId: steerId },
-					),
-				);
-			},
-		}),
-		defineTool({
-			name: "subagent_list",
-			label: "List subagents",
-			description:
-				"List all subagents and managed conversations with their live status: " +
-				"convId, type, state, title, message count (errors/aborts are marked in the state).",
-			promptSnippet: "list all subagents and their live status",
-			parameters: Type.Object({
-				kind: Type.Optional(
-					Type.String({
-						enum: ["all", "subagent", "persistent"],
-						description:
-							"Filter: all (default) = all managed tasks; " +
-							"subagent = only ephemeral in-memory subagents; persistent = only persistent conversations.",
-					}),
-				),
-			}),
-			execute: async (_id, p) => {
-				const list = host.listSubagents(p.kind as "all" | "subagent" | "persistent" | undefined);
-				if (list.length === 0)
-					return text(
-						pick(
-							getLang(),
-							"当前没有运行中的对话/子代理。",
-							"No managed conversations or subagents running.",
-							"subagents.list.empty",
-						),
-					);
-				const tLang = getLang();
-				const lines = list.map((r) => {
-					const tag = r.persisted ? (tLang === "zh" ? "持久化" : "persistent") : tLang === "zh" ? "子代理" : "subagent";
-					return (
-						`- ${r.convId} · ${r.type} · ${subagentVerdict(r, tLang)} · ${r.title}` +
-						(tLang === "zh" ? `（${tag} · msg: ${r.messageCount}）` : ` (${tag} · msg: ${r.messageCount})`)
-					);
-				});
-				return text(lines.join("\n"));
-			},
-		}),
-		defineTool({
-			name: "subagent_stop",
-			label: "Stop subagent",
-			description:
-				"Stop a running subagent (same as the user aborting it in its conversation). " +
-				"Already-finished ones are unaffected.",
-			promptSnippet: "stop a running subagent",
-			parameters: Type.Object({
-				runId: Type.String({
-					description: "Target subagent convId.",
-				}),
-			}),
-			execute: async (_id, p) => {
-				if (!host.getSubagent(p.runId)) {
-					const missingStopId = shortId(p.runId);
-					return text(
-						pick(
-							getLang(),
-							`未找到子代理 ${missingStopId}（可能已移出或已结束），无需停止。请用 subagent_list 确认仍在运行的子代理。`,
-							`Subagent ${missingStopId} not found (may have been dismissed or already finished); nothing to stop. Use subagent_list to confirm running subagents.`,
-							"subagents.stop.not.found",
-							{ missingStopId: missingStopId },
-						),
-					);
-				}
-				await host.stopSubagent(p.runId);
-				const stopId = shortId(p.runId);
-				return text(
-					pick(
-						getLang(),
-						`已请求停止子代理 ${stopId}。`,
-						`Stop requested for subagent ${stopId}.`,
-						"subagents.stop.requested",
-						{ stopId: stopId },
-					),
-				);
-			},
-		}),
-		defineTool({
-			name: "subagent_wait_all",
-			label: "Wait for subagents",
-			description:
-				"Wait for multiple subagents to finish (blocks until all reach a terminal state or time out), then summarizes each result/error — no polling. " +
-				"Pass runIds for specific subagents; omit = own descendant subagents when called from a subagent, else all currently running. " +
-				"The calling session and its ancestors are never waited on (no self-deadlock); descendants spawned during the wait are picked up automatically. " +
-				"On timeout returns the remaining unfinished list — call again to keep waiting.",
-			promptSnippet: "wait for multiple subagents to finish (no polling) and get all results",
-			parameters: Type.Object({
-				runIds: Type.Optional(
-					Type.Array(
-						Type.String({
-							description:
-								"ConvId of a subagent to wait for (returned by subagent_spawn). " +
-								"Omit = wait for all currently running.",
-						}),
-					),
-				),
-				timeoutSeconds: Type.Optional(
-					Type.Integer({
-						description: `Max wait in seconds (default: the cap, ~${Math.floor(WAIT_CAP_MS / 1000)}s — stays below the tool watchdog; on timeout returns the unfinished list so you can call again).`,
-						minimum: 1,
-						maximum: Math.floor(WAIT_CAP_MS / 1000),
-					}),
-				),
-			}),
-			execute: async (_id, p, signal) => {
-				// 祖先链：调用者往上经 parentId 能走到的子代理集合。父级正在执行中的
-				// wait_all 卡着（streaming=true），等它 = 父子互等、必到超时才返回。
-				// parentId 可能指向普通主对话（不在子代理列表里），走到空即停；环按 visited 截断。
-				const ancestorIdsOf = (selfId: string): Set<string> => {
-					const out = new Set<string>();
-					const seen = new Set<string>([selfId]);
-					let cur = host.getSubagent(selfId)?.parentId;
-					while (cur && !seen.has(cur)) {
-						seen.add(cur);
-						// 只有子代理才可能被圈进等待集；普通主对话记下来也无妨（wanted 里没有它）。
-						out.add(cur);
-						cur = host.getSubagent(cur)?.parentId;
-					}
-					return out;
-				};
-				// 后代展开：roots 里任一 id 经 parentId 链能向上走到的子代理。等待集
-				// 传了显式 runIds 时也要顺带等它们的后代（fire-and-forget 的孙子辈否则会漏）。
-				const expandDescendants = (roots: Set<string> | string[]): string[] => {
-					if (roots instanceof Set ? roots.size === 0 : (roots as string[]).length === 0) return [];
-					const rootSet = roots instanceof Set ? roots : new Set(roots);
-					const all = host.listSubagents();
-					const byId = new Map(all.map((s) => [s.convId, s]));
-					const out: string[] = [];
-					for (const s of all) {
-						if (rootSet.has(s.convId)) continue;
-						let curParent = s.parentId;
-						const seen = new Set<string>();
-						while (curParent) {
-							if (rootSet.has(curParent)) {
-								out.push(s.convId);
-								break;
-							}
-							if (seen.has(curParent)) break;
-							seen.add(curParent);
-							curParent = byId.get(curParent)?.parentId;
-							// parentId 指向普通主对话（不在 byId 里）：链到此为止，
-							// 但 root 本身可能就是那个主对话 id（主调 wait_all 的 selfConvId）。
-							if (!curParent) break;
-						}
-					}
-					return out;
-				};
-				const explicit = p.runIds && p.runIds.length > 0;
-				const wanted = new Set<string>();
-				const roots = new Set<string>();
-				let implicitGlobal = false;
-				// 调用者自身 + 祖先永不等待：子代理调本工具时它自己正在 streaming，
-				// 父级同样 streaming（卡在它自己的 wait 里），等谁都是互等死锁到超时。
-				// 先算好排除集，显式 runIds 里的祖先直接剔除（不再展开它的子树，
-				// 否则等父会顺带把整棵子树含兄弟分支都圈进来）。
-				const excluded = new Set<string>();
-				if (selfConvId) {
-					excluded.add(selfConvId);
-					for (const a of ancestorIdsOf(selfConvId)) excluded.add(a);
-				}
-				if (explicit) {
-					for (const id of p.runIds!) {
-						if (!excluded.has(id)) roots.add(id);
-					}
-					for (const id of roots) wanted.add(id);
-					for (const id of expandDescendants(roots)) {
-						if (!excluded.has(id)) wanted.add(id);
-					}
-				} else if (selfConvId && host.getSubagent(selfConvId)) {
-					// 子代理无参：只等自己的后代（不含自己）。全局等会把父级/无关兄弟
-					// 也圈进来：父级卡在 wait 里 streaming=true，子等父 = 父子互等到超时。
-					roots.add(selfConvId);
-					for (const id of expandDescendants(roots)) {
-						if (!excluded.has(id)) wanted.add(id);
-					}
-				} else {
-					// 主对话无参：等当前全部（保持老语义），但同样动态追后代。
-					implicitGlobal = true;
-					for (const r of host.listSubagents()) {
-						if (!excluded.has(r.convId)) wanted.add(r.convId);
-					}
-				}
-				if (wanted.size === 0) {
-					const emptyLang = getLang();
-					return text(
-						pick(
-							emptyLang,
-							"没有需要等待的子代理（调用者自身与祖先不计入等待；子代理无参时只等自己的后代）。",
-							"No subagents to wait for (the calling session itself and its ancestors are never waited on; a subagent without runIds only waits for its own descendants).",
-							"subagents.wait.empty",
-						),
-					);
-				}
-				const currentWatchdogMs = host.getWatchdogTimeoutMs?.() ?? WAIT_CAP_MS;
-				// 同 WAIT_CAP_MS：0.8×看门狗、60s 封顶、5s 兜底，wait 必须先于看门狗干净超时。
-				const currentWaitCapMs =
-					currentWatchdogMs > 0 ? Math.max(Math.min(60_000, Math.floor(currentWatchdogMs * 0.8)), 5_000) : 3600_000;
-				// 默认直接取有效 cap（60s 封顶、随看门狗缩放）：旧默认 600 恒被 cap 截断，
-				// 属于永远不会生效的死值，还会让模型误以为不传参能等 10 分钟（#404）。
-				const timeoutSeconds = p.timeoutSeconds ?? Math.floor(currentWaitCapMs / 1000);
-				const timeoutMs = Math.min(Math.max(timeoutSeconds, 1), Math.floor(currentWaitCapMs / 1000)) * 1000;
-				const waitStart = Date.now();
-				const deadline = waitStart + timeoutMs;
-				// 已到终态的、（或已被移出找不到的）直接归位；剩下的阻塞轮询到
-				// 全部完成/超时/中止（移出 = 无法再等，立即按收口处理）。
-				// 每轮动态追踪：等待期间新派生的后代（roots 的子孙、或主调全局新增）自动纳入，
-				// fire-and-forget 的孙子辈不会漏；自身与祖先永远排除（父子互等死锁）。
-				const trackNewArrivals = () => {
-					if (implicitGlobal) {
-						for (const r of host.listSubagents()) {
-							if (excluded.has(r.convId)) continue;
-							wanted.add(r.convId);
-						}
-					} else {
-						for (const id of expandDescendants(roots)) {
-							if (excluded.has(id)) continue;
-							wanted.add(id);
-						}
-					}
-				};
-				const pending = () => {
-					trackNewArrivals();
-					return [...wanted].filter((id) => {
-						const r = host.getSubagent(id);
-						return r !== undefined && !isSubagentTerminal(r);
-					});
-				};
-				while (pending().length > 0 && Date.now() < deadline && !(signal?.aborted ?? false)) {
-					await new Promise((resolve) => setTimeout(resolve, 300));
-				}
-				const tLang = getLang();
-				const remaining = pending();
-				const lines = [...wanted]
-					.map((id) => {
-						const r = host.getSubagent(id);
-						if (!r)
-							return tLang === "zh"
-								? `- ${shortId(id)}：未找到（可能已移出）`
-								: `- ${shortId(id)}: not found (may have been dismissed)`;
-						const body = verdictText(r, tLang);
-						return (
-							(tLang === "zh"
-								? `- ${shortId(r.convId)}（${r.type}）· ${r.title} · ${subagentVerdict(r, tLang)}`
-								: `- ${shortId(r.convId)} (${r.type}) · ${r.title} · ${subagentVerdict(r, tLang)}`) +
-							(body ? `\n  ${body}` : "") +
-							(r.output ? `\n  ${clipSubagentOutput(r.output, tLang).split("\n").join("\n  ")}` : "")
-						);
-					})
-					.join("\n");
-				const timeoutSecs = Math.round(timeoutMs / 1000);
-				const waitedSecs = Math.round((Date.now() - waitStart) / 1000);
-				const head =
-					remaining.length === 0
-						? pick(
-								tLang,
-								`全部 ${wanted.size} 个子代理已收口：`,
-								`All ${wanted.size} subagent(s) collected:`,
-								"subagents.wait.collected",
-								{ "wanted.size": wanted.size },
-							)
-						: signal?.aborted
-							? pick(
-									tLang,
-									`本轮被中止，${remaining.length} 个仍在运行：`,
-									`This round was aborted, ${remaining.length} still running:`,
-									"subagents.wait.aborted",
-									{ "remaining.length": remaining.length },
-								)
-							: pick(
-									tLang,
-									`等待超过 ${timeoutSecs}s 超时（实际等待 ${waitedSecs}s），${remaining.length} 个仍在运行：`,
-									`Wait timed out after ${timeoutSecs}s (actually waited ${waitedSecs}s), ${remaining.length} still running:`,
-									"subagents.wait.timeout",
-									{ timeoutSecs: timeoutSecs, waitedSecs: waitedSecs, "remaining.length": remaining.length },
-								);
-				return text(`${head}\n${lines}\n` + promptRemaining(remaining, tLang));
-			},
-		}),
-		defineTool({
-			name: "subagent_templates",
-			label: "List subagent templates",
-			description:
-				"List the configurable subagent templates (role system prompt + skills/extensions whitelist + optional model/thinking level) usable via the subagent_spawn template param. " +
-				"Disabled templates never appear; empty list = subagents run with defaults.",
-			promptSnippet: "list configurable subagent templates (role prompt + skills/extensions whitelist presets)",
-			parameters: Type.Object({}),
-			execute: async () => {
-				const list = host.listTemplates();
-				const tLang = getLang();
-				if (list.length === 0) {
-					return text(
-						pick(
-							tLang,
-							"当前没有可用的子代理模板（设置面板 → 子代理模板 添加后可用）。子代理默认按主会话配置运行。",
-							"No subagent templates available (add some under Settings → Subagent Templates). Subagents run with the main session defaults.",
-							"subagents.templates.empty",
-						),
-					);
-				}
-				const lines = list.map((t) => {
-					const desc = tLang === "zh" ? t.description : t.descriptionEn || t.description;
-					// 模型与思考强度分开报：思考强度是模板固定值（空 = 跟主对话当前强度）。
-					const modelPart =
-						tLang === "zh"
-							? t.model
-								? `模型：${t.model}`
-								: "跟随主对话模型"
-							: t.model
-								? `model: ${t.model}`
-								: "follows the main conversation model";
-					const thinkingPart =
-						tLang === "zh"
-							? t.thinkingLevel
-								? `思考强度：${t.thinkingLevel}`
-								: "跟随主对话思考强度"
-							: t.thinkingLevel
-								? `thinking: ${t.thinkingLevel}`
-								: "follows the main conversation thinking level";
-					return (
-						(tLang === "zh" ? `- ${t.name}${desc ? `：${desc}` : ""}` : `- ${t.name}${desc ? `: ${desc}` : ""}`) +
-						(tLang === "zh" ? `（${modelPart}，${thinkingPart}）` : ` (${modelPart}, ${thinkingPart})`)
-					);
-				});
-				const firstTemplateName = list[0]?.name;
-				const templateLines = lines.join("\n");
-				return text(
-					pick(
-						getLang(),
-						`可用的子代理模板（subagent_spawn 的 template 参数传名字，如 subagent_spawn(template="${firstTemplateName}"))：\n${templateLines}`,
-						`Available subagent templates (pass the name as subagent_spawn's template param, e.g. subagent_spawn(template="${firstTemplateName}")):\n${templateLines}`,
-						"subagents.templates.list",
-						{ firstTemplateName: firstTemplateName, templateLines: templateLines },
-					),
-				);
-			},
-		}),
-		defineTool({
-			name: "subagent_handoff",
-			label: "Hand off to peer subagent",
-			description:
-				"Hand off artifacts, context, or results directly to a peer subagent (peer-to-peer, bypassing the parent conversation).",
-			promptSnippet: "hand off task artifacts or results directly to another peer subagent",
-			parameters: Type.Object({
-				toRunId: Type.String({
-					description: "Target peer subagent convId (from subagent_list).",
-				}),
-				payload: Type.String({
-					description: "The artifact, analysis result, or instruction to hand off to the peer subagent.",
-				}),
-				fromRunId: Type.Optional(
-					Type.String({
-						description: "Source subagent convId. Optional: defaults to the current calling subagent.",
-					}),
-				),
-			}),
-			execute: async (_id, p) => {
-				const fromId = p.fromRunId || selfConvId || "unknown";
-				if (fromId === p.toRunId) {
-					return text(
-						pick(
-							getLang(),
-							`交接失败：不能交接给自身（${shortId(fromId)}）。请指定其他同行子代理。`,
-							`Handoff failed: cannot hand off to oneself (${shortId(fromId)}). Please specify a different peer subagent.`,
-							"subagents.handoff.self",
-							{ id: shortId(fromId) },
-						),
-					);
-				}
-				const target = host.getSubagent(p.toRunId);
-				if (!target) {
-					const missingId = shortId(p.toRunId);
-					return text(
-						pick(
-							getLang(),
-							`未找到目标子代理 ${missingId}（可能已移出或不存在）。请用 subagent_list 确认可用的子代理。`,
-							`Target subagent ${missingId} not found (may have been dismissed or non-existent). Use subagent_list to check available subagents.`,
-							"subagents.handoff.not.found",
-							{ missingId },
-						),
-					);
-				}
-
-				try {
-					await host.handoffSubagent(fromId, p.toRunId, p.payload);
-					const fromShort = shortId(fromId);
-					const toShort = shortId(p.toRunId);
-					return text(
-						pick(
-							getLang(),
-							`已成功将产物交接给同行子代理 ${toShort}（${target.type}），协同路由已建立并开始执行。`,
-							`Successfully handed off payload to peer subagent ${toShort} (${target.type}); peer routing established and executing.`,
-							"subagents.handoff.success",
-							{ from: fromShort, to: toShort, type: target.type },
-						),
-						{ fromRunId: fromId, toRunId: p.toRunId, timestamp: Date.now() },
-					);
-				} catch (err) {
-					const msg = err instanceof Error ? err.message : String(err);
-					return text(
-						pick(getLang(), `交接失败：${msg}`, `Handoff failed: ${msg}`, "subagents.handoff.failed", { error: msg }),
-					);
-				}
-			},
-		}),
-	];
+	return [makeSubagentTool(host, lang, selfConvId)];
 }
 
 /** 短 id 前缀（前端展示/日志用）。 */

@@ -76,8 +76,8 @@ export function validateDelegation(
 		const shown = usableNames.slice(0, 12).join(" · ") + (usableNames.length > 12 ? " · …" : "");
 		return pick(
 			lang,
-			`派单被驳回：模板 "${input.agent || "(空)"}" 不可用（不存在或已停用）。可用模板：${shown || "(无)"}。用 subagent_templates 查简介再选；不要编造模板名。`,
-			`Delegation rejected: template "${input.agent || "(empty)"}" is unavailable (missing or disabled). Available templates: ${shown || "(none)"}. Use subagent_templates for descriptions; do not invent template names.`,
+			`派单被驳回：模板 "${input.agent || "(空)"}" 不可用（不存在或已停用）。可用模板：${shown || "(无)"}。用 subagent(action="templates") 查简介再选；不要编造模板名。`,
+			`Delegation rejected: template "${input.agent || "(empty)"}" is unavailable (missing or disabled). Available templates: ${shown || "(none)"}. Use subagent(action="templates") for descriptions; do not invent template names.`,
 			"delegate.validate.agent",
 			{ agent: input.agent, available: shown },
 		);
@@ -94,8 +94,8 @@ export function validateDelegation(
 		if (c.text.trim().length < c.min) {
 			return pick(
 				lang,
-				`派单被驳回：${c.section} 段太短（至少 ${c.min} 字，当前 ${c.text.trim().length} 字）。六段缺一不可、含糊不得：补全后重试，不要改用 subagent_spawn 绕过校验。`,
-				`Delegation rejected: section ${c.section} is too short (minimum ${c.min} chars, got ${c.text.trim().length}). All six sections are mandatory and vague prompts fail: complete it and retry; do not bypass validation via subagent_spawn.`,
+				`派单被驳回：${c.section} 段太短（至少 ${c.min} 字，当前 ${c.text.trim().length} 字）。六段缺一不可、含糊不得：补全后重试，不要改用 subagent(action="spawn") 绕过校验。`,
+				`Delegation rejected: section ${c.section} is too short (minimum ${c.min} chars, got ${c.text.trim().length}). All six sections are mandatory and vague prompts fail: complete it and retry; do not bypass validation via subagent(action="spawn").`,
 				"delegate.validate.short",
 				{ section: c.section, min: c.min },
 			);
@@ -141,7 +141,7 @@ const delegateSchema = Type.Object({
 	agent: Type.String({
 		description:
 			"Specialist template to delegate to (e.g. oracle, metis, momus, explore, librarian, sisyphus-junior, multimodal-looker, review). " +
-			"Must be an enabled template — use subagent_templates to see descriptions and pick the domain match.",
+			"Must be an enabled template — use subagent (action='templates') to see descriptions and pick the domain match.",
 	}),
 	task: Type.String({
 		description: "Atomic, specific goal: ONE action per delegation (minimum 20 chars). Vague tasks are rejected.",
@@ -191,12 +191,12 @@ export function makeDelegateTaskTool(host: SubagentToolHost, lang?: () => Server
 		description:
 			"Delegate ONE well-defined task to a specialist subagent template via a structured six-section brief (TASK / EXPECTED OUTCOME / REQUIRED TOOLS / MUST DO / MUST NOT DO / CONTEXT). " +
 			"The brief is validated server-side — missing or vague sections are rejected, so fill every section concretely. " +
-			"Prefer over subagent_spawn when the work fits a specialist template. Spawns a real subagent conversation; " +
-			"collect with subagent_wait_all / subagent_get_result, redirect with subagent_steer, stop with subagent_stop. " +
+			"Prefer over subagent (action='spawn') when the work fits a specialist template. Spawns a real subagent conversation; " +
+			"collect with subagent (action='wait_all' / 'get_result'), redirect with subagent (action='steer'), stop with subagent (action='stop'). " +
 			"For follow-ups continue the SAME subagent session instead of delegating again.",
 		promptSnippet: "Delegate a well-defined task to a specialist template with a validated six-section brief",
 		promptGuidelines: [
-			"Prefer delegate_task over subagent_spawn when the work matches a specialist template's domain",
+			"Prefer delegate_task over subagent (action='spawn') when the work matches a specialist template's domain",
 			"Before delegating, declare which template you chose and WHY its description matches the task",
 			"After delegation ALWAYS verify the result: " +
 				"does it work, does it follow codebase patterns, did it respect MUST DO / MUST NOT DO",
@@ -238,11 +238,11 @@ export function makeDelegateTaskTool(host: SubagentToolHost, lang?: () => Server
 				pick(
 					getLang(),
 					`已派单：${convId}\n模板：${input.agent} · 标题：${title}${modelLineZh}` +
-						`\n子代理已在左栏运行列表中。用 subagent_wait_all 一次等全部完成（不用轮询）、subagent_get_result 取单个结果；` +
-						`追问请在同一子代理会话里继续（subagent_steer），不要重复派单。拿到结果后必须验证再汇报。`,
+						`\n子代理已在左栏运行列表中。用 subagent(action="wait_all") 一次等全部完成（不用轮询）、subagent(action="get_result") 取单个结果；` +
+						`追问请在同一子代理会话里继续（subagent(action="steer")），不要重复派单。拿到结果后必须验证再汇报。`,
 					`Delegated: ${convId}\nTemplate: ${input.agent} · Title: ${title}${modelLineEn}` +
-						`\nThe subagent is in the left running list. Use subagent_wait_all to wait for all at once (no polling), ` +
-						`subagent_get_result for a single result; continue follow-ups in the SAME subagent session (subagent_steer), ` +
+						`\nThe subagent is in the left running list. Use subagent(action="wait_all") to wait for all at once (no polling), ` +
+						`subagent(action="get_result") for a single result; continue follow-ups in the SAME subagent session (subagent(action="steer")), ` +
 						`do not delegate again. Verify the result before reporting.`,
 					"delegate.started",
 					{ convId: convId, agent: input.agent, title: title, "input.model": input.model },

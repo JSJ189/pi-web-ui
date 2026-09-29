@@ -69,7 +69,6 @@ const DISPATCH_TOOLS = new Set([
 	"spawn",
 	"spawn_agent",
 	"subagent_spawn",
-	"subagent",
 	"spawn_subagent",
 	"subagent_steer",
 	"subagent_stop",
@@ -228,6 +227,20 @@ export function goalReviewDenial(toolName: string, params: unknown): GoalReviewD
 				"目标审查回合：不能向用户提问（本回合由服务端自动驱动，弹窗无人应答）。请只做本轮审查、只回 verdict JSON。",
 			reasonEn:
 				"Goal review round: do not ask the user anything (this round is server-driven; dialogs go unanswered). Just review this round and reply with only the verdict JSON.",
+		};
+	}
+	if (name === "subagent") {
+		const action =
+			typeof params === "object" && params !== null ? (params as Record<string, unknown>).action : undefined;
+		const act = typeof action === "string" ? action.trim().toLowerCase() : "";
+		// 只读 action（get_result, list, templates）放行；其余（spawn, steer, stop, wait_all, handoff）或未传 action 均拒绝
+		if (act === "get_result" || act === "list" || act === "templates") {
+			return undefined;
+		}
+		return {
+			kind: "dispatch-tool",
+			reason: `目标审查回合：不能调用 subagent(action="${act || "spawn"}") —— 轮次由服务端控制。请只做本轮审查、只回 verdict JSON。`,
+			reasonEn: `Goal review round: subagent(action="${act || "spawn"}") is unavailable — the server owns the rounds. Just review this round and reply with only the verdict JSON.`,
 		};
 	}
 	if (DISPATCH_TOOLS.has(name)) {
