@@ -4,6 +4,7 @@ import {
 	appendDraftAttachments,
 	mergeRecalledDraft,
 	selectDraftToRestore,
+	shouldCarryOverDraft,
 	type DraftAttachment,
 } from "../../web/src/composer-draft.js";
 
@@ -176,5 +177,26 @@ describe("advanceComposerSession（待发附件的会话闸门）", () => {
 	it("先空后换：瞬时态不污染比较，真换会话照样清", () => {
 		const gap = advanceComposerSession("s1", "");
 		expect(advanceComposerSession(gap.key, "s2")).toEqual({ key: "s2", clear: true });
+	});
+});
+
+describe("shouldCarryOverDraft", () => {
+	it("全新空白对话且无既有草稿 → 承接正在输入的文本", () => {
+		expect(shouldCarryOverDraft("/skill:do-task-workflow RJC-204", 0, false)).toBe(true);
+	});
+
+	it("待结转文本为空或仅空白 → 不承接", () => {
+		expect(shouldCarryOverDraft("", 0, false)).toBe(false);
+		expect(shouldCarryOverDraft("   ", 0, false)).toBe(false);
+		expect(shouldCarryOverDraft(null, 0, false)).toBe(false);
+		expect(shouldCarryOverDraft(undefined, 0, false)).toBe(false);
+	});
+
+	it("目标对话已有历史消息（已有对话） → 不承接，避免污染旧对话", () => {
+		expect(shouldCarryOverDraft("some text", 5, false)).toBe(false);
+	});
+
+	it("目标对话自身已有草稿 → 不承接，优先显示目标对话的草稿", () => {
+		expect(shouldCarryOverDraft("some text", 0, true)).toBe(false);
 	});
 });

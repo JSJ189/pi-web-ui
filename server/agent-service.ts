@@ -8360,6 +8360,19 @@ export class ClientSession {
 		 */
 		queue = false,
 	): Promise<void> {
+		const trimmedText = (text ?? "").trim();
+		const hasAttachments = Boolean(attachments && attachments.length > 0);
+		if (!trimmedText && !hasAttachments) {
+			this.emit({
+				type: "notice",
+				level: "warning",
+				text: "发送已忽略：提示词为空且未附带文件或上下文引用。",
+				textEn: "Prompt ignored: text is empty and no attachments were provided.",
+			});
+			this.flushSnapshot();
+			return;
+		}
+
 		// Captured at the START (before any await): the conversation being
 		// addressed by this prompt. See the naming block below — a concurrent
 		// switch/new_chat while prompt() is in flight must never target a
