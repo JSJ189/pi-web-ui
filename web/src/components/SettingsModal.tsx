@@ -2313,27 +2313,39 @@ export function SettingsModal({
 								{pluginToolGroups.length === 0 ? (
 									<p className="set-empty">{chat.plugins.length === 0 ? t("noUiPlugins") : t("pluginToolsEmpty")}</p>
 								) : (
-									pluginToolGroups.map((g) => (
-										<div key={g.plugin.id}>
-											<div className="set-row-desc">
-												{g.plugin.icon ? `${g.plugin.icon} ` : ""}
-												{g.plugin.name} · {g.plugin.id}
+									pluginToolGroups.map((g) => {
+										const pluginDisabled = disabledPlugins.has(g.plugin.id);
+										return (
+											<div key={g.plugin.id}>
+												<div className="set-row-desc">
+													{g.plugin.icon ? `${g.plugin.icon} ` : ""}
+													{g.plugin.name} · {g.plugin.id}
+													{pluginDisabled ? ` (${t("pluginDisabledInPlugins")})` : ""}
+												</div>
+												{g.tools.map((tool) => (
+													<ToggleRow
+														key={tool.name}
+														title={tool.label && tool.label !== tool.name ? `${tool.label} (${tool.name})` : tool.name}
+														tip={
+															tool.description
+																? `${tool.description}\n${t("pluginToolOffHint")}`
+																: t("pluginToolOffHint")
+														}
+														subtitle={
+															pluginDisabled
+																? t("pluginToolsDisabledByPlugin")
+																: piPresetFiltering
+																	? t("toolsBlockedByPreset", { name: piPresetName })
+																	: undefined
+														}
+														enabled={!pluginDisabled && !piPresetFiltering && !disabledPluginTools.has(tool.name)}
+														disabled={pluginDisabled || piPresetFiltering}
+														onToggle={() => !pluginDisabled && !piPresetFiltering && togglePluginTool(tool.name)}
+													/>
+												))}
 											</div>
-											{g.tools.map((tool) => (
-												<ToggleRow
-													key={tool.name}
-													title={tool.label && tool.label !== tool.name ? `${tool.label} (${tool.name})` : tool.name}
-													tip={
-														tool.description ? `${tool.description}\n${t("pluginToolOffHint")}` : t("pluginToolOffHint")
-													}
-													subtitle={piPresetFiltering ? t("toolsBlockedByPreset", { name: piPresetName }) : undefined}
-													enabled={!piPresetFiltering && !disabledPluginTools.has(tool.name)}
-													disabled={piPresetFiltering}
-													onToggle={() => togglePluginTool(tool.name)}
-												/>
-											))}
-										</div>
-									))
+										);
+									})
 								)}
 							</div>
 						)}

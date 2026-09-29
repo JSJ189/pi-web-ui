@@ -26,15 +26,13 @@
 - **语音浮层计时器泄漏** —— 切换识别方式时上一个浮层的计时器不再残留（此前每切一次泄一个 500ms 定时器）。
 
 <!-- auto-i18n:start -->
-
 ### i18n
 
-- 前端新增 key（44）：`planImplementBtn`、`planImplementTip`、`planImplementRequest`、`viewCompactedHistory`、`hideCompactedHistory`、`compactedHistoryLoading`、`compactedHistoryEmpty`、`compactedHistoryBadge`、`compactedHistoryTurns`、`planMode`、`planActionBtn`、`planActionTip`、`planModeTip`、`planModeTipOn`、`goalBarExecModel`、`goalBarExecModelTip`、`goalBarOpenExec`、`goalBarOpenExecTip`、`goalBarStaleBackend`、`goalBarStop`、`goalBarExecuting`、`goalHistory`、`delegateMode`、`delegateModeDesc`、`delegateModeOffHint`、`delegateModeBadge`、`delegateModeBadgeTip`、`delegateModeOpenTip`、`toolCorePowershellDesc`、`planModePromptSettingsTitle`、`planModePromptSettingsDesc`、`planModePromptMode`、`planModePromptPlaceholder`、`planModePromptSettingsHint`、`preset.standard`、`preset.minimal`、`preset.code`、`preset.reader`、`preset.ask`、`preset.standardDesc`、`preset.minimalDesc`、`preset.codeDesc`、`preset.readerDesc`、`preset.askDesc`
+- 前端新增 key（46）：`planImplementBtn`、`planImplementTip`、`planImplementRequest`、`viewCompactedHistory`、`hideCompactedHistory`、`compactedHistoryLoading`、`compactedHistoryEmpty`、`compactedHistoryBadge`、`compactedHistoryTurns`、`planMode`、`planActionBtn`、`planActionTip`、`planModeTip`、`planModeTipOn`、`goalBarExecModel`、`goalBarExecModelTip`、`goalBarOpenExec`、`goalBarOpenExecTip`、`goalBarStaleBackend`、`goalBarStop`、`goalBarExecuting`、`goalHistory`、`delegateMode`、`delegateModeDesc`、`delegateModeOffHint`、`delegateModeBadge`、`delegateModeBadgeTip`、`delegateModeOpenTip`、`toolCorePowershellDesc`、`pluginToolsDisabledByPlugin`、`pluginDisabledInPlugins`、`planModePromptSettingsTitle`、`planModePromptSettingsDesc`、`planModePromptMode`、`planModePromptPlaceholder`、`planModePromptSettingsHint`、`preset.standard`、`preset.minimal`、`preset.code`、`preset.reader`、`preset.ask`、`preset.standardDesc`、`preset.minimalDesc`、`preset.codeDesc`、`preset.readerDesc`、`preset.askDesc`
 - 前端中文变更（7）：`planBoardTitle`、`goalBarPlaceholder`、`goalBarSet`、`goalBarReviewModel`、`goalBarMaxRoundsTip`、`goalWizardBtn`、`toolsCoreHint`
 - 前端英文变更（7）：`planBoardTitle`、`goalBarPlaceholder`、`goalBarSet`、`goalBarReviewModel`、`goalBarMaxRoundsTip`、`goalWizardBtn`、`toolsCoreHint`
 - 服务端新增 key（8）：`agent.role.stop`、`goal.role.blocked`、`goal.role.conv_title`、`goal.role.exec`、`goal.role.card.start`、`goal.role.card.result`、`goal.role.review`、`goal.role.review.retry`
 - 服务端删除 key（9）：`goal.set.kick`、`goal.wizard.kick`、`goal.review.incomplete`、`goal.autonomous.pass`、`goal.review.blocked`、`goal.autonomous.continue`、`goal.review.error`、`goal.review.blocked_msg`、`goal.review.revise`
-
 <!-- auto-i18n:end -->
 
 ## [0.96.1] — 2026-09-26

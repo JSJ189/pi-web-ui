@@ -1329,6 +1329,8 @@ export const zh = {
 	toolsPresetBanner: "默认预设「{name}」正在过滤工具：新对话有 {count} 个工具开关暂不生效（切回全功能即恢复）",
 	toolsBackToStandard: "切回全功能",
 	toolsBlockedByPreset: "当前默认预设「{name}」下不可用，切回「全功能」恢复",
+	pluginToolsDisabledByPlugin: "所属插件已在「界面插件」中禁用，重新启用插件后恢复",
+	pluginDisabledInPlugins: "插件已禁用",
 	skillsHiddenByPreset: "技能名录被默认预设「{name}」隐藏（skill 加载工具不可用时不同步展示），切回全功能恢复",
 	toolsSubagentDepHint:
 		"逐个开关：关闭 subagent_spawn 后其余（等待/查询/改向/停止）无会话可管，只会返回空列表或“未找到”；delegate_task 走 spawn 通道，spawn 关了它也派不出去。",
@@ -1780,7 +1782,7 @@ export const zh = {
 /* en                                                                  */
 /* ------------------------------------------------------------------ */
 
-const en: Record<keyof typeof zh, string> = {
+export const en: Record<keyof typeof zh, string> = {
 	/* common */
 	docTitle: "pi-web-ui — pi coding agent",
 	cancel: "Cancel",
@@ -3137,6 +3139,9 @@ const en: Record<keyof typeof zh, string> = {
 		"Default preset “{name}” is filtering tools: {count} tool switches have no effect on new conversations until you switch back to full features",
 	toolsBackToStandard: "Back to full features",
 	toolsBlockedByPreset: "Unavailable under default preset “{name}”; switch back to full features to restore",
+	pluginToolsDisabledByPlugin:
+		"Disabled because the owning plugin is disabled in “Plugins”; re-enable the plugin to restore",
+	pluginDisabledInPlugins: "Plugin disabled",
 	skillsHiddenByPreset:
 		"Skill catalog hidden by default preset “{name}” (not shown while the skill loader is unavailable); switch back to full features to restore",
 	toolsSubagentDepHint:

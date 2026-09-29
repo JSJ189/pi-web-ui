@@ -1177,6 +1177,8 @@
 		"toolsPresetBanner": "Default preset “{name}” is filtering tools: {count} tool switches have no effect on new conversations until you switch back to full features",
 		"toolsBackToStandard": "Back to full features",
 		"toolsBlockedByPreset": "Unavailable under default preset “{name}”; switch back to full features to restore",
+		"pluginToolsDisabledByPlugin": "Disabled because the owning plugin is disabled in “Plugins”; re-enable the plugin to restore",
+		"pluginDisabledInPlugins": "Plugin disabled",
 		"skillsHiddenByPreset": "Skill catalog hidden by default preset “{name}” (not shown while the skill loader is unavailable); switch back to full features to restore",
 		"toolsSubagentDepHint": "個別に切替可能：subagent_spawn をオフにすると、他（待機/取得/方向転換/停止）は管理対象がなく、空リストまたは「見つかりません」のみ返します。delegate_task は spawn 経路を使うため、spawn オフでは委任できません。",
 		"delegateTaskEnabledDesc": "明確に定義されたタスクを specialist サブエージェントテンプレートに委任します。6 セクション構成の依頼書（TASK/EXPECTED OUTCOME/REQUIRED TOOLS/MUST DO/MUST NOT DO/CONTEXT）はサーバー側で検証され、不足や曖昧なセクションは却下されます。サブエージェントの spawn 経路で実行されます。",

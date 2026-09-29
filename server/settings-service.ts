@@ -511,6 +511,7 @@ export class SettingsService {
 		const toolGatingChanged =
 			partial.disabledAgentTools !== undefined ||
 			partial.disabledPluginTools !== undefined ||
+			partial.disabledPlugins !== undefined ||
 			partial.terminalToolsEnabled !== undefined ||
 			partial.editSoftEnabled !== undefined ||
 			partial.questionnaireEnabled !== undefined;

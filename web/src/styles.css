@@ -236,6 +236,13 @@ body {
 	line-height: 1.6;
 }
 
+/* iOS <17 WebKit flexbox bug: inline SVGs inside fixed-width flex buttons shrink to width 0 (issue #399). */
+button > svg {
+	min-width: 1em;
+	min-height: 1em;
+	flex-shrink: 0;
+}
+
 .app {
 	display: flex;
 	flex-direction: column;

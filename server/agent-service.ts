@@ -3714,7 +3714,11 @@ export class ClientSession {
 				},
 				applyRetryOverrides: () => this.applyRetryOverrides(),
 				applyCompactionOverrides: () => this.applyCompactionOverrides(),
-				applyToolGating: () => this.applyToolGating(this.session, this.conv?.agentPreset),
+				applyToolGating: () => {
+					for (const conv of this.convs.values()) {
+						this.applyToolGating(conv.session, conv.agentPreset);
+					}
+				},
 				promptSnapshot: () => this.promptSnapshot(),
 				getMarkerState: () => ({
 					markersEnabled: this.markerSvc.current.markersEnabled,
@@ -8048,14 +8052,20 @@ export class ClientSession {
 		this.flushSnapshot();
 	}
 
-	/** 当前启用的插件 AI 工具定义（provider 快照按 disabledPluginTools 过滤；
+	/** 当前启用的插件 AI 工具定义（provider 快照按 disabledPlugins 与 disabledPluginTools 过滤；
 	 *  未知/已卸载插件的禁用条目保留但不影响现有工具）。
 	 *  预设是第二层门控（见 tool-manager.ts 语义总表）：非 standard 预设下插件工具
 	 *  一律不可用（读写未知，保守处理），此时返回空表，调用方负责从会话移除。 */
 	private enabledPluginToolDefs(preset?: string): ToolDefinition[] {
 		if (!presetAllowsPluginTools(preset)) return [];
 		const off = new Set(normalizeDisabledPluginTools(this.settingsSvc.current.disabledPluginTools));
-		return (this.pluginToolsProvider?.() ?? []).filter((t) => !off.has(t.name)).map(pluginToolToDefinition);
+		const disabledPlugins = new Set(this.settingsSvc.current.disabledPlugins ?? []);
+		return (this.pluginToolsProvider?.() ?? [])
+			.filter((t) => {
+				if (t.pluginId && disabledPlugins.has(t.pluginId)) return false;
+				return !off.has(t.name);
+			})
+			.map(pluginToolToDefinition);
 	}
 
 	/** 把插件 AI 工具同步进一个已存在的会话（新增/更新/移除；禁用工具同步移除）。

@@ -203,6 +203,8 @@ export interface PluginConversationListItem {
  * [{type:"text",text}] 或图片块），或直接返回字符串/对象（自动包成文本）。
  */
 export interface PluginAgentTool {
+	/** 所属插件 ID（由 getAgentTools 等组装时附带）。 */
+	pluginId?: string;
 	/** 工具名（建议 <插件名>_<动作> 前缀，如 mail_list；全局唯一，重复注册后者被拒）。 */
 	name: string;
 	/** UI 显示标签。 */
@@ -2412,10 +2414,14 @@ export class PluginManager {
 		return out;
 	}
 
-	/** 当前全部插件注册的 AI 工具（扁平化，按插件 id 稳定排序）。 */
+	/** 当前全部插件注册的 AI 工具（扁平化，按插件 id 稳定排序，附带所属 pluginId）。 */
 	getAgentTools(): PluginAgentTool[] {
 		const out: PluginAgentTool[] = [];
-		for (const table of [...this.agentTools.values()].sort()) out.push(...table.values());
+		for (const [pid, table] of [...this.agentTools.entries()].sort(([a], [b]) => a.localeCompare(b))) {
+			for (const tool of table.values()) {
+				out.push({ ...tool, pluginId: pid });
+			}
+		}
 		return out;
 	}
 	/** 注册一个供 AI 调用的工具；重名拒绝并返回空操作注销函数。

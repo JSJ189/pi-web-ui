@@ -15,6 +15,7 @@ import {
 	detectPiSdkSplit,
 	formatGitVersion,
 	isGitExtensionCheckEnabled,
+	isHostProvidedPackage,
 	listGitExtensions,
 	listInstalledPackages,
 	memoizeWithTtl,
@@ -313,6 +314,51 @@ describe("collectTargets", () => {
 		} finally {
 			rmSync(dir, { recursive: true, force: true });
 		}
+	});
+
+	it("filters out host-provided SDK peer packages (@earendil-works/* and @mariozechner/*) from package updates (issue #393)", () => {
+		const dir = makeAgentDir(
+			{
+				foo: "^1.0.0",
+				"@earendil-works/pi-agent-core": "^0.86.1",
+				"@earendil-works/pi-ai": "^0.86.1",
+				"@earendil-works/pi-tui": "^0.86.1",
+				"@earendil-works/chord": "^0.1.0",
+				"@mariozechner/pi-agent-core": "^0.80.0",
+			},
+			[
+				["foo", "foo", "1.0.0"],
+				["@earendil-works/pi-agent-core", "@earendil-works/pi-agent-core", "0.86.1"],
+				["@earendil-works/pi-ai", "@earendil-works/pi-ai", "0.86.1"],
+				["@earendil-works/pi-tui", "@earendil-works/pi-tui", "0.86.1"],
+				["@earendil-works/chord", "@earendil-works/chord", "0.1.0"],
+				["@mariozechner/pi-agent-core", "@mariozechner/pi-agent-core", "0.80.0"],
+			],
+		);
+		try {
+			const targets = collectTargets(dir, "0.48.0", () => "0.87.1");
+			expect(targets).toEqual([
+				{ name: "pi-web-ui", version: "0.48.0", kind: "webui" },
+				{ name: CORE, version: "0.87.1", kind: "pi-core" },
+				{ name: "foo", version: "1.0.0", kind: "package" },
+			]);
+		} finally {
+			rmSync(dir, { recursive: true, force: true });
+		}
+	});
+});
+
+describe("isHostProvidedPackage (issue #393)", () => {
+	it("correctly identifies host-provided SDK packages and aliases", () => {
+		expect(isHostProvidedPackage("@earendil-works/pi-coding-agent")).toBe(true);
+		expect(isHostProvidedPackage("@earendil-works/pi-agent-core")).toBe(true);
+		expect(isHostProvidedPackage("@earendil-works/pi-ai")).toBe(true);
+		expect(isHostProvidedPackage("@earendil-works/pi-tui")).toBe(true);
+		expect(isHostProvidedPackage("@earendil-works/chord")).toBe(true);
+		expect(isHostProvidedPackage("@mariozechner/pi-ai")).toBe(true);
+		expect(isHostProvidedPackage("pi-goal")).toBe(false);
+		expect(isHostProvidedPackage("pi-subagents")).toBe(false);
+		expect(isHostProvidedPackage("@other/plugin")).toBe(false);
 	});
 });
 

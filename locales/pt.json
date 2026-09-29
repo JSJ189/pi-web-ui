@@ -1177,6 +1177,8 @@
 		"toolsPresetBanner": "A predefinição padrão «{name}» está filtrando ferramentas: {count} interruptores não têm efeito em conversas novas até você voltar aos recursos completos",
 		"toolsBackToStandard": "Voltar aos recursos completos",
 		"toolsBlockedByPreset": "Indisponível sob a predefinição padrão «{name}»; volte aos recursos completos para restaurar",
+		"pluginToolsDisabledByPlugin": "Disabled because the owning plugin is disabled in “Plugins”; re-enable the plugin to restore",
+		"pluginDisabledInPlugins": "Plugin disabled",
 		"skillsHiddenByPreset": "Catálogo de habilidades oculto pela predefinição padrão «{name}» (não aparece enquanto o carregador de habilidades estiver indisponível); volte aos recursos completos para restaurar",
 		"toolsSubagentDepHint": "Alternância individual: com subagent_spawn desativado, os demais (aguardar/obter/redirecionar/parar) não têm sessões para gerenciar e retornam apenas listas vazias ou “não encontrado”; delegate_task usa o canal spawn e não consegue delegar sem spawn.",
 		"delegateTaskEnabledDesc": "Delega uma tarefa bem definida a uma predefinição de subagente especialista: a especificação de seis seções (TASK/EXPECTED OUTCOME/REQUIRED TOOLS/MUST DO/MUST NOT DO/CONTEXT) é validada no servidor; seções ausentes ou vagas são rejeitadas. Executa no canal de spawn de subagentes.",

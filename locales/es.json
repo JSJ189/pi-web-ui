@@ -1177,6 +1177,8 @@
 		"toolsPresetBanner": "Default preset “{name}” is filtering tools: {count} tool switches have no effect on new conversations until you switch back to full features",
 		"toolsBackToStandard": "Back to full features",
 		"toolsBlockedByPreset": "Unavailable under default preset “{name}”; switch back to full features to restore",
+		"pluginToolsDisabledByPlugin": "Disabled because the owning plugin is disabled in “Plugins”; re-enable the plugin to restore",
+		"pluginDisabledInPlugins": "Plugin disabled",
 		"skillsHiddenByPreset": "Skill catalog hidden by default preset “{name}” (not shown while the skill loader is unavailable); switch back to full features to restore",
 		"toolsSubagentDepHint": "Se activan por separado: con subagent_spawn desactivado, el resto (esperar/obtener/redirigir/detener) no tiene sesiones que gestionar y solo devuelve listas vacías o «no encontrado»; delegate_task usa el canal de spawn, así que no puede delegar sin spawn.",
 		"delegateTaskEnabledDesc": "Delega una tarea bien definida a una plantilla de subagente especialista: el informe de seis secciones (TASK/EXPECTED OUTCOME/REQUIRED TOOLS/MUST DO/MUST NOT DO/CONTEXT) se valida en el servidor; las secciones ausentes o vagas se rechazan. Se ejecuta en el canal de spawn de subagentes.",

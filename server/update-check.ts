@@ -521,12 +521,21 @@ function readVendoredPiCore(agentDir: string): string | null {
 }
 
 /**
+ * 宿主 SDK 及其 peer/内部包（@earendil-works/* / @mariozechner/*）：
+ * 属于宿主引擎随核心一同分发或由别名提供的 SDK 内部构件，非用户安装的独立扩展组件；
+ * 既不应在组件列表重复展示，也不能被 `pi update npm:<name>` 更新（会报 No matching package found，issue #393）。
+ */
+export function isHostProvidedPackage(name: string): boolean {
+	return name === PI_CORE_PACKAGE || name.startsWith("@earendil-works/") || name.startsWith("@mariozechner/");
+}
+
+/**
  * Build the full local target list: webui + the pi core + installed packages
  * + git-source extensions (issue #178) from global and project settings.
  * The pi core version comes from the CLI probe (injectable for tests), falling
  * back to the vendored copy under <agentDir>/npm/node_modules. Packages
- * listing the core directly are filtered out so the pi-core row wins — never
- * two rows for the same package.
+ * listing the core directly or host-provided SDK peers are filtered out so the
+ * pi-core row wins and host peers are not listed as updatable (issue #393).
  */
 export function collectTargets(
 	agentDir: string,
@@ -543,7 +552,7 @@ export function collectTargets(
 			kind: "pi-core",
 		});
 	}
-	targets.push(...listInstalledPackages(agentDir).filter((pkg) => pkg.name !== PI_CORE_PACKAGE));
+	targets.push(...listInstalledPackages(agentDir).filter((pkg) => !isHostProvidedPackage(pkg.name)));
 	targets.push(...listGitExtensions(agentDir, opts?.projectCwd));
 	return targets;
 }
