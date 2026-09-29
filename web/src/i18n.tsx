@@ -1280,11 +1280,15 @@ export const zh = {
 	settingsTools: "工具",
 	toolsSectionCore: "核心工具",
 	toolsCoreHint:
-		"bash / read / edit / write 是模型干活的基本盘，不在下方目录开关里。关闭后模型无法执行对应操作：关 bash 不能跑命令，关 read 不能读文件，关 edit / write 不能改文件。",
+		"bash / read / edit / write 是模型干活的基本盘，grep / find / ls / powershell 是检索与列目的补充，均不在下方目录开关里。关闭后模型无法执行对应操作：关 bash / powershell 不能跑命令，关 read / ls 不能读文件列目录，关 grep / find 不能检索定位，关 edit / write 不能改文件。",
 	toolCoreBashDesc: "执行 shell 命令。关闭后模型不能跑命令、装依赖、跑测试。",
 	toolCoreReadDesc: "读取文件与目录。关闭后模型只能靠对话里已有的内容干活。",
 	toolCoreEditDesc: "精确编辑文件。关闭后模型不能局部修改代码。",
 	toolCoreWriteDesc: "新建或整写文件。关闭后模型不能创建、覆盖文件。",
+	toolCoreGrepDesc: "在文件内容里搜正则/字面量。关闭后模型只能用 bash 的 grep/rg 搜索。",
+	toolCoreFindDesc: "按 glob 找文件路径。关闭后模型只能用 bash 的 ls/fd 找文件。",
+	toolCoreLsDesc: "列目录。关闭后模型仍可用 read 的目录模式或 bash ls 列目录。",
+	toolCorePowershellDesc: "执行 PowerShell 命令。与 bash 能力重叠（Windows 特定操作除外），有 Git Bash/WSL 时可关。",
 	toolsSectionTerminal: "持久终端",
 	toolsSectionSubagent: "子代理",
 	toolsSectionOther: "其他工具",
@@ -3034,13 +3038,20 @@ const en: Record<keyof typeof zh, string> = {
 	settingsTools: "Tools",
 	toolsSectionCore: "Core tools",
 	toolsCoreHint:
-		"bash / read / edit / write are the model's basic toolkit and are not part of the catalog toggles below. Turning one off removes that ability: no bash = no command execution, no read = no file reading, no edit / write = no file modification.",
+		"bash / read / edit / write are the model's basic toolkit; grep / find / ls / powershell complement search and listing. None of them appear in the catalog toggles below. Turning one off removes that ability: no bash / powershell = no command execution, no read / ls = no file reading or listing, no grep / find = no search, no edit / write = no file modification.",
 	toolCoreBashDesc:
 		"Run shell commands. When off, the model cannot execute commands, install dependencies, or run tests.",
 	toolCoreReadDesc:
 		"Read files and directories. When off, the model can only work with content already in the conversation.",
 	toolCoreEditDesc: "Make precise file edits. When off, the model cannot modify code in place.",
 	toolCoreWriteDesc: "Create or overwrite files. When off, the model cannot create or overwrite files.",
+	toolCoreGrepDesc:
+		"Search file contents with regex or literal patterns. When off, the model falls back to grep/rg via bash.",
+	toolCoreFindDesc: "Find files by glob pattern. When off, the model falls back to shell tools to locate files.",
+	toolCoreLsDesc:
+		"List directory entries. When off, the model can still list directories via read's directory mode or bash ls.",
+	toolCorePowershellDesc:
+		"Run PowerShell commands. Overlaps with bash (except Windows-specific operations); safe to turn off when Git Bash/WSL is available.",
 	toolsSectionTerminal: "Persistent terminal",
 	toolsSectionSubagent: "Subagents",
 	toolsSectionOther: "Other tools",

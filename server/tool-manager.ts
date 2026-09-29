@@ -275,8 +275,11 @@ export const AGENT_TOOL_CATALOG: AgentToolEntry[] = [
 	},
 ];
 
-/** SDK 核心内置工具名（可被门控显式禁用或被预设白名单过滤）。 */
-export const CORE_BUILTIN_TOOL_NAMES = ["bash", "read", "edit", "write"] as const;
+/** SDK 核心内置工具名（可被门控显式禁用或被预设白名单过滤）。
+ *  grep / find / ls / powershell 与 bash、read 的能力有重叠（详见 issue #413），
+ *  一并纳入核心区开关：面板可见、可关，关闭后模型回落到 bash 或 read 的
+ *  目录模式（readDirEnabled）。 */
+export const CORE_BUILTIN_TOOL_NAMES = ["bash", "read", "edit", "write", "grep", "find", "ls", "powershell"] as const;
 
 export type CoreBuiltinToolName = (typeof CORE_BUILTIN_TOOL_NAMES)[number];
 
@@ -469,6 +472,7 @@ export function filterToolsByPreset(tools: Iterable<string>, preset?: string): s
 			"edit",
 			"edit_soft",
 			"bash",
+			"powershell",
 			"terminal_create",
 			"terminal_input",
 			"terminal_close",

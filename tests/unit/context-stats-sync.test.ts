@@ -10,14 +10,28 @@ import {
 
 describe("上下文统计与工具门控同步", () => {
 	it("核心内置工具识别正确", () => {
-		expect(CORE_BUILTIN_TOOL_NAMES).toEqual(["bash", "read", "edit", "write"]);
+		expect(CORE_BUILTIN_TOOL_NAMES).toEqual([
+			"bash",
+			"read",
+			"edit",
+			"write",
+			"grep",
+			"find",
+			"ls",
+			"powershell",
+		]);
 		expect(isCoreBuiltinTool("bash")).toBe(true);
 		expect(isCoreBuiltinTool("read")).toBe(true);
 		expect(isCoreBuiltinTool("edit")).toBe(true);
 		expect(isCoreBuiltinTool("write")).toBe(true);
+		expect(isCoreBuiltinTool("grep")).toBe(true);
+		expect(isCoreBuiltinTool("find")).toBe(true);
+		expect(isCoreBuiltinTool("ls")).toBe(true);
+		expect(isCoreBuiltinTool("powershell")).toBe(true);
 		expect(isCoreBuiltinTool("custom_tool")).toBe(false);
 		expect(isKnownAgentTool("bash")).toBe(false);
 		expect(isKnownAgentTool("read")).toBe(false);
+		expect(isKnownAgentTool("powershell")).toBe(false);
 	});
 
 	it("normalizeDisabledAgentTools 保留核心内置工具", () => {
