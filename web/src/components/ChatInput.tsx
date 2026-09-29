@@ -502,10 +502,15 @@ export const ChatInput = memo(function ChatInput({
 		const existingLocal = draftLocalKey ? readLocalDraft(draftLocalKey) : null;
 		const hasExistingDraft = Boolean(
 			(sessionDraft && sessionDraft.text?.trim() && sessionDraft.ts > 0) ||
-				(existingLocal && existingLocal.text?.trim()),
+			(existingLocal && existingLocal.text?.trim()),
 		);
 
-		if (shouldCarryOverDraft(carry, messages.length, hasExistingDraft) && draftLocalKey && sessionId) {
+		if (
+			carry !== null &&
+			shouldCarryOverDraft(carry, messages.length, hasExistingDraft) &&
+			draftLocalKey &&
+			sessionId
+		) {
 			touchedRef.current = true;
 			appliedDraftTsRef.current = Date.now();
 			textMirrorRef.current = carry;
