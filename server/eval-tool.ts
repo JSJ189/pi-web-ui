@@ -532,7 +532,9 @@ export function makeEvalTool(opts: { cwd: string; ownerId?: string; lang?: () =>
 				description: "The code snippet to evaluate. Top-level variables and functions are preserved across calls.",
 			}),
 			language: Type.Optional(
-				Type.Union([Type.Literal("py"), Type.Literal("js"), Type.Literal("ts")], {
+				Type.Unsafe<"py" | "js" | "ts">({
+					type: "string",
+					enum: ["py", "js", "ts"],
 					description: 'Target language: "py" for Python (default), "js" or "ts" for Node.js sandbox.',
 				}),
 			),

@@ -898,21 +898,11 @@ export function makeLspTool(options: LspToolOptions) {
 - \`cascade\`: impact check for \`path\` — report diagnostics of files referencing it.
 Lines are 1-indexed.`,
 		parameters: Type.Object({
-			action: Type.Union(
-				[
-					Type.Literal("definition"),
-					Type.Literal("references"),
-					Type.Literal("hover"),
-					Type.Literal("diagnostics"),
-					Type.Literal("documentSymbol"),
-					Type.Literal("read_symbol"),
-					Type.Literal("workspaceSymbol"),
-					Type.Literal("cascade"),
-				],
-				{
-					description: "The LSP operation to perform.",
-				},
-			),
+			action: Type.Unsafe<LspAction>({
+				type: "string",
+				enum: ["definition", "references", "hover", "diagnostics", "documentSymbol", "read_symbol", "workspaceSymbol", "cascade"],
+				description: "The LSP operation to perform.",
+			}),
 			path: Type.Optional(
 				Type.String({
 					description:
