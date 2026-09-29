@@ -12,6 +12,7 @@ import {
 } from "../composer-bridge";
 import { caretVisualLineFlags } from "../caret-visual-line";
 import { isRasterImage } from "../image-paste";
+import { collectClipboardFiles } from "../clipboard-files";
 import { recordModelUsage } from "../model-usage";
 import { loadPromptHistory, pushPromptHistory } from "../prompt-history";
 import { filterSlashCommands } from "../slash-filter";
@@ -835,24 +836,13 @@ export const ChatInput = memo(function ChatInput({
 	};
 
 	const onPaste = (e: React.ClipboardEvent<HTMLTextAreaElement>) => {
-		const items = e.clipboardData?.items;
-		if (!items) return;
-		const images: File[] = [];
-		for (const item of items) {
-			if (item.kind === "file" && isRasterImage(item.type)) {
-				const f = item.getAsFile();
-				if (f) images.push(f);
-			}
-		}
-		if (images.length === 0) return; // plain text paste — leave the default
+		// 粘贴板里带真文件（文件管理器复制 / 截图 / 混合内容）→ 当附件附加；
+		// 与拖拽同走 handleFiles：图片走视觉管线（含 noVision 拦截），其余走
+		// fileData 上传。拿不到文件就是纯文本粘贴，不 preventDefault。
+		const files = collectClipboardFiles(e.clipboardData?.items, e.clipboardData?.files);
+		if (files.length === 0) return; // plain text paste — leave the default
 		e.preventDefault();
-		// P1-7：当前模型明确不支持图片时拒绝粘贴并提示。
-		const noVision = currentModelNoVision();
-		if (noVision) {
-			onNotice("warning", noVision);
-			return;
-		}
-		onAddImageFiles(images);
+		handleFiles(files);
 	};
 
 	/** 当前模型在模型清单中标记为 text-only（vision === false）→ 返回提示文案。
