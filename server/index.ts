@@ -1241,6 +1241,10 @@ export interface DispatchSession {
 	/** 设置当前对话的审批放行策略（设置面板撤销区；纯内存态）。 */
 	setApprovalPolicy?(partial: { conversationId?: string; allowAll?: boolean; categories?: string[] }): void;
 	updatePlan?(steps: import("./protocol.js").PlanStep[], activeStepId?: string | null, conversationId?: string): void;
+	/** 切换计划模式（只规划不实施）：会话级，热生效。 */
+	setPlanMode?(enabled: boolean, conversationId?: string): Promise<void>;
+	/** 切换审查者模式（自动委派）：会话级，默认关。DSH 实现里直接拒（无工具闸门）。 */
+	setDelegateMode?(enabled: boolean, conversationId?: string): Promise<void>;
 	savePreset(name: string): Promise<void>;
 	applyPreset(name: string): Promise<void>;
 	deletePreset(name: string): Promise<void>;
@@ -2933,6 +2937,16 @@ wss.on("connection", (ws) => {
 				break;
 			case "plan_update":
 				cs.updatePlan?.(msg.steps, msg.activeStepId, msg.conversationId);
+				break;
+			case "set_plan_mode":
+				// 计划模式（只规划不实施）：会话级开关，热生效（提示词重建 + 工具硬闸门）。
+				void cs.setPlanMode?.(msg.enabled, msg.conversationId);
+				break;
+			case "set_delegate_mode":
+				// 审查者模式（自动委派）：会话级开关，默认关。开启后本对话只审阅，
+				// 用户 prompt 由服务端转给常驻落盘执行对话。DSH 引擎的实现在
+				// setDelegateMode 里直接拒（无 customTools 注册面 → 闸门无处可挂）。
+				void cs.setDelegateMode?.(msg.enabled, msg.conversationId);
 				break;
 			case "page_response":
 				// 浏览器（page-picker 扩展经前端）对 browser_page 的回包：恢复挂起的

@@ -242,6 +242,10 @@ export interface ClientSettings {
 	scmCommitMsgPromptMode: PromptMode;
 	/** SCM「AI 生成提交信息」自定义提示词（空 = 内置默认）。 */
 	scmCommitMsgPrompt: string;
+	/** 计划模式提示词模式：追加/替换内置默认（语义同 promptMode）。 */
+	planModePromptMode: PromptMode;
+	/** 计划模式自定义提示词（空 = 内置默认）。 */
+	planModePrompt: string;
 	/** Extra instructions appended to the built-in goal-review prompt. */
 	reviewPrompt: string;
 	/** Skills disabled only for the isolated goal-reviewer. */
@@ -303,6 +307,8 @@ export interface SettingsPreset extends Omit<
 	| "visionBridgePrompt"
 	| "scmCommitMsgPromptMode"
 	| "scmCommitMsgPrompt"
+	| "planModePromptMode"
+	| "planModePrompt"
 	| "questionnaireEnabled"
 	| "goalModeEnabled"
 	| "parallelReminderEnabled"
@@ -773,6 +779,8 @@ export class ClientStateStore {
 			visionBridgePrompt: stored?.visionBridgePrompt ?? "",
 			scmCommitMsgPromptMode: stored?.scmCommitMsgPromptMode === "replace" ? "replace" : "append",
 			scmCommitMsgPrompt: stored?.scmCommitMsgPrompt ?? "",
+			planModePromptMode: stored?.planModePromptMode === "replace" ? "replace" : "append",
+			planModePrompt: stored?.planModePrompt ?? "",
 			subagentDefaultModel: stored?.subagentDefaultModel ?? null,
 			retryMaxAttempts: normalizeRetryMaxAttempts(stored?.retryMaxAttempts),
 			softCapTokens: normalizeSoftCapTokens(stored?.softCapTokens),
@@ -846,6 +854,8 @@ export class ClientStateStore {
 			visionBridgePrompt: settings.visionBridgePrompt ?? cur.visionBridgePrompt ?? "",
 			scmCommitMsgPromptMode: settings.scmCommitMsgPromptMode ?? cur.scmCommitMsgPromptMode ?? "append",
 			scmCommitMsgPrompt: settings.scmCommitMsgPrompt ?? cur.scmCommitMsgPrompt ?? "",
+			planModePromptMode: settings.planModePromptMode ?? cur.planModePromptMode ?? "append",
+			planModePrompt: settings.planModePrompt ?? cur.planModePrompt ?? "",
 			reviewPrompt: settings.reviewPrompt ?? cur.reviewPrompt ?? "",
 			reviewDisabledSkills: settings.reviewDisabledSkills ?? cur.reviewDisabledSkills ?? [],
 			disabledPlugins: settings.disabledPlugins ?? cur.disabledPlugins ?? [],

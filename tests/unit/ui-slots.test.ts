@@ -181,6 +181,7 @@ describe("buildUiSlots / 第 1 层：宿主默认", () => {
 			"host:msg-count",
 			"host:plugin-status",
 			"host:working",
+			"host:status-delegate",
 			"host:host-metrics",
 			"host:cwd",
 		]);
@@ -195,6 +196,7 @@ describe("buildUiSlots / 第 1 层：宿主默认", () => {
 		expect(Object.keys(slots)).toHaveLength(22);
 		expect(slots["composer.leading"]).toEqual([]);
 		// 输入框动作区有 7 个宿主内置（上传/模板/模型/思考/DSH×2/发送），发送簇 align=end
+		// （计划模式已搬到目标条 host:goal-plan）
 		expect(ids(slots["composer.actions"])).toEqual([
 			"host:composer-upload",
 			"host:composer-templates",
@@ -892,6 +894,7 @@ describe("面板 chrome 宿主条目（file.preview / goalbar / scm / terminal /
 			"host:goal-pill",
 			"host:goal-set",
 			"host:goal-wizard",
+			"host:goal-plan",
 			"host:goal-lock",
 			"host:goal-collapse",
 			"host:goal-model",

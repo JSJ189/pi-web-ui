@@ -31,7 +31,7 @@ import {
 	SessionManager,
 	type AgentSession,
 } from "@earendil-works/pi-coding-agent";
-import type { GoalStatus, ServerMessage } from "./protocol.js";
+import type { GoalHistoryEntry, GoalStatus, ServerMessage } from "./protocol.js";
 import type { ClientStateStore } from "./client-state.js";
 import { pick, type ServerLang } from "./i18n.js";
 import { parseModelSpec } from "./attachments.js";
@@ -48,10 +48,19 @@ export interface GoalConversation {
 	wizardRunning: boolean;
 	/** set/clear/stop 都 +1：作废还在飞的异步审查回调。 */
 	goalGeneration: number;
-	goalReviewGeneration: number;
 	goal: GoalStatus;
 	/** 连续无文件改动/无进展轮数 */
 	stagnantRounds?: number;
+	/** 执行者连续 error/timeout 的轮数（done 即清零；≥2 直接受阻，不再无预算空转） */
+	failedRounds?: number;
+	/** 本轮派活点的执行者累计用量（取样点相减即本轮增量；取不到则整轮跳过累计）。 */
+	execUsageBefore?: { input: number; output: number };
+	/** 本轮审查指令投递点的审查者（主对话）累计用量（verdict 落定点相减）。 */
+	reviewUsageBefore?: { input: number; output: number };
+	/** 本目标累计用量（执行者各轮增量 + 审查者各轮增量；目标条展示用）。 */
+	goalUsage?: { input: number; output: number };
+	/** 本对话的目标历史（终态落袋，cap 20；内存态，与目标状态同寿命）。 */
+	goalHistory?: GoalHistoryEntry[];
 	/** 上一轮的 git diff 快照 */
 	lastDiff?: string;
 	/** 上一轮的错误特征 */
@@ -63,8 +72,17 @@ export interface GoalConversation {
 	roleExec?: { convId: string; generation: number };
 	/** 委托执行：服务端已把审查指令交给主对话、正在等它的 verdict（非空 = 审查回合在飞）。 */
 	awaitingVerdict?: { round: number };
-	/** 委托执行：审查回合没给出 JSON 的重试次数（最多 1 次，避免无限加轮）。 */
-	verdictRetry?: number;
+	/** 审查回合里排队的用户插话（steer 进去会污染 verdict，顺延到 verdict 落定后按序发出）。 */
+	deferredPrompts?: string[];
+}
+
+/** 角色对话一次读取的完整形态（vitals 全可选：缺字段即跳过对应累计/展示，老 host 照常工作）。 */
+export interface RoleAgentRead {
+	text: string;
+	errorSnippet?: string;
+	streaming?: boolean;
+	lastTool?: string;
+	usage?: { input: number; output: number };
 }
 
 /** 角色对话一轮的结局（waitRoleAgent 返回）。 */
@@ -114,69 +132,89 @@ export interface GoalHost {
 	waitRoleAgent?: (convId: string, timeoutMs: number) => Promise<RoleWaitOutcome>;
 	/** 续跑：子代理 = 新回合；主对话 = 用户消息（按 deliverAs 排队/插话）。 */
 	sendRoleAgent?: (convId: string, message: string, deliverAs?: "steer" | "followUp") => Promise<boolean>;
-	/** 该对话最后一条 assistant 文本 + 最近错误特征（停滞/同错取数用）。 */
-	readRoleAgent?: (convId: string) => { text: string; errorSnippet?: string } | undefined;
+	/** 该对话最后一条 assistant 文本 + 最近错误特征（停滞/同错取数用）+
+	 *  执行者 vitals（目标条实时进度用：是否在跑 / 最近工具 / 会话累计用量）。
+	 *  缺省字段即不采集（老 fake host 只回 text 也照常工作）。 */
+	readRoleAgent?: (convId: string) => RoleAgentRead | undefined;
 	/** 中止该对话正在跑的回合（角色轮超时 / 清目标时用）。 */
 	stopRoleAgent?: (convId: string) => Promise<void>;
 	/** 收尾：移出角色子代理（目标完成/清除时用）；主对话槽位实现为 no-op。 */
 	dismissRoleAgent?: (convId: string) => Promise<void>;
 	/** 该对话是否仍存在（子代理被移出后 steer 静默 no-op，循环必须显式判）。 */
 	hasConv?: (convId: string) => boolean;
+	/** 工作区是否有可信的 git 信号（缺席 = 默认有，兼容旧 fake host）。
+	 *  非仓库目录下 git diff 恒为空，停滞判定会误杀一切无文件改动的目标，
+	 *  此时取样跳过停滞计数（错误/连败熔断与轮次预算不受影响）。 */
+	isGitRepo?: (cwd: string) => Promise<boolean>;
 	/** 角色轮等待上限（毫秒）；缺省 20 分钟（与工具看门狗同口径）。 */
 	roleDeadlineMs?: () => number;
 }
 
-/** 提取 raw 中第一个括号平衡的 {...} 子串（字符串字面量内的引号/转义/花括号不参与配对）。 */
-function firstBalancedJsonObject(raw: string): string | undefined {
-	const start = raw.indexOf("{");
-	if (start < 0) return undefined;
-	let depth = 0;
-	let inString = false;
-	let escaped = false;
-	for (let i = start; i < raw.length; i++) {
-		const ch = raw[i];
-		if (inString) {
-			if (escaped) escaped = false;
-			else if (ch === "\\") escaped = true;
-			else if (ch === '"') inString = false;
-			continue;
-		}
-		if (ch === '"') inString = true;
-		else if (ch === "{") depth++;
-		else if (ch === "}") {
-			depth--;
-			if (depth === 0) return raw.slice(start, i + 1);
+/** 提取 raw 中**所有**顶层括号平衡的 {...} 子串（字符串字面量内的引号/转义/花括号
+ *  不参与配对）。返回顺序 = 出现顺序；嵌套在内的子串也会被逐个收录。
+ *  输入封顶 32k（取尾：结论通常在末尾）—— 逐 `{` 起跳的扫描是平方级，
+ *  不封顶会被超长回复拖慢；调用方传的就是最后一条 assistant 文本。 */
+function allBalancedJsonObjects(raw: string): string[] {
+	const src = raw.length > 32768 ? raw.slice(-32768) : raw;
+	const out: string[] = [];
+	for (let start = src.indexOf("{", 0); start >= 0; start = src.indexOf("{", start + 1)) {
+		let depth = 0;
+		let inString = false;
+		let escaped = false;
+		for (let i = start; i < src.length; i++) {
+			const ch = src[i];
+			if (inString) {
+				if (escaped) escaped = false;
+				else if (ch === "\\") escaped = true;
+				else if (ch === '"') inString = false;
+				continue;
+			}
+			if (ch === '"') inString = true;
+			else if (ch === "{") depth++;
+			else if (ch === "}") {
+				depth--;
+				if (depth === 0) {
+					out.push(src.slice(start, i + 1));
+					break;
+				}
+			}
 		}
 	}
-	return undefined;
+	return out;
 }
 
 /**
- * 解析审查模型的 verdict 输出（纯函数）。优先取第一个平衡 {...} 做 JSON.parse：
- * 模型常包 markdown 围栏或前后闲话，feedback 里也可能有 \" 转义与嵌套引号，
- * 这些由 JSON 语义天然处理；整体解析失败（单引号/尾逗号等）再退回旧的宽松
- * 正则逐字段抠。两者都失败返回 undefined，调用方按「无 JSON」处理。
+ * 解析审查模型的 verdict 输出（纯函数）。扫描全文所有平衡 {...} 做 JSON.parse，
+ * **最后一个合法 verdict 胜出**：模型常先复述契约里的示例 JSON 再给真正结论，
+ * 取第一个会被示例带偏（复述 pass 示例 + 真结论 fail → 假通过）。feedback 里的
+ * \" 转义与嵌套引号由 JSON 语义天然处理；都不是合法 JSON（单引号/尾逗号等）
+ * 再退回宽松正则逐字段抠（同样以后出现者为准）。两者都失败返回 undefined，
+ * 调用方按「无 JSON」处理。
  */
 export function parseReviewerVerdict(raw: string): { verdict: "pass" | "fail"; feedback: string } | undefined {
-	const json = firstBalancedJsonObject(raw);
-	if (json !== undefined) {
+	let found: { verdict: "pass" | "fail"; feedback: string } | undefined;
+	for (const json of allBalancedJsonObjects(raw)) {
 		try {
 			const value = JSON.parse(json) as { verdict?: unknown; feedback?: unknown };
 			if (value && typeof value === "object" && !Array.isArray(value)) {
 				if (value.verdict === "pass" || value.verdict === "fail") {
-					return { verdict: value.verdict, feedback: typeof value.feedback === "string" ? value.feedback : "" };
+					found = { verdict: value.verdict, feedback: typeof value.feedback === "string" ? value.feedback : "" };
 				}
 			}
 		} catch {
-			// 不是合法 JSON（围栏残留/单引号/尾逗号）→ 落到正则兜底
+			// 不是合法 JSON（围栏残留/单引号/尾逗号）→ 继续扫下一个，实在没有落正则兜底
 		}
 	}
-	const m = raw.match(/\{\s*"verdict"\s*:\s*"(pass|fail)"[^}]*\}/);
-	if (m) {
-		const fm = raw.match(/"feedback"\s*:\s*"([^"]*)"/);
-		return { verdict: m[1] as "pass" | "fail", feedback: fm?.[1] ?? "" };
+	if (found) return found;
+	const re = /\{\s*"verdict"\s*:\s*"(pass|fail)"[^}]*\}/g;
+	let m: RegExpExecArray | null;
+	let last: { verdict: "pass" | "fail"; feedback: string } | undefined;
+	while ((m = re.exec(raw)) !== null) {
+		const block = m[0];
+		const fm = block.match(/"feedback"\s*:\s*"([^"]*)"/);
+		last = { verdict: m[1] as "pass" | "fail", feedback: fm?.[1] ?? "" };
 	}
-	return undefined;
+	return last;
 }
 
 /** diff 正文进审查 prompt 的截断上限（完整规模信息走 [diff-meta] 尾段）。 */
@@ -243,6 +281,31 @@ export function extractErrorSnippetFromSession(session: unknown, text: string): 
 	return undefined;
 }
 
+/**
+ * 该会话最近用过的工具名（纯函数，供目标条「执行者在干什么」用）。
+ * 从后往前扫最近 6 条消息，最新的一次 toolCall 即结果；6 条里没有则返回
+ * undefined（不翻旧账：几轮前的工具不是「正在干」）。
+ */
+export function lastToolNameOfSession(session: unknown): string | undefined {
+	try {
+		const messages = (session as AgentSession | undefined)?.agent?.state?.messages;
+		if (!Array.isArray(messages)) return undefined;
+		for (let i = messages.length - 1; i >= 0 && i >= messages.length - 6; i--) {
+			const m = messages[i] as { role?: unknown; content?: unknown };
+			if (m.role !== "assistant" || !Array.isArray(m.content)) continue;
+			for (let j = m.content.length - 1; j >= 0; j--) {
+				const b = m.content[j] as { type?: unknown; name?: unknown };
+				if (b?.type === "toolCall" && typeof b.name === "string" && b.name.trim() !== "") {
+					return b.name.trim();
+				}
+			}
+		}
+	} catch {
+		// Ignore
+	}
+	return undefined;
+}
+
 /** System prompt for the goal-wizard session. The wizard asks the user a few
  *  questions (via its goal_ask tool) to scope a raw requirement into a precise,
  *  reviewable goal, then emits ONLY the final goal text as its last message. */
@@ -295,11 +358,17 @@ export class GoalService {
 	private verdictSignals = new Map<string, Set<() => void>>();
 	/** 每个对话至多一个在飞循环（convid → promise）。 */
 	private delegatedLoops = new Map<string, Promise<void>>();
+	/** 旧循环还在退场时到来的新启动请求（convId → 最新一次）：旧循环收束后接力
+	 *  启动。没有它的话，setGoal 紧跟 clearGoal 会因「表里还有旧循环」而静默早退，
+	 *  新目标永远不派活（状态却写着「等待生成」）。 */
+	private delegatedPending = new Map<string, { goalGeneration: number; goalText: string }>();
 	/** Idle-timeout for the wizard: if no answer arrives within this window (a
 	 *  dialog is up but the user doesn't respond), the wizard is auto-cancelled. */
 	private static readonly WIZARD_IDLE_TIMEOUT_MS = 5 * 60_000;
 	/** Absolute deadline for the whole wizard session (model latency guard). */
 	private static readonly WIZARD_MAX_TOTAL_MS = 20 * 60_000;
+	/** 执行者连续 error/timeout 超过该轮数 → 直接受阻（不限轮下也不会无限空转）。 */
+	private static readonly EXEC_FAILED_ROUNDS_LIMIT = 2;
 
 	constructor(private readonly host: GoalHost) {
 		// Restore last-used goal/review preferences so model & rounds survive reload.
@@ -315,10 +384,6 @@ export class GoalService {
 	}
 
 	/** Remembered defaults (model choice / rounds cap / lock). */
-	get reviewPrefs() {
-		return this.prefs;
-	}
-
 	/** 当前服务端语言（英文默认，未接线前保持原有英文行为）。 */
 	private lang(): ServerLang {
 		return this.host.lang?.() ?? "en";
@@ -358,7 +423,16 @@ export class GoalService {
 	/** Push the active conversation's goal status to the client (the goal bar
 	 * restores remembered prefs when nothing is active). */
 	emitGoalStatus(): void {
-		const goal = this.host.activeConv().goal;
+		const conv = this.host.activeConv();
+		const goal = conv.goal;
+		// 本目标累计用量随状态下发（目标条展示用；无累计即不发字段）。
+		if (conv.goalUsage) {
+			goal.usage = { inputTokens: conv.goalUsage.input, outputTokens: conv.goalUsage.output };
+		} else {
+			goal.usage = undefined;
+		}
+		// 目标历史随状态下发（清目标不清空，内存态）。
+		goal.history = conv.goalHistory && conv.goalHistory.length > 0 ? [...conv.goalHistory] : undefined;
 		if (!goal.goal && !goal.reviewing && !goal.wizard.active) {
 			goal.reviewModel = this.prefs.reviewModel;
 			goal.maxRounds = this.prefs.maxRounds;
@@ -409,6 +483,9 @@ export class GoalService {
 			});
 			return;
 		}
+		// quiesce（服务排空）：新目标是新工作，直接拒绝（宿主的 quiesceBlocked
+		// 自带「正在排空」notice，与 prompt/编辑入口同口径）。清目标不受影响。
+		if (this.host.quiesceBlocked()) return;
 		// 目标模式 2.0 只有一条路径（执行对话干活 + 当前对话验收），需要宿主提供角色
 		// 对话桥（spawn/wait/send/read/stop/dismiss）；缺任何一个（未接线 / 非 pi
 		// 引擎）则在**动目标状态之前**就拒绝并说明原因。
@@ -471,12 +548,8 @@ export class GoalService {
 			execModel: this.prefs.execModel,
 		});
 		// Reset the loop for a freshly-set goal (single-shot goals start at 0).
-		conv.stagnantRounds = 0;
-		conv.lastDiff = undefined;
-		conv.lastErrorSnippet = undefined;
-		conv.sameErrorRounds = 0;
+		this.resetLoopCounters(conv);
 		conv.awaitingVerdict = undefined;
-		conv.verdictRetry = 0;
 		goal.round = 0;
 		goal.reviewing = false;
 		goal.verdict = "pending";
@@ -1060,37 +1133,61 @@ export class GoalService {
 		conv.goalGeneration += 1;
 		// 委托执行：停掉在飞的执行者（循环靠代次作废 + 代次守卫退出）。
 		this.stopDelegated(conv);
-		conv.stagnantRounds = 0;
-		conv.lastDiff = undefined;
-		conv.lastErrorSnippet = undefined;
-		conv.sameErrorRounds = 0;
-		const goal = conv.goal;
-		goal.reviewing = false;
-		goal.conversationId = null;
-		goal.goal = null;
-		goal.reviewing = false;
-		goal.verdict = "pending";
-		goal.feedback = undefined;
-		goal.wizard.active = false;
-		goal.wizard.status = "";
-		goal.wizard.statusEn = "";
-		goal.status = "";
-		goal.statusEn = "";
-		goal.phase = "idle";
-		goal.roles = {};
+		this.resetLoopCounters(conv);
+		this.clearGoalFields(conv);
 		this.emitGoalStatus();
 		// Abort a running wizard for real (✗ in the goal bar while scoping).
 		if (this.wizardOwnerId === this.host.activeConvId()) {
-			this.wizardCancelled = true;
-			this.host.webUi.cancelPendingDialogs();
-			this.wizardAbort?.abort();
-			const ws2 = this.wizardSession;
-			this.wizardSession = null;
-			if (ws2) {
-				await ws2.abort().catch(() => {});
-				ws2.dispose();
-			}
-			this.wizardAbort = null;
+			await this.abortWizard();
+		}
+	}
+
+	/** 真正中止在飞的调研向导（对话框按取消返回 + agent run 停掉），返回是否停掉了一个。
+	 *  注意：不碰 wizardOwnerId —— 它由向导 run 自己的 finally 清理；提前清掉会让
+	 *  旧向导还没退完时就能开新向导（两个 run 并发）。 */
+	private async abortWizard(): Promise<boolean> {
+		if (this.wizardOwnerId === null) return false;
+		this.wizardCancelled = true;
+		this.host.webUi.cancelPendingDialogs();
+		this.wizardAbort?.abort();
+		const ws2 = this.wizardSession;
+		this.wizardSession = null;
+		if (ws2) {
+			await ws2.abort().catch(() => {});
+			ws2.dispose();
+		}
+		this.wizardAbort = null;
+		return true;
+	}
+
+	/**
+	 * 目标模式总开关关闭：停掉所有在飞的委托循环并收掉各自的执行者（幂等），
+	 * 在跑的调研向导一并中止。已受阻/未通过的目标只留文本（不运行，无需处理），
+	 * 开关重开后仍可继续处置。无在飞目标/调研时无声无 notice。
+	 */
+	async stopAllGoals(): Promise<void> {
+		let stopped = 0;
+		// 直接迭代：stopDelegated 只发 fire-and-forget 的停/收请求，不会同步改这张表
+		// （循环退出是异步的，靠代次守卫），无需快照。
+		for (const convId of this.delegatedLoops.keys()) {
+			const conv = this.host.getConv(convId);
+			if (!conv) continue;
+			conv.goalGeneration += 1; // 作废在飞回调（循环靠代次守卫退出）
+			this.stopDelegated(conv); // 停执行者 + 唤醒 verdict 等待者 + 清 roles/phase
+			this.resetLoopCounters(conv);
+			this.clearGoalFields(conv);
+			stopped++;
+		}
+		const wizardAborted = await this.abortWizard();
+		if (stopped > 0 || wizardAborted) {
+			this.emitGoalStatus();
+			this.host.emit({
+				type: "notice",
+				level: "warning",
+				text: "目标模式已关闭，在飞的目标/调研已停止（执行对话已移出左栏）。",
+				textEn: "Goal mode is off; running goals/surveys were stopped (executor conversations removed).",
+			});
+			this.host.flushSnapshot();
 		}
 	}
 
@@ -1105,20 +1202,31 @@ export class GoalService {
 		const g = conv.goal;
 		if (aborted) {
 			if (g.goal && g.conversationId === conv.id) {
+				// 中止的若是审查回合（服务端正在等 verdict）：只作废这一次审查（走无 JSON
+				// 重试/受阻），目标与执行对话都保留 —— 用户按 Stop 往往只是想掐掉那段机器
+				// JSON 回合，不是要把整个目标连执行者一起清掉。
+				if (conv.awaitingVerdict) {
+					const settle = this.verdictWaiters.get(conv.id);
+					this.verdictWaiters.delete(conv.id);
+					conv.awaitingVerdict = undefined;
+					settle?.("invalid");
+					this.emitGoalStatus();
+					return {
+						text: "⏹ 审查回合已中止（目标保留，将重新审查这一轮）",
+						textEn: "⏹ Review round aborted (the goal is kept and this round will be reviewed again)",
+					};
+				}
 				conv.goalGeneration += 1;
 				// 委托执行：手动停止也要把在飞的执行者停掉（否则它还在后台改工作区）。
 				this.stopDelegated(conv);
-				conv.stagnantRounds = 0;
-				conv.lastDiff = undefined;
-				conv.lastErrorSnippet = undefined;
-				conv.sameErrorRounds = 0;
+				this.resetLoopCounters(conv);
 				g.conversationId = null;
 				g.goal = null;
 				g.reviewing = false;
 				g.verdict = "pending";
 				g.feedback = undefined;
 				g.phase = "idle";
-				g.roles = {};
+				// roles 已由上面的 stopDelegated 经 detachRoleExec 清掉。
 				g.status = "已手动停止，目标审查已中止";
 				g.statusEn = "Stopped manually, goal review aborted";
 				this.emitGoalStatus();
@@ -1200,9 +1308,13 @@ export class GoalService {
 		}
 	}
 
-	/** 启动委托循环（同一对话同时只允许一个）。 */
+	/** 启动委托循环（同一对话同时只允许一个在飞；旧循环退场中到来的请求排队接力）。 */
 	private startDelegatedLoop(conv: GoalConversation, goalGeneration: number, goalText: string): void {
-		if (this.delegatedLoops.has(conv.id)) return;
+		if (this.delegatedLoops.has(conv.id)) {
+			this.delegatedPending.set(conv.id, { goalGeneration, goalText });
+			return;
+		}
+		const convId = conv.id;
 		const loop = this.runDelegatedLoop(conv, goalGeneration, goalText)
 			.catch((err) => {
 				void this.finishDelegated(
@@ -1215,7 +1327,14 @@ export class GoalService {
 				);
 			})
 			.finally(() => {
-				if (this.delegatedLoops.get(conv.id) === loop) this.delegatedLoops.delete(conv.id);
+				if (this.delegatedLoops.get(convId) === loop) this.delegatedLoops.delete(convId);
+				// 接力：退场期间排队的新请求现在启动（代次已过期则首个守卫即退出，无副作用）。
+				const pending = this.delegatedPending.get(convId);
+				if (pending) {
+					this.delegatedPending.delete(convId);
+					const target = this.host.getConv(convId);
+					if (target) this.startDelegatedLoop(target, pending.goalGeneration, pending.goalText);
+				}
 			});
 		this.delegatedLoops.set(conv.id, loop);
 	}
@@ -1264,21 +1383,90 @@ export class GoalService {
 	}
 
 	/** 停掉该对话的委托循环并收掉常驻执行者（幂等；清目标/重设目标/中止时调）。 */
+	/** 一轮循环的计数器归零（新目标/清目标/中止/总开关停摆时调；目标文本与历史不动）。 */
+	private resetLoopCounters(conv: GoalConversation): void {
+		conv.stagnantRounds = 0;
+		conv.failedRounds = 0;
+		conv.execUsageBefore = undefined;
+		conv.reviewUsageBefore = undefined;
+		conv.goalUsage = undefined;
+		conv.lastDiff = undefined;
+		conv.lastErrorSnippet = undefined;
+		conv.sameErrorRounds = 0;
+	}
+
+	/** 目标字段清空（清目标/总开关停摆时调；历史与偏好保留）。 */
+	private clearGoalFields(conv: GoalConversation): void {
+		const goal = conv.goal;
+		goal.reviewing = false;
+		goal.conversationId = null;
+		goal.goal = null;
+		goal.verdict = "pending";
+		goal.feedback = undefined;
+		goal.status = "";
+		goal.statusEn = "";
+		goal.phase = "idle";
+		goal.roles = {};
+		goal.wizard.active = false;
+		goal.wizard.status = "";
+		goal.wizard.statusEn = "";
+	}
+
+	/** 轮次预算（locked=false = 单次；locked + maxRounds>0 = 有限轮并夹到 50；否则不限）。 */
+	private roundBudget(goal: GoalStatus): number {
+		return goal.locked ? (goal.maxRounds > 0 ? Math.min(goal.maxRounds, 50) : Number.POSITIVE_INFINITY) : 1;
+	}
+
+	/** 摘掉常驻执行者引用并清 roles（停/收由调用方按 sync/async 上下文自行处理，
+	 *  停与收本身都是 best-effort）。返回被摘掉的执行者对话 id（没有则 undefined）。 */
+	private detachRoleExec(conv: GoalConversation): string | undefined {
+		const exec = conv.roleExec;
+		conv.roleExec = undefined;
+		conv.goal.roles = {};
+		return exec?.convId;
+	}
+
 	private stopDelegated(conv: GoalConversation): void {
+		// 排队的启动请求一并作废：setGoal 会在后面按新代次重新排，clearGoal 则不需要。
+		this.delegatedPending.delete(conv.id);
 		conv.awaitingVerdict = undefined;
+		// 审查回合里排队的用户插话在这里也顺带发出（take 语义，与 deliverAndWait 的
+		// flush 互斥 —— 先到先得，清目标/停循环不断用户的话）。
+		void this.flushDeferredPrompts(conv);
 		const settle = this.verdictWaiters.get(conv.id);
 		if (settle) {
 			this.verdictWaiters.delete(conv.id);
 			settle("gone");
 		}
-		const exec = conv.roleExec;
-		conv.roleExec = undefined;
-		if (exec) {
-			void this.host.stopRoleAgent?.(exec.convId).catch(() => {});
-			void this.host.dismissRoleAgent?.(exec.convId).catch(() => {});
+		const execId = this.detachRoleExec(conv);
+		if (execId) {
+			void this.host.stopRoleAgent?.(execId).catch(() => {});
+			void this.host.dismissRoleAgent?.(execId).catch(() => {});
 		}
-		conv.goal.roles = {};
 		conv.goal.phase = "idle";
+	}
+
+	/** 读某会话累计用量（取不到返回 undefined；getSessionStats 会遍历转写，只在轮次边界调）。 */
+	private sessionUsage(session: GoalConversation["session"]): { input: number; output: number } | undefined {
+		try {
+			const t = session.getSessionStats()?.tokens as { input?: unknown; output?: unknown } | undefined;
+			if (t && typeof t.input === "number" && typeof t.output === "number") {
+				return { input: t.input, output: t.output };
+			}
+		} catch {
+			// Ignore
+		}
+		return undefined;
+	}
+
+	/** 把一轮增量并入本目标累计（任一端缺失即跳过，不污染总数）。 */
+	private addGoalUsage(conv: GoalConversation, before: { input: number; output: number } | undefined): void {
+		const after = this.sessionUsage(conv.session);
+		if (!after || !before) return;
+		conv.goalUsage = {
+			input: (conv.goalUsage?.input ?? 0) + Math.max(0, after.input - before.input),
+			output: (conv.goalUsage?.output ?? 0) + Math.max(0, after.output - before.output),
+		};
 	}
 
 	/** 轮次标签（"/M"；不限轮时为空串）。 */
@@ -1291,8 +1479,14 @@ export class GoalService {
 		for (;;) {
 			if (!this.isCurrentDelegated(conv, goalGeneration)) return;
 			const g = conv.goal;
+			// quiesce（服务排空）：中途不再派单 —— 存量回合跑完，下一轮不再派
+			// （设计文档 §4.6；与 prompt/编辑入口「新的拒绝、存量跑完」同口径）。
+			if (this.host.quiesceBlocked()) {
+				await this.finishDelegated(conv, goalGeneration, "blocked", g.round, this.roleFailureText("quiesce"), goalText);
+				return;
+			}
 			// 轮次预算：locked=false = 单次（一轮就收）；locked=true 且 maxRounds>0 = 有限轮。
-			const budget = g.locked ? (g.maxRounds > 0 ? Math.min(g.maxRounds, 50) : Number.POSITIVE_INFINITY) : 1;
+			const budget = this.roundBudget(g);
 			if (g.round >= budget) {
 				await this.finishDelegated(conv, goalGeneration, "exhausted", g.round, feedback, goalText);
 				return;
@@ -1305,7 +1499,6 @@ export class GoalService {
 			g.phase = "executing";
 			g.status = `执行中（第 ${round}${this.roundsLabel(budget)} 轮）…`;
 			g.statusEn = `Executing (round ${round}${this.roundsLabel(budget)})…`;
-			conv.verdictRetry = 0;
 			this.emitGoalStatus();
 
 			// ① 派发：首轮 spawn 常驻执行者，之后向同一个它追加回合（记忆连续）。
@@ -1322,6 +1515,18 @@ export class GoalService {
 			const sample = await this.sampleRound(conv, execId);
 			if (!this.isCurrentDelegated(conv, goalGeneration)) return;
 
+			// 熔断先于一切分支：停滞 / 同错 / 执行连败连续两轮 → 直接终止（不问审查者，
+			// 省 token；判定权始终在服务端）。注意它必须在 outcome 分支之前 —— 否则
+			// error/timeout 轮会经由下面的 continue 跳过熔断，在「不限轮」下无限空转。
+			if (
+				(conv.sameErrorRounds ?? 0) >= 2 ||
+				(conv.stagnantRounds ?? 0) >= 2 ||
+				(conv.failedRounds ?? 0) >= GoalService.EXEC_FAILED_ROUNDS_LIMIT
+			) {
+				await this.finishDelegated(conv, goalGeneration, "blocked", round, "", goalText);
+				return;
+			}
+
 			if (outcome !== "done") {
 				// 「人为中止」与「对话失联」是终点事件：用户按了子代理的 ⏹ / 把执行对话关了，
 				// 就是要停下 —— 这里绝不能再派一轮（否则看起来像「关了自己又启动」）。
@@ -1333,17 +1538,26 @@ export class GoalService {
 					await this.finishDelegated(conv, goalGeneration, "blocked", round, reason, goalText);
 					return;
 				}
-				// 超时 / 报错：不花审查 token，直接进下一轮（预算内）。
+				// 超时 / 报错：不花审查 token，直接进下一轮（预算内）。连败计数在这里累加，
+				// 阈值见本轮顶部的熔断（连续 2 轮都起不来就停，不烧无限 token）。
+				conv.failedRounds = (conv.failedRounds ?? 0) + 1;
+				if (conv.failedRounds >= GoalService.EXEC_FAILED_ROUNDS_LIMIT) {
+					await this.finishDelegated(
+						conv,
+						goalGeneration,
+						"blocked",
+						round,
+						this.roleFailureText(outcome === "timeout" ? "timeout-repeat" : "error-repeat", sample.errorSnippet ?? ""),
+						goalText,
+					);
+					return;
+				}
 				feedback = this.roleFailureText(outcome === "timeout" ? "timeout" : "error", sample.errorSnippet ?? "");
 				if (outcome === "timeout") await this.host.stopRoleAgent?.(execId).catch(() => {});
 				continue; // 顶部自增轮次后重新派活
 			}
-
-			// 熔断：停滞 / 同错连续两轮 → 直接终止（不问审查者，省 token；判定权始终在服务端）。
-			if ((conv.sameErrorRounds ?? 0) >= 2 || (conv.stagnantRounds ?? 0) >= 2) {
-				await this.finishDelegated(conv, goalGeneration, "blocked", round, "", goalText);
-				return;
-			}
+			// 执行者本轮正常结束：连败清零。
+			conv.failedRounds = 0;
 
 			// ④⑤ 把审查指令交给主对话（= 审查者），等它的 verdict。
 			g.phase = "reviewing";
@@ -1364,6 +1578,15 @@ export class GoalService {
 				);
 				return;
 			}
+			// 审查结论卡：把 verdict JSON 翻译成人话框住（裸 JSON 留在流里，但不再是唯一载体）。
+			if (this.isCurrentDelegated(conv, goalGeneration)) {
+				await this.pushReviewCard(conv, this.reviewCardText(verdict.verdict, round, budget, verdict.feedback), {
+					phase: "result",
+					round,
+					verdict: verdict.verdict,
+				});
+			}
+			if (!this.isCurrentDelegated(conv, goalGeneration)) return;
 			if (verdict.verdict === "pass") {
 				await this.finishDelegated(conv, goalGeneration, "pass", round, verdict.feedback, goalText);
 				return;
@@ -1401,6 +1624,7 @@ export class GoalService {
 				await this.finishDelegated(conv, goalGeneration, "blocked", round, this.roleFailureText("exec-gone"), goalText);
 				return undefined;
 			}
+			this.beginRoundVitals(conv, existing.convId);
 			return existing.convId;
 		}
 		try {
@@ -1415,6 +1639,7 @@ export class GoalService {
 			});
 			conv.roleExec = { convId, generation: (conv.roleExec?.generation ?? 0) + 1 };
 			g.roles = { ...g.roles, executor: { convId, spawned: true } };
+			this.beginRoundVitals(conv, convId);
 			this.emitGoalStatus();
 			return convId;
 		} catch (err) {
@@ -1422,6 +1647,39 @@ export class GoalService {
 			await this.abortOnSpawnFailure(conv, goalGeneration, goalText, err instanceof Error ? err.message : String(err));
 			return undefined;
 		}
+	}
+
+	/** 派活后记一笔本轮 vitals 基线：执行者用量起点 + 快照（目标条实时进度用）。
+	 *  取数失败不阻断派活（read 缺字段即跳过，老 host 照常工作）。 */
+	private beginRoundVitals(conv: GoalConversation, execId: string): void {
+		let read: RoleAgentRead | undefined;
+		try {
+			read = this.host.readRoleAgent?.(execId);
+		} catch {
+			read = undefined;
+		}
+		conv.execUsageBefore = read?.usage;
+		this.snapshotExecutor(conv, execId, read);
+	}
+
+	/** 刷新执行者快照进 `goal.roles.executor`（目标条实时进度用；轮次边界调用）。
+	 *  在跑且有最近工具 → 「xx 运行中」；否则取自述头 60 字；都没有则清空（不留脏数据）。 */
+	private snapshotExecutor(conv: GoalConversation, execId: string, read?: RoleAgentRead): void {
+		const g = conv.goal;
+		const role = g.roles?.executor;
+		if (!role || role.convId !== execId) return;
+		const streaming = read?.streaming;
+		let activity: string | undefined;
+		let activityEn: string | undefined;
+		if (streaming && read?.lastTool) {
+			activity = `${read.lastTool} 运行中`;
+			activityEn = `${read.lastTool} running`;
+		} else if (read?.text?.trim()) {
+			const head = read.text.trim().replace(/\s+/g, " ").slice(0, 60);
+			activity = head;
+			activityEn = head;
+		}
+		g.roles = { ...g.roles, executor: { ...role, streaming, activity, activityEn } };
 	}
 
 	/** 取样一轮：工作区 diff 指纹 + 执行者会话错误特征（熔断信号独立于 verdict）。 */
@@ -1449,11 +1707,36 @@ export class GoalService {
 			conv.sameErrorRounds = currentError ? 1 : 0;
 		}
 		conv.lastErrorSnippet = currentError;
-		const trimmed = diffOut.trim();
-		const prevDiff = conv.lastDiff;
-		const noChange = trimmed === "" || (prevDiff !== undefined && trimmed === prevDiff);
-		conv.stagnantRounds = noChange ? (conv.stagnantRounds ?? 0) + 1 : 0;
-		conv.lastDiff = trimmed;
+		// 非 git 目录（git diff 恒为空）下没有可信的工作区进展信号：跳过停滞计数
+		// （不清零也不累加），否则纯问答/回答类目标会在第 2 轮被误判「无进展」。
+		// 错误特征与连败熔断不受影响，仍正常计数。
+		let repoAvailable = true;
+		try {
+			if (this.host.isGitRepo) repoAvailable = await this.host.isGitRepo(conv.cwd);
+		} catch {
+			repoAvailable = true;
+		}
+		if (repoAvailable) {
+			const trimmed = diffOut.trim();
+			const prevDiff = conv.lastDiff;
+			const noChange = trimmed === "" || (prevDiff !== undefined && trimmed === prevDiff);
+			conv.stagnantRounds = noChange ? (conv.stagnantRounds ?? 0) + 1 : 0;
+			conv.lastDiff = trimmed;
+		}
+		// 本轮执行者用量 = 取样点累计 - 派活点累计（取不到任一端即跳过，不污染总数）。
+		const after = read?.usage;
+		const before = conv.execUsageBefore;
+		if (after && before) {
+			const dIn = Math.max(0, after.input - before.input);
+			const dOut = Math.max(0, after.output - before.output);
+			conv.goalUsage = {
+				input: (conv.goalUsage?.input ?? 0) + dIn,
+				output: (conv.goalUsage?.output ?? 0) + dOut,
+			};
+		}
+		conv.execUsageBefore = undefined;
+		// 取样即轮次边界：执行者快照同步刷新（目标条实时进度用）。
+		this.snapshotExecutor(conv, execId, read);
 		return { output, errorSnippet: currentError };
 	}
 
@@ -1477,7 +1760,6 @@ export class GoalService {
 					: this.verdictRetryPrompt();
 			const verdict = await this.deliverAndWait(conv, round, text);
 			if (verdict !== "invalid") return verdict;
-			conv.verdictRetry = attempt + 1;
 		}
 		return "invalid";
 	}
@@ -1494,9 +1776,53 @@ export class GoalService {
 	}
 
 	/** 投递审查指令并等 onAgentEnd 送来 verdict（登记 waiter 后再投递，防抢跑）。 */
+	/** 往主对话消息流里插一张目标审查卡（customType "goal-review"，前端有专属卡片样式）。
+	 *  纯妆点：审查指令（user 消息）与 verdict JSON（assistant 消息）之间本来没有任何
+	 *  视觉分隔，用户看到的是裸 JSON；起止两张卡把一轮审查框起来。失败不阻断循环。 */
+	private async pushReviewCard(
+		conv: GoalConversation,
+		text: string,
+		details: { phase: "start" | "result"; round: number; verdict?: string },
+	): Promise<void> {
+		try {
+			await conv.session.sendCustomMessage({
+				customType: "goal-review",
+				content: [{ type: "text", text }],
+				display: true,
+				details: { type: "goal-review", ...details },
+			});
+		} catch {
+			// Card insertion is cosmetic — never block the review loop on it.
+		}
+	}
+
+	/** 取出该对话在审查回合里排队的用户插话并按序发出（take 语义，防重复投递）。
+	 *  followUp 投递：在跑回合结束后送达，不污染已结算的 verdict；空闲则直接开新回合。 */
+	private async flushDeferredPrompts(conv: GoalConversation): Promise<void> {
+		const queued = conv.deferredPrompts;
+		conv.deferredPrompts = undefined;
+		if (!queued || queued.length === 0) return;
+		for (const text of queued) {
+			try {
+				const ok = await this.host.sendRoleAgent!(conv.id, text, "followUp");
+				if (!ok) break; // 对话已不在，剩下发不出去，直接丢（排队时已告知用户）
+			} catch {
+				break;
+			}
+		}
+		this.host.flushSnapshot();
+	}
+
 	private async deliverAndWait(conv: GoalConversation, round: number, text: string): Promise<DelegatedVerdict> {
 		const host = this.host;
 		conv.awaitingVerdict = { round };
+		// 审查者（主对话）本轮用量基线：verdict 落定点相减即审查增量。
+		conv.reviewUsageBefore = this.sessionUsage(conv.session);
+		// 审查开始卡：先框住本轮，再投递审查指令（主对话空闲，顺序即流序）。
+		await this.pushReviewCard(conv, this.reviewCardText("start", round, this.roundBudget(conv.goal), ""), {
+			phase: "start",
+			round,
+		});
 		const verdict = await new Promise<DelegatedVerdict>((resolve) => {
 			let settled = false;
 			let timer: ReturnType<typeof setTimeout> | undefined;
@@ -1518,6 +1844,8 @@ export class GoalService {
 				.catch(() => settle("gone"));
 		});
 		if (conv.awaitingVerdict?.round === round) conv.awaitingVerdict = undefined;
+		// verdict 已结算（任何结局）：把审查回合里排队的用户插话按序发出去。
+		await this.flushDeferredPrompts(conv);
 		return verdict;
 	}
 
@@ -1527,6 +1855,9 @@ export class GoalService {
 		if (!settle) return;
 		this.verdictWaiters.delete(conv.id);
 		conv.awaitingVerdict = undefined;
+		// 审查回合结束：审查者本轮用量落袋（下一轮投递前会重记基线，重试轮不丢数）。
+		this.addGoalUsage(conv, conv.reviewUsageBefore);
+		conv.reviewUsageBefore = undefined;
 		let text = "";
 		try {
 			text = conv.session.getLastAssistantText() ?? "";
@@ -1534,6 +1865,27 @@ export class GoalService {
 			text = "";
 		}
 		settle(parseReviewerVerdict(text) ?? "invalid");
+	}
+
+	/** 终态落历史（本对话最近 20 个；调用点在状态清空之前，保证目标文本还在）。 */
+	private recordHistory(
+		conv: GoalConversation,
+		verdict: GoalHistoryEntry["verdict"],
+		rounds: number,
+		feedback: string,
+	): void {
+		const text = (conv.goal.goal ?? "").trim();
+		if (!text) return;
+		conv.goalHistory = [
+			{
+				goal: text.slice(0, 200),
+				verdict,
+				rounds,
+				feedback: feedback.trim().replace(/\s+/g, " ").slice(0, 200),
+				finishedAt: Date.now(),
+			},
+			...(conv.goalHistory ?? []),
+		].slice(0, 20);
 	}
 
 	/** 收尾：pass / blocked / exhausted / 异常 → 状态、通知、角色对话清理。 */
@@ -1547,6 +1899,8 @@ export class GoalService {
 	): Promise<void> {
 		if (!this.isCurrentDelegated(conv, goalGeneration)) return;
 		const g = conv.goal;
+		// 先落历史（此时目标文本还在；pass 分支后面会清掉它）。
+		this.recordHistory(conv, kind === "pass" ? "pass" : kind === "exhausted" ? "fail" : "blocked", round, feedback);
 		if (conv.awaitingVerdict) {
 			const settle = this.verdictWaiters.get(conv.id);
 			this.verdictWaiters.delete(conv.id);
@@ -1557,21 +1911,23 @@ export class GoalService {
 		const roundsZh = budget > 0 ? `第 ${round}/${budget} 轮` : `第 ${round} 轮（不限）`;
 		const roundsEn = budget > 0 ? `Round ${round}/${budget}` : `Round ${round} (unlimited)`;
 		g.reviewing = false;
-		// 角色对话收尾：停掉在飞的回合；pass 时移出左栏（受阻/未通过保留供用户点开查看）。
-		if (conv.roleExec) {
-			const execId = conv.roleExec.convId;
+		// 角色对话收尾：停掉在飞的回合并一律移出左栏（转录已落盘，历史里仍可回看）。
+		// 受阻/未通过也不再常驻：落盘执行对话占「每项目 8 个普通对话」名额之一，
+		// 连续几个失败目标就会把名额吃满、新目标连执行者都拉不起来。
+		// （用户正看着执行对话时 dismiss 是 no-op，它会暂留，用户可自行关闭。）
+		// 与 stopDelegated 共用 detachRoleExec；这里 await 是为了收尾顺序确定，
+		// 那边 fire-and-forget 是因为调它的都是同步上下文。
+		const execId = this.detachRoleExec(conv);
+		if (execId) {
 			await this.host.stopRoleAgent?.(execId).catch(() => {});
-			if (kind === "pass") {
-				conv.roleExec = undefined;
-				await this.host.dismissRoleAgent?.(execId).catch(() => {});
-			}
+			await this.host.dismissRoleAgent?.(execId).catch(() => {});
 		}
 
 		if (kind === "pass") {
 			g.verdict = "pass";
 			g.feedback = feedback;
 			g.phase = "idle";
-			g.roles = {};
+			// roles 已由函数顶部的 detachRoleExec 清掉。
 			g.status = "✅ 已通过目标审查";
 			g.statusEn = "✅ Goal review passed";
 			g.conversationId = null;
@@ -1636,13 +1992,7 @@ export class GoalService {
 		}
 
 		// blocked：保留目标文本让用户看见并处置（与既有熔断口径一致）。
-		// 执行对话已不在时清掉角色引用（不留指向死对话的「执行对话」按钮），并确保
-		// `conv.roleExec` 也清掉：循环已停，只有用户重新设目标才会再派一个执行者。
-		const execAlive = conv.roleExec ? (this.host.hasConv?.(conv.roleExec.convId) ?? true) : false;
-		if (!execAlive) {
-			conv.roleExec = undefined;
-			g.roles = {};
-		}
+		// 执行对话在函数顶部已统一收掉（roles 已清，不留指向死对话的「执行对话」按钮）。
 		const reason =
 			feedback.trim() !== ""
 				? feedback.trim()
@@ -1700,9 +2050,10 @@ export class GoalService {
 		reason: string,
 	): Promise<void> {
 		const g = conv.goal;
+		this.recordHistory(conv, "blocked", conv.goal.round, reason);
 		g.verdict = "blocked";
 		g.phase = "blocked";
-		g.roles = {};
+		// 执行者都没建出来，不会有角色引用；roles 不动（setGoal 前的 stopDelegated 已清过）。
 		g.feedback = reason;
 		g.status = "执行对话创建失败，目标未开始";
 		g.statusEn = "Failed to create the executor conversation; the goal did not start";
@@ -1741,13 +2092,37 @@ export class GoalService {
 		);
 	}
 
+	/** 审查起止卡的文案（进消息流给人看的；结论 feedback 截断，details 不进大文本）。 */
+	private reviewCardText(kind: "start" | "pass" | "fail", round: number, budget: number, feedback: string): string {
+		const rounds = this.roundsLabel(budget);
+		const fb = feedback.trim().replace(/\s+/g, " ").slice(0, 300);
+		if (kind === "start") {
+			return pick(
+				this.lang(),
+				`🔍 第 ${round}${rounds} 轮审查开始（本回合只回 verdict JSON；审查进行中发消息会自动排队，不用等）`,
+				`🔍 Review round ${round}${rounds} started (reply with only the verdict JSON this round; messages sent mid-review are queued automatically)`,
+				"goal.role.card.start",
+			);
+		}
+		return pick(
+			this.lang(),
+			kind === "pass"
+				? `✅ 第 ${round}${rounds} 轮审查通过${fb ? `：${fb}` : ""}`
+				: `❌ 第 ${round}${rounds} 轮未通过${fb ? `：${fb}` : ""}`,
+			kind === "pass"
+				? `✅ Review round ${round}${rounds} passed${fb ? `: ${fb}` : ""}`
+				: `❌ Review round ${round}${rounds} failed${fb ? `: ${fb}` : ""}`,
+			"goal.role.card.result",
+		);
+	}
+
 	private reviewerRoundPrompt(goalText: string, round: number, budget: number, execOutput: string): string {
 		const rounds = this.roundsLabel(budget);
 		const out = execOutput.trim().slice(0, 4000);
 		return pick(
 			this.lang(),
-			`你是严格、独立的验收者。只判断目标是否被完全满足：不要相信描述，去看工作区的实际状态。\n\n【目标】\n${goalText}\n\n【这是第 ${round}${rounds} 轮】\n\n【执行者本轮自述】\n${out || "（执行者本轮没有给出自述）"}\n\n你可以用只读手段核实：read / grep / scm（只读 git）/ 只读 bash（跑测试）。\n\n只输出一个 JSON 对象，不要有任何其他文本、不要代码围栏：\n{"verdict":"pass","feedback":"<一句话：满足了什么>"}\n{"verdict":"fail","feedback":"<可以直接动手改的具体待改项>"}`,
-			`You are a strict, independent acceptor. Judge only whether the goal is fully satisfied: do not trust the summary — inspect the actual workspace state.\n\n# Goal\n${goalText}\n\n# This is round ${round}${rounds}\n\n# Executor's summary this round\n${out || "(the executor produced no summary)"}\n\nYou may verify with read-only means: read / grep / scm (read-only git) / read-only bash (run tests).\n\nReply with ONLY one JSON object — no other text, no code fences:\n{"verdict":"pass","feedback":"<one short sentence: what was satisfied>"}\n{"verdict":"fail","feedback":"<concrete items the executor must fix>"}`,
+			`你是严格、独立的验收者。只判断目标是否被完全满足：不要相信描述，去看工作区的实际状态。\n\n【目标】\n${goalText}\n\n【这是第 ${round}${rounds} 轮】\n\n【执行者本轮自述】\n${out || "（执行者本轮没有给出自述）"}\n\n你可以用只读手段核实：read / grep / scm（只读 git）/ 只读 bash（跑测试）。\n\n只输出一个 JSON 对象，不要有任何其他文本、不要代码围栏、不要复述下面的形状示例。本回合写类与派发类工具会被服务端直接拒绝（不要试）。字段：verdict 只能填 pass（目标已完全满足，一句话说明满足了什么）或 fail（未满足，给出可以直接动手改的具体待改项）；feedback 是一句话说明。形状示例（不要照抄尖括号里的占位符）：\n{"verdict":"<pass|fail>","feedback":"<一句话说明>"}\n[goal-review]`,
+			`You are a strict, independent acceptor. Judge only whether the goal is fully satisfied: do not trust the summary — inspect the actual workspace state.\n\n# Goal\n${goalText}\n\n# This is round ${round}${rounds}\n\n# Executor's summary this round\n${out || "(the executor produced no summary)"}\n\nYou may verify with read-only means: read / grep / scm (read-only git) / read-only bash (run tests).\n\nReply with ONLY one JSON object — no other text, no code fences, do not echo the shape example below. Write and dispatch tools are blocked by the server during this round — do not try them. Fields: verdict must be pass (goal fully satisfied, say what in one sentence) or fail (not satisfied, give concrete items the executor must fix); feedback is one short sentence. Shape example (do not copy the placeholders in angle brackets):\n{"verdict":"<pass|fail>","feedback":"<one sentence>"}\n[goal-review]`,
 			"goal.role.review",
 		);
 	}
@@ -1755,8 +2130,8 @@ export class GoalService {
 	private verdictRetryPrompt(): string {
 		return pick(
 			this.lang(),
-			`你上一条回复没有给出约定的 JSON。现在只回一个 JSON 对象，不要有任何其他文本或代码围栏：\n{"verdict":"pass|fail","feedback":"…"}`,
-			`Your last reply did not contain the required JSON. Reply with ONLY one JSON object now — no other text, no code fences:\n{"verdict":"pass|fail","feedback":"..."}`,
+			`你上一条回复没有给出约定的 JSON。现在只回一个 JSON 对象，不要有任何其他文本或代码围栏：\n{"verdict":"pass|fail","feedback":"…"}\n[goal-review]`,
+			`Your last reply did not contain the required JSON. Reply with ONLY one JSON object now — no other text, no code fences:\n{"verdict":"pass|fail","feedback":"..."}\n[goal-review]`,
 			"goal.role.review.retry",
 		);
 	}
@@ -1767,19 +2142,27 @@ export class GoalService {
 		const detailEn = detail ? ` (${detail.slice(0, 160)})` : "";
 		const zh: Record<string, string> = {
 			timeout: `上一轮执行超时，未完成既定改动${detailZh}。请拆成更小的步骤完成。`,
+			"timeout-repeat": `执行连续 ${GoalService.EXEC_FAILED_ROUNDS_LIMIT} 轮超时未完成${detailZh}，目标循环已暂停（不会自己重新派活）。请检查执行环境后重新设定目标。`,
 			canceled: `执行被手动中止${detailZh}，目标循环已暂停（不会自己重新派活）。`,
 			error: `上一轮执行报错${detailZh}。请先排查错误再继续。`,
+			"error-repeat": `执行连续 ${GoalService.EXEC_FAILED_ROUNDS_LIMIT} 轮报错${detailZh}，目标循环已暂停（不会自己重新派活）。请先排查错误再重新设定目标。`,
 			"exec-gone": "执行对话已被移出或服务重启，执行者记忆已丢失，目标循环已暂停（不会自己重新派活）。",
+			quiesce:
+				"服务器正在排空存量工作（quiesce），不再派发新一轮，目标循环已暂停。用 pi-web-ui server unquiesce 恢复后可重新设定目标继续。",
 			"review-timeout": "审查回合超时，未收到结论。",
 			"review-gone": "审查对话已不可用，未收到结论。",
 			"review-invalid": "审查回合没有给出约定的 JSON 结论（重试一次仍未通过）。",
 		};
 		const en: Record<string, string> = {
 			timeout: `The previous execution round timed out before finishing the work${detailEn}. Please split it into smaller steps.`,
+			"timeout-repeat": `The executor has timed out for ${GoalService.EXEC_FAILED_ROUNDS_LIMIT} consecutive rounds${detailEn}; the goal loop is paused (it will not dispatch again by itself). Check the environment, then set the goal again.`,
 			canceled: `The execution was aborted manually${detailEn}; the goal loop is paused (it will not dispatch again by itself).`,
 			error: `The previous execution round hit an error${detailEn}. Please investigate before continuing.`,
+			"error-repeat": `The executor has errored for ${GoalService.EXEC_FAILED_ROUNDS_LIMIT} consecutive rounds${detailEn}; the goal loop is paused (it will not dispatch again by itself). Please investigate, then set the goal again.`,
 			"exec-gone":
 				"The executor conversation is gone (dismissed or the server restarted); its memory is lost and the loop is paused (it will not dispatch again by itself).",
+			quiesce:
+				"The server is draining (quiesce); no new rounds will be dispatched and the goal loop is paused. Resume with pi-web-ui server unquiesce, then set the goal again to continue.",
 			"review-timeout": "The review round timed out without a verdict.",
 			"review-gone": "The reviewer conversation is unavailable; no verdict was received.",
 			"review-invalid": "The review round did not produce the required JSON verdict (still missing after one retry).",

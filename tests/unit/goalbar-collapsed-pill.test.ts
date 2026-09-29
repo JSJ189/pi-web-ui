@@ -104,8 +104,8 @@ describe("目标条折叠态", () => {
 		// 定位上下文只在折叠态建（展开态保持 static：里面的 fixed 底抽屉不能被改包含块）
 		expect(bodyOf(".goalbar-slot")).toMatch(/flex:\s*none/);
 		expect(bodyOf(".goalbar-slot:has(.goalbar-collapsed)")).toMatch(/position:\s*relative/);
-		// 始终贴输入区上沿 8px：药丸不因滚动状态上抬，回到底部靠浮标自己让层
-		expect(body).toMatch(/margin:\s*0 var\(--chat-inset\) 8px/);
+		// 始终贴输入区上沿 4px：药丸不因滚动状态上抬，回到底部靠浮标自己让层
+		expect(body).toMatch(/margin:\s*0 var\(--chat-inset\) 4px/);
 		expect(CSS, "别再为回到底部上抬药丸（改成浮标自己上抬）").not.toMatch(
 			/\.main:has\(\.messages\.anchor-live\) \.goalbar-collapsed/,
 		);
@@ -119,11 +119,34 @@ describe("目标条折叠态", () => {
 		// 回到底边正中（最初的位置）
 		expect(jump).toMatch(/left:\s*50%/);
 		expect(jump).toMatch(/transform:\s*translateX\(-50%\)/);
-		expect(jump).toMatch(/bottom:\s*16px/);
-		// 药丸在场（占 8~32px）时上抬一层：同在正中，只改高度不横移
-		const lifted = bodyOf(".main:has(.goalbar-collapsed) .scroll-bottom");
-		expect(lifted).toMatch(/bottom:\s*52px/);
+		// 贴底 4px（比原来的 16px 更近；本轮只动间距，不动按钮尺寸）
+		expect(jump).toMatch(/bottom:\s*4px/);
+		// 尺寸是原件：12px 字 / 6/14 内边距 / gap 6（不许拿「缩小按钮」代替「缩间距」）
+		expect(jump).toMatch(/font-size:\s*12px/);
+		expect(jump).toMatch(/padding:\s*6px 14px/);
+		expect(jump).toMatch(/gap:\s*6px/);
+		// 药丸**浮在消息区内**时上抬一层：同在正中，只改高度不横移。
+		// 选择器必须排除「药丸已退回文档流」的两种情形（.plan-board / .dialog-inline）：
+		// 那时药丸不在消息区里，浮标却还让位 → 按钮凭空离底 ~50px、悬在正文中间
+		// （用户实报「回到底部距离太远了」）。
+		const lifted = bodyOf(
+			".main:has(.goalbar-collapsed):not(:has(.plan-board)):not(:has(.dialog-inline)) .scroll-bottom",
+		);
+		expect(lifted).toMatch(/bottom:\s*32px/);
 		expect(lifted).not.toMatch(/right:/);
+		// 药丸 24px 高 + 4px 贴边 = 占 4~28，抬 32 → 两者间距恒为 4px
+		// （不许回到 52/40 那种大片留白，也不许压到 30 以下贴上药丸）
+		const lift = Number(/bottom:\s*(\d+)px/.exec(lifted)?.[1] ?? "0");
+		expect(lift).toBe(32);
+	});
+
+	it("CSS：收起态药丸尺寸是原件（只收贴边间距，不缩药丸）", () => {
+		const hint = bodyOf(".goalbar-hint");
+		expect(hint).toMatch(/font-size:\s*12px/);
+		expect(hint).toMatch(/padding:\s*4px 10px/);
+		expect(hint).toMatch(/gap:\s*7px/);
+		// 间距归间距：药丸贴输入区上沿 8px → 4px（见 .goalbar-collapsed 的 margin）
+		expect(bodyOf(".goalbar-collapsed")).toMatch(/margin:\s*0 var\(--chat-inset\) 4px/);
 	});
 
 	it("CSS：兜底把 .goalbar 面板皮从折叠态抹掉（老 bundle/插件带回面板类也不画带子）", () => {

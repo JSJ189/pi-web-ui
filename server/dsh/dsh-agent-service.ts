@@ -37,6 +37,7 @@ import {
 	normalizeToolWatchdogTimeoutMs,
 } from "../client-state.js";
 import { normalizeUiLayout } from "../client-state.js";
+import { PLAN_MODE_SYSTEM_PROMPT } from "../plan-mode.js";
 import { FilesService, workspacePath, desktopDirWire } from "../files-service.js";
 import { QuiesceRejectedError } from "../agent-service.js";
 
@@ -2908,6 +2909,10 @@ export class DshClientSession {
 			// DSH 无「AI 生成提交信息」（scm_commitmsg 分发处直接报错），保协议完整。
 			scmCommitMsgPromptMode: "append",
 			scmCommitMsgPrompt: "",
+			// DSH 引擎不渲染计划按钮（无 customTools 注册面），保协议完整。
+			planModePromptMode: "append",
+			planModePrompt: "",
+			planModeDefaultPrompt: PLAN_MODE_SYSTEM_PROMPT,
 			reviewPrompt: this.settings.reviewPrompt,
 			reviewDisabledSkills: [],
 			disabledPlugins: this.settings.disabledPlugins,
@@ -3323,6 +3328,22 @@ export class DshClientSession {
 				textEn: `Permission switch failed: ${(err as Error).message}`,
 			});
 		}
+	}
+
+	/**
+	 * 审查者模式：DSH 不支持（无 customTools 注册面 → 工具硬闸门无处可挂，
+	 * 自动路由也没有可派发的会话通道）。明确回报而不是静默失败 ——
+	 * “点了没反应”比“用不了”更让人怀疑是不是页面坏了。
+	 */
+	async setDelegateMode(enabled: boolean): Promise<void> {
+		if (!enabled) return;
+		this.emit({
+			type: "notice",
+			level: "warning",
+			text: "审查者模式仅支持 pi 引擎（DSH 没有工具硬闸门的注册面），未开启。",
+			textEn: "Reviewer mode needs the pi engine (DSH has no tool-gate registration surface); not enabled.",
+		});
+		this.flushSnapshot();
 	}
 
 	async savePreset(name: string): Promise<void> {

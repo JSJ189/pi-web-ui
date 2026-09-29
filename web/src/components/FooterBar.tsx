@@ -27,6 +27,7 @@ const FALLBACK_BOTTOMBAR: { id: string; align: "start" | "end" }[] = [
 	{ id: "host:cache", align: "start" },
 	{ id: "host:msg-count", align: "start" },
 	{ id: "host:plugin-status", align: "start" },
+	{ id: "host:status-delegate", align: "start" },
 	{ id: "host:working", align: "start" },
 	{ id: "host:host-metrics", align: "end" },
 	{ id: "host:cwd", align: "end" },
@@ -290,6 +291,25 @@ export function FooterBar({ chat, bottombarItems, onUiAction }: FooterBarProps) 
 					{rate > 0 ? `${Math.round(rate)}${t("tps")}` : "…"}
 				</span>
 			</>
+		) : null,
+		// 审查者模式标识：开启时画一枚可点的徐标 —— 点开常驻执行对话看全文。
+		"host:status-delegate": state?.delegateMode ? (
+			<span
+				className="status-item delegate-badge"
+				title={state.delegateConvId ? t("delegateModeOpenTip") : t("delegateModeBadgeTip")}
+			>
+				🔎 {t("delegateModeBadge")}
+				{state.delegateConvId ? (
+					<button
+						type="button"
+						className="delegate-badge-open"
+						title={t("delegateModeOpenTip")}
+						onClick={() => appSend({ type: "switch_conversation", id: state.delegateConvId as string })}
+					>
+						↗
+					</button>
+				) : null}
+			</span>
 		) : null,
 		"host:host-metrics": (() => {
 			const metrics = chat.hostMetrics;

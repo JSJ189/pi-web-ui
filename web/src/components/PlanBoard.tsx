@@ -48,6 +48,14 @@ export function PlanBoard({ plan }: PlanBoardProps) {
 		}
 	};
 
+	/** 「开始实施」= 计划模式的**唯一**出口（输入框那个开关已经删掉，改为一次性
+	 *  动作按钮）：先关掉服务端只规划闸门（set_plan_mode false，排在前面才能让
+	 *  本轮在闸门外跑），再发一条实施请求让模型按看板上的计划动手。 */
+	const handleImplement = () => {
+		appSend({ type: "set_plan_mode", enabled: false });
+		appSend({ type: "prompt", text: t("planImplementRequest") });
+	};
+
 	const getStatusBadge = (status: PlanStepStatus) => {
 		switch (status) {
 			case "done":
@@ -152,6 +160,19 @@ export function PlanBoard({ plan }: PlanBoardProps) {
 				</div>
 
 				<div className="plan-board-actions">
+					{/* 计划模式下这个按钮必须显眼：它是唯一能回到“能写代码”状态的
+					    入口（闸门在服务端，且已常亮直到用户自己关）。 */}
+					<button
+						type="button"
+						className="plan-board-implement"
+						title={t("planImplementTip")}
+						onClick={(e) => {
+							e.stopPropagation();
+							handleImplement();
+						}}
+					>
+						{t("planImplementBtn")}
+					</button>
 					<button
 						type="button"
 						className="plan-board-iconbtn"

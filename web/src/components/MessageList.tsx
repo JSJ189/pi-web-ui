@@ -11,6 +11,7 @@ import { collectQuestionAttachments } from "../question-attachments";
 
 import { parseSkillBlock } from "../skill-block";
 import { CollapsedMessage } from "./CollapsedMessage";
+import { reviewFoldKind } from "../goal-review-fold";
 import { LazyMount } from "./LazyMount";
 import {
 	applyPlan,
@@ -827,6 +828,25 @@ export function MessageList({
 				{state.messages.map((m, i) => {
 					// system 不占位——旧快照残留的空 SYSTEM 气泡直接丢掉，不进折叠行也不进 LazyMount。
 					if (m.role === "system") return null;
+					// 目标审查回合的指令与纯 verdict 结论默认折叠成摘要行（结论卡已有人话
+					// 翻译，裸 JSON 只留审计入口；点开展开看原文，记忆沿用 expanded）。
+					const fold = reviewFoldKind(m);
+					if (fold && !expanded.has(m.id)) {
+						return (
+							<CollapsedMessage
+								key={m.id}
+								message={m}
+								onExpand={expand}
+								summary={
+									fold.kind === "prompt"
+										? t("goalBarReviewing")
+										: fold.verdict === "pass"
+											? t("goalBarPassed")
+											: t("goalBarFailed")
+								}
+							/>
+						);
+					}
 					const isOld = i < recentStart;
 					const isExpandedOld = isOld && expanded.has(m.id);
 					if (isOld && !isExpandedOld) {

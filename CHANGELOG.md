@@ -25,10 +25,11 @@
 
 ### i18n
 
-- 前端新增 key（9）：`goalBarMode`、`goalBarModeSelf`、`goalBarModeDelegated`、`goalBarModeSelfTip`、`goalBarModeDelegatedTip`、`goalBarExecModel`、`goalBarExecModelTip`、`goalBarOpenExec`、`goalBarOpenExecTip`
-- 前端中文变更（1）：`planBoardTitle`
-- 前端英文变更（1）：`planBoardTitle`
-- 服务端新增 key（5）：`agent.role.stop`、`goal.role.blocked`、`goal.role.exec`、`goal.role.review`、`goal.role.review.retry`
+- 前端新增 key（27）：`planImplementBtn`、`planImplementTip`、`planImplementRequest`、`planMode`、`planActionBtn`、`planActionTip`、`planModeTip`、`planModeTipOn`、`goalBarExecModel`、`goalBarExecModelTip`、`goalBarOpenExec`、`goalBarOpenExecTip`、`goalBarStaleBackend`、`goalBarStop`、`goalBarExecuting`、`goalHistory`、`delegateMode`、`delegateModeDesc`、`delegateModeOffHint`、`delegateModeBadge`、`delegateModeBadgeTip`、`delegateModeOpenTip`、`planModePromptSettingsTitle`、`planModePromptSettingsDesc`、`planModePromptMode`、`planModePromptPlaceholder`、`planModePromptSettingsHint`
+- 前端中文变更（6）：`planBoardTitle`、`goalBarPlaceholder`、`goalBarSet`、`goalBarReviewModel`、`goalBarMaxRoundsTip`、`goalWizardBtn`
+- 前端英文变更（6）：`planBoardTitle`、`goalBarPlaceholder`、`goalBarSet`、`goalBarReviewModel`、`goalBarMaxRoundsTip`、`goalWizardBtn`
+- 服务端新增 key（8）：`agent.role.stop`、`goal.role.blocked`、`goal.role.conv_title`、`goal.role.exec`、`goal.role.card.start`、`goal.role.card.result`、`goal.role.review`、`goal.role.review.retry`
+- 服务端删除 key（9）：`goal.set.kick`、`goal.wizard.kick`、`goal.review.incomplete`、`goal.autonomous.pass`、`goal.review.blocked`、`goal.autonomous.continue`、`goal.review.error`、`goal.review.blocked_msg`、`goal.review.revise`
 
 <!-- auto-i18n:end -->
 

@@ -181,7 +181,8 @@ interface SettingsModalProps {
 			exitCode: number | null;
 			command?: CommandDef;
 		}[];
-		state?: { cwd: string; conversationId: string } | null;
+		/** 轻量会话状态的窄投影（只列设置页要用的字段）。 */
+		state?: { cwd: string; conversationId: string; delegateMode?: boolean } | null;
 		activeConversationId?: string | null;
 		/** 内置定时任务（issue #184，全局列表；DSH 引擎下为空） */
 		schedulerTasks: SchedulerTaskView[];
@@ -457,6 +458,9 @@ interface SettingsPatch {
 	visionBridgePrompt?: string;
 	scmCommitMsgPromptMode?: "append" | "replace";
 	scmCommitMsgPrompt?: string;
+	planModePromptMode?: "append" | "replace";
+	planModePrompt?: string;
+	planModeDefaultPrompt?: string;
 	subagentDefaultModel?: string | null;
 	retryMaxAttempts?: number;
 	softCapTokens?: number;
@@ -576,6 +580,9 @@ export function SettingsModal({
 	const [scmMsgDraft, setScmMsgDraft] = useState("");
 	const [scmMsgMode, setScmMsgMode] = useState<"append" | "replace">("append");
 	const scmMsgFocus = useRef(false);
+	const [planModeDraft, setPlanModeDraft] = useState("");
+	const [planModeMode, setPlanModeMode] = useState<"append" | "replace">("append");
+	const planModeFocus = useRef(false);
 	// Goal-review prompt is an independent draft: it does not change the main
 	// agent system prompt and is only used by the isolated reviewer.
 	const [reviewPromptDraft, setReviewPromptDraft] = useState("");
@@ -730,8 +737,17 @@ export function SettingsModal({
 					: settings.scmCommitMsgDefaultPrompt || "",
 			);
 		}
+		// 计划模式提示词：replace 且存的是空（= 内置默认）时预填默认文本。
+		setPlanModeMode(settings.planModePromptMode);
+		if (!planModeFocus.current) {
+			setPlanModeDraft(
+				settings.planModePromptMode === "append" || settings.planModePrompt
+					? settings.planModePrompt
+					: settings.planModeDefaultPrompt || "",
+			);
+		}
 		if (!reviewPromptFocus.current) setReviewPromptDraft(settings.reviewPrompt);
-	}, [settings, vbPromptMode, scmMsgMode]);
+	}, [settings, vbPromptMode, scmMsgMode, planModeMode]);
 
 	const [idleMsDraft, setIdleMsDraft] = useState<string>(String(settings?.terminalBashIdleMs ?? 15000));
 	useEffect(() => {
@@ -1829,6 +1845,51 @@ export function SettingsModal({
 							</div>
 						)}
 
+						{/* ---- 计划模式提示词（计划模式开启时追加给模型的那一段） ---- */}
+						{tab === "prompt" && !isDsh && (
+							<div className="set-section">
+								<div className="set-section-title">
+									<FiEdit3 className="set-section-icon" />
+									{t("planModePromptSettingsTitle")}
+									<HintTip text={t("planModePromptSettingsDesc")} />
+								</div>
+								<FieldRow label={t("planModePromptMode")}>
+									<select
+										className="set-select"
+										value={planModeMode}
+										onChange={(e) => {
+											const mode = e.target.value as "append" | "replace";
+											setPlanModeMode(mode);
+											setPartial({ planModePromptMode: mode });
+										}}
+									>
+										<option value="append">{t("promptModeAppend")}</option>
+										<option value="replace">{t("promptModeReplace")}</option>
+									</select>
+								</FieldRow>
+								<textarea
+									className="set-prompt-input"
+									rows={8}
+									placeholder={t("planModePromptPlaceholder")}
+									value={planModeDraft}
+									onFocus={() => (planModeFocus.current = true)}
+									onBlur={() => {
+										planModeFocus.current = false;
+										// 与系统提示词同一契约：replace 下未改动的内置默认存空（用默认）。
+										const text =
+											planModeMode === "replace" &&
+											settings.planModeDefaultPrompt &&
+											planModeDraft === settings.planModeDefaultPrompt
+												? ""
+												: planModeDraft;
+										setPartial({ planModePromptMode: planModeMode, planModePrompt: text });
+									}}
+									onChange={(e) => setPlanModeDraft(e.target.value)}
+								/>
+								<p className="set-hint">{t("planModePromptSettingsHint")}</p>
+							</div>
+						)}
+
 						{/* ---- prompt history -------------------------------------------- */}
 						{tab === "scheduler" && !isDsh && (
 							<SchedulerPanel
@@ -2866,7 +2927,11 @@ export function SettingsModal({
 								{uiLayoutSections.map(({ slot, labelKey }) => {
 									const entries = (uiSlots[slot] ?? []).filter(
 										(e) =>
-											(isDsh || (e.id !== "host:composer-dsh-perm" && e.id !== "host:composer-dsh-preset")) &&
+											(isDsh ||
+												(e.id !== "host:composer-dsh-perm" &&
+													e.id !== "host:composer-dsh-preset" &&
+													// 计划模式靠 pi 引擎的工具硬闸门，DSH 无 customTools 注册面 → 不列。
+													e.id !== "host:goal-plan")) &&
 											!HIDDEN_FROM_LAYOUT_ITEM_IDS.has(e.id),
 									);
 									const q = uiLayoutFilter.trim().toLowerCase();
@@ -3719,6 +3784,15 @@ export function SettingsModal({
 									tip={`${t("goalModeEnabledDesc")}\n${t("goalModeOffHint")}`}
 									enabled={settings.goalModeEnabled}
 									onToggle={() => setPartial({ goalModeEnabled: !settings.goalModeEnabled })}
+								/>
+								{/* 审查者模式（会话级，默认关）：开启后本对话只审阅，用户请求由服务端
+								    转给一个常驻落盘执行对话；写类/派发类工具被服务端硬闸门拒。
+								    不是全局设置 → 直接发协议消息，不走 setPartial。 */}
+								<ToggleRow
+									title={t("delegateMode")}
+									tip={`${t("delegateModeDesc")}\n${t("delegateModeOffHint")}`}
+									enabled={chat.state?.delegateMode === true}
+									onToggle={() => appSend({ type: "set_delegate_mode", enabled: !(chat.state?.delegateMode === true) })}
 								/>
 								<textarea
 									className="set-prompt-input"

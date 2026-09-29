@@ -207,6 +207,16 @@ export interface UiState {
 	 */
 	plan?: PlanState | null;
 	/**
+	 * 当前会话是否处于计划模式（只规划不实施）。会话级开关，随快照下发；
+	 * 缺省 = false。会话无内容时恒为 false（新建对话不带过来）。
+	 */
+	planMode?: boolean;
+	/** 审查者模式（自动委派）已开：主对话只审阅，用户请求由服务端转给
+	 *  一个常驻落盘执行对话执行（会话级开关，默认关）。 */
+	delegateMode?: boolean;
+	/** 审查者模式下的常驻执行对话 id（供 UI 「打开执行对话」用；null/缺省 = 还没建）。 */
+	delegateConvId?: string | null;
+	/**
 	 * 当前对话的未发送输入框草稿（issue #166，单中心文件方案）。
 	 *  只在**全量快照**里携带（切会话 / new_chat / get_state）：增量
 	 *  snapshot_delta 永远不带 —— 同一标签页的草稿本来就是自己打的，不需要
@@ -833,6 +843,10 @@ export type ClientMessage =
 			 *  + 自定义文本（空 = 内置默认）。pi 引擎的 scm_commitmsg 生成用。 */
 			scmCommitMsgPromptMode?: "append" | "replace";
 			scmCommitMsgPrompt?: string;
+			/** 计划模式提示词：模式（append/replace，语义同 promptMode）+ 自定义
+			 *  文本（空 = 内置默认）。仅主会话计划模式注入用（硬闸门不受影响）。 */
+			planModePromptMode?: "append" | "replace";
+			planModePrompt?: string;
 			/** Extra instructions and independently disabled skills for review. */
 			reviewPrompt?: string;
 			reviewDisabledSkills?: string[];
@@ -1027,6 +1041,15 @@ export type ClientMessage =
 			steps: PlanStep[];
 			activeStepId?: string | null;
 	  }
+	/** 计划模式开关（会话级）：开启后本对话**只调研 + 出实施计划，不实施**。
+	 *  服务端在写类工具与非常规 bash 上加硬闸门（拒绝并把原因回给模型），
+	 *  并向系统提示词追加计划模式约束（先 plan_update 列步骤，再给计划正文）；
+	 *  关掉即恢复普通对话。conversationId 缺省 = 当前对话。 */
+	| { type: "set_plan_mode"; enabled: boolean; conversationId?: string }
+	/** 审查者模式开关（会话级，默认关）：开启后本对话**只审阅不施工**，用户的
+	 *  每条 prompt 由服务端转给一个常驻落盘执行对话执行；写类/派发类工具加硬闸门。
+	 *  conversationId 缺省 = 当前对话。计划模式优先（两者同开时不自动派活）。 */
+	| { type: "set_delegate_mode"; enabled: boolean; conversationId?: string }
 	/** Answer to page_request (id echoes page_request.id). `ok:false` carries a
 	 *  human-readable `error` — no browser/extension, page not allowed, or the
 	 *  action itself failed. The server never inspects `result`'s shape; it is
@@ -1400,6 +1423,26 @@ export interface GoalRoleRef {
 	convId: string;
 	/** true = 服务端拉起的角色对话（落盘普通对话，完成/清目标时可移出）。 */
 	spawned: boolean;
+	/** 执行者上次取样时是否正在跑（goal_status 下发时点的值；轮次边界刷新，非每 token）。 */
+	streaming?: boolean;
+	/** 执行者最近动态（一句话：跑什么工具 / 自述头，≤120 字；轮次边界刷新）。 */
+	activity?: string;
+	/** activity 的英文版（客户端按 locale 二选一，与 status/statusEn 同口径）。 */
+	activityEn?: string;
+}
+
+/** 一条已终结的目标（目标条「历史」下拉用；内存态，随重启丢失）。 */
+export interface GoalHistoryEntry {
+	/** 目标全文（截断 200 字）。 */
+	goal: string;
+	/** 终态：通过 / 未通过（预算用尽）/ 受阻。 */
+	verdict: "pass" | "fail" | "blocked";
+	/** 跑到的轮次。 */
+	rounds: number;
+	/** 终态原因（结论/熔断文案，截断 200 字）。 */
+	feedback: string;
+	/** 终结时间（Date.now()）。 */
+	finishedAt: number;
 }
 
 /** Current state of the goal-review loop, shown in the goal bar UI. */
@@ -1432,6 +1475,10 @@ export interface GoalStatus {
 	wizard: WizardStatus;
 	/** 2.0：循环相位。 */
 	phase?: "idle" | "executing" | "reviewing" | "blocked";
+	/** 本目标累计用量（执行者各轮 + 审查者各轮的输入/输出 token；轮次边界累计）。 */
+	usage?: { inputTokens: number; outputTokens: number };
+	/** 本对话的目标历史（终态落袋，cap 20；内存态，与目标状态同寿命；清目标不清空）。 */
+	history?: GoalHistoryEntry[];
 	/** 2.0：执行者模型（"provider/id"；null = 跟随主对话）。 */
 	execModel?: string | null;
 	/** 2.0：角色对话（审查者就是主对话，故这里只有 executor）。 */
@@ -2332,6 +2379,10 @@ export interface UiSettingsState {
 	scmCommitMsgPromptMode: "append" | "replace";
 	/** SCM「AI 生成提交信息」自定义提示词。 */
 	scmCommitMsgPrompt: string;
+	/** 计划模式提示词模式：追加/替换内置默认（空文本 = 内置默认）。 */
+	planModePromptMode: "append" | "replace";
+	/** 计划模式自定义提示词。 */
+	planModePrompt: string;
 	/** Extra instructions appended to the built-in goal-review prompt. */
 	reviewPrompt: string;
 	/** Skills disabled only for the isolated goal-reviewer. */
@@ -2358,6 +2409,8 @@ export interface UiSettingsState {
 	visionBridgeDefaultPrompt: string;
 	/** SCM「AI 生成提交信息」的内置默认提示词（设置面板 replace 模式预填用）。 */
 	scmCommitMsgDefaultPrompt: string;
+	/** 计划模式的内置默认提示词（设置面板 replace 模式预填用）。 */
+	planModeDefaultPrompt: string;
 	/** Vision-capable configured models available on this machine. */
 	visionModels: UiVisionBridgeModel[];
 	skills: UiSkillInfo[];

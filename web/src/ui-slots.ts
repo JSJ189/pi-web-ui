@@ -215,7 +215,8 @@ export function applyUiSlotCardinality<T extends { id: string; hidden: boolean }
  *                    （align=start，发送簇 align=end），与插件贡献的动作按同一顺序统一渲染。
  *                    隐藏只藏按钮（回车仍可发送）；发送簇藏掉后运行中的停止键一起消失，
  *                    需要停止时从布局页恢复。composer.leading 仍是纯插件位（无内置条目），
- *                    渲染在上传按钮左侧。
+ *                    渲染在上传按钮左侧。**计划模式不在这一槽**（已搬到 goalbar.actions
+ *                    的 host:goal-plan）。
  *   settings.pages   不列内置（按契约：这一槽位是插件专属）。
  *   v8 新增槽位：file.preview.toolbar / leftpanel.sessions / terminal.toolbar /
  *                    scm.toolbar / goalbar.actions 均已登记宿主条目（见下表），与插件贡献
@@ -523,6 +524,16 @@ export const BUILTIN_UI_ITEMS: BuiltinUiItem[] = [
 		order: 15,
 		group: "status",
 	},
+	// 审查者模式标识：开启时才画（渲染层看 state.delegateMode），点开执行对话。
+	{
+		id: "host:status-delegate",
+		slot: "bottombar",
+		labelKey: "delegateModeBadge",
+		icon: "eye",
+		kind: "badge",
+		order: 16,
+		group: "status",
+	},
 	{
 		id: "host:host-metrics",
 		slot: "bottombar",
@@ -727,6 +738,11 @@ export const BUILTIN_UI_ITEMS: BuiltinUiItem[] = [
 		order: 20,
 	},
 	{ id: "host:goal-lock", slot: "goalbar.actions", labelKey: "goalBarLocked", icon: "lock", kind: "action", order: 30 },
+	// 计划模式（会话级「只规划不实施」）：从输入框工具条搬进目标条 —— 它是
+	// 「拿用户输入去规划」的前置开关，与目标同属一条语义线，所以只挂在**展开行**
+	// （编辑行），不进折叠药丸。目标模式被关掉（goalModeEnabled=false）时整条
+	// 目标区不渲染，它也跟着一起隐藏。
+	{ id: "host:goal-plan", slot: "goalbar.actions", labelKey: "planMode", icon: "list", kind: "action", order: 25 },
 	{
 		id: "host:goal-collapse",
 		slot: "goalbar.actions",

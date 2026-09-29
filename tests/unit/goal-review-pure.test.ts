@@ -9,8 +9,8 @@
 import { describe, it, expect } from "vitest";
 import { parseReviewerVerdict, buildDiffFingerprint, GIT_DIFF_CAP } from "../../server/goal-service.js";
 
-describe("审查 verdict 解析（平衡 {...} 优先，正则兜底）", () => {
-	it("从围栏/闲话包裹中提取第一个平衡 JSON 对象", () => {
+describe("审查 verdict 解析（平衡 {...} 全扫、最后一个合法胜出，正则兜底）", () => {
+	it("从围栏/闲话包裹中提取唯一的平衡 JSON 对象", () => {
 		const raw = '好的，我的结论如下：\n```json\n{"verdict":"pass","feedback":"所有验收点都满足"}\n```\n以上。';
 		expect(parseReviewerVerdict(raw)).toEqual({ verdict: "pass", feedback: "所有验收点都满足" });
 	});
@@ -31,6 +31,17 @@ describe("审查 verdict 解析（平衡 {...} 优先，正则兜底）", () => 
 	it("非合法 JSON（单引号）落到旧正则兜底", () => {
 		const raw = `{ verdict: 'pass', feedback: 'fine' } {"verdict":"pass","feedback":"真的通过"}`;
 		expect(parseReviewerVerdict(raw)).toEqual({ verdict: "pass", feedback: "真的通过" });
+	});
+
+	it("多个合法 verdict 并存时取最后一个（模型先复述示例再给结论不假通过）", () => {
+		const raw =
+			'示例：{"verdict":"pass","feedback":"满足了什么"}\n' + '我的结论：{"verdict":"fail","feedback":"还差单测"}';
+		expect(parseReviewerVerdict(raw)).toEqual({ verdict: "fail", feedback: "还差单测" });
+	});
+
+	it("正则兜底同样以后出现者为准（尾逗号导致 JSON.parse 全失败时）", () => {
+		const raw = '{"verdict":"pass","feedback":"a",} {"verdict":"fail","feedback":"b",}';
+		expect(parseReviewerVerdict(raw)).toEqual({ verdict: "fail", feedback: "b" });
 	});
 
 	it("完全无 JSON → undefined（调用方按 fail+原文兜底）", () => {

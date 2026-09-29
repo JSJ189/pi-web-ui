@@ -100,6 +100,8 @@ import {
 	GoalService,
 	buildDiffFingerprint,
 	extractErrorSnippetFromSession,
+	lastToolNameOfSession,
+	type GoalConversation,
 	type RoleWaitOutcome,
 } from "./goal-service.js";
 import { MarkerService } from "./marker-service.js";
@@ -135,6 +137,11 @@ import {
 	type ToolApprovalResolution,
 } from "./tool-approval.js";
 import { PlanManager } from "./plan-manager.js";
+import { buildPlanModePrompt, planModeDenial, planModeNoticeText } from "./plan-mode.js";
+import { DELEGATION_SYSTEM_PROMPT, delegationDenial, delegateNoticeText } from "./delegate-mode.js";
+import { goalReviewDenial, shouldDeferPromptForReview } from "./goal-review-gate.js";
+import { readPlanModeFromSession } from "./permission-preset.js";
+import { readDelegateModeFromSession } from "./permission-preset.js";
 
 import {
 	applyHeadTail,
@@ -494,6 +501,97 @@ export type AskApprovalFn = (
 	conversationId?: string,
 	category?: UiApprovalCategory,
 ) => Promise<ToolApprovalResolution>;
+
+/**
+ * 计划模式闸门装饰（通用）：套在任何工具定义外层，只在**执行前**判定一次。
+ * 与权限沙箱/插件守卫平行且更靠外 —— 计划模式是会话级硬约束，不给任何
+ * 「记住同类/全部允许」的口子（允许了就等于放开了实施）。
+ * 关闭时零开销（返回原定义，不包 execute）。
+ */
+export function withPlanModeGate(
+	def: ToolDefinition,
+	planMode: () => boolean,
+	getLang: () => ServerLang,
+): ToolDefinition {
+	return {
+		...def,
+		execute: (async (...args: unknown[]) => {
+			if (planMode()) {
+				const params = args[1];
+				const denied = planModeDenial(def.name, params);
+				if (denied) {
+					return {
+						content: [{ type: "text", text: pick(getLang(), denied.reason, denied.reasonEn) }],
+						details: { guardDenied: true, planModeDenied: true, kind: denied.kind },
+						isError: true,
+					} as never;
+				}
+			}
+			return (def.execute as (...a: unknown[]) => unknown)(...args);
+		}) as ToolDefinition["execute"],
+	};
+}
+
+/**
+ * 目标审查回合闸门（server/goal-review-gate.ts）：主对话在 `awaitingVerdict`
+ * 置位期间是审查者 —— 写类工具、非常规 bash、派发类工具、向用户提问一律拒。
+ * 形状与 withPlanModeGate / withDelegationGate 同构，串在最外层（理由最贴合
+ * 此刻：跟模型说「这是审查回合」比「这是计划/审查者模式」更有用）。闸门无状态
+ * （每次执行只读 `awaitingVerdict`），verdict 落定即自动恢复，不存在钉死。
+ */
+export function withGoalReviewGate(
+	def: ToolDefinition,
+	reviewTurn: () => boolean,
+	getLang: () => ServerLang,
+): ToolDefinition {
+	return {
+		...def,
+		execute: (async (...args: unknown[]) => {
+			if (reviewTurn()) {
+				const params = args[1];
+				const denied = goalReviewDenial(def.name, params);
+				if (denied) {
+					return {
+						content: [{ type: "text", text: pick(getLang(), denied.reason, denied.reasonEn) }],
+						details: { guardDenied: true, goalReviewDenied: true, kind: denied.kind },
+						isError: true,
+					} as never;
+				}
+			}
+			return (def.execute as (...a: unknown[]) => unknown)(...args);
+		}) as ToolDefinition["execute"],
+	};
+}
+
+/**
+ * 审查者模式闸门（server/delegate-mode.ts）：主对话只审阅不施工 ——
+ * 写类工具、非常规 bash、派发类工具一律拒。形状与 withPlanModeGate 同构，
+ * 串在它**外层**（两者都开时，先问计划模式还是审查者模式都不影响结果：
+ * 都是拒，只是理由不同）。
+ */
+export function withDelegationGate(
+	def: ToolDefinition,
+	delegateMode: () => boolean,
+	getLang: () => ServerLang,
+): ToolDefinition {
+	return {
+		...def,
+		execute: (async (...args: unknown[]) => {
+			if (delegateMode()) {
+				const params = args[1];
+				const denied = delegationDenial(def.name, params);
+				if (denied) {
+					return {
+						content: [{ type: "text", text: pick(getLang(), denied.reason, denied.reasonEn) }],
+						details: { guardDenied: true, delegateDenied: true, kind: denied.kind },
+						isError: true,
+					} as never;
+				}
+			}
+			return (def.execute as (...a: unknown[]) => unknown)(...args);
+		}) as ToolDefinition["execute"],
+	};
+}
 
 /**
  * 给已接管工具（bash/read）包上拦截守卫与人机协同审批：
@@ -1723,6 +1821,16 @@ export interface Conversation {
 	presetLocked?: boolean;
 	/** 权限预设值（read-only/workspace-write-never/danger-full-access）。 */
 	permissionPreset?: string;
+	/** 计划模式（只规划不实施）：写类工具与非常规 bash 被服务端拒，提示词追加
+	 *  计划模式约束。随会话转录落盘（切会话/重载恢复），过户随对话本体搬走。 */
+	planMode?: boolean;
+	/** 审查者模式（自动委派，默认关）：主对话只审阅，用户每条 prompt 由服务端
+	 *  转给 `delegateConvId` 那个常驻落盘执行对话执行；写类/派发类工具被拒。
+	 *  布尔随会话转录落盘（delegate/mode，回放同 planMode）；执行对话 id 只在
+	 *  本进程内有效（重启后首条请求重建），不落盘。 */
+	delegateMode?: boolean;
+	/** 常驻执行对话 id（仅本进程；null/缺省 = 还没建）。 */
+	delegateConvId?: string | null;
 	/** 临时会话（inMemory，不落盘、不进历史、不占持久会话名额）。 */
 	isEphemeral?: boolean;
 	/** 本对话的审批放行策略（仅内存，不落盘）：allowAll = 「本对话全部允许」，
@@ -1741,7 +1849,6 @@ export interface Conversation {
 	/** Independent goal/review state for this conversation. */
 	goal: GoalStatus;
 	goalGeneration: number;
-	goalReviewGeneration: number;
 	/** Wizard execution is per conversation; dialog transport itself remains
 	 * client-wide because the browser can display one dialog at a time. */
 	wizardRunning: boolean;
@@ -3606,6 +3713,10 @@ export class ClientSession {
 					markers: this.markerSvc.listForUi(),
 				}),
 				getApprovalPolicy: () => this.approvalPolicyState(),
+				// 目标模式总开关关闭 → 在飞的目标/调研立即停（幂等；无在飞目标时无声）。
+				onGoalModeDisabled: () => {
+					void this.goalSvc.stopAllGoals();
+				},
 			},
 			this.subagentTemplates,
 			this.approvalRules,
@@ -3628,6 +3739,16 @@ export class ClientSession {
 			getConv: (id) => this.convs.get(id),
 			cwd: () => this.cwd,
 			gitDiff: (dir) => this.gitDiff(dir),
+			// 工作区 git 可用性（目标模式停滞判定的可信信号开关）：非仓库目录下
+			// git diff 恒为空，取样会跳过停滞计数，纯问答类目标不再被误熔断。
+			isGitRepo: async (cwd) => {
+				try {
+					const r = await this.runAsync("git", ["rev-parse", "--is-inside-work-tree"], 5_000, cwd || this.cwd);
+					return r.code === 0;
+				} catch {
+					return false;
+				}
+			},
 			// ---- 目标模式 2.0 的角色对话桥（唯一审查/执行路径）----
 			// 复用子代理通道（同一套模板/模型/思考强度/配额/左栏展示），但角色对话**落盘**
 			// （persist=true）：转录进历史、服务重启后仍可打开回看。
@@ -3670,7 +3791,36 @@ export class ClientSession {
 				} catch {
 					text = "";
 				}
-				return { text, errorSnippet: extractErrorSnippetFromSession(conv.session, text) };
+				// 执行者 vitals（目标条实时进度 + 用量累计用；轮次边界才读一次，
+				// getSessionStats 会遍历转写，不在高频路径上调）。
+				let streaming: boolean | undefined;
+				let lastTool: string | undefined;
+				let usage: { input: number; output: number } | undefined;
+				try {
+					streaming = conv.session.isStreaming;
+				} catch {
+					streaming = undefined;
+				}
+				try {
+					lastTool = lastToolNameOfSession(conv.session);
+				} catch {
+					lastTool = undefined;
+				}
+				try {
+					const t = conv.session.getSessionStats()?.tokens;
+					if (t && typeof t.input === "number" && typeof t.output === "number") {
+						usage = { input: t.input, output: t.output };
+					}
+				} catch {
+					usage = undefined;
+				}
+				return {
+					text,
+					errorSnippet: extractErrorSnippetFromSession(conv.session, text),
+					streaming,
+					lastTool,
+					usage,
+				};
 			},
 			stopRoleAgent: async (convId) => {
 				const conv = this.convs.get(convId);
@@ -3858,6 +4008,21 @@ export class ClientSession {
 							out.push(pickTemplatePrompt(apply, this.getLang()));
 						}
 						// 主会话自定义「追加」已并入组合模板的 {{append}} 覆盖，不再在此注入。
+						// 计划模式：只规划不实施 —— 硬闸门（server/plan-mode.ts 拒写类/旁路
+						// 工具与非常规 bash）之外再补一段软约束，每轮重建提示词时读当前
+						// 会话状态，切换后下一次 reload 生效。提示词正文可在设置面板改
+						// （追加/替换内置默认，见 buildPlanModePrompt）。
+						// ⚠️ 这一段与平台无关（曾在 win32 分支里被误嵌套，导致非 Windows
+						// 上计划模式的软约束从来没进过提示词，只有硬闸门在挡）。
+						if (this.planModeOf(ownerId)) {
+							const planPrefs = this.settingsSvc.current;
+							out.push(buildPlanModePrompt(planPrefs.planModePromptMode, planPrefs.planModePrompt));
+						}
+						// 审查者模式（自动委派）：本对话只审阅，活由服务端派给常驻执行对话。
+						// 与计划模式**互斥优先级**：计划模式开着时以计划模式为准，不派活。
+						if (this.delegateModeOf(ownerId) && !this.planModeOf(ownerId)) {
+							out.push(DELEGATION_SYSTEM_PROMPT);
+						}
 						if (process.platform === "win32") {
 							// Windows 专属 persona：bash 工具跑 Git Bash 且无默认超时、终端
 							// 是交互式 TTY——注入约束避免 heredoc/交互/长驻命令挂死整个会话；
@@ -4035,6 +4200,8 @@ export class ClientSession {
 				// 覆盖 SDK 内置 bash（customTools 按 name 覆盖）。双实现分流：
 				// 「默认 bash 覆盖」开关（terminalBash）关 → 原生 SDK bash（纯进程、不开终端）；
 				// 开 → 终端接管 bash（persist 决定一次性/持久，可静默自动转后台）。
+				// 整列工具统一过计划模式闸门（只规划不实施，写类/旁路工具执行前拒），
+				// read/write/edit 三处覆盖在会话建好后另注入（见 installToolOverrides）。
 				customTools: [
 					// P1-5：bash/read 包插件拦截（pre 拒/问即拦、post 脱敏补上下文；
 					// 未注入 toolGuard 时 withToolGuard 原样返回，零开销）。
@@ -4079,6 +4246,16 @@ export class ClientSession {
 					),
 					...makePersistentTerminalTools(terminals, effectiveCwd, () => this.getLang(), {
 						checkSafety: (cmd) => {
+							// 计划模式：终端只放行只读命令（常驻终端也走这条，与 bash 覆盖同口径）。
+							if (this.planModeOf(ownerId)) {
+								const denied = planModeDenial("bash", { command: cmd });
+								if (denied) return { blocked: true, reason: denied.reason };
+							}
+							// 目标审查回合：常驻终端同样只放只读命令（审查者跑测试可以，改文件不行）。
+							if (this.goalReviewTurnOf(ownerId)) {
+								const denied = goalReviewDenial("bash", { command: cmd });
+								if (denied) return { blocked: true, reason: denied.reason };
+							}
 							const perm =
 								(ownerId ? this.convs.get(ownerId)?.permissionPreset : undefined) ??
 								this.settingsSvc.current.defaultPermissionPreset ??
@@ -4112,19 +4289,32 @@ export class ClientSession {
 					// 扩展加载顺序无关，直接塞进来会静默顶掉第三方扩展注册的同名工具（见
 					// tool-overrides.ts）；它们改在会话建好后由 installToolOverrides 注入。
 					// 不覆盖内置 edit 的独立宽松编辑工具（缩进不敏感匹配；开关看设置；带权限沙箱拦截与人机协同）。
-					wrapEditSoftToolWithPermission(
-						makeEditSoftTool(effectiveCwd, () => this.getLang()),
-						effectiveCwd,
-						() =>
-							(ownerId ? this.convs.get(ownerId)?.permissionPreset : undefined) ??
-							this.settingsSvc.current.defaultPermissionPreset ??
-							"workspace-write-never",
-						() => this.roots,
+					// 目标审查闸门包在最外层：审查回合的理由最贴合此刻（跟模型说「这是审查回合」）。
+					withGoalReviewGate(
+						withDelegationGate(
+							withPlanModeGate(
+								wrapEditSoftToolWithPermission(
+									makeEditSoftTool(effectiveCwd, () => this.getLang()),
+									effectiveCwd,
+									() =>
+										(ownerId ? this.convs.get(ownerId)?.permissionPreset : undefined) ??
+										this.settingsSvc.current.defaultPermissionPreset ??
+										"workspace-write-never",
+									() => this.roots,
+									() => this.getLang(),
+									(toolCallId, toolName, params, reason, reasonEn, convId, category) =>
+										this.askApproval(toolCallId, toolName, params, reason, reasonEn, convId, category),
+									() => ownerId,
+									() => this.approvalRules.list(),
+								),
+								() => this.planModeOf(ownerId),
+								() => this.getLang(),
+							),
+							() => this.delegateModeOf(ownerId),
+							() => this.getLang(),
+						),
+						() => this.goalReviewTurnOf(ownerId),
 						() => this.getLang(),
-						(toolCallId, toolName, params, reason, reasonEn, convId, category) =>
-							this.askApproval(toolCallId, toolName, params, reason, reasonEn, convId, category),
-						() => ownerId,
-						() => this.approvalRules.list(),
 					),
 					// 插件注册的 AI 工具（创建时刻的实时快照，已按 disabledPluginTools 过滤；
 					// 后续注册经 refreshPluginTools 动态补入已有会话）。
@@ -4217,7 +4407,24 @@ export class ClientSession {
 					makePatchTool({ cwd: effectiveCwd, ownerId }),
 					// 原生语言服务器工具（lsp，定义跳转/引用/悬停/诊断）。
 					makeLspTool({ cwd: effectiveCwd, ownerId }),
-				],
+				].map((t) =>
+					// 目标审查闸门在最外层（理由最贴合此刻）；插件工具也在这个数组里，
+					// 创建时注册的同样被闸门覆盖（后续动态补入的走 syncPluginTools，与
+					// 计划/审查者闸门同口径不在覆盖面，见 goal-review-gate.ts 头注）。
+					withGoalReviewGate(
+						withDelegationGate(
+							withPlanModeGate(
+								t,
+								() => this.planModeOf(ownerId),
+								() => this.getLang(),
+							),
+							() => this.delegateModeOf(ownerId),
+							() => this.getLang(),
+						),
+						() => this.goalReviewTurnOf(ownerId),
+						() => this.getLang(),
+					),
+				),
 			});
 			// 桥接工具归属锚点：SDK 会话对象在本 runtime 生命周期内稳定，过户只搬对话
 			// 不改它（见 ClientSession.findConversationHome）。
@@ -4266,6 +4473,8 @@ export class ClientSession {
 				readPermissionFromSession(runtime.session.sessionManager) ??
 				this.settingsSvc.current.defaultPermissionPreset ??
 				"workspace-write-never",
+			planMode: readPlanModeFromSession(runtime.session.sessionManager) === true,
+			delegateMode: readDelegateModeFromSession(runtime.session.sessionManager) === true,
 			// A brand-new conversation is not yet LISTED — it enters the running
 			// list only when it is displaced to the background while still
 			// streaming (its runtime is what `listed` protects). A blank chat is
@@ -4279,7 +4488,6 @@ export class ClientSession {
 			stallNoticed: false,
 			goal: this.makeGoalStatus(),
 			goalGeneration: 0,
-			goalReviewGeneration: 0,
 			wizardRunning: false,
 			deltaSeq: 0,
 			terminals,
@@ -5664,6 +5872,12 @@ export class ClientSession {
 			pendingQuestion: this.pendingQuestionForSnapshot(),
 			pendingApproval: this.pendingApprovalForSnapshot(),
 			plan: this.planManager.getPlan(this.activeId),
+			// 计划模式是**会话级**开关：快照恒给布尔（不用 undefined），否则
+			// snapshot_delta 里 key 缺席 → 前端 spread 合并会残留上一对话的 true。
+			planMode: conv?.planMode === true,
+			// 审查者模式同样是**会话级**：布尔恒给（理由同 planMode），另带执行对话 id。
+			delegateMode: conv?.delegateMode === true,
+			delegateConvId: conv?.delegateConvId ?? null,
 			subagentHandoffs: this.subagentHandoffs.length > 0 ? [...this.subagentHandoffs] : undefined,
 			agentPreset: conv
 				? {
@@ -7368,27 +7582,46 @@ export class ClientSession {
 			getRules: () => this.approvalRules.list(),
 		};
 		// 写/编的权限沙箱包装：同一个函数，有扩展同名工具时把它的定义当基底（末参）。
-		const composeWrite = (base?: AnyToolDefinition): ToolDefinition =>
-			wrapWriteToolWithPermission(
-				cwd,
-				currentPermission,
-				() => this.roots,
+		// 目标审查闸门包在**最外层**（权限沙箱之前）：审查回合只读核实，写类直接拒。
+		const planGate = (def: ToolDefinition): ToolDefinition =>
+			withGoalReviewGate(
+				withDelegationGate(
+					withPlanModeGate(
+						def,
+						() => this.planModeOf(ownerId),
+						() => this.getLang(),
+					),
+					() => this.delegateModeOf(ownerId),
+					() => this.getLang(),
+				),
+				() => this.goalReviewTurnOf(ownerId),
 				() => this.getLang(),
-				approve,
-				() => ownerId,
-				() => this.approvalRules.list(),
-				base,
+			);
+		const composeWrite = (base?: AnyToolDefinition): ToolDefinition =>
+			planGate(
+				wrapWriteToolWithPermission(
+					cwd,
+					currentPermission,
+					() => this.roots,
+					() => this.getLang(),
+					approve,
+					() => ownerId,
+					() => this.approvalRules.list(),
+					base,
+				),
 			);
 		const composeEdit = (base?: AnyToolDefinition): ToolDefinition =>
-			wrapEditToolWithPermission(
-				cwd,
-				currentPermission,
-				() => this.roots,
-				() => this.getLang(),
-				approve,
-				() => ownerId,
-				() => this.approvalRules.list(),
-				base,
+			planGate(
+				wrapEditToolWithPermission(
+					cwd,
+					currentPermission,
+					() => this.roots,
+					() => this.getLang(),
+					approve,
+					() => ownerId,
+					() => this.approvalRules.list(),
+					base,
+				),
 			);
 		return [
 			{
@@ -7551,6 +7784,204 @@ export class ClientSession {
 			textEn: `Current session permission switched to "${hit.name}"`,
 		});
 		this.flushSnapshot();
+	}
+
+	/** 该会话是否处于计划模式（ownerId 缺省 = 当前对话）。 */
+	private planModeOf(ownerId: string | undefined): boolean {
+		const id = ownerId ?? this.activeId;
+		return this.convs.get(id)?.planMode === true;
+	}
+
+	/** 审查者模式（自动委派）是否对该 runtime 所属会话开着。 */
+	private delegateModeOf(ownerId: string | undefined): boolean {
+		const id = ownerId ?? this.activeId;
+		return this.convs.get(id)?.delegateMode === true;
+	}
+
+	/** 该会话是否正在跑目标审查回合（awaitingVerdict 置位）：是则写类 / 派发类工具
+	 *  走目标审查闸门（server/goal-review-gate.ts）。ownerId 恒为会话 id（创建时传入），
+	 *  缺省才回退活动对话 —— 与 planModeOf / delegateModeOf 同口径。 */
+	private goalReviewTurnOf(ownerId: string | undefined): boolean {
+		const id = ownerId ?? this.activeId;
+		return (this.convs.get(id) as unknown as GoalConversation | undefined)?.awaitingVerdict != null;
+	}
+
+	/**
+	 * 切换审查者模式（会话级，默认关）。
+	 *  开启后：① 本对话只审阅（写类/派发类工具硬闸门 + 提示词段）；② 用户发的每条
+	 *  prompt 由服务端转给一个**常驻落盘执行对话**执行。计划模式优先（两者同开不派活）。
+	 */
+	async setDelegateMode(enabled: boolean, conversationId?: string): Promise<void> {
+		const target = conversationId ? this.convs.get(conversationId) : this.conv;
+		if (!target) return;
+		if (target.delegateMode === enabled) {
+			this.flushSnapshot();
+			return;
+		}
+		target.delegateMode = enabled;
+		if (!enabled) target.delegateConvId = null; // 关闭后不再指向旧执行对话
+		try {
+			// 与 plan/mode 同口径写进转录：切会话/重载能回放（布尔），执行对话 id 不落盘。
+			const sm = target.session.sessionManager as unknown as {
+				appendCustomEntry?: (customType: string, data: unknown) => void;
+			};
+			sm?.appendCustomEntry?.("delegate/mode", { enabled });
+		} catch {
+			// best effort for in-memory sessions
+		}
+		const notice = delegateNoticeText(enabled);
+		this.emit({ type: "notice", level: "info", text: notice.text, textEn: notice.textEn });
+		this.flushSnapshot();
+		// 提示词段随之增减（下一轮生效）；失败不阻断（硬闸门仍拦得住）。
+		try {
+			await target.session.reload?.();
+		} catch {
+			// best effort
+		}
+	}
+
+	/**
+	 * 自动路由：把本轮用户输入转给常驻执行对话执行（审查者模式的干活路径）。
+	 *  返回 true = 已接管（调用方不要再跑主会话的模型）；false = 没收走（走正常路径）。
+	 *
+	 *  与计划模式互斥：计划模式开着时**不派活**（那边已把 spawn/旁路工具全拒，
+	 *  再自动派活就是死锁），由计划模式那一轮自己在主对话里出计划。
+	 */
+	private async dispatchToDelegate(conv: Conversation, text: string): Promise<boolean> {
+		if (conv.delegateMode !== true) return false;
+		if (conv.planMode === true) return false; // 计划模式优先
+		if (this.quiesceBlocked()) return false;
+		const trimmed = text.trim();
+		if (!trimmed) return false;
+		let execId = conv.delegateConvId;
+		if (execId && !this.convs.get(execId)?.session) execId = null;
+		// 首轮：第一条 prompt 直接交给 spawnSubagentConversation（它会跑起这一轮）——
+		// **不要再 sendUserMessage 一次**，否则执行对话正在处理中，第二次投递会被
+		// SDK 拒（"Agent is already processing a prompt"）。之后每轮才走追加投递。
+		const firstTurn = !execId;
+		if (firstTurn) {
+			try {
+				// 常驻执行对话：落盘普通对话（进历史、可续聊），与目标模式的执行对话同一通道。
+				// 满员（项目 8 个普通对话）→ 抛错 → 下面提示用户，不会静默把活留在主对话。
+				execId = await this.spawnSubagentConversation(
+					trimmed,
+					"delegate-executor",
+					conv.cwd ?? this.cwd,
+					undefined,
+					null,
+					conv.id,
+					true,
+				);
+				const execConv = this.convs.get(execId);
+				if (execConv) execConv.title = pick(this.getLang(), "委派执行", "Delegate executor");
+				conv.delegateConvId = execId;
+			} catch (err) {
+				const msg = err instanceof Error ? err.message : String(err);
+				this.emit({
+					type: "notice",
+					level: "error",
+					text: `审查者模式：无法创建执行对话（${msg}）。请关闭审查者模式，或先释放一些对话名额。`,
+					textEn: `Reviewer mode: could not create the executor conversation (${msg}). Turn reviewer mode off, or free up some conversation slots first.`,
+				});
+				this.flushSnapshot();
+				return false;
+			}
+		} else {
+			const execConv = this.convs.get(execId as string);
+			if (!execConv?.session) return false;
+			try {
+				await execConv.session.sendUserMessage(
+					trimmed,
+					execConv.session.isStreaming ? { deliverAs: "steer" } : undefined,
+				);
+			} catch (err) {
+				const msg = err instanceof Error ? err.message : String(err);
+				this.emit({
+					type: "notice",
+					level: "error",
+					text: `审查者模式：派活失败（${msg}）`,
+					textEn: `Reviewer mode: dispatch failed (${msg})`,
+				});
+				this.flushSnapshot();
+				return false;
+			}
+		}
+		this.emit({
+			type: "notice",
+			level: "info",
+			text: `🔎 已派给执行对话：${trimmed.slice(0, 120)}${trimmed.length > 120 ? "…" : ""}（本对话只审阅）`,
+			textEn: `🔎 Dispatched to the executor conversation: ${trimmed.slice(0, 120)}${trimmed.length > 120 ? "…" : ""} (this conversation reviews only)`,
+		});
+		this.flushSnapshot();
+		// 执行对话跑完 → 回报主对话（只通知，不自动验收：验收由人/主对话下一轮做）。
+		void this.notifyWhenDelegateFinishes(conv, execId as string);
+		return true;
+	}
+
+	/** 等常驻执行对话这一轮结束，回主对话一条通知（带它的最后一条回复摘要）。 */
+	private async notifyWhenDelegateFinishes(conv: Conversation, execId: string): Promise<void> {
+		try {
+			await this.waitConversationTurnEnd(execId, 30 * 60 * 1000);
+		} catch {
+			// 超时/取消：仍给一条「执行对话还没结束」的弱提示，避免主对话永远静默。
+		}
+		const execConv = this.convs.get(execId);
+		if (!execConv) return;
+		const last = [...(execConv.session.agent.state.messages as { role?: string; content?: unknown }[])]
+			.reverse()
+			.find((m) => m.role === "assistant");
+		const summary =
+			typeof last?.content === "string" ? last.content : JSON.stringify(last?.content ?? "").slice(0, 400);
+		this.emit({
+			type: "notice",
+			level: "info",
+			text: `✅ 执行对话已交付，请审阅：${summary.slice(0, 300)}${summary.length > 300 ? "…" : ""}（左栏「委派执行」可打开看全文）`,
+			textEn: `✅ The executor conversation delivered — review it: ${summary.slice(0, 300)}${summary.length > 300 ? "…" : ""} (open “Delegate executor” in the sidebar for the full transcript)`,
+		});
+		this.flushSnapshot();
+	}
+
+	/**
+	 * 切换计划模式（会话级，只规划不实施）。
+	 *  软约束（系统提示词段）+ 硬闸门（写类/旁路工具与非常规 bash 直接拒）双管：
+	 *  状态随会话转录落盘（切会话/重载恢复），并即时提示用户当前口径。
+	 */
+	async setPlanMode(enabled: boolean, conversationId?: string): Promise<void> {
+		const target = conversationId ? this.convs.get(conversationId) : this.conv;
+		if (!target) return;
+		if (target.planMode === enabled) {
+			this.flushSnapshot();
+			return;
+		}
+		target.planMode = enabled;
+		try {
+			// 持久会话：写入转录日志，切会话/重载后回放恢复（与 permission/preset 同口径）。
+			const sm = target.session.sessionManager as unknown as {
+				appendCustomEntry?: (customType: string, data: unknown) => void;
+			};
+			sm?.appendCustomEntry?.("plan/mode", { enabled });
+		} catch {
+			// best effort for in-memory sessions
+		}
+		// 计划模式有会话准入校验（空白对话也能开，但快照要立刻反映按钮态）。
+		const notice = planModeNoticeText(enabled);
+		this.emit({ type: "notice", level: "info", text: notice.text, textEn: notice.textEn });
+		this.flushSnapshot();
+		// 提示词段随之增减：重建资源让下一轮就带上/去掉计划模式约束。
+		void this.reloadPromptForPlanMode(target);
+	}
+
+	/**
+	 * 提示词重建：切换计划模式后需要让**下一轮**带上/去掉计划模式段
+	 * （appendSystemPromptOverride 在资源加载重放时取值）。会话空闲时即时
+	 * 重建，用户下一句就生效；重建失败不阻断（硬闸门仍然拦得住）。
+	 */
+	private async reloadPromptForPlanMode(conv: Conversation): Promise<void> {
+		try {
+			await conv.session.reload?.();
+		} catch {
+			// best effort：某些引擎/临时态不支持 reload
+		}
 	}
 
 	/** 设置新会话默认权限预设。 */
@@ -7891,6 +8322,57 @@ export class ClientSession {
 		const conv = this.conv;
 		const promptAc = new AbortController();
 		conv.activePromptAc = promptAc;
+		// 审查者模式（自动委派）：本对话只审阅 —— 用户这条 prompt 直接转给常驻执行
+		// 对话执行，主会话这一轮**不跑模型**。接在 promptAc 之后、draft 清理之前：
+		// 转走的内容不该把主对话的草稿也清掉（用户可能还想在主对话里追一句）。
+		// 计划模式优先（那边直接返回 false）。
+		if (await this.dispatchToDelegate(conv, text)) {
+			conv.presetLocked = true;
+			return;
+		}
+		// 目标审查回合进行中：纯文本插话顺延到 verdict 落定后（steer 进去会污染
+		// verdict，一次插话烧掉整个目标；followUp 由 SDK 排在整轮结束后才送达，
+		// 本来就安全所以只拦 steer）。斜杠命令直通（原生配置类不进模型）；带附件 /
+		// 图片的不顺延（附件引用只在发送瞬间有效）→ 响亮拒绝，草稿保留在输入框。
+		// 判定抽成纯函数（server/goal-review-gate.ts），单测见 goal-review-gate.test.ts。
+		if (
+			shouldDeferPromptForReview({
+				queue,
+				text,
+				hasAttachments: !!attachments && attachments.length > 0,
+				awaitingVerdict: (conv as unknown as GoalConversation | undefined)?.awaitingVerdict != null,
+			})
+		) {
+			const gc = conv as unknown as GoalConversation;
+			(gc.deferredPrompts ??= []).push(text);
+			this.emit({
+				type: "notice",
+				level: "info",
+				text: "审查回合进行中，你的消息已排队（审查结束后自动发送，不会打断审查）。",
+				textEn:
+					"A review round is running; your message is queued and will be sent automatically when it ends (without interrupting the review).",
+			});
+			this.flushSnapshot();
+			return;
+		}
+		if (
+			!queue &&
+			!text.trim().startsWith("/") &&
+			!!attachments &&
+			attachments.length > 0 &&
+			(conv as unknown as GoalConversation | undefined)?.awaitingVerdict != null
+		) {
+			// 带附件的插话不顺延也不 steer：直接拒绝，用户稍后重发（草稿还在输入框）。
+			this.emit({
+				type: "notice",
+				level: "warning",
+				text: "审查回合进行中：带附件/图片的消息请等审查结束后再发（文本草稿已保留）。",
+				textEn:
+					"A review round is running; please resend messages with attachments/images after it ends (your draft is kept).",
+			});
+			this.flushSnapshot();
+			return;
+		}
 		// 输入框内容被消费（发送/斜杠执行）→ 清掉该会话存过的草稿（best-effort）。
 		// 快捷短语发送（不碰输入框）同样清：客户端发送成功后会把当前草稿重存回来。
 		// clear() 同时记录 clear 时间戳水位：清掉之后才 landing 的旧 draft_update

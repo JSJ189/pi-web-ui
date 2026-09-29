@@ -34,6 +34,7 @@ import {
 import { normalizeSoftCapByModel, normalizeSoftCapTokens } from "./soft-cap.js";
 import { findVisionModels, SYSTEM_PROMPT } from "./vision-bridge.js";
 import { COMMITMSG_SYSTEM_PROMPT } from "./scm-commitmsg.js";
+import { PLAN_MODE_SYSTEM_PROMPT } from "./plan-mode.js";
 import { DEFAULT_TEMPLATES, type SubagentTemplatesStore } from "./subagent-templates.js";
 import type { ApprovalRulesStore } from "./approval-rules.js";
 import { deriveLegacy, foldLegacyIntoDisabled, normalizeDisabledAgentTools } from "./tool-manager.js";
@@ -80,6 +81,8 @@ export interface SettingsHost {
 	/** 可选：当前对话的审批放行策略（「本对话全部允许 / 允许同类」的撤销区用；
 	 *  纯内存态，见 server/tool-approval.ts 的 ApprovalPolicy）。 */
 	getApprovalPolicy?: () => UiApprovalPolicyState;
+	/** 可选：目标模式总开关 on→off 时调 —— 停掉在飞的目标/调研（否则循环照跑照派）。 */
+	onGoalModeDisabled?: () => void;
 }
 
 export class SettingsService {
@@ -117,13 +120,6 @@ export class SettingsService {
 			dir = dirname(dir);
 		}
 		return false;
-	}
-
-	get reviewPrefs(): Pick<ClientSettings, "reviewPrompt" | "reviewDisabledSkills"> {
-		return {
-			reviewPrompt: this.settings.reviewPrompt,
-			reviewDisabledSkills: this.settings.reviewDisabledSkills,
-		};
 	}
 
 	hasPendingReload(): boolean {
@@ -365,6 +361,8 @@ export class SettingsService {
 				visionBridgePrompt: this.settings.visionBridgePrompt,
 				scmCommitMsgPromptMode: this.settings.scmCommitMsgPromptMode,
 				scmCommitMsgPrompt: this.settings.scmCommitMsgPrompt,
+				planModePromptMode: this.settings.planModePromptMode,
+				planModePrompt: this.settings.planModePrompt,
 				reviewPrompt: this.settings.reviewPrompt,
 				reviewDisabledSkills: [...this.settings.reviewDisabledSkills],
 				disabledPlugins: [...(this.settings.disabledPlugins ?? [])],
@@ -378,6 +376,7 @@ export class SettingsService {
 				toolsSchema: promptSnap.toolsSchema,
 				visionBridgeDefaultPrompt: SYSTEM_PROMPT,
 				scmCommitMsgDefaultPrompt: COMMITMSG_SYSTEM_PROMPT,
+				planModeDefaultPrompt: PLAN_MODE_SYSTEM_PROMPT,
 				visionModels: this.collectVisionModels(),
 				disabledSkills: [...this.settings.disabledSkills],
 				disabledExtensions: [...this.settings.disabledExtensions],
@@ -485,6 +484,8 @@ export class SettingsService {
 		visionBridgePrompt?: string;
 		scmCommitMsgPromptMode?: PromptMode;
 		scmCommitMsgPrompt?: string;
+		planModePromptMode?: PromptMode;
+		planModePrompt?: string;
 		reviewPrompt?: string;
 		reviewDisabledSkills?: string[];
 		disabledPlugins?: string[];
@@ -589,8 +590,11 @@ export class SettingsService {
 			this.settings.toolApprovalEnabled = partial.toolApprovalEnabled;
 		}
 		// 目标模式总开关：运行时无需重载（goal bar / 服务端入口实时读取）。
+		// on→off 时立即停掉在飞的目标/调研 —— 不停的话循环照跑照派，开关名存实亡。
 		if (partial.goalModeEnabled !== undefined) {
+			const wasOn = this.settings.goalModeEnabled !== false;
 			this.settings.goalModeEnabled = partial.goalModeEnabled;
+			if (wasOn && partial.goalModeEnabled === false) this.host.onGoalModeDisabled?.();
 		}
 		// 同项目并行提醒开关：同上，发送入口逐轮实时读取，无需 reload。
 		if (partial.parallelReminderEnabled !== undefined) {
@@ -633,6 +637,12 @@ export class SettingsService {
 		}
 		if (partial.scmCommitMsgPrompt !== undefined) {
 			this.settings.scmCommitMsgPrompt = partial.scmCommitMsgPrompt;
+		}
+		if (partial.planModePromptMode !== undefined) {
+			this.settings.planModePromptMode = partial.planModePromptMode;
+		}
+		if (partial.planModePrompt !== undefined) {
+			this.settings.planModePrompt = partial.planModePrompt;
 		}
 		if (partial.reviewPrompt !== undefined) {
 			this.settings.reviewPrompt = partial.reviewPrompt;
@@ -804,6 +814,9 @@ export class SettingsService {
 			// 「AI 提交信息」提示词同样不进预设——保留当前值。
 			scmCommitMsgPromptMode: this.settings.scmCommitMsgPromptMode,
 			scmCommitMsgPrompt: this.settings.scmCommitMsgPrompt,
+			// 计划模式提示词同样不进预设——保留当前值。
+			planModePromptMode: this.settings.planModePromptMode,
+			planModePrompt: this.settings.planModePrompt,
 			// 子代理默认模型也不进预设——保留当前值。
 			subagentDefaultModel: this.settings.subagentDefaultModel,
 			// 快捷短语是纯 UI 偏好，不进预设——保留当前值。

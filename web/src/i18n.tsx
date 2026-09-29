@@ -327,6 +327,11 @@ export const zh = {
 	planBoardInProgress: "进行中",
 	planBoardPending: "待执行",
 	planBoardFailed: "失败",
+	/* 计划看板里的「开始实施」：计划模式下计划已出，这里是**唯一**的出口 ——
+	   关掉服务端闸门（set_plan_mode false）+ 拿当前计划发起实施轮。 */
+	planImplementBtn: "开始实施",
+	planImplementTip: "关掉只规划闸门，按上面的计划开始写代码",
+	planImplementRequest: "按计划看板上的计划开始实施。",
 	clear: "清空",
 	confirm: "确定",
 	forkBadge: "分支",
@@ -703,6 +708,14 @@ export const zh = {
 	"tpl.clickCard": "点击填入输入框",
 	"tpl.editTpl": "编辑 / 删除模板",
 	"tpl.openPicker": "提示词模板（常用提示词，随时取用）",
+	/* 计划模式：只规划不实施（服务端会话级硬闸门）。
+	   目标条上的「计划」是一次性动作（开闸门 + 直接发送输入），不是开关；
+	   开关语义已删除，退出走计划看板里的「开始实施」。 */
+	planMode: "计划模式",
+	planActionBtn: "计划",
+	planActionTip: "按当前目标出一份实施计划（只规划不写代码，写操作会被服务端拒绝）",
+	planModeTip: "计划模式：只调研与出计划，不实施（写操作会被服务端拒绝）",
+	planModeTipOn: "计划模式已开：这一轮只出计划；实施请用计划看板里的「开始实施」",
 	"tpl.pickerTitle": "提示词模板",
 	"tpl.pickerHint": "点击卡片直接填入输入框，✏️ 可编辑或删除 · 也能新增自己的模板",
 	"tpl.add": "新建模板",
@@ -1072,7 +1085,9 @@ export const zh = {
 	/* goal / review */
 	goalBarTitle: "目标",
 	goalBarPlaceholder: "设定一个目标，另起执行对话去完成，当前对话负责验收…",
-	goalBarSet: "开始",
+	/* 「发送」而非「开始」：目标条这一排（提炼 / 计划 / 发送）都是「点一下直接
+	   发出去」的动作按钮，没有一个是开关。 */
+	goalBarSet: "发送",
 	goalBarClear: "取消",
 	goalBarLocked: "锁定：应用到后续所有回合",
 	goalBarUnlocked: "仅本回合（改完自动清除）",
@@ -1089,13 +1104,15 @@ export const zh = {
 	goalBarStop: "停止目标（并停掉执行对话）",
 
 	goalBarReviewing: "审查中…",
+	goalBarExecuting: "执行中…",
+	goalHistory: "历史",
 	goalBarRound: "第 {n} 轮",
 	goalBarActive: "目标生效中",
 	goalBarPassed: "已通过",
 	goalBarFailed: "未通过",
 	goalBarBlocked: "⚠️ 受阻",
 	goalBarStatusPending: "等待生成…",
-	goalWizardBtn: "AI 提炼",
+	goalWizardBtn: "提炼",
 	goalWizardTip: "让 AI 通过问卷调研细化需求，收敛为目标",
 	goalWizardRunning: "目标调研中",
 	goalWizardAnswer: "回答",
@@ -1192,6 +1209,14 @@ export const zh = {
 	goalModeEnabledDesc:
 		"目标条 / 目标调研向导 / 审查循环的总开关（默认开）。关闭后目标条隐藏，无法设置目标、启动调研或触发审查。",
 	goalModeOffHint: "目标模式已关闭：目标条已隐藏，已有的目标将不再触发审查。",
+	/* 审查者模式（自动委派）：会话级，默认关。开启后本对话只审阅不施工。 */
+	delegateMode: "审查者模式（自动委派）",
+	delegateModeDesc:
+		"开启后本对话**只审阅不施工**：你发的每条请求由服务端自动转给一个常驻的落盘执行对话去干活，本对话负责看结果、提要求。写文件/跑命令/再派子代理会被服务端硬闸门拒绝。",
+	delegateModeOffHint: "审查者模式已关闭：恢复普通对话，本对话可以直接改代码。",
+	delegateModeBadge: "审查者",
+	delegateModeBadgeTip: "审查者模式已开：活由常驻执行对话执行（还没派过活）",
+	delegateModeOpenTip: "打开常驻执行对话，看它干了什么",
 	settingsVisionBridge: "视觉桥",
 	settingsVisionBridgeDesc: "当前模型不支持识图时，把图片交给已配置的视觉模型转写为文字证据，再让模型回答",
 	visionBridgeEnabled: "启用视觉桥",
@@ -1356,6 +1381,13 @@ export const zh = {
 	scmCommitMsgPromptPlaceholder: "输入自定义提示词…（留空 = 使用内置默认提示词，失焦后自动应用）",
 	scmCommitMsgSettingsHint:
 		"追加模式把自定义内容拼在内置提示词末尾；替换模式完全使用自定义内容（切换后输入框会显示内置默认，可直接修改，不改动失焦则仍使用默认）",
+	planModePromptSettingsTitle: "计划模式提示词",
+	planModePromptSettingsDesc:
+		"计划模式（目标条里的「计划」按钮）开启时追加给模型的提示词：只调研 + 出计划，不实施。内置默认含「禁止把实现代码写进回复」「小需求可跳过计划看板走短计划」两条硬规则",
+	planModePromptMode: "计划模式提示词",
+	planModePromptPlaceholder: "输入自定义提示词…（留空 = 使用内置默认提示词，失焦后自动应用）",
+	planModePromptSettingsHint:
+		"追加模式把自定义内容拼在内置提示词末尾；替换模式完全使用自定义内容（切换后输入框会显示内置默认，可直接修改，不改动失焦则仍使用默认）。仅影响提示词，服务端的只读硬闸门始终生效",
 	uninstallExt: "卸载",
 	uninstallConfirm: "确认卸载？",
 	uninstallConfirmHint: "再次点击确认，将在终端执行 pi remove",
@@ -2056,6 +2088,11 @@ const en: Record<keyof typeof zh, string> = {
 	planBoardInProgress: "In Progress",
 	planBoardPending: "Pending",
 	planBoardFailed: "Failed",
+	/* The one and only way out of plan mode now that the composer switch is gone:
+	   turn the server gate off (set_plan_mode false) and start implementing. */
+	planImplementBtn: "Start implementing",
+	planImplementTip: "Turn off the planning-only gate and start writing code per the plan",
+	planImplementRequest: "Start implementing the plan on the task board.",
 	clear: "Clear",
 	confirm: "Confirm",
 	forkBadge: "Branch",
@@ -2441,6 +2478,12 @@ const en: Record<keyof typeof zh, string> = {
 	"tpl.clickCard": "Click to fill the input",
 	"tpl.editTpl": "Edit / delete template",
 	"tpl.openPicker": "Prompt templates (reusable prompts, anytime)",
+	/* plan mode: research + plan only, no implementation */
+	planMode: "Plan mode",
+	planActionBtn: "Plan",
+	planActionTip: "Draft an implementation plan for this goal (planning only — the server blocks writes)",
+	planModeTip: "Plan mode: research and plan only — writes are blocked by the server",
+	planModeTipOn: "Plan mode is on: this turn plans only; use “Start implementing” on the task board",
 	"tpl.pickerTitle": "Prompt templates",
 	"tpl.pickerHint": "Click a card to fill the input; ✏️ to edit or delete; add your own too",
 	"tpl.add": "New template",
@@ -2816,7 +2859,9 @@ const en: Record<keyof typeof zh, string> = {
 	/* goal / review */
 	goalBarTitle: "Goal",
 	goalBarPlaceholder: "Set a goal; an executor conversation does the work and this one reviews it…",
-	goalBarSet: "Start",
+	/* "Send", not "Start": every button in this row (Refine / Plan / Send) is a
+	   click-to-send action — none of them is a toggle. */
+	goalBarSet: "Send",
 	goalBarClear: "Cancel",
 	goalBarLocked: "Locked: applies to every later turn",
 	goalBarUnlocked: "This turn only (cleared afterwards)",
@@ -2833,13 +2878,15 @@ const en: Record<keyof typeof zh, string> = {
 		"⚠️ Stale server build (process not restarted): goal mode 2.0 will not take effect — restart the pi-web-ui service",
 	goalBarStop: "Stop goal (also stops the executor conversation)",
 	goalBarReviewing: "Reviewing…",
+	goalBarExecuting: "Executing…",
+	goalHistory: "History",
 	goalBarRound: "Round {n}",
 	goalBarActive: "Goal active",
 	goalBarPassed: "Passed",
 	goalBarFailed: "Failed",
 	goalBarBlocked: "⚠️ Blocked",
 	goalBarStatusPending: "Waiting to generate…",
-	goalWizardBtn: "AI Scrape",
+	goalWizardBtn: "Refine",
 	goalWizardTip: "Let AI refine the requirement into a goal via a Q&A survey",
 	goalWizardRunning: "Scoping the goal",
 	goalWizardAnswer: "Answer",
@@ -2940,6 +2987,15 @@ const en: Record<keyof typeof zh, string> = {
 	goalModeEnabledDesc:
 		"Master switch for the goal bar, the goal wizard and the review loop (on by default). When off, the goal bar is hidden and you cannot set a goal, run the wizard, or trigger reviews.",
 	goalModeOffHint: "Goal mode is off: the goal bar is hidden and existing goals no longer trigger reviews.",
+	/* Reviewer mode (auto-delegation): per conversation, off by default. */
+	delegateMode: "Reviewer mode (auto-delegate)",
+	delegateModeDesc:
+		"When on, this conversation reviews instead of building: the server forwards every request you send to one persistent executor conversation that does the work, and this conversation inspects the result and states follow-ups. Writing files, running commands and dispatching more subagents are blocked by a server-side gate.",
+	delegateModeOffHint: "Reviewer mode is off: back to a normal conversation — this one can change code again.",
+	delegateModeBadge: "Reviewer",
+	delegateModeBadgeTip:
+		"Reviewer mode is on: work runs in the persistent executor conversation (nothing dispatched yet)",
+	delegateModeOpenTip: "Open the persistent executor conversation to see what it did",
 	settingsVisionBridge: "Vision bridge",
 	settingsVisionBridgeDesc:
 		"When the current model can't see images, send them to a configured vision model and transcribe into text evidence first",
@@ -3122,6 +3178,13 @@ const en: Record<keyof typeof zh, string> = {
 	scmCommitMsgPromptPlaceholder: "Type a custom prompt… (empty = built-in default prompt, applied on blur)",
 	scmCommitMsgSettingsHint:
 		"Append mode adds custom text after the built-in prompt; replace mode uses the custom text entirely (after switching, the editor shows the built-in default ready to edit — blurring without changes keeps the default)",
+	planModePromptSettingsTitle: "Plan mode prompt",
+	planModePromptSettingsDesc:
+		"Prompt appended to the model while plan mode is on (the Plan button in the goal bar): research and plan only, no implementation. The built-in default carries two hard rules — never paste the implementation into the reply, and skip the plan board for small unambiguous requests",
+	planModePromptMode: "Plan mode prompt",
+	planModePromptPlaceholder: "Type a custom prompt… (empty = built-in default prompt, applied on blur)",
+	planModePromptSettingsHint:
+		"Append mode adds custom text after the built-in prompt; replace mode uses the custom text entirely (after switching, the editor shows the built-in default ready to edit — blurring without changes keeps the default). Prompt only — the server-side read-only gate always applies",
 	uninstallExt: "Uninstall",
 	uninstallConfirm: "Confirm?",
 	uninstallConfirmHint: "Click again to confirm — runs pi remove in the terminal",

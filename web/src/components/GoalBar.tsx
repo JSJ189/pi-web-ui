@@ -64,7 +64,28 @@ export const GoalBar = memo(function GoalBar({
 	const goalBelongsToActiveConversation = !goal.conversationId || goal.conversationId === activeConversationId;
 	const active = goal.goal !== null && goalBelongsToActiveConversation;
 	// 目标模式 2.0：委托执行者的对话 id（有它才能「一键打开执行对话」）。
-	const execRoleConvId = goalBelongsToActiveConversation ? goal.roles?.executor?.convId : undefined;
+	const execRole = goalBelongsToActiveConversation ? goal.roles?.executor : undefined;
+	const execRoleConvId = execRole?.convId;
+	// 执行者实时动态（轮次边界刷新）：跑什么工具 / 自述头；中英按 locale 二选一。
+	const execActivity = execRole?.activity
+		? locale !== "zh" && execRole.activityEn
+			? execRole.activityEn
+			: execRole.activity
+		: execRole?.streaming
+			? "…"
+			: undefined;
+	// 轮次标签：有限预算显示 N/M，不限显示 N·不限（单次模式只显示 N）。
+	const roundBudget = goal.locked && goal.maxRounds > 0 ? goal.maxRounds : 0;
+	const roundLabel =
+		roundBudget > 0
+			? locale !== "zh"
+				? `Round ${goal.round}/${roundBudget}`
+				: `第 ${goal.round}/${roundBudget} 轮`
+			: `${t("goalBarRound", { n: goal.round })}${goal.locked ? ` · ${t("goalBarUnlimitedShort")}` : ""}`;
+	// 本目标累计用量（执行者 + 审查者，轮次边界累计）。
+	const usageTotal = (goal.usage?.inputTokens ?? 0) + (goal.usage?.outputTokens ?? 0);
+	const fmtTok = (n: number): string =>
+		n >= 1_000_000 ? `${(n / 1_000_000).toFixed(1)}M` : n >= 1000 ? `${(n / 1000).toFixed(1)}k` : `${n}`;
 	// 目标模式 2.0 加固：pi 引擎的新后端在**任何** goal_status 里都带 execModel
 	// （makeGoalStatus 一定赋值）；旧后端（进程没重启）把未知字段丢掉，于是这里是
 	// undefined。不静默：「新界面 + 旧后端」这种混合态必须当场说出来。
@@ -79,6 +100,7 @@ export const GoalBar = memo(function GoalBar({
 	const [execModel, setExecModel] = useState<string>(goal.execModel ?? "");
 	const [modelOpen, setModelOpen] = useState(false);
 	const [execModelOpen, setExecModelOpen] = useState(false);
+	const [historyOpen, setHistoryOpen] = useState(false);
 	const [reqLoading, setReqLoading] = useState(false);
 	// Collapsed by default: idle shows only a compact pill so the bar never
 	// occupies vertical space until the user actually wants to set a goal.
@@ -133,6 +155,17 @@ export const GoalBar = memo(function GoalBar({
 		setCollapsed(false);
 	};
 
+	/** 「计划」= 一次性动作，不是开关：开服务端只规划闸门 + 把目标输入直接发出去。
+	 *  闸门本身是会话级且热生效（服务端 `set_plan_mode` 重建提示词 + 挂工具硬闸门），
+	 *  两条消息同一条 WS 按序到达 → 本轮就在闸门内跑。输入为空则只开闸门。 */
+	const runPlan = () => {
+		const trimmed = text.trim();
+		appSend({ type: "set_plan_mode", enabled: true });
+		if (!trimmed) return;
+		appSend({ type: "prompt", text: trimmed });
+		setText("");
+	};
+
 	/** Start the collaborative wizard: AI asks questions to refine the draft
 	 *  into a goal, then auto-sets it. Reuses the reviewer-model picker as the
 	 *  optional wizard model. */
@@ -157,6 +190,7 @@ export const GoalBar = memo(function GoalBar({
 		"host:goal-pill",
 		"host:goal-set",
 		"host:goal-wizard",
+		"host:goal-plan",
 		"host:goal-lock",
 		"host:goal-collapse",
 		"host:goal-model",
@@ -193,12 +227,25 @@ export const GoalBar = memo(function GoalBar({
 		"host:goal-wizard": (
 			<button
 				type="button"
-				className="goalbar-btn wizard"
+				className="goalbar-btn action wizard"
 				disabled={!text.trim()}
 				title={t("goalWizardTip")}
 				onClick={startWizard}
 			>
-				🔍 {t("goalWizardBtn")}
+				{t("goalWizardBtn")}
+			</button>
+		),
+		// 计划：与提炼/发送同列的一次性动作按钮（无常亮态、无 aria-pressed ——
+		// 开关语义已删；「退出计划」的唯一出口是计划看板里的「开始实施」）。
+		"host:goal-plan": isDsh ? null : (
+			<button
+				type="button"
+				className="goalbar-btn action plan"
+				disabled={!text.trim()}
+				title={t("planActionTip")}
+				onClick={runPlan}
+			>
+				{t("planActionBtn")}
 			</button>
 		),
 		"host:goal-lock": (
@@ -403,7 +450,7 @@ export const GoalBar = memo(function GoalBar({
 					</span>
 					{goal.reviewing ? (
 						<span className="goalbar-chip reviewing">
-							{t("goalBarReviewing")} {t("goalBarRound", { n: goal.round })}
+							{goal.phase === "executing" ? t("goalBarExecuting") : t("goalBarReviewing")} {roundLabel}
 						</span>
 					) : (
 						<span
@@ -419,6 +466,19 @@ export const GoalBar = memo(function GoalBar({
 						</span>
 					)}
 					<span className="goalbar-detail">{goalDetail}</span>
+					{execActivity && (
+						<span className="goalbar-detail" title={execRole?.convId}>
+							· {execActivity}
+						</span>
+					)}
+					{usageTotal > 0 && (
+						<span
+							className="goalbar-detail"
+							title={`${goal.usage?.inputTokens ?? 0} in / ${goal.usage?.outputTokens ?? 0} out`}
+						>
+							· {fmtTok(usageTotal)} tokens
+						</span>
+					)}
 					{staleBackend && <span className="goalbar-stale">{t("goalBarStaleBackend")}</span>}
 					{renderMergedToolbar(
 						goalZone(["host:goal-openrole", "host:goal-clear"]),
@@ -488,18 +548,55 @@ export const GoalBar = memo(function GoalBar({
 					}}
 				/>
 				{renderMergedToolbar(
-					goalZone(["host:goal-set", "host:goal-wizard", "host:goal-lock", "host:goal-collapse"]),
+					goalZone(["host:goal-set", "host:goal-wizard", "host:goal-plan", "host:goal-lock", "host:goal-collapse"]),
 					goalHostNodes,
 					onUiAction,
 				)}
 			</div>
 			<div className="goalbar-opts">
-				{goalZone(["host:goal-mode", "host:goal-model", "host:goal-execmodel", "host:goal-rounds"])
+				{goalZone(["host:goal-model", "host:goal-execmodel", "host:goal-rounds"])
 					.filter((e) => e.source === "host")
 					.map((e) => (
 						<Fragment key={e.id}>{goalHostNodes[e.id]}</Fragment>
 					))}
 
+				{goal.history && goal.history.length > 0 && (
+					<Dropdown
+						trigger={
+							<span className="goalbar-opt" title={t("goalHistory")}>
+								<span className="goalbar-opt-label">{`${t("goalHistory")}:`}</span>
+								<b>{goal.history.length}</b>
+							</span>
+						}
+						open={historyOpen}
+						onOpenChange={setHistoryOpen}
+						direction="up"
+					>
+						<div className="dd-header">{t("goalHistory")}</div>
+						{goal.history.map((h, i) => (
+							<DropdownItem
+								key={`${h.finishedAt}-${i}`}
+								onClick={() => {
+									// 一键重设 = 把历史目标填回输入框（不直接发送，确认/改完再按发送）。
+									setText(h.goal);
+									setHistoryOpen(false);
+								}}
+							>
+								<span className="dd-model-cell" title={h.goal}>
+									<span className="dd-model-name">
+										{h.verdict === "pass" ? "✅ " : h.verdict === "fail" ? "❌ " : "⚠️ "}
+										{h.goal.length > 42 ? `${h.goal.slice(0, 42)}…` : h.goal}
+									</span>
+									<span className="dd-model-meta">
+										<span className="dd-model-id">
+											{t("goalBarRound", { n: h.rounds })} · {new Date(h.finishedAt).toLocaleString()}
+										</span>
+									</span>
+								</span>
+							</DropdownItem>
+						))}
+					</Dropdown>
+				)}
 				<span className="goalbar-lock-hint">{locked ? t("goalBarLocked") : t("goalBarUnlocked")}</span>
 				{staleBackend && <span className="goalbar-stale">{t("goalBarStaleBackend")}</span>}
 			</div>

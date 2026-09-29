@@ -8739,13 +8739,19 @@ div.chead[role="button"]:focus-visible,
 	font-size: 13px;
 }
 
-/* 「回到底部」浮标：底边**正中**（恢复最初的位置），但抬到目标药丸**上方** ——
-   药丸常驻消息区底缘上沿 8px（.goalbar-collapsed，自身 24px 高 → 占 8~32px），
-   两者都在正中，不分层就会叠在一起：浮标钉 bottom:52px（32 + 8 间隙 + 自身 28px）。
-   药丸不在场时（目标已设定 / 编辑器展开 / 目标模式关闭）自动回到底缘 16px。 */
+/* 「回到底部」浮标：底边**正中**（最初的位置），**贴底 4px**；只在目标药丸**真的浮在
+   消息区里**时才上抬一层让开。药丸浮起时（.goalbar-collapsed 常态：absolute +
+   bottom:100% + 底 margin 4px，自身 24px 高 → 占 4~28px），两者都在正中会叠 →
+   抬到 bottom:32px（28 + **4px 间隙**）。
+   药丸退回文档流时（.plan-board / .dialog-inline 面板在场，见下面两条 :has）它已经落在
+   消息区**外面**，浮标无需让位 —— 保持 bottom:4px 贴着最后一条消息。
+   早先这里只要 :has(.goalbar-collapsed) 就抬 52px，看板在场时按钮被凭空顶高一截、悬在
+   正文中间（用户实报「回到底部距离太远了」），故改成「浮起才抬」。
+   本块只调**间距**（贴底 16→4、让位 52→32，浮标与药丸之间恒定留 4px），按钮尺寸保持原样（12px 字 / 6/14 内边距 /
+   自身 28px 高）—— 要的是「离底近一点」，不是「把按钮做小」。 */
 .scroll-bottom {
 	position: absolute;
-	bottom: 16px;
+	bottom: 4px;
 	left: 50%;
 	z-index: 1;
 	transform: translateX(-50%);
@@ -8762,9 +8768,10 @@ div.chead[role="button"]:focus-visible,
 	box-shadow: 0 6px 20px rgba(0, 0, 0, 0.4);
 }
 
-/* 药丸在场时上抬一层（居中同列，不横移） */
-.main:has(.goalbar-collapsed) .scroll-bottom {
-	bottom: 52px;
+/* 药丸**浮在消息区内**时才上抬一层（居中同列，不横移）；药丸已退回文档流的两种
+   情形（任务看板 / 问卷·插件对话框在场）排除掉，否则按钮会无谓地离底 ~50px。 */
+.main:has(.goalbar-collapsed):not(:has(.plan-board)):not(:has(.dialog-inline)) .scroll-bottom {
+	bottom: 32px;
 }
 .scroll-bottom:hover {
 	color: var(--text);
@@ -9142,6 +9149,26 @@ div.chead[role="button"]:focus-visible,
 	gap: 2px;
 	flex: 0 0 auto;
 }
+/* 审查者模式标识（底栏）：开启时给出「活不在这里」的常驻提示 + 打开执行对话。 */
+.status-item.delegate-badge {
+	display: inline-flex;
+	align-items: center;
+	gap: 3px;
+	color: var(--accent);
+}
+.delegate-badge-open {
+	border: none;
+	background: none;
+	color: inherit;
+	cursor: pointer;
+	padding: 0 1px;
+	font-size: 11px;
+	line-height: 1;
+}
+.delegate-badge-open:hover {
+	text-decoration: underline;
+}
+
 .plan-board-iconbtn {
 	display: inline-flex;
 	padding: 3px;
@@ -9154,6 +9181,25 @@ div.chead[role="button"]:focus-visible,
 .plan-board-iconbtn:hover {
 	color: var(--text);
 	background: var(--bg-elev2);
+}
+
+/* 计划看板的「开始实施」：计划模式下**唯一**的出口（闸门在服务端常亮）。
+   实心强调色 + 文案，和旁边两个纯图标钮拉开一个层级。 */
+.plan-board-implement {
+	display: inline-flex;
+	align-items: center;
+	padding: 3px 10px;
+	border: none;
+	border-radius: 6px;
+	background: var(--accent);
+	color: #fff;
+	font-size: 12px;
+	line-height: 1.5;
+	cursor: pointer;
+	white-space: nowrap;
+}
+.plan-board-implement:hover {
+	filter: brightness(1.08);
 }
 
 /* 展开后的步骤清单：条目多时自己滚，别把整页（输入框 / 顶栏 / 状态栏）顶长。 */
@@ -9366,6 +9412,14 @@ div.chead[role="button"]:focus-visible,
 
 .goalbar-btn.wizard {
 	background: var(--amber);
+}
+
+/* 目标条那一排动作按钮（提炼 / 计划）：口径统一为「点一下直接发出去」，
+   彼此只靠颜色区分职责，都不是开关。`plan` 用强调色（与「发送」同族但略浅，
+   免得两个实心块抢焦点）；空输入时 disabled（.goalbar-btn:disabled 已处理）。 */
+.goalbar-btn.action.plan {
+	background: var(--accent);
+	box-shadow: inset 0 0 0 1px color-mix(in srgb, var(--accent) 70%, transparent);
 }
 
 /* 目标模式 2.0：执行方式开关（⚡ 直奔 / 🧭 委托）——次要控件样式，
@@ -9692,7 +9746,7 @@ div.chead[role="button"]:focus-visible,
 	align-items: center;
 	justify-content: center;
 	gap: 6px;
-	margin: 0 var(--chat-inset) 8px;
+	margin: 0 var(--chat-inset) 4px;
 	min-width: 0;
 	max-width: 100%;
 	/* 插件可能往 pill 那一行贡献条目；不让它把整行顶宽（否则又是横向溢出）。 */
@@ -9705,9 +9759,10 @@ div.chead[role="button"]:focus-visible,
 	pointer-events: auto;
 }
 
-/* 不再为「回到底部」让位：它已经改钉在右下角（.scroll-bottom，right:16px），
-   与居中的药丸各占一侧；药丸始终贴输入区上沿 8px（上面的 margin），不再随
-   滚动状态上下跳。窄屏（≤380px）那个浮标退成纯图标，见 .scroll-bottom-label。 */
+/* 与「回到底部」的关系：浮起态两者都在正中，浮标上抬 24px 让开（见上面
+   `.main:has(.goalbar-collapsed):not(...) .scroll-bottom`）；退回文档流时药丸在消息区
+   之外，浮标原地贴底（4px）即可，两者间距恒为 4px。窄屏（≤380px）浮标退成纯图标，
+   见 .scroll-bottom-label。 */
 
 /* 问卷 / 插件对话框（.dialog-inline）与任务看板（.plan-board）是插在槽位与输入区
    之间的面板：药丸浮到它们顶边会压住面板上边框，这两种情况退回文档流（此时消息区
@@ -9740,6 +9795,9 @@ div.chead[role="button"]:focus-visible,
 	border-radius: 0 !important;
 }
 
+/* 收起态的小药丸：尺寸保持原样（12px 字 / 4/10 内边距 / gap 7 / feather 图标默认
+   尺寸），只把**贴边间距**从 8px 收到 4px（改 .goalbar-collapsed 的底 margin）。
+   手机上它是常驻件，贴得越近越不占地方。 */
 .goalbar-hint {
 	border: none;
 	color: var(--text-dim);
@@ -10172,6 +10230,11 @@ div.chead[role="button"]:focus-visible,
 	background: var(--accent-soft);
 	color: var(--accent);
 }
+
+/* 计划模式开关：已从「开关」改成**一次性动作按钮**（GoalBar 的 host:goal-plan，
+   .goalbar-btn.action.plan）—— 点一下 = 开服务端只规划闸门 + 把目标输入直接发出去。
+   因此这一带不再有 .active / aria-pressed 常亮态，也不需要开启态小圆点；
+   退出计划的唯一出口是计划看板里的「开始实施」（PlanBoard）。 */
 
 /* Send: solid blue circle with a white up-arrow. */
 .inputbox .btn.send {
@@ -14646,15 +14709,21 @@ button.source-default-toggle {
 
 	/* ---- composer: 输入框内底部工具条（模型/思考/附件 左，发送/停止/排队 右）。
 	   恢复 chip 标签显示（上面的全局规则会隐藏它们），并让模型名可截断。
+	   ⚠️ 这条必须限定在 561px 以上：下面 ≤560px 那条「纯图标」要靠**不恢复**
+	   才生效（靠赢下权重很难 —— 上面的藏字规则带一串 :not() 豁免，权重 (0,9,1)，
+	   这里若不限断点，≤560px 的 `display: none`（0,3,1）永远赢不了它，手机端
+	   文字标签就一直漏出来、被格宽截成「S.」「H.」这种碎片）。
 	   手机端工具条保证单行：左侧可收缩（模型/思考文本收缩 → 截断 → 只剩图标），
 	   发送/停止/排队 始终固定在右侧。收缩与截断的规则在基础样式里，这里只放宽
 	   标签宽度、把工具条锁成单行，并在下面一个阈值里直接切成纯图标。 ---- */
-	.composer-tools
-		.chip
-		> span:not(.update-dot):not(.bg-task-badge):not(.update-badge):not(.plugin-icon-svg):not(.plugin-icon-glyph):not(
-			.chip-emoji
-		):not(.goalbar-opt) {
-		display: inline;
+	@media (min-width: 561px) {
+		.composer-tools
+			.chip
+			> span:not(.update-dot):not(.bg-task-badge):not(.update-badge):not(.plugin-icon-svg):not(.plugin-icon-glyph):not(
+				.chip-emoji
+			):not(.goalbar-opt) {
+			display: inline;
+		}
 	}
 	.composer-tools .chip-model {
 		max-width: 96px;
@@ -14670,6 +14739,13 @@ button.source-default-toggle {
 		flex: 1 1 auto;
 		min-width: 0;
 		flex-wrap: nowrap;
+		/* 手机端均匀分布：把左组摊开到「除右组以外的可用宽度」里等距
+		   （space-evenly：首尾留白与按钮间隙相等，不靠边），发送/停止
+		   仍固定贴右（.composer-tools-right flex-shrink:0 + 父级
+		   space-between）。这样左组按钮/插件入口在窄屏上不会全挤在左半边、
+		   右手拇指区留一大片空白。子项仍可收缩（min-width:0 链在
+		   .chip / .dropdown 上），文字省略号优先于等距被牺牲。 */
+		justify-content: space-evenly;
 	}
 	.composer-tools-right {
 		flex-shrink: 0;
@@ -14680,6 +14756,8 @@ button.source-default-toggle {
 	   更宽），所以留到 560px 再启用。右侧按钮本身在窄屏不再变形（对半胶囊已是
 	   图标态，固定 78px，不受此阈值影响）。 */
 	@media (max-width: 560px) {
+		/* 纯图标：不再恢复文字标签（见上面 @media (min-width: 561px) 的说明），
+		   名字交给 title 悬浮提示。 */
 		.composer-tools .chip > span.chip-model,
 		.composer-tools .chip > span.chip-sub {
 			display: none;
@@ -14688,10 +14766,107 @@ button.source-default-toggle {
 			display: none;
 		}
 		.composer-tools .chip {
-			padding: 6px 9px;
-			min-width: 34px;
-			min-height: 30px;
+			padding: 0;
+			min-width: 0;
 			justify-content: center;
+		}
+		/* ---- 手机端工具条退成「等宽方块 + 等距」栅格（不显示文字）。
+		   病根：space-evenly 只让**间隙**相等，而左组各条目宽度并不一致
+		   （宿主 .btn 40px / chip 按内容 / 插件动作 30px 圆钮），宽度不等
+		   → 中心间距不等，看上去就是「不齐」。修法不是钉死宽度（条目一多
+		   就撑爆或挤成一条缝），而是**让它们平分**：flex-basis 0 + grow 1
+		   → 每个条目拿到的宽度天然一致，space-evenly 的等距才真的等距。
+		   上下限：44px 封顶（大屏手机不无限拉大），24px 兜底（条目极端
+		   多时不至于把 266px 的可用宽度顶穿成横向滚动）。 */
+		.composer-tools-left,
+		.composer-tools-center {
+			gap: 4px;
+			/* 方块化：高亮/边框的盒子跟格子同形（正方），不拉成竖长条。
+			   触摸态的高亮底色画在按钮/芯片自己的盒子上，盒子多高高亮就多高 ——
+			   之前芯片沿用基线的 height:40px，在 26px 宽的窄格子里就成了一根
+			   34×40 的竖药丸，看着「盒子太高」。这里改用 aspect-ratio 由宽度
+			   反推高度，并把 align-items 居中，多行时也不会上下错位。
+			   min-height 30px：格子被挤到 24~30px 时至少还留一个接近方形的
+			   点按目标（不为了纯方块把点按区缩成一条）。 */
+			align-items: center;
+			/* 极端情况（插件贡献的入口很多）容错：条目多于一行时折行，而不是
+			   顶穿 24px 下限后横向溢出（手机上裁掉的按钮点不到，比不齐更糟）。
+			   常规条目数（≤9）下依旧单行，外观与之前完全一致。 */
+			flex-wrap: wrap;
+			row-gap: 4px;
+		}
+		.composer-tools-left > *:not(select),
+		.composer-tools-center > *:not(select),
+		.composer-tools-left > .dropdown,
+		.composer-tools-center > .dropdown {
+			flex: 1 1 0;
+			min-width: 24px;
+			max-width: 44px;
+			height: auto;
+			min-height: 30px;
+			aspect-ratio: 1 / 1;
+			align-self: center;
+		}
+		/* 同理收掉各按钮自带的 min-width 基线（.btn / 插件动作 30px / :has(svg) 30px…），
+		   否则同一条工具条里会出现「一部分条目守 24px、另一部分守 30px」的
+		   参差 —— 那正是「不齐」。:has(svg) 那条权重更高，一并带上；
+		   两条同在本段、位置更靠后，覆盖成立。
+		   ⚠️ 选择器只圈**左/中两组**：右组的发送/停止/排队胶囊是另一种控件
+		   （大号实心圆），一旦被这几条扫到会跟着变成方块，形态就被改了。 */
+		.inputbox .composer-tools-left .btn,
+		.inputbox .composer-tools-left .btn:has(svg),
+		.inputbox .composer-tools-center .btn,
+		.inputbox .composer-tools-center .btn:has(svg) {
+			min-width: 24px;
+			/* 同上：方块化。注意要压掉 ≤768px 基线的 height:40px，否则高亮
+			   底色仍是一条 40px 高的竖条。 */
+			height: auto;
+			aspect-ratio: 1 / 1;
+		}
+		.composer-tools-left .chip,
+		.composer-tools-center .chip {
+			width: 100%;
+			max-width: 100%;
+			height: 100%;
+			aspect-ratio: 1 / 1;
+		}
+		/* 高亮 / 边框统一成「方框」：基线里 .inputbox .btn 与插件动作都是
+		   border-radius:50%（圆形），在手机端这一排密集小格子里看着像一串珠子。
+		   改成 9px 小圆角方框，和同排的 chip（基线 8px）看齐，一排入口成为
+		   同一族；触摸态的高亮底色就画在这个方框上。:has(svg) 那条权重更高，
+		   一并带上才压得住。同样只圈左/中两组（右组发送键保持圆形）。 */
+		.inputbox .composer-tools-left .btn,
+		.inputbox .composer-tools-left .btn:has(svg),
+		.inputbox .composer-tools-center .btn,
+		.inputbox .composer-tools-center .btn:has(svg),
+		.inputbox .composer-tools-left .chip,
+		.inputbox .composer-tools-center .chip {
+			border-radius: 9px;
+		}
+		/* 插件动作按钮有两条基线规则（.btn 40px 与 :has(svg) 30px 圆钮），
+		   这里只把 width 放开交给 flex 平分；min-width 不能在本地置 0 —— 那会
+		   盖掉上面栅格的 24px 下限，条目一多就出现「前几个 24px、后几个
+		   15px」的参差（等于把「不齐」又请回来了）。 */
+		.inputbox .btn.composer-plugin-action:has(svg) {
+			width: auto;
+		}
+		/* 没有图标的纯文字插件动作：保留胶囊形态（方块里塞两三个汉字更看不懂），
+		   但不许长到一格之外，宽出部分省略号收尾，完整名字在 title 里。 */
+		.inputbox .composer-tools-left .btn.composer-plugin-action:not(:has(svg)),
+		.inputbox .composer-tools-center .btn.composer-plugin-action:not(:has(svg)) {
+			width: auto;
+			max-width: 44px;
+			padding: 0 8px;
+			overflow: hidden;
+			text-overflow: ellipsis;
+		}
+		/* select 类插件动作（kind="select"）同样进栅格：只留一格宽 + 省略。 */
+		.composer-tools-left select.composer-plugin-select,
+		.composer-tools-center select.composer-plugin-select {
+			width: auto;
+			min-width: 24px;
+			max-width: 44px;
+			flex: 1 1 0;
 		}
 	}
 	.topbar-flow {

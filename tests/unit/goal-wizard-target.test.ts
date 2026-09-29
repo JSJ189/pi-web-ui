@@ -57,7 +57,6 @@ function makeConv(id: string, title: string): GoalConversation {
 		} as unknown as GoalConversation["session"],
 		wizardRunning: false,
 		goalGeneration: 0,
-		goalReviewGeneration: 0,
 		goal: bootSvc.makeGoalStatus(),
 	};
 }
