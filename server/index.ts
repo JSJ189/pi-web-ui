@@ -16,6 +16,9 @@
  *   all share one conversation list per project.
  *   PI_CODING_AGENT_DIR  pi config dir (auth/models/skills) — passed to the SDK
  */
+// MUST be imported before the SDK is loaded so on-disk patches apply cleanly.
+import "./patch-remote-catalog.js";
+import "./patch-turn-end-boundary.js";
 import { existsSync, mkdirSync, readFileSync } from "node:fs";
 import { stat } from "node:fs/promises";
 import { createServer, request as proxyRequest, type IncomingMessage } from "node:http";

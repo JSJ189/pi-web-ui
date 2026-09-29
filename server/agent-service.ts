@@ -14,6 +14,7 @@
 // provider so built-in model lists follow the official pi.dev catalog
 // wholesale (no union merge / no stale built-in leftovers).
 import "./patch-remote-catalog.js";
+import "./patch-turn-end-boundary.js";
 import { spawn } from "node:child_process";
 import { createHash, randomUUID } from "node:crypto";
 import { createRequire } from "node:module";
