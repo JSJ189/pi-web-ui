@@ -272,6 +272,12 @@ export function hasPendingWaitSubscription(options: PendingWakeScanOptions): boo
 
 /** displaceActive 决策的输入快照（纯数据，便于单测）。 */
 export interface DisplacementDecisionInput {
+	/** 用户显式「钉住」的对话常驻运行列表：任何空闲态都不得释放（最高优先级，
+	 *  覆盖「打开未继续即移出」等自动规则；显式 dismiss 仍可移出）。
+	 *  User-pinned conversations stay in the running list across switches even
+	 *  when idle with no live terminals — overrides every automatic rule below;
+	 *  an explicit dismiss still removes it. */
+	pinned?: boolean;
 	reviewing: boolean;
 	wizardRunning: boolean;
 	streaming: boolean;
@@ -311,10 +317,11 @@ export interface DisplacementDecisionInput {
 /**
  * 纯函数版置换决策：true = 保留（不得 dispose），false = 调用方可释放。
  * Pure decision core of displaceActive(): true = retain, false = may dispose.
- * 顺序与 displaceActive 保持一致：review/wizard → streaming → terminals →
+ * 顺序与 displaceActive 保持一致：pin → review/wizard → streaming → terminals →
  * active subagent run → pending wake → listed+continued（「打开后继续过」的会话也保留）。
  */
 export function shouldRetainActive(input: DisplacementDecisionInput): boolean {
+	if (input.pinned) return true;
 	if (input.reviewing || input.wizardRunning) return true;
 	if (input.promptInFlight) return true;
 	if (input.streaming || input.compacting) return true;

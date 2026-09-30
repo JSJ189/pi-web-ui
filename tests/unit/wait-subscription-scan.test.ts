@@ -323,6 +323,41 @@ describe("shouldRetainActive（置换决策）", () => {
 		expect(shouldRetainActive({ ...base, hasActiveSubagentRun: true })).toBe(true);
 	});
 
+	it("pinned → 无条件保留（空闲无终端也不释放）", () => {
+		expect(shouldRetainActive({ ...base, pinned: true })).toBe(true);
+		// 其余判据全关掉的最苛刻情形下仍然保留
+		expect(
+			shouldRetainActive({
+				...base,
+				pinned: true,
+				listed: false,
+				promptedSinceActive: false,
+				hasActiveSubagentRun: false,
+				hasPendingWake: false,
+			}),
+		).toBe(true);
+	});
+
+	it("pinned 优先于磁盘扫描：thunk 不求值即返回", () => {
+		expect(
+			shouldRetainActive({
+				...base,
+				pinned: true,
+				hasActiveSubagentRun: () => {
+					throw new Error("must not be evaluated");
+				},
+				hasPendingWake: () => {
+					throw new Error("must not be evaluated");
+				},
+			}),
+		).toBe(true);
+	});
+
+	it("未钉住 → 维持原置换口径（pinned 缺省不影响其他规则）", () => {
+		expect(shouldRetainActive({ ...base, pinned: false })).toBe(false);
+		expect(shouldRetainActive({ ...base, pinned: undefined })).toBe(false);
+	});
+
 	it("active-run thunk 在 wake thunk 之前求值：命中 active 时 wake 不求值", () => {
 		expect(
 			shouldRetainActive({

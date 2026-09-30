@@ -897,6 +897,17 @@ export const BUILTIN_UI_ITEMS: BuiltinUiItem[] = [
 		context: "session",
 		order: 1,
 	},
+	// 钉住 / 取消钉住：运行中的主对话行才有（子代理本来就永久保留，无意义）。
+	// 点后由 LeftPanel 按当前钉住状态翻转，文案在 showSessionMenu 里换。
+	{
+		id: "host:conv-pin",
+		slot: "contextmenu.session",
+		labelKey: "pinConversation",
+		icon: "pin",
+		kind: "action",
+		context: "session",
+		order: 2,
+	},
 	// 过户：只在“另一处”行出现（owner/convId 标识目标），点后整段对话（含等答复问卷）搬到本页。
 	{
 		id: "host:conv-takeover",

@@ -1804,6 +1804,10 @@ export interface Conversation {
 	 *  它在左栏「运行的对话」里的可见性还额外包括「当前对话 + 已经有内容」——
 	 *  见 shownInRunningList（#140），那是纯展示口径，不改这个标记的语义。 */
 	listed: boolean;
+	/** 用户显式钉住（常驻运行列表）：置换决策无条件保留（见 shouldRetainActive
+	 *  的 pinned 判据），空闲无终端也不随切换释放；显式 dismiss / 强行关闭才移出。
+	 *  本会话进程内有效，不落盘（重启后按历史重开时不再钉）。 */
+	pinned?: boolean;
 	/** A prompt was sent while this conversation was active (cleared whenever
 	 *  it becomes active). A listed conversation that is displaced while idle
 	 *  with this still false counts as "opened but not continued" and is
@@ -9358,8 +9362,8 @@ export class ClientSession {
 				this.emit({
 					type: "notice",
 					level: "warning",
-					text: `当前项目运行的对话已达上限（${MAX_OPEN_CONVERSATIONS} 个），请先打开某个对话并离开（不继续对话）以移出列表`,
-					textEn: `This project already has the max open conversations (${MAX_OPEN_CONVERSATIONS}). Open one and leave it (without continuing) to remove it from the list.`,
+					text: `当前项目运行的对话已达上限（${MAX_OPEN_CONVERSATIONS} 个），请先移出不需要的对话（打开后离开不继续对话即移出；钉住的对话需先取消钉住）`,
+					textEn: `This project already has the max open conversations (${MAX_OPEN_CONVERSATIONS}). Open one and leave it (without continuing) to remove it from the list; pinned chats must be unpinned first.`,
 				});
 				return false;
 			}
@@ -9730,6 +9734,7 @@ export class ClientSession {
 				openTerminals: conv.terminals.countBlockingLive(),
 				listed: conv.listed,
 				promptedSinceActive: conv.promptedSinceActive,
+				pinned: conv.pinned,
 				// 投递中的消息（附件构建 / 影子快照阶段）：见 Conversation.promptInFlight。
 				promptInFlight: Boolean(conv.promptInFlight),
 				hasActiveSubagentRun: () => hasActiveSubagentRun({ sessionId: conv.session.sessionFile }),
@@ -10161,6 +10166,7 @@ export class ClientSession {
 					return pq ? { hasQuestion: true as const, questionId: pq.id, questionTitle: pq.title } : {};
 				})(),
 				parentId: conv.parentId,
+				...(conv.pinned ? { pinned: true as const } : {}),
 				...(conv.forkFrom ? { forkFrom: conv.forkFrom } : {}),
 			});
 		}
@@ -10451,6 +10457,55 @@ export class ClientSession {
 				textEn: `Failed to rename session: ${(err as Error).message}`,
 			});
 		}
+	}
+
+	/** 钉住 / 取消钉住某个对话（左栏右键菜单）。钉住后切走也不从「运行的对话」
+	 *  释放（见 shouldRetainActive 的 pinned 判据，最高优先级）；取消钉住不立即
+	 *  释放，下一次自然置换时按常规规则处理。*/
+	async setConversationPinned(id: string, pinned: boolean): Promise<void> {
+		const conv = this.convs.get(id);
+		if (!conv) {
+			this.emit({
+				type: "notice",
+				level: "warning",
+				text: "该对话不存在或已关闭",
+				textEn: "This conversation does not exist or is already closed",
+			});
+			return;
+		}
+		// 子代理本来就永久豁免置换（displaceActive 开头即返回），钉子对它们无意义。
+		if (conv.isSubagent) {
+			this.emit({
+				type: "notice",
+				level: "info",
+				text: "子代理对话始终保留在运行列表，无需钉住",
+				textEn: "Subagent chats always stay in the running list — no need to pin",
+			});
+			return;
+		}
+		if (pinned === !!conv.pinned) {
+			this.emitConversations();
+			return;
+		}
+		if (pinned) {
+			conv.pinned = true;
+			// 立即进入运行列表（含空白对话）：listed 一旦置位，shownInRunningList 即放行。
+			conv.listed = true;
+		} else {
+			delete conv.pinned;
+		}
+		this.emitConversations();
+		this.flushSnapshot();
+		this.emit({
+			type: "notice",
+			level: "info",
+			text: pinned
+				? `已钉住对话「${conv.title}」，切换其他对话不会将它移出运行列表`
+				: `已取消钉住对话「${conv.title}」，下次切换离开时按常规规则处理`,
+			textEn: pinned
+				? `Pinned "${conv.title}" — switching away keeps it in the running list`
+				: `Unpinned "${conv.title}" — it will be handled by the usual rules on the next switch`,
+		});
 	}
 
 	/** Rename a live conversation by id: retitle in memory AND persist a
@@ -11092,8 +11147,8 @@ export class ClientSession {
 				this.emit({
 					type: "notice",
 					level: "warning",
-					text: `当前项目运行的对话已达上限（${MAX_OPEN_CONVERSATIONS} 个），请先打开某个对话并离开（不继续对话）以移出列表`,
-					textEn: `This project already has the max open conversations (${MAX_OPEN_CONVERSATIONS}). Open one and leave it (without continuing) to remove it from the list.`,
+					text: `当前项目运行的对话已达上限（${MAX_OPEN_CONVERSATIONS} 个），请先移出不需要的对话（打开后离开不继续对话即移出；钉住的对话需先取消钉住）`,
+					textEn: `This project already has the max open conversations (${MAX_OPEN_CONVERSATIONS}). Open one and leave it (without continuing) to remove it from the list; pinned chats must be unpinned first.`,
 				});
 				return;
 			}
@@ -11307,8 +11362,8 @@ export class ClientSession {
 				this.emit({
 					type: "notice",
 					level: "warning",
-					text: `当前项目运行的对话已达上限（${MAX_OPEN_CONVERSATIONS} 个），请先打开某个对话并离开（不继续对话）以移出列表`,
-					textEn: `This project already has the max open conversations (${MAX_OPEN_CONVERSATIONS}). Open one and leave it (without continuing) to remove it from the list.`,
+					text: `当前项目运行的对话已达上限（${MAX_OPEN_CONVERSATIONS} 个），请先移出不需要的对话（打开后离开不继续对话即移出；钉住的对话需先取消钉住）`,
+					textEn: `This project already has the max open conversations (${MAX_OPEN_CONVERSATIONS}). Open one and leave it (without continuing) to remove it from the list; pinned chats must be unpinned first.`,
 				});
 				return;
 			}
@@ -13220,8 +13275,8 @@ export class AgentService {
 			target.takeoverBriefs().filter((b) => b.cwd === main.cwd && !b.isSubagent && !b.isEphemeral).length + movedMains;
 		if (openInProject > MAX_OPEN_CONVERSATIONS) {
 			fail(
-				`目标项目运行的对话已达上限（${MAX_OPEN_CONVERSATIONS} 个），请先打开某个对话并离开（不继续对话）以移出列表`,
-				`This project already has the max open conversations (${MAX_OPEN_CONVERSATIONS}). Open one and leave it (without continuing) to remove it from the list.`,
+				`目标项目运行的对话已达上限（${MAX_OPEN_CONVERSATIONS} 个），请先移出不需要的对话（打开后离开不继续对话即移出；钉住的对话需先取消钉住）`,
+				`This project already has the max open conversations (${MAX_OPEN_CONVERSATIONS}). Open one and leave it (without continuing) to remove it from the list; pinned chats must be unpinned first.`,
 			);
 			return;
 		}

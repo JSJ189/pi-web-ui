@@ -1087,6 +1087,9 @@ export type ClientMessage =
 	/** 将一个内存子代理（inMemory）固化为普通持久化对话：写入磁盘 .jsonl 文件，
 	 *  清除 isSubagent 标记，使其进入历史会话列表并长久保留。 */
 	| { type: "persist_conversation"; id: string }
+	/** 钉住 / 取消钉住运行中的对话：钉住后切换到其他对话也不从「运行的对话」
+	 *  释放（空闲无终端亦然），直到显式移出。pinned=false 时取消钉住。 */
+	| { type: "pin_conversation"; id: string; pinned: boolean }
 	/** Bulk-dismiss FINISHED subagents from the running list (right-click menu).
 	 *  parentId omitted = all finished subagents; given = the transitive
 	 *  subagent descendants of that conversation (children, grandchildren, …),
@@ -2175,6 +2178,8 @@ export interface ConversationSummary {
 	questionTitle?: string;
 	/** 临时会话（不落盘、关闭即销毁、不进历史；不占持久会话名额）。 */
 	isEphemeral?: boolean;
+	/** 用户钉住（常驻运行列表）：切走也不释放，左栏行带 📌 标记。 */
+	pinned?: boolean;
 	/** 派生源信息（若本会话是从另一会话的消息派生而来）。 */
 	forkFrom?: {
 		conversationId: string;

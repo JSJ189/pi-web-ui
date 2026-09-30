@@ -1086,6 +1086,7 @@ export interface DispatchSession {
 	dismissFinishedSubagents(parentId?: string): Promise<void>;
 	handoffSubagent?(fromRunId: string, toRunId: string, payload: string): Promise<void>;
 	persistConversation?(id: string): Promise<void>;
+	setConversationPinned?(id: string, pinned: boolean): Promise<void>;
 	switchSession(path: string): Promise<void>;
 	switchConversation(id: string): Promise<void>;
 	listFiles(path?: string): Promise<void>;
@@ -2203,6 +2204,11 @@ wss.on("connection", (ws) => {
 			case "persist_conversation":
 				if (typeof cs.persistConversation === "function") {
 					void cs.persistConversation(msg.id);
+				}
+				break;
+			case "pin_conversation":
+				if (typeof cs.setConversationPinned === "function") {
+					void cs.setConversationPinned(msg.id, msg.pinned);
 				}
 				break;
 			case "dismiss_finished_subagents":

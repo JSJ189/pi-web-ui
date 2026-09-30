@@ -1057,6 +1057,17 @@ button.session-item.elsewhere-item.confirm {
 	flex-shrink: 0;
 }
 
+/* 钉住标记（左栏会话行：常驻运行列表） */
+.pin-badge {
+	display: inline-block;
+	vertical-align: 1px;
+	margin-right: 6px;
+	font-size: 11px;
+	line-height: 1;
+	flex-shrink: 0;
+	opacity: 0.85;
+}
+
 /* 子代理运行报错的红点（左栏会话行；hover 显示错误文本） */
 .conv-error-badge {
 	display: inline-block;

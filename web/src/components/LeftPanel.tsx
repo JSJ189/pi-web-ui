@@ -53,6 +53,7 @@ interface LeftPanelProps {
 			| { type: "dismiss_conversation"; id: string; withFinishedSubagents?: boolean; force?: boolean }
 			| { type: "dismiss_finished_subagents"; parentId?: string }
 			| { type: "persist_conversation"; id: string }
+			| { type: "pin_conversation"; id: string; pinned: boolean }
 			| { type: "take_over_conversation"; owner: string; id: string }
 			| { type: "peek_elsewhere_question"; owner: string; id: string }
 			| { type: "make_dir"; path: string; setAsCwd?: boolean },
@@ -323,6 +324,14 @@ export const LeftPanel = memo(function LeftPanel({
 					return scopeId
 						? { ...entry, ...(armed ? { label: t("forceDismissConfirm") } : {}) }
 						: { ...entry, hidden: true };
+				// 钉住 / 取消钉住：只在运行中的主对话行出现（子代理本来就永久保留，钉住无意义；
+				// 历史行与「另一处」行不适用 —— 历史是落盘文件，钉只作用于在运行的对话）。
+				if (entry.id === "host:conv-pin") {
+					if (!scopeId) return { ...entry, hidden: true };
+					const pinTarget = conversations.find((c) => c.id === scopeId);
+					if (!pinTarget || pinTarget.isSubagent) return { ...entry, hidden: true };
+					return pinTarget.pinned ? { ...entry, label: t("unpinConversation") } : entry;
+				}
 				// 固化子代理/临时对话为普通对话：只在内存会话（未落盘、isSubagent 或临时）行显示
 				if (entry.id === "host:conv-persist") {
 					if (!scopeId) return { ...entry, hidden: true };
@@ -395,6 +404,14 @@ export const LeftPanel = memo(function LeftPanel({
 			}
 			if (entry.id === "host:conv-persist") {
 				if (scopeId) panelSend({ type: "persist_conversation", id: scopeId });
+				return;
+			}
+			// 钉住 / 取消钉住：按当前状态翻转（菜面文案已按状态给过用户正确预期）。
+			if (entry.id === "host:conv-pin") {
+				if (scopeId) {
+					const cur = conversations.find((c) => c.id === scopeId);
+					panelSend({ type: "pin_conversation", id: scopeId, pinned: !cur?.pinned });
+				}
 				return;
 			}
 			// 对话引用三件套（复制 id / 复制会话文件路径 / 引用到输入框）。
@@ -975,6 +992,11 @@ export const LeftPanel = memo(function LeftPanel({
 																	{c.hasQuestion && (
 																		<span className="question-badge" title={t("waitingQuestionBadge")}>
 																			?
+																		</span>
+																	)}
+																	{c.pinned && (
+																		<span className="pin-badge" title={t("pinnedConversation")}>
+																			📌
 																		</span>
 																	)}
 																</span>
