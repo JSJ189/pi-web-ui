@@ -205,56 +205,9 @@ body,
 	padding: 2px 0 10px;
 }
 
-/* 操作按钮：卡头只有自己的复制键（.chead-copy），消息级按钮全在底部
-   .msg-actions ——主题里不再需要针对「行内操作簇」的任何覆盖。 */
-
-/* 兜底路径（用户消息 / 纯文本回复，无 head 可宿主）：底部操作行改为悬停
-   浮牌，钉在消息右上角的空纸面上 */
-.msg-actions {
-	position: absolute;
-	top: 0;
-	right: 0;
-	margin: 0;
-	z-index: 2;
-	padding: 2px;
-	background: var(--menu-bg) !important;
-	border: 1px solid var(--border) !important;
-	border-radius: 4px !important;
-	box-shadow: 0 4px 14px -4px rgba(38, 34, 24, 0.35) !important;
-	opacity: 0;
-	pointer-events: none;
-	transition:
-		opacity 0.12s ease,
-		pointer-events 0.12s ease;
-}
-
-.msg:hover .msg-actions,
-.msg-actions.has-open-dropdown,
-.msg-actions:focus-within {
-	opacity: 1;
-	pointer-events: auto;
-}
-
-/* 触屏没有 hover：这张浮牌会**永远隐形**（容器 opacity:0 压过按钮的
-   opacity:1，子元素救不回来）且 pointer-events:none 点不动 —— 手机上等于
-   整条操作行消失（基线的 `@media (hover:none)` 只抬按钮的 opacity，
-   抬不动容器）。改为回归基线的**流内右对齐工具行**，同时撤掉浮牌的
-   底色/边框/阴影：常驻的浮牌会正好压住 meta 行右侧的时间。
-   主题在基线之后加载，同权重直接压过基线的 .msg-actions。 */
-@media (hover: none) {
-	.msg-actions {
-		position: static;
-		opacity: 1;
-		pointer-events: auto;
-		justify-content: flex-end;
-		margin-top: 4px;
-		padding: 0;
-		background: transparent !important;
-		border: 0 !important;
-		border-radius: 0 !important;
-		box-shadow: none !important;
-	}
-}
+/* 操作按钮：卡头只有自己的复制键（.chead-copy），消息级按钮（复制三件套 /
+   分叉 / 回滚 / 朗读）统一在底部 .msg-actions 行，流内排在消息气泡/正文下边，
+   桌面端与手机端保持一致。 */
 
 /* 角色行：书目式小标 */
 .msg-meta {
@@ -274,7 +227,7 @@ body,
 }
 
 /* 正文块上的单一复制键去重：卡头现在只有自己的复制键，消息级复制
-   （纯文本 / Markdown / 长图三件套）统一在底部 .msg-actions 悬停浮牌里。 */
+   （纯文本 / Markdown / 长图三件套）统一在底部 .msg-actions 行里。 */
 .msg-text-copy {
 	display: none !important;
 }

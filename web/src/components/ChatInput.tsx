@@ -145,6 +145,8 @@ interface ChatInputProps {
 	dshBlank?: boolean;
 	/** 会话 id（dsh 下拉切换会话时重置选中值）。 */
 	conversationId?: string;
+	/** 当前会话是否处于只读规划模式。 */
+	planMode?: boolean;
 	/** 服务端存过的未发送草稿（全量快照携带，issue #166 单中心文件方案；
 	 *  DSH 引擎不填，传了也忽略）。 */
 	sessionDraft?: { text: string; ts: number } | null;
@@ -154,6 +156,7 @@ interface ChatInputProps {
 
 export const ChatInput = memo(function ChatInput({
 	streaming,
+	planMode,
 	messages,
 	slashCommands,
 	modelState,
@@ -1695,7 +1698,9 @@ export const ChatInput = memo(function ChatInput({
 								? isDsh
 									? t("placeholderStreamingQueued")
 									: t("placeholderStreaming")
-								: t("placeholderIdle")
+								: planMode
+									? t("placeholderPlanMode")
+									: t("placeholderIdle")
 							: t("placeholderConnecting")
 					}
 					disabled={!connected}
@@ -1709,6 +1714,28 @@ export const ChatInput = memo(function ChatInput({
 					onKeyDown={onKeyDown}
 					onPaste={onPaste}
 				/>
+				{planMode && (
+					<div
+						style={{
+							display: "inline-flex",
+							alignItems: "center",
+							gap: 4,
+							fontSize: 11,
+							color: "var(--accent, #38bdf8)",
+							background: "var(--accent-soft, rgba(56, 189, 248, 0.1))",
+							padding: "2px 8px",
+							borderRadius: 12,
+							position: "absolute",
+							right: 12,
+							top: 8,
+							pointerEvents: "none",
+							zIndex: 2,
+						}}
+						title={t("planModeTip")}
+					>
+						📋 {t("planModeBadge")}
+					</div>
+				)}
 				{/* 底部工具条（ChatGPT 风格）：附件 / 模型 / 思考强度 在左，
 				    发送 / 停止 在右，全部收进输入框容器内。 */}
 				<div className="composer-tools">

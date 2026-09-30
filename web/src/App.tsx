@@ -1909,6 +1909,7 @@ export function App() {
 								composerActions={uiSlots["composer.actions"]}
 								onUiAction={onUiAction}
 								streaming={chat.state?.isStreaming ?? false}
+								planMode={chat.state?.planMode ?? false}
 								messages={chat.state?.messages ?? EMPTY_MESSAGES}
 								slashCommands={chat.slashCommands}
 								modelState={modelState}

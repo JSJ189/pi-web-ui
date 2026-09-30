@@ -9354,6 +9354,46 @@ div.chead[role="button"]:focus-visible,
 	filter: brightness(1.08);
 }
 
+/* 净室执行按钮：开辟全新无探索噪音会话 */
+.plan-board-clean-handoff {
+	display: inline-flex;
+	align-items: center;
+	padding: 3px 8px;
+	border: 1px solid var(--accent);
+	border-radius: 6px;
+	background: var(--accent-soft);
+	color: var(--accent);
+	font-size: 12px;
+	line-height: 1.5;
+	cursor: pointer;
+	white-space: nowrap;
+}
+.plan-board-clean-handoff:hover {
+	background: var(--accent);
+	color: #fff;
+}
+
+.plan-board-add-btn {
+	display: inline-flex;
+	align-items: center;
+	justify-content: center;
+	gap: 6px;
+	padding: 6px 12px;
+	border: 1px dashed var(--border-subtle);
+	border-radius: 6px;
+	background: none;
+	color: var(--text-dim);
+	font-size: 12px;
+	cursor: pointer;
+	width: 100%;
+	transition: all 0.2s ease;
+}
+.plan-board-add-btn:hover {
+	border-color: var(--accent);
+	color: var(--accent);
+	background: var(--accent-soft);
+}
+
 /* 展开后的步骤清单：条目多时自己滚，别把整页（输入框 / 顶栏 / 状态栏）顶长。 */
 .plan-board-steps {
 	/* flex:1 + min-height:0：超出上限后在清单内滚动；上限按视口比例，桌面同样

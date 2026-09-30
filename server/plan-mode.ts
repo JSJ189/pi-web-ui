@@ -73,6 +73,9 @@ const BYPASS_TOOLS = new Set([
 	"fork_conversation",
 ]);
 
+/** 计划模式下从模型视野中彻底隐藏的写类工具与旁路工具全集。 */
+export const PLAN_MODE_BLOCKED_TOOL_NAMES = new Set<string>([...BLOCKED_TOOLS, ...BYPASS_TOOLS, "subagent"]);
+
 /** bash 类工具名（terminalBash 开关分流后可能是这几个）。 */
 const BASH_TOOLS = new Set(["bash", "bash_execute", "run_command", "shell", "terminal", "terminal_exec"]);
 

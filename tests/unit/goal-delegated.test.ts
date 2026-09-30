@@ -9,7 +9,13 @@
  * 先例：tests/unit/goal-wizard-target.test.ts（同一套 fake host 手法）。
  */
 import { describe, it, expect } from "vitest";
-import { GoalService, type GoalConversation, type GoalHost, type RoleWaitOutcome } from "../../server/goal-service.js";
+import {
+	GoalService,
+	parseWizardOutput,
+	type GoalConversation,
+	type GoalHost,
+	type RoleWaitOutcome,
+} from "../../server/goal-service.js";
 import type { ServerMessage } from "../../server/protocol.js";
 
 const EXEC_ID = "sa-exec";
@@ -82,6 +88,8 @@ function makeHarness(opts?: {
 	repoAvailable?: boolean;
 	/** 服务排空（quiesce）：新目标拒绝、中途不再派单。 */
 	quiesced?: boolean;
+	/** 计划看板描述（供审查 prompt 联动测试）。 */
+	planDesc?: string;
 }): Harness {
 	const goneFlag = { value: opts?.gone === true };
 	const quiesceFlag = { value: opts?.quiesced === true };
@@ -122,6 +130,7 @@ function makeHarness(opts?: {
 		},
 		goalModeEnabled: () => true,
 		lang: () => "zh",
+		describePlan: () => opts?.planDesc ?? "No active plan.",
 		isGitRepo: async () => opts?.repoAvailable !== false,
 		roleDeadlineMs: () => 1000,
 		spawnRoleAgent: async ({ role, prompt, model }) => {
@@ -643,5 +652,58 @@ describe("委托执行（Plan A / delegated）", () => {
 		h.svc.onAgentEnd(h.conv(), false);
 		expect(h.conv().goal.verdict).toBe("pending");
 		expect(h.spawned).toHaveLength(1);
+	});
+
+	it("P1：审查指令自动注入 describePlan（#389 计划与审查联动）", async () => {
+		const planText = "Plan Progress: 1/2 completed\n[x] 1. Init repo\n[>] 2. Add auth test";
+		const h = makeHarness({ planDesc: planText });
+		await h.svc.setGoal("目标 P", { maxRounds: 0, locked: true });
+		expect(await h.svc.whenAwaitingVerdict("conv-a")).toBe(true);
+		// 审查指令交回给主对话
+		const reviewMsg = h.conv().mainSent.find((m) => m.includes("[goal-review]"));
+		expect(reviewMsg).toBeDefined();
+		expect(reviewMsg).toContain("【任务计划看板当前状态】");
+		expect(reviewMsg).toContain("Plan Progress: 1/2 completed");
+		expect(reviewMsg).toContain("核验时请同时核实上述计划步骤的推进与完成状态是否真实");
+	});
+
+	it("P2：parseWizardOutput 能够正确分离 GOAL 与 STEPS 并解析步骤", () => {
+		const raw = `
+Some preamble text that should be ignored.
+GOAL: 实现用户注册接口并补充自动化测试
+STEPS:
+1. 数据库迁移 | 创建 users 数据表与唯一索引
+2. 编写注册控制器: 校验邮箱密码格式并加密存储
+3. 单元测试 | 覆盖正常注册与重复邮箱异常分支
+(include 2 to 6 concrete steps)
+		`;
+		const res = parseWizardOutput(raw);
+		expect(res.goal).toBe("实现用户注册接口并补充自动化测试");
+		expect(res.steps).toHaveLength(3);
+		expect(res.steps[0]).toEqual({
+			id: "step-1",
+			title: "数据库迁移",
+			status: "pending",
+			description: "创建 users 数据表与唯一索引",
+		});
+		expect(res.steps[1]).toEqual({
+			id: "step-2",
+			title: "编写注册控制器",
+			status: "pending",
+			description: "校验邮箱密码格式并加密存储",
+		});
+		expect(res.steps[2]).toEqual({
+			id: "step-3",
+			title: "单元测试",
+			status: "pending",
+			description: "覆盖正常注册与重复邮箱异常分支",
+		});
+	});
+
+	it("P3：parseWizardOutput 纯 GOAL 无 STEPS 时平稳回退", () => {
+		const raw = "GOAL: 仅仅是一个单行目标描述";
+		const res = parseWizardOutput(raw);
+		expect(res.goal).toBe("仅仅是一个单行目标描述");
+		expect(res.steps).toEqual([]);
 	});
 });

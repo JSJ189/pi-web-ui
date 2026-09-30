@@ -8,6 +8,11 @@ import {
 	FiChevronUp,
 	FiTrash2,
 	FiList,
+	FiCopy,
+	FiCheck,
+	FiEdit2,
+	FiX,
+	FiPlus,
 } from "react-icons/fi";
 import { appSend } from "../app-globals";
 import { useT } from "../i18n";
@@ -17,16 +22,29 @@ interface PlanBoardProps {
 	plan: PlanState | null | undefined;
 }
 
+const NEXT_STATUS: Record<PlanStepStatus, PlanStepStatus> = {
+	pending: "in_progress",
+	in_progress: "done",
+	done: "failed",
+	failed: "pending",
+};
+
 /**
  * 结构化任务计划看板（Plan Mode / Step State Machine）。
  *
- * 借鉴 DSH 的 dsh-plan-mode：
- * 实时展示模型制定和推进的任务步骤状态机（pending / in_progress / done / failed），
- * 支持折叠/展开，并提供总体进度条。
+ * 吸收主流规划与看板范式（DSH / narumitw / plannotator）：
+ * 1. 实时展示任务步骤状态机（pending / in_progress / done / failed）与总体进度；
+ * 2. 支持「开始实施」与「✨ 净室执行（Clean Handoff）」双轨落地；
+ * 3. 支持在看板上可视化微调/批注：内联编辑步骤、删除步骤、切换状态、新增步骤；
+ * 4. 支持一键导出/复制为 Markdown 离线存档。
  */
 export function PlanBoard({ plan }: PlanBoardProps) {
 	const t = useT();
 	const [expanded, setExpanded] = useState(false);
+	const [copied, setCopied] = useState(false);
+	const [editingId, setEditingId] = useState<string | null>(null);
+	const [editTitle, setEditTitle] = useState("");
+	const [editDesc, setEditDesc] = useState("");
 
 	if (!plan || !plan.steps || plan.steps.length === 0) {
 		return null;
@@ -48,91 +66,178 @@ export function PlanBoard({ plan }: PlanBoardProps) {
 		}
 	};
 
-	/** 「开始实施」= 计划模式的**唯一**出口（输入框那个开关已经删掉，改为一次性
-	 *  动作按钮）：先关掉服务端只规划闸门（set_plan_mode false，排在前面才能让
-	 *  本轮在闸门外跑），再发一条实施请求让模型按看板上的计划动手。 */
+	/** 「开始实施」：关掉服务端只规划闸门，在当前会话直接发起实施轮。 */
 	const handleImplement = () => {
 		appSend({ type: "set_plan_mode", enabled: false });
 		appSend({ type: "prompt", text: t("planImplementRequest") });
 	};
 
-	const getStatusBadge = (status: PlanStepStatus) => {
-		switch (status) {
-			case "done":
-				return (
-					<span
-						style={{
-							display: "inline-flex",
-							alignItems: "center",
-							gap: 4,
-							color: "var(--green, #22c55e)",
-							fontSize: 12,
-							fontWeight: 600,
-						}}
-					>
-						<FiCheckCircle />
-						{t("planBoardCompleted")}
-					</span>
-				);
-			case "in_progress":
-				return (
-					<span
-						style={{
-							display: "inline-flex",
-							alignItems: "center",
-							gap: 4,
-							color: "var(--accent, #38bdf8)",
-							fontSize: 12,
-							fontWeight: 600,
-						}}
-					>
-						<FiClock />
-						{t("planBoardInProgress")}
-					</span>
-				);
-			case "failed":
-				return (
-					<span
-						style={{
-							display: "inline-flex",
-							alignItems: "center",
-							gap: 4,
-							color: "var(--red, #ef4444)",
-							fontSize: 12,
-							fontWeight: 600,
-						}}
-					>
-						<FiAlertCircle />
-						{t("planBoardFailed")}
-					</span>
-				);
-			case "pending":
-			default:
-				return (
-					<span
-						style={{
-							display: "inline-flex",
-							alignItems: "center",
-							gap: 4,
-							color: "var(--text-dim, #9aa1b4)",
-							fontSize: 12,
-						}}
-					>
-						<FiCircle />
-						{t("planBoardPending")}
-					</span>
-				);
+	/** 「✨ 净室执行（Clean-session Handoff）」：
+	 *  关闭当前计划模式闸门，新起净室会话，并把目标与计划步骤无损交接过去。
+	 *  避免长调研探索期的上下文噪音污染与注意力漂移。 */
+	const handleCleanHandoff = () => {
+		const planSummary = steps
+			.map((s, i) => `${i + 1}. ${s.title}${s.description ? ` (${s.description})` : ""}`)
+			.join("\n");
+		appSend({ type: "set_plan_mode", enabled: false });
+		appSend({ type: "new_chat" });
+		appSend({ type: "plan_update", steps });
+		appSend({
+			type: "prompt",
+			text: `${t("planCleanHandoffPrompt")}\n\n${planSummary}`,
+		});
+	};
+
+	/** 导出并复制为 Markdown 文本 */
+	const handleExportMarkdown = async () => {
+		const lines = [
+			`# ${t("planBoardTitle")} (${doneCount}/${totalCount})`,
+			"",
+			...steps.map((s, idx) => {
+				const mark =
+					s.status === "done" ? "[x]" : s.status === "in_progress" ? "[>]" : s.status === "failed" ? "[!]" : "[ ]";
+				let line = `${mark} ${idx + 1}. ${s.title}`;
+				if (s.description) line += `\n   ${s.description}`;
+				return line;
+			}),
+		];
+		try {
+			await navigator.clipboard.writeText(lines.join("\n"));
+			setCopied(true);
+			setTimeout(() => setCopied(false), 2000);
+		} catch {
+			// Clipboard API failed fallback
 		}
+	};
+
+	/** 单步内联编辑控制 */
+	const startEdit = (step: PlanStep) => {
+		setEditingId(step.id);
+		setEditTitle(step.title);
+		setEditDesc(step.description || "");
+	};
+
+	const cancelEdit = () => {
+		setEditingId(null);
+		setEditTitle("");
+		setEditDesc("");
+	};
+
+	const saveEdit = (stepId: string) => {
+		const trimmedTitle = editTitle.trim();
+		if (!trimmedTitle) return;
+		const nextSteps = steps.map((s) => {
+			if (s.id !== stepId) return s;
+			const next: PlanStep = { ...s, title: trimmedTitle };
+			if (editDesc.trim()) next.description = editDesc.trim();
+			else delete next.description;
+			return next;
+		});
+		appSend({ type: "plan_update", steps: nextSteps });
+		setEditingId(null);
+	};
+
+	/** 删除步骤 */
+	const handleDeleteStep = (stepId: string) => {
+		const nextSteps = steps.filter((s) => s.id !== stepId);
+		appSend({ type: "plan_update", steps: nextSteps });
+	};
+
+	/** 顺时针切换步骤状态 (pending -> in_progress -> done -> failed) */
+	const handleCycleStatus = (stepId: string) => {
+		const nextSteps = steps.map((s) => (s.id === stepId ? { ...s, status: NEXT_STATUS[s.status] } : s));
+		appSend({ type: "plan_update", steps: nextSteps });
+	};
+
+	/** 新增步骤 */
+	const handleAddStep = () => {
+		const newId = `step-${Date.now()}`;
+		const newStep: PlanStep = {
+			id: newId,
+			title: t("planBoardAddStep"),
+			status: "pending",
+		};
+		const nextSteps = [...steps, newStep];
+		appSend({ type: "plan_update", steps: nextSteps });
+		startEdit(newStep);
+	};
+
+	const getStatusBadge = (status: PlanStepStatus, stepId: string) => {
+		const badgeContent = (() => {
+			switch (status) {
+				case "done":
+					return (
+						<>
+							<FiCheckCircle />
+							{t("planBoardCompleted")}
+						</>
+					);
+				case "in_progress":
+					return (
+						<>
+							<FiClock />
+							{t("planBoardInProgress")}
+						</>
+					);
+				case "failed":
+					return (
+						<>
+							<FiAlertCircle />
+							{t("planBoardFailed")}
+						</>
+					);
+				case "pending":
+				default:
+					return (
+						<>
+							<FiCircle />
+							{t("planBoardPending")}
+						</>
+					);
+			}
+		})();
+
+		const color =
+			status === "done"
+				? "var(--green, #22c55e)"
+				: status === "in_progress"
+					? "var(--accent, #38bdf8)"
+					: status === "failed"
+						? "var(--red, #ef4444)"
+						: "var(--text-dim, #9aa1b4)";
+
+		return (
+			<button
+				type="button"
+				onClick={(e) => {
+					e.stopPropagation();
+					handleCycleStatus(stepId);
+				}}
+				title="点击切换状态 (pending / in_progress / done / failed)"
+				style={{
+					display: "inline-flex",
+					alignItems: "center",
+					gap: 4,
+					color,
+					fontSize: 12,
+					fontWeight: status === "pending" ? 400 : 600,
+					background: "none",
+					border: "none",
+					cursor: "pointer",
+					padding: "2px 4px",
+					borderRadius: 4,
+				}}
+			>
+				{badgeContent}
+			</button>
+		);
 	};
 
 	return (
 		<div
 			className="plan-board"
 			style={{
-				/* 左右内缩与宽度交给 .plan-board（同 .goalbar 的列 token），
-				   别在这里写固定 margin —— 固定值在宽屏聊天列/窄屏下都比对话列宽一截。 */
 				padding: "10px 14px",
-				/* 列向 flex 子项默认 min-width:auto，长英文单词（无空格）会把看板撑破容器。 */
 				minWidth: 0,
 				maxWidth: "100%",
 				borderRadius: 8,
@@ -142,8 +247,7 @@ export function PlanBoard({ plan }: PlanBoardProps) {
 				fontSize: 13,
 			}}
 		>
-			{/* 顶部概要栏。排版全在 styles.css（.plan-board-head 系列）：窄屏下
-			    标题/计数钉死不收缩、当前步骤 chip 放不下就整块换行，避免 CJK 竖排。 */}
+			{/* 顶部概要栏 */}
 			<div className="plan-board-head" onClick={() => setExpanded(!expanded)}>
 				<div className="plan-board-head-main">
 					<FiList className="plan-board-icon" />
@@ -160,8 +264,20 @@ export function PlanBoard({ plan }: PlanBoardProps) {
 				</div>
 
 				<div className="plan-board-actions">
-					{/* 计划模式下这个按钮必须显眼：它是唯一能回到“能写代码”状态的
-					    入口（闸门在服务端，且已常亮直到用户自己关）。 */}
+					{/* 净室执行：开辟干净新会话执行 */}
+					<button
+						type="button"
+						className="plan-board-clean-handoff"
+						title={t("planCleanHandoffTip")}
+						onClick={(e) => {
+							e.stopPropagation();
+							handleCleanHandoff();
+						}}
+					>
+						{t("planCleanHandoffBtn")}
+					</button>
+
+					{/* 实施按钮：在当前会话执行 */}
 					<button
 						type="button"
 						className="plan-board-implement"
@@ -173,6 +289,21 @@ export function PlanBoard({ plan }: PlanBoardProps) {
 					>
 						{t("planImplementBtn")}
 					</button>
+
+					{/* 复制为 Markdown */}
+					<button
+						type="button"
+						className="plan-board-iconbtn"
+						title={copied ? t("planBoardExportSuccess") : t("planBoardExportMarkdown")}
+						onClick={(e) => {
+							e.stopPropagation();
+							void handleExportMarkdown();
+						}}
+					>
+						{copied ? <FiCheck style={{ color: "var(--green, #22c55e)" }} /> : <FiCopy />}
+					</button>
+
+					{/* 清空看板 */}
 					<button
 						type="button"
 						className="plan-board-iconbtn"
@@ -184,6 +315,8 @@ export function PlanBoard({ plan }: PlanBoardProps) {
 					>
 						<FiTrash2 />
 					</button>
+
+					{/* 展开/折叠 */}
 					<button
 						type="button"
 						className="plan-board-iconbtn"
@@ -214,13 +347,99 @@ export function PlanBoard({ plan }: PlanBoardProps) {
 				/>
 			</div>
 
-			{/* 展开的完整步骤清单：限高 + 内部滚动（.plan-board-steps）。
-			    条目一多就把整条 .main 撑得比视口高，输入框、顶栏乃至状态栏跟着
-			    整页滚走 —— 这里自己滚，看板高度封顶在视口比例内。 */}
+			{/* 展开的完整步骤清单 */}
 			{expanded && (
 				<div className="plan-board-steps" style={{ marginTop: 10, display: "flex", flexDirection: "column", gap: 8 }}>
 					{steps.map((step, idx) => {
 						const isCurrent = step.id === plan.activeStepId || step.status === "in_progress";
+						const isEditing = editingId === step.id;
+
+						if (isEditing) {
+							return (
+								<div
+									key={step.id || idx}
+									style={{
+										display: "flex",
+										flexDirection: "column",
+										gap: 6,
+										padding: "8px 10px",
+										borderRadius: 6,
+										backgroundColor: "var(--bg-elev2, rgba(0, 0, 0, 0.2))",
+										border: "1px solid var(--accent, #38bdf8)",
+									}}
+								>
+									<input
+										type="text"
+										value={editTitle}
+										onChange={(e) => setEditTitle(e.target.value)}
+										placeholder={t("planBoardStepTitlePlaceholder")}
+										style={{
+											width: "100%",
+											padding: "4px 8px",
+											borderRadius: 4,
+											border: "1px solid var(--border-subtle)",
+											background: "var(--bg, #0b0f17)",
+											color: "var(--text, #f1f5f9)",
+											fontSize: 13,
+										}}
+										autoFocus
+										onKeyDown={(e) => {
+											if (e.key === "Enter" && !e.shiftKey) {
+												e.preventDefault();
+												saveEdit(step.id);
+											} else if (e.key === "Escape") {
+												cancelEdit();
+											}
+										}}
+									/>
+									<textarea
+										rows={2}
+										value={editDesc}
+										onChange={(e) => setEditDesc(e.target.value)}
+										placeholder={t("planBoardStepDescPlaceholder")}
+										style={{
+											width: "100%",
+											padding: "4px 8px",
+											borderRadius: 4,
+											border: "1px solid var(--border-subtle)",
+											background: "var(--bg, #0b0f17)",
+											color: "var(--text-dim, #9aa1b4)",
+											fontSize: 12,
+											resize: "vertical",
+										}}
+										onKeyDown={(e) => {
+											if (e.key === "Enter" && (e.metaKey || e.ctrlKey)) {
+												e.preventDefault();
+												saveEdit(step.id);
+											} else if (e.key === "Escape") {
+												cancelEdit();
+											}
+										}}
+									/>
+									<div style={{ display: "flex", justifyContent: "flex-end", gap: 6, marginTop: 2 }}>
+										<button
+											type="button"
+											className="plan-board-iconbtn"
+											onClick={cancelEdit}
+											title={t("cancel")}
+											style={{ padding: "3px 8px", fontSize: 12 }}
+										>
+											<FiX /> {t("cancel")}
+										</button>
+										<button
+											type="button"
+											className="plan-board-implement"
+											onClick={() => saveEdit(step.id)}
+											title={t("confirm")}
+											style={{ padding: "3px 10px", fontSize: 12 }}
+										>
+											<FiCheck /> {t("confirm")}
+										</button>
+									</div>
+								</div>
+							);
+						}
+
 						return (
 							<div
 								key={step.id || idx}
@@ -228,7 +447,6 @@ export function PlanBoard({ plan }: PlanBoardProps) {
 									display: "flex",
 									alignItems: "flex-start",
 									justifyContent: "space-between",
-									/* 窄屏时状态徽标换行到下一行，别和标题抢最后几个像素。 */
 									flexWrap: "wrap",
 									rowGap: 4,
 									minWidth: 0,
@@ -255,7 +473,6 @@ export function PlanBoard({ plan }: PlanBoardProps) {
 												fontWeight: isCurrent ? 600 : 500,
 												color: step.status === "done" ? "var(--text-dim, #9aa1b4)" : "var(--text, #f1f5f9)",
 												textDecoration: step.status === "done" ? "line-through" : "none",
-												/* 标题是模型原文：长英文单词/长标识符必须能在窄屏内断行 */
 												minWidth: 0,
 												overflowWrap: "anywhere",
 												wordBreak: "break-word",
@@ -280,10 +497,34 @@ export function PlanBoard({ plan }: PlanBoardProps) {
 										</div>
 									)}
 								</div>
-								<div style={{ flexShrink: 0, marginTop: 2 }}>{getStatusBadge(step.status)}</div>
+
+								<div style={{ display: "flex", alignItems: "center", gap: 4, flexShrink: 0, marginTop: 2 }}>
+									{getStatusBadge(step.status, step.id)}
+									<button
+										type="button"
+										className="plan-board-iconbtn"
+										title={t("planBoardEditStep")}
+										onClick={() => startEdit(step)}
+									>
+										<FiEdit2 size={12} />
+									</button>
+									<button
+										type="button"
+										className="plan-board-iconbtn"
+										title={t("planBoardDeleteStep")}
+										onClick={() => handleDeleteStep(step.id)}
+									>
+										<FiTrash2 size={12} />
+									</button>
+								</div>
 							</div>
 						);
 					})}
+
+					{/* 底部新增步骤按钮 */}
+					<button type="button" className="plan-board-add-btn" onClick={handleAddStep}>
+						<FiPlus /> {t("planBoardAddStep")}
+					</button>
 				</div>
 			)}
 		</div>

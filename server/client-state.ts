@@ -6,7 +6,7 @@
  *
  * 从 agent-service.ts 抽出，行为保持不变。
  */
-import { mkdirSync, readFileSync, renameSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, readFileSync, renameSync, writeFileSync } from "node:fs";
 import { dirname, isAbsolute, resolve } from "node:path";
 import { normalizeSoftCapByModel, normalizeSoftCapTokens } from "./soft-cap.js";
 import { deriveLegacy, legacyToDisabled, normalizeDisabledAgentTools } from "./tool-manager.js";
@@ -582,6 +582,12 @@ export class ClientStateStore {
 			{ path: cwd, lastUsed: now },
 			...state.projects.filter((p) => normalizePathKey(p.path) !== targetKey),
 		].slice(0, 30);
+		// Also persist in global settings so new tabs and sessions inherit it immediately
+		const globalState = (all[ClientStateStore.GLOBAL_SETTINGS_KEY] ??= { projects: [] });
+		globalState.projects = [
+			{ path: cwd, lastUsed: now },
+			...(globalState.projects ?? []).filter((p) => normalizePathKey(p.path) !== targetKey),
+		].slice(0, 50);
 		// Opening the workspace again clears its removal tombstone across all clients and global settings.
 		for (const cState of Object.values(all)) {
 			if (cState.removedProjects?.length) {
@@ -638,6 +644,79 @@ export class ClientStateStore {
 			}
 		}
 		return result;
+	}
+
+	/**
+	 * Get recent projects merged across the client's own history, global settings,
+	 * and other clients in this store, filtering out tombstoned paths and non-existent paths.
+	 */
+	getRecentProjects(clientId: string): { path: string; lastUsed: number }[] {
+		const all = this.load();
+		const removedKeys = new Set(this.getRemovedProjects(clientId).map(normalizePathKey));
+		const map = new Map<string, { path: string; lastUsed: number }>();
+
+		const merge = (list?: { path: string; lastUsed: number }[]) => {
+			if (!list) return;
+			for (const p of list) {
+				if (!p?.path) continue;
+				const key = normalizePathKey(p.path);
+				if (removedKeys.has(key)) continue;
+				const existing = map.get(key);
+				if (!existing || p.lastUsed > existing.lastUsed) {
+					map.set(key, { path: p.path, lastUsed: p.lastUsed });
+				}
+			}
+		};
+
+		// Merge client's own projects first, then global settings, then all other clients
+		merge(all[clientId]?.projects);
+		merge(all[ClientStateStore.GLOBAL_SETTINGS_KEY]?.projects);
+		for (const [id, cState] of Object.entries(all)) {
+			if (id !== clientId && id !== ClientStateStore.GLOBAL_SETTINGS_KEY) {
+				merge(cState.projects);
+			}
+		}
+
+		return [...map.values()]
+			.filter((p) => {
+				try {
+					return existsSync(p.path);
+				} catch {
+					return false;
+				}
+			})
+			.sort((a, b) => b.lastUsed - a.lastUsed)
+			.slice(0, 30);
+	}
+
+	/** Record discovered projects into global settings cache (without clobbering tombstones). */
+	mergeDiscoveredProjects(projects: { path: string; lastUsed: number }[]): void {
+		if (!projects.length) return;
+		const all = this.load();
+		const globalState = (all[ClientStateStore.GLOBAL_SETTINGS_KEY] ??= { projects: [] });
+		const removedKeys = new Set((globalState.removedProjects ?? []).map(normalizePathKey));
+		const map = new Map<string, { path: string; lastUsed: number }>();
+		for (const p of globalState.projects ?? []) {
+			const key = normalizePathKey(p.path);
+			if (!removedKeys.has(key)) map.set(key, p);
+		}
+		let changed = false;
+		for (const p of projects) {
+			const key = normalizePathKey(p.path);
+			if (removedKeys.has(key)) continue;
+			const existing = map.get(key);
+			if (!existing) {
+				map.set(key, p);
+				changed = true;
+			} else if (p.lastUsed > existing.lastUsed) {
+				existing.lastUsed = p.lastUsed;
+				changed = true;
+			}
+		}
+		if (changed) {
+			globalState.projects = [...map.values()].sort((a, b) => b.lastUsed - a.lastUsed).slice(0, 50);
+			this.save();
+		}
 	}
 
 	/** Last-used goal/review prefs for a client, or undefined if never set. */

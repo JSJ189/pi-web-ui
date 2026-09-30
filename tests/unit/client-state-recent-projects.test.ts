@@ -95,4 +95,32 @@ describe("ClientStateStore 最近项目删除全局持久化", () => {
 		// 全新 client 应该能继承老 client 的墓碑
 		expect(newStore.getRemovedProjects("brandNewClient")).toContain("/legacy/path/to/projectX");
 	});
+
+	it("getRecentProjects 跨 client 聚合且过滤墓碑与不存在目录", () => {
+		// dir 本身存在
+		store.remember("clientA", dir);
+		// 不存在的目录
+		store.remember("clientB", join(dir, "non-existent-subfolder"));
+
+		const recentA = store.getRecentProjects("clientA");
+		expect(recentA.map((p) => p.path)).toContain(dir);
+		expect(recentA.map((p) => p.path)).not.toContain(join(dir, "non-existent-subfolder"));
+
+		// 全新 client 也能跨 client 获取到存在的 dir
+		const recentBrandNew = store.getRecentProjects("brandNewClient");
+		expect(recentBrandNew.map((p) => p.path)).toContain(dir);
+
+		// 移除 dir 后，即使是 brandNewClient 也获取不到
+		store.removeProject("clientA", dir);
+		const recentAfterRemove = store.getRecentProjects("brandNewClient");
+		expect(recentAfterRemove.map((p) => p.path)).not.toContain(dir);
+	});
+
+	it("mergeDiscoveredProjects 能合并新发现的项目并尊重墓碑", () => {
+		store.removeProject("clientA", dir);
+		store.mergeDiscoveredProjects([{ path: dir, lastUsed: 12345 }]);
+
+		// 墓碑依然生效
+		expect(store.getRecentProjects("clientA").map((p) => p.path)).not.toContain(dir);
+	});
 });

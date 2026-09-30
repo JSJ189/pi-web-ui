@@ -18,6 +18,7 @@ import "./patch-turn-end-boundary.js";
 import { spawn } from "node:child_process";
 import { createHash, randomUUID } from "node:crypto";
 import { createRequire } from "node:module";
+import * as fsPromises from "node:fs/promises";
 import {
 	appendFileSync,
 	existsSync,
@@ -139,7 +140,7 @@ import {
 	type ToolApprovalResolution,
 } from "./tool-approval.js";
 import { PlanManager } from "./plan-manager.js";
-import { buildPlanModePrompt, planModeDenial, planModeNoticeText } from "./plan-mode.js";
+import { buildPlanModePrompt, planModeDenial, planModeNoticeText, PLAN_MODE_BLOCKED_TOOL_NAMES } from "./plan-mode.js";
 import { DELEGATION_SYSTEM_PROMPT, delegationDenial, delegateNoticeText } from "./delegate-mode.js";
 import { goalReviewDenial, shouldDeferPromptForReview } from "./goal-review-gate.js";
 import { readPlanModeFromSession } from "./permission-preset.js";
@@ -524,11 +525,14 @@ export function withPlanModeGate(
 				const params = args[1];
 				const denied = planModeDenial(def.name, params);
 				if (denied) {
-					return {
-						content: [{ type: "text", text: pick(getLang(), denied.reason, denied.reasonEn) }],
-						details: { guardDenied: true, planModeDenied: true, kind: denied.kind },
-						isError: true,
-					} as never;
+					const reason = pick(getLang(), denied.reason, denied.reasonEn);
+					const err = new Error(reason);
+					(err as unknown as Record<string, unknown>).details = {
+						guardDenied: true,
+						planModeDenied: true,
+						kind: denied.kind,
+					};
+					throw err;
 				}
 			}
 			return (def.execute as (...a: unknown[]) => unknown)(...args);
@@ -2135,6 +2139,220 @@ export function isInsideSessionsDir(agentDir: string, targetPath: string): boole
 	const extra = piSessionsRoot();
 	if (extra) roots.push(resolve(extra));
 	return roots.some((root) => abs.startsWith(root + sep));
+}
+
+/**
+ * 从会话文件首行读取 cwd（轻量探测，最多读取 2KB，绝不完整解析整个 jsonl 消息历史）。
+ */
+async function readCwdFromSessionHeader(filePath: string): Promise<string | null> {
+	let handle: fsPromises.FileHandle | undefined;
+	try {
+		handle = await fsPromises.open(filePath, "r");
+		const buf = Buffer.alloc(2048);
+		const { bytesRead } = await handle.read(buf, 0, 2048, 0);
+		const text = buf.toString("utf8", 0, bytesRead);
+		const nl = text.indexOf("\n");
+		const firstLine = nl !== -1 ? text.slice(0, nl) : text;
+		if (!firstLine.trim()) return null;
+		const parsed = JSON.parse(firstLine);
+		return typeof parsed.cwd === "string" && parsed.cwd.trim() ? parsed.cwd : null;
+	} catch {
+		return null;
+	} finally {
+		if (handle) await handle.close().catch(() => {});
+	}
+}
+
+/**
+ * 快速轻量地从 SDK 会话目录中发现项目路径（仅读取会话文件的第一行头部获取 cwd，
+ * 绝不使用 SessionManager.listAll 遍历解析全部会话文本，避免大历史时阻塞数秒到数十秒）。
+ */
+async function discoverRecentProjectsFromDisk(sessionRoots: string[], limit = 30): Promise<ProjectSummary[]> {
+	const projects = new Map<string, ProjectSummary>();
+
+	for (const root of sessionRoots) {
+		if (projects.size >= limit) break;
+		try {
+			if (!existsSync(root)) continue;
+			const entries = await fsPromises.readdir(root, { withFileTypes: true });
+
+			// 1. 扁平布局（PI_CODING_AGENT_SESSION_DIR）：根目录下直接是 .jsonl
+			const flatFiles = entries.filter((e) => e.isFile() && e.name.endsWith(".jsonl"));
+			if (flatFiles.length > 0) {
+				const fileStats = await Promise.all(
+					flatFiles.map(async (f) => {
+						const fp = join(root, f.name);
+						try {
+							const st = await fsPromises.stat(fp);
+							return { path: fp, mtime: st.mtimeMs };
+						} catch {
+							return null;
+						}
+					}),
+				);
+				fileStats.sort((a, b) => (b?.mtime ?? 0) - (a?.mtime ?? 0));
+				for (const s of fileStats) {
+					if (!s || projects.size >= limit) break;
+					const cwd = await readCwdFromSessionHeader(s.path);
+					if (cwd) {
+						const key = normalizePathKey(cwd);
+						if (!projects.has(key)) {
+							try {
+								if (existsSync(cwd)) projects.set(key, { path: cwd, lastUsed: s.mtime });
+							} catch {}
+						}
+					}
+				}
+			}
+
+			// 2. 默认子目录布局（<agentDir>/sessions/--<cwd>--/）：每 cwd 一个子目录
+			const subdirs = entries.filter((e) => e.isDirectory() || e.isSymbolicLink()).map((e) => join(root, e.name));
+			if (subdirs.length > 0 && projects.size < limit) {
+				const CHUNK = 64;
+				const dirStats: { path: string; mtime: number }[] = [];
+				for (let i = 0; i < subdirs.length; i += CHUNK) {
+					const chunk = subdirs.slice(i, i + CHUNK);
+					const stats = await Promise.all(
+						chunk.map(async (dir) => {
+							try {
+								const st = await fsPromises.stat(dir);
+								return { path: dir, mtime: st.mtimeMs };
+							} catch {
+								return null;
+							}
+						}),
+					);
+					for (const s of stats) if (s) dirStats.push(s);
+				}
+				dirStats.sort((a, b) => b.mtime - a.mtime);
+
+				for (let i = 0; i < dirStats.length; i += 16) {
+					if (projects.size >= limit) break;
+					const batch = dirStats.slice(i, i + 16);
+					const batchRes = await Promise.all(
+						batch.map(async (d) => {
+							try {
+								const files = await fsPromises.readdir(d.path);
+								const jsonls = files.filter((f) => f.endsWith(".jsonl"));
+								if (jsonls.length === 0) return null;
+								let newestFile = "";
+								let newestMtime = 0;
+								for (const f of jsonls) {
+									const fp = join(d.path, f);
+									try {
+										const st = await fsPromises.stat(fp);
+										if (st.mtimeMs > newestMtime) {
+											newestMtime = st.mtimeMs;
+											newestFile = fp;
+										}
+									} catch {}
+								}
+								if (!newestFile) return null;
+								const cwd = await readCwdFromSessionHeader(newestFile);
+								if (!cwd) return null;
+								return { path: cwd, lastUsed: newestMtime };
+							} catch {
+								return null;
+							}
+						}),
+					);
+
+					for (const r of batchRes) {
+						if (!r) continue;
+						const key = normalizePathKey(r.path);
+						if (!projects.has(key)) {
+							try {
+								if (existsSync(r.path)) {
+									projects.set(key, r);
+								}
+							} catch {}
+						}
+					}
+				}
+			}
+		} catch {
+			/* best effort */
+		}
+	}
+
+	return [...projects.values()].sort((a, b) => b.lastUsed - a.lastUsed);
+}
+
+/**
+ * 快速解析单个会话文件（提取 id/cwd/name/parentSessionPath/firstMessage/messageCount/modified/allMessagesText）。
+ * 仅用于会话列表发现与搜索，避免调用 SDK 重型的全量树解析。
+ */
+async function parseSessionInfoFast(filePath: string, fileMtime: number): Promise<SessionInfo | null> {
+	try {
+		const content = await fsPromises.readFile(filePath, "utf8");
+		const lines = content.split("\n");
+		let id = "";
+		let cwd = "";
+		let name: string | undefined;
+		let parentSessionPath: string | undefined;
+		let firstMessage = "";
+		let messageCount = 0;
+		let lastActivityTime = 0;
+		let headerTime = 0;
+		const allMessages: string[] = [];
+
+		for (const line of lines) {
+			if (!line.trim()) continue;
+			let entry: unknown;
+			try {
+				entry = JSON.parse(line);
+			} catch {
+				continue;
+			}
+			const rec = entry as Record<string, unknown> | null;
+			if (!rec) continue;
+			if (rec.type === "session") {
+				id = typeof rec.id === "string" ? rec.id : "";
+				cwd = typeof rec.cwd === "string" ? rec.cwd : "";
+				if (typeof rec.timestamp === "string") headerTime = new Date(rec.timestamp).getTime();
+				if (typeof rec.parentSession === "string") parentSessionPath = rec.parentSession;
+			} else if (rec.type === "session_info") {
+				if (typeof rec.name === "string" && rec.name.trim()) name = rec.name.trim();
+			} else if (rec.type === "message") {
+				messageCount++;
+				const msg = rec.message as Record<string, unknown> | null;
+				if (msg) {
+					if (typeof msg.timestamp === "number") lastActivityTime = Math.max(lastActivityTime, msg.timestamp);
+					let text = "";
+					if (typeof msg.content === "string") {
+						text = msg.content;
+					} else if (Array.isArray(msg.content)) {
+						for (const part of msg.content) {
+							if (part && typeof part.text === "string") {
+								text += (text ? " " : "") + part.text;
+							}
+						}
+					}
+					if (text) {
+						if (!firstMessage && msg.role === "user") firstMessage = text;
+						allMessages.push(text);
+					}
+				}
+			}
+		}
+
+		if (!id) return null;
+		const modified = lastActivityTime > 0 ? lastActivityTime : headerTime > 0 ? headerTime : fileMtime;
+		return {
+			path: filePath,
+			id,
+			cwd,
+			name,
+			parentSessionPath,
+			created: new Date(headerTime || fileMtime),
+			modified: new Date(modified),
+			messageCount,
+			firstMessage: firstMessage || "(no messages)",
+			allMessagesText: allMessages.join(" "),
+		};
+	} catch {
+		return null;
+	}
 }
 
 /** 会话当前模型的 "provider/id"（无模型时 null；软上限按模型覆盖用，issue #229）。 */
@@ -3758,6 +3976,12 @@ export class ClientSession {
 			getConv: (id) => this.convs.get(id),
 			cwd: () => this.cwd,
 			gitDiff: (dir) => this.gitDiff(dir),
+			// 任务计划看板（#389 目标与计划联动）：审查者核验步骤看板，向导产物注入看板
+			getPlan: (convId) => this.planManager.getPlan(convId),
+			describePlan: (convId) => this.planManager.describePlan(convId),
+			setPlan: (convId, steps) => {
+				this.updatePlan(steps, undefined, convId);
+			},
 			// 工作区 git 可用性（目标模式停滞判定的可信信号开关）：非仓库目录下
 			// git diff 恒为空，取样会跳过停滞计数，纯问答类目标不再被误熔断。
 			isGitRepo: async (cwd) => {
@@ -7611,6 +7835,11 @@ export class ClientSession {
 		return undefined;
 	}
 
+	private convOfSession(session: AgentSession): Conversation | undefined {
+		for (const c of this.convs.values()) if (c.session === session) return c;
+		return undefined;
+	}
+
 	/**
 	 * read / write / edit 三处覆盖的注入规格：基底 = 扩展注册的同名工具优先，否则 SDK 内置实现
 	 * （见 tool-overrides.ts —— 这三处覆盖不能塞进创建时的 `customTools`，那会静默顶掉扩展的
@@ -7699,9 +7928,21 @@ export class ClientSession {
 	 *  session.reload() 与新会话创建都会把 custom 工具加回活跃集，
 	 *  所以这两条路径之后都要重放本方法（见 reloadSession/创建处）。 */
 	private applyToolGating(session: AgentSession, preset?: string): void {
+		const conv = this.convOfSession(session);
 		const targetPreset =
-			preset ?? this.presetOfSession(session) ?? this.settingsSvc.current.defaultAgentPreset ?? "standard";
-		applyAgentToolsGating(session, effectiveDisabledAgentTools(this.settingsSvc.current), targetPreset);
+			preset ??
+			conv?.agentPreset ??
+			this.presetOfSession(session) ??
+			this.settingsSvc.current.defaultAgentPreset ??
+			"standard";
+		const isPlanMode = conv?.planMode === true;
+		const disabled = new Set(effectiveDisabledAgentTools(this.settingsSvc.current));
+		if (isPlanMode) {
+			for (const toolName of PLAN_MODE_BLOCKED_TOOL_NAMES) {
+				disabled.add(toolName);
+			}
+		}
+		applyAgentToolsGating(session, [...disabled], targetPreset);
 		this.syncPluginTools(session, targetPreset);
 		this.sessionStatsCache = null;
 		this.cachedBaseTokens = null;
@@ -8021,6 +8262,8 @@ export class ClientSession {
 		} catch {
 			// best effort for in-memory sessions
 		}
+		// 动态应用工具门控：开启计划模式时剔除写类工具，关闭时恢复写类工具
+		this.applyToolGating(target.session);
 		// 计划模式有会话准入校验（空白对话也能开，但快照要立刻反映按钮态）。
 		const notice = planModeNoticeText(enabled);
 		this.emit({ type: "notice", level: "info", text: notice.text, textEn: notice.textEn });
@@ -8037,6 +8280,8 @@ export class ClientSession {
 	private async reloadPromptForPlanMode(conv: Conversation): Promise<void> {
 		try {
 			await conv.session.reload?.();
+			// reload() 重新加载扩展时可能会将工具加回活跃集，重跑一次门控确保写工具被持续剔除
+			this.applyToolGating(conv.session);
 		} catch {
 			// best effort：某些引擎/临时态不支持 reload
 		}
@@ -8399,6 +8644,9 @@ export class ClientSession {
 		const conv = this.conv;
 		const promptAc = new AbortController();
 		conv.activePromptAc = promptAc;
+		if (conv.planMode === true) {
+			this.applyToolGating(conv.session);
+		}
 		// 审查者模式（自动委派）：本对话只审阅 —— 用户这条 prompt 直接转给常驻执行
 		// 对话执行，主会话这一轮**不跑模型**。接在 promptAc 之后、draft 清理之前：
 		// 转走的内容不该把主对话的草稿也清掉（用户可能还想在主对话里追一句）。
@@ -10216,33 +10464,105 @@ export class ClientSession {
 	 * pushSessions() and searchSessions() share this fridge — opening the
 	 * panel warms it, then every keystroke inside the TTL is free.
 	 */
-	private sessionInfosCache: { cwd: string; infos: SessionInfo[]; at: number } | null = null;
-	private static readonly SESSION_INFO_CACHE_TTL = 3000;
+	/** 最近项目列表缓存：跨客户端共享静态缓存，TTL 窗口内直接复用。 */
+	private static projectsCache: { at: number; projects: ProjectSummary[] } | null = null;
+	private static readonly PROJECTS_CACHE_TTL = 60_000;
+	private static projectsInFlight: Promise<ProjectSummary[] | null> | null = null;
 
-	/** 最近项目列表缓存：pushProjects 的全量扫盘（SessionManager.listAll +
-	 *  existsSync 逐个校验）昂贵，切项目/新对话/跨客户端通知时频繁触发 ——
-	 *  TTL 内直接复用并把当前 cwd 合并进去，不反复扫盘。 */
-	private projectsCache: { at: number; projects: ProjectSummary[] } | null = null;
-	private static readonly PROJECTS_CACHE_TTL = 15_000;
-	private projectsInFlight: Promise<ProjectSummary[] | null> | null = null;
+	/** 会话单文件 stat 缓存（path -> { mtime, size, info }）：避免对未修改的会话文件重复读取与 JSON 解析。 */
+	private static sessionFileCache = new Map<string, { mtime: number; size: number; info: SessionInfo }>();
+	/** 会话列表缓存（按 cwdKey 隔离，30s TTL）。 */
+	private static sessionInfosCache = new Map<string, { infos: SessionInfo[]; at: number }>();
+	private static sessionInfosInFlight = new Map<string, Promise<SessionInfo[]>>();
+	private static readonly SESSION_INFO_CACHE_TTL = 30_000;
 
 	private async loadSessionInfos(): Promise<SessionInfo[]> {
 		const now = Date.now();
-		const c = this.sessionInfosCache;
-		if (c && c.cwd === this.cwd && now - c.at < ClientSession.SESSION_INFO_CACHE_TTL) {
+		const cwdKey = normalizePathKey(this.cwd);
+		const c = ClientSession.sessionInfosCache.get(cwdKey);
+		if (c && now - c.at < ClientSession.SESSION_INFO_CACHE_TTL) {
 			return c.infos;
 		}
-		const infos = await SessionManager.list(this.cwd, piSessionsRoot());
-		this.sessionInfosCache = { cwd: this.cwd, infos, at: now };
-		return infos;
+
+		const inFlight = ClientSession.sessionInfosInFlight.get(cwdKey);
+		if (inFlight) return inFlight;
+
+		const run = (async (): Promise<SessionInfo[]> => {
+			try {
+				const sessionDir = piSessionsRoot()
+					? resolve(piSessionsRoot()!)
+					: SessionManager.create(this.cwd).getSessionDir();
+				if (!existsSync(sessionDir)) return [];
+
+				const dirEntries = await fsPromises.readdir(sessionDir);
+				const files = dirEntries.filter((f) => f.endsWith(".jsonl"));
+				if (files.length === 0) return [];
+
+				// Stat files to detect modified/new files (takes only ~8ms for 600+ files)
+				const stats = await Promise.all(
+					files.map(async (f) => {
+						const fp = join(sessionDir, f);
+						try {
+							const st = await fsPromises.stat(fp);
+							return { path: fp, mtime: st.mtimeMs, size: st.size };
+						} catch {
+							return null;
+						}
+					}),
+				);
+
+				const validStats = stats.filter((s): s is { path: string; mtime: number; size: number } => s !== null);
+				validStats.sort((a, b) => b.mtime - a.mtime);
+				const candidates = validStats.slice(0, 200);
+
+				const results = await Promise.all(
+					candidates.map(async (file) => {
+						const cached = ClientSession.sessionFileCache.get(file.path);
+						if (cached && cached.mtime === file.mtime && cached.size === file.size) {
+							return cached.info;
+						}
+						const info = await parseSessionInfoFast(file.path, file.mtime);
+						if (info) {
+							ClientSession.sessionFileCache.set(file.path, {
+								mtime: file.mtime,
+								size: file.size,
+								info,
+							});
+						}
+						return info;
+					}),
+				);
+
+				const validInfos = results.filter((info): info is SessionInfo => info !== null);
+				validInfos.sort((a, b) => b.modified.getTime() - a.modified.getTime());
+				ClientSession.sessionInfosCache.set(cwdKey, { infos: validInfos, at: Date.now() });
+				return validInfos;
+			} catch {
+				try {
+					const fallback = await SessionManager.list(this.cwd, piSessionsRoot());
+					ClientSession.sessionInfosCache.set(cwdKey, { infos: fallback, at: Date.now() });
+					return fallback;
+				} catch {
+					return [];
+				}
+			} finally {
+				ClientSession.sessionInfosInFlight.delete(cwdKey);
+			}
+		})();
+
+		ClientSession.sessionInfosInFlight.set(cwdKey, run);
+		return run;
 	}
 
 	/** Session files on disk changed (delete / new-transcript) — drop the brief
 	 *  TTL fridge so the NEXT listing re-reads the directory instead of serving
 	 *  the pre-mutation snapshot (delete-then-refresh commonly runs inside the
 	 *  window, which would re-push the just-removed session). */
-	private invalidateSessionInfos(): void {
-		this.sessionInfosCache = null;
+	private invalidateSessionInfos(filePath?: string): void {
+		ClientSession.sessionInfosCache.clear();
+		if (filePath) {
+			ClientSession.sessionFileCache.delete(resolve(filePath));
+		}
 	}
 
 	/** Push the persisted session list to the client (client-requested). */
@@ -10351,7 +10671,7 @@ export class ClientSession {
 			}
 			if (holder) {
 				// Same source the history panel uses (refreshSessions): newest first.
-				const infos = await SessionManager.list(this.cwd, piSessionsRoot());
+				const infos = await this.loadSessionInfos();
 				const next = infos
 					.filter((s) => resolve(s.path) !== abs)
 					.sort((a, b) => b.modified.getTime() - a.modified.getTime())[0];
@@ -10415,7 +10735,7 @@ export class ClientSession {
 			// Bust the brief session-info fridge: refreshSessions() below usually
 			// lands inside its 3s TTL and would otherwise re-serve a listing that
 			// still contains the deleted transcript.
-			this.invalidateSessionInfos();
+			this.invalidateSessionInfos(abs);
 			await this.refreshSessions();
 		} catch (err) {
 			this.emit({
@@ -10447,7 +10767,7 @@ export class ClientSession {
 			const mgr = SessionManager.open(abs);
 			mgr.appendSessionInfo(trimmed);
 			this.setConversationTitleForFile(abs, trimmed);
-			this.invalidateSessionInfos();
+			this.invalidateSessionInfos(abs);
 			await this.refreshSessions();
 		} catch (err) {
 			this.emit({
@@ -11631,55 +11951,47 @@ export class ClientSession {
 	 */
 	async pushProjects(): Promise<void> {
 		const now = Date.now();
-		const cached = this.projectsCache;
+		const cached = ClientSession.projectsCache;
 		// TTL 命中：直接复用（把当前 cwd 合并进去，刚 remember 的新项目也可见）。
 		if (cached && now - cached.at < ClientSession.PROJECTS_CACHE_TTL) {
 			this.emit({ type: "projects", projects: this.withCurrentCwd(cached.projects, now) });
 			return;
 		}
+
 		// 已有扫描在跑：搭车等它，不要并发扫两遍盘。
-		if (this.projectsInFlight) {
+		if (ClientSession.projectsInFlight) {
 			try {
-				const projects = await this.projectsInFlight;
+				const projects = await ClientSession.projectsInFlight;
 				if (projects) this.emit({ type: "projects", projects: this.withCurrentCwd(projects, Date.now()) });
 			} catch {
 				/* 首发扫描已自行 emit 错误结果，这里不再补 */
 			}
 			return;
 		}
-		const run: Promise<ProjectSummary[] | null> = (async () => {
+
+		// 执行轻量磁盘发现（仅读会话文件首行头部获取 cwd，不解析全部消息历史）
+		const sessionRoots = [resolve(this.agentDir, "sessions")];
+		const extra = piSessionsRoot();
+		if (extra) sessionRoots.push(resolve(extra));
+
+		const run = (async (): Promise<ProjectSummary[] | null> => {
 			try {
-				const saved = this.stateStore.get(this.clientId);
-				const removedProjects = new Set(this.stateStore.getRemovedProjects(this.clientId).map(normalizePathKey));
-				const map = new Map<string, number>();
-				for (const p of saved.projects) map.set(p.path, p.lastUsed);
-				const all = await SessionManager.listAll(piSessionsRoot());
-				for (const s of all) {
-					if (s.cwd) {
-						const t = s.modified.getTime();
-						const prev = map.get(s.cwd);
-						if (prev === undefined || t > prev) map.set(s.cwd, t);
-					}
-				}
-				// Only keep directories that still exist — a deleted/unmounted workspace
-				// is useless in the picker. Tombstoned entries (explicitly removed by
-				// the user) stay hidden even though session files still mention them.
-				const projects: ProjectSummary[] = [...map.entries()]
-					.filter(([path]) => !removedProjects.has(normalizePathKey(path)) && existsSync(path))
-					.map(([path, lastUsed]) => ({ path, lastUsed }))
-					.sort((a, b) => b.lastUsed - a.lastUsed)
-					.slice(0, 20);
-				this.projectsCache = { at: Date.now(), projects };
-				this.emit({ type: "projects", projects });
-				return projects;
+				const discovered = await discoverRecentProjectsFromDisk(sessionRoots, 30);
+				this.stateStore.mergeDiscoveredProjects(discovered);
+				const merged = this.stateStore.getRecentProjects(this.clientId);
+				ClientSession.projectsCache = { at: Date.now(), projects: merged };
+				const result = this.withCurrentCwd(merged, Date.now());
+				this.emit({ type: "projects", projects: result });
+				return merged;
 			} catch {
-				this.emit({ type: "projects", projects: [] });
-				return null;
+				const fallback = this.withCurrentCwd(this.stateStore.getRecentProjects(this.clientId), Date.now());
+				this.emit({ type: "projects", projects: fallback });
+				return fallback;
 			} finally {
-				this.projectsInFlight = null;
+				ClientSession.projectsInFlight = null;
 			}
 		})();
-		this.projectsInFlight = run;
+		ClientSession.projectsInFlight = run;
 		await run;
 	}
 
@@ -11702,7 +12014,7 @@ export class ClientSession {
 
 	/** 最近项目缓存失效（用户显式移除项目后，下一次推送必须重扫）。 */
 	private invalidateProjectsCache(): void {
-		this.projectsCache = null;
+		ClientSession.projectsCache = null;
 	}
 
 	/** List a workspace directory (relative to the configured cwd). */

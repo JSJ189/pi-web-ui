@@ -337,6 +337,19 @@ export const zh = {
 	planImplementBtn: "开始实施",
 	planImplementTip: "关掉只规划闸门，按上面的计划开始写代码",
 	planImplementRequest: "按计划看板上的计划开始实施。",
+	planBoardExportMarkdown: "复制为 Markdown",
+	planBoardExportSuccess: "计划已复制为 Markdown",
+	planCleanHandoffBtn: "✨ 净室执行",
+	planCleanHandoffTip: "在新会话中开始实施（带走目标与计划，避免历史探索上下文干扰）",
+	planCleanHandoffPrompt:
+		"我们已在规划期制定了如下任务计划。这是一个全新的净室执行会话，请专注于按照计划步骤推进实施：",
+	planBoardAddStep: "添加步骤",
+	planBoardEditStep: "编辑步骤",
+	planBoardDeleteStep: "删除步骤",
+	planBoardStepTitlePlaceholder: "步骤标题…",
+	planBoardStepDescPlaceholder: "步骤描述/验收要求（可选）…",
+	placeholderPlanMode: "📋 计划模式：只调研与制定计划，代码写入操作将被拦截…",
+	planModeBadge: "只读规划中",
 	clear: "清空",
 	confirm: "确定",
 	forkBadge: "分支",
@@ -1095,7 +1108,7 @@ export const zh = {
 
 	/* goal / review */
 	goalBarTitle: "目标",
-	goalBarPlaceholder: "设定一个目标，另起执行对话去完成，当前对话负责验收…",
+	goalBarPlaceholder: "输入要达成的目标…",
 	/* 「发送」而非「开始」：目标条这一排（提炼 / 计划 / 发送）都是「点一下直接
 	   发出去」的动作按钮，没有一个是开关。 */
 	goalBarSet: "发送",
@@ -2130,6 +2143,19 @@ export const en: Record<keyof typeof zh, string> = {
 	planImplementBtn: "Start implementing",
 	planImplementTip: "Turn off the planning-only gate and start writing code per the plan",
 	planImplementRequest: "Start implementing the plan on the task board.",
+	planBoardExportMarkdown: "Copy as Markdown",
+	planBoardExportSuccess: "Plan copied as Markdown",
+	planCleanHandoffBtn: "✨ Clean Handoff",
+	planCleanHandoffTip: "Execute in a fresh session (carries over plan steps, free of exploration noise)",
+	planCleanHandoffPrompt:
+		"We developed the following task plan during the planning phase. This is a clean execution session — focus on implementing and advancing these steps:",
+	planBoardAddStep: "Add step",
+	planBoardEditStep: "Edit step",
+	planBoardDeleteStep: "Delete step",
+	planBoardStepTitlePlaceholder: "Step title…",
+	planBoardStepDescPlaceholder: "Step description / acceptance checks (optional)…",
+	placeholderPlanMode: "📋 Plan mode: research and planning only — code writes will be blocked…",
+	planModeBadge: "Planning Only",
 	clear: "Clear",
 	confirm: "Confirm",
 	forkBadge: "Branch",
@@ -2901,7 +2927,7 @@ export const en: Record<keyof typeof zh, string> = {
 
 	/* goal / review */
 	goalBarTitle: "Goal",
-	goalBarPlaceholder: "Set a goal; an executor conversation does the work and this one reviews it…",
+	goalBarPlaceholder: "Enter the goal to achieve…",
 	/* "Send", not "Start": every button in this row (Refine / Plan / Send) is a
 	   click-to-send action — none of them is a toggle. */
 	goalBarSet: "Send",

@@ -207,12 +207,15 @@ try {
 		"开启时有 notice 提示",
 		notices.some((n) => n.includes("计划模式")),
 	);
+	check(
+		"计划模式下写工具从活跃集动态剔除",
+		Array.isArray(snapshot?.tools) && !snapshot.tools.includes("write") && !snapshot.tools.includes("edit"),
+	);
 
-	// ── 2. 硬闸门：write 被拒 ─────────────────────────────────────────────
+	// ── 2. 硬闸门：write 被拒（从活跃集拿掉后即使强行调用也必定失败）───────
 	script = [{ name: "write", args: { path: "nope.txt", content: "x" } }];
 	const writeReply = await promptAndWait("写个文件", "write 被拒后模型回包");
-	check("write 在计划模式被拒", /计划模式|Plan mode/.test(writeReply), writeReply.slice(0, 140));
-	check("拒绝原因回传给模型（含 plan_update 指引）", writeReply.includes("plan_update"));
+	check("write 在计划模式被拒", /计划模式|Plan mode|not found/.test(writeReply), writeReply.slice(0, 140));
 
 	// ── 3. 硬闸门：bash 写命令被拒 / 只读命令放行 ──────────────────────────
 	script = [{ name: "bash", args: { command: "rm -rf /tmp/nope" } }];

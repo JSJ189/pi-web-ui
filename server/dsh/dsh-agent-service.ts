@@ -2552,10 +2552,10 @@ export class DshClientSession {
 	// -----------------------------------------------------------------------
 
 	async pushProjects(): Promise<void> {
-		const saved = this.stateStore.get(this.clientId);
+		const recent = this.stateStore.getRecentProjects(this.clientId);
 		const removedKeys = new Set(this.stateStore.getRemovedProjects(this.clientId).map(normalizePathKey));
 		const projects = new Map<string, number>();
-		for (const p of saved.projects ?? []) {
+		for (const p of recent) {
 			if (!removedKeys.has(normalizePathKey(p.path))) {
 				projects.set(p.path, p.lastUsed);
 			}

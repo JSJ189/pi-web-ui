@@ -793,16 +793,24 @@ function reducer(state: ChatState, action: Action): ChatState {
 				// WS handling on either side may be stale — banner asks for refresh.
 				protocolMismatch: action.protocolVersion !== undefined && action.protocolVersion !== PROTOCOL_VERSION,
 			};
-		case "snapshot":
+		case "snapshot": {
+			const prevCwd = state.state?.cwd;
+			const nextCwd = action.state.cwd;
+			let nextSessions = state.sessions;
+			if (nextCwd && nextCwd !== prevCwd && nextSessions.length === 0) {
+				nextSessions = readCachedSessions(nextCwd);
+			}
 			return {
 				...state,
 				ready: true,
 				state: action.state,
+				sessions: nextSessions,
 				approval: action.state.pendingApproval ?? null,
 				activeConversationId: action.state.conversationId,
 				liveOutputs: pruneLiveOutputs(state.liveOutputs, action.state),
 				toolStatuses: pruneToolStatuses(state.toolStatuses, action.state),
 			};
+		}
 		case "snapshot_delta": {
 			// Incremental checkpoint from the server. Apply ONLY when it chains
 			// cleanly onto our current rev; a mismatch (dropped message under
@@ -870,6 +878,7 @@ function reducer(state: ChatState, action: Action): ChatState {
 				notices: state.notices.filter((n) => n.id !== action.id),
 			};
 		case "sessions":
+			writeCachedSessions(state.state?.cwd, action.sessions);
 			return { ...state, sessions: action.sessions };
 		case "conversations":
 			return {
@@ -879,6 +888,7 @@ function reducer(state: ChatState, action: Action): ChatState {
 				activeConversationId: action.activeId,
 			};
 		case "projects":
+			writeCachedProjects(action.projects);
 			return { ...state, projects: action.projects };
 		case "files":
 			return { ...state, files: action.files };
@@ -1156,6 +1166,94 @@ export function clearLastCwdIfMatches(path: string): void {
 	}
 }
 
+const RECENT_PROJECTS_KEY = "pi-web-recent-projects";
+
+/** 读取前端缓存的最近项目（刷新时首帧立即可见，避免空白与等待）。 */
+export function readCachedProjects(): ProjectSummary[] {
+	try {
+		const raw = localStorage.getItem(RECENT_PROJECTS_KEY);
+		if (!raw) return [];
+		const parsed = JSON.parse(raw);
+		return Array.isArray(parsed) ? parsed : [];
+	} catch {
+		return [];
+	}
+}
+
+function writeCachedProjects(projects: ProjectSummary[]): void {
+	try {
+		localStorage.setItem(RECENT_PROJECTS_KEY, JSON.stringify(projects.slice(0, 20)));
+	} catch {
+		/* ignore */
+	}
+}
+
+/** 用户移出最近项目时，同步清理前端缓存。 */
+export function clearCachedProject(path: string): void {
+	try {
+		const current = readCachedProjects();
+		const norm = (s: string) =>
+			s
+				.trim()
+				.replace(/[\\/]+$/, "")
+				.toLowerCase();
+		const target = norm(path);
+		const filtered = current.filter((p) => norm(p.path) !== target);
+		writeCachedProjects(filtered);
+	} catch {
+		/* ignore */
+	}
+}
+
+const RECENT_SESSIONS_PREFIX = "pi-web-recent-sessions:";
+
+function sessionsStorageKey(cwd?: string | null): string {
+	if (!cwd) return "pi-web-recent-sessions:default";
+	return `${RECENT_SESSIONS_PREFIX}${cwd
+		.trim()
+		.replace(/[\\/]+$/, "")
+		.toLowerCase()}`;
+}
+
+/** 读取前端缓存的当前工作区历史会话列表（刷新时首帧立即可见，避免空白）。 */
+export function readCachedSessions(cwd?: string | null): SessionSummary[] {
+	try {
+		const key = sessionsStorageKey(cwd ?? readLastCwd());
+		const raw = localStorage.getItem(key);
+		if (!raw) return [];
+		const parsed = JSON.parse(raw);
+		return Array.isArray(parsed) ? parsed : [];
+	} catch {
+		return [];
+	}
+}
+
+function writeCachedSessions(cwd: string | undefined | null, sessions: SessionSummary[]): void {
+	try {
+		const key = sessionsStorageKey(cwd ?? readLastCwd());
+		localStorage.setItem(key, JSON.stringify(sessions.slice(0, 50)));
+	} catch {
+		/* ignore */
+	}
+}
+
+/** 用户删除会话时，同步清理本地对应会话缓存。 */
+export function clearCachedSession(path: string, cwd?: string | null): void {
+	try {
+		const current = readCachedSessions(cwd);
+		const norm = (s: string) =>
+			s
+				.trim()
+				.replace(/[\\/]+$/, "")
+				.toLowerCase();
+		const target = norm(path);
+		const filtered = current.filter((s) => norm(s.path) !== target);
+		writeCachedSessions(cwd, filtered);
+	} catch {
+		/* ignore */
+	}
+}
+
 /** Resolve the WebSocket URL: same host when served by the backend, or the Vite proxy in dev. */
 function wsUrl(): string {
 	const proto = location.protocol === "https:" ? "wss:" : "ws:";
@@ -1172,11 +1270,11 @@ export function useChat() {
 		liveOutputs: new Map(),
 		toolStatuses: new Map(),
 		notices: [],
-		sessions: [],
+		sessions: readCachedSessions(),
 		conversations: [],
 		elsewhere: [],
 		activeConversationId: "",
-		projects: [],
+		projects: readCachedProjects(),
 		files: null,
 
 		fileChanged: null,

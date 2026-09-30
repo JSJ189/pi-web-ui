@@ -10,7 +10,18 @@
 
 ## [Unreleased]
 
+## [0.97.0] — 2026-09-26
+
 ### Added
+
+- **左侧边栏历史会话置顶（#388）** —— 支持置顶/取消置顶历史会话，置顶项目始终固定在会话历史列表顶端，配合本地客户端状态持久化，多窗口即时同步；优化磁盘扫描算法，仅按需快速探测头部读取元数据，大幅提升大历史会话加载响应速度。回归：`tests/unit/client-state-recent-projects.test.ts`。
+
+- **规划门禁与净室交接范式升级（#389）** —— 吸收主流规划与看板范式（DSH / narumitw / plannotator），全面升级「计划与目标」联动架构：
+  - **只读规划门禁（Plan Gate）与状态机**：开启计划模式后自动剥离写类工具及旁路工具，物理级杜绝代码倾倒；
+  - **净室新会话交接（Clean Handoff）**：支持一键将规划好的目标与步骤交接至全新隔离会话中施工，避免长推理上下文污染；
+  - **可视化编辑与导出**：任务看板支持 Markdown 一键复制/导出，步骤支持内联编辑、新增、删除与状态切换；
+  - **目标审查深度联动**：审查指令自动附带任务看板步骤推进状态，核验计划真实完成度。
+    回归：`tests/plan-mode-test.mjs`、`tests/unit/goal-delegated.test.ts`。
 
 - **对话可「钉住」常驻运行列表** —— 左栏「运行的对话」右键新增「钉住」：被钉的对话切到别的对话也不释放运行时（空闲、无存活终端、无后台任务时同样保留，优先级高于「打开未继续即移出」等所有自动规则），直到显式移出或强行关闭；取消钉住后立即恢复原有释放策略。进程内有效、不落盘。回归：`tests/unit/conv-pin.test.ts`、`tests/unit/wait-subscription-scan.test.ts`、`tests/conv-pin-browser-test.mjs`（真浏览器右键 → 钉住/取消钉住 → 切走仍留存 / 对照移出）。
 
@@ -28,14 +39,16 @@
 - **语音浮层计时器泄漏** —— 切换识别方式时上一个浮层的计时器不再残留（此前每切一次泄一个 500ms 定时器）。
 
 <!-- auto-i18n:start -->
+
 ### i18n
 
-- 前端新增 key（55）：`elsewherePseudoBadge`、`elsewherePseudoTip`、`pinConversation`、`unpinConversation`、`pinnedConversation`、`planImplementBtn`、`planImplementTip`、`planImplementRequest`、`viewCompactedHistory`、`hideCompactedHistory`、`compactedHistoryLoading`、`compactedHistoryEmpty`、`compactedHistoryBadge`、`compactedHistoryTurns`、`planMode`、`planActionBtn`、`planActionTip`、`planModeTip`、`planModeTipOn`、`goalBarExecModel`、`goalBarExecModelTip`、`goalBarOpenExec`、`goalBarOpenExecTip`、`goalBarStaleBackend`、`goalBarStop`、`goalBarExecuting`、`goalHistory`、`delegateMode`、`delegateModeDesc`、`delegateModeOffHint`、`delegateModeBadge`、`delegateModeBadgeTip`、`delegateModeOpenTip`、`toolCorePowershellDesc`、`toolCoreLsDesc`、`toolCoreGrepDesc`、`toolCoreFindDesc`、`pluginToolsDisabledByPlugin`、`pluginDisabledInPlugins`、`toolDescSubagent`、`planModePromptSettingsTitle`、`planModePromptSettingsDesc`、`planModePromptMode`、`planModePromptPlaceholder`、`planModePromptSettingsHint`、`preset.standard`、`preset.minimal`、`preset.code`、`preset.reader`、`preset.ask`、`preset.standardDesc`、`preset.minimalDesc`、`preset.codeDesc`、`preset.readerDesc`、`preset.askDesc`
+- 前端新增 key（67）：`elsewherePseudoBadge`、`elsewherePseudoTip`、`pinConversation`、`unpinConversation`、`pinnedConversation`、`planImplementBtn`、`planImplementTip`、`planImplementRequest`、`planBoardExportMarkdown`、`planBoardExportSuccess`、`planCleanHandoffBtn`、`planCleanHandoffTip`、`planCleanHandoffPrompt`、`planBoardAddStep`、`planBoardEditStep`、`planBoardDeleteStep`、`planBoardStepTitlePlaceholder`、`planBoardStepDescPlaceholder`、`placeholderPlanMode`、`planModeBadge`、`viewCompactedHistory`、`hideCompactedHistory`、`compactedHistoryLoading`、`compactedHistoryEmpty`、`compactedHistoryBadge`、`compactedHistoryTurns`、`planMode`、`planActionBtn`、`planActionTip`、`planModeTip`、`planModeTipOn`、`goalBarExecModel`、`goalBarExecModelTip`、`goalBarOpenExec`、`goalBarOpenExecTip`、`goalBarStaleBackend`、`goalBarStop`、`goalBarExecuting`、`goalHistory`、`delegateMode`、`delegateModeDesc`、`delegateModeOffHint`、`delegateModeBadge`、`delegateModeBadgeTip`、`delegateModeOpenTip`、`toolCorePowershellDesc`、`toolCoreLsDesc`、`toolCoreGrepDesc`、`toolCoreFindDesc`、`pluginToolsDisabledByPlugin`、`pluginDisabledInPlugins`、`toolDescSubagent`、`planModePromptSettingsTitle`、`planModePromptSettingsDesc`、`planModePromptMode`、`planModePromptPlaceholder`、`planModePromptSettingsHint`、`preset.standard`、`preset.minimal`、`preset.code`、`preset.reader`、`preset.ask`、`preset.standardDesc`、`preset.minimalDesc`、`preset.codeDesc`、`preset.readerDesc`、`preset.askDesc`
 - 前端中文变更（9）：`planBoardTitle`、`goalBarPlaceholder`、`goalBarSet`、`goalBarReviewModel`、`goalBarMaxRoundsTip`、`goalWizardBtn`、`toolsCoreHint`、`toolsSubagentDepHint`、`delegateTaskOffHint`
 - 前端英文变更（9）：`planBoardTitle`、`goalBarPlaceholder`、`goalBarSet`、`goalBarReviewModel`、`goalBarMaxRoundsTip`、`goalWizardBtn`、`toolsCoreHint`、`toolsSubagentDepHint`、`delegateTaskOffHint`
 - 服务端新增 key（18）：`agent.role.stop`、`goal.role.blocked`、`goal.role.conv_title`、`goal.role.exec`、`goal.role.card.start`、`goal.role.card.result`、`goal.role.review`、`goal.role.review.retry`、`subagents.action.missing`、`subagents.spawn.missing.prompt`、`subagents.get.missing.runId`、`subagents.steer.missing.runId`、`subagents.steer.missing.message`、`subagents.stop.missing.runId`、`subagents.wait.item.missing`、`subagents.handoff.missing.toRunId`、`subagents.handoff.missing.payload`、`subagents.action.unknown`
 - 服务端文案变更（10）：`delegate.validate.agent`、`delegate.validate.short`、`delegate.started`、`subagents.spawn.template.unavailable`、`subagents.spawn.started`、`subagents.steer.not.found`、`subagents.stop.not.found`、`subagents.wait.empty`、`subagents.templates.list`、`subagents.handoff.not.found`
 - 服务端删除 key（9）：`goal.set.kick`、`goal.wizard.kick`、`goal.review.incomplete`、`goal.autonomous.pass`、`goal.review.blocked`、`goal.autonomous.continue`、`goal.review.error`、`goal.review.blocked_msg`、`goal.review.revise`
+
 <!-- auto-i18n:end -->
 
 ## [0.96.1] — 2026-09-26
@@ -1345,7 +1358,8 @@ when?, children?}`，也收 `topbar` / `settings` 这类简写别名）；宿主
 - 0.35.1（2026-08-27）：编辑重问保留附件（#18）+ 全窗口拖放（#19）。
 - 0.29.0（2026-08-23）：全局搜索弹窗（Ctrl+K）+ 消息列表惰性窗口化。
 
-[Unreleased]: https://github.com/xing-shuyin/pi-web-ui/compare/v0.96.1...main
+[Unreleased]: https://github.com/xing-shuyin/pi-web-ui/compare/v0.97.0...main
+[0.97.0]: https://github.com/xing-shuyin/pi-web-ui/releases/tag/v0.97.0
 [0.96.1]: https://github.com/xing-shuyin/pi-web-ui/releases/tag/v0.96.1
 [0.96.0]: https://github.com/xing-shuyin/pi-web-ui/releases/tag/v0.96.0
 [0.95.0]: https://github.com/xing-shuyin/pi-web-ui/releases/tag/v0.95.0

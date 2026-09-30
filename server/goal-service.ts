@@ -31,7 +31,7 @@ import {
 	SessionManager,
 	type AgentSession,
 } from "@earendil-works/pi-coding-agent";
-import type { GoalHistoryEntry, GoalStatus, ServerMessage } from "./protocol.js";
+import type { GoalHistoryEntry, GoalStatus, PlanState, PlanStep, ServerMessage } from "./protocol.js";
 import type { ClientStateStore } from "./client-state.js";
 import { pick, type ServerLang } from "./i18n.js";
 import { parseModelSpec } from "./attachments.js";
@@ -112,6 +112,10 @@ export interface GoalHost {
 	lang?: () => ServerLang;
 	/** 目标模式总开关（设置面板「目标审查」页可关）。关 → 拒绝设目标/调研/审查。 */
 	goalModeEnabled: () => boolean;
+	/** 任务计划看板接入（#389 计划与目标联动）。可选：非 pi 引擎或未接线回落。 */
+	getPlan?: (convId: string) => PlanState | null;
+	describePlan?: (convId: string) => string;
+	setPlan?: (convId: string, steps: PlanStep[]) => void;
 	// ---------------------------------------------------------------------
 	// 目标模式 2.0 的角色对话桥（唯一审查/执行路径）。全部可选：缺席（未接线 /
 	// 非 pi 引擎）时 setGoal 直接拒绝设目标并说明原因。
@@ -373,6 +377,86 @@ export function lastToolNameOfSession(session: unknown): string | undefined {
 	return undefined;
 }
 
+/**
+ * 解析向导输出中的目标与结构化执行计划（纯函数）。
+ * - 目标从 `GOAL: ...` 提取；
+ * - 步骤从 `STEPS:` 或后续数字/无序列表行提取（若有），作为 PlanStep 供看板使用。
+ */
+export function parseWizardOutput(raw: string): { goal: string; steps: PlanStep[] } {
+	const trimmed = (raw ?? "").trim();
+	if (!trimmed) return { goal: "", steps: [] };
+
+	let goalText = "";
+	let stepsPart = "";
+
+	// 先看是否有明确的 STEPS: / PLAN: / TASKS: 标头
+	const stepsHeaderMatch = trimmed.match(/\n\s*(?:STEPS|PLAN|TASKS)\s*[:：]\s*([\s\S]*)/i);
+	let preSteps = trimmed;
+	if (stepsHeaderMatch) {
+		preSteps = trimmed.slice(0, stepsHeaderMatch.index).trim();
+		stepsPart = stepsHeaderMatch[1].trim();
+	}
+
+	// 从前半部分提取 GOAL:
+	const goalMatch = preSteps.match(/GOAL\s*[:：]\s*([\s\S]*)/i);
+	if (goalMatch) {
+		goalText = goalMatch[1].trim();
+	} else {
+		// 没有显式 GOAL: 标头时，按原来逻辑去掉前导前言行
+		const lines = preSteps.split("\n").filter((l) => l.trim());
+		if (lines.length > 1 && !/[。.!?？]\s*$/.test(lines[0])) {
+			goalText = lines.slice(1).join(" ").trim();
+		} else {
+			goalText = preSteps;
+		}
+	}
+
+	// 解析 stepsPart
+	const steps: PlanStep[] = [];
+	if (stepsPart) {
+		const stepLines = stepsPart
+			.split("\n")
+			.map((l) => l.trim())
+			.filter(Boolean);
+		let stepIdx = 1;
+		for (const line of stepLines) {
+			if (line.startsWith("(") && line.endsWith(")")) continue;
+			const itemMatch = line.match(/^(?:(?:\d+[.、)]|-|\*|\[\s*\])\s*)*(?:(?:Step\s*\d+|步骤\s*\d+)[:：\s]*)?(.+)$/i);
+			if (!itemMatch) continue;
+			const content = itemMatch[1].trim();
+			if (!content) continue;
+
+			let title = content;
+			let description: string | undefined;
+			const splitIdx = content.indexOf("|");
+			if (splitIdx > 0) {
+				title = content.slice(0, splitIdx).trim();
+				description = content.slice(splitIdx + 1).trim();
+			} else {
+				const colonIdx = content.indexOf("：") !== -1 ? content.indexOf("：") : content.indexOf(":");
+				if (colonIdx > 0 && colonIdx < 40) {
+					title = content.slice(0, colonIdx).trim();
+					description = content.slice(colonIdx + 1).trim();
+				}
+			}
+
+			steps.push({
+				id: `step-${stepIdx}`,
+				title: title.slice(0, 200),
+				status: "pending",
+				...(description ? { description: description.slice(0, 1000) } : {}),
+			});
+			stepIdx++;
+			if (steps.length >= 10) break;
+		}
+	}
+
+	return {
+		goal: goalText,
+		steps,
+	};
+}
+
 /** System prompt for the goal-wizard session. The wizard asks the user a few
  *  questions (via its goal_ask tool) to scope a raw requirement into a precise,
  *  reviewable goal, then emits ONLY the final goal text as its last message. */
@@ -393,6 +477,10 @@ function wizardPrompt(draft: string, contextSummary = ""): string {
 		`- In each option, concisely explain the impact or tradeoff. Use open questions only for things that genuinely need free text.`, // eslint-disable-line max-len
 		`Once you have enough to write an unambiguous, reviewable goal, STOP asking and reply with EXACTLY this format and nothing else (no preamble, no bullets):`, // eslint-disable-line max-len
 		`GOAL: <one concrete, verifiable sentence describing the deliverable and its acceptance criteria>`, // eslint-disable-line max-len
+		`STEPS:`,
+		`1. <first step title> | <brief description / acceptance check>`,
+		`2. <second step title> | <brief description / acceptance check>`,
+		`(include 2 to 6 concrete, sequential steps for executing the goal)`,
 		`If the user cancels or stops answering (the tool reports a cancellation), still produce a sensible best-effort goal from what you already know.`, // eslint-disable-line max-len
 	].join("\n");
 }
@@ -818,6 +906,7 @@ export class GoalService {
 		);
 
 		let refinedGoal = "";
+		let parsedSteps: PlanStep[] = [];
 		let goalEphemeralDir: string | undefined;
 		try {
 			const wmSpec = opts?.wizardModel ? parseModelSpec(opts.wizardModel) : null; // "provider/id" 解析（唯一事实源）
@@ -1103,19 +1192,10 @@ export class GoalService {
 			} finally {
 				unsubscribe();
 			}
-			refinedGoal = wizard.getLastAssistantText()?.trim() ?? "";
-			// The wizard is prompted to emit "GOAL: <text>". Parse past the marker;
-			// if it didn't follow, strip a leading preamble line and keep the rest.
-			const goalMatch = refinedGoal.match(/GOAL\s*[:：]\s*([\s\S]*)/i);
-			if (goalMatch) {
-				refinedGoal = goalMatch[1].trim();
-			} else {
-				const lines = refinedGoal.split("\n").filter((l) => l.trim());
-				if (lines.length > 1 && !/[。.!?？]\s*$/.test(lines[0])) {
-					// First line looks like preamble (no sentence-ending punctuation).
-					refinedGoal = lines.slice(1).join(" ").trim();
-				}
-			}
+			const rawAssistantText = wizard.getLastAssistantText()?.trim() ?? "";
+			const parsed = parseWizardOutput(rawAssistantText);
+			refinedGoal = parsed.goal;
+			parsedSteps = parsed.steps;
 			await srv.session.dispose();
 		} catch (err) {
 			this.host.emit({
@@ -1183,6 +1263,9 @@ export class GoalService {
 			return;
 		}
 		const switchedAway = this.host.activeConvId() !== wizardConversationId;
+		if (parsedSteps.length > 0) {
+			this.host.setPlan?.(wizardConversationId, parsedSteps);
+		}
 		// Auto-set the refined goal. The wizard workflow implies "set a goal and
 		// work until it passes", so default LOCKED=true unless the user explicitly
 		// turned the lock off (a lock lets the review loop keep revising to pass;
@@ -1893,9 +1976,10 @@ export class GoalService {
 			const idle = await this.waitMainIdle(conv);
 			if (!this.isCurrentDelegated(conv, goalGeneration)) return "gone";
 			if (!idle) return "timeout";
+			const planDesc = this.host.describePlan?.(conv.id) ?? "";
 			const text =
 				attempt === 0
-					? this.reviewerRoundPrompt(conv.goal.goal ?? "", round, budget, execOutput)
+					? this.reviewerRoundPrompt(conv.goal.goal ?? "", round, budget, execOutput, planDesc)
 					: this.verdictRetryPrompt();
 			const verdict = await this.deliverAndWait(conv, round, text);
 			if (verdict !== "invalid") return verdict;
@@ -2255,13 +2339,27 @@ export class GoalService {
 		);
 	}
 
-	private reviewerRoundPrompt(goalText: string, round: number, budget: number, execOutput: string): string {
+	private reviewerRoundPrompt(
+		goalText: string,
+		round: number,
+		budget: number,
+		execOutput: string,
+		planDesc = "",
+	): string {
 		const rounds = this.roundsLabel(budget);
 		const out = execOutput.trim().slice(0, 4000);
+		const planBlockZh =
+			planDesc && planDesc !== "No active plan."
+				? `\n\n【任务计划看板当前状态】\n${planDesc}\n核验时请同时核实上述计划步骤的推进与完成状态是否真实。`
+				: "";
+		const planBlockEn =
+			planDesc && planDesc !== "No active plan."
+				? `\n\n# Task Plan Board\n${planDesc}\nWhen verifying, also check whether the above plan steps have been legitimately advanced or completed.`
+				: "";
 		return pick(
 			this.lang(),
-			`你是严格、独立的验收者。只判断目标是否被完全满足：不要相信描述，去看工作区的实际状态。\n\n【目标】\n${goalText}\n\n【这是第 ${round}${rounds} 轮】\n\n【执行者本轮自述】\n${out || "（执行者本轮没有给出自述）"}\n\n你可以用只读手段核实：read / grep / scm（只读 git）/ 只读 bash（跑测试）。\n\n只输出一个 JSON 对象，不要有任何其他文本、不要代码围栏、不要复述下面的形状示例。本回合写类与派发类工具会被服务端直接拒绝（不要试）。字段：verdict 只能填 pass（目标已完全满足，一句话说明满足了什么）或 fail（未满足，给出可以直接动手改的具体待改项）；feedback 是一句话说明。形状示例（不要照抄尖括号里的占位符）：\n{"verdict":"<pass|fail>","feedback":"<一句话说明>"}\n[goal-review]`,
-			`You are a strict, independent acceptor. Judge only whether the goal is fully satisfied: do not trust the summary — inspect the actual workspace state.\n\n# Goal\n${goalText}\n\n# This is round ${round}${rounds}\n\n# Executor's summary this round\n${out || "(the executor produced no summary)"}\n\nYou may verify with read-only means: read / grep / scm (read-only git) / read-only bash (run tests).\n\nReply with ONLY one JSON object — no other text, no code fences, do not echo the shape example below. Write and dispatch tools are blocked by the server during this round — do not try them. Fields: verdict must be pass (goal fully satisfied, say what in one sentence) or fail (not satisfied, give concrete items the executor must fix); feedback is one short sentence. Shape example (do not copy the placeholders in angle brackets):\n{"verdict":"<pass|fail>","feedback":"<one sentence>"}\n[goal-review]`,
+			`你是严格、独立的验收者。只判断目标是否被完全满足：不要相信描述，去看工作区的实际状态。\n\n【目标】\n${goalText}\n\n【这是第 ${round}${rounds} 轮】${planBlockZh}\n\n【执行者本轮自述】\n${out || "（执行者本轮没有给出自述）"}\n\n你可以用只读手段核实：read / grep / scm（只读 git）/ 只读 bash（跑测试）。\n\n只输出一个 JSON 对象，不要有任何其他文本、不要代码围栏、不要复述下面的形状示例。本回合写类与派发类工具会被服务端直接拒绝（不要试）。字段：verdict 只能填 pass（目标已完全满足，一句话说明满足了什么）或 fail（未满足，给出可以直接动手改的具体待改项）；feedback 是一句话说明。形状示例（不要照抄尖括号里的占位符）：\n{"verdict":"<pass|fail>","feedback":"<一句话说明>"}\n[goal-review]`,
+			`You are a strict, independent acceptor. Judge only whether the goal is fully satisfied: do not trust the summary — inspect the actual workspace state.\n\n# Goal\n${goalText}\n\n# This is round ${round}${rounds}${planBlockEn}\n\n# Executor's summary this round\n${out || "(the executor produced no summary)"}\n\nYou may verify with read-only means: read / grep / scm (read-only git) / read-only bash (run tests).\n\nReply with ONLY one JSON object — no other text, no code fences, do not echo the shape example below. Write and dispatch tools are blocked by the server during this round — do not try them. Fields: verdict must be pass (goal fully satisfied, say what in one sentence) or fail (not satisfied, give concrete items the executor must fix); feedback is one short sentence. Shape example (do not copy the placeholders in angle brackets):\n{"verdict":"<pass|fail>","feedback":"<one sentence>"}\n[goal-review]`,
 			"goal.role.review",
 		);
 	}
