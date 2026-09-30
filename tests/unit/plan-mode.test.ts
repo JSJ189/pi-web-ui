@@ -77,6 +77,8 @@ describe("planModeDenial", () => {
 		expect(planModeDenial("edit_soft", {})?.kind).toBe("write-tool");
 		expect(planModeDenial("patch", {})?.kind).toBe("write-tool");
 		expect(planModeDenial("git", { command: "commit" })?.kind).toBe("write-tool");
+		// 回归 #436：eval 沙箱的 execute 直接 kernel.execute 可写真实文件系统。
+		expect(planModeDenial("eval", { code: "require('fs').writeFileSync('x','y')" })?.kind).toBe("write-tool");
 	});
 
 	it("bash 只放行只读命令", () => {
@@ -116,6 +118,11 @@ describe("PLAN_MODE_BLOCKED_TOOL_NAMES（活跃集剥离名单）", () => {
 		for (const readonly of ["terminal_read", "terminal_list", "terminal_wait", "read", "grep"]) {
 			expect(PLAN_MODE_BLOCKED_TOOL_NAMES.has(readonly), readonly).toBe(false);
 		}
+	});
+
+	// 回归 #436：eval 用户可开（默认关），开了就必须随计划模式一起剥离。
+	it("eval 在剥离名单里", () => {
+		expect(PLAN_MODE_BLOCKED_TOOL_NAMES.has("eval")).toBe(true);
 	});
 });
 

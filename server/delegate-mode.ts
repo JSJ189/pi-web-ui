@@ -48,6 +48,8 @@ const BLOCKED_TOOLS = new Set([
 	"truncate",
 	"rename",
 	"git",
+	// 代码求值（eval 沙箱可写真实文件系统 —— 主对话只审阅不施工，#436）
+	"eval",
 	"format",
 	"prettier",
 	"lint_fix",

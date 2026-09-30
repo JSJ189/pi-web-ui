@@ -52,6 +52,8 @@ const WRITE_TOOLS = new Set([
 	"rename",
 	// 版本控制写（git add/commit/checkout/reset…；只读子命令走 bash 白名单）
 	"git",
+	// 代码求值（eval 沙箱可写真实文件系统 —— 审查回合只读核实，#436）
+	"eval",
 	// 形态变换（会重写整个文件树）
 	"format",
 	"prettier",

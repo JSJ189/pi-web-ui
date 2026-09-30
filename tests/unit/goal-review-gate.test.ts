@@ -17,6 +17,8 @@ describe("目标审查闸门 goalReviewDenial", () => {
 			expect(d!.reason).toContain("只回 verdict JSON");
 			expect(d!.reasonEn).toContain("verdict JSON");
 		}
+		// 回归 #436：eval 沙箱可写真实文件系统，审查回合只许只读核实。
+		expect(goalReviewDenial("eval", {})?.kind).toBe("write-tool");
 	});
 
 	it("只读工具放行（read/grep/scm/present/todo/conversation_read/subagent_get_result）", () => {

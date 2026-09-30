@@ -47,6 +47,9 @@ const BLOCKED_TOOLS = new Set([
 	"rename",
 	// 版本控制写（git add/commit/checkout/reset…；git 的只读子命令走 bash 白名单）
 	"git",
+	// 代码求值（eval 沙箱的 execute 直接 kernel.execute，可写真实文件系统；
+	// 默认关但用户可开，开了就是一条写路径 —— #436）
+	"eval",
 	// 形态变换（会重写整个文件树）
 	"format",
 	"prettier",
