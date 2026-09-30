@@ -280,6 +280,11 @@ export interface DisplacementDecisionInput {
 	 *  Compaction in progress — switching away disposes the runtime, which
 	 *  aborts the compaction. Retain like streaming. */
 	compacting?: boolean;
+	/** 用户消息正在投递中（prompt() 已进门、还没进入流式）：前置的附件构建 /
+	 *  工作区影子快照都是异步的，此期间对话既不 streaming 也未落盘新消息，
+	 *  *切走/新建对话* 会把它当空闲对话替换并销毁 runtime，导致这条消息被
+	 *  静默丢弃（投递写进已销毁的会话）。保留它，等投递落定。 */
+	promptInFlight?: boolean;
 	/** 存活 PTY 数（已退出、仅保留输出的终端不计入）——没有活进程的残留终端
 	 *  不应把空闲对话永久钉在运行列表里。Live PTY count only: exited
 	 *  terminals that merely retain output do not retain the conversation. */
@@ -311,6 +316,7 @@ export interface DisplacementDecisionInput {
  */
 export function shouldRetainActive(input: DisplacementDecisionInput): boolean {
 	if (input.reviewing || input.wizardRunning) return true;
+	if (input.promptInFlight) return true;
 	if (input.streaming || input.compacting) return true;
 	if (input.openTerminals > 0) return true;
 	const hasActiveRun =

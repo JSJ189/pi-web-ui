@@ -1914,6 +1914,10 @@ export interface Conversation {
 	workspaceSnapshots: Array<{ entryId?: string; timestamp: number; snapshotRef: string }>;
 	/** 当前正在启动中（读取附件、视觉桥、快照准备等）的 prompt 取消控制器 */
 	activePromptAc?: AbortController;
+	/** prompt() 已进门、尚未进入流式：前置附件构建 / 工作区影子快照是异步的，
+	 *  此窗口内对话还不算 streaming，置换判定必须把它当作「有活干」保留，
+	 *  否则新建/切换对话会销毁其 runtime，正在投递的消息被静默丢弃。 */
+	promptInFlight?: boolean;
 	/** 最近一次 LLM 响应定稿时的 Base Tokens（生效提示词 + 工具 Schema 占用）。
 	 *  用于在对话中途切换预设或开关工具时计算上下文增量补偿。 */
 	lastTurnBaseTokens?: number;
@@ -8749,6 +8753,12 @@ export class ClientSession {
 				// 立刻要有它（此刻还在流式输出，不能等 agent_end 的防抖刷新）。
 				this.emitConversations();
 			}
+			// 置换守卫：从这一刻起进入异步前置（附件构建 + 影子快照）——在它们完成前
+			// 对话既不 streaming 也没有新消息落盘，displaceActive() 会把它误判成
+			// 空闲对话并销毁 runtime，导致投递中的消息被静默丢弃。放在所有同步校验 /
+			// 原生斜杠命令拦截之后：原生命令（/new, /cwd 等）不进投递流程且可能
+			// 立即切换会话，若提前置位会被 displaceActive 误判为有消息投递而报错通知。
+			conv.promptInFlight = true;
 			// Attach files as independent nextTurn context messages (asides) so the
 			// user message stays clean; they render as separate attachment cards.
 			const asides = await buildAttachmentMessages(
@@ -8790,7 +8800,16 @@ export class ClientSession {
 				return;
 			}
 			conv.activePromptAc = undefined;
-
+			// 前置阶段（附件 / 影子快照）期间用户可能已经切走或新建了对话：消息仍然
+			// 落在本对话里，指给用户看，免得「发出去的消息不见了」。
+			if (conv.id !== this.activeId) {
+				this.emit({
+					type: "notice",
+					level: "info",
+					text: `消息已投递到「${conv.title}」——你刚切换了对话，它不在当前对话里`,
+					textEn: `Message delivered to "${conv.title}" — you switched conversations before it landed`,
+				});
+			}
 			if (s.isStreaming) {
 				// queue=true (补充 button) → followUp: the message is delivered only
 				// after the whole run finishes — the agent finishes what it started,
@@ -8838,6 +8857,10 @@ export class ClientSession {
 				text: `提示发送失败：${(err as Error).message}`,
 				textEn: `Failed to send prompt: ${(err as Error).message}`,
 			});
+		} finally {
+			// 无论走哪条出口（斜杠命令 / quiesce 拒绝 / 中止 / 抛错 / 正常落定），
+			// 投递窗口都结束了；留着 true 会让这条对话永远不被置换。
+			conv.promptInFlight = false;
 		}
 		// The active conversation (captured at prompt start — see above) has been
 		// continued since it was opened — it must not be dismissed when the user
@@ -9707,11 +9730,21 @@ export class ClientSession {
 				openTerminals: conv.terminals.countBlockingLive(),
 				listed: conv.listed,
 				promptedSinceActive: conv.promptedSinceActive,
+				// 投递中的消息（附件构建 / 影子快照阶段）：见 Conversation.promptInFlight。
+				promptInFlight: Boolean(conv.promptInFlight),
 				hasActiveSubagentRun: () => hasActiveSubagentRun({ sessionId: conv.session.sessionFile }),
 				hasPendingWake: () => hasPendingWaitSubscription({ sessionId: conv.session.sessionFile }),
 			});
 		if (retained) {
 			conv.listed = true;
+			if (conv.promptInFlight && !conv.session.isStreaming) {
+				this.emit({
+					type: "notice",
+					level: "info",
+					text: `「${conv.title}」的消息正在投递，已为你保留该对话`,
+					textEn: `"${conv.title}" is still sending your message — kept in the running list`,
+				});
+			}
 			return null;
 		}
 		return conv;
@@ -9723,6 +9756,12 @@ export class ClientSession {
 	private removeConversation(id: string): void {
 		const conv = this.convs.get(id);
 		if (!conv || id === this.activeId) return;
+		// 正在投递的消息（附件构建 / 影子快照阶段）必须先打断：否则 prompt() 醒来
+		// 后会把用户消息写进已销毁的 runtime，静默丢失。
+		if (conv.activePromptAc) {
+			conv.activePromptAc.abort();
+			conv.activePromptAc = undefined;
+		}
 		// 角色轮等待者：对话被移出 → 等它的循环收到 gone（否则要等到超时）。
 		const waiters = this.turnEndWaiters.get(id);
 		if (waiters) {
@@ -10473,6 +10512,7 @@ export class ClientSession {
 			// Dismiss 口径：只看“用过”的用户终端（AI bash 不钉住，见上）。
 			openTerminals: conv.terminals.countUserBlockingLive(),
 			listed: false,
+			promptInFlight: Boolean(conv.promptInFlight),
 			promptedSinceActive: false,
 			hasActiveSubagentRun: () => hasActiveSubagentRun({ sessionId: conv.session.sessionFile }),
 			hasPendingWake: () => hasPendingWaitSubscription({ sessionId: conv.session.sessionFile }),
@@ -10661,6 +10701,7 @@ export class ClientSession {
 				openTerminals: 0,
 				listed: conv.listed,
 				promptedSinceActive: conv.promptedSinceActive,
+				promptInFlight: Boolean(conv.promptInFlight),
 				hasActiveSubagentRun: () => hasActiveSubagentRun({ sessionId: conv.session.sessionFile }),
 				hasPendingWake: () => hasPendingWaitSubscription({ sessionId: conv.session.sessionFile }),
 			})
@@ -10899,6 +10940,7 @@ export class ClientSession {
 						// Dismiss 口径：只看“用过”的用户终端（issue #181，AI bash 不钉住）。
 						openTerminals: conv.terminals.countUserBlockingLive(),
 						listed: false,
+						promptInFlight: Boolean(conv.promptInFlight),
 						promptedSinceActive: false,
 						hasActiveSubagentRun: () => hasActiveSubagentRun({ sessionId: conv.session.sessionFile }),
 						hasPendingWake: () => hasPendingWaitSubscription({ sessionId: conv.session.sessionFile }),

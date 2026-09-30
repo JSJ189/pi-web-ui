@@ -206,9 +206,11 @@ async function main() {
 	// --- 8. /reload re-discovers resources and re-pushes the catalog ---
 	c.send({ type: "prompt", text: "/reload" });
 	const catReloaded = await c.wait((m) => m.type === "slash_commands", 20000);
-	const reloadNotice = await c.wait((m) => m.type === "notice", 8000);
-	if (!reloadNotice.text.includes("已重新加载")) {
-		throw new Error(`FAIL: /reload notice unexpected: ${reloadNotice.text}`);
+	const reloadNotice = await c
+		.wait((m) => m.type === "notice" && m.text.includes("已重新加载"), 8000)
+		.catch(() => null);
+	if (!reloadNotice) {
+		throw new Error("FAIL: /reload did not emit its 已重新加载 notice");
 	}
 	const namesAfterReload = new Set(catReloaded.commands.map((x) => x.name));
 	const missingAfterReload = NATIVE_NAMES.filter((n) => !namesAfterReload.has(n));
