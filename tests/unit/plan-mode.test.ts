@@ -6,6 +6,7 @@ import {
 	bashCommandIsReadOnly,
 	buildPlanModePrompt,
 	planModeDenial,
+	PLAN_MODE_BLOCKED_TOOL_NAMES,
 	PLAN_MODE_SYSTEM_PROMPT,
 } from "../../server/plan-mode.js";
 
@@ -90,6 +91,31 @@ describe("planModeDenial", () => {
 		expect(planModeDenial("spawn", {})?.kind).toBe("bypass-tool");
 		expect(planModeDenial("delegate_task", {})?.kind).toBe("bypass-tool");
 		expect(planModeDenial("set_goal", {})?.kind).toBe("bypass-tool");
+	});
+
+	// 回归 #436：terminal_input 只在自带换行时才过 checkSafety，terminal_key 的
+	// Enter 连检查都没有 —— 「input(无换行) + key(Enter)」即可绕过 bash 只读白名单。
+	it("拒绝常驻终端写向工具（terminal_input/terminal_key）", () => {
+		for (const [name, params] of [
+			["terminal_input", { terminalId: "t1", data: "rm -rf dist" }],
+			["terminal_input", { terminalId: "t1", data: "y" }],
+			["terminal_key", { terminalId: "t1", key: "Enter" }],
+		] as const) {
+			const d = planModeDenial(name, params);
+			expect(d, name).toBeDefined();
+			expect(d!.kind).toBe("write-tool");
+			expect(d!.reasonEn).toContain("Plan mode");
+		}
+	});
+});
+
+describe("PLAN_MODE_BLOCKED_TOOL_NAMES（活跃集剥离名单）", () => {
+	it("终端写向工具在剥离名单里（只读的 read/list/wait 不在）", () => {
+		expect(PLAN_MODE_BLOCKED_TOOL_NAMES.has("terminal_input")).toBe(true);
+		expect(PLAN_MODE_BLOCKED_TOOL_NAMES.has("terminal_key")).toBe(true);
+		for (const readonly of ["terminal_read", "terminal_list", "terminal_wait", "read", "grep"]) {
+			expect(PLAN_MODE_BLOCKED_TOOL_NAMES.has(readonly), readonly).toBe(false);
+		}
 	});
 });
 

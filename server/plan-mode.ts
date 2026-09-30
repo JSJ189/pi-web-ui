@@ -55,6 +55,17 @@ const BLOCKED_TOOLS = new Set([
 ]);
 
 /**
+ * 常驻终端的「写向」工具（server/terminals.ts）：直接往 PTY stdin 写字符/按键。
+ * 必须整体剥离而不只是补检查：terminal_input 只在自带换行时才过 checkSafety，
+ * terminal_key 的 Enter 连检查都没有 —— 「input(无换行) + key(Enter)」两步即可
+ * 绕过 bash 只读白名单执行任意命令（#436）。且 PTY 的行编辑缓冲在 shell 进程内，
+ * 服务端拿不到可靠的「待提交行」（退格/Ctrl+U/补全都无法镜像），按缓冲检查既会
+ * 误放也会误拦 —— 所以计划模式下干脆不给这两件工具：调研用 bash（走白名单），
+ * 观察已有终端用 terminal_read/terminal_list/terminal_wait（只读）。
+ */
+const TERMINAL_WRITE_TOOLS = new Set(["terminal_input", "terminal_key"]);
+
+/**
  * 计划模式下也禁掉的「旁路工具」：它们能在**别的会话**里干活，而闸门是
  * 会话级的 —— 子代理/排程对话的 planMode 是 false，等于绕过只读约束。
  * 调研靠本对话的 read/grep/只读 bash 足够，需要并行调研时先退出计划模式。
@@ -74,7 +85,12 @@ const BYPASS_TOOLS = new Set([
 ]);
 
 /** 计划模式下从模型视野中彻底隐藏的写类工具与旁路工具全集。 */
-export const PLAN_MODE_BLOCKED_TOOL_NAMES = new Set<string>([...BLOCKED_TOOLS, ...BYPASS_TOOLS, "subagent"]);
+export const PLAN_MODE_BLOCKED_TOOL_NAMES = new Set<string>([
+	...BLOCKED_TOOLS,
+	...BYPASS_TOOLS,
+	...TERMINAL_WRITE_TOOLS,
+	"subagent",
+]);
 
 /** bash 类工具名（terminalBash 开关分流后可能是这几个）。 */
 const BASH_TOOLS = new Set(["bash", "bash_execute", "run_command", "shell", "terminal", "terminal_exec"]);
@@ -285,6 +301,7 @@ export interface PlanModeDenial {
  * 计划模式闸门（纯函数）：命中即拒绝，并把可操作的替代路径告诉模型。
  * - 写类工具 → 拒（提示：把要做的事写进计划，用户确认后另起一轮实施）
  * - bash 非常规命令 → 拒（提示：用 read/grep/只读 git，或给出计划）
+ * - 终端写向工具（terminal_input/terminal_key）→ 拒（会绕过只读命令白名单）
  * - 旁路工具（spawn/delegate/目标模式/排程）→ 拒（会绕过本会话只读约束）
  */
 export function planModeDenial(toolName: string, params: unknown): PlanModeDenial | undefined {
@@ -301,6 +318,13 @@ export function planModeDenial(toolName: string, params: unknown): PlanModeDenia
 				reasonEn: `Plan mode: subagent(action="spawn") is unavailable (it runs outside this conversation and would bypass the read-only constraint). Research with read-only tools here.`,
 			};
 		}
+	}
+	if (TERMINAL_WRITE_TOOLS.has(name)) {
+		return {
+			kind: "write-tool",
+			reason: `计划模式：不能调用 ${name}（终端输入/按键会绕过只读命令白名单，见 #436）。调研请用 bash 跑只读命令；观察已有终端用 terminal_read/terminal_list/terminal_wait。`,
+			reasonEn: `Plan mode: ${name} is unavailable (terminal input/keys would bypass the read-only command allowlist). Run read-only commands via bash; observe existing terminals with terminal_read/terminal_list/terminal_wait.`,
+		};
 	}
 	if (BYPASS_TOOLS.has(name)) {
 		return {
