@@ -32,6 +32,17 @@
 - 不做按会话保存：切走再切回来时正文草稿会恢复、附件不会（若要「切回旧对话连引用一起回来」，
   得把 chips 也按 sessionId 存，属于设计升级）。
 
+## 聊天文字引用
+
+在同一条聊天消息内选中文字或代码，松开鼠标后显示「引用」按钮。点击后通过 `composeToComposer` 添加待发送引用卡片，保留输入框草稿。卡片可展开查看原文、独立移除；同一来源和原文的重复引用去重，不同片段可同时发送。滚动、按 Escape 或切换会话时隐藏浮动按钮。
+
+- 协议：`PromptAttachment.mode = "quote"`，`path` 留空，`quote` 保存选中文字、来源消息标识、角色和会话标识。原文以副本保存，保留换行和代码缩进。
+- 前端：`quote-selection.ts` 校验选区范围，排除操作按钮、输入框和跨消息选区；`SelectionQuoteButton` 定位浮动按钮；`TextQuoteCard` 在输入框、已发送消息和编辑重问中展示引用。
+- 标准 pi 引擎：空闲时 `buildAttachmentMessages` 将引用编码为独立的 `customType: "file"` 上下文消息，`details.mode = "quote"`，`details.quote` 用于历史展示和编辑恢复。生成期间将引用编码在对应排队或插队问题的末尾，避免引用滞留到下一条问题；序列化时还原为用户消息的 `details.quotes`。
+- 标准 pi 引擎队列：展示时拆出引用卡片；撤回时恢复提问草稿和引用附件；移除时连同引用一起删除。输入框和编辑重问均允许仅发送引用。
+- DeepSeek Harness 引擎：引用作为独立文字块发送，`dsh-serialize.ts` 在历史回放时还原为用户消息的 `details.quotes`；续聊、编辑和分支上下文重新编码这些引用。编码和校验共用 `server/text-quote.ts`。
+- 回归：`tests/unit/quote-selection.test.ts`、`text-quote.test.ts` 和附件/草稿相关单元测试；构建后运行 `node tests/quote-selection-ui-test.mjs`，使用真实 Chrome 和本地模拟模型服务验证发送、刷新和编辑恢复，不访问真实模型。
+
 ## 图片问答（无工作区路径）
 
 粘贴（Ctrl+V）/ 拖入输入框（**整个窗口都是拖放目标**，issue #19：`.app` 根节点接文件 dragover/drop + 全屏 `.app-drop-overlay` 高亮（唯一提示，输入条不叠局部遮罩）；输入条与编辑器自身 handler 在 drop 上 stopPropagation 保优先级，因此 App 另在 window 捕获阶段监听 drop 复位遮罩——否则落点在输入条时全屏遮罩会常驻）/ 🖼 上传的图片带 `attachments[].imageData`（base64）+ `mimeType` + `name` 发送——服务端直接作为 image content 附加，不走文件路径（`path` 忽略）。浏览器端（`web/src/image-paste.ts`）先把图片等比缩到 ≤1568px、按需转 PNG/JPEG，保证 payload 在服务端 2MB 上限内（`MAX_PASTED_IMAGE_BYTES`）。当前模型不支持识图（`model.vision`）时前端提示警告。

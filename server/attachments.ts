@@ -10,7 +10,8 @@
  * 从 agent-service.ts 抽出，行为保持不变；上下文经 AttachmentContext 注入。
  */
 import type { AgentSession } from "@earendil-works/pi-coding-agent";
-import type { ServerMessage } from "./protocol.js";
+import type { PromptAttachment, ServerMessage } from "./protocol.js";
+import { formatTextQuote, readTextQuote } from "./text-quote.js";
 import type { ServerLang } from "./i18n.js";
 import { sniffImageMime } from "./text-sniff.js";
 import { saveUpload, uploadsRoot } from "./uploads.js";
@@ -71,25 +72,7 @@ function attr(value: string): string {
 
 export async function buildAttachmentMessages(
 	ctx: AttachmentContext,
-	attachments:
-		| {
-				path: string;
-				mode?: "inline" | "reference" | "lines" | "page" | "conversation";
-				conversationId?: string;
-				sessionPath?: string;
-				lines?: { start: number; end: number };
-				/** Raw pasted/dropped/uploaded image (base64) — bypasses workspace path. */
-				imageData?: string;
-				/** Raw uploaded file bytes (base64) — persisted, attached as reference. */
-				fileData?: string;
-				/** Absolute path of a previously-uploaded file to re-read from disk
-				 *  (edit-and-re-ask restore). Mutually exclusive with fileData. */
-				uploadPath?: string;
-				mimeType?: string;
-				name?: string;
-				size?: number;
-		  }[]
-		| undefined,
+	attachments: PromptAttachment[] | undefined,
 ): Promise<{ message: Parameters<AgentSession["sendCustomMessage"]>[0] }[]> {
 	if (!attachments || attachments.length === 0) return [];
 	const fs = await import("node:fs/promises");
@@ -299,6 +282,27 @@ export async function buildAttachmentMessages(
 	}
 
 	for (const [idx, att] of attachments.entries()) {
+		if (att.mode === "quote") {
+			const quote = readTextQuote(att.quote);
+			if (!quote) {
+				ctx.emit({
+					type: "notice",
+					level: "warning",
+					text: "引用内容无效，请重新选择文字",
+					textEn: "Select the text again to add a quote.",
+				});
+				continue;
+			}
+			out.push({
+				message: {
+					customType: "file",
+					content: [{ type: "text", text: formatTextQuote(quote) }],
+					display: true,
+					details: { mode: "quote", quote },
+				},
+			});
+			continue;
+		}
 		// Quoted conversation (left-panel right-click / global-search quote):
 		// `path` is unused — the reference travels in conversationId (running
 		// conversation, incl. subagents) or sessionPath (history transcript).

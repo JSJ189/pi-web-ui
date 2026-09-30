@@ -24,7 +24,8 @@
  *     text→text、tool-call→toolCall），id 用 stream-<会话seq> 稳定跨快照。
  */
 
-import type { UiContentBlock, UiMessage } from "../protocol.js";
+import type { TextQuote, UiContentBlock, UiMessage } from "../protocol.js";
+import { parseTextQuote } from "../text-quote.js";
 
 const TEXT_CAP = 200_000;
 const TOOL_OUTPUT_CAP = 100_000;
@@ -139,10 +140,18 @@ export function userMessageEventToUiMessage(data: {
 	id?: string;
 	time?: number;
 }): UiMessage {
+	const quotes: TextQuote[] = [];
+	const content = (data.content ?? []).filter((block) => {
+		const quote = block.type === "text" ? parseTextQuote(block.text ?? "") : null;
+		if (!quote) return true;
+		quotes.push(quote);
+		return false;
+	});
 	return {
 		id: `u-${data.id ?? "?"}`,
 		role: "user",
-		content: serializeUserBlocks(data.content ?? []),
+		content: serializeUserBlocks(content),
+		...(quotes.length ? { details: { quotes } } : {}),
 		timestamp: data.time,
 	};
 }

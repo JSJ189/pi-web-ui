@@ -44,6 +44,7 @@ import { ensurePluginViewLoaded } from "./plugin-loader";
 import { registerAttachmentSink, insertTextAtCursor, removeMentionFromComposer } from "./composer-bridge";
 import { appendDraftAttachments } from "./composer-draft";
 import { useComposerSessionReset } from "./use-composer-session";
+import { splitQuotedPrompt } from "../../server/text-quote.js";
 import {
 	syncPluginViews,
 	subscribeLoadedPluginViews,
@@ -100,7 +101,8 @@ export interface PendingAttachment {
 	 *  "reference"/"lines" = 工作区路径引用（文件内容不进 prompt）。
 	 *  "inline" = 旧版「全文注入」的遗留值（服务端按 reference 处理）；粘贴图片 /
 	 *  上传文件没有 mode（path 为空，模式对它们无意义）。 */
-	mode?: "inline" | "reference" | "lines" | "page" | "conversation";
+	mode?: "inline" | "reference" | "lines" | "page" | "conversation" | "quote";
+	quote?: import("./types").TextQuote;
 	/** mode "conversation" + 引用运行中对话的 id（如 "c3"）。 */
 	conversationId?: string;
 	/** mode "conversation" + 引用历史会话的转录文件 path。 */
@@ -1347,7 +1349,15 @@ export function App() {
 		(kind: "steer" | "followUp", text: string, index: number) => {
 			send({ type: "queue_remove", kind, text, index });
 			recallSeqRef.current += 1;
-			const item = { text, seq: recallSeqRef.current };
+			const parsed = splitQuotedPrompt(text);
+			const item = { text: parsed.text, seq: recallSeqRef.current };
+			if (parsed.quotes.length)
+				setAttachments((prev) =>
+					appendDraftAttachments(
+						prev,
+						parsed.quotes.map((quote) => ({ path: "", name: "", mode: "quote", quote, key: randomUuid() })),
+					),
+				);
 			setRecallDrafts((prev) => [...prev.slice(-9), item]);
 		},
 		[send],

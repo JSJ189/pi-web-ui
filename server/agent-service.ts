@@ -225,6 +225,7 @@ import { makePatchTool } from "./patch-tool.js";
 import { makeLspTool } from "./lsp-tool.js";
 import { sameSessionFile, type SchedulerStore } from "./scheduler-tasks.js";
 import { buildAttachmentMessages, parseModelSpec } from "./attachments.js";
+import { formatQuotedPrompt, readTextQuote } from "./text-quote.js";
 import { buildVisionBridgePrompt, findVisionModels, transcribeImages } from "./vision-bridge.js";
 import { isNotRepoError, scmCommitContext } from "./scm.js";
 import { buildCommitMsgInput, buildCommitMsgPrompt, sanitizeCommitMessage } from "./scm-commitmsg.js";
@@ -253,6 +254,7 @@ import type {
 	UiApprovalRule,
 	UiMessage,
 	UiPluginUpdateInfo,
+	PromptAttachment,
 	UiQuestion,
 	UiServiceInfo,
 	UiState,
@@ -8603,19 +8605,7 @@ export class ClientSession {
 
 	async prompt(
 		text: string,
-		attachments?: {
-			path: string;
-			/** "inline" is a legacy alias of "reference"（见 protocol.ts 的 PromptAttachment）。 */
-			mode?: "inline" | "reference" | "lines";
-			lines?: { start: number; end: number };
-			/** Raw pasted/dropped/uploaded image (base64) — bypasses workspace path. */
-			imageData?: string;
-			/** Raw uploaded file bytes (base64) — persisted, attached as reference. */
-			fileData?: string;
-			mimeType?: string;
-			name?: string;
-			size?: number;
-		}[],
+		attachments?: PromptAttachment[],
 		/**
 		 * true = followUp: while streaming, queue the prompt and deliver it only
 		 * after the WHOLE run finishes (补充 button — "AI 生成结束才发送").
@@ -9013,6 +9003,13 @@ export class ClientSession {
 			conv.promptInFlight = true;
 			// Attach files as independent nextTurn context messages (asides) so the
 			// user message stays clean; they render as separate attachment cards.
+			// SDK 的流式队列只消费用户消息；引用须与对应队列项一起入队和撤回。
+			const streamingQuotes = s.isStreaming
+				? (attachments ?? [])
+						.filter((a) => a.mode === "quote")
+						.map((a) => readTextQuote(a.quote))
+						.filter((q) => q !== null)
+				: [];
 			const asides = await buildAttachmentMessages(
 				{
 					cwd: this.cwd,
@@ -9023,7 +9020,7 @@ export class ClientSession {
 					// issue #91：附件/视觉桥文案按客户端 UI 语言出中英（英文默认）。
 					getLang: () => this.getLang(),
 				},
-				attachments,
+				streamingQuotes.length ? attachments?.filter((a) => a.mode !== "quote") : attachments,
 			);
 			if (promptAc.signal.aborted) {
 				conv.activePromptAc = undefined;
@@ -9073,11 +9070,11 @@ export class ClientSession {
 				// Enter-during-streaming semantic (docs/usage: Enter queues a
 				// steering message); followUp would wait for the whole run
 				// to finish, which users perceive as ordinary queueing.
-				await s.prompt(text, {
+				await s.prompt(formatQuotedPrompt(text, streamingQuotes), {
 					streamingBehavior: queue ? "followUp" : "steer",
 				});
 			} else {
-				await s.prompt(text);
+				await s.prompt(formatQuotedPrompt(text, streamingQuotes));
 			}
 
 			// 关联快照与本次 prompt 产生的用户消息 entry
@@ -11870,7 +11867,7 @@ export class ClientSession {
 	): Promise<void> {
 		if (this.quiesceBlocked()) return;
 		const trimmed = text.trim();
-		if (!trimmed) {
+		if (!trimmed && !attachments?.some((a) => a.mode === "quote" && readTextQuote(a.quote))) {
 			this.emit({
 				type: "notice",
 				level: "warning",

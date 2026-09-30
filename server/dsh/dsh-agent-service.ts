@@ -73,6 +73,7 @@ import type {
 } from "../protocol.js";
 import { launchOrigin, toServiceInfo } from "../launch-origin.js";
 import { DshRuntime, loadDeepSeekKey, type DshAgentPreset } from "./dsh-client.js";
+import { formatTextQuote, readTextQuote, messageTextWithQuotes } from "../text-quote.js";
 import {
 	DshStreamAccumulator,
 	assistantMessageEventToUiMessage,
@@ -1102,13 +1103,8 @@ export class DshClientSession {
 				if (srcKind === "agent-instructions" || srcKind === "plugin") break;
 				const msg = userMessageEventToUiMessage(ev.data as never);
 				// 重复文本（DSH 有时重放同一用户消息）→ 去重。
-				const text = msg.content.map((c) => ("text" in c ? c.text : "")).join("");
-				if (
-					text &&
-					conv.messages.some(
-						(m) => m.role === "user" && m.content.map((c) => ("text" in c ? c.text : "")).join("") === text,
-					)
-				) {
+				const text = messageTextWithQuotes(msg);
+				if (text && conv.messages.some((m) => m.role === "user" && messageTextWithQuotes(m) === text)) {
 					break;
 				}
 				this.appendMessage(conv, msg);
@@ -1795,7 +1791,7 @@ export class DshClientSession {
 		// 磁盘回放会话（switch_session）没有 live runtime session —— DSH 的
 		// JSON-RPC 面不支持恢复（id collision），自动 fork 新会话继续：把历史
 		// 作为上下文注入首条 prompt，前端提示。
-		if (conv.fromDisk && text.trim()) {
+		if (conv.fromDisk && (text.trim() || attachments?.some((a) => a.mode === "quote" && readTextQuote(a.quote)))) {
 			const histText = this.histToContext(conv);
 			conv = this.forkConversation(conv);
 			if (histText.trim()) {
@@ -1910,6 +1906,12 @@ export class DshClientSession {
 						: []),
 				],
 				timestamp: Date.now(),
+				details: {
+					quotes: (attachments ?? [])
+						.filter((a) => a.mode === "quote")
+						.map((a) => readTextQuote(a.quote))
+						.filter((q) => q !== null),
+				},
 			};
 			this.appendMessage(conv, optimistic);
 			this.flushSnapshot();
@@ -1942,7 +1944,7 @@ export class DshClientSession {
 	private histToContext(conv: DshConversation): string {
 		return conv.messages
 			.map((m) => {
-				const blocks = m.content.map((c) => ("text" in c ? c.text : "")).join("\n");
+				const blocks = messageTextWithQuotes(m);
 				return blocks ? `[${m.role === "assistant" ? "AI" : m.role}] ${blocks}` : "";
 			})
 			.filter(Boolean)
@@ -1978,10 +1980,7 @@ export class DshClientSession {
 		for (let i = conv.messages.length - 1; i >= 0; i--) {
 			const m = conv.messages[i]!;
 			if (m.role === "user") {
-				lastUser = m.content
-					.map((c) => ("text" in c ? c.text : ""))
-					.join("")
-					.trim();
+				lastUser = messageTextWithQuotes(m).trim();
 				if (lastUser) break;
 			}
 		}
@@ -2015,6 +2014,18 @@ export class DshClientSession {
 		const lang = this.getLang();
 		if (!Array.isArray(attachments)) return blocks;
 		for (const a of attachments) {
+			if (a.mode === "quote") {
+				const quote = readTextQuote(a.quote);
+				if (quote) blocks.push({ type: "text", text: formatTextQuote(quote) });
+				else
+					this.emit({
+						type: "notice",
+						level: "warning",
+						text: "引用内容无效，请重新选择文字",
+						textEn: "Select the text again to add a quote.",
+					});
+				continue;
+			}
 			const resolved = a.path ? workspacePath(this.cwd, a.path) : null;
 			if (a.imageData) {
 				// 视觉桥：base64 图片 → attachment store → 真 image 块（模型可看图）。
@@ -4406,11 +4417,11 @@ export class DshClientSession {
 			const fresh = this.addConversation(newSessionId, this.cwd, false);
 			// 回放编辑点之前的消息（作为会话初始上下文：DSH 无 seed 机制，v1 用
 			// 简化——直接把历史作为一条提示词说明附上）。
-			const head = conv.messages.slice(0, idx + 1);
+			const head = conv.messages.slice(0, idx);
 			// 把编辑前的对话内容写进新会话的 prompt（尽力保留上下文）。
 			const contextNote = head
 				.map((m) => {
-					const blocks = m.content.map((c) => ("text" in c ? c.text : "")).join("\n");
+					const blocks = messageTextWithQuotes(m);
 					return `[${m.role}] ${blocks}`;
 				})
 				.join("\n");

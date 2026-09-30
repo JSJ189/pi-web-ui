@@ -4,7 +4,8 @@
  * are truncated with a marker) so snapshots stay cheap to stream.
  */
 import type { AgentSession } from "@earendil-works/pi-coding-agent";
-import type { UiContentBlock, UiImageBlock, UiMessage } from "./protocol.js";
+import type { TextQuote, UiContentBlock, UiImageBlock, UiMessage } from "./protocol.js";
+import { splitQuotedPrompt } from "./text-quote.js";
 
 /** AgentMessage is not re-exported from the package root; derive it from AgentSession. */
 export type AgentMessage = AgentSession["messages"][number];
@@ -236,13 +237,23 @@ export function serializeMessage(m: AgentMessage, seq: number): UiMessage | null
 	const id = uiMessageId(m, seq);
 
 	switch (m.role) {
-		case "user":
+		case "user": {
+			const quotes: TextQuote[] = [];
+			const raw = typeof m.content === "string" ? [{ type: "text" as const, text: m.content }] : m.content;
+			const content = raw.map((block) => {
+				if (block.type !== "text") return block;
+				const parsed = splitQuotedPrompt(block.text);
+				quotes.push(...parsed.quotes);
+				return { ...block, text: parsed.text };
+			});
 			return {
 				id,
 				role: "user",
-				content: serializeUserContent(m.content),
+				content: serializeUserContent(content),
+				...(quotes.length ? { details: { quotes } } : {}),
 				timestamp: m.timestamp,
 			};
+		}
 
 		case "assistant":
 			return {

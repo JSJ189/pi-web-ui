@@ -56,7 +56,8 @@ export interface DraftAttachment {
 	 * "inline" = 旧版「全文注入」的遗留值（服务端按 reference 处理）。
 	 * 粘贴图片/上传文件没有 mode（path 为空）。
 	 */
-	mode?: "inline" | "reference" | "lines" | "page" | "conversation";
+	mode?: "inline" | "reference" | "lines" | "page" | "conversation" | "quote";
+	quote?: import("../../server/protocol.js").TextQuote;
 	/** mode "conversation" + 引用运行中对话的 id（如 "c3"）。 */
 	conversationId?: string;
 	/** mode "conversation" + 引用历史会话的转录文件 path。 */
@@ -79,6 +80,9 @@ export interface DraftAttachment {
  * （拿不到身份就宁可按两份算，也不能把用户刚注入的截图悄悄吃掉）。
  */
 function attachmentIdentity(a: DraftAttachment): string | null {
+	if (a.mode === "quote" && a.quote) {
+		return `quote:${JSON.stringify([a.quote.sessionId ?? "", a.quote.messageId, a.quote.role, a.quote.text])}`;
+	}
 	if (a.key) return `key:${a.key}`;
 	if (a.mode === "conversation") {
 		if (a.conversationId) return `conv:id:${a.conversationId}`;

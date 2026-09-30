@@ -35,6 +35,7 @@ import { DshPresetBar, type DshPresetInfo } from "./DshPresetBar";
 import { DshPermissionBar } from "./DshPermissionBar";
 import type { DshPermissionOption, UiAgentPreset } from "../types";
 import { useTemplates } from "./PromptTemplates";
+import { TextQuoteCard } from "./TextQuoteCard";
 
 /** True on touch-first devices (phones / tablets driven by a soft keyboard) —
  *  see `touch-device.ts` for the detection rules (Windows 触屏笔记本不算触屏，
@@ -83,7 +84,8 @@ interface ChatInputProps {
 		 *  （运行中，含子代理）或 sessionPath（历史转录）。
 		 *  "inline" = 旧版「全文注入」的遗留值（服务端按 reference 处理）。
 		 *  粘贴图片/上传文件没有 mode（path 为空）。 */
-		mode?: "inline" | "reference" | "lines" | "page" | "conversation";
+		mode?: "inline" | "reference" | "lines" | "page" | "conversation" | "quote";
+		quote?: import("../types").TextQuote;
 		/** mode "conversation" + 引用运行中对话的 id（如 "c3"）。 */
 		conversationId?: string;
 		/** mode "conversation" + 引用历史会话的转录文件 path。 */
@@ -968,6 +970,7 @@ export const ChatInput = memo(function ChatInput({
 	 *  submit 与快捷短语发送共用 —— 点短语时文件引用同样带上，不丢失。 */
 	const buildPromptAttachments = () =>
 		attachments.map((a) => {
+			if (a.mode === "quote") return { path: "", mode: "quote" as const, quote: a.quote };
 			if (a.imageData) {
 				return {
 					path: "",
@@ -1292,7 +1295,8 @@ export const ChatInput = memo(function ChatInput({
 	// 空闲态的发送按钮和运行中的对半胶囊共用这一个条件。
 	const canSubmit =
 		connected &&
-		(text.trim() !== "" || attachments.some((a) => a.imageData || a.fileData || a.mode === "conversation"));
+		(text.trim() !== "" ||
+			attachments.some((a) => a.imageData || a.fileData || a.mode === "conversation" || a.mode === "quote"));
 
 	// 插件输入框动作按 align 分组（未接线回落用；接线后统一走下面的 composerGroups）。
 	const pluginActions = useMemo(
@@ -1484,71 +1488,75 @@ export const ChatInput = memo(function ChatInput({
 		>
 			{attachments.length > 0 && (
 				<div className="attach-row">
-					{attachments.map((a) => (
-						<span
-							key={
-								a.key ??
-								(a.mode === "conversation"
-									? `conv|${a.conversationId ?? ""}|${a.sessionPath ?? ""}`
-									: `${a.path}|${a.mode}|${a.lines ? `${a.lines.start}-${a.lines.end}` : ""}`)
-							}
-							className={`attach-chip ${a.imageData ? "image" : a.fileData ? "file" : a.mode}`}
-							title={
-								a.imageData
-									? t("attachImage", { name: a.name })
-									: a.fileData
-										? t("attachFile", { name: a.name })
-										: a.isDir
-											? t("folderRef", { path: a.path })
-											: a.mode === "page"
-												? t("attachPage", { name: a.name })
-												: a.mode === "conversation"
-													? t("attachConversation", { name: a.name })
-													: a.mode === "reference"
-														? t("refOnly", { path: a.path })
-														: a.mode === "lines" && a.lines
-															? t("attachLines", {
-																	path: a.path,
-																	start: a.lines.start,
-																	end: a.lines.end,
-																})
-															: t("attachContent", { path: a.path })
-							}
-						>
-							{a.imageData
-								? "🖼"
-								: a.fileData
-									? "📄"
-									: a.isDir
-										? "📁"
-										: a.mode === "page"
-											? "🌐"
-											: a.mode === "conversation"
-												? "💬"
-												: a.mode === "reference"
-													? "🔗"
-													: "📎"}
-							{a.name}
-							{a.mode === "lines" && a.lines && (
-								<span className="attach-range">
-									L{a.lines.start}-{a.lines.end}
-								</span>
-							)}
-							<button
-								type="button"
-								className="attach-remove"
-								title={t("removeAttachment")}
-								onClick={() =>
-									onRemoveAttachment(
-										a.key ??
-											(a.mode === "conversation" ? `conv|${a.conversationId ?? ""}|${a.sessionPath ?? ""}` : a.path),
-									)
+					{attachments.map((a) =>
+						a.mode === "quote" && a.quote ? (
+							<TextQuoteCard key={a.key} quote={a.quote} onRemove={() => onRemoveAttachment(a.key ?? "")} />
+						) : (
+							<span
+								key={
+									a.key ??
+									(a.mode === "conversation"
+										? `conv|${a.conversationId ?? ""}|${a.sessionPath ?? ""}`
+										: `${a.path}|${a.mode}|${a.lines ? `${a.lines.start}-${a.lines.end}` : ""}`)
+								}
+								className={`attach-chip ${a.imageData ? "image" : a.fileData ? "file" : a.mode}`}
+								title={
+									a.imageData
+										? t("attachImage", { name: a.name })
+										: a.fileData
+											? t("attachFile", { name: a.name })
+											: a.isDir
+												? t("folderRef", { path: a.path })
+												: a.mode === "page"
+													? t("attachPage", { name: a.name })
+													: a.mode === "conversation"
+														? t("attachConversation", { name: a.name })
+														: a.mode === "reference"
+															? t("refOnly", { path: a.path })
+															: a.mode === "lines" && a.lines
+																? t("attachLines", {
+																		path: a.path,
+																		start: a.lines.start,
+																		end: a.lines.end,
+																	})
+																: t("attachContent", { path: a.path })
 								}
 							>
-								×
-							</button>
-						</span>
-					))}
+								{a.imageData
+									? "🖼"
+									: a.fileData
+										? "📄"
+										: a.isDir
+											? "📁"
+											: a.mode === "page"
+												? "🌐"
+												: a.mode === "conversation"
+													? "💬"
+													: a.mode === "reference"
+														? "🔗"
+														: "📎"}
+								{a.name}
+								{a.mode === "lines" && a.lines && (
+									<span className="attach-range">
+										L{a.lines.start}-{a.lines.end}
+									</span>
+								)}
+								<button
+									type="button"
+									className="attach-remove"
+									title={t("removeAttachment")}
+									onClick={() =>
+										onRemoveAttachment(
+											a.key ??
+												(a.mode === "conversation" ? `conv|${a.conversationId ?? ""}|${a.sessionPath ?? ""}` : a.path),
+										)
+									}
+								>
+									×
+								</button>
+							</span>
+						),
+					)}
 					<span className="attach-hint">{t("attachHint")}</span>
 				</div>
 			)}

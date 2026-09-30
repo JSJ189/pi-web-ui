@@ -58,6 +58,30 @@ function fileCard(
 }
 
 describe("collectQuestionAttachments", () => {
+	it("恢复保存在用户消息中的引用", () => {
+		const quote = { text: "引用原文", messageId: "a1", role: "assistant" };
+		const map = collectQuestionAttachments([{ ...user("u1", "解释这段"), details: { quotes: [quote] } }]);
+		expect(map.get("u1")).toEqual([{ path: "", mode: "quote", quote }]);
+	});
+	it("编辑重问恢复文字引用原文与来源，无需文件路径", () => {
+		const quote = { text: "代码\n第二行", messageId: "a1", role: "assistant", sessionId: "s1" };
+		const map = collectQuestionAttachments([
+			user("u1", "解释这段"),
+			fileCard("q1", [{ type: "text", text: "引用上下文" }], { mode: "quote", quote }),
+			assistant("a2"),
+		]);
+		expect(map.get("u1")).toEqual([{ path: "", mode: "quote", quote }]);
+	});
+	it("编辑重问恢复提问之前插入的 aside 卡（非流式提问顺序）", () => {
+		const quote = { text: "代码\n第二行", messageId: "a1", role: "assistant", sessionId: "s1" };
+		const map = collectQuestionAttachments([
+			assistant("a0"),
+			fileCard("q1", [{ type: "text", text: "引用上下文" }], { mode: "quote", quote }),
+			user("u1", "解释这段"),
+			assistant("a2"),
+		]);
+		expect(map.get("u1")).toEqual([{ path: "", mode: "quote", quote }]);
+	});
 	it("收集用户自身内容里的图片块", () => {
 		const u = {
 			...user("u1", "看图"),

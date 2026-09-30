@@ -2,6 +2,86 @@
 
 /* pi-web-ui — dark theme, pi-flavored */
 
+/* ---- 文字引用 ---- */
+.quote-selection-button {
+	position: fixed;
+	z-index: 1100;
+	display: inline-flex;
+	align-items: center;
+	justify-content: center;
+	gap: 6px;
+	width: 88px;
+	height: 34px;
+	border: 1px solid var(--border);
+	border-radius: 8px;
+	background: var(--bg-elev2);
+	color: var(--text);
+	box-shadow: 0 4px 16px #0003;
+	cursor: pointer;
+}
+.quote-selection-button:hover,
+.quote-selection-button:focus-visible {
+	border-color: var(--accent);
+	color: var(--accent);
+}
+.quote-card {
+	display: flex;
+	align-items: flex-start;
+	gap: 8px;
+	width: 100%;
+	min-width: 0;
+	border: 1px solid var(--border);
+	border-left: 3px solid var(--accent);
+	border-radius: 8px;
+	padding: 8px 10px;
+	background: var(--bg-elev);
+	font-size: 12px;
+}
+.quote-card details {
+	flex: 1;
+	min-width: 0;
+}
+.quote-card summary {
+	cursor: pointer;
+	color: var(--text-dim);
+}
+.quote-source {
+	color: var(--accent);
+}
+.quote-preview {
+	display: block;
+	margin-top: 4px;
+	overflow: hidden;
+	white-space: nowrap;
+	text-overflow: ellipsis;
+}
+.quote-content {
+	margin: 8px 0 0;
+	max-height: 220px;
+	overflow: auto;
+	white-space: pre-wrap;
+	overflow-wrap: anywhere;
+	color: var(--text);
+	font-family: var(--mono);
+}
+.quote-remove {
+	flex-shrink: 0;
+	width: 24px;
+	height: 24px;
+	padding: 0;
+	border: 0;
+	border-radius: 4px;
+	background: transparent;
+	color: var(--text-dim);
+	cursor: pointer;
+	font-size: 18px;
+}
+.quote-remove:hover,
+.quote-remove:focus-visible {
+	color: var(--red);
+	background: var(--red-soft);
+}
+
 /* File manager archive / folder transfer dialog. Native dialog traps focus. */
 .file-transfer-dialog {
 	background: var(--bg-elev);

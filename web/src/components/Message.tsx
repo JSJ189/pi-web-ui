@@ -21,6 +21,7 @@ import {
 	FiZap,
 } from "react-icons/fi";
 import type {
+	TextQuote,
 	PromptAttachment,
 	ToolStatus,
 	UiBashBlock,
@@ -31,6 +32,8 @@ import type {
 	UiThinkingBlock,
 	UiToolCallBlock,
 } from "../types";
+import { readTextQuote } from "../../../server/text-quote.js";
+import { TextQuoteCard } from "./TextQuoteCard";
 import { Markdown, PluginWidgetBlock } from "./Markdown";
 import { StreamMarkdown } from "./StreamMarkdown";
 import { ThinkingBlock } from "./ThinkingBlock";
@@ -104,6 +107,7 @@ function editAttKind(att: PromptAttachment): EditAttKind {
 
 /** Tooltip label for an editor chip (reuses the chat-input attachment i18n). */
 function editAttLabel(att: PromptAttachment, t: Translate): string {
+	if (att.mode === "quote" && att.quote) return att.quote.text;
 	if (att.imageData) return t("attachImage", { name: att.name ?? "image" });
 	if (att.uploadPath) return t("attachFile", { name: att.name ?? att.uploadPath });
 	if (att.fileData) return t("attachFile", { name: att.name ?? "file" });
@@ -291,6 +295,15 @@ export const Message = memo(function Message({
 	// Attached files are rendered as their own collapsible card, separate from
 	// the user message text.
 	const isFileAttachment = message.role === "custom" && message.customType === "file";
+	const fileQuote =
+		isFileAttachment && (message.details as { mode?: string })?.mode === "quote"
+			? readTextQuote((message.details as { quote?: unknown }).quote)
+			: null;
+	const quoteValues = (message.details as { quotes?: unknown[] })?.quotes;
+	const messageQuotes: TextQuote[] =
+		message.role === "user" && Array.isArray(quoteValues)
+			? quoteValues.map(readTextQuote).filter((q): q is TextQuote => q !== null)
+			: [];
 	// Question text for the per-question tag's tooltip.
 	const userText = message.content
 		.map((b) => asText(b)?.text ?? "")
@@ -397,7 +410,7 @@ export const Message = memo(function Message({
 	};
 	const submitEdit = () => {
 		const text = draft.trim();
-		if (!text) return;
+		if (!text && !editAttachments.some((a) => a.mode === "quote" && readTextQuote(a.quote))) return;
 		onEdit?.(
 			message.id,
 			text,
@@ -977,6 +990,14 @@ export const Message = memo(function Message({
 						{editAttachments.length > 0 && (
 							<div className="msg-editor-images">
 								{editAttachments.map((att, i) => {
+									if (att.mode === "quote" && att.quote)
+										return (
+											<TextQuoteCard
+												key={`quote-${i}`}
+												quote={att.quote}
+												onRemove={() => setEditAttachments((prev) => prev.filter((_, j) => j !== i))}
+											/>
+										);
 									const kind = editAttKind(att);
 									return (
 										<span
@@ -1052,7 +1073,7 @@ export const Message = memo(function Message({
 							<button
 								type="button"
 								className="chip primary"
-								disabled={!draft.trim()}
+								disabled={!draft.trim() && !editAttachments.some((a) => a.mode === "quote" && readTextQuote(a.quote))}
 								title={t("reaskFromHere")}
 								onClick={submitEdit}
 							>
@@ -1074,7 +1095,12 @@ export const Message = memo(function Message({
 								)}
 							</div>
 						)}
-						{isFileAttachment ? (
+						{messageQuotes.map((quote, i) => (
+							<TextQuoteCard key={`quote-${i}`} quote={quote} forceOpen={searchActive} />
+						))}
+						{fileQuote ? (
+							<TextQuoteCard quote={fileQuote} forceOpen={searchActive} />
+						) : isFileAttachment ? (
 							<AttachmentCard message={message} forceOpen={searchActive} />
 						) : skillBlock ? (
 							<>

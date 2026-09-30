@@ -314,6 +314,14 @@ export interface SlashCommandInfo {
  *  page (page), raw pasted/dropped images (imageData) and raw uploaded files
  *  (fileData). Files are never injected into the prompt — the model gets a
  *  path reference and reads on demand. */
+/** 用户选中的消息原文；发送后保留副本，避免来源消息变化影响引用。 */
+export interface TextQuote {
+	text: string;
+	messageId: string;
+	role: string;
+	sessionId?: string;
+}
+
 export interface PromptAttachment {
 	/** Workspace path — except for mode "page", where it is the page's origin
 	 *  (e.g. "https://example.com"), which is also the browser_page `target`,
@@ -331,7 +339,9 @@ export interface PromptAttachment {
 	 *  right-click / global-search quote): the server emits a small
 	 *  <conversation-ref> aside pointing at it, and the model fetches the
 	 *  transcript on demand with the conversation_read tool. */
-	mode?: "inline" | "reference" | "lines" | "page" | "conversation";
+	mode?: "inline" | "reference" | "lines" | "page" | "conversation" | "quote";
+	/** mode "quote"：path 留空，引用原文和来源保存在 quote。 */
+	quote?: TextQuote;
 	/** mode "conversation" + 引用运行中对话：conversation id（如 "c3"，含子代理）。 */
 	conversationId?: string;
 	/** mode "conversation" + 引用历史会话：会话转录文件 path（左栏历史行 / 全局搜索）。 */

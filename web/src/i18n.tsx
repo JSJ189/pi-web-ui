@@ -1749,6 +1749,10 @@ export const zh = {
 	quoteConversationShort: "引用",
 	attachConversation: "对话引用：{name}（AI 经 conversation_read 按需读取）",
 	attachConversationShort: "对话",
+	quoteSelection: "引用",
+	quoteText: "文字引用",
+	quoteSource: "来源消息：{id}",
+	removeQuote: "移除引用",
 	/* Present files（present_files 工具卡片） */
 	presentOpenLocal: "本地打开",
 	presentMissing: "文件不存在或不可读（可能已被移动、删除或超出工作区）",
@@ -3614,6 +3618,10 @@ export const en: Record<keyof typeof zh, string> = {
 	quoteConversationShort: "Quote",
 	attachConversation: "Conversation reference: {name} (the AI reads it via conversation_read on demand)",
 	attachConversationShort: "conversation",
+	quoteSelection: "Quote",
+	quoteText: "Text quote",
+	quoteSource: "Source message: {id}",
+	removeQuote: "Remove quote",
 	/* Present files (present_files tool cards) */
 	presentOpenLocal: "Open locally",
 	presentMissing: "File missing or unreadable (moved, deleted, or outside the workspace?)",

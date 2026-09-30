@@ -15,11 +15,13 @@
  * 既不 import ./types（单测在 NodeNext 下会因扩展名缺失 shim 报 TS2835），
  * 也让任意 UiMessage 都能传入。
  */
-/** PromptAttachment 的结构化镜像（与 server/protocol.ts 一致）。 */
+import { readTextQuote } from "../../server/text-quote.js";
+
 /** PromptAttachment 的结构化镜像（与 server/protocol.ts 一致）。 */
 export interface EditPromptAttachment {
 	path: string;
-	mode?: "inline" | "reference" | "lines" | "page" | "conversation";
+	mode?: "inline" | "reference" | "lines" | "page" | "conversation" | "quote";
+	quote?: import("../../server/protocol.js").TextQuote;
 	conversationId?: string;
 	sessionPath?: string;
 	lines?: { start: number; end: number };
@@ -61,6 +63,74 @@ function pushImageAttachments(
 	return hasImage;
 }
 
+function parseFileCardAttachment(msg: { content: readonly unknown[]; details?: unknown }): EditPromptAttachment | null {
+	const details = (msg.details ?? {}) as {
+		quote?: import("../../server/protocol.js").TextQuote;
+		mode?: string;
+		name?: string;
+		size?: number;
+		path?: string;
+		startLine?: number;
+		endLine?: number;
+		upload?: boolean;
+	};
+	if (details.mode === "quote") {
+		const quote = readTextQuote(details.quote);
+		if (quote) return { path: "", mode: "quote", quote };
+		return null;
+	}
+	// 1) Image card (pasted/uploaded images incl. bridged thumbnails) —
+	//    the raw base64 lives in the image blocks.
+	const imgAtts: EditPromptAttachment[] = [];
+	if (pushImageAttachments(imgAtts, msg.content, details.name)) return imgAtts[0] ?? null;
+	// 2) Uploaded file (fileData) — re-send the server-generated upload
+	//    path; the server re-reads the persisted bytes from disk.
+	if (details.upload && details.path) {
+		return {
+			path: "",
+			uploadPath: details.path,
+			name: details.name ?? details.path,
+			size: details.size,
+		};
+	}
+	// 3) Granted web page (page-picker 的「引用到对话」)：`path` 是页面 origin、
+	//    name 是标题；扩展的授权表与工作区无关，所以原样重发即可，服务端不读文件。
+	if (details.mode === "page" && details.path) {
+		return { path: details.path, mode: "page", name: details.name ?? details.path };
+	}
+	// 3b) Quoted conversation（对话引用 chip）：path 是 id/path 展示串，
+	//     真引用走 conversationId/sessionPath；重发即重新读取最新转录。
+	if (details.mode === "conversation") {
+		const d = details as { conversationId?: unknown; sessionPath?: unknown };
+		const conversationId = typeof d.conversationId === "string" && d.conversationId ? d.conversationId : undefined;
+		const sessionPath = typeof d.sessionPath === "string" && d.sessionPath ? d.sessionPath : undefined;
+		if (conversationId || sessionPath) {
+			return {
+				path: "",
+				mode: "conversation",
+				name: details.name ?? conversationId ?? sessionPath,
+				...(conversationId ? { conversationId } : {}),
+				...(sessionPath ? { sessionPath } : {}),
+			};
+		}
+		return null;
+	}
+	// 4) Workspace-path attachment (reference / lines / folder)
+	//    — the relative path stays valid on the new branch, so a path +
+	//    mode spec is enough to re-attach it. A legacy "inline" mode (old
+	//    sessions persisted before content injection was removed) is
+	//    downgraded to a plain path reference.
+	if (details.path && details.mode) {
+		const mode = details.mode === "lines" ? "lines" : "reference";
+		const att: EditPromptAttachment = { path: details.path, mode };
+		if (details.mode === "lines" && typeof details.startLine === "number" && typeof details.endLine === "number") {
+			att.lines = { start: details.startLine, end: details.endLine };
+		}
+		return att;
+	}
+	return null;
+}
+
 export function collectQuestionAttachments(
 	messages: readonly {
 		id?: string;
@@ -78,6 +148,19 @@ export function collectQuestionAttachments(
 		// the user content itself).
 		const atts: EditPromptAttachment[] = [];
 		pushImageAttachments(atts, msg.content);
+		const quotes = (msg.details as { quotes?: unknown[] } | undefined)?.quotes;
+		for (const value of Array.isArray(quotes) ? quotes : []) {
+			const quote = readTextQuote(value);
+			if (quote) atts.push({ path: "", mode: "quote", quote });
+		}
+		// Leading attachment cards sent before this user prompt (e.g. non-streaming attachments/quotes).
+		const leadingAtts: EditPromptAttachment[] = [];
+		for (let j = i - 1; j >= 0 && messages[j].role === "custom" && messages[j].customType === "file"; j--) {
+			const att = parseFileCardAttachment(messages[j]);
+			if (att) leadingAtts.unshift(att);
+		}
+		atts.push(...leadingAtts);
+
 		// Then the attachment-card run that follows this question (stops at
 		// any other message kind — assistant/toolResult/next user/etc.).
 		for (
@@ -85,65 +168,8 @@ export function collectQuestionAttachments(
 			j < messages.length && messages[j].role === "custom" && messages[j].customType === "file";
 			j++
 		) {
-			const details = (messages[j].details ?? {}) as {
-				mode?: string;
-				name?: string;
-				size?: number;
-				path?: string;
-				startLine?: number;
-				endLine?: number;
-				upload?: boolean;
-			};
-			// 1) Image card (pasted/uploaded images incl. bridged thumbnails) —
-			//    the raw base64 lives in the image blocks.
-			if (pushImageAttachments(atts, messages[j].content, details.name)) continue;
-			// 2) Uploaded file (fileData) — re-send the server-generated upload
-			//    path; the server re-reads the persisted bytes from disk.
-			if (details.upload && details.path) {
-				atts.push({
-					path: "",
-					uploadPath: details.path,
-					name: details.name ?? details.path,
-					size: details.size,
-				});
-				continue;
-			}
-			// 3) Granted web page (page-picker 的「引用到对话」)：`path` 是页面 origin、
-			//    name 是标题；扩展的授权表与工作区无关，所以原样重发即可，服务端不读文件。
-			if (details.mode === "page" && details.path) {
-				atts.push({ path: details.path, mode: "page", name: details.name ?? details.path });
-				continue;
-			}
-			// 3b) Quoted conversation（对话引用 chip）：path 是 id/path 展示串，
-			//     真引用走 conversationId/sessionPath；重发即重新读取最新转录。
-			if (details.mode === "conversation") {
-				const d = details as { conversationId?: unknown; sessionPath?: unknown };
-				const conversationId = typeof d.conversationId === "string" && d.conversationId ? d.conversationId : undefined;
-				const sessionPath = typeof d.sessionPath === "string" && d.sessionPath ? d.sessionPath : undefined;
-				if (conversationId || sessionPath) {
-					atts.push({
-						path: "",
-						mode: "conversation",
-						name: details.name ?? conversationId ?? sessionPath,
-						...(conversationId ? { conversationId } : {}),
-						...(sessionPath ? { sessionPath } : {}),
-					});
-				}
-				continue;
-			}
-			// 4) Workspace-path attachment (reference / lines / folder)
-			//    — the relative path stays valid on the new branch, so a path +
-			//    mode spec is enough to re-attach it. A legacy "inline" mode (old
-			//    sessions persisted before content injection was removed) is
-			//    downgraded to a plain path reference.
-			if (details.path && details.mode) {
-				const mode = details.mode === "lines" ? "lines" : "reference";
-				const att: EditPromptAttachment = { path: details.path, mode };
-				if (details.mode === "lines" && typeof details.startLine === "number" && typeof details.endLine === "number") {
-					att.lines = { start: details.startLine, end: details.endLine };
-				}
-				atts.push(att);
-			}
+			const att = parseFileCardAttachment(messages[j]);
+			if (att) atts.push(att);
 		}
 		if (atts.length > 0) m.set(msg.id, atts);
 	}

@@ -136,7 +136,8 @@ describe("checkPluginUpdates", () => {
 			"https://github.com/x/b.git": "2222222222222222222222222222222222222222",
 			"https://github.com/x/c.git": "4444444444444444444444444444444444444444",
 		});
-		const res = await checkPluginUpdates(dataDir, exec);
+		const dummyFetcher = async () => ({ ok: false, json: async () => ({}) });
+		const res = await checkPluginUpdates(dataDir, exec, undefined, { fetcher: dummyFetcher });
 		const upd = res
 			.filter((r) => r.updatable)
 			.map((r) => r.id)

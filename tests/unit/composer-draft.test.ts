@@ -56,6 +56,14 @@ const shot = (key: string) =>
 	({ path: "", name: "shot.png", mode: "inline", imageData: "AAA", key }) as DraftAttachment;
 
 describe("appendDraftAttachments", () => {
+	it("同一来源与原文的引用去重，不同片段可以并存", () => {
+		const quote = { text: "第一段", messageId: "a1", role: "assistant" as const, sessionId: "s1" };
+		const first: DraftAttachment = { path: "", name: "pi", mode: "quote", quote };
+		const second: DraftAttachment = { ...first, quote: { ...quote, text: "第二段" } };
+		const otherSession: DraftAttachment = { ...first, quote: { ...quote, sessionId: "s2" } };
+		const result = appendDraftAttachments([first], [{ ...first }, second, otherSession]);
+		expect(result).toEqual([first, second, otherSession]);
+	});
 	it("空数组 → 原样返回（同一引用，不制造新数组）", () => {
 		const current = [file("/a.ts")];
 		expect(appendDraftAttachments(current, [])).toBe(current);

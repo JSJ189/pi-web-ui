@@ -99,6 +99,28 @@ function makeCtx(opts: {
 }
 
 describe("buildAttachmentMessages — 编辑重问附件恢复", () => {
+	it("文字引用保存原文与来源，并作为独立上下文发送", async () => {
+		const quote = { text: "  const value = '<file>';\n下一行  ", messageId: "a1", role: "assistant", sessionId: "s1" };
+		const notices: { level: string; text: string }[] = [];
+		const dir = tempDir();
+		const result = await buildAttachmentMessages(makeCtx({ dataDir: dir, cwd: dir, notices }), [
+			{ path: "", mode: "quote", quote },
+		]);
+		expect(result).toHaveLength(1);
+		expect(result[0].message.details).toMatchObject({ mode: "quote", quote });
+		expect(result[0].message.content).toEqual([{ type: "text", text: expect.stringContaining(JSON.stringify(quote)) }]);
+		expect(notices).toEqual([]);
+	});
+
+	it("空白引用被跳过并提示重新选择内容", async () => {
+		const notices: { level: string; text: string }[] = [];
+		const dir = tempDir();
+		const result = await buildAttachmentMessages(makeCtx({ dataDir: dir, cwd: dir, notices }), [
+			{ path: "", mode: "quote", quote: { text: " \n ", messageId: "a1", role: "assistant" } },
+		]);
+		expect(result).toEqual([]);
+		expect(notices).toEqual([{ level: "warning", text: expect.stringContaining("重新选择") }]);
+	});
 	it("新 fileData 上传的 aside 卡带 upload:true（供按路径恢复）", async () => {
 		const dataDir = tempDir();
 		const oldDataDir = process.env.PI_WEB_DATA_DIR;

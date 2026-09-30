@@ -30,6 +30,9 @@ import { renderSlotToolbar } from "../slot-toolbar";
 import { useT } from "../i18n";
 import { isExportableMessage, setExportMessageCatalog, useExportImage } from "../export-image-state";
 import { SaveImageDialog } from "./SaveImageDialog";
+import { SelectionQuoteButton } from "./SelectionQuoteButton";
+import { TextQuoteCard } from "./TextQuoteCard";
+import { splitQuotedPrompt } from "../../../server/text-quote.js";
 
 /** Stable shared empty map — passing this (instead of a fresh Map) lets
  *  React.memo skip messages that have no live tool output to show. */
@@ -84,6 +87,7 @@ function QueuedMessage({
 	onRecallQueued?: (kind: "steer" | "followUp", text: string, index: number) => void;
 }) {
 	const t = useT();
+	const parsed = splitQuotedPrompt(text);
 	return (
 		<div className="msg msg-user msg-queued" data-role="user">
 			<div className="msg-meta">
@@ -118,7 +122,10 @@ function QueuedMessage({
 			</div>
 			<div className="msg-body">
 				<div className="msg-text">
-					<Markdown text={text} hardBreaks />
+					{parsed.quotes.map((quote, i) => (
+						<TextQuoteCard key={`quote-${i}`} quote={quote} />
+					))}
+					<Markdown text={parsed.text} hardBreaks />
 				</div>
 			</div>
 		</div>
@@ -222,6 +229,11 @@ export function MessageList({
 	const prevScrollHeightRef = useRef(0);
 	/** 用户已主动离开底部：流式结束 / finalize 塌缩时不再自动吸回。 */
 	const escapedRef = useRef(false);
+	const pauseForSelection = useCallback(() => {
+		escapedRef.current = true;
+		stickRef.current = false;
+		setStickBottom(false);
+	}, []);
 	/** Timestamp until which scroll events are treated as programmatic. */
 	const progUntilRef = useRef(0);
 	/** Messages the user expanded from the collapsed view — stay expanded. */
@@ -810,6 +822,12 @@ export function MessageList({
 
 	return (
 		<div className={`messages-wrap${exportImage.open ? " messages-exporting" : ""}`}>
+			<SelectionQuoteButton
+				rootRef={scrollRef}
+				sessionId={state.sessionId}
+				enabled={!exportImage.open}
+				onSelect={pauseForSelection}
+			/>
 			<div
 				// anchor-live：未钉底（逃逸阅读）时启用原生滚动锚定，兜住部分跨视口
 				// 边缘消息的占位⇄真身互换跳动；与钉底期的程序性再钉互斥（那时无此类）。
