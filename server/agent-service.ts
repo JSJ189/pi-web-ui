@@ -10510,10 +10510,9 @@ export class ClientSession {
 
 				const validStats = stats.filter((s): s is { path: string; mtime: number; size: number } => s !== null);
 				validStats.sort((a, b) => b.mtime - a.mtime);
-				const candidates = validStats.slice(0, 200);
 
 				const results = await Promise.all(
-					candidates.map(async (file) => {
+					validStats.map(async (file) => {
 						const cached = ClientSession.sessionFileCache.get(file.path);
 						if (cached && cached.mtime === file.mtime && cached.size === file.size) {
 							return cached.info;
@@ -10531,9 +10530,20 @@ export class ClientSession {
 				);
 
 				const validInfos = results.filter((info): info is SessionInfo => info !== null);
-				validInfos.sort((a, b) => b.modified.getTime() - a.modified.getTime());
-				ClientSession.sessionInfosCache.set(cwdKey, { infos: validInfos, at: Date.now() });
-				return validInfos;
+				// issue #438：扁平布局（PI_CODING_AGENT_SESSION_DIR）下根目录顶层直接是**所有项目**
+				// 共享的 .jsonl，所属 cwd 是文件内字段；不过滤的话其他项目的会话会混进本项目
+				// 「历史会话」列表，点开即把整个工作区切走。与 SessionManager.list(cwd, ...) 的
+				// fallback 及 discoverRecentProjectsFromDisk 同口径：normalizePathKey（Windows
+				// 大小写/斜杠归一）。空 cwd 的损坏文件须排除——normalizePathKey("") 会 resolve 到
+				// process.cwd()，恰好等于本项目时会把垃圾文件误收进来。
+				const ownInfos = validInfos.filter((info) => info.cwd !== "" && normalizePathKey(info.cwd) === cwdKey);
+				// 200 名额只在 cwd 过滤**之后**分配：扁平布局下若先截断，本项目会话可能被
+				// 其他项目的文件挤出列表。截断仍按上面的 mtime 降序序取（Promise.all 保序），
+				// 与原有选集口径一致；非扁平布局每-cwd 子目录内文件全属本项目，过滤幂等。
+				const candidates = ownInfos.slice(0, 200);
+				candidates.sort((a, b) => b.modified.getTime() - a.modified.getTime());
+				ClientSession.sessionInfosCache.set(cwdKey, { infos: candidates, at: Date.now() });
+				return candidates;
 			} catch {
 				try {
 					const fallback = await SessionManager.list(this.cwd, piSessionsRoot());
