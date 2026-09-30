@@ -90,9 +90,9 @@ describe("planModeDenial", () => {
 	});
 
 	it("拒绝旁路工具（会在别的会话实施）", () => {
-		expect(planModeDenial("spawn", {})?.kind).toBe("bypass-tool");
 		expect(planModeDenial("delegate_task", {})?.kind).toBe("bypass-tool");
-		expect(planModeDenial("set_goal", {})?.kind).toBe("bypass-tool");
+		// 回归 #436：schedule_task 是真实注册的排程工具，到期唤醒对话执行 prompt。
+		expect(planModeDenial("schedule_task", {})?.kind).toBe("bypass-tool");
 	});
 
 	// 回归 #436：terminal_input 只在自带换行时才过 checkSafety，terminal_key 的
@@ -123,6 +123,29 @@ describe("PLAN_MODE_BLOCKED_TOOL_NAMES（活跃集剥离名单）", () => {
 	// 回归 #436：eval 用户可开（默认关），开了就必须随计划模式一起剥离。
 	it("eval 在剥离名单里", () => {
 		expect(PLAN_MODE_BLOCKED_TOOL_NAMES.has("eval")).toBe(true);
+	});
+
+	// 回归 #436：名单以 server/tool-manager.ts 实际注册的工具名为事实源 ——
+	// 幽灵名（协议消息/从未注册）全部清掉，真实的 schedule_task 补进来。
+	it("幽灵名不再出现在剥离名单，真实旁路工具在", () => {
+		for (const ghost of [
+			"spawn",
+			"spawn_agent",
+			"subagent_spawn",
+			"schedule_agent",
+			"host_schedule",
+			"create_goal",
+			"set_goal",
+			"start_goal_wizard",
+			"create_conversation",
+			"fork_conversation",
+			"schedule",
+			"set_plan_mode",
+		]) {
+			expect(PLAN_MODE_BLOCKED_TOOL_NAMES.has(ghost), ghost).toBe(false);
+		}
+		expect(PLAN_MODE_BLOCKED_TOOL_NAMES.has("delegate_task")).toBe(true);
+		expect(PLAN_MODE_BLOCKED_TOOL_NAMES.has("schedule_task")).toBe(true);
 	});
 });
 

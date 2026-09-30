@@ -16,7 +16,7 @@
  * 同样被包裹；但之后经 refreshPluginTools 动态补入已有会话的不在覆盖面。
  * 自研插件若绕过 wrapper 直接写文件同样拦不住 —— 只读是硬闸门，不是安全边界。
  */
-import { bashCommandIsReadOnly } from "./plan-mode.js";
+import { bashCommandIsReadOnly, SESSION_DISPATCH_TOOLS } from "./plan-mode.js";
 
 /** 审查回合禁写的工具：与计划/审查者模式同名单（写 / 改 / 增删 / git 写 / 形态变换）。 */
 const WRITE_TOOLS = new Set([
@@ -64,27 +64,12 @@ const WRITE_TOOLS = new Set([
 /**
  * 审查回合禁掉的「派发类」工具：轮次由服务端控制（D6）—— 派生 / 等待 / 指挥
  * 别的对话、排程、改模式 / 开新目标都会绕开「一轮 = 派活 + 判定」的口径。
- * 只读的 `conversation_read` / `subagent_get_result` / `subagent_list` 不在名单里：
+ * 名单 = 三闸门共用的真实注册派发工具（SESSION_DISPATCH_TOOLS，#436 前是一堆
+ * 幽灵名）。subagent 不在此列：上面的按 action 判定已拦掉全部写向 action，
+ * 只读的 `conversation_read` / subagent get_result/list/templates 放行 ——
  * 审查者可以按需看执行者的转录（契约要求看实际状态，而不是信描述）。
  */
-const DISPATCH_TOOLS = new Set([
-	"spawn",
-	"spawn_agent",
-	"subagent_spawn",
-	"spawn_subagent",
-	"subagent_steer",
-	"subagent_stop",
-	"subagent_wait_all",
-	"subagent_handoff",
-	"delegate_task",
-	"schedule",
-	"schedule_agent",
-	"host_schedule",
-	"create_goal",
-	"set_goal",
-	"start_goal_wizard",
-	"set_plan_mode",
-]);
+const DISPATCH_TOOLS = SESSION_DISPATCH_TOOLS;
 
 /** bash 家族（要逐条判命令是否只读；与审查者模式同名单）。 */
 const BASH_TOOLS = new Set(["bash", "shell", "sh", "zsh", "terminal", "terminal_bash", "run_command", "exec"]);

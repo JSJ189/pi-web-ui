@@ -69,23 +69,27 @@ const BLOCKED_TOOLS = new Set([
 const TERMINAL_WRITE_TOOLS = new Set(["terminal_input", "terminal_key"]);
 
 /**
- * 计划模式下也禁掉的「旁路工具」：它们能在**别的会话**里干活，而闸门是
- * 会话级的 —— 子代理/排程对话的 planMode 是 false，等于绕过只读约束。
- * 调研靠本对话的 read/grep/只读 bash 足够，需要并行调研时先退出计划模式。
+ * 三个只读闸门（计划 / 审查者 / 目标审查）共用的「派发类」工具名：它们会把活
+ * 派到**别的会话**执行（delegate_task 走子代理 spawn 通道；schedule_task 到期
+ * 唤醒对话跑 prompt），而这三道闸门都是会话级的 —— 放行即绕过。
+ *
+ * 名单以 server/tool-manager.ts 实际注册的工具名为事实源（#436）：历史名单里的
+ * spawn / spawn_agent / subagent_spawn / schedule_agent / host_schedule /
+ * create_goal / set_goal / start_goal_wizard / create_conversation /
+ * fork_conversation / schedule / set_plan_mode 等都是协议消息名或从未注册的
+ * 幽灵名，一个真实工具都没拦住，反而掩盖了 schedule_task 这类真实旁路工具
+ * 完全可用的事实。subagent 是单 action 工具，由各闸门按 action 细分（只读
+ * action 放行，见各闸门的判定函数）。
  */
-const BYPASS_TOOLS = new Set([
-	"spawn",
-	"spawn_agent",
-	"subagent_spawn",
-	"delegate_task",
-	"schedule_agent",
-	"host_schedule",
-	"create_goal",
-	"set_goal",
-	"start_goal_wizard",
-	"create_conversation",
-	"fork_conversation",
-]);
+export const SESSION_DISPATCH_TOOLS = new Set<string>(["delegate_task", "schedule_task"]);
+
+/**
+ * 计划模式下也禁掉的「旁路工具」（真实派发类，见 SESSION_DISPATCH_TOOLS）：
+ * 它们能在**别的会话**里干活，而闸门是会话级的 —— 子代理/排程对话的
+ * planMode 是 false，等于绕过只读约束。调研靠本对话的 read/grep/只读 bash
+ * 足够，需要并行调研时先退出计划模式。
+ */
+const BYPASS_TOOLS = SESSION_DISPATCH_TOOLS;
 
 /** 计划模式下从模型视野中彻底隐藏的写类工具与旁路工具全集。 */
 export const PLAN_MODE_BLOCKED_TOOL_NAMES = new Set<string>([

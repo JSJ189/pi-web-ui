@@ -15,7 +15,7 @@
  *
  * 判定全部是纯函数（无 IO），单测见 tests/unit/delegate-mode.test.ts。
  */
-import { bashCommandIsReadOnly } from "./plan-mode.js";
+import { bashCommandIsReadOnly, SESSION_DISPATCH_TOOLS } from "./plan-mode.js";
 
 /** 审查者模式下确定禁止的工具：与计划模式同名单（写 / 改 / 增删 / git 写 / 形态变换）。 */
 const BLOCKED_TOOLS = new Set([
@@ -61,18 +61,10 @@ const BLOCKED_TOOLS = new Set([
  * 模型再自己 spawn 一个只会绕开「一个常驻执行对话」这条语义线（多份上下文、
  * 多份配额、左栏一堆对话），而且落盘对话占项目会话名额。
  * 与计划模式禁它的理由不同：那边是「别绕开只读约束」，这边是「别绕开统一派活」。
+ * 名单 = 三闸门共用的真实注册派发工具（SESSION_DISPATCH_TOOLS，#436 前是一堆
+ * 幽灵名）+ subagent 整工具（这里不分 action，审查者对话一概不派不问）。
  */
-const DISPATCH_TOOLS = new Set([
-	"spawn",
-	"subagent_spawn",
-	"subagent",
-	"delegate_task",
-	"spawn_subagent",
-	"schedule",
-	"set_goal",
-	"start_goal_wizard",
-	"set_plan_mode",
-]);
+const DISPATCH_TOOLS = new Set([...SESSION_DISPATCH_TOOLS, "subagent"]);
 
 /** bash 家族（要逐条判命令是否只读）。 */
 const BASH_TOOLS = new Set(["bash", "shell", "sh", "zsh", "terminal", "terminal_bash", "run_command", "exec"]);
