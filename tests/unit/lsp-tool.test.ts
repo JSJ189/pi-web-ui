@@ -484,6 +484,8 @@ function handleMessage(msg) {
 			path: "test.ts",
 		});
 		expect(docRes.details.ok).toBe(true);
+		expect(docRes.details.truncated).toBe(false);
+		expect(docRes.details.symbols.length).toBe(4);
 		expect(docRes.content[0].text).toContain("• [Class] Calculator");
 		expect(docRes.content[0].text).toContain("  • [Method] add ((a: number, b: number) => number) (lines 2-4)");
 		expect(docRes.content[0].text).toContain("lines 1-5");
@@ -673,6 +675,224 @@ function handleMessage(msg) {
 		expect(resLonely.details.ok).toBe(true);
 		expect(resLonely.content[0].text).toContain("No referencing files found");
 		expect(resLonely.details.referencedFiles.length).toBe(0);
+	});
+
+	it("cascade reports real totals with truncation tails when referencing files exceed the cap", async () => {
+		const mockServerScript = join(tempDir, "mock-lsp-server.mjs");
+		const mockCode = `
+let buffer = Buffer.alloc(0);
+process.stdin.on("data", (chunk) => {
+  buffer = Buffer.concat([buffer, chunk]);
+  while (true) {
+    const headerEnd = buffer.indexOf("\\r\\n\\r\\n");
+    if (headerEnd === -1) break;
+    const header = buffer.slice(0, headerEnd).toString("utf8");
+    const lenMatch = header.match(/Content-Length:\\s*(\\d+)/i);
+    if (!lenMatch) { buffer = buffer.slice(headerEnd + 4); continue; }
+    const len = parseInt(lenMatch[1], 10);
+    if (buffer.length < headerEnd + 4 + len) break;
+    const body = JSON.parse(buffer.slice(headerEnd + 4, headerEnd + 4 + len).toString("utf8"));
+    buffer = buffer.slice(headerEnd + 4 + len);
+
+    handleMessage(body);
+  }
+});
+
+function send(msg) {
+  const payload = JSON.stringify(msg);
+  const wire = \`Content-Length: \${Buffer.byteLength(payload, "utf8")}\\r\\n\\r\\n\${payload}\`;
+  process.stdout.write(wire);
+}
+
+function handleMessage(msg) {
+  if (msg.method === "initialize") {
+    send({ jsonrpc: "2.0", id: msg.id, result: { capabilities: {} } });
+  } else if (msg.method === "textDocument/documentSymbol") {
+    // 25 个顶层符号：种子只取前 20 个，输出尾部应标明还有 5 个未分析
+    const symbols = Array.from({ length: 25 }, (_, i) => ({
+      name: "sym" + i,
+      kind: 12,
+      range: { start: { line: i * 2, character: 0 }, end: { line: i * 2 + 1, character: 1 } },
+      selectionRange: { start: { line: i * 2, character: 6 }, end: { line: i * 2, character: 12 } }
+    }));
+    send({ jsonrpc: "2.0", id: msg.id, result: symbols });
+  } else if (msg.method === "textDocument/references") {
+    // 30 个引用方文件：只分析排序后的前 25 个，尾部应标明还有 5 个未分析
+    const uri = String(msg.params.textDocument.uri);
+    const refs = Array.from({ length: 30 }, (_, i) => ({
+      uri: uri.replace(/[^/]+$/, "importer" + String(i + 1).padStart(2, "0") + ".ts"),
+      range: { start: { line: 0, character: 0 }, end: { line: 0, character: 12 } }
+    }));
+    send({ jsonrpc: "2.0", id: msg.id, result: refs });
+  } else if (msg.method === "textDocument/didOpen") {
+    const uri = String(msg.params.textDocument.uri);
+    const diagnostics = uri.includes("importer01")
+      ? [{ range: { start: { line: 0, character: 9 }, end: { line: 0, character: 12 } }, severity: 1, message: "Mock cascade error: signature mismatch", code: 2339 }]
+      : [];
+    send({ jsonrpc: "2.0", method: "textDocument/publishDiagnostics", params: { uri, diagnostics } });
+  }
+}
+`;
+		writeFileSync(mockServerScript, mockCode);
+
+		const binDir = join(tempDir, "node_modules", ".bin");
+		mkdirSync(binDir, { recursive: true });
+		if (process.platform === "win32") {
+			writeFileSync(join(binDir, "vtsls.cmd"), `@"${process.execPath}" "${mockServerScript.replace(/\\/g, "/")}" %*\n`);
+		} else {
+			const shFile = join(binDir, "vtsls");
+			writeFileSync(shFile, `#!/bin/sh\nexec "${process.execPath}" "${mockServerScript}" "$@"\n`);
+			try {
+				chmodSync(shFile, 0o755);
+			} catch {}
+		}
+		clearResolveBinaryCache();
+
+		writeFileSync(join(tempDir, "test.ts"), "function calc() {\n  return 1;\n}\n");
+		for (let i = 1; i <= 30; i++) {
+			writeFileSync(join(tempDir, `importer${String(i).padStart(2, "0")}.ts`), 'import { calc } from "./test";\n');
+		}
+
+		const tool = makeLspTool({ cwd: tempDir });
+		const exec = tool.execute as unknown as (
+			_id: string,
+			p: any,
+		) => Promise<{
+			content: Array<{ type: "text"; text: string }>;
+			details: any;
+		}>;
+
+		const res = await exec("call-cascade-trunc", {
+			action: "cascade",
+			path: "test.ts",
+		});
+		expect(res.details.ok).toBe(true);
+		// 头部计数是截断前的真实总数（30），而不是被分析的前 25 个
+		expect(res.content[0].text).toContain("Impact cascade for test.ts");
+		expect(res.content[0].text).toContain("30 referencing file(s)");
+		// 截断尾注：30 - 25 = 5 个引用方未分析
+		expect(res.content[0].text).toContain("... and 5 more not analyzed");
+		// 种子截断尾注：25 个顶层符号只用前 20 个做种子
+		expect(res.content[0].text).toContain("... and 5 more top-level symbols not analyzed");
+		// details 带真实总数；referencedFiles 仍是实际分析的那 25 个
+		expect(res.details.referencedFilesTotal).toBe(30);
+		expect(res.details.referencedFiles.length).toBe(25);
+		expect(res.details.referencedFiles[0]).toBe("importer01.ts");
+		expect(res.details.impacted.length).toBe(1);
+		expect(res.details.impacted[0].path).toBe("importer01.ts");
+		expect(res.details.clean.length).toBe(24);
+	});
+
+	it("documentSymbol caps details.symbols by flattened count within the 64KB details budget", async () => {
+		const mockServerScript = join(tempDir, "mock-lsp-server.mjs");
+		const mockCode = `
+let buffer = Buffer.alloc(0);
+process.stdin.on("data", (chunk) => {
+  buffer = Buffer.concat([buffer, chunk]);
+  while (true) {
+    const headerEnd = buffer.indexOf("\\r\\n\\r\\n");
+    if (headerEnd === -1) break;
+    const header = buffer.slice(0, headerEnd).toString("utf8");
+    const lenMatch = header.match(/Content-Length:\\s*(\\d+)/i);
+    if (!lenMatch) { buffer = buffer.slice(headerEnd + 4); continue; }
+    const len = parseInt(lenMatch[1], 10);
+    if (buffer.length < headerEnd + 4 + len) break;
+    const body = JSON.parse(buffer.slice(headerEnd + 4, headerEnd + 4 + len).toString("utf8"));
+    buffer = buffer.slice(headerEnd + 4 + len);
+
+    handleMessage(body);
+  }
+});
+
+function send(msg) {
+  const payload = JSON.stringify(msg);
+  const wire = \`Content-Length: \${Buffer.byteLength(payload, "utf8")}\\r\\n\\r\\n\${payload}\`;
+  process.stdout.write(wire);
+}
+
+function handleMessage(msg) {
+  if (msg.method === "initialize") {
+    send({ jsonrpc: "2.0", id: msg.id, result: { capabilities: {} } });
+  } else if (msg.method === "textDocument/documentSymbol") {
+    // 模拟生成的 .d.ts：1 个顶层符号带 400 个长名子符号（展平 401 个）
+    const children = Array.from({ length: 400 }, (_, i) => ({
+      name: "generatedMember" + i + "_" + "x".repeat(500),
+      kind: 6,
+      detail: "(a: number, b: number) => number",
+      range: { start: { line: i * 2, character: 2 }, end: { line: i * 2 + 1, character: 3 } },
+      selectionRange: { start: { line: i * 2, character: 2 }, end: { line: i * 2, character: 12 } }
+    }));
+    send({
+      jsonrpc: "2.0",
+      id: msg.id,
+      result: [
+        {
+          name: "GeneratedBundle",
+          kind: 5,
+          range: { start: { line: 0, character: 0 }, end: { line: 800, character: 1 } },
+          selectionRange: { start: { line: 0, character: 6 }, end: { line: 0, character: 20 } },
+          children
+        }
+      ]
+    });
+  }
+}
+`;
+		writeFileSync(mockServerScript, mockCode);
+
+		const binDir = join(tempDir, "node_modules", ".bin");
+		mkdirSync(binDir, { recursive: true });
+		if (process.platform === "win32") {
+			writeFileSync(join(binDir, "vtsls.cmd"), `@"${process.execPath}" "${mockServerScript.replace(/\\/g, "/")}" %*\n`);
+		} else {
+			const shFile = join(binDir, "vtsls");
+			writeFileSync(shFile, `#!/bin/sh\nexec "${process.execPath}" "${mockServerScript}" "$@"\n`);
+			try {
+				chmodSync(shFile, 0o755);
+			} catch {}
+		}
+		clearResolveBinaryCache();
+
+		writeFileSync(join(tempDir, "big.d.ts"), "declare class GeneratedBundle {}\n");
+
+		const tool = makeLspTool({ cwd: tempDir });
+		const exec = tool.execute as unknown as (
+			_id: string,
+			p: any,
+		) => Promise<{
+			content: Array<{ type: "text"; text: string }>;
+			details: any;
+		}>;
+
+		const docRes = await exec("call-doc-deep", {
+			action: "documentSymbol",
+			path: "big.d.ts",
+		});
+		expect(docRes.details.ok).toBe(true);
+
+		const flattenCount = (list: any[]): number =>
+			list.reduce((n: number, s: any) => n + 1 + (Array.isArray(s.children) ? flattenCount(s.children) : 0), 0);
+
+		// details.symbols 按展平计数截断，不超过 300（与文本大纲同口径）
+		const flat = flattenCount(docRes.details.symbols);
+		expect(flat).toBeLessThanOrEqual(300);
+		expect(flat).toBeGreaterThan(0);
+
+		// 结构正确：父被保留，其 children 与裁剪边界一致，未混入别的层级
+		expect(docRes.details.symbols.length).toBe(1);
+		expect(docRes.details.symbols[0].name).toBe("GeneratedBundle");
+		expect(docRes.details.symbols[0].children.length).toBe(flat - 1);
+		for (const child of docRes.details.symbols[0].children) {
+			expect(child.name.startsWith("generatedMember")).toBe(true);
+			expect(Array.isArray(child.children)).toBe(false);
+		}
+
+		// 截断标记与文本大纲截断提示
+		expect(docRes.details.truncated).toBe(true);
+		expect(docRes.content[0].text).toContain("[Truncated: outline exceeds 300 symbols]");
+
+		// 64KB 预算：details 整体可序列化体积必须低于 TOOL_DETAILS_CAP（64,000）
+		expect(JSON.stringify(docRes.details).length).toBeLessThan(64_000);
 	});
 
 	it("handles shutdown cleanly and rejects requests when pool is shutting down", async () => {
