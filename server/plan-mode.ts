@@ -318,11 +318,16 @@ export function planModeDenial(toolName: string, params: unknown): PlanModeDenia
 		const action =
 			typeof params === "object" && params !== null ? (params as Record<string, unknown>).action : undefined;
 		const act = typeof action === "string" ? action.trim().toLowerCase() : "";
-		if (!act || act === "spawn") {
+		// 与 goal-review-gate 同口径：只读 action（get_result/list/templates，看状态
+		// 与名录）放行；其余（spawn/steer/stop/wait_all/handoff，见 subagents.ts 的
+		// SUBAGENT_ACTIONS）或未传 action 一律拒 —— steer/handoff 会向运行中的子代理
+		// 会话投指令驱动它继续写代码，子代理会话 planMode=false 工具齐全，等于绕过
+		// 本会话的只读约束（#436 此前只拒了 spawn）。
+		if (act !== "get_result" && act !== "list" && act !== "templates") {
 			return {
 				kind: "bypass-tool",
-				reason: `计划模式：不能调用 subagent(action="spawn")（它会在别的会话里执行，绕过本会话的只读约束）。请在本对话内用只读工具完成调研。`,
-				reasonEn: `Plan mode: subagent(action="spawn") is unavailable (it runs outside this conversation and would bypass the read-only constraint). Research with read-only tools here.`,
+				reason: `计划模式：不能调用 subagent(action="${act || "spawn"}")（它会在别的会话里执行，绕过本会话的只读约束）。请在本对话内用只读工具完成调研。`,
+				reasonEn: `Plan mode: subagent(action="${act || "spawn"}") is unavailable (it runs outside this conversation and would bypass the read-only constraint). Research with read-only tools here.`,
 			};
 		}
 	}
