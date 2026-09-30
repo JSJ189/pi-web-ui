@@ -2175,7 +2175,12 @@ async function discoverRecentProjectsFromDisk(sessionRoots: string[], limit = 30
 	for (const root of sessionRoots) {
 		if (projects.size >= limit) break;
 		try {
-			if (!existsSync(root)) continue;
+			// 异步探测（issue #441）：会话根可能在已断连的网络盘上，同步 existsSync 会冻结事件循环。
+			try {
+				await fsPromises.access(root);
+			} catch {
+				continue;
+			}
 			const entries = await fsPromises.readdir(root, { withFileTypes: true });
 
 			// 1. 扁平布局（PI_CODING_AGENT_SESSION_DIR）：根目录下直接是 .jsonl
@@ -2200,7 +2205,9 @@ async function discoverRecentProjectsFromDisk(sessionRoots: string[], limit = 30
 						const key = normalizePathKey(cwd);
 						if (!projects.has(key)) {
 							try {
-								if (existsSync(cwd)) projects.set(key, { path: cwd, lastUsed: s.mtime });
+								// 异步探测（issue #441）：cwd 可能在已断连的网络盘上。
+								await fsPromises.access(cwd);
+								projects.set(key, { path: cwd, lastUsed: s.mtime });
 							} catch {}
 						}
 					}
@@ -2264,9 +2271,9 @@ async function discoverRecentProjectsFromDisk(sessionRoots: string[], limit = 30
 						const key = normalizePathKey(r.path);
 						if (!projects.has(key)) {
 							try {
-								if (existsSync(r.path)) {
-									projects.set(key, r);
-								}
+								// 异步探测（issue #441）：cwd 可能在已断连的网络盘上。
+								await fsPromises.access(r.path);
+								projects.set(key, r);
 							} catch {}
 						}
 					}
@@ -11975,13 +11982,13 @@ export class ClientSession {
 			try {
 				const discovered = await discoverRecentProjectsFromDisk(sessionRoots, 30);
 				this.stateStore.mergeDiscoveredProjects(discovered);
-				const merged = this.stateStore.getRecentProjects(this.clientId);
+				const merged = await this.stateStore.getRecentProjects(this.clientId);
 				ClientSession.projectsCache = { at: Date.now(), projects: merged };
 				const result = this.withCurrentCwd(merged, Date.now());
 				this.emit({ type: "projects", projects: result });
 				return merged;
 			} catch {
-				const fallback = this.withCurrentCwd(this.stateStore.getRecentProjects(this.clientId), Date.now());
+				const fallback = this.withCurrentCwd(await this.stateStore.getRecentProjects(this.clientId), Date.now());
 				this.emit({ type: "projects", projects: fallback });
 				return fallback;
 			} finally {
