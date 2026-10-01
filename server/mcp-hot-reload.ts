@@ -63,14 +63,20 @@ export function createMcpHotReload(deps: McpHotReloadDeps): McpHotReload {
 	let poller: NodeJS.Timeout | null = null;
 	let watcher: FSWatcher | null = null;
 
-	/** 读一次磁盘：指纹 + 清单（`servers` 为 null = 坏配置）。文件不在按「没有服务器」算。 */
+	/** 读一次磁盘：指纹 + 清单（`servers` 为 null = 坏配置/读失败）。文件不在按「没有服务器」算。 */
 	function readOnce(): { fp: string; servers: Record<string, McpServerSpec> | null } {
 		let raw: string;
 		try {
 			raw = readFileSync(file, "utf8");
-		} catch {
-			// 读不到（文件/目录不在）→ 空配置：删掉 mcp.json 就是「关掉全部 MCP 服务器」。
-			return { fp: "empty", servers: {} };
+		} catch (err) {
+			// 不变量 3 只覆盖「文件不在」：删掉 mcp.json = 关掉全部 MCP 服务器。
+			// #497：EBUSY/EACCES 等临时读失败（OneDrive/杀毒独占、权限误改）既不是
+			// 坏配置也不是删除意图——按坏配置口径走（servers: null → 保留在跑的
+			// 服务器 + 一次性提示），否则会把在跑的 MCP 服务器全杀还报「成功 0 个」。
+			const code = (err as NodeJS.ErrnoException | null)?.code;
+			if (code === "ENOENT") return { fp: "empty", servers: {} };
+			log(`[mcp] mcp.json 读取失败（${code ?? String(err)}），按坏配置处理：保留在跑的 MCP 服务器`);
+			return { fp: `unreadable:${code ?? "unknown"}`, servers: null };
 		}
 		const parsed = parseMcpConfig(raw);
 		if (!parsed) return { fp: `invalid:${raw}`, servers: null };
@@ -86,8 +92,8 @@ export function createMcpHotReload(deps: McpHotReloadDeps): McpHotReload {
 			log("[mcp] mcp.json 解析失败，保留在跑的 MCP 服务器");
 			deps.onNotice?.(
 				"warning",
-				"mcp.json 解析失败，已保留当前 MCP 服务器（改好保存后会自动重载）",
-				"Failed to parse mcp.json — keeping the running MCP servers (saving a valid file reloads automatically)",
+				"mcp.json 解析/读取失败，已保留当前 MCP 服务器（恢复可读后会自动重载）",
+				"Failed to parse/read mcp.json — keeping the running MCP servers (it reloads automatically once readable)",
 			);
 			return "invalid";
 		}
