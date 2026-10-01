@@ -20,7 +20,20 @@ export function createEngineBridge({ log = () => {}, jobTimeoutMs = DEFAULT_JOB_
 		const w = new Worker(new URL("./engine-host.mjs", import.meta.url));
 		worker = w;
 		ready = new Promise((resolve, reject) => {
-			const timer = setTimeout(() => reject(new Error("规则引擎 worker 启动超时")), READY_TIMEOUT_MS);
+			const timer = setTimeout(() => {
+				// #466/E-6：启动超时必须复位——此前 ready 永久 rejected、worker 残留，
+				// 桥直到插件重载前不可用。terminate + 置空，让下一次 run() 重新 spawn。
+				try {
+					w.terminate();
+				} catch {
+					// worker 可能已死，best-effort
+				}
+				if (worker === w) {
+					worker = null;
+					ready = null;
+				}
+				reject(new Error("规则引擎 worker 启动超时"));
+			}, READY_TIMEOUT_MS);
 			w.on("message", (msg) => {
 				if (msg?.ready) {
 					clearTimeout(timer);
