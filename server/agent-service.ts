@@ -5070,9 +5070,11 @@ export class ClientSession {
 		};
 	}
 
-	/** (Re)attach event plumbing to the ACTIVE conversation's session. */
-	private async bindSession(): Promise<void> {
-		const conv = this.conv;
+	/** (Re)attach event plumbing to a conversation's session. 默认绑当前活跃对话；
+	 *  forceReset 重建非活跃对话（子代理/角色对话）时必须显式传入该对话，
+	 *  否则重建后的会话永远拿不回事件订阅（issue #484）。 */
+	private async bindSession(target?: Conversation): Promise<void> {
+		const conv = target ?? this.conv;
 		conv.unsubscribe?.();
 		conv.session = conv.runtime.session;
 		await conv.session.bindExtensions({
@@ -9700,6 +9702,10 @@ export class ClientSession {
 			conv.toolStartTimes.clear();
 			disposeEvalSession(conv.id);
 			await conv.runtime.dispose();
+			// #485：dispose 挂起期间会话可能已被强行关闭移出（forceDismiss 走
+			// removeConversation）——此时绝不能幽灵重建，否则新 runtime 挂在已脱离
+			// this.convs 的 conv 对象上，无人持有、永不回收。
+			if (!this.convs.has(conv.id)) return;
 			// #280：dispose 丢弃了内存里的在飞状态（未落盘的工具结果蒸发），
 			// 文件尾可能留下一个悬空 toolCall——先补合成 toolResult 再重建，
 			// 否则重建后的 prompt 会把非法转录链喂给 provider（零落盘黑洞）。
@@ -9733,6 +9739,16 @@ export class ClientSession {
 				async () => (ownFile && existsSync(ownFile) ? ownFile : undefined),
 			);
 			const runtime = opened.runtime;
+			// #485：openManagerAndRuntime 的长 await 期间会话被移出的同一守卫——
+			// 刚建好的 runtime 无人认领，就地 dispose 防止扩展宿主子进程泄漏。
+			if (!this.convs.has(conv.id)) {
+				try {
+					await runtime.dispose();
+				} catch {
+					// 已被移除的会话：dispose 失败无处上报，best-effort。
+				}
+				return;
+			}
 			if (opened.repair) {
 				for (const n of this.transcriptRepairNotices(opened.repair)) this.emit(n);
 			}
@@ -9762,7 +9778,10 @@ export class ClientSession {
 				text: reason,
 				textEn: `${reason} (forced reset: run did not terminate)`,
 			});
-			await this.bindSession();
+			// #484：把订阅重挂到**被重建的那个对话**上。非活跃对话（子代理/角色
+			// 对话）此前永远走 bindSession() → 只给活跃对话挂订阅，重建后该对话
+			// 的所有 SDK 事件失聪：快照冻结、看门狗不再布防、turnEndWaiters 死等。
+			await this.bindSession(conv);
 			this.emitConversations();
 			void this.pushSlashCommands();
 		} catch (err) {
