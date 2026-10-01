@@ -265,6 +265,10 @@ function segmentIsReadOnly(segment: string): boolean {
 	// sed -i / awk 的 system() 之类写路径。
 	if (name === "sed" && args.some((a) => /^-[a-z]*i/.test(a) || a === "--in-place")) return false;
 	if (name === "awk" && /system\s*\(/.test(rest)) return false;
+	// find 的 -exec/-delete/-fprintf 族有写副作用（issue #483）：白名单命中不等于只读，
+	// `find . -name '*.log' -delete` / `-exec touch x {} +` 无任何重定向特征，必须显式拒。
+	if (name === "find" && args.some((a) => /^-(exec|execdir|ok|okdir|delete|fprint0|fprint|fprintf|fls)$/.test(a)))
+		return false;
 	// 解释器：只放行 --version/--help 这类无副作用调用。
 	if (name === "node" || name === "python" || name === "python3" || name === "npm") {
 		return args.length > 0 && args.every((a) => INTERPRETER_SAFE_ARGS.has(a));
