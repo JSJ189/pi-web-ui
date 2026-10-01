@@ -2123,7 +2123,9 @@ wss.on("connection", (ws) => {
 				break;
 			}
 			case "queue_remove":
-				cs.removeQueued(msg.kind, msg.text, msg.index);
+				// #491：removeQueued 是 async——dispatch 是 fire-and-forget，缺 void 时
+				// 内部抛错即 unhandledRejection，而全仓没有兜底 handler，Node ≥15 直接崩进程。
+				void cs.removeQueued(msg.kind, msg.text, msg.index);
 				break;
 			case "draft_update":
 				cs.saveDraft?.(msg.sessionId, msg.text, msg.ts);
