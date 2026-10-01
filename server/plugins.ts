@@ -2090,7 +2090,11 @@ export class PluginManager {
 			params: freezeParams(req.params),
 			conversationId: req.conversationId,
 		};
-		for (const p of this.loaded.values()) {
+		// #489：对 this.loaded 取快照再迭代——下面的 withGuardTimeout 是 await 点，
+		// 期间插件 reload/uninstall 会原地 clear 同一个 Map（实例不变），Map 迭代器
+		// 立即 done → 剩余插件的 pre 守卫一次都不被求值 → fail-open 直接放行。
+		const loadedSnapshot = [...this.loaded.values()];
+		for (const p of loadedSnapshot) {
 			for (const h of p.preGuards ?? []) {
 				let raw: unknown;
 				try {
@@ -2134,7 +2138,10 @@ export class PluginManager {
 			result: req.result,
 			conversationId: req.conversationId,
 		};
-		for (const p of this.loaded.values()) {
+		// #489：同 evaluateToolPre——await 点期间 reload 原地 clear Map 会让迭代器
+		// 提前终止，取快照迭代保证本轮请求遍历的是发起时的插件集合。
+		const postLoadedSnapshot = [...this.loaded.values()];
+		for (const p of postLoadedSnapshot) {
 			for (const h of p.postGuards ?? []) {
 				let raw: unknown;
 				try {
