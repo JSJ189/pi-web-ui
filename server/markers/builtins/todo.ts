@@ -96,7 +96,9 @@ export const todoMarker: MarkerTool<TodoState> = {
 		const op = token.op;
 		switch (op) {
 			case "new": {
-				const subject = token.args[0]?.trim();
+				// #499：subject 是唯一「整段自由文本」参数——args.join 还原含逗号的主题，
+				// 否则 `[[todo:new:修复登录页,同步改注册页]]` 的后半段被静默丢弃。
+				const subject = token.args.join(",").trim();
 				if (!subject)
 					return {
 						applied: false,
@@ -290,7 +292,8 @@ export const todoMarker: MarkerTool<TodoState> = {
 					feedback: pick(
 						lang,
 						`#${id} 依赖：${depsText}`,
-						`#${id} blocks: ${depsText}`,
+						// #499：实现是 blockedBy（deps 先完成）——原英文 "blocks" 把依赖方向说反了。
+						`#${id} is blocked by: ${depsText}`,
 						"markers.todo.dep.blocks.updated",
 						{ id: id, depsText: depsText },
 					),
