@@ -51,13 +51,10 @@ On divergence the engine attempts a 3-way merge. After success the tool returns 
 				description:
 					"The complete Hashline patch text containing one or more [path#TAG] sections with PUT/CUT/REM/MV operations.",
 			}),
-			timeout: Type.Optional(
-				Type.Number({
-					description: "Optional execution timeout in seconds.",
-				}),
-			),
+			// #462/D-2：曾声明过 timeout 死参数（execute 从不读取，hashline-engine
+			// 选项表也无槽位）——已删除；大补丁超时由看门狗统一兜底。
 		}),
-		async execute(_callId, params: { patch: string; timeout?: number }, _signal, _onUpdate, _ctx) {
+		async execute(_callId, params: { patch: string }, _signal, _onUpdate, _ctx) {
 			const patchText = typeof params?.patch === "string" ? params.patch : "";
 			if (!patchText.trim()) {
 				const emptyReport: PatchApplyReport = {

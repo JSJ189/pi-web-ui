@@ -558,7 +558,27 @@ export function makeEvalTool(opts: { cwd: string; ownerId?: string; lang?: () =>
 		}),
 		execute: async (_id, params) => {
 			const lang = getLang();
-			const language = params.language ?? "py";
+			// #462/D-1：schema enum 只是提示不是运行时校验——模型传 "python" 会让
+			// Python 代码落进 Node 内核执行（!== "py" 全走 node spawn）。先归一再拒绝。
+			const rawLang = String(params.language ?? "py")
+				.trim()
+				.toLowerCase();
+			const language = (rawLang === "python" ? "py" : rawLang) as "py" | "js" | "ts";
+			if (language !== "py" && language !== "js" && language !== "ts") {
+				return {
+					content: [
+						{
+							type: "text",
+							text: pick(
+								lang,
+								`Error: 未知 language "${String(params.language)}"（可用：py、js、ts；"python" 会自动归一为 py）`,
+								`Error: unknown language "${String(params.language)}" (use: py, js, ts; "python" is normalized to py)`,
+							),
+						},
+					],
+					details: undefined,
+				};
+			}
 			const timeoutSec = Math.min(Math.max(1, params.timeout ?? DEFAULT_TIMEOUT_SECONDS), MAX_TIMEOUT_SECONDS);
 			const timeoutMs = timeoutSec * 1000;
 			const startTime = Date.now();

@@ -2265,8 +2265,12 @@ export function makePersistentTerminalTools(
 			execute: async (_id, p, signal) => {
 				const lang = getLang();
 				const cursor = p.cursor ?? 0;
-				if (p.waitMs) await terminals.waitForOutput(p.terminalId, cursor, p.waitMs, signal);
-				const read = terminals.read(p.terminalId, cursor, p.maxBytes ?? 20000);
+				// #462/D-4：TypeBox 无运行时校验——maxBytes 传 1e9 可拿满缓冲进转录，
+				// 与 schema 声明的上限（1-100000 / 0-120000）在运行时对齐钳制。
+				const waitMs = p.waitMs === undefined ? undefined : Math.min(Math.max(0, p.waitMs), 120_000);
+				const maxBytes = Math.min(Math.max(1, p.maxBytes ?? 20_000), 100_000);
+				if (waitMs && waitMs > 0) await terminals.waitForOutput(p.terminalId, cursor, waitMs, signal);
+				const read = terminals.read(p.terminalId, cursor, maxBytes);
 				if (!read)
 					throw new Error(
 						pick(
@@ -2332,7 +2336,9 @@ export function makePersistentTerminalTools(
 					return result(JSON.stringify({ applicable: false, reason: why }), { applicable: false });
 				}
 				const cursor = p.cursor ?? terminals.endCursor(p.terminalId) ?? 0;
-				const wait = await terminals.waitForCompletion(p.terminalId, p.maxWaitMs ?? 300_000, signal, cursor);
+				// #462/D-4：maxWaitMs 与 schema 上限（100-600000）在运行时对齐钳制。
+				const maxWaitMs = Math.min(Math.max(100, p.maxWaitMs ?? 300_000), 600_000);
+				const wait = await terminals.waitForCompletion(p.terminalId, maxWaitMs, signal, cursor);
 				const read = terminals.read(p.terminalId, cursor, 20_000);
 				const outputTail = read?.data ? stripAnsi(read.data).slice(-4000) : "";
 				return result(JSON.stringify({ ...wait, outputTail }), {

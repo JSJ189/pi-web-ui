@@ -1004,7 +1004,9 @@ Lines are 1-indexed.`,
 			),
 			timeout: Type.Optional(
 				Type.Number({
-					description: "Timeout in seconds (defaults to 15).",
+					description: "Timeout in seconds (1-120, defaults to 15).",
+					minimum: 1,
+					maximum: 120,
 				}),
 			),
 			allowInstall: Type.Optional(
@@ -1057,7 +1059,9 @@ Lines are 1-indexed.`,
 			const absPath = isAbsolute(targetPath) ? targetPath : resolve(cwd, targetPath);
 			const line = typeof params.line === "number" ? Math.max(1, params.line) : 1;
 			const character = typeof params.character === "number" ? Math.max(1, params.character) : 1;
-			const timeoutMs = (params.timeout ?? 15) * 1000;
+			// #462/D-3：TypeBox schema 无运行时校验——timeout 传 0/负数此前直达
+			// reject 定时器，本次所有 LSP 请求全部 `timed out after 0ms`。
+			const timeoutMs = Math.min(Math.max(1, params.timeout ?? 15), 120) * 1000;
 
 			const rel = relative(cwd, absPath);
 			if (
