@@ -102,14 +102,29 @@ export default {
 		const parsedBody = (req) =>
 			req.body && typeof req.body === "object" && !Buffer.isBuffer(req.body) ? req.body : null;
 
-		/** 未过 express.json 的原始体（非 JSON content-type / 非法 JSON 时）。 */
+		/** 原始体上限（#466/E-7）：/store、/proxy 无界收流可被单请求打满内存。 */
+		const MAX_RAW_BODY_BYTES = 10 * 1024 * 1024;
+
+		/** 未过 express.json 的原始体（非 JSON content-type / 非法 JSON 时）。
+		 *  超过上限即停止累积并截断返回——调用方是「解析失败用默认值继续」的
+		 *  容错风格，这里保持不 reject、只保证内存有界。 */
 		const readRawBody = (req) => {
-			if (Buffer.isBuffer(req.body)) return Promise.resolve(req.body);
+			if (Buffer.isBuffer(req.body))
+				return Promise.resolve(
+					req.body.length > MAX_RAW_BODY_BYTES ? req.body.subarray(0, MAX_RAW_BODY_BYTES) : req.body,
+				);
 			if (req.readableEnded || req.complete) return Promise.resolve(Buffer.alloc(0));
 			return new Promise((resolve) => {
 				const chunks = [];
+				let total = 0;
 				const done = () => resolve(Buffer.concat(chunks));
-				req.on("data", (c) => chunks.push(c));
+				req.on("data", (c) => {
+					if (total >= MAX_RAW_BODY_BYTES) return; // 已超限：不再累积（保持流消费防悬挂）
+					const chunk = Buffer.isBuffer(c) ? c : Buffer.from(c);
+					total += chunk.length;
+					if (total > MAX_RAW_BODY_BYTES) chunks.push(chunk.subarray(0, MAX_RAW_BODY_BYTES - (total - chunk.length)));
+					else chunks.push(chunk);
+				});
 				req.on("end", done);
 				req.on("close", done);
 				req.on("error", done);
