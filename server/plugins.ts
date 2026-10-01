@@ -887,6 +887,8 @@ export const UI_SLOTS: ReadonlySet<string> = new Set([
 	"goalbar.actions",
 	"notice.actions",
 	"modal.dialog",
+	"sidebar.left",
+	"sidebar.right",
 ]);
 
 /** manifest 里可以写更自然的简写（作者少踩坑）：解析时映射到完整 slot 名。 */
@@ -898,6 +900,11 @@ export const UI_SLOT_ALIASES: Readonly<Record<string, string>> = {
 	rightpanel: "rightpanel.tabs",
 	settings: "settings.pages",
 	modal: "modal.dialog",
+	sidebar: "sidebar.left",
+	"sidebar.left": "sidebar.left",
+	"sidebar.right": "sidebar.right",
+	leftbar: "sidebar.left",
+	rightbar: "sidebar.right",
 };
 
 /** 合法的条目种类（缺省 action；settings.pages 缺省 page）。 */

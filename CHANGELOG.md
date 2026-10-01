@@ -28,14 +28,13 @@
 ### Added
 
 - **聊天内容引用** — 选中消息中的文字或代码后点击引用，将原文添加到输入框。支持展开、移除、多条引用和重复引用去重，发送后的引用可在历史消息中查看，编辑重问时保留。
+- **侧边贴边悬浮栏与按钮上下左右移动** — 顶栏、底栏条目支持右键移至顶部、底部、左侧侧边栏、右侧侧边栏，支持左右侧边停靠栏折叠展开与偏好持久化。
 
 <!-- auto-i18n:start -->
-
 ### i18n
 
-- 前端新增 key（5）：`compactedHistoryNotFound`、`quoteSelection`、`quoteText`、`quoteSource`、`removeQuote`
+- 前端新增 key（20）：`openInNewTab`、`clickToCloseImage`、`compactedHistoryNotFound`、`uiLayoutSidebarLeft`、`uiLayoutSidebarRight`、`uiLayoutPosition`、`uiLayoutPosTop`、`uiLayoutPosBottom`、`uiLayoutPosLeft`、`uiLayoutPosRight`、`moveToTop`、`moveToBottom`、`moveToLeft`、`moveToRight`、`sideDockCollapse`、`sideDockExpand`、`quoteSelection`、`quoteText`、`quoteSource`、`removeQuote`
 - 服务端文案变更（1）：`subagents.wait.pending`
-
 <!-- auto-i18n:end -->
 
 ## [0.97.0] — 2026-09-26

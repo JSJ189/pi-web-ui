@@ -73,8 +73,8 @@ describe("buildPluginApiCatalog", () => {
 // ---------------------------------------------------------------------------
 
 describe("静态表与源码同口径", () => {
-	it("22 个真实 slot 个个有例子；别名目标个个存在", () => {
-		expect(UI_SLOTS.size).toBe(22);
+	it("24 个真实 slot 个个有例子；别名目标个个存在", () => {
+		expect(UI_SLOTS.size).toBe(24);
 		for (const slot of UI_SLOTS) {
 			expect(SLOT_EXAMPLES[slot], `slot ${slot} 缺例子`).toBeTruthy();
 		}
@@ -164,9 +164,9 @@ afterEach(() => {
 });
 
 describe("getApiCatalog 接线", () => {
-	it("空目录：22 slot 全在，occupants 全空，工具表与目录一致", () => {
+	it("空目录：24 slot 全在，occupants 全空，工具表与目录一致", () => {
 		const c = mgr.getApiCatalog();
-		expect(c.slots).toHaveLength(22);
+		expect(c.slots).toHaveLength(24);
 		expect(c.slots.every((s) => s.occupants.length === 0)).toBe(true);
 		expect(c.agentTools.length).toBeGreaterThan(20);
 		expect(c.hostMethods.length).toBeGreaterThan(30);

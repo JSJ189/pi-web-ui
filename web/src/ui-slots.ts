@@ -34,6 +34,19 @@ import type {
 	UiSlotId,
 } from "./types";
 
+export type {
+	UiAlign,
+	UiArrangeOp,
+	UiSlotCardinality,
+	UiSlotSpec,
+	UiContribution,
+	UiItemKind,
+	UiLayoutPrefs,
+	UiPluginInfo,
+	UiSelectOption,
+	UiSlotId,
+};
+
 /**
  * 合并过程中的一条**诊断**（P0-1：失败不许静默）。与「静默丢弃」相对：未知 slot /
  * 未知 kind / 非法 when / arrange 目标不存在 / 重复 id 覆盖 / 插件被禁用或激活失败，
@@ -141,6 +154,8 @@ const SLOT_IDS: UiSlotId[] = [
 	"contextmenu.toolcall",
 	"settings.pages",
 	"modal.dialog",
+	"sidebar.left",
+	"sidebar.right",
 ];
 
 /**
@@ -1431,7 +1446,8 @@ export function migrateBrandLayout<T extends UiLayoutPrefs>(src: T): T {
 		(src.order ?? []).some((id) => BRAND_OLD_IDS.includes(id)) ||
 		BRAND_OLD_IDS.some((id) => src.align?.[id] !== undefined) ||
 		BRAND_OLD_IDS.some((id) => src.groups?.[id] !== undefined) ||
-		BRAND_OLD_IDS.some((id) => src.labels?.[id] !== undefined);
+		BRAND_OLD_IDS.some((id) => src.labels?.[id] !== undefined) ||
+		BRAND_OLD_IDS.some((id) => src.slots?.[id] !== undefined);
 	if (!hasOld) return src;
 	const mapList = (list: string[] | undefined): string[] | undefined => {
 		if (!list) return undefined;
@@ -1473,6 +1489,19 @@ export function migrateBrandLayout<T extends UiLayoutPrefs>(src: T): T {
 		}
 		return out;
 	};
+	const foldSlots = (dict: Record<string, UiSlotId> | undefined): Record<string, UiSlotId> | undefined => {
+		if (!dict) return undefined;
+		const out: Record<string, UiSlotId> = {};
+		for (const [k, v] of Object.entries(dict)) {
+			if (BRAND_OLD_IDS.includes(k)) continue;
+			out[k] = v;
+		}
+		if (out[BRAND_ITEM_ID] === undefined) {
+			const picked = dict[BRAND_OLD_IDS[0]!] ?? dict[BRAND_OLD_IDS[1]!];
+			if (picked !== undefined) out[BRAND_ITEM_ID] = picked;
+		}
+		return out;
+	};
 	return {
 		...src,
 		...(src.hidden ? { hidden: mapList(src.hidden) } : {}),
@@ -1481,6 +1510,7 @@ export function migrateBrandLayout<T extends UiLayoutPrefs>(src: T): T {
 		...(src.groups ? { groups: foldDict(src.groups, true) } : {}),
 		...(src.labels ? { labels: foldDict(src.labels, false) } : {}),
 		...(src.align ? { align: foldAlign(src.align) } : {}),
+		...(src.slots ? { slots: foldSlots(src.slots) } : {}),
 	};
 }
 
@@ -1934,12 +1964,23 @@ export function buildUiSlots(
 		entry.label = label;
 		mark(id, "label");
 	}
-	// 设置是用户找回其它入口与布局的最后通道，必须留在顶栏。
-	// 手机端历史对话与文件抽屉是两侧列表的唯一入口，必须常驻顶栏，不能被隐藏。
+	for (const [id, targetSlot] of Object.entries(layout.slots ?? {})) {
+		const entry = byId.get(id);
+		if (!entry || !isSlotId(targetSlot)) continue;
+		if (entry.slot !== targetSlot) {
+			entry.movedFrom = entry.movedFrom ?? entry.slot;
+			entry.slot = targetSlot;
+			mark(id, "slot");
+		}
+	}
+	// 设置是用户找回其它入口与布局的最后通道，必须保证可见。
+	// 手机端历史对话与文件抽屉是两侧列表的唯一入口，必须常驻，不能被隐藏。
 	for (const id of REQUIRED_TOPBAR_ITEM_IDS) {
 		const entry = byId.get(id);
 		if (entry) {
-			entry.slot = "topbar.primary";
+			if (!layout.slots?.[id]) {
+				entry.slot = "topbar.primary";
+			}
 			entry.hidden = false;
 		}
 	}
@@ -2087,16 +2128,19 @@ export function restoreUiItem(layout: UiLayoutPrefs | undefined, id: string): Ui
 	let groups = omitKey(src.groups, id);
 	let labels = omitKey(src.labels, id);
 	let align = omitKey(src.align, id);
+	let slots = omitKey(src.slots, id);
 	if (id === BRAND_ITEM_ID) {
 		for (const old of BRAND_OLD_IDS) {
 			groups = omitKey(groups, old);
 			labels = omitKey(labels, old);
 			align = omitKey(align, old);
+			slots = omitKey(slots, old);
 		}
 	}
 	if (groups) next.groups = groups;
 	if (labels) next.labels = labels;
 	if (align) next.align = align;
+	if (slots) next.slots = slots;
 	// 非布局字段（顶栏文字开关等）原样保留 —— 单条恢复只动该条目。
 	if (src.topbarText !== undefined) next.topbarText = src.topbarText;
 	return next;

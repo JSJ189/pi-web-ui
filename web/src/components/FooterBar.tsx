@@ -1,10 +1,23 @@
 import { Fragment, useEffect, useRef, useState, type ReactNode } from "react";
-import { FiFolder, FiX } from "react-icons/fi";
+import {
+	FiFolder,
+	FiX,
+	FiPlus,
+	FiSettings,
+	FiSearch,
+	FiLayers,
+	FiMessageSquare,
+	FiTerminal,
+	FiGitBranch,
+	FiBox,
+} from "react-icons/fi";
 import type { ChatState } from "../use-chat";
 import { useT } from "../i18n";
 import { appSend, useAppField, useAppGlobals } from "../app-globals";
 import { cacheMetrics, estimateStreamTokens, streamRate, trimRateSamples, type RateSample } from "../cache-stats";
 import type { UiSlotEntry } from "../ui-slots";
+import { openContextMenu } from "../context-menu-state";
+import { focusComposer } from "../composer-bridge";
 
 interface FooterBarProps {
 	/** 底栏条目（bottombar 槽位：内置 + 插件的最终结果，宿主已排好序）。 */
@@ -12,6 +25,10 @@ interface FooterBarProps {
 	/** 点击一个条目：view 由宿主切视图，其余（action）交给贡献它的插件。 */
 	onUiAction?: (item: import("../ui-slots").UiSlotEntry, value?: string) => void;
 	chat: ChatState;
+	onOpenSettings?: () => void;
+	onViewChange?: (view: "chat" | "terminal" | "git" | `plugin:${string}`) => void;
+	onOpenGlobalSearch?: () => void;
+	onOpenBgTasks?: () => void;
 }
 
 /** 机器根（此电脑/盘符列表）wire 字面量 —— 与 server/files-service.ts 的 MACHINE_ROOT 同值。 */
@@ -38,7 +55,15 @@ const FALLBACK_BOTTOMBAR: { id: string; align: "start" | "end" }[] = [
  * workspace path — click the path to open a directory picker (browse into
  * folders, go up, create folders, or pick one as the working directory).
  */
-export function FooterBar({ chat, bottombarItems, onUiAction }: FooterBarProps) {
+export function FooterBar({
+	chat,
+	bottombarItems,
+	onUiAction,
+	onOpenSettings,
+	onViewChange,
+	onOpenGlobalSearch,
+	onOpenBgTasks,
+}: FooterBarProps) {
 	const t = useT();
 	// 引擎徐标：走全局（web/src/app-globals.ts），不依赖 chat 整体对象。
 	const { engine } = useAppGlobals();
@@ -506,6 +531,134 @@ export function FooterBar({ chat, bottombarItems, onUiAction }: FooterBarProps) 
 				📁 {state.cwd}
 			</button>
 		),
+		"host:new-chat": (
+			<button
+				type="button"
+				className="status-action"
+				title={t("newChat")}
+				onClick={() => {
+					onViewChange?.("chat");
+					appSend({ type: "new_chat" });
+					focusComposer();
+				}}
+			>
+				<FiPlus /> {t("newChat")}
+			</button>
+		),
+		"host:settings": (
+			<button type="button" className="status-action" title={t("settings")} onClick={() => onOpenSettings?.()}>
+				<FiSettings /> {t("settings")}
+			</button>
+		),
+		"host:search": (
+			<button type="button" className="status-action" title={t("searchGlobal")} onClick={() => onOpenGlobalSearch?.()}>
+				<FiSearch /> {t("searchGlobal")}
+			</button>
+		),
+		"host:tasks": (
+			<button type="button" className="status-action" title={t("bgTasks")} onClick={() => onOpenBgTasks?.()}>
+				<FiLayers /> {t("bgTasks")}
+				{chat.bgServers.length > 0 && <span className="status-badge">{chat.bgServers.length}</span>}
+			</button>
+		),
+		"host:chat": (
+			<button type="button" className="status-action" title={t("chat")} onClick={() => onViewChange?.("chat")}>
+				<FiMessageSquare /> {t("chat")}
+			</button>
+		),
+		"host:terminal": (
+			<button type="button" className="status-action" title={t("terminal")} onClick={() => onViewChange?.("terminal")}>
+				<FiTerminal /> {t("terminal")}
+			</button>
+		),
+		"host:git": (
+			<button type="button" className="status-action" title={t("scmTab")} onClick={() => onViewChange?.("git")}>
+				<FiGitBranch /> {t("scmTab")}
+			</button>
+		),
+		"host:plugins": (
+			<button type="button" className="status-action" title={t("pluginMenuTitle")} onClick={() => onOpenSettings?.()}>
+				<FiBox /> {t("pluginMenuTitle")}
+			</button>
+		),
+	};
+
+	const openItemMenu = (e: React.MouseEvent, id: string, label: string) => {
+		e.preventDefault();
+		e.stopPropagation();
+		const layout = chat.settings?.uiLayout;
+		const setItemSlot = (targetSlot: import("../ui-slots").UiSlotId) => {
+			const slots = { ...layout?.slots, [id]: targetSlot };
+			appSend({ type: "set_settings", uiLayout: { ...layout, slots } });
+		};
+		const hideItem = () => {
+			const hidden = new Set(layout?.hidden ?? []);
+			hidden.add(id);
+			appSend({ type: "set_settings", uiLayout: { ...layout, hidden: [...hidden] } });
+		};
+		const menuEntries: import("../ui-slots").UiSlotEntry[] = [
+			{
+				id: "host:move-top",
+				slot: "contextmenu.topbar",
+				source: "host",
+				label: t("moveToTop"),
+				kind: "action",
+				order: 10,
+				align: "start",
+				hidden: false,
+				userOverrides: [],
+				arrangedBy: [],
+			},
+			{
+				id: "host:move-left",
+				slot: "contextmenu.topbar",
+				source: "host",
+				label: t("moveToLeft"),
+				kind: "action",
+				order: 20,
+				align: "start",
+				hidden: false,
+				userOverrides: [],
+				arrangedBy: [],
+			},
+			{
+				id: "host:move-right",
+				slot: "contextmenu.topbar",
+				source: "host",
+				label: t("moveToRight"),
+				kind: "action",
+				order: 30,
+				align: "start",
+				hidden: false,
+				userOverrides: [],
+				arrangedBy: [],
+			},
+			{
+				id: "host:hide-item",
+				slot: "contextmenu.topbar",
+				source: "host",
+				label: t("uiLayoutRestore"),
+				kind: "action",
+				order: 40,
+				align: "start",
+				hidden: false,
+				userOverrides: [],
+				arrangedBy: [],
+			},
+		];
+		openContextMenu({
+			x: e.clientX,
+			y: e.clientY,
+			slot: "contextmenu.topbar",
+			target: { id, label },
+			entries: menuEntries,
+			onHostAction: (entry) => {
+				if (entry.id === "host:move-top") setItemSlot("topbar.primary");
+				else if (entry.id === "host:move-left") setItemSlot("sidebar.left");
+				else if (entry.id === "host:move-right") setItemSlot("sidebar.right");
+				else if (entry.id === "host:hide-item") hideItem();
+			},
+		});
 	};
 
 	/**
@@ -561,15 +714,20 @@ export function FooterBar({ chat, bottombarItems, onUiAction }: FooterBarProps) 
 			}
 		}
 		if (!node) continue;
+		const wrappedNode = (
+			<span key={id} className="status-item-wrap" onContextMenu={(e) => openItemMenu(e, id, entry?.label ?? id)}>
+				{node}
+			</span>
+		);
 		// 分区走数据不走 id：正常链路看 entry.align（manifest/arrange/用户偏好都能改），
 		// 降级链路（entry 为空）看 FALLBACK 表里的静态 align。
 		const zone = entry?.align ?? fallbackAlign;
 		if (zone === "end") {
-			rightItems.push({ key: id, node });
+			rightItems.push({ key: id, node: wrappedNode });
 		} else if (zone === "center") {
-			centerItems.push({ key: id, node });
+			centerItems.push({ key: id, node: wrappedNode });
 		} else {
-			leftItems.push({ key: id, node });
+			leftItems.push({ key: id, node: wrappedNode });
 		}
 	}
 

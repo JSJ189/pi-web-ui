@@ -5,6 +5,7 @@ import {
 	FiCode,
 	FiCornerDownLeft,
 	FiEdit3,
+	FiExternalLink,
 	FiEye,
 	FiLink,
 	FiMaximize,
@@ -435,7 +436,15 @@ export function FilePreview({
 			}}
 		>
 			<div className={`fp ${fullscreen ? "fullscreen" : ""}`} style={{ "--fp-zoom": zoom / 100 } as CSSProperties}>
-				<div className="fp-head">
+				<div
+					className="fp-head"
+					onDoubleClick={(e) => {
+						const target = e.target as HTMLElement | null;
+						if (target && !target.closest("button, a, input")) {
+							setFullscreen((f) => !f);
+						}
+					}}
+				>
 					<span className="fp-name" title={file.path}>
 						{file.name}
 					</span>
@@ -464,8 +473,14 @@ export function FilePreview({
 				{!loading && kind === "none" && !isBinary && <div className="fp-empty">{t("previewNotSupported")}</div>}
 
 				{!loading && kind === "image" && (
-					<div className="fp-media-wrap">
-						<img className="fp-media" src={mediaUrl(file.path)} alt={file.name} />
+					<div className="fp-media-wrap clickable" onClick={handleClose} title={t("clickToCloseImage")}>
+						<img
+							className="fp-media fp-media-clickable"
+							src={mediaUrl(file.path)}
+							alt={file.name}
+							onClick={handleClose}
+							title={t("clickToCloseImage")}
+						/>
 					</div>
 				)}
 
@@ -489,6 +504,16 @@ export function FilePreview({
 							>
 								{allowJs ? t("htmlDisableJs") : t("htmlEnableJs")}
 							</button>
+							<a
+								className="fp-html-btn fp-html-external"
+								href={htmlUrl(file.path)}
+								target="_blank"
+								rel="noopener noreferrer"
+								title={t("openInNewTab")}
+							>
+								<FiExternalLink />
+								<span>{t("openInNewTab")}</span>
+							</a>
 						</div>
 						<iframe
 							// key forces a reload when the gate flips (script blocking is
@@ -588,28 +613,26 @@ export function FilePreview({
 					</div>
 				)}
 
-				<div className="fp-foot">
-					{editing ? (
-						<>
-							<span className="fp-hint">{t("editFile")}</span>
-							<div className="fp-actions">
-								<button type="button" className="btn" onClick={toggleEditing}>
-									{t("cancel")}
-								</button>
-								<button
-									type="button"
-									className="btn primary"
-									disabled={saving || draft === (loaded?.text ?? "")}
-									onClick={saveEditing}
-								>
-									<FiSave /> {t("saveFile")}
-								</button>
-							</div>
-						</>
-					) : (
-						!showMarkdown &&
-						!showHtml &&
-						kind === "text" && (
+				{(editing || (!showMarkdown && !showHtml && kind === "text")) && (
+					<div className="fp-foot">
+						{editing ? (
+							<>
+								<span className="fp-hint">{t("editFile")}</span>
+								<div className="fp-actions">
+									<button type="button" className="btn" onClick={toggleEditing}>
+										{t("cancel")}
+									</button>
+									<button
+										type="button"
+										className="btn primary"
+										disabled={saving || draft === (loaded?.text ?? "")}
+										onClick={saveEditing}
+									>
+										<FiSave /> {t("saveFile")}
+									</button>
+								</div>
+							</>
+						) : (
 							<>
 								<span className="fp-hint">
 									{sel
@@ -633,9 +656,9 @@ export function FilePreview({
 									</button>
 								</div>
 							</>
-						)
-					)}
-				</div>
+						)}
+					</div>
+				)}
 			</div>
 		</div>
 	);
