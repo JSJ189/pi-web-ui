@@ -641,7 +641,10 @@ export function makeSubagentTool(host: SubagentToolHost, lang?: () => ServerLang
 						}
 						const allDone = Array.from(wanted).every((id) => {
 							const r = host.getSubagent(id);
-							return isSubagentTerminal(r);
+							// #488：getSubagent 返回 undefined = 已被移出（强行关闭/收尾清理）
+							// ——视为终态，与下方报告段「已移出或不存在」口径一致；否则等待
+							// 集合含被移出子代理时 allDone 恒 false，必然白等满 timeoutMs。
+							return r === undefined || isSubagentTerminal(r);
 						});
 						if (allDone) break;
 						await new Promise((resolve) => setTimeout(resolve, POLL_INTERVAL_MS));
