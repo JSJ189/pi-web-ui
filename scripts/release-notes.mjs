@@ -138,7 +138,9 @@ function main() {
 	const notes = `${replaceI18n(body, i18nLines)}\n\n<!-- release-notes: i18n 小节由 scripts/release-notes.mjs 按 ${base}...工作区现场生成 -->\n`;
 
 	if (argv.includes("--write-changelog")) {
-		const patched = changelog.replace(body, replaceI18n(body, i18nLines));
+		// #498：第二参必须是函数形式——字符串形式的替换串里 `$&`/`` $` ``/`$'`/`$1`
+		// 是替换模式，i18n 文案含 `$`（价格示例、代码片段）时会把 CHANGELOG 写坏。
+		const patched = changelog.replace(body, () => replaceI18n(body, i18nLines));
 		writeFileSync(CHANGELOG, patched);
 		console.log(`✓ CHANGELOG.md ## [${version}] 的 ### i18n 已同步（base ${base}）`);
 	}
