@@ -1087,6 +1087,11 @@ export interface DispatchSession {
 	handoffSubagent?(fromRunId: string, toRunId: string, payload: string): Promise<void>;
 	persistConversation?(id: string): Promise<void>;
 	setConversationPinned?(id: string, pinned: boolean): Promise<void>;
+	pinSession?(path: string, pinned: boolean): Promise<void>;
+	updatePlanStep?(stepId: string, patch: Partial<import("./protocol.js").PlanStep>, conversationId?: string): void;
+	deletePlanStep?(stepId: string, conversationId?: string): void;
+	addPlanStep?(step: import("./protocol.js").PlanStep, afterStepId?: string, conversationId?: string): void;
+	planCleanHandoff?(steps: import("./protocol.js").PlanStep[], promptText: string): Promise<void>;
 	switchSession(path: string): Promise<void>;
 	switchConversation(id: string): Promise<void>;
 	listFiles(path?: string): Promise<void>;
@@ -2211,6 +2216,11 @@ wss.on("connection", (ws) => {
 					void cs.setConversationPinned(msg.id, msg.pinned);
 				}
 				break;
+			case "pin_session":
+				if (typeof cs.pinSession === "function") {
+					void cs.pinSession(msg.path, msg.pinned);
+				}
+				break;
 			case "dismiss_finished_subagents":
 				void cs.dismissFinishedSubagents(msg.parentId);
 				break;
@@ -2962,6 +2972,18 @@ wss.on("connection", (ws) => {
 				break;
 			case "plan_update":
 				cs.updatePlan?.(msg.steps, msg.activeStepId, msg.conversationId);
+				break;
+			case "plan_step_update":
+				cs.updatePlanStep?.(msg.stepId, msg.patch, msg.conversationId);
+				break;
+			case "plan_step_delete":
+				cs.deletePlanStep?.(msg.stepId, msg.conversationId);
+				break;
+			case "plan_step_add":
+				cs.addPlanStep?.(msg.step, msg.afterStepId, msg.conversationId);
+				break;
+			case "plan_clean_handoff":
+				void cs.planCleanHandoff?.(msg.steps, msg.prompt);
 				break;
 			case "set_plan_mode":
 				// 计划模式（只规划不实施）：会话级开关，热生效（提示词重建 + 工具硬闸门）。

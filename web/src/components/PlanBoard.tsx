@@ -79,12 +79,10 @@ export function PlanBoard({ plan }: PlanBoardProps) {
 		const planSummary = steps
 			.map((s, i) => `${i + 1}. ${s.title}${s.description ? ` (${s.description})` : ""}`)
 			.join("\n");
-		appSend({ type: "set_plan_mode", enabled: false });
-		appSend({ type: "new_chat" });
-		appSend({ type: "plan_update", steps });
 		appSend({
-			type: "prompt",
-			text: `${t("planCleanHandoffPrompt")}\n\n${planSummary}`,
+			type: "plan_clean_handoff",
+			steps,
+			prompt: `${t("planCleanHandoffPrompt")}\n\n${planSummary}`,
 		});
 	};
 
@@ -126,30 +124,30 @@ export function PlanBoard({ plan }: PlanBoardProps) {
 	const saveEdit = (stepId: string) => {
 		const trimmedTitle = editTitle.trim();
 		if (!trimmedTitle) return;
-		const nextSteps = steps.map((s) => {
-			if (s.id !== stepId) return s;
-			const next: PlanStep = { ...s, title: trimmedTitle };
-			if (editDesc.trim()) next.description = editDesc.trim();
-			else delete next.description;
-			return next;
-		});
-		appSend({ type: "plan_update", steps: nextSteps });
+		const patch: Partial<PlanStep> = { title: trimmedTitle };
+		if (editDesc.trim()) patch.description = editDesc.trim();
+		else patch.description = undefined;
+		appSend({ type: "plan_step_update", stepId, patch });
 		setEditingId(null);
 	};
 
-	/** 删除步骤 */
+	/** 删除步骤（增量删除，防整组覆盖清改） */
 	const handleDeleteStep = (stepId: string) => {
-		const nextSteps = steps.filter((s) => s.id !== stepId);
-		appSend({ type: "plan_update", steps: nextSteps });
+		appSend({ type: "plan_step_delete", stepId });
 	};
 
-	/** 顺时针切换步骤状态 (pending -> in_progress -> done -> failed) */
+	/** 顺时针切换步骤状态 (pending -> in_progress -> done -> failed，增量更新) */
 	const handleCycleStatus = (stepId: string) => {
-		const nextSteps = steps.map((s) => (s.id === stepId ? { ...s, status: NEXT_STATUS[s.status] } : s));
-		appSend({ type: "plan_update", steps: nextSteps });
+		const targetStep = steps.find((s) => s.id === stepId);
+		if (!targetStep) return;
+		appSend({
+			type: "plan_step_update",
+			stepId,
+			patch: { status: NEXT_STATUS[targetStep.status] },
+		});
 	};
 
-	/** 新增步骤 */
+	/** 新增步骤（增量添加） */
 	const handleAddStep = () => {
 		const newId = `step-${Date.now()}`;
 		const newStep: PlanStep = {
@@ -157,8 +155,7 @@ export function PlanBoard({ plan }: PlanBoardProps) {
 			title: t("planBoardAddStep"),
 			status: "pending",
 		};
-		const nextSteps = [...steps, newStep];
-		appSend({ type: "plan_update", steps: nextSteps });
+		appSend({ type: "plan_step_add", step: newStep });
 		startEdit(newStep);
 	};
 

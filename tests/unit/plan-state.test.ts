@@ -147,4 +147,38 @@ describe("结构化任务计划状态机与看板管理 (PlanManager / Plan Mode
 		expect(plan?.steps[1].description).toContain("Rollback");
 		expect(messages.length).toBeGreaterThan(0);
 	});
+
+	it("deleteStep 增量删除步骤并正确推进 activeStepId (issue #444)", () => {
+		const pm = new PlanManager();
+		pm.setPlan("conv-1", [
+			{ id: "step-1", title: "步骤1", status: "done" },
+			{ id: "step-2", title: "步骤2", status: "in_progress" },
+			{ id: "step-3", title: "步骤3", status: "pending" },
+		]);
+
+		// 删除正在执行的步骤2，activeStepId 自动推给步骤3
+		const next = pm.deleteStep("conv-1", "step-2");
+		expect(next?.steps.map((s) => s.id)).toEqual(["step-1", "step-3"]);
+		expect(next?.activeStepId).toBe("step-3");
+
+		// 删除不存在的步骤：安全早退保持不变
+		const untouched = pm.deleteStep("conv-1", "step-not-found");
+		expect(untouched?.steps.length).toBe(2);
+	});
+
+	it("addStep 增量插入步骤并截断过长字符 (issue #444)", () => {
+		const pm = new PlanManager();
+		pm.setPlan("conv-1", [
+			{ id: "step-1", title: "步骤1", status: "done" },
+			{ id: "step-2", title: "步骤2", status: "pending" },
+		]);
+
+		// 插入到步骤1之后
+		const after1 = pm.addStep("conv-1", { id: "step-1.5", title: "步骤1.5", status: "pending" }, "step-1");
+		expect(after1?.steps.map((s) => s.id)).toEqual(["step-1", "step-1.5", "step-2"]);
+
+		// 默认追加到末尾
+		const atEnd = pm.addStep("conv-1", { id: "step-3", title: "步骤3", status: "pending" });
+		expect(atEnd?.steps.map((s) => s.id)).toEqual(["step-1", "step-1.5", "step-2", "step-3"]);
+	});
 });

@@ -143,6 +143,11 @@ describe("compacted-history", () => {
 			expect(msgs[0].content).toEqual([{ type: "text", text: "用户提问 1" }]);
 			expect(msgs[1].role).toBe("assistant");
 			expect(msgs[1].content).toEqual([{ type: "text", text: "模型回答 1", truncated: false }]);
+
+			// issue #437: 复用全局 seqOf 而不是强制从 1 重计
+			const msgsWithSeq = serializeCompactedEntries(entries, () => 42);
+			expect(msgsWithSeq[0].id).toContain("-42");
+			expect(msgsWithSeq[1].id).toContain("-42");
 		});
 	});
 
@@ -211,7 +216,7 @@ describe("compacted-history", () => {
 			};
 
 			const result = getCompactedMessages(mockSm, "non-existent-id");
-			expect(result.error).toBe("Compaction entry not found");
+			expect(result.error).toBe("compactedHistoryNotFound");
 			expect(result.messages).toEqual([]);
 		});
 	});

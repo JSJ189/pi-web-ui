@@ -54,6 +54,7 @@ interface LeftPanelProps {
 			| { type: "dismiss_finished_subagents"; parentId?: string }
 			| { type: "persist_conversation"; id: string }
 			| { type: "pin_conversation"; id: string; pinned: boolean }
+			| { type: "pin_session"; path: string; pinned: boolean }
 			| { type: "take_over_conversation"; owner: string; id: string }
 			| { type: "peek_elsewhere_question"; owner: string; id: string }
 			| { type: "make_dir"; path: string; setAsCwd?: boolean },
@@ -324,9 +325,12 @@ export const LeftPanel = memo(function LeftPanel({
 					return scopeId
 						? { ...entry, ...(armed ? { label: t("forceDismissConfirm") } : {}) }
 						: { ...entry, hidden: true };
-				// 钉住 / 取消钉住：只在运行中的主对话行出现（子代理本来就永久保留，钉住无意义；
-				// 历史行与「另一处」行不适用 —— 历史是落盘文件，钉只作用于在运行的对话）。
+				// 钉住 / 取消钉住：在运行中的主对话行或历史行出现（子代理本来就永久保留，钉住无意义；「另一处」行不适用）。
 				if (entry.id === "host:conv-pin") {
+					if (target.kind === "history") {
+						const isPinned = sessions.find((s) => s.path === target.id)?.pinned;
+						return isPinned ? { ...entry, label: t("unpinConversation") } : entry;
+					}
 					if (!scopeId) return { ...entry, hidden: true };
 					const pinTarget = conversations.find((c) => c.id === scopeId);
 					if (!pinTarget || pinTarget.isSubagent) return { ...entry, hidden: true };
@@ -408,6 +412,11 @@ export const LeftPanel = memo(function LeftPanel({
 			}
 			// 钉住 / 取消钉住：按当前状态翻转（菜面文案已按状态给过用户正确预期）。
 			if (entry.id === "host:conv-pin") {
+				if (target.kind === "history") {
+					const cur = sessions.find((s) => s.path === target.id);
+					panelSend({ type: "pin_session", path: target.id, pinned: !cur?.pinned });
+					return;
+				}
 				if (scopeId) {
 					const cur = conversations.find((c) => c.id === scopeId);
 					panelSend({ type: "pin_conversation", id: scopeId, pinned: !cur?.pinned });
@@ -1191,7 +1200,14 @@ export const LeftPanel = memo(function LeftPanel({
 													onBlur={() => setRenaming(null)}
 												/>
 											) : (
-												<span className="session-title">{displayName(s)}</span>
+												<span className="session-title">
+													{displayName(s)}
+													{s.pinned && (
+														<span className="pin-badge" title={t("pinnedConversation")}>
+															📌
+														</span>
+													)}
+												</span>
 											)}
 											{renaming === s.path ? null : (
 												<span className="session-sub">

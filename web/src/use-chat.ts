@@ -13,6 +13,7 @@ import type {
 	FileSearchResult,
 	GoalStatus,
 	ModelInfo,
+	PlanState,
 	ProjectSummary,
 	ProviderKeyInfo,
 	ProviderOAuthFlowState,
@@ -574,6 +575,7 @@ type Action =
 	| { type: "terminal_list"; conversationId?: string; terminals: TerminalInfo[] }
 	| { type: "terminal_active"; id: string }
 	| { type: "goal_status"; status: GoalStatus }
+	| { type: "plan_updated"; conversationId?: string; plan: PlanState | null }
 	| { type: "settings"; settings: UiSettingsState }
 	| { type: "bg_servers"; servers: BgServer[] }
 	| { type: "scheduler_tasks"; tasks: SchedulerTaskView[] }
@@ -971,6 +973,19 @@ function reducer(state: ChatState, action: Action): ChatState {
 			return { ...state, slashCommands: action.commands };
 		case "goal_status":
 			return { ...state, goal: action.status };
+		case "plan_updated": {
+			const ui = state.state;
+			if (!ui) return state;
+			if (action.conversationId && action.conversationId !== ui.conversationId) return state;
+			const nextUi: UiState = {
+				...ui,
+				plan: action.plan,
+			};
+			return {
+				...state,
+				state: nextUi,
+			};
+		}
 		case "settings":
 			return { ...state, settings: action.settings };
 		case "bg_servers":
@@ -1960,6 +1975,9 @@ export function useChat() {
 					break;
 				case "goal_status":
 					dispatch({ type: "goal_status", status: msg.status });
+					break;
+				case "plan_updated":
+					dispatch({ type: "plan_updated", conversationId: msg.conversationId, plan: msg.plan });
 					break;
 				case "settings_state":
 					dispatch({ type: "settings", settings: msg.settings });

@@ -1,5 +1,9 @@
 import { describe, expect, it, vi } from "vitest";
+import { mkdtempSync, rmSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
 import { ClientSession } from "../../server/agent-service.js";
+import { ClientStateStore } from "../../server/client-state.js";
 
 /* 钉住（常驻运行列表）只走两处接线：setConversationPinned 改标记，
  * displaceActive 把标记喂给 shouldRetainActive。决策真值由
@@ -111,5 +115,43 @@ describe("钉住（pinned）会话", () => {
 		} as unknown as ClientSession;
 		await (ClientSession.prototype as unknown as AnySession).setConversationPinned.call(cs3, "c3", true);
 		expect(emitSpy).toHaveBeenCalledTimes(1);
+	});
+
+	it("ClientStateStore：已钉住会话持久化与清理 (issue #433)", () => {
+		const dir = mkdtempSync(join(tmpdir(), "pi-pin-test-"));
+		const store = new ClientStateStore(join(dir, "client-state.json"));
+		const cwd = join(dir, "project1");
+		const sess1 = join(dir, "session-1.jsonl");
+		const sess2 = join(dir, "session-2.jsonl");
+
+		expect(store.getPinnedSessions(cwd)).toEqual([]);
+		expect(store.isSessionPinned(cwd, sess1)).toBe(false);
+
+		// 钉住 session 1
+		store.setSessionPinned(cwd, sess1, true);
+		expect(store.isSessionPinned(cwd, sess1)).toBe(true);
+		expect(store.isSessionPinned(cwd, sess2)).toBe(false);
+		expect(store.getPinnedSessions(cwd).length).toBe(1);
+
+		// 钉住 session 2
+		store.setSessionPinned(cwd, sess2, true);
+		expect(store.getPinnedSessions(cwd).length).toBe(2);
+
+		// 重新加载（跨实例模拟服务重启）
+		const store2 = new ClientStateStore(join(dir, "client-state.json"));
+		expect(store2.isSessionPinned(cwd, sess1)).toBe(true);
+		expect(store2.isSessionPinned(cwd, sess2)).toBe(true);
+
+		// 取消钉住 session 1
+		store2.setSessionPinned(cwd, sess1, false);
+		expect(store2.isSessionPinned(cwd, sess1)).toBe(false);
+		expect(store2.isSessionPinned(cwd, sess2)).toBe(true);
+
+		// 会话文件删除时自动清理
+		store2.cleanPinnedSession(sess2);
+		expect(store2.isSessionPinned(cwd, sess2)).toBe(false);
+		expect(store2.getPinnedSessions(cwd)).toEqual([]);
+
+		rmSync(dir, { recursive: true, force: true });
 	});
 });

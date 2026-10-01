@@ -481,6 +481,8 @@ export interface ClientState {
 	defaultProviderKeys?: Record<string, string>;
 	/** 内置标记工具开关（全局 + 按 marker 禁用）。 */
 	markers?: MarkerSettings;
+	/** 用户钉住（常驻运行列表）的会话文件路径列表，按项目 (cwd) 索引持久化在 __settings__ 下。 */
+	pinnedSessions?: Record<string, string[]>;
 	/** Browser UI locale code as reported by hello/set_locale (e.g. "zh",
 	 *  "en", "ja"). Server resolves it via resolveServerLang (non-zh →
 	 *  English default, issue #91) for tool return values / AI prompts.
@@ -1268,6 +1270,72 @@ export class ClientStateStore {
 		const state = (all[ClientStateStore.GLOBAL_SETTINGS_KEY] ??= { projects: [] });
 		(state.defaultProviderKeys ??= {})[provider] = keyName;
 		this.save();
+	}
+
+	/** 获取某项目已钉住的会话文件路径列表。 */
+	getPinnedSessions(cwd: string): string[] {
+		const normCwd = normalizePathKey(cwd);
+		const map = this.load()[ClientStateStore.GLOBAL_SETTINGS_KEY]?.pinnedSessions;
+		return map?.[normCwd] ?? [];
+	}
+
+	/** 钉住 / 取消钉住某个会话文件。 */
+	setSessionPinned(cwd: string, sessionPath: string, pinned: boolean): void {
+		const normCwd = normalizePathKey(cwd);
+		const normPath = normalizePathKey(sessionPath);
+		const absPath = resolve(sessionPath);
+		const all = this.load();
+		const state = (all[ClientStateStore.GLOBAL_SETTINGS_KEY] ??= { projects: [] });
+		const map = (state.pinnedSessions ??= {});
+		const list = map[normCwd] ?? [];
+		const filtered = list.filter((p) => normalizePathKey(p) !== normPath);
+		if (pinned) {
+			filtered.push(absPath);
+			map[normCwd] = filtered;
+		} else {
+			if (filtered.length > 0) {
+				map[normCwd] = filtered;
+			} else {
+				delete map[normCwd];
+			}
+		}
+		if (Object.keys(map).length === 0) {
+			delete state.pinnedSessions;
+		}
+		this.save();
+	}
+
+	/** 检查某个会话文件是否已被钉住。 */
+	isSessionPinned(cwd: string, sessionPath: string): boolean {
+		const list = this.getPinnedSessions(cwd);
+		const norm = normalizePathKey(sessionPath);
+		return list.some((p) => normalizePathKey(p) === norm);
+	}
+
+	/** 会话文件被删除时清理钉住记录。 */
+	cleanPinnedSession(sessionPath: string): void {
+		const norm = normalizePathKey(sessionPath);
+		const all = this.load();
+		const map = all[ClientStateStore.GLOBAL_SETTINGS_KEY]?.pinnedSessions;
+		if (!map) return;
+		let changed = false;
+		for (const [cwdKey, list] of Object.entries(map)) {
+			const next = list.filter((p) => normalizePathKey(p) !== norm);
+			if (next.length !== list.length) {
+				changed = true;
+				if (next.length > 0) {
+					map[cwdKey] = next;
+				} else {
+					delete map[cwdKey];
+				}
+			}
+		}
+		if (changed) {
+			if (Object.keys(map).length === 0) {
+				delete all[ClientStateStore.GLOBAL_SETTINGS_KEY]!.pinnedSessions;
+			}
+			this.save();
+		}
 	}
 
 	/** 全局默认 key 跟随删除：被删的 key 若是全局默认记的，指到接替者（无接替则删引用）。 */

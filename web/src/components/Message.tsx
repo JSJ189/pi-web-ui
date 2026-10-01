@@ -560,14 +560,15 @@ export const Message = memo(function Message({
 			switch (entry.id) {
 				case "host:msg-ctx-copy-markdown":
 				case "host:msg-ctx-copy-text":
-				case "host:msg-ctx-copy-image":
 					return canCopyWhole ? entry : { ...entry, hidden: true };
+				case "host:msg-ctx-copy-image":
+					return canCopyWhole && !readOnly ? entry : { ...entry, hidden: true };
 				case "host:msg-ctx-reask":
 				case "host:msg-ctx-edit-reask":
 					return canEdit ? entry : { ...entry, hidden: true };
 				case "host:msg-ctx-fork":
 				case "host:msg-ctx-rollback":
-					return !streaming && !editing ? entry : { ...entry, hidden: true };
+					return !readOnly && !streaming && !editing ? entry : { ...entry, hidden: true };
 				case "host:msg-ctx-speak":
 					if (!canSpeak) return { ...entry, hidden: true };
 					return speakActive ? { ...entry, label: t("stopSpeakingMsg"), icon: "square" } : entry;
@@ -1475,7 +1476,12 @@ function CompactionCard({
 								)}
 								{historyState.status === "error" && (
 									<div className="compacted-history-error">
-										<span>{historyState.error || t("compactedHistoryEmpty")}</span>
+										<span>
+											{historyState.error === "compactedHistoryNotFound" ||
+											historyState.error === "Compaction entry not found"
+												? t("compactedHistoryNotFound")
+												: historyState.error || t("compactedHistoryEmpty")}
+										</span>
 									</div>
 								)}
 								{historyState.status === "ready" && historyState.messages.length === 0 && (

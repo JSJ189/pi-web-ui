@@ -623,6 +623,7 @@
 		"hideCompactedHistory": "Hide folded history",
 		"compactedHistoryLoading": "Extracting folded history messages…",
 		"compactedHistoryEmpty": "No folded history messages found for this compaction",
+		"compactedHistoryNotFound": "Compaction entry not found or superseded",
 		"compactedHistoryBadge": "Compacted · Read-only stream",
 		"compactedHistoryTurns": "{count} messages",
 		"backToBottom": "Вернуться вниз",

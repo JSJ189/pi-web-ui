@@ -1051,6 +1051,33 @@ export type ClientMessage =
 			steps: PlanStep[];
 			activeStepId?: string | null;
 	  }
+	/** 增量更新单个步骤的状态或内容。 */
+	| {
+			type: "plan_step_update";
+			conversationId?: string;
+			stepId: string;
+			patch: Partial<PlanStep>;
+	  }
+	/** 删除单个步骤。 */
+	| {
+			type: "plan_step_delete";
+			conversationId?: string;
+			stepId: string;
+	  }
+	/** 新增单个步骤。 */
+	| {
+			type: "plan_step_add";
+			conversationId?: string;
+			step: PlanStep;
+			afterStepId?: string;
+	  }
+	/** 「✨ 净室执行（Clean-session Handoff）」：
+	 *  关闭源会话的计划闸门，新建隔离会话，在新会话中原子设置计划步骤、可选迁移目标，并触发实施轮 prompt。 */
+	| {
+			type: "plan_clean_handoff";
+			steps: PlanStep[];
+			prompt: string;
+	  }
 	/** 计划模式开关（会话级）：开启后本对话**只调研 + 出实施计划，不实施**。
 	 *  服务端在写类工具与非常规 bash 上加硬闸门（拒绝并把原因回给模型），
 	 *  并向系统提示词追加计划模式约束（先 plan_update 列步骤，再给计划正文）；
@@ -1100,6 +1127,8 @@ export type ClientMessage =
 	/** 钉住 / 取消钉住运行中的对话：钉住后切换到其他对话也不从「运行的对话」
 	 *  释放（空闲无终端亦然），直到显式移出。pinned=false 时取消钉住。 */
 	| { type: "pin_conversation"; id: string; pinned: boolean }
+	/** 钉住 / 取消钉住历史会话文件（持久化到 client-state.json 并在历史列表展示 📌）。 */
+	| { type: "pin_session"; path: string; pinned: boolean }
 	/** Bulk-dismiss FINISHED subagents from the running list (right-click menu).
 	 *  parentId omitted = all finished subagents; given = the transitive
 	 *  subagent descendants of that conversation (children, grandchildren, …),
@@ -1144,6 +1173,8 @@ export interface SessionSummary {
 	modified: number;
 	/** Where the session lives: this UI's per-client dir, or the pi CLI/TUI dir. */
 	source?: "web" | "tui";
+	/** 用户钉住（常驻运行列表 / 历史置顶）：带 📌 标记。 */
+	pinned?: boolean;
 }
 
 /** 会话转录中一条命中消息的定位锚点：会话载入后按 role + timestamp 在

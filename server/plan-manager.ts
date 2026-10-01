@@ -101,6 +101,71 @@ export class PlanManager {
 		return nextState;
 	}
 
+	/** 增量删除单个步骤。 */
+	deleteStep(conversationId: string, stepId: string): PlanState | null {
+		const current = this.plans.get(conversationId);
+		if (!current) return null;
+
+		const idx = current.steps.findIndex((s) => s.id === stepId);
+		if (idx === -1) return current;
+
+		const nextSteps = current.steps.filter((s) => s.id !== stepId);
+		let nextActive = current.activeStepId;
+		if (current.activeStepId === stepId) {
+			const nextPending = nextSteps.find((s) => s.status === "pending" || s.status === "in_progress");
+			nextActive = nextPending ? nextPending.id : null;
+		}
+
+		const nextState: PlanState = {
+			steps: nextSteps,
+			activeStepId: nextActive,
+			updatedAt: Date.now(),
+		};
+
+		this.plans.set(conversationId, nextState);
+		return nextState;
+	}
+
+	/** 增量新增步骤。 */
+	addStep(conversationId: string, step: PlanStep, afterStepId?: string): PlanState | null {
+		const current = this.plans.get(conversationId);
+		const existingSteps = current?.steps ?? [];
+
+		const normalized: PlanStep = {
+			id: String(step.id ?? `step-${Date.now()}`),
+			title: String(step.title ?? "").slice(0, 200),
+			status: step.status && VALID_STATUSES.has(step.status) ? step.status : "pending",
+		};
+		const description = String(step.description ?? "").slice(0, 1000);
+		if (description) normalized.description = description;
+
+		let nextSteps: PlanStep[];
+		if (afterStepId) {
+			const idx = existingSteps.findIndex((s) => s.id === afterStepId);
+			if (idx !== -1) {
+				nextSteps = [...existingSteps.slice(0, idx + 1), normalized, ...existingSteps.slice(idx + 1)];
+			} else {
+				nextSteps = [...existingSteps, normalized];
+			}
+		} else {
+			nextSteps = [...existingSteps, normalized];
+		}
+
+		let nextActive = current?.activeStepId ?? null;
+		if (!nextActive && normalized.status === "in_progress") {
+			nextActive = normalized.id;
+		}
+
+		const nextState: PlanState = {
+			steps: nextSteps,
+			activeStepId: nextActive,
+			updatedAt: Date.now(),
+		};
+
+		this.plans.set(conversationId, nextState);
+		return nextState;
+	}
+
 	/** 清除指定会话的计划。 */
 	clearPlan(conversationId: string): void {
 		this.plans.delete(conversationId);

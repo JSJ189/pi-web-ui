@@ -1735,6 +1735,14 @@ function pluginToolToDefinition(tool: PluginAgentTool): ToolDefinition {
  * unlikely to matter).
  */
 function contentFingerprint(m: AgentMessage): string {
+	const summary = (m as unknown as { summary?: string }).summary;
+	if (typeof summary === "string" && summary.length > 0) {
+		let h = 5381;
+		for (let i = 0; i < summary.length && i < 512; i++) {
+			h = ((h << 5) + h + summary.charCodeAt(i)) >>> 0;
+		}
+		return `sum:${h.toString(36)}:${summary.length}`;
+	}
 	const content = (m as unknown as { content?: unknown }).content;
 	if (!Array.isArray(content) || content.length === 0) return "empty";
 	const first = content[0] as { type?: string; text?: string; data?: string };
@@ -4248,6 +4256,57 @@ export class ClientSession {
 		}
 		await cs.restoreProjectProviderKeysForCwd(cwd);
 		await cs.restoreProjectModelForCwd(cwd);
+
+		if (conv.session.sessionFile && cs.stateStore?.isSessionPinned(cwd, conv.session.sessionFile)) {
+			conv.pinned = true;
+			conv.listed = true;
+		}
+
+		// 恢复本项目其他已被钉住的会话（重启后常驻运行列表，issue #433）
+		const pinnedPaths = cs.stateStore?.getPinnedSessions(cwd) ?? [];
+		for (const p of pinnedPaths) {
+			if (cs.convs.size >= MAX_OPEN_CONVERSATIONS) break;
+			const normP = normalizePathKey(p);
+			const alreadyOpen = [...cs.convs.values()].some(
+				(c) => c.session.sessionFile && normalizePathKey(c.session.sessionFile) === normP,
+			);
+			if (alreadyOpen) continue;
+			try {
+				const targetPath = resolve(p);
+				if (!existsSync(targetPath)) continue;
+				cs.repairTranscriptFileBeforeOpen(targetPath);
+				const sm = SessionManager.open(targetPath);
+				const convId = cs.nextConversationId();
+				const terms = cs.makeTerminalManager(convId, cwd);
+				const rt = await createAgentSessionRuntime(cs.makeRuntimeFactory(terms, undefined, convId), {
+					cwd,
+					agentDir,
+					sessionManager: sm,
+				});
+				const pinnedConv = cs.makeConversation(rt, convId, terms);
+				pinnedConv.pinned = true;
+				pinnedConv.listed = true;
+				pinnedConv.promptedSinceActive = true;
+				cs.convs.set(pinnedConv.id, pinnedConv);
+				pinnedConv.unsubscribe = pinnedConv.session.subscribe((event) => cs.onEvent(pinnedConv, event));
+				try {
+					await pinnedConv.session.bindExtensions({
+						mode: "rpc",
+						uiContext: WebUIContext.headless(),
+						onError: cs.makeExtensionErrorReporter({
+							text: `会话 ${convId}：`,
+							textEn: `Conversation ${convId}: `,
+						}),
+					});
+				} catch {
+					// 忽略扩展绑定失败
+				}
+				cs.applyToolGating(pinnedConv.session, pinnedConv.agentPreset);
+			} catch {
+				// best effort
+			}
+		}
+
 		return cs;
 	}
 
@@ -6024,7 +6083,44 @@ export class ClientSession {
 		// 一次扫描同时收齐「当前转写里的全部缓存键」（live 集合，供
 		// pruneMessageCache 精确回收死条目）与各自的序列化结果。
 		const live = new Set<string>();
-		let rawMessages = conv.session.agent.state.messages
+
+		let agentMessages = conv.session.agent.state.messages;
+		// issue #448: 多次压缩后 SDK state.messages 只保留最后一次压缩卡片。
+		// 从当前分支祖先链中提取前序未展示的历史 compaction 并正序置前，
+		// 使前端能逐段回溯展开历史折叠内容。
+		if (conv.session.sessionManager?.getBranch) {
+			try {
+				const branch = conv.session.sessionManager.getBranch();
+				const compEntries = branch.filter((e) => e.type === "compaction");
+				if (compEntries.length > 1) {
+					const existingCompKeys = new Set(
+						agentMessages
+							.filter((m) => m.role === "compactionSummary")
+							.map((m) => `${m.timestamp}:${(m as { summary?: string }).summary ?? ""}`),
+					);
+					const missingComps: AgentMessage[] = [];
+					for (const ce of compEntries) {
+						const ts = ce.timestamp ? new Date(ce.timestamp).getTime() : 0;
+						const key = `${ts}:${ce.summary ?? ""}`;
+						if (!existingCompKeys.has(key)) {
+							missingComps.push({
+								role: "compactionSummary",
+								summary: ce.summary ?? "",
+								tokensBefore: ce.tokensBefore,
+								timestamp: ts,
+							} as AgentMessage);
+						}
+					}
+					if (missingComps.length > 0) {
+						agentMessages = [...missingComps, ...agentMessages];
+					}
+				}
+			} catch {
+				// 获取分支异常不影响当前渲染
+			}
+		}
+
+		let rawMessages = agentMessages
 			.map((m) => {
 				const k = this.uiMessageKey(conv, m);
 				live.add(k.cacheKey);
@@ -6669,6 +6765,62 @@ export class ClientSession {
 			plan,
 		});
 		this.flushSnapshot();
+	}
+
+	updatePlanStep(stepId: string, patch: Partial<import("./protocol.js").PlanStep>, conversationId?: string): void {
+		const convId = conversationId ?? this.activeId;
+		const plan = this.planManager.updateStep(convId, stepId, patch);
+		this.emit({
+			type: "plan_updated",
+			conversationId: convId,
+			plan,
+		});
+		this.flushSnapshot();
+	}
+
+	deletePlanStep(stepId: string, conversationId?: string): void {
+		const convId = conversationId ?? this.activeId;
+		const plan = this.planManager.deleteStep(convId, stepId);
+		this.emit({
+			type: "plan_updated",
+			conversationId: convId,
+			plan,
+		});
+		this.flushSnapshot();
+	}
+
+	addPlanStep(step: import("./protocol.js").PlanStep, afterStepId?: string, conversationId?: string): void {
+		const convId = conversationId ?? this.activeId;
+		const plan = this.planManager.addStep(convId, step, afterStepId);
+		this.emit({
+			type: "plan_updated",
+			conversationId: convId,
+			plan,
+		});
+		this.flushSnapshot();
+	}
+
+	/** 「✨ 净室执行（Clean-session Handoff）」：
+	 *  关闭源会话的计划闸门，新建隔离会话，在新会话中原子设置计划步骤、可选迁移目标，并触发实施轮 prompt。 */
+	async planCleanHandoff(steps: import("./protocol.js").PlanStep[], promptText: string): Promise<void> {
+		const sourceConv = this.conv;
+		if (sourceConv?.planMode) {
+			await this.setPlanMode(false, sourceConv.id);
+		}
+		const sourceGoal = sourceConv?.goal?.goal;
+
+		await this.newChat();
+		const targetConv = this.conv;
+		this.planManager.setPlan(targetConv.id, steps);
+		if (sourceGoal) {
+			try {
+				await this.goalSvc.setGoal(sourceGoal, { targetConvId: targetConv.id, autoStart: false });
+			} catch {
+				// 目标迁移失败不阻塞实施
+			}
+		}
+		this.flushSnapshot();
+		await this.prompt(promptText);
 	}
 
 	/** 关闭所有挂起提问（dispose 时清理）：以「取消」解析，避免模型挂死。 */
@@ -10786,6 +10938,7 @@ export class ClientSession {
 
 			const sessions = new Map<string, SessionSummary>();
 			for (const s of visibleInfos) {
+				const isPinned = this.stateStore?.isSessionPinned(this.cwd, s.path);
 				sessions.set(s.path, {
 					path: s.path,
 					name: s.name,
@@ -10793,6 +10946,7 @@ export class ClientSession {
 					messageCount: s.messageCount,
 					modified: s.modified.getTime(),
 					source: "web",
+					...(isPinned ? { pinned: true } : {}),
 				});
 			}
 			const sorted = [...sessions.values()].sort((a, b) => b.modified - a.modified).slice(0, 200); // newest first — the panel shows recent history
@@ -10905,6 +11059,8 @@ export class ClientSession {
 				return;
 			}
 			rmSync(abs, { force: true });
+			// 转录删了，钉住记录一起清理（issue #433）。
+			this.stateStore?.cleanPinnedSession(abs);
 			// 转录删了，sidecar 再留着就是孤儿，一起清掉（不存在不报错）。
 			removeTouchSidecar(abs);
 			// 转录删了，未发送草稿再留着就是孤儿，一起清掉。
@@ -10992,8 +11148,14 @@ export class ClientSession {
 			conv.pinned = true;
 			// 立即进入运行列表（含空白对话）：listed 一旦置位，shownInRunningList 即放行。
 			conv.listed = true;
+			if (conv.session.sessionFile) {
+				this.stateStore?.setSessionPinned(conv.cwd, conv.session.sessionFile, true);
+			}
 		} else {
 			delete conv.pinned;
+			if (conv.session.sessionFile) {
+				this.stateStore?.setSessionPinned(conv.cwd, conv.session.sessionFile, false);
+			}
 		}
 		this.emitConversations();
 		this.flushSnapshot();
@@ -11007,6 +11169,29 @@ export class ClientSession {
 				? `Pinned "${conv.title}" — switching away keeps it in the running list`
 				: `Unpinned "${conv.title}" — it will be handled by the usual rules on the next switch`,
 		});
+	}
+
+	/** 钉住 / 取消钉住历史会话（持久化并在运行中/历史列表生效）。 */
+	async pinSession(path: string, pinned: boolean): Promise<void> {
+		const targetPath = resolve(path);
+		this.stateStore?.setSessionPinned(this.cwd, targetPath, pinned);
+
+		// 如果当前已在运行列表中，同步其 pinned 状态
+		for (const conv of this.convs.values()) {
+			if (conv.session.sessionFile && resolve(conv.session.sessionFile) === targetPath) {
+				if (pinned) {
+					conv.pinned = true;
+					conv.listed = true;
+				} else {
+					delete conv.pinned;
+				}
+				break;
+			}
+		}
+
+		this.emitConversations();
+		this.flushSnapshot();
+		await this.refreshSessions();
 	}
 
 	/** Rename a live conversation by id: retitle in memory AND persist a
@@ -11658,6 +11843,10 @@ export class ClientSession {
 			// Deliberately resumed — must not be dismissed when the user later
 			// switches away without sending a new message.
 			conv.promptedSinceActive = true;
+			if (this.stateStore?.isSessionPinned(targetCwd, targetPath)) {
+				conv.pinned = true;
+				conv.listed = true;
+			}
 			this.noticeInterruptedCompaction(conv);
 			this.convs.set(conv.id, conv);
 			this.activeId = conv.id;
@@ -12234,6 +12423,7 @@ export class ClientSession {
 				.sort((a, b) => b.modified.getTime() - a.modified.getTime())
 				.slice(0, 50)
 				.map((s) => {
+					const isPinned = this.stateStore?.isSessionPinned(this.cwd, s.path);
 					const base: SessionSummary = {
 						path: s.path,
 						name: s.name,
@@ -12241,6 +12431,7 @@ export class ClientSession {
 						messageCount: s.messageCount,
 						modified: s.modified.getTime(),
 						source: "web",
+						...(isPinned ? { pinned: true } : {}),
 					};
 					// 命中会话里再定位具体消息（供点击跳转）；仅元数据命中则无锚点
 					return { ...base, anchors: collectSessionAnchors(s.path, q) };

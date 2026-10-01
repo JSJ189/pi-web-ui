@@ -102,14 +102,18 @@ export function sliceCompactedEntries(
  * 将被折叠的原始 entries 转换为只读 UiMessage[] 列表。
  * 纯函数。
  */
-export function serializeCompactedEntries(entries: SessionEntryLike[]): UiMessage[] {
+export function serializeCompactedEntries(
+	entries: SessionEntryLike[],
+	seqOf?: (m: AgentMessage) => number,
+): UiMessage[] {
 	const result: UiMessage[] = [];
 	let seq = 1;
 
 	for (const entry of entries) {
 		if (entry.type === "message" && entry.message) {
 			if (entry.message.role === "system") continue;
-			const ui = serializeMessage(entry.message, seq++);
+			const s = seqOf ? seqOf(entry.message) : seq++;
+			const ui = serializeMessage(entry.message, s);
 			if (ui) result.push(ui);
 		} else if (entry.type === "custom_message" && entry.display !== false) {
 			const m = {
@@ -117,7 +121,8 @@ export function serializeCompactedEntries(entries: SessionEntryLike[]): UiMessag
 				content: entry.content,
 				timestamp: entry.timestamp ? new Date(entry.timestamp).getTime() : 0,
 			} as AgentMessage;
-			const ui = serializeMessage(m, seq++);
+			const s = seqOf ? seqOf(m) : seq++;
+			const ui = serializeMessage(m, s);
 			if (ui) result.push(ui);
 		}
 	}
@@ -162,7 +167,7 @@ export function getCompactedMessages(
 		}
 
 		if (!targetCompaction || targetCompaction.type !== "compaction") {
-			return { messages: [], error: "Compaction entry not found" };
+			return { messages: [], error: "compactedHistoryNotFound" };
 		}
 
 		// 2. 获取该节点的分支祖先链
@@ -180,7 +185,7 @@ export function getCompactedMessages(
 
 		// 3. 提取折叠区间并序列化
 		const foldedEntries = sliceCompactedEntries(targetCompaction, branch);
-		const messages = serializeCompactedEntries(foldedEntries);
+		const messages = serializeCompactedEntries(foldedEntries, seqOf);
 
 		return { messages };
 	} catch (err) {
