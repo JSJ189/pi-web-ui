@@ -767,13 +767,23 @@ export async function getLiveLspDiagnostics(absPath: string, cwd: string): Promi
 	return `⚠️ Post-edit Diagnostics (${errors.length} error${errors.length > 1 ? "s" : ""}):\n${lines.join("\n")}`;
 }
 
+/** 文本大纲与 details.symbols 共用的展平符号数上限（顶层与子级一并计数）。 */
+const DOCUMENT_SYMBOL_OUTLINE_CAP = 300;
+/**
+ * details.symbols 的序列化体积预算（字符数）。details 随会话持久且整体 ≤64KB，
+ * 超限会被整条丢弃（见 serialize.ts 的 TOOL_DETAILS_CAP）；符号名/签名极长的
+ * 极端文件（生成的 .d.ts、protobuf 产物）下 300 个符号也可能撑爆，故按实际
+ * 序列化体积逐步收紧上限（预算留足余量给 count/truncated 等包装字段）。
+ */
+const DOCUMENT_SYMBOL_DETAILS_CHAR_BUDGET = 60_000;
+
 /**
  * 递归格式化 DocumentSymbol 列表为缩进的符号大纲树（做条数上限保护）
  */
 function formatDocumentSymbols(symbols: any[], indent = "", lines: string[] = []): string[] {
 	for (const sym of symbols) {
-		if (lines.length >= 300) {
-			lines.push(`${indent}• ... [Truncated: outline exceeds 300 symbols]`);
+		if (lines.length >= DOCUMENT_SYMBOL_OUTLINE_CAP) {
+			lines.push(`${indent}• ... [Truncated: outline exceeds ${DOCUMENT_SYMBOL_OUTLINE_CAP} symbols]`);
 			break;
 		}
 		const kind = LSP_SYMBOL_KINDS[sym.kind] || `Kind(${sym.kind})`;
@@ -788,6 +798,58 @@ function formatDocumentSymbols(symbols: any[], indent = "", lines: string[] = []
 		}
 	}
 	return lines;
+}
+
+/**
+ * 与 formatDocumentSymbols 同口径的结构化裁剪：按展平后的符号数（先序遍历，
+ * 顶层与子级一并计数）截断到 cap 个。只在展平序列的边界上裁剪，保留符号的
+ * 父子结构保持一致 —— 父被裁掉则整棵子树不再出现；有符号被裁时 truncated 置真。
+ * 未触发截断时原样返回（不拷贝，避免大对象无谓重建）。
+ */
+function capDocumentSymbolTree(symbols: any[], cap: number): { capped: any[]; truncated: boolean } {
+	let count = 0;
+	let truncated = false;
+	const walk = (list: any[]): { kept: any[]; changed: boolean } => {
+		const kept: any[] = [];
+		let changed = false;
+		for (const sym of list) {
+			if (count >= cap) {
+				truncated = true;
+				break;
+			}
+			count += 1;
+			if (Array.isArray(sym.children) && sym.children.length > 0) {
+				const sub = walk(sym.children);
+				if (sub.changed || sub.kept.length !== sym.children.length) {
+					changed = true;
+					kept.push({ ...sym, children: sub.kept });
+					continue;
+				}
+			}
+			kept.push(sym);
+		}
+		return { kept, changed };
+	};
+	const { kept } = walk(symbols);
+	return { capped: truncated ? kept : symbols, truncated };
+}
+
+/**
+ * details.symbols 的最终裁剪：先与文本大纲同口径按展平计数截到 300；再用实际
+ * 序列化体积校验 —— details 随会话持久且整体 ≤64KB，超限整条丢弃（见
+ * serialize.ts 的 TOOL_DETAILS_CAP），符号名/签名极长的极端文件下按半数逐步
+ * 收紧展平上限，保证结构化大纲真的能进快照而不是被整条丢掉。
+ */
+function capDocumentSymbolsForDetails(symbols: any[]): { capped: any[]; truncated: boolean } {
+	let cap = DOCUMENT_SYMBOL_OUTLINE_CAP;
+	let res = capDocumentSymbolTree(symbols, cap);
+	let size = JSON.stringify(res.capped).length;
+	while (size > DOCUMENT_SYMBOL_DETAILS_CHAR_BUDGET && cap > 1) {
+		cap = Math.floor(cap / 2);
+		res = capDocumentSymbolTree(symbols, cap);
+		size = JSON.stringify(res.capped).length;
+	}
+	return res;
 }
 
 /**
@@ -1227,8 +1289,10 @@ Lines are 1-indexed.`,
 					}
 
 					const lines = formatDocumentSymbols(symbols);
-					// details 随会话持久且整体 ≤64KB（超限整条丢弃）：symbols 与文本大纲同口径截断
-					const detailsSymbols = symbols.length > 300 ? symbols.slice(0, 300) : symbols;
+					// details 随会话持久且整体 ≤64KB（超限整条丢弃）：symbols 与文本大纲同口径
+					// 截断 —— 按展平后的符号数（先序遍历，顶层与子级一并计数）截到 300，保留
+					// 符号维持父子结构；再按序列化体积兜底收紧，极端文件下保证 details 进得了快照。
+					const { capped: detailsSymbols, truncated: symbolsTruncated } = capDocumentSymbolsForDetails(symbols);
 					return {
 						content: [
 							{
@@ -1236,7 +1300,7 @@ Lines are 1-indexed.`,
 								text: `Symbols in ${targetPath} (${symbols.length} top-level):\n${lines.join("\n")}`,
 							},
 						],
-						details: { ok: true, count: symbols.length, symbols: detailsSymbols },
+						details: { ok: true, count: symbols.length, symbols: detailsSymbols, truncated: symbolsTruncated },
 					};
 				}
 
@@ -1398,11 +1462,13 @@ Lines are 1-indexed.`,
 
 					// 1. 收集种子位置：给了 line/character 就只查那个符号；否则查全部顶层符号。
 					const seeds: Array<{ line: number; character: number }> = [];
+					let seedTotal = 0; // 顶层符号总数（截断前），超出 MAX_SEEDS 时在输出尾部标明
 					if (typeof params.line === "number") {
 						seeds.push({ line: line - 1, character: character - 1 });
 					} else {
 						const symResult = await client.request("textDocument/documentSymbol", { textDocument: { uri } }, timeoutMs);
 						const topSymbols: any[] = Array.isArray(symResult) ? symResult : [];
+						seedTotal = topSymbols.length;
 						for (const sym of topSymbols.slice(0, MAX_SEEDS)) {
 							const pos = sym.selectionRange?.start ?? sym.range?.start ?? sym.location?.range?.start;
 							if (pos && typeof pos.line === "number") {
@@ -1451,6 +1517,10 @@ Lines are 1-indexed.`,
 						}
 					}
 
+					// 只分析排序后的前 MAX_DEPENDENTS 个引用方，但计数必须如实上报：文本与
+					// details 都带截断前的真实总数，超出部分用尾注标明（对照 references 动作
+					// 的 "... and N more references" 口径），避免模型误以为清单是完整的。
+					const totalReferencing = depPaths.size;
 					const dependents = [...depPaths].sort().slice(0, MAX_DEPENDENTS);
 					if (dependents.length === 0) {
 						return {
@@ -1512,7 +1582,7 @@ Lines are 1-indexed.`,
 
 					const out: string[] = [];
 					out.push(
-						`Impact cascade for ${targetPath}: ${dependents.length} referencing file(s), ${impacted.length} with findings.`,
+						`Impact cascade for ${targetPath}: ${totalReferencing} referencing file(s), ${impacted.length} with findings.`,
 					);
 					for (const item of impacted) {
 						out.push(`• ${item.path} — ${item.errors} error(s), ${item.warnings} warning(s)`);
@@ -1537,6 +1607,14 @@ Lines are 1-indexed.`,
 							`Diagnostics not reported in time (${notReported.length}, server may still be analyzing): ${notReported.slice(0, 5).join(", ")}${notReported.length > 5 ? ", ..." : ""}`,
 						);
 					}
+					// 截断尾注：与 references 动作的 "... and N more references" 同口径，
+					// 让模型知道被丢弃的引用方/种子符号既不在 clean 也不在 notReported 里。
+					if (totalReferencing > dependents.length) {
+						out.push(`... and ${totalReferencing - dependents.length} more not analyzed`);
+					}
+					if (seedTotal > MAX_SEEDS) {
+						out.push(`... and ${seedTotal - MAX_SEEDS} more top-level symbols not analyzed`);
+					}
 
 					return {
 						content: [{ type: "text", text: out.join("\n") }],
@@ -1546,6 +1624,7 @@ Lines are 1-indexed.`,
 							clean,
 							notReported,
 							referencedFiles: dependents.map((p) => relative(cwd, p).replace(/\\/g, "/")),
+							referencedFilesTotal: totalReferencing,
 						},
 					};
 				}
