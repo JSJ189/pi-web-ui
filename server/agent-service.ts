@@ -9232,6 +9232,14 @@ export class ClientSession {
 			);
 			if (promptAc.signal.aborted) {
 				conv.activePromptAc = undefined;
+				// #492：displacement（新对话顶替/会话被移出）在 prompt 前置阶段 abort 时
+				// 原本静默 return——消息凭空消失、草稿已清，用户毫无回执。
+				this.emit({
+					type: "notice",
+					level: "warning",
+					text: `消息未送达：该对话已被关闭或运行已被停止`,
+					textEn: `Message not delivered: the conversation was closed or the run was stopped`,
+				});
 				return;
 			}
 			for (const aside of asides) {
@@ -9254,6 +9262,13 @@ export class ClientSession {
 			}
 			if (promptAc.signal.aborted) {
 				conv.activePromptAc = undefined;
+				// #492：同上——影子快照阶段的 abort 也必须给回执，不能静默黑洞。
+				this.emit({
+					type: "notice",
+					level: "warning",
+					text: `消息未送达：该对话已被关闭或运行已被停止`,
+					textEn: `Message not delivered: the conversation was closed or the run was stopped`,
+				});
 				return;
 			}
 			conv.activePromptAc = undefined;
