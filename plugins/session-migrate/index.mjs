@@ -743,7 +743,21 @@ function importSessions(files, targetCwd) {
 					continue;
 				}
 				out = normalizeOmp(raw);
-				out[0] = JSON.stringify({ ...JSON.parse(out[0]), cwd });
+				// #500：会话头补来源元数据（历史/工具可识别，不可视渲染无影响）。
+				out[0] = JSON.stringify({ ...JSON.parse(out[0]), cwd, importedFrom: "pi-file" });
+				// #500：pi fallback 此前无任何「导入」标记（其它来源都有 pushNotice）
+				// ——模型可控文件可无痕伪装成官方会话进入历史列表。给首条消息注入与
+				// 其它来源一致的提示；选择改写首条消息文本而非插入新消息，避免重构
+				// 原有 parent 链。
+				const noticeIdx = out.findIndex((l, i) => i > 0 && parseJson(l)?.type === "message");
+				if (noticeIdx > 0) {
+					const firstMsg = parseJson(out[noticeIdx]);
+					const textPart = firstMsg?.message?.content?.find?.((c) => c?.type === "text");
+					if (textPart && typeof textPart.text === "string") {
+						textPart.text = `[imported-from:pi-file] ${IMPORT_NOTICE}\n\n${textPart.text}`;
+						out[noticeIdx] = JSON.stringify(firstMsg);
+					}
+				}
 			}
 			const sessionId = JSON.parse(out[0]).id;
 			const destDir = join(PI_DIR, escapeCwd(cwd));
