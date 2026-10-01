@@ -180,6 +180,7 @@ import { makeEditSoftTool } from "./edit-soft-tool.js";
 import { makeReadDirTool, withReadDirSupport, type ReadDirToolOptions } from "./read-tool.js";
 import {
 	installToolOverrides,
+	syncSubagentOverride,
 	type AnyToolDefinition,
 	type OverrideSessionLike,
 	type ToolOverrideSpec,
@@ -3384,6 +3385,9 @@ export class ClientSession {
 
 		const record = { fromRunId, toRunId, timestamp: Date.now() };
 		this.subagentHandoffs.push(record);
+		if (this.subagentHandoffs.length > 50) {
+			this.subagentHandoffs = this.subagentHandoffs.slice(-50);
+		}
 		if (!fromConv?.peerHandoffTo) {
 			if (fromConv) fromConv.peerHandoffTo = [];
 		}
@@ -8153,6 +8157,12 @@ export class ClientSession {
 			}
 		}
 		applyAgentToolsGating(session, [...disabled], targetPreset);
+		const ownerId = conv?.id;
+		syncSubagentOverride(session as unknown as OverrideSessionLike, disabled.has("subagent"), () =>
+			ownerId
+				? makeSubagentTools(withSubagentOwner(this.subagentHost, ownerId), undefined, ownerId)[0]
+				: makeSubagentTools(this.subagentHost)[0],
+		);
 		this.syncPluginTools(session, targetPreset);
 		this.sessionStatsCache = null;
 		this.cachedBaseTokens = null;
@@ -10313,6 +10323,13 @@ export class ClientSession {
 			this.clearAllToolWatchdogs(conv);
 			conv.unsubscribe?.();
 			conv.unsubscribe = undefined;
+			// issue #457: 唤醒角色轮等待者与目标审查等待者，避免会话搬走后原会话循环永久卡死
+			const waiters = this.turnEndWaiters.get(conv.id);
+			if (waiters) {
+				this.turnEndWaiters.delete(conv.id);
+				for (const fn of waiters) fn("gone");
+			}
+			this.goalSvc.notifyTakeover(conv);
 		}
 		const questions: TakeoverQuestion[] = [];
 		for (const [qid, p] of this.pendingQuestions) {

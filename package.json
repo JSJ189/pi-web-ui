@@ -112,6 +112,18 @@
 		"ws": "^8.21.3",
 		"yauzl": "^3.4.0"
 	},
+	"peerDependencies": {
+		"@earendil-works/pi-coding-agent": "*",
+		"typebox": "*"
+	},
+	"peerDependenciesMeta": {
+		"@earendil-works/pi-coding-agent": {
+			"optional": true
+		},
+		"typebox": {
+			"optional": true
+		}
+	},
 	"devDependencies": {
 		"@types/compression": "^1.8.1",
 		"@types/express": "^5.0.6",

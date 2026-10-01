@@ -26,6 +26,7 @@
  * 或前台启动时在 import 服务入口之前先 import 它）。
  */
 import { registerHooks } from "node:module";
+import { dirname } from "node:path";
 import { pathToFileURL } from "node:url";
 import { compareVersions, sdkCopies, type SdkCopy } from "./sdk-origin.js";
 
@@ -42,6 +43,15 @@ const BUNDLED_MODES = new Set(["bundled", "0", "off", "false", "no"]);
 export function pickGlobalSdk(copies: SdkCopy[], mode: string | undefined): SdkCopy | null {
 	if (BUNDLED_MODES.has((mode ?? "global").trim().toLowerCase())) return null;
 	const bundled = copies[0];
+
+	// 显式透传的宿主 SDK 路径（如 extensions/webui.ts 宿主传递，issue #482）：若不降级优先选用
+	if (process.env.PI_WEB_SDK_DIR) {
+		const hostCopy = copies.find((c) => dirname(c.path) === process.env.PI_WEB_SDK_DIR);
+		if (hostCopy && (!bundled || compareVersions(hostCopy.version, bundled.version) >= 0)) {
+			return hostCopy;
+		}
+	}
+
 	// 只考虑祖先链上**严格更新**的副本，多份取版本最高的（旧的/同版本的都不折腾）。
 	let best: SdkCopy | null = null;
 	for (const copy of copies.slice(1)) {

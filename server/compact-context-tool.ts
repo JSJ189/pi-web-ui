@@ -90,8 +90,10 @@ export const CompactContextParams = Type.Object({
 	}),
 	keepRecentTokens: Type.Optional(
 		Type.Number({
+			minimum: MIN_KEEP_RECENT_TOKENS,
+			maximum: MAX_KEEP_RECENT_TOKENS,
 			description:
-				"Recent tokens to keep uncompacted (1000-64000). Smaller values (e.g. 3000-8000) compact more aggressively. Omit = auto-calculated from session size.",
+				"Recent tokens to keep uncompacted (1000-100000). Smaller values (e.g. 3000-8000) compact more aggressively. Omit = auto-calculated from session size.",
 		}),
 	),
 	summary: Type.Optional(

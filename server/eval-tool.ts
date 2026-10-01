@@ -309,8 +309,10 @@ class EvalKernel {
 			}
 			this.proc = spawn(pyCmd, ["-u", "-c", PYTHON_DRIVER_SCRIPT], spawnOpts);
 		} else {
-			// js / ts：独立 node -e 驱动，避免 eval 里的死循环卡住服务端事件循环。
-			this.proc = spawn(process.execPath, ["-e", NODE_DRIVER_SCRIPT], spawnOpts);
+			// js / ts：独立 node -e 驱动，ts 时带 --experimental-strip-types 支持 TypeScript 原生剥离执行。
+			const nodeArgs =
+				this.language === "ts" ? ["--experimental-strip-types", "-e", NODE_DRIVER_SCRIPT] : ["-e", NODE_DRIVER_SCRIPT];
+			this.proc = spawn(process.execPath, nodeArgs, spawnOpts);
 		}
 
 		// stderr 必须持续排空：驱动只把用户的 print/console 劫进 StringIO，但

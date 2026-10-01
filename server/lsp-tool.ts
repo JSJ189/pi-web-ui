@@ -1004,7 +1004,9 @@ Lines are 1-indexed.`,
 			),
 			timeout: Type.Optional(
 				Type.Number({
-					description: "Timeout in seconds (defaults to 15).",
+					minimum: 1,
+					maximum: 120,
+					description: "Timeout in seconds (1-120, defaults to 15).",
 				}),
 			),
 			allowInstall: Type.Optional(
@@ -1057,7 +1059,7 @@ Lines are 1-indexed.`,
 			const absPath = isAbsolute(targetPath) ? targetPath : resolve(cwd, targetPath);
 			const line = typeof params.line === "number" ? Math.max(1, params.line) : 1;
 			const character = typeof params.character === "number" ? Math.max(1, params.character) : 1;
-			const timeoutMs = (params.timeout ?? 15) * 1000;
+			const timeoutMs = Math.max(1000, Math.min(120_000, Math.floor((params.timeout ?? 15) * 1000)));
 
 			const rel = relative(cwd, absPath);
 			if (

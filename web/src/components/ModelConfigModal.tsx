@@ -2,6 +2,7 @@ import { useEffect, useMemo, useRef, useState } from "react";
 import {
 	FiActivity,
 	FiCheck,
+	FiCopy,
 	FiCpu,
 	FiDownload,
 	FiPlus,
@@ -67,6 +68,14 @@ interface ModelConfigModalProps {
 	refreshBuiltinResult?: {
 		reqId: number;
 		ok: boolean;
+		error?: string;
+	} | null;
+	/** Last refresh_provider_models result (saved-provider list refresh). */
+	refreshProviderResult?: {
+		reqId: number;
+		ok: boolean;
+		added?: number;
+		total?: number;
 		error?: string;
 	} | null;
 	/** Last append_builtin_model result (one model appended to a built-in
@@ -446,6 +455,7 @@ export function ModelConfigModal({
 	enrichModelsProgress: _enrichModelsProgress,
 	cloneProviderResult,
 	refreshBuiltinResult,
+	refreshProviderResult,
 	appendBuiltinResult,
 	defaultModel,
 	onClose,
@@ -540,6 +550,41 @@ export function ModelConfigModal({
 	const [_batch, setBatch] = useState<Draft[] | null>(null);
 	const [_batchKey, setBatchKey] = useState("");
 	const [_addKeyDraft, setAddKeyDraft] = useState<Draft | null>(null);
+
+	/** Saved-provider list refresh: in-flight flags per providerId + reqId echo. */
+	const [refreshing, setRefreshing] = useState<Record<string, boolean>>({});
+	const refreshReqId = useRef(0);
+	const handledRefreshReq = useRef(0);
+	/** Clone built-in → custom draft: in-flight flag + reqId echo. */
+	const [cloning, setCloning] = useState<string | null>(null);
+	const cloneReqId = useRef(0);
+	const handledCloneReq = useRef(0);
+
+	/** Re-fetch the SAVED provider's model list server-side (credentials stay
+	 *  on the server) and merge into its models.json entry. */
+	const refreshProvider = (providerId: string) => {
+		if (refreshing[providerId]) return;
+		const reqId = ++refreshReqId.current + Date.now();
+		setRefreshing((m) => ({ ...m, [providerId]: true }));
+		appSend({ type: "refresh_provider_models", providerId, reqId });
+	};
+
+	useEffect(() => {
+		if (!refreshProviderResult || refreshProviderResult.reqId === handledRefreshReq.current) return;
+		handledRefreshReq.current = refreshProviderResult.reqId;
+		setRefreshing({});
+	}, [refreshProviderResult]);
+
+	/** Ask the server to copy a built-in provider (baseUrl + model catalog) into an editable custom draft. */
+	const cloneBuiltin = (p: ProviderStatus) => {
+		if (cloning) return;
+		setCloning(p.id);
+		const reqId = ++cloneReqId.current + Date.now();
+		const ok = appSend({ type: "clone_provider", provider: p.id, reqId });
+		if (!ok) {
+			setCloning(null);
+		}
+	};
 
 	// 打开弹窗时刷新数据
 	useEffect(() => {
@@ -649,7 +694,9 @@ export function ModelConfigModal({
 
 	// 处理克隆结果
 	useEffect(() => {
-		if (!cloneProviderResult) return;
+		if (!cloneProviderResult || cloneProviderResult.reqId === handledCloneReq.current) return;
+		handledCloneReq.current = cloneProviderResult.reqId;
+		setCloning(null);
 		if (cloneProviderResult.ok) {
 			const cs = (cloneProviderResult as { configs?: UiProviderConfig[] }).configs;
 			if (cs && cs.length > 1) {
@@ -1108,17 +1155,28 @@ export function ModelConfigModal({
 									<div className="studio-card-title">
 										<span>{editing.providerId ? `编辑服务商：${editing.providerId}` : "新建自定义服务商"}</span>
 										{editing.providerId && providers.some((p) => p.providerId === editing.providerId) && (
-											<button
-												type="button"
-												className="iconbtn danger sm"
-												title="删除此服务商"
-												onClick={() => {
-													const target = providers.find((p) => p.providerId === editing.providerId);
-													if (target) removeProvider(target);
-												}}
-											>
-												<FiTrash2 />
-											</button>
+											<>
+												<button
+													type="button"
+													className="iconbtn sm"
+													title={t("refreshModels")}
+													disabled={refreshing[editing.providerId]}
+													onClick={() => refreshProvider(editing.providerId)}
+												>
+													<FiRefreshCw className={refreshing[editing.providerId] ? "spin" : ""} />
+												</button>
+												<button
+													type="button"
+													className="iconbtn danger sm"
+													title="删除此服务商"
+													onClick={() => {
+														const target = providers.find((p) => p.providerId === editing.providerId);
+														if (target) removeProvider(target);
+													}}
+												>
+													<FiTrash2 />
+												</button>
+											</>
 										)}
 									</div>
 									<div style={{ display: "flex", alignItems: "center", gap: 8 }}>
@@ -1472,6 +1530,15 @@ export function ModelConfigModal({
 												{p.source && !p.configured && <span className="auth-badge dim">{p.source}</span>}
 											</div>
 											<div style={{ display: "flex", alignItems: "center", gap: 6 }}>
+												<button
+													type="button"
+													className="btn sm"
+													title={t("cloneProvider")}
+													disabled={cloning === p.id}
+													onClick={() => cloneBuiltin(p)}
+												>
+													<FiCopy /> {t("cloneProvider")}
+												</button>
 												<button
 													type="button"
 													className="btn sm"

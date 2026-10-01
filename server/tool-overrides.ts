@@ -95,3 +95,30 @@ export function installToolOverrides(
 	session._refreshToolRegistry();
 	return [...names];
 }
+
+/**
+ * 同步 subagent 工具与第三方扩展的同名工具共存（issue #481）：
+ * 当第三方扩展注册了同名 subagent 时，若用户在设置中关闭/禁用了内置 subagent，
+ * 则自动从 session._customTools 中移除内置 subagent，让扩展的同名工具透传生效；
+ * 重新启用时则重新注入内置 subagent。
+ */
+export function syncSubagentOverride(
+	session: OverrideSessionLike,
+	subagentDisabled: boolean,
+	builtinSubagentTool?: () => AnyToolDefinition,
+): void {
+	if (!Array.isArray(session._customTools) || typeof session._refreshToolRegistry !== "function") return;
+	const hasExtensionTool = Boolean(extensionToolDefinition(session, "subagent"));
+	if (!hasExtensionTool) return;
+
+	const idx = session._customTools.findIndex((t) => t.name === "subagent");
+	if (subagentDisabled) {
+		if (idx !== -1) {
+			session._customTools = session._customTools.filter((t) => t.name !== "subagent");
+			session._refreshToolRegistry();
+		}
+	} else if (idx === -1 && builtinSubagentTool) {
+		session._customTools = [builtinSubagentTool(), ...session._customTools];
+		session._refreshToolRegistry();
+	}
+}

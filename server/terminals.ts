@@ -2128,7 +2128,9 @@ export function makePersistentTerminalTools(
 			}),
 			execute: async (_id, p) => {
 				const lang = getLang();
-				const info = terminals.create(p.terminalId, p.cwd ?? cwd, p.cols ?? 120, p.rows ?? 40, cwd, p.terminalId);
+				const safeCols = Math.max(2, Math.min(500, Math.floor(p.cols ?? 120)));
+				const safeRows = Math.max(2, Math.min(200, Math.floor(p.rows ?? 40)));
+				const info = terminals.create(p.terminalId, p.cwd ?? cwd, safeCols, safeRows, cwd, p.terminalId);
 				const infoJson = JSON.stringify(info);
 				if (!info)
 					throw new Error(
@@ -2264,9 +2266,11 @@ export function makePersistentTerminalTools(
 			}),
 			execute: async (_id, p, signal) => {
 				const lang = getLang();
-				const cursor = p.cursor ?? 0;
-				if (p.waitMs) await terminals.waitForOutput(p.terminalId, cursor, p.waitMs, signal);
-				const read = terminals.read(p.terminalId, cursor, p.maxBytes ?? 20000);
+				const cursor = Math.max(0, Math.floor(p.cursor ?? 0));
+				const waitMs = p.waitMs !== undefined ? Math.max(0, Math.min(120_000, Math.floor(p.waitMs))) : undefined;
+				const maxBytes = Math.max(1, Math.min(100_000, Math.floor(p.maxBytes ?? 20000)));
+				if (waitMs) await terminals.waitForOutput(p.terminalId, cursor, waitMs, signal);
+				const read = terminals.read(p.terminalId, cursor, maxBytes);
 				if (!read)
 					throw new Error(
 						pick(
@@ -2332,7 +2336,8 @@ export function makePersistentTerminalTools(
 					return result(JSON.stringify({ applicable: false, reason: why }), { applicable: false });
 				}
 				const cursor = p.cursor ?? terminals.endCursor(p.terminalId) ?? 0;
-				const wait = await terminals.waitForCompletion(p.terminalId, p.maxWaitMs ?? 300_000, signal, cursor);
+				const maxWait = Math.max(100, Math.min(600_000, Math.floor(p.maxWaitMs ?? 300_000)));
+				const wait = await terminals.waitForCompletion(p.terminalId, maxWait, signal, cursor);
 				const read = terminals.read(p.terminalId, cursor, 20_000);
 				const outputTail = read?.data ? stripAnsi(read.data).slice(-4000) : "";
 				return result(JSON.stringify({ ...wait, outputTail }), {

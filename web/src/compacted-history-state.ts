@@ -32,6 +32,17 @@ const IDLE_STATE: CompactedHistoryState = Object.freeze({
 const cache = new Map<string, CompactedHistoryState>();
 const listeners = new Set<() => void>();
 
+/** 展开历史缓存上限（LRU 淘汰，防无界内存泄漏，issue #465）。 */
+const MAX_COMPACTED_CACHE = 16;
+
+function pruneCache(): void {
+	while (cache.size > MAX_COMPACTED_CACHE) {
+		const oldest = cache.keys().next().value;
+		if (oldest === undefined) break;
+		cache.delete(oldest);
+	}
+}
+
 function notify(): void {
 	for (const l of listeners) l();
 }
@@ -50,6 +61,7 @@ export function fetchCompactedHistory(compactionMessageId: string, conversationI
 		status: "loading",
 		messages: existing?.messages ?? [],
 	});
+	pruneCache();
 	notify();
 
 	appSend({
@@ -76,12 +88,18 @@ export function receiveCompactedMessages(payload: CompactedMessagesPayload): voi
 			messages: payload.messages ?? [],
 		});
 	}
+	pruneCache();
 	notify();
 }
 
 /** 获取某个压缩卡片当前的折叠历史状态（未请求时返回固定的 IDLE_STATE 引用）。 */
 export function getCompactedHistoryState(compactionMessageId: string): CompactedHistoryState {
-	return cache.get(compactionMessageId) ?? IDLE_STATE;
+	const hit = cache.get(compactionMessageId);
+	if (!hit) return IDLE_STATE;
+	// 刷新 LRU 顺序
+	cache.delete(compactionMessageId);
+	cache.set(compactionMessageId, hit);
+	return hit;
 }
 
 /** 订阅变更。返回取消订阅函数。 */

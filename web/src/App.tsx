@@ -2073,6 +2073,7 @@ export function App() {
 					enrichModelsResult={chat.enrichModelsResult}
 					enrichModelsProgress={chat.enrichModelsProgress}
 					refreshBuiltinResult={chat.refreshBuiltinResult}
+					refreshProviderResult={chat.refreshProviderResult}
 					appendBuiltinResult={chat.appendBuiltinResult}
 					cloneProviderResult={chat.cloneProviderResult}
 					defaultModel={chat.defaultModel}

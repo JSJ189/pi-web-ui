@@ -1018,10 +1018,14 @@ export class GoalService {
 							aborted = true;
 						};
 						ac.signal.addEventListener("abort", onAbort, { once: true });
-						const choose = isChoice ? ctx.ui.select(qTitle, params.options!) : ctx.ui.input(qTitle);
-						const ans = (await choose) as string | boolean | undefined;
-						ac.signal.removeEventListener("abort", onAbort);
-						clearIdle();
+						let ans: string | boolean | undefined;
+						try {
+							const choose = isChoice ? ctx.ui.select(qTitle, params.options!) : ctx.ui.input(qTitle);
+							ans = (await choose) as string | boolean | undefined;
+						} finally {
+							ac.signal.removeEventListener("abort", onAbort);
+							clearIdle();
+						}
 						if (aborted || ac.signal.aborted) {
 							return {
 								content: [
@@ -1648,12 +1652,35 @@ export class GoalService {
 		return exec?.convId;
 	}
 
-	private stopDelegated(conv: GoalConversation): void {
+	private async stopDelegated(conv: GoalConversation): Promise<void> {
 		// 排队的启动请求一并作废：setGoal 会在后面按新代次重新排，clearGoal 则不需要。
 		this.delegatedPending.delete(conv.id);
 		conv.awaitingVerdict = undefined;
 		// 审查回合里排队的用户插话在这里也顺带发出（take 语义，与 deliverAndWait 的
 		// flush 互斥 —— 先到先得，清目标/停循环不断用户的话）。
+		void this.flushDeferredPrompts(conv);
+		const settle = this.verdictWaiters.get(conv.id);
+		if (settle) {
+			this.verdictWaiters.delete(conv.id);
+			settle("gone");
+		}
+		const execId = this.detachRoleExec(conv);
+		if (execId) {
+			try {
+				await this.host.stopRoleAgent?.(execId);
+			} catch {}
+			try {
+				// issue #464: 必须等待执行者完全 dismiss 移出会话表，避免立即重设目标时误报容量超限
+				await this.host.dismissRoleAgent?.(execId);
+			} catch {}
+		}
+		conv.goal.phase = "idle";
+	}
+
+	/** 会话过户时清理目标审查态并唤醒等待者（issue #457）。 */
+	notifyTakeover(conv: GoalConversation): void {
+		this.delegatedPending.delete(conv.id);
+		conv.awaitingVerdict = undefined;
 		void this.flushDeferredPrompts(conv);
 		const settle = this.verdictWaiters.get(conv.id);
 		if (settle) {

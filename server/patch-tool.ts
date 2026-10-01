@@ -53,7 +53,9 @@ On divergence the engine attempts a 3-way merge. After success the tool returns 
 			}),
 			timeout: Type.Optional(
 				Type.Number({
-					description: "Optional execution timeout in seconds.",
+					minimum: 1,
+					maximum: 300,
+					description: "Optional execution timeout in seconds (1-300).",
 				}),
 			),
 		}),

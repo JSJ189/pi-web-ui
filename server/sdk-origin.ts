@@ -43,6 +43,34 @@ export function sdkCopies(fromFile: string = import.meta.url): SdkCopy[] {
 		if (parent === dir) break;
 		dir = parent;
 	}
+
+	// 显式透传的宿主 SDK 路径（如 extensions/webui.ts 宿主传递，issue #482）
+	if (process.env.PI_WEB_SDK_DIR) {
+		const pj = join(process.env.PI_WEB_SDK_DIR, "package.json");
+		if (existsSync(pj) && !out.some((c) => c.path === pj)) {
+			try {
+				const version = JSON.parse(readFileSync(pj, "utf8")).version;
+				if (typeof version === "string" && version) {
+					out.push({ path: pj, version });
+				}
+			} catch {}
+		}
+	}
+
+	// 宿主 Pi Node 路径探测（~/.local/share/pi-node/current/...，issue #482）
+	const home = process.env.HOME || process.env.USERPROFILE;
+	if (home) {
+		const hostPj = join(home, ".local", "share", "pi-node", "current", "lib", "node_modules", PKG, "package.json");
+		if (existsSync(hostPj) && !out.some((c) => c.path === hostPj)) {
+			try {
+				const version = JSON.parse(readFileSync(hostPj, "utf8")).version;
+				if (typeof version === "string" && version) {
+					out.push({ path: hostPj, version });
+				}
+			} catch {}
+		}
+	}
+
 	return out;
 }
 

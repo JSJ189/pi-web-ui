@@ -215,14 +215,28 @@ export default function (pi: ExtensionAPI): void {
 			const cwd = opts.cwd ?? ctx.cwd;
 			const url = `http://localhost:${port}`;
 
+			// 探测并向子进程显式透传宿主 Pi SDK 路径（issue #482）
+			let hostSdkDir: string | undefined;
+			try {
+				const resolved = import.meta.resolve?.("@earendil-works/pi-coding-agent");
+				if (resolved) {
+					let p = resolved.startsWith("file:") ? fileURLToPath(resolved) : resolved;
+					if (p.endsWith("index.js") || p.endsWith("index.mjs")) p = dirname(p);
+					if (existsSync(join(p, "package.json"))) hostSdkDir = p;
+				}
+			} catch {}
+
 			const env = {
 				...process.env,
 				PORT: String(port),
 				PI_WEB_PORT: String(port), // server/index.js 读取 PI_WEB_PORT
 				PI_WEB_CWD: cwd,
+				...(hostSdkDir ? { PI_WEB_SDK_DIR: hostSdkDir } : {}),
 				...(process.env.PI_WEB_DATA_DIR ? {} : { PI_WEB_DATA_DIR: join(cwd, ".pi-web") }),
 			};
-			const proc = spawn(NODE, [SERVER_ENTRY], {
+			const hookPath = join(PKG_ROOT, "dist", "server", "resolve-global-sdk.js");
+			const nodeArgs = existsSync(hookPath) ? ["--import", hookPath, SERVER_ENTRY] : [SERVER_ENTRY];
+			const proc = spawn(NODE, nodeArgs, {
 				cwd,
 				env,
 				stdio: "ignore",

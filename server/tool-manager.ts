@@ -382,8 +382,22 @@ export function applyAgentToolsGating(session: ActiveToolSet, disabled: readonly
 		const allNames = session.getAllTools().map((t) => t.name);
 		const names = new Set(allNames);
 		for (const t of AGENT_TOOL_CATALOG) {
-			if (off.has(t.name)) names.delete(t.name);
-			else names.add(t.name);
+			if (off.has(t.name)) {
+				// issue #481: 若第三方扩展注册了同名工具（如 nicobailon/pi-subagents 的 subagent），
+				// 关闭内置工具时允许扩展工具透传，不从活跃名单删除
+				const hasExtensionTool = Boolean(
+					(
+						session as { extensionRunner?: { getAllRegisteredTools?: () => Array<{ definition?: { name?: string } }> } }
+					)?.extensionRunner
+						?.getAllRegisteredTools?.()
+						?.some((tool) => tool.definition?.name === t.name),
+				);
+				if (!hasExtensionTool) {
+					names.delete(t.name);
+				}
+			} else {
+				names.add(t.name);
+			}
 		}
 		for (const core of CORE_BUILTIN_TOOL_NAMES) {
 			if (off.has(core)) names.delete(core);
