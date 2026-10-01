@@ -113,13 +113,26 @@ function zstdDecompressAll(buf: Buffer): string {
 		}
 	}
 	let out = "";
-	for (let i = 0; i < starts.length; i++) {
+	let i = 0;
+	while (i < starts.length) {
 		const from = starts[i];
-		const to = i + 1 < starts.length ? starts[i + 1] : buf.length;
-		try {
-			out += zstdDecompressSync(buf.subarray(from, to)).toString("utf8");
-		} catch {
-			/* skip unreadable frame */
+		let nextIdx = i + 1;
+		let decompressed: Buffer | null = null;
+		// 贪心尝试：若数据体内部误命中魔数导致切帧错误，向后试探合并到下一个魔数直至解压成功（issue #467）
+		while (nextIdx <= starts.length) {
+			const to = nextIdx < starts.length ? starts[nextIdx] : buf.length;
+			try {
+				decompressed = zstdDecompressSync(buf.subarray(from, to));
+				break;
+			} catch {
+				nextIdx++;
+			}
+		}
+		if (decompressed) {
+			out += decompressed.toString("utf8");
+			i = nextIdx;
+		} else {
+			i++;
 		}
 	}
 	return out || buf.toString("utf8");

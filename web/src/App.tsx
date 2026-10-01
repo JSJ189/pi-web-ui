@@ -563,7 +563,16 @@ export function App() {
 				listProjects: () => chatRefForPlugins.current.projects.map((p) => p.path),
 				grantedPaths: readPluginPathGrants,
 				grantPath: addPluginPathGrant,
-				confirm: (opts) => new Promise<boolean>((resolve) => setPluginPathConfirm({ path: opts.path, resolve })),
+				confirm: (opts) =>
+					new Promise<boolean>((resolve) => {
+						if (pluginPathConfirmRef.current) {
+							resolve(false);
+							return;
+						}
+						const req = { path: opts.path, resolve };
+						pluginPathConfirmRef.current = req;
+						setPluginPathConfirm(req);
+					}),
 				// 宿主 API v10 弹窗（modal.dialog 槽位）：条目必须存在且未被隐藏，否则拒绝。
 				openModal: (id) => {
 					const target = String(id ?? "").trim();
@@ -699,6 +708,7 @@ export function App() {
 	const [pluginPathConfirm, setPluginPathConfirm] = useState<{ path: string; resolve: (ok: boolean) => void } | null>(
 		null,
 	);
+	const pluginPathConfirmRef = useRef<typeof pluginPathConfirm>(null);
 	// 插件宿主对话框（host.dialogs.*，API v8）：同一时刻只允许一个，
 	// 已有未决时新请求直接回绝（confirm 回 false，select/input 回 {ok:false,error:"busy"}）。
 	const [pluginDialog, setPluginDialog] = useState<{
@@ -1191,7 +1201,7 @@ export function App() {
 			const bannerId = `question-${c.id}`;
 			// 当前激活的会话不显示后台横幅（它由中央模态对话框处理）
 			if (c.id === activeConvId) {
-				dismissBanner(bannerId);
+				dismissBanner(bannerId, { silent: true });
 				continue;
 			}
 			// 已被用户主动关闭的该次问卷不再重复弹出
@@ -1211,18 +1221,20 @@ export function App() {
 				},
 				onClick: () => {
 					panelSend({ type: "switch_conversation", id: c.id });
-					dismissBanner(bannerId);
-					if (c.questionId) dismissedQuestionIdsRef.current.add(c.questionId);
+					dismissBanner(bannerId, { silent: true });
 				},
 			});
 		}
 
 		// 会话已无问卷或已被移除时，自动收起对应横幅
-		dismissBannersWhere((b) => {
-			const convId = b.data?.conversationId as string | undefined;
-			if (!convId) return false;
-			return !currentQuestionConvIds.has(convId) || convId === activeConvId;
-		});
+		dismissBannersWhere(
+			(b) => {
+				const convId = b.data?.conversationId as string | undefined;
+				if (!convId) return false;
+				return !currentQuestionConvIds.has(convId) || convId === activeConvId;
+			},
+			{ silent: true },
+		);
 	}, [chat.conversations, activeConvId, panelSend, t]);
 
 	// -- pasted / dropped / uploaded images (no workspace path) ---------------
@@ -2295,6 +2307,7 @@ export function App() {
 									className="dialog-dismiss"
 									title={t("cancel")}
 									onClick={() => {
+										pluginPathConfirmRef.current = null;
 										pluginPathConfirm.resolve(false);
 										setPluginPathConfirm(null);
 									}}
@@ -2309,6 +2322,7 @@ export function App() {
 										type="button"
 										className="btn"
 										onClick={() => {
+											pluginPathConfirmRef.current = null;
 											pluginPathConfirm.resolve(false);
 											setPluginPathConfirm(null);
 										}}
@@ -2319,6 +2333,7 @@ export function App() {
 										type="button"
 										className="btn primary"
 										onClick={() => {
+											pluginPathConfirmRef.current = null;
 											pluginPathConfirm.resolve(true);
 											setPluginPathConfirm(null);
 										}}

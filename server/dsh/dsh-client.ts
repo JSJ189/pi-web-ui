@@ -133,6 +133,7 @@ export class DshRuntime {
 	private notificationHandler: ((method: string, params: unknown) => void) | null = null;
 	private stderrTail = "";
 	private closed = false;
+	private disposed = false;
 	private initialized = false;
 
 	/** PI_WEB_DSH_DEBUG=1 时把 RPC 帧/生命周期事件打到 stderr（诊断用，默认关）。 */
@@ -189,6 +190,9 @@ export class DshRuntime {
 
 	/** 启动子进程 + initialize 握手（幂等；并发调用共享同一个启动任务）。 */
 	start(): Promise<void> {
+		if (this.disposed) {
+			return Promise.reject(new DshTransportError(bilingual("client has been disposed", "客户端已销毁")));
+		}
 		if (this.alive && this.initialized) return Promise.resolve();
 		if (!this.startPromise) {
 			this.startPromise = this.doStart().finally(() => {
@@ -355,7 +359,10 @@ export class DshRuntime {
 		if (!proc || !proc.stdin || proc.stdin.destroyed) {
 			throw new DshTransportError(bilingual("runtime not started", "runtime 未启动"));
 		}
-		proc.stdin.write(JSON.stringify(msg) + "\n");
+		const ok = proc.stdin.write(JSON.stringify(msg) + "\n");
+		if (!ok) {
+			this.debug("stdin buffer full, backpressure triggered");
+		}
 	}
 
 	/**
@@ -594,7 +601,8 @@ export class DshRuntime {
 
 	/** 优雅关闭：shutdown 握手 → stdin EOF → SIGTERM → SIGKILL 阶梯。 */
 	async close(): Promise<void> {
-		if (this.closed) return;
+		if (this.disposed) return;
+		this.disposed = true;
 		this.closed = true;
 		const proc = this.proc;
 		if (!proc || proc.exitCode !== null) {
@@ -667,15 +675,40 @@ export class DshRuntime {
 		this.failPending(new DshTransportError(bilingual("runtime killed (interrupt)", "运行时已被终止（中断）")));
 		try {
 			if (process.platform === "win32") {
-				const killer = spawn("taskkill", ["/pid", String(pid), "/T", "/F"], {
-					stdio: "ignore",
-					windowsHide: true,
-				});
-				killer.on("error", () => {
+				await new Promise<void>((resolve) => {
+					let settled = false;
+					const done = () => {
+						if (!settled) {
+							settled = true;
+							clearTimeout(timer);
+							resolve();
+						}
+					};
+					const timer = setTimeout(done, 1500);
 					try {
-						proc.kill("SIGKILL");
+						const killer = spawn("taskkill", ["/pid", String(pid), "/T", "/F"], {
+							stdio: "ignore",
+							windowsHide: true,
+						});
+						killer.on("close", (code) => {
+							if (code !== 0) {
+								try {
+									proc.kill("SIGKILL");
+								} catch {}
+							}
+							done();
+						});
+						killer.on("error", () => {
+							try {
+								proc.kill("SIGKILL");
+							} catch {}
+							done();
+						});
 					} catch {
-						/* already dead */
+						try {
+							proc.kill("SIGKILL");
+						} catch {}
+						done();
 					}
 				});
 			} else {

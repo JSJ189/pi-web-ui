@@ -25,6 +25,7 @@ import {
 	computeNextFire,
 	describeIntervalMs,
 	SCHEDULER_MIN_INTERVAL_MS,
+	SchedulerValidationError,
 	type SchedulerStore,
 	type SchedulerTaskView,
 } from "./scheduler-tasks.js";
@@ -257,6 +258,10 @@ export function makeScheduleTools(
 					oneShot: !recurring,
 				});
 			} catch (err) {
+				const L = getLang();
+				if (err instanceof SchedulerValidationError) {
+					return text(L === "zh" ? err.messageZh : err.messageEn);
+				}
 				return text(String((err as Error)?.message ?? err));
 			}
 			const L = getLang();

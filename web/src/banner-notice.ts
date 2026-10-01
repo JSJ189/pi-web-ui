@@ -96,20 +96,27 @@ export function showBanner(input: BannerInput): string {
 	return id;
 }
 
+export interface DismissBannerOptions {
+	/** 为 true 时静默关闭，不触发 onClose 回调（例如会话切换时由 UI 生命周期收起横幅）。 */
+	silent?: boolean;
+}
+
 /**
  * 关闭并移除指定的横幅通知。
- * 会清除关联的定时器，并触发该横幅的 onClose 回调。
+ * 会清除关联的定时器，并在非 silent 模式下触发该横幅的 onClose 回调。
  */
-export function dismissBanner(id: string): void {
+export function dismissBanner(id: string, opts?: DismissBannerOptions): void {
 	clearTimer(id);
 	const target = banners.find((b) => b.id === id);
 	if (!target) return;
 
 	banners = banners.filter((b) => b.id !== id);
-	try {
-		target.onClose?.();
-	} catch {
-		/* ignore onClose errors */
+	if (!opts?.silent) {
+		try {
+			target.onClose?.();
+		} catch {
+			/* ignore onClose errors */
+		}
 	}
 	notifyListeners();
 }
@@ -117,16 +124,18 @@ export function dismissBanner(id: string): void {
 /**
  * 批量关闭满足条件的横幅通知。
  */
-export function dismissBannersWhere(predicate: (b: BannerNotice) => boolean): void {
+export function dismissBannersWhere(predicate: (b: BannerNotice) => boolean, opts?: DismissBannerOptions): void {
 	const toDismiss = banners.filter(predicate);
 	if (toDismiss.length === 0) return;
 
 	for (const b of toDismiss) {
 		clearTimer(b.id);
-		try {
-			b.onClose?.();
-		} catch {
-			/* ignore onClose errors */
+		if (!opts?.silent) {
+			try {
+				b.onClose?.();
+			} catch {
+				/* ignore onClose errors */
+			}
 		}
 	}
 

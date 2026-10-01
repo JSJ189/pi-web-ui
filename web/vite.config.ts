@@ -2,8 +2,24 @@ import { defineConfig } from "vite";
 import react from "@vitejs/plugin-react";
 import { fileURLToPath } from "node:url";
 import { dirname, join } from "node:path";
+import { existsSync, readFileSync, writeFileSync } from "node:fs";
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
+
+const buildId = process.env.PI_WEB_BUILD_ID ?? new Date().toISOString().replace(/[-:.]/g, "").slice(0, 14);
+
+function swBuildIdPlugin(id: string) {
+	return {
+		name: "sw-build-id",
+		closeBundle() {
+			const swPath = join(__dirname, "dist", "sw.js");
+			if (existsSync(swPath)) {
+				const content = readFileSync(swPath, "utf-8");
+				writeFileSync(swPath, content.replace(/__BUILD_ID__/g, id), "utf-8");
+			}
+		},
+	};
+}
 
 // Dev: Vite serves the web UI on :5173 and proxies the WebSocket + any API
 // traffic to the backend server (which runs separately via `npm run dev:server`).
@@ -11,14 +27,12 @@ const __dirname = dirname(fileURLToPath(import.meta.url));
 // collides with a globally-installed pi-web-ui running on the default :8787.
 export default defineConfig({
 	root: __dirname,
-	plugins: [react()],
+	plugins: [react(), swBuildIdPlugin(buildId)],
 	define: {
 		// Build id baked into the bundle: the server compares it against the
 		// on-disk build on every WS (re)connect and tells stale pages to
 		// reload themselves (server-driven reload after rebuild+restart).
-		__BUILD_ID__: JSON.stringify(
-			process.env.PI_WEB_BUILD_ID ?? new Date().toISOString().replace(/[-:.]/g, "").slice(0, 14),
-		),
+		__BUILD_ID__: JSON.stringify(buildId),
 	},
 	build: {
 		outDir: join(__dirname, "dist"),

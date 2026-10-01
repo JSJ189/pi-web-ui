@@ -4767,9 +4767,9 @@ export class ClientSession {
 						lang: () => this.getLang(),
 					}),
 					// 高可靠行补丁工具（patch，基于内容哈希与语法块级替换）。
-					makePatchTool({ cwd: effectiveCwd, ownerId }),
+					makePatchTool({ cwd: effectiveCwd, ownerId, lang: () => this.getLang() }),
 					// 原生语言服务器工具（lsp，定义跳转/引用/悬停/诊断）。
-					makeLspTool({ cwd: effectiveCwd, ownerId }),
+					makeLspTool({ cwd: effectiveCwd, ownerId, lang: () => this.getLang() }),
 				].map((t) =>
 					// 目标审查闸门在最外层（理由最贴合此刻）；插件工具也在这个数组里，
 					// 创建时注册的同样被闸门覆盖（后续动态补入的走 syncPluginTools，与

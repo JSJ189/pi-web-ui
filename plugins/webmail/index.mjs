@@ -295,9 +295,16 @@ export default {
 		// IMAP 基础设施：互斥串行 + 惰性连接
 		// ------------------------------------------------------------------
 		function serialized(fn) {
+			if (st.dead) return Promise.reject(new Error("插件已停用"));
 			const run = st.chain.then(
-				() => fn(),
-				() => fn(),
+				() => {
+					if (st.dead) throw new Error("插件已停用");
+					return fn();
+				},
+				() => {
+					if (st.dead) throw new Error("插件已停用");
+					return fn();
+				},
 			);
 			st.chain = run.then(
 				() => {},
@@ -320,6 +327,7 @@ export default {
 		}
 
 		async function ensureClient() {
+			if (st.dead) throw new Error("插件已停用");
 			const c = st.config?.imap;
 			if (!st.deps.imapflow) throw new Error("依赖未安装：请在设置面板点「安装依赖」");
 			if (!c?.host || !c?.user) throw new Error("尚未配置 IMAP 账号");
@@ -335,6 +343,12 @@ export default {
 			});
 			client.on("error", (err) => dropClient(err?.message));
 			await client.connect();
+			if (st.dead) {
+				try {
+					client.close();
+				} catch {}
+				throw new Error("插件已停用");
+			}
 			st.client = client;
 			st.status = "已连接";
 			return client;
@@ -834,6 +848,7 @@ export default {
 		});
 
 		return () => {
+			st.dead = true;
 			offMsg();
 			try {
 				offAttach?.();

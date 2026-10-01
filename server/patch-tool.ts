@@ -12,11 +12,10 @@
 import { resolve } from "node:path";
 import { defineTool } from "@earendil-works/pi-coding-agent";
 import { Type } from "typebox";
+import { pick, type ServerLang } from "./i18n.js";
 import {
 	applyHashlinePatch,
-	computeFileHash,
 	formatHashlineHeader,
-	formatNumberedLines,
 	globalSnapshotStore,
 	type PatchApplyReport,
 } from "./hashline-engine.js";
@@ -27,10 +26,12 @@ export const PATCH_TOOL_NAME = "patch";
 export interface PatchToolOptions {
 	cwd: string;
 	ownerId?: string;
+	lang?: () => ServerLang;
 }
 
 export function makePatchTool(options: PatchToolOptions) {
 	const cwd = options.cwd;
+	const getLang = options.lang ?? (() => "en");
 
 	return defineTool({
 		name: PATCH_TOOL_NAME,
@@ -60,6 +61,7 @@ On divergence the engine attempts a 3-way merge. After success the tool returns 
 			),
 		}),
 		async execute(_callId, params: { patch: string; timeout?: number }, _signal, _onUpdate, _ctx) {
+			const L = getLang();
 			const patchText = typeof params?.patch === "string" ? params.patch : "";
 			if (!patchText.trim()) {
 				const emptyReport: PatchApplyReport = {
@@ -69,7 +71,12 @@ On divergence the engine attempts a 3-way merge. After success the tool returns 
 					error: "Empty patch",
 				};
 				return {
-					content: [{ type: "text", text: "Error: No patch content provided." }],
+					content: [
+						{
+							type: "text",
+							text: pick(L, "错误：未提供任何 patch 补丁内容。", "Error: No patch content provided."),
+						},
+					],
 					details: emptyReport,
 				};
 			}
@@ -81,7 +88,12 @@ On divergence the engine attempts a 3-way merge. After success the tool returns 
 
 			if (!report.ok) {
 				return {
-					content: [{ type: "text", text: `Patch Failed:\n${report.summary}` }],
+					content: [
+						{
+							type: "text",
+							text: pick(L, `补丁应用失败：\n${report.summary}`, `Patch Failed:\n${report.summary}`),
+						},
+					],
 					details: report,
 				};
 			}
@@ -91,12 +103,24 @@ On divergence the engine attempts a 3-way merge. After success the tool returns 
 			for (const r of report.results) {
 				if (r.op !== "deleted" && r.newHash) {
 					const targetPath = r.newPath || r.filePath;
-					textOutput.push(`\nNext edit anchor for ${targetPath}: \`${formatHashlineHeader(targetPath, r.newHash)}\``);
+					textOutput.push(
+						pick(
+							L,
+							`\n${targetPath} 的下一处编辑锚点：\`${formatHashlineHeader(targetPath, r.newHash)}\``,
+							`\nNext edit anchor for ${targetPath}: \`${formatHashlineHeader(targetPath, r.newHash)}\``,
+						),
+					);
 					try {
 						const fullPath = resolve(cwd, targetPath);
 						const diags = await getLiveLspDiagnostics(fullPath, cwd);
 						if (diags) {
-							textOutput.push(`\nLive LSP diagnostics for ${targetPath}:\n${diags}`);
+							textOutput.push(
+								pick(
+									L,
+									`\n${targetPath} 的实时 LSP 诊断：\n${diags}`,
+									`\nLive LSP diagnostics for ${targetPath}:\n${diags}`,
+								),
+							);
 						}
 					} catch {}
 				}

@@ -5,6 +5,7 @@ import { useT, useI18n } from "../i18n";
 import { getPluginSearchProvider, listPluginSearchProviders, triggerPluginUiAction } from "../plugin-host";
 import { appSend, useAppField } from "../app-globals";
 import { composeToComposer } from "../composer-bridge";
+import { nextSearchReqId } from "../search-req-id";
 
 interface GlobalSearchModalProps {
 	/** 常驻挂载：open=false 时隐藏但仍保留查询词与结果，下次打开直接恢复 */
@@ -72,12 +73,18 @@ export function GlobalSearchModal({
 	const [query, setQuery] = useState("");
 	const deferredQuery = useDeferredValue(query);
 	const [active, setActive] = useState(0);
-	// Local reqId counter for search_files requests; only accept results
-	// carrying the latest one (stale responses from earlier keystrokes drop).
-	const reqIdRef = useRef(1);
 	const lastReqRef = useRef(0);
 	// Debounce timer so typing doesn't fire a workspace walk per keystroke.
 	const debounceRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+
+	// 缓存属于本次查询的文件搜索结果，避免其他组件（如 ChatInput @补全）
+	// 的并发或后续 fileSearch 把当前展示结果冲掉（issue #496）。
+	const [activeFileSearch, setActiveFileSearch] = useState<{
+		reqId: number;
+		ok: boolean;
+		results: FileSearchResult[];
+		truncated?: boolean;
+	} | null>(null);
 
 	// 每次打开面板时发起探测（不是 App 挂载时）：预热会话/项目列表，并用
 	// 当前查询重新跑文件/会话搜索 —— 面板关闭期间 cwd 或转录可能已变化，
@@ -88,7 +95,7 @@ export function GlobalSearchModal({
 		appSend({ type: "list_projects" });
 		const qq = query.trim();
 		if (qq) {
-			const reqId = ++reqIdRef.current;
+			const reqId = nextSearchReqId();
 			lastReqRef.current = reqId;
 			setSearchPending(true);
 			appSend({ type: "search_files", reqId, query: qq });
@@ -109,10 +116,11 @@ export function GlobalSearchModal({
 		const q = deferredQuery.trim();
 		if (!q) {
 			setSearchPending(false);
+			setActiveFileSearch(null);
 			return;
 		}
 		debounceRef.current = setTimeout(() => {
-			const reqId = ++reqIdRef.current;
+			const reqId = nextSearchReqId();
 			lastReqRef.current = reqId;
 			setSearchPending(true);
 			appSend({ type: "search_files", reqId, query: q });
@@ -124,6 +132,13 @@ export function GlobalSearchModal({
 		// eslint-disable-next-line react-hooks/exhaustive-deps -- send is stable
 	}, [deferredQuery]);
 
+	// 当服务端推送的 fileSearch 携带的是本组件最新发出的 reqId 时才认领
+	useEffect(() => {
+		if (fileSearch && fileSearch.reqId === lastReqRef.current) {
+			setActiveFileSearch(fileSearch);
+		}
+	}, [fileSearch]);
+
 	const q = deferredQuery.trim().toLowerCase();
 
 	const sessionHits = useMemo(() => {
@@ -133,24 +148,24 @@ export function GlobalSearchModal({
 	}, [sessionSearch, q]);
 	const projectHits = useMemo(() => (q ? projects.filter((p) => matches(p.path, q)).slice(0, 10) : []), [projects, q]);
 	const fileHits = useMemo(() => {
-		if (!q || !fileSearch || fileSearch.reqId !== lastReqRef.current || !fileSearch.ok) return [];
-		return fileSearch.results;
-	}, [fileSearch, q]);
+		if (!q || !activeFileSearch || !activeFileSearch.ok) return [];
+		return activeFileSearch.results;
+	}, [activeFileSearch, q]);
 
 	// Clear the "searching" hint once BOTH latest responses (files + sessions)
 	// have landed — either one still pending keeps the hint on.
 	useEffect(() => {
 		if (
-			fileSearch &&
-			fileSearch.reqId === lastReqRef.current &&
+			activeFileSearch &&
+			activeFileSearch.reqId === lastReqRef.current &&
 			sessionSearch &&
 			sessionSearch.reqId === lastReqRef.current &&
 			lastReqRef.current !== 0
 		) {
 			setSearchPending(false);
 		}
-	}, [fileSearch, sessionSearch]);
-	const fileTruncated = !!fileSearch && fileSearch.ok && fileSearch.truncated;
+	}, [activeFileSearch, sessionSearch]);
+	const fileTruncated = !!activeFileSearch && activeFileSearch.ok && activeFileSearch.truncated;
 
 	/** ④ 插件命中（一行 = 一个 provider 的一条 search 结果）。 */
 	interface PluginHit {
@@ -287,7 +302,7 @@ export function GlobalSearchModal({
 				appSend({ type: "list_projects" });
 				const qq = deferredQuery.trim();
 				if (qq) {
-					const reqId = ++reqIdRef.current;
+					const reqId = nextSearchReqId();
 					lastReqRef.current = reqId;
 					setSearchPending(true);
 					appSend({ type: "search_files", reqId, query: qq });

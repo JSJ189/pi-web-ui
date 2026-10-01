@@ -615,8 +615,15 @@ export function makeEvalTool(opts: { cwd: string; ownerId?: string; lang?: () =>
 				};
 			} catch (err) {
 				const durationMs = Date.now() - startTime;
-				const errMsg = (err as Error).message;
-				const text = `[eval:${language} error (${durationMs}ms)]\n${errMsg}`;
+				let errMsg = (err as Error).message;
+				if (errMsg.includes("Python executable not found in PATH")) {
+					errMsg = pick(
+						lang,
+						"未在系统 PATH 中找到 Python 可执行程序，请安装 Python 或使用 language: 'js'。",
+						"Python executable not found in PATH. Please install Python or use language: 'js'.",
+					);
+				}
+				const text = `${pick(lang, `[eval:${language} 出错 (${durationMs}ms)]`, `[eval:${language} error (${durationMs}ms)]`)}\n${errMsg}`;
 				return {
 					content: [{ type: "text", text }],
 					details: {

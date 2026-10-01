@@ -22,7 +22,8 @@
  * risk serving stale theme/plugin code or caching anything sensitive.
  */
 
-const STATIC_CACHE = "pi-web-ui-static-v1";
+const BUILD_ID = "__BUILD_ID__";
+const STATIC_CACHE = BUILD_ID.startsWith("__") ? "pi-web-ui-static-dev" : `pi-web-ui-static-${BUILD_ID}`;
 const SHELL_CACHE = "pi-web-ui-shell-v1";
 
 // App root within this origin — "/" for root deployments, "/pi/" behind an

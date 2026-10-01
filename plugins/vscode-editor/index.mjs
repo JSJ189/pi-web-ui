@@ -1408,6 +1408,11 @@ export default {
 					.on("close", () => dropSshConn(c, "连接已关闭"));
 				c.client.connect(opts);
 			} catch (err) {
+				sshConns.delete(connId);
+				try {
+					c.client?.end();
+				} catch {}
+				broadcastSshState();
 				host.sendTo(clientId, { res: true, reqId, ok: false, action: "connect", error: err?.message ?? String(err) });
 			}
 		}
@@ -1490,6 +1495,21 @@ export default {
 					.on("close", () => dropSshConn(c, "连接已关闭"));
 				c.client.connect(opts);
 			} catch (err) {
+				sshConns.delete(connId);
+				for (const j of c.jumps) {
+					try {
+						j.end();
+					} catch {}
+				}
+				for (const p of c.procs) {
+					try {
+						p.kill();
+					} catch {}
+				}
+				try {
+					c.client?.end();
+				} catch {}
+				broadcastSshState();
 				host.sendTo(clientId, { res: true, reqId, ok: false, action, error: err?.message ?? String(err) });
 			}
 		}

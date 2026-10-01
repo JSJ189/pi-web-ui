@@ -948,6 +948,10 @@ class DshGoalJsonRpcServer extends HarnessSdkJsonRpcServer {
 		}
 		const bytes = new Uint8Array(Buffer.from(params.data, "base64"));
 		if (bytes.length === 0) throw new TypeError("attachment/save: empty image data");
+		const MAX_ATTACHMENT_BYTES = 20 * 1024 * 1024; // 20MB 上限
+		if (bytes.length > MAX_ATTACHMENT_BYTES) {
+			throw new RangeError(`attachment/save: image data exceeds 20MB limit (${bytes.length} bytes)`);
+		}
 		const ref = await this.ctx.attachments.saveImage({
 			data: bytes,
 			mediaType,

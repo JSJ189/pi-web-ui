@@ -1943,19 +1943,40 @@ function parsePluginSource(rawSpec) {
 	return { owner, repo, ref, subpath, cloneUrl: `https://github.com/${owner}/${repo}.git` };
 }
 
+/** 清理临时目录下残留超过 1 小时的 pi-web-ui-plugin-* 安装目录。 */
+function cleanStalePluginTmpDirs() {
+	try {
+		const base = tmpdir();
+		const entries = readdirSync(base);
+		const now = Date.now();
+		for (const name of entries) {
+			if (name.startsWith("pi-web-ui-plugin-")) {
+				try {
+					const p = join(base, name);
+					const st = statSync(p);
+					if (now - st.mtimeMs > 3600_000) {
+						rmSync(p, { recursive: true, force: true });
+					}
+				} catch {}
+			}
+		}
+	} catch {}
+}
+
 /** 把仓库拉到 tmpDir 并返回检出根目录。优先 git clone --depth 1，失败回退 codeload tarball + 系统 tar。 */
 async function acquireRepo(src, tmpDir) {
 	const dst = join(tmpDir, "src");
 	const hasGit = spawnSync("git", ["--version"], { stdio: "ignore", timeout: 10_000 }).status === 0;
 	if (hasGit) {
-		const args = ["clone", "--depth", "1", "--single-branch"];
+		const gitTimeout = Number(process.env.PI_WEB_GIT_TIMEOUT_MS) || 45_000;
+		const args = ["-c", "connect.timeout=15", "clone", "--depth", "1", "--single-branch"];
 		if (src.ref) args.push("--branch", src.ref);
 		args.push(src.cloneUrl, dst);
 		console.log(`· git clone --depth 1 ${src.cloneUrl}${src.ref ? ` (${src.ref})` : ""}`);
 		const res = spawnSync("git", args, {
 			stdio: "inherit",
 			env: { ...process.env, GIT_TERMINAL_PROMPT: "0", GCM_INTERACTIVE: "never" },
-			timeout: 300_000,
+			timeout: gitTimeout,
 		});
 		if (res.status === 0 && existsSync(dst)) return dst;
 		console.log(
@@ -1969,26 +1990,28 @@ async function acquireRepo(src, tmpDir) {
 	// 注意：这里不用 fail()/process.exit —— async 上下文里还有未关闭的 socket 时
 	// 直接退出会触发 Windows libuv "UV_HANDLE_CLOSING" 断言崩溃；改为 throw，
 	// 由 pluginInstallCmd 捕获后设 exitCode 让事件循环自然排空。
-	let res;
+	let buf;
 	try {
-		res = await fetch(url, { redirect: "follow", signal: AbortSignal.timeout(120_000) });
+		const res = await fetch(url, { redirect: "follow", signal: AbortSignal.timeout(120_000) });
+		if (!res.ok) {
+			throw new Error(
+				(ZH ? `HTTP 状态码 ${res.status}` : `HTTP status ${res.status}`) +
+					(res.status === 404
+						? ZH
+							? "\n  仓库/分支不存在，或为私有仓库（私有仓库请先在本机配置好 git 凭据再重试，会优先走 git clone）。"
+							: "\n  Repository/branch does not exist, or is private (for private repos, configure git credentials locally first and retry; git clone will be tried first)."
+						: ""),
+			);
+		}
+		buf = Buffer.from(await res.arrayBuffer());
 	} catch (err) {
 		throw new Error(
 			ZH
-				? `下载失败：${err?.message ?? err}\n  请检查网络/代理后重试。`
-				: `Download failed: ${err?.message ?? err}\n  Check your network/proxy and retry.`,
+				? `下载失败 (${url})：${err?.message ?? err}\n  请检查网络/代理后重试（可配置 HTTP_PROXY / HTTPS_PROXY 环境变量，或为 git/npm 配置代理）。`
+				: `Download failed (${url}): ${err?.message ?? err}\n  Check your network/proxy and retry (consider configuring HTTP_PROXY/HTTPS_PROXY or git/npm proxy).`,
 		);
 	}
-	if (!res.ok)
-		throw new Error(
-			(ZH ? `下载失败 HTTP ${res.status}：${url}` : `Download failed HTTP ${res.status}: ${url}`) +
-				(res.status === 404
-					? ZH
-						? "\n  仓库/分支不存在，或为私有仓库（私有仓库请先在本机配置好 git 凭据再重试，会优先走 git clone）。"
-						: "\n  Repository/branch does not exist, or is private (for private repos, configure git credentials locally first and retry; git clone will be tried first)."
-					: ""),
-		);
-	writeFileSync(join(tmpDir, "src.tar.gz"), Buffer.from(await res.arrayBuffer()));
+	writeFileSync(join(tmpDir, "src.tar.gz"), buf);
 	const extractTo = join(tmpDir, "tar");
 	mkdirSync(extractTo, { recursive: true });
 	// 相对路径解压：win32 的 GNU tar 会把 "C:\..." 里的 C: 当远程主机（Cannot connect to C:）
@@ -2209,6 +2232,7 @@ async function confirmSourceBuild(plan) {
  * 失败抛 Error（目录模式逐条 try/catch 继续下一条，单源模式由调用方转 fail）。
  */
 async function installOnePlugin({ rawSpec, name, force, build, noBuild, dataDir, isCatalog = false }) {
+	cleanStalePluginTmpDirs();
 	const pluginsDir = join(dataDir, "plugins");
 	const localCandidate = resolve(rawSpec.replace(/^file:\/\//, ""));
 	const isLocal = existsSync(localCandidate);
@@ -2360,7 +2384,11 @@ async function installOnePlugin({ rawSpec, name, force, build, noBuild, dataDir,
 		}
 		return { id, target, manifest, buildMode: decision.mode };
 	} finally {
-		rmSync(tmp, { recursive: true, force: true });
+		try {
+			rmSync(tmp, { recursive: true, force: true });
+		} catch {
+			/* Windows 等平台杀毒/进程占用可能抛 EBUSY，不应翻转已成功的安装 */
+		}
 	}
 }
 

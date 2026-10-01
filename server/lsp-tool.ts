@@ -20,6 +20,7 @@ import { delimiter, extname, isAbsolute, join, relative, resolve, sep } from "no
 import { pathToFileURL, fileURLToPath } from "node:url";
 import { defineTool } from "@earendil-works/pi-coding-agent";
 import { Type } from "typebox";
+import { pick, type ServerLang } from "./i18n.js";
 
 export const LSP_TOOL_NAME = "lsp";
 
@@ -941,10 +942,12 @@ function findDefaultSourceFileForLsp(cwd: string): string | null {
 export interface LspToolOptions {
 	cwd: string;
 	ownerId?: string;
+	lang?: () => ServerLang;
 }
 
 export function makeLspTool(options: LspToolOptions) {
 	const cwd = options.cwd;
+	const getLang = options.lang ?? (() => "en");
 
 	return defineTool({
 		name: LSP_TOOL_NAME,
@@ -1032,6 +1035,7 @@ Lines are 1-indexed.`,
 			_onUpdate,
 			_ctx,
 		) {
+			const L = getLang();
 			const action = params.action;
 			let targetPath = params.path;
 			if (!targetPath && action === "workspaceSymbol") {
@@ -1041,7 +1045,11 @@ Lines are 1-indexed.`,
 						content: [
 							{
 								type: "text",
-								text: `Error: Could not automatically detect a primary project source file to route language server. Please provide 'path' (pointing to any source file in the project, e.g. path='src/index.ts') to select the language server.`,
+								text: pick(
+									L,
+									"错误：无法自动检测项目主要源码文件以路由语言服务器。请提供 'path' 参数（指向项目中任意源码文件，例如 path='src/index.ts'）。",
+									"Error: Could not automatically detect a primary project source file to route language server. Please provide 'path' (pointing to any source file in the project, e.g. path='src/index.ts') to select the language server.",
+								),
 							},
 						],
 						details: { ok: false, error: "Missing path: cannot route language server" },
@@ -1051,7 +1059,16 @@ Lines are 1-indexed.`,
 
 			if (!targetPath) {
 				return {
-					content: [{ type: "text", text: `Error: 'path' parameter is required for action '${action}'.` }],
+					content: [
+						{
+							type: "text",
+							text: pick(
+								L,
+								`错误：执行操作 '${action}' 时必须提供 'path' 参数。`,
+								`Error: 'path' parameter is required for action '${action}'.`,
+							),
+						},
+					],
 					details: { ok: false, error: "Missing path parameter" },
 				};
 			}
@@ -1070,14 +1087,28 @@ Lines are 1-indexed.`,
 				isAbsolute(rel)
 			) {
 				return {
-					content: [{ type: "text", text: `Error: Path traversal denied: ${targetPath} is outside workspace.` }],
+					content: [
+						{
+							type: "text",
+							text: pick(
+								L,
+								`错误：路径穿越已被拒绝：${targetPath} 超出了工作区范围。`,
+								`Error: Path traversal denied: ${targetPath} is outside workspace.`,
+							),
+						},
+					],
 					details: { ok: false, error: "Path traversal denied" },
 				};
 			}
 
 			if (!existsSync(absPath)) {
 				return {
-					content: [{ type: "text", text: `Error: File not found: ${targetPath}` }],
+					content: [
+						{
+							type: "text",
+							text: pick(L, `错误：文件不存在：${targetPath}`, `Error: File not found: ${targetPath}`),
+						},
+					],
 					details: { ok: false, error: "File not found" },
 				};
 			}
@@ -1087,7 +1118,11 @@ Lines are 1-indexed.`,
 					content: [
 						{
 							type: "text",
-							text: `Error: 'symbol' parameter is required for 'read_symbol' action (e.g. symbol="parseConfig" or "ClassName.methodName").`,
+							text: pick(
+								L,
+								`错误：执行 'read_symbol' 操作必须提供 'symbol' 参数（例如 symbol="parseConfig" 或 "ClassName.methodName"）。`,
+								`Error: 'symbol' parameter is required for 'read_symbol' action (e.g. symbol="parseConfig" or "ClassName.methodName").`,
+							),
 						},
 					],
 					details: { ok: false, error: "Missing symbol parameter" },
@@ -1099,7 +1134,11 @@ Lines are 1-indexed.`,
 					content: [
 						{
 							type: "text",
-							text: `Error: 'query' parameter cannot be empty for 'workspaceSymbol' action. Please provide a search term (e.g. query='User' or 'Router').`,
+							text: pick(
+								L,
+								`错误：执行 'workspaceSymbol' 操作时 'query' 参数不能为空。请提供搜索词（例如 query='User' 或 'Router'）。`,
+								`Error: 'query' parameter cannot be empty for 'workspaceSymbol' action. Please provide a search term (e.g. query='User' or 'Router').`,
+							),
 						},
 					],
 					details: { ok: false, error: "Empty query parameter" },

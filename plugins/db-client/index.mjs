@@ -1302,9 +1302,12 @@ export default {
 			if (!readyPromise) {
 				readyPromise = (async () => {
 					await loadConfig();
+					if (st.dead) return;
 					const ok = await loadDeps();
+					if (st.dead) return;
 					broadcastAll();
 					await refreshAiTools();
+					if (st.dead) return;
 					if (!ok) installDeps(true);
 				})();
 			}
@@ -1908,11 +1911,21 @@ export default {
 		}
 
 		async function refreshAiTools() {
+			if (st.dead) return;
 			st.toolUnregister?.();
 			st.toolUnregister = null;
+			if (st.dead) return;
 			// 不卡 depsOk：sqlite 零依赖可用，缺驱动的连接在调用时报友好错误
 			if (host.registerAgentTool) {
 				const offs = aiTools().map((t) => host.registerAgentTool(t));
+				if (st.dead) {
+					offs.forEach((off) => {
+						try {
+							off();
+						} catch {}
+					});
+					return;
+				}
 				st.toolUnregister = () =>
 					offs.forEach((off) => {
 						try {

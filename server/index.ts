@@ -72,7 +72,7 @@ import type { ServerLang } from "./i18n.js";
 import { McpBridge } from "./mcp-bridge.js";
 import { createMcpHotReload } from "./mcp-hot-reload.js";
 import { createHostMetricsSampler } from "./host-metrics.js";
-import { SchedulerStore } from "./scheduler-tasks.js";
+import { SchedulerStore, SchedulerValidationError } from "./scheduler-tasks.js";
 import { initHttpProxy } from "./http-proxy.js";
 import { globalLspPool } from "./lsp-tool.js";
 import { buildPiWebTokenCookie, decodeCookieToken, isTlsRequest } from "./auth-cookie.js";
@@ -1004,6 +1004,14 @@ httpServer.on("upgrade", (req, socket, head) => {
 // closing sockets, sleep/wake, network partitions). Also broadcasts lightweight
 // server host metrics (CPU and memory usage) sampled every ~2s.
 const HEARTBEAT_INTERVAL_MS = 2_000;
+/** 全局广播与心跳推送背压阈值（256KB）：socket 积压时丢弃广播消息，防用户态无界堆积（issue #460）。 */
+const BROADCAST_BACKPRESSURE_MAX_BYTES = 262_144;
+
+interface TrackedWebSocket extends WebSocket {
+	isAlive?: boolean;
+	missedPings?: number;
+}
+
 const sampleHostMetrics = createHostMetricsSampler();
 
 const heartbeatTimer = setInterval(() => {
@@ -1017,8 +1025,36 @@ const heartbeatTimer = setInterval(() => {
 	if (wss.clients.size > 0) {
 		const payload = JSON.stringify(message);
 		for (const ws of wss.clients) {
-			if (ws.readyState === WebSocket.OPEN) {
-				ws.send(payload);
+			if (ws.readyState !== WebSocket.OPEN) continue;
+			const tracked = ws as TrackedWebSocket;
+
+			// 半开连接死连接回收（issue #460）：连续无活动/无 pong 则 terminate
+			if (tracked.isAlive === false) {
+				tracked.missedPings = (tracked.missedPings || 0) + 1;
+				if (tracked.missedPings >= 3) {
+					try {
+						ws.terminate?.();
+					} catch {}
+					continue;
+				}
+			} else {
+				tracked.missedPings = 0;
+			}
+			tracked.isAlive = false;
+			try {
+				ws.ping();
+			} catch {
+				try {
+					ws.terminate?.();
+				} catch {}
+				continue;
+			}
+
+			// 广播背压：缓冲积压严重时跳过心跳推送
+			if (ws.bufferedAmount <= BROADCAST_BACKPRESSURE_MAX_BYTES) {
+				try {
+					ws.send(payload);
+				} catch {}
 			}
 		}
 	}
@@ -1729,6 +1765,7 @@ function pushSchedulerTasks(): void {
 		const payload = JSON.stringify({ type: "scheduler_tasks", tasks: scheduler.list() });
 		for (const client of wss.clients) {
 			if (client.readyState !== WebSocket.OPEN) continue;
+			if (client.bufferedAmount > BROADCAST_BACKPRESSURE_MAX_BYTES) continue;
 			try {
 				client.send(payload);
 			} catch {
@@ -1745,6 +1782,7 @@ function pushNoticeToAll(level: "info" | "warning" | "error", text: string, text
 	const payload = JSON.stringify({ type: "notice", level, text, textEn });
 	for (const client of wss.clients) {
 		if (client.readyState !== WebSocket.OPEN) continue;
+		if (client.bufferedAmount > BROADCAST_BACKPRESSURE_MAX_BYTES) continue;
 		try {
 			client.send(payload);
 		} catch {
@@ -2007,6 +2045,14 @@ function serializeShared(msg: ServerMessage): string {
 }
 
 wss.on("connection", (ws) => {
+	const tracked = ws as TrackedWebSocket;
+	tracked.isAlive = true;
+	tracked.missedPings = 0;
+	ws.on("pong", () => {
+		tracked.isAlive = true;
+		tracked.missedPings = 0;
+	});
+
 	// Count attached sockets (the control socket reports REAL sockets, not
 	// cached client-session objects).
 	service.noteSocketOpen();
@@ -3052,11 +3098,12 @@ wss.on("connection", (ws) => {
 				try {
 					scheduler.upsert(msg.task);
 				} catch (err) {
+					const isVal = err instanceof SchedulerValidationError;
 					send({
 						type: "notice",
 						level: "error",
-						text: `保存定时任务失败：${(err as Error).message}`,
-						textEn: `Failed to save scheduled task: ${(err as Error).message}`,
+						text: `保存定时任务失败：${isVal ? err.messageZh : (err as Error).message}`,
+						textEn: `Failed to save scheduled task: ${isVal ? err.messageEn : (err as Error).message}`,
 					});
 				}
 				break;
@@ -3121,6 +3168,8 @@ wss.on("connection", (ws) => {
 	});
 
 	ws.on("message", (data) => {
+		tracked.isAlive = true;
+		tracked.missedPings = 0;
 		let msg: ClientMessage;
 		try {
 			msg = JSON.parse(data.toString()) as ClientMessage;

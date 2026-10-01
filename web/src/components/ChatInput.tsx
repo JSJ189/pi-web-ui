@@ -29,6 +29,7 @@ import { getLastBrowserControlPages, pokeBrowserControl } from "../browser-contr
 import { getPluginComposerProvider, listPluginComposerProviders } from "../plugin-host";
 import { detectTouchFirstDevice } from "../touch-device";
 import { groupByAlign } from "../ui-slots";
+import { nextSearchReqId } from "../search-req-id";
 
 import { ModelThinking } from "./ModelThinking";
 import { DshPresetBar, type DshPresetInfo } from "./DshPresetBar";
@@ -231,8 +232,6 @@ export const ChatInput = memo(function ChatInput({
 	const [menuIndex, setMenuIndex] = useState(0);
 	/** `@` 异步查询的竞态 guard：迟到响应直接丢弃。 */
 	const atReqRef = useRef(0);
-	/** 内置文件查询的 reqId（search_files 回填匹配用，与 GlobalSearchModal 各自计数）。 */
-	const fileReqRef = useRef(0);
 	/** 等 search_files 回填的 waiter（reqId → resolve；超时/命中即删）。 */
 	const fileWaiters = useRef(new Map<number, (v: unknown) => void>());
 	/** 最近一次 refreshMenus 的输入（迟到响应与快照不一致即丢弃）。 */
@@ -695,7 +694,7 @@ export const ChatInput = memo(function ChatInput({
 	/** 内置文件查询：发 search_files，命中回填时 resolve（超时 3s 回空）。 */
 	const searchBuiltinFiles = (query: string): Promise<unknown> => {
 		if (typeof onSearchFiles !== "function") return Promise.resolve([]);
-		const reqId = ++fileReqRef.current;
+		const reqId = nextSearchReqId();
 		return new Promise((resolve) => {
 			fileWaiters.current.set(reqId, resolve);
 			try {
@@ -1307,11 +1306,8 @@ export const ChatInput = memo(function ChatInput({
 	};
 
 	// 有东西可发才允许提交（空文本 + 无附件时 submit() 直接 return）：
-	// 空闲态的发送按钮和运行中的对半胶囊共用这一个条件。
-	const canSubmit =
-		connected &&
-		(text.trim() !== "" ||
-			attachments.some((a) => a.imageData || a.fileData || a.mode === "conversation" || a.mode === "quote"));
+	// 空闲态的发送按钮和运行中的对半胶囊共用这一个条件。与 submit() 口径保持一致。
+	const canSubmit = connected && (text.trim() !== "" || attachments.length > 0);
 
 	// 插件输入框动作按 align 分组（未接线回落用；接线后统一走下面的 composerGroups）。
 	const pluginActions = useMemo(

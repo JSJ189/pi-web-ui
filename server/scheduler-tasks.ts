@@ -114,40 +114,102 @@ function randomTaskId(): string {
 	return `task-${s}`;
 }
 
-/** 归一化 + 校验用户输入；非法抛 Error（中文信息，直接面向 UI）。纯函数，可单测。 */
+export class SchedulerValidationError extends Error {
+	constructor(
+		public readonly code: string,
+		public readonly messageZh: string,
+		public readonly messageEn: string,
+	) {
+		super(messageZh);
+		this.name = "SchedulerValidationError";
+	}
+}
+
+/** 归一化 + 校验用户输入；非法抛 SchedulerValidationError。纯函数，可单测。 */
 export function normalizeSchedulerInput(input: SchedulerTaskInput, now = Date.now()): SchedulerTask {
 	const idRaw = String(input.id ?? "").trim();
 	const id = idRaw || randomTaskId();
-	if (!SCHEDULER_ID_RE.test(id)) throw new Error("任务 id 非法（只收字母/数字/下划线/连字符，≤64 字）");
+	if (!SCHEDULER_ID_RE.test(id)) {
+		throw new SchedulerValidationError(
+			"invalid_id",
+			"任务 id 非法（只收字母/数字/下划线/连字符，≤64 字）",
+			"Invalid task id (letters/numbers/underscores/hyphens only, <= 64 chars)",
+		);
+	}
 	const name = String(input.name ?? "")
 		.trim()
 		.slice(0, 80);
-	if (!name) throw new Error("任务名称不能为空");
+	if (!name) {
+		throw new SchedulerValidationError("empty_name", "任务名称不能为空", "Task name cannot be empty");
+	}
 	const description = String(input.description ?? "")
 		.trim()
 		.slice(0, 500);
 	const cwd = String(input.cwd ?? "").trim();
-	if (!cwd) throw new Error("执行目标项目（cwd）不能为空");
+	if (!cwd) {
+		throw new SchedulerValidationError(
+			"empty_cwd",
+			"执行目标项目（cwd）不能为空",
+			"Target project directory (cwd) cannot be empty",
+		);
+	}
 	const kind: SchedulerKind = input.kind === "interval" ? "interval" : "cron";
 	let spec: string;
 	if (kind === "cron") {
 		spec = String(input.spec ?? "")
 			.trim()
 			.replace(/\s+/g, " ");
-		if (!parseCronSpec(spec)) throw new Error("cron 表达式非法（要 5 字段：分 时 日 月 周，如 0 9 * * *）");
+		if (!parseCronSpec(spec)) {
+			throw new SchedulerValidationError(
+				"invalid_cron",
+				"cron 表达式非法（要 5 字段：分 时 日 月 周，如 0 9 * * *）",
+				"Invalid cron expression (requires 5 fields: min hour day month weekday, e.g. 0 9 * * *)",
+			);
+		}
 	} else {
 		const ms = Math.floor(Number(input.spec));
-		if (!Number.isFinite(ms) || ms <= 0) throw new Error("间隔毫秒数非法");
-		if (ms < SCHEDULER_MIN_INTERVAL_MS)
-			throw new Error(`间隔太短（最短 ${SCHEDULER_MIN_INTERVAL_MS / 1000}s，防 token 烧穿）`);
-		if (ms > SCHEDULER_MAX_INTERVAL_MS) throw new Error("间隔太长（最长 30 天）");
+		if (!Number.isFinite(ms) || ms <= 0) {
+			throw new SchedulerValidationError("invalid_interval", "间隔毫秒数非法", "Invalid interval milliseconds");
+		}
+		if (ms < SCHEDULER_MIN_INTERVAL_MS) {
+			throw new SchedulerValidationError(
+				"interval_too_short",
+				`间隔太短（最短 ${SCHEDULER_MIN_INTERVAL_MS / 1000}s，防 token 烧穿）`,
+				`Interval too short (minimum ${SCHEDULER_MIN_INTERVAL_MS / 1000}s)`,
+			);
+		}
+		if (ms > SCHEDULER_MAX_INTERVAL_MS) {
+			throw new SchedulerValidationError(
+				"interval_too_long",
+				"间隔太长（最长 30 天）",
+				"Interval too long (maximum 30 days)",
+			);
+		}
 		spec = String(ms);
 	}
 	const prompt = String(input.prompt ?? "").trim();
-	if (!prompt) throw new Error("触发指令（prompt）不能为空");
-	if (prompt.length > 8000) throw new Error("触发指令超长（>8000 字），请裁剪后重试");
+	if (!prompt) {
+		throw new SchedulerValidationError(
+			"empty_prompt",
+			"触发指令（prompt）不能为空",
+			"Trigger instruction (prompt) cannot be empty",
+		);
+	}
+	if (prompt.length > 8000) {
+		throw new SchedulerValidationError(
+			"prompt_too_long",
+			"触发指令超长（>8000 字），请裁剪后重试",
+			"Trigger instruction too long (>8000 characters), please shorten and retry",
+		);
+	}
 	const model = String(input.model ?? "").trim();
-	if (model && !model.includes("/")) throw new Error("模型格式非法（应为 provider/id）");
+	if (model && !model.includes("/")) {
+		throw new SchedulerValidationError(
+			"invalid_model",
+			"模型格式非法（应为 provider/id）",
+			"Invalid model format (expected provider/id)",
+		);
+	}
 	const thinkingLevel = String(input.thinkingLevel ?? "").trim();
 	const catchUp: SchedulerCatchUp = input.catchUp === "once" ? "once" : "skip";
 	const conversationId = String(input.conversationId ?? "")
