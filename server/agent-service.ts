@@ -2041,14 +2041,14 @@ function conversationTitle(session: AgentSession): string {
 	return DEFAULT_CONV_TITLE;
 }
 
-/** 全局搜索的会话匹配：大小写不敏感，命中任一项即算 ——
- *  显示名、当前项目内的文件名片段、首条消息，以及完整转录文本
- *  （SDK 的 allMessagesText 包含每一段 user 与 assistant 消息，AI 输出也在内）。 */
-function sessionMatchesSearch(q: string, s: SessionInfo): boolean {
+/** 全局搜索的会话元信息匹配：大小写不敏感，命中任一项即算 ——
+ *  显示名、当前项目内的文件名片段、首条消息。
+ *  转录全文匹配不在这里：全文单条可达 MB 级，不再随列表缓存常驻（issue #440），
+ *  由 filterSessionsForSearch 按需加载后判定（口径不变：user 与 assistant 消息文本）。 */
+function sessionMatchesMetadata(q: string, s: SessionInfo): boolean {
 	if (s.name && s.name.toLowerCase().includes(q)) return true;
 	if (basename(s.path).toLowerCase().includes(q)) return true;
 	if (s.firstMessage.toLowerCase().includes(q)) return true;
-	if (s.allMessagesText.toLowerCase().includes(q)) return true;
 	return false;
 }
 
@@ -2070,6 +2070,13 @@ function messageSearchText(m: { content?: unknown }): string {
 /** 转录全文扫描/整读的大小上限（16MB，与 readHistorySession 一致）：
  *  超限文件同步 readFileSync 会卡事件循环数百毫秒起，搜索不值得。 */
 const MAX_TRANSCRIPT_SCAN_BYTES = 16 * 1024 * 1024;
+
+/** 转录全文进入内存/缓存的字符上限（256K 字符）：全文只服务搜索的命中判定
+ *  （issue #440 拆分后按需加载），封顶保证单条 worst case 内存可控（缓存 256 条
+ *  × 256K 字符 ≈ 64MB 上界，且只在搜索活动期间存在）。
+ *  影响面：超长转录在截断点之后的内容不参与「是否命中」判定；命中后的消息级
+ *  定位（collectSessionAnchors）仍扫全文件，不受此上限影响。 */
+const MAX_SEARCH_TEXT_CHARS = 256 * 1024;
 
 /** 扫描一个会话转录文件，收集文本命中查询的消息锚点（role + timestamp，
  *  按转录顺序，最多 cap 个）。仅 user/assistant 消息参与，与搜索范围一致。
@@ -2288,10 +2295,18 @@ async function discoverRecentProjectsFromDisk(sessionRoots: string[], limit = 30
 }
 
 /**
- * 快速解析单个会话文件（提取 id/cwd/name/parentSessionPath/firstMessage/messageCount/modified/allMessagesText）。
- * 仅用于会话列表发现与搜索，避免调用 SDK 重型的全量树解析。
+ * 快速解析单个会话文件（提取 id/cwd/name/parentSessionPath/firstMessage/messageCount/modified，
+ * 以及可选的转录全文 allMessagesText）。仅用于会话列表发现与搜索，避免调用 SDK 重型的全量树解析。
+ *
+ * withAllMessagesText=false（默认，列表路径）时不收集转录全文，allMessagesText 返回空串 ——
+ * 全文单条可达 MB 级，绝不随列表进任何缓存（issue #440）；true（搜索路径）时收集全文并在
+ * MAX_SEARCH_TEXT_CHARS 处截断。
  */
-async function parseSessionInfoFast(filePath: string, fileMtime: number): Promise<SessionInfo | null> {
+async function parseSessionInfoFast(
+	filePath: string,
+	fileMtime: number,
+	withAllMessagesText = false,
+): Promise<SessionInfo | null> {
 	try {
 		const content = await fsPromises.readFile(filePath, "utf8");
 		const lines = content.split("\n");
@@ -2303,7 +2318,7 @@ async function parseSessionInfoFast(filePath: string, fileMtime: number): Promis
 		let messageCount = 0;
 		let lastActivityTime = 0;
 		let headerTime = 0;
-		const allMessages: string[] = [];
+		const allMessages: string[] | null = withAllMessagesText ? [] : null;
 
 		for (const line of lines) {
 			if (!line.trim()) continue;
@@ -2339,7 +2354,7 @@ async function parseSessionInfoFast(filePath: string, fileMtime: number): Promis
 					}
 					if (text) {
 						if (!firstMessage && msg.role === "user") firstMessage = text;
-						allMessages.push(text);
+						allMessages?.push(text);
 					}
 				}
 			}
@@ -2347,6 +2362,11 @@ async function parseSessionInfoFast(filePath: string, fileMtime: number): Promis
 
 		if (!id) return null;
 		const modified = lastActivityTime > 0 ? lastActivityTime : headerTime > 0 ? headerTime : fileMtime;
+		let allMessagesText = "";
+		if (allMessages) {
+			const joined = allMessages.join(" ");
+			allMessagesText = joined.length > MAX_SEARCH_TEXT_CHARS ? joined.slice(0, MAX_SEARCH_TEXT_CHARS) : joined;
+		}
 		return {
 			path: filePath,
 			id,
@@ -2357,7 +2377,7 @@ async function parseSessionInfoFast(filePath: string, fileMtime: number): Promis
 			modified: new Date(modified),
 			messageCount,
 			firstMessage: firstMessage || "(no messages)",
-			allMessagesText: allMessages.join(" "),
+			allMessagesText,
 		};
 	} catch {
 		return null;
@@ -5203,7 +5223,7 @@ export class ClientSession {
 	}
 
 	/** 插件扩展点 v2（供 conversationSearcher）：运行中对话标题 + 历史会话全文匹配，返回前 N 个 {id,title}。
-	 *  复用 searchSessions 的 sessionMatchesSearch 判定（含转录全文），只读不 emit。 */
+	 *  复用 searchSessions 的匹配口径（元信息 + 按需加载的转录全文），只读不 emit。 */
 	async searchForPlugins(query: string, limit = 20): Promise<{ id: string; title: string }[]> {
 		const q = query.trim().toLowerCase();
 		if (!q) return [];
@@ -5214,8 +5234,8 @@ export class ClientSession {
 		}
 		try {
 			const infos = await this.loadSessionInfos();
-			for (const s of infos) {
-				if (!sessionMatchesSearch(q, s)) continue;
+			const matched = await ClientSession.filterSessionsForSearch(q, infos);
+			for (const s of matched) {
 				out.push({
 					id: s.path,
 					title: (s.name?.trim() || s.firstMessage.trim() || basename(s.path)).slice(0, 60),
@@ -10473,8 +10493,120 @@ export class ClientSession {
 	private static readonly PROJECTS_CACHE_TTL = 60_000;
 	private static projectsInFlight: Promise<ProjectSummary[] | null> | null = null;
 
-	/** 会话单文件 stat 缓存（path -> { mtime, size, info }）：避免对未修改的会话文件重复读取与 JSON 解析。 */
+	/**
+	 * 会话单文件元信息缓存（path -> { mtime, size, info }）：避免对未修改的会话文件
+	 * 重复读取与 JSON 解析。LRU 上限（issue #440）：静态 Map 跨项目共享，原先没有任何
+	 * 上限/TTL —— 删除、更名、被挤出 200 名额的文件只要曾进过缓存就永久驻留，长驻
+	 * 服务 + 多项目重度使用下 RSS 单调上涨。
+	 *
+	 * 上限 512 的依据：单项目单轮扫描只取最新 200 个候选，512 ≈ 2.5 倍余量，足够容纳
+	 * 多个最近活跃项目的热集；且拆分后（issue #440）条目只含元信息不含转录全文
+	 * （单条 KB 级），总占用恒定且极小 —— 上限防的是「无界累积」，不是单条重量。
+	 *
+	 * LRU 淘汰语义：把 Map 当 LRU 用（Map 迭代序 = 插入序）—— 命中即 delete+set 重插
+	 * 到最新端，写入超上限从最旧端淘汰。mtime/size 未变的条目命中即复用（行为与原先
+	 * 一致），变化的条目由调用方重新解析后经 store 覆盖（也落到最新端）。
+	 */
 	private static sessionFileCache = new Map<string, { mtime: number; size: number; info: SessionInfo }>();
+	private static readonly SESSION_FILE_CACHE_MAX = 512;
+
+	/**
+	 * 转录全文缓存（path -> { text, at }）：仅供 searchSessions / searchForPlugins 的
+	 * 全文命中判定按需加载（issue #440 拆分）。与列表缓存分离的原因：列表路径
+	 * （pushSessions / 插件列表 / 删除后切换）只需要元信息，而全文单条可达 MB 级，
+	 * 随列表常驻会让每个曾进过列表的文件都占住内存。
+	 *
+	 * 容量依据：256 ≥ 单项目候选上限 200，键入查询的其余按键在 TTL 窗口内全程免读盘；
+	 * 单条在 parseSessionInfoFast 里按 MAX_SEARCH_TEXT_CHARS（256K 字符）封顶。
+	 * TTL 只在访问时判断（无定时器），每次载入顺手清扫过期项 —— 搜索空闲后不长期
+	 * 占内存。删除/更名经 invalidateSessionInfos 同步清理。
+	 */
+	private static sessionTextCache = new Map<string, { text: string; at: number }>();
+	private static readonly SESSION_TEXT_CACHE_MAX = 256;
+	private static readonly SESSION_TEXT_CACHE_TTL = 30_000;
+
+	/** sessionFileCache LRU 读取：命中即重插到最新端（续期），未命中返回 undefined。 */
+	private static sessionFileCacheLookup(key: string): { mtime: number; size: number; info: SessionInfo } | undefined {
+		const entry = ClientSession.sessionFileCache.get(key);
+		if (!entry) return undefined;
+		ClientSession.sessionFileCache.delete(key);
+		ClientSession.sessionFileCache.set(key, entry);
+		return entry;
+	}
+
+	/** sessionFileCache LRU 写入：新/更新条目放最新端，超上限从最旧端淘汰。 */
+	private static sessionFileCacheStore(key: string, entry: { mtime: number; size: number; info: SessionInfo }): void {
+		ClientSession.sessionFileCache.delete(key);
+		ClientSession.sessionFileCache.set(key, entry);
+		while (ClientSession.sessionFileCache.size > ClientSession.SESSION_FILE_CACHE_MAX) {
+			const oldest = ClientSession.sessionFileCache.keys().next();
+			if (oldest.done) break;
+			ClientSession.sessionFileCache.delete(oldest.value);
+		}
+	}
+
+	/** sessionTextCache 读取：TTL 内命中即重插续期；过期即清并按未命中处理。 */
+	private static sessionTextCacheLookup(key: string, now: number): string | undefined {
+		const entry = ClientSession.sessionTextCache.get(key);
+		if (!entry) return undefined;
+		ClientSession.sessionTextCache.delete(key);
+		if (now - entry.at >= ClientSession.SESSION_TEXT_CACHE_TTL) return undefined;
+		ClientSession.sessionTextCache.set(key, entry);
+		return entry.text;
+	}
+
+	/** sessionTextCache 写入：放最新端，超上限从最旧端淘汰。 */
+	private static sessionTextCacheStore(key: string, text: string, at: number): void {
+		ClientSession.sessionTextCache.delete(key);
+		ClientSession.sessionTextCache.set(key, { text, at });
+		while (ClientSession.sessionTextCache.size > ClientSession.SESSION_TEXT_CACHE_MAX) {
+			const oldest = ClientSession.sessionTextCache.keys().next();
+			if (oldest.done) break;
+			ClientSession.sessionTextCache.delete(oldest.value);
+		}
+	}
+
+	/** 惰性清扫 sessionTextCache 过期项：TTL 只在访问时判断，没有定时器兜底，
+	 *  靠每次全文载入顺手扫一遍，保证搜索空闲后全文不会无限期滞留内存。 */
+	private static sessionTextCacheSweep(now: number): void {
+		for (const [key, entry] of ClientSession.sessionTextCache) {
+			if (now - entry.at >= ClientSession.SESSION_TEXT_CACHE_TTL) ClientSession.sessionTextCache.delete(key);
+		}
+	}
+
+	/**
+	 * 转录全文按需加载（搜索专用）：TTL 缓存命中直接回；未命中读盘提取全文
+	 * （与 parseSessionInfoFast 同口径：user/assistant 消息文本，MAX_SEARCH_TEXT_CHARS
+	 * 截断）。解析失败回空串且不缓存 —— 与列表路径一样下次重试。
+	 */
+	private static async loadSessionSearchText(filePath: string): Promise<string> {
+		const now = Date.now();
+		ClientSession.sessionTextCacheSweep(now);
+		const hit = ClientSession.sessionTextCacheLookup(filePath, now);
+		if (hit !== undefined) return hit;
+		const info = await parseSessionInfoFast(filePath, 0, true);
+		const text = info?.allMessagesText ?? "";
+		if (text) ClientSession.sessionTextCacheStore(filePath, text, now);
+		return text;
+	}
+
+	/**
+	 * searchSessions / searchForPlugins 共用的全文匹配：先比元信息（零 IO，覆盖绝大多数
+	 * 按标题/文件名/首条消息的查询），元信息未命中的会话再按需加载转录全文判定
+	 * （小容量短 TTL 缓存，见 sessionTextCache）。保序返回命中子集。
+	 * issue #440：全文不再随列表缓存常驻，改在这里按需加载。
+	 */
+	private static async filterSessionsForSearch(q: string, infos: SessionInfo[]): Promise<SessionInfo[]> {
+		const flags = await Promise.all(
+			infos.map(async (s) => {
+				if (sessionMatchesMetadata(q, s)) return true;
+				const text = await ClientSession.loadSessionSearchText(s.path);
+				return text.toLowerCase().includes(q);
+			}),
+		);
+		return infos.filter((_, i) => flags[i]);
+	}
+
 	/** 会话列表缓存（按 cwdKey 隔离，30s TTL）。 */
 	private static sessionInfosCache = new Map<string, { infos: SessionInfo[]; at: number }>();
 	private static sessionInfosInFlight = new Map<string, Promise<SessionInfo[]>>();
@@ -10520,13 +10652,14 @@ export class ClientSession {
 
 				const results = await Promise.all(
 					validStats.map(async (file) => {
-						const cached = ClientSession.sessionFileCache.get(file.path);
+						const cached = ClientSession.sessionFileCacheLookup(file.path);
 						if (cached && cached.mtime === file.mtime && cached.size === file.size) {
 							return cached.info;
 						}
+						// 列表路径不收集转录全文（issue #440）——全文只在搜索时按需加载
 						const info = await parseSessionInfoFast(file.path, file.mtime);
 						if (info) {
-							ClientSession.sessionFileCache.set(file.path, {
+							ClientSession.sessionFileCacheStore(file.path, {
 								mtime: file.mtime,
 								size: file.size,
 								info,
@@ -10554,8 +10687,10 @@ export class ClientSession {
 			} catch {
 				try {
 					const fallback = await SessionManager.list(this.cwd, piSessionsRoot());
-					ClientSession.sessionInfosCache.set(cwdKey, { infos: fallback, at: Date.now() });
-					return fallback;
+					// 统一口径：列表缓存一律不带转录全文（issue #440），搜索按需另行加载
+					const stripped = fallback.map((s) => ({ ...s, allMessagesText: "" }));
+					ClientSession.sessionInfosCache.set(cwdKey, { infos: stripped, at: Date.now() });
+					return stripped;
 				} catch {
 					return [];
 				}
@@ -10575,7 +10710,10 @@ export class ClientSession {
 	private invalidateSessionInfos(filePath?: string): void {
 		ClientSession.sessionInfosCache.clear();
 		if (filePath) {
-			ClientSession.sessionFileCache.delete(resolve(filePath));
+			const abs = resolve(filePath);
+			ClientSession.sessionFileCache.delete(abs);
+			// 全文缓存一并清（issue #440）：文件已删/更名，正文不该再被搜索命中
+			ClientSession.sessionTextCache.delete(abs);
 		}
 	}
 
@@ -12050,8 +12188,9 @@ export class ClientSession {
 
 	/** 全局搜索：在当前工作区的会话转录全文里做大小写不敏感匹配 ——
 	 *  不止首条消息，而是每一段 user 与 assistant 文本（AI 输出也在内）。
-	 *  结果经 session_search_results 回推（reqId 匹配）；复用 loadSessionInfos()
-	 *  缓存，避免每个按键都重新解析全部转录文件。 */
+	 *  结果经 session_search_results 回推（reqId 匹配）；元信息复用 loadSessionInfos()
+	 *  缓存，转录全文按需加载（issue #440，小容量短 TTL 缓存），避免每个按键都重新
+	 *  解析全部转录文件、也不让全文长期驻留内存。 */
 	async searchSessions(query: string, reqId: number): Promise<void> {
 		const q = query.trim().toLowerCase();
 		if (!q) {
@@ -12060,8 +12199,8 @@ export class ClientSession {
 		}
 		try {
 			const infos = await this.loadSessionInfos();
-			const results = infos
-				.filter((s) => sessionMatchesSearch(q, s))
+			const matched = await ClientSession.filterSessionsForSearch(q, infos);
+			const results = matched
 				.sort((a, b) => b.modified.getTime() - a.modified.getTime())
 				.slice(0, 50)
 				.map((s) => {
