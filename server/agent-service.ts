@@ -9491,7 +9491,22 @@ export class ClientSession {
 			this.flushSnapshot();
 			return;
 		}
-		const { steering, followUp } = s.clearQueue();
+		let steering: string[];
+		let followUp: string[];
+		try {
+			({ steering, followUp } = s.clearQueue());
+		} catch (err) {
+			// #491：runtime 被 forceReset 置换等半死状态下 clearQueue 可能抛错——
+			// 回退到本地显示镜像移除，等 queue_update 对账；绝不把 reject 的 Promise
+			// 扔回给 dispatch（无兜底 handler 时 unhandledRejection 直接崩进程）。
+			console.error("[agent-service] clearQueue failed while removing a queued message:", err);
+			const next = removeQueuedByIndexOrText(local, text, index);
+			if (next.length !== local.length) {
+				local.splice(0, local.length, ...next);
+			}
+			this.flushSnapshot();
+			return;
+		}
 		// 气泡 ✕ 对应的是「第几个气泡」（index），不是「哪段文本」：同一文本排队两次时
 		// 按文本只会删掉第一条，点第二个气泡却删掉第一个。用 index 定位，位置对不上
 		// （队列在点击与执行之间变化）或旧客户端没发 index 时回落到第一处文本匹配。
