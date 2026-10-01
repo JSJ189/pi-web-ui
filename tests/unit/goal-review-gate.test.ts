@@ -17,6 +17,8 @@ describe("目标审查闸门 goalReviewDenial", () => {
 			expect(d!.reason).toContain("只回 verdict JSON");
 			expect(d!.reasonEn).toContain("verdict JSON");
 		}
+		// 回归 #436：eval 沙箱可写真实文件系统，审查回合只许只读核实。
+		expect(goalReviewDenial("eval", {})?.kind).toBe("write-tool");
 	});
 
 	it("只读工具放行（read/grep/scm/present/todo/conversation_read/subagent_get_result）", () => {
@@ -66,20 +68,35 @@ describe("目标审查闸门 goalReviewDenial", () => {
 	it("派发类工具一律拒（D6：轮次由服务端控制）", () => {
 		expect(goalReviewDenial("subagent", { action: "spawn" })?.kind).toBe("dispatch-tool");
 		expect(goalReviewDenial("subagent", { action: "wait_all" })?.kind).toBe("dispatch-tool");
-		for (const name of [
+		// schedule_task 是真实注册的排程工具（#436 前名单里只有 schedule 等幽灵名）。
+		for (const name of ["delegate_task", "schedule_task"]) {
+			const d = goalReviewDenial(name, {});
+			expect(d?.kind, name).toBe("dispatch-tool");
+		}
+	});
+
+	// 回归 #436：名单以 server/tool-manager.ts 实际注册的工具名为事实源，
+	// 幽灵名（旧 subagent_* 拆分工具 / 协议消息名）清掉；subagent 本体由
+	// 按 action 的判定负责（见上）。
+	it("幽灵名不再误报", () => {
+		for (const ghost of [
+			"spawn",
+			"spawn_agent",
 			"subagent_spawn",
+			"spawn_subagent",
 			"subagent_steer",
 			"subagent_stop",
 			"subagent_wait_all",
 			"subagent_handoff",
-			"delegate_task",
 			"schedule",
+			"schedule_agent",
+			"host_schedule",
+			"create_goal",
 			"set_goal",
 			"start_goal_wizard",
 			"set_plan_mode",
 		]) {
-			const d = goalReviewDenial(name, {});
-			expect(d?.kind, name).toBe("dispatch-tool");
+			expect(goalReviewDenial(ghost, {}), ghost).toBeUndefined();
 		}
 	});
 

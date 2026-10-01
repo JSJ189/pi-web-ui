@@ -47,6 +47,9 @@ const BLOCKED_TOOLS = new Set([
 	"rename",
 	// 版本控制写（git add/commit/checkout/reset…；git 的只读子命令走 bash 白名单）
 	"git",
+	// 代码求值（eval 沙箱的 execute 直接 kernel.execute，可写真实文件系统；
+	// 默认关但用户可开，开了就是一条写路径 —— #436）
+	"eval",
 	// 形态变换（会重写整个文件树）
 	"format",
 	"prettier",
@@ -55,26 +58,46 @@ const BLOCKED_TOOLS = new Set([
 ]);
 
 /**
- * 计划模式下也禁掉的「旁路工具」：它们能在**别的会话**里干活，而闸门是
- * 会话级的 —— 子代理/排程对话的 planMode 是 false，等于绕过只读约束。
- * 调研靠本对话的 read/grep/只读 bash 足够，需要并行调研时先退出计划模式。
+ * 常驻终端的「写向」工具（server/terminals.ts）：直接往 PTY stdin 写字符/按键。
+ * 必须整体剥离而不只是补检查：terminal_input 只在自带换行时才过 checkSafety，
+ * terminal_key 的 Enter 连检查都没有 —— 「input(无换行) + key(Enter)」两步即可
+ * 绕过 bash 只读白名单执行任意命令（#436）。且 PTY 的行编辑缓冲在 shell 进程内，
+ * 服务端拿不到可靠的「待提交行」（退格/Ctrl+U/补全都无法镜像），按缓冲检查既会
+ * 误放也会误拦 —— 所以计划模式下干脆不给这两件工具：调研用 bash（走白名单），
+ * 观察已有终端用 terminal_read/terminal_list/terminal_wait（只读）。
  */
-const BYPASS_TOOLS = new Set([
-	"spawn",
-	"spawn_agent",
-	"subagent_spawn",
-	"delegate_task",
-	"schedule_agent",
-	"host_schedule",
-	"create_goal",
-	"set_goal",
-	"start_goal_wizard",
-	"create_conversation",
-	"fork_conversation",
-]);
+const TERMINAL_WRITE_TOOLS = new Set(["terminal_input", "terminal_key"]);
+
+/**
+ * 三个只读闸门（计划 / 审查者 / 目标审查）共用的「派发类」工具名：它们会把活
+ * 派到**别的会话**执行（delegate_task 走子代理 spawn 通道；schedule_task 到期
+ * 唤醒对话跑 prompt），而这三道闸门都是会话级的 —— 放行即绕过。
+ *
+ * 名单以 server/tool-manager.ts 实际注册的工具名为事实源（#436）：历史名单里的
+ * spawn / spawn_agent / subagent_spawn / schedule_agent / host_schedule /
+ * create_goal / set_goal / start_goal_wizard / create_conversation /
+ * fork_conversation / schedule / set_plan_mode 等都是协议消息名或从未注册的
+ * 幽灵名，一个真实工具都没拦住，反而掩盖了 schedule_task 这类真实旁路工具
+ * 完全可用的事实。subagent 是单 action 工具，由各闸门按 action 细分（只读
+ * action 放行，见各闸门的判定函数）。
+ */
+export const SESSION_DISPATCH_TOOLS = new Set<string>(["delegate_task", "schedule_task"]);
+
+/**
+ * 计划模式下也禁掉的「旁路工具」（真实派发类，见 SESSION_DISPATCH_TOOLS）：
+ * 它们能在**别的会话**里干活，而闸门是会话级的 —— 子代理/排程对话的
+ * planMode 是 false，等于绕过只读约束。调研靠本对话的 read/grep/只读 bash
+ * 足够，需要并行调研时先退出计划模式。
+ */
+const BYPASS_TOOLS = SESSION_DISPATCH_TOOLS;
 
 /** 计划模式下从模型视野中彻底隐藏的写类工具与旁路工具全集。 */
-export const PLAN_MODE_BLOCKED_TOOL_NAMES = new Set<string>([...BLOCKED_TOOLS, ...BYPASS_TOOLS, "subagent"]);
+export const PLAN_MODE_BLOCKED_TOOL_NAMES = new Set<string>([
+	...BLOCKED_TOOLS,
+	...BYPASS_TOOLS,
+	...TERMINAL_WRITE_TOOLS,
+	"subagent",
+]);
 
 /** bash 类工具名（terminalBash 开关分流后可能是这几个）。 */
 const BASH_TOOLS = new Set(["bash", "bash_execute", "run_command", "shell", "terminal", "terminal_exec"]);
@@ -285,6 +308,7 @@ export interface PlanModeDenial {
  * 计划模式闸门（纯函数）：命中即拒绝，并把可操作的替代路径告诉模型。
  * - 写类工具 → 拒（提示：把要做的事写进计划，用户确认后另起一轮实施）
  * - bash 非常规命令 → 拒（提示：用 read/grep/只读 git，或给出计划）
+ * - 终端写向工具（terminal_input/terminal_key）→ 拒（会绕过只读命令白名单）
  * - 旁路工具（spawn/delegate/目标模式/排程）→ 拒（会绕过本会话只读约束）
  */
 export function planModeDenial(toolName: string, params: unknown): PlanModeDenial | undefined {
@@ -294,13 +318,25 @@ export function planModeDenial(toolName: string, params: unknown): PlanModeDenia
 		const action =
 			typeof params === "object" && params !== null ? (params as Record<string, unknown>).action : undefined;
 		const act = typeof action === "string" ? action.trim().toLowerCase() : "";
-		if (!act || act === "spawn") {
+		// 与 goal-review-gate 同口径：只读 action（get_result/list/templates，看状态
+		// 与名录）放行；其余（spawn/steer/stop/wait_all/handoff，见 subagents.ts 的
+		// SUBAGENT_ACTIONS）或未传 action 一律拒 —— steer/handoff 会向运行中的子代理
+		// 会话投指令驱动它继续写代码，子代理会话 planMode=false 工具齐全，等于绕过
+		// 本会话的只读约束（#436 此前只拒了 spawn）。
+		if (act !== "get_result" && act !== "list" && act !== "templates") {
 			return {
 				kind: "bypass-tool",
-				reason: `计划模式：不能调用 subagent(action="spawn")（它会在别的会话里执行，绕过本会话的只读约束）。请在本对话内用只读工具完成调研。`,
-				reasonEn: `Plan mode: subagent(action="spawn") is unavailable (it runs outside this conversation and would bypass the read-only constraint). Research with read-only tools here.`,
+				reason: `计划模式：不能调用 subagent(action="${act || "spawn"}")（它会在别的会话里执行，绕过本会话的只读约束）。请在本对话内用只读工具完成调研。`,
+				reasonEn: `Plan mode: subagent(action="${act || "spawn"}") is unavailable (it runs outside this conversation and would bypass the read-only constraint). Research with read-only tools here.`,
 			};
 		}
+	}
+	if (TERMINAL_WRITE_TOOLS.has(name)) {
+		return {
+			kind: "write-tool",
+			reason: `计划模式：不能调用 ${name}（终端输入/按键会绕过只读命令白名单，见 #436）。调研请用 bash 跑只读命令；观察已有终端用 terminal_read/terminal_list/terminal_wait。`,
+			reasonEn: `Plan mode: ${name} is unavailable (terminal input/keys would bypass the read-only command allowlist). Run read-only commands via bash; observe existing terminals with terminal_read/terminal_list/terminal_wait.`,
+		};
 	}
 	if (BYPASS_TOOLS.has(name)) {
 		return {

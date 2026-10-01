@@ -6,6 +6,7 @@ import {
 	bashCommandIsReadOnly,
 	buildPlanModePrompt,
 	planModeDenial,
+	PLAN_MODE_BLOCKED_TOOL_NAMES,
 	PLAN_MODE_SYSTEM_PROMPT,
 } from "../../server/plan-mode.js";
 
@@ -76,6 +77,8 @@ describe("planModeDenial", () => {
 		expect(planModeDenial("edit_soft", {})?.kind).toBe("write-tool");
 		expect(planModeDenial("patch", {})?.kind).toBe("write-tool");
 		expect(planModeDenial("git", { command: "commit" })?.kind).toBe("write-tool");
+		// 回归 #436：eval 沙箱的 execute 直接 kernel.execute 可写真实文件系统。
+		expect(planModeDenial("eval", { code: "require('fs').writeFileSync('x','y')" })?.kind).toBe("write-tool");
 	});
 
 	it("bash 只放行只读命令", () => {
@@ -87,9 +90,79 @@ describe("planModeDenial", () => {
 	});
 
 	it("拒绝旁路工具（会在别的会话实施）", () => {
-		expect(planModeDenial("spawn", {})?.kind).toBe("bypass-tool");
 		expect(planModeDenial("delegate_task", {})?.kind).toBe("bypass-tool");
-		expect(planModeDenial("set_goal", {})?.kind).toBe("bypass-tool");
+		// 回归 #436：schedule_task 是真实注册的排程工具，到期唤醒对话执行 prompt。
+		expect(planModeDenial("schedule_task", {})?.kind).toBe("bypass-tool");
+	});
+
+	// 回归 #436：subagent 此前只拒 spawn，steer/handoff 全放行 —— 向运行中的
+	// 子代理会话投指令让它继续写代码，而子代理 planMode=false 工具齐全。
+	// 对齐 goal-review-gate 口径：只读 action 放行，其余（含未知/未传）一律拒。
+	it("subagent 只放行只读 action，写向 action 一律拒", () => {
+		for (const readonly of ["get_result", "list", "templates"]) {
+			expect(planModeDenial("subagent", { action: readonly }), readonly).toBeUndefined();
+		}
+		for (const action of ["spawn", "steer", "stop", "wait_all", "handoff", "erase"]) {
+			const d = planModeDenial("subagent", { action });
+			expect(d, action).toBeDefined();
+			expect(d!.kind).toBe("bypass-tool");
+		}
+		expect(planModeDenial("subagent", { action: "" })?.kind).toBe("bypass-tool");
+		expect(planModeDenial("subagent", {})?.kind).toBe("bypass-tool");
+		expect(planModeDenial("subagent", undefined)?.kind).toBe("bypass-tool");
+	});
+
+	// 回归 #436：terminal_input 只在自带换行时才过 checkSafety，terminal_key 的
+	// Enter 连检查都没有 —— 「input(无换行) + key(Enter)」即可绕过 bash 只读白名单。
+	it("拒绝常驻终端写向工具（terminal_input/terminal_key）", () => {
+		for (const [name, params] of [
+			["terminal_input", { terminalId: "t1", data: "rm -rf dist" }],
+			["terminal_input", { terminalId: "t1", data: "y" }],
+			["terminal_key", { terminalId: "t1", key: "Enter" }],
+		] as const) {
+			const d = planModeDenial(name, params);
+			expect(d, name).toBeDefined();
+			expect(d!.kind).toBe("write-tool");
+			expect(d!.reasonEn).toContain("Plan mode");
+		}
+	});
+});
+
+describe("PLAN_MODE_BLOCKED_TOOL_NAMES（活跃集剥离名单）", () => {
+	it("终端写向工具在剥离名单里（只读的 read/list/wait 不在）", () => {
+		expect(PLAN_MODE_BLOCKED_TOOL_NAMES.has("terminal_input")).toBe(true);
+		expect(PLAN_MODE_BLOCKED_TOOL_NAMES.has("terminal_key")).toBe(true);
+		for (const readonly of ["terminal_read", "terminal_list", "terminal_wait", "read", "grep"]) {
+			expect(PLAN_MODE_BLOCKED_TOOL_NAMES.has(readonly), readonly).toBe(false);
+		}
+	});
+
+	// 回归 #436：eval 用户可开（默认关），开了就必须随计划模式一起剥离。
+	it("eval 在剥离名单里", () => {
+		expect(PLAN_MODE_BLOCKED_TOOL_NAMES.has("eval")).toBe(true);
+	});
+
+	// 回归 #436：名单以 server/tool-manager.ts 实际注册的工具名为事实源 ——
+	// 幽灵名（协议消息/从未注册）全部清掉，真实的 schedule_task 补进来。
+	it("幽灵名不再出现在剥离名单，真实旁路工具在", () => {
+		for (const ghost of [
+			"spawn",
+			"spawn_agent",
+			"subagent_spawn",
+			"schedule_agent",
+			"host_schedule",
+			"create_goal",
+			"set_goal",
+			"start_goal_wizard",
+			"create_conversation",
+			"fork_conversation",
+			"schedule",
+			"set_plan_mode",
+		]) {
+			expect(PLAN_MODE_BLOCKED_TOOL_NAMES.has(ghost), ghost).toBe(false);
+		}
+		expect(PLAN_MODE_BLOCKED_TOOL_NAMES.has("delegate_task")).toBe(true);
+		expect(PLAN_MODE_BLOCKED_TOOL_NAMES.has("schedule_task")).toBe(true);
 	});
 });
 

@@ -13,13 +13,32 @@ describe("delegationDenial", () => {
 			expect(d!.kind).toBe("write-tool");
 			expect(d!.reason).toContain("审查者模式");
 		}
+		// 回归 #436：eval 沙箱可写真实文件系统。
+		expect(delegationDenial("eval", {})?.kind).toBe("write-tool");
 	});
 
 	it("派发类工具拒：派活是服务端的活", () => {
-		for (const name of ["spawn", "subagent_spawn", "delegate_task", "set_goal", "set_plan_mode"]) {
+		// subagent 在审查者模式整体拒（不分 action）；schedule_task 是真实注册
+		// 的排程工具（#436 前名单里只有 schedule 等幽灵名，一个真实工具都没拦住）。
+		for (const name of ["subagent", "delegate_task", "schedule_task"]) {
 			const d = delegationDenial(name, {});
 			expect(d, name).toBeDefined();
 			expect(d!.kind).toBe("dispatch-tool");
+		}
+	});
+
+	// 回归 #436：名单以 server/tool-manager.ts 实际注册的工具名为事实源，幽灵名清掉。
+	it("幽灵名不再误报", () => {
+		for (const ghost of [
+			"spawn",
+			"subagent_spawn",
+			"spawn_subagent",
+			"schedule",
+			"set_goal",
+			"start_goal_wizard",
+			"set_plan_mode",
+		]) {
+			expect(delegationDenial(ghost, {}), ghost).toBeUndefined();
 		}
 	});
 

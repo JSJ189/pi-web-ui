@@ -11491,6 +11491,10 @@ export class ClientSession {
 			openedTerminals = null;
 			if (displaced) this.removeConversation(displaced.id);
 			await this.bindSession();
+			// #436：转录回放恢复的 planMode 在 runtime 工厂的 applyToolGating 时还读不到
+			//（conv 尚未进 this.convs，planModeOf 落空）——注册后统一补一次门控，让
+			// 计划模式的写类/旁路工具剥离对重开的会话同样生效。下同（forkSession/setCwd）。
+			this.applyToolGating(conv.session, conv.agentPreset);
 			this.cwd = targetCwd;
 			// 打开的历史会话可能属于另一个项目 —— 工作区跟随面（roots/文件树/
 			// 历史列表/命令目录/最近项目）必须跟着切，否则 UI 停在旧项目。
@@ -11699,6 +11703,9 @@ export class ClientSession {
 			this.activeId = conversationId;
 			if (displaced) this.removeConversation(displaced.id);
 			await this.bindSession();
+			// #436：同 switchSession —— 派生出的会话若从转录回放恢复了 planMode，
+			// 工厂里的门控当时读不到它，注册后补一次。
+			this.applyToolGating(newConv.session, newConv.agentPreset);
 
 			if (prevModel && this.sharedModelRuntime) {
 				try {
@@ -12416,6 +12423,9 @@ export class ClientSession {
 					}
 				}
 				await this.bindSession();
+				// #436：同 switchSession —— 续聊最近会话若从转录回放恢复了 planMode，
+				// 工厂里的门控当时读不到它，注册后补一次。
+				this.applyToolGating(conv.session, conv.agentPreset);
 				if (resumeSkipped) {
 					this.emit(
 						resumeSkipped.isStreaming
