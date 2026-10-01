@@ -79,8 +79,8 @@
 		"desktop:dist": "npm run build && npm run build:desktop && electron-builder -c desktop/electron-builder.yml",
 		"format": "prettier --write server/ web/src/ extensions/ scripts/ bin/ desktop/ tests/*.mjs tests/unit/ *.mjs",
 		"format:check": "prettier --check server/ web/src/ extensions/ scripts/ bin/ desktop/ tests/*.mjs tests/unit/ *.mjs",
-		"lint": "oxlint server/ web/src/ extensions/ scripts/ desktop/",
-		"lint:fix": "oxlint --fix server/ web/src/ extensions/ scripts/ desktop/"
+		"lint": "oxlint server/ web/src/ extensions/ scripts/ bin/ desktop/",
+		"lint:fix": "oxlint --fix server/ web/src/ extensions/ scripts/ bin/ desktop/"
 	},
 	"dependencies": {
 		"@deepseek-ai/dsh-sdk-jsonrpc-server": "^0.1.5-rc.3",
