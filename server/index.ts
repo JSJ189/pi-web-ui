@@ -119,6 +119,13 @@ function cliFlag(name: string): string | undefined {
 }
 
 const PORT = Number(cliFlag("--port") ?? process.env.PI_WEB_PORT ?? 8787);
+// #506：直启路径与 bin 层对齐做端口校验——`--port abc` / `PI_WEB_PORT=abc` 之前会
+// listen(NaN) 被 Node 当 0 绑到随机端口，且日志打印 http://localhost:NaN。
+if (!Number.isInteger(PORT) || PORT <= 0 || PORT > 65535) {
+	console.error(`无效端口: ${cliFlag("--port") ?? process.env.PI_WEB_PORT} (--port / PI_WEB_PORT)`);
+	console.error(`Invalid port: ${cliFlag("--port") ?? process.env.PI_WEB_PORT} (--port / PI_WEB_PORT)`);
+	process.exit(1);
+}
 const CWD = resolve(cliFlag("--cwd") ?? process.env.PI_WEB_CWD ?? process.cwd());
 const DATA_DIR = resolve(cliFlag("--data-dir") ?? process.env.PI_WEB_DATA_DIR ?? join(homedir(), ".pi-web"));
 // The data dir is where the control socket, client state, plugins, themes and
