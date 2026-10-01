@@ -236,6 +236,7 @@ import {
 	estimatePromptTokens,
 	renderPromptTemplate,
 	resolveSectionTexts,
+	splitExtensionWrap,
 	type PromptComposerInputs,
 } from "./prompt-composer.js";
 import type {
@@ -338,6 +339,27 @@ export class QuiesceRejectedError extends Error {
 /** 自家内联扩展名（组合模板渲染，见 prompt-composer.ts）。SDK 以其
  *  "<inline:<name>>" 作为 path；扩展白名单/禁用过滤必须放行它。 */
 const INLINE_PERSONA_EXT = "<inline:pi-webui-persona>";
+
+/** 本次 run 的 SDK 原始提示词 + 早前扩展的首尾增补（见 splitExtensionWrap）。
+ *  导出仅为单测（tests/unit/persona-prompt-chain.test.ts）可达。
+ *  systemPromptOptions 就是 runner 里那个共享可变对象，forceSystemPrompt 有值即
+ *  说明前面有扩展替换过提示词；临时清掉再读 event.systemPrompt 就拿到原始基线
+ *  （公开字段，不碰 SDK 内部）。没人动过时零开销，直接返回当前文本。 */
+export function splitAgentStartPrompt(event: {
+	readonly systemPrompt: string;
+	systemPromptOptions?: { forceSystemPrompt?: string };
+}): { pre: string; core: string; post: string } {
+	const current = event.systemPrompt;
+	const opts = event.systemPromptOptions;
+	const forced = opts?.forceSystemPrompt;
+	if (!opts || typeof forced !== "string") return { pre: "", core: current, post: "" };
+	try {
+		opts.forceSystemPrompt = undefined;
+		return splitExtensionWrap(event.systemPrompt, current);
+	} finally {
+		opts.forceSystemPrompt = forced;
+	}
+}
 
 /** Pi 包文档路径（composer 的 {{pi_docs}} 自动内容用）。随安装位置解析一次。 */
 const PI_DOC_PATHS = (() => {
@@ -4363,21 +4385,24 @@ export class ClientSession {
 							hidden: true,
 							factory: (pi) => {
 								pi.on("before_agent_start", (event) => {
+									// 我们是链上最后一个 handler：先把早前扩展的首尾增补摘出来（pre/post），
+									// 只在 SDK 原始提示词 core 上做事，最后原样套回去——否则返回 systemPrompt
+									// 会整体替换，把别的扩展注入的内容（如 <invoked_skill>）一起丢掉。
+									const { pre, core, post } = splitAgentStartPrompt(event);
+									const rewrap = (next: string) => pre + next + post;
 									// 子代理模板 replace（无 SYSTEM.md 时）：默认分支拼好的提示词里
 									// 把灵魂段换成模板提示词，自动段保留；SYSTEM.md 情形已在
 									// systemPromptOverride 整体替换，此处边界不存在会自然跳过。
 									if (apply) {
 										const tplPrompt = pickTemplatePrompt(apply, this.getLang()).trim();
 										if (apply.promptMode !== "replace" || !tplPrompt) return undefined;
-										const boundary = event.systemPrompt.indexOf("\n\nAvailable tools:");
+										const boundary = core.indexOf("\n\nAvailable tools:");
 										// 边界串是 SDK 提示词的内部格式：版本一变就可能对不上。
 										// 对不上时不再静默回退默认 persona（模板等于没生效），而是把模板
 										// 提示词前置拼接——角色约束仍在，只是灵魂段没被精确替换。
-										if (boundary === -1) {
-											const fallback = `${tplPrompt}\n\n${event.systemPrompt}`;
-											return fallback === event.systemPrompt ? undefined : { systemPrompt: fallback };
-										}
-										const swapped = tplPrompt + event.systemPrompt.slice(boundary);
+										const swapped = rewrap(
+											boundary === -1 ? `${tplPrompt}\n\n${core}` : tplPrompt + core.slice(boundary),
+										);
 										return swapped === event.systemPrompt ? undefined : { systemPrompt: swapped };
 									}
 									// 主会话：按当前会话归属预设与真正活跃的工具列表组装系统提示词
@@ -4404,6 +4429,7 @@ export class ClientSession {
 									const opts = event.systemPromptOptions as
 										| {
 												cwd?: string;
+												forceSystemPrompt?: string;
 												selectedTools?: string[];
 												toolSnippets?: Record<string, string>;
 												promptGuidelines?: string[];
@@ -4424,7 +4450,8 @@ export class ClientSession {
 										})),
 										preset: currentPreset,
 									});
-									return rendered ? { systemPrompt: rendered } : undefined;
+									// 不自定义时 rendered 为 undefined：不返回提示词，前面扩展的改动原样保留。
+									return rendered ? { systemPrompt: rewrap(rendered) } : undefined;
 								});
 							},
 						},

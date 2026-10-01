@@ -14,6 +14,7 @@ import {
 	renderDefaultPrompt,
 	renderPromptTemplate,
 	resolveSectionTexts,
+	splitExtensionWrap,
 	type PromptComposerInputs,
 	type PromptToken,
 } from "../../server/prompt-composer.js";
@@ -339,5 +340,48 @@ describe("estimatePromptTokens — token 占用估算", () => {
 		const base = estimatePromptTokens(short);
 		expect(base).toBeGreaterThan(0);
 		expect(estimatePromptTokens(more)).toBeGreaterThan(base + 2000);
+	});
+});
+
+describe("splitExtensionWrap", () => {
+	const base = "You are Pi.\n\nAvailable tools:\nread, bash";
+
+	it("no extension touched the prompt → nothing to re-wrap", () => {
+		expect(splitExtensionWrap(base, base)).toEqual({ pre: "", core: base, post: "" });
+	});
+
+	it("keeps a prepend", () => {
+		const wrap = splitExtensionWrap(base, `<invoked_skill/>\n${base}`);
+		expect(wrap).toEqual({ pre: "<invoked_skill/>\n", core: base, post: "" });
+		expect(wrap.pre + "RENDERED" + wrap.post).toBe("<invoked_skill/>\nRENDERED");
+	});
+
+	it("keeps an append", () => {
+		expect(splitExtensionWrap(base, `${base}\n<extra/>`)).toEqual({ pre: "", core: base, post: "\n<extra/>" });
+	});
+
+	it("keeps prepend and append together", () => {
+		expect(splitExtensionWrap(base, `A\n${base}\nB`)).toEqual({ pre: "A\n", core: base, post: "\nB" });
+	});
+
+	it("mid-prompt insertion is not splittable → caller keeps today's behaviour", () => {
+		const spliced = base.replace("Available tools:", "<mid/>\nAvailable tools:");
+		expect(splitExtensionWrap(base, spliced)).toEqual({ pre: "", core: spliced, post: "" });
+	});
+
+	it("wholesale replacement is not splittable → never doubles the prompt", () => {
+		expect(splitExtensionWrap(base, "totally different")).toEqual({
+			pre: "",
+			core: "totally different",
+			post: "",
+		});
+	});
+
+	it("empty baseline is not searched for", () => {
+		expect(splitExtensionWrap("", "anything")).toEqual({ pre: "", core: "anything", post: "" });
+	});
+
+	it("splits on the first occurrence when the baseline repeats", () => {
+		expect(splitExtensionWrap("x", "axbxc")).toEqual({ pre: "a", core: "x", post: "bxc" });
 	});
 });

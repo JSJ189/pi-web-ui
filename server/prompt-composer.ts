@@ -368,3 +368,15 @@ export function estimatePromptTokens(text: string): number {
 	const cjk = text.match(CJK_RE)?.length ?? 0;
 	return Math.ceil(cjk + (text.length - cjk) / 4);
 }
+
+/** 把「早前扩展改过的提示词」拆成 SDK 原始提示词 + 扩展的首尾增补。
+ *  before_agent_start 是链式的：我们是最后一个 handler，返回 systemPrompt 等于
+ *  forceSystemPrompt 整体替换，会把别的扩展（如注入 <invoked_skill> 的）写进去的
+ *  内容一起丢掉。只要原始提示词还原样嵌在里面（纯前置/后置增补），就能把增补摘出来
+ *  重新套回我们的渲染结果上。摘不出来（中间插入 / 被整体替换）时返回 pre/post 为空、
+ *  core 为当前文本 —— 调用方退回今天的行为，绝不把整段提示词翻倍。 */
+export function splitExtensionWrap(baseline: string, current: string): { pre: string; core: string; post: string } {
+	const at = baseline ? current.indexOf(baseline) : -1;
+	if (at === -1) return { pre: "", core: current, post: "" };
+	return { pre: current.slice(0, at), core: baseline, post: current.slice(at + baseline.length) };
+}

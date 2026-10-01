@@ -71,9 +71,25 @@
         before_agent_start（每个 agent run 前）—
             - 主会话：若配置了模板或任一覆盖，用本次 run 的 systemPromptOptions
               （selectedTools / toolSnippets / promptGuidelines / contextFiles /
-              skills 全是当时最新）渲染组合模板，整体替换该 run 的 systemPrompt；
+              skills 全是当时最新）渲染组合模板，替换该 run 的 systemPrompt 主体；
             - 子代理模板 replace：默认分支下把灵魂段换成模板提示词（自动段保留）；
               模板 append 仍走 loader 追加段。
+        链式保留（两个分支共用）—— 我们是 before_agent_start 链上最后一个 handler
+        （resource-loader 把内联扩展排在所有文件/包扩展之后），返回 systemPrompt 即
+        forceSystemPrompt 整体替换，会把别的扩展写进去的内容一起丢掉。所以先拆：
+            splitAgentStartPrompt(event) → { pre, core, post }
+                forceSystemPrompt 无值 = 没人动过，core 即当前提示词，pre/post 为空
+                （零开销，输出与今天逐字节一致）；
+                有值 = 前面有扩展替换过，临时清掉它再读 event.systemPrompt 拿到 SDK
+                原始基线，splitExtensionWrap(基线, 当前) 把首尾增补摘成 pre/post。
+            渲染/换段只在 core 上做，最后 pre + 结果 + post 套回去。
+        优先级：用户模板/覆盖始终赢得提示词主体，扩展只保住自己的首尾增补。基线不是
+        原样嵌在当前文本里时（扩展做了中间插入或整体替换）无法安全摘取，退回今天的
+        行为（pre/post 为空），绝不把整段提示词翻倍。完全默认（未自定义）时主会话仍
+        返回 undefined，扩展的改动原样生效。
+        纯函数 splitExtensionWrap 在 prompt-composer.ts，单测见
+        tests/unit/prompt-composer.test.ts；设置面板预览不跑扩展，因此预览与真实 run
+        会相差这部分扩展增补。
     设置改动无需 reload 即可在下一个 run 生效（逐 run 读取 settingsSvc）；
     session.reload() 仅用于让 loader 侧（默认分支/技能过滤等）同步。
     设置面板预览（settings_state.effectiveSystemPrompt）：用当前会话资源
