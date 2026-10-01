@@ -96,31 +96,31 @@ describe("ClientStateStore 最近项目删除全局持久化", () => {
 		expect(newStore.getRemovedProjects("brandNewClient")).toContain("/legacy/path/to/projectX");
 	});
 
-	it("getRecentProjects 跨 client 聚合且过滤墓碑与不存在目录", () => {
+	it("getRecentProjects 跨 client 聚合且过滤墓碑与不存在目录", async () => {
 		// dir 本身存在
 		store.remember("clientA", dir);
 		// 不存在的目录
 		store.remember("clientB", join(dir, "non-existent-subfolder"));
 
-		const recentA = store.getRecentProjects("clientA");
+		const recentA = await store.getRecentProjects("clientA");
 		expect(recentA.map((p) => p.path)).toContain(dir);
 		expect(recentA.map((p) => p.path)).not.toContain(join(dir, "non-existent-subfolder"));
 
 		// 全新 client 也能跨 client 获取到存在的 dir
-		const recentBrandNew = store.getRecentProjects("brandNewClient");
+		const recentBrandNew = await store.getRecentProjects("brandNewClient");
 		expect(recentBrandNew.map((p) => p.path)).toContain(dir);
 
 		// 移除 dir 后，即使是 brandNewClient 也获取不到
 		store.removeProject("clientA", dir);
-		const recentAfterRemove = store.getRecentProjects("brandNewClient");
+		const recentAfterRemove = await store.getRecentProjects("brandNewClient");
 		expect(recentAfterRemove.map((p) => p.path)).not.toContain(dir);
 	});
 
-	it("mergeDiscoveredProjects 能合并新发现的项目并尊重墓碑", () => {
+	it("mergeDiscoveredProjects 能合并新发现的项目并尊重墓碑", async () => {
 		store.removeProject("clientA", dir);
 		store.mergeDiscoveredProjects([{ path: dir, lastUsed: 12345 }]);
 
 		// 墓碑依然生效
-		expect(store.getRecentProjects("clientA").map((p) => p.path)).not.toContain(dir);
+		expect((await store.getRecentProjects("clientA")).map((p) => p.path)).not.toContain(dir);
 	});
 });

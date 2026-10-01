@@ -6,7 +6,8 @@
  *
  * 从 agent-service.ts 抽出，行为保持不变。
  */
-import { existsSync, mkdirSync, readFileSync, renameSync, writeFileSync } from "node:fs";
+import { mkdirSync, readFileSync, renameSync, writeFileSync } from "node:fs";
+import * as fsPromises from "node:fs/promises";
 import { dirname, isAbsolute, resolve } from "node:path";
 import { normalizeSoftCapByModel, normalizeSoftCapTokens } from "./soft-cap.js";
 import { deriveLegacy, legacyToDisabled, normalizeDisabledAgentTools } from "./tool-manager.js";
@@ -485,6 +486,10 @@ export interface ClientState {
 	 *  English default, issue #91) for tool return values / AI prompts.
 	 *  Missing = never reported → English. */
 	locale?: string;
+	/** 客户端最近活跃时间（epoch ms）。服务端在 per-client 写路径上打点（内存态，
+	 *  随任意后续 save 落盘）；旧存档缺省时按 max(projects[].lastUsed, interrupted[].at)
+	 *  推断。仅用于死 clientId 清理（issue #441），不参与任何业务语义。 */
+	lastActive?: number;
 }
 
 /** 跨平台（尤其是 Windows）路径归一化键：统一转绝对路径，并在 Windows 下转小写以消除大小写与正反斜杠差异。 */
@@ -497,6 +502,20 @@ export function normalizePathKey(p: string): string {
 	}
 }
 
+/** 死 clientId 状态的保留期（issue #441）：距最近活跃超过该时长的 per-client 键在
+ *  加载/定期扫描时淘汰。取 30 天——clientId 存 sessionStorage，每个标签页每次会话
+ *  都生成新 id，远超 30 天才回来的标签页实际等同全新会话，误伤概率可忽略。 */
+export const CLIENT_STATE_RETENTION_MS = 30 * 24 * 60 * 60 * 1000;
+
+/** per-client 键数上限（issue #441）：活跃客户端数超过该值时按最近活跃保留前 50、
+ *  淘汰最旧的。兜底上限：完全无时间戳可推断的存量键不按年龄淘汰，靠它保证
+ *  client-state.json 不随时间无界膨胀。 */
+export const MAX_TRACKED_CLIENTS = 50;
+
+/** 死键清理扫描的最小间隔：load() 是所有读写的高频入口，扫描按 1 小时节流，
+ *  首次加载必扫。 */
+export const CLIENT_STATE_SWEEP_INTERVAL_MS = 60 * 60 * 1000;
+
 /**
  * Persists which workspace each browser client last used + which workspaces it
  * has opened, so a server restart / page reload restores the same project and
@@ -505,6 +524,9 @@ export function normalizePathKey(p: string): string {
  */
 export class ClientStateStore {
 	private cache: Record<string, ClientState> | null = null;
+
+	/** 上次死键清理扫描的时间戳（epoch ms；0 = 尚未扫过，首次 load 必扫）。 */
+	private lastSweepAt = 0;
 
 	constructor(private filePath: string) {}
 
@@ -523,7 +545,10 @@ export class ClientStateStore {
 	}
 
 	private load(): Record<string, ClientState> {
-		if (this.cache) return this.cache;
+		if (this.cache) {
+			this.sweepStaleClientsIfNeeded();
+			return this.cache;
+		}
 		try {
 			const parsed = JSON.parse(readFileSync(this.filePath, "utf8")) as Record<string, ClientState>;
 			this.cache = parsed && typeof parsed === "object" ? parsed : {};
@@ -547,10 +572,71 @@ export class ClientStateStore {
 				}
 			}
 		}
-		if (migrated) {
+		// 死键清理（issue #441）：在墓碑迁移之后做——各 client 的墓碑已先并入全局键，
+		// 淘汰死 client 不会丢墓碑；合并一次 save 落盘（迁移和淘汰只发生一次时也只写一遍）。
+		this.lastSweepAt = Date.now();
+		const evicted = this.sweepDeadClients();
+		if (migrated || evicted > 0) {
 			this.save();
 		}
 		return this.cache;
+	}
+
+	/** 死键清理的节流入口：首次 load 必扫，之后按 CLIENT_STATE_SWEEP_INTERVAL_MS 节流。 */
+	private sweepStaleClientsIfNeeded(): void {
+		if (Date.now() - this.lastSweepAt < CLIENT_STATE_SWEEP_INTERVAL_MS) return;
+		this.lastSweepAt = Date.now();
+		if (this.sweepDeadClients() > 0) this.save();
+	}
+
+	/** 淘汰长期不活跃的 per-client 状态（issue #441）。
+	 *
+	 * 背景：clientId 存 sessionStorage——每个浏览器标签页每次会话都生成新 id，服务端
+	 * 却为每个见过的 id 永久建键（projects / workspaceRoots / projectProviderKeys /
+	 * projectModels…），client-state.json 随死键线性膨胀，save() 的同步
+	 * JSON.stringify + writeFileSync 成本也随之线性增长。
+	 *
+	 * 策略（保守，只动内存态，下次任意 save 自然落盘；绝不直接删文件）：
+	 * - 距最近活跃超过 CLIENT_STATE_RETENTION_MS（30 天）的 clientId 淘汰。活跃时间
+	 *   优先取显式 lastActive（写路径 touchClient 维护），旧存档回退按
+	 *   max(projects[].lastUsed, interrupted[].at) 推断；推断值写回内存态，随下次
+	 *   save 落盘。完全无时间戳可推断的（无法判定活跃度）不按年龄淘汰，仅受数量上限约束。
+	 * - 淘汰后仍超过 MAX_TRACKED_CLIENTS（50）时按最近活跃保留前 50，其余淘汰
+	 *   （无时间戳的排最旧优先淘汰）。
+	 * - 全局键 __settings__ 永不淘汰：设置面板 config / 预设 / 墓碑都在它下面，
+	 *   与任何 clientId 无关。
+	 *
+	 * 返回淘汰的键数（0 = 无变化，调用方无需为此 save）。 */
+	private sweepDeadClients(): number {
+		const all = this.cache;
+		if (!all) return 0;
+		const now = Date.now();
+		const dead = new Set<string>();
+		const activity = new Map<string, number>();
+		for (const [id, state] of Object.entries(all)) {
+			if (id === ClientStateStore.GLOBAL_SETTINGS_KEY) continue;
+			let at = state.lastActive ?? 0;
+			if (at <= 0) {
+				for (const p of state.projects ?? []) if (p.lastUsed > at) at = p.lastUsed;
+				for (const i of state.interrupted ?? []) if (i.at > at) at = i.at;
+				if (at > 0) state.lastActive = at;
+			}
+			activity.set(id, at);
+			if (at > 0 && now - at > CLIENT_STATE_RETENTION_MS) dead.add(id);
+		}
+		if (activity.size - dead.size > MAX_TRACKED_CLIENTS) {
+			const survivors = [...activity.entries()].filter(([id]) => !dead.has(id)).sort((a, b) => b[1] - a[1]);
+			for (const [id] of survivors.slice(MAX_TRACKED_CLIENTS)) dead.add(id);
+		}
+		for (const id of dead) delete all[id];
+		return dead.size;
+	}
+
+	/** 打点客户端活跃时间（内存态，随任意后续 save 落盘；不主动触发 save）。
+	 *  仅在 per-client 写路径上调用，键尚不存在时是 no-op（创建方随后 ??= 补上）。 */
+	private touchClient(all: Record<string, ClientState>, clientId: string): void {
+		const state = all[clientId];
+		if (state) state.lastActive = Date.now();
 	}
 
 	private save(): void {
@@ -575,6 +661,7 @@ export class ClientStateStore {
 	remember(clientId: string, cwd: string): void {
 		const all = this.load();
 		const state = (all[clientId] ??= { projects: [] });
+		this.touchClient(all, clientId);
 		state.lastCwd = cwd;
 		const now = Date.now();
 		const targetKey = normalizePathKey(cwd);
@@ -607,6 +694,7 @@ export class ClientStateStore {
 		const all = this.load();
 		const targetKey = normalizePathKey(cwd);
 		const state = (all[clientId] ??= { projects: [] });
+		this.touchClient(all, clientId);
 		state.projects = state.projects.filter((p) => normalizePathKey(p.path) !== targetKey);
 		if (state.lastCwd && normalizePathKey(state.lastCwd) === targetKey) delete state.lastCwd;
 		const removed = (state.removedProjects ?? []).filter((p) => normalizePathKey(p) !== targetKey);
@@ -649,8 +737,15 @@ export class ClientStateStore {
 	/**
 	 * Get recent projects merged across the client's own history, global settings,
 	 * and other clients in this store, filtering out tombstoned paths and non-existent paths.
+	 *
+	 * 性能（issue #441）：先按 lastUsed 排序截断到 30 条，再对候选做存活性探测——
+	 * 旧实现先对全部合并路径逐个同步 existsSync 再截断，Windows 上已断连的网络
+	 * 驱动器单次 existsSync 可阻塞数秒且直接跑在事件循环上，会把整个服务界面
+	 * （所有客户端 WS/HTTP）冻结。截断后探测把单次探测次数封顶 30；探测改异步
+	 * fsPromises.access（调用链本就是 async），不再阻塞事件循环。代价是前 30 名
+	 * 里有失效路径时不再回补更旧的项目（列表可能短于 30），属可接受的取舍。
 	 */
-	getRecentProjects(clientId: string): { path: string; lastUsed: number }[] {
+	async getRecentProjects(clientId: string): Promise<{ path: string; lastUsed: number }[]> {
 		const all = this.load();
 		const removedKeys = new Set(this.getRemovedProjects(clientId).map(normalizePathKey));
 		const map = new Map<string, { path: string; lastUsed: number }>();
@@ -677,16 +772,22 @@ export class ClientStateStore {
 			}
 		}
 
-		return [...map.values()]
-			.filter((p) => {
-				try {
-					return existsSync(p.path);
-				} catch {
-					return false;
-				}
-			})
-			.sort((a, b) => b.lastUsed - a.lastUsed)
-			.slice(0, 30);
+		// 先截断后探测：探测次数 ≤ 30，且并发执行（Promise.allSettled 吸收单点失败）。
+		const candidates = [...map.values()].sort((a, b) => b.lastUsed - a.lastUsed).slice(0, 30);
+		const probes = await Promise.allSettled(candidates.map((p) => this.pathExists(p.path)));
+		return candidates.filter((_, i) => {
+			const probe = probes[i];
+			return probe?.status === "fulfilled" && probe.value;
+		});
+	}
+
+	/** 单条路径的存活性探测（issue #441）：异步 access，绝不阻塞事件循环。
+	 *  独立成 protected 方法便于单测用子类覆写做计数探针。 */
+	protected async pathExists(path: string): Promise<boolean> {
+		return fsPromises.access(path).then(
+			() => true,
+			() => false,
+		);
 	}
 
 	/** Record discovered projects into global settings cache (without clobbering tombstones). */
@@ -740,6 +841,7 @@ export class ClientStateStore {
 	saveWorkspaceRoots(clientId: string, cwd: string, roots: string[]): void {
 		const all = this.load();
 		const state = (all[clientId] ??= { projects: [] });
+		this.touchClient(all, clientId);
 		const next = normalizeWorkspaceRoots(roots);
 		if (next.length === 0) {
 			if (state.workspaceRoots) {
@@ -759,6 +861,7 @@ export class ClientStateStore {
 		if (!code) return;
 		const all = this.load();
 		const state = (all[clientId] ??= { projects: [] });
+		this.touchClient(all, clientId);
 		if (state.locale === code) return;
 		state.locale = code;
 		this.save();
@@ -768,6 +871,7 @@ export class ClientStateStore {
 	saveGoalPrefs(clientId: string, prefs: ClientState["goalPrefs"]): void {
 		const all = this.load();
 		const state = (all[clientId] ??= { projects: [] });
+		this.touchClient(all, clientId);
 		state.goalPrefs = {
 			reviewModel: prefs?.reviewModel ?? null,
 			maxRounds: prefs?.maxRounds ?? 0,
@@ -783,6 +887,7 @@ export class ClientStateStore {
 		if (list.length === 0) return;
 		const all = this.load();
 		const state = (all[clientId] ??= { projects: [] });
+		this.touchClient(all, clientId);
 		state.interrupted = list.slice(0, 8);
 		this.save();
 	}
@@ -794,6 +899,7 @@ export class ClientStateStore {
 		const state = all[clientId];
 		const list = state?.interrupted;
 		if (list?.length && state) {
+			this.touchClient(all, clientId);
 			delete state.interrupted;
 			this.save();
 		}
@@ -999,6 +1105,7 @@ export class ClientStateStore {
 		(gMap[cwd] ??= {})[provider] = keyName;
 
 		const state = (all[clientId] ??= { projects: [] });
+		this.touchClient(all, clientId);
 		const map = (state.projectProviderKeys ??= {});
 		const inner = (map[cwd] ??= {});
 		inner[provider] = keyName;
@@ -1106,6 +1213,7 @@ export class ClientStateStore {
 		(globalState.projectModels ??= {})[cwd] = modelId;
 		// 同时写入本客户端
 		const state = (all[clientId] ??= { projects: [] });
+		this.touchClient(all, clientId);
 		(state.projectModels ??= {})[cwd] = modelId;
 		this.save();
 	}
