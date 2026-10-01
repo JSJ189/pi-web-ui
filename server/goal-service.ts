@@ -1886,6 +1886,14 @@ export class GoalService {
 				// 落盘对话在左栏/历史里没有「子代理」微标，用带前缀的标题保持可辨识。
 				title: this.roleConvTitle(goalText),
 			});
+			// #490/案1：spawn 的长 await 期间目标可能被重设/清除（goalGeneration 已变，
+			// stopDelegated 当时无可停执行者）——老循环不得把带着老目标首轮 prompt 的
+			// 执行者写回 conv.roleExec，否则新循环会把它当现役执行者 steer（上下文被
+			// 老目标污染，新目标首轮产出混入老目标工作）。就地停掉并让老循环按代次退出。
+			if (conv.goalGeneration !== goalGeneration) {
+				void host.stopRoleAgent?.(convId).catch(() => {});
+				return undefined;
+			}
 			conv.roleExec = { convId, generation: (conv.roleExec?.generation ?? 0) + 1 };
 			g.roles = { ...g.roles, executor: { convId, spawned: true } };
 			this.beginRoundVitals(conv, convId);
@@ -2073,6 +2081,13 @@ export class GoalService {
 			phase: "start",
 			round,
 		});
+		// #490/案2：pushReviewCard 的 await 窗口里 setGoal/clearGoal 可能已清掉
+		// awaitingVerdict（此刻 verdictWaiters 尚未登记，stopDelegated 的 settle 落空）
+		// ——不复检就会继续登记 waiter 并把老目标的审查指令投进主对话：主对话白烧
+		// 一轮审查、老循环干等 20 分钟超时，新目标的 pending 循环全程无法启动。
+		if (!conv.awaitingVerdict || conv.awaitingVerdict.round !== round) {
+			return "gone";
+		}
 		const verdict = await new Promise<DelegatedVerdict>((resolve) => {
 			let settled = false;
 			let timer: ReturnType<typeof setTimeout> | undefined;
