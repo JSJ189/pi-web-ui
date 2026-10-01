@@ -1,6 +1,7 @@
 import { describe, expect, it, vi } from "vitest";
 import {
 	collectSubagentDescendantIds,
+	computeWaitCapMs,
 	makeSubagentTool,
 	makeSubagentTools,
 	subagentTitle,
@@ -26,6 +27,25 @@ function makeHostSpies() {
 }
 
 describe("subagents tools", () => {
+	it("computeWaitCapMs 计算阻塞上限（#449）", () => {
+		// 默认看门狗 20 分钟 -> 0.8 * 20min = 16 分钟 = 960,000ms
+		expect(computeWaitCapMs()).toBe(960_000);
+		// 自定义看门狗 100s -> 80,000ms
+		expect(computeWaitCapMs(100_000)).toBe(80_000);
+		// 看门狗极小 -> 5s 兜底
+		expect(computeWaitCapMs(2_000)).toBe(5_000);
+
+		// 环境变量覆盖
+		const oldEnv = process.env.PI_WEB_SUBAGENT_WAIT_CAP_SECONDS;
+		try {
+			process.env.PI_WEB_SUBAGENT_WAIT_CAP_SECONDS = "120";
+			expect(computeWaitCapMs(1000_000)).toBe(120_000);
+		} finally {
+			if (oldEnv === undefined) delete process.env.PI_WEB_SUBAGENT_WAIT_CAP_SECONDS;
+			else process.env.PI_WEB_SUBAGENT_WAIT_CAP_SECONDS = oldEnv;
+		}
+	});
+
 	it("SUBAGENT_TOOL_NAMES 只包含单个 subagent 工具，SUBAGENT_ACTIONS 包含 8 种 action", () => {
 		expect(SUBAGENT_TOOL_NAMES).toEqual(["subagent"]);
 		expect(SUBAGENT_ACTIONS).toEqual([

@@ -623,6 +623,7 @@ type Action =
 	  }
 	| { type: "dsh_presets"; presets: UiAgentPreset[]; defaultPreset: string }
 	| { type: "dsh_permission"; options: DshPermissionOption[]; defaultPreset: string }
+	| { type: "sync_cached_sessions"; sessions: SessionSummary[] }
 	| { type: "host_metrics"; metrics: UiHostMetrics };
 
 const MAX_LIVE_OUTPUT = 200_000;
@@ -775,6 +776,8 @@ function reducer(state: ChatState, action: Action): ChatState {
 				terminals: action.status === "closed" ? [] : state.terminals,
 				hostMetrics: action.status === "closed" ? null : state.hostMetrics,
 			};
+		case "sync_cached_sessions":
+			return { ...state, sessions: action.sessions };
 		case "host_metrics":
 			return {
 				...state,
@@ -797,7 +800,7 @@ function reducer(state: ChatState, action: Action): ChatState {
 			const prevCwd = state.state?.cwd;
 			const nextCwd = action.state.cwd;
 			let nextSessions = state.sessions;
-			if (nextCwd && nextCwd !== prevCwd && nextSessions.length === 0) {
+			if (nextCwd && nextCwd !== prevCwd) {
 				nextSessions = readCachedSessions(nextCwd);
 			}
 			return {
@@ -1207,7 +1210,7 @@ export function clearCachedProject(path: string): void {
 
 const RECENT_SESSIONS_PREFIX = "pi-web-recent-sessions:";
 
-function sessionsStorageKey(cwd?: string | null): string {
+export function sessionsStorageKey(cwd?: string | null): string {
 	if (!cwd) return "pi-web-recent-sessions:default";
 	return `${RECENT_SESSIONS_PREFIX}${cwd
 		.trim()
@@ -2126,6 +2129,18 @@ export function useChat() {
 		window.addEventListener(UI_LOCALE_EVENT, onLocale);
 		return () => window.removeEventListener(UI_LOCALE_EVENT, onLocale);
 	}, [send]);
+
+	useEffect(() => {
+		const onStorage = (e: StorageEvent) => {
+			const cwd = chat.state?.cwd;
+			if (!cwd || !e.key) return;
+			if (e.key === sessionsStorageKey(cwd)) {
+				dispatch({ type: "sync_cached_sessions", sessions: readCachedSessions(cwd) });
+			}
+		};
+		window.addEventListener("storage", onStorage);
+		return () => window.removeEventListener("storage", onStorage);
+	}, [chat.state?.cwd]);
 
 	// Mount once; all reconnection is self-contained in `connect`.
 	useEffect(() => {

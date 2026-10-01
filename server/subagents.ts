@@ -36,14 +36,23 @@ export type SubagentState = "running" | "queued" | "done" | "canceled";
 /**
  * subagent_wait_all 的最长阻塞时间：必须短暂低于工具看门狗（默认 20 分钟，
  * PI_WEB_TOOL_TIMEOUT_MS 可调），否则看门狗会先中止整个会话而不是让 wait
- * 干净地超时返回。取 0.8×看门狗并以 60s 封顶、5s 兜底：看门狗调小（如 <75s）
- * 时 60s 下限会反超看门狗造成本末倒置，此时随看门狗缩短，但不低于 5s。
+ * 干净地超时返回。取 0.8×看门狗（默认 ~16min，支持 PI_WEB_SUBAGENT_WAIT_CAP_SECONDS 覆盖），
+ * 兜底不低于 5s。
  */
-const WAIT_CAP_MS = (() => {
-	const v = Number(process.env.PI_WEB_TOOL_TIMEOUT_MS);
-	const watchdog = Number.isFinite(v) && v > 0 ? v : 20 * 60_000;
-	return Math.max(Math.min(60_000, Math.floor(watchdog * 0.8)), 5_000);
-})();
+export function computeWaitCapMs(watchdogMs?: number): number {
+	const customSecs = Number(process.env.PI_WEB_SUBAGENT_WAIT_CAP_SECONDS);
+	if (Number.isFinite(customSecs) && customSecs > 0) {
+		return Math.max(Math.floor(customSecs * 1000), 5_000);
+	}
+	const envWatchdog = Number(process.env.PI_WEB_TOOL_TIMEOUT_MS);
+	const watchdog =
+		typeof watchdogMs === "number" && Number.isFinite(watchdogMs) && watchdogMs > 0
+			? watchdogMs
+			: Number.isFinite(envWatchdog) && envWatchdog > 0
+				? envWatchdog
+				: 20 * 60_000;
+	return Math.max(Math.floor(watchdog * 0.8), 5_000);
+}
 
 /** 子代理是否已到终态（运行结束、被中止或出错）。wait 工具据此判断
  * 是否可以取结果；streaming=false 即可（error/canceled 都在快照里带标记）。 */
@@ -195,8 +204,8 @@ export function makeSubagentTool(host: SubagentToolHost, lang?: () => ServerLang
 
 	const currentWaitCapMs =
 		typeof host.getWatchdogTimeoutMs === "function"
-			? Math.max(Math.min(60_000, Math.floor(host.getWatchdogTimeoutMs() * 0.8)), 5_000)
-			: WAIT_CAP_MS;
+			? computeWaitCapMs(host.getWatchdogTimeoutMs())
+			: computeWaitCapMs();
 	const capSeconds = Math.floor(currentWaitCapMs / 1000);
 
 	return defineTool({
@@ -913,8 +922,8 @@ function promptRemaining(remaining: string[], lang: ServerLang = "en"): string {
 	const pendingIds = remaining.map(shortId).join(", ");
 	return pick(
 		lang,
-		`\n未完成：${pendingIds}。可再次调用 subagent_wait_all（或 subagent_steer 补充指令 / subagent_stop 中止）。`,
-		`\nPending: ${pendingIds}. You may call subagent_wait_all again (or subagent_steer to add instructions / subagent_stop to abort).`,
+		`\n未完成：${pendingIds}。可再次调用 subagent（action="wait_all"）继续等待耗时任务，或使用 steer 补充指令 / stop 中止。`,
+		`\nPending: ${pendingIds}. You may call subagent (action="wait_all") again to continue waiting for long tasks, or use steer to add instructions / stop to abort.`,
 		"subagents.wait.pending",
 		{ pendingIds: pendingIds },
 	);

@@ -389,12 +389,9 @@ export const Message = memo(function Message({
 					.filter(Boolean)
 					.join("\n");
 		const trimmed = text.trim();
-		if (!trimmed) return;
-		onEdit?.(
-			message.id,
-			trimmed,
-			questionAttachments && questionAttachments.length > 0 ? questionAttachments : undefined,
-		);
+		const hasAttachments = Boolean(questionAttachments && questionAttachments.length > 0);
+		if (!trimmed && !hasAttachments) return;
+		onEdit?.(message.id, trimmed, hasAttachments ? questionAttachments : undefined);
 	};
 	const startEdit = () => {
 		setDraft(

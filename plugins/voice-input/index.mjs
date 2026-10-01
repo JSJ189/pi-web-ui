@@ -697,8 +697,20 @@ export default {
 
 			// auto：本地优先（免费不出网），本地炸了再试远端；local：只用本地。
 			if (eng !== "remote" && tryLocal) {
-				if (audio.length > MAX_LOCAL_AUDIO_BYTES) throw fail("音频太长（>8分钟），请分段", 413);
-				if (local.transcribeBusy) throw fail("本地正在转写上一段，稍等几秒再试", 429);
+				if (audio.length > MAX_LOCAL_AUDIO_BYTES) {
+					if (eng === "auto" && tryRemote) {
+						host.log("voice-input 音频超过本地 Whisper 上限（>8分钟），切远端兜底");
+						return { text: await transcribeRemote(audio, mime, lang), engine: "remote" };
+					}
+					throw fail("音频太长（>8分钟），请分段", 413);
+				}
+				if (local.transcribeBusy) {
+					if (eng === "auto" && tryRemote) {
+						host.log("voice-input 本地 Whisper 正忙，切远端兜底");
+						return { text: await transcribeRemote(audio, mime, lang), engine: "remote" };
+					}
+					throw fail("本地正在转写上一段，稍等几秒再试", 429);
+				}
 				local.transcribeBusy = true;
 				try {
 					return { text: await transcribeLocal(audio, lang), engine: "local" };

@@ -36,6 +36,10 @@ export interface SlashHost {
 	refreshSessions: () => Promise<void>;
 	/** supervisor 的优雅重启调度；返回 false 时 exec 兜底 process.exit(0)。 */
 	onQuit?: () => boolean;
+	/** 切换计划模式（会话级）。 */
+	setPlanMode?: (enabled: boolean) => Promise<void> | void;
+	/** 获取当前会话是否处于计划模式。 */
+	getPlanMode?: () => boolean;
 	/** session.reload() 之后的钩子（重放终端工具开关等设置门控）。 */
 	afterReload?: () => void;
 	/** 插件注册的斜杠命令（registerCommand）——目录展示 + exec 拦截执行。 */
@@ -90,6 +94,13 @@ export const NATIVE_COMMANDS: {
 		descriptionEn: "Switch workspace",
 		argumentHint: "<路径>",
 		argumentHintEn: "<path>",
+	},
+	{
+		name: "plan",
+		description: "开启或关闭计划模式（/plan [on|off]）",
+		descriptionEn: "Toggle plan mode (/plan [on|off])",
+		argumentHint: "[on|off]",
+		argumentHintEn: "[on|off]",
 	},
 	{
 		name: "thinking",
@@ -295,6 +306,15 @@ export class SlashCommandsService {
 					await this.host.setCwd(args);
 				}
 				return true;
+			case "plan": {
+				const trimmed = args.trim().toLowerCase();
+				const current = this.host.getPlanMode ? this.host.getPlanMode() : false;
+				const next = trimmed === "on" ? true : trimmed === "off" ? false : !current;
+				if (this.host.setPlanMode) {
+					await this.host.setPlanMode(next);
+				}
+				return true;
+			}
 			case "thinking": {
 				const ALIAS: Record<string, string> = {
 					off: "off",

@@ -225,7 +225,8 @@ export const ChatInput = memo(function ChatInput({
 	const dragResizeRef = useRef<{ startY: number; startH: number; next: number | null } | null>(null);
 	/** 统一补全浮层：`/` 命令与 `@` 提及共用一个浮层，按 kind 换内容（互斥，
 	 *  同一时间只可能开一个：slash 优先全文匹配，否则看光标前的 @ 词元）。 */
-	type ComposerMenu = { kind: "slash"; items: SlashCommandInfo[] } | { kind: "at"; start: number; items: AtHit[] };
+	type ComposerMenu =
+		{ kind: "slash"; items: SlashCommandInfo[] } | { kind: "at"; start: number; end: number; items: AtHit[] };
 	const [menu, setMenu] = useState<ComposerMenu | null>(null);
 	const [menuIndex, setMenuIndex] = useState(0);
 	/** `@` 异步查询的竞态 guard：迟到响应直接丢弃。 */
@@ -257,7 +258,12 @@ export const ChatInput = memo(function ChatInput({
 		const pending = recallDrafts.filter((d) => d.text && d.seq > lastRecallSeqRef.current);
 		if (pending.length === 0) return;
 		lastRecallSeqRef.current = pending[pending.length - 1].seq;
-		setText((prev) => pending.reduce((acc, d) => mergeRecalledDraft(acc, d.text), prev));
+		setMenu(null);
+		setText((prev) => {
+			const next = pending.reduce((acc, d) => mergeRecalledDraft(acc, d.text), prev);
+			menuTextRef.current = next;
+			return next;
+		});
 		// 与 prompt 历史导航状态解耦：撤回后从「当前草稿」重新开始。
 		historyIndexRef.current = -1;
 		draftRef.current = "";
@@ -274,7 +280,12 @@ export const ChatInput = memo(function ChatInput({
 	// 挂载时装一次：setText 是 useState 的稳定引用，不依赖任何会变的闭包。
 	useEffect(() => {
 		registerDraftSink((incoming) => {
-			setText((prev) => mergeRecalledDraft(prev, incoming));
+			setMenu(null);
+			setText((prev) => {
+				const next = mergeRecalledDraft(prev, incoming);
+				menuTextRef.current = next;
+				return next;
+			});
 			historyIndexRef.current = -1;
 			draftRef.current = "";
 			requestAnimationFrame(() => {
@@ -611,6 +622,7 @@ export const ChatInput = memo(function ChatInput({
 		const snapshot = value;
 		const start = tok.start;
 		const query = tok.query;
+		const end = start + 1 + query.length;
 		const jobs: { id: string; label: string; run: () => Promise<unknown> }[] = ids.map((p) => ({
 			id: p.id,
 			label: p.label,
@@ -646,7 +658,7 @@ export const ChatInput = memo(function ChatInput({
 		let eagerRendered = false;
 		if (eagerItems.length > 0) {
 			eagerRendered = true;
-			setMenu({ kind: "at", start, items: eagerItems });
+			setMenu({ kind: "at", start, end, items: eagerItems });
 			setMenuIndex(0);
 		}
 		void Promise.allSettled(
@@ -672,7 +684,7 @@ export const ChatInput = memo(function ChatInput({
 				query,
 				30,
 			);
-			setMenu(items.length > 0 ? { kind: "at", start, items } : null);
+			setMenu(items.length > 0 ? { kind: "at", start, end, items } : null);
 			// 仅在初次渲染浮层时重置高亮；若已展示过 eager 结果，保留用户已有键盘/鼠标选项目
 			if (!eagerRendered && items.length > 0) {
 				setMenuIndex(0);
@@ -755,12 +767,13 @@ export const ChatInput = memo(function ChatInput({
 		}
 		const ta = taRef.current;
 		const cursor = ta ? (ta.selectionStart ?? text.length) : text.length;
+		const replaceEnd = cur?.end !== undefined && cur.end >= at ? cur.end : cursor;
 		const atts = pick.attachments ?? [];
 		const rawText = pick.text ?? pick.title;
 		// 附件型命中（文件/目录/页签…）统一插 `@提及` 形式：正文里的 `@x` 与附件 chip
 		// 双向联动（点 ✕ 双向删、退格整块删）；纯文本命中保持原样。
 		const insert = atts.length > 0 && !rawText.startsWith("@") ? `@${rawText} ` : `${rawText} `;
-		const next = `${text.slice(0, at)}${insert}${text.slice(cursor)}`;
+		const next = `${text.slice(0, at)}${insert}${text.slice(replaceEnd)}`;
 		menuTextRef.current = next;
 		setText(next);
 		noteComposerEdit(next);
@@ -907,6 +920,8 @@ export const ChatInput = memo(function ChatInput({
 	useEffect(() => {
 		const onFill = (e: Event) => {
 			const detail = (e as CustomEvent<string>).detail;
+			setMenu(null);
+			menuTextRef.current = detail;
 			setText(detail);
 			taRef.current?.focus();
 		};
@@ -1715,6 +1730,14 @@ export const ChatInput = memo(function ChatInput({
 					onChange={(e) => {
 						handleTextChange(e.target.value, e.target.selectionStart ?? e.target.value.length);
 					}}
+					onSelect={(e) => {
+						if (menu?.kind === "at") {
+							const cur = (e.target as HTMLTextAreaElement).selectionStart;
+							if (cur < menu.start || cur > menu.end) {
+								setMenu(null);
+							}
+						}
+					}}
 					onCompositionEnd={() => {
 						compositionEndTimeRef.current = Date.now();
 					}}
@@ -1723,7 +1746,8 @@ export const ChatInput = memo(function ChatInput({
 					onPaste={onPaste}
 				/>
 				{planMode && (
-					<div
+					<button
+						type="button"
 						style={{
 							display: "inline-flex",
 							alignItems: "center",
@@ -1736,13 +1760,15 @@ export const ChatInput = memo(function ChatInput({
 							position: "absolute",
 							right: 12,
 							top: 8,
-							pointerEvents: "none",
+							cursor: "pointer",
+							border: "1px solid var(--border, rgba(255, 255, 255, 0.1))",
 							zIndex: 2,
 						}}
+						onClick={() => appSend({ type: "set_plan_mode", enabled: false })}
 						title={t("planModeTip")}
 					>
-						📋 {t("planModeBadge")}
-					</div>
+						📋 {t("planModeBadge")} <span style={{ marginLeft: 2, opacity: 0.7 }}>✕</span>
+					</button>
 				)}
 				{/* 底部工具条（ChatGPT 风格）：附件 / 模型 / 思考强度 在左，
 				    发送 / 停止 在右，全部收进输入框容器内。 */}

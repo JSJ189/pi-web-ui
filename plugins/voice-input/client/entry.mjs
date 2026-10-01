@@ -1183,9 +1183,10 @@ async function runLocalInstall() {
 		]);
 		return;
 	}
+	const currentOverlay = overlay;
 	// 轮询进度（overlay 关了就停轮询，服务端照装）。
 	const timer = setInterval(async () => {
-		if (!overlay) {
+		if (!overlay || overlay !== currentOverlay) {
 			clearInterval(timer);
 			return;
 		}
@@ -1202,7 +1203,7 @@ async function runLocalInstall() {
 			return;
 		}
 		clearInterval(timer);
-		if (!overlay) return;
+		if (!overlay || overlay !== currentOverlay) return;
 		if (st.error) {
 			ui.setStatus("🎤");
 			ui.setText(`${T.installFailed}：${st.error}`, true);
@@ -1217,9 +1218,9 @@ async function runLocalInstall() {
 			ui.setStatus(`🎤 ${T.installDone}`);
 			ui.setText("");
 			ui.setNote("");
-			// 装完直接开录，一气呵成。
+			// 装完直接开录，一气呵成（仅当依然处于同一个浮层且为空闲态）。
 			setTimeout(() => {
-				if (overlay) void startRecorderFlow();
+				if (overlay === currentOverlay && session.mode === "idle") void startRecorderFlow();
 			}, 600);
 			return;
 		}

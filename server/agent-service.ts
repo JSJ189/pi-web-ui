@@ -7359,6 +7359,8 @@ export class ClientSession {
 			this.flushSnapshot();
 		},
 		refreshSessions: () => this.refreshSessions(),
+		setPlanMode: (enabled) => this.setPlanMode(enabled),
+		getPlanMode: () => this.conv?.planMode === true,
 		afterReload: () => {
 			// /reload 同样重读磁盘 settings.json——重放重试覆盖 + 软上限覆盖 + 终端门控。
 			this.applyRetryOverrides();
@@ -12056,7 +12058,8 @@ export class ClientSession {
 	): Promise<void> {
 		if (this.quiesceBlocked()) return;
 		const trimmed = text.trim();
-		if (!trimmed && !attachments?.some((a) => a.mode === "quote" && readTextQuote(a.quote))) {
+		const hasAttachments = Boolean(attachments && attachments.length > 0);
+		if (!trimmed && !hasAttachments) {
 			this.emit({
 				type: "notice",
 				level: "warning",
