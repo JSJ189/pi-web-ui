@@ -150,6 +150,10 @@ async function mysqlAdapter(cfg) {
 		CONNECT_TIMEOUT_MS + 3000,
 		"建立连接",
 	);
+	// #458：服务端掐连接（wait_timeout/重启/网络闪断）时会 emit error——无监听即
+	// ERR_UNHANDLED_ERROR 崩掉整个服务进程。静默兜底（与同文件 ioredis 同范式），
+	// 后续操作自身报错走正常工具回执。
+	(conn.connection ?? conn).on?.("error", () => {});
 	await conn.ping();
 	let curDb = null;
 	async function useDb(db) {
@@ -303,6 +307,8 @@ async function postgresAdapter(cfg) {
 		let c = clients.get(name);
 		if (c) return c;
 		c = new Client({ ...base, database: name });
+		// #458：pg 后端重启/网络闪断会 emit error，无监听崩主进程（同 mysql/ioredis 兜底）。
+		c.on("error", () => {});
 		await withTimeout(c.connect(), CONNECT_TIMEOUT_MS + 3000, "建立连接");
 		clients.set(name, c);
 		return c;
@@ -580,6 +586,8 @@ async function mssqlAdapter(cfg) {
 		let p = pools.get(name);
 		if (p) return p;
 		p = new mssql.ConnectionPool({ ...baseCfg, database: name });
+		// #458：mssql 连接池 error 事件无监听同样崩主进程（同三家 SQL 兜底）。
+		p.on("error", () => {});
 		await withTimeout(p.connect(), CONNECT_TIMEOUT_MS + 5000, "建立连接");
 		pools.set(name, p);
 		return p;
@@ -742,6 +750,10 @@ async function mssqlAdapter(cfg) {
 async function mongoAdapter(cfg) {
 	const mod = await import("mongodb");
 	const MongoClient = mod.MongoClient ?? mod.default?.MongoClient;
+	// #458：MongoDB 默认主键就是 ObjectId——docSave/docDelete 必走 new ObjectId 分支，
+	// 只解构 MongoClient 时三处 `new ObjectId(v)` 运行时 100% 抛 ReferenceError（被
+	// catch 吞成普通错误回执，保存/删除从未可用）。
+	const ObjectId = mod.ObjectId ?? mod.default?.ObjectId;
 	let url = cfg.uri;
 	if (!url) {
 		const auth = cfg.user
