@@ -90,13 +90,21 @@ export function renderMarkdown(src, title) {
 			listTag = "";
 		}
 	};
+	// #501：href/src 的 scheme 白名单——预览页与主应用同源，`javascript:` 链接一旦
+	// 可点击即等同主应用执行面。http/https/mailto 与相对路径放行，其余 scheme
+	// （javascript:、data:、vbscript: 等）一律置为失效锚点。与主应用 MdLink 对齐。
+	const safeUrl = (u) => {
+		const t = String(u).trim();
+		if (!/^[a-zA-Z][a-zA-Z0-9+.-]*:/.test(t)) return t; // 无 scheme = 相对路径
+		return /^(https?:|mailto:)/i.test(t) ? t : "#";
+	};
 	const inline = (t) => {
 		let s = escHtml(t);
 		const codes = [];
 		s = s.replace(/`([^`]+)`/g, (_, c) => `@@CODE${codes.push(c) - 1}@@`);
 		s = s
-			.replace(/!\[([^\]]*)\]\(([^)]+)\)/g, '<img alt="$1" src="$2">')
-			.replace(/\[([^\]]+)\]\(([^)]+)\)/g, '<a href="$2">$1</a>')
+			.replace(/!\[([^\]]*)\]\(([^)]+)\)/g, (_, alt, src) => `<img alt="${alt}" src="${safeUrl(src)}">`)
+			.replace(/\[([^\]]+)\]\(([^)]+)\)/g, (_, text, href) => `<a href="${safeUrl(href)}">${text}</a>`)
 			.replace(/\*\*([^*]+)\*\*/g, "<strong>$1</strong>")
 			.replace(/(^|\W)\*([^*\n]+)\*/g, "$1<em>$2</em>")
 			.replace(/@@CODE(\d+)@@/g, (_, n) => `<code>${codes[Number(n)]}</code>`);
