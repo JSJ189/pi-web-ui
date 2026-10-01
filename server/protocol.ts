@@ -1855,7 +1855,11 @@ export type UiSlotId =
 	/** 通知条动作区（notice 上的快捷按钮）。 */
 	| "notice.actions"
 	/** 弹窗（插件声明 kind="view" 的条目，经宿主桥 openModal 按需打开）。 */
-	| "modal.dialog";
+	| "modal.dialog"
+	/** 左侧边缘悬浮工具条。 */
+	| "sidebar.left"
+	/** 右侧边缘悬浮工具条。 */
+	| "sidebar.right";
 
 /** 插件 UI 挂载点的组合语义。list 允许多个条目并列；single 只允许一个可见条目。 */
 export type UiSlotCardinality = "list" | "single";
@@ -1997,6 +2001,8 @@ export interface UiLayoutPrefs {
 	labels?: Record<string, string>;
 	/** 顶栏按钮文字总开关（默认开；false = 只剩图标，数字角标保留，溢出菜单仍带文字）。 */
 	topbarText?: boolean;
+	/** 用户自定义槽位/位置（将条目挪到 topbar.primary / bottombar / sidebar.left / sidebar.right）。 */
+	slots?: Record<string, UiSlotId>;
 }
 
 /** 一个插件下发的全部 UI 贡献（manifest "ui" 与运行时注册合并后的快照）。 */

@@ -11,7 +11,8 @@ import * as fsPromises from "node:fs/promises";
 import { dirname, isAbsolute, resolve } from "node:path";
 import { normalizeSoftCapByModel, normalizeSoftCapTokens } from "./soft-cap.js";
 import { deriveLegacy, legacyToDisabled, normalizeDisabledAgentTools } from "./tool-manager.js";
-import type { UiAlign, UiLayoutPrefs } from "./protocol.js";
+import { UI_SLOTS } from "./plugins.js";
+import type { UiAlign, UiLayoutPrefs, UiSlotId } from "./protocol.js";
 
 /** System-prompt mode: append the custom text to the built prompt, or replace
  *  the whole system prompt with it. (遗留字段：主会话已迁移到 compose 模板，
@@ -166,6 +167,30 @@ export function normalizeUiLayout(v: unknown): UiLayoutPrefs {
 	}
 	// 顶栏按钮文字总开关：只收布尔值（缺席 = 显示，兼容老存档）。
 	const topbarText = typeof o.topbarText === "boolean" ? (o.topbarText as boolean) : undefined;
+	// 用户自定义槽位/位置：只收合法 slot 字符串
+	let slots: Record<string, UiSlotId> | undefined;
+	if (o.slots && typeof o.slots === "object" && !Array.isArray(o.slots)) {
+		slots = {};
+		for (const [k, val] of Object.entries(o.slots as Record<string, unknown>).slice(0, 200)) {
+			if (k.length > 0 && k.length <= 96 && typeof val === "string" && UI_SLOTS.has(val)) {
+				slots[k] = val as UiSlotId;
+			}
+		}
+		if (Object.keys(slots).length === 0) slots = undefined;
+	}
+	// 品牌槽位同样折进 host:brand
+	if (slots && ("host:brand-logo" in slots || "host:brand-name" in slots)) {
+		const out: Record<string, UiSlotId> = {};
+		for (const [k, val] of Object.entries(slots)) {
+			if (k === "host:brand-logo" || k === "host:brand-name") continue;
+			out[k] = val;
+		}
+		if (out[BRAND_NEW] === undefined) {
+			const picked = slots["host:brand-logo"] ?? slots["host:brand-name"];
+			if (picked !== undefined) out[BRAND_NEW] = picked;
+		}
+		slots = Object.keys(out).length ? out : undefined;
+	}
 	return {
 		...(hidden ? { hidden } : {}),
 		...(shown ? { shown } : {}),
@@ -174,6 +199,7 @@ export function normalizeUiLayout(v: unknown): UiLayoutPrefs {
 		...(align ? { align } : {}),
 		...(labels ? { labels } : {}),
 		...(topbarText !== undefined ? { topbarText } : {}),
+		...(slots ? { slots } : {}),
 	};
 }
 

@@ -37,6 +37,7 @@ import {
 	setPluginViewOrder,
 	setPluginViewPinned,
 	type UiSlotEntry,
+	type UiSlotId,
 } from "../ui-slots";
 import { fitTopbar, MOBILE_ASIDE_TOPBAR_IDS, sortOverflowMenuItems } from "../topbar-fit";
 import { openContextMenu } from "../context-menu-state";
@@ -385,15 +386,83 @@ export function TopBar({
 		}
 	};
 
-	/** 右键一个顶栏条目 → 打开 contextmenu.topbar 槽位（插件可往里贡献菜单项）。 */
+	/** 右键一个顶栏条目 → 打开 contextmenu.topbar 槽位（支持位置切换 + 插件菜单项）。 */
 	const openItemMenu = (e: React.MouseEvent, id: string, label: string) => {
 		e.preventDefault();
+		e.stopPropagation();
+		const layout = chat.settings?.uiLayout;
+		const setItemSlot = (targetSlot: UiSlotId) => {
+			const slots = { ...layout?.slots, [id]: targetSlot };
+			appSend({ type: "set_settings", uiLayout: { ...layout, slots } });
+		};
+		const hideItem = () => {
+			const hidden = new Set(layout?.hidden ?? []);
+			hidden.add(id);
+			appSend({ type: "set_settings", uiLayout: { ...layout, hidden: [...hidden] } });
+		};
+		const menuEntries: UiSlotEntry[] = [
+			{
+				id: "host:move-bottom",
+				slot: "contextmenu.topbar",
+				source: "host",
+				label: t("moveToBottom"),
+				kind: "action",
+				order: 10,
+				align: "start",
+				hidden: false,
+				userOverrides: [],
+				arrangedBy: [],
+			},
+			{
+				id: "host:move-left",
+				slot: "contextmenu.topbar",
+				source: "host",
+				label: t("moveToLeft"),
+				kind: "action",
+				order: 20,
+				align: "start",
+				hidden: false,
+				userOverrides: [],
+				arrangedBy: [],
+			},
+			{
+				id: "host:move-right",
+				slot: "contextmenu.topbar",
+				source: "host",
+				label: t("moveToRight"),
+				kind: "action",
+				order: 30,
+				align: "start",
+				hidden: false,
+				userOverrides: [],
+				arrangedBy: [],
+			},
+			{
+				id: "host:hide-item",
+				slot: "contextmenu.topbar",
+				source: "host",
+				label: t("uiLayoutRestore"),
+				kind: "action",
+				order: 40,
+				align: "start",
+				hidden: false,
+				userOverrides: [],
+				arrangedBy: [],
+			},
+			...(uiContextTopbar ?? []),
+		];
 		openContextMenu({
 			x: e.clientX,
 			y: e.clientY,
 			slot: "contextmenu.topbar",
 			target: { id, label },
-			entries: uiContextTopbar ?? [],
+			entries: menuEntries,
+			onHostAction: (entry) => {
+				if (entry.id === "host:move-bottom") setItemSlot("bottombar");
+				else if (entry.id === "host:move-left") setItemSlot("sidebar.left");
+				else if (entry.id === "host:move-right") setItemSlot("sidebar.right");
+				else if (entry.id === "host:hide-item") hideItem();
+			},
 		});
 	};
 	// 受管标记与自身版本号：走全局（web/src/app-globals.ts），整个连接内不变。
@@ -1165,6 +1234,42 @@ export function TopBar({
 			>
 				<FiGithub />
 			</a>
+		),
+		"host:conn": (
+			<span className="chip" data-tip={chat.status}>
+				<span className={`status-dot ${chat.status === "open" ? "ok" : "busy"}`} />
+				<span className="chip-sub">{chat.status}</span>
+			</span>
+		),
+		"host:engine": (
+			<span className="chip" data-tip="engine">
+				<span className="chip-sub">{chat.engine ?? "pi"}</span>
+			</span>
+		),
+		"host:ctx": (
+			<span className="chip" data-tip={t("contextUsage")}>
+				<span className="chip-sub">
+					{(chat.state?.stats?.contextUsage?.tokens ?? 0) > 0
+						? `${chat.state?.stats?.contextUsage?.tokens}`
+						: t("contextUsage")}
+				</span>
+			</span>
+		),
+		"host:cost": (
+			<span className="chip" data-tip={t("cumulativeCost")}>
+				<span className="chip-sub">${(chat.state?.stats?.cost ?? 0).toFixed(4)}</span>
+			</span>
+		),
+		"host:cwd": (
+			<button
+				type="button"
+				className="chip"
+				data-tip={chat.state?.cwd ?? ""}
+				onClick={() => setProjectPickerOpen(true)}
+			>
+				<FiFolder />
+				<span className="chip-sub">{chat.state?.cwd?.split(/[/\\]/).pop() || chat.state?.cwd}</span>
+			</button>
 		),
 	};
 

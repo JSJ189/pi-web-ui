@@ -19,11 +19,9 @@
 - **聊天内容引用** — 选中消息中的文字或代码后点击引用，将原文添加到输入框。支持展开、移除、多条引用和重复引用去重，发送后的引用可在历史消息中查看，编辑重问时保留。
 
 <!-- auto-i18n:start -->
-
 ### i18n
 
-- 前端新增 key（4）：`quoteSelection`、`quoteText`、`quoteSource`、`removeQuote`
-
+- 前端新增 key（19）：`openInNewTab`、`clickToCloseImage`、`uiLayoutSidebarLeft`、`uiLayoutSidebarRight`、`uiLayoutPosition`、`uiLayoutPosTop`、`uiLayoutPosBottom`、`uiLayoutPosLeft`、`uiLayoutPosRight`、`moveToTop`、`moveToBottom`、`moveToLeft`、`moveToRight`、`sideDockCollapse`、`sideDockExpand`、`quoteSelection`、`quoteText`、`quoteSource`、`removeQuote`
 <!-- auto-i18n:end -->
 
 ## [0.97.0] — 2026-09-26

@@ -55,7 +55,7 @@ const ids = (entries: { id: string }[]) => entries.map((e) => e.id);
 
 describe("UI slot cardinality（P1-4）", () => {
 	it("所有现有挂载点都有显式 list 规格，新增 single 不会改变现有入口语义", () => {
-		expect(UI_SLOT_SPECS).toHaveLength(22);
+		expect(UI_SLOT_SPECS).toHaveLength(24);
 		expect(UI_SLOT_SPECS.every((spec) => spec.cardinality === "list")).toBe(true);
 		expect(new Set(UI_SLOT_SPECS.map((spec) => spec.slot)).size).toBe(UI_SLOT_SPECS.length);
 	});
@@ -192,8 +192,8 @@ describe("buildUiSlots / 第 1 层：宿主默认", () => {
 		expect(settings?.kind).toBe("action");
 		expect(settings?.hidden).toBe(false);
 		expect(settings?.order).toBe(60);
-		// 没用到的槽位是空数组（渲染层不必判空），且全部槽位都在（21 个 + modal.dialog）
-		expect(Object.keys(slots)).toHaveLength(22);
+		// 没用到的槽位是空数组（渲染层不必判空），且全部槽位都在
+		expect(Object.keys(slots)).toHaveLength(24);
 		expect(slots["composer.leading"]).toEqual([]);
 		// 输入框动作区有 7 个宿主内置（上传/模板/模型/思考/DSH×2/发送），发送簇 align=end
 		// （计划模式已搬到目标条 host:goal-plan）
@@ -271,6 +271,8 @@ describe("buildUiSlots / 第 1 层：宿主默认", () => {
 			"contextmenu.toolcall",
 			"settings.pages",
 			"modal.dialog",
+			"sidebar.left",
+			"sidebar.right",
 		]);
 	});
 
@@ -410,7 +412,7 @@ describe("buildUiSlots / 第 2 层：插件贡献", () => {
 			arrange: [],
 		});
 		const slots = build([dirty]);
-		expect(Object.keys(slots)).toHaveLength(22);
+		expect(Object.keys(slots)).toHaveLength(24);
 		expect(ids(Object.values(slots).flat()).some((id) => id === "dirty:bad")).toBe(false);
 	});
 });
@@ -607,6 +609,28 @@ describe("buildUiSlots / 第 4 层：用户偏好（最高）", () => {
 		const arr = plugin("a", { items: [], arrange: [{ id: "host:chat", label: "插件改的" }] });
 		const slots = build([arr], { layout: { labels: { "host:chat": "用户改的" } } });
 		expect(slots["topbar.primary"].find((e) => e.id === "host:chat")?.label).toBe("用户改的");
+	});
+
+	it("slots 覆盖条目槽位（可在顶部/底部/左侧/右侧自由移动）", () => {
+		const slots = build([], {
+			layout: {
+				slots: {
+					"host:settings": "sidebar.left",
+					"host:search": "bottombar",
+					"host:ctx": "topbar.primary",
+				},
+			},
+		});
+		expect(ids(slots["sidebar.left"])).toContain("host:settings");
+		expect(ids(slots["topbar.primary"])).not.toContain("host:settings");
+		expect(slots["sidebar.left"].find((e) => e.id === "host:settings")?.userOverrides).toContain("slot");
+		expect(slots["sidebar.left"].find((e) => e.id === "host:settings")?.movedFrom).toBe("topbar.primary");
+
+		expect(ids(slots["bottombar"])).toContain("host:search");
+		expect(ids(slots["topbar.primary"])).not.toContain("host:search");
+
+		expect(ids(slots["topbar.primary"])).toContain("host:ctx");
+		expect(ids(slots["bottombar"])).not.toContain("host:ctx");
 	});
 
 	it("偏好指向不存在的 id 时不报错、不新增条目", () => {

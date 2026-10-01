@@ -1240,12 +1240,16 @@ export function SettingsModal({
 		{ slot: "contextmenu.toolcall", labelKey: "uiLayoutContextToolcall" },
 		{ slot: "settings.pages", labelKey: "uiLayoutSettingsPages" },
 		{ slot: "modal.dialog", labelKey: "uiLayoutModal" },
+		{ slot: "sidebar.left", labelKey: "uiLayoutSidebarLeft" },
+		{ slot: "sidebar.right", labelKey: "uiLayoutSidebarRight" },
 	];
 	/** 渲染层真正按 align 分区的槽位（其余槽位的 align 存了也无处生效，布局页就不提供了）。
 	 *  顶栏与底栏/输入框动作区同口径：顶栏可受管条目的 align 均生效（手机端特有的对话折叠
 	 *  按钮 host:history 与文件列表折叠按钮 host:files 是两侧列表的唯一入口，不可被管理显示，
 	 *  已从设置页中去掉）。 */
-	const uiAlignSlots: UiSlotId[] = ["bottombar", "composer.actions", "topbar.primary"];
+	const uiAlignSlots: UiSlotId[] = ["bottombar", "composer.actions", "topbar.primary", "sidebar.left", "sidebar.right"];
+	/** 可自由在上下和两侧切换位置的槽位 */
+	const uiPositionSlots: UiSlotId[] = ["topbar.primary", "bottombar", "sidebar.left", "sidebar.right"];
 	const [uiLayoutFilter, setUiLayoutFilter] = useState("");
 	/** 槽位 id → 布局页分区标题（movedFrom「移自哪」的显示用）。 */
 	const uiSlotTitle = (slot: UiSlotId): string => {
@@ -1297,6 +1301,11 @@ export function SettingsModal({
 	const setUiAlign = (id: string, align: string) => {
 		if (align !== "start" && align !== "center" && align !== "end") return;
 		setLayout({ align: { ...layout?.align, [id]: align } });
+	};
+	/** 位置：支持在顶栏、底栏、左侧悬浮、右侧悬浮自由切换。 */
+	const setUiSlot = (id: string, targetSlot: UiSlotId) => {
+		const slots = { ...layout?.slots, [id]: targetSlot };
+		setLayout({ slots });
 	};
 	/** 改名：空串 = 清掉用户文案、回到合并文案（60 字截断与协议同口径）。 */
 	const setUiLabel = (id: string, label: string) => {
@@ -3007,6 +3016,20 @@ export function SettingsModal({
 														<span className="set-ui-source" title={it.id}>
 															{t("uiLayoutMovedFrom")}: {uiSlotTitle(it.movedFrom)}
 														</span>
+													)}
+													{uiPositionSlots.includes(slot) && (
+														<label className="set-ui-align" title={t("uiLayoutPosition")}>
+															<select
+																value={slot}
+																onChange={(e) => setUiSlot(it.id, e.target.value as UiSlotId)}
+																aria-label={t("uiLayoutPosition")}
+															>
+																<option value="topbar.primary">{t("uiLayoutPosTop")}</option>
+																<option value="bottombar">{t("uiLayoutPosBottom")}</option>
+																<option value="sidebar.left">{t("uiLayoutPosLeft")}</option>
+																<option value="sidebar.right">{t("uiLayoutPosRight")}</option>
+															</select>
+														</label>
 													)}
 													{uiAlignSlots.includes(slot) && (
 														<label className="set-ui-align" title={t("uiLayoutAlign")}>

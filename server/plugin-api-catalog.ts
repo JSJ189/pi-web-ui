@@ -48,6 +48,8 @@ export const SLOT_EXAMPLES: Readonly<Record<string, string>> = {
 	"goalbar.actions": `{ "ui": { "goalbar.actions": [{ "id": "m", "label": "目标条", "kind": "action", "action": "my:m" }] } }`,
 	"notice.actions": `{ "ui": { "notice.actions": [{ "id": "m", "label": "通知动作", "kind": "action", "action": "my:m" }] } }`,
 	"modal.dialog": `{ "modal": [{ "id": "m", "label": "弹窗", "kind": "action", "action": "my:m" }] }`,
+	"sidebar.left": `{ "sidebar.left": [{ "id": "m", "label": "左侧悬浮", "kind": "action", "action": "my:m" }] }`,
+	"sidebar.right": `{ "sidebar.right": [{ "id": "m", "label": "右侧悬浮", "kind": "action", "action": "my:m" }] }`,
 };
 
 /** 宿主方法表（与 server/plugins.ts#PluginHost 同语义的精简版：只收发现用的注册/调用面）。

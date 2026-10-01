@@ -18,6 +18,7 @@ import { GoalBar } from "./components/GoalBar";
 import { FiRefreshCw } from "react-icons/fi";
 
 import { FooterBar } from "./components/FooterBar";
+import { SideDock } from "./components/SideDock";
 import { Dialog } from "./components/Dialog";
 import { DshQuestionDialog } from "./components/DshQuestionDialog";
 import { presetText } from "./components/DshPresetBar";
@@ -423,6 +424,8 @@ export function App() {
 		[chat.dshPresets, locale],
 	);
 	const uiNoticeActions = useMemo(() => uiSlots["notice.actions"].filter((e) => !e.hidden), [uiSlots]);
+	const uiSidebarLeft = useMemo(() => uiSlots["sidebar.left"] ?? [], [uiSlots]);
+	const uiSidebarRight = useMemo(() => uiSlots["sidebar.right"] ?? [], [uiSlots]);
 	/** 点一个插件顶栏条目：缺省 action（或 "view"）由宿主切成插件视图；其余交给插件
 	 *  （按需加载它的客户端 bundle；没人接管就提示一句，不让按钮看起来"点了没用"）。
 	 *  kind="select" 的渲染层把选中的 value 经第二个参数传进来，转给插件 handler。 */
@@ -2024,7 +2027,75 @@ export function App() {
 					)}
 				</div>
 			</TemplateProvider>
-			<FooterBar chat={chat} bottombarItems={uiSlots["bottombar"]} onUiAction={onUiAction} />
+			<SideDock
+				side="left"
+				items={uiSidebarLeft}
+				chat={chat}
+				view={view}
+				onViewChange={(v: ViewName) => {
+					terminalOpenRequested.current = v === "terminal" && chat.terminals.length === 0;
+					if (terminalOpenRequested.current && createShell()) {
+						terminalOpenRequested.current = false;
+					}
+					setView(v);
+					setDrawer(null);
+				}}
+				onOpenPanel={setDrawer}
+				onOpenSettings={(sec) => {
+					setSettingsInitialSection(sec as any);
+					setSettingsOpen(true);
+				}}
+				onOpenBgTasks={() => setBgTasksOpen(true)}
+				onOpenGlobalSearch={() => setGlobalSearchOpen(true)}
+				onUiAction={onUiAction}
+				uiContextTopbar={uiSlots["contextmenu.topbar"]}
+				onThemeToggle={() => switchTheme(theme === "light" ? null : "light")}
+				onSoundToggle={() => setSound({ ...sound, enabled: !sound.enabled })}
+			/>
+			<SideDock
+				side="right"
+				items={uiSidebarRight}
+				chat={chat}
+				view={view}
+				onViewChange={(v: ViewName) => {
+					terminalOpenRequested.current = v === "terminal" && chat.terminals.length === 0;
+					if (terminalOpenRequested.current && createShell()) {
+						terminalOpenRequested.current = false;
+					}
+					setView(v);
+					setDrawer(null);
+				}}
+				onOpenPanel={setDrawer}
+				onOpenSettings={(sec) => {
+					setSettingsInitialSection(sec as any);
+					setSettingsOpen(true);
+				}}
+				onOpenBgTasks={() => setBgTasksOpen(true)}
+				onOpenGlobalSearch={() => setGlobalSearchOpen(true)}
+				onUiAction={onUiAction}
+				uiContextTopbar={uiSlots["contextmenu.topbar"]}
+				onThemeToggle={() => switchTheme(theme === "light" ? null : "light")}
+				onSoundToggle={() => setSound({ ...sound, enabled: !sound.enabled })}
+			/>
+			<FooterBar
+				chat={chat}
+				bottombarItems={uiSlots["bottombar"]}
+				onUiAction={onUiAction}
+				onOpenSettings={() => {
+					setSettingsInitialSection(undefined);
+					setSettingsOpen(true);
+				}}
+				onViewChange={(v: ViewName) => {
+					terminalOpenRequested.current = v === "terminal" && chat.terminals.length === 0;
+					if (terminalOpenRequested.current && createShell()) {
+						terminalOpenRequested.current = false;
+					}
+					setView(v);
+					setDrawer(null);
+				}}
+				onOpenGlobalSearch={() => setGlobalSearchOpen(true)}
+				onOpenBgTasks={() => setBgTasksOpen(true)}
+			/>
 			{previewFile && (
 				<FilePreview
 					file={previewFile}

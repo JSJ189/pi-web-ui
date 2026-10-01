@@ -23,7 +23,43 @@ describe("normalizeUiLayout", () => {
 		});
 	});
 
-	it("与其他字段共存（存盘→读回不丢对齐）", () => {
+	it("保留合法的 slots（topbar.primary / bottombar / sidebar.left / sidebar.right）", () => {
+		expect(
+			normalizeUiLayout({
+				slots: {
+					"host:settings": "sidebar.left",
+					"host:search": "bottombar",
+					"host:ctx": "sidebar.right",
+					"host:chat": "topbar.primary",
+				},
+			}),
+		).toEqual({
+			slots: {
+				"host:settings": "sidebar.left",
+				"host:search": "bottombar",
+				"host:ctx": "sidebar.right",
+				"host:chat": "topbar.primary",
+			},
+		});
+	});
+
+	it("脏 slot 丢弃（不合法 slot 名不收），全脏时不留空对象", () => {
+		expect(normalizeUiLayout({ slots: { a: "invalid.slot", b: "nope" } })).toEqual({});
+		expect(
+			normalizeUiLayout({
+				slots: {
+					"host:settings": "sidebar.left",
+					bad: "invalid.slot",
+				},
+			}),
+		).toEqual({
+			slots: {
+				"host:settings": "sidebar.left",
+			},
+		});
+	});
+
+	it("与其他字段共存（存盘→读回不丢对齐与槽位）", () => {
 		const prefs = {
 			hidden: ["host:sound"],
 			shown: ["host:chat"],
@@ -31,6 +67,7 @@ describe("normalizeUiLayout", () => {
 			groups: { "host:chat": "g" },
 			align: { "host:cwd": "start" },
 			labels: { "host:chat": "聊天" },
+			slots: { "host:settings": "sidebar.left" as const },
 		};
 		expect(normalizeUiLayout(prefs)).toEqual(prefs);
 	});
@@ -74,6 +111,12 @@ describe("normalizeUiLayout", () => {
 		// 显式新值赢：新旧同时出现时保留新 id 的值。
 		expect(normalizeUiLayout({ labels: { "host:brand": "New", "host:brand-name": "Old" } })).toEqual({
 			labels: { "host:brand": "New" },
+		});
+	});
+
+	it("品牌二合一：slots 折进 host:brand", () => {
+		expect(normalizeUiLayout({ slots: { "host:brand-logo": "sidebar.left" } })).toEqual({
+			slots: { "host:brand": "sidebar.left" },
 		});
 	});
 });
