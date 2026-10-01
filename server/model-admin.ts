@@ -1557,7 +1557,15 @@ export class ModelAdminService {
 			);
 
 			// Merge: manual values win; fetched fills blanks and appends new ids.
-			const prev = new Map((saved.models ?? []).map((m) => [m.id, m]));
+			// #486：probe 是数秒级网络 await，期间用户可能已在设置面板编辑同一服务商——
+			// 以盘上最新条目为合并基准（旧快照 saved 只提供探测参数），否则刷新会用
+			// 旧快照整表覆盖，静默回滚并发编辑（删除的模型复活、手动新增丢失）。
+			const fresh = this.readModelsConfig().providers[pid] as NonNullable<typeof saved> | undefined;
+			if (!fresh) {
+				// probe 期间服务商被删除：不再写回，避免用旧快照复活已删除的条目。
+				return done(false, { error: "provider deleted during refresh" });
+			}
+			const prev = new Map((fresh.models ?? []).map((m) => [m.id, m]));
 			let added = 0;
 			for (const f of fetched) {
 				const cur = prev.get(f.id);
@@ -1574,11 +1582,11 @@ export class ModelAdminService {
 			const merged = [...prev.values()].sort((a, b) => a.id.localeCompare(b.id));
 			await this.saveModelConfig(pid, {
 				providerId: pid,
-				name: saved.name,
-				api: saved.api,
-				baseUrl: saved.baseUrl,
+				name: fresh.name,
+				api: fresh.api,
+				baseUrl: fresh.baseUrl,
 				// apiKey/headers 不回传浏览器——saveModelConfig 会保留旧值
-				authHeader: saved.authHeader === true ? true : undefined,
+				authHeader: fresh.authHeader === true ? true : undefined,
 				models: merged,
 			});
 
