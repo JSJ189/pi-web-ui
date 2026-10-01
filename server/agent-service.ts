@@ -6837,6 +6837,32 @@ export class ClientSession {
 		this.pendingQuestions.clear();
 	}
 
+	/** #487：结算指定会话的挂起提问/审批（按 conversationId 精确匹配）。
+	 *  abort/移除/重建会话后残留的条目会让 isWaitingOnUser 恒真——stall 失联
+	 *  检测被永久豁免，且问卷/审批弹窗跨轮残留。dispose 口径范本：提问以
+	 *  「取消」解析、审批以「拒绝」解析并广播 tool_approval_resolved。 */
+	private settlePendingsForConv(convId: string): void {
+		for (const [id, q] of this.pendingQuestions) {
+			if (q.conversationId !== convId) continue;
+			this.pendingQuestions.delete(id);
+			try {
+				q.resolve(null);
+			} catch {
+				// 单个结算异常不影响其余清理
+			}
+		}
+		for (const [id, a] of this.pendingApprovals) {
+			if (a.conversationId !== convId) continue;
+			this.pendingApprovals.delete(id);
+			try {
+				a.resolve({ decision: "deny", reason: "运行已停止" });
+			} catch {
+				// 单个结算异常不影响其余清理
+			}
+			this.emit({ type: "tool_approval_resolved", id });
+		}
+	}
+
 	/** 关闭所有挂起审批（dispose 时清理）：以「拒绝」解析，避免等答复的
 	 *  Promise 与对应 runtime 泄漏（会话没了，审批弹窗永远不会有人点）。 */
 	cancelPendingApprovals(): void {
@@ -9663,6 +9689,9 @@ export class ClientSession {
 
 	/** Interrupt a run: abort, with a force-reset fallback on timeout. */
 	private async interruptRun(conv: Conversation, reason: string): Promise<void> {
+		// #487：停下就结算该会话的挂起提问/审批——残留条目让 isWaitingOnUser 恒真
+		// （stall 失联检测被永久豁免），弹窗也会跨轮残留；dispose 语义已范本化。
+		this.settlePendingsForConv(conv.id);
 		if (!this.conversationStreaming(conv) && conv.session.isIdle) {
 			return;
 		}
@@ -10273,6 +10302,8 @@ export class ClientSession {
 	private removeConversation(id: string): void {
 		const conv = this.convs.get(id);
 		if (!conv || id === this.activeId) return;
+		// #487：会话没了，挂起的提问/审批永远等不到人点——按 dispose 口径就地结算。
+		this.settlePendingsForConv(id);
 		// 正在投递的消息（附件构建 / 影子快照阶段）必须先打断：否则 prompt() 醒来
 		// 后会把用户消息写进已销毁的 runtime，静默丢失。
 		if (conv.activePromptAc) {
