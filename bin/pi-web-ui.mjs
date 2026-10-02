@@ -682,7 +682,9 @@ function buildWinShortcutPs1(env, cwd, taskName, url, logPath, pidPath) {
  * this launcher never creates one at all.
  */
 function buildWinHiddenVbs(ps1Path) {
-	const cmd = `${winPowershell()} -NoProfile -NonInteractive -ExecutionPolicy Bypass -WindowStyle Hidden -File "${ps1Path}"`;
+	// 可执行文件必须带引号：winPowershell() 常返回 `C:\Program Files\PowerShell\7\pwsh.exe`，
+	// 含空格且未加引号时 WScript.Shell.Run 找不到文件，直接报 80070002（系统找不到指定的文件）。
+	const cmd = `"${winPowershell()}" -NoProfile -NonInteractive -ExecutionPolicy Bypass -WindowStyle Hidden -File "${ps1Path}"`;
 	// VBScript 字符串没有 \" 转义（也没有 \uXXXX），内嵌引号必须写成 ""；
 	// 不能用 JSON.stringify —— 它输出 \" 会在 VBScript 里提前结束字符串（语句未结束 800A0401），
 	// 且会把非 ASCII 路径转成 \uXXXX 字面量（wscript 不识别，中文用户名直接变成乱码路径）。
