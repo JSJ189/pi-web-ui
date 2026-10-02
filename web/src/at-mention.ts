@@ -96,7 +96,10 @@ export function mapFileHits(providerLabel: string, raw: unknown, limit = 10): At
 			providerLabel,
 			title: o.name,
 			hint: o.path,
-			text: `@${o.name}`,
+			// 正文写相对路径而非 basename：同名文件/目录（根目录 报告/ 与 方案/报告/）
+			// 在输入框与聊天记录里靠路径才能区分，linkify 也按相对路径渲染文件药丸
+			// （@src/App.tsx 形态本就受支持）。
+			text: `@${o.path}`,
 			attachments: [
 				{
 					path: o.path,
