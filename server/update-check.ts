@@ -87,6 +87,10 @@ export interface LocalPackage {
 	name: string;
 	version: string;
 	kind: UpdateItemKind;
+	/** Pre-flagged target (issue #533): an i18n key the caller cannot localize
+	 *  yet, resolved by checkAll into the item's `error`. Currently set only for
+	 *  a pi-core whose installed version could not be read. */
+	error?: string;
 	/** git-extension only: `host/path` shorthand (prepend `git:` for the `pi update` command). */
 	source?: string;
 	/** git-extension only: clone dir (<agentDir>/git/… or <projectCwd>/.pi/git/…). */
@@ -426,26 +430,41 @@ function piCliOnPath(): string | null {
 	return null;
 }
 
+/** Read a pi-core package.json's version, or null when absent, not ours, or
+ *  unreadable. Shared by both resolution strategies below. */
+function readPiCoreVersionAt(pkgPath: string): string | null {
+	if (!existsSync(pkgPath)) return null;
+	try {
+		const pkg = JSON.parse(readFileSync(pkgPath, "utf8")) as { name?: string; version?: string };
+		if (pkg.name === PI_CORE_PACKAGE && pkg.version) return pkg.version;
+	} catch {
+		/* unreadable package.json */
+	}
+	return null;
+}
+
 /**
- * Read the pi core version from disk: resolve the `pi` bin (typically a
- * symlink into <global>/node_modules/<pkg>/dist/bundle/cli.js) and walk up to
- * its package.json. FORK-FREE by design — see the note on defaultProbePiCore.
+ * <binDir>/node_modules/<pkg>/package.json — the concrete layout a global npm
+ * install always uses. This is the FIRST candidate because it is the only one
+ * that works on Windows: npm's cmd-shim writes a regular `pi` shell script
+ * (not a symlink into the package), so the realpath walk below would start
+ * from <prefix> itself and never see the package one level down (issue #533).
  */
-function readPiCoreVersionFromDisk(): string | null {
-	const bin = piCliOnPath();
-	if (!bin) return null;
+function versionFromSiblingNodeModules(bin: string): string | null {
+	return readPiCoreVersionAt(join(dirname(bin), "node_modules", ...PI_CORE_PACKAGE.split("/"), "package.json"));
+}
+
+/**
+ * POSIX: `pi` is a symlink into <prefix>/node_modules/<pkg>/dist/bundle/cli.js
+ * — realpath it and walk up (≤8 levels) until a package.json names our
+ * package. Functionally unchanged from the original probe.
+ */
+function versionFromSymlinkWalk(bin: string): string | null {
 	try {
 		let dir = dirname(realpathSync(bin));
 		for (let i = 0; i < 8; i++) {
-			const pkgPath = join(dir, "package.json");
-			if (existsSync(pkgPath)) {
-				try {
-					const pkg = JSON.parse(readFileSync(pkgPath, "utf8")) as { name?: string; version?: string };
-					if (pkg.name === PI_CORE_PACKAGE && pkg.version) return pkg.version;
-				} catch {
-					/* unreadable package.json — keep walking */
-				}
-			}
+			const version = readPiCoreVersionAt(join(dir, "package.json"));
+			if (version) return version;
 			const parent = dirname(dir);
 			if (parent === dir) break;
 			dir = parent;
@@ -454,6 +473,17 @@ function readPiCoreVersionFromDisk(): string | null {
 		/* ignore */
 	}
 	return null;
+}
+
+/**
+ * Read the pi core version from disk: resolve the `pi` bin on PATH, then try
+ * the concrete global-npm layout first (Windows) and the POSIX symlink walk
+ * second. Exported for unit tests — defaultProbePiCore memoizes its result.
+ */
+export function readPiCoreVersionFromDisk(): string | null {
+	const bin = piCliOnPath();
+	if (!bin) return null;
+	return versionFromSiblingNodeModules(bin) ?? versionFromSymlinkWalk(bin);
 }
 
 /**
@@ -545,13 +575,16 @@ export function collectTargets(
 ): LocalPackage[] {
 	const targets: LocalPackage[] = [{ name: "pi-web-ui", version: webuiVersion, kind: "webui" }];
 	const coreVersion = probePiCore() ?? readVendoredPiCore(agentDir);
-	if (coreVersion) {
-		targets.push({
-			name: PI_CORE_PACKAGE,
-			version: coreVersion,
-			kind: "pi-core",
-		});
-	}
+	// issue #533: keep the pi-core row even when the version is undetectable
+	// (e.g. unreadable global install) instead of silently dropping it — an
+	// honest "could not detect" row beats a missing one. checkAll resolves the
+	// key into the item's localized `error`.
+	targets.push({
+		name: PI_CORE_PACKAGE,
+		version: coreVersion ?? "unknown",
+		kind: "pi-core",
+		...(coreVersion ? {} : { error: "pluginupdate.piCore.unknown" }),
+	});
 	targets.push(...listInstalledPackages(agentDir).filter((pkg) => !isHostProvidedPackage(pkg.name)));
 	targets.push(...listGitExtensions(agentDir, opts?.projectCwd));
 	return targets;
@@ -717,6 +750,27 @@ export async function checkAll(
 		while (cursor < targets.length) {
 			const i = cursor++;
 			const t = targets[i]!;
+			if (t.error) {
+				// Pre-flagged target (issue #533, e.g. undetectable pi-core
+				// version): `error` carries an i18n key resolved here so
+				// collectTargets stays language-free. No registry lookup.
+				results[i] = {
+					name: t.name,
+					kind: t.kind,
+					current: t.version,
+					latest: null,
+					latestPublishedAt: null,
+					upToDate: false,
+					...(t.source ? { source: t.source } : {}),
+					error: pick(
+						l,
+						"无法检测已安装的引擎版本（可能未装全局 pi，或安装方式不标准），可手动检查。",
+						"Could not detect the installed engine version (no global pi, or a non-standard install); check manually.",
+						t.error,
+					),
+				};
+				continue;
+			}
 			if (t.kind === "git-extension") {
 				try {
 					if (!t.installDir) throw new Error("missing install dir");

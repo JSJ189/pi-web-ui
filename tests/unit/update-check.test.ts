@@ -253,11 +253,12 @@ describe("collectTargets", () => {
 		}
 	});
 
-	it("probe miss + no vendored copy → no pi-core row, rest unchanged", () => {
+	it("probe miss + no vendored copy → pi-core row kept with an unknown hint (issue #533)", () => {
 		const dir = makeAgentDir({ foo: "^1.0.0" }, [["foo", "foo", "1.0.0"]]);
 		try {
 			expect(collectTargets(dir, "0.48.0", () => null)).toEqual([
 				{ name: "pi-web-ui", version: "0.48.0", kind: "webui" },
+				{ name: CORE, version: "unknown", kind: "pi-core", error: "pluginupdate.piCore.unknown" },
 				{ name: "foo", version: "1.0.0", kind: "package" },
 			]);
 		} finally {
@@ -769,6 +770,12 @@ describe("collectTargets with git extensions (issue #178)", () => {
 			const targets = collectTargets(dir, "0.48.0", () => null, {});
 			expect(targets).toEqual([
 				{ name: "pi-web-ui", version: "0.48.0", kind: "webui" },
+				{
+					name: "@earendil-works/pi-coding-agent",
+					version: "unknown",
+					kind: "pi-core",
+					error: "pluginupdate.piCore.unknown",
+				},
 				{ name: "foo", version: "1.0.0", kind: "package" },
 				{
 					name: "sol-pi",
