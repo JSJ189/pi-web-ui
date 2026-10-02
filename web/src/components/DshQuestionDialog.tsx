@@ -1,4 +1,5 @@
 import { useEffect, useRef, useState } from "react";
+import { FiChevronDown, FiChevronUp } from "react-icons/fi";
 import { useT } from "../i18n";
 import { appSend } from "../app-globals";
 import { useEscapeKey } from "../shortcut-stack";
@@ -55,6 +56,7 @@ export function DshQuestionDialog({ question, owner, conversationTitle }: DshQue
 	const convTitle = question.conversationTitle || conversationTitle;
 	const [selections, setSelections] = useState<Record<string, string[]>>({});
 	const [customs, setCustoms] = useState<Record<string, string>>({});
+	const [collapsed, setCollapsed] = useState(false);
 	/** 向导当前步（question.questions 下标），每次新提问从第一题开始。 */
 	const [step, setStep] = useState(0);
 	// P0-6：倒计时（秒），归零自动取消提问（服务端同样超时 reject）。
@@ -67,6 +69,7 @@ export function DshQuestionDialog({ question, owner, conversationTitle }: DshQue
 		setSelections({});
 		setCustoms({});
 		setStep(0);
+		setCollapsed(false);
 		const remain = question.deadline ? Math.max(0, Math.ceil((question.deadline - Date.now()) / 1000)) : -1;
 		setRemainSec(remain);
 		// 审查 #9：挂载时已过期的提问立即取消 —— 下面的定时器分支（s > 0 才发）
@@ -111,9 +114,10 @@ export function DshQuestionDialog({ question, owner, conversationTitle }: DshQue
 
 	// 审查 #12：Esc 改走 shortcut-stack 分层栈（与 Modal 同一调度）——
 	// 多层弹窗叠开时内层优先消费，不再裸 document 监听抢 Esc。
+	// 折叠态暂停 Esc 取消，避免用户在折叠查看上下文时误触 Esc 取消提问。
 	useEscapeKey(() => {
 		cancel();
-	});
+	}, !collapsed);
 
 	const isQuestionVisible = (qq: QuestionItem, sel: Record<string, string[]>): boolean => {
 		if (!qq.dependsOn) return true;
@@ -234,9 +238,11 @@ export function DshQuestionDialog({ question, owner, conversationTitle }: DshQue
 		.filter((o) => (selections[q.id] ?? []).includes(o.label) && o.preview)
 		.map((o) => o.preview as string);
 
+	const questionPreview = (q.header || q.question).replace(/\s+/g, " ").trim();
+
 	return (
-		<div className="dialog-inline" data-dialog-kind="select">
-			<div className="dialog-head">
+		<div className={`dialog-inline${collapsed ? " collapsed" : ""}`} data-dialog-kind="select">
+			<div className="dialog-head" onClick={collapsed ? () => setCollapsed(false) : undefined}>
 				<span className="dialog-badge">{t("modelQuestion")}</span>
 				{convTitle && (
 					<span className="question-conv-title" title={convTitle}>
@@ -249,79 +255,109 @@ export function DshQuestionDialog({ question, owner, conversationTitle }: DshQue
 						{remainSec > 0 ? t("questionTimeout", { s: remainSec }) : t("questionTimeoutExpired")}
 					</span>
 				)}
-				<button type="button" className="dialog-dismiss" title={t("cancel")} onClick={cancel}>
-					✕
-				</button>
-			</div>
-			<div className="set-section" key={q.id}>
-				<div className="set-section-title">{q.header ?? `${t("modelQuestion")} ${currentStep + 1}`}</div>
-				<div className="question-head">
-					<Markdown text={q.question} rawHtml />
-				</div>
-				{q.detail && (
-					<div className="set-hint">
-						<Markdown text={q.detail} rawHtml />
-					</div>
+				{collapsed && (
+					<span className="question-collapsed-preview" title={questionPreview}>
+						{questionPreview}
+					</span>
 				)}
-				{effectiveOptions.length > 0 && (
-					<div className="set-list">
-						{effectiveOptions.map((o) => {
-							const active = (selections[q.id] ?? []).includes(o.label);
-							return (
-								<QuestionOption
-									key={o.label}
-									label={o.label}
-									description={o.description}
-									mark={q.multiSelect ? (active ? "☑ " : "☐ ") : active ? "● " : "○ "}
-									active={active}
-									onPick={() => onOptionClick(q.id, o.label, !!q.multiSelect)}
-								/>
-							);
-						})}
-					</div>
-				)}
-				{previews.length > 0 && (
-					<div className="question-preview">
-						<div className="question-preview-label">{t("optionPreview")}</div>
-						{previews.map((p, i) => (
-							<div className="question-preview-body" key={i}>
-								<Markdown text={p} rawHtml />
-							</div>
-						))}
-					</div>
-				)}
-				<input
-					className="set-prompt-input question-custom"
-					placeholder={t("modelQuestionCustom")}
-					value={customs[q.id] ?? ""}
-					onChange={(e) => setCustoms((prev) => ({ ...prev, [q.id]: e.target.value }))}
-					onKeyDown={(e) => {
-						// 回车提交（最后一题提交、否则进入下一题）；未作答则不触发。
-						if (e.key === "Enter") {
-							e.preventDefault();
-							if (answered(q.id)) onNext();
-						}
-					}}
-				/>
-			</div>
-			<div className="dialog-nav">
-				<button type="button" className="dialog-dismiss-inline" onClick={cancel}>
-					{t("cancel")}
-				</button>
-				<div className="dialog-nav-right">
+				<div className="dialog-head-actions">
 					<button
 						type="button"
-						className="dialog-prev"
-						disabled={currentStep === 0}
-						onClick={() => setStep(currentStep - 1)}
+						className="dialog-toggle-collapse"
+						title={collapsed ? t("expandSection") : t("collapseSection")}
+						onClick={(e) => {
+							e.stopPropagation();
+							setCollapsed((c) => !c);
+						}}
 					>
-						{t("previous")}
+						{collapsed ? <FiChevronUp /> : <FiChevronDown />}
 					</button>
-					<button type="button" className="dialog-submit" disabled={!answered(q.id)} onClick={onNext}>
-						{currentStep === total - 1 ? t("modelQuestionSubmit") : t("next")}
+					<button
+						type="button"
+						className="dialog-dismiss"
+						title={t("cancel")}
+						onClick={(e) => {
+							e.stopPropagation();
+							cancel();
+						}}
+					>
+						✕
 					</button>
 				</div>
 			</div>
+			{!collapsed && (
+				<>
+					<div className="set-section" key={q.id}>
+						<div className="set-section-title">{q.header ?? `${t("modelQuestion")} ${currentStep + 1}`}</div>
+						<div className="question-head">
+							<Markdown text={q.question} rawHtml />
+						</div>
+						{q.detail && (
+							<div className="set-hint">
+								<Markdown text={q.detail} rawHtml />
+							</div>
+						)}
+						{effectiveOptions.length > 0 && (
+							<div className="set-list">
+								{effectiveOptions.map((o) => {
+									const active = (selections[q.id] ?? []).includes(o.label);
+									return (
+										<QuestionOption
+											key={o.label}
+											label={o.label}
+											description={o.description}
+											mark={q.multiSelect ? (active ? "☑ " : "☐ ") : active ? "● " : "○ "}
+											active={active}
+											onPick={() => onOptionClick(q.id, o.label, !!q.multiSelect)}
+										/>
+									);
+								})}
+							</div>
+						)}
+						{previews.length > 0 && (
+							<div className="question-preview">
+								<div className="question-preview-label">{t("optionPreview")}</div>
+								{previews.map((p, i) => (
+									<div className="question-preview-body" key={i}>
+										<Markdown text={p} rawHtml />
+									</div>
+								))}
+							</div>
+						)}
+						<input
+							className="set-prompt-input question-custom"
+							placeholder={t("modelQuestionCustom")}
+							value={customs[q.id] ?? ""}
+							onChange={(e) => setCustoms((prev) => ({ ...prev, [q.id]: e.target.value }))}
+							onKeyDown={(e) => {
+								// 回车提交（最后一题提交、否则进入下一题）；未作答则不触发。
+								if (e.key === "Enter") {
+									e.preventDefault();
+									if (answered(q.id)) onNext();
+								}
+							}}
+						/>
+					</div>
+					<div className="dialog-nav">
+						<button type="button" className="dialog-dismiss-inline" onClick={cancel}>
+							{t("cancel")}
+						</button>
+						<div className="dialog-nav-right">
+							<button
+								type="button"
+								className="dialog-prev"
+								disabled={currentStep === 0}
+								onClick={() => setStep(currentStep - 1)}
+							>
+								{t("previous")}
+							</button>
+							<button type="button" className="dialog-submit" disabled={!answered(q.id)} onClick={onNext}>
+								{currentStep === total - 1 ? t("modelQuestionSubmit") : t("next")}
+							</button>
+						</div>
+					</div>
+				</>
+			)}
 		</div>
 	);
 }

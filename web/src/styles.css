@@ -10836,6 +10836,18 @@ div.chead[role="button"]:focus-visible,
 	animation: dialog-slide-up 0.18s ease-out;
 }
 
+.dialog-inline.collapsed {
+	max-height: none;
+	overflow: hidden;
+	padding: 6px 12px;
+	gap: 0;
+}
+
+.dialog-inline.collapsed .dialog-head {
+	cursor: pointer;
+	user-select: none;
+}
+
 @keyframes dialog-slide-up {
 	from {
 		opacity: 0;
@@ -10925,6 +10937,47 @@ div.chead[role="button"]:focus-visible,
 .dialog-dismiss:hover {
 	color: var(--text);
 	background: var(--bg-elev);
+}
+
+.dialog-head-actions {
+	display: flex;
+	align-items: center;
+	gap: 4px;
+	margin-left: auto;
+	flex-shrink: 0;
+}
+
+.dialog-head-actions .dialog-dismiss {
+	margin-left: 0;
+}
+
+.dialog-toggle-collapse {
+	flex-shrink: 0;
+	background: none;
+	border: none;
+	color: var(--text-faint);
+	cursor: pointer;
+	font-size: 13px;
+	line-height: 1;
+	padding: 4px 6px;
+	border-radius: 6px;
+	display: inline-flex;
+	align-items: center;
+	justify-content: center;
+}
+.dialog-toggle-collapse:hover {
+	color: var(--text);
+	background: var(--bg-elev);
+}
+
+.question-collapsed-preview {
+	flex: 1;
+	min-width: 0;
+	font-size: 12px;
+	color: var(--text-dim);
+	overflow: hidden;
+	text-overflow: ellipsis;
+	white-space: nowrap;
 }
 
 .dialog-options {
@@ -15539,7 +15592,8 @@ button.source-default-toggle {
 		text-overflow: ellipsis;
 		white-space: nowrap;
 	}
-	.dialog-dismiss {
+	.dialog-dismiss,
+	.dialog-toggle-collapse {
 		min-width: 32px;
 		min-height: 32px;
 		display: inline-flex;

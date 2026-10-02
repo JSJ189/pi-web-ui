@@ -364,3 +364,127 @@ describe("DshQuestionDialog 对话名字展示", () => {
 		expect(titleEl?.textContent?.trim()).toBe("兜底对话名字");
 	});
 });
+
+describe("DshQuestionDialog 折叠与展开", () => {
+	it("默认处于展开状态，显示题目与操作栏", () => {
+		const { container } = mount(baseQuestion);
+		const inline = container.querySelector(".dialog-inline");
+		expect(inline?.classList.contains("collapsed")).toBe(false);
+		expect(container.querySelector(".set-section")).not.toBeNull();
+		expect(container.querySelector(".dialog-nav")).not.toBeNull();
+		expect(container.querySelector(".question-collapsed-preview")).toBeNull();
+
+		const toggleBtn = container.querySelector(".dialog-toggle-collapse") as HTMLButtonElement;
+		expect(toggleBtn).not.toBeNull();
+		expect(["折叠", "Collapse"]).toContain(toggleBtn.getAttribute("title"));
+	});
+
+	it("点击折叠按钮后进入收起态，隐藏题目主体并展示头部简要", () => {
+		const { container } = mount(baseQuestion);
+		click(container, ".dialog-toggle-collapse");
+
+		const inline = container.querySelector(".dialog-inline");
+		expect(inline?.classList.contains("collapsed")).toBe(true);
+		expect(container.querySelector(".set-section")).toBeNull();
+		expect(container.querySelector(".dialog-nav")).toBeNull();
+
+		const preview = container.querySelector(".question-collapsed-preview");
+		expect(preview).not.toBeNull();
+		expect(preview?.textContent).toContain("Which **one**?");
+
+		const toggleBtn = container.querySelector(".dialog-toggle-collapse") as HTMLButtonElement;
+		expect(["展开", "Expand"]).toContain(toggleBtn.getAttribute("title"));
+	});
+
+	it("在收起态点击展开按钮可恢复完整题目面板", () => {
+		const { container } = mount(baseQuestion);
+		click(container, ".dialog-toggle-collapse");
+		expect(container.querySelector(".dialog-inline")?.classList.contains("collapsed")).toBe(true);
+
+		click(container, ".dialog-toggle-collapse");
+		expect(container.querySelector(".dialog-inline")?.classList.contains("collapsed")).toBe(false);
+		expect(container.querySelector(".set-section")).not.toBeNull();
+		expect(container.querySelector(".dialog-nav")).not.toBeNull();
+	});
+
+	it("在收起态点击头部整行可直接展开", () => {
+		const { container } = mount(baseQuestion);
+		click(container, ".dialog-toggle-collapse");
+		expect(container.querySelector(".dialog-inline")?.classList.contains("collapsed")).toBe(true);
+
+		const head = container.querySelector(".dialog-head") as HTMLElement;
+		click(container, head);
+		expect(container.querySelector(".dialog-inline")?.classList.contains("collapsed")).toBe(false);
+		expect(container.querySelector(".set-section")).not.toBeNull();
+	});
+
+	it("折叠并重新展开后，用户输入与选项勾选状态完整保留", () => {
+		const { container } = mount(baseQuestion);
+		// 勾选选项 A
+		const optA = container.querySelector(".question-option") as HTMLElement;
+		click(container, optA);
+		expect(optA.classList.contains("active")).toBe(true);
+
+		// 输入自定义文本
+		const input = container.querySelector(".question-custom") as HTMLInputElement;
+		const setter = Object.getOwnPropertyDescriptor(HTMLInputElement.prototype, "value")!.set!;
+		act(() => {
+			setter.call(input, "my custom reply");
+			input.dispatchEvent(new Event("change", { bubbles: true }));
+		});
+
+		// 折叠
+		click(container, ".dialog-toggle-collapse");
+		expect(container.querySelector(".set-section")).toBeNull();
+
+		// 重新展开
+		click(container, ".dialog-toggle-collapse");
+		const optAReopened = container.querySelector(".question-option") as HTMLElement;
+		expect(optAReopened.classList.contains("active")).toBe(true);
+		const inputReopened = container.querySelector(".question-custom") as HTMLInputElement;
+		expect(inputReopened.value).toBe("my custom reply");
+	});
+
+	it("新提问到来时自动重置为展开状态", () => {
+		const container = document.createElement("div");
+		document.body.appendChild(container);
+		root = createRoot(container);
+		setAppSend(() => true);
+
+		act(() => {
+			root!.render(
+				createElement(
+					LanguageProvider,
+					null,
+					createElement(DshQuestionDialog, {
+						question: baseQuestion,
+					}),
+				),
+			);
+		});
+
+		// 先折叠
+		click(container, ".dialog-toggle-collapse");
+		expect(container.querySelector(".dialog-inline")?.classList.contains("collapsed")).toBe(true);
+
+		// 收到新提问 id
+		const nextQuestion: Question = {
+			id: "q_next",
+			questions: [{ id: "step1", question: "Next question?" }],
+		};
+		act(() => {
+			root!.render(
+				createElement(
+					LanguageProvider,
+					null,
+					createElement(DshQuestionDialog, {
+						question: nextQuestion,
+					}),
+				),
+			);
+		});
+
+		expect(container.querySelector(".dialog-inline")?.classList.contains("collapsed")).toBe(false);
+		expect(container.querySelector(".set-section")).not.toBeNull();
+	});
+});
