@@ -34,14 +34,20 @@
 - **任务计划跨重启/跨刷新持久化** — 计划不再只活在内存：按 `sessionId` 落盘到 `<dataDir>/plans.json`，并随会话转录（`plan/update` custom entry）走；重启后按「落盘文件 → 转录 → 历史 plan_update 工具调用」三重兼容顺序回放，旧会话也能找回看板。
 - **任务看板折叠态精简为单行状态条** — 折叠时只留「标题 + 进度徽标 + 当前步骤」，进度以底边 2px 细线呈现（零额外高度）；「净室执行 / 复制 Markdown / 清空」收进展开态，实施按钮在两种状态都可达。
 
+### Changed
+
+- **清掉 103 个没人引用的 i18n key** — 前端字典里积了一批没人读的翻译（旧模型管理 UI 残留 54 个、旧语言选择键 10 个、提示词/工具开关重构残留等），白白拖着 8 个语言包一起翻译与审阅。现新增守卫 `tests/unit/i18n-dead-keys.test.ts`（随 `npx vitest run` 进 CI）：字典里出现全仓零引用的 key 就直接红，并列出清单。模板拼接的动态 key（`thinking.*` / `promptTok_*`）已显式白名单。
+
 <!-- auto-i18n:start -->
 ### i18n
 
 - 前端新增 key（26）：`openInNewTab`、`clickToCloseImage`、`compactedHistoryNotFound`、`uiLayoutSideDockFloat`、`uiIconEdit`、`uiIconEditTitle`、`uiIconEditHint`、`uiIconEditTray`、`uiIconEditDropHere`、`uiLayoutSidebarLeft`、`uiLayoutSidebarRight`、`uiLayoutPosition`、`uiLayoutPosTop`、`uiLayoutPosBottom`、`uiLayoutPosLeft`、`uiLayoutPosRight`、`moveToTop`、`moveToBottom`、`moveToLeft`、`moveToRight`、`sideDockCollapse`、`sideDockExpand`、`quoteSelection`、`quoteText`、`quoteSource`、`removeQuote`
+- 前端删除 key（103）：`langZh`、`langEn`、`langIt`、`langJa`、`langKo`、`langFr`、`langDe`、`langEs`、`langRu`、`langPt`、`manageModelsTitle`、`setGlobalDefault`、`clearGlobalDefault`、`globalDefaultBadge`、`slashHelpHint`、`renameSessionConfirm`、`dismissConversationWithSubagents`、`dismissConversationWithSubagentsMixed`、`toolApprovalCommand`、`toolApprovalReason`、`approvalRuleResetConfirm`、`approvalRuleDeleteConfirm`、`planBoardSteps`、`planBoardProgress`、`planBoardNoPlan`、`editHint`、`updateTip`、`pluginAllUpToDate`、`fileSaved`、`dshVisionHiddenNote`、`questionNavTip`、`planModeTipOn`、`scmQueryFailed`、`scmTooManyFailures`、`editProvider`、`builtinProviders`、`hintKeyOnly`、`providerAuthHint`、`keyReady`、`replaceKey`、`replaceKeyTitle`、`cloneProviderTitle`、`pasteKey`、`providerIdPlaceholder`、`baseUrlExamplePh`、`saveAllBatch`、`advancedEdit`、`batchCreateProviders`、`secondKeyTitle`、`noBaseUrlShort`、`providerNameLabel`、`providerNameHint`、`apiKeyLabel`、`secondKeyPlaceholder`、`batchDesc`、`batchKeyLabel`、`modelsCountShort`、`customProviders`、`customDesc`、`noCustomProviders`、`refreshBuiltinCatalog`、`appendModelTitle`、`appendModelIdPh`、`appendModelNamePh`、`appendModelAdd`、`appendModelBusy`、`appendModelCancel`、`appendModelApiTitle`、`appendModelApiAuto`、`appendModelBaseUrlPh`、`modelsCount`、`addProvider`、`modelsTitle`、`modelIdReq`、`textImage`、`maxOutput`、`removeModel`、`addModel`、`fetchModelsErr`、`antigravityTemplateTitle`、`antigravityTemplateDesc`、`antigravityFillOpenAI`、`antigravityFillAnthropic`、`enrichHintPh`、`enrichModelsCancelled`、`goalBarActive`、`goalBarStatusPending`、`goalWizardAnswer`、`promptHistoryCleared`、`settingsPromptMode`、`promptAppendHint`、`promptReplaceHint`、`promptPlaceholder`、`promptReadonlyLockedBadge`、`reviewPromptHint`、`settingsTerminalTools`、`terminalToolsOffHint`、`settingsEditTools`、`visionBridgePromptAppendHint`、`visionBridgePromptReplaceHint`、`dshPresetCurrent`、`schedulerNameLabel`、`schedulerPromptLabel`
 - 前端中文变更（3）：`planBoardTitle`、`planImplementBtn`、`planCleanHandoffBtn`
 - 前端英文变更（4）：`planBoardTitle`、`planImplementBtn`、`planCleanHandoffBtn`、`browserControlExample2`
 - 服务端新增 key（1）：`pluginupdate.subpath.manifest.failed`
 - 服务端文案变更（2）：`markers.todo.dep.blocks.updated`、`subagents.wait.pending`
+- 服务端删除 key（1）：`markers.todo.list.empty`
 <!-- auto-i18n:end -->
 
 ## [0.97.0] — 2026-09-26
