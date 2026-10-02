@@ -9,11 +9,11 @@
  *   异常兜底（隐私模式 / 配额满时忽略，不抛错）。
  */
 
-export const PROMPT_HISTORY_KEY = "pi-web-ui:prompt-history";
+const PROMPT_HISTORY_KEY = "pi-web-ui:prompt-history";
 export const PROMPT_HISTORY_MAX = 100;
-export const PROMPT_HISTORY_SETTINGS_KEY = "pi-web-ui:prompt-history-settings";
+const PROMPT_HISTORY_SETTINGS_KEY = "pi-web-ui:prompt-history-settings";
 
-export interface PromptHistorySettings {
+interface PromptHistorySettings {
 	/** 最大保留条数（1–500） */
 	maxEntries: number;
 	/** 是否限制单条字数 */
@@ -22,7 +22,7 @@ export interface PromptHistorySettings {
 	charLimit: number;
 }
 
-export const DEFAULT_PROMPT_HISTORY_SETTINGS: PromptHistorySettings = {
+const DEFAULT_PROMPT_HISTORY_SETTINGS: PromptHistorySettings = {
 	maxEntries: 100,
 	charLimitEnabled: false,
 	charLimit: 2000,

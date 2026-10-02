@@ -25,7 +25,7 @@
  * Pure and dependency-free (unit-tested from tsconfig.tests.json).
  */
 
-export interface StreamSegments {
+interface StreamSegments {
 	/** Complete blocks — render once via memoized Markdown, keyed by index. */
 	frozen: string[];
 	/** The trailing (possibly incomplete) block — re-parsed as it grows. */

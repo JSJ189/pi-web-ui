@@ -31,7 +31,7 @@ const TIMEOUT_RE =
 /** 超过这个值（秒）的 timeout 视为脏数据，不显示。 */
 const TIMEOUT_MAX = 1e9;
 
-export interface ToolArgHints {
+interface ToolArgHints {
 	/** 文件路径（读/写/编辑类工具），已剥离控制字符并按 VALUE_LIMIT 截断。 */
 	path?: string;
 	/** 超时提示文本，已带单位（"30s" / "1.5s" / "500ms"）。 */
@@ -67,14 +67,7 @@ function agentHint(text: string): string | undefined {
 }
 
 /** delegate_task 六段字段名（卡片正文按此顺序渲染）。 */
-export const DELEGATE_FIELDS = [
-	"task",
-	"expected_outcome",
-	"required_tools",
-	"must_do",
-	"must_not_do",
-	"context",
-] as const;
+const DELEGATE_FIELDS = ["task", "expected_outcome", "required_tools", "must_do", "must_not_do", "context"] as const;
 
 export type DelegateField = (typeof DELEGATE_FIELDS)[number];
 

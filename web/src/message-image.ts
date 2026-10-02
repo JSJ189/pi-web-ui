@@ -10,7 +10,7 @@
  *
  * 导出前把计算色拍扁成不透明 rgb，画布底用主题实底，再交给 html-to-image。
  */
-export interface Rgba {
+interface Rgba {
 	r: number;
 	g: number;
 	b: number;
@@ -25,7 +25,7 @@ export const EXPORT_CHROME_SELECTOR =
 	".msg-actions, .msg-text-copy, .chead-copy, .stream-cursor, .msg-editor, .msg-collapse-btn, .msg-export-check, .toolcall-kill, .toolcall-open";
 
 /** 浏览器 canvas 边长上限（Chrome/Edge 约 16384；超出 toBlob 会黑图或抛错）。 */
-export const EXPORT_CANVAS_MAX_PX = 16384;
+const EXPORT_CANVAS_MAX_PX = 16384;
 
 /** 2x 优先；超限降到 1x；1x 仍超返回 0（调用方应拒复制）。 */
 export function pickExportPixelRatio(cssHeight: number, cssWidth = 800, desired = 2): number {
@@ -211,7 +211,7 @@ function flattenColorValue(value: string, backdrop: string): string | null {
  * 把 src 树上的计算色写到 dst（结构相同的 clone）上：半透明背景/文字/描边拍到
  * 最近的不透明祖先上，并关掉 backdrop-filter / mix-blend-mode（SVG 里会变成黑罩）。
  */
-export function flattenPaintTree(src: Element, dst: Element, backdrop: string): void {
+function flattenPaintTree(src: Element, dst: Element, backdrop: string): void {
 	const cs = getComputedStyle(src);
 	const st = styled(dst);
 	let nextBackdrop = backdrop;
@@ -257,11 +257,11 @@ export function flattenPaintTree(src: Element, dst: Element, backdrop: string): 
 	for (let i = 0; i < n; i++) flattenPaintTree(sKids[i], dKids[i], nextBackdrop);
 }
 
-export function stripExportChrome(root: HTMLElement): void {
+function stripExportChrome(root: HTMLElement): void {
 	root.querySelectorAll(EXPORT_CHROME_SELECTOR).forEach((n) => n.remove());
 }
 
-export interface ExportContentFilter {
+interface ExportContentFilter {
 	includeThinking?: boolean;
 	includeTools?: boolean;
 }
@@ -306,24 +306,4 @@ export async function rasterizeElementToPngBlob(
 	});
 	if (!blob) throw new Error("toBlob returned null");
 	return blob;
-}
-
-/** 无弹窗的一键导出（仍走拍扁实底），给不想开预览的调用方。 */
-export async function copyMessageCardAsImage(el: HTMLElement): Promise<void> {
-	const backdrop = resolveExportBackdrop(el);
-	const clone = snapshotMessageForExport(el, backdrop);
-	const width = Math.max(360, Math.round(el.getBoundingClientRect().width) || 640);
-	const wrap = document.createElement("div");
-	wrap.setAttribute("aria-hidden", "true");
-	wrap.style.cssText = `position:fixed;left:-10000px;top:0;width:${width}px;background:${backdrop};color-scheme:${
-		isLightColor(parseCssColor(backdrop) ?? { r: 255, g: 255, b: 255, a: 1 }) ? "light" : "dark"
-	};`;
-	wrap.appendChild(clone);
-	document.body.appendChild(wrap);
-	try {
-		const blob = await rasterizeElementToPngBlob(clone, { backgroundColor: backdrop });
-		await navigator.clipboard.write([new ClipboardItem({ "image/png": blob })]);
-	} finally {
-		wrap.remove();
-	}
 }

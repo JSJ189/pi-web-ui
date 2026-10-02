@@ -312,11 +312,6 @@ export async function syncPluginViews(plugins: UiPluginInfo[], epoch: number): P
 	notify();
 }
 
-/** 当前服务端重载纪元（顶栏动作按需加载插件 bundle 时要用同一个 ?e=）。 */
-export function currentPluginEpoch(): number {
-	return lastEpoch;
-}
-
 /** 组装传给插件 mount() 的上下文（send 由 App 注入真正的 ws 发送函数）。 */
 export function makePluginContext(
 	pluginId: string,

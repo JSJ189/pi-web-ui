@@ -9,7 +9,7 @@ import { useI18n } from "../i18n";
 import { appSend } from "../app-globals";
 
 /** Strip exit sentinels/baked banners; the banner itself renders on terminal_exit. */
-export function stripExitBanner(data: string): { clean: string; exitCode: number | null } {
+function stripExitBanner(data: string): { clean: string; exitCode: number | null } {
 	let exitCode: number | null = null;
 	const clean = data
 		.replace(/\r?\n?\[pi-term-exit:(-?\d+)\]\r?\n?/g, (_, c: string) => {

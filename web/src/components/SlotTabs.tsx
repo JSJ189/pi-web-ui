@@ -38,7 +38,7 @@ export interface SlotTab {
 	pluginPage?: { plugin: UiPluginInfo; entry: UiSlotEntry };
 }
 
-export interface SlotTabsProps {
+interface SlotTabsProps {
 	/** 持久化命名空间（localStorage key 前缀，如 "rightpanel" / "settings"）。 */
 	storageKey: string;
 	tabs: SlotTab[];

@@ -6,7 +6,7 @@
  * 抽成纯函数 cycleCommitRecall 便于单测。
  */
 
-export const SCM_COMMIT_HISTORY_KEY = "scm-commit-history";
+const SCM_COMMIT_HISTORY_KEY = "scm-commit-history";
 export const SCM_COMMIT_HISTORY_CAP = 20;
 
 /** 最小化的 Storage 形状（测试可注入内存实现）。 */

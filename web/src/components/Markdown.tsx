@@ -40,11 +40,11 @@ interface MarkdownProps {
  *  StreamMarkdown's per-segment renderers reuse the exact same configuration
  *  as this full-document renderer — streaming preview and final render must
  *  be visually identical. */
-export const remarkPlugins = [remarkGfm, remarkMath];
+const remarkPlugins = [remarkGfm, remarkMath];
 /** Same pipeline + hard line breaks — used for USER bubbles so typed/pasted
  *  multi-line text keeps every line break (see MarkdownProps.hardBreaks). */
-export const remarkPluginsHardBreaks = [remarkGfm, remarkBreaks, remarkMath];
-export const rehypePlugins: PluggableList = [
+const remarkPluginsHardBreaks = [remarkGfm, remarkBreaks, remarkMath];
+const rehypePlugins: PluggableList = [
 	// KaTeX 在 highlight 之前：两者目标节点不相交（.math vs pre code），
 	// 公式解析失败时只显示红色源码（throwOnError: false），不打断整条消息。
 	[rehypeKatex, { strict: false, throwOnError: false }],

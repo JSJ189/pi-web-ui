@@ -10,7 +10,7 @@ import {
 
 export { MACHINE_ROOT, browseQuery, joinProjectPath, isValidProjectName, parentOf };
 
-export interface ProjectPickerProps {
+interface ProjectPickerProps {
 	open: boolean;
 	currentCwd: string;
 	pathCompletions: { name: string; path: string; type: "dir" | "file" }[];

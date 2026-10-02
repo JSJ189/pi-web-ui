@@ -26,7 +26,7 @@ export interface SchemaRow {
 	depth: number;
 }
 
-export interface SchemaRowsOptions {
+interface SchemaRowsOptions {
 	/** 递归展开的最大层数（默认 3：根对象 + 两层嵌套）。 */
 	maxDepth?: number;
 	/** 最多输出多少行（默认 200）。 */

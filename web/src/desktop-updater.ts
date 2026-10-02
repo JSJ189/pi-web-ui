@@ -13,7 +13,7 @@
 import { useCallback, useEffect, useState } from "react";
 import { isDesktopShell, type DesktopShellWindow } from "./desktop.js";
 
-export const DESKTOP_REPO = "xing-shuyin/pi-web-ui";
+const DESKTOP_REPO = "xing-shuyin/pi-web-ui";
 
 /** 与 desktop/preload.ts 的 DesktopUpdaterEvent 同构。 */
 export interface DesktopUpdaterEvent {
@@ -23,17 +23,16 @@ export interface DesktopUpdaterEvent {
 	message?: string;
 }
 
-export interface DesktopUpdaterBridge {
+interface DesktopUpdaterBridge {
 	check: () => Promise<unknown>;
 	download: () => Promise<unknown>;
 	quitAndInstall: () => Promise<unknown>;
 	onEvent: (cb: (msg: DesktopUpdaterEvent) => void) => () => void;
 }
 
-export type DesktopUpdaterState =
-	"idle" | "checking" | "available" | "up-to-date" | "downloading" | "downloaded" | "error";
+type DesktopUpdaterState = "idle" | "checking" | "available" | "up-to-date" | "downloading" | "downloaded" | "error";
 
-export interface DesktopUpdaterStatus {
+interface DesktopUpdaterStatus {
 	state: DesktopUpdaterState;
 	/** electron-updater 报的远端版本（null = 还没结论）。 */
 	version: string | null;

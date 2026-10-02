@@ -16,11 +16,6 @@ export interface DesktopUpdaterEvent {
 
 contextBridge.exposeInMainWorld("piDesktop", {
 	isDesktop: true as const,
-	versions: {
-		electron: process.versions.electron,
-		chrome: process.versions.chrome,
-		node: process.versions.node,
-	} as const,
 	updater: {
 		check: () => ipcRenderer.invoke("pi-desktop-updater:check"),
 		download: () => ipcRenderer.invoke("pi-desktop-updater:download"),

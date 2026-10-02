@@ -1,6 +1,6 @@
 import { useEffect, useLayoutEffect, useRef } from "react";
 
-export type EscapeHandler = () => boolean | void;
+type EscapeHandler = () => boolean | void;
 
 // 存储注册的 handler 栈（后入栈的优先处理）
 const escapeStack: EscapeHandler[] = [];

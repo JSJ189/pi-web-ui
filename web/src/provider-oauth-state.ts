@@ -6,7 +6,7 @@ export interface ProviderOAuthResultState {
 	error?: string;
 }
 
-export interface ProviderOAuthClientState {
+interface ProviderOAuthClientState {
 	flows: ProviderOAuthFlowState[];
 	results: Record<string, ProviderOAuthResultState>;
 }

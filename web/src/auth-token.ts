@@ -30,7 +30,7 @@ export function initAuthToken(): void {
 }
 
 /** 当前持久化的 token（未设置时为空串）。 */
-export function authToken(): string {
+function authToken(): string {
 	try {
 		return localStorage.getItem(KEY) ?? "";
 	} catch {

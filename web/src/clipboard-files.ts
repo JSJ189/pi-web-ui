@@ -8,7 +8,7 @@
  *
  * 结构化类型而非 DOM 类型，单测可以直接造假对象。
  */
-export interface ClipboardItemLike {
+interface ClipboardItemLike {
 	kind: string;
 	type?: string;
 	/** DOM DataTransferItem.getAsFile 的镜像：拿不到（条目已失效）返回 null。 */

@@ -29,8 +29,8 @@ interface Props {
 const KNOWN_ORDER = ["standard", "ptc", "minimal", "cordis"];
 
 /** pi 引擎内置五档的 i18n 键（与权限档 permLabelKey 同一口径）。 */
-export type PresetLabelKey = "preset.standard" | "preset.minimal" | "preset.code" | "preset.reader" | "preset.ask";
-export type PresetDescKey =
+type PresetLabelKey = "preset.standard" | "preset.minimal" | "preset.code" | "preset.reader" | "preset.ask";
+type PresetDescKey =
 	"preset.standardDesc" | "preset.minimalDesc" | "preset.codeDesc" | "preset.readerDesc" | "preset.askDesc";
 
 const BUILTIN_LABEL: Record<string, PresetLabelKey> = {
@@ -50,11 +50,11 @@ const BUILTIN_DESC: Record<string, PresetDescKey> = {
 };
 
 /** 内置预设的文案键；null = 非内置（DSH 运行时/自建预设，走服务端文案）。 */
-export function presetLabelKey(id: string): PresetLabelKey | null {
+function presetLabelKey(id: string): PresetLabelKey | null {
 	return BUILTIN_LABEL[id] ?? null;
 }
 
-export function presetDescKey(id: string): PresetDescKey | null {
+function presetDescKey(id: string): PresetDescKey | null {
 	return BUILTIN_DESC[id] ?? null;
 }
 

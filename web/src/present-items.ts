@@ -35,7 +35,7 @@ const KINDS: ReadonlySet<string> = new Set([
 ]);
 
 /** 工具参数里的一个条目（模型原样给的）。 */
-export interface PresentArgItem {
+interface PresentArgItem {
 	path: string;
 	caption?: string;
 	focus?: boolean;
@@ -66,7 +66,7 @@ export interface PresentCardItem {
 }
 
 /** 路径归一（比对 details 与参数用）：反斜杠折正斜杠 + 去首尾空白 + 去尾斜杠。 */
-export function normPresentPath(p: string): string {
+function normPresentPath(p: string): string {
 	const w = String(p ?? "")
 		.trim()
 		.replace(/\\/g, "/");
@@ -245,9 +245,4 @@ export function shouldAutoOpenPresent(o: {
 	if (typeof o.timestamp !== "number" || !Number.isFinite(o.timestamp)) return false;
 	const age = o.now - o.timestamp;
 	return age >= 0 && age <= o.maxAgeMs;
-}
-
-/** 工具结果消息（ToolCallBlock 的 view.result）→ details，类型收窄集中在这里。 */
-export function presentResultDetails(result: UiMessage | undefined): unknown {
-	return result?.details;
 }

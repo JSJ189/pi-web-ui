@@ -25,7 +25,7 @@ import { useFloatingPanel } from "../use-floating-panel";
  * 统一接入 `useFloatingPanel`：锚点优先使用 `anchorEl` 的实时位置，退化时使用
  * `anchorRect` 快照；页面滚动/缩放时只重算位置不关闭。
  */
-export interface PluginMenuRow {
+interface PluginMenuRow {
 	id: string;
 	name: string;
 	icon?: string;

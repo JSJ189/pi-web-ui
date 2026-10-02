@@ -12,10 +12,10 @@ import { useEffect, useSyncExternalStore } from "react";
 import { fileToProcessedImage } from "./image-paste";
 import { THEME_CHANGE_EVENT } from "./theme";
 
-export const WALLPAPER_SETTINGS_KEY = "pi-web-ui:wallpaper";
-export const WALLPAPER_BODY_CLASS = "has-wallpaper";
+const WALLPAPER_SETTINGS_KEY = "pi-web-ui:wallpaper";
+const WALLPAPER_BODY_CLASS = "has-wallpaper";
 
-export interface WallpaperSettings {
+interface WallpaperSettings {
 	/** 图片地址（空 = 关闭，主题自带的图仍可生效）。 */
 	url: string;
 	/** 压暗强度 0–95（百分比，越高越接近纯色背景）。 */
@@ -62,7 +62,7 @@ export function normalizeWallpaperSettings(raw: unknown): WallpaperSettings {
 }
 
 /** 读取持久化的壁纸设置（localStorage 不可用 / 数据损坏时回退默认）。 */
-export function loadWallpaperSettings(): WallpaperSettings {
+function loadWallpaperSettings(): WallpaperSettings {
 	try {
 		const raw = localStorage.getItem(WALLPAPER_SETTINGS_KEY);
 		if (!raw) return { ...DEFAULT_WALLPAPER_SETTINGS };
@@ -98,7 +98,7 @@ export async function fileToWallpaperUrl(file: File): Promise<string | null> {
  * body.has-wallpaper 按「最终生效的 --bg-image 是否为 none」开关，
  * styles.css 里 body 上的两层全屏壁纸（图 + 压暗）靠它显隐。
  */
-export function applyWallpaper(): void {
+function applyWallpaper(): void {
 	const s = cached ?? loadWallpaperSettings();
 	const root = document.documentElement;
 	if (s.url) {

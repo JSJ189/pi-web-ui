@@ -27,7 +27,7 @@ export type SoundKind = "question" | "done" | "start" | "error" | "approval";
 
 const STORAGE_KEY = "pi-web-sounds";
 
-export const DEFAULT_SOUND_SETTINGS: SoundSettings = {
+const DEFAULT_SOUND_SETTINGS: SoundSettings = {
 	enabled: true,
 	question: true,
 	done: true,

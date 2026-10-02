@@ -11,19 +11,19 @@
 export const TIP_MARGIN = 8;
 
 /** 锚点包围盒（`getBoundingClientRect()` 的返回可直接传，结构兼容）。 */
-export interface TipRect {
+interface TipRect {
 	left: number;
 	top: number;
 	right: number;
 	bottom: number;
 }
 
-export interface TipSize {
+interface TipSize {
 	width: number;
 	height: number;
 }
 
-export interface TipPos {
+interface TipPos {
 	left: number;
 	top: number;
 }

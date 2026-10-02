@@ -20,7 +20,7 @@ import { applySashDrag, parseWeights } from "../panel-sash";
 import { groupConversations } from "../conv-groups";
 import { ProjectPicker } from "./ProjectPicker.js";
 // 宿主 UI 扩展点（issue #146）：会话行的右键菜单走「slot 条目」这一条通道。
-import { LP_SECTION_ENTRY_IDS, type UiSlotEntry } from "../ui-slots";
+import { type UiSlotEntry } from "../ui-slots";
 import { contextMenuItems, openContextMenu, type ContextMenuRequest } from "../context-menu-state";
 import { composeToComposer, focusComposer } from "../composer-bridge";
 import { clearCachedProject, clearCachedSession, clearLastCwdIfMatches } from "../use-chat";
@@ -488,10 +488,9 @@ export const LeftPanel = memo(function LeftPanel({
 
 	/** `leftpanel.sessions` 会话行内嵌区：每条会话行尾渲染同一组条目（icon button，
 	 *  title=hint||label，点击交回 onUiAction；badge kind 只显示 badge 文本）。
-	 *  分区别名条目（LP_SECTION_ENTRY_IDS）只管分区显隐/排序，不进会话行；
 	 *  无条目时返回 null —— 会话行 DOM 与旧版一字不差。 */
 	const renderLeftSessions = () => {
-		const rows = (uiLeftSessions ?? []).filter((e) => !LP_SECTION_ENTRY_IDS.has(e.id));
+		const rows = uiLeftSessions ?? [];
 		if (rows.length === 0) return null;
 		return (
 			<span className="lp-slot-sessions">

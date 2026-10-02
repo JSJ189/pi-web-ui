@@ -36,7 +36,7 @@ interface DropdownProps {
 	menuStyle?: CSSProperties;
 }
 
-export interface DropdownShiftParams {
+interface DropdownShiftParams {
 	align: "left" | "right";
 	triggerLeft: number;
 	triggerRight: number;

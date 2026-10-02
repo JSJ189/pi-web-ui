@@ -32,7 +32,7 @@ import { appSend } from "../app-globals";
 import { focusComposer } from "../composer-bridge";
 import { openContextMenu } from "../context-menu-state";
 
-export interface SideDockProps {
+interface SideDockProps {
 	side: "left" | "right";
 	items: UiSlotEntry[];
 	chat: ChatState;

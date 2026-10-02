@@ -1,10 +1,10 @@
-export interface StreamingCueFinished {
+interface StreamingCueFinished {
 	id: string;
 	title?: string;
 	isActive: boolean;
 }
 
-export interface StreamingCuesDiff {
+interface StreamingCuesDiff {
 	/** 是否触发开始运行提示音（仅前台活动会话真正开始生成时为 true） */
 	startCue: boolean;
 	/** 刚刚结束运行的会话列表（流式状态由 true 跃迁为 false） */

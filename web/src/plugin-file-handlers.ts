@@ -52,10 +52,6 @@ export function findFileHandler(name: string): RegisteredFileHandler | null {
 	return registry.get(fileExtension(name))?.[0] ?? null;
 }
 
-export function currentFileHandlerEpoch(): number {
-	return epoch;
-}
-
 export async function loadFileHandler(
 	entry: RegisteredFileHandler,
 ): Promise<{ handler: PluginFileHandler; pluginId: string } | null> {

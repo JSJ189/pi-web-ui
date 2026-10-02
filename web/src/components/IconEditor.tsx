@@ -25,7 +25,7 @@ import {
 	zoneEntriesForAlign,
 } from "../ui-layout-edit";
 
-export interface IconEditorProps {
+interface IconEditorProps {
 	/** 合并引擎算好的全部槽位（含 hidden：托盘要用）。 */
 	slots: Record<UiSlotId, UiSlotEntry[]>;
 	/** 当前用户布局偏好（回应后由快照回程刷新）。 */

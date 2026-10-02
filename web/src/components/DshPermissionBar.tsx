@@ -22,8 +22,8 @@ interface Props {
  *  custom 仅展示不可点）。 */
 const OFFER_ORDER = ["read-only", "workspace-write-never", "danger-full-access"];
 
-export type PermLabelKey = "dshPermReadOnly" | "dshPermWorkspaceWrite" | "dshPermFullAccess";
-export type PermDescKey = "dshPermReadOnlyDesc" | "dshPermWorkspaceWriteDesc" | "dshPermFullAccessDesc";
+type PermLabelKey = "dshPermReadOnly" | "dshPermWorkspaceWrite" | "dshPermFullAccess";
+type PermDescKey = "dshPermReadOnlyDesc" | "dshPermWorkspaceWriteDesc" | "dshPermFullAccessDesc";
 
 /** 前端三档顺序（设置面板默认项共用）。 */
 export const DSH_PERMISSION_ORDER = ["read-only", "workspace-write-never", "danger-full-access"];

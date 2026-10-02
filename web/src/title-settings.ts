@@ -12,9 +12,9 @@
 
 import { useSyncExternalStore } from "react";
 
-export const TITLE_SETTINGS_KEY = "pi-web-ui:project-title";
+const TITLE_SETTINGS_KEY = "pi-web-ui:project-title";
 
-export interface TitleSettings {
+interface TitleSettings {
 	/** 浏览器标题是否显示当前项目名（false = 固定应用名） */
 	projectName: boolean;
 }
@@ -42,7 +42,7 @@ export function projectNameFromCwd(cwd: string): string {
 }
 
 /** 读取持久化的开关（localStorage 不可用 / 数据损坏时回退默认值）。 */
-export function loadTitleSettings(): TitleSettings {
+function loadTitleSettings(): TitleSettings {
 	try {
 		const raw = localStorage.getItem(TITLE_SETTINGS_KEY);
 		if (!raw) return { ...DEFAULT_TITLE_SETTINGS };

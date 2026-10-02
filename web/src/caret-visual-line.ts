@@ -17,7 +17,7 @@
  * 与改动前完全一致 —— 宁可少一次「视觉行精确判定」，也不要误判成可以翻历史。
  */
 
-export interface CaretLineFlags {
+interface CaretLineFlags {
 	/** 光标上方没有其他视觉行（`↑` 可以进历史） */
 	first: boolean;
 	/** 光标下方没有其他视觉行（`↓` 可以进历史） */

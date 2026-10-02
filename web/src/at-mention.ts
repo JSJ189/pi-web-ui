@@ -13,13 +13,13 @@
 import { SKILL_NAMESPACE } from "./slash-filter.js";
 
 /** 光标前的一个 `@` 词元：start = `@` 下标，query = `@` 之后到光标的串。 */
-export interface AtToken {
+interface AtToken {
 	start: number;
 	query: string;
 }
 
 /** `@` 提及项可带的路径附件（点选后宿主追加到输入框附件 chips）。 */
-export interface AtAttachment {
+interface AtAttachment {
 	path: string;
 	name?: string;
 	mode?: "inline" | "reference" | "lines" | "page";
@@ -78,7 +78,7 @@ export function mapPageHits(
 }
 
 /** 服务端 search_files 结果 → `@` 命中（内置文件提供方用，引用 chip）。 */
-export interface FileHitLike {
+interface FileHitLike {
 	path: string;
 	name: string;
 	type: "file" | "dir";

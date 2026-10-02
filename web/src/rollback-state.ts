@@ -6,7 +6,7 @@
 import { useSyncExternalStore } from "react";
 import { appSend } from "./app-globals";
 
-export interface RollbackRequest {
+interface RollbackRequest {
 	messageId: string;
 	conversationId?: string;
 }

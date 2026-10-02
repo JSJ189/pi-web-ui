@@ -24,7 +24,7 @@ import { withPluginScopeAsync } from "../plugin-host";
 import { useI18n, useT, type Translate } from "../i18n";
 import type { UiPluginInfo } from "../types";
 
-export interface PluginPageProps {
+interface PluginPageProps {
 	/** 贡献这个页的插件。 */
 	plugin: UiPluginInfo;
 	/** 服务端重载纪元（作为 bundle URL 的 ?e= 缓存击穿参数）。 */

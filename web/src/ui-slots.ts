@@ -65,7 +65,7 @@ export interface UiDiagnostic {
 	message: string;
 }
 
-export type UiDiagnosticLevel = "warn" | "error";
+type UiDiagnosticLevel = "warn" | "error";
 
 /** 协议里的全部 kind（与 server/protocol.ts 的 UiItemKind 同口径；未知值只诊断不丢弃）。 */
 const UI_ITEM_KINDS: ReadonlySet<string> = new Set([
@@ -168,7 +168,7 @@ export const UI_SLOT_SPECS: readonly UiSlotSpec[] = SLOT_IDS.map((slot) => ({
 }));
 
 /** 读取宿主定义的挂载点语义；未知值不应进入结果，但仍安全回落为 list。 */
-export function uiSlotCardinality(slot: UiSlotId): UiSlotCardinality {
+function uiSlotCardinality(slot: UiSlotId): UiSlotCardinality {
 	return UI_SLOT_SPECS.find((spec) => spec.slot === slot)?.cardinality ?? "list";
 }
 
@@ -862,32 +862,6 @@ export const BUILTIN_UI_ITEMS: BuiltinUiItem[] = [
 		order: 30,
 	},
 
-	// ---- 左栏分区（LeftPanel.tsx：三个分区的显隐 + 纵向顺序；会话行内不渲染这三条） ----
-	{
-		id: "host:lp-projects",
-		slot: "leftpanel.sessions",
-		labelKey: "recentProjects",
-		icon: "folder",
-		kind: "action",
-		order: 10,
-	},
-	{
-		id: "host:lp-running",
-		slot: "leftpanel.sessions",
-		labelKey: "runningConversations",
-		icon: "activity",
-		kind: "action",
-		order: 20,
-	},
-	{
-		id: "host:lp-history",
-		slot: "leftpanel.sessions",
-		labelKey: "historySessions",
-		icon: "clock",
-		kind: "action",
-		order: 30,
-	},
-
 	// ---- 右栏 tab（今天只有文件树） ----
 	{
 		id: "host:right-files",
@@ -1363,17 +1337,6 @@ export const BUILTIN_UI_ITEMS: BuiltinUiItem[] = [
 	// 渲染层返回 null / 不渲染，DOM 与旧版一字不差。
 ];
 
-/**
- * 左栏分区别名条目（host:lp-projects / lp-running / lp-history）：只管三个分区的
- * 显隐＋纵向顺序，会话行内不渲染 —— renderLeftSessions 进门先滤掉它们，否则每条
- * 会话行尾都会多出三个按钮（且 icon 名会按原文画出来）。
- */
-export const LP_SECTION_ENTRY_IDS: ReadonlySet<string> = new Set([
-	"host:lp-projects",
-	"host:lp-running",
-	"host:lp-history",
-]);
-
 /** 插件视图 tab 的合成条目 id（`<pluginId>:__view`，`__view` 为保留字）。 */
 export const PLUGIN_VIEW_ITEM_ID = "__view";
 
@@ -1430,7 +1393,7 @@ export function setPluginViewOrder(layout: UiLayoutPrefs | undefined, pluginIds:
 }
 
 /** 品牌旧 id（已合并为 `host:brand`，此处仅做偏好迁移用）。 */
-export const BRAND_ITEM_ID = "host:brand";
+const BRAND_ITEM_ID = "host:brand";
 const BRAND_OLD_IDS: readonly string[] = ["host:brand-logo", "host:brand-name"];
 
 /**
@@ -1439,7 +1402,7 @@ const BRAND_OLD_IDS: readonly string[] = ["host:brand-logo", "host:brand-name"];
  * 与单测直调 buildUiSlots 时同样生效。规则：列表去重映射；align/groups 跟 logo 的值、
  * labels 跟名称的值；显式写在新 id 上的值永远赢。纯函数：不改入参。
  */
-export function migrateBrandLayout<T extends UiLayoutPrefs>(src: T): T {
+function migrateBrandLayout<T extends UiLayoutPrefs>(src: T): T {
 	const hasOld =
 		(src.hidden ?? []).some((id) => BRAND_OLD_IDS.includes(id)) ||
 		(src.shown ?? []).some((id) => BRAND_OLD_IDS.includes(id)) ||

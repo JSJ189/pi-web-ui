@@ -185,7 +185,6 @@ web/src/
 ├── prompt-history.ts   # 输入历史（↑/↓）存储
 ├── message-delta.ts    # message_delta 增量 patch 纯函数，有单测
 ├── lazy-window.ts      # 消息列表惰性窗口化纯函数，有单测
-├── search-text.ts      # 会话内搜索索引纯函数，有单测
 ├── search-folded.ts    # 折叠区搜索辅助
 ├── present-items.ts    # ★ present_files 卡片纯函数（参数解析/与 details 合并/能力判定/自动打开闸门），有单测
 ├── present-settings.ts # 卡片偏好：自动打开预览弹窗（localStorage，默认关）+ 已开过的 toolCallId 去重表
@@ -225,7 +224,6 @@ web/src/
 ├── model-usage.ts      # 模型用量统计
 ├── panel-sash.ts       # 面板分隔条（拖拽调宽）
 ├── provider-oauth-state.ts # 服务商 OAuth 前端状态（配 ProviderOAuthControls）
-├── relative-time.ts    # 相对时间格式化
 ├── rollback-state.ts   # 回滚（workspace-snapshot）前端状态
 ├── scm-commit-history.ts / scm-history-filter.ts / scm-quote.ts / scm-sidebar.ts # SCM 面板辅助模块
 ├── scrollbar-gutter.ts # 滚动条槽位
@@ -238,9 +236,7 @@ web/src/
 ├── token-input.ts      # Token 输入框
 ├── touch-device.ts     # 触屏设备判定（IS_TOUCH）
 ├── update-command.ts   # 更新命令拼装
-├── use-auto-resize-textarea.ts / use-auto-scroll.ts / use-click-outside.ts / use-debounce.ts /
-│   use-in-view.ts / use-keyboard-shortcut.ts / use-latest-async.ts / use-local-storage.ts /
-│   use-media-query.ts / use-resizable.ts # 通用 Hooks
+├── use-click-outside.ts # 点击外部关闭（浮层通用）
 └── components/         # 见下
 ```
 

@@ -131,7 +131,7 @@ export function stripMarkdownForSpeech(input: string): string {
 }
 
 /** Minimal message shape (subset of UiMessage) so tests stay framework-free. */
-export interface SpeechLikeMessage {
+interface SpeechLikeMessage {
 	role: string;
 	content: { type?: string; text?: string }[];
 }

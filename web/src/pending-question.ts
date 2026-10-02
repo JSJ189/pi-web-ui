@@ -19,7 +19,7 @@ import type { UiPendingQuestion } from "./types";
 /** 面板来源：live = 即时通道（question_pending）弹出；snapshot = 由快照恢复。 */
 export type QuestionSource = "live" | "snapshot";
 
-export interface PendingQuestionDecision {
+interface PendingQuestionDecision {
 	/** false = 不必 dispatch（状态不变，避免每 60ms 一次无意义重渲）。 */
 	changed: boolean;
 	question: UiPendingQuestion | null;

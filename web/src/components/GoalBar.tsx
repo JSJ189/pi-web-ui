@@ -8,7 +8,7 @@ import type { UiSlotEntry } from "../ui-slots";
 import { renderMergedToolbar } from "../slot-toolbar";
 
 /** Messages this component sends. */
-export type GoalBarMsg =
+type GoalBarMsg =
 	| {
 			type: "set_goal";
 			goal: string;

@@ -10,7 +10,7 @@ import { asText } from "./components/Message";
  * 起止卡片保持展开。
  */
 
-export const GOAL_REVIEW_MARK = "[goal-review]";
+const GOAL_REVIEW_MARK = "[goal-review]";
 
 function firstText(m: UiMessage): string {
 	for (const b of m.content ?? []) {
@@ -21,7 +21,7 @@ function firstText(m: UiMessage): string {
 }
 
 /** 纯 verdict JSON 的 assistant 回复 → 返回结论。前后带闲话的不算（保持展开）。 */
-export function reviewVerdictOf(m: UiMessage): "pass" | "fail" | undefined {
+function reviewVerdictOf(m: UiMessage): "pass" | "fail" | undefined {
 	if (m.role !== "assistant") return undefined;
 	const text = firstText(m).trim();
 	if (!text.startsWith("{") || !text.endsWith("}")) return undefined;
@@ -35,7 +35,7 @@ export function reviewVerdictOf(m: UiMessage): "pass" | "fail" | undefined {
 	return mm ? (mm[1] as "pass" | "fail") : undefined;
 }
 
-export type ReviewFoldKind = { kind: "prompt" } | { kind: "verdict"; verdict: "pass" | "fail" };
+type ReviewFoldKind = { kind: "prompt" } | { kind: "verdict"; verdict: "pass" | "fail" };
 
 /** 审查回合消息识别：指令（含标记的 user 消息）与纯 verdict 结论默认折叠。 */
 export function reviewFoldKind(m: UiMessage): ReviewFoldKind | undefined {

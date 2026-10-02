@@ -13,11 +13,11 @@ import { useSyncExternalStore } from "react";
 import { appSend } from "./app-globals";
 import type { ServerMessage, UiMessage } from "./types";
 
-export type CompactedMessagesPayload = Extract<ServerMessage, { type: "compacted_messages_result" }>;
+type CompactedMessagesPayload = Extract<ServerMessage, { type: "compacted_messages_result" }>;
 
-export type CompactedHistoryStatus = "idle" | "loading" | "ready" | "error";
+type CompactedHistoryStatus = "idle" | "loading" | "ready" | "error";
 
-export interface CompactedHistoryState {
+interface CompactedHistoryState {
 	status: CompactedHistoryStatus;
 	messages: UiMessage[];
 	error?: string;
@@ -93,7 +93,7 @@ export function receiveCompactedMessages(payload: CompactedMessagesPayload): voi
 }
 
 /** 获取某个压缩卡片当前的折叠历史状态（未请求时返回固定的 IDLE_STATE 引用）。 */
-export function getCompactedHistoryState(compactionMessageId: string): CompactedHistoryState {
+function getCompactedHistoryState(compactionMessageId: string): CompactedHistoryState {
 	const hit = cache.get(compactionMessageId);
 	if (!hit) return IDLE_STATE;
 	// 刷新 LRU 顺序
@@ -103,7 +103,7 @@ export function getCompactedHistoryState(compactionMessageId: string): Compacted
 }
 
 /** 订阅变更。返回取消订阅函数。 */
-export function subscribeCompactedHistory(cb: () => void): () => void {
+function subscribeCompactedHistory(cb: () => void): () => void {
 	listeners.add(cb);
 	return () => {
 		listeners.delete(cb);
@@ -117,9 +117,4 @@ export function useCompactedHistory(compactionMessageId: string): CompactedHisto
 		() => getCompactedHistoryState(compactionMessageId),
 		() => IDLE_STATE,
 	);
-}
-
-/** 仅供单测：清空缓存。 */
-export function resetCompactedHistory(): void {
-	cache.clear();
 }

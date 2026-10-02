@@ -39,7 +39,7 @@ export function loadTheme(): string | null {
 	return null;
 }
 
-export function saveTheme(id: string | null): void {
+function saveTheme(id: string | null): void {
 	try {
 		if (id) localStorage.setItem(STORAGE_KEY, id);
 		else localStorage.removeItem(STORAGE_KEY);
@@ -68,7 +68,7 @@ export function applyTheme(id: string | null): void {
 	link.onload = () => window.dispatchEvent(new CustomEvent(THEME_CHANGE_EVENT));
 }
 
-export async function fetchThemes(): Promise<ThemeInfo[]> {
+async function fetchThemes(): Promise<ThemeInfo[]> {
 	try {
 		const res = await fetch(withToken(appUrl("/api/themes")));
 		if (!res.ok) return [];

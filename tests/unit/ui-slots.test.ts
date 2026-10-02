@@ -942,7 +942,7 @@ describe("面板 chrome 宿主条目（file.preview / goalbar / scm / terminal /
 			"host:scm-term",
 		]);
 		expect(ids(slots["terminal.toolbar"])).toEqual(["host:term-cmd-refresh", "host:term-cmd-new", "host:term-tab-new"]);
-		expect(ids(slots["leftpanel.sessions"])).toEqual(["host:lp-projects", "host:lp-running", "host:lp-history"]);
+		expect(ids(slots["leftpanel.sessions"])).toEqual([]);
 	});
 
 	it("隐藏与调序走同一套偏好（与顶栏同口径）", () => {

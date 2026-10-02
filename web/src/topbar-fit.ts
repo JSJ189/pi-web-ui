@@ -15,7 +15,7 @@
  *     顺序是用户可控的，这里不需要第二套优先级概念。
  */
 
-export interface TopbarFitItem {
+interface TopbarFitItem {
 	/** 条目的全局 id（`host:*` / `<pluginId>:*`）。 */
 	id: string;
 	/** 实测宽度（`offsetWidth`）。0 = 当前断点下被 CSS 藏起来的条目（见下）。 */

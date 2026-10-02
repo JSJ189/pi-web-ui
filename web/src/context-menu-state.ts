@@ -29,7 +29,7 @@ import type { UiSlotEntry } from "./ui-slots";
 import type { UiSlotId } from "./types";
 
 /** 右键菜单的四个槽位（从协议枚举里切出来，新增槽位时这里自动跟着变）。 */
-export type ContextMenuSlot = Extract<UiSlotId, `contextmenu.${string}`>;
+type ContextMenuSlot = Extract<UiSlotId, `contextmenu.${string}`>;
 
 /** 一次右键请求：坐标 + 槽位 + 被右键的对象 + 该槽位算好的条目。 */
 export interface ContextMenuRequest {
@@ -175,7 +175,7 @@ export function clampMenuPosition(
  *  - `session.isRunning`（contextmenu.session：running 对话为真，历史会话为假）
  *  - `message.hasSelection`（contextmenu.message：右键时有文本选中；宿主原生菜单让路时为假）
  *  宿主不认识的条件名一律忽略（不置灰），插件可放心写未来的条件。 */
-export type WhenContext = Record<string, boolean>;
+type WhenContext = Record<string, boolean>;
 
 /** 按槽位 + 被右键对象构造求值上下文（纯函数）。target.kind 由各打开方提供
  *  （RightPanel: file/dir；LeftPanel: running/history；Message: message）。 */
@@ -352,8 +352,7 @@ export function contextMenuItems(entries: UiSlotEntry[]): UiSlotEntry[] {
 /* ------------------------------------------------------------------ */
 
 /** 一行渲染单元：分隔线，或某个条目（`index` = 它在 items 数组里的下标，键盘导航同款下标）。 */
-export type ContextMenuRow =
-	{ kind: "sep"; key: string } | { kind: "item"; key: string; index: number; entry: UiSlotEntry };
+type ContextMenuRow = { kind: "sep"; key: string } | { kind: "item"; key: string; index: number; entry: UiSlotEntry };
 
 /**
  * items（contextMenuItems 的产物）→ 渲染行。

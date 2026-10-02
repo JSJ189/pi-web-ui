@@ -15,7 +15,7 @@
  * Multiple targets are joined with `;` so a failing step never blocks the
  * rest. Pure — unit-tested.
  */
-export interface UpdateTarget {
+interface UpdateTarget {
 	name: string;
 	kind: "webui" | "pi-core" | "package" | "git-extension" | "plugin";
 	/** git-extension only: `host/path` shorthand carried from update_status_all. */

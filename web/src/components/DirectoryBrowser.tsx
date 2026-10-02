@@ -46,7 +46,7 @@ export const parentOf = (p: string): string | null => {
 	return /^[A-Za-z]:$/.test(parent) ? parent + "/" : parent;
 };
 
-export interface DirectoryBrowserProps {
+interface DirectoryBrowserProps {
 	currentCwd: string;
 	pathCompletions: { name: string; path: string; type: "dir" | "file" }[];
 	workspaceRoots: string[];

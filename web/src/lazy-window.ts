@@ -15,7 +15,7 @@ export interface WinRect {
 	bottom: number;
 }
 
-export interface WindowPlan {
+interface WindowPlan {
 	/** 应从隐藏恢复为真实渲染的消息 id。 */
 	show: string[];
 	/** 应替换为占位符的消息 id。 */
@@ -119,7 +119,7 @@ export interface HeightEntry {
 const FP_KEYS = ["text", "thinking", "argumentsText", "output", "command"] as const;
 
 /** 指纹输入：各 content block 只取已知文本字段，结构宽松避免耦合协议类型。 */
-export interface FingerprintBlock {
+interface FingerprintBlock {
 	type?: string;
 	text?: string;
 	thinking?: string;

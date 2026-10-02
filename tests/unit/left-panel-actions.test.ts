@@ -247,56 +247,30 @@ describe("LeftPanel 标题栏操作与项目管理", () => {
 });
 
 describe("LeftPanel 会话行内嵌区", () => {
-	const sectionEntry = (id: string, label: string, icon: string) => ({
-		id,
-		source: "host",
+	const pluginEntry = () => ({
+		id: "plug:x:go",
+		source: "plugin:x",
 		slot: "leftpanel.sessions",
-		label,
+		label: "Go",
 		kind: "action",
-		icon,
-		order: 10,
+		order: 100,
 		align: "start",
 		hidden: false,
 		userOverrides: [],
 		arrangedBy: [],
 	});
 
-	it("分区别名条目不进会话行（行内无 activity/clock 原文）；插件行动作正常渲染", () => {
+	it("插件行动作渲染在会话行尾（leftpanel.sessions 里的条目都进行内嵌区）", () => {
 		setAppGlobals({ cwd: "/test", ready: true, status: "open", workspaceRoots: [] });
-		const { container } = mountLeftPanel({
-			uiLeftSessions: [
-				sectionEntry("host:lp-running", "运行的对话", "activity"),
-				sectionEntry("host:lp-history", "历史对话", "clock"),
-				{
-					id: "plug:x:go",
-					source: "plugin:x",
-					slot: "leftpanel.sessions",
-					label: "Go",
-					kind: "action",
-					order: 100,
-					align: "start",
-					hidden: false,
-					userOverrides: [],
-					arrangedBy: [],
-				},
-			],
-		});
+		const { container } = mountLeftPanel({ uiLeftSessions: [pluginEntry()] });
 		const buttons = Array.from(container.querySelectorAll<HTMLButtonElement>(".lp-slot-btn"));
-		// 只有插件那一条；分区别名两条被过滤（以前会按原文画出 activity/clock）
 		expect(buttons).toHaveLength(1);
 		expect(buttons[0]?.getAttribute("aria-label")).toBe("Go");
-		expect(buttons.every((b) => !/activity|clock/.test(b.textContent ?? ""))).toBe(true);
 	});
 
 	it("内嵌区为空时不留 .lp-slot-sessions 占位（会话行 DOM 与旧版一致）", () => {
 		setAppGlobals({ cwd: "/test", ready: true, status: "open", workspaceRoots: [] });
-		const { container } = mountLeftPanel({
-			uiLeftSessions: [
-				sectionEntry("host:lp-projects", "最近项目", "folder"),
-				sectionEntry("host:lp-running", "运行的对话", "activity"),
-				sectionEntry("host:lp-history", "历史对话", "clock"),
-			],
-		});
+		const { container } = mountLeftPanel({ uiLeftSessions: [] });
 		expect(container.querySelector(".lp-slot-sessions")).toBeNull();
 		expect(container.querySelector(".lp-slot-btn")).toBeNull();
 	});

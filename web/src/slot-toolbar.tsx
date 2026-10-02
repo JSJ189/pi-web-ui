@@ -34,7 +34,7 @@ export function renderSlotToolbar(
 }
 
 /** 单条目渲染（renderSlotToolbar 的每项逻辑抽出，供合并渲染复用，输出一字不差）。 */
-export function renderSlotEntry(
+function renderSlotEntry(
 	entry: UiSlotEntry,
 	i: number,
 	onUiAction: ((item: UiSlotEntry, value?: string) => void) | undefined,

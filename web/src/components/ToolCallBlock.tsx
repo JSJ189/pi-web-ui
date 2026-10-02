@@ -39,7 +39,7 @@ export interface ToolView {
 }
 
 /** Kill just the running bash command(s) — the agent run itself continues. */
-export type KillBashHandler = () => void;
+type KillBashHandler = () => void;
 
 const TOOL_ICONS: Record<string, string> = {
 	bash: "$",
@@ -471,7 +471,7 @@ function DelegateBrief({ args }: { args: Partial<Record<DelegateField | "agent" 
 
 /** 折叠态 bash 命令预览：首行空白归一后取 80 字，多行追加 `+N` 后缀。
  *  输入脏（空串/全空白）返回 undefined——卡头不显示。 */
-export function collapsedBashPreview(command: string): string | undefined {
+function collapsedBashPreview(command: string): string | undefined {
 	const lines = command.split("\n");
 	const first = lines[0].replace(/\s+/g, " ").trim();
 	if (!first) return undefined;

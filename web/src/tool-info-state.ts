@@ -31,7 +31,7 @@ export type ToolInfoPayload = Extract<ServerMessage, { type: "tool_info" }>;
  *  - `missing`     引擎里没有这个工具（例如历史消息里已卸载的插件工具）
  *  - `unsupported` 当前引擎不支持枚举工具定义
  */
-export type ToolInfoStatus = "loading" | "ready" | "missing" | "unsupported";
+type ToolInfoStatus = "loading" | "ready" | "missing" | "unsupported";
 
 /** 弹窗视图状态（= 请求名 + 状态 + 定义字段）。 */
 export interface ToolInfoView {

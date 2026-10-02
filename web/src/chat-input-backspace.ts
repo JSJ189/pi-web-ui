@@ -9,7 +9,7 @@
  *    「精确 path > 精确 name > 短名 fallback」顺序。
  */
 
-export interface BackspaceAttachmentLike {
+interface BackspaceAttachmentLike {
 	path?: string;
 	name?: string;
 	mode?: string;
@@ -18,7 +18,7 @@ export interface BackspaceAttachmentLike {
 	sessionPath?: string;
 }
 
-export interface BackspaceMentionResult<T extends BackspaceAttachmentLike = BackspaceAttachmentLike> {
+interface BackspaceMentionResult<T extends BackspaceAttachmentLike = BackspaceAttachmentLike> {
 	tokenStart: number;
 	attachment?: T;
 }

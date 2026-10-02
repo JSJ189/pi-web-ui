@@ -22,7 +22,7 @@ import type { UiSlotEntry } from "./ui-slots";
 
 /** 「图标编辑」能拖的四个栏。其余槽位（右键菜单、输入框动作区、面板 tab …）不在编辑范围，
  *  仍走设置 → 界面布局。 */
-export interface IconEditZone {
+interface IconEditZone {
 	slot: UiSlotId;
 	/** 界面上的分区标题（i18n key）。 */
 	labelKey: string;
@@ -45,7 +45,7 @@ export const ICON_EDIT_TRAY = "__tray";
 export const ICON_EDIT_ALIGNS: readonly UiAlign[] = ["start", "center", "end"];
 
 /** 一个落点：被拖条目 + 目标栏 + 目标段 + 目标下标。 */
-export interface IconDrop {
+interface IconDrop {
 	id: string;
 	/** 目标栏（ICON_EDIT_ZONES 里的一员的 slot）。 */
 	slot: UiSlotId;
@@ -56,7 +56,7 @@ export interface IconDrop {
 }
 
 /** 四个栏里全部可编辑条目（**含被隐藏的**，编辑模式要把它们画进托盘）。 */
-export interface IconEditBuckets {
+interface IconEditBuckets {
 	/** key = 栏 slot；值 = 该栏条目（含 hidden，顺序即当前渲染顺序）。 */
 	zones: Record<string, UiSlotEntry[]>;
 	/** 托盘：四个栏里被隐藏的条目 + 被放进 `topbar.overflow`（⋯ 常驻）的条目。 */

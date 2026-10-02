@@ -50,7 +50,7 @@ import { isDesktopShell } from "./desktop";
 import type { UiPluginCatalogEntry } from "./types";
 import { randomUuid } from "./uuid";
 
-export const PLUGIN_HOST_GLOBAL = "__piWebUiHost";
+const PLUGIN_HOST_GLOBAL = "__piWebUiHost";
 /** 宿主 API 版本：插件可用它判断宿主能力（> 本值表示宿主更新）。
  *  2 = 新增 `compose()`（注入输入框草稿）。
  *  3 = 新增 `pageCall()`（把模型的动作转给浏览器扩展，见 plugin-host 注释）。
@@ -76,7 +76,7 @@ export const PLUGIN_HOST_GLOBAL = "__piWebUiHost";
  *      newChat 时先建新对话再切到该模型，不动旧对话的模型；非法 id 直接拒绝）。 */
 export const PLUGIN_HOST_API_VERSION = 11;
 
-export interface PluginHostModelInfo {
+interface PluginHostModelInfo {
 	/** canonical 模型 id（`provider/model`，与 set_model 的 modelId 同口径）。 */
 	id: string;
 	provider: string;
@@ -85,7 +85,7 @@ export interface PluginHostModelInfo {
 	reasoning?: boolean;
 }
 
-export interface PluginHostStartChatOptions {
+interface PluginHostStartChatOptions {
 	/** 要作为用户消息发出的文本（必填，空串直接拒绝）。 */
 	prompt: string;
 	/** 是否先新开一个对话，默认 true。 */
@@ -100,10 +100,10 @@ export interface PluginHostStartChatOptions {
 }
 
 /** 注入输入框草稿的内容（见 composer-bridge.ts 的 ComposerPayload）。 */
-export type PluginHostComposeOptions = ComposerPayload;
+type PluginHostComposeOptions = ComposerPayload;
 
 /** 打开一个「绑定到某个项目目录」的会话（issue #146）。 */
-export interface PluginHostOpenSessionOptions {
+interface PluginHostOpenSessionOptions {
 	/** 新会话的工作目录（绝对路径）。与 folders/roots 二选一（同时给 = cwd 优先，
 	 *  其余目录当作额外工作区根）。 */
 	cwd?: string;
@@ -135,7 +135,7 @@ export interface PluginHostSessionInfo {
 }
 
 /** 会话 API（host.sessions，宿主 API v2）：列表 + 打开。 */
-export interface PluginHostSessionsApi {
+interface PluginHostSessionsApi {
 	/** 可打开的会话列表（本客户端运行中的对话 + 当前项目的历史会话）。 */
 	list(): PluginHostSessionInfo[];
 	/** 打开一个会话（id 来自 list()）；与 openSession 同样带目录授权/切换等前置动作。 */
@@ -143,23 +143,23 @@ export interface PluginHostSessionsApi {
 }
 
 /** `{ok:true, sessionId}` 或 `{ok:false, error}`（错误原文回给插件，可用于提示用户）。 */
-export type PluginHostOpenSessionResult = { ok: true; sessionId?: string } | { ok: false; error: string };
+type PluginHostOpenSessionResult = { ok: true; sessionId?: string } | { ok: false; error: string };
 
 /** 目录同步选项（host.reloadCatalog 的第二个参数）。 */
-export interface PluginHostReloadCatalogOptions {
+interface PluginHostReloadCatalogOptions {
 	/** 顺手把条目安装/更新一遍（已装 = 更新，未装 = 安装）。 */
 	install?: boolean;
 	/** 整体替换用户自定义列表（默认合并/按 id upsert）。 */
 	replace?: boolean;
 }
 
-export type PluginHostReloadCatalogResult =
+type PluginHostReloadCatalogResult =
 	| { ok: true; entries?: UiPluginCatalogEntry[]; installed?: { id: string; ok: boolean; error?: string }[] }
 	| { ok: false; error: string };
 
 /** 顶栏条目的点击处理器（插件注册；itemId = manifest 里声明的条目 id）。
  *  kind="select" 的切换回传第二个参数 value（选中的 options value）；其余 kind 只传 itemId。 */
-export type PluginTopbarActionHandler = (
+type PluginTopbarActionHandler = (
 	itemId: string,
 	value?: string,
 	/** 右键菜单（contextmenu.*）点过来的目标：{ id: wire 路径, kind: file/dir/list…, label }；非菜单触发时缺席。 */
@@ -167,7 +167,7 @@ export type PluginTopbarActionHandler = (
 ) => void;
 
 /** 特权 DOM 插件的稳定挂载点（`data-pi-anchor`，跨版本保持；宿主只保证这三个存在）。 */
-export interface PluginHostDomAnchors {
+interface PluginHostDomAnchors {
 	/** 应用根（挂全局浮层/样式用；position:fixed 定位相对视口即可，不必真挂这里）。 */
 	app: Element | null;
 	/** 顶栏容器。 */
@@ -177,71 +177,71 @@ export interface PluginHostDomAnchors {
 }
 
 /** 授权确认弹窗（宿主渲染；插件只拿到 Promise<boolean>）。 */
-export interface PluginHostConfirmOptions {
+interface PluginHostConfirmOptions {
 	/** 插件想打开会话/访问的工作目录（绝对路径）。 */
 	path: string;
 }
 
 /** 插件对话框的一个选项（host.dialogs.select 用，对齐扩展 ui.select）。 */
-export interface PluginHostDialogSelectOption {
+interface PluginHostDialogSelectOption {
 	label: string;
 	description?: string;
 }
 
 /** host.dialogs.select 的入参。 */
-export interface PluginHostDialogSelectOptions {
+interface PluginHostDialogSelectOptions {
 	title: string;
 	options: PluginHostDialogSelectOption[];
 	multi?: boolean;
 }
 
 /** host.dialogs.confirm 的入参。 */
-export interface PluginHostDialogConfirmOptions {
+interface PluginHostDialogConfirmOptions {
 	title: string;
 	detail?: string;
 }
 
 /** host.dialogs.input 的入参。 */
-export interface PluginHostDialogInputOptions {
+interface PluginHostDialogInputOptions {
 	title: string;
 	placeholder?: string;
 	initial?: string;
 }
 
 /** notifyAction 上的一个动作按钮。resolve 时回的是用户点的 id。 */
-export interface PluginHostNotifyActionItem {
+interface PluginHostNotifyActionItem {
 	id: string;
 	label: string;
 }
 
 /** host.notifyAction 的入参。 */
-export interface PluginHostNotifyActionOptions {
+interface PluginHostNotifyActionOptions {
 	text: string;
 	actions: PluginHostNotifyActionItem[];
 }
 
 /** 全局搜索的一条命中（host.searchProviders 注册的 provider 返回它）。 */
-export interface PluginHostSearchResultItem {
+interface PluginHostSearchResultItem {
 	title: string;
 	hint?: string;
 	action: string;
 }
 
 /** 一个全局搜索提供者（id 全局唯一，同 id 后注册的覆盖前面的）。 */
-export interface PluginHostSearchProvider {
+interface PluginHostSearchProvider {
 	id: string;
 	label: string;
 	search: (q: string) => Promise<PluginHostSearchResultItem[]>;
 }
 
 /** searchProviders.list() 返回的轻量信息（不含 search 函数本身）。 */
-export interface PluginHostSearchProviderInfo {
+interface PluginHostSearchProviderInfo {
 	id: string;
 	label: string;
 }
 
 /** `@` 提及项可带的路径附件（点选后经宿主追加到输入框附件 chips）。 */
-export interface PluginHostComposerAttachment {
+interface PluginHostComposerAttachment {
 	path: string;
 	name?: string;
 	mode?: "inline" | "reference" | "lines";
@@ -249,7 +249,7 @@ export interface PluginHostComposerAttachment {
 }
 
 /** `@` 提及的一条命中：选中后把 text 写进光标处并追加 attachments。 */
-export interface PluginHostComposerHit {
+interface PluginHostComposerHit {
 	title: string;
 	hint?: string;
 	/** 写进输入框的文本（缺省 = title）。 */
@@ -258,26 +258,26 @@ export interface PluginHostComposerHit {
 }
 
 /** 一个 `@` 提及提供者（id 全局唯一，同 id 后注册的覆盖前面的）。 */
-export interface PluginHostComposerProvider {
+interface PluginHostComposerProvider {
 	id: string;
 	label: string;
 	search: (q: string) => Promise<PluginHostComposerHit[]>;
 }
 
 /** composerProviders.list() 返回的轻量信息（不含 search 函数本身）。 */
-export interface PluginHostComposerProviderInfo {
+interface PluginHostComposerProviderInfo {
 	id: string;
 	label: string;
 }
 
 /** 主题/语言/视图变化的订阅回调。 */
-export type PluginHostThemeHandler = (name: string) => void;
-export type PluginHostLocaleHandler = (locale: string) => void;
-export type PluginHostViewHandler = (view: string) => void;
+type PluginHostThemeHandler = (name: string) => void;
+type PluginHostLocaleHandler = (locale: string) => void;
+type PluginHostViewHandler = (view: string) => void;
 /** 快捷键触发回调（无参；keydown 事件本身不透给插件）。 */
-export type PluginHostShortcutHandler = () => void;
+type PluginHostShortcutHandler = () => void;
 
-export interface PluginHostApi {
+interface PluginHostApi {
 	version: number;
 	/** 切主视图（"chat" | "terminal" | "git" | `plugin:<id>`）。 */
 	setView(view: string): void;
@@ -362,7 +362,7 @@ export interface PluginHostApi {
 }
 
 /** 模型想执行的一个页面动作（op 词表在扩展侧，服务端只透传）。 */
-export interface PluginHostPageCallOptions {
+interface PluginHostPageCallOptions {
 	op: string;
 	args?: Record<string, unknown>;
 	/** 目标页面 origin（有多个已授权页面时必填）。 */
@@ -371,14 +371,14 @@ export interface PluginHostPageCallOptions {
 }
 
 /** `{ok:true,result}` 或 `{ok:false,error}` —— 后者会变成模型看到的失败原因。 */
-export type PluginHostPageResult = { ok: true; result?: unknown } | { ok: false; error: string };
+type PluginHostPageResult = { ok: true; result?: unknown } | { ok: false; error: string };
 
 /** 扩展注入到页面主世界的桥（只用到 call 这一个方法）。 */
 interface PageBridgeLike {
 	call(req: { op: string; args?: unknown; to?: string; timeoutMs?: number }): Promise<unknown>;
 }
 
-export interface PluginHostDeps {
+interface PluginHostDeps {
 	/** 全局发送器（app-globals 的 appSend）。 */
 	send: AppSend;
 	/** 连接是否可用（WS 开着 + 已有快照）。false 时 startChat 直接拒绝。 */
@@ -893,7 +893,7 @@ const topbarHandlers = new Map<string, Set<PluginTopbarActionHandler>>();
 let pluginScope: string | null = null;
 
 /** 在指定插件作用域里同步执行一段代码（挂载插件视图时用），异常原样抛出。 */
-export function withPluginScope<T>(pluginId: string | null, fn: () => T): T {
+function withPluginScope<T>(pluginId: string | null, fn: () => T): T {
 	const prev = pluginScope;
 	pluginScope = pluginId;
 	try {
@@ -953,9 +953,6 @@ function registerPluginTopbarAction(
 	};
 }
 
-/** 旧名别名（issue #146 早期只有顶栏动作）。 */
-export const triggerPluginTopbarAction = triggerPluginUiAction;
-
 /** 触发一个 UI 动作：先找该插件名下的处理器，再找全局同名；都没有时按需加载
  *  插件的客户端 bundle（顶栏按钮可能来自一个还没被任何视图加载过的插件）后再试。
  *  返回是否真的调到了处理器（false = 插件没接管这个动作，宿主应给个提示）。 */
@@ -1005,7 +1002,7 @@ export async function triggerPluginUiAction(
 /* -------------------------------------------------------------------------- */
 
 /** notifyAction 未注入时的回退信号（App 后续可监听并转成真正的 toast；当前只求不抛错）。 */
-export const PLUGIN_TOAST_EVENT = "pi-web-ui:toast";
+const PLUGIN_TOAST_EVENT = "pi-web-ui:toast";
 
 /* ---- 快捷键（内存注册表 + 全局 keydown） ---- */
 
@@ -1097,7 +1094,7 @@ function maybeDropShortcutListener(): void {
 }
 
 /** 注册一个全局快捷键（key 形如 "ctrl+shift+k"，大小写不敏感）。返回取消函数。 */
-export function registerPluginShortcut(shortcut: string, handler: PluginHostShortcutHandler): () => void {
+function registerPluginShortcut(shortcut: string, handler: PluginHostShortcutHandler): () => void {
 	if (typeof handler !== "function") return () => {};
 	const parsed = parseShortcut(shortcut);
 	if (!parsed) return () => {};
@@ -1121,7 +1118,7 @@ export function registerPluginShortcut(shortcut: string, handler: PluginHostShor
 const searchProviderRegistry = new Map<string, PluginHostSearchProvider>();
 
 /** 注册一个搜索提供者（同 id 后注册的覆盖前面的）。返回取消函数。 */
-export function registerPluginSearchProvider(provider: PluginHostSearchProvider): () => void {
+function registerPluginSearchProvider(provider: PluginHostSearchProvider): () => void {
 	const id = String(provider?.id ?? "").trim();
 	if (!id || typeof provider?.search !== "function") return () => {};
 	const stored: PluginHostSearchProvider = { id, label: String(provider.label ?? id), search: provider.search };
@@ -1141,7 +1138,7 @@ export function listPluginSearchProviders(): PluginHostSearchProviderInfo[] {
 const composerProviderRegistry = new Map<string, PluginHostComposerProvider>();
 
 /** 注册一个 `@` 提及提供者（同 id 后注册的覆盖前面的）。返回取消函数。 */
-export function registerPluginComposerProvider(provider: PluginHostComposerProvider): () => void {
+function registerPluginComposerProvider(provider: PluginHostComposerProvider): () => void {
 	const id = String(provider?.id ?? "").trim();
 	if (!id || typeof provider?.search !== "function") return () => {};
 	const stored: PluginHostComposerProvider = { id, label: String(provider.label ?? id), search: provider.search };
@@ -1173,7 +1170,7 @@ const localeListeners = new Set<PluginHostLocaleHandler>();
 const viewListeners = new Set<PluginHostViewHandler>();
 const modelListeners = new Set<(modelId: string | null) => void>();
 
-export function onModelChange(handler: (modelId: string | null) => void): () => void {
+function onModelChange(handler: (modelId: string | null) => void): () => void {
 	modelListeners.add(handler);
 	return () => {
 		modelListeners.delete(handler);
@@ -1192,7 +1189,7 @@ export function emitPluginHostModel(modelId: string | null): void {
 }
 
 /** 订阅主题变化（返回取消函数；非函数直接回空函数，不抛错）。 */
-export function subscribePluginHostTheme(handler: PluginHostThemeHandler): () => void {
+function subscribePluginHostTheme(handler: PluginHostThemeHandler): () => void {
 	if (typeof handler !== "function") return () => {};
 	themeListeners.add(handler);
 	return () => {
@@ -1201,7 +1198,7 @@ export function subscribePluginHostTheme(handler: PluginHostThemeHandler): () =>
 }
 
 /** 订阅语言变化（返回取消函数）。 */
-export function subscribePluginHostLocale(handler: PluginHostLocaleHandler): () => void {
+function subscribePluginHostLocale(handler: PluginHostLocaleHandler): () => void {
 	if (typeof handler !== "function") return () => {};
 	localeListeners.add(handler);
 	return () => {
@@ -1210,7 +1207,7 @@ export function subscribePluginHostLocale(handler: PluginHostLocaleHandler): () 
 }
 
 /** 订阅视图变化（返回取消函数）。 */
-export function subscribePluginHostView(handler: PluginHostViewHandler): () => void {
+function subscribePluginHostView(handler: PluginHostViewHandler): () => void {
 	if (typeof handler !== "function") return () => {};
 	viewListeners.add(handler);
 	return () => {

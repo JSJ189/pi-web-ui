@@ -17,7 +17,7 @@ import {
 } from "../context-menu-state";
 import type { UiSlotEntry } from "../ui-slots";
 
-export interface ContextMenuProps {
+interface ContextMenuProps {
 	/** 点条目时回调（宿主据此分发：view 切视图 / action 交给插件）。
 	 *  **host 内置条目不走这里** —— 它们由请求里带的 `onHostAction` 分派（见 dispatch），
 	 *  只有插件条目（以及没带分派器的 host 条目）才落到这个回调上。

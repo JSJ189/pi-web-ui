@@ -7,7 +7,7 @@
  */
 import type { ConversationSummary } from "./types";
 
-export interface ConvGroup {
+interface ConvGroup {
 	cwd: string;
 	isCurrent: boolean;
 	convs: ConversationSummary[];

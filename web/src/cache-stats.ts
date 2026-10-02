@@ -15,14 +15,14 @@
  */
 
 /** Structural subset of UiState.stats.tokens we touch. */
-export interface CacheTokenInput {
+interface CacheTokenInput {
 	input: number;
 	cacheRead: number;
 	cacheWrite: number;
 }
 
 /** Derived cache-economics numbers for one conversation. */
-export interface CacheMetrics {
+interface CacheMetrics {
 	/** Total input tokens this conversation has billed = miss + read + write. */
 	totalInput: number;
 	/** Input tokens billed as normal non-cached (cache "miss"). */
@@ -72,7 +72,7 @@ export interface RateSample {
 
 /** Trailing window (ms) the live speedometer averages over. Short enough to
  *  feel live, long enough to damp per-message jitter. */
-export const RATE_WINDOW_MS = 2000;
+const RATE_WINDOW_MS = 2000;
 
 /** Drop samples older than `windowMs` from `now`. Time-ordered in, ordered out. */
 export function trimRateSamples(
@@ -110,7 +110,7 @@ export function streamRate(samples: readonly RateSample[], windowMs: number = RA
 
 /** Structural subset of the streaming content blocks we count. `unknown` so it
  *  accepts the UiContentBlock union (whose catch-all carries an index signature). */
-export interface StreamTokenBlock {
+interface StreamTokenBlock {
 	type: string;
 	text?: unknown;
 	thinking?: unknown;

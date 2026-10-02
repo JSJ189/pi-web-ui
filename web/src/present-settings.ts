@@ -19,16 +19,16 @@
 import { useSyncExternalStore } from "react";
 import { shouldAutoOpenPresent } from "./present-items";
 
-export const PRESENT_SETTINGS_KEY = "pi-web-ui:present-auto-open";
+const PRESENT_SETTINGS_KEY = "pi-web-ui:present-auto-open";
 /** 「刚发生」的时间窗：AI 展示完到浏览器渲染出来的正常延迟远小于这个数。 */
-export const PRESENT_AUTO_OPEN_MAX_AGE_MS = 30_000;
+const PRESENT_AUTO_OPEN_MAX_AGE_MS = 30_000;
 /** sessionStorage 里去重表的键。 */
-export const PRESENT_AUTO_OPEN_SEEN_KEY = "pi-web-ui:present-auto-opened";
+const PRESENT_AUTO_OPEN_SEEN_KEY = "pi-web-ui:present-auto-opened";
 /** 去重表最多记这么多条（防长会话 sessionStorage 无限增长）。 */
 const SEEN_CAP = 200;
 
 /** 读取开关（localStorage 不可用 / 数据损坏 → 默认关）。 */
-export function loadPresentAutoOpen(): boolean {
+function loadPresentAutoOpen(): boolean {
 	try {
 		return localStorage.getItem(PRESENT_SETTINGS_KEY) === "1";
 	} catch {
@@ -77,7 +77,7 @@ export function usePresentAutoOpen(): boolean {
 // ---- 已自动打开过的卡片（sessionStorage 去重表） -----------------------------
 
 /** 读去重表（损坏/不可用 → 空表）。 */
-export function loadAutoOpenedIds(): string[] {
+function loadAutoOpenedIds(): string[] {
 	try {
 		const raw = sessionStorage.getItem(PRESENT_AUTO_OPEN_SEEN_KEY);
 		if (!raw) return [];
@@ -89,7 +89,7 @@ export function loadAutoOpenedIds(): string[] {
 }
 
 /** 记一个已自动打开的 toolCallId（返回 false 表示之前已经打开过 → 本次不要再开）。 */
-export function markAutoOpened(toolCallId: string): boolean {
+function markAutoOpened(toolCallId: string): boolean {
 	if (!toolCallId) return false;
 	const seen = loadAutoOpenedIds();
 	if (seen.includes(toolCallId)) return false;

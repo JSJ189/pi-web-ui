@@ -73,7 +73,7 @@ export interface NotifySettings {
 
 const STORAGE_KEY = "pi-web-notify";
 
-export const DEFAULT_NOTIFY_SETTINGS: NotifySettings = { enabled: false };
+const DEFAULT_NOTIFY_SETTINGS: NotifySettings = { enabled: false };
 
 /** Read persisted settings, falling back to defaults on any failure. */
 export function loadNotifySettings(): NotifySettings {
@@ -100,7 +100,7 @@ export function notificationsSupported(): boolean {
 }
 
 /** Why OS notifications are unavailable (null = available and usable). */
-export type NotifyBlockReason = "insecure" | "unsupported";
+type NotifyBlockReason = "insecure" | "unsupported";
 
 /**
  * Classify *why* notifications are unavailable so the UI can say something
@@ -126,7 +126,7 @@ export function notifyBlockReason(): NotifyBlockReason | null {
 
 /** Native window rectangle as seen from the page (the only Windows-minimise
  *  signal that survives contact with reality, see the file header). */
-export interface WindowRect {
+interface WindowRect {
 	screenX: number;
 	screenY: number;
 	outerWidth: number;
@@ -268,9 +268,9 @@ export async function requestNotificationPermission(): Promise<NotificationPermi
 }
 
 /** Which route actually put the toast on screen (for diagnostics). */
-export type NotifyPath = "sw" | "page" | "none";
+type NotifyPath = "sw" | "page" | "none";
 
-export interface NotifyAttempt {
+interface NotifyAttempt {
 	path: NotifyPath;
 	/** Failure detail when `path === "none"` (or the SW route that was skipped). */
 	error?: string;

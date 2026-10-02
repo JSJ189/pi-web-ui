@@ -14,7 +14,7 @@
  */
 
 /** 预览目标（与 FilePreview 的 PreviewFile 结构一致：path + name）。 */
-export interface PreviewTarget {
+interface PreviewTarget {
 	path: string;
 	name: string;
 }

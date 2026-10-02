@@ -8,7 +8,7 @@
  */
 
 /** 相邻两段的权重（above = 上方/前一段，below = 下方/后一段）。 */
-export interface SashPair {
+interface SashPair {
 	above: number;
 	below: number;
 }
@@ -34,7 +34,7 @@ export function parseWeights<T extends Record<string, number>>(raw: string | nul
 	return out as T;
 }
 
-export interface SashDragInput {
+interface SashDragInput {
 	/** 开始拖动时的权重快照。 */
 	start: SashPair;
 	/** 指针纵向位移（向下为正，px）。 */

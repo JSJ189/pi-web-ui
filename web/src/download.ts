@@ -56,7 +56,7 @@ const WINDOWS_RESERVED = /^(con|prn|aux|nul|com[1-9]|lpt[1-9])(\..*)?$/i;
  * dots); the browser would refuse or mangle the save. Non-ASCII names
  * (Chinese etc.) pass through untouched.
  */
-export function sanitizeFileName(name: string): string {
+function sanitizeFileName(name: string): string {
 	const cleaned = name.replace(WINDOWS_INVALID_CHARS, "_").replace(WINDOWS_TRAILING, "");
 	if (!cleaned) return "_";
 	return WINDOWS_RESERVED.test(cleaned) ? `_${cleaned}` : cleaned;
@@ -75,8 +75,7 @@ export function downloadUrl(path: string, download = true): string {
  *  The caller maps it through the fileNotFoundShort i18n key so only one language shows. */
 export const DOWNLOAD_FILE_NOT_FOUND = "FILE_NOT_FOUND";
 
-export type DownloadResult =
-	{ ok: true } | { ok: false; cancelled: true } | { ok: false; cancelled: false; error: string };
+type DownloadResult = { ok: true } | { ok: false; cancelled: true } | { ok: false; cancelled: false; error: string };
 
 export async function downloadFile(path: string, name: string): Promise<DownloadResult> {
 	// On Windows the save name must be sanitized or the save silently fails

@@ -1,6 +1,6 @@
 import { useCallback, useEffect, useRef, useState } from "react";
 
-export interface UseCopyFeedbackOptions {
+interface UseCopyFeedbackOptions {
 	/** 成功状态持续时间（ms），默认 2000。 */
 	duration?: number;
 	/** 复制成功后的可选回调。 */
@@ -9,7 +9,7 @@ export interface UseCopyFeedbackOptions {
 	onError?: (error: unknown) => void;
 }
 
-export interface UseCopyFeedbackResult {
+interface UseCopyFeedbackResult {
 	/** 当前是否处于复制成功的展示状态。 */
 	copied: boolean;
 	/** 执行复制操作，返回是否成功。 */

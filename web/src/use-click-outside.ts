@@ -1,8 +1,8 @@
 import { useEffect, useLayoutEffect, useRef, type RefObject } from "react";
 
-export type ClickOutsideTarget = RefObject<HTMLElement | null> | HTMLElement | null | undefined;
+type ClickOutsideTarget = RefObject<HTMLElement | null> | HTMLElement | null | undefined;
 
-export interface UseClickOutsideOptions {
+interface UseClickOutsideOptions {
 	/** 是否启用监听（默认 true）。 */
 	enabled?: boolean;
 	/**

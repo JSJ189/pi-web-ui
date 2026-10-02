@@ -1,19 +1,19 @@
 import { useEffect, useLayoutEffect, useRef, useState, type CSSProperties, type RefObject } from "react";
 import { useEscapeKey } from "./shortcut-stack";
 
-export interface FloatingRect {
+interface FloatingRect {
 	left: number;
 	right: number;
 	top: number;
 	bottom: number;
 }
 
-export interface FloatingSize {
+interface FloatingSize {
 	width: number;
 	height: number;
 }
 
-export interface FloatingPositionOptions {
+interface FloatingPositionOptions {
 	/** 对齐方式：默认 "right"（右对齐到触发器右缘）。 */
 	align?: "left" | "right";
 	/** 默认展开方向：默认 "bottom"（挂在触发器下方）。 */
@@ -75,9 +75,9 @@ export function computeFloatingPosition(
 	return { x: Math.round(x), y: Math.round(y) };
 }
 
-export type FloatingAnchor = RefObject<HTMLElement | null> | HTMLElement | FloatingRect | DOMRect | null | undefined;
+type FloatingAnchor = RefObject<HTMLElement | null> | HTMLElement | FloatingRect | DOMRect | null | undefined;
 
-export interface UseFloatingPanelOptions extends FloatingPositionOptions {
+interface UseFloatingPanelOptions extends FloatingPositionOptions {
 	/** 是否处于打开状态（默认 true）。若弹窗挂载时即打开，保持默认即可。 */
 	open?: boolean;
 	/**
@@ -100,7 +100,7 @@ export interface UseFloatingPanelOptions extends FloatingPositionOptions {
 	isInside?: (target: Node) => boolean;
 }
 
-export interface UseFloatingPanelResult {
+interface UseFloatingPanelResult {
 	/** 绑定在浮层根 DOM 上的 ref。 */
 	panelRef: RefObject<HTMLDivElement | null>;
 	/** 计算出的视口坐标（null 表示尚未实测）。 */

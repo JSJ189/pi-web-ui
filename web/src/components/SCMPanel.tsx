@@ -44,7 +44,7 @@ import { renderMergedToolbar } from "../slot-toolbar";
 /* data shapes                                                         */
 /* ------------------------------------------------------------------ */
 
-export interface ScmFile {
+interface ScmFile {
 	/** Repo-relative path (unquoted). */
 	path: string;
 	/** porcelain index (staged) status letter. */
@@ -53,7 +53,7 @@ export interface ScmFile {
 	y: string;
 }
 
-export interface ScmStatus {
+interface ScmStatus {
 	branch: string;
 	detached: boolean;
 	upstream: string | null;
@@ -63,7 +63,7 @@ export interface ScmStatus {
 	files: ScmFile[];
 }
 
-export interface ScmBranch {
+interface ScmBranch {
 	name: string;
 	current: boolean;
 	/** Remote name for remote-tracking refs ("origin/main" → "origin"). */
@@ -105,7 +105,7 @@ interface ScmTerminalBridge {
 	select: (id: string) => void;
 }
 
-export interface ScmPanelProps {
+interface ScmPanelProps {
 	chat: ChatState;
 	terminal: ScmTerminalBridge;
 	/** True when this view is currently visible (drives auto-refresh). */

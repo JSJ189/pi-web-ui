@@ -38,7 +38,7 @@ import { useCopyFeedback } from "../use-copy-feedback";
  * 自动打开预览弹窗（AI 标了 focus: true 的条目）走 present-settings 的三道闸：
  * 用户开了开关、卡片是刚发生的、这个 toolCallId 没开过。
  */
-export interface PresentedFilesProps {
+interface PresentedFilesProps {
 	args: PresentArgs;
 	/** 工具结果 details（可能缺失/被体积闸门丢掉）。 */
 	details?: unknown;

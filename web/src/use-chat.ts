@@ -78,7 +78,7 @@ function readUiLocale(): string {
 }
 
 /** Event fired by i18n.tsx setLocale when the user switches UI language. */
-export const UI_LOCALE_EVENT = "pi-web-ui:locale";
+const UI_LOCALE_EVENT = "pi-web-ui:locale";
 
 /** One component in an all-source update check (update_status_all). */
 export interface UpdateAllItem {
@@ -1150,7 +1150,7 @@ export function getClientId(): string {
 const LAST_CWD_KEY = "pi-web-last-cwd";
 
 /** Read the last-used working directory remembered across browser restarts. */
-export function readLastCwd(): string | null {
+function readLastCwd(): string | null {
 	try {
 		return localStorage.getItem(LAST_CWD_KEY);
 	} catch {
@@ -1187,7 +1187,7 @@ export function clearLastCwdIfMatches(path: string): void {
 const RECENT_PROJECTS_KEY = "pi-web-recent-projects";
 
 /** 读取前端缓存的最近项目（刷新时首帧立即可见，避免空白与等待）。 */
-export function readCachedProjects(): ProjectSummary[] {
+function readCachedProjects(): ProjectSummary[] {
 	try {
 		const raw = localStorage.getItem(RECENT_PROJECTS_KEY);
 		if (!raw) return [];

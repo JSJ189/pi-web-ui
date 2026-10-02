@@ -8,7 +8,7 @@ import { THINKING_VALUES } from "../thinking-levels";
 import { appSend } from "../app-globals";
 
 /** Messages this component sends (a subset shared by TopBar and ChatInput). */
-export type ModelThinkingMsg =
+type ModelThinkingMsg =
 	| { type: "list_models" }
 	| { type: "set_model"; modelId: string }
 	| { type: "set_default_model"; modelId: string }

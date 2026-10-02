@@ -11,7 +11,7 @@ export interface ExportableMsg {
 	content: Array<{ type: string; text?: unknown }>;
 }
 
-export interface ExportImageState {
+interface ExportImageState {
 	open: boolean;
 	triggerId: string;
 	/** 已按对话时间线排好（早 → 晚）。 */
@@ -59,15 +59,11 @@ export function setExportMessageCatalog(msgs: ExportableMsg[]): void {
 	}
 }
 
-export function getExportMessageCatalog(): ExportableMsg[] {
-	return catalog;
-}
-
 export function getExportImage(): ExportImageState {
 	return cached;
 }
 
-export function subscribeExportImage(cb: () => void): () => void {
+function subscribeExportImage(cb: () => void): () => void {
 	listeners.add(cb);
 	return () => {
 		listeners.delete(cb);

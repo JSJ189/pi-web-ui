@@ -29,7 +29,7 @@ export interface BannerNotice {
 	onClose?: () => void;
 }
 
-export type BannerInput = Omit<BannerNotice, "id"> & { id?: string };
+type BannerInput = Omit<BannerNotice, "id"> & { id?: string };
 
 // 内部状态
 let bannerSeq = 0;
@@ -96,7 +96,7 @@ export function showBanner(input: BannerInput): string {
 	return id;
 }
 
-export interface DismissBannerOptions {
+interface DismissBannerOptions {
 	/** 为 true 时静默关闭，不触发 onClose 回调（例如会话切换时由 UI 生命周期收起横幅）。 */
 	silent?: boolean;
 }

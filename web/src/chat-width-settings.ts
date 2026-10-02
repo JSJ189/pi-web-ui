@@ -10,9 +10,9 @@
 
 import { useSyncExternalStore } from "react";
 
-export const CHAT_WIDTH_SETTINGS_KEY = "pi-web-ui:wide-chat";
+const CHAT_WIDTH_SETTINGS_KEY = "pi-web-ui:wide-chat";
 
-export interface ChatWidthSettings {
+interface ChatWidthSettings {
 	/** 中央列是否铺满宽度（false = 保持 860px 上限） */
 	wide: boolean;
 }
@@ -29,7 +29,7 @@ export function normalizeChatWidthSettings(raw: unknown): ChatWidthSettings {
 }
 
 /** 读取持久化的开关（localStorage 不可用 / 数据损坏时回退默认关闭）。 */
-export function loadChatWidthSettings(): ChatWidthSettings {
+function loadChatWidthSettings(): ChatWidthSettings {
 	try {
 		const raw = localStorage.getItem(CHAT_WIDTH_SETTINGS_KEY);
 		if (!raw) return { ...DEFAULT_CHAT_WIDTH_SETTINGS };
