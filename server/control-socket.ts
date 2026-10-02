@@ -51,9 +51,6 @@ type ControlService = Pick<AgentService, "serviceStatus" | "quiesce" | "unquiesc
 /** How long a control connection may sit idle before the server closes it. */
 const CONTROL_IDLE_TIMEOUT_MS = 5_000;
 
-/** How long the CLI waits for a reply before giving up. */
-const CONTROL_CLIENT_TIMEOUT_MS = 3_000;
-
 /** Socket path (POSIX) or pipe name (Windows). */
 export function controlPath(dataDir: string, port: number): string {
 	return process.platform === "win32" ? `\\\\.\\pipe\\pi-web-ui-${port}` : join(dataDir, "pi-web-ui.sock");
@@ -186,45 +183,4 @@ export function startControlServer(opts: { service: ControlService; dataDir: str
 			/* best-effort */
 		}
 	};
-}
-
-/**
- * CLI-side client: send one command and return the parsed reply (or null if
- * the server is unreachable / timed out).
- */
-export function sendControlCommand(
-	dataDir: string,
-	port: number,
-	cmd: ControlCommand["cmd"],
-): Promise<ControlStatus | null> {
-	const path = controlPath(dataDir, port);
-	return new Promise((resolve) => {
-		const sock = createConnection(path);
-		let done = false;
-		const finish = (v: ControlStatus | null): void => {
-			if (done) return;
-			done = true;
-			clearTimeout(timer);
-			sock.destroy();
-			resolve(v);
-		};
-		const timer = setTimeout(() => finish(null), CONTROL_CLIENT_TIMEOUT_MS);
-		let buf = "";
-		sock.on("connect", () => {
-			sock.write(JSON.stringify({ cmd }) + "\n");
-		});
-		sock.on("data", (chunk) => {
-			buf += chunk.toString("utf8");
-			const nl = buf.indexOf("\n");
-			if (nl >= 0) {
-				try {
-					finish(JSON.parse(buf.slice(0, nl)) as ControlStatus);
-				} catch {
-					finish(null);
-				}
-			}
-		});
-		sock.on("error", () => finish(null));
-		sock.on("close", () => finish(null));
-	});
 }

@@ -8,6 +8,8 @@ import { mkdirSync, rmSync } from "node:fs";
 import { join, resolve } from "node:path";
 
 const HERE = resolve(import.meta.dirname ?? ".");
+// 探针住在 dev/dsh-probes/ 之后，DSH runtime 树仍在 server/dsh/ 下。
+const DSH_DIR = resolve(HERE, "..", "..", "server", "dsh");
 const JSONRPC_ENTRY = resolve(
 	HERE,
 	"..",
@@ -24,7 +26,7 @@ rmSync(tmp, { recursive: true, force: true });
 mkdirSync(tmp, { recursive: true });
 
 // PI_WEB_DSH_DEBUG=1 → 允许 tools/invoke（调试/探针专用）。
-const proc = spawn(process.execPath, [join(HERE, "runtime", "launcher.mjs")], {
+const proc = spawn(process.execPath, [join(DSH_DIR, "runtime", "launcher.mjs")], {
 	cwd: HERE,
 	env: {
 		...process.env,

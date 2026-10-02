@@ -167,11 +167,6 @@ export function launchOrigin(): LaunchOrigin {
 	return cached;
 }
 
-/** 仅测试用：清掉缓存。 */
-export function resetLaunchOriginCache(): void {
-	cached = null;
-}
-
 /** 下发给浏览器的服务信息（null = 没有 supervisor，界面不提供「重启服务」）。 */
 export function toServiceInfo(origin: LaunchOrigin): UiServiceInfo | null {
 	if (!origin.supervisor) return null;

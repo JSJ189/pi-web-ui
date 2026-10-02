@@ -3,9 +3,6 @@
  * 复刻自 pi-marker-tools，保持相同解析语义，便于 AI 无缝迁移。
  */
 
-export const MARKER_OPEN = "[[";
-export const MARKER_CLOSE = "]]";
-
 import type { ServerLang } from "../i18n.js";
 
 export interface ParsedToken {
@@ -80,20 +77,4 @@ export function parseMarkers(text: string): ParsedToken[] {
 		tokens.push({ tool, op, args, kwargs, raw: m[0] });
 	}
 	return tokens;
-}
-
-export function stripMarkers(text: string): string {
-	return text.replace(TOKEN_RE, () => "");
-}
-
-export function replaceToken(text: string, raw: string, replacement: string): string {
-	return text.split(raw).join(replacement);
-}
-
-export function serializeToken(token: ParsedToken): string {
-	const parts = [token.tool, token.op, ...token.args];
-	const kwargs = Object.entries(token.kwargs)
-		.sort(([a], [b]) => (a < b ? -1 : 1))
-		.map(([k, v]) => `${k}=${v}`);
-	return `${MARKER_OPEN}${[...parts, ...kwargs].join(":")}${MARKER_CLOSE}`;
 }

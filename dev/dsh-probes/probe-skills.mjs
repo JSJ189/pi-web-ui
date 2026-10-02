@@ -7,6 +7,8 @@ import { join, resolve } from "node:path";
 import { pathToFileURL } from "node:url";
 
 const HERE = resolve(import.meta.dirname ?? ".");
+// 探针住在 dev/dsh-probes/ 之后，DSH runtime 树仍在 server/dsh/ 下。
+const DSH_DIR = resolve(HERE, "..", "..", "server", "dsh");
 const JSONRPC_ENTRY = resolve(
 	HERE,
 	"..",
@@ -21,7 +23,7 @@ const JSONRPC_ENTRY = resolve(
 // ---- 1. 纯函数单测：filterSkillCatalogMessage（直接从 goal-rpc.mjs 导入）----
 // 源码兜底路径按 dist 布局计算（up-4），直接导入前需让 JSONRPC_ENTRY 指向项目 node_modules。
 process.env.PI_WEB_DSH_JSONRPC_ENTRY = JSONRPC_ENTRY;
-const { filterSkillCatalogMessage } = await import(pathToFileURL(join(HERE, "runtime", "goal-rpc.mjs")).href);
+const { filterSkillCatalogMessage } = await import(pathToFileURL(join(DSH_DIR, "runtime", "goal-rpc.mjs")).href);
 {
 	const mkCatalog = (entries) => ({
 		source: { kind: "skill-catalog", entries },
@@ -81,7 +83,7 @@ const tmp = join(HERE, "..", "..", ".tmp-skills-probe");
 rmSync(tmp, { recursive: true, force: true });
 mkdirSync(tmp, { recursive: true });
 
-const proc = spawn(process.execPath, [join(HERE, "runtime", "launcher.mjs")], {
+const proc = spawn(process.execPath, [join(DSH_DIR, "runtime", "launcher.mjs")], {
 	cwd: HERE,
 	env: {
 		...process.env,

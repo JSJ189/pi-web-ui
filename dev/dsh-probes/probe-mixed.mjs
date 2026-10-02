@@ -5,9 +5,11 @@ import { spawn } from "node:child_process";
 import { readFileSync } from "node:fs";
 import { homedir } from "node:os";
 import { join, resolve } from "node:path";
-import { resolveRuntimeBase } from "./runtime/runtime-root.mjs";
+import { resolveRuntimeBase } from "../../server/dsh/runtime/runtime-root.mjs";
 
 const HERE = resolve(import.meta.dirname ?? ".");
+// 探针住在 dev/dsh-probes/ 之后，DSH runtime 树仍在 server/dsh/ 下。
+const DSH_DIR = resolve(HERE, "..", "..", "server", "dsh");
 const KEY = JSON.parse(readFileSync(join(homedir(), ".pi", "agent", "auth.json"), "utf8")).deepseek.key;
 const JSONRPC_ENTRY = resolve(
 	HERE,
@@ -33,7 +35,7 @@ console.log("has dsh-app-boot:", existsSync(join(rtBase, "@deepseek-ai", "dsh-ap
 console.log("jsonrpc entry exists:", existsSync(JSONRPC_ENTRY));
 
 // 2) 启动 launcher 子进程
-const proc = spawn(process.execPath, [join(HERE, "runtime", "launcher.mjs")], {
+const proc = spawn(process.execPath, [join(DSH_DIR, "runtime", "launcher.mjs")], {
 	cwd: HERE,
 	env: {
 		...process.env,

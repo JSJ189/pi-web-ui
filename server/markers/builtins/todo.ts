@@ -37,31 +37,6 @@ function parseId(raw: string | undefined): number | null {
 	return Number.isInteger(n) && n > 0 ? n : null;
 }
 
-function formatStatus(s: TodoStatus): string {
-	switch (s) {
-		case "pending":
-			return "pending";
-		case "in_progress":
-			return "in_progress";
-		case "completed":
-			return "completed";
-		default:
-			return s;
-	}
-}
-
-export function describeTodos(state: TodoState, includeDeleted = false, lang: ServerLang = "en"): string {
-	const visible = state.tasks.filter((t) => includeDeleted || t.status !== "deleted");
-	if (visible.length === 0) return pick(lang, "[todo] （空）", "[todo] (empty)", "markers.todo.list.empty");
-	return visible
-		.map((t) => {
-			const form = t.status === "in_progress" && t.activeForm ? ` (${t.activeForm})` : "";
-			const deps = t.blockedBy.length ? ` ⛓ ${t.blockedBy.join(",")}` : "";
-			return `[${formatStatus(t.status)}] #${t.id} ${t.subject}${form}${deps}`;
-		})
-		.join("\n");
-}
-
 const TODO_GUIDANCE_ZH: string[] = [
 	"- 标记语法：[[todo:new:<主题>]] 新建；[[todo:set:<id>,completed|in_progress|pending]] 状态；[[todo:remove:<id>]] 删除；[[todo:dep:<id>,blocks=<依赖id,逗号分隔>]] 设依赖。",
 	"- 状态变化全部用上面的 [[todo:...]] 内联标记表达，不会中断回答，无需等待返回。",

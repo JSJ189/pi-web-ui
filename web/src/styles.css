@@ -13203,6 +13203,23 @@ button.source-default-toggle {
 	white-space: nowrap;
 	max-width: 100%;
 }
+/* 后台作业的中止键（issue #468）：插件安装/更新是长任务，起跑后必须能停下来（服务端杀进程树）。 */
+.set-job-cancel {
+	flex: 0 0 auto;
+	padding: 1px 8px;
+	border: 1px solid var(--border-subtle, rgb(255 255 255 / 0.16));
+	border-radius: 6px;
+	background: transparent;
+	color: inherit;
+	font-size: 11.5px;
+	line-height: 1.5;
+	cursor: pointer;
+	white-space: nowrap;
+}
+.set-job-cancel:hover {
+	background: var(--bg-elev2);
+	color: var(--text);
+}
 /* 「安装前先读 spec」的一句话提示（DSH P0-3）：输入框下就地给出形状/已装/远端结论。 */
 /* 布局诊断横幅（P0-1）：列出「没出现在界面上」的条目与原因，默认折叠。 */
 .set-ui-diag {

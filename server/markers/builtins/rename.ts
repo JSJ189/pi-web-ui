@@ -13,8 +13,6 @@
 import type { ApplyResult, MarkerTool, ParsedToken, MarkerContext } from "../marker.js";
 import { getServerBlock, pick, type ServerLang } from "../../i18n.js";
 
-export const RENAME_NAMESPACE = "conv";
-
 function extractTitle(token: ParsedToken): string {
 	// args[0] 是主标题；kwargs 兼容 text/name/title
 	const fromArgs = token.args.join(" ").trim();

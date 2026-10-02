@@ -205,10 +205,6 @@ async function fetchJson(
 const catalogCache = new Map<string, { at: number; data: CatalogModel[] }>();
 const CATALOG_TTL_MS = 24 * 3600 * 1000;
 
-export function clearEnrichCache(): void {
-	catalogCache.clear();
-}
-
 export async function getOpenRouterCatalog(fetchFn: FetchFn = fetch, signal?: AbortSignal): Promise<CatalogModel[]> {
 	const hit = catalogCache.get("openrouter");
 	if (hit && Date.now() - hit.at < CATALOG_TTL_MS) return hit.data;

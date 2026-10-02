@@ -8019,9 +8019,6 @@ export class ClientSession {
 		reviewPrompt?: string;
 		reviewDisabledSkills?: string[];
 		disabledPlugins?: string[];
-		/** 插件顶栏条目的隐藏/排序偏好（纯 UI，per-client）。 */
-		pluginTopbarHidden?: string[];
-		pluginTopbarOrder?: string[];
 		markersEnabled?: boolean;
 		disabledMarkers?: string[];
 		quickPhrases?: string[];
@@ -12780,26 +12777,6 @@ export class ClientSession {
 		}
 	}
 
-	async cycleModel(): Promise<void> {
-		try {
-			const result = await this.session.cycleModel();
-			if (result?.model) {
-				const mid = `${result.model.provider}/${result.model.id}`;
-				await this.restoreKeyForModel(mid, this.cwd);
-				// Remember per-project like setModel — cycling is also a model switch.
-				this.rememberProjectModel(mid);
-			}
-		} catch (err) {
-			this.emit({
-				type: "notice",
-				level: "error",
-				text: `切换模型失败：${(err as Error).message}`,
-				textEn: `Failed to switch model: ${(err as Error).message}`,
-			});
-		}
-		this.flushSnapshot();
-	}
-
 	/**
 	 * Path completion for the cwd input: expand ~/relative paths, list the parent
 	 * directory, and return prefix matches (dirs first, capped).
@@ -13256,24 +13233,6 @@ export class ClientSession {
 			const cur = this.session.model;
 			if (cur) {
 				this.session.settingsManager.setModelThinkingLevel(cur.provider, cur.id, thinkingLevel);
-			}
-		} catch (err) {
-			this.emit({
-				type: "notice",
-				level: "error",
-				text: `切换思考强度失败：${(err as Error).message}`,
-				textEn: `Failed to switch thinking level: ${(err as Error).message}`,
-			});
-		}
-		this.flushSnapshot();
-	}
-
-	cycleThinking(): void {
-		try {
-			const nextLevel = this.session.cycleThinkingLevel({ persist: true });
-			const cur = this.session.model;
-			if (cur && nextLevel) {
-				this.session.settingsManager.setModelThinkingLevel(cur.provider, cur.id, nextLevel);
 			}
 		} catch (err) {
 			this.emit({

@@ -40,8 +40,6 @@ export const MANAGED_MESSAGES = [
 	"plugin_catalog_sync",
 ] as const;
 
-export type ManagedMessage = (typeof MANAGED_MESSAGES)[number];
-
 /**
  * Whether this instance is managed from outside.
  *

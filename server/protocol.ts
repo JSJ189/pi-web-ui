@@ -541,8 +541,6 @@ export type ClientMessage =
 			/** 是否联动还原工作区文件至该检查点时刻（Dual-State Rollback） */
 			restoreWorkspace?: boolean;
 	  }
-	| { type: "cycle_model" }
-	| { type: "cycle_thinking" }
 	| { type: "get_state" }
 	/** 按需取一条工具定义（工具卡右键菜单 → 「显示工具详细信息」）。定义是静态大对象，
 	 *  不进快照（否则每次节流推送都要重传一遍），改为点开时现取一次；
@@ -1135,13 +1133,6 @@ export type ClientMessage =
 	 *  plus the parent itself when it is a finished subagent. Running
 	 *  (streaming/retained) subagents are never touched. */
 	| { type: "dismiss_finished_subagents"; parentId?: string }
-	/** 子代理同行直接交接（Peer-to-Peer Subagent Hand-off） */
-	| {
-			type: "subagent_handoff";
-			fromRunId: string;
-			toRunId: string;
-			payload: string;
-	  }
 	// -- scheduled tasks (issue #184, server/scheduler-tasks.ts) -----------------
 	/** Re-push the built-in scheduler task list (also pushed on attach / change). */
 	| { type: "schedule_list" }
@@ -2081,17 +2072,6 @@ export interface PluginStats {
 	tokens: { input: number; output: number; total: number };
 	cost: number;
 	contextUsage?: { tokens: number | null; contextWindow: number; percent: number | null };
-}
-
-/** 插件请求的用户对话框（host.dialog.*，对齐扩展 ui.select/confirm/input）。 */
-export interface PluginDialogOption {
-	label: string;
-	description?: string;
-}
-
-/**  manifest 引擎约束（host 校验，不满足即拒绝激活并提示升级）。 */
-export interface PluginEngines {
-	"pi-web-ui"?: string;
 }
 
 /** One installable plugin in the "plugin list / marketplace" (see

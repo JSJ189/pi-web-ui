@@ -141,7 +141,7 @@
 
 **v1 简化**：模型只见 name/description/parameters；promptSnippet/promptGuidelines/label 不上模型；onUpdate 流式部分结果不转发；无 tools_delta（DSH 不流式工具输出）；`tools/invoke` 仅调试。
 
-**实测（真 key E2E）**：最小插件注册 `test_echo` → 模型收到指令调用它（参数 message=marker）→ 插件在服务端返回 `ECHO:<marker>` → `tools/call-result` 回传 → 工具结果与模型回复都出现在对话里。零 key probe（`server/dsh/probe-tools.mjs`）验证注册/列表/schema 转换/`tools/invoke` 往返，`tests/dsh-tools-test.mjs` 真 key 门控。
+**实测（真 key E2E）**：最小插件注册 `test_echo` → 模型收到指令调用它（参数 message=marker）→ 插件在服务端返回 `ECHO:<marker>` → `tools/call-result` 回传 → 工具结果与模型回复都出现在对话里。零 key probe（`dev/dsh-probes/probe-tools.mjs`）验证注册/列表/schema 转换/`tools/invoke` 往返，`tests/dsh-tools-test.mjs` 真 key 门控。
 
 ### 2.9 ⭐ MCP 工具桥（#16，真 key E2E 实证）
 
@@ -168,7 +168,7 @@
 
 **取舍**：禁用走运行时目录过滤（晚钩子），而非「patch 层重配置/重启」——无需重启即生效；全部禁用时给「本会话无可启用技能」占位。模型可见性过滤由纯函数 + RPC 往返验证（端到端需种技能文件 + 模型列举，Dev 环境未纳入）。
 
-**实证**：`server/dsh/probe-skills.mjs`（零 key）——`filterSkillCatalogMessage` 单测（部分禁用/全禁用/无操作）+ `skills/register`→`list`→`get`→`set-disabled` 往返。`settings_state.skills` 在 `refreshSkillsFromRuntime` 时填充（无技能文件时为空数组，不崩）。
+**实证**：`dev/dsh-probes/probe-skills.mjs`（零 key）——`filterSkillCatalogMessage` 单测（部分禁用/全禁用/无操作）+ `skills/register`→`list`→`get`→`set-disabled` 往返。`settings_state.skills` 在 `refreshSkillsFromRuntime` 时填充（无技能文件时为空数组，不崩）。
 
 ### 2.11 ⭐ 浏览器 UI E2E（#23，零 key Playwright）
 
@@ -222,9 +222,11 @@ E:/pi-web-ui/server/dsh/
 ├── dsh-serialize.ts          # 事件 → UiMessage + DshStreamAccumulator（chunk 增量）
 ├── dsh-sessions.ts           # JSONL 只读（zstdDecompressAll/readSessionLog/projectKey/回放）
 ├── dsh-agent-service.ts      # DshClientSession（协议对齐，goal=DSH 原生事件驱动）+ DshAgentService
-├── probe-mixed.mjs           # 端到端 probe（已验证通过）
-├── probe-patch-seam.mjs      # 用户 patch 层 probe（已通过：会话根被 patch 重定向）
-└── probe-native-goal.mjs     # DSH 原生 goal probe（已通过：goal/set→round-driver→complete→clear）
+└── （无 probe —— 人工验证探针已挪到 dev/dsh-probes/，不进发布产物）
+
+> 开发/验证探针（`probe-mixed` / `probe-tools` / `probe-skills` / `probe-vision` /
+> `probe-native-goal` / `probe-patch-seam`）现位于 `dev/dsh-probes/`（`dev/` 不入 npm 包）。
+> 它们从 `server/dsh/runtime/` 取 launcher，路径已随搬家修正（见各文件里的 `DSH_DIR`）。
 ```
 
 - **launcher 运行时树解析**：`$PI_WEB_DSH_RUNTIME` → 本包 node_modules → execPath 邻近 node_modules → `npm root -g`（win32 shell:true）。**支持 dsh 嵌套树**（`<root>/@deepseek-ai/dsh/node_modules`）。
@@ -382,10 +384,10 @@ E:/pi-web-ui/server/dsh/
 | `E:/pi-web-ui/server/dsh/runtime/goal-rpc.mjs`           | ⭐ jsonrpc wrapper 插件：goal/set                                                              | get | clear | resume | edit + attachment/save | read + question/answer + 提问 provider 桥 |
 | `E:/pi-web-ui/server/dsh/runtime/runtime-root.mjs`       | 运行时树解析（flat + 嵌套布局）                                                                |
 | `E:/pi-web-ui/server/dsh/runtime/override.patch.yml`     | 组合覆盖层（permission preset 等）                                                             |
-| `E:/pi-web-ui/server/dsh/probe-native-goal.mjs`          | DSH 原生 goal probe（goal/set→round-driver→complete→clear）                                    |
-| `E:/pi-web-ui/server/dsh/probe-vision.mjs`               | 视觉桥 probe（attachment/save+read+vision 模型看图）                                           |
-| `E:/pi-web-ui/server/dsh/probe-tools.mjs`                | 工具桥 probe（tools/sync+list 注册/列表/schema 转换 + tools/invoke 往返）                      |
-| `E:/pi-web-ui/server/dsh/probe-skills.mjs`               | 技能启停 probe（filterSkillCatalogMessage 单测 + register/list/get/set-disabled 往返）         |
+| `E:/pi-web-ui/dev/dsh-probes/probe-native-goal.mjs`          | DSH 原生 goal probe（goal/set→round-driver→complete→clear）                                    |
+| `E:/pi-web-ui/dev/dsh-probes/probe-vision.mjs`               | 视觉桥 probe（attachment/save+read+vision 模型看图）                                           |
+| `E:/pi-web-ui/dev/dsh-probes/probe-tools.mjs`                | 工具桥 probe（tools/sync+list 注册/列表/schema 转换 + tools/invoke 往返）                      |
+| `E:/pi-web-ui/dev/dsh-probes/probe-skills.mjs`               | 技能启停 probe（filterSkillCatalogMessage 单测 + register/list/get/set-disabled 往返）         |
 | `E:/pi-web-ui/tests/dsh-smoke-test.mjs`                  | dsh 引擎零 key 协议冒烟（已纳入 run-smoke ALL）                                                |
 | `E:/pi-web-ui/tests/dsh-goal-test.mjs`                   | dsh goal 真 key 门控测试（set_goal→round-driver→complete→clear）                               |
 | `E:/pi-web-ui/tests/dsh-question-test.mjs`               | dsh 提问桥真 key 门控测试（question_pending→answer→模型继续）                                  |
@@ -394,7 +396,7 @@ E:/pi-web-ui/server/dsh/
 | `E:/pi-web-ui/tests/dsh-mcp-test.mjs`                    | dsh MCP 工具桥真 key 门控测试（mcp.json → McpBridge 发现 mcp_echo → 模型调用 → MCP_ECHO 回传） |
 | `E:/pi-web-ui/tests/dsh-ui-test.mjs`                     | dsh 浏览器 UI E2E（零 key Playwright：引擎徽标/目标条/DSH 补丁区块/技能说明，5/5）             |
 | `E:/pi-web-ui/web/src/components/DshQuestionDialog.tsx`  | 模型提问对话框（单选/多选/自定义文本 + `Markdown(rawHtml)` 富渲染 + 选项 `preview` 预览框）    |
-| `E:/pi-web-ui/server/dsh/probe-patch-seam.mjs`           | 用户 patch 层 probe（会话根重定向验证）                                                        |
+| `E:/pi-web-ui/dev/dsh-probes/probe-patch-seam.mjs`           | 用户 patch 层 probe（会话根重定向验证）                                                        |
 | `E:/pi-web-ui/server/index.ts`                           | 引擎分发（ENGINE/EngineService/DispatchSession）+ dispatch 表 + dsh_patches 分支               |
 | `E:/pi-web-ui/server/protocol.ts`                        | wire 协议唯一事实源（ready.engine + dsh_patches 消息）                                         |
 | `E:/pi-web-ui/scripts/copy-dsh-runtime.mjs`              | build:dsh-runtime（拷贝 .mjs/.yml 到 dist）                                                    |

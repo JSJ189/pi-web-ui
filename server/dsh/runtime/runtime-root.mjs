@@ -1,5 +1,5 @@
 // Shared runtime-tree resolution for the pi-web-ui DSH runtime.
-// Used by launcher.mjs (boot-time) and probe-mixed.mjs (self-check).
+// Used by launcher.mjs (boot-time) and dev/dsh-probes/probe-mixed.mjs (self-check).
 //
 // A "runtime tree" is a node_modules root that directly contains the dsh
 // runtime packages: `@deepseek-ai/dsh-base` (with its cordis.patch.yml

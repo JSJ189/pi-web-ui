@@ -1109,8 +1109,6 @@ export interface DispatchSession {
 	newChat(preset?: string, ephemeral?: boolean): Promise<boolean | void>;
 	editMessage(messageId: string, text: string, attachments?: PromptAttachment[]): Promise<void>;
 	forkSession?(messageId: string, position?: "before" | "at", targetConvId?: string): Promise<void>;
-	cycleModel(): Promise<void>;
-	cycleThinking(): void;
 	flushSnapshot(forceFull?: boolean): void;
 	pushSlashCommands(): Promise<void>;
 	/** 取一条工具的**定义说明** → `tool_info`（工具卡右键 → 「显示工具详细信息」）。
@@ -1127,7 +1125,6 @@ export interface DispatchSession {
 	renameConversation(id: string, name: string): Promise<void>;
 	dismissConversation(id: string, withFinishedSubagents?: boolean, force?: boolean): Promise<void>;
 	dismissFinishedSubagents(parentId?: string): Promise<void>;
-	handoffSubagent?(fromRunId: string, toRunId: string, payload: string): Promise<void>;
 	persistConversation?(id: string): Promise<void>;
 	setConversationPinned?(id: string, pinned: boolean): Promise<void>;
 	pinSession?(path: string, pinned: boolean): Promise<void>;
@@ -2213,12 +2210,6 @@ wss.on("connection", (ws) => {
 			case "rollback_session":
 				void cs.rollbackSession?.(msg.messageId, msg.conversationId, msg.restoreWorkspace);
 				break;
-			case "cycle_model":
-				void cs.cycleModel();
-				break;
-			case "cycle_thinking":
-				cs.cycleThinking();
-				break;
 			case "get_state":
 				// Always a FULL snapshot: the client is (re)connecting or detected
 				// a rev/seq gap — it needs an authoritative state to rebuild from.
@@ -2278,9 +2269,6 @@ wss.on("connection", (ws) => {
 				break;
 			case "dismiss_finished_subagents":
 				void cs.dismissFinishedSubagents(msg.parentId);
-				break;
-			case "subagent_handoff":
-				void cs.handoffSubagent?.(msg.fromRunId, msg.toRunId, msg.payload);
 				break;
 			case "switch_session":
 				void cs.switchSession(msg.path);

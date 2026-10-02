@@ -30,10 +30,6 @@ export function loadStateFromBranch(branch: unknown[], namespace: string): unkno
 	return latest?.state;
 }
 
-export function hasStateInBranch(branch: unknown[], namespace: string): boolean {
-	return loadStateFromBranch(branch, namespace) !== undefined;
-}
-
 /** 追加快照：优先走 sessionManager.appendCustomEntry，否则回退到回调。 */
 export function appendSnapshot(
 	mgr: { appendCustomEntry?: (t: string, d: unknown) => unknown; getBranch?: () => unknown[] } | undefined,

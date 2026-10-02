@@ -2858,12 +2858,6 @@ export class DshClientSession {
 		this.flushSnapshot(true);
 	}
 
-	async cycleModel(): Promise<void> {
-		const idx = DSH_MODELS.findIndex((m) => m.id === this.model);
-		const next = DSH_MODELS[(idx + 1) % DSH_MODELS.length];
-		await this.setModel(next.id);
-	}
-
 	setThinking(level: string): void {
 		if (level !== "high") {
 			this.emit({
@@ -2876,16 +2870,6 @@ export class DshClientSession {
 		}
 		this.thinkingLevel = level;
 		this.flushSnapshot();
-	}
-
-	cycleThinking(): void {
-		// DSH 固定 high。
-		this.emit({
-			type: "notice",
-			level: "info",
-			text: "DeepSeek V4 仅支持高思考强度",
-			textEn: "DeepSeek V4 only supports high thinking intensity",
-		});
 	}
 
 	// -----------------------------------------------------------------------

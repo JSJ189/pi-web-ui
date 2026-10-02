@@ -64,10 +64,6 @@ export const DEFAULT_PROMPT_TEMPLATE = PROMPT_TOKENS.map((t) => `{{${t}}}`).join
 
 const TOKEN_RE = /\{\{\s*([A-Za-z_][A-Za-z0-9_]*)\s*\}\}/g;
 
-export function isKnownToken(name: string): boolean {
-	return (PROMPT_TOKENS as readonly string[]).includes(name);
-}
-
 /** 模板里出现的全部 token（含未知名，供 UI 提示）。 */
 export function collectTemplateTokens(template: string): string[] {
 	const out: string[] = [];

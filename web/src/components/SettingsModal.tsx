@@ -1264,6 +1264,15 @@ export function SettingsModal({
 					<FiRefreshCw className="set-job-spin" />
 					{t("pluginJobRunning")}
 					<span className="set-catalog-job-line">{last}</span>
+					{/* 安装/更新是长任务（跑 CLI、打构建），起跑后必须给一个中止口：服务端
+					    `plugin_job_cancel` 会杀掉整棵进程树（plugin-installer.cancel）。 */}
+					<button
+						type="button"
+						className="set-job-cancel"
+						onClick={() => appSend({ type: "plugin_job_cancel", jobId: job.jobId })}
+					>
+						{t("cancel")}
+					</button>
 				</div>
 			);
 		}

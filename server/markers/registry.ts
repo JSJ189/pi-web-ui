@@ -21,10 +21,6 @@ export function allMarkers(): MarkerTool<unknown>[] {
 	return [...registry.values()];
 }
 
-export function lookupToken(name: string): MarkerTool<unknown> | undefined {
-	return registry.get(name);
-}
-
 export function collectGuidance(disabled: Set<string> = new Set(), lang: ServerLang = "en"): string[] {
 	const out: string[] = [];
 	for (const m of allMarkers()) {

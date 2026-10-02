@@ -100,14 +100,6 @@ export interface DshAgentPreset {
 	broken?: string;
 }
 
-/** DSH 会话事件通知（params.event）。 */
-export interface DshSessionEvent {
-	type: string;
-	seq: number;
-	time: number;
-	data: Record<string, unknown>;
-}
-
 /**
  * 一个 DSH 运行时子进程。start() 惰性 spawn + initialize 握手；
  * prompt() 按需隐式建会话；kill() 强杀进程树（中止）；restart() 换模型。
