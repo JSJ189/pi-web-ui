@@ -3315,10 +3315,16 @@ async function checkUpdatesCmd(dataDir) {
 	for (const r of rows) {
 		const label = r.name && r.name !== r.id ? `${r.id}（${r.name}）` : r.id;
 		if (r.updatable) {
+			const cur = r.version ? (r.version.startsWith("v") ? r.version : `v${r.version}`) : (r.localSha ?? "未知");
+			const lat = r.latestVersion
+				? r.latestVersion.startsWith("v")
+					? r.latestVersion
+					: `v${r.latestVersion}`
+				: (r.remoteSha ?? "");
 			console.log(
 				ZH
-					? `  🔄 ${label}${r.version ? ` v${r.version}` : ""}  可更新（已装 ${r.localSha ?? "未知"} → 远端 ${r.remoteSha}）`
-					: `  🔄 ${label}${r.version ? ` v${r.version}` : ""}  Updatable (installed ${r.localSha ?? "unknown"} → remote ${r.remoteSha})`,
+					? `  🔄 ${label}${r.version ? ` v${r.version}` : ""}  可更新（已装 ${cur} → 远端 ${lat}）`
+					: `  🔄 ${label}${r.version ? ` v${r.version}` : ""}  Updatable (installed ${cur} → remote ${lat})`,
 			);
 			console.log(
 				ZH
@@ -3326,11 +3332,16 @@ async function checkUpdatesCmd(dataDir) {
 					: `     Update: pi-web-ui install ${r.source} --name ${r.id} --force`,
 			);
 			any = true;
-		} else if (r.remoteSha) {
+		} else if (r.latestVersion || r.remoteSha) {
+			const detail = r.latestVersion
+				? r.latestVersion.startsWith("v")
+					? r.latestVersion
+					: `v${r.latestVersion}`
+				: (r.remoteSha ?? "");
 			console.log(
 				ZH
-					? `  ✓ ${label}${r.version ? ` v${r.version}` : ""}  已是最新（${r.remoteSha}）`
-					: `  ✓ ${label}${r.version ? ` v${r.version}` : ""}  Up to date (${r.remoteSha})`,
+					? `  ✓ ${label}${r.version ? ` v${r.version}` : ""}  已是最新（${detail}）`
+					: `  ✓ ${label}${r.version ? ` v${r.version}` : ""}  Up to date (${detail})`,
 			);
 		} else {
 			console.log(

@@ -24,17 +24,23 @@
 - **防止会话交接记录与展开历史无界内存增长**（#465）— `subagentHandoffs` 增加上限容量保护，前端被折叠压缩历史展开缓存改用 LRU 淘汰机制，防止长时间会话内存泄漏。
 - **目标审查循环状态机健壮性强化**（#464, #457）— `goal_ask` 超时定时器保证在 `finally` 中清理，避免残留定时器误杀后续调研；`stopDelegated` 异步等待执行者完全移出，消除容量误判；会话过户时主动唤醒等待者并清理目标审查阻塞态。
 - **工具参数 TypeBox 约束与运行时一致性校准**（#462）— `eval` 工具在执行 TypeScript 代码时启用原生类型剥离（`--experimental-strip-types`）；`lsp`、`terminals`、`compact_context`、`patch` 工具参数范围严格钳制与上下限校准。
+- **插件更新检查不再误报** — 版本号相同就绝不报更新（即使 monorepo 仓库 HEAD SHA 变化）；子目录源插件抓不到远端清单时明确报「无法检查（未能获取远端插件清单）」，不再拿仓库根 SHA 当版本号；随包（`pkgRoot`）插件版本可离线直读。CLI `pi-web-ui check-updates` 同步改为按版本号（而非 SHA）展示「已装 → 远端」差距。安装/卸载插件完成后立即重算更新状态，不必等下次轮询。
+- **已结束的对话过户到另一处后可直接继续**（#484）— 过户只换页面持有者、不重建 runtime，但新页面的会话订阅此前没挂回去，导致过户后发消息收不到回复（必须刷新页面）。现在过户尾部显式重挂事件订阅。回归：`idle-takeover-test`。
 
 ### Added
 
 - **聊天内容引用** — 选中消息中的文字或代码后点击引用，将原文添加到输入框。支持展开、移除、多条引用和重复引用去重，发送后的引用可在历史消息中查看，编辑重问时保留。
 - **侧边贴边悬浮栏与按钮上下左右移动** — 顶栏、底栏条目支持右键移至顶部、底部、左侧侧边栏、右侧侧边栏，支持左右侧边停靠栏折叠展开与偏好持久化。
+- **任务计划跨重启/跨刷新持久化** — 计划不再只活在内存：按 `sessionId` 落盘到 `<dataDir>/plans.json`，并随会话转录（`plan/update` custom entry）走；重启后按「落盘文件 → 转录 → 历史 plan_update 工具调用」三重兼容顺序回放，旧会话也能找回看板。
+- **任务看板折叠态精简为单行状态条** — 折叠时只留「标题 + 进度徽标 + 当前步骤」，进度以底边 2px 细线呈现（零额外高度）；「净室执行 / 复制 Markdown / 清空」收进展开态，实施按钮在两种状态都可达。
 
 <!-- auto-i18n:start -->
 ### i18n
 
 - 前端新增 key（26）：`openInNewTab`、`clickToCloseImage`、`compactedHistoryNotFound`、`uiLayoutSideDockFloat`、`uiIconEdit`、`uiIconEditTitle`、`uiIconEditHint`、`uiIconEditTray`、`uiIconEditDropHere`、`uiLayoutSidebarLeft`、`uiLayoutSidebarRight`、`uiLayoutPosition`、`uiLayoutPosTop`、`uiLayoutPosBottom`、`uiLayoutPosLeft`、`uiLayoutPosRight`、`moveToTop`、`moveToBottom`、`moveToLeft`、`moveToRight`、`sideDockCollapse`、`sideDockExpand`、`quoteSelection`、`quoteText`、`quoteSource`、`removeQuote`
-- 前端英文变更（1）：`browserControlExample2`
+- 前端中文变更（3）：`planBoardTitle`、`planImplementBtn`、`planCleanHandoffBtn`
+- 前端英文变更（4）：`planBoardTitle`、`planImplementBtn`、`planCleanHandoffBtn`、`browserControlExample2`
+- 服务端新增 key（1）：`pluginupdate.subpath.manifest.failed`
 - 服务端文案变更（2）：`markers.todo.dep.blocks.updated`、`subagents.wait.pending`
 <!-- auto-i18n:end -->
 

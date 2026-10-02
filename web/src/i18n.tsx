@@ -324,7 +324,7 @@ export const zh = {
 	approvalRuleEmpty: "当前没有审批规则。点击右上角「+ 新增规则」添加自定义拦截与放行策略。",
 	approvalRuleMoveUp: "上移",
 	approvalRuleMoveDown: "下移",
-	planBoardTitle: "任务看板",
+	planBoardTitle: "任务",
 	planBoardSteps: "步骤清单",
 	planBoardProgress: "总体进度",
 	planBoardNoPlan: "暂无任务计划",
@@ -332,14 +332,14 @@ export const zh = {
 	planBoardInProgress: "进行中",
 	planBoardPending: "待执行",
 	planBoardFailed: "失败",
-	/* 计划看板里的「开始实施」：计划模式下计划已出，这里是**唯一**的出口 ——
+	/* 计划看板里的「实施」：计划模式下计划已出，这里是**唯一**的出口 ——
 	   关掉服务端闸门（set_plan_mode false）+ 拿当前计划发起实施轮。 */
-	planImplementBtn: "开始实施",
+	planImplementBtn: "实施",
 	planImplementTip: "关掉只规划闸门，按上面的计划开始写代码",
 	planImplementRequest: "按计划看板上的计划开始实施。",
 	planBoardExportMarkdown: "复制为 Markdown",
 	planBoardExportSuccess: "计划已复制为 Markdown",
-	planCleanHandoffBtn: "✨ 净室执行",
+	planCleanHandoffBtn: "✨ 净室",
 	planCleanHandoffTip: "在新会话中开始实施（带走目标与计划，避免历史探索上下文干扰）",
 	planCleanHandoffPrompt:
 		"我们已在规划期制定了如下任务计划。这是一个全新的净室执行会话，请专注于按照计划步骤推进实施：",
@@ -2156,7 +2156,7 @@ export const en: Record<keyof typeof zh, string> = {
 	approvalRuleEmpty: "No approval rules configured. Click '+ Add Rule' to add custom policies.",
 	approvalRuleMoveUp: "Move Up",
 	approvalRuleMoveDown: "Move Down",
-	planBoardTitle: "Task Board",
+	planBoardTitle: "Tasks",
 	planBoardSteps: "Step List",
 	planBoardProgress: "Overall Progress",
 	planBoardNoPlan: "No active plan",
@@ -2166,12 +2166,12 @@ export const en: Record<keyof typeof zh, string> = {
 	planBoardFailed: "Failed",
 	/* The one and only way out of plan mode now that the composer switch is gone:
 	   turn the server gate off (set_plan_mode false) and start implementing. */
-	planImplementBtn: "Start implementing",
+	planImplementBtn: "Implement",
 	planImplementTip: "Turn off the planning-only gate and start writing code per the plan",
 	planImplementRequest: "Start implementing the plan on the task board.",
 	planBoardExportMarkdown: "Copy as Markdown",
 	planBoardExportSuccess: "Plan copied as Markdown",
-	planCleanHandoffBtn: "✨ Clean Handoff",
+	planCleanHandoffBtn: "✨ Clean",
 	planCleanHandoffTip: "Execute in a fresh session (carries over plan steps, free of exploration noise)",
 	planCleanHandoffPrompt:
 		"We developed the following task plan during the planning phase. This is a clean execution session — focus on implementing and advancing these steps:",

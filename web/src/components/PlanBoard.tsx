@@ -226,26 +226,14 @@ export function PlanBoard({ plan }: PlanBoardProps) {
 	};
 
 	return (
-		<div
-			className="plan-board"
-			style={{
-				padding: "10px 14px",
-				minWidth: 0,
-				maxWidth: "100%",
-				borderRadius: 8,
-				backgroundColor: "var(--bg-elev, #18202f)",
-				border: "1px solid var(--border-subtle, rgba(255, 255, 255, 0.1))",
-				boxShadow: "0 2px 8px rgba(0, 0, 0, 0.15)",
-				fontSize: 13,
-			}}
-		>
+		<div className={`plan-board ${expanded ? "" : "plan-board-collapsed"}`.trim()}>
 			{/* 顶部概要栏 */}
 			<div className="plan-board-head" onClick={() => setExpanded(!expanded)}>
 				<div className="plan-board-head-main">
 					<FiList className="plan-board-icon" />
 					<span className="plan-board-title">{t("planBoardTitle")}</span>
-					<span className="plan-board-count">
-						{doneCount}/{totalCount} ({percent}%)
+					<span className={`plan-board-count ${percent === 100 ? "plan-board-count-done" : ""}`.trim()}>
+						{doneCount}/{totalCount}
 					</span>
 					{/* 紧凑模式下显示当前进行中步骤 */}
 					{!expanded && activeStep && (
@@ -256,20 +244,7 @@ export function PlanBoard({ plan }: PlanBoardProps) {
 				</div>
 
 				<div className="plan-board-actions">
-					{/* 净室执行：开辟干净新会话执行 */}
-					<button
-						type="button"
-						className="plan-board-clean-handoff"
-						title={t("planCleanHandoffTip")}
-						onClick={(e) => {
-							e.stopPropagation();
-							handleCleanHandoff();
-						}}
-					>
-						{t("planCleanHandoffBtn")}
-					</button>
-
-					{/* 实施按钮：在当前会话执行 */}
+					{/* 实施按钮：核心出口，折叠态和展开态均可访问 */}
 					<button
 						type="button"
 						className="plan-board-implement"
@@ -282,31 +257,49 @@ export function PlanBoard({ plan }: PlanBoardProps) {
 						{t("planImplementBtn")}
 					</button>
 
-					{/* 复制为 Markdown */}
-					<button
-						type="button"
-						className="plan-board-iconbtn"
-						title={copied ? t("planBoardExportSuccess") : t("planBoardExportMarkdown")}
-						onClick={(e) => {
-							e.stopPropagation();
-							void handleExportMarkdown();
-						}}
-					>
-						{copied ? <FiCheck style={{ color: "var(--green, #22c55e)" }} /> : <FiCopy />}
-					</button>
+					{/* 净室执行：展开态与实施按钮紧邻并排 */}
+					{expanded && (
+						<button
+							type="button"
+							className="plan-board-clean-handoff"
+							title={t("planCleanHandoffTip")}
+							onClick={(e) => {
+								e.stopPropagation();
+								handleCleanHandoff();
+							}}
+						>
+							{t("planCleanHandoffBtn")}
+						</button>
+					)}
 
-					{/* 清空看板 */}
-					<button
-						type="button"
-						className="plan-board-iconbtn"
-						title={t("clear")}
-						onClick={(e) => {
-							e.stopPropagation();
-							handleClearPlan();
-						}}
-					>
-						<FiTrash2 />
-					</button>
+					{/* 展开态下的辅助图标操作：Markdown导出、清空看板 */}
+					{expanded && (
+						<>
+							<button
+								type="button"
+								className="plan-board-iconbtn"
+								title={copied ? t("planBoardExportSuccess") : t("planBoardExportMarkdown")}
+								onClick={(e) => {
+									e.stopPropagation();
+									void handleExportMarkdown();
+								}}
+							>
+								{copied ? <FiCheck style={{ color: "var(--green, #22c55e)" }} /> : <FiCopy />}
+							</button>
+
+							<button
+								type="button"
+								className="plan-board-iconbtn"
+								title={t("clear")}
+								onClick={(e) => {
+									e.stopPropagation();
+									handleClearPlan();
+								}}
+							>
+								<FiTrash2 />
+							</button>
+						</>
+					)}
 
 					{/* 展开/折叠 */}
 					<button
@@ -317,31 +310,37 @@ export function PlanBoard({ plan }: PlanBoardProps) {
 						{expanded ? <FiChevronUp /> : <FiChevronDown />}
 					</button>
 				</div>
+
+				{/* 展开态：紧贴头部底部的分界线进度条（优雅充当分界线，不占单独空行） */}
+				{expanded && (
+					<div className="plan-board-head-divider">
+						<div
+							className="plan-board-head-divider-fill"
+							style={{
+								width: `${percent}%`,
+								backgroundColor: percent === 100 ? "var(--green, #22c55e)" : "var(--accent, #38bdf8)",
+							}}
+						/>
+					</div>
+				)}
 			</div>
 
-			{/* 进度条 */}
-			<div
-				style={{
-					height: 4,
-					backgroundColor: "rgba(255, 255, 255, 0.08)",
-					borderRadius: 2,
-					margin: "8px 0",
-					overflow: "hidden",
-				}}
-			>
-				<div
-					style={{
-						height: "100%",
-						width: `${percent}%`,
-						backgroundColor: percent === 100 ? "var(--green, #22c55e)" : "var(--accent, #38bdf8)",
-						transition: "width 0.3s ease",
-					}}
-				/>
-			</div>
+			{/* 折叠态：底边 2px 细线进度条（零额外高度成本） */}
+			{!expanded && (
+				<div className="plan-board-progress-line">
+					<div
+						className="plan-board-progress-line-fill"
+						style={{
+							width: `${percent}%`,
+							backgroundColor: percent === 100 ? "var(--green, #22c55e)" : "var(--accent, #38bdf8)",
+						}}
+					/>
+				</div>
+			)}
 
 			{/* 展开的完整步骤清单 */}
 			{expanded && (
-				<div className="plan-board-steps" style={{ marginTop: 10, display: "flex", flexDirection: "column", gap: 8 }}>
+				<div className="plan-board-steps" style={{ marginTop: 8, display: "flex", flexDirection: "column", gap: 8 }}>
 					{steps.map((step, idx) => {
 						const isCurrent = step.id === plan.activeStepId || step.status === "in_progress";
 						const isEditing = editingId === step.id;

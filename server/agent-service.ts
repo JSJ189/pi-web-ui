@@ -134,7 +134,7 @@ import { PlanManager } from "./plan-manager.js";
 import { buildPlanModePrompt, planModeDenial, planModeNoticeText, PLAN_MODE_BLOCKED_TOOL_NAMES } from "./plan-mode.js";
 import { DELEGATION_SYSTEM_PROMPT, delegationDenial, delegateNoticeText } from "./delegate-mode.js";
 import { goalReviewDenial, shouldDeferPromptForReview } from "./goal-review-gate.js";
-import { readPlanModeFromSession } from "./permission-preset.js";
+import { readPlanModeFromSession, readPlanFromSession } from "./permission-preset.js";
 import { readDelegateModeFromSession } from "./permission-preset.js";
 
 import {
@@ -1156,9 +1156,10 @@ function wrapEditSoftToolWithPermission(
  */
 export function makePlanUpdateTool(
 	planManager: PlanManager,
-	getActiveConvId: () => string,
+	getActiveConvTarget: () => string | { id: string; sessionId?: string; sessionManager?: unknown },
 	emit: (msg: ServerMessage) => void,
 	flushSnapshot: () => void,
+	onPersist?: (convId: string, plan: import("./protocol.js").PlanState) => void,
 ): ToolDefinition {
 	return {
 		name: PLAN_UPDATE_TOOL_NAME,
@@ -1194,9 +1195,20 @@ export function makePlanUpdateTool(
 			activeStepId: Type.Optional(Type.String({ description: "ID of the step currently being executed" })),
 		}),
 		execute: async (toolCallId: string, params: unknown) => {
-			const convId = getActiveConvId();
+			const target = getActiveConvTarget();
+			const convId = typeof target === "string" ? target : target.id;
+			const sessionId = typeof target === "string" ? undefined : target.sessionId;
 			const p = params as { steps: import("./protocol.js").PlanStep[]; activeStepId?: string | null };
-			const plan = planManager.setPlan(convId, p.steps, p.activeStepId);
+			const plan = planManager.setPlan(convId, p.steps, p.activeStepId, sessionId);
+			if (typeof target !== "string" && target.sessionManager) {
+				try {
+					const sm = target.sessionManager as { appendCustomEntry?: (type: string, data: unknown) => void };
+					sm?.appendCustomEntry?.("plan/update", { plan });
+				} catch {
+					// 转录追加失败不影响主流程
+				}
+			}
+			onPersist?.(convId, plan);
 			emit({
 				type: "plan_updated",
 				conversationId: convId,
@@ -1821,6 +1833,8 @@ export interface Conversation {
 	peerHandoffTo?: string[];
 	/** 同行协作接收自的来源子代理 convId 列表（谁交接给该子代理）。 */
 	peerHandoffFrom?: string[];
+	/** 正在过户给其他会话（detach 阶段切走 active 时不触发销毁）。 */
+	transferring?: boolean;
 	runtime: AgentSessionRuntime;
 	session: AgentSession;
 	cwd: string;
@@ -3882,7 +3896,7 @@ export class ClientSession {
 	>();
 
 	/** 任务计划管理器（Plan Mode / Step State Machine）。 */
-	private planManager = new PlanManager();
+	private planManager: PlanManager;
 	private approvalSeq = 0;
 	/** 待审批高危工具调用（Human-in-the-Loop: Edit & Run）。 */
 	private pendingApprovals = new Map<string, PendingApprovalEntry>();
@@ -3921,6 +3935,7 @@ export class ClientSession {
 		this.subagentTemplates = new SubagentTemplatesStore(join(stateStore.dataDir, "subagent-templates.json"));
 		this.approvalRules = new ApprovalRulesStore(join(stateStore.dataDir, "approval-rules.json"));
 		this.drafts = new ComposerDraftsStore(join(stateStore.dataDir, "composer-drafts.json"));
+		this.planManager = new PlanManager(join(stateStore.dataDir, "plans.json"));
 		this.markerSvc = new MarkerService({
 			clientId,
 			stateStore,
@@ -4677,7 +4692,15 @@ export class ClientSession {
 					// 结构化任务计划更新（Plan Mode / Step State Machine）。
 					makePlanUpdateTool(
 						this.planManager,
-						() => ownerId ?? this.activeId,
+						() => {
+							const id = ownerId ?? this.activeId;
+							const c = this.convs.get(id);
+							return {
+								id,
+								sessionId: c?.session?.sessionId,
+								sessionManager: c?.session?.sessionManager,
+							};
+						},
 						(msg) => this.emit(msg),
 						() => this.flushSnapshot(),
 					),
@@ -4793,7 +4816,7 @@ export class ClientSession {
 
 	/** Wrap a fresh runtime as a new conversation record. */
 	private makeConversation(runtime: AgentSessionRuntime, id: string, terminals: TerminalManager): Conversation {
-		return {
+		const conv: Conversation = {
 			id,
 			title: conversationTitle(runtime.session),
 			isSubagent: false,
@@ -4837,6 +4860,55 @@ export class ClientSession {
 			toolWatchdogs: new Map(),
 			workspaceSnapshots: [],
 		};
+		this.restorePlan(conv);
+		return conv;
+	}
+
+	/** 会话计划回放恢复：持久化文件（sessionId）→ 转录 customType → 历史消息三重兜底。 */
+	private restorePlan(conv: Conversation): void {
+		const sessionId = conv.session.sessionId;
+		if (sessionId) {
+			const existing = this.planManager.bindSession(conv.id, sessionId);
+			if (existing) return;
+		}
+
+		// 2. 从 sessionManager entries 回放
+		const smPlan = readPlanFromSession(conv.session.sessionManager);
+		if (smPlan && Array.isArray(smPlan.steps) && smPlan.steps.length > 0) {
+			this.planManager.setPlan(conv.id, smPlan.steps, smPlan.activeStepId, sessionId);
+			return;
+		}
+
+		// 3. 从已有历史消息中回放最后一次成功的 plan_update 工具调用
+		const msgs = conv.session.agent?.state?.messages;
+		if (Array.isArray(msgs)) {
+			for (let i = msgs.length - 1; i >= 0; i--) {
+				const msg = msgs[i] as { role?: string; content?: unknown };
+				if (msg?.role === "assistant" && Array.isArray(msg.content)) {
+					for (const part of msg.content) {
+						const p = part as {
+							type?: string;
+							name?: string;
+							input?: { steps?: unknown; activeStepId?: unknown };
+						};
+						if (
+							p?.type === "tool_use" &&
+							p.name === "plan_update" &&
+							Array.isArray(p.input?.steps) &&
+							p.input.steps.length > 0
+						) {
+							this.planManager.setPlan(
+								conv.id,
+								p.input.steps as import("./protocol.js").PlanStep[],
+								(p.input.activeStepId as string) ?? null,
+								sessionId,
+							);
+							return;
+						}
+					}
+				}
+			}
+		}
 	}
 
 	/** Summaries of conversations currently streaming — captured at shutdown
@@ -5043,8 +5115,10 @@ export class ClientSession {
 
 	/** (Re)attach event plumbing to a conversation's session. 默认绑当前活跃对话；
 	 *  forceReset 重建非活跃对话（子代理/角色对话）时必须显式传入该对话，
-	 *  否则重建后的会话永远拿不回事件订阅（issue #484）。 */
-	private async bindSession(target?: Conversation): Promise<void> {
+	 *  否则重建后的会话永远拿不回事件订阅（issue #484）。
+	 *  **public**：过户（take_over_conversation）后由 ClientSessionPool 对 **其它页面** 的
+	 *  ClientSession 调用（切会话只重建 runtime，订阅得重新挂上，见 idle-takeover-test）。 */
+	async bindSession(target?: Conversation): Promise<void> {
 		const conv = target ?? this.conv;
 		conv.unsubscribe?.();
 		conv.session = conv.runtime.session;
@@ -6735,7 +6809,17 @@ export class ClientSession {
 
 	updatePlan(steps: import("./protocol.js").PlanStep[], activeStepId?: string | null, conversationId?: string): void {
 		const convId = conversationId ?? this.activeId;
-		const plan = this.planManager.setPlan(convId, steps, activeStepId);
+		const conv = this.convs.get(convId);
+		const sessionId = conv?.session?.sessionId;
+		const plan = this.planManager.setPlan(convId, steps, activeStepId, sessionId);
+		try {
+			const sm = conv?.session?.sessionManager as unknown as {
+				appendCustomEntry?: (type: string, data: unknown) => void;
+			};
+			sm?.appendCustomEntry?.("plan/update", { plan });
+		} catch {
+			// ignore
+		}
 		this.emit({
 			type: "plan_updated",
 			conversationId: convId,
@@ -7220,6 +7304,7 @@ export class ClientSession {
 	 * 主动检查已安装界面插件（<dataDir>/plugins）的更新状态并向客户端推送。
 	 */
 	async checkPluginUpdates(manual = false): Promise<void> {
+		this.updatesAllCache = null;
 		const lang = () => this.getLang();
 		try {
 			const updates = await checkPluginUpdates(this.stateStore.dataDir, undefined, lang);
@@ -7346,11 +7431,13 @@ export class ClientSession {
 				this.lastPluginUpdates = list;
 				this.emit({ type: "plugin_updates", updates: list });
 
+				const fmtVer = (v?: string | null) => (v ? (/^[vV]/.test(v) ? v : `v${v}`) : null);
+
 				pluginItems = pluginUpdates.map((p) => ({
 					name: p.name ? `${p.name} (${p.id})` : p.id,
 					kind: "plugin" as const,
-					current: p.version ? `v${p.version}` : (p.localSha ?? "unknown"),
-					latest: p.latestVersion ? `v${p.latestVersion}` : (p.remoteSha ?? null),
+					current: fmtVer(p.version) ?? p.localSha ?? "unknown",
+					latest: fmtVer(p.latestVersion) ?? p.remoteSha ?? null,
 					latestPublishedAt: null,
 					upToDate: !p.updatable,
 					error: p.error,
@@ -10209,6 +10296,8 @@ export class ClientSession {
 
 	private displaceActive(): Conversation | null {
 		const conv = this.conv;
+		// 正在过户给其他会话：绝不就地释放（runtime/终端等整体搬迁给 target）。
+		if (conv.transferring) return null;
 		// 子代理不受切换关闭影响（见上）。
 		if (conv.isSubagent) {
 			conv.listed = true;
@@ -10359,15 +10448,20 @@ export class ClientSession {
 		const set = new Set(ids);
 		const convs = [...this.convs.values()].filter((c) => set.has(c.id));
 		if (convs.length === 0) return { ok: false, reason: "missing" };
-		if (set.has(this.activeId)) {
-			const remaining =
-				[...this.convs.values()].find((c) => !set.has(c.id) && !c.isSubagent) ??
-				[...this.convs.values()].find((c) => !set.has(c.id));
-			if (remaining) {
-				await this.switchConversation(remaining.id);
-			} else if (!(await this.newChat())) {
-				return { ok: false, reason: "empty" };
+		for (const conv of convs) conv.transferring = true;
+		try {
+			if (set.has(this.activeId)) {
+				const remaining =
+					[...this.convs.values()].find((c) => !set.has(c.id) && !c.isSubagent) ??
+					[...this.convs.values()].find((c) => !set.has(c.id));
+				if (remaining) {
+					await this.switchConversation(remaining.id);
+				} else if (!(await this.newChat())) {
+					return { ok: false, reason: "empty" };
+				}
 			}
+		} finally {
+			for (const conv of convs) delete conv.transferring;
 		}
 		for (const conv of convs) {
 			this.convs.delete(conv.id);
@@ -14074,6 +14168,7 @@ export class AgentService {
 				textEn: `"${main.title}" was moved to this page — pick up right where it left off.`,
 			});
 			await target.switchConversation(newMainId);
+			await target.bindSession();
 		} catch (err) {
 			fail(`过户失败：${(err as Error).message}`, `Takeover failed: ${(err as Error).message}`);
 		}

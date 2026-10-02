@@ -1,7 +1,11 @@
 import { describe, expect, it } from "vitest";
+import { mkdtempSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
 import { PlanManager } from "../../server/plan-manager.js";
 import type { PlanStep } from "../../server/protocol.js";
 import { makePlanUpdateTool } from "../../server/agent-service.js";
+import { readPlanFromSession } from "../../server/permission-preset.js";
 
 describe("结构化任务计划状态机与看板管理 (PlanManager / Plan Mode)", () => {
 	it("初始状态为空", () => {
@@ -180,5 +184,55 @@ describe("结构化任务计划状态机与看板管理 (PlanManager / Plan Mode
 		// 默认追加到末尾
 		const atEnd = pm.addStep("conv-1", { id: "step-3", title: "步骤3", status: "pending" });
 		expect(atEnd?.steps.map((s) => s.id)).toEqual(["step-1", "step-1.5", "step-2", "step-3"]);
+	});
+
+	it("支持基于 plans.json 文件持久化并在新实例中恢复", () => {
+		const tmpDir = mkdtempSync(join(tmpdir(), "pi-plan-test-"));
+		const filePath = join(tmpDir, "plans.json");
+
+		const pm1 = new PlanManager(filePath);
+		pm1.setPlan(
+			"c1",
+			[
+				{ id: "1", title: "步骤一", status: "done" },
+				{ id: "2", title: "步骤二", status: "in_progress" },
+			],
+			"2",
+			"session-uuid-1",
+		);
+
+		// 新实例（模拟服务重启或跨刷新恢复）
+		const pm2 = new PlanManager(filePath);
+		// 1. 通过 sessionId 恢复
+		expect(pm2.getPlan("session-uuid-1")).toBeTruthy();
+		expect(pm2.getPlan("session-uuid-1")?.steps.length).toBe(2);
+
+		// 2. 绑定新 conversationId 到该 sessionId
+		const restored = pm2.bindSession("c2", "session-uuid-1");
+		expect(restored).toBeTruthy();
+		expect(pm2.getPlan("c2")).toBeTruthy();
+		expect(pm2.getPlan("c2")?.activeStepId).toBe("2");
+	});
+
+	it("readPlanFromSession 能从 sessionManager 的 customType plan/update 恢复", () => {
+		const fakeSm = {
+			getEntries: () => [
+				{ type: "message", role: "user" },
+				{
+					type: "custom",
+					customType: "plan/update",
+					data: {
+						plan: {
+							steps: [{ id: "1", title: "历史步骤", status: "done" }],
+							activeStepId: null,
+							updatedAt: 123456,
+						},
+					},
+				},
+			],
+		};
+		const plan = readPlanFromSession(fakeSm);
+		expect(plan).toBeTruthy();
+		expect(plan?.steps[0].title).toBe("历史步骤");
 	});
 });

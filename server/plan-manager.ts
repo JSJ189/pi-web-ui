@@ -13,20 +13,86 @@
  *    - 状态自动同步到快照 `UiState.plan`
  */
 
+import { mkdirSync, readFileSync, renameSync, writeFileSync } from "node:fs";
+import { dirname } from "node:path";
 import type { PlanState, PlanStep, PlanStepStatus } from "./protocol.js";
 
 const VALID_STATUSES = new Set<PlanStepStatus>(["pending", "in_progress", "done", "failed"]);
 
 export class PlanManager {
 	private plans = new Map<string, PlanState>();
+	private convToSession = new Map<string, string>();
 
-	/** 获取指定会话的计划状态。 */
-	getPlan(conversationId: string): PlanState | null {
-		return this.plans.get(conversationId) ?? null;
+	constructor(private readonly filePath?: string) {
+		if (filePath) {
+			this.load();
+		}
 	}
 
-	/** 设置/全量更新指定会话的计划。 */
-	setPlan(conversationId: string, steps: PlanStep[], activeStepId?: string | null): PlanState {
+	private load(): void {
+		if (!this.filePath) return;
+		try {
+			const raw = JSON.parse(readFileSync(this.filePath, "utf8")) as Record<string, unknown>;
+			for (const [key, val] of Object.entries(raw)) {
+				if (val && typeof val === "object" && Array.isArray((val as { steps?: unknown }).steps)) {
+					this.plans.set(key, val as PlanState);
+				}
+			}
+		} catch {
+			// 文件不存在或格式异常，以空状态起步
+		}
+	}
+
+	private save(): void {
+		if (!this.filePath) return;
+		try {
+			mkdirSync(dirname(this.filePath), { recursive: true });
+			const obj: Record<string, PlanState> = {};
+			for (const [k, v] of this.plans.entries()) {
+				obj[k] = v;
+			}
+			const tmp = `${this.filePath}.tmp.${Date.now()}`;
+			writeFileSync(tmp, JSON.stringify(obj, null, 2), "utf8");
+			renameSync(tmp, this.filePath);
+		} catch {
+			// 持久化失败绝不阻断主流程
+		}
+	}
+
+	/** 绑定 conversationId 与 sessionId。若 sessionId 已有落盘计划，立即恢复给 conversationId。 */
+	bindSession(conversationId: string, sessionId: string): PlanState | null {
+		this.convToSession.set(conversationId, sessionId);
+		const existing = this.plans.get(sessionId);
+		if (existing) {
+			this.plans.set(conversationId, existing);
+			return existing;
+		}
+		const convExisting = this.plans.get(conversationId);
+		if (convExisting) {
+			this.plans.set(sessionId, convExisting);
+			this.save();
+			return convExisting;
+		}
+		return null;
+	}
+
+	/** 获取指定会话的计划状态。优先使用 conversationId，若无则回退查找绑定的 sessionId。 */
+	getPlan(conversationId: string): PlanState | null {
+		const direct = this.plans.get(conversationId);
+		if (direct) return direct;
+		const sessionId = this.convToSession.get(conversationId);
+		if (sessionId) {
+			const bySession = this.plans.get(sessionId);
+			if (bySession) {
+				this.plans.set(conversationId, bySession);
+				return bySession;
+			}
+		}
+		return null;
+	}
+
+	/** 设置/全量更新指定会话的计划（可选绑定 sessionId 进行稳定落盘）。 */
+	setPlan(conversationId: string, steps: PlanStep[], activeStepId?: string | null, sessionId?: string): PlanState {
 		const normalizedSteps: PlanStep[] = (Array.isArray(steps) ? steps : []).map((s, idx) => {
 			const status = (VALID_STATUSES.has(s.status) ? s.status : "pending") as PlanStepStatus;
 			return {
@@ -51,12 +117,20 @@ export class PlanManager {
 		};
 
 		this.plans.set(conversationId, state);
+
+		const effectiveSessionId = sessionId ?? this.convToSession.get(conversationId);
+		if (effectiveSessionId) {
+			this.convToSession.set(conversationId, effectiveSessionId);
+			this.plans.set(effectiveSessionId, state);
+		}
+
+		this.save();
 		return state;
 	}
 
 	/** 增量更新单个步骤的状态或内容。 */
 	updateStep(conversationId: string, stepId: string, patch: Partial<PlanStep>): PlanState | null {
-		const current = this.plans.get(conversationId);
+		const current = this.getPlan(conversationId);
 		if (!current) return null;
 
 		const idx = current.steps.findIndex((s) => s.id === stepId);
@@ -98,6 +172,11 @@ export class PlanManager {
 		};
 
 		this.plans.set(conversationId, nextState);
+		const sessId = this.convToSession.get(conversationId);
+		if (sessId) {
+			this.plans.set(sessId, nextState);
+		}
+		this.save();
 		return nextState;
 	}
 
@@ -169,6 +248,12 @@ export class PlanManager {
 	/** 清除指定会话的计划。 */
 	clearPlan(conversationId: string): void {
 		this.plans.delete(conversationId);
+		const sessId = this.convToSession.get(conversationId);
+		if (sessId) {
+			this.plans.delete(sessId);
+			this.convToSession.delete(conversationId);
+		}
+		this.save();
 	}
 
 	/** 格式化计划为简洁文本，供模型上下文或诊断使用。 */

@@ -195,4 +195,120 @@ describe("checkPluginUpdates", () => {
 		expect(p?.latestVersion).toBe("0.2.0");
 		expect(p?.updatable).toBe(true);
 	});
+
+	it("版本号相同时坚决不报更新（即使 repo commit sha 改变，避免 monorepo 假阳性）", async () => {
+		installPlugin("builtin-same", "0.2.1", "xing-shuyin/pi-web-ui/plugins/builtin-same");
+		writeFileSync(join(dataDir, "plugins", "builtin-same", ".pi-git-sha"), "111111111111");
+		const fakeFetcher = async (url: string) => {
+			if (url.includes("builtin-same")) {
+				return {
+					ok: true,
+					json: async () => ({ version: "0.2.1" }),
+				};
+			}
+			return { ok: false, json: async () => ({}) };
+		};
+		// 仓库 HEAD sha 变更为 999999999999，但插件版本仍为 0.2.1
+		const res = await checkPluginUpdates(
+			dataDir,
+			fakeExec({
+				"https://github.com/xing-shuyin/pi-web-ui.git": "9999999999999999999999999999999999999999",
+			}),
+			undefined,
+			{ fetcher: fakeFetcher },
+		);
+		const p = res.find((r) => r.id === "builtin-same");
+		expect(p).toBeTruthy();
+		expect(p?.version).toBe("0.2.1");
+		expect(p?.latestVersion).toBe("0.2.1");
+		expect(p?.updatable).toBe(false); // 绝不误报！
+	});
+
+	it("子目录源（monorepo）未能获取清单时不以仓库根 SHA 误报更新", async () => {
+		installPlugin("sub-plugin", "1.0.0", "xing-shuyin/pi-web-ui/plugins/sub-plugin");
+		writeFileSync(join(dataDir, "plugins", "sub-plugin", ".pi-git-sha"), "111111111111");
+		// 远端 fetch 失败（模拟断网或网络受限）
+		const fakeFetcher = async () => ({ ok: false, json: async () => ({}) });
+		const res = await checkPluginUpdates(
+			dataDir,
+			fakeExec({
+				"https://github.com/xing-shuyin/pi-web-ui.git": "8888888888888888888888888888888888888888",
+			}),
+			() => "zh",
+			{ fetcher: fakeFetcher },
+		);
+		const p = res.find((r) => r.id === "sub-plugin");
+		expect(p).toBeTruthy();
+		expect(p?.updatable).toBe(false);
+		expect(p?.error).toContain("未能获取远端插件清单");
+	});
+
+	it("从随包 pkgRoot 读取最新插件版本（离线零网络支持）", async () => {
+		installPlugin("offline-plugin", "0.1.0", "some-source");
+		const fakePkgRoot = mkdtempSync(join(tmpdir(), "fake-pkg-root-"));
+		try {
+			const fakePlugDir = join(fakePkgRoot, "plugins", "offline-plugin");
+			mkdirSync(fakePlugDir, { recursive: true });
+			writeFileSync(join(fakePlugDir, "manifest.json"), JSON.stringify({ version: "0.3.0" }));
+
+			const res = await checkPluginUpdates(dataDir, fakeExec({}), undefined, { pkgRoot: fakePkgRoot });
+			const p = res.find((r) => r.id === "offline-plugin");
+			expect(p).toBeTruthy();
+			expect(p?.version).toBe("0.1.0");
+			expect(p?.latestVersion).toBe("0.3.0");
+			expect(p?.updatable).toBe(true);
+		} finally {
+			rmSync(fakePkgRoot, { recursive: true, force: true });
+		}
+	});
+
+	it("从本地路径源的 manifest.json 中读取版本", async () => {
+		const localSrcDir = mkdtempSync(join(tmpdir(), "local-src-plugin-"));
+		try {
+			writeFileSync(join(localSrcDir, "manifest.json"), JSON.stringify({ version: "1.5.0" }));
+			installPlugin("local-src", "1.0.0", localSrcDir);
+
+			const res = await checkPluginUpdates(dataDir, fakeExec({}));
+			const p = res.find((r) => r.id === "local-src");
+			expect(p).toBeTruthy();
+			expect(p?.version).toBe("1.0.0");
+			expect(p?.latestVersion).toBe("1.5.0");
+			expect(p?.updatable).toBe(true);
+		} finally {
+			rmSync(localSrcDir, { recursive: true, force: true });
+		}
+	});
+});
+
+describe("compareVersions (SemVer 规范比较)", () => {
+	it("兼容 v/V 前缀与空格清洗", () => {
+		expect(compareVersions("v1.2.0", "1.1.0")).toBeGreaterThan(0);
+		expect(compareVersions("V2.0.0", "1.0.0")).toBeGreaterThan(0);
+		expect(compareVersions("v1.0.0", "1.0.0")).toBe(0);
+		expect(compareVersions("1.0.0", "v1.0.0")).toBe(0);
+		expect(compareVersions(" v1.0.1 ", "1.0.0")).toBeGreaterThan(0);
+	});
+
+	it("遵循正式版高于预发布版规则", () => {
+		expect(compareVersions("1.0.0", "1.0.0-beta.1")).toBeGreaterThan(0);
+		expect(compareVersions("1.0.0-beta.1", "1.0.0")).toBeLessThan(0);
+		expect(compareVersions("0.2.0", "0.2.0-rc")).toBeGreaterThan(0);
+	});
+
+	it("预发布版本之间的比对", () => {
+		expect(compareVersions("1.0.0-beta.2", "1.0.0-beta.1")).toBeGreaterThan(0);
+		expect(compareVersions("1.0.0-alpha", "1.0.0-beta")).toBeLessThan(0);
+		expect(compareVersions("1.0.0-beta.1", "1.0.0-beta.2")).toBeLessThan(0);
+	});
+
+	it("忽略构建元数据 (+)", () => {
+		expect(compareVersions("1.0.0+20230101", "1.0.0+20230202")).toBe(0);
+		expect(compareVersions("1.0.1+build1", "1.0.0+build2")).toBeGreaterThan(0);
+	});
+
+	it("支持多段或短段数版本号", () => {
+		expect(compareVersions("1.0.0.1", "1.0.0.0")).toBeGreaterThan(0);
+		expect(compareVersions("1.0", "1.0.0")).toBe(0);
+		expect(compareVersions("1.0.1", "1.0")).toBeGreaterThan(0);
+	});
 });

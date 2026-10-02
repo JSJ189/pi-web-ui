@@ -2775,6 +2775,9 @@ wss.on("connection", (ws) => {
 						done: async (ok, info) => {
 							if (ok) {
 								await reloadPluginsAndPush(jobLang);
+								if (typeof cs?.checkPluginUpdates === "function") {
+									void cs.checkPluginUpdates(false);
+								}
 								const isZh = jobLang() === "zh";
 								const actionLabel =
 									jobAction === "uninstall"

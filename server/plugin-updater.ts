@@ -9,7 +9,8 @@
  */
 
 import { existsSync, mkdirSync, readdirSync, readFileSync, rmSync, cpSync, writeFileSync } from "node:fs";
-import { join } from "node:path";
+import { join, resolve, dirname } from "node:path";
+import { fileURLToPath } from "node:url";
 import { execFile } from "node:child_process";
 import { pick, type ServerLang } from "./i18n.js";
 import { parseInstallSpec, manifestCandidateUrls } from "./plugin-install-spec.js";
@@ -17,6 +18,22 @@ import { parseInstallSpec, manifestCandidateUrls } from "./plugin-install-spec.j
 const PLUGIN_ID_RE = /^[A-Za-z0-9_-]+$/;
 /** 保留的备份份数（超出删除最旧的）。 */
 export const BACKUP_KEEP = 3;
+
+const here = dirname(fileURLToPath(import.meta.url));
+
+/**
+ * 解析宿主随包根目录（优先环境变量 PI_WEB_PKG_ROOT，次之向上查找包含 package.json 的祖先目录）。
+ */
+export function resolveDefaultPkgRoot(): string | undefined {
+	if (process.env.PI_WEB_PKG_ROOT && existsSync(process.env.PI_WEB_PKG_ROOT)) {
+		return process.env.PI_WEB_PKG_ROOT;
+	}
+	const candidates = [resolve(here, ".."), resolve(here, "..", ".."), resolve(here, "..", "..", "..")];
+	for (const c of candidates) {
+		if (existsSync(join(c, "package.json"))) return c;
+	}
+	return undefined;
+}
 
 export type Exec = (cmd: string, args: string[]) => Promise<{ ok: boolean; stdout: string; stderr: string }>;
 
@@ -175,24 +192,93 @@ export interface CheckPluginUpdatesOptions {
 	fetcher?: PluginManifestFetcher;
 }
 
-/** 简易数字 semver 比较：>0 代表 a 比 b 新。 */
+/**
+ * 语义化版本（SemVer）比较器：
+ * - 剥离前缀 `v` / `V` 及首尾空白；
+ * - 剥离 `+` 后的构建元数据（build metadata 在优先级比较中被忽略）；
+ * - 分离主要数字版本与预发布标识（prerelease，如 -beta.1）；
+ * - 支持任意段数的数字比对；
+ * - 符合 SemVer 规范：正式版 > 预发布版（例如 1.0.0 > 1.0.0-beta.1）；
+ * - 返回值：>0 代表 a 比 b 新；<0 代表 a 比 b 旧；0 代表版本一致。
+ */
 export function compareVersions(a: string, b: string): number {
-	const pa = a.split(".").map((n) => parseInt(n, 10) || 0);
-	const pb = b.split(".").map((n) => parseInt(n, 10) || 0);
-	for (let i = 0; i < 3; i++) {
-		const x = pa[i] ?? 0;
-		const y = pb[i] ?? 0;
+	const clean = (s: string) =>
+		String(s ?? "")
+			.trim()
+			.replace(/^[vV]/, "")
+			.split("+")[0]
+			.trim();
+
+	const cleanA = clean(a);
+	const cleanB = clean(b);
+	if (cleanA === cleanB) return 0;
+	if (!cleanA && !cleanB) return 0;
+	if (!cleanA) return -1;
+	if (!cleanB) return 1;
+
+	// 拆分主版本段与 prerelease 段
+	const dashA = cleanA.indexOf("-");
+	const mainAStr = dashA >= 0 ? cleanA.slice(0, dashA) : cleanA;
+	const preA = dashA >= 0 ? cleanA.slice(dashA + 1) : null;
+
+	const dashB = cleanB.indexOf("-");
+	const mainBStr = dashB >= 0 ? cleanB.slice(0, dashB) : cleanB;
+	const preB = dashB >= 0 ? cleanB.slice(dashB + 1) : null;
+
+	// 比较主版本数字段
+	const segsA = mainAStr.split(".").map((n) => parseInt(n, 10) || 0);
+	const segsB = mainBStr.split(".").map((n) => parseInt(n, 10) || 0);
+	const maxLen = Math.max(segsA.length, segsB.length);
+
+	for (let i = 0; i < maxLen; i++) {
+		const x = segsA[i] ?? 0;
+		const y = segsB[i] ?? 0;
 		if (x !== y) return x - y;
 	}
+
+	// 主版本数字段全相同时，比较 prerelease（正式版高于任何 prerelease 版）
+	if (preA === null && preB !== null) return 1;
+	if (preA !== null && preB === null) return -1;
+	if (preA !== null && preB !== null) {
+		const partsA = preA.split(".");
+		const partsB = preB.split(".");
+		const maxPreLen = Math.max(partsA.length, partsB.length);
+		for (let i = 0; i < maxPreLen; i++) {
+			const pa = partsA[i];
+			const pb = partsB[i];
+			if (pa === undefined) return -1;
+			if (pb === undefined) return 1;
+			if (pa === pb) continue;
+			const isNumA = /^\d+$/.test(pa);
+			const isNumB = /^\d+$/.test(pb);
+			if (isNumA && isNumB) {
+				const diff = parseInt(pa, 10) - parseInt(pb, 10);
+				if (diff !== 0) return diff;
+			} else if (isNumA && !isNumB) {
+				return -1; // 数字标识优先级低于非数字标识
+			} else if (!isNumA && isNumB) {
+				return 1;
+			} else {
+				return pa.localeCompare(pb);
+			}
+		}
+	}
+
 	return 0;
 }
 
 /** 判断某个插件是否属于随包维护的内置插件（官方插件）。 */
 export function isBuiltinPlugin(id: string, source?: string, builtinCatalogPath?: string): boolean {
 	if (source && /xing-shuyin\/pi-web-ui\/plugins\//i.test(source)) return true;
-	if (builtinCatalogPath && existsSync(builtinCatalogPath)) {
+	const catPath =
+		builtinCatalogPath ??
+		(() => {
+			const pkgRoot = resolveDefaultPkgRoot();
+			return pkgRoot ? join(pkgRoot, "plugins", "catalog.json") : undefined;
+		})();
+	if (catPath && existsSync(catPath)) {
 		try {
-			const raw = JSON.parse(readFileSync(builtinCatalogPath, "utf8")) as unknown[];
+			const raw = JSON.parse(readFileSync(catPath, "utf8")) as unknown[];
 			if (Array.isArray(raw)) {
 				return raw.some((e) => (e as { id?: string })?.id === id);
 			}
@@ -203,9 +289,22 @@ export function isBuiltinPlugin(id: string, source?: string, builtinCatalogPath?
 	return false;
 }
 
-/** 探测远端 manifest 中的版本号（通过 raw.githubusercontent.com 或注入的 fetcher）。 */
+/** 探测远端或本地源 manifest 中的版本号（本地路径 / raw.githubusercontent.com / 注入的 fetcher）。 */
 async function fetchRemoteVersion(source: string, fetcher?: PluginManifestFetcher): Promise<string | null> {
 	const spec = parseInstallSpec(source);
+	if (spec.kind === "path" && spec.normalized) {
+		const manifestFile = join(spec.normalized, "manifest.json");
+		if (existsSync(manifestFile)) {
+			try {
+				const data = JSON.parse(readFileSync(manifestFile, "utf8")) as { version?: unknown };
+				if (typeof data?.version === "string" && data.version.trim()) {
+					return data.version.trim();
+				}
+			} catch {
+				/* ignore */
+			}
+		}
+	}
 	const urls = manifestCandidateUrls(spec);
 	if (urls.length === 0) return null;
 	const fetchImpl = fetcher ?? (typeof fetch === "function" ? (fetch as unknown as PluginManifestFetcher) : null);
@@ -236,6 +335,10 @@ export async function checkPluginUpdates(
 	opts?: CheckPluginUpdatesOptions,
 ): Promise<PluginUpdateInfo[]> {
 	const l = lang?.() ?? "en";
+	const effectivePkgRoot = opts?.pkgRoot ?? resolveDefaultPkgRoot();
+	const effectiveCatalogPath =
+		opts?.builtinCatalogPath ?? (effectivePkgRoot ? join(effectivePkgRoot, "plugins", "catalog.json") : undefined);
+
 	const pluginsDir = join(dataDir, "plugins");
 	let names: string[] = [];
 	try {
@@ -255,7 +358,7 @@ export async function checkPluginUpdates(
 			try {
 				localSha = readFileSync(join(dir, ".pi-git-sha"), "utf8").trim() || null;
 			} catch {
-				localSha = null; // 无 sha 记录 → 保守认为可更新（不知道装了哪个版本）
+				localSha = null; // 无 sha 记录
 			}
 			let name: string | undefined;
 			let version: string | undefined;
@@ -265,17 +368,21 @@ export async function checkPluginUpdates(
 					version?: string;
 				};
 				name = m.name;
-				version = m.version;
+				if (typeof m.version === "string" && m.version.trim()) {
+					version = m.version.trim();
+				}
 			} catch {
 				/* 坏 manifest：仍报告 */
 			}
 
-			const builtin = isBuiltinPlugin(n, source, opts?.builtinCatalogPath);
+			const parsedSpec = parseInstallSpec(source);
+			const isSubpath = Boolean(parsedSpec.subpath);
+			const builtin = isBuiltinPlugin(n, source, effectiveCatalogPath);
 			let latestVersion: string | null = null;
 
-			// 本地开发模式下，如果宿主包自带 plugins/<id>/manifest.json，可直接读本地最新版本号
-			if (opts?.pkgRoot) {
-				const localPkgManifest = join(opts.pkgRoot, "plugins", n, "manifest.json");
+			// 随包或本地开发模式：若宿主包自带 plugins/<id>/manifest.json，可直接读随包最新版本号
+			if (effectivePkgRoot) {
+				const localPkgManifest = join(effectivePkgRoot, "plugins", n, "manifest.json");
 				if (existsSync(localPkgManifest)) {
 					try {
 						const rawPkg = JSON.parse(readFileSync(localPkgManifest, "utf8")) as { version?: string };
@@ -288,13 +395,16 @@ export async function checkPluginUpdates(
 				}
 			}
 
-			// 若本地未取到最新版本号，则尝试通过 fetcher 探测远端 manifest.json
-			if (!latestVersion) {
-				try {
-					latestVersion = await fetchRemoteVersion(source, opts?.fetcher);
-				} catch {
-					latestVersion = null;
+			// 尝试通过 fetcher 探测远端 manifest.json，若拿到了更高版本则采用更高者
+			try {
+				const remoteVer = await fetchRemoteVersion(source, opts?.fetcher);
+				if (remoteVer) {
+					if (!latestVersion || compareVersions(remoteVer, latestVersion) > 0) {
+						latestVersion = remoteVer;
+					}
 				}
+			} catch {
+				/* ignore */
 			}
 
 			let remoteSha: string | null = null;
@@ -305,28 +415,36 @@ export async function checkPluginUpdates(
 				error = err instanceof Error ? err.message : String(err);
 				remoteSha = null;
 			}
-			if (!remoteSha && !latestVersion && !error)
+
+			let updatable = false;
+			if (latestVersion && version) {
+				// 两端都有版本号：版本号是唯一权威事实源。
+				// 严格大于才判定为有更新（cmp > 0）。
+				// 相同或更低（cmp <= 0）坚决判定为无更新，彻底避免主仓库无关 commit 触发的假阳性误报。
+				updatable = compareVersions(latestVersion, version) > 0;
+			} else if (latestVersion && !version) {
+				// 远端有版本号但本地无版本号：视为可更新
+				updatable = true;
+			} else if (!isSubpath && remoteSha) {
+				// 仅在未能获取最新版本号且为独立仓库源（非子目录）时，才回退到基于 git commit SHA 比对
+				updatable = !localSha || localSha !== remoteSha;
+			}
+
+			if (!updatable && !latestVersion && !remoteSha && !error) {
 				error = pick(
 					l,
 					"无法检查（非 git 源或 git 不可用）",
 					"Cannot check (non-git source or git unavailable)",
 					"pluginupdate.cannot.check",
 				);
-
-			let updatable = false;
-			if (latestVersion && version) {
-				const cmp = compareVersions(latestVersion, version);
-				if (cmp > 0) {
-					updatable = true;
-				} else if (cmp === 0 && remoteSha && localSha) {
-					updatable = localSha !== remoteSha;
-				} else if (cmp === 0 && remoteSha && !localSha) {
-					updatable = true;
-				}
-			} else if (remoteSha) {
-				updatable = !localSha || localSha !== remoteSha;
-			} else if (latestVersion && !version) {
-				updatable = true;
+			} else if (!updatable && isSubpath && !latestVersion && !error) {
+				// 子目录源插件未能获取远端清单时，不凭仓库根 SHA 误报，而是提示未能获取清单
+				error = pick(
+					l,
+					"无法检查（未能获取远端插件清单）",
+					"Cannot check (failed to fetch remote plugin manifest)",
+					"pluginupdate.subpath.manifest.failed",
+				);
 			}
 
 			out.push({

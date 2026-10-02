@@ -62,3 +62,35 @@ export function readPermissionFromSession(sm: unknown): string | undefined {
 	}
 	return undefined;
 }
+
+/**
+ * 从会话 sessionManager entries 回放恢复最后保存的结构化计划状态。
+ * customType 为 "plan/update" 或 "pi-web-ui/plan"，载荷结构为 { plan: PlanState }。
+ */
+export function readPlanFromSession(sm: unknown): import("./protocol.js").PlanState | null {
+	try {
+		const mgr = sm as { getEntries?: () => unknown[] };
+		if (typeof mgr?.getEntries !== "function") return null;
+		const entries = mgr.getEntries();
+		for (let i = entries.length - 1; i >= 0; i--) {
+			const e = entries[i] as
+				| {
+						type?: string;
+						customType?: string;
+						data?: { plan?: import("./protocol.js").PlanState };
+				  }
+				| undefined;
+			if (
+				e?.type === "custom" &&
+				(e.customType === "plan/update" || e.customType === "pi-web-ui/plan") &&
+				e.data?.plan &&
+				Array.isArray(e.data.plan.steps)
+			) {
+				return e.data.plan;
+			}
+		}
+	} catch {
+		// ignore
+	}
+	return null;
+}

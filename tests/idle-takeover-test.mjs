@@ -56,7 +56,12 @@ const mock = createServer(async (req, res) => {
 	let body = "";
 	for await (const chunk of req) body += chunk;
 	const payload = JSON.parse(body || "{}");
-	sse(res, [delta(payload.model, { content: "IDLE-TAKEOVER-ANSWER" }), delta(payload.model, {}, "stop")]);
+	const isSecondTurn = (payload.messages ?? []).some((m) => {
+		const text = typeof m.content === "string" ? m.content : JSON.stringify(m.content ?? "");
+		return text.includes("after-takeover-question");
+	});
+	const reply = isSecondTurn ? "POST-TAKEOVER-REPLY" : "IDLE-TAKEOVER-ANSWER";
+	sse(res, [delta(payload.model, { content: reply }), delta(payload.model, {}, "stop")]);
 });
 await new Promise((resolve) => mock.listen(MOCK_PORT, "127.0.0.1", resolve));
 
@@ -273,6 +278,25 @@ try {
 			await sleep(100);
 		}
 		check("A 页该对话已搬走", gone);
+	}
+
+	// B 过户后发送新消息（issue 验证：已结束的对话过户后发新消息必须正常呈现，不需要刷新页面）。
+	clientB.send({ type: "prompt", text: "after-takeover-question" });
+	{
+		const started = Date.now();
+		let seenNewTurn = false;
+		while (Date.now() - started < 30000) {
+			const texts = (clientB.messages ?? [])
+				.flatMap((m) => m.content ?? [])
+				.map((b) => b.text ?? "")
+				.join("\n");
+			if (texts.includes("after-takeover-question") && texts.includes("POST-TAKEOVER-REPLY")) {
+				seenNewTurn = true;
+				break;
+			}
+			await sleep(100);
+		}
+		check("B 过户后可正常发送新消息并获得回复（无须刷新页面）", seenNewTurn);
 	}
 
 	console.log(failures === 0 ? "\nALL PASS" : `\n${failures} FAILURE(S)`);

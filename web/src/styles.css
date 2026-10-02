@@ -9317,27 +9317,50 @@ div.chead[role="button"]:focus-visible,
 	/* 限高封顶靠下面的清单自身滚动（不砍头部）。列向 flex 子项给 min-height:0：
 	   否则清单的 max-height 到了 .main 算总高时仍可能被压回，整页跟着滚。 */
 	min-height: 0;
+	padding: 10px 14px;
+	border-radius: 8px;
+	background-color: var(--bg-elev);
+	border: 1px solid var(--border-subtle);
+	box-shadow: 0 2px 8px rgba(0, 0, 0, 0.15);
+	font-size: 13px;
+	position: relative;
+	transition:
+		padding 0.15s ease,
+		border-radius 0.15s ease;
 }
 
-/* 摘要栏（标题 / 计数 / 当前步骤 chip / 操作按钮）—— 窄屏下唯一会打架的一行。
- * 竖排病根：行内 flex 子项默认 min-width:auto 且允许收缩，「任务看板」「0/6 (0%)」
- * 被 chip 挤到 1 字一行（CJK 逐字断）。口径：标题与计数钉死 nowrap + 不参与收缩，
- * 可压缩的额度全留给 chip；chip 自己 flex-basis 120px，放不下整块换行（父级 wrap），
- * 于是「宽屏同行、窄屏另起一行」，不再出现竖排。 */
+/* 折叠精简态：纯粹单行状态条（高度 ~28px，底边 2px 进度线） */
+.plan-board.plan-board-collapsed {
+	padding: 4px 10px 6px;
+	border-radius: 6px;
+	box-shadow: 0 1px 3px rgba(0, 0, 0, 0.1);
+	overflow: hidden;
+}
+
+/* 摘要栏（标题 / 计数徽章 / 当前步骤 chip / 操作按钮）
+ * 口径：标题与计数徽标钉死同行 nowrap + 不参与收缩，无论展开还是折叠都绝不换行；
+ * 进度计数以高亮徽标呈现，与任务标题锁死在一起。 */
 .plan-board-head {
 	display: flex;
-	align-items: flex-start;
+	align-items: center;
 	justify-content: space-between;
 	gap: 8px;
 	min-width: 0;
 	cursor: pointer;
 	user-select: none;
+	position: relative;
+}
+.plan-board:not(.plan-board-collapsed) .plan-board-head {
+	padding-bottom: 8px;
+}
+.plan-board-collapsed .plan-board-head {
+	min-height: 22px;
 }
 .plan-board-head-main {
 	display: flex;
 	align-items: center;
-	flex-wrap: wrap;
-	gap: 4px 8px;
+	flex-wrap: nowrap;
+	gap: 6px;
 	flex: 1 1 auto;
 	min-width: 0;
 }
@@ -9351,12 +9374,24 @@ div.chead[role="button"]:focus-visible,
 	white-space: nowrap;
 	flex: 0 0 auto;
 }
+/* 任务进度计数徽标：紧凑圆角胶囊，同行展示，100% 自动变绿 */
 .plan-board-count {
-	font-size: 12px;
-	color: var(--text-dim);
+	display: inline-flex;
+	align-items: center;
+	padding: 1px 7px;
+	border-radius: 999px;
+	font-size: 11.5px;
+	font-weight: 600;
+	background: var(--accent-soft);
+	color: var(--accent);
 	white-space: nowrap;
 	flex: 0 0 auto;
 	font-variant-numeric: tabular-nums;
+	line-height: 1.4;
+}
+.plan-board-count.plan-board-count-done {
+	background: var(--green-soft);
+	color: var(--green);
 }
 .plan-board-active {
 	/* basis 180px：手机端同行只剩 ~150px，放不下就整块落到第二行拿满宽度
@@ -9374,6 +9409,24 @@ div.chead[role="button"]:focus-visible,
 	white-space: nowrap;
 	overflow: hidden;
 	text-overflow: ellipsis;
+}
+.plan-board-collapsed .plan-board-active {
+	flex: 0 1 auto;
+	margin-left: 2px;
+	padding: 1px 6px;
+	font-size: 11px;
+	line-height: 1.4;
+}
+
+@media (max-width: 640px) {
+	.plan-board-collapsed .plan-board-active {
+		max-width: min(24ch, 36%);
+	}
+}
+@media (max-width: 440px) {
+	.plan-board-collapsed .plan-board-active {
+		display: none;
+	}
 }
 .plan-board-actions {
 	display: flex;
@@ -9415,12 +9468,12 @@ div.chead[role="button"]:focus-visible,
 	background: var(--bg-elev2);
 }
 
-/* 计划看板的「开始实施」：计划模式下**唯一**的出口（闸门在服务端常亮）。
-   实心强调色 + 文案，和旁边两个纯图标钮拉开一个层级。 */
-.plan-board-implement {
+/* 任务看板行动按钮：实施与净室执行并排，外观保持统一一致（实心强调色 + 相同圆角尺寸） */
+.plan-board-implement,
+.plan-board-clean-handoff {
 	display: inline-flex;
 	align-items: center;
-	padding: 3px 10px;
+	padding: 3px 8px;
 	border: none;
 	border-radius: 6px;
 	background: var(--accent);
@@ -9429,28 +9482,11 @@ div.chead[role="button"]:focus-visible,
 	line-height: 1.5;
 	cursor: pointer;
 	white-space: nowrap;
+	transition: filter 0.15s ease;
 }
-.plan-board-implement:hover {
-	filter: brightness(1.08);
-}
-
-/* 净室执行按钮：开辟全新无探索噪音会话 */
-.plan-board-clean-handoff {
-	display: inline-flex;
-	align-items: center;
-	padding: 3px 8px;
-	border: 1px solid var(--accent);
-	border-radius: 6px;
-	background: var(--accent-soft);
-	color: var(--accent);
-	font-size: 12px;
-	line-height: 1.5;
-	cursor: pointer;
-	white-space: nowrap;
-}
+.plan-board-implement:hover,
 .plan-board-clean-handoff:hover {
-	background: var(--accent);
-	color: #fff;
+	filter: brightness(1.1);
 }
 
 .plan-board-add-btn {
@@ -9492,6 +9528,48 @@ div.chead[role="button"]:focus-visible,
 		/* 手机：摘要栏 + 清单合计仍需给消息区和输入框留出可用地板 */
 		max-height: 34vh;
 	}
+	.plan-board-implement,
+	.plan-board-clean-handoff {
+		padding: 3px 6px;
+		font-size: 11.5px;
+	}
+}
+
+/* 展开态：紧贴头部底部的分界线进度条（优雅充当分界线，不占单独空行） */
+.plan-board-head-divider {
+	position: absolute;
+	left: -14px;
+	right: -14px;
+	bottom: 0;
+	height: 2px;
+	background: rgba(255, 255, 255, 0.08);
+	overflow: hidden;
+	pointer-events: none;
+}
+.plan-board-head-divider-fill {
+	height: 100%;
+	transition: width 0.3s ease;
+}
+
+/* 底边 2px 细线进度条（折叠态专用，绝对贴底，零垂直占位） */
+.plan-board-progress-line {
+	position: absolute;
+	left: 0;
+	bottom: 0;
+	width: 100%;
+	height: 2px;
+	background: rgba(255, 255, 255, 0.08);
+	overflow: hidden;
+	pointer-events: none;
+}
+.plan-board-progress-line-fill {
+	height: 100%;
+	transition: width 0.3s ease;
+}
+
+/* 展开态下的独立进度条（已废弃独立行，统一走 head-divider） */
+.plan-board-steps-progress {
+	display: none;
 }
 
 /* ---------------------------------------------------------------- goalbar */
