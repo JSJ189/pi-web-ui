@@ -14,7 +14,6 @@ import { readFileSync } from "node:fs";
 import { join } from "node:path";
 import { nextCronFire, parseCronSpec } from "./plugin-schedule.js";
 import { writeJsonAtomicSync } from "./atomic-file.js";
-import { normalizePathKey } from "./client-state.js";
 
 export type SchedulerKind = "cron" | "interval";
 export type SchedulerCatchUp = "skip" | "once";
@@ -304,11 +303,8 @@ export function sameSessionFile(a: string, b: string): boolean {
 	const x = String(a ?? "").trim();
 	const y = String(b ?? "").trim();
 	if (!x || !y) return false;
-	try {
-		return normalizePathKey(x) === normalizePathKey(y);
-	} catch {
-		return false;
-	}
+	const norm = (s: string): string => s.replace(/\\/g, "/").replace(/\/+$/, "").toLowerCase();
+	return norm(x) === norm(y);
 }
 
 export class SchedulerStore {
