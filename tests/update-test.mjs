@@ -86,19 +86,33 @@ async function main() {
 
 	await page.goto(`http://localhost:${PORT}/`);
 	await page.waitForSelector(".topbar", { timeout: 60000 });
+	// 顶栏挂载后还会跑一次实测宽度（topbar-fit）并重建条目，节点会被替换：
+	// 等按钮稳定下来再点，并且用 locator.click（每次重新解析节点）而不是 page.click（拿着旧句柄点）。
+	const moreBtn = page.locator(".plugin-topbar-more .plugin-topbar-item");
+	await moreBtn.waitFor({ state: "visible", timeout: 20000 });
+	for (let i = 0; i < 20; i++) {
+		await moreBtn.click();
+		if ((await page.locator(".plugin-topbar-menu.portal").count()) > 0) break;
+		await sleep(200);
+	}
 
-	// -- corner chip shows the running version -------------------------------
+	// -- 版本 chip 显示运行中的版本 ---------------------------------------
+	// ⚠️ 版本 chip 缺省**不在顶栏流里**：`host:update` 的默认布局是 `hidden: true`
+	//（展示型条目 —— 版本号 + 更新红点，收进「⋯」溢出菜单，见 ui-slots.ts 的注释）。
+	// 所以先点开 ⋯（上面已点），再从菜单里取 chip —— 这也正是用户实际走到的路径。
+	await page.waitForSelector(".plugin-topbar-menu.portal", { timeout: 5000 });
 	await page.waitForFunction(
-		(v) => [...document.querySelectorAll(".topbar-flow .chip")].some((el) => el.textContent.includes(`v${v}`)),
+		(v) =>
+			[...document.querySelectorAll(".plugin-topbar-menu.portal .chip")].some((el) => el.textContent.includes(`v${v}`)),
 		pkgVersion,
 		{ timeout: 20000 },
 	);
-	const chip = page.locator(".topbar-flow .dropdown", {
+	const chip = page.locator(".plugin-topbar-menu.portal .dropdown", {
 		hasText: "v" + pkgVersion,
 	});
-	check("corner update chip shows v" + pkgVersion, (await chip.count()) > 0);
+	check("溢出菜单里的更新 chip 显示 v" + pkgVersion, (await chip.count()) > 0);
 
-	// -- open dropdown → registry check completes ----------------------------
+	// -- 打开下拉 → 仓库检查完成 -------------------------------------------
 	await chip.locator("button.chip").click();
 	await page.waitForSelector(".dd-update", { timeout: 5000 });
 	await page.waitForFunction(

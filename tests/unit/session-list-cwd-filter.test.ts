@@ -79,7 +79,11 @@ afterEach(async () => {
 	if (envOriginal.PI_CODING_AGENT_DIR === undefined) delete process.env.PI_CODING_AGENT_DIR;
 	else process.env.PI_CODING_AGENT_DIR = envOriginal.PI_CODING_AGENT_DIR;
 	for (const dir of tmpDirs.splice(0)) {
-		if (existsSync(dir)) await rm(dir, { recursive: true, force: true });
+		if (existsSync(dir)) {
+			// Windows 上带杀毒/索引时 rm 可能瞬时 EBUSY/ENOTEMPTY（尤其当上一个用例刚超时、
+			// 文件还在陆续落盘）—— maxRetries 只在 force+recursive 时生效，这里正好用上。
+			await rm(dir, { recursive: true, force: true, maxRetries: 10, retryDelay: 50 });
+		}
 	}
 });
 
@@ -129,7 +133,11 @@ describe("loadSessionInfos — 扁平布局 cwd 过滤（issue #438）", () => {
 		expect(infos.map((i) => i.path)).toEqual([own.path]);
 	});
 
-	it("200 截断发生在 cwd 过滤之后：名额只分给本项目（issue #438 附带问题）", async () => {
+	// ⚠️ 这里真的有 211 个文件要落盘 + 211 个文件要被真实扫描：全量套件并行跑（4 个 worker，
+	// 且 Windows 上有实时杀毒扫描）时 5s 默认超时不够 —— 那是超时，不是断言失败，会连带
+	// 让 afterEach 在文件还在写时清理。给足超时，不要用缩小用例规模换速度：201 与 200 的
+	// 边界正是这个用例要验的东西。
+	it("200 截断发生在 cwd 过滤之后：名额只分给本项目（issue #438 附带问题）", { timeout: 60_000 }, async () => {
 		const root = await makeTmpDir("flat-cap");
 		const cwdA = await makeTmpDir("proj-a");
 		const cwdB = await makeTmpDir("proj-b");
