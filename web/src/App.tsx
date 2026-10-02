@@ -1138,8 +1138,12 @@ export function App() {
 		// 联动在输入框光标处插入 @提及（文件/目录/页签等所有带名引用统一行为）。
 		// silent（@ 选单 acceptAt）：正文已由 ChatInput 亲自插好，这里不再插；
 		// 重复点同一文件：ChatInput 的 insert sink 会判正文已有该 @提及而跳过。
-		if (!silent && name) {
-			insertTextAtCursor(`@${name} `);
+		// 文件/目录类引用正文写相对路径而非 basename：同名条目（根目录 报告/ 与
+		// 方案/报告/）靠路径才能区分，linkify 也按相对路径渲染文件药丸；
+		// page 无文件路径语义，保持标题形式。
+		const mention = mode === "page" ? name : path;
+		if (!silent && mention) {
+			insertTextAtCursor(`@${mention} `);
 		}
 	};
 	const removeAttachment = (pathOrKey: string) => {
@@ -1151,7 +1155,8 @@ export function App() {
 					: a.mode === "conversation"
 						? `conv|${a.conversationId ?? ""}|${a.sessionPath ?? ""}` === pathOrKey
 						: a.path === pathOrKey;
-				if (isHit && !removedName) removedName = a.name;
+				// 移除口径与 attach 插入一致：文件类提及正文是相对路径，page/conversation 是标题。
+				if (isHit && !removedName) removedName = a.mode === "page" || a.mode === "conversation" ? a.name : a.path;
 				return !isHit;
 			}),
 		);

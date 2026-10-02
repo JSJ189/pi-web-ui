@@ -87,10 +87,21 @@ describe("matchAtToken", () => {
 				{ path: "", name: "x", type: "file" },
 			]);
 			expect(out).toHaveLength(2);
-			expect(out[0]).toMatchObject({ providerId: "host:files", title: "a.ts", text: "@a.ts" });
+			// 正文写相对路径（非 basename）：同名条目靠路径区分，linkify 按路径渲染药丸。
+			expect(out[0]).toMatchObject({ providerId: "host:files", title: "a.ts", text: "@src/a.ts" });
 			expect(out[0]?.attachments?.[0]).toMatchObject({ path: "src/a.ts", mode: "reference" });
 			expect(out[0]?.attachments?.[0]).not.toHaveProperty("isDir");
 			expect(out[1]?.attachments?.[0]).toMatchObject({ isDir: true });
+		});
+
+		it("同名 basename 的两个条目正文互不混淆", () => {
+			const out = mapFileHits("文件", [
+				{ path: "报告", name: "报告", type: "dir" },
+				{ path: "方案/报告", name: "报告", type: "dir" },
+			]);
+			expect(out[0]?.text).toBe("@报告");
+			expect(out[1]?.text).toBe("@方案/报告");
+			expect(out[0]?.text).not.toBe(out[1]?.text);
 		});
 	});
 
