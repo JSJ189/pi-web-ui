@@ -34,7 +34,8 @@
 ### i18n
 
 - 前端新增 key（20）：`openInNewTab`、`clickToCloseImage`、`compactedHistoryNotFound`、`uiLayoutSidebarLeft`、`uiLayoutSidebarRight`、`uiLayoutPosition`、`uiLayoutPosTop`、`uiLayoutPosBottom`、`uiLayoutPosLeft`、`uiLayoutPosRight`、`moveToTop`、`moveToBottom`、`moveToLeft`、`moveToRight`、`sideDockCollapse`、`sideDockExpand`、`quoteSelection`、`quoteText`、`quoteSource`、`removeQuote`
-- 服务端文案变更（1）：`subagents.wait.pending`
+- 前端英文变更（1）：`browserControlExample2`
+- 服务端文案变更（2）：`markers.todo.dep.blocks.updated`、`subagents.wait.pending`
 <!-- auto-i18n:end -->
 
 ## [0.97.0] — 2026-09-26

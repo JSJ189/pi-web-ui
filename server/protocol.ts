@@ -2108,6 +2108,8 @@ export interface UiPluginCatalogEntry {
 	id: string;
 	/** Display name (falls back to id). */
 	name: string;
+	/** Display name in English (falls back to name). */
+	nameEn?: string;
 	description?: string;
 	descriptionEn?: string;
 	/** Optional emoji/single-char icon. */

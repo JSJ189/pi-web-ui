@@ -3162,7 +3162,7 @@ export const en: Record<keyof typeof zh, string> = {
 	browserControlPageClosed: "not open",
 	browserControlExamples: "You can ask for things like",
 	browserControlExample1: '"Read the orders on that page and sort them by amount"',
-	browserControlExample2: '"Type 张三 in the search box, click search, and tell me the first result"',
+	browserControlExample2: '"Type John Doe in the search box, click search, and tell me the first result"',
 	browserControlOpenOptions: "Open extension options",
 	browserControlRefresh: "Refresh status",
 	browserControlCite: "Mention in chat",
@@ -3908,7 +3908,12 @@ export function LanguageProvider({ children }: { children: ReactNode }) {
 	const t = useCallback<Translate>(
 		(key, vars) => {
 			// Pack strings are best-effort: missing keys fall back to English.
-			let str: string = PACK_REGISTRY[locale]?.strings[key] ?? (locale === "zh" ? zh[key] : en[key]);
+			let raw: string | undefined = PACK_REGISTRY[locale]?.strings[key];
+			// 假翻译防护（issue #502）：非中日语言包若包含中文汉字，说明该 key 尚未真正本地化，安全回退到英文
+			if (raw && locale !== "zh" && locale !== "ja" && /[\u4e00-\u9fff]/.test(raw)) {
+				raw = undefined;
+			}
+			let str: string = raw ?? (locale === "zh" ? zh[key] : en[key]);
 			if (vars) {
 				for (const [k, v] of Object.entries(vars)) {
 					str = str.replaceAll(`{${k}}`, String(v));

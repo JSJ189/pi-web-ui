@@ -55,6 +55,17 @@ describe("readCatalog", () => {
 		expect(mermaid.description).toBeUndefined();
 	});
 
+	it("支持 nameEn 字段透传", () => {
+		writeFileSync(
+			custom,
+			JSON.stringify({ entries: [{ id: "custom-p", name: "自定义", nameEn: "Custom", source: "user/custom" }] }),
+		);
+		const list = readCatalog(builtin, custom);
+		const customPlugin = list.find((e) => e.id === "custom-p")!;
+		expect(customPlugin.name).toBe("自定义");
+		expect(customPlugin.nameEn).toBe("Custom");
+	});
+
 	it("builtin 文件缺失时只看 custom", () => {
 		writeFileSync(custom, JSON.stringify({ entries: [{ id: "x", source: "a/b" }] }));
 		const list = readCatalog(join(dir, "missing.json"), custom);

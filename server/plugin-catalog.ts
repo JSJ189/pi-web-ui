@@ -73,6 +73,7 @@ function toEntry(raw: Record<string, unknown>, builtin: boolean): UiPluginCatalo
 	const id = deriveCatalogId(typeof raw.id === "string" ? raw.id.trim() : undefined, source);
 	if (!ID_RE.test(id)) return null;
 	const name = typeof raw.name === "string" && raw.name.trim() ? raw.name.trim() : id;
+	const nameEn = typeof raw.nameEn === "string" && raw.nameEn.trim() ? raw.nameEn.trim() : undefined;
 	const description =
 		typeof raw.description === "string" && raw.description.trim() ? raw.description.trim() : undefined;
 	const descriptionEn =
@@ -85,6 +86,7 @@ function toEntry(raw: Record<string, unknown>, builtin: boolean): UiPluginCatalo
 		name,
 		source,
 		builtin,
+		...(nameEn ? { nameEn } : {}),
 		...(description ? { description } : {}),
 		...(descriptionEn ? { descriptionEn } : {}),
 		...(icon ? { icon } : {}),
@@ -271,6 +273,7 @@ export function writeCustomCatalog(customPath: string, incoming: UiPluginCatalog
 		id: e.id,
 		source: e.source,
 		name: e.name,
+		...(e.nameEn ? { nameEn: e.nameEn } : {}),
 		...(e.description ? { description: e.description } : {}),
 		...(e.descriptionEn ? { descriptionEn: e.descriptionEn } : {}),
 		...(e.icon ? { icon: e.icon } : {}),

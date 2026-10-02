@@ -1163,7 +1163,7 @@
 		"browserControlPageClosed": "não aberta",
 		"browserControlExamples": "Você pode pedir coisas como",
 		"browserControlExample1": "«Leia os pedidos daquela página e ordene por valor»",
-		"browserControlExample2": "«Digite 张三 na busca, clique em pesquisar e me diga o primeiro resultado»",
+		"browserControlExample2": "«Digite João da Silva na busca, clique em pesquisar e me diga o primeiro resultado»",
 		"browserControlOpenOptions": "Abrir opções da extensão",
 		"browserControlRefresh": "Atualizar estado",
 		"browserControlCite": "Mencionar na conversa",

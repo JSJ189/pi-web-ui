@@ -88,10 +88,9 @@ if (!mServer || !mWeb || mServer[1] !== mWeb[1]) {
 	if (!usable || !tag) {
 		console.log("· 跳过协议版本 git 启发式（无可用 tag 或浅检出环境）");
 	} else {
-		const protocolChanged = diffQuiet(`${tag}..HEAD`, "server/protocol.ts");
+		const protocolChanged = diffQuiet(tag, "server/protocol.ts");
 		const versionChanged =
-			diffQuiet(`${tag}..HEAD`, "server/protocol-version.ts") ||
-			diffQuiet(`${tag}..HEAD`, "web/src/protocol-version.ts");
+			diffQuiet(tag, "server/protocol-version.ts") || diffQuiet(tag, "web/src/protocol-version.ts");
 		if (!usable) {
 			console.log("· 跳过协议版本 git 启发式（git 判定不可用）");
 		} else if (protocolChanged && !versionChanged) {

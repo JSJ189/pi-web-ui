@@ -3448,13 +3448,14 @@ export function SettingsModal({
 											const upd = chat.pluginUpdates?.[e.id];
 											const isUpdatable = installed && upd?.updatable === true;
 											const isRunning = Boolean(jobFor(e.id) && jobFor(e.id)?.phase !== "done");
+											const name = locale !== "zh" && e.nameEn ? e.nameEn : e.name;
 											const desc = locale !== "zh" && e.descriptionEn ? e.descriptionEn : e.description;
 											return (
 												<div key={e.id} className="set-catalog-row">
 													<div className="set-catalog-main">
 														<div className="set-catalog-title">
 															<span>
-																<PluginIcon icon={e.icon} iconSvg={e.iconSvg} /> {e.name}
+																<PluginIcon icon={e.icon} iconSvg={e.iconSvg} /> {name}
 															</span>
 															{installed && <span className="set-catalog-installed">{t("pluginInstalled")}</span>}
 															{!e.builtin && <span className="set-catalog-custom">{t("pluginCatalogCustom")}</span>}

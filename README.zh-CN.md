@@ -64,8 +64,8 @@ QQ群 1126050727
 
 **子代理与模板**
 
-- **第一方子代理** —— 后台派发独立对话并行做调研 / 实现 / 审查（`subagent_spawn`）；与普通对话一样在左栏管理：实时查看输出、补充（steer）、中止、移出。内存会话——不进历史 / resume 列表，可嵌套派发。
-- **子代理模板** —— 设置面板「子代理模板」里配置可复用预设：角色系统提示词（追加或整体替换）+ 技能/扩展白名单 + 可选模型 + 可选思考强度。AI 用 `subagent_templates` 工具查询清单、`subagent_spawn(template="…")` 选用，也可以不传模板按主会话默认配置运行。模型与思考强度都留空 = 跟随主对话当前设置（与「跟随主对话」的模型回落同语义）；模板指定了就固定用那个组合（模型不支持的思考档位会自动收敛）。停用的模板保留在面板可随时重新启用，但对 AI 工具不可见（查不到、不能选）。模板全局共享（`<dataDir>/subagent-templates.json`，所有浏览器客户端一致）。首次运行自带 13 个内置模板 —— 前 6 个（review / implement / research / scout / audit / delegate）改编自 pi-subagents 社区项目，另 7 个（oracle / librarian / explore / metis / momus / multimodal-looker / sisyphus-junior）移植自 oh-my-pi 内置 agent —— 面板标「默认」徽标，可像普通模板一样修改或删除。
+- **第一方子代理** —— 后台派发独立对话并行做调研 / 实现 / 审查（统一的 `subagent` 工具，通过 `action="spawn"` 派发）；支持 `action="wait_all"` 批量等待（阻塞上限为 60 秒且不低于 5 秒，受看门狗 × 0.8 约束，超时返回未完成名单引导后续等待）；与普通对话一样在左栏管理：实时查看输出、补充（steer）、中止、移出。内存会话——不进历史 / resume 列表，可嵌套派发。
+- **子代理模板** —— 设置面板「子代理模板」里配置可复用预设：角色系统提示词（追加或整体替换）+ 技能/扩展白名单 + 可选模型 + 可选思考强度。AI 用 `subagent(action="templates")` 查询清单、`subagent(action="spawn", template="…")` 选用，也可以不传模板按主会话默认配置运行。模型与思考强度都留空 = 跟随主对话当前设置（与「跟随主对话」的模型回落同语义）；模板指定了就固定用那个组合（模型不支持的思考档位会自动收敛）。停用的模板保留在面板可随时重新启用，但对 AI 工具不可见（查不到、不能选）。模板全局共享（`<dataDir>/subagent-templates.json`，所有浏览器客户端一致）。首次运行自带 13 个内置模板 —— 前 6 个（review / implement / research / scout / audit / delegate）改编自 pi-subagents 社区项目，另 7 个（oracle / librarian / explore / metis / momus / multimodal-looker / sisyphus-junior）移植自 oh-my-pi 内置 agent —— 面板标「默认」徽标，可像普通模板一样修改或删除。
 
 **文件、图片与附件**
 
@@ -112,7 +112,7 @@ QQ群 1126050727
 
 **代理工具与内联标记**
 
-- **工具开关** —— 设置 →「工具」把所有可选工具逐个列出：7 个终端工具（默认**关**）、7 个 `subagent_*` 工具（默认开），其余 11 个 —— `edit_soft` 与 `browser_page` 默认关，`delegate_task`/`ask_user_question`/`todo_list`/`conversation_read`/`present_files`/`skill`/`schedule_task`/`schedule_list`/`schedule_cancel` 默认开。开关即时生效、不重启，工具只是被禁用仍保留注册以便随时开回；`bash` 与 SDK 自带的 `edit`/`read` 有意不可关。
+- **工具开关** —— 设置 →「工具」把所有可选工具逐个列出：统一的 `subagent` 工具（默认开）、以及另外 17 个工具 —— `edit_soft`、`browser_page`、`eval` 与 `lsp` 默认关，`delegate_task` / `ask_user_question` / `todo_list` / `conversation_read` / `present_files` / `skill` / `schedule_task` / `schedule_list` / `schedule_cancel` / `claim_files` / `plan_update` / `patch` / `compact_context` 默认开。开关即时生效、不重启，工具只是被禁用仍保留注册以便随时开回；核心工具 `bash` 与 SDK 自带的 `read` / `write` / `edit` 走设置页「核心工具」独立区域管理。
 - **内联标记** —— 状态改变不需要工具往返，AI 直接把标记写进回复：任务列表用 `[[todo:new:<主题>]]` / `[[todo:set:<id>,in_progress]]` / `[[todo:remove:<id>]]` / `[[todo:dep:<id>,blocks=<id>]]`，不打断的提醒用 `[[notify:<级别>:<内容>]]`，改对话标题用 `[[conv:rename:<标题>]]`。气泡定稿即执行，标记写错会以浏览器提示回显；任务列表同时以常驻 widget 显示在右栏文件树下方（`N/M done` + ✓/◐/○），跟随当前对话，且因为存在该对话自己的会话分支里，刷新后仍在。设置 →「工具」另有总开关与逐标记开关（这两项全局共享）。
 - **`edit_soft`** —— 更宽松的 `edit`（默认关）：缩进/空白导致内置工具失败时用它，先精确子串、再按去空白逐行核心匹配，`newText` 原样写入并保留文件换行符/BOM，结果带 diff 与 unified patch。
 - **`delegate_task`** —— 强制六段派单（TASK / EXPECTED OUTCOME / REQUIRED TOOLS / MUST DO / MUST NOT DO / CONTEXT）并在服务端校验：模板不可用、任务少于 20 字或任一段为空都会被打回，并把可用模板清单回给模型。卡片按六段结构化展示，跑完后可一键跳到对应子代理对话。
