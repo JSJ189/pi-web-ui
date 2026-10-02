@@ -2032,6 +2032,10 @@ export interface UiLayoutPrefs {
 	labels?: Record<string, string>;
 	/** 顶栏按钮文字总开关（默认开；false = 只剩图标，数字角标保留，溢出菜单仍带文字）。 */
 	topbarText?: boolean;
+	/** 侧边图标停靠栏（SideDock）的形态：默认 false = **贴边槽位**（作为 `.layout` 的 flex
+	 *  子项，面板/主区向它让宽，永不遮挡面板按钮）；true = **悬浮**（贴在屏幕左右边缘的
+	 *  `position:fixed` 浮层，不占布局宽，但会盖住面板竖中央那一条）。 */
+	sideDockFloat?: boolean;
 	/** 用户自定义槽位/位置（将条目挪到 topbar.primary / bottombar / sidebar.left / sidebar.right）。 */
 	slots?: Record<string, UiSlotId>;
 }

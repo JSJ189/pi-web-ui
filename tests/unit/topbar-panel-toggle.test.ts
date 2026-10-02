@@ -503,7 +503,7 @@ describe("TopBar 槽位渲染（顺序即 slot 顺序，插件条目与宿主条
 		expect(tabs[1].textContent).toContain("Mailbox");
 	});
 
-	it("插件动作不限 4 个：5 个全进主栏、无溢出时不画 ⋯", () => {
+	it("插件动作不限 4 个：5 个全进主栏；⋯ 因为兼着「编辑图标」入口而常驻", () => {
 		const { container } = mount("chat", [
 			hostEntry("host:chat"),
 			pluginActionEntry("a"),
@@ -512,8 +512,10 @@ describe("TopBar 槽位渲染（顺序即 slot 顺序，插件条目与宿主条
 			pluginActionEntry("d"),
 			pluginActionEntry("e"),
 		]);
-		expect(container.querySelectorAll(".plugin-topbar-item").length).toBe(5);
-		expect(container.querySelector(".plugin-topbar-more")).toBeNull();
+		// 主直流里 5 个（⋯ 触发按钮是 .topbar-flow 的**兄弟**，不在这个计数里）。
+		expect(flowItems(container).length).toBe(6); // host:chat + a..e
+		// ⋯ 不再随「无溢出」消失：它是「编辑图标」的唯一入口（见 IconEditor）。
+		expect(container.querySelector(".plugin-topbar-more")).not.toBeNull();
 	});
 
 	it("报错插件的视图 tab 置灰保留（走 plugins 清单兜底，slot 里没有它）", () => {

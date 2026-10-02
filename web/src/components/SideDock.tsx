@@ -77,6 +77,9 @@ export function SideDock({
 	const dockRef = useRef<HTMLDivElement>(null);
 
 	const layout = chat.settings?.uiLayout;
+	/** 悬浮模式（设置 → 界面布局 → 侧边图标悬浮显示）：回到旧的 fixed 贴边浮层 ——
+	 *  不占布局宽，但会盖在面板上面（相应地 CSS 把它从 .layout 的 flex 流里摘出去）。 */
+	const floatCls = layout?.sideDockFloat ? " side-dock-float" : "";
 
 	/** 右键条目打开菜单：支持移到顶部/底部/左侧/右侧，以及隐藏与插件菜单项 */
 	const handleContextMenu = (e: React.MouseEvent, item: UiSlotEntry) => {
@@ -307,37 +310,17 @@ export function SideDock({
 
 	const visibleItems = items.filter((e) => !e.hidden);
 
-	// 如果没有分配任何图标，渲染一个可点击的边缘悬浮引导图标，方便用户直达设置
+	// 该侧没有分配任何图标：整条不渲染 —— 停靠栏现在是**在流内**的贴边槽位，留空会白白挤走
+	// 面板与主区的横向空间。（旧版这里渲染一个贴边悬浮的引导图标，但它自己就是「浮层压住
+	// 面板按钮」的来源，故一并去掉；配置入口仍在 设置 → 界面布局。）
 	if (visibleItems.length === 0) {
-		return (
-			<div
-				ref={dockRef}
-				className={`side-dock side-dock-${side} side-dock-empty`}
-				title={
-					side === "left"
-						? `${t("uiLayoutSidebarLeft")} - ${t("uiLayoutTitle")}`
-						: `${t("uiLayoutSidebarRight")} - ${t("uiLayoutTitle")}`
-				}
-			>
-				<button
-					type="button"
-					className="side-dock-btn side-dock-add-btn"
-					data-tip={
-						side === "left" ? `${t("uiLayoutSidebarLeft")} (点此配置)` : `${t("uiLayoutSidebarRight")} (点此配置)`
-					}
-					onClick={() => onOpenSettings("ui-layout")}
-					aria-label={side === "left" ? t("uiLayoutSidebarLeft") : t("uiLayoutSidebarRight")}
-				>
-					<FiAnchor />
-				</button>
-			</div>
-		);
+		return null;
 	}
 
 	// 收起状态：显示贴边悬浮图标，点击展开
 	if (collapsed) {
 		return (
-			<div ref={dockRef} className={`side-dock side-dock-${side} side-dock-collapsed`}>
+			<div ref={dockRef} className={`side-dock side-dock-${side} side-dock-collapsed${floatCls}`}>
 				<button
 					type="button"
 					className="side-dock-btn side-dock-toggle-btn"
@@ -352,7 +335,7 @@ export function SideDock({
 	}
 
 	return (
-		<div ref={dockRef} className={`side-dock side-dock-${side}`}>
+		<div ref={dockRef} className={`side-dock side-dock-${side}${floatCls}`}>
 			<button
 				type="button"
 				className="side-dock-btn side-dock-collapse-btn"

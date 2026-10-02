@@ -2143,6 +2143,7 @@ export function restoreUiItem(layout: UiLayoutPrefs | undefined, id: string): Ui
 	if (slots) next.slots = slots;
 	// 非布局字段（顶栏文字开关等）原样保留 —— 单条恢复只动该条目。
 	if (src.topbarText !== undefined) next.topbarText = src.topbarText;
+	if (src.sideDockFloat !== undefined) next.sideDockFloat = src.sideDockFloat;
 	return next;
 }
 

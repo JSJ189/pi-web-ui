@@ -3,6 +3,7 @@ import { createPortal } from "react-dom";
 import {
 	FiBox,
 	FiDownload,
+	FiEdit2,
 	FiFolder,
 	FiFolderPlus,
 	FiGitBranch,
@@ -199,6 +200,8 @@ interface TopBarProps {
 	onThemeChange: (id: string | null) => void;
 	/** Re-fetch the theme list (called when a theme menu opens with an empty list). */
 	reloadThemes: () => void;
+	/** 打开「图标编辑」模式（直接拖图标改顶栏/底栏/侧边停靠栏的位置）。 */
+	onOpenIconEdit: () => void;
 }
 
 export function TopBar({
@@ -223,6 +226,7 @@ export function TopBar({
 	theme,
 	onThemeChange,
 	reloadThemes,
+	onOpenIconEdit,
 }: TopBarProps) {
 	const { locale, setLocale, t, packs } = useI18n();
 	// 「⋯」溢出菜单的开关（宿主自己的菜单，插件不碰 DOM；顺序与设置面板里看到的一致）。
@@ -1481,7 +1485,10 @@ export function TopBar({
 					<Fragment key={it.id}>{it.node}</Fragment>
 				))}
 			</div>
-			{overflowMenuItems.length > 0 && (
+			{/* 溢出菜单现在只要**顶栏有东西**就常驻：它除了「隐藏/放不下的条目」，还兼着「编辑图标」
+			    这个入口 —— 所有条目都放得下时把 ⋯ 藏掉，用户就再也进不了图标编辑了。
+			    顶栏真的一条条目都没有时不画（没什么可编辑的，也不留空壳）。 */}
+			{(overflowMenuItems.length > 0 || flowItems.length > 0) && (
 				<div className="plugin-topbar-more">
 					<button
 						ref={moreBtnRef}
@@ -1589,6 +1596,22 @@ export function TopBar({
 								</button>
 							);
 						})}
+						{/* 图标编辑入口：拖动改四个栏的位置（见 components/IconEditor.tsx 与 ui-layout-edit.ts）。 */}
+						<div className="tb-menu-divider" aria-hidden="true" />
+						<button
+							type="button"
+							role="menuitem"
+							className="tb-row"
+							onClick={() => {
+								setTopbarMenuOpen(false);
+								onOpenIconEdit();
+							}}
+						>
+							<span className="plugin-icon-glyph">
+								<FiEdit2 />
+							</span>
+							<span className="tb-row-text">{t("uiIconEdit")}</span>
+						</button>
 					</TopbarOverflowMenu>
 				</div>
 			)}

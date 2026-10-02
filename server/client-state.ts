@@ -168,6 +168,8 @@ export function normalizeUiLayout(v: unknown): UiLayoutPrefs {
 	}
 	// 顶栏按钮文字总开关：只收布尔值（缺席 = 显示，兼容老存档）。
 	const topbarText = typeof o.topbarText === "boolean" ? (o.topbarText as boolean) : undefined;
+	// 侧边图标停靠栏形态：只收布尔值（缺席 = 贴边槽位）。
+	const sideDockFloat = typeof o.sideDockFloat === "boolean" ? (o.sideDockFloat as boolean) : undefined;
 	// 用户自定义槽位/位置：只收合法 slot 字符串
 	let slots: Record<string, UiSlotId> | undefined;
 	if (o.slots && typeof o.slots === "object" && !Array.isArray(o.slots)) {
@@ -200,6 +202,7 @@ export function normalizeUiLayout(v: unknown): UiLayoutPrefs {
 		...(align ? { align } : {}),
 		...(labels ? { labels } : {}),
 		...(topbarText !== undefined ? { topbarText } : {}),
+		...(sideDockFloat !== undefined ? { sideDockFloat } : {}),
 		...(slots ? { slots } : {}),
 	};
 }

@@ -36,10 +36,17 @@ import {
 	installPluginHostApi,
 	triggerPluginUiAction,
 } from "./plugin-host";
-import { buildUiSlots, withPluginViewItems, type UiDiagnostic, type UiSlotEntry } from "./ui-slots";
+import {
+	buildUiSlots,
+	withPluginViewItems,
+	HIDDEN_FROM_LAYOUT_ITEM_IDS,
+	type UiDiagnostic,
+	type UiSlotEntry,
+} from "./ui-slots";
 import { renderSlotToolbar } from "./slot-toolbar";
 import { ContextMenu } from "./components/ContextMenu";
 import { BannerContainer } from "./components/BannerContainer";
+import { IconEditor } from "./components/IconEditor";
 import { showBanner, dismissBanner, dismissBannersWhere } from "./banner-notice";
 import { ensurePluginViewLoaded } from "./plugin-loader";
 import { registerAttachmentSink, insertTextAtCursor, removeMentionFromComposer } from "./composer-bridge";
@@ -753,6 +760,8 @@ export function App() {
 	const [bgTasksOpen, setBgTasksOpen] = useState(false);
 	// Global search panel (sessions / projects / workspace files).
 	const [globalSearchOpen, setGlobalSearchOpen] = useState(false);
+	// 图标编辑模式（顶栏「⋯」→ 编辑图标）：直接拖图标改四个栏的位置。
+	const [iconEditOpen, setIconEditOpen] = useState(false);
 	/** 全局搜索「会话」结果点击后的跳转目标：切到该会话并定位到命中消息。
 	 *  由 MessageList 消费（消息载入即跳转+高亮），跳完后置空。 */
 	const [searchJump, setSearchJump] = useState<{
@@ -1531,6 +1540,7 @@ export function App() {
 				}}
 				onOpenBgTasks={() => setBgTasksOpen(true)}
 				onOpenGlobalSearch={() => setGlobalSearchOpen(true)}
+				onOpenIconEdit={() => setIconEditOpen(true)}
 				sound={sound}
 				onSoundChange={setSound}
 				onSoundPreview={(kind: SoundKind) => playSound(kind, sound)}
@@ -1539,6 +1549,14 @@ export function App() {
 				onThemeChange={switchTheme}
 				reloadThemes={reloadThemes}
 			/>
+			{iconEditOpen && (
+				<IconEditor
+					slots={uiSlots}
+					layout={chat.settings?.uiLayout}
+					exclude={HIDDEN_FROM_LAYOUT_ITEM_IDS}
+					onClose={() => setIconEditOpen(false)}
+				/>
+			)}
 			{chat.protocolMismatch && <div className="protocol-banner">⚠ {t("protocolMismatch")}</div>}
 			<div className="notices">
 				{chat.notices.map((n) => (
@@ -1631,6 +1649,34 @@ export function App() {
 					style={{ "--left-w": `${leftWidth}px`, "--right-w": `${rightWidth}px` } as CSSProperties}
 				>
 					{drawer && <div className="drawer-backdrop" onClick={() => setDrawer(null)} />}
+					{/* 悬浮停靠栏是**布局内的贴边槽位**（不再是覆盖一切的 fixed 浮层）：夹在屏幕边缘与
+					    面板之间，面板与主区自动向内让出它的宽度 —— 面板里的按钮再也不会被压住；该侧没有
+					    图标时整条不渲染，连宽度都不占。 */}
+					<SideDock
+						side="left"
+						items={uiSidebarLeft}
+						chat={chat}
+						view={view}
+						onViewChange={(v: ViewName) => {
+							terminalOpenRequested.current = v === "terminal" && chat.terminals.length === 0;
+							if (terminalOpenRequested.current && createShell()) {
+								terminalOpenRequested.current = false;
+							}
+							setView(v);
+							setDrawer(null);
+						}}
+						onOpenPanel={setDrawer}
+						onOpenSettings={(sec) => {
+							setSettingsInitialSection(sec as any);
+							setSettingsOpen(true);
+						}}
+						onOpenBgTasks={() => setBgTasksOpen(true)}
+						onOpenGlobalSearch={() => setGlobalSearchOpen(true)}
+						onUiAction={onUiAction}
+						uiContextTopbar={uiSlots["contextmenu.topbar"]}
+						onThemeToggle={() => switchTheme(theme === "light" ? null : "light")}
+						onSoundToggle={() => setSound({ ...sound, enabled: !sound.enabled })}
+					/>
 					<div className={`view-pane ${view === "chat" ? "" : "hidden"}`}>
 						{!isMobile && leftCollapsed && <PanelRail side="left" onClick={toggleLeft} />}
 						<div
@@ -2042,58 +2088,33 @@ export function App() {
 							failed={failedPluginViews.includes(view.slice("plugin:".length))}
 						/>
 					)}
+					<SideDock
+						side="right"
+						items={uiSidebarRight}
+						chat={chat}
+						view={view}
+						onViewChange={(v: ViewName) => {
+							terminalOpenRequested.current = v === "terminal" && chat.terminals.length === 0;
+							if (terminalOpenRequested.current && createShell()) {
+								terminalOpenRequested.current = false;
+							}
+							setView(v);
+							setDrawer(null);
+						}}
+						onOpenPanel={setDrawer}
+						onOpenSettings={(sec) => {
+							setSettingsInitialSection(sec as any);
+							setSettingsOpen(true);
+						}}
+						onOpenBgTasks={() => setBgTasksOpen(true)}
+						onOpenGlobalSearch={() => setGlobalSearchOpen(true)}
+						onUiAction={onUiAction}
+						uiContextTopbar={uiSlots["contextmenu.topbar"]}
+						onThemeToggle={() => switchTheme(theme === "light" ? null : "light")}
+						onSoundToggle={() => setSound({ ...sound, enabled: !sound.enabled })}
+					/>
 				</div>
 			</TemplateProvider>
-			<SideDock
-				side="left"
-				items={uiSidebarLeft}
-				chat={chat}
-				view={view}
-				onViewChange={(v: ViewName) => {
-					terminalOpenRequested.current = v === "terminal" && chat.terminals.length === 0;
-					if (terminalOpenRequested.current && createShell()) {
-						terminalOpenRequested.current = false;
-					}
-					setView(v);
-					setDrawer(null);
-				}}
-				onOpenPanel={setDrawer}
-				onOpenSettings={(sec) => {
-					setSettingsInitialSection(sec as any);
-					setSettingsOpen(true);
-				}}
-				onOpenBgTasks={() => setBgTasksOpen(true)}
-				onOpenGlobalSearch={() => setGlobalSearchOpen(true)}
-				onUiAction={onUiAction}
-				uiContextTopbar={uiSlots["contextmenu.topbar"]}
-				onThemeToggle={() => switchTheme(theme === "light" ? null : "light")}
-				onSoundToggle={() => setSound({ ...sound, enabled: !sound.enabled })}
-			/>
-			<SideDock
-				side="right"
-				items={uiSidebarRight}
-				chat={chat}
-				view={view}
-				onViewChange={(v: ViewName) => {
-					terminalOpenRequested.current = v === "terminal" && chat.terminals.length === 0;
-					if (terminalOpenRequested.current && createShell()) {
-						terminalOpenRequested.current = false;
-					}
-					setView(v);
-					setDrawer(null);
-				}}
-				onOpenPanel={setDrawer}
-				onOpenSettings={(sec) => {
-					setSettingsInitialSection(sec as any);
-					setSettingsOpen(true);
-				}}
-				onOpenBgTasks={() => setBgTasksOpen(true)}
-				onOpenGlobalSearch={() => setGlobalSearchOpen(true)}
-				onUiAction={onUiAction}
-				uiContextTopbar={uiSlots["contextmenu.topbar"]}
-				onThemeToggle={() => switchTheme(theme === "light" ? null : "light")}
-				onSoundToggle={() => setSound({ ...sound, enabled: !sound.enabled })}
-			/>
 			<FooterBar
 				chat={chat}
 				bottombarItems={uiSlots["bottombar"]}

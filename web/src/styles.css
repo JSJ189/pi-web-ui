@@ -16340,47 +16340,58 @@ button.source-default-toggle {
 	text-overflow: ellipsis;
 }
 
-/* ---- 屏幕边缘浮动图标停靠栏（SideDock） ---- */
+/* ---- 屏幕边缘的图标停靠栏（SideDock）----
+ * **布局内的贴边槽位**：作为 .layout 的 flex 子项参与排版，面板与主区向内让出它的宽度，
+ * 因此它永远不会叠在面板内容（会话行 / 文件行按钮）上面。该侧没有图标时整个组件不渲染
+ * （SideDock 返回 null），连宽度都不占。
+ * 旧的实现是 `position: fixed` 浮层（z-index 70），会盖住面板竖中央那一条，已废弃。 */
 .side-dock {
-	position: fixed;
-	top: 50%;
-	transform: translateY(-50%);
-	z-index: 70;
+	position: relative;
+	align-self: center;
+	flex-shrink: 0;
 	display: flex;
 	flex-direction: column;
 	align-items: center;
 	gap: 4px;
 	padding: 6px 3px;
+	max-height: 100%;
+	min-height: 0;
 	background: var(--bg-elev);
 	border: 1px solid var(--border);
 	box-shadow: 0 4px 18px rgba(0, 0, 0, 0.25);
 	backdrop-filter: blur(12px);
 	-webkit-backdrop-filter: blur(12px);
-	transition:
-		opacity 0.2s ease,
-		transform 0.2s ease;
 	user-select: none;
 }
 
 .side-dock-left {
-	left: 0;
 	border-left: none;
 	border-radius: 0 10px 10px 0;
 }
 
 .side-dock-right {
-	right: 0;
 	border-right: none;
 	border-radius: 10px 0 0 10px;
 }
 
-.side-dock-empty {
-	opacity: 0.35;
-	padding: 4px 2px;
+/* 悬浮模式（设置 → 界面布局「侧边图标悬浮显示」）：回到 fixed 贴边浮层。
+ * `position:fixed` 自身脱离文档流，所以它不再向面板/主区要宽度；代价是又会盖在面板
+ * 竖中央那一条上（文件行/会话行按钮），所以默认关闭。 */
+.side-dock-float {
+	position: fixed;
+	top: 50%;
+	transform: translateY(-50%);
+	z-index: 70;
+	align-self: auto;
+	max-height: none;
 }
 
-.side-dock-empty:hover {
-	opacity: 1;
+.side-dock-float.side-dock-left {
+	left: 0;
+}
+
+.side-dock-float.side-dock-right {
+	right: 0;
 }
 
 .side-dock-collapsed {
@@ -16516,4 +16527,226 @@ button.source-default-toggle {
 .status-item-wrap {
 	display: inline-flex;
 	align-items: center;
+}
+
+/* ---- 图标编辑模式（IconEditor）----
+ * 从顶栏「⋯」→「编辑图标」进入：在一个面板里**同时**画出顶栏 / 底栏 / 左悬浮栏 / 右悬浮栏
+ * 的条目，直接拖动改位置（写的是同一份 uiLayout 偏好，见 web/src/ui-layout-edit.ts）。
+ * 为什么是独立面板而不是「就地拖真顶栏」：四个栏不可能同时可见（悬浮栏会收起、面板会折叠、
+ * 条目会被实测溢出收进 ⋯），跨栏拖动根本没有共同的拖放面。 */
+.icon-editor-backdrop {
+	position: fixed;
+	inset: 0;
+	z-index: 90;
+	background: rgba(0, 0, 0, 0.45);
+}
+
+.icon-editor {
+	position: fixed;
+	left: 50%;
+	top: 50%;
+	transform: translate(-50%, -50%);
+	z-index: 91;
+	display: flex;
+	flex-direction: column;
+	width: min(880px, calc(100vw - 24px));
+	max-height: min(84vh, 760px);
+	background: var(--bg-elev);
+	border: 1px solid var(--border);
+	border-radius: 12px;
+	box-shadow: 0 18px 60px rgba(0, 0, 0, 0.5);
+	overflow: hidden;
+	/* 拖动时指针会扫过面板里的文字，不禁选就会边走边选中一片。 */
+	user-select: none;
+	-webkit-user-select: none;
+}
+
+.icon-editor-head {
+	display: flex;
+	align-items: center;
+	gap: 10px;
+	padding: 10px 12px;
+	border-bottom: 1px solid var(--border-soft);
+	flex-shrink: 0;
+}
+
+.icon-editor-title {
+	font-size: 13px;
+	font-weight: 700;
+	color: var(--text);
+	white-space: nowrap;
+}
+
+.icon-editor-hint {
+	flex: 1;
+	min-width: 0;
+	font-size: 11px;
+	color: var(--text-faint);
+	overflow: hidden;
+	text-overflow: ellipsis;
+	white-space: nowrap;
+}
+
+.icon-editor-close {
+	flex: none;
+	display: inline-flex;
+	align-items: center;
+	justify-content: center;
+	width: 26px;
+	height: 26px;
+	border: 1px solid var(--border);
+	border-radius: 7px;
+	background: var(--bg-elev2);
+	color: var(--text-dim);
+	cursor: pointer;
+}
+
+.icon-editor-close:hover {
+	color: var(--text);
+	border-color: var(--accent);
+}
+
+.icon-editor-body {
+	flex: 1;
+	min-height: 0;
+	overflow-y: auto;
+	overscroll-behavior: contain;
+	padding: 10px 12px 16px;
+	display: flex;
+	flex-direction: column;
+	gap: 10px;
+}
+
+.icon-editor-zone {
+	display: flex;
+	flex-direction: column;
+	gap: 5px;
+}
+
+.icon-editor-zone-title {
+	display: flex;
+	align-items: center;
+	gap: 6px;
+	font-size: 11px;
+	font-weight: 700;
+	letter-spacing: 0.6px;
+	color: var(--text-faint);
+}
+
+.icon-editor-zone-count {
+	font-size: 10px;
+	font-weight: 600;
+	color: var(--text-dim);
+	background: var(--bg-elev2);
+	border: 1px solid var(--border);
+	border-radius: 6px;
+	padding: 0 5px;
+}
+
+.icon-editor-strip {
+	display: flex;
+	flex-wrap: wrap;
+	align-items: center;
+	gap: 6px;
+	min-height: 42px;
+	padding: 5px 6px;
+	border: 1px dashed var(--border);
+	border-radius: 8px;
+	background: var(--bg-elev2);
+	transition:
+		border-color 0.15s ease,
+		background-color 0.15s ease;
+}
+
+.icon-editor-strip.drop-over {
+	border-color: var(--accent);
+	background: var(--accent-soft);
+}
+
+/* 段标签（start/center/end）独占一行：图标才能从行首左对齐，不被标签挤开。 */
+.icon-editor-strip-label {
+	width: 100%;
+	font-size: 10px;
+	color: var(--text-faint);
+	letter-spacing: 0.5px;
+	text-transform: uppercase;
+}
+
+.icon-editor-chip {
+	display: inline-flex;
+	align-items: center;
+	gap: 5px;
+	max-width: 100%;
+	padding: 4px 8px;
+	border: 1px solid var(--border);
+	border-radius: 8px;
+	background: var(--card-bg, var(--bg-elev));
+	color: var(--text);
+	font: inherit;
+	font-size: 12px;
+	cursor: grab;
+	/* 触屏上按住图标拖动 = 拖拽，不是滚动页面（pointermove 才收得到）。 */
+	touch-action: none;
+	user-select: none;
+	-webkit-user-select: none;
+}
+
+.icon-editor-chip:hover {
+	border-color: var(--accent);
+}
+
+.icon-editor-chip.dragging {
+	opacity: 0.4;
+	cursor: grabbing;
+}
+
+.icon-editor-chip-icon {
+	display: inline-flex;
+	align-items: center;
+	flex: none;
+	font-size: 13px;
+}
+
+.icon-editor-chip-label {
+	min-width: 0;
+	max-width: 170px;
+	overflow: hidden;
+	text-overflow: ellipsis;
+	white-space: nowrap;
+}
+
+/* 插入位置指示（落点高亮之外的第二重反馈：插在谁前面）。 */
+.icon-editor-caret {
+	flex: none;
+	align-self: stretch;
+	width: 2px;
+	min-height: 22px;
+	background: var(--accent);
+	border-radius: 1px;
+}
+
+.icon-editor-empty {
+	font-size: 11px;
+	color: var(--text-faint);
+}
+
+.icon-editor-zone-tray .icon-editor-strip {
+	opacity: 0.9;
+}
+
+.icon-editor-zone-tray .icon-editor-chip {
+	border-style: dashed;
+}
+
+/* 顶栏 ⋯ 菜单里的分隔线（图标编辑入口与条目之间）。 */
+.tb-menu-divider {
+	height: 1px;
+	margin: 4px 0;
+	background: var(--border-soft);
+}
+
+/* 宿主内置图标的字形回落（● / # 这类纯字符图标）。 */
+.host-icon-char {
+	font-size: 12px;
+	line-height: 1;
 }

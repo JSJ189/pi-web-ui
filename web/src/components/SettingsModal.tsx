@@ -2959,6 +2959,16 @@ export function SettingsModal({
 									</button>
 								</div>
 								<div className="set-note">{t("uiLayoutHint")}</div>
+								{/* 侧边图标停靠栏形态：默认「贴边槽位」（占宽、不遮挡面板按钮）；勾上 = 旧的
+								    悬浮浮层（不占宽，但会盖住面板竖中央那条）。 */}
+								<label className="set-toggle" title="sideDockFloat">
+									<input
+										type="checkbox"
+										checked={layout?.sideDockFloat === true}
+										onChange={(e) => setLayout({ sideDockFloat: e.target.checked })}
+									/>
+									<span>{t("uiLayoutSideDockFloat")}</span>
+								</label>
 								{uiDiagnostics.length > 0 && (
 									<details className="set-ui-diag" open={uiDiagnostics.some((d) => d.level === "error")}>
 										<summary>⚠ {t("uiLayoutDiagTitle", { n: uiDiagnostics.length })}</summary>
