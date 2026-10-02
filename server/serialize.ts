@@ -10,9 +10,9 @@ import { splitQuotedPrompt } from "./text-quote.js";
 /** AgentMessage is not re-exported from the package root; derive it from AgentSession. */
 export type AgentMessage = AgentSession["messages"][number];
 
-const TEXT_CAP = 200_000;
-const TOOL_OUTPUT_CAP = 100_000;
-const ARGS_CAP = 20_000;
+export const TEXT_CAP = 200_000;
+export const TOOL_OUTPUT_CAP = 100_000;
+export const ARGS_CAP = 20_000;
 /**
  * toolResult 里单张图片进快照的上限（dataUrl 字符数 ≈ 1.5MB 二进制）。
  * 视口/元素截图随便过；超大整页截图回落成占位文本（模型侧不受影响 —— 图它
@@ -30,9 +30,10 @@ const TOOL_RESULT_IMAGE_MAX = 8;
  */
 const TOOL_DETAILS_CAP = 64_000;
 
-function truncate(s: string, cap: number): { text: string; truncated: boolean } {
-	if (s.length <= cap) return { text: s, truncated: false };
-	return { text: `${s.slice(0, cap)}\n\n… [truncated]`, truncated: true };
+export function truncate(s: string, cap: number): { text: string; truncated: boolean } {
+	const str = typeof s === "string" ? s : String(s ?? "");
+	if (str.length <= cap) return { text: str, truncated: false };
+	return { text: `${str.slice(0, cap)}\n\n… [truncated]`, truncated: true };
 }
 
 type ImageBlockLike = {

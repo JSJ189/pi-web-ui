@@ -6,9 +6,10 @@
  *
  * 从 agent-service.ts 抽出，行为保持不变。
  */
-import { mkdirSync, readFileSync, renameSync, writeFileSync } from "node:fs";
+import { readFileSync } from "node:fs";
 import * as fsPromises from "node:fs/promises";
 import { dirname, isAbsolute, resolve } from "node:path";
+import { writeJsonAtomicSync } from "./atomic-file.js";
 import { normalizeSoftCapByModel, normalizeSoftCapTokens } from "./soft-cap.js";
 import { deriveLegacy, legacyToDisabled, normalizeDisabledAgentTools } from "./tool-manager.js";
 import { UI_SLOTS } from "./plugins.js";
@@ -438,7 +439,7 @@ export function normalizeWorkspaceRoots(v: unknown): string[] {
 		const p = raw.trim();
 		if (!p || !isAbsolute(p)) continue;
 		const abs = resolve(p);
-		const key = process.platform === "win32" ? abs.toLowerCase() : abs;
+		const key = normalizePathKey(abs);
 		if (seen.has(key)) continue;
 		seen.add(key);
 		out.push(abs);
@@ -669,13 +670,7 @@ export class ClientStateStore {
 
 	private save(): void {
 		try {
-			mkdirSync(dirname(this.filePath), { recursive: true });
-			// Atomic write (tmp + rename): a crash mid-write must never leave a
-			// half-written JSON — that would wipe ALL persisted state (recent
-			// projects / presets / settings / goal prefs) on next load.
-			const tmp = `${this.filePath}.${process.pid}.tmp`;
-			writeFileSync(tmp, JSON.stringify(this.cache, null, 2) + "\n");
-			renameSync(tmp, this.filePath);
+			writeJsonAtomicSync(this.filePath, this.cache);
 		} catch {
 			// best effort
 		}

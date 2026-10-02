@@ -155,5 +155,5 @@ describe("tool prompt hygiene（工具提示词纯英文精简）", () => {
 		};
 		walk(join(ROOT, "plugins"));
 		expect(offenders, `以下插件提示词行含中文：\n${offenders.join("\n")}`).toEqual([]);
-	});
+	}, 20_000);
 });

@@ -16,7 +16,7 @@
  *     不能防同一用户账号下的完整进程妥协——本地个人工具的合理折衷。
  */
 import { createCipheriv, createDecipheriv, randomBytes } from "node:crypto";
-import { chmodSync, existsSync, mkdirSync, readFileSync, renameSync, statSync, writeFileSync } from "node:fs";
+import { chmodSync, existsSync, readFileSync, statSync } from "node:fs";
 import {
 	readFile as fspReadFile,
 	readdir as fspReaddir,
@@ -27,6 +27,7 @@ import {
 	stat as fspStat,
 } from "node:fs/promises";
 import { dirname, join, relative, resolve } from "node:path";
+import { writeAtomicSync } from "./atomic-file.js";
 import { createRequire } from "node:module";
 import { spawnSync } from "node:child_process";
 // 与 plugin-project 共用同一套 realpath 越界复核（isInsideRoot / realPathOfNearest），
@@ -35,10 +36,7 @@ import { isInsideRoot, realPathOfNearest } from "./plugin-project.js";
 
 /** tmp+rename 原子写（错误由调用方隔离——插件设施的 IO 一律尽力而为）。 */
 function atomicWrite(file: string, data: string): void {
-	mkdirSync(dirname(file), { recursive: true });
-	const tmp = `${file}.tmp-${process.pid}`;
-	writeFileSync(tmp, data);
-	renameSync(tmp, file);
+	writeAtomicSync(file, data);
 }
 
 // ---------------------------------------------------------------------------

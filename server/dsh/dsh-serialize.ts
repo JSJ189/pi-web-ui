@@ -26,16 +26,7 @@
 
 import type { TextQuote, UiContentBlock, UiMessage } from "../protocol.js";
 import { parseTextQuote } from "../text-quote.js";
-
-const TEXT_CAP = 200_000;
-const TOOL_OUTPUT_CAP = 100_000;
-const ARGS_CAP = 20_000;
-
-function truncate(s: string, cap: number): { text: string; truncated: boolean } {
-	const str = typeof s === "string" ? s : String(s ?? "");
-	if (str.length <= cap) return { text: str, truncated: false };
-	return { text: `${str.slice(0, cap)}\n\n… [truncated]`, truncated: true };
-}
+import { ARGS_CAP, TEXT_CAP, TOOL_OUTPUT_CAP, truncate } from "../serialize.js";
 
 // ---------------------------------------------------------------------------
 // 消息内容块序列化

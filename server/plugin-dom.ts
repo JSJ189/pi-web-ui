@@ -14,8 +14,9 @@
  *   （内存态仍生效，本次会话可用）。
  */
 
-import { readFileSync, renameSync, writeFileSync } from "node:fs";
+import { readFileSync } from "node:fs";
 import { join } from "node:path";
+import { writeJsonAtomicSync } from "./atomic-file.js";
 
 const FILE = "plugin-dom.json";
 
@@ -71,9 +72,7 @@ export class PluginDomConsent {
 		if (granted) this.granted.add(id);
 		else this.granted.delete(id);
 		try {
-			const tmp = join(this.dataDir, `${FILE}.tmp.${process.pid}`);
-			writeFileSync(tmp, JSON.stringify({ v: 1, granted: this.list() }), "utf8");
-			renameSync(tmp, join(this.dataDir, FILE));
+			writeJsonAtomicSync(join(this.dataDir, FILE), { v: 1, granted: this.list() });
 		} catch {
 			/* 写失败 best-effort：内存态仍生效，本次会话可用 */
 		}

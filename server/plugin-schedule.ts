@@ -10,8 +10,9 @@
  *    上次触发 lastRun；fn 回调永远由插件代码在 activate 里重给（重启后重建）。
  *    坏文件当空表（不回写，避免一次磁盘抖动清空全部定时）。
  */
-import { readFileSync, writeFileSync, renameSync, mkdirSync } from "node:fs";
-import { dirname, join } from "node:path";
+import { readFileSync } from "node:fs";
+import { join } from "node:path";
+import { writeJsonAtomicSync } from "./atomic-file.js";
 
 export interface CronParts {
 	minute: number[];
@@ -231,11 +232,7 @@ export function loadScheduleRecords(pluginDir: string): Record<string, Persisten
 /** 写持久记录（tmp+rename 原子写；失败只记日志，内存态本次会话仍生效）。 */
 export function saveScheduleRecords(pluginDir: string, records: Record<string, PersistentScheduleRecord>): void {
 	try {
-		mkdirSync(pluginDir, { recursive: true });
-		const file = scheduleFile(pluginDir);
-		const tmp = `${file}.tmp-${process.pid}`;
-		writeFileSync(tmp, JSON.stringify({ v: 1, schedules: records }));
-		renameSync(tmp, file);
+		writeJsonAtomicSync(scheduleFile(pluginDir), { v: 1, schedules: records });
 	} catch (err) {
 		console.error(`[plugin-schedule] persist failed (${pluginDir}):`, err);
 	}

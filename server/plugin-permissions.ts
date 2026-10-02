@@ -13,8 +13,9 @@
  * - 内存 session 授权（仅本次运行，进程结束即失）。
  * 读坏/形状不对当空表，且不在读路径回写；只有真正变更的写才落盘（tmp+rename 原子写）。
  */
-import { readFileSync, writeFileSync, renameSync, mkdirSync } from "node:fs";
-import { dirname, join } from "node:path";
+import { readFileSync } from "node:fs";
+import { join } from "node:path";
+import { writeJsonAtomicSync } from "./atomic-file.js";
 
 export type PermissionFamily = "net" | "llm";
 
@@ -85,10 +86,7 @@ export class PluginPermissionStore {
 
 	private write(grants: PermissionGrant[]): void {
 		try {
-			mkdirSync(dirname(this.file()), { recursive: true });
-			const tmp = `${this.file()}.tmp-${process.pid}`;
-			writeFileSync(tmp, JSON.stringify({ v: 1, grants }));
-			renameSync(tmp, this.file());
+			writeJsonAtomicSync(this.file(), { v: 1, grants });
 		} catch (err) {
 			console.error(`[plugin-permissions] persist failed (${this.file()}):`, err);
 		}

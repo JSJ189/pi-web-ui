@@ -3,7 +3,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { createElement } from "react";
 import { createRoot, type Root } from "react-dom/client";
 import { act } from "react-dom/test-utils";
-import { useCopyFeedback } from "../../web/src/use-copy-feedback.js";
+import { useCopyFeedback, copyTextToClipboard, fallbackCopyText } from "../../web/src/use-copy-feedback.js";
 
 let root: Root | null = null;
 
@@ -102,5 +102,15 @@ describe("useCopyFeedback", () => {
 			hookResult!.reset();
 		});
 		expect(hookResult!.copied).toBe(false);
+	});
+
+	it("copyTextToClipboard: 在 navigator.clipboard 缺失时降级 fallbackCopyText", async () => {
+		vi.stubGlobal("navigator", {});
+		const execCommandMock = vi.fn().mockReturnValue(true);
+		document.execCommand = execCommandMock;
+
+		const ok = await copyTextToClipboard("fallback text");
+		expect(ok).toBe(true);
+		expect(execCommandMock).toHaveBeenCalledWith("copy");
 	});
 });

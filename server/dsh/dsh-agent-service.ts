@@ -25,8 +25,9 @@
  * BgServerTracker（后台任务）、TerminalManager（PTY）、uploads.ts。
  */
 
-import { existsSync, mkdirSync, readFileSync, statSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, readFileSync, statSync } from "node:fs";
 import { basename, dirname, join, resolve, sep } from "node:path";
+import { writeJsonAtomicSync } from "../atomic-file.js";
 import { randomUUID } from "node:crypto";
 import { homedir } from "node:os";
 import { BgServerTracker } from "../bg-servers.js";
@@ -4150,8 +4151,7 @@ export class DshClientSession {
 				/* new file */
 			}
 			auth[this.normalizeDshProvider(provider)] = { type: "api_key", key };
-			mkdirSync(dirname(authPath), { recursive: true });
-			writeFileSync(authPath, JSON.stringify(auth, null, 2) + "\n");
+			writeJsonAtomicSync(authPath, auth);
 			this.emit({
 				type: "notice",
 				level: "info",
@@ -4180,7 +4180,7 @@ export class DshClientSession {
 				return;
 			}
 			delete auth[pid];
-			writeFileSync(authPath, JSON.stringify(auth, null, 2) + "\n");
+			writeJsonAtomicSync(authPath, auth);
 			this.emit({
 				type: "notice",
 				level: "info",

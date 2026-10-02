@@ -17,6 +17,7 @@ import {
 import { appSend } from "../app-globals";
 import { useT } from "../i18n";
 import type { PlanState, PlanStep, PlanStepStatus } from "../types";
+import { useCopyFeedback } from "../use-copy-feedback";
 
 interface PlanBoardProps {
 	plan: PlanState | null | undefined;
@@ -41,7 +42,7 @@ const NEXT_STATUS: Record<PlanStepStatus, PlanStepStatus> = {
 export function PlanBoard({ plan }: PlanBoardProps) {
 	const t = useT();
 	const [expanded, setExpanded] = useState(false);
-	const [copied, setCopied] = useState(false);
+	const { copied, copy } = useCopyFeedback({ duration: 2000 });
 	const [editingId, setEditingId] = useState<string | null>(null);
 	const [editTitle, setEditTitle] = useState("");
 	const [editDesc, setEditDesc] = useState("");
@@ -99,13 +100,7 @@ export function PlanBoard({ plan }: PlanBoardProps) {
 				return line;
 			}),
 		];
-		try {
-			await navigator.clipboard.writeText(lines.join("\n"));
-			setCopied(true);
-			setTimeout(() => setCopied(false), 2000);
-		} catch {
-			// Clipboard API failed fallback
-		}
+		await copy(lines.join("\n"));
 	};
 
 	/** 单步内联编辑控制 */

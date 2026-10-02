@@ -28,6 +28,7 @@ import {
 import { getLastBrowserControlPages, pokeBrowserControl } from "../browser-control";
 import { getPluginComposerProvider, listPluginComposerProviders } from "../plugin-host";
 import { detectTouchFirstDevice } from "../touch-device";
+import { copyTextToClipboard } from "../use-copy-feedback";
 import { groupByAlign } from "../ui-slots";
 import { nextSearchReqId } from "../search-req-id";
 
@@ -857,10 +858,10 @@ export const ChatInput = memo(function ChatInput({
 			onNotice("warning", t("slashCopyEmpty"));
 			return;
 		}
-		try {
-			await navigator.clipboard.writeText(textToCopy);
+		const ok = await copyTextToClipboard(textToCopy);
+		if (ok) {
 			onNotice("info", t("slashCopied"));
-		} catch {
+		} else {
 			onNotice("error", t("slashCopyFailed"));
 		}
 	};

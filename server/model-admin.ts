@@ -11,8 +11,9 @@
  * 经 ModelAdminHost 与 ClientSession 解耦（同 settings/goal/slash 服务模式）。
  * UI 文案直接中文（服务端 notice 约定）。apiKey/headers 绝不下发浏览器。
  */
-import { existsSync, mkdirSync, readFileSync, renameSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, readFileSync, renameSync } from "node:fs";
 import { dirname, join } from "node:path";
+import { writeJsonAtomicSync } from "./atomic-file.js";
 import type { ModelRuntime } from "@earendil-works/pi-coding-agent";
 import type {
 	ServerMessage,
@@ -97,12 +98,9 @@ export function graduateOverlayModels(
 	return graduated;
 }
 
-/** 原子写 JSON（tmp + rename）：进程崩溃不留半截文件——裸 writeFileSync 中途被
- *  杀会把整份配置截断，下次读盘即空表。tmp 名带 pid，避免同机多进程互踩。 */
+/** 原子写 JSON（tmp + rename）：进程崩溃不留半截文件。 */
 function atomicWriteJson(path: string, data: unknown): void {
-	const tmp = `${path}.${process.pid}.tmp`;
-	writeFileSync(tmp, JSON.stringify(data, null, 2) + "\n");
-	renameSync(tmp, path);
+	writeJsonAtomicSync(path, data);
 }
 
 /** Strip // and /* *\/ comments without touching string literals (URLs contain //). */
@@ -424,13 +422,8 @@ export class ModelAdminService {
 	}
 
 	private writeProviderKeys(data: Record<string, ProviderKeysData>): void {
-		mkdirSync(this.host.agentDir, { recursive: true });
-		// 原子写（tmp+rename）：崩溃不留半截 JSON；0o600 限权防本机其他用户读密钥
-		//（Windows 忽略 mode 无害，POSIX 生效）。
-		const path = this.providerKeysPath();
-		const tmp = `${path}.${process.pid}.tmp`;
-		writeFileSync(tmp, JSON.stringify(data, null, 2) + "\n", { mode: 0o600 });
-		renameSync(tmp, path);
+		// 原子写（tmp+rename）：崩溃不留半截 JSON。
+		writeJsonAtomicSync(this.providerKeysPath(), data);
 	}
 
 	/** 解析失败的配置文件改名留存为 <name>.corrupt-<timestamp>。改名失败（占用/

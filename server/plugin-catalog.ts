@@ -14,8 +14,8 @@
  * 设计上服务端不做网络探测（不拉 manifest）：名称/简介/图标由条目本身携带
  * （作者填），id 由来源推导或作者显式指定 —— 保持离线可用、可单测。
  */
-import { existsSync, mkdirSync, readFileSync, renameSync, writeFileSync } from "node:fs";
-import { dirname } from "node:path";
+import { existsSync, readFileSync } from "node:fs";
+import { writeJsonAtomicSync } from "./atomic-file.js";
 import type { UiPluginCatalogEntry } from "./protocol.js";
 import { normalizeIconSvg } from "./icon-svg.js";
 import { pick, type ServerLang } from "./i18n.js";
@@ -60,10 +60,7 @@ function readJsonSafe<T>(path: string, fallback: T): T {
 }
 
 function atomicWrite(path: string, data: unknown): void {
-	mkdirSync(dirname(path), { recursive: true });
-	const tmp = `${path}.tmp-${process.pid}`;
-	writeFileSync(tmp, JSON.stringify(data, null, 2) + "\n");
-	renameSync(tmp, path);
+	writeJsonAtomicSync(path, data);
 }
 
 /** 把任意对象规范化为合法条目；非法则返回 null。 */

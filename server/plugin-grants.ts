@@ -36,8 +36,9 @@
  * 与尾部分隔符（Windows 文件系统不区分大小写），但**存储保持用户写入时的形式**
  * （不 lowerCase），否则设置面板里 `C:\Users\Foo` 会显示成 `c:\users\foo`。
  */
-import { mkdirSync, readFileSync, renameSync, writeFileSync } from "node:fs";
-import { dirname, isAbsolute, resolve, sep } from "node:path";
+import { readFileSync } from "node:fs";
+import { isAbsolute, resolve, sep } from "node:path";
+import { writeJsonAtomicSync } from "./atomic-file.js";
 
 /** 合法插件 id（与 server/plugins.ts 的 ID_RE 一致，防路径穿越）。 */
 const ID_RE = /^[A-Za-z0-9_-]+$/;
@@ -95,13 +96,9 @@ function isSameOrInside(targetKey: string, ancestorKey: string): boolean {
 	return targetKey.startsWith(prefix);
 }
 
-/** 原子写：临时文件 + rename（同 server/plugin-catalog.ts 的写法；本文件不 import
- *  它，避免为一个 3 行函数制造模块耦合）。 */
+/** 原子写：临时文件 + rename。 */
 function atomicWriteJson(filePath: string, data: unknown): void {
-	mkdirSync(dirname(filePath), { recursive: true });
-	const tmp = `${filePath}.tmp-${process.pid}`;
-	writeFileSync(tmp, JSON.stringify(data, null, 2) + "\n");
-	renameSync(tmp, filePath);
+	writeJsonAtomicSync(filePath, data);
 }
 
 /** 读文件并净化为内存表：任何异常（不存在 / 权限 / JSON 坏 / 形状不对）→ 空表。

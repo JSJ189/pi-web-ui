@@ -10,9 +10,11 @@
  * 定时策略：单个 10s ticker 检查到期任务（cron 下次触发 / 间隔毫秒），
  * running 集合防重叠；catchUp "once" 在启动时补跑一次漏掉的触发。
  */
-import { mkdirSync, readFileSync, renameSync, writeFileSync } from "node:fs";
+import { readFileSync } from "node:fs";
 import { join } from "node:path";
 import { nextCronFire, parseCronSpec } from "./plugin-schedule.js";
+import { writeJsonAtomicSync } from "./atomic-file.js";
+import { normalizePathKey } from "./client-state.js";
 
 export type SchedulerKind = "cron" | "interval";
 export type SchedulerCatchUp = "skip" | "once";
@@ -302,8 +304,11 @@ export function sameSessionFile(a: string, b: string): boolean {
 	const x = String(a ?? "").trim();
 	const y = String(b ?? "").trim();
 	if (!x || !y) return false;
-	const norm = (s: string): string => s.replace(/\\/g, "/").replace(/\/+$/, "").toLowerCase();
-	return norm(x) === norm(y);
+	try {
+		return normalizePathKey(x) === normalizePathKey(y);
+	} catch {
+		return false;
+	}
 }
 
 export class SchedulerStore {
@@ -408,13 +413,9 @@ export class SchedulerStore {
 
 	private save(): void {
 		try {
-			mkdirSync(this.dataDir, { recursive: true });
-			const file = schedulerFile(this.dataDir);
-			const tmp = `${file}.tmp-${process.pid}`;
 			const tasks: Record<string, StoredTask> = {};
 			for (const [id, t] of this.tasks) tasks[id] = t;
-			writeFileSync(tmp, JSON.stringify({ v: 1, tasks }));
-			renameSync(tmp, file);
+			writeJsonAtomicSync(schedulerFile(this.dataDir), { v: 1, tasks });
 		} catch (err) {
 			console.error("[scheduler] persist failed:", err);
 		}

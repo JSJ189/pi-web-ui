@@ -1,7 +1,5 @@
 import { Fragment, useEffect, useRef, useState, type ReactNode } from "react";
 import {
-	FiFolder,
-	FiX,
 	FiPlus,
 	FiSettings,
 	FiSearch,
@@ -18,6 +16,7 @@ import { cacheMetrics, estimateStreamTokens, streamRate, trimRateSamples, type R
 import type { UiSlotEntry } from "../ui-slots";
 import { openContextMenu } from "../context-menu-state";
 import { focusComposer } from "../composer-bridge";
+import { DirectoryBrowser } from "./DirectoryBrowser.js";
 
 interface FooterBarProps {
 	/** 底栏条目（bottombar 槽位：内置 + 插件的最终结果，宿主已排好序）。 */
@@ -30,9 +29,6 @@ interface FooterBarProps {
 	onOpenGlobalSearch?: () => void;
 	onOpenBgTasks?: () => void;
 }
-
-/** 机器根（此电脑/盘符列表）wire 字面量 —— 与 server/files-service.ts 的 MACHINE_ROOT 同值。 */
-const MACHINE_ROOT = "@root";
 
 /** 未接线时的回退顺序（= BUILTIN_UI_ITEMS 里 bottombar 槽位的默认次序）。
  *  降级路径没有 slot 数据，分区只能按这张静态表（正常链路一律走 entry.align）。 */
@@ -73,58 +69,6 @@ export function FooterBar({
 	const workspaceRoots = useAppField("workspaceRoots");
 	const state = chat.state;
 	const [editing, setEditing] = useState(false);
-	/** Directory currently shown in the picker (absolute, "/"-separated). */
-	const [browsePath, setBrowsePath] = useState("");
-	/** Free-form path input (still available for typing exact paths). */
-	const [draft, setDraft] = useState("");
-	/** "New folder" inline input state. */
-	const [showNew, setShowNew] = useState(false);
-	const [newName, setNewName] = useState("");
-	/** Tab 补全的当前候选下标（-1 = 未选中，Tab 从头开始）。 */
-	const [compIndex, setCompIndex] = useState(-1);
-	const inputRef = useRef<HTMLInputElement>(null);
-	const newInputRef = useRef<HTMLInputElement>(null);
-	/** Completion list scoped to the picker: directories only (files are noise
-	 *  for a working-directory selector; the free-form input covers files). */
-	const dirs = chat.pathCompletions.filter((c) => c.type === "dir");
-
-	/** Browse query with trailing separator so the server lists the WHOLE dir. */
-	const browseQuery = (p: string) => (p.endsWith("/") ? p : p + "/");
-
-	/** Parent of an absolute "/"-separated path; null at the filesystem root.
-	 *  Windows 盘符根（"C:"）的父级是机器根 @root（盘符列表）；posix "/" 无父级。 */
-	const parentOf = (p: string): string | null => {
-		let s = p.endsWith("/") && p !== "/" ? p.slice(0, -1) : p;
-		if (s === MACHINE_ROOT || s === "/") return null;
-		const i = s.lastIndexOf("/");
-		if (i < 0) {
-			// "/"、盘符根 "C:" 或裸名
-			return /^[A-Za-z]:$/.test(s) ? MACHINE_ROOT : null;
-		}
-		if (i === 0) return "/"; // posix "/foo" → "/"
-		const parent = s.slice(0, i);
-		// Windows drive root resolves weirdly without the trailing slash.
-		return /^[A-Za-z]:$/.test(parent) ? parent + "/" : parent;
-	};
-
-	// Debounced listing request while the picker is open.
-	useEffect(() => {
-		if (!editing) return;
-		const t = setTimeout(() => {
-			appSend({ type: "complete_path", path: browseQuery(browsePath) });
-		}, 60);
-		return () => clearTimeout(t);
-	}, [browsePath, editing]);
-
-	// 输入草稿 ≠ 当前浏览目录（正在打字）时，按草稿请求补全供 Tab 接受 ——
-	// 换盘符（输入 D:）与任意路径的增量补全都走这里。
-	useEffect(() => {
-		if (!editing || draft === browsePath) return;
-		const t = setTimeout(() => {
-			appSend({ type: "complete_path", path: draft });
-		}, 150);
-		return () => clearTimeout(t);
-	}, [draft, browsePath, editing]);
 
 	// Live generation-speed samples (tokens/sec). Kept in a ref so pushing a
 	// sample never triggers a re-render. The SDK only commits a turn's usage
@@ -176,57 +120,6 @@ export function FooterBar({
 	const ctxBarClass = ctxPercent === null ? "" : ctxPercent >= 80 ? "warn" : ctxPercent >= 50 ? "mid" : "ok";
 
 	const queueTotal = state.queue.steering.length + state.queue.followUp.length;
-
-	const startEdit = () => {
-		// 服务端 cwd 是原生分隔符（Windows 下带反斜杠），选择器内部统一用 "/"，
-		// 否则 parentOf 按 "/" 切分会直接返回 null，↑ 按钮一开始就是禁用的。
-		const norm = state.cwd.replace(/\\/g, "/");
-		setDraft(norm);
-		setBrowsePath(norm);
-		setShowNew(false);
-		setNewName("");
-		setEditing(true);
-	};
-
-	/** Toggle the working directory and close the picker. 机器根是虚拟层，不能作工作目录。 */
-	const commit = (path: string) => {
-		const trimmed = path.trim();
-		if (trimmed === MACHINE_ROOT) return;
-		if (trimmed && trimmed !== state.cwd) appSend({ type: "set_cwd", path: trimmed });
-		setEditing(false);
-	};
-
-	/** Create a folder under the currently browsed directory. */
-	const createFolder = () => {
-		const name = newName.trim();
-		if (!name) return;
-		appSend({ type: "make_dir", path: `${browseQuery(browsePath)}${name}` });
-		// make_dir has no direct response — refresh the listing shortly after.
-		setTimeout(() => {
-			appSend({ type: "complete_path", path: browseQuery(browsePath) });
-		}, 80);
-		setNewName("");
-		setShowNew(false);
-	};
-
-	const onKeyDown = (e: React.KeyboardEvent<HTMLInputElement>) => {
-		if (e.key === "Escape") {
-			e.stopPropagation();
-			setEditing(false);
-		} else if (e.key === "Enter" && !e.nativeEvent.isComposing) {
-			commit(draft);
-		} else if (e.key === "Tab") {
-			// Tab 补全：循环接受目录候选（换盘符也走这里——候选可能是 D: 盘）。
-			if (dirs.length === 0) return;
-			e.preventDefault();
-			const idx = compIndex >= 0 ? (compIndex + 1) % dirs.length : 0;
-			setCompIndex(idx);
-			setDraft(dirs[idx].path);
-			setBrowsePath(dirs[idx].path);
-		}
-	};
-
-	const upPath = parentOf(browsePath);
 
 	/**
 	 * 宿主内置条目的**节点工厂**（issue #146 的「位置登记」真正落地）：底栏的可见性与顺序
@@ -354,179 +247,23 @@ export function FooterBar({
 			);
 		})(),
 		"host:cwd": editing ? (
-			<>
-				{/* Click-away backdrop closes the picker. */}
-				<div className="status-cwd-backdrop" onClick={() => setEditing(false)} />
-				<div className="cwd-picker">
-					<div className="cwd-picker-head">
-						<span className="cwd-picker-title" title={browsePath === MACHINE_ROOT ? t("computer") : browsePath}>
-							{browsePath === MACHINE_ROOT ? "💻" : <FiFolder />}
-							<span>{browsePath === MACHINE_ROOT ? t("computer") : browsePath}</span>
-						</span>
-						<button
-							type="button"
-							className="cwd-up"
-							disabled={browsePath === MACHINE_ROOT}
-							title={t("computer")}
-							onClick={() => {
-								setBrowsePath(MACHINE_ROOT);
-								setDraft(MACHINE_ROOT);
-								setCompIndex(-1);
-							}}
-						>
-							💻
-						</button>
-						<button
-							type="button"
-							className="cwd-up"
-							disabled={!upPath}
-							title={t("cwdGoUp")}
-							onClick={() => {
-								if (upPath) {
-									setBrowsePath(upPath);
-									setDraft(upPath);
-									setCompIndex(-1);
-								}
-							}}
-						>
-							↑ {t("cwdGoUp")}
-						</button>
-						{/* 把当前浏览的目录加成「额外工作区根」（宿主侧多根）：与右栏文件树右键的
-						    「添加为工作区根」同一件事，两条入口。已在列 / 就是主工作区 / 机器根时禁用。 */}
-						{(() => {
-							// 选择器内部统一用 "/"（见 startEdit 的归一），而 state.cwd / roots 是原生分隔符：
-							// 比路径一律折成 "/" 再比（win32 再折大小写），否则主工作区会被误判成「可加」。
-							const norm = (p: string) => {
-								const f = p.replace(/\\/g, "/").replace(/\/+$/, "");
-								// win32 盘符路径折大小写（同一目录的两种写法不该被当成两个）；posix 不折。
-								return /^[A-Za-z]:/.test(f) ? f.toLowerCase() : f;
-							};
-							const cur = norm(browsePath);
-							const canAddRoot =
-								Boolean(browsePath) &&
-								browsePath !== MACHINE_ROOT &&
-								cur !== norm(state.cwd) &&
-								!workspaceRoots.some((r) => norm(r) === cur);
-							return (
-								<button
-									type="button"
-									className="cwd-up"
-									disabled={!canAddRoot}
-									title={t("addWorkspaceRootHint")}
-									onClick={() => {
-										if (!canAddRoot) return;
-										appSend({ type: "set_workspace_roots", roots: [...workspaceRoots, browsePath] });
-									}}
-								>
-									＋ {t("addWorkspaceRoot")}
-								</button>
-							);
-						})()}
-						<button
-							type="button"
-							className="cwd-close"
-							title={t("close")}
-							aria-label={t("close")}
-							onClick={() => setEditing(false)}
-						>
-							<FiX />
-						</button>
-					</div>
-					<div className="cwd-picker-row">
-						<input
-							ref={inputRef}
-							className="status-cwd-input cwd-picker-input"
-							value={draft}
-							placeholder={t("enterPath")}
-							spellCheck={false}
-							onChange={(e) => {
-								setDraft(e.target.value);
-								setCompIndex(-1);
-							}}
-							onKeyDown={onKeyDown}
-						/>
-						<button
-							type="button"
-							className="cwd-choose-btn primary"
-							title={t("cwdPickCurrent")}
-							disabled={browsePath === MACHINE_ROOT}
-							onClick={() => commit(browsePath)}
-						>
-							{t("cwdPickCurrent")}
-						</button>
-					</div>
-					<div className="cwd-list">
-						{dirs.length === 0 && <div className="cwd-empty">{t("cwdEmpty")}</div>}
-						{dirs.map((d) => (
-							<div key={d.path} className="cwd-item">
-								<button
-									type="button"
-									className="cwd-enter"
-									title={`${t("cwdEnter")} ${d.path}`}
-									onClick={() => {
-										setBrowsePath(d.path);
-										setDraft(d.path);
-										setCompIndex(-1);
-									}}
-								>
-									<FiFolder />
-									<span className="cwd-name">{d.name}</span>
-								</button>
-								<button type="button" className="cwd-choose-btn" title={t("cwdChoose")} onClick={() => commit(d.path)}>
-									{t("cwdChoose")}
-								</button>
-							</div>
-						))}
-					</div>
-					<div className="cwd-picker-foot">
-						{showNew ? (
-							<div className="cwd-newrow">
-								<input
-									ref={newInputRef}
-									value={newName}
-									autoFocus
-									spellCheck={false}
-									placeholder={t("cwdNewName")}
-									onChange={(e) => setNewName(e.target.value)}
-									onKeyDown={(e) => {
-										if (e.key === "Enter" && !e.nativeEvent.isComposing) {
-											e.preventDefault();
-											createFolder();
-										} else if (e.key === "Escape") {
-											e.stopPropagation();
-											setShowNew(false);
-											setNewName("");
-										}
-									}}
-								/>
-								<button type="button" className="cwd-choose-btn primary" onClick={createFolder}>
-									{t("cwdCreate")}
-								</button>
-								<button
-									type="button"
-									className="cwd-choose-btn"
-									onClick={() => {
-										setShowNew(false);
-										setNewName("");
-									}}
-								>
-									{t("cwdCancel")}
-								</button>
-							</div>
-						) : (
-							<button type="button" className="cwd-newbtn" onClick={() => setShowNew(true)}>
-								＋ {t("cwdNewFolder")}
-							</button>
-						)}
-					</div>
-				</div>
-			</>
+			<DirectoryBrowser
+				currentCwd={state.cwd}
+				pathCompletions={chat.pathCompletions}
+				workspaceRoots={workspaceRoots}
+				onClose={() => setEditing(false)}
+				onSelectDirectory={(p) => {
+					if (p && p !== state.cwd) appSend({ type: "set_cwd", path: p });
+					setEditing(false);
+				}}
+				mode="folder"
+			/>
 		) : (
 			<button
 				type="button"
 				className="status-item status-cwd"
 				title={t("cwdTip", { path: state.cwd })}
-				onClick={startEdit}
+				onClick={() => setEditing(true)}
 			>
 				📁 {state.cwd}
 			</button>

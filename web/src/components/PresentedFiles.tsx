@@ -18,6 +18,7 @@ import {
 } from "../present-items";
 import { takeAutoOpen, usePresentAutoOpen } from "../present-settings";
 import { Markdown } from "./Markdown";
+import { useCopyFeedback } from "../use-copy-feedback";
 
 /**
  * present_files 工具的卡片正文。
@@ -98,7 +99,7 @@ function itemTitle(item: PresentCardItem): string {
 /** 单行：文件头（图标/名字/说明/体积 + 动作）+ 媒体或摘录。 */
 function PresentRow({ item }: { item: PresentCardItem }) {
 	const t = useT();
-	const [copied, setCopied] = useState(false);
+	const { copied, copy } = useCopyFeedback({ duration: 1200 });
 	const [mediaFailed, setMediaFailed] = useState(false);
 	const [downloadError, setDownloadError] = useState("");
 
@@ -108,9 +109,7 @@ function PresentRow({ item }: { item: PresentCardItem }) {
 	const target = { path: item.target, name: item.name };
 
 	const copyPath = () => {
-		void navigator.clipboard.writeText(item.path);
-		setCopied(true);
-		window.setTimeout(() => setCopied(false), 1200);
+		void copy(item.path);
 	};
 
 	const download = () => {

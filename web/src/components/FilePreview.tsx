@@ -24,6 +24,7 @@ import { getClientId } from "../use-chat";
 import { withToken } from "../auth-token";
 import { appUrl } from "../base-url";
 import { appSend } from "../app-globals";
+import { formatSize } from "../format-bytes";
 
 /** Cap rendered lines so a pathological file can't freeze the modal. */
 const MAX_PREVIEW_LINES = 5000;
@@ -678,10 +679,4 @@ function isOfficeFile(name: string): boolean {
 function isHtmlFile(name: string): boolean {
 	const lower = name.toLowerCase();
 	return lower.endsWith(".html") || lower.endsWith(".htm") || lower.endsWith(".xhtml");
-}
-
-function formatSize(bytes: number): string {
-	if (bytes >= 1024 * 1024) return `${(bytes / (1024 * 1024)).toFixed(1)} MB`;
-	if (bytes >= 1024) return `${Math.round(bytes / 1024)} KB`;
-	return `${bytes} B`;
 }

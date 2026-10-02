@@ -30,8 +30,9 @@
  *    - 内存缓存 + 文件 mtime 感知，支持直接编辑 JSON 文件热生效。
  */
 
-import { existsSync, mkdirSync, readFileSync, renameSync, statSync, writeFileSync } from "node:fs";
-import { dirname, resolve, sep } from "node:path";
+import { existsSync, readFileSync, statSync } from "node:fs";
+import { resolve, sep } from "node:path";
+import { writeJsonAtomicSync } from "./atomic-file.js";
 import type { UiApprovalCategory } from "./protocol.js";
 
 /** 工具调用审批命中动作：需审批 / 直接拒绝 / 直接放行（白名单）。 */
@@ -513,10 +514,7 @@ export class ApprovalRulesStore {
 
 	private saveSeeded(names: Set<string>): void {
 		try {
-			mkdirSync(dirname(this.seededPath()), { recursive: true });
-			const tmp = `${this.seededPath()}.${process.pid}.tmp`;
-			writeFileSync(tmp, JSON.stringify([...names].sort(), null, 2) + "\n");
-			renameSync(tmp, this.seededPath());
+			writeJsonAtomicSync(this.seededPath(), [...names].sort());
 		} catch {
 			// best effort
 		}
@@ -572,10 +570,7 @@ export class ApprovalRulesStore {
 
 	private persist(): void {
 		try {
-			mkdirSync(dirname(this.filePath), { recursive: true });
-			const tmp = `${this.filePath}.${process.pid}.tmp`;
-			writeFileSync(tmp, JSON.stringify(this.rules ?? [], null, 2) + "\n");
-			renameSync(tmp, this.filePath);
+			writeJsonAtomicSync(this.filePath, this.rules ?? []);
 			try {
 				this.lastMtime = statSync(this.filePath).mtimeMs;
 			} catch {

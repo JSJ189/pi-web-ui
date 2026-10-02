@@ -19,8 +19,8 @@
  * systemPromptEn 为英文（en 用，缺失回落中文）；调用方用 pickTemplateDescription/
  * pickTemplatePrompt 按语言选用。
  */
-import { mkdirSync, readFileSync, renameSync, writeFileSync } from "node:fs";
-import { dirname } from "node:path";
+import { readFileSync } from "node:fs";
+import { writeJsonAtomicSync } from "./atomic-file.js";
 import type { PromptMode } from "./client-state.js";
 import type { ServerLang } from "./i18n.js";
 
@@ -675,10 +675,7 @@ export class SubagentTemplatesStore {
 
 	private persist(): void {
 		try {
-			mkdirSync(dirname(this.filePath), { recursive: true });
-			const tmp = `${this.filePath}.${process.pid}.tmp`;
-			writeFileSync(tmp, JSON.stringify(this.templates, null, 2) + "\n");
-			renameSync(tmp, this.filePath);
+			writeJsonAtomicSync(this.filePath, this.templates);
 		} catch {
 			// best effort
 		}
@@ -709,10 +706,7 @@ export class SubagentTemplatesStore {
 	private saveSeeded(names: Set<string>): void {
 		this.seededNames = names;
 		try {
-			mkdirSync(dirname(this.seededPath()), { recursive: true });
-			const tmp = `${this.seededPath()}.tmp`;
-			writeFileSync(tmp, JSON.stringify([...names].sort(), null, 2));
-			renameSync(tmp, this.seededPath());
+			writeJsonAtomicSync(this.seededPath(), [...names].sort());
 		} catch {
 			// best effort
 		}

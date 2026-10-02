@@ -19,20 +19,11 @@ import { spawn } from "node:child_process";
 import { createHash, randomUUID } from "node:crypto";
 import { createRequire } from "node:module";
 import * as fsPromises from "node:fs/promises";
-import {
-	appendFileSync,
-	existsSync,
-	readFileSync,
-	renameSync,
-	rmSync,
-	statSync,
-	mkdirSync,
-	watch,
-	writeFileSync,
-} from "node:fs";
+import { appendFileSync, existsSync, readFileSync, rmSync, statSync, mkdirSync, watch, writeFileSync } from "node:fs";
 import { homedir } from "node:os";
 import { basename, delimiter, dirname, join, resolve, sep } from "node:path";
 import { fileURLToPath } from "node:url";
+import { writeAtomicSync } from "./atomic-file.js";
 import {
 	createAgentSessionFromServices,
 	createAgentSessionRuntime,
@@ -1996,28 +1987,10 @@ function previewToolResult(result: unknown): string {
 }
 
 /**
- * 转录整文件重写的原子落盘：先写同目录临时文件再 rename。转录是 append-only
- * 的唯一事实源，compaction 收尾/清理的整文件重写若中途被打断（进程被杀/断电），
- * 原地 writeFileSync 会留下截断的 JSONL；同目录 rename 是原子的，最坏情况是
- * 旧文件原样保留，绝不会出现半份转录。Windows 下目标被外部占用（阅读器/杀软
- * 锁）时 rename 可能 EPERM —— 退回原地写保住功能（旧行为），不因小概率锁失败丢更新。
+ * 转录整文件重写的原子落盘：先写同目录临时文件再 rename。
  */
 function atomicWriteFileSync(file: string, data: string): void {
-	const tmp = `${file}.${process.pid}.${Date.now()}.tmp`;
-	try {
-		writeFileSync(tmp, data);
-		try {
-			renameSync(tmp, file);
-		} catch {
-			writeFileSync(file, data);
-		}
-	} finally {
-		try {
-			rmSync(tmp, { force: true });
-		} catch {
-			// 临时文件清不掉只能留给下次（同目录 .tmp，不影响转录本身）
-		}
-	}
+	writeAtomicSync(file, data);
 }
 
 /** Cap on simultaneously open NON-subagent conversations of ONE project (each keeps a full
@@ -2534,10 +2507,8 @@ export function sameCwd(a: string, b: string): boolean {
 	const x = String(a ?? "").trim();
 	const y = String(b ?? "").trim();
 	if (!x || !y) return false;
-	const norm = (s: string): string => s.replace(/\\/g, "/").replace(/\/+$/, "").toLowerCase();
-	if (norm(x) === norm(y)) return true;
 	try {
-		return norm(resolve(x)) === norm(resolve(y));
+		return normalizePathKey(x) === normalizePathKey(y);
 	} catch {
 		return false;
 	}
@@ -11018,7 +10989,7 @@ export class ClientSession {
 
 			// 隐藏「被 fork 掉的父会话」，历史列表只保留每条 fork 链最新的链尾会话
 			// （全文搜索 searchSessions 保留全部会话，不受此影响）。
-			const normSessionPath = (p: string) => String(p).replace(/\\/g, "/").replace(/\/$/, "").toLowerCase();
+			const normSessionPath = (p: string) => normalizePathKey(p);
 			const forkedParentPaths = new Set<string>();
 			for (const info of infos) {
 				if (typeof info.parentSessionPath === "string" && info.parentSessionPath) {

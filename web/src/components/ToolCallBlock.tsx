@@ -23,6 +23,7 @@ import type { UiSlotEntry } from "../ui-slots";
 import { parseDelegateArgs, shortenPath, toolArgHints, type DelegateField } from "../tool-args";
 import { PRESENT_FILES_TOOL_NAME } from "../../../server/tool-manager.js";
 import { parsePresentArgs } from "../present-items";
+import { useCopyFeedback } from "../use-copy-feedback";
 import { PresentedFiles } from "./PresentedFiles";
 
 export interface ToolView {
@@ -97,7 +98,7 @@ export const ToolCallBlock = memo(function ToolCallBlock({
 	const expanded = open ?? (isPresent ? true : wrap);
 	// 搜索期间 forceOpen 只是“视口展开”，用户 open 状态不受影响
 	const shown = expanded || forceOpen;
-	const [copied, setCopied] = useState(false);
+	const { copied, copy } = useCopyFeedback({ duration: 1200 });
 
 	const running = !view.result && view.streaming && !view.status;
 	const isBashRunning = block.name === "bash" && running;
@@ -194,9 +195,7 @@ export const ToolCallBlock = memo(function ToolCallBlock({
 
 	const copyArgs = () => {
 		if (block.argumentsText) {
-			void navigator.clipboard.writeText(block.argumentsText);
-			setCopied(true);
-			setTimeout(() => setCopied(false), 1200);
+			void copy(block.argumentsText);
 		}
 	};
 

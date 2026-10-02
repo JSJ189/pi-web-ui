@@ -445,3 +445,24 @@ export interface MockHost extends PluginHost {
 }
 
 export declare function createMockHost(overrides?: MockHostOverrides): MockHost;
+
+/** 安全 HTML 实体转义。 */
+export declare function esc(s: unknown): string;
+
+/** 安全取用 window.__piWebUiHost 宿主桥接 API。 */
+export declare function hostApi(): any;
+
+/** 获取插件服务端路由的统一根路径。 */
+export declare function apiBase(pluginId: string): string;
+
+/** 格式化字节大小为人类可读字符串（B / KB / MB / GB）。 */
+export declare function formatBytes(bytes: number | unknown, decimals?: number): string;
+
+/** 为异步操作施加超时限制。 */
+export declare function withTimeout<T>(promise: Promise<T>, timeoutMs: number, errorMsg?: string): Promise<T>;
+
+/** 生成随机 UUID。 */
+export declare function uuid(): string;
+
+/** 归一化相对路径（反斜杠转斜杠、去除首尾多余斜杠与 "./"）。 */
+export declare function normalizeRel(p: string): string;

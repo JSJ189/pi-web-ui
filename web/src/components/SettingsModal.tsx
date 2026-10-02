@@ -33,6 +33,7 @@ import {
 } from "react-icons/fi";
 import { CopyButton } from "./copy-button";
 import { PluginIcon } from "../plugin-icon";
+import { formatBytes } from "../format-bytes";
 import { HintTip } from "./HintTip";
 import { sortAgentPresets, presetText } from "./DshPresetBar";
 import { DSH_PERMISSION_ORDER, permDescKey, permLabelKey } from "./DshPermissionBar";
@@ -227,13 +228,6 @@ function rememberCatalogSyncUrl(url: string): string[] {
 	return next;
 }
 
-/** 文件大小人类可读（设置面板 DSH 补丁列表用）。 */
-function formatBytes(n: number): string {
-	if (n < 1024) return `${n} B`;
-	if (n < 1024 * 1024) return `${(n / 1024).toFixed(1)} KB`;
-	return `${(n / (1024 * 1024)).toFixed(1)} MB`;
-}
-
 /** 各来源排序权重：append 置顶（最常用），可编辑居中，只读沉底（纯预览）。 */
 function rankPromptToken(tk: string): number {
 	if (tk === "append") return 0;
@@ -341,6 +335,74 @@ function FieldRow({
 			</label>
 			{children}
 		</div>
+	);
+}
+
+/** 通用提示词覆盖区块（SCM commit msg、计划模式、视觉桥等共用）：包含模式选择、草稿防抖与默认值契约。 */
+function PromptOverrideEditor({
+	mode,
+	onModeChange,
+	draft,
+	onDraftChange,
+	defaultPrompt,
+	placeholder,
+	rows = 4,
+	onCommit,
+	modeLabel,
+	hint,
+	focusRef,
+}: {
+	mode: "append" | "replace";
+	onModeChange: (m: "append" | "replace") => void;
+	draft: string;
+	onDraftChange: (v: string) => void;
+	defaultPrompt?: string;
+	placeholder?: string;
+	rows?: number;
+	onCommit: (mode: "append" | "replace", text: string) => void;
+	modeLabel?: string;
+	hint?: React.ReactNode;
+	focusRef?: React.MutableRefObject<boolean>;
+}) {
+	const t = useT();
+
+	const commit = (targetMode: "append" | "replace", targetDraft: string) => {
+		const text = targetMode === "replace" && defaultPrompt && targetDraft === defaultPrompt ? "" : targetDraft;
+		onCommit(targetMode, text);
+	};
+
+	return (
+		<>
+			<FieldRow label={modeLabel ?? t("visionBridgePromptMode")}>
+				<select
+					className="set-select"
+					value={mode}
+					onChange={(e) => {
+						const m = e.target.value as "append" | "replace";
+						onModeChange(m);
+						commit(m, draft);
+					}}
+				>
+					<option value="append">{t("promptModeAppend")}</option>
+					<option value="replace">{t("promptModeReplace")}</option>
+				</select>
+			</FieldRow>
+			<textarea
+				className="set-prompt-input"
+				rows={rows}
+				placeholder={placeholder}
+				value={draft}
+				onFocus={() => {
+					if (focusRef) focusRef.current = true;
+				}}
+				onBlur={() => {
+					if (focusRef) focusRef.current = false;
+					commit(mode, draft);
+				}}
+				onChange={(e) => onDraftChange(e.target.value)}
+			/>
+			{hint && <p className="set-hint">{hint}</p>}
+		</>
 	);
 }
 
@@ -1827,43 +1889,23 @@ export function SettingsModal({
 									{t("scmCommitMsgSettingsTitle")}
 									<HintTip text={t("scmCommitMsgSettingsDesc")} />
 								</div>
-								<FieldRow label={t("visionBridgePromptMode")}>
-									<select
-										className="set-select"
-										value={scmMsgMode}
-										onChange={(e) => {
-											const mode = e.target.value as "append" | "replace";
-											setScmMsgMode(mode);
-											setPartial({ scmCommitMsgPromptMode: mode });
-										}}
-									>
-										<option value="append">{t("promptModeAppend")}</option>
-										<option value="replace">{t("promptModeReplace")}</option>
-									</select>
-								</FieldRow>
-								<textarea
-									className="set-prompt-input"
-									rows={4}
+								<PromptOverrideEditor
+									mode={scmMsgMode}
+									onModeChange={setScmMsgMode}
+									draft={scmMsgDraft}
+									onDraftChange={setScmMsgDraft}
+									defaultPrompt={settings.scmCommitMsgDefaultPrompt}
 									placeholder={t("scmCommitMsgPromptPlaceholder")}
-									value={scmMsgDraft}
-									onFocus={() => (scmMsgFocus.current = true)}
-									onBlur={() => {
-										scmMsgFocus.current = false;
-										// 与系统提示词同一契约：replace 下未改动的内置默认存空（用默认）。
-										const text =
-											scmMsgMode === "replace" &&
-											settings.scmCommitMsgDefaultPrompt &&
-											scmMsgDraft === settings.scmCommitMsgDefaultPrompt
-												? ""
-												: scmMsgDraft;
+									rows={4}
+									onCommit={(mode, text) => {
 										setPartial({
-											scmCommitMsgPromptMode: scmMsgMode,
+											scmCommitMsgPromptMode: mode,
 											scmCommitMsgPrompt: text,
 										});
 									}}
-									onChange={(e) => setScmMsgDraft(e.target.value)}
+									hint={t("scmCommitMsgSettingsHint")}
+									focusRef={scmMsgFocus}
 								/>
-								<p className="set-hint">{t("scmCommitMsgSettingsHint")}</p>
 							</div>
 						)}
 
@@ -1875,40 +1917,21 @@ export function SettingsModal({
 									{t("planModePromptSettingsTitle")}
 									<HintTip text={t("planModePromptSettingsDesc")} />
 								</div>
-								<FieldRow label={t("planModePromptMode")}>
-									<select
-										className="set-select"
-										value={planModeMode}
-										onChange={(e) => {
-											const mode = e.target.value as "append" | "replace";
-											setPlanModeMode(mode);
-											setPartial({ planModePromptMode: mode });
-										}}
-									>
-										<option value="append">{t("promptModeAppend")}</option>
-										<option value="replace">{t("promptModeReplace")}</option>
-									</select>
-								</FieldRow>
-								<textarea
-									className="set-prompt-input"
-									rows={8}
+								<PromptOverrideEditor
+									mode={planModeMode}
+									onModeChange={setPlanModeMode}
+									draft={planModeDraft}
+									onDraftChange={setPlanModeDraft}
+									defaultPrompt={settings.planModeDefaultPrompt}
 									placeholder={t("planModePromptPlaceholder")}
-									value={planModeDraft}
-									onFocus={() => (planModeFocus.current = true)}
-									onBlur={() => {
-										planModeFocus.current = false;
-										// 与系统提示词同一契约：replace 下未改动的内置默认存空（用默认）。
-										const text =
-											planModeMode === "replace" &&
-											settings.planModeDefaultPrompt &&
-											planModeDraft === settings.planModeDefaultPrompt
-												? ""
-												: planModeDraft;
-										setPartial({ planModePromptMode: planModeMode, planModePrompt: text });
+									rows={8}
+									onCommit={(mode, text) => {
+										setPartial({ planModePromptMode: mode, planModePrompt: text });
 									}}
-									onChange={(e) => setPlanModeDraft(e.target.value)}
+									modeLabel={t("planModePromptMode")}
+									hint={t("planModePromptSettingsHint")}
+									focusRef={planModeFocus}
 								/>
-								<p className="set-hint">{t("planModePromptSettingsHint")}</p>
 							</div>
 						)}
 
@@ -3913,56 +3936,30 @@ export function SettingsModal({
 									</FieldRow>
 								)}
 								{settings.visionBridgeEnabled && (
-									<FieldRow label={t("visionBridgePromptMode")}>
-										<select
-											className="set-select"
-											value={vbPromptMode}
-											onChange={(e) => {
-												const mode = e.target.value as "append" | "replace";
-												setVbPromptMode(mode);
-												setPartial({ visionBridgePromptMode: mode });
-											}}
-										>
-											<option value="append">{t("promptModeAppend")}</option>
-											<option value="replace">{t("promptModeReplace")}</option>
-										</select>
-									</FieldRow>
-								)}
-								{settings.visionBridgeEnabled && (
-									<textarea
-										className="set-prompt-input"
-										rows={4}
+									<PromptOverrideEditor
+										mode={vbPromptMode}
+										onModeChange={setVbPromptMode}
+										draft={vbPromptDraft}
+										onDraftChange={setVbPromptDraft}
+										defaultPrompt={settings.visionBridgeDefaultPrompt}
 										placeholder={t("visionBridgePromptPlaceholder")}
-										value={vbPromptDraft}
-										onFocus={() => (vbPromptFocus.current = true)}
-										onBlur={() => {
-											vbPromptFocus.current = false;
-											// Same contract as the system prompt: an unmodified copy of
-											// the built-in default is stored as empty (use default).
-											const text =
-												vbPromptMode === "replace" &&
-												settings.visionBridgeDefaultPrompt &&
-												vbPromptDraft === settings.visionBridgeDefaultPrompt
-													? ""
-													: vbPromptDraft;
+										rows={4}
+										onCommit={(mode, text) => {
 											setPartial({
-												visionBridgePromptMode: vbPromptMode,
+												visionBridgePromptMode: mode,
 												visionBridgePrompt: text,
 											});
 										}}
-										onChange={(e) => setVbPromptDraft(e.target.value)}
+										hint={
+											settings.visionModels.length === 0
+												? t("visionBridgeNoModels")
+												: t("visionBridgeCurrent", {
+														model: settings.visionBridgeModel ?? t("visionBridgeAuto"),
+													})
+										}
+										focusRef={vbPromptFocus}
 									/>
 								)}
-								{settings.visionBridgeEnabled &&
-									(settings.visionModels.length === 0 ? (
-										<p className="set-hint">{t("visionBridgeNoModels")}</p>
-									) : (
-										<p className="set-hint">
-											{t("visionBridgeCurrent", {
-												model: settings.visionBridgeModel ?? t("visionBridgeAuto"),
-											})}
-										</p>
-									))}
 							</div>
 						)}
 

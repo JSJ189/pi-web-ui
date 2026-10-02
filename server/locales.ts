@@ -13,9 +13,10 @@
  * tolerable. Manually dropped <dataDir>/locales/*.json files work too
  * (offline installs) — the list is read from disk.
  */
-import { existsSync, mkdirSync, readFileSync, readdirSync, renameSync, rmSync, writeFileSync } from "node:fs";
+import { existsSync, readFileSync, readdirSync, rmSync } from "node:fs";
 import { join } from "node:path";
 import { extractServerStrings, registerServerStrings, unregisterServerStrings } from "./i18n.js";
+import { writeJsonAtomicSync } from "./atomic-file.js";
 
 export interface LocalePackMeta {
 	code: string;
@@ -217,11 +218,8 @@ export async function installPack(
 			}
 			const v = validatePack(data, code);
 			if (!v.ok) throw new Error(`invalid pack ${code}: ${v.error}`);
-			mkdirSync(join(dataDir, "locales"), { recursive: true });
 			const file = packPath(dataDir, code);
-			const tmp = `${file}.${process.pid}.tmp`;
-			writeFileSync(tmp, JSON.stringify(v.pack));
-			renameSync(tmp, file);
+			writeJsonAtomicSync(file, v.pack, 0);
 			return { code, nativeName: v.pack.nativeName, version: v.pack.version };
 		} catch (e) {
 			lastError = e instanceof Error ? e.message : String(e);

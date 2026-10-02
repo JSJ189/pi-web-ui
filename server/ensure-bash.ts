@@ -11,9 +11,10 @@
  * Download is fire-and-forget at server start and never throws: on failure
  * the terminal simply falls back to $COMSPEC (cmd.exe) as before.
  */
-import { copyFileSync, existsSync, mkdirSync, renameSync, rmSync, writeFileSync } from "node:fs";
+import { copyFileSync, existsSync, mkdirSync } from "node:fs";
 import { homedir } from "node:os";
 import { join } from "node:path";
+import { writeAtomicSync } from "./atomic-file.js";
 
 /** Official busybox-w32 64-bit Unicode build (Win10 1903+ / Win11). */
 const BUSYBOX_URL = "https://frippery.org/files/busybox/busybox64u.exe";
@@ -56,7 +57,6 @@ export async function ensureWindowsBash(): Promise<string | null> {
 	if (hasGitBash()) return null; // Git Bash preferred — nothing to install.
 	const dir = windowsBashDir();
 	mkdirSync(dir, { recursive: true });
-	const tmp = join(dir, `busybox-${process.pid}.tmp`);
 	try {
 		const res = await fetch(BUSYBOX_URL, {
 			signal: AbortSignal.timeout(DOWNLOAD_TIMEOUT_MS),
@@ -64,12 +64,10 @@ export async function ensureWindowsBash(): Promise<string | null> {
 		if (!res.ok) return null;
 		const buf = Buffer.from(await res.arrayBuffer());
 		if (buf.length < MIN_SIZE) return null; // error/HTML page, not the exe.
-		writeFileSync(tmp, buf);
-		renameSync(tmp, join(dir, "busybox.exe"));
+		writeAtomicSync(join(dir, "busybox.exe"), buf);
 		copyFileSync(join(dir, "busybox.exe"), target);
 		return target;
 	} catch {
-		rmSync(tmp, { force: true });
 		return null;
 	}
 }

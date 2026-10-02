@@ -24,6 +24,7 @@ import { applySashDrag, parseWeights } from "../panel-sash";
 import type { UiSlotEntry } from "../ui-slots";
 import { contextMenuItems, openContextMenu } from "../context-menu-state";
 import { SlotTabs, type SlotTab } from "./SlotTabs";
+import { copyTextToClipboard } from "../use-copy-feedback";
 
 /** 机器根（此电脑/盘符列表）wire 字面量 —— 与 server/files-service.ts 的 MACHINE_ROOT 同值。 */
 const MACHINE_ROOT = "@root";
@@ -237,36 +238,13 @@ export const RightPanel = memo(function RightPanel({
 		copyTimer.current = setTimeout(() => setCopiedKey(null), 1200);
 	}, []);
 
-	/** 非安全上下文（http）下 navigator.clipboard 可能缺失，走 textarea 兜底。 */
-	const fallbackCopy = (text: string): boolean => {
-		try {
-			const ta = document.createElement("textarea");
-			ta.value = text;
-			ta.style.position = "fixed";
-			ta.style.opacity = "0";
-			document.body.appendChild(ta);
-			ta.select();
-			const ok = document.execCommand("copy");
-			document.body.removeChild(ta);
-			return ok;
-		} catch {
-			return false;
-		}
-	};
-
 	const copyText = useCallback(
 		(text: string, key: string) => {
 			if (!text) return;
-			const done = () => markCopied(key);
-			const fail = () => onNotice("error", t("slashCopyFailed"));
-			const nav = navigator as Navigator & { clipboard?: Clipboard };
-			if (nav.clipboard?.writeText) {
-				void nav.clipboard.writeText(text).then(done, () => {
-					if (fallbackCopy(text)) done();
-					else fail();
-				});
-			} else if (fallbackCopy(text)) done();
-			else fail();
+			void copyTextToClipboard(text).then((ok) => {
+				if (ok) markCopied(key);
+				else onNotice("error", t("slashCopyFailed"));
+			});
 		},
 		[markCopied, onNotice, t],
 	);

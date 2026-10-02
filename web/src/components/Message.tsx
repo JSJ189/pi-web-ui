@@ -44,6 +44,8 @@ import { parseSkillBlock, type SkillBlock } from "../skill-block";
 import { isRasterImage, fileToProcessedImage } from "../image-paste";
 import { contextMenuItems, openContextMenu } from "../context-menu-state";
 import { messageMarkdown, messagePlainText } from "../copy-text";
+import { formatSize } from "../format-bytes";
+import { copyTextToClipboard, useCopyFeedback } from "../use-copy-feedback";
 import {
 	isSpeaking,
 	isTtsAvailable,
@@ -442,14 +444,15 @@ export const Message = memo(function Message({
 		(message.role === "assistant" || message.role === "user") && wholeMarkdown.length > 0 && !streaming;
 	const doWholeCopy = async (id: string) => {
 		try {
-			if (id === "host:msg-copy-text") await navigator.clipboard.writeText(messagePlainText(message.content));
-			else if (id === "host:msg-copy-markdown") await navigator.clipboard.writeText(wholeMarkdown);
+			let ok = false;
+			if (id === "host:msg-copy-text") ok = await copyTextToClipboard(messagePlainText(message.content));
+			else if (id === "host:msg-copy-markdown") ok = await copyTextToClipboard(wholeMarkdown);
 			else {
 				openExportImage(message.id);
 				return;
 			}
 			window.clearTimeout(copyTimer.current);
-			setCopyState({ id, ok: true });
+			setCopyState({ id, ok });
 			copyTimer.current = window.setTimeout(() => setCopyState(null), 1600);
 		} catch {
 			window.clearTimeout(copyTimer.current);
@@ -1203,7 +1206,7 @@ export const Message = memo(function Message({
 function AttachmentCard({ message, forceOpen = false }: { message: UiMessage; forceOpen?: boolean }) {
 	const t = useT();
 	const [open, setOpen] = useState(false);
-	const [copied, setCopied] = useState(false);
+	const { copied, copy } = useCopyFeedback({ duration: 1200 });
 	// 搜索期间 forceOpen 只是“视口展开”：内容进 DOM 让搜索高亮/定位可用
 	const shown = open || forceOpen;
 	const details = (message.details ?? {}) as {
@@ -1299,9 +1302,7 @@ function AttachmentCard({ message, forceOpen = false }: { message: UiMessage; fo
 						aria-label={t("copyMessage")}
 						onClick={(e) => {
 							e.stopPropagation();
-							void navigator.clipboard.writeText(clean);
-							setCopied(true);
-							window.setTimeout(() => setCopied(false), 1200);
+							void copy(clean);
 						}}
 					>
 						{copied ? <FiCheckCircle /> : <FiCopy />}
@@ -1336,13 +1337,6 @@ function AttachmentCard({ message, forceOpen = false }: { message: UiMessage; fo
 	);
 }
 
-function formatSize(bytes?: number): string {
-	if (bytes === undefined) return "";
-	if (bytes >= 1024 * 1024) return `${(bytes / (1024 * 1024)).toFixed(1)} MB`;
-	if (bytes >= 1024) return `${Math.round(bytes / 1024)} KB`;
-	return `${bytes} B`;
-}
-
 /** Strip the <file path="..."> ``` ... ``` </file> or <vision-bridge> ...
  * </vision-bridge> wrapper for display. */
 function stripFileWrapper(text: string): string {
@@ -1369,7 +1363,7 @@ function CompactionCard({
 }) {
 	const t = useT();
 	const [expanded, setExpanded] = useState(false);
-	const [copied, setCopied] = useState(false);
+	const { copied, copy } = useCopyFeedback({ duration: 1200 });
 	// 新摘要到达自动展开一次：render 期间同步（仅上升沿开一次是受支持的
 	// React 模式），之后用户手动收起不再打扰。
 	const [prevAuto, setPrevAuto] = useState(autoExpand);
@@ -1432,9 +1426,7 @@ function CompactionCard({
 							aria-label={t("copyMessage")}
 							onClick={(e) => {
 								e.stopPropagation();
-								void navigator.clipboard.writeText(text);
-								setCopied(true);
-								window.setTimeout(() => setCopied(false), 1200);
+								void copy(text);
 							}}
 						>
 							{copied ? <FiCheckCircle /> : <FiCopy />}
@@ -1546,7 +1538,7 @@ function CompactedHistoryStream({ messages }: { messages: UiMessage[] }) {
 function SkillCard({ block, forceOpen = false }: { block: SkillBlock; forceOpen?: boolean }) {
 	const t = useT();
 	const [expanded, setExpanded] = useState(false);
-	const [copied, setCopied] = useState(false);
+	const { copied, copy } = useCopyFeedback({ duration: 1200 });
 	const shown = expanded || forceOpen;
 	return (
 		<div className={`skillcard${expanded ? " expanded" : ""}`}>
@@ -1578,9 +1570,7 @@ function SkillCard({ block, forceOpen = false }: { block: SkillBlock; forceOpen?
 					aria-label={t("copyMessage")}
 					onClick={(e) => {
 						e.stopPropagation();
-						void navigator.clipboard.writeText(block.content);
-						setCopied(true);
-						window.setTimeout(() => setCopied(false), 1200);
+						void copy(block.content);
 					}}
 				>
 					{copied ? <FiCheckCircle /> : <FiCopy />}
@@ -1643,7 +1633,7 @@ function Block({
 	onUiAction?: (item: UiSlotEntry, value?: string) => void;
 }) {
 	const t = useT();
-	const [copied, setCopied] = useState(false);
+	const { copied, copy } = useCopyFeedback({ duration: 1200 });
 	const text = asText(block);
 	if (text) {
 		const live = streaming && isLast;
@@ -1674,9 +1664,7 @@ function Block({
 				title={copied ? t("copied") : t("copyMessage")}
 				aria-label={t("copyMessage")}
 				onClick={() => {
-					void navigator.clipboard.writeText(text.text);
-					setCopied(true);
-					window.setTimeout(() => setCopied(false), 1200);
+					void copy(text.text);
 				}}
 			>
 				{copied ? <FiCheckCircle /> : <FiCopy />}

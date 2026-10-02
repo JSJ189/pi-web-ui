@@ -21,7 +21,7 @@ export interface UseCopyFeedbackResult {
 /**
  * 降级复制方案：用于非安全上下文（如 http://IP:PORT 访问）或 clipboard API 被阻断的环境。
  */
-function fallbackCopyText(text: string): boolean {
+export function fallbackCopyText(text: string): boolean {
 	if (typeof document === "undefined") return false;
 	try {
 		const ta = document.createElement("textarea");
@@ -38,6 +38,21 @@ function fallbackCopyText(text: string): boolean {
 	} catch {
 		return false;
 	}
+}
+
+/**
+ * 统一跨环境复制文本到剪贴板，带 execCommand 降级兜底。
+ */
+export async function copyTextToClipboard(text: string): Promise<boolean> {
+	if (typeof navigator !== "undefined" && navigator.clipboard && typeof navigator.clipboard.writeText === "function") {
+		try {
+			await navigator.clipboard.writeText(text);
+			return true;
+		} catch {
+			return fallbackCopyText(text);
+		}
+	}
+	return fallbackCopyText(text);
 }
 
 /**
@@ -77,22 +92,10 @@ export function useCopyFeedback(options: UseCopyFeedbackOptions = {}): UseCopyFe
 		async (text: string): Promise<boolean> => {
 			let ok = false;
 			try {
-				if (
-					typeof navigator !== "undefined" &&
-					navigator.clipboard &&
-					typeof navigator.clipboard.writeText === "function"
-				) {
-					await navigator.clipboard.writeText(text);
-					ok = true;
-				} else {
-					ok = fallbackCopyText(text);
-				}
+				ok = await copyTextToClipboard(text);
 			} catch (err) {
-				// clipboard API 失败时尝试 fallback
-				ok = fallbackCopyText(text);
-				if (!ok && onError) {
-					onError(err);
-				}
+				ok = false;
+				if (onError) onError(err);
 			}
 
 			if (ok) {
@@ -103,6 +106,8 @@ export function useCopyFeedback(options: UseCopyFeedbackOptions = {}): UseCopyFe
 					timerRef.current = null;
 				}, duration);
 				onSuccess?.(text);
+			} else if (onError && !ok) {
+				onError(new Error("Copy failed"));
 			}
 
 			return ok;

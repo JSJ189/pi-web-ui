@@ -1,6 +1,7 @@
 import { useState } from "react";
 import { FiCheckCircle, FiChevronDown, FiChevronRight, FiCopy, FiCpu } from "react-icons/fi";
 import { useT } from "../i18n";
+import { useCopyFeedback } from "../use-copy-feedback";
 
 /** 折叠预览纯函数：流式取实时尾巴，结束取开头一行。单测直引此处，禁止在测试里抄一份实现。 */
 export function thinkingPreview(thinking: string, streaming?: boolean): string {
@@ -30,11 +31,9 @@ export function ThinkingBlock({ thinking, streaming, wrap = true, forceOpen = fa
 	const shown = expanded || forceOpen;
 	// 折叠预览：流式中取最新文本（实时尾巴），结束后取开头一行。
 	const preview = thinkingPreview(thinking, streaming);
-	const [copied, setCopied] = useState(false);
+	const { copied, copy } = useCopyFeedback({ duration: 1200 });
 	const copyThinking = () => {
-		void navigator.clipboard.writeText(thinking);
-		setCopied(true);
-		window.setTimeout(() => setCopied(false), 1200);
+		void copy(thinking);
 	};
 
 	return (
