@@ -28,6 +28,7 @@ import {
 import { getLastBrowserControlPages, pokeBrowserControl } from "../browser-control";
 import { getPluginComposerProvider, listPluginComposerProviders } from "../plugin-host";
 import { detectTouchFirstDevice } from "../touch-device";
+import { resolveBackspaceMention } from "../chat-input-backspace";
 import { copyTextToClipboard } from "../use-copy-feedback";
 import { groupByAlign } from "../ui-slots";
 import { nextSearchReqId } from "../search-req-id";
@@ -1161,31 +1162,17 @@ export const ChatInput = memo(function ChatInput({
 		}
 
 		// 退格键原子化整块删除 @提及 并联动摘掉对应附件 chip（文件/目录/页签同一套）。
-		// 两段式：① chip 精确匹配 —— 覆盖带空格标题、中文文件名等词元正则表达不了的名字；
-		// ② 通用有边界 @词元 —— 覆盖用户手打的 @引用（邮箱前有词字符，不会命中）。
+		// 逻辑收敛在纯函数 resolveBackspaceMention（单测锁定）：优先按最长相对路径精确匹配，
+		// 彻底杜绝同名 basename（如 根目录报告 vs 方案/报告）退格误删。
 		if (e.key === "Backspace" && !e.ctrlKey && !e.metaKey && !e.altKey) {
 			const ta = taRef.current;
 			if (ta && ta.selectionStart === ta.selectionEnd && ta.selectionStart > 0) {
 				const pos = ta.selectionStart;
 				const before = text.slice(0, pos);
-				const chipHit = attachments.find(
-					(a) => a.name && (before.endsWith("@" + a.name + " ") || before.endsWith("@" + a.name)),
-				);
-				let tokenStart = -1;
-				if (chipHit && chipHit.name) {
-					const tok = "@" + chipHit.name;
-					const withSpace = before.endsWith(tok + " ");
-					const cand = pos - (withSpace ? tok.length + 1 : tok.length);
-					// token 紧贴词类字符（如 path 中段 /@file）→ 不整块删，落回普通退格
-					if (cand > 0 && /[\w.\-/]/.test(before[cand - 1])) tokenStart = -1;
-					else tokenStart = cand;
-				}
-				if (tokenStart < 0) {
-					const gm = /(^|[\s(（"'"“‘[【])(@[^\s@,.;:!?，。！？)\]】」]+)(\s?)$/.exec(before);
-					if (gm) tokenStart = pos - gm[2].length - gm[3].length;
-				}
-				if (tokenStart >= 0 && tokenStart < pos) {
+				const res = resolveBackspaceMention(before, pos, attachments);
+				if (res && res.tokenStart >= 0 && res.tokenStart < pos) {
 					e.preventDefault();
+					const tokenStart = res.tokenStart;
 					const nextText = text.slice(0, tokenStart) + text.slice(pos);
 					menuTextRef.current = nextText;
 					setText(nextText);
@@ -1194,10 +1181,7 @@ export const ChatInput = memo(function ChatInput({
 							taRef.current.selectionStart = taRef.current.selectionEnd = tokenStart;
 						}
 					});
-					const rawToken = text.slice(tokenStart, pos).trim().replace(/^@/, "");
-					const baseName = rawToken.split("/").pop() ?? rawToken;
-					const hit =
-						chipHit ?? attachments.find((a) => a.name === rawToken || a.name === baseName || a.path === rawToken);
+					const hit = res.attachment;
 					if (hit) {
 						onRemoveAttachment(
 							hit.key ??
