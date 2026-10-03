@@ -677,7 +677,9 @@ export class GoalService {
 		conv.goalGeneration += 1;
 		// 上一轮目标可能还留着常驻执行者子代理（委托执行）：先停掉再开新的，
 		// 否则旧循环会在新目标上继续派活（代次已作废，但角色对话得收）。
-		this.stopDelegated(conv);
+		// await 到 dismiss 完全落定：后面的 spawn 名额检查才不会数到还在收尾的
+		// 旧执行者而误报上限（issue #464；stopDelegated 自身已按会话串行化）。
+		await this.stopDelegated(conv);
 		const goal = conv.goal;
 		goal.reviewing = false;
 		goal.conversationId = goalConversationId;
@@ -1358,7 +1360,8 @@ export class GoalService {
 		const conv = this.host.activeConv();
 		conv.goalGeneration += 1;
 		// 委托执行：停掉在飞的执行者（循环靠代次作废 + 代次守卫退出）。
-		this.stopDelegated(conv);
+		// await 落定，保证旧执行者已移出会话表，后续重设目标不再误报名额（issue #464）。
+		await this.stopDelegated(conv);
 		this.resetLoopCounters(conv);
 		this.clearGoalFields(conv);
 		this.emitGoalStatus();
@@ -1393,13 +1396,14 @@ export class GoalService {
 	 */
 	async stopAllGoals(): Promise<void> {
 		let stopped = 0;
-		// 直接迭代：stopDelegated 只发 fire-and-forget 的停/收请求，不会同步改这张表
-		// （循环退出是异步的，靠代次守卫），无需快照。
-		for (const convId of this.delegatedLoops.keys()) {
+		// 快照迭代：await stopDelegated 期间，循环退出的回调可能增删这张表。
+		for (const convId of [...this.delegatedLoops.keys()]) {
 			const conv = this.host.getConv(convId);
 			if (!conv) continue;
 			conv.goalGeneration += 1; // 作废在飞回调（循环靠代次守卫退出）
-			this.stopDelegated(conv); // 停执行者 + 唤醒 verdict 等待者 + 清 roles/phase
+			// 逐个 await 停/收落定（stopDelegated 已按会话串行化，issue #464）：
+			// 停执行者 + 唤醒 verdict 等待者 + 清 roles/phase
+			await this.stopDelegated(conv);
 			this.resetLoopCounters(conv);
 			this.clearGoalFields(conv);
 			stopped++;
@@ -1444,6 +1448,8 @@ export class GoalService {
 				}
 				conv.goalGeneration += 1;
 				// 委托执行：手动停止也要把在飞的执行者停掉（否则它还在后台改工作区）。
+				// 本钩子是同步上下文，fire-and-forget 即可：stopDelegated 已按会话
+				// 串行化（issue #464），重设/清除目标的一方会先等这次 dismiss 落定。
 				this.stopDelegated(conv);
 				this.resetLoopCounters(conv);
 				g.conversationId = null;
@@ -1652,7 +1658,25 @@ export class GoalService {
 		return exec?.convId;
 	}
 
-	private async stopDelegated(conv: GoalConversation): Promise<void> {
+	private stopInflight = new Map<string, Promise<void>>();
+
+	/**
+	 * 停掉委托执行者（stop + dismiss + 唤醒等待者）。同一会话并发调用时按序串行：
+	 * 上一次 stop/dismiss 未落定前，下一次先等它 —— 否则重设目标时旧执行者尚未
+	 * 移出会话表，随后 spawn 的名额检查会数到它而误报容量上限（issue #464）。
+	 * 同步上下文（onAgentEnd 等钩子）可以继续 fire-and-forget，串行化由这里兜住。
+	 */
+	private stopDelegated(conv: GoalConversation): Promise<void> {
+		const prev = this.stopInflight.get(conv.id);
+		const run = prev ? prev.catch(() => {}).then(() => this.stopDelegatedNow(conv)) : this.stopDelegatedNow(conv);
+		this.stopInflight.set(conv.id, run);
+		void run.finally(() => {
+			if (this.stopInflight.get(conv.id) === run) this.stopInflight.delete(conv.id);
+		});
+		return run;
+	}
+
+	private async stopDelegatedNow(conv: GoalConversation): Promise<void> {
 		// 排队的启动请求一并作废：setGoal 会在后面按新代次重新排，clearGoal 则不需要。
 		this.delegatedPending.delete(conv.id);
 		conv.awaitingVerdict = undefined;
