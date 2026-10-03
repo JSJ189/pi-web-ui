@@ -1,7 +1,8 @@
 import { useState } from "react";
-import { FiCheckCircle, FiChevronDown, FiChevronRight, FiCopy, FiCpu } from "react-icons/fi";
+import { FiCheckCircle, FiCopy, FiCpu } from "react-icons/fi";
 import { useT } from "../i18n";
 import { useCopyFeedback } from "../use-copy-feedback";
+import { CollapsibleHead } from "./CollapsibleHead";
 
 /** 折叠预览纯函数：流式取实时尾巴，结束取开头一行。单测直引此处，禁止在测试里抄一份实现。 */
 export function thinkingPreview(thinking: string, streaming?: boolean): string {
@@ -38,64 +39,45 @@ export function ThinkingBlock({ thinking, streaming, wrap = true, forceOpen = fa
 
 	return (
 		<div className={`thinking ${shown ? "open" : ""} ${streaming ? "live" : ""}`}>
-			<div
-				className="chead thinking-head"
-				role="button"
-				tabIndex={0}
-				aria-expanded={shown}
-				title={shown ? t("collapseMsg") : t("expandMsg")}
-				onClick={() => setOpen(!expanded)}
-				onKeyDown={(e) => {
-					if (e.target !== e.currentTarget) return;
-					if (e.key === "Enter" || e.key === " ") {
-						e.preventDefault();
-						setOpen(!expanded);
-					}
-				}}
+			<CollapsibleHead
+				open={shown}
+				headClassName="thinking-head"
+				toggleClassName="thinking-toggle"
+				titleText={shown ? t("collapseMsg") : t("expandMsg")}
+				onToggle={() => setOpen(!expanded)}
+				icon={<FiCpu />}
+				iconClassName="thinking-icon"
+				titleClassName="thinking-label"
+				after={
+					<>
+						{/* 卡头右端**只有复制键**：消息级按钮一律落在消息底部的 .msg-actions
+						    行（思考卡没有正文，不渲染那一行）。 */}
+						<button
+							type="button"
+							className={`chead-copy toolcall-copy thinking-copy${copied ? " copied" : ""}`}
+							title={copied ? t("copied") : t("copyMessage")}
+							aria-label={t("copyMessage")}
+							onClick={(e) => {
+								e.stopPropagation();
+								copyThinking();
+							}}
+						>
+							{copied ? <FiCheckCircle /> : <FiCopy />}
+						</button>
+					</>
+				}
 			>
-				<button
-					type="button"
-					className="chead-toggle thinking-toggle"
-					title={shown ? t("collapseMsg") : t("expandMsg")}
-					aria-label={shown ? t("collapseMsg") : t("expandMsg")}
-					aria-expanded={shown}
-					onClick={(e) => {
-						e.stopPropagation();
-						setOpen(!expanded);
-					}}
-				>
-					{shown ? <FiChevronDown /> : <FiChevronRight />}
-				</button>
-				<span className="chead-icon thinking-icon">
-					<FiCpu />
-				</span>
-				<span className="chead-title thinking-label">
-					{streaming && shown ? (
-						<span className="thinking-live-label">
-							{t("thinkingNow")}
-							<span className="dots" />
-						</span>
-					) : shown ? (
-						t("thinking")
-					) : (
-						t("thinkingPreview", { preview })
-					)}
-				</span>
-				{/* 卡头右端**只有复制键**：消息级按钮一律落在消息底部的 .msg-actions
-				    行（思考卡没有正文，不渲染那一行）。 */}
-				<button
-					type="button"
-					className={`chead-copy toolcall-copy thinking-copy${copied ? " copied" : ""}`}
-					title={copied ? t("copied") : t("copyMessage")}
-					aria-label={t("copyMessage")}
-					onClick={(e) => {
-						e.stopPropagation();
-						copyThinking();
-					}}
-				>
-					{copied ? <FiCheckCircle /> : <FiCopy />}
-				</button>
-			</div>
+				{streaming && shown ? (
+					<span className="thinking-live-label">
+						{t("thinkingNow")}
+						<span className="dots" />
+					</span>
+				) : shown ? (
+					t("thinking")
+				) : (
+					t("thinkingPreview", { preview })
+				)}
+			</CollapsibleHead>
 			{shown && <div className="thinking-body">{thinking}</div>}
 		</div>
 	);

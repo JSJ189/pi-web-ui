@@ -36,6 +36,7 @@ import { readTextQuote } from "../../../server/text-quote.js";
 import { TextQuoteCard } from "./TextQuoteCard";
 import { Markdown, PluginWidgetBlock } from "./Markdown";
 import { StreamMarkdown } from "./StreamMarkdown";
+import { CollapsibleHead } from "./CollapsibleHead";
 import { ThinkingBlock } from "./ThinkingBlock";
 import { ToolCallBlock, type ToolView } from "./ToolCallBlock";
 import { useT, type Translate } from "../i18n";
@@ -1242,73 +1243,70 @@ function AttachmentCard({ message, forceOpen = false }: { message: UiMessage; fo
 		<div
 			className={`attachcard ${isReference ? "reference" : ""}${isPage ? " page" : ""}${isConversation ? " conversation" : ""}`}
 		>
-			<div
-				className="chead attachcard-head"
-				role="button"
-				tabIndex={0}
-				aria-expanded={shown}
-				title={shown ? t("collapseMsg") : t("expandMsg")}
-				onClick={() => setOpen((v) => (forceOpen ? true : !v))}
-				onKeyDown={(e) => {
-					if (e.target !== e.currentTarget) return;
-					if (e.key === "Enter" || e.key === " ") {
-						e.preventDefault();
-						setOpen((v) => (forceOpen ? true : !v));
-					}
-				}}
+			<CollapsibleHead
+				open={shown}
+				headClassName="attachcard-head"
+				titleText={shown ? t("collapseMsg") : t("expandMsg")}
+				onToggle={() => setOpen((v) => (forceOpen ? true : !v))}
+				toggle={
+					!isReference && !isPage && !isConversation ? (
+						<span className="chead-toggle">{shown ? <FiChevronDown /> : <FiChevronRight />}</span>
+					) : null
+				}
+				icon={isFolder ? "📁" : isPage ? "🌐" : isConversation ? "💬" : "📎"}
+				iconClassName="attachcard-icon"
+				titleClassName="attachcard-name"
+				after={
+					<>
+						{details.path &&
+							(isPage && safePageHref ? (
+								<a className="attachcard-path attachcard-link" href={safePageHref} target="_blank" rel="noreferrer">
+									{details.path}
+								</a>
+							) : (
+								<span className="attachcard-path">{details.path}</span>
+							))}
+						<span
+							className={`attachcard-mode ${details.mode === "lines" ? "lines" : isReference ? "ref" : isPage ? "page" : isConversation ? "conversation" : isBridged ? "bridged" : "inline"}`}
+						>
+							{isPage
+								? t("attachPageShort")
+								: isConversation
+									? t("attachConversationShort")
+									: isReference
+										? isFolder
+											? t("folderRefShort")
+											: `${t("refOnlyShort")} · ${formatSize(details.size)}`
+										: isBridged
+											? t("bridgedVision")
+											: image
+												? t("image")
+												: details.mode === "lines"
+													? t("inlineLinesRange", {
+															start: details.startLine ?? 1,
+															end: details.endLine ?? details.lines ?? 1,
+														})
+													: t("inlineLines", { n: details.lines ?? lines })}
+						</span>
+						{canCopy && (
+							<button
+								type="button"
+								className="chead-copy"
+								title={copied ? t("copied") : t("copyMessage")}
+								aria-label={t("copyMessage")}
+								onClick={(e) => {
+									e.stopPropagation();
+									void copy(clean);
+								}}
+							>
+								{copied ? <FiCheckCircle /> : <FiCopy />}
+							</button>
+						)}
+					</>
+				}
 			>
-				{!isReference && !isPage && !isConversation && (
-					<span className="chead-toggle">{shown ? <FiChevronDown /> : <FiChevronRight />}</span>
-				)}
-				<span className="chead-icon attachcard-icon">
-					{isFolder ? "📁" : isPage ? "🌐" : isConversation ? "💬" : "📎"}
-				</span>
-				<span className="chead-title attachcard-name">{name}</span>
-				{details.path &&
-					(isPage && safePageHref ? (
-						<a className="attachcard-path attachcard-link" href={safePageHref} target="_blank" rel="noreferrer">
-							{details.path}
-						</a>
-					) : (
-						<span className="attachcard-path">{details.path}</span>
-					))}
-				<span
-					className={`attachcard-mode ${details.mode === "lines" ? "lines" : isReference ? "ref" : isPage ? "page" : isConversation ? "conversation" : isBridged ? "bridged" : "inline"}`}
-				>
-					{isPage
-						? t("attachPageShort")
-						: isConversation
-							? t("attachConversationShort")
-							: isReference
-								? isFolder
-									? t("folderRefShort")
-									: `${t("refOnlyShort")} · ${formatSize(details.size)}`
-								: isBridged
-									? t("bridgedVision")
-									: image
-										? t("image")
-										: details.mode === "lines"
-											? t("inlineLinesRange", {
-													start: details.startLine ?? 1,
-													end: details.endLine ?? details.lines ?? 1,
-												})
-											: t("inlineLines", { n: details.lines ?? lines })}
-				</span>
-				{canCopy && (
-					<button
-						type="button"
-						className="chead-copy"
-						title={copied ? t("copied") : t("copyMessage")}
-						aria-label={t("copyMessage")}
-						onClick={(e) => {
-							e.stopPropagation();
-							void copy(clean);
-						}}
-					>
-						{copied ? <FiCheckCircle /> : <FiCopy />}
-					</button>
-				)}
-			</div>
+				{name}
+			</CollapsibleHead>
 			{!isReference &&
 				shown &&
 				(isBridged ? (
@@ -1396,43 +1394,34 @@ function CompactionCard({
 				{message.timestamp && <span className="msg-time">{formatTime(message.timestamp)}</span>}
 			</div>
 			<div className={`compaction-card${expanded ? " expanded" : ""}`}>
-				<div
-					className="chead compaction-head"
-					role="button"
-					tabIndex={0}
-					aria-expanded={shown}
-					title={shown ? t("collapseMsg") : t("expandMsg")}
-					onClick={() => setExpanded((v) => (forceOpen ? true : !v))}
-					onKeyDown={(e) => {
-						if (e.target !== e.currentTarget) return;
-						if (e.key === "Enter" || e.key === " ") {
-							e.preventDefault();
-							setExpanded((v) => (forceOpen ? true : !v));
-						}
-					}}
+				<CollapsibleHead
+					open={shown}
+					headClassName="compaction-head"
+					titleText={shown ? t("collapseMsg") : t("expandMsg")}
+					onToggle={() => setExpanded((v) => (forceOpen ? true : !v))}
+					toggle={<span className="chead-toggle">{shown ? <FiChevronDown /> : <FiChevronRight />}</span>}
+					icon={<FiArchive />}
+					iconClassName="compaction-icon"
+					titleClassName="compaction-title"
+					after={
+						text && (
+							<button
+								type="button"
+								className="chead-copy"
+								title={copied ? t("copied") : t("copyMessage")}
+								aria-label={t("copyMessage")}
+								onClick={(e) => {
+									e.stopPropagation();
+									void copy(text);
+								}}
+							>
+								{copied ? <FiCheckCircle /> : <FiCopy />}
+							</button>
+						)
+					}
 				>
-					<span className="chead-toggle">{shown ? <FiChevronDown /> : <FiChevronRight />}</span>
-					<span className="chead-icon compaction-icon">
-						<FiArchive />
-					</span>
-					<span className="chead-title compaction-title">
-						{tokens ? t("compactionFrom", { tokens }) : t("role.compaction")}
-					</span>
-					{text && (
-						<button
-							type="button"
-							className="chead-copy"
-							title={copied ? t("copied") : t("copyMessage")}
-							aria-label={t("copyMessage")}
-							onClick={(e) => {
-								e.stopPropagation();
-								void copy(text);
-							}}
-						>
-							{copied ? <FiCheckCircle /> : <FiCopy />}
-						</button>
-					)}
-				</div>
+					{tokens ? t("compactionFrom", { tokens }) : t("role.compaction")}
+				</CollapsibleHead>
 				{shown && (
 					<div className="compaction-body">
 						<Markdown text={text} />
@@ -1542,40 +1531,35 @@ function SkillCard({ block, forceOpen = false }: { block: SkillBlock; forceOpen?
 	const shown = expanded || forceOpen;
 	return (
 		<div className={`skillcard${expanded ? " expanded" : ""}`}>
-			<div
-				className="chead skillcard-head"
-				role="button"
-				tabIndex={0}
-				aria-expanded={shown}
-				title={block.location}
-				onClick={() => setExpanded((v) => (forceOpen ? true : !v))}
-				onKeyDown={(e) => {
-					if (e.target !== e.currentTarget) return;
-					if (e.key === "Enter" || e.key === " ") {
-						e.preventDefault();
-						setExpanded((v) => (forceOpen ? true : !v));
-					}
-				}}
+			<CollapsibleHead
+				open={shown}
+				headClassName="skillcard-head"
+				titleText={block.location}
+				onToggle={() => setExpanded((v) => (forceOpen ? true : !v))}
+				toggle={<span className="chead-toggle">{shown ? <FiChevronDown /> : <FiChevronRight />}</span>}
+				icon={<FiBookOpen />}
+				iconClassName="skillcard-icon"
+				titleClassName="skillcard-name"
+				after={
+					<>
+						<span className="skillcard-path">{block.location}</span>
+						<button
+							type="button"
+							className="chead-copy"
+							title={copied ? t("copied") : t("copyMessage")}
+							aria-label={t("copyMessage")}
+							onClick={(e) => {
+								e.stopPropagation();
+								void copy(block.content);
+							}}
+						>
+							{copied ? <FiCheckCircle /> : <FiCopy />}
+						</button>
+					</>
+				}
 			>
-				<span className="chead-toggle">{shown ? <FiChevronDown /> : <FiChevronRight />}</span>
-				<span className="chead-icon skillcard-icon">
-					<FiBookOpen />
-				</span>
-				<span className="chead-title skillcard-name">{block.name}</span>
-				<span className="skillcard-path">{block.location}</span>
-				<button
-					type="button"
-					className="chead-copy"
-					title={copied ? t("copied") : t("copyMessage")}
-					aria-label={t("copyMessage")}
-					onClick={(e) => {
-						e.stopPropagation();
-						void copy(block.content);
-					}}
-				>
-					{copied ? <FiCheckCircle /> : <FiCopy />}
-				</button>
-			</div>
+				{block.name}
+			</CollapsibleHead>
 			{shown && (
 				<div className="skillcard-body">
 					<Markdown text={block.content} />
