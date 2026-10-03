@@ -7094,6 +7094,8 @@ export class ClientSession {
 	 * the forked child deadlocks between fork and exec. This applies to
 	 * asynchronous spawns too — the previous async probe reproduced the hang.
 	 */
+	// 手写 TTL 缓存而非通用 memoize：安装 pi 后 invalidatePiCliProbe() 要立即
+	// 失效重探，通用 TTL memoize 不带失效通道（issue #470 处置说明）。
 	private static piCliProbe: { at: number; installed: boolean } | null = null;
 	private static readonly PI_CLI_PROBE_TTL_MS = 10_000;
 

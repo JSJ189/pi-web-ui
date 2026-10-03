@@ -36,22 +36,6 @@ export function compareVersions(a: string, b: string): number {
 }
 
 /**
- * Cache a zero-arg function's value for ttlMs. Plain value memoization: the
- * pi probe returns null on failure instead of throwing, so errors thread
- * through as ordinary values and there is nothing to rethrow.
- */
-export function memoizeWithTtl<T>(fn: () => T, ttlMs: number): () => T {
-	let entry: { at: number; value: T } | null = null;
-	return () => {
-		const now = Date.now();
-		if (!entry || now - entry.at >= ttlMs) {
-			entry = { at: now, value: fn() };
-		}
-		return entry.value;
-	};
-}
-
-/**
  * Parse `pi --version` stdout into a version string, or null. Two-stage:
  * prefer a line that is exactly the version (optional leading "v", optional
  * prerelease/build suffix) so a stdout preamble like "Update available:

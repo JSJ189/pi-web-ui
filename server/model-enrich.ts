@@ -201,6 +201,8 @@ async function fetchJson(
 	}
 }
 
+// 手写 TTL 缓存而非通用 memoize：双键（openrouter/modelsdev）共享一个 Map，
+// 且 compute 是 async fetch——单值同步的 memoizeWithTtl 覆盖不了（issue #470 处置说明）。
 /** 目录抓取缓存（24h TTL，进程内；首跑后无感）。 */
 const catalogCache = new Map<string, { at: number; data: CatalogModel[] }>();
 const CATALOG_TTL_MS = 24 * 3600 * 1000;

@@ -18,7 +18,6 @@ import {
 	isHostProvidedPackage,
 	listGitExtensions,
 	listInstalledPackages,
-	memoizeWithTtl,
 	NPM_DEFAULT_REGISTRY,
 	parseGitExtensionSource,
 	parseNpmrcAuth,
@@ -77,38 +76,6 @@ describe("parsePiVersionOutput", () => {
 	it("garbage → null", () => {
 		expect(parsePiVersionOutput("")).toBeNull();
 		expect(parsePiVersionOutput("no version here")).toBeNull();
-	});
-});
-
-describe("memoizeWithTtl", () => {
-	it("calls through once within the TTL, again after expiry", () => {
-		vi.useFakeTimers();
-		try {
-			let n = 0;
-			const fn = vi.fn(() => ++n);
-			const memo = memoizeWithTtl(fn, 10_000);
-			expect(memo()).toBe(1);
-			expect(memo()).toBe(1);
-			expect(fn).toHaveBeenCalledTimes(1);
-			vi.advanceTimersByTime(10_000);
-			expect(memo()).toBe(2);
-			expect(fn).toHaveBeenCalledTimes(2);
-		} finally {
-			vi.useRealTimers();
-		}
-	});
-
-	it("caches null results like any other value", () => {
-		vi.useFakeTimers();
-		try {
-			const fn = vi.fn((): string | null => null);
-			const memo = memoizeWithTtl(fn, 60_000);
-			expect(memo()).toBeNull();
-			expect(memo()).toBeNull();
-			expect(fn).toHaveBeenCalledTimes(1);
-		} finally {
-			vi.useRealTimers();
-		}
 	});
 });
 
