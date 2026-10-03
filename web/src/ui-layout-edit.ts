@@ -29,13 +29,16 @@ interface IconEditZone {
 	/** 是否按 start/center/end 分段展示与落位：顶栏与底栏在界面上确实按段渲染
 	 *  （TopBar 的 segStart/segCenter/segEnd、FooterBar 的左右分区），其余栏整串排序。 */
 	alignable: boolean;
+	/** 该栏的分段是**竖轴**（左侧/右侧停靠栏：靠上/居中/靠下）而不是横轴（靠左/居中/靠右）。
+	 *  只影响分段文案（start/center/end vs 靠上/居中/靠下），取值与拖放口径完全一致。 */
+	vertical: boolean;
 }
 
 export const ICON_EDIT_ZONES: readonly IconEditZone[] = [
-	{ slot: "topbar.primary", labelKey: "uiLayoutTopbar", alignable: true },
-	{ slot: "bottombar", labelKey: "uiLayoutBottombar", alignable: true },
-	{ slot: "sidebar.left", labelKey: "uiLayoutSidebarLeft", alignable: false },
-	{ slot: "sidebar.right", labelKey: "uiLayoutSidebarRight", alignable: false },
+	{ slot: "topbar.primary", labelKey: "uiLayoutTopbar", alignable: true, vertical: false },
+	{ slot: "bottombar", labelKey: "uiLayoutBottombar", alignable: true, vertical: false },
+	{ slot: "sidebar.left", labelKey: "uiLayoutSidebarLeft", alignable: true, vertical: true },
+	{ slot: "sidebar.right", labelKey: "uiLayoutSidebarRight", alignable: true, vertical: true },
 ];
 
 /** 「待放回」托盘的落点标识 —— 不是真 slot，只是一个落区（拖进来 = 隐藏该条目）。 */
@@ -43,6 +46,15 @@ export const ICON_EDIT_TRAY = "__tray";
 
 /** 三段（与渲染层同口径；脏值一律当 start）。 */
 export const ICON_EDIT_ALIGNS: readonly UiAlign[] = ["start", "center", "end"];
+
+/** 竖栏的 align 文案（靠上 / 居中 / 靠下）。**字面量 key 集中在这里**，
+ *  免得对齐下拉、分段头、图标编辑器各写一份 switch（也便于死 key 守卫认出来）。 */
+export function sideAlignLabel(
+	t: (key: "uiLayoutAlignTop" | "uiLayoutAlignMiddle" | "uiLayoutAlignBottom") => string,
+	align: UiAlign,
+): string {
+	return t(align === "start" ? "uiLayoutAlignTop" : align === "end" ? "uiLayoutAlignBottom" : "uiLayoutAlignMiddle");
+}
 
 /** 一个落点：被拖条目 + 目标栏 + 目标段 + 目标下标。 */
 interface IconDrop {

@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { mkdtempSync } from "node:fs";
+import { mkdtempSync, readFileSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { PlanManager } from "../../server/plan-manager.js";
@@ -212,6 +212,89 @@ describe("结构化任务计划状态机与看板管理 (PlanManager / Plan Mode
 		expect(restored).toBeTruthy();
 		expect(pm2.getPlan("c2")).toBeTruthy();
 		expect(pm2.getPlan("c2")?.activeStepId).toBe("2");
+	});
+
+	it("防新会话串台：新实例重启时绝不加载临时 conversationId，全新会话不继承上一个会话的任务", () => {
+		const tmpDir = mkdtempSync(join(tmpdir(), "pi-plan-test-"));
+		const filePath = join(tmpDir, "plans.json");
+
+		const pm1 = new PlanManager(filePath);
+		pm1.setPlan(
+			"c2",
+			[
+				{ id: "1", title: "探索与分析代码", status: "done" },
+				{ id: "2", title: "提交 PR 并处理 Issue", status: "done" },
+			],
+			null,
+			"session-prev-c2",
+		);
+
+		// 新实例（模拟服务重启后，新对话重新分配到 conversationId = "c2"）
+		const pm2 = new PlanManager(filePath);
+		// 临时 conversationId 绝不应被直接从 plans.json 中加载
+		expect(pm2.getPlan("c2")).toBeNull();
+
+		// 全新会话绑定全新 sessionId，绝不能被旧计划附体
+		const bound = pm2.bindSession("c2", "session-fresh-c2");
+		expect(bound).toBeNull();
+		expect(pm2.getPlan("c2")).toBeNull();
+	});
+
+	it("清洗历史脏数据：自动过滤 plans.json 中的 c1/c2 等临时 ID 并在下次保存时清除", () => {
+		const tmpDir = mkdtempSync(join(tmpdir(), "pi-plan-test-"));
+		const filePath = join(tmpDir, "plans.json");
+
+		const dirtyData = {
+			c1: { steps: [{ id: "1", title: "旧 c1 任务", status: "done" }], activeStepId: null, updatedAt: 1 },
+			c2: { steps: [{ id: "1", title: "旧 c2 任务", status: "done" }], activeStepId: null, updatedAt: 2 },
+			"valid-session-uuid": {
+				steps: [{ id: "1", title: "有效真实会话任务", status: "pending" }],
+				activeStepId: null,
+				updatedAt: 3,
+			},
+		};
+		writeFileSync(filePath, JSON.stringify(dirtyData), "utf8");
+
+		const pm = new PlanManager(filePath);
+		expect(pm.getPlan("c1")).toBeNull();
+		expect(pm.getPlan("c2")).toBeNull();
+		expect(pm.getPlan("valid-session-uuid")).toBeTruthy();
+
+		// 触发更新与保存
+		pm.setPlan("c3", [{ id: "1", title: "新任务", status: "pending" }], null, "valid-session-uuid-2");
+
+		const saved = JSON.parse(readFileSync(filePath, "utf8")) as Record<string, unknown>;
+		expect(saved["c1"]).toBeUndefined();
+		expect(saved["c2"]).toBeUndefined();
+		expect(saved["c3"]).toBeUndefined();
+		expect(saved["valid-session-uuid"]).toBeTruthy();
+		expect(saved["valid-session-uuid-2"]).toBeTruthy();
+	});
+
+	it("unbindConversation 正确清理运行时 conversationId 映射", () => {
+		const pm = new PlanManager();
+		pm.setPlan("c1", [{ id: "1", title: "步骤1", status: "pending" }]);
+		expect(pm.getPlan("c1")).toBeTruthy();
+
+		pm.unbindConversation("c1");
+		expect(pm.getPlan("c1")).toBeNull();
+	});
+
+	it("setPlan 传入空数组步骤时自动从持久化文件中清除对应 sessionId 条目", () => {
+		const tmpDir = mkdtempSync(join(tmpdir(), "pi-plan-test-"));
+		const filePath = join(tmpDir, "plans.json");
+
+		const pm = new PlanManager(filePath);
+		pm.setPlan("c1", [{ id: "1", title: "步骤1", status: "pending" }], null, "session-to-clear");
+		expect(pm.getPlan("session-to-clear")?.steps.length).toBe(1);
+
+		// 清空计划
+		pm.setPlan("c1", [], null, "session-to-clear");
+		expect(pm.getPlan("c1")?.steps.length).toBe(0);
+
+		// 读取磁盘文件确认条目已被自动清除
+		const saved = JSON.parse(readFileSync(filePath, "utf8")) as Record<string, unknown>;
+		expect(saved["session-to-clear"]).toBeUndefined();
 	});
 
 	it("readPlanFromSession 能从 sessionManager 的 customType plan/update 恢复", () => {

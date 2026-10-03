@@ -10,7 +10,11 @@
 
 ## [Unreleased]
 
-暂无未发布内容。
+<!-- auto-i18n:start -->
+### i18n
+
+- 前端新增 key（3）：`uiLayoutAlignTop`、`uiLayoutAlignMiddle`、`uiLayoutAlignBottom`
+<!-- auto-i18n:end -->
 
 ## [0.98.0] — 2026-10-03
 

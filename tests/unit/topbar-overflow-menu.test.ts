@@ -57,4 +57,23 @@ describe("顶栏溢出菜单（issue #183）", () => {
 	it("portal 里的 chip 在移动端断点与顶栏同高（portal 没有 .topbar 祖先）", () => {
 		expect(CSS).toMatch(/\.plugin-topbar-menu\.portal\s+\.chip\s*\{[^}]*height/s);
 	});
+
+	it("菜单里的行与文字统一 12.5px（不再让 .tb-row 继承 body 的 14px）", () => {
+		// portal 挂在 body 下，继承的是 body 的 14px；不写死就会让「编辑图标」这类
+		// 菜单自绘扁平行（.tb-row）比搬进来的 chip 行大一号（真机实报）。
+		const menu = CSS.match(/\.plugin-topbar-menu\s*\{([^}]*)\}/s);
+		expect(menu).toBeTruthy();
+		expect(menu![1]).toMatch(/font-size:\s*12\.5px/);
+		const rows = CSS.match(/\.plugin-topbar-menu\.portal\s+:is\(\.tb-row[^{]*\{([^}]*)\}/s);
+		expect(rows).toBeTruthy();
+		expect(rows![1]).toMatch(/font-size:\s*12\.5px/);
+	});
+
+	it("菜单里的图标格包着的 svg 也要填满方盒", () => {
+		// .plugin-icon-glyph 原本只装 emoji 字形（字号跟方盒走）；一旦里面塞 svg
+		// （图标组件），1em 会比外面图标格的 15px 小一号，得显式撑满。
+		expect(CSS).toMatch(
+			/\.plugin-topbar-menu\.portal\s+\.plugin-icon-glyph\s+svg\s*\{[^}]*width:\s*100%[^}]*height:\s*100%/s,
+		);
+	});
 });

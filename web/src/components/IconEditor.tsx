@@ -23,6 +23,7 @@ import {
 	collectIconEditItems,
 	visibleZoneEntries,
 	zoneEntriesForAlign,
+	sideAlignLabel,
 } from "../ui-layout-edit";
 
 interface IconEditorProps {
@@ -233,7 +234,14 @@ export function IconEditor({ slots, layout, exclude, onClose }: IconEditorProps)
 									{dragId && <span className="icon-editor-zone-count">{visible.length}</span>}
 								</div>
 								{zone.alignable
-									? ICON_EDIT_ALIGNS.map((al) => renderStrip(zone.slot, al, al, zoneEntriesForAlign(zoneEntries, al)))
+									? ICON_EDIT_ALIGNS.map((al) =>
+											renderStrip(
+												zone.slot,
+												al,
+												zone.vertical ? sideAlignLabel(t, al) : al,
+												zoneEntriesForAlign(zoneEntries, al),
+											),
+										)
 									: renderStrip(zone.slot, undefined, null, visible)}
 							</div>
 						);

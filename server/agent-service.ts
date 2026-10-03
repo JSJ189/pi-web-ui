@@ -6326,7 +6326,9 @@ export class ClientSession {
 			compaction: conv.compactionState ?? null,
 			pendingQuestion: this.pendingQuestionForSnapshot(),
 			pendingApproval: this.pendingApprovalForSnapshot(),
-			plan: this.planManager.getPlan(this.activeId),
+			// 任务计划看板状态同样是会话级：快照恒给 PlanState 或 null（不用 undefined），
+			// 否则 snapshot_delta 里 key 缺席 → 前端 spread 浅合并会残留上一对话的 plan。
+			plan: this.planManager.getPlan(this.activeId) ?? null,
 			// 计划模式是**会话级**开关：快照恒给布尔（不用 undefined），否则
 			// snapshot_delta 里 key 缺席 → 前端 spread 合并会残留上一对话的 true。
 			planMode: conv?.planMode === true,
@@ -6872,7 +6874,7 @@ export class ClientSession {
 
 		await this.newChat();
 		const targetConv = this.conv;
-		this.planManager.setPlan(targetConv.id, steps);
+		this.planManager.setPlan(targetConv.id, steps, undefined, targetConv?.session?.sessionId);
 		if (sourceGoal) {
 			try {
 				await this.goalSvc.setGoal(sourceGoal, { targetConvId: targetConv.id, autoStart: false });
@@ -9923,7 +9925,8 @@ export class ClientSession {
 		// this branch normally can't exist — kept as a safety net).
 		const isBlank = (c: Conversation): boolean => {
 			try {
-				return c.session.getSessionStats().totalMessages === 0 && c.terminals.list().length === 0;
+				const hasPlan = (this.planManager.getPlan(c.id)?.steps.length ?? 0) > 0;
+				return c.session.getSessionStats().totalMessages === 0 && c.terminals.list().length === 0 && !hasPlan;
 			} catch {
 				// session being replaced — treat as used so we don't switch onto it
 				return false;
@@ -10384,6 +10387,7 @@ export class ClientSession {
 			// ignore
 		}
 		this.convs.delete(id);
+		this.planManager.unbindConversation(id);
 		this.clearAllToolWatchdogs(conv);
 		// 关对话 → 连它的 eval 内核（Python/Node 子进程 + 临时沙箱目录）一起回收：
 		// 这些进程是 detached 进程组，父进程退出不会自动带走它们。

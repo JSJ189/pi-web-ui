@@ -11,11 +11,14 @@ import { describe, expect, it } from "vitest";
 import type { UiAlign, UiLayoutPrefs, UiSlotId } from "../../web/src/types.js";
 import type { UiSlotEntry } from "../../web/src/ui-slots.js";
 import {
+	ICON_EDIT_ALIGNS,
 	ICON_EDIT_TRAY,
+	ICON_EDIT_ZONES,
 	applyIconDrop,
 	applyIconHide,
 	collectIconEditItems,
 	findIconEditEntry,
+	sideAlignLabel,
 	visibleZoneEntries,
 	zoneEntriesForAlign,
 } from "../../web/src/ui-layout-edit.js";
@@ -179,5 +182,23 @@ describe("applyIconHide", () => {
 
 	it("托盘落点常量与真 slot 不会撞（组件靠它分流）", () => {
 		expect(ICON_EDIT_TRAY.startsWith("__")).toBe(true);
+	});
+});
+
+/** 停靠栏的竖向 align 文案 + 编辑器的分段能力（见 SideDock / IconEditor）。 */
+describe("竖向栏（侧边停靠栏）", () => {
+	it("侧边栏是竖轴且可按段拖放，顶栏/底栏仍是横轴", () => {
+		const zones = Object.fromEntries(ICON_EDIT_ZONES.map((z) => [z.slot, z]));
+		expect(zones["sidebar.left"]).toMatchObject({ alignable: true, vertical: true });
+		expect(zones["sidebar.right"]).toMatchObject({ alignable: true, vertical: true });
+		expect(zones["topbar.primary"]).toMatchObject({ alignable: true, vertical: false });
+		expect(zones.bottombar).toMatchObject({ alignable: true, vertical: false });
+	});
+
+	it("文案：start=靠上 / center=居中 / end=靠下（字面量 key，死 key 守卫认得出）", () => {
+		const t = (key: string) => key;
+		expect(sideAlignLabel(t, "start")).toBe("uiLayoutAlignTop");
+		expect(sideAlignLabel(t, "center")).toBe("uiLayoutAlignMiddle");
+		expect(sideAlignLabel(t, "end")).toBe("uiLayoutAlignBottom");
 	});
 });

@@ -1607,9 +1607,7 @@ export function TopBar({
 								onOpenIconEdit();
 							}}
 						>
-							<span className="plugin-icon-glyph">
-								<FiEdit2 />
-							</span>
+							<FiEdit2 />
 							<span className="tb-row-text">{t("uiIconEdit")}</span>
 						</button>
 					</TopbarOverflowMenu>

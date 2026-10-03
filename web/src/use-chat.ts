@@ -976,7 +976,8 @@ function reducer(state: ChatState, action: Action): ChatState {
 		case "plan_updated": {
 			const ui = state.state;
 			if (!ui) return state;
-			if (action.conversationId && action.conversationId !== ui.conversationId) return state;
+			const currentConvId = state.activeConversationId || ui.conversationId;
+			if (!action.conversationId || action.conversationId !== currentConvId) return state;
 			const nextUi: UiState = {
 				...ui,
 				plan: action.plan,

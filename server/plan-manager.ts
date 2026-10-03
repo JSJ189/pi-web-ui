@@ -11,6 +11,11 @@
  *    - 模型可通过 customTool `plan_update` 更新
  *    - 客户端也可通过协议消息 `plan_update` 调整
  *    - 状态自动同步到快照 `UiState.plan`
+ *
+ * 存储模型与隔离设计（防新会话串台）：
+ * - 持久化源（plansBySession）：以真实唯一的 SDK sessionId 为主键，落盘至 plans.json。
+ * - 运行时缓存（plansByConv）：以会话槽位 conversationId 为主键，仅存活于进程内存，绝不落盘。
+ * - 历史文件清洗：严格过滤形如 /^c\d+$/ 的易变短 ID，防止服务重启后新会话被上一个会话的任务附体。
  */
 
 import { mkdirSync, readFileSync, renameSync, writeFileSync } from "node:fs";
@@ -19,8 +24,17 @@ import type { PlanState, PlanStep, PlanStepStatus } from "./protocol.js";
 
 const VALID_STATUSES = new Set<PlanStepStatus>(["pending", "in_progress", "done", "failed"]);
 
+/** 判断是否为易变的临时 conversationId（如 c1, c2, c99 等）。此类短 ID 绝不入持久化文件。 */
+function isEphemeralConvId(id: string): boolean {
+	return /^c\d+$/.test(id);
+}
+
 export class PlanManager {
-	private plans = new Map<string, PlanState>();
+	/** 按持久化 sessionId 存储的真实计划状态（落盘至 plans.json）。 */
+	private plansBySession = new Map<string, PlanState>();
+	/** 按运行时 conversationId 存储的临时计划缓存（进程内存态，不落盘）。 */
+	private plansByConv = new Map<string, PlanState>();
+	/** conversationId 到 sessionId 的映射。 */
 	private convToSession = new Map<string, string>();
 
 	constructor(private readonly filePath?: string) {
@@ -34,8 +48,11 @@ export class PlanManager {
 		try {
 			const raw = JSON.parse(readFileSync(this.filePath, "utf8")) as Record<string, unknown>;
 			for (const [key, val] of Object.entries(raw)) {
+				// 严格过滤：形如 c1, c2 的临时 conversationId 绝不作为持久化会话键载入，
+				// 防止服务重启或历史残留时污染新分配的相同 ID 对话。
+				if (isEphemeralConvId(key)) continue;
 				if (val && typeof val === "object" && Array.isArray((val as { steps?: unknown }).steps)) {
-					this.plans.set(key, val as PlanState);
+					this.plansBySession.set(key, val as PlanState);
 				}
 			}
 		} catch {
@@ -48,7 +65,9 @@ export class PlanManager {
 		try {
 			mkdirSync(dirname(this.filePath), { recursive: true });
 			const obj: Record<string, PlanState> = {};
-			for (const [k, v] of this.plans.entries()) {
+			for (const [k, v] of this.plansBySession.entries()) {
+				// 双重防护：临时 conversationId 绝不落盘
+				if (isEphemeralConvId(k)) continue;
 				obj[k] = v;
 			}
 			const tmp = `${this.filePath}.tmp.${Date.now()}`;
@@ -62,32 +81,38 @@ export class PlanManager {
 	/** 绑定 conversationId 与 sessionId。若 sessionId 已有落盘计划，立即恢复给 conversationId。 */
 	bindSession(conversationId: string, sessionId: string): PlanState | null {
 		this.convToSession.set(conversationId, sessionId);
-		const existing = this.plans.get(sessionId);
+		// 绑定（或重新绑定）session 时，先清除当前 conversationId 上次残留的内存状态
+		this.plansByConv.delete(conversationId);
+		const existing = this.plansBySession.get(sessionId);
 		if (existing) {
-			this.plans.set(conversationId, existing);
+			this.plansByConv.set(conversationId, existing);
 			return existing;
 		}
-		const convExisting = this.plans.get(conversationId);
-		if (convExisting) {
-			this.plans.set(sessionId, convExisting);
-			this.save();
-			return convExisting;
-		}
+		// 绝不从 conversationId 逆向污染全新 sessionId！全新会话以空状态起步。
 		return null;
 	}
 
+	/** 解绑并清理指定 conversationId 的运行时内存计划与映射（在会话移除/销毁时调用）。 */
+	unbindConversation(conversationId: string): void {
+		this.plansByConv.delete(conversationId);
+		this.convToSession.delete(conversationId);
+	}
+
 	/** 获取指定会话的计划状态。优先使用 conversationId，若无则回退查找绑定的 sessionId。 */
-	getPlan(conversationId: string): PlanState | null {
-		const direct = this.plans.get(conversationId);
-		if (direct) return direct;
-		const sessionId = this.convToSession.get(conversationId);
+	getPlan(id: string): PlanState | null {
+		const directConv = this.plansByConv.get(id);
+		if (directConv) return directConv;
+		const sessionId = this.convToSession.get(id);
 		if (sessionId) {
-			const bySession = this.plans.get(sessionId);
+			const bySession = this.plansBySession.get(sessionId);
 			if (bySession) {
-				this.plans.set(conversationId, bySession);
+				this.plansByConv.set(id, bySession);
 				return bySession;
 			}
 		}
+		// 兼容以 sessionId 直接查询
+		const directSession = this.plansBySession.get(id);
+		if (directSession) return directSession;
 		return null;
 	}
 
@@ -116,15 +141,19 @@ export class PlanManager {
 			updatedAt: Date.now(),
 		};
 
-		this.plans.set(conversationId, state);
+		this.plansByConv.set(conversationId, state);
 
 		const effectiveSessionId = sessionId ?? this.convToSession.get(conversationId);
 		if (effectiveSessionId) {
 			this.convToSession.set(conversationId, effectiveSessionId);
-			this.plans.set(effectiveSessionId, state);
+			if (normalizedSteps.length === 0) {
+				this.plansBySession.delete(effectiveSessionId);
+			} else {
+				this.plansBySession.set(effectiveSessionId, state);
+			}
+			this.save();
 		}
 
-		this.save();
 		return state;
 	}
 
@@ -171,18 +200,18 @@ export class PlanManager {
 			updatedAt: Date.now(),
 		};
 
-		this.plans.set(conversationId, nextState);
+		this.plansByConv.set(conversationId, nextState);
 		const sessId = this.convToSession.get(conversationId);
 		if (sessId) {
-			this.plans.set(sessId, nextState);
+			this.plansBySession.set(sessId, nextState);
+			this.save();
 		}
-		this.save();
 		return nextState;
 	}
 
 	/** 增量删除单个步骤。 */
 	deleteStep(conversationId: string, stepId: string): PlanState | null {
-		const current = this.plans.get(conversationId);
+		const current = this.getPlan(conversationId);
 		if (!current) return null;
 
 		const idx = current.steps.findIndex((s) => s.id === stepId);
@@ -201,13 +230,18 @@ export class PlanManager {
 			updatedAt: Date.now(),
 		};
 
-		this.plans.set(conversationId, nextState);
+		this.plansByConv.set(conversationId, nextState);
+		const sessId = this.convToSession.get(conversationId);
+		if (sessId) {
+			this.plansBySession.set(sessId, nextState);
+			this.save();
+		}
 		return nextState;
 	}
 
 	/** 增量新增步骤。 */
 	addStep(conversationId: string, step: PlanStep, afterStepId?: string): PlanState | null {
-		const current = this.plans.get(conversationId);
+		const current = this.getPlan(conversationId);
 		const existingSteps = current?.steps ?? [];
 
 		const normalized: PlanStep = {
@@ -241,16 +275,21 @@ export class PlanManager {
 			updatedAt: Date.now(),
 		};
 
-		this.plans.set(conversationId, nextState);
+		this.plansByConv.set(conversationId, nextState);
+		const sessId = this.convToSession.get(conversationId);
+		if (sessId) {
+			this.plansBySession.set(sessId, nextState);
+			this.save();
+		}
 		return nextState;
 	}
 
 	/** 清除指定会话的计划。 */
 	clearPlan(conversationId: string): void {
-		this.plans.delete(conversationId);
+		this.plansByConv.delete(conversationId);
 		const sessId = this.convToSession.get(conversationId);
 		if (sessId) {
-			this.plans.delete(sessId);
+			this.plansBySession.delete(sessId);
 			this.convToSession.delete(conversationId);
 		}
 		this.save();

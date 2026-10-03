@@ -79,6 +79,7 @@ import { TemplateProvider } from "./components/PromptTemplates";
 import { FilePreview, type PreviewFile } from "./components/FilePreview";
 import { PluginFilePreview } from "./components/PluginFilePreview";
 import { useChat } from "./use-chat";
+import { useSwipeDrawer } from "./use-swipe-drawer";
 import { appUrl } from "./base-url";
 import type { ClientMessage, CommandDef, PromptAttachment, UiMessage } from "./types";
 import { useT, useI18n } from "./i18n";
@@ -694,6 +695,8 @@ export function App() {
 	}, []);
 	// Mobile: which side panel is open as a drawer (null = both closed).
 	const [drawer, setDrawer] = useState<"left" | "right" | null>(null);
+	// 抽屉手势的监听容器（移动端 `.layout` 整屏）。
+	const layoutRef = useRef<HTMLDivElement | null>(null);
 	// Viewport class: ≤768px turns the side panels into sliding drawers
 	// (matches the CSS breakpoint) — used to lazy-load panel data only when
 	// a drawer is actually open on mobile.
@@ -704,6 +707,18 @@ export function App() {
 		mq.addEventListener("change", onChange);
 		return () => mq.removeEventListener("change", onChange);
 	}, []);
+	// 手机端侧栏手势：从左右边缘往里横滑 = 拉出该侧列表，列表开着时往外横滑 = 收回去。
+	// 只在 chat 视图挂（左右面板就长在这个 view-pane 里；终端视图的抽屉是另一套）。
+	// 判定纯函数见 `swipe-drawer.ts`，DOM 粘合见 `use-swipe-drawer.ts`。
+	useSwipeDrawer({
+		enabled: isMobile && view === "chat",
+		open: drawer,
+		onOpenChange: setDrawer,
+		container: layoutRef,
+		// 必须点名 `.persistent`：终端视图的抽屉也用 `.drawer-backdrop`（常驻但 display:none
+		// 的 pane 里照样能被 querySelector 查到），不加限定会去改那道看不见的遮罩。
+		backdropSelector: ".drawer-backdrop.persistent",
+	});
 	// Setup modal: one-time prompt when the pi agent config is missing.
 	const [setupDismissed, setSetupDismissed] = useState(false);
 	// Custom model config panel (model dropdown → 管理模型).
@@ -1645,10 +1660,17 @@ export function App() {
 			</div>
 			<TemplateProvider currentModelId={model ? `${model.provider}/${model.id}` : null}>
 				<div
+					ref={layoutRef}
 					className="layout"
 					style={{ "--left-w": `${leftWidth}px`, "--right-w": `${rightWidth}px` } as CSSProperties}
 				>
-					{drawer && <div className="drawer-backdrop" onClick={() => setDrawer(null)} />}
+					{/* 遮罩：移动端**常驻**（否则关着的抽屉被手势拉出来时没有可渐变的遮罩，见
+					    `use-swipe-drawer.ts`），靠 `.on` 类控制显隐与可点；桌面端仍按需挂载。 */}
+					{isMobile ? (
+						<div className={`drawer-backdrop persistent${drawer ? " on" : ""}`} onClick={() => setDrawer(null)} />
+					) : (
+						drawer && <div className="drawer-backdrop" onClick={() => setDrawer(null)} />
+					)}
 					{/* 悬浮停靠栏是**布局内的贴边槽位**（不再是覆盖一切的 fixed 浮层）：夹在屏幕边缘与
 					    面板之间，面板与主区自动向内让出它的宽度 —— 面板里的按钮再也不会被压住；该侧没有
 					    图标时整条不渲染，连宽度都不占。 */}
@@ -1979,7 +2001,13 @@ export function App() {
 								/>
 							)}
 							{/* 任务执行看板 (Plan Mode) */}
-							<PlanBoard plan={chat.state?.plan} />
+							<PlanBoard
+								plan={
+									chat.activeConversationId && chat.state?.conversationId !== chat.activeConversationId
+										? null
+										: chat.state?.plan
+								}
+							/>
 							<ChatInput
 								composerLeading={uiSlots["composer.leading"]}
 								composerActions={uiSlots["composer.actions"]}

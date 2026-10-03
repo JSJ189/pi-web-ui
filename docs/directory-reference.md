@@ -229,6 +229,7 @@ web/src/
 ├── scrollbar-gutter.ts # 滚动条槽位
 ├── shortcut-stack.ts   # 快捷键栈
 ├── stream-markdown.ts  # 流式 Markdown 渲染
+├── swipe-drawer.ts / use-swipe-drawer.ts # 手机端抽屉横滑手势（纯判定 + DOM 粘合）
 ├── term-touch.ts       # 终端触屏支持
 ├── thinking-levels.ts  # 思考强度档位
 ├── tip-position.ts     # 提示定位

@@ -2531,6 +2531,7 @@ select.plugin-topbar-item.plugin-topbar-select {
 	border-radius: 10px;
 	background: var(--bg-elev, #1c1e24);
 	box-shadow: 0 8px 24px rgb(0 0 0 / 0.35);
+	font-size: 12.5px;
 }
 /* issue #183：必须是直子选择器 —— 溢出菜单里搬进来的是整块宿主控件
    （Dropdown 的 .chip 触发器 + .dd-menu、BrowserControl 的 .chip 等），
@@ -2627,6 +2628,7 @@ select.plugin-topbar-item.plugin-topbar-select {
 	gap: 6px;
 	padding: 5px 10px;
 	align-items: center;
+	font-size: 12.5px;
 }
 .plugin-topbar-menu.portal
 	:is(.tb-row, .chip, .tb-tab, .plugin-topbar-item, .panel-toggle)
@@ -2640,6 +2642,10 @@ select.plugin-topbar-item.plugin-topbar-select {
 	/* emoji 字形：字号跟方盒走，别让字体自己决定高度 */
 	font-size: 14px;
 	line-height: 1;
+}
+.plugin-topbar-menu.portal .plugin-icon-glyph svg {
+	width: 100%;
+	height: 100%;
 }
 /* 没有行首图标的行补一个同宽占位（伪元素在 flex 里是 flex item，天然不参与
    text-overflow），文字左缘因此和带图标的行对齐。 */
@@ -2956,6 +2962,26 @@ select.plugin-topbar-item.plugin-topbar-select {
 	to {
 		opacity: 1;
 	}
+}
+
+/* 常驻遮罩（移动端抽屉手势专用，见 use-swipe-drawer.ts）：不进 DOM 就不存在
+   mount 动画，改由 .on 类 + opacity 过渡控制 —— 跟手期间 JS 直接写内联 opacity，
+   松手后清掉内联值就自动过渡到 .on / 无类的终态。 */
+.drawer-backdrop.persistent {
+	animation: none;
+	opacity: 0;
+	pointer-events: none;
+	transition: opacity 0.25s ease;
+}
+.drawer-backdrop.persistent.on {
+	opacity: 1;
+	pointer-events: auto;
+}
+
+/* 手势跟手期间禁掉过渡：transform 由 JS 逐帧写内联值（松手立刻移除本类，
+   让 CSS/React 接着把它过渡到最终位置）。 */
+.panel-drawer.drawer-dragging {
+	transition: none;
 }
 
 /* 视图 tab 的胶囊外观已搬到 .tb-tab（顶栏扁平化：不再有 .view-switch 容器，
@@ -16439,46 +16465,108 @@ button.source-default-toggle {
  * **布局内的贴边槽位**：作为 .layout 的 flex 子项参与排版，面板与主区向内让出它的宽度，
  * 因此它永远不会叠在面板内容（会话行 / 文件行按钮）上面。该侧没有图标时整个组件不渲染
  * （SideDock 返回 null），连宽度都不占。
- * 旧的实现是 `position: fixed` 浮层（z-index 70），会盖住面板竖中央那一条，已废弃。 */
+ * 旧的实现是 `position: fixed` 浮层（z-index 70），会盖住面板竖中央那一条，已废弃。
+ *
+ * **竖向三段**：`entry.align` 在这里读作竖轴（start=靠上 / center=居中 / end=靠下），
+ * 因此容器撑满整列，**药丸底画在每一段上**（`.side-dock-seg`，空段不画）而不是整个
+ * 停靠栏上 —— 否则一整条竖底看不出段与段的差别。上下两段各 flex:1 平分剩余高度，
+ * 中间那段自然落在竖向正中（与顶栏两个 spacer 夹住中间段同构）。 */
 .side-dock {
 	position: relative;
-	align-self: center;
 	flex-shrink: 0;
 	display: flex;
 	flex-direction: column;
 	align-items: center;
-	gap: 4px;
-	padding: 6px 3px;
+	gap: 6px;
+	padding: 6px 0;
+	width: fit-content;
 	max-height: 100%;
 	min-height: 0;
+	user-select: none;
+}
+
+/* 弹性格子：**始终渲染**（包着空段也占位），靠它把上/下两段等分剩余高度，
+ * 中间那段自然落在竖向正中（与顶栏两个 spacer 夹住中间段同构）。 */
+.side-dock-slot {
+	display: flex;
+	flex-direction: column;
+	align-items: center;
+	min-height: 0;
+	width: 100%;
+}
+
+.side-dock-slot-start,
+.side-dock-slot-end {
+	flex: 1 1 0;
+}
+
+.side-dock-slot-start {
+	justify-content: flex-start;
+}
+
+.side-dock-slot-end {
+	justify-content: flex-end;
+}
+
+.side-dock-slot-center {
+	flex: 0 0 auto;
+}
+
+/* 药丸本体：内容高（不继承弹性格子的高度），带图标的那几段才画。 */
+.side-dock-seg {
+	display: flex;
+	flex-direction: column;
+	align-items: center;
+	gap: 4px;
+	min-height: 0;
+	max-height: 100%;
+	padding: 6px 3px;
+	overflow-y: auto;
+	overscroll-behavior: contain;
 	background: var(--bg-elev);
 	border: 1px solid var(--border);
 	box-shadow: 0 4px 18px rgba(0, 0, 0, 0.25);
 	backdrop-filter: blur(12px);
 	-webkit-backdrop-filter: blur(12px);
-	user-select: none;
 }
 
-.side-dock-left {
+.side-dock-left .side-dock-seg {
 	border-left: none;
 	border-radius: 0 10px 10px 0;
 }
 
-.side-dock-right {
+.side-dock-right .side-dock-seg {
 	border-right: none;
 	border-radius: 10px 0 0 10px;
 }
 
 /* 悬浮模式（设置 → 界面布局「侧边图标悬浮显示」）：回到 fixed 贴边浮层。
  * `position:fixed` 自身脱离文档流，所以它不再向面板/主区要宽度；代价是又会盖在面板
- * 竖中央那一条上（文件行/会话行按钮），所以默认关闭。 */
+ * 竖中央那一条上（文件行/会话行按钮），所以默认关闭。
+ * 高度给固定值（略矮于整屏、竖向居中）：悬浮时没有「整列」可撑，但又得有高度才看得出
+ * 靠上/居中/靠下；浮层底色只画在有图标的那几段上，空白段 `pointer-events:none`，
+ * 既不挡面板点击也不显形。 */
 .side-dock-float {
 	position: fixed;
 	top: 50%;
 	transform: translateY(-50%);
+	height: 70vh;
 	z-index: 70;
 	align-self: auto;
 	max-height: none;
+	pointer-events: none;
+}
+
+.side-dock-float .side-dock-slot {
+	pointer-events: none;
+}
+
+.side-dock-float .side-dock-seg {
+	pointer-events: auto;
+}
+
+.side-dock-float.side-dock-collapsed {
+	height: auto;
 }
 
 .side-dock-float.side-dock-left {
@@ -16490,17 +16578,13 @@ button.source-default-toggle {
 }
 
 .side-dock-collapsed {
-	padding: 4px 2px;
+	padding: 3px 1px;
 }
 
-.side-dock-items {
-	display: flex;
-	flex-direction: column;
-	align-items: center;
-	gap: 4px;
-	max-height: calc(100vh - 140px);
-	overflow-y: auto;
-	overscroll-behavior: contain;
+/* 收起态下唯一的按钮（或展开态那颗收起箭头）是浮层自己的直接子按钮：它不在药丸里，
+ * 得单独吃回点击 —— 否则 `pointer-events:none` 之下点不动（展开按钮点不回去）。 */
+.side-dock-float > .side-dock-btn {
+	pointer-events: auto;
 }
 
 .side-dock-btn {
@@ -16530,6 +16614,14 @@ button.source-default-toggle {
 .side-dock-btn.active {
 	background: var(--accent-soft);
 	color: var(--accent);
+}
+
+/* 收起后只剩这一个展开按钮：比条内的普通图标更小，收起的停靠栏本身也只占一条窄边。 */
+.side-dock-toggle-btn {
+	width: 22px;
+	height: 22px;
+	font-size: 12px;
+	border-radius: 5px;
 }
 
 .side-dock-collapse-btn {

@@ -44,6 +44,7 @@ import type {
 	DshPermissionOption,
 	SchedulerTaskView,
 	UiAgentPreset,
+	UiAlign,
 	UiApprovalRule,
 	UiExtensionInfo,
 	UiLayoutPrefs,
@@ -83,6 +84,7 @@ import {
 	type UiDiagnostic,
 	type UiSlotEntry,
 } from "../ui-slots";
+import { ICON_EDIT_ALIGNS, sideAlignLabel } from "../ui-layout-edit";
 import type { CatalogSyncState, PluginInstallInspectState, PluginJobState } from "../use-chat";
 import { appSend, useAppGlobals } from "../app-globals";
 import { countPluginPhases, pluginPhase, type PluginPhase } from "../plugin-phase";
@@ -1317,8 +1319,10 @@ export function SettingsModal({
 	/** 渲染层真正按 align 分区的槽位（其余槽位的 align 存了也无处生效，布局页就不提供了）。
 	 *  顶栏与底栏/输入框动作区同口径：顶栏可受管条目的 align 均生效（手机端特有的对话折叠
 	 *  按钮 host:history 与文件列表折叠按钮 host:files 是两侧列表的唯一入口，不可被管理显示，
-	 *  已从设置页中去掉）。 */
+	 *  已从设置页中去掉）。侧边停靠栏同属「真分区」，只是轴是竖的（靠上/居中/靠下）。 */
 	const uiAlignSlots: UiSlotId[] = ["bottombar", "composer.actions", "topbar.primary", "sidebar.left", "sidebar.right"];
+	/** 该槽位的 align 是竖轴：分段头与下拉用「靠上/居中/靠下」而非 start/center/end。 */
+	const verticalAlignSlot = (slot: string) => slot === "sidebar.left" || slot === "sidebar.right";
 	/** 可自由在上下和两侧切换位置的槽位 */
 	const uiPositionSlots: UiSlotId[] = ["topbar.primary", "bottombar", "sidebar.left", "sidebar.right"];
 	const [uiLayoutFilter, setUiLayoutFilter] = useState("");
@@ -3080,9 +3084,19 @@ export function SettingsModal({
 																onChange={(e) => setUiAlign(it.id, e.target.value)}
 																aria-label={t("uiLayoutAlign")}
 															>
-																<option value="start">start</option>
-																<option value="center">center</option>
-																<option value="end">end</option>
+																{verticalAlignSlot(slot) ? (
+																	ICON_EDIT_ALIGNS.map((al) => (
+																		<option key={al} value={al}>
+																			{sideAlignLabel(t, al)}
+																		</option>
+																	))
+																) : (
+																	<>
+																		<option value="start">start</option>
+																		<option value="center">center</option>
+																		<option value="end">end</option>
+																	</>
+																)}
 															</select>
 														</label>
 													)}
@@ -3145,7 +3159,11 @@ export function SettingsModal({
 											) : (
 												segments.map((seg) => (
 													<Fragment key={seg.align ?? "all"}>
-														{seg.align && <div className="set-ui-slot-title set-ui-seg">{seg.align}</div>}
+														{seg.align && (
+															<div className="set-ui-slot-title set-ui-seg">
+																{verticalAlignSlot(slot) ? sideAlignLabel(t, seg.align as UiAlign) : seg.align}
+															</div>
+														)}
 														{seg.items.map((it) => renderRow(it, seg.items))}
 													</Fragment>
 												))
