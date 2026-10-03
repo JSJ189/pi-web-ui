@@ -81,55 +81,95 @@ On divergence the engine attempts a 3-way merge. After success the tool returns 
 				};
 			}
 
-			const report = applyHashlinePatch(patchText, {
-				cwd,
-				snapshotStore: globalSnapshotStore,
-			});
+			// timeout 此前是死参数：schema 声明了 1-300 秒，execute 从未读取，大补丁
+			// 卡住只能等 20 分钟看门狗（issue #462）。这里用 Promise.race 实现真实
+			// 超时，覆盖 await 长尾（实时 LSP 诊断等）；applyHashlinePatch 是同步
+			// 本地文件操作，同步段无法被中断，race 只能兜异步部分。
+			const timeoutSec = params.timeout ? Math.min(Math.max(1, params.timeout), 300) : null;
 
-			if (!report.ok) {
+			const finish = async () => {
+				const report = applyHashlinePatch(patchText, {
+					cwd,
+					snapshotStore: globalSnapshotStore,
+				});
+
+				if (!report.ok) {
+					return {
+						content: [
+							{
+								type: "text" as const,
+								text: pick(L, `补丁应用失败：\n${report.summary}`, `Patch Failed:\n${report.summary}`),
+							},
+						],
+						details: report,
+					};
+				}
+
+				const textOutput = [report.summary];
+				// 为成功修改的文件输出最新的头部标签，方便 Agent 连续进行下一步修改
+				for (const r of report.results) {
+					if (r.op !== "deleted" && r.newHash) {
+						const targetPath = r.newPath || r.filePath;
+						textOutput.push(
+							pick(
+								L,
+								`\n${targetPath} 的下一处编辑锚点：\`${formatHashlineHeader(targetPath, r.newHash)}\``,
+								`\nNext edit anchor for ${targetPath}: \`${formatHashlineHeader(targetPath, r.newHash)}\``,
+							),
+						);
+						try {
+							const fullPath = resolve(cwd, targetPath);
+							const diags = await getLiveLspDiagnostics(fullPath, cwd);
+							if (diags) {
+								textOutput.push(
+									pick(
+										L,
+										`\n${targetPath} 的实时 LSP 诊断：\n${diags}`,
+										`\nLive LSP diagnostics for ${targetPath}:\n${diags}`,
+									),
+								);
+							}
+						} catch {}
+					}
+				}
+
 				return {
-					content: [
-						{
-							type: "text",
-							text: pick(L, `补丁应用失败：\n${report.summary}`, `Patch Failed:\n${report.summary}`),
-						},
-					],
+					content: [{ type: "text" as const, text: textOutput.join("\n") }],
 					details: report,
 				};
-			}
-
-			const textOutput = [report.summary];
-			// 为成功修改的文件输出最新的头部标签，方便 Agent 连续进行下一步修改
-			for (const r of report.results) {
-				if (r.op !== "deleted" && r.newHash) {
-					const targetPath = r.newPath || r.filePath;
-					textOutput.push(
-						pick(
-							L,
-							`\n${targetPath} 的下一处编辑锚点：\`${formatHashlineHeader(targetPath, r.newHash)}\``,
-							`\nNext edit anchor for ${targetPath}: \`${formatHashlineHeader(targetPath, r.newHash)}\``,
-						),
-					);
-					try {
-						const fullPath = resolve(cwd, targetPath);
-						const diags = await getLiveLspDiagnostics(fullPath, cwd);
-						if (diags) {
-							textOutput.push(
-								pick(
-									L,
-									`\n${targetPath} 的实时 LSP 诊断：\n${diags}`,
-									`\nLive LSP diagnostics for ${targetPath}:\n${diags}`,
-								),
-							);
-						}
-					} catch {}
-				}
-			}
-
-			return {
-				content: [{ type: "text", text: textOutput.join("\n") }],
-				details: report,
 			};
+
+			if (!timeoutSec) return finish();
+
+			const timeoutReply = {
+				content: [
+					{
+						type: "text" as const,
+						text: pick(
+							L,
+							`补丁执行超时（${timeoutSec}s）。补丁可能已部分应用，请检查目标文件后重试。`,
+							`Patch execution timed out (${timeoutSec}s). The patch may have been partially applied; check the target files and retry.`,
+						),
+					},
+				],
+				details: {
+					ok: false,
+					summary: `Execution timed out after ${timeoutSec}s`,
+					results: [],
+					error: "timeout",
+				} satisfies PatchApplyReport,
+			};
+			let timer: ReturnType<typeof setTimeout> | undefined;
+			try {
+				return await Promise.race([
+					finish(),
+					new Promise<typeof timeoutReply>((resolveTimeout) => {
+						timer = setTimeout(() => resolveTimeout(timeoutReply), timeoutSec * 1000);
+					}),
+				]);
+			} finally {
+				clearTimeout(timer);
+			}
 		},
 	});
 }
