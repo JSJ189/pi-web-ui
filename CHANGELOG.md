@@ -10,10 +10,32 @@
 
 ## [Unreleased]
 
+暂无未发布内容。
+
+## [0.99.0] — 2026-10-03
+
+### Added
+
+- **手机端边缘横滑抽屉手势** —— 从屏幕左/右边缘向内横滑拉出左侧会话面板或右侧工具面板，手势支持全行程实时跟手跟随、常驻遮罩层透明度渐显，并具备横向主导轴向识别与代码块/宽表格横向滚动元素避让。回归：`swipe-drawer.test.ts`、`swipe-drawer-ui-test`。
+- **侧边图标停靠栏竖轴对齐（#443）** —— 侧边停靠栏（`SideDock`）支持「靠上 / 居中 / 靠下」三档竖轴对齐模式，三段贴边药丸自适应内容高度，并在设置页「界面布局」对齐选项及拖拽式图标编辑模式中打通。回归：`ui-layout-edit.test.ts`、`side-dock-align-ui-test`。
+
+### Fixed
+
+- **任务计划跨会话隔离防串台** —— `PlanManager` 架构重构：按持久化 `sessionId` 独立落盘至 `<dataDir>/plans.json`，而运行时按 `conversationId` 存入只活在进程内存的临时缓存，启动与载入时严格过滤易变短 ID（`c\d+`），绑定新会话时主动清理旧内存缓存，杜绝服务重启或短 ID 复用导致新会话被上一会话的任务串台附体。回归：`plan-state.test.ts`。
+- **工具契约与运行时脱节修复（#462、#537）** —— 落地三处未对齐的契约细节：`eval` 将 `python` 别名统一归一为 `py`，非法语言显式抛错提示候选；`patch` 真正接入 schema 声明的 `timeout`（1-300s）超时控制并通过 Promise.race 竞速；`bash` 的 `head`/`tail` 参数严密钳制在 schema 上限 5000 以内，防止异常大数冲垮工具结果缓冲与转录。
+- **目标模式 `stopDelegated` 串行化与时序窗口（#464、#536）** —— `stopDelegated` 改为按会话串行化队列执行，`setGoal`/`clearGoal`/`stopAllGoals` 增加 `await` 落定，解决满员边缘重设目标时旧执行者尚未完全移出、同步名额检查误报「名额已满」的问题。
+
+### Changed
+
+- **抽出 CollapsibleHead 公共壳组件（#476、#539）** —— 提取统一的 `CollapsibleHead` 组件，将 `ThinkingBlock`、`ToolCallBlock` 及 `Message`（附件卡/压缩摘要/技能卡）五处内联的可折叠区块头骨架代码收敛统一，键控行为与 ARIA 规范保持一致。
+- **清理 memoizeWithTtl 死码并为手写 TTL 补充注释（#470、#538）** —— 移除全仓零消费的 `memoizeWithTtl` 死码，并为 `agent-service` 的 `piCliProbe`（安装后即时失效）与 `model-enrich` 的 `catalogCache`（双键异步 fetch）补充语义注释。
+
 <!-- auto-i18n:start -->
+
 ### i18n
 
 - 前端新增 key（3）：`uiLayoutAlignTop`、`uiLayoutAlignMiddle`、`uiLayoutAlignBottom`
+
 <!-- auto-i18n:end -->
 
 ## [0.98.0] — 2026-10-03
@@ -100,6 +122,7 @@
 - **`release-notes.mjs --write-changelog` 替换串改函数形式（#498, #515）** —— i18n 文案含 `$&`、`` $` `` 等替换模式时不再静默写坏 `CHANGELOG.md`。
 
 <!-- auto-i18n:start -->
+
 ### i18n
 
 - 前端新增 key（26）：`openInNewTab`、`clickToCloseImage`、`compactedHistoryNotFound`、`uiLayoutSideDockFloat`、`uiIconEdit`、`uiIconEditTitle`、`uiIconEditHint`、`uiIconEditTray`、`uiIconEditDropHere`、`uiLayoutSidebarLeft`、`uiLayoutSidebarRight`、`uiLayoutPosition`、`uiLayoutPosTop`、`uiLayoutPosBottom`、`uiLayoutPosLeft`、`uiLayoutPosRight`、`moveToTop`、`moveToBottom`、`moveToLeft`、`moveToRight`、`sideDockCollapse`、`sideDockExpand`、`quoteSelection`、`quoteText`、`quoteSource`、`removeQuote`
@@ -109,7 +132,6 @@
 - 服务端新增 key（1）：`pluginupdate.subpath.manifest.failed`
 - 服务端文案变更（2）：`markers.todo.dep.blocks.updated`、`subagents.wait.pending`
 - 服务端删除 key（1）：`markers.todo.list.empty`
-
 
 ## [0.97.0] — 2026-09-26
 
@@ -1459,7 +1481,8 @@ when?, children?}`，也收 `topbar` / `settings` 这类简写别名）；宿主
 - 0.35.1（2026-08-27）：编辑重问保留附件（#18）+ 全窗口拖放（#19）。
 - 0.29.0（2026-08-23）：全局搜索弹窗（Ctrl+K）+ 消息列表惰性窗口化。
 
-[Unreleased]: https://github.com/xing-shuyin/pi-web-ui/compare/v0.98.0...main
+[Unreleased]: https://github.com/xing-shuyin/pi-web-ui/compare/v0.99.0...main
+[0.99.0]: https://github.com/xing-shuyin/pi-web-ui/releases/tag/v0.99.0
 [0.98.0]: https://github.com/xing-shuyin/pi-web-ui/releases/tag/v0.98.0
 [0.97.0]: https://github.com/xing-shuyin/pi-web-ui/releases/tag/v0.97.0
 [0.96.1]: https://github.com/xing-shuyin/pi-web-ui/releases/tag/v0.96.1
