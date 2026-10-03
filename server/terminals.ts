@@ -1714,28 +1714,36 @@ function cleanBashOutput(raw: string): string {
  *  保留在 history 供查阅——故每调用独立 id，避免复用覆盖旧输出。 */
 let oneShotBashSeq = 0;
 
+/** head / tail 的运行时上限，与 bash 工具参数 schema 的 maximum 5000 一致
+ *  （agent-service.ts）——schema 只影响提示不拦运行时（issue #462）。 */
+const MAX_HEAD_TAIL_LINES = 5000;
+
 /** 应用 head / tail 参数到输出顶层行（替代 `| head` / `| tail` 管道——管道会
  *  缓冲输出、让可见终端全程哑火，还容易白白触发静默解阻）。两者同时给时先
  *  截头再截尾。 */
 export function applyHeadTail(text: string, head?: number, tail?: number, lang: ServerLang = "en"): string {
+	// 入口钳到 schema 上限：此前只判 >0，传 1e9 会把整段缓冲灌进单条工具结果
+	// 并持久化进转录。
+	const headN = head && head > 0 ? Math.min(Math.floor(head), MAX_HEAD_TAIL_LINES) : 0;
+	const tailN = tail && tail > 0 ? Math.min(Math.floor(tail), MAX_HEAD_TAIL_LINES) : 0;
 	// 只对真实数据行切片；省略提示行单独存，最后再包回输出，避免提示行在
 	// head+tail 组合时被当成数据行参与第二次截取（导致尾部少截一行）。
 	let data = text.split("\n");
 	let headNote: string | null = null;
 	let tailNote: string | null = null;
-	if (head && head > 0 && data.length > head) {
-		const n = data.length - head;
+	if (headN && data.length > headN) {
+		const n = data.length - headN;
 		headNote = pick(lang, `…（后 ${n} 行已省略）`, `…[${n} lines omitted below]…`, "terminals.headtail.omitted.below", {
 			n,
 		});
-		data = data.slice(0, head);
+		data = data.slice(0, headN);
 	}
-	if (tail && tail > 0 && data.length > tail) {
-		const n = data.length - tail;
+	if (tailN && data.length > tailN) {
+		const n = data.length - tailN;
 		tailNote = pick(lang, `…（前 ${n} 行已省略）`, `…[${n} lines omitted above]…`, "terminals.headtail.omitted.above", {
 			n,
 		});
-		data = data.slice(-tail);
+		data = data.slice(-tailN);
 	}
 	const parts: string[] = [];
 	if (tailNote) parts.push(tailNote);
