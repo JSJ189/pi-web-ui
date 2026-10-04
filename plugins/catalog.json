@@ -141,8 +141,8 @@
 		"iconSvg": "<svg xmlns=\"http://www.w3.org/2000/svg\" viewBox=\"0 0 24 24\" fill=\"none\" stroke=\"currentColor\" stroke-width=\"2\" stroke-linecap=\"round\" stroke-linejoin=\"round\"><path d=\"M3 12a9 9 0 0 1 9-9 9.75 9.75 0 0 1 6.74 2.74L21 8\"/><path d=\"M21 3v5h-5\"/><path d=\"M21 12a9 9 0 0 1-9 9 9.75 9.75 0 0 1-6.74-2.74L3 16\"/><path d=\"M3 21v-5h5\"/></svg>",
 		"description": "断连恢复：查看网页服务与重启守护状态，一键重新连接或重启网页服务（支持单服务/全服务重启，配套可选独立守护进程）。",
 		"descriptionEn": "Reconnection & service recovery: inspect web service and companion watchdog health, reconnect or restart services in one click (supports multi-service restarts with companion watchdog).",
-		"source": "xieweimo/pi-web-ui-reconnect-watchdog/reconnect-plugin",
-		"homepage": "https://github.com/xieweimo/pi-web-ui-reconnect-watchdog"
+		"source": "xieweimo/pi-web-ui-contrib/plugins/reconnect",
+		"homepage": "https://github.com/xieweimo/pi-web-ui-contrib/tree/main/plugins/reconnect"
 	},
 	{
 		"id": "sol-savings",
