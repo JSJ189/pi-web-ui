@@ -133,6 +133,11 @@ const ALL = [
 	"theme-dotfile-test",
 	// 工具定义说明（工具卡右键 → 显示工具详细信息）：get_tool_info → tool_info 的归一化回归（零 token）。
 	"tool-info-test",
+	// 逐工具文案覆盖（设置页「工具」区编辑文案）：默认值回读 + 生效 + 清空复原（零 token）。
+	"tool-prompt-test",
+	// 工具延迟加载（load_tools）：默认只常驻核心工具 + 目录在提示词里；加载后 schema 追加，
+	// 且**系统提示词逐字节不变、tools 只追加**（前缀缓存不被我们打坏）。
+	"lazy-tools-test",
 	"vision-bridge-test",
 	"vscode-editor-plugin-test",
 	// 额外工作区根（宿主侧多根，issue #146）：set_workspace_roots 落快照 + 插件受支持路径跨根。

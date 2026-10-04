@@ -212,16 +212,9 @@ export function makeSubagentTool(host: SubagentToolHost, lang?: () => ServerLang
 		name: SUBAGENT_TOOL_NAME,
 		label: "Subagent manager",
 		description:
-			"Manage background subagent conversations for parallel delegation, research, and execution. Actions:\n" +
-			"- `spawn`: start a subagent with `prompt` (optional `template`, `type`, `model`, `cwd`, `persist`).\n" +
-			"- `get_result`: inspect status/output with `runId`.\n" +
-			"- `steer`: inject a `message` into a running subagent with `runId`.\n" +
-			"- `list`: list managed subagents (optional `kind`).\n" +
-			"- `stop`: abort a running subagent with `runId`.\n" +
-			"- `wait_all`: block until subagents finish (optional `runIds`, `timeoutSeconds`).\n" +
-			"- `templates`: list available subagent templates.\n" +
-			"- `handoff`: transfer `payload` to peer subagent with `toRunId` (optional `fromRunId`).",
-		promptSnippet: "manage background subagents: spawn, get_result, steer, list, stop, wait_all, templates, handoff",
+			"Manage background subagent conversations for parallel delegation, research, and execution. " +
+			"Each action's arguments are documented on the parameters below.",
+		promptSnippet: "manage background subagents (spawn/steer/wait/templates)",
 		parameters: Type.Object({
 			action: Type.Unsafe<SubagentAction>({
 				type: "string",
@@ -230,47 +223,47 @@ export function makeSubagentTool(host: SubagentToolHost, lang?: () => ServerLang
 			}),
 			prompt: Type.Optional(
 				Type.String({
-					description: "spawn: instructions for the subagent (goal, constraints, expected output).",
+					description: "spawn: instructions (goal, constraints, expected output).",
 				}),
 			),
 			runId: Type.Optional(
 				Type.String({
-					description: "get_result/steer/stop: target subagent conversation ID.",
+					description: "get_result/steer/stop: target conversation ID.",
 				}),
 			),
 			runIds: Type.Optional(
 				Type.Array(Type.String(), {
-					description: "wait_all: subagent conversation IDs to wait for (omit for all active).",
+					description: "wait_all: conversation IDs to wait for (omit = all active).",
 				}),
 			),
 			message: Type.Optional(
 				Type.String({
-					description: "steer: follow-up instruction to inject into the subagent.",
+					description: "steer: follow-up instruction.",
 				}),
 			),
 			payload: Type.Optional(
 				Type.String({
-					description: "handoff: artifact, data, or instructions to transfer to peer subagent.",
+					description: "handoff: what to transfer to the peer.",
 				}),
 			),
 			toRunId: Type.Optional(
 				Type.String({
-					description: "handoff: target peer subagent conversation ID.",
+					description: "handoff: target peer ID.",
 				}),
 			),
 			fromRunId: Type.Optional(
 				Type.String({
-					description: "handoff: source subagent ID (defaults to current subagent).",
+					description: "handoff: source ID (default = this subagent).",
 				}),
 			),
 			type: Type.Optional(
 				Type.String({
-					description: "spawn: role/type name (e.g. explore/implement/review, default: general).",
+					description: "spawn: role/type (e.g. explore/implement/review, default: general).",
 				}),
 			),
 			template: Type.Optional(
 				Type.String({
-					description: "spawn: subagent template name (see action=templates).",
+					description: "spawn: template name (see action=templates).",
 				}),
 			),
 			model: Type.Optional(
@@ -280,12 +273,12 @@ export function makeSubagentTool(host: SubagentToolHost, lang?: () => ServerLang
 			),
 			cwd: Type.Optional(
 				Type.String({
-					description: "spawn: working directory (defaults to current cwd).",
+					description: "spawn: working directory (default = current).",
 				}),
 			),
 			persist: Type.Optional(
 				Type.Boolean({
-					description: "spawn: persist as a regular session instead of ephemeral subagent.",
+					description: "spawn: persist as a regular session (default = ephemeral).",
 				}),
 			),
 			kind: Type.Optional(
@@ -296,7 +289,7 @@ export function makeSubagentTool(host: SubagentToolHost, lang?: () => ServerLang
 			),
 			timeoutSeconds: Type.Optional(
 				Type.Integer({
-					description: `wait_all: max wait in seconds (1-${capSeconds}, default: ${capSeconds}s).`,
+					description: `wait_all: max wait in seconds (default: ${capSeconds}s).`,
 					minimum: 1,
 					maximum: capSeconds,
 				}),

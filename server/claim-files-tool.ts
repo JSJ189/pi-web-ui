@@ -45,10 +45,10 @@ export function makeClaimFilesTool(host: ClaimFilesHost, lang?: () => ServerLang
 		name: CLAIM_FILES_TOOL_NAME,
 		label: "Claim files to avoid parallel conflicts",
 		description:
-			"Declare files you are about to edit so parallel runs in the same project steer clear (advisory only — never blocks edits). " +
-			"claim reserves paths for THIS conversation (first wins; conflicts reported, not overridden); release frees yours (no paths = all yours); list shows the project's claim table. " +
-			"Claims expire after ~30 min idle (your prompts refresh them) and release when the conversation closes. Paths must stay inside the project.",
-		promptSnippet: "claim files you are about to edit (advisory, first-wins) so parallel runs steer clear",
+			"Declare files you are about to edit so parallel runs in the same project steer clear (advisory — never blocks edits). " +
+			"Claims expire after ~30 min idle (your prompts refresh them) and release when the conversation closes. " +
+			"Paths must stay inside the project.",
+		promptSnippet: "reserve files you are about to edit (parallel-run guard)",
 		parameters: Type.Object({
 			action: Type.Optional(
 				Type.String({ description: 'claim = reserve paths; release = free yours; list = show table. Default "list".' }),

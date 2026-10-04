@@ -493,7 +493,7 @@ export default {
 			name: "office_read",
 			label: "读取 Office 文件",
 			description:
-				"Read a docx / xlsx / csv file inside the workspace and return a text preview (Word paragraphs, tables converted to Markdown). path is workspace-relative.",
+				"Read a docx / xlsx / csv file inside the workspace and return a text preview (Word paragraphs, tables converted to Markdown).",
 			parameters: {
 				type: "object",
 				properties: {

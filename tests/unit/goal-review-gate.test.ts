@@ -68,8 +68,8 @@ describe("目标审查闸门 goalReviewDenial", () => {
 	it("派发类工具一律拒（D6：轮次由服务端控制）", () => {
 		expect(goalReviewDenial("subagent", { action: "spawn" })?.kind).toBe("dispatch-tool");
 		expect(goalReviewDenial("subagent", { action: "wait_all" })?.kind).toBe("dispatch-tool");
-		// schedule_task 是真实注册的排程工具（#436 前名单里只有 schedule 等幽灵名）。
-		for (const name of ["delegate_task", "schedule_task"]) {
+		// schedule 是真实注册的排程工具（单 action；#436 前名单里只有 schedule 等幽灵名）。
+		for (const name of ["delegate_task", "schedule"]) {
 			const d = goalReviewDenial(name, {});
 			expect(d?.kind, name).toBe("dispatch-tool");
 		}
@@ -88,7 +88,6 @@ describe("目标审查闸门 goalReviewDenial", () => {
 			"subagent_stop",
 			"subagent_wait_all",
 			"subagent_handoff",
-			"schedule",
 			"schedule_agent",
 			"host_schedule",
 			"create_goal",

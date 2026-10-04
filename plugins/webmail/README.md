@@ -10,8 +10,8 @@ IMAP 收件 + SMTP 发信 + 新邮件通知，还可以把邮箱开放给 AI 直
 - **发信**：SMTP 纯文本邮件，支持抄送
 - **新邮件通知**：周期轮询 INBOX 未读数，发现新邮件经 `host.notify` 弹通知条
   （轮询间隔可配，默认 60s）
-- **AI 管理邮箱**：依赖装好后注册六个 AI 工具 —— `mail_list` / `mail_read` /
-  `mail_search` / `mail_send` / `mail_manage` / `mail_folders`，对话里直接说
+- **AI 管理邮箱**：依赖装好后注册一个 action 式 `mail` 工具（`action` =
+  `list` / `read` / `search` / `send` / `manage` / `folders`），对话里直接说
   「看看最近有什么邮件」即可；要下架就在设置 →「工具」页的「注册的 AI 工具」
   分组里逐条关（依赖没装齐时工具不注册）
 

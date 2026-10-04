@@ -26,10 +26,10 @@ function okSession() {
 describe("syncPluginToolsIntoSession", () => {
 	it("新增工具并触发 registry 重建", () => {
 		const { session, calls } = okSession();
-		const defs = [{ name: "mail_list" }, { name: "mail_read" }];
+		const defs = [{ name: "mail" }, { name: "calendar" }];
 		const next = syncPluginToolsIntoSession(session as never, defs as never, new Set());
-		expect(next).toEqual(new Set(["mail_list", "mail_read"]));
-		expect(session._customTools!.map((d) => d.name)).toEqual(["mail_list", "mail_read"]);
+		expect(next).toEqual(new Set(["mail", "calendar"]));
+		expect(session._customTools!.map((d) => d.name)).toEqual(["mail", "calendar"]);
 		expect(calls).toHaveLength(1);
 	});
 
@@ -44,8 +44,8 @@ describe("syncPluginToolsIntoSession", () => {
 
 	it("移除已注销的工具名", () => {
 		const { session, calls } = okSession();
-		session._customTools = [{ name: "bash" }, { name: "mail_list" }];
-		const prev = new Set(["mail_list"]);
+		session._customTools = [{ name: "bash" }, { name: "mail" }];
+		const prev = new Set(["mail"]);
 		const next = syncPluginToolsIntoSession(session as never, [] as never, prev);
 		expect(next).toEqual(new Set());
 		expect(session._customTools!.map((d) => d.name)).toEqual(["bash"]); // 内置工具不动

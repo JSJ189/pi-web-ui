@@ -65,6 +65,8 @@ bash 工具始终覆盖 SDK 内置 bash，并按设置开关 `terminalBash`（�
 原生 bash 包装层必须把 `execute` 的第 5 个参数（`ctx`）透传给 SDK 的 definition：SDK 用它在每条命令上注入 `PI_SESSION_ID`、`PI_SESSION_FILE`、`PI_PROVIDER`、`PI_MODEL`、`PI_REASONING_LEVEL`，子 shell 继承这些值。不透传 `ctx` 时，SDK 仍会**清掉**继承来的会话变量，却写不进当前值（子 shell 里读到的是缺失或过期值）。这条只针对原生 bash；终端路径不走 SDK 的会话环境注入。另外，以 SDK 嵌入方式运行时，SDK 也不会自动设置 CLI 专用的 `AI_AGENT` / `PI_CODING_AGENT` 标记。
 
 > 注意：`persist`/`head`/`tail` 始终出现在 bash 工具的参数 schema 里（双实现共用一份），关时 `persist` 被忽略，`head`/`tail` 仍生效。
+>
+> **提示词单源**：description / promptSnippet / promptGuidelines / 参数说明不在这几条路径里各写一份 —— 唯一事实源是 `server/tool-prompts.ts`，由 `makeKillableBashTool`（同时也是参数 schema 的宿主）、`makeTerminalBashTool`、`makeAdaptiveBashTool` 共同取用。`makeAdaptiveBashTool` 只覆盖 `execute`（分流）。历史上它额外覆盖 description，于是终端那份文案整段写死却永不发送 —— 一份会持续漂移的死副本（“prefer head/tail over piping” 曾只写在它里面）。
 
 ### 设置开下的 `persist` 语义
 
@@ -98,6 +100,15 @@ Windows 下的伪终端销毁存在两大架构陷阱：
 开关经 `makeAdaptiveBashTool` 的 `useTerminal` 闭包每次调用读取 → 即时生效（customTools 固定于 runtime 创建，不能在创建时二选一）；`idleMs`/`defaultPersist` 同理从设置读取。回归：`tests/terminal-bash-test.mjs`（直接实例化 + 小阈值注入 + `persist`/`head`/`tail`/一次性/分流用例，零 token 不起 server；win32 未验证）。
 
 **前端展示与配额**：持久 `ai-bash` 与一次性 `ai-bash-<n>` 都带 `TerminalInfo.agentBash=true`（缺省 false = 用户终端），前端 `TerminalPanel` 把它们从用户终端标签里拆出来，单独归到「终端接管 bash」折叠分组（`term-folder`，可点开/收起）；`ensureSpawnAllowed` 也只按非 agent 终端计数，所以 AI 高频调用 bash 不会顶掉用户能开的终端名额。
+## 为什么持久终端工具不合并成单 action 工具（决策备忘）
+
+终端 7 件套（`terminal_create/list/close/input/key/read/wait`）评估过合并为一个 action 式 `terminal`（探针：提示词约 459 字符 / 35%、工具条目 7→1）。**结论：不合并**，代价不只是迁移，而是削弱两道安全边界的粒度：
+
+- **计划模式门禁按工具名**：`plan-mode.ts` 把 `terminal_input`/`terminal_key` 放进 `PLAN_MODE_BLOCKED_TOOL_NAMES`，由 `applyToolGating` 从**模型活跃工具集**里整条摘除（#436 的口径是「不仅拒绝，而是让写向子动作根本不在模型视野内」）。合并后无法「半个工具」隐藏：要么整条 `terminal` 摘掉（连只读的 read/list/wait 观察也没了，违背 #436 保留只读的初衷），要么保留可见只在执行期拒 action —— 丢掉物理摘除这层纵深防御。
+- **审批规则按工具名 + 字段**：`approval-rules.json` 的规则是 `tools: ["terminal_input"]` + field（command/path/params），没有 action 维度；合并后老规则静默失效（用户设的 deny/ask 白设），属安全相关的静默回归。此外 `terminal_input` 独有的换行门控 `checkSafety` 与 `terminal_key` 的语义差异也会被搅在一起。
+
+若将来确实要省条目，只建议合并**非写向**的三件（`create`+`list`+`close` → `terminal`），保留 `input/key/read/wait` 独立；那时仍需为 create/list/close 的禁用名单与审批规则做迁移、并同步 `filterToolsByPreset` 的 reader 写类名单。前端不按工具名渲染终端卡（走通用工具卡），不构成阻碍。
+
 ## macOS launchd / TCC 问题
 
 macOS 下若服务由 launchd 拉起（`process.ppid === 1`，LaunchAgent/孤儿进程），TCC 会把相机/麦克风权限归因到 node 本身（无 App Bundle、无 Info.plist）而静默拒绝——ffmpeg 取流会卡死在取帧。`terminals.ts` 检测该场景，在客户端首次创建终端时输出提示（改 url/文件源，或在自己已授权的终端里前台运行）。

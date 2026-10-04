@@ -18,9 +18,9 @@ describe("delegationDenial", () => {
 	});
 
 	it("派发类工具拒：派活是服务端的活", () => {
-		// subagent 在审查者模式整体拒（不分 action）；schedule_task 是真实注册
-		// 的排程工具（#436 前名单里只有 schedule 等幽灵名，一个真实工具都没拦住）。
-		for (const name of ["subagent", "delegate_task", "schedule_task"]) {
+		// subagent 在审查者模式整体拒（不分 action）；schedule 是真实注册
+		// 的排程工具（单 action；#436 前名单里只有 schedule 等幽灵名，一个真实工具都没拦住）。
+		for (const name of ["subagent", "delegate_task", "schedule"]) {
 			const d = delegationDenial(name, {});
 			expect(d, name).toBeDefined();
 			expect(d!.kind).toBe("dispatch-tool");
@@ -33,7 +33,6 @@ describe("delegationDenial", () => {
 			"spawn",
 			"subagent_spawn",
 			"spawn_subagent",
-			"schedule",
 			"set_goal",
 			"start_goal_wizard",
 			"set_plan_mode",

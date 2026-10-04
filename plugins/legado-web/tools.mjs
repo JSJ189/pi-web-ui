@@ -104,10 +104,11 @@ export function createTools({ host, store, engine, rulesText }) {
 			name: "legado_rules",
 			label: "Legado 规则速查",
 			description:
-				"Legado book-source rule reference for this plugin: data structure (BookSource + ruleSearch/ruleBookInfo/ruleToc/ruleContent fields), evaluation semantics (CSS/XPath/JSONPath/JS, || && %%, ## replacement, @put/@get, {{}} templates, :N index), java.* bindings, known deviations, and the recommended repair workflow. Read it before touching any rule.",
-			promptSnippet: "legado_rules — Legado rule quick reference; read before fixing book sources",
+				"Legado book-source rule reference for this plugin: data structure (BookSource + ruleSearch/ruleBookInfo/ruleToc/ruleContent fields), evaluation semantics (CSS/XPath/JSONPath/JS, || && %%, ## replacement, @put/@get, {{}} templates, :N index), java.* bindings, known deviations, and the recommended repair workflow.",
+			promptSnippet: "Legado rule syntax and semantics",
 			promptGuidelines: [
-				"Before fixing any Legado book source, call legado_rules to confirm rule semantics (in this engine a single-segment CSS rule = selector + text extraction; output forms like `text`/`href` are also supported).",
+				"Before fixing any Legado book source, call legado_rules to confirm rule semantics",
+				"In this engine a single-segment CSS rule = selector + text extraction; output forms like `text`/`href` are also supported",
 			],
 			parameters: {
 				type: "object",
@@ -135,11 +136,12 @@ export function createTools({ host, store, engine, rulesText }) {
 			name: "legado_book_sources",
 			label: "Legado 书源文件",
 			description:
-				"Read/edit this plugin's Legado book-source file (<dataDir>/legado-web/sources.json): list (filter by name/url, with health), get (one source's JSON), update (deep-merge fields, e.g. only ruleContent.content), add (import/replace a whole source), remove, unmark (clear the dead/suspect mark after a verified fix, or the page keeps hiding it). Ask the user to reload the reader page after edits.",
-			promptSnippet: "legado_book_sources — read/edit the Legado book-source file (list/get/update/add/remove/unmark)",
+				"Read/edit this plugin's Legado book-source file (<dataDir>/legado-web/sources.json): list (filter by name/url, with health), get (one source's JSON), update (deep-merge fields, e.g. only ruleContent.content), add (import/replace a whole source), remove, unmark (clear the dead/suspect mark after a verified fix, or the page keeps hiding it).",
+			promptSnippet: "read/edit the book-source file",
 			promptGuidelines: [
 				"To edit a Legado book source use only legado_book_sources update (deep-merge by field); never overwrite the whole file or hand-edit the 5MB sources.json.",
-				"After editing, verify with legado_source_probe first, then use legado_book_sources unmark to clear that source's dead/suspect mark (otherwise the page hides dead sources and the user thinks the source is gone); finally remind the user to reload the reader page (the browser copy is in-memory).",
+				"After editing, verify with legado_source_probe, then unmark that source's dead/suspect mark (the page hides dead sources otherwise)",
+				"Remind the user to reload the reader page afterwards (the browser copy is in-memory)",
 			],
 			parameters: {
 				type: "object",
@@ -285,9 +287,8 @@ export function createTools({ host, store, engine, rulesText }) {
 			name: "legado_source_probe",
 			label: "Legado 书源诊断",
 			description:
-				"Run the Legado pipeline for one book source step by step (reach → search → info → TOC → content), reporting per step: request URLs, HTTP status, page size and snippets, parsed values, the exact rule strings used, and every rule failure. Run it first when a source misbehaves.",
-			promptSnippet:
-				"legado_source_probe — run the source pipeline to find the broken step (rule failures and page snippets included)",
+				"Run the Legado pipeline for one book source step by step (reach → search → info → TOC → content), reporting per step: request URLs, HTTP status, page size and snippets, parsed values, the exact rule strings used, and every rule failure.",
+			promptSnippet: "diagnose a broken book source step by step",
 			promptGuidelines: [
 				'When a source returns no content, run legado_source_probe (dump="snippet") first to locate the break, then fix the rule; never rewrite a whole source from scratch.',
 			],
@@ -345,7 +346,7 @@ export function createTools({ host, store, engine, rulesText }) {
 			label: "Legado 试规则",
 			description:
 				"Fetch a page and evaluate a single Legado rule against it (optionally via a list rule for item-level child rules), returning request info, page snippet and the exact extracted values. Use it to verify a rule fix before saving.",
-			promptSnippet: "legado_run_rule — fetch a page and try one rule to verify the fix (use listRule for item-level)",
+			promptSnippet: "try one rule against a fetched page",
 			parameters: {
 				type: "object",
 				required: ["url", "rule"],
@@ -365,7 +366,7 @@ export function createTools({ host, store, engine, rulesText }) {
 					dump: {
 						type: "string",
 						enum: ["none", "snippet", "full"],
-						description: "Whether to return the page body, default snippet",
+						description: "none | snippet | full (default snippet)",
 					},
 					dumpMax: { type: "number", description: "Max page-body characters returned, default 3000" },
 				},

@@ -1,5 +1,5 @@
 /**
- * issue #193：schedule_task/list/cancel 三件套。
+ * issue #193：schedule 单 action 工具（create/list/cancel）。
  * 时间解析纯函数 + 工具 execute 直调（真 SchedulerStore 落临时 dataDir，
  * 不起 server、不调模型）：建任务默认绑定发起对话＋单次，列表/取消闭环。
  */
@@ -10,7 +10,7 @@ import { join } from "node:path";
 import type { ExtensionContext } from "@earendil-works/pi-coding-agent";
 import { AgentService, sameCwd } from "../../server/agent-service.js";
 import { SchedulerStore, sameSessionFile } from "../../server/scheduler-tasks.js";
-import { makeScheduleTools, parseScheduleSpec, type ScheduleToolHost } from "../../server/schedule-agent-tool.js";
+import { makeScheduleTool, parseScheduleSpec, type ScheduleToolHost } from "../../server/schedule-agent-tool.js";
 import { normalizeSchedulerInput } from "../../server/scheduler-tasks.js";
 
 const CTX = { cwd: "/tmp" } as unknown as ExtensionContext;
@@ -90,17 +90,14 @@ describe("AgentService.wakeConversation（无持有方路径）", () => {
 	});
 });
 
-describe("schedule_* 工具闭环", () => {
+describe("schedule 工具闭环（单 action：create/list/cancel）", () => {
 	let dir: string;
 	let store: SchedulerStore;
-	let tools: ReturnType<typeof makeScheduleTools>;
+	let tool: ReturnType<typeof makeScheduleTool>;
 	let host: ScheduleToolHost;
 
-	const call = async (name: string, params: Record<string, unknown>) => {
-		const tool = tools.find((t) => t.name === name)!;
-		expect(tool, name).toBeTruthy();
-		return tool.execute("call-1", params as never, undefined, undefined, CTX);
-	};
+	const call = async (params: Record<string, unknown>) =>
+		tool.execute("call-1", params as never, undefined, undefined, CTX);
 
 	beforeEach(() => {
 		dir = mkdtempSync(join(tmpdir(), "sched-tool-test-"));
@@ -110,7 +107,7 @@ describe("schedule_* 工具闭环", () => {
 			cwd: () => dir,
 			activeConversationId: () => "c7",
 		};
-		tools = makeScheduleTools(host, "c7", () => "zh");
+		tool = makeScheduleTool(host, "c7", () => "zh");
 	});
 
 	afterEach(() => {
@@ -119,11 +116,11 @@ describe("schedule_* 工具闭环", () => {
 	});
 
 	it("建单次任务：默认绑定发起对话＋oneShot，返回下次触发与取消方式", async () => {
-		const r = await call("schedule_task", { schedule: "in 30m", prompt: "检查训练日志并汇报" });
+		const r = await call({ action: "create", schedule: "in 30m", prompt: "检查训练日志并汇报" });
 		const text = resultText(r);
 		expect(text).toContain("定时任务已创建");
 		expect(text).toContain("单次，触发后自动删除");
-		expect(text).toContain("schedule_cancel");
+		expect(text).toContain('schedule(action="cancel"');
 		const tasks = store.list();
 		expect(tasks).toHaveLength(1);
 		expect(tasks[0]!.conversationId).toBe("c7");
@@ -133,7 +130,8 @@ describe("schedule_* 工具闭环", () => {
 	});
 
 	it("recurring=true 建周期 cron 任务", async () => {
-		const r = await call("schedule_task", {
+		const r = await call({
+			action: "create",
 			schedule: "0 * * * *",
 			prompt: "每小时巡检",
 			label: "巡检",
@@ -148,29 +146,42 @@ describe("schedule_* 工具闭环", () => {
 	});
 
 	it("非法输入给中文报错：坏时间/超短间隔/空 prompt", async () => {
-		expect(resultText(await call("schedule_task", { schedule: "明天", prompt: "x" }))).toContain("非法");
-		expect(resultText(await call("schedule_task", { schedule: "in 30s", prompt: "x" }))).toContain("最短 60s");
-		expect(resultText(await call("schedule_task", { schedule: "in 30m", prompt: "  " }))).toContain("不能为空");
+		expect(resultText(await call({ action: "create", schedule: "明天", prompt: "x" }))).toContain("非法");
+		expect(resultText(await call({ action: "create", schedule: "in 30s", prompt: "x" }))).toContain("最短 60s");
+		expect(resultText(await call({ action: "create", schedule: "in 30m", prompt: "  " }))).toContain("不能为空");
 		expect(store.list()).toHaveLength(0);
 	});
 
+	it("缺 action / 未知 action 给可读报错", async () => {
+		expect(resultText(await call({ action: "" }))).toContain("action");
+		expect(resultText(await call({ action: "nope" }))).toContain("未知 action");
+	});
+
 	it("list 展示全部任务，cancel 按 id 删除（删空报错）", async () => {
-		await call("schedule_task", { schedule: "in 30m", prompt: "甲" });
-		await call("schedule_task", { schedule: "in 1h", prompt: "乙", recurring: true });
-		const list = resultText(await call("schedule_list", {}));
+		await call({ action: "create", schedule: "in 30m", prompt: "甲" });
+		await call({ action: "create", schedule: "in 1h", prompt: "乙", recurring: true });
+		const list = resultText(await call({ action: "list" }));
 		expect(list).toContain("定时任务（2）");
 		const id = store.list()[0]!.id;
-		expect(resultText(await call("schedule_cancel", { id }))).toContain("已删除");
+		expect(resultText(await call({ action: "cancel", id }))).toContain("已删除");
 		expect(store.list()).toHaveLength(1);
-		expect(resultText(await call("schedule_cancel", { id: "no-such" }))).toContain("没有");
-		expect(resultText(await call("schedule_cancel", { id: "" }))).toContain("id");
+		expect(resultText(await call({ action: "cancel", id: "no-such" }))).toContain("没有");
+		expect(resultText(await call({ action: "cancel", id: "" }))).toContain("id");
 	});
 
 	it("store 未接入时直接报错（DSH 这类引擎）", async () => {
-		const dead = makeScheduleTools({ ...host, store: () => undefined }, "c7", () => "zh");
-		const t = dead.find((x) => x.name === "schedule_task")!;
+		const dead = makeScheduleTool({ ...host, store: () => undefined }, "c7", () => "zh");
+		expect(dead.name).toBe("schedule");
 		expect(
-			resultText(await t.execute("c", { schedule: "in 30m", prompt: "x" } as never, undefined, undefined, CTX)),
+			resultText(
+				await dead.execute(
+					"c",
+					{ action: "create", schedule: "in 30m", prompt: "x" } as never,
+					undefined,
+					undefined,
+					CTX,
+				),
+			),
 		).toContain("不支持");
 	});
 
@@ -179,9 +190,14 @@ describe("schedule_* 工具闭环", () => {
 			...host,
 			conversationInfo: (id?: string) => (id === "c7" ? { cwd: dir, sessionFile: "/tmp/sess-1.jsonl" } : undefined),
 		};
-		const tools2 = makeScheduleTools(withInfo, "c7", () => "zh");
-		const tool = tools2.find((t) => t.name === "schedule_task")!;
-		await tool.execute("call-1", { schedule: "in 30m", prompt: "巡检" } as never, undefined, undefined, CTX);
+		const tool2 = makeScheduleTool(withInfo, "c7", () => "zh");
+		await tool2.execute(
+			"call-1",
+			{ action: "create", schedule: "in 30m", prompt: "巡检" } as never,
+			undefined,
+			undefined,
+			CTX,
+		);
 		const tasks = store.list();
 		expect(tasks).toHaveLength(1);
 		expect(tasks[0]!.conversationId).toBe("c7");
@@ -190,7 +206,7 @@ describe("schedule_* 工具闭环", () => {
 	});
 
 	it("issue #231：宿主无 conversationInfo 时只绑 id（老行为兼容）", async () => {
-		await call("schedule_task", { schedule: "in 30m", prompt: "巡检" });
+		await call({ action: "create", schedule: "in 30m", prompt: "巡检" });
 		const tasks = store.list();
 		expect(tasks).toHaveLength(1);
 		expect(tasks[0]!.conversationId).toBe("c7");

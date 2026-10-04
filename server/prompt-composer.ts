@@ -95,6 +95,13 @@ export interface PromptComposerInputs {
 	builtinSoul: string;
 	/** 活动工具名。 */
 	selectedTools: string[];
+	/** 工具**延迟加载**模式：true 时 {{tools}} 列的是完整工具目录（catalogTools），
+	 *  并在末尾加一段**恒定**的提示说明「目录里的工具 schema 未附、用 load_tools 获取」。
+	 *  关键：这段文字不得随已加载集合变化 —— 系统提示词一变，供应商的前缀缓存（prompt
+	 *  cache）就整段失效（见 docs/tool-context-budget.md）。 */
+	lazy?: boolean;
+	/** 延迟加载时的工具目录（全部可用工具，顺序稳定 = 注册表顺序）。 */
+	catalogTools?: string[];
 	/** 活动工具的 prompt snippet（name → snippet）。 */
 	toolSnippets: Record<string, string>;
 	/** 活动工具聚合的 prompt guidelines。 */
@@ -281,14 +288,28 @@ function buildContextText(files: PromptComposerInputs["contextFiles"], lang: Ser
 	].join("\n");
 }
 
-/** 工具列表块：工具列表 + "In addition…" 句。 */
-function buildToolsText(inputs: PromptComposerInputs): string {
-	const visible = inputs.selectedTools.filter((n) => !!inputs.toolSnippets[n]);
+/** 工具列表块：工具列表（延迟加载时列完整目录）+ 恒定提示 + "In addition…" 句。
+ *
+ * 延迟加载下这里**只依赖目录本身**（不依赖「哪些已加载」）：系统提示词是供应商
+ * 前缀缓存的第一段，只要它不变，加载工具造成的只是 tools 数组的追加（前缀不变的
+ * 增量），缓存才不会被我们自已打坏。 */
+function buildToolsText(inputs: PromptComposerInputs, lang: ServerLang): string {
+	const listed = inputs.lazy ? (inputs.catalogTools ?? inputs.selectedTools) : inputs.selectedTools;
+	const visible = listed.filter((n) => !!inputs.toolSnippets[n]);
 	const toolsList = visible.length > 0 ? visible.map((n) => `- ${n}: ${inputs.toolSnippets[n]}`).join("\n") : "(none)";
-	return [
-		`Available tools:\n${toolsList}`,
-		"In addition to the tools above, you may have access to other custom tools depending on the project.",
-	].join("\n\n");
+	const parts = [`Available tools:\n${toolsList}`];
+	if (inputs.lazy) {
+		parts.push(
+			pick(
+				lang,
+				"上表里有一部分工具的**参数 schema 尚未附加**；调用前先用 `load_tools` 把它们的名字传进来，即可拿到完整参数（本对话后续轮次都能继续用）。尚不在你工具列表里的，一律先 load_tools。",
+				"Some tools above do NOT have their parameter schema attached yet. Before calling one, pass its name to `load_tools` to attach the full schema for the rest of this conversation. Anything not in your function list must be loaded first.",
+				"prompt.tools.lazy",
+			),
+		);
+	}
+	parts.push("In addition to the tools above, you may have access to other custom tools depending on the project.");
+	return parts.join("\n\n");
 }
 
 /** 工具 schema 条目（发给模型的 function-calling 工具定义的最小字段）。 */
@@ -323,7 +344,7 @@ export function resolveSectionTexts(inputs: PromptComposerInputs): Record<Prompt
 		soul = getServerBlock(lang, "prompt.soul", BUILTIN_SOUL_ZH.split("\n"), BUILTIN_SOUL.split("\n")).join("\n");
 	return {
 		soul,
-		tools: buildToolsText(inputs),
+		tools: buildToolsText(inputs, lang),
 		guidelines: buildGuidelinesText(inputs),
 		pi_docs: buildPiDocsText(inputs.piReadme, inputs.piDocs, inputs.piExamples, lang),
 		append: inputs.appendFiles.join("\n\n"),

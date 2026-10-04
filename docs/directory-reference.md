@@ -40,7 +40,7 @@ pi-web-ui/
 ├── Dockerfile / docker-compose.yml
 ├── docs/                       # 详细文档（architecture-core / architecture-attachments / architecture-terminal /
 │                               #   architecture-plugins / architecture-system-prompt / goal-conversation-design /
-│                               #   development / release /
+│                               #   tool-context-budget / development / release /
 │                               #   deployment / dsh-engine / antigravity-proxy / env-vars ＋ 本文件）
 └── tsconfig.server.json / tsconfig.extensions.json / tsconfig.tests.json / web/tsconfig.json
 ```
@@ -61,6 +61,7 @@ server/
 ├── uploads.ts              # 文件对话上传 + 保留期清理
 ├── bg-servers.ts           # 后台任务跟踪（bash 前后端口快照 diff + 存活刷新）
 ├── settings-service.ts     # 设置面板状态机
+├── preset-share.ts         # ★ 设置预设的导入/导出/分享/社区目录（交换格式 pi-web-ui-preset v1：白名单净化、SSRF 收口、gh issue 回落预填网页、index.json 目录 5 分钟缓存；编排走 PresetSharePort，见 docs/preset-sharing.md）
 ├── goal-service.ts         # 目标/审查循环/调研向导
 ├── i18n.ts                 # 服务端语言协商 + 翻译表注册（resolveServerLang/pick/bilingual/getServerBlock）
 ├── locales.ts              # 可下载语言包（核心只含 zh/en，其余语言走语言包 serverStrings 节）
@@ -89,6 +90,9 @@ server/
 ├── schedule-agent-tool.ts  # 把内置调度器暴露给 Agent（issue #193）
 ├── scheduler-tasks.ts      # 内置定时任务调度（issue #184）：任务 CRUD + cron/间隔触发 + 无头执行
 ├── tool-info.ts            # 工具定义说明（工具卡右键 → 显示工具详细信息）：按名现取 SDK / DSH 运行时的工具定义 → `tool_info`（定义是大对象，不进快照；DSH 拿不到时回 `unsupported`）
+├── tool-prompt-overrides.ts # 逐工具文案覆盖（设置→工具区「编辑文案」）：归一化 + 给会话 _toolRegistry 打 description/snippet/guidelines 补丁（出厂定义永不动，可复原）
+├── load-tools-tool.ts      # 工具延迟加载入口（load_tools）：目录（名字 + 一行摘要）在系统提示词里，模型按需把参数 schema 拉进本对话
+├── tool-prompts.ts         # bash 工具模型可见文案（description/snippet/guidelines/参数 schema）的唯一事实源（三条执行路径共用）
 ├── subagents.ts            # 第一方子代理：统一的 subagent 工具（spawn/get_result/steer/list/stop/templates/wait_all/handoff）+ 运行态快照
 ├── subagent-templates.ts   # 子代理模板库（全局 <dataDir>/subagent-templates.json；白名单语义；可选模型/思考强度，空=跟随主对话；enabled=false 对 AI 不可见）
 ├── wait-subscription-scan.ts # 挂起 wake 订阅扫描（保留带 pending 子代理 wake 的对话）
@@ -191,6 +195,7 @@ web/src/
 ├── file-preview-bridge.ts # 工具卡片 → 文件预览弹窗的模块级 sink（App 注册 opener）
 ├── file-transfer.ts    # 文件传输前端逻辑（配 FileTransferDialog + file-transfer-routes）
 ├── tool-info-state.ts  # 工具定义弹窗的模块级 store（打开/关闭/应答 → 视图，纯函数 + 单测）
+├── tool-prompt-state.ts # 逐工具文案编辑器的默认值 store（get_tool_prompt 应答 → 视图，纯函数）
 ├── tool-schema.ts      # 参数 JSON Schema → 表格行（参数名/类型/必填/说明，纯函数 + 单测）
 ├── tool-args.ts        # 工具卡头参数提示纯函数（路径/超时安全提取，脏参数不抛错），有单测
 ├── skill-block.ts      # parseSkillBlock：<skill> 块解析，有单测
@@ -249,6 +254,7 @@ web/src/
 | `PluginFilePreview.tsx`                                                                   | 插件提供的文件预览器宿主                                                                                                                                                             |
 | `PresentedFiles.tsx`                                                                      | `present_files` 工具卡片正文：图片/视频/音频内联显示/播放，文本开头摘录 + 「预览」按钮；每行「预览/本地打开/在文件夹中显示/下载/复制路径」；`focus` 条目按偏好自动弹预览窗（三道闸） |
 | `ToolInfoDialog.tsx`                                                                      | 「工具详细信息」弹窗（工具卡右键）：展示工具**定义**（说明/参数 schema 表格+原始 JSON），点开现取不进快照；portal 到 body（消息流祖先有 overflow/transform）                         |
+| `ToolPromptEditor.tsx`                                                                    | 逐工具文案编辑器（设置→工具区「编辑文案」）：description/snippet/guidelines 三字段，留空=默认；保存走 `set_settings.toolPromptOverrides`                                             |
 | `ToolApprovalDialog.tsx`                                                                  | 审批弹窗（ask 规则命中时的人机协同拦截 + 改写执行）                                                                                                                                  |
 | `LeftPanel.tsx`                                                                           | 左栏：最近项目、运行的对话、历史对话（含删除）                                                                                                                                       |
 | `RightPanel.tsx`                                                                          | 文件树浏览（list_files），文件名点击→预览，🔗 引用路径（仅路径，无内容注入）/👁 预览/⬇ 下载等按钮；服务端原生递归 watcher                                                             |

@@ -521,18 +521,16 @@ export function makeConversationReadTool(
 		name: CONVERSATION_READ_TOOL_NAME,
 		label: "Read another conversation",
 		description:
-			"Read ANOTHER conversation: a running conversation of this client (incl. subagents — id from action=list) or a persisted history session (file path). " +
-			"Use when the user references another chat. list: running + history sessions (query filter, limit). " +
-			"read: one transcript — view=chat (default, user/assistant text) or full (incl. tool calls); last=N latest; query searches within (±1 context); messages capped ~600 chars. " +
-			"files: files it created/modified. status: last tool call, last assistant text, pending question. " +
+			"Read ANOTHER conversation: a running conversation of this client (incl. subagents — id from action=list) " +
+			"or a persisted history session (file path). Use it whenever the user references another chat. " +
 			"Only listed sessions are readable; other tabs' live runs appear in history once persisted.",
-		promptSnippet:
-			"read another conversation: list/find chats, read transcript (chat view / tail / search), touched files, status summary",
+		promptSnippet: "inspect another conversation the user mentions (list/read/files/status)",
 		parameters: Type.Object({
 			action: Type.Optional(
 				Type.String({
 					description:
-						'list = show running conversations + history sessions; read = fetch one transcript. Default "list".',
+						'Default "list": running conversations + history sessions; read = one transcript (≤600 chars/msg); ' +
+						"files = files it created/modified; status = last tool call, last assistant text, pending question.",
 				}),
 			),
 			scope: Type.Optional(
@@ -558,7 +556,7 @@ export function makeConversationReadTool(
 				}),
 			),
 			last: Type.Optional(
-				Type.Number({ description: "read only: take the latest N messages (1-200) instead of guessing offset." }),
+				Type.Number({ description: "read only: take the latest N messages instead of guessing offset." }),
 			),
 			id: Type.Optional(
 				Type.String({ description: 'read only: running conversation id (e.g. "c3"), from action=list.' }),
@@ -571,7 +569,7 @@ export function makeConversationReadTool(
 						"list: max entries per section (history defaults to 15, running uncapped up to 50). read/files: max messages/entries (1-200, default 50).",
 				}),
 			),
-			maxChars: Type.Optional(Type.Number({ description: "read only: max characters (1000-60000). Default 20000." })),
+			maxChars: Type.Optional(Type.Number({ description: "read only: max characters. Default 20000." })),
 		}),
 		execute: async (_id, p, _signal, _onUpdate, ctx) => {
 			const action = (p.action ?? "list").trim().toLowerCase();

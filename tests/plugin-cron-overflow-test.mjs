@@ -99,6 +99,8 @@ try {
 		env: {
 			...process.env,
 			PI_WEB_PORT: String(PORT),
+			// 本测试只验其它功能；工具延迟加载默认开会让非核心工具不活跃，这里按部署默认关掉它。
+			PI_WEB_TOOL_LAZY_LOADING: "0",
 			PI_WEB_DATA_DIR: dataDir,
 			PI_WEB_CWD: repoRoot,
 			PI_WEB_PLUGIN_CATALOG_URL: process.env.PI_WEB_PLUGIN_CATALOG_URL ?? "",

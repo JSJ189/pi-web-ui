@@ -10,7 +10,27 @@
 
 ## [Unreleased]
 
-暂无未发布内容。
+### Added
+
+- **工具描述可编辑（设置→工具区「编辑文案」）** —— 每个工具行新增编辑入口，三处模型可见文案都可逐工具覆盖：`description`（tool schema 里的工具说明）、`promptSnippet`（系统提示词 Available tools 列表的一行）、`promptGuidelines`（Guidelines 段要点）；留空 = 用工具自带默认（默认文案折叠可见，可一键恢复）。覆盖持久化在设置里（不进预设），改动即时对**所有工具**生效（核心内置 / 本项目工具 / 插件 / MCP），会话中途改动也会重新声明工具；DSH 引擎无 pi 工具注册面，入口隐藏。
+- **工具延迟加载（默认开，可在设置→工具区关掉）** —— 默认只有核心工具（bash/read/edit/write）与 `load_tools` 的完整参数 schema 常驻；其余工具在系统提示词里只有「名字 + 一行摘要」（目录），模型要用时先调 `load_tools(["patch","lsp"])`，那批工具的 schema 才随之下发（加载后本对话后续轮次都可用；已被关闭/预设不允许/计划模式拦截的名字会被拒绝并给出原因）。常驻工具 schema 约 **33k → 7k 字符**，系统提示词也由 ~8.6k 降到 ~6.7k。**不损坏供应商前缀缓存**：系统提示词的目录段与已加载集合无关（逐字节不变）、被加载工具的 guidelines 随加载回执而非提示词、tools 数组只产生追加增量（回归 `lazy-tools-test` 逐字断言）。激活由用户/模型触发；只影响新会话与之后的门控重放，不会反向清空正在跑的对话。DSH 引擎不适用。
+
+### Changed
+
+- **工具描述进一步精简（模型可见文字 -11.0%，schema -1924 字符）** —— 去掉描述 / guidelines / 参数说明里已由 JSON Schema 约束、参数自身或另一处工具信息覆盖的重复句（`browser_page` 的 target/timeoutMs 说明与 op 矩阵重复、`delegate_task` 的模板名枚举与收集方式说明、`compact_context` 的 token 区间（schema 已有 min/max）、`subagent`/`conversation_read`/`present_files`/`schedule` 的多余措辞等），并按项目自身口径（description = 做什么 + 副作用，不写「何时用」）收紧多处文案；`lsp` 的动作表从多行压缩成一段（op 与语义不变）。`edit`：SDK 原描述与它自带的 guidelines 逐条复述同一批规则，无扩展覆盖时（fallback）改由本项目提供精简版（有扩展 edit 时仍用扩展文案，参数 schema/执行体不变）。30 个目录/核心工具：文字合计 12734→11328 字符，参数说明 19480→18594，下发工具 schema 35085→33161。
+- **定时任务三件套合并为单 `schedule` 工具** —— `schedule_task` / `schedule_list` / `schedule_cancel` 三个独立工具合并为一个 action 式 `schedule`：`action=create` 建任务、`action=list` 查看、`action=cancel` 按 id 取消。工具条目从 3 个减为 1 个（设置页「工具」照常循环渲染；旧版本关掉过任意一个 `schedule_*` 的用户会保持关闭，禁用名单自动迁移）。计划 / 审查者 / 目标审查三道只读闸门的派发名单同步为 `schedule`（保守起见整工具拒，调度面在这三道闸门都不需要）。
+- **webmail 插件六个 AI 工具合并为单 `mail` 工具** —— `mail_list` / `mail_read` / `mail_search` / `mail_send` / `mail_manage` / `mail_folders` 合并为一个 action 式 `mail`（`action=list|read|search|send|manage|folders`），邮件条数、正文、发信与批量标记/删除的返回文本与参数语义不变；`mail_send` 原有的「发送前先与用户确认一次」守则原样保留。工具条目从 6 个减为 1 个；设置页「注册的 AI 工具」开关同步为单行。
+- **工具提示词全量收敛（少 18.5% 字符）** —— 模型同一轮里能同时看到三处工具信息（tool schema 的 `description`、`Available tools` 列表里的 `promptSnippet`、`Guidelines` 段里的 `promptGuidelines`），过去大量内容是同一句话的三份复述。现在职责严格分开：`description` 只写「做什么 + 副作用/边界」（≤600c）、`promptSnippet` 只写触发条件（≤80c、不再重复工具名前缀、不再复述描述）、`promptGuidelines` 只管「何时用/顺序/禁止/跨工具路由」；同一个参数块被多个工具复用的（SSH 凭据、数据库连接/库参数、桌面坐标）抽成共享常量。服务端内置工具少 6.1k 字符（-24.7%，其中 1.1k 是 `terminals.ts` 里**永不发送**的终端版 bash 文案死副本），插件侧少 3.8k（-13.5%）。bash 的提示词与参数 schema 统一到新增的 `server/tool-prompts.ts`（原生/终端/分流三路径单源）。守卫升级：`tests/unit/tool-prompt-hygiene.test.ts` 新增长度上限、snippet 工具名前缀、snippet/guideline 复述检测与同文件同义重复检测。
+
+<!-- auto-i18n:start -->
+### i18n
+
+- 前端新增 key（12）：`toolLazyLoading`、`toolLazyLoadingDesc`、`toolPromptEdit`、`toolPromptEdited`、`toolPromptHint`、`toolPromptDescription`、`toolPromptSnippet`、`toolPromptGuidelines`、`toolPromptDefault`、`toolPromptReset`、`toolPromptSave`、`toolPromptUnavailable`
+- 前端中文变更（1）：`scheduleTaskEnabledDesc`
+- 前端英文变更（1）：`scheduleTaskEnabledDesc`
+- 服务端新增 key（13）：`loadtools.notready`、`loadtools.unknown`、`loadtools.always`、`loadtools.already`、`loadtools.disabled`、`loadtools.preset`、`loadtools.names.empty`、`loadtools.loaded`、`loadtools.rejected`、`loadtools.none`、`prompt.tools.lazy`、`sched.action.missing`、`sched.action.unknown`
+- 服务端文案变更（3）：`sched.list.empty`、`sched.cancel.empty.id`、`sched.cancel.not.found`
+<!-- auto-i18n:end -->
 
 ## [0.99.0] — 2026-10-03
 

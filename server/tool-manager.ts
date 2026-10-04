@@ -63,11 +63,12 @@ export const CONVERSATION_READ_TOOL_NAME = "conversation_read";
 /** 技能全文按名加载工具（定义见 skill-tool.ts）：名录见 {{skills}} 段，
  *  全文走本工具按需取，不再让模型拼路径调 read。 */
 export const SKILL_TOOL_NAME = "skill";
-/** 定时任务工具（定义见 schedule-agent-tool.ts）：创建/查看/取消内置调度任务，
- *  到期自动唤醒发起对话执行 prompt 并汇报。 */
-export const SCHEDULE_TASK_TOOL_NAME = "schedule_task";
-export const SCHEDULE_LIST_TOOL_NAME = "schedule_list";
-export const SCHEDULE_CANCEL_TOOL_NAME = "schedule_cancel";
+/** 定时任务工具（定义见 schedule-agent-tool.ts）：单 action 工具，create 建任务 /
+ *  list 查看 / cancel 取消；到期自动唤醒发起对话执行 prompt 并汇报。 */
+export const SCHEDULE_TOOL_NAME = "schedule";
+/** 旧版 3 个独立定时任务工具名（持久化配置迁移用：用户在旧版本关掉的任一个
+ *  都迁移为关闭合并后的 schedule 工具）。 */
+export const LEGACY_SCHEDULE_TOOL_NAMES = ["schedule_task", "schedule_list", "schedule_cancel"] as const;
 /** 持久代码求值沙箱工具（定义见 eval-tool.ts）：在受控持久内核中执行 Python 或 JS/TS 代码。 */
 export const EVAL_TOOL_NAME = "eval";
 /** 展示文件工具（定义见 present-files-tool.ts）：把图片/视频/文本作为预览卡片
@@ -84,6 +85,13 @@ export const COMPACT_CONTEXT_TOOL_NAME = "compact_context";
 export const PATCH_TOOL_NAME = "patch";
 /** 原生语言服务器工具（定义见 lsp-tool.ts）：代码定义跳转、引用查询、类型悬停与诊断。 */
 export const LSP_TOOL_NAME = "lsp";
+/** 按需加载工具（定义见 load-tools-tool.ts）：延迟加载模式下模型的唯一入口 ——
+ *  系统提示词只给全部工具的**名字 + 一行摘要**，模型先把要用的名字交给它，那些
+ *  工具的完整参数 schema 才会进入会话（SDK 中途新增工具，支持 defer_loading /
+ *  tool_search 的供应商不会把它们堆在首轮）。 */
+export const LOAD_TOOLS_TOOL_NAME = "load_tools";
+/** 延迟加载模式下**永远活跃**的核心工具（其余全部先当未加载）。 */
+export const LAZY_CORE_TOOL_NAMES = ["bash", "read", "edit", "write"] as const;
 /** 旧工具名（持久化迁移用；新代码一律用 MARKERS_LIST_TOOL_NAME）。 */
 export const LEGACY_MARKERS_LIST_TOOL_NAME = "markers_list";
 
@@ -105,7 +113,7 @@ export interface AgentToolEntry {
 	offHintKey?: string;
 }
 
-/** 可开关的 Agent 工具总目录（共 27 个）。核心内置工具 bash/read/edit/write 不进
+/** 可开关的 Agent 工具总目录（共 23 个）。核心内置工具 bash/read/edit/write 不进
  *  目录——目录条目 = OTHER_AGENT_TOOLS 自动渲染的设置行，而这四个在设置页
  *  「核心工具」区单独开关（见 SettingsModal 的 CORE_BUILTIN_TOOL_NAMES 区块），
  *  禁用名单同样接受它们（normalizeDisabledAgentTools）。 */
@@ -231,26 +239,10 @@ export const AGENT_TOOL_CATALOG: AgentToolEntry[] = [
 		descKey: "evalEnabledDesc",
 		offHintKey: "evalOffHint",
 	},
-	// 定时/延时唤醒：默认开（不打开 AI 根本不知道能定时；60s 间隔底线＋面板可随时取消），
-	// DSH 引擎没有该 customTool（走 goal-rpc，无 customTool 注册面）。
+	// 定时/延时唤醒（单 action：create/list/cancel）：默认开（不打开 AI 根本不知道能定时；
+	// 60s 间隔底线＋面板可随时取消），DSH 引擎没有该 customTool（走 goal-rpc，无 customTool 注册面）。
 	{
-		name: SCHEDULE_TASK_TOOL_NAME,
-		group: "other",
-		defaultOn: true,
-		dshVisible: false,
-		descKey: "scheduleTaskEnabledDesc",
-		offHintKey: "scheduleTaskOffHint",
-	},
-	{
-		name: SCHEDULE_LIST_TOOL_NAME,
-		group: "other",
-		defaultOn: true,
-		dshVisible: false,
-		descKey: "scheduleTaskEnabledDesc",
-		offHintKey: "scheduleTaskOffHint",
-	},
-	{
-		name: SCHEDULE_CANCEL_TOOL_NAME,
+		name: SCHEDULE_TOOL_NAME,
 		group: "other",
 		defaultOn: true,
 		dshVisible: false,
@@ -306,6 +298,10 @@ export function normalizeDisabledAgentTools(v: unknown): string[] {
 		// 旧版子代理工具迁移：任意旧 subagent_* 关闭均迁移为关闭 subagent 工具。
 		if (typeof name === "string" && (LEGACY_SUBAGENT_TOOL_NAMES as readonly string[]).includes(name)) {
 			name = SUBAGENT_TOOL_NAME;
+		}
+		// 旧版定时任务三件套迁移：任意旧 schedule_* 关闭均迁移为关闭 schedule 工具（#193）。
+		if (typeof name === "string" && (LEGACY_SCHEDULE_TOOL_NAMES as readonly string[]).includes(name)) {
+			name = SCHEDULE_TOOL_NAME;
 		}
 		if (typeof name === "string" && (KNOWN_NAMES.has(name) || isCoreBuiltinTool(name)) && !out.includes(name)) {
 			out.push(name);
@@ -376,7 +372,16 @@ export function setAgentToolsEnabled(session: ActiveToolSet, names: readonly str
  * 复原基线取 session.getAllTools()（全集，含被禁用的）——基线里没有的工具不会凭空发明。
  * Session 未就绪时静默跳过（下次创建/reload 会再应用）。
  */
-export function applyAgentToolsGating(session: ActiveToolSet, disabled: readonly string[], preset?: string): void {
+export function applyAgentToolsGating(
+	session: ActiveToolSet,
+	disabled: readonly string[],
+	preset?: string,
+	options?: {
+		/** 预设过滤后强制加回的活跃工具（延迟加载模式的 `load_tools` 用：它不在任何
+		 *  预设白名单里，又必须永远可用）。 */
+		forceActive?: readonly string[];
+	},
+): void {
 	try {
 		const off = new Set(disabled);
 		const allNames = session.getAllTools().map((t) => t.name);
@@ -404,10 +409,32 @@ export function applyAgentToolsGating(session: ActiveToolSet, disabled: readonly
 			else if (allNames.includes(core)) names.add(core);
 		}
 		const filtered = filterToolsByPreset(names, preset);
-		session.setActiveToolsByName(filtered);
+		const active = new Set(filtered);
+		const baseline = new Set(allNames);
+		for (const name of options?.forceActive ?? []) {
+			if (baseline.has(name) && !off.has(name)) active.add(name);
+		}
+		session.setActiveToolsByName([...active]);
 	} catch {
 		// Session 未就绪——下次创建/reload 会再应用。
 	}
+}
+
+/**
+ * 延迟加载：把「除核心工具 / 已加载 / load_tools 之外的已登记工具」算成临时禁用名单，
+ * 直接交给 applyAgentToolsGating。
+ *
+ * 用禁用名单而不是另加一套机制：`applyAgentToolsGating` 本来就是「按名字加减活跃集」，
+ * 于是延迟加载不引入第二条门控路径，与用户禁用名单 / 计划·审查闸门同一条链——
+ * 加载只是把名字从这份名单里拿出来。
+ */
+export function lazyLoadingDisabledTools(
+	allNames: readonly string[],
+	loaded: Iterable<string>,
+	core: readonly string[] = LAZY_CORE_TOOL_NAMES,
+): string[] {
+	const keep = new Set<string>([...core, LOAD_TOOLS_TOOL_NAME, ...loaded]);
+	return allNames.filter((n) => !keep.has(n));
 }
 
 /** pi 引擎内置 Agent 预设名录（对齐 DSH 预设体系，会话级工具白名单）。 */

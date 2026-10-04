@@ -1115,6 +1115,9 @@ export interface DispatchSession {
 	 *  pi 与 dsh 都实现了；缺失时 dispatch 回 `unsupported`（不静默 —— 否则点开弹窗
 	 *  会永远停在「读取中」）。 */
 	getToolInfo?(name: string): void | Promise<void>;
+	/** 取一条工具的「出厂默认 + 当前覆盖」→ `tool_prompt`（设置页逐工具编辑文案）。
+	 *  缺失时 dispatch 回 `found: false`（引擎不支持 / 旧服务端）。 */
+	getToolPrompt?(name: string): void | Promise<void>;
 	/** 查询被某个压缩卡片折叠的历史消息（按需惰性加载，issue #398）。 */
 	getCompactedMessages?(compactionMessageId: string, targetConvId?: string): void | Promise<void>;
 	refreshSessions(): Promise<void>;
@@ -1299,6 +1302,12 @@ export interface DispatchSession {
 	savePreset(name: string): Promise<void>;
 	applyPreset(name: string): Promise<void>;
 	deletePreset(name: string): Promise<void>;
+	/** 预设分享（server/preset-share.ts）：导出 / 导入 / 网址导入 / 目录 / 一键分享。 */
+	exportPreset(msg: Extract<ClientMessage, { type: "preset_export" }>): Promise<void>;
+	importPreset(msg: Extract<ClientMessage, { type: "preset_import" }>): Promise<void>;
+	importPresetFromUrl(msg: Extract<ClientMessage, { type: "preset_import_url" }>): Promise<void>;
+	pushPresetCatalog(msg: Extract<ClientMessage, { type: "preset_catalog" }>): Promise<void>;
+	sharePreset(msg: Extract<ClientMessage, { type: "preset_share" }>): Promise<void>;
 	/** Upsert 一个子代理模板（全局共享）。 */
 	saveSubagentTemplate(template: UiSubagentTemplate): Promise<void>;
 	saveApprovalRule?(rule: UiApprovalRule): Promise<void>;
@@ -1836,7 +1845,7 @@ service.pluginCommandsProvider = () => pluginMgr.listCommands();
 pluginMgr.onBgTasksChanged = () => service.refreshBackgroundServers();
 service.pluginBgTasksProvider = () => pluginMgr.bgTasks();
 service.pluginStopBgTask = (taskId) => pluginMgr.stopPluginBgTask(taskId);
-// 定时任务 Agent 工具的数据源（schedule_task/list/cancel）：标准 pi 引擎的
+// 定时任务 Agent 工具的数据源（schedule 单 action：create/list/cancel）：标准 pi 引擎的
 // AgentService 才有 schedulerStore 字段，DSH service 没有 —— 有才设。
 if ("schedulerStore" in service) {
 	(service as unknown as { schedulerStore: typeof scheduler }).schedulerStore = scheduler;
@@ -2228,6 +2237,14 @@ wss.on("connection", (ws) => {
 					send({ type: "tool_info", name: msg.name, found: false, unsupported: true });
 				}
 				break;
+			case "get_tool_prompt":
+				// 设置页逐工具文案编辑器：取「出厂默认 + 当前覆盖」。
+				if (typeof cs.getToolPrompt === "function") {
+					void cs.getToolPrompt(msg.name);
+				} else {
+					send({ type: "tool_prompt", name: msg.name, found: false, unsupported: true });
+				}
+				break;
 			case "get_compacted_messages":
 				void cs.getCompactedMessages?.(msg.compactionMessageId, msg.conversationId);
 				break;
@@ -2604,6 +2621,7 @@ wss.on("connection", (ws) => {
 					customSystemPrompt: msg.customSystemPrompt,
 					promptTemplate: (msg as { promptTemplate?: string }).promptTemplate,
 					promptOverrides: (msg as { promptOverrides?: Record<string, string> }).promptOverrides,
+					toolPromptOverrides: (msg as { toolPromptOverrides?: Record<string, unknown> }).toolPromptOverrides,
 					disabledSkills: msg.disabledSkills,
 					disabledExtensions: msg.disabledExtensions,
 					disabledAgentTools: msg.disabledAgentTools,
@@ -2615,6 +2633,7 @@ wss.on("connection", (ws) => {
 					terminalBashMaxForegroundMs: (msg as { terminalBashMaxForegroundMs?: number }).terminalBashMaxForegroundMs,
 					toolWatchdogTimeoutMs: (msg as { toolWatchdogTimeoutMs?: number }).toolWatchdogTimeoutMs,
 					readDirEnabled: (msg as { readDirEnabled?: boolean }).readDirEnabled,
+					toolLazyLoading: (msg as { toolLazyLoading?: boolean }).toolLazyLoading,
 					toolApprovalEnabled: (msg as { toolApprovalEnabled?: boolean }).toolApprovalEnabled,
 					editSoftEnabled: (msg as { editSoftEnabled?: boolean }).editSoftEnabled,
 					questionnaireEnabled: (msg as { questionnaireEnabled?: boolean }).questionnaireEnabled,
@@ -3048,6 +3067,22 @@ wss.on("connection", (ws) => {
 				break;
 			case "save_preset":
 				void cs.savePreset(msg.name);
+				break;
+			// -- 预设分享（server/preset-share.ts，docs/preset-sharing.md）------
+			case "preset_export":
+				void cs.exportPreset(msg);
+				break;
+			case "preset_import":
+				void cs.importPreset(msg);
+				break;
+			case "preset_import_url":
+				void cs.importPresetFromUrl(msg);
+				break;
+			case "preset_catalog":
+				void cs.pushPresetCatalog(msg);
+				break;
+			case "preset_share":
+				void cs.sharePreset(msg);
 				break;
 			case "save_subagent_template":
 				void cs.saveSubagentTemplate(msg.template);

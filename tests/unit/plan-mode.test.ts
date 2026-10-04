@@ -95,8 +95,8 @@ describe("planModeDenial", () => {
 
 	it("拒绝旁路工具（会在别的会话实施）", () => {
 		expect(planModeDenial("delegate_task", {})?.kind).toBe("bypass-tool");
-		// 回归 #436：schedule_task 是真实注册的排程工具，到期唤醒对话执行 prompt。
-		expect(planModeDenial("schedule_task", {})?.kind).toBe("bypass-tool");
+		// 回归 #436：schedule 是真实注册的排程工具（单 action），到期唤醒对话执行 prompt。
+		expect(planModeDenial("schedule", {})?.kind).toBe("bypass-tool");
 	});
 
 	// 回归 #436：subagent 此前只拒 spawn，steer/handoff 全放行 —— 向运行中的
@@ -147,7 +147,7 @@ describe("PLAN_MODE_BLOCKED_TOOL_NAMES（活跃集剥离名单）", () => {
 	});
 
 	// 回归 #436：名单以 server/tool-manager.ts 实际注册的工具名为事实源 ——
-	// 幽灵名（协议消息/从未注册）全部清掉，真实的 schedule_task 补进来。
+	// 幽灵名（协议消息/从未注册）全部清掉，真实的 schedule 补进来。
 	it("幽灵名不再出现在剥离名单，真实旁路工具在", () => {
 		for (const ghost of [
 			"spawn",
@@ -160,13 +160,12 @@ describe("PLAN_MODE_BLOCKED_TOOL_NAMES（活跃集剥离名单）", () => {
 			"start_goal_wizard",
 			"create_conversation",
 			"fork_conversation",
-			"schedule",
 			"set_plan_mode",
 		]) {
 			expect(PLAN_MODE_BLOCKED_TOOL_NAMES.has(ghost), ghost).toBe(false);
 		}
 		expect(PLAN_MODE_BLOCKED_TOOL_NAMES.has("delegate_task")).toBe(true);
-		expect(PLAN_MODE_BLOCKED_TOOL_NAMES.has("schedule_task")).toBe(true);
+		expect(PLAN_MODE_BLOCKED_TOOL_NAMES.has("schedule")).toBe(true);
 	});
 });
 

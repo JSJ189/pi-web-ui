@@ -13,6 +13,7 @@ import { writeJsonAtomicSync } from "./atomic-file.js";
 import { normalizeSoftCapByModel, normalizeSoftCapTokens } from "./soft-cap.js";
 import { deriveLegacy, legacyToDisabled, normalizeDisabledAgentTools } from "./tool-manager.js";
 import { UI_SLOTS } from "./plugins.js";
+import { normalizeToolPromptOverrides, type ToolPromptOverrideMap } from "./tool-prompt-overrides.js";
 import type { UiAlign, UiLayoutPrefs, UiSlotId } from "./protocol.js";
 
 /** System-prompt mode: append the custom text to the built prompt, or replace
@@ -212,6 +213,13 @@ export function normalizeSkillList(v: unknown): string[] {
 	return Array.isArray(v) ? v.filter((x): x is string => typeof x === "string") : [];
 }
 
+/** 工具延迟加载的**出厂默认**（默认开；`PI_WEB_TOOL_LAZY_LOADING=0/false/off` 部署级关掉，
+ *  给「不想让模型多一步 load_tools」的实例一个开关；用户在设置面板的选择优先于此）。 */
+export const DEFAULT_TOOL_LAZY_LOADING = (() => {
+	const v = (process.env.PI_WEB_TOOL_LAZY_LOADING ?? "").trim().toLowerCase();
+	return !(v === "0" || v === "false" || v === "off" || v === "no");
+})();
+
 /** Settings-panel state (system prompt + disabled skills/extensions). */
 export interface ClientSettings {
 	promptMode: PromptMode;
@@ -222,6 +230,9 @@ export interface ClientSettings {
 	promptTemplate: string;
 	/** 每个来源 token 的独立覆盖文本（空串/缺省 = 用该来源的自动内容）。 */
 	promptOverrides: Record<string, string>;
+	/** 逐工具文案覆盖（工具名 → description/promptSnippet/promptGuidelines；
+	 *  缺省 = 全部默认，见 server/tool-prompt-overrides.ts）。 */
+	toolPromptOverrides: ToolPromptOverrideMap;
 	disabledSkills: string[];
 	disabledExtensions: string[];
 	/** Persistent-terminal tools on/off（遗留别名，兼容旧客户端/旧存档；以 disabledAgentTools 为准同步）。 */
@@ -242,6 +253,12 @@ export interface ClientSettings {
 	 *  列出目录条目；关 → 原样交回内置 read。行为开关（read 本体不可关），
 	 *  覆盖定义每次调用实时读取，无需 reload。 */
 	readDirEnabled: boolean;
+	/** 工具**延迟加载**开关（默认开）：开 → 只有核心工具（bash/read/edit/write）+
+	 *  `load_tools` 常驻，其余工具在系统提示词里只出现「名字 + 一行摘要」，模型用
+	 *  `load_tools` 拉取后完整参数 schema 才进上下文（见 server/load-tools-tool.ts）；
+	 *  关 → 回到旧行为（按禁用名单/预设直接活跃）。live 生效无需 reload，
+	 *  只影响新会话与之后的门控重放。DSH 引擎无 pi 工具注册面，忽略此开关。 */
+	toolLazyLoading: boolean;
 	/** Agent 工具禁用名单（统一开关，见 tool-manager.ts；live 生效无需 reload）。 */
 	disabledAgentTools: string[];
 	/** 插件 AI 工具禁用名单（工具名全局唯一；live 生效无需 reload；
@@ -345,6 +362,7 @@ export interface SettingsPreset extends Omit<
 	| "parallelReminderEnabled"
 	// 纯运行行为开关（不进预设：应用预设时保持当前值）。
 	| "readDirEnabled"
+	| "toolLazyLoading"
 	| "toolApprovalEnabled"
 	| "toolWatchdogTimeoutMs"
 	| "thinkingWrap"
@@ -355,6 +373,8 @@ export interface SettingsPreset extends Omit<
 	| "subagentDefaultModel"
 	| "quickPhrases"
 	| "quickPhrasesEnabled"
+	// 逐工具文案覆盖也不进预设（应用预设时保持当前值）。
+	| "toolPromptOverrides"
 > {
 	name: string;
 }
@@ -953,6 +973,7 @@ export class ClientStateStore {
 			customSystemPrompt: stored?.customSystemPrompt ?? "",
 			promptTemplate,
 			promptOverrides,
+			toolPromptOverrides: normalizeToolPromptOverrides(stored?.toolPromptOverrides),
 			disabledSkills: stored?.disabledSkills ?? [],
 			disabledExtensions: stored?.disabledExtensions ?? [],
 			disabledAgentTools: legacyToDisabled(stored ?? {}),
@@ -967,6 +988,7 @@ export class ClientStateStore {
 			terminalBashMaxForegroundMs: stored?.terminalBashMaxForegroundMs ?? 60_000,
 			toolWatchdogTimeoutMs: normalizeToolWatchdogTimeoutMs(stored?.toolWatchdogTimeoutMs),
 			readDirEnabled: stored?.readDirEnabled ?? true,
+			toolLazyLoading: stored?.toolLazyLoading ?? DEFAULT_TOOL_LAZY_LOADING,
 			toolApprovalEnabled: stored?.toolApprovalEnabled ?? true,
 			editSoftEnabled:
 				stored?.disabledAgentTools !== undefined
@@ -1023,6 +1045,7 @@ export class ClientStateStore {
 			customSystemPrompt: settings.customSystemPrompt ?? cur.customSystemPrompt ?? "",
 			promptTemplate: settings.promptTemplate ?? cur.promptTemplate ?? "",
 			promptOverrides: { ...(settings.promptOverrides ?? cur.promptOverrides) },
+			toolPromptOverrides: normalizeToolPromptOverrides(settings.toolPromptOverrides ?? cur.toolPromptOverrides),
 			disabledSkills: settings.disabledSkills ?? cur.disabledSkills ?? [],
 			disabledExtensions: settings.disabledExtensions ?? cur.disabledExtensions ?? [],
 			disabledAgentTools: normalizeDisabledAgentTools(settings.disabledAgentTools ?? cur.disabledAgentTools),
@@ -1035,6 +1058,7 @@ export class ClientStateStore {
 				settings.toolWatchdogTimeoutMs ?? cur.toolWatchdogTimeoutMs ?? DEFAULT_TOOL_WATCHDOG_TIMEOUT_MS,
 			),
 			readDirEnabled: settings.readDirEnabled ?? cur.readDirEnabled ?? true,
+			toolLazyLoading: settings.toolLazyLoading ?? cur.toolLazyLoading ?? DEFAULT_TOOL_LAZY_LOADING,
 			toolApprovalEnabled: settings.toolApprovalEnabled ?? cur.toolApprovalEnabled ?? true,
 			editSoftEnabled: settings.editSoftEnabled ?? cur.editSoftEnabled ?? false,
 			questionnaireEnabled: settings.questionnaireEnabled ?? cur.questionnaireEnabled ?? true,

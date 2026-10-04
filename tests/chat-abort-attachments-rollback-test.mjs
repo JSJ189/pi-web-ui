@@ -133,7 +133,17 @@ const server = spawn("node", [join(REPO_ROOT, "dist/server/index.js")], {
 server.stdout?.on("data", (d) => process.stdout.write("[srv out] " + d.toString()));
 server.stderr?.on("data", (d) => process.stderr.write("[srv] " + d.toString()));
 
-await new Promise((r) => setTimeout(r, 2000));
+// 等端口就绪，不用固定 sleep（Node 启动耗时略超 2s 时旧写法会在连接处 ECONNREFUSED）。
+for (let i = 0; i < 100; i++) {
+	try {
+		const r = await fetch(`http://127.0.0.1:${PORT}/api/health`);
+		if (r.ok) break;
+	} catch {
+		/* not up yet */
+	}
+	await new Promise((r) => setTimeout(r, 100));
+}
+await new Promise((r) => setTimeout(r, 200));
 let ws;
 let currentState = { isStreaming: false, messages: [] };
 const stateWaiters = [];

@@ -87,6 +87,10 @@ const server = spawn("node", ["dist/server/index.js"], {
 		// 「四预设 / 无 broken」两条断言取决于跑测试的机器上装了什么）。dsh-home-paths
 		// 的优先级是 显式配置 > $DSH_HOME > ~/.dsh，所以这里设 env 即刻生效。
 		DSH_HOME: mkdtempSync(join(tmpdir(), "dsh-smoke-home-")),
+		// 预设分享：分享关掉（绝不真在共享仓库开 Issue），目录指向回环地址（被 SSRF 收口拦下）——
+		// 两条都是确定性的离线断言（DSH 侧 sharePort 适配的回归，见 docs/preset-sharing.md）。
+		PI_WEB_PRESET_REPO: "0",
+		PI_WEB_PRESET_CATALOG_URL: "https://127.0.0.1/index.json",
 	},
 	stdio: ["ignore", "ignore", "pipe"],
 });
@@ -312,6 +316,41 @@ async function main() {
 		"重连后设置持久化恢复",
 		st2.settings.customSystemPrompt === "你是 DSH 冒烟测试助手",
 		`prompt=${st2.settings.customSystemPrompt}`,
+	);
+
+	// --- 5.5 预设分享（DSH 侧的 PresetSharePort 适配；导入/导出/目录） ---
+	c2.send({ type: "preset_export", source: "current", requestId: "dsh-ex1" });
+	const dshEx = await c2.wait((m) => m.type === "preset_export_result" && m.requestId === "dsh-ex1", 10000);
+	check(
+		"DSH 导出当前设置为交换文档",
+		dshEx.ok === true && JSON.parse(dshEx.json).format === "pi-web-ui-preset" && !!dshEx.fileName,
+		String(dshEx.error ?? ""),
+	);
+	c2.send({ type: "preset_import", json: dshEx.json, dryRun: true, requestId: "dsh-im1" });
+	const dshPre = await c2.wait((m) => m.type === "preset_import_result" && m.requestId === "dsh-im1", 10000);
+	check("DSH 导入预览（dryRun 不落盘）", dshPre.ok === true && dshPre.dryRun === true && !!dshPre.preview);
+	c2.send({ type: "preset_import", json: dshEx.json, name: "dsh-冒烟预设", requestId: "dsh-im2" });
+	const dshImp = await c2.wait((m) => m.type === "preset_import_result" && m.requestId === "dsh-im2", 10000);
+	check("DSH 导入落盘", dshImp.ok === true && dshImp.dryRun === false);
+	// 导入成功会推一条 notice（与真实使用一致）——在这里消费掉，否则会污染后面
+	// 「slash 命令 → notice」那几段的首条匹配。
+	await c2.wait((m) => m.type === "notice" && m.text.includes("预设已导入"), 10000).catch(() => null);
+	c2.send({ type: "apply_preset", name: "dsh-冒烟预设" });
+	const dshApplied = await c2.wait(
+		(m) => m.type === "settings_state" && m.settings.presets?.some((p) => p.name === "dsh-冒烟预设"),
+		10000,
+	);
+	check("DSH 导入的预设出现在预设列表", !!dshApplied);
+	c2.send({ type: "preset_import_url", url: "http://127.0.0.1/p.json", requestId: "dsh-im3" });
+	const dshUrl = await c2.wait((m) => m.type === "preset_import_result" && m.requestId === "dsh-im3", 10000);
+	check("DSH 网址导入拦回环地址", dshUrl.ok === false && typeof dshUrl.error === "string");
+	c2.send({ type: "preset_catalog", requestId: "dsh-ct1" });
+	const dshCat = await c2.wait((m) => m.type === "preset_catalog_result" && m.requestId === "dsh-ct1", 15000);
+	check("DSH 目录回执形状完整", Array.isArray(dshCat.entries) && typeof dshCat.source === "string");
+	c2.send({ type: "delete_preset", name: "dsh-冒烟预设" });
+	await c2.wait(
+		(m) => m.type === "settings_state" && !m.settings.presets?.some((p) => p.name === "dsh-冒烟预设"),
+		10000,
 	);
 
 	// --- 6. slash 命令拦截（不发模型） ---

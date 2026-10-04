@@ -33,6 +33,8 @@ import type {
 	UiPluginCatalogEntry,
 	UiPluginInfo,
 	UiPluginUpdateInfo,
+	UiPresetCatalogEntry,
+	UiPresetImportPreview,
 	UiProviderConfig,
 	UiQuestion,
 	UiServiceInfo,
@@ -47,6 +49,8 @@ import { setAppGlobals, setAppSend } from "./app-globals";
 // 工具定义说明弹窗（工具卡右键 → 「显示工具详细信息」）：应答直接回模块级 store，
 // 不进 ChatState（弹窗挂在 App 上，消息列表里几十张卡片不必为此各拿一份数据）。
 import { receiveToolInfo } from "./tool-info-state";
+// 设置页逐工具文案编辑器：默认值/当前覆盖回模块级 store（不弹工具定义弹窗）。
+import { receiveToolPrompt } from "./tool-prompt-state";
 // 被上下文压缩折叠的历史消息（issue #398）：按需获取后回模块级 store 供卡片展开。
 import { receiveCompactedMessages } from "./compacted-history-state";
 import { emitPluginData } from "./plugin-loader";
@@ -139,6 +143,57 @@ export interface CatalogSyncState {
 	/** install:true 时逐条安装结果。 */
 	installed?: { id: string; ok: boolean; error?: string }[];
 	/** 本地收到回执的时间。 */
+	receivedAt: number;
+}
+
+/** 预设导出结果（`preset_export_result`）：json = 可复制/下载的交换文档文本。 */
+export interface PresetExportState {
+	requestId?: string;
+	ok: boolean;
+	name?: string;
+	/** 建议的下载文件名（<slug>-<短哈希>.json）。 */
+	fileName?: string;
+	json?: string;
+	error?: string;
+	receivedAt: number;
+}
+
+/** 预设导入结果（`preset_import_result`）：dryRun=true 时只有预览，没有落盘。
+ *  source 是前端记的（“粘贴/文件/网址”），用于预览头部提示。 */
+export interface PresetImportState {
+	requestId?: string;
+	ok: boolean;
+	dryRun: boolean;
+	preview?: UiPresetImportPreview;
+	applied?: boolean;
+	error?: string;
+	source: "paste" | "file" | "url";
+	receivedAt: number;
+}
+
+/** 社区共享预设目录（`preset_catalog_result`）：失败时 entries 是上一次成功的缓存。 */
+export interface PresetCatalogState {
+	requestId?: string;
+	ok: boolean;
+	entries: UiPresetCatalogEntry[];
+	/** 目录来源地址（关闭时为空串）。 */
+	source: string;
+	cached: boolean;
+	fetchedAt: number;
+	error?: string;
+	receivedAt: number;
+}
+
+/** 预设分享结果（`preset_share_result`）：method=gh 时 url 是新 Issue（直接打开）；
+ *  method=browser 时前端复制 json 后打开 url（预填标题的建 Issue 页）。 */
+export interface PresetShareState {
+	requestId?: string;
+	ok: boolean;
+	method?: "gh" | "browser";
+	url?: string;
+	name?: string;
+	json?: string;
+	error?: string;
 	receivedAt: number;
 }
 
@@ -381,6 +436,11 @@ export interface ChatState {
 	pluginJobs: Record<string, PluginJobState>;
 	/** 最近一次目录同步的回执（设置面板「从目录同步」框展示用；刷新即丢）。 */
 	catalogSync: CatalogSyncState | null;
+	/** 预设分享（server/preset-share.ts）：导出结果 / 导入预览 / 社区目录（刷新即丢）。 */
+	presetExport: PresetExportState | null;
+	presetImport: PresetImportState | null;
+	presetCatalog: PresetCatalogState | null;
+	presetShare: PresetShareState | null;
 	/** 最近一次「安装前先读 spec」的检查结果（设置面板输入框下展示；刷新即丢）。 */
 	installInspect: PluginInstallInspectState | null;
 	/** 插件目录授权表（issue #146）：设置面板列出 + 可撤销。 */
@@ -586,6 +646,15 @@ type Action =
 	/** 插件后台作业进度（安装/更新/卸载）：line 为该次新增的一行输出。 */
 	| { type: "plugin_job"; job: Omit<PluginJobState, "lines" | "startedAt">; line?: string }
 	| { type: "plugin_catalog_sync_result"; result: Omit<CatalogSyncState, "receivedAt"> }
+	/** 预设分享（server/preset-share.ts）：导出/导入/目录/一键分享回执。 */
+	| { type: "preset_export_result"; result: Omit<PresetExportState, "receivedAt"> }
+	| {
+			type: "preset_import_result";
+			result: Omit<PresetImportState, "receivedAt" | "source">;
+			source: PresetImportState["source"];
+	  }
+	| { type: "preset_catalog_result"; result: Omit<PresetCatalogState, "receivedAt"> }
+	| { type: "preset_share_result"; result: Omit<PresetShareState, "receivedAt"> }
 	| { type: "plugin_install_inspect_result"; result: PluginInstallInspectState }
 	/** 插件目录授权表（服务端推）。 */
 	| { type: "plugin_grants"; grants: { pluginId: string; paths: string[] }[] }
@@ -1053,6 +1122,14 @@ function reducer(state: ChatState, action: Action): ChatState {
 		}
 		case "plugin_catalog_sync_result":
 			return { ...state, catalogSync: { ...action.result, receivedAt: Date.now() } };
+		case "preset_export_result":
+			return { ...state, presetExport: { ...action.result, receivedAt: Date.now() } };
+		case "preset_import_result":
+			return { ...state, presetImport: { ...action.result, source: action.source, receivedAt: Date.now() } };
+		case "preset_catalog_result":
+			return { ...state, presetCatalog: { ...action.result, receivedAt: Date.now() } };
+		case "preset_share_result":
+			return { ...state, presetShare: { ...action.result, receivedAt: Date.now() } };
 		case "plugin_install_inspect_result":
 			// 只留最近一次（输入框下面的那一句话），旧的直接丢掉。
 			return { ...state, installInspect: action.result };
@@ -1346,6 +1423,10 @@ export function useChat() {
 		pluginCatalogEpoch: 0,
 		pluginJobs: {},
 		catalogSync: null,
+		presetExport: null,
+		presetImport: null,
+		presetCatalog: null,
+		presetShare: null,
 		installInspect: null,
 		pluginGrants: [],
 		pluginPermissions: [],
@@ -1795,6 +1876,9 @@ export function useChat() {
 				case "tool_info":
 					receiveToolInfo(msg);
 					break;
+				case "tool_prompt":
+					receiveToolPrompt(msg);
+					break;
 				case "compacted_messages_result":
 					receiveCompactedMessages(msg);
 					break;
@@ -2088,6 +2172,70 @@ export function useChat() {
 							...(msg.error ? { error: msg.error } : {}),
 							...(msg.entries ? { entryCount: msg.entries.length } : {}),
 							...(msg.installed ? { installed: msg.installed } : {}),
+						},
+					});
+					break;
+				case "preset_export_result":
+					dispatch({
+						type: "preset_export_result",
+						result: {
+							...(msg.requestId ? { requestId: msg.requestId } : {}),
+							ok: msg.ok === true,
+							...(msg.name ? { name: msg.name } : {}),
+							...(msg.fileName ? { fileName: msg.fileName } : {}),
+							...(msg.json ? { json: msg.json } : {}),
+							...(msg.error ? { error: msg.error } : {}),
+						},
+					});
+					break;
+				case "preset_import_result": {
+					// 导入来源由前端编在 requestId 前缀里（"paste:" / "file:" / "url:"），
+					// 服务端不关心来源，但预览头部要提示“从网址导入”还是“粘贴的”。
+					const id = String(msg.requestId ?? "");
+					const source: PresetImportState["source"] = id.startsWith("url:")
+						? "url"
+						: id.startsWith("file:")
+							? "file"
+							: "paste";
+					dispatch({
+						type: "preset_import_result",
+						source,
+						result: {
+							...(msg.requestId ? { requestId: msg.requestId } : {}),
+							ok: msg.ok === true,
+							dryRun: msg.dryRun === true,
+							...(msg.preview ? { preview: msg.preview } : {}),
+							...(msg.applied ? { applied: true } : {}),
+							...(msg.error ? { error: msg.error } : {}),
+						},
+					});
+					break;
+				}
+				case "preset_catalog_result":
+					dispatch({
+						type: "preset_catalog_result",
+						result: {
+							...(msg.requestId ? { requestId: msg.requestId } : {}),
+							ok: msg.ok === true,
+							entries: msg.entries ?? [],
+							source: msg.source ?? "",
+							cached: msg.cached === true,
+							fetchedAt: msg.fetchedAt ?? 0,
+							...(msg.error ? { error: msg.error } : {}),
+						},
+					});
+					break;
+				case "preset_share_result":
+					dispatch({
+						type: "preset_share_result",
+						result: {
+							...(msg.requestId ? { requestId: msg.requestId } : {}),
+							ok: msg.ok === true,
+							...(msg.method ? { method: msg.method } : {}),
+							...(msg.url ? { url: msg.url } : {}),
+							...(msg.name ? { name: msg.name } : {}),
+							...(msg.json ? { json: msg.json } : {}),
+							...(msg.error ? { error: msg.error } : {}),
 						},
 					});
 					break;

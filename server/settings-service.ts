@@ -11,6 +11,7 @@ import { basename, dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 import type { AgentSession } from "@earendil-works/pi-coding-agent";
 import type {
+	ClientMessage,
 	ServerMessage,
 	UiApprovalPolicyState,
 	UiApprovalRule,
@@ -18,6 +19,7 @@ import type {
 	UiLayoutPrefs,
 	UiSettingsState,
 	UiSkillInfo,
+	UiToolPromptOverride,
 	UiVisionBridgeModel,
 } from "./protocol.js";
 import {
@@ -38,6 +40,17 @@ import { PLAN_MODE_SYSTEM_PROMPT } from "./plan-mode.js";
 import { DEFAULT_TEMPLATES, type SubagentTemplatesStore } from "./subagent-templates.js";
 import type { ApprovalRulesStore } from "./approval-rules.js";
 import { deriveLegacy, foldLegacyIntoDisabled, normalizeDisabledAgentTools } from "./tool-manager.js";
+import { normalizeToolPromptOverrides } from "./tool-prompt-overrides.js";
+import { resolveServerLang, type ServerLang } from "./i18n.js";
+import {
+	exportPresetVia,
+	importPresetFromUrlVia,
+	importPresetVia,
+	packageVersion,
+	pushPresetCatalogVia,
+	sharePresetVia,
+	type PresetSharePort,
+} from "./preset-share.js";
 
 /** ClientSession 提供给本服务的宿主能力（窄接口，便于独立测试）。 */
 export interface MarkerStateForSettings {
@@ -335,6 +348,7 @@ export class SettingsService {
 				customSystemPrompt: this.settings.customSystemPrompt,
 				promptTemplate: this.settings.promptTemplate ?? "",
 				promptOverrides: { ...this.settings.promptOverrides },
+				toolPromptOverrides: { ...this.settings.toolPromptOverrides },
 				disabledAgentTools: [...normalizeDisabledAgentTools(this.settings.disabledAgentTools)],
 				disabledPluginTools: [...normalizeDisabledPluginTools(this.settings.disabledPluginTools)],
 				terminalToolsEnabled: legacyTools.terminalToolsEnabled,
@@ -343,6 +357,7 @@ export class SettingsService {
 				terminalBashMaxForegroundMs: this.settings.terminalBashMaxForegroundMs,
 				toolWatchdogTimeoutMs: this.settings.toolWatchdogTimeoutMs,
 				readDirEnabled: this.settings.readDirEnabled !== false,
+				toolLazyLoading: this.settings.toolLazyLoading !== false,
 				toolApprovalEnabled: this.settings.toolApprovalEnabled !== false,
 				approvalPolicy: this.host.getApprovalPolicy?.() ?? { allowAll: false, categories: [] },
 				approvalRules: this.approvalRules?.list() ?? [],
@@ -451,6 +466,9 @@ export class SettingsService {
 		customSystemPrompt?: string;
 		promptTemplate?: string;
 		promptOverrides?: Record<string, string>;
+		/** 逐工具文案覆盖（工具名 → description/promptSnippet/promptGuidelines；
+		 *  空字段/空对象 = 清除该项覆盖；只合并给出的键）。 */
+		toolPromptOverrides?: Record<string, UiToolPromptOverride>;
 		disabledSkills?: string[];
 		disabledExtensions?: string[];
 		/** 统一工具禁用名单（单源；遗留三开关与之双向同步）。 */
@@ -465,6 +483,8 @@ export class SettingsService {
 		/** read 工具读目录开关（默认开；见 server/read-tool.ts）。运行时无需重载，
 		 *  覆盖定义每次调用实时读取。 */
 		readDirEnabled?: boolean;
+		/** 工具延迟加载开关（默认开）：只影响新会话与之后的门控重放。 */
+		toolLazyLoading?: boolean;
 		/** 工具执行审批总开关（默认开；纯运行开关，每次审批实时读取，无需 reload）。 */
 		toolApprovalEnabled?: boolean;
 		editSoftEnabled?: boolean;
@@ -514,7 +534,9 @@ export class SettingsService {
 			partial.disabledPlugins !== undefined ||
 			partial.terminalToolsEnabled !== undefined ||
 			partial.editSoftEnabled !== undefined ||
-			partial.questionnaireEnabled !== undefined;
+			partial.questionnaireEnabled !== undefined ||
+			partial.toolPromptOverrides !== undefined ||
+			partial.toolLazyLoading !== undefined;
 		if (partial.promptMode !== undefined) this.settings.promptMode = partial.promptMode;
 		if (partial.customSystemPrompt !== undefined) {
 			this.settings.customSystemPrompt = partial.customSystemPrompt;
@@ -530,6 +552,16 @@ export class SettingsService {
 				else delete next[k];
 			}
 			this.settings.promptOverrides = next;
+		}
+		if (partial.toolPromptOverrides !== undefined) {
+			// 逐工具合并：给出的键整体替换（归一化后为空 = 清除该工具覆盖）。
+			const next = { ...this.settings.toolPromptOverrides };
+			const normalized = normalizeToolPromptOverrides(partial.toolPromptOverrides);
+			for (const key of Object.keys(partial.toolPromptOverrides)) {
+				if (normalized[key]) next[key] = normalized[key];
+				else delete next[key];
+			}
+			this.settings.toolPromptOverrides = normalizeToolPromptOverrides(next);
 		}
 		if (partial.disabledSkills !== undefined) {
 			this.settings.disabledSkills = partial.disabledSkills;
@@ -585,6 +617,12 @@ export class SettingsService {
 		// read 读目录开关：覆盖定义每次调用实时读取，改动即时生效，无需 reload。
 		if (partial.readDirEnabled !== undefined) {
 			this.settings.readDirEnabled = partial.readDirEnabled;
+		}
+		// 工具延迟加载开关（默认开）：门控每次实时读取，改动经 applyToolGating 重放生效
+		// （见 toolGatingChanged）——**只影响新会话与之后的门控重放**，已有对话的已加载
+		// 集合不会被反向清空（不想让在跑的对话凭空丢掉工具）。
+		if (partial.toolLazyLoading !== undefined) {
+			this.settings.toolLazyLoading = partial.toolLazyLoading !== false;
 		}
 		// 工具执行审批总开关：审批入口每次实时读取（askApproval 顶部门禁），无需 reload。
 		if (partial.toolApprovalEnabled !== undefined) {
@@ -694,7 +732,7 @@ export class SettingsService {
 		if (needsReload) await this.applyRuntime();
 	}
 
-	/** Save the CURRENT settings as a named preset (overwrites if exists). */
+	/** 保存当前设置为命名预设（同名覆盖）。 */
 	async savePreset(name: string): Promise<void> {
 		const n = name.trim();
 		if (!n) {
@@ -706,8 +744,18 @@ export class SettingsService {
 			});
 			return;
 		}
-		const preset = {
-			name: n,
+		const preset = this.snapshotPreset(n);
+		const existing = this.presets.findIndex((p) => p.name === n);
+		if (existing >= 0) this.presets[existing] = preset;
+		else this.presets.push(preset);
+		this.host.stateStore.savePresets(this.host.clientId, this.presets);
+		this.push();
+	}
+
+	/** 把当前设置快照成一条预设（名字由调用方给定）。导出/保存共用同一字段列表。 */
+	private snapshotPreset(name: string): SettingsPreset {
+		return {
+			name,
 			promptMode: this.settings.promptMode,
 			customSystemPrompt: this.settings.customSystemPrompt,
 			promptTemplate: this.settings.promptTemplate ?? "",
@@ -728,11 +776,6 @@ export class SettingsService {
 			reviewDisabledSkills: [...this.settings.reviewDisabledSkills],
 			skillsFullText: [...normalizeSkillList(this.settings.skillsFullText)],
 		};
-		const existing = this.presets.findIndex((p) => p.name === n);
-		if (existing >= 0) this.presets[existing] = preset;
-		else this.presets.push(preset);
-		this.host.stateStore.savePresets(this.host.clientId, this.presets);
-		this.push();
 	}
 
 	/** Replace the current settings with the named preset and apply it. */
@@ -775,6 +818,8 @@ export class SettingsService {
 			terminalBashMaxForegroundMs: p.terminalBashMaxForegroundMs ?? this.settings.terminalBashMaxForegroundMs,
 			// read 读目录是纯运行行为开关，不进预设——保留当前值。
 			readDirEnabled: this.settings.readDirEnabled !== false,
+			// 工具延迟加载同样是纯运行行为开关，不进预设——保留当前值。
+			toolLazyLoading: this.settings.toolLazyLoading !== false,
 			// 工具审批总开关同样是纯运行开关，不进预设——保留当前值。
 			toolApprovalEnabled: this.settings.toolApprovalEnabled !== false,
 			// toolWatchdogTimeoutMs 是纯运行行为参数，不进预设——保留当前值。
@@ -823,6 +868,8 @@ export class SettingsService {
 			// 快捷短语是纯 UI 偏好，不进预设——保留当前值。
 			quickPhrases: [...this.settings.quickPhrases],
 			quickPhrasesEnabled: this.settings.quickPhrasesEnabled,
+			// 逐工具文案覆盖也不进预设——保留当前值。
+			toolPromptOverrides: { ...this.settings.toolPromptOverrides },
 		};
 		this.host.stateStore.saveSettings(this.host.clientId, this.settings);
 		// 预设可能改了重试次数：即时注入（流式中延迟的 reload 之后还会由调用方重放）。
@@ -838,6 +885,62 @@ export class SettingsService {
 		this.presets = this.presets.filter((p) => p.name !== name);
 		this.host.stateStore.savePresets(this.host.clientId, this.presets);
 		this.push();
+	}
+
+	/* ---------------------------------------------------------------- */
+	/* 预设分享：导出 / 导入 / 分享 / 社区目录（server/preset-share.ts）  */
+	/* ---------------------------------------------------------------- */
+
+	/** 当前客户端语言（服务端文案用；与 agent-service 同源）。 */
+	private get lang(): ServerLang {
+		return resolveServerLang(this.host.stateStore.get(this.host.clientId).locale);
+	}
+
+	/** 分享编排（server/preset-share.ts）需要的最小能力集合。 */
+	private sharePort(): PresetSharePort {
+		return {
+			lang: () => this.lang,
+			appVersion: () => packageVersion(),
+			presets: () => this.presets,
+			currentSettings: () => {
+				const { name: _drop, ...rest } = this.snapshotPreset("") as SettingsPreset & Record<string, unknown>;
+				return { ...rest };
+			},
+			upsertPreset: (preset) => {
+				const i = this.presets.findIndex((p) => p.name === preset.name);
+				if (i >= 0) this.presets[i] = preset;
+				else this.presets.push(preset);
+				this.host.stateStore.savePresets(this.host.clientId, this.presets);
+			},
+			applyPreset: (name) => this.applyPreset(name),
+			pushSettings: () => this.push(),
+			emit: (msg) => this.host.emit(msg),
+		};
+	}
+
+	/** 导出预设（name 命名的预设）或当前设置（source=current）为 JSON 文本。 */
+	async exportPreset(msg: Extract<ClientMessage, { type: "preset_export" }>): Promise<void> {
+		exportPresetVia(this.sharePort(), msg);
+	}
+
+	/** 解析导入的预设 JSON：dryRun = 只回预览（不落盘）；apply = 导入后立即应用。 */
+	async importPreset(msg: Extract<ClientMessage, { type: "preset_import" }>): Promise<void> {
+		await importPresetVia(this.sharePort(), msg);
+	}
+
+	/** 按网址导入（服务端抓取：避开浏览器 CORS；内网地址已拦截）。 */
+	async importPresetFromUrl(msg: Extract<ClientMessage, { type: "preset_import_url" }>): Promise<void> {
+		await importPresetFromUrlVia(this.sharePort(), msg);
+	}
+
+	/** 一键分享到社区共享仓库（gh issue create；gh 不可用时回落预填网页）。 */
+	async sharePreset(msg: Extract<ClientMessage, { type: "preset_share" }>): Promise<void> {
+		await sharePresetVia(this.sharePort(), msg);
+	}
+
+	/** 拉社区共享目录（5 分钟缓存；失败保留上一次成功的列表）。 */
+	async pushPresetCatalog(msg: Extract<ClientMessage, { type: "preset_catalog" }>): Promise<void> {
+		await pushPresetCatalogVia(this.sharePort(), msg);
 	}
 
 	/** Upsert 一个子代理模板（全局共享）。模板只影响未来派生的子代理，

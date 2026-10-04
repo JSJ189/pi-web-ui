@@ -480,11 +480,10 @@ export default {
 				label: "图片信息",
 				description:
 					"Inspect images in the workspace: format, pixel size, aspect ratio, file bytes, alpha, EXIF (camera/exposure/GPS), plus histogram/dominant colors on request. " +
-					"Use it before compressing or cropping so you know what you are dealing with. Accepts one path, several paths, or a directory to scan.",
-				promptSnippet: "image_info — inspect workspace image metadata (size/format/EXIF), also scans a directory",
+					"Accepts one path, several paths, or a directory to scan.",
+				promptSnippet: "inspect an image's size/format/EXIF",
 				promptGuidelines: [
 					"Before compressing or cropping an image, call image_info to learn its real dimensions and format.",
-					"image_info accepts a directory to list every image inside (useful for bulk work).",
 				],
 				parameters: {
 					type: "object",
@@ -560,9 +559,8 @@ export default {
 				label: "图片几何/调色",
 				description:
 					"Transform workspace images: resize (width/height/longEdge/percent), crop, rotate 90/arbitrary, flip, and per-pixel adjust (brightness/contrast/saturation/hue/gamma/grayscale/sepia/invert/blur/sharpen/vignette). " +
-					"Writes new files (never overwrites unless asked). Supports batch via `paths`. PNG/JPEG/BMP only — WebP/GIF/AVIF belong in the 🖼 view.",
-				promptSnippet:
-					"image_transform — resize / crop / rotate / flip / adjust workspace images (PNG/JPEG/BMP, batch ok)",
+					"PNG/JPEG/BMP only — WebP/GIF/AVIF belong in the 🖼 view.",
+				promptSnippet: "resize / crop / rotate / adjust images",
 				promptGuidelines: [
 					"image_transform never overwrites the source unless overwrite=true; by default it writes <name><suffix>.<ext> next to the original (or into outDir).",
 					"Crop coordinates from image_info are 1:1 pixels of the *current* file; if you also rotate, crop applies after rotation.",
@@ -661,9 +659,8 @@ export default {
 				name: "image_compress",
 				label: "压缩图片",
 				description:
-					"Compress workspace images: convert format (png/jpeg/bmp) and/or hit a target file size with a quality binary search (plus downscaling when quality alone is not enough). " +
-					"Use `targetKB` for 'under 300 KB' requests and `quality` for a fixed quality. Batch via `paths`.",
-				promptSnippet: "image_compress — shrink workspace images to a quality or a target file size (batch ok)",
+					"Compress workspace images: convert format (png/jpeg/bmp) and/or hit a target file size with a quality binary search (plus downscaling when quality alone is not enough). Batch via `paths`.",
+				promptSnippet: "shrink images to a quality or file-size budget",
 				promptGuidelines: [
 					"To hit a size budget, pass targetKB — do not guess quality by hand, the tool binary-searches it.",
 					"Compressing a PNG meaningfully usually means converting to jpeg or webp; jpeg is what the server can write (webp only in the 🖼 view).",
@@ -774,9 +771,8 @@ export default {
 				name: "image_watermark",
 				label: "图片水印",
 				description:
-					"Stamp an image (logo/PNG with alpha) onto workspace images: 9-grid position, opacity, scale, margin, or full tiling. " +
-					"Text watermarks with real fonts are browser-side only (🖼 view).",
-				promptSnippet: "image_watermark — overlay a logo image onto workspace images (position/opacity/tile)",
+					"Stamp an image (logo/PNG with alpha) onto workspace images: 9-grid position, opacity, scale, margin, or full tiling.",
+				promptSnippet: "overlay a logo image onto images",
 				promptGuidelines: [
 					"image_watermark takes an image overlay, not text — for text watermarks tell the user to use the 🖼 view (real fonts are browser-side).",
 					'A watermarked output defaults to <name>-wm.<ext> next to the source if you pass suffix="-wm".',

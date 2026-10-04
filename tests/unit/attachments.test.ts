@@ -59,6 +59,8 @@ function makeCtx(opts: {
 			customSystemPrompt: "",
 			promptTemplate: "",
 			promptOverrides: {},
+			toolPromptOverrides: {},
+			toolLazyLoading: true,
 			disabledSkills: [],
 			disabledExtensions: [],
 			disabledAgentTools: [],

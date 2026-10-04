@@ -22,6 +22,7 @@ import {
 	foldLegacyIntoDisabled,
 	isAgentToolEnabled,
 	isKnownAgentTool,
+	lazyLoadingDisabledTools,
 	isTerminalGuidanceOn,
 	legacyToDisabled,
 	normalizeDisabledAgentTools,
@@ -49,8 +50,8 @@ function fakeSet(initial: string[] = []) {
 }
 
 describe("catalog", () => {
-	it("共 25 个可开关工具（终端 7＋子代理 1＋其他 17）", () => {
-		expect(AGENT_TOOL_CATALOG).toHaveLength(25);
+	it("共 23 个可开关工具（终端 7＋子代理 1＋其他 15）", () => {
+		expect(AGENT_TOOL_CATALOG).toHaveLength(23);
 		expect(TERMINAL_TOOL_NAMES).toHaveLength(7);
 		expect(SUBAGENT_TOOL_NAMES).toHaveLength(1);
 	});
@@ -90,6 +91,14 @@ describe("normalize", () => {
 	it("旧名 markers_list 迁移到 todo_list（已关闭保持关闭）", () => {
 		expect(normalizeDisabledAgentTools(["markers_list"])).toEqual(["todo_list"]);
 		expect(normalizeDisabledAgentTools(["markers_list", "todo_list"])).toEqual(["todo_list"]);
+	});
+
+	it("旧定时任务三件套迁移到合并后的 schedule（任一关闭都保持关闭）", () => {
+		for (const legacy of ["schedule_task", "schedule_list", "schedule_cancel"]) {
+			expect(normalizeDisabledAgentTools([legacy])).toEqual(["schedule"]);
+		}
+		expect(normalizeDisabledAgentTools(["schedule_task", "schedule_list"])).toEqual(["schedule"]);
+		expect(normalizeDisabledAgentTools(["schedule"])).toEqual(["schedule"]);
 	});
 
 	it("isKnownAgentTool / isAgentToolEnabled", () => {
@@ -191,6 +200,26 @@ describe("tool_manage 出入口", () => {
 			AGENT_TOOL_CATALOG.map((t) => t.name),
 		);
 		expect(s2.peek()).toEqual(["bash"]);
+	});
+
+	it("applyAgentToolsGating forceActive：预设白名单外也强制加回", () => {
+		// code 预设只留 bash/read/edit/write/edit_soft：load_tools 会被过滤掉……
+		const s = fakeSet(["bash", "read", "load_tools"]);
+		applyAgentToolsGating(s, [], "code");
+		expect(s.peek()).not.toContain("load_tools");
+		// ……forceActive 把它拉回来（它不在任何预设白名单里，但必须永远可用）。
+		const s2 = fakeSet(["bash", "read", "load_tools"]);
+		applyAgentToolsGating(s2, [], "code", { forceActive: ["load_tools"] });
+		expect(s2.peek()).toContain("load_tools");
+	});
+
+	it("lazyLoadingDisabledTools：除核心/已加载/load_tools 外全部当临时禁用", () => {
+		const all = ["bash", "read", "edit", "write", "load_tools", "patch", "lsp"];
+		expect(lazyLoadingDisabledTools(all, [])).toEqual(["patch", "lsp"]);
+		expect(lazyLoadingDisabledTools(all, ["patch"])).toEqual(["lsp"]);
+		expect(lazyLoadingDisabledTools(all, ["patch", "lsp"])).toEqual([]);
+		// 未知工具名不在 all 里 → 不会凭空出现在禁用名单。
+		expect(lazyLoadingDisabledTools(["bash"], ["patch"])).toEqual([]);
 	});
 });
 

@@ -380,6 +380,9 @@ export default {
 		);
 
 		// ------------------------------------------------------------ AI 工具
+		/** todo / reminder 共用的 action 语义（不填 action 时按有无 id 推断），只写一份。 */
+		const ACTION_OR_INFER_DESC = "What to do. Optional: no action + no id = add; no action + id = update.";
+
 		const toolOffs = [
 			host.registerAgentTool({
 				name: "notes_list",
@@ -389,9 +392,8 @@ export default {
 					"Before editing or deleting an item, get its id via notes_list (ids are the input to notes_update / notes_todo / notes_reminder).",
 				],
 				description:
-					"List notes, todos and reminders from the user's personal notes store (this machine). Use it whenever the user asks what is on their plate, or before editing an item to learn its id. Returns compact lines with the id needed by notes_update / notes_todo / notes_reminder.",
-				promptSnippet:
-					"notes_list — list the user's notes/todos/reminders with ids (kind=agenda = what is due today and upcoming)",
+					"List notes, todos and reminders from the user's personal notes store (this machine). Returns compact lines with the id needed by notes_update / notes_todo / notes_reminder.",
+				promptSnippet: "the user's notes, todos and reminders (with ids)",
 				parameters: {
 					type: "object",
 					properties: {
@@ -419,9 +421,8 @@ export default {
 					"Distinguish the three: a piece of information → notes_add; something to do → notes_todo; a timed alert → notes_reminder.",
 				],
 				description:
-					"Save a note (Markdown body) into the user's personal notes store. Use it for 'note this down', meeting minutes, ideas, or anything the user dictates worth keeping.",
-				promptSnippet:
-					"notes_add — save a note (memo/idea/meeting minutes); to-dos go to notes_todo, timed alerts to notes_reminder",
+					"Save a note (Markdown body) into the user's personal notes store — for information the user dictates as worth keeping (memo, idea, meeting minutes).",
+				promptSnippet: "save a memo/idea/meeting note",
 				parameters: {
 					type: "object",
 					properties: {
@@ -441,11 +442,9 @@ export default {
 			host.registerAgentTool({
 				name: "notes_update",
 				label: "改/删笔记",
-				promptGuidelines: [
-					"When the user wants to change or delete a note, find its id with notes_list first, then call notes_update (pass delete:true to remove).",
-				],
+				promptGuidelines: ["Use when the user wants to change, append to, or delete an existing note"],
 				description:
-					"Update or delete an existing note by id. `append` adds text to the end of the body (handy for appending a log). Get ids from notes_list.",
+					"Update or delete an existing note by id; `append` adds text to the end of the body (handy for appending a log).",
 				parameters: {
 					type: "object",
 					properties: {
@@ -486,15 +485,15 @@ export default {
 					"With a specific time: 'when should this be done' → notes_todo's due; 'remind me at a time' → notes_reminder instead.",
 				],
 				description:
-					"Add / update / complete / delete todos in the user's personal list. Use it for action items the user wants to remember (especially with a due date), not for things you can just finish yourself right now.",
-				promptSnippet: "notes_todo — the user's todo list (add/update/toggle/delete)",
+					"Add / update / complete / delete todos in the user's personal list — action items the user wants to remember (especially with a due date), not things you can just finish yourself right now.",
+				promptSnippet: "the user's todo list (add/update/toggle/delete)",
 				parameters: {
 					type: "object",
 					properties: {
 						action: {
 							type: "string",
 							enum: ["add", "update", "done", "undone", "remove", "clear_done"],
-							description: "What to do. Optional: no action + no id = add; no action + id = update.",
+							description: ACTION_OR_INFER_DESC,
 						},
 						id: { type: "string", description: "Todo id (required except for add/clear_done)." },
 						text: { type: "string" },
@@ -555,20 +554,20 @@ export default {
 				name: "notes_reminder",
 				label: "提醒",
 				promptGuidelines: [
-					"Use notes_reminder when the user gives a specific time ('tomorrow 9am', 'daily at 9', 'Fridays 18:00') — it fires a toast/desktop notification in the user's browser.",
+					"Use notes_reminder when the user gives a specific time ('tomorrow 9am', 'daily at 9', 'Fridays 18:00')",
 					"Prefer the simple forms: at / daily_at / weekly_at + weekdays / monthly_at + day_of_month / every_minutes; don't jump straight to raw cron.",
-					"Reminders only wake the user up; for the AI to do work on schedule (write reports, run scripts), use the built-in schedule_task tool instead of a notes reminder.",
+					"Reminders only wake the user up; for the AI to do work on schedule (write reports, run scripts), use the built-in schedule tool instead of a notes reminder.",
 				],
 				description:
-					"Manage scheduled reminders (they fire on the SERVER's local clock and show up as a toast/desktop notification in the user's browser; nothing is fired while no browser is open — those are delivered on next open). Prefer the simple forms (at / daily_at / weekly_at / monthly_at / every_minutes) over raw cron.",
-				promptSnippet: "notes_reminder — remind the user at a given time (one-off/daily/weekly/monthly/interval)",
+					"Manage scheduled reminders: they fire on the SERVER's local clock as a toast/desktop notification in the user's browser; nothing fires while no browser is open — those are delivered on next open.",
+				promptSnippet: "set a reminder at a user-given time",
 				parameters: {
 					type: "object",
 					properties: {
 						action: {
 							type: "string",
 							enum: ["add", "update", "remove", "snooze"],
-							description: "What to do. Optional: no action + no id = add; no action + id = update.",
+							description: ACTION_OR_INFER_DESC,
 						},
 						id: { type: "string", description: "Reminder id (except for add)." },
 						text: { type: "string", description: "What to remind about." },

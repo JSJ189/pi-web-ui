@@ -140,14 +140,14 @@ export function buildDelegationPrompt(input: DelegationInput, lang: ServerLang =
 const delegateSchema = Type.Object({
 	agent: Type.String({
 		description:
-			"Specialist template to delegate to (e.g. oracle, metis, momus, explore, librarian, sisyphus-junior, multimodal-looker, review). " +
-			"Must be an enabled template — use subagent (action='templates') to see descriptions and pick the domain match.",
+			"Specialist template to delegate to (e.g. oracle, explore, review, librarian). " +
+			"Must be enabled — use subagent (action='templates') to list them and pick the domain match.",
 	}),
 	task: Type.String({
-		description: "Atomic, specific goal: ONE action per delegation (minimum 20 chars). Vague tasks are rejected.",
+		description: "Atomic, specific goal: ONE action per delegation. Vague tasks are rejected.",
 	}),
 	expected_outcome: Type.String({
-		description: "Concrete deliverables with done criteria: what does success look like (minimum 10 chars).",
+		description: "Concrete deliverables with done criteria.",
 	}),
 	required_tools: Type.String({
 		description: "Explicit tool whitelist for the subagent (prevents tool sprawl).",
@@ -171,9 +171,8 @@ const delegateSchema = Type.Object({
 	persist: Type.Optional(
 		Type.Boolean({
 			description:
-				"Optional: persist this conversation to disk as a regular session (saved in history, resumable). " +
-				"Default false (lightweight in-memory subagent). " +
-				"Use true for tasks that need long-term retention.",
+				"Persist as a regular session saved in history (default false = lightweight in-memory subagent); " +
+				"use for tasks needing long-term retention.",
 		}),
 	),
 });
@@ -189,14 +188,11 @@ export function makeDelegateTaskTool(host: SubagentToolHost, lang?: () => Server
 		name: DELEGATE_TOOL_NAME,
 		label: "Delegate task",
 		description:
-			"Delegate ONE well-defined task to a specialist subagent template via a structured six-section brief (TASK / EXPECTED OUTCOME / REQUIRED TOOLS / MUST DO / MUST NOT DO / CONTEXT). " +
-			"The brief is validated server-side — missing or vague sections are rejected, so fill every section concretely. " +
-			"Prefer over subagent (action='spawn') when the work fits a specialist template. Spawns a real subagent conversation; " +
-			"collect with subagent (action='wait_all' / 'get_result'), redirect with subagent (action='steer'), stop with subagent (action='stop'). " +
-			"For follow-ups continue the SAME subagent session instead of delegating again.",
-		promptSnippet: "Delegate a well-defined task to a specialist template with a validated six-section brief",
+			"Delegate ONE well-defined task to a specialist template via a six-section brief (TASK / EXPECTED OUTCOME / REQUIRED TOOLS / MUST DO / MUST NOT DO / CONTEXT). " +
+			"Vague sections are rejected server-side — fill every one concretely. Prefer it over subagent (action='spawn'). Spawns a real subagent conversation; " +
+			"follow up with subagent (action='wait_all' | 'get_result' | 'steer' | 'stop'), continuing the SAME session rather than delegating again.",
+		promptSnippet: "hand a well-scoped task to a specialist template",
 		promptGuidelines: [
-			"Prefer delegate_task over subagent (action='spawn') when the work matches a specialist template's domain",
 			"Before delegating, declare which template you chose and WHY its description matches the task",
 			"After delegation ALWAYS verify the result: " +
 				"does it work, does it follow codebase patterns, did it respect MUST DO / MUST NOT DO",

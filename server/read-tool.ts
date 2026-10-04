@@ -126,9 +126,12 @@ export function prepareReadArguments(raw: unknown): Static<typeof readDirSchema>
 
 /** Directory support note appended to any read definition (definitions are English-only). */
 const DIR_DESCRIPTION_NOTE =
-	"Also accepts a directory path: its entries are then listed instead of file contents (one entry per line, directories suffixed with '/'); in that case `limit` caps the number of entries and `offset` is ignored.";
+	"Also accepts a directory path: its entries are listed instead of contents (one per line, directories suffixed with '/'); `limit` then caps entries and `offset` is ignored.";
 
-const DIR_GUIDELINE = "Use read on a directory to list its entries — no need to shell out to `ls`";
+/** 内置基底专用：`file_path` 别名只在没有扩展同名工具时由本模块提供。 */
+const FILE_PATH_ALIAS_NOTE = "Also accepts `file_path` as an alias of `path`.";
+
+const DIR_GUIDELINE = "No need to shell out to `ls`: read lists a directory's entries";
 
 /**
  * 两条路（内置基底 / 扩展基底）共用的执行体：先判「路径是不是目录」—— 是就复用 SDK 的
@@ -233,14 +236,9 @@ export function makeReadDirTool(fallbackCwd: string, options: ReadDirToolOptions
 
 	return defineTool({
 		...base,
-		description:
-			`${base.description} Also accepts \`file_path\` as an alias of \`path\`. ` +
-			"If the path is a directory, its entries are listed instead (one per line, directories suffixed with '/'); `limit` caps the entries and `offset` is ignored.",
-		promptSnippet: "Read file contents (a directory path lists its entries)",
-		promptGuidelines: [
-			...(base.promptGuidelines ?? []),
-			"Use read on a directory to list its entries — no need to shell out to `ls`",
-		],
+		description: `${base.description} ${FILE_PATH_ALIAS_NOTE} ${DIR_DESCRIPTION_NOTE}`,
+		promptSnippet: "file contents by path (a directory lists its entries)",
+		promptGuidelines: [...(base.promptGuidelines ?? []), DIR_GUIDELINE],
 		parameters: readDirSchema,
 		prepareArguments: prepareReadArguments,
 		async execute(toolCallId, params, signal, onUpdate, ctx) {

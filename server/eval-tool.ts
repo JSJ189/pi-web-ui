@@ -526,12 +526,11 @@ export function makeEvalTool(opts: { cwd: string; ownerId?: string; lang?: () =>
 		label: "Execute code in persistent sandbox",
 		description:
 			"Execute Python or JavaScript/TypeScript code in an isolated evaluation sandbox. " +
-			"Variables and imported modules persist across calls within the conversation. " +
-			"Ideal for quick calculations, data transformations, algorithm verification, and inspecting outputs without creating temporary script files.",
-		promptSnippet: "evaluate Python or JS/TS code with persistent state",
+			"Variables and imported modules persist across calls within the conversation.",
+		promptSnippet: "run a code snippet without creating a script file",
 		parameters: Type.Object({
 			code: Type.String({
-				description: "The code snippet to evaluate. Top-level variables and functions are preserved across calls.",
+				description: "The code snippet to evaluate. Top-level variables and functions persist across calls.",
 			}),
 			language: Type.Optional(
 				Type.Unsafe<"py" | "js" | "ts">({
@@ -542,7 +541,7 @@ export function makeEvalTool(opts: { cwd: string; ownerId?: string; lang?: () =>
 			),
 			title: Type.Optional(
 				Type.String({
-					description: 'Optional short label for this step (e.g. "Calculate metrics", "Parse payload").',
+					description: "Optional short label for this step.",
 				}),
 			),
 			timeout: Type.Optional(

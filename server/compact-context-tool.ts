@@ -86,20 +86,21 @@ export function buildCompactionInstructions(focus: string, customSummary?: strin
 export const CompactContextParams = Type.Object({
 	focus: Type.String({
 		description:
-			"Compression focus and requirements for the current issue/task. State: 1) the active problem/goal; 2) context to PRESERVE (key decisions, code changes, conventions, user constraints); 3) what to REMOVE or condense (failed attempts, resolved debugging, off-topic history).",
+			"Compression focus for the current issue. State: 1) the active problem/goal; " +
+			"2) context to PRESERVE (decisions, code changes, conventions, constraints); " +
+			"3) what to REMOVE or condense (failed attempts, resolved debugging, off-topic history).",
 	}),
 	keepRecentTokens: Type.Optional(
 		Type.Number({
 			minimum: MIN_KEEP_RECENT_TOKENS,
 			maximum: MAX_KEEP_RECENT_TOKENS,
 			description:
-				"Recent tokens to keep uncompacted (1000-100000). Smaller values (e.g. 3000-8000) compact more aggressively. Omit = auto-calculated from session size.",
+				"Recent tokens to keep uncompacted; smaller compacts more aggressively; omit = auto-calculated from session size.",
 		}),
 	),
 	summary: Type.Optional(
 		Type.String({
-			description:
-				"Custom structured summary written by you; used as the core basis for the compaction entry if provided.",
+			description: "Optional structured summary; used as the basis for the compaction entry.",
 		}),
 	),
 });
@@ -113,13 +114,12 @@ export function makeCompactContextTool(host: CompactContextHost, lang?: () => Se
 		name: COMPACT_CONTEXT_TOOL_NAME,
 		label: "Compact conversation context based on current issue",
 		description:
-			"Compress/compact the conversation context around the current task: specify what to preserve (key decisions, code structure, active requirements) and what to drop or heavily summarize (unrelated exploration, verbose outputs, resolved debugging). " +
-			"Optionally control how many recent tokens stay untouched. Compaction executes when the current turn settles, refreshing context for subsequent turns.",
-		promptSnippet: "proactively compact conversation context focusing on the current issue",
+			"Compress the conversation context around the current task. Compaction executes when the current turn settles, " +
+			"so the refreshed context applies from the next turn on.",
+		promptSnippet: "compact a long or noisy conversation context",
 		promptGuidelines: [
-			"Use compact_context when the conversation has grown long, or after extensive debugging/exploration, to focus context strictly on the current problem.",
-			"Clearly specify in 'focus' what to keep (decisions, specs, active changes) and what to drop (failed attempts, voluminous command outputs).",
-			"After calling compact_context, conclude your current turn with a brief wrap-up and next steps; the system executes compaction right after this turn finishes.",
+			"Use it when the conversation has grown long or after extensive exploration, to refocus context on the current problem.",
+			"After calling it, wrap up your turn with a brief summary and next steps.",
 		],
 		parameters: CompactContextParams,
 		execute: async (_id, p) => {

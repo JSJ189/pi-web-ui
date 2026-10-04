@@ -546,6 +546,9 @@ export type ClientMessage =
 	 *  不进快照（否则每次节流推送都要重传一遍），改为点开时现取一次；
 	 *  应答 `tool_info`。引擎不支持枚举工具定义时回 `unsupported: true`。 */
 	| { type: "get_tool_info"; name: string }
+	/** 设置页逐工具编辑文案时取「默认值 + 当前覆盖」（同 get_tool_info，但不弹工具定义弹窗）。
+	 *  应答 `tool_prompt`。 */
+	| { type: "get_tool_prompt"; name: string }
 	| { type: "list_sessions" }
 	| { type: "switch_session"; path: string }
 	| { type: "switch_conversation"; id: string }
@@ -792,6 +795,9 @@ export type ClientMessage =
 			promptTemplate?: string;
 			/** 各来源 token 的独立覆盖（空 = 用自动内容）。 */
 			promptOverrides?: Record<string, string>;
+			/** 逐工具文案覆盖：键 = 工具名，值 = 该工具的 description/promptSnippet/
+			 *  promptGuidelines（只合并给出的键；整项给空对象/空字段 = 清除该项覆盖）。 */
+			toolPromptOverrides?: Record<string, UiToolPromptOverride>;
 			disabledSkills?: string[];
 			disabledExtensions?: string[];
 			/** 统一 Agent 工具禁用名单（见 server/tool-manager.ts；live 生效无需 reload）。 */
@@ -816,6 +822,8 @@ export type ClientMessage =
 			 *  关 → 原样交回内置 read（目录报 EISDIR）。行为开关（read 本体不可关），
 			 *  覆盖定义每次调用实时读取，live 生效无需 reload。 */
 			readDirEnabled?: boolean;
+			/** 工具延迟加载开关（默认开）。 */
+			toolLazyLoading?: boolean;
 			/** edit_soft 工具开关（默认关）。开 → AI 可用不严格要求缩进的 edit_soft 工具。 */
 			editSoftEnabled?: boolean;
 			/** 问卷提问（ask_user_question）开关（默认开）。关 → 模型不再弹问卷。 */
@@ -1100,6 +1108,46 @@ export type ClientMessage =
 	| { type: "apply_preset"; name: string }
 	/** Remove the named preset. */
 	| { type: "delete_preset"; name: string }
+	// -- preset sharing (server/preset-share.ts, docs/preset-sharing.md) ------
+	/** 导出预设（或当前设置）为可分享的 JSON 文本。name 为空 = 导出当前设置。
+	 *  meta 只影响外壳字段（description/author/tags），不回写本地预设。 */
+	| {
+			type: "preset_export";
+			/** 导出来源：preset（name 命名的预设）或 current（当前设置）。缺省按 preset。 */
+			source?: "preset" | "current";
+			name?: string;
+			description?: string;
+			author?: string;
+			tags?: string[];
+			/** 关联的对话 id（用于让同一会话的回执被优先处理；可选）。 */
+			requestId?: string;
+	  }
+	/** 解析导入文本（dryRun 只回预览，不落盘）；导入成功后可顺带 apply。 */
+	| {
+			type: "preset_import";
+			json: string;
+			dryRun?: boolean;
+			/** 覆盖文档里的 name（重名兜底/用户改名）。 */
+			name?: string;
+			/** 导入后立即应用（等价于再点一次应用）。 */
+			apply?: boolean;
+			requestId?: string;
+	  }
+	/** 按网址导入（服务端抓取，避开浏览器 CORS 与 SSRF 风险）。 */
+	| { type: "preset_import_url"; url: string; dryRun?: boolean; name?: string; apply?: boolean; requestId?: string }
+	/** 浏览社区共享预设目录（refresh=true 绕过 5 分钟缓存）。 */
+	| { type: "preset_catalog"; refresh?: boolean; requestId?: string }
+	/** 一键分享到社区共享仓库（gh issue create；失败回落预填网页）。 */
+	| {
+			type: "preset_share";
+			/** 分享来源：preset（name 命名的预设）或 current（当前设置）。缺省按 preset。 */
+			source?: "preset" | "current";
+			name?: string;
+			description?: string;
+			author?: string;
+			tags?: string[];
+			requestId?: string;
+	  }
 	/** Drop one workspace from this client's recent-project list (UI state
 	 *  only — nothing on disk is touched). */
 	| { type: "remove_project"; path: string }
@@ -2320,6 +2368,59 @@ export interface UiSettingsPreset {
 	reviewDisabledSkills: string[];
 }
 
+/** 社区共享预设目录里的一条（预设分享仓库 index.json 的条目）。见
+ *  server/preset-share.ts 与 docs/preset-sharing.md。 */
+export interface UiPresetCatalogEntry {
+	/** 稳定 id（`<slug>-<短哈希>`，同内容同 id）。 */
+	id: string;
+	name: string;
+	description: string;
+	author: string;
+	tags: string[];
+	/** 预设文件地址（可直接喂 preset_import_url）。 */
+	url: string;
+	/** 来源 Issue 页面地址（手工收录时为空串）。 */
+	issueUrl: string;
+	/** ISO 时间戳（仓库 index.json 的 updatedAt；可能为空串）。 */
+	updatedAt: string;
+	/** 列表徽标用的摘要（仓库未提供时缺省）。 */
+	summary?: {
+		promptMode: string;
+		skills: number;
+		agentTools: number;
+		hasTemplate: boolean;
+		hasReviewPrompt: boolean;
+	};
+}
+
+/** 导入预览（preset_import / preset_import_url 的 dryRun 回执）。解析与净化都
+ *  在服务端做，前端只负责展示——用户点「导入」前没有任何东西落盘。 */
+export interface UiPresetImportPreview {
+	/** 写入后的预设名（文档 name；导入时可用 name 覆盖）。 */
+	name: string;
+	description: string;
+	author: string;
+	tags: string[];
+	format: string;
+	version: number;
+	/** 会写入的字段名（已白名单过滤）。 */
+	fields: string[];
+	/** 被忽略的未知字段名（旧版客户端/拼错字段的提示）。 */
+	ignored: string[];
+	/** 类型不符被丢弃的已知字段。 */
+	rejected: string[];
+	/** 本地已有同名预设（确认导入即覆盖）。 */
+	replaces: boolean;
+	/** 列表展示摘要。 */
+	summary: NonNullable<UiPresetCatalogEntry["summary"]>;
+	/** 预览用文本片段（自定义系统提示词/模板/审查提示词，已截断）。 */
+	customSystemPrompt: string;
+	promptTemplate: string;
+	reviewPrompt: string;
+	disabledSkills: string[];
+	disabledExtensions: string[];
+}
+
 /** 一个子代理模板（设置面板「子代理模板」区的 CRUD 实体，也是 AI 派生子代理
  *  时可选的预设）：角色系统提示词（replace/append）+ 技能/扩展白名单。白名单
  *  空 = 该维度跟随主会话设置。`enabled: false` 的模板停用 —— 设置面板仍可见
@@ -2365,6 +2466,15 @@ export interface UiMarkerInfo {
 	guidance: string[];
 }
 
+/** 单个工具的用户覆盖文案（设置页「工具」区逐工具编辑；空字段/空串 = 用默认）。
+ *  三项分别对应 tool schema 的 description、系统提示词 Available tools 的 snippet、
+ *  Guidelines 段的要点（见 server/tool-prompt-overrides.ts）。 */
+export interface UiToolPromptOverride {
+	description?: string;
+	promptSnippet?: string;
+	promptGuidelines?: string[];
+}
+
 /** Full settings state pushed to the browser (settings_state). */
 export interface UiSettingsState {
 	promptMode: "append" | "replace";
@@ -2373,6 +2483,8 @@ export interface UiSettingsState {
 	 *  = 模板里 {{token}} 展开各来源提示词；覆盖优先于自动内容。 */
 	promptTemplate: string;
 	promptOverrides: Record<string, string>;
+	/** 逐工具文案覆盖（工具名 → description/snippet/guidelines；缺省 = 全部默认）。 */
+	toolPromptOverrides: Record<string, UiToolPromptOverride>;
 	disabledSkills: string[];
 	disabledExtensions: string[];
 	/** 统一 Agent 工具禁用名单（单源；live 生效无需 reload）。 */
@@ -2394,6 +2506,10 @@ export interface UiSettingsState {
 	/** read 工具读目录开关（默认开）：开 → read(目录路径) 列出目录条目（见
 	 *  server/read-tool.ts；行为开关，live 生效无需 reload）。DSH 引擎无该覆盖面，恒为 true。 */
 	readDirEnabled: boolean;
+	/** 工具**延迟加载**开关（默认开）：开 → 只有核心工具（bash/read/edit/write）+ `load_tools`
+	 *  常驻，其余工具在系统提示词里只有「名字 + 一行摘要」，模型用 `load_tools` 拉取后完整
+	 *  参数 schema 才进上下文（见 server/load-tools-tool.ts）。DSH 引擎无 pi 工具注册面，恒为 true。 */
+	toolLazyLoading: boolean;
 	/** @deprecated 遗留别名（由 disabledAgentTools 推导）。开 → AI 可用不严格要求缩进的 edit_soft 工具。 */
 	editSoftEnabled: boolean;
 	/** 问卷提问开关（默认开）。关 → 模型不再弹问卷对话框。 */
@@ -2717,6 +2833,21 @@ export type ServerMessage =
 			/** 来源作用域：user / project / temporary。 */
 			scope?: string;
 	  }
+	/** `get_tool_prompt` 的应答：一条工具的用户可编辑文案 —— **默认值**（何为出厂）/ 当前覆盖。
+	 *  设置页编辑器用它先填进输入框；`found: false` = 引擎里没这个工具（如已卸载）。 */
+	| {
+			type: "tool_prompt";
+			name: string;
+			found: boolean;
+			/** 当前引擎不支持取工具定义（DSH 未就绪等）。 */
+			unsupported?: boolean;
+			/** 出厂默认（本模块从不修改的原始定义）。 */
+			defaultDescription?: string;
+			defaultPromptSnippet?: string;
+			defaultPromptGuidelines?: string[];
+			/** 用户当前设置的覆盖（缺省 = 没有覆盖）。 */
+			override?: UiToolPromptOverride;
+	  }
 	| { type: "models"; models: ModelInfo[] }
 	| { type: "models_config"; providers: UiProviderConfig[] }
 	| { type: "providers_status"; providers: ProviderStatus[] }
@@ -2924,6 +3055,54 @@ export type ServerMessage =
 	 *  extensions, saved presets). Pushed on attach and after every settings
 	 *  change. */
 	| { type: "settings_state"; settings: UiSettingsState }
+	// -- preset sharing (server/preset-share.ts) ------------------------------
+	/** preset_export 的回执：json = 可复制/下载的交换文档文本。 */
+	| {
+			type: "preset_export_result";
+			requestId?: string;
+			ok: boolean;
+			name?: string;
+			/** 建议的下载文件名（<slug>-<短哈希>.json）。 */
+			fileName?: string;
+			json?: string;
+			error?: string;
+	  }
+	/** preset_import / preset_import_url 的回执。dryRun=true 时只有预览，没有落盘。 */
+	| {
+			type: "preset_import_result";
+			requestId?: string;
+			ok: boolean;
+			dryRun: boolean;
+			preview?: UiPresetImportPreview;
+			/** 导入成功且 apply=true 时，是否已经应用到当前设置。 */
+			applied?: boolean;
+			error?: string;
+	  }
+	/** preset_catalog 的回执（失败时 entries 是上一次成功的缓存，cached=true）。 */
+	| {
+			type: "preset_catalog_result";
+			requestId?: string;
+			ok: boolean;
+			entries: UiPresetCatalogEntry[];
+			/** 目录来源地址（关闭时为空串）。 */
+			source: string;
+			cached: boolean;
+			/** 最近一次成功抓取的时间戳（0 = 从未成功）。 */
+			fetchedAt: number;
+			error?: string;
+	  }
+	/** preset_share 的回执：method=gh 时 url 是新 Issue；browser 时由前端复制
+	 *  json 并打开 url（预填标题的建 Issue 页）。 */
+	| {
+			type: "preset_share_result";
+			requestId?: string;
+			ok: boolean;
+			method?: "gh" | "browser";
+			url?: string;
+			name?: string;
+			json?: string;
+			error?: string;
+	  }
 	// -- plugins (<dataDir>/plugins) -----------------------------------------
 	/** Installed-plugin catalog. Pushed on attach (the dir is re-scanned each
 	 *  time so freshly dropped plugins appear without a server restart) and

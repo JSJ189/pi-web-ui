@@ -205,7 +205,7 @@ export interface PluginConversationListItem {
 export interface PluginAgentTool {
 	/** 所属插件 ID（由 getAgentTools 等组装时附带）。 */
 	pluginId?: string;
-	/** 工具名（建议 <插件名>_<动作> 前缀，如 mail_list；全局唯一，重复注册后者被拒）。 */
+	/** 工具名（全局唯一；单 action 工具直接用具名，如 mail，重复注册后者被拒）。 */
 	name: string;
 	/** UI 显示标签。 */
 	label?: string;

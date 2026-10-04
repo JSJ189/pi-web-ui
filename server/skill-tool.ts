@@ -85,10 +85,9 @@ export function makeSkillTool(host: SkillToolHost, lang?: () => ServerLang): Too
 		name: SKILL_TOOL_NAME,
 		label: "Load a skill",
 		description:
-			"Load a skill's full text by its exact name (see the <available_skills> catalog in the system prompt). " +
-			"Prefer this over reading the skill file with the read tool — no path guessing needed. " +
-			"Call without a name to list the current catalog.",
-		promptSnippet: "load a skill's full text by name (skill tool, preferred over read)",
+			"Load a skill's full text by its exact name (see the <available_skills> catalog). " +
+			"Prefer this over reading the skill file with read — no path guessing.",
+		promptSnippet: "use a skill from <available_skills> by name",
 		parameters: Type.Object({
 			name: Type.Optional(
 				Type.String({

@@ -41,11 +41,11 @@ const replaceEditSchema = Type.Object(
 	{
 		oldText: Type.String({
 			description:
-				"Text to replace. Loose matching: the content of each non-empty line (trimmed of leading/trailing whitespace) must match the corresponding file lines; " +
-				"leading-indentation (spaces/tabs) differences are ignored. Prefer whole lines/blocks.",
+				"Text to replace. Loose matching: each non-empty line must match by trimmed content, so leading-indentation (spaces/tabs) differences are ignored. " +
+				"Prefer whole lines/blocks.",
 		}),
 		newText: Type.String({
-			description: "Replacement text (written verbatim; the indentation you provide is final).",
+			description: "Replacement text (written verbatim).",
 		}),
 	},
 	{},
@@ -58,8 +58,8 @@ const editSoftSchema = Type.Object(
 		}),
 		edits: Type.Array(replaceEditSchema, {
 			description:
-				"One or more targeted replacements. Each edit matches against the original file (not incrementally); " +
-				"do not include overlapping/nested edits; merge edits touching the same block or nearby lines into one.",
+				"One or more targeted replacements, matched against the original file (not incrementally); " +
+				"do not include overlapping/nested edits.",
 		}),
 	},
 	{},
@@ -413,14 +413,12 @@ export function makeEditSoftTool(fallbackCwd: string, getLang?: () => ServerLang
 		name: SOFT_EDIT_TOOL_NAME,
 		label: "Edit (indentation-insensitive)",
 		description:
-			"Edit a single file with text replacement tolerant of indentation: oldText is matched by line content, ignoring leading-whitespace differences, so edits don't fail on indentation mismatch. " +
-			"Use when the built-in edit rejects oldText due to whitespace (common in JS/JSON). Prefer whole-line/whole-block oldText; newText is written exactly as provided.",
-		promptSnippet: "edit a file tolerating indentation differences (whitespace-insensitive match)",
+			"Edit a single file with text replacement tolerant of indentation: oldText matches by trimmed line content, " +
+			"so leading-whitespace drift (common in JS/JSON) does not fail the edit.",
+		promptSnippet: "edit a file when whitespace/indentation makes the built-in edit fail",
 		promptGuidelines: [
-			"Use edit_soft when edit fails because the oldText indentation/spacing differs from the file",
-			"Each edits[].oldText is matched to whole lines by trimmed content; leading whitespace is ignored",
-			"newText is written verbatim — the indentation you provide is the final indentation in the file",
-			"Keep edits[].oldText as small as possible while still being unique; " + "merge nearby changes into one edit",
+			"Use edit_soft when edit rejects oldText on an indentation/spacing mismatch",
+			"Keep edits[].oldText as small as possible while still being unique; merge nearby changes into one edit",
 		],
 		parameters: editSoftSchema,
 		prepareArguments: prepareSoftEditArguments,

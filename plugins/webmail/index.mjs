@@ -5,8 +5,8 @@
  *  - 收件：IMAP（imapflow）列出/搜索/阅读/标记/删除邮件
  *  - 发件：SMTP（nodemailer）
  *  - 新邮件通知：周期轮询 INBOX 未读，新增即 host.notify + 推给插件视图
- *  - AI 工具：常驻经 host.registerAgentTool 注册
- *    mail_list / mail_read / mail_search / mail_send / mail_manage / mail_folders。
+ *  - AI 工具：常驻经 host.registerAgentTool 注册，单个 action 式 `mail` 工具
+ *    （action = list / read / search / send / manage / folders）。
  *
  * 凭据存 <dataDir>/plugins/webmail/config.json（本机明文，与 pi auth.json 同级安全模型）。
  * 依赖 imapflow/mailparser/nodemailer 不随包分发：首次激活尝试自动 npm 安装，
@@ -599,141 +599,113 @@ export default {
 			description: "Mailbox folder path, default INBOX",
 		};
 
+		/** 邮件一行摘要（list / search 共用）：#uid [未读] 日期 发件人 — 主题。 */
+		function describeMail(m) {
+			return `#${m.uid}${m.seen ? "" : " [未读]"} ${m.date.slice(0, 16).replace("T", " ")} ${m.fromName || m.from} — ${m.subject}`;
+		}
+
 		function aiTools() {
 			return [
 				{
-					name: "mail_list",
-					label: "列出新邮件",
+					name: "mail",
+					label: "邮箱",
 					description:
-						"List summaries of recent emails (sender/subject/date/read status). Use it when the user asks to check mail or look at the inbox.",
-					parameters: {
-						type: "object",
-						properties: {
-							folder: FOLDER_PARAM,
-							limit: { type: "number", description: "Number of results, default 30, max 200" },
-							unseen_only: { type: "boolean", description: "Only unread mail, default false" },
-						},
-					},
-					execute: async (_id, args) => {
-						const mails = await listMails(args);
-						if (mails.length === 0) return "邮箱为空（或没有未读）。";
-						return mails
-							.map(
-								(m) =>
-									`#${m.uid}${m.seen ? "" : " [未读]"} ${m.date.slice(0, 16).replace("T", " ")} ${m.fromName || m.from} — ${m.subject}`,
-							)
-							.join("\n");
-					},
-				},
-				{
-					name: "mail_read",
-					label: "读一封邮件",
-					description: "Read the full body of one email by uid (plain text, truncated when very long).",
-					parameters: {
-						type: "object",
-						properties: {
-							uid: { type: "number", description: "#id returned by mail_list" },
-							folder: FOLDER_PARAM,
-						},
-						required: ["uid"],
-					},
-					execute: async (_id, args) => {
-						const m = await readMail(args);
-						return [
-							`主题: ${m.subject}`,
-							`发件人: ${m.fromName ? `${m.fromName} <${m.from}>` : m.from}`,
-							`日期: ${m.date}`,
-							m.hasAttachments ? "(含附件)" : "",
-							"",
-							m.text + (m.truncated ? "\n…(截断)" : ""),
-						]
-							.filter(Boolean)
-							.join("\n");
-					},
-				},
-				{
-					name: "mail_search",
-					label: "搜索邮件",
-					description: "Search recent emails by keyword (matches subject/sender/recipients).",
-					parameters: {
-						type: "object",
-						properties: {
-							query: { type: "string", description: "Keyword" },
-							folder: FOLDER_PARAM,
-							limit: { type: "number", description: "Number of results, default 20" },
-						},
-						required: ["query"],
-					},
-					execute: async (_id, args) => {
-						const mails = await searchMails(args);
-						if (mails.length === 0) return `没有匹配 “${args.query}” 的邮件。`;
-						return mails
-							.map(
-								(m) =>
-									`#${m.uid}${m.seen ? "" : " [未读]"} ${m.date.slice(0, 16).replace("T", " ")} ${m.fromName || m.from} — ${m.subject}`,
-							)
-							.join("\n");
-					},
-				},
-				{
-					name: "mail_send",
-					label: "发送邮件",
-					description: "Send a plain-text email via the configured SMTP.",
-					promptGuidelines: ["Confirm recipient/subject/body with the user once before sending."],
-					parameters: {
-						type: "object",
-						properties: {
-							to: { type: "string", description: "Recipient email address" },
-							cc: { type: "string", description: "CC (optional)" },
-							subject: { type: "string", description: "Subject" },
-							body: { type: "string", description: "Body (plain text)" },
-						},
-						required: ["to", "body"],
-					},
-					execute: async (_id, args) => {
-						const r = await sendMail(args);
-						return `已发送至 ${(r.accepted ?? []).join(", ")}`;
-					},
-				},
-				{
-					name: "mail_manage",
-					label: "管理邮件状态",
-					description: 'Batch-mark mail as read/unread or delete it. action is "seen" | "unseen" | "delete".',
+						"Read and manage the configured mailbox over IMAP, and send plain-text mail over SMTP. " +
+						"Each action's arguments are documented on the parameters below.",
+					promptSnippet: "list/read/search/send/manage mailbox mail",
+					promptGuidelines: [
+						"Confirm recipient, subject, and body with the user once before action=send",
+						"Use action=folders first if the folder path is unknown",
+					],
 					parameters: {
 						type: "object",
 						properties: {
 							action: {
 								type: "string",
-								enum: ["seen", "unseen", "delete"],
-								description: "Operation type",
+								enum: ["list", "read", "search", "send", "manage", "folders"],
+								description: "The mail action to perform.",
 							},
-							uids: { type: "array", items: { type: "number" }, description: "List of mail uids" },
 							folder: FOLDER_PARAM,
+							limit: {
+								type: "number",
+								description: "list/search: number of results, default 30 (search 20), max 200",
+							},
+							unseen_only: { type: "boolean", description: "list: only unread mail, default false" },
+							uid: { type: "number", description: "read: #id returned by action=list" },
+							query: { type: "string", description: "search: keyword" },
+							to: { type: "string", description: "send: recipient email address" },
+							cc: { type: "string", description: "send: CC (optional)" },
+							subject: { type: "string", description: "send: subject" },
+							body: { type: "string", description: "send: body (plain text)" },
+							manage_action: {
+								type: "string",
+								enum: ["seen", "unseen", "delete"],
+								description: "manage: operation type",
+							},
+							uids: {
+								type: "array",
+								items: { type: "number" },
+								description: "manage: list of mail uids",
+							},
 						},
-						required: ["action", "uids"],
+						required: ["action"],
 					},
 					execute: async (_id, args) => {
-						if (args.action === "delete") {
-							const r = await deleteMails(args);
-							return `已删除 ${r.deleted} 封${r.trash ? `（移入 ${r.trash}）` : ""}`;
-						}
-						const r = await markMails({ ...args, seen: args.action === "seen" });
-						return `已更新 ${r.changed} 封邮件状态`;
-					},
-				},
-				{
-					name: "mail_folders",
-					label: "列出文件夹",
-					description: "List all mailbox folder paths (inbox/archive/trash etc.).",
-					parameters: { type: "object", properties: {} },
-					execute: async () => {
-						return withMailbox("INBOX", async (client) => {
-							const out = [];
-							for await (const f of client.list()) {
-								out.push(`${f.path}${f.specialUse ? ` (${f.specialUse})` : ""}`);
+						const action = String(args.action ?? "")
+							.trim()
+							.toLowerCase();
+						switch (action) {
+							case "list": {
+								const mails = await listMails(args);
+								if (mails.length === 0) return "邮箱为空（或没有未读）。";
+								return mails.map(describeMail).join("\n");
 							}
-							return out.join("\n");
-						});
+							case "read": {
+								if (typeof args.uid !== "number") return "读信缺少 uid 参数。";
+								const m = await readMail(args);
+								return [
+									`主题: ${m.subject}`,
+									`发件人: ${m.fromName ? `${m.fromName} <${m.from}>` : m.from}`,
+									`日期: ${m.date}`,
+									m.hasAttachments ? "(含附件)" : "",
+									"",
+									m.text + (m.truncated ? "\n…(截断)" : ""),
+								]
+									.filter(Boolean)
+									.join("\n");
+							}
+							case "search": {
+								if (!args.query) return "搜索缺少 query 参数。";
+								const mails = await searchMails(args);
+								if (mails.length === 0) return `没有匹配 “${args.query}” 的邮件。`;
+								return mails.map(describeMail).join("\n");
+							}
+							case "send": {
+								if (!args.to || !args.body) return "发信需要 to 与 body 参数。";
+								const r = await sendMail(args);
+								return `已发送至 ${(r.accepted ?? []).join(", ")}`;
+							}
+							case "manage": {
+								if (!Array.isArray(args.uids) || args.uids.length === 0) return "管理邮件需要 uids 参数。";
+								if (args.manage_action === "delete") {
+									const r = await deleteMails(args);
+									return `已删除 ${r.deleted} 封${r.trash ? `（移入 ${r.trash}）` : ""}`;
+								}
+								const r = await markMails({ ...args, seen: args.manage_action === "seen" });
+								return `已更新 ${r.changed} 封邮件状态`;
+							}
+							case "folders": {
+								return withMailbox("INBOX", async (client) => {
+									const out = [];
+									for await (const f of client.list()) {
+										out.push(`${f.path}${f.specialUse ? ` (${f.specialUse})` : ""}`);
+									}
+									return out.join("\n");
+								});
+							}
+							default:
+								return `未知 action：${args.action ?? ""}。支持的 action：list, read, search, send, manage, folders。`;
+						}
 					},
 				},
 			];

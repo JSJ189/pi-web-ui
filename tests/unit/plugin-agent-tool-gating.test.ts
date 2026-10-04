@@ -22,8 +22,8 @@ describe("normalizeDisabledPluginTools", () => {
 	});
 
 	it("去重/去空白/丢弃脏条目，未知名保留（重装仍关闭）", () => {
-		expect(normalizeDisabledPluginTools([" mail_list ", "mail_list", "", 42, "ghost_tool", null])).toEqual([
-			"mail_list",
+		expect(normalizeDisabledPluginTools([" mail ", "mail", "", 42, "ghost_tool", null])).toEqual([
+			"mail",
 			"ghost_tool",
 		]);
 	});

@@ -106,13 +106,14 @@ QQ群 1126050727
   - **扩展** —— 逐个启停，`npm:` 装的可在可见终端里一键卸载（`pi remove npm:<包名>`）。
   - **界面插件 / 目标审查 / 视觉桥 / 子代理模板** 各有自己的页，见 [界面插件](#界面插件)。
   - **预设** —— 把当前组合（提示词模板/模式/覆盖、技能与扩展开关、工具开关、终端接管、重试次数、审查提示词、技能全文名单）存成命名预设，随时应用或删除；有意**不**包含（问卷、目标模式、显示偏好、视觉桥、默认子代理模型、快捷短语），应用预设后它们保持原值。
+  - **预设导入 / 导出 / 分享** —— 预设是可交换的 JSON（`pi-web-ui-preset` v1）：导出到剪贴板或 `.json` 文件、粘贴/选文件/**按网址**导入（先预览：名称、说明、将写入的字段、被忽略的未知字段、是否覆盖同名，确认后才落盘，可顺带立即应用），或者一键发到社区共享仓库 [pi-web-ui-presets](https://github.com/xing-shuyin/pi-web-ui-presets)（有 `gh` 就直接开 Issue，没有则复制 JSON 并打开预填页面；仓库机器人校验后自动收录）。「浏览分享」页签拉仓库目录、搜索、一键导入别人的预设。导入的 JSON 在服务端过白名单净化（只认 19 个已知字段，未知字段忽略、类型不符丢弃），网址导入只允许公网 http(s)（内网/回环地址拦下），单个文档 ≤512KB。详见 [docs/preset-sharing.md](docs/preset-sharing.md)。
   - **生效时机** —— 工具开关、重试次数、显示偏好、标记与技能全文名单即时生效；提示词模板/覆盖与技能扩展开关需重载会话，回答中改的会延后到「本回复结束后生效」（有提示）。
   - **显示偏好** —— 思考块默认展开或折叠、工具卡默认展开、宽屏聊天列（宽屏下取消 860px 上限）、标签标题显示项目名、聊天壁纸（地址或上传，带压暗/模糊滑杆）。
 - 主题切换 —— 顶栏选择主题；主题是纯 `:root` 调色板覆盖（布局唯一在 styles.css）。如何添加自定义主题或向仓库贡献主题，见 [主题](#主题)。
 
 **代理工具与内联标记**
 
-- **工具开关** —— 设置 →「工具」把所有可选工具逐个列出：统一的 `subagent` 工具（默认开）、以及另外 17 个工具 —— `edit_soft`、`browser_page`、`eval` 与 `lsp` 默认关，`delegate_task` / `ask_user_question` / `todo_list` / `conversation_read` / `present_files` / `skill` / `schedule_task` / `schedule_list` / `schedule_cancel` / `claim_files` / `plan_update` / `patch` / `compact_context` 默认开。开关即时生效、不重启，工具只是被禁用仍保留注册以便随时开回；核心工具 `bash` 与 SDK 自带的 `read` / `write` / `edit` 走设置页「核心工具」独立区域管理。
+- **工具开关** —— 设置 →「工具」把所有可选工具逐个列出：统一的 `subagent` 工具（默认开）、以及另外 15 个工具 —— `edit_soft`、`browser_page`、`eval` 与 `lsp` 默认关，`delegate_task` / `ask_user_question` / `todo_list` / `conversation_read` / `present_files` / `skill` / `schedule` / `claim_files` / `plan_update` / `patch` / `compact_context` 默认开。开关即时生效、不重启，工具只是被禁用仍保留注册以便随时开回；核心工具 `bash` 与 SDK 自带的 `read` / `write` / `edit` 走设置页「核心工具」独立区域管理。
 - **内联标记** —— 状态改变不需要工具往返，AI 直接把标记写进回复：任务列表用 `[[todo:new:<主题>]]` / `[[todo:set:<id>,in_progress]]` / `[[todo:remove:<id>]]` / `[[todo:dep:<id>,blocks=<id>]]`，不打断的提醒用 `[[notify:<级别>:<内容>]]`，改对话标题用 `[[conv:rename:<标题>]]`。气泡定稿即执行，标记写错会以浏览器提示回显；任务列表同时以常驻 widget 显示在右栏文件树下方（`N/M done` + ✓/◐/○），跟随当前对话，且因为存在该对话自己的会话分支里，刷新后仍在。设置 →「工具」另有总开关与逐标记开关（这两项全局共享）。
 - **`edit_soft`** —— 更宽松的 `edit`（默认关）：缩进/空白导致内置工具失败时用它，先精确子串、再按去空白逐行核心匹配，`newText` 原样写入并保留文件换行符/BOM，结果带 diff 与 unified patch。
 - **`delegate_task`** —— 强制六段派单（TASK / EXPECTED OUTCOME / REQUIRED TOOLS / MUST DO / MUST NOT DO / CONTEXT）并在服务端校验：模板不可用、任务少于 20 字或任一段为空都会被打回，并把可用模板清单回给模型。卡片按六段结构化展示，跑完后可一键跳到对应子代理对话。

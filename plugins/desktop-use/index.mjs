@@ -556,6 +556,12 @@ export default {
 				})
 				.join("\n");
 
+		// 共享参数块：坐标参数在 desktop_click / desktop_type 两处重复，统一一份（模型同时看到全部 schema）。
+		const POINT_PROPS = {
+			x: { type: "number", description: "in-image X with shot, else screen X" },
+			y: { type: "number", description: "in-image Y with shot, else screen Y" },
+		};
+
 		const GUIDELINES = [
 			"Query with desktop_elements first, then click/type using the returned dump+id: never guess coordinates, never reuse ids older than 90 seconds",
 			"Self-drawn UIs (WeChat/QQ/games: elements returns empty shells) use the screenshot flow: desktop_screenshot auto-OCRs text with exact coords — pass text='...' or (cx, cy) to desktop_click, no coordinate guessing",
@@ -571,8 +577,8 @@ export default {
 				name: "desktop_elements",
 				label: "查桌面元素",
 				description:
-					"List Windows controls without screenshots (UI Automation): returns element id/type/name/rect. Call this before any click/type and locate targets with the returned dump+id.",
-				promptSnippet: "desktop_elements — list desktop controls without screenshots (query before click)",
+					"List Windows controls without screenshots (UI Automation): returns element id/type/name/rect along with the dump key and element id.",
+				promptSnippet: "list desktop controls (no screenshot needed)",
 				promptGuidelines: GUIDELINES,
 				parameters: {
 					type: "object",
@@ -632,7 +638,7 @@ export default {
 				label: "点桌面元素",
 				description:
 					"Click: (1) screenshot flow for self-drawn UIs — pass shot + in-image pixel x/y, or shot + text to click by recognized OCR text (auto-centered); (2) dump+id (UIA element center); (3) raw screen x/y (discouraged).",
-				promptSnippet: "desktop_click — click by screenshot coords/text or element id",
+				promptSnippet: "click by screenshot coords/text or element id",
 				promptGuidelines: GUIDELINES,
 				parameters: {
 					type: "object",
@@ -648,14 +654,7 @@ export default {
 						},
 						dump: { type: "string", description: "Snapshot key returned by desktop_elements." },
 						id: { type: "string", description: "Element id (e.g. 0.2.1)." },
-						x: {
-							type: "number",
-							description: "shot mode = in-image pixel X (omit when text given); raw screen X when no shot/id.",
-						},
-						y: {
-							type: "number",
-							description: "shot mode = in-image pixel Y (omit when text given); raw screen Y when no shot/id.",
-						},
+						...POINT_PROPS,
 						button: { type: "string", enum: ["left", "right", "middle"], description: "Defaults to left." },
 						double: { type: "boolean", description: "Double-click, default false." },
 					},
@@ -672,8 +671,8 @@ export default {
 				name: "desktop_screenshot",
 				label: "窗口截图",
 				description:
-					"Screenshot a window (PrintWindow, works even when occluded): returns image + window top-left screen coords + scale + OCR text with in-image pixel coords; the live mouse cursor is drawn into the image with its coords. Find the target in the image, then pass in-image {x,y} to desktop_click (with shot), or shot+text to click by text — the way to drive self-drawn UIs (WeChat/QQ/games).",
-				promptSnippet: "desktop_screenshot — window screenshot + OCR text + mouse position",
+					"Screenshot a window (PrintWindow, works even when occluded): returns image + window top-left screen coords + scale + OCR text with in-image pixel coords; the live mouse cursor is drawn into the image with its coords.",
+				promptSnippet: "screenshot a window with OCR text and mouse position",
 				promptGuidelines: GUIDELINES,
 				parameters: {
 					type: "object",
@@ -814,8 +813,8 @@ export default {
 				name: "desktop_type",
 				label: "向桌面输入",
 				description:
-					"Type into an input: English via keyboard, Chinese/emoji via clipboard paste. Pass shot+x+y, shot+click_text (self-drawn UIs) or dump+id to auto-click and focus first, avoiding lost input from cross-turn focus loss. 2000 chars max per call.",
-				promptSnippet: "desktop_type — type/paste text (can click-focus first)",
+					"Type into an input: English via keyboard, Chinese/emoji via clipboard paste. 2000 chars max per call.",
+				promptSnippet: "type or paste text into an input",
 				promptGuidelines: GUIDELINES,
 				parameters: {
 					type: "object",
@@ -833,14 +832,7 @@ export default {
 						},
 						dump: { type: "string", description: "Optional: snapshot key to click an id first for focus." },
 						id: { type: "string", description: "Optional: element id (clicked first, then types)." },
-						x: {
-							type: "number",
-							description: "shot mode = in-image pixel X (omit when click_text given); raw screen X when no shot/id.",
-						},
-						y: {
-							type: "number",
-							description: "shot mode = in-image pixel Y (omit when click_text given); raw screen Y when no shot/id.",
-						},
+						...POINT_PROPS,
 					},
 					required: ["text"],
 				},
@@ -866,8 +858,8 @@ export default {
 			{
 				name: "desktop_key",
 				label: "按键/快捷键",
-				description: 'Press a key or combo: keys like "enter" / "esc" / "tab" / "ctrl+c" / "alt+F4" / "win+r" / "F5".',
-				promptSnippet: "desktop_key — press keys/shortcuts",
+				description: 'Press a key or combo: "enter" / "esc" / "tab" / "ctrl+c" / "alt+F4" / "win+r" / "F5".',
+				promptSnippet: "press keys or shortcuts",
 				promptGuidelines: GUIDELINES,
 				parameters: {
 					type: "object",
@@ -886,8 +878,8 @@ export default {
 				name: "desktop_window",
 				label: "窗口列表/聚焦",
 				description:
-					"List top-level windows (action=list) or bring one to the foreground (action=focus + title substring). Focus the app before operating on it, then desktop_elements.",
-				promptSnippet: "desktop_window — list/focus windows",
+					"List top-level windows (action=list) or bring one to the foreground (action=focus + title substring).",
+				promptSnippet: "list or focus a desktop window",
 				promptGuidelines: GUIDELINES,
 				parameters: {
 					type: "object",

@@ -1694,6 +1694,14 @@ export default {
 			return [head, ...lines].filter((l) => l !== "").join("\n") || "(空结果)";
 		}
 
+		// 参数说明单源：9 个工具共享同一份连接/库参数（所有工具 schema 同时在上下文里，重复即为纯浪费）。
+		const CONN_PROP = {
+			connection: { type: "string", description: "Connection id or name; omit if only one connection exists" },
+		};
+		const DB_PROP = {
+			database: { type: "string", description: "Database name; omit on connections with a default database" },
+		};
+
 		function aiTools() {
 			return [
 				{
@@ -1720,7 +1728,7 @@ export default {
 					parameters: {
 						type: "object",
 						properties: {
-							connection: { type: "string", description: "Connection id or name; omit if only one connection exists" },
+							...CONN_PROP,
 						},
 					},
 					execute: async (_id, args) => {
@@ -1735,8 +1743,8 @@ export default {
 					parameters: {
 						type: "object",
 						properties: {
-							connection: { type: "string", description: "Connection id or name; omit if only one connection exists" },
-							database: { type: "string", description: "Database name; omit on connections with a default database" },
+							...CONN_PROP,
+							...DB_PROP,
 						},
 					},
 					execute: async (_id, args) => {
@@ -1754,8 +1762,8 @@ export default {
 					parameters: {
 						type: "object",
 						properties: {
-							connection: { type: "string", description: "Connection id or name; omit if only one connection exists" },
-							database: { type: "string", description: "Database name; omit on connections with a default database" },
+							...CONN_PROP,
+							...DB_PROP,
 							table: { type: "string", description: "Table name" },
 						},
 						required: ["table"],
@@ -1786,8 +1794,8 @@ export default {
 					parameters: {
 						type: "object",
 						properties: {
-							connection: { type: "string", description: "Connection id or name; omit if only one connection exists" },
-							database: { type: "string", description: "Database name; omit on connections with a default database" },
+							...CONN_PROP,
+							...DB_PROP,
 							table: { type: "string", description: "Table/collection name" },
 							limit: { type: "number", description: "Rows per page, default 50, max 500" },
 							offset: { type: "number", description: "Offset, default 0" },
@@ -1826,8 +1834,8 @@ export default {
 					parameters: {
 						type: "object",
 						properties: {
-							connection: { type: "string", description: "Connection id or name; omit if only one connection exists" },
-							database: { type: "string", description: "Database name; omit on connections with a default database" },
+							...CONN_PROP,
+							...DB_PROP,
 							sql: { type: "string", description: "SQL statement" },
 						},
 						required: ["sql"],
@@ -1850,7 +1858,7 @@ export default {
 					parameters: {
 						type: "object",
 						properties: {
-							connection: { type: "string", description: "Connection id or name; omit if only one connection exists" },
+							...CONN_PROP,
 							pattern: { type: "string", description: "Match pattern, default *" },
 							count: { type: "number", description: "Max keys to return, default 200" },
 						},
@@ -1874,7 +1882,7 @@ export default {
 					parameters: {
 						type: "object",
 						properties: {
-							connection: { type: "string", description: "Connection id or name; omit if only one connection exists" },
+							...CONN_PROP,
 							key: { type: "string", description: "Key name" },
 						},
 						required: ["key"],
@@ -1896,7 +1904,7 @@ export default {
 					parameters: {
 						type: "object",
 						properties: {
-							connection: { type: "string", description: "Connection id or name; omit if only one connection exists" },
+							...CONN_PROP,
 							cmd: { type: "string", description: "Raw command, e.g. GET foo" },
 						},
 						required: ["cmd"],

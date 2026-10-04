@@ -70,18 +70,19 @@ const TERMINAL_WRITE_TOOLS = new Set(["terminal_input", "terminal_key"]);
 
 /**
  * 三个只读闸门（计划 / 审查者 / 目标审查）共用的「派发类」工具名：它们会把活
- * 派到**别的会话**执行（delegate_task 走子代理 spawn 通道；schedule_task 到期
+ * 派到**别的会话**执行（delegate_task 走子代理 spawn 通道；schedule 到期
  * 唤醒对话跑 prompt），而这三道闸门都是会话级的 —— 放行即绕过。
  *
  * 名单以 server/tool-manager.ts 实际注册的工具名为事实源（#436）：历史名单里的
  * spawn / spawn_agent / subagent_spawn / schedule_agent / host_schedule /
  * create_goal / set_goal / start_goal_wizard / create_conversation /
- * fork_conversation / schedule / set_plan_mode 等都是协议消息名或从未注册的
- * 幽灵名，一个真实工具都没拦住，反而掩盖了 schedule_task 这类真实旁路工具
- * 完全可用的事实。subagent 是单 action 工具，由各闸门按 action 细分（只读
- * action 放行，见各闸门的判定函数）。
+ * fork_conversation / set_plan_mode 等都是协议消息名或从未注册的幽灵名，一个
+ * 真实工具都没拦住，反而掩盖了 schedule 这类真实旁路工具完全可用的事实。
+ * subagent 是单 action 工具，由各闸门按 action 细分（只读 action 放行，见各闸门
+ * 的判定函数）；schedule（create/list/cancel）则整工具拒——调度面在计划/审查
+ * 回合都不需要，宁可保守。
  */
-export const SESSION_DISPATCH_TOOLS = new Set<string>(["delegate_task", "schedule_task"]);
+export const SESSION_DISPATCH_TOOLS = new Set<string>(["delegate_task", "schedule"]);
 
 /**
  * 计划模式下也禁掉的「旁路工具」（真实派发类，见 SESSION_DISPATCH_TOOLS）：

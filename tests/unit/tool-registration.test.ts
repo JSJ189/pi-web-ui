@@ -26,13 +26,12 @@ import {
 	EDIT_SOFT_TOOL_NAME,
 	EVAL_TOOL_NAME,
 	LSP_TOOL_NAME,
+	LOAD_TOOLS_TOOL_NAME,
 	MARKERS_LIST_TOOL_NAME,
 	PATCH_TOOL_NAME,
 	PLAN_UPDATE_TOOL_NAME,
 	PRESENT_FILES_TOOL_NAME,
-	SCHEDULE_CANCEL_TOOL_NAME,
-	SCHEDULE_LIST_TOOL_NAME,
-	SCHEDULE_TASK_TOOL_NAME,
+	SCHEDULE_TOOL_NAME,
 	SKILL_TOOL_NAME,
 	SUBAGENT_TOOL_NAMES,
 	TERMINAL_TOOL_NAMES,
@@ -43,6 +42,10 @@ const AGENT_SERVICE_SRC = readFileSync(join(__dirname, "..", "..", "server", "ag
 /** 覆盖 SDK 内置的内核工具（与 write/edit 同走设置页「核心工具」区，不占目录行；
  *  目录行是 OTHER_AGENT_TOOLS 自动渲染的细粒度开关，核心四件套不在其中）。 */
 const INTRINSIC = new Set(["bash", "read"]);
+
+/** 常驻脚手架工具（不入目录、不可单独关掉）：它们是机制的入口，关掉机制就断了。
+ *  load_tools = 延迟加载模式的唯一拉取入口（见 server/load-tools-tool.ts）。 */
+const HARNESS = new Set([LOAD_TOOLS_TOOL_NAME]);
 
 /** 工厂 → 它注册的工具名（与各工厂的 name: 对齐；makeSubagentTools 产出 7 个子代理工具，见 subagents.ts）。 */
 const FACTORY_TOOLS: Record<string, string[]> = {
@@ -63,10 +66,11 @@ const FACTORY_TOOLS: Record<string, string[]> = {
 	makePresentFilesTool: [PRESENT_FILES_TOOL_NAME],
 	makeSkillTool: [SKILL_TOOL_NAME],
 	makeCompactContextTool: [COMPACT_CONTEXT_TOOL_NAME],
-	makeScheduleTools: [SCHEDULE_TASK_TOOL_NAME, SCHEDULE_LIST_TOOL_NAME, SCHEDULE_CANCEL_TOOL_NAME],
+	makeScheduleTool: [SCHEDULE_TOOL_NAME],
 	makeEvalTool: [EVAL_TOOL_NAME],
 	makePatchTool: [PATCH_TOOL_NAME],
 	makeLspTool: [LSP_TOOL_NAME],
+	makeLoadToolsTool: [LOAD_TOOLS_TOOL_NAME],
 };
 
 /** agent-service.ts 里实际调用的工厂（去注释、防定义行，只认 `makeXxxTool(` 调用）。 */
@@ -94,7 +98,7 @@ describe("注册→目录", () => {
 		const homeless: string[] = [];
 		for (const [factory, tools] of Object.entries(FACTORY_TOOLS)) {
 			for (const name of tools) {
-				if (!known.has(name) && !INTRINSIC.has(name)) homeless.push(`${name}（来自 ${factory}）`);
+				if (!known.has(name) && !INTRINSIC.has(name) && !HARNESS.has(name)) homeless.push(`${name}（来自 ${factory}）`);
 			}
 		}
 		expect(

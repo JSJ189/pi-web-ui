@@ -95,7 +95,7 @@ export const HOST_METHODS: ReadonlyArray<CatalogHostMethod> = [
 		name: "registerAgentTool",
 		needs: "tools",
 		summary: "给 AI 注册工具（插件给模型加能力，与 AI 写插件方向相反）",
-		example: `host.registerAgentTool({ name: "mail_list", description: "…", execute: async () => ({}) })`,
+		example: `host.registerAgentTool({ name: "mail", description: "…", execute: async () => ({}) })`,
 	},
 	{
 		name: "onToolPre",

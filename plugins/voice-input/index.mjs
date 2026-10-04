@@ -793,12 +793,10 @@ export default {
 					name: "transcribe_audio",
 					label: "转写音频文件",
 					description:
-						"Transcribe an audio file that lives in the workspace (a meeting recording, a voice memo, the audio track of a video) into text, so you can read what was said — you cannot listen to audio yourself. " +
-						"WAV works with the free offline local Whisper; other formats (mp3/m4a/ogg/webm) need the remote endpoint configured in this plugin's settings, because the local engine has no decoder for them. " +
-						"Local transcription is capped at ~8 minutes per call — for longer recordings, split them first. " +
-						"Returns the transcript plus which engine produced it. Only files inside the workspace can be read.",
-					promptSnippet:
-						"transcribe a workspace audio file to text (WAV offline via local Whisper; other formats need the plugin's remote endpoint)",
+						"Transcribe an audio file in the workspace (a meeting recording, a voice memo, the audio track of a video) into text, so you can read what was said — you cannot listen to audio yourself. " +
+						"WAV works with the free offline local Whisper; other formats (mp3/m4a/ogg/webm) need the remote endpoint configured in this plugin's settings. " +
+						"Local transcription is capped at ~8 minutes per call — split longer recordings first. Returns the transcript plus which engine produced it.",
+					promptSnippet: "transcribe an audio file to text (WAV offline)",
 					parameters: {
 						type: "object",
 						properties: {

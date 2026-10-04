@@ -2543,13 +2543,25 @@ export default {
 		const REMOTE_PATH_PROP = {
 			path: { type: "string", description: "Remote absolute path (starts with /, e.g. /var/www/app)" },
 		};
+		/** SSH 凭据参数块：vsc_sftp_save 与 vsc_ssh_save 共用（两处逐字重复过一份）。 */
+		const SSH_CRED_PROPS = {
+			username: { type: "string", description: "Username (default root)" },
+			password: { type: ["string", "null"], description: "Password; null clears it" },
+			privateKey: { type: ["string", "null"], description: "Private key PEM content; null clears it" },
+			privateKeyPath: {
+				type: "string",
+				description: "Private key path (~ expansion supported, e.g. ~/.ssh/id_rsa); takes precedence over privateKey",
+			},
+			passphrase: { type: ["string", "null"], description: "Private key passphrase; null clears it" },
+			agent: { type: "string", description: "ssh-agent socket (e.g. $SSH_AUTH_SOCK)" },
+		};
 
 		const AI_TOOLS = [
 			{
 				name: "vsc_sftp_get",
 				label: "读取 SFTP 同步配置",
 				description:
-					"Read the current workspace's SFTP sync config (.vscode/sftp.json; credentials redacted: only whether a password/private key exists is returned, never plaintext). Call it before uploading code to confirm the config exists.",
+					"Read the current workspace's SFTP sync config (.vscode/sftp.json). Credentials are redacted: only whether a password/private key exists is returned, never plaintext.",
 				promptGuidelines: [
 					"To transfer code to a server or operate on SSH remote files, prefer the vscode-editor plugin's vsc_sftp_* / vsc_ssh_* / vsc_remote_* tools instead of hand-crafting scp/sftp commands",
 				],
@@ -2566,23 +2578,14 @@ export default {
 				name: "vsc_sftp_save",
 				label: "保存 SFTP 同步配置",
 				description:
-					"Create or update the current workspace's SFTP sync config (writes .vscode/sftp.json, compatible with the VS Code vscode-sftp plugin format). Omitted fields keep old values; pass null to password/privateKey/passphrase to clear them. At least one of password/privateKeyPath/agent must be valid. After saving, test with vsc_sftp_test and upload code with vsc_sftp_sync.",
+					"Create or update the current workspace's SFTP sync config (writes .vscode/sftp.json, compatible with the VS Code vscode-sftp plugin format). Omitted fields keep old values; pass null to password/privateKey/passphrase to clear them. After saving, test with vsc_sftp_test and upload with vsc_sftp_sync.",
 				parameters: {
 					type: "object",
 					properties: {
 						name: { type: "string", description: "Config alias (optional)" },
 						host: { type: "string", description: "Remote host address (required)" },
 						port: { type: "number", description: "SSH port (default 22)" },
-						username: { type: "string", description: "Username (default root)" },
-						password: { type: ["string", "null"], description: "Password; null clears it" },
-						privateKey: { type: ["string", "null"], description: "Private key PEM content; null clears it" },
-						privateKeyPath: {
-							type: "string",
-							description:
-								"Private key path (~ expansion supported, e.g. ~/.ssh/id_rsa); takes precedence over privateKey",
-						},
-						passphrase: { type: ["string", "null"], description: "Private key passphrase; null clears it" },
-						agent: { type: "string", description: "ssh-agent socket (e.g. $SSH_AUTH_SOCK)" },
+						...SSH_CRED_PROPS,
 						remotePath: { type: "string", description: "Remote root directory (absolute path, e.g. /var/www/app)" },
 						ignore: {
 							type: "array",
@@ -2615,7 +2618,7 @@ export default {
 				name: "vsc_sftp_test",
 				label: "测试 SFTP 连接",
 				description:
-					"Connect to the remote using the current SFTP sync config and probe whether the remote root is reachable. Call it right after saving the config or when an upload fails.",
+					"Connect to the remote using the current SFTP sync config and probe whether the remote root is reachable; use it after saving the config or when an upload fails.",
 				parameters: { type: "object", properties: {} },
 				execute: async () => {
 					const cfg = await readSyncCfg();
@@ -2695,23 +2698,15 @@ export default {
 				name: "vsc_ssh_save",
 				label: "保存 SSH 主机",
 				description:
-					"Create or update an SSH host (written to ssh-hosts.json in the plugin directory; passwords/private keys go into encrypted storage). On update, omitted fields keep old values and passing null clears a credential; on create, host is required plus exactly one of password/privateKey/privateKeyPath/agent. Returns the host id, then connect with vsc_ssh_connect.",
+					"Create or update an SSH host (written to ssh-hosts.json in the plugin directory; passwords/private keys go into encrypted storage). On update, omitted fields keep old values and passing null clears a credential; on create, host is required plus exactly one credential. Returns the host id for vsc_ssh_connect.",
 				parameters: {
 					type: "object",
 					properties: {
 						id: { type: "string", description: "Host id (fill in to update; omit to create)" },
 						name: { type: "string", description: "Alias (defaults to host)" },
 						host: { type: "string", description: "Host address (required on create)" },
-						port: { type: "number", description: "Port (default 22)" },
-						username: { type: "string", description: "Username (default root)" },
-						password: { type: ["string", "null"], description: "Password; null clears it" },
-						privateKey: { type: ["string", "null"], description: "Private key PEM content; null clears it" },
-						privateKeyPath: {
-							type: "string",
-							description: "Private key path (~ expansion supported); takes precedence over privateKey",
-						},
-						passphrase: { type: ["string", "null"], description: "Private key passphrase; null clears it" },
-						agent: { type: "string", description: "ssh-agent socket (e.g. $SSH_AUTH_SOCK)" },
+						port: { type: "number", description: "SSH port (default 22)" },
+						...SSH_CRED_PROPS,
 					},
 				},
 				execute: async (_id, p) => {
@@ -2724,7 +2719,7 @@ export default {
 				name: "vsc_ssh_connect",
 				label: "连接 SSH 主机",
 				description:
-					"Open an SSH connection and return connId (used by all later vsc_ssh_exec / vsc_remote_* calls). id = a manually saved host; alias = a host alias from ~/.ssh/config (same name as VS Code Remote-SSH, connects directly without import). For an already-connected host, reuse its connId from vsc_ssh_hosts.",
+					"Open an SSH connection and return connId (used by all later vsc_ssh_exec / vsc_remote_* calls). id = a manually saved host; alias = a host alias from ~/.ssh/config (same name as VS Code Remote-SSH, connects directly without import). Reuse a live connId from vsc_ssh_hosts instead of reconnecting.",
 				parameters: {
 					type: "object",
 					properties: {

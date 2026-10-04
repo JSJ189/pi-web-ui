@@ -951,19 +951,13 @@ export function makeLspTool(options: LspToolOptions) {
 
 	return defineTool({
 		name: LSP_TOOL_NAME,
-		promptSnippet:
-			"IDE-grade semantic analysis (LSP) across the workspace: definition, references, hover, diagnostics, symbols, impact check",
+		promptSnippet: "semantic code intelligence (definitions, references, diagnostics, impact)",
 		label: "LSP code intelligence",
-		description: `IDE-grade semantic analysis (LSP) across the workspace. Actions:
-- \`definition\`: definition of the symbol at \`line\`/\`character\` in \`path\` (file, line, snippet).
-- \`references\`: all workspace usages of that symbol.
-- \`hover\`: type signature and docs for that symbol.
-- \`diagnostics\`: compiler/type errors and warnings for \`path\` (whole file).
-- \`documentSymbol\`: hierarchical symbol outline with line spans for \`path\`.
-- \`read_symbol\`: read the body of \`symbol\` in \`path\` (e.g. "parseConfig").
-- \`workspaceSymbol\`: search symbols across the workspace by \`query\`.
-- \`cascade\`: impact check for \`path\` — report diagnostics of files referencing it.
-Lines are 1-indexed.`,
+		description:
+			"IDE-grade semantic analysis (LSP) across the workspace (lines are 1-indexed). `definition` / `references` / `hover`: " +
+			"resolve the symbol at `line`/`character` in `path` to its definition, workspace usages, or type and docs. `diagnostics`: " +
+			"file errors/warnings. `documentSymbol`: symbol outline. `read_symbol`: body of `symbol` in `path`. `workspaceSymbol`: " +
+			"symbols matching `query`. `cascade`: diagnostics of files referencing `path`.",
 		parameters: Type.Object({
 			action: Type.Unsafe<LspAction>({
 				type: "string",
@@ -981,23 +975,22 @@ Lines are 1-indexed.`,
 			}),
 			path: Type.Optional(
 				Type.String({
-					description:
-						"Workspace-relative or absolute path to the target source file (required for all actions except workspaceSymbol).",
+					description: "Workspace-relative or absolute file path (required for every action except workspaceSymbol).",
 				}),
 			),
 			symbol: Type.Optional(
 				Type.String({
-					description: "Symbol name to read for 'read_symbol' action (e.g. 'functionName' or 'ClassName.methodName').",
+					description: "Symbol for 'read_symbol' (e.g. 'fn' or 'Class.method').",
 				}),
 			),
 			query: Type.Optional(
 				Type.String({
-					description: "Search query for 'workspaceSymbol' action.",
+					description: "Search query for 'workspaceSymbol'.",
 				}),
 			),
 			line: Type.Optional(
 				Type.Number({
-					description: "1-indexed line number in the source file.",
+					description: "1-indexed line in the file.",
 				}),
 			),
 			character: Type.Optional(
@@ -1009,7 +1002,7 @@ Lines are 1-indexed.`,
 				Type.Number({
 					minimum: 1,
 					maximum: 120,
-					description: "Timeout in seconds (1-120, defaults to 15).",
+					description: "Timeout in seconds (default 15).",
 				}),
 			),
 			allowInstall: Type.Optional(

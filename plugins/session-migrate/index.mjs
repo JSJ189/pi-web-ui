@@ -792,7 +792,7 @@ export default {
 			label: "扫描可迁移会话",
 			description:
 				"Scan omp/pi/claude/codex session stores for migratable sessions (read-only). No network, no writes.",
-			promptSnippet: "session_migrate_scan — list omp/pi/claude/codex sessions with id/cwd/count/preview",
+			promptSnippet: "list omp/pi/claude/codex sessions with id/cwd/count/preview",
 			parameters: { type: "object", properties: {} },
 			async execute() {
 				return JSON.stringify(scanSources(), null, 2);
@@ -803,8 +803,7 @@ export default {
 			label: "导入会话到 pi",
 			description:
 				"Import session files into ~/.pi/agent/sessions (omp/pi copied with normalization, claude/codex converted to pi v3). Skips existing ids, never touches sources.",
-			promptSnippet:
-				"session_migrate_import — import files (targetCwd optional redirect, required when source lacks cwd)",
+			promptSnippet: "import files (targetCwd optional redirect, required when source lacks cwd)",
 			parameters: {
 				type: "object",
 				properties: {
