@@ -48,6 +48,8 @@ const ALL = [
 	"plugin-grants-test",
 	// 注册面目录的 WS 往返（P2-7：plugin_api_catalog → 22 slot+别名+工具表+方法表+占用者）。
 	"plugin-api-catalog-test",
+	// #542：插件会话快照按 clientId 取用（两个标签页互不串台）+ 模型切换事件（不发消息即到、失败/重复不发）。
+	"plugin-client-conversation-test",
 	"provider-oauth-test",
 	"provider-keys-test",
 	"db-client-test",

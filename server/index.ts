@@ -62,6 +62,7 @@ import {
 	PluginManager,
 	resolvePluginClientFile,
 	type PluginChatRequest,
+	type PluginConversationQuery,
 	type PluginConversationSnapshot,
 	type PluginRunEvent,
 } from "./plugins.js";
@@ -1405,8 +1406,11 @@ export interface EngineService {
 	onRunEvent?: ((ev: PluginRunEvent) => void) | undefined;
 	/** 对话切换通知（切历史会话/切 running 对话/新对话/切项目，pi 引擎）。 */
 	onConversationChanged?: (() => void) | undefined;
-	/** 当前打开对话的快照（pi 引擎；dsh 引擎无此方法，插件回退空态）。 */
-	readConversationForPlugins?: (() => PluginConversationSnapshot | null) | undefined;
+	/** 当前打开对话的快照（pi 引擎；dsh 引擎无此方法，插件回退空态）。
+	 *  #542：可带 `{clientId}` 取某标签页正在看的对话。 */
+	readConversationForPlugins?: ((options?: PluginConversationQuery) => PluginConversationSnapshot | null) | undefined;
+	/** 模型切换成功通知（#542；pi 引擎。dsh 引擎暂无——插件订不到事件但快照照旧可读）。 */
+	onClientModelChanged?: ((snap: PluginConversationSnapshot) => void) | undefined;
 	/** 插件无头调用 agent（pi 引擎；dsh 引擎暂无，host.chat 明确拒绝）。 */
 	chatFromPlugin?:
 		((pluginId: string, req: PluginChatRequest) => Promise<{ conversationId: string; clientId: string }>) | undefined;
@@ -1826,8 +1830,10 @@ service.onRunEvent = (ev) => pluginMgr.emitRunEvent(ev);
 // 插件扩展点：对话切换通知（轨迹视图切会话后即重拉；dsh 引擎暂无）。
 service.onConversationChanged = () => pluginMgr.emitConversationChanged();
 // 插件扩展点：当前打开对话的快照（轨迹视图直接显示打开对话的时间线；
-// dsh 引擎无此方法时回退 null，插件显示空态）。
-pluginMgr.conversationProvider = () => service.readConversationForPlugins?.() ?? null;
+// dsh 引擎无此方法时回退 null，插件显示空态）。#542：透传 {clientId} 选本标签页的对话。
+pluginMgr.conversationProvider = (opts) => service.readConversationForPlugins?.(opts) ?? null;
+// 插件扩展点：模型切换成功事件（#542；dsh 引擎无此钩子 = 不发事件）。
+service.onClientModelChanged = (snap) => pluginMgr.emitClientModelChanged(snap);
 // 插件扩展点：无头调用 agent（微信通道等经 host.chat 投递外部消息，无浏览器也能跑）。
 pluginMgr.chatProvider = (pluginId, req) =>
 	service.chatFromPlugin?.(pluginId, req) ?? Promise.reject(new Error("当前引擎不支持无头调用（仅标准 pi 引擎）"));

@@ -100,13 +100,53 @@ export interface PluginToolEvent {
 	isError?: boolean;
 }
 
+/** `host.getActiveConversation` 的取用参数（#542，纯新增）。
+ *  - `clientId`：取该客户端（标签页）当前打开的对话；不给 = 全局回落。
+ *  - `fallback`：回落口径。目前只有一种（默认也是它）：最近活跃的**非子代理**会话。
+ *  插件不得借 `clientId` 读别的标签页之外的任何隐私：它只能拿到同一服务内已被
+ *  hello 过的客户端 id。 */
+export interface PluginConversationQuery {
+	clientId?: string;
+	fallback?: "latest-non-subagent";
+}
+
+/** 交给插件前的防御性拷贝：provider 回的是快照管线的**活引用** —— messages 数组与
+ *  元素对象都被 60ms 推送管线缓存复用（lastMessagesArray / uiMessageCache），插件原地
+ *  改一个字段/挪一个元素，污染的就是推给真实客户端的快照。浅拷数组 + 元素对象
+ *  structuredClone；元素是纯 JSON 结构（details 已过 JSON.stringify 闸），structuredClone
+ *  不会失败，JSON 往返只是万一携带不可克隆值时的兜底。
+ *  `getActiveConversation` 与 `emitClientModelChanged` 共用（两处都要发快照给插件）。 */
+function copySnapshotForPlugins(snap: PluginConversationSnapshot): PluginConversationSnapshot {
+	return {
+		...snap,
+		messages: snap.messages.map((m) => {
+			try {
+				return structuredClone(m);
+			} catch {
+				try {
+					return JSON.parse(JSON.stringify(m)) as typeof m;
+				} catch {
+					return { ...m }; // 连 JSON 往返都失败（循环引用）：至少不共享顶层对象
+				}
+			}
+		}),
+	};
+}
+
 /**
  * 当前打开对话的快照（host.getActiveConversation 返回，轨迹类插件用）。
  * messages/streamingMessage 是服务端只读缓存对象的引用——插件只读、不得修改，
  * 要广播/持久化必须先抽成摘要（截断封顶），禁止原样下发（单条可达 200K）。
  */
 export interface PluginConversationSnapshot {
+	/** 该快照归属的浏览器客户端（每标签页一个 clientId —— 插件用
+	 *  `host.getActiveConversation({clientId})` 就能拿到「本页在看哪个对话」）。 */
+	clientId: string;
 	conversationId: string;
+	/** 这是子代理对话（后台派发、无头）：缺省回落口径会跳过它，见
+	 *  `server/plugin-conversation-view.ts`。显式带 clientId 时不跳过滤 ——
+	 *  那时返回的就是该标签页真正在看的东西，由插件自己按本字段决定要不要用。 */
+	isSubagent: boolean;
 	/** 底层 Pi 会话的持久化 UUID（如 "01a0e6cd-00a5-7068-b3f2-1c62e7dd180f"；inMemory 为 undefined）。 */
 	sessionId?: string;
 	/** 会话持久化 JSONL 文件绝对路径。 */
@@ -327,9 +367,16 @@ export interface PluginHost {
 	 *  —— 轨迹/时间线类插件用它聚合「任务 → 思考 → 工具 → 文件改动 → 结果」。
 	 *  返回注销函数）。 */
 	onRunEvent(handler: (ev: PluginRunEvent) => void): () => void;
-	/** 读取当前打开对话的快照（标题/消息/流式消息/统计——轨迹视图直接显示
-	 *  打开对话的时间线，不只收录插件安装后的运行）。返回 null = 暂无对话。 */
-	getActiveConversation(): PluginConversationSnapshot | null;
+	/** 读取对话快照（标题/消息/流式消息/统计——轨迹视图直接显示打开对话的
+	 *  时间线，不只收录插件安装后的运行）。
+	 *  传 `{clientId}` = 该标签页正在看的对话（本页多标签页互不干扰，#542）；
+	 *  不传 = 最近活跃的非子代理会话。返回 null = 暂无对话。 */
+	getActiveConversation(options?: PluginConversationQuery): PluginConversationSnapshot | null;
+	/** 订阅「某客户端的对话模型切换成功」（#542）。回调收到切换后的快照
+	 *  （含 clientId / conversationId / model），按 clientId 过滤即可只看本页；
+	 *  只在这会话的模型**真的变了**时触发（重复选同一个模型 / 重连重放
+	 *  set_model 不重复发；切换失败不发）。返回注销函数。 */
+	onClientModelChanged(handler: (snap: PluginConversationSnapshot) => void): () => void;
 	/** 无头调用：把外部通道文本投给 agent（微信等，无浏览器也能跑）。
 	 *  fire-and-forget，运行结果经 onRunEvent(run_end) 按 conversationId 关联。
 	 *  需要能力 "chat"（manifest.permissions）。宿主未接 chatProvider 时拒绝。 */
@@ -718,6 +765,8 @@ interface LoadedPlugin {
 	runHandlers: Set<(ev: PluginRunEvent) => void>;
 	/** 对话切换订阅（host.onConversationChanged）。 */
 	convChangeHandlers: Set<() => void>;
+	/** 模型切换订阅（host.onClientModelChanged，#542）。错误占位行可缺省。 */
+	modelChangeHandlers?: Set<(snap: PluginConversationSnapshot) => void>;
 	/** onAttach 钩子（新客户端接入时逐个回调）。 */
 	attachHandlers: Set<(clientId: string) => void>;
 	/** onCwdChange 钩子（工作区切换时逐个回调）。 */
@@ -2183,8 +2232,10 @@ export class PluginManager {
 		return denialText(verdict, pluginId, lang);
 	}
 
-	/** index.ts 注入：读取当前打开对话的快照（轨迹类插件经 host.getActiveConversation 调用）。 */
-	conversationProvider: (() => PluginConversationSnapshot | null) | undefined = undefined;
+	/** index.ts 注入：读取对话快照（轨迹类插件经 host.getActiveConversation 调用）。
+	 *  #542：按 clientId 取「该标签页正在看的对话」；缺省回落「最近活跃的非子代理」。 */
+	conversationProvider: ((options?: PluginConversationQuery) => PluginConversationSnapshot | null) | undefined =
+		undefined;
 	/** index.ts 注入：插件无头调用 agent（微信通道等经 host.chat 调用）。 */
 	chatProvider: ((pluginId: string, req: PluginChatRequest) => Promise<PluginChatResult>) | undefined = undefined;
 	/** 由 index.ts 接入 agent-service：插件直调模型（host.llm.complete 的底层，孤立无工具会话）。
@@ -2332,35 +2383,35 @@ export class PluginManager {
 		});
 	}
 
-	/** 当前打开对话的快照（无提供者/暂无对话时返回 null）。 */
-	getActiveConversation(): PluginConversationSnapshot | null {
+	/** 当前打开对话的快照（无提供者/暂无对话时返回 null）。
+	 *  #542：options.clientId 取该标签页正在看的对话；缺省 = 全局回落
+	 *  （最近活跃的**非子代理**会话，子代理不再把用户正在看的对话挤出去）。 */
+	getActiveConversation(options?: PluginConversationQuery): PluginConversationSnapshot | null {
 		let snap: PluginConversationSnapshot | null;
 		try {
-			snap = this.conversationProvider?.() ?? null;
+			snap = this.conversationProvider?.(options) ?? null;
 		} catch (err) {
 			console.error("[plugins] conversationProvider failed:", err);
 			return null;
 		}
-		if (!snap) return null;
-		// 交给插件前做防御性拷贝：provider 回的是快照管线的**活引用** —— messages
-		// 数组与元素对象都被 60ms 推送管线缓存复用（lastMessagesArray / uiMessageCache），
-		// 插件原地改一个字段/挪一个元素，污染的就是推给真实客户端的快照。浅拷数组 +
-		// 元素对象 structuredClone；元素是纯 JSON 结构（details 已过 JSON.stringify 闸），
-		// structuredClone 不会失败，JSON 往返只是万一携带不可克隆值时的兜底。
-		return {
-			...snap,
-			messages: snap.messages.map((m) => {
+		return snap ? copySnapshotForPlugins(snap) : null;
+	}
+
+	/** agent-service 调：某客户端的对话模型切换成功（#542）—— 订阅
+	 *  host.onClientModelChanged 的插件立即收到新快照（异常隔离，不会拖慢切换）。 */
+	emitClientModelChanged(snap: PluginConversationSnapshot): void {
+		const copy = copySnapshotForPlugins(snap);
+		for (const p of this.loaded.values()) {
+			const hs = p.modelChangeHandlers;
+			if (!hs || hs.size === 0) continue;
+			for (const h of hs) {
 				try {
-					return structuredClone(m);
-				} catch {
-					try {
-						return JSON.parse(JSON.stringify(m)) as typeof m;
-					} catch {
-						return { ...m }; // 连 JSON 往返都失败（循环引用）：至少不共享顶层对象
-					}
+					h(copy);
+				} catch (err) {
+					console.error(`[plugin:${p.info.id}] client-model-changed handler failed:`, err);
 				}
-			}),
-		};
+			}
+		}
 	}
 
 	/** agent-service 调：当前打开对话变了（切历史会话/切 running 对话/新对话）——
@@ -3176,6 +3227,7 @@ export class PluginManager {
 		const postGuards = new Set<ToolPostHandler>();
 		const runHandlers = new Set<(ev: PluginRunEvent) => void>();
 		const convChangeHandlers = new Set<() => void>();
+		const modelChangeHandlers = new Set<(snap: PluginConversationSnapshot) => void>();
 		const attachHandlers = new Set<(clientId: string) => void>();
 		const cwdHandlers = new Set<(cwd: string) => void>();
 		const httpRoutes = new Map<string, (req: Request, res: Response) => void>();
@@ -3552,7 +3604,11 @@ export class PluginManager {
 				convChangeHandlers.add(h);
 				return () => convChangeHandlers.delete(h);
 			},
-			getActiveConversation: () => self.getActiveConversation(),
+			onClientModelChanged: (h) => {
+				modelChangeHandlers.add(h);
+				return () => modelChangeHandlers.delete(h);
+			},
+			getActiveConversation: (opts) => self.getActiveConversation(opts),
 			chat: (req) => sendChat(req),
 			chatWait: async (req, opts) => {
 				try {
@@ -4389,6 +4445,7 @@ export class PluginManager {
 				postGuards,
 				runHandlers,
 				convChangeHandlers,
+				modelChangeHandlers,
 				attachHandlers,
 				cwdHandlers,
 				effects,

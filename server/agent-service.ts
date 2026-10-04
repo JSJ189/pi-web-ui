@@ -76,11 +76,13 @@ import type {
 	PluginChatRequest,
 	PluginChatResult,
 	PluginCommandDef,
+	PluginConversationQuery,
 	PluginConversationSnapshot,
 	PluginRunEvent,
 	PluginToolEvent,
 } from "./plugins.js";
 import { syncPluginToolsIntoSession } from "./plugins.js";
+import { modelChangeKey, pickClientConversation, pickLatestClientSnapshot } from "./plugin-conversation-view.js";
 import {
 	denialText,
 	type GuardedToolName,
@@ -98,6 +100,7 @@ import {
 	type GoalConversation,
 	type RoleWaitOutcome,
 } from "./goal-service.js";
+import { buildEvidenceDigest, sessionMessagesOf } from "./goal-evidence.js";
 import { MarkerService } from "./marker-service.js";
 import { SlashCommandsService, parseSlash } from "./slash-commands.js";
 import { ModelAdminService } from "./model-admin.js";
@@ -2590,6 +2593,9 @@ export class ClientSession {
 	private convs = new Map<string, Conversation>();
 	private activeId = "";
 	private convSeq = 0;
+	/** 模型变更事件（#542）已发过的去重键：convId → `modelChangeKey(snap)`。重连重放
+	 *  同一个 set_model、或重复点同一个模型，不会重复触发插件订阅者。 */
+	private pluginModelKeys = new Map<string, string>();
 	/** One ModelRuntime shared by all conversations — the model chosen in the
 	 *  top bar applies to every chat, not just the one that set it. Seeded by
 	 *  the first conversation and reused by later ones. */
@@ -2649,6 +2655,9 @@ export class ClientSession {
 	/** index.ts 注入：当前打开对话变了（切历史会话/切 running 对话/新对话）时
 	 *  通知插件（PluginManager.emitConversationChanged）——轨迹视图靠它重拉。 */
 	onConversationChanged: (() => void) | undefined = undefined;
+	/** index.ts 注入：某客户端的对话模型切换成功（#542）——直接转发给
+	 *  PluginManager.emitClientModelChanged（插件用 host.onClientModelChanged 订阅）。 */
+	onClientModelChanged: ((snap: PluginConversationSnapshot) => void) | undefined = undefined;
 	/** index.ts 注入：读取插件当前注册的 AI 工具（attach 时拷贝到每个新会话）。 */
 	pluginToolsProvider: (() => PluginAgentTool[]) | undefined = undefined;
 	/** index.ts 经 AgentService 注入：内置调度存储（定时任务 Agent 工具用；未注入时工具直接报错）。 */
@@ -4411,6 +4420,17 @@ export class ClientSession {
 					usage,
 				};
 			},
+			// #543：执行者会话最近的工具/命令证据 —— 审查者的输入原本只有「执行者自述」，
+			// 远程部署类目标于是只能靠猜。只在审查前读一次（轮次边界），与 vitals 分开。
+			readRoleEvidence: (convId) => {
+				const conv = this.convs.get(convId);
+				if (!conv?.session) return undefined;
+				try {
+					return buildEvidenceDigest(sessionMessagesOf(conv.session)) || undefined;
+				} catch {
+					return undefined;
+				}
+			},
 			stopRoleAgent: async (convId) => {
 				const conv = this.convs.get(convId);
 				if (!conv) return;
@@ -5588,14 +5608,38 @@ export class ClientSession {
 		}
 	}
 
-	/** 插件用：本客户端最近活跃对话的快照（轨迹视图直接显示打开对话的时间线）。
-	 *  messages/streamingMessage 为引用稳定的只读缓存对象——调用方只读、不得修改。 */
-	readConversationForPlugins(): PluginConversationSnapshot | null {
+	/** 模型切换成功后通知插件（#542）：只在（客户端, 对话, 模型）三元组真的变了时发
+	 *  一次——重连重放同一个 set_model / 重复点同一个模型不重复触发订阅者。异常隔离：
+	 *  插件侧报错不得影响切换流程。 */
+	private notifyPluginModelChange(): void {
+		if (!this.onClientModelChanged) return;
 		try {
-			let target: Conversation | null = null;
-			for (const c of this.convs.values()) {
-				if (!target || c.lastActiveAt > target.lastActiveAt) target = c;
-			}
+			// 取「本客户端正在看的那条对话」的快照（模型属于它，不能回落成别的会话）。
+			const snap = this.readConversationForPlugins({ preferActive: true, includeSubagents: true });
+			if (!snap) return;
+			const key = modelChangeKey(snap);
+			if (this.pluginModelKeys.get(snap.conversationId) === key) return;
+			this.pluginModelKeys.set(snap.conversationId, key);
+			this.onClientModelChanged(snap);
+		} catch (err) {
+			console.error("[agent-service] onClientModelChanged failed:", err);
+		}
+	}
+
+	/** 插件用：本客户端最近活跃对话的快照（轨迹视图直接显示打开对话的时间线）。
+	 *  messages/streamingMessage 为引用稳定的只读缓存对象——调用方只读、不得修改。
+	 *
+	 *  #542：`opts.preferActive` = 先认「本客户端正在看的对话」（按 clientId 取快照时用），
+	 *  否则按 lastActiveAt 选；`opts.includeSubagents` = 连子代理对话一起算（缺省跳过）。 */
+	readConversationForPlugins(opts?: {
+		preferActive?: boolean;
+		includeSubagents?: boolean;
+	}): PluginConversationSnapshot | null {
+		try {
+			const target = pickClientConversation(this.convs.values(), {
+				active: opts?.preferActive ? this.convs.get(this.activeId) : undefined,
+				includeSubagents: opts?.includeSubagents,
+			});
 			if (!target) return null;
 			const state = target.session.agent.state;
 			let stats: PluginConversationSnapshot["stats"] = {
@@ -5618,7 +5662,9 @@ export class ClientSession {
 			const curModel = target.session.model;
 			const modelId = curModel ? `${curModel.provider}/${curModel.id}` : undefined;
 			return {
+				clientId: this.clientId,
 				conversationId: target.id,
+				isSubagent: target.isSubagent,
 				sessionId: target.session.sessionId,
 				sessionFile: target.session.sessionFile,
 				sessionDir: target.session.sessionManager?.getSessionDir?.(),
@@ -13557,6 +13603,8 @@ export class ClientSession {
 			this.rememberProjectModel(modelId);
 			// 换模型后按新模型的窗口重算软上限覆盖（按模型覆盖可能不同，issue #229）。
 			this.applyCompactionOverrides();
+			// 切换成功 → 立即通知插件（#542：不发消息也能收到）；失败路径落在 catch 里，不发。
+			this.notifyPluginModelChange();
 		} catch (err) {
 			this.emit({
 				type: "notice",
@@ -13789,6 +13837,8 @@ export class AgentService {
 	onRunEvent: ((ev: PluginRunEvent) => void) | undefined = undefined;
 	/** index.ts 注入：对话切换通知钩子，attach 时拷贝到每个新会话。 */
 	onConversationChanged: (() => void) | undefined = undefined;
+	/** index.ts 注入：模型切换成功通知钩子（#542），attach 时拷贝到每个新会话。 */
+	onClientModelChanged: ((snap: PluginConversationSnapshot) => void) | undefined = undefined;
 	/** index.ts 注入：读取插件当前注册的 AI 工具（attach 时拷贝到每个新会话）。 */
 	pluginToolsProvider: (() => PluginAgentTool[]) | undefined = undefined;
 	/** index.ts 注入：读取插件当前注册的斜杠命令（attach 时拷贝到每个新会话）。 */
@@ -14172,18 +14222,33 @@ export class AgentService {
 		return n;
 	}
 
-	/** 插件用：全客户端最近活跃对话的快照（at 最大者即“当前打开的对话”）。 */
-	readConversationForPlugins(): PluginConversationSnapshot | null {
-		let best: PluginConversationSnapshot | null = null;
+	/** 插件用：全客户端最近活跃对话的快照（#542：按 clientId 取某个标签页正在看的
+	 *  对话；缺省回落「最近活跃的**非子代理**会话」——子代理跑得再勤也不会把用户
+	 *  正在看的对话挤出快照）。clientId 不认识/该客户端暂无对话时同样走回落。 */
+	readConversationForPlugins(opts?: PluginConversationQuery): PluginConversationSnapshot | null {
+		const want = (opts?.clientId ?? "").trim();
+		if (want) {
+			const cs = this.clients.get(want);
+			if (cs) {
+				try {
+					// 显式客户端：返回它**真正在看**的对话（含子代理对话——那是事实，
+					// 快照带 isSubagent 由插件自己判）。
+					const s = cs.readConversationForPlugins({ preferActive: true, includeSubagents: true });
+					if (s) return s;
+				} catch {
+					/* 单客户端坏了不影响回落 */
+				}
+			}
+		}
+		const snaps: (PluginConversationSnapshot | null)[] = [];
 		for (const cs of this.clients.values()) {
 			try {
-				const s = cs.readConversationForPlugins();
-				if (s && (!best || s.at > best.at)) best = s;
+				snaps.push(cs.readConversationForPlugins());
 			} catch {
 				/* 单客户端坏了不影响其他 */
 			}
 		}
-		return best;
+		return pickLatestClientSnapshot(snaps);
 	}
 
 	/** 插件无头调用（host.chat 的落地）：外部通道（微信等）把文本投给 agent。
@@ -14727,6 +14792,7 @@ export class AgentService {
 		cs.toolGuard = this.toolGuard;
 		cs.onRunEvent = this.onRunEvent;
 		cs.onConversationChanged = () => this.onConversationChanged?.();
+		cs.onClientModelChanged = (snap) => this.onClientModelChanged?.(snap);
 		cs.pluginToolsProvider = this.pluginToolsProvider;
 		cs.pluginCommandsProvider = this.pluginCommandsProvider;
 		cs.pluginBgTasksProvider = this.pluginBgTasksProvider;

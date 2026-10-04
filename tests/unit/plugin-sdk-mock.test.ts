@@ -151,6 +151,7 @@ describe("createMockHost：无注入回退语义", () => {
 		expect(await host.conversations.search("x")).toEqual([]);
 		expect(host.conversations.get("c")).toBeNull();
 		expect(host.getActiveConversation()).toBeNull();
+		expect(typeof host.onClientModelChanged(() => {})).toBe("function");
 		expect((await host.net.fetch("https://example.com")).ok).toBe(false);
 		expect(await host.dialogs.confirm({})).toBe(false);
 		expect(await host.dialogs.select({})).toEqual({ ok: false });

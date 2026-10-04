@@ -294,6 +294,7 @@ export function createMockHost(overrides) {
 		onToolPost: sub("onToolPost"),
 		onRunEvent: sub("onRunEvent"),
 		getActiveConversation: () => null,
+		onClientModelChanged: sub("onClientModelChanged"),
 		chat: async () => okFalse("chatProvider（无头调用未接入）"),
 		chatWait: async () => ({ ok: false, error: "mock：未注入 chatProvider（不等 run_end）" }),
 		llm: {

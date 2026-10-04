@@ -170,8 +170,11 @@ export interface PluginHost {
 	/** 注册工具 post 编辑守卫（只对 bash/read 生效；要 "tools" 能力）。 */
 	onToolPost(handler: (req: unknown) => unknown): () => void;
 	onRunEvent(handler: (ev: unknown) => void): () => void;
-	getActiveConversation(): unknown;
+	/** 读对话快照。传 `{clientId}` = 该标签页正在看的对话；不传 = 最近活跃的非子代理会话。 */
+	getActiveConversation(options?: { clientId?: string; fallback?: "latest-non-subagent" }): unknown;
 	onConversationChanged(handler: () => void): () => void;
+	/** 订阅模型切换成功（回调带 clientId / conversationId / model / isSubagent… 的快照）。 */
+	onClientModelChanged(handler: (snap: unknown) => void): () => void;
 	registerAgentTool(tool: PluginAgentTool): () => void;
 	dir: string;
 	dataDir: string;

@@ -306,3 +306,78 @@ describe("PluginManager cwd 跟随", () => {
 		expect(probe().seen).toHaveLength(0);
 	});
 });
+
+// ---------------------------------------------------------------------------
+// #542：会话快照按 clientId 取用 + 模型变更事件
+// ---------------------------------------------------------------------------
+
+type Snap = import("../../server/plugins.js").PluginConversationSnapshot;
+
+const snap = (over: Partial<Snap> = {}): Snap => ({
+	clientId: "tab-1",
+	conversationId: "conv-1",
+	isSubagent: false,
+	title: "t",
+	model: "openai/gpt-5",
+	at: 1,
+	isStreaming: false,
+	messages: [],
+	streamingMessage: null,
+	stats: { totalMessages: 0, tokens: { input: 0, output: 0, total: 0 }, cost: 0 },
+	...over,
+});
+
+const MODEL_WATCH_PLUGIN = `
+globalThis.__modelSeen = [];
+export default {
+	activate(host) {
+		const offBad = host.onClientModelChanged(() => { throw new Error("bad"); });
+		const off = host.onClientModelChanged((s) => { globalThis.__modelSeen.push(s.model ?? "(none)"); });
+		return () => { off(); offBad(); };
+	},
+};`;
+
+describe("PluginManager #542 客户端会话快照与模型事件", () => {
+	const seen = (): string[] => (globalThis as { __modelSeen?: string[] }).__modelSeen ?? [];
+
+	it("getActiveConversation 透传 {clientId}，且交给插件的快照是拷贝", () => {
+		const calls: unknown[] = [];
+		const live = { ...snap(), messages: [{ role: "user", text: "hi" }] } as unknown as Snap;
+		mgr.conversationProvider = (opts) => {
+			calls.push(opts);
+			return live;
+		};
+		const got = mgr.getActiveConversation({ clientId: "tab-1" });
+		expect(calls).toEqual([{ clientId: "tab-1" }]);
+		expect(got?.clientId).toBe("tab-1");
+		expect(got?.messages).toHaveLength(1);
+		// 元素是深拷：插件原地改一个字段/挪用一条，不污染 provider 的活引用
+		expect(got?.messages[0]).not.toBe(live.messages[0]);
+		(got!.messages[0] as unknown as { text: string }).text = "tampered";
+		got!.messages.push({ role: "user" } as never);
+		expect(live.messages).toHaveLength(1);
+		expect((live.messages[0] as unknown as { text: string }).text).toBe("hi");
+		// 不传参数 = 全局回落口径（provider 收到 undefined）
+		expect(mgr.getActiveConversation()?.conversationId).toBe("conv-1");
+		expect(calls[1]).toBeUndefined();
+	});
+
+	it("未注入 provider / provider 抛错 → null（插件侧不炸）", () => {
+		expect(mgr.getActiveConversation({ clientId: "tab-1" })).toBeNull();
+		mgr.conversationProvider = () => {
+			throw new Error("boom");
+		};
+		expect(mgr.getActiveConversation()).toBeNull();
+	});
+
+	it("emitClientModelChanged 扇出（抛错隔离）+ 反激活后不再触发", async () => {
+		makePlugin("modelwatch", MODEL_WATCH_PLUGIN);
+		await mgr.ensureLoaded();
+		mgr.emitClientModelChanged(snap({ model: "anthropic/sonnet" }));
+		mgr.emitClientModelChanged(snap({ model: "anthropic/sonnet", conversationId: "conv-2" }));
+		expect(seen()).toEqual(["anthropic/sonnet", "anthropic/sonnet"]);
+		mgr.dispose();
+		mgr.emitClientModelChanged(snap({ model: "other/model" }));
+		expect(seen()).toHaveLength(2);
+	});
+});

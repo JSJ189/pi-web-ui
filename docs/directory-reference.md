@@ -118,6 +118,7 @@ server/
 ├── plugin-api-catalog.ts   # 机器可读的注册面目录（slot 的 key/kind/occupants/example）
 ├── plugin-catalog.ts       # 插件市场列表（builtin plugins/catalog.json + 用户自定义 <dataDir>/plugin-catalog.json）+ 目录同步纯函数（normalizeSyncPayload/writeCustomCatalog，issue #148）
 ├── plugin-catalog-sync.ts  # 市场目录同步编排（拉取/校验/原子写/可选安装/重载+重推，issue #148）
+├── plugin-conversation-view.ts # ★ 插件会话快照选会话策略（#542：按 clientId 取本标签页正看的对话 / 缺省跳过子代理回落 + 模型变更去重键，纯函数）
 ├── plugin-dom.ts           # 特权 DOM 访问授权表（<dataDir>/plugin-dom.json）
 ├── plugin-facilities.ts    # 插件宿主设施：插件私有 KV 存储 + 加密 secrets
 ├── plugin-grants.ts        # 插件目录授权表（<dataDir>/plugin-grants.json）：工作区外目录的「记住」授权（父目录覆盖子目录），设置面板可撤销

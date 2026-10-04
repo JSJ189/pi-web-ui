@@ -202,14 +202,20 @@ export const HOST_METHODS: ReadonlyArray<CatalogHostMethod> = [
 	{
 		name: "getActiveConversation",
 		needs: "-",
-		summary: "读当前打开对话快照（只读引用，广播前抽摘要）",
-		example: `host.getActiveConversation()`,
+		summary: "读对话快照：{clientId} 取该标签页正在看的对话，缺省=最近活跃的非子代理会话",
+		example: `host.getActiveConversation({ clientId })`,
 	},
 	{
 		name: "onConversationChanged",
 		needs: "-",
 		summary: "订阅切对话（轨迹插件重拉时间线）",
 		example: `host.onConversationChanged(() => {})`,
+	},
+	{
+		name: "onClientModelChanged",
+		needs: "-",
+		summary: "订阅模型切换成功（回调带 clientId/对话/model；失败与重复不发）",
+		example: `host.onClientModelChanged((snap) => {})`,
 	},
 	{
 		name: "storage",
