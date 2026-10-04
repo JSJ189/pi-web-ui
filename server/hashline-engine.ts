@@ -11,8 +11,9 @@
  */
 
 import { createHash } from "node:crypto";
-import { existsSync, mkdirSync, readFileSync, unlinkSync, writeFileSync } from "node:fs";
-import { dirname, isAbsolute, relative, resolve, sep } from "node:path";
+import { existsSync, mkdirSync, readFileSync, readdirSync, unlinkSync, writeFileSync } from "node:fs";
+import type { Dirent } from "node:fs";
+import { basename, dirname, isAbsolute, join, relative, resolve, sep } from "node:path";
 
 export const HL_HASH_LENGTH = 4;
 
@@ -445,10 +446,40 @@ export function tryRecoverEdits(
 					lineEnd: hunk.lineEnd !== undefined ? shiftedEnd : undefined,
 				});
 			} else {
-				return {
-					success: false,
-					reason: `目标文件在第 ${firstDiff} 行附近发生外部修改，补丁锚点（第 ${start} 行）产生冲突`,
-				};
+				// 平移后上下文仍不匹配：±6 行窗口内做 trim 归一化重锚定
+				const baseCtx = baseLines
+					.slice(Math.max(0, start - 2), Math.min(baseLines.length, end + 1))
+					.join("\n")
+					.trim();
+				let matched: number | null = null;
+				if (baseCtx) {
+					for (let w = 1; w <= 6 && matched === null; w++) {
+						for (const off of [w, -w]) {
+							const s2 = Math.max(1, start + delta + off);
+							const e2 = Math.max(1, end + delta + off);
+							const curCtx = curLines
+								.slice(Math.max(0, s2 - 2), Math.min(curLines.length, e2 + 1))
+								.join("\n")
+								.trim();
+							if (curCtx && curCtx === baseCtx) {
+								matched = off;
+								break;
+							}
+						}
+					}
+				}
+				if (matched !== null) {
+					remapped.push({
+						...hunk,
+						lineStart: Math.max(1, start + delta + matched),
+						lineEnd: hunk.lineEnd !== undefined ? Math.max(1, end + delta + matched) : undefined,
+					});
+				} else {
+					return {
+						success: false,
+						reason: `目标文件在第 ${firstDiff} 行附近发生外部修改，补丁锚点（第 ${start} 行）产生冲突`,
+					};
+				}
 			}
 		}
 	}
@@ -463,6 +494,8 @@ export function tryRecoverEdits(
 export interface ApplySectionResult {
 	filePath: string;
 	op: "updated" | "deleted" | "moved";
+	created?: boolean;
+	note?: string;
 	oldHash?: string;
 	newHash?: string;
 	linesChanged: number;
@@ -475,6 +508,79 @@ export interface PatchApplyReport {
 	summary: string;
 	results: ApplySectionResult[];
 	error?: string;
+}
+
+/**
+ * 错误消息附带当前内容摘录（行号: 内容，锚点附近 ±2 行），
+ * 让模型基于现内容一次重试到位，而不是被迫整文件重读。
+ */
+function patchFileExcerpt(lines: string[], aroundLine: number | undefined, filePath: string, hash: string): string {
+	let n = lines.length;
+	if (n > 0 && lines[n - 1] === "") n--; // 尾随换行 split 出的幻影空行不计入行数（与引擎 lines 口径一致）
+	const head = `当前共 ${n} 行，最新锚点：[${filePath}#${hash}]`;
+	if (n === 0) return `${head}（空文件）`;
+	const center = Math.max(1, Math.min(n, aroundLine ?? n));
+	const lo = Math.max(1, center - 2);
+	const hi = Math.min(n, center + 2);
+	const rows: string[] = [];
+	for (let i = lo; i <= hi; i++) rows.push(`${i}: ${String(lines[i - 1]).slice(0, 160)}`);
+	return `${head}；第 ${lo}-${hi} 行现内容：\n${rows.join("\n")}`;
+}
+
+/** 同名文件解析时跳过的高风险/重目录 */
+const SAME_BASENAME_SKIP_DIRS = new Set([
+	"node_modules",
+	".git",
+	"__pycache__",
+	".venv",
+	"venv",
+	"dist",
+	"build",
+	".pytest_cache",
+	".mypy_cache",
+	"target",
+	".next",
+]);
+
+interface SameBasenameLookup {
+	status: "resolved" | "ambiguous" | "none";
+	path?: string;
+	candidates: string[];
+}
+
+/**
+ * 带锚头但文件读不到时：工作区内找同名唯一文件（典型场景：模型写错目录层级）。
+ * 只接受唯一命中；歧义/无命中交回原错误路径并附候选清单。
+ */
+function findUniqueSameBasename(cwd: string, targetPath: string): SameBasenameLookup {
+	const base = basename(targetPath);
+	if (!base || base.startsWith(".")) return { status: "none", candidates: [] };
+	const same: string[] = [];
+	const ci: string[] = [];
+	const walk = (dir: string, depth: number): void => {
+		if (depth > 6 || same.length + ci.length > 16) return;
+		let entries: Dirent[];
+		try {
+			entries = readdirSync(dir, { withFileTypes: true });
+		} catch {
+			return;
+		}
+		for (const e of entries) {
+			if (e.name.startsWith(".")) continue;
+			const full = join(dir, e.name);
+			if (e.isDirectory()) {
+				if (!SAME_BASENAME_SKIP_DIRS.has(e.name)) walk(full, depth + 1);
+				continue;
+			}
+			if (e.name === base) same.push(full);
+			else if (e.name.toLowerCase() === base.toLowerCase()) ci.push(full);
+		}
+	};
+	walk(cwd, 0);
+	if (same.length === 1) return { status: "resolved", path: relative(cwd, same[0]) || same[0], candidates: same };
+	if (same.length === 0 && ci.length === 1)
+		return { status: "resolved", path: relative(cwd, ci[0]) || ci[0], candidates: ci };
+	return { status: same.length + ci.length > 1 ? "ambiguous" : "none", candidates: [...same, ...ci].slice(0, 8) };
 }
 
 /**
@@ -526,8 +632,12 @@ export function applyHashlinePatch(
 	}
 
 	const clipboard = new Map<string, string[]>(); // 命名剪切板寄存器
-	const plannedWrites = new Map<string, string>(); // path -> 新内容
+	const plannedWrites = new Map<string, string>(); // foldKey(absPath) -> 新内容
 	const plannedDeletes = new Set<string>();
+	// Windows 文件系统大小写不敏感：键做大小写折叠，避免 [a]/[A] 变体绕过路径归一化造成双写覆盖；
+	// plannedPaths 记录首次见到的原始路径（保持相对/绝对形态）供落盘与自定义读写器使用。
+	const foldKey = (abs: string): string => (process.platform === "win32" ? abs.toLowerCase() : abs);
+	const plannedPaths = new Map<string, string>();
 	const results: ApplySectionResult[] = [];
 
 	// ===== 阶段 1: 预检所有文件并计算目标内容 =====
@@ -549,15 +659,45 @@ export function applyHashlinePatch(
 			};
 		}
 
-		// 同一次 patch 内对同文件的后续段落，优先使用前面段落生成的新内容
-		const currentText = plannedWrites.get(sec.filePath) ?? read(sec.filePath);
+		// 同一次 patch 内对同文件的后续段落，优先使用前面段落生成的新内容。
+		// plannedWrites/plannedDeletes 一律按折叠绝对路径做键：[a] 与 [./a]、大小写变体视为同一文件。
+		let currentText = plannedWrites.get(foldKey(resolve(cwd, sec.filePath))) ?? read(sec.filePath);
+		let fuzzyNote = "";
+		if (currentText === null && sec.expectedHash) {
+			// 带 #TAG 却读不到：先尝试工作区内同名唯一文件解析（典型：模型写错目录层级）
+			const cand = findUniqueSameBasename(cwd, sec.filePath);
+			if (cand.status === "resolved" && cand.path) {
+				fuzzyNote = `（路径 ${sec.filePath} 不存在，已解析为同名文件 ${cand.path}）`;
+				sec.filePath = cand.path;
+				currentText = plannedWrites.get(foldKey(resolve(cwd, sec.filePath))) ?? read(cand.path);
+			}
+		}
+		const isNewFile = currentText === null;
 		if (currentText === null) {
-			return {
-				ok: false,
-				summary: `文件不存在：${sec.filePath}（hashline 仅支持修改已存在的文件，新建文件请使用 write 工具）`,
-				results: [],
-				error: `File not found: ${sec.filePath}`,
-			};
+			// [path] 段头（无 #TAG）+ 内容 hunk = 创建新文件
+			if (sec.hunks.some((h) => h.kind === "remove_file" || h.kind === "move_file")) {
+				return {
+					ok: false,
+					summary: `文件不存在，无法 REM/MV：${sec.filePath}（新建文件请用 [path] 段头 + PUT <1: 提供内容）`,
+					results: [],
+					error: `File not found: ${sec.filePath}`,
+				};
+			}
+			if (sec.expectedHash) {
+				// 附工作区相近文件候选（相对路径），有候选时不建议新建遮蔽
+				const cand = findUniqueSameBasename(cwd, sec.filePath);
+				const candRel = cand.candidates.map((c) => relative(cwd, c) || c);
+				const advice = candRel.length
+					? `工作区内相近文件：${candRel.join("、")}。请核对目录层级后用上述路径重试，勿新建同名文件遮蔽。`
+					: `新建文件时段头不能带 #TAG（无法对不存在的文件校验哈希），请写 [${sec.filePath}] 并用 PUT <1: 提供内容。`;
+				return {
+					ok: false,
+					summary: `文件不存在：${sec.filePath}。${advice}`,
+					results: [],
+					error: `Tagged header on nonexistent file: ${sec.filePath}`,
+				};
+			}
+			currentText = ""; // 新建：从空文件起步
 		}
 
 		const isCrlf = currentText.includes("\r\n");
@@ -577,17 +717,23 @@ export function applyHashlinePatch(
 					sec.hunks = recovery.remappedHunks;
 					isRecovered = true;
 				} else {
+					// 附现内容摘录，模型可基于现内容一次重锚定
+					const excerptLines = normalizeLineEndings(currentText).split("\n");
+					const firstHunk = sec.hunks.find((h) => h.kind !== "remove_file" && h.kind !== "move_file");
 					return {
 						ok: false,
-						summary: `文件内容已发生变动，且三方合流失败：${sec.filePath}（预期哈希 #${sec.expectedHash}，实际哈希 #${liveHash}；${recovery.reason ?? "冲突"}）\n请重新使用 read 工具查看该文件最新内容后再提交 patch。`,
+						summary: `文件内容已发生变动，且三方合流失败：${sec.filePath}（预期哈希 #${sec.expectedHash}，实际哈希 #${liveHash}；${recovery.reason ?? "冲突"}）\n${patchFileExcerpt(excerptLines, firstHunk?.lineStart, sec.filePath, liveHash)}\n请基于上述现内容修正行号后重提交，或重新使用 read 工具查看该文件。`,
 						results: [],
 						error: `Hash mismatch and recovery failed on ${sec.filePath}`,
 					};
 				}
 			} else {
+				// 附现内容摘录，模型可基于现内容一次重锚定
+				const excerptLines = normalizeLineEndings(currentText).split("\n");
+				const firstHunk = sec.hunks.find((h) => h.kind !== "remove_file" && h.kind !== "move_file");
 				return {
 					ok: false,
-					summary: `文件内容与锚点不一致：${sec.filePath}（预期哈希 #${sec.expectedHash}，实际哈希 #${liveHash}）\n请重新使用 read 工具读取该文件以获取最新行号与 #TAG。`,
+					summary: `文件内容与锚点不一致：${sec.filePath}（预期哈希 #${sec.expectedHash}，实际哈希 #${liveHash}）${fuzzyNote}\n${patchFileExcerpt(excerptLines, firstHunk?.lineStart, sec.filePath, liveHash)}\n请基于上述现内容修正行号后重提交，或重新使用 read 工具读取该文件。`,
 					results: [],
 					error: `Hash mismatch on ${sec.filePath} (#${sec.expectedHash} vs #${liveHash})`,
 				};
@@ -598,6 +744,9 @@ export function applyHashlinePatch(
 		let lines = normalizeLineEndings(workingText).split("\n");
 		if (hasTrailingNewline && lines.length > 0 && lines[lines.length - 1] === "") {
 			lines.pop();
+		}
+		if (isNewFile) {
+			lines = []; // 新文件按 0 行处理，PUT <1: / PUT >$: 直接写入内容
 		}
 		let isDeleted = false;
 		let moveDest: string | undefined = undefined;
@@ -652,10 +801,12 @@ export function applyHashlinePatch(
 		}
 
 		if (isDeleted) {
-			plannedDeletes.add(sec.filePath);
+			plannedDeletes.add(foldKey(absFilePath));
+			plannedPaths.set(foldKey(absFilePath), sec.filePath);
 			results.push({
 				filePath: sec.filePath,
 				op: "deleted",
+				note: fuzzyNote || undefined,
 				oldHash: liveHash,
 				linesChanged: lines.length,
 			});
@@ -667,9 +818,10 @@ export function applyHashlinePatch(
 			if (h.kind === "remove_file" || h.kind === "move_file") continue;
 			if (h.lineStart !== -1 && typeof h.lineStart === "number") {
 				if (h.lineStart < 1 || h.lineStart > Math.max(1, lines.length)) {
+					// 附文件尾部摘录，模型可自行改用 PUT >$ 或修正行号
 					return {
 						ok: false,
-						summary: `行号越界：${sec.filePath} 第 ${h.lineStart} 行（文件总共只有 ${lines.length} 行）。请重新使用 read 工具核验行号。`,
+						summary: `行号越界：${sec.filePath} 第 ${h.lineStart} 行（文件总共只有 ${lines.length} 行）。${patchFileExcerpt(lines, lines.length, sec.filePath, liveHash)}`,
 						results: [],
 						error: `Line out of bounds: line ${h.lineStart} in ${sec.filePath} (${lines.length} lines total)`,
 					};
@@ -677,7 +829,7 @@ export function applyHashlinePatch(
 				if (h.lineEnd !== undefined && h.lineEnd > Math.max(1, lines.length)) {
 					return {
 						ok: false,
-						summary: `行号越界：${sec.filePath} 结束行 ${h.lineEnd} 超过文件总行数（总共 ${lines.length} 行）。`,
+						summary: `行号越界：${sec.filePath} 结束行 ${h.lineEnd} 超过文件总行数（总共 ${lines.length} 行）。${patchFileExcerpt(lines, h.lineStart, sec.filePath, liveHash)}`,
 						results: [],
 						error: `Line out of bounds: end line ${h.lineEnd} in ${sec.filePath} (${lines.length} lines total)`,
 					};
@@ -771,13 +923,21 @@ export function applyHashlinePatch(
 			}
 		}
 
-		const newContent = lines.join(eol) + (hasTrailingNewline ? eol : "");
+		const newContent = isNewFile
+			? lines.length > 0
+				? lines.join(eol) + eol
+				: ""
+			: lines.join(eol) + (hasTrailingNewline ? eol : "");
 		if (moveDest) {
-			plannedDeletes.add(sec.filePath);
-			plannedWrites.set(moveDest, newContent);
+			const moveKey = foldKey(resolve(cwd, moveDest));
+			plannedDeletes.add(foldKey(absFilePath));
+			plannedPaths.set(foldKey(absFilePath), sec.filePath);
+			plannedWrites.set(moveKey, newContent);
+			plannedPaths.set(moveKey, moveDest);
 			results.push({
 				filePath: sec.filePath,
 				op: "moved",
+				note: fuzzyNote || undefined,
 				oldHash: liveHash,
 				newHash: computeFileHash(newContent),
 				linesChanged: linesChangedCount,
@@ -785,10 +945,14 @@ export function applyHashlinePatch(
 				recovered: isRecovered,
 			});
 		} else {
-			plannedWrites.set(sec.filePath, newContent);
+			const updateKey = foldKey(absFilePath);
+			plannedWrites.set(updateKey, newContent);
+			plannedPaths.set(updateKey, sec.filePath);
 			results.push({
 				filePath: sec.filePath,
 				op: "updated",
+				created: isNewFile,
+				note: fuzzyNote || undefined,
 				oldHash: liveHash,
 				newHash: computeFileHash(newContent),
 				linesChanged: linesChangedCount,
@@ -799,21 +963,23 @@ export function applyHashlinePatch(
 
 	// ===== 阶段 2: 全部校验通过，统一落盘 =====
 	// 先执行所有写入，确保新文件与移动目标成功落盘，避免先删后写异常时永久丢失源文件
-	for (const [p, content] of plannedWrites.entries()) {
+	for (const [key, content] of plannedWrites.entries()) {
+		const p = plannedPaths.get(key) ?? key;
 		write(p, content);
 		// 记住新快照（统一采用绝对路径隔离多工作区）
 		store.record(resolve(cwd, p), content);
 	}
-	for (const p of plannedDeletes) {
-		if (!plannedWrites.has(p)) {
-			remove(p);
+	for (const key of plannedDeletes) {
+		if (!plannedWrites.has(key)) {
+			remove(plannedPaths.get(key) ?? key);
 		}
 	}
 
 	const summaryParts = results.map((r) => {
-		if (r.op === "deleted") return `删除 ${r.filePath}`;
-		if (r.op === "moved") return `移动 ${r.filePath} -> ${r.newPath}（新哈希 #${r.newHash}）`;
-		return `修改 ${r.filePath}（${r.linesChanged} 行变动，新哈希 #${r.newHash}${r.recovered ? "，三方自愈" : ""}）`;
+		if (r.op === "deleted") return `删除 ${r.filePath}${r.note ?? ""}`;
+		if (r.created) return `新建 ${r.filePath}（${r.linesChanged} 行，新哈希 #${r.newHash}）${r.note ?? ""}`;
+		if (r.op === "moved") return `移动 ${r.filePath} -> ${r.newPath}（新哈希 #${r.newHash}）${r.note ?? ""}`;
+		return `修改 ${r.filePath}（${r.linesChanged} 行变动，新哈希 #${r.newHash}${r.recovered ? "，三方自愈" : ""}）${r.note ?? ""}`;
 	});
 
 	return {
