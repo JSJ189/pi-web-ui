@@ -90,6 +90,8 @@ function makeHarness(opts?: {
 	quiesced?: boolean;
 	/** 计划看板描述（供审查 prompt 联动测试）。 */
 	planDesc?: string;
+	/** 执行者会话的工具/命令证据（#543；不给 = 宿主未接线，审查 prompt 不注入证据段）。 */
+	evidence?: string;
 }): Harness {
 	const goneFlag = { value: opts?.gone === true };
 	const quiesceFlag = { value: opts?.quiesced === true };
@@ -150,6 +152,8 @@ function makeHarness(opts?: {
 			return true;
 		},
 		readRoleAgent: (id) => (id === EXEC_ID ? (opts?.readRole?.() ?? { text: "已改完并自测通过。" }) : undefined),
+		// #543：证据桥。不给就当作老 host（缺席 = 不注入证据段）。
+		readRoleEvidence: (id) => (id === EXEC_ID ? opts?.evidence : undefined),
 		stopRoleAgent: async (id) => void stopped.push(id),
 		dismissRoleAgent: async (id) => void dismissed.push(id),
 		hasConv: (id) => (goneFlag.value ? false : id === EXEC_ID || convs.has(id)),
@@ -665,6 +669,66 @@ describe("委托执行（Plan A / delegated）", () => {
 		expect(reviewMsg).toContain("【任务计划看板当前状态】");
 		expect(reviewMsg).toContain("Plan Progress: 1/2 completed");
 		expect(reviewMsg).toContain("核验时请同时核实上述计划步骤的推进与完成状态是否真实");
+	});
+
+	it("E1：审查指令自动注入执行者的工具/命令证据 + 判定口径四条（#543）", async () => {
+		const h = makeHarness({ evidence: "1. bash (failed): npm test\n   out: 3 failing" });
+		await h.svc.setGoal("目标 EV", { maxRounds: 0, locked: true });
+		expect(await h.svc.whenAwaitingVerdict("conv-a")).toBe(true);
+		const reviewMsg = h.conv().mainSent.find((m) => m.includes("[goal-review]"))!;
+		expect(reviewMsg).toContain("【执行者最近的工具与命令证据");
+		expect(reviewMsg).toContain("1. bash (failed): npm test");
+		// 判定口径（#543 §3）：只判本轮声称完成的、无关改动不构成 fail、无证据必须 fail、feedback 不得为空
+		expect(reviewMsg).toContain("声称已完成");
+		expect(reviewMsg).toContain("没声称完成的后续阶段不构成 fail 理由");
+		expect(reviewMsg).toContain("feedback 不得为空");
+	});
+
+	it("E2：宿主未接证据桥时不注入证据段（老 host / fake host 照常）", async () => {
+		const h = makeHarness();
+		await h.svc.setGoal("目标 EV2", { maxRounds: 0, locked: true });
+		expect(await h.svc.whenAwaitingVerdict("conv-a")).toBe(true);
+		const reviewMsg = h.conv().mainSent.find((m) => m.includes("[goal-review]"))!;
+		expect(reviewMsg).not.toContain("执行者最近的工具与命令证据");
+		expect(reviewMsg).toContain("【执行者本轮自述】");
+	});
+
+	it("E3：verdict=fail 且 feedback 为空 → 下一轮执行者拿到可执行的失败说明（不白烧一轮）", async () => {
+		const h = makeHarness({ diffs: ["a", "b"] });
+		await h.svc.setGoal("目标 EV3", { maxRounds: 0, locked: true });
+		expect(await h.svc.whenAwaitingVerdict("conv-a")).toBe(true);
+		h.conv().mainLastText.value = '{"verdict":"fail","feedback":""}';
+		h.svc.onAgentEnd(h.conv(), false);
+		expect(await h.svc.whenAwaitingVerdict("conv-a")).toBe(true);
+		expect(h.steered.at(-1)).toContain("审查者判 fail 但未给出说明");
+		// 审查结论卡给人看的也是兜底后的文案（不是空白）
+		const card = h.customCards.filter((c) => c.details && (c.details as { phase?: string }).phase === "result").at(-1)!;
+		expect(card.text).toContain("审查者判 fail 但未给出说明");
+	});
+
+	it("E4：连续两轮空 feedback → 第二轮沿用上一轮意见（并标注是沿用的）", async () => {
+		const h = makeHarness({ diffs: ["a", "b", "c"] });
+		await h.svc.setGoal("目标 EV4", { maxRounds: 0, locked: true });
+		expect(await h.svc.whenAwaitingVerdict("conv-a")).toBe(true);
+		h.conv().mainLastText.value = '{"verdict":"fail","feedback":"先补单测"}';
+		h.svc.onAgentEnd(h.conv(), false);
+		expect(await h.svc.whenAwaitingVerdict("conv-a")).toBe(true);
+		h.conv().mainLastText.value = '{"verdict":"fail","feedback":""}';
+		h.svc.onAgentEnd(h.conv(), false);
+		expect(await h.svc.whenAwaitingVerdict("conv-a")).toBe(true);
+		expect(h.steered.at(-1)).toContain("沿用上一轮意见");
+		expect(h.steered.at(-1)).toContain("先补单测");
+	});
+
+	it("E5：verdict=pass 且 feedback 为空 → 不编造通过理由，只补中性标注", async () => {
+		const h = makeHarness();
+		await h.svc.setGoal("目标 EV5", { maxRounds: 0, locked: true });
+		expect(await h.svc.whenAwaitingVerdict("conv-a")).toBe(true);
+		h.conv().mainLastText.value = '{"verdict":"pass","feedback":"  "}';
+		h.svc.onAgentEnd(h.conv(), false);
+		await h.svc.whenDelegatedSettled("conv-a");
+		const passMsg = h.conv().mainSent.find((t) => t.includes("目标已达成并通过审查"))!;
+		expect(passMsg).toContain("（审查者未附说明）");
 	});
 
 	it("P2：parseWizardOutput 能够正确分离 GOAL 与 STEPS 并解析步骤", () => {
