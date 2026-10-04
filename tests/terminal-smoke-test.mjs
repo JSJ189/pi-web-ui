@@ -15,6 +15,10 @@ const dataDir = mkdtempSync(join(tmpdir(), "piweb-term-data-"));
 process.env.PI_WEB_PORT = String(PORT);
 process.env.PI_WEB_CWD = workdir;
 process.env.PI_WEB_DATA_DIR = dataDir;
+// 工具延迟加载默认开（部署级默认，设置页可关）：本测试断言「持久终端开关打开后终端工具
+// 出现在活跃工具集里」，按需加载会把它们藏在目录里不加载，所以显式关掉（同 takeover /
+// subagent-* / question-bridge 等用例）。
+process.env.PI_WEB_TOOL_LAZY_LOADING = "0";
 
 // realpathSync: fnm multishell shim 路径可能失效；fileURLToPath: URL.pathname 在 Windows 下非法
 const NODE = realpathSync(process.execPath);
