@@ -106,6 +106,16 @@ export function normalizeTouchPath(p: string): string {
 	return s;
 }
 
+/** patch 补丁文本 → 目标路径集合（段头 [path#TAG]/[path] + MV 目标）。 */
+export function patchWriteTargets(patchText: string): string[] {
+	const out: string[] = [];
+	for (const m of patchText.matchAll(/^\s*\[([^#\]\r\n]+)(?:#[0-9A-Fa-f]{4})?\]\s*$/gm)) {
+		out.push(m[1].trim());
+	}
+	for (const m of patchText.matchAll(/^\s*MV\s+(\S+)/gim)) out.push(m[1]);
+	return out;
+}
+
 export interface TouchedFile {
 	path: string;
 	count: number;
@@ -292,6 +302,14 @@ export function extractTouches(
 		const ts = typeof m.timestamp === "number" && Number.isFinite(m.timestamp) ? m.timestamp : 0;
 		for (const call of toolCallsOf(m)) {
 			const name = call.name;
+			if (name === "patch") {
+				// patch 的目标路径在补丁文本里（无 args.path），按段头/MV 提取
+				const args = call.args as { patch?: unknown } | undefined;
+				if (args && typeof args.patch === "string") {
+					for (const p of patchWriteTargets(args.patch)) bump(p, ts);
+				}
+				continue;
+			}
 			if (WRITE_TOOL_NAMES.has(name)) {
 				const p = pathOfWriteArgs(call.args);
 				if (p) bump(p, ts);

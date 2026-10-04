@@ -146,6 +146,23 @@ describe("交集与格式化", () => {
 	});
 });
 
+describe("patch 工具的写触碰提取", () => {
+	it("段头 [path#TAG]/[path] 与 MV 目标都算写", () => {
+		const patch = "[recon/parse.py#ABCD]\nPUT 1.=1:\n+x\n[new_dir/new.py]\nPUT <1:\n+y\nMV dest/moved.txt";
+		const out = extractTouches([toolMsg("patch", { patch }, 5)]);
+		const paths = out.map((e) => e.path);
+		expect(paths).toContain("recon/parse.py");
+		expect(paths).toContain("new_dir/new.py");
+		expect(paths).toContain("dest/moved.txt");
+	});
+
+	it("普通文本与 -/+ 行不会被误提取", () => {
+		const patch = "[a.txt]\nPUT 1.=1:\n+not [a header]\n- removed [b.txt] line";
+		const out = extractTouches([toolMsg("patch", { patch }, 5)]);
+		expect(out.map((e) => e.path)).toEqual(["a.txt"]);
+	});
+});
+
 describe("unionTouchLists", () => {
 	it("按路径求并，count 取大（sidecar 与 live 消息集重叠，不能相加）", () => {
 		const out = unionTouchLists(
