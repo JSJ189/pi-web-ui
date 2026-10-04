@@ -1811,7 +1811,7 @@ const PLUGIN_HELP = ZH
   pi-web-ui install <源> [选项]     安装 GitHub 上的界面插件
   pi-web-ui install --catalog <目录> [选项]  同步插件市场目录并逐条安装
   pi-web-ui plugin create <id> [选项]    生成插件骨架（minimal|ui-slot|agent-tool|renderer）
-  pi-web-ui plugin upgrade-sdk [id] [选项]  刷新已装插件的 SDK 拷贝（SDK_VERSION 对不上才拷）
+  pi-web-ui plugin upgrade-sdk [id] [选项]  刷新已装插件的 SDK 拷贝（sdk/ + client/sdk/；版本或文件对不上才拷）
   pi-web-ui uninstall <id> [选项]   卸载已安装的界面插件
   pi-web-ui plugins [选项]          列出已安装的界面插件
 
@@ -1855,7 +1855,7 @@ plugins 选项:
   pi-web-ui install <source> [options]     install a UI plugin from GitHub
   pi-web-ui install --catalog <catalog> [options]  sync plugin catalog and install each entry
   pi-web-ui plugin create <id> [options]    generate plugin skeleton (minimal|ui-slot|agent-tool|renderer)
-  pi-web-ui plugin upgrade-sdk [id] [options]  refresh SDK copy in installed plugins (only when SDK_VERSION mismatches)
+  pi-web-ui plugin upgrade-sdk [id] [options]  refresh SDK copy in installed plugins (sdk/ + client/sdk/; only when version or files mismatch)
   pi-web-ui uninstall <id> [options]   uninstall an installed UI plugin
   pi-web-ui plugins [options]          list installed UI plugins
 
@@ -2624,10 +2624,31 @@ async function installCatalogCmd(opts) {
 /** 脚手架模板：minimal（零权限）| ui-slot | agent-tool | renderer（view:false）。 */
 const PLUGIN_TEMPLATES = ["minimal", "ui-slot", "agent-tool", "renderer"];
 
-/** 包内 plugin-sdk 入口（随包发布，见 package.json files；拷进骨架的 sdk/ 目录）。 */
+/** 随包发布的 plugin-sdk 文件：`index.mjs`（入口）+ `client-utils.mjs`（`index.mjs` 末尾
+ *  `export * from "./client-utils.mjs"`；**少一份连服务端 import 都会 ERR_MODULE_NOT_FOUND**）。*/
+const PLUGIN_SDK_FILES = ["index.mjs", "client-utils.mjs"];
+
+/** 包内 plugin-sdk 文件清单（随包发布，见 package.json files）；缺任一 = 包不完整，按「无 SDK」处理。 */
+function pluginSdkSources() {
+	const dir = join(BIN_DIR, "..", "plugin-sdk");
+	const files = [];
+	for (const name of PLUGIN_SDK_FILES) {
+		const src = join(dir, name);
+		if (!existsSync(src)) return undefined;
+		files.push({ name, src });
+	}
+	return files;
+}
+
+/** 包内 plugin-sdk 入口（版本号读取用）。 */
 function pluginSdkSource() {
-	const p = join(BIN_DIR, "..", "plugin-sdk", "index.mjs");
-	return existsSync(p) ? p : undefined;
+	return pluginSdkSources()?.find((f) => f.name === "index.mjs")?.src;
+}
+
+/** 把整份 SDK 拷进某目录（`<plugin>/sdk` 服务端用；`<plugin>/client/sdk` 客户端用）。 */
+function copySdkInto(dir, sources) {
+	mkdirSync(dir, { recursive: true });
+	for (const { name, src } of sources) copyFileSync(src, join(dir, name));
 }
 
 /** 各模板的 manifest.description（一句话说明骨架来源）。 */
@@ -2644,11 +2665,18 @@ function scaffoldDescription(template) {
 	}
 }
 
+/** 模板的客户端是否 import SDK：**除 renderer 外都 import `./sdk/index.mjs`**（renderer 渲染器走裸 ESM）。
+ *  决定 `client/sdk/` 要不要拷、README 怎么写；拷完还用 import-check 复验（模板以后改了也不漏）。 */
+function templateClientUsesSdk(template) {
+	return template !== "renderer";
+}
+
 /** 拼骨架文件：{ 相对路径: 内容 }。useSdk=false 时走无 SDK 导入的等价写法。
  *  withTest=true（且 useSdk）时多带 index.test.mjs（node --test + createMockHost 最小单测）。 */
 function buildPluginScaffold(id, template, useSdk, withTest = false) {
 	const sdkServer = useSdk ? `import { definePlugin } from "./sdk/index.mjs";\n\n` : "";
-	const sdkClient = useSdk ? `import { defineView, onUiAction } from "../sdk/index.mjs";\n\n` : "";
+	// 客户端 import 必须落在 client/ 内：宿主只暴露 /plugins/<id>/client/*（见 import-check）。
+	const sdkClient = useSdk ? `import { defineView, onUiAction } from "./sdk/index.mjs";\n\n` : "";
 	const wrapServer = (body) =>
 		useSdk ? `${sdkServer}export default definePlugin({\n${body}\n});\n` : `export default {\n${body}\n};\n`;
 	const wrapClient = (body) =>
@@ -2663,6 +2691,9 @@ function buildPluginScaffold(id, template, useSdk, withTest = false) {
 		version: "0.1.0",
 		description: scaffoldDescription(template),
 		apiVersion: 2,
+		// apiVersion 2 **必须**声明 permissions（缺字段 = 宿主直接拒激活，issue #546 现场顺带发现）：
+		// 模板按需覆写（ui-slot → ["ui"]、agent-tool → ["tools"]），零能力的就是空数组。
+		permissions: [],
 	};
 
 	const minimalServer = wrapServer(
@@ -2824,10 +2855,15 @@ function buildPluginScaffold(id, template, useSdk, withTest = false) {
 		`\n` +
 		`## 目录\n` +
 		`\n` +
-		`- \`manifest.json\` —— 插件声明（id/name/version/description/apiVersion/permissions…）\n` +
+		`- \`manifest.json\` —— 插件声明（id/name/version/description/apiVersion/permissions…；apiVersion 2 必须写 permissions，零能力写 \`[]\`）\n` +
 		`- \`index.mjs\` —— 服务端入口（\`export default { activate(host) }\`）\n` +
 		`- \`client/entry.mjs\` —— 客户端视图${template === "renderer" ? "（渲染器：\`{ renderers }\`）" : "（\`{ mount }\`）"}\n` +
-		(useSdk ? `- \`sdk/index.mjs\` —— plugin-sdk 拷贝（definePlugin/defineView/onUiAction，零依赖）\n` : "") +
+		(useSdk
+			? `- \`sdk/index.mjs\` + \`sdk/client-utils.mjs\` —— plugin-sdk 拷贝（服务端用：definePlugin/defineView/onUiAction）\n`
+			: "") +
+		(useSdk && templateClientUsesSdk(template)
+			? `- \`client/sdk/\` —— 同一份 SDK 的**客户端**拷贝：宿主只暴露 \`/plugins/<id>/client/*\`，客户端依赖必须落在 \`client/\` 内（\`client/entry.mjs\` 只能 \`import \"./sdk/index.mjs\"\`）\n`
+			: "") +
 		(withTest && useSdk
 			? "- `index.test.mjs` —— 最小单测（`node --test index.test.mjs`，createMockHost harness）\n"
 			: "") +
@@ -2926,6 +2962,14 @@ function validateScaffoldManifest(manifest, dirName) {
 					: `manifest.permissions must be a string array (e.g. ["ui"])`,
 			);
 	}
+	// 与宿主同口径（server/plugin-manifest-validate.ts）：apiVersion 2 必须有 permissions 字段，
+	// 缺失 = 扫到就报错误、插件被拒（零能力也写 []）—— 骨架曾经漏写，装上去才发现。
+	if (manifest.apiVersion === 2 && manifest.permissions === undefined)
+		warnings.push(
+			ZH
+				? `apiVersion 2 必须声明 permissions（零能力写 []），否则宿主会直接拒激活`
+				: `apiVersion 2 must declare "permissions" (use [] for none), otherwise the host rejects activation`,
+		);
 	if (manifest.view === false && !(Array.isArray(manifest.renderers) && manifest.renderers.length > 0)) {
 		warnings.push(
 			ZH
@@ -2949,7 +2993,8 @@ function installedSdkVersion(sdkFile) {
 
 /** 包内 SDK 版本（单源：plugin-sdk/index.mjs 的 `export const SDK_VERSION`）。 */
 function packageSdkVersion() {
-	const sdkSrc = pluginSdkSource();
+	const sources = pluginSdkSources();
+	const sdkSrc = sources?.find((f) => f.name === "index.mjs")?.src;
 	if (!sdkSrc)
 		fail(
 			ZH
@@ -2973,18 +3018,43 @@ function packageSdkVersion() {
 				? `包内 plugin-sdk/index.mjs 无 SDK_VERSION 导出，无法刷新（请升级 pi-web-ui）`
 				: `plugin-sdk/index.mjs in package has no SDK_VERSION export, cannot refresh (please upgrade pi-web-ui)`,
 		);
-	return { version: m[1], file: sdkSrc };
+	return { version: m[1], file: sdkSrc, sources };
 }
 
-/** 刷新已装插件的 sdk/index.mjs 拷贝（版本号对不上才拷；无拷贝的插件跳过）。 */
-function pluginUpgradeSdkCmd(argv) {
+/** 插件目录里现存的 SDK 拷贝目录：服务端用 `sdk/`，客户端用 `client/sdk/`（两份都要刷）。 */
+function pluginSdkDirs(pluginDir) {
+	return [join(pluginDir, "sdk"), join(pluginDir, "client", "sdk")].filter((d) => existsSync(d));
+}
+
+/** 静态 import 自检问题的双语文案（create / upgrade-sdk 共用）。 */
+function importProblemText(p) {
+	if (p.kind === "escapes-client")
+		return ZH
+			? `${p.file}: import "${p.spec}" 解析到 client/ 之外（${p.target}）—— 宿主只暴露 /plugins/<id>/client/*，浏览器会整包加载失败（插件页空白）；把依赖拷进 client/ 内并改成相对 import`
+			: `${p.file}: import "${p.spec}" resolves outside client/ (${p.target}) — the host only serves /plugins/<id>/client/*, so the browser fails to load the whole bundle (blank plugin page); copy it inside client/ and use a relative import`;
+	return ZH
+		? `${p.file}: import "${p.spec}" 的目标不存在（${p.target}）—— 拼错了，还是忘了拷依赖？`
+		: `${p.file}: import "${p.spec}" target does not exist (${p.target}) — typo, or a missing vendored dependency?`;
+}
+
+/** 懒加载 import-check（随包发布，但裁剪包可能没有 → 跳自检而不是崩）。 */
+let importCheckModule;
+async function loadImportCheck() {
+	if (importCheckModule === undefined) {
+		importCheckModule = await import("../plugin-sdk/import-check.mjs").catch(() => null);
+	}
+	return importCheckModule;
+}
+
+/** 刷新已装插件的 SDK 拷贝（服务端 `sdk/` + 客户端 `client/sdk/`，版本/文件对不上才拷）。 */
+async function pluginUpgradeSdkCmd(argv) {
 	const { opts, positionals } = parseFlags(argv);
 	if (opts.help || positionals.length > 1) {
 		console.log(PLUGIN_HELP);
 		if (!opts.help) process.exit(1);
 		return;
 	}
-	const { version: latest, file: sdkSrc } = packageSdkVersion();
+	const { version: latest, sources } = packageSdkVersion();
 	const parentDir = opts.dir ? resolve(opts.dir) : join(pluginDataDir(opts), "plugins");
 	const only = positionals.length === 1 ? positionals[0] : null;
 	if (only && !PLUGIN_ID_RE.test(only))
@@ -3004,41 +3074,72 @@ function pluginUpgradeSdkCmd(argv) {
 		fail(ZH ? `读插件目录失败: ${parentDir}` : `Failed to read plugin directory: ${parentDir}`);
 	}
 	const targets = only ? [only] : entries;
+	const importCheck = await loadImportCheck();
 	let upgraded = 0;
 	let fresh = 0;
 	let skipped = 0;
+	const healed = [];
 	const broken = [];
 	for (const id of targets) {
-		const sdkFile = join(parentDir, id, "sdk", "index.mjs");
-		if (!existsSync(sdkFile)) {
+		const pluginDir = join(parentDir, id);
+		let dirs = pluginSdkDirs(pluginDir);
+		if (dirs.length === 0) {
 			skipped++;
-			console.log(ZH ? `- ${id}：无 sdk/index.mjs 拷贝，跳过` : `- ${id}: no sdk/index.mjs copy, skipping`);
+			console.log(ZH ? `- ${id}：无 sdk/ 拷贝，跳过` : `- ${id}: no sdk/ copy, skipping`);
 			continue;
 		}
-		const cur = installedSdkVersion(sdkFile);
-		if (cur === latest) {
+		// 客户端侧缺失但代码确实 import ./sdk/ → 补建（修好 issue #546 之前生成的插件）。
+		if (!existsSync(join(pluginDir, "client", "sdk"))) {
+			const wantsClientSdk =
+				importCheck?.scanPluginImports(pluginDir).some((r) => r.client && r.target.startsWith("client/sdk/")) ?? false;
+			if (wantsClientSdk) {
+				dirs = [...dirs, join(pluginDir, "client", "sdk")];
+				healed.push(id);
+			}
+		}
+		const stale =
+			dirs.some((d) => PLUGIN_SDK_FILES.some((name) => !existsSync(join(d, name)))) ||
+			installedSdkVersion(join(dirs[0], "index.mjs")) !== latest;
+		if (!stale) {
 			fresh++;
 			console.log(ZH ? `✔ ${id}：已是最新（SDK ${latest}）` : `✔ ${id}: already up to date (SDK ${latest})`);
 			continue;
 		}
-		copyFileSync(sdkSrc, sdkFile);
-		const r = spawnSync(NODE, ["--check", sdkFile], { stdio: "ignore" });
-		if (r.status !== 0)
+		const cur = installedSdkVersion(join(dirs[0], "index.mjs"));
+		for (const d of dirs) copySdkInto(d, sources);
+		const bad = dirs.filter(
+			(d) => spawnSync(NODE, ["--check", join(d, "index.mjs")], { stdio: "ignore" }).status !== 0,
+		);
+		if (bad.length > 0)
 			broken.push(
 				ZH
-					? `${sdkFile} 未通过 node --check（磁盘/权限异常？请手动检查）`
-					: `${sdkFile} failed node --check (disk/permission issue? please check manually)`,
+					? `${bad.join("、")} 未通过 node --check（磁盘/权限异常？请手动检查）`
+					: `${bad.join(", ")} failed node --check (disk/permission issue? please check manually)`,
 			);
 		else {
 			upgraded++;
+			const where = dirs.map((d) => (d === join(pluginDir, "sdk") ? "sdk/" : "client/sdk/")).join(" + ");
 			console.log(
 				ZH
-					? `✔ ${id}：SDK ${cur ?? "未知旧版"} → ${latest}`
-					: `✔ ${id}: SDK ${cur ?? "unknown old version"} → ${latest}`,
+					? `✔ ${id}：SDK ${cur ?? "未知旧版"} → ${latest}（${where}）`
+					: `✔ ${id}: SDK ${cur ?? "unknown old version"} → ${latest} (${where})`,
 			);
 		}
 	}
+	for (const id of healed)
+		console.log(
+			ZH
+				? `  ↳ ${id}：补上了缺失的 client/sdk/（客户端 import ./sdk/ 需要它）`
+				: `  ↳ ${id}: created the missing client/sdk/ (needed by the client-side ./sdk/ import)`,
+		);
 	for (const w of broken) console.log(`⚠ ${w}`);
+	// 顺带自检 import 越界/缺失（issue #546：客户端越界会让插件页整页空白，而服务端看不出来）。
+	if (importCheck) {
+		for (const id of targets) {
+			for (const p of importCheck.checkPluginImports(join(parentDir, id)).problems)
+				console.log(`⚠ ${id} ${importProblemText(p)}`);
+		}
+	}
 	console.log(
 		ZH
 			? `共 ${targets.length} 个插件：刷新 ${upgraded} 个，已最新 ${fresh} 个，跳过 ${skipped} 个。`
@@ -3051,7 +3152,7 @@ function pluginUpgradeSdkCmd(argv) {
 	);
 }
 
-function pluginCreateCmd(argv) {
+async function pluginCreateCmd(argv) {
 	const { opts, positionals } = parseFlags(argv);
 	if (opts.help || positionals.length !== 1) {
 		console.log(PLUGIN_HELP);
@@ -3076,16 +3177,21 @@ function pluginCreateCmd(argv) {
 		);
 	if (existsSync(target)) rmSync(target, { recursive: true, force: true });
 	mkdirSync(join(target, "client"), { recursive: true });
-	const sdkSrc = pluginSdkSource();
-	const useSdk = Boolean(sdkSrc);
-	if (useSdk) {
-		mkdirSync(join(target, "sdk"), { recursive: true });
-		copyFileSync(sdkSrc, join(target, "sdk", "index.mjs"));
-	}
+	const sdkSources = pluginSdkSources();
+	const useSdk = Boolean(sdkSources);
 	const wantTest = opts.withTest === true;
 	const files = buildPluginScaffold(id, template, useSdk, wantTest && useSdk);
+	if (useSdk) copySdkInto(join(target, "sdk"), sdkSources);
 	for (const [rel, content] of Object.entries(files)) writeFileSync(join(target, rel), content);
-	// 生成后校验：manifest 基础必填 + 生成文件的 node 语法检查。
+	// 客户端侧的相对依赖必须落在 client/ 内（宿主只暴露 /plugins/<id>/client/*）：生成文件里
+	// 引到 client/ 内的 SDK 就把 SDK 也拷进 client/sdk/（renderer 模板客户端不用 SDK，不白拷）。
+	const importCheck = await loadImportCheck();
+	if (useSdk && importCheck) {
+		// 模板按约定先拷（renderer 除外），再用扫描复验一遍 —— 模板以后加了客户端 SDK 引用也不会漏。
+		const scanned = importCheck.scanPluginImports(target).some((r) => r.client && r.target.startsWith("client/sdk/"));
+		if (templateClientUsesSdk(template) || scanned) copySdkInto(join(target, "client", "sdk"), sdkSources);
+	}
+	// 生成后校验：manifest 基础必填 + 生成文件的 node 语法检查 + 静态 import 自检。
 	let manifest;
 	try {
 		manifest = JSON.parse(readFileSync(join(target, "manifest.json"), "utf8"));
@@ -3113,6 +3219,12 @@ function pluginCreateCmd(argv) {
 					? `${rel} 未通过 node --check（请检查生成文件）`
 					: `${rel} failed node --check (please check generated files)`,
 			);
+	}
+	// 静态 import 自检（issue #546）：客户端越界 / 目标缺失都会让插件在浏览器里整页空白，
+	// 而服务端看不出来 —— 在脚手架阶段就报出来。
+	if (importCheck) {
+		const { problems } = importCheck.checkPluginImports(target);
+		for (const p of problems) warnings.push(importProblemText(p));
 	}
 	console.log(
 		ZH ? `✔ 已生成插件骨架 ${id}（模板 ${template}）` : `✔ Plugin scaffold generated: ${id} (template: ${template})`,
@@ -3470,11 +3582,11 @@ async function main() {
 	}
 	if (first === "plugins" || first === "plugin") {
 		if (argv[1] === "upgrade-sdk") {
-			pluginUpgradeSdkCmd(argv.slice(2));
+			await pluginUpgradeSdkCmd(argv.slice(2));
 			return;
 		}
 		if (argv[1] === "create") {
-			pluginCreateCmd(argv.slice(2));
+			await pluginCreateCmd(argv.slice(2));
 			return;
 		}
 		pluginListCmd(argv.slice(1));

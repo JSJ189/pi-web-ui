@@ -10,6 +10,14 @@
 - `index.mjs` 服务端入口（可选，`export default { activate(host) → deactivate? }`）
 - `client/entry.mjs` 视图入口（可选，`export default { mount(el, ctx) → cleanup? }`）
 
+**客户端依赖只能住在 `client/` 里**：宿主只服务 `client/*` 子树（见「静态服务」），所以
+`client/entry.mjs` 的相对 import 一旦解析到 `client/` 之外（典型：写成了 `../sdk/index.mjs`），
+浏览器会报 `Failed to fetch dynamically imported module` 并**整个 bundle 都不执行**（插件页空白，
+而服务端毫无异常：manifest 校验通过、`active:true`、`error:null`）。`plugin create` 生成的骨架
+因此把 plugin-sdk 拷**两份**（服务端 `sdk/`、客户端 `client/sdk/`，各含 `index.mjs` +
+`client-utils.mjs`），生成后还跑一遍 `plugin-sdk/import-check.mjs` 把越界/缺失直接报成警告
+（回归：`tests/plugin-scaffold-test.mjs` + `tests/unit/plugin-import-check.test.ts`）。
+
 **不装即不存在**——目录不在就没有任何协议/UI 痕迹；attach 时重扫目录，新丢进来的插件无需重启服务即出现在顶栏视图 tab（import 每进程一次并缓存；删除目录 → 下次 attach 反激活）。
 
 ## 协议

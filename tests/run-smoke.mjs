@@ -50,6 +50,9 @@ const ALL = [
 	"plugin-api-catalog-test",
 	// #542：插件会话快照按 clientId 取用（两个标签页互不串台）+ 模型切换事件（不发消息即到、失败/重复不发）。
 	"plugin-client-conversation-test",
+	// #546：plugin create 生成的骨架四个模板都要真能用（SDK 两处拷贝 + 客户端 import 落在 client/ 内
+	// + manifest 合法 + 浏览器口径拓客户端 import 图）。
+	"plugin-scaffold-test",
 	"provider-oauth-test",
 	"provider-keys-test",
 	"db-client-test",
@@ -161,6 +164,7 @@ const CORE = [
 	"plugin-command-test",
 	"plugin-grants-test", // 目录授权接线（v0.95.0 回归过）
 	"plugin-api-catalog-test", // 注册面目录（v0.95.0 回归过）
+	"plugin-scaffold-test", // 脚手架四个模板真能用（#546：客户端 import 越界 / SDK 拷贝缺半）
 	"plugin-settings-test",
 	"plugin-cwd-test", // cwd 安全
 	"running-list-test", // 并发列表口径
