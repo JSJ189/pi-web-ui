@@ -12,6 +12,7 @@ import {
 	buildShareDoc,
 	catalogBaseUrl,
 	clearPresetCatalogCache,
+	createPresetIssueViaApi,
 	DEFAULT_PRESET_REPO,
 	exportPresetVia,
 	fetchPresetCatalog,
@@ -29,6 +30,7 @@ import {
 	presetIssueWebUrl,
 	presetRepoUrl,
 	presetShareRepo,
+	presetShareToken,
 	presetShortHash,
 	presetSummary,
 	PRESET_JSON_MAX_BYTES,
@@ -464,13 +466,143 @@ describe("issue 文本", () => {
 		expect(parsed.ok).toBe(true);
 	});
 
-	it("网页回落：小正文预填 body，大正文只预填标题", () => {
+	it("网页回落：正文能塞进 URL 时预填正文（不带 template，点一下 Submit 就行）", () => {
 		const small = presetIssueWebUrl("o/r", "A", "body");
-		expect(small).toContain("template=share-preset.yml");
 		expect(small).toContain("body=body");
-		const big = presetIssueWebUrl("o/r", "A", "x".repeat(5000));
+		// 带 template 时 GitHub 会忽略 body，所以两者不能同时给。
+		expect(small).not.toContain("template=");
+		expect(decodeURIComponent(small.replace(/\+/g, " "))).toContain("[preset] A");
+	});
+
+	it("网页回落：正文太长时退回模板页（只预填标题）", () => {
+		const big = presetIssueWebUrl("o/r", "A", "x".repeat(9000));
 		expect(big).not.toContain("body=");
+		expect(big).toContain("template=share-preset.yml");
 		expect(decodeURIComponent(big.replace(/\+/g, " "))).toContain("[preset] A");
+	});
+
+	it("网页回落：长度按**编码后**算（中文正文膨胀 9 倍也不能超限）", () => {
+		const zh = presetIssueWebUrl("o/r", "中文名", "字".repeat(2000));
+		expect(zh.length).toBeLessThanOrEqual(7_000 + 200);
+		expect(zh).toContain("template=share-preset.yml");
+	});
+});
+
+describe("分享令牌（无 gh 的直连 API 路径）", () => {
+	const saved = {
+		token: process.env["PI_WEB_PRESET_TOKEN"],
+		gh: process.env["GH_TOKEN"],
+		gha: process.env["GITHUB_TOKEN"],
+	};
+	const restore = () => {
+		for (const [k, v] of [
+			["PI_WEB_PRESET_TOKEN", saved.token],
+			["GH_TOKEN", saved.gh],
+			["GITHUB_TOKEN", saved.gha],
+		] as const) {
+			if (v === undefined) delete process.env[k];
+			else process.env[k] = v;
+		}
+	};
+
+	it("令牌优先级：PI_WEB_PRESET_TOKEN > GH_TOKEN > GITHUB_TOKEN", () => {
+		try {
+			delete process.env["PI_WEB_PRESET_TOKEN"];
+			delete process.env["GH_TOKEN"];
+			delete process.env["GITHUB_TOKEN"];
+			expect(presetShareToken()).toBe("");
+			process.env["GITHUB_TOKEN"] = "g";
+			expect(presetShareToken()).toBe("g");
+			process.env["GH_TOKEN"] = "h";
+			expect(presetShareToken()).toBe("h");
+			process.env["PI_WEB_PRESET_TOKEN"] = "p";
+			expect(presetShareToken()).toBe("p");
+		} finally {
+			restore();
+		}
+	});
+
+	it("API 成功：POST 到 /repos/<repo>/issues，用 html_url 作为回执", async () => {
+		const calls: { url: string; init?: { method?: string; headers?: Record<string, string>; body?: string } }[] = [];
+		const fetcher: TextFetcher = async (url, init) => {
+			calls.push({ url, init });
+			return {
+				ok: true,
+				status: 201,
+				text: async () => JSON.stringify({ html_url: "https://github.com/o/r/issues/7" }),
+			};
+		};
+		const r = await createPresetIssueViaApi({ repo: "o/r", name: "A", body: "b", token: "tok", fetcher });
+		expect(r).toEqual({ ok: true, url: "https://github.com/o/r/issues/7" });
+		expect(calls[0]?.url).toBe("https://api.github.com/repos/o/r/issues");
+		expect(calls[0]?.init?.method).toBe("POST");
+		expect(calls[0]?.init?.headers?.["authorization"]).toBe("Bearer tok");
+		expect(JSON.parse(String(calls[0]?.init?.body)).title).toBe("[preset] A");
+	});
+
+	it("API 失败：带上状态码与 GitHub 的 message", async () => {
+		const fetcher: TextFetcher = async () => ({
+			ok: false,
+			status: 403,
+			text: async () => JSON.stringify({ message: "Resource not accessible by integration" }),
+		});
+		const r = await createPresetIssueViaApi({ repo: "o/r", name: "A", body: "b", token: "bad", fetcher });
+		expect(r.ok).toBe(false);
+		if (!r.ok) {
+			expect(r.error).toContain("403");
+			expect(r.error).toContain("Resource not accessible");
+			expect(r.errorKey).toBe("presets.share.apiFailed");
+		}
+	});
+
+	it("API 异常（网络抛错）也返回 ok:false，不抛", async () => {
+		const fetcher: TextFetcher = async () => {
+			throw new Error("connect ECONNREFUSED");
+		};
+		const r = await createPresetIssueViaApi({ repo: "o/r", name: "A", body: "b", token: "t", fetcher });
+		expect(r.ok).toBe(false);
+		if (!r.ok) expect(r.error).toContain("ECONNREFUSED");
+	});
+
+	it("API 回执缺 html_url 也算失败", async () => {
+		const fetcher: TextFetcher = async () => ({ ok: true, status: 201, text: async () => "{}" });
+		const r = await createPresetIssueViaApi({ repo: "o/r", name: "A", body: "b", token: "t", fetcher });
+		expect(r.ok).toBe(false);
+	});
+
+	it("分享顺序：gh 不可用但有令牌 → method=api；两者都没有 → method=browser", async () => {
+		const savedRepo = process.env["PI_WEB_PRESET_REPO"];
+		const savedGh = process.env["PI_WEB_PRESET_GH"];
+		process.env["PI_WEB_PRESET_REPO"] = "o/r";
+		process.env["PI_WEB_PRESET_GH"] = join(tmpdir(), "pi-web-ui-no-such-gh-binary");
+		try {
+			vi.stubGlobal(
+				"fetch",
+				async () => new Response(JSON.stringify({ html_url: "https://github.com/o/r/issues/9" }), { status: 201 }),
+			);
+			process.env["PI_WEB_PRESET_TOKEN"] = "tok";
+			const a = makePort({ presets: () => [{ ...SETTINGS, name: "P" } as never] });
+			await sharePresetVia(a.port, { type: "preset_share", name: "P" });
+			const apiMsg = a.sent[0] as Extract<ServerMessage, { type: "preset_share_result" }>;
+			expect(apiMsg.ok).toBe(true);
+			expect(apiMsg.method).toBe("api");
+			expect(apiMsg.url).toContain("/issues/9");
+
+			delete process.env["PI_WEB_PRESET_TOKEN"];
+			const b = makePort({ presets: () => [{ ...SETTINGS, name: "P" } as never] });
+			await sharePresetVia(b.port, { type: "preset_share", name: "P" });
+			const webMsg = b.sent[0] as Extract<ServerMessage, { type: "preset_share_result" }>;
+			expect(webMsg.ok).toBe(false);
+			expect(webMsg.method).toBe("browser");
+			expect(webMsg.url).toContain("github.com/o/r/issues/new");
+		} finally {
+			vi.unstubAllGlobals();
+			delete process.env["PI_WEB_PRESET_TOKEN"];
+			if (savedRepo === undefined) delete process.env["PI_WEB_PRESET_REPO"];
+			else process.env["PI_WEB_PRESET_REPO"] = savedRepo;
+			if (savedGh === undefined) delete process.env["PI_WEB_PRESET_GH"];
+			else process.env["PI_WEB_PRESET_GH"] = savedGh;
+		}
 	});
 });
 

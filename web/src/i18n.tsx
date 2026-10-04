@@ -1638,8 +1638,8 @@ export const zh = {
 	presetExportDownload: "下载文件",
 	presetShareSubmit: "分享到社区仓库",
 	presetShareHint:
-		"会创建一条 GitHub Issue，仓库机器人校验通过后自动收录，几分钟后就出现在「浏览分享」里。没有 gh 命令时会复制 JSON 并打开提交页，粘一下即可。",
-	presetShareBrowserCopied: "JSON 已复制到剪贴板，请粘贴到打开的页面里提交",
+		"会创建一条 GitHub Issue：有 gh 命令或 GitHub 令牌就直接提交（仓库机器人校验后自动收录，几分钟后就出现在「浏览分享」里）；两者都没有时会打开预填好内容的建 Issue 页面，点一下 Submit 即可（内容太长时会把 JSON 复制到剪贴板，粘一下就行）。",
+	presetShareBrowserCopied: "已打开预填好的提交页面：点一下 Submit 即可（内容太长时 JSON 已复制到剪贴板，粘一下就行）",
 	presetImportText: "粘贴预设 JSON",
 	presetImportTextPlaceholder: "把导出的 JSON 粘到这里（或拖入 .json 文件）…",
 	presetImportPickFile: "选择文件",
@@ -3469,8 +3469,9 @@ export const en: Record<keyof typeof zh, string> = {
 	presetExportDownload: "Download file",
 	presetShareSubmit: "Share to the community repo",
 	presetShareHint:
-		'Creates a GitHub issue; the repo bot validates it, commits it, and it shows up under "Browse shared" within minutes. Without the gh CLI the JSON is copied and the submit page opens — just paste it.',
-	presetShareBrowserCopied: "JSON copied to the clipboard — paste it into the page that just opened",
+		'Creates a GitHub issue: with the gh CLI or a GitHub token it is submitted for you (the repo bot validates and commits it, and it shows up under "Browse shared" within minutes). With neither, a prefilled new-issue page opens — just hit Submit (for very large presets the JSON is copied to the clipboard instead, so you can paste it).',
+	presetShareBrowserCopied:
+		"Prefilled submit page opened — just hit Submit (for large presets the JSON is on your clipboard, paste it)",
 	presetImportText: "Paste preset JSON",
 	presetImportTextPlaceholder: "Paste the exported JSON here (or drop a .json file)…",
 	presetImportPickFile: "Choose file",

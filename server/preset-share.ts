@@ -95,7 +95,12 @@ export function packageVersion(): string {
  *  取值仍复用 defaultFetcher，测试注入假件即可。 */
 export type TextFetcher = (
 	url: string,
-	init?: { signal?: AbortSignal; headers?: Record<string, string> },
+	init?: {
+		signal?: AbortSignal;
+		headers?: Record<string, string>;
+		method?: string;
+		body?: string;
+	},
 ) => Promise<{ ok: boolean; status: number; statusText?: string; text: () => Promise<string> }>;
 
 /** 真实网络的抓取器（与 update-check 的 defaultFetcher 同一个实现）。 */
@@ -127,6 +132,12 @@ export function presetCatalogUrl(repo = presetShareRepo()): string {
 /** 仓库页面地址（issue 落点、目录来源展示）。 */
 export function presetRepoUrl(repo = presetShareRepo()): string {
 	return repo ? `https://github.com/${repo}` : "";
+}
+
+/** 分享用的 GitHub 令牌（无 gh 时的直连 API 路径）：
+ *  `PI_WEB_PRESET_TOKEN`（显式）> `GH_TOKEN` > `GITHUB_TOKEN`；空串 = 不启用。 */
+export function presetShareToken(): string {
+	return (process.env.PI_WEB_PRESET_TOKEN ?? process.env.GH_TOKEN ?? process.env.GITHUB_TOKEN ?? "").trim();
 }
 
 /* ------------------------------------------------------------------ */
@@ -812,12 +823,74 @@ export function presetIssueBody(doc: PresetShareDoc, repoUrl: string): string {
 	].join("\n");
 }
 
-/** 网页回落：浅链接（GitHub 对超长 URL 会截断，所以只预填标题，正文由用户粘贴）。 */
+/** 网页回落链接的长度上限（GitHub 对建 Issue 页的 URL 长度约 8K；留足余量，
+ *  因为非 ASCII 正文 URL 编码后会膨胀最多 9 倍）。 */
+export const PRESET_ISSUE_URL_MAX = 7_000;
+
+/** 网页回落：优先**预填正文**（点一下 Submit 就行，不用粘贴）；正文太大才退回模板页
+ *  （模板里就是那个 JSON 输入框，用户自己粘）。
+ *
+ *  为什么要二选一：GitHub 在带 `template=` 时会**忽略 `body=`**，两个一起给反而要手动粘。 */
 export function presetIssueWebUrl(repo: string, name: string, body?: string): string {
-	const params = new URLSearchParams({ title: presetIssueTitle(name), template: "share-preset.yml" });
-	// 正文不大时顺手预填（GitHub 的 URL 长度限制约 8K，留足余量）。
-	if (body && body.length <= 4_000) params.set("body", body);
-	return `https://github.com/${repo}/issues/new?${params.toString()}`;
+	const title = presetIssueTitle(name);
+	if (body) {
+		const withBody = `https://github.com/${repo}/issues/new?${new URLSearchParams({ title, body })}`;
+		if (withBody.length <= PRESET_ISSUE_URL_MAX) return withBody;
+	}
+	return `https://github.com/${repo}/issues/new?${new URLSearchParams({ title, template: "share-preset.yml" })}`;
+}
+
+/**
+ * 无 gh 时的直连 API 分享：`POST /repos/{owner}/{repo}/issues`。
+ *
+ * 有令牌就不需要 gh 可执行文件（容器/CI 里常见）。令牌无效/无权/网络失败 → 调用方
+ * 继续回落到预填网页（用户手动点 Submit）。只走注入的 Fetcher，与抓取同一套代理。
+ */
+export async function createPresetIssueViaApi(opts: {
+	repo: string;
+	name: string;
+	body: string;
+	token: string;
+	fetcher?: TextFetcher;
+	timeoutMs?: number;
+}): Promise<{ ok: true; url: string } | { ok: false; error: string; errorKey: string }> {
+	const fetcher = opts.fetcher ?? defaultTextFetcher;
+	try {
+		const res = await fetcher(`https://api.github.com/repos/${opts.repo}/issues`, {
+			signal: AbortSignal.timeout(opts.timeoutMs ?? 20_000),
+			headers: {
+				accept: "application/vnd.github+json",
+				authorization: `Bearer ${opts.token}`,
+				"content-type": "application/json",
+				"user-agent": "pi-web-ui",
+				"x-github-api-version": "2022-11-28",
+			},
+			method: "POST",
+			body: JSON.stringify({ title: presetIssueTitle(opts.name), body: opts.body }),
+		});
+		const text = await res.text();
+		if (!res.ok) {
+			// 401/403/404：令牌无效 / 无 repo 权限 / 仓库看不到。带上一段 message 给用户。
+			let detail = `HTTP ${res.status}`;
+			try {
+				const parsed = JSON.parse(text) as { message?: string };
+				if (parsed.message) detail = `HTTP ${res.status}: ${parsed.message}`;
+			} catch {
+				/* 非 JSON 错误体：用状态码 */
+			}
+			return { ok: false, errorKey: "presets.share.apiFailed", error: detail };
+		}
+		const parsed = JSON.parse(text) as { html_url?: string };
+		const url = typeof parsed.html_url === "string" ? parsed.html_url : "";
+		if (!url) return { ok: false, errorKey: "presets.share.noUrl", error: "GitHub API returned no issue URL" };
+		return { ok: true, url };
+	} catch (err) {
+		return {
+			ok: false,
+			errorKey: "presets.share.apiFailed",
+			error: (err instanceof Error ? err.message : String(err)).slice(0, 500),
+		};
+	}
 }
 
 /**
@@ -1103,14 +1176,20 @@ export async function sharePresetVia(port: PresetSharePort, msg: ShareMsg): Prom
 		return;
 	}
 	const body = presetIssueBody(built.doc, presetRepoUrl(repo));
-	const created = await createPresetIssue({ repo, name: built.doc.name, body });
-	if (created.ok) {
+	// 三条落地路径，按「用户需要动手的程度」排序：
+	//   1) gh CLI（装了且已登录）—— 全自动；
+	//   2) GitHub API + 令牌（PI_WEB_PRESET_TOKEN / GH_TOKEN / GITHUB_TOKEN）—— 无 gh 也能全自动；
+	//   3) 预填网页 —— 不需要任何凭据，前端复制 JSON 后打开链接，**大多数情况点一下 Submit 即可**。
+	const gh = await createPresetIssue({ repo, name: built.doc.name, body });
+	const token = gh.ok ? "" : presetShareToken();
+	const viaApi = !gh.ok && token ? await createPresetIssueViaApi({ repo, name: built.doc.name, body, token }) : null;
+	if (gh.ok || (viaApi && viaApi.ok)) {
 		port.emit({
 			type: "preset_share_result",
 			requestId: msg.requestId,
 			ok: true,
-			method: "gh",
-			url: created.url,
+			method: gh.ok ? "gh" : "api",
+			url: gh.ok ? gh.url : viaApi && viaApi.ok ? viaApi.url : "",
 			name: built.doc.name,
 			json: built.json,
 		});
@@ -1122,7 +1201,7 @@ export async function sharePresetVia(port: PresetSharePort, msg: ShareMsg): Prom
 		});
 		return;
 	}
-	// gh 不可用：回落预填网页，json 一起交回前端（前端复制后打开链接）。
+	// 服务端两条路都不通：回落预填网页，json 一起交回前端（前端复制后打开链接）。
 	port.emit({
 		type: "preset_share_result",
 		requestId: msg.requestId,
@@ -1131,7 +1210,7 @@ export async function sharePresetVia(port: PresetSharePort, msg: ShareMsg): Prom
 		url: presetIssueWebUrl(repo, built.doc.name, body),
 		name: built.doc.name,
 		json: built.json,
-		error: created.error,
+		error: (viaApi && !viaApi.ok ? viaApi.error : "") || gh.error,
 	});
 }
 

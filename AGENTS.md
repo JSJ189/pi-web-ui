@@ -144,7 +144,8 @@ npm publish
 | `PI_WEB_TOOL_LAZY_LOADING`  | `1`（开）       | 工具延迟加载的**部署级默认**（设置页开关优先）：`0`/`false`/`off` = 全部工具直接活跃（见 `docs/tool-context-budget.md`）                                                                                                                                                     |
 | `PI_WEB_PRESET_REPO`        | `xing-shuyin/pi-web-ui-presets` | 设置预设的社区共享仓库（`owner/name`）；`off`/`0`/`false`/`no` = 关闭一键分享（导入/导出仍可用），见 `docs/preset-sharing.md`                                                                                                                                                    |
 | `PI_WEB_PRESET_CATALOG_URL` | 仓库 `index.json` 的 raw 地址 | 「浏览分享」的列表来源；空串或 `off` = 关闭浏览；5 分钟缓存 + 刷新绕过，失败保留上次列表                                                                                                                                                                                       |
-| `PI_WEB_PRESET_GH`          | `gh`            | 一键分享调用的 GitHub CLI 路径（不可用时回落「复制 JSON + 打开预填建 Issue 页」）                                                                                                                                                                                               |
+| `PI_WEB_PRESET_GH`          | `gh`            | 一键分享调用的 GitHub CLI 路径（不可用时先试令牌 API，再回落「复制 JSON + 打开预填建 Issue 页」）                                                                                                                                                                               |
+| `PI_WEB_PRESET_TOKEN`       | 空              | 无 gh 时直连 GitHub API 的令牌（`PI_WEB_PRESET_TOKEN` > `GH_TOKEN` > `GITHUB_TOKEN`）：有令牌就不需要 gh；不设也能用（预填页点一下 Submit）                                                                                                                                     |
 
 ## 8. 部署
 

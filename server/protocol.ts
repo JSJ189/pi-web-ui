@@ -3091,13 +3091,13 @@ export type ServerMessage =
 			fetchedAt: number;
 			error?: string;
 	  }
-	/** preset_share 的回执：method=gh 时 url 是新 Issue；browser 时由前端复制
-	 *  json 并打开 url（预填标题的建 Issue 页）。 */
+	/** preset_share 的回执：method=gh|api 时 url 是新 Issue（直接打开）；browser 时由
+	 *  前端复制 json 并打开 url（预填正文/标题的建 Issue 页，不需要任何凭据）。 */
 	| {
 			type: "preset_share_result";
 			requestId?: string;
 			ok: boolean;
-			method?: "gh" | "browser";
+			method?: "gh" | "api" | "browser";
 			url?: string;
 			name?: string;
 			json?: string;

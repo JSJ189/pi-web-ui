@@ -184,12 +184,12 @@ export interface PresetCatalogState {
 	receivedAt: number;
 }
 
-/** 预设分享结果（`preset_share_result`）：method=gh 时 url 是新 Issue（直接打开）；
- *  method=browser 时前端复制 json 后打开 url（预填标题的建 Issue 页）。 */
+/** 预设分享结果（`preset_share_result`）：method=gh|api 时 url 是新 Issue（直接打开）；
+ *  method=browser 时前端复制 json 后打开 url（预填正文/标题的建 Issue 页）。 */
 export interface PresetShareState {
 	requestId?: string;
 	ok: boolean;
-	method?: "gh" | "browser";
+	method?: "gh" | "api" | "browser";
 	url?: string;
 	name?: string;
 	json?: string;

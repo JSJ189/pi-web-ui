@@ -84,15 +84,20 @@ scripts/validate-repo.mjs      # 仓库自检（PR/push 跑）
 .github/workflows/validate-presets.yml # index ↔ 文件自洽
 ```
 
-**一键分享**（`preset_share`）：
+**一键分享**（`preset_share`）——服务端按「用户要动手的程度」依次尝试三条落地路径：
 
-1. 服务端用导出同一份逻辑生成交换文档 + Issue 正文（```json 代码块）；
-2. 优先 `gh issue create --repo <repo> --title "[preset] <name>" --body-file <临时文件>`
+1. **gh CLI**（装了且已登录）——全自动：
+   `gh issue create --repo <repo> --title "[preset] <name>" --body-file <临时文件>`
    （`PI_WEB_PRESET_GH` 可指定 gh 路径；正文走临时文件，不受命令行长度限制）；
-3. gh 不存在/未登录/无权限 → 回执 `method: "browser"`，前端**复制 JSON 到剪贴板**并打开预填标题的
-   建 Issue 页面（正文不大时一并预填），用户粘一下即可；
-4. 回执 `method: "gh"` 时前端直接打开新 Issue 页面；仓库 Action 校验通过后写入 `presets/`、
-   更新 `index.json`、评论并关闭 Issue（失败则评论原因 + 打 `needs-fix`，改完正文自动重试）。
+2. **GitHub API + 令牌**（无 gh 也能全自动）：令牌取 `PI_WEB_PRESET_TOKEN` > `GH_TOKEN` > `GITHUB_TOKEN`，
+   有令牌就 `POST https://api.github.com/repos/<repo>/issues`（走同一个注入的 Fetcher，因此跟随代理设置）；
+   令牌无效/无权时错误体里的 message 会一并回报；
+3. **预填网页**（不需要任何凭据）——前端复制 JSON 后打开建 Issue 页。**大多数情况点一下 Submit 就行**：
+   正文能塞进 URL（编码后 ≤7K）时链接里就**预填了正文且不带 `template=`**（GitHub 在带 template 时会忽略
+   body，两个一起给反而要手动粘）；正文太大才退回模板页，并把 JSON 放进剪贴板让用户粘。
+
+回执 `method` 为 `"gh"` / `"api"`（两者都已建好 Issue，前端直接打开 URL）或 `"browser"`（前端复制 JSON + 打开链接）。
+仓库 Action 校验通过后写入 `presets/`、更新 `index.json`、评论并关闭 Issue（失败则评论原因 + 打 `needs-fix`，改完正文自动重试）。
 
 **浏览列表**（`preset_catalog`）：拉 `PI_WEB_PRESET_CATALOG_URL`（默认
 `https://raw.githubusercontent.com/<repo>/main/index.json`），解析 `index.json` →
@@ -108,6 +113,7 @@ scripts/validate-repo.mjs      # 仓库自检（PR/push 跑）
 | `PI_WEB_PRESET_REPO` | `xing-shuyin/pi-web-ui-presets` | 共享仓库 `owner/name`（也接受 `https://github.com/owner/name(.git)`）；`off`/`0`/`false`/`no` = 关闭分享（导入/导出仍可用） |
 | `PI_WEB_PRESET_CATALOG_URL` | `https://raw.githubusercontent.com/<repo>/main/index.json` | 目录文档地址；空串或 `off` = 关闭「浏览分享」 |
 | `PI_WEB_PRESET_GH` | `gh` | 一键分享调用的 GitHub CLI 路径 |
+| `PI_WEB_PRESET_TOKEN` | 空 | 无 gh 时的直连 API 令牌（回落顺序：`PI_WEB_PRESET_TOKEN` > `GH_TOKEN` > `GITHUB_TOKEN`）；未设就走「预填网页」路径，不需要任何凭据 |
 
 完整表见 `docs/env-vars.md`。
 
@@ -147,3 +153,7 @@ server → client
   → 分享被 env 关闭时明确拒绝但仍回传 JSON → 目录形状。该测试**显式把分享关掉**，绝不真在共享仓库开 Issue。
 - `tests/scratch/preset-share-live.mjs` — 手动联调（真网络）：默认 env 下拉官方仓库目录 → 网址导入
   真实预设 → 导出闭环。需要联网，不入 smoke。
+- `tests/scratch/preset-share-nogh-live.mjs` — 无 gh 的回落验证（真网络）：无效令牌打真实 api.github.com
+  应拿到干净的 `HTTP 401: Bad credentials`（不抛），以及网页回落 URL 的预填/长度/`template` 二选一规则。
+- `tests/scratch/preset-share-api-live.mjs` — 令牌直连 API 的**成功**路径（真网络 + 真仓库）：建一条
+  Issue → 读回校验标题/正文 → GraphQL `deleteIssue` 删掉。跑之前先 `gh workflow disable "Ingest shared preset"`。
