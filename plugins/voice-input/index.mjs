@@ -137,6 +137,17 @@ export function hfEndpointHost(setting, env = process.env.HF_ENDPOINT) {
 	return /^https?:\/\/\S+$/i.test(s) ? s : "";
 }
 
+/** 把 endpoint 应用到 transformers.js v2 的 env：只改 remoteHost。
+ *  v2 的下载 URL 是 pathJoin(remoteHost, remotePathTemplate, filename) 纯字符串
+ *  拼接（hub.js 不识别绝对 URL），模板默认 {model}/resolve/{revision}/ 已含路径——
+ *  若把模板再设成带主机名的完整 URL，会拼出 <endpoint>/https://<endpoint>/…
+ *  双重前缀，任何文件都 404。endpoint 为空时不动原值。 */
+export function applyHfEndpoint(transformersEnv, endpoint) {
+	if (!transformersEnv || !endpoint) return transformersEnv;
+	transformersEnv.remoteHost = endpoint;
+	return transformersEnv;
+}
+
 /* ------------------------------------------------------------------ */
 /* WAV 解码：客户端发的 16k 单声道 16-bit WAV 转 Float32Array（本地      */
 /* Whisper 的输入）。兼容其它采样率/声道/位深（线性重采样 + 声道平均）， */
@@ -385,11 +396,7 @@ export default {
 			mod.env.cacheDir = cacheDir;
 			// 权重下载源：transformers.js v2 只认自己的 env.remoteHost，不读 HF_ENDPOINT
 			// （v3 才读），所以手工接上，否则国内直连 huggingface.co 会卡到超时。
-			const endpoint = hfEndpointHost(cfg.hfEndpoint);
-			if (endpoint && mod.env) {
-				mod.env.remoteHost = endpoint;
-				mod.env.remotePathTemplate = `${endpoint}/{model}/resolve/{revision}/`;
-			}
+			applyHfEndpoint(mod.env, hfEndpointHost(cfg.hfEndpoint));
 			return mod;
 		}
 

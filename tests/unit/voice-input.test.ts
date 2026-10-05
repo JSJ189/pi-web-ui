@@ -21,6 +21,7 @@ import { fileURLToPath } from "node:url";
 import { parseUiContributions } from "../../server/plugins.js";
 import { createMockHost } from "../../plugin-sdk/index.mjs";
 import voiceInput, {
+	applyHfEndpoint,
 	decodeWav16k,
 	hfEndpointHost,
 	joinUrl,
@@ -178,6 +179,21 @@ describe("hfEndpointHost", () => {
 		expect(hfEndpointHost(undefined, "")).toBe("");
 		expect(hfEndpointHost("file:///etc/passwd")).toBe("");
 		expect(hfEndpointHost("ftp://x.example")).toBe("");
+	});
+});
+
+describe("applyHfEndpoint", () => {
+	it("只改 remoteHost，不动 remotePathTemplate（模板带主机名会被 v2 拼成双重前缀）", () => {
+		const env = { remoteHost: "https://huggingface.co/", remotePathTemplate: "{model}/resolve/{revision}/" };
+		applyHfEndpoint(env, "https://hf-mirror.com");
+		expect(env.remoteHost).toBe("https://hf-mirror.com");
+		expect(env.remotePathTemplate).toBe("{model}/resolve/{revision}/");
+	});
+	it("endpoint 为空或 env 缺失时保持原值", () => {
+		const env = { remoteHost: "https://huggingface.co/", remotePathTemplate: "{model}/resolve/{revision}/" };
+		applyHfEndpoint(env, "");
+		expect(env.remoteHost).toBe("https://huggingface.co/");
+		expect(applyHfEndpoint(undefined, "https://hf-mirror.com")).toBeUndefined();
 	});
 });
 
