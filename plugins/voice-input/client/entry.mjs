@@ -62,6 +62,7 @@ const T = {
 	uploading: isZh ? "转写中…" : "Transcribing…",
 	send: isZh ? "直接发送" : "Send",
 	fill: isZh ? "填入输入框" : "Fill composer",
+	stopAndTranscribe: isZh ? "停止并转写" : "Stop & transcribe",
 	sendFailed: isZh
 		? "直接发送没接通，已填入输入框，请手动发送"
 		: "Direct send unavailable — filled into the composer, please send manually",
@@ -160,6 +161,58 @@ export function srExplain(code) {
 	if (c === "aborted") return { msg: T.empty, kind: "aborted" };
 	if (c === "language-not-supported") return { msg: T.noSpeech, kind: "unsupported" };
 	return { msg: `${T.noSpeech}（${c || "unknown"}）`, kind: "other" };
+}
+
+/**
+ * 根据当前配置与录音模式解析出激活的引擎类型 ("sr" | "local" | "remote")。纯函数，单测覆盖。
+ */
+export function resolveActiveEngine(cfg, mode) {
+	if (mode === "sr") return "sr";
+	const eng = String(cfg?.engine || "auto").toLowerCase();
+	if (eng === "remote") return "remote";
+	if (eng === "local") return "local";
+	// auto 模式在服务端录音时本地就绪优先
+	if (cfg?.localReady) return "local";
+	if (cfg?.serverReady) return "remote";
+	return "local";
+}
+
+/**
+ * 格式化引擎徽标文案，如 "🧠 本地 Whisper(base)"、"🌐 浏览器识别"、"☁️ 远端接口"。纯函数，单测覆盖。
+ */
+export function engineBadgeText(engineId, options = {}) {
+	const zh = options.isZh ?? isZh;
+	const id = String(engineId || "").toLowerCase();
+	if (id === "sr") {
+		return zh ? "🌐 浏览器识别" : "🌐 Browser speech";
+	}
+	if (id === "remote") {
+		return zh ? "☁️ 远端接口" : "☁️ Remote endpoint";
+	}
+	const model = options.localModel || "base";
+	return zh ? `🧠 本地 Whisper(${model})` : `🧠 Local Whisper (${model})`;
+}
+
+/**
+ * 计算单通道音频采样的 RMS（均方根振幅）。纯函数，单测覆盖。
+ */
+export function computeAudioRms(frames) {
+	if (!frames || !frames.length) return 0;
+	let sum = 0;
+	for (let i = 0; i < frames.length; i++) {
+		const v = frames[i];
+		sum += v * v;
+	}
+	return Math.sqrt(sum / frames.length);
+}
+
+/**
+ * 将 RMS 振幅平滑映射为 0~1 的电平标量。纯函数，单测覆盖。
+ */
+export function audioLevelFromRms(rms) {
+	if (typeof rms !== "number" || Number.isNaN(rms) || rms <= 0) return 0;
+	const level = Math.min(1, Math.max(0, rms * 4.5));
+	return Math.round(level * 100) / 100;
 }
 
 /**
@@ -303,6 +356,20 @@ function openOverlay() {
 		animation: vi-pulse 1.2s ease-in-out infinite; }
 	@keyframes vi-pulse { 50% { opacity: .25; } }
 	.vi-status { opacity: .75; }
+	.vi-badge {
+		font-size: 11px; padding: 1px 6px; border-radius: 4px;
+		background: var(--bg-card, rgba(255,255,255,.08));
+		border: 1px solid var(--border, #333);
+		opacity: .85; flex: none; white-space: nowrap;
+	}
+	.vi-meter {
+		width: 48px; height: 8px; background: rgba(255,255,255,.1);
+		border-radius: 4px; overflow: hidden; flex: none; display: flex; align-items: center;
+	}
+	.vi-meter-bar {
+		width: 0%; height: 100%; background: #10b981;
+		border-radius: 4px; transition: width .08s ease-out;
+	}
 	.vi-time { margin-left: auto; opacity: .55; font-variant-numeric: tabular-nums; }
 	.vi-text { margin: 8px 0 10px; max-height: 120px; overflow-y: auto;
 		white-space: pre-wrap; line-height: 1.6; }
@@ -318,12 +385,21 @@ function openOverlay() {
 	.vi-err { color: #e5484d; }
 	.vi-note { opacity: .65; font-size: 12px; margin: 6px 0 2px; line-height: 1.6; }
 </style>
-<div class="vi-row"><span class="vi-dot"></span><span class="vi-status"></span><span class="vi-time"></span></div>
+<div class="vi-row">
+	<span class="vi-dot"></span>
+	<span class="vi-status"></span>
+	<span class="vi-badge" style="display:none"></span>
+	<div class="vi-meter" style="display:none"><div class="vi-meter-bar"></div></div>
+	<span class="vi-time"></span>
+</div>
 <div class="vi-text"></div>
 <div class="vi-note" style="display:none"></div>
 <div class="vi-btns"></div>`;
 	document.body.append(root);
 	const statusEl = root.querySelector(".vi-status");
+	const badgeEl = root.querySelector(".vi-badge");
+	const meterEl = root.querySelector(".vi-meter");
+	const meterBarEl = root.querySelector(".vi-meter-bar");
 	const textEl = root.querySelector(".vi-text");
 	const noteEl = root.querySelector(".vi-note");
 	const timeEl = root.querySelector(".vi-time");
@@ -342,6 +418,29 @@ function openOverlay() {
 	return {
 		setStatus(s) {
 			statusEl.textContent = s;
+		},
+		setBadge(s) {
+			if (!badgeEl) return;
+			if (!s) {
+				badgeEl.style.display = "none";
+				badgeEl.textContent = "";
+			} else {
+				badgeEl.style.display = "";
+				badgeEl.textContent = s;
+			}
+		},
+		setLevel(val) {
+			if (!meterEl || !meterBarEl) return;
+			if (val === null || val === undefined || val < 0) {
+				meterEl.style.display = "none";
+			} else {
+				meterEl.style.display = "";
+				const pct = Math.min(100, Math.max(0, Math.round(val * 100)));
+				meterBarEl.style.width = `${pct}%`;
+				if (pct > 70) meterBarEl.style.background = "#e5484d";
+				else if (pct > 25) meterBarEl.style.background = "#10b981";
+				else meterBarEl.style.background = "#3b82f6";
+			}
 		},
 		setText(s, isErr = false) {
 			textEl.textContent = s;
@@ -443,12 +542,13 @@ function trySendDirect(t) {
  * 就回落到填入输入框，并用一行 note 告诉用户手动点发送；两条路都走不通
  * 才给复制按钮（不丢字）。
  */
-async function sendDirectText(text) {
+async function sendDirectText(text, engineBadge = "") {
 	const t = String(text ?? "").trim();
 	resetSession();
 	if (!t) {
 		const ui = openOverlay();
 		ui.setStatus("🎤");
+		if (engineBadge) ui.setBadge(engineBadge);
 		ui.setText(T.empty, true);
 		ui.setButtons([{ label: T.close, primary: true, onClick: closeOverlay }]);
 		setTimeout(closeOverlay, 2500);
@@ -461,6 +561,7 @@ async function sendDirectText(text) {
 	if (tryComposeText(t)) {
 		const ui = openOverlay();
 		ui.setStatus("🎤");
+		if (engineBadge) ui.setBadge(engineBadge);
 		ui.setText(t);
 		ui.setNote(T.sendFailed);
 		ui.setButtons([{ label: T.close, primary: true, onClick: closeOverlay }]);
@@ -469,6 +570,7 @@ async function sendDirectText(text) {
 	}
 	const ui = openOverlay();
 	ui.setStatus("🎤");
+	if (engineBadge) ui.setBadge(engineBadge);
 	ui.setText(t);
 	ui.setButtons([
 		{
@@ -488,12 +590,13 @@ async function sendDirectText(text) {
 }
 
 /** 文本收尾：进输入框草稿；进不去就给复制按钮（不丢字）。 */
-async function finishWithText(text) {
+async function finishWithText(text, engineBadge = "") {
 	const t = String(text ?? "").trim();
 	resetSession();
 	if (!t) {
 		const ui = openOverlay();
 		ui.setStatus("🎤");
+		if (engineBadge) ui.setBadge(engineBadge);
 		ui.setText(T.empty, true);
 		ui.setButtons([{ label: T.close, primary: true, onClick: closeOverlay }]);
 		setTimeout(closeOverlay, 2500);
@@ -512,6 +615,7 @@ async function finishWithText(text) {
 	}
 	const ui = openOverlay();
 	ui.setStatus("🎤");
+	if (engineBadge) ui.setBadge(engineBadge);
 	ui.setText(t);
 	ui.setButtons([
 		{
@@ -673,6 +777,7 @@ function startSpeechRecognition(lang, cfg) {
 	const ui = openOverlay();
 	session.ui = ui;
 	ui.setStatus(`🎤 ${T.listening}`);
+	ui.setBadge(engineBadgeText("sr", { isZh }));
 	const wireButtons = () => {
 		/** 离开当前识别去做别的（切服务端 / 开切换面板）：先立旗再 abort，
 		 *  否则 abort 激起的 onend 会把浏览器半截文字收尾。
@@ -689,9 +794,14 @@ function startSpeechRecognition(lang, cfg) {
 			}
 			next();
 		};
+		const srBadge = engineBadgeText("sr", { isZh });
 		const btns = [
-			{ label: T.fill, primary: true, onClick: () => finishWithText(srTotalText(session.finalText, session.interim)) },
-			{ label: T.send, onClick: () => sendDirectText(srTotalText(session.finalText, session.interim)) },
+			{
+				label: T.fill,
+				primary: true,
+				onClick: () => finishWithText(srTotalText(session.finalText, session.interim), srBadge),
+			},
+			{ label: T.send, onClick: () => sendDirectText(srTotalText(session.finalText, session.interim), srBadge) },
 			// 常驻的切换入口：不必等浏览器联网失败才有机会换成本地识别（issue #383）。
 			// 走 resetSession 而不是 leave()：它先把 mode 置 idle 再收工，abort 激起的
 			// onend 醒来时看到 idle 就直接返回，浮层关掉后也不会留下“僵尸识别态”。
@@ -823,8 +933,9 @@ registerProcessor('vi-cap', ViCap);
 /**
  * 采一段 16k 单声道 PCM。worklet 优先，失败回退 ScriptProcessor。
  * resolve 出 { samples: Float32Array }；中途出错 reject（人话错误）。
+ * onLevel 可选回调，将麦克风实时电平 (0~1) post 给调用方更新音量条。
  */
-function capturePcm16k(onAutoStop) {
+function capturePcm16k(onAutoStop, onLevel) {
 	return new Promise((resolve, reject) => {
 		let stream = null;
 		let ctx = null;
@@ -837,6 +948,11 @@ function capturePcm16k(onAutoStop) {
 		let autoTimer = 0;
 
 		const cleanup = () => {
+			try {
+				if (typeof onLevel === "function") onLevel(null);
+			} catch {
+				/* ignore */
+			}
 			try {
 				if (autoTimer) clearTimeout(autoTimer);
 			} catch {
@@ -878,6 +994,11 @@ function capturePcm16k(onAutoStop) {
 		const finish = (manual) => {
 			if (settled) return null;
 			settled = true;
+			try {
+				if (typeof onLevel === "function") onLevel(null);
+			} catch {
+				/* ignore */
+			}
 			try {
 				if (autoTimer) clearTimeout(autoTimer);
 			} catch {
@@ -930,8 +1051,17 @@ function capturePcm16k(onAutoStop) {
 				return;
 			}
 			src = ctx.createMediaStreamSource(stream);
+			let lastLevelAt = 0;
 			const push = (frames) => {
 				chunks.push(frames);
+				if (typeof onLevel === "function") {
+					const now = Date.now();
+					if (now - lastLevelAt >= 40) {
+						lastLevelAt = now;
+						const rms = computeAudioRms(frames);
+						onLevel(audioLevelFromRms(rms));
+					}
+				}
 			};
 			// 5 分钟自动收尾：走回调直接进转写（await 那头早已 resolve，不能再 resolve）。
 			autoTimer = setTimeout(() => {
@@ -1015,11 +1145,25 @@ async function startRecorderFlow(opts = {}) {
 	}
 	resetSession();
 	session.mode = "rec";
+	const activeEng = resolveActiveEngine(cfg, "rec");
+	const badge = engineBadgeText(activeEng, { isZh, localModel: cfg?.localModel });
 	const ui = openOverlay();
 	session.ui = ui;
 	ui.setStatus(`🎤 ${T.recording}`);
+	ui.setBadge(badge);
 	const stopAndTranscribe = (mode) => {
 		session.manualStop = true;
+		ui.setStatus(`🎤 ${T.uploading}`);
+		ui.setLevel(null);
+		ui.setButtons([
+			{
+				label: T.cancel,
+				onClick: () => {
+					resetSession();
+					closeOverlay();
+				},
+			},
+		]);
 		try {
 			const r = session.rec?.stop(true);
 			if (r && r.samples) void handleRecorded(r.samples, cfg, false, mode);
@@ -1030,7 +1174,7 @@ async function startRecorderFlow(opts = {}) {
 	};
 	ui.setButtons([
 		{
-			label: T.fill,
+			label: T.stopAndTranscribe,
 			primary: true,
 			onClick: () => stopAndTranscribe("compose"),
 		},
@@ -1055,13 +1199,20 @@ async function startRecorderFlow(opts = {}) {
 		},
 	]);
 	try {
-		const cap = await capturePcm16k((samples) => {
-			// 5 分钟自动收尾：stop() 已 settled（再调返回 null），直接进转写。
-			if (session.mode === "rec") {
-				session.manualStop = true;
-				void handleRecorded(samples, cfg, true);
-			}
-		});
+		const cap = await capturePcm16k(
+			(samples) => {
+				// 5 分钟自动收尾：stop() 已 settled（再调返回 null），直接进转写。
+				if (session.mode === "rec") {
+					session.manualStop = true;
+					void handleRecorded(samples, cfg, true);
+				}
+			},
+			(level) => {
+				if (session.mode === "rec") {
+					ui.setLevel(level);
+				}
+			},
+		);
 		if (session.mode !== "rec") {
 			// 用户在授权弹窗那几秒里点了取消：直接收摊。
 			try {
@@ -1084,9 +1235,12 @@ async function startRecorderFlow(opts = {}) {
 async function handleRecorded(samples, cfg, timedOut, mode = "compose") {
 	const rec = session.rec;
 	resetSession();
+	const activeEng = resolveActiveEngine(cfg, "rec");
+	const initialBadge = engineBadgeText(activeEng, { isZh, localModel: cfg?.localModel });
 	if (!samples || !samples.length) {
 		const ui = openOverlay();
 		ui.setStatus("🎤");
+		ui.setBadge(initialBadge);
 		ui.setText(T.tooShort, true);
 		ui.setButtons([{ label: T.close, primary: true, onClick: closeOverlay }]);
 		setTimeout(closeOverlay, 2500);
@@ -1094,6 +1248,7 @@ async function handleRecorded(samples, cfg, timedOut, mode = "compose") {
 	}
 	const ui = openOverlay();
 	ui.setStatus(`🎤 ${timedOut ? T.tooLong : T.uploading}`);
+	ui.setBadge(initialBadge);
 	ui.setButtons([
 		{
 			label: T.cancel,
@@ -1109,6 +1264,7 @@ async function handleRecorded(samples, cfg, timedOut, mode = "compose") {
 		/* ignore */
 	}
 	let text = "";
+	let finalEngine = activeEng;
 	try {
 		const wav = encodeWavPCM(samples, 16000);
 		const blob = new Blob([wav], { type: "audio/wav" });
@@ -1125,6 +1281,7 @@ async function handleRecorded(samples, cfg, timedOut, mode = "compose") {
 			throw err;
 		}
 		text = String(data?.text ?? "");
+		if (data?.engine) finalEngine = data.engine;
 	} catch (err) {
 		const status = err?.status || 0;
 		// 501（两边都没得用）→ 直接给安装入口，别只抛一句话。
@@ -1135,8 +1292,9 @@ async function handleRecorded(samples, cfg, timedOut, mode = "compose") {
 		showError(err instanceof Error ? err.message : String(err));
 		return;
 	}
-	if (mode === "send") await sendDirectText(text);
-	else await finishWithText(text);
+	const finalBadge = engineBadgeText(finalEngine, { isZh, localModel: cfg?.localModel });
+	if (mode === "send") await sendDirectText(text, finalBadge);
+	else await finishWithText(text, finalBadge);
 }
 
 /* ---------------- 一键安装本地 Whisper ---------------- */

@@ -32,7 +32,16 @@ import voiceInput, {
 	whisperFullLang,
 	whisperLang,
 } from "../../plugins/voice-input/index.mjs";
-import { encodeWavPCM, pickEngineRoute, srExplain, srTotalText } from "../../plugins/voice-input/client/entry.mjs";
+import {
+	audioLevelFromRms,
+	computeAudioRms,
+	encodeWavPCM,
+	engineBadgeText,
+	pickEngineRoute,
+	resolveActiveEngine,
+	srExplain,
+	srTotalText,
+} from "../../plugins/voice-input/client/entry.mjs";
 
 const pluginDir = join(dirname(fileURLToPath(import.meta.url)), "..", "..", "plugins", "voice-input");
 const manifest = JSON.parse(readFileSync(join(pluginDir, "manifest.json"), "utf8"));
@@ -373,6 +382,64 @@ describe("srTotalText", () => {
 		const src = readFileSync(join(pluginDir, "client", "entry.mjs"), "utf8");
 		expect(src).toContain("newChat: false");
 		expect(src).toContain("startChat");
+	});
+	it("本地引擎录音中主按钮文案为「停止并转写」，避免与浏览器即时识别的「填入输入框」语义歧义 (issue #549)", () => {
+		const src = readFileSync(join(pluginDir, "client", "entry.mjs"), "utf8");
+		expect(src).toContain('stopAndTranscribe: isZh ? "停止并转写" : "Stop & transcribe"');
+		expect(src).toContain("label: T.stopAndTranscribe");
+	});
+});
+
+describe("resolveActiveEngine & engineBadgeText (issue #548)", () => {
+	it("resolveActiveEngine: sr 模式下返回 sr", () => {
+		expect(resolveActiveEngine({ engine: "auto" }, "sr")).toBe("sr");
+		expect(resolveActiveEngine({ engine: "local" }, "sr")).toBe("sr");
+	});
+
+	it("resolveActiveEngine: rec 模式下根据显式配置与就绪状态解析", () => {
+		expect(resolveActiveEngine({ engine: "remote" }, "rec")).toBe("remote");
+		expect(resolveActiveEngine({ engine: "local" }, "rec")).toBe("local");
+		// auto 模式录音时，本地就绪优先
+		expect(resolveActiveEngine({ engine: "auto", localReady: true }, "rec")).toBe("local");
+		expect(resolveActiveEngine({ engine: "auto", localReady: false, serverReady: true }, "rec")).toBe("remote");
+	});
+
+	it("engineBadgeText: 中英文与模型名正确格式化", () => {
+		expect(engineBadgeText("sr", { isZh: true })).toBe("🌐 浏览器识别");
+		expect(engineBadgeText("sr", { isZh: false })).toBe("🌐 Browser speech");
+		expect(engineBadgeText("remote", { isZh: true })).toBe("☁️ 远端接口");
+		expect(engineBadgeText("remote", { isZh: false })).toBe("☁️ Remote endpoint");
+		expect(engineBadgeText("local", { isZh: true, localModel: "base" })).toBe("🧠 本地 Whisper(base)");
+		expect(engineBadgeText("local", { isZh: false, localModel: "tiny" })).toBe("🧠 Local Whisper (tiny)");
+	});
+});
+
+describe("录音电平计算 (issue #550)", () => {
+	it("computeAudioRms: 空数组/无效输入返回 0", () => {
+		expect(computeAudioRms(null as unknown as Float32Array)).toBe(0);
+		expect(computeAudioRms([] as unknown as Float32Array)).toBe(0);
+		expect(computeAudioRms(new Float32Array(0))).toBe(0);
+	});
+
+	it("computeAudioRms: 全 0 静音返回 0", () => {
+		const silent = new Float32Array(128);
+		expect(computeAudioRms(silent)).toBe(0);
+		expect(audioLevelFromRms(0)).toBe(0);
+	});
+
+	it("computeAudioRms & audioLevelFromRms: 正常振幅计算并平滑映射", () => {
+		// 常数 0.1 采样，RMS 应为 0.1
+		const frames = new Float32Array([0.1, -0.1, 0.1, -0.1]);
+		const rms = computeAudioRms(frames);
+		expect(rms).toBeCloseTo(0.1, 5);
+		const level = audioLevelFromRms(rms);
+		expect(level).toBe(0.45);
+	});
+
+	it("audioLevelFromRms: 大振幅封顶为 1，负数/非法值保护返回 0", () => {
+		expect(audioLevelFromRms(1.0)).toBe(1);
+		expect(audioLevelFromRms(-1)).toBe(0);
+		expect(audioLevelFromRms(NaN)).toBe(0);
 	});
 });
 
