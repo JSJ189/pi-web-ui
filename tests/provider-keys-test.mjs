@@ -89,11 +89,14 @@ class Client {
 		return keys;
 	}
 	// Poll until provider_keys for `provider` has `n` entries (or timeout).
-	async waitProviderKeys(provider, n, timeout = 25000) {
+	// `ready` 可选：再用一个谓词筛一遍（例：等某条密钥的 active 变 true）。
+	// 只比条数会在「条数不变、activated 标记变了」的场景里拿到切换前的旧广播。
+	async waitProviderKeys(provider, n, timeout = 25000, ready = null) {
 		const start = Date.now();
 		while (Date.now() - start < timeout) {
 			const keys = this.lastProviderKeys();
-			if (keys && Array.isArray(keys[provider]) && keys[provider].length === n) return keys[provider];
+			const list = keys && Array.isArray(keys[provider]) ? keys[provider] : null;
+			if (list && list.length === n && (!ready || ready(list))) return list;
 			await sleep(50);
 		}
 		throw new Error(`timeout waiting for provider_keys[${provider}] length ${n}`);
@@ -204,7 +207,10 @@ try {
 	c.send({ type: "activate_provider_key", provider: "deepseek", keyName: keyBName });
 	await c.waitForNotice("已切换", 30000);
 	check("auth.json now sk-B", readAuth().deepseek?.key === "sk-B");
-	ks = await c.waitProviderKeys("deepseek", 2);
+	// 条数没变（依旧是 2），必须等「激活标记已翻转」的那条广播，否则会读到切换前的旧列表。
+	ks = await c.waitProviderKeys("deepseek", 2, 25000, (list) =>
+		list.find((k) => k.name === keyBName)?.active === true,
+	);
 	check("key B active now", ks.find((k) => k.name === keyBName)?.active === true);
 
 	// 4) remove the ACTIVE key by name → falls back to the remaining (sk-A)
