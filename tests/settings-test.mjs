@@ -279,6 +279,15 @@ try {
 			exportDoc.settings.promptOverrides?.soul === SAVED_SOUL,
 	);
 	check("export doc carries no name inside settings", !("name" in exportDoc.settings));
+	// 全量预设：以前不进预设的字段现在也在（工具开关/文案、界面偏好、专用提示词）
+	check(
+		"export doc 带全量字段（含以前排除的运行开关与 UI 偏好）",
+		typeof exportDoc.settings.toolLazyLoading === "boolean" &&
+			typeof exportDoc.settings.readDirEnabled === "boolean" &&
+			typeof exportDoc.settings.toolPromptOverrides === "object" &&
+			typeof exportDoc.settings.uiLayout === "object" &&
+			typeof exportDoc.settings.thinkingWrap === "boolean",
+	);
 
 	// dryRun 预览：只回预览，不落盘（随后真导入时才出现在 presets 里）
 	c.send({ type: "preset_import", json: ex1.json, dryRun: true, requestId: "im1" });
@@ -323,6 +332,35 @@ try {
 	check("unknown fields reported as ignored", im3.preview?.ignored?.includes("evil") === true);
 	check("wrong-typed field reported as rejected", im3.preview?.rejected?.includes("disabledSkills") === true);
 	check("whitelisted field survives sanitizing", im3.preview?.customSystemPrompt === "ok");
+
+	// 可选导入：只带一部分字段 → 落盘预设里只有那些字段（未勾选的保持当前值）
+	c.send({
+		type: "preset_import",
+		json: JSON.stringify({
+			format: "pi-web-ui-preset",
+			version: 1,
+			name: "部分导入",
+			settings: { customSystemPrompt: "partial-only", disabledSkills: ["s1"] },
+		}),
+		fields: ["customSystemPrompt"],
+		requestId: "im3b",
+	});
+	const im3b = await c.waitFor("preset_import_result", 8000, (m) => m.requestId === "im3b");
+	check("可选导入回执只列实际写入的字段", im3b.ok === true && im3b.preview?.fields?.join(",") === "customSystemPrompt");
+	// 一个都没勾 → 拒写
+	c.send({
+		type: "preset_import",
+		json: JSON.stringify({
+			format: "pi-web-ui-preset",
+			version: 1,
+			name: "空选",
+			settings: { customSystemPrompt: "x" },
+		}),
+		fields: [],
+		requestId: "im3c",
+	});
+	const im3c = await c.waitFor("preset_import_result", 8000, (m) => m.requestId === "im3c");
+	check("一个字段都没勾时拒绝导入", im3c.ok === false && typeof im3c.error === "string");
 
 	// 坏文档：错误回执带 error（不抛、不改设置）
 	c.send({ type: "preset_import", json: "{oops", requestId: "im4" });

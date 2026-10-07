@@ -282,9 +282,35 @@ export function isCoreBuiltinTool(name: string): name is CoreBuiltinToolName {
 
 const KNOWN_NAMES = new Set(AGENT_TOOL_CATALOG.map((t) => t.name));
 
+/** 全部已知可开关工具与核心内置工具全集（共 31 个）。用于白名单收敛与默认关闭推导。 */
+export const ALL_KNOWN_AGENT_TOOL_NAMES: readonly string[] = [
+	...AGENT_TOOL_CATALOG.map((t) => t.name),
+	...CORE_BUILTIN_TOOL_NAMES,
+];
+
 /** 是否为本表登记的可开关工具（未知名一律 false，不抛错）。 */
 export function isKnownAgentTool(name: string): boolean {
 	return KNOWN_NAMES.has(name);
+}
+
+/** 是否为预设可配置的有效工具（目录登记工具 ∪ 核心内置工具）。 */
+export function isConfigurableAgentTool(name: string): boolean {
+	return KNOWN_NAMES.has(name) || isCoreBuiltinTool(name);
+}
+
+/** 根据禁用名单计算出当前系统中真正启用的可用工具列表（只取当前系统可用的配置）。 */
+export function resolveEnabledAgentTools(disabled: readonly string[]): string[] {
+	const disabledSet = new Set(disabled);
+	return ALL_KNOWN_AGENT_TOOL_NAMES.filter((name) => !disabledSet.has(name));
+}
+
+/**
+ * 依据显式启用的工具白名单推导禁用列表：**默认没有开的工具就是关**。
+ * 凡是不在 enabled 列表里的当前系统已知工具，一律归入禁用名单，防止系统升级增加新工具时意外隐式开启。
+ */
+export function resolveDisabledAgentToolsFromEnabled(enabled: readonly string[]): string[] {
+	const enabledSet = new Set(enabled);
+	return ALL_KNOWN_AGENT_TOOL_NAMES.filter((name) => !enabledSet.has(name));
 }
 
 /** 归一化禁用名单：非数组回落默认（= 默认关的那些）；数组则只保留已知工具名

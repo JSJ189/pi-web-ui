@@ -153,6 +153,7 @@ const SLOT_IDS: UiSlotId[] = [
 	"contextmenu.file",
 	"contextmenu.toolcall",
 	"settings.pages",
+	"tasks.panel",
 	"modal.dialog",
 	"sidebar.left",
 	"sidebar.right",
@@ -233,6 +234,10 @@ export function applyUiSlotCardinality<T extends { id: string; hidden: boolean }
  *                    渲染在上传按钮左侧。**计划模式不在这一槽**（已搬到 goalbar.actions
  *                    的 host:goal-plan）。
  *   settings.pages   不列内置（按契约：这一槽位是插件专属）。
+ *   tasks.panel     「后台任务」面板（BgTasksModal）的内容区：不列内置，纯插件位。
+ *                    kind="view" 的条目由面板就地内嵌插件 bundle（同 settings.pages 的
+ *                    挂载口径），其余 kind 当动作按钮；宿主自己 diff 出来的后台进程仍走
+ *                    该面板原生的列表，两者在同一面板里共存。
  *   v8 新增槽位：file.preview.toolbar / leftpanel.sessions / terminal.toolbar /
  *                    scm.toolbar / goalbar.actions 均已登记宿主条目（见下表），与插件贡献
  *                    按同一顺序统一渲染；chat.header / chat.empty / notice.actions 仍是
@@ -1726,11 +1731,12 @@ function sortEntries(entries: WorkingEntry[], rank: RankMap): WorkingEntry[] {
 	});
 }
 
-/** 顶栏的插件视图是一个独立区段：固定插件从 Git 后开始排，不能被旧布局偏好挤到最前。 */
-function placeTopbarPluginViews(entries: WorkingEntry[]): WorkingEntry[] {
-	const views = entries.filter((entry) => isPluginViewItem(entry));
-	if (views.length === 0) return entries;
-	const rest = entries.filter((entry) => !isPluginViewItem(entry));
+/** 顶栏的插件视图区段：未被用户显式自定义排序的固定插件默认从 Git 后开始排。
+ *  如果用户已经在布局偏好（layout.order）中显式对该视图排过序，则严格遵循用户的排序位置。 */
+function placeTopbarPluginViews(entries: WorkingEntry[], rank: RankMap): WorkingEntry[] {
+	const unrankedViews = entries.filter((entry) => isPluginViewItem(entry) && !rank.has(entry.id));
+	if (unrankedViews.length === 0) return entries;
+	const rest = entries.filter((entry) => !isPluginViewItem(entry) || rank.has(entry.id));
 	const anchor =
 		["host:git", "host:terminal", "host:chat"]
 			.map((id) => rest.findIndex((entry) => entry.id === id))
@@ -1739,7 +1745,7 @@ function placeTopbarPluginViews(entries: WorkingEntry[]): WorkingEntry[] {
 	let insertAt = anchor + 1;
 	if (panel >= insertAt) insertAt = panel;
 	insertAt = Math.max(0, Math.min(insertAt, rest.length));
-	return [...rest.slice(0, insertAt), ...views, ...rest.slice(insertAt)];
+	return [...rest.slice(0, insertAt), ...unrankedViews, ...rest.slice(insertAt)];
 }
 
 /**
@@ -1962,7 +1968,7 @@ export function buildUiSlots(
 	const out = {} as Record<UiSlotId, UiSlotEntry[]>;
 	for (const id of SLOT_IDS) {
 		const sorted = sortEntries(buckets.get(id) ?? [], rank);
-		const placed = id === "topbar.primary" ? placeTopbarPluginViews(sorted) : sorted;
+		const placed = id === "topbar.primary" ? placeTopbarPluginViews(sorted, rank) : sorted;
 		const resolved = applyUiSlotCardinality(placed, uiSlotCardinality(id));
 		if (resolved.winner && resolved.conflicts.length > 0) {
 			for (const conflict of resolved.conflicts) {

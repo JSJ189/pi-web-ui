@@ -1677,7 +1677,16 @@ export function useChat() {
 					// doesn't chain onto our current rev (a message was dropped under
 					// backpressure, or we're stale), schedule one debounced full resync.
 					const cur = chatApi.current.chat.state;
-					if (!cur || cur.conversationId !== msg.conversationId || cur.rev !== msg.baseRev) scheduleResync();
+					if (!cur) {
+						// 前端当前没有任何快照（冷启动 boot 加载态）：增量快照无法应用，
+						// 立即无延迟向服务端请求全量快照，迅速脱离 boot-wait 加载态！
+						const ws = wsRef.current;
+						if (ws && ws.readyState === WebSocket.OPEN) {
+							ws.send(JSON.stringify({ type: "get_state" } satisfies ClientMessage));
+						}
+					} else if (cur.conversationId !== msg.conversationId || cur.rev !== msg.baseRev) {
+						scheduleResync();
+					}
 					dispatch({ type: "snapshot_delta", msg });
 					syncPendingQuestion(msg.state.pendingQuestion, msg.conversationId);
 					break;
@@ -2322,12 +2331,50 @@ export function useChat() {
 				ws.close();
 			}
 		}, 5_000);
+
+		// 移动端/多标签页休眠唤醒（visibilitychange / pageshow / online）：
+		// 手机锁屏或切换后台挂起一晚上后唤醒，网络往往在后台已断开或变成半开死连接。
+		// 页面重新可见时立即检查：连接断开则立即触发重连（掐掉退避等待）；
+		// 若连接虽然打开但超过心跳阈值（或尚无会话快照），主动发 get_state 校验并拉取最新会话状态。
+		const onWake = () => {
+			if (!aliveRef.current) return;
+			if (typeof document !== "undefined" && document.visibilityState === "hidden") return;
+			const ws = wsRef.current;
+			if (!ws || ws.readyState === WebSocket.CLOSED || ws.readyState === WebSocket.CLOSING) {
+				if (timerRef.current) {
+					clearTimeout(timerRef.current);
+					timerRef.current = null;
+				}
+				connect();
+				return;
+			}
+			if (ws.readyState === WebSocket.OPEN) {
+				if (Date.now() - lastBeatRef.current > 15_000 || !chatApi.current.chat.state) {
+					ws.send(JSON.stringify({ type: "get_state" } satisfies ClientMessage));
+				}
+			}
+		};
+		if (typeof document !== "undefined") {
+			document.addEventListener("visibilitychange", onWake);
+		}
+		if (typeof window !== "undefined") {
+			window.addEventListener("pageshow", onWake);
+			window.addEventListener("online", onWake);
+		}
+
 		return () => {
 			aliveRef.current = false;
 			clearInterval(watchdog);
 			if (timerRef.current) {
 				clearTimeout(timerRef.current);
 				timerRef.current = null;
+			}
+			if (typeof document !== "undefined") {
+				document.removeEventListener("visibilitychange", onWake);
+			}
+			if (typeof window !== "undefined") {
+				window.removeEventListener("pageshow", onWake);
+				window.removeEventListener("online", onWake);
 			}
 			wsRef.current?.close();
 			wsRef.current = null;

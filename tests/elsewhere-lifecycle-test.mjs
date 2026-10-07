@@ -1,7 +1,9 @@
 // issue #291 回归（零 token）：elsewhere（「另一处」）列表的生命周期缺陷。
 //
-// 1) 断连残骸不入列表：客户端 A 用随机 clientId attach 并发一次 prompt（产生对话），
-//    断开 socket 后，另一个客户端 B 的 elsewhere 里不应再有 A 的行（修复前会永久留着）。
+// 1) 断连残骸的离线行有宽限期：客户端 A 用随机 clientId attach 并发一次 prompt
+//    （产生对话），断开 socket 后，另一个客户端 B 的 elsewhere 里**宽限期内仍能看到**
+//    该行（标 ownerOffline，可过户 —— 手机上 run 途中关页面也能换设备接管），
+//    过期后自动消失（#291「残骸不永久占位」仍然成立；本测试把宽限期压到 3s）。
 //    含正向对照：A 在线时 B 必须能看到那一行（证明测试真的在读这张列表）。
 // 2) 删除定时任务回收伪客户端：建一个任务并 schedule_run 一次（产生 `scheduler:<id>`
 //    伪客户端 + 一条对话）→ B 的 elsewhere 有该行；schedule_delete 后该行应消失。
@@ -96,6 +98,8 @@ const server = spawn(process.execPath, [join(realpathSync("."), "dist", "server"
 		// 显式清空：测试必须与 ambient shell 的 PI_WEB_TOKEN 无关。
 		PI_WEB_TOKEN: "",
 		PI_WEB_PLUGIN_CATALOG_URL: "",
+		// 离线行宽限期压到 3 秒：一次冒烟里就能验「到期自动消失」。
+		PI_WEB_OFFLINE_ROWS_TTL_MS: "3000",
 	},
 	stdio: ["ignore", "pipe", "pipe"],
 	windowsHide: true,
@@ -241,9 +245,19 @@ try {
 
 	// 断开 A（不 detach 回收 → 模拟「关浏览器留下的残骸」）。
 	clientA.ws.close();
-	const gone = await waitElsewhereGone(clientB, (w) => w.owner === deadId, "A row gone");
+	const offlineRow = await waitElsewhere(
+		clientB,
+		(w) => w.owner === deadId && w.ownerOffline === true,
+		"A offline row",
+	);
 	check(
-		"A 断连后其行从 B 的 elsewhere 消失（#291 修复点）",
+		"A 断连后其行仍在且标 ownerOffline（宽限期内可过户）",
+		offlineRow?.ownerOffline === true,
+		`elsewhere=${JSON.stringify(clientB.elsewhere)}`,
+	);
+	const gone = await waitElsewhereGone(clientB, (w) => w.owner === deadId, "A row gone", 20000);
+	check(
+		"宽限期到期后其行自动消失（#291「残骸不永久占位」仍成立）",
 		gone,
 		`elsewhere=${JSON.stringify(clientB.elsewhere.map((w) => w.owner))}`,
 	);

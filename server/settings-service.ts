@@ -24,11 +24,13 @@ import type {
 } from "./protocol.js";
 import {
 	extensionKey,
+	normalizeBgCleanupMinutes,
 	normalizeDisabledPluginTools,
 	normalizeRetryMaxAttempts,
 	normalizeSkillList,
 	normalizeToolWatchdogTimeoutMs,
 	normalizeUiLayout,
+	settingsPresetToUi,
 	type ClientStateStore,
 	type ClientSettings,
 	type PromptMode,
@@ -357,6 +359,7 @@ export class SettingsService {
 				terminalBashMaxForegroundMs: this.settings.terminalBashMaxForegroundMs,
 				toolWatchdogTimeoutMs: this.settings.toolWatchdogTimeoutMs,
 				readDirEnabled: this.settings.readDirEnabled !== false,
+				bgAutoCleanupMin: normalizeBgCleanupMinutes(this.settings.bgAutoCleanupMin),
 				toolLazyLoading: this.settings.toolLazyLoading !== false,
 				toolApprovalEnabled: this.settings.toolApprovalEnabled !== false,
 				approvalPolicy: this.host.getApprovalPolicy?.() ?? { allowAll: false, categories: [] },
@@ -398,7 +401,7 @@ export class SettingsService {
 				skills,
 				reviewSkills,
 				extensions,
-				presets: this.presets.map((p) => ({ ...p })),
+				presets: this.presets.map(settingsPresetToUi),
 				...(this.host.getMarkerState
 					? this.host.getMarkerState()
 					: {
@@ -483,6 +486,8 @@ export class SettingsService {
 		/** read 工具读目录开关（默认开；见 server/read-tool.ts）。运行时无需重载，
 		 *  覆盖定义每次调用实时读取。 */
 		readDirEnabled?: boolean;
+		/** 「后台任务」自动清理阈值（分钟；0 = 关，默认关）。 */
+		bgAutoCleanupMin?: number;
 		/** 工具延迟加载开关（默认开）：只影响新会话与之后的门控重放。 */
 		toolLazyLoading?: boolean;
 		/** 工具执行审批总开关（默认开；纯运行开关，每次审批实时读取，无需 reload）。 */
@@ -618,6 +623,10 @@ export class SettingsService {
 		if (partial.readDirEnabled !== undefined) {
 			this.settings.readDirEnabled = partial.readDirEnabled;
 		}
+		// 「后台任务」自动清理阈值（分钟；0 = 关）：bg-servers 的定时器每轮实时读，即时生效。
+		if (partial.bgAutoCleanupMin !== undefined) {
+			this.settings.bgAutoCleanupMin = normalizeBgCleanupMinutes(partial.bgAutoCleanupMin);
+		}
 		// 工具延迟加载开关（默认开）：门控每次实时读取，改动经 applyToolGating 重放生效
 		// （见 toolGatingChanged）——**只影响新会话与之后的门控重放**，已有对话的已加载
 		// 集合不会被反向清空（不想让在跑的对话凭空丢掉工具）。
@@ -752,30 +761,12 @@ export class SettingsService {
 		this.push();
 	}
 
-	/** 把当前设置快照成一条预设（名字由调用方给定）。导出/保存共用同一字段列表。 */
+	/** 把当前设置快照成一条预设（名字由调用方给定）。
+	 *  **全量**：`ClientSettings` 的每个字段都进预设（字段清单/分组见 `server/preset-fields.ts`），
+	 *  导出/分享/导入共用同一张白名单；深层对象做一份拷贝，避免与当前设置共享引用。 */
 	private snapshotPreset(name: string): SettingsPreset {
-		return {
-			name,
-			promptMode: this.settings.promptMode,
-			customSystemPrompt: this.settings.customSystemPrompt,
-			promptTemplate: this.settings.promptTemplate ?? "",
-			promptOverrides: { ...this.settings.promptOverrides },
-			disabledSkills: [...this.settings.disabledSkills],
-			disabledExtensions: [...this.settings.disabledExtensions],
-			disabledAgentTools: [...normalizeDisabledAgentTools(this.settings.disabledAgentTools)],
-			disabledPluginTools: [...normalizeDisabledPluginTools(this.settings.disabledPluginTools)],
-			terminalToolsEnabled: this.settings.terminalToolsEnabled,
-			terminalBash: this.settings.terminalBash,
-			terminalBashIdleMs: this.settings.terminalBashIdleMs,
-			terminalBashMaxForegroundMs: this.settings.terminalBashMaxForegroundMs,
-			editSoftEnabled: this.settings.editSoftEnabled,
-			retryMaxAttempts: this.settings.retryMaxAttempts,
-			softCapTokens: this.settings.softCapTokens,
-			softCapByModel: { ...this.settings.softCapByModel },
-			reviewPrompt: this.settings.reviewPrompt,
-			reviewDisabledSkills: [...this.settings.reviewDisabledSkills],
-			skillsFullText: [...normalizeSkillList(this.settings.skillsFullText)],
-		};
+		const s = structuredClone(this.settings) as ClientSettings;
+		return { ...s, name };
 	}
 
 	/** Replace the current settings with the named preset and apply it. */
@@ -790,8 +781,7 @@ export class SettingsService {
 			});
 			return;
 		}
-		// 统一工具开关随预设走；旧预设缺新字段时按遗留两开关折算（问卷不进预设，
-		// 从当前禁用名单继承，即保留当前问卷状态）。
+		// 统一工具开关：新预设直接用它；旧预设（只有遗留两开关）按当前禁用名单折算。
 		const presetDisabled = normalizeDisabledAgentTools(
 			(p as { disabledAgentTools?: unknown }).disabledAgentTools ??
 				foldLegacyIntoDisabled(this.settings.disabledAgentTools ?? [], {
@@ -800,76 +790,18 @@ export class SettingsService {
 				}),
 		);
 		const presetLegacy = deriveLegacy(presetDisabled);
+		// 全量预设 = 当前设置叠加预设里**实际存在**的字段（缺字段保持当前值）。
+		// 旧预设（19 字段）、以及导入时只勾了一部分的预设，都靠这个 merge 落地。
+		const patch: Record<string, unknown> = { ...(p as unknown as Record<string, unknown>) };
+		delete patch.name;
+		for (const k of Object.keys(patch)) if (patch[k] === undefined) delete patch[k];
 		this.settings = {
-			promptMode: p.promptMode,
-			customSystemPrompt: p.customSystemPrompt,
-			promptTemplate: p.promptTemplate ?? this.settings.promptTemplate ?? "",
-			promptOverrides: { ...(p.promptOverrides ?? this.settings.promptOverrides) },
-			disabledSkills: [...p.disabledSkills],
-			disabledExtensions: [...p.disabledExtensions],
+			...this.settings,
+			...patch,
+			// 工具开关与两个遗留别名以派生结果为准（单源：disabledAgentTools）。
 			disabledAgentTools: presetDisabled,
-			disabledPluginTools: normalizeDisabledPluginTools(
-				(p as { disabledPluginTools?: unknown }).disabledPluginTools ?? this.settings.disabledPluginTools,
-			),
 			terminalToolsEnabled: presetLegacy.terminalToolsEnabled,
-			// 终端接管偏好随预设走；旧预设缺字段时保留当前值。
-			terminalBash: p.terminalBash ?? this.settings.terminalBash,
-			terminalBashIdleMs: p.terminalBashIdleMs ?? this.settings.terminalBashIdleMs,
-			terminalBashMaxForegroundMs: p.terminalBashMaxForegroundMs ?? this.settings.terminalBashMaxForegroundMs,
-			// read 读目录是纯运行行为开关，不进预设——保留当前值。
-			readDirEnabled: this.settings.readDirEnabled !== false,
-			// 工具延迟加载同样是纯运行行为开关，不进预设——保留当前值。
-			toolLazyLoading: this.settings.toolLazyLoading !== false,
-			// 工具审批总开关同样是纯运行开关，不进预设——保留当前值。
-			toolApprovalEnabled: this.settings.toolApprovalEnabled !== false,
-			// toolWatchdogTimeoutMs 是纯运行行为参数，不进预设——保留当前值。
-			toolWatchdogTimeoutMs: this.settings.toolWatchdogTimeoutMs,
 			editSoftEnabled: presetLegacy.editSoftEnabled,
-			// 重试次数随预设走；旧预设缺字段时保留当前值，应用后即时注入各会话。
-			retryMaxAttempts: p.retryMaxAttempts ?? this.settings.retryMaxAttempts,
-			// 压缩软上限同样随预设走（issue #229）；旧预设缺字段时保留当前值。
-			softCapTokens: normalizeSoftCapTokens(
-				(p as { softCapTokens?: unknown }).softCapTokens ?? this.settings.softCapTokens,
-			),
-			softCapByModel: normalizeSoftCapByModel(
-				(p as { softCapByModel?: unknown }).softCapByModel ?? this.settings.softCapByModel,
-			),
-			// 问卷开关不进预设——保留当前值。
-			questionnaireEnabled: this.settings.questionnaireEnabled,
-			// 同项目并行提醒开关不进预设——保留当前值。
-			parallelReminderEnabled: this.settings.parallelReminderEnabled ?? true,
-			// 目标模式总开关不进预设——保留当前值。
-			goalModeEnabled: this.settings.goalModeEnabled,
-			reviewPrompt: p.reviewPrompt ?? this.settings.reviewPrompt,
-			reviewDisabledSkills: [...(p.reviewDisabledSkills ?? this.settings.reviewDisabledSkills)],
-			// 全文注入名单随预设走；旧预设缺字段时保留当前值。
-			skillsFullText: normalizeSkillList(p.skillsFullText ?? this.settings.skillsFullText),
-			// 纯 UI 偏好不进预设——保留当前值。
-			devNoCache: this.settings.devNoCache,
-			autoReload: this.settings.autoReload,
-			thinkingWrap: this.settings.thinkingWrap,
-			toolsWrap: this.settings.toolsWrap,
-			toolImagesEnabled: this.settings.toolImagesEnabled ?? true,
-			// UI 布局偏好也不进预设——保留当前值。
-			uiLayout: normalizeUiLayout(this.settings.uiLayout),
-			// Presets don't capture vision-bridge prefs — keep the current ones.
-			visionBridgeEnabled: this.settings.visionBridgeEnabled,
-			visionBridgeModel: this.settings.visionBridgeModel,
-			visionBridgePromptMode: this.settings.visionBridgePromptMode,
-			visionBridgePrompt: this.settings.visionBridgePrompt,
-			// 「AI 提交信息」提示词同样不进预设——保留当前值。
-			scmCommitMsgPromptMode: this.settings.scmCommitMsgPromptMode,
-			scmCommitMsgPrompt: this.settings.scmCommitMsgPrompt,
-			// 计划模式提示词同样不进预设——保留当前值。
-			planModePromptMode: this.settings.planModePromptMode,
-			planModePrompt: this.settings.planModePrompt,
-			// 子代理默认模型也不进预设——保留当前值。
-			subagentDefaultModel: this.settings.subagentDefaultModel,
-			// 快捷短语是纯 UI 偏好，不进预设——保留当前值。
-			quickPhrases: [...this.settings.quickPhrases],
-			quickPhrasesEnabled: this.settings.quickPhrasesEnabled,
-			// 逐工具文案覆盖也不进预设——保留当前值。
-			toolPromptOverrides: { ...this.settings.toolPromptOverrides },
 		};
 		this.host.stateStore.saveSettings(this.host.clientId, this.settings);
 		// 预设可能改了重试次数：即时注入（流式中延迟的 reload 之后还会由调用方重放）。

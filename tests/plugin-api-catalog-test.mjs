@@ -3,7 +3,7 @@
  *
  * 单测（`tests/unit/plugin-api-catalog.test.ts`）只覆盖装配 + 静态表 + 占位计数，
  * 这里覆盖的是**接线**：浏览器发 `plugin_api_catalog` → 服务端回
- * `plugin_api_catalog_result`（24 slot + 别名 + 工具表 + 方法表 + 当前占用者）。
+ * `plugin_api_catalog_result`（25 slot + 别名 + 工具表 + 方法表 + 当前占用者）。
  *
  * 运行：npm run build && node tests/plugin-api-catalog-test.mjs（已进 tests/run-smoke.mjs）
  */
@@ -108,7 +108,7 @@ try {
 
 	const catalog = await queryCatalog();
 	check("回包带 catalog", !!catalog && catalog.version === 1);
-	check("24 个 slot", catalog?.slots?.length === 24, String(catalog?.slots?.length));
+	check("25 个 slot", catalog?.slots?.length === 25, String(catalog?.slots?.length));
 	const top = catalog?.slots?.find((s) => s.slot === "topbar.primary");
 	check("topbar.primary 别名含 topbar", top?.aliases?.includes("topbar") ?? false, JSON.stringify(top?.aliases));
 	check("例子可抄（非空）", (top?.example ?? "").includes("topbar"));

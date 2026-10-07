@@ -927,6 +927,7 @@ export const UI_SLOTS: ReadonlySet<string> = new Set([
 	"contextmenu.file",
 	"contextmenu.toolcall",
 	"settings.pages",
+	"tasks.panel",
 	"leftpanel.sessions",
 	"chat.header",
 	"chat.empty",

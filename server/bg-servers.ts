@@ -19,6 +19,26 @@ const BG_REFRESH_INTERVAL_MS = 30_000;
 /** bash 结束后等这么久再拍「后」快照——给后台服务绑定端口的时间。 */
 const BG_BIND_WAIT_MS = 1500;
 
+/** 自动清理时「闲置多久算遗留」的兜底阈值（分钟）——手动「立即清理」在策略为关时用它。 */
+export const BG_CLEANUP_FALLBACK_MIN = 30;
+
+/**
+ * 从当前列表里挑出「该被自动清理」的条目（纯函数，好测）：
+ *   - **钉住的（keep）不碰** —— 用户明确说要留的，永远不动；
+ *   - 插件注册的任务不参与（它们不在这个列表里，由插件的 stop 回调负责）；
+ *   - 只看 `since`（宿主首次发现它的时间）与阈值，与是否还在跑无关（还在跑才会在列表里）。
+ * @param entries `{port, pid, since, keep?}` 列表
+ * @param opts `{ now, thresholdMs }`；thresholdMs ≤ 0 = 不清理
+ * @returns 待清理的条目（原样引用）
+ */
+export function staleLeftovers(
+	entries: ReadonlyArray<{ port: number; pid: number; since: number; keep?: boolean }>,
+	opts: { now: number; thresholdMs: number },
+): Array<{ port: number; pid: number; since: number; keep?: boolean }> {
+	if (!Number.isFinite(opts.thresholdMs) || opts.thresholdMs <= 0) return [];
+	return entries.filter((e) => !e.keep && Number.isFinite(e.since) && opts.now - e.since >= opts.thresholdMs);
+}
+
 /**
  * 基本不可能由 AI 启动的常驻桌面软件进程名（小写）。命中即跳过，避免面板被
  * 微信/QQ 等本地软件的动态监听端口污染。注意 Chrome 不进黑名单：AI 会用
@@ -84,7 +104,10 @@ export function shouldTrackBackgroundServer(
 }
 
 export class BgServerTracker {
-	private readonly servers = new Map<number, { pid: number; since: number; name?: string; command?: string }>();
+	private readonly servers = new Map<
+		number,
+		{ pid: number; since: number; name?: string; command?: string; keep?: boolean }
+	>();
 	/**
 	 * bash 工具开始执行前拍的监听端口快照（tool_execution_start 时设置）。
 	 * 槽位存「in-flight Promise」而非已解析的 Map：并发 bash 同时开跑时不互相
@@ -102,13 +125,23 @@ export class BgServerTracker {
 			isDisposed: () => boolean;
 			/** 插件注册的常驻任务（host.registerBackgroundTask）→ 追加进同一列表。 */
 			pluginTasks?: () => BgServer[];
+			/** 自动清理阈值（分钟；0 = 关）。每轮定时器实时读，改设置即时生效。 */
+			cleanupMinutes?: () => number;
 		},
 	) {}
 
-	/** 启动周期性存活检查（死项静默剔除）。 */
+	/** 启动周期性存活检查（死项静默剔除）+ 按策略自动清理遗留实例。 */
 	start(): void {
-		this.refreshTimer = setInterval(() => void this.refresh(), BG_REFRESH_INTERVAL_MS);
+		this.refreshTimer = setInterval(() => void this.tick(), BG_REFRESH_INTERVAL_MS);
 		this.refreshTimer.unref?.();
+	}
+
+	/** 一轮定时任务：先剔死项，再按策略清遗留（策略为 0 = 关，只剔不杀）。 */
+	private async tick(): Promise<void> {
+		await this.refresh();
+		const minutes = Number(this.opts.cleanupMinutes?.() ?? 0);
+		if (!Number.isFinite(minutes) || minutes <= 0) return;
+		await this.cleanStale(minutes * 60_000, { manual: false });
 	}
 
 	stop(): void {
@@ -201,6 +234,7 @@ export class BgServerTracker {
 				since: v.since,
 				...(v.name ? { name: v.name } : {}),
 				...(v.command ? { command: v.command } : {}),
+				...(v.keep ? { keep: true } : {}),
 			}))
 			.sort((a, b) => a.since - b.since);
 		for (const t of this.opts.pluginTasks?.() ?? []) out.push(t);
@@ -288,6 +322,64 @@ export class BgServerTracker {
 		});
 		this.opts.flushSnapshot();
 		return true;
+	}
+
+	/** 钉住 / 取消钉住一个实例（自动清理跳过钉住的）。端口不在列表里 → 回一条 info 通知。 */
+	setKeep(port: number, keep: boolean): boolean {
+		const entry = this.servers.get(port);
+		if (!entry) {
+			this.opts.emit({
+				type: "notice",
+				level: "info",
+				text: `端口 ${port} 不在后台任务列表中（可能已自行退出）`,
+				textEn: `Port ${port} is not in the background task list (it may have exited)`,
+			});
+			this.opts.flushSnapshot();
+			return false;
+		}
+		if (keep) entry.keep = true;
+		else delete entry.keep;
+		this.push();
+		return true;
+	}
+
+	/**
+	 * 按阈值清理遗留实例：先复核端口→pid 归属（同 killOne，不对就剔条目绝不误杀），
+	 * 再杀**未钉住**且闲置超阈值的那些，最后推一条汇总通知。
+	 * @param manual 手动点「立即清理」：即使没东西可清也给一句反馈（否则点了像没反应）。
+	 */
+	async cleanStale(thresholdMs: number, opts: { manual: boolean }): Promise<number[]> {
+		await this.verifyBeforeKill();
+		const picked = staleLeftovers(
+			[...this.servers.entries()].map(([port, v]) => ({ port, ...v })),
+			{ now: Date.now(), thresholdMs },
+		);
+		if (picked.length === 0) {
+			if (opts.manual) {
+				this.opts.emit({
+					type: "notice",
+					level: "info",
+					text: `没有需要清理的遗留实例（阈值 ${Math.round(thresholdMs / 60_000)} 分钟，已钉住的不算）`,
+					textEn: `No leftover instance to clean (threshold ${Math.round(thresholdMs / 60_000)} min; kept ones excluded)`,
+				});
+			}
+			return [];
+		}
+		const killed: number[] = [];
+		for (const item of picked) {
+			killPidTree(item.pid);
+			this.servers.delete(item.port);
+			killed.push(item.port);
+		}
+		this.push();
+		this.opts.emit({
+			type: "notice",
+			level: "info",
+			text: `已清理 ${killed.length} 个遗留后台实例：端口 ${killed.join("、")}（闲置超 ${Math.round(thresholdMs / 60_000)} 分钟；可在面板里钉住想留的）`,
+			textEn: `Cleaned ${killed.length} leftover background instance(s): port ${killed.join(", ")} (idle over ${Math.round(thresholdMs / 60_000)} min; pin the ones you want to keep)`,
+		});
+		this.opts.flushSnapshot();
+		return killed;
 	}
 
 	/** Kill every background server the agent started; returns the freed ports. */

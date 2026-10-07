@@ -104,6 +104,8 @@ export interface PromptComposerInputs {
 	catalogTools?: string[];
 	/** 活动工具的 prompt snippet（name → snippet）。 */
 	toolSnippets: Record<string, string>;
+	/** 工具参数签名简短说明（name → "(param1: hint, param2?: hint)"）。 */
+	toolSignatures?: Record<string, string>;
 	/** 活动工具聚合的 prompt guidelines。 */
 	toolGuidelines: string[];
 	/** Pi 包路径（README.md / docs / examples 目录）。 */
@@ -296,7 +298,15 @@ function buildContextText(files: PromptComposerInputs["contextFiles"], lang: Ser
 function buildToolsText(inputs: PromptComposerInputs, lang: ServerLang): string {
 	const listed = inputs.lazy ? (inputs.catalogTools ?? inputs.selectedTools) : inputs.selectedTools;
 	const visible = listed.filter((n) => !!inputs.toolSnippets[n]);
-	const toolsList = visible.length > 0 ? visible.map((n) => `- ${n}: ${inputs.toolSnippets[n]}`).join("\n") : "(none)";
+	const toolsList =
+		visible.length > 0
+			? visible
+					.map((n) => {
+						const sig = inputs.toolSignatures?.[n] ? ` ${inputs.toolSignatures[n]}` : "";
+						return `- ${n}:${sig} ${inputs.toolSnippets[n]}`;
+					})
+					.join("\n")
+			: "(none)";
 	const parts = [`Available tools:\n${toolsList}`];
 	if (inputs.lazy) {
 		parts.push(

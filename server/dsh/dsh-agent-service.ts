@@ -30,12 +30,14 @@ import { basename, dirname, join, resolve, sep } from "node:path";
 import { writeJsonAtomicSync } from "../atomic-file.js";
 import { randomUUID } from "node:crypto";
 import { homedir } from "node:os";
-import { BgServerTracker } from "../bg-servers.js";
+import { BG_CLEANUP_FALLBACK_MIN, BgServerTracker } from "../bg-servers.js";
 import {
 	ClientStateStore,
 	DEFAULT_RETRY_MAX_ATTEMPTS,
+	normalizeBgCleanupMinutes,
 	normalizePathKey,
 	normalizeToolWatchdogTimeoutMs,
+	settingsPresetToUi,
 } from "../client-state.js";
 import { normalizeUiLayout } from "../client-state.js";
 import { PLAN_MODE_SYSTEM_PROMPT } from "../plan-mode.js";
@@ -221,6 +223,8 @@ interface DshSettings {
 	terminalBashIdleMs: number;
 	terminalBashMaxForegroundMs: number;
 	toolWatchdogTimeoutMs: number;
+	/** 「后台任务」自动清理阈值（分钟；0 = 关）。 */
+	bgAutoCleanupMin: number;
 	editSoftEnabled: boolean;
 	/** 问卷提问（ask_user_question）开关（默认开）。关 → 模型不再弹问卷。 */
 	questionnaireEnabled: boolean;
@@ -284,6 +288,7 @@ const DEFAULT_SETTINGS: DshSettings = {
 	terminalBashIdleMs: 15_000,
 	terminalBashMaxForegroundMs: 60_000,
 	toolWatchdogTimeoutMs: 20 * 60_000,
+	bgAutoCleanupMin: 0,
 	editSoftEnabled: false,
 	questionnaireEnabled: true,
 	toolApprovalEnabled: true,
@@ -429,6 +434,7 @@ export class DshClientSession {
 			flushSnapshot: () => this.flushSnapshot(),
 			isDisposed: () => this.disposed,
 			pluginTasks: () => this.pluginBgTasksProvider?.() ?? [],
+			cleanupMinutes: () => Number(this.settings.bgAutoCleanupMin ?? 0),
 		});
 	}
 
@@ -463,6 +469,7 @@ export class DshClientSession {
 				terminalBashIdleMs: savedSettings.terminalBashIdleMs,
 				terminalBashMaxForegroundMs: savedSettings.terminalBashMaxForegroundMs ?? 60_000,
 				toolWatchdogTimeoutMs: savedSettings.toolWatchdogTimeoutMs ?? 20 * 60_000,
+				bgAutoCleanupMin: Number(savedSettings.bgAutoCleanupMin ?? 0),
 				editSoftEnabled: savedSettings.editSoftEnabled,
 				questionnaireEnabled: savedSettings.questionnaireEnabled ?? true,
 				toolApprovalEnabled: savedSettings.toolApprovalEnabled ?? true,
@@ -1475,6 +1482,7 @@ export class DshClientSession {
 			permission: conv.permissionPreset ?? null,
 			queue: { steering: conv.queue.steering, followUp: conv.queue.followUp },
 			pendingQuestion: this.pendingQuestionForSnapshot(),
+			actionSuggestions: null,
 			tools: [],
 			version: ++this.version,
 			piConfigured: this.isDshConfigured(),
@@ -2278,6 +2286,20 @@ export class DshClientSession {
 		return killed;
 	}
 
+	/** 钉住 / 取消钉住（DSH 引擎同样有后台任务面板，行为与 pi 引擎一致）。 */
+	setBackgroundKeep(port: number, keep: boolean): boolean {
+		return this.bg.setKeep(port, keep);
+	}
+
+	/** 手动「立即清理」（阈值策略与 pi 引擎同源：设置里的 bgAutoCleanupMin，关时兼底 30 分钟）。 */
+	async cleanBackgroundLeftovers(minutesOverride?: number): Promise<number[]> {
+		const override = Number(minutesOverride);
+		const policy = Number(this.settings.bgAutoCleanupMin ?? 0);
+		const minutes = Number.isFinite(override) && override > 0 ? override : policy;
+		const thresholdMs = (minutes > 0 ? minutes : BG_CLEANUP_FALLBACK_MIN) * 60_000;
+		return this.bg.cleanStale(thresholdMs, { manual: true });
+	}
+
 	// -----------------------------------------------------------------------
 	// 会话列表 / 切换 / 删除
 	// -----------------------------------------------------------------------
@@ -2903,6 +2925,7 @@ export class DshClientSession {
 			toolWatchdogTimeoutMs: this.settings.toolWatchdogTimeoutMs,
 			// DSH 引擎无 customTool 注册面（工具来自 shipped preset），read 目录覆盖面不存在。
 			readDirEnabled: true,
+			bgAutoCleanupMin: Number(this.settings.bgAutoCleanupMin ?? 0),
 			// DSH 无 pi 工具注册面，不适用延迟加载；保协议完整。
 			toolLazyLoading: true,
 			editSoftEnabled: this.settings.editSoftEnabled,
@@ -2952,7 +2975,7 @@ export class DshClientSession {
 			skills: this.skillsCache,
 			reviewSkills: [],
 			extensions: [],
-			presets: this.stateStore.getPresets(this.clientId),
+			presets: this.stateStore.getPresets(this.clientId).map(settingsPresetToUi),
 			markersEnabled: true,
 			disabledMarkers: [],
 			markers: [],
@@ -2980,6 +3003,7 @@ export class DshClientSession {
 		terminalBashIdleMs?: number;
 		terminalBashMaxForegroundMs?: number;
 		toolWatchdogTimeoutMs?: number;
+		bgAutoCleanupMin?: number;
 		editSoftEnabled?: boolean;
 		questionnaireEnabled?: boolean;
 		toolApprovalEnabled?: boolean;
@@ -3012,6 +3036,8 @@ export class DshClientSession {
 			this.settings.terminalBashMaxForegroundMs = partial.terminalBashMaxForegroundMs;
 		if (partial.toolWatchdogTimeoutMs !== undefined)
 			this.settings.toolWatchdogTimeoutMs = normalizeToolWatchdogTimeoutMs(partial.toolWatchdogTimeoutMs);
+		if (partial.bgAutoCleanupMin !== undefined)
+			this.settings.bgAutoCleanupMin = normalizeBgCleanupMinutes(partial.bgAutoCleanupMin);
 		if (partial.editSoftEnabled !== undefined) this.settings.editSoftEnabled = partial.editSoftEnabled;
 		if (partial.questionnaireEnabled !== undefined) this.settings.questionnaireEnabled = partial.questionnaireEnabled;
 		if (partial.toolApprovalEnabled !== undefined) this.settings.toolApprovalEnabled = partial.toolApprovalEnabled;
@@ -3423,13 +3449,13 @@ export class DshClientSession {
 			});
 			return;
 		}
-		this.settings.promptMode = preset.promptMode;
-		this.settings.customSystemPrompt = preset.customSystemPrompt;
+		this.settings.promptMode = preset.promptMode === "replace" ? "replace" : "append";
+		this.settings.customSystemPrompt = preset.customSystemPrompt ?? "";
 		this.settings.disabledSkills = preset.disabledSkills ?? [];
 		this.settings.disabledExtensions = preset.disabledExtensions ?? [];
-		this.settings.terminalToolsEnabled = preset.terminalToolsEnabled;
-		this.settings.terminalBash = preset.terminalBash;
-		this.settings.terminalBashIdleMs = preset.terminalBashIdleMs;
+		this.settings.terminalToolsEnabled = preset.terminalToolsEnabled ?? this.settings.terminalToolsEnabled;
+		this.settings.terminalBash = preset.terminalBash ?? this.settings.terminalBash;
+		this.settings.terminalBashIdleMs = preset.terminalBashIdleMs ?? this.settings.terminalBashIdleMs;
 		this.settings.terminalBashMaxForegroundMs =
 			preset.terminalBashMaxForegroundMs ?? this.settings.terminalBashMaxForegroundMs;
 		this.settings.editSoftEnabled = preset.editSoftEnabled ?? this.settings.editSoftEnabled;
@@ -4488,8 +4514,16 @@ export class DshClientSession {
 			const newSessionId = `fork-${randomUUID().slice(0, 12)}`;
 			const fresh = this.addConversation(newSessionId, this.cwd, false);
 			// 回放编辑点之前的消息（作为会话初始上下文：DSH 无 seed 机制，v1 用
-			// 简化——直接把历史作为一条提示词说明附上）。
-			const head = conv.messages.slice(0, idx);
+			// 简化——直接把历史作为一条提示词说明附上）。跳过紧挨在当前提问前面的前置附件卡片。
+			let cutIdx = idx;
+			while (
+				cutIdx > 0 &&
+				conv.messages[cutIdx - 1]?.role === "custom" &&
+				(conv.messages[cutIdx - 1] as { customType?: string })?.customType === "file"
+			) {
+				cutIdx--;
+			}
+			const head = conv.messages.slice(0, cutIdx);
 			// 把编辑前的对话内容写进新会话的 prompt（尽力保留上下文）。
 			const contextNote = head
 				.map((m) => {

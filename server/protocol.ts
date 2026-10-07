@@ -195,6 +195,12 @@ export interface UiState {
 	 */
 	pendingQuestion?: UiPendingQuestion | null;
 	/**
+	 * 期待用户操作的建议按钮列表（由 action/suggest 内联标记产生）。
+	 * 渲染在对话最底部，点击即作为用户消息直接发送。
+	 * 用户发送新消息后清空。
+	 */
+	actionSuggestions?: UiActionSuggestion[] | null;
+	/**
 	 * 待用户审批的高危工具调用（Edit & Run 人机协同）。当前对话有待审批时携带，切会话/刷新恢复。
 	 */
 	pendingApproval?: UiToolApproval | null;
@@ -487,6 +493,13 @@ export type ClientMessage =
 	/** Re-push the current background-server list (the server also refreshes it
 	 *  on its own and prunes entries whose process exited). */
 	| { type: "list_bg_servers" }
+	/** 钉住 / 取消钉住一个后台实例（自动清理跳过钉住的）。仅端口条目有效；
+	 *  端口不在列表里时服务端回一条 info 通知，不报错。 */
+	| { type: "set_bg_keep"; port: number; keep: boolean }
+	/** 立即按策略清一次遗留实例（未钉住且闲置超阈值的那些）。
+	 *  `minutes` 可覆盖阈值（>0 生效；缺省用设置里的策略，策略为关时兼底 30 分钟）——
+	 *  面板发当前选中值，运维/脚本也能拿它驱一个任意阈值。 */
+	| { type: "clean_bg_leftovers"; minutes?: number }
 	/** Global-search recursive filename match across the active workspace.
 	 *  Server-side bounded walk; reqId echoes back in search_files_result. */
 	| { type: "search_files"; reqId: number; query: string }
@@ -822,6 +835,8 @@ export type ClientMessage =
 			 *  关 → 原样交回内置 read（目录报 EISDIR）。行为开关（read 本体不可关），
 			 *  覆盖定义每次调用实时读取，live 生效无需 reload。 */
 			readDirEnabled?: boolean;
+			/** 「后台任务」面板的自动清理阈值（分钟；0 = 关，默认关）。 */
+			bgAutoCleanupMin?: number;
 			/** 工具延迟加载开关（默认开）。 */
 			toolLazyLoading?: boolean;
 			/** edit_soft 工具开关（默认关）。开 → AI 可用不严格要求缩进的 edit_soft 工具。 */
@@ -1131,10 +1146,22 @@ export type ClientMessage =
 			name?: string;
 			/** 导入后立即应用（等价于再点一次应用）。 */
 			apply?: boolean;
+			/** **可选导入**：只写入这些字段（名字必须是预设白名单里的；不传 = 全部）。
+			 *  名单为空数组 = 什么都不写（服务端回错）。 */
+			fields?: string[];
 			requestId?: string;
 	  }
 	/** 按网址导入（服务端抓取，避开浏览器 CORS 与 SSRF 风险）。 */
-	| { type: "preset_import_url"; url: string; dryRun?: boolean; name?: string; apply?: boolean; requestId?: string }
+	| {
+			type: "preset_import_url";
+			url: string;
+			dryRun?: boolean;
+			name?: string;
+			apply?: boolean;
+			/** 同 preset_import.fields：只写入勾选的字段。 */
+			fields?: string[];
+			requestId?: string;
+	  }
 	/** 浏览社区共享预设目录（refresh=true 绕过 5 分钟缓存）。 */
 	| { type: "preset_catalog"; refresh?: boolean; requestId?: string }
 	/** 一键分享到社区共享仓库（gh issue create；失败回落预填网页）。 */
@@ -1292,6 +1319,14 @@ export interface UiPendingQuestion {
 	conversationTitle?: string;
 }
 
+/** 期待用户操作的建议按钮选项（由 action/suggest 内联标记产生）。
+ *  渲染在对话最底部，点击即作为用户消息直接发送。 */
+export interface UiActionSuggestion {
+	id: string;
+	label: string;
+	prompt: string;
+}
+
 /** 审批规则档位（「允许同类审批」的粒度）：稳定 id + 双语名（前端按 locale 自选）。
  *  id 是记忆/撤销的键，不得随文案改名（内置档位见 server/tool-approval.ts 的规则表）。 */
 export interface UiApprovalCategory {
@@ -1382,6 +1417,9 @@ export interface BgServer {
 	command?: string;
 	/** 插件任务的活动状态文案（如轮询间隔、连接数），可经 update 刷新。 */
 	status?: string;
+	/** 用户把这个后台实例**钉住**了（`set_bg_keep`）：自动清理永不碰它。
+	 *  只对宿主自己 diff 出来的端口进程有意义（插件任务不参与自动清理）。 */
+	keep?: boolean;
 }
 
 /** One run of a built-in scheduled task (issue #184): trigger time, outcome,
@@ -1924,6 +1962,11 @@ export type UiSlotId =
 	| "goalbar.actions"
 	/** 通知条动作区（notice 上的快捷按钮）。 */
 	| "notice.actions"
+	/** 「后台任务」面板内容区（BgTasksModal）：插件把管理界面嵌进那个面板。
+	 *  `kind="view"` 的条目由面板就地内嵌渲染（同 settings.pages 的挂载方式），
+	 *  其余 kind 当普通动作按钮处理 —— 这样「pm2 托管的应用」和宿主自己 diff 出来的
+	 *  后台进程就在同一个面板里，不需要另开一个独立视图。 */
+	| "tasks.panel"
 	/** 弹窗（插件声明 kind="view" 的条目，经宿主桥 openModal 按需打开）。 */
 	| "modal.dialog"
 	/** 左侧边缘悬浮工具条。 */
@@ -2297,6 +2340,10 @@ export interface ElsewhereRunning {
 	/** 是否为无头伪客户端（定时任务 scheduler: / 插件 plugin:）。
 	 *  无头会话不支持过户与跨页作答，前端降级为只读状态展示。 */
 	pseudo?: boolean;
+	/** 持有方页面已断开（标签页/浏览器关了、手机锁屏后被回收），只剩服务端残留会话。
+	 *  行仍可过户（搬 runtime 本体，不造第二个 writer），前端标「离线」以示区别；
+	 *  宽限期（PI_WEB_OFFLINE_ROWS_TTL_MS，默认 30 分钟）过后不再下发。 */
+	ownerOffline?: boolean;
 }
 
 /** DSH Agent 预设名录行（字段以运行时树为准；broken = 名录可见但不可挂载）。 */
@@ -2403,7 +2450,8 @@ export interface UiPresetImportPreview {
 	tags: string[];
 	format: string;
 	version: number;
-	/** 会写入的字段名（已白名单过滤）。 */
+	/** 会写入的字段名（已白名单过滤）。dryRun 预览里是文档全部合法字段；
+	 *  确认导入的回执里是**实际写入**的字段（勾选子集）。 */
 	fields: string[];
 	/** 被忽略的未知字段名（旧版客户端/拼错字段的提示）。 */
 	ignored: string[];
@@ -2413,6 +2461,8 @@ export interface UiPresetImportPreview {
 	replaces: boolean;
 	/** 列表展示摘要。 */
 	summary: NonNullable<UiPresetCatalogEntry["summary"]>;
+	/** 预设中各字段净化后的具体值（供前端勾选时查看实际要导入的内容与明细）。 */
+	settings?: Record<string, unknown>;
 	/** 预览用文本片段（自定义系统提示词/模板/审查提示词，已截断）。 */
 	customSystemPrompt: string;
 	promptTemplate: string;
@@ -2506,6 +2556,9 @@ export interface UiSettingsState {
 	/** read 工具读目录开关（默认开）：开 → read(目录路径) 列出目录条目（见
 	 *  server/read-tool.ts；行为开关，live 生效无需 reload）。DSH 引擎无该覆盖面，恒为 true。 */
 	readDirEnabled: boolean;
+	/** 「后台任务」面板的自动清理阈值（分钟；0 = 关）。开着时服务端定期把**未钉住**且
+	 *  闲置超过该阈值的 AI 起后台实例杀掉并推一条通知（见 server/bg-servers.ts）。 */
+	bgAutoCleanupMin: number;
 	/** 工具**延迟加载**开关（默认开）：开 → 只有核心工具（bash/read/edit/write）+ `load_tools`
 	 *  常驻，其余工具在系统提示词里只有「名字 + 一行摘要」，模型用 `load_tools` 拉取后完整
 	 *  参数 schema 才进上下文（见 server/load-tools-tool.ts）。DSH 引擎无 pi 工具注册面，恒为 true。 */

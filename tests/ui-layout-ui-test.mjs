@@ -406,9 +406,16 @@ async function main() {
 			await until(async () => (await page.locator(".plugin-topbar-menu .dd-menu").count()) > 0, 20, 200),
 		);
 		await page.keyboard.press("Escape");
-		// issue #162：溢出菜单现在是 portal + 点外面/Esc 关闭 —— Esc 会把内层声音面板与溢出菜单一起收起。
+		// issue #162：溢出菜单是 portal + 点外面/Esc 关闭。但 Esc 走的是快捷键栈：
+		// 「分层关闭」——先收掉最内层的声音面板，再按一次才轮到溢出菜单（不一锅端外层）。
 		check(
-			"Esc 后溢出菜单收起",
+			"Esc 先收起内层声音面板",
+			await until(async () => (await page.locator(".plugin-topbar-menu .dd-menu").count()) === 0, 20, 200),
+		);
+		check("分层关闭：溢出菜单此时仍开着", (await page.locator(".plugin-topbar-menu").count()) === 1);
+		await page.keyboard.press("Escape");
+		check(
+			"再按一次 Esc 收起溢出菜单",
 			await until(async () => (await page.locator(".plugin-topbar-menu").count()) === 0, 20, 200),
 		);
 	}
@@ -473,10 +480,16 @@ async function main() {
 	check("再打开布局页", await openLayoutPage(page));
 	const msgSlot = page.locator(".set-ui-slot", { hasText: /消息工具条|Message actions/ }).first();
 	check("布局页列出了消息工具条分区", await until(async () => (await msgSlot.count()) > 0, 30, 250));
-	// 分区条目 = 编辑重问 + 整条复制四件套（复制 / 纯文本 / Markdown / 图片）= 5 条，逐个取消勾选
+	// 分区条目 = 内置那批（重问 / 编辑重问 / 会话分叉 / 回滚 / 复制四件套 / 朗读）——
+	// 数量随 catalog 增长（插件也能往这个槽位加），所以只锁「有内置条目列出」；
+	// 真正的行为断言在下面：逐个取消勾选后整条工具条不再绘制。
 	const msgBoxes = msgSlot.locator('.set-row input[type="checkbox"]');
 	const msgBoxCount = await msgBoxes.count();
-	check("消息工具条有 5 个可隐藏条目（编辑重问 + 复制四件套）", msgBoxCount === 5, `${msgBoxCount} 个`);
+	check("消息工具条列出了可隐藏条目（≥5 条内置）", msgBoxCount >= 5, `${msgBoxCount} 个`);
+	check(
+		"分区里能勾到「编辑重问」",
+		(await msgSlot.locator(".set-row", { hasText: /编辑重问|Edit & re-ask/ }).count()) > 0,
+	);
 	for (let k = 0; k < msgBoxCount; k++) {
 		const box = msgBoxes.nth(k);
 		if (await box.isChecked()) await tap(page, box);

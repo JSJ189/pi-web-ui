@@ -34,7 +34,7 @@ pi-web-ui/
 ├── .github/workflows/release-notes.yml   # tag 推送 → 按 CHANGELOG 建/更新 GitHub Release
 ├── .github/workflows/desktop-release.yml  # tag 推送 → windows-latest 出 NSIS 安装包并附到 Release（签名以后加这里）
 ├── extensions/                 # pi 扩展：webui.ts（/webui 命令启动本机服务并打开浏览器）
-├── plugins/                    # 官方插件（webmail / db-client / vscode-editor / demo-mailbox / mermaid / run-trace / legado-web / wechat-ilink / image-toolkit / notes / live-preview / voice-input / desktop-use，各自的 README.md 见其目录；page-picker/extension 是**浏览器扩展**，不是 pi-web-ui 插件）
+├── plugins/                    # 官方插件（webmail / db-client / vscode-editor / demo-mailbox / mermaid / run-trace / legado-web / wechat-ilink / image-toolkit / notes / live-preview / voice-input / desktop-use / pm2-manager，各自的 README.md 见其目录；page-picker/extension 是**浏览器扩展**，不是 pi-web-ui 插件）
 │   └── catalog.json            # ★ 插件市场内置列表（随包发布；社区加插件 = 在此加一条 + PR）
 ├── dev/                        # 本地开发辅助（notice/search 预览等，不入 npm 包）
 ├── Dockerfile / docker-compose.yml
@@ -59,9 +59,10 @@ server/
 ├── process-utils.ts        # 进程工具：snapshotListeningPorts/killPidTree/lookupProcessName
 ├── client-state.ts         # ClientStateStore：<dataDir>/client-state.json 持久化
 ├── uploads.ts              # 文件对话上传 + 保留期清理
-├── bg-servers.ts           # 后台任务跟踪（bash 前后端口快照 diff + 存活刷新）
+├── bg-servers.ts           # 后台任务跟踪（bash 前后端口快照 diff + 存活刷新 + 闲置超阈值自动清理/📌钉住）
 ├── settings-service.ts     # 设置面板状态机
 ├── preset-share.ts         # ★ 设置预设的导入/导出/分享/社区目录（交换格式 pi-web-ui-preset v1：白名单净化、SSRF 收口、gh issue 回落预填网页、index.json 目录 5 分钟缓存；编排走 PresetSharePort，见 docs/preset-sharing.md）
+├── preset-fields.ts        # 预设可携带的字段清单 + 分组（零依赖，前后端共用；编译期守卫对齐 ClientSettings 全集）
 ├── goal-service.ts         # 目标/审查循环/调研向导
 ├── i18n.ts                 # 服务端语言协商 + 翻译表注册（resolveServerLang/pick/bilingual/getServerBlock）
 ├── locales.ts              # 可下载语言包（核心只含 zh/en，其余语言走语言包 serverStrings 节）

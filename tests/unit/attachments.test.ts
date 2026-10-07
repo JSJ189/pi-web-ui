@@ -70,6 +70,7 @@ function makeCtx(opts: {
 			terminalBashMaxForegroundMs: 60_000,
 			toolWatchdogTimeoutMs: 1_200_000,
 			readDirEnabled: true,
+			bgAutoCleanupMin: 0,
 			toolApprovalEnabled: true,
 			editSoftEnabled: false,
 			visionBridgeEnabled: true,

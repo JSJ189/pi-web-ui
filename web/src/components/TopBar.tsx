@@ -50,6 +50,7 @@ import { focusComposer } from "../composer-bridge";
 import { useFloatingPanel } from "../use-floating-panel";
 import { isDesktopShell } from "../desktop";
 import { desktopReleasesUrl, useDesktopUpdater } from "../desktop-updater";
+import { BarItem } from "./BarItem";
 
 /** 「安装全局引擎」按钮的目标（issue #321）：buildUpdateCommand 对 pi-core 生成
  *  `npm i -g <name>@latest`，装完重启服务即由 resolve-global-sdk 自动切到更新的那份。 */
@@ -1076,6 +1077,7 @@ export function TopBar({
 				tip={t("sound")}
 				open={soundOpen}
 				onOpenChange={setSoundOpen}
+				caret={false}
 			>
 				<SoundSettingsPanel settings={sound} onChange={onSoundChange} onPreview={onSoundPreview} />
 				<NotifyToggle />
@@ -1092,6 +1094,7 @@ export function TopBar({
 				tip={t("language")}
 				open={langOpen}
 				onOpenChange={setLangOpen}
+				caret={false}
 			>
 				<div className="dd-header">{t("language")}</div>
 				{packs.map((l) => (
@@ -1126,6 +1129,7 @@ export function TopBar({
 				}
 				tip={t("theme")}
 				open={themeOpen}
+				caret={false}
 				onOpenChange={(v) => {
 					setThemeOpen(v);
 					// 挂载那次拉取若撞上服务端重启会扑空：打开时列表还空就补拉一次
@@ -1214,6 +1218,7 @@ export function TopBar({
 				}
 				tip={t("update")}
 				open={updateOpen}
+				caret={false}
 				onOpenChange={(v) => {
 					setUpdateOpen(v);
 					if (v) {
@@ -1356,13 +1361,67 @@ export function TopBar({
 	for (const it of topEntries) {
 		if (it.entry?.hidden) continue; // uiPrimary 已滤过 hidden；这里只防脏数据（插件 arrange 会改）
 		if (isTabGatedOff(it.id)) continue;
-		const node = it.id.startsWith("host:") ? (hostNodes[it.id] ?? null) : it.entry ? renderPluginEntry(it.entry) : null;
+		let node: ReactNode = null;
+		if (it.entry) {
+			node = (
+				<BarItem
+					key={it.id}
+					entry={it.entry}
+					bar="top"
+					chat={chat}
+					view={view}
+					plugins={plugins}
+					onViewChange={onViewChange}
+					onOpenPanel={onOpenPanel}
+					onOpenSettings={onOpenSettings}
+					onOpenGlobalSearch={onOpenGlobalSearch}
+					onOpenBgTasks={onOpenBgTasks}
+					onOpenProjectPicker={() => setProjectPickerOpen(true)}
+					isProjectPickerOpen={projectPickerOpen}
+					onOpenPluginMenu={(el) =>
+						setPluginMenuAnchor((prev) => (prev?.el === el ? null : { rect: el.getBoundingClientRect(), el }))
+					}
+					isPluginMenuOpen={pluginMenuAnchor !== null}
+					onUiAction={onUiAction}
+					uiContextEntries={uiContextTopbar}
+					dropdownProps={{
+						sound,
+						onSoundChange,
+						onSoundPreview,
+						theme,
+						themes,
+						onThemeChange,
+						reloadThemes,
+						onLocaleModalOpen: () => setLocaleModalOpen(true),
+						renderUpdateBody,
+						renderAllUpdatesBody,
+						updatesCount,
+						managed,
+						appVersion,
+					}}
+				/>
+			);
+		} else if (it.id.startsWith("host:") && hostNodes[it.id]) {
+			node = hostNodes[it.id];
+		}
 		if (!node) continue;
 		flowItems.push({ id: it.id, entry: it.entry, node });
 	}
 	// 报错插件的视图 tab（合并引擎整份丢弃了它们的贡献）以伪条目补回尾部。
 	for (const b of brokenViewEntries) {
-		const node = renderPluginEntry(b);
+		const node = (
+			<BarItem
+				key={b.id}
+				entry={b}
+				bar="top"
+				chat={chat}
+				view={view}
+				plugins={plugins}
+				onViewChange={onViewChange}
+				onUiAction={onUiAction}
+				uiContextEntries={uiContextTopbar}
+			/>
+		);
 		if (node) flowItems.push({ id: b.id, entry: b, node });
 	}
 	/** 条目自己的对齐段（脏值回落 start，与合并引擎同口径）。 */

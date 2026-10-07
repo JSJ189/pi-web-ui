@@ -2,7 +2,7 @@
  * marker-service.ts — 标记服务（内置版 pi-marker-tools）。
  */
 
-import type { ServerMessage } from "./protocol.js";
+import type { ServerMessage, UiActionSuggestion } from "./protocol.js";
 import type { ClientStateStore, MarkerSettings } from "./client-state.js";
 import { pick, type ServerLang } from "./i18n.js";
 import {
@@ -15,11 +15,12 @@ import {
 } from "./markers/index.js";
 import { loadStateFromBranch, appendSnapshot } from "./markers/store.js";
 import { TODO_NAMESPACE, type TodoState, initTodoState } from "./markers/builtins/todo.js";
+import { ACTION_NAMESPACE, type ActionState, initActionState } from "./markers/builtins/action.js";
 import type { MarkerContext } from "./markers/marker.js";
 
 ensureMarkersRegistered();
 
-const DEFAULT_MARKERS: MarkerSettings = {
+const _DEFAULT_MARKERS: MarkerSettings = {
 	markersEnabled: true,
 	disabledMarkers: [],
 };
@@ -36,6 +37,8 @@ export interface MarkerHost {
 	renameConversation: (conversationId: string, title: string) => void;
 	/** 触发一次标记 widget 重绘（宿主把它接到扩展 widget 合并里，跟随当前活动会话）。 */
 	refreshMarkers: () => void;
+	/** 建议操作变更回调（用于快照/增量同步到客户端）。 */
+	onActionsChange?: (conversationId: string) => void;
 	/** 面向模型/工具返回字符串的服务端语言（默认英文）；推给 UI 的 notice 仍走 text+textEn 双字段。 */
 	lang?: () => ServerLang;
 }
@@ -63,6 +66,7 @@ export class MarkerService {
 
 	isMarkerEnabled(name: string): boolean {
 		if (!this.settings.markersEnabled) return false;
+		if (name === "suggest" && this.settings.disabledMarkers.includes("action")) return false;
 		return !this.settings.disabledMarkers.includes(name);
 	}
 
@@ -103,8 +107,13 @@ export class MarkerService {
 
 	toggleMarker(name: string, enabled: boolean): void {
 		const set = new Set(this.settings.disabledMarkers);
-		if (enabled) set.delete(name);
-		else set.add(name);
+		if (enabled) {
+			set.delete(name);
+			if (name === "action") set.delete("suggest");
+		} else {
+			set.add(name);
+			if (name === "action") set.add("suggest");
+		}
 		this.settings.disabledMarkers = [...set];
 		this.host.stateStore.saveMarkerSettings(this.host.clientId, this.settings);
 	}
@@ -192,14 +201,16 @@ export class MarkerService {
 		const disabled = new Set(this.settings.disabledMarkers);
 		const states = new Map<string, unknown>();
 		const getOrInit = (ns: string): unknown => {
-			let st = states.get(ns);
+			const canonicalNs = ns === "suggest" ? ACTION_NAMESPACE : ns;
+			let st = states.get(canonicalNs);
 			if (st !== undefined) return st;
-			if (ns === TODO_NAMESPACE) st = this.getState(conversationId, ns, initTodoState);
+			if (canonicalNs === TODO_NAMESPACE) st = this.getState(conversationId, canonicalNs, initTodoState);
+			else if (canonicalNs === ACTION_NAMESPACE) st = this.getState(conversationId, canonicalNs, initActionState);
 			else {
-				const marker = getMarker(ns);
+				const marker = getMarker(canonicalNs);
 				st = marker?.init ? (marker.init() as unknown) : {};
 			}
-			states.set(ns, st);
+			states.set(canonicalNs, st);
 			return st;
 		};
 
@@ -236,9 +247,10 @@ export class MarkerService {
 				};
 			}
 			if (result.applied) {
-				// todo 落库；notify/conv 即时生效（通知已发 / 对话已重命名），无需快照。
-				if (token.tool !== "notify" && token.tool !== "conv") {
-					dirty.add(token.tool);
+				// todo 与 action 落库；notify/conv 即时生效（通知已发 / 对话已重命名），无需快照。
+				const canonicalTool = token.tool === "suggest" ? ACTION_NAMESPACE : token.tool;
+				if (canonicalTool !== "notify" && canonicalTool !== "conv") {
+					dirty.add(canonicalTool);
 				}
 			} else if (result.error) {
 				this.host.emit({
@@ -256,6 +268,9 @@ export class MarkerService {
 		}
 
 		this.pushOverlay(conversationId);
+		if (dirty.has(ACTION_NAMESPACE)) {
+			this.host.onActionsChange?.(conversationId);
+		}
 	}
 
 	pushOverlay(conversationId: string): void {
@@ -273,10 +288,12 @@ export class MarkerService {
 	overlayLines(conversationId: string): string[] {
 		const lines: string[] = [];
 		for (const m of allMarkers()) {
+			if (m.name === "suggest") continue;
 			if (this.settings.disabledMarkers.includes(m.name)) continue;
 			if (!m.overlay) continue;
 			let state: unknown;
 			if (m.name === TODO_NAMESPACE) state = this.getState(conversationId, m.name, initTodoState);
+			else if (m.name === ACTION_NAMESPACE) state = this.getState(conversationId, m.name, initActionState);
 			else {
 				state = this.getState(conversationId, m.name, () => (m.init?.() as unknown) ?? {});
 				if (state === undefined) continue;
@@ -304,16 +321,36 @@ export class MarkerService {
 
 	getRawState(conversationId: string, namespace: string): unknown {
 		if (namespace === TODO_NAMESPACE) return this.getState(conversationId, namespace, initTodoState);
+		if (namespace === ACTION_NAMESPACE || namespace === "suggest")
+			return this.getState(conversationId, ACTION_NAMESPACE, initActionState);
 		const m = getMarker(namespace);
 		return this.getState(conversationId, namespace, () => (m?.init?.() as unknown) ?? {});
 	}
 
+	getActionSuggestions(conversationId: string): UiActionSuggestion[] | null {
+		if (!this.isMarkerEnabled("action")) return null;
+		const st = this.getState<ActionState>(conversationId, ACTION_NAMESPACE, initActionState);
+		if (!st || !st.actions || st.actions.length === 0) return null;
+		return st.actions.map((a) => ({ id: a.id, label: a.label, prompt: a.prompt }));
+	}
+
+	clearActions(conversationId: string): void {
+		const st = this.getState<ActionState>(conversationId, ACTION_NAMESPACE, initActionState);
+		if (st && st.actions && st.actions.length > 0) {
+			st.actions = [];
+			this.saveState(conversationId, ACTION_NAMESPACE, st);
+			this.pushOverlay(conversationId);
+			this.host.onActionsChange?.(conversationId);
+		}
+	}
+
 	/** 供设置面板展示的 marker 目录（含启用状态）。 */
-	/** UI 过滤：rename/title 是 conv 的别名，不单独展示。 */
+	/** UI 过滤：rename/title 是 conv 的别名，suggest 是 action 的别名，不单独展示。 */
 	listForUi(): Array<{ name: string; enabled: boolean; guidance: string[] }> {
 		const seen = new Set<string>();
 		const out: Array<{ name: string; enabled: boolean; guidance: string[] }> = [];
 		for (const m of allMarkers()) {
+			if (m.name === "suggest") continue;
 			if (seen.has(m.name)) continue;
 			seen.add(m.name);
 			out.push({

@@ -761,3 +761,66 @@ ${transcript}
 	}
 	return out;
 }
+
+/**
+ * 判断一个会话 entry 是否是提问前置注入的 aside 卡片（附件/并行提醒等）。
+ * 这些消息由服务端的 prompt 前置阶段通过 sendCustomMessage 注入在用户提问消息之前。
+ */
+export function isPromptAsideEntry(entry: unknown): boolean {
+	if (!entry || typeof entry !== "object") return false;
+	const e = entry as {
+		type?: string;
+		customType?: string;
+		message?: { role?: string; customType?: string };
+	};
+	const customType =
+		e.customType ?? (e.type === "message" && e.message?.role === "custom" ? e.message.customType : undefined);
+	return (
+		(e.type === "custom_message" || (e.type === "message" && e.message?.role === "custom")) &&
+		(customType === "file" || customType === "parallel-work-reminder")
+	);
+}
+
+/**
+ * 判断一个 entry 是否为用户提问消息。
+ */
+export function isUserMessageEntry(entry: unknown): boolean {
+	if (!entry || typeof entry !== "object") return false;
+	const e = entry as {
+		type?: string;
+		role?: string;
+		message?: { role?: string };
+	};
+	return (e.type === "message" && e.message?.role === "user") || e.type === "user" || e.role === "user";
+}
+
+/**
+ * 从给定的 entry 节点开始，向上追溯属于该轮提问的前置附件 aside 节点（customType === "file" 等），
+ * 返回该轮提问之前的基准 entry id（作为 fork/分支截断点）。
+ * 如果追溯到会话根（即该提问是会话第一轮提问），返回 null。
+ */
+export function findTurnBaseEntryId(sm: { getEntry(id: string): unknown }, entryId: string): string | null {
+	const target = sm.getEntry(entryId);
+	if (!target) return null;
+	// 只有针对用户消息，才需要向上跳过属于该提问的前置附件 aside 卡片
+	if (!isUserMessageEntry(target)) {
+		const parentId = (target as { parentId?: string | null }).parentId;
+		return parentId ?? null;
+	}
+
+	let currentId: string | null | undefined = entryId;
+	while (currentId) {
+		const entry = sm.getEntry(currentId);
+		if (!entry) break;
+		const parentId = (entry as { parentId?: string | null }).parentId;
+		if (!parentId) return null;
+		const parentEntry = sm.getEntry(parentId);
+		if (!parentEntry) return null;
+		if (isPromptAsideEntry(parentEntry)) {
+			currentId = parentId;
+		} else {
+			return parentId;
+		}
+	}
+	return null;
+}

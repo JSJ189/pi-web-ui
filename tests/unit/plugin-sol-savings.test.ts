@@ -7,7 +7,10 @@ import {
 	formatPlanSummary,
 	getSavingsFromLedger,
 	resolveSessionId,
+	saveSolPiConfig,
+	writeSolPiConfig,
 } from "../../plugins/sol-savings/index.mjs";
+import { normalizeSolPlanToPlanSteps } from "../../server/agent-service.js";
 import solSavingsPlugin from "../../plugins/sol-savings/index.mjs";
 
 describe("SoL-Pi Savings 插件与底栏统计", () => {
@@ -512,5 +515,65 @@ describe("SoL-Pi Savings 插件与底栏统计", () => {
 		// 轮次/运行边界立即刷新，不受拖尾窗口影响
 		onRunCb?.({ type: "run_end" });
 		expect(updates.length).toBe(baseline + 2);
+	});
+
+	it("saveSolPiConfig 支持保存自定义特性开关并持久化", () => {
+		const tempDir = join(tmpdir(), `sol-test-cfg-${Date.now()}`);
+		mkdirSync(tempDir, { recursive: true });
+		const origPiDir = process.env.PI_CODING_AGENT_DIR;
+		process.env.PI_CODING_AGENT_DIR = tempDir;
+
+		try {
+			// 1. 初始化写入默认配置
+			writeSolPiConfig();
+
+			// 2. 模拟前端可视化表单关闭 onlineContextCompact 避免工具冲突，并配置专属 EPR 辅模型
+			const updated = saveSolPiConfig({
+				observationPack: true,
+				onlineContextCompact: false,
+				actionFusion: true,
+				cacheWriteReadRatio: 16,
+				evidencePreservingReducerProvider: "openai",
+				evidencePreservingReducerModel: "gpt-4o-mini",
+			});
+
+			expect(updated.observationPack).toBe(true);
+			expect(updated.onlineContextCompact).toBe(false);
+			expect(updated.actionFusion).toBe(true);
+			expect(updated.cacheWriteReadRatio).toBe(16);
+			expect(updated.evidencePreservingReducerProvider).toBe("openai");
+			expect(updated.evidencePreservingReducerModel).toBe("gpt-4o-mini");
+		} finally {
+			if (origPiDir) process.env.PI_CODING_AGENT_DIR = origPiDir;
+			else delete process.env.PI_CODING_AGENT_DIR;
+			rmSync(tempDir, { recursive: true, force: true });
+		}
+	});
+
+	it("normalizeSolPlanToPlanSteps 能够正确将 SoL-Pi 的 update_plan 步骤转换为 WebUI 的任务看板计划", () => {
+		const solSteps = [
+			{ id: "1", goal: "分析代码结构与冲突", status: "completed" },
+			{ id: "2", goal: "桥接 update_plan 工具调用", status: "in_progress" },
+			{ id: "3", goal: "开发底栏可视化管理面板", status: "pending" },
+		];
+
+		const result = normalizeSolPlanToPlanSteps(solSteps);
+		expect(result.steps).toHaveLength(3);
+		expect(result.steps[0]).toEqual({
+			id: "1",
+			title: "分析代码结构与冲突",
+			status: "done",
+		});
+		expect(result.steps[1]).toEqual({
+			id: "2",
+			title: "桥接 update_plan 工具调用",
+			status: "in_progress",
+		});
+		expect(result.steps[2]).toEqual({
+			id: "3",
+			title: "开发底栏可视化管理面板",
+			status: "pending",
+		});
+		expect(result.activeStepId).toBe("2");
 	});
 });

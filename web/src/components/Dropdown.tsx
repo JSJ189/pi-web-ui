@@ -31,6 +31,8 @@ interface DropdownProps {
 	menuRef?: Ref<HTMLDivElement>;
 	/** Custom class for the trigger button (default "chip"). */
 	triggerClassName?: string;
+	/** Whether to render the trailing dropdown caret arrow (default true). */
+	caret?: boolean;
 	/** Inline style for the menu panel — used to LOCK a measured width/height
 	 * so the panel doesn't resize as its content changes (e.g. filtering). */
 	menuStyle?: CSSProperties;
@@ -77,6 +79,7 @@ export function Dropdown({
 	fit = false,
 	direction = "down",
 	tip,
+	caret = true,
 	menuClassName,
 	triggerClassName,
 	menuRef,
@@ -154,7 +157,7 @@ export function Dropdown({
 				data-tip={tip}
 			>
 				{trigger}
-				<FiChevronDown className={`dd-caret ${open ? "up" : ""}`} />
+				{caret && <FiChevronDown className={`dd-caret ${open ? "up" : ""}`} />}
 			</button>
 			{open && (
 				<div

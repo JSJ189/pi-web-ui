@@ -8,11 +8,13 @@ import {
 	FiClock,
 	FiCpu,
 	FiDownload,
+	FiEdit2,
 	FiEdit3,
 	FiEye,
 	FiFileText,
 	FiFolder,
 	FiGitBranch,
+	FiGlobe,
 	FiHelpCircle,
 	FiKey,
 	FiMessageSquare,
@@ -97,7 +99,7 @@ import type {
 	PresetImportState,
 	PresetShareState,
 } from "../use-chat";
-import { PresetShareModal } from "./PresetShareModal";
+import { PresetShareModal, type PresetShareTab } from "./PresetShareModal";
 import { appSend, useAppGlobals } from "../app-globals";
 import { countPluginPhases, pluginPhase, type PluginPhase } from "../plugin-phase";
 import {
@@ -211,6 +213,8 @@ interface SettingsModalProps {
 	/** Switch the top-level view to the terminal (uninstall runs there). */
 	onSwitchToTerminal: () => void;
 	onClose: () => void;
+	/** Open icon drag-and-drop editor mode (issue: quick access from layout settings). */
+	onOpenIconEdit?: () => void;
 	/** Sound cue + TTS settings — state lives in App (localStorage-backed),
 	 *  shared with the TopBar sound dropdown via props. */
 	sound: SoundSettings;
@@ -592,6 +596,7 @@ export function SettingsModal({
 	initialSection,
 	onSwitchToTerminal,
 	onClose,
+	onOpenIconEdit,
 	sound,
 	onSoundChange,
 	tts,
@@ -689,8 +694,8 @@ export function SettingsModal({
 	const [reviewPromptDraft, setReviewPromptDraft] = useState("");
 	const reviewPromptFocus = useRef(false);
 	const [presetName, setPresetName] = useState("");
-	// 预设分享面板（导入/导出/浏览分享）：null = 关闭；字符串 = 打开并预选该预设（"" = 当前设置）。
-	const [presetShareFor, setPresetShareFor] = useState<string | null>(null);
+	// 预设分享面板（导入/导出/浏览分享）：null = 关闭；否则打开并带页签 + 预选预设（"" = 当前设置）。
+	const [presetShareFor, setPresetShareFor] = useState<{ name: string; tab: PresetShareTab } | null>(null);
 	// 正在编辑的子代理模板草稿（新建 = 空模板；null = 关闭编辑表单，表单在独立弹窗里渲染）。
 	const [tplDraft, setTplDraft] = useState<UiSubagentTemplate | null>(null);
 	// 弹窗标题用：新建 vs 编辑（draft 本身区分不出来）。
@@ -973,6 +978,20 @@ export function SettingsModal({
 				.flatMap((pp) => pp.agentTools ?? [])
 				.filter((pt) => !(settings.disabledPluginTools ?? []).includes(pt.name)).length
 		: 0;
+
+	// 预设区（合并为一个卡片后）用到的两处「当前值」说明文案：默认 Agent 预设 + 默认权限。
+	// 原来的只读列表被删掉，说明文字改挂在下拉框下方一行（信息不丢、纵向占用大幅缩水）。
+	const defaultAgentPreset = chat.dshPresets
+		? sortAgentPresets(chat.dshPresets.presets).find((p) => p.id === chat.dshPresets!.defaultPreset)
+		: undefined;
+	const defaultAgentPresetDesc = defaultAgentPreset
+		? (defaultAgentPreset.broken ?? presetText(defaultAgentPreset, locale, t).description)
+		: undefined;
+	const hasUserAgentPreset = !!chat.dshPresets?.presets.some((p) => p.trust === "user");
+	// 合并后的预设配置块是否有内容（两个下拉都在时才渲染，免得留个空框）。
+	const showPresetConfig =
+		!!(chat.dshPresets && chat.dshPresets.presets.length > 0) ||
+		!!(chat.dshPermission && chat.dshPermission.options.length > 0);
 
 	// 界面插件更新检查状态
 	const pluginUpdates = chat.pluginUpdates;
@@ -1361,6 +1380,7 @@ export function SettingsModal({
 		{ slot: "contextmenu.file", labelKey: "uiLayoutContextFile" },
 		{ slot: "contextmenu.toolcall", labelKey: "uiLayoutContextToolcall" },
 		{ slot: "settings.pages", labelKey: "uiLayoutSettingsPages" },
+		{ slot: "tasks.panel", labelKey: "uiLayoutTasksPanel" },
 		{ slot: "modal.dialog", labelKey: "uiLayoutModal" },
 		{ slot: "sidebar.left", labelKey: "uiLayoutSidebarLeft" },
 		{ slot: "sidebar.right", labelKey: "uiLayoutSidebarRight" },
@@ -2383,7 +2403,9 @@ export function SettingsModal({
 														? t("markerGroupNotify")
 														: m.name === "conv"
 															? t("markerGroupRename")
-															: m.name
+															: m.name === "action"
+																? t("markerGroupAction")
+																: m.name
 											}
 											tip={m.guidance.join("\n")}
 											enabled={m.enabled}
@@ -3032,7 +3054,24 @@ export function SettingsModal({
 								<div className="set-section-title">
 									<FiSliders className="set-section-icon" />
 									{t("uiLayoutTitle")}
-									<button type="button" className="set-uninstall" onClick={restoreUiAll}>
+									{onOpenIconEdit && (
+										<button
+											type="button"
+											className="set-uninstall"
+											style={{ marginLeft: "auto" }}
+											title={t("uiIconEditHint")}
+											onClick={onOpenIconEdit}
+										>
+											<FiEdit2 />
+											{t("uiIconEdit")}
+										</button>
+									)}
+									<button
+										type="button"
+										className="set-uninstall"
+										style={onOpenIconEdit ? undefined : { marginLeft: "auto" }}
+										onClick={restoreUiAll}
+									>
 										{t("uiLayoutRestoreAll")}
 									</button>
 								</div>
@@ -4065,121 +4104,98 @@ export function SettingsModal({
 							</div>
 						)}
 
-						{tab === "presets" && chat.dshPresets && chat.dshPresets.presets.length > 0 && (
-							<div className="set-section">
-								<div className="set-section-title">
-									<FiCpu className="set-section-icon" />
-									{t("dshPreset")}
-									<HintTip text={t("dshDefaultPresetDesc")} />
-									<span className="set-count">{chat.dshPresets.presets.length}</span>
-								</div>
-								<div className="set-mode-row">
-									<label className="set-field-label">{t("dshDefaultPreset")}</label>
-									<select
-										className="set-select"
-										value={chat.dshPresets.defaultPreset}
-										onChange={(e) => appSend({ type: "dsh_preset_default", preset: e.target.value })}
-									>
-										{sortAgentPresets(chat.dshPresets.presets).map((p) => (
-											<option key={p.id} value={p.id} disabled={!!p.broken}>
-												{presetText(p, locale, t).name}
-												{p.trust === "user" ? ` · ${t("dshPresetUser")}` : ""}
-											</option>
-										))}
-									</select>
-								</div>
-								<div className="set-list">
-									{sortAgentPresets(chat.dshPresets.presets).map((p) => {
-										const text = presetText(p, locale, t);
-										return (
-											<div className="set-row" key={p.id}>
-												<div className="set-row-info">
-													<div className="set-row-name">
-														{text.name}
-														{p.trust === "user" && <span className="dd-preset-tag">{t("dshPresetUser")}</span>}
-														{p.id === chat.dshPresets!.defaultPreset && (
-															<span className="dd-preset-tag">{t("dshPresetDefaultTag")}</span>
-														)}
-														{p.broken && <span className="dd-preset-tag warn">{t("dshPresetBroken")}</span>}
-													</div>
-													{text.description && !p.broken && <div className="set-row-desc">{text.description}</div>}
-													{p.broken && <div className="set-row-desc">{p.broken}</div>}
-												</div>
-											</div>
-										);
-									})}
-								</div>
-								<p className="set-hint">{t("dshPresetUserNote")}</p>
-							</div>
-						)}
-						{tab === "presets" && chat.dshPermission && chat.dshPermission.options.length > 0 && (
-							<div className="set-section">
-								<div className="set-section-title">
-									<FiShield className="set-section-icon" />
-									{t("dshPerm")}
-									<HintTip text={t("dshPermDefaultDesc")} />
-								</div>
-								<div className="set-mode-row">
-									<label className="set-field-label">{t("dshPermDefault")}</label>
-									<select
-										className="set-select"
-										value={chat.dshPermission.defaultPreset}
-										onChange={(e) => appSend({ type: "dsh_permission_default", preset: e.target.value })}
-									>
-										{DSH_PERMISSION_ORDER.filter((v) => chat.dshPermission!.options.some((o) => o.value === v)).map(
-											(v) => (
-												<option key={v} value={v}>
-													{t(permLabelKey(v))}
-												</option>
-											),
-										)}
-									</select>
-								</div>
-								<div className="set-list">
-									{DSH_PERMISSION_ORDER.filter((v) => chat.dshPermission!.options.some((o) => o.value === v)).map(
-										(v) => (
-											<div className="set-row" key={v}>
-												<div className="set-row-info">
-													<div className="set-row-name">
-														{t(permLabelKey(v))}
-														{v === chat.dshPermission!.defaultPreset && (
-															<span className="dd-preset-tag">{t("dshPresetDefaultTag")}</span>
-														)}
-													</div>
-													<div className="set-row-desc">{t(permDescKey(v))}</div>
-												</div>
-											</div>
-										),
-									)}
-								</div>
-							</div>
-						)}
 						{tab === "presets" && (
 							<div className="set-section">
 								<div className="set-section-title">
-									<FiSettings className="set-section-icon" />
+									<FiSliders className="set-section-icon" />
 									{t("settingsPresets")}
+									<HintTip text={t("dshPresetUserNote")} />
 									<span className="set-count">{settings.presets.length}</span>
-									{/* 导入 / 分享 / 浏览共享仓库（server/preset-share.ts） */}
-									<div className="set-preset-share-bar">
-										<button
-											type="button"
-											className="set-icon-btn"
-											title={t("presetShareTabImport")}
-											onClick={() => setPresetShareFor("")}
-										>
-											<FiUpload />
-										</button>
-										<button
-											type="button"
-											className="set-icon-btn"
-											title={t("presetShare")}
-											onClick={() => setPresetShareFor(settings.presets[0]?.name ?? "")}
-										>
-											<FiShare2 />
-										</button>
-									</div>
 								</div>
+								{/* 分享功能区：导入 / 导出分享 / 浏览共享仓库全部走同一个面板（server/preset-share.ts）。 */}
+								<div className="set-preset-share-actions">
+									<button
+										type="button"
+										className="set-preset-share-btn primary"
+										title={t("presetShareShareBtn")}
+										onClick={() => setPresetShareFor({ name: settings.presets[0]?.name ?? "", tab: "export" })}
+									>
+										<FiShare2 />
+										{t("presetShareShareBtn")}
+									</button>
+									<button
+										type="button"
+										className="set-preset-share-btn"
+										title={t("presetShareImportBtn")}
+										onClick={() => setPresetShareFor({ name: "", tab: "import" })}
+									>
+										<FiUpload />
+										{t("presetShareImportBtn")}
+									</button>
+									<button
+										type="button"
+										className="set-preset-share-btn"
+										title={t("presetShareBrowseBtn")}
+										onClick={() => setPresetShareFor({ name: "", tab: "browse" })}
+									>
+										<FiGlobe />
+										{t("presetShareBrowseBtn")}
+									</button>
+								</div>
+								{/* 引擎预设 / 权限：原只读列表删掉，各精简成一个下拉 + 一行当前说明。 */}
+								{showPresetConfig && (
+									<div className="set-preset-config">
+										{chat.dshPresets && chat.dshPresets.presets.length > 0 && (
+											<>
+												<div className="set-mode-row">
+													<label className="set-field-label">
+														{t("dshDefaultPreset")}
+														<HintTip text={t("dshDefaultPresetDesc")} />
+													</label>
+													<select
+														className="set-select"
+														value={chat.dshPresets.defaultPreset}
+														onChange={(e) => appSend({ type: "dsh_preset_default", preset: e.target.value })}
+													>
+														{sortAgentPresets(chat.dshPresets.presets).map((p) => (
+															<option key={p.id} value={p.id} disabled={!!p.broken}>
+																{presetText(p, locale, t).name}
+																{p.trust === "user" ? ` · ${t("dshPresetUser")}` : ""}
+																{p.broken ? ` · ${t("dshPresetBroken")}` : ""}
+															</option>
+														))}
+													</select>
+												</div>
+												{defaultAgentPresetDesc && <p className="set-preset-config-desc">{defaultAgentPresetDesc}</p>}
+											</>
+										)}
+										{chat.dshPermission && chat.dshPermission.options.length > 0 && (
+											<>
+												<div className="set-mode-row">
+													<label className="set-field-label">
+														{t("dshPermDefault")}
+														<HintTip text={t("dshPermDefaultDesc")} />
+													</label>
+													<select
+														className="set-select"
+														value={chat.dshPermission.defaultPreset}
+														onChange={(e) => appSend({ type: "dsh_permission_default", preset: e.target.value })}
+													>
+														{DSH_PERMISSION_ORDER.filter((v) =>
+															chat.dshPermission!.options.some((o) => o.value === v),
+														).map((v) => (
+															<option key={v} value={v}>
+																{t(permLabelKey(v))}
+															</option>
+														))}
+													</select>
+												</div>
+												<p className="set-preset-config-desc">{t(permDescKey(chat.dshPermission.defaultPreset))}</p>
+											</>
+										)}
+									</div>
+								)}
+								{hasUserAgentPreset && <p className="set-hint">{t("dshPresetUserNote")}</p>}
 								<div className="set-preset-save">
 									<input
 										className="set-input"
@@ -4224,24 +4240,8 @@ export function SettingsModal({
 													<button
 														type="button"
 														className="set-icon-btn"
-														title={t("presetExportJson")}
-														onClick={() => {
-															appSend({
-																type: "preset_export",
-																source: "preset",
-																name: p.name,
-																requestId: `export:${randomUuid()}`,
-															});
-															setPresetShareFor(p.name);
-														}}
-													>
-														<FiDownload />
-													</button>
-													<button
-														type="button"
-														className="set-icon-btn"
-														title={t("presetShareSubmit")}
-														onClick={() => setPresetShareFor(p.name)}
+														title={t("presetShare")}
+														onClick={() => setPresetShareFor({ name: p.name, tab: "export" })}
 													>
 														<FiShare2 />
 													</button>
@@ -5005,7 +5005,8 @@ export function SettingsModal({
 					presetImport={chat.presetImport}
 					presetCatalog={chat.presetCatalog}
 					presetShare={chat.presetShare}
-					initialPreset={presetShareFor}
+					initialPreset={presetShareFor.name}
+					initialTab={presetShareFor.tab}
 					onClose={() => setPresetShareFor(null)}
 				/>
 			)}

@@ -116,15 +116,14 @@ try {
 	await metricsEl.waitFor({ state: "visible", timeout: 15000 });
 
 	const text = (await metricsEl.textContent()) ?? "";
-	const hasProcessor = /CPU|处理器/.test(text);
-	const hasMemory = /RAM|Memory|内存/.test(text);
-	const hasPercent = /\d+%/.test(text);
-	check("文本包含处理器标签", hasProcessor, text);
-	check("文本包含内存标签", hasMemory, text);
-	check("文本包含百分比数值", hasPercent, text);
+	// 底栏走「紧凑」路线：常驻文本只留两个数值（CPU% · 内存%），文字标签交给 hover title。
+	const pcts = text.match(/\d+%/g) ?? [];
+	check("常驻文本是「CPU% · 内存%」两个数值", pcts.length === 2, text);
+	check("常驻文本不带 CPU/内存 字样（紧凑底栏，标签在 title）", !/CPU|处理器|内存|RAM|Memory/i.test(text), text);
 
 	const title = (await metricsEl.getAttribute("title")) ?? "";
 	check("title 包含主机服务语义", /运行 pi-web-ui 服务的主机|Host running pi-web-ui/.test(title), title);
+	check("title 标注处理器与内存", /处理器|CPU/.test(title) && /内存|Memory|RAM/.test(title), title);
 
 	const hasLeft = (await page.locator(".statusbar .statusbar-left").count()) > 0;
 	const hasRight = (await page.locator(".statusbar .statusbar-right").count()) > 0;
@@ -139,7 +138,15 @@ try {
 	const metricsBox = await metricsEl.boundingBox();
 	const cwdBox = await page.locator(".statusbar-right .status-cwd").boundingBox();
 	check("指标水平位置在工作目录左侧", !!metricsBox && !!cwdBox && metricsBox.x < cwdBox.x);
-	check("工作目录在桌面宽度下未发生百分比自适应塌陷", !!cwdBox && cwdBox.width >= 180, `cwdBox.width=${cwdBox?.width}`);
+	// 工作目录是「内容自适应」条目（不再是固定百分比宽）：桌面下应完整显示 basename，没被省略号截断。
+	const cwdLabel = page.locator(".statusbar-right .status-cwd .bar-item-text").first();
+	const cwdLabelBox = await cwdLabel.boundingBox();
+	const cwdClipped = await cwdLabel.evaluate((el) => el.scrollWidth > el.clientWidth + 1);
+	check(
+		"工作目录在桌面宽度下完整显示（未被截断）",
+		!cwdClipped && (cwdLabelBox?.width ?? 0) > 8,
+		`label.width=${cwdLabelBox?.width} clipped=${cwdClipped}`,
+	);
 
 	await page.setViewportSize({ width: 520, height: 800 });
 	await sleep(500);
@@ -147,7 +154,13 @@ try {
 	const cwdVisibleAt520 = await page.locator(".status-cwd").isVisible();
 	const cwdBox520 = await page.locator(".status-cwd").boundingBox();
 	check("520px 视口下指标隐藏", hiddenAt520);
-	check("520px 视口下工作目录仍可见且未塌陷", cwdVisibleAt520 && !!cwdBox520 && cwdBox520.width >= 150);
+	// 零内距后条目宽度 ≈ 图标 11 + gap + 路径文字，阈值只锁「路径文字真的画出来了」
+	const cwdLabel520 = await page.locator(".status-cwd .bar-item-text").first().boundingBox();
+	check(
+		"520px 视口下工作目录仍可见且未压成空条",
+		cwdVisibleAt520 && !!cwdBox520 && (cwdLabel520?.width ?? 0) > 8,
+		`item=${cwdBox520?.width} label=${cwdLabel520?.width}`,
+	);
 
 	await page.setViewportSize({ width: 1440, height: 900 });
 	await sleep(500);

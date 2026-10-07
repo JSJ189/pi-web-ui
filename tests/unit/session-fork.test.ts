@@ -1,4 +1,5 @@
 import { describe, it, expect } from "vitest";
+import { findTurnBaseEntryId } from "../../server/attachments.js";
 import {
 	findEntryByUiId,
 	serializeMessage,
@@ -220,5 +221,129 @@ describe("findEntryByUiId：渲染 id ↔ 解析 id 往返一致（issue #381）
 		const ui = serializeMessage(m, 4);
 		expect(ui?.id).toBe(uiMessageId(m, 4));
 		expect(ui?.id).toBe("a-2005-4");
+	});
+});
+
+describe("findTurnBaseEntryId：带附件提问重问/分叉时的基准节点定位", () => {
+	function makeMockSessionManager(entries: { id: string; parentId: string | null; [key: string]: unknown }[]) {
+		const map = new Map(entries.map((e) => [e.id, e]));
+		return {
+			getEntry: (id: string) => map.get(id),
+		};
+	}
+
+	it("第一轮提问带单附件（如上传/引用视频）：分叉点回退到会话根（null）", () => {
+		const entries = [
+			{
+				id: "e1",
+				parentId: null,
+				type: "custom_message",
+				customType: "file",
+				details: { name: "video.mp4", mode: "reference" },
+			},
+			{
+				id: "e2",
+				parentId: "e1",
+				type: "message",
+				message: { role: "user", content: [{ type: "text", text: "分析这个视频" }] },
+			},
+			{
+				id: "e3",
+				parentId: "e2",
+				type: "message",
+				message: { role: "assistant", content: [{ type: "text", text: "好的" }] },
+			},
+		];
+		const sm = makeMockSessionManager(entries);
+		// 对用户提问 e2 查找基准节点，应跳过 e1 并返回 null（空分支）
+		expect(findTurnBaseEntryId(sm, "e2")).toBeNull();
+	});
+
+	it("第一轮提问带多附件：跳过全部前置附件卡片，返回 null", () => {
+		const entries = [
+			{ id: "e1", parentId: null, type: "custom_message", customType: "file" },
+			{ id: "e2", parentId: "e1", type: "custom_message", customType: "file" },
+			{
+				id: "e3",
+				parentId: "e2",
+				type: "message",
+				message: { role: "user", content: [{ type: "text", text: "对比两个文件" }] },
+			},
+		];
+		const sm = makeMockSessionManager(entries);
+		expect(findTurnBaseEntryId(sm, "e3")).toBeNull();
+	});
+
+	it("多轮对话中带附件提问：回退到上一轮助手的回复，排除本轮附件", () => {
+		const entries = [
+			{
+				id: "e1",
+				parentId: null,
+				type: "message",
+				message: { role: "user", content: [{ type: "text", text: "第1轮" }] },
+			},
+			{
+				id: "e2",
+				parentId: "e1",
+				type: "message",
+				message: { role: "assistant", content: [{ type: "text", text: "第1轮回复" }] },
+			},
+			{ id: "e3", parentId: "e2", type: "custom_message", customType: "file" },
+			{ id: "e4", parentId: "e3", type: "custom_message", customType: "file" },
+			{
+				id: "e5",
+				parentId: "e4",
+				type: "message",
+				message: { role: "user", content: [{ type: "text", text: "第2轮提问带附件" }] },
+			},
+		];
+		const sm = makeMockSessionManager(entries);
+		// 应当跳过 e4、e3，返回上一轮 assistant 消息 e2
+		expect(findTurnBaseEntryId(sm, "e5")).toBe("e2");
+	});
+
+	it("普通提问无附件：第一轮返回 null，后续轮返回前一条 entry", () => {
+		const entries = [
+			{
+				id: "e1",
+				parentId: null,
+				type: "message",
+				message: { role: "user", content: [{ type: "text", text: "首轮" }] },
+			},
+			{
+				id: "e2",
+				parentId: "e1",
+				type: "message",
+				message: { role: "assistant", content: [{ type: "text", text: "回复" }] },
+			},
+			{
+				id: "e3",
+				parentId: "e2",
+				type: "message",
+				message: { role: "user", content: [{ type: "text", text: "次轮" }] },
+			},
+		];
+		const sm = makeMockSessionManager(entries);
+		expect(findTurnBaseEntryId(sm, "e1")).toBeNull();
+		expect(findTurnBaseEntryId(sm, "e3")).toBe("e2");
+	});
+
+	it("非用户消息（如在 assistant 消息上 before 分叉）：保持 parentId 不变", () => {
+		const entries = [
+			{
+				id: "e1",
+				parentId: null,
+				type: "message",
+				message: { role: "user", content: [{ type: "text", text: "首轮" }] },
+			},
+			{
+				id: "e2",
+				parentId: "e1",
+				type: "message",
+				message: { role: "assistant", content: [{ type: "text", text: "回复" }] },
+			},
+		];
+		const sm = makeMockSessionManager(entries);
+		expect(findTurnBaseEntryId(sm, "e2")).toBe("e1");
 	});
 });

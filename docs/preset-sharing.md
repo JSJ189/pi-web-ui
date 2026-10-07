@@ -9,11 +9,16 @@
 
 ## 1. 三条路径
 
-| 路径 | 入口 | 走哪条通道 | 落点 |
-| --- | --- | --- | --- |
-| 导出 / 分享 | 预设行的「导出」「分享」图标，或面板「导出 / 分享」页签 | `preset_export` / `preset_share` | 剪贴板 / 下载 `.json` / 社区仓库 Issue |
-| 导入 | 预设区右上「导入」图标，或面板「导入」页签 | `preset_import`（粘贴/文件）、`preset_import_url`（网址） | 本地 `presets` 存储（同名覆盖），可选立即应用 |
-| 浏览分享 | 面板「浏览分享」页签 | `preset_catalog` | 拉仓库 `index.json` → 列表 → 一键导入（复用网址导入） |
+| 路径        | 入口                                                              | 走哪条通道                                                | 落点                                                  |
+| ----------- | ----------------------------------------------------------------- | --------------------------------------------------------- | ----------------------------------------------------- |
+| 导出 / 分享 | 预设区顶部「分享预设」主按钮，或预设行的分享图标，或面板页签       | `preset_export` / `preset_share`                          | 剪贴板 / 下载 `.json` / 社区仓库 Issue                |
+| 导入        | 预设区顶部「导入预设」按钮，或面板「导入」页签                     | `preset_import`（粘贴/文件）、`preset_import_url`（网址） | 本地 `presets` 存储（同名覆盖），可选立即应用         |
+| 浏览分享    | 预设区顶部「浏览共享」按钮，或面板「浏览分享」页签                 | `preset_catalog`                                          | 拉仓库 `index.json` → 列表 → 一键导入（复用网址导入） |
+
+三个顶部按钮打开的是同一个面板（`PresetShareTab` 决定先落在哪个页签），不再需要在面板里先切页签。
+
+设置区把三块内容合并成一张卡片（**引擎预设 / 权限两个下拉 + 设置预设列表**）：原来 Agent 预设与
+权限各有一份只读列表（逐条列名称 + 说明），精简成下拉框 + 一行当前值说明；权限只剩一个下拉。
 
 **为什么导入/抓取必须在服务端**：下发给浏览器的 `UiSettingsPreset` 是**裁剪视图**（只有
 name/promptMode/customSystemPrompt/promptTemplate/promptOverrides/disabledSkills/disabledExtensions/
@@ -24,28 +29,37 @@ raw.githubusercontent.com 会撞 CORS。所以「解析 → 净化 → 落盘」
 
 ```jsonc
 {
-  "format": "pi-web-ui-preset",
-  "version": 1,
-  "name": "预设名",              // 必填，≤60 字；导入后的预设名（同名覆盖）
-  "description": "适合什么场景",   // ≤500 字
-  "author": "github 用户名",      // ≤80 字
-  "tags": ["编程", "极简"],       // ≤8 个，单条 ≤24 字
-  "createdAt": "2026-01-01T00:00:00.000Z",
-  "appVersion": "0.99.0",        // 生成端的包版本
-  "settings": { /* 见下 */ }
+	"format": "pi-web-ui-preset",
+	"version": 1,
+	"name": "预设名", // 必填，≤60 字；导入后的预设名（同名覆盖）
+	"description": "适合什么场景", // ≤500 字
+	"author": "github 用户名", // ≤80 字
+	"tags": ["编程", "极简"], // ≤8 个，单条 ≤24 字
+	"createdAt": "2026-01-01T00:00:00.000Z",
+	"appVersion": "0.99.0", // 生成端的包版本
+	"settings": {/* 见下 */},
 }
 ```
 
-`settings` 与 `server/client-state.ts` 的 `SettingsPreset` 同构，**字段白名单**（`PRESET_FIELD_NAMES`）：
-`promptMode` · `customSystemPrompt` · `promptTemplate` · `promptOverrides` · `disabledSkills` ·
-`disabledExtensions` · `disabledAgentTools` · `disabledPluginTools` · `terminalToolsEnabled` · `terminalBash` ·
-`terminalBashIdleMs` · `terminalBashMaxForegroundMs` · `editSoftEnabled` · `retryMaxAttempts` ·
-`softCapTokens` · `softCapByModel` · `reviewPrompt` · `reviewDisabledSkills` · `skillsFullText`。
+`settings` 与 `server/client-state.ts` 的 `SettingsPreset` 同构，**字段白名单 = `ClientSettings` 全集**
+（47 个，清单与分组在 `server/preset-fields.ts`，前后端共用）：
 
-**不进预设的字段**（与本地保存预设完全一致）：视觉桥偏好、AI 提交信息提示词、计划模式提示词、问卷/目标/
-并行提醒开关、纯运行行为开关（`readDirEnabled`/`toolLazyLoading`/`toolApprovalEnabled`/看门狗超时/
-`thinkingWrap`/`toolsWrap`/`toolImagesEnabled`/`devNoCache`/`autoReload`/子代理默认模型/快捷短语）、
-逐工具文案覆盖。导入时这些字段**保持当前值**。
+| 分组                      | 字段                                                                                                                                                                                                                                                                                                                         |
+| ------------------------- | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `prompt` 提示词           | `promptMode` · `customSystemPrompt` · `promptTemplate` · `promptOverrides` · `reviewPrompt` · `reviewDisabledSkills`                                                                                                                                                                                                         |
+| `tools` 工具与开关        | `disabledAgentTools` · `disabledPluginTools` · `toolPromptOverrides`（逐工具文案）· `toolLazyLoading` · `readDirEnabled` · `toolApprovalEnabled` · `toolWatchdogTimeoutMs` · `questionnaireEnabled` · `editSoftEnabled` · `terminalToolsEnabled`                                                                             |
+| `terminal` 终端接管       | `terminalBash` · `terminalBashIdleMs` · `terminalBashMaxForegroundMs`                                                                                                                                                                                                                                                        |
+| `skills` 技能与扩展       | `disabledSkills` · `disabledExtensions` · `skillsFullText`                                                                                                                                                                                                                                                                   |
+| `ai` 模型行为与专用提示词 | `retryMaxAttempts` · `softCapTokens` · `softCapByModel` · `subagentDefaultModel` · `visionBridgeEnabled` · `visionBridgeModel` · `visionBridgePromptMode` · `visionBridgePrompt` · `scmCommitMsgPromptMode` · `scmCommitMsgPrompt` · `planModePromptMode` · `planModePrompt` · `goalModeEnabled` · `parallelReminderEnabled` |
+| `ui` 界面与交互偏好       | `uiLayout` · `disabledPlugins` · `thinkingWrap` · `toolsWrap` · `toolImagesEnabled` · `quickPhrases` · `quickPhrasesEnabled` · `devNoCache` · `autoReload`                                                                                                                                                                   |
+| `engine` 引擎默认         | `defaultAgentPreset` · `defaultPermissionPreset`                                                                                                                                                                                                                                                                             |
+
+**仍在预设之外**（不在 `ClientSettings` 里，各有自己的存储）：标记开关（`markersEnabled`/`disabledMarkers`）、
+审批规则库（`approval-rules.json`）、子代理模板库（`subagent-templates.json`）、以及纯前端 localStorage 的
+偏好（墙纸、宽屏聊天列、present 自动预览、标题设置、声音/TTS、通知、输入历史）。
+
+**字段可选**：旧版文档（只有 19 个字段）与「只导入一部分」都靠 `SettingsPreset` 的 `Partial` 语义落地 ——
+应用预设时缺哪个字段就**保持当前值**。单测用编译期断言守「`ClientSettings` 的每个字段都在清单里」。
 
 JSON Schema 也在共享仓库里：`schema/preset.schema.json`、`schema/index.schema.json`。
 
@@ -56,7 +70,7 @@ JSON Schema 也在共享仓库里：`schema/preset.schema.json`、`schema/index.
 1. **形状**：`format` 必须等于 `pi-web-ui-preset`、`version` 必须是 `1`、`name` 非空、`settings` 是对象；
    失败给**稳定的 errorKey**（`presets.import.format` / `.version` / `.name` / `.settings` / `.parse` /
    `.tooLarge` / `.empty` / `.shape` / `.noFields`）与本地化文案。单元素数组也接受（有人会包一层数组）。
-2. **白名单 + 类型**：只认上面 19 个字段；类型不符的**丢弃**（不抛错）并在预览里列出（`rejected`）；
+2. **白名单 + 类型**：只认上面那 47 个字段；类型不符的**丢弃**（不抛错）并在预览里列出（`rejected`）；
    未知字段列进 `ignored`（旧版客户端/拼错字段的提示）。列表字段去空白、去重、单条 ≤200 字、≤500 条；
    映射字段 ≤200 条；长文本字段 ≤100KB。`disabledAgentTools`/`softCapTokens`/`softCapByModel`/
    `retryMaxAttempts`/`skillsFullText` 走应用侧**同一批归一化函数**（`tool-manager` / `soft-cap` /
@@ -69,6 +83,10 @@ JSON Schema 也在共享仓库里：`schema/preset.schema.json`、`schema/index.
 **两段式**：前端先发 `dryRun: true` 拿预览（名称、说明、作者、标签、将写入的字段、被忽略/被丢弃的字段、
 摘要徽标、自定义提示词/模板/审查提示词片段、是否覆盖同名），用户确认后才发 `dryRun: false` 真正落盘
 （可选 `apply: true` 立即应用）。导入成功会推 `settings_state` + 一条 notice。
+
+**可选导入**：确认时带 `fields: string[]`（最后一个 `dryRun` 预览里的字段名，按分组/按字段勾选，默认全选）→
+服务端只把勾选的字段写进预设；未勾选的字段不落盘，应用时保持当前值。名单里出现白名单之外的名称会被过滤掉；
+名单为空数组 = 一个都不勾，服务端回 `ok:false` 并拒写。不给 `fields` = 全量（旧客户端行为不变）。
 
 ## 4. 社区共享仓库
 
@@ -108,12 +126,12 @@ scripts/validate-repo.mjs      # 仓库自检（PR/push 跑）
 
 ## 5. 环境变量
 
-| 变量 | 默认 | 作用 |
-| --- | --- | --- |
-| `PI_WEB_PRESET_REPO` | `xing-shuyin/pi-web-ui-presets` | 共享仓库 `owner/name`（也接受 `https://github.com/owner/name(.git)`）；`off`/`0`/`false`/`no` = 关闭分享（导入/导出仍可用） |
-| `PI_WEB_PRESET_CATALOG_URL` | `https://raw.githubusercontent.com/<repo>/main/index.json` | 目录文档地址；空串或 `off` = 关闭「浏览分享」 |
-| `PI_WEB_PRESET_GH` | `gh` | 一键分享调用的 GitHub CLI 路径 |
-| `PI_WEB_PRESET_TOKEN` | 空 | 无 gh 时的直连 API 令牌（回落顺序：`PI_WEB_PRESET_TOKEN` > `GH_TOKEN` > `GITHUB_TOKEN`）；未设就走「预填网页」路径，不需要任何凭据 |
+| 变量                        | 默认                                                       | 作用                                                                                                                               |
+| --------------------------- | ---------------------------------------------------------- | ---------------------------------------------------------------------------------------------------------------------------------- |
+| `PI_WEB_PRESET_REPO`        | `xing-shuyin/pi-web-ui-presets`                            | 共享仓库 `owner/name`（也接受 `https://github.com/owner/name(.git)`）；`off`/`0`/`false`/`no` = 关闭分享（导入/导出仍可用）        |
+| `PI_WEB_PRESET_CATALOG_URL` | `https://raw.githubusercontent.com/<repo>/main/index.json` | 目录文档地址；空串或 `off` = 关闭「浏览分享」                                                                                      |
+| `PI_WEB_PRESET_GH`          | `gh`                                                       | 一键分享调用的 GitHub CLI 路径                                                                                                     |
+| `PI_WEB_PRESET_TOKEN`       | 空                                                         | 无 gh 时的直连 API 令牌（回落顺序：`PI_WEB_PRESET_TOKEN` > `GH_TOKEN` > `GITHUB_TOKEN`）；未设就走「预填网页」路径，不需要任何凭据 |
 
 完整表见 `docs/env-vars.md`。
 
@@ -128,8 +146,8 @@ scripts/validate-repo.mjs      # 仓库自检（PR/push 跑）
 ```
 client → server
   preset_export      { source?: "preset"|"current", name?, description?, author?, tags?, requestId? }
-  preset_import      { json, dryRun?, name?, apply?, requestId? }
-  preset_import_url  { url, dryRun?, name?, apply?, requestId? }
+  preset_import      { json, dryRun?, name?, apply?, fields?, requestId? }
+  preset_import_url  { url, dryRun?, name?, apply?, fields?, requestId? }
   preset_catalog     { refresh?, requestId? }
   preset_share       { source?, name?, description?, author?, tags?, requestId? }
 
@@ -141,16 +159,19 @@ server → client
 ```
 
 `requestId` 原样回显；前端把导入来源编在前缀里（`paste:` / `file:` / `url:`），预览头部据此提示
-（服务端不关心来源）。两个引擎共用同一份编排（`PresetSharePort`）：`SettingsService`（pi）与
-`DshClientSession`（DSH）各自实现「取预设 / 存预设 / 应用预设 / 推设置」四件事。
+（服务端不关心来源）。`fields` = 可选导入的字段名（见 §2 末）；不给 = 全量。两个引擎共用同一份编排
+（`PresetSharePort`）：`SettingsService`（pi）与 `DshClientSession`（DSH）各自实现「取预设 / 存预设 /
+应用预设 / 推设置」四件事。
 
 ## 8. 测试
 
-- `tests/unit/preset-share.test.ts` — 45 个纯函数/编排单测：slug/短哈希、白名单净化、解析与 errorKey、
-  SSRF 收口、目录解析与缓存、env 读取、Issue 文本、port 编排（导出/导入/分享回落/目录）。
+- `tests/unit/preset-share.test.ts` — 60 个纯函数/编排单测：slug/短哈希、白名单净化（47 字段 + 可选导入
+  选择过滤）、解析与 errorKey、SSRF 收口、目录解析与缓存、env 读取、Issue 文本、port 编排
+  （导出/导入/分享回落/目录）。
 - `tests/settings-test.mjs` — 真机协议往返（隔离 data-dir）：导出 → dryRun 预览 → 改名导入 + 应用
-  （改掉当前设置，导入后应被恢复）→ 净化（未知字段/类型不符）→ 坏 JSON → 网址导入拦回环与非 http(s)
-  → 分享被 env 关闭时明确拒绝但仍回传 JSON → 目录形状。该测试**显式把分享关掉**，绝不真在共享仓库开 Issue。
+  （改掉当前设置，导入后应被恢复）→ 可选导入（只写勾选字段 / 空选拒写）→ 净化（未知字段/类型不符）
+  → 坏 JSON → 网址导入拦回环与非 http(s) → 分享被 env 关闭时明确拒绝但仍回传 JSON → 目录形状。
+  该测试**显式把分享关掉**，绝不真在共享仓库开 Issue。
 - `tests/scratch/preset-share-live.mjs` — 手动联调（真网络）：默认 env 下拉官方仓库目录 → 网址导入
   真实预设 → 导出闭环。需要联网，不入 smoke。
 - `tests/scratch/preset-share-nogh-live.mjs` — 无 gh 的回落验证（真网络）：无效令牌打真实 api.github.com

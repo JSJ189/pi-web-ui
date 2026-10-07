@@ -25,6 +25,9 @@ plugins/*/storage/
 # Scratch/test temp files
 tests/scratch/
 
+# 误落仓库根的临时包（npm pack / 手工下载的 tgz）
+*.tgz
+
 # Local editor and backup files
 .zcodeignore
 *.bak

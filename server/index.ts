@@ -66,7 +66,7 @@ import {
 	type PluginConversationSnapshot,
 	type PluginRunEvent,
 } from "./plugins.js";
-import type { GuardedToolName, ToolPostRequest, ToolPreRequest } from "./plugin-tool-guard.js";
+import type { ToolPostRequest, ToolPreRequest } from "./plugin-tool-guard.js";
 import { buildPluginJobArgs, confirmPluginInstall, inspectInstallSpec, PluginInstaller } from "./plugin-installer.js";
 import { syncPluginCatalog } from "./plugin-catalog-sync.js";
 import type { ServerLang } from "./i18n.js";
@@ -1104,6 +1104,10 @@ export interface DispatchSession {
 	killBackgroundServer(port?: number, taskId?: string): Promise<boolean>;
 	killAllBackgroundServers(): Promise<string[]>;
 	listBgServers(): Promise<void>;
+	/** 钉住 / 取消钉住一个后台实例（自动清理跳过钉住的）。 */
+	setBackgroundKeep(port: number, keep: boolean): boolean;
+	/** 手动「立即清理」：按当前策略阈值清一次遗留实例，返回被清的端口。 */
+	cleanBackgroundLeftovers(minutesOverride?: number): Promise<number[]>;
 	/** 返回值语义见 SlashHost.newChat：布尔值 = 是否落在一个可接收首条的空白
 	 *  新对话（/new <prompt> 用）。此处只管转发，返回值被丢弃，故允许 void。
 	 *  preset = DSH Agent 预设（pi 引擎忽略）。 */
@@ -2111,13 +2115,15 @@ wss.on("connection", (ws) => {
 			lastSnapshotBytes > 0 &&
 			ws.bufferedAmount > Math.max(SNAPSHOT_BACKPRESSURE_MIN_BYTES, SNAPSHOT_BACKPRESSURE_FACTOR * lastSnapshotBytes)
 		) {
+			const wasFull = msg.type === "snapshot";
 			// 真正的慢客户端：丢弃是安全的，但不能「丢完就没了」——安排一次延迟
 			// 重发，等缓冲排空后快照最终必达（否则若此后再无事件，客户端将永久
-			// 停留在旧快照）。重发仍走 flushSnapshot：缓冲未排空则再次顺延。
+			// 停留在旧快照）。重发仍走 flushSnapshot：缓冲未排空则再次顺延；
+			// 若被丢弃的是全量快照（snapshot），重发必须强制 forceFull 保证客户端能拿到完整基线。
 			if (!snapshotRetryTimer) {
 				snapshotRetryTimer = setTimeout(() => {
 					snapshotRetryTimer = null;
-					service.get(clientId ?? "")?.flushSnapshot();
+					service.get(clientId ?? "")?.flushSnapshot(wasFull);
 				}, SNAPSHOT_RETRY_MS);
 			}
 			return;
@@ -2212,6 +2218,12 @@ wss.on("connection", (ws) => {
 				break;
 			case "list_bg_servers":
 				void cs.listBgServers();
+				break;
+			case "set_bg_keep":
+				cs.setBackgroundKeep(msg.port, msg.keep);
+				break;
+			case "clean_bg_leftovers":
+				void cs.cleanBackgroundLeftovers((msg as { minutes?: number }).minutes);
 				break;
 			case "new_chat":
 				void cs.newChat(msg.preset, msg.ephemeral);
@@ -2639,6 +2651,7 @@ wss.on("connection", (ws) => {
 					terminalBashMaxForegroundMs: (msg as { terminalBashMaxForegroundMs?: number }).terminalBashMaxForegroundMs,
 					toolWatchdogTimeoutMs: (msg as { toolWatchdogTimeoutMs?: number }).toolWatchdogTimeoutMs,
 					readDirEnabled: (msg as { readDirEnabled?: boolean }).readDirEnabled,
+					bgAutoCleanupMin: (msg as { bgAutoCleanupMin?: number }).bgAutoCleanupMin,
 					toolLazyLoading: (msg as { toolLazyLoading?: boolean }).toolLazyLoading,
 					toolApprovalEnabled: (msg as { toolApprovalEnabled?: boolean }).toolApprovalEnabled,
 					editSoftEnabled: (msg as { editSoftEnabled?: boolean }).editSoftEnabled,
@@ -3243,7 +3256,10 @@ wss.on("connection", (ws) => {
 				.attach(cid, send)
 				.then((cs) => {
 					clearTimeout(slowTimer);
-					if (closed) return;
+					if (closed) {
+						service.detach(cid, send);
+						return;
+					}
 					// Plugin catalog: re-scan + activate new dirs on every attach so
 					// freshly dropped plugins show up without a server restart.
 					pluginMgr
@@ -3270,7 +3286,9 @@ wss.on("connection", (ws) => {
 							// 插件清单【先于】快照推送：前端渲染历史消息前就拿到 renderer
 							// 注册表（plugin-fence.ts），`` ```lang `` 围栏才能立即命中插件；
 							// 否则消息先落成普通代码块，清单后到也不会重渲。
-							cs.flushSnapshot();
+							// 新连接/新客户端 attach 首次快照必须强制全量（forceFull=true），
+							// 保证新标签页/刷新页能立刻拿到完整的会话基线，绝不因增量 delta 而卡在加载中。
+							cs.flushSnapshot(true);
 							// 内置定时任务列表随附推一次（后续变更经 pushSchedulerTasks 广播）。
 							try {
 								send({ type: "scheduler_tasks", tasks: scheduler.list() });
@@ -3282,8 +3300,8 @@ wss.on("connection", (ws) => {
 						.catch(() => {
 							if (closed) return;
 							// ensureLoaded 失败（如磁盘读错）不能卡死快照——前端 30s 无消息
-							// 会重连，重连又失败会陷入循环。至少把状态推下去。
-							cs.flushSnapshot();
+							// 会重连，重连又失败会陷入循环。至少把状态推下去（同样强制全量）。
+							cs.flushSnapshot(true);
 							replayQueued();
 						});
 					// hello may carry the UI locale — persist it before replaying
@@ -3301,6 +3319,10 @@ wss.on("connection", (ws) => {
 					};
 				})
 				.catch((err: unknown) => {
+					clearTimeout(slowTimer);
+					if (closed) {
+						service.detach(cid, send);
+					}
 					// Admission refused (quiesce): close the socket so the browser
 					// reconnect loop keeps retrying until admission reopens. Do NOT
 					// leave a half-alive connection that can only show an error.

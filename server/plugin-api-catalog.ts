@@ -39,6 +39,7 @@ export const SLOT_EXAMPLES: Readonly<Record<string, string>> = {
 	"contextmenu.file": `{ "contextmenu.file": [{ "id": "mail", "label": "发到邮箱", "kind": "action", "action": "my:send" }] }`,
 	"contextmenu.toolcall": `{ "ui": { "contextmenu.toolcall": [{ "id": "m", "label": "工具菜单", "kind": "action", "action": "my:m" }] } }`,
 	"settings.pages": `{ "settings": [{ "id": "conf", "label": "邮箱设置", "kind": "page" }] }`,
+	"tasks.panel": `{ "ui": { "tasks.panel": [{ "id": "pm2", "label": "pm2 托管的应用", "kind": "view" }] } }`,
 	"leftpanel.sessions": `{ "ui": { "leftpanel.sessions": [{ "id": "m", "label": "会话区", "kind": "action", "action": "my:m" }] } }`,
 	"chat.header": `{ "ui": { "chat.header": [{ "id": "m", "label": "会话题头", "kind": "action", "action": "my:m" }] } }`,
 	"chat.empty": `{ "ui": { "chat.empty": [{ "id": "m", "label": "空态", "kind": "action", "action": "my:m" }] } }`,

@@ -1,4 +1,4 @@
-import { memo, useEffect, useState, useCallback, useRef } from "react";
+import { memo, useEffect, useState, useCallback, useRef, useMemo } from "react";
 import {
 	FiCheck,
 	FiChevronDown,
@@ -572,6 +572,8 @@ export const LeftPanel = memo(function LeftPanel({
 		convId?: string;
 		hasQuestion?: boolean;
 		pseudo?: boolean;
+		/** 持有方页面已断开（标签页/浏览器关了），只剩服务端残留会话：行仍可过户。 */
+		ownerOffline?: boolean;
 	};
 	const panelRef = useRef<HTMLElement>(null);
 	const [weights, setWeights] = useState<LpWeights>(() => loadLpWeights());
@@ -581,23 +583,51 @@ export const LeftPanel = memo(function LeftPanel({
 		} catch {}
 	}, [weights]);
 
-	/** issue #145：运行的对话 = 本客户端会话 + 其他标签页/设备的运行（后者只读行）。 */
-	const runningAll: RowConv[] = [
-		...conversations,
-		...elsewhere.map((w, i) => ({
-			id: `elsewhere:${w.cwd}:${w.title}:${i}`,
-			title: w.title,
-			cwd: w.cwd,
-			messageCount: 0,
-			isStreaming: w.isStreaming,
-			isSubagent: false as const,
-			elsewhere: true as const,
-			pseudo: Boolean(w.pseudo),
-			// 过户目标定位（无则沿用旧行为：只读行，无过户入口）。
-			...(w.owner && w.convId ? { owner: w.owner, convId: w.convId } : {}),
-			...(w.hasQuestion ? { hasQuestion: true as const } : {}),
-		})),
-	];
+	/** issue #145：运行的对话 = 本客户端会话 + 其他标签页/设备的运行（后者只读行）。
+	 *  防重护栏：
+	 *  1) 排除已在本地 conversations 中存在的会话（按 sessionFile 或 cwd+title），避免同一会话既当前又“另一处”；
+	 *  2) 针对 elsewhere 条目按 sessionFile / cwd+title 再次做防重，避免多处上报时在左栏堆叠相同行。
+	 */
+	const runningAll: RowConv[] = useMemo(() => {
+		const localFiles = new Set<string>();
+		const localCwdTitles = new Set<string>();
+		for (const c of conversations) {
+			if (c.sessionFile) localFiles.add(c.sessionFile);
+			localCwdTitles.add(`${c.cwd}\0${c.title}`);
+		}
+
+		const filteredElsewhere: RowConv[] = [];
+		const seenKeys = new Set<string>();
+
+		for (const w of elsewhere) {
+			if (w.sessionFile && localFiles.has(w.sessionFile)) continue;
+			if (localCwdTitles.has(`${w.cwd}\0${w.title}`)) continue;
+
+			const key = w.sessionFile ? `file:${w.sessionFile}` : `title:${w.cwd}\0${w.title}`;
+			if (seenKeys.has(key)) continue;
+			seenKeys.add(key);
+
+			filteredElsewhere.push({
+				id: w.sessionFile
+					? `elsewhere:${w.cwd}:${w.sessionFile}`
+					: `elsewhere:${w.cwd}:${w.title}${w.owner ? `:${w.owner}` : ""}`,
+				title: w.title,
+				cwd: w.cwd,
+				messageCount: 0,
+				isStreaming: w.isStreaming,
+				isSubagent: false as const,
+				elsewhere: true as const,
+				pseudo: Boolean(w.pseudo),
+				ownerOffline: Boolean(w.ownerOffline),
+				sessionFile: w.sessionFile,
+				// 过户目标定位（无则沿用旧行为：只读行，无过户入口）。
+				...(w.owner && w.convId ? { owner: w.owner, convId: w.convId } : {}),
+				...(w.hasQuestion ? { hasQuestion: true as const } : {}),
+			});
+		}
+
+		return [...conversations, ...filteredElsewhere];
+	}, [conversations, elsewhere]);
 	const createSashHandler = useCallback(
 		(aboveKey: keyof LpWeights, belowKey: keyof LpWeights) => (e: React.PointerEvent<HTMLDivElement>) => {
 			e.preventDefault();
@@ -830,6 +860,9 @@ export const LeftPanel = memo(function LeftPanel({
 												const elseOwner = (c as RowConv).owner;
 												const elseConvId = (c as RowConv).convId;
 												const isPseudo = Boolean((c as RowConv).pseudo);
+												// 持有方页面已断开（手机 / 标签页关掉了）只剩服务端残留会话：行照旧可过户
+												// （搬 runtime 本体，不造第二个 writer），标「离线」说清原页面为什么不在。
+												const isOffline = Boolean((c as RowConv).ownerOffline) && !isPseudo;
 												// issue #290：可过户（有 owner + convId）时本行可点击，两段确认。
 												// issue #426：无头伪客户端（定时任务/插件）不支持过户，降级为只读行。
 												const canTakeover = Boolean(elseOwner && elseConvId) && !isPseudo;
@@ -838,7 +871,7 @@ export const LeftPanel = memo(function LeftPanel({
 													? t("takeoverConfirm")
 													: isPseudo
 														? `${t("elsewherePseudoTip")}\n${c.cwd}`
-														: `${t("elsewhereTip")}\n${c.cwd}`;
+														: `${t(isOffline ? "elsewhereOfflineTip" : "elsewhereTip")}\n${c.cwd}`;
 												return (
 													<div
 														className="lp-row"
@@ -885,6 +918,11 @@ export const LeftPanel = memo(function LeftPanel({
 																	<span className="elsewhere-badge">
 																		{isPseudo ? t("elsewherePseudoBadge") : t("elsewhereBadge")}
 																	</span>
+																	{isOffline && (
+																		<span className="elsewhere-badge offline" title={t("elsewhereOfflineTip")}>
+																			{t("elsewhereOfflineBadge")}
+																		</span>
+																	)}
 																	{c.hasQuestion && elseOwner && elseConvId && !isPseudo && (
 																		<span
 																			className="question-badge clickable"

@@ -30,12 +30,21 @@ import {
 	normalizeDisabledPluginTools,
 	normalizeRetryMaxAttempts,
 	normalizeSkillList,
+	normalizeUiLayout,
 	type SettingsPreset,
 } from "./client-state.js";
 import { pick, type ServerLang } from "./i18n.js";
 import type { ClientMessage, ServerMessage, UiPresetCatalogEntry, UiPresetImportPreview } from "./protocol.js";
 import { normalizeSoftCapByModel, normalizeSoftCapTokens } from "./soft-cap.js";
-import { normalizeDisabledAgentTools } from "./tool-manager.js";
+import {
+	ALL_KNOWN_AGENT_TOOL_NAMES,
+	isConfigurableAgentTool,
+	normalizeDisabledAgentTools,
+	resolveDisabledAgentToolsFromEnabled,
+	resolveEnabledAgentTools,
+} from "./tool-manager.js";
+import { normalizeToolPromptOverrides } from "./tool-prompt-overrides.js";
+import { PRESET_FIELD_NAMES, normalizePresetFieldSelection } from "./preset-fields.js";
 import { defaultFetcher } from "./update-check.js";
 
 const execFileAsync = promisify(execFile);
@@ -57,6 +66,8 @@ export const PRESET_LIST_MAX = 500;
 export const PRESET_LIST_ITEM_MAX = 200;
 /** 映射字段（promptOverrides / softCapByModel）条目上限。 */
 export const PRESET_MAP_MAX = 200;
+/** 短字符串字段（模型 id / 预设 id）长度上限。 */
+export const PRESET_SHORT_STR_MAX = 300;
 
 const FETCH_TIMEOUT_MS = 10_000;
 const CATALOG_MAX_BYTES = 512 * 1024;
@@ -183,6 +194,8 @@ export interface PresetShareDoc {
 	tags: string[];
 	createdAt: string;
 	appVersion: string;
+	/** 预设显式启用的工具白名单（默认没开的工具就是关，跨版本防错）。 */
+	enabledTools?: string[];
 	settings: Record<string, unknown>;
 }
 
@@ -225,7 +238,7 @@ export function buildShareDoc(
 	settings: Record<string, unknown>,
 	meta: PresetShareMeta = {},
 ): PresetShareDoc {
-	return {
+	const doc: PresetShareDoc = {
 		format: PRESET_SHARE_FORMAT,
 		version: PRESET_SHARE_VERSION,
 		name: normalizePresetName(name),
@@ -236,6 +249,10 @@ export function buildShareDoc(
 		appVersion: clampText(meta.appVersion, 40),
 		settings,
 	};
+	if (Array.isArray(settings["disabledAgentTools"])) {
+		doc.enabledTools = resolveEnabledAgentTools(settings["disabledAgentTools"] as string[]);
+	}
+	return doc;
 }
 
 /** 交换文档 → JSON 文本（Tab 缩进，和仓库里的收录文件一致，diff 友好）。 */
@@ -269,31 +286,76 @@ function sanitizeTextMap(v: unknown): Record<string, string> {
 	return out;
 }
 
-/** 预设字段白名单：字段名 → 取值方式。与 SettingsService.savePreset 的字段集合一一对应。 */
+/**
+ * 预设字段白名单：字段名 → 取值方式。**与 ClientSettings 一一对应**（含界面偏好与
+ * 逐工具文案），字段清单与分组在 `server/preset-fields.ts`（零依赖，前端也用）。
+ * 单测 `tests/unit/preset-share.test.ts` 守卫两边一致（漏字段/多字段均失败）。
+ */
 const PRESET_FIELD_KINDS = {
+	// -- prompt ----------------------------------------------------------
 	promptMode: "promptMode",
 	customSystemPrompt: "text",
 	promptTemplate: "text",
 	promptOverrides: "textMap",
-	disabledSkills: "list",
-	disabledExtensions: "list",
+	reviewPrompt: "text",
+	reviewDisabledSkills: "list",
+	// -- tools -----------------------------------------------------------
 	disabledAgentTools: "list",
 	disabledPluginTools: "list",
+	toolPromptOverrides: "toolPromptOverrides",
+	toolLazyLoading: "bool",
+	readDirEnabled: "bool",
+	bgAutoCleanupMin: "number",
+	toolApprovalEnabled: "bool",
+	toolWatchdogTimeoutMs: "number",
+	questionnaireEnabled: "bool",
+	editSoftEnabled: "bool",
 	terminalToolsEnabled: "bool",
+	// -- terminal --------------------------------------------------------
 	terminalBash: "bool",
 	terminalBashIdleMs: "number",
 	terminalBashMaxForegroundMs: "number",
-	editSoftEnabled: "bool",
+	// -- skills ----------------------------------------------------------
+	disabledSkills: "list",
+	disabledExtensions: "list",
+	skillsFullText: "list",
+	// -- ai --------------------------------------------------------------
 	retryMaxAttempts: "retry",
 	softCapTokens: "softCap",
 	softCapByModel: "softCapByModel",
-	reviewPrompt: "text",
-	reviewDisabledSkills: "list",
-	skillsFullText: "list",
-} as const;
+	subagentDefaultModel: "nullableString",
+	visionBridgeEnabled: "bool",
+	visionBridgeModel: "nullableString",
+	visionBridgePromptMode: "promptMode",
+	visionBridgePrompt: "text",
+	scmCommitMsgPromptMode: "promptMode",
+	scmCommitMsgPrompt: "text",
+	planModePromptMode: "promptMode",
+	planModePrompt: "text",
+	goalModeEnabled: "bool",
+	parallelReminderEnabled: "bool",
+	// -- ui --------------------------------------------------------------
+	uiLayout: "uiLayout",
+	disabledPlugins: "list",
+	thinkingWrap: "bool",
+	toolsWrap: "bool",
+	toolImagesEnabled: "bool",
+	quickPhrases: "list",
+	quickPhrasesEnabled: "bool",
+	devNoCache: "bool",
+	autoReload: "bool",
+	// -- engine ----------------------------------------------------------
+	defaultAgentPreset: "shortString",
+	defaultPermissionPreset: "shortString",
+} as const satisfies Record<string, string>;
+
+/** 已知字段名（预览/勾选/测试用；顺序 = preset-fields 的分组顺序）。 */
+export const PRESET_FIELD_KIND_NAMES = Object.keys(PRESET_FIELD_KINDS);
+/** 已排序的字段名（净化回执/测试用）；顺序版在 `preset-fields.ts`。 */
+export const PRESET_FIELD_NAMES_SORTED = [...PRESET_FIELD_NAMES].sort();
 
 /** 已知字段名（预览与测试用）。 */
-export const PRESET_FIELD_NAMES = Object.keys(PRESET_FIELD_KINDS).sort();
+export { PRESET_FIELD_NAMES };
 
 export interface SanitizeResult {
 	/** 只含白名单字段的净化结果。 */
@@ -309,8 +371,9 @@ export interface SanitizeResult {
 /**
  * 把任意来源的 settings 对象净化成「可安全写入预设存储」的形状：
  * 只认识白名单字段，类型不符/超限的字段丢弃（而不是抛错），未知字段记录下来。
+ * 贯彻「默认没有开的工具就是关，只取可用的配置，后期发生变化也防止出错」原则。
  */
-export function sanitizePresetSettings(input: unknown): SanitizeResult {
+export function sanitizePresetSettings(input: unknown, opts?: { enabledTools?: unknown }): SanitizeResult {
 	const src = input && typeof input === "object" && !Array.isArray(input) ? (input as Record<string, unknown>) : {};
 	const settings: Record<string, unknown> = {};
 	const ignored: string[] = [];
@@ -347,7 +410,27 @@ export function sanitizePresetSettings(input: unknown): SanitizeResult {
 					rejected.push(key);
 					break;
 				}
-				settings[key] = key === "disabledAgentTools" ? normalizeDisabledAgentTools(raw) : sanitizeStringList(raw);
+				if (key === "disabledAgentTools") {
+					// 只取可用配置：清洗掉不在当前系统已知工具清单中的未知工具名并提示用户
+					for (const item of raw) {
+						if (typeof item === "string" && !isConfigurableAgentTool(item)) {
+							ignored.push(`disabledAgentTools.${item}`);
+						}
+					}
+					// 默认没有开的工具就是关：若声明了显式开启白名单，以开启集合为准收敛
+					if (Array.isArray(opts?.enabledTools)) {
+						const enabled = opts!.enabledTools.filter((x): x is string => typeof x === "string");
+						settings[key] = resolveDisabledAgentToolsFromEnabled(enabled);
+					} else {
+						settings[key] = normalizeDisabledAgentTools(raw);
+					}
+				} else if (key === "disabledPluginTools") {
+					settings[key] = normalizeDisabledPluginTools(raw);
+				} else if (key === "skillsFullText") {
+					settings[key] = normalizeSkillList(raw);
+				} else {
+					settings[key] = sanitizeStringList(raw);
+				}
 				break;
 			}
 			case "bool":
@@ -371,6 +454,34 @@ export function sanitizePresetSettings(input: unknown): SanitizeResult {
 					settings[key] = normalizeSoftCapByModel(raw);
 				} else rejected.push(key);
 				break;
+			case "nullableString":
+				// 约定：null / 空串 = 自动（如 visionBridgeModel / subagentDefaultModel）。
+				if (raw === null) settings[key] = null;
+				else if (typeof raw === "string" && raw.length <= PRESET_SHORT_STR_MAX) settings[key] = raw;
+				else rejected.push(key);
+				break;
+			case "shortString":
+				if (typeof raw === "string" && raw.length <= PRESET_SHORT_STR_MAX) settings[key] = raw;
+				else rejected.push(key);
+				break;
+			case "toolPromptOverrides":
+				// 只取可用的配置：清洗掉当前系统未知的工具覆盖，丢弃并回报 ignored，防后期漂移
+				if (raw && typeof raw === "object" && !Array.isArray(raw)) {
+					for (const toolName of Object.keys(raw as Record<string, unknown>)) {
+						if (!isConfigurableAgentTool(toolName)) {
+							ignored.push(`toolPromptOverrides.${toolName}`);
+						}
+					}
+					settings[key] = normalizeToolPromptOverrides(raw, ALL_KNOWN_AGENT_TOOL_NAMES);
+				} else {
+					rejected.push(key);
+				}
+				break;
+			case "uiLayout":
+				// 界面布局：normalizeUiLayout 本身就只认已知键 + 长度/条数上限。
+				if (raw && typeof raw === "object" && !Array.isArray(raw)) settings[key] = normalizeUiLayout(raw);
+				else rejected.push(key);
+				break;
 		}
 	}
 	return {
@@ -381,33 +492,13 @@ export function sanitizePresetSettings(input: unknown): SanitizeResult {
 	};
 }
 
-/** 把交换文档的 settings 补全成完整的 SettingsPreset（缺字段给默认值）。 */
+/** 把交换文档的 settings 补全成预设对象。
+ *
+ * 只带回文档里**实际存在**的字段（缺失的由 `applyPreset` 回落当前值）——旧版文档、
+ * 以及导入时按勾选过滤后的子集都能原样落盘；规范化已在 `sanitizePresetSettings` 做过了。
+ */
 export function toSettingsPreset(name: string, settings: Record<string, unknown>): SettingsPreset {
-	const s = settings;
-	const str = (k: string, d = "") => (typeof s[k] === "string" ? (s[k] as string) : d);
-	return {
-		name: normalizePresetName(name),
-		promptMode: s["promptMode"] === "replace" ? "replace" : "append",
-		customSystemPrompt: str("customSystemPrompt"),
-		promptTemplate: str("promptTemplate"),
-		promptOverrides: (s["promptOverrides"] as Record<string, string>) ?? {},
-		disabledSkills: (s["disabledSkills"] as string[]) ?? [],
-		disabledExtensions: (s["disabledExtensions"] as string[]) ?? [],
-		disabledAgentTools: normalizeDisabledAgentTools(s["disabledAgentTools"]),
-		disabledPluginTools: normalizeDisabledPluginTools(s["disabledPluginTools"]),
-		terminalToolsEnabled: s["terminalToolsEnabled"] !== false,
-		terminalBash: s["terminalBash"] === true,
-		terminalBashIdleMs: typeof s["terminalBashIdleMs"] === "number" ? (s["terminalBashIdleMs"] as number) : 0,
-		terminalBashMaxForegroundMs:
-			typeof s["terminalBashMaxForegroundMs"] === "number" ? (s["terminalBashMaxForegroundMs"] as number) : 0,
-		editSoftEnabled: s["editSoftEnabled"] === true,
-		retryMaxAttempts: normalizeRetryMaxAttempts(s["retryMaxAttempts"]),
-		softCapTokens: normalizeSoftCapTokens(s["softCapTokens"]),
-		softCapByModel: normalizeSoftCapByModel(s["softCapByModel"]),
-		reviewPrompt: str("reviewPrompt"),
-		reviewDisabledSkills: (s["reviewDisabledSkills"] as string[]) ?? [],
-		skillsFullText: normalizeSkillList(s["skillsFullText"]),
-	};
+	return { name: normalizePresetName(name), ...(settings as Partial<SettingsPreset>) };
 }
 
 /* ------------------------------------------------------------------ */
@@ -503,7 +594,10 @@ export function parseShareDoc(raw: string, lang: ServerLang = "en"): PresetParse
 	if (!doc["settings"] || typeof doc["settings"] !== "object" || Array.isArray(doc["settings"])) {
 		return fail(lang, "presets.import.settings", "缺少 settings 对象", "Missing the settings object");
 	}
-	const sanitized = sanitizePresetSettings(doc["settings"]);
+	const rawEnabled = Array.isArray(doc["enabledTools"])
+		? (doc["enabledTools"] as unknown[]).filter((x): x is string => typeof x === "string")
+		: undefined;
+	const sanitized = sanitizePresetSettings(doc["settings"], { enabledTools: rawEnabled });
 	if (sanitized.fields.length === 0) {
 		return fail(
 			lang,
@@ -523,6 +617,7 @@ export function parseShareDoc(raw: string, lang: ServerLang = "en"): PresetParse
 			tags: normalizeTags(doc["tags"]),
 			createdAt: clampText(doc["createdAt"], 40),
 			appVersion: clampText(doc["appVersion"], 40),
+			...(rawEnabled ? { enabledTools: rawEnabled } : {}),
 			settings: sanitized.settings,
 		},
 		sanitized,
@@ -1026,11 +1121,12 @@ export function buildImportPreview(
 		rejected: sanitized.rejected,
 		replaces,
 		summary: presetSummary(sanitized.settings),
-		customSystemPrompt: preset.customSystemPrompt.slice(0, PREVIEW_TEXT_MAX),
-		promptTemplate: preset.promptTemplate.slice(0, PREVIEW_TEXT_MAX),
-		reviewPrompt: preset.reviewPrompt.slice(0, PREVIEW_TEXT_MAX),
-		disabledSkills: preset.disabledSkills,
-		disabledExtensions: preset.disabledExtensions,
+		settings: sanitized.settings,
+		customSystemPrompt: (preset.customSystemPrompt ?? "").slice(0, PREVIEW_TEXT_MAX),
+		promptTemplate: (preset.promptTemplate ?? "").slice(0, PREVIEW_TEXT_MAX),
+		reviewPrompt: (preset.reviewPrompt ?? "").slice(0, PREVIEW_TEXT_MAX),
+		disabledSkills: preset.disabledSkills ?? [],
+		disabledExtensions: preset.disabledExtensions ?? [],
 	};
 }
 
@@ -1038,8 +1134,9 @@ export function buildImportPreview(
 async function applyImport(
 	port: PresetSharePort,
 	parsed: PresetParseSuccess,
-	opts: { dryRun?: boolean; name?: string; apply?: boolean; requestId?: string },
+	opts: { dryRun?: boolean; name?: string; apply?: boolean; requestId?: string; fields?: unknown },
 ): Promise<void> {
+	const lang = port.lang();
 	const name = (opts.name ?? "").trim() || parsed.doc.name;
 	const replaces = port.presets().some((p) => p.name === name);
 	const preview = buildImportPreview(name, parsed.doc, parsed.sanitized, replaces);
@@ -1047,9 +1144,32 @@ async function applyImport(
 		port.emit({ type: "preset_import_result", requestId: opts.requestId, ok: true, dryRun: true, preview });
 		return;
 	}
-	port.upsertPreset(toSettingsPreset(name, parsed.sanitized.settings));
+	// 可选导入：客户端可只带一部分字段名（导入预览里的按组/按字段勾选）。
+	// 只认白名单里存在的名字；给了名单但一个都没命中 = 用户全取消了，不写任何东西。
+	const selection = normalizePresetFieldSelection(opts.fields);
+	const settings = selection
+		? Object.fromEntries(Object.entries(parsed.sanitized.settings).filter(([k]) => selection.includes(k)))
+		: parsed.sanitized.settings;
+	if (selection && Object.keys(settings).length === 0) {
+		port.emit({
+			type: "preset_import_result",
+			requestId: opts.requestId,
+			ok: false,
+			dryRun: false,
+			error: pick(lang, "没有勾选任何要导入的字段", "No fields selected to import", "presets.import.noneSelected"),
+		});
+		return;
+	}
+	const applied: string[] = Object.keys(settings).sort();
+	port.upsertPreset(toSettingsPreset(name, settings));
 	port.pushSettings();
-	port.emit({ type: "preset_import_result", requestId: opts.requestId, ok: true, dryRun: false, preview });
+	port.emit({
+		type: "preset_import_result",
+		requestId: opts.requestId,
+		ok: true,
+		dryRun: false,
+		preview: { ...preview, fields: applied },
+	});
 	port.emit({
 		type: "notice",
 		level: "info",
@@ -1151,6 +1271,80 @@ export async function importPresetFromUrlVia(port: PresetSharePort, msg: ImportU
 	await applyImport(port, parsed, msg);
 }
 
+/**
+ * 将 gh 或 API 失败原因转化为用户友好的指导文案（含安装提示、登录提示或令牌说明）。
+ */
+export function diagnoseShareFailure(opts: {
+	ghError?: string;
+	ghErrorKey?: string;
+	apiError?: string;
+	apiErrorKey?: string;
+	hasToken?: boolean;
+	lang: ServerLang;
+}): string {
+	const { ghError = "", ghErrorKey, apiError = "", hasToken, lang } = opts;
+
+	// 1. 如果配置了 Token 且通过 API 请求失败：
+	if (hasToken && apiError) {
+		if (/401|bad credentials/i.test(apiError)) {
+			return pick(
+				lang,
+				"GitHub 令牌无效或已过期（PI_WEB_PRESET_TOKEN）。请检查令牌有效性；也可直接在网页提交。",
+				"GitHub token is invalid or expired (PI_WEB_PRESET_TOKEN). Check token validity; or submit via the web link below.",
+				"presets.share.apiTokenInvalid",
+			);
+		}
+		if (/403|404|permission|resource not accessible/i.test(apiError)) {
+			return pick(
+				lang,
+				"GitHub 令牌无权在此仓库创建 Issue（需要 issues: write 权限）。请更新权限；也可直接在网页提交。",
+				"GitHub token lacks permission to create issues here (issues: write required). Update permissions; or submit via the web link below.",
+				"presets.share.apiTokenPermission",
+			);
+		}
+		return pick(
+			lang,
+			`GitHub API 提交失败（${apiError}）。已回落到网页提交方式。`,
+			`GitHub API submission failed (${apiError}). Falling back to web submission.`,
+			"presets.share.apiGeneralFailed",
+			{ error: apiError },
+		);
+	}
+
+	// 2. 如果 gh CLI 缺失（ENOENT 或明确的 ghMissing）：
+	if (ghErrorKey === "presets.share.ghMissing" || /ENOENT|not found/i.test(ghError)) {
+		return pick(
+			lang,
+			"未检测到 GitHub CLI (gh)。可安装 gh（如 winget install --id GitHub.cli 或 brew install gh）并执行 gh auth login；或配置环境变量 PI_WEB_PRESET_TOKEN；也可直接在网页提交。",
+			"GitHub CLI (gh) not found. Install it (e.g. winget install --id GitHub.cli or brew install gh) and run 'gh auth login'; or set the PI_WEB_PRESET_TOKEN env var; or submit via the web link below.",
+			"presets.share.ghMissingHint",
+		);
+	}
+
+	// 3. 如果 gh CLI 未登录/未认证：
+	if (/auth|login|credential|not logged in/i.test(ghError)) {
+		return pick(
+			lang,
+			"GitHub CLI (gh) 尚未登录。请在终端执行 gh auth login 登录，或配置环境变量 PI_WEB_PRESET_TOKEN；也可直接在网页提交。",
+			"GitHub CLI (gh) is not logged in. Run 'gh auth login' in terminal, or set the PI_WEB_PRESET_TOKEN env var; or submit via the web link below.",
+			"presets.share.ghNotLoggedInHint",
+		);
+	}
+
+	// 4. 其他通用错误：
+	if (ghError) {
+		return pick(
+			lang,
+			`自动提交遇到问题（${ghError}）。已回落到网页提交方式。`,
+			`Automatic submission encountered an issue (${ghError}). Falling back to web submission.`,
+			"presets.share.fallbackHint",
+			{ error: ghError },
+		);
+	}
+
+	return "";
+}
+
 /** preset_share：一键发到社区共享仓库（gh issue create；失败回落预填网页）。 */
 export async function sharePresetVia(port: PresetSharePort, msg: ShareMsg): Promise<void> {
 	const built = buildDocFromPort(port, msg);
@@ -1202,6 +1396,14 @@ export async function sharePresetVia(port: PresetSharePort, msg: ShareMsg): Prom
 		return;
 	}
 	// 服务端两条路都不通：回落预填网页，json 一起交回前端（前端复制后打开链接）。
+	const friendlyError = diagnoseShareFailure({
+		ghError: gh.error,
+		ghErrorKey: gh.errorKey,
+		apiError: viaApi && !viaApi.ok ? viaApi.error : "",
+		apiErrorKey: viaApi && !viaApi.ok ? viaApi.errorKey : undefined,
+		hasToken: !!token,
+		lang: port.lang(),
+	});
 	port.emit({
 		type: "preset_share_result",
 		requestId: msg.requestId,
@@ -1210,7 +1412,7 @@ export async function sharePresetVia(port: PresetSharePort, msg: ShareMsg): Prom
 		url: presetIssueWebUrl(repo, built.doc.name, body),
 		name: built.doc.name,
 		json: built.json,
-		error: (viaApi && !viaApi.ok ? viaApi.error : "") || gh.error,
+		error: friendlyError || (viaApi && !viaApi.ok ? viaApi.error : "") || gh.error,
 	});
 }
 

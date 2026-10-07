@@ -38,6 +38,19 @@ export function normalizeToolWatchdogTimeoutMs(v: unknown): number {
 	return n;
 }
 
+/** 「后台任务」自动清理阈值的合法档位（分钟）。0 = 关。 */
+export const BG_CLEANUP_MINUTES = [0, 15, 30, 60, 120] as const;
+
+/** 归一化自动清理阈值（分钟）：只认档位表里的值（脏值按最近档位下取，负数/非数回落 0 = 关）。
+ *  默认关 —— 杀进程是破坏性动作，不替用户做主。 */
+export function normalizeBgCleanupMinutes(v: unknown): number {
+	const n = Math.floor(Number(v));
+	if (!Number.isFinite(n) || n <= 0) return 0;
+	let best = 0;
+	for (const step of BG_CLEANUP_MINUTES) if (step <= n && step > best) best = step;
+	return best;
+}
+
 /** 工具自己声明超时时留给它的余量（毫秒）：让工具先自己超时并返回错误，
  *  而不是看门狗先下手把整轮对话 abort 掉。 */
 export const TOOL_WATCHDOG_EXPLICIT_GRACE_MS = 5_000;
@@ -253,6 +266,9 @@ export interface ClientSettings {
 	 *  列出目录条目；关 → 原样交回内置 read。行为开关（read 本体不可关），
 	 *  覆盖定义每次调用实时读取，无需 reload。 */
 	readDirEnabled: boolean;
+	/** 「后台任务」面板的自动清理阈值（分钟；0 = 关，默认关）：开着时服务端定期把
+	 *  **未钉住**且闲置超过该阈值的 AI 起后台实例杀掉（见 server/bg-servers.ts）。 */
+	bgAutoCleanupMin: number;
 	/** 工具**延迟加载**开关（默认开）：开 → 只有核心工具（bash/read/edit/write）+
 	 *  `load_tools` 常驻，其余工具在系统提示词里只出现「名字 + 一行摘要」，模型用
 	 *  `load_tools` 拉取后完整参数 schema 才进上下文（见 server/load-tools-tool.ts）；
@@ -344,39 +360,31 @@ export interface ClientSettings {
 	defaultPermissionPreset?: string;
 }
 
-/** A named combo of prompt + skill/extension toggles the user can re-apply.
- *  Vision-bridge prefs are intentionally NOT part of a preset — they stay
- *  whatever the user currently has set when a preset is applied. */
-export interface SettingsPreset extends Omit<
-	ClientSettings,
-	| "visionBridgeEnabled"
-	| "visionBridgeModel"
-	| "visionBridgePromptMode"
-	| "visionBridgePrompt"
-	| "scmCommitMsgPromptMode"
-	| "scmCommitMsgPrompt"
-	| "planModePromptMode"
-	| "planModePrompt"
-	| "questionnaireEnabled"
-	| "goalModeEnabled"
-	| "parallelReminderEnabled"
-	// 纯运行行为开关（不进预设：应用预设时保持当前值）。
-	| "readDirEnabled"
-	| "toolLazyLoading"
-	| "toolApprovalEnabled"
-	| "toolWatchdogTimeoutMs"
-	| "thinkingWrap"
-	| "toolsWrap"
-	| "toolImagesEnabled"
-	| "devNoCache"
-	| "autoReload"
-	| "subagentDefaultModel"
-	| "quickPhrases"
-	| "quickPhrasesEnabled"
-	// 逐工具文案覆盖也不进预设（应用预设时保持当前值）。
-	| "toolPromptOverrides"
-> {
+/**
+ * 一条命名预设 = 当前设置的一份快照。
+ *
+ * **全量**：`ClientSettings` 的每个字段都可以进预设（字段清单/分组见
+ * `server/preset-fields.ts`，导出/分享/导入共用同一张白名单）。
+ * 字段一律**可选**：早期预设只有 19 个字段，导入时也可以只勾选一部分 ——
+ * 应用预设时缺哪个字段就保持当前值（见 `SettingsService.applyPreset`）。
+ */
+export interface SettingsPreset extends Partial<ClientSettings> {
 	name: string;
+}
+
+/** 预设 → 设置面板列表用的 UI 形状（协议要求字段完整：旧/部分预设用默认值补齐）。 */
+export function settingsPresetToUi(p: SettingsPreset): import("./protocol.js").UiSettingsPreset {
+	return {
+		name: p.name,
+		promptMode: p.promptMode === "replace" ? "replace" : "append",
+		customSystemPrompt: p.customSystemPrompt ?? "",
+		promptTemplate: p.promptTemplate ?? "",
+		promptOverrides: { ...(p.promptOverrides ?? {}) },
+		disabledSkills: [...(p.disabledSkills ?? [])],
+		disabledExtensions: [...(p.disabledExtensions ?? [])],
+		reviewPrompt: p.reviewPrompt ?? "",
+		reviewDisabledSkills: [...(p.reviewDisabledSkills ?? [])],
+	};
 }
 
 /** Stable identity of an extension for the enable/disable toggle: the npm
@@ -988,6 +996,7 @@ export class ClientStateStore {
 			terminalBashMaxForegroundMs: stored?.terminalBashMaxForegroundMs ?? 60_000,
 			toolWatchdogTimeoutMs: normalizeToolWatchdogTimeoutMs(stored?.toolWatchdogTimeoutMs),
 			readDirEnabled: stored?.readDirEnabled ?? true,
+			bgAutoCleanupMin: normalizeBgCleanupMinutes(stored?.bgAutoCleanupMin),
 			toolLazyLoading: stored?.toolLazyLoading ?? DEFAULT_TOOL_LAZY_LOADING,
 			toolApprovalEnabled: stored?.toolApprovalEnabled ?? true,
 			editSoftEnabled:
@@ -1058,6 +1067,7 @@ export class ClientStateStore {
 				settings.toolWatchdogTimeoutMs ?? cur.toolWatchdogTimeoutMs ?? DEFAULT_TOOL_WATCHDOG_TIMEOUT_MS,
 			),
 			readDirEnabled: settings.readDirEnabled ?? cur.readDirEnabled ?? true,
+			bgAutoCleanupMin: normalizeBgCleanupMinutes(settings.bgAutoCleanupMin ?? cur.bgAutoCleanupMin),
 			toolLazyLoading: settings.toolLazyLoading ?? cur.toolLazyLoading ?? DEFAULT_TOOL_LAZY_LOADING,
 			toolApprovalEnabled: settings.toolApprovalEnabled ?? cur.toolApprovalEnabled ?? true,
 			editSoftEnabled: settings.editSoftEnabled ?? cur.editSoftEnabled ?? false,

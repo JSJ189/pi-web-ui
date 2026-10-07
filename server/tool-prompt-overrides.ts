@@ -76,14 +76,23 @@ export function normalizeToolPromptOverride(v: unknown): UiToolPromptOverride | 
 	return Object.keys(out).length > 0 ? out : null;
 }
 
-/** 归一化整张覆盖表：丢掉空项/空对象/非字符串键；超出上限的条目截断。 */
-export function normalizeToolPromptOverrides(v: unknown): ToolPromptOverrideMap {
+/** 归一化整张覆盖表：丢掉空项/空对象/非字符串键；超出上限的条目截断。
+ *  当传入 knownTools 时，只取当前系统已知可用的工具配置，丢弃未知或不可用工具，防后期漂移或脏数据。 */
+export function normalizeToolPromptOverrides(
+	v: unknown,
+	knownTools?: readonly string[] | Set<string>,
+): ToolPromptOverrideMap {
 	if (!v || typeof v !== "object" || Array.isArray(v)) return {};
 	const out: ToolPromptOverrideMap = {};
 	let count = 0;
+	const isKnown = (key: string) => {
+		if (!knownTools) return true;
+		if (knownTools instanceof Set) return knownTools.has(key);
+		return (knownTools as readonly string[]).includes(key);
+	};
 	for (const [name, raw] of Object.entries(v as Record<string, unknown>)) {
 		const key = name.trim();
-		if (!key) continue;
+		if (!key || !isKnown(key)) continue;
 		const ov = normalizeToolPromptOverride(raw);
 		if (!ov) continue;
 		if (count >= TOOL_PROMPT_OVERRIDE_MAX) break;

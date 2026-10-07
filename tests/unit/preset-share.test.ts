@@ -5,6 +5,7 @@
  * 的 ghPath 验证失败回落路径）。
  */
 import { describe, expect, it, vi } from "vitest";
+import { readFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import {
@@ -14,6 +15,7 @@ import {
 	clearPresetCatalogCache,
 	createPresetIssueViaApi,
 	DEFAULT_PRESET_REPO,
+	diagnoseShareFailure,
 	exportPresetVia,
 	fetchPresetCatalog,
 	importPresetFromUrlVia,
@@ -33,6 +35,8 @@ import {
 	presetShareToken,
 	presetShortHash,
 	presetSummary,
+	PRESET_FIELD_KIND_NAMES,
+	PRESET_FIELD_NAMES_SORTED,
 	PRESET_JSON_MAX_BYTES,
 	PRESET_SHARE_FORMAT,
 	PRESET_SHARE_VERSION,
@@ -48,6 +52,28 @@ import {
 	type TextFetcher,
 } from "../../server/preset-share.js";
 import type { ClientMessage, ServerMessage, UiPresetCatalogEntry } from "../../server/protocol.js";
+import {
+	formatPresetFieldValue,
+	normalizePresetFieldSelection,
+	presetFieldGroup,
+	presetFieldHint,
+	presetFieldLabel,
+	PRESET_FIELD_GROUPS,
+	PRESET_FIELD_META,
+	PRESET_FIELD_NAMES,
+	PRESET_GROUP_ORDER,
+	type PresetFieldName,
+} from "../../server/preset-fields.js";
+import type { ClientSettings } from "../../server/client-state.js";
+
+/**
+ * 编译期守卫：`ClientSettings` 的每个字段都必须在 `preset-fields.ts` 里登记。
+ * 两者对不上时 `Exclude<...>` 不是 `never`，`Assert<true>` 立刻报类型错误。
+ */
+type Assert<T extends true> = T;
+export type PresetFieldsCoverClientSettings = Assert<
+	Exclude<keyof ClientSettings, PresetFieldName> extends never ? true : false
+>;
 
 const SETTINGS = {
 	promptMode: "append",
@@ -177,14 +203,89 @@ describe("sanitizePresetSettings（白名单 + 类型 + 上限）", () => {
 		expect(r.settings["softCapByModel"]).toEqual({ "gpt-x": 1_000_000 });
 	});
 
-	it("toSettingsPreset 补齐缺失字段（旧文档/新客户端都能读）", () => {
+	it("toSettingsPreset 只带回文档里存在的字段（缺的由 applyPreset 回落当前值）", () => {
 		const p = toSettingsPreset("n", { promptMode: "replace" });
 		expect(p.name).toBe("n");
 		expect(p.promptMode).toBe("replace");
-		expect(p.customSystemPrompt).toBe("");
-		expect(p.terminalToolsEnabled).toBe(true);
-		expect(p.retryMaxAttempts).toBeGreaterThan(0);
-		expect(p.softCapTokens).toBe(0);
+		// 部分预设：未出现的字段不聪凭空补默认值（由应用侧保留当前值）。
+		expect("customSystemPrompt" in p).toBe(false);
+		expect("terminalToolsEnabled" in p).toBe(false);
+	});
+
+	it("全量白名单：工具文案 / 界面偏好 / 专用提示词都能进预设（含 null 语义）", () => {
+		const r = sanitizePresetSettings({
+			toolPromptOverrides: { bash: { description: "  custom  ", promptGuidelines: ["a", ""] } },
+			toolLazyLoading: false,
+			readDirEnabled: false,
+			toolWatchdogTimeoutMs: 1234,
+			questionnaireEnabled: false,
+			goalModeEnabled: false,
+			parallelReminderEnabled: false,
+			visionBridgeModel: null,
+			subagentDefaultModel: "openai/gpt-x",
+			visionBridgePrompt: "see this",
+			scmCommitMsgPromptMode: "replace",
+			planModePrompt: "plan first",
+			uiLayout: { hidden: ["host:brand"], sideDockFloat: true },
+			quickPhrases: ["hi"],
+			defaultAgentPreset: "standard",
+		});
+		expect(r.rejected).toEqual([]);
+		expect(r.settings["toolPromptOverrides"]).toEqual({
+			bash: { description: "custom", promptGuidelines: ["a"] },
+		});
+		expect(r.settings["toolLazyLoading"]).toBe(false);
+		expect(r.settings["visionBridgeModel"]).toBeNull();
+		expect(r.settings["uiLayout"]).toEqual({ hidden: ["host:brand"], sideDockFloat: true });
+		expect(r.settings["scmCommitMsgPromptMode"]).toBe("replace");
+	});
+
+	it("新增字段的类型不符也一律 rejected", () => {
+		const r = sanitizePresetSettings({
+			toolPromptOverrides: "nope",
+			toolLazyLoading: "yes",
+			visionBridgeModel: 42,
+			uiLayout: [],
+			defaultAgentPreset: { a: 1 },
+			toolWatchdogTimeoutMs: -5,
+		});
+		expect(r.rejected).toEqual([
+			"defaultAgentPreset",
+			"toolLazyLoading",
+			"toolPromptOverrides",
+			"toolWatchdogTimeoutMs",
+			"uiLayout",
+			"visionBridgeModel",
+		]);
+	});
+});
+
+describe("字段清单一致性（守卫）", () => {
+	it("白名单种类与 preset-fields 的字段名完全一致", () => {
+		expect([...PRESET_FIELD_KIND_NAMES].sort()).toEqual(PRESET_FIELD_NAMES_SORTED);
+		expect(PRESET_FIELD_NAMES_SORTED).toEqual([...PRESET_FIELD_NAMES].sort());
+	});
+
+	it("每个字段都有分组，组内字段不重复", () => {
+		const seen = new Set<string>();
+		for (const g of PRESET_GROUP_ORDER) {
+			for (const f of PRESET_FIELD_GROUPS[g]) {
+				expect(seen.has(f), f).toBe(false);
+				seen.add(f);
+				expect(presetFieldGroup(f)).toBe(g);
+			}
+		}
+		expect(seen.size).toBe(PRESET_FIELD_NAMES_SORTED.length);
+	});
+
+	it("normalizePresetFieldSelection：只留合法名、按固定顺序、非数组返回 undefined", () => {
+		expect(normalizePresetFieldSelection(undefined)).toBeUndefined();
+		expect(normalizePresetFieldSelection("x")).toBeUndefined();
+		expect(normalizePresetFieldSelection(["toolLazyLoading", "nope", 5, "promptMode"])).toEqual([
+			"promptMode",
+			"toolLazyLoading",
+		]);
+		expect(normalizePresetFieldSelection([])).toEqual([]);
 	});
 });
 
@@ -674,6 +775,35 @@ describe("编排：导入", () => {
 		expect(saved).toEqual(["Renamed", "push"]);
 	});
 
+	it("可选导入：只写勾选的字段（未勾选的不进落盘预设）", async () => {
+		const stored: Record<string, unknown>[] = [];
+		const { port, sent } = makePort({
+			upsertPreset: (p) => stored.push(p as unknown as Record<string, unknown>),
+		});
+		await importPresetVia(port, {
+			type: "preset_import",
+			json: shareText(),
+			fields: ["customSystemPrompt", "nope"],
+		});
+		expect(stored).toHaveLength(1);
+		expect(stored[0].customSystemPrompt).toBe("be brief");
+		expect("disabledSkills" in stored[0]).toBe(false);
+		const msg = sent[0] as Extract<ServerMessage, { type: "preset_import_result" }>;
+		expect(msg.ok).toBe(true);
+		expect(msg.dryRun).toBe(false);
+		// 回执里的 fields = **实际写入**的子集（不是文档全部）。
+		expect(msg.preview?.fields).toEqual(["customSystemPrompt"]);
+	});
+
+	it("可选导入：一个字段都没勾 → ok:false 且不落盘", async () => {
+		const { port, sent, saved } = makePort();
+		await importPresetVia(port, { type: "preset_import", json: shareText(), fields: [] });
+		const msg = sent[0] as Extract<ServerMessage, { type: "preset_import_result" }>;
+		expect(msg.ok).toBe(false);
+		expect(msg.dryRun).toBe(false);
+		expect(saved).toEqual([]);
+	});
+
 	it("解析失败：ok:false + 错误文案，不落盘", async () => {
 		const { port, sent, saved } = makePort();
 		await importPresetVia(port, { type: "preset_import", json: "{oops", requestId: "paste:3" });
@@ -763,11 +893,246 @@ describe("编排：分享与目录", () => {
 			expect(msg.url).toContain("github.com/o/r/issues/new");
 			expect(msg.json).toBeTruthy();
 			expect(msg.name).toBe("P");
+			expect(msg.error).toContain("GitHub CLI");
 		} finally {
 			if (savedRepo === undefined) delete process.env["PI_WEB_PRESET_REPO"];
 			else process.env["PI_WEB_PRESET_REPO"] = savedRepo;
 			if (savedGh === undefined) delete process.env["PI_WEB_PRESET_GH"];
 			else process.env["PI_WEB_PRESET_GH"] = savedGh;
+		}
+	});
+
+	it("diagnoseShareFailure：缺少 gh 时提供安装与配置指引", () => {
+		const zh = diagnoseShareFailure({
+			ghError: "spawn gh ENOENT",
+			ghErrorKey: "presets.share.ghMissing",
+			lang: "zh",
+		});
+		expect(zh).toContain("未检测到 GitHub CLI (gh)");
+		expect(zh).toContain("winget install --id GitHub.cli");
+		expect(zh).toContain("PI_WEB_PRESET_TOKEN");
+
+		const en = diagnoseShareFailure({
+			ghError: "spawn gh ENOENT",
+			ghErrorKey: "presets.share.ghMissing",
+			lang: "en",
+		});
+		expect(en).toContain("GitHub CLI (gh) not found");
+		expect(en).toContain("winget install --id GitHub.cli");
+	});
+
+	it("diagnoseShareFailure：gh 未登录时提供 gh auth login 指引", () => {
+		const zh = diagnoseShareFailure({
+			ghError: "To get started with GitHub CLI, please run: gh auth login",
+			ghErrorKey: "presets.share.ghFailed",
+			lang: "zh",
+		});
+		expect(zh).toContain("gh auth login");
+		expect(zh).toContain("尚未登录");
+
+		const en = diagnoseShareFailure({
+			ghError: "authentication required",
+			ghErrorKey: "presets.share.ghFailed",
+			lang: "en",
+		});
+		expect(en).toContain("gh auth login");
+		expect(en).toContain("not logged in");
+	});
+
+	it("diagnoseShareFailure：Token API 鉴权失败时给出友好提示", () => {
+		const invalid = diagnoseShareFailure({
+			apiError: "HTTP 401: Bad credentials",
+			hasToken: true,
+			lang: "zh",
+		});
+		expect(invalid).toContain("令牌无效或已过期");
+
+		const perm = diagnoseShareFailure({
+			apiError: "HTTP 403: Resource not accessible by personal access token",
+			hasToken: true,
+			lang: "en",
+		});
+		expect(perm).toContain("issues: write required");
+	});
+
+	it("PRESET_FIELD_META：48 个预设字段全部具有人类可读的中英文名称与说明", () => {
+		expect(PRESET_FIELD_NAMES.length).toBe(48);
+		for (const name of PRESET_FIELD_NAMES) {
+			const meta = PRESET_FIELD_META[name];
+			expect(meta, `meta for ${name}`).toBeDefined();
+			expect(meta.labelZh.trim().length, `labelZh for ${name}`).toBeGreaterThan(0);
+			expect(meta.labelEn.trim().length, `labelEn for ${name}`).toBeGreaterThan(0);
+			expect(presetFieldLabel(name, "zh")).toBe(meta.labelZh);
+			expect(presetFieldLabel(name, "en")).toBe(meta.labelEn);
+		}
+		expect(presetFieldLabel("unknownField" as never, "zh")).toBe("unknownField");
+	});
+
+	it("formatPresetFieldValue：工具类字段可清晰区分全开启与具体禁用明细", () => {
+		// 全开启
+		const allEnabledZh = formatPresetFieldValue("disabledAgentTools", [], "zh");
+		expect(allEnabledZh.summary).toContain("全部启用");
+		expect(allEnabledZh.detail).toContain("已启用可用工具");
+
+		const allEnabledEn = formatPresetFieldValue("disabledAgentTools", [], "en");
+		expect(allEnabledEn.summary).toContain("All enabled");
+
+		// 部分禁用
+		const disabledZh = formatPresetFieldValue("disabledAgentTools", ["bash", "write"], "zh");
+		expect(disabledZh.summary).toContain("禁用 2 个");
+		expect(disabledZh.summary).toContain("默认没开即关");
+		expect(disabledZh.detail).toContain("已启用可用配置");
+		expect(disabledZh.detail).toContain("bash");
+		expect(disabledZh.detail).toContain("write");
+	});
+
+	it("formatPresetFieldValue：工具提示词覆盖可清晰列出覆盖的工具与具体修改内容", () => {
+		const overridesZh = formatPresetFieldValue(
+			"toolPromptOverrides",
+			{
+				bash: {
+					description: "安全执行 bash 命令",
+					promptGuidelines: ["严禁前台长期运行", "优先使用 head/tail 参数"],
+				},
+				edit: {
+					description: "精准修改代码文件",
+				},
+			},
+			"zh",
+		);
+		expect(overridesZh.summary).toContain("覆盖了 2 个工具的提示词");
+		expect(overridesZh.summary).toContain("bash, edit");
+		expect(overridesZh.detail).toContain("[bash]");
+		expect(overridesZh.detail).toContain("安全执行 bash 命令");
+		expect(overridesZh.detail).toContain("严禁前台长期运行");
+		expect(overridesZh.detail).toContain("[edit]");
+	});
+
+	it("formatPresetFieldValue：提示词与模式类字段有清晰字符统计与文本详情", () => {
+		const promptZh = formatPresetFieldValue("customSystemPrompt", "你是一个资深架构师，请给出严谨的代码方案。", "zh");
+		expect(promptZh.summary).toContain("包含 21 字符");
+		expect(promptZh.detail).toBe("你是一个资深架构师，请给出严谨的代码方案。");
+
+		const modeAppend = formatPresetFieldValue("promptMode", "append", "zh");
+		expect(modeAppend.summary).toContain("追加到系统提示词后");
+
+		const modeReplace = formatPresetFieldValue("promptMode", "replace", "zh");
+		expect(modeReplace.summary).toContain("替换内置系统提示词");
+	});
+
+	it("formatPresetFieldValue：开关与数值字段具备易读性", () => {
+		expect(formatPresetFieldValue("terminalBash", true, "zh").summary).toContain("开启");
+		expect(formatPresetFieldValue("terminalBash", false, "zh").summary).toContain("关闭");
+		expect(formatPresetFieldValue("toolLazyLoading", true, "zh").summary).toContain("仅核心工具常驻");
+		expect(formatPresetFieldValue("retryMaxAttempts", 6, "zh").summary).toBe("最大重试 6 次");
+		expect(formatPresetFieldValue("softCapTokens", 50000, "zh").summary).toBe("50000 tokens");
+	});
+
+	it("默认没有开的工具就是关：声明 enabledTools 时未在名单中的工具自动收敛为禁用", () => {
+		const res = sanitizePresetSettings(
+			{
+				disabledAgentTools: [],
+			},
+			{ enabledTools: ["bash", "read", "edit", "write"] },
+		);
+		const disabled = res.settings["disabledAgentTools"] as string[];
+		expect(disabled).toBeDefined();
+		// 四个明确开启的核心工具不应该在 disabled 列表中
+		expect(disabled).not.toContain("bash");
+		expect(disabled).not.toContain("read");
+		expect(disabled).not.toContain("edit");
+		expect(disabled).not.toContain("write");
+		// 其余所有已知工具均应被自动归入 disabled（默认没开即关）
+		expect(disabled).toContain("terminal_create");
+		expect(disabled).toContain("eval");
+		expect(disabled).toContain("patch");
+		expect(disabled).toContain("lsp");
+	});
+
+	it("只取可用的配置：未知/不可用工具自动清洗并记录进 ignored，防后期漂移", () => {
+		const res = sanitizePresetSettings({
+			disabledAgentTools: ["bash", "unknown_legacy_tool_xyz"],
+			toolPromptOverrides: {
+				bash: { description: "安全执行 bash" },
+				nonexistent_tool_abc: { description: "给不存在的工具配置提示词" },
+			},
+		});
+		const disabled = res.settings["disabledAgentTools"] as string[];
+		expect(disabled).toContain("bash");
+		expect(disabled).not.toContain("unknown_legacy_tool_xyz");
+		expect(res.ignored).toContain("disabledAgentTools.unknown_legacy_tool_xyz");
+
+		const overrides = res.settings["toolPromptOverrides"] as Record<string, unknown>;
+		expect(overrides["bash"]).toBeDefined();
+		expect(overrides["nonexistent_tool_abc"]).toBeUndefined();
+		expect(res.ignored).toContain("toolPromptOverrides.nonexistent_tool_abc");
+	});
+
+	it("buildShareDoc：导出的交换文档自动计算并携带 enabledTools 明确白名单", () => {
+		const doc = buildShareDoc("Strict Preset", {
+			disabledAgentTools: ["terminal_create", "eval"],
+		});
+		expect(doc.enabledTools).toBeDefined();
+		expect(doc.enabledTools).toContain("bash");
+		expect(doc.enabledTools).toContain("read");
+		expect(doc.enabledTools).not.toContain("terminal_create");
+		expect(doc.enabledTools).not.toContain("eval");
+	});
+
+	it("buildImportPreview：生成的预览对象携带 settings 供前端展示明细", () => {
+		const preview = buildImportPreview(
+			"Test",
+			{
+				format: PRESET_SHARE_FORMAT,
+				version: PRESET_SHARE_VERSION,
+				name: "Test",
+				description: "desc",
+				author: "author",
+				tags: [],
+				createdAt: "",
+				appVersion: "",
+				settings: { customSystemPrompt: "test prompt", disabledAgentTools: ["bash"] },
+			},
+			{
+				settings: { customSystemPrompt: "test prompt", disabledAgentTools: ["bash"] },
+				fields: ["customSystemPrompt", "disabledAgentTools"],
+				ignored: [],
+				rejected: [],
+			},
+			false,
+		);
+		expect(preview.settings).toBeDefined();
+		expect(preview.settings?.["customSystemPrompt"]).toBe("test prompt");
+		expect(preview.settings?.["disabledAgentTools"]).toEqual(["bash"]);
+	});
+
+	it("全面测试预设：3 套实战预设（全栈开发 / 学术写作 / 架构审查）均能 100% 成功解析且 UI 布局完整", () => {
+		const presetFiles = ["fullstack-hacker.json", "academic-writer.json", "architect-reviewer.json"];
+		for (const file of presetFiles) {
+			const jsonText = readFileSync(join(__dirname, "..", "..", "docs", "examples", "presets", file), "utf8");
+			const parsed = parseShareDoc(jsonText, "zh");
+			expect(parsed.ok, `parse ${file}`).toBe(true);
+			if (!parsed.ok) continue;
+
+			// 验证元数据
+			expect(parsed.doc.format).toBe(PRESET_SHARE_FORMAT);
+			expect(parsed.doc.version).toBe(PRESET_SHARE_VERSION);
+			expect(parsed.doc.name.length).toBeGreaterThan(0);
+			expect(parsed.doc.tags.length).toBeGreaterThan(0);
+
+			// 验证 UI 布局与偏好完整保留
+			const s = parsed.doc.settings;
+			expect(s["uiLayout"]).toBeDefined();
+			expect(typeof s["uiLayout"]).toBe("object");
+			expect(s["quickPhrases"]).toBeDefined();
+			expect(Array.isArray(s["quickPhrases"])).toBe(true);
+			expect((s["quickPhrases"] as unknown[]).length).toBeGreaterThan(0);
+			expect(typeof s["thinkingWrap"]).toBe("boolean");
+			expect(typeof s["toolsWrap"]).toBe("boolean");
+
+			// 验证白名单收敛：无未知非法字段
+			expect(parsed.sanitized.rejected.length, `rejected for ${file}`).toBe(0);
+			expect(parsed.sanitized.fields.length, `fields for ${file}`).toBeGreaterThan(15);
 		}
 	});
 

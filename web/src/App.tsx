@@ -2224,13 +2224,24 @@ export function App() {
 					initialSection={settingsInitialSection}
 					onSwitchToTerminal={() => setView("terminal")}
 					onClose={() => setSettingsOpen(false)}
+					onOpenIconEdit={() => setIconEditOpen(true)}
 					sound={sound}
 					onSoundChange={setSound}
 					tts={tts}
 					onTtsChange={setTts}
 				/>
 			)}
-			{bgTasksOpen && <BgTasksModal servers={chat.bgServers} onClose={() => setBgTasksOpen(false)} />}
+			{bgTasksOpen && (
+				<BgTasksModal
+					servers={chat.bgServers}
+					plugins={chat.plugins}
+					epoch={chat.pluginsEpoch}
+					send={send}
+					onUiAction={onUiAction}
+					autoCleanupMin={chat.settings?.bgAutoCleanupMin ?? 0}
+					onClose={() => setBgTasksOpen(false)}
+				/>
+			)}
 			{/* 工具定义说明弹窗（工具卡右键菜单 host:tool-info）：自己订阅 store，无 props。 */}
 			<ToolInfoDialog />
 			{/* 会话回滚确认弹窗（Dual-State Rollback） */}

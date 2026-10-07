@@ -426,6 +426,70 @@ export function writeSolPiConfig(customPatch = {}) {
 	return recommended;
 }
 
+export function saveSolPiConfig(patch = {}) {
+	const agentDir = getAgentDir();
+	const configPath = join(agentDir, "sol-pi.json");
+	let current = {};
+	if (existsSync(configPath)) {
+		try {
+			current = JSON.parse(readFileSync(configPath, "utf8"));
+		} catch {
+			/* ignore */
+		}
+	}
+	/**
+	 * 落盘配置：基础开关 + 可选的 EPR（证据保全压缩）辅模型。
+	 * provider/model 只在用户显式设置过时存在，必须声明为可选 —— 否则 TS 从字面量
+	 * 推断出的返回类型里没有这两个字段，调用方（单测/设置页）一读就报 TS2551。
+	 * @type {{
+	 *   version: number,
+	 *   observationPack: boolean,
+	 *   onlineContextCompact: boolean,
+	 *   actionFusion: boolean,
+	 *   evidencePreservingReducer: boolean,
+	 *   cacheWriteReadRatio: number,
+	 *   evidencePreservingReducerProvider?: string,
+	 *   evidencePreservingReducerModel?: string,
+	 * }}
+	 */
+	const updated = {
+		version: current.version || 1,
+		observationPack:
+			typeof patch.observationPack === "boolean" ? patch.observationPack : Boolean(current.observationPack ?? true),
+		onlineContextCompact:
+			typeof patch.onlineContextCompact === "boolean"
+				? patch.onlineContextCompact
+				: Boolean(current.onlineContextCompact ?? true),
+		actionFusion: typeof patch.actionFusion === "boolean" ? patch.actionFusion : Boolean(current.actionFusion ?? false),
+		evidencePreservingReducer:
+			typeof patch.evidencePreservingReducer === "boolean"
+				? patch.evidencePreservingReducer
+				: Boolean(current.evidencePreservingReducer ?? false),
+		cacheWriteReadRatio:
+			typeof patch.cacheWriteReadRatio === "number"
+				? patch.cacheWriteReadRatio
+				: typeof current.cacheWriteReadRatio === "number"
+					? current.cacheWriteReadRatio
+					: 12.5,
+	};
+	if (typeof patch.evidencePreservingReducerProvider === "string" && patch.evidencePreservingReducerProvider.trim()) {
+		updated.evidencePreservingReducerProvider = patch.evidencePreservingReducerProvider.trim();
+	} else if (patch.evidencePreservingReducerProvider === "") {
+		delete updated.evidencePreservingReducerProvider;
+	} else if (current.evidencePreservingReducerProvider) {
+		updated.evidencePreservingReducerProvider = current.evidencePreservingReducerProvider;
+	}
+	if (typeof patch.evidencePreservingReducerModel === "string" && patch.evidencePreservingReducerModel.trim()) {
+		updated.evidencePreservingReducerModel = patch.evidencePreservingReducerModel.trim();
+	} else if (patch.evidencePreservingReducerModel === "") {
+		delete updated.evidencePreservingReducerModel;
+	} else if (current.evidencePreservingReducerModel) {
+		updated.evidencePreservingReducerModel = current.evidencePreservingReducerModel;
+	}
+	writeFileSync(configPath, JSON.stringify(updated, null, 2), "utf8");
+	return updated;
+}
+
 export function solSavingsPlugin(host) {
 	let cachedStats = null;
 	let refreshTimer = null;
@@ -575,6 +639,12 @@ export function solSavingsPlugin(host) {
 				// 自动写默认推荐配置；用户已有配置时不覆盖
 				const status = checkSolPiStatus();
 				const config = status.hasConfig ? status.config : writeSolPiConfig();
+				res.json({ ok: true, config });
+			} else if (action === "save_config") {
+				const config = saveSolPiConfig(req.body?.config || {});
+				res.json({ ok: true, config });
+			} else if (action === "reset_config") {
+				const config = writeSolPiConfig();
 				res.json({ ok: true, config });
 			} else {
 				res.status(400).json({ ok: false, error: "unknown action" });

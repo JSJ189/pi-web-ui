@@ -55,7 +55,7 @@ const ids = (entries: { id: string }[]) => entries.map((e) => e.id);
 
 describe("UI slot cardinality（P1-4）", () => {
 	it("所有现有挂载点都有显式 list 规格，新增 single 不会改变现有入口语义", () => {
-		expect(UI_SLOT_SPECS).toHaveLength(24);
+		expect(UI_SLOT_SPECS).toHaveLength(25);
 		expect(UI_SLOT_SPECS.every((spec) => spec.cardinality === "list")).toBe(true);
 		expect(new Set(UI_SLOT_SPECS.map((spec) => spec.slot)).size).toBe(UI_SLOT_SPECS.length);
 	});
@@ -193,7 +193,7 @@ describe("buildUiSlots / 第 1 层：宿主默认", () => {
 		expect(settings?.hidden).toBe(false);
 		expect(settings?.order).toBe(60);
 		// 没用到的槽位是空数组（渲染层不必判空），且全部槽位都在
-		expect(Object.keys(slots)).toHaveLength(24);
+		expect(Object.keys(slots)).toHaveLength(25);
 		expect(slots["composer.leading"]).toEqual([]);
 		// 输入框动作区有 7 个宿主内置（上传/模板/模型/思考/DSH×2/发送），发送簇 align=end
 		// （计划模式已搬到目标条 host:goal-plan）
@@ -270,6 +270,7 @@ describe("buildUiSlots / 第 1 层：宿主默认", () => {
 			"contextmenu.file",
 			"contextmenu.toolcall",
 			"settings.pages",
+			"tasks.panel",
 			"modal.dialog",
 			"sidebar.left",
 			"sidebar.right",
@@ -412,7 +413,7 @@ describe("buildUiSlots / 第 2 层：插件贡献", () => {
 			arrange: [],
 		});
 		const slots = build([dirty]);
-		expect(Object.keys(slots)).toHaveLength(24);
+		expect(Object.keys(slots)).toHaveLength(25);
 		expect(ids(Object.values(slots).flat()).some((id) => id === "dirty:bad")).toBe(false);
 	});
 });
@@ -534,7 +535,7 @@ describe("buildUiSlots / 第 3 层：插件 arrange", () => {
 });
 
 describe("顶栏插件视图区段", () => {
-	it("固定插件从 Git 后开始，旧布局顺序也不能把它们挤到最前", () => {
+	it("未显式排序的固定插件默认从 Git 后开始，旧布局顺序中未列出的插件不会乱跑", () => {
 		const slots = build(
 			withPluginViewItems([
 				plugin("run-trace", { items: [], arrange: [] }),
@@ -543,7 +544,8 @@ describe("顶栏插件视图区段", () => {
 			{
 				layout: {
 					shown: ["run-trace:__view", "editor:__view"],
-					order: ["run-trace:__view", "host:chat", "editor:__view"],
+					// 旧布局顺序只列了宿主条目，没有列新插件视图
+					order: ["host:chat", "host:terminal", "host:git"],
 				},
 			},
 		);
@@ -551,6 +553,25 @@ describe("顶栏插件视图区段", () => {
 		expect(ids.indexOf("host:git")).toBeLessThan(ids.indexOf("run-trace:__view"));
 		expect(ids.indexOf("run-trace:__view")).toBeLessThan(ids.indexOf("host:plugins"));
 		expect(ids.indexOf("run-trace:__view")).toBeLessThan(ids.indexOf("editor:__view"));
+	});
+
+	it("用户显式排序的插件视图（如拖拽或界面布局调整）严格遵循用户位置，允许自由移动", () => {
+		const slots = build(
+			withPluginViewItems([
+				plugin("run-trace", { items: [], arrange: [] }),
+				plugin("editor", { items: [], arrange: [] }),
+			]),
+			{
+				layout: {
+					shown: ["run-trace:__view", "editor:__view"],
+					// 用户将 run-trace:__view 显式移到了 host:chat 前面
+					order: ["run-trace:__view", "host:chat", "editor:__view"],
+				},
+			},
+		);
+		const ids = slots["topbar.primary"].filter((entry) => !entry.hidden).map((entry) => entry.id);
+		expect(ids.indexOf("run-trace:__view")).toBeLessThan(ids.indexOf("host:chat"));
+		expect(ids.indexOf("host:chat")).toBeLessThan(ids.indexOf("editor:__view"));
 	});
 });
 
@@ -1015,7 +1036,7 @@ describe("withPluginViewItems（插件视图 tab 进槽位）", () => {
 		expect(hidden["topbar.primary"].find((e) => e.id === "mail:__view")?.hidden).toBe(true);
 		const ordered = build(ps, { layout: { order: ["mail:__view", "host:chat"] } });
 		const orderedIds = ids(ordered["topbar.primary"]);
-		expect(orderedIds.indexOf("host:git")).toBeLessThan(orderedIds.indexOf("mail:__view"));
+		expect(orderedIds.indexOf("mail:__view")).toBeLessThan(orderedIds.indexOf("host:chat"));
 	});
 
 	it("合成条目默认 hidden：不钉顶栏时它落在溢出集合里，shown 才把它翻回主栏", () => {

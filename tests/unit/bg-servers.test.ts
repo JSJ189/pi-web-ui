@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { shouldTrackBackgroundServer } from "../../server/bg-servers.js";
+import { staleLeftovers, shouldTrackBackgroundServer } from "../../server/bg-servers.js";
 
 /** 构造一条 子→父 链的 parents 映射：args 为 [pid, parentPid] 数组。 */
 function parentsOf(entries: Array<[number, number]>): Map<number, number> {
@@ -96,5 +96,42 @@ describe("shouldTrackBackgroundServer", () => {
 			[7778, 7777],
 		]);
 		expect(shouldTrackBackgroundServer(7777, parents, new Set([7777]), SERVER)).toBe(false);
+	});
+});
+
+describe("staleLeftovers（自动清理挑选）", () => {
+	const NOW = 1_800_000_000_000;
+	const MIN = 60_000;
+	const entry = (port: number, idleMin: number, keep?: boolean) => ({
+		port,
+		pid: 1000 + port,
+		since: NOW - idleMin * MIN,
+		...(keep ? { keep: true } : {}),
+	});
+
+	it("闲置超阈值的才算遗留", () => {
+		const picked = staleLeftovers([entry(8788, 45), entry(8789, 5)], { now: NOW, thresholdMs: 30 * MIN });
+		expect(picked.map((p) => p.port)).toEqual([8788]);
+	});
+
+	it("钉住（keep）的永不参与，哪怕闲置很久", () => {
+		const picked = staleLeftovers([entry(8788, 600, true), entry(8789, 600)], { now: NOW, thresholdMs: 30 * MIN });
+		expect(picked.map((p) => p.port)).toEqual([8789]);
+	});
+
+	it("阈值 ≤ 0（策略关）一律不清", () => {
+		expect(staleLeftovers([entry(8788, 600)], { now: NOW, thresholdMs: 0 })).toEqual([]);
+		expect(staleLeftovers([entry(8788, 600)], { now: NOW, thresholdMs: -1 })).toEqual([]);
+		expect(staleLeftovers([entry(8788, 600)], { now: NOW, thresholdMs: Number.NaN })).toEqual([]);
+	});
+
+	it("刚好到阈值算遗留（>=），坏 since 的不动", () => {
+		const bad = { port: 8790, pid: 1, since: Number.NaN };
+		const picked = staleLeftovers([entry(8788, 30), bad], { now: NOW, thresholdMs: 30 * MIN });
+		expect(picked.map((p) => p.port)).toEqual([8788]);
+	});
+
+	it("空列表安全", () => {
+		expect(staleLeftovers([], { now: NOW, thresholdMs: 30 * MIN })).toEqual([]);
 	});
 });

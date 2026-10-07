@@ -84,6 +84,10 @@ const ALL = [
 	// 笔记插件（notes）：清单/HTTP 通道/长轮询推送/持久化（零 token，浏览器 E2E 另见 notes-ui-test）。
 	"notes-test",
 	"plugin-bgtask-test",
+	// 后台任务「自动清理」的协议面（阈值落库/归一化、钉住、立即清理反馈）。
+	"bg-cleanup-test",
+	// pm2 进程管家：manifest 被宿主接受 + topbar 占用 + 真激活 + 五个路由（零 token）。
+	"pm2-manager-plugin-test",
 	"plugin-command-test",
 	"plugin-cwd-test",
 	"plugin-http-test",
@@ -126,6 +130,8 @@ const ALL = [
 	"takeover-test",
 	// 已结束对话的过户：run 跑完后 elsewhere 仍保留空闲行可过户；新页面不自动恢复别处持有的会话。
 	"idle-takeover-test",
+	// 离线持有方：手机 run 途中关页面 → run 跑完 → 另一台设备仍能看到「另一处（离线）」行并过户。
+	"offline-takeover-test",
 	// 跨页作答：点 elsewhere 行的 `?` 把问卷拉到本页回答，不搬迁对话。
 	"remote-answer-test",
 	// elsewhere 生命周期（#291）：断连残骸不入列表、删定时任务回收伪客户端。

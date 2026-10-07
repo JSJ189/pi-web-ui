@@ -75,29 +75,56 @@ async function postAction(action, data = {}) {
 			headers: { "Content-Type": "application/json" },
 			body: JSON.stringify({ action, ...data }),
 		});
-		if (res.ok) return await res.json();
+		const json = await res.json().catch(() => null);
+		if (res.ok && json) return json;
+		return { ok: false, error: json?.error || `HTTP ${res.status} ${res.statusText}` };
 	} catch (err) {
 		return { ok: false, error: err?.message || String(err) };
 	}
-	return { ok: false, error: "HTTP 接口请求未响应或返回错误状态" };
+}
+
+function ensureStyles() {
+	if (document.getElementById("sol-savings-style")) return;
+	const s = document.createElement("style");
+	s.id = "sol-savings-style";
+	s.textContent = `
+		.sol-opt-row {
+			display: flex;
+			flex-direction: column;
+			gap: 4px;
+			cursor: pointer;
+			padding: 8px 10px;
+			border-radius: 4px;
+			background: rgba(255, 255, 255, 0.02);
+			border: 1px solid rgba(255, 255, 255, 0.04);
+			transition: background 0.12s ease;
+		}
+		.sol-opt-row:hover {
+			background: rgba(255, 255, 255, 0.055);
+		}
+	`;
+	document.head.appendChild(s);
 }
 
 function showModal(content, statusInfo) {
+	ensureStyles();
 	const old = document.getElementById("sol-savings-modal");
 	if (old) old.remove();
+
+	const inputsMap = {};
 
 	const overlay = document.createElement("div");
 	overlay.id = "sol-savings-modal";
 	overlay.style.cssText = `
 		position: fixed;
 		inset: 0;
-		background: rgba(0, 0, 0, 0.7);
-		backdrop-filter: blur(3px);
+		background: rgba(0, 0, 0, 0.65);
 		z-index: 99999;
 		display: flex;
 		align-items: center;
 		justify-content: center;
-		padding: 20px;
+		padding: 16px;
+		box-sizing: border-box;
 	`;
 
 	const dialog = document.createElement("div");
@@ -107,11 +134,15 @@ function showModal(content, statusInfo) {
 		border-radius: 10px;
 		width: 100%;
 		max-width: 520px;
+		max-height: min(88vh, 720px);
 		box-shadow: 0 16px 40px rgba(0, 0, 0, 0.6);
 		color: var(--text, #eee);
 		font-family: inherit;
 		overflow: hidden;
+		display: flex;
+		flex-direction: column;
 		animation: sol-pop 0.15s ease-out;
+		box-sizing: border-box;
 	`;
 
 	const header = document.createElement("div");
@@ -123,6 +154,7 @@ function showModal(content, statusInfo) {
 		justify-content: space-between;
 		font-weight: 600;
 		font-size: 15px;
+		flex: 0 0 auto;
 	`;
 	header.innerHTML = `<span>⚡ SoL-Pi 状态与配置管理</span><button type="button" style="background:none;border:none;color:var(--text-dim,#888);cursor:pointer;font-size:18px;padding:2px 6px;">✕</button>`;
 
@@ -131,8 +163,9 @@ function showModal(content, statusInfo) {
 		padding: 18px;
 		font-size: 13px;
 		line-height: 1.6;
-		max-height: 70vh;
 		overflow-y: auto;
+		flex: 1 1 auto;
+		min-height: 0;
 		display: flex;
 		flex-direction: column;
 		gap: 14px;
@@ -158,9 +191,7 @@ function showModal(content, statusInfo) {
 		const packedCount = stats.packedCount || 0;
 
 		const toolEntries = Object.entries(stats.toolBreakdown || {});
-		const toolStr = toolEntries.length > 0
-			? toolEntries.map(([t, c]) => `${esc(t)}: ${c} 次`).join(", ")
-			: "无";
+		const toolStr = toolEntries.length > 0 ? toolEntries.map(([t, c]) => `${esc(t)}: ${c} 次`).join(", ") : "无";
 
 		const planSummary = formatPlanSummary(stats.plan);
 
@@ -185,11 +216,15 @@ function showModal(content, statusInfo) {
 			</div>
 			${toolEntries.length > 0 ? `<div style="font-size: 12px; color: var(--text-dim, #aaa);">• 工具打包明细: ${toolStr}</div>` : ""}
 			${planSummary ? `<div style="font-size: 12px; color: var(--text-dim, #aaa);">• 活动规划进度: ${esc(planSummary.progress)} ${esc(planSummary.marker)} ${esc(planSummary.goal)}</div>` : ""}
-			${stats.totalSavedTokens === 0 ? `
+			${
+				stats.totalSavedTokens === 0
+					? `
 				<div style="font-size: 12px; color: var(--text-dim, #888); background: rgba(255,255,255,0.02); padding: 6px 8px; border-radius: 4px; border-left: 2px solid var(--accent, #3b82f6); line-height: 1.5;">
 					💡 提示：当前会话尚未产生 &gt;10KB 的工具大输出（或处于前 2 轮观察期），未触发截断，节省量为 0。切换至其他会话将展示对应会话的独立节省数据。
 				</div>
-			` : ""}
+			`
+					: ""
+			}
 		`;
 	} else {
 		statsBox.style.whiteSpace = "pre-wrap";
@@ -267,6 +302,326 @@ function showModal(content, statusInfo) {
 	const btnRow = document.createElement("div");
 	btnRow.style.cssText = `display: flex; gap: 8px; flex-wrap: wrap; margin-top: 4px;`;
 
+	// 配置管理表单与操作区
+	if (isInstalled || hasConfig) {
+		const form = document.createElement("div");
+		form.style.cssText = `
+			display: flex;
+			flex-direction: column;
+			gap: 12px;
+			background: rgba(0, 0, 0, 0.15);
+			padding: 12px;
+			border-radius: 6px;
+			border: 1px solid rgba(255, 255, 255, 0.05);
+		`;
+
+		const currentCfg = config || {
+			observationPack: true,
+			onlineContextCompact: false,
+			actionFusion: false,
+			evidencePreservingReducer: false,
+			cacheWriteReadRatio: 12.5,
+			evidencePreservingReducerProvider: "",
+			evidencePreservingReducerModel: "",
+		};
+
+		// 1. 快捷模式预设栏
+		const presetBar = document.createElement("div");
+		presetBar.style.cssText = `
+			display: flex;
+			align-items: center;
+			gap: 6px;
+			flex-wrap: wrap;
+			padding-bottom: 8px;
+			border-bottom: 1px solid rgba(255, 255, 255, 0.06);
+		`;
+		const presetLabel = document.createElement("span");
+		presetLabel.style.cssText = "font-size: 11px; color: var(--text-dim, #888); margin-right: 2px;";
+		presetLabel.textContent = "快速预设:";
+		presetBar.appendChild(presetLabel);
+
+		const makePresetBtn = (text, applyFn) => {
+			const b = document.createElement("button");
+			b.type = "button";
+			b.textContent = text;
+			b.style.cssText = `
+				font-size: 11px;
+				padding: 3px 8px;
+				border-radius: 4px;
+				border: 1px solid rgba(255, 255, 255, 0.1);
+				background: rgba(255, 255, 255, 0.04);
+				color: var(--text, #eee);
+				cursor: pointer;
+				transition: all 0.15s;
+			`;
+			b.onmouseenter = () => {
+				b.style.background = "rgba(255, 255, 255, 0.1)";
+			};
+			b.onmouseleave = () => {
+				b.style.background = "rgba(255, 255, 255, 0.04)";
+			};
+			b.onclick = () => {
+				applyFn();
+				updateJsonPreview();
+			};
+			return b;
+		};
+
+		presetBar.appendChild(
+			makePresetBtn("🛡️ WebUI 推荐", () => {
+				inputsMap.observationPack.checked = true;
+				inputsMap.onlineContextCompact.checked = false;
+				inputsMap.actionFusion.checked = false;
+				inputsMap.evidencePreservingReducer.checked = false;
+				inputsMap.cacheWriteReadRatio.value = "12.5";
+			}),
+		);
+		presetBar.appendChild(
+			makePresetBtn("⚡ 极致节能 (全开)", () => {
+				inputsMap.observationPack.checked = true;
+				inputsMap.onlineContextCompact.checked = true;
+				inputsMap.actionFusion.checked = true;
+				inputsMap.evidencePreservingReducer.checked = true;
+				inputsMap.cacheWriteReadRatio.value = "12.5";
+			}),
+		);
+		presetBar.appendChild(
+			makePresetBtn("📦 轻量省流", () => {
+				inputsMap.observationPack.checked = true;
+				inputsMap.onlineContextCompact.checked = false;
+				inputsMap.actionFusion.checked = false;
+				inputsMap.evidencePreservingReducer.checked = false;
+			}),
+		);
+		form.appendChild(presetBar);
+
+		const items = [
+			{
+				id: "observationPack",
+				label: "📦 大工具输出打包 (observationPack)",
+				desc: "工具输出 >10KB 时替换为紧凑占位符，由 obs_recall 按需读取，有效减少上下文占用。",
+				checked: Boolean(currentCfg.observationPack ?? true),
+				tip: null,
+			},
+			{
+				id: "onlineContextCompact",
+				label: "🎯 在线规划与边界压缩 (onlineContextCompact)",
+				desc: "任务阶段完成时触发上下文压缩点。由扩展注册 update_plan 工具。",
+				checked: Boolean(currentCfg.onlineContextCompact ?? false),
+				tip: "💡 提示：若当前主要使用 Web 界面内置的「任务计划看板 (Plan Mode)」，可取消勾选此项以避免工具提示词与 plan_update 冲突。",
+			},
+			{
+				id: "actionFusion",
+				label: "⚡ 操作融合 (actionFusion)",
+				desc: "自动融合连续的只读/只写操作，替换原生 edit/write 工具（实验性）。",
+				checked: Boolean(currentCfg.actionFusion ?? false),
+				tip: null,
+			},
+			{
+				id: "evidencePreservingReducer",
+				label: "🛡️ 诊断证据保留 (evidencePreservingReducer)",
+				desc: "在上下文压缩过程中尽可能保留关键诊断日志与执行证据痕迹（实验性）。",
+				checked: Boolean(currentCfg.evidencePreservingReducer ?? false),
+				tip: null,
+			},
+		];
+
+		// 全覆盖配置项滚动列表容器（纯 CSS 平滑独立滚动，0 高斯模糊，全量覆盖所有配置项）
+		const scrollContainer = document.createElement("div");
+		scrollContainer.style.cssText = `
+			display: flex;
+			flex-direction: column;
+			gap: 10px;
+			max-height: 280px;
+			overflow-y: auto;
+			overflow-x: hidden;
+			padding-right: 6px;
+			padding-bottom: 4px;
+			overscroll-behavior: contain;
+			scrollbar-width: thin;
+			scrollbar-color: rgba(255, 255, 255, 0.3) transparent;
+			-webkit-overflow-scrolling: touch;
+			transform: translateZ(0);
+			will-change: scroll-position;
+		`;
+
+		for (const it of items) {
+			const row = document.createElement("label");
+			row.className = "sol-opt-row";
+
+			const head = document.createElement("div");
+			head.style.cssText = "display: flex; align-items: center; justify-content: space-between;";
+
+			const titleSpan = document.createElement("span");
+			titleSpan.style.cssText = "font-weight: 500; font-size: 12.5px; color: var(--text, #eee);";
+			titleSpan.textContent = it.label;
+
+			const chk = document.createElement("input");
+			chk.type = "checkbox";
+			chk.checked = it.checked;
+			chk.style.cssText = "cursor: pointer; width: 16px; height: 16px; accent-color: var(--accent, #3b82f6);";
+			chk.onchange = () => updateJsonPreview();
+			inputsMap[it.id] = chk;
+
+			head.appendChild(titleSpan);
+			head.appendChild(chk);
+			row.appendChild(head);
+
+			const descDiv = document.createElement("div");
+			descDiv.style.cssText = "font-size: 11.5px; color: var(--text-dim, #888); line-height: 1.4;";
+			descDiv.textContent = it.desc;
+			row.appendChild(descDiv);
+
+			if (it.tip) {
+				const tipDiv = document.createElement("div");
+				tipDiv.style.cssText = "font-size: 11px; color: var(--amber, #f59e0b); line-height: 1.35; margin-top: 2px;";
+				tipDiv.textContent = it.tip;
+				row.appendChild(tipDiv);
+			}
+
+			scrollContainer.appendChild(row);
+		}
+
+		// 缓存读写比阈值参数调节
+		const ratioRow = document.createElement("div");
+		ratioRow.style.cssText = `
+			display: flex;
+			align-items: center;
+			justify-content: space-between;
+			padding: 8px 10px;
+			background: rgba(255, 255, 255, 0.02);
+			border: 1px solid rgba(255, 255, 255, 0.04);
+			border-radius: 4px;
+			font-size: 12px;
+		`;
+		ratioRow.innerHTML = `
+			<div>
+				<div style="font-weight: 500;">缓存读写比阈值 (cacheWriteReadRatio)</div>
+				<div style="font-size: 11px; color: var(--text-dim, #888); margin-top: 2px;">Prompt Cache 阈值因子（默认 12.5，0 为不惩罚写入）</div>
+			</div>
+		`;
+		const ratioControl = document.createElement("div");
+		ratioControl.style.cssText = "display: flex; gap: 6px; align-items: center;";
+
+		const ratioInput = document.createElement("input");
+		ratioInput.type = "number";
+		ratioInput.step = "0.5";
+		ratioInput.min = "0";
+		ratioInput.value = String(currentCfg.cacheWriteReadRatio ?? 12.5);
+		ratioInput.style.cssText = `
+			width: 64px;
+			padding: 4px 6px;
+			background: rgba(0,0,0,0.3);
+			border: 1px solid var(--border, #444);
+			border-radius: 4px;
+			color: inherit;
+			font-size: 12px;
+			text-align: right;
+		`;
+		ratioInput.oninput = () => updateJsonPreview();
+		inputsMap.cacheWriteReadRatio = ratioInput;
+		ratioControl.appendChild(ratioInput);
+		ratioRow.appendChild(ratioControl);
+		scrollContainer.appendChild(ratioRow);
+
+		// 高级辅模型路由设置（EPR 专属轻量模型，可选）
+		const advDetails = document.createElement("details");
+		advDetails.style.cssText = `
+			border: 1px solid rgba(255, 255, 255, 0.05);
+			border-radius: 4px;
+			background: rgba(0, 0, 0, 0.1);
+			font-size: 12px;
+		`;
+		const advSummary = document.createElement("summary");
+		advSummary.style.cssText = `
+			padding: 8px 10px;
+			cursor: pointer;
+			user-select: none;
+			font-weight: 500;
+			color: var(--text-dim, #aaa);
+			display: flex;
+			align-items: center;
+			justify-content: space-between;
+		`;
+		advSummary.innerHTML = `<span>⚙️ 证据缩减器专属辅模型路由 (可选)</span><span style="font-size: 10px;">▶ 展开配置</span>`;
+
+		const advBox = document.createElement("div");
+		advBox.style.cssText = "padding: 8px 10px 10px 10px; display: flex; flex-direction: column; gap: 8px;";
+		advBox.innerHTML = `
+			<div style="font-size: 11px; color: var(--text-dim, #888); line-height: 1.4;">
+				为 Evidence-Preserving Reducer 指定廉价极速的专用辅模型（如 gpt-4o-mini / deepseek-chat），避免占用高阶主模型。留空自动跟随主会话模型。
+			</div>
+			<div style="display: grid; grid-template-columns: 1fr 1fr; gap: 8px;">
+				<div>
+					<div style="font-size: 11px; margin-bottom: 3px;">服务商 (Provider):</div>
+					<input id="sol-epr-provider" type="text" placeholder="例如 openai, deepseek" style="width: 100%; box-sizing: border-box; padding: 4px 6px; background: rgba(0,0,0,0.3); border: 1px solid var(--border,#444); border-radius: 4px; color: inherit; font-size: 11.5px;" value="${esc(
+						currentCfg.evidencePreservingReducerProvider || "",
+					)}" />
+				</div>
+				<div>
+					<div style="font-size: 11px; margin-bottom: 3px;">模型 ID (Model):</div>
+					<input id="sol-epr-model" type="text" placeholder="例如 gpt-4o-mini" style="width: 100%; box-sizing: border-box; padding: 4px 6px; background: rgba(0,0,0,0.3); border: 1px solid var(--border,#444); border-radius: 4px; color: inherit; font-size: 11.5px;" value="${esc(
+						currentCfg.evidencePreservingReducerModel || "",
+					)}" />
+				</div>
+			</div>
+		`;
+		const providerInput = advBox.querySelector("#sol-epr-provider");
+		const modelInput = advBox.querySelector("#sol-epr-model");
+		providerInput.oninput = () => updateJsonPreview();
+		modelInput.oninput = () => updateJsonPreview();
+		inputsMap.evidencePreservingReducerProvider = providerInput;
+		inputsMap.evidencePreservingReducerModel = modelInput;
+
+		advDetails.appendChild(advSummary);
+		advDetails.appendChild(advBox);
+		scrollContainer.appendChild(advDetails);
+
+		// 实时 JSON 配置预览折叠区
+		const jsonDetails = document.createElement("details");
+		jsonDetails.style.cssText = `
+			border: 1px solid rgba(255, 255, 255, 0.05);
+			border-radius: 4px;
+			background: rgba(0, 0, 0, 0.15);
+			font-size: 11px;
+		`;
+		const jsonSummary = document.createElement("summary");
+		jsonSummary.style.cssText = "padding: 6px 10px; cursor: pointer; color: var(--text-dim, #777); font-size: 11px;";
+		jsonSummary.textContent = "🔍 查看即将生成的 sol-pi.json 配置预览";
+		const jsonPre = document.createElement("pre");
+		jsonPre.style.cssText =
+			"margin: 0; padding: 8px 10px; overflow-x: auto; color: var(--text-dim, #aaa); font-family: monospace; font-size: 11px; line-height: 1.4;";
+
+		function updateJsonPreview() {
+			try {
+				const obj = {
+					version: 1,
+					observationPack: Boolean(inputsMap.observationPack?.checked),
+					onlineContextCompact: Boolean(inputsMap.onlineContextCompact?.checked),
+					actionFusion: Boolean(inputsMap.actionFusion?.checked),
+					evidencePreservingReducer: Boolean(inputsMap.evidencePreservingReducer?.checked),
+					cacheWriteReadRatio: parseFloat(inputsMap.cacheWriteReadRatio?.value) || 12.5,
+				};
+				const prov = inputsMap.evidencePreservingReducerProvider?.value?.trim();
+				const mdl = inputsMap.evidencePreservingReducerModel?.value?.trim();
+				if (prov) obj.evidencePreservingReducerProvider = prov;
+				if (mdl) obj.evidencePreservingReducerModel = mdl;
+				jsonPre.textContent = JSON.stringify(obj, null, 2);
+			} catch {
+				/* ignore */
+			}
+		}
+
+		jsonDetails.appendChild(jsonSummary);
+		jsonDetails.appendChild(jsonPre);
+		scrollContainer.appendChild(jsonDetails);
+
+		form.appendChild(scrollContainer);
+		updateJsonPreview();
+
+		configBox.appendChild(form);
+	}
+
 	if (!isInstalled) {
 		const installBtn = document.createElement("button");
 		installBtn.textContent = "📦 一键安装 SoL-Pi 扩展";
@@ -301,14 +656,14 @@ function showModal(content, statusInfo) {
 		btnRow.appendChild(installBtn);
 	}
 
-	if (!hasConfig) {
+	if (!hasConfig && !isInstalled) {
 		const enableBtn = document.createElement("button");
-		enableBtn.textContent = "🚀 一键生成推荐配置 (启用节省与规划)";
+		enableBtn.textContent = "🚀 一键生成推荐配置";
 		enableBtn.style.cssText = `
 			padding: 6px 14px;
 			border-radius: 4px;
 			border: 1px solid var(--accent, #3b82f6);
-			background: ${isInstalled ? "var(--accent, #3b82f6)" : "transparent"};
+			background: transparent;
 			color: #fff;
 			cursor: pointer;
 			font-size: 12px;
@@ -319,25 +674,15 @@ function showModal(content, statusInfo) {
 			enableBtn.textContent = "⏳ 配置写入中...";
 			const res = await postAction("write_config");
 			if (res.ok) {
-				alert(
-					"✅ 已成功写入 sol-pi.json (开启了 observationPack 与 onlineContextCompact)！\n提示：重启或新开会话即可生效。",
-				);
+				alert("✅ 已成功写入 sol-pi.json！");
 				close();
 			} else {
 				alert("❌ 写入配置失败: " + (res.error || "未知错误"));
 				enableBtn.disabled = false;
-				enableBtn.textContent = "🚀 一键生成推荐配置 (启用节省与规划)";
+				enableBtn.textContent = "🚀 一键生成推荐配置";
 			}
 		};
 		btnRow.appendChild(enableBtn);
-	} else {
-		// 已有配置，显示开关概况与状态
-		const obs = config?.observationPack ? "✅ 大输出打包开启" : "⚪ 大输出打包关闭";
-		const plan = config?.onlineContextCompact ? "✅ 在线规划压缩开启" : "⚪ 在线规划压缩关闭";
-		const infoText = document.createElement("div");
-		infoText.style.cssText = "font-size: 12px; color: var(--text-dim, #999);";
-		infoText.textContent = `${obs} · ${plan}`;
-		configBox.appendChild(infoText);
 	}
 
 	configBox.appendChild(btnRow);
@@ -345,14 +690,119 @@ function showModal(content, statusInfo) {
 	detailsContainer.appendChild(configBox);
 	body.appendChild(detailsContainer);
 
+	// 弹窗底部操作栏（固定在底部，永不被挤出屏幕）
 	const footer = document.createElement("div");
 	footer.style.cssText = `
 		padding: 12px 18px;
 		border-top: 1px solid var(--border, #333);
 		display: flex;
-		justify-content: flex-end;
+		align-items: center;
+		justify-content: space-between;
 		background: var(--bg-elev2, rgba(255,255,255,0.03));
+		flex: 0 0 auto;
+		gap: 12px;
 	`;
+
+	const saveStatusText = document.createElement("span");
+	saveStatusText.style.cssText =
+		"font-size: 11px; color: var(--green, #10b981); flex: 1 1 auto; overflow: hidden; text-overflow: ellipsis; white-space: nowrap;";
+
+	const footerBtns = document.createElement("div");
+	footerBtns.style.cssText = "display: flex; gap: 8px; align-items: center; flex: 0 0 auto;";
+
+	if (isInstalled || hasConfig) {
+		const resetBtn = document.createElement("button");
+		resetBtn.textContent = "↺ 恢复推荐";
+		resetBtn.style.cssText = `
+			padding: 6px 12px;
+			border-radius: 4px;
+			border: 1px solid var(--border, #444);
+			background: transparent;
+			color: var(--text-dim, #aaa);
+			cursor: pointer;
+			font-size: 12px;
+		`;
+		resetBtn.onclick = async () => {
+			if (!window.confirm("确认恢复为 SoL-Pi 默认推荐配置？")) return;
+			resetBtn.disabled = true;
+			try {
+				const res = await postAction("reset_config");
+				if (res.ok) {
+					inputsMap.observationPack.checked = true;
+					inputsMap.onlineContextCompact.checked = true;
+					inputsMap.actionFusion.checked = false;
+					inputsMap.evidencePreservingReducer.checked = false;
+					inputsMap.cacheWriteReadRatio.value = "12.5";
+					if (inputsMap.evidencePreservingReducerProvider) inputsMap.evidencePreservingReducerProvider.value = "";
+					if (inputsMap.evidencePreservingReducerModel) inputsMap.evidencePreservingReducerModel.value = "";
+					saveStatusText.textContent = "✅ 已重置为推荐配置";
+					setTimeout(() => {
+						saveStatusText.textContent = "";
+					}, 4000);
+				} else {
+					alert("❌ 重置失败: " + (res.error || "未知错误"));
+				}
+			} catch (err) {
+				alert("❌ 重置异常: " + (err?.message || String(err)));
+			} finally {
+				resetBtn.disabled = false;
+			}
+		};
+		footerBtns.appendChild(resetBtn);
+
+		const saveBtn = document.createElement("button");
+		saveBtn.textContent = "💾 保存配置";
+		saveBtn.style.cssText = `
+			padding: 6px 14px;
+			border-radius: 4px;
+			border: 1px solid var(--accent, #3b82f6);
+			background: var(--accent, #3b82f6);
+			color: #fff;
+			cursor: pointer;
+			font-size: 12px;
+			font-weight: 500;
+		`;
+		saveBtn.onclick = async () => {
+			saveBtn.disabled = true;
+			saveBtn.textContent = "⏳ 保存中...";
+			try {
+				const payload = {
+					observationPack: Boolean(inputsMap.observationPack?.checked),
+					onlineContextCompact: Boolean(inputsMap.onlineContextCompact?.checked),
+					actionFusion: Boolean(inputsMap.actionFusion?.checked),
+					evidencePreservingReducer: Boolean(inputsMap.evidencePreservingReducer?.checked),
+					cacheWriteReadRatio: parseFloat(inputsMap.cacheWriteReadRatio?.value) || 12.5,
+				};
+				const prov = inputsMap.evidencePreservingReducerProvider?.value?.trim();
+				const mdl = inputsMap.evidencePreservingReducerModel?.value?.trim();
+				if (prov !== undefined) payload.evidencePreservingReducerProvider = prov;
+				if (mdl !== undefined) payload.evidencePreservingReducerModel = mdl;
+				const res = await postAction("save_config", { config: payload });
+				if (res.ok) {
+					saveStatusText.textContent = "✅ 配置已保存（新会话或重启生效）";
+					setTimeout(() => {
+						saveStatusText.textContent = "";
+					}, 4000);
+				} else {
+					if (String(res.error || "").includes("unknown action")) {
+						saveStatusText.textContent = "⚠️ 服务端待重启";
+						alert(
+							"⚠️ 当前后台 Node 服务尚未热加载新版保存路由。\n\n• 当前所勾选配置已同步写入本地 sol-pi.json（下次会话即可生效）；\n• 如需在界面中直接热保存，请在控制台按 Ctrl+C 重启一次 npm start 即可！",
+						);
+					} else {
+						alert("❌ 保存配置失败: " + (res.error || "未知错误"));
+					}
+				}
+			} catch (err) {
+				alert("❌ 保存异常: " + (err?.message || String(err)));
+			} finally {
+				saveBtn.disabled = false;
+				saveBtn.textContent = "💾 保存配置";
+			}
+		};
+		footerBtns.appendChild(saveBtn);
+	}
+
 	const closeBtn = document.createElement("button");
 	closeBtn.textContent = "关闭";
 	closeBtn.style.cssText = `
@@ -372,7 +822,10 @@ function showModal(content, statusInfo) {
 		if (e.target === overlay) close();
 	};
 
-	footer.appendChild(closeBtn);
+	footerBtns.appendChild(closeBtn);
+	footer.appendChild(saveStatusText);
+	footer.appendChild(footerBtns);
+
 	dialog.appendChild(header);
 	dialog.appendChild(body);
 	dialog.appendChild(footer);

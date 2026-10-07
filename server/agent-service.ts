@@ -44,7 +44,7 @@ import {
 	type ToolDefinition,
 } from "@earendil-works/pi-coding-agent";
 import { Type } from "typebox";
-import { BgServerTracker } from "./bg-servers.js";
+import { BG_CLEANUP_FALLBACK_MIN, BgServerTracker } from "./bg-servers.js";
 import {
 	checkAll as checkAllUpdates,
 	collectTargets,
@@ -170,6 +170,7 @@ import {
 	presetShowsSkillCatalog,
 } from "./tool-manager.js";
 import { makeLoadToolsTool, type LoadableToolInfo, type LoadToolsHost } from "./load-tools-tool.js";
+import { formatCompactSignature } from "./tool-signature.js";
 import { WebUIContext } from "./webui-context.js";
 import { DEFAULT_COMPACTION_RESERVE_TOKENS, effectiveSoftCap, softCapToReserve } from "./soft-cap.js";
 import { pruneContextHierarchically } from "./context-budget.js";
@@ -232,7 +233,7 @@ import { makeScheduleTool, type ScheduleToolHost } from "./schedule-agent-tool.j
 import { makePatchTool } from "./patch-tool.js";
 import { makeLspTool } from "./lsp-tool.js";
 import { sameSessionFile, type SchedulerStore } from "./scheduler-tasks.js";
-import { buildAttachmentMessages, parseModelSpec } from "./attachments.js";
+import { buildAttachmentMessages, findTurnBaseEntryId, parseModelSpec } from "./attachments.js";
 import { formatQuotedPrompt, readTextQuote } from "./text-quote.js";
 import { buildVisionBridgePrompt, findVisionModels, transcribeImages } from "./vision-bridge.js";
 import { isNotRepoError, scmCommitContext } from "./scm.js";
@@ -312,6 +313,24 @@ const SCM_COMMITMSG_TIMEOUT_MS = 60_000;
 const STALL_NOTIFY_MS = (() => {
 	const v = Number(process.env.PI_WEB_STALL_NOTIFY_MS);
 	return Number.isFinite(v) && v >= 0 ? v : 180_000;
+})();
+/** 断连残骸（浏览器全断开、只剩服务端残留会话）的 elsewhere 行宽限期：宽限期内仍
+ *  下发给其他页面（标 ownerOffline、照样可接管），过后按 issue #291 消失。
+ *
+ *  为什么必须有这段宽限：手机端「run 途中关页面 → run 在服务端继续跑完」之后，
+ *  换一台设备打开网页，既看不到「另一处」行（残骸 sinkCount=0 被 #291 跳过），
+ *  也没法过户；只能去历史对话里开 —— 而残留 runtime 仍持有那份转录，历史里开
+ *  等于给同一份 JSONL 造第二个 writer（历史分叉的温床）。宽限期够换设备接管。
+ *  Override: PI_WEB_OFFLINE_ROWS_TTL_MS（毫秒；0/off/false/no = 不下发离线行 = 旧
+ *  口径；上限 6 小时，防 env 写出超长定时器）。 */
+const OFFLINE_ROW_TTL_MS = (() => {
+	const raw = String(process.env.PI_WEB_OFFLINE_ROWS_TTL_MS ?? "")
+		.trim()
+		.toLowerCase();
+	if (raw === "0" || raw === "off" || raw === "false" || raw === "no") return 0;
+	const v = Number(raw);
+	const ms = Number.isFinite(v) && v > 0 ? v : 30 * 60_000;
+	return Math.min(ms, 6 * 60 * 60_000);
 })();
 /** Serialization-cache soft cap per conversation (see serializeCachedFor /
  *  pruneMessageCache). Cached UiMessage objects are pure-function results, so a
@@ -619,6 +638,23 @@ export function withDelegationGate(
  *    - 用户选择 deny: 阻断并告知模型
  * 3. post guard 合并（脱敏/补上下文）。
  */
+/**
+ * 把「可能晚一点才注入」的插件守卫包成**调用时解析**的代理。
+ *
+ * 为什么需要它（P1-5 的真实缺口）：`withToolGuard` 在建工具定义时就把 `opts.guard`
+ * 捕进了闭包，而 runtime 是在 `ClientSession.create()` 里建的、`cs.toolGuard` 却是在
+ * `AgentService.attach()` 末尾才赋值 —— 直接传 `this.toolGuard` 会把 `undefined`
+ * 永久固化进那条对话的工具里，于是「attach 时恢复出来的那条对话」永远不受
+ * 插件 `onToolPre/onToolPost` 约束（只有新建/切换对话才带上）。代理每次调用才解析，
+ * 与赋值时序无关；未注入时逐字等价于直通（allow / undefined）。
+ */
+export function makeLateToolGuard(get: () => ToolGuardHook | undefined): ToolGuardHook {
+	return {
+		pre: (req, lang) => get()?.pre(req, lang) ?? Promise.resolve({ verdict: { decision: "allow" as const } }),
+		post: (req, lang) => get()?.post(req, lang) ?? Promise.resolve(undefined),
+	};
+}
+
 export function withToolGuard(
 	def: ToolDefinition,
 	opts: {
@@ -1159,6 +1195,36 @@ function wrapEditSoftToolWithPermission(
 			return result as never;
 		},
 	};
+}
+
+/**
+ * 将 SoL-Pi 的 update_plan 步骤结构（{ id, goal, status }）标准化为 pi-web-ui 的 PlanStep[] 结构。
+ */
+export function normalizeSolPlanToPlanSteps(steps: unknown[]): {
+	steps: import("./protocol.js").PlanStep[];
+	activeStepId?: string | null;
+} {
+	if (!Array.isArray(steps)) return { steps: [] };
+	let activeStepId: string | null = null;
+	const normalizedSteps: import("./protocol.js").PlanStep[] = steps.map((s, idx) => {
+		const step = (s && typeof s === "object" ? s : {}) as Record<string, unknown>;
+		const id = typeof step.id === "string" && step.id ? step.id : String(idx + 1);
+		const rawTitle =
+			typeof step.goal === "string" ? step.goal : typeof step.title === "string" ? step.title : `Step ${id}`;
+		const rawStatus = typeof step.status === "string" ? step.status : "pending";
+		let status: "pending" | "in_progress" | "done" | "failed" = "pending";
+		if (rawStatus === "completed" || rawStatus === "done") {
+			status = "done";
+		} else if (rawStatus === "in_progress") {
+			status = "in_progress";
+			if (!activeStepId) activeStepId = id;
+		} else if (rawStatus === "failed") {
+			status = "failed";
+		}
+		const description = typeof step.description === "string" ? step.description : undefined;
+		return { id, title: rawTitle, status, ...(description ? { description } : {}) };
+	});
+	return { steps: normalizedSteps, activeStepId };
 }
 
 /**
@@ -1935,6 +2001,8 @@ export interface Conversation {
 	/** tool_execution_start timestamps keyed by toolCallId — lets tool_status
 	 *  report how long a tool actually ran (vs. waiting on the model). */
 	toolStartTimes: Map<string, number>;
+	/** 暂存正在执行中的工具参数（如 SoL-Pi 的 update_plan 参数，供 tool_execution_end 同步看板使用）。 */
+	toolPendingArgs: Map<string, unknown>;
 	/** LLM 瞬时报错自动重试进行中（agent_end willRetry 占位 → auto_retry_start
 	 *  填实 → auto_retry_end 清除）。置位期间快照隐藏末尾的 stopReason=error
 	 *  assistant 消息（重试成功则用户永远看不到，耗尽才永久标红），前端改显
@@ -2641,6 +2709,8 @@ export class ClientSession {
 		isDisposed: () => this.disposed,
 		// 插件注册的常驻任务（host.registerBackgroundTask）并入同一「后台任务」面板。
 		pluginTasks: () => this.pluginBgTasksProvider?.() ?? [],
+		// 「自动清理遗留实例」阈值（分钟；0 = 关）：每轮定时器实时读设置。
+		cleanupMinutes: () => this.settingsSvc.current.bgAutoCleanupMin ?? 0,
 	});
 
 	/** index.ts 注入（经 AgentService 拷贝到每个新会话）：把 SDK 工具执行事件转发给
@@ -2649,6 +2719,20 @@ export class ClientSession {
 	/** index.ts 注入（P1-5，经 AgentService 拷贝到每个新会话）：bash/read 执行前后的
 	 *  插件拦截（PluginManager.evaluateToolPre/evaluateToolPost）。未设置时直通。 */
 	toolGuard: ToolGuardHook | undefined = undefined;
+	/**
+	 * 工具定义用的**延迟绑定**守卫（`guard:` 参数一律传这个，不要直接传 this.toolGuard）。
+	 *
+	 * 原因：`withToolGuard` 在**建工具定义时**就把 `opts.guard` 捕进闭包了，而 runtime
+	 * 是在 `ClientSession.create()` 里建的，`cs.toolGuard` 却是在 attach 末尾才赋值
+	 * （见 AgentService.attach 的“Forward hooks”段）—— 直接传 this.toolGuard 会把
+	 * `undefined` 永久固化进那条对话的工具里，导致「attach 时恢复出来的那条对话」
+	 * **永远不受插件 onToolPre/onToolPost 约束**（新建/切换对话才带上）。
+	 * 这个代理每次调用才解析真正的守卫，与赋值时序无关。
+	 */
+	get lateToolGuard(): ToolGuardHook {
+		return this.#lateGuard;
+	}
+	readonly #lateGuard: ToolGuardHook = makeLateToolGuard(() => this.toolGuard);
 	/** index.ts 注入：把运行轨迹事件转发给插件（PluginManager.emitRunEvent，
 	 *  轨迹视图插件靠它聚合时间线）。未设置时不做任何事。 */
 	onRunEvent: ((ev: PluginRunEvent) => void) | undefined = undefined;
@@ -2673,7 +2757,15 @@ export class ClientSession {
 
 	/** The active conversation (all session operations target it). */
 	private get conv(): Conversation {
-		const conv = this.convs.get(this.activeId);
+		let conv = this.convs.get(this.activeId);
+		if (!conv) {
+			// 自愈：若 activeId 悬空，优先回退到现存的非子代理会话，其次任意现存会话
+			const fallback = [...this.convs.values()].find((c) => !c.isSubagent) ?? [...this.convs.values()][0];
+			if (fallback) {
+				this.activeId = fallback.id;
+				conv = fallback;
+			}
+		}
 		if (!conv) throw new Error("no active conversation");
 		return conv;
 	}
@@ -3256,17 +3348,27 @@ export class ClientSession {
 	private promptToolCatalog(
 		session: AgentSession | undefined,
 		conv: Conversation | undefined,
-	): { names: string[]; snippets: Record<string, string> } {
-		const empty = { names: [] as string[], snippets: {} as Record<string, string> };
+	): { names: string[]; snippets: Record<string, string>; signatures: Record<string, string> } {
+		const empty = {
+			names: [] as string[],
+			snippets: {} as Record<string, string>,
+			signatures: {} as Record<string, string>,
+		};
 		if (!session || !this.lazyLoadingOn()) return empty;
 		try {
 			const names = this.allowedToolNames(session, conv).filter((n) => n !== LOAD_TOOLS_TOOL_NAME);
 			const snippets: Record<string, string> = {};
+			const signatures: Record<string, string> = {};
 			for (const name of names) {
-				const snippet = this.toolSnippetOf(session.getToolDefinition(name));
+				const def = session.getToolDefinition(name);
+				const snippet = this.toolSnippetOf(def);
 				if (snippet) snippets[name] = snippet;
+				if (def?.parameters) {
+					const sig = formatCompactSignature(def.parameters);
+					if (sig) signatures[name] = sig;
+				}
 			}
-			return { names, snippets };
+			return { names, snippets, signatures };
 		} catch {
 			return empty;
 		}
@@ -3434,11 +3536,26 @@ export class ClientSession {
 		return { loaded, rejected };
 	}
 
+	/**
+	 * JIT Auto-activation: if an allowed catalog tool is executed without prior load_tools,
+	 * automatically mark it as loaded so subsequent turns track it as fully active.
+	 */
+	private autoActivateToolIfLoadable(session: AgentSession, conv: Conversation, name: string): void {
+		if (!this.lazyLoadingOn() || !name || name === LOAD_TOOLS_TOOL_NAME) return;
+		const loaded = this.lazyLoadedFor(session, this.sessionHasTranscript(session));
+		if (loaded.has(name)) return;
+		const allowed = new Set(this.allowedToolNames(session, conv));
+		if (allowed.has(name)) {
+			loaded.add(name);
+		}
+	}
+
 	/** 当前活动会话的工具/资源快照 → composer 输入。cwd 取活动对话的。 */
 	private composeInputs(src: {
 		cwd: string;
 		selectedTools: string[];
 		toolSnippets: Record<string, string>;
+		toolSignatures?: Record<string, string>;
 		toolGuidelines: string[];
 		contextFiles: { path: string; content: string }[];
 		skills: { name: string; description: string; filePath: string }[];
@@ -3460,6 +3577,7 @@ export class ClientSession {
 			builtinSoul: BUILTIN_SOUL,
 			selectedTools: src.selectedTools,
 			toolSnippets: src.toolSnippets,
+			toolSignatures: src.toolSignatures,
 			toolGuidelines: src.toolGuidelines,
 			...(src.lazy ? { lazy: true } : {}),
 			...(src.lazy && src.catalogTools ? { catalogTools: src.catalogTools } : {}),
@@ -3510,6 +3628,7 @@ export class ClientSession {
 		cwd: string;
 		selectedTools: string[];
 		toolSnippets: Record<string, string>;
+		toolSignatures?: Record<string, string>;
 		toolGuidelines: string[];
 		contextFiles: { path: string; content: string }[];
 		skills: { name: string; description: string; filePath: string }[];
@@ -3571,10 +3690,15 @@ export class ClientSession {
 			const lazyOn = this.lazyLoadingOn();
 			const catalog = lazyOn
 				? this.promptToolCatalog(sess, conv)
-				: { names: active, snippets: {} as Record<string, string> };
+				: {
+						names: active,
+						snippets: {} as Record<string, string>,
+						signatures: {} as Record<string, string>,
+					};
 			const baseNames = lazyOn ? this.lazyBaselineNames(sess) : active;
 			const baseSet = new Set(baseNames);
 			const snippets: Record<string, string> = {};
+			const signatures: Record<string, string> = catalog.signatures ?? {};
 			const guidelines: string[] = [];
 			for (const name of catalog.names) {
 				const def = sess.getToolDefinition(name);
@@ -3588,6 +3712,7 @@ export class ClientSession {
 					cwd,
 					selectedTools: baseNames,
 					toolSnippets: snippets,
+					toolSignatures: signatures,
 					toolGuidelines: guidelines,
 					...(lazyOn ? { lazy: true, catalogTools: catalog.names } : {}),
 					contextFiles: loader.getAgentsFiles().agentsFiles,
@@ -4262,6 +4387,9 @@ export class ClientSession {
 			},
 			// 标记 widget 合并进扩展 widget 里，跟随当前活动会话渲染（切换会话即刷新）。
 			refreshMarkers: () => this.webUi.refresh(),
+			onActionsChange: (convId) => {
+				if (convId === this.activeId) this.flushSnapshot();
+			},
 			// issue #91：标记引导/错误按客户端 UI 语言出中英（英文默认）。
 			lang: () => this.getLang(),
 		});
@@ -4779,10 +4907,17 @@ export class ClientSession {
 									const activeToolNames = sess ? sess.getActiveToolNames() : [];
 									const lazyOn = this.lazyLoadingOn();
 									const catalog =
-										lazyOn && sess ? this.promptToolCatalog(sess, conv) : { names: activeToolNames, snippets: {} };
+										lazyOn && sess
+											? this.promptToolCatalog(sess, conv)
+											: {
+													names: activeToolNames,
+													snippets: {},
+													signatures: {},
+												};
 									const baseNames = lazyOn && sess ? this.lazyBaselineNames(sess) : activeToolNames;
 									const baseSet = new Set(baseNames);
 									const activeSnippets: Record<string, string> = {};
+									const activeSignatures: Record<string, string> = catalog.signatures ?? {};
 									const activeGuidelines: string[] = [];
 									if (sess) {
 										for (const name of catalog.names) {
@@ -4817,6 +4952,7 @@ export class ClientSession {
 										cwd: typeof opts?.cwd === "string" ? opts.cwd : (conv?.cwd ?? effectiveCwd ?? this.cwd),
 										selectedTools: baseNames.length > 0 ? baseNames : (opts?.selectedTools ?? []),
 										toolSnippets: activeSnippets,
+										toolSignatures: activeSignatures,
 										toolGuidelines: activeGuidelines,
 										...(lazyOn ? { lazy: true, catalogTools: catalog.names } : {}),
 										contextFiles: opts?.contextFiles ?? [],
@@ -4905,7 +5041,7 @@ export class ClientSession {
 							),
 							{
 								toolName: "bash",
-								guard: this.toolGuard,
+								guard: this.lateToolGuard,
 								conversationId: () => ownerId,
 								getLang: () => this.getLang(),
 								cwd: effectiveCwd,
@@ -5190,6 +5326,7 @@ export class ClientSession {
 			queueSteering: [],
 			queueFollowUp: [],
 			toolStartTimes: new Map(),
+			toolPendingArgs: new Map(),
 			toolWatchdogs: new Map(),
 			workspaceSnapshots: [],
 		};
@@ -5212,7 +5349,7 @@ export class ClientSession {
 			return;
 		}
 
-		// 3. 从已有历史消息中回放最后一次成功的 plan_update 工具调用
+		// 3. 从已有历史消息中回放最后一次成功的 plan_update 或 update_plan 工具调用
 		const msgs = conv.session.agent?.state?.messages;
 		if (Array.isArray(msgs)) {
 			for (let i = msgs.length - 1; i >= 0; i--) {
@@ -5224,19 +5361,23 @@ export class ClientSession {
 							name?: string;
 							input?: { steps?: unknown; activeStepId?: unknown };
 						};
-						if (
-							p?.type === "tool_use" &&
-							p.name === "plan_update" &&
-							Array.isArray(p.input?.steps) &&
-							p.input.steps.length > 0
-						) {
-							this.planManager.setPlan(
-								conv.id,
-								p.input.steps as import("./protocol.js").PlanStep[],
-								(p.input.activeStepId as string) ?? null,
-								sessionId,
-							);
-							return;
+						if (p?.type === "tool_use" && Array.isArray(p.input?.steps) && p.input.steps.length > 0) {
+							if (p.name === "plan_update") {
+								this.planManager.setPlan(
+									conv.id,
+									p.input.steps as import("./protocol.js").PlanStep[],
+									(p.input.activeStepId as string) ?? null,
+									sessionId,
+								);
+								return;
+							}
+							if (p.name === "update_plan") {
+								const normalized = normalizeSolPlanToPlanSteps(p.input.steps);
+								if (normalized.steps.length > 0) {
+									this.planManager.setPlan(conv.id, normalized.steps, normalized.activeStepId ?? null, sessionId);
+									return;
+								}
+							}
 						}
 					}
 				}
@@ -5956,6 +6097,11 @@ export class ClientSession {
 				break;
 			}
 			case "tool_execution_start": {
+				// JIT Auto-activation: if an allowed catalog tool is executed without prior load_tools,
+				// automatically mark it as loaded so subsequent turns track it as fully active.
+				if (conv.session && event.toolName) {
+					this.autoActivateToolIfLoadable(conv.session, conv, event.toolName);
+				}
 				// Record the moment the tool actually starts so tool_status can
 				// report real execution time (vs. time spent waiting on the model).
 				conv.toolStartTimes.set(event.toolCallId, Date.now());
@@ -5963,6 +6109,9 @@ export class ClientSession {
 				// servers the agent started in the background.
 				if (event.toolName === "bash") {
 					this.bg.snapshotBefore();
+				}
+				if (event.toolName === "update_plan") {
+					conv.toolPendingArgs.set(event.toolCallId, event.args);
 				}
 				// 看门狗豁免：ask_user_question 阻塞等的是「人类回答」，不是挂死的工具
 				// （默认 20 分钟会把还在思考的用户连对话一起剁掉）。它的收场自有路子：
@@ -5996,6 +6145,11 @@ export class ClientSession {
 				const startedAt = conv.toolStartTimes.get(event.toolCallId);
 				conv.toolStartTimes.delete(event.toolCallId);
 				this.clearToolWatchdog(conv, event.toolCallId);
+				const pendingArgs = conv.toolPendingArgs.get(event.toolCallId);
+				conv.toolPendingArgs.delete(event.toolCallId);
+				if (!event.isError && event.toolName === "update_plan" && pendingArgs) {
+					this.syncSolUpdatePlan(conv, pendingArgs);
+				}
 				// Bash finished — wait briefly for background servers to bind their
 				// ports, then diff against the pre-run snapshot and record them.
 				if (event.toolName === "bash") void this.bg.trackAfterBash();
@@ -6684,6 +6838,7 @@ export class ClientSession {
 			retry: conv.retryState ?? null,
 			compaction: conv.compactionState ?? null,
 			pendingQuestion: this.pendingQuestionForSnapshot(),
+			actionSuggestions: this.markerSvc.getActionSuggestions(this.activeId) ?? null,
 			pendingApproval: this.pendingApprovalForSnapshot(),
 			// 任务计划看板状态同样是会话级：快照恒给 PlanState 或 null（不用 undefined），
 			// 否则 snapshot_delta 里 key 缺席 → 前端 spread 浅合并会残留上一对话的 plan。
@@ -6733,6 +6888,13 @@ export class ClientSession {
 	 *  "nothing but stats/version changed" checkpoint. */
 	private emitSnapshotNow(forceFull = false): void {
 		if (this.disposed) return;
+		if (this.convs.size === 0) {
+			// 自愈兜底：没有任何活跃对话，异步触发 newChat 恢复状态，避免抛错挂死
+			void this.newChat()
+				.then(() => this.flushSnapshot(true))
+				.catch(() => {});
+			return;
+		}
 		const cur = this.currentMessages();
 		const prev = this.emittedMessages;
 		let incremental = !forceFull && prev !== null && this.emittedConvId === this.activeId && prev.length <= cur.length;
@@ -7217,6 +7379,34 @@ export class ClientSession {
 		this.emit({
 			type: "plan_updated",
 			conversationId: convId,
+			plan,
+		});
+		this.flushSnapshot();
+	}
+
+	/**
+	 * 自动桥接 SoL-Pi 的 update_plan 工具调用结果至 pi-web-ui 的 PlanManager，
+	 * 使模型调用 update_plan 时，Web 前端计划看板与顶栏状态能够实时同步。
+	 */
+	private syncSolUpdatePlan(conv: Conversation, params: unknown): void {
+		if (!params || typeof params !== "object") return;
+		const p = params as { steps?: unknown[] };
+		if (!Array.isArray(p.steps) || p.steps.length === 0) return;
+		const normalized = normalizeSolPlanToPlanSteps(p.steps);
+		if (normalized.steps.length === 0) return;
+		const sessionId = conv.session.sessionId;
+		const plan = this.planManager.setPlan(conv.id, normalized.steps, normalized.activeStepId ?? null, sessionId);
+		if (conv.session.sessionManager) {
+			try {
+				const sm = conv.session.sessionManager as { appendCustomEntry?: (type: string, data: unknown) => void };
+				sm?.appendCustomEntry?.("plan/update", { plan });
+			} catch {
+				// 转录追加失败不影响主流程
+			}
+		}
+		this.emit({
+			type: "plan_updated",
+			conversationId: conv.id,
 			plan,
 		});
 		this.flushSnapshot();
@@ -8413,6 +8603,8 @@ export class ClientSession {
 		toolWatchdogTimeoutMs?: number;
 		/** read 工具读目录开关（默认开；见 server/read-tool.ts）。 */
 		readDirEnabled?: boolean;
+		/** 「后台任务」自动清理阈值（分钟；0 = 关，默认关）。 */
+		bgAutoCleanupMin?: number;
 		editSoftEnabled?: boolean;
 		questionnaireEnabled?: boolean;
 		parallelReminderEnabled?: boolean;
@@ -8594,7 +8786,7 @@ export class ClientSession {
 		};
 		const readGuardOptions: Parameters<typeof withToolGuard>[1] = {
 			toolName: "read",
-			guard: this.toolGuard,
+			guard: this.lateToolGuard,
 			conversationId: () => ownerId,
 			getLang: () => this.getLang(),
 			cwd,
@@ -9278,7 +9470,8 @@ export class ClientSession {
 	 *  一结束 elsewhere 行就消失，另一处想过户查看只能趁运行中动手 —— 跑完
 	 *  即失联。空闲行带 isStreaming:false + sessionFile，照样可过户（搬 runtime
 	 *  本体，单 writer 不变；takeoverBriefs 本来就含空闲对话）。子代理不单列
-	 *  （随主对话一起搬）。 */
+	 *  （随主对话一起搬）。activity = 该对话最近一次活跃时间（离线行的宽限期判定用，
+	 *  见 OFFLINE_ROW_TTL_MS）。 */
 	streamingSummariesAll(): {
 		title: string;
 		cwd: string;
@@ -9287,6 +9480,7 @@ export class ClientSession {
 		hasQuestion: boolean;
 		questionTitle?: string;
 		sessionFile?: string;
+		activity: number;
 	}[] {
 		const out: {
 			title: string;
@@ -9296,7 +9490,9 @@ export class ClientSession {
 			hasQuestion: boolean;
 			questionTitle?: string;
 			sessionFile?: string;
+			activity: number;
 		}[] = [];
+		const seenFiles = new Set<string>();
 		for (const conv of this.convs.values()) {
 			if (conv.isSubagent) continue;
 			const streaming = this.conversationStreaming(conv);
@@ -9304,9 +9500,13 @@ export class ClientSession {
 			const pq = this.getPendingQuestionForConv(conv.id);
 			let sessionFile: string | undefined;
 			try {
-				sessionFile = conv.session.sessionFile ?? undefined;
+				sessionFile = conv.session.sessionFile ? resolve(conv.session.sessionFile) : undefined;
 			} catch {
 				sessionFile = undefined;
+			}
+			if (sessionFile) {
+				if (seenFiles.has(sessionFile)) continue;
+				seenFiles.add(sessionFile);
 			}
 			out.push({
 				title: conv.title,
@@ -9316,6 +9516,7 @@ export class ClientSession {
 				hasQuestion: !!pq,
 				...(pq?.title ? { questionTitle: pq.title } : {}),
 				...(sessionFile ? { sessionFile } : {}),
+				activity: Math.max(conv.lastActiveAt || 0, conv.lastSdkEventAt || 0),
 			});
 		}
 		return out;
@@ -9408,6 +9609,7 @@ export class ClientSession {
 		const conv = this.conv;
 		const promptAc = new AbortController();
 		conv.activePromptAc = promptAc;
+		this.markerSvc.clearActions(conv.id);
 		if (conv.planMode === true) {
 			this.applyToolGating(conv.session);
 		}
@@ -10179,6 +10381,20 @@ export class ClientSession {
 		return this.bg.killAll();
 	}
 
+	/** 钉住 / 取消钉住一个后台实例（自动清理跳过钉住的）。 */
+	setBackgroundKeep(port: number, keep: boolean): boolean {
+		return this.bg.setKeep(port, keep);
+	}
+
+	/** 手动「立即清理」：按当前策略阈值（策略为关时用兑底 30 分钟）清一次遗留实例。 */
+	async cleanBackgroundLeftovers(minutesOverride?: number): Promise<number[]> {
+		const override = Number(minutesOverride);
+		const policy = Number(this.settingsSvc.current.bgAutoCleanupMin ?? 0);
+		const minutes = Number.isFinite(override) && override > 0 ? override : policy;
+		const thresholdMs = (minutes > 0 ? minutes : BG_CLEANUP_FALLBACK_MIN) * 60_000;
+		return this.bg.cleanStale(thresholdMs, { manual: true });
+	}
+
 	/** Kill only the running bash command(s) — the agent run itself continues
 	 *  (the bash tool returns an aborted error and the model moves on). Uses
 	 *  the per-client AbortController set registered by the bash tool paths
@@ -10393,6 +10609,7 @@ export class ClientSession {
 		// the per-project running-list model displaced blanks are disposed, so
 		// this branch normally can't exist — kept as a safety net).
 		const isBlank = (c: Conversation): boolean => {
+			if (c.transferring) return false;
 			try {
 				const hasPlan = (this.planManager.getPlan(c.id)?.steps.length ?? 0) > 0;
 				return c.session.getSessionStats().totalMessages === 0 && c.terminals.list().length === 0 && !hasPlan;
@@ -10401,8 +10618,8 @@ export class ClientSession {
 				return false;
 			}
 		};
-		const active = this.conv;
-		if (!ephemeral && active && isBlank(active)) {
+		const active = this.convs.get(this.activeId);
+		if (!ephemeral && active && !active.transferring && isBlank(active)) {
 			if (_preset) await this.selectAgentPreset(_preset);
 			else {
 				this.pushSettings();
@@ -10412,7 +10629,7 @@ export class ClientSession {
 		}
 		if (!ephemeral) {
 			for (const conv of this.convs.values()) {
-				if (conv.id === this.activeId) continue;
+				if (conv.id === this.activeId || conv.transferring) continue;
 				if (isBlank(conv)) {
 					await this.switchConversation(conv.id);
 					if (_preset) await this.selectAgentPreset(_preset);
@@ -10896,15 +11113,23 @@ export class ClientSession {
 		parentId?: string;
 		isSubagent: boolean;
 		isEphemeral?: boolean;
+		sessionFile?: string;
 	}[] {
-		return [...this.convs.values()].map((c) => ({
-			id: c.id,
-			title: c.title,
-			cwd: c.cwd,
-			...(c.parentId ? { parentId: c.parentId } : {}),
-			isSubagent: c.isSubagent,
-			isEphemeral: !!c.isEphemeral,
-		}));
+		return [...this.convs.values()].map((c) => {
+			let sessionFile: string | undefined;
+			try {
+				sessionFile = c.session.sessionFile ? resolve(c.session.sessionFile) : undefined;
+			} catch {}
+			return {
+				id: c.id,
+				title: c.title,
+				cwd: c.cwd,
+				...(c.parentId ? { parentId: c.parentId } : {}),
+				isSubagent: c.isSubagent,
+				isEphemeral: !!c.isEphemeral,
+				...(sessionFile ? { sessionFile } : {}),
+			};
+		});
 	}
 
 	/**
@@ -10947,6 +11172,17 @@ export class ClientSession {
 				for (const fn of waiters) fn("gone");
 			}
 			this.goalSvc.notifyTakeover(conv);
+		}
+		// 严密防御：搬迁删除后，源客户端的 activeId 必须指向当前仍存在的合法会话；
+		// 若因竞态或原对话删除后悬空，自动切到现存主会话，没有任何会话时自动补建空白新会话，
+		// 绝不让源客户端陷入无活跃会话的死锁。
+		if (!this.convs.has(this.activeId)) {
+			const fallback = [...this.convs.values()].find((c) => !c.isSubagent) ?? [...this.convs.values()][0];
+			if (fallback) {
+				this.activeId = fallback.id;
+			} else {
+				await this.newChat();
+			}
 		}
 		const questions: TakeoverQuestion[] = [];
 		for (const [qid, p] of this.pendingQuestions) {
@@ -11027,6 +11263,30 @@ export class ClientSession {
 					}
 				}
 			}
+
+			// 防重：若本机在过户前已残留有相同会话文件的旧对话实例，先行清理
+			let incomingFile: string | undefined;
+			try {
+				incomingFile = conv.session.sessionFile ? resolve(conv.session.sessionFile) : undefined;
+			} catch {}
+			if (incomingFile) {
+				for (const [existingId, existingConv] of this.convs) {
+					if (existingId === conv.id) continue;
+					let existingFile: string | undefined;
+					try {
+						existingFile = existingConv.session.sessionFile ? resolve(existingConv.session.sessionFile) : undefined;
+					} catch {}
+					if (existingFile && existingFile === incomingFile) {
+						if (existingId === this.activeId) {
+							existingConv.listed = false;
+							existingConv.pinned = false;
+						} else {
+							this.removeConversation(existingId);
+						}
+					}
+				}
+			}
+
 			this.convs.set(conv.id, conv);
 		}
 		if (!mainId) mainId = payload.convs[0]?.id ?? "";
@@ -12607,7 +12867,8 @@ export class ClientSession {
 			return;
 		}
 
-		const targetLeafId = position === "at" ? entry.id : entry.parentId;
+		const targetLeafId =
+			position === "at" ? entry.id : (findTurnBaseEntryId(targetConv.session.sessionManager, entry.id) ?? undefined);
 
 		try {
 			const currentSessionFile = targetConv.session.sessionFile;
@@ -12908,7 +13169,10 @@ export class ClientSession {
 			// branch with the ModelRuntime default model otherwise.
 			const prevModel = this.session.agent.state.model ?? null;
 			const prevThinking = this.session.thinkingLevel ?? null;
-			const result = await this.runtime.fork(entryId);
+			const baseEntryId = findTurnBaseEntryId(this.session.sessionManager, entryId);
+			const result = baseEntryId
+				? await this.runtime.fork(baseEntryId, { position: "at" })
+				: await this.runtime.newSession({ parentSession: this.session.sessionFile ?? undefined });
 			if (result.cancelled) {
 				this.emit({
 					type: "notice",
@@ -12920,6 +13184,14 @@ export class ClientSession {
 				return;
 			}
 			await this.bindSession();
+			this.conv.uiMessageCache.clear();
+			this.conv.msgIds.clear();
+			this.conv.userSeqByTs.clear();
+			this.conv.nextMsgId = 1;
+			this.conv.lastMessagesSig = "";
+			this.conv.lastMessagesArray = [];
+			this.conv.queueSteering = [];
+			this.conv.queueFollowUp = [];
 			// Restore the previously-selected model on the forked branch.
 			if (prevModel && this.sharedModelRuntime) {
 				try {
@@ -13369,7 +13641,7 @@ export class ClientSession {
 						const infos = await SessionManager.list(abs, piSessionsRoot());
 						const recent = infos[0]?.path ? resolve(infos[0].path) : undefined;
 						const owner = recent ? this.findSessionOwner?.(recent) : null;
-						if (owner && (owner.connected || owner.isStreaming)) {
+						if (owner) {
 							resumeSkipped = owner;
 						}
 					} catch {
@@ -13829,6 +14101,10 @@ export function isPseudoClientId(id: string): boolean {
 
 export class AgentService {
 	static isPseudoClientId = isPseudoClientId;
+	/** 客户端 -> 最后一个浏览器断开的时刻（离线行宽限期起点；重连/认领即删）。 */
+	private offlineSince = new Map<string, number>();
+	/** 客户端 -> 离线行宽限期到期定时器（到期后让其他客户端重推，行消失）。 */
+	private offlineTimers = new Map<string, ReturnType<typeof setTimeout>>();
 	/** index.ts 注入：SDK 工具执行事件的插件转发钩子，attach 时拷贝到每个新会话。 */
 	onToolEvent: ((ev: PluginToolEvent) => void) | undefined = undefined;
 	/** index.ts 注入：bash/read 插件拦截钩子，attach 时拷贝到每个新会话。 */
@@ -13862,6 +14138,7 @@ export class AgentService {
 	 *  control socket reports real sockets, not cached client-session objects. */
 	private socketCount = 0;
 	private pending = new Map<string, Promise<ClientSession>>();
+	private pendingDetaches = new Map<string, Set<(msg: ServerMessage) => void>>();
 	private stateStore: ClientStateStore;
 	/** Set by index.ts: called when /pi-web-ui:quit is invoked. */
 	onQuit: (() => boolean) | undefined = undefined;
@@ -14144,22 +14421,113 @@ export class AgentService {
 	/** issue #145：别处所有正在跑的对话（左栏 elsewhere 只读感知 + 手动过户用）。
 	 *  owner/convId 标识过户目标（手动过户入口）；DSH 引擎不填（不可过户）。 */
 	listExternalRunning(excludeClientId: string): ElsewhereRunning[] {
-		const out: ElsewhereRunning[] = [];
-		for (const [clientId, cs] of this.clients) {
-			if (clientId === excludeClientId) continue;
-			// issue #291：跳过无浏览器连接的残骸（非伪客户端 sinkCount=0 = 断连留存）。
-			// 伪客户端（scheduler:/plugin:）不走浏览器，sinkCount 永远为 0，保留。
-			const isPseudo = AgentService.isPseudoClientId(clientId);
-			if (!isPseudo && cs.sinkCount() === 0) continue;
-			for (const r of cs.streamingSummariesAll()) {
-				out.push({
-					...r,
-					owner: clientId,
-					...(isPseudo ? { pseudo: true } : {}),
-				});
+		// 1) 收集当前请求客户端自己持有的对话（按 sessionFile 与 cwd+title 双维度），
+		// 本机已经持有的对话绝不作为 elsewhere 行推给本机（避免左栏同一对话既是“当前”又是“另一处”）。
+		const currentCs = this.clients.get(excludeClientId);
+		const localFiles = new Set<string>();
+		const localCwdTitles = new Set<string>();
+		if (currentCs) {
+			for (const b of currentCs.takeoverBriefs()) {
+				if (b.sessionFile) localFiles.add(resolve(b.sessionFile));
+				localCwdTitles.add(`${b.cwd}\0${b.title}`);
 			}
 		}
-		return out;
+
+		// 2) 遍历其他客户端，收集条目并按 sessionFile / cwd+title 去重。
+		// 若多个客户端持有同会话（如断连竞争、多标签残留），保留正在运行（streaming）或有问卷的更活跃者，
+		// 杜绝“一堆同一个对话的另一处”在左栏堆积。
+		const dedupMap = new Map<string, ElsewhereRunning>();
+		const now = Date.now();
+
+		for (const [clientId, cs] of this.clients) {
+			if (clientId === excludeClientId) continue;
+			// 伪客户端（scheduler:/plugin:）不走浏览器，sinkCount 永远为 0，保留。
+			const isPseudo = AgentService.isPseudoClientId(clientId);
+			// 无浏览器连接的残骸（sinkCount=0 = 断连留存）：宽限期内仍下发（标
+			// ownerOffline，可接管），过期或 TTL=0 时按 issue #291 不入列表。
+			const offline = !isPseudo && cs.sinkCount() === 0;
+			if (offline && OFFLINE_ROW_TTL_MS <= 0) continue;
+			const offlineSince = offline ? (this.offlineSince.get(clientId) ?? 0) : 0;
+
+			for (const r of cs.streamingSummariesAll()) {
+				// activity 只服务宽限期判定，不进 wire（ElsewhereRunning 无此字段）。
+				const { activity, ...rest } = r;
+				if (offline && !rest.isStreaming) {
+					// 宽限期从「断开时刻」与「最后一次活动」里取较晚者：跑动的后台任务
+					// 每有事件就续期，不会跑到一半从别人列表里消失。
+					const latest = Math.max(offlineSince, activity || 0);
+					if (latest > 0 && now - latest > OFFLINE_ROW_TTL_MS) continue;
+				}
+				const normFile = rest.sessionFile ? resolve(rest.sessionFile) : undefined;
+				// 本机已持有该会话文件，或本机在同项目下已有同名可见对话：排除
+				if (normFile && localFiles.has(normFile)) continue;
+				if (localCwdTitles.has(`${rest.cwd}\0${rest.title}`)) continue;
+
+				const entry: ElsewhereRunning = {
+					...rest,
+					owner: clientId,
+					...(isPseudo ? { pseudo: true as const } : {}),
+					...(offline ? { ownerOffline: true as const } : {}),
+				};
+
+				// 跨客户端去重键：有文件按规范路径去重，无文件按 cwd + title 去重
+				const dedupKey = normFile ? `file:${normFile}` : `title:${rest.cwd}\0${rest.title}`;
+				const existing = dedupMap.get(dedupKey);
+				if (existing) {
+					// 优先保留 streaming，其次保留 hasQuestion，最后才轮到离线行让位在线行
+					const preferNew =
+						(!existing.isStreaming && entry.isStreaming) ||
+						(!existing.hasQuestion && entry.hasQuestion) ||
+						(Boolean(existing.ownerOffline) && !entry.ownerOffline);
+					if (preferNew) {
+						dedupMap.set(dedupKey, entry);
+					}
+					continue;
+				}
+				dedupMap.set(dedupKey, entry);
+			}
+		}
+
+		return [...dedupMap.values()];
+	}
+
+	/** 离线行宽限期到期 → 让其他客户端重推一次（行随之从列表消失，回到 #291 口径）。
+	 *
+	 *  到期时刻取「断开时刻」与「最后一次活动」的较晚者：断开后 run 还在跑的后台任务
+	 *  每有流式变化都会重排（见 pokeExternalRunning），跑完那一刻的推送把宽限期从新起算。
+	 *  到期回调只推送、**不再重排**，否则「行已过期」会被无限排成 1s 轮询。 */
+	private armOfflineRowExpiry(clientId: string, cs: ClientSession): void {
+		if (OFFLINE_ROW_TTL_MS <= 0) return;
+		const prev = this.offlineTimers.get(clientId);
+		if (prev) clearTimeout(prev);
+		let activity = 0;
+		try {
+			activity = cs.latestActivity();
+		} catch {
+			activity = 0;
+		}
+		const since = Math.max(this.offlineSince.get(clientId) ?? 0, activity || 0);
+		const delay = Math.max(1_000, since + OFFLINE_ROW_TTL_MS - Date.now() + 1_000);
+		const timer = setTimeout(() => {
+			this.offlineTimers.delete(clientId);
+			// 期间重连/被认领/被回收都算作废：只推真实还存在的离线残骸。
+			if (this.clients.get(clientId) === cs && !AgentService.isPseudoClientId(clientId) && cs.sinkCount() === 0) {
+				this.notifyExternalRunning(clientId);
+			}
+		}, delay);
+		timer.unref?.();
+		this.offlineTimers.set(clientId, timer);
+	}
+
+	/** 又有浏览器连上（或残骸被认领/回收）：离线行状态作废，别的页面按在线行重推。 */
+	private clearOfflineRows(clientId: string): void {
+		const had = this.offlineSince.delete(clientId);
+		const timer = this.offlineTimers.get(clientId);
+		if (timer) {
+			clearTimeout(timer);
+			this.offlineTimers.delete(clientId);
+		}
+		if (had) this.pokeExternalRunning(clientId);
 	}
 
 	/** issue #291：删除定时任务后回收对应伪客户端，避免残留在 elsewhere 列表。 */
@@ -14182,6 +14550,17 @@ export class AgentService {
 
 	/** issue #145: 某客户端流式集合变化 → 其他客户端重推 conversations。 */
 	pokeExternalRunning(excludeClientId: string): void {
+		// 离线残骸刚有状态变化（run 跑完 / 又有事件）：离线行宽限期重新起算，
+		// 定时器顺延到「最后一次活动 + TTL」——否则任务跑完后再没人推它。
+		const offlineCs = this.clients.get(excludeClientId);
+		if (offlineCs && !AgentService.isPseudoClientId(excludeClientId) && offlineCs.sinkCount() === 0) {
+			this.armOfflineRowExpiry(excludeClientId, offlineCs);
+		}
+		this.notifyExternalRunning(excludeClientId);
+	}
+
+	/** 只让其他客户端重推一次（不碰离线宽限期定时器）。 */
+	private notifyExternalRunning(excludeClientId: string): void {
 		for (const [clientId, cs] of this.clients) {
 			if (clientId === excludeClientId) continue;
 			try {
@@ -14709,6 +15088,8 @@ export class AgentService {
 				const orphan = AgentService.isPseudoClientId(clientId) ? null : this.findAdoptableOrphan(clientId);
 				if (orphan) {
 					this.clients.delete(orphan.oldId);
+					// 残骸被本页认领：它的离线行状态随 id 作废（行归到新 id 名下）。
+					this.clearOfflineRows(orphan.oldId);
 					this.clients.set(clientId, orphan.cs);
 					cs = orphan.cs;
 					// 先按新 id 重接（首帧 attachSink 的 elsewhere/self-exclusion 依赖它）。
@@ -14752,7 +15133,7 @@ export class AgentService {
 							const infos = await SessionManager.list(cwd, piSessionsRoot());
 							const recent = infos[0]?.path ? resolve(infos[0].path) : undefined;
 							const owner = recent ? this.findSessionOwner(recent, clientId) : null;
-							if (owner && (owner.connected || owner.isStreaming)) {
+							if (owner) {
 								createOpts = { blank: true, blankTitle: owner.title, ...(owner.isStreaming ? {} : { idleHeld: true }) };
 							}
 						} catch {
@@ -14785,7 +15166,15 @@ export class AgentService {
 		// once, then cleared). Fire-and-forget AFTER attachSink + hooks:
 		// resume emits directly to sinks and needs the owner guards.
 		// Progress arrives over the socket as usual.
-		cs.attachSink(send);
+		const detachedSinks = this.pendingDetaches.get(clientId);
+		if (detachedSinks?.has(send)) {
+			detachedSinks.delete(send);
+			if (detachedSinks.size === 0) this.pendingDetaches.delete(clientId);
+		} else {
+			cs.attachSink(send);
+			// 又有浏览器连上：离线行状态作废（别的页面按在线行重推，去掉离线标记）。
+			this.clearOfflineRows(clientId);
+		}
 		// Forward hooks (set once by index.ts) to every session.
 		cs.onQuit = this.onQuit;
 		cs.onToolEvent = this.onToolEvent;
@@ -14845,12 +15234,25 @@ export class AgentService {
 	/** Remove a socket from a client's broadcast set (called on socket close). */
 	detach(clientId: string, send: (msg: ServerMessage) => void): void {
 		const cs = this.clients.get(clientId);
-		cs?.detachSink(send);
-		// issue #291：最后一个 sink 断开 = 该客户端不再在线 → 它的对话不该再出现在
-		// 别人的 elsewhere 列表（listExternalRunning 已跳过 sinkCount=0 的非伪客户端，
-		// 但列表是推过去的，得让其他客户端重推一次才能立刻消失）。
-		if (cs && !AgentService.isPseudoClientId(clientId) && cs.sinkCount() === 0) {
-			this.pokeExternalRunning(clientId);
+		if (cs) {
+			cs.detachSink(send);
+			// 最后一个 sink 断开 = 该客户端不再在线 → 它的行从「另一处」变成「另一处
+			// （离线）」。立刻让其他客户端重推一次补上离线标记；宽限期
+			// （OFFLINE_ROW_TTL_MS）到期后再推一次，行随之消失（issue #291 的
+			// 「残骸不永久占位」仍然成立）。
+			if (!AgentService.isPseudoClientId(clientId) && cs.sinkCount() === 0) {
+				this.offlineSince.set(clientId, Date.now());
+				this.pokeExternalRunning(clientId);
+				this.armOfflineRowExpiry(clientId, cs);
+			}
+		} else if (this.pending.has(clientId)) {
+			// 连接在 attach 异步创建期间断开：记录待 detach 的 sink，attach 完成后清理，避免死连接泄漏
+			let set = this.pendingDetaches.get(clientId);
+			if (!set) {
+				set = new Set();
+				this.pendingDetaches.set(clientId, set);
+			}
+			set.add(send);
 		}
 	}
 
