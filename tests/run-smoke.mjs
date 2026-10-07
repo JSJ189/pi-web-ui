@@ -134,6 +134,8 @@ const ALL = [
 	"orphan-adopt-test",
 	// 手动过户：右键「另一处」行把对话（含等答复问卷）搬到本页，问卷可直接回答。
 	"takeover-test",
+	// 过户夭折回滚（#556）：源侧已摘、目标侧接入失败时把对话原样搬回，绝不留幽灵会话。
+	"takeover-rollback-test",
 	// 已结束对话的过户：run 跑完后 elsewhere 仍保留空闲行可过户；新页面不自动恢复别处持有的会话。
 	"idle-takeover-test",
 	// 离线持有方：手机 run 途中关页面 → run 跑完 → 另一台设备仍能看到「另一处（离线）」行并过户。

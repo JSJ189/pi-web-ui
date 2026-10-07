@@ -4152,6 +4152,13 @@ body.panel-resizing .scm-divider::after {
 	line-height: 1.2;
 }
 
+/* 布局页给成本条目改过名（issue #555）：名字要落在 `$` 前面，而默认的 gap:0 会把两者
+ * 贴成一坨（「花费$0.0123」）—— 有名字时把条目自身的间距还给它们。 */
+.statusbar .bar-item.status-cost.has-name,
+.footer .bar-item.status-cost.has-name {
+	gap: 3px;
+}
+
 /* 实时生成速率 (tokens/sec) */
 .status-rate {
 	color: var(--accent);

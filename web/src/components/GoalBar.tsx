@@ -208,6 +208,11 @@ export const GoalBar = memo(function GoalBar({
 		const set = new Set(ids);
 		return allGoalEntries.filter((e) => set.has(e.id) || e.source !== "host");
 	};
+	/** 布局页改名 / 插件 arrange 指定过文案（`labelExplicit`）→ 用那一条，否则内置 i18n 文案。 */
+	const goalLabel = (id: string, fallback: string): string => {
+		const e = allGoalEntries.find((x) => x.id === id);
+		return e?.labelExplicit ? e.label : fallback;
+	};
 	const goalHostNodes: Record<string, ReactNode> = {
 		"host:goal-pill": (
 			<button
@@ -216,12 +221,12 @@ export const GoalBar = memo(function GoalBar({
 				title={t("goalBarPlaceholder")}
 				onClick={() => setCollapsed(false)}
 			>
-				<FiTarget /> <span>{t("goalBarTitle")}</span>
+				<FiTarget /> <span>{goalLabel("host:goal-pill", t("goalBarTitle"))}</span>
 			</button>
 		),
 		"host:goal-set": (
 			<button type="button" className="goalbar-btn" disabled={!text.trim()} onClick={set}>
-				{t("goalBarSet")}
+				{goalLabel("host:goal-set", t("goalBarSet"))}
 			</button>
 		),
 		"host:goal-wizard": (
@@ -232,7 +237,7 @@ export const GoalBar = memo(function GoalBar({
 				title={t("goalWizardTip")}
 				onClick={startWizard}
 			>
-				{t("goalWizardBtn")}
+				{goalLabel("host:goal-wizard", t("goalWizardBtn"))}
 			</button>
 		),
 		// 计划：与提炼/发送同列的一次性动作按钮（无常亮态、无 aria-pressed ——
@@ -245,7 +250,7 @@ export const GoalBar = memo(function GoalBar({
 				title={t("planActionTip")}
 				onClick={runPlan}
 			>
-				{t("planActionBtn")}
+				{goalLabel("host:goal-plan", t("planActionBtn"))}
 			</button>
 		),
 		"host:goal-lock": (
@@ -276,7 +281,7 @@ export const GoalBar = memo(function GoalBar({
 					// 标签与值拆成两层：窄屏并排两个下拉时，标签钉死不缩、值省略号收着
 					// （整块挤成一个空盒子 = 模型选谁完全看不见）。title 给全名。
 					<span className="goalbar-opt" title={`${t("goalBarReviewModel")}: ${reviewModelName()}`}>
-						<span className="goalbar-opt-label">{`${t("goalBarReviewModel")}:`}</span>
+						<span className="goalbar-opt-label">{`${goalLabel("host:goal-model", t("goalBarReviewModel"))}:`}</span>
 						<b>{reviewModelName()}</b>
 					</span>
 				}
@@ -323,7 +328,7 @@ export const GoalBar = memo(function GoalBar({
 		),
 		"host:goal-rounds": (
 			<label className="goalbar-round" title={t("goalBarMaxRoundsTip")}>
-				<span>{t("goalBarMaxRounds")}</span>
+				<span>{goalLabel("host:goal-rounds", t("goalBarMaxRounds"))}</span>
 				<input
 					type="number"
 					min={0}
@@ -356,7 +361,7 @@ export const GoalBar = memo(function GoalBar({
 						className="goalbar-opt"
 						title={`${t("goalBarExecModel")}: ${execModelName()} · ${t("goalBarExecModelTip")}`}
 					>
-						<span className="goalbar-opt-label">{`${t("goalBarExecModel")}:`}</span>
+						<span className="goalbar-opt-label">{`${goalLabel("host:goal-execmodel", t("goalBarExecModel"))}:`}</span>
 						<b>{execModelName()}</b>
 					</span>
 				}
@@ -499,7 +504,7 @@ export const GoalBar = memo(function GoalBar({
 								<button
 									type="button"
 									className={`goalbar-x${goal.reviewing ? " stopping" : ""}`}
-									title={goal.reviewing ? t("goalBarStop") : t("goalBarClear")}
+									title={goalLabel("host:goal-clear", goal.reviewing ? t("goalBarStop") : t("goalBarClear"))}
 									onClick={() => {
 										if (goal.goal) setText(goal.goal);
 										appSend({ type: "clear_goal" });

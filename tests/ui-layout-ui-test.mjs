@@ -236,7 +236,12 @@ async function main() {
 	check("底栏渲染出来了", !!footer);
 	check("插件 arrange 隐藏 host:cost → 底栏不再显示成本", !/\$\d|\$0/.test(footer ?? ""), (footer ?? "").slice(0, 160));
 	// 上下文/消息数等宿主条目仍在（隐藏只影响被点名的那一条）
-	check("同槽位其它宿主条目不受影响（上下文用量还在）", /上下文|Context/.test(footer ?? ""));
+	// 按条目 id 断言，不看文案：底栏徐标显示的是实时数值（「上下文」这个名字只在悬浮提示里）。
+	check(
+		"同槽位其它宿主条目不受影响（上下文用量还在）",
+		(await page.locator(".statusbar .bar-item-ctx").count()) === 1 &&
+			/\d/.test((await page.locator(".statusbar .bar-item-ctx").first().textContent()) ?? ""),
+	);
 
 	// ---- 2. 插件贡献的底栏条目与宿主条目同排 -------------------------------
 	check("插件贡献的底栏条目渲染在宿主底栏里", (footer ?? "").includes("B-ONE"), (footer ?? "").slice(0, 200));
@@ -296,15 +301,15 @@ async function main() {
 	);
 
 	// ---- 5. 布局页 ↑ 调序 → 界面真的换位置 --------------------------------
-	/** 底栏里「消息数」与「上下文」两个条目的先后（DOM 顺序）。 */
-	const orderOf = async () => {
-		return await page.evaluate(() => {
+	/** 底栏里「消息数」与「上下文」两个条目的先后（DOM 顺序）。按条目 id 定位 —— 底栏徐标
+	 *  显示的是实时数值，文字里根本没有「上下文/消息」这两个词，靠文案找只会得到 -1。 */
+	const orderOf = async () =>
+		await page.evaluate(() => {
 			const bar = document.querySelector(".statusbar");
 			if (!bar) return "";
-			const txt = bar.textContent ?? "";
-			return `${txt.indexOf("上下文")}:${txt.indexOf("消息")}`;
+			const ids = Array.from(bar.querySelectorAll("[data-bar-item]")).map((n) => n.getAttribute("data-bar-item") ?? "");
+			return `${ids.indexOf("host:ctx")}:${ids.indexOf("host:msg-count")}`;
 		});
-	};
 	const before = await orderOf();
 	const msgRow = layoutRow(page, /底栏|Bottom bar/, /消息|Messages/);
 	const upBtn = msgRow.locator("button", { hasText: "↑" }).first();
@@ -337,6 +342,11 @@ async function main() {
 			},
 			[a, b],
 		);
+	/** `a:b` 下标串里 a 真的在 b 前面（两个都找得到才算）。 */
+	const isBefore = (pair) => {
+		const [a, b] = pair.split(":").map(Number);
+		return a >= 0 && b >= 0 && a < b;
+	};
 	const themeRow = layoutRow(page, /顶栏|Top bar/, /主题|Theme/);
 	check("布局页列出了顶栏的「主题」条目", await until(async () => (await themeRow.count()) > 0, 30, 250));
 	const soundRow = layoutRow(page, /顶栏|Top bar/, /声音|Sound/);
@@ -353,17 +363,16 @@ async function main() {
 		"勾上后「主题」「声音」出现在主栏（这两个默认是隐藏的）",
 		await until(async () => (await page.locator(".topbar-flow .chip", { hasText: /主题|Theme/ }).count()) > 0, 30, 250),
 	);
-	// 默认顺序：…声音(70) → 主题(82)。按两次 ↑ 把主题挪到声音前面。
-	await tap(page, themeRow.locator("button", { hasText: "↑" }).first());
-	await tap(page, themeRow.locator("button", { hasText: "↑" }).first());
+	// 默认顺序：…声音(70) → 主题(82)。按 ↑ 把主题挪到声音前面 —— 每按一次就看一眼界面上的
+	// 真实顺序（快照回合会让行重挂，偶尔会吞掉一次点击），必要时重按，最多 3 次。
+	let orderAfter = await desktopOrder("主题", "声音");
+	for (let i = 0; i < 3 && !isBefore(orderAfter); i++) {
+		await tap(page, themeRow.locator("button", { hasText: "↑" }).first());
+		orderAfter = await desktopOrder("主题", "声音");
+	}
 	check("关掉设置面板", await closeLayoutPage(page));
-	const orderAfter = await desktopOrder("主题", "声音");
-	const [themeIdx, soundIdx] = orderAfter.split(":").map(Number);
-	check(
-		"顶栏 ↑ 调序后界面真的换位置（主题排到声音前面）",
-		themeIdx >= 0 && soundIdx >= 0 && themeIdx < soundIdx,
-		orderAfter,
-	);
+	const orderAfterClose = await desktopOrder("主题", "声音");
+	check("顶栏 ↑ 调序后界面真的换位置（主题排到声音前面）", isBefore(orderAfterClose), orderAfterClose);
 
 	// 隐藏「声音」：chip 从桌面组消失 → 它整块搬到「⋯」溢出菜单里，点了要能开面板
 	check("再打开布局页", await openLayoutPage(page));
@@ -466,6 +475,79 @@ async function main() {
 			await until(async () => (await page.locator(".root-picker-trigger").count()) === 0, 30, 250),
 		);
 	}
+
+	// ---- 5d. 布局页改名 → 界面真的换文案（issue #555） ----------------------
+	// 内置条目（顶栏按钮 / 底栏数值徐标）的文案一直是写死的 i18n 与实际数值：布局页给出
+	// 改名框却改了没反应 = 假承诺。改名规则：名字型条目用用户文案顶掉内置文案；数值型
+	// （上下文/成本/缓存/消息数…）名字插在数值前面（改名只换名字，不吞掉实时数据）。
+	check("打开布局页（改名）", await openLayoutPage(page));
+	const bottomRows = () =>
+		page
+			.locator(".set-ui-slot", { hasText: /底栏|Bottom bar/ })
+			.first()
+			.locator(".set-row");
+	const topRows = () =>
+		page
+			.locator(".set-ui-slot", { hasText: /顶栏|Top bar/ })
+			.first()
+			.locator(".set-row");
+	/** 先把行下标取好：行文案被改掉后就按文案找不到它了。 */
+	const rowIndexOf = async (rows, re) => {
+		const n = await rows().count();
+		for (let i = 0; i < n; i++) {
+			if (re.test((await rows().nth(i).textContent()) ?? "")) return i;
+		}
+		return -1;
+	};
+	const ctxIdx = await rowIndexOf(bottomRows, /上下文|Context/);
+	const termIdx = await rowIndexOf(topRows, /^.*终端|Terminal/);
+	check("布局页列出了底栏「上下文」与顶栏「终端」", ctxIdx >= 0 && termIdx >= 0, `ctx=${ctxIdx} term=${termIdx}`);
+	const ctxFoot = page.locator(".statusbar .bar-item-ctx").first();
+	check("改名前底栏上下文只有数值、没有名字", !((await ctxFoot.textContent()) ?? "").includes("CTX"));
+	const rename = async (row, value) => {
+		const input = row.locator("input.set-ui-label").first();
+		await input.click();
+		await input.fill(value);
+		await input.press("Enter");
+	};
+	await rename(bottomRows().nth(ctxIdx), "MY-CTX");
+	await rename(topRows().nth(termIdx), "MY-TERM");
+	check("关掉设置面板（改名提交）", await closeLayoutPage(page));
+	const ctxAfter = (await ctxFoot.textContent()) ?? "";
+	check(
+		"底栏改了名真的换文案（名字挂在数值前面）",
+		await until(async () => ((await ctxFoot.textContent()) ?? "").includes("MY-CTX"), 30, 250),
+		ctxAfter.slice(0, 60),
+	);
+	check(
+		"改名不吞掉实时数值（名字后面还是 tokens 用量）",
+		/\d/.test(ctxAfter) && /[/]/.test(ctxAfter),
+		ctxAfter.slice(0, 60),
+	);
+	const termBtn = page.locator('[data-bar-item="host:terminal"]').first();
+	check(
+		"顶栏改了名真的换文案",
+		await until(async () => ((await termBtn.textContent()) ?? "").includes("MY-TERM"), 30, 250),
+	);
+	check("改名后内置文案不再出现（不是叠着画）", !((await termBtn.textContent()) ?? "").includes("终端"));
+	check("再打开布局页（验证改名留存）", await openLayoutPage(page));
+	check(
+		"改名后的文案真的存下来了（重开面板 = 原值，不是空框）",
+		(await bottomRows().nth(ctxIdx).locator("input.set-ui-label").first().inputValue()) === "MY-CTX" &&
+			(await topRows().nth(termIdx).locator("input.set-ui-label").first().inputValue()) === "MY-TERM",
+	);
+	// 清空 = 回到内置文案（改名框的语义：空串就是没意见），顺带验证名字不是一个单向开关。
+	await rename(bottomRows().nth(ctxIdx), "");
+	await rename(topRows().nth(termIdx), "");
+	check("关掉设置面板（清空改名）", await closeLayoutPage(page));
+	check(
+		"清空后底栏回到内置数值（不带名字）",
+		await until(async () => !((await ctxFoot.textContent()) ?? "").includes("MY-CTX"), 30, 250),
+	);
+	check(
+		"清空后顶栏回到内置文案",
+		await until(async () => !((await termBtn.textContent()) ?? "").includes("MY-TERM"), 30, 250),
+	);
 
 	// ---- 6. 藏起消息工具条全部条目后工具条整条不画 ------------------
 	// 打开种进去的历史会话（零 token）

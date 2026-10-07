@@ -665,6 +665,12 @@ export function ScmPanel({ chat, terminal, active, onSwitchToTerminal, uiScmTool
 	};
 	const scmShow = (id: string): boolean =>
 		uiScmToolbar === undefined || !uiScmToolbar.some((e) => e.id === id && e.hidden);
+	/** 布局页改名 / 插件 arrange 指定过文案（`labelExplicit`）→ 用那一条，否则内置 i18n 文案。
+	 *  内置条目一直画的是写死的 t(...)：不让位就等于「设置页里改了名，界面上没反应」。 */
+	const scmLabel = (id: string, fallback: string): string => {
+		const e = allScmEntries.find((x) => x.id === id);
+		return e?.labelExplicit ? e.label : fallback;
+	};
 	const scmHostNodes: Record<string, ReactNode> = {
 		"host:scm-changes": (
 			<button
@@ -677,7 +683,7 @@ export function ScmPanel({ chat, terminal, active, onSwitchToTerminal, uiScmTool
 					setError(null);
 				}}
 			>
-				{t("scmChanges")}
+				{scmLabel("host:scm-changes", t("scmChanges"))}
 			</button>
 		),
 		"host:scm-history": (
@@ -691,7 +697,7 @@ export function ScmPanel({ chat, terminal, active, onSwitchToTerminal, uiScmTool
 					setError(null);
 				}}
 			>
-				{t("scmHistory")}
+				{scmLabel("host:scm-history", t("scmHistory"))}
 			</button>
 		),
 		"host:scm-refresh": (
@@ -710,7 +716,7 @@ export function ScmPanel({ chat, terminal, active, onSwitchToTerminal, uiScmTool
 				className="scm-select"
 				value={branchSel}
 				disabled={notRepo || branches.length === 0}
-				title={t("scmSwitchBranch")}
+				title={scmLabel("host:scm-branch", t("scmSwitchBranch"))}
 				onChange={(e) => setBranchSel(e.target.value)}
 			>
 				<option value="" disabled>
@@ -745,7 +751,7 @@ export function ScmPanel({ chat, terminal, active, onSwitchToTerminal, uiScmTool
 				onClick={handleSwitch}
 			>
 				<FiGitBranch />
-				{t("scmSwitch")}
+				{scmLabel("host:scm-switch", t("scmSwitch"))}
 			</button>
 		),
 		"host:scm-push": (
@@ -757,7 +763,7 @@ export function ScmPanel({ chat, terminal, active, onSwitchToTerminal, uiScmTool
 				onClick={handlePush}
 			>
 				<FiArrowUp />
-				{t("scmPush")}
+				{scmLabel("host:scm-push", t("scmPush"))}
 			</button>
 		),
 		"host:scm-pull": (
@@ -769,7 +775,7 @@ export function ScmPanel({ chat, terminal, active, onSwitchToTerminal, uiScmTool
 				onClick={handlePull}
 			>
 				<FiArrowDown />
-				{t("scmPull")}
+				{scmLabel("host:scm-pull", t("scmPull"))}
 			</button>
 		),
 		"host:scm-input": (
@@ -816,7 +822,7 @@ export function ScmPanel({ chat, terminal, active, onSwitchToTerminal, uiScmTool
 				onClick={handleGenCommitMsg}
 			>
 				<FiCpu className={genLoading ? "scm-spin" : ""} />
-				{genLoading ? t("scmGenMsgRunning") : t("scmGenMsg")}
+				{genLoading ? t("scmGenMsgRunning") : scmLabel("host:scm-genmsg", t("scmGenMsg"))}
 			</button>
 		),
 		"host:scm-commit": (
@@ -828,7 +834,7 @@ export function ScmPanel({ chat, terminal, active, onSwitchToTerminal, uiScmTool
 				onClick={handleCommit}
 			>
 				<FiCheck />
-				{t("scmCommit")}
+				{scmLabel("host:scm-commit", t("scmCommit"))}
 			</button>
 		),
 		"host:scm-commit-all": (
@@ -839,7 +845,7 @@ export function ScmPanel({ chat, terminal, active, onSwitchToTerminal, uiScmTool
 				title={t("scmCommitAllTip")}
 				onClick={handleCommitAll}
 			>
-				{t("scmCommitAll")}
+				{scmLabel("host:scm-commit-all", t("scmCommitAll"))}
 			</button>
 		),
 	};
@@ -1084,7 +1090,7 @@ export function ScmPanel({ chat, terminal, active, onSwitchToTerminal, uiScmTool
 				<span>{t("scmRunsInTerminal")}</span>
 				{scmShow("host:scm-term") && (
 					<button type="button" className="scm-goto-term" onClick={onSwitchToTerminal}>
-						{t("scmViewTerminal")}
+						{scmLabel("host:scm-term", t("scmViewTerminal"))}
 					</button>
 				)}
 			</div>

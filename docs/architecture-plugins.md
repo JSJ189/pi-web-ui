@@ -512,6 +512,14 @@ CLI `install --catalog <url>`（同步列表 + 逐条安装/更新，已安装�
 （`arrangedBy`）。恢复只撤**用户偏好**（插件 `arrange` 的意图仍生效，要连它一起撤就禁用插件）；条目上的
 `source` / `userOverrides` / `arrangedBy` / `movedFrom` 就是布局页用来解释「这条是谁挪走的」的依据。
 
+**文案（`labels`）的落地规则**：`UiSlotEntry.label` 分两类 —— 宿主内置默认（`t(labelKey)`）与**显式指定**
+（用户在布局页改名 / 插件 `arrange.label` / 插件自己声明的条目）；后者会置 `UiSlotEntry.labelExplicit`。
+渲染层必须看这面旗：内置条目一直画的是自己写死的 i18n 文案与实时数值（顶栏按钮、底栏数值徐标），只有
+`labelExplicit` 立着时才让位 ——名字型条目（视图三连 / 搜索 / 插件条目…）用用户文案顶掉内置文案；数值型
+（上下文 / 成本 / 缓存 / 消息数 / 连接态…）把名字插在数值前，**不吞掉实时数据**（`BarItem` 里的 `named()` /
+`withName()`）。没置旗时渲染结果与旧版逐字节一致，所以「插件的 label 与用户的改名对内置条目也真的生效」
+（issue #555；回归：`tests/unit/bar-item-unified.test.ts`、`tests/ui-layout-ui-test.mjs`）。
+
 ### 溢出与隐藏
 
 只有**顶栏**有溢出概念：主栏本身不限量（与底栏同款直排，窄屏横滑/桌面端换行），被 `hidden` 的条目、

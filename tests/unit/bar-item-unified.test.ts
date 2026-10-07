@@ -345,4 +345,100 @@ describe("上下左右四栏通用 BarItem 渲染测试", () => {
 		// 底栏文字字号收敛至 11px
 		expect(css).toMatch(/\.statusbar\s+\.bar-item-text[^{]*\{[^}]*font-size:\s*11px/);
 	});
+
+	// ---- 布局页改名落地（issue #555）：内置条目的文案一直是写死的 i18n 与实际数值，
+	// 只有 `labelExplicit`（用户改名 / 插件 arrange 指定）立着时才让位。----------------
+	/** 顶栏按钮的形状（host:terminal 在 switch 分支里画硬编码文案）。 */
+	const buttonEntry = (extra: Partial<UiSlotEntry> = {}): UiSlotEntry => ({
+		id: "host:terminal",
+		slot: "topbar.primary",
+		source: "host",
+		label: "终端",
+		kind: "view",
+		view: "terminal",
+		order: 21,
+		align: "end",
+		hidden: false,
+		userOverrides: [],
+		arrangedBy: [],
+		...extra,
+	});
+
+	it("没置 labelExplicit：内置按钮照旧画 i18n 文案，entry.label 不入渲染", () => {
+		const { container, root } = renderBarItem(buttonEntry({ label: "MY-TERM" }), "top");
+		expect(container.textContent).toContain("终端");
+		expect(container.textContent).not.toContain("MY-TERM");
+		act(() => root.unmount());
+		container.remove();
+	});
+
+	it("布局页改名（labelExplicit）→ 顶栏按钮真的换文案（不再只是设置页里的假承诺）", () => {
+		const { container, root } = renderBarItem(
+			buttonEntry({ label: "MY-TERM", labelExplicit: true, userOverrides: ["label"] }),
+			"top",
+		);
+		const btn = container.querySelector('button[data-bar-item="host:terminal"]');
+		expect(btn).not.toBeNull();
+		expect(btn?.textContent).toContain("MY-TERM");
+		expect(btn?.textContent).not.toContain("终端");
+		// 提示也跟着名字走（悬浮一次看到的还是用户起的名字，不是两套称呼）
+		expect(btn?.getAttribute("title")).toBe("MY-TERM");
+		act(() => root.unmount());
+		container.remove();
+	});
+
+	it("布局页改名（labelExplicit）→ 数值徐标把名字插在数值前，不吞掉实时数据", () => {
+		const ctx: UiSlotEntry = {
+			id: "host:ctx",
+			slot: "bottombar",
+			source: "host",
+			label: "用量",
+			kind: "badge",
+			order: 10,
+			align: "start",
+			hidden: false,
+			userOverrides: ["label"],
+			arrangedBy: [],
+			labelExplicit: true,
+		};
+		const { container, root } = renderBarItem(ctx, "bottom");
+		const text = container.querySelector('[data-bar-item="host:ctx"] .bar-item-text');
+		expect(text?.textContent).toContain("用量");
+		expect(text?.textContent).toContain("1.5K/8K");
+		act(() => root.unmount());
+		container.remove();
+
+		// 成本条目：名字在前、`$` 紧跟数字（不能变成「$ 用量 0.0123」）
+		const cost: UiSlotEntry = {
+			id: "host:cost",
+			slot: "bottombar",
+			source: "host",
+			label: "总花费",
+			kind: "badge",
+			order: 11,
+			align: "start",
+			hidden: false,
+			userOverrides: ["label"],
+			arrangedBy: [],
+			labelExplicit: true,
+		};
+		const costRendered = renderBarItem(cost, "bottom");
+		const costWrap = costRendered.container.querySelector('[data-bar-item="host:cost"]');
+		// 名字是独立的文本节点，`$` 仍紧贴数字 —— 间距由 .has-name 的 gap 给，不靠空格。
+		expect(costWrap?.querySelector(".bar-item-text")?.textContent).toBe("总花费");
+		expect(costWrap?.querySelector(".bar-item-char")?.textContent).toBe("$");
+		expect(costWrap?.classList.contains("has-name")).toBe(true);
+		expect(costWrap?.textContent).toBe("总花费$0.0123");
+		act(() => costRendered.root.unmount());
+		costRendered.container.remove();
+	});
+
+	it("插件 arrange 指定的文案（labelExplicit）同样生效：宿主条目的文案不听插件的也是假承诺", () => {
+		const entry = buttonEntry({ label: "ARRANGED", labelExplicit: true, arrangedBy: ["layouttest"] });
+		const { container, root } = renderBarItem(entry, "top");
+		expect(container.textContent).toContain("ARRANGED");
+		expect(container.textContent).not.toContain("终端");
+		act(() => root.unmount());
+		container.remove();
+	});
 });

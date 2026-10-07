@@ -266,6 +266,14 @@ export function BarItem({
 	};
 
 	const id = entry.id;
+	/** 显式文案（用户布局页改名 / 插件 arrange 改名，见 UiSlotEntry.labelExplicit）。内置条目一直画
+	 *  的是自己写死的 i18n 文案与实时数值，所以只有文案被显式指定时才让位 —— 不然布局页的改名
+	 *  框就是「假承诺」：改了没人理（issue #555）。没置旗时渲染结果与旧版逐字节一致。 */
+	const custom = entry.labelExplicit ? entry.label : "";
+	/** 名字型条目：显式文案顶掉内置文案。 */
+	const named = (fallback: string) => custom || fallback;
+	/** 数值型条目：`名字 数值`（名字只为显式文案而存在），没指定时就是原来的数值。 */
+	const withName = (value: string) => (custom ? `${custom} ${value}` : value);
 
 	// 下拉选择类型插件条目
 	if (entry.kind === "select" && entry.options?.length) {
@@ -300,7 +308,7 @@ export function BarItem({
 				data-bar-item={id}
 			>
 				<span className="brand-logo bar-item-brand-logo">π</span>
-				<span className="brand-name bar-item-text">pi-web-ui</span>
+				<span className="brand-name bar-item-text">{named("pi-web-ui")}</span>
 			</span>
 		);
 	}
@@ -320,7 +328,7 @@ export function BarItem({
 				<span className={`status-dot ${connClass}`} />
 				{/* 连接态常驻「指示灯 + 文字」：只留圆点虽然紧凑，但底栏缺少一处明文的健康状态，
 				 * 用户看不出「亮着的是绿灯还是黄灯」，所以文字保留（窄屏≤768px 由 CSS 单独隐藏文字）。 */}
-				<span className="status-conn-label bar-item-text">{connLabel}</span>
+				<span className="status-conn-label bar-item-text">{withName(connLabel)}</span>
 			</span>
 		);
 	}
@@ -336,7 +344,7 @@ export function BarItem({
 				onContextMenu={handleContextMenu}
 				data-bar-item={id}
 			>
-				{engine === "dsh" ? "DSH" : engine}
+				{withName(engine === "dsh" ? "DSH" : engine)}
 			</span>
 		);
 	}
@@ -390,6 +398,7 @@ export function BarItem({
 					)}
 				</svg>
 				<span className="bar-item-text">
+					{custom ? `${custom} ` : ""}
 					{usedFormatted !== null && maxFormatted !== null ? (
 						<>
 							<span className="ctx-val">{usedFormatted}</span>
@@ -429,6 +438,7 @@ export function BarItem({
 			>
 				<FiDatabase className="bar-item-icon" />
 				<span className="bar-item-text">
+					{custom ? `${custom} ` : ""}
 					<b className={`cache-pct ${hitClass}`}>{hitText}</b>
 				</span>
 			</span>
@@ -443,12 +453,14 @@ export function BarItem({
 		const isZero = cost <= 0;
 		return (
 			<span
-				className={`bar-item status-item status-cost bar-item-cost${isZero ? " is-zero" : ""}`}
+				className={`bar-item status-item status-cost bar-item-cost${isZero ? " is-zero" : ""}${custom ? " has-name" : ""}`}
 				title={costTip}
 				data-tip={costTip}
 				onContextMenu={handleContextMenu}
 				data-bar-item={id}
 			>
+				{/* 名字落在 `$` 前面：`.status-cost` 默认 gap:0 让 `$` 紧贴数字，有名字时靠 .has-name 把间距还给条目。 */}
+				{custom ? <span className="bar-item-text">{custom}</span> : null}
 				<span className="bar-item-char">$</span>
 				<span className="bar-item-text">{costFormatted}</span>
 			</span>
@@ -469,7 +481,7 @@ export function BarItem({
 				data-bar-item={id}
 			>
 				<FiMessageSquare className="bar-item-icon" />
-				<span className="bar-item-text">{count}</span>
+				<span className="bar-item-text">{withName(String(count))}</span>
 			</span>
 		);
 	}
@@ -488,7 +500,7 @@ export function BarItem({
 			>
 				<span className="working-spin" />
 				<span className="bar-item-text">
-					{t("working")}
+					{named(t("working"))}
 					{queueTotal > 0 && ` ⏳ ${queueTotal}`}
 				</span>
 				<span className="status-rate bar-item-rate" title={t("rateTip")}>
@@ -510,7 +522,7 @@ export function BarItem({
 				data-bar-item={id}
 			>
 				<span className="bar-item-icon">🔎</span>
-				<span className="bar-item-text">{t("delegateModeBadge")}</span>
+				<span className="bar-item-text">{named(t("delegateModeBadge"))}</span>
 				{state.delegateConvId ? (
 					<button
 						type="button"
@@ -541,9 +553,7 @@ export function BarItem({
 				data-bar-item={id}
 			>
 				<FiCpu className="bar-item-icon" />
-				<span className="bar-item-text">
-					{cpu} · {memory}
-				</span>
+				<span className="bar-item-text">{withName(`${cpu} · ${memory}`)}</span>
 			</span>
 		);
 	}
@@ -566,19 +576,19 @@ export function BarItem({
 				align={bar === "right" ? "right" : "left"}
 				open={soundOpen}
 				onOpenChange={setSoundOpen}
-				tip={t("sound")}
+				tip={named(t("sound"))}
 				caret={false}
 				trigger={
 					<button
 						type="button"
 						className="bar-item chip"
-						title={t("sound")}
-						data-tip={t("sound")}
+						title={named(t("sound"))}
+						data-tip={named(t("sound"))}
 						onContextMenu={handleContextMenu}
 						data-bar-item={id}
 					>
 						<FiVolume2 className="bar-item-icon" />
-						<span className="chip-sub bar-item-text">{t("sound")}</span>
+						<span className="chip-sub bar-item-text">{named(t("sound"))}</span>
 					</button>
 				}
 			>
@@ -601,19 +611,19 @@ export function BarItem({
 				align={bar === "right" ? "right" : "left"}
 				open={langOpen}
 				onOpenChange={setLangOpen}
-				tip={t("language")}
+				tip={named(t("language"))}
 				caret={false}
 				trigger={
 					<button
 						type="button"
 						className="bar-item chip"
-						title={t("language")}
-						data-tip={t("language")}
+						title={named(t("language"))}
+						data-tip={named(t("language"))}
 						onContextMenu={handleContextMenu}
 						data-bar-item={id}
 					>
 						<FiGlobe className="bar-item-icon" />
-						<span className="chip-sub bar-item-text">{localeShort(locale)}</span>
+						<span className="chip-sub bar-item-text">{withName(localeShort(locale))}</span>
 					</button>
 				}
 			>
@@ -656,19 +666,19 @@ export function BarItem({
 					setThemeOpen(v);
 					if (v && themes.length === 0) dropdownProps?.reloadThemes?.();
 				}}
-				tip={t("theme")}
+				tip={named(t("theme"))}
 				caret={false}
 				trigger={
 					<button
 						type="button"
 						className="bar-item chip"
-						title={t("theme")}
-						data-tip={t("theme")}
+						title={named(t("theme"))}
+						data-tip={named(t("theme"))}
 						onContextMenu={handleContextMenu}
 						data-bar-item={id}
 					>
 						<FiSun className="bar-item-icon" />
-						<span className="chip-sub bar-item-text">{t("theme")}</span>
+						<span className="chip-sub bar-item-text">{named(t("theme"))}</span>
 					</button>
 				}
 			>
@@ -740,7 +750,9 @@ export function BarItem({
 				data-bar-item={id}
 			>
 				<FiDownload className="bar-item-icon" />
-				<span className="chip-sub bar-item-text">v{dropdownProps?.appVersion ?? chat.update?.current ?? "…"}</span>
+				<span className="chip-sub bar-item-text">
+					{withName(`v${dropdownProps?.appVersion ?? chat.update?.current ?? "…"}`)}
+				</span>
 			</span>
 		) : (
 			<Dropdown
@@ -754,20 +766,20 @@ export function BarItem({
 						appSend({ type: "check_updates_all" });
 					}
 				}}
-				tip={t("update")}
+				tip={named(t("update"))}
 				fit
 				caret={false}
 				trigger={
 					<button
 						type="button"
 						className="bar-item chip"
-						title={t("update")}
-						data-tip={t("update")}
+						title={named(t("update"))}
+						data-tip={named(t("update"))}
 						onContextMenu={handleContextMenu}
 						data-bar-item={id}
 					>
 						<FiDownload className="bar-item-icon" />
-						<span className="chip-sub bar-item-text">v{chat.update?.current ?? "…"}</span>
+						<span className="chip-sub bar-item-text">{withName(`v${chat.update?.current ?? "…"}`)}</span>
 						{chat.update && !chat.update.upToDate && <span className="update-dot" />}
 						{updatesCount > 0 && <span className="update-badge">{updatesCount}</span>}
 					</button>
@@ -793,28 +805,28 @@ export function BarItem({
 	switch (id) {
 		case "host:chat":
 			iconNode = <FiMessageSquare className="bar-item-icon" />;
-			labelText = t("chat");
+			labelText = named(t("chat"));
 			isActive = view === "chat";
 			isTab = true;
 			onClick = () => onViewChange?.("chat");
 			break;
 		case "host:terminal":
 			iconNode = <FiTerminal className="bar-item-icon" />;
-			labelText = t("terminal");
+			labelText = named(t("terminal"));
 			isActive = view === "terminal";
 			isTab = true;
 			onClick = () => onViewChange?.("terminal");
 			break;
 		case "host:git":
 			iconNode = <FiGitBranch className="bar-item-icon" />;
-			labelText = t("scmTab");
+			labelText = named(t("scmTab"));
 			isActive = view === "git";
 			isTab = true;
 			onClick = () => onViewChange?.("git");
 			break;
 		case "host:new-chat":
 			iconNode = <FiPlus className="bar-item-icon" />;
-			labelText = t("newChat");
+			labelText = named(t("newChat"));
 			extraClasses = "chip newchat";
 			onClick = () => {
 				onViewChange?.("chat");
@@ -825,7 +837,7 @@ export function BarItem({
 		case "host:new-ephemeral-chat":
 			if (isDsh) return null;
 			iconNode = <LuMessageSquareDashed className="bar-item-icon" />;
-			labelText = t("newChatEphemeral");
+			labelText = named(t("newChatEphemeral"));
 			extraClasses = "chip newchat ephemeral-chat-btn";
 			onClick = () => {
 				onViewChange?.("chat");
@@ -836,33 +848,33 @@ export function BarItem({
 		case "host:history":
 			if (view && view !== "chat") return null;
 			iconNode = <FiMenu className="bar-item-icon" />;
-			labelText = t("openHistory");
+			labelText = named(t("openHistory"));
 			extraClasses = "panel-toggle";
 			onClick = () => onOpenPanel?.("left");
 			break;
 		case "host:files":
 			if (view && view !== "chat") return null;
 			iconNode = <FiFolder className="bar-item-icon" />;
-			labelText = t("openFiles");
+			labelText = named(t("openFiles"));
 			extraClasses = "panel-toggle has-label";
 			onClick = () => onOpenPanel?.("right");
 			break;
 		case "host:open-project":
 			iconNode = <FiFolderPlus className="bar-item-icon" />;
-			labelText = t("openProject");
+			labelText = named(t("openProject"));
 			extraClasses = "chip open-project";
 			isActive = Boolean(isProjectPickerOpen);
 			onClick = () => onOpenProjectPicker?.();
 			break;
 		case "host:search":
 			iconNode = <FiSearch className="bar-item-icon" />;
-			labelText = t("searchGlobal");
+			labelText = named(t("searchGlobal"));
 			extraClasses = "chip";
 			onClick = () => onOpenGlobalSearch?.();
 			break;
 		case "host:tasks":
 			iconNode = <FiLayers className="bar-item-icon" />;
-			labelText = t("bgTasks");
+			labelText = named(t("bgTasks"));
 			extraClasses = "chip bg-task-chip";
 			if (chat.bgServers.length > 0) {
 				badgeNode = <span className="bg-task-badge bar-item-badge">{chat.bgServers.length}</span>;
@@ -871,13 +883,13 @@ export function BarItem({
 			break;
 		case "host:settings":
 			iconNode = <FiSettings className="bar-item-icon" />;
-			labelText = t("settings");
+			labelText = named(t("settings"));
 			extraClasses = "chip";
 			onClick = () => onOpenSettings?.();
 			break;
 		case "host:plugins":
 			iconNode = <FiBox className="bar-item-icon" />;
-			labelText = t("pluginMenuTitle");
+			labelText = named(t("pluginMenuTitle"));
 			extraClasses = "chip";
 			onClick = (e) => {
 				if (onOpenPluginMenu) onOpenPluginMenu(e.currentTarget);
@@ -886,13 +898,13 @@ export function BarItem({
 			break;
 		case "host:github":
 			iconNode = <FiGithub className="bar-item-icon" />;
-			labelText = "GitHub";
+			labelText = named("GitHub");
 			extraClasses = "chip github";
 			onClick = () => window.open("https://github.com/xing-shuyin/pi-web-ui", "_blank", "noreferrer,noopener");
 			break;
 		case "host:cwd":
 			iconNode = <FiFolder className="bar-item-icon" />;
-			labelText = state?.cwd ? state.cwd.split(/[/\\]/).pop() || state.cwd : t("openProject");
+			labelText = withName(state?.cwd ? state.cwd.split(/[/\\]/).pop() || state.cwd : t("openProject"));
 			extraClasses = "status-item status-cwd";
 			isActive = Boolean(isProjectPickerOpen);
 			onClick = () => onOpenProjectPicker?.();
@@ -900,7 +912,7 @@ export function BarItem({
 		case "host:plugin-status":
 			if (chat.statuses.length === 0) return null;
 			iconNode = <FiActivity className="bar-item-icon" />;
-			labelText = chat.statuses.map((st) => st.text).join(" · ");
+			labelText = withName(chat.statuses.map((st) => st.text).join(" · "));
 			extraClasses = "status-item ext-status";
 			break;
 		default:

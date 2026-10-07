@@ -1532,6 +1532,15 @@ export interface UiSlotEntry {
 	label: string;
 	/** host 条目保留的 i18n key（插件条目没有）。 */
 	labelKey?: string;
+	/**
+	 * `label` 是**别人显式指定**的，不是宿主内置默认（`t(labelKey)`）：插件 `arrange.label`
+	 * 或用户在布局页里改过名时置位（插件自己声明的条目也算，那本来就是它给的文案）。
+	 *
+	 * 渲染层必须看这面旗：顶栏按钮/底栏数值徽标这类内置条目的文案一直是写死的 i18n 与实际
+	 * 数值，如果无视它，布局页的改名框就是「假承诺」—— 改了没人理（issue #555）。没置位时
+	 * 一律照旧画内置文案与实时数据，渲染结果与旧版逐字节一致。
+	 */
+	labelExplicit?: boolean;
 	icon?: string;
 	/** 内联 SVG 图标（有则优先于 icon 渲染，见 web/src/plugin-icon.tsx）。 */
 	iconSvg?: string;
@@ -1616,6 +1625,8 @@ function toChildEntry(
 		slot,
 		source,
 		label: pluginLabel(item, zh),
+		// 插件声明的文案就是它给的文案（渲染层一直照用）；置旗是为了与宿主的「内置默认」区分开。
+		labelExplicit: true,
 		...(item.icon ? { icon: item.icon } : {}),
 		...(item.iconSvg ? { iconSvg: item.iconSvg } : {}),
 		...(hint ? { hint } : {}),
@@ -1691,6 +1702,8 @@ function toWorkingEntry(
 		slot,
 		source,
 		label: pluginLabel(item, zh),
+		// 插件声明的文案就是它给的文案（渲染层一直照用）；置旗是为了与宿主的「内置默认」区分开。
+		labelExplicit: true,
 		...(item.icon ? { icon: item.icon } : {}),
 		...(item.iconSvg ? { iconSvg: item.iconSvg } : {}),
 		...(hint ? { hint } : {}),
@@ -1931,6 +1944,7 @@ export function buildUiSlots(
 		const entry = byId.get(id);
 		if (!entry) continue;
 		entry.label = label;
+		entry.labelExplicit = true;
 		mark(id, "label");
 	}
 	for (const [id, targetSlot] of Object.entries(layout.slots ?? {})) {
@@ -2021,6 +2035,7 @@ function applyArrange(byId: Map<string, WorkingEntry>, op: UiArrangeOp, pluginId
 	}
 	if (op.label !== undefined) {
 		entry.label = op.label;
+		entry.labelExplicit = true;
 		applied = true;
 	}
 	if (op.hint !== undefined) {

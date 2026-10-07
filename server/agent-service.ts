@@ -11248,7 +11248,14 @@ export class ClientSession {
 		for (const conv of payload.convs) {
 			conv.id = fix(conv.id);
 			if (conv.parentId) conv.parentId = fix(conv.parentId);
-			if (!conv.isSubagent && !mainId) mainId = conv.id;
+			if (!conv.isSubagent && !mainId) {
+				mainId = conv.id;
+				// 过户是用户显式动作：这条对话必须在某一页看得见。`listed` 一旦置位就进本页的
+				// 运行列表（不靠「是当前对话 + 有内容」那条展示口径兜底）—— 否则一旦后面的
+				// switchConversation 没切过去（抛错/竞态），它就成了「还在跑但谁的列表里都没
+				// 有」的幽灵（issue #556）。代价只是切走时按「被保留」处理，用户可正常关掉。
+				conv.listed = true;
+			}
 			conv.lastActiveAt = Date.now();
 			conv.terminals.rebindEmit((msg) => this.emitTerminal(conv.id, msg));
 			conv.terminals.onAgentIdle = (terminalId, idleMs, title, lastLines) =>
@@ -11363,6 +11370,24 @@ export class ClientSession {
 			}
 		}
 		return mainId;
+	}
+
+	/**
+	 * 过户夭折回滚用：把 payload 里的对话对象从本会话 map 上摘掉，交还给源会话。
+	 * 按**对象身份**认，不按 id —— 转入时可能已因 id 冲突改写过 id。
+	 * 绝不 dispose：runtime/终端/订阅要原样接着用（订阅由转入方的 insert 重挂）。
+	 */
+	reclaimTakeoverConvs(payload: TakeoverPayload): void {
+		const moved = new Set(payload.convs);
+		// 遍历中只删当前项：Map 迭代器允许（已删除的条目不会再被访问）。
+		for (const [id, conv] of this.convs) {
+			if (moved.has(conv)) this.convs.delete(id);
+		}
+		// 防御：万一 active 被抽走（不应该发生），别留一个悬空 active。
+		if (!this.convs.has(this.activeId)) {
+			const fallback = [...this.convs.values()].find((c) => !c.isSubagent) ?? [...this.convs.values()][0];
+			if (fallback) this.activeId = fallback.id;
+		}
 	}
 
 	/**
@@ -14984,7 +15009,37 @@ export class AgentService {
 				if (detached.reason === "missing") target.refreshExternalRunning();
 				return;
 			}
-			const newMainId = target.insertTakeoverConvs(detached.payload);
+			// 测试专用故障注入（默认情况下一行不生效）：让「接进目标」这一步必错，用来回归
+			// 「过户夭折不得变成幽灵」（tests/takeover-rollback-test.mjs）。
+			let newMainId: string;
+			try {
+				if (process.env.PI_WEB_TEST_TAKEOVER_FAIL_INSERT === "1") throw new Error("injected takeover insert failure");
+				newMainId = target.insertTakeoverConvs(detached.payload);
+			} catch (err) {
+				// 夭折回滚：对话已经从源会话摘下来了（源侧 map 已删、订阅已断），接进目标失败就是
+				// 「还在跑但谁的列表里都没有」的幽灵 —— 只有重启服务才能靠落盘恢复（issue #556）。
+				// 原样搬回源会话，两边都拿到诚实的回执。
+				const where = await this.returnTakeoverPayload(source, target, detached.payload);
+				console.error("[takeover] insert failed, payload returned to", where, err);
+				if (where === "source") {
+					// 源页面也得知道发生了什么：它的对话刚才静默地从列表里消失过一瞬间。
+					source.sendNotice({
+						type: "notice",
+						level: "info",
+						text: `对方的过户未完成，「${main.title}」已退回本页，可直接继续。`,
+						textEn: `The takeover did not complete on the other side — "${main.title}" is back on this page.`,
+					});
+				}
+				fail(
+					where === "source"
+						? `过户失败（${(err as Error).message}）——对话已退回原页面，可直接重试`
+						: `过户失败（${(err as Error).message}）——对话留在本页运行列表里，刷新即可继续`,
+					where === "source"
+						? `Takeover failed (${(err as Error).message}) — the conversation is back on the source page; retry there.`
+						: `Takeover failed (${(err as Error).message}) — the conversation is kept in this page's running list; refresh to pick it up.`,
+				);
+				return;
+			}
 			// 源会话修好 active（detach 内部已处理）→ 推全量刷新 + 告知去向；
 			// 无 sink 时 emit 即丢，无需判断。
 			source.sendNotice({
@@ -15003,6 +15058,40 @@ export class AgentService {
 			await target.bindSession();
 		} catch (err) {
 			fail(`过户失败：${(err as Error).message}`, `Takeover failed: ${(err as Error).message}`);
+		}
+	}
+
+	/**
+	 * 过户夭折回滚：把已经摘下来的对话搬回源会话（及其运行列表）。
+	 *
+	 * 为什么要它：detach 与 insert 之间是唯一的空档期 —— 源侧已经删了 map、断了订阅，
+	 * 一旦 insert 报错，对话就两头不挂，但 runtime 还在跑（“幽灵会话”，只有重启服务
+	 * 才能靠落盘会话恢复，issue #556）。这里用同一套 insert 接线原样搬回去。
+	 *
+	 * 搬不回去（二次失败，理论上不该发生）时把它们**留在目标会话**：宁可留在新页面
+	 * 的运行列表里（insert 已给主对话置 listed），也绝不落到“没人持有”的空档。
+	 * 返回最终归属方，调用方据此给用户出对应文案。
+	 */
+	private async returnTakeoverPayload(
+		source: ClientSession,
+		target: ClientSession,
+		payload: TakeoverPayload,
+	): Promise<"source" | "target"> {
+		// 先摘掉已部分插进目标的残留（不 dispose：runtime 要原样搬）。
+		target.reclaimTakeoverConvs(payload);
+		try {
+			const mainId = source.insertTakeoverConvs(payload);
+			await source.switchConversation(mainId);
+			await source.bindSession();
+			return "source";
+		} catch (err) {
+			console.error("[takeover] rollback to source failed:", err);
+			try {
+				target.insertTakeoverConvs(payload);
+			} catch {
+				/* 双失败：对象还在 payload 里，不要再次搬运 —— 不抛，不让 handler 崩 */
+			}
+			return "target";
 		}
 	}
 

@@ -279,24 +279,40 @@ export function TerminalPanel({ chat, terminal, uiTerminalToolbar, onUiAction }:
 		const set = new Set(ids);
 		return allTermEntries.filter((e) => set.has(e.id) || (withPlugins && e.source !== "host"));
 	};
+	/** 布局页改名 / 插件 arrange 指定过文案（`labelExplicit`）→ 用那一条，否则内置 i18n 文案。
+	 *  这三个条目是纯图标按钮，名字落在 `title` 上。 */
+	const termLabel = (id: string, fallback: string): string => {
+		const e = allTermEntries.find((x) => x.id === id);
+		return e?.labelExplicit ? e.label : fallback;
+	};
 	const termHostNodes: Record<string, ReactNode> = {
 		"host:term-cmd-refresh": (
 			<button
 				type="button"
 				className="panel-refresh"
-				title={t("rerun")}
+				title={termLabel("host:term-cmd-refresh", t("rerun"))}
 				onClick={() => appSend({ type: "list_commands" })}
 			>
 				<FiRefreshCw />
 			</button>
 		),
 		"host:term-cmd-new": (
-			<button type="button" className="panel-new" title={t("newCommand")} onClick={startNew}>
+			<button
+				type="button"
+				className="panel-new"
+				title={termLabel("host:term-cmd-new", t("newCommand"))}
+				onClick={startNew}
+			>
 				<FiPlus />
 			</button>
 		),
 		"host:term-tab-new": (
-			<button type="button" className="panel-new" title={t("newTerminal")} onClick={openShell}>
+			<button
+				type="button"
+				className="panel-new"
+				title={termLabel("host:term-tab-new", t("newTerminal"))}
+				onClick={openShell}
+			>
 				<FiPlus />
 			</button>
 		),
