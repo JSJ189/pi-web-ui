@@ -9,9 +9,10 @@
  * win32 it still asserts the common graceful-degradation contract.
  */
 import { portUp, freePort } from "./lib/port-utils.mjs";
+import { ensureBuild } from "./lib/ensure-build.mjs";
 import { fileURLToPath } from "node:url";
 import WebSocket from "ws";
-import { execSync, spawn } from "node:child_process";
+import { spawn } from "node:child_process";
 import { mkdtempSync, mkdirSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -33,9 +34,9 @@ const check = (name, ok, extra = "") => {
 };
 
 try {
-	execSync("npm run build", { cwd: REPO_ROOT, stdio: "ignore" });
-} catch {
-	console.error("build failed");
+	ensureBuild(REPO_ROOT, "list-files-missing-dir-test");
+} catch (err) {
+	console.error(String(err?.message ?? err));
 	process.exit(1);
 }
 try {

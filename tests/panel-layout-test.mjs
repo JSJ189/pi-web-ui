@@ -8,10 +8,11 @@
  * 零 token：本地起一个「永不回包」的假模型（同 recall-queue-test），制造流式窗口。
  */
 import { CHROME_PATH } from "./lib/chrome.mjs";
+import { ensureBuild } from "./lib/ensure-build.mjs";
 import { portUp, freePort } from "./lib/port-utils.mjs";
 import { fileURLToPath } from "node:url";
 import { chromium } from "playwright-core";
-import { execSync, spawn } from "node:child_process";
+import { spawn } from "node:child_process";
 import { mkdirSync, mkdtempSync, writeFileSync } from "node:fs";
 import { createServer } from "node:http";
 import { tmpdir } from "node:os";
@@ -66,9 +67,9 @@ const check = (name, ok, extra = "") => {
 };
 
 try {
-	execSync("npm run build", { cwd: PROJ, stdio: "ignore" });
-} catch {
-	console.error("build failed");
+	ensureBuild(PROJ, "panel-layout-test");
+} catch (err) {
+	console.error(String(err?.message ?? err));
 	process.exit(1);
 }
 try {

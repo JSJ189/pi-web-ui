@@ -8,9 +8,10 @@
  *   ever displaced while streaming), and the file tree follows the project.
  */
 import { portUp, freePort } from "./lib/port-utils.mjs";
+import { ensureBuild } from "./lib/ensure-build.mjs";
 import { fileURLToPath } from "node:url";
 import WebSocket from "ws";
-import { execSync, spawn } from "node:child_process";
+import { spawn } from "node:child_process";
 import { mkdtempSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -33,9 +34,9 @@ const check = (name, ok, extra = "") => {
 };
 
 try {
-	execSync("npm run build", { cwd: PROJ, stdio: "ignore" });
-} catch {
-	console.error("build failed");
+	ensureBuild(PROJ, "conv-cwd-test");
+} catch (err) {
+	console.error(String(err?.message ?? err));
 	process.exit(1);
 }
 const server = spawn("node", ["dist/server/index.js"], {

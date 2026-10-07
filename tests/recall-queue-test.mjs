@@ -5,9 +5,10 @@
  */
 import { CHROME_PATH } from "./lib/chrome.mjs";
 import { portUp, freePort } from "./lib/port-utils.mjs";
+import { ensureBuild } from "./lib/ensure-build.mjs";
 import { fileURLToPath } from "node:url";
 import { chromium } from "playwright-core";
-import { execSync, spawn } from "node:child_process";
+import { spawn } from "node:child_process";
 import { mkdirSync, mkdtempSync, writeFileSync } from "node:fs";
 import { createServer } from "node:http";
 import { tmpdir } from "node:os";
@@ -24,9 +25,13 @@ const check = (name, ok, extra = "") => {
 	if (!ok) failures++;
 };
 
-// --- 0. build worktree ---
-console.log(`building ${REPO_ROOT}…`);
-execSync("npm run build", { cwd: REPO_ROOT, stdio: "ignore" });
+// --- 0. build worktree（套件内 run-smoke.mjs 已统一构建，避免并行时互相踩 dist/）---
+try {
+	ensureBuild(REPO_ROOT, "recall-queue-test");
+} catch (err) {
+	console.error(String(err?.message ?? err));
+	process.exit(1);
+}
 
 // --- 1. hang 假模型：GET 正常回（防启动刷新卡死），POST 永不回（制造 streaming） ---
 const hang = createServer((req, res) => {

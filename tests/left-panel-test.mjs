@@ -6,10 +6,11 @@
  *   footer updates the file tree and fires the 已切换到工作目录 notice.
  */
 import { CHROME_PATH } from "./lib/chrome.mjs";
+import { ensureBuild } from "./lib/ensure-build.mjs";
 import { portUp, freePort } from "./lib/port-utils.mjs";
 import { fileURLToPath } from "node:url";
 import { chromium } from "playwright-core";
-import { execSync, spawn } from "node:child_process";
+import { spawn } from "node:child_process";
 import { mkdtempSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -34,9 +35,9 @@ const check = (name, ok, extra = "") => {
 };
 
 try {
-	execSync("npm run build", { cwd: PROJ, stdio: "ignore" });
-} catch {
-	console.error("build failed");
+	ensureBuild(PROJ, "left-panel-test");
+} catch (err) {
+	console.error(String(err?.message ?? err));
 	process.exit(1);
 }
 

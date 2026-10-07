@@ -8,7 +8,8 @@
  * Run:  node slash-commands-test.mjs
  */
 import { portUp, freePort } from "./lib/port-utils.mjs";
-import { execSync, spawn } from "node:child_process";
+import { ensureBuild } from "./lib/ensure-build.mjs";
+import { spawn } from "node:child_process";
 import { mkdtempSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -75,11 +76,11 @@ function connect() {
 }
 
 async function main() {
-	// Build + boot the server on a dedicated port.
+	// Build + boot the server on a dedicated port.（套件内 run-smoke.mjs 已统一构建）
 	try {
-		execSync("npm run build", { cwd: PROJ, stdio: "ignore" });
-	} catch {
-		console.error("build failed");
+		ensureBuild(PROJ, "slash-commands-test");
+	} catch (err) {
+		console.error(String(err?.message ?? err));
 		process.exit(1);
 	}
 	try {

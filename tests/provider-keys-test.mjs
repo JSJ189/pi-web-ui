@@ -208,9 +208,7 @@ try {
 	await c.waitForNotice("已切换", 30000);
 	check("auth.json now sk-B", readAuth().deepseek?.key === "sk-B");
 	// 条数没变（依旧是 2），必须等「激活标记已翻转」的那条广播，否则会读到切换前的旧列表。
-	ks = await c.waitProviderKeys("deepseek", 2, 25000, (list) =>
-		list.find((k) => k.name === keyBName)?.active === true,
-	);
+	ks = await c.waitProviderKeys("deepseek", 2, 25000, (list) => list.find((k) => k.name === keyBName)?.active === true);
 	check("key B active now", ks.find((k) => k.name === keyBName)?.active === true);
 
 	// 4) remove the ACTIVE key by name → falls back to the remaining (sk-A)

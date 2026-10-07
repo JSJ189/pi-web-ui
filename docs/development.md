@@ -14,7 +14,7 @@ npm run format:check # 只检查不改写（CI 跑这个）
 npm run build        # build:web (vite) + build:server (tsc) + build:dsh-runtime + build:mermaid-vendor + build:runtrace-vendor
 npm start            # 跑编译产物 dist/server/index.js（生产）
 npm test             # vitest 纯函数单测（tests/unit/，毫秒级零 token）
-npm run test:smoke   # 零 token 协议冒烟聚合跑器（tests/run-smoke.mjs，71 个自包含测试；--core 只跑 PR 快检子集）
+npm run test:smoke   # 零 token 协议冒烟聚合跑器（tests/run-smoke.mjs，82 个自包含测试；--core 只跑 PR 快检子集；--no-build 跳过套件前的构建）
 npm run test:freeze  # 冻结/重连回归测试（Playwright，需要本机 chromium headless）
 ```
 
@@ -22,9 +22,11 @@ npm run test:freeze  # 冻结/重连回归测试（Playwright，需要本机 chr
 
 GitHub Actions ubuntu-latest（`.github/workflows/ci.yml`，push/PR → main 触发）：`format:check → lint → check:protocol → typecheck → build → build:extension → pack:extension → vitest → test:smoke`。
 
-冒烟清单（tests/run-smoke.mjs 的 ALL，71 个）只收**自包含、零 token、跨平台**的测试；attach 型（需外部 server）、需真模型、平台相关的脚本不进 CI，本地手动跑（分类见 run-smoke.mjs 头部注释）。
+冒烟清单（tests/run-smoke.mjs 的 ALL，82 个）只收**自包含、零 token、跨平台**的测试；attach 型（需外部 server）、需真模型、平台相关的脚本不进 CI，本地手动跑（分类见 run-smoke.mjs 头部注释）。
 
 冒烟分层（CI 提速）：PR 跑 `--core` 快检子集（CORE，协议/安全/插件接线代表，2~4 分钟），push main + 每日 nightly（北京时间午夜）跑全量；`--retry-once` 让首轮失败重跑一次（标 FLAKY，重跑还挂才算真失败）。新测试默认进 ALL，跑得快（<20s）且稳才进 CORE（有 ALL↔CORE 同步守卫）。
+
+`dist/` 由跑器在开跑前**串行构建一次**（CI 已在 Build 步骤构建过，可用 `--no-build` 跳过）。用例侧一律走 `tests/lib/ensure-build.mjs`，**不要**自己 `execSync("npm run build")`：默认 4 worker 并行下，一个用例重写 `dist/` 时另一个正在 `spawn dist/server/index.js`，会出「测试插件没被激活」之类与被测逻辑无关的假红。
 
 ## 编码约定
 

@@ -11,8 +11,9 @@
  * 纯 HTTP 测试，无需浏览器、无需 token。独立端口 8936 + 临时目录，结束自清理。
  */
 import { portUp, freePort } from "./lib/port-utils.mjs";
+import { ensureBuild } from "./lib/ensure-build.mjs";
 import { fileURLToPath } from "node:url";
-import { execSync, spawn } from "node:child_process";
+import { spawn } from "node:child_process";
 import { mkdirSync, mkdtempSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -38,9 +39,9 @@ const check = (name, ok, extra = "") => {
 };
 
 try {
-	execSync("npm run build", { cwd: PROJ, stdio: "ignore" });
-} catch {
-	console.error("build failed");
+	ensureBuild(PROJ, "theme-dotfile-test");
+} catch (err) {
+	console.error(String(err?.message ?? err));
 	process.exit(1);
 }
 try {

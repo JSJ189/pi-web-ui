@@ -82,10 +82,12 @@ jobs:
         if: github.event_name == 'pull_request'
         env:
           PI_WEB_PLUGIN_CATALOG_URL: ""
-        run: node tests/run-smoke.mjs --core --retry-once --jobs=4
+        # --no-build：上面的 Build 步骤已经构建过 dist/，跑器不必再构建一次
+        # （用例内的构建也由跑器统一接管，见 tests/lib/ensure-build.mjs）。
+        run: node tests/run-smoke.mjs --core --retry-once --jobs=4 --no-build
 
       - name: Protocol smoke tests (full)
         if: github.event_name != 'pull_request'
         env:
           PI_WEB_PLUGIN_CATALOG_URL: ""
-        run: node tests/run-smoke.mjs --retry-once --jobs=4
+        run: node tests/run-smoke.mjs --retry-once --jobs=4 --no-build

@@ -11,9 +11,10 @@
  * 端口 8922（≥8900 约定），临时 data-dir + 临时工作区，结束自行清理。
  */
 import { portUp, freePort } from "./lib/port-utils.mjs";
+import { ensureBuild } from "./lib/ensure-build.mjs";
 import { fileURLToPath } from "node:url";
 import WebSocket from "ws";
-import { execSync, spawn } from "node:child_process";
+import { spawn } from "node:child_process";
 import { mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -32,9 +33,9 @@ const check = (name, ok, extra = "") => {
 };
 
 try {
-	execSync("npm run build", { cwd: REPO_ROOT, stdio: "ignore" });
-} catch {
-	console.error("build failed");
+	ensureBuild(REPO_ROOT, "tool-info-test");
+} catch (err) {
+	console.error(String(err?.message ?? err));
 	process.exit(1);
 }
 try {

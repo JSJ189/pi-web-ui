@@ -14,6 +14,7 @@
  */
 import { createServer } from "node:http";
 import { portUp, freePort } from "./lib/port-utils.mjs";
+import { ensureBuild } from "./lib/ensure-build.mjs";
 import { fileURLToPath } from "node:url";
 import WebSocket from "ws";
 import { spawn } from "node:child_process";
@@ -108,10 +109,9 @@ writeFileSync(
 );
 
 try {
-	const { execSync } = await import("node:child_process");
-	execSync("npm run build", { cwd: REPO_ROOT, stdio: "ignore" });
-} catch {
-	console.error("build failed");
+	ensureBuild(REPO_ROOT, "lazy-tools-test");
+} catch (err) {
+	console.error(String(err?.message ?? err));
 	process.exit(1);
 }
 try {
