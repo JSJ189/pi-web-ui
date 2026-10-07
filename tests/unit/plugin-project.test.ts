@@ -43,7 +43,9 @@ beforeEach(() => {
 });
 
 afterEach(() => {
-	rmSync(base, { recursive: true, force: true });
+	// Windows 上 git 子进程刚退出时目录可能还锁着（EBUSY/EPERM）：带退避重试，
+	// 否则清理失败会盖掉真正的断言失败信息。
+	rmSync(base, { recursive: true, force: true, maxRetries: 5, retryDelay: 100 });
 });
 
 /** 跑一次真实 git（仅用于造 fixture 仓库）。 */
@@ -155,7 +157,7 @@ describe.skipIf(!hasGit)("组装项目（本地 file:// 仓库，零网络）", 
 		expect(onDefault.ok).toBe(true);
 		expect(existsSync(join(ws, "main", "feature-only.txt"))).toBe(false);
 		expect(readText(join(ws, "main", "base.txt"))).toBe("base\n");
-	});
+	}, 30000); // 两次真实 clone（fixture + 组装），满负荷跑全量时 5s 默认超时不够
 
 	it("files 写入：自动建中间目录、内容逐字节正确", async () => {
 		const res = await createProject({
