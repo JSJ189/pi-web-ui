@@ -2,23 +2,15 @@
 	"id": "pm2-manager",
 	"name": "进程管家",
 	"nameEn": "Process Manager",
-	"version": "0.1.0",
+	"version": "0.3.0",
 	"icon": "🚀",
 	"iconSvg": "<svg xmlns=\"http://www.w3.org/2000/svg\" viewBox=\"0 0 24 24\" fill=\"none\" stroke=\"currentColor\" stroke-width=\"2\" stroke-linecap=\"round\" stroke-linejoin=\"round\"><rect x=\"2\" y=\"2\" width=\"20\" height=\"8\" rx=\"2\"/><rect x=\"2\" y=\"14\" width=\"20\" height=\"8\" rx=\"2\"/><line x1=\"6\" y1=\"6\" x2=\"6.01\" y2=\"6\"/><line x1=\"6\" y1=\"18\" x2=\"6.01\" y2=\"18\"/></svg>",
-	"description": "用 pm2 统一托管 AI 启动的后台任务：长期服务与调试实例一律进 pm2，宿主顶栏「后台任务」面板与插件面板同一份列表，可看状态/CPU/内存/重启/日志、单独停止或删除；裸后台启动（nohup、尾部 &、start /b）被硬闸门拦下并指路；未装 pm2 时一键安装。",
-	"descriptionEn": "Supervise every AI-started background task with pm2: long-running services and debug instances go through pm2, so the host background-tasks panel and the plugin panel show one shared list with status/CPU/memory/restarts/logs plus per-app stop or delete; raw detached launches (nohup, trailing &, start /b) are blocked with guidance; one-click pm2 install when missing.",
+	"description": "用 pm2 统一托管 AI 启动的后台任务：长期服务与调试实例交给 pm2 后有名字、有状态、有日志，可单独停止/重启/删除；宿主顶栏「后台任务」面板与插件面板看的是同一份列表（状态/CPU/内存/重启次数/时长/日志），未装 pm2 时一键安装。插件不拦截 AI 的任何命令，只提供工具与面板，管不管由模型和用户自行决定。",
+	"descriptionEn": "Supervise AI-started background tasks with pm2: long-running services and debug instances get a name, a status, logs, and per-app stop/restart/delete; the host background-tasks panel and the plugin panel show one shared list (status/CPU/memory/restarts/uptime/logs), and pm2 installs in one click when missing. The plugin never intercepts AI commands — it only offers the tool and the panel; whether a process goes through pm2 is up to the model and the user.",
 	"apiVersion": 2,
 	"view": false,
 	"permissions": ["ui", "tools", "http"],
 	"settings": [
-		{
-			"key": "guardMode",
-			"type": "select",
-			"label": "裸后台启动拦截",
-			"default": "deny",
-			"options": ["deny", "off"],
-			"hint": "deny：AI 用 nohup / 尾部 & / start /b 起长期任务时直接拒绝并指路 pm2（命令里带 #bg-ok 可放行）；off：只提示不拦。"
-		},
 		{
 			"key": "pm2Bin",
 			"type": "text",

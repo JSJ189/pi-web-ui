@@ -50,9 +50,6 @@ const TEXT = {
 		del: "删除",
 		logs: "日志",
 		logsEmpty: "（无输出）",
-		guard: "裸后台启动拦截",
-		guardOn: "开",
-		guardOff: "关",
 		platform: "平台",
 		busy: "执行中…",
 	},
@@ -78,9 +75,6 @@ const TEXT = {
 		del: "Delete",
 		logs: "Logs",
 		logsEmpty: "(no output)",
-		guard: "Detached-launch guard",
-		guardOn: "on",
-		guardOff: "off",
 		platform: "Platform",
 		busy: "working…",
 	},
@@ -177,7 +171,7 @@ function createApp(container) {
 	root.className = "pm2m-view";
 	container.appendChild(root);
 
-	let state = { installed: false, version: "", apps: [], guardMode: "deny", error: "", platform: "" };
+	let state = { installed: false, version: "", apps: [], error: "", platform: "" };
 	let logsFor = "";
 	let logsText = "";
 	let busy = false;
@@ -201,11 +195,7 @@ function createApp(container) {
 		parts.push(`<div class="pm2m-head">
 			<span>🚀</span><b>${esc(t("title"))}</b>
 			<span class="pm2m-sub">${esc(
-				state.installed
-					? `pm2 ${state.version} · ${t("guard")} ${state.guardMode === "off" ? t("guardOff") : t("guardOn")} · ${t(
-							"platform",
-						)} ${state.platform || "-"}`
-					: t("subtitle"),
+				state.installed ? `pm2 ${state.version} · ${t("platform")} ${state.platform || "-"}` : t("subtitle"),
 			)}</span>
 			<span class="pm2m-sp"></span>
 			<button class="pm2m-btn" data-act="refresh" ${busy ? "disabled" : ""}>${esc(busy ? t("busy") : t("refresh"))}</button>

@@ -92,7 +92,7 @@ const ALL = [
 	"plugin-bgtask-test",
 	// 后台任务「自动清理」的协议面（阈值落库/归一化、钉住、立即清理反馈）。
 	"bg-cleanup-test",
-	// pm2 进程管家：manifest 被宿主接受 + topbar 占用 + 真激活 + 五个路由（零 token）。
+	// pm2 进程管家：manifest 被宿主接受 + tasks.panel 占位 + 真激活 + 三个路由（零 token）。
 	"pm2-manager-plugin-test",
 	"plugin-command-test",
 	"plugin-cwd-test",

@@ -172,8 +172,8 @@
 		"nameEn": "Process Manager",
 		"icon": "🚀",
 		"iconSvg": "<svg xmlns=\"http://www.w3.org/2000/svg\" viewBox=\"0 0 24 24\" fill=\"none\" stroke=\"currentColor\" stroke-width=\"2\" stroke-linecap=\"round\" stroke-linejoin=\"round\"><rect x=\"2\" y=\"2\" width=\"20\" height=\"8\" rx=\"2\"/><rect x=\"2\" y=\"14\" width=\"20\" height=\"8\" rx=\"2\"/><line x1=\"6\" y1=\"6\" x2=\"6.01\" y2=\"6\"/><line x1=\"6\" y1=\"18\" x2=\"6.01\" y2=\"18\"/></svg>",
-		"description": "用 pm2 统一托管 AI 启动的后台任务：长期服务与调试实例一律进 pm2，顶栏「后台任务」面板与插件面板同一份列表，可看状态/CPU/内存/重启/日志、单独停止或删除；裸后台启动（nohup、尾部 &、start /b）被硬闸门拦下并指路；未装 pm2 时一键安装。",
-		"descriptionEn": "Supervise every AI-started background task with pm2: long-running services and debug instances go through pm2, so the host background-tasks panel and the plugin panel show one shared list with status/CPU/memory/restarts/logs plus per-app stop or delete; raw detached launches (nohup, trailing &, start /b) are blocked with guidance; one-click pm2 install when missing.",
+		"description": "用 pm2 统一托管 AI 启动的后台任务：长期服务与调试实例交给 pm2 后有名字、有状态、有日志，顶栏「后台任务」面板与插件面板同一份列表，可看状态/CPU/内存/重启/日志、单独停止或删除；未装 pm2 时一键安装。不拦截 AI 的命令，管不管由模型和用户自行决定。",
+		"descriptionEn": "Supervise AI-started background tasks with pm2: long-running services and debug instances get a name, a status and logs, so the host background-tasks panel and the plugin panel show one shared list with status/CPU/memory/restarts/logs plus per-app stop or delete; one-click pm2 install when missing. It never intercepts AI commands — whether a process goes through pm2 is up to the model and the user.",
 		"source": "xing-shuyin/pi-web-ui/plugins/pm2-manager",
 		"homepage": "https://github.com/xing-shuyin/pi-web-ui/tree/main/plugins/pm2-manager"
 	}

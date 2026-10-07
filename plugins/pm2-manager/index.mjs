@@ -4,14 +4,15 @@
  * 解决的现场问题：AI 调试时用 `nohup` / 尾部 `&` / `start /b` 起一堆后台实例，
  * 既不在任何列表里，也停不干净，CPU 被吃满（本机实测一次遗留 12 个 server 实例）。
  *
- * 四件事：
+ * 两件事：
  *  1. **提示词引导**：注册单个 action 式 `pm2` 工具，description/snippet/guidelines 三处
- *     告诉模型「长期任务一律走 pm2」，不必猜；
- *  2. **硬闸门**：`host.onToolPre` 拦 bash 的裸后台启动（nohup / 尾部 & / start /b /
- *     Start-Process / disown / setsid），带原因拒绝并指路；`#bg-ok` 是逃生门；
- *  3. **同一面板**：宿主「后台任务」面板里就地内嵌一块「pm2 托管的应用」
+ *     告诉模型「长期任务走 pm2 更省心」，不必猜；
+ *  2. **同一面板**：宿主「后台任务」面板里就地内嵌一块「pm2 托管的应用」
  *     （`ui["tasks.panel"]` + `kind="view"`，与宿主自己 diff 出来的裸进程列表共存）；
  *     **不再**给每个应用注册 `registerBackgroundTask` —— 那会让同一个应用在面板里列两遍。
+ *
+ * 刻意**不接管** bash：本插件只提供工具与面板（想看就查、想管就管），不对 AI 的命令
+ * 做任何拦截或追加提示 —— 是否把进程交给 pm2 由模型与用户自行决定。
  *
  * 跨平台：pm2 是 npm 全局包，三平台一致；调用一律走「process.execPath + pm2 的 JS 入口」
  * （`node_modules/pm2/bin/pm2`），避开 Windows 上 `pm2` 是 `.cmd` 垫片、execFile 直接跑会
@@ -31,110 +32,7 @@ import { dirname, join } from "node:path";
 // ════════════════════════════════════════════════════════════════════════════
 
 // ────────────────────────────────────────────────────────────────────────────
-// 1. 裸后台启动识别（bash pre 守卫）
-// ────────────────────────────────────────────────────────────────────────────
-
-/** 命令里带上它就显式放行（模型确实需要裸后台时的逃生门，如 `sleep 30 & #bg-ok`）。 */
-export const ESCAPE_MARK = "#bg-ok";
-
-/** 命令已经在用 pm2 管 → 放行（含 npx/pm2 的常见前置词）。 */
-const PM2_RE = /(?:^|[\s;&|()])(?:npx\s+|pnpx\s+|yarn\s+|bunx\s+|pnpm\s+exec\s+)?pm2(?:\s|$)/;
-
-/** 纯等待/无副作用命令：`sleep 30 &` 这类「等端口起来」的写法不该被拦。 */
-const WAIT_ONLY_RE = /^(?:sleep(?:\s+[\d.]+s?)?|wait|true|:|echo\b.*)$/;
-
-/** 取「命令段」：按 && / ; / | / 换行切分，剥掉每段前缀的 sudo/env/command/exec。
- *  用于「nohup 这类词必须出现在命令位置」的判定 —— `grep nohup` / PowerShell 过滤器里
- *  出现 `*nohup-probe*` 这种**只是提到**该词的命令不该被拦。 */
-function commandSegments(command) {
-	return String(command ?? "")
-		.split(/&&|;|\||\r?\n/)
-		.map((s) => s.trim().replace(/^\(\s*/, ""))
-		.filter(Boolean)
-		.map((s) => s.replace(/^(?:sudo|doas|env|command|exec)\s+/i, "").trim());
-}
-
-/** 某段是否以某个命令词开头（词后必须是空白或结尾）。 */
-function startsWithWord(segment, word) {
-	return new RegExp(`^${word}(?:\\s|$)`).test(segment);
-}
-
-/** 整条命令（去掉尾部 &）是否只是等待类命令。 */
-export function isWaitOnlyCommand(command) {
-	const body = String(command ?? "")
-		.trim()
-		.replace(/&\s*$/, "");
-	if (!body) return true;
-	return body
-		.split(/&&|;|\|/)
-		.map((s) => s.trim())
-		.filter(Boolean)
-		.every((seg) => WAIT_ONLY_RE.test(seg));
-}
-
-/**
- * 识别「裸后台启动」：这类命令会让进程脱离任何管理面（看不到日志、停不干净、重启不恢复），
- * 正是 CPU 被大量遗留实例吃满的根因。
- * @returns null = 放行；否则 `{kind, reason, reasonEn}`（reason 给模型看）。
- */
-export function detectDetachedLaunch(command) {
-	if (typeof command !== "string") return null;
-	const cmd = command.trim();
-	if (!cmd || cmd.includes(ESCAPE_MARK)) return null;
-	if (PM2_RE.test(cmd)) return null;
-	const hit = (kind, reason, reasonEn) => ({ kind, reason, reasonEn });
-	// 这几个词只在**命令位置**才算裸后台启动（`grep nohup`、`... like '*nohup-probe*'`
-	// 只是提到它，拦了纯属误伤）。
-	const segments = commandSegments(cmd);
-	const launchesWith = (word) => segments.some((seg) => startsWithWord(seg, word));
-	if (launchesWith("nohup")) {
-		return hit(
-			"nohup",
-			"检测到 nohup 后台启动：进程会脱离管理面（看不到日志、停不干净）。请改用 pm2 工具 action=start 托管该长期任务。",
-			"nohup detaches the process from any management surface (no logs, no clean stop). Start this long-lived process with the pm2 tool instead: action=start.",
-		);
-	}
-	if (launchesWith("disown")) {
-		return hit(
-			"disown",
-			"检测到 disown：进程会脱离管理面。请改用 pm2 工具 action=start 托管该长期任务。",
-			"disown detaches the process from management. Start this long-lived process with the pm2 tool instead: action=start.",
-		);
-	}
-	if (launchesWith("setsid")) {
-		return hit(
-			"setsid",
-			"检测到 setsid：进程会脱离管理面。请改用 pm2 工具 action=start 托管该长期任务。",
-			"setsid detaches the process from management. Start this long-lived process with the pm2 tool instead: action=start.",
-		);
-	}
-	if (/\bstart\s+\/b\b/i.test(cmd)) {
-		return hit(
-			"start-/b",
-			"检测到 Windows `start /b` 后台启动：进程会脱离管理面。请改用 pm2 工具 action=start 托管该长期任务。",
-			"Windows `start /b` detaches the process from management. Start this long-lived process with the pm2 tool instead: action=start.",
-		);
-	}
-	if (/\bStart-Process\b/i.test(cmd)) {
-		return hit(
-			"Start-Process",
-			"检测到 PowerShell Start-Process 后台启动：进程会脱离管理面。请改用 pm2 工具 action=start 托管该长期任务。",
-			"PowerShell Start-Process detaches the process from management. Start this long-lived process with the pm2 tool instead: action=start.",
-		);
-	}
-	// 尾部 &（排除 `&&` 与 `2>&1`）：纯等待类命令放行。
-	if (/(?:^|[^&>])&$/.test(cmd) && !isWaitOnlyCommand(cmd)) {
-		return hit(
-			"trailing-&",
-			"检测到尾部 `&` 后台启动：进程会脱离管理面。请改用 pm2 工具 action=start 托管该长期任务（确实需要裸后台时在命令里加 #bg-ok 放行）。",
-			"A trailing `&` detaches the process from management. Start this long-lived process with the pm2 tool instead: action=start (add #bg-ok to the command to allow a raw background job).",
-		);
-	}
-	return null;
-}
-
-// ────────────────────────────────────────────────────────────────────────────
-// 2. pm2 可执行入口候选（跨平台）
+// 1. pm2 可执行入口候选（跨平台）
 // ────────────────────────────────────────────────────────────────────────────
 
 /**
@@ -164,7 +62,7 @@ export function pm2EntryCandidates({ execPath, env = {} } = {}) {
 export const INSTALL_COMMAND = "npm i -g pm2";
 
 // ────────────────────────────────────────────────────────────────────────────
-// 3. pm2 jlist 解析与展示格式化
+// 2. pm2 jlist 解析与展示格式化
 // ────────────────────────────────────────────────────────────────────────────
 
 const ANSI_RE = /\u001B\[[0-9;]*[A-Za-z]/g;
@@ -277,8 +175,6 @@ export function formatAppLine(app, now = Date.now()) {
 
 /** 工具/面板输出上限（字符）：防 pm2 logs 把上下文撑爆。 */
 const OUTPUT_CAP = 6000;
-/** 后台任务面板同步间隔（pm2 jlist 是子进程调用，别太密）。 */
-const BG_SYNC_MS = 5000;
 /** 单条 pm2 命令超时。 */
 const PM2_TIMEOUT_MS = 30_000;
 /** 全局安装 pm2 的超时（npm 可能要几十秒）。 */
@@ -342,7 +238,6 @@ export default {
 				raw = {};
 			}
 			st.settings = {
-				guardMode: raw.guardMode === "off" ? "off" : "deny",
 				pm2Bin: typeof raw.pm2Bin === "string" ? raw.pm2Bin.trim() : "",
 			};
 			return st.settings;
@@ -437,19 +332,6 @@ export default {
 			return st.apps;
 		}
 
-		// ── 硬闸门：拦裸后台启动 ───────────────────────────────────────────
-		const offGuard = host.onToolPre?.((req) => {
-			if (st.settings.guardMode === "off") return null;
-			if (req?.toolName !== "bash") return null;
-			const params = req.params && typeof req.params === "object" ? req.params : {};
-			const hit = detectDetachedLaunch(params.command);
-			if (!hit) return null;
-			const missing = st.pm2.installed
-				? ""
-				: "（pm2 尚未安装：可用 pm2 工具 action=install 装，或在顶栏 🚀 面板点「安装 pm2」）";
-			return { decision: "deny", reason: hit.reason + missing, reasonEn: hit.reasonEn };
-		});
-
 		// ── AI 工具：单个 action 式 `pm2` ──────────────────────────────────
 		const offTool = host.registerAgentTool({
 			name: "pm2",
@@ -458,9 +340,9 @@ export default {
 				"Run and supervise long-lived processes with pm2: list status, start a service under a name, " +
 				"stop/restart/delete it, read its logs, or install pm2 when missing. One pm2 record per process " +
 				"keeps every instance visible and stoppable after the shell exits.",
-			promptSnippet: "supervise long-running services and debug instances",
+			promptSnippet: "supervise long-lived services and background tasks",
 			promptGuidelines: [
-				"Start every background or long-lived process (dev server, watcher, debug instance) with action=start instead of detaching it with nohup, a trailing &, or start /b",
+				"Use action=start for every background or long-lived process (dev server, watcher, debug instance); never detach one with nohup, a trailing &, Windows start, Start-Process or a detached spawn",
 				"Call action=list before launching another copy of the same service, and action=delete the instances you no longer need",
 				"Read a supervised process's output with action=logs rather than leaving it unobserved",
 			],
@@ -571,7 +453,6 @@ export default {
 				version: st.pm2.version,
 				bin: st.pm2.bin,
 				error: st.pm2.error,
-				guardMode: st.settings.guardMode,
 				installCommand: INSTALL_COMMAND,
 				apps: st.apps,
 				platform: process.platform,
@@ -617,7 +498,7 @@ export default {
 		host.log(`pm2-manager activated（pm2 ${st.pm2.installed ? st.pm2.version : "未安装"}，平台 ${process.platform}）`);
 
 		return () => {
-			for (const off of [offGuard, offTool, offStatus, offInstall, offAction]) {
+			for (const off of [offTool, offStatus, offInstall, offAction]) {
 				try {
 					off?.();
 				} catch {

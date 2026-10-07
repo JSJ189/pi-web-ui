@@ -3,12 +3,14 @@
  *
  * 覆盖真实宿主接线（单测只到假宿主，manifest 是否被宿主接受、路由是否真挂上、
  * 激活是否真跑完，只有起真服务器才算数）：
- *   1. manifest 被接受：插件出现在 `plugins` 推送里且没有 error（含 view:true → 菜单条目可点）；
+ *   1. manifest 被接受：插件出现在 `plugins` 推送里且没有 error；
  *   2. `view:false`（没有独立面板）+ `ui["tasks.panel"]` 一条 kind=view（内嵌进宿主「后台任务」面板）；
  *   3. 服务端入口真激活（stdout 有 activated 日志，且无 [plugin:pm2-manager] 报错）；
  *   4. 三个 HTTP 路由可用：GET /status 回结构化状态、POST /action 的非法入参被挡（ok:false）、
- *      已删的 /scan 与 /kill 真回 404（遗留实例扫描交给宿主面板，不重复实现）；
+ *      已删的 /scan 真回 404（遗留实例扫描交给宿主面板，不重复实现）；
  *   5. 未装 pm2 时面板拿到的是「可安装」状态而不是崩（status.installCommand 有值）。
+ *
+ * 插件**不接管 bash**：不订阅 onToolPre / onToolPost，不管 AI 怎么写后台命令。
  *
  * 运行：npm run build && node tests/pm2-manager-plugin-test.mjs（已进 tests/run-smoke.mjs）
  */
@@ -172,9 +174,9 @@ async function main() {
 		"GET /status 回结构化状态",
 		statusRes.ok &&
 			typeof status?.installed === "boolean" &&
-			status?.guardMode === "deny" &&
+			status?.guardMode === undefined &&
 			status?.platform === process.platform,
-		JSON.stringify({ installed: status?.installed, guardMode: status?.guardMode, platform: status?.platform }),
+		JSON.stringify({ installed: status?.installed, platform: status?.platform }),
 	);
 	check(
 		"未装 pm2 时给出安装路径（不崩）",
