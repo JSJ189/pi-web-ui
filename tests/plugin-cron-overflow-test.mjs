@@ -115,11 +115,16 @@ try {
 
 	const messages = [];
 	sock = await connectWs((m) => messages.push(m));
-	await new Promise((r) => setTimeout(r, 1_000));
 
-	// 插件被激活了才谈得上排定时
-	const plugins = messages.filter((m) => m.type === "plugins").at(-1)?.plugins ?? [];
-	const info = plugins.find((p) => p.id === "far");
+	// 插件被激活了才谈得上排定时：轮询等 `plugins` 快照里出现 far。
+	// （原来只 sleep(1s) 就断言：满负荷并行跑全量时插件列表可能晚于 1s 才到 → 假红；
+	//  插件真没激活的话这里会在 10s 后仍然 fail。）
+	let info = null;
+	for (let i = 0; i < 40 && !info; i++) {
+		const plugins = messages.filter((m) => m.type === "plugins").at(-1)?.plugins ?? [];
+		info = plugins.find((p) => p.id === "far") ?? null;
+		if (!info) await new Promise((r) => setTimeout(r, 250));
+	}
 	if (!info) fail("测试插件没被激活");
 	else if (info.error) fail(`插件激活报错：${info.error}`);
 	else ok("测试插件已激活并排了两条 cron 任务");
