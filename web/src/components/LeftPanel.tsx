@@ -1035,6 +1035,11 @@ export const LeftPanel = memo(function LeftPanel({
 																	/>
 																) : (
 																	<span className="session-title">
+																		{c.pinned && (
+																			<span className="pin-badge" title={t("pinnedConversation")}>
+																				📌
+																			</span>
+																		)}
 																		{c.isSubagent && <span className="subagent-badge">{t("subagentBadge")}</span>}
 																		{c.isEphemeral && <span className="ephemeral-badge">{t("ephemeralBadge")}</span>}
 																		{c.forkFrom && (
@@ -1060,11 +1065,6 @@ export const LeftPanel = memo(function LeftPanel({
 																		{c.hasQuestion && (
 																			<span className="question-badge" title={t("waitingQuestionBadge")}>
 																				?
-																			</span>
-																		)}
-																		{c.pinned && (
-																			<span className="pin-badge" title={t("pinnedConversation")}>
-																				📌
 																			</span>
 																		)}
 																		{hasKids && isCollapsed && (
@@ -1293,12 +1293,12 @@ export const LeftPanel = memo(function LeftPanel({
 												/>
 											) : (
 												<span className="session-title">
-													{displayName(s)}
 													{s.pinned && (
 														<span className="pin-badge" title={t("pinnedConversation")}>
 															📌
 														</span>
 													)}
+													{displayName(s)}
 												</span>
 											)}
 											{renaming === s.path ? null : (

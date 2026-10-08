@@ -49,7 +49,9 @@ function seedSession(cwd, id, text) {
 	return file;
 }
 const SEED_TEXT = "钉住回归用的对话";
+const SEED_LONG_TEXT = "这是一个非常非常非常非常非常非常非常非常长的第二个会话标题用于回归钉住标记不被截断";
 seedSession(WORK, "pin-seed", SEED_TEXT);
+seedSession(WORK, "pin-long-seed", SEED_LONG_TEXT);
 
 let passed = 0;
 const check = (name, cond, extra = "") => {
@@ -156,7 +158,7 @@ async function main() {
 
 	// 打开 seeded 会话 → 它有内容，进「运行的对话」。
 	const leftPanel = page.locator(".panel-left").first();
-	const historyRow = leftPanel.locator(".panel-sessions .lp-row").first();
+	const historyRow = leftPanel.locator(".panel-sessions .lp-row").filter({ hasText: SEED_TEXT }).first();
 	check("左栏列出 seeded 历史会话", await until(async () => (await historyRow.count()) > 0, 40, 250));
 	await tap(page, historyRow);
 	const runningSection = leftPanel.locator(".lp-section-convs").first();
@@ -191,16 +193,48 @@ async function main() {
 	);
 	check("服务端回了「已钉住」回执", pinnedNotice);
 
-	// ---- 3. 切走（先点成 active 再新建对话）→ 钉住的对话仍留在运行列表 --------
-	await tap(page, seededRow(page).locator(".session-item"));
+	// ---- 3. 切走（打开第二个超长标题会话并钉住）→ 两个钉住对话的 📌 均在面板可视区域内 --------
+	const longHistoryRow = leftPanel.locator(".panel-sessions .lp-row").filter({ hasText: "这是一个非常" }).first();
+	await tap(page, longHistoryRow);
 	await sleep(600);
-	await tap(page, leftPanel.locator('button.lp-new-chat-action[aria-label*="新对话"]').first());
-	await sleep(600);
+	const longRunningRow = leftPanel.locator(".lp-section-convs .lp-row").filter({ hasText: "这是一个非常" }).first();
 	check(
-		"新建对话切走后，钉住的对话仍在运行列表（核心断言）",
+		"切换打开第二个对话后，第一个钉住的对话仍在运行列表（核心断言）",
 		await until(async () => (await seededRow(page).count()) > 0, 40, 250),
 	);
-	check("📌 标记仍在", await until(async () => (await seededRow(page).locator(".pin-badge").count()) > 0, 30, 200));
+	check(
+		"第一个对话 📌 标记仍在",
+		await until(async () => (await seededRow(page).locator(".pin-badge").count()) > 0, 30, 200),
+	);
+
+	await rightClick(page, longRunningRow);
+	await until(async () => (await page.locator(".ctx-menu").count()) > 0, 20, 150);
+	await clickMenuItem(page, "钉住");
+	check(
+		"第二个（长标题）对话钉住后也有 📌 标记",
+		await until(async () => (await longRunningRow.locator(".pin-badge").count()) > 0, 40, 250),
+	);
+	const panelBox = await leftPanel.boundingBox();
+	const badge1Box = await seededRow(page).locator(".pin-badge").boundingBox();
+	const badge2Box = await longRunningRow.locator(".pin-badge").boundingBox();
+	check(
+		"长标题与多会话同时钉住时，所有 📌 标记均在左栏可视宽度内（不被标题省略号挤出截断）",
+		Boolean(
+			panelBox &&
+			badge1Box &&
+			badge2Box &&
+			badge1Box.x + badge1Box.width <= panelBox.x + panelBox.width &&
+			badge2Box.x + badge2Box.width <= panelBox.x + panelBox.width,
+		),
+		`panelW=${panelBox?.width}, b1X=${badge1Box?.x}, b2X=${badge2Box?.x}`,
+	);
+
+	// 取消第二个对话的钉住并切走释放，还原为单会话环境继续后续断言
+	await rightClick(page, longRunningRow);
+	await until(async () => (await page.locator(".ctx-menu").count()) > 0, 20, 150);
+	await clickMenuItem(page, "取消钉住");
+	await tap(page, leftPanel.locator('button.lp-new-chat-action[aria-label*="新对话"]').first());
+	await sleep(600);
 
 	// ---- 4. 取消钉住：标记消失，同样的切换之后它被释放（恢复旧行为）----------
 	await rightClick(page, seededRow(page));
