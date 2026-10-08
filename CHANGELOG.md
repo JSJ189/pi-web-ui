@@ -10,6 +10,8 @@
 
 ## [Unreleased]
 
+## [0.100.0] — 2026-10-08
+
 ### Added
 
 - **高危命令高亮与命中清单（#566）** —— 执行审查与人机协同审批全面强化：审批弹窗展示结构化的「高危命中清单」（精确指出命中哪条规则、哪个字段、第几个字符起以及命中片段内容），针对 bash 命令在转义 JSON 参数框上方呈现直观高亮的命令预览，解决多命令串联时肉眼难寻危险点的问题；对话中的终端命令卡片（`Message` 与 `ToolCallBlock`）以及审查者执行证据（`goal-evidence`）同步标记高危命令片段。判定单源来自同一规则引擎，保持纯展示增强与现有「显示即提交」参数契约。回归：`tests/unit/approval-rules.test.ts`、`tests/unit/tool-approval.test.ts`。
@@ -51,7 +53,6 @@
 - **点开「后台任务」面板时，进程管家那块总会闪一下「未检测到 pm2」** —— 面板 bundle 原先的初始状态写死 `installed:false`，首帧先把黄条画出来，状态回来后再抹掉；且宿主升级后 `<dataDir>/plugins` 里的已安装官方插件未自动同步更新（停留在旧版本）。现在三个层面彻底根治：① 服务端新增**随包官方插件自动热同步机制**（启动/重载时若已装插件版本落后于随包 catalog 官方插件，自动备份并增量升级，不再滞留旧版代码）；② 客户端增加**模块级已知状态缓存与异常隔离**（同一会话内二次打开首帧直接复用已知结论秒开无闪烁；网络或接口异常绝不把环境误报为「未检测到」）；③ 服务端扩充 Windows 默认 npm 与 PATH 候选路径，启动时毫秒级命中，并为探测增加 Promise 并发防抖。回归：`tests/unit/pm2-manager-panel.test.ts`、`tests/unit/plugin-manager.test.ts`。插件版本 0.3.1 → 0.3.2。
 
 <!-- auto-i18n:start -->
-
 ### i18n
 
 - 前端新增 key（97）：`bgTaskKeep`、`bgTaskKeepOn`、`bgTaskCleanup`、`bgTaskCleanupOff`、`bgTaskCleanupMinutes`、`bgTaskCleanupHint`、`bgTaskCleanNow`、`bgTaskCleanNowHint`、`collapseSubagents`、`expandSubagents`、`subagentBadgeCount`、`subagentsStreamingTip`、`subagentsQuestionTip`、`subagentsErrorTip`、`subagentsCountTip`、`toolApprovalHitsTitle`、`approvalHitPos`、`approvalCommandPreview`、`markerGroupAction`、`actionSuggestions`、`actionSuggestionsTip`、`toolLazyLoading`、`toolLazyLoadingDesc`、`uiLayoutTasksPanel`、`presetShare`、`presetShareShareBtn`、`presetShareImportBtn`、`presetShareBrowseBtn`、`presetShareTabExport`、`presetShareTabImport`、`presetShareTabBrowse`、`presetShareSource`、`presetShareSourceCurrent`、`presetShareDescription`、`presetShareDescriptionPlaceholder`、`presetShareTags`、`presetShareTagsPlaceholder`、`presetShareAuthor`、`presetExportJson`、`presetExportDownload`、`presetShareSubmit`、`presetShareHint`、`presetShareSubmitting`、`presetShareOpenWebTitle`、`presetShareOpenWebBtn`、`presetShareOpenIssueBtn`、`presetShareCopyJson`、`presetSharePopupBlocked`、`presetShareBrowserCopied`、`presetImportText`、`presetImportTextPlaceholder`、`presetImportPickFile`、`presetImportFromUrl`、`presetImportUrlPlaceholder`、`presetImportPreview`、`presetImportFields`、`presetImportIgnored`、`presetImportRejected`、`presetImportReplaces`、`presetImportApply`、`presetImportConfirm`、`presetImportPick`、`presetImportSelectAll`、`presetImportSelectNone`、`presetImportAllSelected`、`presetImportNoneSelected`、`presetImportPickHint`、`presetGroupPrompt`、`presetGroupTools`、`presetGroupTerminal`、`presetGroupSkills`、`presetGroupAi`、`presetGroupUi`、`presetGroupEngine`、`presetGroupOther`、`presetImportImported`、`presetBrowseEmpty`、`presetBrowseLoading`、`presetBrowseSearch`、`presetBrowseRefresh`、`presetBrowseCached`、`presetBrowseImport`、`presetBrowseIssue`、`presetBadgeTemplate`、`presetBadgeReview`、`toolPromptEdit`、`toolPromptEdited`、`toolPromptHint`、`toolPromptDescription`、`toolPromptSnippet`、`toolPromptGuidelines`、`toolPromptDefault`、`toolPromptReset`、`toolPromptSave`、`toolPromptUnavailable`、`elsewhereOfflineBadge`、`elsewhereOfflineTip`
@@ -59,7 +60,6 @@
 - 前端英文变更（2）：`settingsMarkersDesc`、`scheduleTaskEnabledDesc`
 - 服务端新增 key（38）：`loadtools.notready`、`loadtools.unknown`、`loadtools.always`、`loadtools.already`、`loadtools.disabled`、`loadtools.preset`、`goal.role.review.feedback.pass`、`goal.role.review.feedback.prev`、`goal.role.review.feedback.empty`、`loadtools.names.empty`、`loadtools.loaded`、`loadtools.rejected`、`loadtools.none`、`markers.action.guidance`、`markers.action.cleared`、`markers.action.unknown.operation`、`markers.action.requires.text`、`markers.action.already.exists`、`markers.action.added`、`presets.catalog.disabled`、`presets.catalog.url`、`presets.catalog.failed`、`presets.share.currentName`、`presets.share.missing`、`presets.import.noneSelected`、`presets.import.url.host`、`presets.import.url.scheme`、`presets.import.fetch.failed`、`presets.share.apiTokenInvalid`、`presets.share.apiTokenPermission`、`presets.share.apiGeneralFailed`、`presets.share.ghMissingHint`、`presets.share.ghNotLoggedInHint`、`presets.share.fallbackHint`、`presets.share.disabled`、`prompt.tools.lazy`、`sched.action.missing`、`sched.action.unknown`
 - 服务端文案变更（4）：`goal.role.review`、`sched.list.empty`、`sched.cancel.empty.id`、`sched.cancel.not.found`
-
 <!-- auto-i18n:end -->
 
 ## [0.99.0] — 2026-10-03
@@ -1531,7 +1531,8 @@ when?, children?}`，也收 `topbar` / `settings` 这类简写别名）；宿主
 - 0.35.1（2026-08-27）：编辑重问保留附件（#18）+ 全窗口拖放（#19）。
 - 0.29.0（2026-08-23）：全局搜索弹窗（Ctrl+K）+ 消息列表惰性窗口化。
 
-[Unreleased]: https://github.com/xing-shuyin/pi-web-ui/compare/v0.99.0...main
+[Unreleased]: https://github.com/xing-shuyin/pi-web-ui/compare/v0.100.0...main
+[0.100.0]: https://github.com/xing-shuyin/pi-web-ui/releases/tag/v0.100.0
 [0.99.0]: https://github.com/xing-shuyin/pi-web-ui/releases/tag/v0.99.0
 [0.98.0]: https://github.com/xing-shuyin/pi-web-ui/releases/tag/v0.98.0
 [0.97.0]: https://github.com/xing-shuyin/pi-web-ui/releases/tag/v0.97.0
