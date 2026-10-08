@@ -36,6 +36,10 @@ action=install                   # 一键 npm i -g pm2（未安装时）
 
 这些都是**建议**：插件不拦截任何命令，AI 真用了脱管写法也能跑，只是那些进程不在 pm2 列表里。
 
+面板首帧**不抢答**：首次 `GET /status` 回来前只显示中性的「正在检测 pm2 环境…」，不说
+「未检测到 pm2」也不说「没有托管任何应用」—— 否则每次点开「后台任务」都会先闪一下黄条
+（看着像报错，其实只是状态还没到）。
+
 ## 跨平台
 
 pm2 是 npm 全局包，**Windows / macOS / Linux 都能跑**，本插件在三个平台上都走同一条调用链：
@@ -74,4 +78,5 @@ pm2 是 npm 全局包，**Windows / macOS / Linux 都能跑**，本插件在三�
 > `index.mjs` 的 import 加 `?e=<epoch>` 缓存击穿，被它静态 import 的兄弟模块会命中
 > Node ESM 模块缓存 —— 改了不随 reload 生效，必须重启服务（踩过一次）。
 
-- 单测：`tests/unit/pm2-manager.test.ts`（纯函数 + 假宿主 activate，零端口零子进程）
+- 单测：`tests/unit/pm2-manager.test.ts`（纯函数 + 假宿主 activate，零端口零子进程）、
+  `tests/unit/pm2-manager-panel.test.ts`（面板首帧：状态未回来前不闪「未检测到 pm2」）

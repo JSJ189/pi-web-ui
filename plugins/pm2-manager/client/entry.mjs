@@ -31,6 +31,7 @@ const TEXT = {
 	zh: {
 		title: "进程管家",
 		subtitle: "pm2 统一托管 AI 的后台任务",
+		probing: "正在检测 pm2 环境…",
 		refresh: "刷新",
 		notInstalled: "未检测到 pm2 —— 长期任务无法托管，AI 起的后台实例会脱离管理面。",
 		install: "安装 pm2",
@@ -56,6 +57,7 @@ const TEXT = {
 	en: {
 		title: "Process Manager",
 		subtitle: "All AI background tasks supervised by pm2",
+		probing: "Checking the pm2 environment…",
 		refresh: "Refresh",
 		notInstalled: "pm2 not found — long-lived tasks cannot be supervised; AI background instances escape management.",
 		install: "Install pm2",
@@ -171,7 +173,9 @@ function createApp(container) {
 	root.className = "pm2m-view";
 	container.appendChild(root);
 
-	let state = { installed: false, version: "", apps: [], error: "", platform: "" };
+	// `loaded`：首次 /status 是否已回来。未回来前**不下任何结论**（既不说没装、也不说没应用），
+	// 否则点开面板总会先闪一下「未检测到 pm2」黄条再消失（环境检查结论的闪烁）。
+	let state = { installed: false, version: "", apps: [], error: "", platform: "", loaded: false };
 	let logsFor = "";
 	let logsText = "";
 	let busy = false;
@@ -200,7 +204,7 @@ function createApp(container) {
 			<span class="pm2m-sp"></span>
 			<button class="pm2m-btn" data-act="refresh" ${busy ? "disabled" : ""}>${esc(busy ? t("busy") : t("refresh"))}</button>
 		</div>`);
-		if (!state.installed) {
+		if (state.loaded && !state.installed) {
 			parts.push(`<div class="pm2m-banner">
 				<span>${esc(t("notInstalled"))}</span>
 				<button class="pm2m-btn primary" data-act="install" ${busy ? "disabled" : ""}>${esc(
@@ -210,7 +214,10 @@ function createApp(container) {
 			</div>`);
 		}
 		parts.push(`<div class="pm2m-sec">${esc(t("appsTitle"))}</div>`);
-		if (!state.apps.length) {
+		if (!state.loaded) {
+			// 首次状态未到：中性占位，别抢答「没有托管任何应用」。
+			parts.push(`<div class="pm2m-empty">${esc(t("probing"))}</div>`);
+		} else if (!state.apps.length) {
 			parts.push(`<div class="pm2m-empty">${esc(t("empty"))}</div>`);
 		} else {
 			parts.push(`<table class="pm2m-table"><colgroup><col style="width:24%"><col style="width:11%"><col style="width:8%">
@@ -249,6 +256,7 @@ function createApp(container) {
 		} catch (err) {
 			state = { ...state, error: String(err?.message ?? err) };
 		}
+		state.loaded = true;
 		render();
 	}
 
