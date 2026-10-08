@@ -12773,12 +12773,22 @@ export class ClientSession {
 			}
 
 			// issue #145 / #567：同一文件在别处已有持有者 —— 绝不建第二个 writer。
+			// 正在跑：直接拒绝（否则两支 run 并发写同一份 JSONL，事后只有一支可读；
+			// 若确实要过户流式对话，走左栏 elsewhere 行的显式两段确认过户入口）；
 			// 伪客户端（定时任务等）：不允许过户抢占，直接拦截；
-			// 普通客户端（无论是运行中、空闲、还是离线宽限期残骸）：
-			// 直接执行跨客户端自动过户（Auto-Takeover）！搬的是 runtime 本体，单 writer 不变，
-			// 彻底避免同一个 session 产生两个 runtime 导致的 pi-background-tasks
-			// owner activation conflict 错误与分支分叉截断。
+			// 空闲或离线宽限期残骸：直接执行跨客户端自动过户（Auto-Takeover），
+			// 搬移 runtime 本体，保持单 writer，避免双 runtime 导致激活冲突与分支分叉。
 			const owner = this.findSessionOwner?.(targetPath);
+			if (owner && owner.isStreaming) {
+				this.emit({
+					type: "notice",
+					level: "warning",
+					text: `该对话正在另一处运行中（「${owner.title}」），为避免两个 agent 同时写同一份记录，已停止打开。请等它结束后再试，或回到原窗口继续。`,
+					textEn: `This conversation is running in another window ("${owner.title}"). Opening it here would create a second writer for the same transcript, so it was blocked. Wait for it to finish, or continue in the original window.`,
+				});
+				this.flushSnapshot();
+				return;
+			}
 			if (owner) {
 				if (AgentService.isPseudoClientId(owner.clientId)) {
 					this.emit({
