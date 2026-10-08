@@ -65,6 +65,7 @@ import {
 	repairSessionFile,
 	type SessionFileRepair,
 } from "./compaction-markers.js";
+import { calibrateSessionLeaf } from "./session-branch.js";
 import {
 	DANGLING_TOOL_RESULT_TEXT,
 	DANGLING_TOOL_RESULT_TEXT_EN,
@@ -2513,6 +2514,7 @@ function contextWindowOf(session: {
  *  streaming 照拦（后台 run 不随标签页消失），idle 警告不再打扰。 */
 export interface SessionOwnerInfo {
 	clientId: string;
+	convId: string;
 	title: string;
 	cwd: string;
 	isStreaming: boolean;
@@ -7855,6 +7857,10 @@ export class ClientSession {
 	 *  - onRunningChanged：本实例流式集合变化时触发，AgentService 借此让其他
 	 *    客户端重推 conversations（elsewhere 列表近实时）。 */
 	findSessionOwner: ((targetPath: string) => SessionOwnerInfo | null) | undefined = undefined;
+	/** issue #567：跨客户端打开历史会话时的自动过户钩子（单 runtime/writer 保持不变）。
+	 *  当别处已持有该 session 文件时，直接把该会话本体从持有方迁移过来，避免创建第二个
+	 *  runtime 导致 pi-background-tasks 等扩展激活冲突与分支分叉。 */
+	takeOverConversationElsewhere: ((ownerId: string, convId: string) => Promise<void>) | undefined = undefined;
 	/** 插件 steer 跨客户端兜底钩子：attach 时由 AgentService 接线（见 steerElsewhere），
 	 *  在其他客户端的 conversations 里找对话并由持有方执行 steer，未持有回 undefined。 */
 	steerConversationElsewhere:
@@ -10984,6 +10990,14 @@ export class ClientSession {
 				textEn: `The conversation transcript had a corrupted parent chain (duplicate compaction markers) and was auto-repaired. The original file is backed up at ${repair.backup ?? "a .bak file next to it"}; restore it manually if anything looks off.`,
 			});
 		}
+		if (repair.reorderedBranches) {
+			out.push({
+				type: "notice",
+				level: "warning",
+				text: `对话活跃分支已纠偏（检测到陈旧元数据侧枝），已恢复包含完整记录的主分支，原文件备份在 ${repair.backup ?? "同目录 .bak 文件"}。`,
+				textEn: `The active conversation branch was restored to the complete main path (stale metadata branch corrected). Original transcript backed up at ${repair.backup ?? "a .bak file next to it"}.`,
+			});
+		}
 		return out;
 	}
 
@@ -11033,6 +11047,7 @@ export class ClientSession {
 	): Promise<{ manager: SessionManager; runtime: AgentSessionRuntime; repair: SessionFileRepair | null }> {
 		try {
 			const manager = makeManager();
+			calibrateSessionLeaf(manager);
 			const runtime = await makeRuntime(manager);
 			return { manager, runtime, repair: null };
 		} catch (err) {
@@ -11041,6 +11056,7 @@ export class ClientSession {
 			const repair = file ? repairSessionFile(file) : null;
 			if (!repair?.changed) throw err;
 			const manager = makeManager();
+			calibrateSessionLeaf(manager);
 			const runtime = await makeRuntime(manager);
 			return { manager, runtime, repair };
 		}
@@ -12756,37 +12772,35 @@ export class ClientSession {
 				}
 			}
 
-			// issue #145：同一文件在别处已有持有者 —— 绝不建第二个 writer。
-			// 正在跑：直接拒绝（否则两支 run 并发写同一份 JSONL，事后只有一支可读）；
-			// 空闲：放行打开（只剩一处能发送时不会分叉），但提醒用户别处也开着，
-			// 发消息前的 prompt() 守卫会再查一次（开时空闲、发时在跑的竞态也拦得住）。
+			// issue #145 / #567：同一文件在别处已有持有者 —— 绝不建第二个 writer。
+			// 伪客户端（定时任务等）：不允许过户抢占，直接拦截；
+			// 普通客户端（无论是运行中、空闲、还是离线宽限期残骸）：
+			// 直接执行跨客户端自动过户（Auto-Takeover）！搬的是 runtime 本体，单 writer 不变，
+			// 彻底避免同一个 session 产生两个 runtime 导致的 pi-background-tasks
+			// owner activation conflict 错误与分支分叉截断。
 			const owner = this.findSessionOwner?.(targetPath);
-			if (owner && owner.isStreaming) {
-				this.emit({
-					type: "notice",
-					level: "warning",
-					text: `该对话正在另一处运行中（「${owner.title}」），为避免两个 agent 同时写同一份记录，已停止打开。请等它结束后再试，或回到原窗口继续。`,
-					textEn: `This conversation is running in another window ("${owner.title}"). Opening it here would create a second writer for the same transcript, so it was blocked. Wait for it to finish, or continue in the original window.`,
-				});
-				this.flushSnapshot();
-				return;
-			}
 			if (owner) {
-				// 对端已断开（标签页关了）只剩残留会话 —— 不打扰，直接开。
-				if (owner.connected) {
+				if (AgentService.isPseudoClientId(owner.clientId)) {
 					this.emit({
 						type: "notice",
-						level: "info",
-						text: `提醒：该对话在另一处也开着（「${owner.title}」，当前空闲）。请只留一处发送消息，否则两边轮流发送会让历史分叉、其中一支事后不可见。`,
-						textEn: `Note: this conversation is also open in another window ("${owner.title}", currently idle). Send new messages from only one place — alternating between two writers forks the history and hides one branch.`,
+						level: "warning",
+						text: `该对话正在由后台任务使用（「${owner.title}」），为避免并发写入，已停止打开。`,
+						textEn: `This conversation is currently used by a background task ("${owner.title}"). Opening was blocked to prevent concurrent writes.`,
 					});
+					this.flushSnapshot();
+					return;
+				}
+				if (this.takeOverConversationElsewhere) {
+					await this.takeOverConversationElsewhere(owner.clientId, owner.convId);
+					return;
 				}
 			}
 
 			// #235：先修后开——坏转录到 open 后的 getBranch 会死循环，修完再读。
-			// 单文件预扫描，健康文件只多一次小读；修过即弹提示（含压缩被打断）。
+			// 单文件预扫描，健康文件只多一次小读；修过即弹提示（含压缩被打断与分支拓扑纠偏）。
 			this.repairTranscriptFileBeforeOpen(targetPath);
 			const sessionManager = SessionManager.open(targetPath);
+			calibrateSessionLeaf(sessionManager);
 			const targetCwd = sessionManager.getCwd();
 			const conversationId = this.nextConversationId();
 			openedTerminals = this.makeTerminalManager(conversationId, targetCwd);
@@ -12988,6 +13002,7 @@ export class ClientSession {
 					throw new Error("Failed to create forked session file");
 				}
 				forkedManager = SessionManager.open(forkedSessionPath, sessionDir);
+				calibrateSessionLeaf(forkedManager);
 			} else {
 				forkedManager = SessionManager.create(targetConv.cwd);
 				if (targetLeafId) {
@@ -14292,6 +14307,7 @@ export class AgentService {
 			if (conv) {
 				return {
 					clientId,
+					convId: conv.id,
 					title: conv.title,
 					cwd: conv.cwd,
 					isStreaming: cs.conversationStreaming(conv),
@@ -14983,6 +14999,7 @@ export class AgentService {
 	 */
 	private wireClient(cs: ClientSession, clientId: string): void {
 		cs.findSessionOwner = (targetPath) => this.findSessionOwner(targetPath, clientId);
+		cs.takeOverConversationElsewhere = (ownerId, convId) => this.takeOverConversation(clientId, ownerId, convId);
 		cs.hasStreamingElsewhere = () => this.hasStreamingElsewhere(clientId);
 		cs.listProjectRunners = (cwd) => this.listProjectRunners(cwd, clientId);
 		cs.getClaimStore = () => this.claimStore;

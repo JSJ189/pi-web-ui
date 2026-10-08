@@ -140,6 +140,8 @@ const ALL = [
 	"idle-takeover-test",
 	// 离线持有方：手机 run 途中关页面 → run 跑完 → 另一台设备仍能看到「另一处（离线）」行并过户。
 	"offline-takeover-test",
+	// 跨设备打开历史会话（#567）：别处已持有自动过户（单 runtime）＋陈旧元数据侧枝纠偏。
+	"cross-device-switch-session-test",
 	// 跨页作答：点 elsewhere 行的 `?` 把问卷拉到本页回答，不搬迁对话。
 	"remote-answer-test",
 	// elsewhere 生命周期（#291）：断连残骸不入列表、删定时任务回收伪客户端。

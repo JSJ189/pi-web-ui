@@ -208,4 +208,55 @@ describe("repairSessionFile", () => {
 		expect(readFileSync(`${file}.bak`, "utf8")).toBe("ORIGINAL"); // 旧备份不动
 		expect(readFileSync(file, "utf8").includes("compaction-pending")).toBe(false);
 	});
+
+	it("修剪被陈旧元数据侧枝劫持的转录拓扑（issue #567）", () => {
+		const dir = mkdtempSync(join(tmpdir(), "session-repair-567-"));
+		const file = join(dir, "s567.jsonl");
+		// 构造 issue #567 结构：
+		// m1 -> m2(8775fb27) -> m3 -> m4(c9560bdb，手机主分支终点)
+		// 尾部追加了挂在 m2 上的 custom entry (plan-1 -> plan-2)
+		const custom1 = JSON.stringify({
+			type: "custom",
+			customType: "plannotator",
+			id: "plan-1",
+			parentId: "8775fb27",
+			timestamp: "2026-10-08T11:53:01.000Z",
+		});
+		const custom2 = JSON.stringify({
+			type: "custom",
+			customType: "plannotator",
+			id: "plan-2",
+			parentId: "plan-1",
+			timestamp: "2026-10-08T11:53:02.000Z",
+		});
+		const transcript = [
+			HEADER,
+			msg("m1", null),
+			msg("8775fb27", "m1"),
+			msg("m3", "8775fb27"),
+			msg("c9560bdb", "m3"),
+			custom1,
+			custom2,
+		].join("\n");
+		writeFileSync(file, transcript, "utf8");
+
+		// 在修复前：SDK SessionManager.open 会选 plan-2 为 leaf，分支只有 2 条消息
+		const beforeSm = SessionManager.open(file);
+		expect(beforeSm.getLeafId()).toBe("plan-2");
+		expect(beforeSm.getBranch().filter((e) => e.type === "message")).toHaveLength(2);
+
+		// 运行修复
+		const r = repairSessionFile(file);
+		expect(r?.changed).toBe(true);
+		expect(r?.reorderedBranches).toBe(true);
+		expect(r?.backup).toBe(`${file}.bak`);
+
+		// 在修复后：SDK SessionManager.open 顺序扫描后末尾变成了 c9560bdb，
+		// 且恢复出全部 4 条消息！且 plan-1, plan-2 完好保留在文件中。
+		const afterSm = SessionManager.open(file);
+		expect(afterSm.getLeafId()).toBe("c9560bdb");
+		expect(afterSm.getBranch().filter((e) => e.type === "message")).toHaveLength(4);
+		expect(afterSm.getEntry("plan-1")).toBeDefined();
+		expect(afterSm.getEntry("plan-2")).toBeDefined();
+	});
 });

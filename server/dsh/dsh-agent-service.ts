@@ -4803,6 +4803,7 @@ export class DshAgentService {
 			if (conv)
 				return {
 					clientId,
+					convId: conv.id,
 					title: conv.title,
 					cwd: conv.cwd,
 					isStreaming: conv.isStreaming,

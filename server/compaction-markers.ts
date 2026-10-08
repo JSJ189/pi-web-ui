@@ -19,6 +19,7 @@
  */
 import { randomUUID } from "node:crypto";
 import { existsSync, readFileSync, writeFileSync } from "node:fs";
+import { reorderEntriesForMainBranch } from "./session-branch.js";
 
 export const COMPACTION_PENDING_TYPE = "pi-web-ui/compaction-pending";
 export const COMPACTION_DONE_TYPE = "pi-web-ui/compaction-done";
@@ -59,6 +60,10 @@ export interface TranscriptRepairResult {
 	cyclesBroken: number;
 	/** 有压缩被打断——调用方弹"可 /compact 重试"提示 */
 	interrupted: boolean;
+	/** 是否发生了分支拓扑归置（issue #567） */
+	reorderedBranches?: boolean;
+	/** 分支拓扑归置原因 */
+	reorderedReason?: string;
 }
 
 interface Slot {
@@ -245,8 +250,40 @@ export function repairSessionTranscript(raw: string): TranscriptRepairResult {
 		}
 	}
 
+	// 第 4 步：分支拓扑归置（issue #567）。
+	// 当物理文件尾部是由于旧节点上追加的 custom/metadata 导致的侧枝（导致主对话分支
+	// 被 SDK 的 SessionManager 读成旧历史）时，按拓扑顺序重排，确保包含完整对话的
+	// 主分支叶子位于物理文件的末行，同时保留全部 custom 条目及其 parentId。
+	const liveEntries = slots.filter((s) => !s.removed && s.entry !== null).map((s) => s.entry!);
+	if (liveEntries.length > 1) {
+		const reorderResult = reorderEntriesForMainBranch(liveEntries);
+		if (reorderResult.changed) {
+			result.reorderedBranches = true;
+			result.reorderedReason = reorderResult.reason;
+			const slotByEntry = new Map<Record<string, unknown>, Slot>();
+			for (const s of slots) {
+				if (!s.removed && s.entry) slotByEntry.set(s.entry, s);
+			}
+			const reorderedSlots: Slot[] = [];
+			for (const e of reorderResult.entries) {
+				const s = slotByEntry.get(e as Record<string, unknown>);
+				if (s) {
+					s.dirty = true;
+					reorderedSlots.push(s);
+				}
+			}
+			const prefixSlots = slots.filter((s) => !s.removed && s.entry === null);
+			slots.length = 0;
+			slots.push(...prefixSlots, ...reorderedSlots);
+		}
+	}
+
 	const anyChange =
-		result.removedPending > 0 || result.renamedIds > 0 || result.rewiredParents > 0 || result.cyclesBroken > 0;
+		result.removedPending > 0 ||
+		result.renamedIds > 0 ||
+		result.rewiredParents > 0 ||
+		result.cyclesBroken > 0 ||
+		Boolean(result.reorderedBranches);
 	if (!anyChange) return result;
 	result.changed = true;
 	result.interrupted = result.removedPending > 0;
