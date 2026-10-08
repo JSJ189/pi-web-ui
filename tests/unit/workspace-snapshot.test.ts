@@ -1,5 +1,5 @@
 import { execSync } from "node:child_process";
-import { mkdtempSync, readFileSync, rmSync, writeFileSync, existsSync } from "node:fs";
+import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync, existsSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
@@ -84,5 +84,167 @@ describe("工作区版本影子快照与双向联动回滚 (Dual-State Rollback)
 		expect(readFileSync(join(testDir, "file1.txt"), "utf8").replace(/\r\n/g, "\n")).toBe("hello v1\n");
 		expect(readFileSync(join(testDir, "file2.txt"), "utf8").replace(/\r\n/g, "\n")).toBe("config v1\n");
 		expect(existsSync(join(testDir, "untracked.txt"))).toBe(false);
+	}, 20000);
+
+	it("快照只覆盖 cwd 子树：子目录快照的顶层只有该子目录", async () => {
+		// 1. 初始化带子目录的 Git 仓库
+		execSync("git init", { cwd: testDir, stdio: "ignore" });
+		execSync("git config user.name test && git config user.email test@test.com", {
+			cwd: testDir,
+			stdio: "ignore",
+		});
+
+		writeFileSync(join(testDir, "root.txt"), "root v1\n");
+		mkdirSync(join(testDir, "proj"));
+		writeFileSync(join(testDir, "proj", "a.txt"), "a v1\n");
+		writeFileSync(join(testDir, "proj", "b.txt"), "b v1\n");
+		mkdirSync(join(testDir, "other"));
+		writeFileSync(join(testDir, "other", "keep.txt"), "keep v1\n");
+		execSync("git add . && git commit -m 'initial'", { cwd: testDir, stdio: "ignore" });
+
+		// 2. 从子目录创建快照
+		const projDir = join(testDir, "proj");
+		const snapshot = await createWorkspaceSnapshot(projDir);
+		expect(snapshot).toBeTruthy();
+
+		// 3. 快照树的顶层条目只有 proj/——快照里不含仓库根文件与兄弟目录
+		const tree = execSync(`git ls-tree --name-only ${snapshot}`, { cwd: testDir }).toString().trim();
+		expect(tree).toBe("proj");
+
+		// 快照内容就是 proj 子树本身
+		const snapA = execSync(`git show ${snapshot}:proj/a.txt`, { cwd: testDir }).toString();
+		expect(snapA.replace(/\r\n/g, "\n")).toBe("a v1\n");
+	}, 20000);
+
+	it("子目录 cwd 的还原只影响该子树，兄弟目录与仓库根不受影响", async () => {
+		// 1. 初始化带子目录的 Git 仓库
+		execSync("git init", { cwd: testDir, stdio: "ignore" });
+		execSync("git config user.name test && git config user.email test@test.com", {
+			cwd: testDir,
+			stdio: "ignore",
+		});
+
+		writeFileSync(join(testDir, "root.txt"), "root v1\n");
+		mkdirSync(join(testDir, "proj"));
+		writeFileSync(join(testDir, "proj", "a.txt"), "a v1\n");
+		writeFileSync(join(testDir, "proj", "b.txt"), "b v1\n");
+		mkdirSync(join(testDir, "other"));
+		writeFileSync(join(testDir, "other", "keep.txt"), "keep v1\n");
+		execSync("git add . && git commit -m 'initial'", { cwd: testDir, stdio: "ignore" });
+
+		const projDir = join(testDir, "proj");
+		const otherDir = join(testDir, "other");
+
+		// 2. 在子目录创建快照
+		const snapshot = await createWorkspaceSnapshot(projDir);
+		expect(snapshot).toBeTruthy();
+
+		// 3. 破坏性修改：proj 内改/删/新增（含一个已 git add 的新文件），同时动手脚到兄弟目录
+		writeFileSync(join(projDir, "a.txt"), "a v2 DESTROYED\n");
+		rmSync(join(projDir, "b.txt"));
+		writeFileSync(join(projDir, "untracked.txt"), "untracked content\n");
+		writeFileSync(join(projDir, "tracked-add.txt"), "staged after snapshot\n");
+		execSync("git add proj/tracked-add.txt", { cwd: testDir, stdio: "ignore" });
+		writeFileSync(join(otherDir, "keep.txt"), "keep v2 TOUCHED\n");
+		writeFileSync(join(otherDir, "stray.txt"), "stranger\n");
+
+		// 4. 以 proj 为 cwd 还原
+		const restoreRes = await restoreWorkspaceSnapshot(projDir, snapshot!);
+		expect(restoreRes.success).toBe(true);
+
+		// 5. proj 子树与快照一致：修改被回滚、删除的跟踪文件被恢复、快照后的新增（未跟踪与已暂存）都被清除
+		expect(readFileSync(join(projDir, "a.txt"), "utf8").replace(/\r\n/g, "\n")).toBe("a v1\n");
+		expect(readFileSync(join(projDir, "b.txt"), "utf8").replace(/\r\n/g, "\n")).toBe("b v1\n");
+		expect(existsSync(join(projDir, "untracked.txt"))).toBe(false);
+		expect(existsSync(join(projDir, "tracked-add.txt"))).toBe(false);
+
+		// 6. 兄弟目录与仓库根完全不受影响（含快照之后的新增与修改）
+		expect(readFileSync(join(otherDir, "keep.txt"), "utf8").replace(/\r\n/g, "\n")).toBe("keep v2 TOUCHED\n");
+		expect(existsSync(join(otherDir, "stray.txt"))).toBe(true);
+		expect(readFileSync(join(testDir, "root.txt"), "utf8").replace(/\r\n/g, "\n")).toBe("root v1\n");
+
+		// 7. index 中 proj 之外条目原样保留
+		const indexFiles = execSync("git ls-files", { cwd: testDir }).toString().trim().split("\n").sort();
+		expect(indexFiles).toEqual(["other/keep.txt", "proj/a.txt", "proj/b.txt", "root.txt"]);
+	}, 20000);
+
+	it("嵌套子目录 cwd 的还原同样只作用于该深层子树", async () => {
+		// 1. 初始化仓库：proj/sub 为 cwd，proj/sibling.txt 为同层兄弟
+		execSync("git init", { cwd: testDir, stdio: "ignore" });
+		execSync("git config user.name test && git config user.email test@test.com", {
+			cwd: testDir,
+			stdio: "ignore",
+		});
+
+		mkdirSync(join(testDir, "proj", "sub"), { recursive: true });
+		writeFileSync(join(testDir, "proj", "sibling.txt"), "sibling v1\n");
+		writeFileSync(join(testDir, "proj", "sub", "deep.txt"), "deep v1\n");
+		execSync("git add . && git commit -m 'initial'", { cwd: testDir, stdio: "ignore" });
+
+		const subDir = join(testDir, "proj", "sub");
+		const snapshot = await createWorkspaceSnapshot(subDir);
+		expect(snapshot).toBeTruthy();
+
+		// 2. 破坏：sub 内修改 + 新增未跟踪；proj/sibling.txt 被改
+		writeFileSync(join(subDir, "deep.txt"), "deep v2 DESTROYED\n");
+		writeFileSync(join(subDir, "new.txt"), "post-snapshot\n");
+		writeFileSync(join(testDir, "proj", "sibling.txt"), "sibling v2 TOUCHED\n");
+
+		// 3. 以 proj/sub 为 cwd 还原
+		expect((await restoreWorkspaceSnapshot(subDir, snapshot!)).success).toBe(true);
+
+		// 4. sub 子树回到快照，兄弟文件保持被篡改后的状态
+		expect(readFileSync(join(subDir, "deep.txt"), "utf8").replace(/\r\n/g, "\n")).toBe("deep v1\n");
+		expect(existsSync(join(subDir, "new.txt"))).toBe(false);
+		expect(readFileSync(join(testDir, "proj", "sibling.txt"), "utf8").replace(/\r\n/g, "\n")).toBe(
+			"sibling v2 TOUCHED\n",
+		);
+	}, 20000);
+
+	it("空子目录快照在有新增文件后能够安全还原为空", async () => {
+		execSync("git init", { cwd: testDir, stdio: "ignore" });
+		execSync("git config user.name test && git config user.email test@test.com", {
+			cwd: testDir,
+			stdio: "ignore",
+		});
+
+		writeFileSync(join(testDir, "root.txt"), "root v1\n");
+		mkdirSync(join(testDir, "empty-sub"));
+		execSync("git add root.txt && git commit -m initial", { cwd: testDir, stdio: "ignore" });
+
+		const subDir = join(testDir, "empty-sub");
+		const snapshot = await createWorkspaceSnapshot(subDir);
+		expect(snapshot).toBeTruthy();
+
+		// AI 新增了文件
+		writeFileSync(join(subDir, "created.txt"), "created by ai\n");
+		execSync("git add .", { cwd: subDir, stdio: "ignore" });
+
+		// 还原
+		const res = await restoreWorkspaceSnapshot(subDir, snapshot!);
+		expect(res.error).toBeUndefined();
+		expect(res.success).toBe(true);
+		expect(existsSync(join(subDir, "created.txt"))).toBe(false);
+	}, 20000);
+
+	it("空仓库根目录快照在有新增文件后能够安全还原为空", async () => {
+		execSync("git init", { cwd: testDir, stdio: "ignore" });
+		execSync("git config user.name test && git config user.email test@test.com", {
+			cwd: testDir,
+			stdio: "ignore",
+		});
+
+		const snapshot = await createWorkspaceSnapshot(testDir);
+		expect(snapshot).toBeTruthy();
+
+		// AI 新增了文件
+		writeFileSync(join(testDir, "created.txt"), "created by ai\n");
+		execSync("git add .", { cwd: testDir, stdio: "ignore" });
+
+		// 还原
+		const res = await restoreWorkspaceSnapshot(testDir, snapshot!);
+		expect(res.error).toBeUndefined();
+		expect(res.success).toBe(true);
+		expect(existsSync(join(testDir, "created.txt"))).toBe(false);
 	}, 20000);
 });
