@@ -159,4 +159,24 @@ describe("高危操作识别与人机协同拦截 (Tool Approval / Human-in-the-
 			expect(isApprovalPolicyEmpty(policy(false, ["bash.rm-rf"]))).toBe(false);
 		});
 	});
+
+	describe("高危命中清单透传 (hits, issue #566)", () => {
+		it("checkDangerousToolCall 返回详细命中清单 hits[]", () => {
+			const cmd = "cd /project && rm -rf ./data && git reset --hard";
+			const res = checkDangerousToolCall("bash", { command: cmd }, cwd);
+			expect(res.dangerous).toBe(true);
+			expect(res.hits).toBeDefined();
+			expect(res.hits!.length).toBeGreaterThanOrEqual(2);
+			expect(res.hits![0].field).toBe("command");
+			expect(res.hits![0].text).toBeTruthy();
+			expect(res.hits![0].index).toBeGreaterThanOrEqual(0);
+			expect(res.hits![0].length).toBeGreaterThan(0);
+		});
+
+		it("安全命令返回 empty/undefined hits", () => {
+			const res = checkDangerousToolCall("bash", { command: "ls -la" }, cwd);
+			expect(res.dangerous).toBe(false);
+			expect(res.hits).toBeUndefined();
+		});
+	});
 });

@@ -6,7 +6,7 @@
  * 「别的项目」，顶上闪一下项目名再消失。含当前对话的组必须直接算当前项目。
  */
 import { describe, expect, it } from "vitest";
-import { groupConversations } from "../../web/src/conv-groups.js";
+import { buildConversationRows, groupConversations } from "../../web/src/conv-groups.js";
 import type { ConversationSummary } from "../../web/src/types.js";
 
 const conv = (id: string, cwd: string, extra: Partial<ConversationSummary> = {}): ConversationSummary => ({
@@ -64,5 +64,85 @@ describe("groupConversations", () => {
 
 	it("空列表 → 空分组", () => {
 		expect(groupConversations([], A, "")).toEqual([]);
+	});
+});
+
+describe("buildConversationRows (issue #564 子代理树展开与折叠)", () => {
+	it("默认未折叠时展开全部子代理行，深度与父子关系正确", () => {
+		const parent = conv("p1", A);
+		const kid1 = conv("k1", A, { isSubagent: true, parentId: "p1" });
+		const kid2 = conv("k2", A, { isSubagent: true, parentId: "p1" });
+		const rows = buildConversationRows([parent, kid1, kid2]);
+
+		expect(rows).toHaveLength(3);
+		expect(rows[0].c.id).toBe("p1");
+		expect(rows[0].depth).toBe(0);
+		expect(rows[0].hasKids).toBe(true);
+		expect(rows[0].isCollapsed).toBe(false);
+		expect(rows[0].descendantCount).toBe(2);
+
+		expect(rows[1].c.id).toBe("k1");
+		expect(rows[1].depth).toBe(1);
+		expect(rows[1].hasKids).toBe(false);
+
+		expect(rows[2].c.id).toBe("k2");
+		expect(rows[2].depth).toBe(1);
+		expect(rows[2].hasKids).toBe(false);
+	});
+
+	it("父对话处于折叠状态时：隐藏子代理行，父行包含准确的计数与活跃状态", () => {
+		const parent = conv("p1", A);
+		const kid1 = conv("k1", A, { isSubagent: true, parentId: "p1", isStreaming: true });
+		const kid2 = conv("k2", A, { isSubagent: true, parentId: "p1", hasQuestion: true });
+		const kid3 = conv("k3", A, { isSubagent: true, parentId: "p1", error: "failed" });
+		const standalone = conv("c2", A);
+
+		const collapsed = new Set(["p1"]);
+		const rows = buildConversationRows([parent, kid1, kid2, kid3, standalone], collapsed);
+
+		// k1, k2, k3 被隐藏，只剩下 p1 和 standalone
+		expect(rows).toHaveLength(2);
+		expect(rows[0].c.id).toBe("p1");
+		expect(rows[0].hasKids).toBe(true);
+		expect(rows[0].isCollapsed).toBe(true);
+		expect(rows[0].descendantCount).toBe(3);
+		expect(rows[0].hasStreaming).toBe(true);
+		expect(rows[0].hasQuestion).toBe(true);
+		expect(rows[0].hasError).toBe(true);
+
+		expect(rows[1].c.id).toBe("c2");
+		expect(rows[1].hasKids).toBe(false);
+	});
+
+	it("深层嵌套（孙代理）递归折叠：折叠父时整棵子树隐藏，计数包含多级后代", () => {
+		const parent = conv("p1", A);
+		const child = conv("c1", A, { isSubagent: true, parentId: "p1" });
+		const grandChild = conv("g1", A, { isSubagent: true, parentId: "c1", isStreaming: true });
+
+		// 1. 折叠根父：整棵树都被隐藏
+		const rowsRootCollapsed = buildConversationRows([parent, child, grandChild], new Set(["p1"]));
+		expect(rowsRootCollapsed).toHaveLength(1);
+		expect(rowsRootCollapsed[0].descendantCount).toBe(2);
+		expect(rowsRootCollapsed[0].hasStreaming).toBe(true);
+
+		// 2. 根父展开，仅折叠子代理：grandChild 被隐藏
+		const rowsChildCollapsed = buildConversationRows([parent, child, grandChild], new Set(["c1"]));
+		expect(rowsChildCollapsed).toHaveLength(2);
+		expect(rowsChildCollapsed[0].c.id).toBe("p1");
+		expect(rowsChildCollapsed[0].isCollapsed).toBe(false);
+		expect(rowsChildCollapsed[1].c.id).toBe("c1");
+		expect(rowsChildCollapsed[1].isCollapsed).toBe(true);
+		expect(rowsChildCollapsed[1].descendantCount).toBe(1);
+		expect(rowsChildCollapsed[1].hasStreaming).toBe(true);
+	});
+
+	it("孤儿对话（parentId 指向不存在的会话）安全保底平铺在根层级", () => {
+		const orphan = conv("orphan1", A, { isSubagent: true, parentId: "non-existent" });
+		const normal = conv("normal1", A);
+		const rows = buildConversationRows([orphan, normal]);
+
+		expect(rows).toHaveLength(2);
+		expect(rows.map((r) => r.c.id)).toEqual(["orphan1", "normal1"]);
+		expect(rows.every((r) => r.depth === 0)).toBe(true);
 	});
 });

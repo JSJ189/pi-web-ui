@@ -33,6 +33,7 @@ import type {
 	UiToolCallBlock,
 } from "../types";
 import { readTextQuote } from "../../../server/text-quote.js";
+import { renderHighlightedCommand } from "../bash-danger.js";
 import { TextQuoteCard } from "./TextQuoteCard";
 import { Markdown, PluginWidgetBlock } from "./Markdown";
 import { StreamMarkdown } from "./StreamMarkdown";
@@ -1723,7 +1724,7 @@ function Block({
 			<div className="bashblock">
 				<div className="bashblock-command">
 					<span className="bashblock-prompt">$</span>
-					<code>{bash.command}</code>
+					<code>{renderHighlightedCommand(bash.command)}</code>
 					{bash.exitCode !== undefined && (
 						<span className={`bashblock-exit ${bash.exitCode === 0 ? "ok" : "err"}`}>
 							{t("exitCode", { code: bash.exitCode })}

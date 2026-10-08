@@ -2,6 +2,7 @@ import { memo, useEffect, useState, useCallback, useRef, useMemo } from "react";
 import {
 	FiCheck,
 	FiChevronDown,
+	FiChevronRight,
 	FiChevronUp,
 	FiChevronsLeft,
 	FiEdit2,
@@ -17,7 +18,7 @@ import type { ConversationSummary, ElsewhereRunning, ProjectSummary, SessionSumm
 import { useT } from "../i18n";
 import { useAppField } from "../app-globals";
 import { applySashDrag, parseWeights } from "../panel-sash";
-import { groupConversations } from "../conv-groups";
+import { buildConversationRows, groupConversations } from "../conv-groups";
 import { ProjectPicker } from "./ProjectPicker.js";
 // 宿主 UI 扩展点（issue #146）：会话行的右键菜单走「slot 条目」这一条通道。
 import { type UiSlotEntry } from "../ui-slots";
@@ -117,6 +118,29 @@ function isEditableTarget(el: EventTarget | null): boolean {
 const LS_COLLAPSE_PROJECTS = "pi-web-ui:lp-collapse-projects";
 const LS_COLLAPSE_CONVS = "pi-web-ui:lp-collapse-convs";
 const LS_COLLAPSE_SESSIONS = "pi-web-ui:lp-collapse-sessions";
+const LS_COLLAPSE_SUBAGENTS = "pi-web-ui:lp-collapse-subagents";
+
+function useCollapsedSubagents(): [Set<string>, (id: string) => void] {
+	const [collapsed, setCollapsed] = useState<Set<string>>(() => {
+		try {
+			const raw = localStorage.getItem(LS_COLLAPSE_SUBAGENTS);
+			if (raw) return new Set(JSON.parse(raw));
+		} catch {}
+		return new Set();
+	});
+	const toggle = useCallback((id: string) => {
+		setCollapsed((prev) => {
+			const next = new Set(prev);
+			if (next.has(id)) next.delete(id);
+			else next.add(id);
+			try {
+				localStorage.setItem(LS_COLLAPSE_SUBAGENTS, JSON.stringify([...next]));
+			} catch {}
+			return next;
+		});
+	}, []);
+	return [collapsed, toggle];
+}
 
 function useCollapsed(key: string, defaultCollapsed = false): [boolean, () => void] {
 	const [collapsed, setCollapsed] = useState(() => {
@@ -191,6 +215,7 @@ export const LeftPanel = memo(function LeftPanel({
 	const [collapseProjects, toggleProjects] = useCollapsed(LS_COLLAPSE_PROJECTS, false);
 	const [collapseConvs, toggleConvs] = useCollapsed(LS_COLLAPSE_CONVS, false);
 	const [collapseSessions, toggleSessions] = useCollapsed(LS_COLLAPSE_SESSIONS, false);
+	const [collapsedSubagents, toggleSubagents] = useCollapsedSubagents();
 	/** 会话右键菜单（`contextmenu.session` 槽位）：见下面的 showSessionMenu / openSessionMenu /
 	 *  dispatchHostSessionEntry。宿主自己的两条（关闭已结束子代理 / 强行关闭对话）也在这个槽位里，
 	 *  与插件贡献的条目同排 —— 插件条目由 App 分发给插件，host 条目由本组件分派。 */
@@ -835,324 +860,354 @@ export const LeftPanel = memo(function LeftPanel({
 										</div>
 									)}
 									{(() => {
-										const byId = new Map(g.convs.map((x) => [x.id, x]));
-										const kids = new Map<string, ConversationSummary[]>();
-										const roots: ConversationSummary[] = [];
-										for (const x of g.convs) {
-											if (x.parentId && byId.has(x.parentId)) {
-												const arr = kids.get(x.parentId) ?? [];
-												arr.push(x);
-												kids.set(x.parentId, arr);
-											} else roots.push(x);
-										}
-										const rows: { c: ConversationSummary; depth: number }[] = [];
-										const seen = new Set<string>();
-										const append = (c: ConversationSummary, depth: number) => {
-											if (seen.has(c.id)) return;
-											seen.add(c.id);
-											rows.push({ c, depth });
-											for (const child of kids.get(c.id) ?? []) append(child, depth + 1);
-										};
-										for (const root of roots) append(root, 0);
-										for (const orphan of g.convs) append(orphan, 0);
-										return rows.map(({ c, depth }) => {
-											if ((c as RowConv).elsewhere) {
-												const elseOwner = (c as RowConv).owner;
-												const elseConvId = (c as RowConv).convId;
-												const isPseudo = Boolean((c as RowConv).pseudo);
-												// 持有方页面已断开（手机 / 标签页关掉了）只剩服务端残留会话：行照旧可过户
-												// （搬 runtime 本体，不造第二个 writer），标「离线」说清原页面为什么不在。
-												const isOffline = Boolean((c as RowConv).ownerOffline) && !isPseudo;
-												// issue #290：可过户（有 owner + convId）时本行可点击，两段确认。
-												// issue #426：无头伪客户端（定时任务/插件）不支持过户，降级为只读行。
-												const canTakeover = Boolean(elseOwner && elseConvId) && !isPseudo;
-												const confirming = confirmTakeover === c.id;
-												const tooltip = confirming
-													? t("takeoverConfirm")
-													: isPseudo
-														? `${t("elsewherePseudoTip")}\n${c.cwd}`
-														: `${t(isOffline ? "elsewhereOfflineTip" : "elsewhereTip")}\n${c.cwd}`;
+										const rows = buildConversationRows(g.convs, collapsedSubagents);
+										return rows.map(
+											({ c, depth, hasKids, isCollapsed, descendantCount, hasStreaming, hasError, hasQuestion }) => {
+												if ((c as RowConv).elsewhere) {
+													const elseOwner = (c as RowConv).owner;
+													const elseConvId = (c as RowConv).convId;
+													const isPseudo = Boolean((c as RowConv).pseudo);
+													// 持有方页面已断开（手机 / 标签页关掉了）只剩服务端残留会话：行照旧可过户
+													// （搬 runtime 本体，不造第二个 writer），标「离线」说清原页面为什么不在。
+													const isOffline = Boolean((c as RowConv).ownerOffline) && !isPseudo;
+													// issue #290：可过户（有 owner + convId）时本行可点击，两段确认。
+													// issue #426：无头伪客户端（定时任务/插件）不支持过户，降级为只读行。
+													const canTakeover = Boolean(elseOwner && elseConvId) && !isPseudo;
+													const confirming = confirmTakeover === c.id;
+													const tooltip = confirming
+														? t("takeoverConfirm")
+														: isPseudo
+															? `${t("elsewherePseudoTip")}\n${c.cwd}`
+															: `${t(isOffline ? "elsewhereOfflineTip" : "elsewhereTip")}\n${c.cwd}`;
+													return (
+														<div
+															className="lp-row"
+															key={c.id}
+															onMouseLeave={() => setConfirmTakeover((k) => (k === c.id ? null : k))}
+															// 「另一处」行右键：过户到本页（含等答复的问卷）。
+															onContextMenu={(e) =>
+																openSessionMenu(e, {
+																	id: elseConvId ?? c.id,
+																	kind: "elsewhere",
+																	label: c.title,
+																	...(elseOwner ? { owner: elseOwner } : {}),
+																	...(isPseudo ? { pseudo: true } : {}),
+																})
+															}
+														>
+															{/* 「另一处」行本体：可过户时当按钮用（第一次点 = 确认，第二次点 = 过户）。
+    不可过户（旧条目无 owner/convId）时保持只读，无 onClick。 */}
+															<button
+																type="button"
+																className={`session-item elsewhere-item${canTakeover ? "" : " elsewhere-static"}${confirming ? " confirm" : ""}`}
+																title={tooltip}
+																tabIndex={canTakeover ? 0 : -1}
+																onClick={
+																	canTakeover
+																		? () => {
+																				if (!confirming) {
+																					setConfirmTakeover(c.id);
+																					return;
+																				}
+																				setConfirmTakeover(null);
+																				panelSend({
+																					type: "take_over_conversation",
+																					owner: elseOwner as string,
+																					id: elseConvId as string,
+																				});
+																			}
+																		: undefined
+																}
+															>
+																<FiMessageSquare className="session-icon" />
+																<span className="session-info">
+																	<span className="session-title">
+																		<span className="elsewhere-badge">
+																			{isPseudo ? t("elsewherePseudoBadge") : t("elsewhereBadge")}
+																		</span>
+																		{isOffline && (
+																			<span className="elsewhere-badge offline" title={t("elsewhereOfflineTip")}>
+																				{t("elsewhereOfflineBadge")}
+																			</span>
+																		)}
+																		{c.hasQuestion && elseOwner && elseConvId && !isPseudo && (
+																			<span
+																				className="question-badge clickable"
+																				title={t("takeoverHasQuestion")}
+																				onClick={(e) => {
+																					e.stopPropagation();
+																					// 点 `?` 直接把问卷拉到本页作答（不搬迁对话）。
+																					panelSend({
+																						type: "peek_elsewhere_question",
+																						owner: elseOwner,
+																						id: elseConvId,
+																					});
+																				}}
+																			>
+																				?
+																			</span>
+																		)}
+																		{confirming ? t("takeoverConfirm") : c.title}
+																	</span>
+																	<span className="session-sub">{projectName(c.cwd)}</span>
+																</span>
+																{c.isStreaming && <span className="conv-streaming" title={t("streaming")} />}
+															</button>
+															{/* 触屏没有右键（contextmenu 不可靠）：给「另一处」行一个可见的操作钮，点开与右键同一个会话菜单
+															（过户 / 抢答问卷 / 复制 id）；槽位暂无可显示条目时不渲染（同右键路径的让路口径）。 */}
+															{sessionMenuAvailable && (
+																<button
+																	type="button"
+																	className="lp-del lp-elsewhere-act"
+																	title={t("elsewhereActions")}
+																	onClick={(e) => {
+																		e.stopPropagation();
+																		forceArmedRef.current = null;
+																		// 坐标按按钮矩形锚定（触屏 click 的 clientX/Y 不可靠），clampMenuPosition 会自行钳进视口。
+																		const r = e.currentTarget.getBoundingClientRect();
+																		showSessionMenu(r.left, r.bottom + 4, {
+																			id: elseConvId ?? c.id,
+																			kind: "elsewhere",
+																			label: c.title,
+																			...(elseOwner ? { owner: elseOwner } : {}),
+																			...(isPseudo ? { pseudo: true } : {}),
+																		});
+																	}}
+																>
+																	<FiMoreVertical />
+																</button>
+															)}
+														</div>
+													);
+												}
+												const active = activeConversationId === c.id;
 												return (
 													<div
-														className="lp-row"
+														className={`lp-row${depth > 0 ? " lp-sub" : ""}${hasKids ? " lp-has-kids" : ""}`}
 														key={c.id}
-														onMouseLeave={() => setConfirmTakeover((k) => (k === c.id ? null : k))}
-														// 「另一处」行右键：过户到本页（含等答复的问卷）。
-														onContextMenu={(e) =>
-															openSessionMenu(e, {
-																id: elseConvId ?? c.id,
-																kind: "elsewhere",
-																label: c.title,
-																...(elseOwner ? { owner: elseOwner } : {}),
-																...(isPseudo ? { pseudo: true } : {}),
-															})
-														}
+														style={depth > 0 ? { marginLeft: depth * 18 } : undefined}
+														onMouseLeave={() => setConfirmDel((k) => (k === `conv:${c.id}` ? null : k))}
+														onContextMenu={(e) => openSessionMenu(e, { id: c.id, kind: "running", label: c.title })}
 													>
-														{/* 「另一处」行本体：可过户时当按钮用（第一次点 = 确认，第二次点 = 过户）。
-    不可过户（旧条目无 owner/convId）时保持只读，无 onClick。 */}
+														{hasKids && (
+															<button
+																type="button"
+																className={`lp-tree-caret${isCollapsed ? " collapsed" : " expanded"}`}
+																title={isCollapsed ? t("expandSubagents") : t("collapseSubagents")}
+																aria-label={isCollapsed ? t("expandSubagents") : t("collapseSubagents")}
+																onClick={(e) => {
+																	e.stopPropagation();
+																	toggleSubagents(c.id);
+																}}
+															>
+																{isCollapsed ? <FiChevronRight /> : <FiChevronDown />}
+															</button>
+														)}
 														<button
 															type="button"
-															className={`session-item elsewhere-item${canTakeover ? "" : " elsewhere-static"}${confirming ? " confirm" : ""}`}
-															title={tooltip}
-															tabIndex={canTakeover ? 0 : -1}
-															onClick={
-																canTakeover
-																	? () => {
-																			if (!confirming) {
-																				setConfirmTakeover(c.id);
-																				return;
-																			}
-																			setConfirmTakeover(null);
-																			panelSend({
-																				type: "take_over_conversation",
-																				owner: elseOwner as string,
-																				id: elseConvId as string,
-																			});
-																		}
-																	: undefined
-															}
+															className={`session-item ${active ? "active" : ""}`}
+															title={`${c.title}${g.isCurrent ? "" : ` — ${g.cwd}`}`}
+															onClick={() => {
+																if (!active) panelSend({ type: "switch_conversation", id: c.id });
+															}}
 														>
 															<FiMessageSquare className="session-icon" />
 															<span className="session-info">
-																<span className="session-title">
-																	<span className="elsewhere-badge">
-																		{isPseudo ? t("elsewherePseudoBadge") : t("elsewhereBadge")}
+																{renaming === `conv:${c.id}` ? (
+																	<input
+																		autoFocus
+																		className="session-rename-input"
+																		value={renameDraft}
+																		placeholder={t("renameSessionPlaceholder")}
+																		onClick={(e) => e.stopPropagation()}
+																		onChange={(e) => setRenameDraft(e.target.value)}
+																		onKeyDown={(e) => {
+																			e.stopPropagation();
+																			if (e.key === "Enter" && !e.nativeEvent.isComposing) {
+																				const name = renameDraft.trim();
+																				if (name) panelSend({ type: "rename_conversation", id: c.id, name });
+																				setRenaming(null);
+																			} else if (e.key === "Escape") {
+																				setRenaming(null);
+																			}
+																		}}
+																		onBlur={() => setRenaming(null)}
+																	/>
+																) : (
+																	<span className="session-title">
+																		{c.isSubagent && <span className="subagent-badge">{t("subagentBadge")}</span>}
+																		{c.isEphemeral && <span className="ephemeral-badge">{t("ephemeralBadge")}</span>}
+																		{c.forkFrom && (
+																			<span
+																				className="preset-badge fork-badge"
+																				title={`${t("forkBadgeTip")}: ${c.forkFrom.title ?? c.forkFrom.conversationId}`}
+																			>
+																				🌿 {t("forkBadge")}
+																			</span>
+																		)}
+																		{c.agentPreset && (
+																			<span className="preset-badge" title={c.agentPreset}>
+																				{presetNames?.[c.agentPreset] ?? c.agentPreset}
+																			</span>
+																		)}
+																		{c.title}
+																		{c.error && (
+																			<span
+																				className="conv-error-badge"
+																				title={t("convErrorBadge", { error: c.error })}
+																			/>
+																		)}
+																		{c.hasQuestion && (
+																			<span className="question-badge" title={t("waitingQuestionBadge")}>
+																				?
+																			</span>
+																		)}
+																		{c.pinned && (
+																			<span className="pin-badge" title={t("pinnedConversation")}>
+																				📌
+																			</span>
+																		)}
+																		{hasKids && isCollapsed && (
+																			<span
+																				className={`subagents-collapsed-badge${
+																					hasStreaming
+																						? " has-streaming"
+																						: hasQuestion
+																							? " has-question"
+																							: hasError
+																								? " has-error"
+																								: ""
+																				}`}
+																				title={
+																					hasStreaming
+																						? t("subagentsStreamingTip", { n: descendantCount })
+																						: hasQuestion
+																							? t("subagentsQuestionTip", { n: descendantCount })
+																							: hasError
+																								? t("subagentsErrorTip", { n: descendantCount })
+																								: t("subagentsCountTip", { n: descendantCount })
+																				}
+																				onClick={(e) => {
+																					e.stopPropagation();
+																					toggleSubagents(c.id);
+																				}}
+																			>
+																				{hasStreaming && <span className="subagent-dot streaming" />}
+																				{hasQuestion && <span className="subagent-dot question">?</span>}
+																				{hasError && <span className="subagent-dot error" />}
+																				<span className="subagents-count-text">
+																					{t("subagentBadgeCount", { n: descendantCount })}
+																				</span>
+																			</span>
+																		)}
 																	</span>
-																	{isOffline && (
-																		<span className="elsewhere-badge offline" title={t("elsewhereOfflineTip")}>
-																			{t("elsewhereOfflineBadge")}
-																		</span>
-																	)}
-																	{c.hasQuestion && elseOwner && elseConvId && !isPseudo && (
-																		<span
-																			className="question-badge clickable"
-																			title={t("takeoverHasQuestion")}
-																			onClick={(e) => {
-																				e.stopPropagation();
-																				// 点 `?` 直接把问卷拉到本页作答（不搬迁对话）。
-																				panelSend({
-																					type: "peek_elsewhere_question",
-																					owner: elseOwner,
-																					id: elseConvId,
-																				});
-																			}}
-																		>
-																			?
-																		</span>
-																	)}
-																	{confirming ? t("takeoverConfirm") : c.title}
-																</span>
-																<span className="session-sub">{projectName(c.cwd)}</span>
+																)}
+																{renaming === `conv:${c.id}` ? null : (
+																	<span className="session-sub">
+																		{active ? t("current") : t("messageCount", { n: c.messageCount })}
+																	</span>
+																)}
 															</span>
 															{c.isStreaming && <span className="conv-streaming" title={t("streaming")} />}
 														</button>
-														{/* 触屏没有右键（contextmenu 不可靠）：给「另一处」行一个可见的操作钮，点开与右键同一个会话菜单
-															（过户 / 抢答问卷 / 复制 id）；槽位暂无可显示条目时不渲染（同右键路径的让路口径）。 */}
-														{sessionMenuAvailable && (
-															<button
-																type="button"
-																className="lp-del lp-elsewhere-act"
-																title={t("elsewhereActions")}
-																onClick={(e) => {
-																	e.stopPropagation();
-																	forceArmedRef.current = null;
-																	// 坐标按按钮矩形锚定（触屏 click 的 clientX/Y 不可靠），clampMenuPosition 会自行钳进视口。
-																	const r = e.currentTarget.getBoundingClientRect();
-																	showSessionMenu(r.left, r.bottom + 4, {
-																		id: elseConvId ?? c.id,
-																		kind: "elsewhere",
-																		label: c.title,
-																		...(elseOwner ? { owner: elseOwner } : {}),
-																		...(isPseudo ? { pseudo: true } : {}),
-																	});
-																}}
-															>
-																<FiMoreVertical />
-															</button>
-														)}
-													</div>
-												);
-											}
-											const active = activeConversationId === c.id;
-											return (
-												<div
-													className={`lp-row${depth > 0 ? " lp-sub" : ""}`}
-													key={c.id}
-													style={depth > 0 ? { marginLeft: depth * 18 } : undefined}
-													onMouseLeave={() => setConfirmDel((k) => (k === `conv:${c.id}` ? null : k))}
-													onContextMenu={(e) => openSessionMenu(e, { id: c.id, kind: "running", label: c.title })}
-												>
-													<button
-														type="button"
-														className={`session-item ${active ? "active" : ""}`}
-														title={`${c.title}${g.isCurrent ? "" : ` — ${g.cwd}`}`}
-														onClick={() => {
-															if (!active) panelSend({ type: "switch_conversation", id: c.id });
-														}}
-													>
-														<FiMessageSquare className="session-icon" />
-														<span className="session-info">
-															{renaming === `conv:${c.id}` ? (
-																<input
-																	autoFocus
-																	className="session-rename-input"
-																	value={renameDraft}
-																	placeholder={t("renameSessionPlaceholder")}
-																	onClick={(e) => e.stopPropagation()}
-																	onChange={(e) => setRenameDraft(e.target.value)}
-																	onKeyDown={(e) => {
-																		e.stopPropagation();
-																		if (e.key === "Enter" && !e.nativeEvent.isComposing) {
-																			const name = renameDraft.trim();
-																			if (name) panelSend({ type: "rename_conversation", id: c.id, name });
-																			setRenaming(null);
-																		} else if (e.key === "Escape") {
-																			setRenaming(null);
-																		}
-																	}}
-																	onBlur={() => setRenaming(null)}
-																/>
-															) : (
-																<span className="session-title">
-																	{c.isSubagent && <span className="subagent-badge">{t("subagentBadge")}</span>}
-																	{c.isEphemeral && <span className="ephemeral-badge">{t("ephemeralBadge")}</span>}
-																	{c.forkFrom && (
-																		<span
-																			className="preset-badge fork-badge"
-																			title={`${t("forkBadgeTip")}: ${c.forkFrom.title ?? c.forkFrom.conversationId}`}
-																		>
-																			🌿 {t("forkBadge")}
-																		</span>
-																	)}
-																	{c.agentPreset && (
-																		<span className="preset-badge" title={c.agentPreset}>
-																			{presetNames?.[c.agentPreset] ?? c.agentPreset}
-																		</span>
-																	)}
-																	{c.title}
-																	{c.error && (
-																		<span
-																			className="conv-error-badge"
-																			title={t("convErrorBadge", { error: c.error })}
-																		/>
-																	)}
-																	{c.hasQuestion && (
-																		<span className="question-badge" title={t("waitingQuestionBadge")}>
-																			?
-																		</span>
-																	)}
-																	{c.pinned && (
-																		<span className="pin-badge" title={t("pinnedConversation")}>
-																			📌
-																		</span>
-																	)}
-																</span>
-															)}
-															{renaming === `conv:${c.id}` ? null : (
-																<span className="session-sub">
-																	{active ? t("current") : t("messageCount", { n: c.messageCount })}
-																</span>
-															)}
-														</span>
-														{c.isStreaming && <span className="conv-streaming" title={t("streaming")} />}
-													</button>
-													<button
-														type="button"
-														className="lp-del lp-rename"
-														title={t("renameSession")}
-														onClick={(e) => {
-															e.stopPropagation();
-															setConfirmDel(null);
-															setRenameDraft(c.title);
-															setRenaming(`conv:${c.id}`);
-														}}
-													>
-														<FiEdit2 />
-													</button>
-													{(() => {
-														const key = `conv:${c.id}`;
-														const armed = confirmDel === key;
-														const nFinished = finishedSubagentCount(conversations, c.id);
-														const nRunning = countRunningSubagentDescendants(conversations, c.id);
-														const nAll = countScopeSubagents(conversations, c.id);
-														// 无子代理 + 空闲：两段确认直接移出（active 也可，后端自动让出）。
-														if (nAll === 0 && !c.isStreaming) {
-															return delButton(
-																key,
-																t("dismissConversation"),
-																t("dismissConversationConfirm"),
-																() => panelSend({ type: "dismiss_conversation", id: c.id }),
-																<FiX />,
-															);
-														}
-														// 无子代理 + 运行中：两段确认强行关闭（中止本轮）。
-														if (nAll === 0) {
-															return delButton(
-																key,
-																t("dismissConversation"),
-																t("dismissStreamingConfirm"),
-																() => panelSend({ type: "dismiss_conversation", id: c.id, force: true }),
-																<FiX />,
-															);
-														}
-														// 有子代理后代：点 X 展开两个选项（只关已结束 / 强行全关）。
-														if (!armed) {
-															return (
-																<button
-																	type="button"
-																	className="lp-del"
-																	title={t("dismissConversation")}
-																	onClick={(e) => {
-																		e.stopPropagation();
-																		setConfirmDel(key);
-																	}}
-																>
-																	<FiX />
-																</button>
-															);
-														}
-														return (
-															<span className="lp-del-group">
-																{nFinished > 0 && (
+														<button
+															type="button"
+															className="lp-del lp-rename"
+															title={t("renameSession")}
+															onClick={(e) => {
+																e.stopPropagation();
+																setConfirmDel(null);
+																setRenameDraft(c.title);
+																setRenaming(`conv:${c.id}`);
+															}}
+														>
+															<FiEdit2 />
+														</button>
+														{(() => {
+															const key = `conv:${c.id}`;
+															const armed = confirmDel === key;
+															const nFinished = finishedSubagentCount(conversations, c.id);
+															const nRunning = countRunningSubagentDescendants(conversations, c.id);
+															const nAll = countScopeSubagents(conversations, c.id);
+															// 无子代理 + 空闲：两段确认直接移出（active 也可，后端自动让出）。
+															if (nAll === 0 && !c.isStreaming) {
+																return delButton(
+																	key,
+																	t("dismissConversation"),
+																	t("dismissConversationConfirm"),
+																	() => panelSend({ type: "dismiss_conversation", id: c.id }),
+																	<FiX />,
+																);
+															}
+															// 无子代理 + 运行中：两段确认强行关闭（中止本轮）。
+															if (nAll === 0) {
+																return delButton(
+																	key,
+																	t("dismissConversation"),
+																	t("dismissStreamingConfirm"),
+																	() => panelSend({ type: "dismiss_conversation", id: c.id, force: true }),
+																	<FiX />,
+																);
+															}
+															// 有子代理后代：点 X 展开两个选项（只关已结束 / 强行全关）。
+															if (!armed) {
+																return (
 																	<button
 																		type="button"
-																		className="lp-del-opt"
-																		title={t("dismissFinishedSubagentsScoped", { n: nFinished })}
+																		className="lp-del"
+																		title={t("dismissConversation")}
+																		onClick={(e) => {
+																			e.stopPropagation();
+																			setConfirmDel(key);
+																		}}
+																	>
+																		<FiX />
+																	</button>
+																);
+															}
+															return (
+																<span className="lp-del-group">
+																	{nFinished > 0 && (
+																		<button
+																			type="button"
+																			className="lp-del-opt"
+																			title={t("dismissFinishedSubagentsScoped", { n: nFinished })}
+																			onClick={(e) => {
+																				e.stopPropagation();
+																				setConfirmDel(null);
+																				panelSend({ type: "dismiss_finished_subagents", parentId: c.id });
+																			}}
+																		>
+																			{t("dismissFinishedOnly", { n: nFinished })}
+																		</button>
+																	)}
+																	<button
+																		type="button"
+																		className="lp-del-opt danger"
+																		title={t("forceDismissTitle", { n: nAll, m: nRunning })}
 																		onClick={(e) => {
 																			e.stopPropagation();
 																			setConfirmDel(null);
-																			panelSend({ type: "dismiss_finished_subagents", parentId: c.id });
+																			panelSend({ type: "dismiss_conversation", id: c.id, force: true });
 																		}}
 																	>
-																		{t("dismissFinishedOnly", { n: nFinished })}
+																		{t("dismissForceAll", { n: nAll })}
 																	</button>
-																)}
-																<button
-																	type="button"
-																	className="lp-del-opt danger"
-																	title={t("forceDismissTitle", { n: nAll, m: nRunning })}
-																	onClick={(e) => {
-																		e.stopPropagation();
-																		setConfirmDel(null);
-																		panelSend({ type: "dismiss_conversation", id: c.id, force: true });
-																	}}
-																>
-																	{t("dismissForceAll", { n: nAll })}
-																</button>
-															</span>
-														);
-													})()}
-													{renderLeftSessions()}
-													{c.isStreaming && (
-														<span
-															className="lp-row-stalled"
-															title={t("streaming")}
-															style={{ position: "absolute", right: 28, top: "50%", transform: "translateY(-50%)" }}
-														/>
-													)}
-												</div>
-											);
-										});
+																</span>
+															);
+														})()}
+														{renderLeftSessions()}
+														{c.isStreaming && (
+															<span
+																className="lp-row-stalled"
+																title={t("streaming")}
+																style={{ position: "absolute", right: 28, top: "50%", transform: "translateY(-50%)" }}
+															/>
+														)}
+													</div>
+												);
+											},
+										);
 									})()}
 								</div>
 							))}

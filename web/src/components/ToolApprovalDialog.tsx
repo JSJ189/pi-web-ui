@@ -3,6 +3,7 @@ import { createPortal } from "react-dom";
 import { FiAlertTriangle, FiCheck, FiCheckCircle, FiEdit3, FiLayers, FiX } from "react-icons/fi";
 import { appSend } from "../app-globals";
 import { useI18n, useT } from "../i18n";
+import { renderHighlightedCommand } from "../bash-danger";
 import type { UiToolApproval } from "../types";
 
 interface ToolApprovalDialogProps {
@@ -144,6 +145,43 @@ export function ToolApprovalDialog({ approval }: ToolApprovalDialogProps) {
 									{t("toolApprovalCategory")}：{locale === "zh" ? approval.category.label : approval.category.labelEn}
 								</div>
 							)}
+							{/* 命中高危规则清单（issue #566） */}
+							{approval.hits && approval.hits.length > 0 && (
+								<div className="approval-hits-panel">
+									<div className="approval-hits-title">
+										{t("toolApprovalHitsTitle")} ({approval.hits.length})
+									</div>
+									<div className="approval-hits-list">
+										{approval.hits.map((hit, idx) => (
+											<div key={idx} className="approval-hit-item">
+												<div className="approval-hit-header">
+													<span className="approval-hit-badge">
+														{locale === "zh" ? hit.label : hit.labelEn || hit.label}
+													</span>
+													<span className="approval-hit-field">{hit.field}</span>
+													<span className="approval-hit-pos">
+														{t("approvalHitPos", { index: hit.index + 1, length: hit.length })}
+													</span>
+												</div>
+												<div className="approval-hit-text">
+													<mark className="approval-danger-hit">{hit.text}</mark>
+												</div>
+											</div>
+										))}
+									</div>
+								</div>
+							)}
+						</div>
+					)}
+
+					{/* 高危命令即时高亮定位（issue #566，针对 bash 命令在 JSON 转义之外提供直观定位） */}
+					{approval.toolName === "bash" && typeof (approval.params as any)?.command === "string" && (
+						<div className="approval-cmd-preview">
+							<div className="approval-cmd-preview-label">{t("approvalCommandPreview")}:</div>
+							<div className="approval-cmd-preview-box">
+								<span className="bashblock-prompt">$</span>
+								<code>{renderHighlightedCommand((approval.params as any).command, approval.hits)}</code>
+							</div>
 						</div>
 					)}
 

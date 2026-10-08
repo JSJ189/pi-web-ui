@@ -19,7 +19,12 @@
  */
 
 import type { UiApprovalCategory } from "./protocol.js";
-import { DEFAULT_APPROVAL_RULES, evaluateApprovalRules, type ApprovalRule } from "./approval-rules.js";
+import {
+	DEFAULT_APPROVAL_RULES,
+	evaluateApprovalRules,
+	type ApprovalRule,
+	type RuleHitDetail,
+} from "./approval-rules.js";
 
 /** 高危操作/自定义规则检测结果。 */
 export interface DangerousCheckResult {
@@ -32,6 +37,8 @@ export interface DangerousCheckResult {
 	reasonEn?: string;
 	/** 命中的规则档位（「允许同类审批」按它记忆/撤销；无档位的自定义拦截缺省）。 */
 	category?: UiApprovalCategory;
+	/** 命中的高危片段清单（issue #566）。 */
+	hits?: RuleHitDetail[];
 }
 
 /** 本对话的审批放行策略（仅内存；挂在 Conversation 上，见 server/agent-service.ts）。 */
@@ -105,6 +112,7 @@ export function checkDangerousToolCall(
 			reason: res.reason,
 			reasonEn: res.reasonEn,
 			category: res.category,
+			hits: res.hits,
 		};
 	}
 
@@ -122,6 +130,7 @@ export function checkDangerousToolCall(
 			reason: res.reason,
 			reasonEn: res.reasonEn,
 			category: res.category,
+			hits: res.hits,
 		};
 	}
 
@@ -138,10 +147,12 @@ export interface PendingApprovalEntry {
 	reasonEn?: string;
 	/** 命中的规则档位（弹窗据此显示「允许同类」并作为记忆键）。 */
 	category?: UiApprovalCategory;
+	/** 命中的高危片段清单（issue #566）。 */
+	hits?: RuleHitDetail[];
 	conversationId?: string;
 	conversationTitle?: string;
 	resolve: (res: ToolApprovalResolution) => void;
 	createdAt: number;
 }
 
-export type { ApprovalRule } from "./approval-rules.js";
+export type { ApprovalRule, RuleHitDetail } from "./approval-rules.js";

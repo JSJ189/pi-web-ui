@@ -5,7 +5,7 @@
  * 只有显式 PI_WEB_SDK=bundled（或 0/off/false/no）才强制自带。
  */
 import { describe, expect, it } from "vitest";
-import { pickGlobalSdk } from "../../server/resolve-global-sdk.js";
+import { findBundledCopy, pickGlobalSdk } from "../../server/resolve-global-sdk.js";
 import type { SdkCopy } from "../../server/sdk-origin.js";
 
 const bundled: SdkCopy = { path: "/app/node_modules/pi-coding-agent/package.json", version: "0.85.1" };
@@ -68,5 +68,21 @@ describe("pickGlobalSdk：绝不降级（祖先必须严格更新）", () => {
 
 	it("一份副本都没有（copies 为空）时不抛错", () => {
 		expect(pickGlobalSdk([], undefined)).toBeNull();
+	});
+});
+
+describe("pickGlobalSdk：缺少自带副本时选用可用全局副本（issue #562）", () => {
+	it("无自带副本（pnpm 隔离安装 / 裁剪部署）且有全局副本 → 选用最高版本全局副本", () => {
+		expect(pickGlobalSdk([globalNewer], undefined, null)).toBe(globalNewer);
+		expect(pickGlobalSdk([globalOlder, globalNewer], undefined, null)).toBe(globalNewer);
+		expect(pickGlobalSdk([globalNewer, globalOlder], undefined, null)).toBe(globalNewer);
+	});
+
+	it("无自带副本且显式指定 bundled → 遵从指令返回 null", () => {
+		expect(pickGlobalSdk([globalNewer], "bundled", null)).toBeNull();
+	});
+
+	it("无自带副本且无任何全局副本 → 返回 null", () => {
+		expect(pickGlobalSdk([], undefined, null)).toBeNull();
 	});
 });

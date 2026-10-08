@@ -5,11 +5,13 @@ import { tmpdir } from "node:os";
 import {
 	ApprovalRulesStore,
 	DEFAULT_APPROVAL_RULES,
+	checkBashCommandDanger,
 	evaluateApprovalRules,
 	extractRuleFieldValue,
 	extractTargetPath,
 	globToRegex,
 	matchApprovalRule,
+	matchApprovalRuleDetail,
 	normalizeApprovalRule,
 	type ApprovalRule,
 } from "../../server/approval-rules.js";
@@ -390,5 +392,120 @@ describe("ApprovalRulesStore 持久化库与播种机制", () => {
 		expect(item?.builtin).toBe(true);
 		// 保护未被绕过
 		expect(store.remove("builtin.bash.rm-rf")).toBe(false);
+	});
+});
+
+describe("matchApprovalRuleDetail & 命中清单 (issue #566)", () => {
+	const cwd = "/workspace/project";
+
+	it("regex 模式：返回精确的 index, length 与 text 命中区间", () => {
+		const rule: ApprovalRule = {
+			id: "test.rm",
+			enabled: true,
+			tools: ["bash"],
+			field: "command",
+			match: "regex",
+			value: "rm\\s+-rf\\s+[^\\s;&|]+",
+			action: "ask",
+			label: "rm -rf 删除",
+		};
+		const cmd = "cd /srv && rm -rf ./dist && echo done";
+		const detail = matchApprovalRuleDetail(rule, "bash", { command: cmd }, cwd);
+		expect(detail).not.toBeNull();
+		expect(detail?.index).toBe(11);
+		expect(detail?.text).toBe("rm -rf ./dist");
+		expect(detail?.length).toBe("rm -rf ./dist".length);
+	});
+
+	it("contains 模式：返回匹配字符串的起始下标与长度", () => {
+		const rule: ApprovalRule = {
+			id: "test.drop",
+			enabled: true,
+			tools: ["bash"],
+			field: "command",
+			match: "contains",
+			value: "DROP DATABASE",
+			action: "ask",
+			label: "删库操作",
+		};
+		const cmd = "psql -c 'DROP DATABASE prod;'";
+		const detail = matchApprovalRuleDetail(rule, "bash", { command: cmd }, cwd);
+		expect(detail).not.toBeNull();
+		expect(detail?.index).toBe(9);
+		expect(detail?.text).toBe("DROP DATABASE");
+		expect(detail?.length).toBe(13);
+	});
+
+	it("prefix 模式：从 0 开始命中", () => {
+		const rule: ApprovalRule = {
+			id: "test.sudo",
+			enabled: true,
+			tools: ["bash"],
+			field: "command",
+			match: "prefix",
+			value: "sudo ",
+			action: "ask",
+			label: "提权命令",
+		};
+		const detail = matchApprovalRuleDetail(rule, "bash", { command: "sudo apt update" }, cwd);
+		expect(detail).toEqual({
+			index: 0,
+			length: 5,
+			text: "sudo ",
+		});
+	});
+
+	it("不匹配时返回 null", () => {
+		const rule: ApprovalRule = {
+			id: "test.safe",
+			enabled: true,
+			tools: ["bash"],
+			field: "command",
+			match: "contains",
+			value: "nuclear",
+			action: "ask",
+			label: "危险操作",
+		};
+		expect(matchApprovalRuleDetail(rule, "bash", { command: "ls -la" }, cwd)).toBeNull();
+	});
+
+	it("evaluateApprovalRules 收集完整命中清单 (hits[])，首条命中决定动作", () => {
+		const r1: ApprovalRule = {
+			id: "r1",
+			enabled: true,
+			tools: ["bash"],
+			field: "command",
+			match: "contains",
+			value: "rm -rf",
+			action: "ask",
+			label: "规则1",
+		};
+		const r2: ApprovalRule = {
+			id: "r2",
+			enabled: true,
+			tools: ["bash"],
+			field: "command",
+			match: "contains",
+			value: "docker",
+			action: "deny",
+			label: "规则2",
+		};
+		const cmd = "rm -rf /tmp && docker run -d";
+		const res = evaluateApprovalRules([r1, r2], "bash", { command: cmd }, cwd);
+		expect(res.action).toBe("ask");
+		expect(res.matchedRule?.id).toBe("r1");
+		expect(res.hits).toHaveLength(2);
+		expect(res.hits?.[0].ruleId).toBe("r1");
+		expect(res.hits?.[0].text).toBe("rm -rf");
+		expect(res.hits?.[1].ruleId).toBe("r2");
+		expect(res.hits?.[1].text).toBe("docker");
+	});
+
+	it("checkBashCommandDanger 快速检测命令并返回高危命中详情", () => {
+		const cmd = "cd /app && rm -rf ./data && git reset --hard";
+		const hits = checkBashCommandDanger(cmd);
+		expect(hits.length).toBeGreaterThanOrEqual(2);
+		expect(hits.some((h) => h.ruleId === "builtin.bash.rm-rf")).toBe(true);
+		expect(hits.some((h) => h.ruleId === "builtin.bash.git-destructive")).toBe(true);
 	});
 });

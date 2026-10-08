@@ -261,6 +261,7 @@ import type {
 	ServerMessage,
 	SessionSummary,
 	UiApprovalCategory,
+	UiApprovalHit,
 	UiApprovalPolicyState,
 	UiApprovalRule,
 	UiMessage,
@@ -524,7 +525,7 @@ export interface ToolGuardHook {
 	) => Promise<{ content?: Array<{ type: string; text?: string }>; pluginIds: string[] } | undefined>;
 }
 
-/** 人机协同审批回调（第 7 参数 = 命中的规则档位，供「允许同类」记忆）。 */
+/** 人机协同审批回调（第 7 参数 = 命中的规则档位，供「允许同类」记忆；第 8 参数 = 命中清单，用于高危片段定位）。 */
 export type AskApprovalFn = (
 	toolCallId: string,
 	toolName: string,
@@ -533,6 +534,7 @@ export type AskApprovalFn = (
 	reasonEn?: string,
 	conversationId?: string,
 	category?: UiApprovalCategory,
+	hits?: UiApprovalHit[],
 ) => Promise<ToolApprovalResolution>;
 
 /**
@@ -724,11 +726,13 @@ export function withToolGuard(
 			}
 
 			// 3. 决定是否需要弹窗审批（系统高危 ask 优先于插件通用 ask，防止恶意或低危插件掩盖高危告警）
+			let approvalHits: UiApprovalHit[] | undefined;
 			if (danger?.dangerous) {
 				needApproval = true;
 				approvalReason = danger.reason;
 				approvalReasonEn = danger.reasonEn;
 				approvalCategory = danger.category;
+				approvalHits = danger.hits;
 			} else if (pre?.verdict.decision === "ask") {
 				needApproval = true;
 				approvalReason = pre.verdict.reason ?? "插件要求确认本次操作";
@@ -748,6 +752,7 @@ export function withToolGuard(
 					approvalReasonEn,
 					conversationId,
 					approvalCategory,
+					approvalHits,
 				);
 				if (res.decision === "deny") {
 					const reasonText = res.reason ? ` 原因：${res.reason}` : "";
@@ -900,6 +905,7 @@ function wrapWriteToolWithPermission(
 						danger.reasonEn,
 						getConversationId?.(),
 						danger.category,
+						danger.hits,
 					);
 					if (res.decision === "deny") {
 						return {
@@ -1039,6 +1045,7 @@ function wrapEditToolWithPermission(
 						danger.reasonEn,
 						getConversationId?.(),
 						danger.category,
+						danger.hits,
 					);
 					if (res.decision === "deny") {
 						return {
@@ -1158,6 +1165,7 @@ function wrapEditSoftToolWithPermission(
 						danger.reasonEn,
 						getConversationId?.(),
 						danger.category,
+						danger.hits,
 					);
 					if (res.decision === "deny") {
 						return {
@@ -2578,6 +2586,7 @@ export interface TakeoverApproval {
 	reason?: string;
 	reasonEn?: string;
 	category?: UiApprovalCategory;
+	hits?: UiApprovalHit[];
 	conversationId: string;
 	conversationTitle?: string;
 	createdAt: number;
@@ -7180,6 +7189,7 @@ export class ClientSession {
 		reasonEn?: string,
 		conversationId?: string,
 		category?: UiApprovalCategory,
+		hits?: UiApprovalHit[],
 	): Promise<ToolApprovalResolution> {
 		return new Promise((resolve) => {
 			if (this.disposed) {
@@ -7207,6 +7217,7 @@ export class ClientSession {
 				reason,
 				reasonEn,
 				...(category ? { category } : {}),
+				...(hits && hits.length > 0 ? { hits } : {}),
 				conversationId,
 				conversationTitle,
 				resolve,
@@ -7222,6 +7233,7 @@ export class ClientSession {
 				reason,
 				reasonEn,
 				...(category ? { category } : {}),
+				...(hits && hits.length > 0 ? { hits } : {}),
 				...(conversationId !== undefined ? { conversationId } : {}),
 				...(conversationTitle ? { conversationTitle } : {}),
 			});
@@ -7374,6 +7386,7 @@ export class ClientSession {
 				reason: p.reason,
 				reasonEn: p.reasonEn,
 				...(p.category ? { category: p.category } : {}),
+				...(p.hits ? { hits: p.hits } : {}),
 				conversationId: p.conversationId,
 				conversationTitle: p.conversationTitle,
 			};
@@ -8828,8 +8841,8 @@ export class ClientSession {
 			(ownerId ? this.convs.get(ownerId)?.permissionPreset : undefined) ??
 			this.settingsSvc.current.defaultPermissionPreset ??
 			"workspace-write-never";
-		const approve: AskApprovalFn = (toolCallId, toolName, params, reason, reasonEn, convId, category) =>
-			this.askApproval(toolCallId, toolName, params, reason, reasonEn, convId, category);
+		const approve: AskApprovalFn = (toolCallId, toolName, params, reason, reasonEn, convId, category, hits) =>
+			this.askApproval(toolCallId, toolName, params, reason, reasonEn, convId, category, hits);
 		// 行为开关（read 本体不可关）：每次调用实时读设置 —— 不进 tool-manager 的 ActiveSet 目录。
 		const readDirOptions: ReadDirToolOptions = {
 			dirEnabled: (): boolean => this.settingsSvc.current.readDirEnabled !== false,
@@ -11268,6 +11281,7 @@ export class ClientSession {
 					reason: a.reason,
 					reasonEn: a.reasonEn,
 					...(a.category ? { category: a.category } : {}),
+					...(a.hits ? { hits: a.hits } : {}),
 					conversationId: a.conversationId,
 					...(a.conversationTitle ? { conversationTitle: a.conversationTitle } : {}),
 					createdAt: a.createdAt,
@@ -11400,6 +11414,7 @@ export class ClientSession {
 				reason: a.reason,
 				reasonEn: a.reasonEn,
 				...(a.category ? { category: a.category } : {}),
+				...(a.hits ? { hits: a.hits } : {}),
 				conversationId: aConvId,
 				...(a.conversationTitle ? { conversationTitle: a.conversationTitle } : {}),
 				resolve: a.resolve,
@@ -11415,6 +11430,7 @@ export class ClientSession {
 					reason: a.reason,
 					reasonEn: a.reasonEn,
 					...(a.category ? { category: a.category } : {}),
+					...(a.hits ? { hits: a.hits } : {}),
 					conversationId: aConvId,
 					...(a.conversationTitle ? { conversationTitle: a.conversationTitle } : {}),
 				});

@@ -127,6 +127,55 @@ describe("sdkOriginNote：只在「被遮蔽的副本更新」时提示", () => 
 	});
 });
 
+describe("sdkCopies 全局与 PATH 探测 (issue #559, #562)", () => {
+	it("从 PATH 中的 pi 可执行文件反推全局 SDK 副本", () => {
+		const root = makeTree();
+		const binDir = join(root, "fake-bin");
+		const globalDir = join(root, "fake-global");
+		mkdirSync(binDir, { recursive: true });
+		putCopy(globalDir, "1.2.0");
+
+		// 在 binDir 中放置 pi 批处理/脚本，指向全局包
+		const isWin = process.platform === "win32";
+		const piCmd = join(binDir, isWin ? "pi.cmd" : "pi");
+		const targetPj = join(globalDir, "node_modules", PKG, "package.json");
+		if (isWin) {
+			writeFileSync(piCmd, `@node "${targetPj}" %*`);
+		} else {
+			writeFileSync(piCmd, `#!/bin/sh\nexec node "${targetPj}" "$@"\n`);
+		}
+
+		// 一个独立的空项目 entry
+		const app = join(root, "app");
+		const entry = join(app, "dist", "server", "index.js");
+		mkdirSync(join(app, "dist", "server"), { recursive: true });
+		writeFileSync(entry, "");
+
+		const copies = sdkCopies(entry, {
+			includeGlobal: true,
+			env: { PATH: binDir },
+		});
+		expect(copies.some((c) => c.version === "1.2.0")).toBe(true);
+	});
+
+	it("从 npm_config_prefix 反推全局 SDK 副本", () => {
+		const root = makeTree();
+		const prefixDir = join(root, "npm-prefix");
+		putCopy(prefixDir, "1.3.0");
+
+		const app = join(root, "app");
+		const entry = join(app, "dist", "server", "index.js");
+		mkdirSync(join(app, "dist", "server"), { recursive: true });
+		writeFileSync(entry, "");
+
+		const copies = sdkCopies(entry, {
+			includeGlobal: true,
+			env: { PATH: "", npm_config_prefix: prefixDir },
+		});
+		expect(copies.some((c) => c.version === "1.3.0")).toBe(true);
+	});
+});
+
 describe("isBundledInUse (issue #321)", () => {
 	it("running == copies[0] → 自带在用；跟随祖先副本 → 不是；copies 为空 → 按自带算", () => {
 		expect(

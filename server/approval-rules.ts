@@ -103,6 +103,19 @@ export interface RuleEvaluationResult {
 	reasonEn?: string;
 	/** 规则档位（用于「允许同类审批」）。 */
 	category?: UiApprovalCategory;
+	/** 命中的规则片段清单（issue #566，带条数上限与单条长度保护）。 */
+	hits?: RuleHitDetail[];
+}
+
+/** 规则命中区间详情（issue #566）。 */
+export interface RuleHitDetail {
+	ruleId: string;
+	label: string;
+	labelEn?: string;
+	field: ApprovalRuleField;
+	index: number;
+	length: number;
+	text: string;
 }
 
 /**
@@ -177,6 +190,98 @@ export function extractRuleFieldValue(field: ApprovalRuleField, toolName: string
 }
 
 /**
+ * 单条规则针对具体工具调用的匹配详情判定（纯函数，issue #566）。
+ * 匹配成功时返回匹配区间信息 { index, length, text }，否则返回 null。
+ */
+export function matchApprovalRuleDetail(
+	rule: ApprovalRule,
+	toolName: string,
+	params: unknown,
+	cwd: string,
+	workspaceRoots: string[] = [],
+): { index: number; length: number; text: string } | null {
+	if (!rule.enabled) return null;
+
+	// 1. 工具名匹配
+	const targetTools = rule.tools.map((t) => t.trim().toLowerCase());
+	const toolMatches = targetTools.includes("*") || targetTools.includes(toolName.trim().toLowerCase());
+	if (!toolMatches) return null;
+
+	// 2. 特殊匹配方式：outside_workspace（工作区外路径）
+	if (rule.match === "outside_workspace") {
+		const targetPath = extractRuleFieldValue("path", toolName, params);
+		if (!targetPath) return null;
+		// 无论相对或绝对路径，统一经 resolve(cwd, targetPath) 规范化并消除 ".."
+		const abs = resolve(cwd, targetPath);
+		const allRoots = [resolve(cwd), ...workspaceRoots.map((r) => resolve(r))];
+		const inside = allRoots.some((r) => isPathInsideRoot(abs, r));
+		if (!inside) {
+			return { index: 0, length: targetPath.length, text: targetPath };
+		}
+		return null;
+	}
+
+	// 3. 提取字段文本
+	const fieldValue = extractRuleFieldValue(rule.field, toolName, params);
+	if (!fieldValue) return null;
+
+	// 4. 按 match kind 进行文本判定并提取命中区间
+	switch (rule.match) {
+		case "regex": {
+			try {
+				const re = new RegExp(rule.value, "i");
+				const m = re.exec(fieldValue);
+				if (m) {
+					return {
+						index: m.index,
+						length: m[0].length,
+						text: m[0],
+					};
+				}
+				return null;
+			} catch {
+				return null;
+			}
+		}
+		case "glob": {
+			try {
+				const re = globToRegex(rule.value);
+				const normalized = fieldValue.replace(/\\/g, "/");
+				if (re.test(normalized)) {
+					return { index: 0, length: fieldValue.length, text: fieldValue };
+				}
+				return null;
+			} catch {
+				return null;
+			}
+		}
+		case "contains": {
+			const idx = fieldValue.toLowerCase().indexOf(rule.value.toLowerCase());
+			if (idx >= 0) {
+				return {
+					index: idx,
+					length: rule.value.length,
+					text: fieldValue.slice(idx, idx + rule.value.length),
+				};
+			}
+			return null;
+		}
+		case "prefix": {
+			if (fieldValue.toLowerCase().startsWith(rule.value.toLowerCase())) {
+				return {
+					index: 0,
+					length: rule.value.length,
+					text: fieldValue.slice(0, rule.value.length),
+				};
+			}
+			return null;
+		}
+		default:
+			return null;
+	}
+}
+
+/**
  * 单条规则针对具体工具调用的匹配判定（纯函数）。
  */
 export function matchApprovalRule(
@@ -186,58 +291,11 @@ export function matchApprovalRule(
 	cwd: string,
 	workspaceRoots: string[] = [],
 ): boolean {
-	if (!rule.enabled) return false;
-
-	// 1. 工具名匹配
-	const targetTools = rule.tools.map((t) => t.trim().toLowerCase());
-	const toolMatches = targetTools.includes("*") || targetTools.includes(toolName.trim().toLowerCase());
-	if (!toolMatches) return false;
-
-	// 2. 特殊匹配方式：outside_workspace（工作区外路径）
-	if (rule.match === "outside_workspace") {
-		const targetPath = extractRuleFieldValue("path", toolName, params);
-		if (!targetPath) return false;
-		// 无论相对或绝对路径，统一经 resolve(cwd, targetPath) 规范化并消除 ".."
-		const abs = resolve(cwd, targetPath);
-		const allRoots = [resolve(cwd), ...workspaceRoots.map((r) => resolve(r))];
-		const inside = allRoots.some((r) => isPathInsideRoot(abs, r));
-		return !inside;
-	}
-
-	// 3. 提取字段文本
-	const fieldValue = extractRuleFieldValue(rule.field, toolName, params);
-
-	// 4. 按 match kind 进行文本判定
-	switch (rule.match) {
-		case "regex": {
-			try {
-				const re = new RegExp(rule.value, "i");
-				return re.test(fieldValue);
-			} catch {
-				return false;
-			}
-		}
-		case "glob": {
-			try {
-				const re = globToRegex(rule.value);
-				return re.test(fieldValue.replace(/\\/g, "/"));
-			} catch {
-				return false;
-			}
-		}
-		case "contains": {
-			return fieldValue.toLowerCase().includes(rule.value.toLowerCase());
-		}
-		case "prefix": {
-			return fieldValue.toLowerCase().startsWith(rule.value.toLowerCase());
-		}
-		default:
-			return false;
-	}
+	return matchApprovalRuleDetail(rule, toolName, params, cwd, workspaceRoots) !== null;
 }
 
 /**
- * 完整评估规则列表对工具调用的决策（纯函数，按列表顺序首个匹配胜出）。
+ * 完整评估规则列表对工具调用的决策（纯函数，按列表顺序首个匹配胜出，收集全部命中清单，issue #566）。
  */
 export function evaluateApprovalRules(
 	rules: ApprovalRule[],
@@ -246,24 +304,70 @@ export function evaluateApprovalRules(
 	cwd: string,
 	workspaceRoots: string[] = [],
 ): RuleEvaluationResult {
+	let primary: {
+		action: "ask" | "deny" | "allow";
+		matchedRule: ApprovalRule;
+		reason?: string;
+		reasonEn?: string;
+		category?: UiApprovalCategory;
+	} | null = null;
+
+	const hits: RuleHitDetail[] = [];
+
 	for (const rule of rules) {
-		if (matchApprovalRule(rule, toolName, params, cwd, workspaceRoots)) {
+		const detail = matchApprovalRuleDetail(rule, toolName, params, cwd, workspaceRoots);
+		if (detail) {
 			const catId = rule.categoryId || rule.id;
 			const category: UiApprovalCategory = {
 				id: catId,
 				label: rule.label,
 				labelEn: rule.labelEn || rule.label,
 			};
-			return {
-				action: rule.action,
-				matchedRule: rule,
-				reason: rule.reason || rule.label,
-				reasonEn: rule.reasonEn || rule.labelEn || rule.label,
-				category,
-			};
+			if (!primary) {
+				primary = {
+					action: rule.action,
+					matchedRule: rule,
+					reason: rule.reason || rule.label,
+					reasonEn: rule.reasonEn || rule.labelEn || rule.label,
+					category,
+				};
+			}
+			if (hits.length < 10) {
+				// 单条 text 超长时做截断，防止塞满 details 预算（硬限制 ≤64KB）
+				const safeText = detail.text.length > 200 ? `${detail.text.slice(0, 200)}…` : detail.text;
+				hits.push({
+					ruleId: rule.id,
+					label: rule.label,
+					labelEn: rule.labelEn || rule.label,
+					field: rule.field,
+					index: detail.index,
+					length: detail.length,
+					text: safeText,
+				});
+			}
 		}
 	}
+
+	if (primary) {
+		return {
+			...primary,
+			hits: hits.length > 0 ? hits : undefined,
+		};
+	}
+
 	return { action: "none" };
+}
+
+/**
+ * 纯命令文本的高危规则快速检测（用于对话卡片终端行即时高亮与审查证据打标，issue #566）。
+ */
+export function checkBashCommandDanger(
+	command: string,
+	rules: ApprovalRule[] = DEFAULT_APPROVAL_RULES,
+): RuleHitDetail[] {
+	if (!command || typeof command !== "string") return [];
+	const res = evaluateApprovalRules(rules, "bash", { command }, "");
+	return res.hits ?? [];
 }
 
 /**

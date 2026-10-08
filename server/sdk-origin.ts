@@ -11,8 +11,8 @@
  *
  * 纯函数 + 零副作用，便于单测（见 tests/unit/sdk-origin.test.ts）。
  */
-import { existsSync, readFileSync } from "node:fs";
-import { dirname, join } from "node:path";
+import { existsSync, readFileSync, realpathSync } from "node:fs";
+import { dirname, join, delimiter, isAbsolute } from "node:path";
 import { fileURLToPath } from "node:url";
 
 const PKG = "@earendil-works/pi-coding-agent";
@@ -24,51 +24,150 @@ export interface SdkCopy {
 	version: string;
 }
 
-/** 从某个文件出发，逐级向上查找 `<dir>/node_modules/<pkg>/package.json`。
+function addCopy(pjPath: string, out: SdkCopy[], requireName = false): void {
+	if (!existsSync(pjPath)) return;
+	const norm = pjPath.replace(/\\/g, "/");
+	if (out.some((c) => c.path.replace(/\\/g, "/") === norm)) return;
+	try {
+		const raw = readFileSync(pjPath, "utf8");
+		const info = JSON.parse(raw);
+		if (requireName && info?.name !== PKG) return;
+		if (typeof info?.version === "string" && info.version) {
+			out.push({ path: pjPath, version: info.version });
+		}
+	} catch {}
+}
+
+/** 探测 PATH 上的 pi 可执行文件反推其包根（issue #559, #562）。 */
+function scanPathForPi(out: SdkCopy[], env: NodeJS.ProcessEnv = process.env): void {
+	const rawPath = env.PATH || "";
+	if (!rawPath) return;
+	const dirs = rawPath.split(delimiter).filter(Boolean);
+	const isWin = process.platform === "win32";
+	const names = isWin ? ["pi.cmd", "pi.exe", "pi.ps1", "pi"] : ["pi"];
+
+	for (const dir of dirs) {
+		for (const name of names) {
+			const candidate = join(dir, name);
+			if (!existsSync(candidate)) continue;
+
+			// 1. 尝试 realpathSync 解析符号链接（Unix 下 npm/pnpm 全局 bin 标准布局）
+			try {
+				const real = realpathSync(candidate);
+				let cur = dirname(real);
+				for (let i = 0; i < 5; i++) {
+					const pj = join(cur, "package.json");
+					addCopy(pj, out, true);
+					const parent = dirname(cur);
+					if (parent === cur) break;
+					cur = parent;
+				}
+			} catch {}
+
+			// 2. 检查常见同级/相对 node_modules 目录（Windows npm 全局 bin 同级 node_modules 等）
+			addCopy(join(dir, "node_modules", PKG, "package.json"), out);
+			addCopy(join(dir, "..", "lib", "node_modules", PKG, "package.json"), out);
+			addCopy(join(dir, "..", "node_modules", PKG, "package.json"), out);
+
+			// 3. 脚本包装内容解析（Windows 下 .cmd / .ps1 或 Unix 下 shell 包装脚本）
+			try {
+				const head = readFileSync(candidate, "utf8").slice(0, 4096);
+				const m = head.match(/[^\r\n"']*@earendil-works[/\\]pi-coding-agent[^\r\n"']*/);
+				if (m) {
+					let matchedPath = m[0].trim().replace(/%~?dp0%?[/\\]/gi, "");
+					let targetDir = isAbsolute(matchedPath) ? matchedPath : join(dir, matchedPath);
+					for (let i = 0; i < 5; i++) {
+						const pj = join(targetDir, "package.json");
+						addCopy(pj, out, true);
+						const parent = dirname(targetDir);
+						if (parent === targetDir) break;
+						targetDir = parent;
+					}
+				}
+			} catch {}
+		}
+	}
+}
+
+/** 探测 npm / pnpm 全局 prefix 目录（issue #559）。 */
+function scanGlobalPrefixes(out: SdkCopy[], env: NodeJS.ProcessEnv = process.env): void {
+	const home = env.HOME || env.USERPROFILE || "";
+
+	// 1. npm_config_prefix / PREFIX
+	const prefix = env.npm_config_prefix || env.PREFIX;
+	if (prefix) {
+		addCopy(join(prefix, "lib", "node_modules", PKG, "package.json"), out);
+		addCopy(join(prefix, "node_modules", PKG, "package.json"), out);
+	}
+
+	// 2. 用户级 npm 全局 (~/.npm-global, %APPDATA%\npm)
+	if (home) {
+		addCopy(join(home, ".npm-global", "lib", "node_modules", PKG, "package.json"), out);
+		addCopy(join(home, ".npm-global", "node_modules", PKG, "package.json"), out);
+	}
+	if (env.APPDATA) {
+		addCopy(join(env.APPDATA, "npm", "node_modules", PKG, "package.json"), out);
+	}
+
+	// 3. POSIX 系统级 npm 全局
+	if (process.platform !== "win32") {
+		addCopy(join("/usr", "local", "lib", "node_modules", PKG, "package.json"), out);
+		addCopy(join("/usr", "lib", "node_modules", PKG, "package.json"), out);
+	}
+
+	// 4. pnpm 全局目录 (PNPM_HOME, ~/.local/share/pnpm/global, %LOCALAPPDATA%\pnpm\global)
+	if (env.PNPM_HOME) {
+		addCopy(join(env.PNPM_HOME, "node_modules", PKG, "package.json"), out);
+		addCopy(join(env.PNPM_HOME, "global", "node_modules", PKG, "package.json"), out);
+	}
+	if (home) {
+		addCopy(join(home, ".local", "share", "pnpm", "global", "node_modules", PKG, "package.json"), out);
+	}
+	if (env.LOCALAPPDATA) {
+		addCopy(join(env.LOCALAPPDATA, "pnpm", "global", "node_modules", PKG, "package.json"), out);
+	}
+}
+
+export interface SdkCopiesOptions {
+	/** 是否包含系统 PATH 及全局 prefix 目录。测试环境下默认 false，生产环境默认 true。 */
+	includeGlobal?: boolean;
+	/** 环境变量覆盖（用于单测隔离 PATH/HOME 等）。 */
+	env?: NodeJS.ProcessEnv;
+}
+
+/** 从某个文件出发，逐级向上查找 `<dir>/node_modules/<pkg>/package.json`，
+ *  并探测系统/全局已安装的 pi SDK 副本（issue #260, #321, #559, #562）。
  *  `fromFile` 收 URL（`import.meta.url`）或普通文件路径（便于单测）。 */
-export function sdkCopies(fromFile: string = import.meta.url): SdkCopy[] {
+export function sdkCopies(fromFile: string = import.meta.url, options: SdkCopiesOptions = {}): SdkCopy[] {
+	const env = options.env ?? process.env;
+	const includeGlobal = options.includeGlobal ?? (options.env ? true : !process.env.VITEST);
 	const out: SdkCopy[] = [];
 	let dir = dirname(fromFile.startsWith("file:") ? fileURLToPath(fromFile) : fromFile);
 	for (;;) {
 		const pj = join(dir, "node_modules", PKG, "package.json");
-		if (existsSync(pj)) {
-			try {
-				const version = JSON.parse(readFileSync(pj, "utf8")).version;
-				if (typeof version === "string" && version) out.push({ path: pj, version });
-			} catch {
-				// 坏 JSON：跳过这一份，不影响其它候选（best-effort，同 process-utils 的口径）
-			}
-		}
+		addCopy(pj, out);
 		const parent = dirname(dir);
 		if (parent === dir) break;
 		dir = parent;
 	}
 
 	// 显式透传的宿主 SDK 路径（如 extensions/webui.ts 宿主传递，issue #482）
-	if (process.env.PI_WEB_SDK_DIR) {
-		const pj = join(process.env.PI_WEB_SDK_DIR, "package.json");
-		if (existsSync(pj) && !out.some((c) => c.path === pj)) {
-			try {
-				const version = JSON.parse(readFileSync(pj, "utf8")).version;
-				if (typeof version === "string" && version) {
-					out.push({ path: pj, version });
-				}
-			} catch {}
-		}
+	if (env.PI_WEB_SDK_DIR) {
+		addCopy(join(env.PI_WEB_SDK_DIR, "package.json"), out);
 	}
 
 	// 宿主 Pi Node 路径探测（~/.local/share/pi-node/current/...，issue #482）
-	const home = process.env.HOME || process.env.USERPROFILE;
+	const home = env.HOME || env.USERPROFILE;
 	if (home) {
-		const hostPj = join(home, ".local", "share", "pi-node", "current", "lib", "node_modules", PKG, "package.json");
-		if (existsSync(hostPj) && !out.some((c) => c.path === hostPj)) {
-			try {
-				const version = JSON.parse(readFileSync(hostPj, "utf8")).version;
-				if (typeof version === "string" && version) {
-					out.push({ path: hostPj, version });
-				}
-			} catch {}
-		}
+		addCopy(join(home, ".local", "share", "pi-node", "current", "lib", "node_modules", PKG, "package.json"), out);
+	}
+
+	if (includeGlobal) {
+		// PATH 上的 pi 可执行文件反推（issue #559）
+		scanPathForPi(out, env);
+
+		// npm / pnpm 全局 prefix 目录探测（issue #559）
+		scanGlobalPrefixes(out, env);
 	}
 
 	return out;
@@ -93,7 +192,10 @@ export function compareVersions(a: string, b: string): number {
  * （如部分桌面/容器布局）时按自带算 —— 那本来就是唯一能加载的份。
  * UI 用它决定是否亮「安装全局引擎并切换」入口（issue #321）。
  */
-export function isBundledInUse(copies: SdkCopy[], effectiveVersion: string): boolean {
+export function isBundledInUse(copies: SdkCopy[], effectiveVersion: string, bundledCopy?: SdkCopy | null): boolean {
+	if (bundledCopy !== undefined) {
+		return bundledCopy !== null && effectiveVersion === bundledCopy.version;
+	}
 	return copies.length === 0 || effectiveVersion === copies[0]!.version;
 }
 

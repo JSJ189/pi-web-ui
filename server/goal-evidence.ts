@@ -15,6 +15,8 @@
  * - `{role:"assistant", content:[{type:"toolCall", toolCallId, name, args}]}`（取参数提示用）
  */
 
+import { checkBashCommandDanger } from "./approval-rules.js";
+
 /** 单条证据：工具名 + 一行参数提示 + 输出尾部 + 失败标记。 */
 export interface EvidenceEntry {
 	tool: string;
@@ -111,9 +113,12 @@ export function collectToolEvidence(messages: unknown, opts: EvidenceOptions = {
 		const m = recent[i];
 		if (!isRecord(m)) continue;
 		if (m.role === "bashExecution") {
+			const cmd = typeof m.command === "string" ? m.command : "";
+			const dangerHits = checkBashCommandDanger(cmd);
+			const prefix = dangerHits.length > 0 ? `⚠️ [${dangerHits[0].label}] ` : "";
 			out.push({
 				tool: "bash",
-				hint: oneLine(m.command),
+				hint: `${prefix}${oneLine(m.command)}`,
 				tail: tailOf(m.output, maxTail),
 				error: typeof m.exitCode === "number" && m.exitCode !== 0,
 			});
@@ -123,9 +128,17 @@ export function collectToolEvidence(messages: unknown, opts: EvidenceOptions = {
 		const id = typeof m.toolCallId === "string" ? m.toolCallId : "";
 		const call = id ? calls.get(id) : undefined;
 		const toolName = typeof m.toolName === "string" ? m.toolName.trim() : "";
+		const effectiveTool = toolName || call?.name || "tool";
+		let hint = call?.hint ?? "";
+		if (effectiveTool === "bash" && hint) {
+			const dangerHits = checkBashCommandDanger(hint);
+			if (dangerHits.length > 0) {
+				hint = `⚠️ [${dangerHits[0].label}] ${hint}`;
+			}
+		}
 		out.push({
-			tool: toolName || call?.name || "tool",
-			hint: call?.hint ?? "",
+			tool: effectiveTool,
+			hint,
 			tail: tailOf(resultText(m.content), maxTail),
 			error: m.isError === true,
 		});

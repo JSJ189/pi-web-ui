@@ -415,7 +415,33 @@ async function startForeground(opts) {
 	if (opts.agentDir) process.env.PI_CODING_AGENT_DIR = resolve(opts.agentDir);
 	const url = `http://localhost:${effectivePort(opts)}`;
 	if (HAS_SDK_HOOK) await import(pathToFileURL(SDK_HOOK).href);
-	await import(pathToFileURL(SERVER_ENTRY).href);
+	try {
+		await import(pathToFileURL(SERVER_ENTRY).href);
+	} catch (err) {
+		if (
+			err &&
+			typeof err === "object" &&
+			"code" in err &&
+			err.code === "ERR_MODULE_NOT_FOUND" &&
+			String(err.message).includes("@earendil-works/pi-coding-agent")
+		) {
+			console.error(
+				ZH
+					? `\n[pi-web-ui] 错误：未找到 @earendil-works/pi-coding-agent 核心依赖。\n` +
+							`请先全局安装 pi CLI，然后重试：\n` +
+							`  npm i -g @earendil-works/pi-coding-agent@latest\n` +
+							`或在 pnpm 环境下：\n` +
+							`  pnpm add -g @earendil-works/pi-coding-agent@latest\n`
+					: `\n[pi-web-ui] Error: '@earendil-works/pi-coding-agent' core dependency not found.\n` +
+							`Please install the pi CLI globally and try again:\n` +
+							`  npm i -g @earendil-works/pi-coding-agent@latest\n` +
+							`or with pnpm:\n` +
+							`  pnpm add -g @earendil-works/pi-coding-agent@latest\n`,
+			);
+			process.exit(1);
+		}
+		throw err;
+	}
 	if (!opts.noBrowser) openBrowserWhenUp(url);
 }
 

@@ -24,6 +24,7 @@ import { PRESENT_FILES_TOOL_NAME } from "../../../server/tool-manager.js";
 import { parsePresentArgs } from "../present-items";
 import { useCopyFeedback } from "../use-copy-feedback";
 import { PresentedFiles } from "./PresentedFiles";
+import { renderHighlightedCommand } from "../bash-danger";
 
 export interface ToolView {
 	/** Tool result message if the tool already finished. */
@@ -433,7 +434,7 @@ function TerminalCommand({ command }: { command: string }) {
 	return (
 		<div className="termline">
 			<FiTerminal className="termline-icon" />
-			<code>{command}</code>
+			<code>{renderHighlightedCommand(command)}</code>
 		</div>
 	);
 }

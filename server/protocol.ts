@@ -1362,6 +1362,17 @@ export interface UiApprovalPolicyState {
 	categories: UiApprovalCategory[];
 }
 
+/** 审批规则命中详情（高危命令片段高亮与命中清单，issue #566）。 */
+export interface UiApprovalHit {
+	ruleId: string;
+	label: string;
+	labelEn?: string;
+	field: "command" | "path" | "params";
+	index: number;
+	length: number;
+	text: string;
+}
+
 /** 待用户审批的高危工具调用（Edit & Run 人机协同）。 */
 export interface UiToolApproval {
 	id: string;
@@ -1372,6 +1383,8 @@ export interface UiToolApproval {
 	reasonEn?: string;
 	/** 命中的规则档位（有档位时弹窗提供「允许同类」；无档位只能单次批准/本对话全部允许）。 */
 	category?: UiApprovalCategory;
+	/** 命中的高危规则清单（用于参数框定位与高危片段标记，issue #566）。 */
+	hits?: UiApprovalHit[];
 	conversationId?: string;
 	conversationTitle?: string;
 }
@@ -3302,6 +3315,8 @@ export type ServerMessage =
 			reasonEn?: string;
 			/** 命中的规则档位（「允许同类」按它记忆）。 */
 			category?: UiApprovalCategory;
+			/** 命中的高危规则清单（issue #566）。 */
+			hits?: UiApprovalHit[];
 			conversationId?: string;
 			conversationTitle?: string;
 	  }

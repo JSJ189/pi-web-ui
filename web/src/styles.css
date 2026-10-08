@@ -1359,6 +1359,98 @@ button.session-item.elsewhere-item.confirm {
 	border-bottom: 1px solid var(--border);
 	border-radius: 0 0 0 5px;
 }
+/* Subagent tree expand/collapse caret in running conversations (issue #564) */
+.lp-tree-caret {
+	display: inline-flex;
+	align-items: center;
+	justify-content: center;
+	width: 18px;
+	height: 18px;
+	padding: 0;
+	margin-left: 2px;
+	margin-right: 2px;
+	border: none;
+	background: transparent;
+	color: var(--text-dim);
+	border-radius: 4px;
+	cursor: pointer;
+	flex-shrink: 0;
+	transition:
+		color 0.15s,
+		background-color 0.15s;
+}
+.lp-tree-caret:hover {
+	background: var(--bg-elev2);
+	color: var(--text);
+}
+.lp-tree-caret svg {
+	width: 12px;
+	height: 12px;
+}
+/* Badge shown on parent row when subagent subtree is collapsed (issue #564) */
+.subagents-collapsed-badge {
+	display: inline-flex;
+	align-items: center;
+	gap: 4px;
+	padding: 1px 6px;
+	margin-left: 6px;
+	font-size: 11px;
+	line-height: 1.4;
+	font-weight: 500;
+	border-radius: 10px;
+	background: var(--bg-elev2);
+	color: var(--text-dim);
+	border: 1px solid var(--border);
+	cursor: pointer;
+	vertical-align: middle;
+	user-select: none;
+	transition:
+		background-color 0.15s,
+		border-color 0.15s,
+		color 0.15s;
+}
+.subagents-collapsed-badge:hover {
+	background: var(--bg-elev3);
+	color: var(--text);
+	border-color: var(--border);
+}
+.subagents-collapsed-badge.has-streaming {
+	background: rgba(34, 197, 94, 0.12);
+	color: var(--green);
+	border-color: rgba(34, 197, 94, 0.3);
+}
+.subagents-collapsed-badge.has-question {
+	background: rgba(245, 158, 11, 0.12);
+	color: var(--amber);
+	border-color: rgba(245, 158, 11, 0.3);
+}
+.subagents-collapsed-badge.has-error {
+	background: rgba(239, 68, 68, 0.12);
+	color: var(--red);
+	border-color: rgba(239, 68, 68, 0.3);
+}
+.subagents-collapsed-badge .subagent-dot {
+	width: 6px;
+	height: 6px;
+	border-radius: 50%;
+	flex-shrink: 0;
+}
+.subagents-collapsed-badge .subagent-dot.streaming {
+	background: var(--green);
+	box-shadow: 0 0 4px var(--green);
+	animation: conv-pulse 1.2s ease-in-out infinite;
+}
+.subagents-collapsed-badge .subagent-dot.question {
+	width: auto;
+	height: auto;
+	font-size: 10px;
+	font-weight: bold;
+	color: var(--amber);
+}
+.subagents-collapsed-badge .subagent-dot.error {
+	background: var(--red);
+	box-shadow: 0 0 4px var(--red);
+}
 .lp-row .lp-del {
 	position: absolute;
 	right: 8px;
@@ -7650,6 +7742,114 @@ span.msg-editor-hint svg {
 	margin-left: auto;
 	flex-shrink: 0;
 	padding: 4px 8px;
+}
+
+/* ---- 审批弹窗高危命中清单与命令预览（issue #566）---- */
+.approval-hits-panel {
+	margin-top: 10px;
+	padding: 10px 12px;
+	background: rgba(0, 0, 0, 0.2);
+	border-radius: 6px;
+	border: 1px solid rgba(245, 158, 11, 0.25);
+}
+
+.approval-hits-title {
+	font-size: 12px;
+	font-weight: 600;
+	margin-bottom: 8px;
+	color: var(--amber);
+}
+
+.approval-hits-list {
+	display: flex;
+	flex-direction: column;
+	gap: 6px;
+}
+
+.approval-hit-item {
+	background: var(--bg-elev);
+	border-radius: 4px;
+	padding: 6px 10px;
+	border-left: 3px solid var(--red);
+}
+
+.approval-hit-header {
+	display: flex;
+	align-items: center;
+	gap: 8px;
+	font-size: 11px;
+	margin-bottom: 4px;
+	flex-wrap: wrap;
+}
+
+.approval-hit-badge {
+	font-weight: 600;
+	color: var(--text);
+}
+
+.approval-hit-field {
+	padding: 1px 4px;
+	border-radius: 3px;
+	background: var(--bg-elev2);
+	color: var(--text-dim);
+	font-family: var(--mono);
+	font-size: 10.5px;
+}
+
+.approval-hit-pos {
+	color: var(--text-faint);
+	font-size: 10.5px;
+	margin-left: auto;
+}
+
+.approval-hit-text {
+	font-family: var(--mono);
+	font-size: 12px;
+	word-break: break-all;
+}
+
+.approval-danger-hit {
+	background: rgba(239, 68, 68, 0.2);
+	color: var(--red);
+	border: 1px solid rgba(239, 68, 68, 0.4);
+	padding: 1px 5px;
+	border-radius: 3px;
+	font-family: var(--mono);
+	font-weight: 600;
+}
+
+.approval-cmd-preview {
+	margin-bottom: 14px;
+}
+
+.approval-cmd-preview-label {
+	font-size: 12px;
+	font-weight: 600;
+	margin-bottom: 4px;
+	color: var(--text-dim);
+}
+
+.approval-cmd-preview-box {
+	padding: 8px 12px;
+	border-radius: 6px;
+	background: var(--bg-elev);
+	border: 1px solid var(--border);
+	font-family: var(--mono);
+	font-size: 12.5px;
+	display: flex;
+	align-items: flex-start;
+	gap: 8px;
+	overflow-x: auto;
+}
+
+/* 终端命令行中的高危命中片段高亮（issue #566） */
+.bash-danger-hit {
+	background: rgba(239, 68, 68, 0.22);
+	color: var(--red);
+	border-bottom: 2px solid var(--red);
+	padding: 1px 4px;
+	border-radius: 3px;
+	font-weight: 600;
 }
 
 .tool-info-body {
