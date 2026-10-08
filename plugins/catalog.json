@@ -144,6 +144,16 @@
 		"homepage": "https://github.com/xieweimo/pi-web-ui-contrib/tree/main/plugins/codex-usage"
 	},
 	{
+		"id": "proxy-health",
+		"name": "代理健康",
+		"nameEn": "Proxy Health",
+		"icon": "🌐",
+		"description": "探测可配置的 HTTPS 目标及代理链路；无代理时检测直连，失败时对比第二目标，谨慎提示网络问题。",
+		"descriptionEn": "Probe a configurable HTTPS target via an HTTP(S) proxy or directly; compare a second site on failure without assuming the root cause.",
+		"source": "xieweimo/pi-web-ui-contrib/plugins/proxy-health",
+		"homepage": "https://github.com/xieweimo/pi-web-ui-contrib/tree/main/plugins/proxy-health"
+	},
+	{
 		"id": "reconnect",
 		"name": "重连",
 		"nameEn": "Reconnect",
