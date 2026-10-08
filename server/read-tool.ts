@@ -31,13 +31,10 @@ import { stat } from "node:fs/promises";
 import { homedir } from "node:os";
 import { isAbsolute, join, resolve as nodeResolve } from "node:path";
 import {
-	DEFAULT_MAX_BYTES,
-	DEFAULT_MAX_LINES,
 	createLsToolDefinition,
 	createReadToolDefinition,
 	defineTool,
 	type AgentToolResult,
-	type ExtensionContext,
 } from "@earendil-works/pi-coding-agent";
 import { Type, type Static } from "typebox";
 import { pick, type ServerLang } from "./i18n.js";
@@ -152,7 +149,7 @@ async function dirAwareExecute(
 	params: unknown,
 	signal: AbortSignal | undefined,
 	onUpdate: unknown,
-	ctx: ExtensionContext,
+	ctx: any,
 ): Promise<AgentToolResult<any>> {
 	const input = (params ?? {}) as ReadDirInput;
 	// 兜底（不依赖 prepareArguments 一定跑过）：path 缺省/空时用 file_path。
@@ -168,7 +165,7 @@ async function dirAwareExecute(
 				{ path, ...(limit !== undefined ? { limit } : {}) },
 				signal,
 				onUpdate as never,
-				ctx,
+				ctx as never,
 			)) as AgentToolResult<unknown>;
 			const header = pick(getLang(), `[目录：${path}]`, `[Directory: ${path}]`, "read.dir.header", { path });
 			// 只取列出来的正文：截断/条目上限提示已在正文末尾，read 卡片的
@@ -184,7 +181,7 @@ async function dirAwareExecute(
 		(normalizePath ? { ...input, path } : params) as never,
 		signal,
 		onUpdate as never,
-		ctx,
+		ctx as never,
 	);
 }
 

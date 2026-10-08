@@ -43,6 +43,7 @@ function mountPanel() {
 afterEach(() => {
 	cleanup?.();
 	cleanup = undefined;
+	(pm2Panel as { _resetCache?: () => void })._resetCache?.();
 	vi.unstubAllGlobals();
 	document.body.innerHTML = "";
 });
@@ -87,5 +88,51 @@ describe("pm2-manager 面板首帧", () => {
 		expect(after).toContain("api");
 		expect(after).not.toContain("未检测到");
 		expect(after).not.toContain("正在检测");
+	});
+
+	it("请求失败或网络异常时不误报「未检测到 pm2」", async () => {
+		document.documentElement.lang = "zh";
+		const fetchStub = vi.fn(() => Promise.reject(new Error("Network Error")));
+		vi.stubGlobal("fetch", fetchStub);
+
+		const container = mountPanel();
+		await flush();
+		const text = container.textContent ?? "";
+		expect(text).not.toContain("未检测到");
+		expect(text).toContain("Network Error");
+	});
+
+	it("二次打开复用已知状态缓存：首帧直接呈现真实结构，零占位零闪烁", async () => {
+		document.documentElement.lang = "zh";
+		const { reply } = deferredFetch();
+		const container1 = mountPanel();
+
+		// 首次打开并完成探测
+		reply({
+			ok: true,
+			installed: true,
+			version: "5.4.2",
+			apps: [{ name: "web", status: "online", cpu: 2, memory: 2048, restarts: 0, startedAt: Date.now() }],
+			error: "",
+			platform: "win32",
+		});
+		await flush();
+		expect(container1.textContent ?? "").toContain("pm2 5.4.2");
+
+		// 关闭面板
+		cleanup?.();
+		cleanup = undefined;
+		document.body.innerHTML = "";
+
+		// 二次打开（重新 deferredFetch 模拟延迟）
+		deferredFetch();
+		const container2 = mountPanel();
+		const firstFrame = container2.textContent ?? "";
+
+		// 首帧无需等 /status 返回，直接呈现已知版本与应用，绝无「正在检测…」，更无「未检测到」
+		expect(firstFrame).toContain("pm2 5.4.2");
+		expect(firstFrame).toContain("web");
+		expect(firstFrame).not.toContain("正在检测");
+		expect(firstFrame).not.toContain("未检测到");
 	});
 });

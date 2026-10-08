@@ -79,6 +79,7 @@ import { usePresentAutoOpen, savePresentAutoOpen } from "../present-settings";
 import { useProjectTitle, saveTitleSettings } from "../title-settings";
 import { sanitizeWallpaperUrl, fileToWallpaperUrl, saveWallpaperSettings, useWallpaperSettings } from "../wallpaper";
 import { useT, useI18n } from "../i18n";
+import { useEscapeKey } from "../shortcut-stack";
 import {
 	buildUiSlots,
 	HIDDEN_FROM_LAYOUT_ITEM_IDS,
@@ -670,7 +671,13 @@ export function SettingsModal({
 	// Compose prompt — 组合模板（{{token}} 自由拼装）+ 各来源覆盖。本地草稿：
 	// 模板聚焦中不覆盖；某个来源的覆盖框聚焦中不覆盖该 key（防回显打断输入）。
 	const [promptTemplateDraft, setPromptTemplateDraft] = useState("");
+	const promptTemplateDraftRef = useRef(promptTemplateDraft);
+	promptTemplateDraftRef.current = promptTemplateDraft;
+	const templateDebounceTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
+
 	const [promptOverridesDraft, setPromptOverridesDraft] = useState<Record<string, string>>({});
+	const promptOverridesDraftRef = useRef(promptOverridesDraft);
+	promptOverridesDraftRef.current = promptOverridesDraft;
 	const templateFocus = useRef(false);
 	const overrideFocus = useRef<string | null>(null);
 	// 各来源展示顺序：append 置顶，其次可编辑来源，只读来源沉底（组内保持 PROMPT_TOKENS 原序）。
@@ -832,11 +839,15 @@ export function SettingsModal({
 
 	useEffect(() => {
 		if (!settings) return;
-		if (!templateFocus.current) setPromptTemplateDraft(settings.promptTemplate ?? "");
+		if (!templateFocus.current) {
+			setPromptTemplateDraft(settings.promptTemplate ?? "");
+			promptTemplateDraftRef.current = settings.promptTemplate ?? "";
+		}
 		setPromptOverridesDraft((prev) => {
 			const next: Record<string, string> = {};
 			for (const [k, v] of Object.entries(settings.promptOverrides ?? {})) next[k] = v ?? "";
 			if (overrideFocus.current) next[overrideFocus.current] = prev[overrideFocus.current] ?? "";
+			promptOverridesDraftRef.current = next;
 			return next;
 		});
 		setVbPromptMode(settings.visionBridgePromptMode);
@@ -1567,10 +1578,20 @@ export function SettingsModal({
 		setPartial({ reviewDisabledSkills: [...disabled] });
 	};
 
-	const commitTemplate = () => setPartial({ promptTemplate: promptTemplateDraft });
+	const commitTemplate = () => {
+		if (templateDebounceTimer.current) {
+			clearTimeout(templateDebounceTimer.current);
+			templateDebounceTimer.current = null;
+		}
+		const cur = promptTemplateDraftRef.current;
+		if (cur !== (settings?.promptTemplate ?? "")) {
+			setPartial({ promptTemplate: cur });
+		}
+	};
 
 	const commitOverride = (token: string) => {
-		setPartial({ promptOverrides: { [token]: promptOverridesDraft[token] ?? "" } });
+		const val = promptOverridesDraftRef.current[token] ?? "";
+		setPartial({ promptOverrides: { [token]: val } });
 	};
 
 	const resetOverride = (token: string) => {
@@ -1579,6 +1600,7 @@ export function SettingsModal({
 		setPromptOverridesDraft((p) => {
 			const n = { ...p };
 			delete n[token];
+			promptOverridesDraftRef.current = n;
 			return n;
 		});
 		setPartial({ promptOverrides: { [token]: "" } });
@@ -1590,30 +1612,99 @@ export function SettingsModal({
 	/** 覆盖输入时一键把默认（自动）内容填进覆盖框 —— 只想改一小部分时用它打底（填
 	 *  入后该来源内容固定，不再随每次对话自动重新生成）。 */
 	const seedFromDefault = (tk: string, def: string) => {
-		setPromptOverridesDraft((p) => ({ ...p, [tk]: def }));
+		setPromptOverridesDraft((p) => {
+			const next = { ...p, [tk]: def };
+			promptOverridesDraftRef.current = next;
+			return next;
+		});
 		setEditingSource(tk);
 	};
 
 	const resetAllPrompt = () => {
+		if (templateDebounceTimer.current) {
+			clearTimeout(templateDebounceTimer.current);
+			templateDebounceTimer.current = null;
+		}
 		templateFocus.current = false;
 		overrideFocus.current = null;
 		setPromptTemplateDraft(DEFAULT_PROMPT_TEMPLATE);
+		promptTemplateDraftRef.current = DEFAULT_PROMPT_TEMPLATE;
 		setPromptOverridesDraft({});
+		promptOverridesDraftRef.current = {};
 		setPartial({ promptTemplate: DEFAULT_PROMPT_TEMPLATE, promptOverrides: {} });
 	};
 
+	/** 点击 token 芯片追加：立即更新草稿并立即提交保存，不依赖后续失焦。 */
 	const appendTokenToTemplate = (token: string) => {
-		setPromptTemplateDraft((prev) => (prev.trim() ? `${prev}\n\n{{${token}}}` : `{{${token}}}`));
+		if (templateDebounceTimer.current) {
+			clearTimeout(templateDebounceTimer.current);
+			templateDebounceTimer.current = null;
+		}
+		const cur = promptTemplateDraftRef.current;
+		const next = cur.trim() ? `${cur}\n\n{{${token}}}` : `{{${token}}}`;
+		setPromptTemplateDraft(next);
+		promptTemplateDraftRef.current = next;
+		setPartial({ promptTemplate: next });
 	};
+
+	/** 离开/关闭/切换分组前把未提交的草稿全量落盘，防止卸载丢失。 */
+	const flushAllDrafts = () => {
+		if (templateDebounceTimer.current) {
+			clearTimeout(templateDebounceTimer.current);
+			templateDebounceTimer.current = null;
+		}
+		const curTpl = promptTemplateDraftRef.current;
+		if (curTpl !== (settings?.promptTemplate ?? "")) {
+			setPartial({ promptTemplate: curTpl });
+		}
+		templateFocus.current = false;
+
+		const curOvs = promptOverridesDraftRef.current;
+		const savedOvs = settings?.promptOverrides ?? {};
+		const patchOvs: Record<string, string> = {};
+		let hasOvsDiff = false;
+		for (const [tk, val] of Object.entries(curOvs)) {
+			const def = settings?.promptSourceDefaults?.[tk] ?? "";
+			const effVal = val.trim() && val === def ? "" : val;
+			if (effVal !== (savedOvs[tk] ?? "")) {
+				patchOvs[tk] = effVal;
+				hasOvsDiff = true;
+			}
+		}
+		if (hasOvsDiff) {
+			setPartial({ promptOverrides: patchOvs });
+		}
+		overrideFocus.current = null;
+	};
+
+	const handleClose = () => {
+		flushAllDrafts();
+		onClose();
+	};
+
+	const handleTabChange = (nextTab: SettingsTab) => {
+		flushAllDrafts();
+		setTab(nextTab);
+	};
+
+	// 按 Escape 键安全退出：先 flush 草稿再关闭；子弹窗开启时放行给子弹窗。
+	useEscapeKey(handleClose, !tplDraft && !ruleDraft && !editingToolPrompt && !presetShareFor);
+
+	// 组件卸载清理：兜底提交任何在途草稿。
+	useEffect(() => {
+		return () => {
+			flushAllDrafts();
+		};
+	}, []);
 
 	const hasPromptCustom =
 		(promptTemplateDraft.trim() && promptTemplateDraft.trim() !== DEFAULT_PROMPT_TEMPLATE) ||
 		Object.values(promptOverridesDraft).some((v) => v.trim());
 
 	return (
-		<div className="modal-backdrop" onClick={onClose}>
+		<div className="modal-backdrop" onClick={handleClose}>
 			<div className="modal settings-modal" onClick={(e) => e.stopPropagation()}>
-				<button type="button" className="modal-close" aria-label={t("close")} onClick={onClose}>
+				<button type="button" className="modal-close" aria-label={t("close")} onClick={handleClose}>
 					<FiX />
 				</button>
 				<div className="modal-head">
@@ -1635,7 +1726,7 @@ export function SettingsModal({
 								className={`settings-tab${tab === tb.id ? " active" : ""}`}
 								aria-current={tab === tb.id ? "true" : undefined}
 								title={tb.hint ?? tb.label}
-								onClick={() => setTab(tb.id)}
+								onClick={() => handleTabChange(tb.id)}
 							>
 								<span className="settings-tab-icon">{tb.icon}</span>
 								<span className="settings-tab-label">{tb.label}</span>
@@ -1731,7 +1822,18 @@ export function SettingsModal({
 											templateFocus.current = false;
 											commitTemplate();
 										}}
-										onChange={(e) => setPromptTemplateDraft(e.target.value)}
+										onChange={(e) => {
+											const val = e.target.value;
+											setPromptTemplateDraft(val);
+											promptTemplateDraftRef.current = val;
+											if (templateDebounceTimer.current) clearTimeout(templateDebounceTimer.current);
+											templateDebounceTimer.current = setTimeout(() => {
+												templateDebounceTimer.current = null;
+												if (val !== (settings?.promptTemplate ?? "")) {
+													setPartial({ promptTemplate: val });
+												}
+											}, 800);
+										}}
 									/>
 									<div className="compose-toolbar">
 										<span className="set-field-label set-muted">{t("promptInsertTokens")}</span>
@@ -1862,7 +1964,14 @@ export function SettingsModal({
 																commitOverride(tk);
 																if (!val.trim()) setEditingSource(null);
 															}}
-															onChange={(e) => setPromptOverridesDraft((p) => ({ ...p, [tk]: e.target.value }))}
+															onChange={(e) => {
+																const val = e.target.value;
+																setPromptOverridesDraft((p) => {
+																	const next = { ...p, [tk]: val };
+																	promptOverridesDraftRef.current = next;
+																	return next;
+																});
+															}}
 														/>
 														{/* 编辑覆盖内容时，下方始终展示该来源的默认（自动）内容，方便对照/复制/只改一小部分。 */}
 														<div className="override-edit-foot">
@@ -4991,7 +5100,7 @@ export function SettingsModal({
 				</div>
 
 				<div className="modal-actions">
-					<button type="button" className="dd-refresh" onClick={onClose}>
+					<button type="button" className="dd-refresh" onClick={handleClose}>
 						{t("close")}
 					</button>
 				</div>

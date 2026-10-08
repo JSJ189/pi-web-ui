@@ -35,6 +35,7 @@ import {
 	getAgentDir,
 	SessionManager,
 	VERSION,
+	estimateTokens,
 	type AgentSession,
 	type AgentSessionEvent,
 	type AgentSessionRuntime,
@@ -3768,6 +3769,49 @@ export class ClientSession {
 		return tokens;
 	}
 
+	/** 判断会话中是否已有大模型返回过有效 usage（input/output/totalTokens > 0）的定稿助手消息。 */
+	private hasSettledAssistantUsage(conv: Conversation): boolean {
+		try {
+			const msgs = conv.session.agent.state.messages;
+			for (let i = msgs.length - 1; i >= 0; i--) {
+				const m = msgs[i];
+				if (m.role === "assistant" && m.usage) {
+					const u = m.usage;
+					if ((u.input ?? 0) > 0 || (u.totalTokens ?? 0) > 0 || (u.output ?? 0) > 0) {
+						return true;
+					}
+				}
+			}
+		} catch {
+			// fallback
+		}
+		return false;
+	}
+
+	/**
+	 * 估算会话中所有非系统消息（用户消息、工具调用/结果、自定义消息以及正在流式的助手内容）的 Token 开销。
+	 * 用于在尚未获得定稿 LLM usage 时，配合精准的 baseTokens 给出平滑、真实的上下文预估，
+	 * 杜绝 SDK 内部全量遍历粗估系统提示词与 baseTokens 双重叠加导致首轮突增翻倍。
+	 */
+	private estimateNonSystemTokens(conv: Conversation): number {
+		let total = 0;
+		try {
+			const msgs = conv.session.agent.state.messages;
+			for (const m of msgs) {
+				if ((m as { role?: string }).role !== "system") {
+					total += estimateTokens(m);
+				}
+			}
+			const streaming = conv.session.agent.state.streamingMessage;
+			if (streaming) {
+				total += estimateTokens(streaming as AgentMessage);
+			}
+		} catch {
+			// best-effort
+		}
+		return total;
+	}
+
 	/** Web-facing extension UI context (widgets, notifications). */
 	private webUi = new WebUIContext((msg) => this.emit(msg));
 
@@ -6434,8 +6478,12 @@ export class ClientSession {
 			case "agent_settled": {
 				// 记录本会话自己的 Base 基线：currentBaseTokens 必须传 conv（否则串成
 				// 活跃会话的基线）；快照未就绪时保持 undefined，宁可少补偿也不把 0 钉死。
+				// 只有在真正获得了有效的大模型回复 usage 时才落账（被 abort 或网络失败全 0 不落账，
+				// 防止未获得有效 usage 时提早进入 delta 模式导致显示掉落到 SDK 粗估值）。
 				const settledBaseTokens = this.currentBaseTokens(conv);
-				if (settledBaseTokens != null) conv.lastTurnBaseTokens = settledBaseTokens;
+				if (settledBaseTokens != null && this.hasSettledAssistantUsage(conv)) {
+					conv.lastTurnBaseTokens = settledBaseTokens;
+				}
 				if (conv.pendingCompaction && !this.disposed) {
 					const pending = conv.pendingCompaction;
 					conv.pendingCompaction = null;
@@ -6768,14 +6816,17 @@ export class ClientSession {
 							softCap: this.activeSoftCap(cu.contextWindow),
 						};
 					}
-					// 首轮对话中（尚未有定稿 assistant 消息，SDK cu.tokens 仅为当前消息估算）：叠加 Base 开销
-					if (conv.lastTurnBaseTokens == null && cu.contextWindow > 0) {
-						const total = baseTokens + (cu.tokens ?? 0);
+					// 首轮对话中（或尚未获得带有效 usage 的定稿助手消息）：
+					// 叠加精准的 Base 开销与当前非系统消息（用户输入、流式生成等）估算，
+					// 杜绝 SDK 内部全量遍历粗估系统提示词与 baseTokens 双重叠加导致突增翻倍（如 10k 变成 17k）。
+					if ((conv.lastTurnBaseTokens == null || !this.hasSettledAssistantUsage(conv)) && cu.contextWindow > 0) {
+						const nonSystemTokens = this.estimateNonSystemTokens(conv);
+						const total = baseTokens + nonSystemTokens;
 						return {
 							tokens: total,
 							contextWindow: cu.contextWindow,
 							percent: (total / cu.contextWindow) * 100,
-							estimated: false,
+							estimated: true,
 							softCap: this.activeSoftCap(cu.contextWindow),
 						};
 					}

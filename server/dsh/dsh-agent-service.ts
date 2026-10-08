@@ -250,6 +250,9 @@ interface DshSettings {
 	/** 输入框上方的快捷短语（点击即发送；纯 UI 偏好）。 */
 	quickPhrases: string[];
 	quickPhrasesEnabled: boolean;
+	/** 组合模板与来源覆盖（保持与 pi 引擎 ClientSettings 一致）。 */
+	promptTemplate?: string;
+	promptOverrides?: Record<string, string>;
 }
 
 /** 把插件工具 execute 的原始返回值归一化成模型可读文本。
@@ -304,6 +307,8 @@ const DEFAULT_SETTINGS: DshSettings = {
 	defaultPermissionPreset: PERMISSION_DEFAULT_PRESET,
 	quickPhrases: [],
 	quickPhrasesEnabled: true,
+	promptTemplate: "",
+	promptOverrides: {},
 };
 
 // ---------------------------------------------------------------------------
@@ -483,6 +488,8 @@ export class DshClientSession {
 				reviewPrompt: savedSettings.reviewPrompt,
 				quickPhrases: savedSettings.quickPhrases ?? [],
 				quickPhrasesEnabled: savedSettings.quickPhrasesEnabled ?? true,
+				promptTemplate: savedSettings.promptTemplate ?? "",
+				promptOverrides: savedSettings.promptOverrides ?? {},
 				defaultAgentPreset: savedSettings.defaultAgentPreset ?? PRESET_DEFAULT_ID,
 				defaultPermissionPreset:
 					savedSettings.defaultPermissionPreset && PERMISSION_OFFERED.includes(savedSettings.defaultPermissionPreset)
@@ -2961,8 +2968,8 @@ export class DshClientSession {
 			reviewDisabledSkills: [],
 			disabledPlugins: this.settings.disabledPlugins,
 			uiLayout: normalizeUiLayout(this.settings.uiLayout),
-			promptTemplate: "",
-			promptOverrides: {},
+			promptTemplate: this.settings.promptTemplate ?? "",
+			promptOverrides: this.settings.promptOverrides ?? {},
 			// DSH 无 pi 工具注册表面，逐工具文案覆盖不适用；保协议完整。
 			toolPromptOverrides: {},
 			effectiveSystemPrompt: this.settings.customSystemPrompt,
@@ -2993,6 +3000,8 @@ export class DshClientSession {
 	async setSettings(partial: {
 		promptMode?: "append" | "replace";
 		customSystemPrompt?: string;
+		promptTemplate?: string;
+		promptOverrides?: Record<string, string>;
 		disabledSkills?: string[];
 		disabledExtensions?: string[];
 		disabledPlugins?: string[];
@@ -3027,6 +3036,8 @@ export class DshClientSession {
 		if (partial.quickPhrasesSeeded) this.stateStore.markQuickPhrasesSeeded();
 		if (partial.promptMode !== undefined) this.settings.promptMode = partial.promptMode;
 		if (partial.customSystemPrompt !== undefined) this.settings.customSystemPrompt = partial.customSystemPrompt;
+		if (partial.promptTemplate !== undefined) this.settings.promptTemplate = partial.promptTemplate;
+		if (partial.promptOverrides !== undefined) this.settings.promptOverrides = partial.promptOverrides;
 		if (partial.disabledSkills !== undefined) this.settings.disabledSkills = partial.disabledSkills;
 		if (partial.disabledExtensions !== undefined) this.settings.disabledExtensions = partial.disabledExtensions;
 		if (partial.terminalToolsEnabled !== undefined) this.settings.terminalToolsEnabled = partial.terminalToolsEnabled;
@@ -3087,6 +3098,8 @@ export class DshClientSession {
 			quickPhrases: this.settings.quickPhrases,
 			quickPhrasesEnabled: this.settings.quickPhrasesEnabled,
 			defaultAgentPreset: this.settings.defaultAgentPreset,
+			promptTemplate: this.settings.promptTemplate ?? "",
+			promptOverrides: this.settings.promptOverrides ?? {},
 		});
 		// 仅系统提示词变化才重启运行时（DSH_PERSONA 由 launcher env 注入）；
 		// 其他设置（开关/隐藏插件等）只存不回写运行时。

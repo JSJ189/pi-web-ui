@@ -55,6 +55,21 @@ export function pm2EntryCandidates({ execPath, env = {} } = {}) {
 		// Unix 下全局包常在 <prefix>/../lib/node_modules（fnm/nvm 布局）
 		push(join(prefix, "..", "lib", "node_modules", "pm2", "bin", "pm2"), "node-prefix-unix");
 	}
+	// Windows 官方 npm 默认全局安装路径：%APPDATA%\npm\node_modules\pm2\bin\pm2
+	if (typeof env.APPDATA === "string" && env.APPDATA.trim()) {
+		push(join(env.APPDATA.trim(), "npm", "node_modules", "pm2", "bin", "pm2"), "npm-appdata");
+	}
+	// PATH 环境变量中的候选（fnm / nvm / pnpm / yarn / 系统 bin 等全局 node_modules 目录）
+	const pathVal = typeof env.PATH === "string" ? env.PATH : typeof env.Path === "string" ? env.Path : "";
+	if (pathVal) {
+		const delimiter = process.platform === "win32" ? ";" : ":";
+		for (const d of pathVal.split(delimiter)) {
+			const dir = d.trim();
+			if (!dir) continue;
+			push(join(dir, "node_modules", "pm2", "bin", "pm2"), "path-node-modules");
+			push(join(dir, "..", "lib", "node_modules", "pm2", "bin", "pm2"), "path-lib-node-modules");
+		}
+	}
 	return out;
 }
 
@@ -250,42 +265,51 @@ export default {
 		});
 
 		// ── pm2 探测与调用 ─────────────────────────────────────────────────
+		let inFlightDetect = null;
 		/**
 		 * 逐个候选入口试跑 `-v`：成功即认定安装。
 		 * `deep:false`（激活时）只查本地已知布局，**不起任何子进程**——没装 pm2 的机器
 		 * 启动时零开销；`deep:true` 才去问 `npm root -g`（要起子进程，按需触发）。
 		 */
 		async function detectPm2({ deep = true } = {}) {
-			const candidates = [];
-			if (st.settings.pm2Bin) candidates.push({ bin: st.settings.pm2Bin, source: "settings" });
-			candidates.push(...pm2EntryCandidates({ execPath: process.execPath, env: process.env }));
-			const local = candidates.filter((c) => c.bin && existsSync(c.bin));
-			const probe = [...local];
-			if (deep && local.length === 0) {
-				// 全局 npm 根（node 前缀之外的布局，如系统 npm / nvm 的当前版本）
-				const npmCli = resolveNpmCli();
-				if (npmCli) {
-					const r = await run(process.execPath, [npmCli, "root", "-g"], { timeoutMs: 20_000 });
-					const root = r.stdout.trim().split(/\r?\n/).pop() ?? "";
-					if (root) probe.push({ bin: join(root, "pm2", "bin", "pm2"), source: "npm-root" });
-				}
-			}
-			for (const c of probe) {
-				if (!c.bin || !existsSync(c.bin)) continue;
-				const r = await run(process.execPath, [c.bin, "-v"], { timeoutMs: 15_000 });
-				const version = stripAnsi(`${r.stdout}${r.stderr}`).trim();
-				if (r.ok && version) {
-					st.pm2 = { installed: true, bin: c.bin, version, error: "" };
+			if (inFlightDetect) return inFlightDetect;
+			inFlightDetect = (async () => {
+				try {
+					const candidates = [];
+					if (st.settings.pm2Bin) candidates.push({ bin: st.settings.pm2Bin, source: "settings" });
+					candidates.push(...pm2EntryCandidates({ execPath: process.execPath, env: process.env }));
+					const local = candidates.filter((c) => c.bin && existsSync(c.bin));
+					const probe = [...local];
+					if (deep && local.length === 0) {
+						// 全局 npm 根（node 前缀之外的布局，如系统 npm / nvm 的当前版本）
+						const npmCli = resolveNpmCli();
+						if (npmCli) {
+							const r = await run(process.execPath, [npmCli, "root", "-g"], { timeoutMs: 20_000 });
+							const root = r.stdout.trim().split(/\r?\n/).pop() ?? "";
+							if (root) probe.push({ bin: join(root, "pm2", "bin", "pm2"), source: "npm-root" });
+						}
+					}
+					for (const c of probe) {
+						if (!c.bin || !existsSync(c.bin)) continue;
+						const r = await run(process.execPath, [c.bin, "-v"], { timeoutMs: 15_000 });
+						const version = stripAnsi(`${r.stdout}${r.stderr}`).trim();
+						if (r.ok && version) {
+							st.pm2 = { installed: true, bin: c.bin, version, error: "" };
+							return st.pm2;
+						}
+					}
+					st.pm2 = {
+						installed: false,
+						bin: "",
+						version: "",
+						error: "未找到 pm2（可一键安装：" + INSTALL_COMMAND + "）",
+					};
 					return st.pm2;
+				} finally {
+					inFlightDetect = null;
 				}
-			}
-			st.pm2 = {
-				installed: false,
-				bin: "",
-				version: "",
-				error: "未找到 pm2（可一键安装：" + INSTALL_COMMAND + "）",
-			};
-			return st.pm2;
+			})();
+			return inFlightDetect;
 		}
 
 		/** 跑一条 pm2 命令。未安装时直接回失败（不 spawn）。 */
@@ -494,8 +518,10 @@ export default {
 		void (async () => {
 			await detectPm2({ deep: false });
 			await refreshApps();
+			host.log(
+				`pm2-manager activated（pm2 ${st.pm2.installed ? st.pm2.version : "未安装"}，平台 ${process.platform}）`,
+			);
 		})();
-		host.log(`pm2-manager activated（pm2 ${st.pm2.installed ? st.pm2.version : "未安装"}，平台 ${process.platform}）`);
 
 		return () => {
 			for (const off of [offTool, offStatus, offInstall, offAction]) {

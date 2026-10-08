@@ -17,7 +17,7 @@
  * - activate 抛错只标记 error 字段并记日志，绝不影响主进程。
  */
 import { mkdir, readdir, readFile, rm, stat, writeFile } from "node:fs/promises";
-import { existsSync, readFileSync, renameSync, watch as fsWatch, writeFileSync } from "node:fs";
+import { cpSync, existsSync, readFileSync, readdirSync, renameSync, watch as fsWatch, writeFileSync } from "node:fs";
 import { dirname, isAbsolute, join, relative, resolve, sep } from "node:path";
 import { pathToFileURL, fileURLToPath } from "node:url";
 import type {
@@ -72,6 +72,7 @@ import {
 } from "./plugin-tool-guard.js";
 // 工作区根的归一化与 client-state 共用一份（同一份语义：只收绝对路径 / 去重 / 上限）。
 import { normalizeWorkspaceRoots } from "./client-state.js";
+import { compareVersions, ensureBackup } from "./plugin-updater.js";
 import {
 	createProject,
 	isInsideRoot,
@@ -2852,8 +2853,67 @@ export class PluginManager {
 		this.pluginLogs.clear();
 	}
 
+	/**
+	 * 检查随包内置官方插件（<pkgRoot>/plugins/）与用户数据目录（<dataDir>/plugins/）的版本。
+	 * 若用户已安装的官方插件版本落后于当前随包版本，自动备份旧版本并增量同步更新代码（保留用户数据/设置）。
+	 */
+	private syncBuiltinPlugins(): void {
+		if (!this.builtinCatalogPath || !existsSync(this.builtinCatalogPath)) return;
+		const builtinDir = dirname(this.builtinCatalogPath);
+		if (!existsSync(builtinDir)) return;
+
+		let names: string[];
+		try {
+			names = readdirSync(this.pluginsDir);
+		} catch {
+			return;
+		}
+
+		// 只有在官方 catalog.json 中登记的官方插件，才属于随宿主自动同步维护的对象（避免误覆盖测试或非 catalog 目录）
+		let builtinCatalogIds: Set<string>;
+		try {
+			const catalogEntries = JSON.parse(readFileSync(this.builtinCatalogPath, "utf8")) as Array<{ id?: string }>;
+			builtinCatalogIds = new Set(
+				catalogEntries.map((e) => e?.id).filter((id): id is string => typeof id === "string"),
+			);
+		} catch {
+			builtinCatalogIds = new Set();
+		}
+
+		for (const name of names) {
+			if (!ID_RE.test(name) || !builtinCatalogIds.has(name)) continue;
+			const targetDir = join(this.pluginsDir, name);
+			const sourceDir = join(builtinDir, name);
+			const targetManifest = join(targetDir, "manifest.json");
+			const sourceManifest = join(sourceDir, "manifest.json");
+
+			if (!existsSync(sourceDir) || !existsSync(sourceManifest) || !existsSync(targetManifest)) {
+				continue;
+			}
+
+			try {
+				const srcRaw = JSON.parse(readFileSync(sourceManifest, "utf8")) as { version?: string };
+				const tgtRaw = JSON.parse(readFileSync(targetManifest, "utf8")) as { version?: string };
+				const srcVer = typeof srcRaw.version === "string" ? srcRaw.version.trim() : "";
+				const tgtVer = typeof tgtRaw.version === "string" ? tgtRaw.version.trim() : "";
+
+				if (srcVer && tgtVer && compareVersions(srcVer, tgtVer) > 0) {
+					ensureBackup(this.dataDir, name, { source: `builtin:${srcVer}` });
+					cpSync(sourceDir, targetDir, {
+						recursive: true,
+						filter: (s) => !/(^|[\\/])(\.git|node_modules)([\\/]|$)/.test(s),
+					});
+					console.log(`[plugins] 内置插件 ${name} 随宿主自动同步升级：${tgtVer} → ${srcVer}`);
+				}
+			} catch (err) {
+				console.warn(`[plugins] 自动同步内置插件 ${name} 失败:`, err);
+			}
+		}
+	}
+
 	/** 读 manifest 清单；坏目录（无 manifest/id 非法）直接跳过。 */
 	private async scan(lang?: () => ServerLang): Promise<UiPluginInfo[]> {
+		this.syncBuiltinPlugins();
 		const l = lang?.() ?? "en";
 		let names: string[];
 		try {

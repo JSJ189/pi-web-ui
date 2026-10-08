@@ -164,6 +164,14 @@ function ensureStyles() {
 }
 
 /**
+ * 模块级已知状态缓存：在同一页面会话内记住 pm2 环境检测结论。
+ * 用户关闭弹窗再打开时，首帧直接沿用已知结论呈现真实内容，绝不闪烁。
+ * 后台静默发起 refresh 同步最新指标与列表。
+ * @type {{ installed: boolean, version: string, platform: string, apps: any[] } | null}
+ */
+let lastKnownState = null;
+
+/**
  * 视图主体：一个容器内自管状态 + 3 秒轮询，切走时由返回的 cleanup 收摊。
  * @param {HTMLElement} container
  */
@@ -173,9 +181,12 @@ function createApp(container) {
 	root.className = "pm2m-view";
 	container.appendChild(root);
 
-	// `loaded`：首次 /status 是否已回来。未回来前**不下任何结论**（既不说没装、也不说没应用），
-	// 否则点开面板总会先闪一下「未检测到 pm2」黄条再消失（环境检查结论的闪烁）。
-	let state = { installed: false, version: "", apps: [], error: "", platform: "", loaded: false };
+	// `loaded`：是否已有确定的 pm2 环境检测结论。
+	// 若存在模块级缓存，首帧直接视作 loaded，秒级呈现；
+	// 未有结论前不下任何结论（既不说没装、也不说没应用），避免环境检查结论闪烁。
+	let state = lastKnownState
+		? { ...lastKnownState, loaded: true, error: "" }
+		: { installed: false, version: "", apps: [], error: "", platform: "", loaded: false };
 	let logsFor = "";
 	let logsText = "";
 	let busy = false;
@@ -252,11 +263,21 @@ function createApp(container) {
 
 	async function refresh() {
 		try {
-			state = { ...state, ...(await api("/status")) };
+			const res = await api("/status");
+			if (res && typeof res === "object") {
+				state = { ...state, ...res, loaded: true, error: res.error || "" };
+				lastKnownState = {
+					installed: !!res.installed,
+					version: String(res.version || ""),
+					platform: String(res.platform || ""),
+					apps: Array.isArray(res.apps) ? res.apps : [],
+				};
+			}
 		} catch (err) {
+			// ⚠ 网络错误 / 服务端短暂无响应不等于「未安装 pm2」！
+			// 若之前尚未成功加载，不可盲目将 loaded 设为 true，否则会因 installed=false 误闪黄条。
 			state = { ...state, error: String(err?.message ?? err) };
 		}
-		state.loaded = true;
 		render();
 	}
 
@@ -265,7 +286,17 @@ function createApp(container) {
 		render();
 		try {
 			const out = await api(`/${kind}`, { method: "POST", body: JSON.stringify(data) });
-			state = { ...state, ...out };
+			if (out && typeof out === "object") {
+				state = { ...state, ...out, loaded: true };
+				if (typeof out.installed === "boolean") {
+					lastKnownState = {
+						installed: out.installed,
+						version: String(out.version || lastKnownState?.version || ""),
+						platform: String(out.platform || lastKnownState?.platform || ""),
+						apps: Array.isArray(out.apps) ? out.apps : lastKnownState?.apps || [],
+					};
+				}
+			}
 			if (kind === "action" && data.action === "logs") {
 				logsFor = data.name;
 				logsText = String(out.output ?? out.error ?? "");
@@ -318,5 +349,9 @@ export default {
 		const app = createApp(container);
 		app.start();
 		return () => app.destroy();
+	},
+	/** 仅供单测重置模块缓存使用 */
+	_resetCache() {
+		lastKnownState = null;
 	},
 };

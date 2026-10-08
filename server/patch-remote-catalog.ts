@@ -25,10 +25,23 @@ import { existsSync, readFileSync, writeFileSync } from "node:fs";
 import { fileURLToPath } from "node:url";
 import { dirname, join } from "node:path";
 
-/** Old fragment that performs the union merge (single occurrence in the file). */
-const OLD = "getModels: () => mergeModels(provider.getModels(), dynamicModels),";
-/** Replacement: whole-replace with the remote catalog when available. */
-const NEW = "getModels: () => (dynamicModels.length > 0 ? dynamicModels : provider.getModels()),";
+/** Supported patch pairs across SDK versions (0.87.x, 1.1.0+). */
+const PATCH_PAIRS = [
+	// SDK 0.87.x
+	{
+		old: "getModels: () => mergeModels(provider.getModels(), dynamicModels),",
+		new: "getModels: () => (dynamicModels.length > 0 ? dynamicModels : provider.getModels()),",
+	},
+	// SDK 1.1.0+ (typed model shards: chat, image, classifier)
+	{
+		old: 'getModels: () => mergeModels(provider.getModels(), dynamicModels.filter((model) => isModelType(model, "chat"))),',
+		new: 'getModels: () => (dynamicModels.length > 0 ? dynamicModels.filter((model) => isModelType(model, "chat")) : provider.getModels()),',
+	},
+	{
+		old: "getAllModels: () => mergeModels(provider.getAllModels?.() ?? provider.getModels(), dynamicModels),",
+		new: "getAllModels: () => (dynamicModels.length > 0 ? dynamicModels : (provider.getAllModels?.() ?? provider.getModels())),",
+	},
+];
 
 /** Absolute path of the installed remote-catalog-provider.js, or null. */
 function remoteCatalogFile(): string | null {
@@ -46,10 +59,17 @@ function applyPatch(): void {
 	try {
 		const file = remoteCatalogFile();
 		if (!file || !existsSync(file)) return;
-		const src = readFileSync(file, "utf8");
-		if (src.includes(NEW)) return; // already patched
-		if (!src.includes(OLD)) return; // unexpected SDK content — leave alone
-		writeFileSync(file, src.replace(OLD, NEW), "utf8");
+		let src = readFileSync(file, "utf8");
+		let changed = false;
+		for (const { old: oldPattern, new: newPattern } of PATCH_PAIRS) {
+			if (src.includes(oldPattern) && !src.includes(newPattern)) {
+				src = src.replace(oldPattern, newPattern);
+				changed = true;
+			}
+		}
+		if (changed) {
+			writeFileSync(file, src, "utf8");
+		}
 	} catch {
 		// best-effort — without the patch the SDK keeps its default union merge
 	}

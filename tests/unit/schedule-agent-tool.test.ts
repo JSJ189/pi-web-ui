@@ -13,7 +13,7 @@ import { SchedulerStore, sameSessionFile } from "../../server/scheduler-tasks.js
 import { makeScheduleTool, parseScheduleSpec, type ScheduleToolHost } from "../../server/schedule-agent-tool.js";
 import { normalizeSchedulerInput } from "../../server/scheduler-tasks.js";
 
-const CTX = { cwd: "/tmp" } as unknown as ExtensionContext;
+const CTX: any = { cwd: "/tmp" };
 
 function resultText(r: { content: { type: string; text?: string }[] }): string {
 	return r.content.map((c) => c.text ?? "").join("\n");

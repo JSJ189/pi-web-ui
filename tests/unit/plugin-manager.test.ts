@@ -380,4 +380,46 @@ describe("PluginManager #542 客户端会话快照与模型事件", () => {
 		mgr.emitClientModelChanged(snap({ model: "other/model" }));
 		expect(seen()).toHaveLength(2);
 	});
+
+	it("随包官方插件自动同步升级：低版本已装插件自动热更新至随包新版并备份", async () => {
+		// 模拟随包根目录（pkgRoot）
+		const fakePkgRoot = join(dir, "fake-pkg");
+		const fakeBuiltinPlugins = join(fakePkgRoot, "plugins");
+		mkdirSync(fakeBuiltinPlugins, { recursive: true });
+		writeFileSync(join(fakeBuiltinPlugins, "catalog.json"), JSON.stringify([{ id: "pm2-manager" }]));
+
+		// 随包提供 0.3.2 版本的 pm2-manager
+		const builtinPm2Dir = join(fakeBuiltinPlugins, "pm2-manager");
+		mkdirSync(join(builtinPm2Dir, "client"), { recursive: true });
+		writeFileSync(join(builtinPm2Dir, "manifest.json"), JSON.stringify({ name: "进程管家", version: "0.3.2" }));
+		writeFileSync(join(builtinPm2Dir, "index.mjs"), "export default {};");
+		writeFileSync(join(builtinPm2Dir, "client", "entry.mjs"), "export default { v: '0.3.2' };");
+
+		// 用户本地已安装 0.2.0 旧版本，且包含用户自定义数据 config.json
+		const installedDir = join(dir, "plugins", "pm2-manager");
+		mkdirSync(join(installedDir, "client"), { recursive: true });
+		writeFileSync(join(installedDir, "manifest.json"), JSON.stringify({ name: "进程管家", version: "0.2.0" }));
+		writeFileSync(join(installedDir, "index.mjs"), "export default {};");
+		writeFileSync(join(installedDir, "client", "entry.mjs"), "export default { v: '0.2.0' };");
+		writeFileSync(join(installedDir, "custom-data.json"), '{"token":"123"}');
+
+		// 创建带有随包 catalog 路径的 PluginManager
+		const testMgr = new PluginManager(dir, dir, join(fakeBuiltinPlugins, "catalog.json"));
+		const plugins = await testMgr.ensureLoaded();
+
+		// 1. 版本被自动更新到 0.3.2
+		const pm2 = plugins.find((p) => p.id === "pm2-manager");
+		expect(pm2?.version).toBe("0.3.2");
+
+		// 2. 客户端 entry.mjs 内容已热更新为新版
+		const { readFileSync } = await import("node:fs");
+		const updatedEntry = readFileSync(join(installedDir, "client", "entry.mjs"), "utf8");
+		expect(updatedEntry).toContain("0.3.2");
+
+		// 3. 用户私有数据文件 custom-data.json 完好保留
+		const customData = readFileSync(join(installedDir, "custom-data.json"), "utf8");
+		expect(customData).toContain("123");
+
+		testMgr.dispose();
+	});
 });
