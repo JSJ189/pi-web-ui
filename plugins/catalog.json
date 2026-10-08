@@ -134,6 +134,16 @@
 		"homepage": "https://github.com/EinErste/pi-web-multigit"
 	},
 	{
+		"id": "codex-usage",
+		"name": "额度与成本",
+		"nameEn": "Usage & Billing",
+		"icon": "⚡",
+		"description": "会话级多模型账本：按 API 提供商和模型连续累计成本、显示 token 与有效单价；订阅明确不计费。",
+		"descriptionEn": "Conversation-level multi-model ledger: continuous cost totals by API provider and model, token and effective-rate details, with subscription calls explicitly excluded.",
+		"source": "xieweimo/pi-web-ui-contrib/plugins/codex-usage",
+		"homepage": "https://github.com/xieweimo/pi-web-ui-contrib/tree/main/plugins/codex-usage"
+	},
+	{
 		"id": "reconnect",
 		"name": "重连",
 		"nameEn": "Reconnect",
