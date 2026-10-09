@@ -8798,6 +8798,17 @@ div.chead[role="button"]:focus-visible,
 	min-width: 0;
 }
 
+/* 被中止的回合（停止 / 被抢占）：中性收尾提示，不是报错，也不带重试键（#575） */
+.msg-stopped {
+	color: var(--text-faint);
+	font-size: 12.5px;
+	font-style: italic;
+	padding: 2px 0 6px;
+	margin-bottom: 4px;
+	min-width: 0;
+	overflow-wrap: anywhere;
+}
+
 .msg-retry-btn {
 	display: inline-flex;
 	align-items: center;

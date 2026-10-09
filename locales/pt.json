@@ -709,6 +709,7 @@
 		"softCapRemove": "Remover",
 		"softCapMarker": "limite",
 		"retryNow": "Tentar de novo",
+		"turnStopped": "Turno interrompido",
 		"retryLastTip": "Tentar de novo manualmente a última solicitação com falha ao modelo",
 		"compactingContext": "Compactando o contexto, gerando resumo…",
 		"compactingReasonManual": "Acionado manualmente",

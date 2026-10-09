@@ -709,6 +709,7 @@
 		"softCapRemove": "削除",
 		"softCapMarker": "圧縮しきい値",
 		"retryNow": "再試行",
+		"turnStopped": "このターンを中止しました",
 		"retryLastTip": "前回失敗したモデル要求を手動で再試行する",
 		"compactingContext": "コンテキストを圧縮し、要約を生成しています…",
 		"compactingReasonManual": "手動で開始",

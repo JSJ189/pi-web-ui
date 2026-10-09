@@ -709,6 +709,7 @@
 		"softCapRemove": "Eliminar",
 		"softCapMarker": "umbral",
 		"retryNow": "Reintentar",
+		"turnStopped": "Turno detenido",
 		"retryLastTip": "Reintentar manualmente la última solicitud fallida al modelo",
 		"compactingContext": "Comprimiendo el contexto, generando el resumen…",
 		"compactingReasonManual": "Activado manualmente",

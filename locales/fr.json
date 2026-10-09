@@ -709,6 +709,7 @@
 		"softCapRemove": "Supprimer",
 		"softCapMarker": "seuil",
 		"retryNow": "Réessayer",
+		"turnStopped": "Tour interrompu",
 		"retryLastTip": "Réessayer manuellement la dernière requête modèle échouée",
 		"compactingContext": "Compression du contexte, génération du résumé…",
 		"compactingReasonManual": "Déclenché manuellement",

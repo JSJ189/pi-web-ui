@@ -709,6 +709,7 @@
 		"softCapRemove": "Entfernen",
 		"softCapMarker": "Kompressionsschwelle",
 		"retryNow": "Wiederholen",
+		"turnStopped": "Runde abgebrochen",
 		"retryLastTip": "Die letzte fehlgeschlagene Modellanfrage manuell wiederholen",
 		"compactingContext": "Kontext wird komprimiert, Zusammenfassung wird erstellt…",
 		"compactingReasonManual": "Manuell ausgelöst",

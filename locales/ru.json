@@ -709,6 +709,7 @@
 		"softCapRemove": "Удалить",
 		"softCapMarker": "порог",
 		"retryNow": "Повторить",
+		"turnStopped": "Ход остановлен",
 		"retryLastTip": "Вручную повторить последний неудачный запрос к модели",
 		"compactingContext": "Сжатие контекста, создание сводки…",
 		"compactingReasonManual": "Запущено вручную",
