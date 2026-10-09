@@ -396,6 +396,14 @@ try {
 	c.send({ type: "set_settings", promptTemplate: SAVED_TEMPLATE });
 	await c.waitFor("settings_state", 8000, (m) => m.settings.promptTemplate === SAVED_TEMPLATE);
 
+	// keepRecentMessages（消息折叠窗口）：set_settings 在 index.ts 里逐字段转发，
+	// 漏转发会导致面板改了、重开又变回去——这里整段做 wire 往返 + 钳制 + 重连持久化
+	c.send({ type: "set_settings", keepRecentMessages: 9999 });
+	const stK = await c.waitFor("settings_state", 8000, (m) => m.settings.keepRecentMessages === 100);
+	check("keepRecentMessages clamped to 100 over the wire", stK.settings.keepRecentMessages === 100);
+	c.send({ type: "set_settings", keepRecentMessages: 45 });
+	await c.waitFor("settings_state", 8000, (m) => m.settings.keepRecentMessages === 45);
+
 	// persistence across reconnect：重新关掉终端工具再断线，重连后应记住
 	c.send({ type: "set_settings", terminalToolsEnabled: false });
 	await c.waitFor("settings_state", 8000, (m) => m.settings.terminalToolsEnabled === false);
@@ -409,6 +417,10 @@ try {
 	check("compose template survives reconnect", st9.settings.promptTemplate === SAVED_TEMPLATE);
 	check("override survives reconnect", st9.settings.promptOverrides?.soul === SAVED_SOUL);
 	check("terminalToolsEnabled survives reconnect (off)", st9.settings.terminalToolsEnabled === false);
+	check("keepRecentMessages survives reconnect", st9.settings.keepRecentMessages === 45);
+	// 恢复默认，别影响后续断言
+	c.send({ type: "set_settings", keepRecentMessages: 15 });
+	await c.waitFor("settings_state", 8000, (m) => m.settings.keepRecentMessages === 15);
 	// 恢复默认关，避免影响后续断言
 	c.send({ type: "set_settings", terminalToolsEnabled: false });
 	await c.waitFor("settings_state", 8000, (m) => m.settings.terminalToolsEnabled === false);

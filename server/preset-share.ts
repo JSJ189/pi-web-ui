@@ -340,6 +340,7 @@ const PRESET_FIELD_KINDS = {
 	thinkingWrap: "bool",
 	toolsWrap: "bool",
 	toolImagesEnabled: "bool",
+	keepRecentMessages: "number",
 	quickPhrases: "list",
 	quickPhrasesEnabled: "bool",
 	devNoCache: "bool",

@@ -553,6 +553,8 @@ interface SettingsPatch {
 	thinkingWrap?: boolean;
 	toolsWrap?: boolean;
 	toolImagesEnabled?: boolean;
+	/** 消息列表尾部常驻渲染的消息条数（纯 UI 偏好，默认 15）。 */
+	keepRecentMessages?: number;
 	devNoCache?: boolean;
 	autoReload?: boolean;
 	skillsFullText?: string[];
@@ -898,6 +900,11 @@ export function SettingsModal({
 	useEffect(() => {
 		setRetryDraft(String(settings?.retryMaxAttempts ?? 6));
 	}, [settings?.retryMaxAttempts]);
+	// 常驻渲染消息数：本地草稿（失焦/回车提交，默认 15）。
+	const [keepRecentDraft, setKeepRecentDraft] = useState<string>(String(settings?.keepRecentMessages ?? 15));
+	useEffect(() => {
+		setKeepRecentDraft(String(settings?.keepRecentMessages ?? 15));
+	}, [settings?.keepRecentMessages]);
 	// 压缩软上限：本地草稿（空 = 关闭；失焦/回车提交）。
 	const [softCapDraft, setSoftCapDraft] = useState<string>(
 		settings?.softCapTokens && settings.softCapTokens > 0 ? formatTokenDraft(settings.softCapTokens) : "",
@@ -2763,6 +2770,28 @@ export function SettingsModal({
 									enabled={settings.toolImagesEnabled ?? true}
 									onToggle={() => setPartial({ toolImagesEnabled: !(settings.toolImagesEnabled ?? true) })}
 								/>
+								<FieldRow label={t("keepRecent")} tip={t("keepRecentDesc")} htmlFor="keep-recent">
+									<input
+										id="keep-recent"
+										className="set-input"
+										type="number"
+										min={5}
+										max={100}
+										step={1}
+										value={keepRecentDraft}
+										onChange={(e) => setKeepRecentDraft(e.target.value)}
+										onBlur={() => {
+											const n = Math.min(100, Math.max(5, Math.floor(Number(keepRecentDraft) || 15)));
+											setKeepRecentDraft(String(n));
+											if (n !== settings.keepRecentMessages) {
+												setPartial({ keepRecentMessages: n });
+											}
+										}}
+										onKeyDown={(e) => {
+											if (e.key === "Enter") (e.target as HTMLInputElement).blur();
+										}}
+									/>
+								</FieldRow>
 								<ToggleRow
 									title={t("presentAutoOpen")}
 									tip={t("presentAutoOpenDesc")}

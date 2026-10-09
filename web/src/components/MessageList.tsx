@@ -40,12 +40,18 @@ import { appSend } from "../app-globals";
 const EMPTY_LIVE = new Map<string, { toolName: string; text: string }>();
 
 /**
- * Messages beyond the most recent KEEP_RECENT are rendered as cheap collapsed
- * summary rows (no Markdown / thinking / tool output) until clicked. Only kicks
- * in once the chat grows past COLLAPSE_MIN, so short conversations are untouched.
+ * Messages beyond the most recent `keepRecent` are rendered as cheap collapsed
+ * summary rows (no Markdown / thinking / tool output) until clicked. The window
+ * size comes from the settings panel (keepRecentMessages, default 15); folding
+ * only kicks in once history is at least twice the window, so short
+ * conversations are untouched.
  */
-const KEEP_RECENT = 15;
-const COLLAPSE_MIN = 30;
+const KEEP_RECENT_DEFAULT = 15;
+const KEEP_RECENT_MIN = 5;
+const KEEP_RECENT_MAX = 100;
+/** 惰性窗口化（占位符）的启动门槛：与折叠判据解耦——折叠是显示偏好（随设置
+ *  变化），窗口化是纯性能手段，门槛固定，不让大窗口用户牺牲渲染性能。 */
+const VIRTUAL_MIN = 30;
 /** Grace window after a programmatic scroll during which onScroll ignores
  *  negative scrollTop jumps from our own snap() re-asserts.
  *
@@ -193,6 +199,8 @@ interface MessageListProps {
 	toolsWrap?: boolean;
 	/** 工具结果图片直接显示（设置面板开关；false = 不渲染缩略图）。 */
 	toolImages?: boolean;
+	/** 尾部保持完整渲染的消息条数（设置面板的 keepRecentMessages；缺省 = 默认值）。 */
+	keepRecent?: number;
 	/** 全局搜索「会话」结果的跳转请求：目标会话 path + 命中消息锚点。
 	 *  消息载入后定位到对应消息并滚动高亮，完成后回调 onJumpDone。 */
 	jumpTarget?: { path: string; role: string; timestamp: number } | null;
@@ -211,6 +219,7 @@ export function MessageList({
 	thinkingWrap,
 	toolsWrap,
 	toolImages,
+	keepRecent,
 	jumpTarget,
 	onJumpDone,
 	uiMessageActions,
@@ -265,9 +274,15 @@ export function MessageList({
 	// system 消息不进渲染(见 serialize.ts)：去掉后再取末尾，否则空 SYSTEM 占住 isLast。
 	const lastVisible = [...messages].reverse().find((m) => m.role !== "system");
 	const lastId = lastVisible ? lastVisible.id : null;
-	// Only the last KEEP_RECENT persisted messages are fully rendered; older
-	// ones collapse to summary rows (unless the user expanded them).
-	const recentStart = state.messages.length > COLLAPSE_MIN ? Math.max(0, state.messages.length - KEEP_RECENT) : 0;
+	// 尾部常驻窗口：设置面板的 keepRecentMessages（默认 15），钳到 [5, 100]——
+	// 与服务端 normalizeKeepRecentMessages 同口径，值不合法时回落默认。
+	const keepRecentCount = Math.min(
+		KEEP_RECENT_MAX,
+		Math.max(KEEP_RECENT_MIN, Math.floor(Number(keepRecent) || KEEP_RECENT_DEFAULT)),
+	);
+	// 折叠只在历史达到窗口两倍（且不少于 30 条）时出现，短会话一律全量渲染。
+	const collapseMin = Math.max(keepRecentCount * 2, VIRTUAL_MIN);
+	const recentStart = state.messages.length > collapseMin ? Math.max(0, state.messages.length - keepRecentCount) : 0;
 
 	/** 当前渲染为折叠摘要行的消息 id（SearchBar 的折叠层搜索索引用它；
 	 *  toolResult 无独立折叠行——其结果文本已并入宿主 toolCall 卡）。
@@ -310,7 +325,7 @@ export function MessageList({
 	const hiddenRef = useRef(hidden);
 	hiddenRef.current = hidden;
 	/** 短会话与搜索打开期间不做窗口化（全量渲染，行为与旧版一致）。 */
-	const virtualOn = state.messages.length > COLLAPSE_MIN && !searchOpen;
+	const virtualOn = state.messages.length > VIRTUAL_MIN && !searchOpen;
 	const virtualOnRef = useRef(virtualOn);
 	virtualOnRef.current = virtualOn;
 	// 底部常驻区（永不占位）：随每次渲染按预算重算（读取最新实测高度），

@@ -858,6 +858,9 @@ export type ClientMessage =
 			/** 工具结果里的图片直接显示（默认开）。关 → 工具卡不渲染缩略图
 				（快照仍带图，纯 UI 偏好，不需要 reload runtime）。 */
 			toolImagesEnabled?: boolean;
+			/** 消息列表尾部保持完整渲染的消息条数（默认 15）；更早的折叠为摘要行。
+			 *  纯 UI 偏好，不需要 reload runtime。 */
+			keepRecentMessages?: number;
 			/** skill 全文注入名单（默认空 = 名录模式）。名单里的技能 {{skills}} 展开正文。 */
 			skillsFullText?: string[];
 			/** 子代理默认模型（"provider/id"；null/未设 = 子代理跟随主对话当前模型）。
@@ -2603,6 +2606,9 @@ export interface UiSettingsState {
 	/** 工具结果里的图片直接显示（默认开）。关 → 工具卡不渲染缩略图。
 	 *  纯 UI 偏好，不进预设。 */
 	toolImagesEnabled: boolean;
+	/** 消息列表尾部保持完整渲染的消息条数（默认 15 = 与原硬编码一致）；更早的消息折叠为摘要行，
+	 *  点击摘要行可展开。纯 UI 偏好，不进预设。 */
+	keepRecentMessages: number;
 	/** skill 全文注入名单（默认空 = 名录模式）：名单里的技能 {{skills}} 展开正文。 */
 	skillsFullText: string[];
 	/** Vision bridge on/off (default on). Off → images are sent as-is. */
