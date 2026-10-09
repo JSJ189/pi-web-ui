@@ -3,6 +3,7 @@ import {
 	FiAlertTriangle,
 	FiArchive,
 	FiBox,
+	FiCheck,
 	FiChevronDown,
 	FiChevronUp,
 	FiClock,
@@ -21,10 +22,13 @@ import {
 	FiPackage,
 	FiPlus,
 	FiRefreshCw,
+	FiSearch,
 	FiSend,
+	FiServer,
 	FiSettings,
 	FiShare2,
 	FiShield,
+	FiShoppingBag,
 	FiVolume2,
 	FiSliders,
 	FiTool,
@@ -43,9 +47,13 @@ import { DSH_PERMISSION_ORDER, permDescKey, permLabelKey } from "./DshPermission
 import { PluginPage } from "./PluginPage";
 import { PluginSettingsForm } from "./PluginSettingsForm";
 import { ToolPromptEditor } from "./ToolPromptEditor";
+import { McpServersPanel } from "./McpServersPanel";
+import { PUBLIC_SKILLS, type PublicSkill } from "../skill-catalog";
 import type {
 	CommandDef,
 	DshPermissionOption,
+	RemoteMcpServer,
+	RemoteSkillSummary,
 	SchedulerTaskView,
 	UiAgentPreset,
 	UiAlign,
@@ -209,6 +217,28 @@ interface SettingsModalProps {
 		activeConversationId?: string | null;
 		/** 内置定时任务（issue #184，全局列表；DSH 引擎下为空） */
 		schedulerTasks: SchedulerTaskView[];
+		/** 公开远程 MCP 市场检索结果 */
+		mcpMarketResult?: {
+			ok: boolean;
+			servers: RemoteMcpServer[];
+			total?: number;
+			source: string;
+			error?: string;
+		} | null;
+		/** 公开远程 Skill 技能仓库检索结果 */
+		skillMarketResult?: {
+			ok: boolean;
+			skills: RemoteSkillSummary[];
+			repo: string;
+			error?: string;
+		} | null;
+		/** 远程单个技能的 SKILL.md 内容拉取结果 */
+		skillContentResult?: {
+			ok: boolean;
+			skillId: string;
+			content: string;
+			error?: string;
+		} | null;
 	};
 	terminal: SettingsTerminalBridge;
 	/** Switch the top-level view to the terminal (uninstall runs there). */
@@ -511,6 +541,7 @@ type SettingsTab =
 	| "skills"
 	| "extensions"
 	| "plugins"
+	| "mcp"
 	| "layout"
 	| "review"
 	| "vision"
@@ -656,6 +687,170 @@ export function SettingsModal({
 	useEffect(() => {
 		railRef.current?.querySelector(".settings-tab.active")?.scrollIntoView({ block: "nearest", inline: "nearest" });
 	}, [tab]);
+
+	// 技能市场子页签、远程仓库与筛选
+	const [skillSubTab, setSkillSubTab] = useState<"installed" | "market">("installed");
+	const [skillMarketCategory, setSkillMarketCategory] = useState<string>("all");
+	const [skillMarketSearch, setSkillMarketSearch] = useState<string>("");
+	const [skillMarketRepo, setSkillMarketRepo] = useState<string>("anthropics/skills");
+	const [customSkillRepo, setCustomSkillRepo] = useState<string>("");
+	const [skillMarketLoading, setSkillMarketLoading] = useState<boolean>(false);
+	const [inspectingSkill, setInspectingSkill] = useState<PublicSkill | null>(null);
+	const [skillContentDraft, setSkillContentDraft] = useState<Record<string, string>>({});
+	const [fetchingSkillContentId, setFetchingSkillContentId] = useState<string | null>(null);
+
+	const installedSkillNames = useMemo(() => {
+		return new Set((settings?.skills ?? []).map((s) => s.name.toLowerCase()));
+	}, [settings?.skills]);
+
+	const effectiveSkillRepo = skillMarketRepo === "custom" ? customSkillRepo.trim() : skillMarketRepo;
+
+	const fetchSkillMarket = (refresh = false) => {
+		if (!effectiveSkillRepo) return;
+		setSkillMarketLoading(true);
+		appSend({
+			type: "fetch_skill_market",
+			repo: effectiveSkillRepo,
+			refresh,
+		});
+	};
+
+	useEffect(() => {
+		if (tab !== "skills" || skillSubTab !== "market") return;
+		if (!effectiveSkillRepo) return;
+		setSkillMarketLoading(true);
+		const timer = setTimeout(() => {
+			appSend({
+				type: "fetch_skill_market",
+				repo: effectiveSkillRepo,
+			});
+		}, 350);
+		return () => clearTimeout(timer);
+	}, [tab, skillSubTab, skillMarketRepo, customSkillRepo]);
+
+	useEffect(() => {
+		if (chat.skillMarketResult) {
+			setSkillMarketLoading(false);
+		}
+	}, [chat.skillMarketResult]);
+
+	useEffect(() => {
+		if (chat.skillContentResult?.ok && chat.skillContentResult.skillId) {
+			const id = chat.skillContentResult.skillId;
+			const content = chat.skillContentResult.content;
+			setSkillContentDraft((prev) => ({ ...prev, [id]: content }));
+			setFetchingSkillContentId(null);
+			if (inspectingSkill && inspectingSkill.id === id) {
+				setInspectingSkill((prev) => (prev ? { ...prev, content } : null));
+			}
+		}
+	}, [chat.skillContentResult]);
+
+	const remoteSkills = useMemo(() => {
+		if (chat.skillMarketResult?.ok && chat.skillMarketResult.skills?.length > 0) {
+			return chat.skillMarketResult.skills.map((s) => ({
+				id: s.id,
+				name: s.name,
+				nameZh: s.name,
+				description: s.description,
+				descriptionZh: s.description,
+				category: "workflow" as const,
+				content: skillContentDraft[s.id] || "",
+			}));
+		}
+		return PUBLIC_SKILLS;
+	}, [chat.skillMarketResult, skillContentDraft]);
+
+	const filteredMarketSkills = useMemo(() => {
+		return remoteSkills.filter((sk) => {
+			if (skillMarketCategory !== "all" && sk.category !== skillMarketCategory) {
+				return false;
+			}
+			if (skillMarketSearch.trim()) {
+				const q = skillMarketSearch.trim().toLowerCase();
+				const matchName = sk.name.toLowerCase().includes(q) || sk.nameZh.toLowerCase().includes(q);
+				const matchDesc = sk.description.toLowerCase().includes(q) || sk.descriptionZh.toLowerCase().includes(q);
+				return matchName || matchDesc;
+			}
+			return true;
+		});
+	}, [remoteSkills, skillMarketCategory, skillMarketSearch]);
+
+	const openInspectSkill = (sk: { id: string; name: string; description: string; content?: string }) => {
+		const cached = skillContentDraft[sk.id] || sk.content;
+		if (cached) {
+			setInspectingSkill({
+				id: sk.id,
+				name: sk.name,
+				nameZh: sk.name,
+				description: sk.description,
+				descriptionZh: sk.description,
+				category: "workflow",
+				content: cached,
+			});
+		} else {
+			setFetchingSkillContentId(sk.id);
+			setInspectingSkill({
+				id: sk.id,
+				name: sk.name,
+				nameZh: sk.name,
+				description: sk.description,
+				descriptionZh: sk.description,
+				category: "workflow",
+				content: "",
+			});
+			appSend({
+				type: "fetch_skill_content",
+				repo: effectiveSkillRepo,
+				skillId: sk.id,
+			});
+		}
+	};
+
+	const handleInstallSkill = (skill: { id: string; content?: string }, scope: "global" | "project") => {
+		const content = skillContentDraft[skill.id] || skill.content;
+		if (content) {
+			appSend({
+				type: "install_skill",
+				name: skill.id,
+				scope,
+				content,
+			});
+			setInspectingSkill(null);
+		} else {
+			setFetchingSkillContentId(skill.id);
+			appSend({
+				type: "fetch_skill_content",
+				repo: effectiveSkillRepo,
+				skillId: skill.id,
+			});
+		}
+	};
+
+	const handleUninstallSkill = (name: string, scope: "global" | "project") => {
+		appSend({
+			type: "uninstall_skill",
+			name,
+			scope,
+		});
+	};
+
+	const skillCategoryBadge = (category: string) => {
+		switch (category) {
+			case "quality":
+				return t("skillCatQuality");
+			case "workflow":
+				return t("skillCatWorkflow");
+			case "architecture":
+				return t("skillCatArchitecture");
+			case "devops":
+				return t("skillCatDevops");
+			case "stack":
+				return t("skillCatStack");
+			default:
+				return t("skillCatAll");
+		}
+	};
 	// DSH 引擎：打开插件分组时拉一次用户 patch 列表（pi 引擎忽略该消息）。
 	useEffect(() => {
 		if (tab === "plugins" && isDsh) {
@@ -1069,6 +1264,13 @@ export function SettingsModal({
 			label: t("settingsUiPlugins"),
 			count: chat.plugins.length,
 			dot: hasBuiltinPluginUpdate || hasAnyPluginUpdate,
+		},
+		{
+			id: "mcp" as const,
+			icon: <FiServer />,
+			label: t("settingsMcp"),
+			count: (settings.mcpServers ?? []).length || undefined,
+			dot: (settings.mcpServers ?? []).some((s) => s.status === "error"),
 		},
 		{ id: "layout", icon: <FiSliders />, label: t("uiLayoutTitle") },
 		{ id: "review", icon: <FiZap />, label: t("settingsReview"), count: settings.reviewSkills.length },
@@ -1688,7 +1890,7 @@ export function SettingsModal({
 	};
 
 	// 按 Escape 键安全退出：先 flush 草稿再关闭；子弹窗开启时放行给子弹窗。
-	useEscapeKey(handleClose, !tplDraft && !ruleDraft && !editingToolPrompt && !presetShareFor);
+	useEscapeKey(handleClose, !tplDraft && !ruleDraft && !editingToolPrompt && !presetShareFor && !inspectingSkill);
 
 	// 组件卸载清理：兜底提交任何在途草稿。
 	useEffect(() => {
@@ -3067,32 +3269,294 @@ export function SettingsModal({
 									<HintTip text={`${t("skillFullTextLabel")}：${t("skillFullTextDesc")}`} />
 									<span className="set-count">{settings.skills.length}</span>
 								</div>
-								{!isDsh && piPresetFiltering && !presetShowsSkillCatalog(piPresetId ?? undefined) && (
-									<p className="set-catalog-hint warn">{t("skillsHiddenByPreset", { name: piPresetName })}</p>
+
+								{/* 子页签：已安装 vs 技能市场 */}
+								<div className="mcp-tab-bar">
+									<button
+										type="button"
+										className={`mcp-tab-btn${skillSubTab === "installed" ? " active" : ""}`}
+										onClick={() => setSkillSubTab("installed")}
+									>
+										<FiCpu />
+										<span>{t("skillTabInstalled")}</span>
+										<span className="set-count">{settings.skills.length}</span>
+									</button>
+									<button
+										type="button"
+										className={`mcp-tab-btn${skillSubTab === "market" ? " active" : ""}`}
+										onClick={() => setSkillSubTab("market")}
+									>
+										<FiShoppingBag />
+										<span>{t("skillTabMarket")}</span>
+										<span className="set-count">{PUBLIC_SKILLS.length}</span>
+									</button>
+								</div>
+
+								{/* 1. 已安装技能列表 */}
+								{skillSubTab === "installed" && (
+									<>
+										{!isDsh && piPresetFiltering && !presetShowsSkillCatalog(piPresetId ?? undefined) && (
+											<p className="set-catalog-hint warn">{t("skillsHiddenByPreset", { name: piPresetName })}</p>
+										)}
+										{settings.skills.length === 0 ? (
+											<div className="mcp-empty-card">
+												<div className="mcp-empty-icon">
+													<FiCpu />
+												</div>
+												<div className="mcp-empty-title">{isDsh ? t("dshSkillsNote") : t("noSkills")}</div>
+												<div className="mcp-empty-desc">{t("skillEmptyDesc")}</div>
+												<button type="button" className="mcp-goto-market-btn" onClick={() => setSkillSubTab("market")}>
+													<FiShoppingBag />
+													{t("skillBrowseMarket")}
+												</button>
+											</div>
+										) : (
+											<div className="set-list">
+												{settings.skills.map((s) => (
+													<ToggleRow
+														key={s.name}
+														title={s.name}
+														subtitle={s.description}
+														enabled={s.enabled}
+														onToggle={() => toggleSkill(s)}
+														action={
+															<button
+																type="button"
+																className={`tpl-chip${fullTextSkills.has(s.name) ? " on" : ""}`}
+																title={t("skillFullTextDesc")}
+																onClick={() => toggleSkillFullText(s.name)}
+															>
+																{t("skillFullTextShort")}
+															</button>
+														}
+													/>
+												))}
+											</div>
+										)}
+									</>
 								)}
-								{settings.skills.length === 0 ? (
-									<p className="set-empty">{isDsh ? t("dshSkillsNote") : t("noSkills")}</p>
-								) : (
-									<div className="set-list">
-										{settings.skills.map((s) => (
-											<ToggleRow
-												key={s.name}
-												title={s.name}
-												subtitle={s.description}
-												enabled={s.enabled}
-												onToggle={() => toggleSkill(s)}
-												action={
-													<button
-														type="button"
-														className={`tpl-chip${fullTextSkills.has(s.name) ? " on" : ""}`}
-														title={t("skillFullTextDesc")}
-														onClick={() => toggleSkillFullText(s.name)}
+
+								{/* 2. 技能市场列表 */}
+								{skillSubTab === "market" && (
+									<div className="skill-market-view">
+										<div className="mcp-market-toolbar">
+											{/* GitHub 仓库源选择 */}
+											<div className="mcp-market-source-row">
+												<div className="mcp-source-select-wrap">
+													<label className="mcp-source-label">{t("skillRepoSelect")}:</label>
+													<select
+														className="set-select mcp-source-select"
+														value={skillMarketRepo}
+														onChange={(e) => setSkillMarketRepo(e.target.value)}
 													>
-														{t("skillFullTextShort")}
+														<option value="anthropics/skills">{t("skillRepoDefault")}</option>
+														<option value="custom">{t("skillRepoCustom")}</option>
+													</select>
+												</div>
+												<button
+													type="button"
+													className={`set-save-btn mcp-sync-btn${skillMarketLoading ? " spinning" : ""}`}
+													title={t("mcpReload")}
+													onClick={() => fetchSkillMarket(true)}
+												>
+													<FiRefreshCw />
+													<span>{t("mcpReload")}</span>
+												</button>
+											</div>
+
+											{skillMarketRepo === "custom" && (
+												<div className="mcp-custom-source-row">
+													<input
+														type="text"
+														className="set-input mcp-custom-input"
+														placeholder={t("skillRepoCustomPlaceholder")}
+														value={customSkillRepo}
+														onChange={(e) => setCustomSkillRepo(e.target.value)}
+														onKeyDown={(e) => {
+															if (e.key === "Enter") fetchSkillMarket(true);
+														}}
+													/>
+												</div>
+											)}
+
+											<div className="mcp-search-wrap">
+												<FiSearch className="mcp-search-icon" />
+												<input
+													type="text"
+													className="set-input mcp-search-input"
+													placeholder={t("skillMarketSearchPlaceholder")}
+													value={skillMarketSearch}
+													onChange={(e) => setSkillMarketSearch(e.target.value)}
+												/>
+												{skillMarketSearch && (
+													<button type="button" className="mcp-search-clear" onClick={() => setSkillMarketSearch("")}>
+														<FiX />
 													</button>
-												}
-											/>
-										))}
+												)}
+											</div>
+											<div className="mcp-category-chips">
+												{[
+													{ id: "all", label: t("skillCatAll") },
+													{ id: "quality", label: t("skillCatQuality") },
+													{ id: "workflow", label: t("skillCatWorkflow") },
+													{ id: "architecture", label: t("skillCatArchitecture") },
+													{ id: "devops", label: t("skillCatDevops") },
+													{ id: "stack", label: t("skillCatStack") },
+												].map((cat) => (
+													<button
+														key={cat.id}
+														type="button"
+														className={`mcp-cat-chip${skillMarketCategory === cat.id ? " active" : ""}`}
+														onClick={() => setSkillMarketCategory(cat.id)}
+													>
+														{cat.label}
+													</button>
+												))}
+											</div>
+										</div>
+
+										{/* 错误提示 */}
+										{chat.skillMarketResult?.error && (
+											<div className="mcp-error-box">
+												<FiAlertTriangle className="mcp-error-icon" />
+												<div className="mcp-error-text">{chat.skillMarketResult.error}</div>
+												<button type="button" className="mcp-mini-btn" onClick={() => fetchSkillMarket(true)}>
+													{t("skillMarketRetry")}
+												</button>
+											</div>
+										)}
+
+										{/* 加载指示器 */}
+										{skillMarketLoading && (
+											<div className="mcp-market-loading">
+												<FiRefreshCw className="spinning" />
+												<span>{t("skillMarketLoading")}</span>
+											</div>
+										)}
+
+										<div className="mcp-market-grid">
+											{filteredMarketSkills.map((sk) => {
+												const isInstalled = installedSkillNames.has(sk.id.toLowerCase());
+												const descText = locale === "zh" ? sk.descriptionZh : sk.description;
+												const nameText = locale === "zh" ? sk.nameZh : sk.name;
+												return (
+													<div key={sk.id} className="mcp-market-card skill-market-card">
+														<div className="mcp-market-card-head">
+															<div className="mcp-market-title-wrap">
+																<span className="mcp-market-name">{sk.name}</span>
+																{locale === "zh" && <span className="mcp-market-subname">({nameText})</span>}
+															</div>
+															<span className="mcp-badge-official">{skillCategoryBadge(sk.category)}</span>
+														</div>
+
+														<p className="mcp-market-desc">{descText}</p>
+
+														<div className="skill-market-card-actions">
+															<button
+																type="button"
+																className="skill-inspect-btn"
+																onClick={() => setInspectingSkill(sk)}
+															>
+																<FiEye />
+																{t("skillInspectPrompt")}
+															</button>
+															<div className="skill-action-btns">
+																{isInstalled ? (
+																	<div className="skill-installed-group">
+																		<span className="mcp-market-configured-badge">
+																			<FiCheck />
+																			{t("skillInstalled")}
+																		</span>
+																		<button
+																			type="button"
+																			className="icon-btn delete-btn"
+																			title={t("uninstallTitle")}
+																			onClick={() => handleUninstallSkill(sk.id, "global")}
+																		>
+																			<FiTrash2 />
+																		</button>
+																	</div>
+																) : (
+																	<div className="mcp-market-add-btns">
+																		<button
+																			type="button"
+																			className="mcp-btn-add global"
+																			title={t("skillInstallGlobalHint")}
+																			onClick={() => handleInstallSkill(sk, "global")}
+																		>
+																			<FiPlus />
+																			{t("skillInstallGlobal")}
+																		</button>
+																		<button
+																			type="button"
+																			className="mcp-btn-add project"
+																			title={t("skillInstallProjectHint")}
+																			onClick={() => handleInstallSkill(sk, "project")}
+																		>
+																			<FiPlus />
+																			{t("skillInstallProject")}
+																		</button>
+																	</div>
+																)}
+															</div>
+														</div>
+													</div>
+												);
+											})}
+										</div>
+									</div>
+								)}
+
+								{/* 技能提示词详情弹窗 */}
+								{inspectingSkill && (
+									<div className="modal-backdrop sub-modal" onClick={() => setInspectingSkill(null)}>
+										<div className="modal skill-inspect-modal" onClick={(e) => e.stopPropagation()}>
+											<button
+												type="button"
+												className="modal-close"
+												aria-label={t("close")}
+												onClick={() => setInspectingSkill(null)}
+											>
+												<FiX />
+											</button>
+											<div className="modal-head">
+												<FiCpu className="modal-head-icon" />
+												<h3>{t("skillInspectModalTitle", { name: inspectingSkill.name })}</h3>
+											</div>
+											<div className="modal-body skill-inspect-body">
+												{fetchingSkillContentId === inspectingSkill.id && !inspectingSkill.content ? (
+													<div className="mcp-market-loading">
+														<FiRefreshCw className="spinning" />
+														<span>{t("skillContentLoading")}</span>
+													</div>
+												) : (
+													<pre className="skill-code-preview">
+														<code>{inspectingSkill.content}</code>
+													</pre>
+												)}
+											</div>
+											<div className="modal-actions">
+												<button type="button" className="set-cancel-btn" onClick={() => setInspectingSkill(null)}>
+													{t("close")}
+												</button>
+												<button
+													type="button"
+													className="set-save-btn global"
+													onClick={() => handleInstallSkill(inspectingSkill, "global")}
+												>
+													<FiPlus />
+													<span>{t("skillInstallGlobal")}</span>
+												</button>
+												<button
+													type="button"
+													className="set-save-btn project"
+													onClick={() => handleInstallSkill(inspectingSkill, "project")}
+												>
+													<FiPlus />
+													<span>{t("skillInstallProject")}</span>
+												</button>
+											</div>
+										</div>
 									</div>
 								)}
 							</div>
@@ -4378,6 +4842,8 @@ export function SettingsModal({
 						)}
 
 						{/* ---- subagent templates（全局共享；DSH 引擎隐藏该分区） ---------- */}
+						{tab === "mcp" && <McpServersPanel settings={settings} chat={chat} />}
+
 						{tab === "subagent-templates" && (
 							<div className="set-section">
 								<div className="set-section-title">

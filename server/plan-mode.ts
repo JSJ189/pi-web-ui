@@ -50,6 +50,8 @@ const BLOCKED_TOOLS = new Set([
 	// 代码求值（eval 沙箱的 execute 直接 kernel.execute，可写真实文件系统；
 	// 默认关但用户可开，开了就是一条写路径 —— #436）
 	"eval",
+	// QuickJS 沙箱代码执行（可嵌套调用写工具/命令，计划模式禁止任意代码执行）
+	"codemode",
 	// 形态变换（会重写整个文件树）
 	"format",
 	"prettier",

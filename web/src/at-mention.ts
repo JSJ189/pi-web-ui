@@ -77,13 +77,6 @@ export function mapPageHits(
 	return out;
 }
 
-/** 服务端 search_files 结果 → `@` 命中（内置文件提供方用，引用 chip）。 */
-interface FileHitLike {
-	path: string;
-	name: string;
-	type: "file" | "dir";
-}
-
 export function mapFileHits(providerLabel: string, raw: unknown, limit = 10): AtHit[] {
 	if (!Array.isArray(raw)) return [];
 	const out: AtHit[] = [];

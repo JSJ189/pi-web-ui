@@ -411,13 +411,19 @@ export function ensurePluginDeps(
 			} catch {}
 		}
 		onProgress?.(`正在安装依赖：${missing.join(", ")}…（首次约需几分钟）`);
-		// win32 的 npm 是 .cmd——spawnSync 直接跑会被 EINVAL 拒绝，必须走 shell；
-		// posix 不用 shell（路径不含空格假设成立，与宿主其它 spawn 一致）。
-		const res = spawnSync(
-			process.platform === "win32" ? "npm.cmd" : "npm",
-			["install", "--no-audit", "--no-fund", ...missing],
-			{ cwd: pluginDir, timeout: DEP_TIMEOUT_MS, shell: process.platform === "win32", encoding: "utf8" },
-		);
+		// win32 的 npm 是 .cmd——spawnSync 直接跑会被 EINVAL 拒绝；走 cmd.exe /d /s /c
+		// 规避 DEP0190 与命令行注入，posix 不用 shell（路径不含空格假设成立，与宿主其它 spawn 一致）。
+		const isWin = process.platform === "win32";
+		const spawnCmd = isWin ? process.env.ComSpec || "cmd.exe" : "npm";
+		const spawnArgs = isWin
+			? ["/d", "/s", "/c", "npm.cmd", "install", "--no-audit", "--no-fund", ...missing]
+			: ["install", "--no-audit", "--no-fund", ...missing];
+		const res = spawnSync(spawnCmd, spawnArgs, {
+			cwd: pluginDir,
+			timeout: DEP_TIMEOUT_MS,
+			windowsHide: true,
+			encoding: "utf8",
+		});
 		if (res.error || res.status !== 0) {
 			console.error(`[plugin-deps] ${join(pluginDir)} npm install 失败:`, res.error ?? res.stderr?.slice(0, 500));
 			return false;

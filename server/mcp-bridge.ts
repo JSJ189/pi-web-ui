@@ -15,18 +15,41 @@
  */
 
 import { spawn, type ChildProcess } from "node:child_process";
-import { readFileSync } from "node:fs";
+import { existsSync, readFileSync } from "node:fs";
+import { homedir } from "node:os";
 import { join } from "node:path";
 import type { PluginAgentTool } from "./plugins.js";
+import type { UiMcpToolInfo } from "./protocol.js";
 
-/** JSON-RPC 2.0 over stdio：每行一条 JSON。 */
+/** 获取全局 MCP 配置文件路径 */
+export function getGlobalMcpPath(agentDir?: string, dataDir?: string): string {
+	const defaultAgentDir = agentDir || process.env.PI_CODING_AGENT_DIR || join(homedir(), ".pi", "agent");
+	const agentPath = join(defaultAgentDir, "mcp.json");
+	if (existsSync(agentPath)) return agentPath;
+	if (dataDir && existsSync(join(dataDir, "mcp.json"))) return join(dataDir, "mcp.json");
+	return agentPath;
+}
+
+/** 获取项目级 MCP 配置文件路径 */
+export function getProjectMcpPath(cwd?: string): string {
+	const activeCwd = cwd || process.cwd();
+	return join(activeCwd, ".pi", "mcp.json");
+}
+
+/** JSON-RPC 2.0 over stdio 或 HTTP：配置规格。 */
 export interface McpServerSpec {
-	command: string;
+	command?: string;
 	args?: string[];
 	cwd?: string;
 	env?: Record<string, string>;
+	url?: string;
+	headers?: Record<string, string>;
+	type?: "stdio" | "http" | "streamable-http";
+	timeout?: number;
 	// 预设的 MCP 协议版本（缺省用最新已知）。
 	protocolVersion?: string;
+	enabled?: boolean;
+	description?: string;
 }
 
 interface RpcIncoming {
@@ -97,6 +120,12 @@ export class McpClient {
 	async start(timeoutMs = 8000): Promise<void> {
 		if (this.child) return;
 		const { command, args = [], cwd, env } = this.spec;
+		if (!command) {
+			if (this.spec.url) {
+				throw new Error(`远程 HTTP MCP 服务器（${this.spec.url}）暂不支持 stdio 直接直连`);
+			}
+			throw new Error("MCP 服务器规格未声明 command 启动命令");
+		}
 		this.log(`[mcp:${this.name}] starting: ${command} ${args.join(" ")}`);
 		this.buffer = "";
 		const child = spawn(command, args, {
@@ -399,14 +428,29 @@ export function parseMcpConfig(text: string): { servers: Record<string, McpServe
 	}
 	if (!parsed || typeof parsed !== "object" || Array.isArray(parsed)) return null;
 	const servers: Record<string, McpServerSpec> = {};
-	for (const [name, s] of Object.entries((parsed as { servers?: Record<string, McpServerSpec> }).servers ?? {})) {
-		if (!s || typeof s.command !== "string" || !s.command.trim()) continue;
+	const raw =
+		(parsed as { mcpServers?: Record<string, unknown>; servers?: Record<string, unknown> }).mcpServers ??
+		(parsed as { servers?: Record<string, unknown> }).servers ??
+		{};
+	for (const [name, s] of Object.entries(raw)) {
+		if (!s || typeof s !== "object") continue;
+		const entry = s as Record<string, unknown>;
+		const cmd = typeof entry.command === "string" && entry.command.trim() ? entry.command.trim() : undefined;
+		const url = typeof entry.url === "string" && entry.url.trim() ? entry.url.trim() : undefined;
+		if (!cmd && !url && entry.enabled === undefined) continue;
 		servers[name] = {
-			command: s.command,
-			args: Array.isArray(s.args) ? s.args.map(String) : [],
-			cwd: typeof s.cwd === "string" ? s.cwd : undefined,
-			env: s.env && typeof s.env === "object" ? (s.env as Record<string, string>) : undefined,
-			protocolVersion: typeof s.protocolVersion === "string" ? s.protocolVersion : undefined,
+			command: cmd,
+			args: Array.isArray(entry.args) ? entry.args.map(String) : [],
+			cwd: typeof entry.cwd === "string" ? entry.cwd : undefined,
+			env: entry.env && typeof entry.env === "object" ? (entry.env as Record<string, string>) : undefined,
+			url,
+			headers:
+				entry.headers && typeof entry.headers === "object" ? (entry.headers as Record<string, string>) : undefined,
+			type: typeof entry.type === "string" ? (entry.type as McpServerSpec["type"]) : undefined,
+			timeout: typeof entry.timeout === "number" ? entry.timeout : undefined,
+			enabled: typeof entry.enabled === "boolean" ? entry.enabled : true,
+			description: typeof entry.description === "string" ? entry.description : undefined,
+			protocolVersion: typeof entry.protocolVersion === "string" ? entry.protocolVersion : undefined,
 		};
 	}
 	return { servers };
@@ -429,11 +473,19 @@ export function readMcpConfig(dataDir: string): { servers: Record<string, McpSer
 export function mcpServerSnapshot(spec: McpServerSpec): Record<string, unknown> {
 	const env: Record<string, string> = {};
 	for (const k of Object.keys(spec.env ?? {}).sort()) env[k] = (spec.env as Record<string, string>)[k];
+	const headers: Record<string, string> = {};
+	for (const k of Object.keys(spec.headers ?? {}).sort()) headers[k] = (spec.headers as Record<string, string>)[k];
 	return {
-		command: spec.command,
+		command: spec.command ?? null,
 		args: spec.args ?? [],
 		cwd: spec.cwd ?? null,
 		env,
+		url: spec.url ?? null,
+		headers,
+		type: spec.type ?? null,
+		timeout: spec.timeout ?? null,
+		enabled: spec.enabled !== false,
+		description: spec.description ?? null,
 		protocolVersion: spec.protocolVersion ?? null,
 	};
 }
@@ -494,24 +546,73 @@ export interface McpReloadSummary {
 	tools: number;
 }
 
+export interface McpBridgeOptions {
+	agentDir?: string;
+	cwd?: string;
+	specOverride?: { name: string; spec: McpServerSpec }[];
+}
+
 /** MCP 服务器管理器：自管多服务器生命周期 + 聚合工具。 */
 export class McpBridge {
 	private clients: McpClient[] = [];
 	private tools: PluginAgentTool[] = [];
+	private serverErrors = new Map<string, string>();
 	/** reload 串行化链：重入的 reload 排在前一个之后，杜绝交叠留下的孤儿进程。 */
 	private reloadChain: Promise<unknown> = Promise.resolve();
+	private agentDir?: string;
+	private cwd?: string;
 
 	constructor(
 		private dataDir: string,
 		private log: (...a: unknown[]) => void = () => {},
-		private opts: { specOverride?: { name: string; spec: McpServerSpec }[] } = {},
-	) {}
+		private opts: McpBridgeOptions = {},
+	) {
+		this.agentDir = opts.agentDir;
+		this.cwd = opts.cwd;
+	}
+
+	setCwd(newCwd: string): void {
+		this.cwd = newCwd;
+		this.opts.cwd = newCwd;
+	}
+
+	getCwd(): string | undefined {
+		return this.cwd;
+	}
+
+	getAgentDir(): string | undefined {
+		return this.agentDir;
+	}
+
+	getServerStatus(name: string): {
+		status: "running" | "stopped" | "error";
+		error?: string;
+		tools: UiMcpToolInfo[];
+	} {
+		const client = this.clients.find((c) => c.name === name);
+		if (client) {
+			return {
+				status: "running",
+				tools: client.getTools().map((t) => ({ name: t.name, description: t.description })),
+			};
+		}
+		if (this.serverErrors.has(name)) {
+			return {
+				status: "error",
+				error: this.serverErrors.get(name),
+				tools: [],
+			};
+		}
+		return { status: "stopped", tools: [] };
+	}
 
 	/** 读取配置并启动全部服务器（顺序 fail-fast：单个失败记日志不拖垮其它）。 */
 	async load(): Promise<void> {
-		const cfg = optsOverrideOrRead(this.opts.specOverride, this.dataDir);
+		this.serverErrors.clear();
+		const cfg = optsOverrideOrRead(this.opts, this.dataDir);
 		await Promise.all(
 			Object.entries(cfg.servers).map(async ([name, spec]) => {
+				if (spec.enabled === false) return;
 				const client = await this.startOne(name, spec);
 				if (!client) return;
 				this.clients.push(client);
@@ -525,27 +626,18 @@ export class McpBridge {
 		try {
 			const client = new McpClient(name, spec, this.log);
 			await client.start();
+			this.serverErrors.delete(name);
 			return client;
 		} catch (err) {
-			this.log(`[mcp] 服务器「${name}」启动失败：`, err instanceof Error ? err.message : err);
+			const msg = err instanceof Error ? err.message : String(err);
+			this.serverErrors.set(name, msg);
+			this.log(`[mcp] 服务器「${name}」启动失败：`, msg);
 			return null;
 		}
 	}
 
 	/**
 	 * 按磁盘上的最新配置**整体换入**服务器集合（`mcp.json` 热加载用），可重复调用。
-	 *
-	 * 并发互斥：watch + 轮询 + 手动 apply 可能同时触发 reload，两个 reload 交叠跑
-	 * 会各自 startOne/close —— 同一服务器起两个子进程、或把别人刚换入的实例当
-	 * stale 关掉（孤儿/误杀）。这里用一条 promise 链把重入排成队，每个 reload
-	 * 看到的是前一个完成后的最新状态；热加载的防抖窗口之外再兜一道。
-	 *
-	 * 三步的顺序都有讲究：
-	 *  1. 规格没变的服务器**沿用原实例** —— 改一个服务器不该连带重启其它服务器（子进程、
-	 *     浏览器会话、在途调用全都不动）；
-	 *  2. 新增/变更的**先启动成功才换入**，失败则沿用旧实例 —— 配置写坏不等于把还能用的
-	 *     工具一起下线；
-	 *  3. 最后才 close 掉被移除/被替换的旧实例，并按新集合重建工具表。
 	 */
 	async reload(): Promise<McpReloadSummary> {
 		const run = this.reloadChain.then(
@@ -560,12 +652,12 @@ export class McpBridge {
 	}
 
 	private async reloadOnce(): Promise<McpReloadSummary> {
-		const cfg = optsOverrideOrRead(this.opts.specOverride, this.dataDir);
+		const cfg = optsOverrideOrRead(this.opts, this.dataDir);
 		const next = new Map<string, McpClient>();
 		let kept = 0;
 		for (const client of this.clients) {
 			const spec = cfg.servers[client.name];
-			if (!spec || !sameMcpSpec(spec, client.spec)) continue;
+			if (!spec || spec.enabled === false || !sameMcpSpec(spec, client.spec)) continue;
 			next.set(client.name, client);
 			kept++;
 		}
@@ -573,7 +665,7 @@ export class McpBridge {
 		let failed = 0;
 		await Promise.all(
 			Object.entries(cfg.servers)
-				.filter(([name]) => !next.has(name))
+				.filter(([name, s]) => s.enabled !== false && !next.has(name))
 				.map(async ([name, spec]) => {
 					const previous = this.clients.find((c) => c.name === name);
 					const fresh = await this.startOne(name, spec);
@@ -617,19 +709,57 @@ export class McpBridge {
 		for (const c of this.clients) c.close();
 		this.clients = [];
 		this.tools = [];
+		this.serverErrors.clear();
 	}
 }
 
 function optsOverrideOrRead(
-	specOverride: { name: string; spec: McpServerSpec }[] | undefined,
+	opts: McpBridgeOptions | undefined,
 	dataDir: string,
 ): {
 	servers: Record<string, McpServerSpec>;
 } {
-	if (specOverride && specOverride.length > 0) {
+	if (opts?.specOverride && opts.specOverride.length > 0) {
 		const servers: Record<string, McpServerSpec> = {};
-		for (const o of specOverride) servers[o.name] = o.spec;
+		for (const o of opts.specOverride) servers[o.name] = o.spec;
 		return { servers };
 	}
-	return readMcpConfig(dataDir);
+
+	// 1. 全局配置：agentDir 或 dataDir 兜底
+	const globalPath = getGlobalMcpPath(opts?.agentDir, dataDir);
+	let globalCfg = readMcpConfigByPath(globalPath);
+	if (Object.keys(globalCfg.servers).length === 0 && dataDir) {
+		const dataDirCfg = readMcpConfig(dataDir);
+		if (Object.keys(dataDirCfg.servers).length > 0) {
+			globalCfg = dataDirCfg;
+		}
+	}
+
+	// 2. 项目级配置：cwd/.pi/mcp.json
+	let projectCfg: { servers: Record<string, McpServerSpec> } = { servers: {} };
+	if (opts?.cwd) {
+		const projectPath = getProjectMcpPath(opts.cwd);
+		projectCfg = readMcpConfigByPath(projectPath);
+	}
+
+	// 3. 项目级覆盖全局
+	const merged: Record<string, McpServerSpec> = { ...globalCfg.servers };
+	for (const [name, projSpec] of Object.entries(projectCfg.servers)) {
+		if (!projSpec.command && !projSpec.url && projSpec.enabled !== undefined && merged[name]) {
+			merged[name] = { ...merged[name], enabled: projSpec.enabled };
+		} else {
+			merged[name] = projSpec;
+		}
+	}
+
+	return { servers: merged };
+}
+
+function readMcpConfigByPath(filePath: string): { servers: Record<string, McpServerSpec> } {
+	if (!existsSync(filePath)) return { servers: {} };
+	try {
+		return parseMcpConfig(readFileSync(filePath, "utf8")) ?? { servers: {} };
+	} catch {
+		return { servers: {} };
+	}
 }

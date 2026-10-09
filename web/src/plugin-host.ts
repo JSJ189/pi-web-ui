@@ -892,17 +892,6 @@ const topbarHandlers = new Map<string, Set<PluginTopbarActionHandler>>();
  *  App 懒加载插件 bundle 时用 withPluginScopeAsync 括住，插件的模块顶层代码即可注册。 */
 let pluginScope: string | null = null;
 
-/** 在指定插件作用域里同步执行一段代码（挂载插件视图时用），异常原样抛出。 */
-function withPluginScope<T>(pluginId: string | null, fn: () => T): T {
-	const prev = pluginScope;
-	pluginScope = pluginId;
-	try {
-		return fn();
-	} finally {
-		pluginScope = prev;
-	}
-}
-
 /** 异步版：等待 fn（通常是 `await import(bundle)`）期间保持作用域。 */
 export async function withPluginScopeAsync<T>(pluginId: string | null, fn: () => Promise<T>): Promise<T> {
 	const prev = pluginScope;
@@ -1179,7 +1168,7 @@ function onModelChange(handler: (modelId: string | null) => void): () => void {
 
 /** 触发模型变更订阅（供 App 在模型切换后调用）。 */
 export function emitPluginHostModel(modelId: string | null): void {
-	for (const h of [...modelListeners]) {
+	for (const h of modelListeners) {
 		try {
 			h(modelId);
 		} catch (err) {
@@ -1218,7 +1207,7 @@ function subscribePluginHostView(handler: PluginHostViewHandler): () => void {
 /** 触发主题订阅（供 App 在主题切换后调用；单个 handler 抛错不影响其余）。 */
 export function emitPluginHostTheme(name: string): void {
 	const n = String(name ?? "");
-	for (const h of [...themeListeners]) {
+	for (const h of themeListeners) {
 		try {
 			h(n);
 		} catch (err) {
@@ -1230,7 +1219,7 @@ export function emitPluginHostTheme(name: string): void {
 /** 触发语言订阅（供 App 在语言切换后调用）。 */
 export function emitPluginHostLocale(locale: string): void {
 	const l = String(locale ?? "");
-	for (const h of [...localeListeners]) {
+	for (const h of localeListeners) {
 		try {
 			h(l);
 		} catch (err) {
@@ -1242,7 +1231,7 @@ export function emitPluginHostLocale(locale: string): void {
 /** 触发视图订阅（供 App 在切视图后调用）。 */
 export function emitPluginHostView(view: string): void {
 	const v = String(view ?? "");
-	for (const h of [...viewListeners]) {
+	for (const h of viewListeners) {
 		try {
 			h(v);
 		} catch (err) {

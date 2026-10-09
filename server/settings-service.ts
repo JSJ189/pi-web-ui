@@ -98,6 +98,12 @@ export interface SettingsHost {
 	getApprovalPolicy?: () => UiApprovalPolicyState;
 	/** 可选：目标模式总开关 on→off 时调 —— 停掉在飞的目标/调研（否则循环照跑照派）。 */
 	onGoalModeDisabled?: () => void;
+	/** 可选：查询 MCP 服务器列表与配置文件路径（设置面板展示）。 */
+	getMcpServers?: () => {
+		servers: import("./protocol.js").UiMcpServer[];
+		globalPath: string;
+		projectPath: string;
+	};
 }
 
 export class SettingsService {
@@ -343,6 +349,11 @@ export class SettingsService {
 		const legacyTools = deriveLegacy(this.settings.disabledAgentTools ?? []);
 		// 当前会话提示词快照：完整生效文本 + 各来源默认（自动）内容（只读预览）。
 		const promptSnap = this.host.promptSnapshot();
+		const mcp = this.host.getMcpServers?.() ?? {
+			servers: [],
+			globalPath: "",
+			projectPath: "",
+		};
 		this.host.emit({
 			type: "settings_state",
 			settings: {
@@ -419,6 +430,9 @@ export class SettingsService {
 				quickPhrases: [...this.settings.quickPhrases],
 				quickPhrasesEnabled: this.settings.quickPhrasesEnabled,
 				quickPhrasesSeeded: this.host.stateStore.getQuickPhrasesSeeded(),
+				mcpServers: mcp.servers,
+				mcpGlobalConfigPath: mcp.globalPath,
+				mcpProjectConfigPath: mcp.projectPath,
 			} satisfies UiSettingsState,
 		});
 	}

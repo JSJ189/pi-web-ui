@@ -19,6 +19,7 @@ import {
 	FiTerminal,
 	FiVolume2,
 } from "react-icons/fi";
+import { GoTriangleDown } from "react-icons/go";
 import { LuMessageSquareDashed } from "react-icons/lu";
 import type { ChatState, UpdateAllItem } from "../use-chat";
 import type { CommandDef } from "../types";
@@ -1555,10 +1556,11 @@ export function TopBar({
 						className="plugin-topbar-item"
 						aria-haspopup="menu"
 						aria-expanded={topbarMenuOpen}
+						aria-label={t("pluginTopbarMore")}
 						data-tip={t("pluginTopbarMore")}
 						onClick={() => setTopbarMenuOpen((v) => !v)}
 					>
-						⋯
+						<GoTriangleDown />
 					</button>
 					{/* issue #162：菜单 portal 到 body（fixed），不再挂在会被祖先 overflow 裁剪的容器里。 */}
 					<TopbarOverflowMenu anchorRef={moreBtnRef} open={topbarMenuOpen} onClose={() => setTopbarMenuOpen(false)}>

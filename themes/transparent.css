@@ -10,7 +10,8 @@
  * 这里压暗加重到 0.85（默认 0.78），亮区壁纸下文字仍可读。
  *
  * 全透后 hover/浮动反馈不能依赖容器色（已是 0%），本文件尾段把这些实色
- * hover 统一改成 70% 半透底（折叠摘要、展开条、折叠键、复制键、滚到底按钮）；
+ * hover 统一改成 70% 半透底（折叠摘要、展开条、折叠键、复制键、滚到底按钮、
+ * 快捷短语芯片）；
  * 强调色 hover（accent-soft）与大部分语义按钮（发送/杀进程）不受影响；
  * 例外是 bash 工具卡的「停止」键（.toolcall-kill）：红底红字在全透下是一块脏红，
  * 改成描边式（透明底 + 半透红描边 + 亮红字）。
@@ -105,4 +106,11 @@
 	background: color-mix(in srgb, var(--red) 78%, transparent);
 	border-color: var(--red);
 	color: #fff;
+}
+
+/* 快捷短语芯片：styles.css 给的是实色 --bg-elev（它现在压在消息正文上，必须
+   压得住字），全透主题下改回与上面那组反馈同一档的半透底（仍透图、文字靠
+   压暗加重仍可读）。 */
+.quick-chip {
+	background: color-mix(in srgb, var(--bg-elev) 70%, transparent);
 }

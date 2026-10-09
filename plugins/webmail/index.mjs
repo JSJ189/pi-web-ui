@@ -259,14 +259,23 @@ export default {
 			host.notify("info", "📬 邮件插件：开始安装依赖（imapflow / mailparser / nodemailer）…");
 			const pkgs = ["imapflow@latest", "mailparser@latest", "nodemailer@latest"];
 			const npmCli = resolveNpmCli();
+			const isWin = process.platform === "win32";
 			const child = npmCli
 				? spawn(process.execPath, [npmCli, "--prefix", host.dir, "install", ...pkgs, "--no-audit", "--no-fund"], {
 						stdio: "ignore",
 					})
-				: spawn("npm", ["--prefix", host.dir, "install", ...pkgs, "--no-audit", "--no-fund"], {
-						stdio: "ignore",
-						shell: process.platform === "win32", // win 下 npm 是 .cmd，必须 shell
-					});
+				: isWin
+					? spawn(
+							process.env.ComSpec || "cmd.exe",
+							["/d", "/s", "/c", "npm.cmd", "--prefix", host.dir, "install", ...pkgs, "--no-audit", "--no-fund"],
+							{
+								stdio: "ignore",
+								windowsHide: true,
+							},
+						)
+					: spawn("npm", ["--prefix", host.dir, "install", ...pkgs, "--no-audit", "--no-fund"], {
+							stdio: "ignore",
+						});
 			st.installChild = child;
 			child.on("error", (err) => finish(false, err.message));
 			child.on("exit", (code) => finish(code === 0, `npm exit ${code}`));

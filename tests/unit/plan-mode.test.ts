@@ -83,6 +83,10 @@ describe("planModeDenial", () => {
 		expect(planModeDenial("git", { command: "commit" })?.kind).toBe("write-tool");
 		// 回归 #436：eval 沙箱的 execute 直接 kernel.execute 可写真实文件系统。
 		expect(planModeDenial("eval", { code: "require('fs').writeFileSync('x','y')" })?.kind).toBe("write-tool");
+		// codemode 沙箱代码执行可嵌套调用写工具与执行命令，计划模式禁止。
+		expect(planModeDenial("codemode", { code: "tools.write({ path: 'a.txt', content: 'x' })" })?.kind).toBe(
+			"write-tool",
+		);
 	});
 
 	it("bash 只放行只读命令", () => {
@@ -136,6 +140,7 @@ describe("PLAN_MODE_BLOCKED_TOOL_NAMES（活跃集剥离名单）", () => {
 	it("终端写向工具在剥离名单里（只读的 read/list/wait 不在）", () => {
 		expect(PLAN_MODE_BLOCKED_TOOL_NAMES.has("terminal_input")).toBe(true);
 		expect(PLAN_MODE_BLOCKED_TOOL_NAMES.has("terminal_key")).toBe(true);
+		expect(PLAN_MODE_BLOCKED_TOOL_NAMES.has("codemode")).toBe(true);
 		for (const readonly of ["terminal_read", "terminal_list", "terminal_wait", "read", "grep"]) {
 			expect(PLAN_MODE_BLOCKED_TOOL_NAMES.has(readonly), readonly).toBe(false);
 		}

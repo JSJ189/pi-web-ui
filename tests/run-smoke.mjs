@@ -120,6 +120,9 @@ const ALL = [
 	"running-list-test",
 	"scm-features-test",
 	"settings-test",
+	// SFTP 插件（项目级 .pi/sftp.json）：差异计划 / dry-run / 删除保护 / 凭据引用 / 变更迁移。
+	// 用 tests/lib/mock-ssh.mjs 的内嵌 SFTP 服务，首次需 ssh2（离线拷不到就现场装，故不进 CORE）。
+	"sftp-plugin-test",
 	"shutdown-test",
 	"slash-commands-test",
 	"snapshot-delta-test",

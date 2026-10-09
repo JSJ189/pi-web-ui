@@ -158,3 +158,31 @@ export async function restoreWorkspaceSnapshot(
 		return { success: false, error: msg };
 	}
 }
+
+/** 工作区影子快照记录项（与会话转录消息检查点联动）。 */
+export interface WorkspaceSnapshotRecord {
+	entryId?: string;
+	timestamp: number;
+	snapshotRef: string;
+}
+
+/**
+ * 查找与指定消息 entryId/时间戳最匹配的工作区物理快照：
+ * 优先匹配 exact entryId，其次查找该 entry 时间戳之前（或 +2000ms 内）的最近一份快照。
+ */
+export function findMatchingWorkspaceSnapshot(
+	snapshots: WorkspaceSnapshotRecord[],
+	entryId?: string,
+	entryTs: number = 0,
+): WorkspaceSnapshotRecord | undefined {
+	if (!snapshots || snapshots.length === 0) return undefined;
+	if (entryId) {
+		const exact = snapshots.find((s) => s.entryId === entryId);
+		if (exact) return exact;
+	}
+	const eligible = snapshots.filter((s) => entryTs === 0 || s.timestamp <= entryTs + 2000);
+	if (eligible.length > 0) {
+		return eligible[eligible.length - 1];
+	}
+	return snapshots[0];
+}

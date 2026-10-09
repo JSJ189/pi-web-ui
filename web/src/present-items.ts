@@ -15,8 +15,6 @@
  * 单测：tests/unit/present-items.test.ts
  */
 
-import type { UiMessage } from "./types";
-
 /** 服务端 PresentKind 的前端镜像 + "unknown"（details 缺失/被丢时的兜底）。 */
 export type PresentKind =
 	"image" | "video" | "audio" | "markdown" | "html" | "pdf" | "text" | "binary" | "dir" | "missing" | "unknown";

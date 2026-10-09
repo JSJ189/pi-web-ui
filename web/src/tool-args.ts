@@ -27,6 +27,7 @@ const PATH_RE = /"(path|file_path|filePath|filename|file)"\s*:\s*"((?:[^"\\\n]|\
 const AGENT_RE = /"agent"\s*:\s*"((?:[^"\\\n]|\\.){0,200})"/;
 const TIMEOUT_RE =
 	/"(timeout|timeoutSeconds|timeout_seconds|timeoutSec|timeoutMs|timeout_ms|timeoutMilliseconds)"\s*:\s*(-?\d+(?:\.\d+)?)(?![0-9eE.])/;
+const QUERY_RE = /"(query|q|search)"\s*:\s*"((?:[^"\\\n]|\\.){0,400})"/;
 
 /** 超过这个值（秒）的 timeout 视为脏数据，不显示。 */
 const TIMEOUT_MAX = 1e9;
@@ -40,6 +41,10 @@ interface ToolArgHints {
 	command?: string;
 	/** 派单目标模板名（delegate_task 卡头用）。 */
 	agent?: string;
+	/** codemode 脚本行数。 */
+	codeLines?: number;
+	/** 搜索关键词（tool_search / 检索类工具）。 */
+	query?: string;
 }
 
 /**
@@ -54,6 +59,8 @@ export function toolArgHints(argsText?: string): ToolArgHints {
 		timeout: timeoutHint(text),
 		command: commandHint(argsText),
 		agent: agentHint(text),
+		codeLines: codeLinesHint(argsText),
+		query: queryHint(text),
 	};
 }
 
@@ -134,6 +141,18 @@ function timeoutHint(text: string): string | undefined {
 	return `${Math.round(value / 100) / 10}s`;
 }
 
+function queryHint(text: string): string | undefined {
+	const m = QUERY_RE.exec(text);
+	if (!m) return undefined;
+	const raw = decodeJsonString(m[2]);
+	const cleaned = raw
+		.replace(/[\u0000-\u001f\u007f]/g, " ")
+		.replace(/\s+/g, " ")
+		.trim();
+	if (!cleaned) return undefined;
+	return cleaned.length > 60 ? `${cleaned.slice(0, 57)}…` : cleaned;
+}
+
 /** bash 命令行：只有真能 JSON.parse 出 `command` 字符串时才给（保留原始换行）。 */
 function commandHint(argsText: string): string | undefined {
 	if (argsText.length > SCAN_LIMIT) return undefined;
@@ -154,4 +173,46 @@ function decodeJsonString(raw: string): string {
 	} catch {
 		return raw;
 	}
+}
+
+/** 解析 codemode 参数：支持标准 JSON {"code": "..."} 与直接透传的 JS 源码 */
+export function parseCodemodeArgs(argsText?: string): { code?: string; options?: Record<string, unknown> } {
+	if (!argsText) return {};
+	let rawCode: string | undefined;
+	const trimmed = argsText.trim();
+	if (trimmed.startsWith("{")) {
+		try {
+			const parsed = JSON.parse(trimmed) as { code?: unknown };
+			if (typeof parsed?.code === "string") {
+				rawCode = parsed.code;
+			}
+		} catch {
+			const m = /"code"\s*:\s*"((?:[^"\\]|\\.)*)/.exec(trimmed);
+			if (m) rawCode = decodeJsonString(m[1]);
+		}
+	} else if (trimmed) {
+		rawCode = argsText;
+	}
+
+	if (!rawCode) return {};
+
+	const firstNewline = rawCode.indexOf("\n");
+	const firstLine = firstNewline === -1 ? rawCode.trim() : rawCode.slice(0, firstNewline).trim();
+	let options: Record<string, unknown> | undefined;
+	if (firstLine.startsWith("// @options:")) {
+		try {
+			options = JSON.parse(firstLine.slice(12).trim()) as Record<string, unknown>;
+		} catch {
+			/* ignore malformed options */
+		}
+	}
+
+	return { code: rawCode, options };
+}
+
+function codeLinesHint(argsText: string): number | undefined {
+	const parsed = parseCodemodeArgs(argsText);
+	if (!parsed.code) return undefined;
+	const lines = parsed.code.split("\n").length;
+	return lines > 0 ? lines : undefined;
 }

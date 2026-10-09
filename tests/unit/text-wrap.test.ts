@@ -119,6 +119,7 @@ const TEXT_CONTAINERS = [
 	".msg-error", // 长报错（URL / 报错码）
 	".goalbar-stale", // 旧后端告警（整句，能断行）
 	".goalbar-round > span", // 「最大轮数」标签（窄屏可压）
+	".notice-text", // 顶部通知/提示条文本（可断行）
 ];
 
 /** 行级 flex 里的单行文本：必须显式收着（overflow:hidden + ellipsis）。 */

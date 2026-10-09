@@ -29,8 +29,10 @@ import {
 	createAgentSessionRuntime,
 	createAgentSessionServices,
 	createBashToolDefinition,
+	createCodemodeExtension,
 	createEditToolDefinition,
 	createLocalBashOperations,
+	createToolSearchExtension,
 	createWriteToolDefinition,
 	getAgentDir,
 	SessionManager,
@@ -125,7 +127,24 @@ import { SubagentTemplatesStore, pickTemplatePrompt, type SubagentTemplate } fro
 import { ApprovalRulesStore, extractTargetPath, type ApprovalRule } from "./approval-rules.js";
 import { ComposerDraftsStore } from "./composer-drafts.js";
 import { readPermissionFromSession } from "./permission-preset.js";
-import { createWorkspaceSnapshot, restoreWorkspaceSnapshot } from "./workspace-snapshot.js";
+import {
+	createWorkspaceSnapshot,
+	restoreWorkspaceSnapshot,
+	findMatchingWorkspaceSnapshot,
+} from "./workspace-snapshot.js";
+import {
+	createScheduleToolHost,
+	createConversationReadHost,
+	createClaimToolHost,
+	createCompactContextHost,
+	createSkillToolHost,
+} from "./tool-host-factories.js";
+import { toSubagentSnapshot, listSubagentSnapshots, subagentRunOutcome, roleOutcomeOf } from "./subagent-helpers.js";
+import { resolveUserMessageEntryId, resolveConversationMessageEntry } from "./message-entry-resolver.js";
+import { fillSkillContents } from "./skill-content-filler.js";
+import { hasSettledAssistantUsage, estimateNonSystemTokens, renderMainCompose } from "./prompt-assembler.js";
+import { formatSubagentHandoffMessage, recordSubagentHandoff, type SubagentHandoffRecord } from "./subagent-handoff.js";
+import { executeContextBudgetPruning } from "./context-budget-runner.js";
 import { isPathInsideRoot } from "./approval-rules.js";
 import {
 	approvalSuppressionReason,
@@ -238,8 +257,7 @@ import { sameSessionFile, type SchedulerStore } from "./scheduler-tasks.js";
 import { buildAttachmentMessages, findTurnBaseEntryId, parseModelSpec } from "./attachments.js";
 import { formatQuotedPrompt, readTextQuote } from "./text-quote.js";
 import { buildVisionBridgePrompt, findVisionModels, transcribeImages } from "./vision-bridge.js";
-import { isNotRepoError, scmCommitContext } from "./scm.js";
-import { buildCommitMsgInput, buildCommitMsgPrompt, sanitizeCommitMessage } from "./scm-commitmsg.js";
+import { generateScmCommitMessage } from "./scm-commitmsg.js";
 import {
 	BUILTIN_SOUL,
 	DEFAULT_PROMPT_TEMPLATE,
@@ -272,7 +290,17 @@ import type {
 	UiServiceInfo,
 	UiState,
 	UiSubagentTemplate,
+	McpScope,
+	UiMcpServer,
 } from "./protocol.js";
+import {
+	listAllMcpServers,
+	saveMcpServer as saveMcpServerFile,
+	deleteMcpServer as deleteMcpServerFile,
+	toggleMcpServer as toggleMcpServerFile,
+} from "./mcp-manager.js";
+import { fetchRemoteMcpMarket, fetchRemoteSkillMarket, fetchRemoteSkillContent } from "./market-service.js";
+import type { McpBridge } from "./mcp-bridge.js";
 import { launchOrigin, toServiceInfo } from "./launch-origin.js";
 import {
 	findEntryByUiId,
@@ -306,8 +334,6 @@ const DELTA_ACTIVE_WINDOW_MS = 1500;
  */
 const STATS_CACHE_MS = 250;
 const WIDGET_REFRESH_MS = 2000;
-/** SCM「AI 生成提交信息」的单次补全超时——慢供应商不该让按钮转圈到天荒地老。 */
-const SCM_COMMITMSG_TIMEOUT_MS = 60_000;
 /** Model-stall watchdog: warn (don't abort — deep thinking can be legitimately
  *  quiet for minutes) when a streaming run produced NO SDK events for this long.
  *  Covers the failure class the per-tool watchdog cannot see: half-open API
@@ -326,7 +352,7 @@ const STALL_NOTIFY_MS = (() => {
  *  等于给同一份 JSONL 造第二个 writer（历史分叉的温床）。宽限期够换设备接管。
  *  Override: PI_WEB_OFFLINE_ROWS_TTL_MS（毫秒；0/off/false/no = 不下发离线行 = 旧
  *  口径；上限 6 小时，防 env 写出超长定时器）。 */
-const OFFLINE_ROW_TTL_MS = (() => {
+export const OFFLINE_ROW_TTL_MS = (() => {
 	const raw = String(process.env.PI_WEB_OFFLINE_ROWS_TTL_MS ?? "")
 		.trim()
 		.toLowerCase();
@@ -366,1505 +392,94 @@ export class QuiesceRejectedError extends Error {
 // here but never read into the snapshot path.
 // ---------------------------------------------------------------------------
 
-/** 自家内联扩展名（组合模板渲染，见 prompt-composer.ts）。SDK 以其
- *  "<inline:<name>>" 作为 path；扩展白名单/禁用过滤必须放行它。 */
-const INLINE_PERSONA_EXT = "<inline:pi-webui-persona>";
+import { INLINE_PERSONA_EXT, splitAgentStartPrompt, PI_DOC_PATHS, WINDOWS_PERSONA } from "./persona-chain.js";
+export { splitAgentStartPrompt };
 
-/** 本次 run 的 SDK 原始提示词 + 早前扩展的首尾增补（见 splitExtensionWrap）。
- *  导出仅为单测（tests/unit/persona-prompt-chain.test.ts）可达。
- *  systemPromptOptions 就是 runner 里那个共享可变对象，forceSystemPrompt 有值即
- *  说明前面有扩展替换过提示词；临时清掉再读 event.systemPrompt 就拿到原始基线
- *  （公开字段，不碰 SDK 内部）。没人动过时零开销，直接返回当前文本。 */
-export function splitAgentStartPrompt(event: {
-	readonly systemPrompt: string;
-	systemPromptOptions?: { forceSystemPrompt?: string };
-}): { pre: string; core: string; post: string } {
-	const current = event.systemPrompt;
-	const opts = event.systemPromptOptions;
-	const forced = opts?.forceSystemPrompt;
-	if (!opts || typeof forced !== "string") return { pre: "", core: current, post: "" };
-	try {
-		opts.forceSystemPrompt = undefined;
-		return splitExtensionWrap(event.systemPrompt, current);
-	} finally {
-		opts.forceSystemPrompt = forced;
-	}
-}
+import { makeKillableBashTool, makeAdaptiveBashTool } from "./bash-tool.js";
+export { makeKillableBashTool, makeAdaptiveBashTool };
 
-/** Pi 包文档路径（composer 的 {{pi_docs}} 自动内容用）。随安装位置解析一次。 */
-const PI_DOC_PATHS = (() => {
-	try {
-		const requireLocal = createRequire(import.meta.url);
-		const root = dirname(requireLocal.resolve("@earendil-works/pi-coding-agent/package.json"));
-		return { readme: join(root, "README.md"), docs: join(root, "docs"), examples: join(root, "examples") };
-	} catch {
-		return { readme: "", docs: "", examples: "" };
-	}
-})();
+import {
+	type ToolGuardHook,
+	type AskApprovalFn,
+	withPlanModeGate,
+	withGoalReviewGate,
+	withDelegationGate,
+	makeLateToolGuard,
+	withToolGuard,
+	isInsideWorkspaceRoots,
+	wrapWriteToolWithPermission,
+	EDIT_DESCRIPTION,
+	EDIT_GUIDELINES,
+	wrapEditToolWithPermission,
+	wrapEditSoftToolWithPermission,
+	wrapBashToolWithPermission,
+} from "./tool-guards.js";
+export {
+	type ToolGuardHook,
+	type AskApprovalFn,
+	withPlanModeGate,
+	withGoalReviewGate,
+	withDelegationGate,
+	makeLateToolGuard,
+	withToolGuard,
+	isInsideWorkspaceRoots,
+	wrapWriteToolWithPermission,
+	EDIT_DESCRIPTION,
+	EDIT_GUIDELINES,
+	wrapEditToolWithPermission,
+	wrapEditSoftToolWithPermission,
+	wrapBashToolWithPermission,
+};
 
-/** Windows persona appendix — appended to the SDK system prompt on win32 only.
- *  Two failure modes it guards against: (1) the SDK bash tool has NO default
- *  timeout, so a long-running command hangs the whole conversation forever;
- *  (2) the in-app terminal is an interactive TTY where heredocs / interactive
- *  programs wait for input that never comes. Legacy Chinese files are often
- *  GBK/GB2312 — read them with the right encoding, never paste mojibake into
- *  reasoning/answers. */
-const WINDOWS_PERSONA = `You are a coding agent running on Windows. The bash tool runs Git Bash (bash.exe), not PowerShell. Follow these rules to avoid hanging the session:
+import { normalizeSolPlanToPlanSteps, makePlanUpdateTool } from "./plan-update-tool.js";
+export { normalizeSolPlanToPlanSteps, makePlanUpdateTool };
 
+import { makeMarkersListTool } from "./markers-list-tool.js";
 
+import { makeAskUserQuestionTool, shouldPopQuestion } from "./ask-user-question-tool.js";
+import {
+	type PageCallResult,
+	type PageCallRequest,
+	normalizePageCallTimeoutMs,
+	collectBrowserPageArgs,
+	formatPageCallResult,
+	formatBrowserPageError,
+	makeBrowserPageTool,
+	extractShotImage,
+} from "./browser-page-tool.js";
+export {
+	makeAskUserQuestionTool,
+	shouldPopQuestion,
+	type PageCallResult,
+	type PageCallRequest,
+	normalizePageCallTimeoutMs,
+	collectBrowserPageArgs,
+	formatPageCallResult,
+	formatBrowserPageError,
+	makeBrowserPageTool,
+	extractShotImage,
+};
 
-- ALWAYS pass a timeout parameter to the bash tool (in seconds). There is NO default timeout — a command that never finishes (servers, watchers, infinite loops, slow downloads/installs) will hang the entire conversation indefinitely. Pick a generous timeout for long-running work, but never omit it.
-- NEVER run interactive or foreground long-running commands through the bash tool (vi, less, top, python -, node -, npm run dev, sleep 10000). For servers/daemons use background execution with output redirected to a log file, then poll the log; stop them when done.
-- In the interactive terminal (TTY) — which is Git Bash too, not PowerShell — NEVER use heredocs (<<'EOF' ... EOF) or here-strings, and NEVER start interactive programs (vi, less, python -, node -, npm init): they wait for keyboard input that never arrives and hang the terminal forever. Prefer writing a temp script file (e.g. .pi-tmp.sh) and running it non-interactively. ALWAYS pass a timeout to long-running commands (e.g. \`timeout 120 npm run dev\`).
-
-Many legacy Chinese text files (.html/.txt/.md/.log, exported documents) are GBK/GB2312 encoded: the read tool decodes UTF-8 only and will show mojibake (乱码) for them. If a file's content looks garbled, read it through the terminal instead: in Git Bash use \`cat file | iconv -f GBK -t UTF-8\` (or \`iconv -f GBK -t UTF-8 file\`); in cmd use \`chcp 65001 && type file\`; in PowerShell use \`Get-Content -Encoding Default file\`. Never paste mojibake into your reasoning or answer — describe the decoded content instead.`;
-
-/**
- * Killable bash tool: wraps the SDK bash tool (native process spawn, NO terminal).
- * Used when the「默认 bash 覆盖」setting is OFF. Registers its own AbortController
- * into a client-level set (kills) so abortBash() kills only these commands while the
- * agent run and the conversation continue. Exposes persist (ignored — native has no
- * terminal) plus head/tail (post-processed on the returned output) so the parameter
- * schema stays consistent with the terminal-backed tool.
- */
-export function makeKillableBashTool(
-	cwd: string,
-	kills: Set<AbortController>,
-	/** per-call 返回文本的服务端语言（默认英文）；工具 definition 为纯英文。 */
-	lang: () => ServerLang = () => "en",
-): ToolDefinition {
-	const base = createLocalBashOperations();
-	const tool = createBashToolDefinition(cwd, {
-		operations: {
-			exec: async (command, c, opts) => {
-				const ac = new AbortController();
-				kills.add(ac);
-				try {
-					const signals = [opts.signal, ac.signal].filter((s): s is AbortSignal => s !== undefined);
-					return await base.exec(command, c, {
-						...opts,
-						signal: signals.length > 1 ? AbortSignal.any(signals) : signals[0],
-					});
-				} finally {
-					kills.delete(ac);
-				}
-			},
-		},
-	});
-	// Keep the SDK definition so execute receives the current session context.
-	return {
-		name: tool.name,
-		label: tool.label,
-		description: BASH_DESCRIPTION,
-		promptSnippet: BASH_PROMPT_SNIPPET,
-		promptGuidelines: BASH_PROMPT_GUIDELINES,
-		parameters: BASH_PARAMETERS,
-		prepareArguments: tool.prepareArguments,
-		executionMode: tool.executionMode,
-		execute: async (toolCallId, params, signal, onUpdate, ctx) => {
-			const result = (await tool.execute(
-				toolCallId,
-				params as { command: string; timeout?: number },
-				signal,
-				onUpdate,
-				ctx,
-			)) as { content?: Array<{ type: string; text?: string }> };
-			// head/tail 后处理（native 无终端，直接截返回行即可）。
-			const p = params as { head?: number; tail?: number };
-			if ((p?.head || p?.tail) && result?.content?.[0]?.text != null) {
-				result.content![0].text = applyHeadTail(result.content![0].text!, p.head, p.tail, lang());
-			}
-			return result as never;
-		},
-	} as ToolDefinition;
-}
-
-/**
- * 动态分流 bash：按「默认 bash 覆盖」设置（terminalBash）在调用时决定走哪套——
- * 关 = 原生 SDK bash（纯进程、不开终端）；开 = 终端接管 bash（persist 决定一次性/
- * 持久）。开关因此即时生效（customTools 固定于 runtime 创建，不能在创建时二选一）。
- *
- * 提示词不在此覆盖：两条路径共用 server/tool-prompts.ts 的那一份（单源），
- * 覆盖 description 正是当年终端版文案被写死却不生效的成因。
- */
-export function makeAdaptiveBashTool(
-	killable: ToolDefinition,
-	terminalBacked: ToolDefinition,
-	useTerminal: () => boolean,
-): ToolDefinition {
-	return {
-		...killable,
-		execute: (id, params, signal, onUpdate, ctx) => {
-			const p = params as { persist?: boolean };
-			// Windows 下 ConPTY 架构限制（MSYS2 全局控制台上限 128，且高频创建销毁容易句柄耗尽/卡顿）：
-			// 一次性命令（persist !== true）走原生 spawn（基于 pipe，无需分配控制台，速度快 60 倍且免死锁，issue #269）；
-			// 只有明确需要持久交互（persist === true）才进可见终端 ai-bash。
-			const shouldUseTerminal = useTerminal() && (process.platform !== "win32" || p?.persist === true);
-			return (shouldUseTerminal ? terminalBacked : killable).execute(id, params as never, signal, onUpdate, ctx);
-		},
-	};
-}
-
-/**
- * 插件工具拦截钩子（P1-5）：index.ts 注入，把 bash/read 的 pre/post 决策委托给
- *  PluginManager（evaluateToolPre/evaluateToolPost）。未注入时零开销直通。
- */
-export interface ToolGuardHook {
-	pre: (
-		req: ToolPreRequest,
-		lang: string,
-	) => Promise<{
-		verdict:
-			| { decision: "allow" }
-			| { decision: "deny"; reason?: string; reasonEn?: string }
-			| { decision: "ask"; reason?: string; reasonEn?: string };
-		pluginId?: string;
-	}>;
-	post: (
-		req: ToolPostRequest,
-		lang: string,
-	) => Promise<{ content?: Array<{ type: string; text?: string }>; pluginIds: string[] } | undefined>;
-}
-
-/** 人机协同审批回调（第 7 参数 = 命中的规则档位，供「允许同类」记忆；第 8 参数 = 命中清单，用于高危片段定位）。 */
-export type AskApprovalFn = (
-	toolCallId: string,
-	toolName: string,
-	params: unknown,
-	reason?: string,
-	reasonEn?: string,
-	conversationId?: string,
-	category?: UiApprovalCategory,
-	hits?: UiApprovalHit[],
-) => Promise<ToolApprovalResolution>;
-
-/**
- * 计划模式闸门装饰（通用）：套在任何工具定义外层，只在**执行前**判定一次。
- * 与权限沙箱/插件守卫平行且更靠外 —— 计划模式是会话级硬约束，不给任何
- * 「记住同类/全部允许」的口子（允许了就等于放开了实施）。
- * 关闭时零开销（返回原定义，不包 execute）。
- */
-export function withPlanModeGate(
-	def: ToolDefinition,
-	planMode: () => boolean,
-	getLang: () => ServerLang,
-): ToolDefinition {
-	return {
-		...def,
-		execute: (async (...args: unknown[]) => {
-			if (planMode()) {
-				const params = args[1];
-				const denied = planModeDenial(def.name, params);
-				if (denied) {
-					const reason = pick(getLang(), denied.reason, denied.reasonEn);
-					const err = new Error(reason);
-					(err as unknown as Record<string, unknown>).details = {
-						guardDenied: true,
-						planModeDenied: true,
-						kind: denied.kind,
-					};
-					throw err;
-				}
-			}
-			return (def.execute as (...a: unknown[]) => unknown)(...args);
-		}) as ToolDefinition["execute"],
-	};
-}
-
-/**
- * 目标审查回合闸门（server/goal-review-gate.ts）：主对话在 `awaitingVerdict`
- * 置位期间是审查者 —— 写类工具、非常规 bash、派发类工具、向用户提问一律拒。
- * 形状与 withPlanModeGate / withDelegationGate 同构，串在最外层（理由最贴合
- * 此刻：跟模型说「这是审查回合」比「这是计划/审查者模式」更有用）。闸门无状态
- * （每次执行只读 `awaitingVerdict`），verdict 落定即自动恢复，不存在钉死。
- */
-export function withGoalReviewGate(
-	def: ToolDefinition,
-	reviewTurn: () => boolean,
-	getLang: () => ServerLang,
-): ToolDefinition {
-	return {
-		...def,
-		execute: (async (...args: unknown[]) => {
-			if (reviewTurn()) {
-				const params = args[1];
-				const denied = goalReviewDenial(def.name, params);
-				if (denied) {
-					return {
-						content: [{ type: "text", text: pick(getLang(), denied.reason, denied.reasonEn) }],
-						details: { guardDenied: true, goalReviewDenied: true, kind: denied.kind },
-						isError: true,
-					} as never;
-				}
-			}
-			return (def.execute as (...a: unknown[]) => unknown)(...args);
-		}) as ToolDefinition["execute"],
-	};
-}
-
-/**
- * 审查者模式闸门（server/delegate-mode.ts）：主对话只审阅不施工 ——
- * 写类工具、非常规 bash、派发类工具一律拒。形状与 withPlanModeGate 同构，
- * 串在它**外层**（两者都开时，先问计划模式还是审查者模式都不影响结果：
- * 都是拒，只是理由不同）。
- */
-export function withDelegationGate(
-	def: ToolDefinition,
-	delegateMode: () => boolean,
-	getLang: () => ServerLang,
-): ToolDefinition {
-	return {
-		...def,
-		execute: (async (...args: unknown[]) => {
-			if (delegateMode()) {
-				const params = args[1];
-				const denied = delegationDenial(def.name, params);
-				if (denied) {
-					return {
-						content: [{ type: "text", text: pick(getLang(), denied.reason, denied.reasonEn) }],
-						details: { guardDenied: true, delegateDenied: true, kind: denied.kind },
-						isError: true,
-					} as never;
-				}
-			}
-			return (def.execute as (...a: unknown[]) => unknown)(...args);
-		}) as ToolDefinition["execute"],
-	};
-}
-
-/**
- * 给已接管工具（bash/read）包上拦截守卫与人机协同审批：
- * 1. pre guard 命中 deny → 直接阻断；
- * 2. pre guard 命中 ask 或内置高危操作检测（rm -rf / 敏感文件覆盖等） →
- *    触发 tool_approval_pending 等待用户审批；
- *    - 用户选择 approve: 放行执行
- *    - 用户选择 edit: 使用用户修改后的参数执行（Edit & Run）
- *    - 用户选择 deny: 阻断并告知模型
- * 3. post guard 合并（脱敏/补上下文）。
- */
-/**
- * 把「可能晚一点才注入」的插件守卫包成**调用时解析**的代理。
- *
- * 为什么需要它（P1-5 的真实缺口）：`withToolGuard` 在建工具定义时就把 `opts.guard`
- * 捕进了闭包，而 runtime 是在 `ClientSession.create()` 里建的、`cs.toolGuard` 却是在
- * `AgentService.attach()` 末尾才赋值 —— 直接传 `this.toolGuard` 会把 `undefined`
- * 永久固化进那条对话的工具里，于是「attach 时恢复出来的那条对话」永远不受
- * 插件 `onToolPre/onToolPost` 约束（只有新建/切换对话才带上）。代理每次调用才解析，
- * 与赋值时序无关；未注入时逐字等价于直通（allow / undefined）。
- */
-export function makeLateToolGuard(get: () => ToolGuardHook | undefined): ToolGuardHook {
-	return {
-		pre: (req, lang) => get()?.pre(req, lang) ?? Promise.resolve({ verdict: { decision: "allow" as const } }),
-		post: (req, lang) => get()?.post(req, lang) ?? Promise.resolve(undefined),
-	};
-}
-
-export function withToolGuard(
-	def: ToolDefinition,
-	opts: {
-		toolName: GuardedToolName;
-		guard?: ToolGuardHook;
-		conversationId?: () => string | undefined;
-		getLang: () => ServerLang;
-		cwd?: string;
-		getRoots?: () => string[];
-		askApproval?: AskApprovalFn;
-		getRules?: () => ApprovalRule[];
-	},
-): ToolDefinition {
-	const guard = opts.guard;
-	const toolName = opts.toolName;
-	if (!guard && !opts.askApproval) return def;
-
-	return {
-		...def,
-		execute: (async (toolCallId: string, params: unknown, signal: unknown, onUpdate: unknown, ctx: unknown) => {
-			const lang = opts.getLang();
-			const conversationId = opts.conversationId?.();
-			let pre: Awaited<ReturnType<ToolGuardHook["pre"]>> | undefined;
-			if (guard) {
-				try {
-					pre = await guard.pre({ toolName, params, conversationId }, lang);
-				} catch {
-					pre = { verdict: { decision: "allow" } };
-				}
-			}
-
-			// 检查是否需要人工协同审批（Human-in-the-Loop）
-			let needApproval = false;
-			let approvalReason: string | undefined;
-			let approvalReasonEn: string | undefined;
-			let approvalCategory: UiApprovalCategory | undefined;
-
-			// 1. 系统核心安全：内置高危操作检测与自定义审批规则先行（优先级最高，防短路）
-			let danger: ReturnType<typeof checkDangerousToolCall> | undefined;
-			if (opts.cwd && opts.askApproval) {
-				danger = checkDangerousToolCall(toolName, params, opts.cwd, opts.getRoots?.() ?? [], opts.getRules?.());
-				if (danger.denied) {
-					const reasonText = danger.reason ? ` 原因：${danger.reason}` : "";
-					const reasonTextEn = danger.reasonEn ? ` Reason: ${danger.reasonEn}` : "";
-					const text = pick(
-						lang,
-						`【工具执行被审批规则直接阻断】${reasonText}`,
-						`[Tool execution blocked by approval rule]${reasonTextEn}`,
-					);
-					return {
-						content: [{ type: "text", text }],
-						details: { guardDenied: true, ruleDenied: true, reason: danger.reason },
-						isError: true,
-					} as never;
-				}
-			}
-
-			// 2. 插件前置守卫 deny 拦截（带 isError 标记）
-			if (pre?.verdict.decision === "deny") {
-				const text = denialText(pre.verdict, pre.pluginId ?? "plugin", lang);
-				return {
-					content: [{ type: "text", text }],
-					details: { guardDenied: true, decision: pre.verdict.decision, pluginId: pre.pluginId },
-					isError: true,
-				} as never;
-			}
-
-			// 3. 决定是否需要弹窗审批（系统高危 ask 优先于插件通用 ask，防止恶意或低危插件掩盖高危告警）
-			let approvalHits: UiApprovalHit[] | undefined;
-			if (danger?.dangerous) {
-				needApproval = true;
-				approvalReason = danger.reason;
-				approvalReasonEn = danger.reasonEn;
-				approvalCategory = danger.category;
-				approvalHits = danger.hits;
-			} else if (pre?.verdict.decision === "ask") {
-				needApproval = true;
-				approvalReason = pre.verdict.reason ?? "插件要求确认本次操作";
-				approvalReasonEn = pre.verdict.reasonEn ?? "Plugin requested confirmation for this operation";
-				// 插件档位按插件 id 分：用户可以「允许同类」= 该插件的确认以后不再问。
-				approvalCategory = pluginApprovalCategory(pre.pluginId ?? "plugin");
-			}
-
-			let effectiveParams = params;
-			let userEdited = false;
-			if (needApproval && opts.askApproval) {
-				const res = await opts.askApproval(
-					toolCallId,
-					toolName,
-					params,
-					approvalReason,
-					approvalReasonEn,
-					conversationId,
-					approvalCategory,
-					approvalHits,
-				);
-				if (res.decision === "deny") {
-					const reasonText = res.reason ? ` 原因：${res.reason}` : "";
-					const reasonTextEn = res.reason ? ` Reason: ${res.reason}` : "";
-					return {
-						content: [
-							{
-								type: "text",
-								text: pick(lang, `【操作被用户拒绝】${reasonText}`, `[Operation denied by user]${reasonTextEn}`),
-							},
-						],
-						details: { guardDenied: true, userDenied: true, reason: res.reason },
-						isError: true,
-					} as never;
-				} else if (res.decision === "edit") {
-					effectiveParams = res.editedParams ?? params;
-					userEdited = true;
-				}
-			} else if (pre?.verdict.decision === "ask") {
-				// 无审批通道时回落至原先的阻断行为
-				const text = denialText(pre.verdict, pre.pluginId ?? "plugin", lang);
-				return {
-					content: [{ type: "text", text }],
-					details: { guardDenied: true, decision: pre.verdict.decision, pluginId: pre.pluginId },
-				} as never;
-			}
-
-			const result = (await (def.execute as (...a: never[]) => Promise<unknown>)(
-				toolCallId as never,
-				effectiveParams as never,
-				signal as never,
-				onUpdate as never,
-				ctx as never,
-			)) as {
-				content?: Array<{ type: string; text?: string }>;
-				details?: Record<string, unknown>;
-				[k: string]: unknown;
-			};
-
-			if (userEdited && result && typeof result === "object") {
-				result.details = {
-					...result.details,
-					userEdited: true,
-					originalParams: params,
-					executedParams: effectiveParams,
-				};
-			}
-
-			if (guard) {
-				let post: ToolPostEdit | undefined | { content?: Array<{ type: string; text?: string }>; pluginIds: string[] };
-				try {
-					post = await guard.post({ toolName, params: effectiveParams, result, conversationId }, lang);
-				} catch {
-					post = undefined;
-				}
-				if (post?.content) return { ...result, content: post.content } as never;
-			}
-			return result as never;
-		}) as never,
-	} as ToolDefinition;
-}
-
-/** 校验目标路径是否在工作区（或多根工作区）内。严格规范化防止 ".." 逃逸与 Windows 盘符大小写不一致。 */
-function isInsideWorkspaceRoots(targetPath: string, cwd: string, roots: string[] = []): boolean {
-	const abs = resolve(cwd, targetPath);
-	const allRoots = [resolve(cwd), ...roots.map((r) => resolve(r))];
-	return allRoots.some((r) => isPathInsideRoot(abs, r));
-}
-
-/**
- * 为 write 工具包装会话级权限沙箱与人机协同审批。
- * `base` = 覆盖基底：第三方扩展注册的同名 write 优先（见 tool-overrides.ts），
- * 省略则是 SDK 内置实现 —— 于是权限门禁叠在扩展实现之上，而不是把它顶掉。
- */
-function wrapWriteToolWithPermission(
-	cwd: string,
-	getPermission: () => string,
-	getRoots: () => string[],
-	getLang: () => ServerLang,
-	askApproval?: AskApprovalFn,
-	getConversationId?: () => string | undefined,
-	getRules?: () => ApprovalRule[],
-	base: AnyToolDefinition = createWriteToolDefinition(cwd),
-): ToolDefinition {
-	return {
-		...base,
-		execute: async (toolCallId, params, signal, onUpdate, ctx) => {
-			const perm = getPermission();
-			if (perm === "read-only") {
-				return {
-					content: [
-						{
-							type: "text",
-							text: pick(
-								getLang(),
-								"【权限被拒绝】当前会话处于「只读模式」（read-only），禁止写入文件。若需修改请切换权限预设。",
-								"[Permission Denied] The current session is in 'read-only' mode; writing files is forbidden. Switch permission preset if needed.",
-							),
-						},
-					],
-					isError: true,
-				} as never;
-			}
-			if (perm === "workspace-write-never") {
-				const p = extractTargetPath(params);
-				if (!isInsideWorkspaceRoots(p, cwd, getRoots())) {
-					return {
-						content: [
-							{
-								type: "text",
-								text: pick(
-									getLang(),
-									`【权限被拒绝】当前会话处于「工作区内修改」（workspace-write-never）模式，禁止修改工作区外部文件（"${p}"）。若需修改请切换至「完全权限」。`,
-									`[Permission Denied] The current session is in 'workspace-write-never' mode; writing files outside the workspace ("${p}") is forbidden. Switch to 'danger-full-access' if needed.`,
-								),
-							},
-						],
-						isError: true,
-					} as never;
-				}
-			}
-
-			// 高危写操作人机协同审批拦截（如敏感配置修改）与规则匹配
-			let effectiveParams = params;
-			let userEdited = false;
-			if (askApproval) {
-				const danger = checkDangerousToolCall("write", params, cwd, getRoots(), getRules?.());
-				if (danger.denied) {
-					return {
-						content: [
-							{
-								type: "text",
-								text: pick(
-									getLang(),
-									`【文件写入被审批规则直接阻断】${danger.reason ? ` 原因：${danger.reason}` : ""}`,
-									`[File write blocked by approval rule]${danger.reason ? ` Reason: ${danger.reason}` : ""}`,
-								),
-							},
-						],
-						details: { guardDenied: true, ruleDenied: true, reason: danger.reason },
-						isError: true,
-					} as never;
-				}
-				if (danger.dangerous) {
-					const res = await askApproval(
-						toolCallId,
-						"write",
-						params,
-						danger.reason,
-						danger.reasonEn,
-						getConversationId?.(),
-						danger.category,
-						danger.hits,
-					);
-					if (res.decision === "deny") {
-						return {
-							content: [
-								{
-									type: "text",
-									text: pick(
-										getLang(),
-										`【文件写入被用户拒绝】${res.reason ? ` 原因：${res.reason}` : ""}`,
-										`[File write denied by user]${res.reason ? ` Reason: ${res.reason}` : ""}`,
-									),
-								},
-							],
-							details: { guardDenied: true, userDenied: true, reason: res.reason },
-							isError: true,
-						} as never;
-					} else if (res.decision === "edit") {
-						effectiveParams = res.editedParams ?? params;
-						userEdited = true;
-					}
-				}
-			}
-
-			const result = (await base.execute(toolCallId, effectiveParams as never, signal, onUpdate, ctx)) as unknown as {
-				details?: Record<string, unknown>;
-				[k: string]: unknown;
-			};
-			if (userEdited && result && typeof result === "object") {
-				result.details = {
-					...result.details,
-					userEdited: true,
-					originalParams: params,
-					executedParams: effectiveParams,
-				};
-			}
-			return result as never;
-		},
-	} as ToolDefinition;
-}
-
-/**
- * `edit` 的模型可见主描述（仅无扩展覆盖时的基底用；有扩展 edit 时保留它自己的文案）。
- *
- * SDK 自带的描述与其自带 guidelines 几乎逐条复述（oldText 要唯一匹配 / 多处改动合成一次调用 /
- * 不要垫大段未改区域都说两遍），单条信息重复进上下文。这里只留一句「做什么」，细节交给
- * guidelines（它们是 SDK 的，本模块不碰）。
- */
-const EDIT_DESCRIPTION =
-	"Edit a single file by exact text replacement: every edits[].oldText must uniquely match the original file.";
-
-/** `edit` 的精简 guidelines（同上：只用于无扩展覆盖的基底；与 SDK 四条规则一一对应，只去冗余措辞）。 */
-const EDIT_GUIDELINES = [
-	"Use edit for precise changes; oldText must match exactly",
-	"When changing several separate locations in one file, put them in ONE call's edits[] instead of multiple calls",
-	"Each oldText matches the original file, not earlier edits in the same call — never overlapping or nested",
-	"Keep oldText small but unique; never pad with large unchanged regions",
-];
-
-/**
- * 为 edit 工具包装会话级权限沙箱与人机协同审批（基底语义同 write）。
- */
-function wrapEditToolWithPermission(
-	cwd: string,
-	getPermission: () => string,
-	getRoots: () => string[],
-	getLang: () => ServerLang,
-	askApproval?: AskApprovalFn,
-	getConversationId?: () => string | undefined,
-	getRules?: () => ApprovalRule[],
-	base: AnyToolDefinition = createEditToolDefinition(cwd),
-): ToolDefinition {
-	return {
-		...base,
-		execute: async (toolCallId, params, signal, onUpdate, ctx) => {
-			const perm = getPermission();
-			if (perm === "read-only") {
-				return {
-					content: [
-						{
-							type: "text",
-							text: pick(
-								getLang(),
-								"【权限被拒绝】当前会话处于「只读模式」（read-only），禁止编辑文件。若需修改请切换权限预设。",
-								"[Permission Denied] The current session is in 'read-only' mode; editing files is forbidden. Switch permission preset if needed.",
-							),
-						},
-					],
-					isError: true,
-				} as never;
-			}
-			if (perm === "workspace-write-never") {
-				const p = extractTargetPath(params);
-				if (!isInsideWorkspaceRoots(p, cwd, getRoots())) {
-					return {
-						content: [
-							{
-								type: "text",
-								text: pick(
-									getLang(),
-									`【权限被拒绝】当前会话处于「工作区内修改」（workspace-write-never）模式，禁止修改工作区外部文件（"${p}"）。若需修改请切换至「完全权限」。`,
-									`[Permission Denied] The current session is in 'workspace-write-never' mode; editing files outside the workspace ("${p}") is forbidden. Switch to 'danger-full-access' if needed.`,
-								),
-							},
-						],
-						isError: true,
-					} as never;
-				}
-			}
-
-			// 高危修改人机协同审批拦截与规则匹配
-			let effectiveParams = params;
-			let userEdited = false;
-			if (askApproval) {
-				const danger = checkDangerousToolCall("edit", params, cwd, getRoots(), getRules?.());
-				if (danger.denied) {
-					return {
-						content: [
-							{
-								type: "text",
-								text: pick(
-									getLang(),
-									`【文件编辑被审批规则直接阻断】${danger.reason ? ` 原因：${danger.reason}` : ""}`,
-									`[File edit blocked by approval rule]${danger.reason ? ` Reason: ${danger.reason}` : ""}`,
-								),
-							},
-						],
-						details: { guardDenied: true, ruleDenied: true, reason: danger.reason },
-						isError: true,
-					} as never;
-				}
-				if (danger.dangerous) {
-					const res = await askApproval(
-						toolCallId,
-						"edit",
-						params,
-						danger.reason,
-						danger.reasonEn,
-						getConversationId?.(),
-						danger.category,
-						danger.hits,
-					);
-					if (res.decision === "deny") {
-						return {
-							content: [
-								{
-									type: "text",
-									text: pick(
-										getLang(),
-										`【文件编辑被用户拒绝】${res.reason ? ` 原因：${res.reason}` : ""}`,
-										`[File edit denied by user]${res.reason ? ` Reason: ${res.reason}` : ""}`,
-									),
-								},
-							],
-							details: { guardDenied: true, userDenied: true, reason: res.reason },
-							isError: true,
-						} as never;
-					} else if (res.decision === "edit") {
-						effectiveParams = res.editedParams ?? params;
-						userEdited = true;
-					}
-				}
-			}
-
-			const result = (await base.execute(toolCallId, effectiveParams as never, signal, onUpdate, ctx)) as unknown as {
-				details?: Record<string, unknown>;
-				[k: string]: unknown;
-			};
-			if (userEdited && result && typeof result === "object") {
-				result.details = {
-					...result.details,
-					userEdited: true,
-					originalParams: params,
-					executedParams: effectiveParams,
-				};
-			}
-			return result as never;
-		},
-	} as ToolDefinition;
-}
-
-/** 为 edit_soft 工具包装会话级权限沙箱与人机协同审批。 */
-function wrapEditSoftToolWithPermission(
-	tool: ToolDefinition,
-	cwd: string,
-	getPermission: () => string,
-	getRoots: () => string[],
-	getLang: () => ServerLang,
-	askApproval?: AskApprovalFn,
-	getConversationId?: () => string | undefined,
-	getRules?: () => ApprovalRule[],
-): ToolDefinition {
-	return {
-		...tool,
-		execute: async (toolCallId, params, signal, onUpdate, ctx) => {
-			const perm = getPermission();
-			if (perm === "read-only") {
-				return {
-					content: [
-						{
-							type: "text",
-							text: pick(
-								getLang(),
-								"【权限被拒绝】当前会话处于「只读模式」（read-only），禁止编辑文件。若需修改请切换权限预设。",
-								"[Permission Denied] The current session is in 'read-only' mode; editing files is forbidden. Switch permission preset if needed.",
-							),
-						},
-					],
-					isError: true,
-				} as never;
-			}
-			if (perm === "workspace-write-never") {
-				const p = (params as { path?: string })?.path ?? "";
-				if (!isInsideWorkspaceRoots(p, cwd, getRoots())) {
-					return {
-						content: [
-							{
-								type: "text",
-								text: pick(
-									getLang(),
-									`【权限被拒绝】当前会话处于「工作区内修改」（workspace-write-never）模式，禁止修改工作区外部文件（"${p}"）。若需修改请切换至「完全权限」。`,
-									`[Permission Denied] The current session is in 'workspace-write-never' mode; editing files outside the workspace ("${p}") is forbidden. Switch to 'danger-full-access' if needed.`,
-								),
-							},
-						],
-						isError: true,
-					} as never;
-				}
-			}
-
-			// 高危修改人机协同审批拦截与规则匹配
-			let effectiveParams = params;
-			let userEdited = false;
-			if (askApproval) {
-				const danger = checkDangerousToolCall("edit_soft", params, cwd, getRoots(), getRules?.());
-				if (danger.denied) {
-					return {
-						content: [
-							{
-								type: "text",
-								text: pick(
-									getLang(),
-									`【文件编辑被审批规则直接阻断】${danger.reason ? ` 原因：${danger.reason}` : ""}`,
-									`[File edit blocked by approval rule]${danger.reason ? ` Reason: ${danger.reason}` : ""}`,
-								),
-							},
-						],
-						details: { guardDenied: true, ruleDenied: true, reason: danger.reason },
-						isError: true,
-					} as never;
-				}
-				if (danger.dangerous) {
-					const res = await askApproval(
-						toolCallId,
-						"edit_soft",
-						params,
-						danger.reason,
-						danger.reasonEn,
-						getConversationId?.(),
-						danger.category,
-						danger.hits,
-					);
-					if (res.decision === "deny") {
-						return {
-							content: [
-								{
-									type: "text",
-									text: pick(
-										getLang(),
-										`【文件编辑被用户拒绝】${res.reason ? ` 原因：${res.reason}` : ""}`,
-										`[File edit denied by user]${res.reason ? ` Reason: ${res.reason}` : ""}`,
-									),
-								},
-							],
-							details: { guardDenied: true, userDenied: true, reason: res.reason },
-							isError: true,
-						} as never;
-					} else if (res.decision === "edit") {
-						effectiveParams = res.editedParams ?? params;
-						userEdited = true;
-					}
-				}
-			}
-
-			const result = (await tool.execute(toolCallId, effectiveParams as never, signal, onUpdate, ctx)) as unknown as {
-				details?: Record<string, unknown>;
-				[k: string]: unknown;
-			};
-			if (userEdited && result && typeof result === "object") {
-				result.details = {
-					...result.details,
-					userEdited: true,
-					originalParams: params,
-					executedParams: effectiveParams,
-				};
-			}
-			return result as never;
-		},
-	};
-}
-
-/**
- * 将 SoL-Pi 的 update_plan 步骤结构（{ id, goal, status }）标准化为 pi-web-ui 的 PlanStep[] 结构。
- */
-export function normalizeSolPlanToPlanSteps(steps: unknown[]): {
-	steps: import("./protocol.js").PlanStep[];
-	activeStepId?: string | null;
-} {
-	if (!Array.isArray(steps)) return { steps: [] };
-	let activeStepId: string | null = null;
-	const normalizedSteps: import("./protocol.js").PlanStep[] = steps.map((s, idx) => {
-		const step = (s && typeof s === "object" ? s : {}) as Record<string, unknown>;
-		const id = typeof step.id === "string" && step.id ? step.id : String(idx + 1);
-		const rawTitle =
-			typeof step.goal === "string" ? step.goal : typeof step.title === "string" ? step.title : `Step ${id}`;
-		const rawStatus = typeof step.status === "string" ? step.status : "pending";
-		let status: "pending" | "in_progress" | "done" | "failed" = "pending";
-		if (rawStatus === "completed" || rawStatus === "done") {
-			status = "done";
-		} else if (rawStatus === "in_progress") {
-			status = "in_progress";
-			if (!activeStepId) activeStepId = id;
-		} else if (rawStatus === "failed") {
-			status = "failed";
-		}
-		const description = typeof step.description === "string" ? step.description : undefined;
-		return { id, title: rawTitle, status, ...(description ? { description } : {}) };
-	});
-	return { steps: normalizedSteps, activeStepId };
-}
-
-/**
- * 结构化任务执行计划更新工具（plan_update）— Plan Mode / Step State Machine。
- */
-export function makePlanUpdateTool(
-	planManager: PlanManager,
-	getActiveConvTarget: () => string | { id: string; sessionId?: string; sessionManager?: unknown },
-	emit: (msg: ServerMessage) => void,
-	flushSnapshot: () => void,
-	onPersist?: (convId: string, plan: import("./protocol.js").PlanState) => void,
-): ToolDefinition {
-	return {
-		name: PLAN_UPDATE_TOOL_NAME,
-		label: "plan_update",
-		description:
-			"Update the structured task plan / step state machine (Plan Mode) and track progress (pending -> in_progress -> done/failed).",
-		promptSnippet: "track decision-ready steps, file touch list, and live status",
-		promptGuidelines: [
-			"Use plan_update early on non-trivial tasks to outline decision-ready steps before coding",
-			"Per step: discovery conclusions, files to be touched (File Touch List), rollback strategy",
-			"Update step status as work progresses for real-time visibility",
-		],
-		parameters: Type.Object({
-			steps: Type.Array(
-				Type.Object({
-					id: Type.String({ description: "Unique step ID, e.g. '1', 'step-1'" }),
-					title: Type.String({ description: "Short step title" }),
-					status: Type.Optional(
-						Type.Unsafe<"pending" | "in_progress" | "done" | "failed">({
-							type: "string",
-							enum: ["pending", "in_progress", "done", "failed"],
-							description: "Step status: pending | in_progress | done | failed (default: pending)",
-						}),
-					),
-					description: Type.Optional(
-						Type.String({
-							description: "Optional step detail: acceptance criteria, files touched, rollback note.",
-						}),
-					),
-				}),
-				{ description: "List of plan steps" },
-			),
-			activeStepId: Type.Optional(Type.String({ description: "ID of the step currently being executed" })),
-		}),
-		execute: async (toolCallId: string, params: unknown) => {
-			const target = getActiveConvTarget();
-			const convId = typeof target === "string" ? target : target.id;
-			const sessionId = typeof target === "string" ? undefined : target.sessionId;
-			const p = params as { steps: import("./protocol.js").PlanStep[]; activeStepId?: string | null };
-			const plan = planManager.setPlan(convId, p.steps, p.activeStepId, sessionId);
-			if (typeof target !== "string" && target.sessionManager) {
-				try {
-					const sm = target.sessionManager as { appendCustomEntry?: (type: string, data: unknown) => void };
-					sm?.appendCustomEntry?.("plan/update", { plan });
-				} catch {
-					// 转录追加失败不影响主流程
-				}
-			}
-			onPersist?.(convId, plan);
-			emit({
-				type: "plan_updated",
-				conversationId: convId,
-				plan,
-			});
-			flushSnapshot();
-			const summary = planManager.describePlan(convId);
-			return {
-				content: [{ type: "text", text: `Plan updated successfully.\n\n${summary}` }],
-				details: { plan },
-			};
-		},
-	};
-}
-
-/** 为 bash 工具包装只读拦截。 */
-function wrapBashToolWithPermission(
-	tool: ToolDefinition,
-	getPermission: () => string,
-	getLang: () => ServerLang,
-): ToolDefinition {
-	return {
-		...tool,
-		execute: async (toolCallId, params, signal, onUpdate, ctx) => {
-			const perm = getPermission();
-			if (perm === "read-only") {
-				return {
-					content: [
-						{
-							type: "text",
-							text: pick(
-								getLang(),
-								"【权限被拒绝】当前会话处于「只读模式」（read-only），禁止执行终端命令。若需执行请切换权限预设。",
-								"[Permission Denied] The current session is in 'read-only' mode; running shell commands is forbidden. Switch permission preset if needed.",
-							),
-						},
-					],
-					isError: true,
-				} as never;
-			}
-			return tool.execute(toolCallId, params as never, signal, onUpdate, ctx);
-		},
-	};
-}
-
-/**
- * 任务列表只读查询工具（todo_list）— 读操作仍走真工具。
- */
-function makeMarkersListTool(
-	getActiveId: () => string,
-	markerSvc: {
-		describe: (id: string, tool: string, inc?: boolean) => string;
-		getRawState: (id: string, ns: string) => unknown;
-	},
-): ToolDefinition {
-	return {
-		name: MARKERS_LIST_TOOL_NAME,
-		promptSnippet: "list inline-marker tasks (read-only; writes use [[todo:...]])",
-		label: "List marker state",
-		description:
-			"Read-only query of inline marker state. All WRITE operations must use inline markers ([[todo:new:...]] etc.) in the reply body — never this tool.",
-		parameters: Type.Object({
-			action: Type.Unsafe<string>({ enum: ["list"] }),
-			tool: Type.Optional(Type.Literal("todo")),
-			includeDeleted: Type.Optional(
-				Type.Boolean({
-					description: "Include deleted tasks (tombstones, todo only).",
-				}),
-			),
-		}),
-		execute: async (_id: string, params: unknown) => {
-			const p = params as { action: string; tool?: string; includeDeleted?: boolean };
-			const convId = getActiveId();
-			const text = markerSvc.describe(convId, "todo", !!p.includeDeleted);
-			const state = markerSvc.getRawState(convId, "todo") as { tasks: unknown[]; nextId: number } | undefined;
-			const visible = (state?.tasks ?? []).filter(
-				(t: unknown) => p.includeDeleted || (t as { status: string }).status !== "deleted",
-			);
-			return {
-				content: [{ type: "text", text }],
-				details: { action: "list", todos: visible, nextId: state?.nextId },
-			} as never;
-		},
-	} as unknown as ToolDefinition;
-}
-
-/**
- * 标准 pi 引擎的 ask_user_question 工具：模型调用时把问题桥到浏览器（复用 DSH
- * 引擎的 question_pending/question_answer 协议，前端 DshQuestionDialog 富渲染），
- * 阻塞 agent 循环直到用户在浏览器回答或取消。
- *
- * 标准 SDK 没有内建 ask_user_question，故由 pi-web-ui 以 customTool 注册（与
- * bash/edit 同机制）。DSH 引擎走 goal-rpc 的 userQuestions provider，两者互不
- * 冲突（各引擎各走各的）。
- *
- * askUser 签名带 {aborted} 快照而非完整 AbortSignal：customTool 的 execute 信号
- * 服务于整个 agent 生命周期，这里按「已中止即拒绝」的最小语义处理，避免与其它
- * 工具的取消逻辑纠缠。
- */
-export function makeAskUserQuestionTool(
-	clientSession: {
-		askUser: (q: UiQuestion[], sig: { aborted?: boolean }, conversationId?: string) => Promise<QuestionAnswer[] | null>;
-	},
-	/** 本 runtime 所属会话：提问跟着对话走，快照只把当前对话的问卷推给客户端。 */
-	ownerId?: string,
-): ToolDefinition {
-	const QuestionOptionSchema = Type.Object({
-		label: Type.String({ description: "Display label (1-5 words)" }),
-		description: Type.Optional(
-			Type.String({
-				description: "Short explanation of impact/tradeoff",
-			}),
-		),
-		preview: Type.Optional(
-			Type.String({
-				description: "Optional preview (markdown/HTML/code)",
-			}),
-		),
-	});
-	const QuestionSchema = Type.Object({
-		id: Type.String({ description: "Unique identifier (snake_case)" }),
-		question: Type.String({ description: "Question text (markdown/HTML ok)" }),
-		detail: Type.Optional(Type.String({ description: "Optional context under question" })),
-		header: Type.Optional(Type.String({ description: "Optional short header" })),
-		options: Type.Optional(
-			Type.Array(QuestionOptionSchema, {
-				description: "2-4 choices (recommended option first)",
-				minItems: 2,
-				maxItems: 4,
-			}),
-		),
-		multiSelect: Type.Optional(Type.Boolean({ description: "Allow multiple choices (default: false)" })),
-		dependsOn: Type.Optional(
-			Type.Object({
-				questionId: Type.String({ description: "Prior question ID" }),
-				value: Type.Optional(
-					Type.Union([Type.String(), Type.Array(Type.String())], {
-						description: "Show when prior answer matches",
-					}),
-				),
-			}),
-		),
-		optionsMap: Type.Optional(
-			Type.Record(Type.String(), Type.Array(QuestionOptionSchema), {
-				description: "Dynamic options keyed by prior answer",
-			}),
-		),
-	});
-	return {
-		name: "ask_user_question",
-		label: "Ask the user",
-		description:
-			"Ask the user 1-3 focused questions to clarify requirements, confirm decisions, or choose options. " +
-			"Renders a rich browser dialog; resumes on submit or cancel.",
-		promptSnippet: "clarify ambiguous requirements or confirm a decision with the user",
-		promptGuidelines: [
-			"When requirements are ambiguous, clarify with ask_user_question: 1 to 3 focused questions (prefer 1), 2-4 choices with the recommended option first, each with a concise impact/tradeoff",
-			"A cancelled question comes back as a tool error — respect it without immediately re-asking",
-		],
-		parameters: Type.Object({
-			questions: Type.Array(QuestionSchema, {
-				description: "Questions to ask (prefer 1).",
-				minItems: 1,
-				maxItems: 3,
-			}),
-		}),
-		execute: async (_id: string, params: unknown, signal: AbortSignal | undefined): Promise<unknown> => {
-			const qs = (params as { questions: UiQuestion[] }).questions;
-			if (!Array.isArray(qs) || qs.length === 0) {
-				throw new Error("ask_user_question requires at least one question");
-			}
-			if (qs.length > 3) {
-				throw new Error(
-					"ask_user_question allows at most 3 questions per call to prevent question fatigue (单次提问最多不得超过 3 个问题)",
-				);
-			}
-			const answers = await clientSession.askUser(
-				qs,
-				{
-					aborted: signal?.aborted,
-				},
-				ownerId,
-			);
-			if (answers === null) {
-				throw new Error("User cancelled the question.\n用户取消了提问。");
-			}
-			// 工具结果：把每道题的回答拼成简洁文本给模型，同时留 details 供 UI 展示。
-			const lines = answers.map((a) => {
-				const q = qs.find((q) => q.id === a.id);
-				const label = a.selected.join(", ");
-				const custom = a.custom?.trim() ? ` (wrote: ${a.custom.trim()})` : "";
-				return `${q?.header ?? q?.id ?? a.id}: ${label || "(no selection)"}${custom}`;
-			});
-			return {
-				content: [{ type: "text", text: lines.join("\n") }],
-				details: { answers },
-			} as never;
-		},
-	} as unknown as ToolDefinition;
-}
-
-/** 判定是否应当即时向前端推送问卷弹窗（只推给当前前台会话，未指定会话按全局放行）。 */
-export function shouldPopQuestion(conversationId: string | undefined, activeId: string): boolean {
-	return conversationId === undefined || conversationId === activeId;
-}
-
-// ---------------------------------------------------------------------------
-// 浏览器页面工具（标准 pi 引擎的 browser_page customTool）
-//
-// 模型调 browser_page → 服务端发 page_request 给浏览器 → 前端转 page-picker
-// 扩展 → 扩展操作目标页面 → 前端回 page_response → 工具结果回到模型。
-//
-// op 的语义（read/click/type/…）属于**扩展侧**，服务端只透传，不解读也不校验
-// ——所以参数说明写在 tool description 里让模型知道怎么用，不在这里分支处理。
-// ---------------------------------------------------------------------------
-
-/** timeoutMs 默认值。对面是扩展不是人，超时必须自己兜住。 */
-const PAGE_CALL_DEFAULT_TIMEOUT_MS = 30_000;
-/** 夹取区间：太小会误杀慢页面（拿不到结果还白跑一趟），太大就把模型拖到
- *  工具看门狗（20 分钟）附近了。 */
-const PAGE_CALL_MIN_TIMEOUT_MS = 1_000;
-const PAGE_CALL_MAX_TIMEOUT_MS = 120_000;
-
-/** 客户端/扩展回来的页面调用结果（pageCall 的返回值）。失败一律带人话原因，
- *  由工具转成 Error 抛给模型（模型看到 error 才会改变策略）。 */
-export type PageCallResult = { ok: true; result?: unknown } | { ok: false; error: string };
-
-/** pageCall 的入参 = 协议 page_request 去掉 id/type（id 由 ClientSession 生成，
- *  type 由 emit 补上）。从 protocol.ts 派生而非手写：契约单源，协议改字段这里
- *  跟着报错。 */
-export type PageCallRequest = Omit<Extract<ServerMessage, { type: "page_request" }>, "id" | "type">;
-
-/** timeoutMs 归一：非有限数字/缺省 → 默认；其余夹在 [1000, 120000]。
- *  工具入口与页桥（pageCall）共用，防手写脏值绕过 schema。 */
-export function normalizePageCallTimeoutMs(v: unknown): number {
-	const n = typeof v === "number" && Number.isFinite(v) ? Math.floor(v) : PAGE_CALL_DEFAULT_TIMEOUT_MS;
-	return Math.min(PAGE_CALL_MAX_TIMEOUT_MS, Math.max(PAGE_CALL_MIN_TIMEOUT_MS, n));
-}
-
-/** 除 op/target/timeoutMs 外的扁平参数名（保持扩展侧原名：what/selector/…）。
- *  列表即 schema 里的可选字段——改 schema 忘改这里，单测会炸（见
- *  tests/unit/browser-page-tool.test.ts）。 */
-const BROWSER_PAGE_ARG_KEYS = ["what", "selector", "text", "url", "code", "all", "index", "maxEdge"] as const;
-
-/** 只收模型**确实传了**的参数：undefined 不入包，否则扩展拿到一堆
- *  `"selector": undefined` 会覆盖自己的默认值。 */
-export function collectBrowserPageArgs(params: Record<string, unknown>): Record<string, unknown> {
-	const args: Record<string, unknown> = {};
-	for (const k of BROWSER_PAGE_ARG_KEYS) {
-		if (params[k] !== undefined) args[k] = params[k];
-	}
-	return args;
-}
-
-/** 页面调用结果 → 给模型的文本：字符串原样（read 的正文就是这样，别再加引号），
- *  其余 JSON 缩进；空结果给一句说明，免得模型以为工具没输出。 */
-export function formatPageCallResult(result: unknown): string {
-	if (typeof result === "string") return result.length > 0 ? result : "(empty)";
-	if (result === undefined || result === null) return "(no result)";
-	try {
-		return JSON.stringify(result, null, 2) ?? String(result);
-	} catch {
-		// 循环引用/含大整数等不可序列化结果：别让格式化把工具调用炸掉。
-		return String(result);
-	}
-}
-
-/** 失败文本：带上 op 与原因，再补一句**可执行的**下一步（模型只有知道该让
- *  用户干什么，才不会再盲目重试同一个调用）。 */
-export function formatBrowserPageError(op: string, error: string): string {
-	return [
-		`browser_page "${op}" failed: ${error}`,
-		`browser_page "${op}" 失败：${error}`,
-		'Next: make sure a pi-web-ui page is open with the page-picker extension enabled and paired, then try op:"pages" to see which pages are available. If the target page is not allowed yet, ask the user to allow it in the extension.',
-		'下一步：确认 pi-web-ui 页面已打开、page-picker 扩展已启用并与该页面配对，再用 op:"pages" 看有哪些可操作页面；若目标页面尚未授权，请让用户先在扩展里授权。',
-	].join("\n");
-}
-
-/**
- * 标准 pi 引擎的 browser_page 工具：模型调用时把请求桥到用户浏览器里的
- * pi-web-ui 页面（page_request/page_response 协议），由 page-picker 扩展真正
- * 操作用户授权的页面。
- *
- * 与 ask_user_question 同样以 customTool 注册（标准 SDK 没有这个工具；DSH 引擎
- * 走自己的运行时，也不经此）。写法严格比照 makeAskUserQuestionTool。
- *
- * pageCall 签名同样带 {aborted} 快照而非完整 AbortSignal（customTool 的 execute
- * 信号服务于整个 agent 生命周期，这里只要「已中止即失败」的最小语义）。
- */
-export function makeBrowserPageTool(
-	clientSession: {
-		pageCall: (req: PageCallRequest, sig: { aborted?: boolean }, conversationId?: string) => Promise<PageCallResult>;
-		/** 主模型能不能直接看图 —— 决定 `op:"shot"` 是「给图」还是「走视觉桥转写」。
-		 *  两者都可选：老测试替身不实现时，截图退化成「看不到图 + 说明原因」。 */
-		canSeeImages?: () => boolean;
-		transcribeToolImage?: (
-			image: { data: string; mimeType: string },
-			signal?: AbortSignal,
-		) => Promise<{ text?: string; reason?: string }>;
-	},
-	/** 本 runtime 所属会话（语义与 ask_user_question 的 ownerId 一致）。 */
-	ownerId?: string,
-): ToolDefinition {
-	return {
-		name: BROWSER_PAGE_TOOL_NAME,
-		label: "Browser page",
-		description: [
-			"Read or act on a page in the USER'S OWN browser via the pi-web-ui page-picker extension (the server only forwards).",
-			"Only the parameters below exist — an op option that is not a field here (e.g. type's submit) is unavailable.",
-			"ops: pages | read (what? selector? all?) | click (selector? index?) | type (selector text) | scroll (selector?) | goto (url) | wait (selector? text? timeoutMs?) | eval (code) | shot (maxEdge?)",
-		].join("\n"),
-		promptSnippet: "operate a page in the user's browser (page-picker extension)",
-		promptGuidelines: [
-			"Only use browser_page when the user asked you to read or act on a page in their browser; " +
-				"never click or type on their pages on your own initiative",
-			'Start with op:"pages"; the target page must already be allowed in the page-picker extension — ' +
-				"if it fails, tell the user what to enable instead of retrying.",
-		],
-		parameters: Type.Object({
-			op: Type.String({
-				description: "Action to perform (extension-side).",
-			}),
-			target: Type.Optional(
-				Type.String({
-					description: "Target page origin (e.g. https://example.com). Only needed when several pages are allowed.",
-				}),
-			),
-			what: Type.Optional(
-				Type.String({ description: 'For op:read — "text" | "html" | "title" | "url" | "query" (default: text).' }),
-			),
-			selector: Type.Optional(
-				Type.String({ description: "CSS selector, for op:read / click / type / scroll / wait." }),
-			),
-			text: Type.Optional(
-				Type.String({ description: "For op:type — the text to enter; for op:wait — the text to wait for." }),
-			),
-			url: Type.Optional(Type.String({ description: "For op:goto — the absolute URL to navigate to." })),
-			code: Type.Optional(
-				Type.String({
-					description: "For op:eval — JS to run in the page (extension-side switch, disabled by default).",
-				}),
-			),
-			all: Type.Optional(
-				Type.Boolean({ description: "For op:read — return every match instead of only the first one." }),
-			),
-			index: Type.Optional(Type.Number({ description: "For op:click — which match to click (default: 0)." })),
-			maxEdge: Type.Optional(
-				Type.Number({
-					description: "For op:shot — max px of the longer side (320-1568, default 1280).",
-				}),
-			),
-			timeoutMs: Type.Optional(
-				Type.Number({
-					description: "How long the server waits for the browser (1000-120000 ms, default 30000).",
-				}),
-			),
-		}),
-		execute: async (_id: string, params: unknown, signal: AbortSignal | undefined): Promise<unknown> => {
-			const p = (params ?? {}) as Record<string, unknown>;
-			const op = typeof p.op === "string" ? p.op.trim() : "";
-			if (!op) {
-				throw new Error(
-					'browser_page requires a non-empty `op` (e.g. "pages", "read", "click").\nbrowser_page 需要非空的 op（如 pages/read/click）。',
-				);
-			}
-			const resolved = await clientSession.pageCall(
-				{
-					op,
-					args: collectBrowserPageArgs(p),
-					target: typeof p.target === "string" && p.target.length > 0 ? p.target : undefined,
-					timeoutMs: normalizePageCallTimeoutMs(p.timeoutMs),
-				},
-				{
-					aborted: signal?.aborted,
-				},
-				ownerId,
-			);
-			if (!resolved.ok) {
-				// 抛 Error 而不是回一段失败文本：模型需要看到「工具失败」才会改策略。
-				throw new Error(formatBrowserPageError(op, resolved.error));
-			}
-			const shot = extractShotImage(resolved.result);
-			if (!shot) {
-				// 工具结果：read 的正文原样给模型，结构化结果 JSON 缩进；details 留 UI/轨迹。
-				return {
-					content: [{ type: "text", text: formatPageCallResult(resolved.result) }],
-					details: { op, args: collectBrowserPageArgs(p), target: p.target, result: resolved.result },
-				} as never;
-			}
-			// 截图：**主模型能看图就直接把图给回去**（当轮就能看到，不用等下一轮）；
-			// 看不到图（纯文本模型）就交给视觉桥转写成文字证据 —— 与用户粘贴图片走同一套
-			// 选择逻辑与提示词，设置里开着就自动生效，模型侧不需要任何额外配置。
-			const where = `${p.target ?? "the page"}${shot.selector ? ` (element ${shot.selector})` : ""}`;
-			const caption = [
-				`Screenshot of ${where} — ${shot.width ?? "?"}×${shot.height ?? "?"} px.`,
-				`页面截图：${where} — ${shot.width ?? "?"}×${shot.height ?? "?"} px。`,
-			].join("\n");
-			const details = {
-				op,
-				args: collectBrowserPageArgs(p),
-				target: p.target,
-				result: { ...(resolved.result as Record<string, unknown>), image: "[image]" },
-			};
-			if (clientSession.canSeeImages?.() === true) {
-				return {
-					content: [
-						{ type: "text", text: caption },
-						{ type: "image", data: shot.data, mimeType: shot.mimeType },
-					],
-					details,
-				} as never;
-			}
-			const bridged = await clientSession.transcribeToolImage?.(shot, signal);
-			const note = bridged?.text
-				? `
-
-<vision-bridge>
-${bridged.text}
-</vision-bridge>`
-				: [
-						`
-
-（当前模型看不到图片：${bridged?.reason ?? "视觉桥不可用"} —— 可让用户改用支持识图的模型，或在模型配置里加一个支持图片的模型）`,
-						`(The current model cannot see images: ${bridged?.reason ?? "vision bridge unavailable"})`,
-					].join("\n");
-			return {
-				content: [{ type: "text", text: caption + note }],
-				details,
-			} as never;
-		},
-	} as unknown as ToolDefinition;
-}
-
-/**
- * 从扩展的截图结果里取出图片。
- *
- * 扩展回的是 `{ image: { dataUrl, mimeType, width, height }, selector?, rect?, viewport? }`；
- * dataUrl 带 `data:image/jpeg;base64,` 前缀，而模型 API 要的是**纯 base64** —— 剥前缀这一步
- * 很容易忘（忘了就是「图片解析失败」）。
- */
-export function extractShotImage(
-	result: unknown,
-): { data: string; mimeType: string; width?: number; height?: number; selector?: string } | undefined {
-	if (!result || typeof result !== "object") return undefined;
-	const image = (result as { image?: unknown }).image;
-	if (!image || typeof image !== "object") return undefined;
-	const src = image as { dataUrl?: unknown; mimeType?: unknown; width?: unknown; height?: unknown };
-	if (typeof src.dataUrl !== "string") return undefined;
-	const match = /^data:([^;,]+);base64,(.+)$/s.exec(src.dataUrl);
-	if (!match) return undefined;
-	const selector = (result as { selector?: unknown }).selector;
-	return {
-		data: match[2],
-		mimeType: typeof src.mimeType === "string" && src.mimeType ? src.mimeType : match[1],
-		...(typeof src.width === "number" ? { width: src.width } : {}),
-		...(typeof src.height === "number" ? { height: src.height } : {}),
-		...(typeof selector === "string" && selector ? { selector } : {}),
-	};
-}
-
-/**
- * 插件结构化工具 → SDK ToolDefinition。
- * execute 返回值宽容处理：{content,details} 原样收编；字符串/对象包成文本块。
- */
-function pluginToolToDefinition(tool: PluginAgentTool): ToolDefinition {
-	const normalize = (
-		result: unknown,
-	): {
-		content: Array<{ type: "text"; text: string }>;
-		details?: unknown;
-	} => {
-		if (result && typeof result === "object" && Array.isArray((result as { content?: unknown }).content)) {
-			return result as {
-				content: Array<{ type: "text"; text: string }>;
-				details?: unknown;
-			};
-		}
-		const text = typeof result === "string" ? result : JSON.stringify(result ?? null, null, 2);
-		return { content: [{ type: "text", text }] };
-	};
-	return {
-		name: tool.name,
-		label: tool.label ?? tool.name,
-		description: tool.description,
-		promptSnippet: tool.promptSnippet,
-		promptGuidelines: tool.promptGuidelines,
-		parameters: (tool.parameters ?? {
-			type: "object",
-			properties: {},
-		}) as ToolDefinition["parameters"],
-		execute: async (
-			toolCallId: string,
-			params: Record<string, unknown>,
-			signal: AbortSignal | undefined,
-			onUpdate: ((partial: unknown) => void) | undefined,
-		) => {
-			const raw = await tool.execute(
-				toolCallId,
-				params as Record<string, unknown>,
-				signal,
-				onUpdate ? (partial) => onUpdate(normalize(partial) as never) : undefined,
-			);
-			return normalize(raw) as never;
-		},
-	} as unknown as ToolDefinition;
-}
-
-/**
- * Cheap per-message discriminator for the serialization cache key. Persisted
- * message content never changes, so this is stable across snapshots, while
- * several same-role messages created within one millisecond (attachment
- * asides) get distinct keys. Text blocks are fingerprinted by a short hash of
- * their head (paths embedded in <file> tags can share long prefixes — e.g.
- * uploads created in the same millisecond differ only at the tail); image
- * payloads by data length (identical lengths within the same ms are far too
- * unlikely to matter).
- */
-function contentFingerprint(m: AgentMessage): string {
-	const summary = (m as unknown as { summary?: string }).summary;
-	if (typeof summary === "string" && summary.length > 0) {
-		let h = 5381;
-		for (let i = 0; i < summary.length && i < 512; i++) {
-			h = ((h << 5) + h + summary.charCodeAt(i)) >>> 0;
-		}
-		return `sum:${h.toString(36)}:${summary.length}`;
-	}
-	const content = (m as unknown as { content?: unknown }).content;
-	if (!Array.isArray(content) || content.length === 0) return "empty";
-	const first = content[0] as { type?: string; text?: string; data?: string };
-	if (first?.type === "image") {
-		return `img:${(first.data ?? "").length}`;
-	}
-	const text = typeof first?.text === "string" ? first.text : "";
-	// djb2 — fast enough to run per snapshot, distinct enough for asides.
-	let h = 5381;
-	for (let i = 0; i < text.length && i < 512; i++) {
-		h = ((h << 5) + h + text.charCodeAt(i)) >>> 0;
-	}
-	return `txt:${h.toString(36)}:${text.length}`;
-}
-
-// ---------------------------------------------------------------------------
-// Web UI context adapter — bridges extension UI calls (setWidget/notify) to the
-// browser. Extensions like rpiv-todo render a TUI widget via
-// `ui.setWidget(key, (tui, theme) => comp)`; we capture the component, render it
-// with a mock theme to plain text lines, and push them to the client.
-// ---------------------------------------------------------------------------
-
-function extractPartialText(partial: unknown): string | null {
-	const content = (partial as { content?: unknown } | null | undefined)?.content;
-	if (Array.isArray(content)) {
-		const text = content
-			.map((c) => ((c as { type?: string; text?: string })?.type === "text" ? (c as { text: string }).text : ""))
-			.join("");
-		return text.length > 0 ? text : null;
-	}
-	return null;
-}
-
-function extractAssistantTextFromContent(content: unknown): string {
-	if (typeof content === "string") return content;
-	if (!Array.isArray(content)) return "";
-	return content
-		.filter(
-			(c): c is { type: string; text: string } =>
-				(c as { type?: string }).type === "text" && typeof (c as { text?: string }).text === "string",
-		)
-		.map((c) => c.text)
-		.join("\n");
-}
+import {
+	RUN_TASK_CAP,
+	RUN_ARGS_CAP,
+	RUN_RESULT_CAP,
+	MAX_OPEN_CONVERSATIONS,
+	MAX_SUBAGENTS,
+	SUBAGENT_PROMPT_SNAPSHOT_CAP,
+	DEFAULT_CONV_TITLE,
+	truncRun,
+	previewToolResult,
+	atomicWriteFileSync,
+	conversationTitle,
+	pluginToolToDefinition,
+	contentFingerprint,
+	extractPartialText,
+	extractAssistantTextFromContent,
+	firstSentence,
+	modelKeyOf,
+	contextWindowOf,
+} from "./agent-formatters.js";
 
 export { workspacePath };
 // ---------------------------------------------------------------------------
@@ -1878,15 +493,6 @@ export { workspacePath };
  *
  * 导出给过户载荷类型（TakeoverPayload）用：对话对象本身在会话之间整体搬迁。
  */
-/** 描述首句（延迟加载目录里没 promptSnippet 时的回落摘要）。 */
-function firstSentence(description: string | undefined): string {
-	const text = (description ?? "").trim();
-	if (!text) return "";
-	const cut = text.split(/\n|[.。](?=\s|$)/)[0]?.trim() ?? "";
-	const head = cut || text;
-	return head.length > 160 ? `${head.slice(0, 160)}…` : head;
-}
-
 export interface Conversation {
 	id: string;
 	/** Display title: first user prompt (truncated) or the default. */
@@ -2054,464 +660,20 @@ export interface Conversation {
 	lastTurnBaseTokens?: number;
 }
 
-/** 轨迹事件 payload 封顶（可直接广播/持久化，不撑爆 storage.json）。 */
-const RUN_TASK_CAP = 500;
-const RUN_ARGS_CAP = 4000;
-const RUN_RESULT_CAP = 4000;
+import {
+	MAX_TRANSCRIPT_SCAN_BYTES,
+	MAX_SEARCH_TEXT_CHARS,
+	sessionMatchesMetadata,
+	messageSearchText,
+	collectSessionAnchors,
+	piSessionsRoot,
+	isInsideSessionsDir,
+	readCwdFromSessionHeader,
+} from "./session-search.js";
+export { piSessionsRoot, isInsideSessionsDir };
 
-function truncRun(s: string, cap: number): string {
-	return s.length <= cap ? s : `${s.slice(0, cap)}\n… [truncated]`;
-}
+import { discoverRecentProjectsFromDisk, parseSessionInfoFast } from "./session-parser.js";
 
-/** 从 SDK tool result 里抠可读文本预览（text 块拼接，图片/二进制占位，封顶）。 */
-function previewToolResult(result: unknown): string {
-	try {
-		const content = (result as { content?: unknown })?.content;
-		if (Array.isArray(content)) {
-			const parts: string[] = [];
-			for (const c of content) {
-				if (c && typeof c === "object" && (c as { type?: unknown }).type === "text") {
-					parts.push(String((c as { text?: unknown }).text ?? ""));
-				} else {
-					parts.push("[…]");
-				}
-			}
-			return truncRun(parts.join("\n"), RUN_RESULT_CAP);
-		}
-		if (typeof result === "string") return truncRun(result, RUN_RESULT_CAP);
-		return truncRun(JSON.stringify(result ?? null), RUN_RESULT_CAP);
-	} catch {
-		return "[unserializable result]";
-	}
-}
-
-/**
- * 转录整文件重写的原子落盘：先写同目录临时文件再 rename。
- */
-function atomicWriteFileSync(file: string, data: string): void {
-	writeAtomicSync(file, data);
-}
-
-/** Cap on simultaneously open NON-subagent conversations of ONE project (each keeps a full
- *  runtime alive; conversations of other projects keep their own lists).
- *  子代理不计入：子代理是 inMemory 后台任务，不参与此上限，既不占位也不被此上限拦截。 */
-const MAX_OPEN_CONVERSATIONS = 8;
-/** 同时存活的子代理上限（按客户端计，含嵌套派生的孙子辈）。每个子代理都是一个完整
- *  runtime + TerminalManager，无上限时 AI 一次并行派发几十个会把服务进程拖垮。
- *  主对话的 8 个上限是按项目计的，子代理按客户端全局计（wait_all 本来就是全局口径）。 */
-const MAX_SUBAGENTS = 16;
-/** SubagentSnapshot.prompt 下发上限：存的是全量 prompt，快照里只带前 N 字符，
- *  避免 subagent_list 一次把几个长 prompt 全推给模型烧 token。 */
-const SUBAGENT_PROMPT_SNAPSHOT_CAP = 2000;
-const DEFAULT_CONV_TITLE = "新对话";
-
-/** First user text in a session, truncated for the conversation list. */
-function conversationTitle(session: AgentSession): string {
-	try {
-		const named = session.sessionManager.getSessionName();
-		if (named && named.trim()) return named.trim();
-	} catch {
-		// best-effort — fall through to first-message title
-	}
-	try {
-		for (const m of session.agent.state.messages) {
-			if (m.role !== "user") continue;
-			const content = m.content as unknown;
-			let text = "";
-			if (typeof content === "string") {
-				text = content;
-			} else if (Array.isArray(content)) {
-				for (const p of content) {
-					if (
-						p &&
-						typeof p === "object" &&
-						(p as { type?: unknown }).type === "text" &&
-						typeof (p as { text?: unknown }).text === "string"
-					) {
-						text = (p as { text: string }).text;
-						break;
-					}
-				}
-			}
-			const trimmed = text.trim().replace(/\s+/g, " ");
-			if (trimmed.length > 0) {
-				return trimmed.length > 30 ? `${trimmed.slice(0, 30)}…` : trimmed;
-			}
-		}
-	} catch {
-		// best-effort
-	}
-	return DEFAULT_CONV_TITLE;
-}
-
-/** 全局搜索的会话元信息匹配：大小写不敏感，命中任一项即算 ——
- *  显示名、当前项目内的文件名片段、首条消息。
- *  转录全文匹配不在这里：全文单条可达 MB 级，不再随列表缓存常驻（issue #440），
- *  由 filterSessionsForSearch 按需加载后判定（口径不变：user 与 assistant 消息文本）。 */
-function sessionMatchesMetadata(q: string, s: SessionInfo): boolean {
-	if (s.name && s.name.toLowerCase().includes(q)) return true;
-	if (basename(s.path).toLowerCase().includes(q)) return true;
-	if (s.firstMessage.toLowerCase().includes(q)) return true;
-	return false;
-}
-
-/** 抽取一条 AgentMessage 的可搜索文本（user/assistant 的 text 块；
- *  镜像 SDK buildSessionInfo 的 allMessagesText 范围，保证搜索与定位一致）。 */
-function messageSearchText(m: { content?: unknown }): string {
-	const c = m.content;
-	if (typeof c === "string") return c;
-	if (!Array.isArray(c)) return "";
-	const parts: string[] = [];
-	for (const b of c) {
-		if (!b || typeof b !== "object") continue;
-		const blk = b as { type?: unknown; text?: unknown };
-		if (blk.type === "text" && typeof blk.text === "string") parts.push(blk.text);
-	}
-	return parts.join("\n");
-}
-
-/** 转录全文扫描/整读的大小上限（16MB，与 readHistorySession 一致）：
- *  超限文件同步 readFileSync 会卡事件循环数百毫秒起，搜索不值得。 */
-const MAX_TRANSCRIPT_SCAN_BYTES = 16 * 1024 * 1024;
-
-/** 转录全文进入内存/缓存的字符上限（256K 字符）：全文只服务搜索的命中判定
- *  （issue #440 拆分后按需加载），封顶保证单条 worst case 内存可控（缓存 256 条
- *  × 256K 字符 ≈ 64MB 上界，且只在搜索活动期间存在）。
- *  影响面：超长转录在截断点之后的内容不参与「是否命中」判定；命中后的消息级
- *  定位（collectSessionAnchors）仍扫全文件，不受此上限影响。 */
-const MAX_SEARCH_TEXT_CHARS = 256 * 1024;
-
-/** 扫描一个会话转录文件，收集文本命中查询的消息锚点（role + timestamp，
- *  按转录顺序，最多 cap 个）。仅 user/assistant 消息参与，与搜索范围一致。
- *  超过大小上限的转录直接跳过（stat 先行，不整读）—— 全局搜索逐会话同步
- *  扫描，无上限时一个大转录就能冻住整个事件循环。 */
-function collectSessionAnchors(filePath: string, q: string, cap = 10): MessageAnchor[] {
-	const anchors: MessageAnchor[] = [];
-	if (!q) return anchors;
-	try {
-		if (statSync(filePath).size > MAX_TRANSCRIPT_SCAN_BYTES) return anchors;
-		const lines = readFileSync(filePath, "utf8").split("\n");
-		for (const line of lines) {
-			if (!line.trim()) continue;
-			let e: {
-				type?: unknown;
-				message?: { role?: unknown; timestamp?: unknown; content?: unknown };
-			};
-			try {
-				e = JSON.parse(line);
-			} catch {
-				continue;
-			}
-			if (e?.type !== "message") continue;
-			const m = e.message;
-			if (!m) continue;
-			if (m.role !== "user" && m.role !== "assistant") continue;
-			if (typeof m.timestamp !== "number") continue;
-			const text = messageSearchText(m);
-			if (!text || !text.toLowerCase().includes(q)) continue;
-			anchors.push({ role: m.role, timestamp: m.timestamp });
-			if (anchors.length >= cap) break;
-		}
-	} catch {
-		// 单个转录损坏不影响其余会话
-	}
-	return anchors;
-}
-
-/**
- * pi 的会话存储根目录。设置了 `PI_CODING_AGENT_SESSION_DIR` 时，pi 将 transcript
- * 以**扁平布局**直接写在根目录顶层（`<root>/<timestamp>_<uuid>.jsonl`，所属 cwd 是
- * 文件内字段）；未设置时走 SDK 默认的 `<agentDir>/sessions/--<cwd>--/` 每-cwd
- * 子目录布局（此时必须**不传** sessionDir，让 SDK 落回默认路径）。
- *
- * 注意：未设置 env 时**不要**回退返回 `join(getAgentDir(), "sessions")`——那样会把
- * 根目录强塞给 SDK `list()/listAll()`，它们只会扫根目录**顶层** jsonl，默认子目录布局
- * 下顶层为空，历史对话/最近项目会全丢（回归风险，已在 0.84.4 实证）。
- */
-export function piSessionsRoot(): string | undefined {
-	return process.env.PI_CODING_AGENT_SESSION_DIR || undefined;
-}
-
-/** Guardrail: only transcripts under a sessions root may be opened/deleted/renamed
- *  — never arbitrary files. Two roots count as “a sessions root”, and they must stay
- *  the **same two** the history list reads from (`loadSessionInfos` →
- *  `SessionManager.list(cwd, piSessionsRoot())`):
- *
- *   1. `<agentDir>/sessions/`（SDK 默认的每-cwd 子目录布局）
- *   2. `PI_CODING_AGENT_SESSION_DIR`（扁平「额外会话根」，设了就以它为准扫盘）
- *
- *  只认第 1 条会让设了该变量的用户「历史列得出来、却点不开/删不掉/改不了名」
- *  （列表与打开两边口径不一致）。守卫的意图是「不许开任意文件」，不是「只许开
- *  默认目录下的文件」，所以放宽到两个根仍然成立。
- *  Shared by deleteSession/renameSession/switchSession so the open path cannot
- *  escape the confinement the write paths already enforce. */
-export function isInsideSessionsDir(agentDir: string, targetPath: string): boolean {
-	const abs = resolve(targetPath);
-	const roots = [resolve(agentDir, "sessions")];
-	const extra = piSessionsRoot();
-	if (extra) roots.push(resolve(extra));
-	return roots.some((root) => abs.startsWith(root + sep));
-}
-
-/**
- * 从会话文件首行读取 cwd（轻量探测，最多读取 2KB，绝不完整解析整个 jsonl 消息历史）。
- */
-async function readCwdFromSessionHeader(filePath: string): Promise<string | null> {
-	let handle: fsPromises.FileHandle | undefined;
-	try {
-		handle = await fsPromises.open(filePath, "r");
-		const buf = Buffer.alloc(2048);
-		const { bytesRead } = await handle.read(buf, 0, 2048, 0);
-		const text = buf.toString("utf8", 0, bytesRead);
-		const nl = text.indexOf("\n");
-		const firstLine = nl !== -1 ? text.slice(0, nl) : text;
-		if (!firstLine.trim()) return null;
-		const parsed = JSON.parse(firstLine);
-		return typeof parsed.cwd === "string" && parsed.cwd.trim() ? parsed.cwd : null;
-	} catch {
-		return null;
-	} finally {
-		if (handle) await handle.close().catch(() => {});
-	}
-}
-
-/**
- * 快速轻量地从 SDK 会话目录中发现项目路径（仅读取会话文件的第一行头部获取 cwd，
- * 绝不使用 SessionManager.listAll 遍历解析全部会话文本，避免大历史时阻塞数秒到数十秒）。
- */
-async function discoverRecentProjectsFromDisk(sessionRoots: string[], limit = 30): Promise<ProjectSummary[]> {
-	const projects = new Map<string, ProjectSummary>();
-
-	for (const root of sessionRoots) {
-		if (projects.size >= limit) break;
-		try {
-			// 异步探测（issue #441）：会话根可能在已断连的网络盘上，同步 existsSync 会冻结事件循环。
-			try {
-				await fsPromises.access(root);
-			} catch {
-				continue;
-			}
-			const entries = await fsPromises.readdir(root, { withFileTypes: true });
-
-			// 1. 扁平布局（PI_CODING_AGENT_SESSION_DIR）：根目录下直接是 .jsonl
-			const flatFiles = entries.filter((e) => e.isFile() && e.name.endsWith(".jsonl"));
-			if (flatFiles.length > 0) {
-				const fileStats = await Promise.all(
-					flatFiles.map(async (f) => {
-						const fp = join(root, f.name);
-						try {
-							const st = await fsPromises.stat(fp);
-							return { path: fp, mtime: st.mtimeMs };
-						} catch {
-							return null;
-						}
-					}),
-				);
-				fileStats.sort((a, b) => (b?.mtime ?? 0) - (a?.mtime ?? 0));
-				for (const s of fileStats) {
-					if (!s || projects.size >= limit) break;
-					const cwd = await readCwdFromSessionHeader(s.path);
-					if (cwd) {
-						const key = normalizePathKey(cwd);
-						if (!projects.has(key)) {
-							try {
-								// 异步探测（issue #441）：cwd 可能在已断连的网络盘上。
-								await fsPromises.access(cwd);
-								projects.set(key, { path: cwd, lastUsed: s.mtime });
-							} catch {}
-						}
-					}
-				}
-			}
-
-			// 2. 默认子目录布局（<agentDir>/sessions/--<cwd>--/）：每 cwd 一个子目录
-			const subdirs = entries.filter((e) => e.isDirectory() || e.isSymbolicLink()).map((e) => join(root, e.name));
-			if (subdirs.length > 0 && projects.size < limit) {
-				const CHUNK = 64;
-				const dirStats: { path: string; mtime: number }[] = [];
-				for (let i = 0; i < subdirs.length; i += CHUNK) {
-					const chunk = subdirs.slice(i, i + CHUNK);
-					const stats = await Promise.all(
-						chunk.map(async (dir) => {
-							try {
-								const st = await fsPromises.stat(dir);
-								return { path: dir, mtime: st.mtimeMs };
-							} catch {
-								return null;
-							}
-						}),
-					);
-					for (const s of stats) if (s) dirStats.push(s);
-				}
-				dirStats.sort((a, b) => b.mtime - a.mtime);
-
-				for (let i = 0; i < dirStats.length; i += 16) {
-					if (projects.size >= limit) break;
-					const batch = dirStats.slice(i, i + 16);
-					const batchRes = await Promise.all(
-						batch.map(async (d) => {
-							try {
-								const files = await fsPromises.readdir(d.path);
-								const jsonls = files.filter((f) => f.endsWith(".jsonl"));
-								if (jsonls.length === 0) return null;
-								let newestFile = "";
-								let newestMtime = 0;
-								for (const f of jsonls) {
-									const fp = join(d.path, f);
-									try {
-										const st = await fsPromises.stat(fp);
-										if (st.mtimeMs > newestMtime) {
-											newestMtime = st.mtimeMs;
-											newestFile = fp;
-										}
-									} catch {}
-								}
-								if (!newestFile) return null;
-								const cwd = await readCwdFromSessionHeader(newestFile);
-								if (!cwd) return null;
-								return { path: cwd, lastUsed: newestMtime };
-							} catch {
-								return null;
-							}
-						}),
-					);
-
-					for (const r of batchRes) {
-						if (!r) continue;
-						const key = normalizePathKey(r.path);
-						if (!projects.has(key)) {
-							try {
-								// 异步探测（issue #441）：cwd 可能在已断连的网络盘上。
-								await fsPromises.access(r.path);
-								projects.set(key, r);
-							} catch {}
-						}
-					}
-				}
-			}
-		} catch {
-			/* best effort */
-		}
-	}
-
-	return [...projects.values()].sort((a, b) => b.lastUsed - a.lastUsed);
-}
-
-/**
- * 快速解析单个会话文件（提取 id/cwd/name/parentSessionPath/firstMessage/messageCount/modified，
- * 以及可选的转录全文 allMessagesText）。仅用于会话列表发现与搜索，避免调用 SDK 重型的全量树解析。
- *
- * withAllMessagesText=false（默认，列表路径）时不收集转录全文，allMessagesText 返回空串 ——
- * 全文单条可达 MB 级，绝不随列表进任何缓存（issue #440）；true（搜索路径）时收集全文并在
- * MAX_SEARCH_TEXT_CHARS 处截断。
- */
-async function parseSessionInfoFast(
-	filePath: string,
-	fileMtime: number,
-	withAllMessagesText = false,
-): Promise<SessionInfo | null> {
-	try {
-		const content = await fsPromises.readFile(filePath, "utf8");
-		const lines = content.split("\n");
-		let id = "";
-		let cwd = "";
-		let name: string | undefined;
-		let parentSessionPath: string | undefined;
-		let firstMessage = "";
-		let messageCount = 0;
-		let lastActivityTime = 0;
-		let headerTime = 0;
-		const allMessages: string[] | null = withAllMessagesText ? [] : null;
-
-		for (const line of lines) {
-			if (!line.trim()) continue;
-			let entry: unknown;
-			try {
-				entry = JSON.parse(line);
-			} catch {
-				continue;
-			}
-			const rec = entry as Record<string, unknown> | null;
-			if (!rec) continue;
-			if (rec.type === "session") {
-				id = typeof rec.id === "string" ? rec.id : "";
-				cwd = typeof rec.cwd === "string" ? rec.cwd : "";
-				if (typeof rec.timestamp === "string") headerTime = new Date(rec.timestamp).getTime();
-				if (typeof rec.parentSession === "string") parentSessionPath = rec.parentSession;
-			} else if (rec.type === "session_info") {
-				if (typeof rec.name === "string" && rec.name.trim()) name = rec.name.trim();
-			} else if (rec.type === "message") {
-				messageCount++;
-				const msg = rec.message as Record<string, unknown> | null;
-				if (msg) {
-					if (typeof msg.timestamp === "number") lastActivityTime = Math.max(lastActivityTime, msg.timestamp);
-					let text = "";
-					if (typeof msg.content === "string") {
-						text = msg.content;
-					} else if (Array.isArray(msg.content)) {
-						for (const part of msg.content) {
-							if (part && typeof part.text === "string") {
-								text += (text ? " " : "") + part.text;
-							}
-						}
-					}
-					if (text) {
-						if (!firstMessage && msg.role === "user") firstMessage = text;
-						allMessages?.push(text);
-					}
-				}
-			}
-		}
-
-		if (!id) return null;
-		const modified = lastActivityTime > 0 ? lastActivityTime : headerTime > 0 ? headerTime : fileMtime;
-		let allMessagesText = "";
-		if (allMessages) {
-			const joined = allMessages.join(" ");
-			allMessagesText = joined.length > MAX_SEARCH_TEXT_CHARS ? joined.slice(0, MAX_SEARCH_TEXT_CHARS) : joined;
-		}
-		return {
-			path: filePath,
-			id,
-			cwd,
-			name,
-			parentSessionPath,
-			created: new Date(headerTime || fileMtime),
-			modified: new Date(modified),
-			messageCount,
-			firstMessage: firstMessage || "(no messages)",
-			allMessagesText,
-		};
-	} catch {
-		return null;
-	}
-}
-
-/** 会话当前模型的 "provider/id"（无模型时 null；软上限按模型覆盖用，issue #229）。 */
-function modelKeyOf(session: { model?: { provider?: unknown; id?: unknown } | null }): string | null {
-	const m = session?.model;
-	if (!m || typeof m.provider !== "string" || typeof m.id !== "string") return null;
-	return `${m.provider}/${m.id}`;
-}
-
-/** 会话当前模型的上下文窗口（未知时 0）：live 统计优先，模型定义回落。 */
-function contextWindowOf(session: {
-	getSessionStats?: () => { contextUsage?: { contextWindow?: unknown } | null };
-	model?: { contextWindow?: unknown } | null;
-}): number {
-	try {
-		const live = session?.getSessionStats?.()?.contextUsage?.contextWindow;
-		if (typeof live === "number" && live > 0) return Math.floor(live);
-	} catch {
-		// 会话未就绪 → 回落模型定义。
-	}
-	const def = (session as { model?: { contextWindow?: unknown } | null })?.model?.contextWindow;
-	return typeof def === "number" && def > 0 ? Math.floor(def) : 0;
-}
-
-/** issue #145：跨客户端同会话持有者（AgentService.clients 全局查重的结果）。
- *  connected=false = 对端已断开（标签页关了，ClientSession 残留）：
- *  streaming 照拦（后台 run 不随标签页消失），idle 警告不再打扰。 */
 export interface SessionOwnerInfo {
 	clientId: string;
 	convId: string;
@@ -2528,41 +690,8 @@ export interface ProjectRunnerInfo {
 	sessionFile?: string;
 }
 
-/**
- * 浏览器重启认领（orphan adoption）的候选快照 —— 纯数据，决策逻辑见
- * pickAdoptableOrphan（纯函数，可单测）。live = 还有浏览器连着（sinkCount>0）；
- * pseudo = 插件/调度伪客户端（sink 常驻，不能按浏览器存活判断，永远不参与认领）。
- */
-export interface OrphanCandidate {
-	id: string;
-	live: boolean;
-	pseudo: boolean;
-	/** 正在跑的对话数（主对话 + 子代理都算）。 */
-	streaming: number;
-	/** 是否有值得认领的内容（跑着 / 后台挂着 / 有消息历史；纯空白会话不算）。 */
-	adoptable: boolean;
-	/** 最近活跃时间（各对话 lastActiveAt/lastSdkEventAt 的最大值）。 */
-	activity: number;
-}
-
-/**
- * 选一个断开的残留会话给新标签认领（纯函数）：
- * - 还有别的在线浏览器（非伪客户端且 live）→ 不认领（新标签是第二块屏，
- *   issue #10 的隔离必须保留，跑着的对话继续走 elsewhere 只读感知）。
- * - 否则在断开 + 非伪 + 有内容的候选中按（streaming 多 → 最近活跃）取最优；
- *   没有返回 null（调用方走正常新建流程）。
- */
-export function pickAdoptableOrphan(cands: OrphanCandidate[]): string | null {
-	if (cands.some((c) => !c.pseudo && c.live)) return null;
-	let best: OrphanCandidate | null = null;
-	for (const c of cands) {
-		if (c.pseudo || c.live || !c.adoptable) continue;
-		if (!best || c.streaming > best.streaming || (c.streaming === best.streaming && c.activity > best.activity)) {
-			best = c;
-		}
-	}
-	return best?.id ?? null;
-}
+import { pickAdoptableOrphan, sameCwd, type OrphanCandidate } from "./orphan-manager.js";
+export { pickAdoptableOrphan, sameCwd, type OrphanCandidate };
 
 /** 手动过户时跟着对话一起搬走的等答复问卷（id 在目标会话重排）. */
 export interface TakeoverQuestion {
@@ -2602,59 +731,11 @@ export interface TakeoverPayload {
 	approvals: TakeoverApproval[];
 }
 
-/** 同项目判定（纯函数）：调度视口回退与 id 唤醒的 cwd 护栏用。
- *  Windows 大小写/分隔符差异归一，空串永不相等。 */
-export function sameCwd(a: string, b: string): boolean {
-	const x = String(a ?? "").trim();
-	const y = String(b ?? "").trim();
-	if (!x || !y) return false;
-	try {
-		return normalizePathKey(x) === normalizePathKey(y);
-	} catch {
-		return false;
-	}
-}
-
-/**
- * 超时杀进程树的决策（纯函数，可单测）。runAsync 的超时兜底用：
- * - win32：shell:true 实际起的是 cmd.exe，p.kill() 只杀 cmd 本身，npm/git 的
- *   孙进程照活 —— 必须走 `taskkill /PID <pid> /T /F` 才能整树带走；
- * - posix：配合 spawn 的 detached:true，向负 pid（整组）发 SIGTERM。
- * 返回决策而不是直接执行，执行留在调用方（便于注入/测试）。
- */
-export function processTreeKillPlan(
-	platform: NodeJS.Platform,
-	pid: number | undefined,
-):
-	| { kind: "taskkill"; cmd: string; args: string[] }
-	| { kind: "group-signal"; signal: NodeJS.Signals }
-	| { kind: "none" } {
-	if (!pid || pid <= 0) return { kind: "none" };
-	if (platform === "win32") return { kind: "taskkill", cmd: "taskkill", args: ["/PID", String(pid), "/T", "/F"] };
-	return { kind: "group-signal", signal: "SIGTERM" };
-}
-
-/**
- * /cwd 目标解析（纯函数，可单测）：
- * - 相对路径以**当前会话 cwd** 为基准（/cwd src = 当前项目的 src），不按 server
- *   进程 cwd 解析 —— 两者经常不同，按进程 cwd 切必错位。绝对路径不受基准影响
- *   （resolve 遇到绝对段会丢弃前面的基准）。
- * - win32 裸盘符（"C:"）：resolve 会按该盘当前目录解析，必须显式指到盘根；仅
- *   win32 生效——posix 下 "C:" 仍是普通相对路径，避免误伤同名目录。
- */
-export function resolveCwdTarget(
-	raw: string,
-	sessionCwd: string,
-	platform: NodeJS.Platform = process.platform,
-): string {
-	const trimmed = String(raw ?? "").trim();
-	if (platform === "win32" && /^[A-Za-z]:$/.test(trimmed)) {
-		return `${trimmed.toUpperCase()}\\`;
-	}
-	return resolve(sessionCwd, trimmed);
-}
+import { processTreeKillPlan, resolveCwdTarget } from "./process-utils.js";
+export { processTreeKillPlan, resolveCwdTarget };
 
 export class ClientSession {
+	static mcpBridge: McpBridge | null = null;
 	readonly clientId: string;
 	/** Set by AgentService.attach: reflects the SERVICE-wide quiesce flag
 	 *  (server draining — new work rejected). Default false for direct use. */
@@ -3080,84 +1161,15 @@ export class ClientSession {
 
 	private getSubagentSnapshot(convId: string): SubagentSnapshot | undefined {
 		const conv = this.convs.get(convId);
-		if (!conv?.session) return undefined;
-		return this.toSubagentSnapshot(conv);
+		return conv?.session ? toSubagentSnapshot(conv) : undefined;
 	}
 
 	private listSubagentSnapshots(scope?: "all" | "subagent" | "persistent"): SubagentSnapshot[] {
-		return [...this.convs.values()]
-			.filter((c) => {
-				const isPersisted = !c.isSubagent;
-				if (scope === "subagent") return c.isSubagent;
-				if (scope === "persistent") return isPersisted;
-				return c.isSubagent || Boolean(c.parentId) || Boolean(c.subagentPrompt);
-			})
-			.sort((a, b) => a.createdAt - b.createdAt)
-			.map((c) => this.toSubagentSnapshot(c));
+		return listSubagentSnapshots(this.convs.values(), scope);
 	}
 
-	private toSubagentSnapshot(conv: Conversation): SubagentSnapshot {
-		const streaming = conv.session.isStreaming;
-		const { error, canceled } = this.subagentRunOutcome(conv);
-		// state 如实反映终态：之前 canceled 的子代理报的也是 done，只能靠独立 flag
-		// 分辨。"queued" 保留给未来（排队调度），当前 spawn 即运行，无排队态。
-		const state: SubagentState = streaming ? "running" : canceled ? "canceled" : "done";
-		let messageCount = 0;
-		try {
-			messageCount = conv.session.getSessionStats().totalMessages;
-		} catch {
-			// session being replaced — report defaults
-		}
-		const fullPrompt = conv.subagentPrompt ?? "";
-		const sm = (conv.session as unknown as { sessionManager?: { isPersisted?: () => boolean } }).sessionManager;
-		const isPersisted = !conv.isSubagent || (typeof sm?.isPersisted === "function" && sm.isPersisted());
-		return {
-			convId: conv.id,
-			type: conv.subagentType ?? "general",
-			title: conv.title,
-			prompt:
-				fullPrompt.length > SUBAGENT_PROMPT_SNAPSHOT_CAP
-					? `${fullPrompt.slice(0, SUBAGENT_PROMPT_SNAPSHOT_CAP)}\n… [truncated]`
-					: fullPrompt,
-			state,
-			streaming,
-			error,
-			canceled,
-			messageCount,
-			model: conv.session.model?.id,
-			output: conv.session.getLastAssistantText() ?? "",
-			parentId: conv.parentId,
-			persisted: isPersisted,
-			handoffTo: conv.peerHandoffTo ? [...conv.peerHandoffTo] : undefined,
-			handoffFrom: conv.peerHandoffFrom ? [...conv.peerHandoffFrom] : undefined,
-		};
-	}
-
-	/** 子代理最近一次运行的结局：最后一条 assistant 消息的 errorMessage / stopReason。
-	 *  报错 > 中止 > 正常，三者互斥；无 assistant 消息时返回空。 */
-	private subagentRunOutcome(conv: Conversation): { error?: string; canceled?: boolean } {
-		// 自动重试等待期结局未定：瞬时 error 不算失败，避免向主对话误报
-		// 「子代理运行失败」（耗尽后 auto_retry_end 清旗，真正失败照常通知）。
-		if (conv.retryState) return {};
-		try {
-			const msgs = conv.session.agent.state.messages;
-			for (let i = msgs.length - 1; i >= 0; i--) {
-				const m = msgs[i];
-				if ((m as { role?: unknown }).role !== "assistant") continue;
-				const err = (m as { errorMessage?: unknown }).errorMessage;
-				if (typeof err === "string" && err.trim()) {
-					return { error: err.trim() };
-				}
-				const stop = (m as { stopReason?: unknown }).stopReason;
-				if (stop === "aborted" || stop === "cancelled") {
-					return { canceled: true };
-				}
-				break;
-			}
-		} catch {
-			// session being replaced — treat as no outcome yet
-		}
-		return {};
+	private subagentRunOutcome(conv: Conversation) {
+		return subagentRunOutcome(conv);
 	}
 
 	/**
@@ -3222,10 +1234,7 @@ export class ClientSession {
 
 	/** 对话结局 → 角色轮结局（报错 > 中止 > 正常）。 */
 	private roleOutcomeOf(conv: Conversation): RoleWaitOutcome {
-		const { error, canceled } = this.subagentRunOutcome(conv);
-		if (error) return "error";
-		if (canceled) return "canceled";
-		return "done";
+		return roleOutcomeOf(conv);
 	}
 
 	/** 某对话回合结束 → 唤醒它的等待者（agent_end / 中止路径都调）。 */
@@ -3610,27 +1619,11 @@ export class ClientSession {
 		};
 	}
 
-	/** skill 全文注入（{{skills}} 全文模式）：最好努力读名单里技能的文件正文。
-	 * 单文件 8KB、总量 32KB 封顶，失败/超限/不在名单回落名录（无 content）。
-	 * 名单为空时零开销：原样返回，不碰磁盘。 */
+	/** skill 全文注入（{{skills}} 全文模式）：最好努力读名单里技能的文件正文。 */
 	private fillSkillContents(
 		skills: { name: string; description: string; filePath: string }[],
 	): { name: string; description: string; filePath: string; content?: string }[] {
-		const wanted = new Set(normalizeSkillList(this.settingsSvc.current.skillsFullText));
-		if (wanted.size === 0) return skills;
-		let budget = 32 * 1024;
-		return skills.map((s) => {
-			if (!wanted.has(s.name) || !s.filePath || budget <= 0) return s;
-			try {
-				const st = statSync(s.filePath);
-				if (!st.isFile() || st.size <= 0 || st.size > 8192) return s;
-				const raw = decodeText(readFileSync(s.filePath).subarray(0, Math.min(st.size, budget))).trim();
-				budget -= raw.length;
-				return raw ? { ...s, content: raw } : s;
-			} catch {
-				return s;
-			}
-		});
+		return fillSkillContents(skills, this.settingsSvc.current.skillsFullText);
 	}
 
 	/** 渲染当前组合模板。当存在自定义模板/覆盖，或者当前会话预设非 standard（如 code/minimal/ask/reader），
@@ -3650,20 +1643,14 @@ export class ClientSession {
 		/** 延迟加载：工具目录（全部可用工具，顺序稳定）。 */
 		catalogTools?: string[];
 	}): string | undefined {
-		const tpl = (this.settingsSvc.current.promptTemplate ?? "").trim();
-		const ovs = this.settingsSvc.current.promptOverrides ?? {};
-		const hasOverride = Object.values(ovs).some((v) => typeof v === "string" && v.trim());
 		const preset = src.preset ?? this.conv?.agentPreset ?? this.settingsSvc.current.defaultAgentPreset ?? "standard";
-		const isCustomized =
-			!!tpl ||
-			hasOverride ||
-			preset !== "standard" ||
-			effectiveDisabledAgentTools(this.settingsSvc.current).length > 0 ||
-			// 延迟加载：提示词多了恒定目录段与 load_tools 引导，不渲染就根本不会出现。
-			src.lazy === true;
-		if (!isCustomized) return undefined;
-		const texts = resolveSectionTexts(this.composeInputs(src));
-		return renderPromptTemplate(tpl || DEFAULT_PROMPT_TEMPLATE, texts, hasOverride ? ovs : undefined);
+		return renderMainCompose(this.composeInputs(src), {
+			promptTemplate: this.settingsSvc.current.promptTemplate,
+			promptOverrides: this.settingsSvc.current.promptOverrides,
+			preset,
+			disabledToolCount: effectiveDisabledAgentTools(this.settingsSvc.current).length,
+			isLazy: src.lazy,
+		});
 	}
 
 	/** 从指定会话（缺省 = 活跃会话）收集工具/资源快照 → 一次算出 ①各来源默认(自动)
@@ -3805,22 +1792,7 @@ export class ClientSession {
 	 * 杜绝 SDK 内部全量遍历粗估系统提示词与 baseTokens 双重叠加导致首轮突增翻倍。
 	 */
 	private estimateNonSystemTokens(conv: Conversation): number {
-		let total = 0;
-		try {
-			const msgs = conv.session.agent.state.messages;
-			for (const m of msgs) {
-				if ((m as { role?: string }).role !== "system") {
-					total += estimateTokens(m);
-				}
-			}
-			const streaming = conv.session.agent.state.streamingMessage;
-			if (streaming) {
-				total += estimateTokens(streaming as AgentMessage);
-			}
-		} catch {
-			// best-effort
-		}
-		return total;
+		return estimateNonSystemTokens(conv.session.agent.state.messages, conv.session.agent.state.streamingMessage);
 	}
 
 	/** Web-facing extension UI context (widgets, notifications). */
@@ -3832,7 +1804,7 @@ export class ClientSession {
 	 * 历史/resume 列表）、listed=true 出现在左栏「运行的对话」并向用户可见——
 	 * 切换查看 / 输入补充（steer）/ 中止（abort）/ 移出全部复用现有对话机制。
 	 */
-	private subagentHandoffs: Array<{ fromRunId: string; toRunId: string; timestamp: number }> = [];
+	private subagentHandoffs: SubagentHandoffRecord[] = [];
 
 	/**
 	 * 多智能体同行协作与直接交接（Peer-to-Peer Subagents & Hand-off）：
@@ -3851,13 +1823,10 @@ export class ClientSession {
 		const fromType = fromConv?.subagentType ?? "peer";
 		const toType = toConv.subagentType ?? "peer";
 
-		const handoffMessage = `[Peer Hand-off from ${fromType} subagent (${fromRunId.slice(0, 8)})]:\n\n${payload}`;
+		const handoffMessage = formatSubagentHandoffMessage(fromType, fromRunId, payload);
 
-		const record = { fromRunId, toRunId, timestamp: Date.now() };
-		this.subagentHandoffs.push(record);
-		if (this.subagentHandoffs.length > 50) {
-			this.subagentHandoffs = this.subagentHandoffs.slice(-50);
-		}
+		const record: SubagentHandoffRecord = { fromRunId, toRunId, timestamp: Date.now() };
+		this.subagentHandoffs = recordSubagentHandoff(this.subagentHandoffs, record, 50);
 		if (!fromConv?.peerHandoffTo) {
 			if (fromConv) fromConv.peerHandoffTo = [];
 		}
@@ -3898,39 +1867,20 @@ export class ClientSession {
 	 * 第二级（已完成步骤折叠），推迟触发全量 LLM 压缩，保留近期关键代码的细节。
 	 */
 	applyContextBudgetPruning(conv: Conversation): void {
-		if (!conv?.session) return;
-		try {
-			const contextWindow = contextWindowOf(conv.session);
-			if (!contextWindow || contextWindow <= 0) return;
-			const s = this.settingsSvc.current;
-			const modelId = modelKeyOf(conv.session);
-			const cap = effectiveSoftCap(s.softCapTokens, s.softCapByModel, modelId);
-			const reserve = softCapToReserve(contextWindow, cap) ?? DEFAULT_COMPACTION_RESERVE_TOKENS;
-
-			const messages = conv.session.agent.state.messages;
-			if (!messages || messages.length === 0) return;
-
-			const result = pruneContextHierarchically(messages, {
-				contextWindow,
-				reserveTokens: reserve,
-				softCap: cap > 0 ? cap : null,
+		const result = executeContextBudgetPruning(conv, {
+			softCapTokens: this.settingsSvc.current.softCapTokens,
+			softCapByModel: this.settingsSvc.current.softCapByModel,
+		});
+		if (result.pruned) {
+			this.emit({
+				type: "notice",
+				level: "info",
+				text: `分层上下文预算裁剪生效：已释放约 ${result.tokensSaved.toLocaleString()} tokens（裁剪远期工具输出/折叠已完成步骤），推迟全量压缩`,
+				textEn: `Hierarchical context pruning active: freed ~${result.tokensSaved.toLocaleString()} tokens (trimmed tool outputs / folded steps), deferring full compaction`,
 			});
-
-			if (result.tier1.trimmedCount > 0 || result.tier2.foldedCount > 0) {
-				conv.session.agent.state.messages = result.messages;
-				const saved = result.tokensBefore - result.tokensAfter;
-				this.emit({
-					type: "notice",
-					level: "info",
-					text: `分层上下文预算裁剪生效：已释放约 ${saved.toLocaleString()} tokens（裁剪远期工具输出/折叠已完成步骤），推迟全量压缩`,
-					textEn: `Hierarchical context pruning active: freed ~${saved.toLocaleString()} tokens (trimmed tool outputs / folded steps), deferring full compaction`,
-				});
-				if (conv.id === this.conv.id) {
-					this.flushSnapshot();
-				}
+			if (conv.id === this.conv.id) {
+				this.flushSnapshot();
 			}
-		} catch {
-			/* 预算裁剪尽力而为，不阻断主流程 */
 		}
 	}
 
@@ -3992,212 +1942,44 @@ export class ClientSession {
 		},
 	};
 
-	/** schedule_* 工具的数据宿主：全局调度存储＋创建时刻 live 的 cwd/活动对话。
-	 *  issue #231：同时快照 owner 对话的落盘会话文件（压缩/重启后稳定），触发时
-	 *  先按 sessionFile 认同一会话（内存对话 id 重启即失效，不可单独做持久键）。 */
+	/** schedule_* 工具的数据宿主：全局调度存储＋创建时刻 live 的 cwd/活动对话。 */
 	private scheduleToolHost(): ScheduleToolHost {
-		return {
-			store: () => this.schedulerStore,
-			cwd: () => this.cwd,
-			activeConversationId: () => this.activeId,
-			conversationInfo: (id?: string) => {
-				try {
-					const target = (id ?? "").trim() ? this.convs.get((id ?? "").trim()) : this.convs.get(this.activeId);
-					if (!target) return undefined;
-					let sessionFile = "";
-					try {
-						sessionFile = String(target.session.sessionFile ?? "");
-					} catch {
-						sessionFile = "";
-					}
-					return { cwd: target.cwd ?? this.cwd, sessionFile };
-				} catch {
-					return undefined;
-				}
-			},
-		};
+		return createScheduleToolHost({
+			getSchedulerStore: () => this.schedulerStore,
+			getCwd: () => this.cwd,
+			getActiveId: () => this.activeId,
+			getConversation: (id) => this.convs.get(id),
+		});
 	}
 
-	/** conversation_read 工具的数据宿主：读本客户端的 conversation 体系 +
-	 *  落盘会话目录。运行中对话按 id（实时消息，含未落盘的）；历史按 path，
-	 *  且必须是会话列表里的路径（任意文件不给读）。跨标签页的实时运行不在
-	 *  this.convs 里——以落盘历史为准（工具 description 会告诉模型）。 */
+	/** conversation_read 工具的数据宿主 */
 	private conversationReadHost(): ConversationReadHost {
-		return {
-			listRunningConversations: () => {
-				const out: {
-					id: string;
-					title: string;
-					cwd: string;
-					messageCount: number;
-					isStreaming: boolean;
-					isSubagent: boolean;
-					parentId?: string;
-				}[] = [];
-				for (const c of this.convs.values()) {
-					let messageCount = 0;
-					let isStreaming = false;
-					try {
-						messageCount = c.session.getSessionStats().totalMessages;
-						isStreaming = c.session.isStreaming;
-					} catch {
-						// 会话替换中——报默认值
-					}
-					out.push({
-						id: c.id,
-						title: c.title,
-						cwd: c.cwd,
-						messageCount,
-						isStreaming,
-						isSubagent: !!c.isSubagent,
-						...(c.parentId ? { parentId: c.parentId } : {}),
-					});
-				}
-				return out;
-			},
-			readRunningConversation: (id) => {
-				const c = this.convs.get(id);
-				if (!c) return undefined;
-				// 取数与并行提醒的触碰集同一路径（convTranscript），不另起读取逻辑。
-				return { title: c.title, cwd: c.cwd, isSubagent: !!c.isSubagent, messages: this.convTranscript(c) };
-			},
-			listHistorySessions: async (scope, cwd) => {
-				const infos =
-					scope === "all"
-						? await SessionManager.listAll(piSessionsRoot())
-						: await SessionManager.list(cwd || this.cwd, piSessionsRoot());
-				return infos.map((s) => ({
-					path: s.path,
-					name: s.name,
-					firstMessage: s.firstMessage,
-					messageCount: s.messageCount,
-					modified: s.modified.getTime(),
-					cwd: s.cwd,
-				}));
-			},
-			readTouchSidecar: (id, path) => {
-				// sidecar 让 files/status 在压缩后仍有答案（additive 可选方法：
-				// 读不到就回 undefined，调用方回落现算转录 —— 绝不抛错阻塞工具）。
-				try {
-					if (id) {
-						const c = this.convs.get(id);
-						let file: string | undefined;
-						try {
-							file = c?.session.sessionFile ?? undefined;
-						} catch {
-							file = undefined;
-						}
-						return readTouchSidecar(file);
-					}
-					if (path) return readTouchSidecar(path);
-					return undefined;
-				} catch {
-					return undefined;
-				}
-			},
-			readHistorySession: async (path) => {
-				const all = await SessionManager.listAll(piSessionsRoot());
-				// win32 路径大小写不敏感：客户端回传的盘符/目录大小写常与服务端
-				// 列表不一致，严格相等会把合法请求误判为“不在白名单”。大小写
-				// 归一后再比（posix 不受影响）。
-				const norm = (p: string): string => {
-					const r = resolve(p);
-					return process.platform === "win32" ? r.toLowerCase() : r;
-				};
-				const hit = all.find((s) => norm(s.path) === norm(path));
-				if (!hit) return undefined;
-				try {
-					if (statSync(hit.path).size > MAX_TRANSCRIPT_SCAN_BYTES) return undefined;
-					const text = readFileSync(hit.path, "utf8");
-					return {
-						title: hit.name || hit.firstMessage,
-						cwd: hit.cwd,
-						sessionPath: hit.path,
-						messages: parseTranscriptLines(text),
-					};
-				} catch {
-					return undefined;
-				}
-			},
-		};
+		return createConversationReadHost({
+			getConversations: () => this.convs.values(),
+			getConversation: (id) => this.convs.get(id),
+			getConvTranscript: (c) => this.convTranscript(c),
+			getCwd: () => this.cwd,
+		});
 	}
 
-	/** claim_files 工具的数据宿主：owner 口径同 subagent/skill（本 runtime 所属会话）。
-	 *  常驻注册、不进 AGENT_TOOL_CATALOG（例外：目录工具必须有设置页行，见
-	 *  settings-tool-rows.test.ts，而 web/src 正被并行任务占用；advisory 工具常驻
-	 *  默认开可接受，目录项 + 设置行等 web/src 空出来后补）。 */
+	/** claim_files 工具的数据宿主：owner 口径同 subagent/skill（本 runtime 所属会话）。 */
 	private claimToolHost(ownerId?: string): ClaimFilesHost {
-		const target = (): Conversation | undefined => {
-			try {
-				return (ownerId ?? "").trim() !== "" ? this.convs.get(ownerId!.trim()) : this.convs.get(this.activeId);
-			} catch {
-				return undefined;
-			}
-		};
-		return {
-			cwd: () => target()?.cwd ?? this.cwd,
-			self: () => {
-				const t = target();
-				return { convId: t?.id ?? this.activeId, title: t?.title ?? "" };
-			},
-			store: () => this.getClaimStore?.(),
-		};
+		return createClaimToolHost({
+			resolveTarget: (oid) => ((oid ?? "").trim() !== "" ? this.convs.get(oid!.trim()) : this.convs.get(this.activeId)),
+			getActiveId: () => this.activeId,
+			getCwd: () => this.cwd,
+			getClaimStore: () => this.getClaimStore?.(),
+			ownerId,
+		});
 	}
 
-	/** compact_context 工具的数据宿主：提供消息统计用于预检，以及注册 pending 压缩请求。
-	 *  ownerId 语义同 skill / claimFiles（本 runtime 所属会话，不是派发瞬间 active）。 */
+	/** compact_context 工具的数据宿主：提供消息统计用于预检，以及注册 pending 压缩请求。 */
 	private compactContextHost(ownerId?: string): CompactContextHost {
-		const target = (): Conversation | undefined => {
-			try {
-				return (ownerId ?? "").trim() !== "" ? this.convs.get(ownerId!.trim()) : this.convs.get(this.activeId);
-			} catch {
-				return undefined;
-			}
-		};
-		return {
-			conversationId: () => target()?.id ?? this.activeId,
-			getContextStats: () => {
-				const conv = target();
-				if (!conv) return { messageCount: 0, estimatedTokens: 0 };
-				let messages: AgentMessage[] = [];
-				try {
-					messages = conv.session.messages;
-				} catch {
-					messages = [];
-				}
-				let totalChars = 0;
-				for (const m of messages) {
-					if (m && typeof m === "object" && "content" in m) {
-						const content = (m as { content?: unknown }).content;
-						if (Array.isArray(content)) {
-							for (const c of content) {
-								if (
-									c &&
-									typeof c === "object" &&
-									"type" in c &&
-									(c as { type: unknown }).type === "text" &&
-									typeof (c as { text?: unknown }).text === "string"
-								) {
-									totalChars += (c as { text: string }).text.length;
-								}
-							}
-						} else if (typeof content === "string") {
-							totalChars += content.length;
-						}
-					}
-				}
-				return {
-					messageCount: messages.length,
-					estimatedTokens: Math.ceil(totalChars / 4),
-				};
-			},
-			scheduleCompaction: (pending) => {
-				const conv = target();
-				if (conv) {
-					conv.pendingCompaction = pending;
-				}
-			},
-		};
+		return createCompactContextHost({
+			resolveTarget: (oid) => ((oid ?? "").trim() !== "" ? this.convs.get(oid!.trim()) : this.convs.get(this.activeId)),
+			getActiveId: () => this.activeId,
+			ownerId,
+		});
 	}
 
 	/** 执行由 AI 调用 compact_context 安排的上下文压缩（在 agent_settled 阶段调用）。 */
@@ -4261,29 +2043,13 @@ export class ClientSession {
 		}
 	}
 
-	/** skill 工具的数据宿主：读所属会话 loader 的实时技能表 + 主会话禁用集过滤
-	 * （与 skillsOverride 主会话语义一致）。ownerId 语义同 browser_page（本
-	 * runtime 所属会话，不是派发瞬间的 active）。失败回空目录，不抛错。 */
+	/** skill 工具的数据宿主：读所属会话 loader 的实时技能表 + 主会话禁用集过滤。 */
 	private skillToolHost(ownerId?: string): SkillToolHost {
-		return {
-			listSkills: () => {
-				try {
-					const target =
-						(ownerId ?? "").trim() !== "" ? this.convs.get(ownerId!.trim()) : this.convs.get(this.activeId);
-					const all = target?.session.resourceLoader.getSkills().skills ?? [];
-					const disabled = new Set(this.settingsSvc.current.disabledSkills);
-					return all
-						.filter((s) => !disabled.has(s.name))
-						.map((s) => ({
-							name: s.name,
-							description: s.description ?? "",
-							filePath: (s as { filePath?: string }).filePath ?? "",
-						}));
-				} catch {
-					return [];
-				}
-			},
-		};
+		return createSkillToolHost({
+			resolveTarget: (oid) => ((oid ?? "").trim() !== "" ? this.convs.get(oid!.trim()) : this.convs.get(this.activeId)),
+			getDisabledSkills: () => this.settingsSvc.current.disabledSkills,
+			ownerId,
+		});
 	}
 
 	/** 技能名录指纹（sha256 over name+description，非正文）：变化才打一行日志，
@@ -4491,6 +2257,7 @@ export class ClientSession {
 				onGoalModeDisabled: () => {
 					void this.goalSvc.stopAllGoals();
 				},
+				getMcpServers: () => this.listMcpServers(),
 			},
 			this.subagentTemplates,
 			this.approvalRules,
@@ -4928,6 +2695,8 @@ export class ClientSession {
 					// 覆盖，则用 composer 把 {{token}} 展开为各来源文本（工具列表/项目上下文/技能
 					// 等都取自本次 run 的 systemPromptOptions，永远最新）。
 					extensionFactories: [
+						createCodemodeExtension({ mode: "on" }),
+						createToolSearchExtension(),
 						{
 							name: "pi-webui-persona",
 							hidden: true,
@@ -7751,16 +5520,17 @@ export class ClientSession {
 		return new Promise((resolve) => {
 			let p;
 			try {
-				p = spawn(cmd, args, {
+				const isWin = process.platform === "win32";
+				const spawnCmd = isWin ? process.env.ComSpec || "cmd.exe" : cmd;
+				const spawnArgs = isWin ? ["/d", "/s", "/c", cmd, ...args] : args;
+				p = spawn(spawnCmd, spawnArgs, {
 					...(cwd ? { cwd } : {}),
 					stdio: ["ignore", "pipe", "pipe"],
-					// Windows: npm and friends are .cmd shims — Node can only exec
-					// them through the shell (otherwise spawn npm → ENOENT).
-					shell: process.platform === "win32",
+					windowsHide: true,
 					// posix 下让子进程自成进程组：超时时能整组杀掉（孙进程不残留）。
 					// 代价是父进程退出后子进程可能短暂存活——这些都是带超时的短命令，
 					// 可接受；win32 不需要（走 taskkill /T）。
-					detached: process.platform !== "win32",
+					detached: !isWin,
 				});
 			} catch (err) {
 				resolve({ code: -1, out: String(err) });
@@ -8818,6 +6588,269 @@ export class ClientSession {
 	/** 删除一个子代理模板。 */
 	async deleteSubagentTemplate(name: string): Promise<void> {
 		return this.settingsSvc.deleteTemplate(name);
+	}
+
+	/** 查询全部 MCP 服务器及配置路径（全局 + 项目级） */
+	listMcpServers(): { servers: UiMcpServer[]; globalPath: string; projectPath: string } {
+		return listAllMcpServers({
+			agentDir: this.agentDir,
+			cwd: this.cwd,
+			dataDir: this.stateStore.dataDir,
+			bridge: ClientSession.mcpBridge ?? undefined,
+		});
+	}
+
+	/** 保存或更新 MCP 服务器 */
+	async saveMcpServer(server: UiMcpServer, prevName?: string, prevScope?: McpScope): Promise<void> {
+		const res = saveMcpServerFile({
+			agentDir: this.agentDir,
+			cwd: this.cwd,
+			dataDir: this.stateStore.dataDir,
+			server,
+			prevName,
+			prevScope,
+		});
+		if (!res.ok) {
+			this.emit({
+				type: "notice",
+				level: "error",
+				text: res.error || "保存 MCP 服务器失败",
+				textEn: res.error || "Failed to save MCP server",
+			});
+			return;
+		}
+		if (ClientSession.mcpBridge) {
+			await ClientSession.mcpBridge.reload();
+		}
+		this.broadcastMcpServers();
+		this.pushSettings();
+	}
+
+	/** 删除指定作用域下的 MCP 服务器 */
+	async deleteMcpServer(name: string, scope: McpScope): Promise<void> {
+		const res = deleteMcpServerFile({
+			agentDir: this.agentDir,
+			cwd: this.cwd,
+			dataDir: this.stateStore.dataDir,
+			name,
+			scope,
+		});
+		if (!res.ok) {
+			this.emit({
+				type: "notice",
+				level: "error",
+				text: res.error || "删除 MCP 服务器失败",
+				textEn: res.error || "Failed to delete MCP server",
+			});
+			return;
+		}
+		if (ClientSession.mcpBridge) {
+			await ClientSession.mcpBridge.reload();
+		}
+		this.broadcastMcpServers();
+		this.pushSettings();
+	}
+
+	/** 切换指定作用域下的 MCP 服务器启用/停用状态 */
+	async toggleMcpServer(name: string, scope: McpScope, enabled: boolean): Promise<void> {
+		const res = toggleMcpServerFile({
+			agentDir: this.agentDir,
+			cwd: this.cwd,
+			dataDir: this.stateStore.dataDir,
+			name,
+			scope,
+			enabled,
+		});
+		if (!res.ok) {
+			this.emit({
+				type: "notice",
+				level: "error",
+				text: res.error || "切换 MCP 服务器状态失败",
+				textEn: res.error || "Failed to toggle MCP server",
+			});
+			return;
+		}
+		if (ClientSession.mcpBridge) {
+			await ClientSession.mcpBridge.reload();
+		}
+		this.broadcastMcpServers();
+		this.pushSettings();
+	}
+
+	/** 手动触发重新加载全部 MCP 服务器 */
+	async reloadMcp(): Promise<void> {
+		if (ClientSession.mcpBridge) {
+			await ClientSession.mcpBridge.reload();
+		}
+		this.broadcastMcpServers();
+		this.pushSettings();
+		this.emit({
+			type: "notice",
+			level: "info",
+			text: "已重新加载所有 MCP 服务器",
+			textEn: "Reloaded all MCP servers",
+		});
+	}
+
+	/** 广播最新的 MCP 服务器列表给当前客户端 */
+	broadcastMcpServers(): void {
+		const data = this.listMcpServers();
+		this.emit({
+			type: "mcp_servers",
+			servers: data.servers,
+			globalConfigPath: data.globalPath,
+			projectConfigPath: data.projectPath,
+		});
+	}
+
+	/** 从技能市场安装技能到全局 (~/.pi/agent/skills) 或当前项目 (.pi/skills) */
+	async installSkill(name: string, scope: "global" | "project", content: string): Promise<void> {
+		const cleanName = name.trim();
+		if (!cleanName || !/^[a-zA-Z0-9_-]+$/.test(cleanName)) {
+			this.emit({
+				type: "notice",
+				level: "error",
+				text: "技能名称非法，仅允许包含英文字母、数字、下划线及中划线",
+				textEn: "Invalid skill name: only letters, numbers, underscores and hyphens are allowed",
+			});
+			return;
+		}
+
+		const baseDir = scope === "global" ? join(this.agentDir, "skills") : join(this.cwd, ".pi", "skills");
+		const targetDir = join(baseDir, cleanName);
+		try {
+			mkdirSync(targetDir, { recursive: true });
+			writeFileSync(join(targetDir, "SKILL.md"), content.trim() + "\n", "utf8");
+
+			await this.reloadSessionDirect();
+			this.pushSettings();
+			this.emit({
+				type: "notice",
+				level: "info",
+				text: `技能「${cleanName}」已成功安装至${scope === "global" ? "全局" : "当前项目"}`,
+				textEn: `Skill "${cleanName}" installed successfully to ${scope === "global" ? "global" : "project"}`,
+			});
+		} catch (err) {
+			const msg = err instanceof Error ? err.message : String(err);
+			this.emit({
+				type: "notice",
+				level: "error",
+				text: `安装技能失败：${msg}`,
+				textEn: `Failed to install skill: ${msg}`,
+			});
+		}
+	}
+
+	/** 卸载指定作用域下的技能 */
+	async uninstallSkill(name: string, scope: "global" | "project"): Promise<void> {
+		const cleanName = name.trim();
+		const baseDir = scope === "global" ? join(this.agentDir, "skills") : join(this.cwd, ".pi", "skills");
+		const targetDir = join(baseDir, cleanName);
+		const singleFile = join(baseDir, `${cleanName}.md`);
+		try {
+			let deleted = false;
+			if (existsSync(targetDir)) {
+				rmSync(targetDir, { recursive: true, force: true });
+				deleted = true;
+			}
+			if (existsSync(singleFile)) {
+				rmSync(singleFile, { force: true });
+				deleted = true;
+			}
+
+			if (!deleted) {
+				this.emit({
+					type: "notice",
+					level: "warning",
+					text: `未找到技能「${cleanName}」的安装文件`,
+					textEn: `Skill "${cleanName}" installation file not found`,
+				});
+				return;
+			}
+
+			await this.reloadSessionDirect();
+			this.pushSettings();
+			this.emit({
+				type: "notice",
+				level: "info",
+				text: `技能「${cleanName}」已从${scope === "global" ? "全局" : "当前项目"}卸载`,
+				textEn: `Skill "${cleanName}" uninstalled from ${scope === "global" ? "global" : "project"}`,
+			});
+		} catch (err) {
+			const msg = err instanceof Error ? err.message : String(err);
+			this.emit({
+				type: "notice",
+				level: "error",
+				text: `卸载技能失败：${msg}`,
+				textEn: `Failed to uninstall skill: ${msg}`,
+			});
+		}
+	}
+
+	/** 查询公开远程 MCP 服务器市场 */
+	async fetchMcpMarket(source?: string, query?: string, page?: number, refresh?: boolean): Promise<void> {
+		const res = await fetchRemoteMcpMarket({
+			source,
+			query,
+			page,
+			refresh,
+			dataDir: this.stateStore.dataDir,
+		});
+		this.emit({
+			type: "mcp_market_result",
+			ok: res.ok,
+			servers: res.servers,
+			source: res.source,
+			total: res.total,
+			error: res.error,
+		});
+	}
+
+	/** 查询公开远程 Skill 技能仓库 */
+	async fetchSkillMarket(repo?: string, refresh?: boolean): Promise<void> {
+		const res = await fetchRemoteSkillMarket({
+			repo,
+			refresh,
+			dataDir: this.stateStore.dataDir,
+		});
+		this.emit({
+			type: "skill_market_result",
+			ok: res.ok,
+			skills: res.skills,
+			repo: res.repo,
+			error: res.error,
+		});
+	}
+
+	/** 从远程仓库拉取单个技能的完整 SKILL.md 内容 */
+	async fetchSkillContent(repo: string, skillId: string): Promise<void> {
+		const res = await fetchRemoteSkillContent({
+			repo,
+			skillId,
+			dataDir: this.stateStore.dataDir,
+		});
+		this.emit({
+			type: "skill_content_result",
+			ok: res.ok,
+			skillId: res.skillId,
+			content: res.content,
+			error: res.error,
+		});
+	}
+
+	/** 重新加载当前运行中会话并重放门控 */
+	private async reloadSessionDirect(): Promise<void> {
+		if (this.session && !this.session.isStreaming) {
+			try {
+				await this.session.reload();
+				this.applyRetryOverrides();
+				this.applyCompactionOverrides();
+				this.applyToolGating(this.session, this.conv?.agentPreset);
+				await this.pushSlashCommands();
+			} catch {
+				/* best effort */
+			}
+		}
 	}
 
 	/** Make settings effective in the running runtime（流式中则延迟到 agent_end）。 */
@@ -11153,6 +9186,7 @@ export class ClientSession {
 			// ignore
 		}
 		this.convs.delete(id);
+		this.pluginModelKeys?.delete(id);
 		this.planManager.unbindConversation(id);
 		this.clearAllToolWatchdogs(conv);
 		// 关对话 → 连它的 eval 内核（Python/Node 子进程 + 临时沙箱目录）一起回收：
@@ -11242,6 +9276,7 @@ export class ClientSession {
 		}
 		for (const conv of convs) {
 			this.convs.delete(conv.id);
+			this.pluginModelKeys?.delete(conv.id);
 			this.clearAllToolWatchdogs(conv);
 			conv.unsubscribe?.();
 			conv.unsubscribe = undefined;
@@ -12899,26 +10934,10 @@ export class ClientSession {
 
 	/**
 	 * Map a rendered user-message id (`u-<timestamp>-<seq>`, assigned in
-	 * serialize.ts) back to its append-only session entry id. The seq handles
-	 * two user messages sharing the same millisecond timestamp.
+	 * serialize.ts) back to its append-only session entry id.
 	 */
 	private resolveUserMessageEntryId(messageId: string): string | null {
-		const m = /^u-(\d+)(?:-(\d+))?$/.exec(messageId);
-		if (!m) return null;
-		const ts = Number(m[1]);
-		const seq = m[2] ? Number(m[2]) : 1;
-		let count = 0;
-		// Resolve against the compaction-aware current leaf path — the same list
-		// the UI renders (state.messages). Scanning the whole file (getEntries)
-		// could match a summarized entry or one on a different branch.
-		for (const entry of this.session.sessionManager.buildContextEntries()) {
-			if (entry.type !== "message") continue;
-			const msg = (entry as unknown as { message?: AgentMessage }).message;
-			if (!msg || msg.role !== "user" || msg.timestamp !== ts) continue;
-			count += 1;
-			if (count === seq) return entry.id;
-		}
-		return null;
+		return resolveUserMessageEntryId(this.session.sessionManager.buildContextEntries(), messageId);
 	}
 
 	/**
@@ -12929,20 +10948,12 @@ export class ClientSession {
 		conv: Conversation,
 		messageId: string,
 	): import("@earendil-works/pi-coding-agent").SessionEntry | null {
-		// The matcher re-derives rendered ids with the SAME derivation
-		// serializeCachedFor() used to hand them to the browser (uiMessageId +
-		// the counter below). Historically this recomputed ids with its own
-		// numbering (per-timestamp assistant seq, branch-entry global seq),
-		// which never matched what was rendered — fork/rollback on any
-		// assistant bubble failed 100% of the time (issue #381).
-		const entries = conv.session.sessionManager.buildContextEntries();
-		const found = findEntryByUiId(
-			entries as (UiIdEntryLike & import("@earendil-works/pi-coding-agent").SessionEntry)[],
+		return resolveConversationMessageEntry(
+			conv.session.sessionManager.buildContextEntries() as never,
 			messageId,
 			(m) => this.uiMessageKey(conv, m).n,
+			(id) => conv.session.sessionManager.getEntry(id),
 		);
-		// 兜底：getEntry 查整棵树
-		return found ?? conv.session.sessionManager.getEntry(messageId) ?? null;
 	}
 
 	/**
@@ -13184,15 +11195,7 @@ export class ClientSession {
 					0;
 
 				// 查找最贴近该 entry 的快照（按 entryId 或 <= entryTs 的最后一份快照）
-				const snapshots = targetConv.workspaceSnapshots ?? [];
-				let matched = snapshots.find((s) => s.entryId === entry.id);
-				if (!matched) {
-					const eligible = snapshots.filter((s) => entryTs === 0 || s.timestamp <= entryTs + 2000);
-					matched = eligible[eligible.length - 1];
-				}
-				if (!matched && snapshots.length > 0) {
-					matched = snapshots[0];
-				}
+				const matched = findMatchingWorkspaceSnapshot(targetConv.workspaceSnapshots ?? [], entry.id, entryTs);
 
 				if (matched) {
 					const res = await restoreWorkspaceSnapshot(targetConv.cwd, matched.snapshotRef);
@@ -13502,90 +11505,21 @@ export class ClientSession {
 					),
 				);
 			}
-			const ctx = await scmCommitContext(cwd, () => lang);
-			const input = buildCommitMsgInput(ctx, lang === "zh" ? "zh" : "en");
-			if (!input) {
-				throw new Error(
-					pick(
-						lang,
-						"没有可描述的更改（工作区干净）",
-						"Nothing to describe (working tree clean)",
-						"scm.commitmsg.no.changes",
-					),
-				);
-			}
-
-			const ac = new AbortController();
-			const timer = setTimeout(() => ac.abort(), SCM_COMMITMSG_TIMEOUT_MS);
-			// 提示词可配置（设置 → 提示词 → AI 提交信息）：追加/替换内置默认。
 			const commitSettings = this.settingsSvc.current;
-			const systemPrompt = buildCommitMsgPrompt(
-				commitSettings.scmCommitMsgPromptMode === "replace" ? "replace" : "append",
-				commitSettings.scmCommitMsgPrompt ?? "",
-			);
-			let msg: Awaited<ReturnType<typeof runtime.completeSimple>>;
-			try {
-				msg = await runtime.completeSimple(
-					model,
-					{
-						systemPrompt,
-						messages: [
-							{
-								role: "user",
-								timestamp: Date.now(),
-								content: [{ type: "text", text: input }],
-							},
-						],
-					},
-					{ signal: ac.signal, maxTokens: 400 },
-				);
-			} finally {
-				clearTimeout(timer);
+			const res = await generateScmCommitMessage({
+				cwd,
+				model,
+				runtime,
+				lang,
+				promptMode: commitSettings.scmCommitMsgPromptMode === "replace" ? "replace" : "append",
+				customPrompt: commitSettings.scmCommitMsgPrompt ?? "",
+			});
+			if (res.ok) {
+				reply(true, { text: res.text });
+			} else {
+				reply(false, { error: res.error });
 			}
-			if (msg.stopReason === "error" || msg.stopReason === "aborted") {
-				throw new Error(
-					msg.errorMessage ||
-						pick(
-							lang,
-							`模型异常终止（${msg.stopReason}）`,
-							`Model terminated abnormally (${msg.stopReason})`,
-							"scm.commitmsg.model.terminated",
-						),
-				);
-			}
-			const raw = msg.content
-				.filter((b) => b.type === "text")
-				.map((b) => (b as { text?: string }).text ?? "")
-				.join("\n");
-			const text = sanitizeCommitMessage(raw);
-			if (!text) {
-				throw new Error(
-					pick(lang, "模型返回了空的提交信息", "The model returned an empty commit message", "scm.commitmsg.empty"),
-				);
-			}
-			reply(true, { text });
 		} catch (err) {
-			if (isNotRepoError(err)) {
-				fail(
-					new Error(
-						pick(lang, "当前目录不是 Git 仓库", "Current directory is not a Git repository", "scm.commitmsg.not.repo"),
-					),
-				);
-				return;
-			}
-			if (err instanceof Error && /abort/i.test(`${err.name} ${err.message}`)) {
-				fail(
-					new Error(
-						pick(
-							lang,
-							`生成提交信息超时（${Math.round(SCM_COMMITMSG_TIMEOUT_MS / 1000)} 秒）`,
-							`Commit-message generation timed out (${Math.round(SCM_COMMITMSG_TIMEOUT_MS / 1000)}s)`,
-							"scm.commitmsg.timeout",
-						),
-					),
-				);
-				return;
-			}
 			fail(err);
 		}
 	}
@@ -14133,6 +12067,7 @@ export class ClientSession {
 
 	async dispose(): Promise<void> {
 		this.disposed = true;
+		this.pluginModelKeys?.clear();
 		this.modelAdmin.dispose();
 		// 关机路径：Windows 下跳过 pty.kill()（issue #215 ConPTY 死锁），只做
 		// TerminateProcess + 状态清理，句柄由 OS 在进程退出时回收。
@@ -14178,1315 +12113,8 @@ export class ClientSession {
 	}
 }
 
-/** issue #226：插件无头调用的工作目录校验（纯函数，可单测）。
- *  存在性语义与定时任务一致（须存在且为目录，不默默跑错目录）；另在
- *  Windows 下拒绝 SystemRoot 及其子树（如 C:\Windows\System32）——后台服务/
- *  快捷方式启动时宿主 cwd 常飘到 system32，直接跑就是高危误操作。 */
-export function checkPluginCwd(cwd: string): { ok: boolean; abs?: string; error?: string } {
-	const trimmed = String(cwd ?? "").trim();
-	if (!trimmed) return { ok: false, error: "工作目录为空" };
-	let abs: string;
-	try {
-		abs =
-			process.platform === "win32" && /^[A-Za-z]:$/.test(trimmed) ? `${trimmed.toUpperCase()}${sep}` : resolve(trimmed);
-	} catch {
-		return { ok: false, error: `工作目录非法：${trimmed}` };
-	}
-	try {
-		if (!statSync(abs).isDirectory()) throw new Error("not-a-dir");
-	} catch {
-		return { ok: false, error: `目标项目不存在或不是目录：${trimmed}` };
-	}
-	if (process.platform === "win32") {
-		const sysRoot = (process.env.SystemRoot || process.env.windir || "C:\\Windows")
-			.replace(/\//g, "\\")
-			.replace(/\\+$/, "");
-		const norm = abs.replace(/\//g, "\\").replace(/\\+$/, "");
-		const low = norm.toLowerCase();
-		const rootLow = sysRoot.toLowerCase();
-		if (low === rootLow || low.startsWith(`${rootLow}\\`)) {
-			return { ok: false, error: `拒绝在系统目录执行：${abs}（请在插件设置里指定项目工作目录）` };
-		}
-	}
-	return { ok: true, abs };
-}
+import { checkPluginCwd, isPseudoClientId } from "./client-id-utils.js";
+export { checkPluginCwd, isPseudoClientId };
 
-/** 插件/调度伪客户端：sink 常驻（fire-and-forget 的空函数），不能按浏览器存活判断。 */
-export function isPseudoClientId(id: string): boolean {
-	return id.startsWith("plugin:") || id.startsWith("scheduler:");
-}
-
-export class AgentService {
-	static isPseudoClientId = isPseudoClientId;
-	/** 客户端 -> 最后一个浏览器断开的时刻（离线行宽限期起点；重连/认领即删）。 */
-	private offlineSince = new Map<string, number>();
-	/** 客户端 -> 离线行宽限期到期定时器（到期后让其他客户端重推，行消失）。 */
-	private offlineTimers = new Map<string, ReturnType<typeof setTimeout>>();
-	/** index.ts 注入：SDK 工具执行事件的插件转发钩子，attach 时拷贝到每个新会话。 */
-	onToolEvent: ((ev: PluginToolEvent) => void) | undefined = undefined;
-	/** index.ts 注入：bash/read 插件拦截钩子，attach 时拷贝到每个新会话。 */
-	toolGuard: ToolGuardHook | undefined = undefined;
-	/** index.ts 注入：运行轨迹事件的插件转发钩子，attach 时拷贝到每个新会话。 */
-	onRunEvent: ((ev: PluginRunEvent) => void) | undefined = undefined;
-	/** index.ts 注入：对话切换通知钩子，attach 时拷贝到每个新会话。 */
-	onConversationChanged: (() => void) | undefined = undefined;
-	/** index.ts 注入：模型切换成功通知钩子（#542），attach 时拷贝到每个新会话。 */
-	onClientModelChanged: ((snap: PluginConversationSnapshot) => void) | undefined = undefined;
-	/** index.ts 注入：读取插件当前注册的 AI 工具（attach 时拷贝到每个新会话）。 */
-	pluginToolsProvider: (() => PluginAgentTool[]) | undefined = undefined;
-	/** index.ts 注入：读取插件当前注册的斜杠命令（attach 时拷贝到每个新会话）。 */
-	pluginCommandsProvider: (() => PluginCommandDef[]) | undefined = undefined;
-	/** index.ts 注入：读取插件注册的常驻后台任务（并入 bg_servers 面板）。 */
-	pluginBgTasksProvider: (() => BgServer[]) | undefined = undefined;
-	/** index.ts 注入：停止插件任务（kill_background_server with taskId）。 */
-	pluginStopBgTask: ((taskId: string) => boolean) | undefined = undefined;
-	/** index.ts 注入：内置调度存储（attach 时拷贝到每个新会话，供 schedule_* 工具）。 */
-	schedulerStore: SchedulerStore | undefined = undefined;
-	private clients = new Map<string, ClientSession>();
-	/** 全局认领表（跨浏览器标签页共享；<dataDir>/claims.json，best-effort 持久化）。 */
-	private claimStore: ClaimStore;
-	/** Quiesce (draining) state — the service refuses NEW work (prompts, forks,
-	 *  session resumes, new clients) so a deploy/upgrade/backup can stop cleanly
-	 *  once existing runs finish. Controlled via the local control socket:
-	 *  `pi-web-ui server quiesce|unquiesce`. */
-	private quiesced = false;
-	private quiescedAt = 0;
-	/** Attached browser sockets (reported by index.ts on open/close) — the
-	 *  control socket reports real sockets, not cached client-session objects. */
-	private socketCount = 0;
-	private pending = new Map<string, Promise<ClientSession>>();
-	private pendingDetaches = new Map<string, Set<(msg: ServerMessage) => void>>();
-	private stateStore: ClientStateStore;
-	/** Set by index.ts: called when /pi-web-ui:quit is invoked. */
-	onQuit: (() => boolean) | undefined = undefined;
-	/** 任意客户端成功切换工作区后触发（新绝对路径 + 该项目的额外工作区根）。
-	 *  index.ts 接到 PluginManager.notifyCwd / notifyWorkspaceRoots，让插件宿主的
-	 *  host.cwd 实时跟随当前项目、受支持路径范围跟着多根变。 */
-	onClientCwdChanged: ((cwd: string, roots: string[]) => void) | undefined = undefined;
-
-	constructor(
-		private cwd: string,
-		stateFile: string,
-	) {
-		this.stateStore = new ClientStateStore(stateFile);
-		this.claimStore = new ClaimStore(join(this.stateStore.dataDir, "claims.json"));
-	}
-
-	/** Get or create the session for a client, racing attach calls safely. */
-	/** True while the service is draining — new work is refused. */
-	isQuiesced(): boolean {
-		return this.quiesced;
-	}
-
-	/** Enter quiesce: stop admitting new work. Existing runs keep going. */
-	quiesce(): void {
-		this.quiesced = true;
-		this.quiescedAt = Date.now();
-	}
-
-	/** Leave quiesce: admit new work again. */
-	unquiesce(): void {
-		this.quiesced = false;
-		this.quiescedAt = 0;
-	}
-
-	/** Snapshot for the control socket / status command. */
-	quiesceInfo(): { quiesced: boolean; quiescedSince?: number } {
-		return this.quiesced ? { quiesced: true, quiescedSince: this.quiescedAt } : { quiesced: false };
-	}
-
-	/** issue #145：除请求方外是否有客户端正在跑（扫目录查重前置的无 I/O 判断）。 */
-	hasStreamingElsewhere(excludeClientId: string): boolean {
-		for (const [clientId, cs] of this.clients) {
-			if (clientId === excludeClientId) continue;
-			try {
-				if (cs.activeConversations() > 0) return true;
-			} catch {
-				// 单客户端坏了不影响判断
-			}
-		}
-		return false;
-	}
-
-	/** issue #145：跨客户端同会话查重 —— 找持有某 session 文件的别处对话。
-	 *  调用方在 SessionManager.open() 之前问这一句，就造不出第二个 writer。 */
-	findSessionOwner(targetPath: string, excludeClientId: string): SessionOwnerInfo | null {
-		for (const [clientId, cs] of this.clients) {
-			if (clientId === excludeClientId) continue;
-			const conv = cs.findConversationBySessionFile(targetPath);
-			if (conv) {
-				return {
-					clientId,
-					convId: conv.id,
-					title: conv.title,
-					cwd: conv.cwd,
-					isStreaming: cs.conversationStreaming(conv),
-					connected: cs.sinkCount() > 0,
-				};
-			}
-		}
-		return null;
-	}
-
-	/** 插件 steer 跨客户端兜底：除请求方外逐个问其他客户端的 conversations，
-	 *  找到持有方由其执行 steer（只调 steerOwnConversation，不碰钩子，无递归）；
-	 *  都找不到回 undefined，调用方回未知对话。单客户端异常跳过，不影响其他。 */
-	async steerElsewhere(
-		excludeClientId: string,
-		id: string,
-		text: string,
-	): Promise<{ ok: boolean; error?: string } | undefined> {
-		for (const [clientId, cs] of this.clients) {
-			if (clientId === excludeClientId) continue;
-			try {
-				const r = await cs.steerOwnConversation(id, text);
-				if (r) return r;
-			} catch {
-				// 单客户端坏了继续找下一个
-			}
-		}
-		return undefined;
-	}
-
-	/** issue #193：定时任务唤醒发起对话。逐个客户端找持有方，用 steer 语义投递
-	 *  （运行时插队、未跑时普通投递，不切用户当前对话）；都找不到回 ok:false，
-	 *  调用方（index.ts executor）回落视口/无头执行。quiesced 时直接拒绝。
-	 *  issue #226：成功时带回持有方 clientId（插件绑定网页会话时原样回执）。
-	 *  issue #231：opts.sessionFile 是跨压缩/重启的稳定键 —— 优先按它认同一会话
-	 *  （内存对话 id 重启即失效，压缩后同文件对话可能已换新 id，成功时带回**实际**
-	 *  投递的 conversationId + sessionFile，调用方据此重绑定任务）；id 相位带 cwd
-	 *  护栏（各客户端计数器都从 c1 开始，不校验会把报告投进无关项目）。压缩进行中
-	 *  的持有方回 busy:true（调用方另寻视口兄弟，而不是当成“不在”静默转无头）。 */
-	async wakeConversation(
-		id: string,
-		text: string,
-		opts?: { sessionFile?: string; cwd?: string },
-	): Promise<{
-		ok: boolean;
-		conversationId?: string;
-		sessionFile?: string;
-		clientId?: string;
-		busy?: boolean;
-		error?: string;
-	}> {
-		const wantFile = String(opts?.sessionFile ?? "").trim();
-		const wantCwd = String(opts?.cwd ?? "").trim();
-		if ((!id && !wantFile) || !text.trim()) return { ok: false, error: "唤醒目标或文本为空" };
-		if (this.quiesced) return { ok: false, error: "服务器正忙（quiesced），请稍后重试" };
-		const liveFile = (c: Conversation): string => {
-			try {
-				return String(c.session.sessionFile ?? "");
-			} catch {
-				return "";
-			}
-		};
-		const flush = (cs: ClientSession): void => {
-			try {
-				cs.flushSnapshot();
-			} catch {
-				// 推送失败不影响已投递的唤醒
-			}
-		};
-		// 相位一：落盘会话文件（稳定键）。同文件可能在多处打开，取最近活跃者；
-		// 全部忙（压缩中）则报 busy，调用方去找视口兄弟。
-		if (wantFile) {
-			const hits: { cs: ClientSession; clientId: string; conv: Conversation }[] = [];
-			for (const [clientId, cs] of this.clients) {
-				try {
-					const conv = cs.resolveSchedulerTarget({ sessionFile: wantFile });
-					if (conv) hits.push({ cs, clientId, conv });
-				} catch {
-					// 单客户端坏了继续找下一个
-				}
-			}
-			hits.sort((a, b) => b.conv.lastActiveAt - a.conv.lastActiveAt);
-			let busyError: string | undefined;
-			for (const h of hits) {
-				try {
-					const r = await h.cs.trySteerScheduler(h.conv, text);
-					if (r.ok) {
-						flush(h.cs);
-						return { ok: true, conversationId: h.conv.id, sessionFile: liveFile(h.conv), clientId: h.clientId };
-					}
-					if (r.busy) busyError = r.error;
-					// 非忙失败（投递异常）试下一个同文件持有方
-				} catch {
-					// 单客户端坏了继续找下一个
-				}
-			}
-			if (hits.length > 0) {
-				if (busyError) return { ok: false, busy: true, error: busyError };
-				// 同文件持有方都在但都投递失败 —— id 相位大概率指向同一批，无需再试
-				return { ok: false, error: "目标对话投递失败（持有方异常）" };
-			}
-			// 无同文件持有方 —— 老任务只有 id，继续相位二
-		}
-		// 相位二：内存对话 id（易失键，必须配 cwd 护栏防跨项目串台）。
-		if (id) {
-			const hits: { cs: ClientSession; clientId: string; conv: Conversation }[] = [];
-			for (const [clientId, cs] of this.clients) {
-				try {
-					const conv = cs.resolveSchedulerTarget({
-						conversationId: id,
-						...(wantCwd ? { cwd: wantCwd } : {}),
-					});
-					if (conv) hits.push({ cs, clientId, conv });
-				} catch {
-					// 单客户端坏了继续找下一个
-				}
-			}
-			hits.sort((a, b) => b.conv.lastActiveAt - a.conv.lastActiveAt);
-			let busyError: string | undefined;
-			for (const h of hits) {
-				try {
-					const r = await h.cs.trySteerScheduler(h.conv, text);
-					if (r.ok) {
-						flush(h.cs);
-						return { ok: true, conversationId: h.conv.id, sessionFile: liveFile(h.conv), clientId: h.clientId };
-					}
-					if (r.busy) busyError = r.error;
-				} catch {
-					// 单客户端坏了继续找下一个
-				}
-			}
-			if (busyError) return { ok: false, busy: true, error: busyError };
-		}
-		return { ok: false, error: "目标对话不在运行中（已关闭或服务重启过）" };
-	}
-
-	/** issue #231：同项目视口回退 —— 原绑定对话不在时，把唤醒投给该项目最近活跃
-	 *  的对话（用户当前正看着的面），而不是静默转无头。excludeIds 跳过已知忙对话；
-	 *  候选全部忙回 busy:true；无候选回 ok:false。成功带回实际投递方（调用方重绑定）。 */
-	async wakeViewportInCwd(
-		cwd: string,
-		text: string,
-		excludeIds?: Set<string>,
-	): Promise<{
-		ok: boolean;
-		conversationId?: string;
-		sessionFile?: string;
-		clientId?: string;
-		busy?: boolean;
-		error?: string;
-	}> {
-		const want = String(cwd ?? "").trim();
-		if (!want || !text.trim()) return { ok: false, error: "回退目标或文本为空" };
-		if (this.quiesced) return { ok: false, error: "服务器正忙（quiesced），请稍后重试" };
-		const cands: { cs: ClientSession; clientId: string; conv: Conversation }[] = [];
-		for (const [clientId, cs] of this.clients) {
-			try {
-				const conv = cs.findViewportInCwd(want, excludeIds);
-				if (conv) cands.push({ cs, clientId, conv });
-			} catch {
-				// 单客户端坏了继续找下一个
-			}
-		}
-		cands.sort((a, b) => b.conv.lastActiveAt - a.conv.lastActiveAt);
-		if (cands.length === 0) return { ok: false, error: "同项目无存活对话" };
-		let busyError: string | undefined;
-		for (const c of cands) {
-			try {
-				const r = await c.cs.trySteerScheduler(c.conv, text);
-				if (r.ok) {
-					try {
-						c.cs.flushSnapshot();
-					} catch {
-						// 推送失败不影响已投递的唤醒
-					}
-					let f = "";
-					try {
-						f = String(c.conv.session.sessionFile ?? "");
-					} catch {
-						f = "";
-					}
-					return { ok: true, conversationId: c.conv.id, sessionFile: f, clientId: c.clientId };
-				}
-				if (r.busy) busyError = r.error;
-			} catch {
-				// 单客户端坏了继续找下一个
-			}
-		}
-		if (busyError) return { ok: false, busy: true, error: busyError };
-		return { ok: false, error: "同项目对话投递失败" };
-	}
-
-	/** issue #145：别处在某 cwd 下正在跑的对话（同项目并行感知用，不含请求方）。 */
-	listProjectRunners(cwd: string, excludeClientId: string): ProjectRunnerInfo[] {
-		const out: ProjectRunnerInfo[] = [];
-		for (const [clientId, cs] of this.clients) {
-			if (clientId === excludeClientId) continue;
-			for (const r of cs.streamingInCwd(cwd)) out.push({ clientId, title: r.title, sessionFile: r.sessionFile });
-		}
-		return out;
-	}
-
-	/** 按 SDK 会话（runtime 身份）找它当前归属的客户端会话与对话 id（过户后归属会变）：
-	 *  桥接工具（问卷 / 页面）在调用瞬间用它投递，见 ClientSession.bridgeTarget。
-	 *  一条对话任一时刻只属于一个会话（过户先摘后插），扫一遍即可 —— 问卷/截图都是
-	 *  低频调用，不值得为此再维护一张全局索引。 */
-	findConversationHome(sdkSession: AgentSession): { session: ClientSession; convId: string } | undefined {
-		for (const cs of this.clients.values()) {
-			try {
-				const convId = cs.conversationIdOfSession(sdkSession);
-				if (convId) return { session: cs, convId };
-			} catch {
-				// 单客户端坏了不影响解析
-			}
-		}
-		return undefined;
-	}
-
-	/** issue #145：别处所有正在跑的对话（左栏 elsewhere 只读感知 + 手动过户用）。
-	 *  owner/convId 标识过户目标（手动过户入口）；DSH 引擎不填（不可过户）。 */
-	listExternalRunning(excludeClientId: string): ElsewhereRunning[] {
-		// 1) 收集当前请求客户端自己持有的对话（按 sessionFile 与 cwd+title 双维度），
-		// 本机已经持有的对话绝不作为 elsewhere 行推给本机（避免左栏同一对话既是“当前”又是“另一处”）。
-		const currentCs = this.clients.get(excludeClientId);
-		const localFiles = new Set<string>();
-		const localCwdTitles = new Set<string>();
-		if (currentCs) {
-			for (const b of currentCs.takeoverBriefs()) {
-				if (b.sessionFile) localFiles.add(resolve(b.sessionFile));
-				localCwdTitles.add(`${b.cwd}\0${b.title}`);
-			}
-		}
-
-		// 2) 遍历其他客户端，收集条目并按 sessionFile / cwd+title 去重。
-		// 若多个客户端持有同会话（如断连竞争、多标签残留），保留正在运行（streaming）或有问卷的更活跃者，
-		// 杜绝“一堆同一个对话的另一处”在左栏堆积。
-		const dedupMap = new Map<string, ElsewhereRunning>();
-		const now = Date.now();
-
-		for (const [clientId, cs] of this.clients) {
-			if (clientId === excludeClientId) continue;
-			// 伪客户端（scheduler:/plugin:）不走浏览器，sinkCount 永远为 0，保留。
-			const isPseudo = AgentService.isPseudoClientId(clientId);
-			// 无浏览器连接的残骸（sinkCount=0 = 断连留存）：宽限期内仍下发（标
-			// ownerOffline，可接管），过期或 TTL=0 时按 issue #291 不入列表。
-			const offline = !isPseudo && cs.sinkCount() === 0;
-			if (offline && OFFLINE_ROW_TTL_MS <= 0) continue;
-			const offlineSince = offline ? (this.offlineSince.get(clientId) ?? 0) : 0;
-
-			for (const r of cs.streamingSummariesAll()) {
-				// activity 只服务宽限期判定，不进 wire（ElsewhereRunning 无此字段）。
-				const { activity, ...rest } = r;
-				if (offline && !rest.isStreaming) {
-					// 宽限期从「断开时刻」与「最后一次活动」里取较晚者：跑动的后台任务
-					// 每有事件就续期，不会跑到一半从别人列表里消失。
-					const latest = Math.max(offlineSince, activity || 0);
-					if (latest > 0 && now - latest > OFFLINE_ROW_TTL_MS) continue;
-				}
-				const normFile = rest.sessionFile ? resolve(rest.sessionFile) : undefined;
-				// 本机已持有该会话文件，或本机在同项目下已有同名可见对话：排除
-				if (normFile && localFiles.has(normFile)) continue;
-				if (localCwdTitles.has(`${rest.cwd}\0${rest.title}`)) continue;
-
-				const entry: ElsewhereRunning = {
-					...rest,
-					owner: clientId,
-					...(isPseudo ? { pseudo: true as const } : {}),
-					...(offline ? { ownerOffline: true as const } : {}),
-				};
-
-				// 跨客户端去重键：有文件按规范路径去重，无文件按 cwd + title 去重
-				const dedupKey = normFile ? `file:${normFile}` : `title:${rest.cwd}\0${rest.title}`;
-				const existing = dedupMap.get(dedupKey);
-				if (existing) {
-					// 优先保留 streaming，其次保留 hasQuestion，最后才轮到离线行让位在线行
-					const preferNew =
-						(!existing.isStreaming && entry.isStreaming) ||
-						(!existing.hasQuestion && entry.hasQuestion) ||
-						(Boolean(existing.ownerOffline) && !entry.ownerOffline);
-					if (preferNew) {
-						dedupMap.set(dedupKey, entry);
-					}
-					continue;
-				}
-				dedupMap.set(dedupKey, entry);
-			}
-		}
-
-		return [...dedupMap.values()];
-	}
-
-	/** 离线行宽限期到期 → 让其他客户端重推一次（行随之从列表消失，回到 #291 口径）。
-	 *
-	 *  到期时刻取「断开时刻」与「最后一次活动」的较晚者：断开后 run 还在跑的后台任务
-	 *  每有流式变化都会重排（见 pokeExternalRunning），跑完那一刻的推送把宽限期从新起算。
-	 *  到期回调只推送、**不再重排**，否则「行已过期」会被无限排成 1s 轮询。 */
-	private armOfflineRowExpiry(clientId: string, cs: ClientSession): void {
-		if (OFFLINE_ROW_TTL_MS <= 0) return;
-		const prev = this.offlineTimers.get(clientId);
-		if (prev) clearTimeout(prev);
-		let activity = 0;
-		try {
-			activity = cs.latestActivity();
-		} catch {
-			activity = 0;
-		}
-		const since = Math.max(this.offlineSince.get(clientId) ?? 0, activity || 0);
-		const delay = Math.max(1_000, since + OFFLINE_ROW_TTL_MS - Date.now() + 1_000);
-		const timer = setTimeout(() => {
-			this.offlineTimers.delete(clientId);
-			// 期间重连/被认领/被回收都算作废：只推真实还存在的离线残骸。
-			if (this.clients.get(clientId) === cs && !AgentService.isPseudoClientId(clientId) && cs.sinkCount() === 0) {
-				this.notifyExternalRunning(clientId);
-			}
-		}, delay);
-		timer.unref?.();
-		this.offlineTimers.set(clientId, timer);
-	}
-
-	/** 又有浏览器连上（或残骸被认领/回收）：离线行状态作废，别的页面按在线行重推。 */
-	private clearOfflineRows(clientId: string): void {
-		const had = this.offlineSince.delete(clientId);
-		const timer = this.offlineTimers.get(clientId);
-		if (timer) {
-			clearTimeout(timer);
-			this.offlineTimers.delete(clientId);
-		}
-		if (had) this.pokeExternalRunning(clientId);
-	}
-
-	/** issue #291：删除定时任务后回收对应伪客户端，避免残留在 elsewhere 列表。 */
-	releaseSchedulerClient(taskId: string): void {
-		const safe = String(taskId ?? "").replace(/[^A-Za-z0-9_-]/g, "") || "task";
-		const clientId = `scheduler:${safe}`;
-		const cs = this.clients.get(clientId);
-		if (!cs) return;
-		// 伪客户端常驻一个 noop sink（chatFromScheduler 的 attach），所以不能按
-		// sinkCount 判断「有没有浏览器」—— 它永远为 1。这里就是它的回收点。
-		this.clients.delete(clientId);
-		// 先摘出 map 再异步 dispose：只删 map 的话，对话的 runtime/终端/看门狗
-		// 计时器全都留在内存里（泄漏），转录还挂着活 writer（同文件双写者风险）。
-		void cs.dispose().catch(() => {
-			// 回收失败不拦主流程：尽力而为，进程退出时 OS 兜底
-		});
-		// 通知其他客户端刷新 elsewhere 列表。
-		this.pokeExternalRunning(clientId);
-	}
-
-	/** issue #145: 某客户端流式集合变化 → 其他客户端重推 conversations。 */
-	pokeExternalRunning(excludeClientId: string): void {
-		// 离线残骸刚有状态变化（run 跑完 / 又有事件）：离线行宽限期重新起算，
-		// 定时器顺延到「最后一次活动 + TTL」——否则任务跑完后再没人推它。
-		const offlineCs = this.clients.get(excludeClientId);
-		if (offlineCs && !AgentService.isPseudoClientId(excludeClientId) && offlineCs.sinkCount() === 0) {
-			this.armOfflineRowExpiry(excludeClientId, offlineCs);
-		}
-		this.notifyExternalRunning(excludeClientId);
-	}
-
-	/** 只让其他客户端重推一次（不碰离线宽限期定时器）。 */
-	private notifyExternalRunning(excludeClientId: string): void {
-		for (const [clientId, cs] of this.clients) {
-			if (clientId === excludeClientId) continue;
-			try {
-				cs.refreshExternalRunning();
-			} catch {
-				// 单客户端坏了不影响其他
-			}
-		}
-	}
-
-	/** issue #145：向除请求方外的所有客户端发一条 notice（并行通告用）。 */
-	notifyClientsExcept(
-		excludeClientId: string,
-		msg: { type: "notice"; level: "info" | "warning" | "error"; text: string; textEn?: string },
-	): void {
-		for (const [clientId, cs] of this.clients) {
-			if (clientId === excludeClientId) continue;
-			try {
-				// 经 ClientSession.emit 才能进该客户端的 sink 组播；用公开发送面。
-				cs.sendNotice(msg);
-			} catch {
-				// 单客户端坏了不影响其他
-			}
-		}
-	}
-
-	/** Aggregate across every client session: conversations with in-flight runs. */
-	activeConversations(): number {
-		let n = 0;
-		for (const cs of this.clients.values()) n += cs.activeConversations();
-		return n;
-	}
-
-	/** Aggregate across every client session: messages queued in the SDK. */
-	pendingMessages(): number {
-		let n = 0;
-		for (const cs of this.clients.values()) n += cs.pendingMessages();
-		return n;
-	}
-
-	/** 插件用：全客户端最近活跃对话的快照（#542：按 clientId 取某个标签页正在看的
-	 *  对话；缺省回落「最近活跃的**非子代理**会话」——子代理跑得再勤也不会把用户
-	 *  正在看的对话挤出快照）。clientId 不认识/该客户端暂无对话时同样走回落。 */
-	readConversationForPlugins(opts?: PluginConversationQuery): PluginConversationSnapshot | null {
-		const want = (opts?.clientId ?? "").trim();
-		if (want) {
-			const cs = this.clients.get(want);
-			if (cs) {
-				try {
-					// 显式客户端：返回它**真正在看**的对话（含子代理对话——那是事实，
-					// 快照带 isSubagent 由插件自己判）。
-					const s = cs.readConversationForPlugins({ preferActive: true, includeSubagents: true });
-					if (s) return s;
-				} catch {
-					/* 单客户端坏了不影响回落 */
-				}
-			}
-		}
-		const snaps: (PluginConversationSnapshot | null)[] = [];
-		for (const cs of this.clients.values()) {
-			try {
-				snaps.push(cs.readConversationForPlugins());
-			} catch {
-				/* 单客户端坏了不影响其他 */
-			}
-		}
-		return pickLatestClientSnapshot(snaps);
-	}
-
-	/** 插件无头调用（host.chat 的落地）：外部通道（微信等）把文本投给 agent。
-	 *  每个 (pluginId, accountId) 独立伪客户端——复用 attach 完整链路
-	 *  （会话恢复/持久化/工具注入/快照），无浏览器也能跑；sink 是空函数，
-	 *  快照/notice 发了即丢，不攒内存。fire-and-forget：prompt 投递即返回，
-	 *  运行结果经 onRunEvent(run_end) 按 conversationId 关联。
-	 *  v1 语义：与该服务 cwd 下最近会话共享（单用户视角连续）；peer 名由插件
-	 *  拼进文本前缀，per-peer 会话隔离以后再加。
-	 *  issue #226：对齐定时任务的四件套——conversationId 命中时走 steer 语义
-	 *  投递（网页端实时可见，miss 则回落无头）；cwd 显式 pin 住（不存在/系统
-	 *  目录即拒绝，不默默跑错目录）；model/thinkingLevel 投递前应用（失败即
-	 *  拒绝，不回落，避免账单/效果与预期不符）。 */
-	async chatFromPlugin(pluginId: string, req: PluginChatRequest): Promise<PluginChatResult> {
-		const safe = String(pluginId ?? "plugin").replace(/[^A-Za-z0-9_-]/g, "") || "plugin";
-		const acct = String(req?.accountId ?? "default").replace(/[^A-Za-z0-9_-]/g, "") || "default";
-		const clientId = `plugin:${safe}:${acct}`;
-		const text = String(req?.text ?? "");
-		if (!text.trim()) throw new Error("chatFromPlugin: text 为空");
-		if (this.quiesced) throw new QuiesceRejectedError("插件无头调用被拒绝，请等服务器恢复后重试");
-		// 1. 绑定已有会话：steer 语义投递，网页端实时可见（微信当远程遥控器用）。
-		// miss/已回收时不抛错，回落无头伪客户端（浏览器关着时微信照常可用）。
-		const target = String(req?.conversationId ?? "").trim();
-		if (target) {
-			const w = await this.wakeConversation(target, text);
-			if (w.ok) return { conversationId: target, clientId: w.clientId ?? clientId };
-		}
-		// 2. 工作空间：不传回落伪客户端当前目录；传了必须存在且非系统目录。
-		const cwdReq = String(req?.cwd ?? "").trim();
-		let cwdAbs = "";
-		if (cwdReq) {
-			const chk = checkPluginCwd(cwdReq);
-			if (!chk.ok) throw new Error(`chatFromPlugin: ${chk.error}`);
-			cwdAbs = chk.abs ?? "";
-		}
-		const cs = await this.attach(clientId, () => {});
-		try {
-			if (cwdAbs && cs.cwd !== cwdAbs) await cs.setCwd(cwdAbs);
-		} catch (err) {
-			throw new Error(`chatFromPlugin: 切换工作目录失败（${cwdAbs}）：${(err as Error).message}`);
-		}
-		const model = String(req?.model ?? "").trim();
-		if (model) {
-			try {
-				await cs.switchModelOrThrow(model);
-			} catch (err) {
-				throw new Error(`chatFromPlugin: 切换模型失败（${model}）：${(err as Error).message}`);
-			}
-		}
-		const thinking = String(req?.thinkingLevel ?? "").trim();
-		if (thinking) {
-			try {
-				cs.setThinking(thinking);
-			} catch (err) {
-				throw new Error(`chatFromPlugin: 切换思考强度失败（${thinking}）：${(err as Error).message}`);
-			}
-		}
-		const conversationId = cs.readConversationForPlugins()?.conversationId ?? "";
-		void cs.prompt(text);
-		return { conversationId, clientId };
-	}
-
-	/** 内置定时任务的无头执行（issue #184，server/scheduler-tasks.ts 的 executor）。
-	 *  每个任务独立伪客户端 `scheduler:<taskId>`（专属会话连续、无浏览器也能跑）；
-	 *  cwd 按任务配置 pin 住（不存在即失败，不默默跑错目录）；可选模型/思考强度
-	 *  在投递前应用（失败即返回错误，不回落，避免账单/效果与预期不符）。
-	 *  fire-and-forget 投递后等待运行结束（最长 10 分钟轮询），回填真实 outcome
-	 * （成功/失败/耗时/会话 id）供历史记录与通知使用；超时按失败记录（运行本身
-	 *  不中止，继续在后台跑完）。 */
-	async chatFromScheduler(task: {
-		id: string;
-		cwd: string;
-		prompt: string;
-		model?: string;
-		thinkingLevel?: string;
-	}): Promise<{ ok: boolean; conversationId?: string; error?: string }> {
-		const safe = String(task.id ?? "task").replace(/[^A-Za-z0-9_-]/g, "") || "task";
-		const clientId = `scheduler:${safe}`;
-		const text = String(task.prompt ?? "");
-		if (!text.trim()) return { ok: false, error: "触发指令为空" };
-		if (this.quiesced) return { ok: false, error: "服务器正忙（quiesced），请稍后重试" };
-		const cwd = String(task.cwd ?? "").trim();
-		try {
-			if (!cwd || !statSync(cwd).isDirectory()) throw new Error("not-a-dir");
-		} catch {
-			return { ok: false, error: `目标项目不存在或不是目录：${cwd || "（空）"}` };
-		}
-		try {
-			const cs = await this.attach(clientId, () => {});
-			if (cs.cwd !== cwd) await cs.setCwd(cwd);
-			const model = String(task.model ?? "").trim();
-			if (model) {
-				try {
-					await cs.switchModelOrThrow(model);
-				} catch (err) {
-					return { ok: false, error: `切换模型失败（${model}）：${(err as Error).message}` };
-				}
-			}
-			const thinking = String(task.thinkingLevel ?? "").trim();
-			if (thinking) {
-				try {
-					cs.setThinking(thinking);
-				} catch (err) {
-					return { ok: false, error: `切换思考强度失败（${thinking}）：${(err as Error).message}` };
-				}
-			}
-			const conversationId = cs.readConversationForPlugins()?.conversationId ?? "";
-			void cs.prompt(`[定时任务] ${text}`);
-			// 等待运行结束：每 2s 轮询，最长 10 分钟。超时按失败记录（运行继续）。
-			const deadline = Date.now() + 10 * 60 * 1000;
-			for (;;) {
-				await new Promise((r) => setTimeout(r, 2000));
-				let streaming = false;
-				let lastError: string | undefined;
-				try {
-					const snap = cs.readConversationForPlugins();
-					streaming = snap?.isStreaming === true;
-					const msgs = snap?.messages ?? [];
-					for (let i = msgs.length - 1; i >= 0; i--) {
-						const m = msgs[i];
-						if (m.role === "assistant" && m.errorMessage) {
-							lastError = m.errorMessage;
-							break;
-						}
-						if (m.role === "assistant") break;
-					}
-				} catch {
-					streaming = false;
-				}
-				if (!streaming) {
-					if (lastError) return { ok: false, conversationId: conversationId || undefined, error: lastError };
-					return { ok: true, conversationId: conversationId || undefined };
-				}
-				if (Date.now() >= deadline)
-					return { ok: false, conversationId: conversationId || undefined, error: "运行超时（10 分钟），仍在后台继续" };
-			}
-		} catch (err) {
-			return { ok: false, error: (err as Error).message };
-		}
-	}
-
-	/** 插件直调模型（host.llm.complete 的落地）：孤立无工具的一次性补全。
-	 *  不建对话、不进历史、不碰任何会话状态；花费走用户自己的模型额度。
-	 *  quiesced 时拒绝；无客户端时用进程 cwd + 默认模型照常跑。 */
-	async completeForPlugins(
-		pluginId: string,
-		req: { prompt?: string; system?: string; model?: string; maxChars?: number; timeoutMs?: number },
-	): Promise<{
-		ok: boolean;
-		text?: string;
-		model?: string;
-		usage?: { input: number; output: number };
-		error?: string;
-	}> {
-		try {
-			if (this.quiesced) return { ok: false, error: "插件 LLM 调用被拒绝，请等服务器恢复后重试" };
-			let env: { cwd: string; agentDir: string; fallbackModel?: { provider: string; id: string } };
-			const agentDir = process.env.PI_CODING_AGENT_DIR ?? getAgentDir();
-			try {
-				const cs = this.pluginClient();
-				env = cs?.llmEnvForPlugins() ?? { cwd: this.cwd, agentDir };
-			} catch {
-				env = { cwd: this.cwd, agentDir };
-			}
-			const mod = await import("./plugin-llm.js");
-			const r = await mod.completeWithIsolatedSession(env, { ...req, prompt: String(req?.prompt ?? "") });
-			if (!r.ok) return r;
-			console.log(`[plugin:${pluginId}] llm.complete ok（模型 ${r.model}，输出 ${r.text.length} 字）`);
-			return r;
-		} catch (err) {
-			return { ok: false, error: (err as Error).message };
-		}
-	}
-
-	/** index.ts calls this when a browser socket opens/closes. */
-	noteSocketOpen(): void {
-		this.socketCount += 1;
-	}
-	noteSocketClose(): void {
-		this.socketCount = Math.max(0, this.socketCount - 1);
-	}
-
-	/** Full status for the control socket / `server status` command. */
-	serviceStatus(): {
-		pid: number;
-		version: string;
-		cwd: string;
-		quiesced: boolean;
-		quiescedSince?: number;
-		connectedClients: number;
-		activeConversations: number;
-		pendingMessages: number;
-		/** 托管本实例的平台服务（null = 前台/dev/Docker）——CLI 的
-		 *  `server status` 据此显示启动方式，见 launch-origin.ts。 */
-		service: UiServiceInfo | null;
-	} {
-		return {
-			pid: process.pid,
-			version: VERSION,
-			cwd: this.cwd,
-			...this.quiesceInfo(),
-			connectedClients: this.socketCount,
-			activeConversations: this.activeConversations(),
-			pendingMessages: this.pendingMessages(),
-			service: toServiceInfo(launchOrigin()),
-		};
-	}
-
-	// （原 private static isPseudoClientId 已抽到模块级导出并挂为 static 属性）
-
-	/**
-	 * 浏览器重启认领：给 fresh clientId 找一个可接管的断开残留会话（返回旧 id）。
-	 * 有别的在线浏览器时返回 null（issue #10 隔离优先）。
-	 * 全同步：attach 里的认领段不含 await，并发的新标签后到者看到 sinkCount>0，
-	 * 不会抢走同一个残留。
-	 */
-	private findAdoptableOrphan(excludeClientId: string): { oldId: string; cs: ClientSession } | null {
-		const cands: OrphanCandidate[] = [];
-		for (const [id, cs] of this.clients) {
-			if (id === excludeClientId) continue;
-			const pseudo = AgentService.isPseudoClientId(id);
-			let live = false;
-			let streaming = 0;
-			let adoptable = false;
-			let activity = 0;
-			try {
-				live = cs.sinkCount() > 0;
-			} catch {
-				live = false;
-			}
-			if (!pseudo && !live) {
-				try {
-					streaming = cs.activeConversations();
-				} catch {
-					streaming = 0;
-				}
-				try {
-					adoptable = cs.hasAdoptableContent();
-				} catch {
-					adoptable = false;
-				}
-				try {
-					activity = cs.latestActivity();
-				} catch {
-					activity = 0;
-				}
-			}
-			cands.push({ id, live, pseudo, streaming, adoptable, activity });
-		}
-		const picked = pickAdoptableOrphan(cands);
-		if (!picked) return null;
-		const cs = this.clients.get(picked);
-		return cs ? { oldId: picked, cs } : null;
-	}
-
-	/**
-	 * 跨客户端感知接线（同会话查重 / 同项目并行 / elsewhere 列表 / 跨端 steer）。
-	 * attach 尾部与认领分支共用 —— 认领换了 map 键，必须在首帧推送（attachSink）
-	 * 前就按新 id 重接，否则 self-exclusion 失效：把自己当成“另一处”（elsewhere
-	 * 误报 + prompt/switch 自拦）。尾部会再调一次，幂等。
-	 */
-	private wireClient(cs: ClientSession, clientId: string): void {
-		cs.findSessionOwner = (targetPath) => this.findSessionOwner(targetPath, clientId);
-		cs.takeOverConversationElsewhere = (ownerId, convId) => this.takeOverConversation(clientId, ownerId, convId);
-		cs.hasStreamingElsewhere = () => this.hasStreamingElsewhere(clientId);
-		cs.listProjectRunners = (cwd) => this.listProjectRunners(cwd, clientId);
-		cs.getClaimStore = () => this.claimStore;
-		cs.findConversationHome = (sdkSession) => this.findConversationHome(sdkSession);
-		cs.listExternalRunning = () => this.listExternalRunning(clientId);
-		cs.notifyExternalClients = (msg) => this.notifyClientsExcept(clientId, msg);
-		cs.onRunningChanged = () => this.pokeExternalRunning(clientId);
-		cs.steerConversationElsewhere = (id, text) => this.steerElsewhere(clientId, id, text);
-		cs.schedulerStore = this.schedulerStore;
-	}
-
-	/**
-	 * 手动过户（take_over_conversation）：把 owner 会话的某主对话（含子代理后代、
-	 * 等答复问卷/页调用）整体搬到 target 会话并切过去。搬的是 runtime 本体不是
-	 * 副本，单 writer 不变 —— 从在线标签页手里接管也是安全的；源会话修好 active
-	 * 并推全量刷新，双方都收到去向通知。quiesce 排空期也放行（重连既有工作）。
-	 */
-	async takeOverConversation(targetId: string, ownerId: string, convId: string): Promise<void> {
-		const target = this.clients.get(targetId);
-		if (!target) return;
-		const fail = (text: string, textEn: string): void => {
-			target.sendNotice({ type: "notice", level: "warning", text, textEn });
-		};
-		if (!ownerId || !convId) {
-			fail("过户目标不明确（缺 owner/id），请重试", "Takeover target unclear (missing owner/id), please retry.");
-			return;
-		}
-		if (ownerId === targetId) {
-			// 自己的对话 → 退化为普通切换。
-			try {
-				await target.switchConversation(convId);
-			} catch {
-				/* switch 内部已用 notice 报错 */
-			}
-			return;
-		}
-		if (AgentService.isPseudoClientId(ownerId)) {
-			fail(
-				"定时任务/插件会话不支持过户 —— 报告会自动落回绑定的对话，可在后台任务面板查看进度",
-				"Scheduler/plugin sessions cannot be taken over — reports are saved to the bound conversation automatically; check progress in the Background Tasks panel.",
-			);
-			return;
-		}
-		const source = this.clients.get(ownerId);
-		if (!source) {
-			fail("对方会话已不存在，可从历史对话里直接打开", "The source session is gone; reopen it from History instead.");
-			target.refreshExternalRunning();
-			return;
-		}
-		const briefs = source.takeoverBriefs();
-		const main = briefs.find((b) => b.id === convId);
-		if (!main) {
-			fail(
-				"对方已经没有这条对话（刚结束或被关闭），左栏稍后自动刷新",
-				"That conversation is gone on the other side; the list refreshes shortly.",
-			);
-			target.refreshExternalRunning();
-			return;
-		}
-		if (main.isSubagent) {
-			fail(
-				"只能过户主对话（子代理随主对话一起搬）",
-				"Only main conversations can be taken over (subagents move with their parent).",
-			);
-			return;
-		}
-		const moveIds = [convId, ...collectSubagentDescendantIds(briefs, convId)];
-		const moveSet = new Set(moveIds);
-		// 容量：与 switchSession 同口径（目标项目非子代理且非临时会话 8 个）。
-		const movedMains = briefs.filter((b) => moveSet.has(b.id) && !b.isSubagent && !b.isEphemeral).length;
-		const openInProject =
-			target.takeoverBriefs().filter((b) => b.cwd === main.cwd && !b.isSubagent && !b.isEphemeral).length + movedMains;
-		if (openInProject > MAX_OPEN_CONVERSATIONS) {
-			fail(
-				`目标项目运行的对话已达上限（${MAX_OPEN_CONVERSATIONS} 个），请先移出不需要的对话（打开后离开不继续对话即移出；钉住的对话需先取消钉住）`,
-				`This project already has the max open conversations (${MAX_OPEN_CONVERSATIONS}). Open one and leave it (without continuing) to remove it from the list; pinned chats must be unpinned first.`,
-			);
-			return;
-		}
-		try {
-			const detached = await source.detachTakeoverConversations(moveIds);
-			if (!detached.ok) {
-				fail(
-					detached.reason === "empty"
-						? "对方会话只剩这一条对话且服务排空中，稍后再试"
-						: "对方已经没有这条对话（刚结束或被关闭），左栏稍后自动刷新",
-					detached.reason === "empty"
-						? "The source session only has this conversation and the server is draining; try later."
-						: "That conversation is gone on the other side; the list refreshes shortly.",
-				);
-				if (detached.reason === "missing") target.refreshExternalRunning();
-				return;
-			}
-			// 测试专用故障注入（默认情况下一行不生效）：让「接进目标」这一步必错，用来回归
-			// 「过户夭折不得变成幽灵」（tests/takeover-rollback-test.mjs）。
-			let newMainId: string;
-			try {
-				if (process.env.PI_WEB_TEST_TAKEOVER_FAIL_INSERT === "1") throw new Error("injected takeover insert failure");
-				newMainId = target.insertTakeoverConvs(detached.payload);
-			} catch (err) {
-				// 夭折回滚：对话已经从源会话摘下来了（源侧 map 已删、订阅已断），接进目标失败就是
-				// 「还在跑但谁的列表里都没有」的幽灵 —— 只有重启服务才能靠落盘恢复（issue #556）。
-				// 原样搬回源会话，两边都拿到诚实的回执。
-				const where = await this.returnTakeoverPayload(source, target, detached.payload);
-				console.error("[takeover] insert failed, payload returned to", where, err);
-				if (where === "source") {
-					// 源页面也得知道发生了什么：它的对话刚才静默地从列表里消失过一瞬间。
-					source.sendNotice({
-						type: "notice",
-						level: "info",
-						text: `对方的过户未完成，「${main.title}」已退回本页，可直接继续。`,
-						textEn: `The takeover did not complete on the other side — "${main.title}" is back on this page.`,
-					});
-				}
-				fail(
-					where === "source"
-						? `过户失败（${(err as Error).message}）——对话已退回原页面，可直接重试`
-						: `过户失败（${(err as Error).message}）——对话留在本页运行列表里，刷新即可继续`,
-					where === "source"
-						? `Takeover failed (${(err as Error).message}) — the conversation is back on the source page; retry there.`
-						: `Takeover failed (${(err as Error).message}) — the conversation is kept in this page's running list; refresh to pick it up.`,
-				);
-				return;
-			}
-			// 源会话修好 active（detach 内部已处理）→ 推全量刷新 + 告知去向；
-			// 无 sink 时 emit 即丢，无需判断。
-			source.sendNotice({
-				type: "notice",
-				level: "info",
-				text: `「${main.title}」已过户到另一处接管，本页不再持有它。`,
-				textEn: `"${main.title}" was taken over by another page and is no longer held here.`,
-			});
-			target.sendNotice({
-				type: "notice",
-				level: "info",
-				text: `已将「${main.title}」过户到当前页面，可直接继续查看与操作。`,
-				textEn: `"${main.title}" was moved to this page — pick up right where it left off.`,
-			});
-			await target.switchConversation(newMainId);
-			await target.bindSession();
-		} catch (err) {
-			fail(`过户失败：${(err as Error).message}`, `Takeover failed: ${(err as Error).message}`);
-		}
-	}
-
-	/**
-	 * 过户夭折回滚：把已经摘下来的对话搬回源会话（及其运行列表）。
-	 *
-	 * 为什么要它：detach 与 insert 之间是唯一的空档期 —— 源侧已经删了 map、断了订阅，
-	 * 一旦 insert 报错，对话就两头不挂，但 runtime 还在跑（“幽灵会话”，只有重启服务
-	 * 才能靠落盘会话恢复，issue #556）。这里用同一套 insert 接线原样搬回去。
-	 *
-	 * 搬不回去（二次失败，理论上不该发生）时把它们**留在目标会话**：宁可留在新页面
-	 * 的运行列表里（insert 已给主对话置 listed），也绝不落到“没人持有”的空档。
-	 * 返回最终归属方，调用方据此给用户出对应文案。
-	 */
-	private async returnTakeoverPayload(
-		source: ClientSession,
-		target: ClientSession,
-		payload: TakeoverPayload,
-	): Promise<"source" | "target"> {
-		// 先摘掉已部分插进目标的残留（不 dispose：runtime 要原样搬）。
-		target.reclaimTakeoverConvs(payload);
-		try {
-			const mainId = source.insertTakeoverConvs(payload);
-			await source.switchConversation(mainId);
-			await source.bindSession();
-			return "source";
-		} catch (err) {
-			console.error("[takeover] rollback to source failed:", err);
-			try {
-				target.insertTakeoverConvs(payload);
-			} catch {
-				/* 双失败：对象还在 payload 里，不要再次搬运 —— 不抛，不让 handler 崩 */
-			}
-			return "target";
-		}
-	}
-
-	/**
-	 * 跨页作答预告（peek_elsewhere_question）：把 owner 会话里某对话的等答复问卷
-	 *  原文取回 target 页展示。只读，不搬迁对话；问卷已不在则直说（并刷新左栏）。
-	 */
-	async peekElsewhereQuestion(targetId: string, ownerId: string, convId: string): Promise<void> {
-		const target = this.clients.get(targetId);
-		if (!target) return;
-		const fail = (text: string, textEn: string): void => {
-			target.sendNotice({ type: "notice", level: "warning", text, textEn });
-		};
-		if (!ownerId || !convId) {
-			fail("问卷目标不明确（缺 owner/id），请重试", "Question target unclear (missing owner/id), please retry.");
-			return;
-		}
-		if (ownerId === targetId) return; // 自己的问卷走本地通道，不需要预告
-		if (AgentService.isPseudoClientId(ownerId)) {
-			fail(
-				"定时任务/插件会话的问卷不支持跨页作答 —— 报告会自动落回绑定的对话，可在后台任务面板查看进度",
-				"Scheduler/plugin session questions cannot be answered cross-page — reports are saved to the bound conversation automatically; check progress in the Background Tasks panel.",
-			);
-			return;
-		}
-		const source = this.clients.get(ownerId);
-		const q = source?.peekPendingQuestion(convId);
-		if (!q) {
-			fail(
-				"那张问卷已不在（对方刚回答/取消或对话已结束）",
-				"That question is gone (just answered/cancelled there, or the run ended).",
-			);
-			target.refreshExternalRunning();
-			return;
-		}
-		target.pushElsewhereQuestion(ownerId, convId, q);
-	}
-
-	/**
-	 * 跨页作答（question_answer 带 owner）：把本页提交的答案送到持有方会话。
-	 * 问卷已不在（对方刚回答/取消）则明确告知，答案不吞不丢两不沾 —— 没送出就是没送出。
-	 */
-	async answerElsewhereQuestion(
-		targetId: string,
-		ownerId: string,
-		id: string,
-		answers: QuestionAnswer[],
-		cancelled?: boolean,
-	): Promise<void> {
-		const target = this.clients.get(targetId);
-		if (!target) return;
-		const source = this.clients.get(ownerId);
-		const ok = source ? source.resolveQuestion(id, answers, cancelled) : false;
-		if (!ok) {
-			target.sendNotice({
-				type: "notice",
-				level: "warning",
-				text: "那张问卷已不在（对方刚回答/取消或对话已结束），你的回答没有送出",
-				textEn:
-					"That question is gone (just answered/cancelled there, or the run ended) — your answer was not delivered.",
-			});
-			target.refreshExternalRunning();
-		}
-	}
-
-	/** Get or create the session for a client, racing attach calls safely. */
-	async attach(clientId: string, send: (msg: ServerMessage) => void): Promise<ClientSession> {
-		let cs = this.clients.get(clientId);
-		if (!cs) {
-			const inflight = this.pending.get(clientId);
-			if (inflight) {
-				cs = await inflight;
-			} else {
-				// 浏览器重启认领（clientId 存 sessionStorage，关浏览器即失；服务端残留
-				// ClientSession 的运行中对话否则永远卡在“另一处”只读，连看都看不了）：
-				// 无其他在线浏览器时，把最近断开的残留会话整体过户给这个新 id
-				// （只换 map 键，不搬 runtime：对话/终端/订阅/cwd 原样保留，
-				// 流式增量经尾部 attachSink 直接推给新 socket）。
-				// 有其他在线标签时不认领（issue #10 隔离优先）；quiesce 排空期也放行
-				// （这是重连既有工作，不是新工作）。本段无 await，并发 attach 原子。
-				// 伪客户端（scheduler:/plugin:，定时任务/插件的无头调用）绝不认领：
-				// 否则无头会话会改键劫持用户关浏览器留下的残会话。
-				const orphan = AgentService.isPseudoClientId(clientId) ? null : this.findAdoptableOrphan(clientId);
-				if (orphan) {
-					this.clients.delete(orphan.oldId);
-					// 残骸被本页认领：它的离线行状态随 id 作废（行归到新 id 名下）。
-					this.clearOfflineRows(orphan.oldId);
-					this.clients.set(clientId, orphan.cs);
-					cs = orphan.cs;
-					// 先按新 id 重接（首帧 attachSink 的 elsewhere/self-exclusion 依赖它）。
-					this.wireClient(cs, clientId);
-					cs.noteAdopted();
-					// 服务重启前记在旧 id 名下的中断记录搬到新 id 名下，尾部
-					// resumeInterrupted 按新 id 消费（只认领一次，不重复恢复）。
-					const inter = this.stateStore.takeInterrupted(orphan.oldId);
-					if (inter?.length) this.stateStore.saveInterrupted(clientId, inter);
-				} else {
-					// Restore this client's last-used workspace when it still exists;
-					// Admission gate: while quiesced, only clients with an EXISTING
-					// session may attach (they can watch their runs drain); brand-new
-					// clients are refused — index.ts closes their socket (4403) and the
-					// browser reconnect loop retries after admission reopens.
-					if (this.quiesced) {
-						throw new QuiesceRejectedError("新连接被拒绝，请等服务器恢复后重试");
-					}
-					// otherwise fall back to the server's configured default cwd.
-					let cwd = this.cwd;
-					const saved = this.stateStore.get(clientId);
-					if (saved.lastCwd && saved.lastCwd !== this.cwd) {
-						try {
-							// issue #295：异步 stat —— 同步 stat 落在坏挂载（已卸载的外部卷/
-							// autofs 触发点）上会在内核里挂起，冻住整个事件循环（含控制
-							// socket 与其他客户端的心跳）；异步版本只挡本连接，超时提示照发。
-							const { stat } = await import("node:fs/promises");
-							if ((await stat(saved.lastCwd)).isDirectory()) cwd = saved.lastCwd;
-						} catch {
-							// gone (unmounted drive / deleted / hanging mount) — fall back to the default
-						}
-					}
-					// Sessions use the SDK default per-project dir — no per-client dir.
-					// issue #145：新标签页默认恢复项目最近的会话 —— 若那条仍被别处持有
-					// （跑着或空闲），建之前就决定空白（第二个 writer 根本不会被打开，
-					// 也无需事后拆 runtime）。之前只拦 running：空闲持有照样恢复出双
-					// writer，两边轮流发送分叉历史。其他客户端不存在时不扫目录。
-					let createOpts: { blank?: boolean; blankTitle?: string; idleHeld?: boolean } | undefined;
-					if (this.clients.size > 0) {
-						try {
-							const infos = await SessionManager.list(cwd, piSessionsRoot());
-							const recent = infos[0]?.path ? resolve(infos[0].path) : undefined;
-							const owner = recent ? this.findSessionOwner(recent, clientId) : null;
-							if (owner) {
-								createOpts = { blank: true, blankTitle: owner.title, ...(owner.isStreaming ? {} : { idleHeld: true }) };
-							}
-						} catch {
-							// 列表失败不挡正常恢复
-						}
-					}
-					const creating = ClientSession.create(clientId, cwd, this.stateStore, createOpts).finally(() => {
-						this.pending.delete(clientId);
-					});
-					this.pending.set(clientId, creating);
-					cs = await creating;
-					this.clients.set(clientId, cs);
-					// issue #145 接线提前：首帧 elsewhere 依赖它。
-					this.wireClient(cs, clientId);
-					// Make sure the restored/default workspace appears in the project list.
-					this.stateStore.remember(clientId, cwd);
-					if (cwd !== this.cwd) {
-						send({
-							type: "notice",
-							level: "info",
-							text: `已恢复上次的工作目录：${cwd}`,
-							textEn: `Restored the last working directory: ${cwd}`,
-						});
-					}
-				}
-			}
-		}
-		// First attach after a restart: reopen sessions that were streaming
-		// when the previous process shut down and continue them (consumed
-		// once, then cleared). Fire-and-forget AFTER attachSink + hooks:
-		// resume emits directly to sinks and needs the owner guards.
-		// Progress arrives over the socket as usual.
-		const detachedSinks = this.pendingDetaches.get(clientId);
-		if (detachedSinks?.has(send)) {
-			detachedSinks.delete(send);
-			if (detachedSinks.size === 0) this.pendingDetaches.delete(clientId);
-		} else {
-			cs.attachSink(send);
-			// 又有浏览器连上：离线行状态作废（别的页面按在线行重推，去掉离线标记）。
-			this.clearOfflineRows(clientId);
-		}
-		// Forward hooks (set once by index.ts) to every session.
-		cs.onQuit = this.onQuit;
-		cs.onToolEvent = this.onToolEvent;
-		cs.toolGuard = this.toolGuard;
-		cs.onRunEvent = this.onRunEvent;
-		cs.onConversationChanged = () => this.onConversationChanged?.();
-		cs.onClientModelChanged = (snap) => this.onClientModelChanged?.(snap);
-		cs.pluginToolsProvider = this.pluginToolsProvider;
-		cs.pluginCommandsProvider = this.pluginCommandsProvider;
-		cs.pluginBgTasksProvider = this.pluginBgTasksProvider;
-		cs.pluginStopBgTask = this.pluginStopBgTask;
-		cs.isQuiesced = () => this.quiesced;
-		// issue #145 跨客户端感知接线（同会话查重 / 同项目并行 / elsewhere 列表）。
-		this.wireClient(cs, clientId);
-		// 插件宿主工作区跟随：初次接入也同步一次（恢复的 lastCwd 可能≠服务启动目录），
-		// notifyCwd 幂等去重；此后 set_cwd 成功时由 cs.onCwdChanged 继续驱动。
-		cs.onCwdChanged = (abs, roots) => this.onClientCwdChanged?.(abs, roots);
-		this.onClientCwdChanged?.(cs.cwd, cs.workspaceRoots);
-		void cs.resumeInterrupted(this.stateStore.takeInterrupted(clientId));
-		return cs;
-	}
-
-	/** 插件 AI 工具集合变化（注册/注销）时由 index.ts 触发：推送到所有客户端的全部会话。 */
-	applyPluginAgentTools(): void {
-		for (const cs of this.clients.values()) cs.refreshPluginTools();
-	}
-
-	/** Browser UI locale report (hello.locale / set_locale): persist per client
-	 *  and refresh lang-aware prompts (streaming-safe via ClientSession). */
-	async setLocale(clientId: string, locale: string): Promise<void> {
-		const cs = this.clients.get(clientId);
-		if (cs) {
-			await cs.setLocale(locale);
-			return;
-		}
-		// hello race: session still being created — wait for it, then apply.
-		const inflight = this.pending.get(clientId);
-		if (inflight) {
-			try {
-				await (await inflight).setLocale(locale);
-			} catch {
-				/* attach failed — nothing to apply to */
-			}
-		}
-	}
-
-	/** 插件斜杠命令集合变化时由 index.ts 触发：重推各客户端的命令目录。 */
-	applyPluginCommandCatalog(): void {
-		for (const cs of this.clients.values()) void cs.pushSlashCommands();
-	}
-
-	/** 插件常驻后台任务变化时由 index.ts 触发：重推各客户端的 bg_servers。 */
-	refreshBackgroundServers(): void {
-		for (const cs of this.clients.values()) cs.refreshBgTasks();
-	}
-
-	/** Remove a socket from a client's broadcast set (called on socket close). */
-	detach(clientId: string, send: (msg: ServerMessage) => void): void {
-		const cs = this.clients.get(clientId);
-		if (cs) {
-			cs.detachSink(send);
-			// 最后一个 sink 断开 = 该客户端不再在线 → 它的行从「另一处」变成「另一处
-			// （离线）」。立刻让其他客户端重推一次补上离线标记；宽限期
-			// （OFFLINE_ROW_TTL_MS）到期后再推一次，行随之消失（issue #291 的
-			// 「残骸不永久占位」仍然成立）。
-			if (!AgentService.isPseudoClientId(clientId) && cs.sinkCount() === 0) {
-				this.offlineSince.set(clientId, Date.now());
-				this.pokeExternalRunning(clientId);
-				this.armOfflineRowExpiry(clientId, cs);
-			}
-		} else if (this.pending.has(clientId)) {
-			// 连接在 attach 异步创建期间断开：记录待 detach 的 sink，attach 完成后清理，避免死连接泄漏
-			let set = this.pendingDetaches.get(clientId);
-			if (!set) {
-				set = new Set();
-				this.pendingDetaches.set(clientId, set);
-			}
-			set.add(send);
-		}
-	}
-
-	get(clientId: string): ClientSession | undefined {
-		return this.clients.get(clientId);
-	}
-
-	/** 插件扩展点 v2：挑一个最合适的客户端会话供无浏览器调用的插件 API 用
-	 *  （conversationLister/Searcher/Writer、modelLister、runAborter）。
-	 *  有运行中对话的优先，否则任意残留客户端；一个没有时返回 undefined，
-	 *  调用方（index.ts 注入）回退空列表 / {ok:false}，绝不抛错。 */
-	pluginClient(): ClientSession | undefined {
-		let fallback: ClientSession | undefined;
-		for (const cs of this.clients.values()) {
-			if (!fallback) fallback = cs;
-			try {
-				if (cs.activeConversations() > 0) return cs;
-			} catch {
-				// 单客户端坏了不影响挑选
-			}
-		}
-		return fallback;
-	}
-
-	/** Snapshot still-streaming conversations for post-restart resume.
-	 *  Called during graceful shutdown AND from the restart_service handler
-	 *  (which exits without shutdown under systemd — without this, the
-	 *  interrupted-run record would silently never be written there). */
-	recordInterruptedRuns(): void {
-		// Record still-streaming conversations BEFORE tearing anything down, so
-		// the next attach can tell the user what was lost (SIGTERM / update).
-		// eslint-disable-next-line unicorn/no-useless-spread -- snapshot: handlers may unsubscribe mid-emit
-		for (const [clientId, cs] of [...this.clients]) {
-			try {
-				const running = cs.streamingSummaries();
-				if (running.length > 0) {
-					this.stateStore.saveInterrupted(
-						clientId,
-						running.map((r) => ({ ...r, at: Date.now() })),
-					);
-				}
-			} catch {
-				// best effort — never block shutdown on bookkeeping
-			}
-		}
-	}
-
-	async disposeAll(): Promise<void> {
-		this.recordInterruptedRuns();
-		const all = [...this.clients.values()];
-		this.clients.clear();
-		await Promise.all(all.map((cs) => cs.dispose()));
-	}
-}
+import { AgentService } from "./agent-service-daemon.js";
+export { AgentService };

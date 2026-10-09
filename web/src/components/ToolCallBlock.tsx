@@ -1,5 +1,6 @@
 import { memo, useEffect, useMemo, useRef, useState } from "react";
 import { createPortal } from "react-dom";
+import { appUrl } from "../base-url";
 import {
 	FiArrowRight,
 	FiCheck,
@@ -19,7 +20,7 @@ import { openContextMenu } from "../context-menu-state";
 import { openToolInfo } from "../tool-info-state";
 import { CollapsibleHead } from "./CollapsibleHead";
 import type { UiSlotEntry } from "../ui-slots";
-import { parseDelegateArgs, shortenPath, toolArgHints, type DelegateField } from "../tool-args";
+import { parseCodemodeArgs, parseDelegateArgs, shortenPath, toolArgHints, type DelegateField } from "../tool-args";
 import { PRESENT_FILES_TOOL_NAME } from "../../../server/tool-manager.js";
 import { parsePresentArgs } from "../present-items";
 import { useCopyFeedback } from "../use-copy-feedback";
@@ -51,6 +52,8 @@ const TOOL_ICONS: Record<string, string> = {
 	grep: "🔍",
 	find: "🧭",
 	ls: "📂",
+	codemode: "⚡",
+	tool_search: "🔎",
 	[PRESENT_FILES_TOOL_NAME]: "🖼",
 };
 
@@ -115,7 +118,7 @@ export const ToolCallBlock = memo(function ToolCallBlock({
 	const output = rawOutput.replace(/…\[LIVE_OMIT:(\d+)\]…\n/, (_, n) => t("liveOutputOmitted", { n }));
 	/** 工具结果里的图片（web_shot 截图、read 读到的图……）：开关开着就在卡片里
 	 *  直接出缩略图（折叠态也可见 —— 「直接显示出来」），点击进灯箱看大图。
-	 *  只认 data: 内联图（服务端 serialize.ts 只下发这种；远端 URL 不内联展示）。 */
+	 *  支持 data: 内联图与 CAS 附件短 URL（/api/attachment/）。 */
 	const resultImages = useMemo(() => {
 		if (!showImages) return [];
 		const content = view.result?.content ?? [];
@@ -123,7 +126,8 @@ export const ToolCallBlock = memo(function ToolCallBlock({
 			(b): b is UiImageBlock =>
 				b.type === "image" &&
 				typeof (b as UiImageBlock).dataUrl === "string" &&
-				((b as UiImageBlock).dataUrl as string).startsWith("data:"),
+				(((b as UiImageBlock).dataUrl as string).startsWith("data:") ||
+					((b as UiImageBlock).dataUrl as string).startsWith("/")),
 		);
 	}, [showImages, view.result]);
 	const [zoomed, setZoomed] = useState<string | null>(null);
@@ -137,6 +141,11 @@ export const ToolCallBlock = memo(function ToolCallBlock({
 	}, [zoomed]);
 	const isDelegate = block.name === "delegate_task";
 	const delegateArgs = isDelegate ? parseDelegateArgs(block.argumentsText) : {};
+	const isCodemode = block.name === "codemode";
+	const codemodeArgs = useMemo(
+		() => (isCodemode ? parseCodemodeArgs(block.argumentsText) : null),
+		[isCodemode, block.argumentsText],
+	);
 	// 展示文件卡片：参数（路径清单）在流式期间可能是半截 JSON，解析失败就回落到
 	// 原文展示；卡片内容本体不依赖 details（它只让 kind/size/摘录更准）。
 	const presentArgs = useMemo(
@@ -292,6 +301,16 @@ export const ToolCallBlock = memo(function ToolCallBlock({
 								{shortenPath(hints.path)}
 							</span>
 						)}
+						{hints.codeLines && (
+							<span className="toolcall-timeout" title={`${hints.codeLines} lines`}>
+								λ {hints.codeLines}L
+							</span>
+						)}
+						{hints.query && block.name === "tool_search" && (
+							<span className="toolcall-query" title={hints.query}>
+								🔎 {hints.query}
+							</span>
+						)}
 						{hints.timeout && <span className="toolcall-timeout">⏱ {hints.timeout}</span>}
 						{isDelegate && hints.agent && (
 							<span className="toolcall-agent" title={hints.agent}>
@@ -350,21 +369,26 @@ export const ToolCallBlock = memo(function ToolCallBlock({
 			</CollapsibleHead>
 			{resultImages.length > 0 && (
 				<div className="toolcall-images">
-					{resultImages.map((img, i) => (
-						<button
-							key={i}
-							type="button"
-							className="toolcall-image"
-							title={t("toolImageZoom")}
-							aria-label={t("toolImageZoom")}
-							onClick={(e) => {
-								e.stopPropagation();
-								setZoomed(img.dataUrl as string);
-							}}
-						>
-							<img src={img.dataUrl} alt={`tool result image ${i + 1}`} />
-						</button>
-					))}
+					{resultImages.map((img, i) => {
+						const src = (img.dataUrl as string).startsWith("/")
+							? appUrl(img.dataUrl as string)
+							: (img.dataUrl as string);
+						return (
+							<button
+								key={i}
+								type="button"
+								className="toolcall-image"
+								title={t("toolImageZoom")}
+								aria-label={t("toolImageZoom")}
+								onClick={(e) => {
+									e.stopPropagation();
+									setZoomed(src);
+								}}
+							>
+								<img src={src} loading="lazy" decoding="async" alt={`tool result image ${i + 1}`} />
+							</button>
+						);
+					})}
 				</div>
 			)}
 			{zoomed &&
@@ -397,6 +421,8 @@ export const ToolCallBlock = memo(function ToolCallBlock({
 						/>
 					) : isDelegate ? (
 						<DelegateBrief args={delegateArgs} />
+					) : isCodemode && codemodeArgs?.code ? (
+						<CodemodeCard code={codemodeArgs.code} options={codemodeArgs.options} details={view.result?.details} />
 					) : (
 						block.argumentsText && (
 							<div className="toolcall-args">
@@ -404,6 +430,7 @@ export const ToolCallBlock = memo(function ToolCallBlock({
 							</div>
 						)
 					)}
+					{block.name === "tool_search" && <ToolSearchDetails details={view.result?.details} />}
 					{output.length > 0 && (
 						<div className="toolcall-output">
 							<div className="toolcall-output-label">
@@ -439,6 +466,27 @@ function TerminalCommand({ command }: { command: string }) {
 	);
 }
 
+/** tool_search 结果展示：已被 BM25 检索并加载激活的工具名徽标列表 */
+function ToolSearchDetails({ details }: { details?: unknown }) {
+	const t = useT();
+	const loaded = Array.isArray((details as { loaded?: unknown })?.loaded)
+		? (details as { loaded: string[] }).loaded
+		: [];
+	if (loaded.length === 0) return null;
+	return (
+		<div className="tool-search-loaded-box">
+			<span className="tool-search-loaded-label">{t("toolSearchLoaded")}:</span>
+			<div className="tool-search-tags">
+				{loaded.map((toolName) => (
+					<span key={toolName} className="tool-search-tag">
+						{toolName}
+					</span>
+				))}
+			</div>
+		</div>
+	);
+}
+
 /** 派单卡片正文：六段式结构化展示（只渲染非空段；脏参数解析出空对象时回落原文）。 */
 function DelegateBrief({ args }: { args: Partial<Record<DelegateField | "agent" | "model", string>> }) {
 	const t = useT();
@@ -460,6 +508,79 @@ function DelegateBrief({ args }: { args: Partial<Record<DelegateField | "agent" 
 					<div className="delegate-sec-text">{args[field]}</div>
 				</div>
 			))}
+		</div>
+	);
+}
+
+interface CodemodeCallItem {
+	id: string;
+	name: string;
+	args?: string;
+	status: "running" | "ok" | "error" | "cancelled";
+	durationMs?: number;
+	error?: string;
+	cost?: number;
+}
+
+/** codemode 卡片正文：JavaScript 源码高亮 + 嵌套工具调用列表 + 选项标记 */
+function CodemodeCard({
+	code,
+	options,
+	details,
+}: {
+	code: string;
+	options?: Record<string, unknown>;
+	details?: unknown;
+}) {
+	const t = useT();
+	const callDetails = details as { calls?: CodemodeCallItem[]; fullOutputPath?: string } | undefined;
+	const calls = Array.isArray(callDetails?.calls) ? callDetails.calls : [];
+	const fullOutputPath = typeof callDetails?.fullOutputPath === "string" ? callDetails.fullOutputPath : undefined;
+
+	return (
+		<div className="codemode-card">
+			<div className="codemode-sec">
+				<div className="codemode-sec-head">
+					<span className="codemode-sec-title">{t("codemodeScript")}</span>
+					{options && Object.keys(options).length > 0 && (
+						<span className="codemode-options-badge">{JSON.stringify(options)}</span>
+					)}
+				</div>
+				<pre className="codemode-code">
+					<code>{code}</code>
+				</pre>
+			</div>
+
+			{calls.length > 0 && (
+				<div className="codemode-sec codemode-calls-sec">
+					<div className="codemode-sec-head">
+						<span className="codemode-sec-title">{t("codemodeNestedCalls")}</span>
+						<span className="codemode-count-badge">{calls.length}</span>
+					</div>
+					<div className="codemode-calls-list">
+						{calls.map((c, idx) => (
+							<div key={c.id || idx} className={`codemode-call-item status-${c.status}`}>
+								<span className="codemode-call-status">
+									{c.status === "ok" ? "✓" : c.status === "error" ? "✗" : c.status === "running" ? "…" : "⊘"}
+								</span>
+								<span className="codemode-call-name">{c.name}</span>
+								{c.args && <span className="codemode-call-args">{c.args}</span>}
+								{typeof c.durationMs === "number" && (
+									<span className="codemode-call-duration">{formatDuration(c.durationMs)}</span>
+								)}
+								{c.error && <div className="codemode-call-error">{c.error}</div>}
+							</div>
+						))}
+					</div>
+				</div>
+			)}
+
+			{fullOutputPath && (
+				<div className="codemode-full-output">
+					<span className="codemode-sec-title">{t("codemodeFullOutput")}:</span>
+					<code>{fullOutputPath}</code>
+				</div>
+			)}
 		</div>
 	);
 }

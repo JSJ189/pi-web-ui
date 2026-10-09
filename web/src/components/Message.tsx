@@ -38,6 +38,7 @@ import { TextQuoteCard } from "./TextQuoteCard";
 import { Markdown, PluginWidgetBlock } from "./Markdown";
 import { StreamMarkdown } from "./StreamMarkdown";
 import { CollapsibleHead } from "./CollapsibleHead";
+import { appUrl } from "../base-url";
 import { ThinkingBlock } from "./ThinkingBlock";
 import { ToolCallBlock, type ToolView } from "./ToolCallBlock";
 import { useT, type Translate } from "../i18n";
@@ -1310,23 +1311,30 @@ function AttachmentCard({ message, forceOpen = false }: { message: UiMessage; fo
 			</CollapsibleHead>
 			{!isReference &&
 				shown &&
-				(isBridged ? (
-					<>
-						<div className="attachcard-bridgenote">{t("bridgedVisionDetail")}</div>
-						{image?.dataUrl && (
-							<div className="attachcard-image">
-								<img src={image.dataUrl} alt={name} />
-							</div>
-						)}
-						{clean && <pre className="attachcard-content">{clean}</pre>}
-					</>
-				) : image?.dataUrl ? (
-					<div className="attachcard-image">
-						<img src={image.dataUrl} alt={name} />
-					</div>
-				) : (
-					<pre className="attachcard-content">{clean}</pre>
-				))}
+				(() => {
+					const imgSrc = image?.dataUrl
+						? image.dataUrl.startsWith("/")
+							? appUrl(image.dataUrl)
+							: image.dataUrl
+						: undefined;
+					return isBridged ? (
+						<>
+							<div className="attachcard-bridgenote">{t("bridgedVisionDetail")}</div>
+							{imgSrc && (
+								<div className="attachcard-image">
+									<img src={imgSrc} loading="lazy" decoding="async" alt={name} />
+								</div>
+							)}
+							{clean && <pre className="attachcard-content">{clean}</pre>}
+						</>
+					) : imgSrc ? (
+						<div className="attachcard-image">
+							<img src={imgSrc} loading="lazy" decoding="async" alt={name} />
+						</div>
+					) : (
+						<pre className="attachcard-content">{clean}</pre>
+					);
+				})()}
 			{isReference && (
 				<div className="attachcard-refnote">
 					{isFolder ? t("folderNotExpanded") : t("fileNotExpanded", { size: formatSize(details.size) })}
@@ -1711,9 +1719,10 @@ function Block({
 
 	const image = asImage(block);
 	if (image && image.dataUrl) {
+		const src = image.dataUrl.startsWith("/") ? appUrl(image.dataUrl) : image.dataUrl;
 		return (
 			<div className="msg-image">
-				<img src={image.dataUrl} alt="attachment" />
+				<img src={src} loading="lazy" decoding="async" alt="attachment" />
 			</div>
 		);
 	}

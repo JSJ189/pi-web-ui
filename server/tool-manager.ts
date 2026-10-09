@@ -85,6 +85,10 @@ export const COMPACT_CONTEXT_TOOL_NAME = "compact_context";
 export const PATCH_TOOL_NAME = "patch";
 /** 原生语言服务器工具（定义见 lsp-tool.ts）：代码定义跳转、引用查询、类型悬停与诊断。 */
 export const LSP_TOOL_NAME = "lsp";
+/** QuickJS WASM 沙箱代码执行与批量调用工具（SDK 内置 codemode 扩展）。 */
+export const CODEMODE_TOOL_NAME = "codemode";
+/** 基于 BM25 算法的延迟工具检索与激活工具（SDK 内置 tool-search 扩展）。 */
+export const TOOL_SEARCH_TOOL_NAME = "tool_search";
 /** 按需加载工具（定义见 load-tools-tool.ts）：延迟加载模式下模型的唯一入口 ——
  *  系统提示词只给全部工具的**名字 + 一行摘要**，模型先把要用的名字交给它，那些
  *  工具的完整参数 schema 才会进入会话（SDK 中途新增工具，支持 defer_loading /
@@ -113,7 +117,7 @@ export interface AgentToolEntry {
 	offHintKey?: string;
 }
 
-/** 可开关的 Agent 工具总目录（共 23 个）。核心内置工具 bash/read/edit/write 不进
+/** 可开关的 Agent 工具总目录（共 25 个）。核心内置工具 bash/read/edit/write 不进
  *  目录——目录条目 = OTHER_AGENT_TOOLS 自动渲染的设置行，而这四个在设置页
  *  「核心工具」区单独开关（见 SettingsModal 的 CORE_BUILTIN_TOOL_NAMES 区块），
  *  禁用名单同样接受它们（normalizeDisabledAgentTools）。 */
@@ -238,6 +242,24 @@ export const AGENT_TOOL_CATALOG: AgentToolEntry[] = [
 		dshVisible: false,
 		descKey: "evalEnabledDesc",
 		offHintKey: "evalOffHint",
+	},
+	// QuickJS WASM 沙箱代码执行与批量调用工具：默认关（opt-in）；DSH 引擎无此扩展。
+	{
+		name: CODEMODE_TOOL_NAME,
+		group: "other",
+		defaultOn: false,
+		dshVisible: false,
+		descKey: "codemodeEnabledDesc",
+		offHintKey: "codemodeOffHint",
+	},
+	// 基于 BM25 的延迟工具检索与激活（特别适用于大规模 MCP 场景）：默认关（opt-in）。
+	{
+		name: TOOL_SEARCH_TOOL_NAME,
+		group: "other",
+		defaultOn: false,
+		dshVisible: false,
+		descKey: "toolSearchEnabledDesc",
+		offHintKey: "toolSearchOffHint",
 	},
 	// 定时/延时唤醒（单 action：create/list/cancel）：默认开（不打开 AI 根本不知道能定时；
 	// 60s 间隔底线＋面板可随时取消），DSH 引擎没有该 customTool（走 goal-rpc，无 customTool 注册面）。
@@ -415,14 +437,19 @@ export function applyAgentToolsGating(
 		for (const t of AGENT_TOOL_CATALOG) {
 			if (off.has(t.name)) {
 				// issue #481: 若第三方扩展注册了同名工具（如 nicobailon/pi-subagents 的 subagent），
-				// 关闭内置工具时允许扩展工具透传，不从活跃名单删除
-				const hasExtensionTool = Boolean(
-					(
-						session as { extensionRunner?: { getAllRegisteredTools?: () => Array<{ definition?: { name?: string } }> } }
-					)?.extensionRunner
-						?.getAllRegisteredTools?.()
-						?.some((tool) => tool.definition?.name === t.name),
-				);
+				// 关闭内置工具时允许扩展工具透传，不从活跃名单删除；其余由扩展自身注册的工具（如 codemode）正常随禁用名单剔除
+				const isShadowedCustomTool = t.name === "subagent";
+				const hasExtensionTool =
+					isShadowedCustomTool &&
+					Boolean(
+						(
+							session as {
+								extensionRunner?: { getAllRegisteredTools?: () => Array<{ definition?: { name?: string } }> };
+							}
+						)?.extensionRunner
+							?.getAllRegisteredTools?.()
+							?.some((tool) => tool.definition?.name === t.name),
+					);
 				if (!hasExtensionTool) {
 					names.delete(t.name);
 				}
@@ -594,6 +621,7 @@ export function filterToolsByPreset(tools: Iterable<string>, preset?: string): s
 			"terminal_input",
 			"terminal_close",
 			"terminal_key",
+			"codemode",
 		]);
 		return all.filter((n) => !writeTools.has(n));
 	}

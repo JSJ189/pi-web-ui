@@ -20,24 +20,25 @@ import { mkdir, readdir, readFile, rm, stat, writeFile } from "node:fs/promises"
 import { cpSync, existsSync, readFileSync, readdirSync, renameSync, watch as fsWatch, writeFileSync } from "node:fs";
 import { dirname, isAbsolute, join, relative, resolve, sep } from "node:path";
 import { pathToFileURL, fileURLToPath } from "node:url";
-import type {
-	ServerMessage,
-	UiMessage,
-	UiPluginAgentTool,
-	UiPluginInfo,
-	PluginRequires,
-	PluginApiCatalog,
-	UiContribution,
-	UiAlign,
-	UiArrangeOp,
-	UiPluginUi,
-	BgServer,
-	UiPluginSettingField,
-	UiPluginCatalogEntry,
-	PluginBusEvent,
-	PluginModelInfo,
-	PluginStats,
+import {
+	type ServerMessage,
+	type UiMessage,
+	type UiPluginAgentTool,
+	type UiPluginInfo,
+	type PluginRequires,
+	type PluginApiCatalog,
+	type UiContribution,
+	type UiAlign,
+	type UiArrangeOp,
+	type UiPluginUi,
+	type BgServer,
+	type UiPluginSettingField,
+	type UiPluginCatalogEntry,
+	type PluginBusEvent,
+	type PluginModelInfo,
+	type PluginStats,
 } from "./protocol.js";
+import { UI_SLOTS } from "./plugin-ui-slots.js";
 import { pick, type ServerLang } from "./i18n.js";
 import { PluginStorage, PluginSecrets, ensurePluginDeps, WorkspaceFS, withFileRmwLock } from "./plugin-facilities.js";
 import {
@@ -64,7 +65,6 @@ import {
 	normalizePostEdit,
 	normalizePreDecision,
 	withGuardTimeout,
-	type ToolPostEdit,
 	type ToolPostHandler,
 	type ToolPostRequest,
 	type ToolPreHandler,
@@ -914,33 +914,7 @@ const SETTING_OPTIONS_FROM = new Set(["models", "thinkingLevels"]);
  * 不认识的 slot / kind / when 直接丢弃（旧宿主读到新字段也不会崩，新宿主读到旧字段同理）。
  * 归属由宿主决定：全局 id = `<pluginId>:<itemId>`。
  */
-export const UI_SLOTS: ReadonlySet<string> = new Set([
-	"topbar.primary",
-	"topbar.overflow",
-	"bottombar",
-	"composer.leading",
-	"composer.actions",
-	"message.actions",
-	"rightpanel.tabs",
-	"contextmenu.topbar",
-	"contextmenu.message",
-	"contextmenu.session",
-	"contextmenu.file",
-	"contextmenu.toolcall",
-	"settings.pages",
-	"tasks.panel",
-	"leftpanel.sessions",
-	"chat.header",
-	"chat.empty",
-	"file.preview.toolbar",
-	"terminal.toolbar",
-	"scm.toolbar",
-	"goalbar.actions",
-	"notice.actions",
-	"modal.dialog",
-	"sidebar.left",
-	"sidebar.right",
-]);
+export { UI_SLOTS };
 
 /** manifest 里可以写更自然的简写（作者少踩坑）：解析时映射到完整 slot 名。 */
 export const UI_SLOT_ALIASES: Readonly<Record<string, string>> = {
@@ -1489,21 +1463,6 @@ function readStoredSettings(dir: string): Record<string, unknown> {
 		/* 无存储文件 = 全默认 */
 	}
 	return {};
-}
-
-function storedSettingsValues(
-	dir: string,
-	schema: UiPluginSettingField[],
-	secrets?: Pick<PluginSecrets, "has">,
-	overlay: Record<string, unknown> = {},
-): Record<string, unknown> {
-	// 浏览器侧 secret 只看到有无（布尔），明文永不下发；无 secrets 上下文（如单测）回落 false。
-	return resolveSettingsValues(
-		schema,
-		readStoredSettings(dir),
-		overlay,
-		secrets ? { has: (k) => secrets.has(k) } : undefined,
-	).values;
 }
 
 /** 插件运行时视角的设置值：非 secret 与 storedSettingsValues 同口径；secret 返回真值
@@ -2135,7 +2094,7 @@ export class PluginManager {
 	 *  守卫抛错/超时一律按弃权（不阻断）。无守卫时回 allow，调用方可直接放行。 */
 	async evaluateToolPre(
 		req: ToolPreRequest,
-		lang: string = "en",
+		_lang: string = "en",
 	): Promise<{
 		verdict:
 			| { decision: "allow" }
@@ -2308,7 +2267,7 @@ export class PluginManager {
 
 	/** 会话统计扇出（异常隔离；订阅者崩了只记日志）。发送方（如定期推送快照统计处）负责节流。 */
 	emitStats(s: PluginStats): void {
-		for (const h of [...this.statsHandlers]) {
+		for (const h of this.statsHandlers) {
 			try {
 				h(s);
 			} catch (err) {
@@ -2319,7 +2278,7 @@ export class PluginManager {
 
 	/** 流式增量透传（异常隔离；宿主不做节流，由发送方保证频率）。 */
 	emitStreaming(ev: { conversationId?: string; delta: string }): void {
-		for (const h of [...this.streamingHandlers]) {
+		for (const h of this.streamingHandlers) {
 			try {
 				h(ev);
 			} catch (err) {
@@ -2436,7 +2395,7 @@ export class PluginManager {
 	 *  run_end 顺带唤醒 host.chatWait 的等待者（按 conversationId 匹配）。 */
 	emitRunEvent(ev: PluginRunEvent): void {
 		if (ev.type === "run_end" && ev.conversationId) {
-			for (const w of [...this.chatWaiters]) {
+			for (const w of this.chatWaiters) {
 				if (w.conversationId !== ev.conversationId) continue;
 				try {
 					w.done(true);
@@ -2841,7 +2800,7 @@ export class PluginManager {
 			}
 		}
 		// ③ 兜底：清掉插件名下的代理前缀（该插件名下但未经栈登记的残留）。
-		for (const prefix of [...this.proxyRoutes.keys()]) {
+		for (const prefix of this.proxyRoutes.keys()) {
 			if (pluginIds.has(this.proxyRoutes.get(prefix)!.pluginId)) this.proxyRoutes.delete(prefix);
 		}
 		this.pluginBgTasks.clear();
@@ -3211,7 +3170,7 @@ export class PluginManager {
 		const hit: string[] = [];
 		for (;;) {
 			let changed = false;
-			for (const [id, p] of [...this.loaded]) {
+			for (const [id, p] of this.loaded) {
 				if (p.info.error) continue;
 				const req = byId.get(id)?.requires ?? p.info.requires;
 				if (!req?.plugins?.length) continue;
@@ -4443,7 +4402,7 @@ export class PluginManager {
 					const ev: PluginBusEvent = { topic: t, from: info.id, payload: p };
 					const handlers = self.busHandlers.get(t);
 					if (!handlers) return;
-					for (const h of [...handlers]) {
+					for (const h of handlers) {
 						try {
 							h(ev);
 						} catch (err) {

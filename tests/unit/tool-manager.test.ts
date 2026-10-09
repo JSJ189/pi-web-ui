@@ -7,6 +7,7 @@ import {
 	AGENT_TOOL_CATALOG,
 	ASK_USER_QUESTION_TOOL_NAME,
 	CLAIM_FILES_TOOL_NAME,
+	CODEMODE_TOOL_NAME,
 	COMPACT_CONTEXT_TOOL_NAME,
 	CONVERSATION_READ_TOOL_NAME,
 	LSP_TOOL_NAME,
@@ -34,6 +35,7 @@ import {
 	setAgentToolsEnabled,
 	SUBAGENT_TOOL_NAMES,
 	TERMINAL_TOOL_NAMES,
+	TOOL_SEARCH_TOOL_NAME,
 } from "../../server/tool-manager.js";
 
 /** 假 ActiveSet（只记录名字集合，不碰 SDK；getAllTools 与活跃集同源 = 初始全集）。 */
@@ -50,8 +52,8 @@ function fakeSet(initial: string[] = []) {
 }
 
 describe("catalog", () => {
-	it("共 23 个可开关工具（终端 7＋子代理 1＋其他 15）", () => {
-		expect(AGENT_TOOL_CATALOG).toHaveLength(23);
+	it("共 25 个可开关工具（终端 7＋子代理 1＋其他 17）", () => {
+		expect(AGENT_TOOL_CATALOG).toHaveLength(25);
 		expect(TERMINAL_TOOL_NAMES).toHaveLength(7);
 		expect(SUBAGENT_TOOL_NAMES).toHaveLength(1);
 	});
@@ -62,6 +64,8 @@ describe("catalog", () => {
 		expect(off.has("edit_soft")).toBe(true);
 		expect(off.has(EVAL_TOOL_NAME)).toBe(true);
 		expect(off.has(LSP_TOOL_NAME)).toBe(true);
+		expect(off.has(CODEMODE_TOOL_NAME)).toBe(true);
+		expect(off.has(TOOL_SEARCH_TOOL_NAME)).toBe(true);
 		expect(off.has(PATCH_TOOL_NAME)).toBe(false);
 		for (const n of SUBAGENT_TOOL_NAMES) expect(off.has(n)).toBe(false);
 		expect(off.has("delegate_task")).toBe(false);

@@ -34,7 +34,7 @@ pi-web-ui/
 ├── .github/workflows/release-notes.yml   # tag 推送 → 按 CHANGELOG 建/更新 GitHub Release
 ├── .github/workflows/desktop-release.yml  # tag 推送 → windows-latest 出 NSIS 安装包并附到 Release（签名以后加这里）
 ├── extensions/                 # pi 扩展：webui.ts（/webui 命令启动本机服务并打开浏览器）
-├── plugins/                    # 官方插件（webmail / db-client / vscode-editor / demo-mailbox / mermaid / run-trace / legado-web / wechat-ilink / image-toolkit / notes / live-preview / voice-input / desktop-use / pm2-manager，各自的 README.md 见其目录；page-picker/extension 是**浏览器扩展**，不是 pi-web-ui 插件）
+├── plugins/                    # 官方插件（webmail / db-client / vscode-editor / sftp / demo-mailbox / mermaid / run-trace / legado-web / wechat-ilink / image-toolkit / notes / live-preview / voice-input / desktop-use / pm2-manager，各自的 README.md 见其目录；page-picker/extension 是**浏览器扩展**，不是 pi-web-ui 插件）
 │   └── catalog.json            # ★ 插件市场内置列表（随包发布；社区加插件 = 在此加一条 + PR）
 ├── dev/                        # 本地开发辅助（notice/search 预览等，不入 npm 包）
 ├── Dockerfile / docker-compose.yml

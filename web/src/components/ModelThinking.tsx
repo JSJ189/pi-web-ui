@@ -7,15 +7,6 @@ import { loadModelUsage, sortByUsage } from "../model-usage";
 import { THINKING_VALUES } from "../thinking-levels";
 import { appSend } from "../app-globals";
 
-/** Messages this component sends (a subset shared by TopBar and ChatInput). */
-type ModelThinkingMsg =
-	| { type: "list_models" }
-	| { type: "set_model"; modelId: string }
-	| { type: "set_default_model"; modelId: string }
-	| { type: "clear_default_model" }
-	| { type: "set_thinking"; level: string }
-	| { type: "activate_provider_key"; provider: string; keyName: string };
-
 /* 档位清单在 ../thinking-levels.ts（与设置面板「子代理模板」共用一份）。 */
 
 /** Props are deliberately NARROW (no whole-ChatState object): every field is

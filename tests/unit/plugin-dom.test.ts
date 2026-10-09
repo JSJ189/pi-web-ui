@@ -6,7 +6,7 @@
  * - isDomBundleBlocked：wantsDom && !granted 才拦；未知插件（未声明）永远放行。
  * - PluginDomConsent：授权/撤销返回值、落盘与重读、坏 JSON 当空表、空 id 拒绝。
  */
-import { afterEach, beforeEach, describe, expect, it } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -84,6 +84,9 @@ describe("PluginManager 集成：scan 标记 + 门禁 + 授权", () => {
 	}
 
 	beforeEach(() => {
+		vi.spyOn(console, "log").mockImplementation(() => {});
+		vi.spyOn(console, "warn").mockImplementation(() => {});
+		vi.spyOn(console, "error").mockImplementation(() => {});
 		pdir = mkdtempSync(join(tmpdir(), "pi-dom-int-"));
 		mkdirSync(join(pdir, "plugins"), { recursive: true });
 		// pluginsDir = <dataDir>/plugins，consent 落 <dataDir>/plugin-dom.json。

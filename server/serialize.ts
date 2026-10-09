@@ -6,6 +6,7 @@
 import type { AgentSession } from "@earendil-works/pi-coding-agent";
 import type { TextQuote, UiContentBlock, UiImageBlock, UiMessage } from "./protocol.js";
 import { splitQuotedPrompt } from "./text-quote.js";
+import { saveAttachmentSync } from "./attachment-store.js";
 
 /** AgentMessage is not re-exported from the package root; derive it from AgentSession. */
 export type AgentMessage = AgentSession["messages"][number];
@@ -29,6 +30,69 @@ const TOOL_RESULT_IMAGE_MAX = 8;
  * 前端还得写容错）；工具作者应自己封顶（见 present-files-tool.ts 的摘录预算）。
  */
 const TOOL_DETAILS_CAP = 64_000;
+
+/**
+ * 对带有嵌套调用列表（如 codemode 的 details.calls）的 details 做安全预算裁剪。
+ * 当 JSON 体积超过 TOOL_DETAILS_CAP（64KB）时，不直接丢弃整包，而是保留首尾
+ * 关键调用并精简单项 args/error 长度，保证 UI 仍能渲染出调用树。
+ */
+export function pruneCallsDetails(details: Record<string, unknown>, cap: number): Record<string, unknown> | undefined {
+	const rawCalls = details.calls;
+	if (!Array.isArray(rawCalls)) return undefined;
+
+	const sanitizeCall = (c: unknown) => {
+		if (typeof c !== "object" || c === null) return c;
+		const call = { ...(c as Record<string, unknown>) };
+		if (typeof call.args === "string" && call.args.length > 200) {
+			call.args = `${call.args.slice(0, 197)}...`;
+		}
+		if (typeof call.error === "string" && call.error.length > 300) {
+			call.error = `${call.error.slice(0, 297)}...`;
+		}
+		return call;
+	};
+
+	let calls = rawCalls.map(sanitizeCall);
+	let candidate = { ...details, calls };
+	let json = JSON.stringify(candidate);
+	if (json.length <= cap) return candidate;
+
+	const headCount = 20;
+	const tailCount = 10;
+	if (calls.length > headCount + tailCount) {
+		const omitted = calls.length - (headCount + tailCount);
+		calls = [
+			...calls.slice(0, headCount),
+			{
+				id: "omitted",
+				name: `... (${omitted} calls omitted) ...`,
+				args: "",
+				status: "cancelled",
+			},
+			...calls.slice(-tailCount),
+		];
+		candidate = { ...details, calls };
+		json = JSON.stringify(candidate);
+		if (json.length <= cap) return candidate;
+	}
+
+	if (calls.length > 10) {
+		calls = [
+			...calls.slice(0, 5),
+			{
+				id: "omitted",
+				name: `... (${rawCalls.length - 8} calls omitted) ...`,
+				args: "",
+				status: "cancelled",
+			},
+			...calls.slice(-3),
+		];
+		candidate = { ...details, calls };
+		if (JSON.stringify(candidate).length <= cap) return candidate;
+	}
+
+	return undefined;
+}
 
 export function truncate(s: string, cap: number): { text: string; truncated: boolean } {
 	const str = typeof s === "string" ? s : String(s ?? "");
@@ -59,14 +123,30 @@ function imageBlockToUi(b: unknown, cap = Number.POSITIVE_INFINITY): UiImageBloc
 	const src = img.source;
 	if (typeof src?.url === "string" && src.url) return { type: "image", dataUrl: src.url };
 	if (typeof img.data === "string" && img.data.length > 0) {
-		const dataUrl = `data:${img.mimeType ?? "image/png"};base64,${img.data}`;
-		if (dataUrl.length > cap) return undefined;
-		return { type: "image", dataUrl, mimeType: img.mimeType };
+		if (img.data.length > cap) return undefined;
+		const mimeType = img.mimeType ?? "image/png";
+		try {
+			const buf = Buffer.from(img.data, "base64");
+			const rec = saveAttachmentSync(buf, mimeType);
+			return { type: "image", dataUrl: rec.url, mimeType };
+		} catch {
+			const dataUrl = `data:${mimeType};base64,${img.data}`;
+			if (dataUrl.length > cap) return undefined;
+			return { type: "image", dataUrl, mimeType };
+		}
 	}
 	if (src?.type === "base64" && src.data) {
-		const dataUrl = `data:${src.mediaType ?? "image/png"};base64,${src.data}`;
-		if (dataUrl.length > cap) return undefined;
-		return { type: "image", dataUrl, mimeType: src.mediaType };
+		if (src.data.length > cap) return undefined;
+		const mimeType = src.mediaType ?? "image/png";
+		try {
+			const buf = Buffer.from(src.data, "base64");
+			const rec = saveAttachmentSync(buf, mimeType);
+			return { type: "image", dataUrl: rec.url, mimeType };
+		} catch {
+			const dataUrl = `data:${mimeType};base64,${src.data}`;
+			if (dataUrl.length > cap) return undefined;
+			return { type: "image", dataUrl, mimeType };
+		}
 	}
 	return undefined;
 }
@@ -307,7 +387,13 @@ export function serializeMessage(m: AgentMessage, seq: number): UiMessage | null
 			// ask_user_question/todo_list 同理。体积封顶，超限整丢（见 TOOL_DETAILS_CAP）。
 			if (m.details !== undefined) {
 				try {
-					if (JSON.stringify(m.details).length <= TOOL_DETAILS_CAP) msg.details = m.details;
+					const json = JSON.stringify(m.details);
+					if (json.length <= TOOL_DETAILS_CAP) {
+						msg.details = m.details;
+					} else if (typeof m.details === "object" && m.details !== null && "calls" in m.details) {
+						const pruned = pruneCallsDetails(m.details as Record<string, unknown>, TOOL_DETAILS_CAP);
+						if (pruned) msg.details = pruned;
+					}
 				} catch {
 					// 循环引用等序列化不了的值：details 是附加信息，丢掉不影响消息本体。
 				}

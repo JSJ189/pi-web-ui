@@ -1,3 +1,5 @@
+import { resolve } from "node:path";
+
 /**
  * process-utils — 跨平台进程工具：监听端口快照、进程树查杀、进程名查询。
  * 后台任务面板（bgServers）用它们检测/停止 agent 在后台拉起的服务。
@@ -193,4 +195,43 @@ export async function lookupProcessName(pid: number): Promise<string | undefined
 	} catch {
 		return undefined;
 	}
+}
+
+/**
+ * 超时杀进程树的决策（纯函数，可单测）。runAsync 的超时兜底用：
+ * - win32：shell:true 实际起的是 cmd.exe，p.kill() 只杀 cmd 本身，npm/git 的
+ *   孙进程照活 —— 必须走 `taskkill /PID <pid> /T /F` 才能整树带走；
+ * - posix：配合 spawn 的 detached:true，向负 pid（整组）发 SIGTERM。
+ * 返回决策而不是直接执行，执行留在调用方（便于注入/测试）。
+ */
+export function processTreeKillPlan(
+	platform: NodeJS.Platform,
+	pid: number | undefined,
+):
+	| { kind: "taskkill"; cmd: string; args: string[] }
+	| { kind: "group-signal"; signal: NodeJS.Signals }
+	| { kind: "none" } {
+	if (!pid || pid <= 0) return { kind: "none" };
+	if (platform === "win32") return { kind: "taskkill", cmd: "taskkill", args: ["/PID", String(pid), "/T", "/F"] };
+	return { kind: "group-signal", signal: "SIGTERM" };
+}
+
+/**
+ * /cwd 目标解析（纯函数，可单测）：
+ * - 相对路径以**当前会话 cwd** 为基准（/cwd src = 当前项目的 src），不按 server
+ *   进程 cwd 解析 —— 两者经常不同，按进程 cwd 切必错位。绝对路径不受基准影响
+ *   （resolve 遇到绝对段会丢弃前面的基准）。
+ * - win32 裸盘符（"C:"）：resolve 会按该盘当前目录解析，必须显式指到盘根；仅
+ *   win32 生效——posix 下 "C:" 仍是普通相对路径，避免误伤同名目录。
+ */
+export function resolveCwdTarget(
+	raw: string,
+	sessionCwd: string,
+	platform: NodeJS.Platform = process.platform,
+): string {
+	const trimmed = String(raw ?? "").trim();
+	if (platform === "win32" && /^[A-Za-z]:$/.test(trimmed)) {
+		return `${trimmed.toUpperCase()}\\`;
+	}
+	return resolve(sessionCwd, trimmed);
 }

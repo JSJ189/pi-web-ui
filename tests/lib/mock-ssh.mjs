@@ -106,13 +106,222 @@ function tarFileEntry(name, content) {
 	return Buffer.concat([h, content, Buffer.alloc((512 - (content.length % 512)) % 512), Buffer.alloc(1024)]);
 }
 
+/** 读 ustar 头里的 NUL 结尾字符串。 */
+function tarStr(buf, offset, len) {
+	const raw = buf.subarray(offset, offset + len);
+	const end = raw.indexOf(0);
+	return raw.subarray(0, end < 0 ? raw.length : end).toString("utf8");
+}
+
+/** 解一个 ustar 流（够我们用：普通文件 + 目录）。 */
+function untarBuffer(buf) {
+	const out = [];
+	let off = 0;
+	while (off + 512 <= buf.length) {
+		const h = buf.subarray(off, off + 512);
+		if (!h.some((b) => b !== 0)) break; // 全零块 = 结束
+		const name = tarStr(h, 0, 100);
+		const prefix = tarStr(h, 345, 155);
+		const size = parseInt(tarStr(h, 124, 12).trim() || "0", 8) || 0;
+		const type = String.fromCharCode(h[156] || 0x30);
+		off += 512;
+		const data = buf.subarray(off, off + size);
+		off += Math.ceil(size / 512) * 512;
+		if (!name) continue;
+		const full = prefix ? `${prefix}/${name}` : name;
+		if (type === "0" || type === "\0") out.push({ name: full, data: Buffer.from(data) });
+		else if (type === "5") out.push({ name: full, dir: true });
+	}
+	return out;
+}
+
+/** 父目录路径（`/a.txt` → `/`）。 */
+function parentOf(p) {
+	const i = String(p).lastIndexOf("/");
+	return i <= 0 ? "/" : String(p).slice(0, i);
+}
+
+/** 把 name 登记进父目录的条目表（父目录不在表里就跳过，与真实服务器一致：目录必须先存在）。 */
+function linkName(p) {
+	const name = String(p).slice(String(p).lastIndexOf("/") + 1);
+	const list = dirs[parentOf(p)];
+	if (Array.isArray(list) && name && !list.includes(name)) list.push(name);
+}
+
+/** 从父目录的条目表里摘掉 name。
+ *  ⚠ 必须判 indexOf >= 0：旧版直接 `splice(indexOf(...), 1)`，名字本就不在表里时
+ *  indexOf 回 -1，`splice(-1, 1)` 会删掉**列表最后一项**（静默弄丢一个完全无关的文件）。 */
+function unlinkName(p) {
+	const name = String(p).slice(String(p).lastIndexOf("/") + 1);
+	const list = dirs[parentOf(p)];
+	if (!Array.isArray(list)) return;
+	const i = list.indexOf(name);
+	if (i >= 0) list.splice(i, 1);
+}
+
+/** mock 文件系统的写操作（批量上传的 mkdir/mv/rm 靠这几个）。 */
+function mockFsOps() {
+	function ensureDir(p) {
+		const parts = String(p).split("/").filter(Boolean);
+		let cur = "";
+		for (const seg of parts) {
+			cur = `${cur}/${seg}`;
+			if (!dirs[cur]) {
+				dirs[cur] = [];
+				linkName(cur);
+			}
+		}
+	}
+	function removePath(p) {
+		for (const k of Object.keys(files)) if (k === p || k.startsWith(`${p}/`)) delete files[k];
+		for (const k of Object.keys(dirs)) if (k === p || k.startsWith(`${p}/`)) delete dirs[k];
+		unlinkName(p);
+	}
+	return { ensureDir, removePath };
+}
+
+/**
+ * 把一条 `a && b && c` 拆成命令列表。只在引号外切 —— 文件名里带 " && " 也不能拆错。
+ */
+function splitShellChain(cmd) {
+	const out = [];
+	let cur = "";
+	let quote = "";
+	for (let i = 0; i < cmd.length; i++) {
+		const c = cmd[i];
+		if (quote) {
+			if (c === quote) quote = "";
+			cur += c;
+			continue;
+		}
+		if (c === "'" || c === '"') {
+			quote = c;
+			cur += c;
+			continue;
+		}
+		if (c === "&" && cmd[i + 1] === "&") {
+			out.push(cur.trim());
+			cur = "";
+			i++;
+			continue;
+		}
+		cur += c;
+	}
+	if (cur.trim()) out.push(cur.trim());
+	return out;
+}
+
+/** 带引号的参数（我们的命令都是单引号包路径）。 */
+function shellArgs(s) {
+	return [...String(s).matchAll(/'([^']*)'/g)].map((m) => m[1]);
+}
+
+/** 极简 glob（`*` / `?`）—— 只给 mock 内部用。 */
+function mockGlob(pat, name) {
+	const re = `^${String(pat)
+		.replace(/[.+^${}()|[\]\\]/g, "\\$&")
+		.replace(/\*/g, ".*")
+		.replace(/\?/g, ".")}$`;
+	return new RegExp(re).test(name);
+}
+
+/**
+ * 模拟远端 `tar -czf - <名字…>`：内存文件系统 → ustar → gzip。
+ * 名字给目录就打包整棵子树（编辑器插件整目录下载），给文件就只打那一个（批量下载）。
+ */
+function exportTar(cdDir, names) {
+	const root = cdDir === "/" ? "" : String(cdDir).replace(/\/+$/, "");
+	const parts = [];
+	for (const name of names) {
+		const abs = `${root}/${name}`;
+		if (dirs[abs]) {
+			parts.push(tarDirEntry(name));
+			for (const d of Object.keys(dirs)) {
+				if (d.startsWith(abs + "/")) parts.push(tarFileEntry(d.slice(root.length + 1), Buffer.alloc(0)));
+			}
+			for (const [p, content] of Object.entries(files)) {
+				if (p.startsWith(abs + "/")) parts.push(tarFileEntry(p.slice(root.length + 1), content));
+			}
+			continue;
+		}
+		if (files[abs]) parts.push(tarFileEntry(name, files[abs]));
+	}
+	return Buffer.concat(parts);
+}
+
+/**
+ * 极简 find：`'<root>' [( -name 'x' -o ... ) -prune -o] [-type f] -printf '<fmt>'`。
+ *
+ * 只实现插件会发的那一形状（包括 `%P` 相对路径、`-prune` 剪枝、`-printf` 里的 `\t`/`\0`）。
+ * `%T@` 输出 `?`：mock 文件系统不存 mtime，而引擎把非数字 mtime 当作「远端没给 mtime」
+ * —— 与 readdir 路径（mock 的 attrs 也不带 mtime）完全一致，所以两条扫描路径能互相比对。
+ */
+function runFind(stream, root, mid, fmt) {
+	const pruneNames = [...String(mid).matchAll(/-name\s+'([^']*)'/g)].map((m) => m[1]);
+	const typeFilter = /-type\s+([a-z])/.exec(mid)?.[1] ?? "";
+	const base = String(root).replace(/\/+$/, "");
+	const pruned = (name) =>
+		pruneNames.some((p) => (p.includes("*") || p.includes("?") ? mockGlob(p, name) : p === name));
+	const render = (type, path, size) => {
+		const rel = path.slice(base.length).replace(/^\/+/, "");
+		return fmt
+			.replace(/%y/g, type)
+			.replace(/%s/g, String(size))
+			.replace(/%T@/g, "?")
+			.replace(/%P/g, rel)
+			.replace(/\\t/g, "\t")
+			.replace(/\\0/g, "\0")
+			.replace(/\\n/g, "\n");
+	};
+	let out = "";
+	const walk = (dir) => {
+		for (const name of dirs[dir] ?? []) {
+			const p = `${dir === "/" ? "" : dir}/${name}`;
+			if (pruned(name)) continue; // -prune：不打印也不下去
+			if (dirs[p]) {
+				if (!typeFilter || typeFilter === "d") out += render("d", p, 4096);
+				walk(p);
+			} else if (!typeFilter || typeFilter === "f") {
+				out += render("f", p, files[p]?.length ?? 0);
+			}
+		}
+	};
+	walk(base || "/");
+	stream.write(out);
+	return true;
+}
+
+/** mock 的 `mv -f`（源不存在 ⇒ 返回 false，正好能测「打包失败回落逐文件」）。 */
+function runMv(src, dst) {
+	if (dirs[src]) {
+		for (const k of Object.keys(dirs))
+			if (k === src || k.startsWith(`${src}/`)) dirs[dst + k.slice(src.length)] = dirs[k];
+		for (const k of Object.keys(dirs)) if (k === src || k.startsWith(`${src}/`)) delete dirs[k];
+		for (const k of Object.keys(files)) if (k.startsWith(`${src}/`)) files[dst + k.slice(src.length)] = files[k];
+		for (const k of Object.keys(files)) if (k.startsWith(`${src}/`)) delete files[k];
+	} else if (files[src]) {
+		files[dst] = files[src];
+		delete files[src];
+		unlinkName(src);
+	} else {
+		return false;
+	}
+	linkName(dst);
+	return true;
+}
+
 /**
  * 启动 mock SSH 服务。
  * @param {string} pluginDir 含 node_modules/ssh2 的插件目录（复用同一份依赖）
  * @param {number} port 监听端口
- * @returns {Promise<{close(): void}>}
+ * @param {{ latencyMs?: number }} [opts] `latencyMs` 给每个 READDIR 加固定延迟（模拟高延迟链路；
+ *   返回的 `latency` 是个活开关，测试中途可改 —— 取消类测试需要一段真实存在的时间窗）
+ * @returns {Promise<{close(): void, latency: {latencyMs: number}}>}
  */
-export async function startMockSsh(pluginDir, port) {
+export async function startMockSsh(pluginDir, port, opts = {}) {
+	const latency = { latencyMs: Math.max(0, Number(opts.latencyMs) || 0) };
+	/** 活开关：置 true 后所有 tar 命令都失败（测「远端没有 tar 时回落逐文件」这条兵不血刃的路）。 */
+	const failTar = { on: false };
 	const { createRequire } = await import("node:module");
 	const { generateKeyPairSync } = await import("node:crypto");
 	const req = createRequire(join(pluginDir, "package.json"));
@@ -142,6 +351,14 @@ export async function startMockSsh(pluginDir, port) {
 			sftp.handle(id, h);
 		});
 		sftp.on("READDIR", (id, handleBuf) => {
+			// 高延迟链路模拟：延迟加在每个 READDIR 响应上（一个目录一次往返），别处不受影响
+			if (latency.latencyMs > 0) {
+				setTimeout(() => readdirOnce(id, handleBuf), latency.latencyMs);
+				return;
+			}
+			readdirOnce(id, handleBuf);
+		});
+		const readdirOnce = (id, handleBuf) => {
 			const key = handleBuf.toString();
 			const h = handles.get(key);
 			if (!h) return sftp.status(id, 4);
@@ -161,7 +378,7 @@ export async function startMockSsh(pluginDir, port) {
 					},
 				})),
 			);
-		});
+		};
 		sftp.on("OPEN", (id, path, flags) => {
 			if (flags & SFTP.READ && !(flags & (SFTP.WRITE | SFTP.CREAT | SFTP.TRUNC))) {
 				if (!files[path]) return sftp.status(id, 2);
@@ -177,6 +394,8 @@ export async function startMockSsh(pluginDir, port) {
 				path,
 				buf: !files[path] || flags & SFTP.TRUNC ? Buffer.alloc(0) : Buffer.from(files[path]),
 			});
+			// 新建的文件要出现在父目录列表里（真实服务器就是这样：上传完 ls 能看见）
+			linkName(path);
 			sftp.handle(id, h);
 		});
 		sftp.on("READ", (id, handleBuf, offset, len) => {
@@ -208,24 +427,19 @@ export async function startMockSsh(pluginDir, port) {
 		sftp.on("MKDIR", (id, path) => {
 			if (dirs[path]) return sftp.status(id, 4);
 			dirs[path] = [];
-			const idx = path.lastIndexOf("/");
-			dirs[idx <= 0 ? "/" : path.slice(0, idx)].push(path.slice(idx + 1));
+			linkName(path);
 			sftp.status(id, 0);
 		});
 		sftp.on("REMOVE", (id, path) => {
 			if (!files[path]) return sftp.status(id, 2);
 			delete files[path];
-			const idx = path.lastIndexOf("/");
-			const parent = dirs[idx <= 0 ? "/" : path.slice(0, idx)];
-			if (parent) parent.splice(parent.indexOf(path.slice(idx + 1)), 1);
+			unlinkName(path);
 			sftp.status(id, 0);
 		});
 		sftp.on("RMDIR", (id, path) => {
 			if (!dirs[path]?.length) {
 				delete dirs[path];
-				const idx = path.lastIndexOf("/");
-				const parent = dirs[idx <= 0 ? "/" : path.slice(0, idx)];
-				if (parent) parent.splice(parent.indexOf(path.slice(idx + 1)), 1);
+				unlinkName(path);
 				return sftp.status(id, 0);
 			}
 			sftp.status(id, 4); // 目录非空或不存在
@@ -238,12 +452,8 @@ export async function startMockSsh(pluginDir, port) {
 				dirs[dst] = dirs[src];
 				delete dirs[src];
 			} else return sftp.status(id, 2);
-			const i = src.lastIndexOf("/");
-			const p1 = dirs[i <= 0 ? "/" : src.slice(0, i)];
-			if (p1) p1.splice(p1.indexOf(src.slice(i + 1)), 1);
-			const j = dst.lastIndexOf("/");
-			const p2 = dirs[j <= 0 ? "/" : dst.slice(0, j)];
-			if (p2) p2.push(dst.slice(j + 1));
+			unlinkName(src);
+			linkName(dst);
 			sftp.status(id, 0);
 		});
 	}
@@ -277,35 +487,95 @@ export async function startMockSsh(pluginDir, port) {
 						session.once("exec", (accept2, reject2, info) => {
 							const stream = accept2();
 							const cmd = info.command ?? "";
-							// 模拟远端 tar -czf -（编辑器插件「下载文件夹到电脑」用）：内存文件系统 → ustar → gzip
-							const tarM = cmd.match(/^cd '(.*)' && tar -czf - '(.*)'$/);
-							if (tarM) {
-								const base = (tarM[1] === "/" ? "" : tarM[1]) + "/" + tarM[2];
-								const parts = [tarDirEntry(tarM[2])];
-								for (const d of Object.keys(dirs)) {
-									if (d.startsWith(base + "/")) parts.push(tarFileEntry(d.slice(base.length + 1), Buffer.alloc(0)));
+							const ops = mockFsOps();
+							let stdin = Buffer.alloc(0);
+							let exitCode = 0;
+
+							/** 单条命令（返回 false = 失败，退出码写在 exitCode 里）。 */
+							const runStep = (step) => {
+								if (failTar.on && /(^|\s)tar(\s|$)/.test(step)) {
+									stream.stderr.write("tar: not found");
+									exitCode = 127;
+									return false;
 								}
-								for (const [p, content] of Object.entries(files)) {
-									if (p.startsWith(base + "/")) parts.push(tarFileEntry(p.slice(base.length + 1), content));
+								if (/^cd\s+'.*'$/.test(step)) return true; // 目录切换：mock 只有一棵树，空操作
+								// 批量上传：tar -x -m -f - -C '<暂存目录>'（数据从 stdin 来）
+								const tarX = step.match(/^tar\s+-x\s+-m\s+-f\s+-\s+-C\s+'([^']*)'$/);
+								if (tarX) {
+									const base = tarX[1].replace(/\/+$/, "");
+									ops.ensureDir(base);
+									for (const e of untarBuffer(stdin)) {
+										const p = `${base}/${e.name}`;
+										if (e.dir) {
+											ops.ensureDir(p);
+											continue;
+										}
+										ops.ensureDir(parentOf(p));
+										files[p] = e.data;
+										linkName(p);
+									}
+									return true;
 								}
-								stream.write(gzipSync(Buffer.concat(parts)));
-								stream.exit(0);
+								// 远端快扫：find '<root>' [\( -name 'x' -o ... \) -prune -o] [-type f] -printf '<fmt>'
+								const findM = step.match(/^find\s+'([^']*)'(.*?)-printf\s+'([^']*)'$/);
+								if (findM) return runFind(stream, findM[1], findM[2], findM[3]);
+								if (step.startsWith("mkdir -p ")) {
+									for (const p of shellArgs(step.slice(9))) ops.ensureDir(p);
+									return true;
+								}
+								const mvM = step.match(/^mv\s+-f\s+'([^']*)'\s+'([^']*)'$/);
+								if (mvM) return runMv(mvM[1], mvM[2]);
+								if (step.startsWith("rm -rf ")) {
+									for (const p of shellArgs(step.slice(7))) ops.removePath(p);
+									return true;
+								}
+								if (step.startsWith("echo ")) {
+									stream.write(step.slice(5).replace(/^["']|["']$/g, "") + "\n");
+									return true;
+								}
+								if (step === "pwd") {
+									stream.write("/home/test\n");
+									return true;
+								}
+								if (step.startsWith("fail")) {
+									stream.stderr.write("boom\n");
+									exitCode = 7;
+									return false;
+								}
+								exitCode = 127;
+								return false;
+							};
+
+							const finish = () => {
+								// 自带 `cd X &&` 前缀的命令（编辑器插件整目录下载）要**整条**先试：
+								// 按 ` && ` 拆开会把它拆成两条互不相干的命令，正则就再也匹配不上了
+								const wholeTar = failTar.on ? null : cmd.match(/^cd '(.*)' && tar -czf - (.*)$/);
+								if (wholeTar) {
+									stream.write(gzipSync(exportTar(wholeTar[1], shellArgs(wholeTar[2]))));
+									stream.exit(0);
+									stream.end();
+									return;
+								}
+								let ok = true;
+								for (const step of splitShellChain(cmd)) {
+									if (!runStep(step)) {
+										ok = false;
+										break;
+									}
+								}
+								stream.exit(ok ? 0 : exitCode || 1);
 								stream.end();
-								return;
-							}
-							if (cmd.startsWith("echo ")) {
-								stream.write(cmd.slice(5).replace(/^["']|["']$/g, "") + "\n");
-								stream.exit(0);
-							} else if (cmd.startsWith("fail")) {
-								stream.stderr.write("boom\n");
-								stream.exit(7);
-							} else if (cmd === "pwd") {
-								stream.write("/home/test\n");
-								stream.exit(0);
+							};
+							// 要 stdin 的命令（tar -x）必须等数据到齐；其余命令直接跑
+							if (/tar\s+-x/.test(cmd)) {
+								stream.on("data", (d) => {
+									stdin = Buffer.concat([stdin, d]);
+								});
+								stream.on("end", finish);
+								stream.on("close", finish);
 							} else {
-								stream.exit(127);
+								finish();
 							}
-							stream.end();
 						});
 						session.once("sftp", (accept2) => bindSftp(accept2()));
 					});
@@ -314,6 +584,8 @@ export async function startMockSsh(pluginDir, port) {
 			srv.on("error", reject);
 			srv.listen(port, "127.0.0.1", () =>
 				resolve({
+					latency,
+					failTar,
 					close() {
 						try {
 							srv.close();

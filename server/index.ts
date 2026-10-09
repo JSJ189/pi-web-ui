@@ -33,7 +33,7 @@ import { WebSocket, WebSocketServer } from "ws";
 import { VERSION, getAgentDir } from "@earendil-works/pi-coding-agent";
 import { sdkCopies, sdkOriginNote } from "./sdk-origin.js";
 import { PROTOCOL_VERSION } from "./protocol-version.js";
-import { AgentService, workspacePath, QuiesceRejectedError } from "./agent-service.js";
+import { AgentService, workspacePath, QuiesceRejectedError, ClientSession } from "./agent-service.js";
 import { WS_MAX_PAYLOAD_BYTES, isAbsoluteWirePath, wireToAbs } from "./files-service.js";
 import { httpHostAllowed } from "./host-guard.js";
 import { registerFileTransferRoutes } from "./file-transfer-routes.js";
@@ -77,6 +77,20 @@ import { SchedulerStore, SchedulerValidationError } from "./scheduler-tasks.js";
 import { initHttpProxy } from "./http-proxy.js";
 import { globalLspPool } from "./lsp-tool.js";
 import { buildPiWebTokenCookie, decodeCookieToken, isTlsRequest } from "./auth-cookie.js";
+import {
+	handleFileMessage,
+	handleScmMessage,
+	handleBgServerMessage,
+	handlePresetAndDshMessage,
+	handleModelAndProviderMessage,
+	handleTerminalMessage,
+	handleSessionLifecycleMessage,
+	handlePlanAndGoalMessage,
+	handleScheduleMessage,
+	handleSettingsMessage,
+	handleInteractiveResponseMessage,
+} from "./dispatch-domain-handlers.js";
+import { handlePluginMessage } from "./dispatch-plugin-handlers.js";
 import type {
 	BgServer,
 	ClientMessage,
@@ -1307,6 +1321,19 @@ export interface DispatchSession {
 	savePreset(name: string): Promise<void>;
 	applyPreset(name: string): Promise<void>;
 	deletePreset(name: string): Promise<void>;
+	saveMcpServer?(
+		server: import("./protocol.js").UiMcpServer,
+		prevName?: string,
+		prevScope?: import("./protocol.js").McpScope,
+	): Promise<void>;
+	deleteMcpServer?(name: string, scope: import("./protocol.js").McpScope): Promise<void>;
+	toggleMcpServer?(name: string, scope: import("./protocol.js").McpScope, enabled: boolean): Promise<void>;
+	reloadMcp?(): Promise<void>;
+	installSkill?(name: string, scope: "global" | "project", content: string): Promise<void>;
+	uninstallSkill?(name: string, scope: "global" | "project"): Promise<void>;
+	fetchMcpMarket?(source?: string, query?: string, page?: number, refresh?: boolean): Promise<void>;
+	fetchSkillMarket?(repo?: string, refresh?: boolean): Promise<void>;
+	fetchSkillContent?(repo: string, skillId: string): Promise<void>;
 	/** 预设分享（server/preset-share.ts）：导出 / 导入 / 网址导入 / 目录 / 一键分享。 */
 	exportPreset(msg: Extract<ClientMessage, { type: "preset_export" }>): Promise<void>;
 	importPreset(msg: Extract<ClientMessage, { type: "preset_import" }>): Promise<void>;
@@ -1805,13 +1832,19 @@ function pushNoticeToAll(level: "info" | "warning" | "error", text: string, text
 	}
 }
 
-// MCP 工具桥：读取 <dataDir>/mcp.json 启动外部 MCP 服务器（stdio），把它们的
+// MCP 工具桥：读取配置启动外部 MCP 服务器（stdio），把它们的
 // 工具并入与插件工具相同的 customTools 管线；单服务器失败不炸进程。
-const mcpBridge = new McpBridge(DATA_DIR, (...a) => console.log("[mcp]", ...a));
+const mcpBridge = new McpBridge(DATA_DIR, (...a) => console.log("[mcp]", ...a), {
+	agentDir: getAgentDir(),
+	cwd: CWD,
+});
+ClientSession.mcpBridge = mcpBridge;
 // mcp.json 热加载：保存文件即生效，改完不必再重启服务。两半都在这里收口 —— reload 换入
 // 新的服务器集合（只重启规格真变了的），applyPluginAgentTools 把新工具推给已有会话。
 const mcpHotReload = createMcpHotReload({
 	dataDir: DATA_DIR,
+	agentDir: getAgentDir(),
+	cwd: CWD,
 	reload: () => mcpBridge.reload(),
 	onToolsChanged: () => service.applyPluginAgentTools(),
 	onNotice: (level, text, textEn) => pushNoticeToAll(level, text, textEn),
@@ -2178,860 +2211,114 @@ wss.on("connection", (ws) => {
 			send({ type: "notice", level: "error", text: refusal });
 			return;
 		}
-		switch (msg.type) {
-			case "prompt": {
-				const hasAttach = Boolean(msg.attachments && msg.attachments.length > 0);
-				if (!msg.text?.trim() && !hasAttach) {
-					send({
-						type: "notice",
-						level: "warning",
-						text: "发送已忽略：提示词为空且未附带文件或上下文引用。",
-						textEn: "Prompt ignored: text is empty and no attachments were provided.",
-					});
-					break;
-				}
-				void cs.prompt(msg.text, msg.attachments, msg.queue);
-				break;
-			}
-			case "queue_remove":
-				// #491：removeQueued 是 async——dispatch 是 fire-and-forget，缺 void 时
-				// 内部抛错即 unhandledRejection，而全仓没有兜底 handler，Node ≥15 直接崩进程。
-				void cs.removeQueued(msg.kind, msg.text, msg.index);
-				break;
-			case "draft_update":
-				cs.saveDraft?.(msg.sessionId, msg.text, msg.ts);
-				break;
-			case "abort":
-				void cs.abort();
-				break;
-			case "abort_bash":
-				void cs.abortBash();
-				break;
-			case "retry_last":
-				void cs.retryLast();
-				break;
-			case "kill_background_server":
-				void cs.killBackgroundServer(msg.port, msg.taskId);
-				break;
-			case "kill_background_servers":
-				void cs.killAllBackgroundServers();
-				break;
-			case "list_bg_servers":
-				void cs.listBgServers();
-				break;
-			case "set_bg_keep":
-				cs.setBackgroundKeep(msg.port, msg.keep);
-				break;
-			case "clean_bg_leftovers":
-				void cs.cleanBackgroundLeftovers((msg as { minutes?: number }).minutes);
-				break;
-			case "new_chat":
-				void cs.newChat(msg.preset, msg.ephemeral);
-				break;
-			case "edit_message":
-				void cs.editMessage(msg.messageId, msg.text, msg.attachments);
-				break;
-			case "fork_session":
-				void cs.forkSession?.(msg.messageId, msg.position, msg.conversationId);
-				break;
-			case "rollback_session":
-				void cs.rollbackSession?.(msg.messageId, msg.conversationId, msg.restoreWorkspace);
-				break;
-			case "get_state":
-				// Always a FULL snapshot: the client is (re)connecting or detected
-				// a rev/seq gap — it needs an authoritative state to rebuild from.
-				cs.flushSnapshot(true);
-				break;
-			case "get_commands":
-				void cs.pushSlashCommands();
-				break;
-			case "get_tool_info":
-				// 工具卡右键菜单的「显示工具详细信息」：按需取一次工具定义（不进快照）。
-				// 引擎没实现（或旧版服务端）时回一条 unsupported，前端据此显示「不支持」
-				// 而不是永远转圈。
-				if (typeof cs.getToolInfo === "function") {
-					void cs.getToolInfo(msg.name);
-				} else {
-					send({ type: "tool_info", name: msg.name, found: false, unsupported: true });
-				}
-				break;
-			case "get_tool_prompt":
-				// 设置页逐工具文案编辑器：取「出厂默认 + 当前覆盖」。
-				if (typeof cs.getToolPrompt === "function") {
-					void cs.getToolPrompt(msg.name);
-				} else {
-					send({ type: "tool_prompt", name: msg.name, found: false, unsupported: true });
-				}
-				break;
-			case "get_compacted_messages":
-				void cs.getCompactedMessages?.(msg.compactionMessageId, msg.conversationId);
-				break;
-			case "list_sessions":
-				void cs.refreshSessions();
-				break;
-			case "list_projects":
-				void cs.pushProjects();
-				break;
-			case "remove_project":
-				void cs.removeProject(msg.path);
-				break;
-			case "delete_session":
-				void cs.deleteSession(msg.path);
-				break;
-			case "rename_session":
-				void cs.renameSession(msg.path, msg.name);
-				break;
-			case "rename_conversation":
-				void cs.renameConversation(msg.id, msg.name);
-				break;
-			case "dismiss_conversation":
-				void cs.dismissConversation(msg.id, msg.withFinishedSubagents, msg.force);
-				break;
-			case "persist_conversation":
-				if (typeof cs.persistConversation === "function") {
-					void cs.persistConversation(msg.id);
-				}
-				break;
-			case "pin_conversation":
-				if (typeof cs.setConversationPinned === "function") {
-					void cs.setConversationPinned(msg.id, msg.pinned);
-				}
-				break;
-			case "pin_session":
-				if (typeof cs.pinSession === "function") {
-					void cs.pinSession(msg.path, msg.pinned);
-				}
-				break;
-			case "dismiss_finished_subagents":
-				void cs.dismissFinishedSubagents(msg.parentId);
-				break;
-			case "switch_session":
-				void cs.switchSession(msg.path);
-				break;
-			case "switch_conversation":
-				void cs.switchConversation(msg.id);
-				break;
-			case "take_over_conversation":
-				if (typeof service.takeOverConversation === "function") {
-					void service.takeOverConversation(clientId, msg.owner, msg.id);
-				} else {
-					send({
-						type: "notice",
-						level: "error",
-						text: "当前引擎不支持过户（take over），请用 pi 引擎",
-						textEn: "Takeover is not supported by the current engine; use the pi engine.",
-					});
-				}
-				break;
-			case "peek_elsewhere_question":
-				if (typeof service.peekElsewhereQuestion === "function") {
-					void service.peekElsewhereQuestion(clientId, msg.owner, msg.id);
-				} else {
-					send({
-						type: "notice",
-						level: "error",
-						text: "当前引擎不支持跨页作答，请用 pi 引擎",
-						textEn: "Cross-page answering is not supported by the current engine; use the pi engine.",
-					});
-				}
-				break;
-			case "list_files":
-				void cs.listFiles(msg.path);
-				break;
-			case "search_files":
-				void cs.searchFiles(msg.query, msg.reqId);
-				break;
-			case "search_sessions":
-				void cs.searchSessions(msg.query, msg.reqId);
-				break;
-			case "scm_status":
-				void cs.scmQuery("status", msg.reqId);
-				break;
-			case "scm_history":
-				void cs.scmQuery("history", msg.reqId);
-				break;
-			case "scm_filediff":
-				void cs.scmQuery("filediff", msg.reqId, { path: msg.path });
-				break;
-			case "scm_commit":
-				void cs.scmQuery("commit", msg.reqId, { hash: msg.hash });
-				break;
-			case "scm_commitmsg":
-				if (typeof cs.scmGenCommitMessage === "function") {
-					void cs.scmGenCommitMessage(msg.reqId);
-				} else {
-					// DSH 等引擎没有 pi 的 ModelRuntime——照样应答一次（ok:false），
-					// 前端按钮不能因引擎差异卡在转圈。
-					send({
-						type: "scm_data",
-						reqId: msg.reqId,
-						kind: "commitmsg",
-						ok: false,
-						error: "当前引擎不支持 AI 生成提交信息（请用 pi 引擎）/ AI commit messages need the pi engine",
-					});
-				}
-				break;
-			case "read_file":
-				void cs.readFile(msg.path);
-				break;
-			case "write_file":
-				void cs.writeFile(msg.path, msg.text);
-				break;
-			case "upload_file":
-				void cs.uploadFile(msg.dirPath, msg.name, msg.data);
-				break;
-			case "file_create":
-				void cs.createEntry(msg.dir, msg.name, msg.kind);
-				break;
-			case "file_rename":
-				void cs.renameEntry(msg.path, msg.newName);
-				break;
-			case "file_delete":
-				void cs.deleteEntry(msg.path);
-				break;
-			case "file_copy":
-				void cs.copyEntry(msg.src, msg.destDir, msg.move);
-				break;
-			case "file_reveal":
-				void cs.revealEntry(msg.path);
-				break;
-			case "file_open_default":
-				void cs.openDefaultEntry(msg.path);
-				break;
-			case "list_models":
-				void cs.listModels();
-				break;
-			case "set_model":
-				void cs.setModel(msg.modelId);
-				break;
-			case "set_default_model":
-				void cs.setDefaultModel?.(msg.modelId);
-				break;
-			case "clear_default_model":
-				cs.clearDefaultModel?.();
-				break;
-			case "set_thinking":
-				cs.setThinking(msg.level);
-				break;
-			case "set_cwd":
-				void cs.setCwd(msg.path);
-				break;
-			case "set_workspace_roots":
-				// 宿主侧多根（issue #146）：只改「哪些路径算工作区内」与右栏文件树的根，
-				// 不动 cwd（AI 仍只在主 cwd 里干活）。
-				void cs.setWorkspaceRoots(msg.roots);
-				break;
-			case "set_locale":
-				// UI language report — per-client persist + lang-aware prompt
-				// refresh (streaming-safe). Engine-agnostic via DispatchSession.
-				void service.setLocale(clientId, msg.locale);
-				break;
-			case "complete_path":
-				void cs.completePath(msg.path);
-				break;
-			case "make_dir":
-				void cs.makeDir(msg.path, msg.setAsCwd === true);
-				break;
-			case "check_update":
-				void cs.checkUpdate();
-				break;
-			case "check_updates_all":
-				void cs.checkUpdatesAll(msg.force === true);
-				break;
-			case "check_plugin_updates":
-				if (typeof cs.checkPluginUpdates === "function") {
-					void cs.checkPluginUpdates(true);
-				}
-				break;
-			case "restart_service": {
-				// Same effect as `pi-web-ui server restart`: this process exits and its
-				// supervisor brings it back (launchd/systemd immediately, the Windows
-				// watchdog within ~10s). Refused without a supervisor — exiting there
-				// would just stop the server the user is looking at.
-				if (!ORIGIN.supervisor) {
-					send({
-						type: "notice",
-						level: "error",
-						text: "当前实例不是由 pi-web-ui 服务启动的（前台运行），无法自动重启；请在终端里重启，或先用 pi-web-ui server install 安装服务。",
-						textEn:
-							"This instance runs in the foreground, not as a pi-web-ui service — nothing would bring it back. Restart it in its terminal, or install the service with `pi-web-ui server install`.",
-					});
-					break;
-				}
-				send({
-					type: "notice",
-					level: "info",
-					text: "正在重启服务…页面会在服务恢复后自动重连，进行中的对话会自动恢复并继续。",
-					textEn:
-						"Restarting the service… this page reconnects once it is back; running conversations resume automatically.",
-				});
-				// Record streaming runs BEFORE exiting: under systemd this path
-				// exits via process.exit without shutdown(), so without this the
-				// post-restart resume would find nothing to continue.
-				try {
-					service.recordInterruptedRuns();
-				} catch {
-					/* best effort — never block the restart on bookkeeping */
-				}
-				// Let the notice (and this socket's backlog) flush before we go down.
-				setTimeout(() => void scheduleQuit(), 400);
-				break;
-			}
-			case "dialog_response":
-				cs.resolveDialog(msg.id, msg.value);
-				break;
-			case "install_pi_agent":
-				void cs.installPiAgent();
-				break;
-			case "set_provider_api_key":
-				void cs.setProviderApiKey(msg.provider, msg.apiKey);
-				break;
-			case "clear_provider_api_key":
-				void cs.clearProviderApiKey(msg.provider);
-				break;
-			case "provider_oauth_start":
-				cs.startProviderOAuth(msg.provider);
-				break;
-			case "provider_oauth_reply":
-				cs.replyProviderOAuth(msg.flowId, msg.promptId, msg.value);
-				break;
-			case "provider_oauth_cancel":
-				cs.cancelProviderOAuth(msg.flowId);
-				break;
-			case "list_provider_oauth_flows":
-				cs.listProviderOAuthFlows();
-				break;
-			case "provider_oauth_logout":
-				void cs.logoutProviderOAuth(msg.provider);
-				break;
-			case "list_models_config":
-				void cs.listModelsConfig();
-				break;
-			case "reload_models_config":
-				void cs.reloadModelsConfig();
-				break;
-			case "save_model_config":
-				void cs.saveModelConfig(msg.providerId, msg.config);
-				break;
-			case "delete_model_config":
-				void cs.deleteModelConfig(msg.providerId);
-				break;
-			case "list_providers":
-				void cs.listProviders();
-				break;
-			case "fetch_models":
-				void cs.fetchModelsList(msg.reqId, msg.baseUrl, msg.apiKey, msg.authHeader, msg.api, msg.providerId);
-				break;
-			case "test_model_connection":
-				void cs.testModelConnection?.(msg.reqId, msg.baseUrl, msg.apiKey, msg.authHeader, msg.api, msg.providerId);
-				break;
-			case "refresh_provider_models":
-				void cs.refreshProviderModels(msg.providerId, msg.reqId);
-				break;
-			case "refresh_builtin_models":
-				void cs.refreshBuiltinModels(msg.reqId);
-				break;
-			case "append_builtin_model":
-				void cs.appendBuiltinModel(msg.providerId, msg.model, msg.reqId);
-				break;
-			case "clone_provider":
-				void cs.cloneProvider(msg.provider, msg.reqId);
-				break;
-			case "enrich_models":
-				void cs.enrichModels(msg.reqId, msg.ids, msg.hints);
-				break;
-			case "abort_enrich_models":
-				cs.abortEnrichModels(msg.reqId);
-				break;
-			case "list_provider_keys":
-				cs.listProviderKeys();
-				break;
-			case "add_provider_key":
-				void cs.addProviderKey(msg.provider, msg.apiKey, msg.name);
-				break;
-			case "activate_provider_key":
-				void cs.activateProviderKey(msg.provider, msg.keyName);
-				break;
-			case "remove_provider_key":
-				void cs.removeProviderKey(msg.provider, msg.keyName);
-				break;
-			case "terminal_create": {
-				const tm = cs.getTerminalManager(msg.conversationId);
-				if (tm) {
-					// agentBash 透传：前端重建已退出的 AI 终端时保留其身份（issue #147）；
-					// 字段缺省（旧前端）时 create() 再从 history 继承。
-					const createOpts =
-						msg.locale !== undefined || msg.agentBash !== undefined
-							? { locale: msg.locale, agentBash: msg.agentBash }
-							: undefined;
-					tm.create(
-						msg.terminalId,
-						msg.cwd,
-						msg.cols,
-						msg.rows,
-						cs.getTerminalCwd(msg.conversationId),
-						msg.title,
-						createOpts,
-					);
-				}
-				break;
-			}
-			case "terminal_input":
-				cs.getTerminalManager(msg.conversationId)?.input(msg.terminalId, msg.data);
-				break;
-			case "terminal_resize":
-				cs.getTerminalManager(msg.conversationId)?.resize(msg.terminalId, msg.cols, msg.rows);
-				break;
-			case "terminal_kill":
-				cs.getTerminalManager(msg.conversationId)?.kill(msg.terminalId);
-				break;
-			case "rename_terminal":
-				cs.getTerminalManager(msg.conversationId)?.rename(msg.terminalId, msg.title);
-				break;
-			case "run_command":
-				cs.getTerminalManager(msg.conversationId)?.runCommand(
-					msg.terminalId,
-					msg.command,
-					msg.cols,
-					msg.rows,
-					cs.getTerminalCwd(msg.conversationId),
-				);
-				break;
-			case "list_commands":
-				void cs.listCommands();
-				break;
-			case "save_commands":
-				void cs.saveCommands(msg.commands);
-				break;
-			case "set_goal":
-				void cs.setGoal(msg.goal, {
-					reviewModel: msg.reviewModel,
-					maxRounds: msg.maxRounds,
-					locked: msg.locked,
-					execModel: msg.execModel,
-				});
-				break;
-			case "clear_goal":
-				void cs.clearGoal();
-				break;
-			case "start_goal_wizard":
-				void cs.startGoalWizard(msg.text, {
-					wizardModel: msg.wizardModel,
-					maxRounds: msg.maxRounds,
-					locked: msg.locked,
-				});
-				break;
-			case "set_goal_prefs":
-				void cs.setGoalPrefs({
-					reviewModel: msg.reviewModel,
-					maxRounds: msg.maxRounds,
-					locked: msg.locked,
-					execModel: msg.execModel,
-				});
-				break;
-			case "get_settings":
-				cs.pushSettings();
-				break;
-			case "set_settings":
-				// SAFETY: Both dispatch engines validate the explicitly enumerated settings fields below.
-				void (cs as unknown as { setSettings: (p: Record<string, unknown>) => Promise<void> }).setSettings({
-					promptMode: msg.promptMode,
-					customSystemPrompt: msg.customSystemPrompt,
-					promptTemplate: (msg as { promptTemplate?: string }).promptTemplate,
-					promptOverrides: (msg as { promptOverrides?: Record<string, string> }).promptOverrides,
-					toolPromptOverrides: (msg as { toolPromptOverrides?: Record<string, unknown> }).toolPromptOverrides,
-					disabledSkills: msg.disabledSkills,
-					disabledExtensions: msg.disabledExtensions,
-					disabledAgentTools: msg.disabledAgentTools,
-					disabledPluginTools: (msg as { disabledPluginTools?: string[] }).disabledPluginTools,
-					disabledPlugins: msg.disabledPlugins,
-					terminalToolsEnabled: msg.terminalToolsEnabled,
-					terminalBash: msg.terminalBash,
-					terminalBashIdleMs: msg.terminalBashIdleMs,
-					terminalBashMaxForegroundMs: (msg as { terminalBashMaxForegroundMs?: number }).terminalBashMaxForegroundMs,
-					toolWatchdogTimeoutMs: (msg as { toolWatchdogTimeoutMs?: number }).toolWatchdogTimeoutMs,
-					readDirEnabled: (msg as { readDirEnabled?: boolean }).readDirEnabled,
-					bgAutoCleanupMin: (msg as { bgAutoCleanupMin?: number }).bgAutoCleanupMin,
-					toolLazyLoading: (msg as { toolLazyLoading?: boolean }).toolLazyLoading,
-					toolApprovalEnabled: (msg as { toolApprovalEnabled?: boolean }).toolApprovalEnabled,
-					editSoftEnabled: (msg as { editSoftEnabled?: boolean }).editSoftEnabled,
-					questionnaireEnabled: (msg as { questionnaireEnabled?: boolean }).questionnaireEnabled,
-					parallelReminderEnabled: (msg as { parallelReminderEnabled?: boolean }).parallelReminderEnabled,
-					goalModeEnabled: (msg as { goalModeEnabled?: boolean }).goalModeEnabled,
-					thinkingWrap: msg.thinkingWrap,
-					toolsWrap: msg.toolsWrap,
-					toolImagesEnabled: (msg as { toolImagesEnabled?: boolean }).toolImagesEnabled,
-					devNoCache: (msg as { devNoCache?: boolean }).devNoCache,
-					autoReload: (msg as { autoReload?: boolean }).autoReload,
-					skillsFullText: (msg as { skillsFullText?: string[] }).skillsFullText,
-					visionBridgeEnabled: msg.visionBridgeEnabled,
-					visionBridgeModel: msg.visionBridgeModel,
-					visionBridgePromptMode: msg.visionBridgePromptMode,
-					visionBridgePrompt: msg.visionBridgePrompt,
-					subagentDefaultModel: (msg as { subagentDefaultModel?: string | null }).subagentDefaultModel,
-					retryMaxAttempts: (msg as { retryMaxAttempts?: number }).retryMaxAttempts,
-					softCapTokens: (msg as { softCapTokens?: number }).softCapTokens,
-					softCapByModel: (msg as { softCapByModel?: Record<string, number> }).softCapByModel,
-					reviewPrompt: msg.reviewPrompt,
-					reviewDisabledSkills: msg.reviewDisabledSkills,
-					markersEnabled: (msg as { markersEnabled?: boolean }).markersEnabled,
-					disabledMarkers: (msg as { disabledMarkers?: string[] }).disabledMarkers,
-					quickPhrases: (msg as { quickPhrases?: string[] }).quickPhrases,
-					quickPhrasesEnabled: (msg as { quickPhrasesEnabled?: boolean }).quickPhrasesEnabled,
-					quickPhrasesSeeded: (msg as { quickPhrasesSeeded?: boolean }).quickPhrasesSeeded,
-					uiLayout: (msg as { uiLayout?: UiLayoutPrefs }).uiLayout,
-				});
-				break;
-			case "extensions_reload":
-				void cs.reloadExtensions();
-				break;
-			case "plugin_message":
-				pluginMgr.handleMessage(msg.pluginId, msg.payload, clientId ?? undefined);
-				break;
-			case "plugin_settings": {
-				const r = pluginMgr.savePluginSettings(msg.pluginId, msg.values ?? {}, () => cs?.getLang() ?? "en");
-				if (r.error) {
-					cs?.emitNotice("error", `插件设置保存失败：${r.error}`, `Failed to save plugin settings: ${r.error}`);
-				} else {
-					cs?.emitNotice("info", "插件设置已保存", "Plugin settings saved");
-				}
-				break;
-			}
-			case "plugins_reload":
-				void pluginMgr.reload(() => cs?.getLang() ?? "en").then(() => pluginMgr.pushToAll());
-				break;
-			case "plugin_catalog_add": {
-				const r = pluginMgr.addCatalogEntry(msg.entry ?? {}, () => cs?.getLang() ?? "en");
-				if (r.error) {
-					cs?.emitNotice("error", `添加到插件列表失败：${r.error}`, `Failed to add to plugin list: ${r.error}`);
-				} else {
-					cs?.emitNotice("info", "已添加到插件列表", "Added to the plugin list");
-				}
-				break;
-			}
-			case "plugin_catalog_remove": {
-				const r = pluginMgr.removeCatalogEntry(msg.id, () => cs?.getLang() ?? "en");
-				if (r.error) {
-					cs?.emitNotice("error", `从插件列表移除失败：${r.error}`, `Failed to remove from plugin list: ${r.error}`);
-				} else {
-					cs?.emitNotice("info", "已从插件列表移除", "Removed from the plugin list");
-				}
-				break;
-			}
-			// -- 插件后台作业（安装/更新/卸载，issue #152）----------------------------
-			// 不再是「开一个可见终端 tab 并关掉设置面板」：作业在服务端后台跑，输出按行
-			// 回给发起者，设置面板原就位显示。真正的执行者是 CLI（单一实现）。
-			case "plugin_job": {
-				const jobLang = () => cs?.getLang() ?? "en";
-				const jobId = String(msg.jobId ?? "");
-				const pluginId = String(msg.id ?? "");
-				// function 声明会提升、TS 对 msg 判别联合的收窄进不了闭包 —— 先拍平成常量。
-				const jobAction = msg.action;
-				const jobSpec = {
-					jobId,
-					action: jobAction,
-					id: pluginId,
-					source: msg.source,
-					build: msg.build === true,
-					noBuild: msg.noBuild === true,
-				};
-				const jobDone = (ok: boolean, error?: string) => {
-					send({
-						type: "plugin_job",
-						jobId,
-						action: jobAction,
-						pluginId,
-						phase: "done",
-						ok,
-						...(error ? { error } : {}),
-						output: "",
-					});
-				};
-				// 参数静态校验：参数非法直接拒绝，避免向客户端发起无意义/恶意的确认弹窗。
-				const argCheck = buildPluginJobArgs(jobSpec, DATA_DIR, jobLang);
-				if ("error" in argCheck) {
-					jobDone(false, argCheck.error);
-					break;
-				}
-				// 安装确认门（P0）：install/update 先经用户确认。第三方页面脚本可以直发
-				// plugin_job；拒绝/超时直接回一条 done，让面板上的作业就地结束（不占
-				// 安装锁、不弹「失败」之外的噪音）。卸载不在本门范围内（由面板本身发起）。
-				if (jobAction === "install" || jobAction === "update") {
-					const alreadyGranted = pluginMgr.permGrants.has("plugin-installer", "net", { host: "github.com" });
-					if (!alreadyGranted) {
+		try {
+			if (handleFileMessage(msg, cs)) return;
+			if (handleScmMessage(msg, cs, send)) return;
+			if (handleBgServerMessage(msg, cs)) return;
+			if (handlePresetAndDshMessage(msg, cs)) return;
+			if (handleModelAndProviderMessage(msg, cs)) return;
+			if (handleTerminalMessage(msg, cs)) return;
+			if (handleSessionLifecycleMessage(msg, cs)) return;
+			if (handlePlanAndGoalMessage(msg, cs)) return;
+			if (handleScheduleMessage(msg, scheduler, send)) return;
+			if (handleSettingsMessage(msg, cs)) return;
+			if (handleInteractiveResponseMessage(msg, cs, service, clientId, send)) return;
+			if (
+				handlePluginMessage(msg, {
+					pluginMgr,
+					pluginInstaller,
+					cs,
+					clientId,
+					send,
+					dataDir: DATA_DIR,
+					cwd: CWD,
+					clients: wss.clients,
+					pendingPathRequests,
+					pendingPermissionRequests,
+					pendingDomConsents,
+					findDomConsentById,
+					applyDomConsent,
+					pushPluginGrants,
+					pushPluginPermissions,
+					reloadPluginsAndPush,
+					confirmPluginInstallHelper,
+				})
+			)
+				return;
+
+			switch (msg.type) {
+				case "prompt": {
+					const hasAttach = Boolean(msg.attachments && msg.attachments.length > 0);
+					if (!msg.text?.trim() && !hasAttach) {
 						send({
-							type: "plugin_job",
-							jobId,
-							action: jobAction,
-							pluginId,
-							phase: "start",
+							type: "notice",
+							level: "warning",
+							text: "发送已忽略：提示词为空且未附带文件或上下文引用。",
+							textEn: "Prompt ignored: text is empty and no attachments were provided.",
 						});
+						break;
+					}
+					void cs.prompt(msg.text, msg.attachments, msg.queue);
+					break;
+				}
+				case "queue_remove":
+					// #491：removeQueued 是 async——dispatch 是 fire-and-forget，缺 void 时
+					// 内部抛错即 unhandledRejection，而全仓没有兜底 handler，Node ≥15 直接崩进程。
+					void cs.removeQueued(msg.kind, msg.text, msg.index);
+					break;
+				case "draft_update":
+					cs.saveDraft?.(msg.sessionId, msg.text, msg.ts);
+					break;
+				case "abort":
+					void cs.abort();
+					break;
+				case "abort_bash":
+					void cs.abortBash();
+					break;
+				case "retry_last":
+					void cs.retryLast();
+					break;
+				case "get_state":
+					// Always a FULL snapshot: the client is (re)connecting or detected
+					// a rev/seq gap — it needs an authoritative state to rebuild from.
+					cs.flushSnapshot(true);
+					break;
+				case "get_commands":
+					void cs.pushSlashCommands();
+					break;
+				case "get_tool_info":
+					// 工具卡右键菜单的「显示工具详细信息」：按需取一次工具定义（不进快照）。
+					// 引擎没实现（或旧版服务端）时回一条 unsupported，前端据此显示「不支持」
+					// 而不是永远转圈。
+					if (typeof cs.getToolInfo === "function") {
+						void cs.getToolInfo(msg.name);
+					} else {
+						send({ type: "tool_info", name: msg.name, found: false, unsupported: true });
+					}
+					break;
+				case "get_tool_prompt":
+					// 设置页逐工具文案编辑器：取「出厂默认 + 当前覆盖」。
+					if (typeof cs.getToolPrompt === "function") {
+						void cs.getToolPrompt(msg.name);
+					} else {
+						send({ type: "tool_prompt", name: msg.name, found: false, unsupported: true });
+					}
+					break;
+				case "take_over_conversation":
+					if (typeof service.takeOverConversation === "function") {
+						void service.takeOverConversation(clientId, msg.owner, msg.id);
+					} else {
 						send({
-							type: "plugin_job",
-							jobId,
-							action: jobAction,
-							pluginId,
-							phase: "log",
-							line: jobLang() === "zh" ? "等待确认安装授权…" : "Waiting for install confirmation…",
+							type: "notice",
+							level: "error",
+							text: "当前引擎不支持过户（take over），请用 pi 引擎",
+							textEn: "Takeover is not supported by the current engine; use the pi engine.",
 						});
 					}
-					void confirmPluginInstallHelper([{ id: pluginId, source: String(msg.source ?? "") }])
-						.then((confirmed) => {
-							if (!confirmed) {
-								jobDone(
-									false,
-									jobLang() === "zh"
-										? "用户未确认安装（拒绝或 120 秒超时）"
-										: "Installation not confirmed (rejected or timed out after 120s)",
-								);
-								return;
-							}
-							startPluginJob();
-						})
-						.catch(() => jobDone(false, jobLang() === "zh" ? "安装确认流程异常" : "Installation confirmation error"));
 					break;
-				}
-				startPluginJob();
-				// 真正派发作业（确认门通过后走这里）：被拒（忙 / 托管实例 / 参数非法）也要回
-				// 一条 done，让面板上的作业就地结束。
-				function startPluginJob(): void {
-					const started = pluginInstaller.start(jobSpec, {
-						lang: jobLang,
-						emit: (m) => send(m),
-						done: async (ok, info) => {
-							if (ok) {
-								await reloadPluginsAndPush(jobLang);
-								if (typeof cs?.checkPluginUpdates === "function") {
-									void cs.checkPluginUpdates(false);
-								}
-								const isZh = jobLang() === "zh";
-								const actionLabel =
-									jobAction === "uninstall"
-										? isZh
-											? "卸载"
-											: "uninstalled"
-										: jobAction === "update"
-											? isZh
-												? "更新"
-												: "updated"
-											: isZh
-												? "安装"
-												: "installed";
-								cs?.emitNotice(
-									"info",
-									`插件「${pluginId}」${actionLabel}完成`,
-									`Plugin "${pluginId}" ${actionLabel} successfully`,
-								);
-							} else if (info.error) {
-								cs?.emitNotice("error", `插件操作失败：${info.error}`, `Plugin operation failed: ${info.error}`);
-							}
-						},
-					});
-					if (!started.ok) jobDone(false, started.error);
-				}
-				break;
-			}
-			case "plugin_job_cancel":
-				pluginInstaller.cancel(String(msg.jobId ?? ""));
-				break;
-			// 注册面目录（DSH P2-7）：只读装配（slot/工具/宿主方法表+当前占用者），按需拉取。
-			case "plugin_api_catalog": {
-				const requestId = String(msg.requestId ?? "");
-				send({ type: "plugin_api_catalog_result", requestId, catalog: pluginMgr.getApiCatalog() });
-				break;
-			}
-			// 安装前先读 spec（DSH P0-3）：不联网也能查（形状/已装），GitHub 源再探一次
-			// raw manifest。结果只作引导（UI 把 problem 渲染成输入框下的一句话），不阻塞安装。
-			case "plugin_install_inspect": {
-				const requestId = String(msg.requestId ?? "");
-				const source = String(msg.source ?? "");
-				void inspectInstallSpec(source, {
-					pluginsDir: pluginMgr.pluginsDir,
-					...(typeof msg.explicitId === "string" && msg.explicitId.trim() ? { explicitId: msg.explicitId.trim() } : {}),
-					force: msg.force === true,
-				}).then((r) => {
-					send({
-						type: "plugin_install_inspect_result",
-						requestId,
-						source,
-						kind: r.spec.kind,
-						suggestedId: r.suggestedId,
-						installed: r.installed,
-						...(r.problem ? { problem: r.problem } : {}),
-						...(r.detail ? { detail: r.detail } : {}),
-						...(r.manifest ? { manifest: r.manifest } : {}),
-					});
-				});
-				break;
-			}
-			// -- 插件目录授权（issue #146）------------------------------------------
-			case "plugin_path_response": {
-				const id = String(msg.id ?? "");
-				const pending = pendingPathRequests.get(id);
-				// 来源绑定：应答必须来自弹窗广播时在线的 clientId——广播后才连上的
-				// 端没见过弹窗，忽略其代答（pending 保留，真正的弹窗端仍可答复）。
-				if (pending && clientId && pending.recipients.has(clientId)) {
-					clearTimeout(pending.timer);
-					pendingPathRequests.delete(id);
-					pending.resolve(msg.ok === true);
-				}
-				break;
-			}
-			// -- 插件能力授权（host.requestPermission）-------------------------------
-			case "plugin_permission_response": {
-				const id = String(msg.id ?? "");
-				const pending = pendingPermissionRequests.get(id);
-				// 来源绑定：同 plugin_path_response——只有收到弹窗广播的端可代答。
-				if (pending && clientId && pending.recipients.has(clientId)) {
-					clearTimeout(pending.timer);
-					pendingPermissionRequests.delete(id);
-					// 先答复者胜：通知其它在线端收起同一条请求（与目录授权不同，这里要显式 resolved）。
-					const resolved = JSON.stringify({ type: "plugin_permission_resolved", id });
-					for (const client of wss.clients) {
-						if (client.readyState === WebSocket.OPEN) {
-							try {
-								client.send(resolved);
-							} catch {
-								/* 死连接 */
-							}
-						}
-					}
-					pending.resolve({ ok: msg.ok === true, remember: msg.remember === true });
-				}
-				break;
-			}
-			case "plugin_dom_consent": {
-				// grant 是提权方向：走两步握手——只生成在途 consent 请求并广播，不在此
-				// 处落盘；收到绑定来源的 plugin_dom_consent_response 后才 setDomConsent。
-				// 同 pluginId 已有在途请求时忽略（首个优先，120s 超时自动失效）。
-				if (msg.granted === true) {
-					const pid = typeof msg.pluginId === "string" ? msg.pluginId.trim() : "";
-					if (!pid || !pluginMgr.isDomPlugin(pid) || pendingDomConsents.has(pid)) break;
-					const id = randomUUID();
-					const timer = setTimeout(() => {
-						pendingDomConsents.delete(pid);
-					}, 120_000);
-					pendingDomConsents.set(pid, { id, pluginId: pid, recipients: new Set(pluginMgr.onlineClientIds()), timer });
-					// from = 发起端 clientId：前端只自动应答自己发起的授权（设置面板点击）。
-					const payload = JSON.stringify({ type: "plugin_dom_consent_request", id, pluginId: pid, from: clientId });
-					for (const client of wss.clients) {
-						if (client.readyState === WebSocket.OPEN) {
-							try {
-								client.send(payload);
-							} catch {
-								/* 死连接 */
-							}
-						}
-					}
-					break;
-				}
-				// revoke 是降权方向：单步直达（不在途等待），pluginId 校验交给 setDomConsent。
-				applyDomConsent(msg.pluginId, false);
-				break;
-			}
-			// -- DOM 授权两步握手的应答：按 id 回查在途请求，且应答连接必须在弹窗
-			// 广播时的在线端集合里，才允许把 grant 持久写盘。
-			case "plugin_dom_consent_response": {
-				const id = typeof msg.id === "string" ? msg.id : "";
-				const pendingConsent = findDomConsentById(id);
-				if (pendingConsent && clientId && pendingConsent.recipients.has(clientId)) {
-					clearTimeout(pendingConsent.timer);
-					pendingDomConsents.delete(pendingConsent.pluginId);
-					// ok=false = 显式拒绝：只清在途请求不落盘（当前前端自动应答只发
-					// true，这里守住协议语义，将来接拒绝按钮不用动服务端）。
-					if (msg.ok === true) applyDomConsent(pendingConsent.pluginId, true);
-				}
-				break;
-			}
-			case "plugin_path_revoke": {
-				const removed = pluginMgr.grants.revoke(
-					typeof msg.pluginId === "string" ? msg.pluginId : undefined,
-					typeof msg.path === "string" ? msg.path : undefined,
-				);
-				cs?.emitNotice("info", `已撤销 ${removed} 条插件目录授权`, `Revoked ${removed} plugin path grant(s)`);
-				pushPluginGrants();
-				break;
-			}
-			case "plugin_permission_revoke": {
-				const family = msg.family === "net" || msg.family === "llm" ? msg.family : undefined;
-				const removed = pluginMgr.permGrants.revoke(
-					typeof msg.pluginId === "string" ? msg.pluginId : undefined,
-					family,
-					typeof msg.host === "string" || typeof msg.model === "string"
-						? {
-								...(typeof msg.host === "string" ? { host: msg.host } : {}),
-								...(typeof msg.model === "string" ? { model: msg.model } : {}),
-							}
-						: undefined,
-				);
-				cs?.emitNotice("info", `已撤销 ${removed} 条能力授权`, `Revoked ${removed} permission grant(s)`);
-				pushPluginPermissions();
-				break;
-			}
-			// -- 插件市场目录同步（issue #148）--------------------------------------
-			case "plugin_catalog_sync": {
-				const syncLang = () => cs?.getLang() ?? "en";
-				const requestId = String(msg.requestId ?? "");
-				void syncPluginCatalog(
-					String(msg.source ?? ""),
-					{ install: msg.install === true, replace: msg.replace === true },
-					{
-						customCatalogPath: pluginMgr.customCatalogPath,
-						pluginsDir: join(DATA_DIR, "plugins"),
-						installer: pluginInstaller,
-						// 只更新市场列表时无需重启已激活插件，避免重复广播工作目录。
-						afterWrite: () => (msg.install === true ? reloadPluginsAndPush(syncLang) : pluginMgr.pushCatalog()),
-						lang: syncLang,
-						// 本地文件来源只允许工作区内（防任意路径文件探测 oracle）。
-						workspaceRoot: cs?.cwd ?? CWD,
-						// 安装确认门（P0）：拒绝/超时只写目录不安装。
-						confirmInstall: (items) => confirmPluginInstallHelper(items),
-					},
-				).then((r) => {
-					if (r.installRefused) {
-						cs?.emitNotice(
-							"warning",
-							"目录已同步，但安装未获用户确认（拒绝或超时），未安装任何插件",
-							"Catalog synced, but installation was not confirmed (denied or timed out) — nothing was installed",
-						);
-					}
-					send({
-						type: "plugin_catalog_sync_result",
-						requestId,
-						ok: r.ok,
-						...(r.error ? { error: r.error } : {}),
-						entries: pluginMgr.catalog(),
-						...(r.installed ? { installed: r.installed } : {}),
-					});
-				});
-				break;
-			}
-			case "dsh_patches_list":
-				void cs.listDshPatches?.();
-				break;
-			case "dsh_preset_list":
-				void cs.refreshAgentPresets?.();
-				break;
-			case "dsh_preset_select":
-				void cs.selectAgentPreset?.(msg.preset);
-				break;
-			case "dsh_preset_default":
-				void cs.setDefaultAgentPreset?.(msg.preset);
-				break;
-			case "dsh_permission_set":
-				void cs.setPermissionPreset?.(msg.preset);
-				break;
-			case "dsh_permission_default":
-				void cs.setDefaultPermissionPreset?.(msg.preset);
-				break;
-			case "dsh_patches_rescan":
-				void cs.rescanDshPatches?.();
-				break;
-			case "question_answer":
-				if (msg.owner) {
-					// 跨页作答：答案转交持有方会话（本页不持有该问卷）。
-					if (typeof service.answerElsewhereQuestion === "function") {
-						void service.answerElsewhereQuestion(clientId, msg.owner, msg.id, msg.answers, msg.cancelled);
+				case "peek_elsewhere_question":
+					if (typeof service.peekElsewhereQuestion === "function") {
+						void service.peekElsewhereQuestion(clientId, msg.owner, msg.id);
 					} else {
 						send({
 							type: "notice",
@@ -3040,157 +2327,76 @@ wss.on("connection", (ws) => {
 							textEn: "Cross-page answering is not supported by the current engine; use the pi engine.",
 						});
 					}
-				} else {
-					void cs.answerQuestion?.(msg.id, msg.answers, msg.cancelled);
-				}
-				break;
-			case "tool_approval_response":
-				cs.resolveToolApproval?.(msg.id, msg.decision, msg.editedParams, msg.reason, msg.scope);
-				break;
-			case "set_approval_policy":
-				cs.setApprovalPolicy?.({
-					conversationId: msg.conversationId,
-					allowAll: msg.allowAll,
-					categories: msg.categories,
-				});
-				break;
-			case "plan_update":
-				cs.updatePlan?.(msg.steps, msg.activeStepId, msg.conversationId);
-				break;
-			case "plan_step_update":
-				cs.updatePlanStep?.(msg.stepId, msg.patch, msg.conversationId);
-				break;
-			case "plan_step_delete":
-				cs.deletePlanStep?.(msg.stepId, msg.conversationId);
-				break;
-			case "plan_step_add":
-				cs.addPlanStep?.(msg.step, msg.afterStepId, msg.conversationId);
-				break;
-			case "plan_clean_handoff":
-				void cs.planCleanHandoff?.(msg.steps, msg.prompt);
-				break;
-			case "set_plan_mode":
-				// 计划模式（只规划不实施）：会话级开关，热生效（提示词重建 + 工具硬闸门）。
-				void cs.setPlanMode?.(msg.enabled, msg.conversationId);
-				break;
-			case "set_delegate_mode":
-				// 审查者模式（自动委派）：会话级开关，默认关。开启后本对话只审阅，
-				// 用户 prompt 由服务端转给常驻落盘执行对话。DSH 引擎的实现在
-				// setDelegateMode 里直接拒（无 customTools 注册面 → 闸门无处可挂）。
-				void cs.setDelegateMode?.(msg.enabled, msg.conversationId);
-				break;
-			case "page_response":
-				// 浏览器（page-picker 扩展经前端）对 browser_page 的回包：恢复挂起的
-				// pageCall；id 不匹配（超时后迟到/页面刷新）由 resolvePageCall 静默忽略。
-				cs.resolvePageCall?.(msg.id, msg.ok, msg.result, msg.error);
-				break;
-			case "save_preset":
-				void cs.savePreset(msg.name);
-				break;
-			// -- 预设分享（server/preset-share.ts，docs/preset-sharing.md）------
-			case "preset_export":
-				void cs.exportPreset(msg);
-				break;
-			case "preset_import":
-				void cs.importPreset(msg);
-				break;
-			case "preset_import_url":
-				void cs.importPresetFromUrl(msg);
-				break;
-			case "preset_catalog":
-				void cs.pushPresetCatalog(msg);
-				break;
-			case "preset_share":
-				void cs.sharePreset(msg);
-				break;
-			case "save_subagent_template":
-				void cs.saveSubagentTemplate(msg.template);
-				break;
-			case "delete_subagent_template":
-				void cs.deleteSubagentTemplate(msg.name);
-				break;
-			case "save_approval_rule":
-				void cs.saveApprovalRule?.(msg.rule);
-				break;
-			case "save_approval_rules":
-				void cs.saveApprovalRules?.(msg.rules);
-				break;
-			case "delete_approval_rule":
-				void cs.deleteApprovalRule?.(msg.id);
-				break;
-			case "reset_builtin_approval_rule":
-				void cs.resetBuiltinApprovalRule?.(msg.id);
-				break;
-			case "apply_preset":
-				void cs.applyPreset(msg.name);
-				break;
-			case "delete_preset":
-				void cs.deletePreset(msg.name);
-				break;
-			case "schedule_list":
-				try {
-					send({ type: "scheduler_tasks", tasks: scheduler.list() });
-				} catch (err) {
-					send({
-						type: "notice",
-						level: "error",
-						text: `读取定时任务失败：${(err as Error).message}`,
-						textEn: `Failed to list scheduled tasks: ${(err as Error).message}`,
-					});
-				}
-				break;
-			case "schedule_save":
-				try {
-					scheduler.upsert(msg.task);
-				} catch (err) {
-					const isVal = err instanceof SchedulerValidationError;
-					send({
-						type: "notice",
-						level: "error",
-						text: `保存定时任务失败：${isVal ? err.messageZh : (err as Error).message}`,
-						textEn: `Failed to save scheduled task: ${isVal ? err.messageEn : (err as Error).message}`,
-					});
-				}
-				break;
-			case "schedule_delete":
-				if (!scheduler.remove(msg.id)) {
-					send({
-						type: "notice",
-						level: "warning",
-						text: `定时任务不存在：${msg.id}`,
-						textEn: `No such scheduled task: ${msg.id}`,
-					});
-				}
-				break;
-			case "schedule_run":
-				void scheduler.runNow(msg.id).then((r) => {
-					if (!r.ok)
+					break;
+				case "set_locale":
+					// UI language report — per-client persist + lang-aware prompt
+					// refresh (streaming-safe). Engine-agnostic via DispatchSession.
+					void service.setLocale(clientId, msg.locale);
+					break;
+				case "check_update":
+					void cs.checkUpdate();
+					break;
+				case "check_updates_all":
+					void cs.checkUpdatesAll(msg.force === true);
+					break;
+				case "check_plugin_updates":
+					if (typeof cs.checkPluginUpdates === "function") {
+						void cs.checkPluginUpdates(true);
+					}
+					break;
+				case "restart_service": {
+					// Same effect as `pi-web-ui server restart`: this process exits and its
+					// supervisor brings it back (launchd/systemd immediately, the Windows
+					// watchdog within ~10s). Refused without a supervisor — exiting there
+					// would just stop the server the user is looking at.
+					if (!ORIGIN.supervisor) {
 						send({
 							type: "notice",
-							level: "warning",
-							text: `定时任务手动触发失败：${r.error ?? "未知错误"}`,
-							textEn: `Manual scheduled-task run failed: ${r.error ?? "unknown error"}`,
+							level: "error",
+							text: "当前实例不是由 pi-web-ui 服务启动的（前台运行），无法自动重启；请在终端里重启，或先用 pi-web-ui server install 安装服务。",
+							textEn:
+								"This instance runs in the foreground, not as a pi-web-ui service — nothing would bring it back. Restart it in its terminal, or install the service with `pi-web-ui server install`.",
 						});
-				});
-				break;
-			case "schedule_toggle":
-				if (!scheduler.setEnabled(msg.id, msg.enabled === true)) {
+						break;
+					}
 					send({
 						type: "notice",
-						level: "warning",
-						text: `定时任务不存在：${msg.id}`,
-						textEn: `No such scheduled task: ${msg.id}`,
+						level: "info",
+						text: "正在重启服务…页面会在服务恢复后自动重连，进行中的对话会自动恢复并继续。",
+						textEn:
+							"Restarting the service… this page reconnects once it is back; running conversations resume automatically.",
 					});
+					// Record streaming runs BEFORE exiting: under systemd this path
+					// exits via process.exit without shutdown(), so without this the
+					// post-restart resume would find nothing to continue.
+					try {
+						service.recordInterruptedRuns();
+					} catch {
+						/* best effort — never block the restart on bookkeeping */
+					}
+					// Let the notice (and this socket's backlog) flush before we go down.
+					setTimeout(() => void scheduleQuit(), 400);
+					break;
 				}
-				break;
-			default: {
-				// 未知 type 只计数 + 节流 warn，不改变已知类型行为。
-				// default 分支里 msg 已收窄成 never，type 需从宽化后取。
-				const raw = (msg as unknown as { type?: unknown }).type;
-				const name = typeof raw === "string" ? raw : String(raw);
-				const r = recordUnknownWsType(name);
-				if (r.warn) console.warn(`[ws] unknown message type "${name}" (x${r.count})`);
-				break;
+				default: {
+					// 未知 type 只计数 + 节流 warn，不改变已知类型行为。
+					// default 分支里 msg 已收窄成 never，type 需从宽化后取。
+					const raw = (msg as unknown as { type?: unknown }).type;
+					const name = typeof raw === "string" ? raw : String(raw);
+					const r = recordUnknownWsType(name);
+					if (r.warn) console.warn(`[ws] unknown message type "${name}" (x${r.count})`);
+					break;
+				}
+			}
+		} catch (err) {
+			console.error(`[dispatch error on "${msg.type}"]:`, err);
+			if (!closed) {
+				send({
+					type: "notice",
+					level: "error",
+					text: `操作「${msg.type}」执行出错：${err instanceof Error ? err.message : String(err)}`,
+					textEn: `Error executing "${msg.type}": ${err instanceof Error ? err.message : String(err)}`,
+				});
 			}
 		}
 	};
@@ -3574,3 +2780,9 @@ async function shutdown(signal: "SIGINT" | "SIGTERM" = "SIGINT"): Promise<void> 
 }
 process.on("SIGINT", () => void shutdown("SIGINT"));
 process.on("SIGTERM", () => void shutdown("SIGTERM"));
+process.on("unhandledRejection", (reason: unknown) => {
+	console.error("[pi-web-ui] Unhandled Promise Rejection:", reason);
+});
+process.on("uncaughtException", (err: Error) => {
+	console.error("[pi-web-ui] Uncaught Exception:", err);
+});

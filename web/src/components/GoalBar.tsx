@@ -7,27 +7,6 @@ import { Dropdown, DropdownItem } from "./Dropdown";
 import type { UiSlotEntry } from "../ui-slots";
 import { renderMergedToolbar } from "../slot-toolbar";
 
-/** Messages this component sends. */
-type GoalBarMsg =
-	| {
-			type: "set_goal";
-			goal: string;
-			reviewModel?: string;
-			maxRounds: number;
-			locked: boolean;
-			execModel?: string;
-	  }
-	| { type: "clear_goal" }
-	| { type: "start_goal_wizard"; text: string; wizardModel?: string; maxRounds?: number; locked?: boolean }
-	| {
-			type: "set_goal_prefs";
-			reviewModel?: string;
-			maxRounds?: number;
-			locked?: boolean;
-			execModel?: string;
-	  }
-	| { type: "list_models" };
-
 /** Props are deliberately NARROW (no whole-ChatState object): every field is
  *  stable while tokens stream in, so the shallow-compared memo() below skips
  *  the goal bar entirely during streaming. */

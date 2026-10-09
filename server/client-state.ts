@@ -12,8 +12,8 @@ import { dirname, isAbsolute, resolve } from "node:path";
 import { writeJsonAtomicSync } from "./atomic-file.js";
 import { normalizeSoftCapByModel, normalizeSoftCapTokens } from "./soft-cap.js";
 import { deriveLegacy, legacyToDisabled, normalizeDisabledAgentTools } from "./tool-manager.js";
-import { UI_SLOTS } from "./plugins.js";
 import { normalizeToolPromptOverrides, type ToolPromptOverrideMap } from "./tool-prompt-overrides.js";
+import { UI_SLOTS } from "./plugin-ui-slots.js";
 import type { UiAlign, UiLayoutPrefs, UiSlotId } from "./protocol.js";
 
 /** System-prompt mode: append the custom text to the built prompt, or replace
@@ -379,7 +379,7 @@ export function settingsPresetToUi(p: SettingsPreset): import("./protocol.js").U
 		promptMode: p.promptMode === "replace" ? "replace" : "append",
 		customSystemPrompt: p.customSystemPrompt ?? "",
 		promptTemplate: p.promptTemplate ?? "",
-		promptOverrides: { ...(p.promptOverrides ?? {}) },
+		promptOverrides: { ...p.promptOverrides },
 		disabledSkills: [...(p.disabledSkills ?? [])],
 		disabledExtensions: [...(p.disabledExtensions ?? [])],
 		reviewPrompt: p.reviewPrompt ?? "",

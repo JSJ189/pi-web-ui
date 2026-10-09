@@ -167,7 +167,9 @@ body,
 /* 彻底打破贴底通栏传统，将输入框重构为居中浮空战术控制台 */
 .inputbar {
 	background: transparent !important;
-	padding: 12px var(--chat-inset) 28px !important;
+	/* 上内边距走 --composer-pad-top（消息区的负 margin 按同一个值算），
+	   这个主题只是把下留白加大。 */
+	padding: var(--composer-pad-top) var(--chat-inset) 28px !important;
 	position: relative !important;
 	z-index: 30 !important;
 	border-top: none !important;

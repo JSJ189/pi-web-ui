@@ -913,7 +913,7 @@ if [ -n "\${SERVER_PID:-}" ]; then wait "$SERVER_PID"; fi
 }
 
 function installLinuxShortcut(opts) {
-	const { name, port, cwd, dataDir, engine, host, agentDir } = serviceOptions(opts);
+	const { name, port } = serviceOptions(opts);
 	const url = `http://localhost:${port}`;
 	const scriptDir = join(homedir(), ".local", "share", "pi-web-ui");
 	const scriptPath = join(scriptDir, `${name}-start.sh`);
@@ -2666,12 +2666,6 @@ function pluginSdkSources() {
 	return files;
 }
 
-/** 包内 plugin-sdk 入口（版本号读取用）。 */
-function pluginSdkSource() {
-	return pluginSdkSources()?.find((f) => f.name === "index.mjs")?.src;
-}
-
-/** 把整份 SDK 拷进某目录（`<plugin>/sdk` 服务端用；`<plugin>/client/sdk` 客户端用）。 */
 function copySdkInto(dir, sources) {
 	mkdirSync(dir, { recursive: true });
 	for (const { name, src } of sources) copyFileSync(src, join(dir, name));
@@ -2883,12 +2877,12 @@ function buildPluginScaffold(id, template, useSdk, withTest = false) {
 		`\n` +
 		`- \`manifest.json\` —— 插件声明（id/name/version/description/apiVersion/permissions…；apiVersion 2 必须写 permissions，零能力写 \`[]\`）\n` +
 		`- \`index.mjs\` —— 服务端入口（\`export default { activate(host) }\`）\n` +
-		`- \`client/entry.mjs\` —— 客户端视图${template === "renderer" ? "（渲染器：\`{ renderers }\`）" : "（\`{ mount }\`）"}\n` +
+		`- \`client/entry.mjs\` —— 客户端视图${template === "renderer" ? "（渲染器：`{ renderers }`）" : "（`{ mount }`）"}\n` +
 		(useSdk
 			? `- \`sdk/index.mjs\` + \`sdk/client-utils.mjs\` —— plugin-sdk 拷贝（服务端用：definePlugin/defineView/onUiAction）\n`
 			: "") +
 		(useSdk && templateClientUsesSdk(template)
-			? `- \`client/sdk/\` —— 同一份 SDK 的**客户端**拷贝：宿主只暴露 \`/plugins/<id>/client/*\`，客户端依赖必须落在 \`client/\` 内（\`client/entry.mjs\` 只能 \`import \"./sdk/index.mjs\"\`）\n`
+			? `- \`client/sdk/\` —— 同一份 SDK 的**客户端**拷贝：宿主只暴露 \`/plugins/<id>/client/*\`，客户端依赖必须落在 \`client/\` 内（\`client/entry.mjs\` 只能 \`import "./sdk/index.mjs"\`）\n`
 			: "") +
 		(withTest && useSdk
 			? "- `index.test.mjs` —— 最小单测（`node --test index.test.mjs`，createMockHost harness）\n"
@@ -3362,7 +3356,7 @@ function pluginUninstallCmd(argv) {
 }
 
 function pluginListCmd(argv) {
-	const { opts, positionals } = parseFlags(argv);
+	const { opts } = parseFlags(argv);
 	if (opts.help) {
 		console.log(PLUGIN_HELP);
 		return;

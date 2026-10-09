@@ -14,13 +14,7 @@
  * （不进快照、不进清单，按需拉）。给将来「AI 写插件」铺路；当前消费方是
  * 插件作者（浏览器 devtools 发一条 WS 即可查）与后面的设置面板目录页。
  */
-import type {
-	CatalogAgentTool,
-	CatalogHostMethod,
-	CatalogSlotEntry,
-	CatalogSlotOccupant,
-	PluginApiCatalog,
-} from "./protocol.js";
+import type { CatalogHostMethod, CatalogSlotEntry, CatalogSlotOccupant, PluginApiCatalog } from "./protocol.js";
 
 export const PLUGIN_API_CATALOG_VERSION = 1 as const;
 

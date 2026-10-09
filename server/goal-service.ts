@@ -1401,7 +1401,7 @@ export class GoalService {
 	async stopAllGoals(): Promise<void> {
 		let stopped = 0;
 		// 快照迭代：await stopDelegated 期间，循环退出的回调可能增删这张表。
-		for (const convId of [...this.delegatedLoops.keys()]) {
+		for (const convId of Array.from(this.delegatedLoops.keys())) {
 			const conv = this.host.getConv(convId);
 			if (!conv) continue;
 			conv.goalGeneration += 1; // 作废在飞回调（循环靠代次守卫退出）

@@ -41,6 +41,9 @@ import type {
 	UiSettingsState,
 	UiState,
 	UiToolApproval,
+	UiMcpServer,
+	RemoteMcpServer,
+	RemoteSkillSummary,
 } from "./types";
 
 import { applyMessageDelta, type MessageDeltaMsg } from "./message-delta";
@@ -63,9 +66,9 @@ import {
 	type ProviderOAuthResultState,
 	type ProviderOAuthServerMessage,
 } from "./provider-oauth-state";
-import type { SchedulerTaskView } from "./types";
+import type { ConnStatus, SchedulerTaskView } from "./types";
 
-export type ConnStatus = "connecting" | "open" | "closed";
+export type { ConnStatus };
 
 /** localStorage key for the UI language (mirrors i18n.tsx STORAGE_KEY). */
 const UI_LANG_KEY = "pi-web-ui:lang";
@@ -478,6 +481,28 @@ export interface ChatState {
 	/** Server wire-protocol version differs from ours — the page was loaded
 	 *  before/after an app update; show a persistent refresh banner. */
 	protocolMismatch: boolean;
+	/** 公开远程 MCP 市场查询结果（来自 Smithery/GitHub/自定义源） */
+	mcpMarketResult: {
+		ok: boolean;
+		servers: RemoteMcpServer[];
+		total?: number;
+		source: string;
+		error?: string;
+	} | null;
+	/** 公开远程 Skill 技能仓库检索结果 */
+	skillMarketResult: {
+		ok: boolean;
+		skills: RemoteSkillSummary[];
+		repo: string;
+		error?: string;
+	} | null;
+	/** 单个技能的远程 SKILL.md 内容拉取结果 */
+	skillContentResult: {
+		ok: boolean;
+		skillId: string;
+		content: string;
+		error?: string;
+	} | null;
 }
 
 type Action =
@@ -637,6 +662,24 @@ type Action =
 	| { type: "goal_status"; status: GoalStatus }
 	| { type: "plan_updated"; conversationId?: string; plan: PlanState | null }
 	| { type: "settings"; settings: UiSettingsState }
+	| {
+			type: "mcp_servers";
+			servers: UiMcpServer[];
+			globalConfigPath?: string;
+			projectConfigPath?: string;
+	  }
+	| {
+			type: "mcp_market_result";
+			result: { ok: boolean; servers: RemoteMcpServer[]; total?: number; source: string; error?: string };
+	  }
+	| {
+			type: "skill_market_result";
+			result: { ok: boolean; skills: RemoteSkillSummary[]; repo: string; error?: string };
+	  }
+	| {
+			type: "skill_content_result";
+			result: { ok: boolean; skillId: string; content: string; error?: string };
+	  }
 	| { type: "bg_servers"; servers: BgServer[] }
 	| { type: "scheduler_tasks"; tasks: SchedulerTaskView[] }
 	| { type: "plugins"; plugins: UiPluginInfo[]; epoch: number }
@@ -1058,6 +1101,24 @@ function reducer(state: ChatState, action: Action): ChatState {
 		}
 		case "settings":
 			return { ...state, settings: action.settings };
+		case "mcp_servers": {
+			if (!state.settings) return state;
+			return {
+				...state,
+				settings: {
+					...state.settings,
+					mcpServers: action.servers,
+					mcpGlobalConfigPath: action.globalConfigPath ?? state.settings.mcpGlobalConfigPath,
+					mcpProjectConfigPath: action.projectConfigPath ?? state.settings.mcpProjectConfigPath,
+				},
+			};
+		}
+		case "mcp_market_result":
+			return { ...state, mcpMarketResult: action.result };
+		case "skill_market_result":
+			return { ...state, skillMarketResult: action.result };
+		case "skill_content_result":
+			return { ...state, skillContentResult: action.result };
 		case "bg_servers":
 			return { ...state, bgServers: action.servers };
 		case "scheduler_tasks":
@@ -1433,6 +1494,9 @@ export function useChat() {
 		pathRequests: [],
 		permRequests: [],
 		dshPatches: null,
+		mcpMarketResult: null,
+		skillMarketResult: null,
+		skillContentResult: null,
 		dshPresets: null,
 		dshPermission: null,
 		protocolMismatch: false,
@@ -2075,6 +2139,23 @@ export function useChat() {
 					break;
 				case "settings_state":
 					dispatch({ type: "settings", settings: msg.settings });
+					break;
+				case "mcp_servers":
+					dispatch({
+						type: "mcp_servers",
+						servers: msg.servers,
+						globalConfigPath: msg.globalConfigPath,
+						projectConfigPath: msg.projectConfigPath,
+					});
+					break;
+				case "mcp_market_result":
+					dispatch({ type: "mcp_market_result", result: msg });
+					break;
+				case "skill_market_result":
+					dispatch({ type: "skill_market_result", result: msg });
+					break;
+				case "skill_content_result":
+					dispatch({ type: "skill_content_result", result: msg });
 					break;
 				case "bg_servers":
 					dispatch({ type: "bg_servers", servers: msg.servers });

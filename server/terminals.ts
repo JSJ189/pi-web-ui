@@ -937,7 +937,6 @@ export class TerminalManager {
 			// last known size so the replacement matches the xterm's dimensions.
 			if (!existing.exited) {
 				this.flushPending(existing);
-				existing.exited = true;
 				this.killNative(existing);
 			}
 			cols = existing.cols || cols;
@@ -1087,6 +1086,7 @@ export class TerminalManager {
 			this.queueOut(entry, data);
 		});
 		pty.onExit(({ exitCode }) => {
+			entry.exited = true;
 			if (this.terms.get(id) !== entry) return;
 			this.exit(id, exitCode);
 		});
@@ -1548,7 +1548,6 @@ export class TerminalManager {
 			entry.watches = [];
 			for (const w of killedWatches) w.cb(null);
 			this.flushPending(entry);
-			entry.exited = true;
 			this.killNative(entry);
 			this.terms.delete(id);
 			this.emit({ type: "terminal_exit", terminalId: id, exitCode: null });
@@ -1609,6 +1608,7 @@ export class TerminalManager {
 			if (shutdown) return;
 			const t = setTimeout(() => {
 				if (entry.exited) return;
+				entry.exited = true;
 				try {
 					entry.pty.kill();
 				} catch {
@@ -1636,7 +1636,6 @@ export class TerminalManager {
 		for (const entry of this.terms.values()) {
 			this.disarmIdleWatch(entry);
 			if (entry.exited) continue;
-			entry.exited = true;
 			this.killNative(entry, shutdown);
 		}
 		for (const entry of this.terms.values()) {

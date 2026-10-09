@@ -19,7 +19,11 @@
  * language passed as fallbackLang.
  */
 
-import type { ScmCommitContext } from "./scm.js";
+import { isNotRepoError, scmCommitContext, type ScmCommitContext } from "./scm.js";
+import { pick, type ServerLang } from "./i18n.js";
+
+/** SCM AI 提交信息生成超时时间（毫秒） */
+export const SCM_COMMITMSG_TIMEOUT_MS = 60_000;
 
 /** Hard cap for the generated subject — the commit input is single-line and
  *  this keeps a chatty model from filling the whole header row. */
@@ -150,4 +154,135 @@ export function sanitizeCommitMessage(raw: string): string {
 	}
 	if (out.length > MAX_COMMITMSG_LEN) out = `${out.slice(0, MAX_COMMITMSG_LEN - 1).trimEnd()}…`;
 	return out;
+}
+
+/**
+ * 完整的 SCM AI 提交信息生成逻辑封装：
+ * 提取 git 差异上下文 -> 组装 prompt -> 调用模型 completeSimple -> 结果清洗校验
+ */
+export async function generateScmCommitMessage(opts: {
+	cwd: string;
+	model: any;
+	runtime: {
+		completeSimple: (
+			model: any,
+			context: any,
+			options?: any,
+		) => Promise<{
+			stopReason: string;
+			errorMessage?: string;
+			content: Array<{ type: string; text?: string }>;
+		}>;
+	};
+	lang: ServerLang;
+	promptMode?: "append" | "replace";
+	customPrompt?: string;
+	timeoutMs?: number;
+}): Promise<{ ok: true; text: string } | { ok: false; error: string }> {
+	const {
+		cwd,
+		model,
+		runtime,
+		lang,
+		promptMode = "append",
+		customPrompt = "",
+		timeoutMs = SCM_COMMITMSG_TIMEOUT_MS,
+	} = opts;
+
+	try {
+		const ctx = await scmCommitContext(cwd, () => lang);
+		const input = buildCommitMsgInput(ctx, lang === "zh" ? "zh" : "en");
+		if (!input) {
+			return {
+				ok: false,
+				error: pick(
+					lang,
+					"没有可描述的更改（工作区干净）",
+					"Nothing to describe (working tree clean)",
+					"scm.commitmsg.no.changes",
+				),
+			};
+		}
+
+		const ac = new AbortController();
+		const timer = setTimeout(() => ac.abort(), timeoutMs);
+		const systemPrompt = buildCommitMsgPrompt(promptMode, customPrompt);
+
+		let msg: Awaited<ReturnType<typeof runtime.completeSimple>>;
+		try {
+			msg = await runtime.completeSimple(
+				model,
+				{
+					systemPrompt,
+					messages: [
+						{
+							role: "user",
+							timestamp: Date.now(),
+							content: [{ type: "text", text: input }],
+						},
+					],
+				},
+				{ signal: ac.signal, maxTokens: 400 },
+			);
+		} finally {
+			clearTimeout(timer);
+		}
+
+		if (msg.stopReason === "error" || msg.stopReason === "aborted") {
+			return {
+				ok: false,
+				error:
+					msg.errorMessage ||
+					pick(
+						lang,
+						`模型异常终止（${msg.stopReason}）`,
+						`Model terminated abnormally (${msg.stopReason})`,
+						"scm.commitmsg.model.terminated",
+					),
+			};
+		}
+
+		const raw = msg.content
+			.filter((b) => b.type === "text")
+			.map((b) => (b as { text?: string }).text ?? "")
+			.join("\n");
+		const text = sanitizeCommitMessage(raw);
+		if (!text) {
+			return {
+				ok: false,
+				error: pick(
+					lang,
+					"模型返回了空的提交信息",
+					"The model returned an empty commit message",
+					"scm.commitmsg.empty",
+				),
+			};
+		}
+
+		return { ok: true, text };
+	} catch (err) {
+		if (isNotRepoError(err)) {
+			return {
+				ok: false,
+				error: pick(
+					lang,
+					"当前目录不是 Git 仓库",
+					"Current directory is not a Git repository",
+					"scm.commitmsg.not.repo",
+				),
+			};
+		}
+		if (err instanceof Error && /abort/i.test(`${err.name} ${err.message}`)) {
+			return {
+				ok: false,
+				error: pick(
+					lang,
+					`生成提交信息超时（${Math.round(timeoutMs / 1000)} 秒）`,
+					`Commit-message generation timed out (${Math.round(timeoutMs / 1000)}s)`,
+					"scm.commitmsg.timeout",
+				),
+			};
+		}
+		return { ok: false, error: err instanceof Error ? err.message : String(err) };
+	}
 }

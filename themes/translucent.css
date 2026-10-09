@@ -76,3 +76,10 @@
 	/* 终端视图：xterm canvas + 容器都读 --term-bg，改成半透明随整体透图 */
 	--term-bg: color-mix(in srgb, #0b0d12 45%, transparent);
 }
+
+/* 快捷短语芯片：styles.css 给的是实色 --bg-elev（它现在压在消息正文上，要压得
+   住字），这里覆盖回同族半透底 —— 仍是「45% 容器色 + 55% 透图」，与顶栏 chips /
+   卡片一致（--card-bg 就是这个式子的卡片色版）。 */
+.quick-chip {
+	background: var(--card-bg);
+}

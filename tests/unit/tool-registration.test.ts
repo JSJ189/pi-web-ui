@@ -20,6 +20,7 @@ import {
 	ASK_USER_QUESTION_TOOL_NAME,
 	BROWSER_PAGE_TOOL_NAME,
 	CLAIM_FILES_TOOL_NAME,
+	CODEMODE_TOOL_NAME,
 	COMPACT_CONTEXT_TOOL_NAME,
 	CONVERSATION_READ_TOOL_NAME,
 	DELEGATE_TASK_TOOL_NAME,
@@ -35,6 +36,7 @@ import {
 	SKILL_TOOL_NAME,
 	SUBAGENT_TOOL_NAMES,
 	TERMINAL_TOOL_NAMES,
+	TOOL_SEARCH_TOOL_NAME,
 } from "../../server/tool-manager.js";
 
 const AGENT_SERVICE_SRC = readFileSync(join(__dirname, "..", "..", "server", "agent-service.ts"), "utf8");
@@ -71,16 +73,21 @@ const FACTORY_TOOLS: Record<string, string[]> = {
 	makePatchTool: [PATCH_TOOL_NAME],
 	makeLspTool: [LSP_TOOL_NAME],
 	makeLoadToolsTool: [LOAD_TOOLS_TOOL_NAME],
+	createCodemodeExtension: [CODEMODE_TOOL_NAME],
+	createToolSearchExtension: [TOOL_SEARCH_TOOL_NAME],
 };
 
-/** agent-service.ts 里实际调用的工厂（去注释、防定义行，只认 `makeXxxTool(` 调用）。 */
+/** agent-service.ts 里实际调用的工厂（去注释、防定义行，只认 `makeXxxTool(` 或 `createCodemodeExtension(` 或 `createToolSearchExtension(` 调用）。 */
 function calledFactories(): Set<string> {
 	const lines = AGENT_SERVICE_SRC.replace(/\/\*[\s\S]*?\*\//g, "")
 		.split("\n")
 		.filter((l) => !/^\s*(\/\/|\*)/.test(l) && !/function\s+make/.test(l))
 		.map((l) => l.replace(/\/\/.*$/, ""));
 	const found = new Set<string>();
-	for (const m of lines.join("\n").matchAll(/\b(make[A-Za-z]*Tools?)\(/g)) found.add(m[1]);
+	for (const m of lines
+		.join("\n")
+		.matchAll(/\b(make[A-Za-z]*Tools?|createCodemodeExtension|createToolSearchExtension)\(/g))
+		found.add(m[1]);
 	return found;
 }
 

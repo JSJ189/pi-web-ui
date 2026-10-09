@@ -398,7 +398,7 @@ export function tryRecoverEdits(
 	baseText: string,
 	currentText: string,
 	hunks: Hunk[],
-	filePath: string,
+	_filePath: string,
 ): { success: boolean; remappedHunks?: Hunk[]; reason?: string } {
 	const baseLines = normalizeLineEndings(baseText).split("\n");
 	const curLines = normalizeLineEndings(currentText).split("\n");

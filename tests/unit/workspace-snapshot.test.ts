@@ -3,7 +3,13 @@ import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync, existsSync
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
-import { createWorkspaceSnapshot, isGitWorkspace, restoreWorkspaceSnapshot } from "../../server/workspace-snapshot.js";
+import {
+	createWorkspaceSnapshot,
+	findMatchingWorkspaceSnapshot,
+	isGitWorkspace,
+	restoreWorkspaceSnapshot,
+	type WorkspaceSnapshotRecord,
+} from "../../server/workspace-snapshot.js";
 
 describe("工作区版本影子快照与双向联动回滚 (Dual-State Rollback)", () => {
 	let testDir: string;
@@ -247,4 +253,37 @@ describe("工作区版本影子快照与双向联动回滚 (Dual-State Rollback)
 		expect(res.success).toBe(true);
 		expect(existsSync(join(testDir, "created.txt"))).toBe(false);
 	}, 20000);
+
+	describe("findMatchingWorkspaceSnapshot 匹配决策纯函数", () => {
+		const snaps: WorkspaceSnapshotRecord[] = [
+			{ entryId: "e1", timestamp: 1000, snapshotRef: "ref-1" },
+			{ entryId: "e2", timestamp: 5000, snapshotRef: "ref-2" },
+			{ entryId: "e3", timestamp: 9000, snapshotRef: "ref-3" },
+		];
+
+		it("空快照列表安全返回 undefined", () => {
+			expect(findMatchingWorkspaceSnapshot([])).toBeUndefined();
+			expect(findMatchingWorkspaceSnapshot([], "e1", 1000)).toBeUndefined();
+		});
+
+		it("精确匹配 entryId 优先命中", () => {
+			const found = findMatchingWorkspaceSnapshot(snaps, "e2", 9999);
+			expect(found?.snapshotRef).toBe("ref-2");
+		});
+
+		it("时间戳窗口内匹配最贴近的快照（<= entryTs + 2000 的最后一份）", () => {
+			// entryTs = 4000: 4000 + 2000 = 6000 -> 命中 timestamp <= 6000 的最后一份（e2, ts 5000）
+			const found = findMatchingWorkspaceSnapshot(snaps, "non-existent", 4000);
+			expect(found?.snapshotRef).toBe("ref-2");
+		});
+
+		it("超出窗口无更早快照时回退到列表首个快照兜底", () => {
+			const found = findMatchingWorkspaceSnapshot(
+				[{ timestamp: 20000, snapshotRef: "ref-future" }],
+				"unknown",
+				100, // 100 + 2000 = 2100 < 20000
+			);
+			expect(found?.snapshotRef).toBe("ref-future");
+		});
+	});
 });

@@ -35,9 +35,7 @@
  */
 
 import { useSyncExternalStore } from "react";
-import type { ClientMessage, UiServiceInfo } from "./types";
-// 仅类型（编译期擦除）：ConnStatus 定义在 use-chat（快照机那里），这里只借用联合类型。
-import type { ConnStatus } from "./use-chat";
+import type { ClientMessage, ConnStatus, UiServiceInfo } from "./types";
 
 export interface AppGlobals {
 	/** 引擎标识（"pi" | "dsh"）。缺省 "pi" —— 老服务端不发这个字段。 */

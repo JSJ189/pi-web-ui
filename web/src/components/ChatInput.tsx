@@ -981,6 +981,28 @@ export const ChatInput = memo(function ChatInput({
 		}
 	}, [text, composerH]);
 
+	/** 快捷短语按钮行：整行高度实测写进 CSS 变量 `--quick-row-h`。消息区要按这个值
+	 *  往下铺一层（.messages-wrap 的负 margin / .messages 的底部留白，见 styles.css
+	 *  的「消息列表」），正文才能从短语行后面透出来；行高会随短语条数/窗口宽度变
+	 *  （窄屏折行），所以挂 ResizeObserver 而不是只量一次。行不存在时归 0。 */
+	const quickRowRef = useRef<HTMLDivElement>(null);
+	useEffect(() => {
+		const el = quickRowRef.current;
+		const root = document.documentElement;
+		if (!el) {
+			root.style.removeProperty("--quick-row-h");
+			return;
+		}
+		const apply = () => root.style.setProperty("--quick-row-h", `${el.offsetHeight}px`);
+		apply();
+		const ro = new ResizeObserver(apply);
+		ro.observe(el);
+		return () => {
+			ro.disconnect();
+			root.style.removeProperty("--quick-row-h");
+		};
+	}, [quickPhrasesEnabled, quickPhrases.length]);
+
 	/* 光标是否在首/末**视觉行**交给 caret-visual-line.ts：自动折行的长草稿（没有 \n，
 	 * 但界面上是多行）也必须先让 ↑/↓ 走普通光标移动，不能误触发历史（issue #127）。 */
 
@@ -1606,7 +1628,7 @@ export const ChatInput = memo(function ChatInput({
 				</div>
 			)}
 			{quickPhrasesEnabled && quickPhrases.length > 0 && (
-				<div className="quick-row" aria-label={t("quickPhrases")}>
+				<div className="quick-row" aria-label={t("quickPhrases")} ref={quickRowRef}>
 					{quickPhrases.map((p) => (
 						<button
 							key={p}

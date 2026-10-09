@@ -14,8 +14,15 @@
  *     MCP 服务器，照常应用。
  */
 import { readFileSync, watch, type FSWatcher } from "node:fs";
-import { join } from "node:path";
-import { mcpServerSnapshot, parseMcpConfig, type McpReloadSummary, type McpServerSpec } from "./mcp-bridge.js";
+import { dirname, join } from "node:path";
+import {
+	getGlobalMcpPath,
+	getProjectMcpPath,
+	mcpServerSnapshot,
+	parseMcpConfig,
+	type McpReloadSummary,
+	type McpServerSpec,
+} from "./mcp-bridge.js";
 
 /** 一次「文件 → 运行时」应用的结果。 */
 export type McpReloadOutcome =
@@ -25,6 +32,8 @@ export type McpReloadOutcome =
 
 export interface McpHotReloadDeps {
 	dataDir: string;
+	agentDir?: string;
+	cwd?: string;
 	/** 应用新配置（`McpBridge.reload`）：每个服务器的启动失败由它自己消化，不该向这里抛。 */
 	reload: () => Promise<McpReloadSummary>;
 	/** 工具集合变化后推入已有会话（`service.applyPluginAgentTools`）——「工具列表热刷新」那一半。 */
@@ -53,7 +62,10 @@ function fingerprint(servers: Record<string, McpServerSpec>): string {
 }
 
 export function createMcpHotReload(deps: McpHotReloadDeps): McpHotReload {
-	const file = join(deps.dataDir, "mcp.json");
+	const globalFile = getGlobalMcpPath(deps.agentDir, deps.dataDir);
+	const projectFile = deps.cwd ? getProjectMcpPath(deps.cwd) : undefined;
+	const legacyFile = join(deps.dataDir, "mcp.json");
+
 	const log = deps.log ?? (() => {});
 	const debounceMs = deps.debounceMs ?? 300;
 	const pollIntervalMs = deps.pollIntervalMs ?? 2000;
@@ -61,26 +73,64 @@ export function createMcpHotReload(deps: McpHotReloadDeps): McpHotReload {
 	let applied: string | null = null;
 	let debounce: NodeJS.Timeout | null = null;
 	let poller: NodeJS.Timeout | null = null;
-	let watcher: FSWatcher | null = null;
+	let watchers: FSWatcher[] = [];
 
-	/** 读一次磁盘：指纹 + 清单（`servers` 为 null = 坏配置/读失败）。文件不在按「没有服务器」算。 */
-	function readOnce(): { fp: string; servers: Record<string, McpServerSpec> | null } {
+	function readOneFile(file: string): { fp: string; servers: Record<string, McpServerSpec> | null } {
 		let raw: string;
 		try {
 			raw = readFileSync(file, "utf8");
 		} catch (err) {
-			// 不变量 3 只覆盖「文件不在」：删掉 mcp.json = 关掉全部 MCP 服务器。
-			// #497：EBUSY/EACCES 等临时读失败（OneDrive/杀毒独占、权限误改）既不是
-			// 坏配置也不是删除意图——按坏配置口径走（servers: null → 保留在跑的
-			// 服务器 + 一次性提示），否则会把在跑的 MCP 服务器全杀还报「成功 0 个」。
 			const code = (err as NodeJS.ErrnoException | null)?.code;
 			if (code === "ENOENT") return { fp: "empty", servers: {} };
-			log(`[mcp] mcp.json 读取失败（${code ?? String(err)}），按坏配置处理：保留在跑的 MCP 服务器`);
+			log(`[mcp] ${file} 读取失败（${code ?? String(err)}），按坏配置处理：保留在跑的 MCP 服务器`);
 			return { fp: `unreadable:${code ?? "unknown"}`, servers: null };
 		}
 		const parsed = parseMcpConfig(raw);
 		if (!parsed) return { fp: `invalid:${raw}`, servers: null };
 		return { fp: `ok:${fingerprint(parsed.servers)}`, servers: parsed.servers };
+	}
+
+	/** 读全部配置文件（全局 + 项目）并合并指纹 */
+	function readOnce(): { fp: string; servers: Record<string, McpServerSpec> | null } {
+		const g = readOneFile(globalFile);
+		let globalServers = g.servers;
+		let gFp = g.fp;
+		if (g.fp === "empty" && legacyFile !== globalFile) {
+			const leg = readOneFile(legacyFile);
+			if (leg.servers) {
+				globalServers = leg.servers;
+				gFp = leg.fp;
+			} else if (leg.fp.startsWith("unreadable:") || leg.fp.startsWith("invalid:")) {
+				return leg;
+			}
+		} else if (!g.servers && (g.fp.startsWith("unreadable:") || g.fp.startsWith("invalid:"))) {
+			return g;
+		}
+
+		let pFp = "none";
+		let projServers: Record<string, McpServerSpec> | null = {};
+		if (projectFile) {
+			const p = readOneFile(projectFile);
+			if (!p.servers && (p.fp.startsWith("unreadable:") || p.fp.startsWith("invalid:"))) {
+				return p;
+			}
+			projServers = p.servers;
+			pFp = p.fp;
+		}
+
+		const merged: Record<string, McpServerSpec> = { ...globalServers };
+		for (const [name, ps] of Object.entries(projServers || {})) {
+			if (!ps.command && !ps.url && ps.enabled !== undefined && merged[name]) {
+				merged[name] = { ...merged[name], enabled: ps.enabled };
+			} else {
+				merged[name] = ps;
+			}
+		}
+
+		return {
+			fp: `g:${gFp}|p:${pFp}`,
+			servers: merged,
+		};
 	}
 
 	async function apply(): Promise<McpReloadOutcome> {
@@ -125,8 +175,12 @@ export function createMcpHotReload(deps: McpHotReloadDeps): McpHotReload {
 
 	/** fs.watch 用不了（目录还不存在、网络盘、容器）→ 回落到轮询：单文件不值得上更重的机制。 */
 	function fallBackToPolling(): void {
-		watcher?.close();
-		watcher = null;
+		for (const w of watchers) {
+			try {
+				w.close();
+			} catch {}
+		}
+		watchers = [];
 		if (poller) return;
 		log(`[mcp] 目录监视不可用，mcp.json 热加载回落到 ${pollIntervalMs}ms 轮询`);
 		poller = setInterval(run, pollIntervalMs);
@@ -134,18 +188,26 @@ export function createMcpHotReload(deps: McpHotReloadDeps): McpHotReload {
 	}
 
 	function start(): void {
-		if (watcher || poller) return;
+		if (watchers.length > 0 || poller) return;
 		// 播种：启动时 load() 已按同一份文件启动过服务器，别在第一个事件里白重载一次。
 		applied = readOnce().fp;
-		try {
-			watcher = watch(deps.dataDir, { persistent: false }, (_event, filename) => {
-				// 有些平台/编辑器（保存 = 临时文件 + rename）给不出文件名，拿不到就当命中。
-				if (typeof filename === "string" && filename && filename !== "mcp.json") return;
-				schedule();
-			});
-			watcher.on("error", () => fallBackToPolling());
-		} catch {
-			fallBackToPolling();
+
+		const dirsToWatch = new Set<string>();
+		dirsToWatch.add(deps.dataDir);
+		if (globalFile) dirsToWatch.add(dirname(globalFile));
+		if (projectFile) dirsToWatch.add(dirname(projectFile));
+
+		for (const dir of dirsToWatch) {
+			try {
+				const w = watch(dir, { persistent: false }, (_event, filename) => {
+					if (typeof filename === "string" && filename && filename !== "mcp.json") return;
+					schedule();
+				});
+				w.on("error", () => fallBackToPolling());
+				watchers.push(w);
+			} catch {
+				fallBackToPolling();
+			}
 		}
 	}
 
@@ -154,8 +216,12 @@ export function createMcpHotReload(deps: McpHotReloadDeps): McpHotReload {
 		debounce = null;
 		if (poller) clearInterval(poller);
 		poller = null;
-		watcher?.close();
-		watcher = null;
+		for (const w of watchers) {
+			try {
+				w.close();
+			} catch {}
+		}
+		watchers = [];
 	}
 
 	return { apply, start, dispose };

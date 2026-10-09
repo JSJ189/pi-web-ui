@@ -119,8 +119,10 @@ describe("目标条折叠态", () => {
 		// 回到底边正中（最初的位置）
 		expect(jump).toMatch(/left:\s*50%/);
 		expect(jump).toMatch(/transform:\s*translateX\(-50%\)/);
-		// 贴底 4px（比原来的 16px 更近；本轮只动间距，不动按钮尺寸）
-		expect(jump).toMatch(/bottom:\s*4px/);
+		/* 贴底 4px（比原来的 16px 更近；本轮只动间距，不动按钮尺寸）。基准值之上
+		   再补 --composer-strip：浮动容器底缘已经往下盖住了输入框上方那条带子
+		   （见 .messages-wrap 的负 margin），不补回来浮标会跟着往下掉进短语行。 */
+		expect(jump).toMatch(/bottom:\s*calc\(4px \+ var\(--composer-strip\)\)/);
 		// 尺寸是原件：12px 字 / 6/14 内边距 / gap 6（不许拿「缩小按钮」代替「缩间距」）
 		expect(jump).toMatch(/font-size:\s*12px/);
 		expect(jump).toMatch(/padding:\s*6px 14px/);
@@ -132,11 +134,11 @@ describe("目标条折叠态", () => {
 		const lifted = bodyOf(
 			".main:has(.goalbar-collapsed):not(:has(.plan-board)):not(:has(.dialog-inline)) .scroll-bottom",
 		);
-		expect(lifted).toMatch(/bottom:\s*32px/);
+		expect(lifted).toMatch(/bottom:\s*calc\(32px \+ var\(--composer-strip\)\)/);
 		expect(lifted).not.toMatch(/right:/);
 		// 药丸 24px 高 + 4px 贴边 = 占 4~28，抬 32 → 两者间距恒为 4px
 		// （不许回到 52/40 那种大片留白，也不许压到 30 以下贴上药丸）
-		const lift = Number(/bottom:\s*(\d+)px/.exec(lifted)?.[1] ?? "0");
+		const lift = Number(/bottom:\s*calc\((\d+)px/.exec(lifted)?.[1] ?? "0");
 		expect(lift).toBe(32);
 	});
 

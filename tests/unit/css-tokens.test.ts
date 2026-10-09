@@ -30,6 +30,7 @@ const RUNTIME_TOKENS = new Map<string, string>([
 	["--rail-gap", "web/src/components/MessageList.tsx（inline style）"],
 	["--scm-sidebar-w", "web/src/components/SCMPanel.tsx（inline style，Git 左栏拖拽宽度，issue #139）"],
 	["--msgs-gutter", "web/src/scrollbar-gutter.ts（style.setProperty）"],
+	["--quick-row-h", "web/src/components/ChatInput.tsx（style.setProperty，快捷短语行实高）"],
 ]);
 
 /**

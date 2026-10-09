@@ -933,6 +933,55 @@ export type ClientMessage =
 	| { type: "delete_approval_rule"; id: string }
 	/** 恢复某条内置审批规则到系统默认设定。 */
 	| { type: "reset_builtin_approval_rule"; id: string }
+	// -- MCP 服务器管理（全局 ~/.pi/agent/mcp.json 与项目级 .pi/mcp.json） --------
+	/** 保存或更新 MCP 服务器（支持全局与项目级配置；同名同作用域覆盖）。 */
+	| {
+			type: "save_mcp_server";
+			server: UiMcpServer;
+			prevName?: string;
+			prevScope?: McpScope;
+	  }
+	/** 删除指定作用域下的 MCP 服务器。 */
+	| { type: "delete_mcp_server"; name: string; scope: McpScope }
+	/** 切换指定作用域下的 MCP 服务器启用/停用状态。 */
+	| { type: "toggle_mcp_server"; name: string; scope: McpScope; enabled: boolean }
+	/** 手动重新加载全部 MCP 服务器。 */
+	| { type: "reload_mcp" }
+	// -- Skill 技能市场安装与卸载 ----------------------------------------------
+	/** 从技能市场安装技能到全局 (~/.pi/agent/skills) 或项目级 (.pi/skills)。 */
+	| {
+			type: "install_skill";
+			name: string;
+			scope: "global" | "project";
+			content: string;
+	  }
+	/** 卸载指定作用域下的技能。 */
+	| {
+			type: "uninstall_skill";
+			name: string;
+			scope: "global" | "project";
+	  }
+	// -- 远程市场检索 (MCP & Skill) --------------------------------------------
+	/** 查询公开远程 MCP 服务器市场（支持 Smithery API、GitHub 及自定义源） */
+	| {
+			type: "fetch_mcp_market";
+			source?: string;
+			query?: string;
+			page?: number;
+			refresh?: boolean;
+	  }
+	/** 查询公开远程 Skill 技能仓库（支持 GitHub 仓库，默认 anthropics/skills） */
+	| {
+			type: "fetch_skill_market";
+			repo?: string;
+			refresh?: boolean;
+	  }
+	/** 从远程仓库拉取单个技能的完整 SKILL.md 内容供预览或安装 */
+	| {
+			type: "fetch_skill_content";
+			repo: string;
+			skillId: string;
+	  }
 	/** Save a UI plugin's declarative settings (manifest "settings" schema).
 	 *  The host validates against the schema, persists to storage.json and
 	 *  notifies the plugin (host.onSettingsChanged). */
@@ -2523,6 +2572,79 @@ export interface UiVisionBridgeModel {
 	label: string;
 }
 
+/** MCP 服务器作用域：global = Pi 全局 (~/.pi/agent/mcp.json)；project = 当前项目 (.pi/mcp.json)。 */
+export type McpScope = "global" | "project";
+
+/** MCP 服务器暴露给智能体的单个工具摘要 */
+export interface UiMcpToolInfo {
+	name: string;
+	description?: string;
+}
+
+/** 前端/设置面板交互使用的 MCP 服务器描述与运行时状态 */
+export interface UiMcpServer {
+	/** 服务器唯一标识名（[a-zA-Z0-9_-]+） */
+	name: string;
+	/** 配置归属作用域：全局或项目级 */
+	scope: McpScope;
+	/** 启动命令（stdio 传输模式，如 npx、node、uvx、python） */
+	command?: string;
+	/** 命令行参数 */
+	args?: string[];
+	/** 工作目录（stdio 传输模式） */
+	cwd?: string;
+	/** 环境变量（stdio 传输模式） */
+	env?: Record<string, string>;
+	/** 远程服务端点 URL（HTTP 传输模式，如 https://...） */
+	url?: string;
+	/** 自定义请求头（HTTP 传输模式） */
+	headers?: Record<string, string>;
+	/** 传输类型 */
+	type?: "stdio" | "http" | "streamable-http";
+	/** 超时时间（秒） */
+	timeout?: number;
+	/** 协议版本覆盖（缺省自动协商） */
+	protocolVersion?: string;
+	/** 是否启用（默认 true；false = 停用保留配置） */
+	enabled?: boolean;
+	/** 服务器能力说明（注入系统提示词与检索） */
+	description?: string;
+	/** 运行时状态：running = 运行中/就绪；stopped = 已停用；error = 启动或握手失败 */
+	status?: "running" | "stopped" | "error";
+	/** 启动失败或运行报错详情 */
+	error?: string;
+	/** 运行时成功发现的工具清单 */
+	tools?: UiMcpToolInfo[];
+}
+
+/** 从公开 API 或远程目录检索到的 MCP 服务器条目 */
+export interface RemoteMcpServer {
+	id: string;
+	name: string;
+	displayName?: string;
+	description: string;
+	homepage?: string;
+	package?: string;
+	command?: string;
+	args?: string[];
+	env?: Record<string, string>;
+	url?: string;
+	transport: "stdio" | "http";
+	source: string;
+	downloads?: number;
+	verified?: boolean;
+	iconUrl?: string;
+}
+
+/** 从公开 GitHub 仓库检索到的 Skill 技能简要信息 */
+export interface RemoteSkillSummary {
+	id: string;
+	name: string;
+	description: string;
+	repo: string;
+	url?: string;
+}
+
 export interface UiMarkerInfo {
 	name: string;
 	enabled: boolean;
@@ -2682,6 +2804,12 @@ export interface UiSettingsState {
 	/** 内置默认模板名（settings_state 里供面板标「默认」徽标；用户文件为准时可能
 	 *  已删除/改名，长度可与 subagentTemplates 不同）。 */
 	subagentDefaultTemplates: string[];
+	/** MCP 服务器列表（含全局与项目级配置及当前运行时状态）。 */
+	mcpServers?: UiMcpServer[];
+	/** 全局 MCP 配置文件路径。 */
+	mcpGlobalConfigPath?: string;
+	/** 当前项目 MCP 配置文件路径。 */
+	mcpProjectConfigPath?: string;
 }
 export type ServerMessage =
 	| {
@@ -2691,6 +2819,34 @@ export type ServerMessage =
 			toRunId: string;
 			payload: string;
 			timestamp: number;
+	  }
+	| {
+			type: "mcp_servers";
+			servers: UiMcpServer[];
+			globalConfigPath?: string;
+			projectConfigPath?: string;
+	  }
+	| {
+			type: "mcp_market_result";
+			ok: boolean;
+			servers: RemoteMcpServer[];
+			total?: number;
+			source: string;
+			error?: string;
+	  }
+	| {
+			type: "skill_market_result";
+			ok: boolean;
+			skills: RemoteSkillSummary[];
+			repo: string;
+			error?: string;
+	  }
+	| {
+			type: "skill_content_result";
+			ok: boolean;
+			skillId: string;
+			content: string;
+			error?: string;
 	  }
 	| {
 			type: "ready";

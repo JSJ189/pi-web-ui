@@ -264,17 +264,23 @@ export async function autoInstallLanguageServer(pkg: string): Promise<boolean> {
 
 			let stderr = "";
 			await new Promise<void>((resolve, reject) => {
-				const proc = spawn(npmCmd, ["install", "--no-audit", "--no-fund", "--save-dev", ...pkgs], {
+				const spawnCmd = isWin ? process.env.ComSpec || "cmd.exe" : npmCmd;
+				const spawnArgs = isWin
+					? ["/d", "/s", "/c", npmCmd, "install", "--no-audit", "--no-fund", "--save-dev", ...pkgs]
+					: ["install", "--no-audit", "--no-fund", "--save-dev", ...pkgs];
+				const proc = spawn(spawnCmd, spawnArgs, {
 					cwd: userLspDir,
 					stdio: ["ignore", "ignore", "pipe"],
-					shell: isWin,
+					windowsHide: true,
 				});
 				const timer = setTimeout(() => {
 					if (isWin) {
-						// shell:true 时 proc.pid 只是 cmd.exe 的 PID——proc.kill() 只杀得到
-						// cmd.exe，npm/node 整棵子进程树会残留。taskkill /T 连树强杀。
+						// win32 下 taskkill /T 连整棵子进程树强杀，避免 npm/node 残留。
 						if (typeof proc.pid === "number") {
-							const killer = spawn("taskkill", ["/PID", String(proc.pid), "/T", "/F"], { stdio: "ignore" });
+							const killer = spawn("taskkill", ["/PID", String(proc.pid), "/T", "/F"], {
+								stdio: "ignore",
+								windowsHide: true,
+							});
 							killer.on("error", () => {});
 						}
 					} else {
@@ -349,14 +355,18 @@ export class LspClient {
 
 	async start(): Promise<void> {
 		this.touch();
-		this.proc = spawn(this.binPath, this.binArgs, {
+		const isWin = process.platform === "win32";
+		const isBatch = isWin && /\.(cmd|bat)$/i.test(this.binPath);
+		const spawnCmd = isBatch ? process.env.ComSpec || "cmd.exe" : this.binPath;
+		const spawnArgs = isBatch ? ["/d", "/s", "/c", this.binPath, ...this.binArgs] : this.binArgs;
+		this.proc = spawn(spawnCmd, spawnArgs, {
 			cwd: this.projectCwd,
 			stdio: ["pipe", "pipe", "pipe"],
-			shell: process.platform === "win32" && /\.(cmd|bat)$/i.test(this.binPath),
+			windowsHide: true,
 		});
 
 		this.proc.stdout?.on("data", (chunk: Buffer) => this.handleData(chunk));
-		this.proc.stderr?.on("data", (d: Buffer) => {
+		this.proc.stderr?.on("data", (_d: Buffer) => {
 			// 可选记录 debug 日志，不干扰输出
 		});
 
@@ -385,7 +395,7 @@ export class LspClient {
 
 		try {
 			// 发送 initialize 握手
-			const initRes = await this.request("initialize", {
+			await this.request("initialize", {
 				processId: process.pid,
 				rootUri: pathToFileURL(this.projectCwd).toString(),
 				workspaceFolders: [
@@ -410,7 +420,15 @@ export class LspClient {
 		} catch (err) {
 			if (this.proc) {
 				try {
-					this.proc.kill();
+					if (process.platform === "win32" && typeof this.proc.pid === "number") {
+						const killer = spawn("taskkill", ["/PID", String(this.proc.pid), "/T", "/F"], {
+							stdio: "ignore",
+							windowsHide: true,
+						});
+						killer.on("error", () => {});
+					} else {
+						this.proc.kill();
+					}
 				} catch {}
 				this.proc = null;
 			}
@@ -593,7 +611,15 @@ export class LspClient {
 
 		if (this.proc) {
 			try {
-				this.proc.kill();
+				if (process.platform === "win32" && typeof this.proc.pid === "number") {
+					const killer = spawn("taskkill", ["/PID", String(this.proc.pid), "/T", "/F"], {
+						stdio: "ignore",
+						windowsHide: true,
+					});
+					killer.on("error", () => {});
+				} else {
+					this.proc.kill();
+				}
 			} catch {}
 			this.proc = null;
 		}
@@ -1582,7 +1608,7 @@ export function makeLspTool(options: LspToolOptions) {
 					while (pending.size > 0 && Date.now() < deadline) {
 						await new Promise((r) => setTimeout(r, 120));
 						const known = client.getAllDiagnostics();
-						for (const u of [...pending]) {
+						for (const u of Array.from(pending)) {
 							if (known.has(u)) pending.delete(u);
 						}
 					}

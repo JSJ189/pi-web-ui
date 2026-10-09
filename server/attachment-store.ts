@@ -9,7 +9,7 @@
  */
 
 import { createHash, randomUUID } from "node:crypto";
-import { mkdirSync, existsSync, readdirSync } from "node:fs";
+import { mkdirSync, existsSync, readdirSync, writeFileSync, renameSync, rmSync } from "node:fs";
 import { readFile, rename, rm, writeFile, stat } from "node:fs/promises";
 import { join, extname } from "node:path";
 
@@ -85,6 +85,47 @@ export async function saveAttachment(
 			await rename(tmpPath, filePath);
 		} catch (err) {
 			await rm(tmpPath, { force: true }).catch(() => {});
+			const code = (err as NodeJS.ErrnoException).code;
+			if (code !== "EEXIST" && code !== "EPERM") throw err;
+		}
+	}
+
+	return {
+		hash,
+		size: buffer.length,
+		mimeType,
+		ext,
+		url: `/api/attachment/${hash}`,
+		filePath,
+	};
+}
+
+/**
+ * 将二进制内容写入附件存储（同步版本，供消息序列化等纯同步链路使用）：
+ * 已存在同哈希文件则直接返回元数据，不重复写盘。
+ */
+export function saveAttachmentSync(
+	buffer: Buffer,
+	mimeType = "application/octet-stream",
+	preferredExt?: string,
+): AttachmentRecord {
+	if (!storeDir) {
+		throw new Error("AttachmentStore has not been initialized with initAttachmentStore(dataDir)");
+	}
+	const hash = createHash("sha256").update(buffer).digest("hex");
+	const ext = preferredExt || MIME_EXT_MAP[mimeType] || ".bin";
+	const fileName = `${hash}${ext}`;
+	const filePath = join(storeDir, fileName);
+
+	if (!existsSync(filePath)) {
+		const tmpPath = `${filePath}.${randomUUID()}.tmp`;
+		try {
+			writeFileSync(tmpPath, buffer);
+			renameSync(tmpPath, filePath);
+		} catch (err) {
+			try {
+				rmSync(tmpPath, { force: true });
+			} catch {}
 			const code = (err as NodeJS.ErrnoException).code;
 			if (code !== "EEXIST" && code !== "EPERM") throw err;
 		}

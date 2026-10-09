@@ -75,6 +75,24 @@ describe("serializeMessage: toolResult 的 details", () => {
 		expect(serializeMessage(toolResult(huge), 0)?.details).toBeUndefined();
 	});
 
+	it("codemode calls 超过体积闸门时执行预算裁剪，保留首尾调用而非整包丢弃", () => {
+		const manyCalls = Array.from({ length: 400 }, (_, i) => ({
+			id: `call_${i}`,
+			name: `tools.step_${i}`,
+			args: JSON.stringify({ index: i, payload: "long_argument_string_".repeat(20) }),
+			status: "ok" as const,
+			durationMs: 12,
+		}));
+		const details = { calls: manyCalls, fullOutputPath: "/tmp/pi-codemode-out.txt" };
+		const res = serializeMessage(toolResult(details), 0);
+		expect(res?.details).toBeDefined();
+		const pruned = res?.details as { calls?: unknown[]; fullOutputPath?: string };
+		expect(pruned.fullOutputPath).toBe("/tmp/pi-codemode-out.txt");
+		expect(Array.isArray(pruned.calls)).toBe(true);
+		expect((pruned.calls ?? []).length).toBeLessThan(400);
+		expect(JSON.stringify(res?.details).length).toBeLessThanOrEqual(64_000);
+	});
+
 	it("序列化不了的值（循环引用）也不炸", () => {
 		const cyc: Record<string, unknown> = {};
 		cyc.self = cyc;

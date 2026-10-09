@@ -18,6 +18,9 @@ export type { FileEntry };
 // 前端本地类型（server 不发送/接收这些结构本身，或仅作为消息字段的一部分）
 // ---------------------------------------------------------------------------
 
+/** 前端 WebSocket 连接状态。 */
+export type ConnStatus = "connecting" | "open" | "closed";
+
 export interface FileListing {
 	path: string;
 	parent: string | null;
