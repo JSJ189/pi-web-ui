@@ -3,6 +3,7 @@ import { mkdtempSync, readFileSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import {
+	danglingToolResultText,
 	findDanglingToolCalls,
 	healDanglingToolCallFile,
 	tailAssistantToolCallIds,
@@ -244,5 +245,38 @@ describe("healDanglingToolCallFile", () => {
 
 		// Second pass is clean
 		expect(healDanglingToolCallFile(file)).toBe(0);
+	});
+});
+
+/** #574：合成结果按成因归因——服务重启不得被说成「超时 / 流卡死」，且都提醒可能已执行。 */
+describe("合成结果文案按成因归因 (#574)", () => {
+	it("restart：说明是服务重启中断，不提「超时 / 流卡死」", () => {
+		const t = danglingToolResultText("restart");
+		expect(t).toContain("服务重启");
+		expect(t).toContain("service restart");
+		expect(t).not.toMatch(/超时|流卡死|timeout|hung/);
+	});
+
+	it("generic：不把成因说死，但仍提醒可能已部分执行", () => {
+		const t = danglingToolResultText();
+		expect(t).toContain("可能");
+		expect(t).toContain("may have partly or fully run");
+	});
+
+	it("healDanglingToolCallFile(file, 'restart') 写入的是重启口径", () => {
+		const dir = mkdtempSync(join(tmpdir(), "dangling-cause-"));
+		const file = join(dir, "s.jsonl");
+		const header = JSON.stringify({ type: "session", id: "s1", cwd: "/tmp" });
+		const a = JSON.stringify({
+			type: "message",
+			id: "m1",
+			parentId: null,
+			timestamp: new Date().toISOString(),
+			message: assistantWithCalls(["call-r"]),
+		});
+		writeFileSync(file, `${header}\n${a}\n`, "utf8");
+		expect(healDanglingToolCallFile(file, "restart")).toBe(1);
+		const synthetic = JSON.parse(readFileSync(file, "utf8").trim().split("\n")[2]);
+		expect(synthetic.message.content[0].text).toBe(danglingToolResultText("restart"));
 	});
 });

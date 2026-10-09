@@ -21,15 +21,35 @@
  * - findDanglingToolCalls：纯函数，消息/条目数组里找「有调用、无后继结果」的 toolCall；
  * - tailAssistantToolCallIds：沿当前分支回溯，定位尾部会上线的 assistant 的 toolCallId 集合；
  * - healDanglingToolCallFile：落盘版，仅针对当前分支尾部生效的悬空调用追加合成 toolResult；
- * - 合成结果文案：DANGLING_TOOL_RESULT_TEXT（中英各一，toolResult content 只带一条文本）。
+ * - 合成结果文案：danglingToolResultText(cause)（按成因归因，中英各一，toolResult content 只带一条文本）。
  */
 import { appendFileSync, existsSync, readFileSync } from "node:fs";
 import { randomUUID } from "node:crypto";
 
-export const DANGLING_TOOL_RESULT_TEXT =
-	"（系统：上一次运行被强制终止（工具执行超时/模型流卡死），该工具调用没有返回结果。为避免对话记录损坏，已自动填入一条合成结果。请根据需要重新执行该工具或继续对话。）";
-export const DANGLING_TOOL_RESULT_TEXT_EN =
-	"(System: the previous run was force-terminated (tool timeout / hung model stream) and this tool call never returned. A synthetic result was inserted automatically to keep the transcript valid. Re-run the tool or continue as needed.)";
+/**
+ * 合成结果的归因（issue #574）：悬空调用的「成因」决定文案内容。
+ * - restart：本次是服务重启把在飞的工具调用腰斩（pi-web-ui 自己知道，见 resumeInterrupted）；
+ * - generic：成因不确定（工具超时 / 模型流卡死 / 服务中断 / /reload 都可能）。
+ * 两种文案都提醒「可能已部分或全部执行」，避免模型把它当成「没执行过」去重跑带副作用的命令。
+ */
+export type DanglingCause = "restart" | "generic";
+
+const DANGLING_TEXT: Record<DanglingCause, { zh: string; en: string }> = {
+	generic: {
+		zh: "（系统：上一次运行未正常结束（可能是工具执行超时、模型流卡死或服务中断），该工具调用没有返回结果。为避免对话记录损坏，已自动填入一条合成结果。该命令可能已部分或全部执行，若需重跑请先确认是否会产生重复副作用。）",
+		en: "(System: the previous run did not finish cleanly (possibly a tool timeout, a hung model stream, or a service interruption) and this tool call never returned. A synthetic result was inserted automatically to keep the transcript valid. The command may have partly or fully run; confirm before re-running anything with side effects.)",
+	},
+	restart: {
+		zh: "（系统：上一次运行因服务重启被中断，该工具调用没有返回结果——它可能已经执行过。为避免对话记录损坏，已自动填入一条合成结果。重跑前请先确认是否会产生重复副作用（如删除、部署、推送）。）",
+		en: "(System: the previous run was interrupted by a service restart and this tool call never returned — it may already have executed. A synthetic result was inserted automatically to keep the transcript valid. Confirm before re-running anything with side effects such as deletes, deploys or pushes.)",
+	},
+};
+
+/** 合成 toolResult 的文本（中英各一，content 只带一条文本）。 */
+export function danglingToolResultText(cause: DanglingCause = "generic"): string {
+	const t = DANGLING_TEXT[cause];
+	return `${t.zh}\n${t.en}`;
+}
 
 export interface DanglingToolCall {
 	toolCallId: string;
@@ -175,7 +195,7 @@ export function tailAssistantToolCallIds(entries: unknown[], lastId: string | nu
  * parentId 链式接在当前尾行之后。append-only——历史字节不动，无需备份。
  * 返回追加条数（0 = 健康，无需处理；-1 = 文件不可读/不可写）。
  */
-export function healDanglingToolCallFile(filePath: string): number {
+export function healDanglingToolCallFile(filePath: string, cause: DanglingCause = "generic"): number {
 	let raw: string;
 	try {
 		raw = readFileSync(filePath, "utf8");
@@ -215,7 +235,7 @@ export function healDanglingToolCallFile(filePath: string): number {
 					role: "toolResult",
 					toolCallId: d.toolCallId,
 					toolName: d.toolName,
-					content: [{ type: "text", text: `${DANGLING_TOOL_RESULT_TEXT}\n${DANGLING_TOOL_RESULT_TEXT_EN}` }],
+					content: [{ type: "text", text: danglingToolResultText(cause) }],
 					isError: true,
 					timestamp: Date.now(),
 				},
