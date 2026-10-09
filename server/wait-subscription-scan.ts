@@ -270,6 +270,50 @@ export function hasPendingWaitSubscription(options: PendingWakeScanOptions): boo
 	return false;
 }
 
+export interface BackgroundTaskScanOptions {
+	/** 对话的工作目录（任务目录位于其下的 .pi/tasks）。 */
+	cwd?: string;
+	/** 会话 .jsonl 绝对路径；其文件名尾部的 UUID 即任务目录的会话段。 */
+	sessionFile?: string;
+	/** 当前进程 pid（默认 process.pid）：任务目录名后缀。测试可注入。 */
+	pid?: number;
+}
+
+/**
+ * 磁盘扫描：该会话在本进程里是否还有 running 的第三方后台任务（pi-background-tasks 的 bg_run）。
+ * 任务元数据位于 <cwd>/.pi/tasks/<会话UUID>-<pid>/<taskId>.json；本进程起的任务目录 pid
+ * 必为 process.pid，因此只看这一个目录——上次进程崩溃遗留的 status:"running" 不算活跃证据。
+ * 只要有 running 任务，移出/置换/切目录都会 dispose 运行时、把它 SIGTERM 掉且永不补通知（#576），
+ * 故与 pending wake 同级保留。任何 I/O / 解析错误按「无证据」处理（fail-open）。
+ */
+export function hasRunningBackgroundTask(options: BackgroundTaskScanOptions): boolean {
+	const { cwd, sessionFile } = options;
+	if (!cwd || !sessionFile) return false;
+	const sessionUuid = path
+		.basename(sessionFile)
+		.replace(/\.jsonl$/i, "")
+		.split("_")
+		.pop();
+	if (!sessionUuid) return false;
+	const ownDir = path.join(cwd, ".pi", "tasks", `${sessionUuid}-${options.pid ?? process.pid}`);
+	let files: string[];
+	try {
+		files = readdirSync(ownDir);
+	} catch {
+		return false; // 目录不存在 / 不可读 → 无证据
+	}
+	for (const f of files) {
+		if (!f.endsWith(".json")) continue;
+		try {
+			const task = JSON.parse(readFileSync(path.join(ownDir, f), "utf-8")) as { status?: unknown } | null;
+			if (task && task.status === "running") return true;
+		} catch {
+			// 缺失 / 损坏 → 无证据（fail-open）
+		}
+	}
+	return false;
+}
+
 /** displaceActive 决策的输入快照（纯数据，便于单测）。 */
 export interface DisplacementDecisionInput {
 	/** 用户显式「钉住」的对话常驻运行列表：任何空闲态都不得释放（最高优先级，
@@ -312,13 +356,19 @@ export interface DisplacementDecisionInput {
 	 * invoked at this precedence point, after the cheaper checks pass.
 	 */
 	hasPendingWake: boolean | (() => boolean);
+	/**
+	 * 磁盘扫描结果：本进程里该会话还有 running 的第三方后台任务（bg_run，#576）。
+	 * 可选：未提供视为无证据。同样传 thunk 延迟求值。
+	 * Running third-party background-task evidence (optional; thunk allowed).
+	 */
+	hasRunningBackgroundTask?: boolean | (() => boolean);
 }
 
 /**
  * 纯函数版置换决策：true = 保留（不得 dispose），false = 调用方可释放。
  * Pure decision core of displaceActive(): true = retain, false = may dispose.
  * 顺序与 displaceActive 保持一致：pin → review/wizard → streaming → terminals →
- * active subagent run → pending wake → listed+continued（「打开后继续过」的会话也保留）。
+ * active subagent run → pending wake → running background task → listed+continued（「打开后继续过」的会话也保留）。
  */
 export function shouldRetainActive(input: DisplacementDecisionInput): boolean {
 	if (input.pinned) return true;
@@ -331,6 +381,11 @@ export function shouldRetainActive(input: DisplacementDecisionInput): boolean {
 	if (hasActiveRun) return true;
 	const hasPendingWake = typeof input.hasPendingWake === "function" ? input.hasPendingWake() : input.hasPendingWake;
 	if (hasPendingWake) return true;
+	const hasBgTask =
+		typeof input.hasRunningBackgroundTask === "function"
+			? input.hasRunningBackgroundTask()
+			: (input.hasRunningBackgroundTask ?? false);
+	if (hasBgTask) return true;
 	if (input.listed && input.promptedSinceActive) return true;
 	return false;
 }

@@ -59,7 +59,12 @@ import {
 } from "./update-check.js";
 import { checkPluginUpdates } from "./plugin-updater.js";
 import { isBundledInUse, sdkCopies } from "./sdk-origin.js";
-import { hasActiveSubagentRun, hasPendingWaitSubscription, shouldRetainActive } from "./wait-subscription-scan.js";
+import {
+	hasActiveSubagentRun,
+	hasPendingWaitSubscription,
+	hasRunningBackgroundTask,
+	shouldRetainActive,
+} from "./wait-subscription-scan.js";
 import {
 	COMPACTION_PENDING_TYPE,
 	looksLikeChainCorruption,
@@ -9151,6 +9156,8 @@ export class ClientSession {
 				promptInFlight: Boolean(conv.promptInFlight),
 				hasActiveSubagentRun: () => hasActiveSubagentRun({ sessionId: conv.session.sessionFile }),
 				hasPendingWake: () => hasPendingWaitSubscription({ sessionId: conv.session.sessionFile }),
+				hasRunningBackgroundTask: () =>
+					hasRunningBackgroundTask({ cwd: conv.cwd, sessionFile: conv.session.sessionFile }),
 			});
 		if (retained) {
 			conv.listed = true;
@@ -10304,6 +10311,8 @@ export class ClientSession {
 			promptedSinceActive: false,
 			hasActiveSubagentRun: () => hasActiveSubagentRun({ sessionId: conv.session.sessionFile }),
 			hasPendingWake: () => hasPendingWaitSubscription({ sessionId: conv.session.sessionFile }),
+			hasRunningBackgroundTask: () =>
+				hasRunningBackgroundTask({ cwd: conv.cwd, sessionFile: conv.session.sessionFile }),
 		});
 	}
 
@@ -10495,6 +10504,8 @@ export class ClientSession {
 				promptInFlight: Boolean(conv.promptInFlight),
 				hasActiveSubagentRun: () => hasActiveSubagentRun({ sessionId: conv.session.sessionFile }),
 				hasPendingWake: () => hasPendingWaitSubscription({ sessionId: conv.session.sessionFile }),
+				hasRunningBackgroundTask: () =>
+					hasRunningBackgroundTask({ cwd: conv.cwd, sessionFile: conv.session.sessionFile }),
 			})
 		) {
 			this.emit({
@@ -10735,6 +10746,8 @@ export class ClientSession {
 						promptedSinceActive: false,
 						hasActiveSubagentRun: () => hasActiveSubagentRun({ sessionId: conv.session.sessionFile }),
 						hasPendingWake: () => hasPendingWaitSubscription({ sessionId: conv.session.sessionFile }),
+						hasRunningBackgroundTask: () =>
+							hasRunningBackgroundTask({ cwd: conv.cwd, sessionFile: conv.session.sessionFile }),
 					}),
 			)
 			.sort((a, b) => depthOf(b.id) - depthOf(a.id));

@@ -4,6 +4,7 @@ import path from "node:path";
 import { afterAll, describe, expect, it } from "vitest";
 import {
 	hasActiveSubagentRun,
+	hasRunningBackgroundTask,
 	hasPendingWaitSubscription,
 	resolveAsyncRunsDir,
 	resolveSubscriptionsDir,
@@ -540,5 +541,72 @@ describe("M1/M4/S2 边界与宿主对齐", () => {
 			}),
 		).toBe(false);
 		expect(silent).toHaveLength(0);
+	});
+});
+
+/** #576：第三方后台任务（bg_run）在飞时，切目录 / 移出 / 置换不得 dispose 掉它。 */
+describe("hasRunningBackgroundTask（#576：.pi/tasks 的 running 任务是保留证据）", () => {
+	const SESSION =
+		"/home/u/.pi/agent/sessions/--proj--/2026-10-09T03-32-42-335Z_01a11eb8-60df-7150-9357-ba8dbbb73cff.jsonl";
+	const UUID = "01a11eb8-60df-7150-9357-ba8dbbb73cff";
+	const PID = 311227;
+
+	function taskDir(cwd: string, pid = PID): string {
+		const dir = path.join(cwd, ".pi", "tasks", `${UUID}-${pid}`);
+		mkdirSync(dir, { recursive: true });
+		return dir;
+	}
+
+	it("本进程的会话目录里有 running 任务 → 有证据", () => {
+		const cwd = makeDir();
+		writeFileSync(path.join(taskDir(cwd), "b2c75ed2c.json"), JSON.stringify({ id: "b2c75ed2c", status: "running" }));
+		expect(hasRunningBackgroundTask({ cwd, sessionFile: SESSION, pid: PID })).toBe(true);
+	});
+
+	it("任务已 killed / completed → 无证据（不得永久钉住对话）", () => {
+		const cwd = makeDir();
+		const dir = taskDir(cwd);
+		writeFileSync(path.join(dir, "a.json"), JSON.stringify({ status: "killed", notified: false }));
+		writeFileSync(path.join(dir, "b.json"), JSON.stringify({ status: "completed" }));
+		expect(hasRunningBackgroundTask({ cwd, sessionFile: SESSION, pid: PID })).toBe(false);
+	});
+
+	it("崩溃遗留的 running（别的 pid 目录）→ 无证据，不把死进程的任务当活的", () => {
+		const cwd = makeDir();
+		writeFileSync(path.join(taskDir(cwd, 99999), "x.json"), JSON.stringify({ status: "running" }));
+		expect(hasRunningBackgroundTask({ cwd, sessionFile: SESSION, pid: PID })).toBe(false);
+	});
+
+	it("别的会话的 running 任务不算（按会话 UUID 隔离）", () => {
+		const cwd = makeDir();
+		const other = path.join(cwd, ".pi", "tasks", `00000000-0000-0000-0000-000000000000-${PID}`);
+		mkdirSync(other, { recursive: true });
+		writeFileSync(path.join(other, "x.json"), JSON.stringify({ status: "running" }));
+		expect(hasRunningBackgroundTask({ cwd, sessionFile: SESSION, pid: PID })).toBe(false);
+	});
+
+	it("目录缺失 / 损坏 json / 无 cwd → 无证据（fail-open）", () => {
+		const cwd = makeDir();
+		expect(hasRunningBackgroundTask({ cwd, sessionFile: SESSION, pid: PID })).toBe(false);
+		writeFileSync(path.join(taskDir(cwd), "bad.json"), "{not json");
+		expect(hasRunningBackgroundTask({ cwd, sessionFile: SESSION, pid: PID })).toBe(false);
+		expect(hasRunningBackgroundTask({ sessionFile: SESSION, pid: PID })).toBe(false);
+	});
+
+	it("shouldRetainActive：有 running 后台任务即保留；未提供该字段时行为不变", () => {
+		const base = {
+			reviewing: false,
+			wizardRunning: false,
+			streaming: false,
+			openTerminals: 0,
+			listed: false,
+			promptedSinceActive: false,
+			hasActiveSubagentRun: false,
+			hasPendingWake: false,
+		};
+		expect(shouldRetainActive({ ...base, hasRunningBackgroundTask: true })).toBe(true);
+		expect(shouldRetainActive({ ...base, hasRunningBackgroundTask: () => true })).toBe(true);
+		expect(shouldRetainActive({ ...base, hasRunningBackgroundTask: () => false })).toBe(false);
+		expect(shouldRetainActive(base)).toBe(false);
 	});
 });
