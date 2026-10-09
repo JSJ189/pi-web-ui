@@ -50,7 +50,7 @@ const check = (name, cond, extra = "") => {
 	const line = buildTerminalBashLine("ls -la");
 	check(
 		"单行命令追加哨兵序列",
-		line.includes("ls -la") && line.includes("[pi-exit:%s]") && line.includes("PIPESTATUS"),
+		line.includes("ls -la") && /\[pi-exit-[0-9a-f]{12}:%s\]/.test(line) && line.includes("PIPESTATUS"),
 	);
 	const ml = buildTerminalBashLine("for i in 1 2\ndo\n echo $i\ndone");
 	check("多行脚本包进 eval $'...'", ml.startsWith("eval $'") && ml.includes("\\n") && !ml.includes("\n"));

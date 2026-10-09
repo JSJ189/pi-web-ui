@@ -12,6 +12,7 @@
  * `${pwd}` inside cwd/command resolves to the agent session's current working
  * directory (the same directory the agent operates in — see set_cwd).
  */
+import { randomBytes } from "node:crypto";
 import { chmodSync, existsSync, readdirSync, realpathSync, statSync } from "node:fs";
 import { mkdir, readFile, writeFile } from "node:fs/promises";
 import { createRequire } from "node:module";
@@ -220,9 +221,20 @@ export function terminalIdleNotifyLines(): number {
 // 终端接管 bash（terminal-backed bash tool）
 // ---------------------------------------------------------------------------
 
-/** 哨兵行：命令执行完后由 shell 打印，携带真实退出码。正则只匹配数字，
- *  因此不会误匹配回显里的 printf 格式串 `[pi-exit:%s]`。 */
-const BASH_SENTINEL_RE = /\[pi-exit:(\d+)\]/g;
+/** 哨兵行：命令执行完后由 shell 打印，形如 `[pi-exit-<nonce>:<退出码>]`。
+ *  nonce 每次调用随机生成（12 位 hex）：回显里的 printf 格式串（`%s`）、真实输出里
+ *  的 `[pi-exit:42]` 之类字面量都不会与本次哨兵混淆（#572）。 */
+const SENTINEL_NONCE_SRC = "[0-9a-f]{12}";
+/** 任意 nonce 的哨兵（终端级通用等待用）。bash 工具自己的完成判定请用 sentinelReFor。 */
+const BASH_SENTINEL_RE = new RegExp(`\\[pi-exit-${SENTINEL_NONCE_SRC}:(\\d+)\\]`, "g");
+/** 本次调用的哨兵 nonce。 */
+export function newSentinelNonce(): string {
+	return randomBytes(6).toString("hex");
+}
+/** 只匹配本次 nonce 的哨兵（bash 工具的完成判定只认自己注入的那一个）。 */
+function sentinelReFor(nonce: string): RegExp {
+	return new RegExp(`\\[pi-exit-${nonce}:(\\d+)\\]`, "g");
+}
 
 /** bash 阻塞循环 collected 的累积上限：超限丢最旧一半（见 bash 工具执行循环）。 */
 const BASH_COLLECT_MAX = 2 * 1024 * 1024;
@@ -234,7 +246,11 @@ const BASH_COLLECT_MAX = 2 * 1024 * 1024;
  * 后续哨兵；也避开交互 shell 的 bracketed-paste 对多行输入的特殊处理。
  * 多行脚本用 `$'...'` ANSI-C 引号转义后交给 eval（bash/zsh/busybox ash 都支持）。
  */
-export function buildTerminalBashLine(command: string, tailFile?: { file: string; lines: number }): string {
+export function buildTerminalBashLine(
+	command: string,
+	tailFile?: { file: string; lines: number },
+	nonce: string = newSentinelNonce(),
+): string {
 	const trimmed = command.replace(/\s+$/, "");
 	// 退出码取【第一个】命令（真正干活的那个）而非管道末尾命令：`head`/`grep`/`tail`
 	// 在管道末尾会把退出码吞成自己的（head 恒 0、grep 无命恒 1）。`${PIPESTATUS:-$?}`
@@ -247,7 +263,7 @@ export function buildTerminalBashLine(command: string, tailFile?: { file: string
 		? `; tail -n ${Math.max(1, Math.floor(tailFile.lines))} -- '${tailFile.file.replace(/'/g, `'\\''`)}'`
 		: "";
 	// eslint-disable-next-line no-useless-escape -- \$? must reach the shell literally
-	const sentinel = `__pi_rc=\${PIPESTATUS:-\$?}; [ "$__pi_rc" -eq 141 ] && __pi_rc=0${tailPart}; printf '\\n[pi-exit:%s]\\n' "$__pi_rc"`;
+	const sentinel = `__pi_rc=\${PIPESTATUS:-\$?}; [ "$__pi_rc" -eq 141 ] && __pi_rc=0${tailPart}; printf '\\n[pi-exit-${nonce}:%s]\\n' "$__pi_rc"`;
 
 	if (trimmed.includes("\n")) {
 		// 多行路径（行为保持）：$'...' 转义后是一行物理输入，引号/换行全部字面化，
@@ -1694,28 +1710,37 @@ export class TerminalManager {
 const sleep = (ms: number): Promise<void> => new Promise((r) => setTimeout(r, ms));
 
 /** 取 collected 尾部里最后一个哨兵匹配（哨兵只可能出现在新输出的尾部）。 */
-function lastSentinel(collected: string): RegExpMatchArray | null {
+function lastSentinel(collected: string, nonce: string): RegExpMatchArray | null {
 	const tail = collected.length > 8000 ? collected.slice(-8000) : collected;
-	BASH_SENTINEL_RE.lastIndex = 0;
-	return [...tail.matchAll(BASH_SENTINEL_RE)].pop() ?? null;
+	return [...tail.matchAll(sentinelReFor(nonce))].pop() ?? null;
 }
 
 /** 去掉输入回显、哨兵及其后的 shell 提示符垃圾与 ANSI 序列，还原 bash 风格纯文本。 */
-function cleanBashOutput(raw: string): string {
+/**
+ * 去掉注入回显、哨兵及其后的 shell 提示符垃圾与 ANSI 序列，还原 bash 风格纯文本。
+ *
+ * 按**注入位置**清洗，不按字面量位置整段截。同一条注入行会被回显两次：
+ * ① 命令执行前的 PTY 硬件回显（位于真实输出之前）：丢弃它及其之前的全部内容（命令回显）；
+ * ② 命令结束后 readline 重绘的哨兵行（位于真实输出之后）：只删该行本身，真实输出原样保留。
+ * 旧实现对 ② 也「丢掉该行之前的全部内容」，把真实输出整段吃掉（#572）。
+ */
+export function cleanBashOutput(raw: string, nonce: string): string {
 	let text = stripAnsi(raw).replace(/\r\n/g, "\n");
-	// 回显的命令行可能被 readline 折行拆成多行，按行剥不可靠——改为锚定
-	// printf 格式串字面量 [pi-exit:%s]（真哨兵是数字版），连同其所在整行丢弃。
-	// 注意：同一命令会被回显两次（PTY 输入回显 + readline 提示符回显），需循环。
-	for (;;) {
-		const fmtIdx = text.indexOf("[pi-exit:%s]");
-		if (fmtIdx < 0) break;
-		const nl = text.indexOf("\n", fmtIdx);
+	const fmt = `[pi-exit-${nonce}:%s]`;
+	const firstFmt = text.indexOf(fmt);
+	if (firstFmt >= 0) {
+		const nl = text.indexOf("\n", firstFmt);
 		text = nl >= 0 ? text.slice(nl + 1) : "";
 	}
-	// 最后一个哨兵之后的内容全是 shell 新提示符——整段截掉。
-	BASH_SENTINEL_RE.lastIndex = 0;
+	for (let idx = text.indexOf(fmt); idx >= 0; idx = text.indexOf(fmt)) {
+		const lineStart = text.lastIndexOf("\n", idx) + 1;
+		const nl = text.indexOf("\n", idx);
+		text = text.slice(0, lineStart) + (nl >= 0 ? text.slice(nl + 1) : "");
+	}
+	// 最后一个本次哨兵之后的内容全是 shell 新提示符——整段截掉。
+	const re = sentinelReFor(nonce);
 	let last: RegExpExecArray | null = null;
-	for (let m = BASH_SENTINEL_RE.exec(text); m; m = BASH_SENTINEL_RE.exec(text)) {
+	for (let m = re.exec(text); m; m = re.exec(text)) {
 		last = m;
 	}
 	if (last) text = text.slice(0, last.index);
@@ -1893,6 +1918,7 @@ export function makeTerminalBashTool(
 				let lastDataAt = Date.now();
 				// 尾随续行符/未闭合引号的命令无法安全注入哨兵（哨兵行会被并入命令或
 				// 吞进字符串）：按无退出码模式执行，靠静默/超时/总时长解阻收尾并注明。
+				const nonce = newSentinelNonce();
 				const sentinelUnsafe = sentinelUnsafeReason(runCommand);
 				const sentinelNote = sentinelUnsafe
 					? pick(
@@ -1905,7 +1931,7 @@ export function makeTerminalBashTool(
 				// 标记「有哨兵命令在跑」：terminal_wait 据此区分等待与空闲。
 				// 无哨兵命令没有可等待的哨兵，标记反而误导 terminal_wait。
 				if (!sentinelUnsafe) terminals.setSentinelPending(termId, true);
-				const inputErr = terminals.inputChecked(termId, buildTerminalBashLine(runCommand, tailFile) + "\r");
+				const inputErr = terminals.inputChecked(termId, buildTerminalBashLine(runCommand, tailFile, nonce) + "\r");
 				if (inputErr) throw new Error(inputErr);
 				for (;;) {
 					if (ac.signal.aborted || signal?.aborted) {
@@ -1928,11 +1954,11 @@ export function makeTerminalBashTool(
 							collected = collected.slice(collected.length - BASH_COLLECT_MAX / 2);
 						}
 					}
-					const m = lastSentinel(collected);
+					const m = lastSentinel(collected, nonce);
 					if (m) {
 						terminals.setSentinelPending(termId, false);
 						closeOneShot();
-						const text = applyHeadTail(cleanBashOutput(collected), p.head, effectiveTail, lang);
+						const text = applyHeadTail(cleanBashOutput(collected, nonce), p.head, effectiveTail, lang);
 						return {
 							content: [
 								{
@@ -1964,9 +1990,10 @@ export function makeTerminalBashTool(
 							terminals,
 							opts,
 							runCommand,
-							applyHeadTail(cleanBashOutput(collected), p.head, effectiveTail, lang) + sentinelNote,
+							applyHeadTail(cleanBashOutput(collected, nonce), p.head, effectiveTail, lang) + sentinelNote,
 							Math.round((Date.now() - lastDataAt) / 1000),
 							lang,
+							nonce,
 							termId,
 							persist,
 							"idle",
@@ -1978,9 +2005,10 @@ export function makeTerminalBashTool(
 							terminals,
 							opts,
 							runCommand,
-							applyHeadTail(cleanBashOutput(collected), p.head, effectiveTail, lang) + sentinelNote,
+							applyHeadTail(cleanBashOutput(collected, nonce), p.head, effectiveTail, lang) + sentinelNote,
 							Math.round((Date.now() - startTime) / 1000),
 							lang,
+							nonce,
 							termId,
 							persist,
 							"elapsed",
@@ -2002,11 +2030,12 @@ function backgroundResult(
 	partialText: string,
 	durationSeconds: number,
 	lang: ServerLang,
+	nonce: string,
 	termId: string = "ai-bash",
 	persist: boolean = true,
 	reason: "idle" | "elapsed" = "idle",
 ): { content: { type: "text"; text: string }[]; details: unknown } {
-	terminals.watchOutput(termId, BASH_SENTINEL_RE, (m) => {
+	terminals.watchOutput(termId, sentinelReFor(nonce), (m) => {
 		// 后台命令最终结束（或终端被关）→ 清除待决标记，terminal_wait 不再适用。
 		terminals.setSentinelPending(termId, false);
 		opts.notifyBackgroundDone({

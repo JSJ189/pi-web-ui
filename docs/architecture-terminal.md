@@ -60,7 +60,7 @@
 bash 工具始终覆盖 SDK 内置 bash，并按设置开关 `terminalBash`（默认关）在两种实现间**动态分流**（agent-service 的 `makeAdaptiveBashTool`）：
 
 - **关（默认）**：`makeKillableBashTool` —— 用 SDK 原生 `createBashToolDefinition`（纯进程 spawn，**不开终端**），就是覆盖前的行为；`persist` 在此路径无效，`head`/`tail` 对返回行做后处理。
-- **开**：`makeTerminalBashTool` —— 命令写进可见终端（单行哨兵技术：`{cmd}; __pi_rc=$?; printf '\n[pi-exit:%s]\n' "$__pi_rc"`，多行脚本经 `$'...'` 转义 eval），等哨兵行拿到**真实退出码**后返回完整输出（`stripAnsi` 清理、截掉回显与新提示符）。此路径下 `persist` 决定终端**生命周期**，`head`/`tail` 决定返回行数。
+- **开**：`makeTerminalBashTool` —— 命令写进可见终端（单行哨兵技术：`{cmd}; __pi_rc=$?; printf '\n[pi-exit-<nonce>:%s]\n' "$__pi_rc"`，多行脚本经 `$'...'` 转义 eval），哨兵带每次调用随机的 12 位 hex nonce，只认本次注入的那一个（真实输出里的 `[pi-exit:42]` 不会被当成真退出码）；等哨兵行拿到**真实退出码**后返回完整输出（`stripAnsi` 清理；按注入位置删回显行与重绘行，不吞真实输出）。此路径下 `persist` 决定终端**生命周期**，`head`/`tail` 决定返回行数。
 
 原生 bash 包装层必须把 `execute` 的第 5 个参数（`ctx`）透传给 SDK 的 definition：SDK 用它在每条命令上注入 `PI_SESSION_ID`、`PI_SESSION_FILE`、`PI_PROVIDER`、`PI_MODEL`、`PI_REASONING_LEVEL`，子 shell 继承这些值。不透传 `ctx` 时，SDK 仍会**清掉**继承来的会话变量，却写不进当前值（子 shell 里读到的是缺失或过期值）。这条只针对原生 bash；终端路径不走 SDK 的会话环境注入。另外，以 SDK 嵌入方式运行时，SDK 也不会自动设置 CLI 专用的 `AI_AGENT` / `PI_CODING_AGENT` 标记。
 
@@ -76,10 +76,12 @@ bash 工具始终覆盖 SDK 内置 bash，并按设置开关 `terminalBash`（�
 ### Windows ConPTY 退出与 MSYS2 控制台释放（issue #215 / #269）
 
 Windows 下的伪终端销毁存在两大架构陷阱：
+
 1. **ConPTY 关机死锁（issue #215）**：进程退出时若直接调 `pty.kill()`（底层 `ClosePseudoConsole`），管道有未排空数据时会内核级同步死锁，冻住事件循环。
 2. **MSYS2 控制台 slot 泄漏（issue #269）**：若无脑直接调 Node 的 `process.kill(pid)`（Win32 `TerminateProcess`），MSYS2 的 DLL 析构与控制台清理钩子被直接跳过，导致全局命名共享内存 `\cygwin.shared` 中的控制台设备 slot（上限 128）永久泄漏，累积后引发 `fatal error - console device allocation failure - too many consoles in use, max consoles is 128`。
 
 `terminals.ts` 的 `killNative` 与终端生命周期对此做了精细分流：
+
 - **进程已自然退出（`entry.exited === true`）**：绝对不调用 `process.kill(pid)`（避免误杀 PID 复用后的新进程），直接调用 `entry.pty.kill()` 释放 HPCON、socket 与 worker 句柄；因为进程已死、管道见 EOF，此时 `ClosePseudoConsole` 绝不会死锁。终端自然 `exit`、`this.history` 淘汰最老项（超出 32）、用户在 UI 关闭历史 tab 以及 `killAll` 时均执行该安全清理。
 - **进程仍在运行（`!entry.exited`）**：先向 PTY 写入 `\x03exit\r` 尝试让 shell 正常退出并触发 MSYS2 清理钩子；若仍未退出才用 `process.kill(pid)` 强制兜底，最后调 `pty.kill()` 释放句柄（关机 `shutdown=true` 时跳过 `pty.kill()` 由 OS 回收）。
 - **`conpty_console_list_agent` 容错（`patch-node-pty.ts`）**：给 node-pty 的 console-list agent 增加 try-catch，进程已死时 `AttachConsole` 失败不再抛出未捕获异常，安全返回空列表。
@@ -100,6 +102,7 @@ Windows 下的伪终端销毁存在两大架构陷阱：
 开关经 `makeAdaptiveBashTool` 的 `useTerminal` 闭包每次调用读取 → 即时生效（customTools 固定于 runtime 创建，不能在创建时二选一）；`idleMs`/`defaultPersist` 同理从设置读取。回归：`tests/terminal-bash-test.mjs`（直接实例化 + 小阈值注入 + `persist`/`head`/`tail`/一次性/分流用例，零 token 不起 server；win32 未验证）。
 
 **前端展示与配额**：持久 `ai-bash` 与一次性 `ai-bash-<n>` 都带 `TerminalInfo.agentBash=true`（缺省 false = 用户终端），前端 `TerminalPanel` 把它们从用户终端标签里拆出来，单独归到「终端接管 bash」折叠分组（`term-folder`，可点开/收起）；`ensureSpawnAllowed` 也只按非 agent 终端计数，所以 AI 高频调用 bash 不会顶掉用户能开的终端名额。
+
 ## 为什么持久终端工具不合并成单 action 工具（决策备忘）
 
 终端 7 件套（`terminal_create/list/close/input/key/read/wait`）评估过合并为一个 action 式 `terminal`（探针：提示词约 459 字符 / 35%、工具条目 7→1）。**结论：不合并**，代价不只是迁移，而是削弱两道安全边界的粒度：

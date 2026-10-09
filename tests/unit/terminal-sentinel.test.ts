@@ -1,6 +1,9 @@
 import { describe, expect, it } from "vitest";
 import { buildTerminalBashLine, detectTrailingLimiter, sentinelUnsafeReason } from "../../server/terminals.js";
 
+/** 哨兵 printf 格式串（回显里出现的那一份）：nonce 每次随机，只校验形状。 */
+const SENTINEL_FMT = /\[pi-exit-[0-9a-f]{12}:%s\]/;
+
 /** 终端接管 bash 的哨兵注入（audit fix #2/#6）：
  *  - 旧实现把 `; printf '\n[pi-exit:%s]\n' "$__pi_rc"` 与命令拼在同一物理行，
  *    尾注释/尾管道/续行符/未闭合引号都会吞掉哨兵或造成语法错误；
@@ -12,7 +15,7 @@ describe("buildTerminalBashLine：哨兵独占一行（audit fix #2）", () => {
 		const lines = line.split("\n");
 		expect(lines).toHaveLength(2);
 		expect(lines[0]).toBe("ls -la");
-		expect(lines[1]).toContain("[pi-exit:%s]");
+		expect(lines[1]).toMatch(SENTINEL_FMT);
 		expect(lines[1]).toContain("PIPESTATUS");
 		// 命令行本身不再拼哨兵序列
 		expect(lines[0]).not.toContain("printf");
@@ -23,14 +26,14 @@ describe("buildTerminalBashLine：哨兵独占一行（audit fix #2）", () => {
 		const lines = line.split("\n");
 		expect(lines[0]).toBe("echo done # note");
 		expect(lines[1]).toMatch(/^__pi_rc=/);
-		expect(lines[1]).toContain("[pi-exit:%s]");
+		expect(lines[1]).toMatch(SENTINEL_FMT);
 	});
 
 	it("尾管道不再吞哨兵：哨兵行仍是独立的一行", () => {
 		const line = buildTerminalBashLine("echo hi |");
 		const lines = line.split("\n");
 		expect(lines[0]).toBe("echo hi |");
-		expect(lines[1]).toContain("[pi-exit:%s]");
+		expect(lines[1]).toMatch(SENTINEL_FMT);
 	});
 
 	it("尾随续行符：无法安全注入，原样返回（无哨兵）", () => {
@@ -50,7 +53,7 @@ describe("buildTerminalBashLine：哨兵独占一行（audit fix #2）", () => {
 		expect(line.startsWith("eval $'")).toBe(true);
 		expect(line.includes("\n")).toBe(false);
 		expect(line).toContain("; __pi_rc=");
-		expect(line).toContain("[pi-exit:%s]");
+		expect(line).toMatch(SENTINEL_FMT);
 	});
 
 	it("tailFile：tail 补看段落在哨兵行内，退出码仍是底层命令的", () => {
@@ -58,7 +61,7 @@ describe("buildTerminalBashLine：哨兵独占一行（audit fix #2）", () => {
 		const lines = line.split("\n");
 		expect(lines).toHaveLength(2);
 		expect(lines[1]).toContain("tail -n 20 -- 'build.log'");
-		expect(lines[1]).toContain("[pi-exit:%s]");
+		expect(lines[1]).toMatch(SENTINEL_FMT);
 	});
 });
 
