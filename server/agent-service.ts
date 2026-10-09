@@ -10471,6 +10471,9 @@ export class ClientSession {
 		}
 		// 没动过的空 shell（点开终端 tab 自动建的那个）与 AI bash 不拦截：随对话一起释放
 		// （removeConversation 里 killAll）。
+		// 「刚聊过」(promptedSinceActive) 不是显式 ✕ 的保留依据：它只保护 displaceActive
+		// 的自动置换（切走不被换掉），用户亲手点 ✕ 即是移出意图（#579）。这里传 false，
+		// 与 dismissFinishedSubagents 的批量移出口径一致；真正的后台任务/审查/终端仍然拦截。
 		if (
 			shouldRetainActive({
 				reviewing: conv.goal.reviewing,
@@ -10478,7 +10481,7 @@ export class ClientSession {
 				streaming: false,
 				openTerminals: 0,
 				listed: conv.listed,
-				promptedSinceActive: conv.promptedSinceActive,
+				promptedSinceActive: false,
 				promptInFlight: Boolean(conv.promptInFlight),
 				hasActiveSubagentRun: () => hasActiveSubagentRun({ sessionId: conv.session.sessionFile }),
 				hasPendingWake: () => hasPendingWaitSubscription({ sessionId: conv.session.sessionFile }),
