@@ -86,6 +86,7 @@ function makeCtx(opts: {
 			thinkingWrap: true,
 			toolsWrap: true,
 			toolImagesEnabled: true,
+			keepRecentMessages: 15,
 			skillsFullText: [],
 			quickPhrases: [],
 			quickPhrasesEnabled: true,

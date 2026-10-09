@@ -1254,6 +1254,8 @@
 		"toolsWrapDesc": "Ligado: as chamadas de ferramenta sempre expandidas, mostrando argumentos e saída; desligado: recolhidas por padrão, clique para expandir",
 		"toolImages": "Mostrar imagens das ferramentas",
 		"toolImagesDesc": "Ativado: imagens retornadas por ferramentas (p. ex. capturas) aparecem no cartão, clique para ampliar; desativado: imagens ocultas",
+		"keepRecent": "Mensagens exibidas por inteiro",
+		"keepRecentDesc": "Quantas mensagens recentes seguem renderizadas por completo no chat (15 por padrão); as mais antigas viram resumos de uma linha que você expande ao clicar. Intervalo 5–100 — valores altos deixam conversas longas mais lentas",
 		"toolImageZoom": "Clique para ampliar",
 		"devNoCache": "Modo dev: sem cache da página",
 		"devNoCacheDesc": "Ativado: buscar sempre uma página nova (para desenvolvimento a partir do código); Desativado: permitir cache do navegador (padrão de instalação)",

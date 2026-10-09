@@ -566,6 +566,7 @@ export function handleSettingsMessage(msg: ClientMessage, cs: DispatchSession): 
 				thinkingWrap: msg.thinkingWrap,
 				toolsWrap: msg.toolsWrap,
 				toolImagesEnabled: (msg as { toolImagesEnabled?: boolean }).toolImagesEnabled,
+				keepRecentMessages: (msg as { keepRecentMessages?: number }).keepRecentMessages,
 				devNoCache: (msg as { devNoCache?: boolean }).devNoCache,
 				autoReload: (msg as { autoReload?: boolean }).autoReload,
 				skillsFullText: (msg as { skillsFullText?: string[] }).skillsFullText,

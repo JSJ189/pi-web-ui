@@ -1254,6 +1254,8 @@
 		"toolsWrapDesc": "Activé : les appels d'outils montrent toujours paramètres et sorties en entier ; désactivé : repliés par défaut, cliquez pour déplier",
 		"toolImages": "Afficher les images d'outils",
 		"toolImagesDesc": "Activé : les images renvoyées par les outils (p. ex. captures) s'affichent dans la carte, cliquez pour agrandir ; désactivé : images masquées",
+		"keepRecent": "Messages affichés en entier",
+		"keepRecentDesc": "Nombre de messages récents affichés en entier dans la conversation (15 par défaut) ; les plus anciens se réduisent à des résumés d'une ligne dépliables au clic. Plage 5–100 — des valeurs élevées ralentissent les longues conversations",
 		"toolImageZoom": "Cliquer pour agrandir",
 		"devNoCache": "Mode dev : pas de cache de la page",
 		"devNoCacheDesc": "Activé : toujours récupérer une page fraîche (pour le développement depuis les sources) ; Désactivé : autoriser le cache du navigateur (défaut d'installation)",

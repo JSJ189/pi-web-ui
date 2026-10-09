@@ -78,6 +78,7 @@ export const PRESET_FIELD_GROUPS = {
 		"thinkingWrap",
 		"toolsWrap",
 		"toolImagesEnabled",
+		"keepRecentMessages",
 		"bgAutoCleanupMin",
 		"quickPhrases",
 		"quickPhrasesEnabled",
@@ -392,6 +393,12 @@ export const PRESET_FIELD_META = {
 		labelEn: "Tool Image Preview",
 		hintZh: "直接在工具卡片内渲染输出的图片文件",
 		hintEn: "Render image output directly in tool cards",
+	},
+	keepRecentMessages: {
+		labelZh: "常驻渲染消息数",
+		labelEn: "Messages Kept In Full",
+		hintZh: "消息列表尾部保持完整渲染的消息条数；更早的折叠为摘要行",
+		hintEn: "Recent messages rendered in full; older ones collapse to summary rows",
 	},
 	quickPhrases: {
 		labelZh: "快捷短语列表",

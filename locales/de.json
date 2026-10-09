@@ -1254,6 +1254,8 @@
 		"toolsWrapDesc": "Aktiviert: Werkzeugaufrufe werden stets vollständig ausgeklappt mit Parametern und Ausgabe angezeigt; Deaktiviert: Standardmäßig eingeklappt, zum Ausklappen anklicken",
 		"toolImages": "Werkzeugbilder direkt anzeigen",
 		"toolImagesDesc": "Ein: Bildausgaben von Werkzeugen (z. B. Screenshots) werden in der Karte direkt angezeigt, zum Vergrößern anklicken; Aus: Bilder werden nicht angezeigt",
+		"keepRecent": "Vollständig angezeigte Nachrichten",
+		"keepRecentDesc": "Anzahl der letzten Nachrichten, die vollständig im Chat gerendert bleiben (Standard 15); ältere werden zu einzeiligen Zusammenfassungen, die du per Klick ausklappst. Bereich 5–100 – hohe Werte verlangsamen lange Chats",
 		"toolImageZoom": "Klicken zum Vergrößern",
 		"devNoCache": "Dev-Modus: Seite nicht zwischenspeichern",
 		"devNoCacheDesc": "Ein: Seite bei jedem Laden frisch holen (für Quellcode-Entwicklung); Aus: Browser-Cache erlauben (Installations-Standard)",

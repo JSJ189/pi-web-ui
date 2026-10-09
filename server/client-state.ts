@@ -30,6 +30,23 @@ export const DEFAULT_TOOL_WATCHDOG_TIMEOUT_MS = (() => {
 	return Number.isFinite(v) && v >= 0 ? v : 20 * 60_000;
 })();
 
+/** 消息列表尾部「常驻渲染」消息条数的默认值：更早的消息折叠为摘要行
+ *  （见 web/src/components/MessageList.tsx 的 recentStart）。默认与原硬编码
+ *  KEEP_RECENT 一致（15），想要更大窗口在设置面板「常驻渲染消息数」里开。纯 UI 偏好。 */
+export const DEFAULT_KEEP_RECENT_MESSAGES = 15;
+export const KEEP_RECENT_MESSAGES_MIN = 5;
+export const KEEP_RECENT_MESSAGES_MAX = 100;
+
+/** 归一化常驻渲染消息数：缺省/非数值回落默认值；有效整数钳到 [5, 100]。 */
+export function normalizeKeepRecentMessages(v: unknown): number {
+	if (v === null || v === undefined || v === "") return DEFAULT_KEEP_RECENT_MESSAGES;
+	const n = Math.floor(Number(v));
+	if (!Number.isFinite(n)) return DEFAULT_KEEP_RECENT_MESSAGES;
+	if (n < KEEP_RECENT_MESSAGES_MIN) return KEEP_RECENT_MESSAGES_MIN;
+	if (n > KEEP_RECENT_MESSAGES_MAX) return KEEP_RECENT_MESSAGES_MAX;
+	return n;
+}
+
 /** 归一化工具看门狗超时（毫秒）：0 = 禁用；非数值、负数或空值回落默认值，非负整数保留。 */
 export function normalizeToolWatchdogTimeoutMs(v: unknown): number {
 	if (v === null || v === undefined || v === "") return DEFAULT_TOOL_WATCHDOG_TIMEOUT_MS;
@@ -334,6 +351,9 @@ export interface ClientSettings {
 	/** 工具结果里的图片直接显示（默认开 = 卡片里出缩略图、点开放大；关 = 不渲染）。
 	 *  纯 UI 偏好，不进预设。 */
 	toolImagesEnabled: boolean;
+	/** 消息列表尾部保持完整渲染的消息条数（默认 15 = 与原硬编码一致）；更早的消息
+	 *  折叠为摘要行，点开再展开。纯 UI 偏好，不进预设。 */
+	keepRecentMessages: number;
 	/** skill 全文注入名单（默认空 = 名录模式）。名单里的技能 {{skills}} 展开正文
 	 *  （oh-my-pi 式全文注入；单文件 8KB、总量 32KB 封顶，超限回落名录）。
 	 *  进预设；逐 run 实时读取，改动下一轮即生效。 */
@@ -1014,6 +1034,7 @@ export class ClientStateStore {
 			autoReload: stored?.autoReload,
 			toolsWrap: stored?.toolsWrap ?? true,
 			toolImagesEnabled: stored?.toolImagesEnabled ?? true,
+			keepRecentMessages: normalizeKeepRecentMessages(stored?.keepRecentMessages),
 			skillsFullText: normalizeSkillList(stored?.skillsFullText),
 			visionBridgeEnabled: stored?.visionBridgeEnabled ?? true,
 			visionBridgeModel: stored?.visionBridgeModel ?? null,
@@ -1079,6 +1100,9 @@ export class ClientStateStore {
 			autoReload: settings.autoReload ?? cur.autoReload,
 			toolsWrap: settings.toolsWrap ?? cur.toolsWrap ?? true,
 			toolImagesEnabled: settings.toolImagesEnabled ?? cur.toolImagesEnabled ?? true,
+			keepRecentMessages: normalizeKeepRecentMessages(
+				settings.keepRecentMessages ?? cur.keepRecentMessages ?? DEFAULT_KEEP_RECENT_MESSAGES,
+			),
 			skillsFullText: normalizeSkillList(settings.skillsFullText ?? cur.skillsFullText),
 			visionBridgeEnabled: settings.visionBridgeEnabled ?? cur.visionBridgeEnabled ?? true,
 			// 按键存在性合并：null 是合法值（清除语义），`null ?? cur` 会把旧值

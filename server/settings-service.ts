@@ -27,6 +27,7 @@ import {
 	normalizeBgCleanupMinutes,
 	normalizeDisabledPluginTools,
 	normalizeRetryMaxAttempts,
+	normalizeKeepRecentMessages,
 	normalizeSkillList,
 	normalizeToolWatchdogTimeoutMs,
 	normalizeUiLayout,
@@ -384,6 +385,7 @@ export class SettingsService {
 				thinkingWrap: this.settings.thinkingWrap,
 				toolsWrap: this.settings.toolsWrap,
 				toolImagesEnabled: this.settings.toolImagesEnabled ?? true,
+				keepRecentMessages: normalizeKeepRecentMessages(this.settings.keepRecentMessages),
 				visionBridgeEnabled: this.settings.visionBridgeEnabled,
 				visionBridgeModel: this.settings.visionBridgeModel,
 				visionBridgePromptMode: this.settings.visionBridgePromptMode,
@@ -514,6 +516,8 @@ export class SettingsService {
 		thinkingWrap?: boolean;
 		toolsWrap?: boolean;
 		toolImagesEnabled?: boolean;
+		/** 消息列表尾部常驻渲染的消息条数（默认 15 = 与原硬编码一致；纯 UI 偏好）。 */
+		keepRecentMessages?: number;
 		devNoCache?: boolean;
 		autoReload?: boolean;
 		skillsFullText?: string[];
@@ -676,6 +680,9 @@ export class SettingsService {
 		}
 		if (partial.toolImagesEnabled !== undefined) {
 			this.settings.toolImagesEnabled = partial.toolImagesEnabled;
+		}
+		if (partial.keepRecentMessages !== undefined) {
+			this.settings.keepRecentMessages = normalizeKeepRecentMessages(partial.keepRecentMessages);
 		}
 		// 编排模式 / skill 全文注入：before_agent_start 逐 run 实时读取（agent-service
 		// composeInputs + 指导块追加），开关下一轮即生效，无需 reload runtime。
