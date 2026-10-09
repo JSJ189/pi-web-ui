@@ -498,7 +498,15 @@ try {
 } finally {
 	mgr.killAll();
 	await sleep(200);
-	rmSync(workdir, { recursive: true, force: true });
+	// Windows 上 PTY 进程释放 cwd 句柄可能滞后：给删除留重试余量（EPERM/EBUSY）。
+	try {
+		rmSync(workdir, { recursive: true, force: true, maxRetries: 10, retryDelay: 300 });
+	} catch (e) {
+		// 清理失败不影响断言结果（临时目录由系统回收）；只告警。
+		console.warn(`  ! 临时目录未能删除（仍被 shell 占用）：${workdir} (${e.code})`);
+	}
 }
 
 console.log(`\n${passed} checks passed${process.exitCode ? "（有失败）" : ""}`);
+
+process.exit(process.exitCode ?? 0);

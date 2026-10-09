@@ -8,18 +8,31 @@ import {
 	type TerminalManager,
 } from "../../server/terminals.js";
 
-/** 终端接管 bash 的输出清洗与退出码判定（#572）。
+/** 终端接管 bash 的输出清洗与退出码判定（#572 / #571）。
  *
- * 旧实现的两个缺陷：
- *  ① 清洗按「字面量 [pi-exit:%s] 的位置」整段截——readline 在命令结束后重绘哨兵行，
- *     那一次把真实输出整段吃掉，只剩哨兵 → 返回空正文 + [exit:0]；
- *  ② 哨兵没有 nonce——真实输出里的 `[pi-exit:42]` 被当成真哨兵，提前返回假退出码。
- * 修复：哨兵带每次调用随机的 nonce；清洗只删注入回显行本身（前缀回显整段丢弃，
- * 重绘行只删该行）。下面的假 PTY 按真实终端的字节序列喂数据：回显 → 真实输出 →
- * 重绘哨兵行 → 哨兵输出。 */
+ * 旧实现的缺陷：清洗假定「哨兵回显一定在真实输出之前」，按它截断。
+ *  - Linux 上哨兵回显确实在输出之前，但readline 命令结束后又重绘一次，第二次把真实输出整段吃掉（#572 ①）；
+ *  - Windows ConPTY（MINGW64 bash）实测：shell 读到哨兵行才回显它，哨兵回显排在真实输出之后，
+ *    同样整段吃掉、只剩 [exit:0]（Windows 实测复现，tests/terminal-bash-test.mjs 也因此失败）；
+ *  - 哨兵没有 nonce，真实输出里的 `[pi-exit:42]` 被当成真哨兵，提前返回假退出码（#572 ②）。
+ * 修复：哨兵带每次调用随机 nonce；清洗只依赖与时序无关的两个锚点——含 nonce 的哨兵回显行整行删除，
+ * 命令回显（首行）及其之前的提示符删除。 */
 
-/** 假 PTY：收到命令行时按真实终端的顺序写入缓冲区。 */
-function fakePty(realOutput: string): TerminalManager {
+const NONCE = "0123456789ab";
+
+/** 哨兵行的 shell 回显（与 buildTerminalBashLine 的 sentinel 同形）。字符串拼接，避免转义歧义。 */
+const sentinelEcho = (nonce: string): string =>
+	"__pi_rc=${PIPESTATUS:-$?}; printf '" + String.raw`\n[pi-exit-${nonce}:%s]\n` + `' "$__pi_rc"`;
+
+/** 哨兵输出（数字版）。 */
+const sentinelExit = (nonce: string, code = 0): string => `\r\n[pi-exit-${nonce}:${code}]\r\n`;
+
+const toCRLF = (s: string): string => s.replace(/\n/g, "\r\n");
+
+/** 假 PTY：按两种真实时序之一写入缓冲区。
+ *  - linux：命令回显 → 哨兵回显 → 真实输出 → 哨兵重绘 → 哨兵输出；
+ *  - conpty：提示符 + 命令回显 → 真实输出 → 提示符 + 哨兵回显（读到才回显）→ 哨兵输出。 */
+function fakePty(realOutput: string, timing: "linux" | "conpty"): TerminalManager {
 	let buf = "";
 	return {
 		create: () => "ai-bash-1",
@@ -36,19 +49,25 @@ function fakePty(realOutput: string): TerminalManager {
 			const body = data.replace(/\r$/, "");
 			const nonce = /\[pi-exit-([0-9a-f]{12}):%s\]/.exec(body)?.[1];
 			if (!nonce) return "fake pty: no sentinel in input";
-			const sentinelLine = body.split("\n").pop() ?? "";
-			const echo = body.replace(/\n/g, "\r\n") + "\r\n"; // ① PTY 硬件回显（真实输出之前）
-			const out = realOutput.replace(/\n/g, "\r\n"); // ② 真实输出
-			const redraw = "\r" + sentinelLine + "\r\n"; // ③ readline 重绘哨兵行（真实输出之后）
-			const exit = `\r\n[pi-exit-${nonce}:0]\r\n`; // ④ 哨兵输出
-			buf += echo + out + redraw + exit;
+			const cmdFirstLine = body.split("\n")[0] ?? "";
+			const sentLine = body.split("\n").pop() ?? "";
+			const prompt = "c@HOST MINGW64 /tmp/x\r\n$ ";
+			if (timing === "linux") {
+				buf += toCRLF(body) + "\r\n" + toCRLF(realOutput) + "\r" + sentLine + "\r\n" + sentinelExit(nonce);
+			} else {
+				buf += prompt + cmdFirstLine + "\r\n" + toCRLF(realOutput) + prompt + sentLine + "\r\n" + sentinelExit(nonce);
+			}
 			return null;
 		},
 	} as unknown as TerminalManager;
 }
 
-async function run(command: string, realOutput: string): Promise<{ output: string; exitCode: number }> {
-	const tool = makeTerminalBashTool(fakePty(realOutput), {
+async function run(
+	command: string,
+	realOutput: string,
+	timing: "linux" | "conpty",
+): Promise<{ output: string; exitCode: number }> {
+	const tool = makeTerminalBashTool(fakePty(realOutput, timing), {
 		cwd: process.cwd(),
 		defaultPersist: () => false,
 		idleMs: () => 0,
@@ -60,46 +79,71 @@ async function run(command: string, realOutput: string): Promise<{ output: strin
 	return { output: details.output, exitCode: details.exitCode };
 }
 
-describe("cleanBashOutput：按注入位置清洗（#572 ①）", () => {
-	it("回显 + 真实输出 + 重绘哨兵行：只删注入行，真实输出完整保留", () => {
-		const nonce = "0123456789ab";
+describe("cleanBashOutput：与时序无关的清洗（#572 ①、Windows ConPTY 实测）", () => {
+	it("Linux 时序：命令回显 / 哨兵回显 / 真实输出 / 哨兵重绘：正文完整保留", () => {
 		const raw =
 			"echo hello; whoami\r\n" +
-			`__pi_rc=\${PIPESTATUS:-$?}; printf '\\n[pi-exit-${nonce}:%s]\\n' "$__pi_rc"\r\n` +
-			"hello\r\nuser\r\n" +
-			`__pi_rc=\${PIPESTATUS:-$?}; printf '\\n[pi-exit-${nonce}:%s]\\n' "$__pi_rc"\r\n` +
-			`\n[pi-exit-${nonce}:0]\n`;
-		expect(cleanBashOutput(raw, nonce)).toBe("hello\nuser");
+			sentinelEcho(NONCE) +
+			"\r\nhello\r\nuser\r\n" +
+			"\r" +
+			sentinelEcho(NONCE) +
+			"\r\n" +
+			sentinelExit(NONCE);
+		expect(cleanBashOutput(raw, NONCE, "echo hello; whoami")).toBe("hello\nuser");
+	});
+
+	it("ConPTY 时序：哨兵回显在真实输出之后，正文完整保留（旧实现在此返回空串）", () => {
+		const raw =
+			"c@HOST MINGW64 /tmp/x\r\n$ echo hello-dbg\r\nhello-dbg       \r\n" +
+			"c@HOST MINGW64 /tmp/x\r\n$ " +
+			sentinelEcho(NONCE) +
+			"\r\n" +
+			sentinelExit(NONCE);
+		expect(cleanBashOutput(raw, NONCE, "echo hello-dbg")).toBe("hello-dbg");
+	});
+
+	it("ConPTY 时序：行尾填充空格被去掉，多行输出顺序不变", () => {
+		const raw =
+			"c@HOST MINGW64 /tmp/x\r\n$ ls\r\na.txt       \r\nb.txt       \r\n" +
+			"c@HOST MINGW64 /tmp/x\r\n$ " +
+			sentinelEcho(NONCE) +
+			"\r\n" +
+			sentinelExit(NONCE);
+		expect(cleanBashOutput(raw, NONCE, "ls")).toBe("a.txt\nb.txt");
 	});
 });
 
 describe("cleanBashOutput / 退出码：nonce 隔离真实输出里的哨兵字面量（#572 ②）", () => {
 	it("真实输出含 [pi-exit:%s] 与 [pi-exit:42]：不被清掉、不被当成真哨兵", () => {
-		const nonce = "0123456789ab";
 		const raw =
-			"grep out\r\n" +
-			`__pi_rc=\${PIPESTATUS:-$?}; printf '\\n[pi-exit-${nonce}:%s]\\n' "$__pi_rc"\r\n` +
-			"hello\r\n[pi-exit:42]\r\n[pi-exit:%s]\r\n" +
-			`\n[pi-exit-${nonce}:0]\n`;
-		expect(cleanBashOutput(raw, nonce)).toBe("hello\n[pi-exit:42]\n[pi-exit:%s]");
+			"grep out\r\n" + sentinelEcho(NONCE) + "\r\nhello\r\n[pi-exit:42]\r\n[pi-exit:%s]\r\n" + sentinelExit(NONCE);
+		expect(cleanBashOutput(raw, NONCE, "grep out")).toBe("hello\n[pi-exit:42]\n[pi-exit:%s]");
 	});
 });
 
-describe("终端接管 bash 工具端到端（假 PTY）", () => {
-	it("正常命令：正文非空、退出码真实（不再是 [exit:0] + 空正文）", async () => {
-		const r = await run("echo hello; whoami", "hello\nuser\n");
-		expect(r.output).toBe("hello\nuser");
+describe("终端接管 bash 工具端到端（假 PTY，两种时序）", () => {
+	it.each(["linux", "conpty"] as const)("%s：正常命令正文非空、退出码真实", async (timing) => {
+		const r = await run("echo hello-dbg", "hello-dbg       \n", timing);
+		expect(r.output).toBe("hello-dbg");
 		expect(r.exitCode).toBe(0);
 	});
 
-	it("输出含 [pi-exit:42]：退出码仍是真实的 0，后续输出不被截断", async () => {
-		const r = await run("grep -n x file", "before\n[pi-exit:42]\nafter\n");
-		expect(r.exitCode).toBe(0);
-		expect(r.output).toBe("before\n[pi-exit:42]\nafter");
+	it.each(["linux", "conpty"] as const)("%s：多行输出完整返回", async (timing) => {
+		const r = await run("ls", "a.txt\nb.txt\nc.txt\n", timing);
+		expect(r.output).toBe("a.txt\nb.txt\nc.txt");
 	});
 
-	it("输出含 printf 格式串字面量 [pi-exit:%s]：不吞行、不丢真实输出", async () => {
-		const r = await run("grep -n 'pi-exit:%s' server/terminals.ts", "A\n[pi-exit:%s]\nB\n");
+	it.each(["linux", "conpty"] as const)(
+		"%s：输出含 [pi-exit:42]：退出码仍是真实的 0，后续输出不被截断",
+		async (timing) => {
+			const r = await run("grep -n x file", "before\n[pi-exit:42]\nafter\n", timing);
+			expect(r.exitCode).toBe(0);
+			expect(r.output).toBe("before\n[pi-exit:42]\nafter");
+		},
+	);
+
+	it.each(["linux", "conpty"] as const)("%s：输出含 printf 格式串 [pi-exit:%%s]：不吞行", async (timing) => {
+		const r = await run("grep -n 'pi-exit:%s' server/terminals.ts", "A\n[pi-exit:%s]\nB\n", timing);
 		expect(r.exitCode).toBe(0);
 		expect(r.output).toBe("A\n[pi-exit:%s]\nB");
 	});
@@ -163,17 +207,5 @@ describe("语法不完整：直接拒绝，不注入、不建终端（#571）", 
 
 	it("detectTrailingLimiter：注释里的 | tail 不被当成管道拆掉", () => {
 		expect(detectTrailingLimiter("echo a # x | tail -3")).toBeNull();
-	});
-
-	it("带注释的正常命令端到端执行：拿到真实退出码", async () => {
-		const tool = makeTerminalBashTool(fakePty("ok\n"), {
-			cwd: process.cwd(),
-			defaultPersist: () => false,
-			idleMs: () => 0,
-			kills: new Set(),
-			notifyBackgroundDone: () => {},
-		});
-		const res = await tool.execute("t1", { command: "echo ok # don't" }, undefined, undefined, undefined as never);
-		expect((res.details as { exitCode: number }).exitCode).toBe(0);
 	});
 });

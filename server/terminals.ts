@@ -1724,38 +1724,56 @@ function lastSentinel(collected: string, nonce: string): RegExpMatchArray | null
 	return [...tail.matchAll(sentinelReFor(nonce))].pop() ?? null;
 }
 
-/** 去掉输入回显、哨兵及其后的 shell 提示符垃圾与 ANSI 序列，还原 bash 风格纯文本。 */
 /**
  * 去掉注入回显、哨兵及其后的 shell 提示符垃圾与 ANSI 序列，还原 bash 风格纯文本。
  *
- * 按**注入位置**清洗，不按字面量位置整段截。同一条注入行会被回显两次：
- * ① 命令执行前的 PTY 硬件回显（位于真实输出之前）：丢弃它及其之前的全部内容（命令回显）；
- * ② 命令结束后 readline 重绘的哨兵行（位于真实输出之后）：只删该行本身，真实输出原样保留。
- * 旧实现对 ② 也「丢掉该行之前的全部内容」，把真实输出整段吃掉（#572）。
+ * 清洗只依赖两个与时序无关的锚点，不再假定「哨兵回显一定在真实输出之前」——那个假定
+ * 在 Windows ConPTY 下不成立：shell 读到哨兵行才回显它，于是哨兵回显排在真实输出之后，
+ * 旧实现按它截断会把输出整段吃掉、只剩 `[exit:0]`（#572 ①）。
+ *
+ * ① 含本次 nonce 哨兵格式串的行（`printf '…[pi-exit-<nonce>:%s]…'` 的回显，
+ *    无论出现在输出前还是后）整行删除——nonce 随机，真实输出不可能与之相同。
+ * ② 命令回显：第一次出现的命令首行（及其之前的提示符）整段丢弃——它总在真实输出之前。
+ * 最后一个本次哨兵之后的内容是 shell 新提示符，整段截掉。
  */
-export function cleanBashOutput(raw: string, nonce: string): string {
-	let text = stripAnsi(raw).replace(/\r\n/g, "\n");
+export function cleanBashOutput(raw: string, nonce: string, command = ""): string {
 	const fmt = `[pi-exit-${nonce}:%s]`;
-	const firstFmt = text.indexOf(fmt);
-	if (firstFmt >= 0) {
-		const nl = text.indexOf("\n", firstFmt);
-		text = nl >= 0 ? text.slice(nl + 1) : "";
-	}
-	for (let idx = text.indexOf(fmt); idx >= 0; idx = text.indexOf(fmt)) {
-		const lineStart = text.lastIndexOf("\n", idx) + 1;
-		const nl = text.indexOf("\n", idx);
-		text = text.slice(0, lineStart) + (nl >= 0 ? text.slice(nl + 1) : "");
+	let lines = stripAnsi(raw)
+		.replace(/\r\n/g, "\n")
+		.split("\n")
+		.filter((line) => !line.includes(fmt));
+	const anchor = (command.split("\n")[0] ?? "").trim().slice(0, 80);
+	// 命令回显前那一行提示符（如 `user@host MINGW64 /cwd`）：收尾时用它识别「哨兵前残留的新提示符」。
+	let promptLine = "";
+	if (anchor) {
+		const echoIdx = lines.findIndex((line) => line.includes(anchor));
+		if (echoIdx >= 0) {
+			for (let i = echoIdx - 1; i >= 0 && !promptLine; i--) {
+				const t = lines[i].trim();
+				if (t && t !== "$") promptLine = t;
+			}
+			lines = lines.slice(echoIdx + 1);
+		}
 	}
 	// 最后一个本次哨兵之后的内容全是 shell 新提示符——整段截掉。
+	const text = lines.join("\n");
 	const re = sentinelReFor(nonce);
 	let last: RegExpExecArray | null = null;
 	for (let m = re.exec(text); m; m = re.exec(text)) {
 		last = m;
 	}
-	if (last) text = text.slice(0, last.index);
-	const lines = text.split("\n");
-	while (lines.length > 0 && !lines[lines.length - 1].trim()) lines.pop();
-	return truncateMiddle(lines.join("\n").trim());
+	const kept = (last ? text.slice(0, last.index) : text).split("\n").map((line) => line.trimEnd());
+	// 收尾残留：空行、裸 `$`、与命令前相同的提示符行（ConPTY 在哨兵回显前重打了一次提示符）。
+	// 提示符的 `user@host` 段：让 cd 之后路径变了的提示符也能识别。
+	const promptHead = promptLine.match(/^\S+@\S+/)?.[0] ?? "";
+	const isResidue = (line: string): boolean => {
+		const t = line.trim();
+		if (t === "" || t === "$") return true;
+		if (promptLine !== "" && t === promptLine) return true;
+		return promptHead !== "" && t.startsWith(`${promptHead} `);
+	};
+	while (kept.length > 0 && isResidue(kept[kept.length - 1])) kept.pop();
+	return truncateMiddle(kept.join("\n").trim());
 }
 
 /**
@@ -1981,7 +1999,7 @@ export function makeTerminalBashTool(
 					if (m) {
 						terminals.setSentinelPending(termId, false);
 						closeOneShot();
-						const text = applyHeadTail(cleanBashOutput(collected, nonce), p.head, effectiveTail, lang);
+						const text = applyHeadTail(cleanBashOutput(collected, nonce, runCommand), p.head, effectiveTail, lang);
 						return {
 							content: [
 								{
@@ -2013,7 +2031,7 @@ export function makeTerminalBashTool(
 							terminals,
 							opts,
 							runCommand,
-							applyHeadTail(cleanBashOutput(collected, nonce), p.head, effectiveTail, lang),
+							applyHeadTail(cleanBashOutput(collected, nonce, runCommand), p.head, effectiveTail, lang),
 							Math.round((Date.now() - lastDataAt) / 1000),
 							lang,
 							nonce,
@@ -2028,7 +2046,7 @@ export function makeTerminalBashTool(
 							terminals,
 							opts,
 							runCommand,
-							applyHeadTail(cleanBashOutput(collected, nonce), p.head, effectiveTail, lang),
+							applyHeadTail(cleanBashOutput(collected, nonce, runCommand), p.head, effectiveTail, lang),
 							Math.round((Date.now() - startTime) / 1000),
 							lang,
 							nonce,
