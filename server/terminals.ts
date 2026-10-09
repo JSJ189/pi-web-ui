@@ -274,18 +274,23 @@ export function buildTerminalBashLine(command: string, tailFile?: { file: string
  *
  * - 尾随续行符 `\`：下一行被并入本命令，哨兵行成为命令的一部分。
  * - 未闭合引号：哨兵行被吞进字符串字面量，永远不会作为代码执行。
+ * - 未闭合的 `{}` / `()` 组：shell 停在 PS2 续行，哨兵永远不会执行（#573）。
  * - 多行命令：经 `$'...'` 转义单行化后引号/换行全部字面化，总是安全 → null。
  *
  * 扫描按 POSIX 引号语义跟踪 `'`/`"`/`` ` `` 三种引号与转义；`$'...'`（ANSI-C
  * 引号）内 `\'` 不闭合引号，也一并识别。
  */
-export function sentinelUnsafeReason(command: string): "trailing_backslash" | "unclosed_quote" | null {
+export function sentinelUnsafeReason(
+	command: string,
+): "trailing_backslash" | "unclosed_quote" | "unclosed_group" | null {
 	const trimmed = command.replace(/\s+$/, "");
 	if (trimmed.includes("\n")) return null;
 	let quote: "'" | '"' | "`" | null = null;
 	// 当前单引号是否 $' 开头（ANSI-C 引号，内含转义语义）
 	let ansiC = false;
 	let escaped = false;
+	// `{` / `(` 未闭合深度：残句（如 `{ a; b | tail -3`）注入后 shell 停在 PS2、哨兵永不执行（#573）
+	let depth = 0;
 	for (let i = 0; i < trimmed.length; i++) {
 		const ch = trimmed[i];
 		if (quote) {
@@ -313,33 +318,61 @@ export function sentinelUnsafeReason(command: string): "trailing_backslash" | "u
 		if (ch === "'" || ch === '"' || ch === "`") {
 			quote = ch;
 			ansiC = ch === "'" && i > 0 && trimmed[i - 1] === "$";
+			continue;
 		}
+		if (ch === "(" || ch === "{") depth++;
+		else if ((ch === ")" || ch === "}") && depth > 0) depth--;
 	}
 	if (quote !== null) return "unclosed_quote";
 	// 扫描结束仍在转义态 = 最后一个字符是引号外的 `\`（尾随续行符）
 	if (escaped) return "trailing_backslash";
+	if (depth > 0) return "unclosed_group";
 	return null;
 }
 
-/** 顶层（引号/反引号/转义外）按 `|` 拆分的管道元素。 */
+/** 顶层（引号/反引号/转义外、且不在 `()` / `{}` 组内）按 `|` 拆分的管道元素。
+ *  组内的 `|`（`{ a; b | tail; }`）属于组本身，不是顶层管道（#573）。 */
 export function splitTopLevelPipes(cmd: string): string[] {
+	return scanTopLevel(cmd).parts;
+}
+
+/** 顶层管道扫描：引号 / ANSI-C 引号 / 转义 / `||` 不拆；`()` `{}` 组内的 `|` 不拆。
+ *  openGroups > 0 = 结尾仍有未闭合的组（调用方据此放弃拆管 / 拒注入）。 */
+function scanTopLevel(cmd: string): { parts: string[]; openGroups: number } {
 	const parts: string[] = [];
 	let cur = "";
 	let quote: "'" | '"' | "`" | null = null;
+	// 当前单引号是否 $' 开头（ANSI-C 引号：内含 \' 等转义，不闭合引号）
+	let ansiC = false;
+	let depth = 0;
 	for (let i = 0; i < cmd.length; i++) {
 		const ch = cmd[i];
 		if (quote) {
 			cur += ch;
-			if (ch === "\\" && quote !== "'" && quote !== "`" && i + 1 < cmd.length) cur += cmd[++i];
+			if (ch === "\\" && quote !== "`" && (quote !== "'" || ansiC) && i + 1 < cmd.length) cur += cmd[++i];
 			else if (ch === quote) quote = null;
+			continue;
+		}
+		if (ch === "\\" && i + 1 < cmd.length) {
+			// 引号外的转义：被转义字符原样保留（`\|` 是字面竖线，不是管道）
+			cur += ch + cmd[++i];
 			continue;
 		}
 		if (ch === "'" || ch === '"' || ch === "`") {
 			quote = ch;
+			ansiC = ch === "'" && i > 0 && cmd[i - 1] === "$";
 			cur += ch;
 			continue;
 		}
-		if (ch === "|") {
+		if (ch === "(" || ch === "{") depth++;
+		else if ((ch === ")" || ch === "}") && depth > 0) depth--;
+		if (ch === "|" && cmd[i + 1] === "|") {
+			// `||` 是逻辑或，不是管道
+			cur += "||";
+			i++;
+			continue;
+		}
+		if (ch === "|" && depth === 0) {
 			parts.push(cur.trimEnd());
 			cur = "";
 			continue;
@@ -347,7 +380,7 @@ export function splitTopLevelPipes(cmd: string): string[] {
 		cur += ch;
 	}
 	parts.push(cur.trimEnd());
-	return parts;
+	return { parts, openGroups: depth };
 }
 
 type LimiterKind = "tail" | "less" | "more" | "cat";
@@ -379,8 +412,9 @@ export function detectTrailingLimiter(
 	// 与顶层 `|`，不解析括号嵌套——`cmd $(x | y)` 里替换内的管道会被误判为顶层
 	// 管道段，拆掉后直接破坏命令语义。保守正确优先，宁可少优化。
 	if (/\$\(|`/.test(command)) return null;
-	const parts = splitTopLevelPipes(command);
-	if (parts.length < 2) return null;
+	const { parts, openGroups } = scanTopLevel(command);
+	// 结尾仍有未闭合的 `{` / `(`：这条命令本身就是残的，拆管只会把组截断（#573）。
+	if (parts.length < 2 || openGroups > 0) return null;
 	// 管道分隔处可能在 `|` 后留前导空白（`| tail`），trim 掉再匹配。
 	const last = parts[parts.length - 1].trim();
 	const m = last.match(/^(tail|less|more|cat)\b(.*)$/i);
@@ -1863,8 +1897,8 @@ export function makeTerminalBashTool(
 				const sentinelNote = sentinelUnsafe
 					? pick(
 							lang,
-							`\n[注：命令以${sentinelUnsafe === "trailing_backslash" ? "续行符 \\" : "未闭合引号"}结尾，无法注入退出码哨兵——已按无退出码模式执行，拿不到真实 exit code。建议拆分成更简单的单行命令重试。]`,
-							`\n[Note: the command ends with ${sentinelUnsafe === "trailing_backslash" ? "a line-continuation backslash" : "an unclosed quote"}; the exit-code sentinel could not be injected — it ran without exit-code detection. Prefer splitting it into simpler single-line commands.]`,
+							`\n[注：命令${sentinelUnsafe === "trailing_backslash" ? "以续行符 \\ 结尾" : sentinelUnsafe === "unclosed_quote" ? "以未闭合引号结尾" : "含未闭合的 { } / ( ) 组"}，无法注入退出码哨兵——已按无退出码模式执行，拿不到真实 exit code。建议拆分成更简单的单行命令重试。]`,
+							`\n[Note: the command ${sentinelUnsafe === "trailing_backslash" ? "ends with a line-continuation backslash" : sentinelUnsafe === "unclosed_quote" ? "ends with an unclosed quote" : "has an unclosed { } / ( ) group"}; the exit-code sentinel could not be injected — it ran without exit-code detection. Prefer splitting it into simpler single-line commands.]`,
 							"terminals.bash.nosentinel.note",
 						)
 					: "";

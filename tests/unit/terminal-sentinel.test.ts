@@ -105,3 +105,42 @@ describe("detectTrailingLimiter：命令替换保守跳过拆管（audit fix #6�
 		expect(hit?.lines).toBe(3);
 	});
 });
+
+describe("括号组感知：组内 | 不是顶层管道，未闭合组不注入哨兵（#573）", () => {
+	it("花括号组内的末段 | tail 不被拆（复现原形：cmd && { …; x | tail -3; } > log）", () => {
+		expect(detectTrailingLimiter("cd /tmp && { echo HELLO; date | tail -3; } > /tmp/x.log 2>&1; echo done")).toBeNull();
+	});
+
+	it("子 shell 内的 | tail 不被拆", () => {
+		expect(detectTrailingLimiter("cd /tmp && ( echo A; date | tail -3 )")).toBeNull();
+	});
+
+	it("组外的顶层尾部管道仍照常拆，base 是完整的组", () => {
+		const hit = detectTrailingLimiter("{ echo a; echo b; } | tail -1");
+		expect(hit?.base).toBe("{ echo a; echo b; }");
+		expect(hit?.lines).toBe(1);
+	});
+
+	it("逻辑或 || 不是管道；转义的 \| 是字面竖线，都不拆", () => {
+		expect(detectTrailingLimiter("false || tail -3")).toBeNull();
+		expect(detectTrailingLimiter("echo a \\| tail -3")).toBeNull();
+	});
+
+	it("ANSI-C 引号内的 \' 不提前闭合引号，其后的顶层管道照常识别", () => {
+		const hit = detectTrailingLimiter("echo $'it\\'s' | tail -1");
+		expect(hit?.base).toBe("echo $'it\\'s'");
+	});
+
+	it("sentinelUnsafeReason：未闭合的 { / ( 组 → unclosed_group（残句不注入）", () => {
+		expect(sentinelUnsafeReason("cd /tmp && { echo HELLO; date | tail -3")).toBe("unclosed_group");
+		expect(sentinelUnsafeReason("cd /tmp && ( echo A; date")).toBe("unclosed_group");
+	});
+
+	it("sentinelUnsafeReason：括号已配平 / 参数展开 / 函数定义 / case 的 ) 不误判", () => {
+		expect(sentinelUnsafeReason("cd /tmp && { echo HELLO; date | tail -3; } > /tmp/x.log 2>&1; echo done")).toBeNull();
+		expect(sentinelUnsafeReason("echo ${HOME} && echo $((1+2))")).toBeNull();
+		expect(sentinelUnsafeReason("f() { echo a; }; f")).toBeNull();
+		expect(sentinelUnsafeReason("case x in a) echo a;; esac")).toBeNull();
+		expect(sentinelUnsafeReason("echo '{' && echo done")).toBeNull();
+	});
+});
