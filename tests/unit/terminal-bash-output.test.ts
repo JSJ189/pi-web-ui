@@ -1,8 +1,10 @@
 import { describe, expect, it } from "vitest";
 import {
 	cleanBashOutput,
+	detectTrailingLimiter,
 	makeTerminalBashTool,
 	newSentinelNonce,
+	sentinelUnsafeReason,
 	type TerminalManager,
 } from "../../server/terminals.js";
 
@@ -105,5 +107,73 @@ describe("终端接管 bash 工具端到端（假 PTY）", () => {
 	it("nonce 每次调用不同（同一输出不会跨调用串号）", () => {
 		expect(newSentinelNonce()).not.toBe(newSentinelNonce());
 		expect(newSentinelNonce()).toMatch(/^[0-9a-f]{12}$/);
+	});
+});
+
+/** #571：语法不完整的命令直接拒绝（不建终端、不注入）；`#` 注释里的撇号不算未闭合引号。 */
+describe("语法不完整：直接拒绝，不注入、不建终端（#571）", () => {
+	function spyPty() {
+		const created: string[] = [];
+		const sent: string[] = [];
+		const mgr = {
+			create: (id: string) => {
+				created.push(id);
+				return { id };
+			},
+			suspendIdleWatch: () => {},
+			endCursor: () => 0,
+			setSentinelPending: () => {},
+			watchOutput: () => () => {},
+			read: () => null,
+			inputChecked: (_id: string, data: string) => {
+				sent.push(data);
+				return null;
+			},
+		} as unknown as TerminalManager;
+		return { mgr, created, sent };
+	}
+
+	it.each([
+		["续行符结尾", "echo hi \\"],
+		["未闭合引号", 'echo "unclosed'],
+		["未闭合花括号组", "cd /tmp && { echo HELLO; date"],
+	])("%s：报「语法不完整、未执行」，既不建终端也不写入", async (_label, command) => {
+		const { mgr, created, sent } = spyPty();
+		const tool = makeTerminalBashTool(mgr, {
+			cwd: process.cwd(),
+			defaultPersist: () => false,
+			idleMs: () => 0,
+			kills: new Set(),
+			notifyBackgroundDone: () => {},
+		});
+		await expect(tool.execute("t1", { command }, undefined, undefined, undefined as never)).rejects.toThrow(
+			/语法不完整|syntactically incomplete/,
+		);
+		expect(created).toHaveLength(0);
+		expect(sent).toHaveLength(0);
+	});
+
+	it("sentinelUnsafeReason：# 注释里的撇号 / 引号不算未闭合", () => {
+		expect(sentinelUnsafeReason("echo hi # don't")).toBeNull();
+		expect(sentinelUnsafeReason('echo "a" # say "hi')).toBeNull();
+		expect(sentinelUnsafeReason("echo $# ${#arr[@]}")).toBeNull();
+		// 真残句仍然拦
+		expect(sentinelUnsafeReason("echo hi \\")).toBe("trailing_backslash");
+	});
+
+	it("detectTrailingLimiter：注释里的 | tail 不被当成管道拆掉", () => {
+		expect(detectTrailingLimiter("echo a # x | tail -3")).toBeNull();
+	});
+
+	it("带注释的正常命令端到端执行：拿到真实退出码", async () => {
+		const tool = makeTerminalBashTool(fakePty("ok\n"), {
+			cwd: process.cwd(),
+			defaultPersist: () => false,
+			idleMs: () => 0,
+			kills: new Set(),
+			notifyBackgroundDone: () => {},
+		});
+		const res = await tool.execute("t1", { command: "echo ok # don't" }, undefined, undefined, undefined as never);
+		expect((res.details as { exitCode: number }).exitCode).toBe(0);
 	});
 });

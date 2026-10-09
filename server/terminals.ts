@@ -327,6 +327,7 @@ export function sentinelUnsafeReason(
 			escaped = false;
 			continue;
 		}
+		if (ch === "#" && (i === 0 || /\s/.test(trimmed[i - 1]))) break; // 注释到行尾，不再计引号/括号
 		if (ch === "\\") {
 			escaped = true;
 			continue;
@@ -368,6 +369,11 @@ function scanTopLevel(cmd: string): { parts: string[]; openGroups: number } {
 			if (ch === "\\" && quote !== "`" && (quote !== "'" || ansiC) && i + 1 < cmd.length) cur += cmd[++i];
 			else if (ch === quote) quote = null;
 			continue;
+		}
+		if (ch === "#" && (i === 0 || /\s/.test(cmd[i - 1]))) {
+			// 词首的 # 注释到行尾：之后的 | 和引号都不是 shell 结构（否则 `echo hi # don't` 会被当成未闭合引号）
+			cur += cmd.slice(i);
+			break;
 		}
 		if (ch === "\\" && i + 1 < cmd.length) {
 			// 引号外的转义：被转义字符原样保留（`\|` 是字面竖线，不是管道）
@@ -1359,12 +1365,14 @@ export class TerminalManager {
 			.map((entry) => ({ terminalId: entry.id, data: entry.output }));
 	}
 
-	/** Read output after an absolute cursor. */
+	/** Read output after an absolute cursor.
+	 *  commandPending：终端接管 bash 注入的命令是否仍未见到退出码哨兵（即 shell 级 running
+	 *  之外的「这条命令结束了没有」）。手工 terminal_input 的命令没有哨兵，不计入。 */
 	read(
 		id: string,
 		cursor = 0,
 		maxBytes = 20_000,
-	): { data: string; cursor: number; running: boolean; exitCode: number | null } | null {
+	): { data: string; cursor: number; running: boolean; exitCode: number | null; commandPending: boolean } | null {
 		const entry = this.find(id);
 		if (!entry) return null;
 		const start = Math.max(entry.outputOffset, Math.min(cursor, entry.outputOffset + entry.output.length));
@@ -1374,6 +1382,7 @@ export class TerminalManager {
 			cursor: end,
 			running: !entry.exited,
 			exitCode: entry.exitCode,
+			commandPending: entry.sentinelPending === true,
 		};
 	}
 
@@ -1842,6 +1851,32 @@ export function makeTerminalBashTool(
 		parameters: BASH_PARAMETERS,
 		execute: async (_id, p, signal) => {
 			const lang: ServerLang = opts.lang?.() ?? "en";
+			// 语法不完整的命令（续行符结尾 / 未闭合引号 / 未闭合括号组）：交互 shell 会停在续行提示符
+			// （PS2）零执行，且无法注入退出码哨兵——没有任何办法得知它何时结束。直接拒绝，不建终端、
+			// 不注入，避免空等 60 秒后回报「仍在后台运行」这种与事实相反的状态（#571）。
+			const incomplete = sentinelUnsafeReason(detectTrailingLimiter(p.command)?.base ?? p.command);
+			if (incomplete) {
+				const reasonZh =
+					incomplete === "trailing_backslash"
+						? "以续行符 \\ 结尾"
+						: incomplete === "unclosed_quote"
+							? "存在未闭合引号"
+							: "存在未闭合的 { } / ( ) 组";
+				const reasonEn =
+					incomplete === "trailing_backslash"
+						? "ends with a line-continuation backslash"
+						: incomplete === "unclosed_quote"
+							? "has an unclosed quote"
+							: "has an unclosed { } / ( ) group";
+				throw new Error(
+					pick(
+						lang,
+						`命令语法不完整（${reasonZh}），未执行。终端接管 bash 无法为它注入退出码哨兵，残句还会让 shell 停在续行提示符、零执行。请补全引号 / 续行符 / 括号后重试。`,
+						`Command is syntactically incomplete (${reasonEn}); nothing was executed. The terminal bash path cannot inject an exit-code sentinel here, and the leftover fragment would leave the shell waiting at a continuation prompt. Complete the quote / continuation / bracket and retry.`,
+						"terminals.bash.incomplete",
+					),
+				);
+			}
 			const persist = p.persist ?? opts.defaultPersist();
 			// create() 对已存活的同名终端原样返回、对已退出的原地重启。
 			// forceBash：该终端永远跑 bash（而非用户登录 shell），模型写的
@@ -1916,21 +1951,9 @@ export function makeTerminalBashTool(
 				let collected = "";
 				let cursor = start;
 				let lastDataAt = Date.now();
-				// 尾随续行符/未闭合引号的命令无法安全注入哨兵（哨兵行会被并入命令或
-				// 吞进字符串）：按无退出码模式执行，靠静默/超时/总时长解阻收尾并注明。
 				const nonce = newSentinelNonce();
-				const sentinelUnsafe = sentinelUnsafeReason(runCommand);
-				const sentinelNote = sentinelUnsafe
-					? pick(
-							lang,
-							`\n[注：命令${sentinelUnsafe === "trailing_backslash" ? "以续行符 \\ 结尾" : sentinelUnsafe === "unclosed_quote" ? "以未闭合引号结尾" : "含未闭合的 { } / ( ) 组"}，无法注入退出码哨兵——已按无退出码模式执行，拿不到真实 exit code。建议拆分成更简单的单行命令重试。]`,
-							`\n[Note: the command ${sentinelUnsafe === "trailing_backslash" ? "ends with a line-continuation backslash" : sentinelUnsafe === "unclosed_quote" ? "ends with an unclosed quote" : "has an unclosed { } / ( ) group"}; the exit-code sentinel could not be injected — it ran without exit-code detection. Prefer splitting it into simpler single-line commands.]`,
-							"terminals.bash.nosentinel.note",
-						)
-					: "";
-				// 标记「有哨兵命令在跑」：terminal_wait 据此区分等待与空闲。
-				// 无哨兵命令没有可等待的哨兵，标记反而误导 terminal_wait。
-				if (!sentinelUnsafe) terminals.setSentinelPending(termId, true);
+				// 标记「有哨兵命令在跑」：terminal_wait / terminal_read 据此区分等待与空闲。
+				terminals.setSentinelPending(termId, true);
 				const inputErr = terminals.inputChecked(termId, buildTerminalBashLine(runCommand, tailFile, nonce) + "\r");
 				if (inputErr) throw new Error(inputErr);
 				for (;;) {
@@ -1977,8 +2000,8 @@ export function makeTerminalBashTool(
 						throw new Error(
 							pick(
 								lang,
-								`Command timed out after ${p.timeout}s（已发 Ctrl+C；已有输出：${timeoutPartial}）${sentinelNote}`,
-								`Command timed out after ${p.timeout}s (sent Ctrl+C; partial output: ${timeoutPartial})${sentinelNote}`,
+								`Command timed out after ${p.timeout}s（已发 Ctrl+C；已有输出：${timeoutPartial}）`,
+								`Command timed out after ${p.timeout}s (sent Ctrl+C; partial output: ${timeoutPartial})`,
 								"terminals.bash.timeout",
 								{ "p.timeout": p.timeout, timeoutPartial },
 							),
@@ -1990,7 +2013,7 @@ export function makeTerminalBashTool(
 							terminals,
 							opts,
 							runCommand,
-							applyHeadTail(cleanBashOutput(collected, nonce), p.head, effectiveTail, lang) + sentinelNote,
+							applyHeadTail(cleanBashOutput(collected, nonce), p.head, effectiveTail, lang),
 							Math.round((Date.now() - lastDataAt) / 1000),
 							lang,
 							nonce,
@@ -2005,7 +2028,7 @@ export function makeTerminalBashTool(
 							terminals,
 							opts,
 							runCommand,
-							applyHeadTail(cleanBashOutput(collected, nonce), p.head, effectiveTail, lang) + sentinelNote,
+							applyHeadTail(cleanBashOutput(collected, nonce), p.head, effectiveTail, lang),
 							Math.round((Date.now() - startTime) / 1000),
 							lang,
 							nonce,
@@ -2299,7 +2322,9 @@ export function makePersistentTerminalTools(
 			description:
 				"Read incremental output from a persistent PTY. " +
 				"Keep the returned cursor and pass it on the next read; " +
-				"optionally wait for new output or process exit.",
+				"optionally wait for new output or process exit. " +
+				"commandPending=true means a bash-tool command has not reported its exit code yet " +
+				"(manual terminal_input commands are not tracked).",
 			parameters: Type.Object({
 				terminalId: Type.String(),
 				cursor: Type.Optional(Type.Integer({ minimum: 0 })),
