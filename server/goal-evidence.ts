@@ -52,6 +52,13 @@ function isRecord(v: unknown): v is Record<string, unknown> {
 }
 
 /** 压成一行并封顶（提示是给人/模型扫的，不做换行）。 */
+/** 高危命中前缀：同一命令里的多处命中逐条列出（去重标签，#578）。 */
+function dangerPrefix(hits: { label: string }[]): string {
+	if (hits.length === 0) return "";
+	const labels = [...new Set(hits.map((h) => h.label))];
+	return `⚠️ [${labels.join(" / ")}] `;
+}
+
 function oneLine(v: unknown, max = 120): string {
 	if (typeof v !== "string") return "";
 	const s = v.trim().replace(/\s+/g, " ");
@@ -115,7 +122,7 @@ export function collectToolEvidence(messages: unknown, opts: EvidenceOptions = {
 		if (m.role === "bashExecution") {
 			const cmd = typeof m.command === "string" ? m.command : "";
 			const dangerHits = checkBashCommandDanger(cmd);
-			const prefix = dangerHits.length > 0 ? `⚠️ [${dangerHits[0].label}] ` : "";
+			const prefix = dangerPrefix(dangerHits);
 			out.push({
 				tool: "bash",
 				hint: `${prefix}${oneLine(m.command)}`,
@@ -133,7 +140,7 @@ export function collectToolEvidence(messages: unknown, opts: EvidenceOptions = {
 		if (effectiveTool === "bash" && hint) {
 			const dangerHits = checkBashCommandDanger(hint);
 			if (dangerHits.length > 0) {
-				hint = `⚠️ [${dangerHits[0].label}] ${hint}`;
+				hint = `${dangerPrefix(dangerHits)}${hint}`;
 			}
 		}
 		out.push({

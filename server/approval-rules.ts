@@ -33,6 +33,9 @@
 import { existsSync, readFileSync, statSync } from "node:fs";
 import { resolve, sep } from "node:path";
 import { writeJsonAtomicSync } from "./atomic-file.js";
+import { DEFAULT_APPROVAL_RULES } from "./approval-default-rules.js";
+
+export { DEFAULT_APPROVAL_RULES };
 import type { UiApprovalCategory } from "./protocol.js";
 
 /** 工具调用审批命中动作：需审批 / 直接拒绝 / 直接放行（白名单）。 */
@@ -193,6 +196,41 @@ export function extractRuleFieldValue(field: ApprovalRuleField, toolName: string
  * 单条规则针对具体工具调用的匹配详情判定（纯函数，issue #566）。
  * 匹配成功时返回匹配区间信息 { index, length, text }，否则返回 null。
  */
+/** 单条规则在一段字段文本里的全部命中区间（issue #578）。regex 规则逐次扫描、不只取首个。 */
+export function matchApprovalRuleDetails(
+	rule: ApprovalRule,
+	toolName: string,
+	params: unknown,
+	cwd: string,
+	workspaceRoots: string[] = [],
+): { index: number; length: number; text: string }[] {
+	if (!rule.enabled) return [];
+	const targetTools = rule.tools.map((t) => t.trim().toLowerCase());
+	const toolMatches = targetTools.includes("*") || targetTools.includes(toolName.trim().toLowerCase());
+	if (!toolMatches) return [];
+	if (rule.match === "regex") {
+		const fieldValue = extractRuleFieldValue(rule.field, toolName, params);
+		if (!fieldValue) return [];
+		let re: RegExp;
+		try {
+			re = new RegExp(rule.value, "gi");
+		} catch {
+			return [];
+		}
+		const out: { index: number; length: number; text: string }[] = [];
+		for (let m = re.exec(fieldValue); m; m = re.exec(fieldValue)) {
+			if (m[0].length === 0) {
+				re.lastIndex++; // 空匹配推进一位，防死循环
+				continue;
+			}
+			out.push({ index: m.index, length: m[0].length, text: m[0] });
+		}
+		return out;
+	}
+	const single = matchApprovalRuleDetail(rule, toolName, params, cwd, workspaceRoots);
+	return single ? [single] : [];
+}
+
 export function matchApprovalRuleDetail(
 	rule: ApprovalRule,
 	toolName: string,
@@ -315,21 +353,19 @@ export function evaluateApprovalRules(
 	const hits: RuleHitDetail[] = [];
 
 	for (const rule of rules) {
-		const detail = matchApprovalRuleDetail(rule, toolName, params, cwd, workspaceRoots);
-		if (detail) {
-			const catId = rule.categoryId || rule.id;
-			const category: UiApprovalCategory = {
-				id: catId,
-				label: rule.label,
-				labelEn: rule.labelEn || rule.label,
-			};
+		// 同一规则可在一段命令里出现多次（如 `git reset --hard && git clean -fd`），全部列出（#578）。
+		for (const detail of matchApprovalRuleDetails(rule, toolName, params, cwd, workspaceRoots)) {
 			if (!primary) {
 				primary = {
 					action: rule.action,
 					matchedRule: rule,
 					reason: rule.reason || rule.label,
 					reasonEn: rule.reasonEn || rule.labelEn || rule.label,
-					category,
+					category: {
+						id: rule.categoryId || rule.id,
+						label: rule.label,
+						labelEn: rule.labelEn || rule.label,
+					},
 				};
 			}
 			if (hits.length < 10) {
@@ -358,9 +394,6 @@ export function evaluateApprovalRules(
 	return { action: "none" };
 }
 
-/**
- * 纯命令文本的高危规则快速检测（用于对话卡片终端行即时高亮与审查证据打标，issue #566）。
- */
 export function checkBashCommandDanger(
 	command: string,
 	rules: ApprovalRule[] = DEFAULT_APPROVAL_RULES,
@@ -369,164 +402,6 @@ export function checkBashCommandDanger(
 	const res = evaluateApprovalRules(rules, "bash", { command }, "");
 	return res.hits ?? [];
 }
-
-/**
- * 内置默认审批规则（与 server/tool-approval.ts 既有内置检测表保持 100% 同口径与同一 id）。
- */
-export const DEFAULT_APPROVAL_RULES: ApprovalRule[] = [
-	{
-		id: "builtin.bash.rm-rf",
-		enabled: true,
-		tools: ["bash"],
-		field: "command",
-		match: "regex",
-		value:
-			"\\brm\\s+((-[a-zA-Z0-9]*[rf][a-zA-Z0-9]*|--recursive|--force)\\s+)+(((\\/)|(~)|(\\.\\.)|(\\*)|(\\.\\/))|[a-zA-Z]:[\\\\/])",
-		action: "ask",
-		label: "递归/强制删除 (rm -rf)",
-		labelEn: "Recursive/force delete (rm -rf)",
-		reason: "检测到高风险的递归/强制删除大范围路径命令 (rm -rf)",
-		reasonEn: "Detected high-risk recursive/force deletion of wide paths (rm -rf)",
-		categoryId: "bash.rm-rf",
-		builtin: true,
-	},
-	{
-		id: "builtin.bash.win-del",
-		enabled: true,
-		tools: ["bash"],
-		field: "command",
-		match: "regex",
-		value: "\\b(del|rmdir|rd)\\s+[/\\-][fsq]",
-		action: "ask",
-		label: "Windows 强制删除 (del/rmdir/rd)",
-		labelEn: "Windows force delete (del/rmdir/rd)",
-		reason: "检测到高风险的 Windows 强制/递归删除目录命令 (del/rmdir/rd /s /q)",
-		reasonEn: "Detected high-risk Windows force/recursive deletion command (del/rmdir/rd /s /q)",
-		categoryId: "bash.win-del",
-		builtin: true,
-	},
-	{
-		id: "builtin.bash.disk",
-		enabled: true,
-		tools: ["bash"],
-		field: "command",
-		match: "regex",
-		value: "\\b(mkfs|format\\s+[a-zA-Z]:|dd\\s+if=)",
-		action: "ask",
-		label: "磁盘格式化/底层写入",
-		labelEn: "Disk format / raw block write",
-		reason: "检测到磁盘格式化或底层块写入危险命令 (format/mkfs/dd)",
-		reasonEn: "Detected dangerous disk formatting or raw block write command (format/mkfs/dd)",
-		categoryId: "bash.disk",
-		builtin: true,
-	},
-	{
-		id: "builtin.bash.git-destructive",
-		enabled: true,
-		tools: ["bash"],
-		field: "command",
-		match: "regex",
-		value:
-			"\\bgit\\s+(push\\s+.*?(--force|-[a-zA-Z0-9]*f)\\b|reset\\s+--hard|clean\\s+-[a-zA-Z0-9]*f|branch\\s+-[dD]\\b)",
-		action: "ask",
-		label: "破坏性 Git 操作",
-		labelEn: "Destructive git operation",
-		reason: "检测到不可逆的破坏性 Git 操作 (force push / reset --hard / clean -f)",
-		reasonEn: "Detected irreversible destructive Git operation (force push / reset --hard / clean -f)",
-		categoryId: "bash.git-destructive",
-		builtin: true,
-	},
-	{
-		id: "builtin.bash.chmod",
-		enabled: true,
-		tools: ["bash"],
-		field: "command",
-		match: "regex",
-		value: "\\bchmod\\s+(-R\\s+)?(777|000)\\b",
-		action: "ask",
-		label: "危险权限修改 (chmod)",
-		labelEn: "Dangerous permission change (chmod)",
-		reason: "检测到过度开放或全局破坏性的文件权限修改 (chmod 777/000)",
-		reasonEn: "Detected overly permissive or globally destructive file permission change (chmod 777/000)",
-		categoryId: "bash.chmod",
-		builtin: true,
-	},
-	{
-		id: "builtin.bash.system-redirect",
-		enabled: true,
-		tools: ["bash"],
-		field: "command",
-		match: "regex",
-		value: ">\\s*(\\/etc\\/|\\/boot\\/|C:\\\\Windows)",
-		action: "ask",
-		label: "写入系统关键目录",
-		labelEn: "Write into system directories",
-		reason: "检测到重定向写入系统关键目录的危险操作",
-		reasonEn: "Detected dangerous redirection writing into critical system directories",
-		categoryId: "bash.system-redirect",
-		builtin: true,
-	},
-	{
-		id: "builtin.file.sensitive.env",
-		enabled: true,
-		tools: ["write", "edit", "edit_soft"],
-		field: "path",
-		match: "regex",
-		value: "(^|[\\/\\\\])\\.env(\\.[a-zA-Z0-9_-]+)?$",
-		action: "ask",
-		label: "敏感配置 (.env)",
-		labelEn: "Sensitive config (.env)",
-		reason: "尝试修改敏感环境变量/密钥配置文件 (.env)",
-		reasonEn: "Attempting to modify sensitive environment/secret configuration (.env)",
-		categoryId: "file.sensitive.env",
-		builtin: true,
-	},
-	{
-		id: "builtin.file.sensitive.ssh",
-		enabled: true,
-		tools: ["write", "edit", "edit_soft"],
-		field: "path",
-		match: "regex",
-		value: "(^|[\\/\\\\])(id_rsa|id_ed25519|authorized_keys|known_hosts)$",
-		action: "ask",
-		label: "SSH 密钥/凭据",
-		labelEn: "SSH keys / credentials",
-		reason: "尝试修改 SSH 密钥或认证凭据文件",
-		reasonEn: "Attempting to modify SSH keys or authentication credentials",
-		categoryId: "file.sensitive.ssh",
-		builtin: true,
-	},
-	{
-		id: "builtin.file.sensitive.shell",
-		enabled: true,
-		tools: ["write", "edit", "edit_soft"],
-		field: "path",
-		match: "regex",
-		value: "(^|[\\/\\\\])(\\.bashrc|\\.zshrc|\\.profile|\\.bash_profile)$",
-		action: "ask",
-		label: "Shell 启动配置",
-		labelEn: "Shell profile",
-		reason: "尝试修改用户全局 Shell 启动配置文件",
-		reasonEn: "Attempting to modify user global Shell profile configuration",
-		categoryId: "file.sensitive.shell",
-		builtin: true,
-	},
-	{
-		id: "builtin.file.outside-workspace",
-		enabled: true,
-		tools: ["write", "edit", "edit_soft"],
-		field: "path",
-		match: "outside_workspace",
-		value: "",
-		action: "ask",
-		label: "工作区外写入",
-		labelEn: "Write outside workspace",
-		reason: "尝试在工作区外部写入/修改文件",
-		reasonEn: "Attempting to write/modify file outside the workspace",
-		categoryId: "file.outside-workspace",
-		builtin: true,
-	},
-];
 
 /** 归一化输入规则。脏数据或非法规则返回 null。 */
 export function normalizeApprovalRule(raw: unknown): ApprovalRule | null {

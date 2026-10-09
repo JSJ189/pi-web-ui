@@ -1,5 +1,6 @@
 import type { ReactNode } from "react";
 import type { UiApprovalHit } from "./types";
+import { DEFAULT_APPROVAL_RULES } from "../../server/approval-default-rules.js";
 
 export interface DangerousSegment {
 	start: number;
@@ -7,44 +8,15 @@ export interface DangerousSegment {
 	label?: string;
 }
 
-const DANGEROUS_REGEXES: { re: RegExp; label: string }[] = [
-	{
-		re: /\brm\s+((-[a-zA-Z0-9]*[rf][a-zA-Z0-9]*|--recursive|--force)\s+)+(((\/)|(~)|(\.\.)|(\*)|(\.\/))|[a-zA-Z]:[\\/])/i,
-		label: "rm -rf (递归/强制删除)",
-	},
-	{
-		re: /\b(del|rmdir|rd)\s+[/-][fsq]/i,
-		label: "Windows 强制删除 (del/rmdir/rd)",
-	},
-	{
-		re: /\b(mkfs|dd\s+if=.*of=\/dev\/[sh]d|fdisk|parted)\b/i,
-		label: "底层磁盘/格式化操作",
-	},
-	{
-		re: /\b(curl|wget)\s+.*\|\s*(bash|sh|zsh)\b/i,
-		label: "管道下载执行远程脚本",
-	},
-	{
-		re: /\bchmod\s+(-R\s+)?(777|a\+rwx)\b/i,
-		label: "放开全局写/执行权限 (chmod 777)",
-	},
-	{
-		re: /\bgit\s+(reset\s+--hard|clean\s+-[a-zA-Z]*f)/i,
-		label: "Git 破坏性未提交修改丢弃",
-	},
-	{
-		re: /\b(shutdown|reboot|poweroff|init\s+0|halt)\b/i,
-		label: "关机/重启",
-	},
-	{
-		re: />\s*\/dev\/[sh]d[a-z]/i,
-		label: "直接覆写原始磁盘设备",
-	},
-	{
-		re: /:\(\)\s*\{\s*:\s*\|\s*:\s*&\s*\}\s*;\s*:/i,
-		label: "Bash Fork Bomb",
-	},
-];
+/**
+ * 无服务端命中清单时的降级高亮（对话卡片 / 已执行命令）。
+ * 与服务端 evaluateApprovalRules 共用同一份内置规则表（issue #578：不再维护前端第二份黑名单），
+ * 这里只取「命令字段 + 正则」这一类规则——高亮只需要它们。
+ */
+const FALLBACK_RULES = DEFAULT_APPROVAL_RULES.filter(
+	(r) =>
+		r.enabled && r.field === "command" && r.match === "regex" && r.tools.some((t) => t.trim().toLowerCase() === "bash"),
+);
 
 function mergeSegments(segments: DangerousSegment[]): DangerousSegment[] {
 	if (segments.length <= 1) return segments;
@@ -85,14 +57,17 @@ export function findDangerousBashSegments(command: string, hits?: UiApprovalHit[
 	}
 
 	const found: DangerousSegment[] = [];
-	for (const { re, label } of DANGEROUS_REGEXES) {
-		const m = re.exec(command);
-		if (m && m[0].length > 0) {
-			found.push({
-				start: m.index,
-				end: m.index + m[0].length,
-				label,
-			});
+	for (const rule of FALLBACK_RULES) {
+		let re: RegExp;
+		try {
+			re = new RegExp(rule.value, "gi");
+		} catch {
+			continue;
+		}
+		// 同一规则在一段命令里可能多次出现，全部标出（#578）
+		for (const m of command.matchAll(re)) {
+			const start = m.index ?? 0;
+			if (m[0].length > 0) found.push({ start, end: start + m[0].length, label: rule.label });
 		}
 	}
 	return mergeSegments(found);
