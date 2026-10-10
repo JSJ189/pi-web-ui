@@ -60,7 +60,7 @@ jobs:
           retention-days: 1
 
       - name: Sign Windows installer with SignPath
-        uses: signpath/github-action-submit-signing-request@v2
+        uses: signpath/github-action-submit-signing-request@v3
         with:
           api-token: ${{ secrets.SIGNPATH_API_TOKEN }}
           organization-id: "3de26332-3db9-4d2a-b7cd-33ca0c263a6e"
