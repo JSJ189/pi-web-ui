@@ -17,7 +17,7 @@ import { existsSync } from "node:fs";
 import { createServer } from "node:net";
 import { homedir } from "node:os";
 import { dirname, join } from "node:path";
-import { fileURLToPath } from "node:url";
+import { fileURLToPath, pathToFileURL } from "node:url";
 import { isAllowedExternalUrl } from "./external-url.js";
 
 const here = dirname(fileURLToPath(import.meta.url));
@@ -123,7 +123,14 @@ async function startServerSidecar(): Promise<string> {
 	const sdkHook = join(dirname(entry), "resolve-global-sdk.js");
 	serverProc = spawn(
 		process.execPath,
-		[...(existsSync(sdkHook) ? ["--import", sdkHook] : []), entry, "--host", "127.0.0.1", "--port", String(port)],
+		[
+			...(existsSync(sdkHook) ? ["--import", pathToFileURL(sdkHook).href] : []),
+			entry,
+			"--host",
+			"127.0.0.1",
+			"--port",
+			String(port),
+		],
 		{
 			env: {
 				...process.env,

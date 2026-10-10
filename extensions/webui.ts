@@ -18,10 +18,10 @@
  */
 
 import { spawn, execSync } from "node:child_process";
-import { existsSync } from "node:fs";
+import { closeSync, existsSync, mkdirSync, openSync } from "node:fs";
 import { homedir } from "node:os";
 import { dirname, join, resolve } from "node:path";
-import { fileURLToPath } from "node:url";
+import { fileURLToPath, pathToFileURL } from "node:url";
 import net from "node:net";
 import type { ExtensionAPI, ExtensionCommandContext } from "@earendil-works/pi-coding-agent";
 
@@ -92,10 +92,27 @@ interface RunningServer {
 	port: number;
 	cwd: string;
 	url: string;
+	logFile?: string;
+	stop: () => void;
 }
 
 // 会话 → 运行实例（模块级 Map；每会话一个会话对象，无需清理全局）
 const running = new Map<string, RunningServer>();
+
+/**
+ * 组装子进程参数。
+ * hookPath（resolve-global-sdk.js）必须以 file:// URL 形式传给 --import，
+ * 否则在 Windows 上传裸盘符路径（如 C:\...）会触发 Node ESM 的 ERR_UNSUPPORTED_ESM_URL_SCHEME 异常（issue #420 / #580）。
+ */
+export function buildNodeArgs(
+	entry: string,
+	hookPath?: string,
+	hookExists = hookPath ? existsSync(hookPath) : false,
+): string[] {
+	return hookPath && hookExists ? ["--import", pathToFileURL(hookPath).href, entry] : [entry];
+}
+
+export { running };
 
 /** 找一个空闲端口 */
 function findFreePort(from = 8787): Promise<number> {
@@ -162,11 +179,13 @@ export default function (pi: ExtensionAPI): void {
 			// 停止
 			if (action === "stop" || action === "kill") {
 				const inst = running.get(sid);
-				if (!inst) {
+				const alive = inst && inst.proc.exitCode === null && inst.proc.signalCode === null;
+				if (!inst || !alive) {
+					running.delete(sid);
 					ctx.ui.notify("没有正在运行的本机 pi-web-ui 服务器", "info");
 					return;
 				}
-				inst.proc.kill("SIGTERM");
+				inst.stop();
 				running.delete(sid);
 				ctx.ui.notify(`已停止 pi-web-ui (${inst.url})`, "info");
 				return;
@@ -179,13 +198,21 @@ export default function (pi: ExtensionAPI): void {
 					ctx.ui.notify("本机 pi-web-ui 未运行", "info");
 					return;
 				}
-				const alive = inst.proc.exitCode === null;
-				ctx.ui.notify(
-					alive
-						? `pi-web-ui 运行中 → ${inst.url}\n端口 ${inst.port} · cwd ${inst.cwd}`
-						: `已退出(exit=${inst.proc.exitCode})`,
-					alive ? "info" : "warning",
-				);
+				const alive = inst.proc.exitCode === null && inst.proc.signalCode === null;
+				if (alive) {
+					ctx.ui.notify(
+						`pi-web-ui 运行中 → ${inst.url}\n端口 ${inst.port} · cwd ${inst.cwd}${inst.logFile ? `\n日志: ${inst.logFile}` : ""}`,
+						"info",
+					);
+				} else {
+					const exit =
+						inst.proc.exitCode !== null
+							? `exit=${inst.proc.exitCode}`
+							: inst.proc.signalCode
+								? `signal=${inst.proc.signalCode}`
+								: "unknown";
+					ctx.ui.notify(`pi-web-ui 已退出 (${exit})${inst.logFile ? ` · 日志: ${inst.logFile}` : ""}`, "warning");
+				}
 				return;
 			}
 
@@ -197,7 +224,7 @@ export default function (pi: ExtensionAPI): void {
 
 			// 已运行则提示
 			const existing = running.get(sid);
-			if (existing && existing.proc.exitCode === null) {
+			if (existing && existing.proc.exitCode === null && existing.proc.signalCode === null) {
 				ctx.ui.notify(`pi-web-ui 已在运行 → ${existing.url}`, "info");
 				return;
 			}
@@ -226,34 +253,73 @@ export default function (pi: ExtensionAPI): void {
 				}
 			} catch {}
 
+			const dataDir = process.env.PI_WEB_DATA_DIR ? resolve(process.env.PI_WEB_DATA_DIR) : join(cwd, ".pi-web");
 			const env = {
 				...process.env,
 				PORT: String(port),
 				PI_WEB_PORT: String(port), // server/index.js 读取 PI_WEB_PORT
 				PI_WEB_CWD: cwd,
 				...(hostSdkDir ? { PI_WEB_SDK_DIR: hostSdkDir } : {}),
-				...(process.env.PI_WEB_DATA_DIR ? {} : { PI_WEB_DATA_DIR: join(cwd, ".pi-web") }),
+				PI_WEB_DATA_DIR: dataDir,
 			};
 			const hookPath = join(PKG_ROOT, "dist", "server", "resolve-global-sdk.js");
-			const nodeArgs = existsSync(hookPath) ? ["--import", hookPath, SERVER_ENTRY] : [SERVER_ENTRY];
+			const nodeArgs = buildNodeArgs(SERVER_ENTRY, hookPath);
+
+			let logFile: string | undefined;
+			let logFd: number | "ignore" = "ignore";
+			try {
+				mkdirSync(dataDir, { recursive: true });
+				logFile = join(dataDir, "webui.log");
+				logFd = openSync(logFile, "a");
+			} catch {
+				/* 无法创建日志目录或文件时静默回退 ignore */
+			}
+
 			const proc = spawn(NODE, nodeArgs, {
 				cwd,
 				env,
-				stdio: "ignore",
+				stdio: ["ignore", logFd, logFd],
 				detached: process.platform !== "win32",
 				windowsHide: true,
 			});
+			if (typeof logFd === "number") {
+				try {
+					closeSync(logFd);
+				} catch {}
+			}
 			proc.unref();
-			running.set(sid, { proc, port, cwd, url });
+
+			let stoppedManually = false;
+			const startTime = Date.now();
+			const inst: RunningServer = {
+				proc,
+				port,
+				cwd,
+				url,
+				logFile,
+				stop: () => {
+					stoppedManually = true;
+					proc.kill("SIGTERM");
+				},
+			};
+			running.set(sid, inst);
+
+			proc.on("error", (err) => {
+				ctx.ui.notify(`pi-web-ui 启动失败: ${err.message}${logFile ? `\n日志: ${logFile}` : ""}`, "error");
+			});
+
+			proc.on("exit", (code, signal) => {
+				const duration = Date.now() - startTime;
+				// 启动后 15 秒内非手动停止的异常退出，向用户告警
+				if (!stoppedManually && (code !== 0 || signal !== null) && duration < 15000) {
+					const reason = code !== null ? `exit=${code}` : `signal=${signal}`;
+					ctx.ui.notify(`pi-web-ui 启动异常退出 (${reason})。\n${logFile ? `查看日志: ${logFile}` : ""}`, "error");
+				}
+			});
 
 			ctx.ui.notify(`pi-web-ui 启动中 → ${url}\n端口 ${port} · cwd ${cwd}\n(几秒后可用，/webui status 查看)`);
 
 			if (!opts.noBrowser) await openBrowser(url);
-
-			// 进程退出时清理
-			proc.on("exit", () => {
-				if (running.get(sid)?.proc === proc) running.delete(sid);
-			});
 		},
 	});
 
@@ -261,9 +327,9 @@ export default function (pi: ExtensionAPI): void {
 	pi.on("session_shutdown", async (_event, ctx) => {
 		const sid = ctx.sessionManager.getSessionId();
 		const inst = running.get(sid);
-		if (inst && inst.proc.exitCode === null) {
-			inst.proc.kill("SIGTERM");
-			running.delete(sid);
+		if (inst && inst.proc.exitCode === null && inst.proc.signalCode === null) {
+			inst.stop();
 		}
+		running.delete(sid);
 	});
 }
