@@ -36,6 +36,7 @@ const DEFAULT_CONFIG = {
 	},
 	pollSec: 60,
 	notifyEnabled: true,
+	transModel: "",
 };
 
 function esc(s) {
@@ -94,6 +95,7 @@ export default {
 			toolUnregister: null,
 			/** registerBackgroundTask 的句柄（后台任务面板里的邮件轮询）。 */
 			bgTask: null,
+			availableModels: [],
 		};
 
 		// ------------------------------------------------------------------
@@ -201,7 +203,9 @@ export default {
 					},
 					pollSec: c?.pollSec ?? 60,
 					notifyEnabled: c?.notifyEnabled !== false,
+					transModel: c?.transModel ?? "",
 				},
+				models: st.availableModels || [],
 			};
 		}
 		function broadcastState() {
@@ -431,6 +435,35 @@ export default {
 				.slice(0, Math.min(Number(limit) || 20, 50));
 		}
 
+		/**
+		 * 深度清洗邮件纯文本（处理 Steam 等发件方在 text/plain 中残留的 &nbsp; 实体与泄露的 CSS 样式块）。
+		 */
+		function cleanMailPlainText(raw) {
+			return (
+				String(raw ?? "")
+					.replace(/\r\n/g, "\n")
+					// 1. 解码 HTML 命名与数字实体
+					.replace(/&nbsp;/gi, " ")
+					.replace(/&amp;/gi, "&")
+					.replace(/&lt;/gi, "<")
+					.replace(/&gt;/gi, ">")
+					.replace(/&quot;/gi, '"')
+					.replace(/&#39;|&apos;/gi, "'")
+					.replace(/&copy;/gi, "©")
+					.replace(/&ndash;/gi, "–")
+					.replace(/&mdash;/gi, "—")
+					.replace(/&#(\d+);/g, (_, dec) => String.fromCharCode(Number(dec)))
+					.replace(/&#x([0-9a-f]+);/gi, (_, hex) => String.fromCharCode(parseInt(hex, 16)))
+					// 2. 剥除 @media 块与发件方错误遗留在纯文本中的跨行 CSS 规则块（如 Steam 的 td, p, h1 { ... }）
+					.replace(/@media[^{]+\{(?:[^{}]*\{[^{}]*\})*[^{}]*\}/gi, "\n")
+					.replace(/(?:^|\n)[ \t]*(?:[a-z0-9_.*#\-:>+, \t]+\n)*[ \t]*[a-z0-9_.*#\-:>+, \t]+\{[^{}]*\}/gi, "\n")
+					// 3. 折叠连续空行與行尾空白
+					.replace(/[ \t]+\n/g, "\n")
+					.replace(/\n{3,}/g, "\n\n")
+					.trim()
+			);
+		}
+
 		async function readMail({ folder = "INBOX", uid } = {}) {
 			if (!uid) throw new Error("缺少 uid");
 			return withMailbox(folder, async (client) => {
@@ -442,17 +475,27 @@ export default {
 				const raw = msg.source;
 				const { simpleParser } = st.deps.mailparser;
 				const parsed = await simpleParser(raw);
-				const text =
+				const rawText =
 					parsed.text ||
 					String(parsed.html ?? "")
 						.replace(/<style[\s\S]*?<\/style>/gi, "")
 						.replace(/<script[\s\S]*?<\/script>/gi, "")
-						.replace(/<[^>]+>/g, " ")
-						.replace(/\s+/g, " ")
-						.trim();
+						.replace(/<br\s*\/?>/gi, "\n")
+						.replace(/<\/(p|div|tr|li|h[1-6])>/gi, "\n")
+						.replace(/<[^>]+>/g, " ");
+				const text = cleanMailPlainText(rawText);
+				let safeHtml = "";
+				if (parsed.html) {
+					safeHtml = String(parsed.html)
+						.replace(/<script[\s\S]*?<\/script>/gi, "")
+						.replace(/\son\w+\s*=\s*(['"])[\s\S]*?\1/gi, "")
+						.replace(/\bhref\s*=\s*(['"])javascript:[^'"]*\1/gi, 'href="#"')
+						.slice(0, BODY_LIMIT * 4);
+				}
 				return {
 					...meta,
 					text: text.slice(0, BODY_LIMIT),
+					html: safeHtml || undefined,
 					truncated: text.length > BODY_LIMIT,
 					hasAttachments: (parsed.attachments ?? []).length > 0,
 				};
@@ -498,25 +541,297 @@ export default {
 			});
 		}
 
-		async function sendMail({ to, cc, subject, body } = {}) {
+		/** 简易剥离 HTML 标签生成兜底纯文本（用于只有 html 没有降级 body 时的回退）。 */
+		function stripHtmlTags(html) {
+			return String(html ?? "")
+				.replace(/<style[\s\S]*?<\/style>/gi, "")
+				.replace(/<script[\s\S]*?<\/script>/gi, "")
+				.replace(/<br\s*[\/]?>/gi, "\n")
+				.replace(/<\/(p|div|tr|li|h[1-6])>/gi, "\n")
+				.replace(/<[^>]+>/g, " ")
+				.replace(/&nbsp;/gi, " ")
+				.replace(/&amp;/gi, "&")
+				.replace(/&lt;/gi, "<")
+				.replace(/&gt;/gi, ">")
+				.replace(/&quot;/gi, '"')
+				.replace(/&#39;/gi, "'")
+				.replace(/[ \t]+/g, " ")
+				.replace(/\n\s*\n\s*\n/g, "\n\n")
+				.trim();
+		}
+
+		/** 外发邮件正文体积上限（256KB）。 */
+		const SEND_BODY_LIMIT = 256 * 1024;
+
+		async function sendMail({ to, cc, subject, body, html } = {}) {
 			const nd = st.deps.nodemailer;
 			if (!nd) throw new Error("依赖未安装：请在设置面板点「安装依赖」");
 			const c = st.config?.smtp;
 			if (!c?.host || !c?.user) throw new Error("尚未配置 SMTP 账号");
+
+			let textBody = body != null ? String(body) : "";
+			let htmlBody = html ? String(html) : undefined;
+
+			// 当只提供了 html 没有 body 时，剥离标签作为纯文本降级兜底
+			if (!textBody && htmlBody) {
+				textBody = stripHtmlTags(htmlBody);
+			}
+
+			if (textBody.length > SEND_BODY_LIMIT) {
+				throw new Error(`正文超出大小上限（${Math.round(SEND_BODY_LIMIT / 1024)}KB）`);
+			}
+			if (htmlBody && htmlBody.length > SEND_BODY_LIMIT) {
+				throw new Error(`HTML 正文超出大小上限（${Math.round(SEND_BODY_LIMIT / 1024)}KB）`);
+			}
+
+			// 防御性过滤：剥除潜在恶意的 script 标签与伪协议链接
+			if (htmlBody) {
+				htmlBody = htmlBody
+					.replace(/<script[\s\S]*?<\/script>/gi, "")
+					.replace(/\bhref\s*=\s*(['"])javascript:[^'"]*\1/gi, 'href="#"')
+					.replace(/\bsrc\s*=\s*(['"])javascript:[^'"]*\1/gi, 'src=""');
+			}
+
 			const transport = nd.createTransport({
 				host: c.host,
 				port: Number(c.port) || 465,
 				secure: c.tls !== false,
 				auth: { user: c.user, pass: c.pass ?? "" },
 			});
-			const info = await transport.sendMail({
-				from: c.from || c.user,
+			let sender = c.from || c.user;
+			if (sender && !sender.includes("@")) {
+				sender = `"${sender}" <${c.user}>`;
+			}
+			const mailOptions = {
+				from: sender,
 				to: String(to ?? ""),
 				cc: cc ? String(cc) : undefined,
 				subject: String(subject ?? "(无主题)"),
-				text: String(body ?? ""),
-			});
+				text: textBody,
+			};
+			if (htmlBody) {
+				mailOptions.html = htmlBody;
+			}
+			const info = await transport.sendMail(mailOptions);
 			return { messageId: info.messageId, accepted: info.accepted };
+		}
+
+		// ------------------------------------------------------------------
+		// 邮件翻译支持（可选大模型 LLM 直调，回退 Google Translate / MyMemory）
+		// ------------------------------------------------------------------
+		async function refreshModels() {
+			try {
+				const list = await host.models?.list?.();
+				if (Array.isArray(list)) st.availableModels = list;
+			} catch {
+				st.availableModels = [];
+			}
+		}
+
+		async function translateWithLlm(text, targetLang, modelId) {
+			if (!host.llm?.complete) throw new Error("宿主未支持 host.llm 直调");
+			const langName = targetLang === "en" ? "English" : "Chinese";
+			const prompt = `Translate the following email content into natural ${langName}. Preserve formatting, line breaks and paragraphs. Output ONLY the translated text without conversational intro or explanations:\n\n${text}`;
+			const req = {
+				prompt,
+				system: "You are a professional email translator. Output only the translation accurately.",
+				maxChars: 16000,
+				timeoutMs: 60000,
+			};
+			if (modelId && modelId !== "current") {
+				req.model = modelId;
+			}
+			const res = await host.llm.complete(req);
+			if (res.ok && res.text) {
+				return { text: res.text.trim(), model: res.model || modelId || "LLM" };
+			}
+			throw new Error(res.error || "模型补全返回为空");
+		}
+
+		async function fetchWithTimeout(url, opts = {}, timeoutMs = 8000) {
+			const controller = new AbortController();
+			const id = setTimeout(() => controller.abort(), timeoutMs);
+			try {
+				return await fetch(url, { ...opts, signal: controller.signal });
+			} finally {
+				clearTimeout(id);
+			}
+		}
+
+		async function translateChunkGoogle(text, targetLang) {
+			const q = encodeURIComponent(text);
+			const tl = encodeURIComponent(targetLang);
+			const url = `https://translate.googleapis.com/translate_a/single?client=gtx&sl=auto&tl=${tl}&dt=t&q=${q}`;
+			const res = await fetchWithTimeout(url);
+			if (!res.ok) throw new Error(`Google HTTP ${res.status}`);
+			const data = await res.json();
+			if (Array.isArray(data?.[0])) {
+				return data[0].map((item) => (Array.isArray(item) ? item[0] : "")).join("");
+			}
+			throw new Error("Google 返回格式异常");
+		}
+
+		async function translateChunkMyMemory(text, targetLang) {
+			const q = encodeURIComponent(text);
+			const tl = encodeURIComponent(targetLang);
+			const url = `https://api.mymemory.translated.net/get?q=${q}&langpair=auto|${tl}`;
+			const res = await fetchWithTimeout(url);
+			if (!res.ok) throw new Error(`MyMemory HTTP ${res.status}`);
+			const data = await res.json();
+			const trans = data?.responseData?.translatedText;
+			if (trans) return trans;
+			throw new Error(data?.responseDetails || "MyMemory 返回为空");
+		}
+
+		async function translateChunk(text, targetLang) {
+			if (!text || !text.trim()) return text;
+			try {
+				return await translateChunkGoogle(text, targetLang);
+			} catch (errGoogle) {
+				try {
+					return await translateChunkMyMemory(text, targetLang);
+				} catch (errMyMem) {
+					throw new Error(`翻译请求失败（Google: ${errGoogle?.message}；MyMemory: ${errMyMem?.message}）`);
+				}
+			}
+		}
+
+		async function translateLongText(text, targetLang) {
+			if (!text || !text.trim()) return text;
+			const paragraphs = text.split("\n");
+			const chunks = [];
+			let cur = "";
+			for (const p of paragraphs) {
+				if (cur && cur.length + p.length + 1 > 1200) {
+					chunks.push(cur);
+					cur = p;
+				} else {
+					cur = cur ? `${cur}\n${p}` : p;
+				}
+			}
+			if (cur) chunks.push(cur);
+
+			const translatedChunks = [];
+			for (const chunk of chunks) {
+				if (!chunk.trim()) {
+					translatedChunks.push(chunk);
+					continue;
+				}
+				const t = await translateChunk(chunk, targetLang);
+				translatedChunks.push(t);
+			}
+			return translatedChunks.join("\n");
+		}
+
+		/**
+		 * 翻译前清洗与保护 URL：
+		 * 1) 剥除纯图片地址占位符 [https://.../logo.png]
+		 * 2) 将 [https://...] 或长 URL 替换为简短占位符 [[URL_N]]，避免长追踪码污染翻译或浪费 Token
+		 */
+		function protectUrlsForTranslation(rawText) {
+			const urls = [];
+			let cleaned = cleanMailPlainText(rawText)
+				// 移除单独成行或内联的纯图片资源占位 [https://.../xxx.png]
+				.replace(/\[https?:\/\/[^\s\]]+\.(?:png|jpe?g|gif|svg|webp|ico)(?:\?[^\s\]]*)?\]/gi, "")
+				// 折叠多余空行
+				.replace(/\n{3,}/g, "\n\n");
+
+			// 保护括起的链接 [https://...] 与裸露的 URL
+			cleaned = cleaned.replace(/\[https?:\/\/[^\s\]]+\]|https?:\/\/\S+/gi, (match) => {
+				const idx = urls.length;
+				urls.push(match);
+				return `[[URL_${idx}]]`;
+			});
+			return { cleaned: cleaned.trim(), urls };
+		}
+
+		function restoreProtectedUrls(translatedText, urls) {
+			if (!urls || !urls.length) return translatedText;
+			return String(translatedText ?? "").replace(/\[\[\s*URL_(\d+)\s*\]\]/gi, (_, n) => {
+				const idx = Number(n);
+				return urls[idx] !== undefined ? urls[idx] : "";
+			});
+		}
+
+		async function translateMailContent({ subject, text, targetLang, model } = {}) {
+			const s = String(subject ?? "").trim();
+			const rawB = String(text ?? "").trim();
+			if (!s && !rawB) throw new Error("邮件内容为空，无需翻译");
+
+			const { cleaned: b, urls } = protectUrlsForTranslation(rawB);
+
+			// 自动判定目标语言：若未指定，采样判断是否含较多中文
+			let tl = targetLang;
+			if (!tl) {
+				const sample = `${s} ${b}`.slice(0, 300);
+				const hanCount = (sample.match(/[\u4e00-\u9fa5]/g) || []).length;
+				const isChinese = hanCount >= 5 && hanCount / sample.length > 0.15;
+				tl = isChinese ? "en" : "zh-CN";
+			}
+
+			// 选择翻译引擎：参数指定优先，其次看全局配置
+			const chosenModel = model !== undefined ? model : st.config?.transModel || "";
+			if (chosenModel && chosenModel !== "") {
+				// 选用大模型进行智能翻译
+				try {
+					let translatedSubject = "";
+					let translatedText = "";
+					let modelUsed = chosenModel;
+
+					if (s && b) {
+						// 标题与正文拼接一次调用大模型，节省 token 与时间
+						const combined = `<<SUBJECT>>\n${s}\n<</SUBJECT>>\n<<BODY>>\n${b}\n<</BODY>>`;
+						const res = await translateWithLlm(combined, tl, chosenModel);
+						modelUsed = res.model;
+						const matchSubj = res.text.match(/<<SUBJECT>>\s*([\s\S]*?)\s*<<\/SUBJECT>>/i);
+						const matchBody = res.text.match(/<<BODY>>\s*([\s\S]*?)\s*<<\/BODY>>/i);
+						if (matchSubj && matchBody) {
+							translatedSubject = matchSubj[1].trim();
+							translatedText = matchBody[1].trim();
+						} else {
+							// 降级分两段调
+							const [ts, tb] = await Promise.all([
+								translateWithLlm(s, tl, chosenModel),
+								translateWithLlm(b, tl, chosenModel),
+							]);
+							translatedSubject = ts.text;
+							translatedText = tb.text;
+						}
+					} else if (s) {
+						const res = await translateWithLlm(s, tl, chosenModel);
+						translatedSubject = res.text;
+						modelUsed = res.model;
+					} else {
+						const res = await translateWithLlm(b, tl, chosenModel);
+						translatedText = res.text;
+						modelUsed = res.model;
+					}
+
+					return {
+						translatedSubject,
+						translatedText: restoreProtectedUrls(translatedText, urls),
+						targetLang: tl,
+						engine: "llm",
+						model: modelUsed,
+					};
+				} catch (errLlm) {
+					host.log(`大模型翻译失败 (${errLlm?.message})，自动回退到快速公共引擎`);
+				}
+			}
+
+			// 快速公共免密翻译引擎（Google Translate gtx 优先，回退 MyMemory）
+			const [translatedSubject, translatedText] = await Promise.all([
+				s ? translateChunk(s, tl) : Promise.resolve(""),
+				b ? translateLongText(b, tl) : Promise.resolve(""),
+			]);
+
+			return {
+				translatedSubject,
+				translatedText: restoreProtectedUrls(translatedText, urls),
+				targetLang: tl,
+				engine: "fast",
+				model: chosenModel ? `回退自 ${chosenModel}` : undefined,
+			};
 		}
 
 		async function countUnseen() {
@@ -619,7 +934,7 @@ export default {
 					name: "mail",
 					label: "邮箱",
 					description:
-						"Read and manage the configured mailbox over IMAP, and send plain-text mail over SMTP. " +
+						"Read and manage the configured mailbox over IMAP, and send mail (plain text, optionally with an HTML alternative) over SMTP. " +
 						"Each action's arguments are documented on the parameters below.",
 					promptSnippet: "list/read/search/send/manage mailbox mail",
 					promptGuidelines: [
@@ -646,6 +961,10 @@ export default {
 							cc: { type: "string", description: "send: CC (optional)" },
 							subject: { type: "string", description: "send: subject" },
 							body: { type: "string", description: "send: body (plain text)" },
+							html: {
+								type: "string",
+								description: "send: HTML body (optional; sent alongside body as multipart/alternative)",
+							},
 							manage_action: {
 								type: "string",
 								enum: ["seen", "unseen", "delete"],
@@ -690,7 +1009,7 @@ export default {
 								return mails.map(describeMail).join("\n");
 							}
 							case "send": {
-								if (!args.to || !args.body) return "发信需要 to 与 body 参数。";
+								if (!args.to || (!args.body && !args.html)) return "发信需要 to 与 (body 或 html) 参数。";
 								const r = await sendMail(args);
 								return `已发送至 ${(r.accepted ?? []).join(", ")}`;
 							}
@@ -800,6 +1119,27 @@ export default {
 						})
 						.catch((err) => host.notify("error", `📬 发送失败：${err?.message ?? err}`));
 					break;
+				case "translate":
+					void (async () => {
+						try {
+							const res = await translateMailContent(msg);
+							host.broadcast({
+								kind: "translated",
+								uid: msg.uid,
+								ok: true,
+								...res,
+							});
+						} catch (err) {
+							host.broadcast({
+								kind: "translated",
+								uid: msg.uid,
+								ok: false,
+								error: err?.message ?? String(err),
+							});
+							host.notify("error", `📬 翻译失败：${err?.message ?? err}`);
+						}
+					})();
+					break;
 				default:
 					host.log("unknown action:", msg.action);
 			}
@@ -812,6 +1152,7 @@ export default {
 			try {
 				st.config = await loadConfigSecure();
 				await loadDeps();
+				await refreshModels();
 				if (!st.depsOk) installDeps(true); // 缺依赖就自动装，不等配置保存
 				await refreshAiTools();
 				restartPoller();

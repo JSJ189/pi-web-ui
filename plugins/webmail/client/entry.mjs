@@ -8,9 +8,10 @@
  */
 
 function esc(s) {
-	return String(s ?? "").replace(/[&<>"']/g, (c) => (
-		{ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" }[c]
-	));
+	return String(s ?? "").replace(
+		/[&<>"']/g,
+		(c) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" })[c],
+	);
 }
 
 function fmtDate(iso) {
@@ -20,6 +21,154 @@ function fmtDate(iso) {
 	return d.toDateString() === today.toDateString()
 		? d.toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" })
 		: d.toLocaleString([], { month: "numeric", day: "numeric", hour: "2-digit", minute: "2-digit" });
+}
+
+/** 从 URL 提取简短可读的品牌/主域名（如 url3243.email.openai.com -> openai.com）。 */
+function shortDomain(rawUrl) {
+	try {
+		const u = new URL(rawUrl);
+		const parts = u.hostname.replace(/^www\./i, "").split(".");
+		if (parts.length > 2) {
+			// 处理两级常见后缀如 .co.uk / .com.cn，否则取最后两段
+			const tail2 = parts.slice(-2).join(".");
+			if (/^(com|co|org|net|edu|gov)\.[a-z]{2}$/i.test(tail2) && parts.length >= 3) {
+				return parts.slice(-3).join(".");
+			}
+			return tail2;
+		}
+		return parts.join(".");
+	} catch {
+		return "链接";
+	}
+}
+
+/**
+ * 将单行邮件文本安全转义，并将 [https://...] 或裸 URL 转为精美的内联胶囊链接。
+ */
+function renderInlineLinks(line) {
+	// 1. 剥除纯图片地址占位符 [https://.../logo.png]
+	const cleaned = String(line ?? "").replace(
+		/\[https?:\/\/[^\s\]]+\.(?:png|jpe?g|gif|svg|webp|ico)(?:\?[^\s\]]*)?\]/gi,
+		"",
+	);
+
+	// 2. 匹配 [https://...] 或裸露的 https://...
+	const urlRegex = /\[(https?:\/\/[^\s\]]+)\]|(https?:\/\/[^\s<>")\]]+)/gi;
+	let out = "";
+	let lastIdx = 0;
+	let m;
+	while ((m = urlRegex.exec(cleaned)) !== null) {
+		out += esc(cleaned.slice(lastIdx, m.index));
+		const rawUrl = m[1] || m[2];
+		const domain = shortDomain(rawUrl);
+		out += `<a class="mail-link-chip" href="${esc(rawUrl)}" target="_blank" rel="noopener noreferrer" title="${esc(rawUrl)}">🔗 ${esc(domain)} ↗</a>`;
+		lastIdx = urlRegex.lastIndex;
+	}
+	out += esc(cleaned.slice(lastIdx));
+	return out;
+}
+
+/**
+ * 深度净化邮件文本（消除 &nbsp; 等 HTML 实体与 Steam 等邮件在纯文本中泄露的跨行 CSS 规则块）。
+ */
+function cleanMailPlainText(raw) {
+	return String(raw ?? "")
+		.replace(/\r\n/g, "\n")
+		.replace(/&nbsp;/gi, " ")
+		.replace(/&amp;/gi, "&")
+		.replace(/&lt;/gi, "<")
+		.replace(/&gt;/gi, ">")
+		.replace(/&quot;/gi, '"')
+		.replace(/&#39;|&apos;/gi, "'")
+		.replace(/&copy;/gi, "©")
+		.replace(/&ndash;/gi, "–")
+		.replace(/&mdash;/gi, "—")
+		.replace(/&#(\d+);/g, (_, dec) => String.fromCharCode(Number(dec)))
+		.replace(/&#x([0-9a-f]+);/gi, (_, hex) => String.fromCharCode(parseInt(hex, 16)))
+		.replace(/@media[^{]+\{(?:[^{}]*\{[^{}]*\})*[^{}]*\}/gi, "\n")
+		.replace(/(?:^|\n)[ \t]*(?:[a-z0-9_.*#\-:>+, \t]+\n)*[ \t]*[a-z0-9_.*#\-:>+, \t]+\{[^{}]*\}/gi, "\n")
+		.replace(/[ \t]+\n/g, "\n")
+		.replace(/\n{3,}/g, "\n\n")
+		.trim();
+}
+
+/**
+ * 将邮件纯文本格式化为复用宿主 .md 样式的结构化 HTML（零外部依赖）：
+ * - 自动过滤纯文本降级残留的图片占位 URL、&nbsp; 实体与泄露的 CSS 块
+ * - 将冗长的追踪链接折叠为紧凑胶囊芯片
+ * - 识别段落、列表、引用块与签名档分隔线
+ */
+function formatMailBody(text, truncated = false) {
+	const raw = cleanMailPlainText(text);
+	const lines = raw.split("\n");
+	const blocks = [];
+	let inList = false;
+	let inFooter = false;
+	let paraLines = [];
+
+	const flushPara = () => {
+		if (!paraLines.length) return;
+		const content = paraLines.map(renderInlineLinks).join("<br/>");
+		if (content.trim()) blocks.push(`<p>${content}</p>`);
+		paraLines = [];
+	};
+	const closeList = () => {
+		if (inList) {
+			blocks.push("</ul>");
+			inList = false;
+		}
+	};
+
+	for (const line of lines) {
+		const trimmed = line.trim();
+		// 若整行只是图片占位符，直接跳过
+		if (/^\[https?:\/\/[^\s\]]+\.(?:png|jpe?g|gif|svg|webp|ico)(?:\?[^\s\]]*)?\]$/i.test(trimmed)) {
+			continue;
+		}
+		// 签名档 / 页脚分隔线 (-- 或 ---)
+		if (/^(--+|___+|\*{3,})$/.test(trimmed)) {
+			flushPara();
+			closeList();
+			if (!inFooter) {
+				blocks.push('<hr class="mail-hr"/><div class="mail-footer">');
+				inFooter = true;
+			} else {
+				blocks.push('<hr class="mail-hr"/>');
+			}
+			continue;
+		}
+		// 空行分段
+		if (!trimmed) {
+			flushPara();
+			closeList();
+			continue;
+		}
+		// 列表项 (* 或 - 或 •)
+		const listMatch = trimmed.match(/^([*\-•])\s+(.*)$/);
+		if (listMatch) {
+			flushPara();
+			if (!inList) {
+				blocks.push("<ul>");
+				inList = true;
+			}
+			blocks.push(`<li>${renderInlineLinks(listMatch[2])}</li>`);
+			continue;
+		}
+		// 引用行 (> )
+		if (trimmed.startsWith(">")) {
+			flushPara();
+			closeList();
+			blocks.push(`<blockquote>${renderInlineLinks(trimmed.replace(/^>+\s*/, ""))}</blockquote>`);
+			continue;
+		}
+		closeList();
+		paraLines.push(line);
+	}
+	flushPara();
+	closeList();
+	if (inFooter) blocks.push("</div>");
+	if (truncated) blocks.push('<p style="opacity:.55;font-size:12px">…（内容过长已截断）</p>');
+	return blocks.join("");
 }
 
 const EMPTY_READER = `<div class="empty-reader">👈 从左侧选择一封邮件查看内容</div>`;
@@ -92,12 +241,69 @@ export default {
 			min-height: 320px; align-content: start;
 		}
 		.wmx .empty-reader { display: grid; place-content: center; height: 100%; min-height: 300px; opacity: .4; }
-		.wmx .reader pre.body {
-			margin: 0; white-space: pre-wrap; word-break: break-word;
-			font: inherit; max-height: calc(100vh - 340px); max-height: calc(100dvh - 340px); overflow: auto;
-			background: var(--bg-elev, #16161d); border-radius: 6px; padding: 10px;
+		.wmx .reader .body {
+			margin: 0; word-break: break-word; overflow-wrap: anywhere;
+			font-size: 13.5px; line-height: 1.7;
+			max-height: calc(100vh - 320px); max-height: calc(100dvh - 320px); overflow: auto;
+			background: var(--bg-elev, #16161d); border-radius: 8px; padding: 14px 16px;
 		}
-		.wmx .reader .actions { display: flex; gap: 6px; flex-wrap: wrap; }
+		.wmx .reader .body p { margin: 0 0 10px; }
+		.wmx .reader .body p:last-child { margin-bottom: 0; }
+		.wmx .reader .body ul { margin: 0 0 10px; padding-left: 20px; }
+		.wmx .reader .body li { margin: 4px 0; }
+		.wmx .reader .body blockquote {
+			margin: 6px 0; padding: 4px 10px;
+			border-left: 3px solid color-mix(in srgb, var(--accent, #7c5cff) 55%, var(--border, #333));
+			opacity: .85;
+		}
+		.wmx .mail-hr { border: 0; border-top: 1px dashed var(--border, #333); margin: 12px 0; opacity: .6; }
+		.wmx .mail-footer { font-size: 12px; opacity: .65; line-height: 1.55; }
+		.wmx .mail-link-chip {
+			display: inline-flex; align-items: center; gap: 3px;
+			padding: 1px 8px; margin: 0 2px; border-radius: 99px;
+			font-size: 11.5px; line-height: 1.5; text-decoration: none;
+			color: var(--accent, #7c5cff);
+			background: color-mix(in srgb, var(--accent, #7c5cff) 12%, transparent);
+			border: 1px solid color-mix(in srgb, var(--accent, #7c5cff) 30%, transparent);
+			vertical-align: baseline; white-space: nowrap;
+		}
+		.wmx .mail-link-chip:hover {
+			background: color-mix(in srgb, var(--accent, #7c5cff) 22%, transparent);
+			text-decoration: none;
+		}
+		.wmx .reader .actions { display: flex; gap: 6px; flex-wrap: wrap; align-items: center; }
+		.wmx .reader .actions .act-translate {
+			color: var(--accent, #7c5cff);
+			border-color: color-mix(in srgb, var(--accent, #7c5cff) 45%, var(--border, #333));
+		}
+		.wmx .reader .actions .act-translate:hover {
+			background: color-mix(in srgb, var(--accent, #7c5cff) 12%, transparent);
+		}
+
+		/* 译文卡片与主题 */
+		.wmx .trans-box {
+			margin-top: 8px; border: 1px solid color-mix(in srgb, var(--accent, #7c5cff) 35%, var(--border, #333));
+			border-radius: 8px; background: color-mix(in srgb, var(--accent, #7c5cff) 5%, var(--bg-elev, #16161d));
+			overflow: hidden;
+		}
+		.wmx .trans-head {
+			display: flex; align-items: center; justify-content: space-between; gap: 8px;
+			padding: 6px 12px; font-size: 11.5px;
+			background: color-mix(in srgb, var(--accent, #7c5cff) 12%, transparent);
+			border-bottom: 1px solid color-mix(in srgb, var(--accent, #7c5cff) 22%, transparent);
+			color: var(--accent, #7c5cff); font-weight: 600;
+		}
+		.wmx .trans-head button { padding: 2px 8px; font-size: 11px; white-space: nowrap; flex-shrink: 0; }
+		.wmx .trans-body {
+			margin: 0; padding: 14px 16px;
+			font-size: 13.5px; line-height: 1.7;
+			max-height: calc(100vh - 340px); max-height: calc(100dvh - 340px); overflow: auto;
+			background: transparent;
+		}
+		.wmx .trans-subj {
+			font-size: 13px; font-weight: 500; margin-top: 3px;
+			color: var(--accent, #7c5cff); opacity: .95;
+		}
 
 		/* 弹窗（设置 / 写信） */
 		.wmx .modal-backdrop {
@@ -202,7 +408,11 @@ export default {
 				<fieldset>
 					<legend>行为</legend>
 					<label>轮询间隔(秒)</label><input name="pollSec" type="number" min="15" />
-					<label></label><span></span>
+					<label>翻译引擎</label>
+					<select name="transModel">
+						<option value="">⚡ 快速公共引擎（免 Token · 速度快）</option>
+						<option value="current">🤖 跟随主会话当前模型</option>
+					</select>
 					<label class="full"><input type="checkbox" name="notifyEnabled" /> 新邮件桌面通知条</label>
 				</fieldset>
 				<fieldset>
@@ -228,9 +438,14 @@ export default {
 				<input name="to" placeholder="收件人 to@example.com" required />
 				<input name="subject" placeholder="主题" />
 				<textarea name="body" rows="8" placeholder="正文…"></textarea>
-				<div class="row">
-					<button type="button" class="btn-cancel">取消</button>
-					<button type="submit" class="primary">发送</button>
+				<div style="display:flex;align-items:center;justify-content:space-between;gap:8px;flex-wrap:wrap">
+					<label style="font-size:12px;opacity:.75;display:inline-flex;align-items:center;gap:5px;cursor:pointer">
+						<input type="checkbox" name="isHtml" /> HTML 正文（自动生成纯文本降级）
+					</label>
+					<div class="row" style="margin:0">
+						<button type="button" class="btn-cancel">取消</button>
+						<button type="submit" class="primary">发送</button>
+					</div>
 				</div>
 			</form>
 			</div>
@@ -240,7 +455,61 @@ export default {
 
 		const root = container.querySelector(".wmx");
 		const $ = (sel) => root.querySelector(sel);
-		const st = { mails: [], activeUid: null };
+		const st = { mails: [], activeUid: null, activeMail: null, availableModels: [], transModel: "" };
+
+		function shortModelLabel(id) {
+			const s = String(id ?? "");
+			const slash = s.indexOf("/");
+			return slash >= 0 ? s.slice(slash + 1) : s;
+		}
+
+		function getModelOptionsHtml(selectedVal) {
+			const seen = new Set(["", "current"]);
+			const opts = [
+				{ val: "", text: "⚡ 快速引擎" },
+				{ val: "current", text: "🤖 当前会话模型" },
+			];
+			// 优先从主服务宿主桥（window.__piWebUiHost.models.list）与服务端上报合并模型列表
+			let hostModels = [];
+			try {
+				const hostBridge = ctx?.host || window.__piWebUiHost || window.__piPluginHost;
+				hostModels = hostBridge?.models?.list?.() || [];
+			} catch {}
+			for (const m of [...hostModels, ...(st.availableModels || [])]) {
+				const id =
+					typeof m === "string"
+						? m
+						: m?.provider && m?.id && !String(m.id).includes("/")
+							? `${m.provider}/${m.id}`
+							: m?.id;
+				if (id && !seen.has(id)) {
+					seen.add(id);
+					opts.push({ val: id, text: `🤖 ${shortModelLabel(id)}` });
+				}
+			}
+			const presets = [
+				"deepseek/deepseek-chat",
+				"anthropic/claude-3-7-sonnet",
+				"openai/gpt-4o",
+				"openai/gpt-4o-mini",
+				"google/gemini-2.5-pro",
+			];
+			for (const id of presets) {
+				if (!seen.has(id)) {
+					seen.add(id);
+					opts.push({ val: id, text: `🤖 ${shortModelLabel(id)}` });
+				}
+			}
+			if (selectedVal && !seen.has(selectedVal)) {
+				opts.push({ val: selectedVal, text: `🤖 ${shortModelLabel(selectedVal)}` });
+			}
+			return opts
+				.map(
+					(o) =>
+						`<option value="${esc(o.val)}" title="${esc(o.val || o.text)}"${o.val === selectedVal ? " selected" : ""}>${esc(o.text)}</option>`,
+				)
+				.join("");
+		}
 
 		function openModal(sel) {
 			$(sel).hidden = false;
@@ -281,6 +550,14 @@ export default {
 			f.smtpTls.checked = cfg.smtp?.tls !== false;
 			f.pollSec.value = cfg.pollSec ?? 60;
 			f.notifyEnabled.checked = cfg.notifyEnabled !== false;
+
+			const sel = f.transModel;
+			if (sel) {
+				const currentVal = cfg.transModel ?? "";
+				st.transModel = currentVal;
+				sel.innerHTML = getModelOptionsHtml(currentVal);
+				sel.value = currentVal;
+			}
 		}
 
 		function renderList() {
@@ -301,31 +578,206 @@ export default {
 				.join("");
 		}
 
+		function getTranslateBtnLabel(mail) {
+			if (mail._translating) return "🌐 翻译中…";
+			if (mail._translation) {
+				return mail._showTranslation ? "🌐 显示原文" : "🌐 显示译文";
+			}
+			return "🌐 翻译";
+		}
+
 		function renderReader(mail) {
+			st.activeMail = mail;
 			const r = $(".reader");
+			const hasTrans = Boolean(mail._translation);
+			const showTrans = hasTrans && mail._showTranslation !== false;
+			const curModel = mail._translation?.model || st.transModel || "";
+
+			let transHtml = "";
+			if (showTrans) {
+				const langLabel = mail._translation.targetLang === "en" ? "英文" : "中文";
+				const engineLabel =
+					mail._translation.engine === "llm"
+						? ` · 🤖 ${shortModelLabel(mail._translation.model || "AI 大模型")}`
+						: mail._translation.model
+							? ` · ⚡ ${shortModelLabel(mail._translation.model)}`
+							: " · ⚡ 快速引擎";
+				transHtml = `
+<div class="trans-box">
+	<div class="trans-head">
+		<div style="display:flex;align-items:center;gap:6px;flex-wrap:wrap;min-width:0">
+			<span>🌐 译文（已译为${langLabel}${esc(engineLabel)}）</span>
+			<select class="sel-card-model" title="切换模型并重新翻译" style="padding:1px 5px;font-size:11px;height:22px;max-width:160px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;background:var(--bg,#101016);color:inherit;border:1px solid color-mix(in srgb,var(--accent,#7c5cff) 40%,var(--border,#333));border-radius:4px;cursor:pointer">
+				${getModelOptionsHtml(curModel)}
+			</select>
+		</div>
+		<div style="display:flex;gap:6px;flex-shrink:0">
+			<button type="button" class="act-copy-trans">复制译文</button>
+			<button type="button" class="act-toggle-orig">${mail._showOrig ? "收起原文" : "对照原文"}</button>
+		</div>
+	</div>
+	<div class="body md trans-body">${formatMailBody(mail._translation.translatedText)}</div>
+</div>`;
+			}
+
+			// 原文正文区块：如果展示了译文且未展开对照原文，则折叠原文正文
+			const hideOrigBody = showTrans && !mail._showOrig;
+			const origHtml = hideOrigBody
+				? ""
+				: `${showTrans ? '<div style="font-size:11px;opacity:.55;margin-top:6px">【原文】</div>' : ""}<div class="body md">${formatMailBody(mail.text, mail.truncated)}</div>`;
+
 			r.innerHTML = `
 <div style="display:flex;gap:10px;align-items:baseline;flex-wrap:wrap">
 	<b style="font-size:14px">${esc(mail.subject)}</b>
 	<span style="opacity:.55;font-size:11px">${esc(fmtDate(mail.date))}</span>
 </div>
+${showTrans && mail._translation.translatedSubject ? `<div class="trans-subj">译：${esc(mail._translation.translatedSubject)}</div>` : ""}
 <div style="opacity:.7;font-size:12px">${esc(mail.fromName)} &lt;${esc(mail.from)}&gt; → ${esc(mail.to)}
 	${mail.hasAttachments ? " · 📎 含附件（正文下方不展示）" : ""}</div>
-<pre class="body">${esc(mail.text)}${mail.truncated ? "\n\n…(过长截断)" : ""}</pre>
+${transHtml}
+${origHtml}
 <div class="actions">
 	<button class="act-toggle-seen">${mail.seen ? "标为未读" : "标为已读"}</button>
+	<div style="display:inline-flex;align-items:center;gap:4px;min-width:0">
+		<button class="act-translate"${mail._translating ? " disabled" : ""}>${getTranslateBtnLabel(mail)}</button>
+		<select class="sel-reader-model" title="选择翻译使用的 AI 模型或引擎" style="padding:2px 6px;font-size:12px;height:28px;max-width:155px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;background:var(--bg-elev,#16161d);color:inherit;border:1px solid var(--border,#333);border-radius:6px;cursor:pointer">
+			${getModelOptionsHtml(curModel)}
+		</select>
+	</div>
+	<button class="act-quote-chat" title="将此邮件引用到主对话输入框">💬 引用到对话</button>
 	<button class="act-reply">回复</button>
 	<button class="act-delete danger">删除</button>
 </div>`;
-			$(".act-toggle-seen").onclick = () =>
-				ctx.send({ action: "mark", uids: [mail.uid], seen: !mail.seen });
+			$(".act-toggle-seen").onclick = () => ctx.send({ action: "mark", uids: [mail.uid], seen: !mail.seen });
 			$(".act-delete").onclick = () => ctx.send({ action: "delete", uids: [mail.uid] });
 			$(".act-reply").onclick = () => openCompose({ to: mail.from, subject: `Re: ${mail.subject}` });
+
+			const quoteBtn = $(".act-quote-chat");
+			if (quoteBtn) {
+				quoteBtn.onclick = () => {
+					const rawContent =
+						showTrans && mail._translation?.translatedText ? mail._translation.translatedText : mail.text;
+					// 净化文本并将冗长的追踪 URL 简化为可读域名
+					const cleanBody = cleanMailPlainText(rawContent)
+						.replace(/\[https?:\/\/[^\s\]]+\.(?:png|jpe?g|gif|svg|webp|ico)(?:\?[^\s\]]*)?\]/gi, "")
+						.replace(/\[(https?:\/\/[^\s\]]+)\]/gi, (_, u) => `[${shortDomain(u)}](${u})`)
+						.trim();
+					const subjLine =
+						showTrans && mail._translation?.translatedSubject && mail._translation.translatedSubject !== mail.subject
+							? `${mail.subject}（译：${mail._translation.translatedSubject}）`
+							: mail.subject;
+					const fromStr = mail.fromName ? `${mail.fromName} <${mail.from}>` : mail.from;
+					const quoteText = [
+						`📬 邮件 #${mail.uid}：${subjLine}`,
+						`发件人：${fromStr}${mail.date ? ` · ${fmtDate(mail.date)}` : ""}`,
+						"",
+						cleanBody,
+					].join("\n");
+
+					const hostBridge = ctx?.host || window.__piWebUiHost;
+					if (hostBridge?.compose) {
+						hostBridge.compose({
+							attachments: [
+								{
+									path: "",
+									name: `📬 ${mail.subject}`,
+									mode: "quote",
+									quote: {
+										text: quoteText,
+										messageId: `📬 #${mail.uid} ${mail.subject}`,
+										role: "attachment",
+									},
+									key: `mail-quote-${mail.uid}`,
+								},
+							],
+						});
+						hostBridge.setView?.("chat");
+					} else {
+						navigator.clipboard?.writeText?.(quoteText);
+						quoteBtn.textContent = "✓ 已复制引用";
+						setTimeout(() => {
+							if (quoteBtn) quoteBtn.textContent = "💬 引用到对话";
+						}, 1500);
+					}
+				};
+			}
+
+			const triggerTranslate = (modelToUse) => {
+				mail._translating = true;
+				renderReader(mail);
+				ctx.send({
+					action: "translate",
+					uid: mail.uid,
+					subject: mail.subject,
+					text: mail.text,
+					model: modelToUse !== undefined ? modelToUse : st.transModel,
+				});
+			};
+
+			const transBtn = $(".act-translate");
+			if (transBtn) {
+				transBtn.onclick = () => {
+					if (mail._translating) return;
+					if (mail._translation) {
+						mail._showTranslation = !mail._showTranslation;
+						renderReader(mail);
+						return;
+					}
+					triggerTranslate(st.transModel);
+				};
+			}
+
+			const readerModelSel = $(".sel-reader-model");
+			if (readerModelSel) {
+				readerModelSel.onchange = (e) => {
+					const chosen = e.target.value;
+					st.transModel = chosen;
+					// 若已经翻译过，切换模型自动重译
+					if (mail._translation) {
+						triggerTranslate(chosen);
+					}
+				};
+			}
+
+			const cardModelSel = $(".sel-card-model");
+			if (cardModelSel) {
+				cardModelSel.onchange = (e) => {
+					const chosen = e.target.value;
+					st.transModel = chosen;
+					triggerTranslate(chosen);
+				};
+			}
+
+			const copyBtn = $(".act-copy-trans");
+			if (copyBtn) {
+				copyBtn.onclick = async () => {
+					try {
+						await navigator.clipboard.writeText(mail._translation.translatedText || "");
+						copyBtn.textContent = "已复制！";
+						setTimeout(() => {
+							if (copyBtn) copyBtn.textContent = "复制译文";
+						}, 1500);
+					} catch {
+						/* 降级忽略 */
+					}
+				};
+			}
+
+			const toggleOrigBtn = $(".act-toggle-orig");
+			if (toggleOrigBtn) {
+				toggleOrigBtn.onclick = () => {
+					mail._showOrig = !mail._showOrig;
+					renderReader(mail);
+				};
+			}
+
 			// 窄屏单列时列表在上、阅读区在下：选中后把阅读区滚入视野（桌面端不执行）
 			if (window.matchMedia("(max-width: 640px)").matches) r.scrollIntoView({ behavior: "smooth", block: "nearest" });
 		}
 
 		function clearReader() {
 			st.activeUid = null;
+			st.activeMail = null;
 			$(".reader").innerHTML = EMPTY_READER;
 		}
 
@@ -415,6 +867,7 @@ export default {
 				},
 				pollSec: Math.max(15, Number(f.pollSec.value) || 60),
 				notifyEnabled: f.notifyEnabled.checked,
+				transModel: f.transModel?.value ?? "",
 			};
 			// 清掉 undefined 让服务端 merge 语义生效（空密码字段保留旧值）
 			for (const box of ["imap", "smtp"]) {
@@ -429,11 +882,13 @@ export default {
 		$("form.compose").addEventListener("submit", (e) => {
 			e.preventDefault();
 			const f = e.target;
+			const isHtml = f.isHtml?.checked;
 			ctx.send({
 				action: "send",
 				to: f.to.value.trim(),
 				subject: f.subject.value,
-				body: f.body.value,
+				body: isHtml ? undefined : f.body.value,
+				html: isHtml ? f.body.value : undefined,
 			});
 			f.reset();
 			closeModal(".compose-modal");
@@ -448,6 +903,7 @@ export default {
 			const msg = payload ?? {};
 			switch (msg.kind) {
 				case "state":
+					if (Array.isArray(msg.state?.models)) st.availableModels = msg.state.models;
 					setStateChips(msg.state);
 					fillSettings(msg.state ?? msg.config); // config 嵌在 state 里
 					break;
@@ -456,8 +912,24 @@ export default {
 					renderList();
 					break;
 				case "mail":
+					st.activeMail = msg.mail;
 					renderReader(msg.mail);
 					break;
+				case "translated": {
+					if (st.activeMail && st.activeMail.uid === msg.uid) {
+						st.activeMail._translating = false;
+						if (msg.ok) {
+							st.activeMail._translation = {
+								translatedSubject: msg.translatedSubject,
+								translatedText: msg.translatedText,
+								targetLang: msg.targetLang,
+							};
+							st.activeMail._showTranslation = true;
+						}
+						renderReader(st.activeMail);
+					}
+					break;
+				}
 				case "new-mail":
 					refreshList();
 					break;

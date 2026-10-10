@@ -11,6 +11,7 @@ import {
 	FiDownload,
 	FiEdit2,
 	FiEdit3,
+	FiExternalLink,
 	FiEye,
 	FiFileText,
 	FiFolder,
@@ -360,6 +361,30 @@ function phaseLabelKey(ph: PluginPhase): string {
 /** 插件运行相位圆点（设置面板清单区 + 列表行标题用；颜色见 styles.css `.inv-dot`）。 */
 function InvDot({ phase, label }: { phase: PluginPhase; label: string }) {
 	return <span className={`inv-dot inv-dot-${phase}`} title={label} aria-label={label} />;
+}
+
+/** 官方插件市场仓库链接。 */
+export const OFFICIAL_PLUGINS_REPO_URL = "https://github.com/xing-shuyin/pi-web-ui-plugins";
+
+/** 解析插件的官方主页/源码链接（优先 homepage，其次解析 GitHub 来源）。 */
+export function pluginOfficialUrl(entry?: { homepage?: string; source?: string } | null): string | null {
+	if (entry?.homepage && /^https?:\/\//i.test(entry.homepage)) {
+		return entry.homepage;
+	}
+	const src = entry?.source?.trim();
+	if (!src) return null;
+	if (/^https?:\/\//i.test(src)) return src;
+	if (src.startsWith("git@github.com:")) {
+		return `https://github.com/${src.slice("git@github.com:".length).replace(/\.git$/, "")}`;
+	}
+	const parts = src.split("/");
+	if (parts.length === 2 && !parts[0].includes(":") && !parts[1].includes(":")) {
+		return `https://github.com/${parts[0]}/${parts[1]}`;
+	}
+	if (parts.length > 2 && !src.includes(":")) {
+		return `https://github.com/${parts[0]}/${parts[1]}/tree/main/${parts.slice(2).join("/")}`;
+	}
+	return null;
 }
 
 /** 插件清单汇总条（只读）：四相计数 + 各相圆点，明细在下方列表行里看。 */
@@ -4053,6 +4078,16 @@ export function SettingsModal({
 									<span className="set-count">{chat.pluginCatalog.length}</span>
 								</div>
 								<div className="set-toolbar">
+									<a
+										href={OFFICIAL_PLUGINS_REPO_URL}
+										target="_blank"
+										rel="noreferrer noopener"
+										className="set-uninstall link"
+										title={t("pluginOfficialMarketHint")}
+									>
+										<FiExternalLink />
+										{t("pluginOfficialMarket")}
+									</a>
 									<label className="set-catalog-build" title={t("pluginBuildHint")}>
 										<input type="checkbox" checked={catBuild} onChange={(ev) => setCatBuild(ev.target.checked)} />
 										{t("pluginBuildSource")}
@@ -4252,6 +4287,18 @@ export function SettingsModal({
 														{renderJobStatus(e.id)}
 													</div>
 													<div className="set-row-actions">
+														{pluginOfficialUrl(e) && (
+															<a
+																href={pluginOfficialUrl(e)!}
+																target="_blank"
+																rel="noreferrer noopener"
+																className="set-uninstall link"
+																title={t("pluginOfficialLinkHint")}
+															>
+																<FiExternalLink />
+																{t("pluginOfficialLink")}
+															</a>
+														)}
 														{installed ? (
 															<>
 																<button
@@ -4338,6 +4385,16 @@ export function SettingsModal({
 									<FiBox className="set-section-icon" />
 									{t("pluginListTab")}
 									<span className="set-count">{chat.plugins.length}</span>
+									<a
+										href={OFFICIAL_PLUGINS_REPO_URL}
+										target="_blank"
+										rel="noreferrer noopener"
+										className="set-uninstall link"
+										title={t("pluginOfficialMarketHint")}
+									>
+										<FiExternalLink />
+										{t("pluginOfficialMarket")}
+									</a>
 									<button
 										type="button"
 										className="set-uninstall"
@@ -4407,6 +4464,23 @@ export function SettingsModal({
 														onToggle={() => !p.error && togglePlugin(p)}
 														action={
 															<div className="set-row-actions">
+																{(() => {
+																	const url =
+																		pluginOfficialUrl(chat.pluginCatalog.find((c) => c.id === p.id)) ||
+																		pluginOfficialUrl(p);
+																	return url ? (
+																		<a
+																			href={url}
+																			target="_blank"
+																			rel="noreferrer noopener"
+																			className="set-uninstall link"
+																			title={t("pluginOfficialLinkHint")}
+																		>
+																			<FiExternalLink />
+																			{t("pluginOfficialLink")}
+																		</a>
+																	) : null;
+																})()}
 																{p.source && (
 																	<button
 																		type="button"

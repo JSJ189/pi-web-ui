@@ -501,6 +501,40 @@ export default {
 			};
 		});
 
+		route("POST", "/copy-pubkey", async (req) => {
+			const loaded = await load(req.body?.profile);
+			let conn = requireConn(loaded);
+			if (req.body?.host) {
+				conn = {
+					...conn,
+					host: String(req.body.host).trim(),
+					port: req.body.port ? Number(req.body.port) : conn.port,
+					username: req.body.username ? String(req.body.username).trim() : conn.username,
+				};
+			}
+			const password = req.body?.password ? String(req.body.password) : undefined;
+			const privateKeyPath = req.body?.privateKeyPath ? String(req.body.privateKeyPath) : undefined;
+			const publicKey = req.body?.publicKey ? String(req.body.publicKey) : undefined;
+
+			const out = await ssh.authorizePublicKey(conn, {
+				password,
+				privateKeyPath,
+				publicKey,
+				sftpCalls: {
+					stat: (s, p) => sftpCall(s, "stat", p),
+					writeFile: (s, p, b) => sftpCall(s, "writeFile", p, b),
+					unlink: (s, p) => sftpCall(s, "unlink", p),
+				},
+			});
+			return {
+				profile: conn.name,
+				host: conn.host,
+				port: conn.port,
+				username: conn.username,
+				...out,
+			};
+		});
+
 		// 停正在跑的同步（包括还在扫的那一段）。UI 的「停止」按钮和 AI 工具的 action=cancel 走这里。
 		route("POST", "/cancel", () => {
 			if (!job.running) return { cancelled: false, job: { ...job } };

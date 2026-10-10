@@ -159,7 +159,7 @@ export function normalizeConnection(name, raw, defaults = {}, warnings = []) {
 	}
 	if (!method) method = password ? "password" : agent ? "agent" : "key";
 	if (method === "password" && !password) warn("选了密码登录但没配密码");
-	if (method === "key" && !privateKey && !privateKeyPath) warn("选了密钥登录但既没给 privateKeyPath 也没给 privateKey");
+	// method 为 key 且未给路径时，会自动探测 ~/.ssh/ 默认密钥，无需报警
 
 	const host = String(c.host ?? "").trim();
 	if (!host) warn("缺 host（主机地址）");
@@ -476,7 +476,13 @@ export function publicConnection(conn) {
 			privateKeyPath: conn.auth.privateKeyPath,
 			agent: conn.auth.agent,
 		},
-		hasCredentials: Boolean(conn.auth.password || conn.auth.privateKey || conn.auth.privateKeyPath || conn.auth.agent),
+		hasCredentials: Boolean(
+			conn.auth.password ||
+			conn.auth.privateKey ||
+			conn.auth.privateKeyPath ||
+			conn.auth.agent ||
+			conn.auth.method === "key",
+		),
 	};
 }
 

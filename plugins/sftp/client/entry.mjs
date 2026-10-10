@@ -94,6 +94,13 @@ const TEXT = {
 		secretValue: "机密值（不会回显）",
 		settingsHint: "并发数、扫描并发、删除策略、远端命令开关在「设置 → 插件 → SFTP 同步」里。",
 		outsideWorkspace: "只能同步工作区内的文件：{path}（右键菜单里的机器浏览路径不在工作区里）",
+		keypathPlaceholder: "留空自动尝试 ~/.ssh/ 默认密钥（id_ed25519 等）",
+		copyKey: "添加公钥到远端",
+		copyKeyPrompt: "请输入远程服务器的密码以安装公钥：",
+		copyKeyTesting: "正在添加公钥并验证…",
+		copyKeySuccess: "✓ 公钥已成功写入远端 authorized_keys，且密钥登录验证通过！",
+		copyKeyAlready: "✓ 远端 authorized_keys 已存在该公钥，密钥登录验证通过！",
+		copyKeyWarn: "⚠ 公钥已写入，但密钥验证失败：{err}",
 	},
 	en: {
 		title: "SFTP Sync",
@@ -110,6 +117,13 @@ const TEXT = {
 		authAgent: "ssh-agent",
 		password: "Password",
 		passwordPlaceholder: "blank = keep; prefer a ${secret:name} reference",
+		keypathPlaceholder: "blank = probe ~/.ssh/ default keys (id_ed25519, etc.)",
+		copyKey: "Copy Key to Remote",
+		copyKeyPrompt: "Enter remote server password to install public key:",
+		copyKeyTesting: "Adding key and verifying…",
+		copyKeySuccess: "✓ Successfully added public key to remote authorized_keys and verified!",
+		copyKeyAlready: "✓ Public key already exists in remote authorized_keys, verified!",
+		copyKeyWarn: "⚠ Key added, but verification failed: {err}",
 		privateKeyPath: "Private key path",
 		passphrase: "Key passphrase",
 		agent: "agent socket",
@@ -374,6 +388,7 @@ export default {
 			<div class="row">
 				<select class="profile grow"></select>
 				<button class="btn-test"></button>
+				<button class="btn-copy-key"></button>
 				<button class="btn-import"></button>
 			</div>
 			<div class="grid2">
@@ -480,6 +495,7 @@ export default {
 		setText(".btn-save", t("save"));
 		setText(".btn-secret", t("secretBtn"));
 		setText(".btn-test", t("test"));
+		setText(".btn-copy-key", t("copyKey"));
 		setText(".btn-import", t("import"));
 		setText(".btn-plan", t("plan"));
 		setText(".btn-run", t("run"));
@@ -503,6 +519,7 @@ export default {
 			el.innerHTML = values.map((v, i) => `<option value="${v}">${esc(t(keys[i]))}</option>`).join("");
 		}
 		$(".f-pass").placeholder = t("passwordPlaceholder");
+		$(".f-keypath").placeholder = t("keypathPlaceholder");
 		$(".f-path").placeholder = t("pathHint");
 
 		/** fetch 包装：统一解 `{ok,data}` / `{ok:false,error}`。 */
@@ -961,6 +978,43 @@ export default {
 			} finally {
 				btn.disabled = false;
 				btn.textContent = t("test");
+			}
+		});
+
+		on(".btn-copy-key", "click", async () => {
+			const btn = $(".btn-copy-key");
+			btn.disabled = true;
+			btn.textContent = t("copyKeyTesting");
+			showError(".msg.err", "");
+			showError(".msg.ok", "");
+			try {
+				let password = $(".f-pass").value.trim();
+				if (!password) {
+					password = globalThis.prompt?.(t("copyKeyPrompt")) ?? "";
+					if (!password) return;
+				}
+				const out = await api("/copy-pubkey", {
+					method: "POST",
+					body: {
+						profile: $(".profile").value,
+						host: $(".f-host").value.trim(),
+						port: Number($(".f-port").value) || undefined,
+						username: $(".f-user").value.trim(),
+						password,
+						privateKeyPath: $(".f-keypath").value.trim() || undefined,
+					},
+				});
+				if (out.verified) {
+					showError(".msg.ok", out.alreadyPresent ? t("copyKeyAlready") : t("copyKeySuccess"));
+				} else {
+					showError(".msg.err", t("copyKeyWarn", { err: out.verifyError || "验证未通过" }));
+				}
+				await refresh();
+			} catch (err) {
+				showError(".msg.err", String(err.message ?? err));
+			} finally {
+				btn.disabled = false;
+				btn.textContent = t("copyKey");
 			}
 		});
 

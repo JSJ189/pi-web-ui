@@ -1904,6 +1904,8 @@ export interface UiPluginInfo {
 	name: string;
 	version?: string;
 	description?: string;
+	/** Optional project/homepage URL from manifest.json. */
+	homepage?: string;
 	/** A client/entry.mjs exists → the frontend should load its view bundle. */
 	hasClient: boolean;
 	/** Optional emoji/single-char icon from manifest.json — shown instead of

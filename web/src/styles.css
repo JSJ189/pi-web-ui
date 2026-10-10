@@ -13523,6 +13523,7 @@ button.source-default-toggle {
 	background: transparent;
 	color: var(--text-dim);
 	cursor: pointer;
+	text-decoration: none;
 	transition:
 		color 0.15s,
 		border-color 0.15s;
@@ -13530,6 +13531,11 @@ button.source-default-toggle {
 .set-uninstall:hover {
 	color: var(--red);
 	border-color: var(--red);
+}
+.set-uninstall.link:hover,
+a.set-uninstall:hover {
+	color: var(--accent);
+	border-color: var(--accent);
 }
 .set-uninstall.confirm {
 	color: var(--red);
@@ -14659,6 +14665,15 @@ button.source-default-toggle {
 	min-height: 28px;
 	min-width: 28px;
 	justify-content: center;
+	text-decoration: none;
+}
+.settings-modal a.set-uninstall {
+	text-decoration: none;
+	color: var(--text-dim);
+}
+.settings-modal a.set-uninstall:hover {
+	color: var(--accent);
+	border-color: var(--accent);
 }
 /* 说明文字：布局提示/授权提示/同步提示共用 */
 .settings-modal .set-note {

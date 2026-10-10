@@ -2933,6 +2933,7 @@ export class PluginManager {
 					name?: string;
 					version?: string;
 					description?: string;
+					homepage?: string;
 					icon?: string;
 					iconSvg?: string;
 					apiVersion?: number;
@@ -3003,6 +3004,7 @@ export class PluginManager {
 					name: typeof m.name === "string" && m.name ? m.name : name,
 					version: typeof m.version === "string" ? m.version : undefined,
 					description: typeof m.description === "string" ? m.description : undefined,
+					homepage: typeof m.homepage === "string" && m.homepage.trim() ? m.homepage.trim() : undefined,
 					icon: typeof m.icon === "string" && m.icon.trim() ? m.icon.trim() : undefined,
 					iconSvg: normalizeIconSvg(m.iconSvg),
 					hasClient: existsSync(join(dir, "client", "entry.mjs")),

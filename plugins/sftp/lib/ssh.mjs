@@ -29,6 +29,58 @@ export function expandHome(p) {
 	return s;
 }
 
+/** 遵循 OpenSSH 标准行为，未指定密钥路径时自动探测 ~/.ssh/ 下的常用私钥。 */
+export const DEFAULT_KEY_PATHS = ["~/.ssh/id_ed25519", "~/.ssh/id_ecdsa", "~/.ssh/id_rsa", "~/.ssh/id_dsa"];
+
+/**
+ * 探测用户目录常用私钥，返回第一个存在且有内容的密钥信息。
+ */
+export async function findDefaultPrivateKey(fsModule = fs) {
+	for (const candidate of DEFAULT_KEY_PATHS) {
+		const file = expandHome(candidate);
+		try {
+			const content = await fsModule.readFile(file, "utf8");
+			if (content && content.trim()) {
+				return { path: candidate, expandedPath: file, content };
+			}
+		} catch {
+			/* 不存在或不可读，尝试下一个 */
+		}
+	}
+	return null;
+}
+
+/**
+ * 寻找本地对应的公钥文件（.pub）。
+ * 优先找指定 privateKeyPath 对应的 .pub，未指定时按 DEFAULT_KEY_PATHS 查找。
+ */
+export async function resolvePublicKey(privateKeyPath, fsModule = fs) {
+	if (privateKeyPath) {
+		const expanded = expandHome(privateKeyPath);
+		const pubCandidate = `${expanded}.pub`;
+		try {
+			const content = await fsModule.readFile(pubCandidate, "utf8");
+			if (content && content.trim()) {
+				return { path: pubCandidate, content: content.trim() };
+			}
+		} catch {
+			/* 不存在，继续向后查找 */
+		}
+	}
+	for (const candidate of DEFAULT_KEY_PATHS) {
+		const pubCandidate = `${expandHome(candidate)}.pub`;
+		try {
+			const content = await fsModule.readFile(pubCandidate, "utf8");
+			if (content && content.trim()) {
+				return { path: pubCandidate, content: content.trim() };
+			}
+		} catch {
+			/* 不存在，尝试下一个 */
+		}
+	}
+	return null;
+}
+
 /** `$SSH_AUTH_SOCK` 占位符展开（vscode-sftp 的习惯写法）。 */
 function expandAgent(a) {
 	return String(a ?? "").replace(/\$SSH_AUTH_SOCK\b/g, () => process.env.SSH_AUTH_SOCK || "");
@@ -90,21 +142,53 @@ export function createSshManager({ host, log = () => {}, secrets }) {
 	/** 把连接上的凭据引用解析成真实值（明文原样返回，但记录来源用于告警）。 */
 	async function resolveAuth(conn) {
 		const a = conn.auth ?? {};
-		const [password, passphrase, privateKey, agent] = await Promise.all([
-			resolveRef(a.password, { secrets, label: `${conn.name}.auth.password` }),
-			resolveRef(a.passphrase, { secrets, label: `${conn.name}.auth.passphrase` }),
-			resolveRef(a.privateKey, { secrets, label: `${conn.name}.auth.privateKey` }),
-			resolveRef(a.agent, { secrets, label: `${conn.name}.auth.agent` }),
-		]);
+		const method = String(a.method ?? "").trim();
+
+		// 按认证方式按需解析引用，避免选了密钥登录却因残留的密码机密引用报错
+		let password = { value: "", source: "plain" };
+		let passphrase = { value: "", source: "plain" };
+		let privateKey = { value: "", source: "plain" };
+		let agent = { value: "", source: "plain" };
+
+		if (method === "password") {
+			password = await resolveRef(a.password, { secrets, label: `${conn.name}.auth.password` });
+		} else if (method === "agent") {
+			agent = await resolveRef(a.agent, { secrets, label: `${conn.name}.auth.agent` });
+		} else if (method === "key") {
+			[passphrase, privateKey] = await Promise.all([
+				resolveRef(a.passphrase, { secrets, label: `${conn.name}.auth.passphrase` }),
+				resolveRef(a.privateKey, { secrets, label: `${conn.name}.auth.privateKey` }),
+			]);
+		} else {
+			// 未显式指定 method，按字段存在性依次解析
+			[password, passphrase, privateKey, agent] = await Promise.all([
+				resolveRef(a.password, { secrets, label: `${conn.name}.auth.password` }),
+				resolveRef(a.passphrase, { secrets, label: `${conn.name}.auth.passphrase` }),
+				resolveRef(a.privateKey, { secrets, label: `${conn.name}.auth.privateKey` }),
+				resolveRef(a.agent, { secrets, label: `${conn.name}.auth.agent` }),
+			]);
+		}
+
 		let key = privateKey.value;
+		let keySource = privateKey.source;
 		if (!key && a.privateKeyPath) {
 			const file = expandHome(a.privateKeyPath);
 			try {
 				key = await fs.readFile(file, "utf8");
+				keySource = "path";
 			} catch (err) {
 				throw new Error(`私钥文件读不到（${file}）：${err?.code ?? err?.message ?? err}`);
 			}
+		} else if (!key && (method === "key" || (!password.value && !agent.value))) {
+			// 选了密钥方式或没有任何可用凭据时，默认尝试 ~/.ssh 用户目录的标准密钥
+			const found = await findDefaultPrivateKey();
+			if (found) {
+				key = found.content;
+				keySource = "default";
+				log(`连接「${conn.name}」未指定私钥路径，自动使用用户目录密钥：${found.path}`);
+			}
 		}
+
 		return {
 			password: password.value,
 			passphrase: passphrase.value,
@@ -113,7 +197,7 @@ export function createSshManager({ host, log = () => {}, secrets }) {
 			sources: {
 				password: password.source,
 				passphrase: passphrase.source,
-				privateKey: privateKey.source,
+				privateKey: keySource,
 				agent: agent.source,
 			},
 		};
@@ -195,7 +279,7 @@ export function createSshManager({ host, log = () => {}, secrets }) {
 			} else {
 				return reject(
 					new Error(
-						`${conn.name}: 没有任何可用凭据 —— 配 auth.password / auth.privateKeyPath / auth.agent 之一（建议用 \${secret:名} 引用，明文会让密码进配置文件）`,
+						`${conn.name}: 没有任何可用凭据 —— 配 auth.password / auth.privateKeyPath / auth.agent 之一（或在 ~/.ssh/ 放置 id_ed25519/id_rsa 私钥）`,
 					),
 				);
 			}
@@ -446,12 +530,192 @@ export function createSshManager({ host, log = () => {}, secrets }) {
 		};
 	}
 
+	function sftpCallInternal(sftp, method, ...args) {
+		return new Promise((resolve, reject) => {
+			try {
+				sftp[method](...args, (err, ...res) => {
+					if (err) return reject(err);
+					resolve(res.length <= 1 ? res[0] : res);
+				});
+			} catch (err) {
+				reject(err);
+			}
+		});
+	}
+
+	/**
+	 * 把本地公钥添加到远端 authorized_keys 中（类似 ssh-copy-id）。
+	 * 支持临时提供密码（未配置密钥授权时的首次登入）。
+	 */
+	async function authorizePublicKey(conn, opts = {}) {
+		const { Client } = await library();
+		const password = opts.password;
+		const customKey = opts.publicKey;
+		const customKeyPath = opts.privateKeyPath || conn.auth?.privateKeyPath;
+
+		let pubInfo = null;
+		if (customKey && typeof customKey === "string" && customKey.trim()) {
+			pubInfo = { path: "(custom)", content: customKey.trim() };
+		} else {
+			pubInfo = await resolvePublicKey(customKeyPath);
+		}
+
+		if (!pubInfo || !pubInfo.content) {
+			throw new Error("未找到本地公钥文件（~/.ssh/id_ed25519.pub / id_rsa.pub 等不存在，请先用 ssh-keygen 生成）");
+		}
+
+		// 公钥行清理：提取第一行非空，必须像合法 SSH 公钥（ssh-ed25519 / ssh-rsa / ecdsa-sha2-...）
+		const rawLine =
+			pubInfo.content
+				.split(/\r?\n/)
+				.map((l) => l.trim())
+				.find(Boolean) || "";
+		if (!rawLine.startsWith("ssh-") && !rawLine.startsWith("ecdsa-")) {
+			throw new Error(`公钥格式不正确（${pubInfo.path}）：${rawLine.slice(0, 30)}...`);
+		}
+		const pubLine = rawLine;
+
+		// 决定连接认证凭据：优先使用本次传入的临时密码，否则使用现有凭据
+		const connectOpts = {
+			host: conn.host,
+			port: conn.port || 22,
+			username: conn.username || "root",
+			readyTimeout: READY_TIMEOUT_MS,
+			keepaliveInterval: 10_000,
+			keepaliveCountMax: 3,
+		};
+
+		if (password) {
+			connectOpts.password = password;
+		} else {
+			const auth = await resolveAuth(conn);
+			if (auth.password) connectOpts.password = auth.password;
+			else if (auth.agent) connectOpts.agent = auth.agent;
+			else if (auth.privateKey) {
+				connectOpts.privateKey = auth.privateKey;
+				if (auth.passphrase) connectOpts.passphrase = auth.passphrase;
+			} else {
+				throw new Error("安装公钥需要远程服务器密码，请在输入框或弹窗中提供密码");
+			}
+		}
+
+		// 建立临时 SSH + SFTP 连接
+		const client = new Client();
+		const sftp = await new Promise((resolve, reject) => {
+			let settled = false;
+			const fail = (err) => {
+				if (settled) return;
+				settled = true;
+				try {
+					client.end();
+				} catch {}
+				reject(err);
+			};
+			client.on("error", fail);
+			client.on("ready", () => {
+				client.sftp((err, s) => {
+					if (err) return fail(err);
+					settled = true;
+					resolve(s);
+				});
+			});
+			try {
+				client.connect(connectOpts);
+			} catch (err) {
+				fail(err);
+			}
+		});
+
+		let alreadyPresent = false;
+		try {
+			// 获取远端用户 home 目录
+			let homeDir = "";
+			try {
+				homeDir = await sftpCallInternal(sftp, "realpath", ".");
+			} catch {
+				/* fallback */
+			}
+			if (!homeDir || typeof homeDir !== "string" || !homeDir.startsWith("/")) {
+				homeDir = conn.username === "root" ? "/root" : `/home/${conn.username}`;
+			}
+			homeDir = homeDir.replace(/\/+$/, "") || "/";
+
+			const sshDir = `${homeDir}/.ssh`;
+			const authKeysFile = `${sshDir}/authorized_keys`;
+
+			// 确保 ~/.ssh 目录存在并具有 700 权限
+			let sshDirStat = null;
+			try {
+				sshDirStat = await sftpCallInternal(sftp, "stat", sshDir);
+			} catch {
+				/* 目录不存在 */
+			}
+			if (!sshDirStat) {
+				try {
+					await sftpCallInternal(sftp, "mkdir", sshDir);
+				} catch {
+					/* 忽略已存在报错 */
+				}
+			}
+			try {
+				await sftpCallInternal(sftp, "setstat", sshDir, { mode: 0o700 });
+			} catch {}
+
+			// 读取已有 authorized_keys
+			let existingContent = "";
+			try {
+				const buf = await sftpCallInternal(sftp, "readFile", authKeysFile);
+				existingContent = buf ? buf.toString("utf8") : "";
+			} catch {
+				/* 文件不存在视为空 */
+			}
+
+			const lines = existingContent.split(/\r?\n/).map((l) => l.trim());
+			if (lines.includes(pubLine)) {
+				alreadyPresent = true;
+			} else {
+				const newContent = existingContent.trim() ? `${existingContent.trimEnd()}\n${pubLine}\n` : `${pubLine}\n`;
+				await sftpCallInternal(sftp, "writeFile", authKeysFile, Buffer.from(newContent, "utf8"));
+				try {
+					await sftpCallInternal(sftp, "setstat", authKeysFile, { mode: 0o600 });
+				} catch {}
+			}
+		} finally {
+			try {
+				client.end();
+			} catch {}
+		}
+
+		// 清理已有连接池缓存，测试密钥登录验证
+		drop(`${conn.__cwd ?? ""}\u0000${conn.name}`);
+		let verified = false;
+		let verifyError = "";
+		try {
+			if (opts.sftpCalls) {
+				const probeRes = await probe(conn, { sftpCalls: opts.sftpCalls });
+				verified = probeRes.remoteExists !== false;
+			}
+		} catch (err) {
+			verifyError = String(err?.message ?? err);
+		}
+
+		return {
+			ok: true,
+			publicKeyPath: pubInfo.path,
+			publicKey: pubLine,
+			alreadyPresent,
+			verified,
+			verifyError,
+		};
+	}
+
 	return {
 		library,
 		getSftp,
 		exec,
 		execStream,
 		probe,
+		authorizePublicKey,
 		resolveAuth,
 		drop,
 		dropAll,

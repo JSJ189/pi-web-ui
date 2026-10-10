@@ -115,7 +115,6 @@
    · 无气泡、无头像 —— 人机内容同处一条全宽文档流
    · 工具调用 = 台账行（等宽小字 + 点线引导符）
    · 思考流 = 脚注体（※ 起手）
-   · 左缘 1px 墨线活动脊贯穿消息区
    · 输入框 = 命令栏，左缘一抹朱笔
    · 色彩只有语义：墨、淡墨、朱（唯一强调）、印绿
    ========================================================================= */
@@ -184,21 +183,8 @@ body,
 	box-shadow: none !important;
 }
 
-/* ---- 2. 消息区：左缘墨线活动脊 + 文档化排版 ----
- * 列缘这条线让给脊线与输入框边框：脊线（虚线针脚）与输入框左边框同一条
- * 像素线，历史虚下来、接到输入框变实，像「线活了起来」；消息正文整体
- * 右移 23px 挂在轨上，不贴线。仅桌面（≥641px，与 qn-rail 断点一致）启用；
- * 手机上无脊线、保持原生内缩。注意 background-position 的百分比按
- * 「容器宽-图宽」解析，与 padding 不同，偏移公式不要互相套用。 */
-@media (min-width: 641px) {
-	.messages {
-		padding-inline: max(0px, calc(var(--chat-inset) + 23px - var(--msgs-gutter, 0px))) !important;
-		background-image: linear-gradient(to bottom, rgba(38, 34, 24, 0.22) 40%, transparent 0);
-		background-repeat: repeat-y;
-		background-size: 1px 7px;
-		background-position: calc(var(--chat-inset) - 0.5px) top;
-	}
-}
+/* ---- 2. 消息区：文档化排版 ----
+ * 消息区左右边缘与输入框/快捷短语行保持一致严丝合缝对齐（继承基线列几何）。 */
 
 .msg {
 	position: relative;
