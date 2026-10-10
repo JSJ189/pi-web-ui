@@ -3,7 +3,7 @@ import { SessionManager } from "@earendil-works/pi-coding-agent";
 
 describe("检查点回滚（Checkpoint Rollback）", () => {
 	it("通过 branch(entryId) 截断会话上下文至目标检查点", () => {
-		const sm = SessionManager.create(".");
+		const sm = SessionManager.inMemory(".");
 		sm.newSession();
 
 		const id1 = sm.appendMessage({

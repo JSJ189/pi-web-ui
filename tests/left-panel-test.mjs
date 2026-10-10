@@ -11,7 +11,7 @@ import { portUp, freePort } from "./lib/port-utils.mjs";
 import { fileURLToPath } from "node:url";
 import { chromium } from "playwright-core";
 import { spawn } from "node:child_process";
-import { mkdtempSync, writeFileSync } from "node:fs";
+import { mkdtempSync, writeFileSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { setTimeout as sleep } from "node:timers/promises";
@@ -23,6 +23,8 @@ const PORT = 8899;
 const URL = `http://localhost:${PORT}`;
 const PROJ = REPO_ROOT;
 
+const dataDir = mkdtempSync(join(tmpdir(), "pi-left-panel-data-"));
+const agentDir = mkdtempSync(join(tmpdir(), "pi-left-panel-agent-"));
 const A = mkdtempSync(join(tmpdir(), "pi-ui-a-"));
 const B = mkdtempSync(join(tmpdir(), "pi-ui-b-"));
 writeFileSync(join(A, "a.txt"), "a");
@@ -50,7 +52,13 @@ try {
 await sleep(500);
 const server = spawn("node", ["dist/server/index.js"], {
 	cwd: PROJ,
-	env: { ...process.env, PI_WEB_PORT: String(PORT), PI_WEB_CWD: A },
+	env: {
+		...process.env,
+		PI_WEB_PORT: String(PORT),
+		PI_WEB_DATA_DIR: dataDir,
+		PI_CODING_AGENT_DIR: agentDir,
+		PI_WEB_CWD: A,
+	},
 	stdio: "ignore",
 });
 for (let i = 0; i < 40 && !(await portUp(PORT)); i++) await sleep(250);
@@ -62,6 +70,19 @@ await page.waitForSelector(".panel-left .panel-sessions", { timeout: 15000 });
 
 // Wait for the Chinese locale UI (conn label or section titles).
 await sleep(800);
+
+// 空 agent 目录（PI_CODING_AGENT_DIR 隔离）会弹「首次配置」向导（piConfigured=false），
+// 它的 modal-backdrop 盖住整个界面，本用例测的是左栏、不测模型配置 → 先关掉它。
+const setup = page.locator(".setup-modal");
+if (
+	await setup.waitFor({ state: "visible", timeout: 5000 }).then(
+		() => true,
+		() => false,
+	)
+) {
+	await page.locator(".setup-modal .modal-close").click();
+	await setup.waitFor({ state: "detached", timeout: 5000 }).catch(() => {});
+}
 
 // 1. Fresh state: only 历史对话 title; no 运行的对话 section, no divider
 //    (the only conversation is blank — blank chats are never listed; one with
@@ -128,5 +149,11 @@ check(
 
 await browser.close();
 server.kill("SIGKILL");
+try {
+	rmSync(dataDir, { recursive: true, force: true });
+	rmSync(agentDir, { recursive: true, force: true });
+	rmSync(A, { recursive: true, force: true });
+	rmSync(B, { recursive: true, force: true });
+} catch {}
 console.log(failures === 0 ? "\nALL PASS" : `\n${failures} FAILURE(S)`);
 process.exit(failures === 0 ? 0 : 1);

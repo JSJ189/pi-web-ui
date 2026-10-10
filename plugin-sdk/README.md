@@ -129,6 +129,23 @@ describe("my-plugin", () => {
 | `schedule` 持久版（`{id, persistent, catchUp, label}`，落盘+补跑+进后台面板）                    | ✅                    | —                               |
 | `host.requestPermission`（动态授权：net 补主机 / llm 限模型，用户逐条确认可记住）                | ✅（基础族须已声明）  | 确认框 + 设置面板「已授权能力」 |
 
+## 左栏运行条目：`host.leftPanel`（需要能力 `ui`）
+
+把「正在跑的事」登记到左栏「运行的对话」里，按插件分组显示（例如第三方子代理：谁在跑、进度多少）。
+**只展示**：不是对话，没有停止按钮；点击条目时把 `action` 交给你的浏览器 bundle（`host.onUiAction`）。
+
+```js
+// 整体替换本插件的条目；同时作为心跳（ttlMs 内不再调用 → 整组自动清空，缺省 60s，夹取 5s–1h）
+host.leftPanel.setRunning(
+	[{ id: "sub-1", title: "代码审查", hint: "第 2/5 步", status: "running", icon: "🔍", action: "review:open" }],
+	{ ttlMs: 30_000 },
+);
+host.leftPanel.clear(); // 立即清空
+```
+
+`status`：`running`（进行中）/ `done` / `error`；缺省 `running`。`id` 在插件内唯一（重复的后者丢弃）。
+上限 50 条；超出、缺 id、非法字段都会丢弃并进入运行时诊断，不会抛错。
+
 ## 反激活与清理：`host.effect(label, dispose)`
 
 宿主的每个注册面（`ui.register` / `registerAgentTool` / `registerCommand` / `route` /

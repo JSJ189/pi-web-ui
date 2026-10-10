@@ -33,6 +33,7 @@ import type {
 	UiSelectOption,
 	UiSlotId,
 } from "./types";
+import { LP_SECTION_ENTRY_ID } from "./left-sections";
 
 export type {
 	UiAlign,
@@ -135,6 +136,13 @@ const SLOT_IDS: UiSlotId[] = [
 	"topbar.primary",
 	"topbar.overflow",
 	"notice.actions",
+	"leftpanel.sections",
+	"leftpanel.projects.actions",
+	"leftpanel.project",
+	"leftpanel.running.actions",
+	"leftpanel.running",
+	"leftpanel.history.actions",
+	"leftpanel.history",
 	"leftpanel.sessions",
 	"chat.header",
 	"chat.empty",
@@ -150,6 +158,7 @@ const SLOT_IDS: UiSlotId[] = [
 	"contextmenu.topbar",
 	"contextmenu.message",
 	"contextmenu.session",
+	"contextmenu.project",
 	"contextmenu.file",
 	"contextmenu.toolcall",
 	"settings.pages",
@@ -219,6 +228,11 @@ export function applyUiSlotCardinality<T extends { id: string; hidden: boolean }
  *   rightpanel.tabs  web/src/components/RightPanel.tsx：今天只有文件树一个 tab
  *                    （tab 列表按本表顺序渲染：隐藏 / 调序都生效）。
  *   contextmenu.session  LeftPanel.tsx 的 `.ctx-menu`：重命名 / 关闭已结束子代理 / 强行关闭对话。
+ *   leftpanel.projects.actions / leftpanel.running.actions / leftpanel.history.actions  左栏三个分区
+ *                    标题栏的纯插件按钮位（追加在宿主自带按钮之后；无条目不渲染）。
+ *   leftpanel.project  左栏项目行内嵌区（项目名旁的徽标 / 快捷按钮；target=项目路径）。
+ *   contextmenu.project  左栏项目行右键菜单（target.kind="project"，id=项目路径）；
+ *                    无可见条目时不抢浏览器右键。纯插件位，无宿主内置条目。
  *   contextmenu.file     RightPanel.tsx 的 `.ctx-menu`：上传到文件夹 / 以项目打开 /
  *                    添加为工作区根（宿主侧多根，见 protocol 的 set_workspace_roots）。
  *   contextmenu.message 与 contextmenu.topbar：右键菜单（Message.tsx 整条消息右键 /
@@ -247,6 +261,32 @@ export function applyUiSlotCardinality<T extends { id: string; hidden: boolean }
  *                    file.preview.toolbar 在 FilePreview 的 .fp-head-actions 尾部。
  */
 export const BUILTIN_UI_ITEMS: BuiltinUiItem[] = [
+	// ---- 左栏三个分区（P2：布局页可隐藏 / 调序；LeftPanel 按此计划挂载，见 left-sections.ts） ----
+	{
+		id: "host:lp-projects",
+		slot: "leftpanel.sections",
+		labelKey: "recentProjects",
+		icon: "folder",
+		kind: "action",
+		order: 10,
+	},
+	{
+		id: "host:lp-running",
+		slot: "leftpanel.sections",
+		labelKey: "runningConversations",
+		icon: "activity",
+		kind: "action",
+		order: 20,
+	},
+	{
+		id: "host:lp-history",
+		slot: "leftpanel.sections",
+		labelKey: "historySessions",
+		icon: "clock",
+		kind: "action",
+		order: 30,
+	},
+
 	// ---- 品牌（左上角 π 标识与名称合一） ----
 	// kind=badge：纯展示，无动作。单一条目承载整个品牌块（渲染层见 TopBar 的 host:brand），
 	// 对齐/隐藏/改名/调序全部直通 —— 不再有「名称的 align 存而不用」的双 id 包袱。
@@ -1337,9 +1377,10 @@ export const BUILTIN_UI_ITEMS: BuiltinUiItem[] = [
 	},
 
 	// ---- v8 新增槽位一律纯插件新增位，不登记宿主占位（宁缺勿造） ----
-	// leftpanel.sessions / notice.actions 等在宿主侧都没有可整理的独立入口
-	// （会话行点行即打开、通知条无常驻按钮），保持空数组，无插件贡献时
-	// 渲染层返回 null / 不渲染，DOM 与旧版一字不差。
+	// leftpanel.sessions / leftpanel.running / leftpanel.history / notice.actions 等行内槽位在宿主侧
+	// 没有可整理的独立入口（会话点行即打开、通知条无常驻按钮），保持空数组，
+	// 无插件贡献时渲染层返回 null / 不渲染，DOM 与旧版一字不差。
+	// 左栏三个分区本身已登记为 host:lp-*（见上方 BUILTIN）。
 ];
 
 /** 插件视图 tab 的合成条目 id（`<pluginId>:__view`，`__view` 为保留字）。 */
@@ -1848,6 +1889,17 @@ export function buildUiSlots(
 				});
 				continue;
 			}
+			// P4：左栏分区位只接受插件的「自定义分区」（kind="view"，正文由插件 bundle 挂载）；
+			// 其它种类没有可渲染的形态，丢弃并给诊断（不静默）。内置分区不可替换，只能隐藏 / 调序。
+			if (item.slot === "leftpanel.sections" && item.kind !== "view") {
+				diag({
+					pluginId: plugin.id,
+					entryId: item.id,
+					slot: item.slot,
+					message: `item "${plugin.id}:${item.id}" targets leftpanel.sections: only kind="view" (a plugin section) is accepted — dropped`,
+				});
+				continue;
+			}
 			if (item.kind && !UI_ITEM_KINDS.has(item.kind)) {
 				diag({
 					pluginId: plugin.id,
@@ -1975,6 +2027,15 @@ export function buildUiSlots(
 		mark(id, "order");
 	});
 
+	// 左栏三个分区只能待在 leftpanel.sections：它们由 LeftPanel 按计划挂载，搬到别的槽位就会整块消失。
+	for (const id of Object.values(LP_SECTION_ENTRY_ID)) {
+		const entry = byId.get(id);
+		if (entry && entry.slot !== "leftpanel.sections") {
+			diag({ entryId: id, slot: entry.slot, message: `"${id}" must stay in leftpanel.sections — the move is ignored` });
+			entry.slot = "leftpanel.sections";
+			delete entry.movedFrom;
+		}
+	}
 	// ---- 按挂载点分组 + 排序 + 落成只读条目 ----
 	const buckets = new Map<UiSlotId, WorkingEntry[]>();
 	for (const id of SLOT_IDS) buckets.set(id, []);

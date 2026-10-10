@@ -30,10 +30,18 @@ export const SLOT_EXAMPLES: Readonly<Record<string, string>> = {
 	"contextmenu.topbar": `{ "ui": { "contextmenu.topbar": [{ "id": "m", "label": "顶栏菜单", "kind": "action", "action": "my:m" }] } }`,
 	"contextmenu.message": `{ "ui": { "contextmenu.message": [{ "id": "m", "label": "消息菜单", "kind": "action", "action": "my:m" }] } }`,
 	"contextmenu.session": `{ "ui": { "contextmenu.session": [{ "id": "m", "label": "会话菜单", "kind": "action", "action": "my:m" }] } }`,
+	"contextmenu.project": `{ "ui": { "contextmenu.project": [{ "id": "m", "label": "项目菜单", "kind": "action", "action": "my:m" }] } }`,
 	"contextmenu.file": `{ "contextmenu.file": [{ "id": "mail", "label": "发到邮箱", "kind": "action", "action": "my:send" }] }`,
 	"contextmenu.toolcall": `{ "ui": { "contextmenu.toolcall": [{ "id": "m", "label": "工具菜单", "kind": "action", "action": "my:m" }] } }`,
 	"settings.pages": `{ "settings": [{ "id": "conf", "label": "邮箱设置", "kind": "page" }] }`,
 	"tasks.panel": `{ "ui": { "tasks.panel": [{ "id": "pm2", "label": "pm2 托管的应用", "kind": "view" }] } }`,
+	"leftpanel.projects.actions": `{ "ui": { "leftpanel.projects.actions": [{ "id": "m", "label": "项目标题按钮", "kind": "action", "action": "my:m" }] } }`,
+	"leftpanel.project": `{ "ui": { "leftpanel.project": [{ "id": "m", "label": "项目行", "kind": "action", "action": "my:m" }] } }`,
+	"leftpanel.running.actions": `{ "ui": { "leftpanel.running.actions": [{ "id": "m", "label": "运行标题按钮", "kind": "action", "action": "my:m" }] } }`,
+	"leftpanel.history.actions": `{ "ui": { "leftpanel.history.actions": [{ "id": "m", "label": "历史标题按钮", "kind": "action", "action": "my:m" }] } }`,
+	"leftpanel.sections": `{ "ui": { "leftpanel.sections": [{ "id": "m", "label": "我的分区", "kind": "view" }] } }`,
+	"leftpanel.running": `{ "ui": { "leftpanel.running": [{ "id": "m", "label": "运行行", "kind": "action", "action": "my:m" }] } }`,
+	"leftpanel.history": `{ "ui": { "leftpanel.history": [{ "id": "m", "label": "历史行", "kind": "action", "action": "my:m" }] } }`,
 	"leftpanel.sessions": `{ "ui": { "leftpanel.sessions": [{ "id": "m", "label": "会话区", "kind": "action", "action": "my:m" }] } }`,
 	"chat.header": `{ "ui": { "chat.header": [{ "id": "m", "label": "会话题头", "kind": "action", "action": "my:m" }] } }`,
 	"chat.empty": `{ "ui": { "chat.empty": [{ "id": "m", "label": "空态", "kind": "action", "action": "my:m" }] } }`,
@@ -50,6 +58,18 @@ export const SLOT_EXAMPLES: Readonly<Record<string, string>> = {
 /** 宿主方法表（与 server/plugins.ts#PluginHost 同语义的精简版：只收发现用的注册/调用面）。
  *  needs="-" = 观察/基础设施类（无需能力声明）；其余走 can() 门控。 */
 export const HOST_METHODS: ReadonlyArray<CatalogHostMethod> = [
+	{
+		name: "leftPanel.setRunning",
+		needs: "ui",
+		summary: "左栏「运行的对话」登记插件运行条目（整体替换即心跳；ttlMs 缺省 60s 无心跳自动清空）",
+		example: `host.leftPanel.setRunning([{ id: "sync-1", title: "同步邮件", status: "running", hint: "3/10" }])`,
+	},
+	{
+		name: "leftPanel.clear",
+		needs: "ui",
+		summary: "立即清空本插件在左栏的运行条目",
+		example: `host.leftPanel.clear()`,
+	},
 	{
 		name: "ui.register",
 		needs: "ui",

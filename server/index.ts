@@ -2482,6 +2482,8 @@ wss.on("connection", (ws) => {
 							// 让各插件向新接入的客户端推送自身初始状态（onAttach 钩子）——
 							// 插件不要依赖客户端挂载后自己拉（见 plugins.ts onAttach 注释）。
 							pluginMgr.notifyAttach(cid);
+							// P3：左栏插件运行条目全量补发（之后的变更经 plugin_panel_items 广播）。
+							send({ type: "plugin_panel_items", groups: pluginMgr.panelGroups() });
 							// 插件目录授权表（设置面板展示 + 可撤销）
 							send({ type: "plugin_grants", grants: pluginMgr.grants.list() });
 							// 插件能力授权表（设置面板展示 + 可撤销；session 授权带标记）

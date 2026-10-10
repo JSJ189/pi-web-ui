@@ -39,6 +39,8 @@ import {
 	type PluginStats,
 } from "./protocol.js";
 import { UI_SLOTS } from "./plugin-ui-slots.js";
+import { LeftPanelRunningStore } from "./left-panel-running.js";
+import type { PluginPanelGroup } from "./protocol.js";
 import { pick, type ServerLang } from "./i18n.js";
 import { PluginStorage, PluginSecrets, ensurePluginDeps, WorkspaceFS, withFileRmwLock } from "./plugin-facilities.js";
 import {
@@ -568,6 +570,13 @@ export interface PluginHost {
 	}): {
 		update(next: Partial<{ label: string; status: string; stop: () => void }>): void;
 		unregister(): void;
+	};
+	/** P3：左栏「运行的对话」里的插件运行条目（仅展示，需要能力 "ui"）。
+	 *  setRunning 整体替换本插件的条目，同时作为心跳：超过 ttlMs（缺省 60 秒，夹取 5 秒–1 小时）
+	 *  没有再次调用，本插件的条目整组自动清空；clear() 立即清空。反激活时自动清空。 */
+	leftPanel: {
+		setRunning(items: unknown[], opts?: { ttlMs?: number }): void;
+		clear(): void;
 	};
 	/** 读取宿主管理的设置值（manifest "settings" 声明的字段，storage.json
 	 *  存值 + 默认值合并）。插件应以此为准做运行时行为。 */
@@ -1611,6 +1620,10 @@ export class PluginManager {
 	private pluginBgTasks = new Map<string, Map<string, PluginBgTask>>();
 	/** 任务集合变化回调（index.ts 接到 AgentService，重推 bg_servers）。 */
 	onBgTasksChanged: (() => void) | undefined = undefined;
+	/** P3：左栏插件运行条目（见 left-panel-running.ts）。 */
+	readonly panelRunning = new LeftPanelRunningStore();
+	private panelPushTimer: ReturnType<typeof setTimeout> | null = null;
+	private panelSweepTimer: ReturnType<typeof setInterval> | null = null;
 	/** 服务端重载纪元：每次 reload() +1，前端用作 import 缓存击穿参数。 */
 	private epochCounter = 0;
 	/** 插件市场列表纪元：每次 add/remove +1，前端据此重渲。 */
@@ -2634,6 +2647,33 @@ export class PluginManager {
 		}
 	}
 
+	/** P3：节流广播左栏运行条目（同一窗口内的多次变更合并成一条，约 500ms）。 */
+	schedulePanelPush(): void {
+		if (this.panelPushTimer) return;
+		this.panelPushTimer = setTimeout(() => {
+			this.panelPushTimer = null;
+			this.deliverAll({ type: "plugin_panel_items", groups: this.panelRunning.groups() });
+		}, 500);
+		this.panelPushTimer.unref?.();
+	}
+	/** P3：心跳扫描（有条目才跑，每 5 秒）：过期即清空并广播；条目全无则停表。 */
+	ensurePanelSweep(): void {
+		if (this.panelSweepTimer) return;
+		this.panelSweepTimer = setInterval(() => {
+			const expired = this.panelRunning.sweep();
+			if (expired.length) this.schedulePanelPush();
+			if (this.panelRunning.size === 0 && this.panelSweepTimer) {
+				clearInterval(this.panelSweepTimer);
+				this.panelSweepTimer = null;
+			}
+		}, 5000);
+		this.panelSweepTimer.unref?.();
+	}
+	/** P3：attach 时补发的全量（index.ts 用）。 */
+	panelGroups(): PluginPanelGroup[] {
+		return this.panelRunning.groups();
+	}
+
 	/** 当前目录清单（重扫 manifest，不重新 import）。 */
 	async list(lang?: () => ServerLang): Promise<UiPluginInfo[]> {
 		return this.scan(lang);
@@ -3252,6 +3292,7 @@ export class PluginManager {
 		const cwdHandlers = new Set<(cwd: string) => void>();
 		const httpRoutes = new Map<string, (req: Request, res: Response) => void>();
 		const bgTaskTable = new Map<string, PluginBgTask>();
+		let leftPanelOwned = false;
 		const settingsHandlers = new Set<(values: Record<string, unknown>) => void>();
 		// 可逆副作用栈：本插件的全部注册面（工具/命令/路由/代理/watch/定时/后台任务/
 		// UI 条目/事件订阅…）都经 effects.add 登记，反激活时**逆序**回卷 —— 插件忘写
@@ -3940,6 +3981,26 @@ export class PluginManager {
 						return { ok: false, dir, log: [], error: `项目目录未授权：先 await host.fs.requestAccess("${dir}")` };
 					}
 					return createProject(spec, { onProgress: (line) => self.notifyAll("info", line) });
+				},
+			},
+			leftPanel: {
+				setRunning: (items, opts) => {
+					if (!can("ui")) return;
+					if (!leftPanelOwned) {
+						leftPanelOwned = true;
+						effects.add("leftPanel", () => {
+							leftPanelOwned = false;
+							if (self.panelRunning.clear(info.id)) self.schedulePanelPush();
+						});
+					}
+					const outcome = self.panelRunning.set(info.id, info.name || info.id, items, opts);
+					for (const d of outcome.diags) self.pushRuntimeDiag(info.id, d);
+					if (outcome.changed) self.schedulePanelPush();
+					self.ensurePanelSweep();
+				},
+				clear: () => {
+					if (!can("ui")) return;
+					if (self.panelRunning.clear(info.id)) self.schedulePanelPush();
 				},
 			},
 			registerBackgroundTask: (task) => {

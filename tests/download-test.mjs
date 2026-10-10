@@ -15,7 +15,7 @@ import { portUp, freePort } from "./lib/port-utils.mjs";
 import { fileURLToPath } from "node:url";
 import { chromium } from "playwright-core";
 import { spawn } from "node:child_process";
-import { mkdtempSync, writeFileSync } from "node:fs";
+import { mkdtempSync, writeFileSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { setTimeout as sleep } from "node:timers/promises";
@@ -29,6 +29,8 @@ const PROJ = REPO_ROOT;
 
 // Workspace with a "no-reputation" binary-ish file with a Chinese name —
 // the worst case for Chrome's Safe Browsing block.
+const dataDir = mkdtempSync(join(tmpdir(), "pi-dl-data-"));
+const agentDir = mkdtempSync(join(tmpdir(), "pi-dl-agent-"));
 const WS = mkdtempSync(join(tmpdir(), "pi-dl-test-"));
 const CONTENT = "zipcontent-测试内容";
 writeFileSync(join(WS, "报告.zip"), CONTENT);
@@ -48,7 +50,13 @@ try {
 }
 const server = spawn("node", ["dist/server/index.js"], {
 	cwd: PROJ,
-	env: { ...process.env, PI_WEB_PORT: String(PORT), PI_WEB_CWD: WS },
+	env: {
+		...process.env,
+		PI_WEB_PORT: String(PORT),
+		PI_WEB_DATA_DIR: dataDir,
+		PI_CODING_AGENT_DIR: agentDir,
+		PI_WEB_CWD: WS,
+	},
 	stdio: "ignore",
 });
 for (let i = 0; i < 40 && !(await portUp(PORT)); i++) await sleep(250);
@@ -92,5 +100,10 @@ if (dl) {
 
 await browser.close();
 server.kill("SIGKILL");
+try {
+	rmSync(dataDir, { recursive: true, force: true });
+	rmSync(agentDir, { recursive: true, force: true });
+	rmSync(WS, { recursive: true, force: true });
+} catch {}
 console.log(failures === 0 ? "\nALL PASS" : `\n${failures} FAILURE(S)`);
 process.exit(failures === 0 ? 0 : 1);

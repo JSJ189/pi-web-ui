@@ -16,6 +16,9 @@ import { ensureBuild } from "./lib/ensure-build.mjs";
 import { fileURLToPath } from "node:url";
 import { chromium } from "playwright-core";
 import { spawn } from "node:child_process";
+import { mkdtempSync, rmSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
 import { setTimeout as sleep } from "node:timers/promises";
 // fileURLToPath: URL.pathname 在 Windows 下是 /E:/... 形式，直接当 cwd 会失败
 const REPO_ROOT = fileURLToPath(new globalThis.URL("../", import.meta.url));
@@ -24,6 +27,8 @@ const HEADLESS = CHROME_PATH;
 const PORT = 8899;
 const URL = `http://localhost:${PORT}`;
 const PROJ = REPO_ROOT;
+const dataDir = mkdtempSync(join(tmpdir(), "pi-freeze-data-"));
+const agentDir = mkdtempSync(join(tmpdir(), "pi-freeze-agent-"));
 
 let failures = 0;
 function check(name, ok, extra = "") {
@@ -35,7 +40,7 @@ let server = null;
 async function startServer() {
 	server = spawn("node", ["dist/server/index.js"], {
 		cwd: PROJ,
-		env: { ...process.env, PI_WEB_PORT: String(PORT) },
+		env: { ...process.env, PI_WEB_PORT: String(PORT), PI_WEB_DATA_DIR: dataDir, PI_CODING_AGENT_DIR: agentDir },
 		stdio: "ignore",
 	});
 	// Wait until the port actually listens (or the process died).
@@ -197,5 +202,9 @@ check(
 
 await browser.close();
 await stopServer();
+try {
+	rmSync(dataDir, { recursive: true, force: true });
+	rmSync(agentDir, { recursive: true, force: true });
+} catch {}
 console.log(failures === 0 ? "\nALL FREEZE TESTS PASSED" : `\n${failures} FAILURE(S)`);
 process.exit(failures === 0 ? 0 : 1);

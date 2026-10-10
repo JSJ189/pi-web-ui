@@ -9,7 +9,7 @@ import { ensureBuild } from "./lib/ensure-build.mjs";
 import { fileURLToPath } from "node:url";
 import { chromium } from "playwright-core";
 import { spawn } from "node:child_process";
-import { mkdtempSync, writeFileSync } from "node:fs";
+import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { setTimeout as sleep } from "node:timers/promises";
@@ -21,6 +21,8 @@ const PORT = 8899;
 const URL = `http://localhost:${PORT}`;
 const PROJ = REPO_ROOT;
 
+const dataDir = mkdtempSync(join(tmpdir(), "pi-supp-data-"));
+const agentDir = mkdtempSync(join(tmpdir(), "pi-supp-agent-"));
 const WS = mkdtempSync(join(tmpdir(), "pi-supp-"));
 writeFileSync(join(WS, "a.txt"), "a");
 
@@ -44,7 +46,13 @@ try {
 await sleep(500);
 const server = spawn("node", ["dist/server/index.js"], {
 	cwd: PROJ,
-	env: { ...process.env, PI_WEB_PORT: String(PORT), PI_WEB_CWD: WS },
+	env: {
+		...process.env,
+		PI_WEB_PORT: String(PORT),
+		PI_WEB_DATA_DIR: dataDir,
+		PI_CODING_AGENT_DIR: agentDir,
+		PI_WEB_CWD: WS,
+	},
 	stdio: "ignore",
 });
 for (let i = 0; i < 40 && !(await portUp(PORT)); i++) await sleep(250);
@@ -114,5 +122,10 @@ check("agent answered the queued message", secondReply);
 
 await browser.close();
 server.kill("SIGKILL");
+try {
+	rmSync(dataDir, { recursive: true, force: true });
+	rmSync(agentDir, { recursive: true, force: true });
+	rmSync(WS, { recursive: true, force: true });
+} catch {}
 console.log(failures === 0 ? "\nALL PASS" : `\n${failures} FAILURE(S)`);
 process.exit(failures === 0 ? 0 : 1);

@@ -20,8 +20,8 @@ import { ensureBuild } from "./lib/ensure-build.mjs";
 import { fileURLToPath } from "node:url";
 import WebSocket from "ws";
 import { spawn } from "node:child_process";
-import { mkdirSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
-import { homedir } from "node:os";
+import { mkdirSync, mkdtempSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
+import { homedir, tmpdir } from "node:os";
 import { join } from "node:path";
 import { randomUUID } from "node:crypto";
 import { setTimeout as sleep } from "node:timers/promises";
@@ -44,6 +44,8 @@ try {
 
 // Workspace lives under $HOME (not the system temp dir) — otherwise "~" cannot point at it.
 const WS = join(homedir(), `.pi-web-ui-symtest-${randomUUID().slice(0, 8)}`);
+const dataDir = mkdtempSync(join(tmpdir(), "pi-symlink-data-"));
+const agentDir = mkdtempSync(join(tmpdir(), "pi-symlink-agent-"));
 const REAL = join(WS, "real");
 mkdirSync(REAL, { recursive: true });
 writeFileSync(join(WS, "top.txt"), "hello");
@@ -64,7 +66,13 @@ try {
 	await sleep(400);
 	const server = spawn("node", ["dist/server/index.js"], {
 		cwd: REPO_ROOT,
-		env: { ...process.env, PI_WEB_PORT: String(PORT), PI_WEB_CWD: WS },
+		env: {
+			...process.env,
+			PI_WEB_PORT: String(PORT),
+			PI_WEB_DATA_DIR: dataDir,
+			PI_CODING_AGENT_DIR: agentDir,
+			PI_WEB_CWD: WS,
+		},
 		stdio: ["ignore", "ignore", "pipe"],
 	});
 	let serverErr = "";
@@ -137,6 +145,10 @@ try {
 	ws.close();
 	server.kill("SIGKILL");
 } finally {
+	try {
+		rmSync(dataDir, { recursive: true, force: true });
+		rmSync(agentDir, { recursive: true, force: true });
+	} catch {}
 	rmSync(WS, { recursive: true, force: true });
 }
 console.log(failures === 0 ? "\nALL PASS" : `\n${failures} FAILURE(S)`);

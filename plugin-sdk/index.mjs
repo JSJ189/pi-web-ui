@@ -407,6 +407,10 @@ export function createMockHost(overrides) {
 			create: async () => ({ ok: false, error: "mock：未实现 project.create", log: [], dir: "" }),
 		},
 		registerBackgroundTask: () => ({ update: noop, unregister: noop }),
+		leftPanel: {
+			setRunning: noop,
+			clear: noop,
+		},
 		getSettings: () => settingsState,
 		onSettingsChanged: sub("onSettingsChanged"),
 		scm: {
@@ -517,6 +521,7 @@ export function createMockHost(overrides) {
 		"llm",
 		"conversations",
 		"ui",
+		"leftPanel",
 		"storage",
 		"secrets",
 		"fs",

@@ -22,7 +22,9 @@ for (let depth = 0; depth < 4; depth++) {
 }
 console.log(`目录 ${created} 个，RTT ${process.env.LAT ?? 40}ms/次 readdir`);
 
-const srv = await startMockSsh(join("E:/pi-web-ui", "plugins", "vscode-editor"), 21999, { latencyMs: Number(process.env.LAT ?? 40) });
+const srv = await startMockSsh(join("E:/pi-web-ui", "plugins", "vscode-editor"), 21999, {
+	latencyMs: Number(process.env.LAT ?? 40),
+});
 const req = createRequire(join("E:/pi-web-ui", "plugins", "vscode-editor", "package.json"));
 const { Client } = req("ssh2");
 const client = new Client();
@@ -33,7 +35,12 @@ const sftp = await new Promise((resolve, reject) => {
 });
 for (const c of [1, 8, 16]) {
 	const t0 = performance.now();
-	const { files: f } = await scanRemote(sftp, "/home/test", (rel) => rel.startsWith("a.txt") || rel.startsWith("big.bin") || rel.startsWith("sub"), { concurrency: c });
+	const { files: f } = await scanRemote(
+		sftp,
+		"/home/test",
+		(rel) => rel.startsWith("a.txt") || rel.startsWith("big.bin") || rel.startsWith("sub"),
+		{ concurrency: c },
+	);
 	console.log(`concurrency=${c}: 远端 ${f.size} 个文件 / ${created} 个目录，${Math.round(performance.now() - t0)}ms`);
 }
 client.end();

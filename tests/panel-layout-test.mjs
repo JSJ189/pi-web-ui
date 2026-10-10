@@ -178,10 +178,13 @@ check(
 	"the row is the row of the chat we are looking at (当前)",
 	(await page.locator(".panel-convs .session-item .session-sub").allTextContents()).some((s) => s.includes("当前")),
 );
-check(
-	"the row shows the streaming indicator while the run is in flight",
-	(await page.locator(".panel-convs .conv-streaming").count()) === 1,
-);
+// 行一出现（用户消息入库）不等于运行已进入流式：服务端启动 run 后才置 isStreaming，所以等待标记出现，
+// 而不是行一出现就立刻计数（假模型永不回包，标记会一直保留）。
+const streamingShown = await page
+	.waitForSelector(".panel-convs .conv-streaming", { timeout: 15000 })
+	.then(() => true)
+	.catch(() => false);
+check("the row shows the streaming indicator while the run is in flight", streamingShown);
 check(
 	"only that one row is listed (blank chats stay out)",
 	(await page.locator(".panel-convs .session-item").count()) === 1,

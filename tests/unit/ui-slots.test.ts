@@ -55,7 +55,7 @@ const ids = (entries: { id: string }[]) => entries.map((e) => e.id);
 
 describe("UI slot cardinality（P1-4）", () => {
 	it("所有现有挂载点都有显式 list 规格，新增 single 不会改变现有入口语义", () => {
-		expect(UI_SLOT_SPECS).toHaveLength(25);
+		expect(UI_SLOT_SPECS).toHaveLength(33);
 		expect(UI_SLOT_SPECS.every((spec) => spec.cardinality === "list")).toBe(true);
 		expect(new Set(UI_SLOT_SPECS.map((spec) => spec.slot)).size).toBe(UI_SLOT_SPECS.length);
 	});
@@ -193,7 +193,7 @@ describe("buildUiSlots / 第 1 层：宿主默认", () => {
 		expect(settings?.hidden).toBe(false);
 		expect(settings?.order).toBe(60);
 		// 没用到的槽位是空数组（渲染层不必判空），且全部槽位都在
-		expect(Object.keys(slots)).toHaveLength(25);
+		expect(Object.keys(slots)).toHaveLength(33);
 		expect(slots["composer.leading"]).toEqual([]);
 		// 输入框动作区有 7 个宿主内置（上传/模板/模型/思考/DSH×2/发送），发送簇 align=end
 		// （计划模式已搬到目标条 host:goal-plan）
@@ -252,6 +252,13 @@ describe("buildUiSlots / 第 1 层：宿主默认", () => {
 			"topbar.primary",
 			"topbar.overflow",
 			"notice.actions",
+			"leftpanel.sections",
+			"leftpanel.projects.actions",
+			"leftpanel.project",
+			"leftpanel.running.actions",
+			"leftpanel.running",
+			"leftpanel.history.actions",
+			"leftpanel.history",
 			"leftpanel.sessions",
 			"chat.header",
 			"chat.empty",
@@ -267,6 +274,7 @@ describe("buildUiSlots / 第 1 层：宿主默认", () => {
 			"contextmenu.topbar",
 			"contextmenu.message",
 			"contextmenu.session",
+			"contextmenu.project",
 			"contextmenu.file",
 			"contextmenu.toolcall",
 			"settings.pages",
@@ -413,7 +421,7 @@ describe("buildUiSlots / 第 2 层：插件贡献", () => {
 			arrange: [],
 		});
 		const slots = build([dirty]);
-		expect(Object.keys(slots)).toHaveLength(25);
+		expect(Object.keys(slots)).toHaveLength(33);
 		expect(ids(Object.values(slots).flat()).some((id) => id === "dirty:bad")).toBe(false);
 	});
 });
@@ -1217,5 +1225,114 @@ describe("buildUiSlots —— diagnostics（P0-1）", () => {
 		expect(same.some((d) => d.pluginId === "one" && d.entryId === "dup" && d.message.includes("more than once"))).toBe(
 			true,
 		);
+	});
+});
+
+describe("左栏分区（P2 · leftpanel.sections）", () => {
+	const sectionIds = (slots: ReturnType<typeof build>) => ids(slots["leftpanel.sections"]);
+
+	it("三条宿主分区默认登记在 leftpanel.sections，顺序：项目 / 运行 / 历史", () => {
+		const slots = build([]);
+		expect(sectionIds(slots)).toEqual(["host:lp-projects", "host:lp-running", "host:lp-history"]);
+		expect(slots["leftpanel.sections"].every((e) => e.source === "host" && !e.hidden)).toBe(true);
+	});
+
+	it("布局页隐藏某分区 → hidden=true，条目本身仍在（布局页才找得回来）", () => {
+		const slots = build([], { layout: { hidden: ["host:lp-running"] } });
+		expect(slots["leftpanel.sections"].find((e) => e.id === "host:lp-running")?.hidden).toBe(true);
+		expect(sectionIds(slots)).toHaveLength(3);
+	});
+
+	it("用户调序（layout.order）改变分区先后", () => {
+		const slots = build([], { layout: { order: ["host:lp-history", "host:lp-projects"] } });
+		const order = sectionIds(slots);
+		expect(order.indexOf("host:lp-history")).toBeLessThan(order.indexOf("host:lp-projects"));
+	});
+
+	it("插件往 leftpanel.sections 里放条目 → 丢弃并给出诊断（不静默）", () => {
+		const diagnostics: UiDiagnostic[] = [];
+		const p = plugin("p", { items: [{ id: "x", slot: "leftpanel.sections", label: "X" }], arrange: [] });
+		const slots = build([p], { diagnostics });
+		expect(slots["leftpanel.sections"].some((e) => e.id === "p:x")).toBe(false);
+		expect(diagnostics.some((d) => d.pluginId === "p" && d.entryId === "x" && d.slot === "leftpanel.sections")).toBe(
+			true,
+		);
+	});
+
+	it("插件 arrange 把宿主分区挪到别的槽位 → 复位回 leftpanel.sections 并诊断", () => {
+		const diagnostics: UiDiagnostic[] = [];
+		const p = plugin("p", { items: [], arrange: [{ id: "host:lp-history", slot: "bottombar" }] });
+		const slots = build([p], { diagnostics });
+		expect(sectionIds(slots)).toContain("host:lp-history");
+		expect(slots.bottombar.some((e) => e.id === "host:lp-history")).toBe(false);
+		expect(
+			diagnostics.some((d) => d.entryId === "host:lp-history" && /must stay in leftpanel\.sections/.test(d.message)),
+		).toBe(true);
+	});
+
+	it("插件 arrange 隐藏宿主分区是允许的（它只是把 hidden 置位）", () => {
+		const p = plugin("p", { items: [], arrange: [{ id: "host:lp-projects", hide: true }] });
+		const slots = build([p]);
+		expect(slots["leftpanel.sections"].find((e) => e.id === "host:lp-projects")?.hidden).toBe(true);
+	});
+
+	it("行内槽位 leftpanel.running / leftpanel.history 是独立挂载点（插件条目落在各自槽位）", () => {
+		const p = plugin("p", {
+			items: [
+				{ id: "r", slot: "leftpanel.running", label: "R" },
+				{ id: "h", slot: "leftpanel.history", label: "H" },
+			],
+			arrange: [],
+		});
+		const slots = build([p]);
+		expect(ids(slots["leftpanel.running"])).toEqual(["p:r"]);
+		expect(ids(slots["leftpanel.history"])).toEqual(["p:h"]);
+		expect(ids(slots["leftpanel.sessions"])).toEqual([]);
+	});
+});
+
+describe("左栏插件自定义分区（P4 · leftpanel.sections 接受 kind=view）", () => {
+	const sectionIds = (slots: ReturnType<typeof build>) => ids(slots["leftpanel.sections"]);
+
+	it("插件 kind=view 条目进入 leftpanel.sections（source=插件，位置在宿主分区之后）", () => {
+		const p = plugin("notes", {
+			items: [{ id: "fav", slot: "leftpanel.sections", kind: "view", label: "收藏" }],
+			arrange: [],
+		});
+		const slots = build([p]);
+		expect(sectionIds(slots)).toEqual(["host:lp-projects", "host:lp-running", "host:lp-history", "notes:fav"]);
+		const fav = slots["leftpanel.sections"].find((e) => e.id === "notes:fav");
+		expect(fav?.source).toBe("plugin:notes");
+		expect(fav?.kind).toBe("view");
+		expect(fav?.label).toBe("收藏");
+	});
+
+	it("插件 kind=action 等非 view 条目仍被丢弃并给诊断（不静默）", () => {
+		const diagnostics: UiDiagnostic[] = [];
+		const p = plugin("notes", {
+			items: [{ id: "x", slot: "leftpanel.sections", kind: "action", label: "X" }],
+			arrange: [],
+		});
+		const slots = build([p], { diagnostics });
+		expect(sectionIds(slots)).not.toContain("notes:x");
+		expect(diagnostics.some((d) => d.entryId === "x" && /only kind="view"/.test(d.message))).toBe(true);
+	});
+
+	it("插件分区与宿主分区一样可被布局页隐藏（hidden 进入合并结果）", () => {
+		const p = plugin("notes", {
+			items: [{ id: "fav", slot: "leftpanel.sections", kind: "view", label: "收藏" }],
+			arrange: [],
+		});
+		const slots = build([p], { layout: { hidden: ["notes:fav"] } });
+		expect(slots["leftpanel.sections"].find((e) => e.id === "notes:fav")?.hidden).toBe(true);
+	});
+
+	it("插件分区不能挪走宿主分区（P2 的复位规则不受影响）；插件 arrange 只能隐藏插件分区", () => {
+		const p = plugin("notes", {
+			items: [{ id: "fav", slot: "leftpanel.sections", kind: "view", label: "收藏" }],
+			arrange: [{ id: "notes:fav", hide: true }],
+		});
+		const slots = build([p]);
+		expect(slots["leftpanel.sections"].find((e) => e.id === "notes:fav")?.hidden).toBe(true);
 	});
 });

@@ -1575,13 +1575,20 @@ export function SettingsModal({
 		);
 	};
 
-	/** 布局页按界面位置分组的挂载点（22 个全量：与 ui-slots.ts 的 SLOT_IDS 同顺序，
+	/** 布局页按界面位置分组的挂载点（30 个全量：与 ui-slots.ts 的 SLOT_IDS 同顺序，
 	 *  严格按实际界面的 DOM/视觉顺序：顶栏 → 通知 → 左栏 → 主列（头部/空态/消息/目标条/
 	 *  输入框） → 右栏 → 终端/Git 视图 → 底栏 → 悬浮层 → 右键菜单 → 设置页 → 对话框）。 */
 	const uiLayoutSections: { slot: UiSlotId; labelKey: string }[] = [
 		{ slot: "topbar.primary", labelKey: "uiLayoutTopbar" },
 		{ slot: "topbar.overflow", labelKey: "uiLayoutTopbarOverflow" },
 		{ slot: "notice.actions", labelKey: "uiLayoutNotice" },
+		{ slot: "leftpanel.sections", labelKey: "uiLayoutLeftSections" },
+		{ slot: "leftpanel.projects.actions", labelKey: "uiLayoutLeftProjectsActions" },
+		{ slot: "leftpanel.project", labelKey: "uiLayoutLeftProject" },
+		{ slot: "leftpanel.running.actions", labelKey: "uiLayoutLeftRunningActions" },
+		{ slot: "leftpanel.running", labelKey: "uiLayoutLeftRunning" },
+		{ slot: "leftpanel.history.actions", labelKey: "uiLayoutLeftHistoryActions" },
+		{ slot: "leftpanel.history", labelKey: "uiLayoutLeftHistory" },
 		{ slot: "leftpanel.sessions", labelKey: "uiLayoutLeftSessions" },
 		{ slot: "chat.header", labelKey: "uiLayoutChatHeader" },
 		{ slot: "chat.empty", labelKey: "uiLayoutChatEmpty" },
@@ -1597,6 +1604,7 @@ export function SettingsModal({
 		{ slot: "contextmenu.topbar", labelKey: "uiLayoutContextTopbar" },
 		{ slot: "contextmenu.message", labelKey: "uiLayoutContextMessage" },
 		{ slot: "contextmenu.session", labelKey: "uiLayoutContextSession" },
+		{ slot: "contextmenu.project", labelKey: "uiLayoutContextProject" },
 		{ slot: "contextmenu.file", labelKey: "uiLayoutContextFile" },
 		{ slot: "contextmenu.toolcall", labelKey: "uiLayoutContextToolcall" },
 		{ slot: "settings.pages", labelKey: "uiLayoutSettingsPages" },
@@ -3739,7 +3747,7 @@ export function SettingsModal({
 												},
 											];
 									const total = segments.reduce((n, g) => n + g.items.length, 0);
-									// 搜索时藏掉无命中的分区（22 个分区全展开翻不动）。
+									// 搜索时藏掉无命中的分区（30 个分区全展开翻不动）。
 									if (q && total === 0) return null;
 									const renderRow = (it: UiSlotEntry, rowItems: UiSlotEntry[]) => {
 										const idx = rowItems.findIndex((e) => e.id === it.id);

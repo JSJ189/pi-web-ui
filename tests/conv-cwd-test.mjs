@@ -12,7 +12,7 @@ import { ensureBuild } from "./lib/ensure-build.mjs";
 import { fileURLToPath } from "node:url";
 import WebSocket from "ws";
 import { spawn } from "node:child_process";
-import { mkdtempSync, writeFileSync } from "node:fs";
+import { mkdtempSync, writeFileSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { setTimeout as sleep } from "node:timers/promises";
@@ -22,6 +22,8 @@ const REPO_ROOT = fileURLToPath(new globalThis.URL("../", import.meta.url));
 
 const PORT = Number(process.argv[2] || 8898);
 const PROJ = REPO_ROOT;
+const dataDir = mkdtempSync(join(tmpdir(), "pi-conv-cwd-data-"));
+const agentDir = mkdtempSync(join(tmpdir(), "pi-conv-cwd-agent-"));
 const A = mkdtempSync(join(tmpdir(), "pi-proj-a-"));
 const B = mkdtempSync(join(tmpdir(), "pi-proj-b-"));
 writeFileSync(join(A, "only-in-A.txt"), "A\n");
@@ -41,7 +43,13 @@ try {
 }
 const server = spawn("node", ["dist/server/index.js"], {
 	cwd: PROJ,
-	env: { ...process.env, PI_WEB_PORT: String(PORT), PI_WEB_CWD: A },
+	env: {
+		...process.env,
+		PI_WEB_PORT: String(PORT),
+		PI_WEB_DATA_DIR: dataDir,
+		PI_CODING_AGENT_DIR: agentDir,
+		PI_WEB_CWD: A,
+	},
 	stdio: "ignore",
 });
 for (let i = 0; i < 40 && !(await portUp(PORT)); i++) await sleep(250);
@@ -173,5 +181,11 @@ for (const n of notices) console.log("  ", n);
 
 ws.close();
 server.kill("SIGKILL");
+try {
+	rmSync(dataDir, { recursive: true, force: true });
+	rmSync(agentDir, { recursive: true, force: true });
+	rmSync(A, { recursive: true, force: true });
+	rmSync(B, { recursive: true, force: true });
+} catch {}
 console.log(failures === 0 ? "\nALL PASS" : `\n${failures} FAILURE(S)`);
 process.exit(failures === 0 ? 0 : 1);

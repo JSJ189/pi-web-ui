@@ -32,6 +32,8 @@ const HEADLESS = CHROME_PATH;
 const PORT = 8901;
 const URL = `http://localhost:${PORT}`;
 const PROJ = REPO_ROOT;
+const dataDir = mkdtempSync(join(tmpdir(), "piweb-uuid-data-"));
+const agentDir = mkdtempSync(join(tmpdir(), "piweb-uuid-agent-"));
 // Hermetic workdir: the test server runs in a fresh temp dir so the user's
 // real .pi/commands.json (in the project) is never loaded or modified.
 const workdir = mkdtempSync(join(tmpdir(), "piweb-uuid-"));
@@ -46,7 +48,13 @@ let server = null;
 async function startServer() {
 	server = spawn("node", ["dist/server/index.js"], {
 		cwd: PROJ,
-		env: { ...process.env, PI_WEB_PORT: String(PORT), PI_WEB_CWD: workdir },
+		env: {
+			...process.env,
+			PI_WEB_PORT: String(PORT),
+			PI_WEB_DATA_DIR: dataDir,
+			PI_CODING_AGENT_DIR: agentDir,
+			PI_WEB_CWD: workdir,
+		},
 		stdio: "ignore",
 	});
 	for (let i = 0; i < 40; i++) {
@@ -186,6 +194,8 @@ check("no randomUUID page errors", uuidErrors.length === 0, uuidErrors.slice(0, 
 await browser.close();
 await stopServer();
 try {
+	rmSync(dataDir, { recursive: true, force: true });
+	rmSync(agentDir, { recursive: true, force: true });
 	rmSync(workdir, { recursive: true, force: true });
 } catch {
 	/* noop */

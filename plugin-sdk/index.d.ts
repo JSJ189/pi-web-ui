@@ -260,6 +260,23 @@ export interface PluginHost {
 			error?: string;
 		}>;
 	};
+	/** P3：左栏「运行的对话」里的插件运行条目（仅展示，需要能力 "ui"）。setRunning 整体替换本插件的
+	 *  条目，同时作为心跳：超过 ttlMs（缺省 60 秒，夹取 5 秒–1 小时）没有再次调用就整组自动清空；
+	 *  clear() 立即清空；反激活时自动清空。item.action 点击时交给本插件浏览器 bundle 的 onUiAction。 */
+	leftPanel: {
+		setRunning(
+			items: Array<{
+				id: string;
+				title: string;
+				hint?: string;
+				status?: "running" | "done" | "error";
+				icon?: string;
+				action?: string;
+			}>,
+			opts?: { ttlMs?: number },
+		): void;
+		clear(): void;
+	};
 	/** 常驻后台任务（顶栏「后台任务」面板；返回 update/unregister）。 */
 	registerBackgroundTask(task: { id: string; label: string; stop?: () => void; status?: string }): {
 		update(next: Partial<{ label: string; status: string; stop: () => void }>): void;

@@ -1874,6 +1874,29 @@ export interface UiPluginFileHandler {
 	labelEn?: string;
 }
 
+/** P3：插件登记的「运行中」条目（左栏「运行的对话」分区里，按插件分组展示）。
+ *  仅展示：不是对话、没有 runtime，点击只把 action 回传给插件的浏览器 bundle。 */
+export interface PluginPanelItem {
+	/** 插件内唯一（服务端去重，重复的后者丢弃）。 */
+	id: string;
+	title: string;
+	/** 副标题（如「第 3/5 步」）。 */
+	hint?: string;
+	/** running = 进行中；done / error = 已结束（仍可见，直到插件清掉或心跳过期）。 */
+	status: "running" | "done" | "error";
+	/** 单个 emoji / 短符号（≤ 8 字符）。 */
+	icon?: string;
+	/** 点击时回传给插件的动作名（插件 bundle 用 host.onUiAction 接）；缺省则点击无效果。 */
+	action?: string;
+}
+
+/** P3：某个插件的一组运行中条目（分组标题用插件显示名）。 */
+export interface PluginPanelGroup {
+	pluginId: string;
+	pluginName: string;
+	items: PluginPanelItem[];
+}
+
 export interface UiPluginInfo {
 	/** Directory name; must match ^[A-Za-z0-9_-]+$ (path-safety). */
 	id: string;
@@ -2005,13 +2028,31 @@ export type UiSlotId =
 	| "contextmenu.message"
 	/** 左栏会话右键菜单。 */
 	| "contextmenu.session"
+	/** 左栏项目行右键菜单（最近项目；target.kind="project"，target.id=项目路径）。 */
+	| "contextmenu.project"
 	/** 文件树条目右键菜单。 */
 	| "contextmenu.file"
 	/** 工具调用卡片的**工具名**右键菜单（ToolCallBlock；宿主内置条目只有「显示工具详细信息」）。 */
 	| "contextmenu.toolcall"
 	/** 设置面板里的一整页（插件用 mount() 自己渲染）。 */
 	| "settings.pages"
-	/** 左栏会话行内嵌区（会话标题旁的徽标/快捷按钮）。 */
+	/** 左栏「最近项目」分区标题栏按钮（宿主「管理项目」按钮之后追加）。 */
+	| "leftpanel.projects.actions"
+	/** 左栏项目行内嵌区（项目名旁的徽标/快捷按钮；点击回传 target=项目）。 */
+	| "leftpanel.project"
+	/** 左栏「运行的对话」分区标题栏按钮。 */
+	| "leftpanel.running.actions"
+	/** 运行会话行内嵌区（与 leftpanel.sessions 并集，只在运行行上出现）。 */
+	| "leftpanel.running"
+	/** 历史会话行内嵌区（与 leftpanel.sessions 并集，只在历史行上出现）。 */
+	| "leftpanel.history"
+	/** 左栏「历史对话」分区标题栏按钮（宿主「新对话」按钮之后追加）。 */
+	| "leftpanel.history.actions"
+	/** 左栏三个分区（最近项目 / 运行的对话 / 历史对话）的顺序与显隐。
+	 *  宿主条目（host:lp-projects / host:lp-running / host:lp-history）可隐藏 / 调序；插件可以用
+	 *  kind="view" 新增一个自定义分区（正文由插件 bundle 挂载），但不能替换内置分区。 */
+	| "leftpanel.sections"
+	/** 左栏会话行内嵌区（运行 / 历史两类会话行共用；会话标题旁的徽标/快捷按钮）。 */
 	| "leftpanel.sessions"
 	/** 对话头部条（标题旁的操作区）。 */
 	| "chat.header"
@@ -3351,6 +3392,9 @@ export type ServerMessage =
 	 *  Broadcast to every connected socket (plugins have no per-client state
 	 *  in v1); the frontend fans it out to the matching loaded view. */
 	| { type: "plugin_data"; pluginId: string; payload: unknown }
+	/** P3：左栏「运行的对话」里的插件运行条目（全量，非增量）。attach 时补发一次，之后每次变更
+	 *  广播（节流约 500ms）。不进快照：它的变化频率与对话快照无关，单独走这条消息。 */
+	| { type: "plugin_panel_items"; groups: PluginPanelGroup[] }
 	/** Plugin job progress — sent ONLY to the client that started the job. One
 	 *  `start`, N `log`, one `done`. `done` carries `ok` plus the tail of the
 	 *  job output so the settings panel can show what happened in place. */

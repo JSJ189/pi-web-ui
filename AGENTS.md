@@ -31,7 +31,7 @@ pi-web-ui 是 pi 编码智能体（`@earendil-works/pi-coding-agent` SDK）的 W
 - **server 核心事实源与入口（★=关键事实源）**：
   `protocol.ts`★（跨端 wire 协议唯一事实源）· `index.ts`（Express + WS 服务路由与心跳）· `agent-service.ts`（ClientSession / 运行态 / customTools 注册）· `tool-manager.ts`★（`AGENT_TOOL_CATALOG` 工具开关唯一事实源）· `tool-prompts.ts`★（bash 等工具提示词单源）· `tool-overrides.ts`（SDK 内置工具安全覆盖基底）· `client-state.ts`（持久化配置）· `tool-approval.ts`（审批门禁与规则库）· `plugins.ts`（UI 插槽与插件运行时）· `subagents.ts`（子代理管理）· `terminals.ts`（PTY 终端与 bash 接管）· `soft-cap.ts`（上下文软上限纯函数）· `goal-service.ts`（目标模式 2.0 审查会话编排）· `plan-mode.ts`（计划模式硬闸门）· `delegate-mode.ts`（审查者模式自动委派）· `preset-share.ts`（预设导入导出四道闸门净化）。
 - **web/src 核心模块（★=优先阅读）**：
-  `use-chat.ts`★（WS 通信 + Reducer + 终端 Bridge）· `app-globals.ts`★（模块级全局 Store + `appSend`，高频快照流禁入）· `ui-slots.ts`★（宿主 25 个 UI 扩展插槽与四层合并）· `types.ts`（协议类型 shim，受脚本守护）· `styles.css`（全应用共享 CSS 变量与主题基线）· `i18n.tsx`（前端双语国际化）· `composer-bridge.ts`（输入框草稿管理与自动聚焦）· `topbar-fit.ts`（顶栏溢出测量）· `use-floating-panel.ts`（浮层统管 Hook）。
+  `use-chat.ts`★（WS 通信 + Reducer + 终端 Bridge）· `app-globals.ts`★（模块级全局 Store + `appSend`，高频快照流禁入）· `ui-slots.ts`★（宿主 33 个 UI 扩展插槽与四层合并）· `types.ts`（协议类型 shim，受脚本守护）· `styles.css`（全应用共享 CSS 变量与主题基线）· `i18n.tsx`（前端双语国际化）· `composer-bridge.ts`（输入框草稿管理与自动聚焦）· `topbar-fit.ts`（顶栏溢出测量）· `use-floating-panel.ts`（浮层统管 Hook）。
 - **测试与 CI 套件**：
   `tests/run-smoke.mjs`（零 token 冒烟聚合列表）· `tests/unit/`（vitest 纯函数单测）· `tests/*-test.mjs`（Playwright / WS 集成测试，无 Chrome 自动 SKIP）；CI 矩阵见 `.github/workflows/ci.yml`。
 

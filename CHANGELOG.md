@@ -10,7 +10,18 @@
 
 ## [Unreleased]
 
-暂无未发布内容。
+<!-- auto-i18n:start -->
+
+### i18n
+
+- 前端新增 key（130）：`settingsMcp`、`settingsMcpDesc`、`mcpReload`、`mcpAddServer`、`mcpFilterAll`、`mcpFilterGlobal`、`mcpFilterProject`、`mcpGlobalPath`、`mcpProjectPath`、`mcpEmptyTitle`、`mcpEmptyDesc`、`mcpQuickAdd`、`mcpScopeGlobal`、`mcpScopeProject`、`mcpScopeGlobalHint`、`mcpScopeProjectHint`、`mcpStatusRunning`、`mcpStatusStopped`、`mcpStatusError`、`mcpEnableHint`、`mcpDisableHint`、`mcpToolsCount`、`mcpDeleteConfirmTitle`、`mcpDeleteConfirmDesc`、`mcpAddModalTitle`、`mcpEditModalTitle`、`mcpPresetSelect`、`mcpScopeLabel`、`mcpNameLabel`、`mcpNamePlaceholder`、`mcpTransportLabel`、`mcpTransportStdio`、`mcpTransportHttp`、`mcpCommandLabel`、`mcpCommandPlaceholder`、`mcpArgsLabel`、`mcpArgsPlaceholder`、`mcpCwdLabel`、`mcpCwdPlaceholder`、`mcpEnvLabel`、`mcpAddEnv`、`mcpEnvKeyPlaceholder`、`mcpEnvValuePlaceholder`、`mcpUrlLabel`、`mcpUrlPlaceholder`、`mcpHeadersLabel`、`mcpAddHeader`、`mcpHeaderKeyPlaceholder`、`mcpHeaderValuePlaceholder`、`mcpDescriptionLabel`、`mcpDescriptionPlaceholder`、`mcpEnabledLabel`、`mcpEnabledDesc`、`mcpPresetCustom`、`mcpPresetCustomDesc`、`mcpPresetFilesystem`、`mcpPresetFilesystemDesc`、`mcpPresetFetch`、`mcpPresetFetchDesc`、`mcpPresetMemory`、`mcpPresetMemoryDesc`、`mcpPresetGithub`、`mcpPresetGithubDesc`、`mcpPresetSqlite`、`mcpPresetSqliteDesc`、`mcpTabConfigured`、`mcpTabMarket`、`mcpBrowseMarket`、`mcpMarketSearchPlaceholder`、`mcpBadgeOfficial`、`mcpConfigured`、`mcpAddGlobal`、`mcpAddProject`、`mcpAddGlobalHint`、`mcpAddProjectHint`、`skillTabInstalled`、`skillTabMarket`、`skillEmptyDesc`、`skillBrowseMarket`、`skillMarketSearchPlaceholder`、`skillCatAll`、`skillCatQuality`、`skillCatWorkflow`、`skillCatArchitecture`、`skillCatDevops`、`skillCatStack`、`skillInspectPrompt`、`skillInstalled`、`skillInstallGlobal`、`skillInstallProject`、`skillInstallGlobalHint`、`skillInstallProjectHint`、`skillInspectModalTitle`、`mcpSourceSelectLabel`、`mcpSourceSmithery`、`mcpSourceGithub`、`mcpSourceCustom`、`mcpSourceCustomPlaceholder`、`mcpMarketLoading`、`mcpMarketRetry`、`skillRepoSelect`、`skillRepoDefault`、`skillRepoCustom`、`skillRepoCustomPlaceholder`、`skillMarketLoading`、`skillContentLoading`、`skillMarketRetry`、`turnStopped`、`keepRecent`、`keepRecentDesc`、`uiLayoutLeftProjectsActions`、`uiLayoutLeftProject`、`uiLayoutLeftRunningActions`、`uiLayoutLeftHistoryActions`、`uiLayoutLeftSections`、`uiLayoutLeftRunning`、`uiLayoutLeftHistory`、`leftPanelPluginGroup`、`pluginRunStatusRunning`、`pluginRunStatusDone`、`pluginRunStatusError`、`uiLayoutContextProject`、`codemodeEnabledDesc`、`codemodeOffHint`、`codemodeNestedCalls`、`codemodeScript`、`codemodeFullOutput`、`toolSearchEnabledDesc`、`toolSearchOffHint`、`toolSearchLoaded`
+- 前端中文变更（1）：`pluginTopbarMore`
+- 前端英文变更（1）：`pluginTopbarMore`
+- 服务端新增 key（1）：`terminals.bash.incomplete`
+- 服务端文案变更（2）：`scm.commitmsg.timeout`、`terminals.bash.timeout`
+- 服务端删除 key（1）：`terminals.bash.nosentinel.note`
+
+<!-- auto-i18n:end -->
 
 ## [0.100.0] — 2026-10-08
 
@@ -55,6 +66,7 @@
 - **点开「后台任务」面板时，进程管家那块总会闪一下「未检测到 pm2」** —— 面板 bundle 原先的初始状态写死 `installed:false`，首帧先把黄条画出来，状态回来后再抹掉；且宿主升级后 `<dataDir>/plugins` 里的已安装官方插件未自动同步更新（停留在旧版本）。现在三个层面彻底根治：① 服务端新增**随包官方插件自动热同步机制**（启动/重载时若已装插件版本落后于随包 catalog 官方插件，自动备份并增量升级，不再滞留旧版代码）；② 客户端增加**模块级已知状态缓存与异常隔离**（同一会话内二次打开首帧直接复用已知结论秒开无闪烁；网络或接口异常绝不把环境误报为「未检测到」）；③ 服务端扩充 Windows 默认 npm 与 PATH 候选路径，启动时毫秒级命中，并为探测增加 Promise 并发防抖。回归：`tests/unit/pm2-manager-panel.test.ts`、`tests/unit/plugin-manager.test.ts`。插件版本 0.3.1 → 0.3.2。
 
 <!-- auto-i18n:start -->
+
 ### i18n
 
 - 前端新增 key（97）：`bgTaskKeep`、`bgTaskKeepOn`、`bgTaskCleanup`、`bgTaskCleanupOff`、`bgTaskCleanupMinutes`、`bgTaskCleanupHint`、`bgTaskCleanNow`、`bgTaskCleanNowHint`、`collapseSubagents`、`expandSubagents`、`subagentBadgeCount`、`subagentsStreamingTip`、`subagentsQuestionTip`、`subagentsErrorTip`、`subagentsCountTip`、`toolApprovalHitsTitle`、`approvalHitPos`、`approvalCommandPreview`、`markerGroupAction`、`actionSuggestions`、`actionSuggestionsTip`、`toolLazyLoading`、`toolLazyLoadingDesc`、`uiLayoutTasksPanel`、`presetShare`、`presetShareShareBtn`、`presetShareImportBtn`、`presetShareBrowseBtn`、`presetShareTabExport`、`presetShareTabImport`、`presetShareTabBrowse`、`presetShareSource`、`presetShareSourceCurrent`、`presetShareDescription`、`presetShareDescriptionPlaceholder`、`presetShareTags`、`presetShareTagsPlaceholder`、`presetShareAuthor`、`presetExportJson`、`presetExportDownload`、`presetShareSubmit`、`presetShareHint`、`presetShareSubmitting`、`presetShareOpenWebTitle`、`presetShareOpenWebBtn`、`presetShareOpenIssueBtn`、`presetShareCopyJson`、`presetSharePopupBlocked`、`presetShareBrowserCopied`、`presetImportText`、`presetImportTextPlaceholder`、`presetImportPickFile`、`presetImportFromUrl`、`presetImportUrlPlaceholder`、`presetImportPreview`、`presetImportFields`、`presetImportIgnored`、`presetImportRejected`、`presetImportReplaces`、`presetImportApply`、`presetImportConfirm`、`presetImportPick`、`presetImportSelectAll`、`presetImportSelectNone`、`presetImportAllSelected`、`presetImportNoneSelected`、`presetImportPickHint`、`presetGroupPrompt`、`presetGroupTools`、`presetGroupTerminal`、`presetGroupSkills`、`presetGroupAi`、`presetGroupUi`、`presetGroupEngine`、`presetGroupOther`、`presetImportImported`、`presetBrowseEmpty`、`presetBrowseLoading`、`presetBrowseSearch`、`presetBrowseRefresh`、`presetBrowseCached`、`presetBrowseImport`、`presetBrowseIssue`、`presetBadgeTemplate`、`presetBadgeReview`、`toolPromptEdit`、`toolPromptEdited`、`toolPromptHint`、`toolPromptDescription`、`toolPromptSnippet`、`toolPromptGuidelines`、`toolPromptDefault`、`toolPromptReset`、`toolPromptSave`、`toolPromptUnavailable`、`elsewhereOfflineBadge`、`elsewhereOfflineTip`
@@ -62,6 +74,7 @@
 - 前端英文变更（2）：`settingsMarkersDesc`、`scheduleTaskEnabledDesc`
 - 服务端新增 key（38）：`loadtools.notready`、`loadtools.unknown`、`loadtools.always`、`loadtools.already`、`loadtools.disabled`、`loadtools.preset`、`goal.role.review.feedback.pass`、`goal.role.review.feedback.prev`、`goal.role.review.feedback.empty`、`loadtools.names.empty`、`loadtools.loaded`、`loadtools.rejected`、`loadtools.none`、`markers.action.guidance`、`markers.action.cleared`、`markers.action.unknown.operation`、`markers.action.requires.text`、`markers.action.already.exists`、`markers.action.added`、`presets.catalog.disabled`、`presets.catalog.url`、`presets.catalog.failed`、`presets.share.currentName`、`presets.share.missing`、`presets.import.noneSelected`、`presets.import.url.host`、`presets.import.url.scheme`、`presets.import.fetch.failed`、`presets.share.apiTokenInvalid`、`presets.share.apiTokenPermission`、`presets.share.apiGeneralFailed`、`presets.share.ghMissingHint`、`presets.share.ghNotLoggedInHint`、`presets.share.fallbackHint`、`presets.share.disabled`、`prompt.tools.lazy`、`sched.action.missing`、`sched.action.unknown`
 - 服务端文案变更（4）：`goal.role.review`、`sched.list.empty`、`sched.cancel.empty.id`、`sched.cancel.not.found`
+
 <!-- auto-i18n:end -->
 
 ## [0.99.0] — 2026-10-03

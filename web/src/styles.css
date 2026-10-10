@@ -1354,6 +1354,57 @@ button.session-item.elsewhere-item.confirm {
 .lp-row:has(.lp-del-group) .lp-slot-sessions {
 	display: none;
 }
+/* 项目行内嵌槽位（P1）：删除钮是 absolute（右 8px、宽 20px），槽位让出 32px 呼吸位，
+   与会话行同理，删除钮永远相对项目行居中 */
+.lp-row .lp-slot-project {
+	flex-shrink: 0;
+	margin-right: 32px;
+}
+/* 分区标题栏的插件按钮：不收缩，紧挨宿主自带的图标钮 */
+.lp-slot-section {
+	flex-shrink: 0;
+}
+/* P3 插件运行条目（仅展示）：状态圆点 + 可选图标；缺省 action 的条目点击无效果 */
+.lp-plugin-item {
+	gap: 6px;
+}
+.lp-plugin-item.is-static {
+	cursor: default;
+}
+.lp-plugin-dot {
+	flex-shrink: 0;
+	width: 7px;
+	height: 7px;
+	border-radius: 50%;
+	background: var(--text-faint);
+}
+.lp-plugin-dot.st-running {
+	background: var(--accent);
+	animation: lp-plugin-pulse 1.4s ease-in-out infinite;
+}
+.lp-plugin-dot.st-done {
+	background: var(--green);
+}
+.lp-plugin-dot.st-error {
+	background: var(--red);
+}
+.lp-plugin-icon {
+	flex-shrink: 0;
+}
+/* P4 插件自定义分区：正文即插件画布，去掉宿主列表的内边距，由插件自己排版（滚动仍由 .lp-section-body 接管） */
+.lp-section-body.lp-plugin-section-body {
+	padding: 0;
+}
+@keyframes lp-plugin-pulse {
+	50% {
+		opacity: 0.35;
+	}
+}
+@media (prefers-reduced-motion: reduce) {
+	.lp-plugin-dot.st-running {
+		animation: none;
+	}
+}
 /* Subagent tree branch. Parent and child remain full, independent links. */
 .lp-row.lp-sub::before {
 	content: "";
@@ -6821,6 +6872,8 @@ body:not(.has-wallpaper)::after {
 /* 插件槽位按钮（terminal/scm/goalbar 工具条、通知区、会话行）：复用 .btn 基调，只补尺寸。 */
 .slot-toolbar,
 .lp-slot-sessions,
+.lp-slot-project,
+.lp-slot-section,
 .notice-actions {
 	display: inline-flex;
 	align-items: center;

@@ -34,12 +34,16 @@ const base = mkdtempSync(join(tmpdir(), "pi-ctxmenu-ui-"));
 const WORK = join(base, "work");
 const SUB = join(WORK, "subproject");
 const FILE = join(WORK, "readme.txt");
+// 上传源必须是工作区里不存在的新名字：readme.txt 已在工作区根，上传它只会得到「已存在」回执。
+const UPLOAD_SRC = join(base, "incoming", "upload-me.txt");
 const DATA_DIR = join(base, "data");
 const AGENT_DIR = join(base, "agent");
 const PORT = 20000 + Math.floor(Math.random() * 8000);
 mkdirSync(SUB, { recursive: true });
 writeFileSync(FILE, "hello\n");
 writeFileSync(join(SUB, "inside.txt"), "sub\n");
+mkdirSync(join(base, "incoming"), { recursive: true });
+writeFileSync(UPLOAD_SRC, "upload\n");
 
 /**
  * 种一个历史会话（格式与 pi CLI/TUI 相同，见 left-panel-delete-test.mjs）。
@@ -318,7 +322,7 @@ async function main() {
 	const fc = await chooser;
 	check("点「上传到当前目录」打开了文件选择器", !!fc);
 	if (fc) {
-		await fc.setFiles(FILE);
+		await fc.setFiles(UPLOAD_SRC);
 		const uploaded = await until(
 			async () =>
 				(await page

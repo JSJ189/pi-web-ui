@@ -66,6 +66,7 @@ import { ModelConfigModal } from "./components/ModelConfigModal";
 
 import { SettingsModal } from "./components/SettingsModal";
 import { BgTasksModal } from "./components/BgTasksModal";
+import { PluginPage } from "./components/PluginPage";
 import { RollbackDialog } from "./components/RollbackDialog";
 import { openRollbackDialog } from "./rollback-state";
 import { ToolApprovalDialog } from "./components/ToolApprovalDialog";
@@ -416,6 +417,18 @@ export function App() {
 	);
 	// 面板槽位（收尾接线）：非 hidden 条目直传面板，空数组时面板返回 null，DOM 与旧版一致。
 	const uiLeftSessions = useMemo(() => uiSlots["leftpanel.sessions"].filter((e) => !e.hidden), [uiSlots]);
+	// 左栏 P1 挂载点（项目 / 运行 / 历史三个分区标题栏 + 项目行）：hidden 滤掉，无条目时 LeftPanel 不画。
+	const uiLeftProjectsActions = useMemo(
+		() => uiSlots["leftpanel.projects.actions"].filter((e) => !e.hidden),
+		[uiSlots],
+	);
+	const uiLeftProject = useMemo(() => uiSlots["leftpanel.project"].filter((e) => !e.hidden), [uiSlots]);
+	const uiLeftRunningActions = useMemo(() => uiSlots["leftpanel.running.actions"].filter((e) => !e.hidden), [uiSlots]);
+	const uiLeftHistoryActions = useMemo(() => uiSlots["leftpanel.history.actions"].filter((e) => !e.hidden), [uiSlots]);
+	// P2：分区本身不滤 hidden（隐藏也要在布局页里找得回来），由 LeftPanel 按 hidden 计划。
+	const uiLeftSections = uiSlots["leftpanel.sections"];
+	const uiLeftRunning = useMemo(() => uiSlots["leftpanel.running"].filter((e) => !e.hidden), [uiSlots]);
+	const uiLeftHistory = useMemo(() => uiSlots["leftpanel.history"].filter((e) => !e.hidden), [uiSlots]);
 	const uiTerminalToolbar = useMemo(() => uiSlots["terminal.toolbar"].filter((e) => !e.hidden), [uiSlots]);
 	const uiScmToolbar = useMemo(() => uiSlots["scm.toolbar"].filter((e) => !e.hidden), [uiSlots]);
 	const uiGoalbarActions = useMemo(() => uiSlots["goalbar.actions"].filter((e) => !e.hidden), [uiSlots]);
@@ -462,6 +475,34 @@ export function App() {
 			void triggerPluginUiAction(pluginId, action, item.id, {
 				...(value !== undefined ? { value } : {}),
 				...(target !== undefined ? { target } : {}),
+				loadBundle: async (pid) => {
+					const info = chatRefForPlugins.current.plugins.find((x) => x.id === pid);
+					if (!info) return false;
+					return ensurePluginViewLoaded(info, chatRefForPlugins.current.pluginsEpoch);
+				},
+			}).then((handled) => {
+				if (!handled) pushNotice("info", t("pluginUiNoHandler"));
+			});
+		},
+		[t, pushNotice],
+	);
+	/** P4：左栏插件自定义分区的正文：由 PluginPage 挂插件 bundle（与后台任务面板同口径）。
+	 *  插件不存在 / 无客户端脚本时返回 null（PluginPage 自己会给出明确占位）。 */
+	const renderLeftPluginSectionBody = useCallback(
+		(entry: UiSlotEntry) => {
+			const plugin = chat.plugins.find((p) => p.id === entry.source.slice("plugin:".length));
+			if (!plugin) return null;
+			return <PluginPage plugin={plugin} epoch={chat.pluginsEpoch} send={send} className="lp-plugin-page" />;
+		},
+		[chat.plugins, chat.pluginsEpoch, send],
+	);
+	/** P3：点左栏「运行的对话」里的插件运行条目 → 交给贡献它的插件 bundle（与 onUiAction 同通道；
+	 *  target 带条目 id/标题，kind="plugin-running"）。没有 action 的条目点击无效果。 */
+	const onPluginRunningAction = useCallback(
+		(group: { pluginId: string }, item: { id: string; title: string; action?: string }) => {
+			if (!item.action) return;
+			void triggerPluginUiAction(group.pluginId, item.action, item.id, {
+				target: { id: item.id, kind: "plugin-running", label: item.title },
 				loadBundle: async (pid) => {
 					const info = chatRefForPlugins.current.plugins.find((x) => x.id === pid);
 					if (!info) return false;
@@ -1722,6 +1763,17 @@ export function App() {
 								   分派它自己的两条内置项（host:conv-dismiss-subagents / host:conv-force-dismiss）。 */
 								uiContextSession={uiSlots["contextmenu.session"]}
 								uiLeftSessions={uiLeftSessions}
+								uiContextProject={uiSlots["contextmenu.project"]}
+								uiProjectsActions={uiLeftProjectsActions}
+								uiLeftProject={uiLeftProject}
+								uiRunningActions={uiLeftRunningActions}
+								uiHistoryActions={uiLeftHistoryActions}
+								uiSections={uiLeftSections}
+								renderPluginSectionBody={renderLeftPluginSectionBody}
+								uiLeftRunning={uiLeftRunning}
+								uiLeftHistory={uiLeftHistory}
+								uiPluginRunning={chat.pluginPanelGroups}
+								onPluginRunningAction={onPluginRunningAction}
 								onUiAction={onUiAction}
 								presetNames={presetNames}
 							/>

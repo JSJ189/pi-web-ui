@@ -90,6 +90,8 @@ const ALL = [
 	// 笔记插件（notes）：清单/HTTP 通道/长轮询推送/持久化（零 token，浏览器 E2E 另见 notes-ui-test）。
 	"notes-test",
 	"plugin-bgtask-test",
+	// 左栏「运行的对话」插件运行条目（P3）：登记推送 / attach 补发 / clear / 心跳过期整组清空。
+	"plugin-leftpanel-running-test",
 	// 后台任务「自动清理」的协议面（阈值落库/归一化、钉住、立即清理反馈）。
 	"bg-cleanup-test",
 	// pm2 进程管家：manifest 被宿主接受 + tasks.panel 占位 + 真激活 + 三个路由（零 token）。

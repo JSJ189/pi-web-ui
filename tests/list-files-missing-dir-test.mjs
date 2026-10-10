@@ -21,6 +21,8 @@ import { setTimeout as sleep } from "node:timers/promises";
 
 const REPO_ROOT = fileURLToPath(new globalThis.URL("../", import.meta.url));
 const PORT = 8902;
+const dataDir = mkdtempSync(join(tmpdir(), "pi-missingdir-data-"));
+const agentDir = mkdtempSync(join(tmpdir(), "pi-missingdir-agent-"));
 const WS = mkdtempSync(join(tmpdir(), "pi-missingdir-"));
 const GONE_DIR = join(WS, "documents", "review");
 mkdirSync(GONE_DIR, { recursive: true });
@@ -45,7 +47,13 @@ try {
 await sleep(400);
 let server = spawn("node", ["dist/server/index.js"], {
 	cwd: REPO_ROOT,
-	env: { ...process.env, PI_WEB_PORT: String(PORT), PI_WEB_CWD: WS },
+	env: {
+		...process.env,
+		PI_WEB_PORT: String(PORT),
+		PI_WEB_DATA_DIR: dataDir,
+		PI_CODING_AGENT_DIR: agentDir,
+		PI_WEB_CWD: WS,
+	},
 	stdio: ["ignore", "ignore", "pipe"],
 });
 let serverErr = "";
@@ -62,7 +70,13 @@ for (let attempt = 0; attempt < 2 && !(await portUp(PORT)); attempt++) {
 	} catch {}
 	server = spawn("node", ["dist/server/index.js"], {
 		cwd: REPO_ROOT,
-		env: { ...process.env, PI_WEB_PORT: String(PORT), PI_WEB_CWD: WS },
+		env: {
+			...process.env,
+			PI_WEB_PORT: String(PORT),
+			PI_WEB_DATA_DIR: dataDir,
+			PI_CODING_AGENT_DIR: agentDir,
+			PI_WEB_CWD: WS,
+		},
 		stdio: ["ignore", "ignore", "pipe"],
 	});
 	attachErr();
@@ -131,5 +145,10 @@ check(
 
 ws.close();
 server.kill("SIGKILL");
+try {
+	rmSync(dataDir, { recursive: true, force: true });
+	rmSync(agentDir, { recursive: true, force: true });
+	rmSync(WS, { recursive: true, force: true });
+} catch {}
 console.log(failures === 0 ? "\nALL PASS" : `\n${failures} FAILURE(S)`);
 process.exit(failures === 0 ? 0 : 1);

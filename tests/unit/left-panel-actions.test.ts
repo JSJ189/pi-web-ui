@@ -7,6 +7,7 @@ import { LeftPanel } from "../../web/src/components/LeftPanel.js";
 import { joinProjectPath, isValidProjectName, parentOf, MACHINE_ROOT } from "../../web/src/components/ProjectPicker.js";
 import { LanguageProvider } from "../../web/src/i18n.js";
 import { resetAppGlobals, setAppGlobals } from "../../web/src/app-globals.js";
+import { getContextMenu, closeContextMenu } from "../../web/src/context-menu-state.js";
 
 let root: Root | null = null;
 
@@ -72,6 +73,7 @@ function mountLeftPanel(overrides: Record<string, unknown> = {}) {
 afterEach(() => {
 	vi.unstubAllGlobals();
 	resetAppGlobals();
+	closeContextMenu();
 	if (root) act(() => root!.unmount());
 	root = null;
 	document.body.innerHTML = "";
@@ -273,5 +275,317 @@ describe("LeftPanel 会话行内嵌区", () => {
 		const { container } = mountLeftPanel({ uiLeftSessions: [] });
 		expect(container.querySelector(".lp-slot-sessions")).toBeNull();
 		expect(container.querySelector(".lp-slot-btn")).toBeNull();
+	});
+});
+
+describe("LeftPanel P1：分区标题栏 / 项目行 / 项目右键插件位", () => {
+	const entry = (slot: string, id: string, label: string) => ({
+		id: `plug:x:${id}`,
+		source: "plugin:x",
+		slot,
+		label,
+		kind: "action",
+		order: 100,
+		align: "start",
+		hidden: false,
+		userOverrides: [],
+		arrangedBy: [],
+	});
+	const oneProject = [{ path: "/test/p1", lastUsed: Date.now() }];
+
+	it("三个分区标题栏各自渲染本槽位的插件按钮（插在宿主按钮之后）", () => {
+		setAppGlobals({ cwd: "/test", ready: true, status: "open", workspaceRoots: [] });
+		const { container } = mountLeftPanel({
+			projects: oneProject,
+			conversations: [{ id: "c1", title: "run", cwd: "/test", messageCount: 1, isStreaming: true, isSubagent: false }],
+			uiProjectsActions: [entry("leftpanel.projects.actions", "pa", "PA")],
+			uiRunningActions: [entry("leftpanel.running.actions", "ra", "RA")],
+			uiHistoryActions: [entry("leftpanel.history.actions", "ha", "HA")],
+		});
+		const pick = (sel: string) => container.querySelector(`${sel} .lp-section-actions .lp-slot-section .lp-slot-btn`);
+		expect(pick(".panel-projects")?.getAttribute("aria-label")).toBe("PA");
+		expect(pick(".panel-convs")?.getAttribute("aria-label")).toBe("RA");
+		expect(pick(".panel-sessions")?.getAttribute("aria-label")).toBe("HA");
+		// 宿主「管理项目」按钮仍在，插件按钮紧随其后
+		const projActions = container.querySelector(".panel-projects .lp-section-actions");
+		expect(projActions?.firstElementChild?.classList.contains("lp-project-action")).toBe(true);
+	});
+
+	it("分区标题栏无插件条目时不留占位（标题栏 DOM 与旧版一致）", () => {
+		setAppGlobals({ cwd: "/test", ready: true, status: "open", workspaceRoots: [] });
+		const { container } = mountLeftPanel({ projects: oneProject });
+		expect(container.querySelector(".lp-slot-section")).toBeNull();
+		// 运行分区没有宿主按钮：无插件条目时标题栏根本不出 .lp-section-actions
+		expect(container.querySelector(".panel-convs")).toBeNull();
+	});
+
+	it("项目行内嵌区：点击回传 target={id: 项目路径, kind: project}", () => {
+		setAppGlobals({ cwd: "/test", ready: true, status: "open", workspaceRoots: [] });
+		const onUiAction = vi.fn();
+		const { container } = mountLeftPanel({
+			projects: oneProject,
+			uiLeftProject: [entry("leftpanel.project", "pj", "PJ")],
+			onUiAction,
+		});
+		const btn = container.querySelector<HTMLButtonElement>(".lp-row .lp-slot-project .lp-slot-btn");
+		expect(btn?.getAttribute("aria-label")).toBe("PJ");
+		act(() => btn!.click());
+		expect(onUiAction).toHaveBeenCalledTimes(1);
+		const [item, value, target] = onUiAction.mock.calls[0]!;
+		expect((item as { id: string }).id).toBe("plug:x:pj");
+		expect(value).toBeUndefined();
+		expect(target).toEqual({ id: "/test/p1", kind: "project", label: "p1" });
+	});
+
+	it("项目行无插件条目时不渲染 .lp-slot-project 占位", () => {
+		setAppGlobals({ cwd: "/test", ready: true, status: "open", workspaceRoots: [] });
+		const { container } = mountLeftPanel({ projects: oneProject, uiLeftProject: [] });
+		expect(container.querySelector(".lp-slot-project")).toBeNull();
+	});
+
+	it("右键项目行：有插件条目 → 打开 contextmenu.project（target.kind=project）", () => {
+		setAppGlobals({ cwd: "/test", ready: true, status: "open", workspaceRoots: [] });
+		const { container } = mountLeftPanel({
+			projects: oneProject,
+			uiContextProject: [entry("contextmenu.project", "pm", "项目菜单")],
+		});
+		const row = container.querySelector<HTMLElement>(".lp-row");
+		act(() => {
+			row!.dispatchEvent(new MouseEvent("contextmenu", { bubbles: true, cancelable: true, clientX: 10, clientY: 20 }));
+		});
+		const menu = getContextMenu();
+		expect(menu?.slot).toBe("contextmenu.project");
+		expect(menu?.target).toEqual({ id: "/test/p1", kind: "project", label: "p1" });
+		expect(menu?.entries.map((e) => e.label)).toEqual(["项目菜单"]);
+	});
+
+	it("项目行右键但没有任何插件条目 → 不抢浏览器右键（不开菜单）", () => {
+		setAppGlobals({ cwd: "/test", ready: true, status: "open", workspaceRoots: [] });
+		const { container } = mountLeftPanel({ projects: oneProject, uiContextProject: [] });
+		const row = container.querySelector<HTMLElement>(".lp-row");
+		act(() => {
+			row!.dispatchEvent(new MouseEvent("contextmenu", { bubbles: true, cancelable: true }));
+		});
+		expect(getContextMenu()).toBeNull();
+	});
+});
+
+describe("LeftPanel P2：分区顺序 / 显隐 / 分隔条 / 行内槽位拆分", () => {
+	const hostSection = (id: string, hidden = false) => ({
+		id,
+		source: "host",
+		slot: "leftpanel.sections",
+		label: id,
+		kind: "action",
+		order: 10,
+		align: "start",
+		hidden,
+		userOverrides: [],
+		arrangedBy: [],
+	});
+	const oneProject = [{ path: "/test/p1", lastUsed: Date.now() }];
+	const runningConv = [{ id: "c1", title: "run", cwd: "/test", messageCount: 1, isStreaming: true, isSubagent: false }];
+	/** 分区在 DOM 里的先后（只看直接子节点，分隔条不计入）。 */
+	const sectionOrder = (container: HTMLElement) =>
+		Array.from(container.querySelectorAll<HTMLElement>(".lp-panel > .lp-section")).map((el) =>
+			el.classList.contains("panel-projects")
+				? "projects"
+				: el.classList.contains("panel-convs")
+					? "convs"
+					: el.classList.contains("panel-sessions")
+						? "sessions"
+						: "?",
+		);
+
+	it("uiSections 决定分区先后（布局页调序的结果）", () => {
+		setAppGlobals({ cwd: "/test", ready: true, status: "open", workspaceRoots: [] });
+		const { container } = mountLeftPanel({
+			projects: oneProject,
+			conversations: runningConv,
+			uiSections: [hostSection("host:lp-history"), hostSection("host:lp-projects"), hostSection("host:lp-running")],
+		});
+		expect(sectionOrder(container)).toEqual(["sessions", "projects", "convs"]);
+	});
+
+	it("隐藏的分区不渲染，分隔条按剩余展开分区重新配对", () => {
+		setAppGlobals({ cwd: "/test", ready: true, status: "open", workspaceRoots: [] });
+		const all = mountLeftPanel({ projects: oneProject, conversations: runningConv });
+		expect(all.container.querySelectorAll(".lp-sash")).toHaveLength(2);
+		all.container.remove();
+		act(() => root!.unmount());
+		root = null;
+
+		const { container } = mountLeftPanel({
+			projects: oneProject,
+			conversations: runningConv,
+			uiSections: [
+				hostSection("host:lp-projects", true),
+				hostSection("host:lp-running"),
+				hostSection("host:lp-history"),
+			],
+		});
+		expect(sectionOrder(container)).toEqual(["convs", "sessions"]);
+		expect(container.querySelectorAll(".lp-sash")).toHaveLength(1);
+	});
+
+	it("默认（无 uiSections）三区全显示、两条分隔条，与改造前一致", () => {
+		setAppGlobals({ cwd: "/test", ready: true, status: "open", workspaceRoots: [] });
+		const { container } = mountLeftPanel({ projects: oneProject, conversations: runningConv });
+		expect(sectionOrder(container)).toEqual(["projects", "convs", "sessions"]);
+		expect(container.querySelectorAll(".lp-sash")).toHaveLength(2);
+	});
+
+	it("运行行与历史行各用自己的行内槽位；leftpanel.sessions 两边都有", () => {
+		setAppGlobals({ cwd: "/test", ready: true, status: "open", workspaceRoots: [] });
+		const mk = (slot: string, id: string) => ({
+			id: `plug:x:${id}`,
+			source: "plugin:x",
+			slot,
+			label: id,
+			kind: "action",
+			order: 100,
+			align: "start",
+			hidden: false,
+			userOverrides: [],
+			arrangedBy: [],
+		});
+		const { container } = mountLeftPanel({
+			conversations: runningConv,
+			uiLeftSessions: [mk("leftpanel.sessions", "s")],
+			uiLeftRunning: [mk("leftpanel.running", "r")],
+			uiLeftHistory: [mk("leftpanel.history", "h")],
+		});
+		const labels = (sel: string) =>
+			Array.from(container.querySelectorAll<HTMLElement>(`${sel} .lp-slot-sessions .lp-slot-btn`)).map((b) =>
+				b.getAttribute("aria-label"),
+			);
+		expect(labels(".panel-convs")).toEqual(["s", "r"]);
+		expect(labels(".panel-sessions")).toEqual(["s", "h"]);
+	});
+});
+
+describe("LeftPanel P3：插件运行条目（运行分区末尾，仅展示）", () => {
+	const pluginGroups = [
+		{
+			pluginId: "mailer",
+			pluginName: "邮件同步",
+			items: [
+				{ id: "job-1", title: "同步收件箱", hint: "3/10", status: "running", icon: "📬", action: "mailer:open" },
+				{ id: "job-2", title: "归档旧邮件", status: "error" },
+			],
+		},
+	];
+
+	it("只有插件条目、没有对话时运行分区也出现，标题计数含插件条目", () => {
+		setAppGlobals({ cwd: "/test", ready: true, status: "open", workspaceRoots: [] });
+		const { container } = mountLeftPanel({ conversations: [], uiPluginRunning: pluginGroups });
+		const convs = container.querySelector(".panel-convs");
+		expect(convs).not.toBeNull();
+		expect(convs?.querySelector(".lp-section-title-text")?.textContent).toBe("运行的对话 (2)");
+		expect(container.querySelectorAll(".lp-plugin-group")).toHaveLength(1);
+		expect(container.querySelectorAll(".lp-plugin-item")).toHaveLength(2);
+		expect(convs?.querySelector(".lp-plugin-group .panel-conv-group-title")?.textContent).toBe("插件 · 邮件同步");
+	});
+
+	it("点击带 action 的条目：把所属分组与条目交给 onPluginRunningAction；无 action 的带 is-static", () => {
+		setAppGlobals({ cwd: "/test", ready: true, status: "open", workspaceRoots: [] });
+		const onPluginRunningAction = vi.fn();
+		const { container } = mountLeftPanel({ conversations: [], uiPluginRunning: pluginGroups, onPluginRunningAction });
+		const items = container.querySelectorAll<HTMLButtonElement>(".lp-plugin-item");
+		expect(items[0]!.classList.contains("is-static")).toBe(false);
+		expect(items[1]!.classList.contains("is-static")).toBe(true);
+		act(() => items[0]!.click());
+		expect(onPluginRunningAction).toHaveBeenCalledTimes(1);
+		const [group, item] = onPluginRunningAction.mock.calls[0]!;
+		expect((group as { pluginId: string }).pluginId).toBe("mailer");
+		expect((item as { id: string }).id).toBe("job-1");
+	});
+
+	it("状态圆点带类名（running / done / error 三种）", () => {
+		setAppGlobals({ cwd: "/test", ready: true, status: "open", workspaceRoots: [] });
+		const { container } = mountLeftPanel({ conversations: [], uiPluginRunning: pluginGroups });
+		expect(container.querySelector(".lp-plugin-dot.st-running")).not.toBeNull();
+		expect(container.querySelector(".lp-plugin-dot.st-error")).not.toBeNull();
+	});
+
+	it("没有插件条目（不传或空数组）时 DOM 里不出现插件分组", () => {
+		setAppGlobals({ cwd: "/test", ready: true, status: "open", workspaceRoots: [] });
+		const a = mountLeftPanel({ conversations: [] });
+		expect(a.container.querySelector(".panel-convs")).toBeNull();
+		expect(a.container.querySelector(".lp-plugin-group")).toBeNull();
+	});
+});
+
+describe("LeftPanel P4：插件自定义分区（kind=view）", () => {
+	const hostEntry = (id: string) => ({
+		id,
+		source: "host",
+		slot: "leftpanel.sections",
+		label: id,
+		kind: "action",
+		order: 10,
+		align: "start",
+		hidden: false,
+		userOverrides: [],
+		arrangedBy: [],
+	});
+	const pluginSection = (id = "notes:fav", label = "收藏", hidden = false) => ({
+		id,
+		source: "plugin:notes",
+		slot: "leftpanel.sections",
+		label,
+		kind: "view",
+		order: 100,
+		align: "start",
+		hidden,
+		userOverrides: [],
+		arrangedBy: [],
+	});
+	const allSections = (extra: unknown[]) => [
+		hostEntry("host:lp-projects"),
+		hostEntry("host:lp-running"),
+		hostEntry("host:lp-history"),
+		...extra,
+	];
+
+	it("插件分区：标题是条目 label，正文来自 renderPluginSectionBody", () => {
+		setAppGlobals({ cwd: "/test", ready: true, status: "open", workspaceRoots: [] });
+		const render = vi.fn(() => createElement("div", { className: "fake-plugin-body" }, "插件正文"));
+		const { container } = mountLeftPanel({
+			uiSections: allSections([pluginSection()]),
+			renderPluginSectionBody: render,
+		});
+		const sec = container.querySelector(".lp-section-plugin");
+		expect(sec).not.toBeNull();
+		expect(sec?.querySelector(".lp-section-title-text")?.textContent).toBe("收藏");
+		expect(sec?.querySelector(".fake-plugin-body")?.textContent).toBe("插件正文");
+		expect(render).toHaveBeenCalledWith(expect.objectContaining({ id: "notes:fav" }));
+	});
+
+	it("点标题折叠：正文消失，折叠态写入 localStorage（只记折叠的分区键）", () => {
+		setAppGlobals({ cwd: "/test", ready: true, status: "open", workspaceRoots: [] });
+		const { container } = mountLeftPanel({
+			uiSections: allSections([pluginSection()]),
+			renderPluginSectionBody: () => createElement("div", { className: "fake-plugin-body" }, "x"),
+		});
+		const title = container.querySelector<HTMLButtonElement>(".lp-section-plugin .lp-section-title");
+		act(() => title!.click());
+		expect(container.querySelector(".lp-section-plugin.collapsed")).not.toBeNull();
+		expect(container.querySelector(".lp-section-plugin .fake-plugin-body")).toBeNull();
+		expect(localStorage.getItem("pi-web-ui:lp-collapse-plugin-sections")).toBe(JSON.stringify(["plugin:notes:fav"]));
+	});
+
+	it("没有正文渲染器时分区仍在（正文为空，不抛错）", () => {
+		setAppGlobals({ cwd: "/test", ready: true, status: "open", workspaceRoots: [] });
+		const { container } = mountLeftPanel({ uiSections: allSections([pluginSection("notes:bare", "裸分区")]) });
+		const sec = container.querySelector(".lp-section-plugin");
+		expect(sec?.querySelector(".lp-section-title-text")?.textContent).toBe("裸分区");
+		expect(sec?.querySelector(".lp-plugin-section-body")?.childElementCount).toBe(0);
+	});
+
+	it("布局页隐藏的插件分区不渲染", () => {
+		setAppGlobals({ cwd: "/test", ready: true, status: "open", workspaceRoots: [] });
+		const { container } = mountLeftPanel({ uiSections: allSections([pluginSection("notes:fav", "收藏", true)]) });
+		expect(container.querySelector(".lp-section-plugin")).toBeNull();
 	});
 });
