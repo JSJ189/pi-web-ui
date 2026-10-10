@@ -15,6 +15,7 @@ on:
 
 permissions:
   contents: write
+  actions: read
 
 jobs:
   windows-installer:
@@ -45,15 +46,38 @@ jobs:
         run: npx electron-builder -c desktop/electron-builder.yml --win --publish never
 
       # ───────────────────────────────────────────────────────────────────────────
-      # TODO（拿到 SignPath Foundation 资格后在这里启用签名）
-      #   SignPath 只签 CI 产物，所以流程必须是：本 workflow 产出的未签名 exe
-      #   → SignPath 签名 → 下载签名后的文件 → 再挂到 Release。
-      #   用官方 action `signpath/github-action-submit-signing-request`，需要的
-      #   secret/变量（api-token、organization-id、project-slug、
-      #   signing-policy-slug、artifact-configuration-slug）以批准后他们发来的
-      #   文档为准，别照抄记忆里的参数名。步骤顺序：先 upload-artifact 把未签名
-      #   包传上去 → 调 SignPath action 拿回签名包 → 改下面的 upload 路径。
+      # SignPath 签名流程：
+      # 1. 上传未签名的 exe 到 GitHub Artifact
+      # 2. 调 SignPath 官方 Action 提交签名并等待签名完成（测试期使用 test-signing 策略）
+      # 3. 用签名后的 exe 覆盖 release/ 下的文件，并刷新 .blockmap 与 latest.yml 哈希
       # ───────────────────────────────────────────────────────────────────────────
+      - name: Upload unsigned installer for signing
+        id: upload-unsigned-artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: unsigned-win-installer
+          path: release/*.exe
+          retention-days: 1
+
+      - name: Sign Windows installer with SignPath
+        uses: signpath/github-action-submit-signing-request@v2
+        with:
+          api-token: ${{ secrets.SIGNPATH_API_TOKEN }}
+          organization-id: "3de26332-3db9-4d2a-b7cd-33ca0c263a6e"
+          project-slug: "pi-web-ui"
+          # 注意：测试期使用 test-signing；SignPath 官方核验后导入正式证书再换为 release-signing
+          signing-policy-slug: "test-signing"
+          artifact-configuration-slug: "initial"
+          github-artifact-id: ${{ steps.upload-unsigned-artifact.outputs.artifact-id }}
+          github-token: ${{ secrets.GITHUB_TOKEN }}
+          wait-for-completion: true
+          output-artifact-directory: release-signed
+
+      - name: Replace installer with signed binary and refresh release metadata
+        shell: bash
+        run: |
+          cp -f release-signed/*.exe release/
+          node scripts/refresh-win-release-metadata.mjs
 
       - name: Upload installer as workflow artifact
         uses: actions/upload-artifact@v4
