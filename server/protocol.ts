@@ -1254,7 +1254,7 @@ export type ClientMessage =
 	| { type: "promote_sandbox"; path?: string; targetPath: string; switchToTarget?: boolean }
 	/** Compare a sandbox project against its sourcePath and push a `sandbox_diff` summary. */
 	| { type: "diff_sandbox"; path?: string }
-	/** Sync modified/added files from an imported sandbox back to its original sourcePath. */
+	/** Sync modified/added files and prune deleted files from an imported sandbox back to its original sourcePath. */
 	| { type: "apply_sandbox_to_source"; path?: string }
 	/** Permanently destroy a sandbox project directory and remove it from the registry. */
 	| { type: "destroy_sandbox"; path: string }

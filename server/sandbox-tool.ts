@@ -352,8 +352,22 @@ export function makeSandboxTool(
 
 						// 强制触发人工审批：写回源项目会修改真实工作区文件，绝不允许静默执行
 						if (host.askApproval) {
-							const reasonZh = `将沙盒「${diff.sandbox.name}」的改动（新增 ${diff.added.length}、修改 ${diff.modified.length} 个文件）写回源项目 ${diff.sourcePath}`;
-							const reasonEn = `Sync changes from sandbox "${diff.sandbox.name}" (+${diff.added.length} added, ~${diff.modified.length} modified) back to source project ${diff.sourcePath}`;
+							const diffSummaryZh = [
+								diff.added.length > 0 ? `新增 ${diff.added.length}` : "",
+								diff.modified.length > 0 ? `修改 ${diff.modified.length}` : "",
+								diff.deleted.length > 0 ? `删除 ${diff.deleted.length}` : "",
+							]
+								.filter(Boolean)
+								.join("、");
+							const diffSummaryEn = [
+								diff.added.length > 0 ? `+${diff.added.length} added` : "",
+								diff.modified.length > 0 ? `~${diff.modified.length} modified` : "",
+								diff.deleted.length > 0 ? `-${diff.deleted.length} deleted` : "",
+							]
+								.filter(Boolean)
+								.join(", ");
+							const reasonZh = `将沙盒「${diff.sandbox.name}」的改动（${diffSummaryZh || "无变更"}）写回源项目 ${diff.sourcePath}`;
+							const reasonEn = `Sync changes from sandbox "${diff.sandbox.name}" (${diffSummaryEn || "no changes"}) back to source project ${diff.sourcePath}`;
 							const decision = await host.askApproval(
 								toolCallId,
 								SANDBOX_TOOL_NAME,
@@ -363,6 +377,7 @@ export function makeSandboxTool(
 									sourcePath: diff.sourcePath,
 									added: diff.added.slice(0, 30),
 									modified: diff.modified.slice(0, 30),
+									deleted: diff.deleted.slice(0, 30),
 								},
 								reasonZh,
 								reasonEn,
@@ -399,8 +414,8 @@ export function makeSandboxTool(
 									type: "text",
 									text: pick(
 										lang,
-										`✅ 已将沙盒「${res.sandbox.name}」的变更（共 ${res.copiedFiles} 个文件）同步写回源项目：${res.sourcePath}`,
-										`✅ Synced changes from sandbox "${res.sandbox.name}" (${res.copiedFiles} files) back to source project: ${res.sourcePath}`,
+										`✅ 已将沙盒「${res.sandbox.name}」的变更同步写回源项目：${res.sourcePath}（同步 ${res.copiedFiles} 个文件${res.deletedFiles ? `，清理 ${res.deletedFiles} 个已删除文件` : ""}）`,
+										`✅ Synced changes from sandbox "${res.sandbox.name}" back to source project: ${res.sourcePath} (${res.copiedFiles} files synced${res.deletedFiles ? `, ${res.deletedFiles} deleted files pruned` : ""})`,
 									),
 								},
 							],
@@ -409,6 +424,7 @@ export function makeSandboxTool(
 								sandbox: res.sandbox,
 								sourcePath: res.sourcePath,
 								copiedFiles: res.copiedFiles,
+								deletedFiles: res.deletedFiles ?? 0,
 							},
 						};
 					}

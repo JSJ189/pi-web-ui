@@ -160,6 +160,8 @@ export interface PluginHost {
 	broadcast(payload: unknown): void;
 	notify(level: "info" | "warning" | "error", text: string, textEn?: string): void;
 	onMessage(handler: (payload: unknown, from?: string) => void): () => void;
+	/** 注册客户端上行消息处理器（RPC 模式）：回调提供 (msg, reply)，调用 reply(payload) 可直接向来源客户端回包。 */
+	onClientMessage(handler: (msg: unknown, reply: (payload: unknown) => void) => void | Promise<void>): () => void;
 	sendTo(clientId: string, payload: unknown): void;
 	onAttach(handler: (clientId: string) => void): () => void;
 	onToolEvent(handler: (ev: unknown) => void): () => void;
@@ -176,6 +178,16 @@ export interface PluginHost {
 	/** 订阅模型切换成功（回调带 clientId / conversationId / model / isSubagent… 的快照）。 */
 	onClientModelChanged(handler: (snap: unknown) => void): () => void;
 	registerAgentTool(tool: PluginAgentTool): () => void;
+	/** 注册一个供 AI 调用的工具（单参数 execute(args) 兼容接口，内部适配并转调 registerAgentTool）。 */
+	registerTool(tool: {
+		name: string;
+		description: string;
+		label?: string;
+		promptSnippet?: string;
+		promptGuidelines?: string[];
+		parameters?: Record<string, unknown>;
+		execute(args: Record<string, unknown>): Promise<unknown>;
+	}): () => void;
 	dir: string;
 	dataDir: string;
 	readonly cwd: string;
@@ -203,6 +215,7 @@ export interface PluginHost {
 		has(name: string): boolean;
 		delete(name: string): void;
 		list(): string[];
+		getAll(): Record<string, string>;
 	};
 	ensureDeps(specs: string[], opts?: { onProgress?: (msg: string) => void }): Promise<boolean>;
 	fs: PluginHostFs;

@@ -92,10 +92,14 @@ describe("SandboxManager & Hard Jail Isolation", () => {
 		expect(readFileSync(join(sandbox.path, "src", "index.ts"), "utf-8")).toBe("export const x = 1;\n");
 		expect(existsSync(join(sandbox.path, "src", "new-file.ts"))).toBe(false);
 
-		// Modify again and applyToSource -> updates sourceProjectDir while preserving .git
+		// Modify again and applyToSource -> updates sourceProjectDir while preserving .git and pruning deleted files
 		writeFileSync(join(sandbox.path, "src", "index.ts"), "export const x = 42;\n", "utf-8");
 		writeFileSync(join(sandbox.path, ".git", "HEAD"), "corrupted\n", "utf-8");
-		await mgr.applyToSource(sandbox.id);
+		// Remove package.json in sandbox -> applyToSource should prune it in sourceProjectDir as well
+		rmSync(join(sandbox.path, "package.json"));
+		const applyRes = await mgr.applyToSource(sandbox.id);
+		expect(applyRes.deletedFiles).toBe(1);
+		expect(existsSync(join(sourceProjectDir, "package.json"))).toBe(false);
 		expect(readFileSync(join(sourceProjectDir, "src", "index.ts"), "utf-8")).toBe("export const x = 42;\n");
 		expect(readFileSync(join(sourceProjectDir, ".git", "HEAD"), "utf-8")).toBe("ref: refs/heads/main\n");
 	});
@@ -133,6 +137,9 @@ describe("SandboxManager & Hard Jail Isolation", () => {
 			evaluateSandboxJail(sandbox, "bash", { command: `cat "${sourceProjectDir}/package.json"` }, sandbox.path),
 		).not.toBeNull();
 		expect(evaluateSandboxJail(sandbox, "bash", { command: "cd .. && ls" }, sandbox.path)).not.toBeNull();
+		expect(evaluateSandboxJail(sandbox, "bash", { command: "(cd .. && ls)" }, sandbox.path)).not.toBeNull();
+		expect(evaluateSandboxJail(sandbox, "bash", { command: 'cd "$HOME/.."' }, sandbox.path)).not.toBeNull();
+		expect(evaluateSandboxJail(sandbox, "bash", { command: 'cd "${HOME}/.."' }, sandbox.path)).not.toBeNull();
 		expect(evaluateSandboxJail(sandbox, "bash", { command: "cd ~/.ssh" }, sandbox.path)).not.toBeNull();
 		expect(evaluateSandboxJail(sandbox, "bash", { command: "rm -rf /etc/hosts" }, sandbox.path)).not.toBeNull();
 		expect(

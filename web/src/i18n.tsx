@@ -2059,7 +2059,8 @@ export const zh = {
 	sandboxApplyTitle: "同步沙盒改动回源项目",
 	sandboxDiffStats: "新增 {added} · 修改 {modified} · 沙盒内已删 {deleted} · 未变 {unchanged}",
 	sandboxDiffEmpty: "当前沙盒与源项目文件完全一致，没有需要写回的改动。",
-	sandboxDiffDeletedNote: "注：写回仅同步新增与修改的文件（自动保护源项目 .git，不会删除源项目原有文件）。",
+	sandboxDiffDeletedNote:
+		"注：写回将同步新增与修改的文件，并同步清理源项目中已被移除的文件（自动保护源项目 .git 与依赖缓存）。",
 	sandboxApplySubmit: "确认写回 ({count} 个文件)",
 	sandboxEnabledDesc:
 		"允许 AI 创建空白或导入型隔离沙盒项目（自动跳过 node_modules 等缓存）、查看 diff、重置或销毁；写回源项目强制经过用户审批确认。",
@@ -4195,7 +4196,7 @@ export const en: Record<keyof typeof zh, string> = {
 	sandboxDiffStats: "+{added} added · ~{modified} modified · -{deleted} deleted in sandbox · {unchanged} unchanged",
 	sandboxDiffEmpty: "This sandbox is identical to the source project — no modified or added files to sync.",
 	sandboxDiffDeletedNote:
-		"Note: Syncing only writes added and modified files (preserves source .git and never deletes existing source files).",
+		"Note: Syncing writes added/modified files and prunes removed files in the source project (preserves source .git and dependency caches).",
 	sandboxApplySubmit: "Confirm Sync ({count} files)",
 	sandboxEnabledDesc:
 		"Allow AI to create blank or imported copy-on-write sandbox projects (skipping node_modules/caches), inspect diffs, reset, or destroy; syncing changes back to the source project requires user approval.",

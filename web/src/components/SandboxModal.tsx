@@ -107,7 +107,9 @@ export function SandboxModal({
 		sandboxDiff &&
 		currentSandbox &&
 		(sandboxDiff.sandboxId === currentSandbox.id || sandboxDiff.path === currentSandbox.path);
-	const writeableCount = diffMatchesCurrent ? sandboxDiff.added.length + sandboxDiff.modified.length : 0;
+	const totalChangedCount = diffMatchesCurrent
+		? sandboxDiff.added.length + sandboxDiff.modified.length + sandboxDiff.deleted.length
+		: 0;
 
 	const headerTitle =
 		mode === "create" ? t("sandboxModalTitle") : mode === "promote" ? t("sandboxPromoteTitle") : t("sandboxApplyTitle");
@@ -316,8 +318,8 @@ export function SandboxModal({
 							<button type="button" className="btn" onClick={onClose}>
 								{t("cancel")}
 							</button>
-							<button type="submit" className="btn primary" disabled={!diffMatchesCurrent || writeableCount === 0}>
-								✅ {t("sandboxApplySubmit", { count: writeableCount })}
+							<button type="submit" className="btn primary" disabled={!diffMatchesCurrent || totalChangedCount === 0}>
+								✅ {t("sandboxApplySubmit", { count: totalChangedCount })}
 							</button>
 						</div>
 					</form>

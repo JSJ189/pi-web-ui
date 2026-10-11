@@ -358,6 +358,10 @@ export interface PluginHost {
 	/** 注册客户端上行消息（plugin_message）处理器；回调第二参为发送方 clientId
 	 *  （可用于 sendTo 定向回复）。返回注销函数。 */
 	onMessage(handler: (payload: unknown, from?: string) => void): () => void;
+	/** 注册客户端上行消息处理器（RPC 模式）：
+	 *  回调提供 (msg, reply)，调用 reply(payload) 可直接向来源客户端回包（缺省定向，无 from 广播回退）。
+	 *  返回注销函数。内部通过 onMessage 实现。 */
+	onClientMessage(handler: (msg: unknown, reply: (payload: unknown) => void) => void | Promise<void>): () => void;
 	/** 给指定客户端定向发一条本插件消息（不广播）；clientId 来自 onMessage。 */
 	sendTo(clientId: string, payload: unknown): void;
 	/** 注册「新客户端接入」钩子：每次浏览器 attach（含插件刚激活时已在场的连接、
@@ -454,6 +458,17 @@ export interface PluginHost {
 	 *  返回注销函数——插件可按自己的配置开关随时注册/注销（如邮箱插件的
 	 *  「让 AI 管理邮件」开关）。 */
 	registerAgentTool(tool: PluginAgentTool): () => void;
+	/** 注册一个供 AI 调用的工具（单参数 execute(args) 兼容接口，内部适配并转调 registerAgentTool）。
+	 *  返回注销函数。 */
+	registerTool(tool: {
+		name: string;
+		description: string;
+		label?: string;
+		promptSnippet?: string;
+		promptGuidelines?: string[];
+		parameters?: Record<string, unknown>;
+		execute(args: Record<string, unknown>): Promise<unknown>;
+	}): () => void;
 	/** 插件自己的持久化目录（<dataDir>/plugins/<id>）——凭据等放这里。 */
 	dir: string;
 	/** 全局数据目录（~/.pi-web）。 */
@@ -505,6 +520,7 @@ export interface PluginHost {
 		has(name: string): boolean;
 		delete(name: string): void;
 		list(): string[];
+		getAll(): Record<string, string>;
 	};
 	/** 确保依赖就绪：缺了自动 npm install 到插件目录（单飞合并）。
 	 *  resolve 后的 import 才能成功——插件动态加载重型依赖前应 await 它。 */
@@ -3671,6 +3687,27 @@ export class PluginManager {
 				handlers.add(h);
 				return () => handlers.delete(h);
 			},
+			onClientMessage: (h) => {
+				return host.onMessage((payload, from) => {
+					const reply = (res: unknown) => {
+						if (from) {
+							host.sendTo(from, res);
+						} else {
+							host.broadcast(res);
+						}
+					};
+					try {
+						const ret = h(payload, reply);
+						if (ret instanceof Promise) {
+							ret.catch((err) => {
+								console.error(`[plugin:${info.id}] onClientMessage async handler failed:`, err);
+							});
+						}
+					} catch (err) {
+						console.error(`[plugin:${info.id}] onClientMessage handler failed:`, err);
+					}
+				});
+			},
 			onToolEvent: (h) => {
 				toolHandlers.add(h);
 				return () => toolHandlers.delete(h);
@@ -3923,6 +3960,38 @@ export class PluginManager {
 				if (!can("tools")) return () => {};
 				const off = this.registerAgentTool(info.id, tool);
 				return effects.add(`agentTool:${String(tool?.name ?? "?")}`, off);
+			},
+			registerTool: (tool) => {
+				if (!can("tools")) return () => {};
+				if (!tool || typeof tool !== "object") return () => {};
+				const exec = tool.execute;
+				const adaptedTool: PluginAgentTool = {
+					name: tool.name,
+					description: tool.description,
+					label: tool.label,
+					promptSnippet: tool.promptSnippet,
+					promptGuidelines: tool.promptGuidelines,
+					parameters: tool.parameters,
+					execute: async (
+						toolCallId: string,
+						params: Record<string, unknown>,
+						signal?: AbortSignal,
+						onUpdate?: (partial: unknown) => void,
+					) => {
+						if (typeof exec !== "function") return "";
+						if (exec.length <= 1) {
+							return await (exec as (args: Record<string, unknown>) => Promise<unknown>)(params);
+						}
+						const multiFn = exec as unknown as (
+							toolCallId: string,
+							params: Record<string, unknown>,
+							signal?: AbortSignal,
+							onUpdate?: (partial: unknown) => void,
+						) => Promise<unknown>;
+						return await multiFn(toolCallId, params, signal, onUpdate);
+					},
+				};
+				return host.registerAgentTool(adaptedTool);
 			},
 			dir,
 			dataDir: this.dataDir,

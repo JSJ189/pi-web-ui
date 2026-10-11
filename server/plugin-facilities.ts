@@ -314,6 +314,15 @@ export class PluginSecrets {
 	list(): string[] {
 		return Object.keys(this.load().items);
 	}
+
+	getAll(): Record<string, string> {
+		const out: Record<string, string> = {};
+		for (const name of this.list()) {
+			const val = this.get(name);
+			if (val !== undefined) out[name] = val;
+		}
+		return out;
+	}
 }
 
 // ---------------------------------------------------------------------------

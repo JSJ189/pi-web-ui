@@ -6,10 +6,11 @@
  *    - 支持「临时沙盒（用完即删）」与「永久沙盒（持久化保留，随时一键转正）」；
  *    - 支持一键重置（还原到初始空白或重新从源项目同步）、另存为正式项目（promote）、将修改写回源项目（applyToSource）、彻底销毁（destroy）。
  *
- * 2. 沙盒硬围栏（Hard Jail Gate）：
+ * 2. 沙盒安全围栏（Sandbox Jail Gate）：
  *    - 当会话处于受管沙盒目录内时，所有文件写入/编辑/补丁（write/edit/edit_soft/patch）必须严格落在
  *      `sandbox.path` 内部（含祖先目录 realpath 校验，防软链逃逸），越界直接硬拒绝（不走审批放行）；
- *    - 终端命令（bash）严禁直接引用源项目路径（`sourcePath`）或越过沙盒根向外 cd；
+ *    - 终端命令（bash）采用启发式拦截（禁止直接引用源项目路径 `sourcePath`、拦截越界 cd、输出重定向、越界写删命令与系统特权命令等）；
+ *      请注意：沙盒基于工作区副本与工具调用层校验，未采用内核命名空间/容器级物理隔离，bash 终端拦截为尽力而为的启发式防护，非绝对安全边界；
  *    - 外部副作用工具（sftp 远端写/删/执行、mail 发信/删信）在沙盒内默认拦截。
  */
 
@@ -150,7 +151,7 @@ export function extractPatchTargetPaths(patchText: string): string[] {
 		// hashline 格式段头（本仓 patch 工具实际消费的唯一格式）：[path#TAG] / [path]。
 		// 不识别的话 hashline 补丁提取出 0 个目标 → 围栏检查整体空转，patch 路径
 		// 只剩 hashline-engine 的词法 cwd 限制（无 realpath，沙盒内软链可逃逸）
-		const mHashline = rawLine.match(/^\s*\[([^\#\]]+)(?:#[0-9a-fA-F]{4})?\]\s*$/);
+		const mHashline = rawLine.match(/^\s*\[([^#\]]+)(?:#[0-9a-fA-F]{4})?\]\s*$/);
 		if (mHashline?.[1]?.trim()) {
 			paths.push(mHashline[1].trim());
 		}
@@ -237,15 +238,16 @@ export function evaluateSandboxJail(
 			}
 		}
 
-		// 3b. 拦截通过 cd 跳出沙盒边界（裸 cd 跳 $HOME、cd ~、cd ..、或 cd 到沙盒外绝对路径）
-		for (const m of cmd.matchAll(/(?:^|[;&|\n]\s*)cd(?:\s+([^;&|\n]+))?(?=$|[;&|\n])/g)) {
+		// 3b. 拦截通过 cd 跳出沙盒边界（裸 cd 跳 $HOME、cd ~、cd ..、或 cd 到沙盒外绝对路径，支持括号子 shell 与带引号/变量路径）
+		for (const m of cmd.matchAll(/(?:^|[;&|\n(`]\s*)cd(?:\s+([^;&|\n)`]+))?(?=$|[;&|\n)`])/g)) {
 			const rawArg = (m[1] ?? "").trim().replace(/^["']|["']$/g, "");
 			if (
 				!rawArg ||
 				rawArg === "~" ||
 				rawArg.startsWith("~/") ||
 				rawArg.startsWith("~\\") ||
-				/^\$HOME\b|^%USERPROFILE%/i.test(rawArg)
+				/^\$(?:HOME|USERPROFILE)\b|^\$\{(?:HOME|USERPROFILE)\}|^%USERPROFILE%/i.test(rawArg) ||
+				/\$(?:HOME|USERPROFILE)|\$\{(?:HOME|USERPROFILE)\}/i.test(rawArg)
 			) {
 				return {
 					reason: `【沙盒安全隔离拦截】沙盒内禁止执行跳回用户主目录的 "cd ${rawArg || "~"}" 命令，请保持在沙盒目录（${sbxPath}）内操作。`,
@@ -289,7 +291,7 @@ export function evaluateSandboxJail(
 
 		// 3e. 拦截文件修改/删除命令（rm/del/mv/cp/chmod/touch/mkdir/sed -i/tee 等）指向 ..、~、$HOME 或沙盒外绝对路径
 		const mutatingCmdRe =
-			/(?:^|[;&|\n]\s*)(?:rm|del|erase|rmdir|rd|mv|move|cp|copy|xcopy|robocopy|ln|mklink|chmod|chown|touch|mkdir|tee|dd|Remove-Item|Move-Item|Copy-Item|Set-Content|Add-Content|Out-File|sed\s+-[a-zA-Z]*i)\b([^;&|\n]*)/gi;
+			/(?:^|[;&|\n(`]\s*)(?:rm|del|erase|rmdir|rd|mv|move|cp|copy|xcopy|robocopy|ln|mklink|chmod|chown|touch|mkdir|tee|dd|Remove-Item|Move-Item|Copy-Item|Set-Content|Add-Content|Out-File|sed\s+-[a-zA-Z]*i)\b([^;&|\n)]*)/gi;
 		for (const m of cmd.matchAll(mutatingCmdRe)) {
 			const argsTail = (m[1] ?? "").trim();
 			const tokens = argsTail.match(/(?:"[^"]*"|'[^']*'|\S+)/g) ?? [];
@@ -750,9 +752,14 @@ export class SandboxManager {
 	}
 
 	/**
-	 * 将导入型沙盒中的修改写回源项目（保留源项目 `.git` 与重型依赖目录，仅同步工作区文件变更）。
+	 * 将导入型沙盒中的修改写回源项目（保留源项目 `.git` 与重型依赖目录，同步工作区文件变更并清理已删除文件）。
 	 */
-	async applyToSource(idOrPath: string): Promise<{ sandbox: SandboxInfo; sourcePath: string; copiedFiles: number }> {
+	async applyToSource(idOrPath: string): Promise<{
+		sandbox: SandboxInfo;
+		sourcePath: string;
+		copiedFiles: number;
+		deletedFiles: number;
+	}> {
 		const info = this.get(idOrPath) ?? this.getByCwd(idOrPath);
 		if (!info) {
 			throw new Error(`Sandbox not found: ${idOrPath}`);
@@ -760,11 +767,54 @@ export class SandboxManager {
 		if (!info.sourcePath || !existsSync(info.sourcePath)) {
 			throw new Error("This sandbox has no valid source project to apply changes back to");
 		}
+
+		// 1. 先通过 diff 计算出被删除的文件列表，以便同步清理源项目中的对应文件
+		const diff = await this.diffWithSource(info.id);
+		let deletedFiles = 0;
+		for (const rel of diff.deleted) {
+			// 安全校验：严格限制在 sourcePath 内，且避开 .git 与重型忽略目录
+			if (
+				!rel ||
+				rel === ".git" ||
+				rel.startsWith(".git/") ||
+				rel.startsWith(".git\\") ||
+				!isStrictlyInsideSandbox(rel, info.sourcePath, info.sourcePath)
+			) {
+				continue;
+			}
+			const targetFile = join(info.sourcePath, rel);
+			if (existsSync(targetFile)) {
+				try {
+					await rm(targetFile, { force: true });
+					deletedFiles++;
+					// 尝试顺带清理变空的父目录（直到 sourcePath，不删 sourcePath 自身）
+					let parent = dirname(targetFile);
+					while (
+						parent &&
+						isSameOrSubpath(parent, info.sourcePath) &&
+						normalizePathKey(parent) !== normalizePathKey(info.sourcePath)
+					) {
+						const remaining = await readdir(parent).catch(() => ["non-empty"]);
+						if (remaining.length === 0) {
+							await rm(parent, { recursive: true, force: true }).catch(() => {});
+							parent = dirname(parent);
+						} else {
+							break;
+						}
+					}
+				} catch {
+					// 忽略单个文件清理失败
+				}
+			}
+		}
+
+		// 2. 将沙盒工作区的文件复制覆盖回源项目
 		const stats = await copyWorkspaceTree(info.path, info.sourcePath, { skipGitDir: true });
 		return {
 			sandbox: info,
 			sourcePath: info.sourcePath,
 			copiedFiles: stats.copiedFiles,
+			deletedFiles,
 		};
 	}
 

@@ -2837,12 +2837,14 @@ export class DshClientSession {
 	async applySandboxToSource(path?: string): Promise<void> {
 		const target = path?.trim() || this.cwd;
 		try {
-			const { sandbox, sourcePath, copiedFiles } = await this.sandboxes.applyToSource(target);
+			const { sandbox, sourcePath, copiedFiles, deletedFiles } = await this.sandboxes.applyToSource(target);
+			const delSuffixZh = deletedFiles ? `，清理 ${deletedFiles} 个已删除文件` : "";
+			const delSuffixEn = deletedFiles ? `, pruned ${deletedFiles} deleted files` : "";
 			this.emit({
 				type: "notice",
 				level: "info",
-				text: `✅ 已将沙盒「${sandbox.name}」中的 ${copiedFiles} 个文件同步回源项目：${sourcePath}`,
-				textEn: `✅ Applied ${copiedFiles} files from sandbox "${sandbox.name}" back to source project: ${sourcePath}`,
+				text: `✅ 已将沙盒「${sandbox.name}」中的改动同步回源项目：${sourcePath}（同步 ${copiedFiles} 个文件${delSuffixZh}）`,
+				textEn: `✅ Applied changes from sandbox "${sandbox.name}" back to source project: ${sourcePath} (${copiedFiles} files synced${delSuffixEn})`,
 			});
 		} catch (err) {
 			this.emit({
