@@ -49,6 +49,7 @@ export function makeMcpManageTool(host: McpManageToolHost, lang?: () => ServerLa
 		promptSnippet: "check whether an MCP server is installed or install/configure one",
 		promptGuidelines: [
 			"Run mcp_manage with action='check' before installing an MCP server to avoid duplicate entries.",
+			"install refuses to overwrite an existing server with the same name unless overwrite=true (it would replace command/args/env).",
 			"Prefer package shorthand (e.g. package='@modelcontextprotocol/server-filesystem') for npm-based stdio MCP servers.",
 		],
 		parameters: Type.Object({
@@ -119,6 +120,12 @@ export function makeMcpManageTool(host: McpManageToolHost, lang?: () => ServerLa
 			scope: Type.Optional(
 				Type.Union([Type.Literal("project"), Type.Literal("global")], {
 					description: "install/remove: config scope ('project' = .pi/mcp.json, 'global' = ~/.pi/agent/mcp.json).",
+				}),
+			),
+			overwrite: Type.Optional(
+				Type.Boolean({
+					description:
+						"install: set true to replace an existing server with the same name (its command/args/env get overwritten).",
 				}),
 			),
 			description: Type.Optional(
