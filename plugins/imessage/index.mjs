@@ -48,9 +48,10 @@ export async function sendMacOSIMessage(address, text, { execFileImpl = execFile
 	if (!safeAddress) throw new Error("iMessage recipient address is required.");
 	if (!safeText) throw new Error("Message text is required.");
 
-	if (process.platform !== "darwin") {
-		// Mock support on non-macOS environments for testing
-		return { success: true, platform: process.platform, mocked: true };
+	if (process.platform !== "darwin" && !execFileImpl) {
+		// 非 macOS 且未注入执行实现时明确报错——假成功会让用户以为消息已发出
+		//（实际什么都没发）。注入的 execFileImpl（测试/宿主钩子）不受此限。
+		throw new Error(`iMessage is only available on macOS (current platform: ${process.platform}).`);
 	}
 
 	const script = `
@@ -114,9 +115,11 @@ export class IMessageBotBridge {
 		this.status.enabled = true;
 
 		if (process.platform !== "darwin") {
-			this.status.state = "connected";
-			this.status.connected = true;
-			this.log("info", "iMessage bridge started (compatibility mode on non-macOS)");
+			// 非 macOS 明确置 unsupported——假"在线"误导排障
+			this.status.state = "unsupported";
+			this.status.connected = false;
+			this.status.lastError = `iMessage bridge requires macOS (current platform: ${process.platform}).`;
+			this.log("warn", this.status.lastError);
 		} else {
 			this.status.state = "connected";
 			this.status.connected = true;
