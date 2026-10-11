@@ -1059,6 +1059,7 @@ export default async function activate(host) {
 						presets: PRESETS,
 						customChats,
 						botStatus: botBridge.getStatus(),
+						hostCwd: String(host.cwd ?? "").trim(),
 					});
 					break;
 				}

@@ -100,9 +100,16 @@ export default {
 									<input type="checkbox" id="discord-cfg-bot-enabled" class="discord-cfg-bot-enabled" style="cursor: pointer;" />
 									<label for="discord-cfg-bot-enabled" style="font-size: 12px; cursor: pointer; user-select: none;">启用 Discord 机器人双向对话服务 (Gateway 长连接接收消息并由 AI 回复)</label>
 								</div>
-								<div>
+								<div style="margin-bottom: 8px;">
 									<label style="display: block; margin-bottom: 4px; color: var(--text-dim);">允许的用户白名单 (Discord User ID，逗号分隔，留空不限制):</label>
 									<input type="text" class="discord-cfg-allowed-users" placeholder="1234567890, 9876543210 (留空允许所有用户)" style="width: 100%; box-sizing: border-box; padding: 6px 10px; border-radius: 4px; border: 1px solid var(--border); background: var(--bg); color: var(--text);" />
+								</div>
+								<div>
+									<div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 4px;">
+										<label style="color: var(--text-dim);">📂 项目根目录 (Workspace Cwd，留空跟随当前项目，支持聊天发 /cwd 切换):</label>
+										<button type="button" class="discord-cfg-use-cwd" style="padding: 2px 8px; font-size: 11px; border-radius: 4px; border: 1px solid var(--border); background: var(--bg); color: var(--text); cursor: pointer;">设为当前项目</button>
+									</div>
+									<input type="text" class="discord-cfg-workspace" placeholder="如：E:/my-project (留空跟随当前项目)" style="width: 100%; box-sizing: border-box; padding: 6px 10px; border-radius: 4px; border: 1px solid var(--border); background: var(--bg); color: var(--text);" />
 								</div>
 							</div>
 						</div>
@@ -130,6 +137,7 @@ export default {
 		const cfgDefaultChannel = q(".discord-cfg-default-channel");
 		const cfgBotEnabled = q(".discord-cfg-bot-enabled");
 		const cfgAllowedUsers = q(".discord-cfg-allowed-users");
+		const cfgWorkspace = q(".discord-cfg-workspace");
 
 		let currentState = {};
 
@@ -173,10 +181,14 @@ export default {
 			cfgDefaultChannel.value = cfg.defaultChannelId || "";
 			cfgBotEnabled.checked = Boolean(cfg.botEnabled);
 			cfgAllowedUsers.value = Array.isArray(cfg.allowedUsers) ? cfg.allowedUsers.join(", ") : "";
+			cfgWorkspace.value = cfg.workspace || "";
 
 			modal.style.display = "flex";
 		});
 
+		q(".discord-cfg-use-cwd")?.addEventListener("click", () => {
+			if (currentState.hostCwd) cfgWorkspace.value = currentState.hostCwd;
+		});
 		q(".discord-modal-close").addEventListener("click", () => (modal.style.display = "none"));
 		q(".discord-modal-cancel").addEventListener("click", () => (modal.style.display = "none"));
 
@@ -206,6 +218,7 @@ export default {
 					.split(/[,，\s]+/)
 					.map((s) => s.trim())
 					.filter(Boolean),
+				workspace: cfgWorkspace.value.trim(),
 			};
 
 			const res = await sendHost("save_config", { config: newCfg });
