@@ -3,7 +3,7 @@ import { afterEach, describe, expect, it, vi } from "vitest";
 import { createElement } from "react";
 import { createRoot, type Root } from "react-dom/client";
 import { act } from "react-dom/test-utils";
-import { HintTip } from "../../web/src/components/HintTip.js";
+import { HintTip, TipButton } from "../../web/src/components/HintTip.js";
 
 /**
  * HintTip 回归：滚动/缩放不收起（跟随锚点），锚点滚出视口才收。
@@ -85,6 +85,28 @@ describe("HintTip 滚动跟随", () => {
 		const anchor = openTip();
 		act(() => {
 			anchor.dispatchEvent(new MouseEvent("mouseout", { bubbles: true }));
+		});
+		expect(bubble()).toBeNull();
+	});
+
+	it("TipButton 悬停立即弹出名称气泡，离开即收起", () => {
+		stubSyncRaf();
+		const container = document.createElement("div");
+		document.body.appendChild(container);
+		root = createRoot(container);
+		act(() => {
+			root!.render(createElement(TipButton, { tip: "此电脑", className: "crumb" }, "icon"));
+		});
+		const btn = container.querySelector("button.crumb") as HTMLElement;
+		expect(btn).toBeTruthy();
+		expect(btn.getAttribute("aria-label")).toBe("此电脑");
+		expect(btn.getAttribute("title")).toBeNull();
+		act(() => {
+			btn.dispatchEvent(new MouseEvent("mouseover", { bubbles: true }));
+		});
+		expect(bubble()?.textContent).toBe("此电脑");
+		act(() => {
+			btn.dispatchEvent(new MouseEvent("mouseout", { bubbles: true }));
 		});
 		expect(bubble()).toBeNull();
 	});

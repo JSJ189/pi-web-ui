@@ -10,15 +10,18 @@ import {
 	FiEyeOff,
 	FiFile,
 	FiFolder,
+	FiHardDrive,
+	FiHome,
 	FiLink,
 	FiMaximize2,
+	FiMonitor,
 	FiX,
 } from "react-icons/fi";
 import type { ClientMessage, FileListing, UiPluginInfo } from "../types";
 import { useT } from "../i18n";
 import { useAppField } from "../app-globals";
 import { downloadFile, DOWNLOAD_FILE_NOT_FOUND } from "../download";
-import { HintTip } from "./HintTip";
+import { HintTip, TipButton } from "./HintTip";
 import { FileTransferDialog, type FileTransferRequest } from "./FileTransferDialog";
 import { isExtractableArchive } from "../file-transfer";
 import { applySashDrag, parseWeights } from "../panel-sash";
@@ -939,48 +942,43 @@ export const RightPanel = memo(function RightPanel({
 													>
 														{t("rootDir")}
 													</button>
-													<button
-														type="button"
+													<TipButton
 														className={`crumb ${currentPath === MACHINE_ROOT ? "active" : ""}`}
-														title={t("computer")}
+														tip={t("computer")}
 														onClick={() => request(MACHINE_ROOT)}
 													>
-														💻
-													</button>
-													{/* 🏠 用户目录：快照直给的绝对路径，当普通目录请求（与 💻 / 面包屑同一条路）。旧服务不带 homeDir 时整个按钮不渲染。 */}
+														<FiHardDrive />
+													</TipButton>
+													{/* 用户目录：快照直给的绝对路径，当普通目录请求（与此电脑 / 面包屑同一条路）。旧服务不带 homeDir 时整个按钮不渲染。 */}
 													{homeDir !== "" && (
-														<button
-															type="button"
+														<TipButton
 															className={`crumb ${currentPath === homeDir || currentPath.startsWith(`${homeDir}/`) ? "active" : ""}`}
-															title={t("homeDir")}
+															tip={t("homeDir")}
 															onClick={() => request(homeDir)}
 														>
-															🏠
-														</button>
+															<FiHome />
+														</TipButton>
 													)}
-													{/* 🖥️ 桌面：快照直给的绝对路径（不存在/旧服务则不渲染），与 🏠 同一条路。 */}
+													{/* 桌面：快照直给的绝对路径（不存在/旧服务则不渲染），与用户目录同一条路。 */}
 													{desktopDir !== "" && (
-														<button
-															type="button"
+														<TipButton
 															className={`crumb ${currentPath === desktopDir || currentPath.startsWith(`${desktopDir}/`) ? "active" : ""}`}
-															title={t("desktopDir")}
+															tip={t("desktopDir")}
 															onClick={() => request(desktopDir)}
 														>
-															🖥️
-														</button>
+															<FiMonitor />
+														</TipButton>
 													)}
-													<HintTip text={t("filesHelp")} />
 													{/* 隐藏文件开关：服务端会下发 dotfiles，过滤只在客户端做（默认隐藏），偏好记在 localStorage。 */}
-													<button
-														type="button"
+													<TipButton
 														className={`crumb ${showHiddenFiles ? "active" : ""}`}
-														title={showHiddenFiles ? t("filesHideHidden") : t("filesShowHidden")}
-														aria-label={showHiddenFiles ? t("filesHideHidden") : t("filesShowHidden")}
+														tip={showHiddenFiles ? t("filesHideHidden") : t("filesShowHidden")}
 														aria-pressed={showHiddenFiles}
 														onClick={() => setShowHiddenFiles((v) => !v)}
 													>
 														{showHiddenFiles ? <FiEyeOff /> : <FiEye />}
-													</button>
+													</TipButton>
+													<HintTip text={t("filesHelp")} />
 													{/* 额外工作区根（宿主侧多根，见 protocol 的 set_workspace_roots）：有根才渲染根选择器，
 											    没根时 crumbs 与以前一模一样（不多一个空按钮）。文件树一次只展一个根（不做合并视图），
 											    选中即把 currentPath 切到那个绝对路径 —— 树本来就支持任意绝对路径（同 💻 机器浏览）。 */}

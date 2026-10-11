@@ -1,5 +1,5 @@
 import { useEffect, useRef, useState } from "react";
-import { FiFolder, FiGlobe, FiServer, FiTrash2, FiX } from "react-icons/fi";
+import { FiFolder, FiGlobe, FiHardDrive, FiServer, FiTrash2, FiX } from "react-icons/fi";
 import { useT } from "../i18n";
 import { appSend } from "../app-globals";
 import {
@@ -395,7 +395,7 @@ export function DirectoryBrowser({
 					<>
 						<div className="cwd-picker-head">
 							<span className="cwd-picker-title" title={browsePath === MACHINE_ROOT ? t("computer") : browsePath}>
-								{browsePath === MACHINE_ROOT ? "💻" : <FiFolder />}
+								{browsePath === MACHINE_ROOT ? <FiHardDrive /> : <FiFolder />}
 								<span>{browsePath === MACHINE_ROOT ? t("computer") : browsePath}</span>
 							</span>
 							<button
@@ -403,13 +403,14 @@ export function DirectoryBrowser({
 								className="cwd-up"
 								disabled={browsePath === MACHINE_ROOT}
 								title={t("computer")}
+								aria-label={t("computer")}
 								onClick={() => {
 									setBrowsePath(MACHINE_ROOT);
 									setDraft(MACHINE_ROOT);
 									setCompIndex(-1);
 								}}
 							>
-								💻
+								<FiHardDrive />
 							</button>
 							<button
 								type="button"
