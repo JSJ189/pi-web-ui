@@ -14,8 +14,8 @@
 
 import { execFile } from "node:child_process";
 import { randomUUID } from "node:crypto";
-import { rm } from "node:fs/promises";
-import { join } from "node:path";
+import { copyFile, rm } from "node:fs/promises";
+import { join, resolve } from "node:path";
 import { promisify } from "node:util";
 import { gitDirOf } from "./scm.js";
 
@@ -115,6 +115,12 @@ export async function restoreWorkspaceSnapshot(
 		return { success: false, error: "Workspace is not a Git repository" };
 	}
 
+	// index 备份：子目录回滚的第 1 步 rm --cached 直接改真实 index，后续 checkout/clean
+	// 中途失败时原子还原，暂存区不再留在损坏状态（见 catch 中的还原注释）
+	let indexRealPath = "";
+	let indexBackup = "";
+	let indexBackedUp = false;
+
 	try {
 		// 验证 snapshotRef 合法性
 		await runGit(cwd, ["rev-parse", "--verify", snapshotRef]);
@@ -132,20 +138,33 @@ export async function restoreWorkspaceSnapshot(
 		// 子目录 cwd：作用域收敛到该子树，不误伤同仓兄弟目录与仓库根
 		const pathspec = `:(top)${prefix}`;
 
+		indexRealPath = resolve(cwd, (await runGit(cwd, ["rev-parse", "--git-path", "index"])).trim());
+		indexBackup = join(gitDir, `temp-index-backup-${randomUUID()}`);
+		try {
+			await copyFile(indexRealPath, indexBackup);
+			indexBackedUp = true;
+		} catch {
+			// 空仓库可能还没有 index 文件：rm --cached 无从破坏，无需备份
+		}
+
 		// 1. 把 cwd 子树移出 index（不删除工作区文件），快照里不存在的文件由此退回未跟踪状态
 		await runGit(cwd, ["rm", "-r", "--cached", "--quiet", "--ignore-unmatch", "--", pathspec]);
 
-		// 2. 从快照树把 cwd 子树写回 index 与工作区（恢复被修改与被删除的跟踪文件）
-		//    注：若快照时刻该子树为空（快照树内无匹配文件），checkout 会报
-		//    "did not match any file(s) known to git"；此时快照树内本无文件，捕获忽略即可，
-		//    第 3 步 clean 会清理掉新增文件完成空状态还原。
-		try {
+		// 2. 快照树内确有该子树文件时才 checkout（恢复被修改与被删除的跟踪文件）。
+		//    先 ls-tree 判存在，替代老实现「捕获 checkout 的英文报错文案」的判空——
+		//    本地化 git（zh_CN 等）下文案不匹配会把「快照为空」误当真失败抛出。
+		//    ls-tree 的 path 按 git 进程 cwd（= 本子目录）相对解析：用 :(top) 锚定
+		//    到仓库根的子树前缀，与第 1/3 步的 pathspec 同口径。
+		const listed = await runGit(cwd, [
+			"ls-tree",
+			"-r",
+			"--name-only",
+			snapshotRef,
+			"--",
+			`:(top)${prefix.replace(/\/+$/, "")}`,
+		]);
+		if (listed.trim()) {
 			await runGit(cwd, ["checkout", snapshotRef, "--", pathspec]);
-		} catch (checkoutErr) {
-			const errMsg = String(checkoutErr);
-			if (!errMsg.includes("did not match any file(s) known to git")) {
-				throw checkoutErr;
-			}
 		}
 
 		// 3. 清理快照之后新增的未跟踪文件与空目录（含第 1 步退回未跟踪的那些）
@@ -153,9 +172,27 @@ export async function restoreWorkspaceSnapshot(
 
 		return { success: true };
 	} catch (err) {
+		if (indexBackedUp) {
+			// 原子还原 index：第 1 步 rm --cached 已改真实 index，checkout 中途失败
+			//（文件被占用 EBUSY、磁盘满…）不能把暂存区留在「整棵子树 staged-deleted」
+			// 的损坏状态——回滚本身不能再制造新破坏。
+			//（还原窗口内的并发 git 写操作会被覆盖：窗口毫秒级，且损坏的暂存区
+			// 比丢一瞬间的暂存操作严重得多。）
+			try {
+				await copyFile(indexBackup, indexRealPath);
+			} catch {
+				// 还原失败：错误照常上报
+			}
+		}
 		const msg = (err as Error).message;
 		console.error(`[workspace-snapshot] 还原快照失败 (${cwd}, ${snapshotRef}):`, msg);
 		return { success: false, error: msg };
+	} finally {
+		try {
+			await rm(indexBackup, { force: true });
+		} catch {
+			// ignore cleanup error
+		}
 	}
 }
 
