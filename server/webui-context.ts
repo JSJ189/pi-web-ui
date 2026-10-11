@@ -36,14 +36,22 @@ export const mockThemeProxy = new Proxy(
 	{
 		fg: (_color: string, text: string) => text,
 		bold: (text: string) => text,
+		italic: (text: string) => text,
+		underline: (text: string) => text,
+		inverse: (text: string) => text,
 		strikethrough: (text: string) => text,
 		dim: (text: string) => text,
 	},
 	{
 		get(target, prop) {
 			if (prop in target) return (target as Record<string, unknown>)[prop as string];
-			// Unknown theme methods → no-op passthrough.
-			return (_arg: unknown, text?: unknown) => (text !== undefined ? text : "");
+			// Unknown theme methods → no-op passthrough。文本永远是**最后一个**参数
+			// （`decorate(text)` 与 `color(token, text)` 两种形态都存在），不能假设它固定在第二位，
+			// 否则像 `italic(text)` 这类单参数装饰器会把包住的正文整段丢成空串。
+			return (...args: unknown[]) => {
+				const text = args[args.length - 1];
+				return typeof text === "string" ? text : "";
+			};
 		},
 	},
 ) as unknown as Theme;

@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { WebUIContext } from "../../server/webui-context.js";
+import { mockThemeProxy, WebUIContext } from "../../server/webui-context.js";
 import type { ServerMessage } from "../../server/protocol.js";
 
 /** Mimic pi SDK wrapUIPromptContext: `{ ...ui, select: wrapped }` copies own
@@ -96,5 +96,28 @@ describe("WebUIContext.hasWidgets (conditional 2s poll)", () => {
 		msgs.length = 0;
 		ui.refresh();
 		expect(msgs).toEqual([]);
+	});
+});
+
+describe("mockThemeProxy (TUI theme shim used in the browser)", () => {
+	// 主题代理的文本永远是**最后一个**参数：`decorate(text)` 与 `color(token, text)` 两种形态都有。
+	// 若通用兜底假设文本固定在第二位，单参数装饰器会把包住的正文整段丢成空串
+	// （实测：扩展 @lanlance/pi-recap 的 `※ recap:` 行在网页端只剩前缀）。
+	const theme = mockThemeProxy as unknown as Record<string, (...args: unknown[]) => string>;
+
+	it("keeps text through every single-arg decorator", () => {
+		for (const name of ["bold", "italic", "underline", "inverse", "strikethrough"]) {
+			expect(theme[name]("正文")).toBe("正文");
+		}
+	});
+
+	it("keeps text through the two-arg color helpers", () => {
+		expect(theme.fg("accent", "正文")).toBe("正文");
+		expect(theme.bg("panel", "正文")).toBe("正文");
+	});
+
+	it("unknown theme methods still fall back to the last string argument", () => {
+		expect(theme.someFutureDecorator("正文")).toBe("正文");
+		expect(theme.someFutureDecorator("accent", "正文")).toBe("正文");
 	});
 });
