@@ -9,6 +9,7 @@
 
 import { existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import { dirname, join } from "node:path";
+import { validateFetchUrl } from "./preset-share.js";
 import type { RemoteMcpServer, RemoteSkillSummary } from "./protocol.js";
 
 const DEFAULT_TIMEOUT_MS = 10_000;
@@ -89,7 +90,10 @@ export async function fetchRemoteMcpMarket(opts: FetchMcpMarketOptions): Promise
 	error?: string;
 }> {
 	const source = opts.source || "smithery";
-	const cacheKey = `mcp-market-${source.replace(/[^a-zA-Z0-9_-]/g, "_")}-${opts.query || "all"}.json`;
+	// query 与 source 同样消毒进缓存 key：query 未消毒时 `q/../../x` 会经 join
+	// 归一化逃出 market-cache 目录（dataDir 内任意路径读写）
+	const sanitizeCacheKey = (s: string): string => s.replace(/[^a-zA-Z0-9_-]/g, "_");
+	const cacheKey = `mcp-market-${sanitizeCacheKey(source)}-${sanitizeCacheKey(opts.query || "all")}.json`;
 	const cacheFile = join(opts.dataDir, "market-cache", cacheKey);
 
 	if (!opts.refresh) {
@@ -174,7 +178,15 @@ export async function fetchRemoteMcpMarket(opts: FetchMcpMarketOptions): Promise
 		}
 
 		// 自定义 URL（支持返回 JSON 格式的 servers 列表）
-		const customRes = await fetch(source, {
+		// SSRF 收口：与 preset-share 同一口径——自定义源也只允许 http/https 公网地址，
+		// 否则内网/回环地址可被当作市场源探测（preset_import_url 有校验，此处原本没有）
+		const validated = validateFetchUrl(source);
+		if (!validated.ok) {
+			throw new Error(
+				validated.reason === "scheme" ? "自定义目录仅支持 http/https 地址" : "自定义目录不允许内网/回环地址",
+			);
+		}
+		const customRes = await fetch(validated.url, {
 			headers: fetchHeaders(),
 			signal: AbortSignal.timeout(DEFAULT_TIMEOUT_MS),
 		});
@@ -231,7 +243,10 @@ export async function fetchRemoteSkillMarket(opts: FetchSkillMarketOptions): Pro
 
 	try {
 		// 1. 优先尝试读取 repo 下的 skills 目录；若不存在则尝试根目录
+		// skillPrefix 记录技能实际所在目录——SKILL.md 的 raw 地址必须按它拼，
+		// 否则根目录仓库的描述抓取全部 404（fetchRemoteSkillContent 同理双分支）
 		let apiUrl = `https://api.github.com/repos/${repo}/contents/skills`;
+		let skillPrefix = "skills";
 		let res = await fetch(apiUrl, {
 			headers: fetchHeaders(),
 			signal: AbortSignal.timeout(DEFAULT_TIMEOUT_MS),
@@ -239,6 +254,7 @@ export async function fetchRemoteSkillMarket(opts: FetchSkillMarketOptions): Pro
 
 		if (res.status === 404) {
 			apiUrl = `https://api.github.com/repos/${repo}/contents`;
+			skillPrefix = "";
 			res = await fetch(apiUrl, {
 				headers: fetchHeaders(),
 				signal: AbortSignal.timeout(DEFAULT_TIMEOUT_MS),
@@ -253,18 +269,29 @@ export async function fetchRemoteSkillMarket(opts: FetchSkillMarketOptions): Pro
 		const skillDirs = items.filter((item) => item.type === "dir" && !item.name.startsWith("."));
 
 		// 2. 并发读取每个 skill 的 SKILL.md 提取描述（按 raw github 内容读取，避开 GitHub API rate limit）
-		const skills: RemoteSkillSummary[] = await Promise.all(
-			skillDirs.map(async (dir) => {
-				const id = dir.name;
-				const rawUrl = `https://raw.githubusercontent.com/${repo}/main/skills/${id}/SKILL.md`;
-				let description = `Agent skill ${id} from ${repo}`;
+		// 默认分支 main/master 双尝试（仓库默认分支为 master 时 main 404）
+		const fetchSkillDoc = async (id: string): Promise<string | null> => {
+			const base = skillPrefix ? `${skillPrefix}/${id}/SKILL.md` : `${id}/SKILL.md`;
+			for (const branch of ["main", "master"]) {
 				try {
-					const rawRes = await fetch(rawUrl, {
+					const rawRes = await fetch(`https://raw.githubusercontent.com/${repo}/${branch}/${base}`, {
 						headers: { "User-Agent": "pi-web-ui" },
 						signal: AbortSignal.timeout(5000),
 					});
-					if (rawRes.ok) {
-						const text = await rawRes.text();
+					if (rawRes.ok) return await rawRes.text();
+				} catch {
+					/* try next branch / fallback to default description */
+				}
+			}
+			return null;
+		};
+		const skills: RemoteSkillSummary[] = await Promise.all(
+			skillDirs.map(async (dir) => {
+				const id = dir.name;
+				let description = `Agent skill ${id} from ${repo}`;
+				try {
+					const text = await fetchSkillDoc(id);
+					if (text) {
 						const descMatch = text.match(/description:\s*(?:>|\|)?\s*([^\r\n]+)/);
 						if (descMatch && descMatch[1].trim()) {
 							description = descMatch[1].trim();

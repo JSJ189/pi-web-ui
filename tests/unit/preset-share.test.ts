@@ -18,6 +18,7 @@ import {
 	diagnoseShareFailure,
 	exportPresetVia,
 	fetchPresetCatalog,
+	fetchText,
 	importPresetFromUrlVia,
 	importPresetVia,
 	isBlockedHost,
@@ -398,11 +399,19 @@ describe("网址收口（SSRF）", () => {
 			"foo.local",
 			"x.internal",
 			"",
+			// IPv4-mapped IPv6：dotted 与 URL 规范化后的十六进制两种形态
+			"::ffff:127.0.0.1",
+			"::ffff:10.0.0.1",
+			"::ffff:192.168.1.1",
+			"::ffff:7f00:1",
+			"::ffff:a00:1",
+			"::ffff:c0a8:101",
 		]) {
 			expect(isBlockedHost(host), host).toBe(true);
 		}
 		expect(isBlockedHost("raw.githubusercontent.com")).toBe(false);
 		expect(isBlockedHost("172.32.0.1")).toBe(false);
+		expect(isBlockedHost("::ffff:ac10:0")).toBe(true); // 172.16.0.0/12 内网段映射
 	});
 
 	it("validateFetchUrl 只放行 http/https 且非内网", () => {
@@ -1197,5 +1206,28 @@ describe("协议消息形状（前端依赖）", () => {
 			"preset_catalog",
 			"preset_share",
 		]);
+	});
+});
+
+describe("fetchText 流式限长与 SSRF 收口（0.103 审计）", () => {
+	it("body 超过 maxBytes 立即失败（流式累计，不等整读）", async () => {
+		const fetcher: TextFetcher = async () => new Response("x".repeat(2048), { status: 200 });
+		const r = await fetchText("https://example.com/big.json", { fetcher, maxBytes: 1024 });
+		expect(r.ok).toBe(false);
+		if (!r.ok) expect(r.errorKey).toBe("presets.fetch.tooLarge");
+	});
+
+	it("body 在限内正常返回文本", async () => {
+		const fetcher: TextFetcher = async () => new Response(JSON.stringify({ a: 1 }), { status: 200 });
+		const r = await fetchText("https://example.com/ok.json", { fetcher, maxBytes: 1024 });
+		expect(r.ok).toBe(true);
+		if (r.ok) expect(JSON.parse(r.text)).toEqual({ a: 1 });
+	});
+
+	it("无 body 的 mock fetcher 回落整读路径", async () => {
+		const fetcher: TextFetcher = async () => ({ ok: true, status: 200, text: async () => "hello" });
+		const r = await fetchText("https://example.com/mock.json", { fetcher, maxBytes: 1024 });
+		expect(r.ok).toBe(true);
+		if (r.ok) expect(r.text).toBe("hello");
 	});
 });
