@@ -133,6 +133,15 @@ describe("SandboxManager & Hard Jail Isolation", () => {
 			evaluateSandboxJail(sandbox, "bash", { command: `cat "${sourceProjectDir}/package.json"` }, sandbox.path),
 		).not.toBeNull();
 		expect(evaluateSandboxJail(sandbox, "bash", { command: "cd .. && ls" }, sandbox.path)).not.toBeNull();
+		expect(evaluateSandboxJail(sandbox, "bash", { command: "cd ~/.ssh" }, sandbox.path)).not.toBeNull();
+		expect(evaluateSandboxJail(sandbox, "bash", { command: "rm -rf /etc/hosts" }, sandbox.path)).not.toBeNull();
+		expect(
+			evaluateSandboxJail(sandbox, "bash", { command: "rm -rf ~/Desktop/important" }, sandbox.path),
+		).not.toBeNull();
+		expect(evaluateSandboxJail(sandbox, "bash", { command: "echo pwn > /etc/passwd" }, sandbox.path)).not.toBeNull();
+		expect(evaluateSandboxJail(sandbox, "bash", { command: "npm install -g typescript" }, sandbox.path)).not.toBeNull();
+		expect(evaluateSandboxJail(sandbox, "bash", { command: "echo ok > build.log" }, sandbox.path)).toBeNull();
+		expect(evaluateSandboxJail(sandbox, "bash", { command: "npm test > /dev/null" }, sandbox.path)).toBeNull();
 
 		// 5. SFTP & Mail external side-effect gates
 		expect(evaluateSandboxJail(sandbox, "sftp", { action: "plan" }, sandbox.path)).toBeNull();
@@ -264,5 +273,35 @@ describe("SandboxManager & Hard Jail Isolation", () => {
 		expect(destroyRes.isError).toBeUndefined();
 		expect(currentCwd.replace(/\\/g, "/")).toBe(sourceProjectDir.replace(/\\/g, "/"));
 		expect(existsSync(sbxPath)).toBe(false);
+	});
+});
+
+describe("patch 围栏的 hashline 段头识别（0.104 审计）", () => {
+	let tempRoot: string;
+	let dataDir: string;
+
+	beforeEach(() => {
+		tempRoot = mkdtempSync(join(tmpdir(), "pi-sandbox-hashline-"));
+		dataDir = join(tempRoot, "data");
+	});
+
+	afterEach(() => {
+		rmSync(tempRoot, { recursive: true, force: true });
+	});
+
+	it("extractPatchTargetPaths 识别 [path#TAG] / [path] 段头（patch 工具实际消费的格式）", () => {
+		const hashlinePatch = "[src/index.ts#a1b2]\nDEL <1: 3\nPUT <1: export const x = 2;\n";
+		expect(extractPatchTargetPaths(hashlinePatch)).toContain("src/index.ts");
+		const newFilePatch = "[new-file.ts]\nPUT <1: hello\n";
+		expect(extractPatchTargetPaths(newFilePatch)).toContain("new-file.ts");
+	});
+
+	it("hashline 补丁的越界目标被围栏硬拒（此前提取出 0 目标、检查空转）", async () => {
+		const mgr = new SandboxManager(dataDir);
+		const { sandbox } = await mgr.create({ name: "hashline-lab", ephemeral: true });
+		const evilHashline = "[../escape.ts]\nPUT <1: evil\n";
+		expect(evaluateSandboxJail(sandbox, "patch", { patch: evilHashline }, sandbox.path)).not.toBeNull();
+		const goodHashline = "[inside.ts]\nPUT <1: ok\n";
+		expect(evaluateSandboxJail(sandbox, "patch", { patch: goodHashline }, sandbox.path)).toBeNull();
 	});
 });

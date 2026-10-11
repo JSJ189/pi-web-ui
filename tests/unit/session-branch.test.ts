@@ -164,4 +164,28 @@ describe("session-branch (issue #567)", () => {
 		expect(result?.bestLeafId).toBe("m3_long");
 		expect(result?.changed).toBe(true);
 	});
+
+	it("preserves valid JSON transcript entries without an id field during reordering (#601)", () => {
+		const entries: AnySessionEntry[] = [
+			{ type: "session", id: "sess_1", timestamp: "2026-10-08T10:00:00.000Z" },
+			{ id: "m1", parentId: null, type: "message", timestamp: "2026-10-08T10:01:00.000Z" },
+			// Valid JSON lines without an `id` field (e.g. third-party extension or manual repair)
+			{ type: "custom_note", parentId: "m1", note: "attached-to-m1" },
+			{ type: "DiagnosticLog", note: "dangling-no-id-no-parent" },
+			{ id: "m2", parentId: "m1", type: "message", timestamp: "2026-10-08T10:02:00.000Z" },
+			{ id: "m3", parentId: "m2", type: "message", timestamp: "2026-10-08T10:03:00.000Z" },
+			// Metadata hijacking entry at the physical tail pointing to m1
+			{ id: "ext_tail", parentId: "m1", type: "custom", timestamp: "2026-10-08T10:04:00.000Z" },
+		];
+
+		const reordered = reorderEntriesForMainBranch(entries);
+		expect(reordered.changed).toBe(true);
+		// Must never silently drop id-less entries
+		expect(reordered.entries.length).toBe(entries.length);
+		expect(reordered.entries).toContain(entries[2]);
+		expect(reordered.entries).toContain(entries[3]);
+		// Physical tail with id must still be the main branch leaf m3
+		const nonHeaderWithId = reordered.entries.filter((e) => e.type !== "session" && typeof e.id === "string");
+		expect(nonHeaderWithId[nonHeaderWithId.length - 1]?.id).toBe("m3");
+	});
 });

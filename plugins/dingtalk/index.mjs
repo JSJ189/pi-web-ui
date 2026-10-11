@@ -96,6 +96,7 @@ export class DingtalkBotBridge {
 		this.pendingRuns = new Map();
 		this.earlyRuns = new Map();
 		this.userConversations = new Map();
+		this.userWorkspaces = new Map();
 
 		this.status = {
 			enabled: false,
@@ -111,6 +112,10 @@ export class DingtalkBotBridge {
 
 	getStatus() {
 		return { ...this.status };
+	}
+
+	resolveWorkspace(senderId, cfg) {
+		return String(this.userWorkspaces.get(senderId) || cfg?.workspace || this.host?.cwd || "").trim();
 	}
 
 	async start() {
@@ -183,9 +188,9 @@ export class DingtalkBotBridge {
 		this.status.messagesReceived++;
 		this.status.lastMessageAt = Date.now();
 
-		// Slash command handling (/help, /clear, /new, /status)
+		// Slash command handling (/help, /cwd, /clear, /new, /status)
 		if (cleanText.startsWith("/")) {
-			const handled = await this.handleSlashCommand(cleanText, { sessionWebhook, senderId });
+			const handled = await this.handleSlashCommand(cleanText, { sessionWebhook, senderId, cfg });
 			if (handled) return;
 		}
 
@@ -205,11 +210,14 @@ export class DingtalkBotBridge {
 		});
 
 		try {
-			await this.host.chat({
+			const workspace = this.resolveWorkspace(senderId, cfg);
+			const chatReq = {
 				text: cleanText,
 				accountId,
 				conversationId,
-			});
+			};
+			if (workspace) chatReq.cwd = workspace;
+			await this.host.chat(chatReq);
 		} catch (err) {
 			this.log("warn", `DingTalk host.chat dispatch failed: ${err.message}`);
 			this.pendingRuns.delete(conversationId);
@@ -223,7 +231,7 @@ export class DingtalkBotBridge {
 		}
 	}
 
-	async handleSlashCommand(cmdText, { sessionWebhook, senderId }) {
+	async handleSlashCommand(cmdText, { sessionWebhook, senderId, cfg }) {
 		const parts = cmdText.trim().split(/\s+/);
 		const cmd = parts[0].toLowerCase();
 		if (!sessionWebhook) return false;
@@ -233,6 +241,7 @@ export class DingtalkBotBridge {
 				const helpText = [
 					"### 🤖 钉钉机器人帮助",
 					"- 直接发送文本即可与 AI 助手对话，支持多轮上下文",
+					"- `/cwd [路径]` 或 `/workspace [路径]`：查看或切换当前项目根目录",
 					"- `/clear` 或 `/new`：清空当前上下文，开启全新对话",
 					"- `/status`：查看机器人运行状态与指标",
 					"- `/help`：展示本帮助信息",
@@ -241,6 +250,38 @@ export class DingtalkBotBridge {
 					method: "POST",
 					headers: { "content-type": "application/json; charset=utf-8" },
 					body: JSON.stringify(buildDingtalkMessage({ msgType: "markdown", title: "钉钉机器人帮助", text: helpText })),
+				}).catch(() => {});
+				return true;
+			}
+			case "/cwd":
+			case "/workspace": {
+				const argPath = cmdText.replace(/^\/\S+/, "").trim();
+				if (!argPath) {
+					const currentWs = this.resolveWorkspace(senderId, cfg) || "(默认跟随宿主当前项目)";
+					await fetch(sessionWebhook, {
+						method: "POST",
+						headers: { "content-type": "application/json; charset=utf-8" },
+						body: JSON.stringify(
+							buildDingtalkMessage({
+								msgType: "text",
+								text: `📂 当前项目根目录：${currentWs}\n提示：发送 /cwd <目录路径> 可切换项目根目录。`,
+							}),
+						),
+					}).catch(() => {});
+					return true;
+				}
+				this.userWorkspaces.set(senderId, argPath);
+				const newId = `dt_${senderId.slice(-8)}_${Date.now().toString(36)}`;
+				this.userConversations.set(senderId, newId);
+				await fetch(sessionWebhook, {
+					method: "POST",
+					headers: { "content-type": "application/json; charset=utf-8" },
+					body: JSON.stringify(
+						buildDingtalkMessage({
+							msgType: "text",
+							text: `📂 已将项目根目录切换为：${argPath}\n✨ 已自动为您开启该目录下的全新会话！`,
+						}),
+					),
 				}).catch(() => {});
 				return true;
 			}
@@ -497,12 +538,14 @@ export default async function activate(host) {
 							appKey: localConfig.appKey || "",
 							robotCode: localConfig.robotCode || "",
 							webhookUrl: localConfig.webhookUrl || "",
+							workspace: localConfig.workspace || "",
 							botEnabled: Boolean(localConfig.botEnabled),
 							allowedSenders: localConfig.allowedSenders || [],
 							hasAppSecret: Boolean(secrets[SECRET_APP_SECRET]),
 							hasWebhookSecret: Boolean(secrets[SECRET_WEBHOOK_SECRET]),
 						},
 						botStatus: botBridge.getStatus(),
+						hostCwd: String(host.cwd ?? "").trim(),
 					});
 					break;
 				}

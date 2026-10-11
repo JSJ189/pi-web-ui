@@ -11953,18 +11953,30 @@ export class ClientSession {
 		const cached = ClientSession.projectsCache;
 		// TTL 命中（或已建立过项目缓存）：直接把当前 cwd 合并重排并续期，
 		// 避免切换工作区时因为刚好跨过 60s TTL 而触发全盘 30 个会话子目录重扫。
+		// 已建立过缓存：emit 本客户端的派生视图即可，**绝不把派生结果写回静态缓存**
+		// ——withCurrentCwd 注入了本客户端的 cwd/lastUsed/removedKeys 过滤与沙盒
+		// 元数据，写回会把 A 客户端的视图固化给 B（静态缓存跨客户端共享）；
+		// 底层超过 TTL 后后台重扫一次，磁盘上新工作区不会被永久挡在列表外。
 		if (cached) {
-			const updated = this.withCurrentCwd(cached.projects, now);
-			ClientSession.projectsCache = { at: now, projects: updated };
-			this.emit({ type: "projects", projects: updated });
+			this.emit({ type: "projects", projects: this.withCurrentCwd(cached.projects, now) });
+			if (now - cached.at >= ClientSession.PROJECTS_CACHE_TTL) void this.ensureProjectsCache(false);
 			return;
 		}
+		await this.ensureProjectsCache(true);
+	}
 
-		// 已有扫描在跑：搭车等它，不要并发扫两遍盘。
+	/**
+	 * 确保静态缓存有基底（单飞：已有扫描在跑则搭车，不并发扫两遍盘）。
+	 * `emitResult`：首发扫描把结果 emit 给客户端；后台续期扫描只更新缓存——
+	 * 当前视图已由命中分支 emit 过，续期完成后客户端下次 pushProjects 自然拿到新基底。
+	 */
+	private async ensureProjectsCache(emitResult: boolean): Promise<void> {
 		if (ClientSession.projectsInFlight) {
 			try {
 				const projects = await ClientSession.projectsInFlight;
-				if (projects) this.emit({ type: "projects", projects: this.withCurrentCwd(projects, Date.now()) });
+				if (projects && emitResult) {
+					this.emit({ type: "projects", projects: this.withCurrentCwd(projects, Date.now()) });
+				}
 			} catch {
 				/* 首发扫描已自行 emit 错误结果，这里不再补 */
 			}
@@ -11982,12 +11994,15 @@ export class ClientSession {
 				this.stateStore.mergeDiscoveredProjects(discovered);
 				const merged = await this.stateStore.getRecentProjects(this.clientId);
 				ClientSession.projectsCache = { at: Date.now(), projects: merged };
-				const result = this.withCurrentCwd(merged, Date.now());
-				this.emit({ type: "projects", projects: result });
+				if (emitResult) {
+					this.emit({ type: "projects", projects: this.withCurrentCwd(merged, Date.now()) });
+				}
 				return merged;
 			} catch {
 				const fallback = this.withCurrentCwd(await this.stateStore.getRecentProjects(this.clientId), Date.now());
-				this.emit({ type: "projects", projects: fallback });
+				if (emitResult) {
+					this.emit({ type: "projects", projects: fallback });
+				}
 				return fallback;
 			} finally {
 				ClientSession.projectsInFlight = null;
@@ -12658,9 +12673,10 @@ export class ClientSession {
 				}
 				await this.setCwd(fallbackCwd);
 			}
-			// 清理仍挂在该沙盒下的后台会话
+			// 清理仍挂在该沙盒下的后台会话（cwd 在沙盒**子目录**的也算——
+			// 精确相等比较会让 <sandbox>/src 里的子代理/后台对话销毁后悬空）
 			for (const [cid, c] of this.convs) {
-				if (cid !== this.activeId && normalizePathKey(c.cwd) === normalizePathKey(sbx.path)) {
+				if (cid !== this.activeId && isSameOrSubpath(c.cwd, sbx.path)) {
 					this.removeConversation(cid);
 				}
 			}

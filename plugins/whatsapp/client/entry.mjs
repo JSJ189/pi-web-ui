@@ -105,9 +105,16 @@ export default {
 									<input type="checkbox" id="whatsapp-cfg-bot-enabled" class="whatsapp-cfg-bot-enabled" style="cursor: pointer;" />
 									<label for="whatsapp-cfg-bot-enabled" style="font-size: 12px; cursor: pointer; user-select: none;">启用 WhatsApp 机器人双向对话回复服务</label>
 								</div>
-								<div>
+								<div style="margin-bottom: 8px;">
 									<label style="display: block; margin-bottom: 4px; color: var(--text-dim);">安全白名单 (手机号，逗号分隔，留空不限制):</label>
 									<input type="text" class="whatsapp-cfg-allowed-users" placeholder="8613800000000, 15551234567 (留空允许所有用户)" style="width: 100%; box-sizing: border-box; padding: 6px 10px; border-radius: 4px; border: 1px solid var(--border); background: var(--bg); color: var(--text);" />
+								</div>
+								<div>
+									<div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 4px;">
+										<label style="color: var(--text-dim);">📂 项目根目录 (Workspace Cwd，留空跟随当前项目，支持聊天发 /cwd 切换):</label>
+										<button type="button" class="whatsapp-cfg-use-cwd" style="padding: 2px 8px; font-size: 11px; border-radius: 4px; border: 1px solid var(--border); background: var(--bg); color: var(--text); cursor: pointer;">设为当前项目</button>
+									</div>
+									<input type="text" class="whatsapp-cfg-workspace" placeholder="如：E:/my-project (留空跟随当前项目)" style="width: 100%; box-sizing: border-box; padding: 6px 10px; border-radius: 4px; border: 1px solid var(--border); background: var(--bg); color: var(--text);" />
 								</div>
 							</div>
 						</div>
@@ -136,6 +143,7 @@ export default {
 		const cfgDefaultRecipient = q(".whatsapp-cfg-default-recipient");
 		const cfgBotEnabled = q(".whatsapp-cfg-bot-enabled");
 		const cfgAllowedUsers = q(".whatsapp-cfg-allowed-users");
+		const cfgWorkspace = q(".whatsapp-cfg-workspace");
 
 		let currentState = {};
 
@@ -180,10 +188,14 @@ export default {
 			cfgDefaultRecipient.value = cfg.defaultRecipient || "";
 			cfgBotEnabled.checked = Boolean(cfg.botEnabled);
 			cfgAllowedUsers.value = Array.isArray(cfg.allowedUsers) ? cfg.allowedUsers.join(", ") : "";
+			cfgWorkspace.value = cfg.workspace || "";
 
 			modal.style.display = "flex";
 		});
 
+		q(".whatsapp-cfg-use-cwd")?.addEventListener("click", () => {
+			if (currentState.hostCwd) cfgWorkspace.value = currentState.hostCwd;
+		});
 		q(".whatsapp-modal-close").addEventListener("click", () => (modal.style.display = "none"));
 		q(".whatsapp-modal-cancel").addEventListener("click", () => (modal.style.display = "none"));
 
@@ -215,6 +227,7 @@ export default {
 					.split(/[,，\s]+/)
 					.map((s) => s.trim())
 					.filter(Boolean),
+				workspace: cfgWorkspace.value.trim(),
 			};
 
 			const res = await sendHost("save_config", { config: newCfg });

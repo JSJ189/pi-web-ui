@@ -23,6 +23,7 @@ import {
 import { LuMessageSquareDashed } from "react-icons/lu";
 import type { UiSlotEntry, UiSlotId } from "../ui-slots";
 import type { ChatState } from "../use-chat";
+import { useFormattedCost } from "../cost-format";
 import { useT, useI18n } from "../i18n";
 import { useAppGlobals, appSend } from "../app-globals";
 import { PluginIcon } from "../plugin-icon";
@@ -87,12 +88,6 @@ function formatTokens(n: number): string {
 	return String(n);
 }
 
-function formatCost(cost: number): string {
-	if (cost <= 0) return "0";
-	if (cost < 0.0001) return "<0.0001";
-	return cost.toFixed(4).replace(/\.?0+$/, "");
-}
-
 function localeShort(code: string): string {
 	if (code.startsWith("zh")) return "ZH";
 	if (code.startsWith("ja")) return "JA";
@@ -145,6 +140,7 @@ export function BarItem({
 	const state = chat.state;
 	const stats = state?.stats;
 	const isStreaming = state?.isStreaming ?? false;
+	const costDisplay = useFormattedCost(stats?.cost ?? 0);
 
 	const samplesRef = useRef<RateSample[]>([]);
 	const streamEst = state?.streamingMessage ? estimateStreamTokens(state.streamingMessage.content) : 0;
@@ -445,11 +441,10 @@ export function BarItem({
 		);
 	}
 
-	// 5.5 特殊条目：累计成本（与 ctx / cache 同级的纯状态指标，无按钮行为）
+	// 5.5 特殊条目：累计成本（与 ctx / cache 同级的纯状态指标，无按钮行为；支持配置货币符号或插件接管格式化 #607）
 	if (id === "host:cost") {
 		const cost = stats?.cost ?? 0;
-		const costFormatted = formatCost(cost);
-		const costTip = t("cumulativeCost");
+		const costTip = costDisplay.tooltip || t("cumulativeCost");
 		const isZero = cost <= 0;
 		return (
 			<span
@@ -459,10 +454,10 @@ export function BarItem({
 				onContextMenu={handleContextMenu}
 				data-bar-item={id}
 			>
-				{/* 名字落在 `$` 前面：`.status-cost` 默认 gap:0 让 `$` 紧贴数字，有名字时靠 .has-name 把间距还给条目。 */}
+				{/* 名字落在货币符号前面：`.status-cost` 默认 gap:0 让符号紧贴数字，有名字时靠 .has-name 把间距还给条目。 */}
 				{custom ? <span className="bar-item-text">{custom}</span> : null}
-				<span className="bar-item-char">$</span>
-				<span className="bar-item-text">{costFormatted}</span>
+				{costDisplay.symbol ? <span className="bar-item-char">{costDisplay.symbol}</span> : null}
+				<span className="bar-item-text">{costDisplay.value}</span>
 			</span>
 		);
 	}

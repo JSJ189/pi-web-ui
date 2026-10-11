@@ -96,6 +96,7 @@ export class DiscordBotBridge {
 		this.pendingRuns = new Map();
 		this.earlyRuns = new Map();
 		this.userConversations = new Map();
+		this.userWorkspaces = new Map();
 
 		this.status = {
 			enabled: false,
@@ -112,6 +113,10 @@ export class DiscordBotBridge {
 
 	getStatus() {
 		return { ...this.status };
+	}
+
+	resolveWorkspace(authorId, cfg) {
+		return String(this.userWorkspaces.get(authorId) || cfg?.workspace || this.host?.cwd || "").trim();
 	}
 
 	async start() {
@@ -346,11 +351,14 @@ export class DiscordBotBridge {
 		});
 
 		try {
-			await this.host.chat({
+			const workspace = this.resolveWorkspace(authorId, cfg);
+			const chatReq = {
 				text: cleanText,
 				accountId,
 				conversationId,
-			});
+			};
+			if (workspace) chatReq.cwd = workspace;
+			await this.host.chat(chatReq);
 		} catch (err) {
 			this.log("warn", `Discord host.chat dispatch failed: ${err.message}`);
 			this.pendingRuns.delete(conversationId);
@@ -370,12 +378,33 @@ export class DiscordBotBridge {
 				const helpText = [
 					"### 🤖 pi-web-ui Discord 机器人帮助",
 					"- 直接发送文本即可与 AI 助手对话，支持多轮上下文",
+					"- `/cwd [路径]` 或 `/workspace [路径]`：查看或切换当前项目根目录",
 					"- `/clear` 或 `/new`：清空当前上下文，开启全新对话",
 					"- `/status`：查看机器人运行状态与指标",
 					"- `/help`：展示本帮助信息",
 				].join("\n");
 				await discordApi(cfg.botToken, "POST", `/channels/${channelId}/messages`, {
 					content: helpText,
+					message_reference: { message_id: replyToId },
+				}).catch(() => {});
+				return true;
+			}
+			case "/cwd":
+			case "/workspace": {
+				const argPath = cmdText.replace(/^\/\S+/, "").trim();
+				if (!argPath) {
+					const currentWs = this.resolveWorkspace(authorId, cfg) || "(默认跟随宿主当前项目)";
+					await discordApi(cfg.botToken, "POST", `/channels/${channelId}/messages`, {
+						content: `📂 当前项目根目录：${currentWs}\n提示：发送 /cwd <目录路径> 可切换项目根目录。`,
+						message_reference: { message_id: replyToId },
+					}).catch(() => {});
+					return true;
+				}
+				this.userWorkspaces.set(authorId, argPath);
+				const newId = `dc_${String(authorId).slice(-8)}_${Date.now().toString(36)}`;
+				this.userConversations.set(authorId, newId);
+				await discordApi(cfg.botToken, "POST", `/channels/${channelId}/messages`, {
+					content: `📂 已将项目根目录切换为：${argPath}\n✨ 已自动为您开启该目录下的全新会话！`,
 					message_reference: { message_id: replyToId },
 				}).catch(() => {});
 				return true;
@@ -577,11 +606,13 @@ export default async function activate(host) {
 						type: "state",
 						config: {
 							defaultChannelId: localConfig.defaultChannelId || "",
+							workspace: localConfig.workspace || "",
 							botEnabled: Boolean(localConfig.botEnabled),
 							allowedUsers: localConfig.allowedUsers || [],
 							hasBotToken: Boolean(secrets[SECRET_BOT_TOKEN] || localConfig.botToken),
 						},
 						botStatus: botBridge.getStatus(),
+						hostCwd: String(host.cwd ?? "").trim(),
 					});
 					break;
 				}

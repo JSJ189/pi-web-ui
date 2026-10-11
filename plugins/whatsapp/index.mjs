@@ -116,6 +116,7 @@ export class WhatsappBotBridge {
 		this.pendingRuns = new Map();
 		this.earlyRuns = new Map();
 		this.userConversations = new Map();
+		this.userWorkspaces = new Map();
 
 		this.status = {
 			enabled: false,
@@ -132,6 +133,10 @@ export class WhatsappBotBridge {
 
 	getStatus() {
 		return { ...this.status };
+	}
+
+	resolveWorkspace(senderPhone, cfg) {
+		return String(this.userWorkspaces.get(senderPhone) || cfg?.workspace || this.host?.cwd || "").trim();
 	}
 
 	async start() {
@@ -239,11 +244,14 @@ export class WhatsappBotBridge {
 		});
 
 		try {
-			await this.host.chat({
+			const workspace = this.resolveWorkspace(senderPhone, cfg);
+			const chatReq = {
 				text: cleanText,
 				accountId,
 				conversationId,
-			});
+			};
+			if (workspace) chatReq.cwd = workspace;
+			await this.host.chat(chatReq);
 		} catch (err) {
 			this.log("warn", `WhatsApp host.chat dispatch failed: ${err.message}`);
 			this.pendingRuns.delete(conversationId);
@@ -265,6 +273,7 @@ export class WhatsappBotBridge {
 					"🤖 *pi-web-ui WhatsApp Bot Help*",
 					"",
 					"- Send any text message to chat with your AI assistant",
+					"- `/cwd [path]` or `/workspace [path]`: view or switch current workspace root",
 					"- `/clear` or `/new`: reset context and start a fresh session",
 					"- `/status`: inspect bot connection and metrics",
 					"- `/help`: display this help guide",
@@ -274,6 +283,33 @@ export class WhatsappBotBridge {
 					cfg.phoneNumberId,
 					"/messages",
 					buildWhatsappPayload(senderPhone, helpText),
+				).catch(() => {});
+				return true;
+			}
+			case "/cwd":
+			case "/workspace": {
+				const argPath = cmdText.replace(/^\/\S+/, "").trim();
+				if (!argPath) {
+					const currentWs = this.resolveWorkspace(senderPhone, cfg) || "(following host current project)";
+					await whatsappApi(
+						cfg.accessToken,
+						cfg.phoneNumberId,
+						"/messages",
+						buildWhatsappPayload(
+							senderPhone,
+							`📂 Current workspace root: ${currentWs}\nTip: send /cwd <path> to switch workspace.`,
+						),
+					).catch(() => {});
+					return true;
+				}
+				this.userWorkspaces.set(senderPhone, argPath);
+				const newId = `wa_${String(senderPhone).slice(-8)}_${Date.now().toString(36)}`;
+				this.userConversations.set(senderPhone, newId);
+				await whatsappApi(
+					cfg.accessToken,
+					cfg.phoneNumberId,
+					"/messages",
+					buildWhatsappPayload(senderPhone, `📂 Switched workspace root to: ${argPath}\n✨ Started a fresh session!`),
 				).catch(() => {});
 				return true;
 			}
@@ -477,11 +513,13 @@ export default async function activate(host) {
 						config: {
 							phoneNumberId: localConfig.phoneNumberId || "",
 							defaultRecipient: localConfig.defaultRecipient || "",
+							workspace: localConfig.workspace || "",
 							botEnabled: Boolean(localConfig.botEnabled),
 							allowedUsers: localConfig.allowedUsers || [],
 							hasAccessToken: Boolean(secrets[SECRET_ACCESS_TOKEN] || localConfig.accessToken),
 						},
 						botStatus: botBridge.getStatus(),
+						hostCwd: String(host.cwd ?? "").trim(),
 					});
 					break;
 				}

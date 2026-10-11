@@ -203,4 +203,92 @@ describe("FeishuBotBridge 双工通信流程测试", () => {
 
 		await bridge.stop();
 	});
+
+	it("支持配置默认项目根目录 workspace 以及通过 /cwd 指令动态切换工作目录并透传给 host.chat", async () => {
+		const chatSpy = vi.fn().mockResolvedValue({ conversationId: "conv_cwd_1" });
+		const replySpy = vi.fn().mockResolvedValue({ success: true });
+
+		const bridge = new FeishuBotBridge({
+			host: {
+				cwd: "E:/default-host-cwd",
+				chat: chatSpy,
+				onRunEvent: () => () => {},
+			},
+			getConfig: () => ({
+				appId: "cli_123",
+				appSecret: "sec_123",
+				workspace: "E:/configured-workspace",
+			}),
+			sendMessage: vi.fn(),
+			replyMessage: replySpy,
+			reactMessage: vi.fn(),
+		});
+
+		await bridge.start();
+
+		// 1. 发送 /cwd 查看当前项目根目录
+		await bridge.onInboundMessage({
+			message: {
+				message_id: "om_cwd_1",
+				chat_id: "oc_1",
+				message_type: "text",
+				content: JSON.stringify({ text: "/cwd" }),
+			},
+			sender: {
+				sender_type: "user",
+				sender_id: { open_id: "ou_user1" },
+			},
+		});
+		expect(chatSpy).not.toHaveBeenCalled();
+		expect(replySpy).toHaveBeenCalledWith(
+			expect.anything(),
+			expect.objectContaining({
+				messageId: "om_cwd_1",
+				text: expect.stringContaining("E:/configured-workspace"),
+			}),
+		);
+
+		// 2. 发送 /cwd E:/custom-user-project 切换项目根目录
+		await bridge.onInboundMessage({
+			message: {
+				message_id: "om_cwd_2",
+				chat_id: "oc_1",
+				message_type: "text",
+				content: JSON.stringify({ text: "/cwd E:/custom-user-project" }),
+			},
+			sender: {
+				sender_type: "user",
+				sender_id: { open_id: "ou_user1" },
+			},
+		});
+		expect(replySpy).toHaveBeenCalledWith(
+			expect.anything(),
+			expect.objectContaining({
+				messageId: "om_cwd_2",
+				text: expect.stringContaining("E:/custom-user-project"),
+			}),
+		);
+
+		// 3. 发送正常消息，校验 host.chat 收到了切换后的 cwd
+		await bridge.onInboundMessage({
+			message: {
+				message_id: "om_cwd_3",
+				chat_id: "oc_1",
+				message_type: "text",
+				content: JSON.stringify({ text: "请列出当前目录下的文件" }),
+			},
+			sender: {
+				sender_type: "user",
+				sender_id: { open_id: "ou_user1" },
+			},
+		});
+		expect(chatSpy).toHaveBeenCalledWith(
+			expect.objectContaining({
+				text: "请列出当前目录下的文件",
+				cwd: "E:/custom-user-project",
+			}),
+		);
+
+		await bridge.stop();
+	});
 });

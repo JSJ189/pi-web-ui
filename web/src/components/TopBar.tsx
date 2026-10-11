@@ -32,6 +32,7 @@ import { BROWSER_PAGE_TOOL_NAME } from "../../../server/tool-manager.js";
 import { NotifyToggle } from "./NotifyToggle";
 import type { SoundKind, SoundSettings } from "../sounds";
 import { PluginIcon } from "../plugin-icon";
+import { formatCostDisplay } from "../cost-format";
 import { useI18n, localeShort } from "../i18n";
 import {
 	isPluginViewItem,
@@ -1265,11 +1266,17 @@ export function TopBar({
 				</span>
 			</span>
 		),
-		"host:cost": (
-			<span className="chip" data-tip={t("cumulativeCost")}>
-				<span className="chip-sub">${(chat.state?.stats?.cost ?? 0).toFixed(4)}</span>
-			</span>
-		),
+		"host:cost": (() => {
+			const chipCost = formatCostDisplay(chat.state?.stats?.cost ?? 0, { fixedDigits: 4 });
+			return (
+				<span className="chip" data-tip={chipCost.tooltip || t("cumulativeCost")}>
+					<span className="chip-sub">
+						{chipCost.symbol}
+						{chipCost.value}
+					</span>
+				</span>
+			);
+		})(),
 		"host:cwd": (
 			<button
 				type="button"

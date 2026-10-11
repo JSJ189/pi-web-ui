@@ -1,4 +1,4 @@
-import { describe, it, expect, beforeEach } from "vitest";
+import { describe, it, expect, beforeEach, vi } from "vitest";
 import { mkdtempSync, readdirSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -78,5 +78,58 @@ describe("attachment-store 内容寻址附件存储（CAS）", () => {
 		expect(hit?.ext).toBe(rec.ext);
 		const read = await readAttachment(rec.hash);
 		expect(read?.buffer.equals(data)).toBe(true);
+	});
+});
+
+describe("saveAttachmentSync EPERM 语义（0.104 审计）", () => {
+	it("EPERM 且目标不存在：抛出让调用方回退 dataUrl，不返回坏记录", async () => {
+		vi.resetModules();
+		vi.doMock("node:fs", async (importOriginal) => {
+			const mod = await importOriginal<typeof import("node:fs")>();
+			return {
+				...mod,
+				existsSync: () => false,
+				writeFileSync: () => {},
+				renameSync: () => {
+					const e = new Error("EPERM") as NodeJS.ErrnoException;
+					e.code = "EPERM";
+					throw e;
+				},
+			};
+		});
+		try {
+			const fresh = await import("../../server/attachment-store.js");
+			fresh.initAttachmentStore("/tmp/attachment-eperm-test");
+			expect(() => fresh.saveAttachmentSync(Buffer.from("x"), "image/png", ".png")).toThrowError();
+		} finally {
+			vi.doUnmock("node:fs");
+			vi.resetModules();
+		}
+	});
+
+	it("EPERM 但目标已存在（并发方写好）：按已存在成功返回", async () => {
+		vi.resetModules();
+		vi.doMock("node:fs", async (importOriginal) => {
+			const mod = await importOriginal<typeof import("node:fs")>();
+			return {
+				...mod,
+				existsSync: () => true,
+				writeFileSync: () => {},
+				renameSync: () => {
+					const e = new Error("EPERM") as NodeJS.ErrnoException;
+					e.code = "EPERM";
+					throw e;
+				},
+			};
+		});
+		try {
+			const fresh = await import("../../server/attachment-store.js");
+			fresh.initAttachmentStore("/tmp/attachment-eperm-test");
+			const rec = fresh.saveAttachmentSync(Buffer.from("y"), "image/png", ".png");
+			expect(rec.url).toContain("/api/attachment/");
+		} finally {
+			vi.doUnmock("node:fs");
+			vi.resetModules();
+		}
 	});
 });

@@ -145,6 +145,14 @@ export function extractPatchTargetPaths(patchText: string): string[] {
 		const mUnified = line.match(/^(?:---|\+\+\+)\s+(?:[ab]\/)?([^\t\r\n]+)$/);
 		if (mUnified?.[1] && mUnified[1] !== "/dev/null") {
 			paths.push(mUnified[1].trim());
+			continue;
+		}
+		// hashline 格式段头（本仓 patch 工具实际消费的唯一格式）：[path#TAG] / [path]。
+		// 不识别的话 hashline 补丁提取出 0 个目标 → 围栏检查整体空转，patch 路径
+		// 只剩 hashline-engine 的词法 cwd 限制（无 realpath，沙盒内软链可逃逸）
+		const mHashline = rawLine.match(/^\s*\[([^\#\]]+)(?:#[0-9a-fA-F]{4})?\]\s*$/);
+		if (mHashline?.[1]?.trim()) {
+			paths.push(mHashline[1].trim());
 		}
 	}
 	return paths;
@@ -229,15 +237,95 @@ export function evaluateSandboxJail(
 			}
 		}
 
-		// 3b. 当 cwd 就是沙盒根时，拦截 `cd ..` 逃出沙盒根
-		if (normalizePathKey(cwd) === normalizePathKey(sbxPath)) {
-			if (/(?:^|[;&|\n]\s*)cd\s+\.\.(?:[\\/\s;&|]|$)/.test(cmd)) {
+		// 3b. 拦截通过 cd 跳出沙盒边界（裸 cd 跳 $HOME、cd ~、cd ..、或 cd 到沙盒外绝对路径）
+		for (const m of cmd.matchAll(/(?:^|[;&|\n]\s*)cd(?:\s+([^;&|\n]+))?(?=$|[;&|\n])/g)) {
+			const rawArg = (m[1] ?? "").trim().replace(/^["']|["']$/g, "");
+			if (
+				!rawArg ||
+				rawArg === "~" ||
+				rawArg.startsWith("~/") ||
+				rawArg.startsWith("~\\") ||
+				/^\$HOME\b|^%USERPROFILE%/i.test(rawArg)
+			) {
 				return {
-					reason: `【沙盒安全隔离拦截】当前位于沙盒根目录（${sbxPath}），禁止通过 "cd .." 跳出沙盒边界。`,
-					reasonEn: `[Sandbox Isolation Blocked] Currently at sandbox root (${sbxPath}); escaping the sandbox boundary via "cd .." is forbidden.`,
+					reason: `【沙盒安全隔离拦截】沙盒内禁止执行跳回用户主目录的 "cd ${rawArg || "~"}" 命令，请保持在沙盒目录（${sbxPath}）内操作。`,
+					reasonEn: `[Sandbox Isolation Blocked] Escaping to the user home directory via "cd ${rawArg || "~"}" is forbidden in sandbox mode; stay within "${sbxPath}".`,
+				};
+			}
+			if (rawArg !== "-" && !rawArg.startsWith("$") && !isStrictlyInsideSandbox(rawArg, cwd, sbxPath)) {
+				return {
+					reason: `【沙盒安全隔离拦截】禁止通过 "cd ${rawArg}" 跳出沙盒根目录（${sbxPath}）。`,
+					reasonEn: `[Sandbox Isolation Blocked] Escaping the sandbox root (${sbxPath}) via "cd ${rawArg}" is forbidden.`,
 				};
 			}
 		}
+
+		// 3c. 拦截重定向（> / >>）写入沙盒外路径（/dev/null 除外）
+		for (const m of cmd.matchAll(/(?:^|[^0-9>&])>>?\s*([^\s;&|>'"]+|"[^"]+"|'[^']+')/g)) {
+			const target = (m[1] ?? "").trim().replace(/^["']|["']$/g, "");
+			if (!target || target === "/dev/null" || target === "NUL" || target.startsWith("&")) continue;
+			if (!isStrictlyInsideSandbox(target, cwd, sbxPath)) {
+				return {
+					reason: `【沙盒安全隔离拦截】禁止将输出重定向写入沙盒目录（${sbxPath}）以外的路径："${target}"。`,
+					reasonEn: `[Sandbox Isolation Blocked] Redirecting output to a path outside the sandbox directory (${sbxPath}) is forbidden: "${target}".`,
+				};
+			}
+		}
+
+		// 3d. 拦截系统特权命令与全局包安装污染宿主机
+		if (
+			/(?:^|[;&|\n]\s*)(?:sudo|su|mkfs|format|fdisk|diskpart|reg\s+(?:add|delete)|schtasks|systemctl|launchctl|sc\s+(?:create|delete|stop))\b/i.test(
+				cmd,
+			) ||
+			/\b(?:npm\s+(?:i|install|add|un|uninstall)\s+(?:[^;&|\n]*\s)?(?:-g|--global)\b|pnpm\s+(?:add|remove)\s+(?:[^;&|\n]*\s)?(?:-g|--global)\b|yarn\s+global\b)/i.test(
+				cmd,
+			)
+		) {
+			return {
+				reason: `【沙盒安全隔离拦截】沙盒内禁止执行宿主机系统级管理命令或全局包安装（-g/--global），以保护宿主系统环境。`,
+				reasonEn: `[Sandbox Isolation Blocked] System administration commands and global package installations (-g/--global) are forbidden in sandbox mode to protect the host environment.`,
+			};
+		}
+
+		// 3e. 拦截文件修改/删除命令（rm/del/mv/cp/chmod/touch/mkdir/sed -i/tee 等）指向 ..、~、$HOME 或沙盒外绝对路径
+		const mutatingCmdRe =
+			/(?:^|[;&|\n]\s*)(?:rm|del|erase|rmdir|rd|mv|move|cp|copy|xcopy|robocopy|ln|mklink|chmod|chown|touch|mkdir|tee|dd|Remove-Item|Move-Item|Copy-Item|Set-Content|Add-Content|Out-File|sed\s+-[a-zA-Z]*i)\b([^;&|\n]*)/gi;
+		for (const m of cmd.matchAll(mutatingCmdRe)) {
+			const argsTail = (m[1] ?? "").trim();
+			const tokens = argsTail.match(/(?:"[^"]*"|'[^']*'|\S+)/g) ?? [];
+			for (const rawTok of tokens) {
+				const tok = rawTok.replace(/^["']|["']$/g, "");
+				if (!tok || tok.startsWith("-") || tok === "/dev/null") continue;
+				if (
+					tok === "~" ||
+					tok.startsWith("~/") ||
+					tok.startsWith("~\\") ||
+					/^\$(?:HOME|USERPROFILE)\b|^%USERPROFILE%/i.test(tok) ||
+					tok === ".." ||
+					tok.startsWith("../") ||
+					tok.startsWith("..\\") ||
+					tok.includes("/../") ||
+					tok.includes("\\..\\")
+				) {
+					if (!isStrictlyInsideSandbox(tok, cwd, sbxPath)) {
+						return {
+							reason: `【沙盒安全隔离拦截】检测到命令尝试操作沙盒外部或宿主系统路径（"${tok}"），已被硬围栏阻断。`,
+							reasonEn: `[Sandbox Isolation Blocked] Command attempted to mutate a path outside the sandbox or on the host system ("${tok}") and was blocked.`,
+						};
+					}
+				}
+				// 绝对路径（POSIX /... 或 Windows C:\...）且不在沙盒根内
+				if ((tok.startsWith("/") && !tok.startsWith("//")) || /^[a-zA-Z]:[\\/]/.test(tok)) {
+					if (!isStrictlyInsideSandbox(tok, cwd, sbxPath)) {
+						return {
+							reason: `【沙盒安全隔离拦截】检测到命令尝试修改沙盒目录（${sbxPath}）以外的系统/外部路径（"${tok}"），已被硬围栏阻断。`,
+							reasonEn: `[Sandbox Isolation Blocked] Command attempted to modify an external/system path outside the sandbox ("${tok}") and was blocked.`,
+						};
+					}
+				}
+			}
+		}
+
 		return null;
 	}
 
@@ -503,6 +591,10 @@ export class SandboxManager {
 		sourcePath?: string;
 		ephemeral?: boolean;
 	}): Promise<{ sandbox: SandboxInfo; copiedFiles: number; skippedFiles: number }> {
+		// 先同步共享注册表：每个 ClientSession/DshClientSession 各持一个管理器实例、
+		// 共享同一 registry.json——不 ensureFresh 的话并发创建会用陈旧内存覆盖写回，
+		// 丢掉其他客户端刚建的沙盒条目（getByCwd 找不到 → jail 围栏静默失效）
+		this.ensureFresh();
 		const rawSource = opts.sourcePath?.trim();
 		let resolvedSource: string | undefined;
 
@@ -522,6 +614,11 @@ export class SandboxManager {
 			}
 			if (isSameOrSubpath(this.sandboxesRoot, abs)) {
 				throw new Error(`Refusing to import a parent directory of sandboxes root: ${abs}`);
+			}
+			// 沙盒根**内部**的目录也不允许当源：会造出嵌套沙盒（源被另一沙盒的
+			// destroy/reset 抽掉、apply_to_source 把改动写进另一个沙盒）
+			if (isSameOrSubpath(abs, this.sandboxesRoot)) {
+				throw new Error(`Refusing to import a directory inside the sandboxes root: ${abs}`);
 			}
 			// 若选中的 source 本身已经是某个沙盒，而且该沙盒记录了原始 sourcePath，保留最外层真实路径或直接复制该沙盒内容
 			resolvedSource = toWirePath(abs);
@@ -561,8 +658,26 @@ export class SandboxManager {
 		}
 		await mkdir(info.path, { recursive: true });
 		const entries = await readdir(info.path);
+		// 逐条目容错：Windows 下沙盒内进程未停（npm run dev 的 node.exe 持有句柄）
+		// 会让单个条目 EBUSY/EPERM——整体抛错会留下半清空状态；能删的先删，
+		// 全部失败才抛
+		const failures: string[] = [];
 		for (const entry of entries) {
-			await rm(join(info.path, entry), { recursive: true, force: true, maxRetries: 3 });
+			try {
+				await rm(join(info.path, entry), { recursive: true, force: true, maxRetries: 3 });
+			} catch {
+				failures.push(entry);
+			}
+		}
+		if (failures.length === entries.length && entries.length > 0) {
+			throw new Error(
+				`Failed to clear sandbox contents (all ${failures.length} entries busy): ${failures.slice(0, 5).join(", ")}`,
+			);
+		}
+		if (failures.length > 0) {
+			console.warn(
+				`[sandbox] reset: ${failures.length}/${entries.length} entries could not be removed (busy): ${failures.slice(0, 5).join(", ")}`,
+			);
 		}
 		let copyStats: CopyTreeStats = { copiedFiles: 0, skippedFiles: 0 };
 		if (info.sourcePath && existsSync(info.sourcePath)) {
