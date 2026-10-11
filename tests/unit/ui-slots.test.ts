@@ -935,6 +935,7 @@ describe("面板 chrome 宿主条目（file.preview / goalbar / scm / terminal /
 		const slots = build([]);
 		expect(ids(slots["file.preview.toolbar"])).toEqual([
 			"host:fp-md",
+			"host:fp-toc",
 			"host:fp-html",
 			"host:fp-edit",
 			"host:fp-wrap",

@@ -758,6 +758,14 @@ export const BUILTIN_UI_ITEMS: BuiltinUiItem[] = [
 		order: 10,
 	},
 	{
+		id: "host:fp-toc",
+		slot: "file.preview.toolbar",
+		labelKey: "previewTocLabel",
+		icon: "list",
+		kind: "action",
+		order: 15,
+	},
+	{
 		id: "host:fp-html",
 		slot: "file.preview.toolbar",
 		labelKey: "showHtmlPreview",

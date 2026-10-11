@@ -8,6 +8,7 @@ import {
 	FiExternalLink,
 	FiEye,
 	FiLink,
+	FiList,
 	FiMaximize,
 	FiMinimize,
 	FiSave,
@@ -17,6 +18,7 @@ import {
 } from "react-icons/fi";
 import type { FileContent } from "../types";
 import type { UiSlotEntry } from "../ui-slots";
+import { assignHeadingIds, shouldShowToc, type TocHeading } from "../preview-toc";
 import { Markdown } from "./Markdown";
 import { renderMergedToolbar } from "../slot-toolbar";
 import { useT } from "../i18n";
@@ -28,6 +30,8 @@ import { formatSize } from "../format-bytes";
 
 /** Cap rendered lines so a pathological file can't freeze the modal. */
 const MAX_PREVIEW_LINES = 5000;
+/** 预览面板「标题导航」开关的 localStorage key（每个浏览器各自记忆）。 */
+const LS_PREVIEW_TOC = "pi-web-ui:preview-toc";
 
 export interface PreviewFile {
 	path: string;
@@ -298,6 +302,65 @@ export function FilePreview({
 	const isHtml = isHtmlFile(file.name);
 	const showMarkdown = isMarkdown && markdownPreview && !editing && kind === "text" && !isBinary;
 	const showHtml = isHtml && htmlPreview && !editing && kind === "text" && !isBinary;
+
+	/** 标题导航：开关记在 localStorage；条目在正文渲染完成后从 DOM 里扫出来（同一份事实源）。 */
+	const [tocOpen, setTocOpen] = useState(() => {
+		try {
+			return localStorage.getItem(LS_PREVIEW_TOC) === "1";
+		} catch {
+			return false;
+		}
+	});
+	useEffect(() => {
+		try {
+			localStorage.setItem(LS_PREVIEW_TOC, tocOpen ? "1" : "0");
+		} catch {
+			// Storage may be disabled; the current in-memory preference remains usable.
+		}
+	}, [tocOpen]);
+	const [toc, setToc] = useState<TocHeading[]>([]);
+	const [tocActive, setTocActive] = useState("");
+	/** 正文容器（`.fp-markdown-zoom`）：既用来扫标题，也是点击跳转的查询根。 */
+	const markdownRef = useRef<HTMLDivElement>(null);
+
+	// 扫标题：给正文里的 h1~h6 补稳定 id（已有 id 的不动），并生成目录条目。
+	// 依赖 loaded.text/file.path：正文一变就重扫；React 复用同一批元素时 id 也会保留。
+	useEffect(() => {
+		const root = markdownRef.current;
+		if (!root || !showMarkdown) {
+			setToc([]);
+			return;
+		}
+		const nodes = [...root.querySelectorAll<HTMLElement>("h1, h2, h3, h4, h5, h6")];
+		const heads = assignHeadingIds(
+			nodes.map((el) => ({ level: Number(el.tagName.slice(1)), label: el.textContent ?? "" })),
+		);
+		nodes.forEach((el, index) => {
+			if (!el.id) el.id = heads[index].id;
+		});
+		setToc(heads);
+	}, [showMarkdown, loaded?.text, file.path]);
+
+	// 滚动高亮：以「进入视口的标题」为准（IntersectionObserver 比逐帧读 offsetTop 便宜）。
+	useEffect(() => {
+		const root = markdownRef.current;
+		if (!root || !tocOpen || !shouldShowToc(toc)) return;
+		const nodes = toc
+			.map((head) => root.querySelector<HTMLElement>(`#${CSS.escape(head.id)}`))
+			.filter((el): el is HTMLElement => el !== null);
+		if (nodes.length === 0) return;
+		const observer = new IntersectionObserver(
+			(entries) => {
+				const first = entries
+					.filter((entry) => entry.isIntersecting)
+					.sort((a, b) => a.boundingClientRect.top - b.boundingClientRect.top)[0];
+				if (first?.target.id) setTocActive(first.target.id);
+			},
+			{ rootMargin: "0px 0px -70% 0px" },
+		);
+		for (const node of nodes) observer.observe(node);
+		return () => observer.disconnect();
+	}, [toc, tocOpen]);
 	/** 头栏宿主节点（key = file.preview.toolbar 条目 id；显隐与顺序由槽位决定，
 	 *  文件类型条件（md/html/文本/缩放）仍各自保留 —— 布局隐藏是用户意图，类型条件是内容能力）。 */
 	const fpHostNodes: Record<string, ReactNode> = {
@@ -311,6 +374,17 @@ export function FilePreview({
 					onClick={() => setMarkdownPreview((value) => !value)}
 				>
 					{markdownPreview ? <FiEye /> : <FiCode />}
+				</button>
+			) : null,
+		"host:fp-toc":
+			showMarkdown && shouldShowToc(toc) ? (
+				<button
+					type="button"
+					className={`fp-attach toc ${tocOpen ? "on" : ""}`}
+					data-tip={tocOpen ? t("previewTocHide") : t("previewTocShow")}
+					onClick={() => setTocOpen((value) => !value)}
+				>
+					<FiList />
 				</button>
 			) : null,
 		"host:fp-html":
@@ -401,6 +475,7 @@ export function FilePreview({
 		uiFilePreviewToolbar === undefined
 			? [
 					"host:fp-md",
+					"host:fp-toc",
 					"host:fp-html",
 					"host:fp-edit",
 					"host:fp-wrap",
@@ -535,8 +610,30 @@ export function FilePreview({
 
 				{!loading && showMarkdown && loaded && (
 					<div className={isOfficeFile(file.name) ? "fp-markdown msg-text fp-office" : "fp-markdown msg-text"}>
-						<div className="fp-markdown-zoom">
-							<Markdown text={loaded.text} />
+						<div className={tocOpen && shouldShowToc(toc) ? "fp-toc-layout" : undefined}>
+							{tocOpen && shouldShowToc(toc) && (
+								<nav className="fp-toc" aria-label={t("previewTocLabel")}>
+									{toc.map((head) => (
+										<a
+											key={head.id}
+											className={`l${Math.min(head.level, 6)}${head.id === tocActive ? " on" : ""}`}
+											href={`#${head.id}`}
+											title={head.label}
+											onClick={(event) => {
+												event.preventDefault();
+												markdownRef.current
+													?.querySelector<HTMLElement>(`#${CSS.escape(head.id)}`)
+													?.scrollIntoView({ behavior: "smooth", block: "start" });
+											}}
+										>
+											{head.label}
+										</a>
+									))}
+								</nav>
+							)}
+							<div className="fp-markdown-zoom" ref={markdownRef}>
+								<Markdown text={loaded.text} />
+							</div>
 						</div>
 					</div>
 				)}

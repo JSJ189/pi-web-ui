@@ -16170,6 +16170,8 @@ a.set-uninstall:hover {
 }
 .fp-attach.wrap:hover,
 .fp-attach.wrap.on,
+.fp-attach.toc:hover,
+.fp-attach.toc.on,
 .fp-attach.edit:hover,
 .fp-attach.edit.on,
 .fp-attach.zoom-in:hover,
@@ -16328,6 +16330,68 @@ a.set-uninstall:hover {
    CSS zoom (a zoom-out can leave side whitespace — acceptable). */
 .fp-markdown-zoom {
 	zoom: var(--fp-zoom, 1);
+}
+/* 预览面板的标题导航（左侧目录）：实测标题 ≥ 2 个且开关打开时才渲染（见 FilePreview.tsx）。 */
+.fp-toc-layout {
+	display: flex;
+	align-items: flex-start;
+	gap: 14px;
+}
+.fp-toc {
+	position: sticky;
+	top: 0;
+	flex: 0 0 auto;
+	width: 180px;
+	max-height: 100%;
+	overflow: auto;
+	padding-right: 6px;
+	border-right: 1px solid var(--border-soft);
+	font-size: 12.5px;
+	line-height: 1.6;
+	overscroll-behavior: contain;
+}
+.fp-toc a {
+	display: block;
+	padding: 2px 6px;
+	border-left: 2px solid transparent;
+	border-radius: 4px;
+	color: var(--text-dim);
+	text-decoration: none;
+	white-space: nowrap;
+	overflow: hidden;
+	text-overflow: ellipsis;
+}
+.fp-toc a:hover {
+	background: var(--bg-elev);
+	color: var(--text);
+}
+.fp-toc a.on {
+	background: var(--bg-elev);
+	border-left-color: var(--accent);
+	color: var(--accent);
+}
+.fp-toc a.l1 {
+	font-weight: 600;
+}
+.fp-toc a.l2 {
+	padding-left: 14px;
+}
+.fp-toc a.l3 {
+	padding-left: 26px;
+}
+.fp-toc a.l4 {
+	padding-left: 38px;
+}
+.fp-toc a.l5,
+.fp-toc a.l6 {
+	padding-left: 50px;
+	font-size: 12px;
+}
+/* 窄屏（面板本身可能只有几百 px）不抢正文宽度。 */
+@media (max-width: 900px) {
+	.fp-toc {
+		display: none;
+	}
 }
 .fp-markdown-zoom > .md {
 	width: 100%;
