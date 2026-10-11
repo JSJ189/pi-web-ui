@@ -281,3 +281,259 @@ export function toggleMcpServer(opts: {
 
 	return { ok: false, error: `服务器 ${name} 不存在` };
 }
+
+/** 从 npm 包名、URL 或命令自动推导合法的 MCP 服务器名称 */
+export function deriveMcpServerName(raw: string): string {
+	let s = String(raw ?? "").trim();
+	if (!s) return "";
+	// 如果是 URL，提取 hostname
+	if (/^https?:\/\//i.test(s)) {
+		try {
+			const u = new URL(s);
+			s = u.hostname;
+		} catch {
+			/* ignore */
+		}
+	} else {
+		// 去掉 npm 版本后缀（如 @scope/pkg@1.2.3 或 pkg@latest）
+		const atIdx = s.lastIndexOf("@");
+		if (atIdx > 0) {
+			s = s.slice(0, atIdx);
+		}
+		// 若为 @scope/pkg，取斜杠后半段；若后半段只是 "mcp" 或 "server"（如 @playwright/mcp），取 scope
+		if (s.startsWith("@") && s.includes("/")) {
+			const [scopePart, pkgPart] = s.slice(1).split("/", 2);
+			if (pkgPart && !/^(mcp|server|mcp-server)$/i.test(pkgPart)) {
+				s = pkgPart;
+			} else if (scopePart) {
+				s = scopePart;
+			}
+		}
+		// 剥离常见前后缀（保留非空主体）
+		const stripped = s.replace(/^(mcp-server-|server-|mcp-)/i, "").replace(/(-mcp-server|-server|-mcp)$/i, "");
+		if (stripped.trim()) {
+			s = stripped.trim();
+		}
+	}
+	return s
+		.replace(/[^a-zA-Z0-9_-]+/g, "-")
+		.replace(/^-+|-+$/g, "")
+		.slice(0, 64);
+}
+
+/** 检查某个 MCP 是否已安装的返回结构 */
+export interface McpCheckResult {
+	/** 是否已在全局或项目中配置了匹配的 MCP 服务器 */
+	installed: boolean;
+	/** 匹配的主服务器当前是否处于 running 状态 */
+	running: boolean;
+	/** 匹配的主服务器是否已启用 */
+	enabled: boolean;
+	/** 最佳匹配的服务器详情（项目级优先于全局级） */
+	server: UiMcpServer | null;
+	/** 所有匹配的服务器列表 */
+	matches: UiMcpServer[];
+	/** 匹配服务器当前已握手的工具列表 */
+	tools: UiMcpToolInfo[];
+}
+
+/**
+ * 检查某个 MCP 服务器是否已安装（支持按服务器名称、npm 包名、命令或 URL 匹配）。
+ */
+export function checkMcpServer(opts: {
+	agentDir?: string;
+	cwd?: string;
+	dataDir?: string;
+	bridge?: McpBridge;
+	query: string;
+}): McpCheckResult {
+	const q = String(opts.query ?? "").trim();
+	if (!q) {
+		return { installed: false, running: false, enabled: false, server: null, matches: [], tools: [] };
+	}
+	const qLower = q.toLowerCase();
+	const derived = deriveMcpServerName(q).toLowerCase();
+	const { servers } = listAllMcpServers(opts);
+
+	// 按匹配度打分：精确名 > 忽略大小写名 > 推导短名相等 > package/args/url/command 包含
+	const scored: Array<{ server: UiMcpServer; score: number }> = [];
+	for (const srv of servers) {
+		const nameLower = srv.name.toLowerCase();
+		const cmdLower = (srv.command ?? "").toLowerCase();
+		const argsLower = (srv.args ?? []).map((a) => String(a).toLowerCase());
+		const urlLower = (srv.url ?? "").toLowerCase();
+		let score = 0;
+		if (srv.name === q) {
+			score = 100;
+		} else if (nameLower === qLower) {
+			score = 90;
+		} else if (derived && nameLower === derived) {
+			score = 80;
+		} else if (argsLower.some((a) => a === qLower || (derived && deriveMcpServerName(a).toLowerCase() === derived))) {
+			score = 75;
+		} else if (
+			nameLower.includes(qLower) ||
+			cmdLower.includes(qLower) ||
+			urlLower.includes(qLower) ||
+			argsLower.some((a) => a.includes(qLower))
+		) {
+			score = 50;
+		}
+		if (score > 0) {
+			// 同分时项目级优先、running 优先
+			if (srv.scope === "project") score += 2;
+			if (srv.status === "running") score += 1;
+			scored.push({ server: srv, score });
+		}
+	}
+
+	scored.sort((a, b) => b.score - a.score);
+	const matches = scored.map((x) => x.server);
+	const primary = matches[0] ?? null;
+	return {
+		installed: matches.length > 0,
+		running: primary ? primary.status === "running" : false,
+		enabled: primary ? primary.enabled !== false : false,
+		server: primary,
+		matches,
+		tools: primary?.tools ?? [],
+	};
+}
+
+/** 便捷安装 MCP 服务器的规格（支持 package 快捷方式、stdio command 或 http url） */
+export interface McpInstallSpec {
+	/** 服务器名称（省略时从 package / url / command 自动推导） */
+	name?: string;
+	/** npm 包名快捷安装（如 "@modelcontextprotocol/server-filesystem"），自动转为 npx -y <package> ...args */
+	package?: string;
+	/** 启动命令（stdio 模式，如 "npx" / "uvx" / "node"） */
+	command?: string;
+	/** 命令参数（若同时提供 package，则追加在 npx -y <package> 之后） */
+	args?: string[];
+	/** 工作目录（stdio 模式） */
+	cwd?: string;
+	/** 环境变量 */
+	env?: Record<string, string>;
+	/** 远端 URL（http / streamable-http 模式） */
+	url?: string;
+	/** 远端 HTTP 请求头 */
+	headers?: Record<string, string>;
+	/** 传输类型 */
+	type?: "stdio" | "http" | "streamable-http";
+	/** 超时毫秒数 */
+	timeout?: number;
+	/** 描述 */
+	description?: string;
+	/** 写入作用域：默认 "project"（.pi/mcp.json），可选 "global" */
+	scope?: McpScope;
+	/** 是否启用（默认 true） */
+	enabled?: boolean;
+}
+
+export interface McpInstallResult {
+	ok: boolean;
+	name?: string;
+	scope?: McpScope;
+	status?: "running" | "stopped" | "error";
+	tools?: UiMcpToolInfo[];
+	server?: UiMcpServer;
+	error?: string;
+}
+
+/**
+ * 便捷安装/配置一个 MCP 服务器并立即触发 McpBridge 热加载。
+ */
+export async function installMcpServer(opts: {
+	agentDir?: string;
+	cwd?: string;
+	dataDir?: string;
+	bridge?: McpBridge;
+	spec: McpInstallSpec;
+}): Promise<McpInstallResult> {
+	const spec = opts.spec ?? {};
+	const pkg = typeof spec.package === "string" ? spec.package.trim() : "";
+	const rawCmd = typeof spec.command === "string" ? spec.command.trim() : "";
+	const rawUrl = typeof spec.url === "string" ? spec.url.trim() : "";
+	const extraArgs = Array.isArray(spec.args) ? spec.args.map(String) : [];
+
+	let command = rawCmd || undefined;
+	let args = extraArgs.length > 0 ? extraArgs : undefined;
+	if (pkg) {
+		command = command || "npx";
+		args = command === "npx" ? ["-y", pkg, ...extraArgs] : [pkg, ...extraArgs];
+	}
+
+	if (!command && !rawUrl) {
+		return {
+			ok: false,
+			error: "安装 MCP 服务器需提供 package（npm 包名）、command（启动命令）或 url（HTTP 地址）之一",
+		};
+	}
+
+	const rawName =
+		(typeof spec.name === "string" && spec.name.trim()) ||
+		deriveMcpServerName(pkg || rawUrl || extraArgs[0] || command || "");
+	if (!rawName || !isValidMcpServerName(rawName)) {
+		return {
+			ok: false,
+			error: "无法推导出合法的服务器名称，请显式指定 name（仅允许英文字母、数字、下划线及中划线）",
+		};
+	}
+
+	const scope: McpScope = spec.scope === "global" ? "global" : "project";
+	const uiServer: UiMcpServer = {
+		name: rawName,
+		scope,
+		command,
+		args,
+		cwd: typeof spec.cwd === "string" && spec.cwd.trim() ? spec.cwd.trim() : undefined,
+		env: spec.env && typeof spec.env === "object" ? spec.env : undefined,
+		url: rawUrl || undefined,
+		headers: spec.headers && typeof spec.headers === "object" ? spec.headers : undefined,
+		type: spec.type ?? (rawUrl ? "streamable-http" : "stdio"),
+		timeout: typeof spec.timeout === "number" ? spec.timeout : undefined,
+		enabled: spec.enabled !== false,
+		description: typeof spec.description === "string" && spec.description.trim() ? spec.description.trim() : undefined,
+		status: "stopped",
+		tools: [],
+	};
+
+	const saved = saveMcpServer({
+		agentDir: opts.agentDir,
+		cwd: opts.cwd,
+		dataDir: opts.dataDir,
+		server: uiServer,
+	});
+	if (!saved.ok) {
+		return { ok: false, error: saved.error };
+	}
+
+	if (opts.bridge) {
+		try {
+			await opts.bridge.reload();
+		} catch {
+			/* bridge reload 内部已吞异常，兜底防御 */
+		}
+	}
+
+	const after = listAllMcpServers({
+		agentDir: opts.agentDir,
+		cwd: opts.cwd,
+		dataDir: opts.dataDir,
+		bridge: opts.bridge,
+	});
+	const updated =
+		after.servers.find((s) => s.name === rawName && s.scope === scope) ??
+		after.servers.find((s) => s.name === rawName) ??
+		uiServer;
+
+	return {
+		ok: true,
+		name: rawName,
+		scope,
+		status: updated.status,
+		tools: updated.tools,
+		server: updated,
+		...(updated.error ? { error: updated.error } : {}),
+	};
+}

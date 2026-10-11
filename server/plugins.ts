@@ -82,6 +82,16 @@ import {
 	type ProjectCreateSpec,
 	type ProjectCreateResult,
 } from "./plugin-project.js";
+import {
+	listAllMcpServers,
+	checkMcpServer,
+	installMcpServer,
+	type McpCheckResult,
+	type McpInstallSpec,
+	type McpInstallResult,
+} from "./mcp-manager.js";
+import type { McpBridge } from "./mcp-bridge.js";
+import type { UiMcpServer } from "./protocol.js";
 import type { Request, Response } from "express";
 import { createHash } from "node:crypto";
 import { execFile } from "node:child_process";
@@ -618,6 +628,20 @@ export interface PluginHost {
 	/** 插件可见的模型列表（经 modelLister 注入点；无注入回 []）。 */
 	models: {
 		list(): PluginModelInfo[] | Promise<PluginModelInfo[]>;
+	};
+	/** MCP 服务器检测与便捷安装接口：
+	 *  - `list()`：列出全局与项目级已配置的全部 MCP 服务器及运行态/工具列表（只读免权限）；
+	 *  - `check(query)`：按服务器名、npm 包名、启动命令或 URL 检查某个 MCP 是否已安装/运行中（只读免权限）；
+	 *  - `install(spec)`：直接写入配置（支持 `package` 快捷方式转为 `npx -y <package>`）并触发热加载（需 `"tools"` 权限）；
+	 *  - `promptInstall(target, opts?)`：向当前或指定对话发送结构化指令，让 AI 协助检查并安装配置该 MCP（需 `"chat"` 或 `"tools"` 权限）。 */
+	mcp: {
+		list(): Promise<UiMcpServer[]>;
+		check(query: string): Promise<McpCheckResult>;
+		install(spec: McpInstallSpec): Promise<McpInstallResult>;
+		promptInstall(
+			target: string | McpInstallSpec,
+			opts?: { conversationId?: string; scope?: "global" | "project" },
+		): Promise<{ ok: boolean; conversationId?: string; error?: string }>;
 	};
 	/** 订阅会话统计（PluginManager.emitStats 扇出，异常隔离）；返回注销函数。 */
 	onStats(handler: (s: PluginStats) => void): () => void;
@@ -2254,6 +2278,8 @@ export class PluginManager {
 	runAborter: ((conversationId: string) => Promise<{ ok: boolean; error?: string }>) | undefined = undefined;
 	/** 由 index.ts 接入 agent-service：模型列表（host.models.list 的底层）。无注入回 []。 */
 	modelLister: (() => PluginModelInfo[] | Promise<PluginModelInfo[]>) | undefined = undefined;
+	/** 由 index.ts 接入 McpBridge：供 host.mcp 读取实时运行状态与热重载。 */
+	mcpBridge: McpBridge | undefined = undefined;
 	/** 插件能力动态授权表（host.requestPermission 的底层，见 server/plugin-permissions.ts）。 */
 	readonly permGrants: PluginPermissionStore;
 	/** 由 index.ts 注入：向浏览器请求能力授权的用户确认（{ok, remember}）。
@@ -4419,6 +4445,106 @@ export class PluginManager {
 						console.error(`[plugin:${info.id}] modelLister failed:`, err);
 						return [];
 					}
+				},
+			},
+			mcp: {
+				list: async () => {
+					try {
+						const res = listAllMcpServers({
+							agentDir: self.mcpBridge?.getAgentDir(),
+							cwd: self.cwdValue,
+							dataDir: self.dataDir,
+							bridge: self.mcpBridge,
+						});
+						return res.servers;
+					} catch (err) {
+						console.error(`[plugin:${info.id}] mcp.list failed:`, err);
+						return [];
+					}
+				},
+				check: async (query) => {
+					try {
+						return checkMcpServer({
+							agentDir: self.mcpBridge?.getAgentDir(),
+							cwd: self.cwdValue,
+							dataDir: self.dataDir,
+							bridge: self.mcpBridge,
+							query: String(query ?? ""),
+						});
+					} catch (err) {
+						console.error(`[plugin:${info.id}] mcp.check failed:`, err);
+						return { installed: false, running: false, enabled: false, server: null, matches: [], tools: [] };
+					}
+				},
+				install: async (spec) => {
+					if (!can("tools")) {
+						return { ok: false, error: '插件未声明能力 "tools"（manifest.permissions）——请求被拒' };
+					}
+					try {
+						const res = await installMcpServer({
+							agentDir: self.mcpBridge?.getAgentDir(),
+							cwd: self.cwdValue,
+							dataDir: self.dataDir,
+							bridge: self.mcpBridge,
+							spec: spec ?? {},
+						});
+						if (res.ok) {
+							try {
+								self.onAgentToolsChanged?.();
+							} catch {
+								/* ignore */
+							}
+						}
+						return res;
+					} catch (err) {
+						return { ok: false, error: (err as Error).message };
+					}
+				},
+				promptInstall: async (target, opts) => {
+					if (!can("chat") && !can("tools")) {
+						return { ok: false, error: '插件未声明能力 "chat" 或 "tools"（manifest.permissions）——请求被拒' };
+					}
+					const scope = opts?.scope === "global" ? "global" : "project";
+					let desc = "";
+					if (typeof target === "string") {
+						desc = target.trim();
+					} else if (target && typeof target === "object") {
+						const parts: string[] = [];
+						if (target.name) parts.push(`name="${target.name}"`);
+						if (target.package) parts.push(`package="${target.package}"`);
+						if (target.command) parts.push(`command="${target.command}"`);
+						if (target.args?.length) parts.push(`args=${JSON.stringify(target.args)}`);
+						if (target.url) parts.push(`url="${target.url}"`);
+						desc = parts.join(", ");
+					}
+					if (!desc) {
+						return { ok: false, error: "mcp.promptInstall: target 不能为空" };
+					}
+					const cfgFile = scope === "global" ? "~/.pi/agent/mcp.json" : ".pi/mcp.json";
+					const promptText =
+						`请检查并安装以下 MCP 服务器（作用域：${scope}，配置文件：\`${cfgFile}\`）：${desc}。\n` +
+						`- 若当前会话已启用 \`mcp_manage\` 工具，请先调用 \`mcp_manage({ action: "check", query: ... })\` 确认是否已安装，未安装则调用 \`mcp_manage({ action: "install", scope: "${scope}", ... })\` 完成安装并验证状态；\n` +
+						`- 若未启用 \`mcp_manage\` 工具，请用 \`read\` 检查 \`${cfgFile}\`，并在 \`mcpServers\` 字段下写入对应的服务器配置（例如 \`{ "command": "npx", "args": ["-y", "<package>"] }\`），保存后系统会自动热加载该 MCP 服务器。`;
+					const targetConvId =
+						(typeof opts?.conversationId === "string" && opts.conversationId.trim()) ||
+						self.conversationProvider?.()?.conversationId;
+					if (targetConvId && self.conversationWriter) {
+						try {
+							const r = await self.conversationWriter(targetConvId, promptText);
+							return { ok: r.ok, conversationId: targetConvId, ...(r.error ? { error: r.error } : {}) };
+						} catch (err) {
+							return { ok: false, error: (err as Error).message };
+						}
+					}
+					if (self.chatProvider) {
+						try {
+							const r = await self.chatProvider(info.id, { text: promptText });
+							return { ok: true, conversationId: r.conversationId };
+						} catch (err) {
+							return { ok: false, error: (err as Error).message };
+						}
+					}
+					return { ok: false, error: "无可用对话通道（conversationWriter / chatProvider 未接入）" };
 				},
 			},
 			onStats: (h) => {

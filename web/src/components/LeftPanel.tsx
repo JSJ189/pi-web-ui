@@ -8,6 +8,7 @@ import {
 	FiEdit2,
 	FiFolder,
 	FiFolderPlus,
+	FiLoader,
 	FiMessageSquare,
 	FiMoreVertical,
 	FiPlus,
@@ -33,7 +34,12 @@ import { type UiSlotEntry } from "../ui-slots";
 import { contextMenuItems, openContextMenu, type ContextMenuRequest } from "../context-menu-state";
 import { composeToComposer, focusComposer } from "../composer-bridge";
 import { buildSessionDeepLink, extractSessionIdFromPath } from "../session-url";
-import { clearCachedProject, clearCachedSession, clearLastCwdIfMatches } from "../use-chat";
+import {
+	clearCachedProject,
+	clearCachedSession,
+	clearLastCwdIfMatches,
+	type WorkspaceTransitionState,
+} from "../use-chat";
 
 /** Props are deliberately NARROW (no whole-ChatState object): every field is
  *  stable while tokens stream in, so the shallow-compared memo() below skips
@@ -57,6 +63,7 @@ interface LeftPanelProps {
 			| { type: "switch_conversation"; id: string }
 			| { type: "set_cwd"; path: string }
 			| { type: "remove_project"; path: string }
+			| { type: "destroy_sandbox"; path: string }
 			| { type: "delete_session"; path: string }
 			| { type: "rename_session"; path: string; name: string }
 			| { type: "rename_conversation"; id: string; name: string }
@@ -115,6 +122,10 @@ interface LeftPanelProps {
 	presetNames?: Record<string, string>;
 	/** 路径补全（用于项目管理面板的目录浏览与补全）。 */
 	pathCompletions?: { name: string; path: string; type: "dir" | "file" }[];
+	/** 工作区/历史会话/对话的流式切换状态（用于目标行实时转圈与百分比展示）。 */
+	transition?: WorkspaceTransitionState | null;
+	/** 打开启动沙盒项目弹窗。 */
+	onOpenSandboxModal?: () => void;
 }
 
 function formatModified(ts: number): string {
@@ -272,6 +283,8 @@ export const LeftPanel = memo(function LeftPanel({
 	uiLeftHistory,
 	onUiAction,
 	presetNames,
+	transition,
+	onOpenSandboxModal,
 }: LeftPanelProps) {
 	const t = useT();
 	const currentFile = sessionFile;
@@ -292,6 +305,16 @@ export const LeftPanel = memo(function LeftPanel({
 	const [collapseSessions, toggleSessions] = useCollapsed(LS_COLLAPSE_SESSIONS, false);
 	const [pluginCollapsed, togglePluginCollapsed] = usePluginSectionCollapse();
 	const [collapsedSubagents, toggleSubagents] = useCollapsedSubagents();
+	const [visibleSessionCount, setVisibleSessionCount] = useState(60);
+	useEffect(() => {
+		setVisibleSessionCount(60);
+	}, [currentCwd]);
+	const visibleSessions = useMemo(() => {
+		if (sessions.length <= visibleSessionCount) return sessions;
+		const activeIdx = currentFile ? sessions.findIndex((s) => s.path === currentFile) : -1;
+		const cap = activeIdx >= visibleSessionCount ? activeIdx + 10 : visibleSessionCount;
+		return sessions.slice(0, cap);
+	}, [sessions, visibleSessionCount, currentFile]);
 	/** 会话右键菜单（`contextmenu.session` 槽位）：见下面的 showSessionMenu / openSessionMenu /
 	 *  dispatchHostSessionEntry。宿主自己的两条（关闭已结束子代理 / 强行关闭对话）也在这个槽位里，
 	 *  与插件贡献的条目同排 —— 插件条目由 App 分发给插件，host 条目由本组件分派。 */
@@ -982,21 +1005,44 @@ export const LeftPanel = memo(function LeftPanel({
 						collapseProjects,
 						toggleProjects,
 						projects.length,
-						<button
-							type="button"
-							className="lp-section-action lp-project-action"
-							title={t("manageProjects")}
-							aria-label={t("manageProjects")}
-							onClick={() => setProjectPickerOpen(true)}
-						>
-							<FiFolderPlus />
-						</button>,
+						<>
+							{onOpenSandboxModal && (
+								<button
+									type="button"
+									className="lp-section-action lp-project-action lp-sandbox-action"
+									title={t("sandboxNewBtn")}
+									aria-label={t("sandboxNewBtn")}
+									onClick={() => onOpenSandboxModal()}
+								>
+									<span aria-hidden style={{ fontSize: "13px", lineHeight: 1 }}>
+										🧪
+									</span>
+								</button>
+							)}
+							<button
+								type="button"
+								className="lp-section-action lp-project-action"
+								title={t("manageProjects")}
+								aria-label={t("manageProjects")}
+								onClick={() => setProjectPickerOpen(true)}
+							>
+								<FiFolderPlus />
+							</button>
+						</>,
 						renderInlineEntries(uiProjectsActions, "lp-slot-section"),
 					)}
 					{projects.length > 0 && !collapseProjects && (
 						<div className="lp-section-body projects-scroll">
 							{projects.map((p) => {
+								const norm = (v?: string) =>
+									(v ?? "")
+										.trim()
+										.replace(/[\\/]+$/, "")
+										.toLowerCase();
 								const active = currentCwd === p.path;
+								const switching = transition?.kind === "cwd" && norm(transition.target) === norm(p.path);
+								const sbx = p.sandbox;
+								const dispName = sbx ? sbx.name : projectName(p.path);
 								return (
 									<div
 										className="lp-row"
@@ -1006,28 +1052,59 @@ export const LeftPanel = memo(function LeftPanel({
 									>
 										<button
 											type="button"
-											className={`project-item ${active ? "active" : ""}`}
-											title={p.path}
+											className={`project-item ${active ? "active" : ""} ${switching ? "switching" : ""}`}
+											title={
+												sbx?.sourcePath
+													? `${dispName}\n${t("sandboxSourceLabel")}: ${sbx.sourcePath}\n${p.path}`
+													: p.path
+											}
+											disabled={switching}
 											onClick={() => {
-												if (!active) panelSend({ type: "set_cwd", path: p.path });
+												if (!active && !switching) panelSend({ type: "set_cwd", path: p.path });
 											}}
 										>
-											<FiFolder className="project-icon" />
+											{switching ? (
+												<FiLoader className="project-icon spin" />
+											) : sbx ? (
+												<span className="project-icon sandbox-icon" aria-hidden>
+													🧪
+												</span>
+											) : (
+												<FiFolder className="project-icon" />
+											)}
 											<span className="project-info">
-												<span className="project-name">{projectName(p.path)}</span>
-												<span className="project-path">{p.path}</span>
+												<span className="project-name">
+													{dispName}
+													{sbx && (
+														<span className={`lp-sandbox-badge ${sbx.ephemeral ? "ephemeral" : "permanent"}`}>
+															{sbx.ephemeral ? t("sandboxBadgeEphemeral") : t("sandboxBadgePermanent")}
+														</span>
+													)}
+												</span>
+												<span className="project-path">
+													{sbx?.sourcePath ? `← ${projectName(sbx.sourcePath)} · ${p.path}` : p.path}
+												</span>
 											</span>
-											<span className="project-time">{formatModified(p.lastUsed)}</span>
+											<span className={`project-time ${switching ? "switching-pct" : ""}`}>
+												{switching ? `${transition.progress}%` : formatModified(p.lastUsed)}
+											</span>
 										</button>
-										{delButton(`proj:${p.path}`, t("deleteProject"), t("deleteProjectConfirm"), () => {
-											clearLastCwdIfMatches(p.path);
-											clearCachedProject(p.path);
-											panelSend({ type: "remove_project", path: p.path });
-										})}
+										{delButton(
+											`proj:${p.path}`,
+											sbx ? t("sandboxActionDestroyTip") : t("deleteProject"),
+											sbx ? t("sandboxActionDestroy") : t("deleteProjectConfirm"),
+											() => {
+												clearLastCwdIfMatches(p.path);
+												clearCachedProject(p.path);
+												panelSend(
+													sbx ? { type: "destroy_sandbox", path: p.path } : { type: "remove_project", path: p.path },
+												);
+											},
+										)}
 										{renderInlineEntries(uiLeftProject, "lp-slot-project", {
 											id: p.path,
 											kind: "project",
-											label: projectName(p.path),
+											label: dispName,
 										})}
 									</div>
 								);
@@ -1453,10 +1530,25 @@ export const LeftPanel = memo(function LeftPanel({
 						renderInlineEntries(uiHistoryActions, "lp-slot-section"),
 					)}
 					{!collapseSessions && (
-						<div className="lp-section-body sessions-scroll">
+						<div
+							className="lp-section-body sessions-scroll"
+							onScroll={(e) => {
+								if (visibleSessions.length >= sessions.length) return;
+								const el = e.currentTarget;
+								if (el.scrollHeight - el.scrollTop - el.clientHeight < 180) {
+									setVisibleSessionCount((c) => Math.min(sessions.length, c + 60));
+								}
+							}}
+						>
 							{sessions.length === 0 && <div className="panel-empty">{t("noHistory")}</div>}
-							{sessions.map((s) => {
+							{visibleSessions.map((s) => {
+								const norm = (v?: string) =>
+									(v ?? "")
+										.trim()
+										.replace(/[\\/]+$/, "")
+										.toLowerCase();
 								const active = currentFile === s.path;
+								const switching = transition?.kind === "session" && norm(transition.target) === norm(s.path);
 								return (
 									<div
 										className="lp-row"
@@ -1466,14 +1558,19 @@ export const LeftPanel = memo(function LeftPanel({
 									>
 										<button
 											type="button"
-											className={`session-item ${active ? "active" : ""}`}
+											className={`session-item ${active ? "active" : ""} ${switching ? "switching" : ""}`}
 											title={s.path}
+											disabled={switching}
 											onClick={() => {
-												if (renaming) return;
+												if (renaming || switching) return;
 												if (!active) panelSend({ type: "switch_session", path: s.path });
 											}}
 										>
-											<FiMessageSquare className="session-icon" />
+											{switching ? (
+												<FiLoader className="session-icon spin" />
+											) : (
+												<FiMessageSquare className="session-icon" />
+											)}
 											<span className="session-info">
 												{renaming === s.path ? (
 													<input
@@ -1516,7 +1613,9 @@ export const LeftPanel = memo(function LeftPanel({
 													</span>
 												)}
 											</span>
-											<span className="session-time">{formatModified(s.modified)}</span>
+											<span className={`session-time ${switching ? "switching-pct" : ""}`}>
+												{switching ? `${transition.progress}%` : formatModified(s.modified)}
+											</span>
 										</button>
 										<button
 											type="button"

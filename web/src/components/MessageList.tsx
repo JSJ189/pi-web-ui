@@ -380,10 +380,10 @@ export function MessageList({
 		});
 	}, [sweep]);
 
-	// 初始挂载：首帧绘制前就把远端内容换成占位（大会话 attach 不再全量布局绘制）
+	// 初始挂载与切换会话/消息集更新：首帧绘制前就把远端内容换成占位（大会话 attach 不再全量布局绘制）
 	useLayoutEffect(() => {
 		sweep();
-	}, [sweep]);
+	}, [sweep, state.conversationId, state.sessionFile, state.messages.length]);
 
 	// 搜索关闭瞬间重新收起远端内容（打开期间强制全渲染以兼容 DOM 高亮/Range 收集）
 	const prevSearchRef = useRef(searchOpen);

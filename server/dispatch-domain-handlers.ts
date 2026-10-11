@@ -60,6 +60,31 @@ export function handleFileMessage(msg: ClientMessage, cs: DispatchSession): bool
 		case "set_workspace_roots":
 			void cs.setWorkspaceRoots(msg.roots);
 			return true;
+		case "create_sandbox":
+			void cs.createSandbox?.({
+				name: msg.name,
+				sourcePath: msg.sourcePath,
+				ephemeral: msg.ephemeral,
+			});
+			return true;
+		case "reset_sandbox":
+			void cs.resetSandbox?.(msg.path);
+			return true;
+		case "persist_sandbox":
+			void cs.persistSandbox?.(msg.path);
+			return true;
+		case "promote_sandbox":
+			void cs.promoteSandbox?.(msg.targetPath, msg.path, msg.switchToTarget);
+			return true;
+		case "diff_sandbox":
+			void cs.diffSandbox?.(msg.path);
+			return true;
+		case "apply_sandbox_to_source":
+			void cs.applySandboxToSource?.(msg.path);
+			return true;
+		case "destroy_sandbox":
+			void cs.destroySandbox?.(msg.path);
+			return true;
 		default:
 			return false;
 	}

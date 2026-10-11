@@ -11,6 +11,8 @@ import {
 	COMPACT_CONTEXT_TOOL_NAME,
 	CONVERSATION_READ_TOOL_NAME,
 	LSP_TOOL_NAME,
+	MCP_MANAGE_TOOL_NAME,
+	SANDBOX_TOOL_NAME,
 	PATCH_TOOL_NAME,
 	PLAN_UPDATE_TOOL_NAME,
 	PRESENT_FILES_TOOL_NAME,
@@ -52,8 +54,8 @@ function fakeSet(initial: string[] = []) {
 }
 
 describe("catalog", () => {
-	it("共 25 个可开关工具（终端 7＋子代理 1＋其他 17）", () => {
-		expect(AGENT_TOOL_CATALOG).toHaveLength(25);
+	it("共 27 个可开关工具（终端 7＋子代理 1＋其他 19）", () => {
+		expect(AGENT_TOOL_CATALOG).toHaveLength(27);
 		expect(TERMINAL_TOOL_NAMES).toHaveLength(7);
 		expect(SUBAGENT_TOOL_NAMES).toHaveLength(1);
 	});
@@ -66,7 +68,9 @@ describe("catalog", () => {
 		expect(off.has(LSP_TOOL_NAME)).toBe(true);
 		expect(off.has(CODEMODE_TOOL_NAME)).toBe(true);
 		expect(off.has(TOOL_SEARCH_TOOL_NAME)).toBe(true);
+		expect(off.has(MCP_MANAGE_TOOL_NAME)).toBe(true);
 		expect(off.has(PATCH_TOOL_NAME)).toBe(false);
+		expect(off.has(SANDBOX_TOOL_NAME)).toBe(false);
 		for (const n of SUBAGENT_TOOL_NAMES) expect(off.has(n)).toBe(false);
 		expect(off.has("delegate_task")).toBe(false);
 		expect(off.has(ASK_USER_QUESTION_TOOL_NAME)).toBe(false);

@@ -15,6 +15,7 @@ import { RightPanel } from "./components/RightPanel";
 import { MessageList } from "./components/MessageList";
 import { ChatInput } from "./components/ChatInput";
 import { GoalBar } from "./components/GoalBar";
+import { SandboxModal } from "./components/SandboxModal";
 import { FiRefreshCw } from "react-icons/fi";
 
 import { FooterBar } from "./components/FooterBar";
@@ -100,6 +101,7 @@ import { registerFilePreviewHost } from "./file-preview-bridge";
 import { projectNameFromCwd, useProjectTitle } from "./title-settings";
 import { notify } from "./notify";
 import { diffStreamingCues } from "./streaming-cues";
+import { getNoticeDurationMs } from "./notice-policy";
 import { useTheme } from "./theme";
 import { useWallpaperEffect } from "./wallpaper";
 
@@ -133,10 +135,9 @@ export interface PendingAttachment {
 	key?: string;
 }
 
-/** A single notice toast. Auto-dismisses after a level-dependent delay, but
- *  hovering PAUSES the timer (stays visible as long as the pointer is over it),
- *  resuming when the pointer leaves. Clicking the toast body does NOT hide it —
- *  only the × button dismisses (and the auto timer). */
+/** A single notice toast. Auto-dismisses after a level-dependent delay (info 2.4s /
+ *  warning 4.2s / error 6.5s); hovering pauses the timer, and clicking the toast
+ *  body (when not selecting text) or the × button dismisses it immediately. */
 function NoticeToast({ notice, onDismiss }: { notice: Notice; onDismiss: (id: number) => void }) {
 	const t = useT();
 	const { locale } = useI18n();
@@ -144,8 +145,8 @@ function NoticeToast({ notice, onDismiss }: { notice: Notice; onDismiss: (id: nu
 	const [paused, setPaused] = useState(false);
 	useEffect(() => {
 		if (paused) return;
-		const t = setTimeout(() => onDismiss(notice.id), notice.level === "error" ? 12000 : 7000);
-		return () => clearTimeout(t);
+		const timer = setTimeout(() => onDismiss(notice.id), getNoticeDurationMs(notice.level));
+		return () => clearTimeout(timer);
 	}, [paused, notice.id, notice.level, onDismiss]);
 	const Icon = notice.level === "error" ? FiAlertCircle : notice.level === "warning" ? FiAlertTriangle : FiInfo;
 	return (
@@ -154,10 +155,22 @@ function NoticeToast({ notice, onDismiss }: { notice: Notice; onDismiss: (id: nu
 			role="status"
 			onMouseEnter={() => setPaused(true)}
 			onMouseLeave={() => setPaused(false)}
+			onClick={() => {
+				if (window.getSelection?.()?.toString()) return;
+				onDismiss(notice.id);
+			}}
 		>
 			<Icon className="notice-icon" />
 			<span className="notice-text">{text}</span>
-			<button type="button" className="notice-close" title={t("close")} onClick={() => onDismiss(notice.id)}>
+			<button
+				type="button"
+				className="notice-close"
+				title={t("close")}
+				onClick={(e) => {
+					e.stopPropagation();
+					onDismiss(notice.id);
+				}}
+			>
 				<FiX />
 			</button>
 		</div>
@@ -769,6 +782,7 @@ export function App() {
 	// Settings panel (system prompt / skills / extensions / presets).
 	const [settingsOpen, setSettingsOpen] = useState(false);
 	const [settingsInitialSection, setSettingsInitialSection] = useState<"plugins" | undefined>();
+	const [sandboxModalMode, setSandboxModalMode] = useState<"create" | "promote" | "apply" | null>(null);
 	// 插件请求目录授权时的确认（host.openSession，issue #146）——非模态 inline 面板。
 	const [pluginPathConfirm, setPluginPathConfirm] = useState<{ path: string; resolve: (ok: boolean) => void } | null>(
 		null,
@@ -1866,10 +1880,37 @@ export function App() {
 								onPluginRunningAction={onPluginRunningAction}
 								onUiAction={onUiAction}
 								presetNames={presetNames}
+								transition={chat.transition}
+								onOpenSandboxModal={() => setSandboxModalMode("create")}
 							/>
 						</div>
 						{!isMobile && <ResizeHandle side="left" width={leftWidth} onResize={resizeLeft} />}
-						<main className={wide ? "main wide-chat" : "main"}>
+						<main
+							className={`${wide ? "main wide-chat" : "main"}${
+								chat.transition && !chat.transition.previewMessages?.length ? " main-transitioning" : ""
+							}`}
+						>
+							{chat.transition && (
+								<div
+									className={`workspace-transition-bar phase-${chat.transition.phase}`}
+									role="status"
+									aria-live="polite"
+								>
+									<div className="workspace-transition-track">
+										<div
+											className="workspace-transition-fill"
+											style={{ width: `${Math.min(100, Math.max(8, chat.transition.progress))}%` }}
+										/>
+									</div>
+									<div className="workspace-transition-pill">
+										<span className="workspace-transition-spinner" aria-hidden="true" />
+										<span className="workspace-transition-text">
+											{locale !== "zh" && chat.transition.textEn ? chat.transition.textEn : chat.transition.text}
+										</span>
+										<span className="workspace-transition-pct">{chat.transition.progress}%</span>
+									</div>
+								</div>
+							)}
 							{/* 对话头部条（chat.header 槽位）：纯插件新增位，无条目时不渲染。 */}
 							{uiChatHeader.length > 0 && (
 								<div className="chat-header" role="toolbar">
@@ -1878,6 +1919,83 @@ export function App() {
 							)}
 							{chat.state ? (
 								<>
+									{chat.state.sandbox && (
+										<div className="sandbox-banner" role="region" aria-label={chat.state.sandbox.name}>
+											<div className="sandbox-banner-info">
+												<span className="sandbox-banner-title">
+													🧪 {t("sandboxBannerTitle", { name: chat.state.sandbox.name })}
+													<span
+														className={`lp-sandbox-badge ${chat.state.sandbox.ephemeral ? "ephemeral" : "permanent"}`}
+													>
+														{chat.state.sandbox.ephemeral ? t("sandboxBadgeEphemeral") : t("sandboxBadgePermanent")}
+													</span>
+												</span>
+												<span className="sandbox-banner-desc">
+													{chat.state.sandbox.sourcePath
+														? t("sandboxBannerSourceDesc", { source: chat.state.sandbox.sourcePath })
+														: t("sandboxBannerBlankDesc")}
+												</span>
+											</div>
+											<div className="sandbox-banner-actions">
+												{chat.state.sandbox.ephemeral && (
+													<button
+														type="button"
+														className="sandbox-banner-btn"
+														title={t("sandboxActionPersistTip")}
+														onClick={() => send({ type: "persist_sandbox", path: chat.state?.sandbox?.path })}
+													>
+														📌 {t("sandboxActionPersist")}
+													</button>
+												)}
+												{chat.state.sandbox.sourcePath && (
+													<button
+														type="button"
+														className="sandbox-banner-btn primary"
+														title={t("sandboxActionApplySourceTip")}
+														onClick={() => setSandboxModalMode("apply")}
+													>
+														✅ {t("sandboxActionApplySource")}
+													</button>
+												)}
+												<button
+													type="button"
+													className="sandbox-banner-btn"
+													title={t("sandboxActionPromoteTip")}
+													onClick={() => setSandboxModalMode("promote")}
+												>
+													📤 {t("sandboxActionPromote")}
+												</button>
+												<button
+													type="button"
+													className="sandbox-banner-btn"
+													title={t("sandboxActionResetTip")}
+													onClick={() => {
+														const sbx = chat.state?.sandbox;
+														if (!sbx) return;
+														if (window.confirm(t("sandboxActionResetConfirm", { name: sbx.name }))) {
+															send({ type: "reset_sandbox", path: sbx.path });
+														}
+													}}
+												>
+													🔄 {t("sandboxActionReset")}
+												</button>
+												<button
+													type="button"
+													className="sandbox-banner-btn danger"
+													title={t("sandboxActionDestroyTip")}
+													onClick={() => {
+														const sbx = chat.state?.sandbox;
+														if (!sbx) return;
+														if (window.confirm(t("sandboxActionDestroyConfirm", { name: sbx.name }))) {
+															send({ type: "destroy_sandbox", path: sbx.path });
+														}
+													}}
+												>
+													🗑️ {t("sandboxActionDestroy")}
+												</button>
+											</div>
+										</div>
+									)}
 									{chat.state.isEphemeral && (
 										<div className="ephemeral-banner">
 											<span>🎭 {t("ephemeralBannerText")}</span>
@@ -1898,8 +2016,21 @@ export function App() {
 										uiContextToolCall={uiSlots["contextmenu.toolcall"]}
 										uiChatEmpty={uiChatEmpty}
 										onUiAction={onUiAction}
-										key={chat.state.conversationId ?? "boot"}
-										state={chat.state}
+										key={
+											chat.transition?.previewMessages?.length
+												? `preview:${chat.transition.target}`
+												: (chat.state.conversationId ?? "boot")
+										}
+										state={
+											chat.transition?.previewMessages?.length
+												? {
+														...chat.state,
+														messages: chat.transition.previewMessages,
+														streamingMessage: null,
+														isStreaming: false,
+													}
+												: chat.state
+										}
 										liveOutputs={chat.liveOutputs}
 										toolStatuses={chat.toolStatuses}
 										onEdit={onEditMessage}
@@ -2582,6 +2713,17 @@ export function App() {
 						return lastLine ? <span className="active-plugin-jobs-line">{lastLine}</span> : null;
 					})()}
 				</div>
+			)}
+			{sandboxModalMode && (
+				<SandboxModal
+					mode={sandboxModalMode}
+					currentCwd={chat.state?.cwd}
+					currentSandbox={chat.state?.sandbox}
+					sandboxDiff={chat.sandboxDiff}
+					projects={chat.projects}
+					send={send}
+					onClose={() => setSandboxModalMode(null)}
+				/>
 			)}
 			<BannerContainer />
 		</div>

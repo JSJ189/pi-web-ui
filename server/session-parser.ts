@@ -93,17 +93,24 @@ export async function discoverRecentProjectsFromDisk(sessionRoots: string[], lim
 								const files = await fsPromises.readdir(d.path);
 								const jsonls = files.filter((f) => f.endsWith(".jsonl"));
 								if (jsonls.length === 0) return null;
+								const fileStats = await Promise.all(
+									jsonls.map(async (f) => {
+										const fp = join(d.path, f);
+										try {
+											const st = await fsPromises.stat(fp);
+											return { fp, mtimeMs: st.mtimeMs };
+										} catch {
+											return null;
+										}
+									}),
+								);
 								let newestFile = "";
 								let newestMtime = 0;
-								for (const f of jsonls) {
-									const fp = join(d.path, f);
-									try {
-										const st = await fsPromises.stat(fp);
-										if (st.mtimeMs > newestMtime) {
-											newestMtime = st.mtimeMs;
-											newestFile = fp;
-										}
-									} catch {}
+								for (const item of fileStats) {
+									if (item && item.mtimeMs > newestMtime) {
+										newestMtime = item.mtimeMs;
+										newestFile = item.fp;
+									}
 								}
 								if (!newestFile) return null;
 								const cwd = await readCwdFromSessionHeader(newestFile);
@@ -161,9 +168,24 @@ export async function parseSessionInfoFast(
 		let lastActivityTime = 0;
 		let headerTime = 0;
 		const allMessages: string[] | null = withAllMessagesText ? [] : null;
+		let collectedChars = 0;
 
 		for (const line of lines) {
 			if (!line.trim()) continue;
+			// 列表路径（withAllMessagesText=false）已拿到 id 与首条消息后，跳过对大块长行
+			// （如数百 KB 的 toolResult/assistant 消息）的全量 JSON.parse：仅轻量计数并提取时间戳
+			if (!withAllMessagesText && id && firstMessage && line.length > 512 && !line.includes('"session_info"')) {
+				const head = line.slice(0, 140);
+				if (/"type"\s*:\s*"message"/.test(head)) {
+					messageCount++;
+					const tsMatch = /"timestamp"\s*:\s*(\d{10,16})/.exec(line);
+					if (tsMatch) {
+						const ts = Number(tsMatch[1]);
+						if (ts > lastActivityTime) lastActivityTime = ts;
+					}
+				}
+				continue;
+			}
 			let entry: unknown;
 			try {
 				entry = JSON.parse(line);
@@ -184,19 +206,26 @@ export async function parseSessionInfoFast(
 				const msg = rec.message as Record<string, unknown> | null;
 				if (msg) {
 					if (typeof msg.timestamp === "number") lastActivityTime = Math.max(lastActivityTime, msg.timestamp);
-					let text = "";
-					if (typeof msg.content === "string") {
-						text = msg.content;
-					} else if (Array.isArray(msg.content)) {
-						for (const part of msg.content) {
-							if (part && typeof part.text === "string") {
-								text += (text ? " " : "") + part.text;
+					const needText =
+						(!firstMessage && msg.role === "user") || (allMessages !== null && collectedChars < MAX_SEARCH_TEXT_CHARS);
+					if (needText) {
+						let text = "";
+						if (typeof msg.content === "string") {
+							text = msg.content;
+						} else if (Array.isArray(msg.content)) {
+							for (const part of msg.content) {
+								if (part && typeof part.text === "string") {
+									text += (text ? " " : "") + part.text;
+								}
 							}
 						}
-					}
-					if (text) {
-						if (!firstMessage && msg.role === "user") firstMessage = text;
-						allMessages?.push(text);
+						if (text) {
+							if (!firstMessage && msg.role === "user") firstMessage = text;
+							if (allMessages && collectedChars < MAX_SEARCH_TEXT_CHARS) {
+								allMessages.push(text);
+								collectedChars += text.length + 1;
+							}
+						}
 					}
 				}
 			}

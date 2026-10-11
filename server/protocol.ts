@@ -126,6 +126,8 @@ export interface UiState {
 	 *  提示条与「保存为正式对话」按钮读它 —— 不能改读 `conversations` 列表，
 	 *  因为空白的临时对话不在那个列表里（刚新建时提示条必须就能看到）。 */
 	isEphemeral?: boolean;
+	/** 当前工作区若属于受管沙盒项目，携带其沙盒元数据（否则为 null/缺省）。 */
+	sandbox?: SandboxInfo | null;
 	/** Monotonic snapshot revision — increments on every snapshot/snapshot_delta
 	 *  emission. snapshot_delta.baseRev must equal the client's current rev;
 	 *  a mismatch means the client missed an update and must get_state resync. */
@@ -1241,6 +1243,21 @@ export type ClientMessage =
 	/** Drop one workspace from this client's recent-project list (UI state
 	 *  only — nothing on disk is touched). */
 	| { type: "remove_project"; path: string }
+	// -- sandbox projects -----------------------------------------------------
+	/** Create an isolated sandbox project (blank or imported copy of sourcePath) and switch cwd to it. */
+	| { type: "create_sandbox"; name?: string; sourcePath?: string; ephemeral?: boolean }
+	/** Reset a sandbox project back to its initial state (blank or re-copied from sourcePath). */
+	| { type: "reset_sandbox"; path?: string }
+	/** Convert an ephemeral sandbox project into a permanent sandbox project. */
+	| { type: "persist_sandbox"; path?: string }
+	/** Export / promote a sandbox project to a formal project directory outside sandboxes. */
+	| { type: "promote_sandbox"; path?: string; targetPath: string; switchToTarget?: boolean }
+	/** Compare a sandbox project against its sourcePath and push a `sandbox_diff` summary. */
+	| { type: "diff_sandbox"; path?: string }
+	/** Sync modified/added files from an imported sandbox back to its original sourcePath. */
+	| { type: "apply_sandbox_to_source"; path?: string }
+	/** Permanently destroy a sandbox project directory and remove it from the registry. */
+	| { type: "destroy_sandbox"; path: string }
 	/** Permanently delete a persisted session transcript file (history list). */
 	| { type: "delete_session"; path: string }
 	/** Append a session_info name entry to a persisted session transcript (history rename). */
@@ -1402,14 +1419,45 @@ export interface SessionSearchResult extends SessionSummary {
 }
 
 /**
+ * Metadata for an isolated sandbox workspace managed under `<dataDir>/sandboxes/<id>`.
+ */
+export interface SandboxInfo {
+	/** Unique sandbox identifier (e.g. "sbx-m8x9k2a1"). */
+	id: string;
+	/** Display name of the sandbox project. */
+	name: string;
+	/** Absolute path to the sandbox workspace directory (`/` normalized wire path). */
+	path: string;
+	/** Optional source project path when created by importing an existing workspace. */
+	sourcePath?: string;
+	/** True = temporary sandbox (cleaned up when destroyed/discarded); false = permanent sandbox. */
+	ephemeral: boolean;
+	/** Creation timestamp (epoch ms). */
+	createdAt: number;
+}
+
+/**
  * A workspace directory this client has opened before (persisted per client in
  * <dataDir>/client-state.json, merged with cwds found in the session store).
  */
+export interface SandboxDiffView {
+	sandboxId: string;
+	path: string;
+	sourcePath?: string;
+	added: string[];
+	modified: string[];
+	deleted: string[];
+	unchangedCount: number;
+	error?: string;
+}
+
 export interface ProjectSummary {
 	/** Absolute path of the workspace directory. */
 	path: string;
 	/** Last time this workspace was used (ms epoch) — drives the sort order. */
 	lastUsed: number;
+	/** Present when this project is a managed sandbox workspace. */
+	sandbox?: SandboxInfo;
 }
 
 /** 一个可选项：模型的 ask_user_question 问卷选项。preview 为选项被选中后
@@ -3746,4 +3794,16 @@ export type ServerMessage =
 			type: "remote_ssh_profiles_result";
 			reqId?: string;
 			profiles: RemoteSshProfileSummary[];
-	  };
+	  }
+	| {
+			type: "transition_progress";
+			kind: "cwd" | "session" | "new_chat" | "conversation";
+			target: string;
+			phase: "fs" | "transcript" | "runtime" | "done" | "error";
+			progress: number;
+			text: string;
+			textEn: string;
+			totalMessages?: number;
+			previewMessages?: UiMessage[];
+	  }
+	| { type: "sandbox_diff"; diff: SandboxDiffView };

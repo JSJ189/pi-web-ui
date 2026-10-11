@@ -85,7 +85,7 @@ ws.on("message", (d) => {
 		}
 	} else if (m.type === "conversations") conversations = m.conversations;
 	else if (m.type === "files") files = m;
-	else if (m.type === "notice") notices.push(m.text);
+	else if (m.type === "notice" || m.type === "transition_progress") notices.push(m.text);
 	else if (m.type === "ready") {
 		console.log("ready");
 		send({ type: "list_files", path: undefined });

@@ -42,6 +42,7 @@ import {
 import { normalizeUiLayout, normalizeKeepRecentMessages, DEFAULT_KEEP_RECENT_MESSAGES } from "../client-state.js";
 import { PLAN_MODE_SYSTEM_PROMPT } from "../plan-mode.js";
 import { FilesService, workspacePath, desktopDirWire } from "../files-service.js";
+import { SandboxManager, isSameOrSubpath } from "../sandbox-service.js";
 import { QuiesceRejectedError } from "../agent-service.js";
 
 import { NATIVE_COMMANDS, parseSlash } from "../slash-commands.js";
@@ -387,6 +388,7 @@ export class DshClientSession {
 
 	private readonly files: FilesService;
 	private readonly bg: BgServerTracker;
+	private readonly sandboxes: SandboxManager;
 
 	/** 插件扩展点（index.ts 注入）。 */
 	onToolEvent:
@@ -425,6 +427,7 @@ export class DshClientSession {
 		this.dataDir = dataDir;
 		this.agentDir = agentDir;
 		this.sessionRoot = dshSessionRoot(dataDir);
+		this.sandboxes = new SandboxManager(dataDir);
 		try {
 			mkdirSync(this.sessionRoot, { recursive: true });
 		} catch {
@@ -1476,6 +1479,7 @@ export class DshClientSession {
 			desktopDir: DESKTOP_WIRE,
 			sessionId: conv.sessionId,
 			conversationId: this.activeId,
+			sandbox: this.sandboxes.getByCwd(this.cwd) ?? null,
 			rev,
 			streamingMessage: conv.streaming ? conv.streaming.toUiMessage(conv.lastEventAt, this.model, "deepseek") : null,
 			isStreaming: conv.isStreaming,
@@ -2648,8 +2652,22 @@ export class DshClientSession {
 		if (!removedKeys.has(normalizePathKey(this.cwd))) {
 			projects.set(this.cwd, Date.now());
 		}
+		for (const sbx of this.sandboxes.list()) {
+			if (!removedKeys.has(normalizePathKey(sbx.path)) && !projects.has(sbx.path)) {
+				projects.set(sbx.path, sbx.createdAt);
+			}
+		}
 		const list: ProjectSummary[] = [...projects.entries()]
-			.map(([path, lastUsed]) => ({ path, lastUsed }))
+			.filter(([path]) => {
+				if (isSameOrSubpath(path, this.sandboxes.sandboxesRoot)) {
+					return Boolean(this.sandboxes.getByCwd(path));
+				}
+				return true;
+			})
+			.map(([path, lastUsed]) => {
+				const sbx = this.sandboxes.getByCwd(path);
+				return sbx ? { path, lastUsed, sandbox: sbx } : { path, lastUsed };
+			})
 			.sort((a, b) => b.lastUsed - a.lastUsed)
 			.slice(0, 30);
 		this.emit({ type: "projects", projects: list });
@@ -2679,8 +2697,203 @@ export class DshClientSession {
 	}
 
 	async removeProject(path: string): Promise<void> {
+		const sbx = this.sandboxes.get(path) ?? this.sandboxes.getByCwd(path);
+		if (sbx) {
+			await this.destroySandbox(sbx.path);
+			return;
+		}
 		this.stateStore.removeProject(this.clientId, path);
 		await this.pushProjects();
+	}
+
+	async createSandbox(opts: { name?: string; sourcePath?: string; ephemeral?: boolean }): Promise<void> {
+		try {
+			const { sandbox, copiedFiles } = await this.sandboxes.create(opts);
+			await this.setCwd(sandbox.path);
+			await this.pushProjects();
+			const modeZh = sandbox.sourcePath ? `已从源项目导入 ${copiedFiles} 个文件` : "空白隔离环境";
+			const modeEn = sandbox.sourcePath ? `imported ${copiedFiles} files from source` : "blank isolated workspace";
+			this.emit({
+				type: "notice",
+				level: "info",
+				text: `🧪 沙盒「${sandbox.name}」已启动（${modeZh}，一切修改与原项目完全隔离）`,
+				textEn: `🧪 Sandbox "${sandbox.name}" started (${modeEn}; all changes are strictly isolated)`,
+			});
+		} catch (err) {
+			this.emit({
+				type: "notice",
+				level: "error",
+				text: `创建沙盒失败：${(err as Error).message}`,
+				textEn: `Failed to create sandbox: ${(err as Error).message}`,
+			});
+		}
+	}
+
+	async resetSandbox(path?: string): Promise<void> {
+		const target = path?.trim() || this.cwd;
+		try {
+			const { sandbox, copiedFiles } = await this.sandboxes.reset(target);
+			await this.listFiles();
+			this.flushSnapshot();
+			this.emit({
+				type: "notice",
+				level: "info",
+				text: sandbox.sourcePath
+					? `🔄 已重置沙盒「${sandbox.name}」（重新从源项目同步 ${copiedFiles} 个文件）`
+					: `🔄 已清空并重置沙盒「${sandbox.name}」`,
+				textEn: sandbox.sourcePath
+					? `🔄 Reset sandbox "${sandbox.name}" (re-synced ${copiedFiles} files from source)`
+					: `🔄 Cleared and reset sandbox "${sandbox.name}"`,
+			});
+		} catch (err) {
+			this.emit({
+				type: "notice",
+				level: "error",
+				text: `重置沙盒失败：${(err as Error).message}`,
+				textEn: `Failed to reset sandbox: ${(err as Error).message}`,
+			});
+		}
+	}
+
+	async persistSandbox(path?: string): Promise<void> {
+		const target = path?.trim() || this.cwd;
+		try {
+			const sandbox = this.sandboxes.persist(target);
+			await this.pushProjects();
+			this.flushSnapshot();
+			this.emit({
+				type: "notice",
+				level: "info",
+				text: `📌 沙盒「${sandbox.name}」已转为永久保留`,
+				textEn: `📌 Sandbox "${sandbox.name}" is now saved permanently`,
+			});
+		} catch (err) {
+			this.emit({
+				type: "notice",
+				level: "error",
+				text: `转换永久沙盒失败：${(err as Error).message}`,
+				textEn: `Failed to persist sandbox: ${(err as Error).message}`,
+			});
+		}
+	}
+
+	async promoteSandbox(targetPath: string, path?: string, switchToTarget = true): Promise<void> {
+		const sbxTarget = path?.trim() || this.cwd;
+		try {
+			const { sandbox, targetPath: resolvedTarget, copiedFiles } = await this.sandboxes.promote(sbxTarget, targetPath);
+			if (switchToTarget) {
+				await this.setCwd(resolvedTarget);
+			} else {
+				await this.pushProjects();
+			}
+			this.emit({
+				type: "notice",
+				level: "info",
+				text: `📤 已将沙盒「${sandbox.name}」导出为正式项目：${resolvedTarget}（共 ${copiedFiles} 个文件）`,
+				textEn: `📤 Exported sandbox "${sandbox.name}" to formal project: ${resolvedTarget} (${copiedFiles} files)`,
+			});
+		} catch (err) {
+			this.emit({
+				type: "notice",
+				level: "error",
+				text: `导出沙盒失败：${(err as Error).message}`,
+				textEn: `Failed to export sandbox: ${(err as Error).message}`,
+			});
+		}
+	}
+
+	async diffSandbox(path?: string): Promise<void> {
+		const target = path?.trim() || this.cwd;
+		try {
+			const res = await this.sandboxes.diffWithSource(target);
+			this.emit({
+				type: "sandbox_diff",
+				diff: {
+					sandboxId: res.sandbox.id,
+					path: res.sandbox.path,
+					sourcePath: res.sourcePath,
+					added: res.added.slice(0, 200),
+					modified: res.modified.slice(0, 200),
+					deleted: res.deleted.slice(0, 200),
+					unchangedCount: res.unchangedCount,
+				},
+			});
+		} catch (err) {
+			this.emit({
+				type: "sandbox_diff",
+				diff: {
+					sandboxId: "",
+					path: target,
+					added: [],
+					modified: [],
+					deleted: [],
+					unchangedCount: 0,
+					error: (err as Error).message,
+				},
+			});
+		}
+	}
+
+	async applySandboxToSource(path?: string): Promise<void> {
+		const target = path?.trim() || this.cwd;
+		try {
+			const { sandbox, sourcePath, copiedFiles } = await this.sandboxes.applyToSource(target);
+			this.emit({
+				type: "notice",
+				level: "info",
+				text: `✅ 已将沙盒「${sandbox.name}」中的 ${copiedFiles} 个文件同步回源项目：${sourcePath}`,
+				textEn: `✅ Applied ${copiedFiles} files from sandbox "${sandbox.name}" back to source project: ${sourcePath}`,
+			});
+		} catch (err) {
+			this.emit({
+				type: "notice",
+				level: "error",
+				text: `写回源项目失败：${(err as Error).message}`,
+				textEn: `Failed to apply sandbox changes to source: ${(err as Error).message}`,
+			});
+		}
+	}
+
+	async destroySandbox(path: string): Promise<void> {
+		const target = path?.trim() || this.cwd;
+		const sbx = this.sandboxes.get(target) ?? this.sandboxes.getByCwd(target);
+		if (!sbx) {
+			this.stateStore.removeProject(this.clientId, target);
+			await this.pushProjects();
+			return;
+		}
+		try {
+			const activeInSbx = isSameOrSubpath(this.cwd, sbx.path);
+			if (activeInSbx) {
+				let fallbackCwd = sbx.sourcePath && existsSync(sbx.sourcePath) ? sbx.sourcePath : "";
+				if (!fallbackCwd) {
+					const recent = await this.stateStore.getRecentProjects(this.clientId);
+					const other = recent.find((p) => {
+						const pk = normalizePathKey(p.path);
+						return pk !== normalizePathKey(sbx.path) && existsSync(p.path);
+					});
+					fallbackCwd = other?.path || homedir();
+				}
+				await this.setCwd(fallbackCwd);
+			}
+			await this.sandboxes.destroy(sbx.id);
+			this.stateStore.removeProject(this.clientId, sbx.path);
+			await this.pushProjects();
+			this.flushSnapshot();
+			this.emit({
+				type: "notice",
+				level: "info",
+				text: `🗑️ 已销毁沙盒项目「${sbx.name}」并清理隔离目录`,
+				textEn: `🗑️ Destroyed sandbox project "${sbx.name}" and cleaned up isolated directory`,
+			});
+		} catch (err) {
+			this.emit({
+				type: "notice",
+				level: "error",
+				text: `销毁沙盒失败：${(err as Error).message}`,
+				textEn: `Failed to destroy sandbox: ${(err as Error).message}`,
+			});
+		}
 	}
 
 	async listFiles(relPath?: string): Promise<void> {
@@ -4624,6 +4837,15 @@ export class DshClientSession {
 			const abs = resolve(newCwd);
 			if (!existsSync(abs) || !statSync(abs).isDirectory()) {
 				this.emit({
+					type: "transition_progress",
+					kind: "cwd",
+					target: newCwd,
+					phase: "error",
+					progress: 100,
+					text: `切换工作目录失败：目录不存在：${newCwd}`,
+					textEn: `Failed to switch directory; does not exist: ${newCwd}`,
+				});
+				this.emit({
 					type: "notice",
 					level: "error",
 					text: `切换工作目录失败：目录不存在：${newCwd}`,
@@ -4631,7 +4853,28 @@ export class DshClientSession {
 				});
 				return;
 			}
-			if (abs === this.cwd) return;
+			if (abs === this.cwd) {
+				this.emit({
+					type: "transition_progress",
+					kind: "cwd",
+					target: abs,
+					phase: "done",
+					progress: 100,
+					text: `已在工作目录：${abs}`,
+					textEn: `Already in directory: ${abs}`,
+				});
+				return;
+			}
+			this.emit({
+				type: "transition_progress",
+				kind: "cwd",
+				target: abs,
+				phase: "runtime",
+				progress: 45,
+				text: `正在切换工作目录并重启运行环境：${abs}`,
+				textEn: `Switching workspace & restarting runtime: ${abs}`,
+			});
+			await new Promise<void>((r) => setImmediate(r));
 			this.cwd = abs;
 			this.roots = this.stateStore.getWorkspaceRoots(this.clientId, abs);
 			this.stateStore.remember(this.clientId, abs);
@@ -4664,14 +4907,16 @@ export class DshClientSession {
 				if (c.cwd === abs) continue;
 				if (c.listed) continue;
 				if (c.isStreaming) continue;
-				// 只看“用过”的存活终端：没动过的空 shell 不阻止项目切换时的旧会话回收。
-				if (c.terminals.countBlockingLive() > 0) continue;
+				// 只看“用过”的存活终端：没动过的空 shell 不阻止项目切换时的旧会话回收。\n\t\t\t\tif (c.terminals.countBlockingLive() > 0) continue;
 				this.removeConversation(id);
 			}
 			this.onCwdChanged?.(abs);
 			this.emit({
-				type: "notice",
-				level: "info",
+				type: "transition_progress",
+				kind: "cwd",
+				target: abs,
+				phase: "done",
+				progress: 100,
 				text: `已切换到工作目录：${abs}`,
 				textEn: `Switched to directory: ${abs}`,
 			});
@@ -4684,6 +4929,15 @@ export class DshClientSession {
 			this.pushSettings();
 			this.flushSnapshot(true);
 		} catch (err) {
+			this.emit({
+				type: "transition_progress",
+				kind: "cwd",
+				target: newCwd,
+				phase: "error",
+				progress: 100,
+				text: `切换目录失败：${(err as Error).message}`,
+				textEn: `Failed to switch directory: ${(err as Error).message}`,
+			});
 			this.emit({
 				type: "notice",
 				level: "error",

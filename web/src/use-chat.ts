@@ -15,6 +15,7 @@ import type {
 	ModelInfo,
 	PlanState,
 	ProjectSummary,
+	SandboxDiffView,
 	ProviderKeyInfo,
 	ProviderOAuthFlowState,
 	ProviderStatus,
@@ -40,6 +41,7 @@ import type {
 	UiServiceInfo,
 	UiSettingsState,
 	UiState,
+	UiMessage,
 	UiToolApproval,
 	UiMcpServer,
 	RemoteMcpServer,
@@ -61,6 +63,7 @@ import { emitPluginData } from "./plugin-loader";
 import { ingestPluginLogsData } from "./plugin-logs";
 import { resolveCatalogSyncResult } from "./plugin-host";
 import { PROTOCOL_VERSION } from "./protocol-version";
+import { enqueueNotice } from "./notice-policy";
 import { dispatchRemoteSshMessage } from "./remote-ssh-client";
 import {
 	initialProviderOAuthState,
@@ -515,6 +518,22 @@ export interface ChatState {
 		content: string;
 		error?: string;
 	} | null;
+	/** 工作区/历史会话/新对话的流式阶段切换状态（像传输文件一样展示实时进度与先行预览消息）。 */
+	transition: WorkspaceTransitionState | null;
+	/** 沙盒与源项目的最新对比结果（点击「写回源项目」弹窗时拉取展示）。 */
+	sandboxDiff: SandboxDiffView | null;
+}
+
+export interface WorkspaceTransitionState {
+	kind: "cwd" | "session" | "new_chat" | "conversation";
+	target: string;
+	phase: "start" | "fs" | "transcript" | "runtime" | "done" | "error";
+	progress: number;
+	text: string;
+	textEn: string;
+	totalMessages?: number;
+	previewMessages?: UiMessage[];
+	startedAt: number;
 }
 
 type Action =
@@ -681,6 +700,20 @@ type Action =
 	| { type: "terminal_restart"; terminalId: string }
 	| { type: "terminal_list"; conversationId?: string; terminals: TerminalInfo[] }
 	| { type: "terminal_active"; id: string }
+	| {
+			type: "transition_start";
+			kind: WorkspaceTransitionState["kind"];
+			target: string;
+			progress: number;
+			text: string;
+			textEn: string;
+	  }
+	| {
+			type: "transition_progress";
+			msg: Extract<ServerMessage, { type: "transition_progress" }>;
+	  }
+	| { type: "transition_tick" }
+	| { type: "transition_clear" }
 	| { type: "goal_status"; status: GoalStatus }
 	| { type: "plan_updated"; conversationId?: string; plan: PlanState | null }
 	| { type: "settings"; settings: UiSettingsState }
@@ -761,7 +794,8 @@ type Action =
 	| { type: "dsh_presets"; presets: UiAgentPreset[]; defaultPreset: string }
 	| { type: "dsh_permission"; options: DshPermissionOption[]; defaultPreset: string }
 	| { type: "sync_cached_sessions"; sessions: SessionSummary[] }
-	| { type: "host_metrics"; metrics: UiHostMetrics };
+	| { type: "host_metrics"; metrics: UiHostMetrics }
+	| { type: "sandbox_diff"; diff: SandboxDiffView | null };
 
 const MAX_LIVE_OUTPUT = 200_000;
 const MAX_TERM_BUFFER = 200_000;
@@ -935,15 +969,42 @@ function reducer(state: ChatState, action: Action): ChatState {
 			};
 		case "snapshot": {
 			const prevCwd = state.state?.cwd;
+			const prevConvId = state.state?.conversationId;
 			const nextCwd = action.state.cwd;
 			let nextSessions = state.sessions;
 			if (nextCwd && nextCwd !== prevCwd) {
 				nextSessions = readCachedSessions(nextCwd);
 			}
+			const normPath = (s?: string) =>
+				(s ?? "")
+					.trim()
+					.replace(/[\\/]+$/, "")
+					.toLowerCase();
+			let nextTransition = state.transition;
+			if (nextTransition) {
+				if (nextTransition.phase === "done" || nextTransition.phase === "error") {
+					nextTransition = null;
+				} else if (nextTransition.kind === "cwd" && normPath(action.state.cwd) === normPath(nextTransition.target)) {
+					nextTransition = null;
+				} else if (
+					nextTransition.kind === "session" &&
+					normPath(action.state.sessionFile) === normPath(nextTransition.target)
+				) {
+					nextTransition = null;
+				} else if (nextTransition.kind === "conversation" && action.state.conversationId === nextTransition.target) {
+					nextTransition = null;
+				} else if (
+					nextTransition.kind === "new_chat" &&
+					(!prevConvId || action.state.conversationId !== prevConvId || action.state.messages.length === 0)
+				) {
+					nextTransition = null;
+				}
+			}
 			return {
 				...state,
 				ready: true,
 				state: action.state,
+				transition: nextTransition,
 				sessions: nextSessions,
 				approval: action.state.pendingApproval ?? null,
 				activeConversationId: action.state.conversationId,
@@ -1010,8 +1071,10 @@ function reducer(state: ChatState, action: Action): ChatState {
 				...state,
 				toolStatuses: new Map(state.toolStatuses).set(action.status.toolCallId, action.status),
 			};
-		case "notice":
-			return { ...state, notices: [...state.notices, action.notice].slice(-6) };
+		case "notice": {
+			const nextNotices = enqueueNotice(state.notices, action.notice);
+			return nextNotices === state.notices ? state : { ...state, notices: nextNotices };
+		}
 		case "dismiss_notice":
 			return {
 				...state,
@@ -1030,6 +1093,8 @@ function reducer(state: ChatState, action: Action): ChatState {
 		case "projects":
 			writeCachedProjects(action.projects);
 			return { ...state, projects: action.projects };
+		case "sandbox_diff":
+			return { ...state, sandboxDiff: action.diff };
 		case "files":
 			return { ...state, files: action.files };
 		case "file_changed":
@@ -1272,6 +1337,70 @@ function reducer(state: ChatState, action: Action): ChatState {
 			};
 		case "terminal_active":
 			return { ...state, terminalActiveId: action.id };
+		case "transition_start": {
+			const cachedTargetSessions = action.kind === "cwd" ? readCachedSessions(action.target) : null;
+			return {
+				...state,
+				...(cachedTargetSessions && cachedTargetSessions.length > 0 ? { sessions: cachedTargetSessions } : {}),
+				transition: {
+					kind: action.kind,
+					target: action.target,
+					phase: "start",
+					progress: action.progress,
+					text: action.text,
+					textEn: action.textEn,
+					startedAt: Date.now(),
+				},
+			};
+		}
+		case "transition_progress": {
+			const m = action.msg;
+			if (m.phase === "done" || m.phase === "error") {
+				return {
+					...state,
+					transition: state.transition
+						? {
+								...state.transition,
+								phase: m.phase,
+								progress: 100,
+								text: m.text,
+								textEn: m.textEn,
+							}
+						: null,
+				};
+			}
+			const prev = state.transition;
+			return {
+				...state,
+				transition: {
+					kind: m.kind,
+					target: m.target,
+					phase: m.phase,
+					progress: Math.max(prev?.target === m.target ? prev.progress : 0, m.progress),
+					text: m.text,
+					textEn: m.textEn,
+					totalMessages: m.totalMessages ?? prev?.totalMessages,
+					previewMessages: m.previewMessages ?? prev?.previewMessages,
+					startedAt: prev?.startedAt ?? Date.now(),
+				},
+			};
+		}
+		case "transition_tick": {
+			const cur = state.transition;
+			if (!cur || cur.phase === "done" || cur.phase === "error") return state;
+			const cap = cur.phase === "start" ? 26 : cur.phase === "fs" ? 56 : 92;
+			if (cur.progress >= cap) return state;
+			const step = Math.max(1, Math.round((cap - cur.progress) * 0.16));
+			return {
+				...state,
+				transition: {
+					...cur,
+					progress: Math.min(cap, cur.progress + step),
+				},
+			};
+		}
+		case "transition_clear":
+			return state.transition ? { ...state, transition: null } : state;
 		default:
 			return state;
 	}
@@ -1529,6 +1658,8 @@ export function useChat() {
 		dshPresets: null,
 		dshPermission: null,
 		protocolMismatch: false,
+		transition: null,
+		sandboxDiff: null,
 	});
 	const wsRef = useRef<WebSocket | null>(null);
 	/** Terminal output bridge (writers keyed by terminalId). */
@@ -1596,7 +1727,87 @@ export function useChat() {
 		// 自动消失计时由通知组件（NoticeToast）管理：悬浮暂停、移开继续。
 	}, []);
 
+	// 流式阶段切换进度：等待后端 runtime/转录时平滑递增进度条，并在完成/超时后自动收起
+	useEffect(() => {
+		if (!chat.transition) return;
+		if (chat.transition.phase === "done" || chat.transition.phase === "error") {
+			const t = setTimeout(() => dispatch({ type: "transition_clear" }), 180);
+			return () => clearTimeout(t);
+		}
+		const iv = setInterval(() => {
+			if (Date.now() - (chat.transition?.startedAt ?? 0) > 20_000) {
+				dispatch({ type: "transition_clear" });
+				return;
+			}
+			dispatch({ type: "transition_tick" });
+		}, 160);
+		return () => clearInterval(iv);
+	}, [chat.transition]);
+
 	const send = useCallback((msg: ClientMessage) => {
+		// 切换工作目录 / 历史会话 / 运行中对话 / 新建对话：0ms 乐观启动流式进度指示
+		const curState = chatApi.current.chat.state;
+		if (msg.type === "set_cwd" && msg.path) {
+			const cur = (curState?.cwd ?? "")
+				.trim()
+				.replace(/[\\/]+$/, "")
+				.toLowerCase();
+			const tgt = msg.path
+				.trim()
+				.replace(/[\\/]+$/, "")
+				.toLowerCase();
+			if (tgt && tgt !== cur) {
+				dispatch({
+					type: "transition_start",
+					kind: "cwd",
+					target: msg.path,
+					progress: 14,
+					text: `正在切换到工作目录：${msg.path}`,
+					textEn: `Switching to workspace: ${msg.path}`,
+				});
+			}
+		} else if (msg.type === "switch_session" && msg.path) {
+			const cur = (curState?.sessionFile ?? "")
+				.trim()
+				.replace(/[\\/]+$/, "")
+				.toLowerCase();
+			const tgt = msg.path
+				.trim()
+				.replace(/[\\/]+$/, "")
+				.toLowerCase();
+			if (tgt && tgt !== cur) {
+				dispatch({
+					type: "transition_start",
+					kind: "session",
+					target: msg.path,
+					progress: 14,
+					text: "正在流式载入历史会话…",
+					textEn: "Streaming session history…",
+				});
+			}
+		} else if (msg.type === "new_chat") {
+			if (curState && (curState.messages.length > 0 || curState.isStreaming)) {
+				dispatch({
+					type: "transition_start",
+					kind: "new_chat",
+					target: curState.cwd,
+					progress: 22,
+					text: "正在初始化新对话…",
+					textEn: "Initializing new chat…",
+				});
+			}
+		} else if (msg.type === "switch_conversation" && msg.id) {
+			if (curState && msg.id !== curState.conversationId) {
+				dispatch({
+					type: "transition_start",
+					kind: "conversation",
+					target: msg.id,
+					progress: 35,
+					text: "正在切换对话…",
+					textEn: "Switching conversation…",
+				});
+			}
+		}
 		const ws = wsRef.current;
 		if (ws && ws.readyState === WebSocket.OPEN) {
 			// Forced re-check: drop stale rows immediately so the "checking"
@@ -1807,12 +2018,18 @@ export function useChat() {
 				}
 				case "notice": {
 					const id = ++noticeId.current;
+					if (msg.level === "error" || msg.level === "warning") {
+						dispatch({ type: "transition_clear" });
+					}
 					dispatch({
 						type: "notice",
 						notice: { id, level: msg.level, text: msg.text, textEn: msg.textEn },
 					});
 					break;
 				}
+				case "transition_progress":
+					dispatch({ type: "transition_progress", msg });
+					break;
 				case "sessions":
 					dispatch({ type: "sessions", sessions: msg.sessions });
 					break;
@@ -1826,6 +2043,9 @@ export function useChat() {
 					break;
 				case "projects":
 					dispatch({ type: "projects", projects: msg.projects });
+					break;
+				case "sandbox_diff":
+					dispatch({ type: "sandbox_diff", diff: msg.diff });
 					break;
 				case "files":
 					dispatch({ type: "files", files: msg });

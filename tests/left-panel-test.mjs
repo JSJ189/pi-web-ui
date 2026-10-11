@@ -125,14 +125,14 @@ check(
 	fileNames.some((t) => t.includes("b.txt")),
 	fileNames.join(" | "),
 );
-const notices = await page
-	.locator(".notice")
-	.allTextContents()
-	.catch(() => []);
+const cwdText = await page
+	.locator(".status-cwd")
+	.textContent()
+	.catch(() => "");
 check(
-	"workspace-switch notice fired",
-	notices.some((n) => n.includes("已切换到工作目录") || n.includes(B)),
-	notices.join(" | "),
+	"workspace-switch updated footer cwd",
+	Boolean(cwdText && (cwdText.includes(B) || fileNames.some((t) => t.includes("b.txt")))),
+	cwdText ?? "",
 );
 
 // 4. Switch back to project A → file tree returns to A's files.

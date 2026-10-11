@@ -5,6 +5,10 @@
  */
 
 import { createHmac } from "node:crypto";
+import { FeishuBotBridge } from "./bot-bridge.mjs";
+import { chunkMarkdownText } from "./markdown-chunks.mjs";
+
+export { FeishuBotBridge, chunkMarkdownText };
 
 export const SECRET_APP_SECRET = "app.secret";
 export const SECRET_WEBHOOK_SECRET = "webhook.secret";
@@ -360,6 +364,21 @@ export default async function activate(host) {
 	};
 
 	let isPolling = false;
+
+	const botBridge = new FeishuBotBridge({
+		host,
+		getConfig: () => localConfig,
+		sendMessage: (cfg, opts) => sendMessage(cfg, opts),
+		replyMessage: (cfg, opts) => replyMessage(cfg, opts),
+		reactMessage: (cfg, msgId, emoji) => reactMessage(cfg, msgId, emoji),
+		log: (lvl, msg) => host.log?.(lvl, msg),
+	});
+
+	if (localConfig.botEnabled && hasAppConfig(localConfig)) {
+		botBridge.start().catch((err) => {
+			host.log?.("warn", `Feishu bot auto-start note: ${err.message}`);
+		});
+	}
 
 	function getBaseUrl(cfg) {
 		const preset = PRESETS[cfg.preset || "feishu"];
@@ -1039,6 +1058,7 @@ export default async function activate(host) {
 						status,
 						presets: PRESETS,
 						customChats,
+						botStatus: botBridge.getStatus(),
 					});
 					break;
 				}
@@ -1068,8 +1088,13 @@ export default async function activate(host) {
 
 					// 配置变了（含 pollSec、首次配好 appId/appSecret）：按新配置重启轮询
 					restartPoller();
+					if (localConfig.botEnabled && hasAppConfig(localConfig)) {
+						await botBridge.start().catch(() => {});
+					} else {
+						await botBridge.stop().catch(() => {});
+					}
 					await updateUnreadStatus();
-					reply({ type: "save_config_done", success: true });
+					reply({ type: "save_config_done", success: true, botStatus: botBridge.getStatus() });
 					break;
 				}
 
@@ -1230,6 +1255,27 @@ export default async function activate(host) {
 					break;
 				}
 
+				case "get_bot_status": {
+					reply({ type: "bot_status", status: botBridge.getStatus() });
+					break;
+				}
+
+				case "start_bot": {
+					localConfig.botEnabled = true;
+					await host.storage.set("config", stripSecretsFromConfig(localConfig));
+					await botBridge.start();
+					reply({ type: "bot_status", success: true, status: botBridge.getStatus() });
+					break;
+				}
+
+				case "stop_bot": {
+					localConfig.botEnabled = false;
+					await host.storage.set("config", stripSecretsFromConfig(localConfig));
+					await botBridge.stop();
+					reply({ type: "bot_status", success: true, status: botBridge.getStatus() });
+					break;
+				}
+
 				case "poll_now": {
 					await pollNewMessages();
 					reply({ type: "poll_done", success: true });
@@ -1247,11 +1293,12 @@ export default async function activate(host) {
 
 	await updateUnreadStatus();
 
-	// activate 返回的函数被宿主登记为 deactivate（server/plugins.ts）：反激活时停掉轮询
-	return () => {
+	// activate 返回的函数被宿主登记为 deactivate（server/plugins.ts）：反激活时停掉轮询与 Bot
+	return async () => {
 		if (pollTimer) {
 			clearInterval(pollTimer);
 			pollTimer = null;
 		}
+		await botBridge.stop().catch(() => {});
 	};
 }

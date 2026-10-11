@@ -135,6 +135,29 @@ describe("repairSessionTranscript", () => {
 		expect(r.changed).toBe(false);
 		expect(r.text).toBe(raw);
 	});
+
+	it("超长 message 行（>512 字节）走头部快速提取且在旁路改写时仍完整保留正文", () => {
+		const bigMsg = JSON.stringify({
+			type: "message",
+			id: "big-b",
+			parentId: "p1",
+			timestamp: "2026-09-19T00:00:05.000Z",
+			message: { role: "assistant", content: "z".repeat(1200) },
+		});
+		const raw = [HEADER, msg("a", null), pendingMarker("p1", "a"), bigMsg].join("\n") + "\n";
+		const r = repairSessionTranscript(raw);
+		expect(r.changed).toBe(true);
+		expect(r.rewiredParents).toBe(1);
+		const lines = r.text.split("\n").filter(Boolean);
+		const parsedBig = JSON.parse(lines[2]) as {
+			id: string;
+			parentId: string;
+			message: { content: string };
+		};
+		expect(parsedBig.id).toBe("big-b");
+		expect(parsedBig.parentId).toBe("a");
+		expect(parsedBig.message.content).toBe("z".repeat(1200));
+	});
 });
 
 describe("issue #235 原场景", () => {

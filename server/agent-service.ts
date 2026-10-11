@@ -155,6 +155,7 @@ import { pick, resolveServerLang, type ServerLang } from "./i18n.js";
 import { SubagentTemplatesStore, pickTemplatePrompt, type SubagentTemplate } from "./subagent-templates.js";
 import { ApprovalRulesStore, extractTargetPath, type ApprovalRule } from "./approval-rules.js";
 import { ComposerDraftsStore } from "./composer-drafts.js";
+import { SandboxManager, evaluateSandboxJail, isSameOrSubpath, withSandboxJailGate } from "./sandbox-service.js";
 import { readPermissionFromSession } from "./permission-preset.js";
 import {
 	createWorkspaceSnapshot,
@@ -288,6 +289,8 @@ import { getCompactedMessages, type SessionManagerLike } from "./compacted-histo
 import { makeScheduleTool, type ScheduleToolHost } from "./schedule-agent-tool.js";
 import { makePatchTool } from "./patch-tool.js";
 import { makeLspTool } from "./lsp-tool.js";
+import { makeMcpManageTool, type McpManageToolHost } from "./mcp-agent-tool.js";
+import { makeSandboxTool } from "./sandbox-tool.js";
 import { sameSessionFile, type SchedulerStore } from "./scheduler-tasks.js";
 import { buildAttachmentMessages, findTurnBaseEntryId, parseModelSpec } from "./attachments.js";
 import { formatQuotedPrompt, readTextQuote } from "./text-quote.js";
@@ -330,6 +333,8 @@ import type {
 } from "./protocol.js";
 import {
 	listAllMcpServers,
+	checkMcpServer,
+	installMcpServer,
 	saveMcpServer as saveMcpServerFile,
 	deleteMcpServer as deleteMcpServerFile,
 	toggleMcpServer as toggleMcpServerFile,
@@ -2210,6 +2215,8 @@ export class ClientSession {
 	private readonly approvalRules: ApprovalRulesStore;
 	/** 未发送输入框草稿（全局共享，<dataDir>/composer-drafts.json，按 sessionId 键入，见 server/composer-drafts.ts）。 */
 	private readonly drafts: ComposerDraftsStore;
+	/** 隔离沙盒项目管理器（全局共享，<dataDir>/sandboxes/registry.json）。 */
+	private readonly sandboxes: SandboxManager;
 	/** 内置标记服务（todo/notify/svc/rename 等，可全局/分组开关）。 */
 	private readonly markerSvc: MarkerService;
 
@@ -2271,6 +2278,7 @@ export class ClientSession {
 		this.subagentTemplates = new SubagentTemplatesStore(join(stateStore.dataDir, "subagent-templates.json"));
 		this.approvalRules = new ApprovalRulesStore(join(stateStore.dataDir, "approval-rules.json"));
 		this.drafts = new ComposerDraftsStore(join(stateStore.dataDir, "composer-drafts.json"));
+		this.sandboxes = new SandboxManager(stateStore.dataDir);
 		this.planManager = new PlanManager(join(stateStore.dataDir, "plans.json"));
 		this.markerSvc = new MarkerService({
 			clientId,
@@ -2745,6 +2753,15 @@ export class ClientSession {
 						if (this.delegateModeOf(ownerId) && !this.planModeOf(ownerId)) {
 							out.push(DELEGATION_SYSTEM_PROMPT);
 						}
+						const activeSandbox = this.sandboxes.getByCwd(effectiveCwd);
+						if (activeSandbox) {
+							out.push(
+								`[Sandbox Isolation Mode] You are operating inside an isolated sandbox workspace "${activeSandbox.name}" at "${activeSandbox.path}".` +
+									(activeSandbox.sourcePath
+										? ` This sandbox is an isolated copy of "${activeSandbox.sourcePath}". NEVER read from or modify "${activeSandbox.sourcePath}" directly; make all changes exclusively within the current sandbox directory "${activeSandbox.path}".`
+										: ` Keep all file writes, edits, and command side effects strictly inside "${activeSandbox.path}".`),
+							);
+						}
 						const realCwd = restoreWorkspaceUriFromSessionDir(effectiveCwd);
 						if (isRemoteWorkspaceUri(realCwd)) {
 							// 远程 SSH 工作区：明确告知 AI 当前处于远程主机以及所有工具已透明桥接至远端，
@@ -2937,7 +2954,10 @@ export class ClientSession {
 			// 避免 SDK findInitialModel 在无 model 时回退到内置硬编码默认（如 deepseek-v4-pro）：
 			let sessionModel: Parameters<AgentSession["setModel"]>[0] | undefined = initialModel;
 			if (!sessionModel) {
-				const isBlank = sessionManager.buildSessionContext().messages.length === 0;
+				const isBlank =
+					typeof sessionManager.getEntries === "function"
+						? !sessionManager.getEntries().some((e) => e.type === "message")
+						: sessionManager.buildSessionContext().messages.length === 0;
 				if (isBlank) {
 					const savedModelId =
 						this.stateStore.getProjectModel(this.clientId, effectiveCwd) ?? this.stateStore.getDefaultModel();
@@ -3015,6 +3035,12 @@ export class ClientSession {
 					),
 					...makePersistentTerminalTools(terminals, effectiveCwd, () => this.getLang(), {
 						checkSafety: (cmd) => {
+							// 沙盒硬围栏：禁止引用源项目路径或跳出沙盒根。
+							const activeSbx = this.sandboxes.getByCwd(effectiveCwd);
+							if (activeSbx) {
+								const sbxDenied = evaluateSandboxJail(activeSbx, "bash", { command: cmd }, effectiveCwd);
+								if (sbxDenied) return { blocked: true, reason: sbxDenied.reason };
+							}
 							// 计划模式：终端只放行只读命令（常驻终端也走这条，与 bash 覆盖同口径）。
 							if (this.planModeOf(ownerId)) {
 								const denied = planModeDenial("bash", { command: cmd });
@@ -3062,19 +3088,24 @@ export class ClientSession {
 					withGoalReviewGate(
 						withDelegationGate(
 							withPlanModeGate(
-								wrapEditSoftToolWithPermission(
-									makeEditSoftTool(effectiveCwd, () => this.getLang()),
-									effectiveCwd,
-									() =>
-										(ownerId ? this.convs.get(ownerId)?.permissionPreset : undefined) ??
-										this.settingsSvc.current.defaultPermissionPreset ??
-										"workspace-write-never",
-									() => this.roots,
+								withSandboxJailGate(
+									wrapEditSoftToolWithPermission(
+										makeEditSoftTool(effectiveCwd, () => this.getLang()),
+										effectiveCwd,
+										() =>
+											(ownerId ? this.convs.get(ownerId)?.permissionPreset : undefined) ??
+											this.settingsSvc.current.defaultPermissionPreset ??
+											"workspace-write-never",
+										() => this.roots,
+										() => this.getLang(),
+										(toolCallId, toolName, params, reason, reasonEn, convId, category) =>
+											this.askApproval(toolCallId, toolName, params, reason, reasonEn, convId, category),
+										() => ownerId,
+										() => this.approvalRules.list(),
+									),
+									() => this.sandboxes.getByCwd(effectiveCwd),
+									() => effectiveCwd,
 									() => this.getLang(),
-									(toolCallId, toolName, params, reason, reasonEn, convId, category) =>
-										this.askApproval(toolCallId, toolName, params, reason, reasonEn, convId, category),
-									() => ownerId,
-									() => this.approvalRules.list(),
 								),
 								() => this.planModeOf(ownerId),
 								() => this.getLang(),
@@ -3189,6 +3220,25 @@ export class ClientSession {
 					makePatchTool({ cwd: effectiveCwd, ownerId, lang: () => this.getLang() }),
 					// 原生语言服务器工具（lsp，定义跳转/引用/悬停/诊断）。
 					makeLspTool({ cwd: effectiveCwd, ownerId, lang: () => this.getLang() }),
+					// MCP 服务器检测与安装管理工具（mcp_manage：list/check/install/remove/reload）。
+					makeMcpManageTool(this.mcpManageToolHost(effectiveCwd), () => this.getLang()),
+					// 隔离沙盒项目管理工具（sandbox：list/create/diff/reset/persist/promote/apply_to_source/destroy）。
+					makeSandboxTool(
+						{
+							sandboxes: this.sandboxes,
+							getCwd: () => (ownerId ? this.convs.get(ownerId)?.cwd : undefined) ?? effectiveCwd,
+							setCwd: (newCwd) => this.setCwd(newCwd),
+							onSandboxesChanged: async () => {
+								this.invalidateProjectsCache();
+								await this.pushProjects();
+								this.flushSnapshot();
+							},
+							askApproval: (toolCallId, toolName, params, reason, reasonEn, convId, category) =>
+								this.askApproval(toolCallId, toolName, params, reason, reasonEn, convId, category),
+							getConversationId: () => ownerId,
+						},
+						() => this.getLang(),
+					),
 				].map((t) =>
 					// 目标审查闸门在最外层（理由最贴合此刻）；插件工具也在这个数组里，
 					// 创建时注册的同样被闸门覆盖（后续动态补入的走 syncPluginTools，与
@@ -3196,7 +3246,12 @@ export class ClientSession {
 					withGoalReviewGate(
 						withDelegationGate(
 							withPlanModeGate(
-								t,
+								withSandboxJailGate(
+									t,
+									() => this.sandboxes.getByCwd(effectiveCwd),
+									() => effectiveCwd,
+									() => this.getLang(),
+								),
 								() => this.planModeOf(ownerId),
 								() => this.getLang(),
 							),
@@ -4798,6 +4853,7 @@ export class ClientSession {
 			// 必须**恒存在**（不能只在 true 时展开）：转正后它由 true→false，而增量快照是
 			// `{...ui, ...d.state}` 浅合并，缺字段会把 true 残留下来。
 			isEphemeral: !!this.conv?.isEphemeral,
+			sandbox: this.sandboxes?.getByCwd(this.cwd) ?? null,
 			rev,
 			streamingMessage,
 			isStreaming: this.session.isStreaming,
@@ -6895,6 +6951,84 @@ export class ClientSession {
 		});
 	}
 
+	/** 构造 mcp_manage 工具宿主：安装/删除/重载后同步本客户端会话工具表与设置面板。 */
+	private mcpManageToolHost(cwd: string): McpManageToolHost {
+		return {
+			listServers: () =>
+				listAllMcpServers({
+					agentDir: this.agentDir,
+					cwd,
+					dataDir: this.stateStore.dataDir,
+					bridge: ClientSession.mcpBridge ?? undefined,
+				}),
+			checkServer: (query: string) =>
+				checkMcpServer({
+					agentDir: this.agentDir,
+					cwd,
+					dataDir: this.stateStore.dataDir,
+					bridge: ClientSession.mcpBridge ?? undefined,
+					query,
+				}),
+			installServer: async (spec) => {
+				const res = await installMcpServer({
+					agentDir: this.agentDir,
+					cwd,
+					dataDir: this.stateStore.dataDir,
+					bridge: ClientSession.mcpBridge ?? undefined,
+					spec,
+				});
+				if (res.ok) {
+					this.refreshPluginTools();
+					this.broadcastMcpServers();
+					this.pushSettings();
+				}
+				return res;
+			},
+			removeServer: async (name: string, scope?: McpScope) => {
+				const targetScope: McpScope =
+					scope ??
+					(checkMcpServer({
+						agentDir: this.agentDir,
+						cwd,
+						dataDir: this.stateStore.dataDir,
+						bridge: ClientSession.mcpBridge ?? undefined,
+						query: name,
+					}).server?.scope ||
+						"project");
+				const res = deleteMcpServerFile({
+					agentDir: this.agentDir,
+					cwd,
+					dataDir: this.stateStore.dataDir,
+					name,
+					scope: targetScope,
+				});
+				if (res.ok) {
+					if (ClientSession.mcpBridge) {
+						await ClientSession.mcpBridge.reload();
+					}
+					this.refreshPluginTools();
+					this.broadcastMcpServers();
+					this.pushSettings();
+				}
+				return res;
+			},
+			reloadServers: async () => {
+				if (ClientSession.mcpBridge) {
+					await ClientSession.mcpBridge.reload();
+				}
+				this.refreshPluginTools();
+				this.broadcastMcpServers();
+				this.pushSettings();
+				return listAllMcpServers({
+					agentDir: this.agentDir,
+					cwd,
+					dataDir: this.stateStore.dataDir,
+					bridge: ClientSession.mcpBridge ?? undefined,
+				});
+			},
+		};
+	}
+
 	/** 从技能市场安装技能到全局 (~/.pi/agent/skills) 或当前项目 (.pi/skills) */
 	async installSkill(name: string, scope: "global" | "project", content: string): Promise<void> {
 		const cleanName = name.trim();
@@ -7095,7 +7229,12 @@ export class ClientSession {
 			withGoalReviewGate(
 				withDelegationGate(
 					withPlanModeGate(
-						def,
+						withSandboxJailGate(
+							def,
+							() => this.sandboxes.getByCwd(cwd),
+							() => cwd,
+							() => this.getLang(),
+						),
 						() => this.planModeOf(ownerId),
 						() => this.getLang(),
 					),
@@ -8992,6 +9131,16 @@ export class ClientSession {
 			const conversationId = this.nextConversationId();
 			const terminals = this.makeTerminalManager(conversationId, this.cwd);
 			const sessionBaseDir = resolveWorkspaceSessionDir(this.stateStore?.dataDir, this.cwd);
+			this.emit({
+				type: "transition_progress",
+				kind: "new_chat",
+				target: this.cwd,
+				phase: "runtime",
+				progress: 45,
+				text: "正在初始化新对话环境…",
+				textEn: "Initializing new chat runtime…",
+			});
+			await new Promise<void>((r) => setImmediate(r));
 			let sessionManager: SessionManager;
 			if (ephemeral) {
 				sessionManager = SessionManager.inMemory(sessionBaseDir);
@@ -9079,8 +9228,26 @@ export class ClientSession {
 			// 新对话即当前打开 → 插件重拉（轨迹视图跟随）。
 			this.notifyConversationChanged();
 			this.pushSettings();
+			this.emit({
+				type: "transition_progress",
+				kind: "new_chat",
+				target: this.cwd,
+				phase: "done",
+				progress: 100,
+				text: "新对话已就绪",
+				textEn: "New chat ready",
+			});
 			ready = true;
 		} catch (err) {
+			this.emit({
+				type: "transition_progress",
+				kind: "new_chat",
+				target: this.cwd,
+				phase: "error",
+				progress: 100,
+				text: `新建对话失败：${(err as Error).message}`,
+				textEn: `Failed to create chat: ${(err as Error).message}`,
+			});
 			this.emit({
 				type: "notice",
 				level: "error",
@@ -9292,6 +9459,40 @@ export class ClientSession {
 	}
 
 	/**
+	 * 从已打开并校准叶子节点的 SessionManager 中提取尾部预览消息与总条数。
+	 * 在耗时的 createAgentSessionRuntime（扫扩展/技能）开始前先行流式推给浏览器，
+	 * 让切换目录/历史会话在几十毫秒内就能在屏幕上流式呈现对话内容。
+	 */
+	private extractTranscriptPreview(
+		manager: SessionManager,
+		maxPreview = 16,
+	): { totalMessages: number; previewMessages: UiMessage[] } {
+		try {
+			const branch = manager.getBranch();
+			const msgEntries: AgentMessage[] = [];
+			for (const e of branch) {
+				if (e.type === "message") {
+					const m = (e as unknown as { message?: AgentMessage }).message;
+					if (m && (m as { role?: string }).role !== "system") {
+						msgEntries.push(m);
+					}
+				}
+			}
+			const totalMessages = msgEntries.length;
+			const tail = msgEntries.slice(-maxPreview);
+			const startOffset = totalMessages - tail.length;
+			const previewMessages: UiMessage[] = [];
+			for (let i = 0; i < tail.length; i++) {
+				const ui = serializeMessage(tail[i], startOffset + i + 1);
+				if (ui) previewMessages.push(ui);
+			}
+			return { totalMessages, previewMessages };
+		} catch {
+			return { totalMessages: 0, previewMessages: [] };
+		}
+	}
+
+	/**
 	 * #235：manager＋runtime 一起建，链损坏报错则修最近文件后重试一次。
 	 * SessionManager.open 本身不走 parent 链（真正死循环的是 runtime 初始化里的
 	 * getBranch），所以重试必须把两步都包进来；修完用全新 manager 重读。
@@ -9300,10 +9501,12 @@ export class ClientSession {
 		makeManager: () => SessionManager,
 		makeRuntime: (m: SessionManager) => Promise<AgentSessionRuntime>,
 		locateFile: () => Promise<string | undefined>,
+		onTranscriptLoaded?: (m: SessionManager) => Promise<void> | void,
 	): Promise<{ manager: SessionManager; runtime: AgentSessionRuntime; repair: SessionFileRepair | null }> {
 		try {
 			const manager = makeManager();
 			calibrateSessionLeaf(manager);
+			if (onTranscriptLoaded) await onTranscriptLoaded(manager);
 			const runtime = await makeRuntime(manager);
 			return { manager, runtime, repair: null };
 		} catch (err) {
@@ -9313,6 +9516,7 @@ export class ClientSession {
 			if (!repair?.changed) throw err;
 			const manager = makeManager();
 			calibrateSessionLeaf(manager);
+			if (onTranscriptLoaded) await onTranscriptLoaded(manager);
 			const runtime = await makeRuntime(manager);
 			return { manager, runtime, repair };
 		}
@@ -10059,9 +10263,10 @@ export class ClientSession {
 	private static sessionInfosInFlight = new Map<string, Promise<SessionInfo[]>>();
 	private static readonly SESSION_INFO_CACHE_TTL = 30_000;
 
-	private async loadSessionInfos(): Promise<SessionInfo[]> {
+	private async loadSessionInfos(forCwd?: string): Promise<SessionInfo[]> {
+		const targetCwd = forCwd ?? this.cwd;
 		const now = Date.now();
-		const cwdKey = normalizePathKey(this.cwd);
+		const cwdKey = normalizePathKey(targetCwd);
 		const c = ClientSession.sessionInfosCache.get(cwdKey);
 		if (c && now - c.at < ClientSession.SESSION_INFO_CACHE_TTL) {
 			return c.infos;
@@ -10070,7 +10275,7 @@ export class ClientSession {
 		const inFlight = ClientSession.sessionInfosInFlight.get(cwdKey);
 		if (inFlight) return inFlight;
 
-		const sessionBaseDir = resolveWorkspaceSessionDir(this.stateStore?.dataDir, this.cwd);
+		const sessionBaseDir = resolveWorkspaceSessionDir(this.stateStore?.dataDir, targetCwd);
 		const run = (async (): Promise<SessionInfo[]> => {
 			try {
 				const sessionDir = piSessionsRoot()
@@ -10166,10 +10371,14 @@ export class ClientSession {
 		await this.pushSessions();
 	}
 
-	/** 切项目时的会话列表刷新：历史面板没打开过就不扫盘（只清缓存），打开过
-	 *  才重推 —— 首访切项目的转录解析不在关键路径上。 */
+	/** 切项目时的会话列表刷新：sessionInfosCache 已按 cwdKey 隔离（30s TTL），
+	 *  若刚刚在 setCwd 并行预热过（<2s 内）则直接复用预热结果推送，不再清空重扫。 */
 	private refreshSessionsOnSwitch(): void {
-		this.invalidateSessionInfos();
+		const cwdKey = normalizePathKey(this.cwd);
+		const cached = ClientSession.sessionInfosCache.get(cwdKey);
+		if (!cached || Date.now() - cached.at > 2_000) {
+			ClientSession.sessionInfosCache.delete(cwdKey);
+		}
 		if (this.sessionsRequested) void this.refreshSessions();
 	}
 
@@ -10219,8 +10428,13 @@ export class ClientSession {
 		}
 	}
 
-	/** Remove an entry from the client's recent-project list (UI state only). */
+	/** Remove an entry from the client's recent-project list (UI state only, or destroy if sandbox). */
 	async removeProject(path: string): Promise<void> {
+		const sbx = this.sandboxes.get(path) ?? this.sandboxes.getByCwd(path);
+		if (sbx) {
+			await this.destroySandbox(sbx.path);
+			return;
+		}
 		this.stateStore.removeProject(this.clientId, path);
 		this.invalidateProjectsCache();
 		await this.pushProjects();
@@ -11148,9 +11362,40 @@ export class ClientSession {
 
 			// #235：先修后开——坏转录到 open 后的 getBranch 会死循环，修完再读。
 			// 单文件预扫描，健康文件只多一次小读；修过即弹提示（含压缩被打断与分支拓扑纠偏）。
+			this.emit({
+				type: "transition_progress",
+				kind: "session",
+				target: targetPath,
+				phase: "fs",
+				progress: 28,
+				text: "正在读取历史会话记录…",
+				textEn: "Reading session transcript…",
+			});
+			await new Promise<void>((r) => setImmediate(r));
 			this.repairTranscriptFileBeforeOpen(targetPath);
 			const sessionManager = SessionManager.open(targetPath);
 			calibrateSessionLeaf(sessionManager);
+			{
+				const { totalMessages, previewMessages } = this.extractTranscriptPreview(sessionManager, 16);
+				this.emit({
+					type: "transition_progress",
+					kind: "session",
+					target: targetPath,
+					phase: "transcript",
+					progress: 62,
+					text:
+						totalMessages > 0
+							? `已流式载入会话记录（${totalMessages} 条消息），正在挂载智能体环境…`
+							: "会话记录已就绪，正在挂载智能体环境…",
+					textEn:
+						totalMessages > 0
+							? `Streamed session transcript (${totalMessages} messages), mounting agent runtime…`
+							: "Transcript ready, mounting agent runtime…",
+					totalMessages,
+					...(previewMessages.length > 0 ? { previewMessages } : {}),
+				});
+				await new Promise<void>((r) => setImmediate(r));
+			}
 			const rawSessionCwd = sessionManager.getCwd();
 			const targetCwd = restoreWorkspaceUriFromSessionDir(rawSessionCwd);
 			const runtimeCwd = resolveWorkspaceSessionDir(this.stateStore?.dataDir, targetCwd);
@@ -11184,6 +11429,15 @@ export class ClientSession {
 				openedRuntime = null;
 				openedTerminals = null;
 				this.emit({
+					type: "transition_progress",
+					kind: "session",
+					target: targetPath,
+					phase: "error",
+					progress: 100,
+					text: `当前项目运行的对话已达上限（${maxOpenConversations} 个）`,
+					textEn: `Max open conversations (${maxOpenConversations}) reached`,
+				});
+				this.emit({
 					type: "notice",
 					level: "warning",
 					text: `当前项目运行的对话已达上限（${maxOpenConversations} 个），请先移出不需要的对话（打开后离开不继续对话即移出；钉住的对话需先取消钉住）`,
@@ -11215,8 +11469,21 @@ export class ClientSession {
 			// 打开的历史会话可能属于另一个项目 —— 工作区跟随面（roots/文件树/
 			// 历史列表/命令目录/最近项目）必须跟着切，否则 UI 停在旧项目。
 			this.applyCwdSideEffects(targetCwd);
-			await this.restoreProjectProviderKeysForCwd(targetCwd);
-			await this.restoreProjectModelForCwd(targetCwd);
+			// 模型与 key 恢复走后台异步（带代际守卫），不阻塞历史会话快照首帧送达
+			{
+				const convId = this.activeId;
+				void (async () => {
+					try {
+						await this.restoreProjectProviderKeysForCwd(targetCwd);
+						if (this.disposed || this.activeId !== convId || this.cwd !== targetCwd) return;
+						await this.restoreProjectModelForCwd(targetCwd);
+						if (this.disposed || this.activeId !== convId || this.cwd !== targetCwd) return;
+						this.flushSnapshot();
+					} catch {
+						/* 静默：恢复失败保持会话默认 */
+					}
+				})();
+			}
 			this.conv.lastActiveAt = Date.now();
 			this.webUi.refresh();
 			this.emitConversations();
@@ -11227,9 +11494,27 @@ export class ClientSession {
 			// 切历史会话成功 → 插件重拉（轨迹视图立即显示该会话时间线）。
 			this.notifyConversationChanged();
 			this.pushSettings();
+			this.emit({
+				type: "transition_progress",
+				kind: "session",
+				target: targetPath,
+				phase: "done",
+				progress: 100,
+				text: "会话加载完成",
+				textEn: "Session loaded",
+			});
 		} catch (err) {
 			openedTerminals?.killAll();
 			if (openedRuntime) await openedRuntime.dispose().catch(() => {});
+			this.emit({
+				type: "transition_progress",
+				kind: "session",
+				target: path || sessionId || "",
+				phase: "error",
+				progress: 100,
+				text: `切换会话失败：${(err as Error).message}`,
+				textEn: `Failed to switch session: ${(err as Error).message}`,
+			});
 			this.emit({
 				type: "notice",
 				level: "error",
@@ -11666,9 +11951,12 @@ export class ClientSession {
 	async pushProjects(): Promise<void> {
 		const now = Date.now();
 		const cached = ClientSession.projectsCache;
-		// TTL 命中：直接复用（把当前 cwd 合并进去，刚 remember 的新项目也可见）。
-		if (cached && now - cached.at < ClientSession.PROJECTS_CACHE_TTL) {
-			this.emit({ type: "projects", projects: this.withCurrentCwd(cached.projects, now) });
+		// TTL 命中（或已建立过项目缓存）：直接把当前 cwd 合并重排并续期，
+		// 避免切换工作区时因为刚好跨过 60s TTL 而触发全盘 30 个会话子目录重扫。
+		if (cached) {
+			const updated = this.withCurrentCwd(cached.projects, now);
+			ClientSession.projectsCache = { at: now, projects: updated };
+			this.emit({ type: "projects", projects: updated });
 			return;
 		}
 
@@ -11715,15 +12003,42 @@ export class ClientSession {
 	private withCurrentCwd(projects: ProjectSummary[], now: number): ProjectSummary[] {
 		const currentKey = normalizePathKey(this.cwd);
 		const removedKeys = new Set(this.stateStore.getRemovedProjects(this.clientId).map(normalizePathKey));
+		// 过滤掉已销毁（不在沙盒注册表且目录位于 sandboxesRoot 下）的残留沙盒条目
+		const validProjects = projects.filter((p) => {
+			if (isSameOrSubpath(p.path, this.sandboxes.sandboxesRoot)) {
+				return Boolean(this.sandboxes.getByCwd(p.path));
+			}
+			return true;
+		});
+
+		let list: ProjectSummary[];
 		if (removedKeys.has(currentKey)) {
-			return projects;
-		}
-		if (projects.some((p) => normalizePathKey(p.path) === currentKey)) {
-			return projects
+			list = validProjects;
+		} else if (validProjects.some((p) => normalizePathKey(p.path) === currentKey)) {
+			list = validProjects
 				.map((p) => (normalizePathKey(p.path) === currentKey && p.lastUsed < now ? { ...p, lastUsed: now } : p))
 				.sort((a, b) => b.lastUsed - a.lastUsed);
+		} else {
+			list = [{ path: this.cwd, lastUsed: now }, ...validProjects].slice(0, 20);
 		}
-		return [{ path: this.cwd, lastUsed: now }, ...projects].slice(0, 20);
+
+		// 确保所有仍存活的注册沙盒也出现在列表里，并附带 sandbox 元数据
+		const existingKeys = new Set(list.map((p) => normalizePathKey(p.path)));
+		for (const sbx of this.sandboxes.list()) {
+			const k = normalizePathKey(sbx.path);
+			if (!existingKeys.has(k) && !removedKeys.has(k)) {
+				list.push({ path: sbx.path, lastUsed: sbx.createdAt, sandbox: sbx });
+				existingKeys.add(k);
+			}
+		}
+
+		return list
+			.map((p) => {
+				const sbx = this.sandboxes.getByCwd(p.path);
+				return sbx ? { ...p, sandbox: sbx } : p;
+			})
+			.sort((a, b) => b.lastUsed - a.lastUsed)
+			.slice(0, 25);
 	}
 
 	/** 最近项目缓存失效（用户显式移除项目后，下一次推送必须重扫）。 */
@@ -11992,14 +12307,24 @@ export class ClientSession {
 				if (displaced) this.removeConversation(displaced.id);
 			} else {
 				// 冷切换的 runtime 创建要 1~2s（扫技能/扩展）—— 先回一条 ack +
-				// 快照，点击看起来不再 frozen；落地后再推第二次全量。
+				// 流式进度 + 快照，点击立即呈现阶段进度与转录预览；落地后再推完整全量。
 				this.emit({
-					type: "notice",
-					level: "info",
-					text: `正在切换到工作目录：${abs}`,
-					textEn: `Switching to directory: ${abs}`,
+					type: "transition_progress",
+					kind: "cwd",
+					target: abs,
+					phase: "fs",
+					progress: 28,
+					text: `正在同步目录与检查最近会话：${abs}`,
+					textEn: `Validating workspace & checking recent session: ${abs}`,
 				});
 				this.flushSnapshot();
+				// 让出事件循环，确保首帧进度在同步磁盘扫描前真正发往浏览器
+				await new Promise<void>((r) => setImmediate(r));
+				// 在耗时的 runtime 初始化期间，并行预热目标项目的会话列表缓存
+				if (this.sessionsRequested) {
+					ClientSession.sessionInfosCache.delete(normalizePathKey(abs));
+					void this.loadSessionInfos(abs).catch(() => {});
+				}
 				// First visit to this project: resume its most recent session —
 				// unless that transcript is still held on another client (#145):
 				// default-opening it would strand the tab on a conversation it
@@ -12034,6 +12359,27 @@ export class ClientSession {
 							sessionManager: m,
 						}),
 					async () => (await SessionManager.list(sessionBaseDir))[0]?.path,
+					async (m) => {
+						const { totalMessages, previewMessages } = this.extractTranscriptPreview(m, 16);
+						this.emit({
+							type: "transition_progress",
+							kind: "cwd",
+							target: abs,
+							phase: "transcript",
+							progress: 64,
+							text:
+								totalMessages > 0
+									? `已流式载入最近会话（${totalMessages} 条消息），正在挂载智能体与工具…`
+									: `工作区会话已就绪，正在挂载智能体与工具…`,
+							textEn:
+								totalMessages > 0
+									? `Streamed recent session (${totalMessages} messages), mounting agent & tools…`
+									: `Workspace session ready, mounting agent & tools…`,
+							totalMessages,
+							...(previewMessages.length > 0 ? { previewMessages } : {}),
+						});
+						await new Promise<void>((r) => setImmediate(r));
+					},
 				);
 				const newRuntime = opened.runtime;
 				if (opened.repair) {
@@ -12099,8 +12445,11 @@ export class ClientSession {
 			// Skills / prompt templates are project-bound — refresh the catalog.
 			void this.pushSlashCommands();
 			this.emit({
-				type: "notice",
-				level: "info",
+				type: "transition_progress",
+				kind: "cwd",
+				target: abs,
+				phase: "done",
+				progress: 100,
 				text: `已切换到工作目录：${abs}`,
 				textEn: `Switched to directory: ${abs}`,
 			});
@@ -12109,6 +12458,15 @@ export class ClientSession {
 			this.pushSettings();
 		} catch (err) {
 			this.emit({
+				type: "transition_progress",
+				kind: "cwd",
+				target: newCwd.trim(),
+				phase: "error",
+				progress: 100,
+				text: `切换工作目录失败：${(err as Error).message}`,
+				textEn: `Failed to switch directory: ${(err as Error).message}`,
+			});
+			this.emit({
 				type: "notice",
 				level: "error",
 				text: `切换工作目录失败：${(err as Error).message}`,
@@ -12116,6 +12474,215 @@ export class ClientSession {
 			});
 		}
 		this.flushSnapshot();
+	}
+
+	/** 创建隔离沙盒项目（空白或从 sourcePath 导入）并自动切换到该沙盒。 */
+	async createSandbox(opts: { name?: string; sourcePath?: string; ephemeral?: boolean }): Promise<void> {
+		try {
+			const { sandbox, copiedFiles } = await this.sandboxes.create(opts);
+			this.invalidateProjectsCache();
+			await this.setCwd(sandbox.path);
+			await this.pushProjects();
+			const modeZh = sandbox.sourcePath ? `已从源项目导入 ${copiedFiles} 个文件` : "空白隔离环境";
+			const modeEn = sandbox.sourcePath ? `imported ${copiedFiles} files from source` : "blank isolated workspace";
+			this.emit({
+				type: "notice",
+				level: "info",
+				text: `🧪 沙盒「${sandbox.name}」已启动（${modeZh}，一切修改与原项目完全隔离）`,
+				textEn: `🧪 Sandbox "${sandbox.name}" started (${modeEn}; all changes are strictly isolated)`,
+			});
+		} catch (err) {
+			this.emit({
+				type: "notice",
+				level: "error",
+				text: `创建沙盒失败：${(err as Error).message}`,
+				textEn: `Failed to create sandbox: ${(err as Error).message}`,
+			});
+		}
+	}
+
+	/** 重置沙盒工作区到初始状态（空白或重新从源项目复制）。 */
+	async resetSandbox(path?: string): Promise<void> {
+		const target = path?.trim() || this.cwd;
+		try {
+			const { sandbox, copiedFiles } = await this.sandboxes.reset(target);
+			await this.listFiles();
+			this.flushSnapshot();
+			this.emit({
+				type: "notice",
+				level: "info",
+				text: sandbox.sourcePath
+					? `🔄 已重置沙盒「${sandbox.name}」（重新从源项目同步 ${copiedFiles} 个文件）`
+					: `🔄 已清空并重置沙盒「${sandbox.name}」`,
+				textEn: sandbox.sourcePath
+					? `🔄 Reset sandbox "${sandbox.name}" (re-synced ${copiedFiles} files from source)`
+					: `🔄 Cleared and reset sandbox "${sandbox.name}"`,
+			});
+		} catch (err) {
+			this.emit({
+				type: "notice",
+				level: "error",
+				text: `重置沙盒失败：${(err as Error).message}`,
+				textEn: `Failed to reset sandbox: ${(err as Error).message}`,
+			});
+		}
+	}
+
+	/** 将临时沙盒转为永久保留的沙盒项目。 */
+	async persistSandbox(path?: string): Promise<void> {
+		const target = path?.trim() || this.cwd;
+		try {
+			const sandbox = this.sandboxes.persist(target);
+			this.invalidateProjectsCache();
+			await this.pushProjects();
+			this.flushSnapshot();
+			this.emit({
+				type: "notice",
+				level: "info",
+				text: `📌 沙盒「${sandbox.name}」已转为永久保留`,
+				textEn: `📌 Sandbox "${sandbox.name}" is now saved permanently`,
+			});
+		} catch (err) {
+			this.emit({
+				type: "notice",
+				level: "error",
+				text: `转换永久沙盒失败：${(err as Error).message}`,
+				textEn: `Failed to persist sandbox: ${(err as Error).message}`,
+			});
+		}
+	}
+
+	/** 将沙盒导出/另存为正式项目目录，可选立即切换过去。 */
+	async promoteSandbox(targetPath: string, path?: string, switchToTarget = true): Promise<void> {
+		const sbxTarget = path?.trim() || this.cwd;
+		try {
+			const { sandbox, targetPath: resolvedTarget, copiedFiles } = await this.sandboxes.promote(sbxTarget, targetPath);
+			this.invalidateProjectsCache();
+			if (switchToTarget) {
+				await this.setCwd(resolvedTarget);
+			} else {
+				await this.pushProjects();
+			}
+			this.emit({
+				type: "notice",
+				level: "info",
+				text: `📤 已将沙盒「${sandbox.name}」导出为正式项目：${resolvedTarget}（共 ${copiedFiles} 个文件）`,
+				textEn: `📤 Exported sandbox "${sandbox.name}" to formal project: ${resolvedTarget} (${copiedFiles} files)`,
+			});
+		} catch (err) {
+			this.emit({
+				type: "notice",
+				level: "error",
+				text: `导出沙盒失败：${(err as Error).message}`,
+				textEn: `Failed to export sandbox: ${(err as Error).message}`,
+			});
+		}
+	}
+
+	/** 对比沙盒与源项目之间的新增/修改/删除文件清单并推送给前端。 */
+	async diffSandbox(path?: string): Promise<void> {
+		const target = path?.trim() || this.cwd;
+		try {
+			const res = await this.sandboxes.diffWithSource(target);
+			this.emit({
+				type: "sandbox_diff",
+				diff: {
+					sandboxId: res.sandbox.id,
+					path: res.sandbox.path,
+					sourcePath: res.sourcePath,
+					added: res.added.slice(0, 200),
+					modified: res.modified.slice(0, 200),
+					deleted: res.deleted.slice(0, 200),
+					unchangedCount: res.unchangedCount,
+				},
+			});
+		} catch (err) {
+			this.emit({
+				type: "sandbox_diff",
+				diff: {
+					sandboxId: "",
+					path: target,
+					added: [],
+					modified: [],
+					deleted: [],
+					unchangedCount: 0,
+					error: (err as Error).message,
+				},
+			});
+		}
+	}
+
+	/** 将导入型沙盒的改动写回源项目（保留源项目 .git 与依赖缓存）。 */
+	async applySandboxToSource(path?: string): Promise<void> {
+		const target = path?.trim() || this.cwd;
+		try {
+			const { sandbox, sourcePath, copiedFiles } = await this.sandboxes.applyToSource(target);
+			this.emit({
+				type: "notice",
+				level: "info",
+				text: `✅ 已将沙盒「${sandbox.name}」中的 ${copiedFiles} 个文件同步回源项目：${sourcePath}`,
+				textEn: `✅ Applied ${copiedFiles} files from sandbox "${sandbox.name}" back to source project: ${sourcePath}`,
+			});
+		} catch (err) {
+			this.emit({
+				type: "notice",
+				level: "error",
+				text: `写回源项目失败：${(err as Error).message}`,
+				textEn: `Failed to apply sandbox changes to source: ${(err as Error).message}`,
+			});
+		}
+	}
+
+	/** 彻底销毁沙盒目录：若当前正在该沙盒内，先自动切回源项目或其它最近项目。 */
+	async destroySandbox(path: string): Promise<void> {
+		const target = path?.trim() || this.cwd;
+		const sbx = this.sandboxes.get(target) ?? this.sandboxes.getByCwd(target);
+		if (!sbx) {
+			this.stateStore.removeProject(this.clientId, target);
+			this.invalidateProjectsCache();
+			await this.pushProjects();
+			return;
+		}
+		try {
+			const activeInSbx = isSameOrSubpath(this.cwd, sbx.path);
+			if (activeInSbx) {
+				// 挑选回退目录：优先源项目 → 最近非当前沙盒项目 → homedir
+				let fallbackCwd = sbx.sourcePath && existsSync(sbx.sourcePath) ? sbx.sourcePath : "";
+				if (!fallbackCwd) {
+					const recent = await this.stateStore.getRecentProjects(this.clientId);
+					const other = recent.find((p) => {
+						const pk = normalizePathKey(p.path);
+						return pk !== normalizePathKey(sbx.path) && existsSync(p.path);
+					});
+					fallbackCwd = other?.path || homedir();
+				}
+				await this.setCwd(fallbackCwd);
+			}
+			// 清理仍挂在该沙盒下的后台会话
+			for (const [cid, c] of this.convs) {
+				if (cid !== this.activeId && normalizePathKey(c.cwd) === normalizePathKey(sbx.path)) {
+					this.removeConversation(cid);
+				}
+			}
+			await this.sandboxes.destroy(sbx.id);
+			this.stateStore.removeProject(this.clientId, sbx.path);
+			this.invalidateProjectsCache();
+			await this.pushProjects();
+			this.flushSnapshot();
+			this.emit({
+				type: "notice",
+				level: "info",
+				text: `🗑️ 已销毁沙盒项目「${sbx.name}」并清理隔离目录`,
+				textEn: `🗑️ Destroyed sandbox project "${sbx.name}" and cleaned up isolated directory`,
+			});
+		} catch (err) {
+			this.emit({
+				type: "notice",
+				level: "error",
+				text: `销毁沙盒失败：${(err as Error).message}`,
+				textEn: `Failed to destroy sandbox: ${(err as Error).message}`,
+			});
+		}
 	}
 
 	/** Strip the "(New)" freshness marker some catalogs append to display names

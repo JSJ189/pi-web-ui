@@ -54,6 +54,8 @@ const WRITE_TOOLS = new Set([
 	"git",
 	// 代码求值（eval 沙箱可写真实文件系统 —— 审查回合只读核实，#436）
 	"eval",
+	"mcp_manage",
+	"sandbox",
 	// 形态变换（会重写整个文件树）
 	"format",
 	"prettier",

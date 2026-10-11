@@ -85,6 +85,10 @@ export const COMPACT_CONTEXT_TOOL_NAME = "compact_context";
 export const PATCH_TOOL_NAME = "patch";
 /** 原生语言服务器工具（定义见 lsp-tool.ts）：代码定义跳转、引用查询、类型悬停与诊断。 */
 export const LSP_TOOL_NAME = "lsp";
+/** MCP 服务器检测与安装管理工具（定义见 mcp-agent-tool.ts）：检查/安装/移除/重载 MCP 服务器。 */
+export const MCP_MANAGE_TOOL_NAME = "mcp_manage";
+/** 隔离沙盒项目管理工具（定义见 sandbox-tool.ts）：创建空白/导入型隔离沙盒、查看 diff、重置或销毁。 */
+export const SANDBOX_TOOL_NAME = "sandbox";
 /** QuickJS WASM 沙箱代码执行与批量调用工具（SDK 内置 codemode 扩展）。 */
 export const CODEMODE_TOOL_NAME = "codemode";
 /** 基于 BM25 算法的延迟工具检索与激活工具（SDK 内置 tool-search 扩展）。 */
@@ -280,6 +284,26 @@ export const AGENT_TOOL_CATALOG: AgentToolEntry[] = [
 		dshVisible: false,
 		descKey: "compactContextEnabledDesc",
 		offHintKey: "compactContextOffHint",
+	},
+	// MCP 服务器检测与安装管理（单 action：list/check/install/remove/reload）：默认关（opt-in），
+	// 开启后 AI 可检查某个 MCP 是否已安装并一键写入 mcp.json 热加载挂载。
+	{
+		name: MCP_MANAGE_TOOL_NAME,
+		group: "other",
+		defaultOn: false,
+		dshVisible: false,
+		descKey: "mcpManageEnabledDesc",
+		offHintKey: "mcpManageOffHint",
+	},
+	// 隔离沙盒项目管理（单 action：list/create/diff/reset/persist/promote/apply_to_source/destroy）：默认开，
+	// 支持 AI 自主创建空白或导入型隔离副本实验，写回源项目强制经过用户审批。
+	{
+		name: SANDBOX_TOOL_NAME,
+		group: "other",
+		defaultOn: true,
+		dshVisible: false,
+		descKey: "sandboxEnabledDesc",
+		offHintKey: "sandboxOffHint",
 	},
 	// todo_list 唯一例外：行不在「其他」组，固定在上面的 markers 分区（设置页循环
 	// 跳过它，见 OTHER_AGENT_TOOLS；文案 key 照给，万一哪天搬家不用补）。

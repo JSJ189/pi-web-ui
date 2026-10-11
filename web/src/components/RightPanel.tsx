@@ -811,13 +811,18 @@ export const RightPanel = memo(function RightPanel({
 		if (files && files.path === currentPath) setLoading(false);
 	}, [files, currentPath]);
 
-	// Auto-refresh: when the cwd changes (project switch / set_cwd) re-list its
-	// root; otherwise poll the current directory silently so the tree stays fresh
-	// without a manual refresh button.
+	// Auto-refresh: on initial mount request the root listing; on project switch
+	// (set_cwd) the server's applyCwdSideEffects already pushes root `files`, so
+	// just reset currentPath to "" to avoid a duplicate list_files + git status round-trip.
 	useEffect(() => {
 		if (cwd !== lastCwd.current) {
+			const isInitialMount = lastCwd.current === undefined;
 			lastCwd.current = cwd;
-			request("", { silent: true });
+			if (isInitialMount) {
+				request("", { silent: true });
+			} else {
+				setCurrentPath("");
+			}
 			return;
 		}
 		const timer = setInterval(() => {

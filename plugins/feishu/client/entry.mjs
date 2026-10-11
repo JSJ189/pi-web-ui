@@ -248,6 +248,31 @@ function renderFeishuWorkbench(container, ctx) {
 								</div>
 							</div>
 						</div>
+						<div class="feishu-cfg-bot-section" style="border-top: 1px solid var(--border); padding-top: 12px;">
+							<div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 8px;">
+								<div style="font-weight: 600;">🤖 飞书机器人 (Bot) 双工对话服务</div>
+								<span class="feishu-bot-status-badge" style="font-size: 11px; padding: 2px 6px; border-radius: 4px; background: var(--bg); border: 1px solid var(--border);">未启动</span>
+							</div>
+							<div style="display: flex; align-items: center; gap: 8px; margin-bottom: 10px;">
+								<input type="checkbox" id="feishu-cfg-bot-enabled" class="feishu-cfg-bot-enabled" style="cursor: pointer;" />
+								<label for="feishu-cfg-bot-enabled" style="font-size: 12px; cursor: pointer; user-select: none;">启用飞书机器人对话 (用户在群里 @机器人 或私聊自动驱动 AI 会话并回复)</label>
+							</div>
+							<div style="display: flex; gap: 10px; margin-bottom: 8px;">
+								<div style="flex: 1;">
+									<label style="display: block; margin-bottom: 4px; color: var(--text-dim);">群聊响应模式:</label>
+									<select class="feishu-cfg-group-mode" style="width: 100%; box-sizing: border-box; padding: 6px 10px; border-radius: 4px; border: 1px solid var(--border); background: var(--bg); color: var(--text);">
+										<option value="mention">仅在群内 @机器人 时回复 (推荐)</option>
+										<option value="none">群聊不回复 (仅私聊对话)</option>
+										<option value="all">群聊全部消息均回复</option>
+									</select>
+								</div>
+								<div style="flex: 1;">
+									<label style="display: block; margin-bottom: 4px; color: var(--text-dim);">安全白名单 (Open ID，逗号分隔，留空不限制):</label>
+									<input type="text" class="feishu-cfg-allowed-senders" placeholder="ou_xxx, ou_yyy (留空允许所有用户)" style="width: 100%; box-sizing: border-box; padding: 6px 10px; border-radius: 4px; border: 1px solid var(--border); background: var(--bg); color: var(--text);" />
+								</div>
+							</div>
+							<div class="feishu-bot-metrics" style="font-size: 11px; color: var(--text-dim); margin-top: 4px;">已接收: 0 条 · 已回复: 0 条</div>
+						</div>
 						<div class="feishu-cfg-webhook-section" style="border-top: 1px solid var(--border); padding-top: 12px;">
 							<div style="font-weight: 600; margin-bottom: 8px;">自定义群机器人 Webhook (单向卡片与文本推送)</div>
 							<div style="margin-bottom: 8px;">
@@ -324,6 +349,11 @@ function renderFeishuWorkbench(container, ctx) {
 	const cfgAppSecret = q(".feishu-cfg-appsecret");
 	const cfgDefaultChat = q(".feishu-cfg-default-chat");
 	const cfgPollSec = q(".feishu-cfg-pollsec");
+	const cfgBotEnabled = q(".feishu-cfg-bot-enabled");
+	const cfgGroupMode = q(".feishu-cfg-group-mode");
+	const cfgAllowedSenders = q(".feishu-cfg-allowed-senders");
+	const botStatusBadge = q(".feishu-bot-status-badge");
+	const botMetrics = q(".feishu-bot-metrics");
 	const cfgWebhookUrl = q(".feishu-cfg-webhook-url");
 	const cfgWebhookSecret = q(".feishu-cfg-webhook-secret");
 
@@ -770,6 +800,26 @@ function renderFeishuWorkbench(container, ctx) {
 		cfgAppSecret.placeholder = cfg.hasAppSecret ? "●●●●●● (已加密保存，留空保持)" : "填入 App Secret";
 		cfgDefaultChat.value = cfg.defaultChatId || "";
 		cfgPollSec.value = cfg.pollSec || 60;
+		cfgBotEnabled.checked = Boolean(cfg.botEnabled);
+		cfgGroupMode.value = cfg.groupResponseMode || "mention";
+		cfgAllowedSenders.value = Array.isArray(cfg.allowedSenders) ? cfg.allowedSenders.join(", ") : "";
+
+		const bStat = state.botStatus || {};
+		if (bStat.state === "connected") {
+			botStatusBadge.textContent = "🟢 在线";
+			botStatusBadge.style.color = "var(--green, #22c55e)";
+		} else if (bStat.state === "connecting") {
+			botStatusBadge.textContent = "🟡 连接中";
+			botStatusBadge.style.color = "var(--amber, #eab308)";
+		} else if (bStat.state === "error") {
+			botStatusBadge.textContent = "🔴 错误";
+			botStatusBadge.style.color = "var(--red, #ef4444)";
+		} else {
+			botStatusBadge.textContent = "⚪ 未启动";
+			botStatusBadge.style.color = "var(--text-dim)";
+		}
+		botMetrics.textContent = `已接收: ${bStat.messagesReceived || 0} 条 · 已回复: ${bStat.messagesReplied || 0} 条`;
+
 		cfgWebhookUrl.value = cfg.webhookUrl || "";
 		cfgWebhookSecret.value = "";
 		cfgWebhookSecret.placeholder = cfg.hasWebhookSecret
@@ -823,6 +873,12 @@ function renderFeishuWorkbench(container, ctx) {
 			appSecret: cfgAppSecret.value.trim(),
 			defaultChatId: cfgDefaultChat.value.trim(),
 			pollSec: Number(cfgPollSec.value) || 60,
+			botEnabled: Boolean(cfgBotEnabled.checked),
+			groupResponseMode: cfgGroupMode.value,
+			allowedSenders: cfgAllowedSenders.value
+				.split(/[,，\s]+/)
+				.map((s) => s.trim())
+				.filter(Boolean),
 			webhookUrl: cfgWebhookUrl.value.trim(),
 			webhookSecret: cfgWebhookSecret.value.trim(),
 		};

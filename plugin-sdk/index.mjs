@@ -424,6 +424,19 @@ export function createMockHost(overrides) {
 		models: {
 			list: () => [],
 		},
+		mcp: {
+			list: async () => [],
+			check: async () => ({
+				installed: false,
+				running: false,
+				enabled: false,
+				server: null,
+				matches: [],
+				tools: [],
+			}),
+			install: async () => okFalse("mcp.install（MCP 安装未接入）"),
+			promptInstall: async () => okFalse("mcp.promptInstall（对话通道未接入）"),
+		},
 		onStats: sub("onStats"),
 		onStreaming: sub("onStreaming"),
 		net: {
@@ -528,6 +541,7 @@ export function createMockHost(overrides) {
 		"project",
 		"scm",
 		"models",
+		"mcp",
 		"net",
 		"events",
 		"dialogs",

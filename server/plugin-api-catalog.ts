@@ -285,6 +285,30 @@ export const HOST_METHODS: ReadonlyArray<CatalogHostMethod> = [
 	},
 	{ name: "models.list", needs: "-", summary: "列出已配置鉴权的模型（provider/id）", example: `host.models.list()` },
 	{
+		name: "mcp.list",
+		needs: "-",
+		summary: "列出已配置的全局与项目级 MCP 服务器及运行态/工具列表",
+		example: `await host.mcp.list()`,
+	},
+	{
+		name: "mcp.check",
+		needs: "-",
+		summary: "按名称、npm 包名、命令或 URL 检查指定 MCP 是否已安装/运行中",
+		example: `await host.mcp.check("filesystem")`,
+	},
+	{
+		name: "mcp.install",
+		needs: "tools",
+		summary: "安装/配置 MCP 服务器（支持 package 快捷方式）并立即触发热加载",
+		example: `await host.mcp.install({ package: "@modelcontextprotocol/server-memory" })`,
+	},
+	{
+		name: "mcp.promptInstall",
+		needs: "chat",
+		summary: "向当前对话发送指令，让 AI 检查并安装指定的 MCP 服务器",
+		example: `await host.mcp.promptInstall("@modelcontextprotocol/server-filesystem")`,
+	},
+	{
 		name: "scm",
 		needs: "-",
 		summary: "只读 git 查询（status/branches/history，不经过 shell）",

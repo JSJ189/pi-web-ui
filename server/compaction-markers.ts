@@ -18,7 +18,7 @@
  * - looksLikeChainCorruption：识别链损坏报错，供 open 重试分支用。
  */
 import { randomUUID } from "node:crypto";
-import { existsSync, readFileSync, writeFileSync } from "node:fs";
+import { existsSync, readFileSync, statSync, writeFileSync } from "node:fs";
 import { reorderEntriesForMainBranch } from "./session-branch.js";
 
 export const COMPACTION_PENDING_TYPE = "pi-web-ui/compaction-pending";
@@ -71,12 +71,41 @@ interface Slot {
 	entry: Record<string, unknown> | null;
 	removed: boolean;
 	dirty: boolean;
+	partial?: boolean;
 	finalId: string | null;
 }
 
 function parentIdOf(entry: Record<string, unknown>): string | null {
 	const p = entry.parentId;
 	return typeof p === "string" ? p : null;
+}
+
+/**
+ * 对超长 message 行（>512 字节，例如数十 KB~数 MB 的 toolResult / assistant 回复）
+ * 仅从前 260 个字符提取拓扑校验所需的头字段（type/id/parentId/timestamp），
+ * 避免在预检健康文件时对整行大载荷执行全量 JSON.parse；若该行真触发了 id/parentId
+ * 改写（dirty=true），写回前再按需解析完整 JSON。
+ */
+function parseFastMessageSlotHeader(line: string): Record<string, unknown> | null {
+	if (line.length <= 512) return null;
+	const head = line.slice(0, 260);
+	if (!/"type"\s*:\s*"message"/.test(head)) return null;
+	const idMatch = /"id"\s*:\s*"([^"\\]+)"/.exec(head);
+	if (!idMatch) return null;
+	let parentId: string | null = null;
+	const parentStrMatch = /"parentId"\s*:\s*"([^"\\]*)"/.exec(head);
+	if (parentStrMatch) {
+		parentId = parentStrMatch[1];
+	} else if (!/"parentId"\s*:\s*null/.test(head)) {
+		return null;
+	}
+	const tsMatch = /"timestamp"\s*:\s*"([^"\\]+)"/.exec(head);
+	return {
+		type: "message",
+		id: idMatch[1],
+		parentId,
+		...(tsMatch ? { timestamp: tsMatch[1] } : {}),
+	};
 }
 
 /**
@@ -97,6 +126,17 @@ export function repairSessionTranscript(raw: string): TranscriptRepairResult {
 	const lines = raw.split("\n");
 	const slots: Slot[] = lines.map((line) => {
 		if (!line.trim()) return { raw: line, entry: null, removed: false, dirty: false, finalId: null };
+		const fastEntry = parseFastMessageSlotHeader(line);
+		if (fastEntry) {
+			return {
+				raw: line,
+				entry: fastEntry,
+				removed: false,
+				dirty: false,
+				partial: true,
+				finalId: fastEntry.id as string,
+			};
+		}
 		try {
 			const parsed: unknown = JSON.parse(line);
 			if (typeof parsed === "object" && parsed !== null) {
@@ -290,7 +330,22 @@ export function repairSessionTranscript(raw: string): TranscriptRepairResult {
 	const out: string[] = [];
 	for (const s of slots) {
 		if (s.removed) continue;
-		out.push(s.dirty && s.entry ? JSON.stringify(s.entry) : s.raw);
+		if (s.dirty && s.entry) {
+			if (s.partial) {
+				try {
+					const full = JSON.parse(s.raw) as Record<string, unknown>;
+					full.id = s.entry.id;
+					full.parentId = s.entry.parentId;
+					out.push(JSON.stringify(full));
+					continue;
+				} catch {
+					/* fallback */
+				}
+			}
+			out.push(JSON.stringify(s.entry));
+		} else {
+			out.push(s.raw);
+		}
 	}
 	result.text = out.join("\n");
 	return result;
@@ -303,10 +358,55 @@ export interface SessionFileRepair extends TranscriptRepairResult {
 }
 
 /**
+ * 已校验健康的会话文件指纹缓存（filePath -> `${mtimeMs}:${size}`，LRU 上限 512）：
+ * switchSession 每次打开历史会话都会先调 repairSessionFile；若文件自上次校验后
+ * mtime 与 size 均未变，直接跳过整文件同步读取与全量 JSON.parse（耗时从数十毫秒降至 0.01ms）。
+ */
+const healthyTranscriptCache = new Map<string, string>();
+const HEALTHY_TRANSCRIPT_CACHE_MAX = 512;
+
+function rememberHealthyTranscript(filePath: string): void {
+	try {
+		const st = statSync(filePath);
+		const sig = `${st.mtimeMs}:${st.size}`;
+		healthyTranscriptCache.delete(filePath);
+		healthyTranscriptCache.set(filePath, sig);
+		while (healthyTranscriptCache.size > HEALTHY_TRANSCRIPT_CACHE_MAX) {
+			const oldest = healthyTranscriptCache.keys().next();
+			if (oldest.done) break;
+			healthyTranscriptCache.delete(oldest.value);
+		}
+	} catch {
+		/* best effort */
+	}
+}
+
+/**
  * 落盘版修复：健康文件只读不写；坏文件先写 <原名>.bak（已存在则保留最早那份，
  * 不覆盖），再写回修复文本。读失败/写失败返回 null（调用方按原错误继续抛）。
  */
 export function repairSessionFile(filePath: string): SessionFileRepair | null {
+	try {
+		const st = statSync(filePath);
+		const sig = `${st.mtimeMs}:${st.size}`;
+		if (healthyTranscriptCache.get(filePath) === sig) {
+			healthyTranscriptCache.delete(filePath);
+			healthyTranscriptCache.set(filePath, sig);
+			return {
+				text: "",
+				changed: false,
+				removedPending: 0,
+				renamedIds: 0,
+				rewiredParents: 0,
+				cyclesBroken: 0,
+				interrupted: false,
+				file: filePath,
+				backup: null,
+			};
+		}
+	} catch {
+		return null;
+	}
 	let raw: string;
 	try {
 		raw = readFileSync(filePath, "utf8");
@@ -314,11 +414,15 @@ export function repairSessionFile(filePath: string): SessionFileRepair | null {
 		return null;
 	}
 	const r = repairSessionTranscript(raw);
-	if (!r.changed) return { ...r, file: filePath, backup: null };
+	if (!r.changed) {
+		rememberHealthyTranscript(filePath);
+		return { ...r, file: filePath, backup: null };
+	}
 	try {
 		const bak = `${filePath}.bak`;
 		if (!existsSync(bak)) writeFileSync(bak, raw, "utf8");
 		writeFileSync(filePath, r.text, "utf8");
+		rememberHealthyTranscript(filePath);
 		return { ...r, file: filePath, backup: bak };
 	} catch {
 		return null;

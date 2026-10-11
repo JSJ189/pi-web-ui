@@ -1144,6 +1144,13 @@ export interface DispatchSession {
 	refreshSessions(): Promise<void>;
 	pushProjects(): Promise<void>;
 	removeProject(path: string): Promise<void>;
+	createSandbox?(opts: { name?: string; sourcePath?: string; ephemeral?: boolean }): Promise<void>;
+	resetSandbox?(path?: string): Promise<void>;
+	persistSandbox?(path?: string): Promise<void>;
+	promoteSandbox?(targetPath: string, path?: string, switchToTarget?: boolean): Promise<void>;
+	diffSandbox?(path?: string): Promise<void>;
+	applySandboxToSource?(path?: string): Promise<void>;
+	destroySandbox?(path: string): Promise<void>;
 	deleteSession(path: string): Promise<void>;
 	renameSession(path: string, name: string): Promise<void>;
 	renameConversation(id: string, name: string): Promise<void>;
@@ -1849,6 +1856,7 @@ const mcpBridge = new McpBridge(DATA_DIR, (...a) => console.log("[mcp]", ...a), 
 	cwd: CWD,
 });
 ClientSession.mcpBridge = mcpBridge;
+pluginMgr.mcpBridge = mcpBridge;
 // mcp.json 热加载：保存文件即生效，改完不必再重启服务。两半都在这里收口 —— reload 换入
 // 新的服务器集合（只重启规格真变了的），applyPluginAgentTools 把新工具推给已有会话。
 const mcpHotReload = createMcpHotReload({

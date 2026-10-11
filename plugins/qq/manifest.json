@@ -1,0 +1,50 @@
+{
+	"apiVersion": 2,
+	"name": "qq",
+	"nameEn": "QQ",
+	"version": "0.1.0",
+	"description": "QQ 机器人：腾讯官方开放平台 QQBot 出站 WebSocket 双工长连接（零公网 IP / 智能 Markdown 分块 / 多轮会话隔离）/ 用户白名单准入 / AI qq 工具（密钥加密存储，零外部依赖）",
+	"descriptionEn": "QQ Bot: official Tencent QQBot outbound WebSocket duplex chat (zero public IP, structure-aware Markdown chunks, isolated multi-turn sessions), access control whitelist, and AI qq tool.",
+	"author": "pi-web-ui",
+	"homepage": "https://github.com/xing-shuyin/pi-web-ui/tree/main/plugins/qq",
+	"icon": "🐧",
+	"iconSvg": "<svg xmlns=\"http://www.w3.org/2000/svg\" viewBox=\"0 0 24 24\" fill=\"none\" stroke=\"currentColor\" stroke-width=\"2\" stroke-linecap=\"round\" stroke-linejoin=\"round\"><path d=\"M12 2a8 8 0 0 0-8 8c0 3 1.5 5 2 7-1 .5-2 1.5-2 3h16c0-1.5-1-2.5-2-3 .5-2 2-4 2-7a8 8 0 0 0-8-8z\"/><circle cx=\"9\" cy=\"9\" r=\"1\"/><circle cx=\"15\" cy=\"9\" r=\"1\"/><path d=\"M10 13h4\"/></svg>",
+	"server": "index.mjs",
+	"client": "client/entry.mjs",
+	"permissions": ["ui", "tools", "notify", "storage", "secrets", "llm", "chat"],
+	"ui": {
+		"views": [
+			{
+				"id": "qq",
+				"label": "QQ",
+				"icon": "🐧"
+			}
+		],
+		"topbar": [
+			{
+				"id": "qq-open",
+				"label": "QQ",
+				"icon": "🐧",
+				"action": { "type": "view", "viewId": "qq" },
+				"order": 63
+			}
+		],
+		"statusBar": [
+			{
+				"id": "qq-status",
+				"label": "🐧 QQ",
+				"title": "点击打开 QQ 机器人工作台",
+				"action": { "type": "view", "viewId": "qq" },
+				"order": 53
+			}
+		],
+		"commands": [
+			{
+				"id": "open",
+				"label": "打开 QQ 机器人工作台",
+				"icon": "🐧",
+				"action": { "type": "view", "viewId": "qq" }
+			}
+		]
+	}
+}

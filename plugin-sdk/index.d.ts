@@ -286,6 +286,45 @@ export interface PluginHost {
 	models: {
 		list(): Array<{ id: string; [key: string]: unknown }> | Promise<Array<{ id: string; [key: string]: unknown }>>;
 	};
+	/** MCP 服务器检测与便捷安装接口（list/check 只读免权限；install 要 "tools"；promptInstall 要 "chat" 或 "tools"）。 */
+	mcp: {
+		list(): Promise<Array<{ name: string; scope: "global" | "project"; status: string; [key: string]: unknown }>>;
+		check(query: string): Promise<{
+			installed: boolean;
+			running: boolean;
+			enabled: boolean;
+			server: Record<string, unknown> | null;
+			matches: Array<Record<string, unknown>>;
+			tools: Array<{ name: string; description?: string }>;
+		}>;
+		install(spec: {
+			name?: string;
+			package?: string;
+			command?: string;
+			args?: string[];
+			cwd?: string;
+			env?: Record<string, string>;
+			url?: string;
+			headers?: Record<string, string>;
+			type?: "stdio" | "http" | "streamable-http";
+			timeout?: number;
+			description?: string;
+			scope?: "global" | "project";
+			enabled?: boolean;
+		}): Promise<{
+			ok: boolean;
+			name?: string;
+			scope?: "global" | "project";
+			status?: string;
+			tools?: Array<{ name: string; description?: string }>;
+			server?: Record<string, unknown>;
+			error?: string;
+		}>;
+		promptInstall(
+			target: string | Record<string, unknown>,
+			opts?: { conversationId?: string; scope?: "global" | "project" },
+		): Promise<{ ok: boolean; conversationId?: string; error?: string }>;
+	};
 	/** 会话统计 / 流式增量订阅（返回注销函数）。 */
 	onStats(handler: (s: unknown) => void): () => void;
 	onStreaming(handler: (ev: { conversationId?: string; delta: string }) => void): () => void;
