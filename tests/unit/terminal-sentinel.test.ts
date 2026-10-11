@@ -147,3 +147,41 @@ describe("括号组感知：组内 | 不是顶层管道，未闭合组不注入�
 		expect(sentinelUnsafeReason("echo '{' && echo done")).toBeNull();
 	});
 });
+
+describe("sentinelUnsafeReason：heredoc 与关键字块（0.103 审计补漏）", () => {
+	it("未闭合 heredoc → unclosed_heredoc：哨兵行会被当正文吞掉，shell 停在 PS2", () => {
+		expect(sentinelUnsafeReason("cat <<EOF")).toBe("unclosed_heredoc");
+		expect(sentinelUnsafeReason("cat <<- EOF")).toBe("unclosed_heredoc");
+		expect(sentinelUnsafeReason("cat << 'EOF'")).toBe("unclosed_heredoc");
+		expect(sentinelUnsafeReason("cat <<EOF | grep a")).toBe("unclosed_heredoc");
+	});
+
+	it("<<< here-string 与算术左移不是 heredoc，不误判", () => {
+		expect(sentinelUnsafeReason("cat <<< 'text'")).toBeNull();
+		expect(sentinelUnsafeReason("echo $((1 << 2))")).toBeNull();
+		expect(sentinelUnsafeReason("(( x << 2 ))")).toBeNull();
+		expect(sentinelUnsafeReason("echo a << b")).toBe("unclosed_heredoc"); // 重定向仍是 heredoc
+	});
+
+	it("未闭合 if/for/while/case 块 → unclosed_block", () => {
+		expect(sentinelUnsafeReason("if [ -f x ]; then echo y")).toBe("unclosed_block");
+		expect(sentinelUnsafeReason("for f in *; do echo $f")).toBe("unclosed_block");
+		expect(sentinelUnsafeReason("while true; do sleep 1")).toBe("unclosed_block");
+		expect(sentinelUnsafeReason("case $x in a) echo y;; ")).toBe("unclosed_block");
+	});
+
+	it("单行闭合的 if/for/while/case 不误判", () => {
+		expect(sentinelUnsafeReason("if [ -f x ]; then echo y; fi")).toBeNull();
+		expect(sentinelUnsafeReason("for f in *; do echo $f; done")).toBeNull();
+		expect(sentinelUnsafeReason("while read l; do echo $l; done < f.txt")).toBeNull();
+		expect(sentinelUnsafeReason("case $x in a) echo y;; esac")).toBeNull();
+		expect(sentinelUnsafeReason("if true; then echo a; elif false; then echo b; else echo c; fi")).toBeNull();
+	});
+
+	it("作为参数/操作数/字符串的关键字不算块（命令位置识别）", () => {
+		expect(sentinelUnsafeReason("echo if done fi esac while")).toBeNull();
+		expect(sentinelUnsafeReason("[[ $x == if ]]")).toBeNull();
+		expect(sentinelUnsafeReason("echo 'if; then'")).toBeNull();
+		expect(sentinelUnsafeReason("grep if file # while done")).toBeNull();
+	});
+});

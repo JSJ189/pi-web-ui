@@ -209,3 +209,34 @@ describe("语法不完整：直接拒绝，不注入、不建终端（#571）", 
 		expect(detectTrailingLimiter("echo a # x | tail -3")).toBeNull();
 	});
 });
+
+describe("cleanBashOutput：回显折行续行剥离与锚点失配回落（0.103 审计）", () => {
+	it("长命令折行回显：与命令逐字衔接的续行一并剥掉", () => {
+		const cmd = "echo " + "x".repeat(150);
+		// 终端 120 列：回显第一行 = 提示符(16 列) + 命令前 104 字符，其余折到第二行
+		const raw = `c@HOST MINGW64 /tmp$ ${cmd.slice(0, 104)}\r\n${cmd.slice(104)}\r\nOK\r\n` + sentinelExit(NONCE);
+		expect(cleanBashOutput(raw, NONCE, cmd)).toBe("OK");
+	});
+
+	it("折行后续行与命令不衔接（真实输出）时保守保留", () => {
+		const cmd = "echo " + "x".repeat(150);
+		const raw =
+			`c@HOST MINGW64 /tmp$ ${cmd.slice(0, 104)}\r\n${cmd.slice(104)}GARBAGE\r\nREAL-OUT\r\n` + sentinelExit(NONCE);
+		expect(cleanBashOutput(raw, NONCE, cmd)).toBe(`${cmd.slice(104)}GARBAGE\nREAL-OUT`);
+	});
+
+	it("锚点失配（回显缺失）：首行呈提示符形状时按回落剥掉", () => {
+		const raw = `c@HOST MINGW64 /tmp$ ssh host 'long remote command'\r\nREMOTE-OUT\r\n` + sentinelExit(NONCE);
+		expect(cleanBashOutput(raw, NONCE, "totally-different-typed-text")).toBe("REMOTE-OUT");
+	});
+
+	it("RHEL 风格提示符 [user@host dir]$ 也识别", () => {
+		const raw = `[admin@web-01 /var/www]$ deploy.sh\r\nDEPLOYED\r\n` + sentinelExit(NONCE);
+		expect(cleanBashOutput(raw, NONCE, "totally-different-typed-text")).toBe("DEPLOYED");
+	});
+
+	it("输出首行不是提示符形状时不误删", () => {
+		const raw = `user@example.com\r\nBODY\r\n` + sentinelExit(NONCE);
+		expect(cleanBashOutput(raw, NONCE, "other-cmd")).toBe("user@example.com\nBODY");
+	});
+});

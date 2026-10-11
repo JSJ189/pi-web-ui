@@ -17,7 +17,7 @@ import { chmodSync, existsSync, readdirSync, realpathSync, statSync } from "node
 import { mkdir, readFile, writeFile } from "node:fs/promises";
 import { createRequire } from "node:module";
 import { homedir } from "node:os";
-import { dirname, isAbsolute, join, relative, resolve, sep } from "node:path";
+import { dirname, isAbsolute, join, posix, relative, resolve, sep } from "node:path";
 // MUST run before node-pty is required: rewrites the installed node-pty copies
 // so their worker/agent handlers tolerate Node `--watch`'s IPC traffic (see the
 // module itself for details).
@@ -28,7 +28,12 @@ import { Type } from "typebox";
 import type { CommandDef, ServerMessage, TerminalInfo } from "./protocol.js";
 import { BASH_DESCRIPTION, BASH_PARAMETERS, BASH_PROMPT_GUIDELINES, BASH_PROMPT_SNIPPET } from "./tool-prompts.js";
 import { pick, type ServerLang } from "./i18n.js";
-import { getGlobalRemoteSshService, isRemoteWorkspaceUri, resolveWorkspaceSessionDir } from "./remote-ssh-service.js";
+import {
+	getGlobalRemoteSshService,
+	isRemoteWorkspaceUri,
+	parseRemoteWorkspaceUri,
+	resolveWorkspaceSessionDir,
+} from "./remote-ssh-service.js";
 
 // ---------------------------------------------------------------------------
 // .pi/commands.json
@@ -297,6 +302,9 @@ export function buildTerminalBashLine(
  * - 尾随续行符 `\`：下一行被并入本命令，哨兵行成为命令的一部分。
  * - 未闭合引号：哨兵行被吞进字符串字面量，永远不会作为代码执行。
  * - 未闭合的 `{}` / `()` 组：shell 停在 PS2 续行，哨兵永远不会执行（#573）。
+ * - 未闭合的 heredoc（`<<`，非 `<<<`）：哨兵行被当成 heredoc 正文吞掉，shell
+ *   停在 PS2 等 EOF——不仅本条零执行，持久 shell 的后续命令也会连环被吞。
+ * - 未闭合的 if/for/while/until/case 块：同样停在 PS2 等续行。
  * - 多行命令：经 `$'...'` 转义单行化后引号/换行全部字面化，总是安全 → null。
  *
  * 扫描按 POSIX 引号语义跟踪 `'`/`"`/`` ` `` 三种引号与转义；`$'...'`（ANSI-C
@@ -304,15 +312,46 @@ export function buildTerminalBashLine(
  */
 export function sentinelUnsafeReason(
 	command: string,
-): "trailing_backslash" | "unclosed_quote" | "unclosed_group" | null {
+): "trailing_backslash" | "unclosed_quote" | "unclosed_group" | "unclosed_heredoc" | "unclosed_block" | null {
 	const trimmed = command.replace(/\s+$/, "");
 	if (trimmed.includes("\n")) return null;
 	let quote: "'" | '"' | "`" | null = null;
 	// 当前单引号是否 $' 开头（ANSI-C 引号，内含转义语义）
 	let ansiC = false;
 	let escaped = false;
-	// `{` / `(` 未闭合深度：残句（如 `{ a; b | tail -3`）注入后 shell 停在 PS2、哨兵永不执行（#573）
+	// `{` 未闭合深度：残句（如 `{ a; b | tail -3`）注入后 shell 停在 PS2、哨兵永不执行（#573）
 	let depth = 0;
+	// `(` 栈：区分普通组与算术上下文（`(())`）——算术里的 `<<` 是左移不是 heredoc
+	const parenStack: Array<"group" | "arith"> = [];
+	// 关键字块计数（命令位置的 if / for|while|until|select / case）
+	let ifDepth = 0;
+	let loopDepth = 0;
+	let caseDepth = 0;
+	let heredoc = false;
+	// [[ ]] 内是测试表达式，单词不是命令
+	let inDoubleBracket = false;
+	// 当前累积的词；wordCmdPos 记录该词是否处于命令位置
+	// （行首/`;|&(`/`{`/`}`/then|else|do 之后）——`echo if` 的 `if` 是参数不是关键字
+	let word = "";
+	let wordCmdPos = false;
+	let cmdPos = true;
+	const flushWord = (): void => {
+		if (!word) return;
+		if (word === "[[") inDoubleBracket = true;
+		else if (word === "]]") inDoubleBracket = false;
+		else if (!inDoubleBracket && parenStack[parenStack.length - 1] !== "arith") {
+			if (wordCmdPos) {
+				if (word === "if") ifDepth++;
+				else if (word === "fi") ifDepth = Math.max(0, ifDepth - 1);
+				else if (word === "for" || word === "while" || word === "until" || word === "select") loopDepth++;
+				else if (word === "done") loopDepth = Math.max(0, loopDepth - 1);
+				else if (word === "case") caseDepth++;
+				else if (word === "esac") caseDepth = Math.max(0, caseDepth - 1);
+				else if (word === "then" || word === "else" || word === "elif" || word === "do") cmdPos = true;
+			}
+		}
+		word = "";
+	};
 	for (let i = 0; i < trimmed.length; i++) {
 		const ch = trimmed[i];
 		if (quote) {
@@ -338,18 +377,94 @@ export function sentinelUnsafeReason(
 			escaped = true;
 			continue;
 		}
+		if (/[A-Za-z0-9_#]/.test(ch)) {
+			if (!word) {
+				wordCmdPos = cmdPos;
+				cmdPos = false;
+			}
+			word += ch;
+			continue;
+		}
 		if (ch === "'" || ch === '"' || ch === "`") {
+			flushWord();
 			quote = ch;
 			ansiC = ch === "'" && i > 0 && trimmed[i - 1] === "$";
 			continue;
 		}
-		if (ch === "(" || ch === "{") depth++;
-		else if ((ch === ")" || ch === "}") && depth > 0) depth--;
+		if (ch === "<" && trimmed[i + 1] === "<") {
+			flushWord();
+			cmdPos = false;
+			if (trimmed[i + 2] === "<") {
+				i += 2; // `<<<` here-string：不等待后续行，安全
+			} else if (parenStack[parenStack.length - 1] !== "arith" && !inDoubleBracket) {
+				heredoc = true;
+				break; // 哨兵行必然被当 heredoc 正文吞掉
+			} else {
+				i += 1; // 算术左移 / [[ 内：非 heredoc
+			}
+			continue;
+		}
+		if (ch === "(") {
+			flushWord();
+			cmdPos = true;
+			if (trimmed[i + 1] === "(") {
+				parenStack.push("arith");
+				i += 1;
+			} else {
+				parenStack.push("group");
+			}
+			continue;
+		}
+		if (ch === ")") {
+			flushWord();
+			const top = parenStack[parenStack.length - 1];
+			if (top === "arith" && trimmed[i + 1] === ")") {
+				parenStack.pop();
+				i += 1;
+			} else if (top === "group") {
+				parenStack.pop();
+			}
+			// 栈空/不匹配的 `)`（case 模式 `a)`、算术残留）保持忽略
+			cmdPos = true;
+			continue;
+		}
+		if (ch === "[" && trimmed[i + 1] === "[") {
+			flushWord();
+			inDoubleBracket = true;
+			i += 1;
+			continue;
+		}
+		if (ch === "]" && trimmed[i + 1] === "]" && inDoubleBracket) {
+			flushWord();
+			inDoubleBracket = false;
+			i += 1;
+			continue;
+		}
+		if (ch === "{") {
+			flushWord();
+			depth++;
+			cmdPos = true;
+			continue;
+		}
+		if (ch === "}") {
+			flushWord();
+			depth = Math.max(0, depth - 1);
+			cmdPos = true;
+			continue;
+		}
+		// 其余字符（空白/`;|&`/`$`/`!` 等）结束当前词
+		flushWord();
+		if (ch === ";" || ch === "|" || ch === "&" || ch === "!") cmdPos = true;
+		else if (ch !== "$" && !/\s/.test(ch)) cmdPos = false;
 	}
+	flushWord();
 	if (quote !== null) return "unclosed_quote";
 	// 扫描结束仍在转义态 = 最后一个字符是引号外的 `\`（尾随续行符）
 	if (escaped) return "trailing_backslash";
+	if (heredoc) return "unclosed_heredoc";
+	if (ifDepth > 0 || loopDepth > 0 || caseDepth > 0) return "unclosed_block";
 	if (depth > 0) return "unclosed_group";
+	if (parenStack.length > 0) return "unclosed_group";
 	return null;
 }
 
@@ -1320,6 +1435,26 @@ export class TerminalManager {
 	}
 
 	private safeCwd(raw: string): string | null {
+		// 远程工作区的根是 ssh:// URI：下面的本地文件系统边界（realpath/relative）
+		// 无法解析它，会让远程终端的每次创建/接管命令都被「必须位于工作区内」拒掉，
+		// spawnShell 的远程分支成为死代码。远程侧的目录边界由 SSH 服务在远端校验，
+		// 这里只做同主机校验与 URI 规范化（spawnShell 的 URI 正则要求带端口）。
+		if (isRemoteWorkspaceUri(this.workspaceRoot)) {
+			const root = parseRemoteWorkspaceUri(this.workspaceRoot);
+			if (!root) return null;
+			if (isRemoteWorkspaceUri(raw)) {
+				const cand = parseRemoteWorkspaceUri(raw);
+				if (!cand) return null;
+				if (cand.username !== root.username || cand.host !== root.host || cand.port !== root.port) return null;
+				return `ssh://${cand.username}@${cand.host}:${cand.port}${cand.remotePath}`;
+			}
+			// 相对/本地写法一律挂到远程根下解析（与本地分支 resolve(root, raw) 同语义）
+			const rel = String(raw).replace(/\\/g, "/").replace(/^\/+/, "");
+			const joined = posix.normalize(`${root.remotePath}/${rel}`).replace(/\/+$/, "") || "/";
+			const prefix = root.remotePath === "/" ? "/" : `${root.remotePath}/`;
+			if (joined !== root.remotePath && !joined.startsWith(prefix)) return null;
+			return `ssh://${root.username}@${root.host}:${root.port}${joined}`;
+		}
 		try {
 			const root = realpathSync(resolve(this.workspaceRoot));
 			const candidate = realpathSync(isAbsolute(raw) ? resolve(raw) : resolve(root, raw));
@@ -1786,6 +1921,28 @@ export function cleanBashOutput(raw: string, nonce: string, command = ""): strin
 	const anchor = (command.split("\n")[0] ?? "").trim().slice(0, 80);
 	// 命令回显前那一行提示符（如 `user@host MINGW64 /cwd`）：收尾时用它识别「哨兵前残留的新提示符」。
 	let promptLine = "";
+	// 锚点找不到（横向滚动只回显尾部 / 回显缺失）时的回落：首个非空行若呈
+	// 提示符形状（`user@host … $ ` / `[user@host dir]$ `），按提示符+回显行剥掉，
+	// 否则命令回显与提示符会整行留在返回给模型的输出里。
+	const fallbackPromptDetect = (): void => {
+		const idx = lines.findIndex((line) => line.trim() !== "");
+		if (idx < 0) return;
+		const first = lines[idx].trim();
+		// 单行提示符：`user@host MINGW64 /tmp$ cmd`（MINGW）或 `user@host:~/p$ cmd`（Linux）
+		if (
+			/^[A-Za-z0-9._-]+@[A-Za-z0-9._-]+[^\n]*[$#] /.test(first) ||
+			/^\[[A-Za-z0-9._-]+@[A-Za-z0-9._-]+[^\]]*\][$#] /.test(first)
+		) {
+			promptLine = first;
+			lines = lines.slice(idx + 1);
+			return;
+		}
+		// MINGW 双行提示符：`user@host MINGW64 /path` 换行后 `$ cmd`
+		if (/^[A-Za-z0-9._-]+@[A-Za-z0-9._-]+ /.test(first) && /^[$#] /.test(lines[idx + 1]?.trim() ?? "")) {
+			promptLine = first;
+			lines = lines.slice(idx + 2);
+		}
+	};
 	if (anchor) {
 		const echoIdx = lines.findIndex((line) => line.includes(anchor));
 		if (echoIdx >= 0) {
@@ -1793,8 +1950,25 @@ export function cleanBashOutput(raw: string, nonce: string, command = ""): strin
 				const t = lines[i].trim();
 				if (t && t !== "$") promptLine = t;
 			}
-			lines = lines.slice(echoIdx + 1);
+			// 回显折行：锚点行只含命令的前一段，后续折行若恰好逐行拼接出命令的
+			// 剩余文本，也一并剥掉（精确匹配，匹配不上即停，保守不误删输出）。
+			const firstLine = (command.split("\n")[0] ?? "").trim();
+			const echoLine = lines[echoIdx].trimEnd();
+			const anchorAt = echoLine.indexOf(anchor);
+			let pos = anchorAt >= 0 ? Math.min(echoLine.length - anchorAt, firstLine.length) : anchor.length;
+			let idx = echoIdx + 1;
+			while (pos < firstLine.length && idx < lines.length) {
+				const chunk = lines[idx].trim();
+				if (!chunk || firstLine.slice(pos, pos + chunk.length) !== chunk) break;
+				pos += chunk.length;
+				idx++;
+			}
+			lines = lines.slice(idx);
+		} else {
+			fallbackPromptDetect();
 		}
+	} else {
+		fallbackPromptDetect();
 	}
 	// 最后一个本次哨兵之后的内容全是 shell 新提示符——整段截掉。
 	const text = lines.join("\n");
@@ -1920,13 +2094,21 @@ export function makeTerminalBashTool(
 						? "以续行符 \\ 结尾"
 						: incomplete === "unclosed_quote"
 							? "存在未闭合引号"
-							: "存在未闭合的 { } / ( ) 组";
+							: incomplete === "unclosed_heredoc"
+								? "存在未闭合的 heredoc（<<）"
+								: incomplete === "unclosed_block"
+									? "存在未闭合的 if/for/case 块"
+									: "存在未闭合的 { } / ( ) 组";
 				const reasonEn =
 					incomplete === "trailing_backslash"
 						? "ends with a line-continuation backslash"
 						: incomplete === "unclosed_quote"
 							? "has an unclosed quote"
-							: "has an unclosed { } / ( ) group";
+							: incomplete === "unclosed_heredoc"
+								? "has an unclosed heredoc (<<)"
+								: incomplete === "unclosed_block"
+									? "has an unclosed if/for/case block"
+									: "has an unclosed { } / ( ) group";
 				throw new Error(
 					pick(
 						lang,
