@@ -165,4 +165,103 @@ describe("QqBotBridge 双工逻辑测试", () => {
 		await bridge.stop();
 		vi.unstubAllGlobals();
 	});
+
+	it("长回复按 3000 字分块后，replyMessage 调用时的 msg_seq 严格从 1 递增", async () => {
+		const replySpy = vi.fn().mockResolvedValue({});
+		let runHandler: ((ev: any) => void) | null = null;
+		const chatSpy = vi.fn().mockResolvedValue({ conversationId: "conv_qq_long" });
+
+		const fetchMock = vi.fn().mockResolvedValue({
+			ok: true,
+			status: 200,
+			json: async () => ({ access_token: "mock_qq_token" }),
+		});
+		vi.stubGlobal("fetch", fetchMock);
+
+		const bridge = new QqBotBridge({
+			host: {
+				chat: chatSpy,
+				onRunEvent: (fn: any) => {
+					runHandler = fn;
+					return () => {};
+				},
+			},
+			getConfig: () => ({
+				appId: "102030",
+				clientSecret: "mock_secret",
+			}),
+		});
+
+		bridge.replyMessage = replySpy;
+		await bridge.start();
+
+		await bridge.onInboundMessage(
+			{
+				id: "msg_qq_4",
+				channel_id: "c_123",
+				author: { id: "ALLOWED_USER_1", bot: false },
+				content: "请生成长文本",
+			},
+			"AT_MESSAGE_CREATE",
+		);
+
+		const convId = chatSpy.mock.calls[0][0].conversationId;
+
+		// 构造超过 3000 字的长回复，使其切为至少 2 块
+		const longReply = "A".repeat(3500);
+		runHandler!({
+			conversationId: convId,
+			type: "message",
+			message: {
+				role: "assistant",
+				content: longReply,
+			},
+		});
+
+		await runHandler!({
+			conversationId: convId,
+			type: "run_end",
+		});
+
+		expect(replySpy).toHaveBeenCalledTimes(2);
+		expect(replySpy.mock.calls[0][2]).toBe(1);
+		expect(replySpy.mock.calls[1][2]).toBe(2);
+
+		await bridge.stop();
+		vi.unstubAllGlobals();
+	});
+
+	it("ensureAccessToken：未到期直接复用，到期惰性刷新", async () => {
+		const fetchMock = vi.fn().mockResolvedValue({
+			ok: true,
+			status: 200,
+			json: async () => ({ access_token: "token_v2", expires_in: 7200 }),
+		});
+		vi.stubGlobal("fetch", fetchMock);
+
+		const bridge = new QqBotBridge({
+			host: { chat: vi.fn() },
+			getConfig: () => ({ appId: "102030", clientSecret: "mock_secret" }),
+		});
+
+		// 初始状态：持有还有很长时间过期的 token
+		bridge.accessToken = "token_v1";
+		bridge.tokenExpiresAt = Date.now() + 7200 * 1000;
+
+		// 未到期调用：直接复用，不发起网络请求
+		const t1 = await bridge.ensureAccessToken();
+		expect(t1).toBe("token_v1");
+		expect(fetchMock).not.toHaveBeenCalled();
+
+		// 模拟 token 进入 5 分钟刷新余量区间
+		bridge.tokenExpiresAt = Date.now() + 60 * 1000;
+
+		const t2 = await bridge.ensureAccessToken();
+		expect(t2).toBe("token_v2");
+		expect(bridge.accessToken).toBe("token_v2");
+		expect(fetchMock).toHaveBeenCalledTimes(1);
+
+		await bridge.stop();
+		vi.unstubAllGlobals();
+	});
 });
