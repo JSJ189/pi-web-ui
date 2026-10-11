@@ -770,4 +770,64 @@ STEPS:
 		expect(res.goal).toBe("仅仅是一个单行目标描述");
 		expect(res.steps).toEqual([]);
 	});
+
+	it("#591：主对话正在执行旧任务时设目标 → 首轮派发前先中断主对话旧 run 并提示，且该次 abort 不会误清刚设的目标", async () => {
+		const events: string[] = [];
+		const h = makeHarness();
+		const conv = h.conv();
+		(conv.session as { isStreaming: boolean }).isStreaming = true;
+		h.host.interruptMainConv = async (convId) => {
+			events.push(`interrupt:${convId}`);
+			(conv.session as { isStreaming: boolean }).isStreaming = false;
+			// 模拟 interruptRun 中止旧任务时同步触发的 agent_end(aborted)
+			const stopNotice = h.svc.onAgentEnd(conv, true);
+			expect(stopNotice).toBeNull();
+		};
+		const origSpawn = h.host.spawnRoleAgent!;
+		h.host.spawnRoleAgent = async (opts) => {
+			events.push(`spawn:${opts.role}`);
+			return origSpawn(opts);
+		};
+
+		await h.svc.setGoal("接手完成剩余重构", { maxRounds: 0, locked: true });
+
+		// 顺序铁律：先中断主对话旧 run，再拉起执行者
+		expect(events).toEqual(["interrupt:conv-a", "spawn:executor"]);
+		expect(conv.goal.goal).toBe("接手完成剩余重构");
+		expect(notices(h).some((t) => t.includes("主对话当前的运行已停止，接下来由目标执行者接手"))).toBe(true);
+		expect(notices(h).some((t) => t.includes("已手动停止"))).toBe(false);
+		expect(await h.svc.whenAwaitingVerdict("conv-a")).toBe(true);
+	});
+
+	it("#591：委托执行期间用户在主对话发起的新聊天不会被下一轮派发中断（仅首轮派发前处置旧 run）", async () => {
+		const interrupted: string[] = [];
+		const h = makeHarness({ diffs: ["d1", "d2"] });
+		h.host.interruptMainConv = async (convId) => {
+			interrupted.push(convId);
+		};
+
+		await h.svc.setGoal("多轮目标", { maxRounds: 0, locked: true });
+		expect(interrupted).toEqual([]);
+		expect(await h.svc.whenAwaitingVerdict("conv-a")).toBe(true);
+
+		// 第 1 轮判 fail，且主对话在进入第 2 轮派发时正处于用户新聊天流式中
+		const conv = h.conv();
+		conv.mainLastText.value = '{"verdict":"fail","feedback":"继续改"}';
+		(conv.session as { isStreaming: boolean }).isStreaming = true;
+		const origWait = h.host.waitRoleAgent!;
+		h.host.waitRoleAgent = async (id, timeoutMs) => {
+			if (id === "conv-a") {
+				// waitMainIdle 等用户聊天结束
+				(conv.session as { isStreaming: boolean }).isStreaming = false;
+				return "done";
+			}
+			return origWait(id, timeoutMs);
+		};
+
+		h.svc.onAgentEnd(conv, false);
+		expect(await h.svc.whenAwaitingVerdict("conv-a")).toBe(true);
+		expect(conv.goal.round).toBe(2);
+		// 第 2 轮复用既有执行者，不得中断用户在主对话的新聊天
+		expect(interrupted).toEqual([]);
+	});
 });

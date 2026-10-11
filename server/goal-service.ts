@@ -74,6 +74,13 @@ export interface GoalConversation {
 	awaitingVerdict?: { round: number };
 	/** 审查回合里排队的用户插话（steer 进去会污染 verdict，顺延到 verdict 落定后按序发出）。 */
 	deferredPrompts?: string[];
+	/** 首轮启动期的在途用户消息（附件准备 / 影子快照阶段，#589）。 */
+	promptInFlight?: boolean;
+	/** 设目标时正在主动中断主对话的旧运行：期间收到的 agent_end(aborted) 是预期让位，
+	 *  不得被 onAgentEnd(conv, true) 误判为「用户手动按了 Stop」而把刚设的目标清掉（#591）。 */
+	preemptingMainRun?: boolean;
+	/** 已完成主对话旧运行让位处置的目标代次（防 setGoal 与 dispatchExecutor 重复中断，#591）。 */
+	preemptedGoalGen?: number;
 }
 
 /** 角色对话一次读取的完整形态（vitals 全可选：缺字段即跳过对应累计/展示，老 host 照常工作）。 */
@@ -146,6 +153,9 @@ export interface GoalHost {
 	readRoleEvidence?: (convId: string) => string | undefined;
 	/** 中止该对话正在跑的回合（角色轮超时 / 清目标时用）。 */
 	stopRoleAgent?: (convId: string) => Promise<void>;
+	/** 首轮派发目标执行者前，若主对话仍有设目标前的旧运行在飞，先中断它让位给执行者
+	 *  （#591；未提供则回落到 stopRoleAgent(conv.id)）。 */
+	interruptMainConv?: (convId: string) => Promise<void>;
 	/** 收尾：移出角色子代理（目标完成/清除时用）；主对话槽位实现为 no-op。 */
 	dismissRoleAgent?: (convId: string) => Promise<void>;
 	/** 该对话是否仍存在（子代理被移出后 steer 静默 no-op，循环必须显式判）。 */
@@ -736,10 +746,15 @@ export class GoalService {
 		// the wizard's internal one, which kicks off itself). This makes the direct
 		// goal-bar path behave like the AI-提炼 path: set a target → agent begins.
 		if (opts?.autoStart !== false) {
+			const gen = conv.goalGeneration;
+			// #591：主对话若仍在跑设目标前的旧任务，首轮派发执行者前先中断让位，
+			// 避免主对话与目标执行者在同一工作区并行动工、污染采样 diff。
+			await this.preemptMainRunForGoal(conv, gen);
+			if (!this.isCurrentDelegated(conv, gen)) return;
 			// 目标模式 2.0（唯一路径）：主对话当审查者，干活的是常驻执行对话 ——
 			// 不向主对话注入「请开始实现」，改由服务端驱动循环（等执行者跑完再把
 			// 审查指令交给主对话）。
-			this.startDelegatedLoop(conv, conv.goalGeneration, text);
+			this.startDelegatedLoop(conv, gen, text);
 			this.host.flushSnapshot();
 		}
 	}
@@ -1435,6 +1450,12 @@ export class GoalService {
 	onAgentEnd(conv: GoalConversation, aborted: boolean): { text: string; textEn: string } | null {
 		const g = conv.goal;
 		if (aborted) {
+			// #591：设目标时服务端主动中断主对话的旧运行以让位给执行者 —— 该次 abort
+			// 是预期交接，不是用户按了 Stop，不得把刚设好的目标清掉。
+			if (conv.preemptingMainRun) {
+				conv.preemptingMainRun = false;
+				return null;
+			}
 			if (g.goal && g.conversationId === conv.id) {
 				// 中止的若是审查回合（服务端正在等 verdict）：只作废这一次审查（走无 JSON
 				// 重试/受阻），目标与执行对话都保留 —— 用户按 Stop 往往只是想掐掉那段机器
@@ -1538,10 +1559,44 @@ export class GoalService {
 
 	private isConvStreaming(conv: GoalConversation): boolean {
 		try {
-			return conv.session?.isStreaming === true;
+			if (conv.promptInFlight) return true;
+			if (conv.session?.isStreaming === true) return true;
+			if (typeof (conv.session as { isIdle?: unknown } | undefined)?.isIdle === "boolean" && !conv.session.isIdle) {
+				return true;
+			}
+			return false;
 		} catch {
 			return false;
 		}
+	}
+
+	/**
+	 * #591：首轮派发目标执行者前，若主对话仍在执行设目标之前的旧任务，先中断它并提示用户。
+	 * 仅在首轮派发前生效（按 goalGeneration 去重），委托执行期间用户在主对话发起的新聊天不受影响。
+	 */
+	private async preemptMainRunForGoal(conv: GoalConversation, goalGeneration: number): Promise<void> {
+		if (!this.isConvStreaming(conv)) return;
+		if (conv.preemptedGoalGen === goalGeneration) return;
+		conv.preemptedGoalGen = goalGeneration;
+		conv.preemptingMainRun = true;
+		try {
+			if (this.host.interruptMainConv) {
+				await this.host.interruptMainConv(conv.id);
+			} else {
+				await this.host.stopRoleAgent?.(conv.id);
+			}
+		} catch {
+			// best-effort
+		} finally {
+			conv.preemptingMainRun = false;
+		}
+		if (!this.isCurrentDelegated(conv, goalGeneration)) return;
+		this.host.emit({
+			type: "notice",
+			level: "info",
+			text: "🎯 目标已设：主对话当前的运行已停止，接下来由目标执行者接手",
+			textEn: "🎯 Goal set: stopped the main conversation's current run so the goal executor can take over",
+		});
 	}
 
 	/** 启动委托循环（同一对话同时只允许一个在飞；旧循环退场中到来的请求排队接力）。 */
@@ -1907,6 +1962,9 @@ export class GoalService {
 			this.beginRoundVitals(conv, existing.convId);
 			return existing.convId;
 		}
+		// #591：向导结束 / 排队接力等路径直接进 startDelegatedLoop 时，首轮 spawn 前同样保证主对话旧运行已让位。
+		await this.preemptMainRunForGoal(conv, goalGeneration);
+		if (!this.isCurrentDelegated(conv, goalGeneration)) return undefined;
 		try {
 			const convId = await host.spawnRoleAgent!({
 				role: "executor",

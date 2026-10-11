@@ -24,8 +24,17 @@ export const RUN_RESULT_CAP = 4000;
 
 /** Cap on simultaneously open NON-subagent conversations of ONE project */
 export const MAX_OPEN_CONVERSATIONS = 8;
-/** 同时存活的子代理上限（按客户端计，含嵌套派生的孙子辈）。 */
+/** 同时运行（非终态）的子代理默认并发上限（按客户端计，含嵌套派生的孙子辈；可通过 PI_WEB_MAX_SUBAGENTS 覆盖，#589）。 */
 export const MAX_SUBAGENTS = 16;
+
+/** 读取当前生效的子代理并发上限（支持 PI_WEB_MAX_SUBAGENTS 环境变量覆盖，默认 16，最小 1）。 */
+export function getMaxSubagents(): number {
+	const raw = Number(process.env.PI_WEB_MAX_SUBAGENTS);
+	if (Number.isFinite(raw) && raw > 0) {
+		return Math.max(1, Math.floor(raw));
+	}
+	return MAX_SUBAGENTS;
+}
 /** SubagentSnapshot.prompt 下发上限：存的是全量 prompt，快照里只带前 N 字符。 */
 export const SUBAGENT_PROMPT_SNAPSHOT_CAP = 2000;
 export const DEFAULT_CONV_TITLE = "新对话";

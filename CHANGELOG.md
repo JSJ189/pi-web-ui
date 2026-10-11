@@ -10,6 +10,15 @@
 
 ## [Unreleased]
 
+<!-- auto-i18n:start -->
+
+### i18n
+
+- 服务端新增 key（1）：`agent.goal.preempt_main`
+- 服务端文案变更（1）：`agent.subagent.limit.reached`
+
+<!-- auto-i18n:end -->
+
 ## [0.103.2] — 2026-10-11
 
 ### Added
@@ -38,9 +47,11 @@
 - **样式与 CSS 变量兼容性修复** —— 统一目录浏览器 SSH 相关面板的 Hover 高亮样式为系统标准 `--bg-elev2`，消除未定义变量告警。
 
 <!-- auto-i18n:start -->
+
 ### i18n
 
 - 前端新增 key（21）：`workspaceModeLocal`、`workspaceModeRemote`、`sshHost`、`sshPort`、`sshUser`、`sshAuthType`、`sshPassword`、`sshKeyPath`、`sshAgent`、`sshSaveProfile`、`sshProfileName`、`sshConnectAndProbe`、`sshConnecting`、`sshSavedProfiles`、`sshInstallTool`、`sshInstalling`、`sshSkipAndBrowse`、`sshOpenRemoteWorkspace`、`sshDisconnect`、`sshDeleteProfileConfirm`、`tuiOverlayTitle`
+
 <!-- auto-i18n:end -->
 
 ## [0.102.0] — 2026-10-10
@@ -54,9 +65,11 @@
 - **SFTP 插件深度增强与引擎优化** —— 扩充默认 SSH 私钥探测路径与连接稳定性；优化客户端文件操作列表与动作响应机制。
 
 <!-- auto-i18n:start -->
+
 ### i18n
 
 - 前端新增 key（28）：`modelQuestionRejectWithNote`、`modelQuestionRejectWithNoteTip`、`recommended`、`keyShortcutTip`、`questionCardWaiting`、`questionCardCancelled`、`questionCardRejectReason`、`questionCardUserCustom`、`questionCardNoSelection`、`tpl.confirmFillTitle`、`tpl.confirmFillDesc`、`tpl.confirmFillAppend`、`tpl.confirmFillOverwrite`、`pluginOfficialMarket`、`pluginOfficialMarketHint`、`pluginOfficialLink`、`pluginOfficialLinkHint`、`copyConversationLink`、`copyMessageLink`、`codemodeModeLabel`、`codemodeModeHint`、`codemodeModeOn`、`codemodeModeOnly`、`codemodeInlineBudgetLabel`、`codemodeInlineBudgetHint`、`codemodeNestedApprovalBadge`、`codemodeNestedApprovalDesc`、`codemodeSavedImages`
+
 <!-- auto-i18n:end -->
 
 ## [0.101.0] — 2026-10-10

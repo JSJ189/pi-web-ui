@@ -81,6 +81,17 @@
 		"homepage": "https://github.com/xing-shuyin/pi-web-ui/tree/main/plugins/wechat-ilink"
 	},
 	{
+		"id": "feishu",
+		"name": "飞书",
+		"nameEn": "Feishu",
+		"icon": "🐦",
+		"iconSvg": "<svg xmlns=\"http://www.w3.org/2000/svg\" viewBox=\"0 0 24 24\" fill=\"none\" stroke=\"currentColor\" stroke-width=\"2\" stroke-linecap=\"round\" stroke-linejoin=\"round\"><path d=\"M21 4L10 14\"/><path d=\"M21 4l-6.5 16-4.5-6-6-4.5L21 4z\"/></svg>",
+		"description": "飞书工作台：群聊与单聊会话列表 / 消息收发、回复、撤回与表情回应 / 自定义机器人 Webhook 卡片推送 / 新消息轮询提醒 / AI 飞书工具（密钥加密落盘，零外部依赖）。",
+		"descriptionEn": "Feishu (Lark) workspace: list chats, read/send/reply/recall messages, emoji reactions, custom bot webhook cards, background polling, and AI feishu tool (encrypted secret storage, zero extra dependencies).",
+		"source": "xing-shuyin/pi-web-ui/plugins/feishu",
+		"homepage": "https://github.com/xing-shuyin/pi-web-ui/tree/main/plugins/feishu"
+	},
+	{
 		"id": "voice-input",
 		"name": "语音输入",
 		"nameEn": "Voice Input",

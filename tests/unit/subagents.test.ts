@@ -9,6 +9,9 @@ import {
 	SUBAGENT_ACTIONS,
 	type SubagentToolHost,
 } from "../../server/subagents.js";
+import { MAX_SUBAGENTS, getMaxSubagents } from "../../server/agent-formatters.js";
+import { countActiveSubagents, isSubagentActive, toSubagentSnapshot } from "../../server/subagent-helpers.js";
+import type { Conversation } from "../../server/agent-service.js";
 import { SUBAGENT_TOOL_NAMES } from "../../server/tool-manager.js";
 
 /** 一个假的 host，工具调用不会真正执行会话（只验证走通与参数透传）。 */
@@ -857,5 +860,90 @@ describe("subagent parent retention", () => {
 		expect(hasLiveChild("c1")).toBe(true);
 		convs.delete("sa-1");
 		expect(hasLiveChild("c1")).toBe(false);
+	});
+});
+
+describe("active subagent quota & retention decoupling (issue #589)", () => {
+	function makeFakeConv(opts: {
+		id: string;
+		isSubagent?: boolean;
+		isStreaming?: boolean;
+		promptInFlight?: boolean;
+		stopReason?: string;
+	}): Conversation {
+		return {
+			id: opts.id,
+			title: opts.id,
+			isSubagent: opts.isSubagent ?? true,
+			promptInFlight: opts.promptInFlight ?? false,
+			subagentType: "explore",
+			subagentPrompt: "task",
+			createdAt: 1,
+			session: {
+				isStreaming: opts.isStreaming ?? false,
+				agent: {
+					state: {
+						messages: opts.stopReason ? [{ role: "assistant", stopReason: opts.stopReason }] : [],
+					},
+				},
+				getSessionStats: () => ({ totalMessages: 2 }),
+				getLastAssistantText: () => "done text",
+			},
+		} as unknown as Conversation;
+	}
+
+	it("isSubagentActive 仅将流式中或首轮投递中的子代理计为活跃，已终态子代理与普通对话不占名额", () => {
+		const runningSa = makeFakeConv({ id: "sa-run", isSubagent: true, isStreaming: true });
+		const bootingSa = makeFakeConv({ id: "sa-boot", isSubagent: true, isStreaming: false, promptInFlight: true });
+		const doneSa = makeFakeConv({ id: "sa-done", isSubagent: true, isStreaming: false, stopReason: "end_turn" });
+		const canceledSa = makeFakeConv({ id: "sa-cancel", isSubagent: true, isStreaming: false, stopReason: "aborted" });
+		const regularRunning = makeFakeConv({ id: "conv-1", isSubagent: false, isStreaming: true });
+
+		expect(isSubagentActive(runningSa)).toBe(true);
+		expect(isSubagentActive(bootingSa)).toBe(true);
+		expect(isSubagentActive(doneSa)).toBe(false);
+		expect(isSubagentActive(canceledSa)).toBe(false);
+		expect(isSubagentActive(regularRunning)).toBe(false);
+
+		// 即使存在 20 个已终态子代理保留在左栏，活跃名额只计 running + booting + 在途 spawning
+		const finishedBatch = Array.from({ length: 20 }, (_, i) =>
+			makeFakeConv({ id: `sa-fin-${i}`, isSubagent: true, isStreaming: false, stopReason: "end_turn" }),
+		);
+		const all = [...finishedBatch, runningSa, bootingSa, regularRunning];
+		expect(countActiveSubagents(all)).toBe(2);
+		expect(countActiveSubagents(all, 3)).toBe(5);
+	});
+
+	it("toSubagentSnapshot 在首轮 promptInFlight 窗口内保持 running，落定后转为 done/canceled", () => {
+		const booting = makeFakeConv({ id: "sa-boot", isSubagent: true, isStreaming: false, promptInFlight: true });
+		const snapBoot = toSubagentSnapshot(booting);
+		expect(snapBoot.streaming).toBe(true);
+		expect(snapBoot.state).toBe("running");
+
+		booting.promptInFlight = false;
+		const snapDone = toSubagentSnapshot(booting);
+		expect(snapDone.streaming).toBe(false);
+		expect(snapDone.state).toBe("done");
+	});
+
+	it("getMaxSubagents 默认返回 MAX_SUBAGENTS (16)，支持 PI_WEB_MAX_SUBAGENTS 覆盖", () => {
+		const prev = process.env.PI_WEB_MAX_SUBAGENTS;
+		try {
+			delete process.env.PI_WEB_MAX_SUBAGENTS;
+			expect(getMaxSubagents()).toBe(MAX_SUBAGENTS);
+			expect(getMaxSubagents()).toBe(16);
+
+			process.env.PI_WEB_MAX_SUBAGENTS = "32";
+			expect(getMaxSubagents()).toBe(32);
+
+			process.env.PI_WEB_MAX_SUBAGENTS = "0";
+			expect(getMaxSubagents()).toBe(16);
+
+			process.env.PI_WEB_MAX_SUBAGENTS = "invalid";
+			expect(getMaxSubagents()).toBe(16);
+		} finally {
+			if (prev === undefined) delete process.env.PI_WEB_MAX_SUBAGENTS;
+			else process.env.PI_WEB_MAX_SUBAGENTS = prev;
+		}
 	});
 });

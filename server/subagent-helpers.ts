@@ -4,6 +4,7 @@
  * 负责：
  * - subagentRunOutcome: 根据 assistant 消息的 errorMessage / stopReason 计算运行结局
  * - roleOutcomeOf: 映射为角色轮终态（error / canceled / done）
+ * - isSubagentActive / countActiveSubagents: 判定与统计占用并发名额的活跃（非终态）子代理
  * - toSubagentSnapshot: 转换单个对话为轻量子代理快照（SubagentSnapshot）
  * - listSubagentSnapshots: 过滤和排序子代理快照列表
  *
@@ -13,6 +14,28 @@ import type { SubagentSnapshot, SubagentState } from "./subagents.js";
 import type { RoleWaitOutcome } from "./goal-service.js";
 import type { Conversation } from "./agent-service.js";
 import { SUBAGENT_PROMPT_SNAPSHOT_CAP } from "./agent-formatters.js";
+
+/** 子代理是否处于活跃（流式运行中或首轮投递启动中）状态。
+ *  #589：名额与可见性解耦——仅活跃（非终态）子代理占用 MAX_SUBAGENTS 并发名额；
+ *  已结束（done / canceled / error）的子代理保留在左栏供用户审阅追溯，不再占名额。 */
+export function isSubagentActive(conv: Conversation): boolean {
+	if (!conv.isSubagent) return false;
+	if (conv.promptInFlight) return true;
+	try {
+		return Boolean(conv.session.isStreaming);
+	} catch {
+		return false;
+	}
+}
+
+/** 统计当前占用并发名额的活跃子代理数（含正在创建 runtime 的在途 spawn，不含已终态子代理，#589）。 */
+export function countActiveSubagents(convs: Iterable<Conversation>, spawningCount = 0): number {
+	let count = Math.max(0, Math.floor(spawningCount));
+	for (const c of convs) {
+		if (isSubagentActive(c)) count++;
+	}
+	return count;
+}
 
 /** 子代理最近一次运行的结局：最后一条 assistant 消息的 errorMessage / stopReason。
  *  报错 > 中止 > 正常，三者互斥；无 assistant 消息时返回空。 */
@@ -51,7 +74,13 @@ export function roleOutcomeOf(conv: Conversation): RoleWaitOutcome {
 
 /** 序列化对话为前端可消费的子代理快照 */
 export function toSubagentSnapshot(conv: Conversation): SubagentSnapshot {
-	const streaming = conv.session.isStreaming;
+	let sessionStreaming = false;
+	try {
+		sessionStreaming = Boolean(conv.session.isStreaming);
+	} catch {
+		sessionStreaming = false;
+	}
+	const streaming = Boolean(sessionStreaming || conv.promptInFlight);
 	const { error, canceled } = subagentRunOutcome(conv);
 	const state: SubagentState = streaming ? "running" : canceled ? "canceled" : "done";
 	let messageCount = 0;

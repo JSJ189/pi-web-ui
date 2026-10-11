@@ -12,9 +12,10 @@
  * 加新工具 = 在这里给它的工厂登记一行，逼着你当场决定：入目录还是内核。
  * 插件工具走 enabledPluginToolDefs 动态区，不经过 make*Tool 调用，不管。
  */
-import { readFileSync } from "node:fs";
+import { readFileSync, readdirSync } from "node:fs";
 import { join } from "node:path";
 import { describe, expect, it } from "vitest";
+import { makeMarkersListTool } from "../../server/markers-list-tool.js";
 import {
 	AGENT_TOOL_CATALOG,
 	ASK_USER_QUESTION_TOOL_NAME,
@@ -126,5 +127,31 @@ describe("注册→目录", () => {
 	it("核心内置工具不入目录（它们走设置页「核心工具」区，不占 OTHER_AGENT_TOOLS 目录行）", () => {
 		const known = new Set(AGENT_TOOL_CATALOG.map((t) => t.name));
 		expect([...INTRINSIC].filter((n) => known.has(n))).toEqual([]);
+	});
+
+	it("todo_list 与所有 Type.Unsafe 参数均显式声明 type（防 Moonshot 等严格端点 HTTP 400，#590）", () => {
+		const todoTool = makeMarkersListTool(() => "conv-1", { describe: () => "", getRawState: () => undefined });
+		const schema = todoTool.parameters as unknown as {
+			properties?: Record<string, { type?: string; enum?: string[] }>;
+		};
+		expect(schema.properties?.action?.type).toBe("string");
+		expect(schema.properties?.action?.enum).toEqual(["list"]);
+
+		const serverDir = join(__dirname, "..", "..", "server");
+		const missingType: string[] = [];
+		for (const file of readdirSync(serverDir).filter((f) => f.endsWith(".ts"))) {
+			const src = readFileSync(join(serverDir, file), "utf8");
+			for (const m of src.matchAll(/Type\.Unsafe(?:<[^>]*>)?\(\s*\{([\s\S]*?)\}\s*\)/g)) {
+				const body = m[1];
+				if (!/\btype\s*:/.test(body)) {
+					const line = src.slice(0, m.index ?? 0).split("\n").length;
+					missingType.push(`${file}:${line}`);
+				}
+			}
+		}
+		expect(
+			missingType,
+			`以下 Type.Unsafe({...}) 缺少显式 type 字段，会导致严格校验端点返回 HTTP 400：${missingType.join(", ")}`,
+		).toEqual([]);
 	});
 });

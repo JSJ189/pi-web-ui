@@ -168,7 +168,13 @@ import {
 	createCompactContextHost,
 	createSkillToolHost,
 } from "./tool-host-factories.js";
-import { toSubagentSnapshot, listSubagentSnapshots, subagentRunOutcome, roleOutcomeOf } from "./subagent-helpers.js";
+import {
+	toSubagentSnapshot,
+	listSubagentSnapshots,
+	subagentRunOutcome,
+	roleOutcomeOf,
+	countActiveSubagents,
+} from "./subagent-helpers.js";
 import { resolveUserMessageEntryId, resolveConversationMessageEntry } from "./message-entry-resolver.js";
 import { fillSkillContents } from "./skill-content-filler.js";
 import { hasSettledAssistantUsage, estimateNonSystemTokens, renderMainCompose } from "./prompt-assembler.js";
@@ -494,7 +500,7 @@ import {
 	RUN_ARGS_CAP,
 	RUN_RESULT_CAP,
 	MAX_OPEN_CONVERSATIONS,
-	MAX_SUBAGENTS,
+	getMaxSubagents,
 	SUBAGENT_PROMPT_SNAPSHOT_CAP,
 	DEFAULT_CONV_TITLE,
 	truncRun,
@@ -997,6 +1003,9 @@ export class ClientSession {
 		}
 	}
 
+	/** 正在创建 runtime 尚未注册进 convs 的轻量子代理数量（防并发 spawn 绕过并发名额，#589）。 */
+	private spawningSubagents = 0;
+
 	/** 创建子代理 conversation（inMemory runtime + 独立 terminals），listed 入左栏，
 	 *  并在其上触发一次完整回合。返回 convId（= 工具 runId）。
 	 *
@@ -1033,164 +1042,192 @@ export class ClientSession {
 				);
 			}
 		} else {
-			const liveSubagents = [...this.convs.values()].filter((c) => c.isSubagent).length;
-			if (liveSubagents >= MAX_SUBAGENTS) {
+			// #589：名额与可见性解耦——只统计正在运行/启动中的活跃子代理，已结束（done/canceled/error）
+			// 的子代理留在左栏供用户审阅追溯，不再占用并发名额，使 wait_all / stop 能真正释放名额。
+			const maxSubagents = getMaxSubagents();
+			const liveSubagents = countActiveSubagents(this.convs.values(), this.spawningSubagents);
+			if (liveSubagents >= maxSubagents) {
 				throw new Error(
 					pick(
 						this.getLang(),
-						`子代理数量已达上限（${MAX_SUBAGENTS} 个），请先用 subagent_wait_all 等一部分完成、或用 subagent_stop 停掉不需要的再派发`,
-						`Subagent limit reached (${MAX_SUBAGENTS} live). Wait for some with subagent_wait_all or stop unneeded ones with subagent_stop before spawning more`,
+						`同时运行的子代理数量已达上限（${maxSubagents} 个），请先用 subagent_wait_all 等一部分完成、或用 subagent_stop 停掉不需要的再派发`,
+						`Active subagent limit reached (${maxSubagents} live). Wait for some with subagent_wait_all or stop unneeded ones with subagent_stop before spawning more`,
 						"agent.subagent.limit.reached",
-						{ limit: MAX_SUBAGENTS },
+						{ limit: maxSubagents },
 					),
 				);
 			}
 		}
-		// 真正的派发者（withSubagentOwner 按 runtime 归属填入）：cwd 基准 / 跟随模型 /
-		// 跟随思考强度一律读它，而不是派发瞬间的 active——后台对话产出时用户可能正
-		// 看着别的项目，读 active 会跟错模型、把相对 cwd 解析到错误的项目下。
-		const spawner = parentId ? this.convs.get(parentId) : undefined;
-		const spawnerSession = spawner?.session ?? this.session;
-		const baseCwd = spawner?.cwd ?? this.cwd;
-		// 相对 cwd 按派发者所在目录解析：直接透传会相对 server 进程 cwd 落到别处。
-		const resolvedCwd = isRemoteWorkspaceUri(baseCwd) ? baseCwd : cwd ? resolve(baseCwd, cwd) : baseCwd;
-		const sessionBaseDir = resolveWorkspaceSessionDir(this.stateStore?.dataDir, resolvedCwd);
-		const conversationId = persist ? `conv-${randomUUID().slice(0, 8)}` : `sa-${randomUUID().slice(0, 8)}`;
-		const terminals = this.makeTerminalManager(conversationId, resolvedCwd);
-		const sessionManager = persist ? SessionManager.create(sessionBaseDir) : SessionManager.inMemory(sessionBaseDir);
-		if (!persist) {
-			// 为内存子代理提供隔离的临时运行目录（供 SoL-Pi 等依赖 getSessionDir 的扩展正常放置缓存），
-			// 但保持 persist = false（不写 .jsonl 对话文件、不污染历史记录）
-			const ephemeralDir = join(this.agentDir, "subagent-sessions", conversationId);
-			try {
-				mkdirSync(ephemeralDir, { recursive: true });
-				(sessionManager as unknown as { sessionDir: string }).sessionDir = ephemeralDir;
-			} catch {}
+		const isEphemeralSubagent = !persist;
+		if (isEphemeralSubagent) {
+			this.spawningSubagents++;
 		}
-		const runtime = await createAgentSessionRuntime(this.makeRuntimeFactory(terminals, apply, conversationId), {
-			cwd: sessionBaseDir,
-			agentDir: this.agentDir,
-			sessionManager,
-		});
-		const conv = this.makeConversation(runtime, conversationId, terminals);
-		conv.cwd = resolvedCwd;
-		conv.isSubagent = !persist;
-		// 父对话 = 真正派发它的会话（按会话归属的 host 包装填入）。直接用 active
-		// 会错：后台对话运行时用户可能正看着别的项目对话，孩子会被记到无关
-		// 对话名下、沉到别的项目组底部（issue #95）。缺省才回退到 active。
-		conv.parentId = parentId ?? this.activeId ?? undefined;
-		conv.subagentType = type;
-		conv.subagentPrompt = prompt;
-		// 模板快照留在对话上：forceReset 重建 runtime 时工厂要按同一模板组装
-		// （system prompt/技能/扩展白名单），否则重建后回落主会话设置。
-		conv.subagentTemplate = apply;
-		// 插件工具门与模板扩展白名单对齐：白名单非空时插件/MCP 工具（无 SDK
-		// extensionKey 身份）不进该会话。工厂期 customTools 不注册 + 下面的
-		// syncPluginTools 不回补，模板热改不影响已运行的子代理（与 prompt/技能一致）。
-		conv.subagentBarsPluginTools = !!apply && apply.enabledExtensions.length > 0;
-		conv.listed = true;
-		conv.title = title ?? subagentTitle(prompt);
-		this.convs.set(conv.id, conv);
-		// 子代理会话同样订阅 SDK 事件：否则 onEvent 永不触发，点开查看时没有
-		// message_delta 流式增量、快照也不刷新，只能靠切走切回时的 flushSnapshot
-		// 看到新内容（dismiss/释放流程本来就会 unsubscribe，不泄漏）。
-		conv.unsubscribe = conv.session.subscribe((event) => this.onEvent(conv, event));
-		// 子代理不走 bindSession——这里同样注入面板的重试次数覆盖。
-		this.applyRetryOverrides();
-		// 软上限覆盖同样重放（子代理跟随主对话的压缩阈值，issue #229）。
-		this.applyCompactionOverrides();
-		this.applyCodemodeOverrides();
-		// 扩展绑定（rpc 模式）；用 headless 的 Web UI context：
-		// 扩展绑定时不会因缺方法崩，UI 输出也不下发（不会与主对话的 widget/status 冲突）。
+		let handedOffToConv = false;
 		try {
-			await conv.session.bindExtensions({
-				mode: "rpc",
-				// 子代理的扩展照常拿到完整 ExtensionUIContext（扩展调用新增方法不会因
-				// 局部 mock 缺失而崩），但它是 headless 的：UI 输出全部丢弃、弹窗按取消返回，
-				// 因此既不与主对话的 widget/status 串台，也不会让扩展卡在永远无人应答的弹窗上。
-				uiContext: WebUIContext.headless(),
-				onError: this.makeExtensionErrorReporter({
-					text: `子代理 ${conversationId}：`,
-					textEn: `Subagent ${conversationId}: `,
-				}),
-			});
-		} catch {
-			// 绑定失败不阻断运行。
-		}
-		// 指定模型（显式 model 参数 → 模板 model → 设置面板默认）时，在首回合前
-		// 给子代理会话换模型；全都不给 = 跟随主对话：把发起会话当前的模型也
-		// 显式搬过来（新 runtime 的默认模型未必等于主对话刚选的模型）。
-		const resolvedModel =
-			model ?? (apply?.model?.trim() || null) ?? (this.settingsSvc.current.subagentDefaultModel || null);
-		const followModel = resolvedModel
-			? resolvedModel
-			: spawnerSession.model
-				? `${spawnerSession.model.provider}/${spawnerSession.model.id}`
-				: null;
-		if (followModel) {
-			const slash = followModel.indexOf("/");
-			const m =
-				slash > 0 && slash < followModel.length - 1
-					? this.sharedModelRuntime?.getModel(followModel.slice(0, slash), followModel.slice(slash + 1))
-					: undefined;
-			if (m) {
+			// 真正的派发者（withSubagentOwner 按 runtime 归属填入）：cwd 基准 / 跟随模型 /
+			// 跟随思考强度一律读它，而不是派发瞬间的 active——后台对话产出时用户可能正
+			// 看着别的项目，读 active 会跟错模型、把相对 cwd 解析到错误的项目下。
+			const spawner = parentId ? this.convs.get(parentId) : undefined;
+			const spawnerSession = spawner?.session ?? this.session;
+			const baseCwd = spawner?.cwd ?? this.cwd;
+			// 相对 cwd 按派发者所在目录解析：直接透传会相对 server 进程 cwd 落到别处。
+			const resolvedCwd = isRemoteWorkspaceUri(baseCwd) ? baseCwd : cwd ? resolve(baseCwd, cwd) : baseCwd;
+			const sessionBaseDir = resolveWorkspaceSessionDir(this.stateStore?.dataDir, resolvedCwd);
+			const conversationId = persist ? `conv-${randomUUID().slice(0, 8)}` : `sa-${randomUUID().slice(0, 8)}`;
+			const terminals = this.makeTerminalManager(conversationId, resolvedCwd);
+			const sessionManager = persist ? SessionManager.create(sessionBaseDir) : SessionManager.inMemory(sessionBaseDir);
+			if (!persist) {
+				// 为内存子代理提供隔离的临时运行目录（供 SoL-Pi 等依赖 getSessionDir 的扩展正常放置缓存），
+				// 但保持 persist = false（不写 .jsonl 对话文件、不污染历史记录）
+				const ephemeralDir = join(this.agentDir, "subagent-sessions", conversationId);
 				try {
-					// 先恢复该 provider 的项目密钥（setModel 的鉴权检查要用），再换模型。
-					// 按子代理自己的目录恢复（跨目录派发时派发者的密钥不一定适用）。
-					await this.restoreKeyForModel(followModel, resolvedCwd);
-					await conv.session.setModel(m);
-				} catch (err) {
-					// 换模型失败不阻断运行——沿用默认模型继续。
+					mkdirSync(ephemeralDir, { recursive: true });
+					(sessionManager as unknown as { sessionDir: string }).sessionDir = ephemeralDir;
+				} catch {}
+			}
+			const runtime = await createAgentSessionRuntime(this.makeRuntimeFactory(terminals, apply, conversationId), {
+				cwd: sessionBaseDir,
+				agentDir: this.agentDir,
+				sessionManager,
+			});
+			const conv = this.makeConversation(runtime, conversationId, terminals);
+			conv.cwd = resolvedCwd;
+			conv.isSubagent = !persist;
+			if (conv.isSubagent) {
+				// 首轮 sendUserMessage 进入流式前的预检/模型切换窗口标记为投递中，
+				// 确保并发名额与快照状态在此窗口内均按运行中处理（#589）。
+				conv.promptInFlight = true;
+			}
+			// 父对话 = 真正派发它的会话（按会话归属的 host 包装填入）。直接用 active
+			// 会错：后台对话运行时用户可能正看着别的项目对话，孩子会被记到无关
+			// 对话名下、沉到别的项目组底部（issue #95）。缺省才回退到 active。
+			conv.parentId = parentId ?? this.activeId ?? undefined;
+			conv.subagentType = type;
+			conv.subagentPrompt = prompt;
+			// 模板快照留在对话上：forceReset 重建 runtime 时工厂要按同一模板组装
+			// （system prompt/技能/扩展白名单），否则重建后回落主会话设置。
+			conv.subagentTemplate = apply;
+			// 插件工具门与模板扩展白名单对齐：白名单非空时插件/MCP 工具（无 SDK
+			// extensionKey 身份）不进该会话。工厂期 customTools 不注册 + 下面的
+			// syncPluginTools 不回补，模板热改不影响已运行的子代理（与 prompt/技能一致）。
+			conv.subagentBarsPluginTools = !!apply && apply.enabledExtensions.length > 0;
+			conv.listed = true;
+			conv.title = title ?? subagentTitle(prompt);
+			this.convs.set(conv.id, conv);
+			if (isEphemeralSubagent) {
+				handedOffToConv = true;
+				this.spawningSubagents = Math.max(0, this.spawningSubagents - 1);
+			}
+			// 子代理会话同样订阅 SDK 事件：否则 onEvent 永不触发，点开查看时没有
+			// message_delta 流式增量、快照也不刷新，只能靠切走切回时的 flushSnapshot
+			// 看到新内容（dismiss/释放流程本来就会 unsubscribe，不泄漏）。
+			conv.unsubscribe = conv.session.subscribe((event) => this.onEvent(conv, event));
+			// 子代理不走 bindSession——这里同样注入面板的重试次数覆盖。
+			this.applyRetryOverrides();
+			// 软上限覆盖同样重放（子代理跟随主对话的压缩阈值，issue #229）。
+			this.applyCompactionOverrides();
+			this.applyCodemodeOverrides();
+			// 扩展绑定（rpc 模式）；用 headless 的 Web UI context：
+			// 扩展绑定时不会因缺方法崩，UI 输出也不下发（不会与主对话的 widget/status 冲突）。
+			try {
+				await conv.session.bindExtensions({
+					mode: "rpc",
+					// 子代理的扩展照常拿到完整 ExtensionUIContext（扩展调用新增方法不会因
+					// 局部 mock 缺失而崩），但它是 headless 的：UI 输出全部丢弃、弹窗按取消返回，
+					// 因此既不与主对话的 widget/status 串台，也不会让扩展卡在永远无人应答的弹窗上。
+					uiContext: WebUIContext.headless(),
+					onError: this.makeExtensionErrorReporter({
+						text: `子代理 ${conversationId}：`,
+						textEn: `Subagent ${conversationId}: `,
+					}),
+				});
+			} catch {
+				// 绑定失败不阻断运行。
+			}
+			// 指定模型（显式 model 参数 → 模板 model → 设置面板默认）时，在首回合前
+			// 给子代理会话换模型；全都不给 = 跟随主对话：把发起会话当前的模型也
+			// 显式搬过来（新 runtime 的默认模型未必等于主对话刚选的模型）。
+			const resolvedModel =
+				model ?? (apply?.model?.trim() || null) ?? (this.settingsSvc.current.subagentDefaultModel || null);
+			const followModel = resolvedModel
+				? resolvedModel
+				: spawnerSession.model
+					? `${spawnerSession.model.provider}/${spawnerSession.model.id}`
+					: null;
+			if (followModel) {
+				const slash = followModel.indexOf("/");
+				const m =
+					slash > 0 && slash < followModel.length - 1
+						? this.sharedModelRuntime?.getModel(followModel.slice(0, slash), followModel.slice(slash + 1))
+						: undefined;
+				if (m) {
+					try {
+						// 先恢复该 provider 的项目密钥（setModel 的鉴权检查要用），再换模型。
+						// 按子代理自己的目录恢复（跨目录派发时派发者的密钥不一定适用）。
+						await this.restoreKeyForModel(followModel, resolvedCwd);
+						await conv.session.setModel(m);
+					} catch (err) {
+						// 换模型失败不阻断运行——沿用默认模型继续。
+						this.emit({
+							type: "notice",
+							level: "warning",
+							text: `子代理模型切换失败（将按默认模型运行）：${followModel}（${(err as Error).message}）`,
+							textEn: `Failed to set subagent model, running with default: ${followModel} (${(err as Error).message})`,
+						});
+					}
+				} else {
 					this.emit({
 						type: "notice",
 						level: "warning",
-						text: `子代理模型切换失败（将按默认模型运行）：${followModel}（${(err as Error).message}）`,
-						textEn: `Failed to set subagent model, running with default: ${followModel} (${(err as Error).message})`,
+						text: `子代理模型不存在，将按默认模型运行：${followModel}`,
+						textEn: `Subagent model not found, running with default: ${followModel}`,
 					});
 				}
-			} else {
-				this.emit({
-					type: "notice",
-					level: "warning",
-					text: `子代理模型不存在，将按默认模型运行：${followModel}`,
-					textEn: `Subagent model not found, running with default: ${followModel}`,
+			}
+			// 思考强度：模板指定则固定用它，否则跟随派发者当前强度（与「跟随派发者模型」
+			// 同一取数源：spawnerSession）。所以子代理默认与派发者一致，而不是默默回到
+			// SDK 默认档位。放在换模型之后：setModel 会按模型能力重算强度，我们先让它
+			// 算完再覆盖。不传 persist：只影响这个子代理会话，不动全局默认强度；模型不
+			// 支持的档位由 SDK 自动收敛（reasoning:false 的模型只能是 off）。
+			const thinkingLevel = apply?.thinkingLevel?.trim() || spawnerSession.thinkingLevel;
+			if (thinkingLevel) {
+				try {
+					conv.session.setThinkingLevel(thinkingLevel as Parameters<AgentSession["setThinkingLevel"]>[0]);
+				} catch (err) {
+					// 强度不合法/会话未就绪都不阻断运行（沿用当前档位）。
+					this.emit({
+						type: "notice",
+						level: "warning",
+						text: `子代理思考强度设置失败（将按当前档位运行）：${thinkingLevel}（${(err as Error).message}）`,
+						textEn: `Failed to set subagent thinking level, keeping the current one: ${thinkingLevel} (${(err as Error).message})`,
+					});
+				}
+			}
+			// 触发回合（后台执行；失败转识为通知）。把 Promise 挂在对话上：目标模式的
+			// 「等本回合结束」要先等它落定，才能区分「还没开跑」与「已跑完」。
+			conv.kickoff = conv.session
+				.sendUserMessage(prompt)
+				.catch((err) => {
+					this.emit({
+						type: "notice",
+						level: "error",
+						text: `子代理 ${conversationId} 启动失败: ${err instanceof Error ? err.message : String(err)}`,
+						textEn: `Subagent ${conversationId} failed to start: ${err instanceof Error ? err.message : String(err)}`,
+					});
+				})
+				.finally(() => {
+					conv.promptInFlight = false;
 				});
+			if (persist) {
+				this.pushProjects().catch(() => {});
+			}
+			this.emitConversations();
+			return conv.id;
+		} finally {
+			if (isEphemeralSubagent && !handedOffToConv) {
+				this.spawningSubagents = Math.max(0, this.spawningSubagents - 1);
 			}
 		}
-		// 思考强度：模板指定则固定用它，否则跟随派发者当前强度（与「跟随派发者模型」
-		// 同一取数源：spawnerSession）。所以子代理默认与派发者一致，而不是默默回到
-		// SDK 默认档位。放在换模型之后：setModel 会按模型能力重算强度，我们先让它
-		// 算完再覆盖。不传 persist：只影响这个子代理会话，不动全局默认强度；模型不
-		// 支持的档位由 SDK 自动收敛（reasoning:false 的模型只能是 off）。
-		const thinkingLevel = apply?.thinkingLevel?.trim() || spawnerSession.thinkingLevel;
-		if (thinkingLevel) {
-			try {
-				conv.session.setThinkingLevel(thinkingLevel as Parameters<AgentSession["setThinkingLevel"]>[0]);
-			} catch (err) {
-				// 强度不合法/会话未就绪都不阻断运行（沿用当前档位）。
-				this.emit({
-					type: "notice",
-					level: "warning",
-					text: `子代理思考强度设置失败（将按当前档位运行）：${thinkingLevel}（${(err as Error).message}）`,
-					textEn: `Failed to set subagent thinking level, keeping the current one: ${thinkingLevel} (${(err as Error).message})`,
-				});
-			}
-		}
-		// 触发回合（后台执行；失败转识为通知）。把 Promise 挂在对话上：目标模式的
-		// 「等本回合结束」要先等它落定，才能区分「还没开跑」与「已跑完」。
-		conv.kickoff = conv.session.sendUserMessage(prompt).catch((err) => {
-			this.emit({
-				type: "notice",
-				level: "error",
-				text: `子代理 ${conversationId} 启动失败: ${err instanceof Error ? err.message : String(err)}`,
-				textEn: `Subagent ${conversationId} failed to start: ${err instanceof Error ? err.message : String(err)}`,
-			});
-		});
-		if (persist) {
-			this.pushProjects().catch(() => {});
-		}
-		this.emitConversations();
-		return conv.id;
 	}
 
 	private getSubagentSnapshot(convId: string): SubagentSnapshot | undefined {
@@ -1954,11 +1991,14 @@ export class ClientSession {
 		},
 		stopSubagent: async (convId) => {
 			const conv = this.convs.get(convId);
-			if (conv && (conv.session.isStreaming || !conv.session.isIdle)) {
-				await this.interruptRun(
-					conv,
-					pick(this.getLang(), "用户停止子代理", "User stopped the subagent", "agent.subagent.stop.user"),
-				);
+			if (conv) {
+				conv.promptInFlight = false;
+				if (conv.session.isStreaming || !conv.session.isIdle) {
+					await this.interruptRun(
+						conv,
+						pick(this.getLang(), "用户停止子代理", "User stopped the subagent", "agent.subagent.stop.user"),
+					);
+				}
 			}
 		},
 		getWatchdogTimeoutMs: () => this.getBaseToolWatchdogTimeoutMs(),
@@ -2431,10 +2471,29 @@ export class ClientSession {
 				const conv = this.convs.get(convId);
 				if (!conv) return;
 				try {
-					if (conv.session.isStreaming || !conv.session.isIdle) {
+					if (this.conversationStreaming(conv) || !conv.session.isIdle) {
 						await this.interruptRun(
 							conv,
 							pick(this.getLang(), "目标模式停止角色对话", "Goal mode stopped a role conversation", "agent.role.stop"),
+						);
+					}
+				} catch {
+					// best-effort
+				}
+			},
+			interruptMainConv: async (convId) => {
+				const conv = this.convs.get(convId);
+				if (!conv) return;
+				try {
+					if (this.conversationStreaming(conv) || !conv.session.isIdle) {
+						await this.interruptRun(
+							conv,
+							pick(
+								this.getLang(),
+								"目标已设定，主对话当前运行已让位给目标执行者",
+								"Goal set — stopped the main conversation's run so the goal executor can take over",
+								"agent.goal.preempt_main",
+							),
 						);
 					}
 				} catch {
@@ -4232,6 +4291,7 @@ export class ClientSession {
 					// 本轮结束且无后续重试：任何残留占位都是过期的（会话替换、
 					// 结束信号丢失等），清掉，否则横幅会卡住不消失。
 					conv.retryState = null;
+					conv.promptInFlight = false;
 				}
 				// 轨迹事件：本轮结束（放最前——aborted 中断路径也会 break，
 				// 轨迹里必须留下「已停止」而不是凭空消失）。
@@ -4385,6 +4445,8 @@ export class ClientSession {
 				break;
 			}
 			case "agent_start": {
+				// 本轮已正式进入流式（session.isStreaming=true），清除首轮启动期投递标记（#589）。
+				conv.promptInFlight = false;
 				// 轨迹事件：新一轮开始（任务文本由 prompt() 暂存；steer/内部续跑
 				// 无暂存时省略，插件回退为「继续执行」）。
 				const task = conv.pendingTask;

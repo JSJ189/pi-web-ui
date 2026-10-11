@@ -22,7 +22,7 @@ export function makeMarkersListTool(
 		description:
 			"Read-only query of inline marker state. All WRITE operations must use inline markers ([[todo:new:...]] etc.) in the reply body — never this tool.",
 		parameters: Type.Object({
-			action: Type.Unsafe<string>({ enum: ["list"] }),
+			action: Type.Unsafe<string>({ type: "string", enum: ["list"] }),
 			tool: Type.Optional(Type.Literal("todo")),
 			includeDeleted: Type.Optional(
 				Type.Boolean({
