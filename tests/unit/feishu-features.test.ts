@@ -244,3 +244,45 @@ describe("Feishu 插件激活与 AI 工具集成", () => {
 		expect(typeof registeredView.render).toBe("function");
 	});
 });
+
+describe("Feishu 轮询调度（0.103 审计修复）", () => {
+	it("轮询由插件自建 setInterval 调度，面板任务带 stop，deactivate 停轮询", async () => {
+		const pluginMod = await import("../../plugins/feishu/index.mjs");
+		vi.useFakeTimers();
+		const storageData = new Map<string, unknown>([["config", { appId: "cli_x", appSecret: "s", pollSec: 15 }]]);
+		const bgTaskHandle = { update: vi.fn(), unregister: vi.fn() };
+		const registerBackgroundTask = vi.fn(() => bgTaskHandle);
+		const mockFetch = vi.fn().mockResolvedValue({ ok: false, status: 500 });
+		const originalFetch = globalThis.fetch;
+		globalThis.fetch = mockFetch as unknown as typeof fetch;
+		try {
+			const deactivate = await (pluginMod.default as unknown as (h: unknown) => Promise<unknown>)({
+				storage: {
+					get: async (k: string) => storageData.get(k),
+					set: async () => {},
+				},
+				secrets: { getAll: async () => ({}), set: async () => {}, delete: async () => {} },
+				ui: { patch: vi.fn() },
+				registerBackgroundTask,
+				log: vi.fn(),
+				notify: vi.fn(),
+			} as any);
+			await vi.advanceTimersByTimeAsync(1); // 首轮立即发起
+			expect(mockFetch).toHaveBeenCalled();
+			const afterFirst = mockFetch.mock.calls.length;
+			expect(registerBackgroundTask).toHaveBeenCalledWith(
+				expect.objectContaining({ id: "feishu-poll", status: "每 15s" }),
+			);
+			await vi.advanceTimersByTimeAsync(15_000); // 一个周期后第二轮
+			expect(mockFetch.mock.calls.length).toBeGreaterThan(afterFirst);
+			expect(typeof deactivate).toBe("function");
+			(deactivate as () => void)();
+			const beforeStop = mockFetch.mock.calls.length;
+			await vi.advanceTimersByTimeAsync(60_000);
+			expect(mockFetch.mock.calls.length).toBe(beforeStop); // 不再轮询
+		} finally {
+			vi.useRealTimers();
+			globalThis.fetch = originalFetch;
+		}
+	});
+});

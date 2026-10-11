@@ -802,15 +802,37 @@ export default async function activate(host) {
 		}
 	}
 
-	// Register background polling task
-	if (host.registerBackgroundTask) {
-		host.registerBackgroundTask({
-			id: "feishu-poll",
-			label: "🐦 飞书轮询",
-			intervalSec: Math.max(15, Number(localConfig.pollSec || 60)),
-			run: pollNewMessages,
-		});
-	}
+	// 轮询调度：宿主的 registerBackgroundTask 是纯「后台任务面板」登记（只消费
+	// id/label/status/stop，不产生任何调度）——此前把 intervalSec/run 传给它，
+	// 轮询从未被调度，新消息通知/未读徽标只剩面板「立即轮询」一条触发路径。
+	// 与 webmail 同口径：插件自建 setInterval，面板任务负责可见性与一键停止。
+	let pollTimer = null;
+	const pollSecLabel = () => `每 ${Math.max(15, Math.floor(Number(localConfig.pollSec) || 60))}s`;
+	const restartPoller = () => {
+		if (pollTimer) {
+			clearInterval(pollTimer);
+			pollTimer = null;
+		}
+		if (hasAppConfig(localConfig)) {
+			const sec = Math.max(15, Math.floor(Number(localConfig.pollSec) || 60));
+			pollTimer = setInterval(() => void pollNewMessages(), sec * 1000);
+			void pollNewMessages(); // 立即来一轮
+			bgTask?.update({ status: pollSecLabel() });
+		} else {
+			bgTask?.update({ status: "未配置" });
+		}
+	};
+	const bgTask = host.registerBackgroundTask?.({
+		id: "feishu-poll",
+		label: "🐦 飞书轮询",
+		status: hasAppConfig(localConfig) ? pollSecLabel() : "未配置",
+		stop: () => {
+			if (pollTimer) clearInterval(pollTimer);
+			pollTimer = null;
+			host.log?.("info", "Feishu polling stopped from background panel");
+		},
+	});
+	restartPoller();
 
 	// Register AI tool "feishu" adhering strictly to tool-prompt-hygiene rules
 	host.registerTool?.({
@@ -1044,6 +1066,8 @@ export default async function activate(host) {
 					tokenCache.token = "";
 					tokenCache.expiresAt = 0;
 
+					// 配置变了（含 pollSec、首次配好 appId/appSecret）：按新配置重启轮询
+					restartPoller();
 					await updateUnreadStatus();
 					reply({ type: "save_config_done", success: true });
 					break;
@@ -1222,4 +1246,12 @@ export default async function activate(host) {
 	});
 
 	await updateUnreadStatus();
+
+	// activate 返回的函数被宿主登记为 deactivate（server/plugins.ts）：反激活时停掉轮询
+	return () => {
+		if (pollTimer) {
+			clearInterval(pollTimer);
+			pollTimer = null;
+		}
+	};
 }
