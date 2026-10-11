@@ -366,12 +366,14 @@ export function reorderEntriesForMainBranch<T extends AnySessionEntry>(
 	// as early as possible (immediately after their parent) so that the deep main branch entries
 	// remain at the end of the file.
 	const result: T[] = [...headerEntries];
-	const placed = new Set<string>();
+	const placedIds = new Set<string>();
+	const placedRefs = new Set<T>(headerEntries);
 
 	// Helper to place a side entry and its side descendants
 	const sideChildrenOf = new Map<string, T[]>();
 	for (const s of sideEntries) {
 		const pid = typeof s.parentId === "string" ? s.parentId : "";
+		if (!pid) continue;
 		let list = sideChildrenOf.get(pid);
 		if (!list) {
 			list = [];
@@ -380,30 +382,46 @@ export function reorderEntriesForMainBranch<T extends AnySessionEntry>(
 		list.push(s);
 	}
 
+	const canPlace = (entry: T): boolean => {
+		if (placedRefs.has(entry)) return false;
+		if (typeof entry.id === "string" && entry.id && placedIds.has(entry.id)) return false;
+		return true;
+	};
+
+	const markPlaced = (entry: T) => {
+		placedRefs.add(entry);
+		if (typeof entry.id === "string" && entry.id) {
+			placedIds.add(entry.id);
+		}
+	};
+
 	const placeSideDescendants = (parentId: string) => {
 		const children = sideChildrenOf.get(parentId);
 		if (!children) return;
 		for (const child of children) {
-			if (child.id && !placed.has(child.id)) {
-				placed.add(child.id);
+			if (canPlace(child)) {
+				markPlaced(child);
 				result.push(child);
-				placeSideDescendants(child.id);
+				if (typeof child.id === "string" && child.id) {
+					placeSideDescendants(child.id);
+				}
 			}
 		}
 	};
 
 	for (const m of mainEntries) {
-		if (m.id) placed.add(m.id);
+		markPlaced(m);
 		result.push(m);
-		if (m.id) {
+		if (typeof m.id === "string" && m.id) {
 			placeSideDescendants(m.id);
 		}
 	}
 
-	// Any dangling side entries with unknown parents placed before the final main entry if possible
+	// Any dangling side entries (including valid JSON entries without an `id` field, #601)
+	// are placed before the final main entry so that ZERO transcript lines are ever dropped.
 	for (const s of sideEntries) {
-		if (s.id && !placed.has(s.id)) {
-			placed.add(s.id);
+		if (!placedRefs.has(s)) {
+			markPlaced(s);
 			// Insert before the last entry (which is the best leaf)
 			if (result.length > headerEntries.length + 1) {
 				result.splice(result.length - 1, 0, s);
@@ -413,7 +431,10 @@ export function reorderEntriesForMainBranch<T extends AnySessionEntry>(
 		}
 	}
 
-	// Verify that the new last non-header entry is bestLeafId
+	// Verify that no entries were lost (#601) and the new last non-header entry with id is bestLeafId
+	if (result.length !== entries.length) {
+		return { entries, changed: false };
+	}
 	const newNonHeader = result.filter((e) => e && e.type !== "session" && typeof e.id === "string");
 	const newTail = newNonHeader[newNonHeader.length - 1];
 	const successfullyReordered = newTail?.id === bestLeafId;

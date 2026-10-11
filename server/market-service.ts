@@ -9,7 +9,7 @@
 
 import { existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import { dirname, join } from "node:path";
-import { validateFetchUrl } from "./preset-share.js";
+import { safeFetch, validateFetchUrl } from "./net-guard.js";
 import type { RemoteMcpServer, RemoteSkillSummary } from "./protocol.js";
 
 const DEFAULT_TIMEOUT_MS = 10_000;
@@ -186,7 +186,7 @@ export async function fetchRemoteMcpMarket(opts: FetchMcpMarketOptions): Promise
 				validated.reason === "scheme" ? "自定义目录仅支持 http/https 地址" : "自定义目录不允许内网/回环地址",
 			);
 		}
-		const customRes = await fetch(validated.url, {
+		const customRes = await safeFetch(validated.url, {
 			headers: fetchHeaders(),
 			signal: AbortSignal.timeout(DEFAULT_TIMEOUT_MS),
 		});
