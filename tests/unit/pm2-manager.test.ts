@@ -12,7 +12,7 @@
 import { readFileSync } from "node:fs";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
-import { afterEach, describe, expect, it } from "vitest";
+import { afterEach, describe, expect, it, vi } from "vitest";
 import { createMockHost } from "../../plugin-sdk/index.mjs";
 import { parseUiContributions } from "../../server/plugins.js";
 import pm2Plugin, {
@@ -193,5 +193,46 @@ describe("pm2-manager activate", () => {
 		deactivate?.();
 		expect(host.mock.agentTools).toHaveLength(0);
 		expect(host.mock.routes).toHaveLength(0);
+	});
+});
+
+describe("pm2 探测负缓存（0.103 审计）", () => {
+	it("未安装结论 5 分钟内缓存：/status 连续轮询不重复 spawn npm 探测", async () => {
+		let execFileCalls = 0;
+		vi.resetModules();
+		vi.doMock("node:child_process", () => ({
+			execFile: (
+				_cmd: string,
+				_args: string[],
+				_opts: unknown,
+				cb: (e: Error | null, stdout: string, stderr: string) => void,
+			) => {
+				execFileCalls++;
+				setImmediate(() => cb(new Error("no pm2 in test"), "", ""));
+			},
+		}));
+		try {
+			const { createMockHost: freshHost } = await import("../../plugin-sdk/index.mjs");
+			const plugin = (await import("../../plugins/pm2-manager/index.mjs")).default;
+			const host = freshHost({ settings: {} });
+			plugin.activate(host as any);
+			const statusRoute = (host.mock.routes as Array<{ method: string; path: string; handler: any }>).find(
+				(r) => r.method === "GET" && r.path === "/status",
+			);
+			expect(statusRoute).toBeDefined();
+			const callStatus = () =>
+				new Promise<{ installed: boolean }>((resolve) => {
+					statusRoute!.handler({}, { json: (p: { installed: boolean }) => resolve(p) });
+				});
+			const first = await callStatus();
+			const spawnsAfterFirst = execFileCalls;
+			const second = await callStatus();
+			expect(first.installed).toBe(false);
+			expect(second.installed).toBe(false);
+			expect(execFileCalls).toBe(spawnsAfterFirst); // 第二次轮询零新增 spawn（负缓存命中）
+		} finally {
+			vi.doUnmock("node:child_process");
+			vi.resetModules();
+		}
 	});
 });
