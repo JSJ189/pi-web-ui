@@ -118,8 +118,17 @@ describe("主题分组与现代经典主题测试", () => {
 		expect(paperCss).toContain("color: #5f533e");
 	});
 
-	it("朱批与朱批·夜主题具备笺纸凹版边框及空思考高度兜底", () => {
-		for (const file of ["zhupi.css", "zhupi-dark.css"]) {
+	it("朱笺与朱笺·夜主题具备笺纸凹版边框及空思考高度兜底", () => {
+		const themes = listThemes(BUILTIN_DIR, USER_DIR);
+		const byId = new Map(themes.map((t) => [t.id, t]));
+		expect(byId.get("zhujian")?.name).toBe("朱笺");
+		expect(byId.get("zhujian")?.nameEn).toBe("Vermilion Note");
+		expect(byId.get("zhujian")?.scheme).toBe("light");
+		expect(byId.get("zhujian-dark")?.name).toBe("朱笺·夜");
+		expect(byId.get("zhujian-dark")?.nameEn).toBe("Vermilion Note Dark");
+		expect(byId.get("zhujian-dark")?.scheme).toBe("dark");
+
+		for (const file of ["zhujian.css", "zhujian-dark.css"]) {
 			const css = readFileSync(join(BUILTIN_DIR, file), "utf8");
 			expect(css).toContain("border: 1px solid var(--border-soft) !important;");
 			expect(css).toContain("background: var(--code-bg) !important;");
