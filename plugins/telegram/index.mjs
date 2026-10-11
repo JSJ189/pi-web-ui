@@ -226,14 +226,23 @@ export class TelegramBotBridge {
 		const botUsername = this.status.botUsername || "";
 
 		// In group chats, only respond if mentioned BY NAME —— mention 实体必须
-		// 指向机器人自身（entity.value === @botUsername），否则群里 @任何人
-		// （entities 里存在任意 mention）都会触发 AI 插话
+		// 指向机器人自身（entity.value === @botUsername 或按 offset/length 切片匹配），
+		// 否则群里 @任何人（entities 里存在任意 mention）都会触发 AI 插话
 		if (isGroup) {
-			const namedMention = !!botUsername && message.text?.includes(`@${botUsername}`);
+			const targetName = `@${botUsername}`.toLowerCase();
+			const namedMention = !!botUsername && message.text?.toLowerCase().includes(targetName);
 			const entityMention =
 				!!botUsername &&
 				Array.isArray(message.entities) &&
-				message.entities.some((e) => e.type === "mention" && e.value === `@${botUsername}`);
+				message.entities.some((e) => {
+					if (e.type !== "mention") return false;
+					if (e.value && String(e.value).toLowerCase() === targetName) return true;
+					if (typeof e.offset === "number" && typeof e.length === "number" && message.text) {
+						const slice = message.text.slice(e.offset, e.offset + e.length).toLowerCase();
+						return slice === targetName;
+					}
+					return false;
+				});
 			if (botUsername && !namedMention && !entityMention) return;
 		}
 

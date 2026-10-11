@@ -169,4 +169,42 @@ describe("TelegramBotBridge 双工通信流程测试", () => {
 		await bridge.stop();
 		vi.unstubAllGlobals();
 	});
+
+	it("Telegram 群聊门控：@其他人的消息不触发，只有指名道姓 @机器人自身才触发", async () => {
+		const chatSpy = vi.fn().mockResolvedValue({ conversationId: "conv_tg_group" });
+		const bridge = new TelegramBotBridge({
+			host: { chat: chatSpy },
+			getConfig: () => ({ botToken: "123:test_token" }),
+		});
+		bridge.status.botUsername = "MyAwesomeBot";
+
+		// 1. 群聊里 @别人（entities 指向别人，文本也是别人）
+		await bridge.onInboundMessage({
+			message_id: 10,
+			chat: { id: -100123, type: "supergroup" },
+			from: { id: 10001, is_bot: false },
+			text: "@OtherUser 你好，看下这个",
+			entities: [{ type: "mention", offset: 0, length: 10 }],
+		});
+		expect(chatSpy).not.toHaveBeenCalled();
+
+		// 2. 群聊里指名道姓 @ 机器人自己（通过 text 或 entities）
+		await bridge.onInboundMessage({
+			message_id: 11,
+			chat: { id: -100123, type: "supergroup" },
+			from: { id: 10001, is_bot: false },
+			text: "@MyAwesomeBot 帮我写个脚本",
+			entities: [{ type: "mention", offset: 0, length: 13 }],
+		});
+		expect(chatSpy).toHaveBeenCalledTimes(1);
+
+		// 3. 私聊消息无需 @ 即可触发
+		await bridge.onInboundMessage({
+			message_id: 12,
+			chat: { id: 8888, type: "private" },
+			from: { id: 10001, is_bot: false },
+			text: "私聊直接提问",
+		});
+		expect(chatSpy).toHaveBeenCalledTimes(2);
+	});
 });
