@@ -10,15 +10,7 @@
 
 ## [Unreleased]
 
-<!-- auto-i18n:start -->
-
-### i18n
-
-- 前端新增 key（56）：`filesShowHidden`、`filesHideHidden`、`previewTocShow`、`previewTocHide`、`previewTocLabel`、`mcpManageEnabledDesc`、`mcpManageOffHint`、`sandboxNewBtn`、`sandboxModalTitle`、`sandboxModalSubtitle`、`sandboxModeLabel`、`sandboxModeBlank`、`sandboxModeBlankDesc`、`sandboxModeImport`、`sandboxModeImportDesc`、`sandboxSourceLabel`、`sandboxSourcePlaceholder`、`sandboxLifecycleLabel`、`sandboxLifecycleEphemeral`、`sandboxLifecycleEphemeralDesc`、`sandboxLifecyclePermanent`、`sandboxLifecyclePermanentDesc`、`sandboxNameLabel`、`sandboxNamePlaceholder`、`sandboxCreateSubmit`、`sandboxBadgeEphemeral`、`sandboxBadgePermanent`、`sandboxBannerTitle`、`sandboxBannerSourceDesc`、`sandboxBannerBlankDesc`、`sandboxActionPersist`、`sandboxActionPersistTip`、`sandboxActionApplySource`、`sandboxActionApplySourceTip`、`sandboxActionApplyConfirm`、`sandboxActionReset`、`sandboxActionResetTip`、`sandboxActionResetConfirm`、`sandboxActionPromote`、`sandboxActionPromoteTip`、`sandboxActionDestroy`、`sandboxActionDestroyTip`、`sandboxActionDestroyConfirm`、`sandboxPromoteTitle`、`sandboxPromoteSubtitle`、`sandboxPromoteTargetLabel`、`sandboxPromoteTargetPlaceholder`、`sandboxPromoteSwitchLabel`、`sandboxPromoteSubmit`、`sandboxApplyTitle`、`sandboxDiffStats`、`sandboxDiffEmpty`、`sandboxDiffDeletedNote`、`sandboxApplySubmit`、`sandboxEnabledDesc`、`sandboxOffHint`
-- 服务端新增 key（12）：`mcp_manage.list.empty`、`mcp_manage.list.ok`、`mcp_manage.check.missing_query`、`mcp_manage.check.not_installed`、`mcp_manage.check.found`、`mcp_manage.install.fail`、`mcp_manage.install.tools`、`mcp_manage.install.ok`、`mcp_manage.remove.missing_name`、`mcp_manage.remove.fail`、`mcp_manage.remove.ok`、`mcp_manage.reload.ok`
-- 服务端文案变更（1）：`agent.conv.limit.reached`
-
-<!-- auto-i18n:end -->
+暂无未发布内容。
 
 ## [0.103.3] — 2026-10-11
 
