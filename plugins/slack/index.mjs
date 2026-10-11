@@ -258,6 +258,14 @@ export class SlackBotBridge {
 		// Filter self
 		if (userId === botId) return;
 
+		// 频道里只响应被 @ 的消息（DM 全收）——否则机器人在的频道里任何人的
+		// 任何一句话都触发一次 agent 运行（烧额度 + 刷屏）
+		const isDirectMessage = event.channel_type === "im";
+		if (!isDirectMessage && botId) {
+			const mentioned = typeof event.text === "string" && event.text.includes(`<@${botId}>`);
+			if (!mentioned) return;
+		}
+
 		const cleanText = extractSlackText(event.text, botId);
 		if (!cleanText) return;
 
