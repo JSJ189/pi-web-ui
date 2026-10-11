@@ -145,6 +145,14 @@ export function extractPatchTargetPaths(patchText: string): string[] {
 		const mUnified = line.match(/^(?:---|\+\+\+)\s+(?:[ab]\/)?([^\t\r\n]+)$/);
 		if (mUnified?.[1] && mUnified[1] !== "/dev/null") {
 			paths.push(mUnified[1].trim());
+			continue;
+		}
+		// hashline 格式段头（本仓 patch 工具实际消费的唯一格式）：[path#TAG] / [path]。
+		// 不识别的话 hashline 补丁提取出 0 个目标 → 围栏检查整体空转，patch 路径
+		// 只剩 hashline-engine 的词法 cwd 限制（无 realpath，沙盒内软链可逃逸）
+		const mHashline = rawLine.match(/^\s*\[([^\#\]]+)(?:#[0-9a-fA-F]{4})?\]\s*$/);
+		if (mHashline?.[1]?.trim()) {
+			paths.push(mHashline[1].trim());
 		}
 	}
 	return paths;
@@ -503,6 +511,10 @@ export class SandboxManager {
 		sourcePath?: string;
 		ephemeral?: boolean;
 	}): Promise<{ sandbox: SandboxInfo; copiedFiles: number; skippedFiles: number }> {
+		// 先同步共享注册表：每个 ClientSession/DshClientSession 各持一个管理器实例、
+		// 共享同一 registry.json——不 ensureFresh 的话并发创建会用陈旧内存覆盖写回，
+		// 丢掉其他客户端刚建的沙盒条目（getByCwd 找不到 → jail 围栏静默失效）
+		this.ensureFresh();
 		const rawSource = opts.sourcePath?.trim();
 		let resolvedSource: string | undefined;
 
@@ -522,6 +534,11 @@ export class SandboxManager {
 			}
 			if (isSameOrSubpath(this.sandboxesRoot, abs)) {
 				throw new Error(`Refusing to import a parent directory of sandboxes root: ${abs}`);
+			}
+			// 沙盒根**内部**的目录也不允许当源：会造出嵌套沙盒（源被另一沙盒的
+			// destroy/reset 抽掉、apply_to_source 把改动写进另一个沙盒）
+			if (isSameOrSubpath(abs, this.sandboxesRoot)) {
+				throw new Error(`Refusing to import a directory inside the sandboxes root: ${abs}`);
 			}
 			// 若选中的 source 本身已经是某个沙盒，而且该沙盒记录了原始 sourcePath，保留最外层真实路径或直接复制该沙盒内容
 			resolvedSource = toWirePath(abs);
@@ -561,8 +578,26 @@ export class SandboxManager {
 		}
 		await mkdir(info.path, { recursive: true });
 		const entries = await readdir(info.path);
+		// 逐条目容错：Windows 下沙盒内进程未停（npm run dev 的 node.exe 持有句柄）
+		// 会让单个条目 EBUSY/EPERM——整体抛错会留下半清空状态；能删的先删，
+		// 全部失败才抛
+		const failures: string[] = [];
 		for (const entry of entries) {
-			await rm(join(info.path, entry), { recursive: true, force: true, maxRetries: 3 });
+			try {
+				await rm(join(info.path, entry), { recursive: true, force: true, maxRetries: 3 });
+			} catch {
+				failures.push(entry);
+			}
+		}
+		if (failures.length === entries.length && entries.length > 0) {
+			throw new Error(
+				`Failed to clear sandbox contents (all ${failures.length} entries busy): ${failures.slice(0, 5).join(", ")}`,
+			);
+		}
+		if (failures.length > 0) {
+			console.warn(
+				`[sandbox] reset: ${failures.length}/${entries.length} entries could not be removed (busy): ${failures.slice(0, 5).join(", ")}`,
+			);
 		}
 		let copyStats: CopyTreeStats = { copiedFiles: 0, skippedFiles: 0 };
 		if (info.sourcePath && existsSync(info.sourcePath)) {

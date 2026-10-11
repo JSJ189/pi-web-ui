@@ -12673,9 +12673,10 @@ export class ClientSession {
 				}
 				await this.setCwd(fallbackCwd);
 			}
-			// 清理仍挂在该沙盒下的后台会话
+			// 清理仍挂在该沙盒下的后台会话（cwd 在沙盒**子目录**的也算——
+			// 精确相等比较会让 <sandbox>/src 里的子代理/后台对话销毁后悬空）
 			for (const [cid, c] of this.convs) {
-				if (cid !== this.activeId && normalizePathKey(c.cwd) === normalizePathKey(sbx.path)) {
+				if (cid !== this.activeId && isSameOrSubpath(c.cwd, sbx.path)) {
 					this.removeConversation(cid);
 				}
 			}
