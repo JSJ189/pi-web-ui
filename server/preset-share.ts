@@ -117,8 +117,16 @@ export type TextFetcher = (
 	status: number;
 	statusText?: string;
 	text: () => Promise<string>;
-	// 真实 fetch 有 body（fetchText 流式累计限长）；mock fetcher 不带则回落整读
-	body?: ReadableStream<Uint8Array>;
+	// 真实 fetch 的 body 有（fetchText 流式累计限长）；mock fetcher 不带则回落整读。
+	// 只声明用到的最小流接口：DOM/Node 两套 ReadableStream 类型都满足，避免跨
+	// tsconfig lib 的类型不兼容（server 用 Node 全局、tests 用 DOM lib）。
+	// DOM 的 Response.body 可为 null。
+	body?: {
+		getReader(): {
+			read(): Promise<{ done: boolean; value?: Uint8Array }>;
+			cancel(): Promise<void>;
+		};
+	} | null;
 }>;
 
 /** 真实网络的抓取器（与 update-check 的 defaultFetcher 同一个实现）。 */
@@ -732,6 +740,7 @@ export async function fetchText(
 		for (;;) {
 			const { done, value } = await reader.read();
 			if (done) break;
+			if (!value) continue;
 			received += value.byteLength;
 			if (received > maxBytes) {
 				try {
