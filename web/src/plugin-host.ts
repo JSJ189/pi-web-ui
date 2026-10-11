@@ -45,6 +45,7 @@
  */
 
 import type { AppSend } from "./app-globals";
+import { getCostCurrencySymbol, registerCostFormatter, setCostCurrencySymbol, type CostFormatter } from "./cost-format";
 import { composeToComposer, isComposerReady, type ComposerPayload } from "./composer-bridge";
 import { isDesktopShell } from "./desktop";
 import type { UiPluginCatalogEntry } from "./types";
@@ -359,6 +360,11 @@ interface PluginHostApi {
 	onTheme(handler: PluginHostThemeHandler): () => void;
 	onLocale(handler: PluginHostLocaleHandler): () => void;
 	onViewChange(handler: PluginHostViewHandler): () => void;
+	/** 注册自定义成本格式化器（issue #607）：允许插件接管底栏/顶栏 host:cost 的货币符号与金额折算展示。返回取消函数。 */
+	setCostFormatter(formatter: CostFormatter | null): () => void;
+	/** 设置或读取成本显示的货币符号（默认 "$"；如设为 "¥"）。 */
+	setCostCurrency(symbol: string | null | undefined): void;
+	getCostCurrency(): string;
 }
 
 /** 模型想执行的一个页面动作（op 词表在扩展侧，服务端只透传）。 */
@@ -867,6 +873,9 @@ export function createPluginHostApi(deps: PluginHostDeps): PluginHostApi {
 		onTheme: (handler) => subscribePluginHostTheme(handler),
 		onLocale: (handler) => subscribePluginHostLocale(handler),
 		onViewChange: (handler) => subscribePluginHostView(handler),
+		setCostFormatter: (formatter) => registerCostFormatter(formatter),
+		setCostCurrency: (symbol) => setCostCurrencySymbol(symbol),
+		getCostCurrency: () => getCostCurrencySymbol(),
 	};
 }
 

@@ -271,6 +271,13 @@ function renderFeishuWorkbench(container, ctx) {
 									<input type="text" class="feishu-cfg-allowed-senders" placeholder="ou_xxx, ou_yyy (留空允许所有用户)" style="width: 100%; box-sizing: border-box; padding: 6px 10px; border-radius: 4px; border: 1px solid var(--border); background: var(--bg); color: var(--text);" />
 								</div>
 							</div>
+							<div style="margin-bottom: 8px;">
+								<div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 4px;">
+									<label style="color: var(--text-dim);">📂 项目根目录 (Workspace Cwd，留空跟随宿主当前项目，支持在聊天发 /cwd 切换):</label>
+									<button type="button" class="feishu-cfg-use-cwd" style="padding: 2px 8px; font-size: 11px; border-radius: 4px; border: 1px solid var(--border); background: var(--bg); color: var(--text); cursor: pointer;">设为当前项目</button>
+								</div>
+								<input type="text" class="feishu-cfg-workspace" placeholder="如：E:/my-project (留空跟随当前项目)" style="width: 100%; box-sizing: border-box; padding: 6px 10px; border-radius: 4px; border: 1px solid var(--border); background: var(--bg); color: var(--text);" />
+							</div>
 							<div class="feishu-bot-metrics" style="font-size: 11px; color: var(--text-dim); margin-top: 4px;">已接收: 0 条 · 已回复: 0 条</div>
 						</div>
 						<div class="feishu-cfg-webhook-section" style="border-top: 1px solid var(--border); padding-top: 12px;">
@@ -352,6 +359,7 @@ function renderFeishuWorkbench(container, ctx) {
 	const cfgBotEnabled = q(".feishu-cfg-bot-enabled");
 	const cfgGroupMode = q(".feishu-cfg-group-mode");
 	const cfgAllowedSenders = q(".feishu-cfg-allowed-senders");
+	const cfgWorkspace = q(".feishu-cfg-workspace");
 	const botStatusBadge = q(".feishu-bot-status-badge");
 	const botMetrics = q(".feishu-bot-metrics");
 	const cfgWebhookUrl = q(".feishu-cfg-webhook-url");
@@ -559,6 +567,8 @@ function renderFeishuWorkbench(container, ctx) {
 		if (st) {
 			state.config = st.config || {};
 			state.presets = st.presets || {};
+			state.botStatus = st.botStatus || {};
+			state.hostCwd = st.hostCwd || "";
 			updateStatusBadge(st.status || {});
 		}
 		const ch = await sendHost("list_chats");
@@ -803,6 +813,7 @@ function renderFeishuWorkbench(container, ctx) {
 		cfgBotEnabled.checked = Boolean(cfg.botEnabled);
 		cfgGroupMode.value = cfg.groupResponseMode || "mention";
 		cfgAllowedSenders.value = Array.isArray(cfg.allowedSenders) ? cfg.allowedSenders.join(", ") : "";
+		cfgWorkspace.value = cfg.workspace || "";
 
 		const bStat = state.botStatus || {};
 		if (bStat.state === "connected") {
@@ -838,6 +849,9 @@ function renderFeishuWorkbench(container, ctx) {
 	}
 
 	cfgPreset.addEventListener("change", updatePresetHint);
+	q(".feishu-cfg-use-cwd")?.addEventListener("click", () => {
+		if (state.hostCwd) cfgWorkspace.value = state.hostCwd;
+	});
 	q(".feishu-settings-close").addEventListener("click", () => (settingsModal.style.display = "none"));
 	q(".feishu-settings-cancel").addEventListener("click", () => (settingsModal.style.display = "none"));
 
@@ -879,6 +893,7 @@ function renderFeishuWorkbench(container, ctx) {
 				.split(/[,，\s]+/)
 				.map((s) => s.trim())
 				.filter(Boolean),
+			workspace: cfgWorkspace.value.trim(),
 			webhookUrl: cfgWebhookUrl.value.trim(),
 			webhookSecret: cfgWebhookSecret.value.trim(),
 		};

@@ -54,6 +54,8 @@ const WRITE_TOOLS = new Set([
 	"git",
 	// 代码求值（eval 沙箱可写真实文件系统 —— 审查回合只读核实，#436）
 	"eval",
+	// QuickJS 沙箱代码执行（可嵌套调用写工具/命令；与 plan-mode/delegate-mode 同口径）
+	"codemode",
 	"mcp_manage",
 	"sandbox",
 	// 形态变换（会重写整个文件树）

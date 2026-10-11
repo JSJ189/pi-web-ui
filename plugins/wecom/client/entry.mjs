@@ -111,9 +111,16 @@ export default {
 									<input type="checkbox" id="wecom-cfg-bot-enabled" class="wecom-cfg-bot-enabled" style="cursor: pointer;" />
 									<label for="wecom-cfg-bot-enabled" style="font-size: 12px; cursor: pointer; user-select: none;">启用企业微信机器人双向对话回复服务</label>
 								</div>
-								<div>
+								<div style="margin-bottom: 8px;">
 									<label style="display: block; margin-bottom: 4px; color: var(--text-dim);">安全白名单 (用户账号/UserId，逗号分隔，留空不限制):</label>
 									<input type="text" class="wecom-cfg-allowed-users" placeholder="zhangsan, lisi (留空允许所有用户)" style="width: 100%; box-sizing: border-box; padding: 6px 10px; border-radius: 4px; border: 1px solid var(--border); background: var(--bg); color: var(--text);" />
+								</div>
+								<div>
+									<div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 4px;">
+										<label style="color: var(--text-dim);">📂 项目根目录 (Workspace Cwd，留空跟随当前项目，支持聊天发 /cwd 切换):</label>
+										<button type="button" class="wecom-cfg-use-cwd" style="padding: 2px 8px; font-size: 11px; border-radius: 4px; border: 1px solid var(--border); background: var(--bg); color: var(--text); cursor: pointer;">设为当前项目</button>
+									</div>
+									<input type="text" class="wecom-cfg-workspace" placeholder="如：E:/my-project (留空跟随当前项目)" style="width: 100%; box-sizing: border-box; padding: 6px 10px; border-radius: 4px; border: 1px solid var(--border); background: var(--bg); color: var(--text);" />
 								</div>
 							</div>
 						</div>
@@ -142,6 +149,7 @@ export default {
 		const cfgAgentId = q(".wecom-cfg-agentid");
 		const cfgBotEnabled = q(".wecom-cfg-bot-enabled");
 		const cfgAllowedUsers = q(".wecom-cfg-allowed-users");
+		const cfgWorkspace = q(".wecom-cfg-workspace");
 
 		let currentState = {};
 
@@ -187,10 +195,14 @@ export default {
 			cfgAgentId.value = cfg.agentId || "";
 			cfgBotEnabled.checked = Boolean(cfg.botEnabled);
 			cfgAllowedUsers.value = Array.isArray(cfg.allowedUsers) ? cfg.allowedUsers.join(", ") : "";
+			cfgWorkspace.value = cfg.workspace || "";
 
 			modal.style.display = "flex";
 		});
 
+		q(".wecom-cfg-use-cwd")?.addEventListener("click", () => {
+			if (currentState.hostCwd) cfgWorkspace.value = currentState.hostCwd;
+		});
 		q(".wecom-modal-close").addEventListener("click", () => (modal.style.display = "none"));
 		q(".wecom-modal-cancel").addEventListener("click", () => (modal.style.display = "none"));
 
@@ -226,6 +238,7 @@ export default {
 					.split(/[,，\s]+/)
 					.map((s) => s.trim())
 					.filter(Boolean),
+				workspace: cfgWorkspace.value.trim(),
 			};
 
 			const res = await sendHost("save_config", { config: newCfg });

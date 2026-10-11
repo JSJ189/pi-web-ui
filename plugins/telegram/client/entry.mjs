@@ -105,9 +105,16 @@ export default {
 									<input type="checkbox" id="telegram-cfg-bot-enabled" class="telegram-cfg-bot-enabled" style="cursor: pointer;" />
 									<label for="telegram-cfg-bot-enabled" style="font-size: 12px; cursor: pointer; user-select: none;">启用 Telegram 机器人双向对话服务 (长轮询接收消息并由 AI 回复)</label>
 								</div>
-								<div>
+								<div style="margin-bottom: 8px;">
 									<label style="display: block; margin-bottom: 4px; color: var(--text-dim);">允许的用户白名单 (User ID，逗号分隔，留空不限制):</label>
 									<input type="text" class="telegram-cfg-allowed-users" placeholder="12345678, 87654321 (留空允许所有用户)" style="width: 100%; box-sizing: border-box; padding: 6px 10px; border-radius: 4px; border: 1px solid var(--border); background: var(--bg); color: var(--text);" />
+								</div>
+								<div>
+									<div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 4px;">
+										<label style="color: var(--text-dim);">📂 项目根目录 (Workspace Cwd，留空跟随当前项目，支持聊天发 /cwd 切换):</label>
+										<button type="button" class="telegram-cfg-use-cwd" style="padding: 2px 8px; font-size: 11px; border-radius: 4px; border: 1px solid var(--border); background: var(--bg); color: var(--text); cursor: pointer;">设为当前项目</button>
+									</div>
+									<input type="text" class="telegram-cfg-workspace" placeholder="如：E:/my-project (留空跟随当前项目)" style="width: 100%; box-sizing: border-box; padding: 6px 10px; border-radius: 4px; border: 1px solid var(--border); background: var(--bg); color: var(--text);" />
 								</div>
 							</div>
 						</div>
@@ -136,6 +143,7 @@ export default {
 		const cfgDefaultChat = q(".telegram-cfg-default-chat");
 		const cfgBotEnabled = q(".telegram-cfg-bot-enabled");
 		const cfgAllowedUsers = q(".telegram-cfg-allowed-users");
+		const cfgWorkspace = q(".telegram-cfg-workspace");
 
 		let currentState = {};
 
@@ -180,10 +188,14 @@ export default {
 			cfgDefaultChat.value = cfg.defaultChatId || "";
 			cfgBotEnabled.checked = Boolean(cfg.botEnabled);
 			cfgAllowedUsers.value = Array.isArray(cfg.allowedUsers) ? cfg.allowedUsers.join(", ") : "";
+			cfgWorkspace.value = cfg.workspace || "";
 
 			modal.style.display = "flex";
 		});
 
+		q(".telegram-cfg-use-cwd")?.addEventListener("click", () => {
+			if (currentState.hostCwd) cfgWorkspace.value = currentState.hostCwd;
+		});
 		q(".telegram-modal-close").addEventListener("click", () => (modal.style.display = "none"));
 		q(".telegram-modal-cancel").addEventListener("click", () => (modal.style.display = "none"));
 
@@ -215,6 +227,7 @@ export default {
 					.split(/[,，\s]+/)
 					.map((s) => s.trim())
 					.filter(Boolean),
+				workspace: cfgWorkspace.value.trim(),
 			};
 
 			const res = await sendHost("save_config", { config: newCfg });

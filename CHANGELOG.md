@@ -10,15 +10,16 @@
 
 ## [Unreleased]
 
-<!-- auto-i18n:start -->
+暂无未发布内容。
 
-### i18n
+## [0.104.2] — 2026-10-11
 
-- 前端新增 key（56）：`filesShowHidden`、`filesHideHidden`、`previewTocShow`、`previewTocHide`、`previewTocLabel`、`mcpManageEnabledDesc`、`mcpManageOffHint`、`sandboxNewBtn`、`sandboxModalTitle`、`sandboxModalSubtitle`、`sandboxModeLabel`、`sandboxModeBlank`、`sandboxModeBlankDesc`、`sandboxModeImport`、`sandboxModeImportDesc`、`sandboxSourceLabel`、`sandboxSourcePlaceholder`、`sandboxLifecycleLabel`、`sandboxLifecycleEphemeral`、`sandboxLifecycleEphemeralDesc`、`sandboxLifecyclePermanent`、`sandboxLifecyclePermanentDesc`、`sandboxNameLabel`、`sandboxNamePlaceholder`、`sandboxCreateSubmit`、`sandboxBadgeEphemeral`、`sandboxBadgePermanent`、`sandboxBannerTitle`、`sandboxBannerSourceDesc`、`sandboxBannerBlankDesc`、`sandboxActionPersist`、`sandboxActionPersistTip`、`sandboxActionApplySource`、`sandboxActionApplySourceTip`、`sandboxActionApplyConfirm`、`sandboxActionReset`、`sandboxActionResetTip`、`sandboxActionResetConfirm`、`sandboxActionPromote`、`sandboxActionPromoteTip`、`sandboxActionDestroy`、`sandboxActionDestroyTip`、`sandboxActionDestroyConfirm`、`sandboxPromoteTitle`、`sandboxPromoteSubtitle`、`sandboxPromoteTargetLabel`、`sandboxPromoteTargetPlaceholder`、`sandboxPromoteSwitchLabel`、`sandboxPromoteSubmit`、`sandboxApplyTitle`、`sandboxDiffStats`、`sandboxDiffEmpty`、`sandboxDiffDeletedNote`、`sandboxApplySubmit`、`sandboxEnabledDesc`、`sandboxOffHint`
-- 服务端新增 key（12）：`mcp_manage.list.empty`、`mcp_manage.list.ok`、`mcp_manage.check.missing_query`、`mcp_manage.check.not_installed`、`mcp_manage.check.found`、`mcp_manage.install.fail`、`mcp_manage.install.tools`、`mcp_manage.install.ok`、`mcp_manage.remove.missing_name`、`mcp_manage.remove.fail`、`mcp_manage.remove.ok`、`mcp_manage.reload.ok`
-- 服务端文案变更（1）：`agent.conv.limit.reached`
+### Added
 
-<!-- auto-i18n:end -->
+- **全系 10 大 IM 插件支持工作区根目录配置与 `/cwd` 动态切换** —— 飞书 (feishu)、钉钉 (dingtalk)、企业微信 (wecom)、QQ (qq)、Discord (discord)、Telegram (telegram)、Slack (slack)、WhatsApp (whatsapp)、iMessage (imessage)、Matrix (matrix) 插件全面支持项目工作区（Workspace Cwd）：
+  - 插件设置面板新增项目根目录配置项与「设为当前项目」一键填入按钮；
+  - 机器人聊天支持 `/cwd` 或 `/workspace` 指令查看当前项目目录，发送 `/cwd <目录绝对路径>` 即可动态切换项目根目录；
+  - 切换项目后自动开启新会话，并将目标 `cwd` 精确透传至宿主 `host.chat`，使多项目或移动端远控编码更加灵活便捷。
 
 ## [0.103.3] — 2026-10-11
 
@@ -1708,6 +1709,7 @@ when?, children?}`，也收 `topbar` / `settings` 这类简写别名）；宿主
 [0.64.4]: https://github.com/xing-shuyin/pi-web-ui/releases/tag/v0.64.4
 [0.64.3]: https://github.com/xing-shuyin/pi-web-ui/releases/tag/v0.64.3
 [0.64.2]: https://github.com/xing-shuyin/pi-web-ui/releases/tag/v0.64.2
+[0.104.2]: https://github.com/xing-shuyin/pi-web-ui/releases/tag/v0.104.2
 [0.64.1]: https://github.com/xing-shuyin/pi-web-ui/releases/tag/v0.64.1
 [0.64.0]: https://github.com/xing-shuyin/pi-web-ui/releases/tag/v0.64.0
 [0.63.4]: https://github.com/xing-shuyin/pi-web-ui/releases/tag/v0.63.4
