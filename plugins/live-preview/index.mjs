@@ -8,10 +8,12 @@
  *   Range 断点续传、SSE 自动刷新天然可用，无需重写页面。
  *
  * 根随 host.cwd 活值走：set_cwd 切项目后刷新预览即看新项目。
+ * /md 的渲染产物会交给 md-toc.mjs 加一列「标题导航」（纯字符串注入，见该文件头）。
  * 反激活/卸载时关闭内建服务并注销前缀（宿主 releaseEntry 兜底）。
  */
 
 import { createServer } from "node:http";
+import { enhanceMarkdownHtml } from "./md-toc.mjs";
 
 const PREFIXES = ["/liveserver", "/md"];
 /** 预览文件上限 10MB（超了回 413，防大文件打爆内存）。 */
@@ -359,7 +361,7 @@ export default {
 				if (ext === "md" || ext === "markdown") {
 					const text = await host.fs.readText(rel, MAX_BYTES);
 					const live = settings().liveReload !== false;
-					let html = renderMarkdown(text, name);
+					let html = enhanceMarkdownHtml(renderMarkdown(text, name));
 					if (live) html = html.replace(/<\/body\s*>/i, `${reloadSnippet(prefix, state.version)}</body>`);
 					send(200, { "Content-Type": MIME.html, "Cache-Control": "no-store" }, Buffer.from(html));
 					return;
