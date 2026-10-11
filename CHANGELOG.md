@@ -10,6 +10,19 @@
 
 ## [Unreleased]
 
+## [0.103.3] — 2026-10-11
+
+### Added
+
+- **飞书机器人官方插件（plugins/feishu v0.1.0）** —— 支持飞书开放平台应用机器人接入（WebSocket 长连接免公网 IP，以及自定义群机器人 Webhook 通知）；支持私聊与群聊 @ 触发对话、富文本与交互式卡片发送、表情回应、历史消息搜索，以及 App Secret / Encrypt Key / Verification Token 加密存储。
+- **子代理并发名额按活跃态统计与 `PI_WEB_MAX_SUBAGENTS` 环境变量（#589）** —— 子代理配额改为仅统计正在运行（`status === "running"`）的子代理，已完成的子代理不再永久占用名额；新增 `PI_WEB_MAX_SUBAGENTS` 环境变量支持调整并发上限（默认 16）。
+
+### Fixed
+
+- **`todo_list` 工具 Schema 显式补齐 `action.type`（#590）** —— 为 `todo_list` 工具的 `action` 参数显式声明 `type: "string"`，修复 Moonshot / Kimi 等严格校验 JSON Schema 的端点每次请求返回 HTTP 400 的问题，并新增静态守卫单测拦截缺失 `type` 的 `Type.Unsafe` 定义。
+- **主对话执行中设定目标时自动中断旧运行并让位给执行者（#591）** —— 设目标首轮派发目标执行者前，若主对话仍有设目标前的旧运行在飞，服务端先通过 `interruptMainConv` 中断旧运行并弹出提示（同时豁免该次预期让位 abort 误清目标），避免主对话与目标执行者在同一工作区并行动工互相干扰；委托期间用户在主对话发起的新聊天不受影响。
+- **WebUI 主题代理保留单参数装饰器包裹的组件正文（#592）** —— 在 `mockThemeProxy` 中补齐 `italic`、`underline`、`inverse` 单参数装饰器并将通用兜底改为取最后一个字符串参数，修复扩展 widget 使用单参数主题装饰器时正文被清空的问题。
+
 <!-- auto-i18n:start -->
 
 ### i18n
@@ -1629,6 +1642,7 @@ when?, children?}`，也收 `topbar` / `settings` 这类简写别名）；宿主
 - 0.29.0（2026-08-23）：全局搜索弹窗（Ctrl+K）+ 消息列表惰性窗口化。
 
 [Unreleased]: https://github.com/xing-shuyin/pi-web-ui/compare/v0.101.0...main
+[0.103.3]: https://github.com/xing-shuyin/pi-web-ui/releases/tag/v0.103.3
 [0.103.2]: https://github.com/xing-shuyin/pi-web-ui/releases/tag/v0.103.2
 [0.103.1]: https://github.com/xing-shuyin/pi-web-ui/releases/tag/v0.103.1
 [0.103.0]: https://github.com/xing-shuyin/pi-web-ui/releases/tag/v0.103.0
