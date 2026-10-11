@@ -6,6 +6,8 @@ import {
 	FiClipboard,
 	FiCopy,
 	FiDownload,
+	FiEye,
+	FiEyeOff,
 	FiFile,
 	FiFolder,
 	FiLink,
@@ -20,6 +22,7 @@ import { HintTip } from "./HintTip";
 import { FileTransferDialog, type FileTransferRequest } from "./FileTransferDialog";
 import { isExtractableArchive } from "../file-transfer";
 import { applySashDrag, parseWeights } from "../panel-sash";
+import { visibleTreeEntries } from "../file-tree-hidden";
 // 宿主 UI 扩展点（issue #146）：右栏的 tab 条与文件右键菜单都走「slot 条目」这一条通道。
 import type { UiSlotEntry } from "../ui-slots";
 import { contextMenuItems, openContextMenu } from "../context-menu-state";
@@ -31,6 +34,8 @@ const MACHINE_ROOT = "@root";
 
 /** 右栏纵向分割（文件区 ↔ widgets）的默认权重与最小高度 —— 与左栏同一套权重模型。 */
 const LS_RP_SIZES = "pi-web-ui:rp-sizes";
+/** 文件树「显示隐藏文件」子偏好的 localStorage key（每个浏览器各自记忆）。 */
+const LS_FILES_SHOW_HIDDEN = "pi-web-ui:files-show-hidden";
 type RpWeights = { files: number; widgets: number };
 const DEFAULT_RP_WEIGHTS: RpWeights = { files: 4, widgets: 1 };
 const RP_MIN_FILES_PX = 120;
@@ -171,6 +176,22 @@ export const RightPanel = memo(function RightPanel({
 			// Storage may be disabled; the current in-memory layout remains usable.
 		}
 	}, [rpWeights]);
+
+	/** 文件树是否显示以 . 开头的隐藏条目（服务端本来就会下发，隐藏只在客户端过滤）。默认隐藏。 */
+	const [showHiddenFiles, setShowHiddenFiles] = useState(() => {
+		try {
+			return localStorage.getItem(LS_FILES_SHOW_HIDDEN) === "1";
+		} catch {
+			return false;
+		}
+	});
+	useEffect(() => {
+		try {
+			localStorage.setItem(LS_FILES_SHOW_HIDDEN, showHiddenFiles ? "1" : "0");
+		} catch {
+			// Storage may be disabled; the current in-memory preference remains usable.
+		}
+	}, [showHiddenFiles]);
 	const hasWidgets = widgets.some((w) => w.lines.length > 0);
 	const onSashDown = useCallback(
 		(e: React.PointerEvent<HTMLDivElement>) => {
@@ -944,6 +965,17 @@ export const RightPanel = memo(function RightPanel({
 														</button>
 													)}
 													<HintTip text={t("filesHelp")} />
+													{/* 隐藏文件开关：服务端会下发 dotfiles，过滤只在客户端做（默认隐藏），偏好记在 localStorage。 */}
+													<button
+														type="button"
+														className={`crumb ${showHiddenFiles ? "active" : ""}`}
+														title={showHiddenFiles ? t("filesHideHidden") : t("filesShowHidden")}
+														aria-label={showHiddenFiles ? t("filesHideHidden") : t("filesShowHidden")}
+														aria-pressed={showHiddenFiles}
+														onClick={() => setShowHiddenFiles((v) => !v)}
+													>
+														{showHiddenFiles ? <FiEyeOff /> : <FiEye />}
+													</button>
 													{/* 额外工作区根（宿主侧多根，见 protocol 的 set_workspace_roots）：有根才渲染根选择器，
 											    没根时 crumbs 与以前一模一样（不多一个空按钮）。文件树一次只展一个根（不做合并视图），
 											    选中即把 currentPath 切到那个绝对路径 —— 树本来就支持任意绝对路径（同 💻 机器浏览）。 */}
@@ -1100,7 +1132,7 @@ export const RightPanel = memo(function RightPanel({
 																	<span className="file-name">..</span>
 																</button>
 															)}
-															{files.entries.map((e) =>
+															{visibleTreeEntries(files.entries, showHiddenFiles).map((e) =>
 																e.type === "dir" ? (
 																	<div
 																		key={e.path}

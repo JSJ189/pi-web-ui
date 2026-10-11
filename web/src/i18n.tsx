@@ -547,6 +547,8 @@ export const zh = {
 	rootDir: "根目录",
 	homeDir: "用户目录",
 	desktopDir: "桌面",
+	filesShowHidden: "显示以 . 开头的隐藏文件",
+	filesHideHidden: "隐藏以 . 开头的文件",
 	filesHelp:
 		"浏览：点文件夹进入、点文件预览，「..」返回上级；「根目录」回当前项目根，「此电脑」浏览全盘换盘符，「🏠」直达用户目录，「🖥️」直达桌面。\n" +
 		"文件操作：右键可新建文件/文件夹、重命名、复制/剪切/粘贴、创建副本、删除、上传文件；文件可下载，行尾按钮可复制名称/路径。\n" +
@@ -2562,6 +2564,8 @@ export const en: Record<keyof typeof zh, string> = {
 	rootDir: "Root",
 	homeDir: "Home directory",
 	desktopDir: "Desktop",
+	filesShowHidden: "Show hidden files (names starting with a dot)",
+	filesHideHidden: "Hide files whose name starts with a dot",
 	filesHelp:
 		"Navigate: click a folder to enter, a file to preview, '..' to go up; Root returns to the current project, This PC browses all drives, 🏠 jumps to your home directory, 🖥️ to the desktop.\n" +
 		"Manage: right-click for new file/folder, rename, copy/cut/paste, duplicate, delete, upload; files can be downloaded, row buttons copy name/path.\n" +
