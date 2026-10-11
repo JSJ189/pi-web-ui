@@ -12,6 +12,36 @@
 
 暂无未发布内容。
 
+## [0.104.3] — 2026-10-12
+
+### Added
+
+- **面包屑与帮助提示统一使用 SVG 图标并支持无延迟 TipButton** —— 全站统一采用基于 SVG 的提示图标与面包屑组件，新增支持零等待延迟的 `TipButton`，提升界面的视觉一致性与响应交互体验。
+
+### Fixed
+
+- **沙盒硬围栏强化与启发式命令拦截** —— 完善 bash 沙盒围栏规则，深度拦截越界 `cd`、重定向、系统特权命令以及越界写删行为；补齐 `[path#TAG]` / `[path]` hashline 段头解析，避免 patch 围栏空转；`sandbox` 工具的 `action=destroy` 接入强制审批保护，销毁后安全回退当前目录；完善沙盒重置容错与写回删除同步机制。
+- **IM 通道插件群聊触发收敛与稳定性修复**：
+  - **Telegram / Slack**：收敛群聊触发面，Telegram 仅响应针对机器人自身的精确 @mention 实体，Slack 频道内仅响应包含 `<@botId>` 的明确提及，彻底避免被动误触发与刷屏。
+  - **企业微信 (WeCom)**：AI 回复切块逻辑严格按 UTF-8 字节数（4096 字节限制）处理，消除纯中文超限被拒；回复链路补齐 `errcode` 校验，防止消息静默丢失。
+  - **飞书 (Feishu)**：移除空轮询假降级，WS 断开时如实报错并反馈真实原因，杜绝面板虚假“已连接”。
+  - **QQ 开放平台**：同一消息的多段分块回复补齐 `msg_seq` 自增序号，修复长回答分块被平台丢弃；新增 Access Token 惰性提前刷新机制，解决 Token 过期后 401 永久重试问题。
+  - **Matrix**：持久化 sync 游标到 `host.storage`，重启或热重载后不再重放历史消息；主动过滤 `m.notice` 类型机器人消息，避免死循环互聊。
+  - **iMessage**：非 macOS 环境不再返回假成功，如实反馈 unsupported 状态。
+- **MCP 服务重名保护与热重载口径对齐** —— `install` 操作对同名已有服务默认拒绝，提供显式 `spec.overwrite` 选项；放宽热重载 legacy 回退逻辑，确保与服务端启动阶段加载行为完全一致。
+- **项目列表多端派生视图缓存隔离** —— 静态 `projectsCache` 仅用于派生视图广播，不再跨客户端写回静态内存，杜绝客户端工作区视图相互污染；引入 TTL 后台续期机制，兼顾磁盘发现能力与切换性能。
+- **目标审查写闸门补拦 CodeMode** —— 目标审查回路严格禁止写操作，写工具拦截名单补齐 `codemode`，防止通过内嵌 QuickJS 沙箱绕过只读限制；附件存储遇到 EPERM 锁定故障时安全回退 Data URL，防止写入失效的死链记录。
+- **插件宿主控制面兼容 API 补齐** —— 扩展并兼容插件宿主常用控制面调用接口，提升外部插件运行与交互兼容性。
+
+<!-- auto-i18n:start -->
+
+### i18n
+
+- 前端中文变更（1）：`sandboxDiffDeletedNote`
+- 前端英文变更（1）：`sandboxDiffDeletedNote`
+
+<!-- auto-i18n:end -->
+
 ## [0.104.2] — 2026-10-11
 
 ### Added
@@ -1709,6 +1739,7 @@ when?, children?}`，也收 `topbar` / `settings` 这类简写别名）；宿主
 [0.64.4]: https://github.com/xing-shuyin/pi-web-ui/releases/tag/v0.64.4
 [0.64.3]: https://github.com/xing-shuyin/pi-web-ui/releases/tag/v0.64.3
 [0.64.2]: https://github.com/xing-shuyin/pi-web-ui/releases/tag/v0.64.2
+[0.104.3]: https://github.com/xing-shuyin/pi-web-ui/releases/tag/v0.104.3
 [0.104.2]: https://github.com/xing-shuyin/pi-web-ui/releases/tag/v0.104.2
 [0.64.1]: https://github.com/xing-shuyin/pi-web-ui/releases/tag/v0.64.1
 [0.64.0]: https://github.com/xing-shuyin/pi-web-ui/releases/tag/v0.64.0
