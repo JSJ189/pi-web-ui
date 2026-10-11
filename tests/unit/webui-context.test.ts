@@ -121,3 +121,16 @@ describe("mockThemeProxy (TUI theme shim used in the browser)", () => {
 		expect(theme.someFutureDecorator("accent", "正文")).toBe("正文");
 	});
 });
+
+describe("mockThemeProxy 返回装饰函数的方法（0.103 审计，#592 同类遗漏）", () => {
+	const theme = mockThemeProxy as unknown as Record<string, (...args: unknown[]) => unknown>;
+
+	it("getThinkingBorderColor / getBashModeBorderColor 返回函数而非字符串", () => {
+		const border = (theme.getThinkingBorderColor as (level: string) => (s: string) => string)("medium");
+		expect(typeof border).toBe("function");
+		expect(border("正文")).toBe("正文");
+		const bashBorder = (theme.getBashModeBorderColor as () => (s: string) => string)();
+		expect(typeof bashBorder).toBe("function");
+		expect(bashBorder("命令")).toBe("命令");
+	});
+});

@@ -41,6 +41,12 @@ export const mockThemeProxy = new Proxy(
 		inverse: (text: string) => text,
 		strikethrough: (text: string) => text,
 		dim: (text: string) => text,
+		// 真实 SDK 的 Theme 里这两个返回**装饰函数**而非字符串——扩展 widget 会写
+		// `theme.getThinkingBorderColor(level)(text)`。兜底「取最后一个 string 参数」
+		// 会把 level 字符串（或空串）当装饰器返回，一调用即 TypeError，render 的
+		// try/catch 吞掉后 widget 内容静默消失（#592 的同类遗漏）。
+		getThinkingBorderColor: (_level: string) => (text: string) => text,
+		getBashModeBorderColor: () => (text: string) => text,
 	},
 	{
 		get(target, prop) {
