@@ -44,8 +44,17 @@ import {
 	resolveEnabledAgentTools,
 } from "./tool-manager.js";
 import { normalizeToolPromptOverrides } from "./tool-prompt-overrides.js";
+import {
+	isBlockedHost,
+	isNativeGlobalFetch,
+	resolveAndValidateUrl,
+	validateFetchUrl,
+	type LookupAllFn,
+} from "./net-guard.js";
 import { PRESET_FIELD_NAMES, normalizePresetFieldSelection } from "./preset-fields.js";
 import { defaultFetcher } from "./update-check.js";
+
+export { isBlockedHost, resolveAndValidateUrl, validateFetchUrl, type LookupAllFn };
 
 const execFileAsync = promisify(execFile);
 
@@ -111,11 +120,13 @@ export type TextFetcher = (
 		headers?: Record<string, string>;
 		method?: string;
 		body?: string;
+		redirect?: "follow" | "error" | "manual";
 	},
 ) => Promise<{
 	ok: boolean;
 	status: number;
 	statusText?: string;
+	headers?: { get(name: string): string | null };
 	text: () => Promise<string>;
 	// 真实 fetch 的 body 有（fetchText 流式累计限长）；mock fetcher 不带则回落整读。
 	// 只声明用到的最小流接口：DOM/Node 两套 ReadableStream 类型都满足，避免跨
@@ -662,66 +673,69 @@ export function presetSummary(settings: Record<string, unknown>): NonNullable<Ui
 /* 抓取（目录 / 网址导入）                                             */
 /* ------------------------------------------------------------------ */
 
-/** SSRF 收口：内网/回环/链路本地地址一律拒绝（预设来源只该是公网）。 */
-export function isBlockedHost(hostname: string): boolean {
-	let host = hostname
-		.trim()
-		.toLowerCase()
-		.replace(/^\[|\]$/g, "");
-	if (!host) return true;
-	if (host === "localhost" || host.endsWith(".localhost") || host.endsWith(".local") || host.endsWith(".internal")) {
-		return true;
-	}
-	if (host === "::1" || host === "::" || host.startsWith("fe80:") || /^f[cd][0-9a-f]{2}:/.test(host)) return true;
-	// IPv4-mapped IPv6 绕过：URL 会把 [::ffff:127.0.0.1] 规范化成十六进制
-	// [::ffff:7f00:1]，两种形态都要还原成 IPv4 走下面的内网判定
-	const mapped =
-		host.match(/^::ffff:(\d{1,3}(?:\.\d{1,3}){3})$/i) ?? host.match(/^::ffff:([0-9a-f]{1,4}):([0-9a-f]{1,4})$/i);
-	if (mapped) {
-		if (mapped.length === 2) {
-			host = mapped[1];
-		} else {
-			const hi = parseInt(mapped[1], 16);
-			const lo = parseInt(mapped[2], 16);
-			host = `${hi >> 8}.${hi & 255}.${lo >> 8}.${lo & 255}`;
-		}
-	}
-	const m = host.match(/^(\d{1,3})\.(\d{1,3})\.(\d{1,3})\.(\d{1,3})$/);
-	if (!m) return false;
-	const [a, b] = [Number(m[1]), Number(m[2])];
-	return (
-		a === 0 ||
-		a === 10 ||
-		a === 127 ||
-		(a === 169 && b === 254) ||
-		(a === 172 && b >= 16 && b <= 31) ||
-		(a === 192 && b === 168) ||
-		a >= 224
-	);
-}
-
-/** 校验一个可抓取地址：只允许 http/https 且非内网。 */
-export function validateFetchUrl(raw: string): { ok: true; url: string } | { ok: false; reason: "scheme" | "host" } {
-	let u: URL;
-	try {
-		u = new URL(String(raw ?? "").trim());
-	} catch {
-		return { ok: false, reason: "scheme" };
-	}
-	if (u.protocol !== "http:" && u.protocol !== "https:") return { ok: false, reason: "scheme" };
-	if (isBlockedHost(u.hostname)) return { ok: false, reason: "host" };
-	return { ok: true, url: u.toString() };
-}
-
-/** 带超时与大小上限的抓取（只走注入的 Fetcher）。 */
+/** 带超时、大小上限、DNS 解析后 IP 校验与重定向逐跳校验的抓取（#602）。 */
 export async function fetchText(
 	url: string,
-	opts: { fetcher?: TextFetcher; timeoutMs?: number; maxBytes?: number } = {},
+	opts: {
+		fetcher?: TextFetcher;
+		lookup?: LookupAllFn;
+		timeoutMs?: number;
+		maxBytes?: number;
+		maxRedirects?: number;
+	} = {},
 ): Promise<{ ok: true; text: string } | { ok: false; error: string; errorKey: string }> {
 	const fetcher = opts.fetcher ?? defaultTextFetcher;
 	const timeoutMs = opts.timeoutMs ?? FETCH_TIMEOUT_MS;
 	const maxBytes = opts.maxBytes ?? PRESET_JSON_MAX_BYTES;
-	const res = await fetcher(url, { signal: AbortSignal.timeout(timeoutMs) });
+	const maxRedirects = opts.maxRedirects ?? 5;
+	// 真实抓取或显式注入 lookup 时执行 DNS 解析后内网 IP 校验（防 DNS rebinding）；
+	// 纯内存 mock fetcher（未传 lookup）仅执行 URL 校验与重定向逐跳校验。
+	const useDns = !!opts.lookup || (!opts.fetcher && isNativeGlobalFetch());
+
+	let currentUrl = url;
+	let res: Awaited<ReturnType<TextFetcher>> | null = null;
+	for (let hop = 0; hop <= maxRedirects; hop++) {
+		const check = useDns
+			? await resolveAndValidateUrl(currentUrl, { lookup: opts.lookup })
+			: validateFetchUrl(currentUrl);
+		if (!check.ok) {
+			return {
+				ok: false,
+				errorKey: check.reason === "scheme" ? "presets.url.scheme" : "presets.url.host",
+				error:
+					check.reason === "scheme"
+						? "Only http:// and https:// URLs are supported"
+						: "Private, loopback, or internal addresses are blocked",
+			};
+		}
+		currentUrl = check.url;
+		res = await fetcher(currentUrl, { signal: AbortSignal.timeout(timeoutMs), redirect: "manual" });
+		if (res.status === 301 || res.status === 302 || res.status === 303 || res.status === 307 || res.status === 308) {
+			const location = res.headers?.get?.("location");
+			if (!location) break;
+			if (hop === maxRedirects) {
+				return {
+					ok: false,
+					errorKey: "presets.fetch.status",
+					error: `Too many redirects (> ${maxRedirects})`,
+				};
+			}
+			try {
+				currentUrl = new URL(location, currentUrl).toString();
+			} catch {
+				return {
+					ok: false,
+					errorKey: "presets.url.scheme",
+					error: "Invalid redirect URL",
+				};
+			}
+			continue;
+		}
+		break;
+	}
+	if (!res) {
+		return { ok: false, errorKey: "presets.fetch.status", error: "Empty response" };
+	}
 	if (!res.ok) {
 		return {
 			ok: false,

@@ -237,3 +237,40 @@ describe("PluginHost host.mcp", () => {
 		expect(sentPrompts[0]?.text).toContain("@modelcontextprotocol/server-filesystem");
 	});
 });
+
+describe("installMcpServer 重名保护（0.104 审计）", () => {
+	it("同名 install 默认拒绝；overwrite=true 才覆盖", async () => {
+		const dir = mkdtempSync(join(tmpdir(), "mcp-manage-overwrite-"));
+		const agentDir = join(dir, "agent");
+		const cwd = join(dir, "workspace");
+		mkdirSync(agentDir, { recursive: true });
+		mkdirSync(cwd, { recursive: true });
+		const base = {
+			agentDir,
+			cwd,
+			dataDir: dir,
+			spec: {
+				name: "github",
+				command: "npx",
+				args: ["-y", "@modelcontextprotocol/server-github"],
+				scope: "project" as const,
+			},
+		};
+		const first = await installMcpServer(base);
+		expect(first.ok).toBe(true);
+
+		const clash = await installMcpServer({
+			...base,
+			spec: { ...base.spec, args: ["-y", "@evil/replacement"] },
+		});
+		expect(clash.ok).toBe(false);
+		expect(clash.error).toContain("overwrite=true");
+
+		const overwrite = await installMcpServer({
+			...base,
+			spec: { ...base.spec, overwrite: true, args: ["-y", "@evil/replacement"] },
+		});
+		expect(overwrite.ok).toBe(true);
+		rmSync(dir, { recursive: true, force: true });
+	});
+});

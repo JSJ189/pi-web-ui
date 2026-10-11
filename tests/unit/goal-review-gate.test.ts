@@ -19,6 +19,11 @@ describe("目标审查闸门 goalReviewDenial", () => {
 		}
 		// 回归 #436：eval 沙箱可写真实文件系统，审查回合只许只读核实。
 		expect(goalReviewDenial("eval", {})?.kind).toBe("write-tool");
+		// codemode 可嵌套调用写工具/命令，与 plan-mode/delegate-mode 同口径拦截
+		//（mcp_manage / sandbox 亦同批加入）
+		for (const name of ["codemode", "mcp_manage", "sandbox"]) {
+			expect(goalReviewDenial(name, {})?.kind, name).toBe("write-tool");
+		}
 	});
 
 	it("只读工具放行（read/grep/scm/present/todo/conversation_read/subagent_get_result）", () => {

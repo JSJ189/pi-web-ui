@@ -2876,6 +2876,13 @@ export class DshClientSession {
 				}
 				await this.setCwd(fallbackCwd);
 			}
+			// 清理仍挂在该沙盒下的后台会话（含子目录 cwd）——ClientSession 版有此步，
+			// DSH 版此前完全没有：销毁后这些对话的 runtime/终端指向已删目录
+			for (const [id, conv] of this.convs) {
+				if (id !== this.activeId && isSameOrSubpath(conv.cwd, sbx.path)) {
+					this.removeConversation(id);
+				}
+			}
 			await this.sandboxes.destroy(sbx.id);
 			this.stateStore.removeProject(this.clientId, sbx.path);
 			await this.pushProjects();

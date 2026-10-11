@@ -109,9 +109,16 @@ export default {
 									<input type="checkbox" id="qq-cfg-bot-enabled" class="qq-cfg-bot-enabled" style="cursor: pointer;" />
 									<label for="qq-cfg-bot-enabled" style="font-size: 12px; cursor: pointer; user-select: none;">启用 QQ 机器人双向会话对话服务 (WebSocket 出站长连接)</label>
 								</div>
-								<div>
+								<div style="margin-bottom: 8px;">
 									<label style="display: block; margin-bottom: 4px; color: var(--text-dim);">允许的用户白名单 (用户 ID / OpenID，逗号分隔，留空不限制):</label>
 									<input type="text" class="qq-cfg-allowed-users" placeholder="123456, 789012 (留空允许所有用户)" style="width: 100%; box-sizing: border-box; padding: 6px 10px; border-radius: 4px; border: 1px solid var(--border); background: var(--bg); color: var(--text);" />
+								</div>
+								<div>
+									<div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 4px;">
+										<label style="color: var(--text-dim);">📂 项目根目录 (Workspace Cwd，留空跟随当前项目，支持聊天发 /cwd 切换):</label>
+										<button type="button" class="qq-cfg-use-cwd" style="padding: 2px 8px; font-size: 11px; border-radius: 4px; border: 1px solid var(--border); background: var(--bg); color: var(--text); cursor: pointer;">设为当前项目</button>
+									</div>
+									<input type="text" class="qq-cfg-workspace" placeholder="如：E:/my-project (留空跟随当前项目)" style="width: 100%; box-sizing: border-box; padding: 6px 10px; border-radius: 4px; border: 1px solid var(--border); background: var(--bg); color: var(--text);" />
 								</div>
 							</div>
 						</div>
@@ -141,6 +148,7 @@ export default {
 		const cfgDefaultChannel = q(".qq-cfg-default-channel");
 		const cfgBotEnabled = q(".qq-cfg-bot-enabled");
 		const cfgAllowedUsers = q(".qq-cfg-allowed-users");
+		const cfgWorkspace = q(".qq-cfg-workspace");
 
 		let currentState = {};
 
@@ -186,10 +194,14 @@ export default {
 			cfgDefaultChannel.value = cfg.defaultChannelId || "";
 			cfgBotEnabled.checked = Boolean(cfg.botEnabled);
 			cfgAllowedUsers.value = Array.isArray(cfg.allowedUsers) ? cfg.allowedUsers.join(", ") : "";
+			cfgWorkspace.value = cfg.workspace || "";
 
 			modal.style.display = "flex";
 		});
 
+		q(".qq-cfg-use-cwd")?.addEventListener("click", () => {
+			if (currentState.hostCwd) cfgWorkspace.value = currentState.hostCwd;
+		});
 		q(".qq-modal-close").addEventListener("click", () => (modal.style.display = "none"));
 		q(".qq-modal-cancel").addEventListener("click", () => (modal.style.display = "none"));
 
@@ -223,6 +235,7 @@ export default {
 					.split(/[,，\s]+/)
 					.map((s) => s.trim())
 					.filter(Boolean),
+				workspace: cfgWorkspace.value.trim(),
 			};
 
 			const res = await sendHost("save_config", { config: newCfg });

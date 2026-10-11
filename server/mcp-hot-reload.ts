@@ -95,7 +95,12 @@ export function createMcpHotReload(deps: McpHotReloadDeps): McpHotReload {
 		const g = readOneFile(globalFile);
 		let globalServers = g.servers;
 		let gFp = g.fp;
-		if (g.fp === "empty" && legacyFile !== globalFile) {
+		// 与 mcp-bridge 的启动加载同口径：全局文件**不存在或存在但 0 个服务器**都
+		// 回退 dataDir legacy 配置。只判「文件不存在」时，「全局空配置 + legacy 有
+		// 服务」的部署里启动用 legacy 起服务、热加载却跳过 legacy——改 legacy 的
+		// 增删在重启前永不生效。
+		const globalHasNoServers = g.servers !== null && Object.keys(g.servers).length === 0;
+		if ((g.fp === "empty" || globalHasNoServers) && legacyFile !== globalFile) {
 			const leg = readOneFile(legacyFile);
 			if (leg.servers) {
 				globalServers = leg.servers;

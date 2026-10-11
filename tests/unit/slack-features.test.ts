@@ -168,4 +168,43 @@ describe("SlackBotBridge 双工逻辑测试", () => {
 		await bridge.stop();
 		vi.unstubAllGlobals();
 	});
+
+	it("Slack 频道门控：非私聊频道下，未 @ 机器人的消息被忽略，@ 机器人的消息正常触发", async () => {
+		const chatSpy = vi.fn().mockResolvedValue({ conversationId: "conv_sl_channel" });
+		const bridge = new SlackBotBridge({
+			host: { chat: chatSpy },
+			getConfig: () => ({ botToken: "xoxb-mock", appToken: "xapp-mock" }),
+		});
+		(bridge as any).botUser = { user_id: "B_BOT_999" };
+
+		// 1. 群聊消息但未 @ 机器人
+		await bridge.onInboundEvent({
+			user: "U_USER_1",
+			channel: "C_PUBLIC_1",
+			channel_type: "channel",
+			text: "大家好，今天天气不错",
+			ts: "123.456",
+		});
+		expect(chatSpy).not.toHaveBeenCalled();
+
+		// 2. 群聊消息指名道姓 @ 机器人
+		await bridge.onInboundEvent({
+			user: "U_USER_1",
+			channel: "C_PUBLIC_1",
+			channel_type: "channel",
+			text: "<@B_BOT_999> 你好，帮我查个数据",
+			ts: "123.457",
+		});
+		expect(chatSpy).toHaveBeenCalledTimes(1);
+
+		// 3. 私聊消息（im）即便不带 mention 也直接响应
+		await bridge.onInboundEvent({
+			user: "U_USER_1",
+			channel: "D_DM_1",
+			channel_type: "im",
+			text: "私聊直接问问题",
+			ts: "123.458",
+		});
+		expect(chatSpy).toHaveBeenCalledTimes(2);
+	});
 });

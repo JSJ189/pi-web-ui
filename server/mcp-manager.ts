@@ -424,6 +424,8 @@ export interface McpInstallSpec {
 	timeout?: number;
 	/** 描述 */
 	description?: string;
+	/** 同名服务器已存在时是否覆盖（默认拒绝，防止静默吃掉用户手工配置） */
+	overwrite?: boolean;
 	/** 写入作用域：默认 "project"（.pi/mcp.json），可选 "global" */
 	scope?: McpScope;
 	/** 是否启用（默认 true） */
@@ -481,6 +483,17 @@ export async function installMcpServer(opts: {
 	}
 
 	const scope: McpScope = spec.scope === "global" ? "global" : "project";
+	// 重名保护：install 默认拒绝覆盖——promptGuidelines 里的"先 check"只是给模型
+	// 的建议，不拦运行时；静默覆盖会吃掉用户手工配置的同名条目（含私有 token env）
+	const existing = listAllMcpServers({ agentDir: opts.agentDir, cwd: opts.cwd, dataDir: opts.dataDir }).servers.find(
+		(s) => s.name === rawName && s.scope === scope,
+	);
+	if (existing && spec.overwrite !== true) {
+		return {
+			ok: false,
+			error: `已存在同名服务器「${rawName}」(${scope})——确认要覆盖请传 overwrite=true（将替换其命令/参数/环境变量）`,
+		};
+	}
 	const uiServer: UiMcpServer = {
 		name: rawName,
 		scope,

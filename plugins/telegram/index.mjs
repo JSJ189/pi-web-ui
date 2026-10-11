@@ -89,6 +89,7 @@ export class TelegramBotBridge {
 		this.pendingRuns = new Map();
 		this.earlyRuns = new Map();
 		this.userConversations = new Map();
+		this.userWorkspaces = new Map();
 
 		this.status = {
 			enabled: false,
@@ -105,6 +106,10 @@ export class TelegramBotBridge {
 
 	getStatus() {
 		return { ...this.status };
+	}
+
+	resolveWorkspace(userId, cfg) {
+		return String(this.userWorkspaces.get(userId) || cfg?.workspace || this.host?.cwd || "").trim();
 	}
 
 	async start() {
@@ -220,12 +225,25 @@ export class TelegramBotBridge {
 		const cfg = this.getConfig();
 		const botUsername = this.status.botUsername || "";
 
-		// In group chats, only respond if mentioned
+		// In group chats, only respond if mentioned BY NAME —— mention 实体必须
+		// 指向机器人自身（entity.value === @botUsername 或按 offset/length 切片匹配），
+		// 否则群里 @任何人（entities 里存在任意 mention）都会触发 AI 插话
 		if (isGroup) {
-			const hasMention =
-				message.text?.includes(`@${botUsername}`) ||
-				(Array.isArray(message.entities) && message.entities.some((e) => e.type === "mention"));
-			if (botUsername && !hasMention) return;
+			const targetName = `@${botUsername}`.toLowerCase();
+			const namedMention = !!botUsername && message.text?.toLowerCase().includes(targetName);
+			const entityMention =
+				!!botUsername &&
+				Array.isArray(message.entities) &&
+				message.entities.some((e) => {
+					if (e.type !== "mention") return false;
+					if (e.value && String(e.value).toLowerCase() === targetName) return true;
+					if (typeof e.offset === "number" && typeof e.length === "number" && message.text) {
+						const slice = message.text.slice(e.offset, e.offset + e.length).toLowerCase();
+						return slice === targetName;
+					}
+					return false;
+				});
+			if (botUsername && !namedMention && !entityMention) return;
 		}
 
 		const cleanText = extractTelegramText(message, botUsername);
@@ -285,11 +303,14 @@ export class TelegramBotBridge {
 		});
 
 		try {
-			await this.host.chat({
+			const workspace = this.resolveWorkspace(userId, cfg);
+			const chatReq = {
 				text: cleanText,
 				accountId,
 				conversationId,
-			});
+			};
+			if (workspace) chatReq.cwd = workspace;
+			await this.host.chat(chatReq);
 		} catch (err) {
 			this.log("warn", `Telegram host.chat dispatch failed: ${err.message}`);
 			this.pendingRuns.delete(conversationId);
@@ -316,6 +337,7 @@ export class TelegramBotBridge {
 					"🤖 *pi-web-ui Telegram 机器人帮助*",
 					"",
 					"- 直接发送文本即可与 AI 助手对话，支持多轮上下文",
+					"- `/cwd [路径]` 或 `/workspace [路径]`：查看或切换当前项目根目录",
 					"- `/clear` 或 `/new`：清空当前上下文，开启全新对话",
 					"- `/status`：查看机器人运行状态与指标",
 					"- `/help`：展示本帮助信息",
@@ -327,6 +349,36 @@ export class TelegramBotBridge {
 						chat_id: chatId,
 						text: helpText,
 						parse_mode: "Markdown",
+					},
+					{ apiBase: cfg.apiBase || "https://api.telegram.org" },
+				).catch(() => {});
+				return true;
+			}
+			case "/cwd":
+			case "/workspace": {
+				const argPath = cmdText.replace(/^\/\S+/, "").trim();
+				if (!argPath) {
+					const currentWs = this.resolveWorkspace(userId, cfg) || "(默认跟随宿主当前项目)";
+					await telegramApi(
+						cfg.botToken,
+						"sendMessage",
+						{
+							chat_id: chatId,
+							text: `📂 当前项目根目录：${currentWs}\n提示：发送 /cwd <目录路径> 可切换项目根目录。`,
+						},
+						{ apiBase: cfg.apiBase || "https://api.telegram.org" },
+					).catch(() => {});
+					return true;
+				}
+				this.userWorkspaces.set(userId, argPath);
+				const newId = `tg_${String(userId).slice(-8)}_${Date.now().toString(36)}`;
+				this.userConversations.set(userId, newId);
+				await telegramApi(
+					cfg.botToken,
+					"sendMessage",
+					{
+						chat_id: chatId,
+						text: `📂 已将项目根目录切换为：${argPath}\n✨ 已自动为您开启该目录下的全新会话！`,
 					},
 					{ apiBase: cfg.apiBase || "https://api.telegram.org" },
 				).catch(() => {});
@@ -566,11 +618,13 @@ export default async function activate(host) {
 						config: {
 							apiBase: localConfig.apiBase || "https://api.telegram.org",
 							defaultChatId: localConfig.defaultChatId || "",
+							workspace: localConfig.workspace || "",
 							botEnabled: Boolean(localConfig.botEnabled),
 							allowedUsers: localConfig.allowedUsers || [],
 							hasBotToken: Boolean(secrets[SECRET_BOT_TOKEN] || localConfig.botToken),
 						},
 						botStatus: botBridge.getStatus(),
+						hostCwd: String(host.cwd ?? "").trim(),
 					});
 					break;
 				}

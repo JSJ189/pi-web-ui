@@ -13,6 +13,8 @@
  */
 
 import { Type, type Static } from "typebox";
+import { existsSync } from "node:fs";
+import { homedir } from "node:os";
 import type { AgentToolResult, ToolDefinition } from "@earendil-works/pi-coding-agent";
 import { pick, type ServerLang } from "./i18n.js";
 import type { SandboxInfo } from "./protocol.js";
@@ -442,9 +444,51 @@ export function makeSandboxTool(
 								isError: true,
 							};
 						}
-						// 若当前工作区正好在该沙盒内，先切回源项目
-						if (activeSbx?.id === targetInfo.id && targetInfo.sourcePath) {
-							await host.setCwd(targetInfo.sourcePath);
+						// 销毁会 rm -rf 整个沙盒目录（可能含用户转正后的工作成果），
+						// 与 apply_to_source 同样强制人工审批——bash 跑 rm -rf 都会命中
+						// 内置审批规则，工具路径不该有绕过口
+						if (host.askApproval) {
+							const decision = await host.askApproval(
+								toolCallId,
+								SANDBOX_TOOL_NAME,
+								{
+									action: "destroy",
+									sandbox: targetInfo.id,
+									path: targetInfo.path,
+									sourcePath: targetInfo.sourcePath,
+								},
+								`将销毁沙盒「${targetInfo.name}」（${targetInfo.path}${targetInfo.ephemeral ? "" : "，永久沙盒"}）并删除其全部内容，不可撤销`,
+								`Destroy sandbox "${targetInfo.name}" (${targetInfo.path}${targetInfo.ephemeral ? "" : ", persistent"}) and remove all of its contents. This cannot be undone.`,
+								host.getConversationId?.(),
+								{
+									id: "sandbox.destroy",
+									label: "销毁沙盒",
+									labelEn: "Destroy sandbox",
+								},
+							);
+							if (decision.decision === "deny") {
+								return {
+									content: [
+										{
+											type: "text",
+											text: pick(
+												lang,
+												`【销毁沙盒被用户拒绝】${decision.reason ? `原因：${decision.reason}` : ""}`,
+												`[Sandbox destroy denied by user]${decision.reason ? ` Reason: ${decision.reason}` : ""}`,
+											),
+										},
+									],
+									details: { guardDenied: true, userDenied: true },
+									isError: true,
+								};
+							}
+						}
+						// 若当前工作区正好在该沙盒内，先切出去（源项目优先，空白沙盒回退
+						// homedir——否则销毁后 cwd 悬空，后续 bash/read/write 全部 ENOENT）
+						if (activeSbx?.id === targetInfo.id) {
+							await host.setCwd(
+								targetInfo.sourcePath && existsSync(targetInfo.sourcePath) ? targetInfo.sourcePath : homedir(),
+							);
 						}
 						const destroyed = await host.sandboxes.destroy(targetInfo.id);
 						await host.onSandboxesChanged();

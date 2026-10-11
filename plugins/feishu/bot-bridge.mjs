@@ -76,6 +76,15 @@ export function stripMentions(text) {
  * FeishuBotBridge manages duplex message exchange between Feishu and pi-web-ui agent host.
  */
 export class FeishuBotBridge {
+	/**
+	 * @param {object} options
+	 * @param {any} options.host
+	 * @param {() => any} options.getConfig
+	 * @param {any} options.sendMessage
+	 * @param {any} options.replyMessage
+	 * @param {any} options.reactMessage
+	 * @param {(level: string, msg: string) => void} [options.log]
+	 */
 	constructor({ host, getConfig, sendMessage, replyMessage, reactMessage, log }) {
 		this.host = host;
 		this.getConfig = getConfig;
@@ -99,6 +108,8 @@ export class FeishuBotBridge {
 
 		// User to active conversationId mapping: openId -> conversationId
 		this.userConversations = new Map();
+		// User custom workspace root mapping: openId -> cwd path
+		this.userWorkspaces = new Map();
 
 		// Metrics and runtime status
 		this.status = {
@@ -115,6 +126,11 @@ export class FeishuBotBridge {
 
 	getStatus() {
 		return { ...this.status };
+	}
+
+	/** Resolve active workspace directory for user or fallback to config/host cwd. */
+	resolveWorkspace(openId, cfg) {
+		return String(this.userWorkspaces.get(openId) || cfg?.workspace || this.host?.cwd || "").trim();
 	}
 
 	/** Start bot duplex bridge service. */
@@ -384,11 +400,14 @@ export class FeishuBotBridge {
 
 		// Dispatch to host.chat
 		try {
-			await this.host.chat({
+			const workspace = this.resolveWorkspace(openId, cfg);
+			const chatReq = {
 				text: cleanText,
 				accountId,
 				conversationId,
-			});
+			};
+			if (workspace) chatReq.cwd = workspace;
+			await this.host.chat(chatReq);
 		} catch (err) {
 			this.log("warn", `host.chat dispatch failed: ${err.message}`);
 			this.pendingRuns.delete(conversationId);
@@ -411,6 +430,7 @@ export class FeishuBotBridge {
 					"🤖 **pi-web-ui 飞书机器人帮助**",
 					"",
 					"- 直接发送文本即可与 AI 助手对话，支持多轮上下文",
+					"- `/cwd` 或 `/workspace [路径]`：查看或切换当前项目根目录",
 					"- `/clear` 或 `/new`：清空当前上下文，开启全新对话",
 					"- `/status`：查看机器人运行状态与连接指标",
 					"- `/model`：查看当前配置的 AI 模型",
@@ -422,6 +442,28 @@ export class FeishuBotBridge {
 					title: "飞书机器人帮助",
 					text: helpText,
 					cardTemplate: "blue",
+				});
+				return true;
+			}
+			case "/cwd":
+			case "/workspace": {
+				const argPath = cmdText.replace(/^\/\S+/, "").trim();
+				if (!argPath) {
+					const currentWs = this.resolveWorkspace(openId, cfg) || "(默认跟随宿主当前项目)";
+					await this.replyMessage(cfg, {
+						messageId,
+						msgType: "text",
+						text: `📂 当前项目根目录：${currentWs}\n提示：发送 \`/cwd <目录绝对路径>\` 可切换项目根目录。`,
+					});
+					return true;
+				}
+				this.userWorkspaces.set(openId, argPath);
+				const newId = `fs_${openId.slice(-8)}_${Date.now().toString(36)}`;
+				this.userConversations.set(openId, newId);
+				await this.replyMessage(cfg, {
+					messageId,
+					msgType: "text",
+					text: `📂 已将项目根目录切换为：${argPath}\n✨ 已自动为您开启该目录下的全新会话！`,
 				});
 				return true;
 			}
@@ -439,8 +481,10 @@ export class FeishuBotBridge {
 			}
 			case "/status": {
 				const s = this.status;
+				const currentWs = this.resolveWorkspace(openId, cfg) || "(跟随当前项目)";
 				const statusText = [
 					`🟢 **连接状态**：${s.state === "connected" ? "已连接 (在线)" : s.state}`,
+					`📂 **项目根目录**：${currentWs}`,
 					`📥 **已接收消息**：${s.messagesReceived} 条`,
 					`📤 **已回复消息**：${s.messagesReplied} 条`,
 					`⏱️ **运行状态**：正常工作`,

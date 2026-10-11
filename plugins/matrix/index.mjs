@@ -102,6 +102,7 @@ export class MatrixBotBridge {
 		this.pendingRuns = new Map();
 		this.earlyRuns = new Map();
 		this.userConversations = new Map();
+		this.userWorkspaces = new Map();
 
 		this.status = {
 			enabled: false,
@@ -118,6 +119,10 @@ export class MatrixBotBridge {
 
 	getStatus() {
 		return { ...this.status };
+	}
+
+	resolveWorkspace(sender, cfg) {
+		return String(this.userWorkspaces.get(sender) || cfg?.workspace || this.host?.cwd || "").trim();
 	}
 
 	async start() {
@@ -298,11 +303,14 @@ export class MatrixBotBridge {
 		});
 
 		try {
-			await this.host.chat({
+			const workspace = this.resolveWorkspace(sender, cfg);
+			const chatReq = {
 				text: cleanText,
 				accountId,
 				conversationId,
-			});
+			};
+			if (workspace) chatReq.cwd = workspace;
+			await this.host.chat(chatReq);
 		} catch (err) {
 			this.log("warn", `Matrix host.chat dispatch failed: ${err.message}`);
 			this.pendingRuns.delete(conversationId);
@@ -326,7 +334,7 @@ export class MatrixBotBridge {
 		);
 	}
 
-	async handleSlashCommand(cmdText, { roomId }) {
+	async handleSlashCommand(cmdText, { roomId, sender, cfg }) {
 		const parts = cmdText.trim().split(/\s+/);
 		const cmd = parts[0].toLowerCase();
 
@@ -336,11 +344,39 @@ export class MatrixBotBridge {
 					"🔮 **pi-web-ui Matrix 机器人帮助**",
 					"",
 					"- 发送消息即可与 AI 助手对话，支持多轮上下文",
+					"- `/cwd [路径]` 或 `/workspace [路径]`：查看或切换当前项目根目录",
 					"- `/clear` 或 `/new`：清空当前上下文，开启全新会话",
 					"- `/status`：查看机器人运行状态与指标",
 					"- `/help`：展示本帮助信息",
 				].join("\n");
 				await this.sendRoomMessage(roomId, helpText).catch(() => {});
+				return true;
+			}
+			case "/cwd":
+			case "/workspace": {
+				const argPath = cmdText.replace(/^\/\S+/, "").trim();
+				if (!argPath) {
+					const currentWs = this.resolveWorkspace(sender, cfg) || "(默认跟随宿主当前项目)";
+					await this.sendRoomMessage(
+						roomId,
+						`📂 当前项目根目录：${currentWs}\n提示：发送 /cwd <目录路径> 可切换项目根目录。`,
+					).catch(() => {});
+					return true;
+				}
+				this.userWorkspaces.set(sender, argPath);
+				const newId = `mtx_${sender.replace(/[^a-zA-Z0-9]/g, "_").slice(-12)}_${Date.now().toString(36)}`;
+				this.userConversations.set(sender, newId);
+				await this.sendRoomMessage(
+					roomId,
+					`📂 已将项目根目录切换为：${argPath}\n✨ 已自动为您开启该目录下的全新会话！`,
+				).catch(() => {});
+				return true;
+			}
+			case "/clear":
+			case "/new": {
+				const newId = `mtx_${sender.replace(/[^a-zA-Z0-9]/g, "_").slice(-12)}_${Date.now().toString(36)}`;
+				this.userConversations.set(sender, newId);
+				await this.sendRoomMessage(roomId, "✨ 对话上下文已清空，已为您开启全新会话！").catch(() => {});
 				return true;
 			}
 			case "/status": {
@@ -520,11 +556,13 @@ export default async function activate(host) {
 						config: {
 							homeserverUrl: localConfig.homeserverUrl || "https://matrix.org",
 							defaultRoomId: localConfig.defaultRoomId || "",
+							workspace: localConfig.workspace || "",
 							botEnabled: Boolean(localConfig.botEnabled),
 							allowedUsers: localConfig.allowedUsers || [],
 							hasAccessToken: Boolean(secrets[SECRET_ACCESS_TOKEN] || localConfig.accessToken),
 						},
 						botStatus: botBridge.getStatus(),
+						hostCwd: String(host.cwd ?? "").trim(),
 					});
 					break;
 				}

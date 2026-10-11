@@ -91,6 +91,7 @@ export class IMessageBotBridge {
 		this.pendingRuns = new Map();
 		this.earlyRuns = new Map();
 		this.userConversations = new Map();
+		this.userWorkspaces = new Map();
 
 		this.status = {
 			enabled: false,
@@ -107,6 +108,10 @@ export class IMessageBotBridge {
 
 	getStatus() {
 		return { ...this.status, platform: process.platform };
+	}
+
+	resolveWorkspace(sender, cfg) {
+		return String(this.userWorkspaces.get(sender) || cfg?.workspace || this.host?.cwd || "").trim();
 	}
 
 	async start() {
@@ -207,11 +212,14 @@ export class IMessageBotBridge {
 		});
 
 		try {
-			await this.host.chat({
+			const workspace = this.resolveWorkspace(sender, cfg);
+			const chatReq = {
 				text: cleanText,
 				accountId,
 				conversationId,
-			});
+			};
+			if (workspace) chatReq.cwd = workspace;
+			await this.host.chat(chatReq);
 		} catch (err) {
 			this.log("warn", `iMessage host.chat dispatch failed: ${err.message}`);
 			this.pendingRuns.delete(conversationId);
@@ -221,7 +229,7 @@ export class IMessageBotBridge {
 		}
 	}
 
-	async handleSlashCommand(cmdText, { sender }) {
+	async handleSlashCommand(cmdText, { sender, cfg }) {
 		const parts = cmdText.trim().split(/\s+/);
 		const cmd = parts[0].toLowerCase();
 
@@ -230,11 +238,34 @@ export class IMessageBotBridge {
 				const helpText = [
 					`${IMESSAGE_BOT_PREFIX}🤖 pi-web-ui iMessage 机器人帮助`,
 					"- 直接发送文本即可与 AI 助手对话，支持多轮上下文",
+					"- /cwd [路径] 或 /workspace [路径]：查看或切换当前项目根目录",
 					"- /clear 或 /new：清空当前上下文，开启全新会话",
 					"- /status：查看机器人运行状态与指标",
 					"- /help：展示本帮助信息",
 				].join("\n");
 				await sendMacOSIMessage(sender, helpText, { execFileImpl: this.execFileImpl }).catch(() => {});
+				return true;
+			}
+			case "/cwd":
+			case "/workspace": {
+				const argPath = cmdText.replace(/^\/\S+/, "").trim();
+				if (!argPath) {
+					const currentWs = this.resolveWorkspace(sender, cfg) || "(默认跟随宿主当前项目)";
+					await sendMacOSIMessage(
+						sender,
+						`${IMESSAGE_BOT_PREFIX}📂 当前项目根目录：${currentWs}\n提示：发送 /cwd <目录路径> 可切换项目根目录。`,
+						{ execFileImpl: this.execFileImpl },
+					).catch(() => {});
+					return true;
+				}
+				this.userWorkspaces.set(sender, argPath);
+				const newId = `im_${sender.slice(-8)}_${Date.now().toString(36)}`;
+				this.userConversations.set(sender, newId);
+				await sendMacOSIMessage(
+					sender,
+					`${IMESSAGE_BOT_PREFIX}📂 已将项目根目录切换为：${argPath}\n✨ 已自动为您开启该目录下的全新会话！`,
+					{ execFileImpl: this.execFileImpl },
+				).catch(() => {});
 				return true;
 			}
 			case "/clear":
@@ -402,10 +433,12 @@ export default async function activate(host) {
 						type: "state",
 						config: {
 							defaultRecipient: localConfig.defaultRecipient || "",
+							workspace: localConfig.workspace || "",
 							botEnabled: Boolean(localConfig.botEnabled),
 							allowedUsers: localConfig.allowedUsers || [],
 						},
 						botStatus: botBridge.getStatus(),
+						hostCwd: String(host.cwd ?? "").trim(),
 					});
 					break;
 				}

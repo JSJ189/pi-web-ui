@@ -65,7 +65,11 @@ export async function getQqAccessToken(appId, clientSecret, { timeoutMs = 15000 
 	if (!json.access_token) {
 		throw new Error(json.msg || "Failed to obtain QQBot access token");
 	}
-	return json.access_token;
+	return {
+		accessToken: json.access_token,
+		// 平台返回的时效（秒）；缺省按 2 小时量级保守估计，调用方据此提前刷新
+		expiresInSec: Number(json.expires_in) > 0 ? Number(json.expires_in) : 2 * 60 * 60,
+	};
 }
 
 /**
@@ -120,6 +124,8 @@ export class QqBotBridge {
 		this.heartbeatTimer = null;
 		this.lastSequence = null;
 		this.accessToken = "";
+		this.tokenExpiresAt = 0;
+		this.tokenRefreshInFlight = null;
 		this.botUser = null;
 		this.offRunEvent = null;
 
@@ -127,6 +133,7 @@ export class QqBotBridge {
 		this.pendingRuns = new Map();
 		this.earlyRuns = new Map();
 		this.userConversations = new Map();
+		this.userWorkspaces = new Map();
 
 		this.status = {
 			enabled: false,
@@ -143,6 +150,10 @@ export class QqBotBridge {
 
 	getStatus() {
 		return { ...this.status };
+	}
+
+	resolveWorkspace(authorId, cfg) {
+		return String(this.userWorkspaces.get(authorId) || cfg?.workspace || this.host?.cwd || "").trim();
 	}
 
 	async start() {
@@ -163,7 +174,9 @@ export class QqBotBridge {
 		}
 
 		try {
-			this.accessToken = await getQqAccessToken(cfg.appId, cfg.clientSecret);
+			const auth = await getQqAccessToken(cfg.appId, cfg.clientSecret);
+			this.accessToken = auth.accessToken;
+			this.tokenExpiresAt = Date.now() + auth.expiresInSec * 1000;
 			this.status.lastError = null;
 			this.log("info", "QQBot access token obtained successfully");
 		} catch (err) {
@@ -208,13 +221,45 @@ export class QqBotBridge {
 		}
 	}
 
+	/**
+	 * 确保持有未过期的 access token：QQ 开放平台 token 是短时效（expires_in 量级），
+	 * 此前只在 start() 取一次——到期后所有 REST 回复 401，WS 断线重连又拿旧 token
+	 * 请求 /gateway 也 401，进入每 5 秒一次的永久失败循环。
+	 * 提前 5 分钟刷新；并发调用共享同一次刷新。
+	 */
+	async ensureAccessToken() {
+		const cfg = this.getConfig();
+		const REFRESH_MARGIN_MS = 5 * 60 * 1000;
+		if (this.accessToken && Date.now() < this.tokenExpiresAt - REFRESH_MARGIN_MS) {
+			return this.accessToken;
+		}
+		if (!this.tokenRefreshInFlight) {
+			this.tokenRefreshInFlight = (async () => {
+				try {
+					const auth = await getQqAccessToken(cfg.appId, cfg.clientSecret);
+					this.accessToken = auth.accessToken;
+					this.tokenExpiresAt = Date.now() + auth.expiresInSec * 1000;
+				} catch (err) {
+					// 刷新失败不阻塞回复路径：手里还有旧 token 就先用（真过期时
+					// REST 会 401 并走重连循环，届时再次尝试刷新）
+					this.log("warn", `QQBot token refresh failed: ${err.message}`);
+				}
+				return this.accessToken;
+			})().finally(() => {
+				this.tokenRefreshInFlight = null;
+			});
+		}
+		return this.tokenRefreshInFlight;
+	}
+
 	async connectGateway() {
 		const cfg = this.getConfig();
 		const apiBase = cfg.useSandbox ? "https://sandbox.api.sgroup.qq.com" : QQ_API_BASE;
 
 		let wssUrl;
 		try {
-			const gw = await qqApi(this.accessToken, "GET", "/gateway", null, { apiBase });
+			const token = await this.ensureAccessToken();
+			const gw = await qqApi(token, "GET", "/gateway", null, { apiBase });
 			wssUrl = gw?.url;
 		} catch (err) {
 			throw new Error(`Failed to obtain QQ Gateway URL: ${err.message}`);
@@ -390,11 +435,14 @@ export class QqBotBridge {
 		});
 
 		try {
-			await this.host.chat({
+			const workspace = this.resolveWorkspace(authorId, cfg);
+			const chatReq = {
 				text: cleanText,
 				accountId,
 				conversationId,
-			});
+			};
+			if (workspace) chatReq.cwd = workspace;
+			await this.host.chat(chatReq);
 		} catch (err) {
 			this.log("warn", `QQBot host.chat dispatch failed: ${err.message}`);
 			this.pendingRuns.delete(conversationId);
@@ -402,24 +450,28 @@ export class QqBotBridge {
 		}
 	}
 
-	async replyMessage(target, text) {
+	async replyMessage(target, text, msgSeq = 1) {
 		const cfg = this.getConfig();
 		const apiBase = cfg.useSandbox ? "https://sandbox.api.sgroup.qq.com" : QQ_API_BASE;
+		const token = await this.ensureAccessToken();
 		const payload = {
 			content: text,
 			msg_id: target.msgId,
+			// 同一 msg_id 的被动回复需 msg_seq 从 1 递增（上限 5），相同 seq 会被
+			// 平台去重丢弃——长回复分块后只有第一块能送达
+			msg_seq: msgSeq,
 		};
 
 		if (target.channelId) {
-			await qqApi(this.accessToken, "POST", `/channels/${target.channelId}/messages`, payload, { apiBase });
+			await qqApi(token, "POST", `/channels/${target.channelId}/messages`, payload, { apiBase });
 		} else if (target.groupOpenid) {
-			await qqApi(this.accessToken, "POST", `/v2/groups/${target.groupOpenid}/messages`, payload, { apiBase });
+			await qqApi(token, "POST", `/v2/groups/${target.groupOpenid}/messages`, payload, { apiBase });
 		} else if (target.userOpenid) {
-			await qqApi(this.accessToken, "POST", `/v2/users/${target.userOpenid}/messages`, payload, { apiBase });
+			await qqApi(token, "POST", `/v2/users/${target.userOpenid}/messages`, payload, { apiBase });
 		}
 	}
 
-	async handleSlashCommand(cmdText, { authorId, replyTarget }) {
+	async handleSlashCommand(cmdText, { authorId, replyTarget, cfg }) {
 		const parts = cmdText.trim().split(/\s+/);
 		const cmd = parts[0].toLowerCase();
 
@@ -429,11 +481,32 @@ export class QqBotBridge {
 					"🤖 **pi-web-ui QQ 机器人帮助**",
 					"",
 					"- 发送消息即可与 AI 助手对话，支持多轮上下文",
+					"- `/cwd [路径]` 或 `/workspace [路径]`：查看或切换当前项目根目录",
 					"- `/clear` 或 `/new`：清空当前上下文，开启全新会话",
 					"- `/status`：查看机器人运行状态与指标",
 					"- `/help`：展示本帮助信息",
 				].join("\n");
 				await this.replyMessage(replyTarget, helpText).catch(() => {});
+				return true;
+			}
+			case "/cwd":
+			case "/workspace": {
+				const argPath = cmdText.replace(/^\/\S+/, "").trim();
+				if (!argPath) {
+					const currentWs = this.resolveWorkspace(authorId, cfg) || "(默认跟随宿主当前项目)";
+					await this.replyMessage(
+						replyTarget,
+						`📂 当前项目根目录：${currentWs}\n提示：发送 /cwd <目录路径> 可切换项目根目录。`,
+					).catch(() => {});
+					return true;
+				}
+				this.userWorkspaces.set(authorId, argPath);
+				const newId = `qq_${String(authorId).slice(-8)}_${Date.now().toString(36)}`;
+				this.userConversations.set(authorId, newId);
+				await this.replyMessage(
+					replyTarget,
+					`📂 已将项目根目录切换为：${argPath}\n✨ 已自动为您开启该目录下的全新会话！`,
+				).catch(() => {});
 				return true;
 			}
 			case "/clear":
@@ -505,8 +578,9 @@ export class QqBotBridge {
 			const chunks = chunkMarkdownText(finalText, 3000);
 
 			try {
-				for (const chunk of chunks) {
-					await this.replyMessage(run.replyTarget, chunk);
+				for (let i = 0; i < chunks.length; i++) {
+					// msg_seq 从 1 递增：同一 msg_id 的第 2 块起若重复 seq 会被平台去重丢弃
+					await this.replyMessage(run.replyTarget, chunks[i], i + 1);
 				}
 				this.status.messagesReplied++;
 				this.status.lastReplyAt = Date.now();
@@ -596,7 +670,7 @@ export default async function activate(host) {
 					if (!localConfig.appId || !localConfig.clientSecret) {
 						throw new Error("QQBot AppID or ClientSecret is not configured.");
 					}
-					const token = await getQqAccessToken(localConfig.appId, localConfig.clientSecret);
+					const token = await getQqAccessToken(localConfig.appId, localConfig.clientSecret).then((r) => r.accessToken);
 					const apiBase = localConfig.useSandbox ? "https://sandbox.api.sgroup.qq.com" : QQ_API_BASE;
 					const res = await qqApi(
 						token,
@@ -629,12 +703,14 @@ export default async function activate(host) {
 						config: {
 							appId: localConfig.appId || "",
 							defaultChannelId: localConfig.defaultChannelId || "",
+							workspace: localConfig.workspace || "",
 							useSandbox: Boolean(localConfig.useSandbox),
 							botEnabled: Boolean(localConfig.botEnabled),
 							allowedUsers: localConfig.allowedUsers || [],
 							hasClientSecret: Boolean(secrets[SECRET_CLIENT_SECRET] || localConfig.clientSecret),
 						},
 						botStatus: botBridge.getStatus(),
+						hostCwd: String(host.cwd ?? "").trim(),
 					});
 					break;
 				}
@@ -676,7 +752,7 @@ export default async function activate(host) {
 					}
 
 					try {
-						const token = await getQqAccessToken(testCfg.appId, testCfg.clientSecret);
+						const token = await getQqAccessToken(testCfg.appId, testCfg.clientSecret).then((r) => r.accessToken);
 						const apiBase = testCfg.useSandbox ? "https://sandbox.api.sgroup.qq.com" : QQ_API_BASE;
 						const me = await qqApi(token, "GET", "/users/@me", null, { apiBase });
 						reply({
@@ -696,7 +772,7 @@ export default async function activate(host) {
 					if (!localConfig.appId || !localConfig.clientSecret) {
 						throw new Error("QQBot AppID or ClientSecret is not configured.");
 					}
-					const token = await getQqAccessToken(localConfig.appId, localConfig.clientSecret);
+					const token = await getQqAccessToken(localConfig.appId, localConfig.clientSecret).then((r) => r.accessToken);
 					const apiBase = localConfig.useSandbox ? "https://sandbox.api.sgroup.qq.com" : QQ_API_BASE;
 					const res = await qqApi(
 						token,

@@ -97,6 +97,7 @@ export class SlackBotBridge {
 		this.pendingRuns = new Map();
 		this.earlyRuns = new Map();
 		this.userConversations = new Map();
+		this.userWorkspaces = new Map();
 
 		this.status = {
 			enabled: false,
@@ -113,6 +114,10 @@ export class SlackBotBridge {
 
 	getStatus() {
 		return { ...this.status };
+	}
+
+	resolveWorkspace(userId, cfg) {
+		return String(this.userWorkspaces.get(userId) || cfg?.workspace || this.host?.cwd || "").trim();
 	}
 
 	async start() {
@@ -258,6 +263,14 @@ export class SlackBotBridge {
 		// Filter self
 		if (userId === botId) return;
 
+		// 频道里只响应被 @ 的消息（DM 全收）——否则机器人在的频道里任何人的
+		// 任何一句话都触发一次 agent 运行（烧额度 + 刷屏）
+		const isDirectMessage = event.channel_type === "im";
+		if (!isDirectMessage && botId) {
+			const mentioned = typeof event.text === "string" && event.text.includes(`<@${botId}>`);
+			if (!mentioned) return;
+		}
+
 		const cleanText = extractSlackText(event.text, botId);
 		if (!cleanText) return;
 
@@ -302,11 +315,14 @@ export class SlackBotBridge {
 		});
 
 		try {
-			await this.host.chat({
+			const workspace = this.resolveWorkspace(userId, cfg);
+			const chatReq = {
 				text: cleanText,
 				accountId,
 				conversationId,
-			});
+			};
+			if (workspace) chatReq.cwd = workspace;
+			await this.host.chat(chatReq);
 		} catch (err) {
 			this.log("warn", `Slack host.chat dispatch failed: ${err.message}`);
 			this.pendingRuns.delete(conversationId);
@@ -328,6 +344,7 @@ export class SlackBotBridge {
 					"🤖 *pi-web-ui Slack Bot Help*",
 					"",
 					"- Send any message or mention the bot to chat with AI",
+					"- `/cwd [path]` or `/workspace [path]`: view or switch current workspace root",
 					"- `/clear` or `/new`: reset context and start a fresh session",
 					"- `/status`: inspect bot connection and metrics",
 					"- `/help`: display this help guide",
@@ -336,6 +353,28 @@ export class SlackBotBridge {
 					channel: channelId,
 					thread_ts: threadTs,
 					text: helpText,
+				}).catch(() => {});
+				return true;
+			}
+			case "/cwd":
+			case "/workspace": {
+				const argPath = cmdText.replace(/^\/\S+/, "").trim();
+				if (!argPath) {
+					const currentWs = this.resolveWorkspace(userId, cfg) || "(following host current project)";
+					await slackApi(cfg.botToken, "chat.postMessage", {
+						channel: channelId,
+						thread_ts: threadTs,
+						text: `📂 Current workspace root: ${currentWs}\nTip: send /cwd <path> to switch workspace.`,
+					}).catch(() => {});
+					return true;
+				}
+				this.userWorkspaces.set(userId, argPath);
+				const newId = `sl_${String(userId).slice(-8)}_${Date.now().toString(36)}`;
+				this.userConversations.set(userId, newId);
+				await slackApi(cfg.botToken, "chat.postMessage", {
+					channel: channelId,
+					thread_ts: threadTs,
+					text: `📂 Switched workspace root to: ${argPath}\n✨ Started a fresh session!`,
 				}).catch(() => {});
 				return true;
 			}
@@ -557,12 +596,14 @@ export default async function activate(host) {
 						type: "state",
 						config: {
 							defaultChannelId: localConfig.defaultChannelId || "",
+							workspace: localConfig.workspace || "",
 							botEnabled: Boolean(localConfig.botEnabled),
 							allowedUsers: localConfig.allowedUsers || [],
 							hasBotToken: Boolean(secrets[SECRET_BOT_TOKEN] || localConfig.botToken),
 							hasAppToken: Boolean(secrets[SECRET_APP_TOKEN] || localConfig.appToken),
 						},
 						botStatus: botBridge.getStatus(),
+						hostCwd: String(host.cwd ?? "").trim(),
 					});
 					break;
 				}
