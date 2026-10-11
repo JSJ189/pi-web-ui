@@ -94,6 +94,9 @@ export class MatrixBotBridge {
 
 		this.botUserId = "";
 		this.nextBatch = "";
+		// sync 游标持久化：内存态 nextBatch 在重启/热重载后清零，首轮 sync 会把
+		// 各房间最近时间线（此前已回复过的消息）当新消息重放、重复触发 agent
+		this.nextBatchLoaded = false;
 
 		this.seenEventIds = new Set();
 		this.pendingRuns = new Map();
@@ -192,9 +195,14 @@ export class MatrixBotBridge {
 			if (!cfg.homeserverUrl || !cfg.accessToken) break;
 
 			try {
+				if (!this.nextBatchLoaded) {
+					this.nextBatch = String((await this.host?.storage?.get?.("matrix.nextBatch")) || "");
+					this.nextBatchLoaded = true;
+				}
 				const query = new URLSearchParams({
 					timeout: "25000",
 				});
+				const initialSync = !this.nextBatch;
 				if (this.nextBatch) {
 					query.set("since", this.nextBatch);
 				}
@@ -210,17 +218,22 @@ export class MatrixBotBridge {
 
 				if (res?.next_batch) {
 					this.nextBatch = res.next_batch;
+					await this.host?.storage?.set?.("matrix.nextBatch", this.nextBatch);
 				}
 
-				// Handle joined room timeline events
-				const joinedRooms = res?.rooms?.join || {};
-				for (const [roomId, roomData] of Object.entries(joinedRooms)) {
-					const events = roomData?.timeline?.events || [];
-					for (const ev of events) {
-						if (ev.type === "m.room.message") {
-							await this.onInboundMessage(roomId, ev).catch((err) => {
-								this.log("warn", `Matrix event handling error: ${err.message}`);
-							});
+				// Handle joined room timeline events（无持久化游标的首轮 sync 只落
+				// 游标不消费时间线——Synapse 默认返回每房间最近约 10 条，其中多数
+				// 是重启前已回复过的消息，重放会重复触发 agent）
+				if (!initialSync) {
+					const joinedRooms = res?.rooms?.join || {};
+					for (const [roomId, roomData] of Object.entries(joinedRooms)) {
+						const events = roomData?.timeline?.events || [];
+						for (const ev of events) {
+							if (ev.type === "m.room.message") {
+								await this.onInboundMessage(roomId, ev).catch((err) => {
+									this.log("warn", `Matrix event handling error: ${err.message}`);
+								});
+							}
 						}
 					}
 				}
@@ -238,6 +251,8 @@ export class MatrixBotBridge {
 
 	async onInboundMessage(roomId, event) {
 		if (!event || event.sender === this.botUserId) return;
+		// m.notice 是 Matrix 生态的机器人消息约定——不滤掉会与其他 bot 互聊死循环
+		if (event.content?.msgtype === "m.notice") return;
 		const eventId = event.event_id;
 		if (eventId) {
 			if (this.seenEventIds.has(eventId)) return;

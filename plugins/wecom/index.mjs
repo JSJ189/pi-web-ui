@@ -12,6 +12,25 @@ import { chunkMarkdownText } from "../feishu/markdown-chunks.mjs";
 export const SECRET_CORP_SECRET = "wecom.corpSecret";
 export const SECRET_WEBHOOK_KEY = "wecom.webhookKey";
 
+/** 按 UTF-8 字节数切块（企微 markdown content 上限 4096 字节——按字符数切
+ *  2048 个汉字 ≈ 6KB UTF-8 必超）。 */
+function chunkByUtf8Bytes(text, maxBytes) {
+	const input = String(text || "");
+	if (Buffer.byteLength(input, "utf8") <= maxBytes) return [input];
+	const chunks = [];
+	let current = "";
+	for (const ch of input) {
+		if (Buffer.byteLength(current + ch, "utf8") > maxBytes) {
+			chunks.push(current);
+			current = ch;
+		} else {
+			current += ch;
+		}
+	}
+	if (current) chunks.push(current);
+	return chunks;
+}
+
 /** Strips internal system markers from assistant response text before delivery. */
 export function stripInternalMarkers(text) {
 	return String(text ?? "")
@@ -297,7 +316,10 @@ export class WecomBotBridge {
 			const cleanText = stripInternalMarkers(rawText);
 			const finalText = cleanText || "✅ 任务已完成（无文本输出）。";
 
-			const chunks = chunkMarkdownText(finalText, 2048);
+			// 企微群机器人 markdown content 上限 4096 **字节**：按 2048 字符切块，
+			// 纯中文时 2048 字 ≈ 6KB UTF-8 → 平台返回 errcode≠0 直接丢——按字节数
+			// 切（3900 字节内）
+			const chunks = chunkByUtf8Bytes(finalText, 3900);
 			const cfg = this.getConfig();
 			const key = run.webhookKey || cfg.webhookKey;
 
@@ -305,11 +327,17 @@ export class WecomBotBridge {
 				try {
 					const url = `https://qyapi.weixin.qq.com/cgi-bin/webhook/send?key=${key}`;
 					for (const chunk of chunks) {
-						await fetch(url, {
+						const res = await fetch(url, {
 							method: "POST",
 							headers: { "content-type": "application/json; charset=utf-8" },
 							body: JSON.stringify(buildWecomMessage({ msgType: "markdown", title: "AI 回复", text: chunk })),
 						});
+						// 回复路径此前不查 errcode：平台拒绝（超限/限频）被当成功，
+						// AI 回复整段静默丢失（sendWebhookMessage 是查的，口径不一）
+						const json = await res.json().catch(() => ({}));
+						if (!res.ok || json.errcode !== 0) {
+							throw new Error(`WeCom error ${json.errcode ?? res.status}: ${json.errmsg ?? res.statusText}`);
+						}
 					}
 					this.status.messagesReplied++;
 					this.status.lastReplyAt = Date.now();

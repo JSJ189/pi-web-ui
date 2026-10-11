@@ -291,4 +291,24 @@ describe("FeishuBotBridge 双工通信流程测试", () => {
 
 		await bridge.stop();
 	});
+
+	it("飞书 WS 双工失败时如实置 state: error，不再假装已连接空转", async () => {
+		const fetchMock = vi.fn().mockRejectedValue(new Error("Network unreachable"));
+		vi.stubGlobal("fetch", fetchMock);
+
+		const bridge = new FeishuBotBridge({
+			host: { chat: vi.fn() },
+			getConfig: () => ({ appId: "cli_123", appSecret: "sec_123" }),
+		} as any);
+
+		await bridge.start();
+
+		const status = bridge.getStatus();
+		expect(status.connected).toBe(false);
+		expect(status.state).toBe("error");
+		expect(status.lastError).toContain("WebSocket endpoint unavailable");
+
+		await bridge.stop();
+		vi.unstubAllGlobals();
+	});
 });

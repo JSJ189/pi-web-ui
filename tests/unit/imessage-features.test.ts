@@ -131,4 +131,22 @@ describe("IMessageBotBridge 双工逻辑测试", () => {
 
 		await bridge.stop();
 	});
+
+	it("非 macOS 平台且未注入 execFileImpl 时，sendMacOSIMessage 明确抛错，bridge 置为 unsupported", async () => {
+		if (process.platform === "darwin") return;
+
+		const { sendMacOSIMessage } = await import("../../plugins/imessage/index.mjs");
+		await expect(sendMacOSIMessage("user@example.com", "hello", {})).rejects.toThrow("only available on macOS");
+
+		const bridge = new IMessageBotBridge({
+			host: { chat: vi.fn() },
+			getConfig: () => ({}),
+		});
+
+		await bridge.start();
+		const status = bridge.getStatus();
+		expect(status.state).toBe("unsupported");
+		expect(status.connected).toBe(false);
+		expect(status.lastError).toContain("requires macOS");
+	});
 });

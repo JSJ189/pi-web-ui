@@ -156,4 +156,39 @@ describe("MatrixBotBridge 双工逻辑测试", () => {
 		await bridge.stop();
 		vi.unstubAllGlobals();
 	});
+
+	it("Matrix 门控与防重放：忽略 m.notice 机器人通知消息，且支持游标持久化", async () => {
+		const chatSpy = vi.fn().mockResolvedValue({ conversationId: "conv_mtx_test" });
+		const storageMap = new Map<string, string>();
+		const host = {
+			chat: chatSpy,
+			storage: {
+				get: vi.fn(async (key: string) => storageMap.get(key)),
+				set: vi.fn(async (key: string, val: string) => {
+					storageMap.set(key, val);
+				}),
+			},
+		};
+
+		const bridge = new MatrixBotBridge({
+			host,
+			getConfig: () => ({ homeserverUrl: "https://matrix.org", accessToken: "token" }),
+		});
+
+		// 1. 过滤 m.notice 消息
+		await bridge.onInboundMessage("!room1:matrix.org", {
+			event_id: "$ev_notice",
+			sender: "@otherbot:matrix.org",
+			content: { msgtype: "m.notice", body: "机器人系统通知" },
+		});
+		expect(chatSpy).not.toHaveBeenCalled();
+
+		// 2. 正常 m.text 消息触发
+		await bridge.onInboundMessage("!room1:matrix.org", {
+			event_id: "$ev_normal",
+			sender: "@alice:matrix.org",
+			content: { msgtype: "m.text", body: "用户正常提问" },
+		});
+		expect(chatSpy).toHaveBeenCalledTimes(1);
+	});
 });

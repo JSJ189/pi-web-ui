@@ -42,17 +42,19 @@ export function cleanIMessageText(textRaw = "") {
 /**
  * Send an iMessage via macOS AppleScript (/usr/bin/osascript).
  */
-export async function sendMacOSIMessage(address, text, { execFileImpl = execFileAsync } = {}) {
+export async function sendMacOSIMessage(address, text, { execFileImpl } = {}) {
 	const safeAddress = String(address || "").trim();
 	const safeText = String(text || "").trim();
 	if (!safeAddress) throw new Error("iMessage recipient address is required.");
 	if (!safeText) throw new Error("Message text is required.");
 
-	if (process.platform !== "darwin") {
-		// Mock support on non-macOS environments for testing
-		return { success: true, platform: process.platform, mocked: true };
+	if (process.platform !== "darwin" && !execFileImpl) {
+		// 非 macOS 且未注入执行实现时明确报错——假成功会让用户以为消息已发出
+		//（实际什么都没发）。注入的 execFileImpl（测试/宿主钩子）不受此限。
+		throw new Error(`iMessage is only available on macOS (current platform: ${process.platform}).`);
 	}
 
+	const runExec = execFileImpl || execFileAsync;
 	const script = `
 		tell application "Messages"
 			set targetService to 1st service whose service type = iMessage
@@ -61,7 +63,7 @@ export async function sendMacOSIMessage(address, text, { execFileImpl = execFile
 		end tell
 	`;
 
-	await execFileImpl("/usr/bin/osascript", ["-e", script], { timeout: 15000 });
+	await runExec("/usr/bin/osascript", ["-e", script], { timeout: 15000 });
 	return { success: true };
 }
 
@@ -76,7 +78,7 @@ export class IMessageBotBridge {
 	 * @param {(level: string, msg: string) => void} [options.log]
 	 * @param {any} [options.execFileImpl]
 	 */
-	constructor({ host, getConfig, log, execFileImpl = execFileAsync } = {}) {
+	constructor({ host, getConfig, log, execFileImpl } = {}) {
 		this.host = host;
 		this.getConfig = getConfig;
 		this.log = log || ((level, msg) => console.log(`[imessage-bot:${level}] ${msg}`));
@@ -119,9 +121,11 @@ export class IMessageBotBridge {
 		this.status.enabled = true;
 
 		if (process.platform !== "darwin") {
-			this.status.state = "connected";
-			this.status.connected = true;
-			this.log("info", "iMessage bridge started (compatibility mode on non-macOS)");
+			// 非 macOS 明确置 unsupported——假"在线"误导排障
+			this.status.state = "unsupported";
+			this.status.connected = false;
+			this.status.lastError = `iMessage bridge requires macOS (current platform: ${process.platform}).`;
+			this.log("warn", this.status.lastError);
 		} else {
 			this.status.state = "connected";
 			this.status.connected = true;

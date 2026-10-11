@@ -264,14 +264,16 @@ export class FeishuBotBridge {
 		}
 
 		// 3. Fallback: lightweight message polling loop (interval 5s)
-		this.status.connected = true;
-		this.status.state = "connected";
-		this.log("info", "Feishu bot duplex started in polling mode");
-
-		if (this.pollTimer) clearInterval(this.pollTimer);
-		this.pollTimer = setInterval(() => {
-			if (this.running) this.pollCycle().catch(() => {});
-		}, 5000);
+		// pollCycle 是空实现（只有注释）：降级后每 5 秒空转、面板显示"已连接"，
+		// 实际永远收不到消息，用户无从排查——如实置 error 并给原因
+		this.status.connected = false;
+		this.status.state = "error";
+		this.status.lastError =
+			"WebSocket endpoint unavailable and polling fallback is not implemented; bot cannot receive messages.";
+		this.log(
+			"warn",
+			"Feishu bot duplex: WebSocket endpoint unavailable, polling fallback not implemented — bot stays offline.",
+		);
 	}
 
 	/** Handle binary or text frames received over WebSocket. */
@@ -304,12 +306,6 @@ export class FeishuBotBridge {
 		} catch (err) {
 			// Non-JSON or binary protobuf control frames can be safely ignored in mock/fallback
 		}
-	}
-
-	/** Polling cycle fallback for environments without direct WebSocket. */
-	async pollCycle() {
-		// In polling mode, checks for recent unhandled messages
-		// Integrated with listMessages to detect any @bot or direct chat mentions
 	}
 
 	/**
