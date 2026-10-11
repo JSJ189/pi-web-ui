@@ -127,7 +127,15 @@ export function saveAttachmentSync(
 				rmSync(tmpPath, { force: true });
 			} catch {}
 			const code = (err as NodeJS.ErrnoException).code;
-			if (code !== "EEXIST" && code !== "EPERM") throw err;
+			if (code === "EEXIST") {
+				// 并发写同哈希：目标已在，按「已存在」成功路径返回
+			} else if (code === "EPERM" && existsSync(filePath)) {
+				// Windows 杀软/OneDrive 锁住的是 tmp 源而目标已由并发方写好：等同已存在
+			} else {
+				// EPERM 且目标不存在 / 其他错误：照常抛出。吞掉会返回指向缺失文件的
+				// 坏记录，消息里图片 404；抛出让 serialize 回退 dataUrl（转录里 base64 仍在）
+				throw err;
+			}
 		}
 	}
 
