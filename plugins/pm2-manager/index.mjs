@@ -266,6 +266,11 @@ export default {
 
 		// ── pm2 探测与调用 ─────────────────────────────────────────────────
 		let inFlightDetect = null;
+		// 「未安装」结论的负缓存 TTL：客户端面板每 3s 轮询 /status，未安装机器上
+		// 每次 deep 探测都要起一次 `npm root -g` 子进程（Windows 上每次数百 ms～
+		// 秒级 CPU/磁盘）——结论缓存一段时间；安装动作会主动清缓存立即重探。
+		const NEGATIVE_TTL_MS = 5 * 60 * 1000;
+		let lastNegativeAt = 0;
 		/**
 		 * 逐个候选入口试跑 `-v`：成功即认定安装。
 		 * `deep:false`（激活时）只查本地已知布局，**不起任何子进程**——没装 pm2 的机器
@@ -273,6 +278,9 @@ export default {
 		 */
 		async function detectPm2({ deep = true } = {}) {
 			if (inFlightDetect) return inFlightDetect;
+			if (deep && !st.pm2.installed && Date.now() - lastNegativeAt < NEGATIVE_TTL_MS) {
+				return st.pm2;
+			}
 			inFlightDetect = (async () => {
 				try {
 					const candidates = [];
@@ -295,6 +303,7 @@ export default {
 						const version = stripAnsi(`${r.stdout}${r.stderr}`).trim();
 						if (r.ok && version) {
 							st.pm2 = { installed: true, bin: c.bin, version, error: "" };
+							lastNegativeAt = 0;
 							return st.pm2;
 						}
 					}
@@ -304,6 +313,7 @@ export default {
 						version: "",
 						error: "未找到 pm2（可一键安装：" + INSTALL_COMMAND + "）",
 					};
+					lastNegativeAt = Date.now();
 					return st.pm2;
 				} finally {
 					inFlightDetect = null;
@@ -339,6 +349,7 @@ export default {
 			if (!npmCli) return { ok: false, output: "", error: "找不到 npm CLI，请手动执行：" + INSTALL_COMMAND };
 			const r = await run(process.execPath, [npmCli, "i", "-g", "pm2"], { timeoutMs: INSTALL_TIMEOUT_MS });
 			const out = stripAnsi(`${r.stdout}\n${r.stderr}`).trim();
+			lastNegativeAt = 0; // 刚装完立即重探，不吃「未安装」负缓存
 			await detectPm2();
 			if (!st.pm2.installed) {
 				return {
