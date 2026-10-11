@@ -112,7 +112,22 @@ export type TextFetcher = (
 		method?: string;
 		body?: string;
 	},
-) => Promise<{ ok: boolean; status: number; statusText?: string; text: () => Promise<string> }>;
+) => Promise<{
+	ok: boolean;
+	status: number;
+	statusText?: string;
+	text: () => Promise<string>;
+	// 真实 fetch 的 body 有（fetchText 流式累计限长）；mock fetcher 不带则回落整读。
+	// 只声明用到的最小流接口：DOM/Node 两套 ReadableStream 类型都满足，避免跨
+	// tsconfig lib 的类型不兼容（server 用 Node 全局、tests 用 DOM lib）。
+	// DOM 的 Response.body 可为 null。
+	body?: {
+		getReader(): {
+			read(): Promise<{ done: boolean; value?: Uint8Array }>;
+			cancel(): Promise<void>;
+		};
+	} | null;
+}>;
 
 /** 真实网络的抓取器（与 update-check 的 defaultFetcher 同一个实现）。 */
 export const defaultTextFetcher: TextFetcher = defaultFetcher as unknown as TextFetcher;
@@ -649,7 +664,7 @@ export function presetSummary(settings: Record<string, unknown>): NonNullable<Ui
 
 /** SSRF 收口：内网/回环/链路本地地址一律拒绝（预设来源只该是公网）。 */
 export function isBlockedHost(hostname: string): boolean {
-	const host = hostname
+	let host = hostname
 		.trim()
 		.toLowerCase()
 		.replace(/^\[|\]$/g, "");
@@ -658,6 +673,19 @@ export function isBlockedHost(hostname: string): boolean {
 		return true;
 	}
 	if (host === "::1" || host === "::" || host.startsWith("fe80:") || /^f[cd][0-9a-f]{2}:/.test(host)) return true;
+	// IPv4-mapped IPv6 绕过：URL 会把 [::ffff:127.0.0.1] 规范化成十六进制
+	// [::ffff:7f00:1]，两种形态都要还原成 IPv4 走下面的内网判定
+	const mapped =
+		host.match(/^::ffff:(\d{1,3}(?:\.\d{1,3}){3})$/i) ?? host.match(/^::ffff:([0-9a-f]{1,4}):([0-9a-f]{1,4})$/i);
+	if (mapped) {
+		if (mapped.length === 2) {
+			host = mapped[1];
+		} else {
+			const hi = parseInt(mapped[1], 16);
+			const lo = parseInt(mapped[2], 16);
+			host = `${hi >> 8}.${hi & 255}.${lo >> 8}.${lo & 255}`;
+		}
+	}
 	const m = host.match(/^(\d{1,3})\.(\d{1,3})\.(\d{1,3})\.(\d{1,3})$/);
 	if (!m) return false;
 	const [a, b] = [Number(m[1]), Number(m[2])];
@@ -700,6 +728,41 @@ export async function fetchText(
 			errorKey: "presets.fetch.status",
 			error: `HTTP ${res.status}${res.statusText ? ` ${res.statusText}` : ""}`,
 		};
+	}
+	// 流式累计到上限即取消：先整读进内存再查上限，一个几百 MB 的响应照样
+	// 在超时窗口内把缓冲打爆（AbortSignal 只断超时，不限字节）
+	const body = res.body;
+	if (body) {
+		const reader = body.getReader();
+		const decoder = new TextDecoder();
+		let received = 0;
+		const chunks: Uint8Array[] = [];
+		for (;;) {
+			const { done, value } = await reader.read();
+			if (done) break;
+			if (!value) continue;
+			received += value.byteLength;
+			if (received > maxBytes) {
+				try {
+					await reader.cancel();
+				} catch {
+					/* body already consumed/closed */
+				}
+				return {
+					ok: false,
+					errorKey: "presets.fetch.tooLarge",
+					error: `Content too large (> ${Math.round(maxBytes / 1024)} KB)`,
+				};
+			}
+			chunks.push(value);
+		}
+		const merged = new Uint8Array(received);
+		let offset = 0;
+		for (const chunk of chunks) {
+			merged.set(chunk, offset);
+			offset += chunk.byteLength;
+		}
+		return { ok: true, text: decoder.decode(merged) };
 	}
 	const text = await res.text();
 	if (Buffer.byteLength(text, "utf8") > maxBytes) {

@@ -121,3 +121,38 @@ describe("market-service", () => {
 		}
 	});
 });
+
+describe("market 缓存 key 路径穿越防护（0.103 审计）", () => {
+	it("query 里的 ../ 不再逃出 market-cache：消毒后的缓存文件零网络命中", async () => {
+		const dir = makeTempDir("market-trav-");
+		const originalFetch = globalThis.fetch;
+		try {
+			const cacheDir = join(dir, "market-cache");
+			const { mkdirSync } = await import("node:fs");
+			mkdirSync(cacheDir, { recursive: true });
+			const mockServers = [
+				{ id: "hit", name: "Hit", description: "d", transport: "stdio" as const, source: "smithery" },
+			];
+			// 与实现同一消毒口径：`q/../../x` 里 / 和 . 都替换成 _
+			const query = "q/../../x";
+			writeFileSync(
+				join(cacheDir, `mcp-market-smithery-${query.replace(/[^a-zA-Z0-9_-]/g, "_")}.json`),
+				JSON.stringify({ timestamp: Date.now(), data: mockServers }),
+			);
+			// fetch 一旦被调用即失败——命中缓存就意味着零网络
+			let fetchCalled = false;
+			vi.stubGlobal("fetch", ((..._args: unknown[]) => {
+				fetchCalled = true;
+				return Promise.reject(new Error("network disabled in test"));
+			}) as typeof fetch);
+			const r = await fetchRemoteMcpMarket({ source: "smithery", query, dataDir: dir });
+			expect(fetchCalled).toBe(false);
+			expect(r.ok).toBe(true);
+			expect(r.servers[0]?.id).toBe("hit");
+		} finally {
+			vi.unstubAllGlobals();
+			globalThis.fetch = originalFetch;
+			rmSync(dir, { recursive: true, force: true });
+		}
+	});
+});
