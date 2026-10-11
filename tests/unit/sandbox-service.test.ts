@@ -133,6 +133,15 @@ describe("SandboxManager & Hard Jail Isolation", () => {
 			evaluateSandboxJail(sandbox, "bash", { command: `cat "${sourceProjectDir}/package.json"` }, sandbox.path),
 		).not.toBeNull();
 		expect(evaluateSandboxJail(sandbox, "bash", { command: "cd .. && ls" }, sandbox.path)).not.toBeNull();
+		expect(evaluateSandboxJail(sandbox, "bash", { command: "cd ~/.ssh" }, sandbox.path)).not.toBeNull();
+		expect(evaluateSandboxJail(sandbox, "bash", { command: "rm -rf /etc/hosts" }, sandbox.path)).not.toBeNull();
+		expect(
+			evaluateSandboxJail(sandbox, "bash", { command: "rm -rf ~/Desktop/important" }, sandbox.path),
+		).not.toBeNull();
+		expect(evaluateSandboxJail(sandbox, "bash", { command: "echo pwn > /etc/passwd" }, sandbox.path)).not.toBeNull();
+		expect(evaluateSandboxJail(sandbox, "bash", { command: "npm install -g typescript" }, sandbox.path)).not.toBeNull();
+		expect(evaluateSandboxJail(sandbox, "bash", { command: "echo ok > build.log" }, sandbox.path)).toBeNull();
+		expect(evaluateSandboxJail(sandbox, "bash", { command: "npm test > /dev/null" }, sandbox.path)).toBeNull();
 
 		// 5. SFTP & Mail external side-effect gates
 		expect(evaluateSandboxJail(sandbox, "sftp", { action: "plan" }, sandbox.path)).toBeNull();

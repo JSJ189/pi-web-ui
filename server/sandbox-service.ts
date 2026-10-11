@@ -237,15 +237,95 @@ export function evaluateSandboxJail(
 			}
 		}
 
-		// 3b. 当 cwd 就是沙盒根时，拦截 `cd ..` 逃出沙盒根
-		if (normalizePathKey(cwd) === normalizePathKey(sbxPath)) {
-			if (/(?:^|[;&|\n]\s*)cd\s+\.\.(?:[\\/\s;&|]|$)/.test(cmd)) {
+		// 3b. 拦截通过 cd 跳出沙盒边界（裸 cd 跳 $HOME、cd ~、cd ..、或 cd 到沙盒外绝对路径）
+		for (const m of cmd.matchAll(/(?:^|[;&|\n]\s*)cd(?:\s+([^;&|\n]+))?(?=$|[;&|\n])/g)) {
+			const rawArg = (m[1] ?? "").trim().replace(/^["']|["']$/g, "");
+			if (
+				!rawArg ||
+				rawArg === "~" ||
+				rawArg.startsWith("~/") ||
+				rawArg.startsWith("~\\") ||
+				/^\$HOME\b|^%USERPROFILE%/i.test(rawArg)
+			) {
 				return {
-					reason: `【沙盒安全隔离拦截】当前位于沙盒根目录（${sbxPath}），禁止通过 "cd .." 跳出沙盒边界。`,
-					reasonEn: `[Sandbox Isolation Blocked] Currently at sandbox root (${sbxPath}); escaping the sandbox boundary via "cd .." is forbidden.`,
+					reason: `【沙盒安全隔离拦截】沙盒内禁止执行跳回用户主目录的 "cd ${rawArg || "~"}" 命令，请保持在沙盒目录（${sbxPath}）内操作。`,
+					reasonEn: `[Sandbox Isolation Blocked] Escaping to the user home directory via "cd ${rawArg || "~"}" is forbidden in sandbox mode; stay within "${sbxPath}".`,
+				};
+			}
+			if (rawArg !== "-" && !rawArg.startsWith("$") && !isStrictlyInsideSandbox(rawArg, cwd, sbxPath)) {
+				return {
+					reason: `【沙盒安全隔离拦截】禁止通过 "cd ${rawArg}" 跳出沙盒根目录（${sbxPath}）。`,
+					reasonEn: `[Sandbox Isolation Blocked] Escaping the sandbox root (${sbxPath}) via "cd ${rawArg}" is forbidden.`,
 				};
 			}
 		}
+
+		// 3c. 拦截重定向（> / >>）写入沙盒外路径（/dev/null 除外）
+		for (const m of cmd.matchAll(/(?:^|[^0-9>&])>>?\s*([^\s;&|>'"]+|"[^"]+"|'[^']+')/g)) {
+			const target = (m[1] ?? "").trim().replace(/^["']|["']$/g, "");
+			if (!target || target === "/dev/null" || target === "NUL" || target.startsWith("&")) continue;
+			if (!isStrictlyInsideSandbox(target, cwd, sbxPath)) {
+				return {
+					reason: `【沙盒安全隔离拦截】禁止将输出重定向写入沙盒目录（${sbxPath}）以外的路径："${target}"。`,
+					reasonEn: `[Sandbox Isolation Blocked] Redirecting output to a path outside the sandbox directory (${sbxPath}) is forbidden: "${target}".`,
+				};
+			}
+		}
+
+		// 3d. 拦截系统特权命令与全局包安装污染宿主机
+		if (
+			/(?:^|[;&|\n]\s*)(?:sudo|su|mkfs|format|fdisk|diskpart|reg\s+(?:add|delete)|schtasks|systemctl|launchctl|sc\s+(?:create|delete|stop))\b/i.test(
+				cmd,
+			) ||
+			/\b(?:npm\s+(?:i|install|add|un|uninstall)\s+(?:[^;&|\n]*\s)?(?:-g|--global)\b|pnpm\s+(?:add|remove)\s+(?:[^;&|\n]*\s)?(?:-g|--global)\b|yarn\s+global\b)/i.test(
+				cmd,
+			)
+		) {
+			return {
+				reason: `【沙盒安全隔离拦截】沙盒内禁止执行宿主机系统级管理命令或全局包安装（-g/--global），以保护宿主系统环境。`,
+				reasonEn: `[Sandbox Isolation Blocked] System administration commands and global package installations (-g/--global) are forbidden in sandbox mode to protect the host environment.`,
+			};
+		}
+
+		// 3e. 拦截文件修改/删除命令（rm/del/mv/cp/chmod/touch/mkdir/sed -i/tee 等）指向 ..、~、$HOME 或沙盒外绝对路径
+		const mutatingCmdRe =
+			/(?:^|[;&|\n]\s*)(?:rm|del|erase|rmdir|rd|mv|move|cp|copy|xcopy|robocopy|ln|mklink|chmod|chown|touch|mkdir|tee|dd|Remove-Item|Move-Item|Copy-Item|Set-Content|Add-Content|Out-File|sed\s+-[a-zA-Z]*i)\b([^;&|\n]*)/gi;
+		for (const m of cmd.matchAll(mutatingCmdRe)) {
+			const argsTail = (m[1] ?? "").trim();
+			const tokens = argsTail.match(/(?:"[^"]*"|'[^']*'|\S+)/g) ?? [];
+			for (const rawTok of tokens) {
+				const tok = rawTok.replace(/^["']|["']$/g, "");
+				if (!tok || tok.startsWith("-") || tok === "/dev/null") continue;
+				if (
+					tok === "~" ||
+					tok.startsWith("~/") ||
+					tok.startsWith("~\\") ||
+					/^\$(?:HOME|USERPROFILE)\b|^%USERPROFILE%/i.test(tok) ||
+					tok === ".." ||
+					tok.startsWith("../") ||
+					tok.startsWith("..\\") ||
+					tok.includes("/../") ||
+					tok.includes("\\..\\")
+				) {
+					if (!isStrictlyInsideSandbox(tok, cwd, sbxPath)) {
+						return {
+							reason: `【沙盒安全隔离拦截】检测到命令尝试操作沙盒外部或宿主系统路径（"${tok}"），已被硬围栏阻断。`,
+							reasonEn: `[Sandbox Isolation Blocked] Command attempted to mutate a path outside the sandbox or on the host system ("${tok}") and was blocked.`,
+						};
+					}
+				}
+				// 绝对路径（POSIX /... 或 Windows C:\...）且不在沙盒根内
+				if ((tok.startsWith("/") && !tok.startsWith("//")) || /^[a-zA-Z]:[\\/]/.test(tok)) {
+					if (!isStrictlyInsideSandbox(tok, cwd, sbxPath)) {
+						return {
+							reason: `【沙盒安全隔离拦截】检测到命令尝试修改沙盒目录（${sbxPath}）以外的系统/外部路径（"${tok}"），已被硬围栏阻断。`,
+							reasonEn: `[Sandbox Isolation Blocked] Command attempted to modify an external/system path outside the sandbox ("${tok}") and was blocked.`,
+						};
+					}
+				}
+			}
+		}
+
 		return null;
 	}
 
