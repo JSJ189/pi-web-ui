@@ -103,13 +103,13 @@ import {
 	sharePresetVia,
 	type PresetSharePort,
 } from "../preset-share.js";
+import { getMaxOpenConversations } from "../agent-formatters.js";
 
 const SNAPSHOT_INTERVAL_MS = 60;
 /** 用户主目录（wire 格式）：进程内不变，模块加载时求值一次（右栏 🏠）。 */
 const HOME_WIRE = homedir().replace(/\\/g, "/");
 /** 桌面目录（wire 格式）：进程内不变，不存在则空串 → 前端不渲染 🖥️。 */
 const DESKTOP_WIRE = desktopDirWire(HOME_WIRE);
-const MAX_OPEN_CONVERSATIONS = 8;
 /** 新会话默认权限预设（沙箱内 + 无审批弹窗；无头运行的当前行为，保持不变）。 */
 const PERMISSION_DEFAULT_PRESET = "workspace-write-never";
 /** 前端提供的三档（官方 workspace-write 走 ask，无应答者时是死路，不提供）。 */
@@ -1675,12 +1675,13 @@ export class DshClientSession {
 			}
 		}
 		const openInProject = [...this.convs.values()].filter((c) => c.cwd === this.cwd).length;
-		if (openInProject >= MAX_OPEN_CONVERSATIONS) {
+		const maxOpenConversations = getMaxOpenConversations();
+		if (openInProject >= maxOpenConversations) {
 			this.emit({
 				type: "notice",
 				level: "warning",
-				text: `当前项目运行的对话已达上限（${MAX_OPEN_CONVERSATIONS} 个）`,
-				textEn: `This project already has the max open conversations (${MAX_OPEN_CONVERSATIONS}).`,
+				text: `当前项目运行的对话已达上限（${maxOpenConversations} 个）`,
+				textEn: `This project already has the max open conversations (${maxOpenConversations}).`,
 			});
 			return false;
 		}

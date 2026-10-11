@@ -499,7 +499,7 @@ import {
 	RUN_TASK_CAP,
 	RUN_ARGS_CAP,
 	RUN_RESULT_CAP,
-	MAX_OPEN_CONVERSATIONS,
+	getMaxOpenConversations,
 	getMaxSubagents,
 	SUBAGENT_PROMPT_SNAPSHOT_CAP,
 	DEFAULT_CONV_TITLE,
@@ -1030,14 +1030,15 @@ export class ClientSession {
 			const openInProject = [...this.convs.values()].filter(
 				(c) => c.cwd === resolvedCwdForLimit && !c.isSubagent && !c.isEphemeral,
 			).length;
-			if (openInProject >= MAX_OPEN_CONVERSATIONS) {
+			const maxOpenConversations = getMaxOpenConversations();
+			if (openInProject >= maxOpenConversations) {
 				throw new Error(
 					pick(
 						this.getLang(),
-						`目标项目运行的普通对话已达上限（${MAX_OPEN_CONVERSATIONS} 个），无法创建持久化对话。请先关闭不需要的对话，或以轻量子代理（persist=false）方式运行`,
-						`The project already has max open regular conversations (${MAX_OPEN_CONVERSATIONS}). Please close some or run as a lightweight subagent (persist=false)`,
+						`目标项目运行的普通对话已达上限（${maxOpenConversations} 个），无法创建持久化对话。请先关闭不需要的对话，或以轻量子代理（persist=false）方式运行`,
+						`The project already has max open regular conversations (${maxOpenConversations}). Please close some or run as a lightweight subagent (persist=false)`,
 						"agent.conv.limit.reached",
-						{ limit: MAX_OPEN_CONVERSATIONS },
+						{ limit: maxOpenConversations },
 					),
 				);
 			}
@@ -2630,8 +2631,9 @@ export class ClientSession {
 
 		// 恢复本项目其他已被钉住的会话（重启后常驻运行列表，issue #433）
 		const pinnedPaths = cs.stateStore?.getPinnedSessions(cwd) ?? [];
+		const maxOpenConversations = getMaxOpenConversations();
 		for (const p of pinnedPaths) {
-			if (cs.convs.size >= MAX_OPEN_CONVERSATIONS) break;
+			if (cs.convs.size >= maxOpenConversations) break;
 			const normP = normalizePathKey(p);
 			const alreadyOpen = [...cs.convs.values()].some(
 				(c) => c.session.sessionFile && normalizePathKey(c.session.sessionFile) === normP,
@@ -8966,12 +8968,13 @@ export class ClientSession {
 			const openInProject = [...this.convs.values()].filter(
 				(c) => c.cwd === this.cwd && !c.isSubagent && !c.isEphemeral,
 			).length;
-			if (openInProject >= MAX_OPEN_CONVERSATIONS) {
+			const maxOpenConversations = getMaxOpenConversations();
+			if (openInProject >= maxOpenConversations) {
 				this.emit({
 					type: "notice",
 					level: "warning",
-					text: `当前项目运行的对话已达上限（${MAX_OPEN_CONVERSATIONS} 个），请先移出不需要的对话（打开后离开不继续对话即移出；钉住的对话需先取消钉住）`,
-					textEn: `This project already has the max open conversations (${MAX_OPEN_CONVERSATIONS}). Open one and leave it (without continuing) to remove it from the list; pinned chats must be unpinned first.`,
+					text: `当前项目运行的对话已达上限（${maxOpenConversations} 个），请先移出不需要的对话（打开后离开不继续对话即移出；钉住的对话需先取消钉住）`,
+					textEn: `This project already has the max open conversations (${maxOpenConversations}). Open one and leave it (without continuing) to remove it from the list; pinned chats must be unpinned first.`,
 				});
 				return false;
 			}
@@ -11170,7 +11173,8 @@ export class ClientSession {
 				[...this.convs.values()].filter((c) => c.cwd === targetCwd && !c.isSubagent && !c.isEphemeral).length +
 				1 -
 				(displaced?.cwd === targetCwd && !displaced?.isSubagent && !displaced?.isEphemeral ? 1 : 0);
-			if (openInProject > MAX_OPEN_CONVERSATIONS) {
+			const maxOpenConversations = getMaxOpenConversations();
+			if (openInProject > maxOpenConversations) {
 				// displaceActive() may have promoted a streaming conversation into the
 				// running list. Roll that presentation-only mutation back because no
 				// switch will take place.
@@ -11182,8 +11186,8 @@ export class ClientSession {
 				this.emit({
 					type: "notice",
 					level: "warning",
-					text: `当前项目运行的对话已达上限（${MAX_OPEN_CONVERSATIONS} 个），请先移出不需要的对话（打开后离开不继续对话即移出；钉住的对话需先取消钉住）`,
-					textEn: `This project already has the max open conversations (${MAX_OPEN_CONVERSATIONS}). Open one and leave it (without continuing) to remove it from the list; pinned chats must be unpinned first.`,
+					text: `当前项目运行的对话已达上限（${maxOpenConversations} 个），请先移出不需要的对话（打开后离开不继续对话即移出；钉住的对话需先取消钉住）`,
+					textEn: `This project already has the max open conversations (${maxOpenConversations}). Open one and leave it (without continuing) to remove it from the list; pinned chats must be unpinned first.`,
 				});
 				return;
 			}
@@ -11375,7 +11379,8 @@ export class ClientSession {
 				[...this.convs.values()].filter((c) => c.cwd === targetConv.cwd && !c.isSubagent && !c.isEphemeral).length +
 				1 -
 				(displaced?.cwd === targetConv.cwd && !displaced?.isSubagent && !displaced?.isEphemeral ? 1 : 0);
-			if (openInProject > MAX_OPEN_CONVERSATIONS) {
+			const maxOpenConversations = getMaxOpenConversations();
+			if (openInProject > maxOpenConversations) {
 				// displaceActive() 可能只是把旧对话标成后台展示（presentation-only）；
 				// 没有切换发生时回滚该标记，新 fork 的 runtime/终端直接释放。
 				this.conv.listed = oldListed;
@@ -11384,8 +11389,8 @@ export class ClientSession {
 				this.emit({
 					type: "notice",
 					level: "warning",
-					text: `当前项目运行的对话已达上限（${MAX_OPEN_CONVERSATIONS} 个），请先移出不需要的对话（打开后离开不继续对话即移出；钉住的对话需先取消钉住）`,
-					textEn: `This project already has the max open conversations (${MAX_OPEN_CONVERSATIONS}). Open one and leave it (without continuing) to remove it from the list; pinned chats must be unpinned first.`,
+					text: `当前项目运行的对话已达上限（${maxOpenConversations} 个），请先移出不需要的对话（打开后离开不继续对话即移出；钉住的对话需先取消钉住）`,
+					textEn: `This project already has the max open conversations (${maxOpenConversations}). Open one and leave it (without continuing) to remove it from the list; pinned chats must be unpinned first.`,
 				});
 				return;
 			}

@@ -22,7 +22,7 @@ import { isPseudoClientId, checkPluginCwd } from "./client-id-utils.js";
 import { pickAdoptableOrphan, type OrphanCandidate } from "./orphan-manager.js";
 import { piSessionsRoot } from "./session-search.js";
 import { isRemoteWorkspaceUri, resolveWorkspaceSessionDir } from "./remote-ssh-service.js";
-import { MAX_OPEN_CONVERSATIONS } from "./agent-formatters.js";
+import { getMaxOpenConversations } from "./agent-formatters.js";
 import { collectSubagentDescendantIds } from "./subagents.js";
 import { pickLatestClientSnapshot } from "./plugin-conversation-view.js";
 import type { ToolGuardHook } from "./tool-guards.js";
@@ -914,10 +914,11 @@ export class AgentService {
 		const movedMains = briefs.filter((b) => moveSet.has(b.id) && !b.isSubagent && !b.isEphemeral).length;
 		const openInProject =
 			target.takeoverBriefs().filter((b) => b.cwd === main.cwd && !b.isSubagent && !b.isEphemeral).length + movedMains;
-		if (openInProject > MAX_OPEN_CONVERSATIONS) {
+		const maxOpenConversations = getMaxOpenConversations();
+		if (openInProject > maxOpenConversations) {
 			fail(
-				`目标项目运行的对话已达上限（${MAX_OPEN_CONVERSATIONS} 个），请先移出不需要的对话（打开后离开不继续对话即移出；钉住的对话需先取消钉住）`,
-				`This project already has the max open conversations (${MAX_OPEN_CONVERSATIONS}). Open one and leave it (without continuing) to remove it from the list; pinned chats must be unpinned first.`,
+				`目标项目运行的对话已达上限（${maxOpenConversations} 个），请先移出不需要的对话（打开后离开不继续对话即移出；钉住的对话需先取消钉住）`,
+				`This project already has the max open conversations (${maxOpenConversations}). Open one and leave it (without continuing) to remove it from the list; pinned chats must be unpinned first.`,
 			);
 			return;
 		}
