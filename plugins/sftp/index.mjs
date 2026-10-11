@@ -70,7 +70,9 @@ export default {
 	async activate(host) {
 		const log = (msg, level = "info") => {
 			try {
-				host.log?.(String(msg), level);
+				// 宿主约定首参是级别（server/plugins.ts log(levelOrArg, ...args)）——
+				// 顺序颠倒是消息当级别、级别恒 info 且文本尾部多挂一个裸级别词
+				host.log?.(level, String(msg));
 			} catch {
 				/* 日志失败不影响主流程 */
 			}

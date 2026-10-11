@@ -794,15 +794,38 @@ function counting(onBytes) {
 	});
 }
 
-/** 远端 rename，目标已存在时先删（Windows OpenSSH 的 rename 不覆盖）。 */
+/**
+ * 远端 rename；目标已存在时走安全覆盖路径（Windows OpenSSH 的 rename 不覆盖）。
+ *
+ * 老实现在首次 rename 失败后**无条件先删目标**再改名：首个失败若是瞬时错误
+ * （网络抖动/权限）而第二步再失败（连接断开），远端原文件就永久丢了。
+ * 现在只有 stat 确认目标存在才覆盖；覆盖时先把目标挪到同目录备份名（同盘
+ * rename 原子完成），from→to 成功后清掉备份，失败则把备份改回原名——任何
+ * 一步失败目标内容都不丢。
+ */
 export async function renameRemote(sftp, from, to) {
+	let firstErr;
 	try {
 		await sftpCall(sftp, "rename", from, to);
-	} catch {
-		// 目标已存在时某些服务端（Windows OpenSSH）的 rename 会失败：先删再 rename
-		await sftpCall(sftp, "unlink", to).catch(() => {});
-		await sftpCall(sftp, "rename", from, to);
+		return;
+	} catch (err) {
+		// 目标已存在时某些服务端（Windows OpenSSH）的 rename 会失败：走覆盖路径
+		firstErr = err;
 	}
+	const st = await sftpCall(sftp, "stat", to).catch(() => null);
+	if (!st) {
+		// 目标不存在：首次失败是瞬时错误，不是覆盖场景——原样抛出，不删任何东西
+		throw firstErr;
+	}
+	const bak = `${to}.pi-ren-bak-${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 8)}`;
+	await sftpCall(sftp, "rename", to, bak);
+	try {
+		await sftpCall(sftp, "rename", from, to);
+	} catch (err) {
+		await sftpCall(sftp, "rename", bak, to).catch(() => {});
+		throw err;
+	}
+	await sftpCall(sftp, "unlink", bak).catch(() => {});
 }
 
 /** 远端递归建目录（带缓存，避免每个文件都重走一遍）。 */

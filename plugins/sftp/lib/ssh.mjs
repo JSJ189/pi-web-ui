@@ -11,6 +11,7 @@
  */
 
 import { once } from "node:events";
+import { StringDecoder } from "node:string_decoder";
 import { promises as fs } from "node:fs";
 import os from "node:os";
 import path from "node:path";
@@ -97,6 +98,10 @@ export function createSshManager({ host, log = () => {}, secrets }) {
 	const dep = { status: "idle", error: "" };
 	/** key → { client, sftp, fp, lastUsed, timer, alive } */
 	const pool = new Map();
+	// key → Promise<entry>：同 key 在建连接的单飞表。并发首连共享同一条 TCP/SFTP，
+	// 防止「两个并发各开一条、后完成者覆盖池位」——输者成孤儿（dropAll/drop 都
+	// 摸不到，永久泄漏），且其 5 分钟空闲定时器到期时会误杀正在使用的后到连接
+	const inflight = new Map();
 
 	/** 惰性加载 ssh2；缺了就装上。并发调用共享同一个 Promise。 */
 	function library() {
@@ -261,50 +266,57 @@ export function createSshManager({ host, log = () => {}, secrets }) {
 		}
 		if (existing) drop(key);
 
-		const opened = await new Promise((resolve, reject) => {
-			const client = new Client();
-			const opts = {
-				host: conn.host,
-				port: conn.port || 22,
-				username: conn.username || "root",
-				readyTimeout: READY_TIMEOUT_MS,
-				keepaliveInterval: 10_000,
-				keepaliveCountMax: 3,
-			};
-			if (auth.password) {
-				opts.password = auth.password;
-				opts.tryKeyboard = true;
-			} else if (auth.agent) opts.agent = auth.agent;
-			else if (auth.privateKey) {
-				opts.privateKey = auth.privateKey;
-				if (auth.passphrase) opts.passphrase = auth.passphrase;
-			} else {
-				return reject(
-					new Error(
-						`${conn.name}: 没有任何可用凭据 —— 配 auth.password / auth.privateKeyPath / auth.agent 之一（或在 ~/.ssh/ 放置 id_ed25519/id_rsa 私钥）`,
-					),
-				);
-			}
-			let settled = false;
-			const fail = (err) => {
-				if (settled) return;
-				settled = true;
-				try {
-					client.end();
-				} catch {
-					/* ignore */
+		const pending = inflight.get(key);
+		if (pending) {
+			const entry = await pending;
+			return { client: entry.client, sftp: entry.sftp, key };
+		}
+
+		const opening = (async () => {
+			const opened = await new Promise((resolve, reject) => {
+				const client = new Client();
+				const opts = {
+					host: conn.host,
+					port: conn.port || 22,
+					username: conn.username || "root",
+					readyTimeout: READY_TIMEOUT_MS,
+					keepaliveInterval: 10_000,
+					keepaliveCountMax: 3,
+				};
+				if (auth.password) {
+					opts.password = auth.password;
+					opts.tryKeyboard = true;
+				} else if (auth.agent) opts.agent = auth.agent;
+				else if (auth.privateKey) {
+					opts.privateKey = auth.privateKey;
+					if (auth.passphrase) opts.passphrase = auth.passphrase;
+				} else {
+					return reject(
+						new Error(
+							`${conn.name}: 没有任何可用凭据 —— 配 auth.password / auth.privateKeyPath / auth.agent 之一（或在 ~/.ssh/ 放置 id_ed25519/id_rsa 私钥）`,
+						),
+					);
 				}
-				reject(err);
-			};
-			if (auth.password) {
-				client.on("keyboard-interactive", (_name, _instr, _lang, prompts, finish) => {
-					finish(Array.isArray(prompts) ? prompts.map(() => auth.password) : [auth.password]);
-				});
-			}
-			client.on("error", fail);
-			client.on("close", () => {
-				const cur = pool.get(key);
-				if (cur?.client === client) drop(key);
+				let settled = false;
+				const fail = (err) => {
+					if (settled) return;
+					settled = true;
+					try {
+						client.end();
+					} catch {
+						/* ignore */
+					}
+					reject(err);
+				};
+				if (auth.password) {
+					client.on("keyboard-interactive", (_name, _instr, _lang, prompts, finish) => {
+						finish(Array.isArray(prompts) ? prompts.map(() => auth.password) : [auth.password]);
+					});
+				}
+				client.on("error", fail);
+				client.on("close", () => {
+					const cur = pool.get(key);
+					if (cur?.client === client) drop(key);
 			});
 			client.on("ready", () => {
 				client.sftp((err, sftp) => {
@@ -318,13 +330,17 @@ export function createSshManager({ host, log = () => {}, secrets }) {
 			} catch (err) {
 				fail(err);
 			}
-		});
+			});
 
-		const entry = { ...opened, fp, key, lastUsed: Date.now(), alive: true, conn };
-		entry.timer = null;
-		pool.set(key, entry);
-		shorten(entry);
-		return { client: opened.client, sftp: opened.sftp, key };
+			const entry = { ...opened, fp, key, lastUsed: Date.now(), alive: true, conn };
+			entry.timer = null;
+			pool.set(key, entry);
+			shorten(entry);
+			return entry;
+		})().finally(() => inflight.delete(key));
+		inflight.set(key, opening);
+		const entry = await opening;
+		return { client: entry.client, sftp: entry.sftp, key };
 	}
 
 	/**
@@ -372,9 +388,14 @@ export function createSshManager({ host, log = () => {}, secrets }) {
 				() => fail(new Error(`远端命令超时（${Math.round(timeoutMs / 1000)}s）：${String(cmd).slice(0, 120)}`)),
 				timeoutMs,
 			);
+			// 文本模式的解码器：ssh2 的 data 分块按网络边界切，不按字符对齐——
+			// 逐 chunk toString("utf8") 会让跨块的中日韩多字节字符变成 U+FFFD。
+			// StringDecoder 攒住半个字符直到下一块，close 时 end() 收尾。
+			const outDecoder = new StringDecoder("utf8");
+			const errDecoder = new StringDecoder("utf8");
 			const push = (buf, which) => {
 				if (which === "err") {
-					const e = buf.toString("utf8");
+					const e = errDecoder.write(buf);
 					if (outBytes + out.length + errOut.length + e.length > maxBytes) {
 						truncated = true;
 						return;
@@ -391,7 +412,7 @@ export function createSshManager({ host, log = () => {}, secrets }) {
 					outBytes += buf.length;
 					return;
 				}
-				const s = buf.toString("utf8");
+				const s = outDecoder.write(buf);
 				if (out.length + errOut.length + s.length > maxBytes) {
 					truncated = true;
 					return;
@@ -413,8 +434,8 @@ export function createSshManager({ host, log = () => {}, secrets }) {
 					stop();
 					resolve({
 						code: typeof c === "number" ? c : null,
-						stdout: binary ? Buffer.concat(outChunks) : out,
-						stderr: errOut,
+						stdout: binary ? Buffer.concat(outChunks) : out + outDecoder.end(),
+						stderr: errOut + errDecoder.end(),
 						truncated,
 					});
 				});
