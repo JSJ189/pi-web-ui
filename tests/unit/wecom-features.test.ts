@@ -151,4 +151,59 @@ describe("WecomBotBridge 双工逻辑测试", () => {
 		await bridge.stop();
 		vi.unstubAllGlobals();
 	});
+
+	it("长中文回复按 3900 字节分块，且 Webhook 错误码 errcode!=0 时能捕获", async () => {
+		const fetchMock = vi.fn().mockResolvedValue({
+			ok: true,
+			json: async () => ({ errcode: 0 }),
+		});
+		vi.stubGlobal("fetch", fetchMock);
+
+		let runHandler: ((ev: any) => void) | null = null;
+		const chatSpy = vi.fn().mockResolvedValue({ conversationId: "conv_wc_bytes" });
+
+		const bridge = new WecomBotBridge({
+			host: {
+				chat: chatSpy,
+				onRunEvent: (fn: any) => {
+					runHandler = fn;
+					return () => {};
+				},
+			},
+			getConfig: () => ({ webhookKey: "mock-key" }),
+		});
+
+		await bridge.start();
+
+		await bridge.onInboundMessage({
+			msgId: "msg_wc_4",
+			fromUserName: "user_03",
+			content: "超长中文回复测试",
+		});
+
+		const convId = chatSpy.mock.calls[0][0].conversationId;
+
+		// 构造 2000 个中文字符，每个 3 字节，共 6000 字节，必拆成至少 2 块
+		const chineseLong = "测".repeat(2000);
+		runHandler!({
+			conversationId: convId,
+			type: "message",
+			message: { role: "assistant", content: chineseLong },
+		});
+
+		await runHandler!({
+			conversationId: convId,
+			type: "run_end",
+		});
+
+		// 应该切成两块发送，且每块（包含标题头）均不超过企微平台的 4096 字节硬上限
+		expect(fetchMock).toHaveBeenCalledTimes(2);
+		for (const call of fetchMock.mock.calls) {
+			const body = JSON.parse(call[1].body);
+			expect(Buffer.byteLength(body.markdown.content, "utf8")).toBeLessThanOrEqual(4096);
+		}
+
+		await bridge.stop();
+		vi.unstubAllGlobals();
+	});
 });

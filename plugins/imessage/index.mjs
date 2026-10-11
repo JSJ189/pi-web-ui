@@ -42,7 +42,7 @@ export function cleanIMessageText(textRaw = "") {
 /**
  * Send an iMessage via macOS AppleScript (/usr/bin/osascript).
  */
-export async function sendMacOSIMessage(address, text, { execFileImpl = execFileAsync } = {}) {
+export async function sendMacOSIMessage(address, text, { execFileImpl } = {}) {
 	const safeAddress = String(address || "").trim();
 	const safeText = String(text || "").trim();
 	if (!safeAddress) throw new Error("iMessage recipient address is required.");
@@ -54,6 +54,7 @@ export async function sendMacOSIMessage(address, text, { execFileImpl = execFile
 		throw new Error(`iMessage is only available on macOS (current platform: ${process.platform}).`);
 	}
 
+	const runExec = execFileImpl || execFileAsync;
 	const script = `
 		tell application "Messages"
 			set targetService to 1st service whose service type = iMessage
@@ -62,7 +63,7 @@ export async function sendMacOSIMessage(address, text, { execFileImpl = execFile
 		end tell
 	`;
 
-	await execFileImpl("/usr/bin/osascript", ["-e", script], { timeout: 15000 });
+	await runExec("/usr/bin/osascript", ["-e", script], { timeout: 15000 });
 	return { success: true };
 }
 
@@ -77,7 +78,7 @@ export class IMessageBotBridge {
 	 * @param {(level: string, msg: string) => void} [options.log]
 	 * @param {any} [options.execFileImpl]
 	 */
-	constructor({ host, getConfig, log, execFileImpl = execFileAsync } = {}) {
+	constructor({ host, getConfig, log, execFileImpl } = {}) {
 		this.host = host;
 		this.getConfig = getConfig;
 		this.log = log || ((level, msg) => console.log(`[imessage-bot:${level}] ${msg}`));
