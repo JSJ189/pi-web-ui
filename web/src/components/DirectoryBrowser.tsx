@@ -348,7 +348,14 @@ export function DirectoryBrowser({
 
 	const commitRemote = (targetPath: string) => {
 		const port = parseInt(sshPort, 10) || 22;
-		const uri = formatRemoteWorkspaceUri(sshUser, sshHost, port, targetPath);
+		const homeDir = remoteSystem?.homeDir || "/";
+		let resolved = (targetPath || "").trim() || remoteCwd || "/";
+		if (resolved === "~") {
+			resolved = homeDir;
+		} else if (resolved.startsWith("~/") || resolved.startsWith("~\\")) {
+			resolved = `${homeDir.replace(/\/+$/, "")}/${resolved.slice(2).replace(/\\/g, "/")}`;
+		}
+		const uri = formatRemoteWorkspaceUri(sshUser, sshHost, port, resolved);
 		onSelectDirectory(uri);
 		onClose();
 	};
@@ -800,7 +807,21 @@ export function DirectoryBrowser({
 											}
 										}}
 									/>
-									<button type="button" className="cwd-choose-btn primary" onClick={() => commitRemote(remoteCwd)}>
+									{remoteDraft.trim() && remoteDraft.trim() !== remoteCwd && connectionId && (
+										<button
+											type="button"
+											className="cwd-choose-btn"
+											disabled={loadingRemoteDir}
+											onClick={() => void loadRemoteDir(connectionId, remoteDraft)}
+										>
+											{t("cwdEnter")}
+										</button>
+									)}
+									<button
+										type="button"
+										className="cwd-choose-btn primary"
+										onClick={() => commitRemote(remoteDraft.trim() || remoteCwd)}
+									>
 										{t("sshOpenRemoteWorkspace")}
 									</button>
 								</div>

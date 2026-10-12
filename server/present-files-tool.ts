@@ -26,11 +26,17 @@
  */
 
 import { open, stat } from "node:fs/promises";
-import { basename, extname, sep } from "node:path";
+import { basename, extname, posix, sep } from "node:path";
 import { defineTool, type ToolDefinition } from "@earendil-works/pi-coding-agent";
 import { Type } from "typebox";
 import { pick, type ServerLang } from "./i18n.js";
 import { resolvePathForDirCheck } from "./read-tool.js";
+import {
+	getGlobalRemoteSshService,
+	isRemoteWorkspaceUri,
+	parseRemoteWorkspaceUri,
+	restoreWorkspaceUriFromSessionDir,
+} from "./remote-ssh-service.js";
 import { decodeText, isAudioFile, looksLikeText, previewKind } from "./text-sniff.js";
 import { PRESENT_FILES_TOOL_NAME } from "./tool-manager.js";
 
@@ -231,6 +237,47 @@ export async function probePresentItem(
 	cwd: string,
 	budget: ExcerptBudget,
 ): Promise<PresentItem> {
+	const effCwd = restoreWorkspaceUriFromSessionDir(cwd);
+	if (isRemoteWorkspaceUri(effCwd)) {
+		const parsed = parseRemoteWorkspaceUri(effCwd);
+		const sshSvc = getGlobalRemoteSshService();
+		const cleaned = String(raw.path ?? "")
+			.trim()
+			.replace(/^@/, "")
+			.replace(/\\/g, "/");
+		const remoteAbs = cleaned.startsWith("/")
+			? posix.normalize(cleaned)
+			: posix.resolve(parsed?.remotePath || "/", cleaned);
+		const name = posix.basename(remoteAbs) || raw.path;
+		const base: PresentItem = { ...raw, name, abs: remoteAbs, kind: "missing" };
+		if (!sshSvc || !parsed) return base;
+		const st = await sshSvc.sftpStat(effCwd, remoteAbs).catch(() => null);
+		if (!st) return base;
+		if (st.isDirectory) return { ...base, kind: "dir", mtime: st.mtime };
+		if (!st.isFile) return base;
+		let kind = classifyPresentKind(name);
+		if (shouldSniff(kind) && st.size > 0 && st.size <= MAX_SNIFFABLE_BYTES) {
+			const headRes = await sshSvc.sftpReadFile(effCwd, remoteAbs, SNIFF_BYTES).catch(() => null);
+			if (headRes && headRes.data.length > 0 && looksLikeText(headRes.data)) kind = "text";
+		}
+		const item: PresentItem = { ...base, kind, size: st.size, mtime: st.mtime };
+		if (hasExcerpt(item.kind) && st.size > 0 && st.size <= MAX_SNIFFABLE_BYTES && budget.left > 0) {
+			const headRes = await sshSvc.sftpReadFile(effCwd, remoteAbs, EXCERPT_READ_BYTES).catch(() => null);
+			if (headRes && headRes.data.length > 0) {
+				const text = decodeText(headRes.data).replace(/\u0000+$/, "");
+				if (text) {
+					const cap = Math.min(MAX_EXCERPT_CHARS, budget.left);
+					const clipped = text.length > cap;
+					const excerpt = clipped ? text.slice(0, cap) : text;
+					item.excerpt = excerpt;
+					item.excerptTruncated = clipped || st.size > headRes.data.length;
+					budget.left -= excerpt.length;
+				}
+			}
+		}
+		return item;
+	}
+
 	const native = resolvePathForDirCheck(raw.path, cwd);
 	const abs = toWirePath(native);
 	const name = basename(native) || raw.path;

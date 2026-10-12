@@ -91,7 +91,12 @@ import {
 	handleInteractiveResponseMessage,
 	handleRemoteSshMessage,
 } from "./dispatch-domain-handlers.js";
-import { RemoteSshService, setGlobalRemoteSshService } from "./remote-ssh-service.js";
+import {
+	RemoteSshService,
+	isRemoteWorkspaceUri,
+	serveRemoteWorkspaceFile,
+	setGlobalRemoteSshService,
+} from "./remote-ssh-service.js";
 import { handlePluginMessage } from "./dispatch-plugin-handlers.js";
 import type {
 	BgServer,
@@ -470,6 +475,17 @@ app.get("/api/file", async (req, res) => {
 		const cid = typeof req.query.clientId === "string" ? req.query.clientId : "";
 		const cs = cid ? service.get(cid) : undefined;
 		const root = cs?.cwd ?? CWD;
+		if (isRemoteWorkspaceUri(root)) {
+			await serveRemoteWorkspaceFile(
+				req,
+				res,
+				root,
+				raw,
+				{ isDownload: req.query.download === "1", allowAllTypes: false },
+				remoteSshService,
+			);
+			return;
+		}
 		const absWire = isAbsoluteWirePath(raw);
 		let abs: string;
 		if (absWire) {
@@ -560,6 +576,26 @@ app.get("/api/preview/*splat", async (req, res) => {
 		const cid = typeof req.query.clientId === "string" ? req.query.clientId : "";
 		const cs = cid ? service.get(cid) : undefined;
 		const root = cs?.cwd ?? CWD;
+		if (isRemoteWorkspaceUri(root)) {
+			if (captured === "__abs__") {
+				res.status(400).end("bad absolute preview path");
+				return;
+			}
+			const remoteTarget = captured.startsWith(ABS_MARKER) ? captured.slice(ABS_MARKER.length) : captured;
+			if (captured.startsWith(ABS_MARKER) && !remoteTarget.startsWith("/")) {
+				res.status(400).end("bad absolute preview path");
+				return;
+			}
+			await serveRemoteWorkspaceFile(
+				req,
+				res,
+				root,
+				remoteTarget,
+				{ isDownload: false, allowAllTypes: true },
+				remoteSshService,
+			);
+			return;
+		}
 		// Express decodes %XX in the wildcard, so this is back to the wire
 		// form (filenames never contain "/", so per-segment encoding from
 		// the client round-trips exactly).
