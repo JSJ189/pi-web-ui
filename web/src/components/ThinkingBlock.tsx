@@ -1,4 +1,4 @@
-import { useState } from "react";
+import { useCallback, useEffect, useRef, useState } from "react";
 import { FiCheckCircle, FiCopy, FiCpu } from "react-icons/fi";
 import { useT } from "../i18n";
 import { useCopyFeedback } from "../use-copy-feedback";
@@ -86,9 +86,24 @@ export function ThinkingBlock({ thinking, streaming, wrap = true, forceOpen = fa
 	const expanded = open ?? wrap;
 	// 搜索期间 forceOpen 只是“视口展开”，用户 open 状态不受影响
 	const shown = expanded || forceOpen;
-	const displayedThinking = useSmoothStreamText(thinking, !!streaming);
+
+	// 余韵收尾（Graceful Tail Drain）：短思考紧接着触发 toolCall 时，streaming 会迅速变为 false；
+	// 保持 draining 直至缓冲池内的文字平滑流淌完毕，防止短思考没有过程就直接全部蹦出。
+	const live = !!streaming;
+	const liveRef = useRef(live);
+	liveRef.current = live;
+	const [draining, setDraining] = useState(live);
+	useEffect(() => {
+		if (live) setDraining(true);
+	}, [live]);
+	const handleStreamSettled = useCallback(() => {
+		if (!liveRef.current) setDraining(false);
+	}, []);
+	const activeStream = live || draining;
+
+	const displayedThinking = useSmoothStreamText(thinking, activeStream, !live && draining, handleStreamSettled);
 	// 折叠预览：流式中取最新文本（实时最后一行），结束后取首句实质思路。
-	const preview = thinkingPreview(displayedThinking, streaming);
+	const preview = thinkingPreview(displayedThinking, activeStream);
 	const { copied, copy } = useCopyFeedback({ duration: 1200 });
 	const copyThinking = () => {
 		void copy(thinking);
@@ -97,10 +112,10 @@ export function ThinkingBlock({ thinking, streaming, wrap = true, forceOpen = fa
 	const headTitle = shown ? t("collapseMsg") : preview ? `${t("expandMsg")} · ${preview}` : t("expandMsg");
 
 	return (
-		<div className={`thinking ${shown ? "open" : ""} ${streaming ? "live" : ""}`}>
+		<div className={`thinking ${shown ? "open" : ""} ${activeStream ? "live" : ""}`}>
 			<CollapsibleHead
 				open={shown}
-				headClassName={`thinking-head${streaming ? " thinking-live" : ""}`}
+				headClassName={`thinking-head${activeStream ? " thinking-live" : ""}`}
 				toggleClassName="thinking-toggle"
 				titleText={headTitle}
 				onToggle={() => setOpen(!expanded)}
@@ -126,14 +141,14 @@ export function ThinkingBlock({ thinking, streaming, wrap = true, forceOpen = fa
 					</>
 				}
 			>
-				{streaming && shown ? (
+				{activeStream && shown ? (
 					<span className="thinking-live-label">
 						{t("thinkingNow")}
 						<span className="dots" />
 					</span>
 				) : shown ? (
 					t("thinking")
-				) : streaming ? (
+				) : activeStream ? (
 					preview ? (
 						<span className="thinking-preview-live">
 							<span className="thinking-preview-prefix">{t("thinkingPreview", { preview: "" })}</span>
@@ -156,7 +171,12 @@ export function ThinkingBlock({ thinking, streaming, wrap = true, forceOpen = fa
 					t("thinking")
 				)}
 			</CollapsibleHead>
-			{shown && <div className="thinking-body">{displayedThinking}</div>}
+			{shown && (
+				<div className="thinking-body">
+					{displayedThinking}
+					{activeStream && <span className="stream-cursor" />}
+				</div>
+			)}
 		</div>
 	);
 }

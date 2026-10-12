@@ -31,15 +31,18 @@ const FrozenSegment = memo(function FrozenSegment({ text }: { text: string }) {
 
 /** 恒定步进时间间隔（ms）：锚定约 45 步/秒的细腻节奏，防止在 120Hz/144Hz/240Hz 高刷屏上因 rAF 频率翻倍导致吐字过快。 */
 const SMOOTH_PACE_MS = 22;
+/** 余韵收尾（finishing）步进时间间隔（ms）：保持平滑加速的同时防止在高刷屏上瞬间闪完导致短思考无过程。 */
+const FINISHING_PACE_MS = 14;
 
 /**
  * 将网络层大段脉冲到达的流式文本，通过 requestAnimationFrame + 时间锚定熨平为
  * 恒定节奏逐字/微步连续流淌的字符串（接收时大段接收，渲染时逐字细腻丝滑渲染）。
- * - 首次挂载若已有较长历史文本（> 120 字符，如刷新或切换会话），直接对齐现有长度，仅对后续增量平滑吐出；
+ * - 首次挂载若非活跃流（!active）或已有超长历史文本（> 1500 字符，如刷新或切换会话），直接对齐现有长度；
+ *   活跃流中到达的 200~400 字短思考块一律从 0 开始平滑吐出，避免无过程直接全部显示；
  * - 支持 onSettled 回调：当缓冲池追平 targetText 时触发，供流结束余韵收尾（Graceful Tail Drain）无缝切回静态渲染。
  */
 export function useSmoothStreamText(text: string, active = true, finishing = false, onSettled?: () => void): string {
-	const [displayedLen, setDisplayedLen] = useState<number>(() => (text.length > 120 ? text.length : 0));
+	const [displayedLen, setDisplayedLen] = useState<number>(() => (!active || text.length > 1500 ? text.length : 0));
 	const targetRef = useRef(text);
 	targetRef.current = text;
 	const lenRef = useRef(displayedLen);
@@ -70,7 +73,8 @@ export function useSmoothStreamText(text: string, active = true, finishing = fal
 		let raf = 0;
 		let lastTickTime = 0;
 		const tick = (now: number) => {
-			if (!finishingRef.current && lastTickTime > 0 && now - lastTickTime < SMOOTH_PACE_MS) {
+			const paceMs = finishingRef.current ? FINISHING_PACE_MS : SMOOTH_PACE_MS;
+			if (lastTickTime > 0 && now - lastTickTime < paceMs) {
 				raf = requestAnimationFrame(tick);
 				return;
 			}
