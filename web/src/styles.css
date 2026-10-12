@@ -7296,6 +7296,23 @@ body.panel-resizing .scm-divider::after {
 	margin-bottom: calc(-1 * var(--composer-strip));
 }
 
+/* 当目标条展开、看板或对话框在场时，消息区取消负 margin，避免覆盖操作行与输入框 */
+.main:has(.goalbar) .messages-wrap,
+.main:has(.plan-board) .messages-wrap,
+.main:has(.dialog-inline) .messages-wrap {
+	margin-bottom: 0;
+}
+.main:has(.goalbar) .scroll-bottom,
+.main:has(.plan-board) .scroll-bottom,
+.main:has(.dialog-inline) .scroll-bottom {
+	bottom: 4px;
+}
+.main:has(.goalbar) .qn-rail,
+.main:has(.plan-board) .qn-rail,
+.main:has(.dialog-inline) .qn-rail {
+	bottom: 10px;
+}
+
 /* ---- 聊天背景图（壁纸，issue #100）----
  * body.has-wallpaper 时在文档最底层铺两层全屏壁纸（position:fixed，覆盖
  * 整个视口：含左右面板、顶栏、底栏）：::before 放图片（cover 居中、可模糊，
@@ -11343,6 +11360,8 @@ div.chead[role="button"]:focus-visible,
 }
 
 .goalbar {
+	position: relative;
+	z-index: 2;
 	/* 与消息列/输入框同宽：同一条列 token（见 .main） */
 	margin: 0 var(--chat-inset) 8px;
 	border: 1px solid var(--border);

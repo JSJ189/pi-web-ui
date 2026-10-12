@@ -523,6 +523,7 @@ export const GoalBar = memo(function GoalBar({
 				</span>
 				<input
 					className="goalbar-input"
+					autoFocus
 					value={text}
 					placeholder={t("goalBarPlaceholder")}
 					title={t("goalBarPlaceholder")}
