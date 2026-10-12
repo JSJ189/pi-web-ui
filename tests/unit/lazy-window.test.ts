@@ -58,6 +58,23 @@ describe("planWindow", () => {
 		expect(plan.hide).toEqual(["far"]);
 		expect(plan.shrinkAbove).toBe(0);
 	});
+
+	it("迟滞安全区（Hysteresis）：离开挂载视口但在更宽卸载视口内的项保持渲染不被收起", () => {
+		const mountVp = { top: 0, bottom: 1000 };
+		const unmountVp = { top: -1000, bottom: 2000 };
+		// 项落在挂载视口之外，但仍在卸载视口内 [-1000, 2000]
+		const item = rect("mid", 1200, 1500);
+
+		// 如果它当前已经在显示中（hidden 为空），由于尚未超出 unmountVp，不应被 hide（杜绝边缘反复震荡）
+		const planMounted = planWindow([item], mountVp, new Set(), new Set(), unmountVp);
+		expect(planMounted.hide).toEqual([]);
+		expect(planMounted.show).toEqual([]);
+
+		// 只有当它完全离开更宽的 unmountVp 时（如 bottom <= -1000 或 top >= 2000），才进入 hide
+		const farItem = rect("far", 2100, 2400);
+		const planFar = planWindow([farItem], mountVp, new Set(), new Set(), unmountVp);
+		expect(planFar.hide).toEqual(["far"]);
+	});
 });
 
 describe("applyPlan", () => {

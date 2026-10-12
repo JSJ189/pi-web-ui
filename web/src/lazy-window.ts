@@ -31,29 +31,44 @@ interface WindowPlan {
  * 计算本轮窗口计划。只输出**变化**：已在隐藏集合里的不可见项不再重复输出
  * （避免 rAF 连续两帧之间重复累计 shrinkAbove），保持 always 集合里的项不动。
  *
- * @param items    当前所有受管消息的矩形（通常来自 getBoundingClientRect）
- * @param viewport 含缓冲带的视口区间 {top, bottom}（与 items 同一坐标系）
- * @param always   永不占位（始终真实渲染）的消息 id
- * @param hidden   当前已处于占位状态的消息 id
+ * 支持双阈值迟滞（Hysteresis）：
+ * - 进入挂载（show）：使用较贴近的 mountViewport（如视口 ±1200px）触发挂载；
+ * - 离开卸载（hide）：使用更宽裕的 unmountViewport（如视口 ±2400px）才允许卸载；
+ * 两者之间形成迟滞安全带，杜绝视口边缘因微弱滚动频繁在「真身 ⇄ 占位」之间反复震荡。
+ *
+ * @param items           当前所有受管消息的矩形（通常来自 getBoundingClientRect）
+ * @param mountViewport   挂载缓冲带视口区间 {top, bottom}
+ * @param always          永不占位（始终真实渲染）的消息 id
+ * @param hidden          当前已处于占位状态的消息 id
+ * @param unmountViewport 可选更宽的卸载视口区间；未传则回落为 mountViewport
  */
 export function planWindow(
 	items: readonly WinRect[],
-	viewport: { top: number; bottom: number },
+	mountViewport: { top: number; bottom: number },
 	always: ReadonlySet<string>,
 	hidden: ReadonlySet<string>,
+	unmountViewport?: { top: number; bottom: number },
 ): WindowPlan {
+	const unmountVp = unmountViewport ?? mountViewport;
 	const show: string[] = [];
 	const hide: string[] = [];
 	let shrinkAbove = 0;
 	for (const it of items) {
 		if (always.has(it.id)) continue;
-		const visible = it.top < viewport.bottom && it.bottom > viewport.top;
-		if (visible) {
-			if (hidden.has(it.id)) show.push(it.id);
-		} else if (!hidden.has(it.id)) {
-			hide.push(it.id);
-			// 完全在视口上方的项被收起后，下方内容整体上移——需要回滚 scrollTop。
-			if (it.bottom <= viewport.top) shrinkAbove += it.bottom - it.top;
+		const isMounted = !hidden.has(it.id);
+		if (!isMounted) {
+			// 占位项：只要触及挂载视口（较贴近）就恢复真实渲染
+			const shouldMount = it.top < mountViewport.bottom && it.bottom > mountViewport.top;
+			if (shouldMount) {
+				show.push(it.id);
+			}
+		} else {
+			// 真实渲染项：只有完全离开更宽的卸载视口时，才允许收起为占位
+			const inUnmountZone = it.top < unmountVp.bottom && it.bottom > unmountVp.top;
+			if (!inUnmountZone) {
+				hide.push(it.id);
+				if (it.bottom <= unmountVp.top) shrinkAbove += it.bottom - it.top;
+			}
 		}
 	}
 	return { show, hide, shrinkAbove };

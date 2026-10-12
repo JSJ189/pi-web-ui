@@ -5,9 +5,64 @@ import { useCopyFeedback } from "../use-copy-feedback";
 import { CollapsibleHead } from "./CollapsibleHead";
 import { useSmoothStreamText } from "./StreamMarkdown";
 
-/** 折叠预览纯函数：流式取实时尾巴，结束取开头一行。单测直引此处，禁止在测试里抄一份实现。 */
+/** 安全截断长度：允许占满 4K 大屏卡头，防止极端超长文本阻塞 DOM 布局 */
+const MAX_PREVIEW_LEN = 300;
+
+/** 剥离思考文本开头常见的无意义模板标题行（如 "# Thinking Process" / "思路："） */
+function stripLeadingGenericHeader(thinking: string): string {
+	const lines = thinking.split("\n");
+	let startIdx = 0;
+	while (startIdx < lines.length) {
+		const line = lines[startIdx].trim();
+		if (!line) {
+			startIdx++;
+			continue;
+		}
+		const stripped = line.replace(/^[#*>\s]+/, "").toLowerCase();
+		if (
+			stripped === "thinking" ||
+			stripped === "thinking:" ||
+			stripped === "thinking process" ||
+			stripped === "thinking process:" ||
+			stripped === "思考" ||
+			stripped === "思考过程" ||
+			stripped === "思考过程：" ||
+			stripped === "思路" ||
+			stripped === "思路："
+		) {
+			startIdx++;
+			continue;
+		}
+		break;
+	}
+	return lines.slice(startIdx).join("\n");
+}
+
+/**
+ * 将多行思考压平为单行连续文本：
+ * - 流式时不因换行而清空闪烁，也不因单行超出宽度而卡住不动；
+ * - 结束时不因首行过短而留出大片空白，充分利用整行宽度。
+ */
+export function flattenThinkingText(thinking: string): string {
+	const body = stripLeadingGenericHeader(thinking).trim();
+	const source = body || thinking.trim();
+	if (!source) return "";
+	return source
+		.split(/\n+/)
+		.map((l) => l.trim())
+		.filter(Boolean)
+		.join(" ");
+}
+
+/**
+ * 折叠预览纯函数：
+ * - 流式（streaming=true）：取连续单行流的实时尾部，配合 CSS 右端锚定实时滚动显示最新生成文字；
+ * - 结束（streaming=false）：取连续单行流的头部摘要，铺满卡头宽度并由 CSS ellipsis 优雅收尾。
+ */
 export function thinkingPreview(thinking: string, streaming?: boolean): string {
-	return streaming ? thinking.trimEnd().slice(-80) : thinking.split("\n")[0].slice(0, 80);
+	const flat = flattenThinkingText(thinking);
+	if (!flat) return "";
+	return streaming ? flat.slice(-MAX_PREVIEW_LEN) : flat.slice(0, MAX_PREVIEW_LEN);
 }
 
 interface ThinkingBlockProps {
@@ -32,20 +87,22 @@ export function ThinkingBlock({ thinking, streaming, wrap = true, forceOpen = fa
 	// 搜索期间 forceOpen 只是“视口展开”，用户 open 状态不受影响
 	const shown = expanded || forceOpen;
 	const displayedThinking = useSmoothStreamText(thinking, !!streaming);
-	// 折叠预览：流式中取最新文本（实时尾巴），结束后取开头一行。
+	// 折叠预览：流式中取最新文本（实时最后一行），结束后取首句实质思路。
 	const preview = thinkingPreview(displayedThinking, streaming);
 	const { copied, copy } = useCopyFeedback({ duration: 1200 });
 	const copyThinking = () => {
 		void copy(thinking);
 	};
 
+	const headTitle = shown ? t("collapseMsg") : preview ? `${t("expandMsg")} · ${preview}` : t("expandMsg");
+
 	return (
 		<div className={`thinking ${shown ? "open" : ""} ${streaming ? "live" : ""}`}>
 			<CollapsibleHead
 				open={shown}
-				headClassName="thinking-head"
+				headClassName={`thinking-head${streaming ? " thinking-live" : ""}`}
 				toggleClassName="thinking-toggle"
-				titleText={shown ? t("collapseMsg") : t("expandMsg")}
+				titleText={headTitle}
 				onToggle={() => setOpen(!expanded)}
 				icon={<FiCpu />}
 				iconClassName="thinking-icon"
@@ -76,8 +133,27 @@ export function ThinkingBlock({ thinking, streaming, wrap = true, forceOpen = fa
 					</span>
 				) : shown ? (
 					t("thinking")
-				) : (
+				) : streaming ? (
+					preview ? (
+						<span className="thinking-preview-live">
+							<span className="thinking-preview-prefix">{t("thinkingPreview", { preview: "" })}</span>
+							<span className="thinking-preview-viewport">
+								<span className="thinking-preview-track">
+									{preview}
+									<span className="stream-cursor" />
+								</span>
+							</span>
+						</span>
+					) : (
+						<span className="thinking-live-label">
+							{t("thinkingNow")}
+							<span className="dots" />
+						</span>
+					)
+				) : preview ? (
 					t("thinkingPreview", { preview })
+				) : (
+					t("thinking")
 				)}
 			</CollapsibleHead>
 			{shown && <div className="thinking-body">{displayedThinking}</div>}

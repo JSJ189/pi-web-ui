@@ -17,43 +17,28 @@ interface LazyMountProps {
 }
 
 /**
- * 惰性挂载包装：隐藏时渲染一个保留 data-msg-id 的等高占位 div；显示瞬间在
- * layout effect（提交后、绘制前）里实测真实高度，若元素完全位于视口上方，
- * 按「真实 − 占位」差值补偿 scrollTop，抵消向上滚动时的视觉跳动。
+ * 惰性挂载包装：隐藏时渲染一个保留 data-msg-id 的等高占位 div；
+ * 显示瞬间实测真实高度并更新缓存。滚动稳定性由容器原生的 overflow-anchor: auto
+ * 原生滚动锚定接管，避免 JS 暴力篡改 scrollTop 与浏览器底层锚定打架导致跳跃。
  */
 export const LazyMount = memo(function LazyMount({
 	id,
 	show,
 	height,
-	containerRef,
+	containerRef: _containerRef,
 	onMeasured,
 	lazyRef,
 	children,
 }: LazyMountProps) {
 	const innerRef = useRef<HTMLDivElement>(null);
-	// 上一帧是否处于显示状态（null = 刚挂载，不做补偿）
-	const wasShown = useRef<boolean | null>(null);
 
 	useLayoutEffect(() => {
-		const was = wasShown.current;
-		wasShown.current = show;
-		if (!show || was !== false) return;
+		if (!show) return;
 		const inner = innerRef.current;
-		const root = containerRef.current;
-		if (!inner || !root) return;
+		if (!inner) return;
 		const h = inner.offsetHeight;
-		onMeasured?.(id, h);
-		const delta = h - height;
-		if (delta !== 0) {
-			const wrap = inner.parentElement;
-			if (wrap && wrap.getBoundingClientRect().bottom <= root.getBoundingClientRect().top) {
-				// 内容整体在视口上方：占位换真身导致下方内容位移，回滚之。
-				root.scrollTop += delta;
-			}
-		}
-		// 仅在显隐切换时测量；height/onMeasured 的变化不重跑
-		// eslint-disable-next-line react-hooks/exhaustive-deps
-	}, [show]);
+		if (h > 0) onMeasured?.(id, h);
+	}, [show, id, onMeasured]);
 
 	if (!show) {
 		return (

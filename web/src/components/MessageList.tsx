@@ -68,8 +68,11 @@ const VIRTUAL_MIN = 30;
  *  re-assert timer, so the grace runs until ~600+250 = ~850ms. */
 const PROGRAMMATIC_SCROLL_GRACE_MS = 250;
 
-/** 惰性窗口化缓冲带：视口上下各多保留 1200px 的真实内容再开始收起。 */
-const LAZY_MARGIN = 1200;
+/** 惰性窗口化挂载缓冲带：视口上下各多保留 1200px 的真实内容提前挂载。 */
+const LAZY_MOUNT_MARGIN = 1200;
+/** 惰性窗口化卸载缓冲带（迟滞安全区）：距离视口超过 2400px 时才卸载回占位符，
+ *  1200px~2400px 之间保持现有挂载状态，彻底消除视口边缘反复横跳震荡。 */
+const LAZY_UNMOUNT_MARGIN = 2400;
 /** 底部常驻区高度预算（px）：贴底滚动 / 流式输出区域零占位延迟，
  *  但按累计高度截断——单条巨型消息不允许把常驻区撑成半个文档。 */
 const ALWAYS_BUDGET = 1600;
@@ -320,32 +323,40 @@ export function MessageList({
 	}, [messages]);
 	// 尾部常驻窗口：设置面板的 keepRecentMessages（默认 15），钳到 [5, 100]——
 	// 与服务端 normalizeKeepRecentMessages 同口径，值不合法时回落默认。
+	// 用于保证底部常驻区至少覆盖指定数量的消息高度预算。
 	const keepRecentCount = Math.min(
 		KEEP_RECENT_MAX,
 		Math.max(KEEP_RECENT_MIN, Math.floor(Number(keepRecent) || KEEP_RECENT_DEFAULT)),
 	);
-	// 折叠只在历史达到窗口两倍（且不少于 30 条）时出现，短会话一律全量渲染。
-	const collapseMin = Math.max(keepRecentCount * 2, VIRTUAL_MIN);
-	const recentStart = state.messages.length > collapseMin ? Math.max(0, state.messages.length - keepRecentCount) : 0;
 
 	/** 当前渲染为折叠摘要行的消息 id（SearchBar 的折叠层搜索索引用它；
 	 *  toolResult 无独立折叠行——其结果文本已并入宿主 toolCall 卡）。
-	 *  引用稳定：SearchBar 命中收集把它当依赖，只有消息集/展开态变化时才重算。 */
+	 *  采用视口自适应机制后，仅目标审查语义折叠的消息属于折叠摘要。 */
 	const collapsedIds = useMemo(() => {
 		const s = new Set<string>();
-		for (let i = 0; i < recentStart; i++) {
-			const m = state.messages[i];
+		for (const m of state.messages) {
 			if (m.role === "toolResult") continue;
-			if (!expanded.has(m.id)) s.add(m.id);
+			const fold = reviewFoldKind(m);
+			if (fold && !expanded.has(m.id)) {
+				s.add(m.id);
+			}
 		}
 		return s;
-	}, [state.messages, recentStart, expanded]);
+	}, [state.messages, expanded]);
 
 	// ---- 惰性窗口化（lazy windowing，纯函数见 lazy-window.ts）----------------
 	// 视口缓冲带之外的重型消息替换为等高占位 div；滚动临近时换回真实内容并
 	// 在同一帧内补偿 scrollTop。占位保留 data-msg-id，导航/跳转/搜索不受影响。
-	/** 当前处于占位状态的消息 id。 */
-	const [hidden, setHidden] = useState<Set<string>>(() => new Set());
+	/** 当前处于占位状态的消息 id。长对话首帧即预置非可见区，避免大会话初次挂载时全量绘制导致卡顿。 */
+	const [hidden, setHidden] = useState<Set<string>>(() => {
+		if (state.messages.length <= VIRTUAL_MIN) return new Set();
+		const always = pickAlways(state.messages, new Map(), Math.max(ALWAYS_BUDGET, keepRecentCount * 120));
+		const init = new Set<string>();
+		for (const m of state.messages) {
+			if (!always.has(m.id)) init.add(m.id);
+		}
+		return init;
+	});
 	/** 用户跳转过的消息——永久保持真实渲染，避免占位符闪现。 */
 	const [pinned, setPinned] = useState<Set<string>>(() => new Set());
 	/** 已实测的消息高度（隐藏时用作占位高度）。 */
@@ -373,10 +384,30 @@ export function MessageList({
 	const virtualOnRef = useRef(virtualOn);
 	virtualOnRef.current = virtualOn;
 	// 底部常驻区（永不占位）：随每次渲染按预算重算（读取最新实测高度），
-	// 首次全量测量后巨型消息会被预算挤出常驻区、参与正常窗口化。
-	const alwaysSet = pickAlways(state.messages, heightsRef.current, ALWAYS_BUDGET);
+	// 结合 keepRecentCount 保障常驻预算，首次全量测量后巨型消息会被预算挤出常驻区、参与正常窗口化。
+	const alwaysSet = pickAlways(state.messages, heightsRef.current, Math.max(ALWAYS_BUDGET, keepRecentCount * 120));
 	const alwaysRef = useRef(alwaysSet);
 	alwaysRef.current = alwaysSet;
+
+	// 会话切换时：同步将新会话的非视口历史预置入 hidden，彻底杜绝大会话切换时的全量首帧挂载
+	const convKey = `${state.conversationId ?? ""}:${state.sessionFile ?? ""}`;
+	const prevLazyConvKeyRef = useRef(convKey);
+	if (prevLazyConvKeyRef.current !== convKey) {
+		prevLazyConvKeyRef.current = convKey;
+		if (state.messages.length > VIRTUAL_MIN) {
+			const newAlways = pickAlways(state.messages, heightsRef.current, Math.max(ALWAYS_BUDGET, keepRecentCount * 120));
+			const nextHidden = new Set<string>();
+			for (const m of state.messages) {
+				if (!newAlways.has(m.id)) nextHidden.add(m.id);
+			}
+			setHidden(nextHidden);
+			hiddenRef.current = nextHidden;
+		} else if (hidden.size > 0) {
+			const empty = new Set<string>();
+			setHidden(empty);
+			hiddenRef.current = empty;
+		}
+	}
 
 	/** 全量测量受管元素 → 窗口计划（rAF 节流调用；也用于初始与特殊迁移后）。 */
 	const sweep = useCallback(() => {
@@ -387,9 +418,13 @@ export function MessageList({
 			return;
 		}
 		const rootRect = root.getBoundingClientRect();
-		const viewport = {
-			top: rootRect.top - LAZY_MARGIN,
-			bottom: rootRect.bottom + LAZY_MARGIN,
+		const mountViewport = {
+			top: rootRect.top - LAZY_MOUNT_MARGIN,
+			bottom: rootRect.bottom + LAZY_MOUNT_MARGIN,
+		};
+		const unmountViewport = {
+			top: rootRect.top - LAZY_UNMOUNT_MARGIN,
+			bottom: rootRect.bottom + LAZY_UNMOUNT_MARGIN,
 		};
 		const items: WinRect[] = [];
 		for (const [id, el] of elsRef.current) {
@@ -399,7 +434,7 @@ export function MessageList({
 			// 只在隐藏时测量的话，「初始就显示」的消息会永远停留在估算值。
 			if (!hiddenRef.current.has(id)) recordMeasured(id, b.bottom - b.top, fpRef.current.get(id));
 		}
-		const plan = planWindow(items, viewport, alwaysRef.current, hiddenRef.current);
+		const plan = planWindow(items, mountViewport, alwaysRef.current, hiddenRef.current, unmountViewport);
 		// 收起时用刚实测的高度做占位 ⇒ 流总高度不变 ⇒ 无需任何 scrollTop 补偿。
 		// （曾在此做 shrink 补偿：它触发的 scroll 事件会让缓冲带重新罩住刚收起的
 		// 元素 → 再挂载 → 再收起，自搏循环把用户钉在原地永远滚不到底。）
@@ -596,11 +631,10 @@ export function MessageList({
 	/** Scroll the conversation to a question; expand it first if it's collapsed. */
 	const jumpTo = useCallback(
 		(id: string) => {
-			const idx = state.messages.findIndex((m) => m.id === id);
-			// 占位中的目标先同步恢复真实渲染（折叠行同步展开），再滚动定位——
+			// 占位中的目标或折叠中的目标先同步恢复真实渲染，再滚动定位——
 			// flushSync 保证本轮 commit 后 DOM 即为最终形态。
 			flushSync(() => {
-				if (idx >= 0 && idx < recentStart && !expanded.has(id)) expand(id);
+				expand(id);
 				setPinned((prev) => (prev.has(id) ? prev : new Set(prev).add(id)));
 			});
 			const qIdx = questionsRef.current.findIndex((q) => q.id === id);
@@ -621,7 +655,7 @@ export function MessageList({
 				}
 			});
 		},
-		[state.messages, recentStart, expanded, expand],
+		[expand],
 	);
 
 	// ---- 新压缩摘要到达：自动展开 + 滚动定位 ------------------------------
@@ -790,7 +824,7 @@ export function MessageList({
 		const dSh = el.scrollHeight - prevScrollHeightRef.current;
 		prevStRef.current = el.scrollTop;
 		prevScrollHeightRef.current = el.scrollHeight;
-		const nearBottom = el.scrollHeight - el.scrollTop - el.clientHeight < 80;
+		const nearBottom = el.scrollHeight - el.scrollTop - el.clientHeight < 36;
 
 		// 用户按住滚动条滑块向上拖动：当场切断吸底
 		if (isPointerDownRef.current && dSt < -1) {
@@ -833,7 +867,7 @@ export function MessageList({
 				// 无向上物理意图时的 dSt < 0 不撤销 stickRef
 			} else if (nearBottom && (dSt > 0 || !escapedRef.current)) {
 				// 只有当用户真正向下滚动到达底部（dSt > 0 && nearBottom），或原本就未逃逸时，才恢复/保持吸底！
-				// 防止用户在底部 80px 内轻轻向上滚了一小格（dSt === 0 的后续回声帧）被误判为“滚回底部”又吸回去。
+				// 防止用户在底部附近微动被误判为“滚回底部”又吸回去。
 				stickRef.current = true;
 				escapedRef.current = false;
 			}
@@ -1046,7 +1080,7 @@ export function MessageList({
 			<div
 				// anchor-live：未钉底（逃逸阅读）时启用原生滚动锚定，兜住部分跨视口
 				// 边缘消息的占位⇄真身互换跳动；与钉底期的程序性再钉互斥（那时无此类）。
-				className={`messages${searchOpen ? "" : stickBottom ? "" : " anchor-live"}`}
+				className={`messages${searchOpen ? "" : stickBottom && !escapedRef.current ? "" : " anchor-live"}`}
 				ref={scrollRef}
 				onScroll={onScroll}
 				onWheel={handleWheel}
@@ -1062,9 +1096,12 @@ export function MessageList({
 						)}
 					</div>
 				)}
-				{state.messages.map((m, i) => {
+				{state.messages.map((m) => {
 					// system 不占位——旧快照残留的空 SYSTEM 气泡直接丢掉，不进折叠行也不进 LazyMount。
 					if (m.role === "system") return null;
+					// toolResult content lives inside its toolCall card — nothing to show as top-level row.
+					if (m.role === "toolResult") return null;
+
 					// 目标审查回合的指令与纯 verdict 结论默认折叠成摘要行（结论卡已有人话
 					// 翻译，裸 JSON 只留审计入口；点开展开看原文，记忆沿用 expanded）。
 					const fold = reviewFoldKind(m);
@@ -1083,14 +1120,6 @@ export function MessageList({
 								}
 							/>
 						);
-					}
-					const isOld = i < recentStart;
-					const isExpandedOld = isOld && expanded.has(m.id);
-					if (isOld && !isExpandedOld) {
-						// toolResult content lives inside its toolCall card — nothing to
-						// show in the collapsed row either.
-						if (m.role === "toolResult") return null;
-						return <CollapsedMessage key={m.id} message={m} onExpand={expand} />;
 					}
 					const qIdx = m.role === "user" ? qnIndex.get(m.id) : undefined;
 					const show = !virtualOn || alwaysSet.has(m.id) || pinned.has(m.id) || !hidden.has(m.id);
@@ -1131,7 +1160,7 @@ export function MessageList({
 								isLast={m.id === lastId}
 								onEdit={onEdit}
 								questionAttachments={questionAttachments.get(m.id)}
-								onCollapse={isExpandedOld ? collapse : undefined}
+								onCollapse={fold ? collapse : undefined}
 								searchActive={searchOpen}
 								autoExpand={m.id === freshCompactionId}
 							/>

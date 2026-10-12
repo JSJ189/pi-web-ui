@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
 import { applyMessageDelta, type MessageDeltaMsg, type MessageDeltaUiState } from "../../web/src/message-delta.js";
-import { thinkingPreview } from "../../web/src/components/ThinkingBlock.js";
+import { flattenThinkingText, thinkingPreview } from "../../web/src/components/ThinkingBlock.js";
 
 // P1 thinking first-char probe (w25, 2026-09-17): live wire capture from
 // openai-codex/gpt-5.6-luna — the ONLY run (of 4, across 3 providers) where
@@ -66,12 +66,29 @@ describe("thinking first-char verbatim (codex-luna live capture)", () => {
 
 // thinkingPreview 直引源码：源实现变了测试必挂，不许在测试里抄一份实现。
 describe("ThinkingBlock preview (thinkingPreview)", () => {
-	const long = `First-char-ABC ${"x".repeat(100)}\nsecond line ${"y".repeat(100)}\nthird line tail-TAIL`;
+	const long = `First-char-ABC ${"x".repeat(200)}\nsecond line ${"y".repeat(200)}\nthird line tail-TAIL`;
+	const flat = flattenThinkingText(long);
 
-	it("streaming preview shows the tail, final preview shows the head", () => {
-		expect(thinkingPreview(long, true)).toBe(long.trimEnd().slice(-80));
-		expect(thinkingPreview(long, false)).toBe("First-char-ABC " + "x".repeat(65));
+	it("streaming preview shows the continuous tail, final preview shows the continuous head", () => {
+		expect(thinkingPreview(long, true)).toBe(flat.slice(-300));
+		expect(thinkingPreview(long, true).endsWith("third line tail-TAIL")).toBe(true);
+		expect(thinkingPreview(long, false)).toBe(flat.slice(0, 300));
+		expect(thinkingPreview(long, false).startsWith("First-char-ABC ")).toBe(true);
 		expect(thinkingPreview(long, true)).not.toBe(thinkingPreview(long, false));
+	});
+
+	it("flattens multi-line thoughts into a continuous single-line stream without resetting on newline", () => {
+		const multi = "Step 1: checking files\n\nStep 2: reading code\n";
+		expect(thinkingPreview(multi, true)).toBe("Step 1: checking files Step 2: reading code");
+		expect(thinkingPreview(multi, false)).toBe("Step 1: checking files Step 2: reading code");
+	});
+
+	it("skips generic headers like # Thinking Process", () => {
+		const withHeader = "# Thinking Process\n\nWe need to construct a tool file.\nThen test it.";
+		expect(thinkingPreview(withHeader, false)).toBe("We need to construct a tool file. Then test it.");
+
+		const withChineseHeader = "思路：\n首先分析当前代码仓库的目录结构。";
+		expect(thinkingPreview(withChineseHeader, false)).toBe("首先分析当前代码仓库的目录结构。");
 	});
 
 	it("body text is identical mid-stream and after end (preview never edits data)", () => {

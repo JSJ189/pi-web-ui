@@ -1,18 +1,44 @@
-import { memo, useEffect, useMemo, useRef, useState } from "react";
+import { memo, useEffect, useMemo, useRef, useState, type ReactNode } from "react";
 import { createPortal } from "react-dom";
 import { appUrl } from "../base-url";
 import {
+	FiArchive,
 	FiArrowRight,
+	FiBookOpen,
+	FiBox,
 	FiCheck,
 	FiCheckCircle,
+	FiCheckSquare,
 	FiClock,
+	FiCode,
+	FiCompass,
 	FiCopy,
+	FiDatabase,
+	FiEdit2,
+	FiEdit3,
+	FiFilePlus,
+	FiFileText,
+	FiFolder,
+	FiGitBranch,
+	FiGlobe,
+	FiHelpCircle,
 	FiImage,
+	FiLayers,
 	FiLoader,
+	FiLock,
+	FiMail,
+	FiMessageSquare,
 	FiMinus,
+	FiPackage,
+	FiSearch,
+	FiServer,
 	FiSquare,
+	FiTag,
 	FiTerminal,
+	FiTool,
+	FiUsers,
 	FiX,
+	FiZap,
 } from "react-icons/fi";
 import type { ToolStatus, UiImageBlock, UiMessage, UiToolCallBlock } from "../types";
 import { useT } from "../i18n";
@@ -51,24 +77,90 @@ export interface ToolView {
 /** Kill just the running bash command(s) — the agent run itself continues. */
 type KillBashHandler = () => void;
 
-const TOOL_ICONS: Record<string, string> = {
-	bash: "$",
-	delegate_task: "◈",
-	read: "📄",
-	write: "✍️",
-	edit: "✏️",
-	edit_soft: "✏️",
-	grep: "🔍",
-	find: "🧭",
-	ls: "📂",
-	codemode: "⚡",
-	tool_search: "🔎",
-	ask_user_question: "❓",
-	[PRESENT_FILES_TOOL_NAME]: "🖼",
+/** 模块级静态工具图标节点表：整个生命周期仅创建一次，O(1) 查表复用引用，零 GC 与重排开销。 */
+const TOOL_ICONS: Record<string, ReactNode> = {
+	bash: <FiTerminal />,
+	delegate_task: <FiLayers />,
+	subagent: <FiUsers />,
+	read: <FiFileText />,
+	write: <FiEdit3 />,
+	edit: <FiEdit2 />,
+	edit_soft: <FiEdit2 />,
+	patch: <FiFilePlus />,
+	grep: <FiSearch />,
+	find: <FiCompass />,
+	ls: <FiFolder />,
+	codemode: <FiZap />,
+	eval: <FiCode />,
+	lsp: <FiCode />,
+	tool_search: <FiSearch />,
+	load_tools: <FiPackage />,
+	ask_user_question: <FiHelpCircle />,
+	[PRESENT_FILES_TOOL_NAME]: <FiImage />,
+	browser_page: <FiGlobe />,
+	conversation_read: <FiMessageSquare />,
+	claim_files: <FiLock />,
+	plan_update: <FiCheckSquare />,
+	todo_list: <FiCheckSquare />,
+	skill: <FiBookOpen />,
+	schedule: <FiClock />,
+	compact_context: <FiArchive />,
+	mcp_manage: <FiBox />,
+	sandbox: <FiBox />,
+	worktree: <FiGitBranch />,
+	sftp: <FiServer />,
+	mail: <FiMail />,
+	obs_recall: <FiDatabase />,
+	markers_list: <FiTag />,
 };
 
-function toolIcon(name: string): string {
-	return TOOL_ICONS[name] ?? "🛠";
+const DEFAULT_TOOL_ICON: ReactNode = <FiTool />;
+
+/** 模块级静态工具色系分类表：预拼好 className 字符串，渲染期 O(1) 查表零分配。 */
+const TOOL_ICON_CLASSES: Record<string, string> = {
+	bash: "toolcall-icon tc-tone-exec",
+	sftp: "toolcall-icon tc-tone-exec",
+	read: "toolcall-icon tc-tone-read",
+	ls: "toolcall-icon tc-tone-read",
+	conversation_read: "toolcall-icon tc-tone-read",
+	obs_recall: "toolcall-icon tc-tone-read",
+	write: "toolcall-icon tc-tone-edit",
+	edit: "toolcall-icon tc-tone-edit",
+	edit_soft: "toolcall-icon tc-tone-edit",
+	patch: "toolcall-icon tc-tone-edit",
+	claim_files: "toolcall-icon tc-tone-edit",
+	grep: "toolcall-icon tc-tone-search",
+	find: "toolcall-icon tc-tone-search",
+	tool_search: "toolcall-icon tc-tone-search",
+	load_tools: "toolcall-icon tc-tone-search",
+	codemode: "toolcall-icon tc-tone-code",
+	eval: "toolcall-icon tc-tone-code",
+	lsp: "toolcall-icon tc-tone-code",
+	skill: "toolcall-icon tc-tone-code",
+	compact_context: "toolcall-icon tc-tone-code",
+	delegate_task: "toolcall-icon tc-tone-agent",
+	subagent: "toolcall-icon tc-tone-agent",
+	worktree: "toolcall-icon tc-tone-agent",
+	plan_update: "toolcall-icon tc-tone-agent",
+	todo_list: "toolcall-icon tc-tone-agent",
+	schedule: "toolcall-icon tc-tone-agent",
+	ask_user_question: "toolcall-icon tc-tone-ui",
+	[PRESENT_FILES_TOOL_NAME]: "toolcall-icon tc-tone-ui",
+	browser_page: "toolcall-icon tc-tone-ui",
+	mail: "toolcall-icon tc-tone-ui",
+	mcp_manage: "toolcall-icon tc-tone-ui",
+	sandbox: "toolcall-icon tc-tone-ui",
+	markers_list: "toolcall-icon tc-tone-ui",
+};
+
+const DEFAULT_TOOL_ICON_CLASS = "toolcall-icon tc-tone-default";
+
+function toolIcon(name: string): ReactNode {
+	return TOOL_ICONS[name] ?? DEFAULT_TOOL_ICON;
+}
+
+function toolIconClass(name: string): string {
+	return TOOL_ICON_CLASSES[name] ?? DEFAULT_TOOL_ICON_CLASS;
 }
 
 export const ToolCallBlock = memo(function ToolCallBlock({
@@ -284,7 +376,7 @@ export const ToolCallBlock = memo(function ToolCallBlock({
 				onToggle={() => setOpen(!expanded)}
 				onHeadContextMenu={onHeadContextMenu}
 				icon={toolIcon(block.name)}
-				iconClassName="toolcall-icon"
+				iconClassName={toolIconClass(block.name)}
 				titleClassName="toolcall-name"
 				after={
 					<>
@@ -331,12 +423,12 @@ export const ToolCallBlock = memo(function ToolCallBlock({
 						)}
 						{hints.query && block.name === "tool_search" && (
 							<span className="toolcall-query" title={hints.query}>
-								🔎 {hints.query}
+								{hints.query}
 							</span>
 						)}
 						{hints.questionTitle && isQuestionnaire && (
 							<span className="toolcall-query" title={hints.questionTitle}>
-								❓ {hints.questionTitle}
+								{hints.questionTitle}
 							</span>
 						)}
 						{hints.timeout && <span className="toolcall-timeout">⏱ {hints.timeout}</span>}
