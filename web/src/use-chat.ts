@@ -226,6 +226,8 @@ export interface ChatState {
 	state: UiState | null;
 	/** Latest host server CPU and memory usage from heartbeat. */
 	hostMetrics: UiHostMetrics | null;
+	/** Latest WebSocket round-trip network latency in ms (null when disconnected or not yet measured). */
+	latencyMs?: number | null;
 	/** Live tool output accumulated from tool_delta messages, keyed by toolCallId. */
 	liveOutputs: Map<string, { toolName: string; text: string }>;
 	/**
@@ -556,6 +558,7 @@ type Action =
 			managed?: boolean;
 			tabs?: string[];
 			service?: UiServiceInfo;
+			latencyMs?: number | null;
 	  }
 	| { type: "sessions"; sessions: SessionSummary[] }
 	| {
@@ -794,7 +797,7 @@ type Action =
 	| { type: "dsh_presets"; presets: UiAgentPreset[]; defaultPreset: string }
 	| { type: "dsh_permission"; options: DshPermissionOption[]; defaultPreset: string }
 	| { type: "sync_cached_sessions"; sessions: SessionSummary[] }
-	| { type: "host_metrics"; metrics: UiHostMetrics }
+	| { type: "host_metrics"; metrics?: UiHostMetrics; latencyMs?: number | null }
 	| { type: "sandbox_diff"; diff: SandboxDiffView | null };
 
 const MAX_LIVE_OUTPUT = 200_000;
@@ -946,13 +949,15 @@ function reducer(state: ChatState, action: Action): ChatState {
 				// the browser views so xterm writers remount when the server replays them.
 				terminals: action.status === "closed" ? [] : state.terminals,
 				hostMetrics: action.status === "closed" ? null : state.hostMetrics,
+				latencyMs: action.status === "open" ? state.latencyMs : null,
 			};
 		case "sync_cached_sessions":
 			return { ...state, sessions: action.sessions };
 		case "host_metrics":
 			return {
 				...state,
-				hostMetrics: action.metrics,
+				...(action.metrics !== undefined ? { hostMetrics: action.metrics } : {}),
+				...(action.latencyMs !== undefined ? { latencyMs: action.latencyMs } : {}),
 			};
 		case "ready":
 			return {
@@ -963,6 +968,7 @@ function reducer(state: ChatState, action: Action): ChatState {
 				managed: action.managed === true,
 				tabs: action.tabs,
 				ready: true,
+				...(typeof action.latencyMs === "number" && state.latencyMs == null ? { latencyMs: action.latencyMs } : {}),
 				// Old page + new server (or the reverse) after an in-place update:
 				// WS handling on either side may be stale — banner asks for refresh.
 				protocolMismatch: action.protocolVersion !== undefined && action.protocolVersion !== PROTOCOL_VERSION,
@@ -1580,6 +1586,7 @@ export function useChat() {
 		ready: false,
 		state: null,
 		hostMetrics: null,
+		latencyMs: null,
 		liveOutputs: new Map(),
 		toolStatuses: new Map(),
 		notices: [],
@@ -1876,12 +1883,14 @@ export function useChat() {
 		dispatch({ type: "status", status: "connecting" });
 		const ws = new WebSocket(wsUrl());
 		wsRef.current = ws;
+		let helloSentAt = 0;
 
 		ws.onopen = () => {
 			if (wsRef.current !== ws) return; // stale socket
 			dispatch({ type: "status", status: "open" });
 			retryRef.current = 0;
 			lastBeatRef.current = Date.now();
+			helloSentAt = performance.now();
 			ws.send(
 				JSON.stringify({
 					type: "hello",
@@ -1936,6 +1945,7 @@ export function useChat() {
 						serverVersion: msg.serverVersion,
 						service: msg.service,
 					});
+					const initialLatencyMs = helloSentAt > 0 ? Math.max(0, Math.round(performance.now() - helloSentAt)) : null;
 					dispatch({
 						type: "ready",
 						serverVersion: msg.serverVersion,
@@ -1945,6 +1955,7 @@ export function useChat() {
 						managed: msg.managed,
 						tabs: msg.tabs,
 						service: msg.service,
+						latencyMs: initialLatencyMs,
 					});
 					// Reconnect/attach: clear answered questions cache and stale dialog so
 					// freshly started server runs don't collide on restarted question counters (e.g. q-1).
@@ -2205,8 +2216,12 @@ export function useChat() {
 					receiveCompactedMessages(msg);
 					break;
 				case "heartbeat":
-					if (msg.hostMetrics) {
-						dispatch({ type: "host_metrics", metrics: msg.hostMetrics });
+					if (msg.hostMetrics || typeof msg.latencyMs === "number") {
+						dispatch({
+							type: "host_metrics",
+							metrics: msg.hostMetrics,
+							latencyMs: typeof msg.latencyMs === "number" ? msg.latencyMs : undefined,
+						});
 					}
 					break;
 				case "install_result":

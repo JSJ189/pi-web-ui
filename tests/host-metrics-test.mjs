@@ -108,6 +108,10 @@ try {
 			(typeof cpuPercent === "number" && Number.isFinite(cpuPercent) && cpuPercent >= 0 && cpuPercent <= 100);
 		const memValid =
 			typeof memoryPercent === "number" && Number.isFinite(memoryPercent) && memoryPercent >= 0 && memoryPercent <= 100;
+		const latencyValid =
+			typeof receivedHeartbeat.latencyMs === "number" &&
+			Number.isFinite(receivedHeartbeat.latencyMs) &&
+			receivedHeartbeat.latencyMs >= 0;
 
 		if (!cpuValid) {
 			console.error(`  ✗ FAIL: cpuPercent 不合法: ${cpuPercent}`);
@@ -115,8 +119,11 @@ try {
 		} else if (!memValid) {
 			console.error(`  ✗ FAIL: memoryPercent 不合法: ${memoryPercent}`);
 			process.exitCode = 1;
+		} else if (!latencyValid) {
+			console.error(`  ✗ FAIL: latencyMs 不合法: ${receivedHeartbeat.latencyMs}`);
+			process.exitCode = 1;
 		} else {
-			console.log("  ✓ heartbeat 携带有效 hostMetrics 指标");
+			console.log(`  ✓ heartbeat 携带有效 hostMetrics 与 latencyMs (${receivedHeartbeat.latencyMs}ms) 指标`);
 		}
 	}
 } catch (err) {

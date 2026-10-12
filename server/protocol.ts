@@ -128,6 +128,8 @@ export interface UiState {
 	isEphemeral?: boolean;
 	/** 当前工作区若属于受管沙盒项目，携带其沙盒元数据（否则为 null/缺省）。 */
 	sandbox?: SandboxInfo | null;
+	/** 当前工作区关联的 Git 工作树元数据（不在 git 仓库或无工作树时为 null/缺省）。 */
+	worktree?: WorktreeInfo | null;
 	/** Monotonic snapshot revision — increments on every snapshot/snapshot_delta
 	 *  emission. snapshot_delta.baseRev must equal the client's current rev;
 	 *  a mismatch means the client missed an update and must get_state resync. */
@@ -1258,6 +1260,8 @@ export type ClientMessage =
 	| { type: "apply_sandbox_to_source"; path?: string }
 	/** Permanently destroy a sandbox project directory and remove it from the registry. */
 	| { type: "destroy_sandbox"; path: string }
+	| { type: "switch_worktree"; path: string }
+	| { type: "remove_worktree"; path: string; force?: boolean }
 	/** Permanently delete a persisted session transcript file (history list). */
 	| { type: "delete_session"; path: string }
 	/** Append a session_info name entry to a persisted session transcript (history rename). */
@@ -1449,6 +1453,31 @@ export interface SandboxDiffView {
 	deleted: string[];
 	unchangedCount: number;
 	error?: string;
+}
+
+export interface LinkedWorktreeEntry {
+	path: string;
+	branch?: string;
+	isCurrent?: boolean;
+	isMain?: boolean;
+	isDirty?: boolean;
+	uncommittedCount?: number;
+	aheadCount?: number;
+}
+
+export interface WorktreeInfo {
+	/** True if the current active workspace (cwd) is a linked worktree (not the main worktree). */
+	isLinkedWorktree: boolean;
+	/** Normalized absolute path of the current worktree. */
+	currentPath: string;
+	/** Branch name for current worktree (e.g. 'feat/pr-12'). */
+	branch?: string;
+	/** Normalized absolute path of the main worktree (the repository root). */
+	mainPath: string;
+	/** Branch name for the main worktree (e.g. 'main'). */
+	mainBranch?: string;
+	/** List of all linked worktrees in this repository. */
+	linkedWorktrees: LinkedWorktreeEntry[];
 }
 
 export interface ProjectSummary {
@@ -3164,8 +3193,8 @@ export type ServerMessage =
 	/** The watched git dir changed outside the panel (terminal commit,
 	 *  CLI, IDE) — the client should re-run its scm_status query. */
 	| { type: "scm_changed" }
-	/** Sent every ~2s so clients can detect half-open connections and display host metrics. */
-	| { type: "heartbeat"; hostMetrics?: UiHostMetrics }
+	/** Sent every ~2s so clients can detect half-open connections and display host metrics / network latency. */
+	| { type: "heartbeat"; hostMetrics?: UiHostMetrics; latencyMs?: number }
 	| { type: "sessions"; sessions: SessionSummary[] }
 	/** Filename matches for the global search panel (reqId echo). Always sent
 	 *  in reply to a search_files request — ok:false means the walk failed. */

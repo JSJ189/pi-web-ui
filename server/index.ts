@@ -1063,6 +1063,8 @@ const BROADCAST_BACKPRESSURE_MAX_BYTES = 262_144;
 interface TrackedWebSocket extends WebSocket {
 	isAlive?: boolean;
 	missedPings?: number;
+	pingSentAt?: number;
+	latencyMs?: number;
 }
 
 const sampleHostMetrics = createHostMetricsSampler();
@@ -1093,7 +1095,9 @@ const heartbeatTimer = setInterval(() => {
 			} else {
 				tracked.missedPings = 0;
 			}
+			const prevLatencyMs = tracked.latencyMs;
 			tracked.isAlive = false;
+			tracked.pingSentAt = performance.now();
 			try {
 				ws.ping();
 			} catch {
@@ -1106,7 +1110,11 @@ const heartbeatTimer = setInterval(() => {
 			// 广播背压：缓冲积压严重时跳过心跳推送
 			if (ws.bufferedAmount <= BROADCAST_BACKPRESSURE_MAX_BYTES) {
 				try {
-					ws.send(payload);
+					if (typeof prevLatencyMs === "number" && Number.isFinite(prevLatencyMs)) {
+						ws.send(JSON.stringify({ ...message, latencyMs: prevLatencyMs }));
+					} else {
+						ws.send(payload);
+					}
 				} catch {}
 			}
 		}
@@ -1187,6 +1195,8 @@ export interface DispatchSession {
 	diffSandbox?(path?: string): Promise<void>;
 	applySandboxToSource?(path?: string): Promise<void>;
 	destroySandbox?(path: string): Promise<void>;
+	switchWorktree?(path: string): Promise<void>;
+	removeWorktree?(path: string, force?: boolean): Promise<void>;
 	deleteSession(path: string): Promise<void>;
 	renameSession(path: string, name: string): Promise<void>;
 	renameConversation(id: string, name: string): Promise<void>;
@@ -2154,7 +2164,16 @@ wss.on("connection", (ws) => {
 	ws.on("pong", () => {
 		tracked.isAlive = true;
 		tracked.missedPings = 0;
+		if (typeof tracked.pingSentAt === "number") {
+			tracked.latencyMs = Math.max(0, Math.round(performance.now() - tracked.pingSentAt));
+		}
 	});
+	tracked.pingSentAt = performance.now();
+	try {
+		ws.ping();
+	} catch {
+		/* ignore */
+	}
 
 	// Count attached sockets (the control socket reports REAL sockets, not
 	// cached client-session objects).

@@ -309,15 +309,21 @@ export function BarItem({
 		);
 	}
 
-	// 2. 特殊条目：连接状态
+	// 2. 特殊条目：连接状态（已连接时附带实时网络延迟 ms）
 	if (id === "host:conn") {
 		const connClass = chat.ready ? "ok" : chat.status === "closed" ? "error" : "busy";
 		const connLabel = chat.ready ? t("connected") : chat.status === "closed" ? t("reconnecting") : t("connecting");
+		const hasLatency =
+			chat.ready && typeof chat.latencyMs === "number" && Number.isFinite(chat.latencyMs) && chat.latencyMs >= 0;
+		const latencyVal = hasLatency ? Math.round(chat.latencyMs as number) : null;
+		const latencyText = latencyVal !== null ? `${latencyVal}ms` : null;
+		const latencyClass = latencyVal === null ? "" : latencyVal < 100 ? "ok" : latencyVal < 300 ? "mid" : "warn";
+		const connTitle = latencyText ? `${connLabel} · ${t("networkLatency")}: ${latencyText}` : connLabel;
 		return (
 			<span
 				className={`bar-item status-item status-conn ${connClass} bar-item-conn`}
-				title={connLabel}
-				data-tip={connLabel}
+				title={connTitle}
+				data-tip={connTitle}
 				onContextMenu={handleContextMenu}
 				data-bar-item={id}
 			>
@@ -325,6 +331,7 @@ export function BarItem({
 				{/* 连接态常驻「指示灯 + 文字」：只留圆点虽然紧凑，但底栏缺少一处明文的健康状态，
 				 * 用户看不出「亮着的是绿灯还是黄灯」，所以文字保留（窄屏≤768px 由 CSS 单独隐藏文字）。 */}
 				<span className="status-conn-label bar-item-text">{withName(connLabel)}</span>
+				{latencyText && <span className={`status-latency ${latencyClass}`}>{latencyText}</span>}
 			</span>
 		);
 	}

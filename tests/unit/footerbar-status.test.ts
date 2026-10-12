@@ -106,6 +106,42 @@ describe("FooterBar 连接状态", () => {
 		expect(connWrapper?.textContent).toContain("重连中…");
 	});
 
+	it("已连接且带 latencyMs 时在状态栏显示网络延迟与分级样式，断连时不显示延迟", () => {
+		setAppGlobals({ ready: true, status: "open" });
+		const chatOk = makeChatState({ ready: true, status: "open", latencyMs: 18 });
+		const { container: c1 } = mountFooter(chatOk);
+		const latOk = c1.querySelector(".status-conn .status-latency");
+		expect(latOk).toBeTruthy();
+		expect(latOk?.textContent).toBe("18ms");
+		expect(latOk?.classList.contains("ok")).toBe(true);
+		expect(c1.querySelector(".status-conn")?.getAttribute("title")).toBe("已连接 · 网络延迟: 18ms");
+
+		act(() => root!.unmount());
+		root = null;
+
+		const chatMid = makeChatState({ ready: true, status: "open", latencyMs: 180 });
+		const { container: c2 } = mountFooter(chatMid);
+		const latMid = c2.querySelector(".status-conn .status-latency");
+		expect(latMid?.textContent).toBe("180ms");
+		expect(latMid?.classList.contains("mid")).toBe(true);
+
+		act(() => root!.unmount());
+		root = null;
+
+		const chatWarn = makeChatState({ ready: true, status: "open", latencyMs: 420 });
+		const { container: c3 } = mountFooter(chatWarn);
+		const latWarn = c3.querySelector(".status-conn .status-latency");
+		expect(latWarn?.textContent).toBe("420ms");
+		expect(latWarn?.classList.contains("warn")).toBe(true);
+
+		act(() => root!.unmount());
+		root = null;
+
+		const chatDisconnected = makeChatState({ ready: false, status: "closed", latencyMs: 18 });
+		const { container: c4 } = mountFooter(chatDisconnected);
+		expect(c4.querySelector(".status-conn .status-latency")).toBeNull();
+	});
+
 	it("无 softCap 时底栏 Context 显示物理上限并按物理上限计算百分比，且不渲染常驻上下文文字", () => {
 		const chat = makeChatState({
 			state: {
