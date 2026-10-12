@@ -118,6 +118,12 @@ export function handleScmMessage(msg: ClientMessage, cs: DispatchSession, send: 
 				});
 			}
 			return true;
+		case "switch_worktree":
+			void cs.switchWorktree?.(msg.path);
+			return true;
+		case "remove_worktree":
+			void cs.removeWorktree?.(msg.path, msg.force);
+			return true;
 		default:
 			return false;
 	}

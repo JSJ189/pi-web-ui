@@ -24,6 +24,7 @@ export const BASH_PROMPT_SNIPPET = "run shell commands";
 /** 行为要点：只在「何时用/顺序/禁止」上说 description 没说的事。 */
 export const BASH_PROMPT_GUIDELINES = [
 	"For interactive commands (REPLs, y/n prompts) set persist=true and drive them with terminal_input / terminal_key",
+	"Use the dedicated worktree tool instead of running 'git worktree' in bash to prevent unsynchronized workspace state",
 ];
 
 /** 参数 schema（含参数说明）：三条执行路径共用，避免「分流后 schema 变陌生」。 */

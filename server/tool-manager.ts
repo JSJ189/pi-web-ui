@@ -89,6 +89,8 @@ export const LSP_TOOL_NAME = "lsp";
 export const MCP_MANAGE_TOOL_NAME = "mcp_manage";
 /** 隔离沙盒项目管理工具（定义见 sandbox-tool.ts）：创建空白/导入型隔离沙盒、查看 diff、重置或销毁。 */
 export const SANDBOX_TOOL_NAME = "sandbox";
+/** Git 工作树管理工具（定义见 worktree-tool.ts）：创建/切换/清理工作树，保持多 PR 开发与界面工作区同步。 */
+export const WORKTREE_TOOL_NAME = "worktree";
 /** QuickJS WASM 沙箱代码执行与批量调用工具（SDK 内置 codemode 扩展）。 */
 export const CODEMODE_TOOL_NAME = "codemode";
 /** 基于 BM25 算法的延迟工具检索与激活工具（SDK 内置 tool-search 扩展）。 */
@@ -304,6 +306,14 @@ export const AGENT_TOOL_CATALOG: AgentToolEntry[] = [
 		dshVisible: false,
 		descKey: "sandboxEnabledDesc",
 		offHintKey: "sandboxOffHint",
+	},
+	{
+		name: WORKTREE_TOOL_NAME,
+		group: "other",
+		defaultOn: true,
+		dshVisible: false,
+		descKey: "toolsWorktreeDesc",
+		offHintKey: "toolsWorktreeOffHint",
 	},
 	// todo_list 唯一例外：行不在「其他」组，固定在上面的 markers 分区（设置页循环
 	// 跳过它，见 OTHER_AGENT_TOOLS；文案 key 照给，万一哪天搬家不用补）。
