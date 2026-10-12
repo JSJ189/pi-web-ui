@@ -13,8 +13,9 @@
  */
 
 import { execFile, spawn } from "node:child_process";
-import { randomUUID } from "node:crypto";
+import { createHash, randomUUID } from "node:crypto";
 import { copyFile, rm } from "node:fs/promises";
+import { existsSync } from "node:fs";
 import { join, resolve } from "node:path";
 import { promisify } from "node:util";
 import { gitDirOf } from "./scm.js";
@@ -54,6 +55,8 @@ function runGitInput(cwd: string, args: string[], input: string, envExtra?: Node
 			child.kill();
 			reject(new Error(`git ${args[0] ?? ""} timed out`));
 		}, GIT_SNAPSHOT_TIMEOUT_MS);
+		// 防御 EPIPE：当子进程异常提早退出时，写管道不会引发未捕获异常崩溃 Node 进程
+		child.stdin?.on("error", () => {});
 		child.stderr?.on("data", (chunk: Buffer) => {
 			stderr += chunk.toString();
 		});
@@ -70,45 +73,88 @@ function runGitInput(cwd: string, args: string[], input: string, envExtra?: Node
 			if (code === 0) resolvePromise();
 			else reject(new Error(stderr.trim() || `git exited ${code}`));
 		});
-		child.stdin.end(input);
+		try {
+			child.stdin.end(input);
+		} catch {
+			// ignore synchronous pipe write error
+		}
 	});
 }
 
+/** 仓库元数据探测信息。 */
+export interface GitRepoInfo {
+	gitDir: string;
+	indexFile: string;
+	prefix: string;
+}
+
 /**
- * 把用户真实 index 拷贝为快照用的临时 index，避免每次对空 index 做全量 `git add -A`。
- *
- * 空 index 上 `git add -A` 会把 cwd 子树里所有未 ignore 文件重新哈希。大仓库（数万文件）上这一步要 3–15 秒，
- * 而它又挡在 `s.prompt()` 之前，用户气泡要等它做完才会出现。拷贝现有 index 后，`git add -A` 只哈希
- * 变更和未跟踪文件。
- *
- * 子目录 cwd 必须先从临时 index 里剔掉子树之外的条目，否则 `write-tree` 会把整仓写进快照，
- * 破坏「快照顶层只有该子目录」的约定。剔除失败则删掉临时 index，回退到空 index 全量添加，不改语义。
- * 只动临时文件，不写用户的 `.git/index`。
+ * 一次性获取仓库核心元数据：gitDir、indexFile 与 prefix。
+ * 合并多次独立的 `rev-parse` 调用，减少 Windows 下子进程启动开销。
  */
-async function seedSnapshotIndex(cwd: string, tempIndex: string, env: NodeJS.ProcessEnv): Promise<void> {
+export async function probeGitRepo(cwd: string): Promise<GitRepoInfo | null> {
 	try {
-		const indexReal = resolve(cwd, await runGit(cwd, ["rev-parse", "--git-path", "index"]));
-		await copyFile(indexReal, tempIndex);
+		const out = await runGit(cwd, ["rev-parse", "--git-dir", "--git-path", "index", "--show-prefix"]);
+		const lines = out.split("\n").map((l) => l.trim());
+		if (lines.length < 2) return null;
+		const rawGitDir = lines[0];
+		const rawIndex = lines[1];
+		const rawPrefix = lines[2] ?? "";
+		if (!rawGitDir || !rawIndex) return null;
+		return {
+			gitDir: resolve(cwd, rawGitDir),
+			indexFile: resolve(cwd, rawIndex),
+			prefix: rawPrefix.replace(/\\/g, "/").replace(/\/+$/, ""),
+		};
 	} catch {
-		return;
+		return null;
 	}
-	let prefix = "";
+}
+
+/** 影子 index 缓存文件路径（按 gitDir 与规范化 cwd 的哈希隔离）。 */
+export function snapshotCachePath(gitDir: string, cwd: string): string {
+	const hash = createHash("sha1").update(resolve(cwd)).digest("hex").slice(0, 16);
+	return join(gitDir, `pi-snapshot-cache-${hash}`);
+}
+
+/**
+ * 把持久化的影子 index 缓存或用户真实 index 拷贝为快照用的临时 index。
+ *
+ * 优化：若之前已有该 cwd 的影子 index 缓存且有效，直接复用拷贝它（无需重复扫描兄弟目录且保留上一轮已跟踪/未跟踪文件的 stat 缓存）；
+ * 若无缓存，拷贝用户真实 index 并剔除子树外条目；若出错则回退。
+ */
+async function seedSnapshotIndex(
+	cwd: string,
+	tempIndex: string,
+	repo: GitRepoInfo,
+	env: NodeJS.ProcessEnv,
+): Promise<{ fromCache: boolean }> {
+	const cachePath = snapshotCachePath(repo.gitDir, cwd);
+	if (existsSync(cachePath)) {
+		try {
+			await copyFile(cachePath, tempIndex);
+			return { fromCache: true };
+		} catch {
+			// 缓存损坏或不可读，清理并回落到真实 index
+			await rm(cachePath, { force: true }).catch(() => {});
+		}
+	}
+
 	try {
-		prefix = (await runGit(cwd, ["rev-parse", "--show-prefix"], env)).replace(/\\/g, "/").replace(/\/+$/, "");
+		await copyFile(repo.indexFile, tempIndex);
 	} catch {
-		await rm(tempIndex, { force: true });
-		return;
+		return { fromCache: false };
 	}
-	if (!prefix) return;
+
+	const prefix = repo.prefix;
+	if (!prefix) return { fromCache: false };
 	const prefixSlash = `${prefix}/`;
 	let listed = "";
 	try {
-		// 必须从仓库根列：在子目录 cwd 里不带 :(top) 时，ls-files 只返回当前子树，
-		// 兄弟目录会被漏掉，write-tree 仍会把整仓写进快照。
 		listed = await runGit(cwd, ["ls-files", "-z", "--full-name", "--", ":(top)"], env);
 	} catch {
-		await rm(tempIndex, { force: true });
-		return;
+		await rm(tempIndex, { force: true }).catch(() => {});
+		return { fromCache: false };
 	}
 	const outside = listed.split("\0").filter((path) => {
 		if (!path || path.includes("\n")) return false;
@@ -116,20 +162,41 @@ async function seedSnapshotIndex(cwd: string, tempIndex: string, env: NodeJS.Pro
 		return norm !== prefix && !norm.startsWith(prefixSlash);
 	});
 	if (listed.includes("\n") && listed.split("\0").some((path) => path.includes("\n"))) {
-		await rm(tempIndex, { force: true });
-		return;
+		await rm(tempIndex, { force: true }).catch(() => {});
+		return { fromCache: false };
 	}
-	if (outside.length === 0) return;
-	const info = outside.map((path) => `0 0000000000000000000000000000000000000000\t${path}\n`).join("");
-	try {
-		await runGitInput(cwd, ["update-index", "--index-info"], info, env);
-	} catch {
-		await rm(tempIndex, { force: true });
+	if (outside.length > 0) {
+		const info = outside.map((path) => `0 0000000000000000000000000000000000000000\t${path}\n`).join("");
+		try {
+			await runGitInput(cwd, ["update-index", "--index-info"], info, env);
+		} catch {
+			await rm(tempIndex, { force: true }).catch(() => {});
+		}
+	}
+	return { fromCache: false };
+}
+
+/** 内存缓存：记录每个 cwd 上一次成功快照的 treeSha 与 commitHash，支持无变动轮次直接复用。 */
+interface LastSnapshotCache {
+	treeSha: string;
+	snapshotRef: string;
+	timestamp: number;
+}
+const lastSnapshotByCwd = new Map<string, LastSnapshotCache>();
+
+/** 清理特定 cwd（或全部）的上次快照内存缓存（单测或工作区还原时调用）。 */
+export function clearWorkspaceSnapshotCaches(cwd?: string): void {
+	if (cwd) {
+		lastSnapshotByCwd.delete(resolve(cwd));
+	} else {
+		lastSnapshotByCwd.clear();
 	}
 }
 
 /** 检查工作区是否由 Git 管理。 */
 export async function isGitWorkspace(cwd: string): Promise<boolean> {
+	const info = await probeGitRepo(cwd);
+	if (info) return true;
 	return (await gitDirOf(cwd)) !== null;
 }
 
@@ -140,24 +207,47 @@ export async function isGitWorkspace(cwd: string): Promise<boolean> {
  * 该操作纯粹在临时 index 文件中完成，绝不影响用户的实际 index 或 HEAD。
  */
 export async function createWorkspaceSnapshot(cwd: string): Promise<string | null> {
-	const gitDir = await gitDirOf(cwd);
-	if (!gitDir) return null;
+	const repo = await probeGitRepo(cwd);
+	if (!repo) return null;
 
-	const tempIndex = join(gitDir, `temp-index-snapshot-${randomUUID()}`);
+	const tempIndex = join(repo.gitDir, `temp-index-snapshot-${randomUUID()}`);
 	const env = { GIT_INDEX_FILE: tempIndex };
+	const cachePath = snapshotCachePath(repo.gitDir, cwd);
 
 	try {
-		// 先种入真实 index（子目录再剔掉子树外条目）。失败则临时 index 不存在，下面的 add 仍从空 index 开始。
-		await seedSnapshotIndex(cwd, tempIndex, env);
-		// 1. 将 cwd 子树（而非整个工作区）的当前改动（含未跟踪与新增）记录到临时 index；
-		//    暂存路径相对仓库根，write-tree 顶层因此只有该子目录一个条目
-		await runGit(cwd, ["add", "-A", "--", "."], env);
+		// 1. 先种入 index（优先从持久化影子缓存拷贝，次选从真实 index 拷贝并剔除子树外条目）
+		await seedSnapshotIndex(cwd, tempIndex, repo, env);
 
-		// 2. 写入 tree 对象
-		const tree = await runGit(cwd, ["write-tree"], env);
+		// 2 & 3. 将 cwd 子树当前改动暂存到临时 index 并生成 tree 对象（若因 cache 损坏或脏索引失败，回退空 index 重试）
+		let tree: string | null = null;
+		try {
+			await runGit(cwd, ["add", "-A", "--", "."], env);
+			tree = await runGit(cwd, ["write-tree"], env);
+		} catch (stageErr) {
+			// 回退兜底：清理损坏的临时 index 和缓存 index，从纯空 index 重试一次
+			await rm(tempIndex, { force: true }).catch(() => {});
+			await rm(cachePath, { force: true }).catch(() => {});
+			try {
+				await runGit(cwd, ["add", "-A", "--", "."], env);
+				tree = await runGit(cwd, ["write-tree"], env);
+			} catch {
+				throw stageErr;
+			}
+		}
 		if (!tree) return null;
 
-		// 3. 检查是否有 HEAD commit 作为 parent
+		// 异步更新持久化影子 index 缓存供下轮秒级复用
+		void copyFile(tempIndex, cachePath).catch(() => {});
+
+		// 优化 3：检查 tree 是否与该 cwd 上次快照完全一致
+		const normCwd = resolve(cwd);
+		const last = lastSnapshotByCwd.get(normCwd);
+		if (last && last.treeSha === tree) {
+			// 工作区内容完全无变动：直接复用已有快照 SHA，省去 rev-parse HEAD + commit-tree
+			return last.snapshotRef;
+		}
+
+		// 4. 检查是否有 HEAD commit 作为 parent
 		let hasHead = false;
 		try {
 			await runGit(cwd, ["rev-parse", "--verify", "HEAD"]);
@@ -166,7 +256,7 @@ export async function createWorkspaceSnapshot(cwd: string): Promise<string | nul
 			hasHead = false;
 		}
 
-		// 4. 创建轻量 commit 对象，不关联任何分支引用
+		// 5. 创建轻量 commit 对象，不关联任何分支引用
 		const commitArgs = ["commit-tree", tree];
 		if (hasHead) {
 			commitArgs.push("-p", "HEAD");
@@ -174,7 +264,15 @@ export async function createWorkspaceSnapshot(cwd: string): Promise<string | nul
 		commitArgs.push("-m", `pi-web-ui: workspace shadow snapshot ${new Date().toISOString()}`);
 
 		const commitHash = await runGit(cwd, commitArgs, env);
-		return commitHash || null;
+		if (commitHash) {
+			lastSnapshotByCwd.set(normCwd, {
+				treeSha: tree,
+				snapshotRef: commitHash,
+				timestamp: Date.now(),
+			});
+			return commitHash;
+		}
+		return null;
 	} catch (err) {
 		console.warn(`[workspace-snapshot] 创建快照失败 (${cwd}):`, (err as Error).message);
 		return null;
@@ -226,6 +324,12 @@ export async function restoreWorkspaceSnapshot(
 			// 仓库根 cwd：整仓还原，使用原子 read-tree --reset，旧实现经过长期验证且天然支持空仓库快照
 			await runGit(cwd, ["read-tree", "-u", "--reset", snapshotRef]);
 			await runGit(cwd, ["clean", "-fd"]);
+
+			// 还原成功后，清除该 cwd 的上次快照缓存与影子 index
+			lastSnapshotByCwd.delete(resolve(cwd));
+			const cachePath = snapshotCachePath(gitDir, cwd);
+			void rm(cachePath, { force: true }).catch(() => {});
+
 			return { success: true };
 		}
 
@@ -263,6 +367,11 @@ export async function restoreWorkspaceSnapshot(
 
 		// 3. 清理快照之后新增的未跟踪文件与空目录（含第 1 步退回未跟踪的那些）
 		await runGit(cwd, ["clean", "-fd", "--", pathspec]);
+
+		// 还原成功后，清除该 cwd 的上次快照缓存与影子 index，确保后续快照重新根据物理工作区生成
+		lastSnapshotByCwd.delete(resolve(cwd));
+		const cachePath = snapshotCachePath(gitDir, cwd);
+		void rm(cachePath, { force: true }).catch(() => {});
 
 		return { success: true };
 	} catch (err) {
@@ -316,4 +425,60 @@ export function findMatchingWorkspaceSnapshot(
 		return eligible[eligible.length - 1];
 	}
 	return snapshots[0];
+}
+
+/** 从会话 sessionManager entries 回放恢复之前持久化的快照映射记录。 */
+export function readWorkspaceSnapshotsFromSession(sm: unknown): WorkspaceSnapshotRecord[] {
+	try {
+		const mgr = sm as { getEntries?: () => unknown[] };
+		if (typeof mgr?.getEntries !== "function") return [];
+		const entries = mgr.getEntries();
+		const records: WorkspaceSnapshotRecord[] = [];
+		for (const e of entries) {
+			const entry = e as
+				| {
+						type?: string;
+						customType?: string;
+						data?: WorkspaceSnapshotRecord;
+				  }
+				| undefined;
+			if (entry?.type === "custom" && entry.customType === "pi-web-ui/workspace-snapshot" && entry.data?.snapshotRef) {
+				records.push({
+					entryId: entry.data.entryId,
+					timestamp: Number(entry.data.timestamp) || 0,
+					snapshotRef: String(entry.data.snapshotRef),
+				});
+			}
+		}
+		return records.slice(-50);
+	} catch {
+		return [];
+	}
+}
+
+/** 将快照映射记录持久化到会话转录中（以便会话重载或服务重启后支持双向回滚）。 */
+export function appendWorkspaceSnapshotToSession(sm: unknown, record: WorkspaceSnapshotRecord): void {
+	try {
+		const mgr = sm as { appendCustomEntry?: (customType: string, data: unknown) => void };
+		mgr?.appendCustomEntry?.("pi-web-ui/workspace-snapshot", record);
+	} catch {
+		// ignore
+	}
+}
+
+/**
+ * 为工具定义叠加影子快照门禁：在工具执行物理写操作之前，确保正在并发生成的快照已经完成。
+ */
+export function withWorkspaceSnapshotGate<T extends { execute: (...args: any[]) => any }>(
+	def: T,
+	awaitPendingSnapshot: () => Promise<void>,
+): T {
+	const originalExecute = def.execute;
+	return {
+		...def,
+		execute: async (...args: any[]) => {
+			await awaitPendingSnapshot();
+			return originalExecute.apply(def, args);
+		},
+	};
 }

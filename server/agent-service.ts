@@ -162,6 +162,10 @@ import {
 	createWorkspaceSnapshot,
 	restoreWorkspaceSnapshot,
 	findMatchingWorkspaceSnapshot,
+	readWorkspaceSnapshotsFromSession,
+	appendWorkspaceSnapshotToSession,
+	withWorkspaceSnapshotGate,
+	type WorkspaceSnapshotRecord,
 } from "./workspace-snapshot.js";
 import {
 	createScheduleToolHost,
@@ -292,6 +296,9 @@ import { makePatchTool } from "./patch-tool.js";
 import { makeLspTool } from "./lsp-tool.js";
 import { makeMcpManageTool, type McpManageToolHost } from "./mcp-agent-tool.js";
 import { makeSandboxTool } from "./sandbox-tool.js";
+import { makeWorktreeTool, WORKTREE_TOOL_NAME } from "./worktree-tool.js";
+import { getWorktreeContext, removeWorktree, normalizeWirePath } from "./worktree-service.js";
+import type { WorktreeInfo } from "./protocol.js";
 import { sameSessionFile, type SchedulerStore } from "./scheduler-tasks.js";
 import { buildAttachmentMessages, findTurnBaseEntryId, parseModelSpec } from "./attachments.js";
 import { formatQuotedPrompt, readTextQuote } from "./text-quote.js";
@@ -692,6 +699,8 @@ export interface Conversation {
 	transcriptBlocked?: boolean;
 	/** 工作区版本影子快照记录（Dual-State Rollback：时间戳/entryId -> snapshotRef）。 */
 	workspaceSnapshots: Array<{ entryId?: string; timestamp: number; snapshotRef: string }>;
+	/** 当前对话正在并发执行中的影子快照生成任务（工具调用前必须等待其完成，保证快照点在修改前）。 */
+	pendingWorkspaceSnapshot?: Promise<string | null>;
 	/** 当前正在启动中（读取附件、视觉桥、快照准备等）的 prompt 取消控制器 */
 	activePromptAc?: AbortController;
 	/** prompt() 已进门、尚未进入流式：前置附件构建 / 工作区影子快照是异步的，
@@ -2218,6 +2227,8 @@ export class ClientSession {
 	private readonly drafts: ComposerDraftsStore;
 	/** 隔离沙盒项目管理器（全局共享，<dataDir>/sandboxes/registry.json）。 */
 	private readonly sandboxes: SandboxManager;
+	/** 当前工作区关联的 Git 工作树元数据（用于顶栏横幅与 AI 工具同步）。 */
+	private worktreeInfo: WorktreeInfo | null = null;
 	/** 内置标记服务（todo/notify/svc/rename 等，可全局/分组开关）。 */
 	private readonly markerSvc: MarkerService;
 
@@ -2684,6 +2695,7 @@ export class ClientSession {
 			}
 		}
 
+		void cs.refreshWorktreeInfo();
 		return cs;
 	}
 
@@ -3008,23 +3020,26 @@ export class ClientSession {
 					// 权限沙箱拦截（只读模式拦截终端执行）。
 					wrapBashToolWithPermission(
 						withToolGuard(
-							makeAdaptiveBashTool(
-								// issue #91：bash 返回按客户端 UI 语言出中英（英文默认）。
-								makeKillableBashTool(effectiveCwd, this.bashKills, () => this.getLang()),
-								makeTerminalBashTool(terminals, {
-									cwd: effectiveCwd,
-									// 设置开 = 用终端；此分支里 persist 未显式给时默认一次性（false）。
-									defaultPersist: () => false,
-									idleMs: () => Math.max(0, Math.floor(this.settingsSvc.current.terminalBashIdleMs) || 0),
-									maxForegroundMs: () =>
-										Math.max(0, Math.floor(this.settingsSvc.current.terminalBashMaxForegroundMs) || 0),
-									kills: this.bashKills,
-									notifyBackgroundDone: (info) => this.notifyTerminalBashDone(terminals, info),
+							withWorkspaceSnapshotGate(
+								makeAdaptiveBashTool(
 									// issue #91：bash 返回按客户端 UI 语言出中英（英文默认）。
-									lang: () => this.getLang(),
-								}),
-								// 设置关 → 原生 bash；开 → 终端 bash。
-								() => this.settingsSvc.current.terminalBash,
+									makeKillableBashTool(effectiveCwd, this.bashKills, () => this.getLang()),
+									makeTerminalBashTool(terminals, {
+										cwd: effectiveCwd,
+										// 设置开 = 用终端；此分支里 persist 未显式给时默认一次性（false）。
+										defaultPersist: () => false,
+										idleMs: () => Math.max(0, Math.floor(this.settingsSvc.current.terminalBashIdleMs) || 0),
+										maxForegroundMs: () =>
+											Math.max(0, Math.floor(this.settingsSvc.current.terminalBashMaxForegroundMs) || 0),
+										kills: this.bashKills,
+										notifyBackgroundDone: (info) => this.notifyTerminalBashDone(terminals, info),
+										// issue #91：bash 返回按客户端 UI 语言出中英（英文默认）。
+										lang: () => this.getLang(),
+									}),
+									// 设置关 → 原生 bash；开 → 终端 bash。
+									() => this.settingsSvc.current.terminalBash,
+								),
+								() => this.awaitPendingWorkspaceSnapshot(ownerId),
 							),
 							{
 								toolName: "bash",
@@ -3090,7 +3105,7 @@ export class ClientSession {
 							}
 							return {};
 						},
-					}),
+					}).map((tool) => withWorkspaceSnapshotGate(tool, () => this.awaitPendingWorkspaceSnapshot(ownerId))),
 					// read / write / edit 三处覆盖**不在这里注册**：创建时的 customTools 恒胜、与
 					// 扩展加载顺序无关，直接塞进来会静默顶掉第三方扩展注册的同名工具（见
 					// tool-overrides.ts）；它们改在会话建好后由 installToolOverrides 注入。
@@ -3250,6 +3265,17 @@ export class ClientSession {
 						},
 						() => this.getLang(),
 					),
+					// Git 工作树管理工具（worktree：list/create/switch/remove）。
+					makeWorktreeTool(
+						{
+							getCwd: () => (ownerId ? this.convs.get(ownerId)?.cwd : undefined) ?? effectiveCwd,
+							setCwd: (newCwd) => this.setCwd(newCwd),
+							onWorktreeChanged: async () => {
+								await this.refreshWorktreeInfo();
+							},
+						},
+						() => this.getLang(),
+					),
 				].map((t) =>
 					// 目标审查闸门在最外层（理由最贴合此刻）；插件工具也在这个数组里，
 					// 创建时注册的同样被闸门覆盖（后续动态补入的走 syncPluginTools，与
@@ -3351,7 +3377,7 @@ export class ClientSession {
 			toolPendingArgs: new Map(),
 			activeToolCalls: new Map(),
 			toolWatchdogs: new Map(),
-			workspaceSnapshots: [],
+			workspaceSnapshots: readWorkspaceSnapshotsFromSession(runtime.session.sessionManager),
 		};
 		this.restorePlan(conv);
 		return conv;
@@ -4865,6 +4891,7 @@ export class ClientSession {
 			// `{...ui, ...d.state}` 浅合并，缺字段会把 true 残留下来。
 			isEphemeral: !!this.conv?.isEphemeral,
 			sandbox: this.sandboxes?.getByCwd(this.cwd) ?? null,
+			worktree: this.worktreeInfo ?? null,
 			rev,
 			streamingMessage,
 			isStreaming: this.session.isStreaming,
@@ -7236,24 +7263,28 @@ export class ClientSession {
 		};
 		// 写/编的权限沙箱包装：同一个函数，有扩展同名工具时把它的定义当基底（末参）。
 		// 目标审查闸门包在**最外层**（权限沙箱之前）：审查回合只读核实，写类直接拒。
+		// 快照并发门禁包裹在工具执行最前沿，确保写操作前快照必定已就绪。
 		const planGate = (def: ToolDefinition): ToolDefinition =>
-			withGoalReviewGate(
-				withDelegationGate(
-					withPlanModeGate(
-						withSandboxJailGate(
-							def,
-							() => this.sandboxes.getByCwd(cwd),
-							() => cwd,
+			withWorkspaceSnapshotGate(
+				withGoalReviewGate(
+					withDelegationGate(
+						withPlanModeGate(
+							withSandboxJailGate(
+								def,
+								() => this.sandboxes.getByCwd(cwd),
+								() => cwd,
+								() => this.getLang(),
+							),
+							() => this.planModeOf(ownerId),
 							() => this.getLang(),
 						),
-						() => this.planModeOf(ownerId),
+						() => this.delegateModeOf(ownerId),
 						() => this.getLang(),
 					),
-					() => this.delegateModeOf(ownerId),
+					() => this.goalReviewTurnOf(ownerId),
 					() => this.getLang(),
 				),
-				() => this.goalReviewTurnOf(ownerId),
-				() => this.getLang(),
+				() => this.awaitPendingWorkspaceSnapshot(ownerId),
 			);
 		const composeWrite = (base?: AnyToolDefinition): ToolDefinition =>
 			planGate(
@@ -7542,6 +7573,19 @@ export class ClientSession {
 	private goalReviewTurnOf(ownerId: string | undefined): boolean {
 		const id = ownerId ?? this.activeId;
 		return (this.convs.get(id) as unknown as GoalConversation | undefined)?.awaitingVerdict != null;
+	}
+
+	/** 等待该会话正在并发生成的影子快照完成，确保写操作发生在快照完成之后。 */
+	private async awaitPendingWorkspaceSnapshot(ownerId: string | undefined): Promise<void> {
+		const id = ownerId ?? this.activeId;
+		const conv = this.convs.get(id);
+		if (conv?.pendingWorkspaceSnapshot) {
+			try {
+				await conv.pendingWorkspaceSnapshot;
+			} catch {
+				// best-effort
+			}
+		}
 	}
 
 	/**
@@ -8493,15 +8537,16 @@ export class ClientSession {
 			if (asides.length > 0) {
 				this.flushSnapshot();
 			}
-			// 创建工作区版本影子快照（Dual-State Rollback）
-			let snapshotRef: string | null = null;
-			try {
-				snapshotRef = await createWorkspaceSnapshot(conv.cwd);
-			} catch {
-				// best-effort
-			}
+			// 启动工作区版本影子快照（与模型首字并发执行，消除发送到气泡上屏的等待；写工具执行前自动门禁拦截）
+			const snapshotPromise = createWorkspaceSnapshot(conv.cwd).catch((err) => {
+				console.warn(`[workspace-snapshot] 创建快照失败 (${conv.cwd}):`, (err as Error).message);
+				return null;
+			});
+			conv.pendingWorkspaceSnapshot = snapshotPromise;
+
 			if (promptAc.signal.aborted) {
 				conv.activePromptAc = undefined;
+				conv.pendingWorkspaceSnapshot = undefined;
 				// #492：同上——影子快照阶段的 abort 也必须给回执，不能静默黑洞。
 				this.emit({
 					type: "notice",
@@ -8541,6 +8586,15 @@ export class ClientSession {
 			}
 
 			// 关联快照与本次 prompt 产生的用户消息 entry
+			let snapshotRef: string | null = null;
+			try {
+				snapshotRef = await conv.pendingWorkspaceSnapshot;
+			} catch {
+				// best-effort
+			} finally {
+				conv.pendingWorkspaceSnapshot = undefined;
+			}
+
 			if (snapshotRef) {
 				try {
 					const entries = conv.session.sessionManager.buildContextEntries();
@@ -8549,14 +8603,16 @@ export class ClientSession {
 						.find(
 							(e) => e.type === "message" && (e as unknown as { message?: { role?: string } }).message?.role === "user",
 						);
-					conv.workspaceSnapshots.push({
+					const record: WorkspaceSnapshotRecord = {
 						entryId: lastUserEntry?.id,
 						timestamp: Date.now(),
 						snapshotRef,
-					});
+					};
+					conv.workspaceSnapshots.push(record);
 					if (conv.workspaceSnapshots.length > 50) {
 						conv.workspaceSnapshots.shift();
 					}
+					appendWorkspaceSnapshotToSession(conv.session.sessionManager, record);
 				} catch {
 					// best-effort
 				}
@@ -11795,6 +11851,13 @@ export class ClientSession {
 			// 联动还原物理工作区文件（Dual-State Rollback）
 			let workspaceRestored = false;
 			if (restoreWorkspace) {
+				if (targetConv.pendingWorkspaceSnapshot) {
+					try {
+						await targetConv.pendingWorkspaceSnapshot;
+					} catch {
+						// best-effort
+					}
+				}
 				const entryTs =
 					(entry as unknown as { message?: { timestamp?: number }; timestamp?: number }).message?.timestamp ??
 					(entry as unknown as { timestamp?: number }).timestamp ??
@@ -12482,6 +12545,7 @@ export class ClientSession {
 			// 切项目即换了当前打开对话 → 插件重拉。
 			this.notifyConversationChanged();
 			this.pushSettings();
+			void this.refreshWorktreeInfo();
 		} catch (err) {
 			this.emit({
 				type: "transition_progress",
@@ -12710,6 +12774,49 @@ export class ClientSession {
 				level: "error",
 				text: `销毁沙盒失败：${(err as Error).message}`,
 				textEn: `Failed to destroy sandbox: ${(err as Error).message}`,
+			});
+		}
+	}
+
+	/** 刷新当前工作区的 Git 工作树状态并推送快照。 */
+	async refreshWorktreeInfo(): Promise<void> {
+		try {
+			this.worktreeInfo = await getWorktreeContext(this.cwd);
+		} catch {
+			this.worktreeInfo = null;
+		}
+		this.flushSnapshot();
+	}
+
+	/** 切换当前工作区至指定 Git 工作树目录。 */
+	async switchWorktree(targetPath: string): Promise<void> {
+		await this.setCwd(targetPath);
+	}
+
+	/** 移除指定 Git 工作树；若移除的是当前工作区则先切回主仓库。 */
+	async removeWorktree(targetPath: string, force = false): Promise<void> {
+		try {
+			const { resolve } = await import("node:path");
+			const normTarget = normalizeWirePath(resolve(this.cwd, targetPath));
+			const isCurrent = this.worktreeInfo?.currentPath === normTarget;
+			const fallback = this.worktreeInfo?.mainPath || this.cwd;
+			if (isCurrent && fallback !== normTarget) {
+				await this.setCwd(fallback);
+			}
+			await removeWorktree(this.cwd, normTarget, force, () => this.getLang());
+			await this.refreshWorktreeInfo();
+			this.emit({
+				type: "notice",
+				level: "info",
+				text: `🗑️ 已移除 Git 工作树：${normTarget}`,
+				textEn: `🗑️ Removed Git worktree: ${normTarget}`,
+			});
+		} catch (err) {
+			this.emit({
+				type: "notice",
+				level: "error",
+				text: `移除工作树失败：${(err as Error).message}`,
+				textEn: `Failed to remove worktree: ${(err as Error).message}`,
 			});
 		}
 	}

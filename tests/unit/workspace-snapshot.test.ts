@@ -8,6 +8,12 @@ import {
 	findMatchingWorkspaceSnapshot,
 	isGitWorkspace,
 	restoreWorkspaceSnapshot,
+	probeGitRepo,
+	snapshotCachePath,
+	clearWorkspaceSnapshotCaches,
+	readWorkspaceSnapshotsFromSession,
+	appendWorkspaceSnapshotToSession,
+	withWorkspaceSnapshotGate,
 	type WorkspaceSnapshotRecord,
 } from "../../server/workspace-snapshot.js";
 
@@ -288,6 +294,126 @@ describe("工作区版本影子快照与双向联动回滚 (Dual-State Rollback)
 		const staged = execSync("git diff --cached --name-only", { cwd: testDir }).toString().trim();
 		expect(staged).toBe("other/staged.txt");
 	}, 20000);
+
+	it("probeGitRepo 一次性获取 gitDir、indexFile 与 prefix", async () => {
+		execSync("git init", { cwd: testDir, stdio: "ignore" });
+		mkdirSync(join(testDir, "sub", "pkg"), { recursive: true });
+
+		const repoRoot = await probeGitRepo(testDir);
+		expect(repoRoot).toBeTruthy();
+		expect(repoRoot?.gitDir).toContain(".git");
+		expect(repoRoot?.indexFile).toContain(".git");
+		expect(repoRoot?.prefix).toBe("");
+
+		const repoSub = await probeGitRepo(join(testDir, "sub", "pkg"));
+		expect(repoSub).toBeTruthy();
+		expect(repoSub?.prefix).toBe("sub/pkg");
+	});
+
+	it("影子 index 缓存文件按 cwd 生成并在快照后持久化，后续快照复用它", async () => {
+		clearWorkspaceSnapshotCaches();
+		execSync("git init", { cwd: testDir, stdio: "ignore" });
+		execSync("git config user.name test && git config user.email test@test.com", {
+			cwd: testDir,
+			stdio: "ignore",
+		});
+		writeFileSync(join(testDir, "a.txt"), "v1\n");
+		execSync("git add a.txt && git commit -m 'init'", { cwd: testDir, stdio: "ignore" });
+
+		const repo = await probeGitRepo(testDir);
+		expect(repo).toBeTruthy();
+		const cachePath = snapshotCachePath(repo!.gitDir, testDir);
+		expect(existsSync(cachePath)).toBe(false);
+
+		// 第 1 次快照：冷启动建立缓存
+		const snap1 = await createWorkspaceSnapshot(testDir);
+		expect(snap1).toBeTruthy();
+		expect(existsSync(cachePath)).toBe(true);
+
+		// 修改文件并做第 2 次快照：从缓存快速复用
+		writeFileSync(join(testDir, "a.txt"), "v2\n");
+		writeFileSync(join(testDir, "b.txt"), "new b\n");
+		const snap2 = await createWorkspaceSnapshot(testDir);
+		expect(snap2).toBeTruthy();
+		expect(snap2).not.toBe(snap1);
+
+		// 工作区文件无变动时再次快照：优化 3 直接复用相同 commit SHA
+		const snap3 = await createWorkspaceSnapshot(testDir);
+		expect(snap3).toBe(snap2);
+	}, 20000);
+
+	it("影子 index 缓存损坏时自动回退兜底，不阻断快照生成", async () => {
+		clearWorkspaceSnapshotCaches();
+		execSync("git init", { cwd: testDir, stdio: "ignore" });
+		execSync("git config user.name test && git config user.email test@test.com", {
+			cwd: testDir,
+			stdio: "ignore",
+		});
+		writeFileSync(join(testDir, "a.txt"), "v1\n");
+		execSync("git add a.txt && git commit -m 'init'", { cwd: testDir, stdio: "ignore" });
+
+		const repo = await probeGitRepo(testDir);
+		const cachePath = snapshotCachePath(repo!.gitDir, testDir);
+
+		// 人为写入一个被破坏的乱码缓存文件
+		writeFileSync(cachePath, "corrupted binary junk index content");
+
+		// 快照创建应能自动捕获并回退重试，正常生成可用快照
+		const snap = await createWorkspaceSnapshot(testDir);
+		expect(snap).toBeTruthy();
+	}, 20000);
+
+	it("readWorkspaceSnapshotsFromSession 与 appendWorkspaceSnapshotToSession 编解码持久化", () => {
+		const mockEntries: unknown[] = [];
+		const mockSm = {
+			getEntries: () => mockEntries,
+			appendCustomEntry: (customType: string, data: unknown) => {
+				mockEntries.push({ type: "custom", customType, data });
+			},
+		};
+
+		expect(readWorkspaceSnapshotsFromSession(mockSm)).toEqual([]);
+
+		const rec1: WorkspaceSnapshotRecord = { entryId: "e1", timestamp: 1000, snapshotRef: "ref-1" };
+		const rec2: WorkspaceSnapshotRecord = { entryId: "e2", timestamp: 2000, snapshotRef: "ref-2" };
+		appendWorkspaceSnapshotToSession(mockSm, rec1);
+		appendWorkspaceSnapshotToSession(mockSm, rec2);
+
+		const restored = readWorkspaceSnapshotsFromSession(mockSm);
+		expect(restored).toHaveLength(2);
+		expect(restored[0]).toEqual(rec1);
+		expect(restored[1]).toEqual(rec2);
+	});
+
+	it("withWorkspaceSnapshotGate 门禁在工具执行前等待 pending 快照完成", async () => {
+		let snapshotResolved = false;
+		let toolExecuted = false;
+
+		const pendingSnapshot = new Promise<void>((resolve) => {
+			setTimeout(() => {
+				snapshotResolved = true;
+				resolve();
+			}, 30);
+		});
+
+		const dummyTool = {
+			name: "test_write",
+			description: "test write",
+			execute: async () => {
+				// 执行时刻快照必须已经完成
+				expect(snapshotResolved).toBe(true);
+				toolExecuted = true;
+				return { content: [{ type: "text", text: "ok" }] };
+			},
+		};
+
+		const gatedTool = withWorkspaceSnapshotGate(dummyTool as any, () => pendingSnapshot);
+		expect(snapshotResolved).toBe(false);
+
+		await gatedTool.execute("call-1", {}, undefined, undefined, {} as any);
+		expect(toolExecuted).toBe(true);
+		expect(snapshotResolved).toBe(true);
+	});
 
 	describe("findMatchingWorkspaceSnapshot 匹配决策纯函数", () => {
 		const snaps: WorkspaceSnapshotRecord[] = [
