@@ -969,14 +969,14 @@ export const RightPanel = memo(function RightPanel({
 															<FiMonitor />
 														</TipButton>
 													)}
-													{/* 隐藏文件开关：服务端会下发 dotfiles，过滤只在客户端做（默认隐藏），偏好记在 localStorage。 */}
+													{/* 隐藏文件开关：服务端会下发 dotfiles，过滤只在客户端做（默认隐藏），偏好记在 localStorage。图标画的是当前状态（隐藏中＝划掉的眼睛），与 .crumb.active / aria-pressed 同向；点击动作只由 tip 承担。 */}
 													<TipButton
 														className={`crumb ${showHiddenFiles ? "active" : ""}`}
 														tip={showHiddenFiles ? t("filesHideHidden") : t("filesShowHidden")}
 														aria-pressed={showHiddenFiles}
 														onClick={() => setShowHiddenFiles((v) => !v)}
 													>
-														{showHiddenFiles ? <FiEyeOff /> : <FiEye />}
+														{showHiddenFiles ? <FiEye /> : <FiEyeOff />}
 													</TipButton>
 													<HintTip text={t("filesHelp")} />
 													{/* 额外工作区根（宿主侧多根，见 protocol 的 set_workspace_roots）：有根才渲染根选择器，
