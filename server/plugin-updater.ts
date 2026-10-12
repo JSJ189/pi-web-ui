@@ -60,8 +60,8 @@ export function ensureBackup(dataDir: string, id: string, opts?: { source?: stri
 		mkdirSync(dirnameOf(dest)!, { recursive: true });
 		cpSync(target, dest, {
 			recursive: true,
-			// 与安装一致：不备份 .git/node_modules（纯运行目录），config.json 等保留。
-			filter: (s) => !/(^|[\\/])(\.git|node_modules)([\\/]|$)/.test(s),
+			// 与安装一致：不备份 .git/node_modules/whisper-cache（纯运行/大体量模型缓存），config.json 等保留。
+			filter: (s) => !/(^|[\\/])(\.git|node_modules|whisper-cache)([\\/]|$)/.test(s),
 		});
 		writeFileSync(join(dest, ".pi-backup.json"), JSON.stringify({ id, ts, source: opts?.source }, null, 2) + "\n");
 		pruneBackups(dataDir, id);
@@ -104,8 +104,14 @@ export function restoreBackup(dataDir: string, id: string): string | null {
 	const src = join(dataDir, "plugin-backups", backups[0]);
 	const target = join(dataDir, "plugins", id);
 	try {
-		if (existsSync(target)) rmSync(target, { recursive: true, force: true });
-		mkdirSync(join(dataDir, "plugins"), { recursive: true });
+		if (existsSync(target)) {
+			const keepDirs = new Set(["node_modules", "whisper-cache"]);
+			for (const entry of readdirSync(target)) {
+				if (keepDirs.has(entry)) continue;
+				rmSync(join(target, entry), { recursive: true, force: true });
+			}
+		}
+		mkdirSync(target, { recursive: true });
 		cpSync(src, target, { recursive: true });
 		rmSync(src, { recursive: true, force: true });
 		return backups[0];

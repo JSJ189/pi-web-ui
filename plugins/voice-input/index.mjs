@@ -26,10 +26,10 @@
  * 服务打挂（image-toolkit 踩过的坑）。
  */
 
-import { existsSync, readFileSync } from "node:fs";
+import { existsSync, readdirSync, readFileSync } from "node:fs";
 import { rm } from "node:fs/promises";
 import { createRequire } from "node:module";
-import { join } from "node:path";
+import { dirname, join } from "node:path";
 import { pathToFileURL } from "node:url";
 
 const REMOTE_TRANSCRIBE_TIMEOUT_MS = 120_000;
@@ -146,6 +146,102 @@ export function applyHfEndpoint(transformersEnv, endpoint) {
 	if (!transformersEnv || !endpoint) return transformersEnv;
 	transformersEnv.remoteHost = endpoint;
 	return transformersEnv;
+}
+
+/**
+ * 为缺失原生绑定的 `sharp` 注入内存 stub（纯函数，单测覆盖）。
+ *
+ * `@xenova/transformers` v2 的 `src/utils/image.js` 在顶层执行 `import sharp from "sharp"`
+ * 并以 `else if (sharp)` 校验真值。本插件仅用语音识别（automatic-speech-recognition）
+ * 且自带纯 JS WAV 解码，从不调用任何图像处理接口。
+ *
+ * 当用户配置了 npm `allow-scripts` / `ignore-scripts` 或因网络/编译环境导致 `sharp`
+ * 的 `libvips` 原生二进制（`../build/Release/sharp-*.node`）未生成时，直接加载会抛
+ * `Something went wrong installing the "sharp" module`。这里先探测 `sharp` 是否可加载；
+ * 若抛错则在 `require.cache` 中把 `sharp` 主入口与底层 `sharp.js` 替换为轻量真值函数 stub，
+ * 使 ESM 加载 `@xenova/transformers` 时绕过损坏的 `sharp` 绑定。
+ *
+ * 返回 true = 注入了 stub；false = `sharp` 本身正常或尚未安装。
+ */
+export function ensureSharpStub(fromFile) {
+	let req;
+	try {
+		req = createRequire(fromFile);
+	} catch {
+		return false;
+	}
+	let sharpEntry = "";
+	try {
+		sharpEntry = req.resolve("sharp");
+	} catch {
+		// 兜底 CJS 负缓存：沿 fromFile 向上找 node_modules/sharp/package.json
+		let cur = dirname(fromFile);
+		for (;;) {
+			const pkgJson = join(cur, "node_modules", "sharp", "package.json");
+			if (existsSync(pkgJson)) {
+				try {
+					const pkg = JSON.parse(readFileSync(pkgJson, "utf8"));
+					const main = str(pkg?.main) || "lib/index.js";
+					const cand = join(cur, "node_modules", "sharp", main);
+					if (existsSync(cand)) {
+						sharpEntry = cand;
+						break;
+					}
+				} catch {
+					/* ignore */
+				}
+			}
+			const up = dirname(cur);
+			if (!up || up === cur) break;
+			cur = up;
+		}
+	}
+	if (!sharpEntry) return false;
+	try {
+		req(sharpEntry);
+		return false;
+	} catch {
+		const stub = function sharpStub() {
+			throw new Error("sharp native binary is unavailable (stubbed by voice-input for audio-only pipeline)");
+		};
+		req.cache[sharpEntry] = {
+			id: sharpEntry,
+			filename: sharpEntry,
+			loaded: true,
+			exports: stub,
+		};
+		const nativeWrapper = join(dirname(sharpEntry), "sharp.js");
+		if (existsSync(nativeWrapper)) {
+			req.cache[nativeWrapper] = {
+				id: nativeWrapper,
+				filename: nativeWrapper,
+				loaded: true,
+				exports: stub,
+			};
+		}
+		return true;
+	}
+}
+
+/**
+ * 检查本地模型权重是否已落盘（`<cacheDir>/<modelId>/config.json` + `onnx/*.onnx`）。
+ *
+ * 插件覆盖更新、回滚或 `storage.json` 的 `whisperModels` 标记丢失后，磁盘上的
+ * `whisper-cache/` 若仍在，据此自动恢复就绪态并回写 storage，避免几百 MB 模型白重下。
+ */
+export function hasCachedModelOnDisk(cacheDir, modelId) {
+	const id = str(modelId);
+	if (!cacheDir || !id) return false;
+	try {
+		const modelDir = join(cacheDir, ...id.split("/"));
+		if (!existsSync(join(modelDir, "config.json"))) return false;
+		const onnxDir = join(modelDir, "onnx");
+		if (!existsSync(onnxDir)) return false;
+		const files = readdirSync(onnxDir);
+		return files.some((f) => f.endsWith(".onnx"));
+	} catch {
+		return false;
+	}
 }
 
 /* ------------------------------------------------------------------ */
@@ -284,7 +380,21 @@ export default {
 				return {};
 			}
 		};
-		const localReady = () => Boolean(installedModels()[wantedModelId()]);
+		const localReady = () => {
+			const id = wantedModelId();
+			if (installedModels()[id]) return true;
+			if (hasCachedModelOnDisk(cacheDir, id)) {
+				const prev = installedModels();
+				prev[id] = true;
+				try {
+					host.storage.set("whisperModels", prev);
+				} catch {
+					/* ignore */
+				}
+				return true;
+			}
+			return false;
+		};
 
 		const localStatus = () => ({
 			installing: local.installing,
@@ -391,6 +501,7 @@ export default {
 			} catch {
 				throw new Error("本地语音运行时装上了但解析不到入口（node_modules 可能损坏，删了重装）");
 			}
+			ensureSharpStub(entry);
 			const mod = await import(pathToFileURL(entry).href);
 			if (!mod || !mod.pipeline) throw new Error("本地语音运行时加载失败（依赖装上了但 import 不到）");
 			mod.env.cacheDir = cacheDir;
