@@ -714,18 +714,26 @@ describe("ensureSharpStub & hasCachedModelOnDisk", () => {
 		const host = createMockHost({ dir: tmp, settings: { engine: "local", localModel: "base" } });
 		const off = voiceInput.activate(host);
 		cleanups.push(() => off());
-		const statusRoute = host.mock.routes.find((r: { method: string; path: string }) => r.method === "GET" && r.path === "/local-status");
+		const statusRoute = host.mock.routes.find(
+			(r: { method: string; path: string }) => r.method === "GET" && r.path === "/local-status",
+		);
 		const res = {
 			statusCode: 200,
 			headersSent: false,
 			body: null as Record<string, unknown> | null,
-			status() { return this; },
-			json(p: Record<string, unknown>) { this.body = p; return this; },
-			end() { return this; },
+			status() {
+				return this;
+			},
+			json(p: Record<string, unknown>) {
+				this.body = p;
+				return this;
+			},
+			end() {
+				return this;
+			},
 		};
 		await statusRoute.handler({}, res);
 		expect(res.body?.ready).toBe(true);
 		expect(host.storage.get("whisperModels")).toEqual({ [LOCAL_MODELS.base]: true });
 	});
 });
-
