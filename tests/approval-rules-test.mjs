@@ -109,7 +109,7 @@ async function main() {
 	await c1.next((m) => m.type === "snapshot", "initial snapshot", 25000);
 	const s1 = await c1.next((m) => m.type === "settings_state", "initial settings_state", 25000);
 	check("settings_state 携带 approvalRules 数组", Array.isArray(s1.settings.approvalRules));
-	check("默认包含 10 条内置规则", s1.settings.approvalRules.length === 10);
+	check("默认包含 11 条内置规则", s1.settings.approvalRules.length === 11);
 	const rmRf = s1.settings.approvalRules.find((r) => r.id === "builtin.bash.rm-rf");
 	check("内置 rm -rf 规则存在且 builtin=true", rmRf && rmRf.builtin === true);
 
