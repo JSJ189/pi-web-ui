@@ -85,13 +85,13 @@ export function isRemoteWorkspaceUri(uri?: string | null): boolean {
 	return Boolean(uri && uri.trim().startsWith("ssh://"));
 }
 
-/** 解析 ssh://user@host:port/remote/path */
+/** 解析 ssh://user@host:port/remote/path 或 ssh://host/remote/path */
 export function parseRemoteWorkspaceUri(uri: string): ParsedRemoteUri | null {
 	if (!isRemoteWorkspaceUri(uri)) return null;
 	const trimmed = uri.trim();
-	const m = /^ssh:\/\/([^@]+)@([^:/]+)(?::(\d+))?(\/.*)?$/.exec(trimmed);
+	const m = /^ssh:\/\/(?:([^@]+)@)?([^:/]+)(?::(\d+))?(\/.*)?$/.exec(trimmed);
 	if (!m) return null;
-	const username = m[1];
+	const username = m[1] || "";
 	const host = m[2];
 	const port = m[3] ? parseInt(m[3], 10) || 22 : 22;
 	const rawPath = m[4] ? m[4].replace(/\\/g, "/") : "/";
@@ -101,7 +101,7 @@ export function parseRemoteWorkspaceUri(uri: string): ParsedRemoteUri | null {
 		host,
 		port,
 		remotePath,
-		hostKey: `${username}@${host}:${port}`,
+		hostKey: username ? `${username}@${host}:${port}` : `${host}:${port}`,
 	};
 }
 

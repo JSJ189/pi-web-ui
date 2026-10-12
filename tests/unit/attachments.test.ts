@@ -15,6 +15,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { buildAttachmentMessages, type AttachmentContext } from "../../server/attachments.js";
 import { saveUpload, uploadsRoot } from "../../server/uploads.js";
+import { setGlobalRemoteSshService, type RemoteSshService } from "../../server/remote-ssh-service.js";
 
 const dirs: string[] = [];
 function tempDir(): string {
@@ -340,5 +341,71 @@ describe("buildAttachmentMessages — 对话引用（mode:conversation）", () =
 		expect(out.length).toBe(0);
 		expect(notices.length).toBe(1);
 		expect(notices[0].level).toBe("warning");
+	});
+});
+
+describe("buildAttachmentMessages — 远程 SSH 工作区路径附件", () => {
+	it("远程工作区引用绝对路径和相对路径成功", async () => {
+		const sessDir = tempDir();
+		writeFileSync(join(sessDir, ".pi-remote-uri"), "ssh://PRO6000D/home/k/project");
+		const mockSshSvc = {
+			sftpStat: async (_uri: string, remoteAbs: string) => {
+				if (remoteAbs === "/data/spare/my-fast-qwen3-tts/LITELLM对TTS透传建议.md") {
+					return { size: 1024, isFile: true, isDirectory: false, mtime: 12345 };
+				}
+				if (remoteAbs === "/home/k/project/README.md") {
+					return { size: 256, isFile: true, isDirectory: false, mtime: 12345 };
+				}
+				throw new Error(`File not found: ${remoteAbs}`);
+			},
+			sftpReadFile: async () => ({ data: Buffer.from("test") }),
+		};
+		setGlobalRemoteSshService(mockSshSvc as unknown as RemoteSshService);
+
+		const notices: { level: string; text: string }[] = [];
+		const ctx = makeCtx({ dataDir: tempDir(), cwd: sessDir, clientId: "c", notices });
+
+		const out = (await buildAttachmentMessages(ctx, [
+			{ path: "/data/spare/my-fast-qwen3-tts/LITELLM对TTS透传建议.md", mode: "reference" },
+			{ path: "README.md", mode: "reference" },
+		])) as Aside[];
+
+		expect(notices).toEqual([]);
+		expect(out.length).toBe(2);
+
+		// 远程绝对路径
+		expect(out[0].message.details.name).toBe("LITELLM对TTS透传建议.md");
+		expect(out[0].message.details.path).toBe("/data/spare/my-fast-qwen3-tts/LITELLM对TTS透传建议.md");
+		expect(out[0].message.details.size).toBe(1024);
+		expect(out[0].message.content[0].text).toContain(
+			'<file path="/data/spare/my-fast-qwen3-tts/LITELLM对TTS透传建议.md" size="1024" />',
+		);
+
+		// 远程相对路径
+		expect(out[1].message.details.name).toBe("README.md");
+		expect(out[1].message.details.path).toBe("README.md");
+		expect(out[1].message.details.size).toBe(256);
+		expect(out[1].message.content[0].text).toContain('<file path="README.md" size="256" />');
+	});
+
+	it("远程工作区文件不存在时发出 notice 报错", async () => {
+		const sessDir = tempDir();
+		writeFileSync(join(sessDir, ".pi-remote-uri"), "ssh://PRO6000D/home/k/project");
+		const mockSshSvc = {
+			sftpStat: async () => {
+				throw new Error("No such file");
+			},
+		};
+		setGlobalRemoteSshService(mockSshSvc as unknown as RemoteSshService);
+
+		const notices: { level: string; text: string }[] = [];
+		const ctx = makeCtx({ dataDir: tempDir(), cwd: sessDir, clientId: "c", notices });
+
+		const out = await buildAttachmentMessages(ctx, [{ path: "/data/not-found.md", mode: "reference" }]);
+
+		expect(out.length).toBe(0);
+		expect(notices.length).toBe(1);
+		expect(notices[0].level).toBe("error");
+		expect(notices[0].text).toContain("附件不存在：/data/not-found.md");
 	});
 });

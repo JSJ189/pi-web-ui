@@ -19,6 +19,13 @@ import { isAbsoluteWirePath, wireToAbs } from "./files-service.js";
 import { buildVisionBridgePrompt, findVisionModels, transcribeImages } from "./vision-bridge.js";
 import { saveAttachment } from "./attachment-store.js";
 import type { ClientSettings } from "./client-state.js";
+import {
+	getGlobalRemoteSshService,
+	isRemoteWorkspaceUri,
+	parseRemoteWorkspaceUri,
+	resolveRemoteWorkspacePath,
+	restoreWorkspaceUriFromSessionDir,
+} from "./remote-ssh-service.js";
 
 /** 跨快照的视觉转写缓存：批次 hash（名称 + base64 头 + 提示词）→ 转写文本。
  *  编辑重问重发相同图片不再重复耗视觉 token。进程级共享即可。
@@ -76,9 +83,61 @@ export async function buildAttachmentMessages(
 ): Promise<{ message: Parameters<AgentSession["sendCustomMessage"]>[0] }[]> {
 	if (!attachments || attachments.length === 0) return [];
 	const fs = await import("node:fs/promises");
-	const { resolve, sep, relative, extname, basename } = await import("node:path");
+	const { resolve, sep, relative, extname, basename, posix } = await import("node:path");
 
 	const root = resolve(ctx.cwd);
+	const effCwd = restoreWorkspaceUriFromSessionDir(ctx.cwd);
+	const isRemote = isRemoteWorkspaceUri(effCwd);
+	const remoteParsed = isRemote ? parseRemoteWorkspaceUri(effCwd) : null;
+	const remoteSshSvc = isRemote ? getGlobalRemoteSshService() : null;
+
+	const resolveTarget = (rawPath: string) => {
+		if (isRemote) {
+			const cleaned = rawPath.trim();
+			const isAbs = cleaned.startsWith("/") || cleaned === "~" || cleaned.startsWith("~/");
+			let remoteAbs: string;
+			let rel: string;
+			let outside = false;
+			if (isAbs) {
+				if (cleaned === "~" || cleaned.startsWith("~/")) {
+					const homeBase = remoteParsed?.remotePath.split("/").slice(0, 3).join("/") || "/root";
+					remoteAbs = posix.normalize(cleaned === "~" ? homeBase : `${homeBase}${cleaned.slice(1)}`);
+				} else {
+					remoteAbs = posix.normalize(cleaned);
+				}
+				rel = remoteAbs;
+			} else {
+				const baseDir = remoteParsed?.remotePath ?? "/";
+				const resolved = resolveRemoteWorkspacePath(baseDir, cleaned);
+				if (!resolved) {
+					outside = true;
+					remoteAbs = posix.resolve(baseDir, cleaned);
+					rel = cleaned;
+				} else {
+					remoteAbs = resolved.abs;
+					rel = resolved.rel || resolved.abs;
+				}
+			}
+			return {
+				isRemote: true,
+				abs: remoteAbs,
+				rel,
+				outsideWorkspace: outside,
+			};
+		}
+
+		const absPath = isAbsoluteWirePath(rawPath);
+		const abs = absPath ? wireToAbs(rawPath) : resolve(root, rawPath);
+		const rawRel = absPath ? null : relative(root, abs);
+		const outsideWorkspace = !absPath && (rawRel!.startsWith("..") || rawRel!.includes(`${sep}..`));
+		const rel = absPath ? abs.split(sep).join("/") : rawRel!.split(sep).join("/");
+		return {
+			isRemote: false,
+			abs,
+			rel,
+			outsideWorkspace,
+		};
+	};
 	const MAX_ATTACHMENT_BYTES = 200 * 1024;
 	const IMAGE_EXT = new Set([".png", ".jpg", ".jpeg", ".gif", ".webp", ".bmp", ".svg"]);
 	const MIME: Record<string, string> = {
@@ -159,27 +218,49 @@ export async function buildAttachmentMessages(
 		if (att.fileData || !att.path) continue;
 		const ext = extname(att.path).toLowerCase();
 		if (!IMAGE_EXT.has(ext) || ext === ".svg") continue;
-		// 机器浏览的绝对路径（盘符 / posix "/"）允许在工作区之外。
-		const absPath = isAbsoluteWirePath(att.path);
-		const abs = absPath ? wireToAbs(att.path) : resolve(root, att.path);
-		const rawRel = absPath ? null : relative(root, abs);
-		if (!absPath && (rawRel!.startsWith("..") || rawRel!.includes(`${sep}..`))) continue;
-		let st: { size: number; isFile(): boolean } | undefined;
-		try {
-			st = await fs.stat(abs);
-		} catch {
-			continue;
-		}
-		if (!st.isFile() || st.size === 0 || st.size > MAX_PATH_IMAGE_BYTES) {
-			continue;
-		}
-		const buf = await fs.readFile(abs);
-		const mime = sniffImageMime(buf, ext);
-		if (!mime) continue;
-		const raw = buf.toString("base64");
-		pathImageData.set(idx, { raw, mimeType: mime, bytes: st.size });
-		if (!mainSupportsVision) {
-			bridgedImages.push({ idx, att, raw, mimeType: mime, bytes: st.size });
+		const target = resolveTarget(att.path);
+		if (target.outsideWorkspace) continue;
+		if (target.isRemote) {
+			let st: { size: number; isFile: boolean } | undefined;
+			try {
+				if (!remoteSshSvc) continue;
+				st = await remoteSshSvc.sftpStat(effCwd, target.abs);
+			} catch {
+				continue;
+			}
+			if (!st || !st.isFile || st.size === 0 || st.size > MAX_PATH_IMAGE_BYTES) {
+				continue;
+			}
+			try {
+				const fileRes = await remoteSshSvc.sftpReadFile(effCwd, target.abs, MAX_PATH_IMAGE_BYTES);
+				const mime = sniffImageMime(fileRes.data, ext);
+				if (!mime) continue;
+				const raw = fileRes.data.toString("base64");
+				pathImageData.set(idx, { raw, mimeType: mime, bytes: st.size });
+				if (!mainSupportsVision) {
+					bridgedImages.push({ idx, att, raw, mimeType: mime, bytes: st.size });
+				}
+			} catch {
+				continue;
+			}
+		} else {
+			let st: { size: number; isFile(): boolean } | undefined;
+			try {
+				st = await fs.stat(target.abs);
+			} catch {
+				continue;
+			}
+			if (!st.isFile() || st.size === 0 || st.size > MAX_PATH_IMAGE_BYTES) {
+				continue;
+			}
+			const buf = await fs.readFile(target.abs);
+			const mime = sniffImageMime(buf, ext);
+			if (!mime) continue;
+			const raw = buf.toString("base64");
+			pathImageData.set(idx, { raw, mimeType: mime, bytes: st.size });
+			if (!mainSupportsVision) {
+				bridgedImages.push({ idx, att, raw, mimeType: mime, bytes: st.size });
+			}
 		}
 	}
 	/** Transcript per attachment index (filled below, keyed by bridgedImages idx). */
@@ -559,10 +640,8 @@ export async function buildAttachmentMessages(
 			continue;
 		}
 
-		const absPath = isAbsoluteWirePath(att.path);
-		const abs = absPath ? wireToAbs(att.path) : resolve(root, att.path);
-		const rawRel = absPath ? null : relative(root, abs);
-		if (!absPath && (rawRel!.startsWith("..") || rawRel!.includes(`${sep}..`))) {
+		const target = resolveTarget(att.path);
+		if (target.outsideWorkspace) {
 			ctx.emit({
 				type: "notice",
 				level: "warning",
@@ -574,18 +653,38 @@ export async function buildAttachmentMessages(
 		// Normalize to forward slashes (relative() returns "\\" on Windows);
 		// <file path> and details.path must use the wire format. 机器浏览的绝对
 		// 路径直接按绝对路径引用（SDK 读文件工具接受绝对路径，与上传文件一致）。
-		const rel = absPath ? abs.split(sep).join("/") : rawRel!.split(sep).join("/");
+		const rel = target.rel;
 		let stat: { size: number; isFile(): boolean; isDirectory(): boolean } | undefined;
-		try {
-			stat = await fs.stat(abs);
-		} catch {
-			ctx.emit({
-				type: "notice",
-				level: "error",
-				text: `附件不存在：${att.path}`,
-				textEn: `Attachment does not exist: ${att.path}`,
-			});
-			continue;
+		if (target.isRemote) {
+			try {
+				if (!remoteSshSvc) throw new Error("Remote SSH service is not available");
+				const st = await remoteSshSvc.sftpStat(effCwd, target.abs);
+				stat = {
+					size: st.size,
+					isFile: () => st.isFile,
+					isDirectory: () => st.isDirectory,
+				};
+			} catch {
+				ctx.emit({
+					type: "notice",
+					level: "error",
+					text: `附件不存在：${att.path}`,
+					textEn: `Attachment does not exist: ${att.path}`,
+				});
+				continue;
+			}
+		} else {
+			try {
+				stat = await fs.stat(target.abs);
+			} catch {
+				ctx.emit({
+					type: "notice",
+					level: "error",
+					text: `附件不存在：${att.path}`,
+					textEn: `Attachment does not exist: ${att.path}`,
+				});
+				continue;
+			}
 		}
 
 		const name = att.path.split(/[\\/]/).pop() ?? att.path;
@@ -688,7 +787,18 @@ ${transcript}
 				});
 				continue;
 			}
-			const data = await fs.readFile(abs, "base64");
+			let data: string;
+			try {
+				if (target.isRemote) {
+					if (!remoteSshSvc) continue;
+					const fileRes = await remoteSshSvc.sftpReadFile(effCwd, target.abs, MAX_ATTACHMENT_BYTES);
+					data = fileRes.data.toString("base64");
+				} else {
+					data = await fs.readFile(target.abs, "base64");
+				}
+			} catch {
+				continue;
+			}
 			out.push({
 				message: {
 					customType: "file",
