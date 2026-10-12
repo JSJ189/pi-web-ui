@@ -187,6 +187,22 @@ body,
 	padding: 2px 0 10px;
 }
 
+.msg-user {
+	padding-bottom: 2px !important;
+}
+
+.msg-user .msg-actions {
+	margin-top: 2px !important;
+}
+
+.msg-user + .msg-assistant {
+	padding-top: 2px !important;
+}
+
+.msg-user + .msg-assistant .msg-body > :first-child {
+	margin-top: 2px !important;
+}
+
 /* 操作按钮：卡头只有自己的复制键（.chead-copy），消息级按钮（复制三件套 /
    分叉 / 回滚 / 朗读）统一在底部 .msg-actions 行，流内排在消息气泡/正文下边，
    桌面端与手机端保持一致。 */
@@ -405,10 +421,6 @@ div.chead[role="button"]:hover,
 .thinking-head {
 	font-size: 12px;
 	color: var(--text-faint);
-}
-
-.thinking-icon {
-	color: var(--text-faint) !important;
 }
 
 .thinking-body {
