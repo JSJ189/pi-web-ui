@@ -4342,6 +4342,21 @@ body.panel-resizing .scm-divider::after {
 	box-shadow: 0 0 4px var(--red);
 }
 
+.status-latency {
+	font-variant-numeric: tabular-nums;
+	font-size: 10.5px;
+	color: var(--text-faint);
+}
+.status-latency.ok {
+	color: var(--green);
+}
+.status-latency.mid {
+	color: var(--amber);
+}
+.status-latency.warn {
+	color: var(--red);
+}
+
 .status-item {
 	display: inline-flex;
 	align-items: center;
@@ -6633,6 +6648,146 @@ body.panel-resizing .scm-divider::after {
 	border: 1px solid rgba(16, 185, 129, 0.38);
 	color: #34d399;
 }
+
+/* -------------------------------------------------------------------------
+   Git Worktree (工作树) Banner
+   ------------------------------------------------------------------------- */
+.worktree-banner {
+	display: flex;
+	align-items: center;
+	justify-content: space-between;
+	flex-wrap: wrap;
+	gap: 8px 12px;
+	margin: 6px 12px 4px;
+	padding: 7px 12px;
+	border-radius: 8px;
+	color: var(--text);
+	font-size: 12px;
+	min-width: 0;
+	max-width: calc(100% - 24px);
+}
+.worktree-banner.linked {
+	background: rgba(16, 185, 129, 0.08);
+	border: 1px solid rgba(16, 185, 129, 0.35);
+}
+.worktree-banner.notice {
+	background: rgba(245, 158, 11, 0.08);
+	border: 1px solid rgba(245, 158, 11, 0.35);
+}
+.worktree-banner-info {
+	display: flex;
+	flex-direction: column;
+	gap: 2px;
+	min-width: 0;
+	flex: 1 1 220px;
+}
+.worktree-banner-title {
+	display: flex;
+	align-items: center;
+	gap: 6px;
+	font-weight: 600;
+	min-width: 0;
+	overflow-wrap: anywhere;
+}
+.worktree-banner.linked .worktree-banner-title {
+	color: #34d399;
+}
+.worktree-banner.notice .worktree-banner-title {
+	color: var(--amber);
+}
+.worktree-banner-desc {
+	font-size: 11px;
+	color: var(--text-dim);
+	min-width: 0;
+	overflow: hidden;
+	text-overflow: ellipsis;
+	white-space: nowrap;
+}
+.worktree-banner-actions {
+	display: flex;
+	align-items: center;
+	flex-wrap: wrap;
+	gap: 6px;
+	flex-shrink: 0;
+}
+.worktree-banner-btn {
+	padding: 3px 8px;
+	border-radius: 6px;
+	border: 1px solid var(--border);
+	background: var(--bg-elev);
+	color: var(--text);
+	font-size: 11px;
+	cursor: pointer;
+	transition:
+		background 0.15s,
+		border-color 0.15s;
+}
+.worktree-banner-btn:hover {
+	border-color: var(--accent);
+	background: var(--bg-elev2);
+}
+.worktree-banner-btn.primary {
+	border-color: rgba(16, 185, 129, 0.45);
+	background: rgba(16, 185, 129, 0.14);
+	color: #6ee7b7;
+}
+.worktree-banner-btn.primary:hover {
+	background: rgba(16, 185, 129, 0.24);
+}
+.worktree-banner-btn.danger:hover {
+	border-color: var(--red);
+	color: var(--red);
+}
+
+.lp-worktree-badge {
+	display: inline-flex;
+	align-items: center;
+	padding: 1px 5px;
+	margin-left: 5px;
+	border-radius: 4px;
+	font-size: 10px;
+	font-weight: 500;
+	line-height: 1.3;
+	vertical-align: middle;
+	flex-shrink: 0;
+}
+.lp-worktree-badge.linked {
+	background: rgba(16, 185, 129, 0.14);
+	border: 1px solid rgba(16, 185, 129, 0.38);
+	color: #34d399;
+}
+.lp-worktree-badge.dirty {
+	background: rgba(239, 68, 68, 0.14);
+	border: 1px solid rgba(239, 68, 68, 0.38);
+	color: var(--red);
+}
+
+.worktree-banner-expand {
+	width: 100%;
+	display: flex;
+	flex-direction: column;
+	gap: 4px;
+	margin-top: 4px;
+	padding-top: 6px;
+	border-top: 1px dashed var(--border);
+}
+.worktree-expand-row {
+	display: flex;
+	align-items: center;
+	justify-content: space-between;
+	font-size: 11px;
+}
+.worktree-expand-name {
+	display: flex;
+	align-items: center;
+	gap: 4px;
+	color: var(--text-dim);
+}
+.worktree-expand-actions {
+	display: flex;
+	align-items: center;
+	gap: 4px;
+}
 .project-icon.sandbox-icon {
 	font-size: 13px;
 	line-height: 1;
@@ -7219,6 +7374,8 @@ body:not(.has-wallpaper)::after {
 /* 惰性窗口化的等高占位（视口外的重型消息收起后的替身） */
 .msg-lazy-ph {
 	margin: 0;
+	box-sizing: border-box;
+	contain: layout style;
 }
 
 .msg {
@@ -7227,6 +7384,11 @@ body:not(.has-wallpaper)::after {
 	/* Question-nav jumps land the message just below the top of the list,
 	 * matching the active-bar detection line in MessageList. */
 	scroll-margin-top: 84px;
+	/* content-visibility: auto 配合 contain-intrinsic-size 让浏览器在底层
+	 * 自动跳过离屏重型消息的重排与绘制开销；auto 关键字让浏览器自动记住
+	 * 实测尺寸，与容器的 overflow-anchor: auto 协同，杜绝滚动跳跃。 */
+	content-visibility: auto;
+	contain-intrinsic-size: auto 160px;
 }
 
 .msg-meta {
@@ -7266,6 +7428,74 @@ body:not(.has-wallpaper)::after {
 	font-size: 11px;
 	color: var(--text-faint);
 	margin-left: auto;
+}
+
+/* 隐藏聊天中的模型名字行（设置 → 消息显示 → 隐藏聊天中的模型名字行，默认关闭）：
+ * 隐去助手消息顶部的「角色 · 模型名 · 时间」行（若旧消息展开有「收起」按钮则仅留该按钮），
+ * 并收紧消息块及思考/工具卡片的垂直间距，使多步工具调用的对话流更加紧凑。 */
+.main.hide-model-row .msg-model {
+	display: none !important;
+}
+
+.main.hide-model-row .msg-assistant .msg-meta {
+	display: none !important;
+}
+
+.main.hide-model-row .msg-assistant .msg-meta:has(.msg-collapse-btn) {
+	display: flex !important;
+	margin-bottom: 2px !important;
+}
+
+.main.hide-model-row .msg-assistant .msg-meta .msg-role,
+.main.hide-model-row .msg-assistant .msg-meta .msg-time {
+	display: none !important;
+}
+
+.main.hide-model-row .msg {
+	padding-top: 3px !important;
+	padding-bottom: 6px !important;
+}
+
+.main.hide-model-row .msg-assistant {
+	padding-top: 2px !important;
+	padding-bottom: 4px !important;
+}
+
+.main.hide-model-row .msg-assistant + .msg-assistant {
+	padding-top: 0 !important;
+}
+
+.main.hide-model-row .msg-assistant .thinking,
+.main.hide-model-row .msg-assistant .toolcall {
+	margin: 4px 0 !important;
+}
+
+.main.hide-model-row .msg-assistant .msg-body > :first-child {
+	margin-top: 0 !important;
+}
+
+.main.hide-model-row .msg-assistant .msg-body > :last-child {
+	margin-bottom: 0 !important;
+}
+
+.main.hide-model-row .msg-actions {
+	margin-top: 2px;
+}
+
+.main.hide-model-row .msg-user {
+	padding-bottom: 0 !important;
+}
+
+.main.hide-model-row .msg-user .msg-actions {
+	margin-top: 0 !important;
+}
+
+.main.hide-model-row .msg-user + .msg-assistant {
+	padding-top: 0 !important;
+}
+
+.main.hide-model-row .msg-user + .msg-assistant .msg-body > :first-child {
+	margin-top: 2px !important;
 }
 
 /* ------------------------------------------------ in-conversation search (Ctrl+F) */
@@ -8183,15 +8413,51 @@ span.msg-editor-hint svg {
 	color: var(--accent);
 }
 
-/* 思考 / 工具 head 的图标占同尺寸盒子，箭头 / 图标 / 标题位置完全对齐。 */
-.thinking-icon,
 .toolcall-icon {
+	color: var(--text-dim);
+}
+
+/* 语义化工具色系：按工具职责赋予鲜活且和谐的主题色，配合 13% 柔光底衬徽标，
+ * 既保持 Feather 线性矢量风格完全统一，又能在长对话流中一眼扫出工具类别。 */
+.toolcall-icon.tc-tone-exec {
+	color: var(--term-bright-green);
+}
+
+.toolcall-icon.tc-tone-read {
+	color: var(--term-bright-blue);
+}
+
+.toolcall-icon.tc-tone-edit {
+	color: var(--amber);
+}
+
+.toolcall-icon.tc-tone-search {
+	color: var(--term-bright-cyan);
+}
+
+.toolcall-icon.tc-tone-code {
+	color: var(--term-bright-magenta);
+}
+
+.toolcall-icon.tc-tone-agent {
+	color: var(--term-bright-red);
+}
+
+.toolcall-icon.tc-tone-ui {
+	color: var(--accent);
+}
+
+/* 思考 / 工具 head 的图标占同尺寸圆角柔光方盒，箭头 / 图标 / 标题位置完全对齐。 */
+.chead-icon.thinking-icon,
+.chead-icon.toolcall-icon {
 	display: inline-flex;
 	align-items: center;
 	justify-content: center;
 	flex: none;
 	width: 20px;
-	height: 28px;
+	height: 20px;
+	border-radius: 5px;
+	background: color-mix(in srgb, currentColor 13%, transparent);
 	font-size: 14px;
 }
 
@@ -8214,6 +8480,39 @@ span.msg-editor-hint svg {
 /* Animated “…” on the thinking header while reasoning is streaming live. */
 .thinking-live .thinking-toggle {
 	color: var(--text);
+}
+
+.thinking.live .thinking-icon,
+.thinking-live .thinking-icon {
+	color: var(--accent);
+	animation: conv-pulse 2s ease-in-out infinite;
+}
+
+.thinking-preview-live {
+	display: flex;
+	align-items: center;
+	width: 100%;
+	min-width: 0;
+}
+
+.thinking-preview-prefix {
+	flex: none;
+	white-space: pre;
+}
+
+.thinking-preview-viewport {
+	flex: 1 1 auto;
+	min-width: 0;
+	overflow: hidden;
+	display: flex;
+	justify-content: flex-end;
+}
+
+.thinking-preview-track {
+	min-width: 100%;
+	flex-shrink: 0;
+	white-space: nowrap;
+	text-align: left;
 }
 
 .thinking-live-label {
@@ -8871,7 +9170,7 @@ div.chead[role="button"]:focus-visible,
 	justify-content: center;
 	flex: none;
 	width: 20px;
-	height: 28px;
+	height: 20px;
 	font-size: 14px;
 }
 .chead-icon > svg {
@@ -9533,11 +9832,60 @@ div.chead[role="button"]:focus-visible,
 	}
 }
 
+.msg-user {
+	padding-bottom: 2px;
+}
+
 .msg-user .msg-body {
 	background: var(--accent-soft);
 	border: 1px solid rgba(139, 92, 246, 0.25);
 	border-radius: 12px;
 	padding: 10px 14px;
+}
+
+/* 用户消息底部的操作栏（.msg-actions）收紧：
+ * 用户消息气泡外单独占有一行 .msg-actions，未 hover 时 opacity 为 0。
+ * 此处收紧其 margin-top 并使用小一号按钮（26px，与触屏/卡头对齐），
+ * 避免在未 hover 时留下过大的空白断层。 */
+.msg-user .msg-actions {
+	margin-top: 2px;
+}
+
+.msg-user .msg-action {
+	width: 26px;
+	height: 26px;
+	font-size: 14px;
+	border-radius: 6px;
+}
+
+.msg-user .msg-action > svg {
+	width: 14px;
+	height: 14px;
+}
+
+.msg-user .msg-copy-group {
+	height: 26px;
+	border-radius: 6px;
+}
+
+.msg-user .msg-copy-main-btn {
+	width: 26px;
+	height: 26px;
+}
+
+.msg-user .msg-copy-caret-btn {
+	width: 16px;
+	height: 26px;
+}
+
+/* 用户消息后紧跟助手消息时收紧过渡间距 */
+.msg-user + .msg-assistant {
+	padding-top: 2px;
+}
+
+.msg-user + .msg-assistant .msg-body > .thinking:first-child,
+.msg-user + .msg-assistant .msg-body > .toolcall:first-child {
+	margin-top: 4px;
 }
 
 .msg-error {
@@ -18073,11 +18421,11 @@ a.set-uninstall:hover {
 		):not(:has(.working)):not(:has(.bar-item-working)) {
 		display: none !important;
 	}
-	/* 连接状态：仅保留状态指示圆点，隐藏文字 */
+	/* 连接状态：仅保留状态指示圆点与延迟数值，隐藏文字标签 */
 	.statusbar .status-conn,
 	.statusbar .bar-item-conn {
 		padding: 0 !important;
-		gap: 0;
+		gap: 3px;
 	}
 	.statusbar .status-conn .status-conn-label,
 	.statusbar .bar-item-conn .status-conn-label {
@@ -20762,4 +21110,73 @@ a.set-uninstall:hover {
 	overflow-wrap: anywhere;
 	word-break: break-word;
 	color: var(--text);
+}
+
+/* ============================================================
+   Zen / Focus Mode (极简沉浸模式)
+   ============================================================ */
+.app.zen-mode .topbar,
+.app.zen-mode .footer-bar,
+.app.zen-mode .side-dock,
+.app.zen-mode .panel-rail,
+.app.zen-mode .panel-drawer,
+.app.zen-mode .resize-handle,
+.app.zen-mode .chat-header {
+	display: none !important;
+}
+
+.app.zen-mode .layout {
+	height: 100vh;
+	max-height: 100vh;
+}
+
+.app.zen-mode .main {
+	--chat-rail: 0px;
+	padding-top: 14px;
+}
+
+/* 浮动退出按钮 (半透明融入背景，hover/focus 唤醒高亮) */
+.zen-exit-pill {
+	position: fixed;
+	top: 14px;
+	right: 18px;
+	z-index: 1000;
+	display: inline-flex;
+	align-items: center;
+	gap: 6px;
+	padding: 6px 14px;
+	border-radius: 999px;
+	border: 1px solid var(--border);
+	background: var(--bg-elev);
+	color: var(--text-dim);
+	font-size: 12px;
+	font-family: inherit;
+	cursor: pointer;
+	opacity: 0.22;
+	transition:
+		opacity 0.2s ease,
+		transform 0.2s ease,
+		color 0.2s ease,
+		background 0.2s ease,
+		border-color 0.2s ease,
+		box-shadow 0.2s ease;
+	box-shadow: 0 2px 10px rgba(0, 0, 0, 0.12);
+	backdrop-filter: blur(8px);
+	-webkit-backdrop-filter: blur(8px);
+	user-select: none;
+}
+
+.zen-exit-pill:hover,
+.zen-exit-pill:focus-visible {
+	opacity: 0.95;
+	color: var(--text);
+	border-color: var(--border);
+	background: var(--bg-elev2);
+	transform: translateY(-1px);
+	box-shadow: 0 4px 14px rgba(0, 0, 0, 0.2);
+}
+
+.zen-exit-pill svg {
+	font-size: 13px;
+	flex-shrink: 0;
 }

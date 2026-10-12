@@ -72,3 +72,64 @@ function getSnapshot(): boolean {
 export function useWideChat(): boolean {
 	return useSyncExternalStore(subscribe, getSnapshot);
 }
+
+// ---- 隐藏聊天中的模型名字行（紧凑对话流）------------------------------------
+
+const HIDE_MODEL_ROW_SETTINGS_KEY = "pi-web-ui:hide-model-row";
+
+export interface HideModelRowSettings {
+	/** 是否隐藏聊天中的模型名字行（助手消息顶栏 .msg-meta），使对话流更紧凑 */
+	hide: boolean;
+}
+
+export const DEFAULT_HIDE_MODEL_ROW_SETTINGS: HideModelRowSettings = { hide: false };
+
+/** 规整隐藏模型名字行设置：非对象 / 字段类型错误一律回退默认关闭。 */
+export function normalizeHideModelRowSettings(raw: unknown): HideModelRowSettings {
+	if (!raw || typeof raw !== "object") return { ...DEFAULT_HIDE_MODEL_ROW_SETTINGS };
+	const o = raw as Record<string, unknown>;
+	return {
+		hide: typeof o.hide === "boolean" ? o.hide : DEFAULT_HIDE_MODEL_ROW_SETTINGS.hide,
+	};
+}
+
+function loadHideModelRowSettings(): HideModelRowSettings {
+	try {
+		const raw = localStorage.getItem(HIDE_MODEL_ROW_SETTINGS_KEY);
+		if (!raw) return { ...DEFAULT_HIDE_MODEL_ROW_SETTINGS };
+		return normalizeHideModelRowSettings(JSON.parse(raw));
+	} catch {
+		return { ...DEFAULT_HIDE_MODEL_ROW_SETTINGS };
+	}
+}
+
+export function saveHideModelRowSettings(s: HideModelRowSettings): void {
+	const norm = normalizeHideModelRowSettings(s);
+	try {
+		localStorage.setItem(HIDE_MODEL_ROW_SETTINGS_KEY, JSON.stringify(norm));
+	} catch {
+		/* ignore */
+	}
+	cachedHideModelRow = norm;
+	for (const l of hideModelRowListeners) l();
+}
+
+let cachedHideModelRow: HideModelRowSettings | null = null;
+const hideModelRowListeners = new Set<() => void>();
+
+function subscribeHideModelRow(onStoreChange: () => void): () => void {
+	hideModelRowListeners.add(onStoreChange);
+	return () => {
+		hideModelRowListeners.delete(onStoreChange);
+	};
+}
+
+function getHideModelRowSnapshot(): boolean {
+	if (!cachedHideModelRow) cachedHideModelRow = loadHideModelRowSettings();
+	return cachedHideModelRow.hide;
+}
+
+/** 当前是否隐藏聊天中的模型名字行（设置面板切换后即时生效，无需刷新）。 */
+export function useHideModelRow(): boolean {
+	return useSyncExternalStore(subscribeHideModelRow, getHideModelRowSnapshot);
+}

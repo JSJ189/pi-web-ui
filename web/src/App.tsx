@@ -16,7 +16,9 @@ import { MessageList } from "./components/MessageList";
 import { ChatInput } from "./components/ChatInput";
 import { GoalBar } from "./components/GoalBar";
 import { SandboxModal } from "./components/SandboxModal";
-import { FiRefreshCw } from "react-icons/fi";
+import { WorktreeBanner } from "./components/WorktreeBanner";
+import { FiRefreshCw, FiMinimize2 } from "react-icons/fi";
+import { useEscapeKey } from "./shortcut-stack";
 
 import { FooterBar } from "./components/FooterBar";
 import { formatSessionHash, parseSessionHash } from "./session-url";
@@ -96,7 +98,7 @@ import { recordModelUsage } from "./model-usage";
 import { loadSoundSettings, playSound, saveSoundSettings, type SoundKind, type SoundSettings } from "./sounds";
 import { assistantPlainText, loadTtsSettings, saveTtsSettings, speak, type TtsSettings } from "./tts";
 import { shouldSuppressNotify, currentPresence } from "./notify";
-import { useWideChat } from "./chat-width-settings";
+import { useWideChat, useHideModelRow } from "./chat-width-settings";
 import { registerFilePreviewHost } from "./file-preview-bridge";
 import { projectNameFromCwd, useProjectTitle } from "./title-settings";
 import { notify } from "./notify";
@@ -828,6 +830,7 @@ export function App() {
 	const pendingPermRequest = chat.permRequests.find((r) => !answeredPermRequests.has(r.id)) ?? null;
 	// Wide chat column (client-local, default off).
 	const wide = useWideChat();
+	const hideModelRow = useHideModelRow();
 	// Background-task panel (AI-started servers — stop individually or all).
 	const [bgTasksOpen, setBgTasksOpen] = useState(false);
 	// Global search panel (sessions / projects / workspace files).
@@ -996,6 +999,59 @@ export function App() {
 		window.addEventListener("keydown", onKey);
 		return () => window.removeEventListener("keydown", onKey);
 	}, []);
+
+	// -- zen mode (focus mode) ------------------------------------------------
+	const [zenMode, setZenMode] = useState<boolean>(() => {
+		try {
+			return localStorage.getItem("pi_zen_mode") === "1";
+		} catch {
+			return false;
+		}
+	});
+
+	useEffect(() => {
+		try {
+			if (zenMode) {
+				localStorage.setItem("pi_zen_mode", "1");
+			} else {
+				localStorage.removeItem("pi_zen_mode");
+			}
+		} catch {
+			/* ignore */
+		}
+	}, [zenMode]);
+
+	const toggleZenMode = useCallback(() => {
+		setZenMode((prev) => {
+			const next = !prev;
+			if (next && view !== "chat") {
+				setView("chat");
+			}
+			return next;
+		});
+	}, [view]);
+
+	useEscapeKey(() => {
+		if (zenMode) {
+			setZenMode(false);
+			return true;
+		}
+		return false;
+	}, zenMode);
+
+	// Alt+Z / Ctrl+Shift+F / Cmd+Shift+F toggles focus / zen mode
+	useEffect(() => {
+		const onKey = (e: KeyboardEvent) => {
+			const isAltZ = e.altKey && !e.ctrlKey && !e.metaKey && e.key.toLowerCase() === "z";
+			const isCtrlShiftF = (e.ctrlKey || e.metaKey) && e.shiftKey && e.key.toLowerCase() === "f";
+			if (isAltZ || isCtrlShiftF) {
+				e.preventDefault();
+				toggleZenMode();
+			}
+		};
+		window.addEventListener("keydown", onKey);
+		return () => window.removeEventListener("keydown", onKey);
+	}, [toggleZenMode]);
 
 	// -- sound notifications --------------------------------------------------
 	const [sound, setSound] = useState<SoundSettings>(loadSoundSettings);
@@ -1638,7 +1694,7 @@ export function App() {
 		// navigating away; children with their own handlers (input bar / edit
 		// composer) call stopPropagation and keep priority.
 		<div
-			className="app"
+			className={`app${zenMode ? " zen-mode" : ""}`}
 			data-pi-anchor="app"
 			onDragOver={(e) => {
 				if (!Array.from(e.dataTransfer?.types ?? []).includes("Files")) return;
@@ -1665,6 +1721,18 @@ export function App() {
 				if (others.length > 0) void addLocalFiles(others);
 			}}
 		>
+			{zenMode && (
+				<button
+					type="button"
+					className="zen-exit-pill"
+					onClick={toggleZenMode}
+					title={t("zenModeExitTip")}
+					aria-label={t("zenModeExit")}
+				>
+					<FiMinimize2 />
+					<span>{t("zenModeExit")}</span>
+				</button>
+			)}
 			{appDragOver && (
 				<div className="app-drop-overlay" aria-hidden>
 					<span>📎 {t("dropHereToAttach")}</span>
@@ -1679,6 +1747,8 @@ export function App() {
 				uiOverflow={uiOverflow}
 				uiContextTopbar={uiSlots["contextmenu.topbar"]}
 				onUiAction={onUiAction}
+				zenMode={zenMode}
+				onToggleZenMode={toggleZenMode}
 				onViewChange={(v: ViewName) => {
 					// The terminal panel stays mounted while hidden. Create the first
 					// shell on the user's terminal-view click, not on initial mount.
@@ -1886,7 +1956,7 @@ export function App() {
 						</div>
 						{!isMobile && <ResizeHandle side="left" width={leftWidth} onResize={resizeLeft} />}
 						<main
-							className={`${wide ? "main wide-chat" : "main"}${
+							className={`${wide ? "main wide-chat" : "main"}${hideModelRow ? " hide-model-row" : ""}${
 								chat.transition && !chat.transition.previewMessages?.length ? " main-transitioning" : ""
 							}`}
 						>
@@ -1995,6 +2065,13 @@ export function App() {
 												</button>
 											</div>
 										</div>
+									)}
+									{chat.state.worktree && (
+										<WorktreeBanner
+											worktree={chat.state.worktree}
+											onSwitch={(path) => send({ type: "switch_worktree", path })}
+											onRemove={(path, force) => send({ type: "remove_worktree", path, force })}
+										/>
 									)}
 									{chat.state.isEphemeral && (
 										<div className="ephemeral-banner">
@@ -2308,7 +2385,7 @@ export function App() {
 								onManageModels={openManageModels}
 								onSent={clearAttachments}
 								quickPhrases={chat.settings?.quickPhrases ?? []}
-								quickPhrasesEnabled={chat.settings?.quickPhrasesEnabled ?? true}
+								quickPhrasesEnabled={zenMode ? false : (chat.settings?.quickPhrasesEnabled ?? true)}
 								recallDrafts={recallDrafts}
 								dshPermCurrent={chat.state?.permission ?? null}
 								dshPermOptions={chat.dshPermission?.options ?? undefined}

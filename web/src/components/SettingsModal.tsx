@@ -83,7 +83,7 @@ import {
 import { randomUuid } from "../uuid";
 import { THINKING_VALUES } from "../thinking-levels";
 import { formatTokenDraft, parseTokenInput } from "../token-input";
-import { useWideChat, saveChatWidthSettings } from "../chat-width-settings";
+import { useWideChat, saveChatWidthSettings, useHideModelRow, saveHideModelRowSettings } from "../chat-width-settings";
 import { usePresentAutoOpen, savePresentAutoOpen } from "../present-settings";
 import { useProjectTitle, saveTitleSettings } from "../title-settings";
 import { sanitizeWallpaperUrl, fileToWallpaperUrl, saveWallpaperSettings, useWallpaperSettings } from "../wallpaper";
@@ -967,6 +967,7 @@ export function SettingsModal({
 	const totalContextTokenEstimate = promptTokenEstimate + toolsSchemaTokenEstimate;
 	// 宽屏聊天列开关（纯前端 localStorage，见 chat-width-settings.ts）。
 	const wideChat = useWideChat();
+	const hideModelRow = useHideModelRow();
 	// present_files 卡片：AI 标了「先看这个」时要不要自动弹预览窗（纯前端偏好，localStorage）。
 	const presentAutoOpen = usePresentAutoOpen();
 	const projectTitle = useProjectTitle();
@@ -3129,6 +3130,12 @@ export function SettingsModal({
 									tip={t("wideChatDesc")}
 									enabled={wideChat}
 									onToggle={() => saveChatWidthSettings({ wide: !wideChat })}
+								/>
+								<ToggleRow
+									title={t("hideModelRow")}
+									tip={t("hideModelRowDesc")}
+									enabled={hideModelRow}
+									onToggle={() => saveHideModelRowSettings({ hide: !hideModelRow })}
 								/>
 								<ToggleRow
 									title={t("projectTitle")}

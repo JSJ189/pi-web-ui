@@ -16,6 +16,8 @@ import {
 	FiPlus,
 	FiSettings,
 	FiLayers,
+	FiMaximize2,
+	FiMinimize2,
 	FiTerminal,
 	FiVolume2,
 } from "react-icons/fi";
@@ -205,6 +207,9 @@ interface TopBarProps {
 	reloadThemes: () => void;
 	/** 打开「图标编辑」模式（直接拖图标改顶栏/底栏/侧边停靠栏的位置）。 */
 	onOpenIconEdit: () => void;
+	/** 极简沉浸模式状态与切换回调 */
+	zenMode?: boolean;
+	onToggleZenMode?: () => void;
 }
 
 export function TopBar({
@@ -230,6 +235,8 @@ export function TopBar({
 	onThemeChange,
 	reloadThemes,
 	onOpenIconEdit,
+	zenMode,
+	onToggleZenMode,
 }: TopBarProps) {
 	const { locale, setLocale, t, packs } = useI18n();
 	// 「⋯」溢出菜单的开关（宿主自己的菜单，插件不碰 DOM；顺序与设置面板里看到的一致）。
@@ -302,6 +309,7 @@ export function TopBar({
 		"host:search",
 		"host:browser",
 		"host:tasks",
+		"host:zen-mode",
 		"host:settings",
 		"host:sound",
 		"host:language",
@@ -374,6 +382,9 @@ export function TopBar({
 				return true;
 			case "host:tasks":
 				onOpenBgTasks();
+				return true;
+			case "host:zen-mode":
+				onToggleZenMode?.();
 				return true;
 			case "host:settings":
 				onOpenSettings();
@@ -1060,6 +1071,19 @@ export function TopBar({
 				<FiLayers />
 				<span className="chip-sub">{t("bgTasks")}</span>
 				{chat.bgServers.length > 0 && <span className="bg-task-badge">{chat.bgServers.length}</span>}
+			</button>
+		),
+		"host:zen-mode": (
+			<button
+				type="button"
+				className={`chip chip-zen${zenMode ? " active" : ""}`}
+				data-tip={t("zenModeTip")}
+				onClick={onToggleZenMode}
+				aria-label={t("zenMode")}
+				aria-pressed={zenMode}
+			>
+				{zenMode ? <FiMinimize2 /> : <FiMaximize2 />}
+				<span className="chip-sub">{t("zenMode")}</span>
 			</button>
 		),
 		"host:settings": (
