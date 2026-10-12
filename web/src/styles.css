@@ -8930,6 +8930,7 @@ div.chead[role="button"]:focus-visible,
 	white-space: pre;
 	overflow: auto;
 	max-height: 200px;
+	overscroll-behavior: contain;
 	background: var(--chip-bg, var(--bg-elev2));
 	border: 1px solid var(--code-border, var(--border-soft));
 	border-radius: 6px;
@@ -9087,6 +9088,7 @@ div.chead[role="button"]:focus-visible,
 	margin: 0;
 	max-height: 280px;
 	overflow: auto;
+	overscroll-behavior: contain;
 	background: var(--chip-bg, var(--code-bg));
 	border: 1px solid var(--code-border, var(--border-soft));
 	border-radius: 6px;
@@ -9279,6 +9281,7 @@ div.chead[role="button"]:focus-visible,
 	margin: 0;
 	max-height: 320px;
 	overflow: auto;
+	overscroll-behavior: contain;
 	background: var(--chip-bg, var(--code-bg));
 	border: 1px solid var(--code-border, var(--border-soft));
 	border-radius: 6px;

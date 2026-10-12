@@ -1,5 +1,5 @@
 import { memo, useEffect, useMemo, useRef, useState } from "react";
-import { segmentStream } from "../stream-markdown";
+import { segmentStream, stepSmoothStream } from "../stream-markdown";
 import { MarkdownBody } from "./Markdown";
 
 /**
@@ -29,34 +29,101 @@ const FrozenSegment = memo(function FrozenSegment({ text }: { text: string }) {
 	return <MarkdownBody text={text} />;
 });
 
-const TAIL_INTERVAL_MS = 200;
+/** 恒定步进时间间隔（ms）：锚定约 45 步/秒的细腻节奏，防止在 120Hz/144Hz/240Hz 高刷屏上因 rAF 频率翻倍导致吐字过快。 */
+const SMOOTH_PACE_MS = 22;
 
-/** Active (still-growing) tail: re-parse at most every TAIL_INTERVAL_MS,
- *  with a trailing timer so nothing is left unrendered. */
+/**
+ * 将网络层大段脉冲到达的流式文本，通过 requestAnimationFrame + 时间锚定熨平为
+ * 恒定节奏逐字/微步连续流淌的字符串（接收时大段接收，渲染时逐字细腻丝滑渲染）。
+ * - 首次挂载若已有较长历史文本（> 120 字符，如刷新或切换会话），直接对齐现有长度，仅对后续增量平滑吐出；
+ * - 支持 onSettled 回调：当缓冲池追平 targetText 时触发，供流结束余韵收尾（Graceful Tail Drain）无缝切回静态渲染。
+ */
+export function useSmoothStreamText(text: string, active = true, finishing = false, onSettled?: () => void): string {
+	const [displayedLen, setDisplayedLen] = useState<number>(() => (text.length > 120 ? text.length : 0));
+	const targetRef = useRef(text);
+	targetRef.current = text;
+	const lenRef = useRef(displayedLen);
+	lenRef.current = displayedLen;
+	const finishingRef = useRef(finishing);
+	finishingRef.current = finishing;
+	const onSettledRef = useRef(onSettled);
+	onSettledRef.current = onSettled;
+
+	useEffect(() => {
+		if (!active) {
+			if (lenRef.current !== text.length) {
+				lenRef.current = text.length;
+				setDisplayedLen(text.length);
+			}
+			return;
+		}
+		if (text.length < lenRef.current) {
+			lenRef.current = text.length;
+			setDisplayedLen(text.length);
+			return;
+		}
+		if (lenRef.current >= text.length) {
+			onSettledRef.current?.();
+			return;
+		}
+
+		let raf = 0;
+		let lastTickTime = 0;
+		const tick = (now: number) => {
+			if (!finishingRef.current && lastTickTime > 0 && now - lastTickTime < SMOOTH_PACE_MS) {
+				raf = requestAnimationFrame(tick);
+				return;
+			}
+			lastTickTime = now;
+			const target = targetRef.current;
+			const next = stepSmoothStream(target, lenRef.current, finishingRef.current);
+			if (next !== lenRef.current) {
+				lenRef.current = next;
+				setDisplayedLen(next);
+			}
+			if (next < target.length) {
+				raf = requestAnimationFrame(tick);
+			} else {
+				onSettledRef.current?.();
+			}
+		};
+		raf = requestAnimationFrame(tick);
+		return () => cancelAnimationFrame(raf);
+	}, [text, active, finishing]);
+
+	if (!active || displayedLen >= text.length) return text;
+	return text.slice(0, displayedLen);
+}
+
+const LONG_TAIL_THRESHOLD = 600;
+const LONG_TAIL_INTERVAL_MS = 32;
+
+/** Active (still-growing) tail:
+ *  - Normal paragraphs (< 600 chars) and fenced code render immediately at 60FPS
+ *    alongside useSmoothStreamText's per-frame character pacer;
+ *  - Extremely long unbroken single paragraphs (>= 600 chars) throttle to 32ms (~30FPS). */
 function ActiveTail({ text, inFence }: { text: string; inFence: boolean }) {
+	const isLong = !inFence && text.length >= LONG_TAIL_THRESHOLD;
 	const [rendered, setRendered] = useState(text);
 	const lastRef = useRef(0);
 	const timerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
 
 	useEffect(() => {
-		if (inFence) {
-			// Plain code path renders directly — no throttle needed.
-			return;
-		}
+		if (!isLong) return;
 		const elapsed = Date.now() - lastRef.current;
 		const flush = () => {
 			lastRef.current = Date.now();
 			setRendered(text);
 		};
-		if (elapsed >= TAIL_INTERVAL_MS) {
+		if (elapsed >= LONG_TAIL_INTERVAL_MS) {
 			flush();
 			return;
 		}
-		timerRef.current = setTimeout(flush, TAIL_INTERVAL_MS - elapsed);
+		timerRef.current = setTimeout(flush, LONG_TAIL_INTERVAL_MS - elapsed);
 		return () => {
 			if (timerRef.current) clearTimeout(timerRef.current);
 		};
-	}, [text, inFence]);
+	}, [text, isLong]);
 
 	if (inFence) {
 		// Growing fenced code: plain <pre>, zero highlight cost while typing.
@@ -68,11 +135,20 @@ function ActiveTail({ text, inFence }: { text: string; inFence: boolean }) {
 			</div>
 		);
 	}
-	return <MarkdownBody text={rendered} />;
+	return <MarkdownBody text={isLong ? rendered : text} />;
 }
 
-export const StreamMarkdown = memo(function StreamMarkdown({ text }: { text: string }) {
-	const { frozen, active, inFence } = useMemo(() => segmentStream(text), [text]);
+export const StreamMarkdown = memo(function StreamMarkdown({
+	text,
+	finishing = false,
+	onSettled,
+}: {
+	text: string;
+	finishing?: boolean;
+	onSettled?: () => void;
+}) {
+	const smoothed = useSmoothStreamText(text, true, finishing, onSettled);
+	const { frozen, active, inFence } = useMemo(() => segmentStream(smoothed), [smoothed]);
 	return (
 		<div className="md">
 			{frozen.map((seg, i) => (

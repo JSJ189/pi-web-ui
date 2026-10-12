@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { classifyScroll } from "../../web/src/components/scroll-classify.js";
+import { classifyScroll, shouldEscapeOnScroll } from "../../web/src/components/scroll-classify.js";
 
 /**
  * MUTATION-PROOF PIN for the scroll layout-shift discriminator (5cd680b).
@@ -77,5 +77,51 @@ describe("classifyScroll — layout-shift discriminator decision table", () => {
 		const d = run({ dSt: -120, dSh: -300, stuck: false });
 		expect(d.reassert).toBe(false);
 		expect(d.flipEscape).toBe(false);
+	});
+});
+
+describe("shouldEscapeOnScroll — 用户物理手势门禁与布局突变重吸底", () => {
+	it("用户真实向上滚轮/手势（hasUserUpwardIntent=true）且 flipEscape=true → 准许逃逸，不吸底", () => {
+		const res = shouldEscapeOnScroll({
+			decisionFlipEscape: true,
+			hasUserUpwardIntent: true,
+			stuck: true,
+			escaped: false,
+		});
+		expect(res.shouldEscape).toBe(true);
+		expect(res.shouldReassert).toBe(false);
+	});
+
+	it("长输出工具/正文流式排版导致负向抖动但无用户手势（hasUserUpwardIntent=false）且处于吸底态 → 拒绝逃逸，强制重新吸底", () => {
+		const res = shouldEscapeOnScroll({
+			decisionFlipEscape: true,
+			hasUserUpwardIntent: false,
+			stuck: true,
+			escaped: false,
+		});
+		expect(res.shouldEscape).toBe(false);
+		expect(res.shouldReassert).toBe(true);
+	});
+
+	it("用户已处于逃逸状态（escaped=true）时发生布局突变 → 不逃逸，也不强行拉回底部（不打扰用户看历史）", () => {
+		const res = shouldEscapeOnScroll({
+			decisionFlipEscape: true,
+			hasUserUpwardIntent: false,
+			stuck: false,
+			escaped: true,
+		});
+		expect(res.shouldEscape).toBe(false);
+		expect(res.shouldReassert).toBe(false);
+	});
+
+	it("decisionFlipEscape=false → 既不逃逸也不再吸底", () => {
+		const res = shouldEscapeOnScroll({
+			decisionFlipEscape: false,
+			hasUserUpwardIntent: false,
+			stuck: true,
+			escaped: false,
+		});
+		expect(res.shouldEscape).toBe(false);
+		expect(res.shouldReassert).toBe(false);
 	});
 });

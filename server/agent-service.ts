@@ -143,6 +143,7 @@ import {
 	effectiveToolWatchdogMs,
 	isExtensionDisabled,
 	isExtensionEnabled,
+	isInternalExtension,
 	normalizeDisabledPluginTools,
 	normalizePathKey,
 	normalizeRetryMaxAttempts,
@@ -432,7 +433,7 @@ export class QuiesceRejectedError extends Error {
 // here but never read into the snapshot path.
 // ---------------------------------------------------------------------------
 
-import { INLINE_PERSONA_EXT, splitAgentStartPrompt, PI_DOC_PATHS, WINDOWS_PERSONA } from "./persona-chain.js";
+import { splitAgentStartPrompt, PI_DOC_PATHS, WINDOWS_PERSONA } from "./persona-chain.js";
 export { splitAgentStartPrompt };
 
 import { makeKillableBashTool, makeAdaptiveBashTool } from "./bash-tool.js";
@@ -2808,8 +2809,8 @@ export class ClientSession {
 					// 注意 SDK 在 extensionsOverride 之后才补 sourceInfo，包扩展此处只能靠路径
 					// 匹配 —— isExtensionDisabled / isExtensionEnabled 同时比对 npm:<pkg> 候选键。
 					extensionsOverride: (res) => {
-						// 自家内联扩展（灵魂替换）是基础设施，不参与白名单/禁用过滤。
-						const keepOwn = (e: { path: string }) => !e.path.startsWith(INLINE_PERSONA_EXT);
+						// 内部基础设施扩展（codemode、tool-search、persona 等）不参与白名单/禁用过滤。
+						const keepOwn = (e: { path: string; hidden?: boolean }) => isInternalExtension(e);
 						if (apply && apply.enabledExtensions.length > 0) {
 							const set = new Set(apply.enabledExtensions);
 							return {
@@ -2829,8 +2830,18 @@ export class ClientSession {
 					// 覆盖，则用 composer 把 {{token}} 展开为各来源文本（工具列表/项目上下文/技能
 					// 等都取自本次 run 的 systemPromptOptions，永远最新）。
 					extensionFactories: [
-						createCodemodeExtension(),
-						createToolSearchExtension(),
+						{
+							name: "codemode",
+							hidden: true,
+							replaceable: true,
+							factory: createCodemodeExtension(),
+						},
+						{
+							name: "tool-search",
+							hidden: true,
+							replaceable: true,
+							factory: createToolSearchExtension(),
+						},
 						{
 							name: "pi-webui-persona",
 							hidden: true,

@@ -275,3 +275,17 @@ describe("卡片头右端按钮列（窄屏对齐 / 不外溢）", () => {
 		expect(/min-width\s*:\s*0/.test(bodyOf(".chead-title")), ".chead-title 缺 min-width: 0").toBe(true);
 	});
 });
+
+describe("工具卡片内部滚动容器防穿透（overscroll-behavior: contain）", () => {
+	it.each([".toolcall-output pre", ".toolcall-args pre", ".codemode-code"])(
+		"%s 声明 overscroll-behavior: contain 防止滚轮穿透打断主消息区吸底跟随",
+		(selector) => {
+			const body = bodyOf(selector);
+			expect(body, `${selector} 在 styles.css 里没有声明`).not.toBe("");
+			expect(
+				/overscroll-behavior(?:-y)?\s*:\s*contain/.test(body),
+				`${selector} 缺少 overscroll-behavior: contain（滚动到底顶时会穿透触发父级消息区 scroll 事件，打断跟随）`,
+			).toBe(true);
+		},
+	);
+});

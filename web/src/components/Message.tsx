@@ -1,4 +1,4 @@
-import { Fragment, memo, useEffect, useMemo, useRef, useState, type ReactNode } from "react";
+import { Fragment, memo, useCallback, useEffect, useMemo, useRef, useState, type ReactNode } from "react";
 import {
 	FiArchive,
 	FiBookOpen,
@@ -1652,8 +1652,17 @@ function Block({
 	const t = useT();
 	const { copied, copy } = useCopyFeedback({ duration: 1200 });
 	const text = asText(block);
+	const live = !!(text && streaming && isLast);
+	const liveRef = useRef(live);
+	liveRef.current = live;
+	const [draining, setDraining] = useState(live);
+	useEffect(() => {
+		if (live) setDraining(true);
+	}, [live]);
+	const handleStreamSettled = useCallback(() => {
+		if (!liveRef.current) setDraining(false);
+	}, []);
 	if (text) {
-		const live = streaming && isLast;
 		// 单行消息：复制键不再用绝对定位压住文字，改成行内 flex 右键——与各 head
 		// 同样的 6px 间距、垂直居中、28px 尺寸。多行仍用右上浮层。
 		// showCopy=false：宿主在布局里隐藏了 host:msg-copy（那个条目的落点就是这里）。
@@ -1664,8 +1673,8 @@ function Block({
 				// 用户自己的气泡：保留输入/粘贴时的单个换行（CommonMark 软换行会把
 				// 多行纯文本折叠成连续文字）。助手消息仍走标准 markdown 段落语义。
 				<Markdown text={text.text} hardBreaks />
-			) : live ? (
-				<StreamMarkdown text={text.text} />
+			) : live || draining ? (
+				<StreamMarkdown text={text.text} finishing={!live && draining} onSettled={handleStreamSettled} />
 			) : (
 				<Markdown text={text.text} />
 			);

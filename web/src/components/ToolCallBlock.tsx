@@ -122,10 +122,18 @@ export const ToolCallBlock = memo(function ToolCallBlock({
 	const waitingModel = !view.result && !!view.status;
 	const isError = view.result?.isError ?? view.status?.isError ?? false;
 
+	const outputPreRef = useRef<HTMLPreElement>(null);
+	const outputStickRef = useRef(true);
 	const rawOutput = view.result
 		? view.result.content.map((b) => (b.type === "text" ? b.text : "")).join("")
 		: (view.liveOutput ?? "");
 	const output = rawOutput.replace(/…\[LIVE_OMIT:(\d+)\]…\n/, (_, n) => t("liveOutputOmitted", { n }));
+
+	useEffect(() => {
+		if ((running || waitingModel) && outputStickRef.current && outputPreRef.current) {
+			outputPreRef.current.scrollTop = outputPreRef.current.scrollHeight;
+		}
+	}, [output, running, waitingModel]);
 	/** 工具结果里的图片（web_shot 截图、read 读到的图……）：开关开着就在卡片里
 	 *  直接出缩略图（折叠态也可见 —— 「直接显示出来」），点击进灯箱看大图。
 	 *  支持 data: 内联图与 CAS 附件短 URL（/api/attachment/）。 */
@@ -470,7 +478,27 @@ export const ToolCallBlock = memo(function ToolCallBlock({
 								{isError ? t("errorOutput") : t("output")}
 								{(running || waitingModel) && <span className="cursor" />}
 							</div>
-							<pre>{output}</pre>
+							<pre
+								ref={outputPreRef}
+								onWheel={(e) => {
+									if (e.deltaY < 0) {
+										outputStickRef.current = false;
+									} else if (e.deltaY > 0 && outputPreRef.current) {
+										const el = outputPreRef.current;
+										if (el.scrollHeight - el.scrollTop - el.clientHeight < 32) {
+											outputStickRef.current = true;
+										}
+									}
+								}}
+								onScroll={(e) => {
+									const el = e.currentTarget;
+									if (el.scrollHeight - el.scrollTop - el.clientHeight < 24) {
+										outputStickRef.current = true;
+									}
+								}}
+							>
+								{output}
+							</pre>
 						</div>
 					)}
 					{running && output.length === 0 && (

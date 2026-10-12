@@ -120,4 +120,37 @@ describe("disabledExtensions stale 剔除（issue #192）", () => {
 		const ids = (lastSettingsState()?.extensions ?? []).map((e) => e.id);
 		expect(ids).not.toContain("npm:ghost-pkg");
 	});
+
+	it("loader 中的 <inline:...> / hidden 内部扩展不进入设置面板，且残留的 inline 禁用记录被自动剔除", () => {
+		const realPath = join(dir, "my-real-ext");
+		mkdirSync(realPath, { recursive: true });
+		store.saveSettings("test-client", {
+			disabledExtensions: ["<inline:1>", "<inline:codemode>", "<inline:pi-webui-persona>", realPath],
+		});
+		const svc = new SettingsService(
+			makeHost(
+				makeSession([
+					{ path: "<inline:1>" },
+					{ path: "<inline:2>" },
+					{ path: "<inline:pi-webui-persona>" },
+					{ path: "/internal-hidden", hidden: true } as never,
+					{ path: realPath },
+				]),
+			),
+			new SubagentTemplatesStore(join(dir, "templates.json")),
+		);
+		svc.push();
+
+		// disabledExtensions 中残留的 <inline:...> 全部被剔除，只有合法的外部扩展保留
+		expect(svc.current.disabledExtensions).toEqual([realPath]);
+		expect(store.getSettings("test-client").disabledExtensions).toEqual([realPath]);
+
+		// 面板推送的 extensions 完全不包含任何 <inline:...> 或 hidden 扩展
+		const panelExts = lastSettingsState()?.extensions ?? [];
+		const ids = panelExts.map((e) => e.id);
+		expect(ids).toEqual([realPath]);
+		expect(ids).not.toContain("<inline:1>");
+		expect(ids).not.toContain("<inline:2>");
+		expect(ids).not.toContain("<inline:pi-webui-persona>");
+	});
 });

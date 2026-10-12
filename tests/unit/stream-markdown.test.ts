@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { segmentStream } from "../../web/src/stream-markdown.js";
+import { segmentStream, stepSmoothStream } from "../../web/src/stream-markdown.js";
 
 describe("segmentStream", () => {
 	it("空文本 → 无 frozen、无 active", () => {
@@ -82,5 +82,35 @@ describe("segmentStream", () => {
 		// 围栏内的 ``` 出现在行中间（非围栏标记位置），不影响结构
 		expect(s.frozen[0]).toContain('echo "```"');
 		expect(s.inFence).toBe(false);
+	});
+});
+
+describe("stepSmoothStream — 自适应平滑流式步进（大段接收、逐字细腻丝滑渲染）", () => {
+	it("中小积压（backlog <= 32）时每步严格推进 1 个字符（逐字打字机感）", () => {
+		const target = "你好世界，这是一段测试文本，用来验证单字细腻吐出区间";
+		expect(stepSmoothStream(target, 5)).toBe(6);
+		expect(stepSmoothStream(target, 12)).toBe(13);
+	});
+
+	it("大段脉冲到达（如一次收到 140 字符）时拆分为细腻多步平滑推进，绝不一次性蹦出整段", () => {
+		const target = "A".repeat(140);
+		const next = stepSmoothStream(target, 0);
+		expect(next).toBe(5); // ceil(140 / 28) = 5
+		let cur = 0;
+		let frames = 0;
+		while (cur < target.length) {
+			cur = stepSmoothStream(target, cur);
+			frames++;
+		}
+		expect(cur).toBe(140);
+		expect(frames).toBeGreaterThan(45); // 先柔顺流淌、后单字细腻收尾
+	});
+
+	it("UTF-16 代理对（Emoji）边界安全：绝不把双码元字符劈成两半", () => {
+		// "Hi🚀!" 中 '🚀' 位于索引 2..3（2 是高位代理 0xD83D，3 是低位代理 0xDE80）
+		const target = "Hi🚀!后续文字";
+		// 从 2 推进 1 个字符原本会落在 3（刚好切在 🚀 中间），应当自动进位到 4
+		expect(stepSmoothStream(target, 2)).toBe(4);
+		expect(target.slice(0, stepSmoothStream(target, 2))).toBe("Hi🚀");
 	});
 });

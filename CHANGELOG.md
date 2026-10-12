@@ -12,6 +12,15 @@
 
 暂无未发布内容。
 
+## [0.104.4] — 2026-10-12
+
+### Fixed
+
+- **流式输出跟手滚动与物理向上手势即时打断**：
+  - 重构 `MessageList` 滚动捕获与吸底总闸门：捕获用户滚轮向上、触控向上滑动、按住滚动条滑块拖动及 PageUp 物理手势时当场立即切断自动吸底并作废保护窗，绝不等异步 `onScroll` 事件，彻底避免浏览器平滑滚动第一帧被流式 MutationObserver 强行拉回底部；
+  - 流式渲染平滑收尾（`StreamMarkdown` draining）：流式结束到转为静态 Markdown 之间引入缓冲排水状态，避免 DOM 瞬间跳变导致高度突变或文字闪烁；加固思考折叠块（`ThinkingBlock`）与工具卡片（`ToolCallBlock`）展开收起时的视口锚定与高度补偿。
+- **内部基础设施扩展隔离与启停白名单保护** —— 将 codemode、tool-search、persona 等宿主注入的内部基础设施扩展标为 `hidden: true`，明确排除在扩展设置列表之外，避免污染设置项与幽灵扩展检测；在子代理白名单（`isExtensionEnabled`）及全局扩展禁用（`isExtensionDisabled`）判定中始终放行内部扩展，防止被意外拦截或被子代理模板白名单误剔除。
+
 ## [0.104.3] — 2026-10-12
 
 ### Added
@@ -1739,6 +1748,7 @@ when?, children?}`，也收 `topbar` / `settings` 这类简写别名）；宿主
 [0.64.4]: https://github.com/xing-shuyin/pi-web-ui/releases/tag/v0.64.4
 [0.64.3]: https://github.com/xing-shuyin/pi-web-ui/releases/tag/v0.64.3
 [0.64.2]: https://github.com/xing-shuyin/pi-web-ui/releases/tag/v0.64.2
+[0.104.4]: https://github.com/xing-shuyin/pi-web-ui/releases/tag/v0.104.4
 [0.104.3]: https://github.com/xing-shuyin/pi-web-ui/releases/tag/v0.104.3
 [0.104.2]: https://github.com/xing-shuyin/pi-web-ui/releases/tag/v0.104.2
 [0.64.1]: https://github.com/xing-shuyin/pi-web-ui/releases/tag/v0.64.1

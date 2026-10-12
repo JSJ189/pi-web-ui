@@ -24,6 +24,7 @@ import type {
 } from "./protocol.js";
 import {
 	extensionKey,
+	isInternalExtension,
 	normalizeBgCleanupMinutes,
 	normalizeDisabledPluginTools,
 	normalizeRetryMaxAttempts,
@@ -199,6 +200,7 @@ export class SettingsService {
 	 *  路径型 → 文件/目录任一存在。空串一律不存在。 */
 	private extensionStillOnDisk(id: string): boolean {
 		if (!id) return false;
+		if (isInternalExtension({ path: id })) return false;
 		if (id.startsWith("npm:")) {
 			const pkg = id.slice(4);
 			if (!pkg) return false;
@@ -240,7 +242,8 @@ export class SettingsService {
 		let loadedExtNames: Set<string> | null = null;
 		try {
 			const loadedSkills = this.host.getSession().resourceLoader.getSkills().skills;
-			const loadedExts = this.host.getSession().resourceLoader.getExtensions().extensions;
+			const allLoadedExts = this.host.getSession().resourceLoader.getExtensions().extensions;
+			const loadedExts = allLoadedExts.filter((e) => !isInternalExtension(e));
 			loadedSkillNames = new Set(loadedSkills.map((s) => s.name));
 			loadedExtNames = new Set(loadedExts.map((e) => extensionKey(e)));
 			// Prune entries that no longer exist on disk AND aren't disabled
@@ -249,7 +252,7 @@ export class SettingsService {
 			const keepSkills = new Set<string>([...loadedSkills.map((s) => s.name), ...this.settings.disabledSkills]);
 			const keepExts = new Set<string>([
 				...loadedExts.map((e) => extensionKey(e)),
-				...this.settings.disabledExtensions,
+				...this.settings.disabledExtensions.filter((id) => !isInternalExtension({ path: id })),
 			]);
 			// eslint-disable-next-line unicorn/no-useless-spread -- snapshot: handlers may unsubscribe mid-emit
 			for (const name of [...this.knownSkills.keys()]) {
@@ -257,7 +260,7 @@ export class SettingsService {
 			}
 			// eslint-disable-next-line unicorn/no-useless-spread -- snapshot: handlers may unsubscribe mid-emit
 			for (const id of [...this.knownExtensions.keys()]) {
-				if (!keepExts.has(id)) this.knownExtensions.delete(id);
+				if (!keepExts.has(id) || isInternalExtension({ path: id })) this.knownExtensions.delete(id);
 			}
 			for (const s of loadedSkills) {
 				this.knownSkills.set(s.name, {
@@ -312,7 +315,7 @@ export class SettingsService {
 		// loadedExtNames 非 null 即 session 就绪；取不到（catch 分支）时保守跳过。
 		if (loadedExtNames !== null) {
 			const staleExts = this.settings.disabledExtensions.filter(
-				(id) => !loadedExtNames.has(id) && !this.extensionStillOnDisk(id),
+				(id) => isInternalExtension({ path: id }) || (!loadedExtNames.has(id) && !this.extensionStillOnDisk(id)),
 			);
 			if (staleExts.length > 0) {
 				this.settings.disabledExtensions = this.settings.disabledExtensions.filter((n) => !staleExts.includes(n));
@@ -329,6 +332,7 @@ export class SettingsService {
 		// （上面的 stale 清理已把卸载项移出禁用记录；这里再按磁盘挡一次，
 		// session 未就绪跳过清理时也不复活幽灵。）
 		for (const id of this.settings.disabledExtensions) {
+			if (isInternalExtension({ path: id })) continue;
 			if (!this.knownExtensions.has(id)) {
 				if (!this.extensionStillOnDisk(id)) continue;
 				this.knownExtensions.set(id, {
@@ -346,6 +350,7 @@ export class SettingsService {
 			.map((s) => ({ ...s, enabled: !reviewDisabledSkills.has(s.name) }))
 			.sort((a, b) => a.name.localeCompare(b.name));
 		const extensions = [...this.knownExtensions.values()]
+			.filter((e) => !isInternalExtension({ path: e.id }) && !isInternalExtension({ path: e.path }))
 			.map((e) => ({ ...e, enabled: !disabledExts.has(e.id) }))
 			.sort((a, b) => a.name.localeCompare(b.name));
 		// 统一工具开关是单源（disabledAgentTools），遗留三开关推送时推导，保证面板一致。

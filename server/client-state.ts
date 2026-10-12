@@ -462,14 +462,23 @@ export function extensionKeyCandidates(e: {
 	return [...keys];
 }
 
-/** Whether an extension is covered by the disabled list (any identity match). */
+/** 判断一个扩展是否为宿主或 SDK 内部注入的基础设施扩展（如 codemode、tool_search、persona 等），
+ *  这些扩展不属于用户安装的业务扩展，不应在设置面板显示，也不受用户启停配置控制。 */
+export function isInternalExtension(e: { path: string; hidden?: boolean }): boolean {
+	return Boolean(e.hidden) || e.path.startsWith("<inline:") || e.path.startsWith("<builtin:");
+}
+
+/** Whether an extension is covered by the disabled list (any identity match).
+ *  Internal / hidden infrastructure extensions are always exempt. */
 export function isExtensionDisabled(
 	e: {
 		sourceInfo?: { origin?: string; source?: string; path?: string };
 		path: string;
+		hidden?: boolean;
 	},
 	disabled: readonly string[],
 ): boolean {
+	if (isInternalExtension(e)) return false;
 	if (disabled.length === 0) return false;
 	const keys = extensionKeyCandidates(e);
 	return disabled.some((d) => keys.includes(d));
@@ -477,14 +486,17 @@ export function isExtensionDisabled(
 
 /** Whether an extension is covered by an ENABLED whitelist (any identity
  *  match). Empty whitelist = not whitelisting = everything allowed. Used by
- *  subagent templates（白名单语义：模板勾选 = 子代理只加载这些扩展）。 */
+ *  subagent templates（白名单语义：模板勾选 = 子代理只加载这些扩展）。
+ *  Internal / hidden infrastructure extensions are always kept. */
 export function isExtensionEnabled(
 	e: {
 		sourceInfo?: { origin?: string; source?: string; path?: string };
 		path: string;
+		hidden?: boolean;
 	},
 	enabled: readonly string[],
 ): boolean {
+	if (isInternalExtension(e)) return true;
 	if (enabled.length === 0) return true;
 	const keys = extensionKeyCandidates(e);
 	return enabled.some((d) => keys.includes(d));
