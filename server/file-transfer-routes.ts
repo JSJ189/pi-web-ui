@@ -1,9 +1,16 @@
 import express, { type Express, type Request } from "express";
 import { mkdtemp, mkdir, open, realpath, rm, stat } from "node:fs/promises";
-import { join, dirname } from "node:path";
+import { join, dirname, posix } from "node:path";
 import { tmpdir } from "node:os";
 import { createArchive, extractArchive, safeDestination, safeEntryPath, type ConflictPolicy } from "./file-archives.js";
 import { isAbsoluteWirePath, wireToAbs, workspacePath } from "./files-service.js";
+import {
+	getGlobalRemoteSshService,
+	isRemoteWorkspaceUri,
+	parseRemoteWorkspaceUri,
+	resolveRemoteWorkspacePath,
+	shellQuotePosix,
+} from "./remote-ssh-service.js";
 
 /** Registered behind the host's authentication middleware; shared by Pi and DSH. */
 export function registerFileTransferRoutes(
@@ -25,6 +32,24 @@ export function registerFileTransferRoutes(
 		if (!resolved) throw new Error("Path outside workspace");
 		return resolved.abs;
 	}
+	function remotePath(cwd: string, raw: unknown, allowRoot = false): string {
+		if (typeof raw !== "string" || raw === "@root") throw new Error("Invalid path");
+		const parsed = parseRemoteWorkspaceUri(cwd);
+		if (!parsed) throw new Error("Invalid remote workspace");
+		const trimmed = raw.trim();
+		if (!trimmed) {
+			if (!allowRoot) throw new Error("Invalid path");
+			return parsed.remotePath;
+		}
+		if (trimmed.startsWith("/")) {
+			const abs = posix.normalize(trimmed);
+			if (abs === "/" && !allowRoot) throw new Error("Invalid path");
+			return abs;
+		}
+		const w = resolveRemoteWorkspacePath(parsed.remotePath, trimmed);
+		if (!w || (!allowRoot && w.rel === "")) throw new Error("Path outside workspace");
+		return w.abs;
+	}
 	// A cross-origin form cannot set this header. No CORS permission is granted.
 	app.use("/api/file-transfer", (req, res, next) => {
 		if (req.headers["x-file-operation"] !== "1") {
@@ -45,6 +70,70 @@ export function registerFileTransferRoutes(
 			}
 			busy.add(cwd);
 			acquired = true;
+			if (isRemoteWorkspaceUri(cwd)) {
+				const sshSvc = getGlobalRemoteSshService();
+				if (!sshSvc) throw new Error("Remote SSH service not available");
+				const remoteSource = remotePath(cwd, req.body?.path);
+				if (req.body?.action === "extract") {
+					const remoteDest = remotePath(cwd, req.body?.destination, true);
+					const lower = remoteSource.toLowerCase();
+					const cmd = lower.endsWith(".zip")
+						? `mkdir -p ${shellQuotePosix(remoteDest)} && unzip -o ${shellQuotePosix(remoteSource)} -d ${shellQuotePosix(remoteDest)}`
+						: `mkdir -p ${shellQuotePosix(remoteDest)} && tar -xf ${shellQuotePosix(remoteSource)} -C ${shellQuotePosix(remoteDest)}`;
+					const r = await sshSvc.execInWorkspace(cwd, cmd, { cwd: "/" });
+					if (r.exitCode !== 0) throw new Error(r.stderr || r.stdout || "Remote extract failed");
+					res.json({ extracted: 1, skipped: [] });
+					return;
+				}
+				if (req.body?.action === "compress") {
+					const parentDir = posix.dirname(remoteSource) || "/";
+					const baseName = posix.basename(remoteSource);
+					const archiveName = `${baseName}.tar.gz`;
+					const remoteDest = posix.join(parentDir, archiveName);
+					const cmd = `tar -czf ${shellQuotePosix(remoteDest)} -C ${shellQuotePosix(parentDir)} ${shellQuotePosix(baseName)}`;
+					const r = await sshSvc.execInWorkspace(cwd, cmd, { cwd: "/" });
+					if (r.exitCode !== 0) throw new Error(r.stderr || r.stdout || "Remote compress failed");
+					res.json({ name: archiveName });
+					return;
+				}
+				if (req.body?.action === "download") {
+					const parentDir = posix.dirname(remoteSource) || "/";
+					const baseName = posix.basename(remoteSource);
+					const archiveName = `${baseName}.tar.gz`;
+					const remoteTmp = `/tmp/pi-web-dl-${Date.now()}-${Math.random().toString(36).slice(2, 8)}.tar.gz`;
+					try {
+						const cmd = `tar -czf ${shellQuotePosix(remoteTmp)} -C ${shellQuotePosix(parentDir)} ${shellQuotePosix(baseName)}`;
+						const r = await sshSvc.execInWorkspace(cwd, cmd, { cwd: "/" });
+						if (r.exitCode !== 0) throw new Error(r.stderr || r.stdout || "Remote archive creation failed");
+						const st = await sshSvc.sftpStat(cwd, remoteTmp);
+						if (st.size > 200 * 1024 * 1024) {
+							throw new Error("Temporary download exceeds 200 MiB; compress in place and download the archive instead");
+						}
+						const asciiFallback = archiveName.replace(/[^\x20-\x7e]|["\\]/g, "_");
+						const encoded = encodeURIComponent(archiveName).replace(
+							/['()*]/g,
+							(c) => `%${c.charCodeAt(0).toString(16).toUpperCase()}`,
+						);
+						res.type(archiveName);
+						res.setHeader(
+							"Content-Disposition",
+							`attachment; filename="${asciiFallback}"; filename*=UTF-8''${encoded}`,
+						);
+						res.setHeader("Content-Length", String(st.size));
+						const stream = await sshSvc.sftpCreateReadStream(cwd, remoteTmp);
+						await new Promise<void>((ok, fail) => {
+							stream.on("error", fail);
+							res.on("finish", ok);
+							res.on("close", ok);
+							stream.pipe(res);
+						});
+					} finally {
+						await sshSvc.execInWorkspace(cwd, `rm -f ${shellQuotePosix(remoteTmp)}`, { cwd: "/" }).catch(() => {});
+					}
+					return;
+				}
+				throw new Error("Invalid archive action");
+			}
 			const source = path(cwd, req.body?.path);
 			if (req.body?.action === "extract") {
 				const result = await extractArchive(source, path(cwd, req.body.destination), req.body.policy as ConflictPolicy);
@@ -82,6 +171,29 @@ export function registerFileTransferRoutes(
 		async (req, res) => {
 			try {
 				const cwd = root(req);
+				if (isRemoteWorkspaceUri(cwd)) {
+					const sshSvc = getGlobalRemoteSshService();
+					if (!sshSvc) throw new Error("Remote SSH service not available");
+					const remoteDir = remotePath(cwd, typeof req.query.dir === "string" ? req.query.dir : "", true);
+					const name = safeEntryPath(typeof req.query.name === "string" ? req.query.name : "");
+					const remoteDest = posix.join(remoteDir, name.replace(/\\/g, "/"));
+					if (!Buffer.isBuffer(req.body)) throw new Error("Expected a binary file");
+					if (req.query.kind === "directory") {
+						if (req.body.length) throw new Error("Directory requests cannot contain file data");
+						await sshSvc.sftpMkdirRecursive(cwd, remoteDest);
+						res.json({ name });
+						return;
+					}
+					const exists = await sshSvc.sftpStat(cwd, remoteDest).catch(() => null);
+					if (exists) {
+						const e = new Error("File already exists") as NodeJS.ErrnoException;
+						e.code = "EEXIST";
+						throw e;
+					}
+					await sshSvc.sftpWriteFile(cwd, remoteDest, req.body, { createParents: true });
+					res.json({ name });
+					return;
+				}
 				const dir = await realpath(path(cwd, req.query.dir));
 				const name = safeEntryPath(typeof req.query.name === "string" ? req.query.name : "");
 				const dest = await safeDestination(dir, name);

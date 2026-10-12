@@ -2,7 +2,14 @@ import { describe, expect, it } from "vitest";
 import { promises as fs } from "node:fs";
 import os from "node:os";
 import path from "node:path";
-import { expandHome, RemoteSshService } from "../../server/remote-ssh-service.js";
+import { PassThrough, Readable } from "node:stream";
+import {
+	expandHome,
+	RemoteSshService,
+	serveRemoteWorkspaceFile,
+	setGlobalRemoteSshService,
+} from "../../server/remote-ssh-service.js";
+import { probePresentItem } from "../../server/present-files-tool.js";
 
 describe("RemoteSshService", () => {
 	it("expandHome correctly expands home directory", () => {
@@ -151,5 +158,186 @@ describe("installTools 工具名注入防护（0.103 审计）", () => {
 	it("合法工具名放行到连接层（未知连接按原样抛连接错误）", async () => {
 		const svc = new RemoteSshService(os.tmpdir());
 		await expect(svc.installTools("no-such-connection", ["git"])).rejects.toThrowError("连接已断开或不存在");
+	});
+});
+
+describe("listDir 软链接目录识别与 ~ 路径展开", () => {
+	it("跟随符号链接判断目录并展开 ~/ 路径", async () => {
+		const svc = new RemoteSshService(os.tmpdir());
+		const mockSftp = {
+			readdir: (targetPath: string, cb: (err: Error | null, list?: any[]) => void) => {
+				expect(targetPath).toBe("/home/k");
+				cb(null, [
+					{
+						filename: "data",
+						attrs: {
+							isDirectory: () => false,
+							isSymbolicLink: () => true,
+							size: 12,
+							mtime: 1700000000,
+						},
+					},
+					{
+						filename: "broken-link",
+						attrs: {
+							isDirectory: () => false,
+							isSymbolicLink: () => true,
+							size: 8,
+							mtime: 1700000000,
+						},
+					},
+					{
+						filename: "readme.md",
+						attrs: {
+							isDirectory: () => false,
+							isSymbolicLink: () => false,
+							size: 100,
+							mtime: 1700000000,
+						},
+					},
+				]);
+			},
+			stat: (fullPath: string, cb: (err: Error | null, stats?: any) => void) => {
+				if (fullPath === "/home/k/data") {
+					cb(null, { isDirectory: () => true, isFile: () => false });
+				} else {
+					cb(new Error("No such file"));
+				}
+			},
+		};
+
+		// 注入模拟存活连接
+		// @ts-expect-error testing internal connection map
+		svc.connections.set("conn-1", {
+			id: "conn-1",
+			hostKey: "k@pro6000d:22",
+			client: {} as any,
+			sftp: mockSftp as any,
+			params: { host: "pro6000d", port: 22, username: "k", auth: { type: "key" } },
+			system: { os: "Linux", arch: "x86_64", hostname: "k", user: "k", homeDir: "/home/k" },
+			alive: true,
+			timer: setTimeout(() => {}, 60000),
+		});
+
+		const res = await svc.listDir("conn-1", "~");
+		// @ts-expect-error cleanup timer
+		clearTimeout(svc.connections.get("conn-1")?.timer);
+
+		expect(res.ok).toBe(true);
+		expect(res.path).toBe("/home/k");
+		const dataItem = res.items.find((i) => i.name === "data");
+		expect(dataItem?.type).toBe("dir");
+		expect(dataItem?.path).toBe("/home/k/data");
+
+		const brokenItem = res.items.find((i) => i.name === "broken-link");
+		expect(brokenItem?.type).toBe("file");
+	});
+});
+
+describe("serveRemoteWorkspaceFile 与 present_files 远程工作区支持", () => {
+	function createMockRes() {
+		const pt = new PassThrough();
+		const chunks: Buffer[] = [];
+		pt.on("data", (c) => chunks.push(Buffer.from(c)));
+		let statusCode = 200;
+		const headers: Record<string, string> = {};
+		let endedBody = "";
+		const origEnd = pt.end.bind(pt);
+		(pt as any).status = (code: number) => {
+			statusCode = code;
+			return pt;
+		};
+		(pt as any).setHeader = (k: string, v: string) => {
+			headers[k.toLowerCase()] = v;
+		};
+		(pt as any).type = (_name: string) => {};
+		(pt as any).end = (chunk?: any) => {
+			if (typeof chunk === "string") endedBody = chunk;
+			else if (Buffer.isBuffer(chunk)) chunks.push(chunk);
+			return origEnd(chunk);
+		};
+		return {
+			res: pt as any,
+			getStatus: () => statusCode,
+			getHeaders: () => headers,
+			getBody: () => (chunks.length > 0 ? Buffer.concat(chunks).toString("utf8") : endedBody),
+		};
+	}
+
+	it("支持远程工作区文件 HTTP 下载（相对路径与绝对路径）并拦截越界路径", async () => {
+		const remoteUri = "ssh://k@pro6000d:22/data/spare/project";
+		const fileContent = "# Benchmark Report\nAll tests passed!";
+		const mockSvc = {
+			sftpStat: async (_uri: string, remoteAbs: string) => {
+				if (remoteAbs === "/data/spare/project/report.md" || remoteAbs === "/data/models/config.json") {
+					return { isDirectory: false, isFile: true, size: Buffer.byteLength(fileContent), mtime: 1700000000000 };
+				}
+				throw new Error("ENOENT");
+			},
+			sftpCreateReadStream: async (_uri: string, _remoteAbs: string, opts?: { start?: number; end?: number }) => {
+				const buf = Buffer.from(fileContent, "utf8");
+				const slice =
+					opts?.start !== undefined || opts?.end !== undefined
+						? buf.subarray(opts?.start ?? 0, opts?.end !== undefined ? opts.end + 1 : undefined)
+						: buf;
+				return Readable.from(slice);
+			},
+			sftpReadFile: async (_uri: string, _remoteAbs: string, maxBytes?: number) => {
+				const buf = Buffer.from(fileContent, "utf8");
+				return { data: maxBytes ? buf.subarray(0, maxBytes) : buf, size: buf.length };
+			},
+		} as unknown as RemoteSshService;
+
+		// 1. 相对路径下载
+		const m1 = createMockRes();
+		await serveRemoteWorkspaceFile(
+			{ headers: {}, query: { download: "1" } },
+			m1.res,
+			remoteUri,
+			"report.md",
+			{ isDownload: true, allowAllTypes: false },
+			mockSvc,
+		);
+		expect(m1.getStatus()).toBe(200);
+		expect(m1.getHeaders()["content-disposition"]).toContain("report.md");
+		expect(m1.getBody()).toBe(fileContent);
+
+		// 2. 绝对路径下载
+		const m2 = createMockRes();
+		await serveRemoteWorkspaceFile(
+			{ headers: {}, query: { download: "1" } },
+			m2.res,
+			remoteUri,
+			"/data/models/config.json",
+			{ isDownload: true, allowAllTypes: false },
+			mockSvc,
+		);
+		expect(m2.getStatus()).toBe(200);
+		expect(m2.getHeaders()["content-disposition"]).toContain("config.json");
+		expect(m2.getBody()).toBe(fileContent);
+
+		// 3. 越界相对路径拦截
+		const m3 = createMockRes();
+		await serveRemoteWorkspaceFile(
+			{ headers: {}, query: { download: "1" } },
+			m3.res,
+			remoteUri,
+			"../../../etc/passwd",
+			{ isDownload: true, allowAllTypes: false },
+			mockSvc,
+		);
+		expect(m3.getStatus()).toBe(400);
+		expect(m3.getBody()).toBe("path outside workspace");
+
+		// 4. present_files 工具在远程工作区下正常探测文件与摘录
+		setGlobalRemoteSshService(mockSvc);
+		try {
+			const item = await probePresentItem({ path: "report.md" }, remoteUri, { left: 1000 });
+			expect(item.kind).toBe("markdown");
+			expect(item.abs).toBe("/data/spare/project/report.md");
+			expect(item.excerpt).toContain("Benchmark Report");
+		} finally {
+			setGlobalRemoteSshService(null as any);
+		}
 	});
 });

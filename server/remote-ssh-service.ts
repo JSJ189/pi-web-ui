@@ -15,6 +15,8 @@ import { createCipheriv, createDecipheriv, createHash, randomBytes, randomUUID }
 import { existsSync, mkdirSync, readFileSync, writeFileSync, promises as fs } from "node:fs";
 import os from "node:os";
 import path from "node:path";
+import { Readable } from "node:stream";
+import { isAudioFile, previewKind } from "./text-sniff.js";
 import type {
 	RemoteSshDirItem,
 	RemoteSshProbeParams,
@@ -1028,10 +1030,18 @@ done
 
 		try {
 			const sftp = await this.getSftp(conn);
-			const targetPath = (reqPath && reqPath.trim()) || conn.system?.homeDir || "/";
+			const homeDir = conn.system?.homeDir || "/";
+			let rawTarget = (reqPath && reqPath.trim()) || homeDir;
+			if (rawTarget === "~") {
+				rawTarget = homeDir;
+			} else if (rawTarget.startsWith("~/") || rawTarget.startsWith("~\\")) {
+				rawTarget = path.posix.join(homeDir, rawTarget.slice(2).replace(/\\/g, "/"));
+			}
+			const normTarget = path.posix.normalize(rawTarget.replace(/\\/g, "/"));
+			const targetPath = normTarget !== "/" ? normTarget.replace(/\/+$/, "") || "/" : "/";
 
 			return await new Promise((resolve) => {
-				sftp.readdir(targetPath, (err, list) => {
+				sftp.readdir(targetPath, async (err, list) => {
 					if (err) {
 						return resolve({
 							ok: false,
@@ -1045,9 +1055,23 @@ done
 					const items: RemoteSshDirItem[] = [];
 					for (const item of list) {
 						if (item.filename === "." || item.filename === "..") continue;
-						const isDir = Boolean(item.attrs.isDirectory());
 						const fullPath =
 							targetPath === "/" ? `/${item.filename}` : `${targetPath.replace(/\/+$/, "")}/${item.filename}`;
+						let isDir = Boolean(item.attrs.isDirectory?.());
+						const isSymlink =
+							typeof item.attrs.isSymbolicLink === "function"
+								? Boolean(item.attrs.isSymbolicLink())
+								: ((item.attrs.mode ?? 0) & 0o170000) === 0o120000;
+						if (!isDir && isSymlink && typeof sftp.stat === "function") {
+							try {
+								const st = await new Promise<import("ssh2").Stats>((resStat, rejStat) => {
+									sftp.stat(fullPath, (stErr, stats) => (stErr ? rejStat(stErr) : resStat(stats)));
+								});
+								isDir = Boolean(st?.isDirectory?.());
+							} catch {
+								isDir = false;
+							}
+						}
 						items.push({
 							name: item.filename,
 							path: fullPath,
@@ -1274,8 +1298,12 @@ fi
 		const out: Array<{ name: string; type: "dir" | "file"; size: number; mtime: number }> = [];
 		for (const item of list) {
 			if (item.filename === "." || item.filename === "..") continue;
-			let isDir = Boolean(item.attrs.isDirectory());
-			if (item.attrs.isSymbolicLink()) {
+			let isDir = Boolean(item.attrs.isDirectory?.());
+			const isSymlink =
+				typeof item.attrs.isSymbolicLink === "function"
+					? Boolean(item.attrs.isSymbolicLink())
+					: ((item.attrs.mode ?? 0) & 0o170000) === 0o120000;
+			if (!isDir && isSymlink) {
 				try {
 					const target = path.posix.join(remoteAbsPath, item.filename);
 					const st = await this.sftpStat(uri, target);
@@ -1292,6 +1320,24 @@ fi
 			});
 		}
 		return out;
+	}
+
+	/** SFTP 创建远程文件读取流（供 HTTP 下载与媒体流式预览使用） */
+	async sftpCreateReadStream(
+		uri: string,
+		remoteAbsPath: string,
+		opts?: { start?: number; end?: number },
+	): Promise<NodeJS.ReadableStream> {
+		const { sftp } = await this.getOrConnectByUri(uri);
+		if (typeof sftp.createReadStream === "function") {
+			return sftp.createReadStream(remoteAbsPath, opts);
+		}
+		const { data } = await this.sftpReadFile(uri, remoteAbsPath);
+		const slice =
+			opts?.start !== undefined || opts?.end !== undefined
+				? data.subarray(opts?.start ?? 0, opts?.end !== undefined ? opts.end + 1 : undefined)
+				: data;
+		return Readable.from(slice);
 	}
 
 	/** SFTP 读取远程文件 Buffer（可选限制最大读取字节数） */
@@ -1524,4 +1570,138 @@ fi
 		};
 		return virtualPty;
 	}
+}
+
+/**
+ * 通过 SFTP 流式响应远程工作区文件的 HTTP 下载与媒体/HTML 预览请求（/api/file 与 /api/preview）。
+ */
+export async function serveRemoteWorkspaceFile(
+	req: {
+		headers?: Record<string, string | string[] | undefined>;
+		query?: Record<string, unknown>;
+		on?: (event: string, listener: () => void) => unknown;
+	},
+	res: {
+		status: (code: number) => any;
+		setHeader: (name: string, value: string) => unknown;
+		type?: (name: string) => unknown;
+		end: (chunk?: any) => unknown;
+		destroy?: () => unknown;
+		headersSent?: boolean;
+	} & NodeJS.WritableStream,
+	root: string,
+	rawPath: string,
+	opts: { isDownload: boolean; allowAllTypes: boolean },
+	sshServiceOverride?: RemoteSshService | null,
+): Promise<void> {
+	const parsed = parseRemoteWorkspaceUri(root);
+	const sshSvc = sshServiceOverride ?? getGlobalRemoteSshService();
+	if (!parsed || !sshSvc) {
+		res.status(404).end("not found");
+		return;
+	}
+	const trimmed = rawPath.trim();
+	let remoteAbs: string;
+	if (trimmed.startsWith("/")) {
+		remoteAbs = path.posix.normalize(trimmed);
+		if (remoteAbs === "/") {
+			res.status(400).end("not a file");
+			return;
+		}
+	} else {
+		const w = resolveRemoteWorkspacePath(parsed.remotePath, trimmed);
+		if (!w || w.rel === "") {
+			res.status(400).end("path outside workspace");
+			return;
+		}
+		remoteAbs = w.abs;
+	}
+	const name = path.posix.basename(remoteAbs);
+	const kind = previewKind(name);
+	const lower = name.toLowerCase();
+	const isHtmlPreview = lower.endsWith(".html") || lower.endsWith(".htm") || lower.endsWith(".xhtml");
+	const isAudioPreview = isAudioFile(name);
+	if (
+		!opts.isDownload &&
+		!opts.allowAllTypes &&
+		kind !== "image" &&
+		kind !== "video" &&
+		!isHtmlPreview &&
+		!isAudioPreview
+	) {
+		res.status(400).end("not a previewable media file");
+		return;
+	}
+	const st = await sshSvc.sftpStat(root, remoteAbs);
+	if (!st.isFile) {
+		res.status(400).end("not a file");
+		return;
+	}
+
+	res.type?.(name);
+	if (opts.isDownload) {
+		const asciiFallback = name.replace(/[^\x20-\x7e]|["\\]/g, "_");
+		const encoded = encodeURIComponent(name).replace(
+			/['()*]/g,
+			(c) => `%${c.charCodeAt(0).toString(16).toUpperCase()}`,
+		);
+		res.setHeader("Content-Disposition", `attachment; filename="${asciiFallback}"; filename*=UTF-8''${encoded}`);
+	} else {
+		res.setHeader("X-Content-Type-Options", "nosniff");
+		if (isHtmlPreview) {
+			const allowJs = req.query?.allowJs === "1";
+			res.setHeader("Content-Security-Policy", allowJs ? "sandbox allow-scripts" : "sandbox");
+		} else if (lower.endsWith(".svg")) {
+			res.setHeader("Content-Security-Policy", "sandbox");
+		}
+	}
+
+	const rangeHeader = typeof req.headers?.range === "string" ? req.headers.range : "";
+	let streamOpts: { start?: number; end?: number } | undefined;
+	if (!opts.isDownload && rangeHeader && st.size > 0 && /^bytes=\d*-\d*$/.test(rangeHeader)) {
+		const [startStr, endStr] = rangeHeader.slice(6).split("-");
+		let start = startStr ? parseInt(startStr, 10) : 0;
+		let end = endStr ? parseInt(endStr, 10) : st.size - 1;
+		if (!startStr && endStr) {
+			start = Math.max(0, st.size - parseInt(endStr, 10));
+			end = st.size - 1;
+		}
+		if (start >= st.size || start > end || start < 0) {
+			res.status(416);
+			res.setHeader("Content-Range", `bytes */${st.size}`);
+			res.end();
+			return;
+		}
+		end = Math.min(end, st.size - 1);
+		res.status(206);
+		res.setHeader("Accept-Ranges", "bytes");
+		res.setHeader("Content-Range", `bytes ${start}-${end}/${st.size}`);
+		res.setHeader("Content-Length", String(end - start + 1));
+		streamOpts = { start, end };
+	} else {
+		res.setHeader("Accept-Ranges", "bytes");
+		res.setHeader("Content-Length", String(st.size));
+		if (st.size === 0) {
+			res.end();
+			return;
+		}
+	}
+
+	const stream = await sshSvc.sftpCreateReadStream(root, remoteAbs, streamOpts);
+	await new Promise<void>((resolveStream) => {
+		stream.on("error", () => {
+			if (!res.headersSent) res.status(404).end("not found");
+			else res.destroy?.();
+			resolveStream();
+		});
+		res.on("finish", () => resolveStream());
+		res.on("close", () => resolveStream());
+		req.on?.("close", () => {
+			if ("destroy" in stream && typeof (stream as { destroy?: () => void }).destroy === "function") {
+				(stream as { destroy: () => void }).destroy();
+			}
+			resolveStream();
+		});
+		stream.pipe(res);
+	});
 }
