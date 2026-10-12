@@ -2355,7 +2355,8 @@ async function installOnePlugin({ rawSpec, name, force, build, noBuild, dataDir,
 			);
 		const target = join(pluginsDir, id);
 		let backupTs = null;
-		const PRESERVED_FILES = ["config.json", "secrets.bin", "storage.json"];
+		const PRESERVED_FILES = ["config.json", "secrets.bin", "storage.json", "package.json", "package-lock.json"];
+		const PRESERVED_DIRS = new Set(["whisper-cache", "node_modules"]);
 		const preservedData = new Map();
 		if (existsSync(target)) {
 			if (!force)
@@ -2367,7 +2368,7 @@ async function installOnePlugin({ rawSpec, name, force, build, noBuild, dataDir,
 			// 更新前备份旧版本（<dataDir>/plugin-backups/<id>-<ts>/，保留最近 3 份），
 			// 失败时自动回滚。备份与安装同 filter：不带 .git/node_modules。
 			backupTs = ensurePluginBackup(dataDir, id, { source: rawSpec });
-			// 插件凭据/加密机密/私有存储不因升级丢失：先取出旧 config.json / secrets.bin / storage.json，拷完新文件后原样放回
+			// 插件凭据/加密机密/私有存储/运行时依赖声明不因升级丢失：先取出，拷完新文件后若新包未自带则原样放回
 			for (const fname of PRESERVED_FILES) {
 				try {
 					preservedData.set(fname, readFileSync(join(target, fname)));
@@ -2375,7 +2376,12 @@ async function installOnePlugin({ rawSpec, name, force, build, noBuild, dataDir,
 					/* 无该文件 */
 				}
 			}
-			rmSync(target, { recursive: true, force: true });
+			// 清理旧代码文件，但原地保留 node_modules 与 whisper-cache（既免重下几百 MB 模型，
+			// 也规避 Windows 下已加载 .node/.dll 被 rmSync 触发 EBUSY 导致更新失败）。
+			for (const entry of readdirSync(target)) {
+				if (PRESERVED_DIRS.has(entry)) continue;
+				rmSync(join(target, entry), { recursive: true, force: true });
+			}
 		}
 		mkdirSync(target, { recursive: true });
 		try {

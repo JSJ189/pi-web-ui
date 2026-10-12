@@ -15,7 +15,9 @@
  *     srExplain 错误码映射。
  */
 import { afterEach, describe, expect, it, vi } from "vitest";
-import { readFileSync } from "node:fs";
+import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { createRequire } from "node:module";
+import { tmpdir } from "node:os";
 import { join, dirname } from "node:path";
 import { fileURLToPath } from "node:url";
 import { parseUiContributions } from "../../server/plugins.js";
@@ -23,6 +25,8 @@ import { createMockHost } from "../../plugin-sdk/index.mjs";
 import voiceInput, {
 	applyHfEndpoint,
 	decodeWav16k,
+	ensureSharpStub,
+	hasCachedModelOnDisk,
 	hfEndpointHost,
 	joinUrl,
 	LOCAL_MODELS,
@@ -184,10 +188,10 @@ describe("hfEndpointHost", () => {
 		expect(hfEndpointHost("", "https://hf-mirror.com")).toBe("https://hf-mirror.com");
 	});
 	it("非 http(s) / 空 → 空（不改官方源）", () => {
-		expect(hfEndpointHost("")).toBe("");
+		expect(hfEndpointHost("", "")).toBe("");
 		expect(hfEndpointHost(undefined, "")).toBe("");
-		expect(hfEndpointHost("file:///etc/passwd")).toBe("");
-		expect(hfEndpointHost("ftp://x.example")).toBe("");
+		expect(hfEndpointHost("file:///etc/passwd", "")).toBe("");
+		expect(hfEndpointHost("ftp://x.example", "")).toBe("");
 	});
 });
 
@@ -663,3 +667,65 @@ describe("transcribe_audio 执行路径", () => {
 		expect(fetchSpy).not.toHaveBeenCalled();
 	});
 });
+
+describe("ensureSharpStub & hasCachedModelOnDisk", () => {
+	it("sharp 缺失原生 .node 绑定时自动注入内存 stub，使 require('sharp') 返回真值函数而不崩", () => {
+		const tmp = mkdtempSync(join(tmpdir(), "voice-sharp-stub-"));
+		cleanups.push(() => rmSync(tmp, { recursive: true, force: true }));
+		const sharpDir = join(tmp, "node_modules", "sharp", "lib");
+		mkdirSync(sharpDir, { recursive: true });
+		writeFileSync(
+			join(tmp, "node_modules", "sharp", "package.json"),
+			JSON.stringify({ name: "sharp", main: "lib/index.js" }),
+		);
+		writeFileSync(
+			join(sharpDir, "sharp.js"),
+			`throw new Error("Something went wrong installing the \\"sharp\\" module\\nCannot find module '../build/Release/sharp-win32-x64.node'");\n`,
+		);
+		writeFileSync(join(sharpDir, "index.js"), `module.exports = require("./sharp.js");\n`);
+		const entry = join(tmp, "index.mjs");
+		writeFileSync(entry, "export default {};\n");
+
+		expect(ensureSharpStub(entry)).toBe(true);
+		const req = createRequire(entry);
+		const loaded = req("sharp");
+		expect(typeof loaded).toBe("function");
+		expect(() => loaded()).toThrow("unavailable");
+		// 再次调用幂等（命中已注入的 stub，不再抛加载异常）
+		expect(ensureSharpStub(entry)).toBe(false);
+	});
+
+	it("hasCachedModelOnDisk 探测 config.json + onnx/*.onnx，且 localReady 自动从磁盘恢复 storage 标记", async () => {
+		const tmp = mkdtempSync(join(tmpdir(), "voice-cache-heal-"));
+		cleanups.push(() => rmSync(tmp, { recursive: true, force: true }));
+		const cacheDir = join(tmp, "whisper-cache");
+		expect(hasCachedModelOnDisk(cacheDir, LOCAL_MODELS.base)).toBe(false);
+
+		const modelDir = join(cacheDir, "Xenova", "whisper-base");
+		mkdirSync(join(modelDir, "onnx"), { recursive: true });
+		writeFileSync(join(modelDir, "config.json"), "{}");
+		// 只有 config.json 没有 .onnx 权重 → false
+		expect(hasCachedModelOnDisk(cacheDir, LOCAL_MODELS.base)).toBe(false);
+
+		writeFileSync(join(modelDir, "onnx", "encoder_model_quantized.onnx"), "onnx");
+		expect(hasCachedModelOnDisk(cacheDir, LOCAL_MODELS.base)).toBe(true);
+
+		// 模拟插件重装/storage 重置后 whisperModels 丢失但磁盘缓存仍在：GET /local-status 应自动自愈为 ready=true 并回写 storage
+		const host = createMockHost({ dir: tmp, settings: { engine: "local", localModel: "base" } });
+		const off = voiceInput.activate(host);
+		cleanups.push(() => off());
+		const statusRoute = host.mock.routes.find((r: { method: string; path: string }) => r.method === "GET" && r.path === "/local-status");
+		const res = {
+			statusCode: 200,
+			headersSent: false,
+			body: null as Record<string, unknown> | null,
+			status() { return this; },
+			json(p: Record<string, unknown>) { this.body = p; return this; },
+			end() { return this; },
+		};
+		await statusRoute.handler({}, res);
+		expect(res.body?.ready).toBe(true);
+		expect(host.storage.get("whisperModels")).toEqual({ [LOCAL_MODELS.base]: true });
+	});
+});
+

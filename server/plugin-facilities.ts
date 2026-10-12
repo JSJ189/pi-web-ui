@@ -424,15 +424,24 @@ export function ensurePluginDeps(
 		// 规避 DEP0190 与命令行注入，posix 不用 shell（路径不含空格假设成立，与宿主其它 spawn 一致）。
 		const isWin = process.platform === "win32";
 		const spawnCmd = isWin ? process.env.ComSpec || "cmd.exe" : "npm";
-		const spawnArgs = isWin
-			? ["/d", "/s", "/c", "npm.cmd", "install", "--no-audit", "--no-fund", ...missing]
-			: ["install", "--no-audit", "--no-fund", ...missing];
-		const res = spawnSync(spawnCmd, spawnArgs, {
-			cwd: pluginDir,
-			timeout: DEP_TIMEOUT_MS,
-			windowsHide: true,
-			encoding: "utf8",
-		});
+		const runNpmInstall = (extraFlags: string[]) => {
+			const spawnArgs = isWin
+				? ["/d", "/s", "/c", "npm.cmd", "install", "--no-audit", "--no-fund", ...extraFlags, ...missing]
+				: ["install", "--no-audit", "--no-fund", ...extraFlags, ...missing];
+			return spawnSync(spawnCmd, spawnArgs, {
+				cwd: pluginDir,
+				timeout: DEP_TIMEOUT_MS,
+				windowsHide: true,
+				encoding: "utf8",
+			});
+		};
+		let res = runNpmInstall([]);
+		// 传递依赖（如 @xenova/transformers 拉进来的 sharp@0.32）在无编译环境或连不上
+		// GitHub Release 拉 libvips 时，install 脚本会以非 0 退出拖垮整轮安装；
+		// 用 --ignore-scripts 重试一次，让预打包二进制（如 onnxruntime-node）与纯 JS 包先落盘。
+		if (res.error || res.status !== 0) {
+			res = runNpmInstall(["--ignore-scripts"]);
+		}
 		if (res.error || res.status !== 0) {
 			console.error(`[plugin-deps] ${join(pluginDir)} npm install 失败:`, res.error ?? res.stderr?.slice(0, 500));
 			return false;

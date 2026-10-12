@@ -54,27 +54,33 @@ describe("备份 / 回滚", () => {
 		expect(listBackups(dataDir, "p1").length).toBe(BACKUP_KEEP ?? 3);
 	});
 
-	it("备份不包含 node_modules/.git；目标不存在返回 null", () => {
+	it("备份不包含 node_modules/.git/whisper-cache；目标不存在返回 null", () => {
 		const d = installPlugin("p1", "v1");
 		mkdirSync(join(d, "node_modules"), { recursive: true });
 		mkdirSync(join(d, ".git"), { recursive: true });
+		mkdirSync(join(d, "whisper-cache"), { recursive: true });
 		writeFileSync(join(d, "node_modules/x.js"), "x");
+		writeFileSync(join(d, "whisper-cache/m.onnx"), "m");
 		const ts = ensureBackup(dataDir, "p1");
 		expect(ts).toBeTruthy();
 		const dest = join(dataDir, "plugin-backups", listBackups(dataDir, "p1")[0]);
 		expect(existsSync(join(dest, "node_modules"))).toBe(false);
 		expect(existsSync(join(dest, ".git"))).toBe(false);
+		expect(existsSync(join(dest, "whisper-cache"))).toBe(false);
 		expect(ensureBackup(dataDir, "not-installed")).toBeNull();
 	});
 
-	it("restoreBackup 恢复并清理备份；无备份返回 null", () => {
-		installPlugin("p1", "v1");
+	it("restoreBackup 恢复并清理备份（原地保留 node_modules 与 whisper-cache）；无备份返回 null", () => {
+		const d = installPlugin("p1", "v1");
+		mkdirSync(join(d, "whisper-cache"), { recursive: true });
+		writeFileSync(join(d, "whisper-cache/m.onnx"), "m");
 		ensureBackup(dataDir, "p1", { source: "x" });
 		// 当前目录变成 v2
 		writeFileSync(join(dataDir, "plugins", "p1", "index.mjs"), "// v2\n");
 		const ts = restoreBackup(dataDir, "p1");
 		expect(ts).toBeTruthy();
 		expect(readFileSync(join(dataDir, "plugins", "p1", "index.mjs"), "utf8")).toBe("// v1\n");
+		expect(existsSync(join(dataDir, "plugins", "p1", "whisper-cache", "m.onnx"))).toBe(true);
 		expect(listBackups(dataDir, "p1").length).toBe(0);
 		expect(restoreBackup(dataDir, "p1")).toBeNull();
 	});
