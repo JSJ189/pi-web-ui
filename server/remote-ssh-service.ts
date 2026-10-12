@@ -1705,4 +1705,3 @@ export async function serveRemoteWorkspaceFile(
 		stream.pipe(res);
 	});
 }
-
