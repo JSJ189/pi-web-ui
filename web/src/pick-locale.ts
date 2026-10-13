@@ -21,7 +21,21 @@
  */
 
 /** Locale codes this build can show: the two core ones plus every pack. */
-export const KNOWN_LOCALES = ["zh", "en", "de", "es", "fr", "it", "ja", "ko", "pt", "ru", "zh-TW"] as const;
+export const KNOWN_LOCALES = [
+	"zh",
+	"en",
+	"de",
+	"es",
+	"fr",
+	"it",
+	"ja",
+	"ko",
+	"pt",
+	"ru",
+	"zh-Hant",
+	"zh-HK",
+	"zh-TW",
+] as const;
 
 /**
  * True for every Chinese UI locale: core "zh" (Simplified) and packs such as
@@ -36,13 +50,34 @@ export function isZhLocale(code: string | null | undefined): boolean {
 
 /**
  * Chinese tags the browser sends that should land on Traditional Chinese.
- * Script subtags win over regions ("zh-Hans-HK" is Simplified); Hong Kong and
- * Macau have no pack of their own, so they share the Taiwan one.
+ * Returns the best candidate in order of preference, checking against known locales.
+ * Script subtags win over regions ("zh-Hans-HK" is Simplified).
  */
-function traditionalChinese(tag: string): boolean {
+function matchTraditionalChinese(tag: string, known: readonly string[]): string | null {
 	const parts = tag.split("-");
-	if (parts[0] !== "zh" || parts.includes("hans")) return false;
-	return parts.includes("hant") || parts.includes("tw") || parts.includes("hk") || parts.includes("mo");
+	if (parts[0] !== "zh" || parts.includes("hans")) return null;
+
+	const hasTw = parts.includes("tw");
+	const hasHk = parts.includes("hk") || parts.includes("mo");
+	const hasHant = parts.includes("hant");
+
+	if (!hasTw && !hasHk && !hasHant) return null;
+
+	// Determine preference order based on tag
+	let candidates: string[];
+	if (hasTw) {
+		candidates = ["zh-tw", "zh-hant", "zh-hk"];
+	} else if (hasHk) {
+		candidates = ["zh-hk", "zh-hant", "zh-tw"];
+	} else {
+		candidates = ["zh-hant", "zh-tw", "zh-hk"];
+	}
+
+	for (const candidate of candidates) {
+		const hit = findKnown(candidate, known);
+		if (hit) return hit;
+	}
+	return null;
 }
 
 /** Normalize a language tag: trimmed, lowercase, `_` → `-`. */
@@ -64,11 +99,7 @@ function findKnown(code: string, known: readonly string[]): string | null {
  */
 function matchTag(tag: string, known: readonly string[]): string | null {
 	if (!tag) return null;
-	return (
-		findKnown(tag, known) ??
-		(traditionalChinese(tag) ? findKnown("zh-tw", known) : null) ??
-		findKnown(tag.split("-")[0] ?? "", known)
-	);
+	return findKnown(tag, known) ?? matchTraditionalChinese(tag, known) ?? findKnown(tag.split("-")[0] ?? "", known);
 }
 
 /**

@@ -30,8 +30,20 @@ function placeholders(s: string): string[] {
 }
 
 describe("language packs", () => {
-	it("9 个语言包齐全（de/es/fr/it/ja/ko/pt/ru/zh-TW）", () => {
-		expect([...packs.keys()].sort()).toEqual(["de", "es", "fr", "it", "ja", "ko", "pt", "ru", "zh-TW"]);
+	it("11 个语言包齐全（de/es/fr/it/ja/ko/pt/ru/zh-Hant/zh-HK/zh-TW）", () => {
+		expect([...packs.keys()].sort()).toEqual([
+			"de",
+			"es",
+			"fr",
+			"it",
+			"ja",
+			"ko",
+			"pt",
+			"ru",
+			"zh-HK",
+			"zh-Hant",
+			"zh-TW",
+		]);
 	});
 
 	it("meta 合法：文件名=code、nativeName 非空、version 非空", () => {

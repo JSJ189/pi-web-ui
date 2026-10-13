@@ -42,20 +42,32 @@ describe("first-visit language", () => {
 		expect(pickLocale(null, ["IT-it"], "en")).toBe("it");
 	});
 
-	it("sends Traditional Chinese tags to the zh-TW pack and Simplified ones to zh", () => {
+	it("sends Traditional Chinese tags to their specific packs and Simplified ones to zh", () => {
 		// Case-insensitive, and the code comes back spelled the way the pack is.
-		for (const tag of ["zh-TW", "zh-tw", "zh_TW", "zh-HK", "zh-MO", "zh-Hant", "zh-Hant-TW", "zh-Hant-HK"]) {
+		for (const tag of ["zh-TW", "zh-tw", "zh_TW", "zh-Hant-TW"]) {
 			expect(pickLocale(null, [tag], "en"), tag).toBe("zh-TW");
+		}
+		for (const tag of ["zh-HK", "zh-hk", "zh_HK", "zh-MO", "zh-mo", "zh-Hant-HK", "zh-Hant-MO"]) {
+			expect(pickLocale(null, [tag], "en"), tag).toBe("zh-HK");
+		}
+		for (const tag of ["zh-Hant", "zh-hant"]) {
+			expect(pickLocale(null, [tag], "en"), tag).toBe("zh-Hant");
 		}
 		for (const tag of ["zh", "zh-CN", "zh-SG", "zh-Hans", "zh-Hans-CN", "zh-Hans-HK"]) {
 			expect(pickLocale(null, [tag], "en"), tag).toBe("zh");
 		}
 	});
 
-	it("lands a Traditional Chinese browser on zh when the zh-TW pack is not installed", () => {
+	it("lands a Traditional Chinese browser on zh-TW when zh-HK or zh-Hant pack is not installed", () => {
+		expect(pickLocale(null, ["zh-HK"], null, ["zh", "en", "zh-TW"])).toBe("zh-TW");
+		expect(pickLocale(null, ["zh-Hant"], null, ["zh", "en", "zh-TW"])).toBe("zh-TW");
+	});
+
+	it("lands a Traditional Chinese browser on zh when no Traditional pack is installed", () => {
 		// i18n.tsx re-picks with the core locales only once it knows the pack is gone.
 		expect(pickLocale(null, ["zh-TW"], null, ["zh", "en"])).toBe("zh");
 		expect(pickLocale(null, ["zh-HK", "en"], null, ["zh", "en"])).toBe("zh");
+		expect(pickLocale(null, ["zh-Hant"], null, ["zh", "en"])).toBe("zh");
 	});
 
 	it("falls back to the instance default, then to English", () => {
@@ -75,14 +87,15 @@ describe("first-visit language", () => {
 
 	it("knows the locales this build ships", () => {
 		expect([...KNOWN_LOCALES].sort()).toEqual(
-			["de", "en", "es", "fr", "it", "ja", "ko", "pt", "ru", "zh", "zh-TW"].sort(),
+			["de", "en", "es", "fr", "it", "ja", "ko", "pt", "ru", "zh", "zh-Hant", "zh-HK", "zh-TW"].sort(),
 		);
 	});
 });
 
 describe("isZhLocale", () => {
 	it("is true for every Chinese UI locale", () => {
-		for (const c of ["zh", "zh-TW", "zh-tw", "zh_TW", " ZH "]) expect(isZhLocale(c), c).toBe(true);
+		for (const c of ["zh", "zh-TW", "zh-tw", "zh_TW", "zh-HK", "zh-hk", "zh-Hant", "zh-hant", " ZH "])
+			expect(isZhLocale(c), c).toBe(true);
 	});
 
 	it("is false for everything else", () => {

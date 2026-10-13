@@ -4353,7 +4353,9 @@ export function unregisterLocale(code: string): void {
 /** Short chip label for the topbar (native for Chinese, uppercase code otherwise). */
 export function localeShort(code: string): string {
 	if (code === "zh") return "中文";
-	if (code === "zh-TW") return "繁中";
+	if (code === "zh-TW") return "台繁";
+	if (code === "zh-HK") return "港繁";
+	if (code === "zh-Hant") return "繁中";
 	return code.toUpperCase();
 }
 
