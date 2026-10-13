@@ -32,13 +32,13 @@ class RootErrorBoundary extends Component<{ children: ReactNode }, { error: Erro
 						alignItems: "center",
 						justifyContent: "center",
 						padding: "24px",
-						background: "var(--bg-main, rgb(13, 14, 18))",
-						color: "var(--text-main, #e2e8f0)",
+						background: "var(--bg, rgb(13, 14, 18))",
+						color: "var(--text, #e2e8f0)",
 						fontFamily: "system-ui, -apple-system, sans-serif",
 						textAlign: "center",
 					}}
 				>
-					<h2 style={{ fontSize: "18px", marginBottom: "12px", color: "var(--danger, #f43f5e)" }}>
+					<h2 style={{ fontSize: "18px", marginBottom: "12px", color: "var(--red, #f43f5e)" }}>
 						页面加载出现异常 / App Failed to Render
 					</h2>
 					<pre
