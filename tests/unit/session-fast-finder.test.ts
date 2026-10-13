@@ -88,4 +88,25 @@ describe("findMostRecentSessionFileFast", () => {
 		const resultBeta = await findMostRecentSessionFileFast(dir, "/workspace/project-beta");
 		expect(resultBeta).toBe(projB_newest);
 	});
+
+	it("传入工作区目录时自动解析物理存储目录中的会话", async () => {
+		const workdir = await makeTmpDir("workspace");
+		const storageDir = await makeTmpDir("storage");
+		const prev = process.env.PI_CODING_AGENT_SESSION_DIR;
+		try {
+			process.env.PI_CODING_AGENT_SESSION_DIR = storageDir;
+			const sessionFile = join(storageDir, "session-resolved.jsonl");
+			const header = JSON.stringify({ type: "session", id: "s-res", cwd: workdir }) + "\n";
+			await writeFile(sessionFile, header, "utf8");
+
+			const result = await findMostRecentSessionFileFast(workdir, workdir);
+			expect(result).toBe(sessionFile);
+		} finally {
+			if (prev !== undefined) {
+				process.env.PI_CODING_AGENT_SESSION_DIR = prev;
+			} else {
+				delete process.env.PI_CODING_AGENT_SESSION_DIR;
+			}
+		}
+	});
 });

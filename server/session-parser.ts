@@ -8,11 +8,11 @@
  * 从 agent-service.ts 抽出为独立模块。
  */
 import * as fsPromises from "node:fs/promises";
-import { join } from "node:path";
-import type { SessionInfo } from "@earendil-works/pi-coding-agent";
+import { join, resolve } from "node:path";
+import { SessionManager, type SessionInfo } from "@earendil-works/pi-coding-agent";
 import type { ProjectSummary } from "./protocol.js";
 import { normalizePathKey } from "./client-state.js";
-import { MAX_SEARCH_TEXT_CHARS, readCwdFromSessionHeader } from "./session-search.js";
+import { MAX_SEARCH_TEXT_CHARS, readCwdFromSessionHeader, piSessionsRoot } from "./session-search.js";
 
 /**
  * 快速轻量地从 SDK 会话目录中发现项目路径（仅读取会话文件的第一行头部获取 cwd，
@@ -334,18 +334,37 @@ export async function findMostRecentSessionFileFast(
 	targetCwd?: string,
 ): Promise<string | undefined> {
 	try {
+		let targetDir = sessionDir;
+		let dirEntries: string[] = [];
 		try {
-			await fsPromises.access(sessionDir);
+			await fsPromises.access(targetDir);
+			dirEntries = await fsPromises.readdir(targetDir);
 		} catch {
 			return undefined;
 		}
-		const dirEntries = await fsPromises.readdir(sessionDir);
-		const jsonlFiles = dirEntries.filter((f) => f.endsWith(".jsonl"));
+		let jsonlFiles = dirEntries.filter((f) => f.endsWith(".jsonl"));
+		if (jsonlFiles.length === 0) {
+			// 如果 targetDir 下没有 .jsonl 文件，可能是工作区根目录（sessionBaseDir），尝试解析物理存储目录
+			try {
+				const extra = piSessionsRoot();
+				const resolvedStorageDir = extra ? resolve(extra) : SessionManager.create(targetDir).getSessionDir();
+				if (resolvedStorageDir && resolvedStorageDir !== targetDir) {
+					try {
+						const storageEntries = await fsPromises.readdir(resolvedStorageDir);
+						const storageJsonl = storageEntries.filter((f) => f.endsWith(".jsonl"));
+						if (storageJsonl.length > 0) {
+							targetDir = resolvedStorageDir;
+							jsonlFiles = storageJsonl;
+						}
+					} catch {}
+				}
+			} catch {}
+		}
 		if (jsonlFiles.length === 0) return undefined;
 
 		const stats = await Promise.all(
 			jsonlFiles.map(async (f) => {
-				const fp = join(sessionDir, f);
+				const fp = join(targetDir, f);
 				try {
 					const st = await fsPromises.stat(fp);
 					return { path: fp, mtime: st.mtimeMs };

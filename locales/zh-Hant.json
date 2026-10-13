@@ -1,7 +1,7 @@
 {
 	"code": "zh-Hant",
 	"nativeName": "繁體中文",
-	"version": "0.104.4",
+	"version": "0.105.0",
 	"strings": {
 		"docTitle": "pi-web-ui — pi 編碼智能體",
 		"cancel": "取消",

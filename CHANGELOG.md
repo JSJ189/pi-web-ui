@@ -10,13 +10,30 @@
 
 ## [Unreleased]
 
+暂无未发布内容。
+
+## [0.105.0] — 2026-10-13
+
 ### Added
 
+- **Git Worktree 隔离开发管理工具与工作区顶部横幅**：
+  - 新增内置 `worktree` 管理工具，支持在独立目录创建、切换与清理工作树；
+  - 界面顶部新增 Worktree 状态横幅，实时感知当前工作树分支、修改状态与关联主目录，支持一键切换与清理。
+- **专注模式 (Zen Mode) 与界面显示偏好**：
+  - 支持专注模式快捷切换（Alt/Option 快捷操作或顶栏按钮），沉浸式隐藏侧边栏与辅助干扰；
+  - 设置页支持对话宽度调整、模型选择行显示/隐藏偏好设置。
+- **WebSocket 网络往返延迟 (RTT) 实时监测**：
+  - 客户端与服务端心跳上报端到端网络延迟，并在连接指示条目实时悬浮显示延迟毫秒数。
+- **繁体中文通用 (zh-Hant)、香港 (zh-HK) 与台湾 (zh-TW) 语言包**：
+  - 完整补齐繁体中文三区域语言包（zh-TW / zh-HK / zh-Hant），支持浏览器区域路由与智能回退。
 - **切走时保留已结束的对话开关（`retainFinishedConversations`）**：
   设置页「界面与交互」新增「切走时保留已结束的对话」开关（默认关闭）。开启后，切换到其他对话或新建对话时，已结束（空闲）的对话依然保留在左栏「运行的对话」列表中，不自动释放运行时，直到用户点击 ✕ 手动移出；未开始对话的空白新会话依然自动回收以避免堆积。同时会话达到同项目并发上限时的提示文案亦随该开关自动适配指导点击 ✕ 移出。
 
 ### Fixed
 
+- **大项目/大历史会话恢复解耦与异步加载通知**：
+  - 解耦会话初始化状态，避免重型转录解析卡住 WebSocket 握手；支持 `sessionInitializingNotice` 提供清晰加载态；
+  - 修复 `findMostRecentSessionFileFast` 传入工作区目录时物理存储目录解析失效问题，保证跨端会话恢复与过户判定毫秒级完成。
 - **工作区影子快照（Dual-State Rollback）全链路并发与缓存优化**：
   - **影子 Index 缓存按工作区持久复用**：按 `(gitDir, cwd)` 缓存影子 index，后续轮次直接复用，避免每次重新扫描与剔除外部兄弟目录，保留上一轮已跟踪/未跟踪文件的 stat 缓存；
   - **快照创建与模型推理并发执行**：在用户发消息时并发启动快照生成，用户气泡与 LLM 请求 0ms 立即上屏与发出；在写文件、编辑、执行 bash 等破坏性工具执行前施加门禁（`withWorkspaceSnapshotGate`），确保模型动手改文件前快照必定已就绪，兼顾零延迟体验与精准回滚点；
@@ -24,18 +41,21 @@
   - **快照映射随会话转录持久化**：将快照记录写入会话转录自定义项（`pi-web-ui/workspace-snapshot`），并在会话重载/服务重启时自动回放恢复，彻底解决跨重启或 LRU 卸载后无法联动还原工作区文件的问题；
   - **管道写入 EPIPE 防御与脏索引兜底回退**：加固 `runGitInput` 的 `stdin` 错误监听，杜绝子进程提前退出时的进程级崩溃；若缓存索引或用户暂存区因冲突/损坏导致 `git add` 或 `write-tree` 报错，自动清理并回退到全新空 index 重试，保证快照高可用。
 - **大仓库发消息不再被影子快照的冷 `git add -A` 挡住** —— 创建工作区影子快照时先把真实 index 拷进临时 index（子目录 cwd 再剔掉子树外条目），`git add -A` 只哈希变更和未跟踪文件，不再每次对空 index 重哈希整棵工作树。快照仍在模型改文件之前完成，回滚语义不变，也不写用户的暂存区。
+- **Markdown KaTeX 数学公式支持反斜杠定界符** —— 支持 `\( ... \)` 行内公式与 `\[ ... \]` 块级数学公式解析。
+- **目标审查执行阶段用户输入转发** —— 目标模式执行中主会话收到的用户输入实时投递给活动执行者会话，避免输入丢失。
+- **插件权限与能力扩展** —— 允许 notify、storage、secrets 宿主能力声明，按插件独立捆绑 markdown-chunks。
+- **语音输入缺失 sharp 绑定自愈** —— 绕过平台缺失 sharp 原生绑定报错，保留并自愈本地 Whisper 模型缓存。
+- **远程工作区文件下载与软链接识别** —— 修复远程工作区文件下载/预览 404，增强目录浏览器对软链接的识别与路径输入同步。
+- **流式思考与长内容首字视口锁定** —— 思考折叠与长工具卡延迟挂载，平滑收尾排水节奏优化。
 
 <!-- auto-i18n:start -->
-
 ### i18n
 
-- 前端新增 key（41）：`networkLatency`、`engineSwitchTip`、`engineTagFull`、`engineTagFast`、`enginePickerDesc`、`settingsEngineSection`、`settingsEngineHint`、`settingsEnginePiTitle`、`settingsEnginePiDesc`、`settingsEngineDshTitle`、`settingsEngineDshDesc`、`zenMode`、`zenModeTip`、`zenModeExit`、`zenModeExitTip`、`forkedSessionBadge`、`forkedSessionTip`、`piCoreUndetected`、`showForkedParents`、`showForkedParentsDesc`、`retainFinishedConversations`、`retainFinishedConversationsDesc`、`hideModelRow`、`hideModelRowDesc`、`toolsWorktreeDesc`、`toolsWorktreeOffHint`、`worktreeBadgeLinked`、`worktreeBadgeDirtyCount`、`worktreeBannerActiveTitle`、`worktreeBannerActiveDesc`、`worktreeBannerUncleanedTitle`、`worktreeBannerUncleanedDesc`、`worktreeActionSwitchMain`、`worktreeActionSwitchMainTip`、`worktreeActionSwitchTo`、`worktreeActionSwitchToTip`、`worktreeActionRemove`、`worktreeActionRemoveTip`、`worktreeActionRemoveConfirm`、`worktreeActionCollapse`、`worktreeActionMore`
-- 前端中文变更（2）：`keepRecent`、`keepRecentDesc`
-- 前端英文变更（1）：`keepRecentDesc`
+- 前端新增 key（42）：`networkLatency`、`engineSwitchTip`、`engineTagFull`、`engineTagFast`、`enginePickerDesc`、`settingsEngineSection`、`settingsEngineHint`、`settingsEnginePiTitle`、`settingsEnginePiDesc`、`settingsEngineDshTitle`、`settingsEngineDshDesc`、`zenMode`、`zenModeTip`、`zenModeExit`、`zenModeExitTip`、`forkedSessionBadge`、`forkedSessionTip`、`piCoreUndetected`、`sessionInitializingNotice`、`showForkedParents`、`showForkedParentsDesc`、`retainFinishedConversations`、`retainFinishedConversationsDesc`、`hideModelRow`、`hideModelRowDesc`、`toolsWorktreeDesc`、`toolsWorktreeOffHint`、`worktreeBadgeLinked`、`worktreeBadgeDirtyCount`、`worktreeBannerActiveTitle`、`worktreeBannerActiveDesc`、`worktreeBannerUncleanedTitle`、`worktreeBannerUncleanedDesc`、`worktreeActionSwitchMain`、`worktreeActionSwitchMainTip`、`worktreeActionSwitchTo`、`worktreeActionSwitchToTip`、`worktreeActionRemove`、`worktreeActionRemoveTip`、`worktreeActionRemoveConfirm`、`worktreeActionCollapse`、`worktreeActionMore`
+- 前端中文变更（3）：`goalBarOpenExecTip`、`keepRecent`、`keepRecentDesc`
+- 前端英文变更（2）：`goalBarOpenExecTip`、`keepRecentDesc`
 - 服务端新增 key（16）：`worktree.not.git`、`worktree.remove.dirty`、`worktree.list.empty`、`worktree.list.header`、`worktree.tag.main`、`worktree.tag.current`、`worktree.tag.dirty`、`worktree.tag.ahead`、`worktree.create.missing_path`、`worktree.create.switched`、`worktree.create.success`、`worktree.switch.missing_path`、`worktree.switch.success`、`worktree.remove.missing_path`、`worktree.remove.success`、`worktree.op.failed`
 - 服务端文案变更（2）：`loadtools.always`、`prompt.tools.lazy`
-
-<!-- auto-i18n:end -->
 
 ## [0.104.4] — 2026-10-12
 
@@ -1773,6 +1793,7 @@ when?, children?}`，也收 `topbar` / `settings` 这类简写别名）；宿主
 [0.64.4]: https://github.com/xing-shuyin/pi-web-ui/releases/tag/v0.64.4
 [0.64.3]: https://github.com/xing-shuyin/pi-web-ui/releases/tag/v0.64.3
 [0.64.2]: https://github.com/xing-shuyin/pi-web-ui/releases/tag/v0.64.2
+[0.105.0]: https://github.com/xing-shuyin/pi-web-ui/releases/tag/v0.105.0
 [0.104.4]: https://github.com/xing-shuyin/pi-web-ui/releases/tag/v0.104.4
 [0.104.3]: https://github.com/xing-shuyin/pi-web-ui/releases/tag/v0.104.3
 [0.104.2]: https://github.com/xing-shuyin/pi-web-ui/releases/tag/v0.104.2
