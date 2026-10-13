@@ -172,27 +172,40 @@ async function main() {
 
 	// 8. 可选压缩成 zip
 	if (createZip) {
-		const zipTarget = join(releaseDir, `pi-web-ui-desktop-${version}-portable.zip`);
+		const zipName = `pi-web-ui-desktop-${version}-portable.zip`;
+		const zipTarget = join(releaseDir, zipName);
 		console.log(`[make-portable] 正在压缩便携包到 ${zipTarget}...`);
 		try {
 			if (existsSync(zipTarget)) {
 				rmSync(zipTarget, { force: true });
 			}
-			// 在 Windows 上尝试优先调用 tar，若失败回落 powershell Compress-Archive
+			// 在 Windows 上尝试优先调用 7z / tar（传相对文件名避免 GNU tar 将盘符 D: 误当远程主机），若失败回落 powershell Compress-Archive
 			if (process.platform === "win32") {
+				let zipped = false;
 				try {
-					execSync(`tar -a -c -f "${zipTarget}" "PiWebUI-Portable"`, {
+					execSync(`7z a -tzip "${zipName}" "PiWebUI-Portable" -mx=3`, {
 						cwd: releaseDir,
 						stdio: "inherit",
 					});
-				} catch {
+					zipped = true;
+				} catch {}
+				if (!zipped) {
+					try {
+						execSync(`tar -a -c -f "${zipName}" "PiWebUI-Portable"`, {
+							cwd: releaseDir,
+							stdio: "inherit",
+						});
+						zipped = true;
+					} catch {}
+				}
+				if (!zipped) {
 					execSync(
 						`powershell -NoProfile -Command "Compress-Archive -Path '${portableDir}' -DestinationPath '${zipTarget}' -Force"`,
 						{ cwd: repoRoot, stdio: "inherit" },
 					);
 				}
 			} else {
-				execSync(`zip -r "${zipTarget}" "PiWebUI-Portable"`, { cwd: releaseDir, stdio: "inherit" });
+				execSync(`zip -r "${zipName}" "PiWebUI-Portable"`, { cwd: releaseDir, stdio: "inherit" });
 			}
 			console.log(`✔ 便携压缩包制作完成: ${zipTarget}`);
 		} catch (err) {
