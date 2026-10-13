@@ -12,6 +12,20 @@
 
 暂无未发布内容。
 
+## [0.105.1] — 2026-10-13
+
+### Fixed
+
+- **跨平台 Windows 路径归一化键修复** —— 修复在 POSIX/Linux 环境下 `normalizePathKey` 处理 Windows 盘符路径时因平台路径分隔符差异导致的 Fork 会话比对与父会话隐藏失效问题。
+
+### i18n
+
+- 前端新增 key（42）：`networkLatency`、`engineSwitchTip`、`engineTagFull`、`engineTagFast`、`enginePickerDesc`、`settingsEngineSection`、`settingsEngineHint`、`settingsEnginePiTitle`、`settingsEnginePiDesc`、`settingsEngineDshTitle`、`settingsEngineDshDesc`、`zenMode`、`zenModeTip`、`zenModeExit`、`zenModeExitTip`、`forkedSessionBadge`、`forkedSessionTip`、`piCoreUndetected`、`sessionInitializingNotice`、`showForkedParents`、`showForkedParentsDesc`、`retainFinishedConversations`、`retainFinishedConversationsDesc`、`hideModelRow`、`hideModelRowDesc`、`toolsWorktreeDesc`、`toolsWorktreeOffHint`、`worktreeBadgeLinked`、`worktreeBadgeDirtyCount`、`worktreeBannerActiveTitle`、`worktreeBannerActiveDesc`、`worktreeBannerUncleanedTitle`、`worktreeBannerUncleanedDesc`、`worktreeActionSwitchMain`、`worktreeActionSwitchMainTip`、`worktreeActionSwitchTo`、`worktreeActionSwitchToTip`、`worktreeActionRemove`、`worktreeActionRemoveTip`、`worktreeActionRemoveConfirm`、`worktreeActionCollapse`、`worktreeActionMore`
+- 前端中文变更（3）：`goalBarOpenExecTip`、`keepRecent`、`keepRecentDesc`
+- 前端英文变更（2）：`goalBarOpenExecTip`、`keepRecentDesc`
+- 服务端新增 key（16）：`worktree.not.git`、`worktree.remove.dirty`、`worktree.list.empty`、`worktree.list.header`、`worktree.tag.main`、`worktree.tag.current`、`worktree.tag.dirty`、`worktree.tag.ahead`、`worktree.create.missing_path`、`worktree.create.switched`、`worktree.create.success`、`worktree.switch.missing_path`、`worktree.switch.success`、`worktree.remove.missing_path`、`worktree.remove.success`、`worktree.op.failed`
+- 服务端文案变更（2）：`loadtools.always`、`prompt.tools.lazy`
+
 ## [0.105.0] — 2026-10-13
 
 ### Added
@@ -1793,6 +1807,7 @@ when?, children?}`，也收 `topbar` / `settings` 这类简写别名）；宿主
 [0.64.4]: https://github.com/xing-shuyin/pi-web-ui/releases/tag/v0.64.4
 [0.64.3]: https://github.com/xing-shuyin/pi-web-ui/releases/tag/v0.64.3
 [0.64.2]: https://github.com/xing-shuyin/pi-web-ui/releases/tag/v0.64.2
+[0.105.1]: https://github.com/xing-shuyin/pi-web-ui/releases/tag/v0.105.1
 [0.105.0]: https://github.com/xing-shuyin/pi-web-ui/releases/tag/v0.105.0
 [0.104.4]: https://github.com/xing-shuyin/pi-web-ui/releases/tag/v0.104.4
 [0.104.3]: https://github.com/xing-shuyin/pi-web-ui/releases/tag/v0.104.3

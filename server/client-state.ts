@@ -618,8 +618,16 @@ export function normalizePathKey(p: string): string {
 		return p;
 	}
 	try {
-		const resolved = resolve(p);
-		return process.platform === "win32" ? resolved.toLowerCase() : resolved;
+		if (process.platform === "win32") {
+			return resolve(p).toLowerCase();
+		}
+		// 在非 Windows 平台（如 Linux CI 或容器）处理 Windows 盘符路径时做跨平台归一化
+		if (/^[a-zA-Z]:[\\/]/.test(p)) {
+			const drive = p.slice(0, 2).toLowerCase();
+			const rest = p.slice(2).replace(/\\/g, "/").replace(/\/+/g, "/");
+			return (drive + rest).toLowerCase();
+		}
+		return resolve(p);
 	} catch {
 		return process.platform === "win32" ? p.toLowerCase() : p;
 	}
