@@ -6,8 +6,11 @@ import {
 	DEFAULT_TEMPLATES,
 	SubagentTemplatesStore,
 	TEMPLATE_LIMITS,
+	canonicalizeTemplate,
+	localizeTemplate,
 	type SubagentTemplate,
 } from "../../server/subagent-templates.js";
+import { BUILTIN_TEMPLATES_HANT } from "../../server/subagent-templates-hant.js";
 
 /** 每个用例一个临时目录，用后即焚。 */
 const dirs: string[] = [];
@@ -284,5 +287,119 @@ describe("oh-my-pi specialist 内置模板", () => {
 			expect(t.systemPrompt.trim().length, `${n}.systemPrompt`).toBeGreaterThan(100);
 			expect(t.systemPromptEn?.trim().length, `${n}.systemPromptEn`).toBeGreaterThan(100);
 		}
+	});
+});
+
+describe("内置模板繁中视图（zh-TW / zh-HK / zh-Hant 共用一份台湾用语）", () => {
+	/** 简中出厂文案里已知的笔误（momus「_Number_」应为「步骤编号」）；繁中版写对，对齐比较时先剔掉。 */
+	const ZH_SOURCE_STRAY = ["_Number_"];
+	/** 只在简体出现的字（繁体写法不同）：繁中文案里出现 = 漏转/粘贴了简体。 */
+	const SIMPLIFIED_ONLY =
+		"这与为个们发现档验证码类项请实阅读并统结构测试环风险总过关说对该态执览审计划议诊应误错没问题务备约规范释简编库";
+	/** 英文/符号词元序列（P0/P1/P2、BLOCK / OK、No issues found. 等）：繁中版必须与简中版逐个对齐。 */
+	const asciiTokens = (s: string, strip: string[] = []) =>
+		strip.reduce((acc, x) => acc.split(x).join(" "), s).match(/[A-Za-z0-9][A-Za-z0-9_./+-]*/g) ?? [];
+	const review = () => DEFAULT_TEMPLATES.find((t) => t.name === "review")!;
+
+	it("守卫：每个内置模板都有繁中文案，且没有多余/过期的条目", () => {
+		expect(Object.keys(BUILTIN_TEMPLATES_HANT).sort()).toEqual(DEFAULT_TEMPLATES.map((t) => t.name).sort());
+	});
+
+	it("守卫：繁中文案与简中出厂文案结构对齐（行数、英文词元一致），且已不含简体字", () => {
+		for (const d of DEFAULT_TEMPLATES) {
+			const hant = BUILTIN_TEMPLATES_HANT[d.name]!;
+			for (const field of ["description", "systemPrompt"] as const) {
+				const zh = d[field];
+				const tw = hant[field];
+				expect(tw, `${d.name}.${field} 不应与简中相同`).not.toBe(zh);
+				expect(tw.split("\n").length, `${d.name}.${field} 行数`).toBe(zh.split("\n").length);
+				expect(asciiTokens(tw), `${d.name}.${field} 英文词元`).toEqual(asciiTokens(zh, ZH_SOURCE_STRAY));
+				const leaked = [...tw].filter((ch) => SIMPLIFIED_ONLY.includes(ch));
+				expect(leaked, `${d.name}.${field} 含简体字`).toEqual([]);
+			}
+		}
+	});
+
+	it("繁中界面（含 zh-HK / zh-Hant / 区域与分隔写法）拿到繁中视图，英文字段不动", () => {
+		for (const locale of ["zh-TW", "zh-tw", "zh_TW", "zh-HK", "zh-MO", "zh-Hant", "zh-Hant-TW"]) {
+			const v = localizeTemplate(review(), locale);
+			expect(v.description, locale).toBe(BUILTIN_TEMPLATES_HANT.review!.description);
+			expect(v.systemPrompt, locale).toBe(BUILTIN_TEMPLATES_HANT.review!.systemPrompt);
+			expect(v.descriptionEn, locale).toBe(review().descriptionEn);
+			expect(v.systemPromptEn, locale).toBe(review().systemPromptEn);
+		}
+	});
+
+	it("简中 / 英文 / 其它语言 / 未上报 locale 原样返回（同一对象）", () => {
+		for (const locale of ["zh", "zh-CN", "zh-Hans", "zh-Hans-HK", "zh-SG", "en", "ja", "", undefined, null]) {
+			const src = review();
+			expect(localizeTemplate(src, locale), String(locale)).toBe(src);
+		}
+	});
+
+	it("逐字段判断：用户改过的字段原样保留，没改的字段仍换成繁中；不改动入参", () => {
+		const edited = { ...review(), systemPrompt: `${review().systemPrompt}\n- 额外约定。` };
+		const v = localizeTemplate(edited, "zh-TW");
+		expect(v.description).toBe(BUILTIN_TEMPLATES_HANT.review!.description);
+		expect(v.systemPrompt).toBe(edited.systemPrompt);
+		expect(edited.description).toBe(review().description);
+	});
+
+	it("自建模板 / 同名但内容不同 / 原型链属性名都不受影响", () => {
+		const custom = { name: "reviewer", description: "只读审查", systemPrompt: "你是审查者。" };
+		expect(localizeTemplate(custom, "zh-TW")).toBe(custom);
+		const sameNameOtherText = { name: "review", description: "我的审查", systemPrompt: "我的提示词" };
+		expect(localizeTemplate(sameNameOtherText, "zh-TW")).toBe(sameNameOtherText);
+		for (const name of ["constructor", "toString", "__proto__", "hasOwnProperty"]) {
+			const proto = { name, description: "d", systemPrompt: "p" };
+			expect(localizeTemplate(proto, "zh-TW")).toBe(proto);
+			expect(canonicalizeTemplate(proto)).toBe(proto);
+		}
+	});
+
+	it("canonicalizeTemplate 是 localizeTemplate 的逆运算（全部内置模板往返不变）", () => {
+		for (const d of DEFAULT_TEMPLATES) {
+			expect(canonicalizeTemplate(localizeTemplate(d, "zh-HK"))).toEqual(d);
+			expect(canonicalizeTemplate(d)).toBe(d);
+		}
+		// 用户真正改过的繁中文字不会被还原
+		const mine = { ...review(), systemPrompt: `${BUILTIN_TEMPLATES_HANT.review!.systemPrompt}\n- 額外約定。` };
+		expect(canonicalizeTemplate(mine)).toBe(mine);
+	});
+
+	it("upsert：设置页回传繁中视图（如只点启用开关）时，库里仍存出厂简中", () => {
+		const store = tmpStore();
+		const view = localizeTemplate(store.get("review")!, "zh-TW");
+		expect(view.systemPrompt).not.toBe(review().systemPrompt);
+		expect(store.upsert({ ...view, enabled: false })).toBeNull();
+		const saved = store.get("review")!;
+		expect(saved.enabled).toBe(false);
+		expect(saved.description).toBe(review().description);
+		expect(saved.systemPrompt).toBe(review().systemPrompt);
+	});
+
+	it("upsert：用户在繁中界面真正改了提示词，改动原样入库（不被还原）", () => {
+		const store = tmpStore();
+		const view = localizeTemplate(store.get("review")!, "zh-Hant");
+		const edited = `${view.systemPrompt}\n- 額外約定。`;
+		expect(store.upsert({ ...view, systemPrompt: edited })).toBeNull();
+		const saved = store.get("review")!;
+		expect(saved.systemPrompt).toBe(edited);
+		// 简介没改 → 仍是出厂简中，繁中视图继续翻译它
+		expect(saved.description).toBe(review().description);
+		expect(localizeTemplate(saved, "zh-Hant").systemPrompt).toBe(edited);
+	});
+
+	it("已落盘的旧数据无需迁移：出厂简中原样的内置模板在繁中界面直接换成繁中", () => {
+		const dir = mkdtempSync(join(tmpdir(), "satpl-"));
+		dirs.push(dir);
+		const file = join(dir, "subagent-templates.json");
+		const a = new SubagentTemplatesStore(file);
+		a.upsert({ ...base }); // 触发整表落盘（含全部出厂简中内置模板）
+		const b = new SubagentTemplatesStore(file);
+		expect(b.get("review")!.systemPrompt).toBe(review().systemPrompt);
+		expect(localizeTemplate(b.get("review")!, "zh-HK").systemPrompt).toBe(BUILTIN_TEMPLATES_HANT.review!.systemPrompt);
+		// 视图不回写：库里仍是简中
+		expect(b.get("review")!.systemPrompt).toBe(review().systemPrompt);
 	});
 });

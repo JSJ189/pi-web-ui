@@ -154,8 +154,13 @@ import {
 	type PromptMode,
 	ClientStateStore,
 } from "./client-state.js";
-import { pick, resolveServerLang, type ServerLang } from "./i18n.js";
-import { SubagentTemplatesStore, pickTemplatePrompt, type SubagentTemplate } from "./subagent-templates.js";
+import { isTraditionalLocale, pick, resolveServerLang, type ServerLang } from "./i18n.js";
+import {
+	SubagentTemplatesStore,
+	localizeTemplate,
+	pickTemplatePrompt,
+	type SubagentTemplate,
+} from "./subagent-templates.js";
 import { ApprovalRulesStore, extractTargetPath, type ApprovalRule } from "./approval-rules.js";
 import { ComposerDraftsStore } from "./composer-drafts.js";
 import { SandboxManager, evaluateSandboxJail, isSameOrSubpath, withSandboxJailGate } from "./sandbox-service.js";
@@ -2045,11 +2050,12 @@ export class ClientSession {
 		getWatchdogTimeoutMs: () => this.getBaseToolWatchdogTimeoutMs(),
 		// issue #91：子代理工具返回按客户端 UI 语言出中英（英文默认）。
 		lang: () => this.getLang(),
-		// 只向 AI 暴露 enabled 的模板（停用的对 AI 不可见）。
+		// 只向 AI 暴露 enabled 的模板（停用的对 AI 不可见）。繁中界面用繁中视图（同设置页）。
 		listTemplates: () =>
 			this.subagentTemplates
 				.list()
 				.filter((t) => t.enabled)
+				.map((t) => localizeTemplate(t, this.getLocale()))
 				.map((t) => ({
 					name: t.name,
 					description: t.description,
@@ -2393,6 +2399,7 @@ export class ClientSession {
 					void this.pushSessions();
 				},
 				getMcpServers: () => this.listMcpServers(),
+				getLocale: () => this.getLocale(),
 			},
 			this.subagentTemplates,
 			this.approvalRules,
@@ -2765,8 +2772,8 @@ export class ClientSession {
 					systemPromptOverride: (base?: string) => {
 						if (typeof base === "string" && base) {
 							this.lastBaseSystemPrompt = base;
-							if (apply && apply.promptMode === "replace" && pickTemplatePrompt(apply, this.getLang()).trim()) {
-								return pickTemplatePrompt(apply, this.getLang());
+							if (apply && apply.promptMode === "replace" && this.templatePrompt(apply).trim()) {
+								return this.templatePrompt(apply);
 							}
 						}
 						return undefined;
@@ -2775,8 +2782,8 @@ export class ClientSession {
 						// 记录 SDK APPEND_SYSTEM.md base（composer {{append}} 自动内容）。
 						if (!apply) this.lastSdkAppendFiles = base.slice();
 						const out = [...base];
-						if (apply && apply.promptMode === "append" && pickTemplatePrompt(apply, this.getLang()).trim()) {
-							out.push(pickTemplatePrompt(apply, this.getLang()));
+						if (apply && apply.promptMode === "append" && this.templatePrompt(apply).trim()) {
+							out.push(this.templatePrompt(apply));
 						}
 						// 主会话自定义「追加」已并入组合模板的 {{append}} 覆盖，不再在此注入。
 						// 计划模式：只规划不实施 —— 硬闸门（server/plan-mode.ts 拒写类/旁路
@@ -2896,7 +2903,7 @@ export class ClientSession {
 									// 把灵魂段换成模板提示词，自动段保留；SYSTEM.md 情形已在
 									// systemPromptOverride 整体替换，此处边界不存在会自然跳过。
 									if (apply) {
-										const tplPrompt = pickTemplatePrompt(apply, this.getLang()).trim();
+										const tplPrompt = this.templatePrompt(apply).trim();
 										if (apply.promptMode !== "replace" || !tplPrompt) return undefined;
 										const boundary = core.indexOf("\n\nAvailable tools:");
 										// 边界串是 SDK 提示词的内部格式：版本一变就可能对不上。
@@ -8086,6 +8093,18 @@ export class ClientSession {
 		return resolveServerLang(this.stateStore.get(this.clientId).locale);
 	}
 
+	/** Raw UI locale as the browser reported it ("zh-TW", "zh-HK", …). Unlike
+	 *  getLang() it is NOT folded: zh-TW / zh-HK / zh-Hant all resolve to "zh"
+	 *  there, so Traditional-script data variants must key off this instead. */
+	getLocale(): string | undefined {
+		return this.stateStore.get(this.clientId).locale;
+	}
+
+	/** 子代理模板的系统提示词：繁中界面先套繁中视图（localizeTemplate），再按服务端语言选 zh/en。 */
+	private templatePrompt(apply: SubagentTemplate): string {
+		return pickTemplatePrompt(localizeTemplate(apply, this.getLocale()), this.getLang());
+	}
+
 	/** Persist the browser UI locale (hello.locale / set_locale) and refresh
 	 *  lang-aware prompt segments. Reuses the settings reload path, so it is
 	 *  streaming-safe (deferred to agent_end mid-run, same as settings). */
@@ -8093,8 +8112,15 @@ export class ClientSession {
 		const code = locale.trim().slice(0, 16);
 		if (!code) return;
 		const prev = this.getLang();
+		const prevTraditional = isTraditionalLocale(this.getLocale());
 		this.stateStore.saveLocale(this.clientId, code);
-		if (this.getLang() === prev) return; // same server language — nothing to re-render
+		if (this.getLang() === prev) {
+			// Same server language (every zh* folds to "zh") — no runtime reload needed. But
+			// Simplified ↔ Traditional changes the built-in subagent templates' view, so
+			// re-push the settings snapshot for an open settings panel.
+			if (isTraditionalLocale(this.getLocale()) !== prevTraditional) this.settingsSvc.push();
+			return;
+		}
 		await this.applySettingsReload();
 	}
 

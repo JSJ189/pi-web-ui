@@ -30,9 +30,15 @@ const ROOT = fileURLToPath(new URL("../..", import.meta.url));
 /** 仍允许使用 bilingual() 的文件（面向用户的 relay 文案，非工具定义）。 */
 const BILINGUAL_ALLOW = new Set(["i18n.ts", "dsh-client.ts", "dsh-agent-service.ts"]);
 
-/** CJK 检查豁免（非模型提示词）：斜杠命令 UI、用户可编辑模板数据、宿主 API 目录、
+/** CJK 检查豁免（非模型提示词）：斜杠命令 UI、用户可编辑模板数据（含其繁中视图）、宿主 API 目录、
  *  tool-manager 的工具预设说明（设置面板 UI）。 */
-const CJK_ALLOW = new Set(["slash-commands.ts", "subagent-templates.ts", "plugin-api-catalog.ts", "tool-manager.ts"]);
+const CJK_ALLOW = new Set([
+	"slash-commands.ts",
+	"subagent-templates.ts",
+	"subagent-templates-hant.ts",
+	"plugin-api-catalog.ts",
+	"tool-manager.ts",
+]);
 
 /** 主 description 长度上限（字符）；操作语法参考类工具单独豁免。 */
 const MAIN_DESC_CAP = 600;

@@ -2,6 +2,7 @@ import { createContext, useCallback, useContext, useEffect, useMemo, useRef, use
 import { appUrl } from "./base-url";
 import { withToken } from "./auth-token";
 import { isZhLocale, pickLocale } from "./pick-locale.js";
+import { announceUiLocale, initializeUiLocale } from "./ui-locale.js";
 
 export { isZhLocale };
 
@@ -4472,13 +4473,14 @@ function savedLocale(): string | null {
  * if the browser named nothing we speak. See web/src/pick-locale.ts.
  */
 function loadLocale(): Locale {
-	return pickLocale(savedLocale(), typeof navigator !== "undefined" ? navigator.languages : [], null);
+	return initializeUiLocale(savedLocale(), typeof navigator !== "undefined" ? navigator.languages : []);
 }
 
 export function LanguageProvider({ children }: { children: ReactNode }) {
 	const [locale, setLocaleState] = useState<Locale>(loadLocale);
 	const [packsTick, setPacksTick] = useState(0);
 	const localeRef = useRef(locale);
+	const bootGenerationRef = useRef(0);
 	localeRef.current = locale;
 
 	const setLocale = useCallback((l: Locale) => {
@@ -4488,13 +4490,9 @@ export function LanguageProvider({ children }: { children: ReactNode }) {
 		} catch {
 			// ignore storage errors
 		}
-		// Tell the socket layer (use-chat.ts) to report the new UI language
-		// to the server — tool return values / AI prompts follow it (issue #91).
-		try {
-			window.dispatchEvent(new CustomEvent<string>("pi-web-ui:locale", { detail: l }));
-		} catch {
-			// non-DOM environment — hello carries the code on next connect
-		}
+		// Tell the socket layer to report the new UI language to the server.
+		// Explicit choices are persisted above; automatic choices are only announced.
+		announceUiLocale(l);
 	}, []);
 
 	const reloadPacks = useCallback(async (): Promise<string | null> => {
@@ -4532,7 +4530,12 @@ export function LanguageProvider({ children }: { children: ReactNode }) {
 	// Boot: load installed packs, apply the instance default when the browser
 	// named nothing we speak, then drop a saved locale whose pack is gone.
 	useEffect(() => {
+		const generation = ++bootGenerationRef.current;
+		let active = true;
 		void reloadPacks().then((serverDefault) => {
+			// StrictMode may start the boot effect twice. Only the current effect
+			// may apply its pack result or report a locale to the server.
+			if (!active || generation !== bootGenerationRef.current) return;
 			// Nobody has ever chosen here (blank storage counts as nobody): the server
 			// may name the language this instance should speak when the browser
 			// asks for one we do not have.
@@ -4541,6 +4544,7 @@ export function LanguageProvider({ children }: { children: ReactNode }) {
 				if (chosen !== localeRef.current) {
 					localeRef.current = chosen;
 					setLocaleState(chosen);
+					announceUiLocale(chosen);
 				}
 			}
 			const cur = localeRef.current;
@@ -4553,13 +4557,14 @@ export function LanguageProvider({ children }: { children: ReactNode }) {
 				]);
 				localeRef.current = fallback;
 				setLocaleState(fallback);
-				try {
-					localStorage.setItem(STORAGE_KEY, fallback);
-				} catch {
-					// ignore storage errors
-				}
+				// This may be an automatic fallback after pack discovery. Report the
+				// effective locale, but do not turn it into a saved user choice.
+				announceUiLocale(fallback);
 			}
 		});
+		return () => {
+			active = false;
+		};
 	}, [reloadPacks]);
 
 	const packs = useMemo(() => {

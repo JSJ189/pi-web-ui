@@ -96,6 +96,7 @@ server/
 ├── tool-prompts.ts         # bash 工具模型可见文案（description/snippet/guidelines/参数 schema）的唯一事实源（三条执行路径共用）
 ├── subagents.ts            # 第一方子代理：统一的 subagent 工具（spawn/get_result/steer/list/stop/templates/wait_all/handoff）+ 运行态快照
 ├── subagent-templates.ts   # 子代理模板库（全局 <dataDir>/subagent-templates.json；白名单语义；可选模型/思考强度，空=跟随主对话；enabled=false 对 AI 不可见）
+├── subagent-templates-hant.ts # 内置子代理模板的繁中（台湾用语）文案；zh-TW/zh-HK/zh-Hant 共用，仅作展示/取用视图，不回写库
 ├── wait-subscription-scan.ts # 挂起 wake 订阅扫描（保留带 pending 子代理 wake 的对话）
 ├── slash-commands.ts       # 斜杠命令（NATIVE_COMMANDS 内置命令拦截执行 + 目录推送）
 ├── prompt-composer.ts      # 主会话系统提示词自由组合模板（{{token}} 在每次 run 前展开）

@@ -18,11 +18,18 @@
  * 双语约定（issue #91）：description/systemPrompt 为中文（zh 用），descriptionEn/
  * systemPromptEn 为英文（en 用，缺失回落中文）；调用方用 pickTemplateDescription/
  * pickTemplatePrompt 按语言选用。
+ *
+ * 繁中视图：内置模板出厂只有简中 + 英文，resolveServerLang 又把 zh-TW / zh-HK / zh-Hant
+ * 都折成 "zh"，繁中用户会拿到简体。localizeTemplate 按**原始 locale** 在内置模板文字仍等于
+ * 出厂简中时换上 subagent-templates-hant.ts 的繁中文案（一份台湾用语，三个繁中界面共用）；
+ * 它只是展示/取用视图，不回写库——canonicalizeTemplate 在 upsert 时把「恰为出厂繁中」的
+ * 文字还原成出厂简中，库里始终是出厂简中或用户自己的文字。
  */
 import { readFileSync } from "node:fs";
 import { writeJsonAtomicSync } from "./atomic-file.js";
 import type { PromptMode } from "./client-state.js";
-import type { ServerLang } from "./i18n.js";
+import { isTraditionalLocale, type ServerLang } from "./i18n.js";
+import { BUILTIN_TEMPLATES_HANT } from "./subagent-templates-hant.js";
 
 /**
  * 思考强度取值：与 SDK 的 THINKING_LEVEL_OPTIONS（前端 ModelThinking 的 THINKING_VALUES）
@@ -598,6 +605,44 @@ export const DEFAULT_TEMPLATES: SubagentTemplate[] = [
 	},
 ];
 
+/** 出厂简中文案索引（按模板名）：判断「文字是否仍是出厂原样」的唯一基准。 */
+const SHIPPED_BY_NAME: ReadonlyMap<string, SubagentTemplate> = new Map(DEFAULT_TEMPLATES.map((t) => [t.name, t]));
+
+/** localize / canonicalize 只关心的三个字段（UiSubagentTemplate 与 SubagentTemplate 都满足）。 */
+type TemplateText = Pick<SubagentTemplate, "name" | "description" | "systemPrompt">;
+
+/**
+ * 繁中界面（zh-TW / zh-HK / zh-Hant）看到的模板视图：内置模板的 description / systemPrompt
+ * 若仍等于出厂简中，换成繁中文案；两个字段逐一判断、互不牵连。用户改过的字段、自建模板、
+ * 非繁中界面一律原样返回（同一个对象）。返回值只作展示/取用，不要回写进库。
+ */
+export function localizeTemplate<T extends TemplateText>(t: T, locale?: string | null): T {
+	if (!isTraditionalLocale(locale)) return t;
+	const shipped = SHIPPED_BY_NAME.get(t.name);
+	const hant = shipped && BUILTIN_TEMPLATES_HANT[t.name];
+	if (!shipped || !hant) return t;
+	const description = t.description === shipped.description ? hant.description : t.description;
+	const systemPrompt = t.systemPrompt === shipped.systemPrompt ? hant.systemPrompt : t.systemPrompt;
+	if (description === t.description && systemPrompt === t.systemPrompt) return t;
+	return { ...t, description, systemPrompt };
+}
+
+/**
+ * localizeTemplate 的逆运算：内置模板里恰好等于出厂繁中的 description / systemPrompt 还原成
+ * 出厂简中。设置页在繁中界面显示的是繁中视图，单击启用开关或只改模型都会把整个模板连同
+ * 繁中文字回传；不还原的话，库（所有客户端共享）就会被悄悄改写成繁体，其它语言的用户再
+ * 也看不到出厂简中。用户真正改过的文字与自建模板原样保留。
+ */
+export function canonicalizeTemplate<T extends TemplateText>(t: T): T {
+	const shipped = SHIPPED_BY_NAME.get(t.name);
+	const hant = shipped && BUILTIN_TEMPLATES_HANT[t.name];
+	if (!shipped || !hant) return t;
+	const description = t.description === hant.description ? shipped.description : t.description;
+	const systemPrompt = t.systemPrompt === hant.systemPrompt ? shipped.systemPrompt : t.systemPrompt;
+	if (description === t.description && systemPrompt === t.systemPrompt) return t;
+	return { ...t, description, systemPrompt };
+}
+
 /** 容忍脏数据/旧版本：非法条目整体丢弃。 */
 function normalize(raw: unknown): SubagentTemplate | null {
 	if (!raw || typeof raw !== "object") return null;
@@ -728,8 +773,10 @@ export class SubagentTemplatesStore {
 
 	/** Upsert 一个模板（同名覆盖）。返回错误文本；成功返回 null。 */
 	upsert(input: unknown): string | null {
-		const t = normalize(input);
-		if (!t) return `模板名称不合法（去空白后 1-${NAME_MAX} 字符）`;
+		const normalized = normalize(input);
+		if (!normalized) return `模板名称不合法（去空白后 1-${NAME_MAX} 字符）`;
+		// 设置页在繁中界面回传的是繁中视图：恰为出厂繁中的文字还原成出厂简中再入库。
+		const t = canonicalizeTemplate(normalized);
 		// replace + 空提示词 = 子代理静默用默认 persona 运行（模板等于没生效），
 		// 在保存期直接拦下：只想限定白名单请用 append 模式。读盘的老数据不拦
 		// （向后兼容，只拦新保存）。

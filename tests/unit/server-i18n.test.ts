@@ -8,6 +8,7 @@ import {
 	extractServerStrings,
 	getServerBlock,
 	getServerString,
+	isTraditionalLocale,
 	isZh,
 	pick,
 	registerServerStrings,
@@ -37,6 +38,29 @@ describe("resolveServerLang", () => {
 		expect(resolveServerLang("")).toBe("en");
 		expect(resolveServerLang("   ")).toBe("en");
 		expect(resolveServerLang("zht")).toBe("zht"); // well-formed code, passes through
+	});
+});
+
+describe("isTraditionalLocale", () => {
+	it("zh-TW / zh-HK / zh-MO / zh-Hant 系（含大小写与下划线写法）是繁体", () => {
+		for (const l of ["zh-TW", "zh-tw", "zh_TW", "zh-HK", "zh-MO", "zh-Hant", "zh-Hant-TW", "zh-Hant-HK", "  ZH-hk  "]) {
+			expect(isTraditionalLocale(l), l).toBe(true);
+		}
+	});
+	it("核心 zh / zh-CN / zh-SG / 带 Hans 的、以及非中文都不是繁体（script 子标签压过地区）", () => {
+		for (const l of ["zh", "zh-CN", "zh_cn", "zh-SG", "zh-Hans", "zh-Hans-HK", "zh-Hans-TW", "en", "ja", "tw", "hk"]) {
+			expect(isTraditionalLocale(l), l).toBe(false);
+		}
+	});
+	it("未上报 / 空值 / 非字符串 → false", () => {
+		expect(isTraditionalLocale(undefined)).toBe(false);
+		expect(isTraditionalLocale(null)).toBe(false);
+		expect(isTraditionalLocale("")).toBe(false);
+		expect(isTraditionalLocale("   ")).toBe(false);
+	});
+	it("与 resolveServerLang 互补：繁中也折成 zh，必须靠原始 locale 才能区分", () => {
+		for (const l of ["zh", "zh-TW", "zh-HK", "zh-Hant"]) expect(resolveServerLang(l)).toBe("zh");
+		expect(isTraditionalLocale("zh-TW")).not.toBe(isTraditionalLocale("zh"));
 	});
 });
 

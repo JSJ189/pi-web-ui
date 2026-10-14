@@ -282,6 +282,53 @@ async function main() {
 		);
 	}
 
+	// 7. 繁中界面（zh-TW / zh-HK / zh-Hant 共用一份台湾用语）：内置模板文字是「视图」，不回写库。
+	//    review 的简介出厂简中含「代码」、繁中含「程式碼」。
+	{
+		const review = (s) => s.settings.subagentTemplates.find((t) => t.name === "review");
+		const isHant = (m) => /程式碼/.test(review(m)?.description ?? "") && !/代码/.test(review(m)?.description ?? "");
+		const isHans = (m) => /代码/.test(review(m)?.description ?? "");
+
+		c.send({ type: "set_locale", locale: "zh" });
+		const zhSnap = await c.waitFor("settings_state", 8000, isHans);
+		check("简中界面：内置模板是出厂简中", isHans(zhSnap));
+
+		// zh → zh-TW：服务端语言同为 zh（不 reload），但必须补推快照，设置页才会换字。
+		c.send({ type: "set_locale", locale: "zh-TW" });
+		const twSnap = await c.waitFor("settings_state", 8000, isHant);
+		check("zh → zh-TW：补推快照，内置模板换成繁中", isHant(twSnap));
+		check(
+			"繁中视图：提示词也是繁中，英文字段不动",
+			/審查類型/.test(review(twSnap).systemPrompt) && /Code \/ plan/.test(review(twSnap).descriptionEn ?? ""),
+		);
+
+		// 在繁中快照上只点启用开关（回传整个繁中视图）→ 库里仍应是出厂简中。
+		c.send({ type: "save_subagent_template", template: { ...review(twSnap), enabled: false } });
+		const toggled = await c.waitFor("settings_state", 8000, (m) => review(m)?.enabled === false);
+		check("繁中界面点开关：保存成功且仍显示繁中", isHant(toggled));
+		const onDisk = JSON.parse(readFileSync(TPL_FILE, "utf8")).find((t) => t.name === "review");
+		check(
+			"落盘文字仍是出厂简中（没被改写成繁体）",
+			onDisk.enabled === false && /代码/.test(onDisk.description) && /审查类型/.test(onDisk.systemPrompt),
+			onDisk.description,
+		);
+
+		// zh-TW → zh-HK：同属繁体，文字不变（不需要重推也不应变回简体）。
+		c.send({ type: "set_locale", locale: "zh-HK" });
+		c.send({ type: "get_settings" });
+		const hkSnap = await c.waitFor("settings_state", 8000, isHant);
+		check("zh-HK 同样是繁中视图", isHant(hkSnap));
+
+		// 回到英文：库里是简中，快照回到出厂简中（其它语言的用户不受繁中用户操作影响）。
+		c.send({ type: "set_locale", locale: "en" });
+		const enSnap = await c.waitFor("settings_state", 8000, isHans);
+		check("切回英文：显示出厂简中（库未被繁中操作污染）", isHans(enSnap) && review(enSnap).enabled === false);
+
+		// 还原现场。
+		c.send({ type: "save_subagent_template", template: { ...review(enSnap), enabled: true } });
+		await c.waitFor("settings_state", 8000, (m) => review(m)?.enabled === true);
+	}
+
 	console.log(`\nsubagent-template-test: ${pass} 通过, ${fail} 失败`);
 	server.kill();
 	process.exit(fail ? 1 : 0);

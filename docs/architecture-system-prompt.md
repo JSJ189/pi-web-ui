@@ -135,6 +135,14 @@
     specialist 系列：oracle/librarian/explore/metis/momus/multimodal-looker/
     sisyphus-junior）；老用户已有文件时缺失的内置模板一次性补齐（sidecar
     subagent-templates.seeded.json 记已播种名单，删后不再复活）。
+    繁中视图：resolveServerLang 把 zh-TW/zh-HK/zh-Hant 都折成 "zh"，繁中用户
+    会拿到简体。localizeTemplate 按**原始 locale**（isTraditionalLocale）在内置
+    模板的 description/systemPrompt 仍等于出厂简中时，换成
+    subagent-templates-hant.ts 的台湾用语文案（三个繁中界面共用一份），用于设置
+    快照、templates 工具与子代理系统提示词；只是视图，不回写库，用户改过的字段
+    不动。canonicalizeTemplate 在 upsert 时把「恰为出厂繁中」的文字还原成简中，
+    避免繁中界面点一下开关就把全局库改写成繁体。出厂简中文案改动时，
+    subagent-templates-hant.ts 必须同步（守卫：subagent-templates.test.ts）。
 
 ## 九、结构化派单与 skill 全文注入（oh-my-pi 精髓的原生移植）
 

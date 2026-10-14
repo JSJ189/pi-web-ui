@@ -21,7 +21,9 @@
  *    messages etc.). Tool DEFINITIONS (description/promptSnippet/promptGuidelines)
  *    are concise English-only. No keys needed.
  *  - Template DATA (subagent_templates content, user overrides) stays zh/en
- *    fields — it is user-editable config, not code copy.
+ *    fields — it is user-editable config, not code copy. The built-ins also
+ *    ship a Traditional Chinese view (subagent-templates-hant.ts), picked by
+ *    the raw locale via isTraditionalLocale — not by the ServerLang.
  *
  * Pure functions + a tiny in-memory registry (no node imports) — unit-tested.
  * Tables are loaded from `<dataDir>/locales/*.json` at startup (see
@@ -47,6 +49,22 @@ export function resolveServerLang(locale?: string | null): ServerLang {
 /** True when the server language is Chinese. */
 export function isZh(lang: ServerLang): boolean {
 	return lang === "zh";
+}
+
+/**
+ * True for Traditional-script Chinese UI locales ("zh-TW", "zh-HK", "zh-MO",
+ * "zh-Hant", "zh-Hant-TW", …). Bare "zh", "zh-CN" and anything with a Hans
+ * subtag are Simplified. Same rule as the browser's pickLocale: the script
+ * subtag wins over the region ("zh-Hans-HK" is Simplified).
+ *
+ * `resolveServerLang` folds every zh* into "zh" (the Simplified inline copy), so
+ * code that ships a Traditional variant of Chinese DATA needs the raw locale.
+ */
+export function isTraditionalLocale(locale?: string | null): boolean {
+	if (typeof locale !== "string") return false;
+	const parts = locale.trim().toLowerCase().replace(/_/g, "-").split("-");
+	if (parts[0] !== "zh" || parts.includes("hans")) return false;
+	return parts.includes("hant") || parts.includes("tw") || parts.includes("hk") || parts.includes("mo");
 }
 
 /* ------------------------------------------------------------------ */

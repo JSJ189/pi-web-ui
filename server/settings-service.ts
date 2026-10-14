@@ -41,7 +41,7 @@ import { normalizeSoftCapByModel, normalizeSoftCapTokens } from "./soft-cap.js";
 import { findVisionModels, SYSTEM_PROMPT } from "./vision-bridge.js";
 import { COMMITMSG_SYSTEM_PROMPT } from "./scm-commitmsg.js";
 import { PLAN_MODE_SYSTEM_PROMPT } from "./plan-mode.js";
-import { DEFAULT_TEMPLATES, type SubagentTemplatesStore } from "./subagent-templates.js";
+import { DEFAULT_TEMPLATES, localizeTemplate, type SubagentTemplatesStore } from "./subagent-templates.js";
 import type { ApprovalRulesStore } from "./approval-rules.js";
 import { deriveLegacy, foldLegacyIntoDisabled, normalizeDisabledAgentTools } from "./tool-manager.js";
 import { normalizeToolPromptOverrides } from "./tool-prompt-overrides.js";
@@ -110,6 +110,9 @@ export interface SettingsHost {
 		globalPath: string;
 		projectPath: string;
 	};
+	/** 可选：该客户端上报的原始 UI locale（"zh-TW" 等，未折叠）。内置子代理模板据此在
+	 *  设置面板显示繁中视图（见 localizeTemplate）；缺省 = 不做视图转换。 */
+	getLocale?: () => string | undefined;
 }
 
 export class SettingsService {
@@ -435,7 +438,7 @@ export class SettingsService {
 							disabledMarkers: [] as string[],
 							markers: [] as import("./protocol.js").UiMarkerInfo[],
 						}),
-				subagentTemplates: this.templates.list(),
+				subagentTemplates: this.templates.list().map((t) => localizeTemplate(t, this.host.getLocale?.())),
 				subagentDefaultTemplates: DEFAULT_TEMPLATES.map((t) => t.name),
 				subagentDefaultModel: this.settings.subagentDefaultModel ?? null,
 				retryMaxAttempts: this.settings.retryMaxAttempts,

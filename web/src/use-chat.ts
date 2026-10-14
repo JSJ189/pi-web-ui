@@ -63,6 +63,7 @@ import {
 import { resolvePendingQuestion, type QuestionSource } from "./pending-question";
 import { emitTuiOverlayRender } from "./tui-overlay-bridge";
 import { setAppGlobals, setAppSend } from "./app-globals";
+import { currentUiLocale, UI_LOCALE_EVENT } from "./ui-locale.js";
 // 工具定义说明弹窗（工具卡右键 → 「显示工具详细信息」）：应答直接回模块级 store，
 // 不进 ChatState（弹窗挂在 App 上，消息列表里几十张卡片不必为此各拿一份数据）。
 import { receiveToolInfo } from "./tool-info-state";
@@ -86,22 +87,10 @@ import type { ConnStatus, PluginPanelGroup, SchedulerTaskView } from "./types";
 
 export type { ConnStatus };
 
-/** localStorage key for the UI language (mirrors i18n.tsx STORAGE_KEY). */
-const UI_LANG_KEY = "pi-web-ui:lang";
-
-/** Browser UI locale for the hello/set_locale server report (issue #91).
- *  Read straight from localStorage so the socket layer never depends on
- *  React context. Missing → "" (server treats it as English default). */
+/** Browser UI locale for the hello/set_locale server report (issue #91). */
 function readUiLocale(): string {
-	try {
-		return (localStorage.getItem(UI_LANG_KEY) ?? "").trim();
-	} catch {
-		return "";
-	}
+	return currentUiLocale();
 }
-
-/** Event fired by i18n.tsx setLocale when the user switches UI language. */
-const UI_LOCALE_EVENT = "pi-web-ui:locale";
 
 /**
  * Safe WebSocket readyState constants:
