@@ -642,6 +642,7 @@ export function handleSettingsMessage(msg: ClientMessage, cs: DispatchSession): 
 				toolImagesEnabled: (msg as { toolImagesEnabled?: boolean }).toolImagesEnabled,
 				keepRecentMessages: (msg as { keepRecentMessages?: number }).keepRecentMessages,
 				showForkedParentSessions: (msg as { showForkedParentSessions?: boolean }).showForkedParentSessions,
+				retainFinishedConversations: msg.retainFinishedConversations,
 				devNoCache: (msg as { devNoCache?: boolean }).devNoCache,
 				autoReload: (msg as { autoReload?: boolean }).autoReload,
 				skillsFullText: (msg as { skillsFullText?: string[] }).skillsFullText,
