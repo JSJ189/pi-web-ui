@@ -80,6 +80,23 @@ export function focusComposer(): boolean {
 	return true;
 }
 
+let lastSessionSwitchInitiatedAt = 0;
+
+/**
+ * 标记发起了一次会话切换或新建（记录时间戳并尝试聚焦输入框）。
+ * 供切换会话（switch_conversation/switch_session）或新建（new_chat）时调用，
+ * 以便 ChatInput 识别用户在切换期间输入的内容属于目标会话，避免切换完成时误清空（issue #638）。
+ */
+export function notifySessionSwitch(): void {
+	lastSessionSwitchInitiatedAt = Date.now();
+	focusComposer();
+}
+
+/** 获取最近一次发起会话切换或新建的时间戳。 */
+export function getLastSessionSwitchTime(): number {
+	return lastSessionSwitchInitiatedAt;
+}
+
 /** 有没有输入框在听（页面还没挂载好 = false，宿主该拒收而不是静默丢）。 */
 export function isComposerReady(): boolean {
 	return Boolean(draftSink || attachmentSink);
@@ -92,6 +109,7 @@ export function resetComposerSinks(): void {
 	focusSink = null;
 	insertSink = null;
 	removeMentionSink = null;
+	lastSessionSwitchInitiatedAt = 0;
 }
 
 /**

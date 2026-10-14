@@ -2,6 +2,7 @@ import { useCallback, useEffect, useReducer, useRef } from "react";
 import { randomUuid } from "./uuid";
 import { withToken } from "./auth-token";
 import { appUrl } from "./base-url";
+import { notifySessionSwitch } from "./composer-bridge";
 import type {
 	ClientMessage,
 	BgServer,
@@ -1881,23 +1882,25 @@ export function useChat() {
 					textEn: `Switching to workspace: ${msg.path}`,
 				});
 			}
-		} else if (msg.type === "switch_session" && msg.path) {
+		} else if (msg.type === "switch_session" && (msg.path || msg.sessionId)) {
+			notifySessionSwitch();
 			const norm = (s?: string) => (s ?? "").trim().replace(/\\/g, "/").replace(/\/+$/, "").toLowerCase();
 			const cur = norm(curState?.sessionFile);
 			const curSid = norm(curState?.sessionId);
 			const curCid = norm(curState?.conversationId);
-			const tgt = norm(msg.path);
+			const tgt = norm(msg.path || msg.sessionId);
 			if (tgt && tgt !== cur && tgt !== curSid && tgt !== curCid) {
 				dispatch({
 					type: "transition_start",
 					kind: "session",
-					target: msg.path,
+					target: msg.path || msg.sessionId || "",
 					progress: 14,
 					text: "正在流式载入历史会话…",
 					textEn: "Streaming session history…",
 				});
 			}
 		} else if (msg.type === "new_chat") {
+			notifySessionSwitch();
 			if (curState && (curState.messages.length > 0 || curState.isStreaming)) {
 				dispatch({
 					type: "transition_start",
@@ -1909,6 +1912,7 @@ export function useChat() {
 				});
 			}
 		} else if (msg.type === "switch_conversation" && msg.id) {
+			notifySessionSwitch();
 			if (curState && msg.id !== curState.conversationId) {
 				dispatch({
 					type: "transition_start",

@@ -151,6 +151,26 @@ export function shouldCarryOverDraft(
 	return true;
 }
 
+/**
+ * 当会话切换完成（新会话就绪）时，判断是否应保留当前输入框中的文本（issue #638）：
+ * 1. 若用户在发起切换/新建之后主动编辑/输入了内容（userEditedAfterSwitch === true），
+ *    说明该内容是用户为当前目标会话积极输入的，必须保留，绝不清除；
+ * 2. 否则，沿用空白新对话结转逻辑（shouldCarryOverDraft）：
+ *    仅当目标对话为完全空白对话（无历史消息）且无自身既有草稿时才承接；
+ * 3. 其余情况（切到已有历史对话且用户在切换后未打字）不保留旧会话的内容，
+ *    避免旧会话草稿污染已有对话。
+ */
+export function shouldPreserveDraftOnSwitch(
+	pendingCarry: string | null | undefined,
+	userEditedAfterSwitch: boolean,
+	targetMessageCount: number,
+	hasExistingDraftOnTarget: boolean,
+): boolean {
+	if (!pendingCarry || !pendingCarry.trim()) return false;
+	if (userEditedAfterSwitch) return true;
+	return shouldCarryOverDraft(pendingCarry, targetMessageCount, hasExistingDraftOnTarget);
+}
+
 /** 提示词模板填入非空输入框时的三种用户选择（issue #586）。 */
 export type TemplateFillChoice = "cancel" | "append" | "overwrite";
 

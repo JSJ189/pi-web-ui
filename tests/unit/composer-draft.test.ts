@@ -6,6 +6,7 @@ import {
 	mergeRecalledDraft,
 	selectDraftToRestore,
 	shouldCarryOverDraft,
+	shouldPreserveDraftOnSwitch,
 	shouldConfirmTemplateFill,
 	type DraftAttachment,
 } from "../../web/src/composer-draft.js";
@@ -208,6 +209,34 @@ describe("shouldCarryOverDraft", () => {
 
 	it("目标对话自身已有草稿 → 不承接，优先显示目标对话的草稿", () => {
 		expect(shouldCarryOverDraft("some text", 0, true)).toBe(false);
+	});
+});
+
+describe("shouldPreserveDraftOnSwitch (issue #638)", () => {
+	it("用户在发起切换/新建后主动输入了内容 → 无论切到已有对话还是空白对话均必须保留，绝不清除", () => {
+		// 切到已有对话（messages.length > 0），用户在切换后打了字 → 保留！
+		expect(shouldPreserveDraftOnSwitch("帮我分析一下这个函数", true, 10, false)).toBe(true);
+		// 目标已有自身草稿，但用户在切换后主动输入了新内容 → 保留新内容！
+		expect(shouldPreserveDraftOnSwitch("帮我分析一下这个函数", true, 0, true)).toBe(true);
+		expect(shouldPreserveDraftOnSwitch("帮我分析一下这个函数", true, 5, true)).toBe(true);
+		// 切到全新空白对话，用户在切换后打了字 → 保留！
+		expect(shouldPreserveDraftOnSwitch("帮我分析一下这个函数", true, 0, false)).toBe(true);
+	});
+
+	it("待结转/保留的文本为空或空白时 → 不保留", () => {
+		expect(shouldPreserveDraftOnSwitch("", true, 5, false)).toBe(false);
+		expect(shouldPreserveDraftOnSwitch("   ", true, 5, false)).toBe(false);
+		expect(shouldPreserveDraftOnSwitch(null, true, 5, false)).toBe(false);
+		expect(shouldPreserveDraftOnSwitch(undefined, true, 5, false)).toBe(false);
+	});
+
+	it("用户在发起切换前留下的旧草稿（切换后未主动输入，userEditedAfterSwitch=false） → 遵循空白新对话结转逻辑", () => {
+		// 切到全新空白对话且无自身草稿 → 承接旧草稿
+		expect(shouldPreserveDraftOnSwitch("/skill:do-task-workflow RJC-204", false, 0, false)).toBe(true);
+		// 切到已有历史消息的对话 → 不保留，避免旧草稿污染已有对话
+		expect(shouldPreserveDraftOnSwitch("旧对话草稿", false, 3, false)).toBe(false);
+		// 目标已有自身草稿 → 不保留，优先显示目标自身草稿
+		expect(shouldPreserveDraftOnSwitch("旧对话草稿", false, 0, true)).toBe(false);
 	});
 });
 

@@ -53,7 +53,12 @@ import { BannerContainer } from "./components/BannerContainer";
 import { IconEditor } from "./components/IconEditor";
 import { showBanner, dismissBanner, dismissBannersWhere } from "./banner-notice";
 import { ensurePluginViewLoaded } from "./plugin-loader";
-import { registerAttachmentSink, insertTextAtCursor, removeMentionFromComposer } from "./composer-bridge";
+import {
+	registerAttachmentSink,
+	insertTextAtCursor,
+	removeMentionFromComposer,
+	focusComposer,
+} from "./composer-bridge";
 import { appendDraftAttachments } from "./composer-draft";
 import { useComposerSessionReset } from "./use-composer-session";
 import { splitQuotedPrompt } from "../../server/text-quote.js";
@@ -1007,7 +1012,11 @@ export function App() {
 		// 派单卡片的「查看子代理」按钮：切到对应的子代理对话（与左栏点击同效果）。
 		const onSwitchConversation = (e: Event) => {
 			const id = (e as CustomEvent<string>).detail;
-			if (typeof id === "string" && id) send({ type: "switch_conversation", id });
+			if (typeof id === "string" && id) {
+				setView((prev) => (prev !== "chat" ? "chat" : prev));
+				send({ type: "switch_conversation", id });
+				focusComposer();
+			}
 		};
 		window.addEventListener("pi-web-ui:switch-conversation", onSwitchConversation);
 		return () => {
@@ -1431,6 +1440,7 @@ export function App() {
 			}
 			if (msg.type === "new_chat" || msg.type === "switch_conversation" || msg.type === "switch_session") {
 				setView((prev) => (prev !== "chat" ? "chat" : prev));
+				focusComposer();
 			}
 			return send(msg);
 		},

@@ -7,11 +7,12 @@ import {
 	applyTemplateFill,
 	mergeRecalledDraft,
 	selectDraftToRestore,
-	shouldCarryOverDraft,
+	shouldPreserveDraftOnSwitch,
 	shouldConfirmTemplateFill,
 	type TemplateFillChoice,
 } from "../composer-draft";
 import {
+	getLastSessionSwitchTime,
 	registerDraftSink,
 	registerFocusSink,
 	registerInsertSink,
@@ -419,7 +420,7 @@ export const ChatInput = memo(function ChatInput({
 	const appliedDraftTsRef = useRef(0);
 	const draftTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
 	const draftScopeRef = useRef<string | null>(null);
-	const pendingCarryOverRef = useRef<string | null>(null);
+	const pendingCarryOverRef = useRef<{ text: string; userEditedAfterSwitch: boolean } | null>(null);
 	/** 输入法守卫（issue #248：macOS 中文输入法下敲英文字母按 Enter 上屏时，浏览器会先派发
 	 *  compositionend 再派发 keydown(Enter, isComposing=false)，需通过时间差拦截误发送）。
 	 *  判定与 ask_user_question 问卷输入框同源：web/src/ime-guard.ts。 */
@@ -509,11 +510,17 @@ export const ChatInput = memo(function ChatInput({
 				clearTimeout(draftTimerRef.current);
 				draftTimerRef.current = null;
 			}
-			if (touchedRef.current && textMirrorRef.current.trim()) {
+			const curText = textMirrorRef.current;
+			if (touchedRef.current && curText.trim()) {
 				if (scope && sid && localKey) {
-					persistComposerDraft(sid, localKey, textMirrorRef.current, lastEditTsRef.current);
+					persistComposerDraft(sid, localKey, curText, lastEditTsRef.current);
 				}
-				pendingCarryOverRef.current = textMirrorRef.current;
+				const switchTime = getLastSessionSwitchTime();
+				const isActivelyFocused = typeof document !== "undefined" && document.activeElement === taRef.current;
+				const userEditedAfterSwitch = Boolean(
+					(switchTime > 0 && lastEditTsRef.current >= switchTime) || isActivelyFocused,
+				);
+				pendingCarryOverRef.current = { text: curText, userEditedAfterSwitch };
 			} else {
 				pendingCarryOverRef.current = null;
 			}
@@ -521,11 +528,14 @@ export const ChatInput = memo(function ChatInput({
 		// eslint-disable-next-line react-hooks/exhaustive-deps
 	}, [draftSessionKey]);
 
-	// 新会话就绪：若切到全新空会话（messages 为空）且新会话无自身草稿，保留并承接用户未提交的正在输入内容。
+	// 新会话就绪：判断是否保留打字内容（issue #638：切换/新建期间用户正在输入的内容绝不清空；
+	// 若无主动编辑，仅全新空会话承接旧未发送草稿）。
 	useEffect(() => {
 		draftScopeRef.current = draftSessionKey;
-		const carry = pendingCarryOverRef.current;
+		const carryInfo = pendingCarryOverRef.current;
 		pendingCarryOverRef.current = null;
+		const carryText = carryInfo?.text ?? null;
+		const userEditedAfterSwitch = carryInfo?.userEditedAfterSwitch ?? false;
 
 		const existingLocal = draftLocalKey ? readLocalDraft(draftLocalKey) : null;
 		const hasExistingDraft = Boolean(
@@ -533,18 +543,20 @@ export const ChatInput = memo(function ChatInput({
 			(existingLocal && existingLocal.text?.trim()),
 		);
 
-		if (
-			carry !== null &&
-			shouldCarryOverDraft(carry, messages.length, hasExistingDraft) &&
-			draftLocalKey &&
-			sessionId
-		) {
+		const shouldPreserve = shouldPreserveDraftOnSwitch(
+			carryText,
+			userEditedAfterSwitch,
+			messages.length,
+			hasExistingDraft,
+		);
+
+		if (shouldPreserve && carryText !== null && draftLocalKey && sessionId) {
 			touchedRef.current = true;
 			appliedDraftTsRef.current = Date.now();
-			textMirrorRef.current = carry;
+			textMirrorRef.current = carryText;
 			lastEditTsRef.current = appliedDraftTsRef.current;
-			setText(carry);
-			persistComposerDraft(sessionId, draftLocalKey, carry, lastEditTsRef.current);
+			setText(carryText);
+			persistComposerDraft(sessionId, draftLocalKey, carryText, lastEditTsRef.current);
 		} else {
 			touchedRef.current = false;
 			appliedDraftTsRef.current = 0;
@@ -556,13 +568,14 @@ export const ChatInput = memo(function ChatInput({
 		historyIndexRef.current = -1;
 	}, [draftSessionKey]);
 
-	// 新对话自动聚焦：初次加载为新对话、或切到新对话（messages 为空）时自动聚焦。
+	// 会话切换或初次加载新对话时自动聚焦输入框（触屏设备除外）。
 	const prevSessionKeyRef = useRef<string | null>(null);
 	useEffect(() => {
 		const isNewChat = messages.length === 0;
-		const sessionChanged = prevSessionKeyRef.current !== draftSessionKey;
+		const sessionChanged = prevSessionKeyRef.current !== null && prevSessionKeyRef.current !== draftSessionKey;
+		const isInitialNewChat = prevSessionKeyRef.current === null && isNewChat;
 		prevSessionKeyRef.current = draftSessionKey;
-		if (ready && isNewChat && (!IS_TOUCH || sessionChanged)) {
+		if (ready && !IS_TOUCH && (sessionChanged || isInitialNewChat)) {
 			requestAnimationFrame(() => {
 				taRef.current?.focus();
 			});
