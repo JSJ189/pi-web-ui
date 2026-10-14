@@ -180,15 +180,16 @@ You can develop on remote servers through two simple ways:
 
 ### Common Flags & Environment Variables
 
-| CLI Flag             | Environment Variable | Default           | Description                                                |
-| :------------------- | :------------------- | :---------------- | :--------------------------------------------------------- |
-| `--port <n>`         | `PI_WEB_PORT`        | `8787`            | HTTP port to listen on                                     |
-| `--host <addr>`      | `PI_WEB_HOST`        | `127.0.0.1`       | Listen address (`0.0.0.0` for remote/LAN access)           |
-| `--cwd <dir>`        | `PI_WEB_CWD`         | Current directory | Workspace root (local path or `ssh://user@host:port/path`) |
-| `--data-dir <dir>`   | `PI_WEB_DATA_DIR`    | `~/.pi-web`       | Directory for state, plugins, themes, and uploads          |
-| `--engine <pi\|dsh>` | `PI_WEB_ENGINE`      | `pi`              | Agent engine: `pi` native or `dsh` (DeepSeek Harness)      |
-| `--no-browser`       | —                    | off               | Do not auto-launch system browser on startup               |
-| _Env only_           | `PI_WEB_TOKEN`       | empty             | Optional shared authentication token                       |
+| CLI Flag             | Environment Variable | Default           | Description                                                                 |
+| :------------------- | :------------------- | :---------------- | :-------------------------------------------------------------------------- |
+| `--port <n>`         | `PI_WEB_PORT`        | `8787`            | HTTP port to listen on                                                      |
+| `--host <addr>`      | `PI_WEB_HOST`        | `127.0.0.1`       | Listen address (`0.0.0.0` for remote/LAN access)                            |
+| `--cwd <dir>`        | `PI_WEB_CWD`         | Current directory | Workspace root (local path or `ssh://user@host:port/path`)                  |
+| `--data-dir <dir>`   | `PI_WEB_DATA_DIR`    | `~/.pi-web`       | Directory for state, plugins, themes, and uploads                           |
+| `--engine <pi\|dsh>` | `PI_WEB_ENGINE`      | `pi`              | Agent engine: `pi` native or `dsh` (DeepSeek Harness)                       |
+| `--no-browser`       | —                    | off               | Do not auto-launch system browser on startup                                |
+| _Env only_           | `PI_WEB_TOKEN`       | empty             | Optional shared authentication token                                        |
+| _Env only_           | `PI_WEB_SDK`         | `global`          | Auto-follow newer pi SDK on ancestor path; set to `bundled` to pin built-in |
 
 ### System Background Service (`pi-web-ui server`)
 

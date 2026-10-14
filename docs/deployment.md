@@ -65,15 +65,15 @@ npm i -g @deepseek-ai/dsh@0.1.1-rc.2   # 全局安装（自带嵌套运行时树
 
 ### DSH 环境变量速览
 
-| 变量 | 默认 | 作用 |
-| --- | --- | --- |
-| `PI_WEB_ENGINE` | `pi` | 引擎：`pi` / `dsh`（重启生效） |
-| `PI_WEB_DSH_RUNTIME` | 自动解析 | 运行时树根（node_modules 根，含 `@deepseek-ai/dsh-base`） |
-| `PI_WEB_DSH_DATA_DIR` | `PI_WEB_DATA_DIR` | DSH 专用数据目录（用户 patch 层 `<dir>/dsh-patches/*.yml`） |
-| `PI_WEB_DSH_PATCH_DIR` | 空 | 用户 patch 目录显式覆盖（优先级高于推导） |
-| `PI_WEB_DSH_QUESTION_TIMEOUT_MS` | `600000` | 模型 ask_user_question 提问桥超时（前端倒计时） |
-| `PI_WEB_DSH_SESSION_RETENTION_DAYS` | `90` | 会话 JSONL 保留天数（0 = 关闭清理） |
-| `PI_WEB_DSH_DEBUG` | 空 | `1` 时输出运行时诊断到 stderr |
+| 变量                                | 默认              | 作用                                                        |
+| ----------------------------------- | ----------------- | ----------------------------------------------------------- |
+| `PI_WEB_ENGINE`                     | `pi`              | 引擎：`pi` / `dsh`（重启生效）                              |
+| `PI_WEB_DSH_RUNTIME`                | 自动解析          | 运行时树根（node_modules 根，含 `@deepseek-ai/dsh-base`）   |
+| `PI_WEB_DSH_DATA_DIR`               | `PI_WEB_DATA_DIR` | DSH 专用数据目录（用户 patch 层 `<dir>/dsh-patches/*.yml`） |
+| `PI_WEB_DSH_PATCH_DIR`              | 空                | 用户 patch 目录显式覆盖（优先级高于推导）                   |
+| `PI_WEB_DSH_QUESTION_TIMEOUT_MS`    | `600000`          | 模型 ask_user_question 提问桥超时（前端倒计时）             |
+| `PI_WEB_DSH_SESSION_RETENTION_DAYS` | `90`              | 会话 JSONL 保留天数（0 = 关闭清理）                         |
+| `PI_WEB_DSH_DEBUG`                  | 空                | `1` 时输出运行时诊断到 stderr                               |
 
 完整列表见 `docs/env-vars.md`。
 
@@ -146,14 +146,32 @@ Environment=PI_WEB_TOKEN=s3cret
 ## 子路径反代（nginx 挂在 /pi/ 等路径下）
 
 页面挂在 `https://example.com/pi/` 而非根路径时，nginx 需要**剥离前缀**转发。
-浏览器侧会自动从页面 baseURI 推导应用根（/pi/），插件 bundle、WebSocket、
-`/api`、`/themes` 全部请求都会带上 `/pi/` 前缀，因此只需一条转发规则，无需
-额外配置：
+浏览器侧会自动从页面 baseURI 推导应用根（/pi/），插件 bundle、WebSocket（`/pi/ws`）、
+`/api`、`/themes` 全部请求都会带上 `/pi/` 前缀。
 
 ```nginx
+# 配合 WebSocket 升级映射（建议写在 http {} 块中）：
+# map $http_upgrade $connection_upgrade {
+#     default upgrade;
+#     ''      close;
+# }
+
 server {
     listen 80;
     server_name example.com;
+
+    # 子路径 WebSocket：前端在 /pi/ 基础路径下连接 /pi/ws，剥离前缀转发到 /ws
+    location /pi/ws {
+        proxy_pass http://127.0.0.1:8787/ws;
+        proxy_http_version 1.1;
+        proxy_set_header Host $http_host;
+        proxy_set_header Upgrade $http_upgrade;
+        proxy_set_header Connection "upgrade";
+        proxy_read_timeout 3600s;
+        proxy_send_timeout 3600s;
+        proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
+        proxy_set_header X-Forwarded-Proto $scheme;
+    }
 
     # 关键是 proxy_pass 末尾的 /：剥离 /pi 前缀后透传给后端（8787 为默认端口）
     location /pi/ {
@@ -162,19 +180,24 @@ server {
         # WebSocket 升级头必须透传
         proxy_set_header Upgrade $http_upgrade;
         proxy_set_header Connection "upgrade";
-        # 保持 Host/Origin 一致（服务端同源校验依赖它）
-        proxy_set_header Host $host;
+        # 必须用 $http_host 保留端口（服务端的 Origin 校验包含主机名与端口，$host 会丢掉端口导致 403）
+        proxy_set_header Host $http_host;
         proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
+        proxy_set_header X-Forwarded-Proto $scheme;
+        proxy_read_timeout 3600s;
+        proxy_send_timeout 3600s;
     }
 }
 ```
 
 注意：
 
+- **`Host` 必须使用 `$http_host`**（保留原始端口）——后端的 Origin 校验要求 hostname 与端口完全一致，若使用 `$host` 会丢弃非标准端口引发 403。
+- **长连接超时**：WebSocket 需要显式声明 `proxy_read_timeout 3600s;`，避免终端或长时间 AI 回答因 nginx 默认 60s 超时而意外断连。
 - 官方 dist 的静态资源是根绝对路径（`/assets/...`），与 JS 里的应用根推导无关。
   要让 HTML 在 /pi/ 下渲染，二选一：① 另加一条 `location /assets/ { proxy_pass
-  http://127.0.0.1:8787; }` 转发静态资源；② 用 `vite build --base=/pi/` 重新构建
+http://127.0.0.1:8787; }` 转发静态资源；② 用 `vite build --base=/pi/` 重新构建
   （产物里 assets 引用与 `import.meta.env.BASE_URL` 均为 /pi/，与 baseURI 推导
   结果一致，两种方式可混用）。
 - 插件目录（`<dataDir>/plugins/`）不需要在 nginx 单独配置——客户端请求
-  `/pi/plugins/...`，剥离前缀后由后端标准路由处理。
+  `/pi/plugins/...`，剥离前缀后由后端标准路由处理。完整示例见 `deploy/nginx-subpath.conf`。
