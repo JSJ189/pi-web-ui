@@ -2,7 +2,7 @@
 
 # 💬 pi-web-ui
 
-**English** | [简体中文](https://github.com/xing-shuyin/pi-web-ui/blob/main/README.zh-CN.md) · 🌐 [**Official Website**](https://xing-shuyin.github.io/pi-web-ui-site/) · 📖 [**Documentation Portal**](https://xing-shuyin.github.io/pi-web-ui-site/docs.html)
+**English** | [简体中文](https://github.com/xing-shuyin/pi-web-ui/blob/main/README.zh-CN.md) · [繁體中文](https://github.com/xing-shuyin/pi-web-ui/blob/main/README.zh-TW.md) · 🌐 [**Official Website**](https://xing-shuyin.github.io/pi-web-ui-site/) · 📖 [**Documentation Portal**](https://xing-shuyin.github.io/pi-web-ui-site/docs.html)
 
 _Just open your browser to get all your work done — browser cockpit for AI coding agents._
 
