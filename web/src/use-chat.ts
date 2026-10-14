@@ -47,6 +47,8 @@ import type {
 	UiMcpServer,
 	RemoteMcpServer,
 	RemoteSkillSummary,
+	DshPatchFileInfo,
+	DshMarketPlugin,
 } from "./types";
 
 import { applyMessageDelta, type MessageDeltaMsg } from "./message-delta";
@@ -508,7 +510,14 @@ export interface ChatState {
 		reason?: string;
 	}[];
 	/** DSH engine: <dataDir>/dsh-patches user patch files (list + dir). */
-	dshPatches: { patchDir: string; files: { name: string; path: string; size: number; mtimeMs: number }[] } | null;
+	dshPatches: { patchDir: string; files: DshPatchFileInfo[] } | null;
+	/** DSH engine: awesome-dsh-plugin / dsh-market 社区插件市场数据。 */
+	dshMarket: {
+		count: number;
+		updated?: string;
+		categories: Record<string, { en: string; zh: string }>;
+		plugins: DshMarketPlugin[];
+	} | null;
 	/** DSH engine: Agent 预设名录（null = 未加载/legacy，UI 隐藏预设条）。 */
 	dshPresets: { presets: UiAgentPreset[]; defaultPreset: string } | null;
 	/** DSH engine: 权限预设选项表 + 新会话默认（null = 未就绪/legacy，UI 隐藏权限条）。 */
@@ -815,7 +824,14 @@ type Action =
 	| {
 			type: "dsh_patches";
 			patchDir: string;
-			files: { name: string; path: string; size: number; mtimeMs: number }[];
+			files: DshPatchFileInfo[];
+	  }
+	| {
+			type: "dsh_market_data";
+			count: number;
+			updated?: string;
+			categories: Record<string, { en: string; zh: string }>;
+			plugins: DshMarketPlugin[];
 	  }
 	| { type: "dsh_presets"; presets: UiAgentPreset[]; defaultPreset: string }
 	| { type: "dsh_permission"; options: DshPermissionOption[]; defaultPreset: string }
@@ -996,6 +1012,10 @@ function reducer(state: ChatState, action: Action): ChatState {
 				ready: true,
 				...(engineChanged
 					? {
+							state: null,
+							models: [],
+							sessions: readCachedSessions(state.state?.cwd, action.engine),
+							conversations: [],
 							terminals: [],
 							dshPatches: null,
 							dshAgentPresets: null,
@@ -1014,25 +1034,30 @@ function reducer(state: ChatState, action: Action): ChatState {
 			const nextCwd = action.state.cwd;
 			let nextSessions = state.sessions;
 			if (nextCwd && nextCwd !== prevCwd) {
-				nextSessions = readCachedSessions(nextCwd);
+				nextSessions = readCachedSessions(nextCwd, state.engine);
 			}
-			const normPath = (s?: string) =>
-				(s ?? "")
-					.trim()
-					.replace(/[\\/]+$/, "")
-					.toLowerCase();
+			const normPath = (s?: string) => (s ?? "").trim().replace(/\\/g, "/").replace(/\/+$/, "").toLowerCase();
 			let nextTransition = state.transition;
 			if (nextTransition) {
+				const normTarget = normPath(nextTransition.target);
+				const normSessionFile = normPath(action.state.sessionFile);
+				const normConvId = normPath(action.state.conversationId);
+				const normSessionId = normPath(action.state.sessionId);
+
 				if (nextTransition.phase === "done" || nextTransition.phase === "error") {
 					nextTransition = null;
-				} else if (nextTransition.kind === "cwd" && normPath(action.state.cwd) === normPath(nextTransition.target)) {
+				} else if (nextTransition.kind === "cwd" && normPath(action.state.cwd) === normTarget) {
 					nextTransition = null;
 				} else if (
 					nextTransition.kind === "session" &&
-					normPath(action.state.sessionFile) === normPath(nextTransition.target)
+					(normSessionFile === normTarget ||
+						normSessionId === normTarget ||
+						normConvId === normTarget ||
+						(normSessionFile &&
+							(normSessionFile.endsWith("/" + normTarget) || normTarget.endsWith("/" + normSessionFile))))
 				) {
 					nextTransition = null;
-				} else if (nextTransition.kind === "conversation" && action.state.conversationId === nextTransition.target) {
+				} else if (nextTransition.kind === "conversation" && normConvId === normTarget) {
 					nextTransition = null;
 				} else if (
 					nextTransition.kind === "new_chat" &&
@@ -1169,7 +1194,7 @@ function reducer(state: ChatState, action: Action): ChatState {
 				notices: state.notices.filter((n) => n.id !== action.id),
 			};
 		case "sessions":
-			writeCachedSessions(state.state?.cwd, action.sessions);
+			writeCachedSessions(state.state?.cwd, action.sessions, state.engine);
 			return { ...state, sessions: action.sessions };
 		case "conversations":
 			return {
@@ -1376,6 +1401,16 @@ function reducer(state: ChatState, action: Action): ChatState {
 			return { ...state, installInspect: action.result };
 		case "dsh_patches":
 			return { ...state, dshPatches: { patchDir: action.patchDir, files: action.files } };
+		case "dsh_market_data":
+			return {
+				...state,
+				dshMarket: {
+					count: action.count,
+					updated: action.updated,
+					categories: action.categories,
+					plugins: action.plugins,
+				},
+			};
 		case "dsh_presets":
 			return { ...state, dshPresets: { presets: action.presets, defaultPreset: action.defaultPreset } };
 		case "dsh_permission":
@@ -1426,7 +1461,7 @@ function reducer(state: ChatState, action: Action): ChatState {
 		case "terminal_active":
 			return { ...state, terminalActiveId: action.id };
 		case "transition_start": {
-			const cachedTargetSessions = action.kind === "cwd" ? readCachedSessions(action.target) : null;
+			const cachedTargetSessions = action.kind === "cwd" ? readCachedSessions(action.target, state.engine) : null;
 			return {
 				...state,
 				...(cachedTargetSessions && cachedTargetSessions.length > 0 ? { sessions: cachedTargetSessions } : {}),
@@ -1608,18 +1643,19 @@ export function clearCachedProject(path: string): void {
 
 const RECENT_SESSIONS_PREFIX = "pi-web-recent-sessions:";
 
-export function sessionsStorageKey(cwd?: string | null): string {
-	if (!cwd) return "pi-web-recent-sessions:default";
-	return `${RECENT_SESSIONS_PREFIX}${cwd
+export function sessionsStorageKey(cwd?: string | null, engine?: string): string {
+	const eng = engine ?? "pi";
+	if (!cwd) return `pi-web-recent-sessions:${eng}:default`;
+	return `${RECENT_SESSIONS_PREFIX}${eng}:${cwd
 		.trim()
 		.replace(/[\\/]+$/, "")
 		.toLowerCase()}`;
 }
 
 /** 读取前端缓存的当前工作区历史会话列表（刷新时首帧立即可见，避免空白）。 */
-export function readCachedSessions(cwd?: string | null): SessionSummary[] {
+export function readCachedSessions(cwd?: string | null, engine?: string): SessionSummary[] {
 	try {
-		const key = sessionsStorageKey(cwd ?? readLastCwd());
+		const key = sessionsStorageKey(cwd ?? readLastCwd(), engine);
 		const raw = localStorage.getItem(key);
 		if (!raw) return [];
 		const parsed = JSON.parse(raw);
@@ -1629,9 +1665,9 @@ export function readCachedSessions(cwd?: string | null): SessionSummary[] {
 	}
 }
 
-function writeCachedSessions(cwd: string | undefined | null, sessions: SessionSummary[]): void {
+function writeCachedSessions(cwd: string | undefined | null, sessions: SessionSummary[], engine?: string): void {
 	try {
-		const key = sessionsStorageKey(cwd ?? readLastCwd());
+		const key = sessionsStorageKey(cwd ?? readLastCwd(), engine);
 		localStorage.setItem(key, JSON.stringify(sessions.slice(0, 50)));
 	} catch {
 		/* ignore */
@@ -1639,9 +1675,9 @@ function writeCachedSessions(cwd: string | undefined | null, sessions: SessionSu
 }
 
 /** 用户删除会话时，同步清理本地对应会话缓存。 */
-export function clearCachedSession(path: string, cwd?: string | null): void {
+export function clearCachedSession(path: string, cwd?: string | null, engine?: string): void {
 	try {
-		const current = readCachedSessions(cwd);
+		const current = readCachedSessions(cwd, engine);
 		const norm = (s: string) =>
 			s
 				.trim()
@@ -1649,7 +1685,7 @@ export function clearCachedSession(path: string, cwd?: string | null): void {
 				.toLowerCase();
 		const target = norm(path);
 		const filtered = current.filter((s) => norm(s.path) !== target);
-		writeCachedSessions(cwd, filtered);
+		writeCachedSessions(cwd, filtered, engine);
 	} catch {
 		/* ignore */
 	}
@@ -1741,6 +1777,7 @@ export function useChat() {
 		pathRequests: [],
 		permRequests: [],
 		dshPatches: null,
+		dshMarket: null,
 		mcpMarketResult: null,
 		skillMarketResult: null,
 		skillContentResult: null,
@@ -1856,15 +1893,12 @@ export function useChat() {
 				});
 			}
 		} else if (msg.type === "switch_session" && msg.path) {
-			const cur = (curState?.sessionFile ?? "")
-				.trim()
-				.replace(/[\\/]+$/, "")
-				.toLowerCase();
-			const tgt = msg.path
-				.trim()
-				.replace(/[\\/]+$/, "")
-				.toLowerCase();
-			if (tgt && tgt !== cur) {
+			const norm = (s?: string) => (s ?? "").trim().replace(/\\/g, "/").replace(/\/+$/, "").toLowerCase();
+			const cur = norm(curState?.sessionFile);
+			const curSid = norm(curState?.sessionId);
+			const curCid = norm(curState?.conversationId);
+			const tgt = norm(msg.path);
+			if (tgt && tgt !== cur && tgt !== curSid && tgt !== curCid) {
 				dispatch({
 					type: "transition_start",
 					kind: "session",
@@ -2047,6 +2081,7 @@ export function useChat() {
 						appVersion: msg.appVersion,
 						serverVersion: msg.serverVersion,
 						service: msg.service,
+						...(msg.engineCapabilities ? { engineCapabilities: msg.engineCapabilities } : {}),
 					});
 					const initialLatencyMs = helloSentAt > 0 ? Math.max(0, Math.round(performance.now() - helloSentAt)) : null;
 					dispatch({
@@ -2720,6 +2755,9 @@ export function useChat() {
 				case "dsh_patches":
 					dispatch({ type: "dsh_patches", patchDir: msg.patchDir, files: msg.files });
 					break;
+				case "dsh_market_data":
+					dispatch(msg);
+					break;
 				case "dsh_presets":
 					dispatch({ type: "dsh_presets", presets: msg.presets, defaultPreset: msg.defaultPreset });
 					break;
@@ -2785,13 +2823,13 @@ export function useChat() {
 		const onStorage = (e: StorageEvent) => {
 			const cwd = chat.state?.cwd;
 			if (!cwd || !e.key) return;
-			if (e.key === sessionsStorageKey(cwd)) {
-				dispatch({ type: "sync_cached_sessions", sessions: readCachedSessions(cwd) });
+			if (e.key === sessionsStorageKey(cwd, chat.engine)) {
+				dispatch({ type: "sync_cached_sessions", sessions: readCachedSessions(cwd, chat.engine) });
 			}
 		};
 		window.addEventListener("storage", onStorage);
 		return () => window.removeEventListener("storage", onStorage);
-	}, [chat.state?.cwd]);
+	}, [chat.state?.cwd, chat.engine]);
 
 	// Mount once; all reconnection is self-contained in `connect`.
 	useEffect(() => {
@@ -2895,6 +2933,7 @@ export function useChat() {
 			homeDir: chat.state?.homeDir ?? "",
 			// 桌面目录（右栏 🖥️）：与 cwd 同源，空串 = 不存在/旧服务 → 不渲染 🖥️。
 			desktopDir: chat.state?.desktopDir ?? "",
+			...(chat.state?.engineCapabilities ? { engineCapabilities: chat.state.engineCapabilities } : {}),
 		});
 	}, [
 		chat.ready,
@@ -2903,6 +2942,7 @@ export function useChat() {
 		chat.state?.workspaceRoots,
 		chat.state?.homeDir,
 		chat.state?.desktopDir,
+		chat.state?.engineCapabilities,
 	]);
 
 	const dismissNotice = useCallback((id: number) => dispatch({ type: "dismiss_notice", id }), []);

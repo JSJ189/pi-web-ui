@@ -54,6 +54,8 @@ import { PUBLIC_SKILLS, type PublicSkill } from "../skill-catalog";
 import { SUPPORTED_ENGINES } from "./EnginePicker";
 import type {
 	CommandDef,
+	DshMarketPlugin,
+	DshPatchFileInfo,
 	DshPermissionOption,
 	RemoteMcpServer,
 	RemoteSkillSummary,
@@ -201,7 +203,14 @@ interface SettingsModalProps {
 			session?: boolean;
 		}[];
 		/** DSH engine: <dataDir>/dsh-patches user patch files. */
-		dshPatches: { patchDir: string; files: { name: string; path: string; size: number; mtimeMs: number }[] } | null;
+		dshPatches: { patchDir: string; files: DshPatchFileInfo[] } | null;
+		/** DSH engine: awesome-dsh-plugin 社区插件市场清单。 */
+		dshMarket: {
+			count: number;
+			updated?: string;
+			categories: Record<string, { en: string; zh: string }>;
+			plugins: DshMarketPlugin[];
+		} | null;
 		/** DSH engine: Agent 预设名录（null/空 = legacy，隐藏预设区）。 */
 		dshPresets: { presets: UiAgentPreset[]; defaultPreset: string } | null;
 		/** DSH engine: 权限预设选项表 + 新会话默认（null = 未就绪/legacy，隐藏权限区）。 */
@@ -249,6 +258,8 @@ interface SettingsModalProps {
 	onClose: () => void;
 	/** Open icon drag-and-drop editor mode (issue: quick access from layout settings). */
 	onOpenIconEdit?: () => void;
+	/** 打开模型与服务商管理面板（弹窗） */
+	onOpenManageModels?: () => void;
 	/** Sound cue + TTS settings — state lives in App (localStorage-backed),
 	 *  shared with the TopBar sound dropdown via props. */
 	sound: SoundSettings;
@@ -555,6 +566,7 @@ function PluginLogView({ pluginId }: { pluginId: string }) {
  *  —— 条目全局 id 本身是 `<pluginId>:<itemId>`，所以整串是 `plugin-page:<pluginId>:<itemId>`；
  *  一个插件可以贡献多页，故不用 `plugin-page:<pluginId>`（会撞车）。 */
 type SettingsTab =
+	| "models"
 	| "prompt"
 	| "prompt-history"
 	| "scheduler"
@@ -573,6 +585,7 @@ type SettingsTab =
 	| "review"
 	| "vision"
 	| "presets"
+	| "dsh-presets"
 	| "subagent-templates"
 	| `plugin-page:${string}`;
 
@@ -666,6 +679,7 @@ export function SettingsModal({
 	onSwitchToTerminal,
 	onClose,
 	onOpenIconEdit,
+	onOpenManageModels,
 	sound,
 	onSoundChange,
 	tts,
@@ -708,10 +722,13 @@ export function SettingsModal({
 	const approvalPolicy = settings?.approvalPolicy;
 	// 全局运行态（引擎 / 受管）：不再从 App 一路传进来，见 web/src/app-globals.ts。
 	const { engine, managed } = useAppGlobals();
-	// DSH 引擎：无 pi 扩展/技能体系与视觉桥概念 —— 隐藏对应分区/改占位说明。
+	// 引擎特性分支判断：动态适应引擎，隐藏不可用的分区
 	const isDsh = engine === "dsh";
-	// 当前左侧导航选中的分组。
-	const [tab, setTab] = useState<SettingsTab>(initialSection ?? "prompt");
+	const isClaude = engine === "claude";
+	const isPi = !isDsh && !isClaude;
+	// 默认分区自适应：Claude/DSH 优先进模型与服务商，Pi 进系统提示词
+	const defaultTab: SettingsTab = isClaude ? "models" : isDsh ? "models" : "prompt";
+	const [tab, setTab] = useState<SettingsTab>(initialSection ?? defaultTab);
 	// 界面插件分组内的子页签：市场 / 已安装（一次只看一坨，免得 5 大块堆在一起滚半天；默认进市场，安装一步直达）。
 	const [pluginSub, setPluginSub] = useState<"market" | "installed">("market");
 	// 内容滚动容器：切换分组后回到顶部（各组高度不同，停留旧滚动位置会像没切换）。
@@ -888,12 +905,13 @@ export function SettingsModal({
 				return t("skillCatAll");
 		}
 	};
-	// DSH 引擎：打开插件分组时拉一次用户 patch 列表（pi 引擎忽略该消息）。
+	// DSH 引擎：打开设置时自动拉取用户 patch 列表与社区插件市场数据（pi 引擎忽略该消息）。
 	useEffect(() => {
-		if (tab === "plugins" && isDsh) {
+		if (isDsh) {
 			appSend({ type: "dsh_patches_list" });
+			appSend({ type: "dsh_market_fetch" });
 		}
-	}, [tab, isDsh]);
+	}, [isDsh]);
 
 	// 打开设置面板或当前工作区/会话切换时，主动拉取一次最新设置快照（确保 {{context}}、生效提示词与 token 估算为当前项目最新值）。
 	useEffect(() => {
@@ -1069,6 +1087,13 @@ export function SettingsModal({
 	const [quickNew, setQuickNew] = useState("");
 	// 快捷短语行内编辑（null = 未在编辑；输入框受控于 value，回显不打断输入）。
 	const [quickEdit, setQuickEdit] = useState<{ index: number; value: string } | null>(null);
+	// DSH 用户补丁安装输入框草稿
+	const [dshPatchInput, setDshPatchInput] = useState("");
+	// DSH 插件市场子面板（探索 / 已安装）与搜索分类状态
+	const [dshMarketSub, setDshMarketSub] = useState<"discover" | "installed">("discover");
+	const [dshMarketSearch, setDshMarketSearch] = useState("");
+	const [dshMarketCat, setDshMarketCat] = useState<string>("all");
+	const [dshMarketPage, setDshMarketPage] = useState(1);
 
 	useEffect(() => {
 		if (!settings) return;
@@ -1179,15 +1204,6 @@ export function SettingsModal({
 	/** 导航 id ↔ 插件页的换算只写这一处（tab 状态、回落 effect、渲染块共用）。 */
 	const pluginPageTabId = (entryId: string): SettingsTab => `plugin-page:${entryId}`;
 
-	/** 正在看的插件页消失了（插件被卸载/禁用，或布局页把这条隐藏了）→ 回落到默认分区。
-	 *  留着指向不存在的 tab，正文会空白一片，而导航里那项也没了——用户不知道该点哪。
-	 *  用 effect 而不是渲染期纠正：纠正要改 state，渲染期不能改。 */
-	useEffect(() => {
-		if (!tab.startsWith("plugin-page:")) return;
-		if (pluginPages.some((p) => pluginPageTabId(p.entry.id) === tab)) return;
-		setTab("prompt");
-	}, [tab, pluginPages]);
-
 	if (!settings) return null;
 
 	// 统一工具禁用名单（工具 tab 唯一写入口；旧 tab 的遗留单开关已迁入）。
@@ -1260,47 +1276,86 @@ export function SettingsModal({
 		/** 悬浮提示（插件条目的 `hint`）。 */
 		hint?: string;
 	}[] = [
-		{ id: "prompt", icon: <FiFileText />, label: t("settingsSystemPrompt") },
+		// 模型与服务商（全引擎通用：统一管理 BaseURL、API Key 与自定义中转模型）
+		...(onOpenManageModels
+			? [
+					{
+						id: "models" as const,
+						icon: <FiCpu />,
+						label: t("settingsModelsAndProviders"),
+					},
+				]
+			: []),
+		// 系统提示词（仅 Pi 引擎支持自定义提示词注入与查看）
+		...(isPi ? [{ id: "prompt" as const, icon: <FiFileText />, label: t("settingsSystemPrompt") }] : []),
+		// 输入历史（全引擎通用）
 		{
 			id: "prompt-history",
 			icon: <FiClock />,
 			label: t("settingsPromptHistory"),
 			count: phCount,
 		},
-		// 内置定时任务（issue #184）：DSH 引擎无无头执行通道，隐藏该分区。
-		...(isDsh
-			? []
-			: [
+		// 定时任务（仅 Pi 引擎具备后台执行通道）
+		...(isPi
+			? [
 					{
 						id: "scheduler" as const,
 						icon: <FiClock />,
 						label: t("settingsScheduler"),
 						count: chat.schedulerTasks.length || undefined,
 					},
-				]),
-		// 统一工具开关（tool-manager.ts 目录，逐工具）：DSH 引擎无子代理/edit_soft
-		// 概念，隐藏该分区；DSH 的问卷开关仍在“问卷提问”页（走 goal-rpc）。
+				]
+			: []),
+		// 工具 & 审批规则 / DSH 问卷提问
 		...(isDsh
 			? [{ id: "question" as const, icon: <FiHelpCircle />, label: t("settingsQuestionnaire") }]
-			: [
-					{
-						id: "tools" as const,
-						icon: <FiTool />,
-						label: t("settingsTools"),
-						count: disabledToolsCount + (settings.disabledMarkers?.length ?? 0) || undefined,
-					},
-					{
-						id: "approval-rules" as const,
-						icon: <FiShield />,
-						label: t("settingsApprovalRules"),
-						count: (settings.approvalRules ?? []).length || undefined,
-					},
-				]),
+			: isPi
+				? [
+						{
+							id: "tools" as const,
+							icon: <FiTool />,
+							label: t("settingsTools"),
+							count: disabledToolsCount + (settings.disabledMarkers?.length ?? 0) || undefined,
+						},
+						{
+							id: "approval-rules" as const,
+							icon: <FiShield />,
+							label: t("settingsApprovalRules"),
+							count: (settings.approvalRules ?? []).length || undefined,
+						},
+					]
+				: []),
+		// 对话展示（全引擎通用）
 		{ id: "display", icon: <FiMessageSquare />, label: t("settingsMessageDisplay") },
+		// 声音与语音（全引擎通用）
 		{ id: "sound", icon: <FiVolume2 />, label: t("settingsSoundVoice") },
+		// 快捷短语（全引擎通用）
 		{ id: "quick", icon: <FiSend />, label: t("quickPhrases"), count: settings.quickPhrases.length },
-		{ id: "skills", icon: <FiCpu />, label: t("settingsSkills"), count: settings.skills.length },
-		{ id: "extensions", icon: <FiPackage />, label: t("settingsExtensions"), count: settings.extensions.length },
+		// 技能（仅 Pi 引擎支持 .pi/skills）
+		...(isPi
+			? [{ id: "skills" as const, icon: <FiCpu />, label: t("settingsSkills"), count: settings.skills.length }]
+			: []),
+		// 扩展 / DSH 补丁市场（Claude 引擎无此类扩展）
+		...(isDsh
+			? [
+					{
+						id: "extensions" as const,
+						icon: <FiPackage />,
+						label: t("dshPlugins"),
+						count: chat.dshPatches?.files.length,
+					},
+				]
+			: isPi
+				? [
+						{
+							id: "extensions" as const,
+							icon: <FiPackage />,
+							label: t("settingsExtensions"),
+							count: settings.extensions.length,
+						},
+					]
+				: []),
+		// 界面插件（全引擎通用）
 		{
 			id: "plugins",
 			icon: <FiBox />,
@@ -1308,35 +1363,55 @@ export function SettingsModal({
 			count: chat.plugins.length,
 			dot: hasBuiltinPluginUpdate || hasAnyPluginUpdate,
 		},
-		{
-			id: "mcp" as const,
-			icon: <FiServer />,
-			label: t("settingsMcp"),
-			count: (settings.mcpServers ?? []).length || undefined,
-			dot: (settings.mcpServers ?? []).some((s) => s.status === "error"),
-		},
+		// MCP 服务器（仅 Pi 引擎原生支持）
+		...(isPi
+			? [
+					{
+						id: "mcp" as const,
+						icon: <FiServer />,
+						label: t("settingsMcp"),
+						count: (settings.mcpServers ?? []).length || undefined,
+						dot: (settings.mcpServers ?? []).some((s) => s.status === "error"),
+					},
+				]
+			: []),
+		// 界面布局（全引擎通用）
 		{ id: "layout", icon: <FiSliders />, label: t("uiLayoutTitle") },
-		{ id: "review", icon: <FiZap />, label: t("settingsReview"), count: settings.reviewSkills.length },
-		// DSH：无视觉桥概念（真图片直通 vision 模型），隐藏该分区。
-		...(isDsh ? [] : [{ id: "vision" as const, icon: <FiEye />, label: t("settingsVisionBridge") }]),
-		{ id: "presets", icon: <FiSliders />, label: t("settingsPresets"), count: settings.presets.length },
-		// DSH：无子代理概念，隐藏该分区。
-		...(isDsh
+		// 目标审查（仅 Pi 与 DSH 支持）
+		...(isClaude
 			? []
-			: [
+			: [{ id: "review" as const, icon: <FiZap />, label: t("settingsReview"), count: settings.reviewSkills.length }]),
+		// 视觉桥（仅 Pi 引擎支持）
+		...(isPi ? [{ id: "vision" as const, icon: <FiEye />, label: t("settingsVisionBridge") }] : []),
+		// 预设（仅 Pi 引擎支持）
+		...(isPi
+			? [{ id: "presets" as const, icon: <FiSliders />, label: t("settingsPresets"), count: settings.presets.length }]
+			: []),
+		// DSH 预设与权限三档（仅 DSH 引擎支持：极简模式/代码运行时/PTC 预设 + 权限三档）
+		...(isDsh
+			? [
+					{
+						id: "dsh-presets" as const,
+						icon: <FiSliders />,
+						label: `${t("dshPreset")} & ${t("dshPerm")}`,
+						hint: t("dshDefaultPresetDesc"),
+					},
+				]
+			: []),
+		// 子代理模板（仅 Pi 引擎支持）
+		...(isPi
+			? [
 					{
 						id: "subagent-templates" as const,
 						icon: <FiUsers />,
 						label: t("settingsSubagentTemplates"),
 						count: settings.subagentTemplates.length,
 					},
-				]),
-		// 插件自定义设置页（settings.pages，issue #146）：排在内置分区之后。内容由
-		// PluginPage 挂载插件自己的 client bundle 渲染（设置弹窗不关、主视图不切）。
+				]
+			: []),
+		// 插件自定义设置页（全引擎通用）
 		...pluginPages.map((p) => ({
 			id: pluginPageTabId(p.entry.id),
-			// 图标：插件给 emoji/单字符就照原样画；给的是宿主图标词表名（或没给）时用通用盒图标，
-			// 绝不把 "folder" 这样的词当文字显出来（口径同 SlotTabs.isGlyphIcon）。
 			icon: p.entry.iconSvg ? (
 				<PluginIcon iconSvg={p.entry.iconSvg} />
 			) : p.entry.icon && !/[a-z]/i.test(p.entry.icon) ? (
@@ -1348,6 +1423,14 @@ export function SettingsModal({
 			pluginPage: { plugin: p.plugin, entry: p.entry },
 		})),
 	];
+
+	/** 导航纠偏：若当前 tab 不在当前引擎可用的分区列表（例如切换引擎、或插件被卸载）→ 自动回落到该引擎的首个可用分区。 */
+	useEffect(() => {
+		if (tabs.length === 0) return;
+		if (!tabs.some((t) => t.id === tab)) {
+			setTab(tabs[0].id);
+		}
+	}, [tabs, tab]);
 
 	/** 当前选中的插件页（tab 形如 `plugin-page:<条目全局 id>`）。找不到 = null：上面的 effect
 	 *  会把 tab 纠回默认分区，这里先什么都不画，免得白屏时还留着上一页的错误提示。 */
@@ -1989,6 +2072,87 @@ export function SettingsModal({
 						))}
 					</nav>
 					<div className="modal-body" ref={bodyRef}>
+						{/* ---- models & providers (all engines) ------------------------ */}
+						{tab === "models" && (
+							<div className="set-section">
+								<div className="set-section-title">
+									<FiAperture className="set-section-icon" />
+									{t("settingsEngineSection")}
+									<HintTip text={t("settingsEngineHint")} />
+								</div>
+								<div className="set-mode-row" role="radiogroup" aria-label={t("settingsEngineSection")}>
+									{SUPPORTED_ENGINES.map((item) => {
+										const isSelected = item.id === engine;
+										return (
+											<button
+												key={item.id}
+												type="button"
+												role="radio"
+												aria-checked={isSelected}
+												data-testid={`engine-switch-${item.id}`}
+												className={`set-mode-btn${isSelected ? " active" : ""}`}
+												onClick={() => {
+													if (!isSelected)
+														appSend({ type: "switch_engine", engine: item.id as "pi" | "dsh" | "claude" });
+												}}
+											>
+												<div className="set-mode-title">
+													{t(item.titleKey) !== item.badge ? (
+														<>
+															<span style={{ marginRight: 6 }}>{t(item.titleKey)}</span>
+															<span className={`engine-badge ${item.colorClass}`}>{item.badge}</span>
+														</>
+													) : (
+														<span className={`engine-badge ${item.colorClass}`}>{item.badge}</span>
+													)}
+												</div>
+												<div className="set-mode-desc">{t(item.descKey)}</div>
+											</button>
+										);
+									})}
+								</div>
+
+								<div className="set-section-title" style={{ marginTop: 20 }}>
+									<FiCpu className="set-section-icon" />
+									{t("settingsModelsAndProviders")}
+									<HintTip text={t("settingsModelsDesc")} />
+								</div>
+								<p className="set-desc" style={{ marginTop: 4, marginBottom: 12 }}>
+									{isClaude
+										? "当前由 Claude Code CLI 引擎驱动。您在「模型与服务商」中配置的 Anthropic 兼容端点 BaseURL、API 密钥以及自定义中转模型，将自动注入到 Claude CLI 子进程中运行（无需外部 cc-switch 工具）。"
+										: isDsh
+											? "当前由 DSH 引擎驱动。支持 DeepSeek 官方及第三方端点与模型密钥配置。在此处配置的模型（包括 OpenAI 兼容中转端点）将自动注入 BaseURL 与 API Key 到 DSH 运行时中供其调用执行。"
+											: "当前由 Pi 原生引擎驱动。支持任意 OpenAI / Anthropic / Gemini / DeepSeek 兼容端点、多密钥与模型元数据管理。"}
+								</p>
+
+								{onOpenManageModels && (
+									<div className="set-block" style={{ marginTop: 8 }}>
+										<div className="set-row">
+											<div>
+												<div className="set-label">{t("manageModelsAndProviders")}</div>
+												<div className="set-desc">{t("manageModelsAndProvidersHint")}</div>
+											</div>
+											<button
+												type="button"
+												className="set-btn accent"
+												style={{
+													display: "inline-flex",
+													alignItems: "center",
+													gap: 6,
+													padding: "6px 14px",
+													flexShrink: 0,
+												}}
+												onClick={onOpenManageModels}
+											>
+												<FiCpu />
+												<span>{t("openModelManager")}</span>
+											</button>
+										</div>
+									</div>
+								)}
+							</div>
+						)}
+
 						{/* ---- system prompt -------------------------------------------- */}
 						{tab === "prompt" && (
 							<div className="set-section">
@@ -2009,12 +2173,19 @@ export function SettingsModal({
 												data-testid={`engine-switch-${item.id}`}
 												className={`set-mode-btn${isSelected ? " active" : ""}`}
 												onClick={() => {
-													if (!isSelected) appSend({ type: "switch_engine", engine: item.id as "pi" | "dsh" });
+													if (!isSelected)
+														appSend({ type: "switch_engine", engine: item.id as "pi" | "dsh" | "claude" });
 												}}
 											>
 												<div className="set-mode-title">
-													<span style={{ marginRight: 6 }}>{t(item.titleKey)}</span>
-													<span className={`engine-badge ${item.colorClass}`}>{item.badge}</span>
+													{t(item.titleKey) !== item.badge ? (
+														<>
+															<span style={{ marginRight: 6 }}>{t(item.titleKey)}</span>
+															<span className={`engine-badge ${item.colorClass}`}>{item.badge}</span>
+														</>
+													) : (
+														<span className={`engine-badge ${item.colorClass}`}>{item.badge}</span>
+													)}
 												</div>
 												<div className="set-mode-desc">{t(item.descKey)}</div>
 											</button>
@@ -3756,8 +3927,439 @@ export function SettingsModal({
 							</div>
 						)}
 
-						{/* ---- extensions ------------------------------------------------ */}
-						{tab === "extensions" && (
+						{/* ---- extensions (DSH: 独立 DSH 插件市场与管理面板) ------------------ */}
+						{tab === "extensions" && isDsh && (
+							<div className="set-section dsh-market-container">
+								<div className="dsh-market-header">
+									<div className="dsh-market-title-group">
+										<div className="dsh-market-main-title">
+											<FiPackage className="set-section-icon" />
+											<span>{t("dshMarketTitle")}</span>
+											<span className="dsh-market-version-tag">awesome-dsh-plugin</span>
+											<HintTip text={t("dshPluginsDesc")} />
+										</div>
+										<div className="dsh-market-subtitle-row">
+											<span>{t("dshMarketSubtitle")}</span>
+											<a
+												href="https://github.com/awesome-dsh-plugin/awesome-dsh-plugin"
+												target="_blank"
+												rel="noreferrer"
+												className="dsh-market-submit-link"
+											>
+												{t("dshMarketSubmit")}
+											</a>
+										</div>
+									</div>
+									<div className="dsh-market-header-actions">
+										<button
+											type="button"
+											className="set-uninstall"
+											title={t("dshMarketRefresh")}
+											onClick={() => {
+												appSend({ type: "dsh_market_fetch", force: true });
+												appSend({ type: "dsh_patches_list" });
+											}}
+										>
+											<FiRefreshCw />
+											{t("dshMarketRefresh")}
+										</button>
+										<button
+											type="button"
+											className="set-uninstall"
+											title={t("dshPatchesRescanHint")}
+											onClick={() => appSend({ type: "dsh_patches_rescan" })}
+										>
+											<FiRefreshCw />
+											{t("dshPatchesRescan")}
+										</button>
+									</div>
+								</div>
+
+								{/* 子选项卡导航：Discover (探索) | Installed (已安装) */}
+								<div className="dsh-market-tabs">
+									<button
+										type="button"
+										className={`dsh-market-tab ${dshMarketSub === "discover" ? "active" : ""}`}
+										onClick={() => setDshMarketSub("discover")}
+									>
+										{t("dshMarketTabDiscover")}
+										{chat.dshMarket?.count ? (
+											<span className="dsh-market-tab-badge">
+												{chat.dshMarket.count >= 1000
+													? `${(chat.dshMarket.count / 1000).toFixed(1)}k`
+													: chat.dshMarket.count}
+											</span>
+										) : null}
+									</button>
+									<button
+										type="button"
+										className={`dsh-market-tab ${dshMarketSub === "installed" ? "active" : ""}`}
+										onClick={() => setDshMarketSub("installed")}
+									>
+										{t("dshMarketTabInstalled")}
+										<span className="dsh-market-tab-badge">{chat.dshPatches?.files.length ?? 0}</span>
+									</button>
+								</div>
+
+								{/* ---------------- TAB 1: Discover (插件市场探索) ---------------- */}
+								{dshMarketSub === "discover" && (
+									<div className="dsh-market-discover">
+										{/* 兼容性提示横幅：明确声明 WebUI 视图类插件可能无效 */}
+										<div className="dsh-market-compat-banner">
+											<FiAlertTriangle className="dsh-market-banner-icon" />
+											<div className="dsh-market-banner-text">
+												<strong>{t("dshMarketDisclaimerTitle")}</strong>：{t("dshMarketDisclaimerText")}
+											</div>
+										</div>
+
+										<div className="dsh-market-search-box">
+											<FiSearch className="dsh-market-search-icon" />
+											<input
+												type="text"
+												className="dsh-market-search-input"
+												placeholder={t("dshMarketSearchPlaceholder")}
+												value={dshMarketSearch}
+												onChange={(e) => {
+													setDshMarketSearch(e.target.value);
+													setDshMarketPage(1);
+												}}
+											/>
+											{dshMarketSearch && (
+												<button
+													type="button"
+													className="dsh-market-search-clear"
+													onClick={() => {
+														setDshMarketSearch("");
+														setDshMarketPage(1);
+													}}
+												>
+													<FiX />
+												</button>
+											)}
+										</div>
+
+										<div className="dsh-market-cats">
+											<button
+												type="button"
+												className={`dsh-market-cat-chip ${dshMarketCat === "all" ? "active" : ""}`}
+												onClick={() => {
+													setDshMarketCat("all");
+													setDshMarketPage(1);
+												}}
+											>
+												{t("dshMarketAll")} ({chat.dshMarket?.plugins.length ?? 0})
+											</button>
+											{Object.entries(chat.dshMarket?.categories ?? {}).map(([catKey, catNames]) => {
+												const isZh = isZhLocale(locale);
+												const label = isZh ? catNames.zh || catNames.en : catNames.en || catNames.zh;
+												return (
+													<button
+														key={catKey}
+														type="button"
+														className={`dsh-market-cat-chip ${dshMarketCat === catKey ? "active" : ""}`}
+														onClick={() => {
+															setDshMarketCat(catKey);
+															setDshMarketPage(1);
+														}}
+													>
+														{label}
+													</button>
+												);
+											})}
+										</div>
+
+										{(() => {
+											const allPlugins = chat.dshMarket?.plugins ?? [];
+											const q = dshMarketSearch.trim().toLowerCase();
+											const installedIds = new Set(
+												(chat.dshPatches?.files ?? []).map((f) =>
+													f.name.replace(/\.ya?ml(\.disabled)?$/i, "").toLowerCase(),
+												),
+											);
+
+											const filtered = allPlugins.filter((p) => {
+												if (dshMarketCat !== "all" && p.category !== dshMarketCat) return false;
+												if (!q) return true;
+												const descZh = p.description?.zh?.toLowerCase() ?? "";
+												const descEn = p.description?.en?.toLowerCase() ?? "";
+												return (
+													p.name.toLowerCase().includes(q) ||
+													(p.owner?.toLowerCase().includes(q) ?? false) ||
+													(p.npm?.toLowerCase().includes(q) ?? false) ||
+													descZh.includes(q) ||
+													descEn.includes(q)
+												);
+											});
+
+											const PAGE_SIZE = 16;
+											const totalPages = Math.max(1, Math.ceil(filtered.length / PAGE_SIZE));
+											const currentPage = Math.min(Math.max(1, dshMarketPage), totalPages);
+											const pagePlugins = filtered.slice((currentPage - 1) * PAGE_SIZE, currentPage * PAGE_SIZE);
+
+											const formatCount = (n?: number) => {
+												if (!n) return "0";
+												return n >= 1000 ? `${(n / 1000).toFixed(1)}k` : String(n);
+											};
+											const isZh = isZhLocale(locale);
+
+											return (
+												<>
+													<div className="dsh-market-grid">
+														{pagePlugins.map((p) => {
+															const cleanId = p.name.replace(/^dsh-plugin-|^dsh-/, "").toLowerCase();
+															const isInstalled = installedIds.has(p.name.toLowerCase()) || installedIds.has(cleanId);
+															const catInfo = p.category ? chat.dshMarket?.categories?.[p.category] : undefined;
+															const catLabel = catInfo
+																? isZh
+																	? catInfo.zh || catInfo.en
+																	: catInfo.en || catInfo.zh
+																: p.category;
+															const desc = isZh
+																? p.description?.zh || p.description?.en || ""
+																: p.description?.en || p.description?.zh || "";
+
+															const isWebUiPlugin =
+																p.category === "ui" ||
+																p.category === "theme" ||
+																p.name.includes("-ui") ||
+																p.name.includes("-sidebar") ||
+																p.name.includes("theme");
+
+															return (
+																<div className="dsh-market-card" key={`${p.owner ?? ""}/${p.name}`}>
+																	<div className="dsh-market-card-top">
+																		<div className="dsh-market-card-title-wrap">
+																			{p.url ? (
+																				<a
+																					href={p.url}
+																					target="_blank"
+																					rel="noreferrer"
+																					className="dsh-market-card-title"
+																				>
+																					{p.name}
+																					<FiExternalLink className="dsh-market-ext-icon" />
+																				</a>
+																			) : (
+																				<span className="dsh-market-card-title">{p.name}</span>
+																			)}
+																		</div>
+																		{isInstalled ? (
+																			<button
+																				type="button"
+																				className="dsh-market-install-btn installed"
+																				onClick={() => setDshMarketSub("installed")}
+																			>
+																				<FiCheck />
+																				{t("dshMarketInstalled")}
+																			</button>
+																		) : (
+																			<button
+																				type="button"
+																				className="dsh-market-install-btn"
+																				onClick={() =>
+																					appSend({
+																						type: "dsh_patch_install",
+																						spec: p.npm || p.name,
+																						id: cleanId || p.name,
+																					})
+																				}
+																			>
+																				{t("dshMarketInstall")}
+																			</button>
+																		)}
+																	</div>
+
+																	<div className="dsh-market-card-meta">
+																		{p.owner && (
+																			<span className="dsh-market-author">
+																				<img
+																					src={`https://github.com/${p.owner}.png?size=32`}
+																					alt={p.owner}
+																					className="dsh-market-avatar"
+																					loading="lazy"
+																					onError={(e) => {
+																						(e.currentTarget as HTMLImageElement).style.display = "none";
+																					}}
+																				/>
+																				{p.owner}
+																			</span>
+																		)}
+																		{p.version && <span>· v{p.version}</span>}
+																		{typeof p.downloads === "number" && p.downloads > 0 && (
+																			<span>· ↓ {formatCount(p.downloads)}</span>
+																		)}
+																		{typeof p.stars === "number" && p.stars > 0 && (
+																			<span>· ★ {formatCount(p.stars)}</span>
+																		)}
+																	</div>
+
+																	<p className="dsh-market-card-desc" title={desc}>
+																		{desc}
+																	</p>
+
+																	<div className="dsh-market-card-tags">
+																		{catLabel && <span className="dsh-market-tag">{catLabel}</span>}
+																		{isWebUiPlugin && (
+																			<span className="dsh-market-tag webui-warn" title={t("dshMarketWebuiWarn")}>
+																				⚠️ {t("dshMarketWebuiTag")}
+																			</span>
+																		)}
+																		{(p.capabilities ?? []).slice(0, 3).map((cap) => (
+																			<span className="dsh-market-tag cap" key={cap}>
+																				{cap}
+																			</span>
+																		))}
+																	</div>
+																</div>
+															);
+														})}
+													</div>
+
+													{/* 翻页控制器 (Pagination) */}
+													{totalPages > 1 && (
+														<div className="dsh-market-pagination">
+															<span className="dsh-market-page-info">
+																{t("dshMarketPageInfo")
+																	.replace("{page}", String(currentPage))
+																	.replace("{total}", String(totalPages))
+																	.replace("{count}", String(filtered.length))}
+															</span>
+															<div className="dsh-market-page-btns">
+																<button
+																	type="button"
+																	className="dsh-market-page-btn"
+																	disabled={currentPage <= 1}
+																	onClick={() => setDshMarketPage((p) => Math.max(1, p - 1))}
+																>
+																	{t("dshMarketPrevPage")}
+																</button>
+																{Array.from({ length: Math.min(5, totalPages) }, (_, i) => {
+																	let pageNum = i + 1;
+																	if (totalPages > 5 && currentPage > 3) {
+																		pageNum = Math.min(currentPage - 2 + i, totalPages - 4 + i);
+																	}
+																	return (
+																		<button
+																			key={pageNum}
+																			type="button"
+																			className={`dsh-market-page-btn ${pageNum === currentPage ? "active" : ""}`}
+																			onClick={() => setDshMarketPage(pageNum)}
+																		>
+																			{pageNum}
+																		</button>
+																	);
+																})}
+																<button
+																	type="button"
+																	className="dsh-market-page-btn"
+																	disabled={currentPage >= totalPages}
+																	onClick={() => setDshMarketPage((p) => Math.min(totalPages, p + 1))}
+																>
+																	{t("dshMarketNextPage")}
+																</button>
+															</div>
+														</div>
+													)}
+												</>
+											);
+										})()}
+									</div>
+								)}
+
+								{/* ---------------- TAB 2: Installed (已安装与本地补丁管理) ---------------- */}
+								{dshMarketSub === "installed" && (
+									<div className="dsh-market-installed">
+										<div className="dsh-patch-install-bar">
+											<input
+												type="text"
+												className="dsh-patch-input"
+												placeholder={t("dshPatchSpecPlaceholder")}
+												value={dshPatchInput}
+												onChange={(e) => setDshPatchInput(e.target.value)}
+												onKeyDown={(e) => {
+													if (e.key === "Enter" && dshPatchInput.trim()) {
+														appSend({ type: "dsh_patch_install", spec: dshPatchInput.trim() });
+														setDshPatchInput("");
+													}
+												}}
+											/>
+											<button
+												type="button"
+												className="set-save-btn dsh-patch-add-btn"
+												disabled={!dshPatchInput.trim()}
+												onClick={() => {
+													if (dshPatchInput.trim()) {
+														appSend({ type: "dsh_patch_install", spec: dshPatchInput.trim() });
+														setDshPatchInput("");
+													}
+												}}
+											>
+												<FiPlus />
+												{t("dshPatchAdd")}
+											</button>
+										</div>
+										{(chat.dshPatches?.files.length ?? 0) === 0 ? (
+											<p className="set-empty">{t("dshPatchesEmpty")}</p>
+										) : (
+											<div className="set-list">
+												{chat.dshPatches!.files.map((f) => {
+													const displayName = f.name.replace(/\.disabled$/, "");
+													return (
+														<div className="set-row dsh-patch-row" key={f.name}>
+															<div className="set-row-info">
+																<div className="set-row-name dsh-patch-name">
+																	<span>{displayName}</span>
+																	<span className={`dsh-patch-badge ${f.disabled ? "disabled" : "active"}`}>
+																		{f.disabled ? t("dshPatchDisabled") : t("dshPatchActive")}
+																	</span>
+																</div>
+																<div className="set-row-desc">
+																	{f.name} · {formatBytes(f.size)} · {new Date(f.mtimeMs).toLocaleString()}
+																</div>
+															</div>
+															<div className="dsh-patch-actions">
+																<button
+																	type="button"
+																	className={`dsh-patch-toggle ${f.disabled ? "off" : "on"}`}
+																	title={f.disabled ? t("dshPatchToggleOn") : t("dshPatchToggleOff")}
+																	onClick={() =>
+																		appSend({
+																			type: "dsh_patch_toggle",
+																			name: f.name,
+																			enabled: !!f.disabled,
+																		})
+																	}
+																>
+																	{f.disabled ? t("dshPatchToggleOn") : t("dshPatchToggleOff")}
+																</button>
+																<button
+																	type="button"
+																	className="set-uninstall"
+																	title={t("dshPatchDeleteConfirm")}
+																	onClick={() => {
+																		if (window.confirm(t("dshPatchDeleteConfirm"))) {
+																			appSend({ type: "dsh_patch_delete", name: f.name });
+																		}
+																	}}
+																>
+																	<FiTrash2 />
+																</button>
+															</div>
+														</div>
+													);
+												})}
+											</div>
+										)}
+										<p className="set-hint">
+											{t("dshPatchesPath")} {chat.dshPatches?.patchDir ?? ""}
+										</p>
+									</div>
+								)}
+							</div>
+						)}
+
+						{/* ---- extensions (pi: pi 扩展管理) -------------------------------- */}
+						{tab === "extensions" && !isDsh && (
 							<div className="set-section">
 								<div className="set-section-title">
 									<FiPackage className="set-section-icon" />
@@ -3765,7 +4367,7 @@ export function SettingsModal({
 									<span className="set-count">{settings.extensions.length}</span>
 								</div>
 								{settings.extensions.length === 0 ? (
-									<p className="set-empty">{isDsh ? t("dshExtensionsNote") : t("noExtensions")}</p>
+									<p className="set-empty">{t("noExtensions")}</p>
 								) : (
 									<div className="set-list">
 										{settings.extensions.map((e) => {
@@ -4760,46 +5362,6 @@ export function SettingsModal({
 							</div>
 						)}
 
-						{/* ---- DSH 用户补丁（<dataDir>/dsh-patches，仅 dsh 引擎） ---------- */}
-						{tab === "plugins" && isDsh && pluginSub === "installed" && (
-							<div className="set-section">
-								<div className="set-section-title">
-									<FiBox className="set-section-icon" />
-									{t("dshPatches")}
-									<HintTip text={t("dshPatchesDesc")} />
-									<span className="set-count">{chat.dshPatches?.files.length ?? 0}</span>
-									<button
-										type="button"
-										className="set-uninstall"
-										title={t("dshPatchesRescanHint")}
-										onClick={() => appSend({ type: "dsh_patches_rescan" })}
-									>
-										<FiRefreshCw />
-										{t("dshPatchesRescan")}
-									</button>
-								</div>
-								{(chat.dshPatches?.files.length ?? 0) === 0 ? (
-									<p className="set-empty">{t("dshPatchesEmpty")}</p>
-								) : (
-									<div className="set-list">
-										{chat.dshPatches!.files.map((f) => (
-											<div className="set-row" key={f.name}>
-												<div className="set-row-info">
-													<div className="set-row-name">{f.name}</div>
-													<div className="set-row-desc">
-														{formatBytes(f.size)} · {new Date(f.mtimeMs).toLocaleString()}
-													</div>
-												</div>
-											</div>
-										))}
-									</div>
-								)}
-								<p className="set-hint">
-									{t("dshPatchesPath")} {chat.dshPatches?.patchDir ?? ""}
-								</p>
-							</div>
-						)}
-
 						{/* ---- goal review ----------------------------------------------- */}
 						{tab === "review" && (
 							<div className="set-section">
@@ -4920,12 +5482,78 @@ export function SettingsModal({
 							</div>
 						)}
 
-						{tab === "presets" && (
+						{/* ---- DSH 预设与权限三档（极简模式/代码运行时/PTC 预设 + 权限三档） ---- */}
+						{tab === "dsh-presets" && isDsh && (
+							<div className="set-section">
+								<div className="set-section-title">
+									<FiSliders className="set-section-icon" />
+									{t("dshPreset")} & {t("dshPerm")}
+									<HintTip text={t("dshDefaultPresetDesc")} />
+								</div>
+								<p className="set-desc" style={{ marginTop: 4, marginBottom: 12 }}>
+									{t("settingsEngineDshDesc")}
+								</p>
+								{showPresetConfig && (
+									<div className="set-preset-config" style={{ marginTop: 8 }}>
+										{chat.dshPresets && chat.dshPresets.presets.length > 0 && (
+											<>
+												<div className="set-mode-row">
+													<label className="set-field-label">
+														{t("dshDefaultPreset")}
+														<HintTip text={t("dshDefaultPresetDesc")} />
+													</label>
+													<select
+														className="set-select"
+														value={chat.dshPresets.defaultPreset}
+														onChange={(e) => appSend({ type: "dsh_preset_default", preset: e.target.value })}
+													>
+														{sortAgentPresets(chat.dshPresets.presets).map((p) => (
+															<option key={p.id} value={p.id} disabled={!!p.broken}>
+																{presetText(p, locale, t).name}
+																{p.trust === "user" ? ` · ${t("dshPresetUser")}` : ""}
+																{p.broken ? ` · ${t("dshPresetBroken")}` : ""}
+															</option>
+														))}
+													</select>
+												</div>
+												{defaultAgentPresetDesc && <p className="set-preset-config-desc">{defaultAgentPresetDesc}</p>}
+											</>
+										)}
+										{chat.dshPermission && chat.dshPermission.options.length > 0 && (
+											<>
+												<div className="set-mode-row" style={{ marginTop: 14 }}>
+													<label className="set-field-label">
+														{t("dshPermDefault")}
+														<HintTip text={t("dshPermDefaultDesc")} />
+													</label>
+													<select
+														className="set-select"
+														value={chat.dshPermission.defaultPreset}
+														onChange={(e) => appSend({ type: "dsh_permission_default", preset: e.target.value })}
+													>
+														{DSH_PERMISSION_ORDER.filter((v) =>
+															chat.dshPermission!.options.some((o) => o.value === v),
+														).map((v) => (
+															<option key={v} value={v}>
+																{t(permLabelKey(v))}
+															</option>
+														))}
+													</select>
+												</div>
+												<p className="set-preset-config-desc">{t(permDescKey(chat.dshPermission.defaultPreset))}</p>
+											</>
+										)}
+									</div>
+								)}
+								{hasUserAgentPreset && <p className="set-hint">{t("dshPresetUserNote")}</p>}
+							</div>
+						)}
+
+						{tab === "presets" && isPi && (
 							<div className="set-section">
 								<div className="set-section-title">
 									<FiSliders className="set-section-icon" />
 									{t("settingsPresets")}
-									<HintTip text={t("dshPresetUserNote")} />
 									<span className="set-count">{settings.presets.length}</span>
 								</div>
 								{/* 分享功能区：导入 / 导出分享 / 浏览共享仓库全部走同一个面板（server/preset-share.ts）。 */}
@@ -4958,60 +5586,6 @@ export function SettingsModal({
 										{t("presetShareBrowseBtn")}
 									</button>
 								</div>
-								{/* 引擎预设 / 权限：原只读列表删掉，各精简成一个下拉 + 一行当前说明。 */}
-								{showPresetConfig && (
-									<div className="set-preset-config">
-										{chat.dshPresets && chat.dshPresets.presets.length > 0 && (
-											<>
-												<div className="set-mode-row">
-													<label className="set-field-label">
-														{t("dshDefaultPreset")}
-														<HintTip text={t("dshDefaultPresetDesc")} />
-													</label>
-													<select
-														className="set-select"
-														value={chat.dshPresets.defaultPreset}
-														onChange={(e) => appSend({ type: "dsh_preset_default", preset: e.target.value })}
-													>
-														{sortAgentPresets(chat.dshPresets.presets).map((p) => (
-															<option key={p.id} value={p.id} disabled={!!p.broken}>
-																{presetText(p, locale, t).name}
-																{p.trust === "user" ? ` · ${t("dshPresetUser")}` : ""}
-																{p.broken ? ` · ${t("dshPresetBroken")}` : ""}
-															</option>
-														))}
-													</select>
-												</div>
-												{defaultAgentPresetDesc && <p className="set-preset-config-desc">{defaultAgentPresetDesc}</p>}
-											</>
-										)}
-										{chat.dshPermission && chat.dshPermission.options.length > 0 && (
-											<>
-												<div className="set-mode-row">
-													<label className="set-field-label">
-														{t("dshPermDefault")}
-														<HintTip text={t("dshPermDefaultDesc")} />
-													</label>
-													<select
-														className="set-select"
-														value={chat.dshPermission.defaultPreset}
-														onChange={(e) => appSend({ type: "dsh_permission_default", preset: e.target.value })}
-													>
-														{DSH_PERMISSION_ORDER.filter((v) =>
-															chat.dshPermission!.options.some((o) => o.value === v),
-														).map((v) => (
-															<option key={v} value={v}>
-																{t(permLabelKey(v))}
-															</option>
-														))}
-													</select>
-												</div>
-												<p className="set-preset-config-desc">{t(permDescKey(chat.dshPermission.defaultPreset))}</p>
-											</>
-										)}
-									</div>
-								)}
-								{hasUserAgentPreset && <p className="set-hint">{t("dshPresetUserNote")}</p>}
 								<div className="set-preset-save">
 									<input
 										className="set-input"

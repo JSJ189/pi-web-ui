@@ -206,6 +206,18 @@ export function handlePresetAndDshMessage(msg: ClientMessage, cs: DispatchSessio
 		case "dsh_patches_rescan":
 			void cs.rescanDshPatches?.();
 			return true;
+		case "dsh_patch_install":
+			void cs.installDshPatch?.(msg.spec, msg.id);
+			return true;
+		case "dsh_patch_toggle":
+			void cs.toggleDshPatch?.(msg.name, msg.enabled);
+			return true;
+		case "dsh_patch_delete":
+			void cs.deleteDshPatch?.(msg.name);
+			return true;
+		case "dsh_market_fetch":
+			void cs.fetchDshMarket?.(msg.force);
+			return true;
 		case "save_preset":
 			void cs.savePreset(msg.name);
 			return true;

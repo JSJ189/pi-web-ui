@@ -59,12 +59,13 @@ export function serializeUserBlocks(blocks: DshContentBlock[]): UiContentBlock[]
 	});
 }
 
-/** 提取 DSH assistant 事件中的原始未剥离文本（供 MarkerService 解析内联标记）。 */
+/** 提取 DSH assistant 事件中的原始未剥离文本（供 MarkerService 解析内联标记）。
+ * 同时包含正文 (text) 与思考链 (reasoning)，确保模型在思考开头输出的 marker 也被捕获执行。 */
 export function extractDshAssistantRawText(data: { message?: { content?: DshContentBlock[] } }): string {
 	const blocks = data.message?.content;
 	if (!Array.isArray(blocks)) return "";
 	return blocks
-		.filter((b) => b?.type === "text" && typeof b.text === "string")
+		.filter((b) => (b?.type === "text" || b?.type === "reasoning") && typeof b.text === "string")
 		.map((b) => b.text as string)
 		.join("\n");
 }
@@ -80,7 +81,8 @@ export function serializeAssistantBlocks(blocks: DshContentBlock[]): UiContentBl
 				return { type: "text", text, truncated };
 			}
 			case "reasoning": {
-				return { type: "thinking", thinking: b.text ?? "" };
+				const cleaned = stripMarkers(b.text ?? "");
+				return { type: "thinking", thinking: cleaned };
 			}
 			case "tool-call": {
 				const args = typeof b.arguments === "string" ? b.arguments : "";
@@ -295,6 +297,11 @@ export class DshStreamAccumulator {
 				out.push({ type: "toolCall", id: b.id, name: b.name });
 			} else if (b.type === "text") {
 				out.push({ ...b, text: stripMarkers(String(b.text ?? ""), { stripTrailingIncomplete: true }) });
+			} else if (b.type === "thinking") {
+				out.push({
+					...b,
+					thinking: stripMarkers(String(b.thinking ?? ""), { stripTrailingIncomplete: true }),
+				});
 			} else {
 				out.push(b);
 			}

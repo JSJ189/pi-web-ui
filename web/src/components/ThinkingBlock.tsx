@@ -38,14 +38,24 @@ function stripLeadingGenericHeader(thinking: string): string {
 	return lines.slice(startIdx).join("\n");
 }
 
+/** 剥离思考文本中残留的内联标记（如 [[conv:rename:...]] / [[action:suggest:...]]），保证思考区纯净展示 */
+export function stripThinkingMarkers(text: string): string {
+	if (!text || !text.includes("[[")) return text;
+	return text
+		.replace(/\[\[(?:conv|todo|action|suggest|notify|goal):[\s\S]*?\]\]/gu, "")
+		.replace(/\[\[(?:conv|todo|action|suggest|notify|goal):[^\]]*$/u, "");
+}
+
 /**
  * 格式化思考展开态正文：
  * - 剥离首行无意义模板标题与首尾空白/换行，消除模型输出尾随 `\n\n\n` 在
  *   `white-space: pre-wrap` 下撑出的底部大片空白；
+ * - 剥离模型在思考开头输出的内联标记指令（如 [[conv:rename:...]]）；
  * - 将段间连续 3 个及以上换行收敛为单空行（`\n\n`），保留正常段落层次。
  */
 export function formatThinkingBody(thinking: string): string {
-	const normalized = thinking.replace(/\r\n/g, "\n").replace(/[ \t]+\n/g, "\n");
+	const cleaned = stripThinkingMarkers(thinking);
+	const normalized = cleaned.replace(/\r\n/g, "\n").replace(/[ \t]+\n/g, "\n");
 	const body = stripLeadingGenericHeader(normalized).trim();
 	const source = body || normalized.trim();
 	if (!source) return "";
@@ -58,8 +68,9 @@ export function formatThinkingBody(thinking: string): string {
  * - 结束时不因首行过短而留出大片空白，充分利用整行宽度。
  */
 export function flattenThinkingText(thinking: string): string {
-	const body = stripLeadingGenericHeader(thinking).trim();
-	const source = body || thinking.trim();
+	const cleaned = stripThinkingMarkers(thinking);
+	const body = stripLeadingGenericHeader(cleaned).trim();
+	const source = body || cleaned.trim();
 	if (!source) return "";
 	return source
 		.split(/\n+/)
@@ -103,13 +114,25 @@ export function ThinkingBlock({ thinking, streaming, wrap = true, forceOpen = fa
 
 	// 余韵收尾（Graceful Tail Drain）：短思考紧接着触发 toolCall 时，streaming 会迅速变为 false；
 	// 保持 draining 直至缓冲池内的文字平滑流淌完毕，防止短思考没有过程就直接全部蹦出。
+	// 若处于后台标签页（document.hidden），直接禁止进入 draining，并在切换可见性时直接结算，
+	// 杜绝多个历史思考块在切换回前台时同时补播文字流动画。
 	const live = !!streaming;
 	const liveRef = useRef(live);
 	liveRef.current = live;
-	const [draining, setDraining] = useState(live);
+	const isHidden = () => typeof document !== "undefined" && document.hidden;
+	const [draining, setDraining] = useState(() => live && !isHidden());
 	useEffect(() => {
-		if (live) setDraining(true);
+		if (live && !isHidden()) setDraining(true);
+		else if (!live && isHidden()) setDraining(false);
 	}, [live]);
+	useEffect(() => {
+		if (typeof document === "undefined") return;
+		const onVis = () => {
+			if (!liveRef.current) setDraining(false);
+		};
+		document.addEventListener("visibilitychange", onVis);
+		return () => document.removeEventListener("visibilitychange", onVis);
+	}, []);
 	const handleStreamSettled = useCallback(() => {
 		if (!liveRef.current) setDraining(false);
 	}, []);

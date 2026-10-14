@@ -25,7 +25,7 @@ import type {
 	SessionSummary,
 } from "../types";
 import { useT } from "../i18n";
-import { useAppField } from "../app-globals";
+import { useAppField, useEngineCapabilities } from "../app-globals";
 import { applySashDrag } from "../panel-sash";
 import { type LpSectionKey, flexSectionKeys, parseLpWeights, planLeftSections, sashPairs } from "../left-sections";
 import { buildConversationRows, groupConversations } from "../conv-groups";
@@ -288,6 +288,7 @@ export const LeftPanel = memo(function LeftPanel({
 	onOpenSandboxModal,
 }: LeftPanelProps) {
 	const t = useT();
+	const capabilities = useEngineCapabilities();
 	const currentFile = sessionFile;
 	// 连接态与当前工作目录走全局（web/src/app-globals.ts），不再从 App 传
 	// —— 这三个值整棵树都要，传参只会越传越漏。
@@ -493,7 +494,9 @@ export const LeftPanel = memo(function LeftPanel({
 					return sid ? entry : { ...entry, when: [...(entry.when ?? []), "disabled"] };
 				}
 				if (entry.id === "host:conv-quote")
-					return takeId || target.kind === "history" ? entry : { ...entry, hidden: true };
+					return capabilities.conversationRef && (takeId || target.kind === "history")
+						? entry
+						: { ...entry, hidden: true };
 				return entry;
 			});
 			openContextMenu({
@@ -506,7 +509,7 @@ export const LeftPanel = memo(function LeftPanel({
 				onHostAction: (entry, tgt) => hostActionRef.current(entry, tgt),
 			});
 		},
-		[uiContextSession, conversations, finishedSubagentCount, t],
+		[uiContextSession, conversations, finishedSubagentCount, t, capabilities.conversationRef],
 	);
 
 	/** host 内置条目的分派：作用范围（scopeId）来自打开菜单时记下的 target。
@@ -891,8 +894,8 @@ export const LeftPanel = memo(function LeftPanel({
 	}, [active, ready, status, cwd, panelSend]);
 
 	const displayName = (s: SessionSummary): string => {
-		const title = s.name || s.firstMessage.trim();
-		return title.length > 0 ? title : t("emptyChat");
+		const title = s.displayName || s.name || s.firstMessage?.trim();
+		return title && title.length > 0 ? title : t("emptyChat");
 	};
 
 	const projectName = (path: string): string => path.split(/[\\/]/).pop() || path;
@@ -1332,7 +1335,7 @@ export const LeftPanel = memo(function LeftPanel({
 																					🌿 {t("forkBadge")}
 																				</span>
 																			)}
-																			{c.agentPreset && (
+																			{c.agentPreset && c.agentPreset !== "standard" && (
 																				<span className="preset-badge" title={c.agentPreset}>
 																					{presetNames?.[c.agentPreset] ?? c.agentPreset}
 																				</span>

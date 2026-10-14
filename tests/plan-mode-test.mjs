@@ -186,7 +186,7 @@ const promptAndWait = async (text, what) => {
 	mark = (snapshot?.messages ?? []).length;
 	send({ type: "prompt", text });
 	const ok = await waitFor(
-		() => (snapshot?.messages ?? []).length > mark && msgText(lastReply() ?? {}).includes("SEEN:"),
+		() => (snapshot?.messages ?? []).length > mark + 1 && msgText(lastReply() ?? {}).includes("SEEN:"),
 		what,
 	);
 	return ok ? msgText(lastReply()) : "";

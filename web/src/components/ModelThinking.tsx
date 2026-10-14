@@ -47,7 +47,7 @@ export const ModelThinking = memo(function ModelThinking({
 	const t = useT();
 	const model = state?.model;
 	// snapshot model.id is the bare id; list ids are "provider/id".
-	const currentModelId = model ? `${model.provider}/${model.id}` : null;
+	const currentModelId = model ? (model.id.includes("/") ? model.id : `${model.provider}/${model.id}`) : null;
 	const [modelOpen, setModelOpen] = useState(false);
 	const [thinkingOpen, setThinkingOpen] = useState(false);
 	// Model dropdown filter — the list can be long (all providers × models),
@@ -246,7 +246,9 @@ export const ModelThinking = memo(function ModelThinking({
 					{filteredModels.length === 0 && models.length > 0 && <div className="dd-loading">{t("noModelMatches")}</div>}
 					{displayRows.map((row) => {
 						const m = row.model;
-						const isActive = currentModelId === m.id && (!row.key || row.key.active);
+						const isActive =
+							(currentModelId === m.id || model?.id === m.id || `${m.provider}/${m.id}` === currentModelId) &&
+							(!row.key || row.key.active);
 						const isDefault = defaultModel !== undefined && defaultModel === m.id;
 						return (
 							<DropdownItem
@@ -259,7 +261,7 @@ export const ModelThinking = memo(function ModelThinking({
 									if (row.key && !row.key.active) {
 										appSend({ type: "activate_provider_key", provider: m.provider, keyName: row.key.name });
 									}
-									if (currentModelId !== m.id) {
+									if (currentModelId !== m.id && model?.id !== m.id) {
 										appSend({ type: "set_model", modelId: m.id });
 									}
 									setModelOpen(false);
@@ -269,7 +271,9 @@ export const ModelThinking = memo(function ModelThinking({
 									<span className="dd-model-name">{m.name}</span>
 									<span className="dd-model-meta">
 										<span className="dd-model-provider">{m.provider}</span>
-										<span className="dd-model-id">{m.id.split("/").slice(1).join("/")}</span>
+										<span className="dd-model-id">
+											{m.id.includes("/") ? m.id.split("/").slice(1).join("/") : m.id}
+										</span>
 										{row.key && (
 											<span className={`dd-model-key ${row.key.active ? "active" : ""}`}>
 												{row.key.active ? "●" : "○"} {row.key.name}

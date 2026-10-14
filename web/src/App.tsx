@@ -2423,7 +2423,7 @@ export function App() {
 								models={chat.models}
 								modelsLoading={chat.modelsLoading}
 								providerKeys={chat.providerKeys}
-								defaultModel={chat.engine === "pi" ? chat.defaultModel : undefined}
+								defaultModel={chat.defaultModel ?? undefined}
 								attachments={attachments}
 								onRemoveAttachment={removeAttachmentCb}
 								onAddImageFiles={addImageFilesCb}
@@ -2445,7 +2445,7 @@ export function App() {
 								dshPresetDefault={chat.dshPresets?.defaultPreset}
 								dshBlank={(chat.state?.messages?.length ?? 0) === 0}
 								conversationId={chat.activeConversationId || chat.state?.conversationId || ""}
-								sessionDraft={chat.engine === "pi" ? (chat.state?.draft ?? null) : null}
+								sessionDraft={chat.state?.draft ?? null}
 								sessionId={chat.state?.sessionId ?? ""}
 							/>
 						</main>
@@ -2635,6 +2635,10 @@ export function App() {
 					onSwitchToTerminal={() => setView("terminal")}
 					onClose={() => setSettingsOpen(false)}
 					onOpenIconEdit={() => setIconEditOpen(true)}
+					onOpenManageModels={() => {
+						setSettingsOpen(false);
+						setManageModelsOpen(true);
+					}}
 					sound={sound}
 					onSoundChange={setSound}
 					tts={tts}

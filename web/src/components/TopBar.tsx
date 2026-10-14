@@ -45,7 +45,15 @@ import {
 } from "../ui-slots";
 import { fitTopbar, MOBILE_ASIDE_TOPBAR_IDS, sortOverflowMenuItems } from "../topbar-fit";
 import { openContextMenu } from "../context-menu-state";
-import { appSend, useAppField, useAppGlobals, useIsDsh, useIsManaged, useServiceInfo } from "../app-globals";
+import {
+	appSend,
+	useAppField,
+	useAppGlobals,
+	useEngineCapabilities,
+	useIsDsh,
+	useIsManaged,
+	useServiceInfo,
+} from "../app-globals";
 import { ProjectPicker } from "./ProjectPicker";
 import { PluginMenu } from "./PluginMenu";
 import { LocaleModal } from "./LocaleModal";
@@ -252,9 +260,10 @@ export function TopBar({
 	const [pluginMenuAnchor, setPluginMenuAnchor] = useState<{ rect: DOMRect; el: HTMLElement } | null>(null);
 	const cwd = useAppField("cwd");
 	const workspaceRoots = useAppField("workspaceRoots");
-	/* 临时会话是 pi 引擎专有能力（SessionManager.inMemory）：DSH 的 newChat 忽略该标志，
-	   画出来只会得到一个普通持久对话，因此 DSH 下不提供该入口。 */
+	/* 临时会话能力由引擎底座 capabilities.ephemeralChat 事实源驱动（DSH 不提供，Pi 与 Universal 提供）。 */
 	const isDsh = useIsDsh();
+	const capabilities = useEngineCapabilities();
+	const supportsEphemeral = Boolean(capabilities.ephemeralChat !== false && !isDsh);
 	// 溢出菜单触发按钮：portal 菜单按它的视口矩形锚定（issue #162）。
 	const moreBtnRef = useRef<HTMLButtonElement>(null);
 	/* PI_WEB_TABS: an instance can be set up to offer only some tabs — the
@@ -1021,7 +1030,7 @@ export function TopBar({
 				<span>{t("newChat")}</span>
 			</button>
 		) : null,
-		"host:new-ephemeral-chat": isDsh ? null : (
+		"host:new-ephemeral-chat": !supportsEphemeral ? null : (
 			<button
 				type="button"
 				className="chip newchat ephemeral-chat-btn"

@@ -1213,6 +1213,7 @@ export const Message = memo(function Message({
 											toolStatuses={toolStatuses}
 											streaming={streaming}
 											isLast={isLast}
+											isTrailingBlock={i === message.content.length - 1}
 											onKillBash={onKillBash}
 											toolsWrap={toolsWrap}
 											toolImages={toolImages}
@@ -1239,6 +1240,7 @@ export const Message = memo(function Message({
 										toolStatuses={toolStatuses}
 										streaming={streaming}
 										isLast={isLast}
+										isTrailingBlock={i === message.content.length - 1}
 										onKillBash={onKillBash}
 										toolsWrap={toolsWrap}
 										toolImages={toolImages}
@@ -1263,6 +1265,7 @@ export const Message = memo(function Message({
 										toolStatuses={toolStatuses}
 										streaming={streaming}
 										isLast={isLast}
+										isTrailingBlock={i === message.content.length - 1}
 										onKillBash={onKillBash}
 										toolsWrap={toolsWrap}
 										toolImages={toolImages}
@@ -1673,6 +1676,7 @@ function Block({
 	toolStatuses,
 	streaming,
 	isLast,
+	isTrailingBlock,
 	onKillBash,
 	thinkingWrap,
 	toolsWrap,
@@ -1691,6 +1695,8 @@ function Block({
 	toolStatuses: ReadonlyMap<string, ToolStatus>;
 	streaming: boolean;
 	isLast: boolean;
+	/** 当前块是否为消息内容数组中的最后一个块（非尾部块必定已生成完毕）。 */
+	isTrailingBlock?: boolean;
 	onKillBash?: () => void;
 	/** 思考文本是否换行（false = 不换行横向滚动）。 */
 	thinkingWrap?: boolean;
@@ -1715,8 +1721,9 @@ function Block({
 }) {
 	const t = useT();
 	const { copied, copy } = useCopyFeedback({ duration: 1200 });
+	const isTrailing = isTrailingBlock ?? true;
 	const rawText = asText(block);
-	const live = !!(rawText && streaming && isLast);
+	const live = !!(rawText && streaming && isLast && isTrailing);
 	const liveRef = useRef(live);
 	liveRef.current = live;
 	// 标记此文本块是否在当前组件生命周期内曾作为实时流式生成过。
@@ -1724,10 +1731,20 @@ function Block({
 	// 避免在打完字瞬间整树卸载替换为 Markdown 造成重排闪烁与高度跳动。
 	const wasLiveRef = useRef(live);
 	if (live) wasLiveRef.current = true;
-	const [draining, setDraining] = useState(live);
+	const isHidden = () => typeof document !== "undefined" && document.hidden;
+	const [draining, setDraining] = useState(() => live && !isHidden());
 	useEffect(() => {
-		if (live) setDraining(true);
+		if (live && !isHidden()) setDraining(true);
+		else if (!live && isHidden()) setDraining(false);
 	}, [live]);
+	useEffect(() => {
+		if (typeof document === "undefined") return;
+		const onVis = () => {
+			if (!liveRef.current) setDraining(false);
+		};
+		document.addEventListener("visibilitychange", onVis);
+		return () => document.removeEventListener("visibilitychange", onVis);
+	}, []);
 	const handleStreamSettled = useCallback(() => {
 		if (!liveRef.current) setDraining(false);
 	}, []);
@@ -1791,7 +1808,7 @@ function Block({
 		return (
 			<ThinkingBlock
 				thinking={thinking.thinking}
-				streaming={streaming && isLast}
+				streaming={streaming && isLast && isTrailing}
 				wrap={thinkingWrap}
 				forceOpen={searchActive || forceThinking}
 			/>

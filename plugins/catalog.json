@@ -326,5 +326,16 @@
 		"descriptionEn": "Persistent local chat archive preserving pre-compaction originals, with branch history, question navigation and a Markdown file viewer. No model calls or native-session edits.",
 		"source": "engharat/pi-web-ui-md-chat",
 		"homepage": "https://github.com/engharat/pi-web-ui-md-chat"
+	},
+	{
+		"id": "wallpaper-engine",
+		"name": "动态壁纸",
+		"nameEn": "Wallpaper Engine",
+		"icon": "🖼️",
+		"iconSvg": "<svg xmlns=\"http://www.w3.org/2000/svg\" viewBox=\"0 0 24 24\" fill=\"none\" stroke=\"currentColor\" stroke-width=\"2\" stroke-linecap=\"round\" stroke-linejoin=\"round\"><rect width=\"18\" height=\"18\" x=\"3\" y=\"3\" rx=\"2\" ry=\"2\"/><circle cx=\"9\" cy=\"9\" r=\"2\"/><path d=\"m21 15-3.086-3.086a2 2 0 0 0-2.828 0L6 21\"/></svg>",
+		"description": "动态壁纸：自动扫描本机 Wallpaper Engine 创意工坊壁纸，支持视频壁纸播放、液态毛玻璃磨砂效果与壁纸库抽屉。",
+		"descriptionEn": "Wallpaper Engine: scans Steam Workshop, supports video wallpapers, liquid frosted glass effects and a wallpaper library drawer.",
+		"source": "xing-shuyin/pi-web-ui/plugins/wallpaper-engine",
+		"homepage": "https://github.com/xing-shuyin/pi-web-ui/tree/main/plugins/wallpaper-engine"
 	}
 ]

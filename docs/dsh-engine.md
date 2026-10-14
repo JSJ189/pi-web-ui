@@ -54,7 +54,7 @@
 
 `session.event` 通知 params = `{ sessionId, event: { type, seq, time, data } }`：
 
-- **user/message** data: `{ content[], source: {kind}, role, id }`。⚠️ 系统注入消息的 source.kind = `agent-instructions` / `plugin`（workspace 指令/运行时上下文快照）——必须过滤，否则 UI 显示垃圾气泡。
+- **user/message** data: `{ content[], source: {kind}, role, id }`。⚠️ 系统注入消息的 source.kind = `agent-instructions` / `plugin` / `skill-catalog` / `goal`（workspace 指令/运行时上下文快照/技能目录/目标轮次，或含 `<system-reminder>`/`<goal_round>`）——必须过滤，否则 UI 显示垃圾气泡。
 - **assistant/message** data: `{ turn, step, message: { role, content[], id, time } }`（完整消息；content 里 reasoning/text/tool-call 块）。
 - **tool/result** data: `{ turn, step, message: { role:"user", content:[{type:"tool-result", toolCallId, content[], isError}] } }`。
 - **assistant/chunk** data.chunk: `block-start {index, blockType: reasoning|text|tool-call}`、`reasoning-delta {index, text}`、`text-delta {index, text}`、`tool-call-delta {index, id, name, argumentsDelta}`、`block-end {index, block}`、`usage {usage:{inputTokens,outputTokens,cacheReadTokens}}`、`finish {reason}`。
@@ -137,7 +137,7 @@
 - `handleToolCallRequest`：收 `tools.call.request` → 按 name 在 `pluginToolsProvider()` 找工具 → 调 `tool.execute(id, args, signal)`（服务端跑插件）→ `normalizeToolResult` 归一化（`{content}` / string / object）→ `tools/call-result` 回传。
 - `applyPluginAgentTools`：插件工具列表变化 → 各客户端运行时重同步。
 
-**schema 转换**：pi 插件用标准 JSON Schema（`{type,properties,required[]}`），DSH 要 per-property 映射（`required` 挂在每条属性上）——`piParamsToDshSpec` 纯函数转换（保留 type/description/enum/items/anyOf/oneOf，required 转属性）。
+**schema 转换**：pi 插件用标准 JSON Schema（`{type,properties,required[]}`），DSH 要 per-property 映射（`required` 挂在每条属性上）——`piParamsToDshSpec` 纯函数转换（DSH 仅支持严格子集：`type` 数组如 `["string","null"]` 映射为 `oneOf`、`anyOf` 转为 `oneOf`、`object` 补齐显式 `additionalProperties: true`、递归规整嵌套字段与去除 unsupported DSL keys，单工具注册失败异常隔离不阻断全量 sync）。
 
 **v1 简化**：模型只见 name/description/parameters；promptSnippet/promptGuidelines/label 不上模型；onUpdate 流式部分结果不转发；无 tools_delta（DSH 不流式工具输出）；`tools/invoke` 仅调试。
 
@@ -276,9 +276,14 @@ E:/pi-web-ui/server/dsh/
 ### 4.1 引擎主体收尾（已基本完成；goal 已改为 DSH 原生，见 §2.6）
 
 - **目标（goal）**：✅ 完成 —— DSH 原生 goal 域（goal-rpc wrapper RPC + goal/change 事件翻译 + round-driver 自动轮次 + 模型自判定 complete/blocked）。与 pi 引擎差异（设计意图）：无独立审查会话；完成由模型自判定；locked 开关透传不映射行为（DSH 目标持续到 complete/blocked/轮尽）；reviewModel 忽略（无独立审查者）。
-- **设置面板**：第二轮后全量存储回显（promptMode/customSystemPrompt/terminalToolsEnabled/terminalBash/thinkingWrap/toolsWrap/disabledSkills/disabledExtensions/disabledPlugins/reviewPrompt 经 ClientStateStore 持久化，跨重连存活）；仅 prompt 相关变化才重启运行时（DSH_PERSONA env 注入）；技能/扩展空列表显示 DSH 说明文案；vision tab 隐藏。模型配置表单仍"不支持"（DSH 只有内置 deepseek 模型）。
+- **设置面板**：第二轮后全量存储回显（promptMode/customSystemPrompt/terminalToolsEnabled/terminalBash/thinkingWrap/toolsWrap/disabledSkills/disabledExtensions/disabledPlugins/reviewPrompt 经 ClientStateStore 持久化，跨重连存活）；仅 prompt 相关变化才重启运行时（DSH_PERSONA env 注入）；引擎专属设置项扩展机制（Engine-Contributed Settings）动态呈现 DSH 预设与三档权限、补丁与市场、问卷调研；通用底座设置项全量兼容。
 - **视觉桥**：✅ 完成（§2.7）—— 真 image block（attachment/save + read RPC + vision-exp 模型 + 回放补图）。图片附件/工作区图片文件都走附件存储。注意：仅 deepseek-v4-flash-vision-exp 模型看图。
-- **模型配置表单（models.json）**：DSH 引擎返回空 providers 列表 + 保存报"不支持"。**v1 可接受**（DSH 只有内置 deepseek 模型）。
+- **第三方自定义端点与模型接入（models.json）**：✅ 完成 —— DSH 引擎接入公共模型底座，自动枚举 `models.json` 中配置的第三方自定义端点模型（如 `antigravity-openai/gemini-3.8-flash` 等）；切换时动态解析 BaseURL 与 API Key 并注入子进程环境变量 `DEEPSEEK_BASE_URL` 与 `DEEPSEEK_API_KEY`，RPC 握手传递真实模型 ID，实现第三方 OpenAI 兼容端点在 DSH 运行时的直接调用执行。
+- **Universal Agent 底座驱动化（DshAgentDriver）**：✅ 完成 —— 在 `server/universal/drivers/dsh-driver.ts` 中完整实现 `BaseAgentDriver` 契约，使 DSH 能作为标准驱动插装至 Universal Agent 底座（`server/universal/`）：
+  - 具备完整的能力矩阵声明（`AgentCapabilities`: `supportsModelSwitch: true, supportsThinkingLevels: true, supportsAskUser: true`）；
+  - 将 DSH stdio JSON-RPC 的 `assistant/chunk`（`reasoning-delta` / `text-delta`）、`tool/call`、`tool/result` 与 `assistant/message` 统一投影至底座的 `AgentEventSink`（`onThinkingDelta` / `onTextDelta` / `onToolStart` / `onToolEnd` / `onTurnComplete`）；
+  - 自动结合 `normalizeDshUsage` 计算 Token 四桶统计与成本；
+  - `UniversalSession` 原生适配 DSH 默认高思考等级与预设模型，实现真正的驱动插拔式底座化！
 - **对话框（dialog_response）/ 扩展 UI 桥**：DSH 侧已有提问桥（question_pending/question_answer，§2.7）；pi 扩展 dialog（dialog_response）v1 仍忽略。
 - **目标调研向导（startGoalWizard）**：✅ 完成（§2.7）—— 交互式（模型 ask_user_question 逐题提问 + 前端对话框 + GOAL: 收敛 + 自动设目标）。
 
@@ -384,10 +389,10 @@ E:/pi-web-ui/server/dsh/
 | `E:/pi-web-ui/server/dsh/runtime/goal-rpc.mjs`           | ⭐ jsonrpc wrapper 插件：goal/set                                                              | get | clear | resume | edit + attachment/save | read + question/answer + 提问 provider 桥 |
 | `E:/pi-web-ui/server/dsh/runtime/runtime-root.mjs`       | 运行时树解析（flat + 嵌套布局）                                                                |
 | `E:/pi-web-ui/server/dsh/runtime/override.patch.yml`     | 组合覆盖层（permission preset 等）                                                             |
-| `E:/pi-web-ui/dev/dsh-probes/probe-native-goal.mjs`          | DSH 原生 goal probe（goal/set→round-driver→complete→clear）                                    |
-| `E:/pi-web-ui/dev/dsh-probes/probe-vision.mjs`               | 视觉桥 probe（attachment/save+read+vision 模型看图）                                           |
-| `E:/pi-web-ui/dev/dsh-probes/probe-tools.mjs`                | 工具桥 probe（tools/sync+list 注册/列表/schema 转换 + tools/invoke 往返）                      |
-| `E:/pi-web-ui/dev/dsh-probes/probe-skills.mjs`               | 技能启停 probe（filterSkillCatalogMessage 单测 + register/list/get/set-disabled 往返）         |
+| `E:/pi-web-ui/dev/dsh-probes/probe-native-goal.mjs`      | DSH 原生 goal probe（goal/set→round-driver→complete→clear）                                    |
+| `E:/pi-web-ui/dev/dsh-probes/probe-vision.mjs`           | 视觉桥 probe（attachment/save+read+vision 模型看图）                                           |
+| `E:/pi-web-ui/dev/dsh-probes/probe-tools.mjs`            | 工具桥 probe（tools/sync+list 注册/列表/schema 转换 + tools/invoke 往返）                      |
+| `E:/pi-web-ui/dev/dsh-probes/probe-skills.mjs`           | 技能启停 probe（filterSkillCatalogMessage 单测 + register/list/get/set-disabled 往返）         |
 | `E:/pi-web-ui/tests/dsh-smoke-test.mjs`                  | dsh 引擎零 key 协议冒烟（已纳入 run-smoke ALL）                                                |
 | `E:/pi-web-ui/tests/dsh-goal-test.mjs`                   | dsh goal 真 key 门控测试（set_goal→round-driver→complete→clear）                               |
 | `E:/pi-web-ui/tests/dsh-question-test.mjs`               | dsh 提问桥真 key 门控测试（question_pending→answer→模型继续）                                  |
@@ -396,7 +401,7 @@ E:/pi-web-ui/server/dsh/
 | `E:/pi-web-ui/tests/dsh-mcp-test.mjs`                    | dsh MCP 工具桥真 key 门控测试（mcp.json → McpBridge 发现 mcp_echo → 模型调用 → MCP_ECHO 回传） |
 | `E:/pi-web-ui/tests/dsh-ui-test.mjs`                     | dsh 浏览器 UI E2E（零 key Playwright：引擎徽标/目标条/DSH 补丁区块/技能说明，5/5）             |
 | `E:/pi-web-ui/web/src/components/DshQuestionDialog.tsx`  | 模型提问对话框（单选/多选/自定义文本 + `Markdown(rawHtml)` 富渲染 + 选项 `preview` 预览框）    |
-| `E:/pi-web-ui/dev/dsh-probes/probe-patch-seam.mjs`           | 用户 patch 层 probe（会话根重定向验证）                                                        |
+| `E:/pi-web-ui/dev/dsh-probes/probe-patch-seam.mjs`       | 用户 patch 层 probe（会话根重定向验证）                                                        |
 | `E:/pi-web-ui/server/index.ts`                           | 引擎分发（ENGINE/EngineService/DispatchSession）+ dispatch 表 + dsh_patches 分支               |
 | `E:/pi-web-ui/server/protocol.ts`                        | wire 协议唯一事实源（ready.engine + dsh_patches 消息）                                         |
 | `E:/pi-web-ui/scripts/copy-dsh-runtime.mjs`              | build:dsh-runtime（拷贝 .mjs/.yml 到 dist）                                                    |

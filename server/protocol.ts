@@ -104,11 +104,58 @@ export interface UiHostMetrics {
 	memoryPercent: number;
 }
 
+/**
+ * 智能体底座能力声明契约（AgentEngineCapabilities）
+ *
+ * 作为当前底层引擎（Pi / DSH / 通用基座等）向宿主和前端声明的能力唯一事实源。
+ * 前端依据此声明自适应开启、隐藏或降级对应交互入口（如远程 SSH、跨对话引用、计划模式等）。
+ */
+export interface AgentEngineCapabilities {
+	/** 是否支持远程 SSH 目录连接与远程虚拟环境交互（SFTP + SSH2 PTY + 会话隔离） */
+	remoteSsh: boolean;
+	/** 是否支持工作区沙盒机制（创建/重置/持久化） */
+	sandboxes: boolean;
+	/** 智能体运行时是否原生感知额外工作区根（多根工作区） */
+	workspaceRoots: boolean;
+
+	/** 是否支持跨会话上下文引用（包含配套的 conversation_read 等工具按需回拉转录） */
+	conversationRef: boolean;
+	/** 是否支持网页/页面捕获引用 */
+	pageRef: boolean;
+	/** 是否支持富媒体文件展示卡片工具（present_files 等） */
+	presentFiles: boolean;
+
+	/** 是否支持计划模式硬拦截与任务看板驱动（Plan Mode） */
+	planMode: boolean;
+	/** 是否支持审查者自动委派模式（Delegate Mode） */
+	delegateMode: boolean;
+	/** 是否支持多任务子代理调度与生命周期管理（subagents / 模板库） */
+	subagents: boolean;
+
+	/** 是否支持在设置页逐工具微调提示词（Tool Prompt Overrides） */
+	toolPromptOverride: boolean;
+	/** 是否支持工具按需延迟加载（Lazy Loading / load_tools / 缓存前缀守卫） */
+	lazyTools: boolean;
+	/** 是否支持上下文动态软上限与压缩（Soft Cap） */
+	softCap: boolean;
+
+	/** 是否支持历史消息树状分叉与在此分叉重跑（Tree Fork） */
+	treeFork: boolean;
+	/** 是否支持就地修改历史用户消息并重新生成（Message Edit） */
+	messageEdit: boolean;
+	/** 是否支持单轮生成进行中的插话打断（Mid-run Steering）；false 时仅支持排队等待本轮结束（FollowUp） */
+	steer?: boolean;
+	/** 是否支持不落盘的临时探索对话（Ephemeral Chat） */
+	ephemeralChat?: boolean;
+}
+
 export interface UiState {
 	clientId: string;
 	cwd: string;
 	sessionId: string;
 	sessionFile?: string;
+	/** 当前底层智能体引擎的能力声明（Capabilities）。前端据此动态隐藏不支持的入口。 */
+	engineCapabilities?: AgentEngineCapabilities;
 	/** 额外工作区根（宿主侧多根，见 set_workspace_roots）：按项目（cwd）持久化。
 	 *  AI 仍只在主 cwd 里干活（pi SDK 是单 cwd 模型）；右栏文件树可跨这些根浏览，
 	 *  插件的受支持路径（host.fs / host.project.create）也把这些根当作「工作区内」。
@@ -642,8 +689,8 @@ export type ClientMessage =
 	 *  this process exits and its supervisor brings it back). The server refuses
 	 *  when no supervisor manages this instance (foreground / dev / Docker). */
 	| { type: "restart_service" }
-	/** Switch active agent engine ("pi" | "dsh") for this client tab in-process without restarting. */
-	| { type: "switch_engine"; engine: "pi" | "dsh" }
+	/** Switch active agent engine ("pi" | "dsh" | "claude") for this client tab in-process without restarting. */
+	| { type: "switch_engine"; engine: "pi" | "dsh" | "claude" }
 	// -- pi agent setup ------------------------------------------------------
 	/** Auto-install the pi agent (mkdir config dir + npm i -g the CLI). */
 	| { type: "install_pi_agent" }
@@ -1106,6 +1153,14 @@ export type ClientMessage =
 	/** Re-scan <dataDir>/dsh-patches and restart the DSH runtime so new/edited
 	 *  patch files take effect (patches are only loaded at runtime boot). */
 	| { type: "dsh_patches_rescan" }
+	/** 安装/添加 DSH 插件补丁（写入 <dataDir>/dsh-patches/<id>.yml 并重载运行时）。 */
+	| { type: "dsh_patch_install"; spec: string; id?: string }
+	/** 切换 DSH 插件补丁启用/禁用状态（追加/移除 .disabled 后缀并重载运行时）。 */
+	| { type: "dsh_patch_toggle"; name: string; enabled: boolean }
+	/** 删除 DSH 插件补丁文件（移除文件并重载运行时）。 */
+	| { type: "dsh_patch_delete"; name: string }
+	/** 拉取 DSH 插件市场数据（force: true 表示绕过本地缓存重新拉取）。 */
+	| { type: "dsh_market_fetch"; force?: boolean }
 	/** DSH engine: answer a model ask_user_question dialog (id echoes
 	 *  question_pending.id). `cancelled` (user ✗) rejects the pending ask.
 	 *  owner = 跨页作答：转给持有方会话（elsewhere_question 预告的那张问卷）。 */
@@ -1405,6 +1460,8 @@ export interface SessionSummary {
 	/** 稳定会话 UUID（转录头 `id` 或目录名，供 `#s=<sessionId>` URL 深链与跨重启定位，issue #587）。 */
 	sessionId?: string;
 	name?: string;
+	/** 引擎权威计算的最终前端展示名称（由引擎自身的回调或解析逻辑定制生成）。 */
+	displayName?: string;
 	firstMessage: string;
 	messageCount: number;
 	modified: number;
@@ -3064,6 +3121,31 @@ export interface UiSettingsState {
 	/** 当前项目 MCP 配置文件路径。 */
 	mcpProjectConfigPath?: string;
 }
+
+/** DSH 用户补丁文件信息（<dataDir>/dsh-patches/*.yml 或 *.yml.disabled）。 */
+export interface DshPatchFileInfo {
+	name: string;
+	path: string;
+	size: number;
+	mtimeMs: number;
+	disabled?: boolean;
+}
+
+/** DSH 社区市场插件条目（来自 awesome-dsh-plugin / dsh-market 数据源）。 */
+export interface DshMarketPlugin {
+	name: string;
+	owner?: string;
+	url?: string;
+	category?: string;
+	description?: { en?: string; zh?: string };
+	npm?: string;
+	version?: string;
+	stars?: number;
+	downloads?: number;
+	capabilities?: string[];
+	install?: string;
+}
+
 export type ServerMessage =
 	| {
 			/** 子代理同行直接交接协同通知（Peer-to-Peer Handoff Event） */
@@ -3107,6 +3189,8 @@ export type ServerMessage =
 			serverVersion: string;
 			/** 引擎标识（pi | dsh）—— 前端据此显示引擎徽标（只读展示）。 */
 			engine?: string;
+			/** 引擎能力声明（Capabilities）—— 前端据此自适应隐藏不支持的入口。 */
+			engineCapabilities?: AgentEngineCapabilities;
 			/** Wire-protocol version (server/protocol-version.ts). The client
 			 *  compares it against its own copy — a mismatch means the page was
 			 *  loaded before an app update and must be refreshed. */
@@ -3699,11 +3783,19 @@ export type ServerMessage =
 			/** Per-entry install results when install:true was asked. */
 			installed?: { id: string; ok: boolean; error?: string }[];
 	  }
+	/** DSH 插件市场全量清单推送（DSH only；初始化或拉取后推）。 */
+	| {
+			type: "dsh_market_data";
+			count: number;
+			updated?: string;
+			categories: Record<string, { en: string; zh: string }>;
+			plugins: DshMarketPlugin[];
+	  }
 	// -- DSH engine user patches --------------------------------------------
 	/** List of <dataDir>/dsh-patches/*.yml files (DSH engine only; pi engine
 	 *  never emits it). Pushed on request (dsh_patches_list) and after a
 	 *  rescan (dsh_patches_rescan). */
-	| { type: "dsh_patches"; patchDir: string; files: { name: string; path: string; size: number; mtimeMs: number }[] }
+	| { type: "dsh_patches"; patchDir: string; files: DshPatchFileInfo[] }
 	/** DSH Agent 预设名录（DSH only；attach/启动/默认变化后推；legacy 下 presets 空）。 */
 	| {
 			type: "dsh_presets";

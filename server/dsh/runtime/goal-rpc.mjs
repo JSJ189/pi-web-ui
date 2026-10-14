@@ -16,22 +16,32 @@
 import { resolve } from "node:path";
 import { dirname, join } from "node:path";
 import { fileURLToPath, pathToFileURL } from "node:url";
+import { existsSync } from "node:fs";
 import { JsonRpcLineTransport } from "@deepseek-ai/dsh-sdk-protocol";
 import { defineTool } from "@deepseek-ai/dsh-tools";
 
 const HERE = dirname(fileURLToPath(import.meta.url));
 
-/** 官方 jsonrpc-server 入口（env 优先，兜底项目 node_modules）。 */
-const officialEntry = process.env.PI_WEB_DSH_JSONRPC_ENTRY
-	? resolve(process.env.PI_WEB_DSH_JSONRPC_ENTRY)
-	: join(
-			resolve(HERE, "..", "..", "..", ".."),
-			"node_modules",
-			"@deepseek-ai",
-			"dsh-sdk-jsonrpc-server",
-			"lib",
-			"index.js",
-		);
+/** 官方 jsonrpc-server 入口（env 优先，兜底从本文件向上找 node_modules 里的官方包）。 */
+function findOfficialEntry() {
+	if (process.env.PI_WEB_DSH_JSONRPC_ENTRY) return resolve(process.env.PI_WEB_DSH_JSONRPC_ENTRY);
+	let cur = HERE;
+	for (let i = 0; i < 6; i++) {
+		const candidate = join(cur, "node_modules", "@deepseek-ai", "dsh-sdk-jsonrpc-server", "lib", "index.js");
+		if (existsSync(candidate)) return candidate;
+		cur = dirname(cur);
+	}
+	return join(
+		resolve(HERE, "..", "..", ".."),
+		"node_modules",
+		"@deepseek-ai",
+		"dsh-sdk-jsonrpc-server",
+		"lib",
+		"index.js",
+	);
+}
+
+const officialEntry = findOfficialEntry();
 
 const official = await import(pathToFileURL(officialEntry).href);
 const { HarnessSdkJsonRpcServer, Config } = official;
@@ -78,32 +88,143 @@ function escapeTextSimple(s) {
 	return String(s).replaceAll("&", "&amp;").replaceAll("<", "&lt;").replaceAll(">", "&gt;");
 }
 
+const DSH_VALID_TYPES = new Set(["string", "number", "integer", "boolean", "null", "array", "object", "json"]);
+
+/**
+ * 把任意 JSON Schema 节点规整为 DSH schema compiler 支持的纯净 value schema。
+ * @param {unknown} def 原始属性定义
+ * @param {boolean} [allowRequired=false] 是否允许 required 字段（仅顶层 property-map 允许）
+ */
+function normalizeDshNode(def, allowRequired = false) {
+	if (!def || typeof def !== "object" || Array.isArray(def)) {
+		return { type: "string" };
+	}
+
+	const out = {};
+
+	// 1. 复制合法的 annotations
+	if (typeof def.description === "string") out.description = def.description;
+	if (typeof def.title === "string") out.title = def.title;
+	if (def.default !== undefined) out.default = def.default;
+	if (Array.isArray(def.examples)) out.examples = def.examples;
+	if (allowRequired && def.required === true) out.required = true;
+
+	// 2. 处理 oneOf / anyOf（DSH 仅支持 oneOf，且与 type 互斥）
+	const unionCandidates = Array.isArray(def.oneOf) ? def.oneOf : Array.isArray(def.anyOf) ? def.anyOf : null;
+
+	if (unionCandidates) {
+		const branches = unionCandidates.map((branch) => normalizeDshNode(branch, false)).filter(Boolean);
+		if (branches.length >= 2) {
+			out.oneOf = branches;
+			return out;
+		}
+		if (branches.length === 1) {
+			return { ...branches[0], ...out };
+		}
+	}
+
+	// 3. 处理 type 字段（可能为数组，如 ["string", "null"]）
+	let rawType = def.type;
+	if (Array.isArray(rawType)) {
+		const types = rawType
+			.map((t) => (typeof t === "string" ? t.toLowerCase().trim() : ""))
+			.filter((t) => DSH_VALID_TYPES.has(t));
+		if (types.length >= 2) {
+			out.oneOf = types.map((t) => {
+				const branch = { type: t };
+				if (t === "object") branch.additionalProperties = true;
+				return branch;
+			});
+			return out;
+		}
+		rawType = types[0];
+	}
+
+	let type = typeof rawType === "string" ? rawType.toLowerCase().trim() : undefined;
+	if (type === "float") type = "number";
+	else if (type === "int") type = "integer";
+	else if (type === "bool") type = "boolean";
+
+	if (!type) {
+		if (def.properties && typeof def.properties === "object") type = "object";
+		else if (def.items) type = "array";
+		else type = "string";
+	}
+
+	if (!DSH_VALID_TYPES.has(type)) {
+		type = "string";
+	}
+
+	out.type = type;
+
+	// 4. 根据具体 type 补充/规整专属字段（严格限制在 DSH 允许子集，去除 format/pattern 等不支持属性）
+	switch (type) {
+		case "object": {
+			out.additionalProperties = typeof def.additionalProperties === "boolean" ? def.additionalProperties : true;
+			if (def.properties && typeof def.properties === "object" && !Array.isArray(def.properties)) {
+				const nestedProps = {};
+				const reqList = Array.isArray(def.required) ? def.required : [];
+				for (const [pKey, pDef] of Object.entries(def.properties)) {
+					const pNode = normalizeDshNode(pDef, true);
+					if (reqList.includes(pKey)) pNode.required = true;
+					nestedProps[pKey] = pNode;
+				}
+				out.properties = nestedProps;
+			}
+			break;
+		}
+		case "array": {
+			if (def.items && typeof def.items === "object" && !Array.isArray(def.items)) {
+				out.items = normalizeDshNode(def.items, false);
+			}
+			break;
+		}
+		case "string":
+		case "number":
+		case "integer":
+		case "boolean":
+		case "null": {
+			if (Array.isArray(def.enum) && def.enum.length > 0) {
+				out.enum = def.enum;
+			}
+			if (def.const !== undefined) {
+				out.const = def.const;
+			}
+			break;
+		}
+		case "json":
+			break;
+	}
+
+	return out;
+}
+
 /** 把 pi-web-ui 插件工具的标准 JSON Schema `parameters`（`{type,properties,required[]}`）
  *  转成 DSH defineTool 的 per-property 参数映射 spec（`{key:{type,required?,description}}`）。
  *  DSH 的 parameterSchemaSpecToJsonSchema 需要 property-map 形状（required 挂在每条属性上），
  *  而 pi 插件/TypeBox 用的是标准 JSON Schema（required 是对象数组）。纯函数。 */
-function piParamsToDshSpec(parameters) {
+export function piParamsToDshSpec(parameters) {
 	if (!parameters || typeof parameters !== "object" || Array.isArray(parameters)) return {};
+	let propSource;
+	let requiredList = [];
 	if (parameters.properties && typeof parameters.properties === "object" && !Array.isArray(parameters.properties)) {
-		const required = Array.isArray(parameters.required) ? parameters.required : [];
-		const propMap = {};
-		for (const [key, def] of Object.entries(parameters.properties)) {
-			if (!def || typeof def !== "object" || Array.isArray(def)) {
-				propMap[key] = { type: "string" };
-				continue;
-			}
-			const entry = {};
-			for (const [k, v] of Object.entries(def)) {
-				// 只保留 DSH schema 编译器认识的子集；default/format/title 等跳过（避免寄存器 reject）。
-				if (["type", "description", "enum", "items", "anyOf", "oneOf"].includes(k)) entry[k] = v;
-			}
-			if (required.includes(key)) entry.required = true;
-			propMap[key] = entry;
-		}
-		return propMap;
+		propSource = parameters.properties;
+		if (Array.isArray(parameters.required)) requiredList = parameters.required;
+	} else if (parameters.type === "object") {
+		// 标准 JSON Schema 的无属性对象：{ type: "object" }
+		return {};
+	} else {
+		// 已是 DSH property-map 形状
+		propSource = parameters;
+		if (Array.isArray(parameters.required)) requiredList = parameters.required;
 	}
-	// 已是 DSH property-map 形状（每条属性自己带 type）——原样透传。
-	return parameters;
+	const propMap = {};
+	for (const [key, def] of Object.entries(propSource)) {
+		const node = normalizeDshNode(def, true);
+		if (requiredList.includes(key)) node.required = true;
+		propMap[key] = node;
+	}
+	return propMap;
 }
 
 /** goal view → RPC 载荷（紧凑 JSON；view 是扁平结构，无目标时 get 返回 undefined）。 */
@@ -653,19 +774,23 @@ class DshGoalJsonRpcServer extends HarnessSdkJsonRpcServer {
 		const registered = [];
 		for (const t of tools) {
 			if (!t || typeof t.name !== "string" || typeof t.description !== "string") continue;
-			const tool = defineTool({
-				name: t.name,
-				description: t.description,
-				parameters: piParamsToDshSpec(t.parameters),
-				output: {
-					schema: { type: "string" },
-					render: (_args, value) => [{ type: "text", text: String(value ?? "") }],
-				},
-				execute: (args, exec) => this.invokeBridgedTool(exec, t.name, args),
-			});
-			const off = this.ctx.tools.register(tool);
-			this.toolUnregisters.push(off);
-			registered.push(t.name);
+			try {
+				const tool = defineTool({
+					name: t.name,
+					description: t.description,
+					parameters: piParamsToDshSpec(t.parameters),
+					output: {
+						schema: { type: "string" },
+						render: (_args, value) => [{ type: "text", text: String(value ?? "") }],
+					},
+					execute: (args, exec) => this.invokeBridgedTool(exec, t.name, args),
+				});
+				const off = this.ctx.tools.register(tool);
+				this.toolUnregisters.push(off);
+				registered.push(t.name);
+			} catch (err) {
+				console.warn(`[dsh] 工具 ${t.name} 注册跳过:`, err?.message ?? err);
+			}
 		}
 		return { registered, count: registered.length };
 	}

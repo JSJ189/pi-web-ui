@@ -2,7 +2,7 @@ import { Fragment, memo, useEffect, useMemo, useRef, useState, type ReactNode } 
 import { FiList, FiSquare, FiPaperclip, FiArrowUp, FiBookOpen, FiMic, FiCamera } from "react-icons/fi";
 import type { FileSearchResult, ModelInfo, ProviderKeyInfo, SlashCommandInfo, UiMessage, UiState } from "../types";
 import { isZhLocale, useT, useI18n } from "../i18n";
-import { appSend, useAppField, useIsDsh } from "../app-globals";
+import { appSend, useAppField, useIsDsh, useEngineCapabilities } from "../app-globals";
 import {
 	applyTemplateFill,
 	mergeRecalledDraft,
@@ -210,6 +210,8 @@ export const ChatInput = memo(function ChatInput({
 	/** DSH 无 mid-run steering（isStreaming 时 prompt 全部走 followUp，
 	 *  见 server/dsh/dsh-agent-service.ts）—— 只渲染「排队」半段，不摆一个说了不算的「插队」。 */
 	const isDsh = useIsDsh();
+	const capabilities = useEngineCapabilities();
+	const effectivePlanMode = Boolean(planMode && capabilities.planMode);
 	const { locale } = useI18n();
 	/** 打开模板库（对话中途也可随时取用提示词模板）。 */
 	const { openPicker } = useTemplates();
@@ -407,7 +409,7 @@ export const ChatInput = memo(function ChatInput({
 	// 历史导航进来的内容），服务端快照 vs 本地 L1 按 ts 新的赢。DSH 引擎不参与。
 	const DRAFT_TEXT_CAP = 20000; // 与服务端 DRAFT_TEXT_MAX 同值（两端各自截断）
 	const DRAFT_SAVE_DEBOUNCE_MS = 2000;
-	const draftSessionKey = !isDsh && sessionId ? `${conversationId ?? ""}${sessionId}` : null;
+	const draftSessionKey = sessionId ? `${conversationId ?? ""}${sessionId}` : null;
 	const draftLocalKey = draftSessionKey && sessionId ? `pi-web-ui:composer-draft:${sessionId}` : null;
 	const textMirrorRef = useRef("");
 	const lastEditTsRef = useRef(0);
@@ -650,15 +652,17 @@ export const ChatInput = memo(function ChatInput({
 		if (query && typeof onSearchFiles === "function") {
 			jobs.push({ id: "host:files", label: t("openFiles"), run: () => searchBuiltinFiles(query) });
 		}
-		// 内置页面提供方（page-picker 已授权页）：读缓存同步出结果，后台节流刷新
-		// （扩展在线才会问，桌面壳/未装扩展时缓存恒空，零打扰）。
-		pokeBrowserControl();
-		const immediatePages = mapPageHits(t("browserControl"), getLastBrowserControlPages(), query);
-		jobs.push({
-			id: "host:pages",
-			label: t("browserControl"),
-			run: () => Promise.resolve(immediatePages),
-		});
+		// 内置页面提供方（page-picker 已授权页）：底座支持 pageRef 且在线时才添加
+		let immediatePages: AtHit[] = [];
+		if (capabilities.pageRef) {
+			pokeBrowserControl();
+			immediatePages = mapPageHits(t("browserControl"), getLastBrowserControlPages(), query);
+			jobs.push({
+				id: "host:pages",
+				label: t("browserControl"),
+				run: () => Promise.resolve(immediatePages),
+			});
+		}
 		if (jobs.length === 0) {
 			setMenu(null);
 			return;
@@ -1102,6 +1106,15 @@ export const ChatInput = memo(function ChatInput({
 			onNotice("warning", t("sessionInitializingNotice"));
 			return;
 		}
+		if (!capabilities.conversationRef && attachments.some((a) => a.mode === "conversation")) {
+			onNotice(
+				"warning",
+				isZhLocale(locale)
+					? "当前底层智能体不支持跨对话引用（缺少 conversation_read 工具），请移除会话引用后再发送。"
+					: "The current agent engine does not support conversation references (conversation_read tool unavailable). Remove conversation references before sending.",
+			);
+			return;
+		}
 		// Client-side slash commands (never sent to the server).
 		if (trimmed === "/help") {
 			// Match the modal width to the input box (the backdrop spans the full
@@ -1429,12 +1442,14 @@ export const ChatInput = memo(function ChatInput({
 	// 一旦有可发送内容（canSubmit）则胶囊出现、停止键隐藏。
 	// 胶囊：左半 = 排队（followUp，整轮结束才发），右半 = 插队（steer，回车语义，
 	// 本回合立刻响应）；两半同宽、中间一条细分隔线。DSH 引擎没有 mid-run
-	// steering（prompt 一律 followUp），所以那里只留下左半（.single 收成 38px）。
+	// 是否支持 mid-run steering（插话打断）：由引擎底座 capabilities 声明驱动。
+	// 不支持时只留下左半边单一排队按钮（.single 收成 38px）。
+	const canSteer = Boolean(capabilities.steer !== false && !isDsh);
 	const renderActions = () => (
 		<div className="inputbox-actions">
 			{streaming ? (
 				canSubmit ? (
-					<div className={`split-send${isDsh ? " single" : ""}`}>
+					<div className={`split-send${!canSteer ? " single" : ""}`}>
 						<button
 							type="button"
 							className="split-queue"
@@ -1444,7 +1459,7 @@ export const ChatInput = memo(function ChatInput({
 						>
 							<FiList />
 						</button>
-						{!isDsh && (
+						{canSteer && (
 							<button
 								type="button"
 								className="split-steer"
@@ -1811,7 +1826,7 @@ export const ChatInput = memo(function ChatInput({
 								? isDsh
 									? t("placeholderStreamingQueued")
 									: t("placeholderStreaming")
-								: planMode
+								: effectivePlanMode
 									? t("placeholderPlanMode")
 									: t("placeholderIdle")
 							: t("placeholderConnecting")
@@ -1833,7 +1848,7 @@ export const ChatInput = memo(function ChatInput({
 					onKeyDown={onKeyDown}
 					onPaste={onPaste}
 				/>
-				{planMode && (
+				{effectivePlanMode && (
 					<button
 						type="button"
 						style={{

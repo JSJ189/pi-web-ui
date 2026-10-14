@@ -41,6 +41,7 @@ async function main() {
 		env: {
 			...process.env,
 			PI_WEB_DATA_DIR: dataDir,
+			PI_CODING_AGENT_DIR: dataDir,
 			PI_WEB_PORT: String(PORT),
 		},
 		stdio: ["ignore", "pipe", "pipe"],

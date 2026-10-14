@@ -2,7 +2,7 @@ import { Fragment, memo, useEffect, useState, type ReactNode } from "react";
 import { FiTarget, FiLock, FiUnlock, FiX, FiChevronUp, FiArrowUpRight, FiSquare } from "react-icons/fi";
 import type { GoalStatus, ModelInfo } from "../types";
 import { isZhLocale, useT, useI18n } from "../i18n";
-import { appSend, useIsDsh } from "../app-globals";
+import { appSend, useIsDsh, useEngineCapabilities } from "../app-globals";
 import { Dropdown, DropdownItem } from "./Dropdown";
 import type { UiSlotEntry } from "../ui-slots";
 import { renderMergedToolbar } from "../slot-toolbar";
@@ -37,6 +37,7 @@ export const GoalBar = memo(function GoalBar({
 	// DSH：不接目标模式 2.0 的执行对话（隐藏执行模型下拉；轮次上限仍然有效）。
 	// engine 走全局（web/src/app-globals.ts），不再从 App 一路传下来。
 	const isDsh = useIsDsh();
+	const capabilities = useEngineCapabilities();
 	// Goals belong to the conversation that created them. The server keeps the
 	// status around while switching chats so returning to the owner restores the
 	// goal, but never show another conversation's goal as active.
@@ -221,8 +222,8 @@ export const GoalBar = memo(function GoalBar({
 			</button>
 		),
 		// 计划：与提炼/发送同列的一次性动作按钮（无常亮态、无 aria-pressed ——
-		// 开关语义已删；「退出计划」的唯一出口是计划看板里的「开始实施」）。
-		"host:goal-plan": isDsh ? null : (
+		// 开关语义已删；「退出计划」的唯一出口是计划看板里的「开始实施」）。底座不支持计划模式时隐藏。
+		"host:goal-plan": !capabilities.planMode ? null : (
 			<button
 				type="button"
 				className="goalbar-btn action plan"

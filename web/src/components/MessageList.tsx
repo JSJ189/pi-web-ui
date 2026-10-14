@@ -1199,7 +1199,9 @@ export function MessageList({
 					}
 					const qIdx = m.role === "user" ? qnIndex.get(m.id) : undefined;
 					const show = !virtualOn || alwaysSet.has(m.id) || pinned.has(m.id) || !hidden.has(m.id);
-					const isStreamingThis = (state.isStreaming || m.id === state.streamingMessage?.id) && m.role === "assistant";
+					const isStreamingThis =
+						(state.streamingMessage ? m.id === state.streamingMessage.id : state.isStreaming && m.id === lastId) &&
+						m.role === "assistant";
 					const renderKey = stableKeyMap.get(m.id) ?? m.id;
 					return (
 						<LazyMount

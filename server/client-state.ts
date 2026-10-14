@@ -584,11 +584,16 @@ export interface ClientState {
 	 *  Together with projectProviderKeys it makes the whole {model, key} pair
 	 *  project-bound, so switching back restores both right away. */
 	projectModels?: Record<string, string>;
+	/** 按引擎区分的项目模型记忆：engine -> cwd -> "provider/id"。
+	 *  确保每个智能体引擎（pi / dsh / claude 等）在各工作区的模型选择独立记录、互不覆盖。 */
+	engineProjectModels?: Record<string, Record<string, string>>;
 	/** 全局默认模型（"provider/id"，跨项目、新项目回落用）。
 	 *  存在全局键 __settings__ 下（见 GLOBAL_SETTINGS_KEY 注释：clientId 每标签页独立，
 	 *  放 per-client 下新标签页会丢），所有客户端共享、服务端持久化、重启不丢。
 	 *  优先级：项目记忆 projectModels[cwd] > 全局默认 > SDK 默认。 */
 	defaultModel?: string;
+	/** 按引擎区分的全局默认模型：engine -> "provider/id"。 */
+	defaultModels?: Record<string, string>;
 	/** 全局默认模型各 provider 当时用的 key（provider -> keyName），随全局默认一起记；
 	 *  新项目回落到全局默认模型时一并恢复 key（同 projectProviderKeys 的作用）。 */
 	defaultProviderKeys?: Record<string, string>;
@@ -596,15 +601,17 @@ export interface ClientState {
 	markers?: MarkerSettings;
 	/** 用户钉住（常驻运行列表）的会话文件路径列表，按项目 (cwd) 索引持久化在 __settings__ 下。 */
 	pinnedSessions?: Record<string, string[]>;
+	/** 会话重命名标题记忆（cwd -> sessionKey -> title），在无法修改日志原帧的引擎（如 DSH/只读引擎）下持久化保存自定义会话名称 */
+	sessionTitles?: Record<string, Record<string, string>>;
 	/** Browser UI locale code as reported by hello/set_locale (e.g. "zh",
 	 *  "en", "ja"). Server resolves it via resolveServerLang (non-zh →
 	 *  English default, issue #91) for tool return values / AI prompts.
 	 *  Missing = never reported → English. */
 	locale?: string;
-	/** 客户端当前激活的智能体引擎（"pi" | "dsh"，按标签页 clientId 独立记忆，刷新后保持）。 */
-	engine?: "pi" | "dsh";
-	/** 全局默认智能体引擎（"pi" | "dsh"，存于 __settings__ 下，新标签页与重启后默认跟随）。 */
-	defaultEngine?: "pi" | "dsh";
+	/** 客户端当前激活的智能体引擎（"pi" | "dsh" | "claude"，按标签页 clientId 独立记忆，刷新后保持）。 */
+	engine?: "pi" | "dsh" | "claude";
+	/** 全局默认智能体引擎（"pi" | "dsh" | "claude"，存于 __settings__ 下，新标签页与重启后默认跟随）。 */
+	defaultEngine?: "pi" | "dsh" | "claude";
 	/** 客户端最近活跃时间（epoch ms）。服务端在 per-client 写路径上打点（内存态，
 	 *  随任意后续 save 落盘）；旧存档缺省时按 max(projects[].lastUsed, interrupted[].at)
 	 *  推断。仅用于死 clientId 清理（issue #441），不参与任何业务语义。 */
@@ -1329,15 +1336,41 @@ export class ClientStateStore {
 	}
 
 	/** Get the model the user last selected in a project, or undefined. */
-	getProjectModel(clientId: string, cwd: string): string | undefined {
+	getProjectModel(clientId: string, cwd: string, engine?: string): string | undefined {
 		const all = this.load();
-		// 1. 全局项目模型记忆（跨标签页、跨客户端、重启浏览器共享，优先级最高）
+		const eng = engine?.trim();
+		// 1. 如果指定了引擎，优先查找按引擎隔离的项目模型记录
+		if (eng) {
+			const globalEngHit = all[ClientStateStore.GLOBAL_SETTINGS_KEY]?.engineProjectModels?.[eng]?.[cwd];
+			if (globalEngHit) return globalEngHit;
+			const directEng = all[clientId]?.engineProjectModels?.[eng]?.[cwd];
+			if (directEng) return directEng;
+
+			const engCandidates: { model: string; lastUsed: number }[] = [];
+			for (const [id, state] of Object.entries(all)) {
+				if (id === clientId || id === ClientStateStore.GLOBAL_SETTINGS_KEY) continue;
+				const m = state.engineProjectModels?.[eng]?.[cwd];
+				if (m) {
+					const p = state.projects?.find((proj) => proj.path === cwd);
+					engCandidates.push({ model: m, lastUsed: p?.lastUsed ?? 0 });
+				}
+			}
+			if (engCandidates.length > 0) {
+				engCandidates.sort((a, b) => b.lastUsed - a.lastUsed);
+				return engCandidates[0].model;
+			}
+
+			// 非 pi 引擎不向旧有的全局 projectModels 回退，保持严格隔离
+			if (eng !== "pi") {
+				return undefined;
+			}
+		}
+
+		// 2. 回退到旧有的通用项目模型记录（向后兼容）
 		const globalHit = all[ClientStateStore.GLOBAL_SETTINGS_KEY]?.projectModels?.[cwd];
 		if (globalHit) return globalHit;
-		// 2. 本客户端记忆
 		const direct = all[clientId]?.projectModels?.[cwd];
 		if (direct) return direct;
-		// 3. 其他客户端按最近活跃时间倒序查找兜底
 		const candidates: { model: string; lastUsed: number }[] = [];
 		for (const [id, state] of Object.entries(all)) {
 			if (id === clientId || id === ClientStateStore.GLOBAL_SETTINGS_KEY) continue;
@@ -1355,44 +1388,80 @@ export class ClientStateStore {
 	}
 
 	/** Remember the model last selected in a project (immediate, not after a turn). */
-	saveProjectModel(clientId: string, cwd: string, modelId: string): void {
+	saveProjectModel(clientId: string, cwd: string, modelId: string, engine?: string): void {
 		const all = this.load();
-		// 写入全局项目记忆（保证新标签页/重启浏览器时确定可用）
-		const globalState = (all[ClientStateStore.GLOBAL_SETTINGS_KEY] ??= { projects: [] });
-		(globalState.projectModels ??= {})[cwd] = modelId;
-		// 同时写入本客户端
-		const state = (all[clientId] ??= { projects: [] });
-		this.touchClient(all, clientId);
-		(state.projectModels ??= {})[cwd] = modelId;
+		const eng = engine?.trim();
+		if (eng) {
+			const globalState = (all[ClientStateStore.GLOBAL_SETTINGS_KEY] ??= { projects: [] });
+			((globalState.engineProjectModels ??= {})[eng] ??= {})[cwd] = modelId;
+			const state = (all[clientId] ??= { projects: [] });
+			this.touchClient(all, clientId);
+			((state.engineProjectModels ??= {})[eng] ??= {})[cwd] = modelId;
+		}
+		// 若为 pi 引擎或未传 engine，同步维护旧字段 projectModels 保持向后兼容
+		if (!eng || eng === "pi") {
+			const globalState = (all[ClientStateStore.GLOBAL_SETTINGS_KEY] ??= { projects: [] });
+			(globalState.projectModels ??= {})[cwd] = modelId;
+			const state = (all[clientId] ??= { projects: [] });
+			this.touchClient(all, clientId);
+			(state.projectModels ??= {})[cwd] = modelId;
+		}
 		this.save();
 	}
 
 	/** Drop the per-project model memory for a project (e.g. when the model is
 	 *  removed from the catalog). */
-	deleteProjectModel(clientId: string, cwd: string): void {
+	deleteProjectModel(clientId: string, cwd: string, engine?: string): void {
 		const all = this.load();
-		const gMap = all[ClientStateStore.GLOBAL_SETTINGS_KEY]?.projectModels;
-		if (gMap && cwd in gMap) {
-			delete gMap[cwd];
-			if (Object.keys(gMap).length === 0) delete all[ClientStateStore.GLOBAL_SETTINGS_KEY]!.projectModels;
+		const eng = engine?.trim();
+		if (eng) {
+			const gEng = all[ClientStateStore.GLOBAL_SETTINGS_KEY]?.engineProjectModels?.[eng];
+			if (gEng && cwd in gEng) {
+				delete gEng[cwd];
+			}
+			const cEng = all[clientId]?.engineProjectModels?.[eng];
+			if (cEng && cwd in cEng) {
+				delete cEng[cwd];
+			}
 		}
-		const map = all[clientId]?.projectModels;
-		if (!map || !(cwd in map)) return;
-		delete map[cwd];
-		if (Object.keys(map).length === 0) delete all[clientId]!.projectModels;
+		if (!eng || eng === "pi") {
+			const gMap = all[ClientStateStore.GLOBAL_SETTINGS_KEY]?.projectModels;
+			if (gMap && cwd in gMap) {
+				delete gMap[cwd];
+				if (Object.keys(gMap).length === 0) delete all[ClientStateStore.GLOBAL_SETTINGS_KEY]!.projectModels;
+			}
+			const map = all[clientId]?.projectModels;
+			if (map && cwd in map) {
+				delete map[cwd];
+				if (Object.keys(map).length === 0) delete all[clientId]!.projectModels;
+			}
+		}
 		this.save();
 	}
 
 	/** 全局默认模型（跨客户端共享，存 __settings__ 键）。缺省 = 未设置。 */
-	getDefaultModel(): string | undefined {
-		return this.load()[ClientStateStore.GLOBAL_SETTINGS_KEY]?.defaultModel;
+	getDefaultModel(engine?: string): string | undefined {
+		const eng = engine?.trim();
+		const globalSettings = this.load()[ClientStateStore.GLOBAL_SETTINGS_KEY];
+		if (eng) {
+			const engDef = globalSettings?.defaultModels?.[eng];
+			if (engDef) return engDef;
+			if (eng !== "pi") return undefined;
+		}
+		return globalSettings?.defaultModel;
 	}
 
 	/** 设置全局默认模型（"provider/id"）。 */
-	saveDefaultModel(modelId: string): void {
+	saveDefaultModel(modelId: string, engine?: string): void {
 		const all = this.load();
 		const state = (all[ClientStateStore.GLOBAL_SETTINGS_KEY] ??= { projects: [] });
-		state.defaultModel = modelId;
+		const eng = engine?.trim();
+		if (eng) {
+			(state.defaultModels ??= {})[eng] = modelId;
+		}
+		if (!eng || eng === "pi") {
+			state.defaultModel = modelId;
+		}
 		this.save();
 	}
 
@@ -1542,13 +1611,13 @@ export class ClientStateStore {
 	}
 
 	/** 读取某客户端（标签页）上次使用的引擎（未设置返回 undefined）。 */
-	getClientEngine(clientId: string): "pi" | "dsh" | undefined {
+	getClientEngine(clientId: string): "pi" | "dsh" | "claude" | undefined {
 		const eng = this.load()[clientId]?.engine;
-		return eng === "dsh" || eng === "pi" ? eng : undefined;
+		return eng === "dsh" || eng === "pi" || eng === "claude" ? eng : undefined;
 	}
 
 	/** 保存某客户端（标签页）当前使用的引擎。 */
-	saveClientEngine(clientId: string, engine: "pi" | "dsh"): void {
+	saveClientEngine(clientId: string, engine: "pi" | "dsh" | "claude"): void {
 		const all = this.load();
 		const state = (all[clientId] ??= { projects: [] });
 		state.engine = engine;
@@ -1557,16 +1626,54 @@ export class ClientStateStore {
 	}
 
 	/** 读取全局默认引擎（存在 __settings__ 下，新标签页及服务重启后默认跟随）。 */
-	getDefaultEngine(): "pi" | "dsh" | undefined {
+	getDefaultEngine(): "pi" | "dsh" | "claude" | undefined {
 		const eng = this.load()[ClientStateStore.GLOBAL_SETTINGS_KEY]?.defaultEngine;
-		return eng === "dsh" || eng === "pi" ? eng : undefined;
+		return eng === "dsh" || eng === "pi" || eng === "claude" ? eng : undefined;
 	}
 
 	/** 保存全局默认引擎。 */
-	saveDefaultEngine(engine: "pi" | "dsh"): void {
+	saveDefaultEngine(engine: "pi" | "dsh" | "claude"): void {
 		const all = this.load();
 		const state = (all[ClientStateStore.GLOBAL_SETTINGS_KEY] ??= { projects: [] });
 		state.defaultEngine = engine;
 		this.save();
+	}
+
+	/** 保存指定会话的自定义标题（按 cwd + sessionKey 索引，跨重启存活） */
+	saveSessionTitle(cwd: string, sessionKey: string, title: string): void {
+		const all = this.load();
+		const state = (all[ClientStateStore.GLOBAL_SETTINGS_KEY] ??= { projects: [] });
+		const map = (state.sessionTitles ??= {});
+		const normCwd = normalizePathKey(cwd);
+		const normKey = normalizePathKey(sessionKey);
+		const cwdMap = (map[normCwd] ??= {});
+		cwdMap[normKey] = title.trim();
+		this.save();
+	}
+
+	/** 读取指定会话的自定义标题（若未自定义过返回 undefined） */
+	getSessionTitle(cwd: string, sessionKey: string): string | undefined {
+		const all = this.load();
+		const map = all[ClientStateStore.GLOBAL_SETTINGS_KEY]?.sessionTitles;
+		if (!map) return undefined;
+		const normCwd = normalizePathKey(cwd);
+		const normKey = normalizePathKey(sessionKey);
+		return map[normCwd]?.[normKey] || map[normCwd]?.[sessionKey];
+	}
+
+	/** 删除指定会话的自定义标题记忆 */
+	deleteSessionTitle(cwd: string, sessionKey: string): void {
+		const all = this.load();
+		const map = all[ClientStateStore.GLOBAL_SETTINGS_KEY]?.sessionTitles;
+		if (!map) return;
+		const normCwd = normalizePathKey(cwd);
+		const normKey = normalizePathKey(sessionKey);
+		if (map[normCwd]) {
+			delete map[normCwd][normKey];
+			delete map[normCwd][sessionKey];
+			if (Object.keys(map[normCwd]).length === 0) delete map[normCwd];
+			if (Object.keys(map).length === 0) delete all[ClientStateStore.GLOBAL_SETTINGS_KEY]!.sessionTitles;
+			this.save();
+		}
 	}
 }

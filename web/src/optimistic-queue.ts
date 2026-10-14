@@ -189,7 +189,8 @@ export function recordOptimisticQueueAdd(
 		return { tracker, state };
 	}
 
-	const kind: "steer" | "followUp" = opts.queue || opts.engine === "dsh" ? "followUp" : "steer";
+	const steerSupported = state?.engineCapabilities?.steer !== false && opts.engine !== "dsh";
+	const kind: "steer" | "followUp" = opts.queue || !steerSupported ? "followUp" : "steer";
 	const formattedText = formatOptimisticQueuedPrompt(opts.text, opts.attachments);
 	const rawText = splitQuotedPrompt(formattedText).text.trim();
 	const currentList = kind === "steer" ? state.queue.steering : state.queue.followUp;

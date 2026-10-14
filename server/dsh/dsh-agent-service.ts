@@ -25,9 +25,10 @@
  * BgServerTracker（后台任务）、TerminalManager（PTY）、uploads.ts。
  */
 
-import { existsSync, mkdirSync, readFileSync, statSync } from "node:fs";
+import { DEFAULT_DSH_CAPABILITIES } from "../engine-capabilities.js";
+import type { AgentEngineCapabilities } from "../protocol.js";
+import { existsSync, mkdirSync, readFileSync, renameSync, rmSync, statSync, writeFileSync } from "node:fs";
 import { basename, dirname, join, resolve, sep } from "node:path";
-import { writeJsonAtomicSync } from "../atomic-file.js";
 import { randomUUID } from "node:crypto";
 import { homedir } from "node:os";
 import { BG_CLEANUP_FALLBACK_MIN, BgServerTracker } from "../bg-servers.js";
@@ -46,9 +47,11 @@ import { SandboxManager, isSameOrSubpath } from "../sandbox-service.js";
 import { QuiesceRejectedError } from "../agent-service.js";
 
 import { NATIVE_COMMANDS, parseSlash } from "../slash-commands.js";
+import { discoverDiskSkills, readSkillInstruction } from "../skill-discovery.js";
+import { scanAtMentions, formatPromptWithSkills } from "../universal/universal-attachments.js";
 import type { ProjectRunnerInfo, SessionOwnerInfo } from "../agent-service.js";
 import { bilingual, pick, resolveServerLang, type ServerLang } from "../i18n.js";
-// 工具定义说明的归一化（工具卡右键 → 「显示工具详细信息」，见 getToolInfo）。
+import { ModelAdminService } from "../model-admin.js";
 import { normalizeToolInfo, unsupportedToolInfo } from "../tool-info.js";
 import { TerminalManager, loadCommands, saveCommandsFile } from "../terminals.js";
 import { saveUpload } from "../uploads.js";
@@ -75,9 +78,12 @@ import type {
 	UiSkillInfo,
 	UiState,
 	UiLayoutPrefs,
+	DshPatchFileInfo,
 } from "../protocol.js";
 import { launchOrigin, toServiceInfo } from "../launch-origin.js";
 import { DshRuntime, loadDeepSeekKey, type DshAgentPreset } from "./dsh-client.js";
+import { resolveProviderCredential, listCustomModelsFromConfig } from "../model-resolver.js";
+import { loadDshMarketData } from "./dsh-market-service.js";
 import { formatTextQuote, readTextQuote, messageTextWithQuotes } from "../text-quote.js";
 import { MarkerService } from "../marker-service.js";
 import {
@@ -90,10 +96,12 @@ import {
 import {
 	firstUserText,
 	findSessionFilesForCwd,
+	isDshInternalUserMessage,
 	readSessionLog,
 	replayEventsToMessages,
 	sessionLogPermission,
 	sessionLogPreset,
+	sessionLogTitle,
 } from "./dsh-sessions.js";
 import { generatePresetClones, PRESET_DEFAULT_ID } from "./preset-clones.js";
 import { dshContextUsage, lastUsageFromEvents, normalizeDshUsage } from "./dsh-usage.js";
@@ -160,6 +168,8 @@ interface DshConversation {
 	id: string;
 	/** DSH session id（JSONL 目录名，持久标识）。 */
 	sessionId: string;
+	/** 对应的磁盘会话文件绝对路径（若已知）。 */
+	sessionFile?: string;
 	/** Agent 预设 id（standard/ptc/minimal/cordis/自建；创建时确定，首轮后锁定）。 */
 	agentPreset: string;
 	/** 首轮用户发言后锁定（与官方 agent-preset/locked 同语义）。 */
@@ -350,6 +360,7 @@ export class DshClientSession {
 
 	private sinks = new Set<(msg: ServerMessage) => void>();
 	private pendingNotices: ServerMessage[] = [];
+	private readonly sessionDrafts = new Map<string, { text: string; ts: number }>();
 	private snapshotTimer: ReturnType<typeof setTimeout> | null = null;
 	private snapRev = 0;
 	private version = 0;
@@ -358,6 +369,9 @@ export class DshClientSession {
 	private disposed = false;
 
 	private model = DEFAULT_MODEL;
+	private modelProvider = "deepseek";
+	private modelDisplayName = "DeepSeek V4 Flash";
+	private modelVision = false;
 	thinkingLevel = "high";
 
 	/** P0-1 watchdog：60s 窗口内最多自动重启 2 次，超限升级为报错 notice。 */
@@ -397,6 +411,7 @@ export class DshClientSession {
 	private readonly bg: BgServerTracker;
 	private readonly sandboxes: SandboxManager;
 	private readonly markerSvc: MarkerService;
+	private readonly modelAdmin: ModelAdminService;
 
 	/** 插件扩展点（index.ts 注入）。 */
 	onToolEvent:
@@ -447,6 +462,13 @@ export class DshClientSession {
 			getCwd: () => this.cwd,
 			getActiveCwd: () => this.cwd,
 		});
+		this.modelAdmin = new ModelAdminService({
+			agentDir: this.agentDir,
+			emit: (msg) => this.emit(msg),
+			flushSnapshot: () => this.flushSnapshot(),
+			isDisposed: () => this.disposed,
+			pushModels: async () => this.listModels(),
+		});
 		this.bg = new BgServerTracker({
 			emit: (msg) => this.emit(msg),
 			flushSnapshot: () => this.flushSnapshot(),
@@ -490,6 +512,11 @@ export class DshClientSession {
 				locked: gPrefs.locked,
 			};
 		}
+		// 恢复上次使用的模型（按 DSH 引擎独立记录：项目记忆 > 全局默认）
+		const savedModel = stateStore.getProjectModel(clientId, cwd, "dsh") ?? stateStore.getDefaultModel("dsh");
+		if (savedModel) {
+			cs.applySavedModel(savedModel);
+		}
 		// 恢复上次使用的设置（跨重连存活；DSH 忽略无行为字段但回显保持 UI 一致）。
 		const savedSettings = stateStore.getSettings(clientId);
 		if (savedSettings) {
@@ -529,11 +556,38 @@ export class DshClientSession {
 						: PERMISSION_DEFAULT_PRESET,
 			};
 		}
-		// 第一个 conversation = 新会话（每客户端独立 sessionId，避免多标签页/多
-		// 客户端共享同一 JSONL 互相串会话）。历史会话经 switch_session 恢复。
+		// 恢复最近会话（若有）或新建空白会话（避免刷新页面后丢失历史变成空白新对话）
 		cs.makeRuntime();
-		const first = cs.addConversation(`web-${randomUUID().slice(0, 12)}`, cwd, false, cs.settings.defaultAgentPreset);
-		cs.activeId = first.id;
+		const recentFiles = findSessionFilesForCwd(cs.sessionRoot, cwd).filter(
+			(f) => !basename(dirname(f)).startsWith("review-"),
+		);
+		let resumedConv: DshConversation | null = null;
+		for (const file of recentFiles) {
+			try {
+				const { events } = readSessionLog(file);
+				const hasRealMessages = events.some(
+					(e) =>
+						(e.type === "user/message" && !isDshInternalUserMessage(e.data as Record<string, unknown>)) ||
+						e.type === "assistant/message",
+				);
+				if (hasRealMessages) {
+					const sid = basename(dirname(file));
+					const conv = cs.addConversation(sid, cwd, true, cs.settings.defaultAgentPreset, file);
+					conv.fromDisk = true;
+					conv.sessionFile = file;
+					resumedConv = conv;
+					break;
+				}
+			} catch {
+				continue;
+			}
+		}
+		if (resumedConv) {
+			cs.activeId = resumedConv.id;
+		} else {
+			const first = cs.addConversation(`web-${randomUUID().slice(0, 12)}`, cwd, false, cs.settings.defaultAgentPreset);
+			cs.activeId = first.id;
+		}
 		cs.attachRuntimeEvents();
 		// 每次启动成功（含初次/换模型/watchdog 重启）后重新注册插件工具桥，
 		// 因为重 spawn 后的 ctx.tools 是全新的，需要重新 sync 插件工具。
@@ -739,6 +793,7 @@ export class DshClientSession {
 			cwd: this.cwd,
 			provider: "deepseek-official",
 			model: this.model,
+			modelProvider: this.modelProvider,
 			sessionRoot: this.sessionRoot,
 			dataDir: this.dataDir,
 			agentDir: this.agentDir,
@@ -1043,11 +1098,18 @@ export class DshClientSession {
 	}
 
 	/** 新建（或切换）一个 conversation。existing 的 sessionId 续聊最近 JSONL。 */
-	private addConversation(sessionId: string, cwd: string, replay = true, preset?: string): DshConversation {
+	private addConversation(
+		sessionId: string,
+		cwd: string,
+		replay = true,
+		preset?: string,
+		sessionFilePath?: string,
+	): DshConversation {
 		const id = this.nextConversationId();
 		const conv: DshConversation = {
 			id,
 			sessionId,
+			sessionFile: sessionFilePath,
 			agentPreset: this.resolvePreset(preset),
 			presetLocked: false,
 			assignedGen: -1,
@@ -1082,9 +1144,14 @@ export class DshClientSession {
 		if (replay) {
 			// 从磁盘 JSONL 回放历史消息（DSH 事件流不重放历史）。
 			try {
-				const files = findSessionFilesForCwd(this.sessionRoot, cwd).filter((f) => basename(dirname(f)) === sessionId);
-				if (files.length > 0) {
-					const { header, events } = readSessionLog(files[0]);
+				let targetFile = sessionFilePath && existsSync(sessionFilePath) ? sessionFilePath : null;
+				if (!targetFile) {
+					const files = findSessionFilesForCwd(this.sessionRoot, cwd).filter((f) => basename(dirname(f)) === sessionId);
+					if (files.length > 0) targetFile = files[0];
+				}
+				if (targetFile) {
+					conv.sessionFile = targetFile;
+					const { header, events } = readSessionLog(targetFile);
 					conv.messages = replayEventsToMessages(events);
 					for (const m of conv.messages) conv.messageIds.add(m.id);
 					conv.title = firstUserText(events, this.getLang());
@@ -1157,11 +1224,49 @@ export class DshClientSession {
 					}
 					break;
 				}
-				if (srcKind === "agent-instructions" || srcKind === "plugin") break;
+				if (isDshInternalUserMessage(ev.data as Record<string, unknown>)) break;
 				const msg = userMessageEventToUiMessage(ev.data as never);
-				// 重复文本（DSH 有时重放同一用户消息）→ 去重。
 				const text = messageTextWithQuotes(msg);
-				if (text && conv.messages.some((m) => m.role === "user" && messageTextWithQuotes(m) === text)) {
+				const cleanText = text
+					.replace(/\n\[(?:文件引用|File reference|上传文件|Uploaded file|图片附件|Image attachment):[\s\S]*$/u, "")
+					.trim();
+
+				// 1. 优先查找是否有暂存的本地乐观用户消息（u-pending- 开头）
+				// DSH 运行时回抛的消息往往带有 \n[File reference: ...] 附件说明，需要替换原乐观消息避免出现两条气泡
+				const pendingIdx = conv.messages.findIndex(
+					(m) => m.role === "user" && typeof m.id === "string" && m.id.startsWith("u-pending-"),
+				);
+				if (pendingIdx !== -1) {
+					const pendingMsg = conv.messages[pendingIdx];
+					const pendingText = messageTextWithQuotes(pendingMsg).trim();
+					if (pendingText === text || pendingText === cleanText || text.startsWith(pendingText)) {
+						conv.messageIds.delete(pendingMsg.id);
+						conv.messageIds.add(msg.id);
+						conv.messages[pendingIdx] = msg;
+						// 图片附件异步补图处理
+						const imgRefs = ((ev.data as { content?: unknown[] }).content ?? [])
+							.filter((b) => (b as { type?: string })?.type === "image")
+							.map((b) => (b as { attachment?: { attachmentId?: string; mediaType?: string } }).attachment)
+							.filter(
+								(r): r is { attachmentId: string; mediaType: string } =>
+									!!r && typeof r.attachmentId === "string" && typeof r.mediaType === "string",
+							);
+						if (imgRefs.length > 0) {
+							void this.hydrateImageBlocks(conv, msg, imgRefs);
+						}
+						break;
+					}
+				}
+
+				// 2. 重复文本（DSH 有时重放同一用户消息）→ 去重。
+				if (
+					cleanText &&
+					conv.messages.some((m) => {
+						if (m.role !== "user") return false;
+						const mt = messageTextWithQuotes(m).trim();
+						return mt === text || mt === cleanText;
+					})
+				) {
 					break;
 				}
 				this.appendMessage(conv, msg);
@@ -1490,6 +1595,22 @@ export class DshClientSession {
 		}
 	}
 
+	private guessSessionFile(conv: DshConversation): string | undefined {
+		if (conv.sessionFile && existsSync(conv.sessionFile)) return conv.sessionFile;
+		try {
+			const files = findSessionFilesForCwd(this.sessionRoot, conv.cwd).filter(
+				(f) => basename(dirname(f)) === conv.sessionId,
+			);
+			if (files.length > 0) {
+				conv.sessionFile = files[0];
+				return files[0];
+			}
+		} catch {
+			/* ignore */
+		}
+		return undefined;
+	}
+
 	private buildLightState(rev: number): Omit<UiState, "messages" | "rev"> & { rev: number } {
 		const conv = this.conv;
 		const tokens = conv.tokens;
@@ -1513,20 +1634,23 @@ export class DshClientSession {
 			homeDir: HOME_WIRE,
 			desktopDir: DESKTOP_WIRE,
 			sessionId: conv.sessionId,
+			sessionFile: this.guessSessionFile(conv),
 			conversationId: this.activeId,
 			sandbox: this.sandboxes.getByCwd(this.cwd) ?? null,
 			rev,
 			streamingMessage: conv.streaming ? conv.streaming.toUiMessage(conv.lastEventAt, this.model, "deepseek") : null,
 			isStreaming: conv.isStreaming,
+			draft: this.sessionDrafts.get(conv.sessionId) ?? null,
 			model: {
 				id: this.model,
-				name: DSH_MODELS.find((m) => m.id === this.model)?.name ?? this.model,
-				provider: "deepseek",
+				name: this.modelDisplayName || (DSH_MODELS.find((m) => m.id === this.model)?.name ?? this.model),
+				provider: this.modelProvider || "deepseek",
 				// dsh-llm-deepseek adapter：仅 vision-exp 模型 inputModalities 含 image
-				vision: DSH_MODELS.find((m) => m.id === this.model)?.vision ?? false,
+				vision: this.modelVision,
 			},
 			thinkingLevel: this.thinkingLevel,
 			availableThinkingLevels: ["high"],
+			engineCapabilities: DEFAULT_DSH_CAPABILITIES,
 			agentPreset: { id: conv.agentPreset, name: this.presetName(conv.agentPreset), locked: conv.presetLocked },
 			permission: conv.permissionPreset ?? null,
 			queue: { steering: conv.queue.steering, followUp: conv.queue.followUp },
@@ -1541,6 +1665,10 @@ export class DshClientSession {
 		};
 	}
 
+	getCapabilities(): AgentEngineCapabilities {
+		return DEFAULT_DSH_CAPABILITIES;
+	}
+
 	// -----------------------------------------------------------------------
 	// socket / 通知
 	// -----------------------------------------------------------------------
@@ -1552,6 +1680,7 @@ export class DshClientSession {
 		this.emitConversations();
 		this.emitGoalStatus();
 		this.pushSettings();
+		this.pushDefaultModel();
 		this.pushAgentPresets();
 		this.pushPermission();
 		void this.refreshPermissionOptions().catch(() => {});
@@ -1656,14 +1785,21 @@ export class DshClientSession {
 			// 被置换到后台的会话 + 当前对话（一旦有内容就是用户正在聊的那条，
 			// 不该在列表里缺席——issue #140；空白新对话仍然不入列）。
 			if (!conv.listed && !this.shownInRunningList(conv)) continue;
+			const sf = this.guessSessionFile(conv);
+			const isPinned = Boolean(
+				this.stateStore?.isSessionPinned(this.cwd, sf || "") ||
+				this.stateStore?.isSessionPinned(this.cwd, conv.sessionId),
+			);
 			list.push({
 				id: conv.id,
 				sessionId: conv.sessionId,
+				...(sf ? { sessionFile: sf } : {}),
 				title: conv.title,
 				cwd: conv.cwd,
 				messageCount: conv.messages.length,
 				isStreaming: conv.isStreaming,
 				isSubagent: false,
+				pinned: isPinned,
 				// DSH Agent 预设（左栏徽标/详情用；pi 引擎不填）。
 				agentPreset: conv.agentPreset,
 				presetLocked: conv.presetLocked,
@@ -1973,7 +2109,23 @@ export class DshClientSession {
 			// 新会话默认权限预设（与当前一致时 apply 无事件零噪音）。
 			await this.ensurePermissionDefault(conv);
 			this.flushSnapshot();
-			const blocks = await this.buildContentBlocks(sysPrefix ? `${sysPrefix}${text}` : text, attachments);
+			const allSkills = [
+				...this.skillsCache.map((s) => ({
+					name: s.name,
+					description: s.description,
+					filePath: "",
+					dirPath: "",
+				})),
+				...discoverDiskSkills({ cwd: this.cwd, agentDir: this.agentDir }),
+			];
+			const scanResult = scanAtMentions(text, this.cwd, allSkills, attachments ?? []);
+			const effectiveAttachments = [...(attachments ?? []), ...scanResult.detectedAttachments];
+			const promptText = formatPromptWithSkills(text, scanResult.detectedSkills);
+
+			const blocks = await this.buildContentBlocks(
+				sysPrefix ? `${sysPrefix}${promptText}` : promptText,
+				effectiveAttachments,
+			);
 			// 乐观落地用户消息（id 用暂定值；user/message 事件到达时按内容去重）。
 			const optimistic: UiMessage = {
 				id: `u-pending-${Date.now()}-${conv.deltaSeq++}`,
@@ -2035,6 +2187,9 @@ export class DshClientSession {
 	private forkConversation(prev: DshConversation): DshConversation {
 		const fork = this.addConversation(`fork-${randomUUID().slice(0, 12)}`, this.cwd, false, prev.agentPreset);
 		fork.title = prev.title;
+		// 继承原会话的所有消息历史，使得 UI 界面上完整保留所有轮次的历史消息
+		fork.messages = [...prev.messages];
+		fork.messageIds = new Set(prev.messageIds);
 		this.activeId = fork.id;
 		// P2-19：原会话有 active goal（DSH same-session 语义）→ 提示随会话存档。
 		const hadGoal = prev.goal.goal !== null && prev.goal.verdict === "pending";
@@ -2394,16 +2549,37 @@ export class DshClientSession {
 					// 审查会话（review-*）是内部工作会话，不进历史列表。
 					if (sessionId.startsWith("review-")) continue;
 					const { events } = readSessionLog(file);
+					const count = events.filter(
+						(e) =>
+							(e.type === "user/message" && !isDshInternalUserMessage(e.data as Record<string, unknown>)) ||
+							e.type === "assistant/message" ||
+							e.type === "tool/result",
+					).length;
+					// 过滤无消息空会话（仅有初始化 preset 事件的空壳不展示在历史列表）
+					if (count === 0) continue;
+					const isPinned = Boolean(
+						this.stateStore?.isSessionPinned(this.cwd, file) || this.stateStore?.isSessionPinned(this.cwd, sessionId),
+					);
+					const storedTitle =
+						this.stateStore?.getSessionTitle(this.cwd, file) ?? this.stateStore?.getSessionTitle(this.cwd, sessionId);
+					const explicitTitle =
+						storedTitle ??
+						sessionLogTitle(events) ??
+						[...this.convs.values()].find((c) => c.sessionId === sessionId && !DshClientSession.isDefaultTitle(c.title))
+							?.title;
+					const firstMsg = firstUserText(events, this.getLang());
+					const displayName = this.resolveSessionDisplayName(sessionId, explicitTitle, firstMsg);
+
 					summaries.push({
 						path: file,
 						sessionId,
-						name: sessionId,
-						firstMessage: firstUserText(events, this.getLang()),
-						messageCount: events.filter(
-							(e) => e.type === "user/message" || e.type === "assistant/message" || e.type === "tool/result",
-						).length,
+						name: explicitTitle,
+						displayName,
+						firstMessage: firstMsg,
+						messageCount: count,
 						modified: statSync(file).mtimeMs,
 						source: "web",
+						pinned: isPinned,
 					});
 				} catch {
 					/* skip unreadable */
@@ -2415,12 +2591,93 @@ export class DshClientSession {
 		}
 	}
 
-	async renameSession(_path: string, _name: string): Promise<void> {
+	/** 引擎自属的会话展示名解析回调（定制 DSH 的首条提取 + 模型自动总结命名 + 用户显式重命名记忆） */
+	resolveSessionDisplayName(sessionId: string, explicitTitle?: string, firstMsg?: string): string {
+		const storedTitle = this.stateStore?.getSessionTitle(this.cwd, sessionId);
+		if (storedTitle && !DshClientSession.isDefaultTitle(storedTitle)) {
+			return storedTitle;
+		}
+		if (explicitTitle && !DshClientSession.isDefaultTitle(explicitTitle)) {
+			return explicitTitle;
+		}
+		if (firstMsg && !DshClientSession.isDefaultTitle(firstMsg)) {
+			return firstMsg;
+		}
+		return this.defaultTitle();
+	}
+
+	async pinSession(path: string, pinned: boolean): Promise<void> {
+		const target = path.trim() || this.conv.sessionFile || this.conv.sessionId;
+		if (this.stateStore && target) {
+			this.stateStore.setSessionPinned(this.cwd, target, pinned);
+		}
+		this.emitConversations();
+		void this.pushSessions();
+	}
+
+	async setConversationPinned(id: string, pinned: boolean): Promise<void> {
+		const conv = this.convs.get(id);
+		if (conv) {
+			const key = conv.sessionFile || conv.sessionId;
+			if (this.stateStore && key) {
+				this.stateStore.setSessionPinned(this.cwd, key, pinned);
+			}
+			this.emitConversations();
+			void this.pushSessions();
+		}
+	}
+
+	saveDraft(sessionId: string, text: string, ts: number): void {
+		if (!text) {
+			this.sessionDrafts.delete(sessionId);
+		} else {
+			this.sessionDrafts.set(sessionId, { text, ts: ts || Date.now() });
+		}
+	}
+
+	async renameSession(path: string, name: string): Promise<void> {
+		const trimmed = (name ?? "").trim();
+		if (!trimmed) return;
+		const absPath = path.trim() ? resolve(path.trim()) : "";
+		const sid = absPath ? basename(dirname(absPath)) : "";
+		for (const conv of this.convs.values()) {
+			if (conv.sessionId === sid || conv.sessionFile === absPath || conv.id === path.trim()) {
+				conv.title = trimmed;
+			}
+		}
+		if (this.stateStore) {
+			if (absPath) this.stateStore.saveSessionTitle(this.cwd, absPath, trimmed);
+			if (sid) this.stateStore.saveSessionTitle(this.cwd, sid, trimmed);
+		}
+		this.emitConversations();
+		this.flushSnapshot();
+		await this.pushSessions();
 		this.emit({
 			type: "notice",
-			level: "warning",
-			text: "DSH 引擎暂不支持重命名会话",
-			textEn: "The DSH engine does not support renaming sessions yet",
+			level: "info",
+			text: `已重命名会话为「${trimmed}」`,
+			textEn: `Renamed session to "${trimmed}"`,
+		});
+	}
+
+	getToolPrompt(name: string): void {
+		this.emit({
+			type: "tool_prompt",
+			name,
+			found: false,
+			unsupported: true,
+		});
+	}
+
+	getCompactedMessages(compactionMessageId: string, conversationId?: string): void {
+		const conv = conversationId ? this.convs.get(conversationId) : this.conv;
+		const msg = conv?.messages.find((m) => m.id === compactionMessageId);
+		const compacted = (msg?.details as { compactedMessages?: UiMessage[] } | undefined)?.compactedMessages ?? [];
+		this.emit({
+			type: "compacted_messages_result",
+			compactionMessageId,
+			conversationId: conv?.id ?? this.activeId,
+			messages: compacted,
 		});
 	}
 
@@ -2430,7 +2687,16 @@ export class DshClientSession {
 		const conv = this.convs.get(id);
 		if (!conv) return;
 		conv.title = trimmed;
+		const key = conv.sessionFile || conv.sessionId;
+		if (this.stateStore && key) {
+			this.stateStore.saveSessionTitle(this.cwd, key, trimmed);
+			if (conv.sessionId && conv.sessionFile) {
+				this.stateStore.saveSessionTitle(this.cwd, conv.sessionId, trimmed);
+			}
+		}
 		this.emitConversations();
+		this.flushSnapshot();
+		await this.pushSessions();
 	}
 
 	async deleteSession(path: string): Promise<void> {
@@ -2539,16 +2805,26 @@ export class DshClientSession {
 	/** 切换会话：读 JSONL 回放 → 新建 conversation（同一 sessionId 续聊）。 */
 	async switchSession(path: string, wantSessionId?: string): Promise<void> {
 		try {
+			const resolvedPath = path.trim() ? resolve(path.trim()) : "";
 			const explicitSid = wantSessionId?.trim() ?? "";
-			const sessionId = explicitSid || basename(dirname(resolve(path)));
+			const sessionId = explicitSid || (resolvedPath ? basename(dirname(resolvedPath)) : "");
 			// 同一 sessionId 已在运行 → 直接切过去。
 			for (const conv of this.convs.values()) {
 				if (conv.sessionId === sessionId || conv.id === sessionId) {
 					await this.switchConversation(conv.id);
+					this.emit({
+						type: "transition_progress",
+						kind: "session",
+						target: path,
+						phase: "done",
+						progress: 100,
+						text: "会话加载完成",
+						textEn: "Session loaded",
+					});
 					return;
 				}
 			}
-			if (!path.trim() && explicitSid) {
+			if (!resolvedPath && explicitSid) {
 				const candidateFile = join(this.sessionRoot, explicitSid, "session.jsonl");
 				if (!existsSync(candidateFile)) {
 					this.emit({
@@ -2587,14 +2863,33 @@ export class DshClientSession {
 			const prev = this.conv;
 			// 只看“用过”的存活终端：没动过的空 shell 不钉住 listed（与 pi 的 displaceActive 同口径）。
 			prev.listed = this.shouldRetainDshConversation(prev);
-			const conv = this.addConversation(sessionId, this.cwd, true);
+			const conv = this.addConversation(sessionId, this.cwd, true, undefined, resolvedPath || undefined);
 			conv.fromDisk = true; // 磁盘回放 → prompt 时 fork
+			if (resolvedPath) conv.sessionFile = resolvedPath;
 			this.activeId = conv.id;
 			this.emitConversations();
 			this.pushTerminals();
 			this.pushSettings();
 			this.flushSnapshot(true);
+			this.emit({
+				type: "transition_progress",
+				kind: "session",
+				target: path,
+				phase: "done",
+				progress: 100,
+				text: "会话加载完成",
+				textEn: "Session loaded",
+			});
 		} catch (err) {
+			this.emit({
+				type: "transition_progress",
+				kind: "session",
+				target: path,
+				phase: "error",
+				progress: 100,
+				text: `切换会话失败：${(err as Error).message}`,
+				textEn: `Failed to switch session: ${(err as Error).message}`,
+			});
 			this.emit({
 				type: "notice",
 				level: "error",
@@ -2613,27 +2908,30 @@ export class DshClientSession {
 		return join(this.dataDir, "dsh-patches");
 	}
 
-	/** 列出 <dataDir>/dsh-patches/*.yml（按文件名序），带文件信息。 */
+	/** 列出 <dataDir>/dsh-patches/*.yml 以及 *.yml.disabled（按文件名序），带文件信息与启停状态。 */
 	async listDshPatches(): Promise<void> {
 		const dir = this.userPatchDir();
-		const files: {
-			name: string;
-			path: string;
-			size: number;
-			mtimeMs: number;
-		}[] = [];
+		const files: DshPatchFileInfo[] = [];
 		try {
 			const { readdirSync } = await import("node:fs");
 			for (const name of readdirSync(dir)) {
-				if (!name.startsWith(".") && /\.ya?ml$/iu.test(name)) {
-					try {
-						const st = statSync(join(dir, name));
-						if (st.isFile()) {
-							files.push({ name, path: join(dir, name), size: st.size, mtimeMs: st.mtimeMs });
-						}
-					} catch {
-						/* skip unreadable */
+				if (name.startsWith(".")) continue;
+				const isYaml = /\.ya?ml$/iu.test(name);
+				const isDisabledYaml = /\.ya?ml\.disabled$/iu.test(name);
+				if (!isYaml && !isDisabledYaml) continue;
+				try {
+					const st = statSync(join(dir, name));
+					if (st.isFile()) {
+						files.push({
+							name,
+							path: join(dir, name),
+							size: st.size,
+							mtimeMs: st.mtimeMs,
+							disabled: isDisabledYaml,
+						});
 					}
+				} catch {
+					/* skip unreadable */
 				}
 			}
 		} catch {
@@ -2664,6 +2962,152 @@ export class DshClientSession {
 			});
 		}
 		await this.listDshPatches();
+	}
+
+	/** 安装/添加 DSH 用户 patch（写入 <dataDir>/dsh-patches/<id>.yml 并重载运行时）。 */
+	async installDshPatch(rawSpec: string, rawId?: string): Promise<void> {
+		const spec = rawSpec.trim().replace(/^['"]|['"]$/g, "");
+		if (!spec) {
+			this.emit({
+				type: "notice",
+				level: "error",
+				text: "补丁包名或路径不能为空",
+				textEn: "Patch package name or path cannot be empty",
+			});
+			return;
+		}
+
+		// 推导合法 id（仅允许字母数字横线下划线）
+		let id = (rawId ?? "").trim();
+		if (!id) {
+			const base = basename(spec.replace(/[\\/]+$/, ""));
+			id = base.replace(/^dsh-plugin-|^dsh-/, "").replace(/[^a-zA-Z0-9_-]+/g, "-");
+		}
+		id = id.replace(/[^a-zA-Z0-9_-]+/g, "-").replace(/^-+|-+$/g, "") || `patch-${Date.now().toString(36)}`;
+
+		const dir = this.userPatchDir();
+		mkdirSync(dir, { recursive: true });
+
+		// 规范化包名/路径：Windows 路径转为正斜杠以确保 YAML 兼容性
+		const normalizedSpec = spec.replace(/\\/g, "/");
+		const escapedName = normalizedSpec.replace(/'/g, "''");
+
+		const yamlContent = `# DSH user patch generated by pi-web-ui\n- insert:\n    - id: ${id}\n      name: '${escapedName}'\n      config: {}\n`;
+		const targetFile = join(dir, `${id}.yml`);
+		const disabledFile = join(dir, `${id}.yml.disabled`);
+
+		try {
+			if (existsSync(disabledFile)) {
+				rmSync(disabledFile, { force: true });
+			}
+			writeFileSync(targetFile, yamlContent, "utf8");
+			this.emit({
+				type: "notice",
+				level: "info",
+				text: `已添加补丁 ${id}，正在重启 DSH 运行时...`,
+				textEn: `Added patch ${id}, restarting DSH runtime...`,
+			});
+		} catch (err) {
+			this.emit({
+				type: "notice",
+				level: "error",
+				text: `写入补丁失败：${(err as Error).message}`,
+				textEn: `Failed to write patch: ${(err as Error).message}`,
+			});
+			return;
+		}
+
+		await this.rescanDshPatches();
+	}
+
+	/** 切换 DSH 用户 patch 启用/停用状态（重命名为 *.yml.disabled 或 *.yml）。 */
+	async toggleDshPatch(name: string, enabled: boolean): Promise<void> {
+		const safeName = basename(name);
+		if (!safeName || safeName !== name) {
+			return;
+		}
+
+		const dir = this.userPatchDir();
+		const currentPath = join(dir, safeName);
+		if (!existsSync(currentPath)) {
+			await this.listDshPatches();
+			return;
+		}
+
+		try {
+			if (enabled && safeName.endsWith(".disabled")) {
+				const activeName = safeName.replace(/\.disabled$/, "");
+				renameSync(currentPath, join(dir, activeName));
+			} else if (!enabled && !safeName.endsWith(".disabled")) {
+				renameSync(currentPath, join(dir, `${safeName}.disabled`));
+			}
+		} catch (err) {
+			this.emit({
+				type: "notice",
+				level: "error",
+				text: `切换补丁状态失败：${(err as Error).message}`,
+				textEn: `Failed to toggle patch state: ${(err as Error).message}`,
+			});
+			return;
+		}
+
+		await this.rescanDshPatches();
+	}
+
+	/** 删除指定的 DSH 用户 patch 文件并重启运行时。 */
+	async deleteDshPatch(name: string): Promise<void> {
+		const safeName = basename(name);
+		if (!safeName || safeName !== name) {
+			return;
+		}
+
+		const dir = this.userPatchDir();
+		const filePath = join(dir, safeName);
+		if (!existsSync(filePath)) {
+			await this.listDshPatches();
+			return;
+		}
+
+		try {
+			rmSync(filePath, { force: true });
+			this.emit({
+				type: "notice",
+				level: "info",
+				text: `已删除补丁 ${safeName}，正在重载...`,
+				textEn: `Deleted patch ${safeName}, reloading...`,
+			});
+		} catch (err) {
+			this.emit({
+				type: "notice",
+				level: "error",
+				text: `删除补丁失败：${(err as Error).message}`,
+				textEn: `Failed to delete patch: ${(err as Error).message}`,
+			});
+			return;
+		}
+
+		await this.rescanDshPatches();
+	}
+
+	/** 拉取 DSH 插件市场数据并推送给客户端。 */
+	async fetchDshMarket(force = false): Promise<void> {
+		try {
+			const data = await loadDshMarketData(this.dataDir, force);
+			this.emit({
+				type: "dsh_market_data",
+				count: data.count,
+				updated: data.updated,
+				categories: data.categories,
+				plugins: data.plugins,
+			});
+		} catch (err) {
+			this.emit({
+				type: "notice",
+				level: "warning",
+				text: `拉取 DSH 插件市场失败：${(err as Error).message}`,
+				textEn: `Failed to fetch DSH plugin market: ${(err as Error).message}`,
+			});
+		}
 	}
 
 	// -----------------------------------------------------------------------
@@ -2975,6 +3419,7 @@ export class DshClientSession {
 					for (const ev of events) {
 						// P1-14：索引范围 = user/assistant 文本 + tool-result 工具输出。
 						if (ev.type === "user/message" || ev.type === "assistant/message" || ev.type === "tool/result") {
+							if (ev.type === "user/message" && isDshInternalUserMessage(ev.data as Record<string, unknown>)) continue;
 							const blocks =
 								(
 									ev.data?.message as
@@ -3018,7 +3463,10 @@ export class DshClientSession {
 							name: sessionId,
 							firstMessage: firstUserText(events, this.getLang()),
 							messageCount: events.filter(
-								(e) => e.type === "user/message" || e.type === "assistant/message" || e.type === "tool/result",
+								(e) =>
+									(e.type === "user/message" && !isDshInternalUserMessage(e.data as Record<string, unknown>)) ||
+									e.type === "assistant/message" ||
+									e.type === "tool/result",
 							).length,
 							modified: statSync(file).mtimeMs,
 							source: "web",
@@ -3099,11 +3547,16 @@ export class DshClientSession {
 	// 模型 / 思考
 	// -----------------------------------------------------------------------
 
-	/** P2-17 动态模型 id 缓存（adapter 目录查询结果；setModel 校验用）。 */
+	/** P2-17 动态与自定义模型 id 缓存（adapter 目录与 models.json 自定义模型；setModel 校验用）。 */
 	private dynamicModels = new Set<string>();
+	/** 缓存自定义模型及动态适配器模型元数据，用于 setModel 快速解析。 */
+	private customModelsMap = new Map<
+		string,
+		{ id: string; bareId: string; name: string; provider: string; reasoning: boolean; vision: boolean }
+	>();
 
 	async listModels(): Promise<void> {
-		// 以本地表为底（定价/上下文窗口/vision 标记），运行时 adapter 目录动态
+		// 以本地表为底（定价/上下文窗口/vision 标记），运行时 adapter 目录与 models.json 自定义模型动态
 		// 扩展——新模型自动出现在选择器，无需改代码。
 		const known = new Map(DSH_MODELS.map((m) => [m.id, m]));
 		let dynamic: { id: string; name?: string; inputModalities?: string[] }[] = [];
@@ -3116,38 +3569,183 @@ export class DshClientSession {
 		const seen = new Set<string>();
 		const models: { id: string; name: string; provider: string; reasoning: boolean; vision: boolean }[] = [];
 		this.dynamicModels.clear();
-		for (const m of dynamic) {
-			if (seen.has(m.id)) continue;
-			seen.add(m.id);
-			const local = known.get(m.id);
-			const vision = local?.vision ?? m.inputModalities?.includes("image") ?? false;
-			if (!local) this.dynamicModels.add(m.id);
-			models.push({
-				id: m.id,
-				name: local?.name ?? m.name ?? m.id,
-				provider: "deepseek",
-				reasoning: true,
-				vision,
-			});
-		}
+		this.customModelsMap.clear();
+
+		// 1. DSH 官方内置模型
 		for (const m of DSH_MODELS) {
-			if (seen.has(m.id)) continue;
+			const canonicalId = `deepseek/${m.id}`;
 			seen.add(m.id);
+			seen.add(canonicalId);
+			this.dynamicModels.add(m.id);
+			this.dynamicModels.add(canonicalId);
+			const meta = {
+				id: canonicalId,
+				bareId: m.id,
+				name: m.name,
+				provider: m.provider,
+				reasoning: true,
+				vision: m.vision,
+			};
+			this.customModelsMap.set(canonicalId, meta);
+			this.customModelsMap.set(m.id, meta);
 			models.push({
-				id: m.id,
+				id: canonicalId,
 				name: m.name,
 				provider: m.provider,
 				reasoning: true,
 				vision: m.vision,
 			});
 		}
+
+		// 2. 运行时动态目录（adapter 发现）
+		for (const m of dynamic) {
+			const canonicalId = m.id.includes("/") ? m.id : `deepseek/${m.id}`;
+			const bareId = m.id.includes("/") ? m.id.slice(m.id.indexOf("/") + 1) : m.id;
+			if (seen.has(m.id) || seen.has(canonicalId)) continue;
+			seen.add(m.id);
+			seen.add(canonicalId);
+			this.dynamicModels.add(m.id);
+			this.dynamicModels.add(canonicalId);
+			const local = known.get(bareId) ?? known.get(m.id);
+			const vision = local?.vision ?? m.inputModalities?.includes("image") ?? false;
+			const name = local?.name ?? m.name ?? bareId;
+			const meta = {
+				id: canonicalId,
+				bareId,
+				name,
+				provider: "deepseek",
+				reasoning: true,
+				vision,
+			};
+			this.customModelsMap.set(canonicalId, meta);
+			this.customModelsMap.set(bareId, meta);
+			models.push({
+				id: canonicalId,
+				name,
+				provider: "deepseek",
+				reasoning: true,
+				vision,
+			});
+		}
+
+		// 3. 用户在 models.json 中配置的第三方自定义端点模型
+		try {
+			const custom = listCustomModelsFromConfig(this.agentDir);
+			for (const c of custom) {
+				const canonicalId = `${c.providerId}/${c.modelId}`;
+				if (seen.has(canonicalId)) continue;
+				seen.add(canonicalId);
+				seen.add(c.modelId);
+				this.dynamicModels.add(canonicalId);
+				this.dynamicModels.add(c.modelId);
+				const meta = {
+					id: canonicalId,
+					bareId: c.modelId,
+					name: c.name,
+					provider: c.providerId,
+					reasoning: c.reasoning ?? true,
+					vision: c.vision ?? false,
+				};
+				this.customModelsMap.set(canonicalId, meta);
+				this.customModelsMap.set(c.modelId, meta);
+				models.push({
+					id: canonicalId,
+					name: c.name,
+					provider: c.providerId,
+					reasoning: c.reasoning ?? true,
+					vision: c.vision ?? false,
+				});
+			}
+		} catch {
+			/* models.json 不存在或解析错误 → 静默忽略 */
+		}
+
 		this.emit({ type: "models", models });
 	}
 
-	/** 换模型 = 重启运行时。 */
+	/** 解析模型 ID 对应的服务商、元数据与裸模型 ID。 */
+	resolveModelMeta(modelId: string): {
+		meta?: {
+			id: string;
+			bareId: string;
+			name: string;
+			provider: string;
+			reasoning?: boolean;
+			vision?: boolean;
+		};
+		targetProvider: string;
+		bareModelId: string;
+		known: boolean;
+	} {
+		const normId = modelId.trim();
+		const hasSlash = normId.includes("/");
+		let targetProvider = hasSlash ? normId.slice(0, normId.indexOf("/")) : "";
+		let bareModelId = hasSlash ? normId.slice(normId.indexOf("/") + 1) : normId;
+
+		let meta = this.customModelsMap.get(normId) ?? this.customModelsMap.get(bareModelId);
+		if (!meta) {
+			const localDsh = DSH_MODELS.find((m) => m.id === normId || m.id === bareModelId || `deepseek/${m.id}` === normId);
+			if (localDsh) {
+				meta = {
+					id: `deepseek/${localDsh.id}`,
+					bareId: localDsh.id,
+					name: localDsh.name,
+					provider: "deepseek",
+					reasoning: true,
+					vision: localDsh.vision,
+				};
+			} else {
+				try {
+					const customList = listCustomModelsFromConfig(this.agentDir);
+					const hit = customList.find(
+						(c) => `${c.providerId}/${c.modelId}` === normId || c.modelId === normId || c.modelId === bareModelId,
+					);
+					if (hit) {
+						meta = {
+							id: `${hit.providerId}/${hit.modelId}`,
+							bareId: hit.modelId,
+							name: hit.name,
+							provider: hit.providerId,
+							reasoning: hit.reasoning ?? true,
+							vision: hit.vision ?? false,
+						};
+					}
+				} catch {
+					/* ignore */
+				}
+			}
+		}
+
+		if (meta) {
+			targetProvider = meta.provider;
+			bareModelId = meta.bareId;
+		} else if (!targetProvider) {
+			targetProvider = "deepseek";
+		}
+
+		const known =
+			!!meta ||
+			DSH_MODELS.some((m) => m.id === normId || m.id === bareModelId) ||
+			this.dynamicModels.has(normId) ||
+			this.dynamicModels.has(bareModelId);
+
+		return { meta, targetProvider, bareModelId, known };
+	}
+
+	/** 应用已保存的模型配置到当前 session 实例（启动/恢复/切换工作区时用）。 */
+	private applySavedModel(modelId: string): void {
+		const res = this.resolveModelMeta(modelId);
+		if (res.known || res.meta) {
+			this.model = res.bareModelId;
+			this.modelProvider = res.targetProvider;
+			this.modelDisplayName = res.meta?.name ?? res.bareModelId;
+			this.modelVision = res.meta?.vision ?? false;
+		}
+	}
+
+	/** 换模型 = 重启运行时。支持官方模型与第三方自定义端点模型。 */
 	async setModel(modelId: string): Promise<void> {
-		// 校验：本地表 + 运行时动态目录（P2-17）。
-		const known = DSH_MODELS.some((m) => m.id === modelId) || this.dynamicModels.has(modelId);
+		const { meta, targetProvider, bareModelId, known } = this.resolveModelMeta(modelId);
 		if (!known) {
 			this.emit({
 				type: "notice",
@@ -3157,7 +3755,20 @@ export class DshClientSession {
 			});
 			return;
 		}
-		if (modelId === this.model) return;
+
+		if (bareModelId === this.model && targetProvider === this.modelProvider) return;
+
+		// 解析服务商 BaseURL 与 API Key（如果是自定义 Provider）
+		const cred = resolveProviderCredential(this.agentDir, targetProvider);
+		if (targetProvider !== "deepseek" && !cred.apiKey && !process.env.DEEPSEEK_API_KEY) {
+			this.emit({
+				type: "notice",
+				level: "warning",
+				text: `服务商「${targetProvider}」未配置 API Key，请在模型与服务商设置中填写`,
+				textEn: `Provider "${targetProvider}" has no API Key configured. Please configure it in Model Settings.`,
+			});
+		}
+
 		// P0-2 竞态告知：换模型 = 强杀运行时 → 进行中的 run 全部中止。
 		if ([...this.convs.values()].some((c) => c.isStreaming)) {
 			this.emit({
@@ -3168,10 +3779,22 @@ export class DshClientSession {
 					"Conversations are running; switching models aborts all of them (DSH model switch restarts the runtime)",
 			});
 		}
-		this.model = modelId;
+
+		this.model = bareModelId;
+		this.modelProvider = targetProvider;
+		this.modelDisplayName = meta?.name ?? bareModelId;
+		this.modelVision = meta?.vision ?? false;
+		// 持久化当前项目的模型选择（按 DSH 引擎独立记录）
+		this.stateStore?.saveProjectModel(this.clientId, this.cwd, modelId, "dsh");
+
 		try {
-			await this.runtime.restart(modelId);
-			this.emit({ type: "notice", level: "info", text: `已切换到 ${modelId}`, textEn: `Switched to ${modelId}` });
+			await this.runtime.restart(bareModelId, targetProvider);
+			this.emit({
+				type: "notice",
+				level: "info",
+				text: `已切换到 ${this.modelDisplayName}`,
+				textEn: `Switched to ${this.modelDisplayName}`,
+			});
 		} catch (err) {
 			this.emit({
 				type: "notice",
@@ -3181,6 +3804,48 @@ export class DshClientSession {
 			});
 		}
 		this.flushSnapshot(true);
+	}
+
+	async setDefaultModel(modelId: string): Promise<void> {
+		try {
+			const res = this.resolveModelMeta(modelId);
+			if (!res.known && !res.meta) {
+				throw new Error(`未知模型：${modelId}`);
+			}
+			this.stateStore?.saveDefaultModel(modelId, "dsh");
+			this.pushDefaultModel();
+			this.emit({
+				type: "notice",
+				level: "info",
+				text: `🌍 已设全局默认模型 ${modelId}（新项目自动使用，项目记忆优先）`,
+				textEn: `🌍 Global default model set to ${modelId} (new projects follow it; project memory wins)`,
+			});
+		} catch (err) {
+			this.emit({
+				type: "notice",
+				level: "error",
+				text: `设置全局默认模型失败：${(err as Error).message}`,
+				textEn: `Failed to set global default model: ${(err as Error).message}`,
+			});
+		}
+		this.flushSnapshot();
+	}
+
+	clearDefaultModel(): void {
+		this.stateStore?.saveDefaultModel("", "dsh");
+		this.pushDefaultModel();
+		this.emit({
+			type: "notice",
+			level: "info",
+			text: "🌍 已清除全局默认模型（新项目回到系统默认）",
+			textEn: "🌍 Global default model cleared (new projects use the system default)",
+		});
+		this.flushSnapshot();
+	}
+
+	pushDefaultModel(): void {
+		const def = this.stateStore?.getDefaultModel("dsh");
+		this.emit({ type: "default_model", modelId: def ? def : null });
 	}
 
 	setThinking(level: string): void {
@@ -4331,12 +4996,34 @@ export class DshClientSession {
 			descriptionEn?: string;
 			argumentHint?: string;
 			argumentHintEn?: string;
-			source: "builtin" | "plugin";
+			source: "builtin" | "plugin" | "skill";
 		}[] = [];
 		const seen = new Set<string>();
 		for (const c of NATIVE_COMMANDS) {
 			commands.push({ ...c, source: "builtin" });
 			seen.add(c.name);
+		}
+		// 技能命令：运行时技能 + 磁盘技能
+		for (const s of this.skillsCache) {
+			const name = `skill:${s.name}`;
+			if (seen.has(name)) continue;
+			commands.push({
+				name,
+				description: s.description,
+				source: "skill",
+			});
+			seen.add(name);
+		}
+		const diskSkills = discoverDiskSkills({ cwd: this.cwd, agentDir: this.agentDir });
+		for (const s of diskSkills) {
+			const name = `skill:${s.name}`;
+			if (seen.has(name)) continue;
+			commands.push({
+				name,
+				description: s.description,
+				source: "skill",
+			});
+			seen.add(name);
 		}
 		for (const cmd of this.pluginCommandsProvider?.() ?? []) {
 			if (seen.has(cmd.name)) continue;
@@ -4355,6 +5042,19 @@ export class DshClientSession {
 
 	/** 拦截执行斜杠命令；返回 true 表示已处理（不发给模型）。 */
 	private async execSlash(name: string, args: string): Promise<boolean> {
+		if (name.startsWith("skill:")) {
+			const skillName = name.slice(6);
+			const diskSkills = discoverDiskSkills({ cwd: this.cwd, agentDir: this.agentDir });
+			const found = diskSkills.find((s) => s.name.toLowerCase() === skillName.toLowerCase());
+			if (found) {
+				const instruction = readSkillInstruction(found.filePath);
+				const skillPrompt = instruction
+					? `[Skill: ${found.name}]\n${instruction}\n\n[User Prompt]\n${args || "执行此技能"}`
+					: args || name;
+				await this.prompt(skillPrompt);
+				return true;
+			}
+		}
 		switch (name) {
 			case "new": {
 				const first = args.trim();
@@ -4374,7 +5074,11 @@ export class DshClientSession {
 					return true;
 				}
 				const q = args.trim().toLowerCase();
-				const all = [...DSH_MODELS, ...[...this.dynamicModels].map((id) => ({ id, name: id }))];
+				const all = [
+					...DSH_MODELS,
+					...[...this.dynamicModels].map((id) => ({ id, name: id })),
+					...[...this.customModelsMap.values()].map((m) => ({ id: m.id, name: m.name })),
+				];
 				const hit = all.find((m) => m.id === q || m.name?.toLowerCase().includes(q));
 				if (hit) {
 					await this.setModel(hit.id);
@@ -4547,9 +5251,24 @@ export class DshClientSession {
 		});
 	}
 
-	/** DSH 是否就绪：auth.json 的 deepseek key 或环境变量 DEEPSEEK_API_KEY 任一即可。 */
+	/** DSH 是否就绪：auth.json 的 deepseek key、环境变量 DEEPSEEK_API_KEY 或自定义 Provider 凭据任一即可。 */
 	private isDshConfigured(): boolean {
-		return !!loadDeepSeekKey(this.agentDir) || !!process.env.DEEPSEEK_API_KEY;
+		if (loadDeepSeekKey(this.agentDir) || process.env.DEEPSEEK_API_KEY) return true;
+		if (this.modelProvider && this.modelProvider !== "deepseek") {
+			const cred = resolveProviderCredential(this.agentDir, this.modelProvider);
+			if (cred.apiKey) return true;
+		}
+		try {
+			const custom = listCustomModelsFromConfig(this.agentDir);
+			if (custom.length > 0) {
+				for (const c of custom) {
+					if (resolveProviderCredential(this.agentDir, c.providerId).apiKey) return true;
+				}
+			}
+		} catch {
+			/* ignore */
+		}
+		return false;
 	}
 
 	/** 下拉框里的 deepseek-official 归一到 auth.json 的 deepseek 槽位（loadDeepSeekKey 只读它）。 */
@@ -4559,259 +5278,138 @@ export class DshClientSession {
 	}
 
 	async setProviderApiKey(provider: string, apiKey: string): Promise<void> {
-		const key = apiKey.trim();
-		if (!key) {
-			this.emit({ type: "notice", level: "error", text: "请填写 API 密钥", textEn: "Enter an API key" });
-			return;
+		await this.modelAdmin.setProviderApiKey(provider, apiKey);
+		if (this.runtime.alive && (provider === "deepseek" || provider === "deepseek-official")) {
+			await this.runtime.restart(this.model);
 		}
-		try {
-			// 与 pi 引擎同形状：{ <provider>: { type: "api_key", key } }。
-			const authPath = join(this.agentDir, "auth.json");
-			let auth: Record<string, unknown> = {};
-			try {
-				auth = JSON.parse(readFileSync(authPath, "utf8"));
-			} catch {
-				/* new file */
-			}
-			auth[this.normalizeDshProvider(provider)] = { type: "api_key", key };
-			writeJsonAtomicSync(authPath, auth);
-			this.emit({
-				type: "notice",
-				level: "info",
-				text: `✅ 已保存 ${provider.trim()} 的 API 密钥`,
-				textEn: `Saved API key`,
-			});
-			if (this.runtime.alive) await this.runtime.restart(this.model);
-			this.flushSnapshot();
-		} catch (err) {
-			this.emit({
-				type: "notice",
-				level: "error",
-				text: `保存 key 失败：${(err as Error).message}`,
-				textEn: `Failed to save key: ${(err as Error).message}`,
-			});
-		}
+		this.flushSnapshot();
 	}
 
 	async clearProviderApiKey(provider: string): Promise<void> {
-		const pid = this.normalizeDshProvider(provider);
-		try {
-			const authPath = join(this.agentDir, "auth.json");
-			const auth = JSON.parse(readFileSync(authPath, "utf8")) as Record<string, unknown>;
-			if (!(pid in auth)) {
-				this.emit({ type: "notice", level: "info", text: `${pid} 没有已保存的密钥`, textEn: `No saved key` });
-				return;
-			}
-			delete auth[pid];
-			writeJsonAtomicSync(authPath, auth);
-			this.emit({
-				type: "notice",
-				level: "info",
-				text: `🗑  已清除 ${pid} 的密钥，该服务商回到未配置状态`,
-				textEn: "Cleared",
-			});
-			if (this.runtime.alive && pid === "deepseek") await this.runtime.restart(this.model);
-			this.flushSnapshot();
-		} catch (err) {
-			this.emit({
-				type: "notice",
-				level: "error",
-				text: `清除失败：${(err as Error).message}`,
-				textEn: `Clear failed: ${(err as Error).message}`,
-			});
+		await this.modelAdmin.clearProviderApiKey(provider);
+		if (this.runtime.alive && (provider === "deepseek" || provider === "deepseek-official")) {
+			await this.runtime.restart(this.model);
 		}
+		this.flushSnapshot();
 	}
 
-	startProviderOAuth(_provider: string): void {
-		this.emit({
-			type: "notice",
-			level: "warning",
-			text: "当前引擎不支持 OAuth 登录",
-			textEn: "The current engine does not support OAuth login",
-		});
+	startProviderOAuth(provider: string): void {
+		this.modelAdmin.startProviderOAuth(provider);
 	}
 
-	replyProviderOAuth(_flowId: string, _promptId: string, _value: string): void {}
+	replyProviderOAuth(flowId: string, promptId: string, value: string): void {
+		this.modelAdmin.replyProviderOAuth(flowId, promptId, value);
+	}
 
-	cancelProviderOAuth(_flowId: string): void {}
+	cancelProviderOAuth(flowId: string): void {
+		this.modelAdmin.cancelProviderOAuth(flowId);
+	}
 
 	listProviderOAuthFlows(): void {
-		this.emit({ type: "provider_oauth_flows", flows: [] });
+		this.modelAdmin.listProviderOAuthFlows();
 	}
 
 	async logoutProviderOAuth(provider: string): Promise<void> {
-		this.emit({
-			type: "provider_oauth_logout_result",
-			provider,
-			ok: false,
-			error: "当前引擎不支持 OAuth 登录",
-		});
+		return this.modelAdmin.logoutProviderOAuth(provider);
 	}
 
 	async listModelsConfig(): Promise<void> {
-		this.emit({ type: "models_config", providers: [] });
+		return this.modelAdmin.listModelsConfig();
 	}
 
 	async reloadModelsConfig(): Promise<void> {
-		this.emit({
-			type: "notice",
-			level: "warning",
-			text: "DSH 引擎不支持自定义 provider",
-			textEn: "The DSH engine does not support custom providers",
-		});
+		return this.modelAdmin.reloadModelsConfig();
 	}
 
-	async saveModelConfig(_providerId: string, _config: unknown): Promise<void> {
-		this.emit({
-			type: "notice",
-			level: "warning",
-			text: "DSH 引擎使用内置 DeepSeek 模型，不支持自定义模型配置",
-			textEn: "The DSH engine uses the built-in DeepSeek model",
-		});
+	async saveModelConfig(providerId: string, config: unknown): Promise<void> {
+		await this.modelAdmin.saveModelConfig(providerId, config as any);
+		if (this.runtime.alive && (providerId === "deepseek" || providerId === "deepseek-official")) {
+			await this.runtime.restart(this.model);
+		}
 	}
 
-	async deleteModelConfig(_providerId: string): Promise<void> {
-		this.emit({
-			type: "notice",
-			level: "warning",
-			text: "DSH 引擎不支持自定义模型配置",
-			textEn: "The DSH engine does not support custom model configs",
+	deleteModelConfig(providerId: string): Promise<void> {
+		return this.modelAdmin.deleteModelConfig(providerId).then(async () => {
+			if (this.runtime.alive && (providerId === "deepseek" || providerId === "deepseek-official")) {
+				await this.runtime.restart(this.model);
+			}
 		});
 	}
 
 	async listProviders(): Promise<void> {
-		this.emit({
-			type: "providers_status",
-			providers: [
-				{
-					id: "deepseek-official",
-					name: pick(this.getLang(), "DeepSeek 官方", "DeepSeek Official", "dsh.provider.deepseek.official"),
-					configured: this.isDshConfigured(),
-					source: loadDeepSeekKey(this.agentDir) ? "stored" : process.env.DEEPSEEK_API_KEY ? "environment" : undefined,
-					supportsApiKey: true,
-					supportsOAuth: false,
-					usingOAuth: false,
-				},
-			],
-		});
+		return this.modelAdmin.listProviders();
 	}
 
 	listProviderKeys(): void {
-		this.emit({ type: "provider_keys", keys: {} });
+		this.modelAdmin.listProviderKeys();
 	}
 
-	async addProviderKey(_provider: string, _apiKey: string, _name?: string): Promise<void> {
-		this.emit({
-			type: "notice",
-			level: "warning",
-			text: "DSH 引擎不支持多密钥",
-			textEn: "The DSH engine does not support multiple keys",
-		});
+	async addProviderKey(provider: string, apiKey: string, name?: string): Promise<void> {
+		await this.modelAdmin.addProviderKey(provider, apiKey, name);
+		if (this.runtime.alive && (provider === "deepseek" || provider === "deepseek-official")) {
+			await this.runtime.restart(this.model);
+		}
 	}
 
-	async activateProviderKey(_provider: string, _keyName: string): Promise<void> {
-		this.emit({
-			type: "notice",
-			level: "warning",
-			text: "DSH 引擎不支持多密钥",
-			textEn: "The DSH engine does not support multiple keys",
-		});
+	async activateProviderKey(provider: string, keyName: string): Promise<void> {
+		await this.modelAdmin.activateProviderKey(provider, keyName);
+		if (this.runtime.alive && (provider === "deepseek" || provider === "deepseek-official")) {
+			await this.runtime.restart(this.model);
+		}
 	}
 
-	async removeProviderKey(_provider: string, _keyName: string): Promise<void> {
-		this.emit({
-			type: "notice",
-			level: "warning",
-			text: "DSH 引擎不支持多密钥",
-			textEn: "The DSH engine does not support multiple keys",
-		});
+	async removeProviderKey(provider: string, keyName: string): Promise<void> {
+		await this.modelAdmin.removeProviderKey(provider, keyName);
+		if (this.runtime.alive && (provider === "deepseek" || provider === "deepseek-official")) {
+			await this.runtime.restart(this.model);
+		}
 	}
 
 	async fetchModelsList(
 		reqId: number,
-		_baseUrl: string,
-		_apiKey?: string,
-		_authHeader?: boolean,
-		_api?: string,
+		baseUrl: string,
+		apiKey?: string,
+		authHeader?: boolean,
+		api?: string,
+		providerId?: string,
 	): Promise<void> {
-		this.emit({
-			type: "fetch_models_result",
-			reqId,
-			ok: false,
-			error: pick(
-				this.getLang(),
-				"DSH 引擎不支持自定义 provider 探测",
-				"The DSH engine does not support custom provider probing",
-				"dsh.provider.probing.unsupported",
-			),
-		});
+		return this.modelAdmin.fetchModelsList(reqId, baseUrl, apiKey, authHeader, api, () => this.getLang(), providerId);
 	}
 
-	async refreshProviderModels(_providerId: string, reqId: number): Promise<void> {
-		this.emit({
-			type: "refresh_provider_result",
-			reqId,
-			ok: false,
-			error: pick(
-				this.getLang(),
-				"DSH 引擎不支持自定义 provider",
-				"The DSH engine does not support custom providers",
-				"dsh.provider.custom.unsupported",
-			),
-		});
+	async testModelConnection(
+		reqId: number,
+		baseUrl: string,
+		apiKey?: string,
+		authHeader?: boolean,
+		api?: string,
+		providerId?: string,
+	): Promise<void> {
+		return this.modelAdmin.testConnection(reqId, baseUrl, apiKey, authHeader, api, () => this.getLang(), providerId);
+	}
+
+	async refreshProviderModels(providerId: string, reqId: number): Promise<void> {
+		return this.modelAdmin.refreshProviderModels(providerId, reqId, () => this.getLang());
 	}
 
 	async refreshBuiltinModels(reqId: number): Promise<void> {
-		this.emit({
-			type: "refresh_builtin_result",
-			reqId,
-			ok: false,
-			error: pick(
-				this.getLang(),
-				"DSH 引擎走运行时内置模型，无官方目录可刷新",
-				"The DSH engine uses runtime-built-in models; no official catalog to refresh",
-				"dsh.provider.builtin.refresh.unsupported",
-			),
-		});
+		return this.modelAdmin.refreshBuiltinModels(reqId);
 	}
 
-	async appendBuiltinModel(_providerId: string, _model: unknown, reqId: number): Promise<void> {
-		this.emit({
-			type: "append_builtin_result",
-			reqId,
-			ok: false,
-			error: pick(
-				this.getLang(),
-				"DSH 引擎不支持自定义 provider",
-				"The DSH engine does not support custom providers",
-				"dsh.provider.custom.unsupported",
-			),
-		});
+	async appendBuiltinModel(providerId: string, model: unknown, reqId: number): Promise<void> {
+		return this.modelAdmin.appendBuiltinModel(providerId, model as any, reqId);
 	}
 
-	async cloneProvider(_provider: string, reqId: number): Promise<void> {
-		const error = pick(
-			this.getLang(),
-			"DSH 引擎不支持自定义 provider",
-			"The DSH engine does not support custom providers",
-			"dsh.provider.clone.unsupported",
-		);
-		const errorEn = "DSH engine does not support custom providers";
-		this.emit({ type: "notice", level: "error", text: error, textEn: errorEn });
-		this.emit({ type: "clone_provider_result", reqId, ok: false, error });
+	async cloneProvider(provider: string, reqId: number): Promise<void> {
+		return this.modelAdmin.cloneProvider(provider, reqId);
 	}
 
-	async enrichModels(reqId: number, _ids: string[], _hints?: Record<string, string>): Promise<void> {
-		const error = pick(
-			this.getLang(),
-			"DSH 引擎不支持自定义 provider",
-			"The DSH engine does not support custom providers",
-			"dsh.provider.custom.unsupported",
-		);
-		this.emit({ type: "enrich_models_result", reqId, ok: false, error });
+	async enrichModels(reqId: number, ids: string[], hints?: Record<string, string>): Promise<void> {
+		return this.modelAdmin.enrichModels(reqId, ids, hints);
 	}
 
-	abortEnrichModels(_reqId?: number): void {}
+	abortEnrichModels(reqId?: number): void {
+		this.modelAdmin.abortEnrichModels(reqId);
+	}
 
 	// -----------------------------------------------------------------------
 	// 其他
@@ -4950,9 +5548,15 @@ export class DshClientSession {
 			this.cwd = abs;
 			this.roots = this.stateStore.getWorkspaceRoots(this.clientId, abs);
 			this.stateStore.remember(this.clientId, abs);
+			// 恢复新工作区的记忆模型（按 DSH 引擎独立记录：项目记忆 > 全局默认）
+			const savedModel =
+				this.stateStore.getProjectModel(this.clientId, abs, "dsh") ?? this.stateStore.getDefaultModel("dsh");
+			if (savedModel) {
+				this.applySavedModel(savedModel);
+			}
 			// 换项目 = 重启运行时（initialize 固定 cwd）。
 			try {
-				await this.runtime.restart(this.model);
+				await this.runtime.restart(this.model, this.modelProvider);
 			} catch (err) {
 				this.emit({
 					type: "notice",
@@ -4965,8 +5569,32 @@ export class DshClientSession {
 			// （与 pi 的 displaceActive 语义一致）；空白的直接弃（不列）。
 			const prev = this.conv;
 			prev.listed = this.shouldRetainDshConversation(prev) || prev.messages.length > 0;
-			// 新项目 → 新会话。
-			this.activeId = this.addConversation(`web-${randomUUID().slice(0, 12)}`, abs, false).id;
+			// 新项目 → 恢复最近历史会话（若有）或新建空白会话
+			const recentFiles = findSessionFilesForCwd(this.sessionRoot, abs).filter(
+				(f) => !basename(dirname(f)).startsWith("review-"),
+			);
+			let resumedConv: DshConversation | null = null;
+			for (const file of recentFiles) {
+				try {
+					const { events } = readSessionLog(file);
+					const hasRealMessages = events.some(
+						(e) =>
+							(e.type === "user/message" && !isDshInternalUserMessage(e.data as Record<string, unknown>)) ||
+							e.type === "assistant/message",
+					);
+					if (hasRealMessages) {
+						const sid = basename(dirname(file));
+						const conv = this.addConversation(sid, abs, true, undefined, file);
+						conv.fromDisk = true;
+						conv.sessionFile = file;
+						resumedConv = conv;
+						break;
+					}
+				} catch {
+					continue;
+				}
+			}
+			this.activeId = (resumedConv ?? this.addConversation(`web-${randomUUID().slice(0, 12)}`, abs, false)).id;
 			// 旧项目非活跃 conversation 回收（pi 的 displaceActive 语义：切走后
 			// 非 streaming / 无终端 / 未列出的旧会话从内存移除，磁盘 JSONL 可回放恢复）。
 			// eslint-disable-next-line unicorn/no-useless-spread -- snapshot: handlers may unsubscribe mid-emit
@@ -5033,6 +5661,7 @@ export class DshClientSession {
 			this.retentionOnce = null;
 		}
 		this.bg.stop();
+		this.modelAdmin.dispose();
 		for (const conv of this.convs.values()) conv.terminals.killAll();
 		try {
 			await this.runtime.close();
@@ -5295,6 +5924,10 @@ export class DshAgentService {
 			}
 		}
 		this.clients.clear();
+	}
+
+	getCapabilities(): AgentEngineCapabilities {
+		return DEFAULT_DSH_CAPABILITIES;
 	}
 
 	/** dsh engine keeps no interrupted-run record — resume is pi-only. */

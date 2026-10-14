@@ -442,7 +442,7 @@ describe("上下左右四栏通用 BarItem 渲染测试", () => {
 		container.remove();
 	});
 
-	it("引擎选择器 host:engine 常驻显示下拉胶囊（含引擎名与 PI 徽标），点击展开多引擎下拉菜单", () => {
+	it("引擎选择器 host:engine 常驻显示下拉胶囊（含 PI 徽标），点击展开多引擎下拉菜单", () => {
 		const engEntry: UiSlotEntry = {
 			id: "host:engine",
 			slot: "bottombar",
@@ -464,7 +464,7 @@ describe("上下左右四栏通用 BarItem 渲染测试", () => {
 		expect(badge?.textContent).toBe("PI");
 		const triggerBtn = container.querySelector(".engine-picker-btn") as HTMLButtonElement | null;
 		expect(triggerBtn).not.toBeNull();
-		expect(triggerBtn?.textContent).toContain("pi 引擎");
+		expect(triggerBtn?.textContent).toContain("PI");
 		act(() => {
 			triggerBtn?.click();
 		});

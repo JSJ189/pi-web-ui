@@ -32,10 +32,10 @@ export interface ModelAdminHost {
 	emit: (msg: ServerMessage) => void;
 	flushSnapshot: () => void;
 	isDisposed: () => boolean;
-	/** 共享 ModelRuntime（所有对话共用），改动后需 refresh/热更新。 */
-	modelRuntime: () => ModelRuntime;
+	/** 共享 ModelRuntime（所有对话共用），改动后需 refresh/热更新。非 pi 引擎时可缺省。 */
+	modelRuntime?: () => ModelRuntime;
 	/** auth/models 变更后 pi 配置检测缓存失效（piConfigured 可能翻转）。 */
-	invalidatePiConfig: () => void;
+	invalidatePiConfig?: () => void;
 	/** 变更后重推顶栏模型下拉。 */
 	pushModels: () => Promise<void>;
 	/** OAuth becomes authoritative, so project-scoped API-key choices must not restore over it. */
@@ -290,7 +290,11 @@ export class ModelAdminService {
 
 	constructor(private readonly host: ModelAdminHost) {
 		this.oauthFlows = new ProviderOAuthFlowManager({
-			modelRuntime: host.modelRuntime,
+			modelRuntime:
+				host.modelRuntime ??
+				(() => {
+					throw new Error("OAuth not supported without ModelRuntime");
+				}),
 			emit: host.emit,
 			isDisposed: host.isDisposed,
 			onLoginSuccess: (provider) => this.onOAuthLoginSuccess(provider),
@@ -339,12 +343,12 @@ export class ModelAdminService {
 	async logoutProviderOAuth(provider: string): Promise<void> {
 		const providerId = provider.trim();
 		try {
-			const runtime = this.host.modelRuntime();
-			if (!providerId || !runtime.getProvider(providerId)?.auth.oauth) {
+			const runtime = this.host.modelRuntime?.();
+			if (!runtime || !providerId || !runtime.getProvider(providerId)?.auth.oauth) {
 				throw new Error("该服务商不支持 OAuth 登录");
 			}
 			await runtime.logout(providerId);
-			this.host.invalidatePiConfig();
+			this.host.invalidatePiConfig?.();
 			await this.host.pushModels();
 			await this.listProviders();
 			this.host.emit({ type: "provider_oauth_logout_result", provider: providerId, ok: true });
@@ -367,7 +371,7 @@ export class ModelAdminService {
 			this.writeProviderKeys(keys);
 		}
 		this.host.onOAuthActivated?.(provider);
-		this.host.invalidatePiConfig();
+		this.host.invalidatePiConfig?.();
 		await this.host.pushModels();
 		await this.listProviders();
 		this.listProviderKeys();
@@ -529,9 +533,15 @@ export class ModelAdminService {
 		const data = this.readProviderKeys();
 		const ids = new Set(Object.keys(data));
 		try {
-			for (const p of this.host.modelRuntime().getProviders()) ids.add(p.id);
+			const mr = this.host.modelRuntime?.();
+			if (mr) {
+				for (const p of mr.getProviders()) ids.add(p.id);
+			}
 		} catch {
 			// runtime not ready
+		}
+		for (const id of ["anthropic", "openai", "google", "deepseek", "groq", "mistral", "openrouter", "ollama"]) {
+			ids.add(id);
 		}
 		return [...ids];
 	}
@@ -548,10 +558,12 @@ export class ModelAdminService {
 		}
 		data[pid] = { type: "api_key", key: apiKey };
 		atomicWriteJson(authPath, data);
-		const mr = this.host.modelRuntime();
-		await mr.setRuntimeApiKey(pid, apiKey);
-		await mr.refresh({ allowNetwork: true, providers: [pid] });
-		this.host.invalidatePiConfig();
+		const mr = this.host.modelRuntime?.();
+		if (mr) {
+			await mr.setRuntimeApiKey(pid, apiKey);
+			await mr.refresh({ allowNetwork: true, providers: [pid] });
+		}
+		this.host.invalidatePiConfig?.();
 	}
 
 	/** Persist an api-key credential for a provider (auth.json) and apply it now.
@@ -769,10 +781,12 @@ export class ModelAdminService {
 				}
 				delete auth[pid];
 				atomicWriteJson(authPath, auth);
-				const mr = this.host.modelRuntime();
-				await mr.removeRuntimeApiKey(pid);
-				await mr.refresh({ providers: [pid] });
-				this.host.invalidatePiConfig();
+				const mr = this.host.modelRuntime?.();
+				if (mr) {
+					await mr.removeRuntimeApiKey(pid);
+					await mr.refresh({ providers: [pid] });
+				}
+				this.host.invalidatePiConfig?.();
 				this.host.emit({
 					type: "notice",
 					level: "info",
@@ -825,7 +839,7 @@ export class ModelAdminService {
 			this.host.emit({ type: "notice", level: "error", text: "请填写服务商 ID", textEn: "Enter a provider ID" });
 			return;
 		}
-		if (this.host.modelRuntime().isUsingOAuth(pid)) {
+		if (this.host.modelRuntime?.()?.isUsingOAuth(pid)) {
 			this.host.emit({
 				type: "notice",
 				level: "error",
@@ -862,10 +876,12 @@ export class ModelAdminService {
 			this.writeProviderKeys(keyData);
 			// Drop the runtime override too, then re-read credentials so the
 			// provider goes back to unconfigured and its models leave the list.
-			const mr = this.host.modelRuntime();
-			await mr.removeRuntimeApiKey(pid);
-			await mr.refresh({ providers: [pid] });
-			this.host.invalidatePiConfig();
+			const mr = this.host.modelRuntime?.();
+			if (mr) {
+				await mr.removeRuntimeApiKey(pid);
+				await mr.refresh({ providers: [pid] });
+			}
+			this.host.invalidatePiConfig?.();
 			this.host.emit({
 				type: "notice",
 				level: "info",
@@ -905,10 +921,28 @@ export class ModelAdminService {
 				fail("请填写服务商 ID", "Enter a provider ID");
 				return;
 			}
-			const mr = this.host.modelRuntime();
-			const p = mr.getProvider(pid);
-			if (!p) {
-				fail(`供应商 ${pid} 不存在`, `Provider ${pid} does not exist`);
+			const mr = this.host.modelRuntime?.();
+			const p = mr?.getProvider(pid);
+			if (!mr || !p) {
+				const { providers } = this.readModelsConfig();
+				const saved = providers[pid];
+				if (!saved) {
+					fail(`供应商 ${pid} 不存在`, `Provider ${pid} does not exist`);
+					return;
+				}
+				this.host.emit({
+					type: "clone_provider_result",
+					reqId,
+					ok: true,
+					config: {
+						providerId: `${pid}-clone`,
+						name: `${(saved.name as string) ?? pid} (副本)`,
+						baseUrl: saved.baseUrl as string | undefined,
+						api: saved.api as string | undefined,
+						hasApiKey: false,
+						models: Array.isArray(saved.models) ? (saved.models as any) : [],
+					},
+				});
 				return;
 			}
 			const noBaseUrl = !p.baseUrl;
@@ -1072,46 +1106,106 @@ export class ModelAdminService {
 
 	/** Enumerate pi's built-in providers with auth capabilities and status. */
 	async listProviders(): Promise<void> {
-		const mr = this.host.modelRuntime();
+		const mr = this.host.modelRuntime?.();
 		let providers;
-		try {
-			providers = mr.getProviders().map((p) => {
-				const supportsApiKey = p.auth.apiKey !== undefined;
-				const supportsOAuth = p.auth.oauth !== undefined;
-				const oauthName = p.auth.oauth?.name;
-				try {
-					const st = mr.getProviderAuthStatus(p.id);
-					return {
-						id: p.id,
-						name: p.name,
-						configured: st?.configured ?? false,
-						source: st?.source,
-						supportsApiKey,
-						supportsOAuth,
-						oauthName,
-						usingOAuth: mr.isUsingOAuth(p.id),
-					};
-				} catch {
-					// One odd provider must not blank the whole list.
-					return {
-						id: p.id,
-						name: p.name,
-						configured: false,
-						supportsApiKey,
-						supportsOAuth,
-						oauthName,
+		if (mr) {
+			try {
+				providers = mr.getProviders().map((p) => {
+					const supportsApiKey = p.auth.apiKey !== undefined;
+					const supportsOAuth = p.auth.oauth !== undefined;
+					const oauthName = p.auth.oauth?.name;
+					try {
+						const st = mr.getProviderAuthStatus(p.id);
+						return {
+							id: p.id,
+							name: p.name,
+							configured: st?.configured ?? false,
+							source: st?.source,
+							supportsApiKey,
+							supportsOAuth,
+							oauthName,
+							usingOAuth: mr.isUsingOAuth(p.id),
+						};
+					} catch {
+						// One odd provider must not blank the whole list.
+						return {
+							id: p.id,
+							name: p.name,
+							configured: false,
+							supportsApiKey,
+							supportsOAuth,
+							oauthName,
+							usingOAuth: false,
+						};
+					}
+				});
+			} catch (err) {
+				this.host.emit({
+					type: "notice",
+					level: "error",
+					text: `获取服务商列表失败：${(err as Error).message}`,
+					textEn: `Failed to fetch provider list: ${(err as Error).message}`,
+				});
+				return;
+			}
+		} else {
+			// 非 pi 引擎：根据 models.json + auth.json + provider-keys.json + 常见官方列表综合列出
+			let auth: Record<string, unknown> = {};
+			try {
+				auth = JSON.parse(readFileSync(join(this.host.agentDir, "auth.json"), "utf8")) as Record<string, unknown>;
+			} catch {
+				/* ignore */
+			}
+			const keyData = this.readProviderKeys();
+			const { providers: custom } = this.readModelsConfig();
+			const builtins = [
+				{ id: "anthropic", name: "Anthropic" },
+				{ id: "openai", name: "OpenAI" },
+				{ id: "deepseek", name: "DeepSeek" },
+				{ id: "google", name: "Google Gemini" },
+				{ id: "openrouter", name: "OpenRouter" },
+				{ id: "groq", name: "Groq" },
+				{ id: "mistral", name: "Mistral" },
+				{ id: "ollama", name: "Ollama" },
+			];
+			const allIds = new Set<string>();
+			providers = [];
+			for (const b of builtins) {
+				allIds.add(b.id);
+				const hasStored = Boolean(auth[b.id] || (keyData[b.id]?.keys.length ?? 0) > 0);
+				const hasEnv = Boolean(
+					(b.id === "anthropic" && process.env.ANTHROPIC_API_KEY) ||
+					(b.id === "deepseek" && process.env.DEEPSEEK_API_KEY) ||
+					(b.id === "openai" && process.env.OPENAI_API_KEY) ||
+					(b.id === "openrouter" && process.env.OPENROUTER_API_KEY) ||
+					(b.id === "google" && (process.env.GEMINI_API_KEY || process.env.GOOGLE_API_KEY)),
+				);
+				providers.push({
+					id: b.id,
+					name: b.name,
+					configured: hasStored || hasEnv,
+					source: (hasStored ? "stored" : hasEnv ? "environment" : undefined) as "stored" | "environment" | undefined,
+					supportsApiKey: true,
+					supportsOAuth: false,
+					usingOAuth: false,
+				});
+			}
+			for (const [cid, c] of Object.entries(custom)) {
+				if (!allIds.has(cid)) {
+					allIds.add(cid);
+					const hasKey = typeof c.apiKey === "string" && c.apiKey.trim() !== "";
+					const hasStored = Boolean(auth[cid] || (keyData[cid]?.keys.length ?? 0) > 0);
+					providers.push({
+						id: cid,
+						name: (c.name as string) || cid,
+						configured: hasKey || hasStored,
+						source: (hasKey ? "stored" : hasStored ? "stored" : undefined) as "stored" | "environment" | undefined,
+						supportsApiKey: true,
+						supportsOAuth: false,
 						usingOAuth: false,
-					};
+					});
 				}
-			});
-		} catch (err) {
-			this.host.emit({
-				type: "notice",
-				level: "error",
-				text: `获取服务商列表失败：${(err as Error).message}`,
-				textEn: `Failed to fetch provider list: ${(err as Error).message}`,
-			});
-			return;
+			}
 		}
 		if (providers.length === 0) {
 			this.host.emit({
@@ -1223,8 +1317,8 @@ export class ModelAdminService {
 	 *  repush — same refresh tail that save_model_config runs. */
 	async reloadModelsConfig(): Promise<void> {
 		try {
-			await this.host.modelRuntime().refresh();
-			this.host.invalidatePiConfig();
+			await this.host.modelRuntime?.()?.refresh();
+			this.host.invalidatePiConfig?.();
 			await this.listModelsConfig();
 			await this.host.pushModels();
 			this.host.emit({
@@ -1530,7 +1624,7 @@ export class ModelAdminService {
 			// 已知的地址——内置 provider 的 baseUrl 本来就不在 models.json 里。
 			// 注意只拿来探测用，不写回磁盘：保持条目仍是纯覆盖。
 			const baseUrl =
-				saved?.baseUrl?.trim() || (this.host.modelRuntime().getProvider(pid)?.baseUrl ?? "").trim() || undefined;
+				saved?.baseUrl?.trim() || (this.host.modelRuntime?.()?.getProvider(pid)?.baseUrl ?? "").trim() || undefined;
 			if (!saved || !baseUrl) {
 				this.host.emit({
 					type: "notice",
@@ -1619,7 +1713,12 @@ export class ModelAdminService {
 		const done = (ok: boolean, error?: string) =>
 			this.host.emit({ type: "refresh_builtin_result", reqId, ok, ...(error ? { error } : {}) });
 		try {
-			const mr = this.host.modelRuntime();
+			const mr = this.host.modelRuntime?.();
+			if (!mr) {
+				await this.listProviders();
+				await this.host.pushModels();
+				return done(true);
+			}
 			const res = await mr.refresh({
 				allowNetwork: true,
 				force: true,
@@ -1633,7 +1732,7 @@ export class ModelAdminService {
 			if (graduated.length > 0) {
 				await mr.refresh();
 			}
-			this.host.invalidatePiConfig();
+			this.host.invalidatePiConfig?.();
 			await this.host.pushModels();
 			await this.listProviders();
 			const failures = [...res.errors.entries()].map(([pid, err]) => `${pid} (${err.message})`);
@@ -1762,13 +1861,13 @@ export class ModelAdminService {
 				typeof credential.key === "string" &&
 				credential.key.trim()
 			) {
-				await this.host.modelRuntime().setRuntimeApiKey(pid, credential.key);
+				await this.host.modelRuntime?.()?.setRuntimeApiKey(pid, credential.key);
 			}
 		} catch {
 			// auth.json is optional; models.json can still use its own apiKey.
 		}
-		await this.host.modelRuntime().refresh();
-		this.host.invalidatePiConfig();
+		await this.host.modelRuntime?.()?.refresh();
+		this.host.invalidatePiConfig?.();
 		await this.listModelsConfig();
 		await this.host.pushModels();
 	}
@@ -1816,7 +1915,7 @@ export class ModelAdminService {
 					);
 				}
 			}
-			if (!this.host.modelRuntime().getProvider(pid)) {
+			if (this.host.modelRuntime && !this.host.modelRuntime().getProvider(pid)) {
 				return fail(`供应商 ${pid} 不存在`, `Provider ${pid} does not exist`);
 			}
 			const { providers } = this.readModelsConfig();
@@ -1914,8 +2013,8 @@ export class ModelAdminService {
 			}
 			delete providers[providerId];
 			atomicWriteJson(this.modelsConfigPath(), { providers });
-			await this.host.modelRuntime().refresh();
-			this.host.invalidatePiConfig();
+			await this.host.modelRuntime?.()?.refresh();
+			this.host.invalidatePiConfig?.();
 			await this.listModelsConfig();
 			await this.host.pushModels();
 			this.host.emit({

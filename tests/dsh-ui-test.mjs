@@ -70,6 +70,31 @@ async function startServer() {
 	throw new Error("server did not start");
 }
 
+async function tap(page, locator) {
+	await locator.waitFor({ state: "visible", timeout: 15000 });
+	await locator.scrollIntoViewIfNeeded();
+	const box = await locator.boundingBox();
+	if (!box) throw new Error("tap: 元素没有 bounding box");
+	await page.mouse.click(box.x + box.width / 2, box.y + box.height / 2);
+}
+
+async function openSettings(page) {
+	const btn = page
+		.locator(
+			'button.chip[data-tip*="设置"], button.chip[data-tip*="Settings"], button[title*="设置"], button[title*="Settings"]',
+		)
+		.first();
+	for (let attempt = 0; attempt < 6; attempt++) {
+		if ((await page.locator(".settings-modal").count()) > 0) return true;
+		await tap(page, btn).catch(() => {});
+		for (let i = 0; i < 15; i++) {
+			if ((await page.locator(".settings-modal").count()) > 0) return true;
+			await sleep(200);
+		}
+	}
+	return false;
+}
+
 async function run() {
 	if (!CHROME) {
 		console.log("⏭ SKIP：未找到 Chrome（设 PI_WEB_CHROME 或安装 Chrome/playwright chromium）");
@@ -86,31 +111,29 @@ async function run() {
 	check("DSH 引擎徽标显示", /DSH/i.test(badge.trim()), badge.trim());
 
 	// 2. 目标条渲染。
-	await page.locator(".goalbar").waitFor({ timeout: 15000 });
-	const goalbarCount = await page.locator(".goalbar").count();
+	await page.locator(".goalbar, .goalbar-collapsed").first().waitFor({ timeout: 15000 });
+	const goalbarCount = await page.locator(".goalbar, .goalbar-collapsed").count();
 	check("目标条（GoalBar）渲染", goalbarCount > 0, `count=${goalbarCount}`);
 
-	// 3. 设置面板「界面插件」→ 「DSH 用户补丁」区块。
-	await page
-		.locator('button.chip[data-tip="设置"], button.chip[data-tip="Settings"], button.chip[title="设置"]')
-		.first()
-		.click();
-	await page.locator(".settings-tab", { hasText: "界面插件" }).first().click();
-	await page.locator("text=DSH 用户补丁").first().waitFor({ timeout: 10000 });
-	check("设置面板显示「DSH 用户补丁」区块", (await page.locator("text=DSH 用户补丁").count()) > 0);
+	// 3. 打开设置面板并验证 DSH 专属「补丁与市场」页签。
+	check("设置面板打开", await openSettings(page));
+	await page.waitForSelector(".settings-tab", { timeout: 10000 });
+	await tap(page, page.locator('.settings-tab[data-tab="extensions"]').first());
+	// 切换到「已安装」子选项卡
+	await tap(page, page.locator(".dsh-market-tab").nth(1));
 	// 补丁文件应在列表里展示（扫到 00-ui.patch.yml）。
 	await page.locator("text=00-ui.patch.yml").first().waitFor({ timeout: 10000 });
 	check("补丁文件 00-ui.patch.yml 展示", (await page.locator("text=00-ui.patch.yml").count()) > 0);
 
-	// 4. 设置面板「技能」页签 → DSH 说明文案。
-	await page.locator(".settings-tab", { hasText: "技能" }).first().click();
-	const skillsNote = await page
-		.locator("text=DSH 引擎使用运行时内置技能")
+	// 4. 设置面板 DSH 专属「预设与权限」页签。
+	await tap(page, page.locator('.settings-tab[data-tab="dsh-presets"]').first());
+	const presetSection = await page
+		.getByText(/新对话使用的预设|Preset for new chats|默认预设|Default preset/i)
 		.first()
 		.waitFor({ timeout: 10000 })
 		.then(() => true)
 		.catch(() => false);
-	check("技能页签显示 DSH 说明文案", skillsNote);
+	check("DSH 专属预设与权限页签展示", presetSection);
 
 	await browser.close().catch(() => {});
 	if (server) server.kill();

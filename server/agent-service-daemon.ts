@@ -26,7 +26,15 @@ import { getMaxOpenConversations } from "./agent-formatters.js";
 import { collectSubagentDescendantIds } from "./subagents.js";
 import { pickLatestClientSnapshot } from "./plugin-conversation-view.js";
 import type { ToolGuardHook } from "./tool-guards.js";
-import type { ServerMessage, UiServiceInfo, QuestionAnswer, ElsewhereRunning, BgServer } from "./protocol.js";
+import type {
+	ServerMessage,
+	UiServiceInfo,
+	QuestionAnswer,
+	ElsewhereRunning,
+	BgServer,
+	AgentEngineCapabilities,
+} from "./protocol.js";
+import { DEFAULT_PI_CAPABILITIES } from "./engine-capabilities.js";
 import type {
 	PluginToolEvent,
 	PluginRunEvent,
@@ -1320,6 +1328,10 @@ export class AgentService {
 				// best effort — never block shutdown on bookkeeping
 			}
 		}
+	}
+
+	getCapabilities(): AgentEngineCapabilities {
+		return DEFAULT_PI_CAPABILITIES;
 	}
 
 	async disposeAll(): Promise<void> {

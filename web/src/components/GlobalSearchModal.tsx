@@ -3,7 +3,7 @@ import { FiFileText, FiFolder, FiMessageSquare, FiPackage, FiSearch, FiX } from 
 import type { FileSearchResult, MessageAnchor, ProjectSummary, SessionSearchResult } from "../types";
 import { useT } from "../i18n";
 import { getPluginSearchProvider, listPluginSearchProviders, triggerPluginUiAction } from "../plugin-host";
-import { appSend, useAppField } from "../app-globals";
+import { appSend, useAppField, useEngineCapabilities } from "../app-globals";
 import { composeToComposer } from "../composer-bridge";
 import { nextSearchReqId } from "../search-req-id";
 
@@ -63,6 +63,7 @@ export function GlobalSearchModal({
 	onPreviewFile,
 }: GlobalSearchModalProps) {
 	const t = useT();
+	const capabilities = useEngineCapabilities();
 	// 节标题复用现成词条（zh「插件」/ en「Plugins」/ 各语言包自带译文）。
 	const pluginSectionLabel = t("pluginMenuTitle");
 	// 当前工作目录：走全局（web/src/app-globals.ts），不再从 App 传（项目行的
@@ -413,27 +414,29 @@ export function GlobalSearchModal({
 											</span>
 											<span className="gs-item-sub">{s.firstMessage}</span>
 										</button>
-										<button
-											type="button"
-											className="gs-quote"
-											title={t("quoteConversation")}
-											onClick={(e) => {
-												e.stopPropagation();
-												composeToComposer({
-													attachments: [
-														{
-															path: "",
-															key: `conv||${s.path}`,
-															name: title,
-															mode: "conversation",
-															sessionPath: s.path,
-														},
-													],
-												});
-											}}
-										>
-											💬 {t("quoteConversationShort")}
-										</button>
+										{capabilities.conversationRef && (
+											<button
+												type="button"
+												className="gs-quote"
+												title={t("quoteConversation")}
+												onClick={(e) => {
+													e.stopPropagation();
+													composeToComposer({
+														attachments: [
+															{
+																path: "",
+																key: `conv||${s.path}`,
+																name: title,
+																mode: "conversation",
+																sessionPath: s.path,
+															},
+														],
+													});
+												}}
+											>
+												💬 {t("quoteConversationShort")}
+											</button>
+										)}
 									</div>
 								);
 							})}

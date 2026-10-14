@@ -35,7 +35,24 @@
  */
 
 import { useSyncExternalStore } from "react";
-import type { ClientMessage, ConnStatus, UiServiceInfo } from "./types";
+import type { ClientMessage, ConnStatus, UiServiceInfo, AgentEngineCapabilities } from "./types";
+
+export const DEFAULT_ENGINE_CAPABILITIES: AgentEngineCapabilities = {
+	remoteSsh: true,
+	sandboxes: true,
+	workspaceRoots: true,
+	conversationRef: true,
+	pageRef: true,
+	presentFiles: true,
+	planMode: true,
+	delegateMode: true,
+	subagents: true,
+	toolPromptOverride: true,
+	lazyTools: true,
+	softCap: true,
+	treeFork: true,
+	messageEdit: true,
+};
 
 export interface AppGlobals {
 	/** 引擎标识（"pi" | "dsh"）。缺省 "pi" —— 老服务端不发这个字段。 */
@@ -66,6 +83,8 @@ export interface AppGlobals {
 	homeDir: string;
 	/** 桌面目录（快照 UiState.desktopDir 的镜像）：空串 = 不存在/旧服务 → 🖥️ 不渲染。 */
 	desktopDir: string;
+	/** 当前底座能力声明（Capabilities）—— 前端据此自适应隐藏不支持的入口。 */
+	engineCapabilities: AgentEngineCapabilities;
 }
 
 export const DEFAULT_APP_GLOBALS: AppGlobals = {
@@ -77,6 +96,7 @@ export const DEFAULT_APP_GLOBALS: AppGlobals = {
 	workspaceRoots: [],
 	homeDir: "",
 	desktopDir: "",
+	engineCapabilities: DEFAULT_ENGINE_CAPABILITIES,
 };
 
 let cached: AppGlobals = DEFAULT_APP_GLOBALS;
@@ -87,6 +107,27 @@ function sameArray(a?: string[], b?: string[]): boolean {
 	if (a === b) return true;
 	if (!a || !b || a.length !== b.length) return false;
 	return a.every((v, i) => v === b[i]);
+}
+
+function sameCapabilities(a?: AgentEngineCapabilities, b?: AgentEngineCapabilities): boolean {
+	if (a === b) return true;
+	if (!a || !b) return false;
+	return (
+		a.remoteSsh === b.remoteSsh &&
+		a.sandboxes === b.sandboxes &&
+		a.workspaceRoots === b.workspaceRoots &&
+		a.conversationRef === b.conversationRef &&
+		a.pageRef === b.pageRef &&
+		a.presentFiles === b.presentFiles &&
+		a.planMode === b.planMode &&
+		a.delegateMode === b.delegateMode &&
+		a.subagents === b.subagents &&
+		a.toolPromptOverride === b.toolPromptOverride &&
+		a.lazyTools === b.lazyTools &&
+		a.softCap === b.softCap &&
+		a.treeFork === b.treeFork &&
+		a.messageEdit === b.messageEdit
+	);
 }
 
 function same(a: AppGlobals, b: AppGlobals): boolean {
@@ -104,6 +145,7 @@ function same(a: AppGlobals, b: AppGlobals): boolean {
 		a.homeDir === b.homeDir &&
 		a.desktopDir === b.desktopDir &&
 		sameArray(a.tabs, b.tabs) &&
+		sameCapabilities(a.engineCapabilities, b.engineCapabilities) &&
 		// ready 每次重连都会带一份新的 service 对象——比字段，避免白重渲染。
 		a.service?.name === b.service?.name &&
 		a.service?.supervisor === b.service?.supervisor
@@ -175,6 +217,11 @@ export function useIsManaged(): boolean {
  *  退出后会被 supervisor 拉起）；前台/dev 实例返回 undefined。 */
 export function useServiceInfo(): UiServiceInfo | undefined {
 	return useAppField("service");
+}
+
+/** 当前底层引擎能力声明 */
+export function useEngineCapabilities(): AgentEngineCapabilities {
+	return useAppField("engineCapabilities");
 }
 
 /* ------------------------------------------------------------------ */

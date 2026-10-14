@@ -19,6 +19,7 @@ import { spawn } from "node:child_process";
 import { createHash, randomUUID } from "node:crypto";
 import { createRequire } from "node:module";
 import * as fsPromises from "node:fs/promises";
+import { DEFAULT_PI_CAPABILITIES } from "./engine-capabilities.js";
 import {
 	appendFileSync,
 	existsSync,
@@ -302,6 +303,7 @@ import { getWorktreeContext, removeWorktree, normalizeWirePath } from "./worktre
 import type { WorktreeInfo } from "./protocol.js";
 import { sameSessionFile, type SchedulerStore } from "./scheduler-tasks.js";
 import { buildAttachmentMessages, findTurnBaseEntryId, parseModelSpec } from "./attachments.js";
+import { scanAtMentions } from "./universal/universal-attachments.js";
 import { formatQuotedPrompt, formatStreamingPrompt, readTextQuote, splitQuotedPrompt } from "./text-quote.js";
 import { buildVisionBridgePrompt, findVisionModels, transcribeImages } from "./vision-bridge.js";
 import { generateScmCommitMessage } from "./scm-commitmsg.js";
@@ -337,6 +339,7 @@ import type {
 	UiServiceInfo,
 	UiState,
 	UiSubagentTemplate,
+	AgentEngineCapabilities,
 	McpScope,
 	UiMcpServer,
 } from "./protocol.js";
@@ -3008,7 +3011,7 @@ export class ClientSession {
 						: sessionManager.buildSessionContext().messages.length === 0;
 				if (isBlank) {
 					const savedModelId =
-						this.stateStore.getProjectModel(this.clientId, effectiveCwd) ?? this.stateStore.getDefaultModel();
+						this.stateStore.getProjectModel(this.clientId, effectiveCwd, "pi") ?? this.stateStore.getDefaultModel("pi");
 					if (savedModelId) {
 						const slash = savedModelId.indexOf("/");
 						if (slash > 0 && slash < savedModelId.length - 1) {
@@ -5000,12 +5003,17 @@ export class ClientSession {
 			// 这个 key 必须整个缺席（不能是显式的 undefined——前端 delta 合并是
 			// {...ui, ...d.state} 整批覆盖，显式 undefined 会把上次全量带回的草稿洗掉）。
 			...(withDraft ? { draft: this.draftForSnapshot() } : {}),
+			engineCapabilities: DEFAULT_PI_CAPABILITIES,
 			tools: state.tools.map((t) => t.name),
 			version: ++this.version,
 			piConfigured: this.isPiConfigured(),
 			piAgentInstalled: this.isPiCliInstalled(),
 			stats,
 		};
+	}
+
+	getCapabilities(): AgentEngineCapabilities {
+		return DEFAULT_PI_CAPABILITIES;
 	}
 
 	/** Emit one snapshot update — incremental when possible, full otherwise.
@@ -6637,7 +6645,7 @@ export class ClientSession {
 	 *  message yet (the SDK only flushes a model_change to disk once one exists). */
 	private rememberProjectModel(modelId: string): void {
 		const cwd = this.cwd;
-		this.stateStore.saveProjectModel(this.clientId, cwd, modelId);
+		this.stateStore.saveProjectModel(this.clientId, cwd, modelId, "pi");
 		const slash = modelId.indexOf("/");
 		if (slash <= 0) return;
 		const provider = modelId.slice(0, slash);
@@ -6654,7 +6662,8 @@ export class ClientSession {
 	 *  the user switches via the picker. Silent on failure (model no longer in catalog).
 	 *  Fallback chain: project memory > GLOBAL default model > SDK default (no-op). */
 	private async restoreProjectModelForCwd(cwd: string): Promise<void> {
-		const savedModel = this.stateStore.getProjectModel(this.clientId, cwd) ?? this.stateStore.getDefaultModel();
+		const savedModel =
+			this.stateStore.getProjectModel(this.clientId, cwd, "pi") ?? this.stateStore.getDefaultModel("pi");
 		if (!savedModel) return;
 		try {
 			if (this.conv.session.getSessionStats().totalMessages > 0) return;
@@ -8726,13 +8735,18 @@ export class ClientSession {
 			// Attach files as independent nextTurn context messages (asides) so the
 			// user message stays clean; they render as separate attachment cards.
 			// SDK 的流式队列只消费用户消息；引用须与对应队列项一起入队和撤回。
+			const scan = scanAtMentions(trimmedText, this.cwd, [], attachments ?? []);
+			const effectiveAttachments =
+				scan.detectedAttachments.length > 0 ? [...(attachments ?? []), ...scan.detectedAttachments] : attachments;
 			const streamingQuotes = s.isStreaming
-				? (attachments ?? [])
+				? (effectiveAttachments ?? [])
 						.filter((a) => a.mode === "quote")
 						.map((a) => readTextQuote(a.quote))
 						.filter((q) => q !== null)
 				: [];
-			const nonQuoteAttachments = streamingQuotes.length ? attachments?.filter((a) => a.mode !== "quote") : attachments;
+			const nonQuoteAttachments = streamingQuotes.length
+				? effectiveAttachments?.filter((a) => a.mode !== "quote")
+				: effectiveAttachments;
 			const asides =
 				nonQuoteAttachments && nonQuoteAttachments.length > 0
 					? await buildAttachmentMessages(
@@ -10783,10 +10797,12 @@ export class ClientSession {
 			const sessions = new Map<string, SessionSummary>();
 			for (const s of visibleInfos) {
 				const isPinned = this.stateStore?.isSessionPinned(this.cwd, s.path);
+				const displayName = s.name?.trim() || (s.firstMessage ? s.firstMessage.trim().replace(/\s+/g, " ") : undefined);
 				sessions.set(s.path, {
 					path: s.path,
 					...(s.id ? { sessionId: s.id } : {}),
 					name: s.name,
+					displayName,
 					firstMessage: s.firstMessage,
 					messageCount: s.messageCount,
 					modified: s.modified.getTime(),
@@ -11696,6 +11712,15 @@ export class ClientSession {
 				const sessionFile = conv.session.sessionFile;
 				if (sessionFile && resolve(sessionFile) === targetPath) {
 					await this.switchConversation(conv.id);
+					this.emit({
+						type: "transition_progress",
+						kind: "session",
+						target: targetPath,
+						phase: "done",
+						progress: 100,
+						text: "会话加载完成",
+						textEn: "Session loaded",
+					});
 					return;
 				}
 			}
@@ -13299,7 +13324,7 @@ export class ClientSession {
 			const provider = modelId.slice(0, slash);
 			const id = modelId.slice(slash + 1);
 			if (!mr.getModel(provider, id)) throw new Error(`模型不存在：${modelId}`);
-			this.stateStore.saveDefaultModel(modelId);
+			this.stateStore.saveDefaultModel(modelId, "pi");
 			const active = this.modelAdmin.getActiveKeyName(provider);
 			if (active) this.stateStore.saveDefaultProviderKey(provider, active);
 			// 同步写入 SDK 的 settingsManager，使底层 session 创建时 findInitialModel 也能识别该默认模型
@@ -13328,7 +13353,7 @@ export class ClientSession {
 
 	/** Clear the GLOBAL default model (new projects fall back to the SDK default). */
 	clearDefaultModel(): void {
-		this.stateStore.clearDefaultModel();
+		this.stateStore.saveDefaultModel("", "pi");
 		try {
 			this.session.settingsManager.setDefaultModelAndProvider(
 				undefined as unknown as string,
@@ -13349,7 +13374,7 @@ export class ClientSession {
 
 	/** Push the current global default model (attach + after every change). */
 	pushDefaultModel(): void {
-		this.emit({ type: "default_model", modelId: this.stateStore.getDefaultModel() ?? null });
+		this.emit({ type: "default_model", modelId: this.stateStore.getDefaultModel("pi") ?? null });
 	}
 
 	/** 切换模型，失败时抛出（无头路径专用：插件 host.chat / 定时任务）。

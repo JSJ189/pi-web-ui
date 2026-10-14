@@ -1,7 +1,7 @@
 import { useEffect, useRef, useState } from "react";
 import { FiFolder, FiGlobe, FiHardDrive, FiServer, FiTrash2, FiX } from "react-icons/fi";
 import { useT } from "../i18n";
-import { appSend } from "../app-globals";
+import { appSend, useEngineCapabilities } from "../app-globals";
 import {
 	deleteRemoteProfile,
 	formatRemoteWorkspaceUri,
@@ -85,11 +85,19 @@ export function DirectoryBrowser({
 	ariaLabel,
 }: DirectoryBrowserProps) {
 	const t = useT();
+	const capabilities = useEngineCapabilities();
+	const supportsRemoteSsh = capabilities.remoteSsh;
 
-	// 模式 Tab：本地 vs 远程 SSH
+	// 模式 Tab：本地 vs 远程 SSH（底座不支持远程 SSH 时强制本地）
 	const [activeTab, setActiveTab] = useState<"local" | "remote">(() =>
-		isRemoteWorkspaceUri(currentCwd) ? "remote" : "local",
+		supportsRemoteSsh && isRemoteWorkspaceUri(currentCwd) ? "remote" : "local",
 	);
+
+	useEffect(() => {
+		if (!supportsRemoteSsh && activeTab === "remote") {
+			setActiveTab("local");
+		}
+	}, [supportsRemoteSsh, activeTab]);
 
 	// ===== 本地文件浏览状态 =====
 	const [browsePath, setBrowsePath] = useState("");
@@ -376,26 +384,37 @@ export function DirectoryBrowser({
 		<>
 			<div className={`status-cwd-backdrop ${backdropClassName ?? ""}`.trim()} onClick={onClose} />
 			<div className={`cwd-picker ${className ?? ""}`.trim()} role={role} aria-label={ariaLabel}>
-				{/* 模式切换 Tab */}
-				<div className="cwd-mode-tabs">
-					<button
-						type="button"
-						className={`cwd-mode-tab ${activeTab === "local" ? "active" : ""}`}
-						onClick={() => setActiveTab("local")}
-					>
-						💻 {t("workspaceModeLocal")}
-					</button>
-					<button
-						type="button"
-						className={`cwd-mode-tab ${activeTab === "remote" ? "active" : ""}`}
-						onClick={() => setActiveTab("remote")}
-					>
-						🌐 {t("workspaceModeRemote")}
-					</button>
-					<button type="button" className="cwd-close" title={t("close")} aria-label={t("close")} onClick={onClose}>
-						<FiX />
-					</button>
-				</div>
+				{/* 模式切换 Tab（支持远程 SSH 时显示选项卡切换，不支持时仅显示本地目录模式） */}
+				{supportsRemoteSsh ? (
+					<div className="cwd-mode-tabs">
+						<button
+							type="button"
+							className={`cwd-mode-tab ${activeTab === "local" ? "active" : ""}`}
+							onClick={() => setActiveTab("local")}
+						>
+							💻 {t("workspaceModeLocal")}
+						</button>
+						<button
+							type="button"
+							className={`cwd-mode-tab ${activeTab === "remote" ? "active" : ""}`}
+							onClick={() => setActiveTab("remote")}
+						>
+							🌐 {t("workspaceModeRemote")}
+						</button>
+						<button type="button" className="cwd-close" title={t("close")} aria-label={t("close")} onClick={onClose}>
+							<FiX />
+						</button>
+					</div>
+				) : (
+					<div className="cwd-mode-tabs cwd-mode-tabs-single">
+						<div className="cwd-mode-tab active" style={{ cursor: "default" }}>
+							💻 {t("workspaceModeLocal")}
+						</div>
+						<button type="button" className="cwd-close" title={t("close")} aria-label={t("close")} onClick={onClose}>
+							<FiX />
+						</button>
+					</div>
+				)}
 
 				{/* 本地目录视图 */}
 				{activeTab === "local" && (

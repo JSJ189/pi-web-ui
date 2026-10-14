@@ -24,6 +24,7 @@ import { homedir } from "node:os";
 import { dirname, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import { bilingual } from "../i18n.js";
+import { resolveProviderCredential } from "../model-resolver.js";
 
 /** 项目依赖解析（tsc 编译后 dist/server/dsh/ 里向上找 node_modules）。 */
 const require = createRequire(import.meta.url);
@@ -68,6 +69,8 @@ export interface DshRuntimeOptions {
 	provider?: string;
 	/** 模型 id（deepseek-v4-flash / deepseek-v4-pro）。 */
 	model?: string;
+	/** 当前模型所属的服务商 id（如 antigravity-openai、deepseek 等）。 */
+	modelProvider?: string;
 	/** 每次请求输出上限。 */
 	maxTokens?: number;
 	/** DSH_SESSION_ROOT：JSONL 会话持久化根。 */
@@ -108,6 +111,7 @@ export class DshRuntime {
 	readonly cwd: string;
 	provider: string;
 	model: string;
+	modelProvider?: string;
 	maxTokens?: number;
 	private sessionRoot?: string;
 	private dataDir?: string;
@@ -146,6 +150,9 @@ export class DshRuntime {
 		this.cwd = resolve(opts.cwd);
 		this.provider = opts.provider ?? "deepseek-official";
 		this.model = opts.model ?? "deepseek-v4-flash";
+		this.modelProvider =
+			opts.modelProvider ??
+			(opts.model && opts.model.includes("/") ? opts.model.slice(0, opts.model.indexOf("/")) : undefined);
 		this.maxTokens = opts.maxTokens;
 		this.sessionRoot = opts.sessionRoot;
 		this.dataDir = opts.dataDir;
@@ -180,6 +187,50 @@ export class DshRuntime {
 		return this.alive;
 	}
 
+	/** 解析当前激活模型对应的运行环境（BaseURL、API Key、CWD 等）与 bare model ID。 */
+	resolveRuntimeConfig(): {
+		env: NodeJS.ProcessEnv;
+		activeProvider: string;
+		bareModelId: string;
+	} {
+		let activeProvider = this.modelProvider;
+		let bareModelId = this.model;
+		if (this.model.includes("/")) {
+			const slashIdx = this.model.indexOf("/");
+			if (!activeProvider) {
+				activeProvider = this.model.slice(0, slashIdx);
+			}
+			bareModelId = this.model.slice(slashIdx + 1);
+		}
+		if (!activeProvider) {
+			activeProvider = "deepseek";
+		}
+
+		// 根据当前激活模型所属的 Provider（通过 resolveProviderCredential）
+		// 将对应的 BaseURL 注入到 DEEPSEEK_BASE_URL，将 API Key 注入到 DEEPSEEK_API_KEY
+		const cred = resolveProviderCredential(this.agentDir, activeProvider);
+		const deepseekKey = loadDeepSeekKey(this.agentDir);
+		const resolvedKey = cred.apiKey || (activeProvider === "deepseek" ? deepseekKey : undefined);
+		const resolvedBaseUrl = cred.baseUrl;
+
+		const env: NodeJS.ProcessEnv = {
+			...process.env,
+			DSH_CWD: this.cwd,
+			...this.env,
+		};
+		if (this.sessionRoot) env.DSH_SESSION_ROOT = this.sessionRoot;
+		if (this.dataDir) env.PI_WEB_DSH_DATA_DIR = this.dataDir;
+		if (resolvedKey && !this.env.DEEPSEEK_API_KEY && !env.DEEPSEEK_API_KEY) {
+			env.DEEPSEEK_API_KEY = resolvedKey;
+		}
+		if (resolvedBaseUrl && !this.env.DEEPSEEK_BASE_URL && !env.DEEPSEEK_BASE_URL) {
+			env.DEEPSEEK_BASE_URL = resolvedBaseUrl;
+		}
+		env.PI_WEB_DSH_JSONRPC_ENTRY = this.jsonrpcEntry;
+
+		return { env, activeProvider, bareModelId };
+	}
+
 	/** 启动子进程 + initialize 握手（幂等；并发调用共享同一个启动任务）。 */
 	start(): Promise<void> {
 		if (this.disposed) {
@@ -208,16 +259,7 @@ export class DshRuntime {
 				),
 			);
 		}
-		const key = loadDeepSeekKey(this.agentDir);
-		const env: NodeJS.ProcessEnv = {
-			...process.env,
-			DSH_CWD: this.cwd,
-			...this.env,
-		};
-		if (this.sessionRoot) env.DSH_SESSION_ROOT = this.sessionRoot;
-		if (this.dataDir) env.PI_WEB_DSH_DATA_DIR = this.dataDir;
-		if (key && !this.env.DEEPSEEK_API_KEY) env.DEEPSEEK_API_KEY = key;
-		env.PI_WEB_DSH_JSONRPC_ENTRY = this.jsonrpcEntry;
+		const { env, bareModelId } = this.resolveRuntimeConfig();
 
 		this.closed = false;
 		this.buffer = "";
@@ -266,12 +308,12 @@ export class DshRuntime {
 			await this._request("initialize", {
 				cwd: this.cwd,
 				provider: this.provider,
-				model: this.model,
+				model: bareModelId,
 				...(this.maxTokens ? { maxTokens: this.maxTokens } : {}),
 			});
 		} catch (err) {
 			console.error(
-				`[dsh] initialize 失败 (model=${this.model} cwd=${this.cwd}): ${(err as Error).message}` +
+				`[dsh] initialize 失败 (model=${bareModelId} cwd=${this.cwd}): ${(err as Error).message}` +
 					(this.stderrTail ? `\n  launcher stderr: ${this.stderrTail.slice(-600)}` : ""),
 			);
 			// initialize 失败：确认子进程已被清理，避免半死进程占着 stdin。
@@ -732,8 +774,19 @@ export class DshRuntime {
 			// 等旧进程真正退出（避免 pid 复用竞态）。
 			await new Promise((r) => setTimeout(r, 150));
 		}
-		if (newModel) this.model = newModel;
-		if (newProvider) this.provider = newProvider;
+		if (newModel) {
+			this.model = newModel;
+			if (newModel.includes("/")) {
+				this.modelProvider = newModel.slice(0, newModel.indexOf("/"));
+			}
+		}
+		if (newProvider) {
+			if (newProvider === "deepseek-official") {
+				this.provider = newProvider;
+			} else {
+				this.modelProvider = newProvider;
+			}
+		}
 		this.initialized = false;
 		if (wasAlive) await this.start();
 	}
