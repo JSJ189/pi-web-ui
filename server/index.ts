@@ -68,7 +68,7 @@ import {
 	type PluginRunEvent,
 } from "./plugins.js";
 import type { ToolPostRequest, ToolPreRequest } from "./plugin-tool-guard.js";
-import { buildPluginJobArgs, confirmPluginInstall, inspectInstallSpec, PluginInstaller } from "./plugin-installer.js";
+import { confirmPluginInstall, PluginInstaller } from "./plugin-installer.js";
 import { syncPluginCatalog } from "./plugin-catalog-sync.js";
 import type { ServerLang } from "./i18n.js";
 import { McpBridge } from "./mcp-bridge.js";
@@ -2833,6 +2833,10 @@ wss.on("connection", (ws) => {
 			// saveUpload 的两条路径都从这里来，入口统一拦一次即可）。
 			const cid = validateClientId(msg.clientId) ?? randomUUID();
 			clientId = cid;
+			if (msg.locale) {
+				const code = msg.locale.trim().slice(0, 16);
+				if (code) sharedStateStore.saveLocale(cid, code);
+			}
 			// issue #295：ready 先行 —— 传输握手不等待会话初始化。attach 会进 SDK 的
 			// resourceLoader.reload 等同步目录扫描，坏挂载/家目录下可能阻塞数十秒；
 			// ready 在握手里先发，前端立刻离开「正在连接」（快照随后到）。

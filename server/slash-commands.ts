@@ -319,7 +319,8 @@ export class SlashCommandsService {
 				if (available.length === 0 && this.host.getAvailableModels) {
 					available = await this.host.getAvailableModels();
 				}
-				if (available.length > 0) {
+				const hasLister = Boolean(this.host.getSession || this.host.getAvailableModels);
+				if (hasLister) {
 					// Prefer an exact "provider/id" match, else id/name substring.
 					const exact = available.find((m) => (m.provider ? `${m.provider}/${m.id}` : m.id) === args.trim());
 					const matches = exact

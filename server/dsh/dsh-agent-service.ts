@@ -871,6 +871,7 @@ export class DshClientSession {
 						...(this.activeId ? { conversationId: this.activeId } : {}),
 						...(conversationTitle ? { conversationTitle } : {}),
 					});
+					this.flushSnapshot();
 				} else if (method === "tools.call.request") {
 					// 工具桥（#15）：模型调了插件工具 → 服务端跑插件实现 → tools/call-result 回传。
 					void this.handleToolCallRequest(params as { id: string; name: string; args?: Record<string, unknown> });
@@ -901,6 +902,7 @@ export class DshClientSession {
 		// 无论成功失败都清掉待答快照：同 id 不会再有下一次，留着会让重连的客户端
 		// 恢复到一张已经没人在等的问卷。
 		if (this.pendingQuestion?.id === id) this.pendingQuestion = null;
+		this.flushSnapshot();
 		try {
 			await this.runtime.answerQuestion(id, answers, cancelled);
 		} catch (err) {

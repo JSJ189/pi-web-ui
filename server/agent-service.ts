@@ -5283,6 +5283,7 @@ export class ClientSession {
 					...(conversationTitle ? { conversationTitle } : {}),
 				});
 			}
+			this.flushSnapshot();
 		});
 	}
 
@@ -5303,6 +5304,7 @@ export class ClientSession {
 		this.emit({ type: "question_retracted", id });
 		// 同上：角标消失也要即时推送（否则要等到 run 结束别处才知道问完了）。
 		this.emitConversations();
+		this.flushSnapshot();
 		return true;
 	}
 
