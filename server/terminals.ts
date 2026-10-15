@@ -2119,6 +2119,7 @@ export function makeTerminalBashTool(
 						`命令语法不完整（${reasonZh}），未执行。终端接管 bash 无法为它注入退出码哨兵，残句还会让 shell 停在续行提示符、零执行。请补全引号 / 续行符 / 括号后重试。`,
 						`Command is syntactically incomplete (${reasonEn}); nothing was executed. The terminal bash path cannot inject an exit-code sentinel here, and the leftover fragment would leave the shell waiting at a continuation prompt. Complete the quote / continuation / bracket and retry.`,
 						"terminals.bash.incomplete",
+						{ reason: reasonEn, reasonEn, reasonZh },
 					),
 				);
 			}
@@ -2248,7 +2249,7 @@ export function makeTerminalBashTool(
 								`Command timed out after ${p.timeout}s（已发 Ctrl+C；已有输出：${timeoutPartial}）`,
 								`Command timed out after ${p.timeout}s (sent Ctrl+C; partial output: ${timeoutPartial})`,
 								"terminals.bash.timeout",
-								{ "p.timeout": p.timeout, timeoutPartial },
+								{ "p.timeout": p.timeout, timeout: p.timeout, timeoutPartial, sentinelNote: "" },
 							),
 						);
 					}

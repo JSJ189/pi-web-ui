@@ -29,7 +29,7 @@ import { open, stat } from "node:fs/promises";
 import { basename, extname, posix, sep } from "node:path";
 import { defineTool, type ToolDefinition } from "@earendil-works/pi-coding-agent";
 import { Type } from "typebox";
-import { pick, type ServerLang } from "./i18n.js";
+import { getServerString, pick, type ServerLang } from "./i18n.js";
 import { resolvePathForDirCheck } from "./read-tool.js";
 import {
 	getGlobalRemoteSshService,
@@ -301,13 +301,27 @@ export function buildPresentResultText(items: PresentItem[], lang: ServerLang, t
 	const shown = items.filter((i) => i.kind !== "missing");
 	const missing = items.filter((i) => i.kind === "missing");
 	const lines: string[] = [];
-	const head = pick(
-		lang,
-		`已把 ${shown.length} 个文件作为预览卡片展示给用户${title ? `（${title}）` : ""}：`,
-		`Presented ${shown.length} file(s) to the user as preview cards${title ? ` (${title})` : ""}:`,
-		"present.files.result.head",
-		{ n: shown.length, title: title ?? "" },
-	);
+	const trimmedTitle = title?.trim();
+	const key = trimmedTitle
+		? getServerString(lang, "present.files.result.head.titled")
+			? "present.files.result.head.titled"
+			: "present.files.result.head"
+		: "present.files.result.head";
+	const head = trimmedTitle
+		? pick(
+				lang,
+				`已把 ${shown.length} 个文件作为预览卡片展示给用户（${trimmedTitle}）：`,
+				`Presented ${shown.length} file(s) to the user as preview cards (${trimmedTitle}):`,
+				key,
+				{ n: shown.length, title: trimmedTitle },
+			)
+		: pick(
+				lang,
+				`已把 ${shown.length} 个文件作为预览卡片展示给用户：`,
+				`Presented ${shown.length} file(s) to the user as preview cards:`,
+				"present.files.result.head",
+				{ n: shown.length, title: "" },
+			);
 	lines.push(head);
 	for (const [i, it] of shown.entries()) {
 		const meta =

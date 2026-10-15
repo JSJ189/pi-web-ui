@@ -136,14 +136,15 @@ export function makeSkillTool(host: SkillToolHost, lang?: () => ServerLang): Too
 			}
 			try {
 				const st = statSync(found.filePath);
+				const kb = SKILL_TOOL_FILE_CAP / 1024;
 				if (!st.isFile() || st.size <= 0 || st.size > SKILL_TOOL_FILE_CAP) {
 					return text(
 						pick(
 							L,
-							`技能 ${name} 的文件不可读（不存在/超 ${SKILL_TOOL_FILE_CAP / 1024}KB 上限）。`,
-							`Skill ${name} file unreadable (missing or over the ${SKILL_TOOL_FILE_CAP / 1024}KB cap).`,
+							`技能 ${name} 的文件不可读（不存在/超 ${kb}KB 上限）。`,
+							`Skill ${name} file unreadable (missing or over the ${kb}KB cap).`,
 							"skill.file.unreadable",
-							{ name },
+							{ name, kb },
 						),
 					);
 				}

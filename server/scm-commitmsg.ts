@@ -238,6 +238,7 @@ export async function generateScmCommitMessage(opts: {
 						`模型异常终止（${msg.stopReason}）`,
 						`Model terminated abnormally (${msg.stopReason})`,
 						"scm.commitmsg.model.terminated",
+						{ stopReason: msg.stopReason },
 					),
 			};
 		}
@@ -273,13 +274,15 @@ export async function generateScmCommitMessage(opts: {
 			};
 		}
 		if (err instanceof Error && /abort/i.test(`${err.name} ${err.message}`)) {
+			const secs = Math.round(timeoutMs / 1000);
 			return {
 				ok: false,
 				error: pick(
 					lang,
-					`生成提交信息超时（${Math.round(timeoutMs / 1000)} 秒）`,
-					`Commit-message generation timed out (${Math.round(timeoutMs / 1000)}s)`,
+					`生成提交信息超时（${secs} 秒）`,
+					`Commit-message generation timed out (${secs}s)`,
 					"scm.commitmsg.timeout",
+					{ secs },
 				),
 			};
 		}

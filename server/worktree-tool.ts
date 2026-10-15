@@ -111,6 +111,7 @@ export function makeWorktreeTool(
 								`共发现 ${list.length} 个 Git 工作树：`,
 								`Found ${list.length} Git worktree(s):`,
 								"worktree.list.header",
+								{ n: list.length },
 							),
 						);
 
@@ -125,6 +126,7 @@ export function makeWorktreeTool(
 										`未提交修改: ${item.uncommittedCount ?? 0} 个文件`,
 										`dirty: ${item.uncommittedCount ?? 0} files`,
 										"worktree.tag.dirty",
+										{ n: item.uncommittedCount ?? 0 },
 									),
 								);
 							}
@@ -135,6 +137,7 @@ export function makeWorktreeTool(
 										`领先主分支 ${item.aheadCount} 个提交`,
 										`ahead ${item.aheadCount} commit(s)`,
 										"worktree.tag.ahead",
+										{ n: item.aheadCount },
 									),
 								);
 							}
@@ -187,15 +190,18 @@ export function makeWorktreeTool(
 								)
 							: "";
 
+						const branchSuffixZh = res.branch ? ` (分支: ${res.branch})` : "";
+						const branchSuffixEn = res.branch ? ` (branch: ${res.branch})` : "";
 						return {
 							content: [
 								{
 									type: "text",
 									text: pick(
 										lang,
-										`✅ 成功创建 Git 工作树：${res.path}${res.branch ? ` (分支: ${res.branch})` : ""}${switchedText}`,
-										`✅ Successfully created Git worktree: ${res.path}${res.branch ? ` (branch: ${res.branch})` : ""}${switchedText}`,
+										`✅ 成功创建 Git 工作树：${res.path}${branchSuffixZh}${switchedText}`,
+										`✅ Successfully created Git worktree: ${res.path}${branchSuffixEn}${switchedText}`,
 										"worktree.create.success",
+										{ path: res.path, branch: res.branch ?? "", switched: switchedText },
 									),
 								},
 							],
@@ -228,6 +234,7 @@ export function makeWorktreeTool(
 										`🌿 已将当前工作区切换至 Git 工作树：${target}`,
 										`🌿 Switched active workspace to Git worktree: ${target}`,
 										"worktree.switch.success",
+										{ target },
 									),
 								},
 							],
@@ -260,6 +267,7 @@ export function makeWorktreeTool(
 										`🗑️ 已安全移除 Git 工作树：${target}`,
 										`🗑️ Successfully removed Git worktree: ${target}`,
 										"worktree.remove.success",
+										{ target },
 									),
 								},
 							],
@@ -281,6 +289,7 @@ export function makeWorktreeTool(
 								`❌ 操作 Git 工作树失败：${msg}`,
 								`❌ Worktree operation failed: ${msg}`,
 								"worktree.op.failed",
+								{ msg },
 							),
 						},
 					],

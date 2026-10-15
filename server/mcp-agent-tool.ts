@@ -147,6 +147,7 @@ export function makeMcpManageTool(host: McpManageToolHost, lang?: () => ServerLa
 							`当前未配置任何 MCP 服务器。\n项目配置：${projectPath}\n全局配置：${globalPath}`,
 							`No MCP servers configured.\nProject config: ${projectPath}\nGlobal config: ${globalPath}`,
 							"mcp_manage.list.empty",
+							{ projectPath, globalPath },
 						),
 						{ count: 0 },
 					);
@@ -158,7 +159,7 @@ export function makeMcpManageTool(host: McpManageToolHost, lang?: () => ServerLa
 						`已配置的 MCP 服务器（${servers.length}）：\n${lines}`,
 						`Configured MCP servers (${servers.length}):\n${lines}`,
 						"mcp_manage.list.ok",
-						{ count: servers.length },
+						{ count: servers.length, lines },
 					),
 					{ count: servers.length, servers: servers.map((s) => ({ name: s.name, scope: s.scope, status: s.status })) },
 				);
@@ -197,7 +198,7 @@ export function makeMcpManageTool(host: McpManageToolHost, lang?: () => ServerLa
 						`已找到匹配「${q}」的 MCP 服务器（installed=true, running=${res.running}）：\n${lines}`,
 						`Found MCP server matching "${q}" (installed=true, running=${res.running}):\n${lines}`,
 						"mcp_manage.check.found",
-						{ query: q },
+						{ query: q, running: res.running, lines },
 					),
 					{
 						query: q,
@@ -227,25 +228,28 @@ export function makeMcpManageTool(host: McpManageToolHost, lang?: () => ServerLa
 					description: params.description,
 				});
 				if (!res.ok) {
+					const errorText = res.error ?? (L === "zh" ? "未知错误" : "unknown error");
 					return reply(
 						pick(
 							L,
 							`MCP 服务器安装失败：${res.error ?? "未知错误"}`,
 							`Failed to install MCP server: ${res.error ?? "unknown error"}`,
 							"mcp_manage.install.fail",
+							{ error: errorText },
 						),
 						{ ok: false, error: res.error },
 					);
 				}
 				const toolNames = (res.tools ?? []).map((t) => `${res.name}_${t.name}`);
+				const toolsJoined = toolNames.join(", ");
 				const toolHint =
 					toolNames.length > 0
 						? pick(
 								L,
-								`\n已暴露工具（${toolNames.length}）：${toolNames.join(", ")}`,
-								`\nExposed tools (${toolNames.length}): ${toolNames.join(", ")}`,
+								`\n已暴露工具（${toolNames.length}）：${toolsJoined}`,
+								`\nExposed tools (${toolNames.length}): ${toolsJoined}`,
 								"mcp_manage.install.tools",
-								{ count: toolNames.length },
+								{ count: toolNames.length, tools: toolsJoined },
 							)
 						: res.error
 							? `\n⚠️ ${res.error}`
@@ -256,7 +260,7 @@ export function makeMcpManageTool(host: McpManageToolHost, lang?: () => ServerLa
 						`已安装 MCP 服务器「${res.name}」（作用域：${res.scope}，状态：${res.status}）。${toolHint}`,
 						`Installed MCP server "${res.name}" (scope: ${res.scope}, status: ${res.status}).${toolHint}`,
 						"mcp_manage.install.ok",
-						{ name: res.name ?? "", scope: res.scope ?? "project", status: res.status ?? "stopped" },
+						{ name: res.name ?? "", scope: res.scope ?? "project", status: res.status ?? "stopped", toolHint },
 					),
 					{
 						ok: true,
@@ -284,13 +288,14 @@ export function makeMcpManageTool(host: McpManageToolHost, lang?: () => ServerLa
 				}
 				const res = await host.removeServer(name, params.scope);
 				if (!res.ok) {
+					const errorText = res.error ?? (L === "zh" ? "不存在" : "not found");
 					return reply(
 						pick(
 							L,
 							`移除 MCP 服务器「${name}」失败：${res.error ?? "不存在"}`,
 							`Failed to remove MCP server "${name}": ${res.error ?? "not found"}`,
 							"mcp_manage.remove.fail",
-							{ name },
+							{ name, error: errorText },
 						),
 						{ ok: false, name, error: res.error },
 					);

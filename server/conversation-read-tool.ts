@@ -636,13 +636,14 @@ export function makeConversationReadTool(
 					);
 				}
 				if (history.length > shownHistory.length) {
+					const n = history.length - shownHistory.length;
 					histLines.push(
 						pick(
 							L,
-							`… 还有 ${history.length - shownHistory.length} 条历史（用 query 或 limit 收窄；默认只给 ${HISTORY_LIST_DEFAULT} 条）。`,
-							`… ${history.length - shownHistory.length} more history (narrow with query or limit; default shows ${HISTORY_LIST_DEFAULT}).`,
+							`… 还有 ${n} 条历史（用 query 或 limit 收窄；默认只给 ${HISTORY_LIST_DEFAULT} 条）。`,
+							`… ${n} more history (narrow with query or limit; default shows ${HISTORY_LIST_DEFAULT}).`,
 							"convread.list.history.more",
-							{ n: history.length - shownHistory.length },
+							{ n, def: HISTORY_LIST_DEFAULT },
 						),
 					);
 				}
@@ -661,14 +662,14 @@ export function makeConversationReadTool(
 									`历史会话（${history.length}，scope=${scope}）：`,
 									`History sessions (${history.length}, scope=${scope}):`,
 									"convread.list.head.history",
-									{ n: history.length },
+									{ n: history.length, scope },
 								)
 							: pick(
 									L,
 									`运行中对话（${running.length}）+ 历史会话（${history.length}，scope=${scope}）：`,
 									`Running conversations (${running.length}) + history sessions (${history.length}, scope=${scope}):`,
 									"convread.list.head.all",
-									{ running: running.length, history: history.length },
+									{ running: running.length, history: history.length, scope },
 								);
 				const runHead = L === "zh" ? "【运行中】" : "[running]";
 				const histHead = L === "zh" ? "【历史】" : "[history]";
@@ -1012,15 +1013,16 @@ export function makeConversationReadTool(
 						)}`
 					: "";
 				// 认领只在有的时候占一行（没有就不提，省 token）。
+				const linesZh = formatClaimLines(statusClaims, 3, "inline").join("、");
+				const linesEn = formatClaimLines(statusClaims, 3, "inline").join("; ");
 				const claimLine =
 					statusClaims.length > 0
-						? `\n- ${pick(
-								L,
-								`认领：${formatClaimLines(statusClaims, 3, "inline").join("、")}。`,
-								`Claims: ${formatClaimLines(statusClaims, 3, "inline").join("; ")}.`,
-								"convread.status.claims",
-								{ total: statusClaims.length },
-							)}`
+						? `\n- ${pick(L, `认领：${linesZh}。`, `Claims: ${linesEn}.`, "convread.status.claims", {
+								total: statusClaims.length,
+								lines: linesEn,
+								linesZh,
+								linesEn,
+							})}`
 						: "";
 				return text(`${head}\n- ${toolLine}\n- ${sayLine}\n- ${touchLine}${claimLine}${waitLine}`, {
 					...where,

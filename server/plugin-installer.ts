@@ -337,16 +337,19 @@ export class PluginInstaller {
 		child.on("error", (err) => finish(false, err.message));
 		child.on("close", (code) => {
 			if (cancelled) return finish(false, pick(l, "作业已取消", "Job cancelled", "plugininstaller.cancelled"));
-			if (timedOut)
+			if (timedOut) {
+				const min = Math.round(Math.max(1000, Number(this.deps.timeoutMs ?? DEFAULT_TIMEOUT_MS)) / 60000);
 				return finish(
 					false,
 					pick(
 						l,
-						`作业超时（${Math.round(Math.max(1000, Number(this.deps.timeoutMs ?? DEFAULT_TIMEOUT_MS)) / 60000)} 分钟）已终止`,
-						`Job timed out after ${Math.round(Math.max(1000, Number(this.deps.timeoutMs ?? DEFAULT_TIMEOUT_MS)) / 60000)} min and was killed`,
+						`作业超时（${min} 分钟）已终止`,
+						`Job timed out after ${min} min and was killed`,
 						"plugininstaller.timeout",
+						{ min },
 					),
 				);
+			}
 			finish(code === 0, code === 0 ? undefined : `exit code ${code}`);
 		});
 

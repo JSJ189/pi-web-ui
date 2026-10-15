@@ -138,3 +138,131 @@ describe("extractServerStrings", () => {
 		expect(extractServerStrings({ code: "ja", serverStrings: {} })).toBeNull();
 	});
 });
+
+describe("issue #640: server pick() preserves computed values in translated packs", () => {
+	it("replaces slots without leaving raw placeholders in pt pack", async () => {
+		const fs = await import("node:fs");
+		const ptRaw = JSON.parse(fs.readFileSync(new URL("../../locales/pt.json", import.meta.url), "utf8"));
+		const extracted = extractServerStrings(ptRaw);
+		expect(extracted).not.toBeNull();
+		if (!extracted) return;
+		registerServerStrings("pt", extracted.table);
+
+		try {
+			// Worktree
+			const wtCreate = pick("pt", "✅ 创建成功", "✅ Created", "worktree.create.success", {
+				path: "wt/feat",
+				branch: " (branch: feat)",
+				switched: ", switched",
+			});
+			expect(wtCreate).toContain("wt/feat");
+			expect(wtCreate).not.toMatch(/\{[a-zA-Z0-9_.]+\}/);
+
+			const wtDirty = pick("pt", "未提交", "dirty", "worktree.remove.dirty", {
+				targetPath: "wt/feat",
+				count: 5,
+			});
+			expect(wtDirty).toContain("wt/feat");
+			expect(wtDirty).toContain("5");
+			expect(wtDirty).not.toMatch(/\{[a-zA-Z0-9_.]+\}/);
+
+			const wtSwitch = pick("pt", "切换", "switched", "worktree.switch.success", { target: "wt/dev" });
+			expect(wtSwitch).toContain("wt/dev");
+			expect(wtSwitch).not.toMatch(/\{[a-zA-Z0-9_.]+\}/);
+
+			// Claim files
+			const claimOk = pick("pt", "已认领", "Claimed", "claimfiles.claim.ok", {
+				n: 3,
+				paths: "a.ts, b.ts",
+				ttl: "30m",
+			});
+			expect(claimOk).toContain("3");
+			expect(claimOk).toContain("30m");
+			expect(claimOk).not.toMatch(/\{[a-zA-Z0-9_.]+\}/);
+
+			// Conv read
+			const convMore = pick("pt", "更多", "more", "convread.list.history.more", { n: 10, def: 20 });
+			expect(convMore).toContain("10");
+			expect(convMore).toContain("20");
+			expect(convMore).not.toMatch(/\{[a-zA-Z0-9_.]+\}/);
+
+			const convAll = pick("pt", "全部", "all", "convread.list.head.all", { running: 2, history: 5, scope: "project" });
+			expect(convAll).toContain("2");
+			expect(convAll).toContain("5");
+			expect(convAll).toContain("project");
+			expect(convAll).not.toMatch(/\{[a-zA-Z0-9_.]+\}/);
+
+			// MCP manage
+			const mcpFail = pick("pt", "失败", "fail", "mcp_manage.install.fail", { error: "bad package" });
+			expect(mcpFail).toContain("bad package");
+			expect(mcpFail).not.toMatch(/\{[a-zA-Z0-9_.]+\}/);
+
+			const mcpEmpty = pick("pt", "空", "empty", "mcp_manage.list.empty", {
+				projectPath: "/proj/.pi/mcp.json",
+				globalPath: "~/.pi/mcp.json",
+			});
+			expect(mcpEmpty).toContain("/proj/.pi/mcp.json");
+			expect(mcpEmpty).toContain("~/.pi/mcp.json");
+			expect(mcpEmpty).not.toMatch(/\{[a-zA-Z0-9_.]+\}/);
+
+			// Plugin installer timeout
+			const piTimeout = pick("pt", "超时", "timeout", "plugininstaller.timeout", { min: 15 });
+			expect(piTimeout).toContain("15");
+			expect(piTimeout).not.toMatch(/\{[a-zA-Z0-9_.]+\}/);
+
+			// SCM commitmsg
+			const scmTerm = pick("pt", "异常终止", "terminated", "scm.commitmsg.model.terminated", {
+				stopReason: "tool_use",
+			});
+			expect(scmTerm).toContain("tool_use");
+			expect(scmTerm).not.toMatch(/\{[a-zA-Z0-9_.]+\}/);
+
+			const scmTimeout = pick("pt", "超时", "timeout", "scm.commitmsg.timeout", { secs: 30 });
+			expect(scmTimeout).toContain("30");
+			expect(scmTimeout).not.toMatch(/\{[a-zA-Z0-9_.]+\}/);
+
+			// Skill
+			const skillBad = pick("pt", "不可读", "unreadable", "skill.file.unreadable", { name: "my-skill", kb: 256 });
+			expect(skillBad).toContain("my-skill");
+			expect(skillBad).toContain("256");
+			expect(skillBad).not.toMatch(/\{[a-zA-Z0-9_.]+\}/);
+
+			// Goal mode
+			const goalStart = pick("pt", "审查开始", "review started", "goal.role.card.start", { round: 1, rounds: " / 3" });
+			expect(goalStart).toContain("1");
+			expect(goalStart).toContain(" / 3");
+			expect(goalStart).not.toMatch(/\{[a-zA-Z0-9_.]+\}/);
+
+			const goalPass = pick("pt", "审查通过", "review passed", "goal.role.card.pass", {
+				round: 2,
+				rounds: " / 5",
+				fb: ": all good",
+			});
+			expect(goalPass).toContain("2");
+			expect(goalPass).toContain(": all good");
+			expect(goalPass).not.toMatch(/\{[a-zA-Z0-9_.]+\}/);
+
+			const goalFail = pick("pt", "审查未通过", "review failed", "goal.role.card.fail", {
+				round: 2,
+				rounds: " / 5",
+				fb: ": missing tests",
+			});
+			expect(goalFail).toContain("2");
+			expect(goalFail).toContain(": missing tests");
+			expect(goalFail).not.toMatch(/\{[a-zA-Z0-9_.]+\}/);
+
+			// Present files titled vs untitled
+			const presTitled = pick("pt", "展示", "presented", "present.files.result.head.titled", { n: 2, title: "Report" });
+			expect(presTitled).toContain("2");
+			expect(presTitled).toContain("Report");
+			expect(presTitled).not.toMatch(/\{[a-zA-Z0-9_.]+\}/);
+
+			const presHead = pick("pt", "展示", "presented", "present.files.result.head", { n: 2, title: "" });
+			expect(presHead).toContain("2");
+			expect(presHead).not.toContain("()");
+			expect(presHead).not.toMatch(/\{[a-zA-Z0-9_.]+\}/);
+		} finally {
+			unregisterServerStrings("pt");
+		}
+	});
+});

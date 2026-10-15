@@ -274,6 +274,7 @@ export async function removeWorktree(
 					`工作树「${targetPath}」包含 ${count} 个未提交的文件修改；请先提交或传入 force=true 强制删除`,
 					`Worktree "${targetPath}" has ${count} uncommitted changes; commit them or pass force=true to remove`,
 					"worktree.remove.dirty",
+					{ targetPath, count },
 				),
 			);
 		}

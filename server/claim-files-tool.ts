@@ -168,14 +168,21 @@ export function makeClaimFilesTool(host: ClaimFilesHost, lang?: () => ServerLang
 						})),
 					);
 					const L = getLang();
+					const ttl = fmtTtl(ttlMs);
 					const okLine =
 						claimed.length > 0
 							? pick(
 									L,
-									`已认领 ${claimed.length} 个（${claimed.map((c) => c.path).join("、")}），约 ${fmtTtl(ttlMs)} 后过期（你发 prompt 自动续）。`,
-									`Claimed ${claimed.length} (${claimed.map((c) => c.path).join(", ")}), expiring in ~${fmtTtl(ttlMs)} (refreshed by your prompts).`,
+									`已认领 ${claimed.length} 个（${claimed.map((c) => c.path).join("、")}），约 ${ttl} 后过期（你发 prompt 自动续）。`,
+									`Claimed ${claimed.length} (${claimed.map((c) => c.path).join(", ")}), expiring in ~${ttl} (refreshed by your prompts).`,
 									"claimfiles.claim.ok",
-									{ n: claimed.length },
+									{
+										n: claimed.length,
+										paths: claimed.map((c) => c.path).join(", "),
+										pathsZh: claimed.map((c) => c.path).join("、"),
+										pathsEn: claimed.map((c) => c.path).join(", "),
+										ttl,
+									},
 								)
 							: "";
 					const clashLine =

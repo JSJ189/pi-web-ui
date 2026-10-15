@@ -219,13 +219,14 @@ export function makeScheduleTool(
 					try {
 						parsed = parseScheduleSpec(p.schedule);
 					} catch (err) {
+						const errorMsg = (err as Error).message;
 						return text(
 							pick(
 								getLang(),
-								`时间写法非法：${String(p.schedule ?? "")}（要 5 字段 cron 如 "0 * * * *" 或相对时间如 "in 30m"）：${(err as Error).message}`,
-								`Invalid schedule: ${String(p.schedule ?? "")} (want 5-field cron like "0 * * * *" or a delay like "in 30m"): ${(err as Error).message}`,
+								`时间写法非法：${String(p.schedule ?? "")}（要 5 字段 cron 如 "0 * * * *" 或相对时间如 "in 30m"）：${errorMsg}`,
+								`Invalid schedule: ${String(p.schedule ?? "")} (want 5-field cron like "0 * * * *" or a delay like "in 30m"): ${errorMsg}`,
 								"sched.task.bad.schedule",
-								{ schedule: String(p.schedule ?? "") },
+								{ schedule: String(p.schedule ?? ""), error: errorMsg },
 							),
 						);
 					}

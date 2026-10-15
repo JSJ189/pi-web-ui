@@ -33,7 +33,7 @@ import {
 } from "@earendil-works/pi-coding-agent";
 import type { GoalHistoryEntry, GoalStatus, PlanState, PlanStep, ServerMessage } from "./protocol.js";
 import type { ClientStateStore } from "./client-state.js";
-import { pick, type ServerLang } from "./i18n.js";
+import { getServerString, pick, type ServerLang } from "./i18n.js";
 import { parseModelSpec } from "./attachments.js";
 import type { WebUIContext } from "./webui-context.js";
 
@@ -2147,6 +2147,7 @@ export class GoalService {
 				`（审查者本轮未给出新意见，沿用上一轮意见）\n${prev}`,
 				`(the reviewer gave no new feedback this round — carrying the previous round's over)\n${prev}`,
 				"goal.role.review.feedback.prev",
+				{ prev },
 			);
 		}
 		return pick(
@@ -2417,7 +2418,7 @@ export class GoalService {
 					`⚠️ 目标执行受阻（${roundsZh}）。\n\n目标：${goalText}\n\n原因：${reason}\n\n（委托执行已暂停，不会自己重新派活。要彻底退出目标模式：点目标条右侧的 ■ 停止目标（取消）；想继续就重新设定目标。）`,
 					`⚠️ Goal execution blocked (${roundsEn}).\n\nGoal: ${goalText}\n\nReason: ${reason}\n\n(Delegated execution is paused and will not dispatch again by itself. To leave goal mode entirely, press ■ Stop goal (cancel) in the goal bar; to resume, set the goal again.)`,
 					"goal.role.blocked",
-					{ round: round, goalText: goalText, reason: reason },
+					{ round, goalText, reason, rounds: roundsEn, roundsZh, roundsEn },
 				),
 				{ deliverAs: conv.session.isStreaming ? "steer" : "followUp" },
 			);
@@ -2437,6 +2438,7 @@ export class GoalService {
 			`[目标执行] ${brief}${withTail}`,
 			`[Goal executor] ${brief}${withTail}`,
 			"goal.role.conv_title",
+			{ brief, withTail },
 		);
 	}
 
@@ -2489,6 +2491,7 @@ export class GoalService {
 			`【目标 · 第 ${round}${rounds} 轮】\n\n${goalText}\n\n${prev ? `上一轮审查意见：\n${prev}\n\n` : ""}要求：\n- 直接修改工作区（不要只在回复里描述改动），做完用一段话说明「改了什么、怎么验证的」。\n- 禁止向用户提问（本对话由服务端自动驱动，弹窗会被按取消返回）。\n- 禁止派生或等待其他子代理（轮次由服务端控制，你只负责这一轮）。`,
 			`[Goal · round ${round}${rounds}]\n\n${goalText}\n\n${prev ? `Review feedback from the previous round:\n${prev}\n\n` : ""}Requirements:\n- Change the workspace directly (don't just describe it), then summarize in one paragraph what you changed and how you verified it.\n- Do NOT ask the user anything (this conversation is server-driven; dialogs are auto-cancelled).\n- Do NOT spawn or wait for other subagents (the server owns the rounds; you own this one only).`,
 			"goal.role.exec",
+			{ round, rounds, goalText, prev },
 		);
 	}
 
@@ -2502,17 +2505,21 @@ export class GoalService {
 				`🔍 第 ${round}${rounds} 轮审查开始（本回合只回 verdict JSON；审查进行中发消息会自动排队，不用等）`,
 				`🔍 Review round ${round}${rounds} started (reply with only the verdict JSON this round; messages sent mid-review are queued automatically)`,
 				"goal.role.card.start",
+				{ round, rounds },
 			);
 		}
+		const specificKey = kind === "pass" ? "goal.role.card.pass" : "goal.role.card.fail";
+		const key = getServerString(this.lang(), specificKey) ? specificKey : "goal.role.card.result";
+		const fbZh = fb ? `：${fb}` : "";
+		const fbEn = fb ? `: ${fb}` : "";
 		return pick(
 			this.lang(),
+			kind === "pass" ? `✅ 第 ${round}${rounds} 轮审查通过${fbZh}` : `❌ 第 ${round}${rounds} 轮未通过${fbZh}`,
 			kind === "pass"
-				? `✅ 第 ${round}${rounds} 轮审查通过${fb ? `：${fb}` : ""}`
-				: `❌ 第 ${round}${rounds} 轮未通过${fb ? `：${fb}` : ""}`,
-			kind === "pass"
-				? `✅ Review round ${round}${rounds} passed${fb ? `: ${fb}` : ""}`
-				: `❌ Review round ${round}${rounds} failed${fb ? `: ${fb}` : ""}`,
-			"goal.role.card.result",
+				? `✅ Review round ${round}${rounds} passed${fbEn}`
+				: `❌ Review round ${round}${rounds} failed${fbEn}`,
+			key,
+			{ round, rounds, fb: fbEn, fbZh, fbEn, feedback: fb },
 		);
 	}
 
@@ -2548,6 +2555,16 @@ export class GoalService {
 			`你是严格、独立的验收者。只判断目标是否被完全满足：不要相信描述，去看工作区的实际状态。\n\n【目标】\n${goalText}\n\n【这是第 ${round}${rounds} 轮】${planBlockZh}\n\n【执行者本轮自述】\n${out || "（执行者本轮没有给出自述）"}${evidenceBlockZh}\n\n你可以用只读手段核实：read / grep / scm（只读 git）/ 只读 bash（跑测试）。\n\n判定口径：\n- 只判【执行者本轮自述】里**声称已完成**的条目；本轮没声称完成的后续阶段不构成 fail 理由（目标写成「完成阶段 3 并收尾后续」也不代表这一轮要做完所有阶段）。\n- 忽略与目标无关的本地改动（其它项目的补丁、工具/模型配置、临时文件）。\n- 声称完成但自述与证据里都没有对应命令输出或文件证据的，必须 fail，并点名缺哪条命令的输出。\n- feedback 不得为空：fail 时必须给出可以直接动手改的具体待改项。\n\n只输出一个 JSON 对象，不要有任何其他文本、不要代码围栏、不要复述下面的形状示例。本回合写类与派发类工具会被服务端直接拒绝（不要试）。字段：verdict 只能填 pass（目标已完全满足，一句话说明满足了什么）或 fail（未满足，给出可以直接动手改的具体待改项）；feedback 是一句话说明。形状示例（不要照抄尖括号里的占位符）：\n{"verdict":"<pass|fail>","feedback":"<一句话说明>"}\n[goal-review]`,
 			`You are a strict, independent acceptor. Judge only whether the goal is fully satisfied: do not trust the summary — inspect the actual workspace state.\n\n# Goal\n${goalText}\n\n# This is round ${round}${rounds}${planBlockEn}\n\n# Executor's summary this round\n${out || "(the executor produced no summary)"}${evidenceBlockEn}\n\nYou may verify with read-only means: read / grep / scm (read-only git) / read-only bash (run tests).\n\nJudging rules:\n- Judge only the items the executor's summary **claims to have completed this round**; later phases it did not claim this round are NOT grounds for fail (a goal phrased as "finish phase 3 and wrap up the rest" does not mean all phases must land this round).\n- Ignore local changes unrelated to the goal (other projects' patches, tool/model settings, scratch files).\n- If a claimed item has no matching command output or file evidence in the summary or the evidence above, you MUST fail and name which command's output is missing.\n- feedback must not be empty: on fail, give concrete items the executor can act on directly.\n\nReply with ONLY one JSON object — no other text, no code fences, do not echo the shape example below. Write and dispatch tools are blocked by the server during this round — do not try them. Fields: verdict must be pass (goal fully satisfied, say what in one sentence) or fail (not satisfied, give concrete items the executor must fix); feedback is one short sentence. Shape example (do not copy the placeholders in angle brackets):\n{"verdict":"<pass|fail>","feedback":"<one sentence>"}\n[goal-review]`,
 			"goal.role.review",
+			{
+				goalText,
+				round,
+				rounds,
+				out: out || "(the executor produced no summary)",
+				planBlockEn,
+				evidenceBlockEn,
+				planBlockZh,
+				evidenceBlockZh,
+			},
 		);
 	}
 

@@ -241,7 +241,15 @@ export function makeDelegateTaskTool(host: SubagentToolHost, lang?: () => Server
 						`subagent(action="get_result") for a single result; continue follow-ups in the SAME subagent session (subagent(action="steer")), ` +
 						`do not delegate again. Verify the result before reporting.`,
 					"delegate.started",
-					{ convId: convId, agent: input.agent, title: title, "input.model": input.model },
+					{
+						convId: convId,
+						agent: input.agent,
+						title: title,
+						"input.model": input.model,
+						modelLine: modelLineEn,
+						modelLineZh,
+						modelLineEn,
+					},
 				),
 				{ convId, agent: input.agent, template: input.agent, model: input.model },
 			);
