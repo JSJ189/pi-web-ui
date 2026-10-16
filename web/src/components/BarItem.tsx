@@ -353,7 +353,7 @@ export function BarItem({
 				onContextMenu={handleContextMenu}
 				data-bar-item={id}
 			>
-				<span className="brand-logo bar-item-brand-logo">π</span>
+				<span className="brand-logo bar-item-brand-logo bar-item-icon">π</span>
 				<span className="brand-name bar-item-text">{named("pi-web-ui")}</span>
 			</span>
 		);

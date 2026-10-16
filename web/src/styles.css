@@ -5433,11 +5433,14 @@ body.panel-resizing .scm-divider::after {
 	justify-content: center;
 	width: 26px;
 	height: 26px;
-	border-radius: 7px;
-	background: linear-gradient(135deg, var(--brand-grad-a), var(--brand-grad-b));
-	color: #fff;
+	border-radius: 7px !important;
+	background: linear-gradient(135deg, #8b5cf6, #6366f1) !important;
+	color: #fff !important;
 	font-weight: 700;
 	font-size: 16px;
+	line-height: 1;
+	flex-shrink: 0;
+	box-shadow: 0 1px 3px rgba(0, 0, 0, 0.2);
 }
 
 .brand-name {
@@ -5477,7 +5480,8 @@ body.panel-resizing .scm-divider::after {
 .topbar.no-labels .tb-tab,
 .topbar.no-labels .plugin-topbar-item,
 .topbar.no-labels .panel-toggle,
-.topbar.no-labels .bar-item:not(:has(.bg-task-badge)):not(:has(.update-badge)):not(:has(.update-dot)),
+.topbar.no-labels
+	.bar-item:not(.brand):not(.bar-item-brand):not(:has(.bg-task-badge)):not(:has(.update-badge)):not(:has(.update-dot)),
 .topbar.no-labels .chip:not(:has(svg ~ svg)):not(:has(.bg-task-badge)):not(:has(.update-badge)):not(:has(.update-dot)) {
 	width: var(--topbar-ctl-h);
 	height: var(--topbar-ctl-h);
@@ -5489,11 +5493,17 @@ body.panel-resizing .scm-divider::after {
 .topbar.no-labels .tb-tab:hover,
 .topbar.no-labels .plugin-topbar-item:hover,
 .topbar.no-labels .panel-toggle:hover,
-.topbar.no-labels .bar-item:not(:has(.bg-task-badge)):not(:has(.update-badge)):not(:has(.update-dot)):hover,
+.topbar.no-labels
+	.bar-item:not(.brand):not(.bar-item-brand):not(:has(.bg-task-badge)):not(:has(.update-badge)):not(
+		:has(.update-dot)
+	):hover,
 .topbar.no-labels
 	.chip:not(:has(svg ~ svg)):not(:has(.bg-task-badge)):not(:has(.update-badge)):not(:has(.update-dot)):hover,
 .topbar.no-labels .tb-tab.active,
-.topbar.no-labels .bar-item:not(:has(.bg-task-badge)):not(:has(.update-badge)):not(:has(.update-dot)).active {
+.topbar.no-labels
+	.bar-item:not(.brand):not(.bar-item-brand):not(:has(.bg-task-badge)):not(:has(.update-badge)):not(
+		:has(.update-dot)
+	).active {
 	border-radius: 50% !important;
 }
 
@@ -20868,11 +20878,23 @@ a.set-uninstall:hover {
 .bar-item-brand {
 	font-weight: 700;
 	color: var(--accent);
-	gap: 4px;
+	gap: 6px;
 }
 
 .bar-item-brand-logo {
-	color: #fff;
+	display: inline-flex;
+	align-items: center;
+	justify-content: center;
+	width: 26px;
+	height: 26px;
+	border-radius: 7px !important;
+	background: linear-gradient(135deg, #8b5cf6, #6366f1) !important;
+	color: #fff !important;
+	font-weight: 700;
+	font-size: 16px;
+	line-height: 1;
+	flex-shrink: 0;
+	box-shadow: 0 1px 3px rgba(0, 0, 0, 0.2);
 }
 
 .bar-item-char {
@@ -20912,18 +20934,41 @@ a.set-uninstall:hover {
 .topbar.no-labels .bar-item > .bar-item-text,
 .topbar.no-labels
 	.bar-item
-	> span:not(.bar-item-icon):not(.plugin-icon-svg):not(.plugin-icon-glyph):not(.bg-task-badge):not(.update-badge):not(
-		.update-dot
-	) {
+	> span:not(.bar-item-icon):not(.brand-logo):not(.bar-item-brand-logo):not(.plugin-icon-svg):not(
+		.plugin-icon-glyph
+	):not(.bg-task-badge):not(.update-badge):not(.update-dot) {
 	display: none !important;
 }
 
-.topbar.no-labels .bar-item:not(:has(.bg-task-badge)):not(:has(.update-badge)):not(:has(.update-dot)) {
+.topbar.no-labels
+	.bar-item:not(.brand):not(.bar-item-brand):not(:has(.bg-task-badge)):not(:has(.update-badge)):not(:has(.update-dot)) {
 	width: var(--topbar-ctl-h, 28px);
 	height: var(--topbar-ctl-h, 28px);
 	padding: 0;
 	justify-content: center;
 	border-radius: 50% !important;
+}
+
+/* 品牌在顶栏纯图标模式下：保持原有徽标展示，不设固定 28px 宽高与圆形边框，仅隐藏文字 */
+.topbar.no-labels .bar-item.brand,
+.topbar.no-labels .bar-item-brand {
+	width: auto !important;
+	height: auto !important;
+	padding: 0 !important;
+	background: transparent !important;
+	border: none !important;
+	box-shadow: none !important;
+	border-radius: 0 !important;
+}
+
+.topbar.no-labels .bar-item-brand > .bar-item-text,
+.topbar.no-labels .brand > .brand-name {
+	display: none !important;
+}
+
+.topbar.no-labels .bar-item-brand > .brand-logo,
+.topbar.no-labels .bar-item-brand > .bar-item-brand-logo {
+	display: inline-flex !important;
 }
 
 /* 在底栏（.statusbar / .status-bar / footer）中时保持精致紧凑的专业状态栏质感（方案 C：VS Code 纯平精益流） */

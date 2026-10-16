@@ -136,13 +136,6 @@ body,
 	box-shadow: none !important;
 }
 
-.brand-logo {
-	background: var(--accent) !important;
-	color: #131313 !important;
-	border-radius: 2px !important;
-	box-shadow: none !important;
-}
-
 .brand-name {
 	font-family: var(--serif);
 	font-weight: 700;

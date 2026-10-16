@@ -90,14 +90,39 @@ describe("Universal 引擎 resolveSessionDisplayName", () => {
 	});
 });
 
-describe("品牌徽标 .bar-item-brand-logo 对比度防灾难守护（issue #644）", () => {
-	it("styles.css 中的 .bar-item-brand-logo 必须使用 #fff 且不能使用 var(--accent)", () => {
+describe("品牌徽标固定样式与全主题/纯图标模式守护", () => {
+	it("styles.css 中的 .brand-logo 与 .bar-item-brand-logo 固定使用紫色渐变与 #fff 白色字体", () => {
 		const css = readFileSync(join(ROOT, "web/src/styles.css"), "utf8");
-		// 截取 .bar-item-brand-logo 规则块
-		const match = /\.bar-item-brand-logo\s*\{([^}]+)\}/.exec(css);
-		expect(match).not.toBeNull();
-		const block = match![1];
-		expect(block).toContain("color: #fff");
-		expect(block).not.toContain("var(--accent)");
+		const logoMatch = /\.brand-logo\s*\{([^}]+)\}/.exec(css);
+		expect(logoMatch).not.toBeNull();
+		const logoBlock = logoMatch![1];
+		expect(logoBlock).toContain("#8b5cf6");
+		expect(logoBlock).toContain("#6366f1");
+		expect(logoBlock).toContain("color: #fff");
+
+		const barLogoMatch = /\.bar-item-brand-logo\s*\{([^}]+)\}/.exec(css);
+		expect(barLogoMatch).not.toBeNull();
+		const barLogoBlock = barLogoMatch![1];
+		expect(barLogoBlock).toContain("#8b5cf6");
+		expect(barLogoBlock).toContain("#6366f1");
+		expect(barLogoBlock).toContain("color: #fff");
+	});
+
+	it("纯图标模式（.topbar.no-labels）下品牌徽标保持展示且不被塑形为 28px 圆形", () => {
+		const css = readFileSync(join(ROOT, "web/src/styles.css"), "utf8");
+		expect(css).toContain(".topbar.no-labels .bar-item.brand");
+		expect(css).toContain(".topbar.no-labels .bar-item-brand");
+		expect(css).toContain("display: inline-flex !important");
+	});
+
+	it("themes/*.css 中不得覆盖 .brand-logo，保证品牌徽标不受主题影响", () => {
+		const { readdirSync } = require("node:fs");
+		const themesDir = join(ROOT, "themes");
+		const themeFiles = readdirSync(themesDir).filter((f: string) => f.endsWith(".css"));
+		for (const file of themeFiles) {
+			const content = readFileSync(join(themesDir, file), "utf8");
+			expect(content).not.toMatch(/\.brand-logo\s*\{/);
+			expect(content).not.toMatch(/\.brand-logo\s*,/);
+		}
 	});
 });
