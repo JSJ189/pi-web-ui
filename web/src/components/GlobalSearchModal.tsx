@@ -393,7 +393,11 @@ export function GlobalSearchModal({
 							{sessionHits.map((s) => {
 								navIdx++;
 								const idx = navIdx;
-								const title = s.name || s.path.split(/[\\/]/).pop() || s.path;
+								const title =
+									s.displayName ||
+									s.name ||
+									s.firstMessage?.trim() ||
+									(s.path.split(/[\\/]/).pop() || s.path).replace(/\.jsonl$/i, "");
 								return (
 									<div key={s.path} className="gs-item-wrap">
 										<button

@@ -3462,15 +3462,22 @@ export class DshClientSession {
 					const sessionId = basename(dirname(file));
 					// 审查会话不进搜索。
 					if (sessionId.startsWith("review-")) continue;
-					if (
-						all.includes(q) ||
-						sessionId.toLowerCase().includes(q) ||
-						firstUserText(events, this.getLang()).toLowerCase().includes(q)
-					) {
+					const firstMsg = firstUserText(events, this.getLang());
+					if (all.includes(q) || sessionId.toLowerCase().includes(q) || firstMsg.toLowerCase().includes(q)) {
+						const storedTitle =
+							this.stateStore?.getSessionTitle(this.cwd, file) ?? this.stateStore?.getSessionTitle(this.cwd, sessionId);
+						const explicitTitle =
+							storedTitle ??
+							sessionLogTitle(events) ??
+							[...this.convs.values()].find(
+								(c) => c.sessionId === sessionId && !DshClientSession.isDefaultTitle(c.title),
+							)?.title;
+						const displayName = this.resolveSessionDisplayName(sessionId, explicitTitle, firstMsg);
 						results.push({
 							path: file,
-							name: sessionId,
-							firstMessage: firstUserText(events, this.getLang()),
+							name: explicitTitle ?? sessionId,
+							displayName,
+							firstMessage: firstMsg,
 							messageCount: events.filter(
 								(e) =>
 									(e.type === "user/message" && !isDshInternalUserMessage(e.data as Record<string, unknown>)) ||

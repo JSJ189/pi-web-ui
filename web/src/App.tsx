@@ -622,7 +622,7 @@ export function App() {
 						})),
 						...c.sessions.map((s) => ({
 							id: s.path,
-							title: s.name || s.firstMessage || s.path,
+							title: s.displayName || s.name || s.firstMessage?.trim() || s.path,
 							cwd,
 							kind: "history" as const,
 						})),

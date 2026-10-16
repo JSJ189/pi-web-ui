@@ -12684,10 +12684,13 @@ export class ClientSession {
 				.slice(0, 50)
 				.map((s) => {
 					const isPinned = this.stateStore?.isSessionPinned(this.cwd, s.path);
+					const displayName =
+						s.name?.trim() || (s.firstMessage ? s.firstMessage.trim().replace(/\s+/g, " ") : undefined);
 					const base: SessionSummary = {
 						path: s.path,
 						...(s.id ? { sessionId: s.id } : {}),
 						name: s.name,
+						displayName,
 						firstMessage: s.firstMessage,
 						messageCount: s.messageCount,
 						modified: s.modified.getTime(),

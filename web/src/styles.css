@@ -20872,10 +20872,7 @@ a.set-uninstall:hover {
 }
 
 .bar-item-brand-logo {
-	font-size: 14.5px;
-	font-family: serif, sans-serif;
-	font-weight: 700;
-	color: var(--accent);
+	color: #fff;
 }
 
 .bar-item-char {

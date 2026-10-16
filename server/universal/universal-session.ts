@@ -1392,6 +1392,7 @@ export class UniversalSession implements DispatchSession {
 						path: conv.id,
 						sessionId: conv.id,
 						name: conv.title,
+						displayName: this.resolveSessionDisplayName(conv, firstMsg),
 						firstMessage: firstMsg,
 						messageCount: conv.messages.length,
 						modified: conv.updatedAt,
