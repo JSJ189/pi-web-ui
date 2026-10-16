@@ -10985,6 +10985,41 @@ div.chead[role="button"]:focus-visible,
 	color: var(--text-dim);
 }
 
+/* 极简新对话：空态清空，输入框垂直居中 */
+.main.main-minimal-empty .messages-wrap {
+	flex: 1 1 0%;
+	min-height: 0;
+	margin-bottom: 0;
+	overflow: hidden;
+}
+
+.main.main-minimal-empty .empty-state {
+	display: none !important;
+}
+
+.main.main-minimal-empty::after {
+	content: "";
+	flex: 1 1 0%;
+	min-height: 0;
+	pointer-events: none;
+}
+
+.main.main-minimal-empty .inputbar {
+	padding-block: 0;
+	transition: transform 0.25s cubic-bezier(0.16, 1, 0.3, 1);
+}
+
+.main.main-minimal-empty .composer-resize {
+	display: none;
+}
+
+.main.main-minimal-empty .inputbox {
+	border-radius: 18px;
+	box-shadow:
+		0 16px 40px -12px rgba(0, 0, 0, 0.16),
+		0 0 0 1px var(--border);
+}
+
 /* 对话头部条（chat.header 槽位）与空态区（chat.empty 槽位）：无条目时不渲染。 */
 .chat-header {
 	display: flex;

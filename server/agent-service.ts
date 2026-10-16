@@ -6999,6 +6999,7 @@ export class ClientSession {
 		disabledMarkers?: string[];
 		quickPhrases?: string[];
 		quickPhrasesEnabled?: boolean;
+		minimalNewChat?: boolean;
 	}): Promise<void> {
 		const { markersEnabled, disabledMarkers, quickPhrasesSeeded, ...rest } = partial as {
 			markersEnabled?: boolean;

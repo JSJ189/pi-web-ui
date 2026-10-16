@@ -362,6 +362,7 @@ const PRESET_FIELD_KINDS = {
 	openRecentSessionOnProjectSwitch: "bool",
 	quickPhrases: "list",
 	quickPhrasesEnabled: "bool",
+	minimalNewChat: "bool",
 	devNoCache: "bool",
 	autoReload: "bool",
 	// -- engine ----------------------------------------------------------

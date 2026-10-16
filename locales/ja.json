@@ -188,6 +188,8 @@
 		"quickPhrasesEdit": "このフレーズを編集します",
 		"quickPhrasesEditPh": "フレーズを修正します…（Enter で保存、Esc でキャンセルします）",
 		"quickPhrasesReset": "デフォルトのフレーズに戻します",
+		"minimalNewChat": "ミニマルな新しいチャット",
+		"minimalNewChatDesc": "有効にすると、新しいチャットでプロンプトテンプレートとクイックフレーズが非表示になり、すっきりとしたミニマルな初期画面になります",
 		"slashCommands": "コマンド",
 		"slashMenuHint": "↑↓ で選択 ・ Enter/Tab で補完します",
 		"atMentions": "メンション",

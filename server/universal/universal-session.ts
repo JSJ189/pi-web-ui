@@ -2115,6 +2115,7 @@ export class UniversalSession implements DispatchSession {
 			subagentModels: [],
 			quickPhrases: s?.quickPhrases ?? [],
 			quickPhrasesEnabled: s?.quickPhrasesEnabled ?? true,
+			minimalNewChat: s?.minimalNewChat ?? false,
 			quickPhrasesSeeded: this.stateStore?.getQuickPhrasesSeeded() ?? true,
 		};
 		this.send({ type: "settings_state", settings });

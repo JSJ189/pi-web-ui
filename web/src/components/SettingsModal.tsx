@@ -641,6 +641,7 @@ interface SettingsPatch {
 	skillsFullText?: string[];
 	quickPhrases?: string[];
 	quickPhrasesEnabled?: boolean;
+	minimalNewChat?: boolean;
 	visionBridgeEnabled?: boolean;
 	visionBridgeModel?: string | null;
 	visionBridgePromptMode?: "append" | "replace";
@@ -3482,6 +3483,12 @@ export function SettingsModal({
 									}
 								/>
 								<ToggleRow
+									title={t("minimalNewChat")}
+									tip={t("minimalNewChatDesc")}
+									enabled={settings.minimalNewChat ?? false}
+									onToggle={() => setPartial({ minimalNewChat: !(settings.minimalNewChat ?? false) })}
+								/>
+								<ToggleRow
 									title={t("presentAutoOpen")}
 									tip={t("presentAutoOpenDesc")}
 									enabled={presentAutoOpen}
@@ -3658,6 +3665,12 @@ export function SettingsModal({
 									tip={t("quickPhrasesDesc")}
 									enabled={settings.quickPhrasesEnabled}
 									onToggle={() => setPartial({ quickPhrasesEnabled: !settings.quickPhrasesEnabled })}
+								/>
+								<ToggleRow
+									title={t("minimalNewChat")}
+									tip={t("minimalNewChatDesc")}
+									enabled={settings.minimalNewChat ?? false}
+									onToggle={() => setPartial({ minimalNewChat: !(settings.minimalNewChat ?? false) })}
 								/>
 								{!settings.quickPhrasesEnabled && <p className="set-hint">{t("quickPhrasesOffHint")}</p>}
 								<div className="set-preset-save">

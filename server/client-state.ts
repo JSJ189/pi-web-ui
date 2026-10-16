@@ -399,6 +399,8 @@ export interface ClientSettings {
 	/** 输入框上方的快捷短语（点击即发送）。纯 UI 偏好，不进预设、不需 reload。 */
 	quickPhrases: string[];
 	quickPhrasesEnabled: boolean;
+	/** 极简新对话开关（默认关；开 = 新对话隐藏提示词模板并隐藏快捷短语，呈现现代极简风格）。 */
+	minimalNewChat: boolean;
 	/** DSH Agent 预设默认（新会话取值；pi 引擎忽略）。全局共享，不进设置预设。 */
 	defaultAgentPreset?: string;
 	/** DSH 新会话默认权限预设（三档之一；pi 引擎忽略）。全局共享，不进设置预设。 */
@@ -1119,6 +1121,7 @@ export class ClientStateStore {
 			softCapByModel: normalizeSoftCapByModel(stored?.softCapByModel),
 			quickPhrases: stored?.quickPhrases ?? [],
 			quickPhrasesEnabled: stored?.quickPhrasesEnabled ?? true,
+			minimalNewChat: stored?.minimalNewChat ?? false,
 			reviewPrompt: stored?.reviewPrompt ?? "",
 			reviewDisabledSkills: stored?.reviewDisabledSkills ?? [],
 			disabledPlugins: stored?.disabledPlugins ?? [],
@@ -1208,6 +1211,7 @@ export class ClientStateStore {
 			uiLayout: normalizeUiLayout(settings.uiLayout ?? cur.uiLayout),
 			quickPhrases: settings.quickPhrases ?? cur.quickPhrases ?? [],
 			quickPhrasesEnabled: settings.quickPhrasesEnabled ?? cur.quickPhrasesEnabled ?? true,
+			minimalNewChat: settings.minimalNewChat ?? cur.minimalNewChat ?? false,
 			defaultAgentPreset: settings.defaultAgentPreset ?? cur.defaultAgentPreset ?? "standard",
 			defaultPermissionPreset:
 				settings.defaultPermissionPreset ?? cur.defaultPermissionPreset ?? "workspace-write-never",

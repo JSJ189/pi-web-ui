@@ -188,6 +188,8 @@
 		"quickPhrasesEdit": "Editar esta frase",
 		"quickPhrasesEditPh": "Editar frase… (Enter para salvar, Esc para cancelar)",
 		"quickPhrasesReset": "Restaurar padrões",
+		"minimalNewChat": "Novo chat minimalista",
+		"minimalNewChatDesc": "Usa um visual minimalista moderno para novos chats: oculta modelos de prompt e frases rápidas",
 		"slashCommands": "Comandos",
 		"slashMenuHint": "↑↓ seleciona · Enter/Tab completa",
 		"atMentions": "Menções",

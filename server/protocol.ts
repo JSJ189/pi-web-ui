@@ -988,6 +988,8 @@ export type ClientMessage =
 			/** 输入框上方的快捷短语（点击即发送）。纯 UI 偏好，不需要 reload runtime。 */
 			quickPhrases?: string[];
 			quickPhrasesEnabled?: boolean;
+			/** 极简新对话模式（默认关；开 = 新对话隐藏提示词模板并隐藏快捷短语，呈现现代极简风格）。 */
+			minimalNewChat?: boolean;
 			/** 上报「已 seed 一次默认快捷短语」（首次见空列表时客户端按语言填一批默认并置位；
 			 *  服务端存全局标记，跨会话/跨浏览器生效，避免删除默认后又被填回）。 */
 			quickPhrasesSeeded?: boolean;
@@ -3131,6 +3133,8 @@ export interface UiSettingsState {
 	quickPhrases: string[];
 	/** 快捷短语总开关（默认开；关 = 输入框上方不显示）。 */
 	quickPhrasesEnabled: boolean;
+	/** 极简新对话开关（默认关；开 = 新对话隐藏提示词模板并隐藏快捷短语）。 */
+	minimalNewChat: boolean;
 	/** 是否已在服务端 seed 过一次默认快捷短语（跨会话/跨浏览器，用于避免删除后被填回默认）。 */
 	quickPhrasesSeeded: boolean;
 	/** 已配置鉴权的全部模型（子代理默认模型/模板模型选择器）。 */

@@ -188,6 +188,8 @@
 		"quickPhrasesEdit": "Редактировать эту фразу",
 		"quickPhrasesEditPh": "Измените фразу… (Enter — сохранить, Esc — отмена)",
 		"quickPhrasesReset": "Восстановить фразы по умолчанию",
+		"minimalNewChat": "Минималистичный новый чат",
+		"minimalNewChatDesc": "Включает современный минималистичный дизайн для новых чатов: скрывает шаблоны промптов и быстрые фразы",
 		"slashCommands": "Команды",
 		"slashMenuHint": "↑↓ — выбор · Enter/Tab — вставка",
 		"atMentions": "Упоминания",

@@ -863,6 +863,8 @@ export function App() {
 	// Wide chat column (client-local, default off).
 	const wide = useWideChat();
 	const hideModelRow = useHideModelRow();
+	const isMinimalEmpty =
+		!!chat.settings?.minimalNewChat && (chat.state?.messages?.length ?? 0) === 0 && !chat.state?.streamingMessage;
 	// Background-task panel (AI-started servers — stop individually or all).
 	const [bgTasksOpen, setBgTasksOpen] = useState(false);
 	// Global search panel (sessions / projects / workspace files).
@@ -2029,7 +2031,7 @@ export function App() {
 						<main
 							className={`${wide ? "main wide-chat" : "main"}${hideModelRow ? " hide-model-row" : ""}${
 								chat.transition && !chat.transition.previewMessages?.length ? " main-transitioning" : ""
-							}`}
+							}${isMinimalEmpty ? " main-minimal-empty" : ""}`}
 						>
 							{chat.transition && (
 								<div
@@ -2197,6 +2199,7 @@ export function App() {
 										toolsWrap={chat.settings?.toolsWrap ?? true}
 										toolImages={chat.settings?.toolImagesEnabled ?? true}
 										keepRecent={chat.settings?.keepRecentMessages}
+										minimalNewChat={chat.settings?.minimalNewChat ?? false}
 										jumpTarget={searchJump}
 										onJumpDone={() => setSearchJump(null)}
 										urlJumpMessageId={urlJump && urlJump.sessionId === chat.state.sessionId ? urlJump.messageId : null}
@@ -2457,7 +2460,14 @@ export function App() {
 								onManageModels={openManageModels}
 								onSent={clearAttachments}
 								quickPhrases={chat.settings?.quickPhrases ?? []}
-								quickPhrasesEnabled={zenMode ? false : (chat.settings?.quickPhrasesEnabled ?? true)}
+								quickPhrasesEnabled={
+									zenMode
+										? false
+										: (chat.settings?.quickPhrasesEnabled ?? true) &&
+											(!chat.settings?.minimalNewChat ||
+												(chat.state?.messages?.length ?? 0) > 0 ||
+												!!chat.state?.streamingMessage)
+								}
 								recallDrafts={recallDrafts}
 								dshPermCurrent={chat.state?.permission ?? null}
 								dshPermOptions={chat.dshPermission?.options ?? undefined}

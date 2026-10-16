@@ -92,6 +92,7 @@ function makeCtx(opts: {
 			skillsFullText: [],
 			quickPhrases: [],
 			quickPhrasesEnabled: true,
+			minimalNewChat: false,
 			questionnaireEnabled: true,
 			goalModeEnabled: true,
 			parallelReminderEnabled: true,

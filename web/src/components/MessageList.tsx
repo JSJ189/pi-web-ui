@@ -265,6 +265,8 @@ interface MessageListProps {
 	toolImages?: boolean;
 	/** 尾部保持完整渲染的消息条数（设置面板的 keepRecentMessages；缺省 = 默认值）。 */
 	keepRecent?: number;
+	/** 极简新对话模式（设置面板开关；开 = 新对话隐藏提示词模板并隐藏快捷短语）。 */
+	minimalNewChat?: boolean;
 	/** 全局搜索「会话」结果的跳转请求：目标会话 path + 命中消息锚点。
 	 *  消息载入后定位到对应消息并滚动高亮，完成后回调 onJumpDone。 */
 	jumpTarget?: { path: string; role: string; timestamp: number } | null;
@@ -287,6 +289,7 @@ export function MessageList({
 	toolsWrap,
 	toolImages,
 	keepRecent,
+	minimalNewChat = false,
 	jumpTarget,
 	onJumpDone,
 	urlJumpMessageId,
@@ -1164,7 +1167,7 @@ export function MessageList({
 				onTouchMove={handleTouchMove}
 				onPointerDown={handlePointerDown}
 			>
-				{state.messages.length === 0 && !state.streamingMessage && (
+				{state.messages.length === 0 && !state.streamingMessage && !minimalNewChat && (
 					<div className="empty-state">
 						<EmptyTemplateCards />
 						{uiChatEmpty && uiChatEmpty.length > 0 && (

@@ -661,6 +661,7 @@ export function handleSettingsMessage(msg: ClientMessage, cs: DispatchSession): 
 				disabledMarkers: (msg as { disabledMarkers?: string[] }).disabledMarkers,
 				quickPhrases: (msg as { quickPhrases?: string[] }).quickPhrases,
 				quickPhrasesEnabled: (msg as { quickPhrasesEnabled?: boolean }).quickPhrasesEnabled,
+				minimalNewChat: (msg as { minimalNewChat?: boolean }).minimalNewChat,
 				quickPhrasesSeeded: (msg as { quickPhrasesSeeded?: boolean }).quickPhrasesSeeded,
 				uiLayout: (msg as { uiLayout?: unknown }).uiLayout,
 			});

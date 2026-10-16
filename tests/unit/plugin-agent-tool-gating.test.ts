@@ -165,6 +165,7 @@ describe("禁用语义（会话同步层面）", () => {
 					softCapByModel: {},
 					quickPhrases: [],
 					quickPhrasesEnabled: true,
+					minimalNewChat: false,
 					reviewPrompt: "",
 					reviewDisabledSkills: [],
 					disabledPlugins: [],

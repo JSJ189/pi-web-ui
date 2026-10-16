@@ -188,6 +188,8 @@
 		"quickPhrasesEdit": "Diese Phrase bearbeiten",
 		"quickPhrasesEditPh": "Phrase bearbeiten … (Enter zum Speichern, Esc zum Abbrechen)",
 		"quickPhrasesReset": "Auf Standard zurücksetzen",
+		"minimalNewChat": "Minimalistischer neuer Chat",
+		"minimalNewChatDesc": "Aktiviert ein modernes, minimalistisches Design für neue Chats: Blendet Prompt-Vorlagen und Schnellphrasen aus",
 		"slashCommands": "Befehle",
 		"slashMenuHint": "↑↓ Auswählen · Enter/Tab vervollständigen",
 		"atMentions": "Erwähnungen",

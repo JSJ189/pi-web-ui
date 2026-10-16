@@ -188,6 +188,8 @@
 		"quickPhrasesEdit": "Modifier cette expression",
 		"quickPhrasesEditPh": "Modifier l'expression… (Entrée pour enregistrer, Échap pour annuler)",
 		"quickPhrasesReset": "Restaurer les expressions par défaut",
+		"minimalNewChat": "Nouveau chat minimaliste",
+		"minimalNewChatDesc": "Utilise un design minimaliste moderne pour les nouveaux chats : masque les modèles d'instructions et les expressions rapides",
 		"slashCommands": "Commandes",
 		"slashMenuHint": "↑↓ pour choisir · Entrée/Tab pour compléter",
 		"atMentions": "Mentions",

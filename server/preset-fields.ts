@@ -87,6 +87,7 @@ export const PRESET_FIELD_GROUPS = {
 		"bgAutoCleanupMin",
 		"quickPhrases",
 		"quickPhrasesEnabled",
+		"minimalNewChat",
 		"devNoCache",
 		"autoReload",
 	],
@@ -447,6 +448,12 @@ export const PRESET_FIELD_META = {
 		labelEn: "Enable Quick Phrases",
 		hintZh: "是否在输入框上方显示快捷短语药丸栏",
 		hintEn: "Display quick phrases bar above composer",
+	},
+	minimalNewChat: {
+		labelZh: "极简新对话",
+		labelEn: "Minimalist New Chat",
+		hintZh: "新对话隐藏提示词模板并隐藏快捷短语，呈现现代极简风格",
+		hintEn: "Hide prompt templates and quick phrases on new chat for a clean modern look",
 	},
 	devNoCache: {
 		labelZh: "开发者免缓存模式",

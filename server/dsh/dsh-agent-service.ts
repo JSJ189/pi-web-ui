@@ -269,6 +269,7 @@ interface DshSettings {
 	/** 输入框上方的快捷短语（点击即发送；纯 UI 偏好）。 */
 	quickPhrases: string[];
 	quickPhrasesEnabled: boolean;
+	minimalNewChat: boolean;
 	/** 组合模板与来源覆盖（保持与 pi 引擎 ClientSettings 一致）。 */
 	promptTemplate?: string;
 	promptOverrides?: Record<string, string>;
@@ -330,6 +331,7 @@ const DEFAULT_SETTINGS: DshSettings = {
 	defaultPermissionPreset: PERMISSION_DEFAULT_PRESET,
 	quickPhrases: [],
 	quickPhrasesEnabled: true,
+	minimalNewChat: false,
 	promptTemplate: "",
 	promptOverrides: {},
 };
@@ -551,6 +553,7 @@ export class DshClientSession {
 				reviewPrompt: savedSettings.reviewPrompt,
 				quickPhrases: savedSettings.quickPhrases ?? [],
 				quickPhrasesEnabled: savedSettings.quickPhrasesEnabled ?? true,
+				minimalNewChat: savedSettings.minimalNewChat ?? false,
 				promptTemplate: savedSettings.promptTemplate ?? "",
 				promptOverrides: savedSettings.promptOverrides ?? {},
 				defaultAgentPreset: savedSettings.defaultAgentPreset ?? PRESET_DEFAULT_ID,
@@ -3955,6 +3958,7 @@ export class DshClientSession {
 			subagentModels: [],
 			quickPhrases: [...this.settings.quickPhrases],
 			quickPhrasesEnabled: this.settings.quickPhrasesEnabled,
+			minimalNewChat: this.settings.minimalNewChat,
 			quickPhrasesSeeded: this.stateStore.getQuickPhrasesSeeded(),
 		};
 		this.emit({ type: "settings_state", settings });
@@ -3998,6 +4002,7 @@ export class DshClientSession {
 		disabledMarkers?: string[];
 		quickPhrases?: string[];
 		quickPhrasesEnabled?: boolean;
+		minimalNewChat?: boolean;
 		quickPhrasesSeeded?: boolean;
 	}): Promise<void> {
 		if (partial.quickPhrasesSeeded) this.stateStore.markQuickPhrasesSeeded();
@@ -4044,6 +4049,7 @@ export class DshClientSession {
 				.slice(0, 30);
 		}
 		if (partial.quickPhrasesEnabled !== undefined) this.settings.quickPhrasesEnabled = partial.quickPhrasesEnabled;
+		if (partial.minimalNewChat !== undefined) this.settings.minimalNewChat = partial.minimalNewChat;
 		const prevMarkerGuidance = this.markerSvc.buildGuidance();
 		this.markerSvc.setAll({
 			markersEnabled: partial.markersEnabled,
@@ -4082,6 +4088,7 @@ export class DshClientSession {
 			reviewPrompt: this.settings.reviewPrompt,
 			quickPhrases: this.settings.quickPhrases,
 			quickPhrasesEnabled: this.settings.quickPhrasesEnabled,
+			minimalNewChat: this.settings.minimalNewChat,
 			defaultAgentPreset: this.settings.defaultAgentPreset,
 			promptTemplate: this.settings.promptTemplate ?? "",
 			promptOverrides: this.settings.promptOverrides ?? {},

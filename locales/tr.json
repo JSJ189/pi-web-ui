@@ -188,6 +188,8 @@
 		"quickPhrasesEdit": "Bu ifadeyi düzenle",
 		"quickPhrasesEditPh": "İfadeyi düzenle… (Enter ile kaydet, Esc ile iptal)",
 		"quickPhrasesReset": "Varsayılan ifadelere dön",
+		"minimalNewChat": "Minimalist yeni sohbet",
+		"minimalNewChatDesc": "Yeni sohbetler için modern minimalist görünüm: istem şablonlarını ve hızlı ifadeleri gizler",
 		"slashCommands": "Komutlar",
 		"slashMenuHint": "↑↓ seç · Enter/Tab tamamla",
 		"atMentions": "Bahsetmeler",

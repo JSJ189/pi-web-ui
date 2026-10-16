@@ -188,6 +188,8 @@
 		"quickPhrasesEdit": "編輯該短語",
 		"quickPhrasesEditPh": "修改短語…（Enter 儲存，Esc 取消）",
 		"quickPhrasesReset": "還原預設短語",
+		"minimalNewChat": "極簡新對話",
+		"minimalNewChatDesc": "開啟後新對話介面採用現代極簡設計：隱藏中心提示詞範本卡片與對話框快捷短語，呈現純淨無干擾的初始對話體驗",
 		"slashCommands": "命令",
 		"slashMenuHint": "↑↓ 選擇 · Enter/Tab 補全",
 		"atMentions": "提及",

@@ -188,6 +188,8 @@
 		"quickPhrasesEdit": "이 문구를 수정해요",
 		"quickPhrasesEditPh": "문구를 수정해요…(Enter로 저장, Esc로 취소)",
 		"quickPhrasesReset": "기본 문구로 되돌려요",
+		"minimalNewChat": "미니멀 새 대화",
+		"minimalNewChatDesc": "활성화하면 새 대화에서 프롬프트 템플릿 카드와 빠른 문구를 숨겨 깔끔하고 방해 없는 시작 화면을 제공합니다",
 		"slashCommands": "명령",
 		"slashMenuHint": "↑↓로 선택 · Enter/Tab으로 완성해요",
 		"atMentions": "멘션",

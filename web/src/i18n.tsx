@@ -209,6 +209,9 @@ export const zh = {
 	quickPhrasesEdit: "编辑该短语",
 	quickPhrasesEditPh: "修改短语…（Enter 保存，Esc 取消）",
 	quickPhrasesReset: "恢复默认短语",
+	minimalNewChat: "极简新对话",
+	minimalNewChatDesc:
+		"开启后新对话界面采用现代极简设计：隐藏中心提示词模板卡片与对话框快捷短语，呈现纯净无干扰的初始对话体验",
 
 	/* slash commands */
 	slashCommands: "命令",
@@ -2369,6 +2372,9 @@ export const en: Record<keyof typeof zh, string> = {
 	quickPhrasesEdit: "Edit this phrase",
 	quickPhrasesEditPh: "Edit phrase… (Enter to save, Esc to cancel)",
 	quickPhrasesReset: "Reset to defaults",
+	minimalNewChat: "Minimalist new chat",
+	minimalNewChatDesc:
+		"Use a modern minimalist look for new chats: hide prompt template cards and composer quick phrases to keep the initial screen clean and distraction-free",
 
 	/* slash commands */
 	slashCommands: "Commands",

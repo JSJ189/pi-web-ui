@@ -57,6 +57,7 @@ function makeMockHost(savedSettings: Record<string, unknown> = {}) {
 				softCapByModel: {},
 				quickPhrases: [],
 				quickPhrasesEnabled: true,
+				minimalNewChat: false,
 				reviewPrompt: "",
 				reviewDisabledSkills: [],
 				disabledPlugins: [],
