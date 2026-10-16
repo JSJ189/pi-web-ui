@@ -21,6 +21,11 @@ import { join } from "node:path";
 import type { PluginAgentTool } from "./plugins.js";
 import type { UiMcpToolInfo } from "./protocol.js";
 
+/** 展开字符串中的 ${VAR_NAME} 环境变量占位符。 */
+export function expandEnvVars(val: string): string {
+	return val.replace(/\$\{([^}]+)\}/g, (_, k) => process.env[k] ?? "");
+}
+
 /** 获取全局 MCP 配置文件路径 */
 export function getGlobalMcpPath(agentDir?: string, dataDir?: string): string {
 	if (agentDir) {
@@ -94,20 +99,29 @@ const MCP_MAX_BUFFER_CHARS = 4 * 1024 * 1024;
 
 let rpcSeq = 0;
 
+interface PendingRequest {
+	resolve: (v: unknown) => void;
+	reject: (e: Error) => void;
+	timer: NodeJS.Timeout;
+	timeoutMs: number;
+	method: string;
+	progressToken?: string;
+	abortController?: AbortController;
+}
+
 /**
- * 单个 MCP 服务器的客户端：管理子进程、请求/响应按 id 关联、握手与工具调用。
+ * 单个 MCP 服务器的客户端：管理子进程或 HTTP 传输、请求/响应按 id 关联、握手与工具调用。
+ * 传输支持：
+ *  - stdio：通过 child_process.spawn 与 NDJSON 交互
+ *  - streamable-http / http：通过原生 fetch 发送 JSON-RPC POST 请求，支持 Mcp-Session-Id 与 SSE 流式响应
  * 线程模型：无需并发控制（MCP 允许乱序 + 我们按请求 id 匹配响应）。
- * 自愈：子进程意外退出（崩溃/被杀）后不永久失效 —— 下一次工具调用会惰性重启并
+ * 自愈：子进程意外退出（崩溃/被杀）或 HTTP 会话失效后不永久失效 —— 下一次工具调用会惰性重启并
  * 重新握手、重新拉取工具列表；显式 close() 之后才永久停用。
  */
 export class McpClient {
 	private child: ChildProcess | null = null;
 	private buffer = "";
-	private nextId = 1;
-	private pending = new Map<
-		string,
-		{ resolve: (v: unknown) => void; reject: (e: Error) => void; timer: NodeJS.Timeout }
-	>();
+	private pending = new Map<string, PendingRequest>();
 	private log: (...a: unknown[]) => void;
 	readonly name: string;
 	/** 已握手的工具列表（tools/list 结果缓存）。 */
@@ -117,6 +131,12 @@ export class McpClient {
 	private starting: Promise<void> | null = null;
 	/** 已启动次数（含自愈重启；诊断/测试用）。 */
 	private startedCount = 0;
+	/** HTTP 会话 ID（服务端返回 Mcp-Session-Id 时记录）。 */
+	private sessionId: string | null = null;
+	/** 是否已成功握手（HTTP 模式无 child，以 initialized 标志为准）。 */
+	private initialized = false;
+	/** 工具列表动态更新回调（收到 notifications/tools/list_changed 时触发）。 */
+	onToolsChanged?: () => void;
 
 	constructor(
 		name: string,
@@ -128,21 +148,37 @@ export class McpClient {
 		this.log = log ?? (() => {});
 	}
 
-	/** 启动子进程 + 握手 + 拉取工具列表。可安全重入：子进程退出后再次调用即全新启动。 */
+	get isHttp(): boolean {
+		return !this.spec.command && !!this.spec.url;
+	}
+
+	/** 启动子进程或 HTTP 连接 + 握手 + 拉取工具列表。可安全重入：退出后再次调用即全新启动。 */
 	async start(timeoutMs = 8000): Promise<void> {
+		if (this.isHttp) {
+			if (this.initialized) return;
+			await this.startHttp(timeoutMs);
+			return;
+		}
 		if (this.child) return;
+		await this.startStdio(timeoutMs);
+	}
+
+	private async startStdio(timeoutMs = 8000): Promise<void> {
 		const { command, args = [], cwd, env } = this.spec;
 		if (!command) {
-			if (this.spec.url) {
-				throw new Error(`远程 HTTP MCP 服务器（${this.spec.url}）暂不支持 stdio 直接直连`);
-			}
 			throw new Error("MCP 服务器规格未声明 command 启动命令");
 		}
 		this.log(`[mcp:${this.name}] starting: ${command} ${args.join(" ")}`);
 		this.buffer = "";
+		const spawnedEnv: Record<string, string> = { ...(process.env as Record<string, string>) };
+		if (env) {
+			for (const [k, v] of Object.entries(env)) {
+				spawnedEnv[k] = expandEnvVars(v);
+			}
+		}
 		const child = spawn(command, args, {
 			cwd: cwd ?? undefined,
-			env: { ...process.env, ...env },
+			env: spawnedEnv,
 			stdio: ["pipe", "pipe", "pipe"],
 			windowsHide: true,
 		});
@@ -206,22 +242,61 @@ export class McpClient {
 		}
 	}
 
+	private async startHttp(timeoutMs = 8000): Promise<void> {
+		const url = this.spec.url;
+		if (!url) throw new Error("MCP HTTP 服务器规格未声明 url");
+		this.log(`[mcp:${this.name}] connecting (HTTP): ${url}`);
+		this.sessionId = null;
+		this.initialized = false;
+		this.startedCount++;
+
+		try {
+			const handshake = await this.requestHttp(
+				"initialize",
+				{
+					protocolVersion: this.spec.protocolVersion ?? PROTOCOL_VERSION,
+					capabilities: {},
+					clientInfo: { name: "pi-web-ui", version: "0.41.0" },
+				},
+				timeoutMs,
+			);
+			const version =
+				(handshake as { protocolVersion?: string })?.protocolVersion ?? this.spec.protocolVersion ?? PROTOCOL_VERSION;
+			void version;
+
+			// 通知 initialized（无 id 的 notification）
+			await this.sendHttpNotification("notifications/initialized", {});
+
+			const listed = ((await this.requestHttp("tools/list", {}, timeoutMs)) ?? {}) as {
+				tools?: McpToolDefinition[];
+			};
+			this.tools = Array.isArray(listed?.tools) ? listed.tools : [];
+			this.initialized = true;
+			this.log(`[mcp:${this.name}] ready (HTTP), ${this.tools.length} tools`);
+		} catch (err) {
+			this.initialized = false;
+			this.sessionId = null;
+			throw err;
+		}
+	}
+
 	/** 已启动次数（含自愈重启；诊断/测试用）。 */
 	get startCount(): number {
 		return this.startedCount;
 	}
 
 	/**
-	 * 保活：子进程还活着就直接返回；已意外退出则惰性重启（并发调用共享同一次重连）。
+	 * 保活：连接存活就直接返回；已意外退出则惰性重启（并发调用共享同一次重连）。
 	 * 显式 close() 后抛错，绝不复活。
 	 */
 	private async ensureStarted(timeoutMs: number): Promise<void> {
 		if (this.shuttingDown) throw new Error(`[mcp:${this.name}] 客户端已关闭，不会重启`);
-		// 先认「进行中的重连」再认 child：start() 是同步把 child 落位的，握手却还没完 ——
-		// 此时若按 child 判存活就直接返回，并发的第二个调用会抢在 initialize 应答前发出
-		// tools/call（严格实现会回「未初始化」）。共享同一个 promise 才能真正串行化。
 		if (this.starting) return this.starting;
-		if (this.child) return;
+		if (this.isHttp) {
+			if (this.initialized) return;
+		} else {
+			if (this.child) return;
+		}
 		this.starting = this.start(timeoutMs).finally(() => {
 			this.starting = null;
 		});
@@ -234,19 +309,63 @@ export class McpClient {
 	}
 
 	/**
-	 * 调用一个工具，返回其结果。
-	 * 纯文本块拼接成字符串（老形状，向后兼容）；出现非文本块（image/resource/audio 等）时按序透传或退化提示，不再静默丢弃。
+	 * 刷新工具列表（收到 notifications/tools/list_changed 或手动刷新用）。
 	 */
-	async call(name: string, args: Record<string, unknown>, timeoutMs = 60000): Promise<unknown> {
+	async refreshTools(timeoutMs = 8000): Promise<McpToolDefinition[]> {
+		const listed = ((await this.request("tools/list", {}, timeoutMs)) ?? {}) as {
+			tools?: McpToolDefinition[];
+		};
+		this.tools = Array.isArray(listed.tools) ? listed.tools : [];
+		this.log(`[mcp:${this.name}] tools refreshed, ${this.tools.length} tools`);
+		this.onToolsChanged?.();
+		return this.tools;
+	}
+
+	/**
+	 * 调用一个工具，返回其结果。
+	 * 纯文本块拼接成字符串（向后兼容）；出现非文本块（image/resource/audio 等）时按序透传或退化提示，不再静默丢弃。
+	 * 超时遵循 spec.timeout（秒，默认 60s），收到 progress 通知会自动重置超时计时器。
+	 */
+	async call(name: string, args: Record<string, unknown>, timeoutMs?: number, signal?: AbortSignal): Promise<unknown> {
 		if (this.shuttingDown) throw new Error(`[mcp:${this.name}] 客户端已关闭，不会重启`);
+		const effectiveTimeoutMs =
+			timeoutMs ?? (this.spec.timeout && this.spec.timeout > 0 ? this.spec.timeout * 1000 : 60000);
+
 		try {
-			// 自愈：子进程已退出（非主动关闭）→ 先惰性重启再发；重启失败给出明确错误而不是挂 60s 超时。
+			// 自愈：已断开或退出（非主动关闭）→ 先惰性重启/重新握手；失败给出明确错误。
 			await this.ensureStarted(8000);
 		} catch (err) {
 			const detail = err instanceof Error ? err.message : String(err);
 			throw new Error(`[mcp:${this.name}] 服务器进程已退出且自动重启失败：${detail}`);
 		}
-		const res = (await this.request("tools/call", { name, arguments: args }, timeoutMs)) as {
+
+		try {
+			return await this.executeCall(name, args, effectiveTimeoutMs, signal);
+		} catch (err) {
+			// HTTP 模式下的会话失效自愈：若远端提示会话过期，重新握手并重试一次
+			if (this.isHttp && err instanceof Error && err.message.includes("MCP_SESSION_EXPIRED")) {
+				this.log(`[mcp:${this.name}] 会话已失效，重新握手重试调用...`);
+				this.sessionId = null;
+				this.initialized = false;
+				await this.ensureStarted(8000);
+				return await this.executeCall(name, args, effectiveTimeoutMs, signal);
+			}
+			throw err;
+		}
+	}
+
+	private async executeCall(
+		name: string,
+		args: Record<string, unknown>,
+		timeoutMs: number,
+		signal?: AbortSignal,
+	): Promise<unknown> {
+		const res = (await this.request(
+			"tools/call",
+			{ name, arguments: args, _meta: { progressToken: String(rpcSeq) } },
+			timeoutMs,
+			signal,
+		)) as {
 			content?: McpContentBlock[];
 			isError?: boolean;
 			structuredContent?: unknown;
@@ -303,9 +422,10 @@ export class McpClient {
 		return { content: blocks, isError: !!res.isError };
 	}
 
-	/** 关闭：kill 子进程，拒绝所有在途请求。 */
+	/** 关闭：kill 子进程或注销 HTTP 会话，拒绝所有在途请求。 */
 	close(): void {
 		this.shuttingDown = true;
+		this.initialized = false;
 		this.rejectAll(new Error("[mcp] client closed"));
 		if (this.child) {
 			try {
@@ -314,6 +434,15 @@ export class McpClient {
 				/* 已退出 */
 			}
 			this.child = null;
+		}
+		if (this.isHttp && this.sessionId && this.spec.url) {
+			const url = this.spec.url;
+			const sid = this.sessionId;
+			this.sessionId = null;
+			void fetch(url, {
+				method: "DELETE",
+				headers: { "Mcp-Session-Id": sid },
+			}).catch(() => {});
 		}
 	}
 
@@ -324,17 +453,304 @@ export class McpClient {
 		stdin.write(JSON.stringify(msg) + "\n");
 	}
 
-	private request(method: string, params: Record<string, unknown>, timeoutMs = 8000): Promise<unknown> {
+	private request(
+		method: string,
+		params: Record<string, unknown>,
+		timeoutMs = 8000,
+		signal?: AbortSignal,
+	): Promise<unknown> {
+		if (this.isHttp) {
+			return this.requestHttp(method, params, timeoutMs, signal);
+		}
+		return this.requestStdio(method, params, timeoutMs, signal);
+	}
+
+	private requestStdio(
+		method: string,
+		params: Record<string, unknown>,
+		timeoutMs = 8000,
+		signal?: AbortSignal,
+	): Promise<unknown> {
 		const id = rpcSeq++;
 		const outId = String(id);
 		return new Promise<unknown>((resolve, reject) => {
+			if (signal?.aborted) {
+				reject(new Error("Request aborted"));
+				return;
+			}
+			const onAbort = () => {
+				this.pending.delete(outId);
+				clearTimeout(timer);
+				this.send({
+					jsonrpc: "2.0",
+					method: "notifications/cancelled",
+					params: { requestId: id, reason: "Cancelled by user" },
+				});
+				reject(new Error("Request aborted"));
+			};
+			signal?.addEventListener("abort", onAbort, { once: true });
+
 			const timer = setTimeout(() => {
 				this.pending.delete(outId);
+				signal?.removeEventListener("abort", onAbort);
 				reject(new Error(`[mcp:${this.name}] ${method} 超时 (${timeoutMs}ms)`));
 			}, timeoutMs);
-			this.pending.set(outId, { resolve, reject, timer });
+
+			this.pending.set(outId, {
+				resolve: (v) => {
+					signal?.removeEventListener("abort", onAbort);
+					resolve(v);
+				},
+				reject: (e) => {
+					signal?.removeEventListener("abort", onAbort);
+					reject(e);
+				},
+				timer,
+				timeoutMs,
+				method,
+				progressToken: outId,
+			});
 			this.send({ jsonrpc: "2.0", id: id, method, params });
 		});
+	}
+
+	private async requestHttp(
+		method: string,
+		params: Record<string, unknown>,
+		timeoutMs = 8000,
+		signal?: AbortSignal,
+	): Promise<unknown> {
+		const url = this.spec.url;
+		if (!url) throw new Error("MCP HTTP 服务器未声明 url");
+
+		const id = rpcSeq++;
+		const outId = String(id);
+		const abortController = new AbortController();
+
+		if (signal?.aborted) {
+			throw new Error("Request aborted");
+		}
+
+		const onAbort = () => {
+			abortController.abort();
+		};
+		signal?.addEventListener("abort", onAbort, { once: true });
+
+		const headers: Record<string, string> = {
+			"Content-Type": "application/json",
+			Accept: "application/json, text/event-stream",
+		};
+		if (this.sessionId) {
+			headers["Mcp-Session-Id"] = this.sessionId;
+		}
+		if (this.spec.headers) {
+			for (const [k, v] of Object.entries(this.spec.headers)) {
+				headers[k] = expandEnvVars(v);
+			}
+		}
+
+		let timedOut = false;
+		let reqResolve!: (v: unknown) => void;
+		let reqReject!: (e: Error) => void;
+		const reqPromise = new Promise<unknown>((res, rej) => {
+			reqResolve = res;
+			reqReject = rej;
+		});
+
+		const timer = setTimeout(() => {
+			timedOut = true;
+			this.pending.delete(outId);
+			abortController.abort();
+			reqReject(new Error(`[mcp:${this.name}] ${method} 超时 (${timeoutMs}ms)`));
+		}, timeoutMs);
+
+		this.pending.set(outId, {
+			resolve: (v) => {
+				clearTimeout(timer);
+				signal?.removeEventListener("abort", onAbort);
+				this.pending.delete(outId);
+				reqResolve(v);
+			},
+			reject: (e) => {
+				clearTimeout(timer);
+				signal?.removeEventListener("abort", onAbort);
+				this.pending.delete(outId);
+				reqReject(e);
+			},
+			timer,
+			timeoutMs,
+			method,
+			progressToken: outId,
+			abortController,
+		});
+
+		try {
+			const res = await fetch(url, {
+				method: "POST",
+				headers,
+				body: JSON.stringify({ jsonrpc: "2.0", id, method, params }),
+				signal: abortController.signal,
+			});
+
+			const newSid = res.headers.get("mcp-session-id");
+			if (newSid) this.sessionId = newSid;
+
+			if (res.status === 202) {
+				const pending = this.pending.get(outId);
+				pending?.resolve(null);
+				return await reqPromise;
+			}
+
+			if (res.status === 404 || res.status === 400) {
+				const errText = await res.text().catch(() => "");
+				if (res.status === 404 || /session/i.test(errText)) {
+					this.sessionId = null;
+					this.initialized = false;
+					const pending = this.pending.get(outId);
+					pending?.reject(new Error(`MCP_SESSION_EXPIRED: ${errText || "Session expired or not found"}`));
+					return await reqPromise;
+				}
+				throw new Error(`HTTP ${res.status}: ${errText}`);
+			}
+
+			if (!res.ok) {
+				const errText = await res.text().catch(() => "");
+				throw new Error(`HTTP ${res.status}: ${errText}`);
+			}
+
+			const contentType = res.headers.get("content-type") || "";
+			if (contentType.includes("text/event-stream") && res.body) {
+				void this.readSseStream(res.body, outId, signal);
+			} else {
+				const text = await res.text();
+				let parsed: RpcIncoming;
+				try {
+					parsed = JSON.parse(text) as RpcIncoming;
+				} catch {
+					let matched: RpcIncoming | undefined;
+					if (text.includes("data:")) {
+						for (const l of text.split("\n")) {
+							const trimmed = l.trim();
+							if (trimmed.startsWith("data:")) {
+								try {
+									const item = JSON.parse(trimmed.slice(5).trim()) as RpcIncoming;
+									if (item.id !== undefined && String(item.id) === outId) {
+										matched = item;
+										break;
+									}
+								} catch {}
+							}
+						}
+					}
+					if (matched) {
+						parsed = matched;
+					} else {
+						throw new Error(`Invalid JSON response: ${text.slice(0, 200)}`);
+					}
+				}
+				const pending = this.pending.get(outId);
+				if (pending) {
+					if (parsed.error) {
+						pending.reject(new Error(`[mcp:${this.name}] ${parsed.error.message ?? "MCP 错误"}`));
+					} else {
+						pending.resolve(parsed.result);
+					}
+				}
+			}
+
+			return await reqPromise;
+		} catch (err) {
+			if (timedOut) {
+				return await reqPromise;
+			}
+			if (signal?.aborted) {
+				const pending = this.pending.get(outId);
+				pending?.reject(new Error("Request aborted"));
+				return await reqPromise;
+			}
+			const pending = this.pending.get(outId);
+			pending?.reject(err instanceof Error ? err : new Error(String(err)));
+			return await reqPromise;
+		} finally {
+			signal?.removeEventListener("abort", onAbort);
+		}
+	}
+
+	private async sendHttpNotification(method: string, params: Record<string, unknown>): Promise<void> {
+		const url = this.spec.url;
+		if (!url) return;
+		const headers: Record<string, string> = {
+			"Content-Type": "application/json",
+			Accept: "application/json, text/event-stream",
+		};
+		if (this.sessionId) {
+			headers["Mcp-Session-Id"] = this.sessionId;
+		}
+		if (this.spec.headers) {
+			for (const [k, v] of Object.entries(this.spec.headers)) {
+				headers[k] = expandEnvVars(v);
+			}
+		}
+		try {
+			const res = await fetch(url, {
+				method: "POST",
+				headers,
+				body: JSON.stringify({ jsonrpc: "2.0", method, params }),
+			});
+			const newSid = res.headers.get("mcp-session-id");
+			if (newSid) this.sessionId = newSid;
+		} catch (err) {
+			this.log(`[mcp:${this.name}] HTTP notification ${method} failed:`, err);
+		}
+	}
+
+	private async readSseStream(body: ReadableStream<Uint8Array>, targetId: string, signal?: AbortSignal): Promise<void> {
+		const reader = body.getReader();
+		const decoder = new TextDecoder("utf-8");
+		let buffer = "";
+
+		const onAbort = () => {
+			void reader.cancel().catch(() => {});
+		};
+		signal?.addEventListener("abort", onAbort, { once: true });
+
+		try {
+			while (true) {
+				const { done, value } = await reader.read();
+				if (done) break;
+				buffer += decoder.decode(value, { stream: true });
+				let nl: number;
+				while ((nl = buffer.indexOf("\n")) >= 0) {
+					const rawLine = buffer.slice(0, nl);
+					buffer = buffer.slice(nl + 1);
+					const line = rawLine.replace(/\r$/, "").trim();
+					if (!line || !line.startsWith("data:")) continue;
+					const dataStr = line.slice(5).trim();
+					if (!dataStr) continue;
+					let msg: RpcIncoming;
+					try {
+						msg = JSON.parse(dataStr) as RpcIncoming;
+					} catch {
+						continue;
+					}
+					this.handleMessage(msg);
+				}
+			}
+		} catch (err) {
+			if (!signal?.aborted) {
+				const pending = this.pending.get(targetId);
+				if (pending) {
+					clearTimeout(pending.timer);
+					this.pending.delete(targetId);
+					pending.reject(err instanceof Error ? err : new Error(String(err)));
+				}
+			}
+		} finally {
+			if (signal) {
+				signal.removeEventListener("abort", onAbort);
+			}
+			reader.releaseLock();
+		}
 	}
 
 	private onData(chunk: string): void {
@@ -391,6 +807,26 @@ export class McpClient {
 		}
 	}
 
+	private handleProgress(params: { progressToken?: number | string; progress?: number; total?: number }): void {
+		const token = params?.progressToken !== undefined ? String(params.progressToken) : undefined;
+		let target: PendingRequest | undefined;
+		if (token && this.pending.has(token)) {
+			target = this.pending.get(token);
+		} else if (this.pending.size === 1) {
+			target = this.pending.values().next().value;
+		}
+		if (target) {
+			clearTimeout(target.timer);
+			target.timer = setTimeout(() => {
+				this.pending.delete(token ?? "");
+				target!.reject(new Error(`[mcp:${this.name}] ${target!.method} 超时 (${target!.timeoutMs}ms)`));
+			}, target.timeoutMs);
+			this.log(
+				`[mcp:${this.name}] progress received (${params.progress ?? "?"}/${params.total ?? "?"}), timeout reset (${target.timeoutMs}ms)`,
+			);
+		}
+	}
+
 	private handleMessage(msg: RpcIncoming): void {
 		if (msg.id !== undefined) {
 			const pending = this.pending.get(String(msg.id));
@@ -404,7 +840,18 @@ export class McpClient {
 			else pending.resolve(msg.result);
 			return;
 		}
-		// 服务端主动通知（log / cancelled 等）——仅记录。
+		// 服务端主动通知（progress / tools/list_changed / message 等）
+		if (msg.method === "notifications/progress") {
+			this.handleProgress(msg.params as { progressToken?: number | string; progress?: number; total?: number });
+			return;
+		}
+		if (msg.method === "notifications/tools/list_changed") {
+			this.log(`[mcp:${this.name}] tools/list_changed notification received, refreshing tools...`);
+			void this.refreshTools().catch((err) => {
+				this.log(`[mcp:${this.name}] tools refresh failed:`, err);
+			});
+			return;
+		}
 		if (msg.method === "notifications/message") {
 			const p = msg.params as { level?: string; message?: string } | undefined;
 			if (p?.message) this.log(`[mcp:${this.name}] ${p.level ?? "message"}:`, p.message);
@@ -522,8 +969,8 @@ function adaptMcpTool(serverName: string, mcpTool: McpToolDefinition, client: Mc
 		// 这个能力（#403）。这里从 description 提取首句做极简 snippet。
 		promptSnippet: firstSentenceSnippet(mcpTool.description) ?? `MCP tool ${mcpTool.name} (server: ${serverName})`,
 		parameters: mcpTool.inputSchema ?? {},
-		execute: async (_toolCallId: string, params: Record<string, unknown>, _signal?: AbortSignal) => {
-			return client.call(mcpTool.name, params ?? {});
+		execute: async (_toolCallId: string, params: Record<string, unknown>, signal?: AbortSignal) => {
+			return client.call(mcpTool.name, params ?? {}, undefined, signal);
 		},
 	};
 }
@@ -562,6 +1009,7 @@ export interface McpBridgeOptions {
 	agentDir?: string;
 	cwd?: string;
 	specOverride?: { name: string; spec: McpServerSpec }[];
+	onToolsChanged?: () => void;
 }
 
 /** MCP 服务器管理器：自管多服务器生命周期 + 聚合工具。 */
@@ -637,6 +1085,7 @@ export class McpBridge {
 	private async startOne(name: string, spec: McpServerSpec): Promise<McpClient | null> {
 		try {
 			const client = new McpClient(name, spec, this.log);
+			client.onToolsChanged = () => this.reaggregateTools();
 			await client.start();
 			this.serverErrors.delete(name);
 			return client;
@@ -646,6 +1095,16 @@ export class McpBridge {
 			this.log(`[mcp] 服务器「${name}」启动失败：`, msg);
 			return null;
 		}
+	}
+
+	private reaggregateTools(): void {
+		this.tools = [];
+		for (const c of this.clients) {
+			for (const t of c.getTools()) {
+				this.tools.push(adaptMcpTool(c.name, t, c));
+			}
+		}
+		this.opts.onToolsChanged?.();
 	}
 
 	/**

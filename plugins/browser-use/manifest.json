@@ -1,0 +1,25 @@
+{
+	"id": "browser-use",
+	"name": "browser-use",
+	"version": "0.3.2",
+	"icon": "🌐",
+	"iconSvg": "<svg xmlns=\"http://www.w3.org/2000/svg\" viewBox=\"0 0 24 24\" fill=\"none\" stroke=\"currentColor\" stroke-width=\"2\" stroke-linecap=\"round\" stroke-linejoin=\"round\"><circle cx=\"12\" cy=\"12\" r=\"10\"/><path d=\"M12 2a14.5 14.5 0 0 0 0 20 14.5 14.5 0 0 0 0-20\"/><path d=\"M2 12h20\"/></svg>",
+	"description": "常驻 Chrome 自动化：自动拉起或接管常驻浏览器窗口，支持后台任务面板统一管理与一键停止、闲置自动关闭、多标签页切换、精简交互元素快照（极省 Token）、智能点击输入、反爬穿透与状态跨任务持久。",
+	"descriptionEn": "Persistent Chrome automation: launches or attaches to a persistent Chrome instance, managed in background tasks panel with one-click stop, idle auto-close, tab management, human-visible element snapshots, and anti-bot resilience.",
+	"apiVersion": 2,
+	"permissions": ["tools"],
+	"view": false,
+	"settings": [
+		{
+			"key": "idleTimeoutMinutes",
+			"type": "number",
+			"label": "闲置自动关闭（分钟）",
+			"labelEn": "Idle Auto-Close (minutes)",
+			"default": 15,
+			"min": 0,
+			"max": 180,
+			"hint": "浏览器无任何操作达到该时长后自动关闭以释放内存；设为 0 表示永不自动关闭",
+			"hintEn": "Automatically close the browser to release RAM when idle for this duration; set to 0 to disable"
+		}
+	]
+}

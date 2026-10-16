@@ -1,13 +1,14 @@
 /**
- * notes 的界面本体（视图与浮窗**同一份代码**，靠 `compact` 换布局）。
+ * notes 界面本体（现代闪念笔记 + 日历双视图）。
  *
- * 渲染策略（刻意保守）：
- *   - 骨架（头部/输入行/列表容器/编辑器容器/脚注）**只建一次**，动态部分各自局部更新 ——
- *     否则每次服务端推快照都会重建搜索框/输入框，用户打字会被打断。
- *   - 列表每次重建（条目少、结构简单）；编辑器只在「换条目」或「没在编辑时外部改了数据」
- *     时重建 —— 光标在编辑器里时不重建，用户正在打的字不会被快照洗掉。
- *   - 输入即存（debounce 400ms）：没有保存按钮，也不做「未保存」状态机。服务端返回的快照
- *     是唯一事实源；本地输入只是把它推过去。
+ * 核心设计：
+ *   - 纯粹的「笔记」与「日历」两个 Tab：
+ *       * 笔记：现代无标题流式速记（直接记录文字，可选设置提醒，无心智负担，
+ *         就地快速内联编辑，秒速捕捉灵感与备忘）。
+ *       * 日历：42 格月视图，展示每天有提醒的笔记与日程，可直观按天查阅与安排。
+ *   - 顶部常驻 Quick Note Composer（自适应多行，支持 Markdown，Ctrl+Enter 即存，
+ *     可快捷设置提醒时间与重复档位，智能嗅探时间）。
+ *   - 笔记流卡片（Memos Timeline）：相对时间、置顶高亮、提醒状态胶囊、就地双击/按钮编辑。
  */
 import * as S from "./store.mjs";
 import {
@@ -23,7 +24,7 @@ import { createSettings } from "./settings-form.mjs";
 
 const pad2 = (n) => String(n).padStart(2, "0");
 
-/** 当天 0 点 / 当月 1 号 0 点 / 加 N 天 / 加 N 月（都按本地时区）。 */
+/** 当天 0 点 / 当月 1 号 0 点 / 加 N 天 / 加 N 月（本地时区）。 */
 function startOfDay(ms) {
 	const d = new Date(ms);
 	return new Date(d.getFullYear(), d.getMonth(), d.getDate()).getTime();
@@ -40,22 +41,34 @@ function addMonths(ms, n) {
 	const d = new Date(ms);
 	return new Date(d.getFullYear(), d.getMonth() + n, 1).getTime();
 }
-/** 本地日期键 YYYY-MM-DD（按天归桶用）。 */
 function dayKey(ms) {
 	const d = new Date(ms);
 	return `${d.getFullYear()}-${pad2(d.getMonth() + 1)}-${pad2(d.getDate())}`;
 }
-/** 只要时刻 HH:MM。 */
 function fmtHM(ms) {
 	const d = new Date(ms);
 	return `${pad2(d.getHours())}:${pad2(d.getMinutes())}`;
 }
 
-/** 两个时间戳是否同一本地日历日。 */
-function sameDay(a, b) {
-	const x = new Date(a);
-	const y = new Date(b);
-	return x.getFullYear() === y.getFullYear() && x.getMonth() === y.getMonth() && x.getDate() === y.getDate();
+/** 毫秒 → 相对时间（刚刚、N分钟前、今天 HH:MM、昨天 HH:MM、日期）。 */
+function formatRelativeTime(stampStr, t, nowMs = Date.now()) {
+	if (!stampStr) return "";
+	const ms = new Date(stampStr).getTime();
+	if (Number.isNaN(ms)) return "";
+	const diff = nowMs - ms;
+	if (diff < 60_000) return t("quick.now");
+	if (diff < 3600_000) return t("quick.ago", { m: Math.floor(diff / 60_000) });
+	const d = new Date(ms);
+	const hm = `${pad2(d.getHours())}:${pad2(d.getMinutes())}`;
+	const day0 = startOfDay(nowMs);
+	const targetDay0 = startOfDay(ms);
+	const diffDays = Math.round((day0 - targetDay0) / 86400000);
+	if (diffDays === 0) return t("quick.todayAt", { t: hm });
+	if (diffDays === 1) return t("quick.yesterdayAt", { t: hm });
+	if (d.getFullYear() === new Date(nowMs).getFullYear()) {
+		return `${pad2(d.getMonth() + 1)}-${pad2(d.getDate())} ${hm}`;
+	}
+	return `${d.getFullYear()}-${pad2(d.getMonth() + 1)}-${pad2(d.getDate())}`;
 }
 
 /** 毫秒 → 人话（今天/明天/周X/日期 + 时刻）。 */
@@ -75,7 +88,7 @@ export function formatWhen(ms, t, nowMs = Date.now()) {
 	return `${d.getFullYear()}-${pad2(d.getMonth() + 1)}-${pad2(d.getDate())} ${hm}`;
 }
 
-/** 提醒 schedule → 人话（编辑器与列表共用）。 */
+/** 提醒 schedule → 人话。 */
 export function scheduleLabel(schedule, t) {
 	const s = S.normalizeSchedule(schedule);
 	if (!s) return "—";
@@ -97,33 +110,106 @@ export function scheduleLabel(schedule, t) {
 	}
 }
 
-const KIND_OF_TAB = { todo: "todo", note: "note", reminder: "reminder" };
+/** 格式化提醒标签，简明显示在卡片上。 */
+function reminderBadgeText(reminder, t) {
+	if (!reminder?.schedule) return "";
+	const s = reminder.schedule;
+	if (s.type === "once") {
+		const ms = new Date(s.at).getTime();
+		return formatWhen(ms, t);
+	}
+	if (s.type === "daily") return `${t("repeat.daily")} ${s.time}`;
+	if (s.type === "weekly") return `${t("repeat.weekly")} ${s.time}`;
+	if (s.type === "monthly") return `${t("repeat.monthly")} ${s.dom}日 ${s.time}`;
+	return scheduleLabel(s, t);
+}
+
+/** 格式化行内链接与代码。 */
+function appendInlineFormatted(parent, text) {
+	const str = String(text ?? "");
+	const parts = str.split(/(`[^`]+`|https?:\/\/[^\s]+)/g);
+	for (const part of parts) {
+		if (!part) continue;
+		if (part.startsWith("`") && part.endsWith("`") && part.length > 2) {
+			parent.append(el("code", { text: part.slice(1, -1) }));
+		} else if (/^https?:\/\//i.test(part)) {
+			parent.append(el("a", { href: part, target: "_blank", rel: "noreferrer noopener", text: part }));
+		} else {
+			parent.append(document.createTextNode(part));
+		}
+	}
+}
+
+/** 简易轻量 Markdown 渲染器（支持换行、待办复选框、标题、行内代码）。 */
+function renderMarkdown(text, onToggleTask) {
+	const fragment = document.createDocumentFragment();
+	const lines = String(text ?? "").split("\n");
+	let i = 0;
+	while (i < lines.length) {
+		const line = lines[i];
+		// 任务复选框: - [ ] 或 - [x]
+		const taskMatch = line.match(/^(\s*[-*]\s*)\[([ xX])\]\s*(.*)$/);
+		if (taskMatch) {
+			const checked = taskMatch[2].toLowerCase() === "x";
+			const taskText = taskMatch[3];
+			const lineIndex = i;
+			const row = el("div", { class: "nt-inline-row", style: "margin: 3px 0;" });
+			const chk = el("input", {
+				type: "checkbox",
+				class: "nt-check nt-task-box",
+				checked,
+				onChange: () => onToggleTask?.(lineIndex, !checked),
+			});
+			const span = el("span", { style: checked ? "text-decoration: line-through; opacity: 0.65;" : "" });
+			appendInlineFormatted(span, taskText);
+			row.append(chk, span);
+			fragment.append(row);
+			i++;
+			continue;
+		}
+		// 标题: # ... 或 ## ...
+		const hMatch = line.match(/^(#{1,3})\s+(.*)$/);
+		if (hMatch) {
+			const h = el(hMatch[1].length === 1 ? "h4" : "h5", {
+				style: "margin: 6px 0 3px; font-weight: 600; font-size: 13px;",
+			});
+			appendInlineFormatted(h, hMatch[2]);
+			fragment.append(h);
+			i++;
+			continue;
+		}
+		// 空行
+		if (!line.trim()) {
+			fragment.append(el("div", { style: "height: 6px;" }));
+			i++;
+			continue;
+		}
+		// 普通段落
+		const p = el("div", { style: "margin: 2px 0;" });
+		appendInlineFormatted(p, line);
+		fragment.append(p);
+		i++;
+	}
+	return fragment;
+}
 
 /**
- * 建一个笔记界面。
- *   root      挂载容器（调用方给一个空 div）
- *   data      data.mjs 的共享客户端
- *   t         文案函数（i18n.mjs）
- *   compact   true = 浮窗里的紧凑布局（当前唯一在用的形态：插件没有独立视图）
+ * 笔记界面。
  */
 export function createNotesApp(options) {
 	const { root, data, t, compact = false } = options;
 	const state = {
 		tab: readTab(),
 		query: "",
-		editingId: null,
-		includeDone: false,
+		inlineEditId: null,
 		tag: "",
-		/** 日历：显示中的月份锚点（该月 1 号 0 点）与选中的那一天。 */
 		month: startOfMonth(Date.now()),
 		day: startOfDay(Date.now()),
 	};
 
 	let snapshot = data.getState();
-	let editorKey = "";
-	let saveTimer = 0;
-	let pendingPatch = null;
-	let pendingKind = "";
+	let composerReminder = null; // 当前 composer 里设置的提醒 { schedule, enabled }
+	let activePopMenu = null; // 当前展开的提醒菜单
 
 	root.classList.add("nt-root");
 	root.textContent = "";
@@ -131,16 +217,14 @@ export function createNotesApp(options) {
 	// ---------------------------------------------------------------- 骨架
 	const tabButtons = {};
 	const tabBar = el("div", { class: "nt-tabs" });
-	for (const tab of compact ? ["todo", "note", "reminder", "calendar"] : ["todo", "note", "reminder", "agenda", "calendar"]) {
+	for (const tab of ["note", "calendar"]) {
 		const btn = el("button", {
 			type: "button",
 			class: "nt-tab",
 			onClick: () => {
 				state.tab = tab;
-				// 切 tab = 结束编辑：editingId 与 editorKey 一起复位（漏一个就会出现
-				// 「列表被 CSS 藏起来 + 编辑器是空的」的全空面板，见 closeEditor）
-				state.editingId = null;
-				editorKey = "";
+				state.inlineEditId = null;
+				closePopMenu();
 				writeTab(tab);
 				render();
 			},
@@ -148,6 +232,7 @@ export function createNotesApp(options) {
 		tabButtons[tab] = btn;
 		tabBar.append(btn);
 	}
+
 	const searchInput = el("input", {
 		class: "nt-search",
 		type: "search",
@@ -157,51 +242,92 @@ export function createNotesApp(options) {
 			renderList();
 		},
 	});
+
 	const head = el("div", { class: "nt-head" }, tabBar, el("span", { class: "nt-grow" }), searchInput);
-	const quickInput = el("input", {
-		type: "text",
+
+	// ---------------- 现代闪念速记 Composer ----------------
+	const composerText = el("textarea", {
+		class: "nt-composer-text",
+		placeholder: t("quick.notePlaceholder"),
+		rows: 2,
+		onInput: () => {
+			autoGrowComposer();
+			checkSmartTimeSuggest();
+		},
 		onKeyDown: (e) => {
-			if (e.key === "Enter" && !e.isComposing) {
+			if (e.key === "Enter" && (e.ctrlKey || e.metaKey) && !e.isComposing) {
 				e.preventDefault();
-				void submitQuick();
+				void submitComposer();
 			}
 		},
 	});
-	const quickBtn = el("button", { type: "button", class: "nt-btn", text: t("quick.add"), onClick: () => void submitQuick() });
-	const quickRow = el("div", { class: "nt-quick" }, quickInput, quickBtn);
 
-	const listEl = el("div", { class: "nt-list" });
-	const editorEl = el("div", { class: "nt-editor" });
-	const bodyEl = el("div", { class: "nt-body" }, listEl, editorEl);
-	const footEl = el("div", { class: "nt-foot" });
-	const app = el("div", { class: `nt-app${compact ? " nt-compact" : ""}` }, head, quickRow, bodyEl, footEl);
-	root.append(app);
-
-	// 光标在编辑器里时不重建编辑器（否则打字被打断）。判定**从 DOM 现算**（focus/blur
-	// 事件维护的布尔会粘住：正在编辑的条目被别处删掉时，节点被移除不会补发 focusout，
-	// 那个 true 会永久挡住后续所有重画 → 编辑器再也画不出来）。
-	const editorHasFocus = () => {
-		try {
-			return editorEl.contains(document.activeElement);
-		} catch {
-			return false;
-		}
-	};
-	editorEl.addEventListener("focusout", () => {
-		// 失焦即结算未落盘的改动（不等 debounce）
-		if (saveTimer) {
-			clearTimeout(saveTimer);
-			saveTimer = 0;
-			void commit();
-		}
+	const composerRemBtn = el("button", {
+		type: "button",
+		class: "nt-btn nt-icon",
+		text: `⏰ ${t("quick.setReminder")}`,
+		onClick: (e) => {
+			e.stopPropagation();
+			toggleComposerReminderPop(composerRemBtn);
+		},
 	});
 
-	// 非紧凑布局（更宽、带自己的 ⚙ 设置块）：**当前走不到** —— 插件已去掉独立视图
-	// （manifest view:false），浮窗是唯一界面。留着是为了以后重新挂一个视图时不用重写。
-	// 浮窗自己的设置走 panel.mjs 的覆盖层（同一份 settings-form.mjs）。
-	let settingsBox = null;
+	const composerRemChip = el("span", {
+		class: "nt-rem-chip",
+		style: "display: none;",
+	});
+
+	const smartSuggestChip = el("span", {
+		class: "nt-smart-tip",
+		style: "display: none;",
+		onClick: () => applySmartSuggest(),
+	});
+
+	let detectedSmartTime = null;
+
+	const tagInsertBtn = el("button", {
+		type: "button",
+		class: "nt-btn nt-icon",
+		text: "#",
+		title: "Insert tag",
+		onClick: () => {
+			const start = composerText.selectionStart ?? composerText.value.length;
+			const end = composerText.selectionEnd ?? composerText.value.length;
+			composerText.setRangeText("#", start, end, "end");
+			composerText.focus();
+		},
+	});
+
+	const saveNoteBtn = el("button", {
+		type: "button",
+		class: "nt-btn nt-btn-primary",
+		text: `${t("quick.save")} (Ctrl+↵)`,
+		onClick: () => void submitComposer(),
+	});
+
+	const composerTools = el(
+		"div",
+		{ class: "nt-composer-tools" },
+		composerRemBtn,
+		composerRemChip,
+		smartSuggestChip,
+		tagInsertBtn,
+		el("span", { class: "nt-grow" }),
+		saveNoteBtn,
+	);
+
+	const composerBox = el("div", { class: "nt-composer-box" }, composerText, composerTools);
+	const composerWrap = el("div", { class: "nt-composer" }, composerBox);
+
+	// ---------------- 列表与容器 ----------------
+	const listEl = el("div", { class: "nt-list" });
+	const bodyEl = el("div", { class: "nt-body" }, listEl);
+	const footEl = el("div", { class: "nt-foot" });
+	const app = el("div", { class: `nt-app${compact ? " nt-compact" : ""}` }, head, composerWrap, bodyEl, footEl);
+	root.append(app);
+
+	// 搜索框手机端收起/展开
 	if (compact) {
-		// 手机上浮窗很窄：搜索框默认收起，一个 🔍 按钮按需展开
 		searchInput.style.display = "none";
 		const searchBtn = el("button", {
 			type: "button",
@@ -215,21 +341,227 @@ export function createNotesApp(options) {
 			},
 		});
 		head.insertBefore(searchBtn, searchInput);
-	} else {
-		settingsBox = createSettings({ t, data, onNotify: (text) => notifyInfo(text) });
-		const settingsBtn = el("button", {
-			type: "button",
-			class: "nt-btn nt-icon",
-			text: "⚙",
-			title: t("action.settings"),
-			onClick: () => {
-				settingsBox.el.style.display = settingsBox.el.style.display === "none" ? "" : "none";
+	}
+
+	// 全局点击关闭弹出层
+	document.addEventListener("click", (e) => {
+		if (activePopMenu && !activePopMenu.contains(e.target)) {
+			closePopMenu();
+		}
+	});
+
+	function closePopMenu() {
+		if (activePopMenu) {
+			activePopMenu.remove();
+			activePopMenu = null;
+		}
+	}
+
+	function autoGrowComposer() {
+		composerText.style.height = "auto";
+		composerText.style.height = `${Math.min(composerText.scrollHeight, 220)}px`;
+	}
+
+	function checkSmartTimeSuggest() {
+		const text = composerText.value;
+		if (composerReminder) {
+			smartSuggestChip.style.display = "none";
+			detectedSmartTime = null;
+			return;
+		}
+		const found = S.detectTimeFromText(text);
+		if (found) {
+			detectedSmartTime = found;
+			smartSuggestChip.textContent = `💡 ${t("quick.smartSuggest", { time: found.timeLabel })}`;
+			smartSuggestChip.style.display = "inline-flex";
+		} else {
+			smartSuggestChip.style.display = "none";
+			detectedSmartTime = null;
+		}
+	}
+
+	function applySmartSuggest() {
+		if (!detectedSmartTime) return;
+		setComposerReminder({
+			schedule: { type: "once", at: detectedSmartTime.stamp },
+			enabled: true,
+		});
+		smartSuggestChip.style.display = "none";
+		detectedSmartTime = null;
+	}
+
+	function setComposerReminder(rem) {
+		composerReminder = rem;
+		if (rem?.schedule) {
+			composerRemBtn.style.display = "none";
+			composerRemChip.textContent = "";
+			const textSpan = el("span", { text: `⏰ ${reminderBadgeText(rem, t)}` });
+			const xBtn = el("span", {
+				class: "nt-rem-x",
+				text: "✕",
+				onClick: (e) => {
+					e.stopPropagation();
+					setComposerReminder(null);
+				},
+			});
+			composerRemChip.append(textSpan, xBtn);
+			composerRemChip.style.display = "inline-flex";
+			composerRemChip.onclick = (e) => {
+				e.stopPropagation();
+				toggleComposerReminderPop(composerRemChip);
+			};
+		} else {
+			composerRemBtn.style.display = "";
+			composerRemChip.style.display = "none";
+		}
+		checkSmartTimeSuggest();
+	}
+
+	// 提醒弹出菜单
+	function toggleComposerReminderPop(anchorEl) {
+		if (activePopMenu) {
+			closePopMenu();
+			return;
+		}
+		const pop = buildReminderMenu((schedule) => {
+			if (schedule) {
+				setComposerReminder({ schedule, enabled: true });
+			} else {
+				setComposerReminder(null);
+			}
+			closePopMenu();
+		});
+		positionPop(pop, anchorEl);
+		document.body.append(pop);
+		activePopMenu = pop;
+	}
+
+	function positionPop(pop, anchorEl) {
+		const rect = anchorEl.getBoundingClientRect();
+		pop.style.left = `${Math.max(8, rect.left)}px`;
+		pop.style.top = `${rect.bottom + 4}px`;
+	}
+
+	function buildReminderMenu(onSelect) {
+		const pop = el("div", { class: "nt-pop-menu" });
+		const presets = [
+			{ label: t("quick.preset1h"), at: Date.now() + 3600_000 },
+			{
+				label: t("quick.presetTonight"),
+				getAt: () => {
+					const d = new Date();
+					d.setHours(20, 0, 0, 0);
+					if (d.getTime() <= Date.now()) d.setDate(d.getDate() + 1);
+					return d.getTime();
+				},
+			},
+			{
+				label: t("quick.presetTomorrow"),
+				getAt: () => {
+					const d = new Date();
+					d.setDate(d.getDate() + 1);
+					d.setHours(9, 0, 0, 0);
+					return d.getTime();
+				},
+			},
+			{
+				label: t("quick.presetTomorrowPm"),
+				getAt: () => {
+					const d = new Date();
+					d.setDate(d.getDate() + 1);
+					d.setHours(15, 0, 0, 0);
+					return d.getTime();
+				},
+			},
+			{
+				label: t("quick.presetAfterTomorrow"),
+				getAt: () => {
+					const d = new Date();
+					d.setDate(d.getDate() + 2);
+					d.setHours(9, 0, 0, 0);
+					return d.getTime();
+				},
+			},
+			{
+				label: t("quick.presetNextMonday"),
+				getAt: () => {
+					const d = new Date();
+					const diff = (8 - d.getDay()) % 7 || 7;
+					d.setDate(d.getDate() + diff);
+					d.setHours(9, 0, 0, 0);
+					return d.getTime();
+				},
+			},
+		];
+
+		for (const p of presets) {
+			const btn = el("button", {
+				type: "button",
+				class: "nt-pop-item",
+				text: p.label,
+				onClick: () => {
+					const ms = p.getAt ? p.getAt() : p.at;
+					onSelect({ type: "once", at: S.nowStamp(ms) });
+				},
+			});
+			pop.append(btn);
+		}
+
+		// 自定义时间
+		const customWrap = el("div", { class: "nt-pop-custom" });
+		const dtInput = el("input", {
+			type: "datetime-local",
+			class: "nt-input",
+			onChange: (e) => {
+				if (e.target.value) {
+					onSelect({ type: "once", at: e.target.value });
+				}
 			},
 		});
-		head.append(settingsBtn);
-		settingsBox.el.style.display = "none";
-		// 设置块插在输入行上面（头部之下）
-		app.insertBefore(settingsBox.el, quickRow);
+		customWrap.append(el("div", { class: "nt-hint", text: t("quick.customTime") }), dtInput);
+		pop.append(customWrap);
+
+		// 清除选项
+		const clearBtn = el("button", {
+			type: "button",
+			class: "nt-pop-item",
+			style: "color: var(--nt-red);",
+			text: t("quick.clearReminder"),
+			onClick: () => onSelect(null),
+		});
+		pop.append(clearBtn);
+
+		return pop;
+	}
+
+	async function submitComposer() {
+		const raw = composerText.value.trim();
+		if (!raw) {
+			composerText.focus();
+			return;
+		}
+		// 自动从内容中解析标签 #tag
+		const tagMatches = raw.match(/#[^\s#]{1,32}/g) ?? [];
+		const tags = [...new Set(tagMatches.map((x) => x.slice(1)))];
+		const title = S.extractTitle(raw) || "未命名笔记";
+
+		const patch = {
+			body: raw,
+			title,
+			tags,
+			reminder: composerReminder,
+		};
+
+		const res = await data.op({ op: "note.save", item: patch });
+		if (res?.ok) {
+			composerText.value = "";
+			composerText.style.height = "auto";
+			setComposerReminder(null);
+			state.inlineEditId = null;
+			renderList();
+		} else {
+			notifyError(res?.error || "save failed");
+		}
 	}
 
 	// ---------------------------------------------------------------- 数据订阅
@@ -238,53 +570,22 @@ export function createNotesApp(options) {
 		render();
 	});
 
-	// ---------------------------------------------------------------- 渲染
 	function store() {
 		return snapshot.store;
-	}
-
-	function items() {
-		const tab = state.tab;
-		return S.searchItems(store(), {
-			tab: KIND_OF_TAB[tab] ?? tab,
-			query: state.query,
-			tag: state.tag,
-			includeDone: state.includeDone,
-		});
 	}
 
 	function render() {
 		const counts = S.counts(store());
 		for (const [tab, btn] of Object.entries(tabButtons)) {
-			const n = tab === "todo" ? counts.openTodos : tab === "note" ? counts.notes : tab === "reminder" ? counts.reminders : 0;
 			btn.className = `nt-tab${state.tab === tab ? " on" : ""}`;
 			btn.textContent = t(`tab.${tab}`);
-			if (n) btn.append(el("span", { class: "nt-count", text: String(n) }));
+			if (tab === "note" && counts.notes) {
+				btn.append(el("span", { class: "nt-count", text: String(counts.notes) }));
+			}
 		}
-		if (document.activeElement !== searchInput && searchInput.value !== state.query) searchInput.value = state.query;
-		// 「浮窗里显示列表还是编辑器」只由 state 派生（历史上这里在两处手写 class，
-		// 切换 tab 漏摘一次 → 列表被藏、编辑器空白）
-		app.classList.toggle("nt-editing", compact && Boolean(state.editingId));
-		searchInput.placeholder = t("search.placeholder");
-		renderQuick();
+		composerWrap.style.display = state.tab === "note" ? "" : "none";
 		renderList();
-		renderEditor();
 		renderFoot(counts);
-	}
-
-	function renderQuick() {
-		const map = {
-			todo: ["quick.todo", "quick.hintTodo"],
-			note: ["quick.note", "quick.hintNote"],
-			reminder: ["quick.reminder", "quick.hintReminder"],
-			agenda: ["quick.todo", "quick.hintTodo"],
-			calendar: ["quick.todo", "quick.hintTodo"],
-		};
-		const [ph, hint] = map[state.tab] ?? map.todo;
-		quickInput.placeholder = t(ph);
-		quickRow.title = t(hint);
-		quickRow.style.display = state.tab === "agenda" || state.tab === "calendar" ? "none" : "";
-		quickBtn.textContent = t("quick.add");
 	}
 
 	function renderFoot(counts) {
@@ -293,23 +594,21 @@ export function createNotesApp(options) {
 		const dotClass = status === "online" ? "nt-dot" : status === "offline" ? "nt-dot nt-bad" : "nt-dot nt-busy";
 		const statusText = status === "online" ? "" : status === "offline" ? t("status.offline") : t("status.syncing");
 		footEl.append(el("span", { class: dotClass, title: statusText || "online" }));
-		footEl.append(el("span", { text: `${t("tab.todo")} ${counts.openTodos} · ${t("due.today")} ${counts.dueTodos}` }));
+
+		const totalRem = store().reminders.length;
+		const remCountText =
+			totalRem > 0
+				? t("status.notesRemCount", { n: counts.notes, m: totalRem })
+				: t("status.notesTotal", { n: counts.notes });
+		footEl.append(el("span", { text: remCountText }));
+
 		const nextRem = nextReminder();
-		// nt-foot-rem：浮窗里这一句长了要省略号（见 styles.mjs 的 .nt-panel .nt-foot-rem）
-		if (nextRem) footEl.append(el("span", { class: "nt-foot-rem", text: `⏰ ${formatWhen(nextRem.ms, t)} ${nextRem.text}` }));
+		if (nextRem) {
+			footEl.append(el("span", { class: "nt-foot-rem", text: `⏰ ${formatWhen(nextRem.ms, t)} ${nextRem.text}` }));
+		}
 		if (status === "offline") footEl.append(el("span", { text: statusText }));
-		const clear = el("button", {
-			type: "button",
-			class: "nt-btn nt-icon",
-			text: t("todo.clearDone"),
-			onClick: () => {
-				const done = store().todos.filter((x) => x.done).length;
-				if (!done) return;
-				if (confirm(t("confirm.clearDone", { n: done }))) void data.op({ op: "todo.clearDone" });
-			},
-		});
-		clear.style.display = state.tab === "todo" && store().todos.some((x) => x.done) ? "" : "none";
-		footEl.append(el("span", { class: "nt-grow" }), clear);
+
+		footEl.append(el("span", { class: "nt-grow" }));
 	}
 
 	function nextReminder() {
@@ -321,314 +620,426 @@ export function createNotesApp(options) {
 		return best;
 	}
 
-	// ---------------------------------------------------------------- 列表
+	// ---------------------------------------------------------------- 列表渲染
 	function renderList() {
 		listEl.textContent = "";
-		if (state.tab === "agenda") {
-			renderAgenda(listEl);
-			return;
-		}
 		if (state.tab === "calendar") {
 			renderCalendar(listEl);
 			return;
 		}
-		const list = items();
-		if (!list.length) {
-			listEl.append(el("div", { class: "nt-empty", text: state.query ? t("empty.search") : t(`empty.${state.tab}`) }));
-			return;
-		}
-		for (const item of list) {
-			if (state.tab === "note") listEl.append(noteRow(item));
-			else if (state.tab === "todo") listEl.append(todoRow(item));
-			else listEl.append(reminderRow(item));
-		}
-	}
 
-	/** 条目 → 纯文本（复制 / 塞进输入框共用，带上关键元信息免得只剩半句）。 */
-	function itemText(kind, item) {
-		if (kind === "note") {
-			const tagLine = item.tags?.length ? `\n\n${item.tags.map((x) => `#${x}`).join(" ")}` : "";
-			return `# ${item.title}\n\n${item.body ?? ""}${tagLine}`.trim();
-		}
-		if (kind === "todo") {
-			const bits = [];
-			if (item.due) bits.push(`${t("field.due")} ${String(item.due).replace("T", " ")}`);
-			if (item.priority) bits.push(t(`pri.${item.priority}`));
-			if (item.repeat && item.repeat !== "none") bits.push(t(`repeat.${item.repeat}`));
-			if (item.tags?.length) bits.push(item.tags.map((x) => `#${x}`).join(" "));
-			return `${item.done ? "[x]" : "[ ]"} ${item.text}${bits.length ? `（${bits.join(" · ")}）` : ""}`;
-		}
-		return `${item.text}（${scheduleLabel(item.schedule, t)}）`;
-	}
-
-	/** 剪贴板写入（Clipboard API 被拦时退回 textarea + execCommand）。 */
-	async function copyItemText(btn, text) {
-		let ok = false;
-		try {
-			await navigator.clipboard.writeText(text);
-			ok = true;
-		} catch {
-			try {
-				const ta = document.createElement("textarea");
-				ta.value = text;
-				ta.style.position = "fixed";
-				ta.style.opacity = "0";
-				document.body.append(ta);
-				ta.select();
-				ok = document.execCommand("copy");
-				ta.remove();
-			} catch {
-				ok = false;
-			}
-		}
-		if (!ok) notifyError(t("status.error", { e: text.slice(0, 60) }));
-		// 按钮上闪一下 ✓ 当反馈（比每次弹通知条安静）
-		if (!btn) return;
-		try {
-			const old = btn.textContent;
-			btn.textContent = ok ? "✓" : "!";
-			setTimeout(() => {
-				btn.textContent = old;
-			}, 900);
-		} catch {
-			/* 列表已重画：节点不在了，无需反馈 */
-		}
-	}
-
-	/** 把条目文本塞进主输入框草稿（等用户自己发）；桥没就绪就退化成复制，字不丢。 */
-	function quoteItemText(text) {
-		let ok = false;
-		try {
-			ok = globalThis.window?.__piWebUiHost?.compose?.({ text }) ?? false;
-		} catch {
-			ok = false;
-		}
-		if (!ok) {
-			notifyInfo(t("action.composerBusy"));
-			void copyItemText(null, text);
-		}
-	}
-
-	function rowShell(kind, item, main, extra = []) {
-		const node = el(
-			"div",
-			{
-				class: `nt-item${state.editingId === item.id ? " on" : ""}`,
-				dataset: { id: item.id, kind },
-				onClick: (e) => {
-					if (e.target.closest("button,input,a")) return;
-					openEditor(kind, item.id);
-				},
-			},
-			main,
-			...extra,
-			el("button", {
-				type: "button",
-				class: "nt-x",
-				text: "💬",
-				title: t("action.quote"),
-				onClick: (e) => {
-					e.stopPropagation();
-					quoteItemText(itemText(kind, item));
-				},
-			}),
-			el("button", {
-				type: "button",
-				class: "nt-x",
-				text: "📋",
-				title: t("action.copy"),
-				onClick: (e) => {
-					e.stopPropagation();
-					void copyItemText(e.currentTarget, itemText(kind, item));
-				},
-			}),
-			el("button", {
-				type: "button",
-				class: "nt-x",
-				text: "✕",
-				title: t("action.delete"),
-				onClick: (e) => {
-					e.stopPropagation();
-					void removeItem(kind, item);
-				},
-			}),
-		);
-		return node;
-	}
-
-	function todoRow(todo) {
-		const check = el("input", {
-			type: "checkbox",
-			class: "nt-check",
-			checked: !!todo.done,
-			onChange: () => void data.op({ op: "todo.toggle", id: todo.id }),
+		// 笔记流渲染 (Notes Stream)
+		const allNotes = [...store().notes];
+		// 排序：置顶优先，其次按 updatedAt 倒序
+		allNotes.sort((a, b) => {
+			if (a.pinned !== b.pinned) return a.pinned ? -1 : 1;
+			return String(b.updatedAt ?? "").localeCompare(String(a.updatedAt ?? ""));
 		});
-		const meta = el("div", { class: "nt-meta" });
-		if (todo.priority) meta.append(el("span", { class: `nt-pri nt-pri-${todo.priority}`, text: t(`pri.${todo.priority}`) }));
-		const ds = S.dueState(todo);
-		if (todo.due) {
-			const ms = fromLocalInput(todo.due);
-			meta.append(
-				el("span", {
-					class: ds === "overdue" ? "nt-due-overdue" : ds === "today" ? "nt-due-today" : "",
-					text: `${t(`due.${ds}`)} ${formatWhen(ms, t)}`,
-				}),
-			);
-		}
-		if (todo.repeat && todo.repeat !== "none") meta.append(el("span", { text: `🔁 ${t(`repeat.${todo.repeat}`)}` }));
-		for (const tag of todo.tags) meta.append(el("span", { class: "nt-tag", text: `#${tag}` }));
-		const main = el(
-			"div",
-			{ class: "nt-main" },
-			el("div", { class: "nt-title nt-fixed", text: todo.text }),
-			meta.childNodes.length ? meta : null,
-		);
-		const node = rowShell("todo", todo, main);
-		node.insertBefore(check, main);
-		node.classList.toggle("nt-done", todo.done);
-		return node;
-	}
 
-	function noteRow(note) {
-		const meta = el("div", { class: "nt-meta" });
-		for (const tag of note.tags) meta.append(el("span", { class: "nt-tag", text: `#${tag}` }));
-		meta.append(el("span", { text: note.updatedAt.replace("T", " ") }));
-		const preview = (note.body || "").split("\n").filter(Boolean)[1] ?? "";
-		const main = el(
-			"div",
-			{ class: "nt-main" },
-			el("div", { class: "nt-title", text: `${note.pinned ? "📌 " : ""}${note.title}` }),
-			preview ? el("div", { class: "nt-title nt-fixed", style: "color:var(--nt-dim);font-size:12px", text: preview }) : null,
-			meta,
-		);
-		return rowShell("note", note, main);
-	}
+		// 搜索与标签过滤
+		const query = state.query.trim().toLowerCase();
+		const filtered = allNotes.filter((n) => {
+			if (!query) return true;
+			const inTitle = (n.title || "").toLowerCase().includes(query);
+			const inBody = (n.body || "").toLowerCase().includes(query);
+			const inTags = (n.tags || []).some((tag) => tag.toLowerCase().includes(query.replace(/^#/, "")));
+			return inTitle || inBody || inTags;
+		});
 
-	function reminderRow(rem) {
-		const ms = data.nextAt(rem);
-		const meta = el("div", { class: "nt-meta" });
-		meta.append(el("span", { text: scheduleLabel(rem.schedule, t) }));
-		meta.append(el("span", { text: rem.enabled ? (ms ? `${t("rem.next")} ${formatWhen(ms, t)}` : t("rem.never")) : t("rem.disabled") }));
-		if (rem.lastFired) meta.append(el("span", { text: `${t("rem.last")} ${rem.lastFired.replace("T", " ")}` }));
-		const main = el(
-			"div",
-			{ class: "nt-main" },
-			el("div", { class: "nt-title", text: `${rem.enabled ? "🔔" : "🔕"} ${rem.text}` }),
-			meta,
-		);
-		const actions = [];
-		if (rem.enabled) {
-			actions.push(
-				el("button", {
-					type: "button",
-					class: "nt-btn nt-icon",
-					text: "⏰",
-					title: t("rem.snooze"),
-					onClick: (e) => {
-						e.stopPropagation();
-						void data.op({ op: "reminder.snooze", id: rem.id, minutes: 10 });
-					},
-				}),
-			);
-		}
-		return rowShell("reminder", rem, main, actions);
-	}
-
-	// ---------------------------------------------------------------- 议程
-	function renderAgenda(container) {
-		const now = Date.now();
-		const groups = new Map();
-		const add = (key, label, node) => {
-			if (!groups.has(key)) groups.set(key, { label, nodes: [] });
-			groups.get(key).nodes.push(node);
-		};
-		const overdue = [];
-		const today = [];
-		const tomorrow = [];
-		const week = [];
-		const noDate = [];
-		for (const todo of store().todos) {
-			if (todo.done) continue;
-			if (!todo.due) {
-				noDate.push(todo);
-				continue;
-			}
-			const ms = fromLocalInput(todo.due);
-			const ds = S.dueState(todo, now);
-			if (ds === "overdue") overdue.push(todo);
-			else if (sameDay(ms, now)) today.push(todo);
-			else if (sameDay(ms, now + 86400000)) tomorrow.push(todo);
-			else if (ms - now <= 7 * 86400000) week.push(todo);
-		}
-		const reminderBuckets = new Map();
-		for (const rem of store().reminders) {
-			const ms = data.nextAt(rem);
-			if (!ms || ms - now > 14 * 86400000) continue;
-			const key = new Date(ms).toDateString();
-			if (!reminderBuckets.has(key)) reminderBuckets.set(key, { ms, items: [] });
-			reminderBuckets.get(key).items.push(rem);
-		}
-		if (overdue.length) for (const x of overdue) add("overdue", t("agenda.overdue"), todoRow(x));
-		if (today.length) for (const x of today) add("today", t("agenda.today"), todoRow(x));
-		for (const [key, bucket] of [...reminderBuckets.entries()].sort((a, b) => a[1].ms - b[1].ms)) {
-			const isToday = sameDay(bucket.ms, now);
-			for (const rem of bucket.items) {
-				add(`rem-${key}`, isToday ? t("agenda.reminders") : formatWhen(bucket.ms, t), reminderRow(rem));
-			}
-		}
-		if (tomorrow.length) for (const x of tomorrow) add("tomorrow", t("agenda.tomorrow"), todoRow(x));
-		if (week.length) for (const x of week) add("week", t("agenda.week"), todoRow(x));
-		if (noDate.length) for (const x of noDate) add("none", t("agenda.noDate"), todoRow(x));
-		if (!groups.size) {
-			container.append(el("div", { class: "nt-empty", text: t("empty.agenda") }));
+		if (!filtered.length) {
+			listEl.append(el("div", { class: "nt-empty", text: query ? t("empty.search") : t("empty.note") }));
 			return;
 		}
-		for (const [key, group] of groups) {
-			const cls = key === "overdue" ? " nt-overdue" : key === "today" ? " nt-today" : "";
-			container.append(el("div", { class: `nt-group${cls}`, text: group.label }));
-			for (const node of group.nodes) container.append(node);
-		}
-	}
 
-	// ---------------------------------------------------------------- 日历（月视图）
-	/** 当月每一天 → { todos, reminders }：待办按截止日期，提醒按**当月所有触发实例**。 */
-	function monthBuckets(lib, anchorMs) {
-		const from = startOfMonth(anchorMs);
-		const to = addMonths(from, 1);
-		const map = new Map();
-		const bucket = (ms) => {
-			const key = dayKey(ms);
-			if (!map.has(key)) map.set(key, { todos: [], reminders: [] });
-			return map.get(key);
-		};
-		for (const todo of lib.todos) {
-			if (!todo.due) continue;
-			const ms = fromLocalInput(todo.due);
-			if (ms === null || ms < from || ms >= to) continue;
-			bucket(ms).todos.push(todo);
-		}
-		for (const rem of lib.reminders) {
-			if (!rem.enabled) continue;
-			// 一个月内的所有实例（「每天 9:00 吃药」要在整月每一天都画出来）
-			for (const at of occurrencesBetween(rem.schedule, from, to, 40)) {
-				bucket(at).reminders.push({ rem, at });
+		const cardsWrap = el("div", { class: "nt-cards" });
+		for (const note of filtered) {
+			if (state.inlineEditId === note.id) {
+				cardsWrap.append(renderInlineEditCard(note));
+			} else {
+				cardsWrap.append(renderNoteCard(note));
 			}
 		}
-		for (const entry of map.values()) {
-			entry.todos.sort((a, b) => String(a.due).localeCompare(String(b.due)));
-			entry.reminders.sort((a, b) => a.at - b.at);
-		}
-		return map;
+		listEl.append(cardsWrap);
 	}
 
+	async function executeDeleteNote(id) {
+		if (state.inlineEditId === id) state.inlineEditId = null;
+		const res = await data.op({ op: "note.remove", id });
+		if (res?.ok === false) {
+			notifyError(res.error ?? "delete failed");
+		} else {
+			const list = store().notes;
+			const idx = list.findIndex((n) => n.id === id);
+			if (idx >= 0) list.splice(idx, 1);
+			renderList();
+		}
+	}
+
+	// ---------------- 单条笔记卡片 (Card) ----------------
+	function renderNoteCard(note) {
+		const card = el("div", {
+			class: `nt-card${note.pinned ? " nt-pinned" : ""}`,
+		});
+
+		// 头部元信息
+		const headEl = el("div", { class: "nt-card-head" });
+		const timeEl = el("span", {
+			class: "nt-card-time",
+			text: formatRelativeTime(note.updatedAt || note.createdAt, t),
+			title: (note.updatedAt || note.createdAt || "").replace("T", " "),
+		});
+		headEl.append(timeEl);
+
+		if (note.pinned) {
+			headEl.append(el("span", { class: "nt-card-pin-icon", text: "📌", title: t("action.pin") }));
+		}
+
+		// 提醒状态徽标
+		if (note.reminder?.schedule) {
+			const rem = note.reminder;
+			const isOnce = rem.schedule.type === "once";
+			const dueMs = isOnce ? new Date(rem.schedule.at).getTime() : 0;
+			const isOverdue = isOnce && dueMs < Date.now();
+			const badge = el("span", {
+				class: `nt-rem-chip${isOverdue ? " nt-overdue" : ""}`,
+				text: `⏰ ${reminderBadgeText(rem, t)}`,
+				title: isOverdue ? t("due.overdue") : "",
+				onClick: (e) => {
+					e.stopPropagation();
+					toggleCardReminderMenu(badge, note);
+				},
+			});
+			headEl.append(badge);
+		}
+
+		// 标签
+		for (const tag of note.tags ?? []) {
+			const tagChip = el("span", {
+				class: "nt-tag",
+				text: `#${tag}`,
+				onClick: (e) => {
+					e.stopPropagation();
+					state.query = `#${tag}`;
+					if (searchInput) searchInput.value = state.query;
+					renderList();
+				},
+			});
+			headEl.append(tagChip);
+		}
+
+		// 右侧悬浮操作组
+		const ops = el("div", { class: "nt-card-ops" });
+
+		const editBtn = el("button", {
+			type: "button",
+			class: "nt-op-btn",
+			text: "✏️",
+			title: t("action.edit"),
+			onClick: (e) => {
+				e.stopPropagation();
+				state.inlineEditId = note.id;
+				renderList();
+			},
+		});
+
+		const pinBtn = el("button", {
+			type: "button",
+			class: "nt-op-btn",
+			text: note.pinned ? "📍" : "📌",
+			title: note.pinned ? t("action.unpin") : t("action.pin"),
+			onClick: (e) => {
+				e.stopPropagation();
+				void data.op({ op: "note.save", item: { id: note.id, pinned: !note.pinned } });
+			},
+		});
+
+		const remBtn = el("button", {
+			type: "button",
+			class: "nt-op-btn",
+			text: "⏰",
+			title: t("quick.setReminder"),
+			onClick: (e) => {
+				e.stopPropagation();
+				toggleCardReminderMenu(remBtn, note);
+			},
+		});
+
+		const copyBtn = el("button", {
+			type: "button",
+			class: "nt-op-btn",
+			text: "📋",
+			title: t("action.copy"),
+			onClick: (e) => {
+				e.stopPropagation();
+				void copyItemText(copyBtn, note.body || note.title);
+			},
+		});
+
+		const quoteBtn = el("button", {
+			type: "button",
+			class: "nt-op-btn",
+			text: "💬",
+			title: t("action.quote"),
+			onClick: (e) => {
+				e.stopPropagation();
+				quoteItemText(note.body || note.title);
+			},
+		});
+
+		// 删除按钮：点击变为打勾按钮，再次点击确认删除
+		let delTimer = null;
+		const delBtn = el("button", {
+			type: "button",
+			class: "nt-op-btn nt-del",
+			text: "✕",
+			title: t("action.delete"),
+			onClick: async (e) => {
+				e.stopPropagation();
+				if (delBtn.dataset.confirming === "1") {
+					if (delTimer) clearTimeout(delTimer);
+					delBtn.dataset.confirming = "0";
+					delBtn.disabled = true;
+					await executeDeleteNote(note.id);
+					return;
+				}
+				delBtn.dataset.confirming = "1";
+				delBtn.textContent = "✓";
+				delBtn.classList.add("nt-del-confirm");
+				delBtn.title = `${t("action.delete")} (再次点击确认)`;
+				delTimer = setTimeout(() => {
+					delBtn.dataset.confirming = "0";
+					delBtn.textContent = "✕";
+					delBtn.classList.remove("nt-del-confirm");
+					delBtn.title = t("action.delete");
+				}, 3000);
+			},
+		});
+
+		ops.append(editBtn, pinBtn, remBtn, copyBtn, quoteBtn, delBtn);
+		headEl.append(ops);
+		card.append(headEl);
+
+		// 正文区（支持双击就地编辑）
+		const bodyEl = el("div", {
+			class: "nt-card-body",
+			onDblClick: () => {
+				state.inlineEditId = note.id;
+				renderList();
+			},
+		});
+
+		// 任务复选框切换
+		const onToggleTask = (lineIndex, nextChecked) => {
+			const lines = (note.body || "").split("\n");
+			if (lines[lineIndex] !== undefined) {
+				lines[lineIndex] = lines[lineIndex].replace(/^(\s*[-*]\s*)\[([ xX])\]/, `$1[${nextChecked ? "x" : " "}]`);
+				const newBody = lines.join("\n");
+				void data.op({ op: "note.save", item: { id: note.id, body: newBody } });
+			}
+		};
+
+		bodyEl.append(renderMarkdown(note.body || note.title, onToggleTask));
+		card.append(bodyEl);
+
+		return card;
+	}
+
+	// ---------------- 就地快速内联编辑卡片 (Inline Edit) ----------------
+	function renderInlineEditCard(note) {
+		const card = el("div", { class: "nt-card nt-editing" });
+		let draftReminder = note.reminder;
+		let draftPinned = note.pinned;
+
+		const textarea = el("textarea", {
+			class: "nt-card-edit-area",
+			value: note.body || note.title || "",
+			onKeyDown: (e) => {
+				if (e.key === "Enter" && (e.ctrlKey || e.metaKey) && !e.isComposing) {
+					e.preventDefault();
+					void doSave();
+				}
+				if (e.key === "Escape") {
+					e.preventDefault();
+					state.inlineEditId = null;
+					renderList();
+				}
+			},
+		});
+
+		// 自动撑开
+		setTimeout(() => {
+			textarea.style.height = "auto";
+			textarea.style.height = `${Math.min(textarea.scrollHeight + 10, 320)}px`;
+			textarea.focus();
+			textarea.setSelectionRange(textarea.value.length, textarea.value.length);
+		}, 20);
+
+		// 底栏与工具
+		const editFoot = el("div", { class: "nt-card-edit-foot" });
+		const leftTools = el("div", { class: "nt-inline-row" });
+
+		const remBtn = el("button", {
+			type: "button",
+			class: "nt-btn nt-icon",
+			text: draftReminder?.schedule ? `⏰ ${reminderBadgeText(draftReminder, t)}` : `⏰ ${t("quick.setReminder")}`,
+			onClick: (e) => {
+				e.stopPropagation();
+				const pop = buildReminderMenu((sched) => {
+					draftReminder = sched ? { schedule: sched, enabled: true } : null;
+					remBtn.textContent = draftReminder?.schedule
+						? `⏰ ${reminderBadgeText(draftReminder, t)}`
+						: `⏰ ${t("quick.setReminder")}`;
+					closePopMenu();
+				});
+				positionPop(pop, remBtn);
+				document.body.append(pop);
+				activePopMenu = pop;
+			},
+		});
+
+		const pinLabel = el("label", { class: "nt-checkline", style: "font-size: 11px;" });
+		const pinChk = el("input", {
+			type: "checkbox",
+			checked: draftPinned,
+			onChange: (e) => {
+				draftPinned = e.target.checked;
+			},
+		});
+		pinLabel.append(pinChk, el("span", { text: t("field.pinned") }));
+
+		let inlineDelTimer = null;
+		const inlineDelBtn = el("button", {
+			type: "button",
+			class: "nt-btn nt-danger",
+			text: "✕",
+			title: t("action.delete"),
+			onClick: async (e) => {
+				e.stopPropagation();
+				if (inlineDelBtn.dataset.confirming === "1") {
+					if (inlineDelTimer) clearTimeout(inlineDelTimer);
+					inlineDelBtn.dataset.confirming = "0";
+					inlineDelBtn.disabled = true;
+					await executeDeleteNote(note.id);
+					return;
+				}
+				inlineDelBtn.dataset.confirming = "1";
+				inlineDelBtn.textContent = "✓";
+				inlineDelBtn.title = `${t("action.delete")} (再次点击确认)`;
+				inlineDelTimer = setTimeout(() => {
+					inlineDelBtn.dataset.confirming = "0";
+					inlineDelBtn.textContent = "✕";
+					inlineDelBtn.title = t("action.delete");
+				}, 3000);
+			},
+		});
+
+		leftTools.append(remBtn, pinLabel, inlineDelBtn);
+
+		const rightBtns = el("div", { class: "nt-inline-row" });
+		const cancelBtn = el("button", {
+			type: "button",
+			class: "nt-btn",
+			text: t("action.cancel"),
+			onClick: () => {
+				state.inlineEditId = null;
+				renderList();
+			},
+		});
+
+		const saveBtn = el("button", {
+			type: "button",
+			class: "nt-btn nt-btn-primary",
+			text: `${t("action.save")} (Ctrl+↵)`,
+			onClick: () => void doSave(),
+		});
+
+		rightBtns.append(cancelBtn, saveBtn);
+		editFoot.append(leftTools, rightBtns);
+
+		card.append(textarea, editFoot);
+
+		async function doSave() {
+			const body = textarea.value.trim();
+			if (!body) {
+				state.inlineEditId = null;
+				renderList();
+				return;
+			}
+			const tagMatches = body.match(/#[^\s#]{1,32}/g) ?? [];
+			const tags = [...new Set(tagMatches.map((x) => x.slice(1)))];
+			const title = S.extractTitle(body) || "未命名笔记";
+
+			const patch = {
+				id: note.id,
+				body,
+				title,
+				tags,
+				pinned: draftPinned,
+				reminder: draftReminder,
+			};
+			await data.op({ op: "note.save", item: patch });
+			state.inlineEditId = null;
+			renderList();
+		}
+
+		return card;
+	}
+
+	function toggleCardReminderMenu(anchorEl, note) {
+		if (activePopMenu) {
+			closePopMenu();
+			return;
+		}
+		const pop = buildReminderMenu(async (schedule) => {
+			const patch = {
+				id: note.id,
+				reminder: schedule ? { schedule, enabled: true } : null,
+			};
+			await data.op({ op: "note.save", item: patch });
+			closePopMenu();
+			renderList();
+		});
+		positionPop(pop, anchorEl);
+		document.body.append(pop);
+		activePopMenu = pop;
+	}
+
+	// ---------------------------------------------------------------- 日历 (Calendar)
 	function renderCalendar(container) {
-		const lib = store(); // 注意别叫 store：会遮蔽上面的 store() 取值函数（TDZ 直接抛错）
 		const monthStart = state.month;
-		const buckets = monthBuckets(lib, monthStart);
+		const monthEnd = addMonths(monthStart, 1);
 		const todayKey = dayKey(Date.now());
 		const selectedKey = dayKey(state.day);
 
-		// 头部：‹ 2026年9月 › + 今天
+		const buckets = new Map();
+		const ensureBucket = (key) => {
+			let b = buckets.get(key);
+			if (!b) {
+				b = { todos: [], reminders: [] };
+				buckets.set(key, b);
+			}
+			return b;
+		};
+
+		// 待办截止
+		for (const todo of store().todos) {
+			if (!todo.due) continue;
+			const ms = new Date(todo.due).getTime();
+			if (ms >= monthStart && ms < monthEnd) {
+				ensureBucket(dayKey(ms)).todos.push(todo);
+			}
+		}
+
+		// 提醒
+		for (const rem of store().reminders) {
+			if (!rem.enabled) continue;
+			const occs = occurrencesBetween(rem.schedule, monthStart, monthEnd);
+			for (const at of occs) {
+				ensureBucket(dayKey(at)).reminders.push({ rem, at });
+			}
+		}
+
+		// 头部控制行
 		const head = el(
 			"div",
 			{ class: "nt-cal-head" },
@@ -642,7 +1053,10 @@ export function createNotesApp(options) {
 					renderList();
 				},
 			}),
-			el("span", { class: "nt-cal-title", text: t("cal.month", { y: new Date(monthStart).getFullYear(), m: new Date(monthStart).getMonth() + 1 }) }),
+			el("span", {
+				class: "nt-cal-title",
+				text: t("cal.month", { y: new Date(monthStart).getFullYear(), m: new Date(monthStart).getMonth() + 1 }),
+			}),
 			el("button", {
 				type: "button",
 				class: "nt-btn nt-icon",
@@ -667,12 +1081,13 @@ export function createNotesApp(options) {
 		);
 		container.append(head);
 
-		// 星期表头（周一开头，跟着中国习惯走）
+		// 星期表头
 		const grid = el("div", { class: "nt-cal-grid" });
 		for (let i = 0; i < 7; i++) {
 			grid.append(el("div", { class: "nt-cal-wd", text: t(`week.${(i + 1) % 7}`) }));
 		}
-		// 从「当月 1 号所在周的周一」开始，画满 6 周（42 格，跨月补位）
+
+		// 42 天格子
 		const firstCell = addDays(startOfMonth(monthStart), -((new Date(monthStart).getDay() + 6) % 7));
 		for (let i = 0; i < 42; i++) {
 			const dayMs = addDays(firstCell, i);
@@ -704,473 +1119,157 @@ export function createNotesApp(options) {
 				chips.append(el("div", { class: "nt-cal-chip nt-rem", text: `⏰ ${fmtHM(at)} ${rem.text}` }));
 				shown++;
 			}
-			if (count > shown) chips.append(el("div", { class: "nt-cal-chip nt-more", text: t("cal.more", { n: count - shown }) }));
+			if (count > shown) {
+				chips.append(el("div", { class: "nt-cal-chip nt-more", text: t("cal.more", { n: count - shown }) }));
+			}
 			cell.append(chips);
 			grid.append(cell);
 		}
 		container.append(grid);
 
-		// 选中那天的清单（点条目照常进编辑器）
+		// 选中当天的清单
 		const entry = buckets.get(selectedKey);
 		const detail = el("div", { class: "nt-cal-detail" });
 		const selected = new Date(state.day);
-		detail.append(
+
+		const detailHead = el("div", { class: "nt-inline-row", style: "margin-bottom: 6px;" });
+		detailHead.append(
 			el("div", {
 				class: "nt-group",
-				text: `${selected.getFullYear()}-${String(selected.getMonth() + 1).padStart(2, "0")}-${String(selected.getDate()).padStart(2, "0")}（${t(`week.${selected.getDay()}`)}）`,
+				style: "padding: 0;",
+				text: `${selected.getFullYear()}-${pad2(selected.getMonth() + 1)}-${pad2(selected.getDate())} (${t(`week.${selected.getDay()}`)})`,
+			}),
+			el("span", { class: "nt-grow" }),
+			el("button", {
+				type: "button",
+				class: "nt-btn",
+				text: `📝 ${t("quick.newNoteOnDay")}`,
+				onClick: () => {
+					// 切回笔记 tab，并预置好那一天的 09:00 提醒
+					state.tab = "note";
+					writeTab("note");
+					const d = new Date(state.day);
+					d.setHours(9, 0, 0, 0);
+					setComposerReminder({
+						schedule: { type: "once", at: S.nowStamp(d.getTime()) },
+						enabled: true,
+					});
+					render();
+					composerText.focus();
+				},
 			}),
 		);
+		detail.append(detailHead);
+
 		if (!entry || (!entry.todos.length && !entry.reminders.length)) {
 			detail.append(el("div", { class: "nt-empty", text: t("cal.empty") }));
 		} else {
-			for (const todo of entry.todos) detail.append(todoRow(todo));
+			for (const todo of entry.todos) {
+				const row = el(
+					"div",
+					{ class: "nt-item" },
+					el("input", {
+						type: "checkbox",
+						class: "nt-check",
+						checked: todo.done,
+						onChange: () => void data.op({ op: "todo.save", item: { id: todo.id, done: !todo.done } }),
+					}),
+					el("div", {
+						class: "nt-main",
+						children: [
+							el("div", {
+								class: `nt-title${todo.done ? " nt-done" : ""}`,
+								text: todo.text,
+							}),
+						],
+					}),
+				);
+				detail.append(row);
+			}
 			for (const { rem, at } of entry.reminders) {
-				const node = reminderRow(rem);
-				node.prepend(el("span", { class: "nt-meta", text: fmtHM(at) }));
-				detail.append(node);
+				const row = el(
+					"div",
+					{ class: "nt-item" },
+					el("span", { text: "⏰" }),
+					el("div", {
+						class: "nt-main",
+						children: [
+							el("div", { class: "nt-title", text: rem.text }),
+							el("div", { class: "nt-meta", text: fmtHM(at) }),
+						],
+					}),
+				);
+				detail.append(row);
 			}
 		}
 		container.append(detail);
 	}
 
-	// ---------------------------------------------------------------- 编辑器
-	function findItem(kind, id) {
-		if (kind === "note") return S.findNote(store(), id);
-		if (kind === "todo") return S.findTodo(store(), id);
-		return S.findReminder(store(), id);
-	}
-
-	function openEditor(kind, id) {
-		state.editingId = id;
-		editorKey = ""; // 强制重画（即使焦点还在编辑器里）
-		render();
-		editorEl.scrollTop = 0;
-	}
-
-	function closeEditor() {
-		state.editingId = null;
-		editorKey = "";
-		render();
-	}
-
-	function renderEditor() {
-		const kind = KIND_OF_TAB[state.tab] ?? lastKindOfEditing();
-		if (!state.editingId) {
-			if (editorHasFocus() && editorKey) return;
-			editorEl.textContent = "";
-			editorKey = "";
-			return;
-		}
-		const item = findItem(kind, state.editingId);
-		if (!item) {
-			state.editingId = null;
-			editorEl.textContent = "";
-			editorKey = "";
-			return;
-		}
-		// 渲染键带 updatedAt：外部改了同一条（AI 工具/另一个标签页）也要能刷新；
-		// 但光标在编辑器里/有未落盘输入时一律不重建（打字的字不能被快照洗掉）。
-		const key = `${kind}:${item.id}#${item.updatedAt}#${state.tab}`;
-		if (key === editorKey) return;
-		if (editorHasFocus() || pendingPatch) return;
-		editorKey = key;
-		editorEl.textContent = "";
-		if (kind === "note") editorEl.append(noteForm(item));
-		else if (kind === "todo") editorEl.append(todoForm(item));
-		else editorEl.append(reminderForm(item));
-	}
-
-	function lastKindOfEditing() {
-		const inTodos = store().todos.some((x) => x.id === state.editingId);
-		if (inTodos) return "todo";
-		const inNotes = store().notes.some((x) => x.id === state.editingId);
-		if (inNotes) return "note";
-		return "reminder";
-	}
-
-	/** 统一的「输入即存」：把 patch 合并进待发送队列，400ms 后落盘。 */
-	function queueSave(kind, id, patch) {
-		pendingKind = kind;
-		pendingPatch = { id, ...(pendingPatch ?? {}), ...patch };
-		if (saveTimer) clearTimeout(saveTimer);
-		saveTimer = setTimeout(() => {
-			saveTimer = 0;
-			void commit();
-		}, 400);
-	}
-
-	async function commit() {
-		const patch = pendingPatch;
-		const kind = pendingKind || KIND_OF_TAB[state.tab] || lastKindOfEditing();
-		pendingPatch = null;
-		pendingKind = "";
-		if (!patch) return;
-		const opName = kind === "note" ? "note.save" : kind === "todo" ? "todo.save" : "reminder.save";
-		const res = await data.op({ op: opName, item: patch });
-		if (res && res.ok === false && res.error) notifyError(res.error);
-	}
-
-	function field(label, control, hint) {
-		return el(
-			"div",
-			{ class: "nt-field" },
-			el("label", { text: label }),
-			control,
-			hint ? el("div", { class: "nt-hint", text: hint }) : null,
-		);
-	}
-
-	function deleteButton(kind, item) {
-		return el("button", {
-			type: "button",
-			class: "nt-btn nt-danger",
-			text: t("action.delete"),
-			onClick: () => void removeItem(kind, item),
-		});
-	}
-
-	function noteForm(note) {
-		const title = el("input", {
-			class: "nt-input",
-			value: note.title,
-			onInput: (e) => queueSave("note", note.id, { id: note.id, title: e.target.value }),
-		});
-		const tags = el("input", {
-			class: "nt-input",
-			value: note.tags.join(" "),
-			placeholder: t("field.tagsHint"),
-			onInput: (e) => queueSave("note", note.id, { id: note.id, tags: e.target.value }),
-		});
-		const body = el("textarea", {
-			class: "nt-textarea",
-			value: note.body,
-			onInput: (e) => queueSave("note", note.id, { id: note.id, body: e.target.value }),
-		});
-		const pinned = el("input", {
-			type: "checkbox",
-			checked: !!note.pinned,
-			onChange: (e) => queueSave("note", note.id, { id: note.id, pinned: e.target.checked }),
-		});
-		return el(
-			"div",
-			{ class: "nt-form" },
-			field(t("field.title"), title),
-			field(t("field.tags"), tags),
-			field(t("field.body"), body, t("field.bodyHint")),
-			el("label", { class: "nt-checkline" }, pinned, el("span", { text: t("field.pinned") })),
-			el(
-				"div",
-				{ class: "nt-actions" },
-				el("button", { type: "button", class: "nt-btn", text: t("action.cancel"), onClick: closeEditor }),
-				deleteButton("note", note),
-				el("span", { class: "nt-grow" }),
-				el("span", { class: "nt-hint", text: note.updatedAt.replace("T", " ") }),
-			),
-		);
-	}
-
-	function todoForm(todo) {
-		const text = el("input", {
-			class: "nt-input",
-			value: todo.text,
-			onInput: (e) => queueSave("todo", todo.id, { id: todo.id, text: e.target.value }),
-		});
-		const pri = el(
-			"select",
-			{
-				class: "nt-select",
-				onChange: (e) => queueSave("todo", todo.id, { id: todo.id, priority: Number(e.target.value) }),
-			},
-			...[0, 1, 2, 3].map((p) => el("option", { value: String(p), selected: todo.priority === p, text: t(`pri.${p}`) })),
-		);
-		const due = el("input", {
-			class: "nt-input",
-			type: "datetime-local",
-			value: todo.due ?? "",
-			onChange: (e) => queueSave("todo", todo.id, { id: todo.id, due: e.target.value }),
-		});
-		const dueClear = el("button", {
-			type: "button",
-			class: "nt-btn",
-			text: "✕",
-			onClick: () => {
-				due.value = "";
-				queueSave("todo", todo.id, { id: todo.id, due: "" });
-			},
-		});
-		const repeat = el(
-			"select",
-			{
-				class: "nt-select",
-				onChange: (e) => queueSave("todo", todo.id, { id: todo.id, repeat: e.target.value }),
-			},
-			...["none", "daily", "weekly", "monthly"].map((r) =>
-				el("option", { value: r, selected: todo.repeat === r, text: t(`repeat.${r}`) }),
-			),
-		);
-		const tags = el("input", {
-			class: "nt-input",
-			value: todo.tags.join(" "),
-			placeholder: t("field.tagsHint"),
-			onInput: (e) => queueSave("todo", todo.id, { id: todo.id, tags: e.target.value }),
-		});
-		const done = el("button", {
-			type: "button",
-			class: `nt-btn${todo.done ? " on" : ""}`,
-			text: todo.done ? t("todo.open") : t("todo.done"),
-			onClick: () => void data.op({ op: "todo.toggle", id: todo.id }),
-		});
-		return el(
-			"div",
-			{ class: "nt-form" },
-			field(t("field.text"), text),
-			el("div", { class: "nt-grid2" }, field(t("field.priority"), pri), field(t("field.repeat"), repeat)),
-			field(t("field.due"), el("div", { class: "nt-inline-row" }, due, dueClear)),
-			field(t("field.tags"), tags),
-			el("div", { class: "nt-actions" }, done, el("span", { class: "nt-grow" }), deleteButton("todo", todo)),
-		);
-	}
-
-	function reminderForm(rem) {
-		const text = el("input", {
-			class: "nt-input",
-			value: rem.text,
-			onInput: (e) => queueSave("reminder", rem.id, { id: rem.id, text: e.target.value }),
-		});
-		const sched = rem.schedule;
-		const typeSel = el(
-			"select",
-			{
-				class: "nt-select",
-				onChange: (e) => {
-					const type = e.target.value;
-					const next = defaultSchedule(type, sched);
-					void data.op({ op: "reminder.save", item: { id: rem.id, schedule: next } });
-					editorKey = ""; // 换类型 → 重画表单（字段集不同）
-				},
-			},
-			...["once", "daily", "weekly", "monthly", "every", "cron"].map((x) =>
-				el("option", { value: x, selected: sched.type === x, text: t(`type.${x}`) }),
-			),
-		);
-		const rows = [field(t("field.text"), text), field(t("field.schedule"), typeSel)];
-		if (sched.type === "once") {
-			rows.push(
-				field(
-					t("field.at"),
-					el("input", {
-						class: "nt-input",
-						type: "datetime-local",
-						value: sched.at,
-						onChange: (e) => queueSave("reminder", rem.id, { id: rem.id, schedule: { type: "once", at: e.target.value } }),
-					}),
-				),
-			);
-		} else if (sched.type === "daily" || sched.type === "weekly" || sched.type === "monthly") {
-			rows.push(
-				field(
-					t("field.time"),
-					el("input", {
-						class: "nt-input",
-						type: "time",
-						value: sched.time,
-						onChange: (e) =>
-							queueSave("reminder", rem.id, { id: rem.id, schedule: { ...sched, time: e.target.value } }),
-					}),
-				),
-			);
-		}
-		if (sched.type === "weekly") {
-			const dowRow = el("div", { class: "nt-dows" });
-			for (let d = 0; d < 7; d++) {
-				const on = sched.dow.includes(d);
-				dowRow.append(
-					el("button", {
-						type: "button",
-						class: `nt-btn${on ? " on" : ""}`,
-						text: t(`week.${d}`),
-						onClick: () => {
-							const next = on ? sched.dow.filter((x) => x !== d) : [...sched.dow, d].sort((a, b) => a - b);
-							if (!next.length) return;
-							void data.op({ op: "reminder.save", item: { id: rem.id, schedule: { ...sched, dow: next } } });
-						},
-					}),
-				);
+	// ---------------- 辅助工具 ----------------
+	async function copyItemText(btn, text) {
+		let ok = false;
+		try {
+			await navigator.clipboard.writeText(text);
+			ok = true;
+		} catch {
+			try {
+				const ta = document.createElement("textarea");
+				ta.value = text;
+				ta.style.position = "fixed";
+				ta.style.opacity = "0";
+				document.body.append(ta);
+				ta.select();
+				ok = document.execCommand("copy");
+				ta.remove();
+			} catch {
+				ok = false;
 			}
-			rows.push(field(t("field.dow"), dowRow));
 		}
-		if (sched.type === "monthly") {
-			rows.push(
-				field(
-					t("field.dom"),
-					el("input", {
-						class: "nt-input",
-						type: "number",
-						min: 1,
-						max: 31,
-						value: sched.dom,
-						onChange: (e) =>
-							queueSave("reminder", rem.id, { id: rem.id, schedule: { ...sched, dom: Number(e.target.value) } }),
-					}),
-				),
-			);
+		if (btn) {
+			const old = btn.textContent;
+			btn.textContent = ok ? "✓" : "!";
+			setTimeout(() => {
+				btn.textContent = old;
+			}, 900);
 		}
-		if (sched.type === "every") {
-			// 真间隔：任意 1..10080 分钟（到点判定走 nextDue，不受 cron 表达能力限制）
-			const everyInput = el("input", {
-				class: "nt-input",
-				type: "number",
-				min: MIN_EVERY_MINUTES,
-				max: MAX_EVERY_MINUTES,
-				value: sched.minutes,
-				onChange: (e) => {
-					const minutes = Math.round(Number(e.target.value));
-					if (!isSupportedEvery(minutes)) {
-						e.target.value = String(sched.minutes); // 越界就退回原值（不写库）
-						return;
-					}
-					queueSave("reminder", rem.id, { id: rem.id, schedule: { type: "every", minutes } });
-				},
-			});
-			rows.push(field(t("field.minutes"), everyInput, t("field.minutesHint")));
-		}
-		if (sched.type === "cron") {
-			rows.push(
-				field(
-					t("field.cron"),
-					el("input", {
-						class: "nt-input",
-						value: sched.spec,
-						placeholder: "0 9 * * 1-5",
-						onChange: (e) => queueSave("reminder", rem.id, { id: rem.id, schedule: { type: "cron", spec: e.target.value } }),
-					}),
-				),
-			);
-		}
-		const ms = data.nextAt(rem);
-		rows.push(
-			el("label", { class: "nt-checkline" },
-				el("input", {
-					type: "checkbox",
-					checked: rem.enabled,
-					onChange: (e) => void data.op({ op: "reminder.save", item: { id: rem.id, enabled: e.target.checked } }),
-				}),
-				el("span", { text: t("field.enabled") }),
-			),
-			el("div", { class: "nt-hint", text: rem.enabled ? (ms ? `${t("rem.next")} ${formatWhen(ms, t)}` : t("rem.never")) : t("rem.disabled") }),
-			el(
-				"div",
-				{ class: "nt-actions" },
-				el("button", {
-					type: "button",
-					class: "nt-btn",
-					text: t("rem.snooze"),
-					onClick: () => void data.op({ op: "reminder.snooze", id: rem.id, minutes: 10 }),
-				}),
-				el("span", { class: "nt-grow" }),
-				deleteButton("reminder", rem),
-			),
-		);
-		return el("div", { class: "nt-form" }, ...rows);
 	}
 
-	function defaultSchedule(type, prev) {
-		const now = Date.now();
-		const base = { ...prev };
-		if (type === "once") return { type: "once", at: toLocalInput(now + 3600_000) };
-		if (type === "daily") return { type: "daily", time: base.time ?? "09:00" };
-		if (type === "weekly") return { type: "weekly", time: base.time ?? "09:00", dow: base.dow?.length ? base.dow : [1] };
-		if (type === "monthly") return { type: "monthly", time: base.time ?? "09:00", dom: 1 };
-		if (type === "every") return { type: "every", minutes: 30 };
-		return { type: "cron", spec: "0 9 * * *" };
-	}
-
-	// ---------------------------------------------------------------- 动作
-	async function submitQuick() {
-		const raw = quickInput.value.trim();
-		if (!raw) return;
-		if (state.tab === "note") {
-			const res = await data.op({ op: "note.save", item: { title: raw } });
-			if (res?.item) {
-				quickInput.value = "";
-				openEditor("note", res.item.id);
-			}
-			return;
+	function quoteItemText(text) {
+		let ok = false;
+		try {
+			ok = globalThis.window?.__piWebUiHost?.compose?.({ text }) ?? false;
+		} catch {
+			ok = false;
 		}
-		if (state.tab === "reminder") {
-			const parsed = S.parseQuickReminder(raw);
-			if (!parsed) {
-				notifyError(t("quick.hintReminder"));
-				return;
-			}
-			const res = await data.op({ op: "reminder.save", item: { text: parsed.text, schedule: parsed.schedule } });
-			if (res?.ok === false) notifyError(res.error ?? "error");
-			else quickInput.value = "";
-			return;
+		if (!ok) {
+			notifyInfo(t("action.composerBusy"));
+			void copyItemText(null, text);
 		}
-		const parsed = S.parseQuickTodo(raw);
-		if (!parsed.text) {
-			notifyError(t("quick.hintTodo"));
-			return;
-		}
-		const res = await data.op({
-			op: "todo.save",
-			item: { text: parsed.text, due: parsed.due, priority: parsed.priority, tags: parsed.tags },
-		});
-		if (res?.ok === false) notifyError(res.error ?? "error");
-		else quickInput.value = "";
-	}
-
-	async function removeItem(kind, item) {
-		const name = kind === "note" ? item.title : item.text;
-		if (!confirm(t("confirm.delete", { name }))) return;
-		const op = kind === "note" ? "note.remove" : kind === "todo" ? "todo.remove" : "reminder.remove";
-		await data.op({ op, id: item.id });
-		if (state.editingId === item.id) closeEditor();
 	}
 
 	function notifyInfo(text) {
-		try {
-			const bridge = globalThis.window?.__piWebUiHost;
-			if (typeof bridge?.notifyAction === "function") void bridge.notifyAction({ text, actions: [] });
-		} catch {
-			/* 宿主桥未就绪：静默（界面本身会反映结果） */
-		}
+		toast(text);
 	}
-
 	function notifyError(text) {
-		notifyInfo(text);
-		console.warn("[notes]", text);
+		toast(`✗ ${text}`);
 	}
-
-	// 输入框聚焦快捷键（浮窗里 Ctrl/Cmd+K 定位到快速输入）
-	function onKeyDown(e) {
-		if ((e.ctrlKey || e.metaKey) && e.key.toLowerCase() === "k" && root.contains(e.target)) {
-			e.preventDefault();
-			quickInput.focus();
+	function toast(text) {
+		try {
+			options.onNotify?.(text);
+		} catch {
+			/* ignore */
 		}
-		if (e.key === "Escape" && state.editingId) closeEditor();
 	}
-	app.addEventListener("keydown", onKeyDown);
-
-	render();
-	void data.refresh();
 
 	return {
+		el: root,
 		destroy() {
 			unsubscribe();
-			// 400ms 合并窗口里还没落盘的编辑要先发出去（切视图/切语言/插件热重载都会走
-			// destroy，直接 clearTimeout 会让用户刚打的这段话凭空消失）
-			if (saveTimer) {
-				clearTimeout(saveTimer);
-				saveTimer = 0;
-				void commit();
-			}
+			closePopMenu();
 			root.textContent = "";
 		},
-		/** 外部（浮窗被打开/宿主快捷键）请求聚焦快速输入。 */
 		focusQuickInput() {
-			quickInput.focus();
+			composerText.focus();
 		},
 		render,
 	};
@@ -1179,11 +1278,11 @@ export function createNotesApp(options) {
 function readTab() {
 	try {
 		const v = localStorage.getItem("notes:tab");
-		if (v && ["todo", "note", "reminder", "agenda"].includes(v)) return v;
+		if (v && ["note", "calendar"].includes(v)) return v;
 	} catch {
 		/* ignore */
 	}
-	return "todo";
+	return "note";
 }
 
 function writeTab(tab) {

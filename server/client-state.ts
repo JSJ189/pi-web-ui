@@ -377,6 +377,8 @@ export interface ClientSettings {
 	/** 结束的对话切换时不自动从运行的对话消失（默认关）。开 → 对话结束（空闲）且切换到其他对话时，
 	 *  依然保留在运行列表中，不自动释放；关 → 切走且未继续对话的会话自动移出。纯运行开关，无需 reload。 */
 	retainFinishedConversations?: boolean;
+	/** 切换项目时是否打开该项目最近的会话（默认 true 开）。关 → 切换项目时始终创建空白新对话。 */
+	openRecentSessionOnProjectSwitch?: boolean;
 	/** skill 全文注入名单（默认空 = 名录模式）。名单里的技能 {{skills}} 展开正文
 	 *  （oh-my-pi 式全文注入；单文件 8KB、总量 32KB 封顶，超限回落名录）。
 	 *  进预设；逐 run 实时读取，改动下一轮即生效。 */
@@ -1101,6 +1103,7 @@ export class ClientStateStore {
 			keepRecentMessages: normalizeKeepRecentMessages(stored?.keepRecentMessages),
 			showForkedParentSessions: stored?.showForkedParentSessions ?? false,
 			retainFinishedConversations: stored?.retainFinishedConversations ?? false,
+			openRecentSessionOnProjectSwitch: stored?.openRecentSessionOnProjectSwitch ?? true,
 			skillsFullText: normalizeSkillList(stored?.skillsFullText),
 			visionBridgeEnabled: stored?.visionBridgeEnabled ?? true,
 			visionBridgeModel: stored?.visionBridgeModel ?? null,
@@ -1175,6 +1178,8 @@ export class ClientStateStore {
 			),
 			showForkedParentSessions: settings.showForkedParentSessions ?? cur.showForkedParentSessions ?? false,
 			retainFinishedConversations: settings.retainFinishedConversations ?? cur.retainFinishedConversations ?? false,
+			openRecentSessionOnProjectSwitch:
+				settings.openRecentSessionOnProjectSwitch ?? cur.openRecentSessionOnProjectSwitch ?? true,
 			skillsFullText: normalizeSkillList(settings.skillsFullText ?? cur.skillsFullText),
 			visionBridgeEnabled: settings.visionBridgeEnabled ?? cur.visionBridgeEnabled ?? true,
 			// 按键存在性合并：null 是合法值（清除语义），`null ?? cur` 会把旧值

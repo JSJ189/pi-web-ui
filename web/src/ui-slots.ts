@@ -361,6 +361,17 @@ export const BUILTIN_UI_ITEMS: BuiltinUiItem[] = [
 		// 缺省落右区工具组之尾（紧接「新对话」）；位置完全由 slot 顺序定，用户 ↑↓ 可调。
 		align: "end",
 	},
+	{
+		id: "host:new-sandbox",
+		slot: "topbar.primary",
+		labelKey: "newSandbox",
+		icon: "sandbox",
+		kind: "action",
+		order: 96.6,
+		group: "primary",
+		// 缺省落右区工具组之尾（紧接「新对话 / 临时对话」）；位置完全由 slot 顺序定，用户 ↑↓ 可调。
+		align: "end",
+	},
 	// 视图切换三连：同组 + 连号权重 → 顺序就是 TopBar 里 tab 的顺序（chat/terminal/git）。
 	{
 		id: "host:chat",

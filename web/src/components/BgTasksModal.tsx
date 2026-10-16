@@ -90,9 +90,19 @@ export function BgTasksModal({
 					<FiLayers /> {t("bgTasks")}
 					{servers.length > 0 && <em className="bg-task-count">{servers.length}</em>}
 				</span>
-				<button type="button" className="btn" title={t("close")} onClick={onClose}>
-					<FiX />
-				</button>
+				<div className="bg-task-head-actions">
+					<button
+						type="button"
+						className="btn bg-task-head-btn"
+						title={t("bgTaskRefresh")}
+						onClick={() => appSend({ type: "list_bg_servers" })}
+					>
+						<FiRefreshCw />
+					</button>
+					<button type="button" className="btn bg-task-head-btn" title={t("close")} onClick={onClose}>
+						<FiX />
+					</button>
+				</div>
 			</div>
 
 			{servers.length === 0 ? (
@@ -200,54 +210,58 @@ export function BgTasksModal({
 
 			<div className="bg-task-foot">
 				{/* 自动清理：阈值下拉 + 立即清理。钉住（📌）的实例永不参与。 */}
-				<label className="bg-task-cleanup" title={t("bgTaskCleanupHint")}>
-					<span>{t("bgTaskCleanup")}</span>
-					<select
-						className="btn"
-						value={String(autoCleanupMin)}
-						onChange={(e) =>
-							appSend({
-								type: "set_settings",
-								bgAutoCleanupMin: Number(e.target.value),
-							})
-						}
+				<div className="bg-task-cleanup-bar">
+					<label className="bg-task-cleanup-field" title={t("bgTaskCleanupHint")}>
+						<span className="bg-task-cleanup-label">{t("bgTaskCleanup")}</span>
+						<select
+							className="bg-task-cleanup-select"
+							value={String(autoCleanupMin)}
+							onChange={(e) =>
+								appSend({
+									type: "set_settings",
+									bgAutoCleanupMin: Number(e.target.value),
+								})
+							}
+						>
+							<option value="0">{t("bgTaskCleanupOff")}</option>
+							{[15, 30, 60, 120].map((m) => (
+								<option key={m} value={String(m)}>
+									{t("bgTaskCleanupMinutes", { n: m })}
+								</option>
+							))}
+						</select>
+					</label>
+					<button
+						type="button"
+						className="btn bg-task-clean-btn"
+						title={t("bgTaskCleanNowHint")}
+						onClick={() => appSend({ type: "clean_bg_leftovers" })}
 					>
-						<option value="0">{t("bgTaskCleanupOff")}</option>
-						{[15, 30, 60, 120].map((m) => (
-							<option key={m} value={String(m)}>
-								{t("bgTaskCleanupMinutes", { n: m })}
-							</option>
-						))}
-					</select>
-				</label>
-				<button
-					type="button"
-					className="btn"
-					title={t("bgTaskCleanNowHint")}
-					onClick={() => appSend({ type: "clean_bg_leftovers" })}
-				>
-					<FiTrash2 />
-					<span>{t("bgTaskCleanNow")}</span>
-				</button>
-				<button
-					type="button"
-					className="btn"
-					title={t("bgTaskRefresh")}
-					onClick={() => appSend({ type: "list_bg_servers" })}
-				>
-					<FiRefreshCw />
-					<span>{t("bgTaskRefresh")}</span>
-				</button>
-				<button
-					type="button"
-					className="btn bg-task-stopall"
-					disabled={servers.length === 0}
-					title={t("bgTaskStopAll")}
-					onClick={() => appSend({ type: "kill_background_servers" })}
-				>
-					<FiSquare />
-					<span>{t("bgTaskStopAll")}</span>
-				</button>
+						<FiTrash2 />
+						<span>{t("bgTaskCleanNow")}</span>
+					</button>
+				</div>
+				<div className="bg-task-actions-bar">
+					<button
+						type="button"
+						className="btn bg-task-refresh-btn"
+						title={t("bgTaskRefresh")}
+						onClick={() => appSend({ type: "list_bg_servers" })}
+					>
+						<FiRefreshCw />
+						<span>{t("bgTaskRefresh")}</span>
+					</button>
+					<button
+						type="button"
+						className="btn bg-task-stopall"
+						disabled={servers.length === 0}
+						title={t("bgTaskStopAll")}
+						onClick={() => appSend({ type: "kill_background_servers" })}
+					>
+						<FiSquare />
+						<span>{t("bgTaskStopAll")}</span>
+					</button>
+				</div>
 			</div>
 		</Modal>
 	);

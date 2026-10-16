@@ -402,6 +402,7 @@ export class SettingsService {
 				keepRecentMessages: normalizeKeepRecentMessages(this.settings.keepRecentMessages),
 				showForkedParentSessions: this.settings.showForkedParentSessions ?? false,
 				retainFinishedConversations: this.settings.retainFinishedConversations ?? false,
+				openRecentSessionOnProjectSwitch: this.settings.openRecentSessionOnProjectSwitch ?? true,
 				visionBridgeEnabled: this.settings.visionBridgeEnabled,
 				visionBridgeModel: this.settings.visionBridgeModel,
 				visionBridgePromptMode: this.settings.visionBridgePromptMode,
@@ -541,6 +542,7 @@ export class SettingsService {
 		/** 历史对话列表中是否显示已被 fork 派生的父会话（默认 false = 仅显示链尾最新分支）。 */
 		showForkedParentSessions?: boolean;
 		retainFinishedConversations?: boolean;
+		openRecentSessionOnProjectSwitch?: boolean;
 		devNoCache?: boolean;
 		autoReload?: boolean;
 		skillsFullText?: string[];
@@ -724,6 +726,9 @@ export class SettingsService {
 		}
 		if (partial.retainFinishedConversations !== undefined) {
 			this.settings.retainFinishedConversations = Boolean(partial.retainFinishedConversations);
+		}
+		if (partial.openRecentSessionOnProjectSwitch !== undefined) {
+			this.settings.openRecentSessionOnProjectSwitch = Boolean(partial.openRecentSessionOnProjectSwitch);
 		}
 		let sessionsFilterChanged = false;
 		if (partial.showForkedParentSessions !== undefined) {

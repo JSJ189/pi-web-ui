@@ -1157,6 +1157,7 @@ heartbeatTimer.unref?.();
 // 默认 pi 引擎。同一 wire 协议，前端无感知（ready/health 携带 engine 字段）。
 import { DshAgentService } from "./dsh/dsh-agent-service.js";
 import { UniversalAgentService, ClaudeCodeDriver, probeClaudeCode } from "./universal/index.js";
+import { probeAllEngines, probeEngine, getCachedEngineStatuses } from "./engine-probe.js";
 
 /** dispatch 表所需的方法契约（pi 的 ClientSession 与 dsh 的 DshClientSession
  *  都结构兼容；dsh 引擎对不支持的功能做简化实现）。 */
@@ -2102,11 +2103,12 @@ function pushNoticeToAll(level: "info" | "warning" | "error", text: string, text
 	}
 }
 
-// MCP 工具桥：读取配置启动外部 MCP 服务器（stdio），把它们的
+// MCP 工具桥：读取配置启动外部 MCP 服务器（stdio / HTTP streamable-http），把它们的
 // 工具并入与插件工具相同的 customTools 管线；单服务器失败不炸进程。
 const mcpBridge = new McpBridge(DATA_DIR, (...a) => console.log("[mcp]", ...a), {
 	agentDir: getAgentDir(),
 	cwd: CWD,
+	onToolsChanged: () => service.applyPluginAgentTools(),
 });
 ClientSession.mcpBridge = mcpBridge;
 pluginMgr.mcpBridge = mcpBridge;
@@ -2465,7 +2467,7 @@ wss.on("connection", (ws) => {
 			.catch(() => {});
 	};
 
-	const handleSwitchEngine = (msg: Extract<ClientMessage, { type: "switch_engine" }>): void => {
+	const handleSwitchEngine = async (msg: Extract<ClientMessage, { type: "switch_engine" }>): Promise<void> => {
 		const targetEngine =
 			msg.engine === "claude" ? "claude" : msg.engine === "dsh" ? "dsh" : msg.engine === "pi" ? "pi" : null;
 		if (!targetEngine) {
@@ -2478,6 +2480,21 @@ wss.on("connection", (ws) => {
 			return;
 		}
 		if (!clientId) return;
+
+		// 闸门：非 pi 引擎需确认宿主环境中已安装对应的全局包/运行时，未安装时拒绝切换
+		if (targetEngine !== "pi") {
+			const probe = await probeEngine(targetEngine);
+			if (!probe.installed) {
+				send({
+					type: "notice",
+					level: "warning",
+					text: `引擎 ${targetEngine.toUpperCase()} 尚未安装全局包（${probe.packageName ?? targetEngine}），请先安装后再切换`,
+					textEn: `Engine ${targetEngine.toUpperCase()} global package (${probe.packageName ?? targetEngine}) is not installed; please install it before switching`,
+				});
+				return;
+			}
+		}
+
 		const prevEngine = resolveClientEngine(clientId);
 		if (prevEngine === targetEngine) {
 			setClientEngine(clientId, targetEngine);
@@ -2581,7 +2598,14 @@ wss.on("connection", (ws) => {
 
 		// switch_engine 为宿主级控制消息：豁免 cs 初始化与 attachDone 门禁，确保任何异常状态下都能自由切回！
 		if (msg.type === "switch_engine") {
-			handleSwitchEngine(msg);
+			void handleSwitchEngine(msg);
+			return;
+		}
+
+		if (msg.type === "check_engines") {
+			void probeAllEngines(msg.force).then((engines) => {
+				if (!closed) send({ type: "engines_status", engines });
+			});
 			return;
 		}
 
@@ -2728,6 +2752,9 @@ wss.on("connection", (ws) => {
 					break;
 				case "check_updates_all":
 					void cs.checkUpdatesAll(msg.force === true);
+					void probeAllEngines(true).then((engines) => {
+						if (!closed) send({ type: "engines_status", engines });
+					});
 					break;
 				case "check_plugin_updates":
 					if (typeof cs.checkPluginUpdates === "function") {
@@ -2807,6 +2834,7 @@ wss.on("connection", (ws) => {
 		managed: MANAGED,
 		tabs: TABS ? [...TABS] : undefined,
 		service: SERVICE_INFO ?? undefined,
+		engines: getCachedEngineStatuses(),
 	});
 
 	ws.on("message", (data) => {
@@ -2842,6 +2870,9 @@ wss.on("connection", (ws) => {
 			// ready 在握手里先发，前端立刻离开「正在连接」（快照随后到）。
 			if (!closed) {
 				send(readyMsg(cid));
+				void probeAllEngines().then((engines) => {
+					if (!closed) send({ type: "engines_status", engines });
+				});
 			}
 			// attach 慢提示：本体继续等，不取消；完成后照常走快照流程。
 			const slowTimer = setTimeout(() => {

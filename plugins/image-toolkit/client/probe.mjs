@@ -84,7 +84,12 @@ function findTiff(bytes) {
 		const len = (bytes[i + 2] << 8) | bytes[i + 3];
 		if (marker === 0xe1) {
 			const start = i + 4;
-			if (bytes[start] === 0x45 && bytes[start + 1] === 0x78 && bytes[start + 2] === 0x69 && bytes[start + 3] === 0x66) {
+			if (
+				bytes[start] === 0x45 &&
+				bytes[start + 1] === 0x78 &&
+				bytes[start + 2] === 0x69 &&
+				bytes[start + 3] === 0x66
+			) {
 				return start + 6; // "Exif\0\0"
 			}
 		}
@@ -170,7 +175,11 @@ export function parseExif(bytes) {
 		if (raw.__exifIfd) readIfd(base + raw.__exifIfd, TAG_EXIF, raw);
 		if (raw.__gpsIfd) {
 			const gps = {};
-			readIfd(base + raw.__gpsIfd, { 0x0001: "latRef", 0x0002: "lat", 0x0003: "lonRef", 0x0004: "lon", 0x0006: "alt" }, gps);
+			readIfd(
+				base + raw.__gpsIfd,
+				{ 0x0001: "latRef", 0x0002: "lat", 0x0003: "lonRef", 0x0004: "lon", 0x0006: "alt" },
+				gps,
+			);
 			if (Array.isArray(gps.lat) && Array.isArray(gps.lon)) {
 				const dms = (a) => (a[0] ?? 0) + (a[1] ?? 0) / 60 + (a[2] ?? 0) / 3600;
 				let lat = dms(gps.lat);
@@ -243,9 +252,7 @@ export function imageStats(imageData, colorCount = 6) {
 		.sort((a, b) => b.n - a.n)
 		.slice(0, colorCount)
 		.map((c) => ({
-			hex: `#${[c.r / c.n, c.g / c.n, c.b / c.n]
-				.map((v) => Math.round(v).toString(16).padStart(2, "0"))
-				.join("")}`,
+			hex: `#${[c.r / c.n, c.g / c.n, c.b / c.n].map((v) => Math.round(v).toString(16).padStart(2, "0")).join("")}`,
 			share: total ? c.n / total : 0,
 		}));
 	return { histogram: norm, colors };

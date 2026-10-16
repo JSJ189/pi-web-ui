@@ -12,15 +12,15 @@
 	--text-dim: #a8a8b3;
 	--text-faint: #6e6e7a;
 	--accent: #31ac9d;
-	--accent-soft: #3A8C8A26;
-	--green: #2dd4bf; 
-	--green-soft: #4ADE801F;
+	--accent-soft: #3a8c8a26;
+	--green: #2dd4bf;
+	--green-soft: #4ade801f;
 	--amber: #eab380;
 	--term-bg: #0b0b0e;
 	--term-fg: #ededf0;
 	--term-cursor: #2dd4bf;
 	--term-cursor-accent: #0b0b0e;
-	--term-selection: #2DD4BF47;
+	--term-selection: #2dd4bf47;
 	--term-black: #1c1c22;
 	--term-green: #4ade80;
 	--term-cyan: #2dd4bf;
@@ -59,7 +59,7 @@
 	--on-amber: #12121a;
 	--search-active-fg: #0f0f12;
 	--switch-knob: #f5f5f7;
-	--bg-elev3: #FFFFFF0D;
+	--bg-elev3: #ffffff0d;
 	--control-fg: #a8a8b3;
 	--control-bg: #1c1c22;
 	--control-border: #33333d;
@@ -137,11 +137,11 @@
 }
 .hljs-addition {
 	color: #86efac;
-	background: #4ADE8024;
+	background: #4ade8024;
 }
 .hljs-deletion {
 	color: #fca5a5;
-	background: #F8717124;
+	background: #f8717124;
 }
 
 /* 亮底上的按钮/徽标：内置写死 color:#fff，压亮青只有 1.9:1 → 统一换近黑墨色（只改颜色） */
@@ -172,7 +172,7 @@
 
 /* 模板卡悬停阴影 */
 .empty-template:hover {
-	box-shadow: 0 8px 22px #5DC7B040;
+	box-shadow: 0 8px 22px #5dc7b040;
 }
 
 /* 描边 */
@@ -190,7 +190,7 @@
 .browser-control-modal .bc-cite,
 .notice-info,
 .set-catalog-custom {
-	border-color: #5DC7B080;
+	border-color: #5dc7b080;
 }
 .chip.newchat {
 	border-color: var(--accent);
@@ -218,21 +218,20 @@
 	background: var(--accent-soft);
 }
 /* 侧栏 Hover */
-.lp-section-title:hover {
-    background: var(--chip-bg);
+.lp-section-header:hover {
+	background: var(--chip-bg);
 }
-
 
 /* 输入框发送\停止按钮阴影 */
 .inputbox .btn.send,
 .inputbox .btn.stop,
 .inputbox .split-send {
-    box-shadow: 0px 2px 14px #5dc7b040;
+	box-shadow: 0px 2px 14px #5dc7b040;
 }
 .inputbox .btn.send:hover:not(:disabled),
 .inputbox .btn.stop:hover:not(:disabled),
 .inputbox .split-send:hover {
-    box-shadow: 0 8px 22px #5dc7b040;
+	box-shadow: 0 8px 22px #5dc7b040;
 }
 
 /* 正文 */
@@ -246,21 +245,19 @@ strong {
 }
 
 /* 调整 MD 文件预览样式 */
-.fp-markdown :not(pre)>code,
-.dialog-inline .md :not(pre)>code {
+.fp-markdown :not(pre) > code,
+.dialog-inline .md :not(pre) > code {
 	color: var(--text);
 	background: #303038;
 }
 .fp-markdown blockquote {
-	border: 1px solid #5CF6D55E;
-	border-left-width: 4px; 
-    background: #5cd6f612;
+	border: 1px solid #5cf6d55e;
+	border-left-width: 4px;
+	background: #5cd6f612;
 }
 .fp-markdown thead {
-    background: #5cd6f612;
+	background: #5cd6f612;
 }
 .fp-markdown {
-	background: radial-gradient(circle at 10% 0%, #5CCBF60D, transparent 34%), #00000038;
+	background: radial-gradient(circle at 10% 0%, #5ccbf60d, transparent 34%), #00000038;
 }
-
-

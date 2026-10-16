@@ -4,7 +4,7 @@ import type { ChatState } from "../use-chat";
 import { groupByAlign, type UiSlotEntry } from "../ui-slots";
 import { ICON_EDIT_ALIGNS } from "../ui-layout-edit";
 import { useI18n } from "../i18n";
-import { BarItem } from "./BarItem";
+import { BarItem, type BarItemProps } from "./BarItem";
 
 interface SideDockProps {
 	side: "left" | "right";
@@ -23,6 +23,10 @@ interface SideDockProps {
 	onSoundToggle?: () => void;
 	zenMode?: boolean;
 	onToggleZenMode?: () => void;
+	dropdownProps?: BarItemProps["dropdownProps"];
+	plugins?: BarItemProps["plugins"];
+	onOpenPluginMenu?: (el: HTMLElement) => void;
+	isPluginMenuOpen?: boolean;
 }
 
 /**
@@ -53,6 +57,10 @@ export function SideDock({
 	onSoundToggle: _onSoundToggle,
 	zenMode,
 	onToggleZenMode,
+	dropdownProps,
+	plugins,
+	onOpenPluginMenu,
+	isPluginMenuOpen,
 }: SideDockProps) {
 	const { t } = useI18n();
 	const [collapsed, setCollapsed] = useState(false);
@@ -102,16 +110,20 @@ export function SideDock({
 			bar={side}
 			chat={chat}
 			view={view}
+			plugins={plugins}
 			onViewChange={onViewChange}
 			onOpenPanel={onOpenPanel}
 			onOpenSettings={onOpenSettings}
 			onOpenGlobalSearch={onOpenGlobalSearch}
 			onOpenBgTasks={onOpenBgTasks}
 			onOpenProjectPicker={onOpenProjectPicker}
+			onOpenPluginMenu={onOpenPluginMenu}
+			isPluginMenuOpen={isPluginMenuOpen}
 			onUiAction={onUiAction}
 			uiContextEntries={uiContextTopbar}
 			zenMode={zenMode}
 			onToggleZenMode={onToggleZenMode}
+			dropdownProps={dropdownProps}
 		/>
 	);
 

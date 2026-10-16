@@ -210,15 +210,30 @@ describe("tool_manage 出入口", () => {
 		expect(s2.peek()).toEqual(["bash"]);
 	});
 
-	it("applyAgentToolsGating forceActive：预设白名单外也强制加回", () => {
+	it("applyAgentToolsGating forceActive：预设白名单外也强制加回，非延迟加载时不暴露 load_tools", () => {
 		// code 预设只留 bash/read/edit/write/edit_soft：load_tools 会被过滤掉……
 		const s = fakeSet(["bash", "read", "load_tools"]);
 		applyAgentToolsGating(s, [], "code");
 		expect(s.peek()).not.toContain("load_tools");
-		// ……forceActive 把它拉回来（它不在任何预设白名单里，但必须永远可用）。
+		// ……forceActive 把它拉回来（它不在任何预设白名单里，延迟加载开启时必须可用）。
 		const s2 = fakeSet(["bash", "read", "load_tools"]);
 		applyAgentToolsGating(s2, [], "code", { forceActive: ["load_tools"] });
 		expect(s2.peek()).toContain("load_tools");
+
+		// standard 预设（默认）：未开启延迟加载（未传 forceActive）时不暴露 load_tools
+		const s3 = fakeSet(["bash", "read", "load_tools"]);
+		applyAgentToolsGating(s3, []);
+		expect(s3.peek()).not.toContain("load_tools");
+
+		// standard 预设（默认）：开启延迟加载（传入 forceActive: ["load_tools"]）时暴露 load_tools
+		const s4 = fakeSet(["bash", "read", "load_tools"]);
+		applyAgentToolsGating(s4, [], undefined, { forceActive: ["load_tools"] });
+		expect(s4.peek()).toContain("load_tools");
+
+		// 被显式加入 disabled 名单时，forceActive 也不得加回
+		const s5 = fakeSet(["bash", "read", "load_tools"]);
+		applyAgentToolsGating(s5, ["load_tools"], undefined, { forceActive: ["load_tools"] });
+		expect(s5.peek()).not.toContain("load_tools");
 	});
 
 	it("lazyLoadingDisabledTools：除核心/已加载/load_tools 外全部当临时禁用", () => {

@@ -643,6 +643,7 @@ export function handleSettingsMessage(msg: ClientMessage, cs: DispatchSession): 
 				keepRecentMessages: (msg as { keepRecentMessages?: number }).keepRecentMessages,
 				showForkedParentSessions: (msg as { showForkedParentSessions?: boolean }).showForkedParentSessions,
 				retainFinishedConversations: msg.retainFinishedConversations,
+				openRecentSessionOnProjectSwitch: msg.openRecentSessionOnProjectSwitch,
 				devNoCache: (msg as { devNoCache?: boolean }).devNoCache,
 				autoReload: (msg as { autoReload?: boolean }).autoReload,
 				skillsFullText: (msg as { skillsFullText?: string[] }).skillsFullText,

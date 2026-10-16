@@ -155,12 +155,54 @@ try {
 		}),
 	);
 	await page.route("**/plugins-api/image-toolkit/ws/image*", (r) => r.fulfill({ contentType: "image/png", body: png }));
+	await page.route("**/plugins-api/image-toolkit/gen/image*", (r) =>
+		r.fulfill({ contentType: "image/png", body: png }),
+	);
 	await page.route("**/plugins-api/image-toolkit/ws/save*", (r) => {
 		saved.push(r.request().url());
 		return r.fulfill({
 			json: { ok: true, path: "out/photo-min.webp", pretty: "out/photo-min.webp", bytes: 1, renamed: false },
 		});
 	});
+	await page.route("**/plugins-api/image-toolkit/gen/config*", (r) =>
+		r.fulfill({
+			json: {
+				cwd: "E:/demo",
+				config: {
+					services: [{ id: "mock-svc", name: "Mock Svc", enabled: true, models: ["m1"], sizes: ["1:1"] }],
+					outputDir: "generated",
+				},
+				shapes: [],
+				presets: [],
+				jobs: [
+					{
+						id: "job-1",
+						status: "done",
+						prompt: "cat art",
+						serviceId: "mock-svc",
+						model: "m1",
+						files: [{ path: "generated/cat.png", bytes: 1024, mime: "image/png" }],
+					},
+				],
+			},
+		}),
+	);
+	await page.route("**/plugins-api/image-toolkit/gen/jobs*", (r) =>
+		r.fulfill({
+			json: {
+				jobs: [
+					{
+						id: "job-1",
+						status: "done",
+						prompt: "cat art",
+						serviceId: "mock-svc",
+						model: "m1",
+						files: [{ path: "generated/cat.png", bytes: 1024, mime: "image/png" }],
+					},
+				],
+			},
+		}),
+	);
 
 	await page.goto(`http://127.0.0.1:${PORT}/`, { waitUntil: "load" });
 	await page.waitForSelector(".igt", { timeout: 15_000 });
@@ -756,6 +798,50 @@ try {
 	}));
 	check(canvasDrag.draggable === false, "画布显式 draggable=false（Chrome 默认会把 canvas 当图片拖走）");
 	check(canvasDrag.css === "none", `画布 CSS 也禁止原生拖拽（-webkit-user-drag: ${canvasDrag.css || "空"}）`);
+
+	// ---- 12b. 一体化布局与图片流转真实交互 --------------------------------
+	// 验证参数面板动作区分层（hero / flow / batch / history）
+	const actRows = await page.$$eval(".igt-act-row", (els) => els.length);
+	check(actRows === 4, `参数面板动作区清晰分 4 层（实际 ${actRows} 层）`);
+
+	// 验证 Studio 顶栏导航与流转
+	const navBtns = await page.$$eval(".igt-nav-tab", (els) => els.map((e) => e.textContent.trim()));
+	check(navBtns.length === 4, `Studio 顶栏包含 4 个模式页签（${navBtns.join(" | ")}）`);
+
+	// 切换到「AI 生图」
+	await page.click('.igt-nav-tab[data-mode="gen"]');
+	await sleep(400);
+	check(await page.$eval(".igt-gen-wrap", (el) => getComputedStyle(el).display !== "none"), "成功切入 AI 生图工作台");
+	check(await page.$eval(".igt-main", (el) => getComputedStyle(el).display === "none"), "编辑主界面平滑隐藏");
+
+	// 点击任务卡上的「进入处理」按钮流转到工具箱
+	await page.waitForSelector('.ig-tile button:has-text("进入处理")', { timeout: 10_000 });
+	await page.click('.ig-tile button:has-text("进入处理")');
+	await sleep(600);
+	check(
+		await page.$eval(".igt-main", (el) => getComputedStyle(el).display !== "none"),
+		"图片流转：点击进入处理切回编辑界面",
+	);
+	check(await page.$eval(".igt-gen-wrap", (el) => getComputedStyle(el).display === "none"), "生图容器平滑隐藏");
+	const qItemTexts = await page.$$eval(".igt-qitem", (els) => els.map((e) => e.textContent));
+	check(
+		qItemTexts.some((t) => t.includes("cat.png")),
+		"图片流转：生图产物 cat.png 成功流转加入工具箱队列",
+	);
+
+	// 反向流转：在编辑界面点击「用作生图参考图」
+	await page.click(".igt-actions >> text=用作生图参考图");
+	await sleep(600);
+	check(
+		await page.$eval(".igt-gen-wrap", (el) => getComputedStyle(el).display !== "none"),
+		"图片流转：点击用作参考图切入 AI 生图",
+	);
+	check((await page.textContent(".ig-dock"))?.includes("cat.png"), "图片流转：参考图芯片在生图 dock 中可见");
+
+	// 随时一键切回图片处理
+	await page.click('.igt-nav-tab[data-mode="edit"]');
+	await sleep(300);
+	check(await page.$eval(".igt-main", (el) => getComputedStyle(el).display !== "none"), "Studio 顶栏一键切回图片处理");
 	// ---- 13. 手机端（390×780）：三栏 → 上下堆叠 + 底部抽屉 ----------------
 	const mobile = await browser.newPage({
 		viewport: { width: 390, height: 780 },

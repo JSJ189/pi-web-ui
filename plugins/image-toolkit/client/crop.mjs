@@ -154,7 +154,11 @@ export function createCropper(layer, opts) {
 		window.addEventListener("pointermove", moveHandler);
 		window.addEventListener("pointerup", upHandler);
 		window.addEventListener("pointercancel", upHandler);
-		return { get moved() { return moved; } };
+		return {
+			get moved() {
+				return moved;
+			},
+		};
 	}
 
 	/** 盒子上的拖动：把手缩放 / 框内平移。 */
@@ -181,10 +185,7 @@ export function createCropper(layer, opts) {
 		const drag = beginDrag(ev, (p, snap) => {
 			const cx = Math.max(0, Math.min(p.cx - stage.left, snap.bounds.width));
 			const cy = Math.max(0, Math.min(p.cy - stage.top, snap.bounds.height));
-			return fit(
-				{ x: Math.min(ax, cx), y: Math.min(ay, cy), w: Math.abs(cx - ax), h: Math.abs(cy - ay) },
-				snap,
-			);
+			return fit({ x: Math.min(ax, cx), y: Math.min(ay, cy), w: Math.abs(cx - ax), h: Math.abs(cy - ay) }, snap);
 		});
 		// 只是点了一下压暗区（没拖出框）→ 保持原选区，别把框缩成一点
 		window.addEventListener(

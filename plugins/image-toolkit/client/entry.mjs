@@ -16,7 +16,19 @@
  * 走的是同一套代码，参数一致的项结果一定一致。
  */
 import { detectLang, makeT } from "./i18n.mjs";
-import { clamp, copyImageToClipboard, debounce, downloadBlob, el, fmtBytes, fmtInt, makeZip, stem } from "./util.mjs";
+import { mountGenView } from "./gen-view.mjs";
+import {
+	basename,
+	clamp,
+	copyImageToClipboard,
+	debounce,
+	downloadBlob,
+	el,
+	fmtBytes,
+	fmtInt,
+	makeZip,
+	stem,
+} from "./util.mjs";
 import { drawHistogram, imageStats, parseExif, sniffType } from "./probe.mjs";
 import * as ws from "./workspace.mjs";
 import { createCropper } from "./crop.mjs";
@@ -87,6 +99,7 @@ export default {
 			activeId: null,
 			lang: detectLang(),
 			tab: "compress",
+			mode: "edit",
 			// 手机端底部参数抽屉是否收起（桌面端手柄不显示，这个状态一直用不上）
 			sheetMin: false,
 			cfg: {},
@@ -103,6 +116,11 @@ export default {
 
 		let ui = null;
 		let cropper = null;
+		let genHandle = null;
+		let genContainer = null;
+		let studioNavBtns = [];
+		let editActionGroup = null;
+		let genActionGroup = null;
 		/** 最近一次渲染用的显示比例（显示像素 / 源像素），裁剪拖动时更新状态文案要用。 */
 		let viewScaleNow = 1;
 		let cleanupFns = [];
@@ -181,6 +199,9 @@ export default {
 
 		/** 解码一张图并建队列项（失败只标记该项，不影响其它）。 */
 		async function addOne({ name, bytes, path = "" }) {
+			if (bytes instanceof Blob) {
+				bytes = await bytes.arrayBuffer();
+			}
 			const item = {
 				id: uid(),
 				name: name || "image",
@@ -378,7 +399,10 @@ export default {
 			if (app.tab === "crop" && !app.compare) {
 				if (!cropper) {
 					cropper = createCropper(ui.cropLayer, {
-						bounds: () => ({ width: parseFloat(ui.frame.style.width) || 1, height: parseFloat(ui.frame.style.height) || 1 }),
+						bounds: () => ({
+							width: parseFloat(ui.frame.style.width) || 1,
+							height: parseFloat(ui.frame.style.height) || 1,
+						}),
 						rect: () => {
 							const a = active();
 							if (!a) return { x: 0, y: 0, w: 1, h: 1 };
@@ -507,7 +531,9 @@ export default {
 			if (app.tab === "crop") ui.statusbar.append(el("span", { class: "igt-dim", text: t("stage.cropHint") }));
 			// 形状抠图：形状外到底透明还是被底色填了，直接写在状态条上（用户就是踩了这个坑）
 			if (alphaFixForShape(item.state, item.sourceType)) {
-				ui.statusbar.append(el("span", { class: "igt-chip-warn", text: t("status.shapeFilled", { c: item.state.background }) }));
+				ui.statusbar.append(
+					el("span", { class: "igt-chip-warn", text: t("status.shapeFilled", { c: item.state.background }) }),
+				);
 			} else if ((item.state.cropShape ?? "rect") !== "rect") {
 				ui.statusbar.append(el("span", { class: "igt-chip-ok", text: t("status.shapeAlpha") }));
 			}
@@ -846,7 +872,13 @@ export default {
 					for (const f of imgs) {
 						listEl.append(
 							el("button", { class: "igt-wsitem", onclick: () => void pick(f.path) }, [
-								el("img", { class: "igt-wsthumb", src: ws.imageUrl(f.path), loading: "lazy", alt: "", draggable: "false" }),
+								el("img", {
+									class: "igt-wsthumb",
+									src: ws.imageUrl(f.path),
+									loading: "lazy",
+									alt: "",
+									draggable: "false",
+								}),
 								el("span", { text: f.name }),
 							]),
 						);
@@ -857,7 +889,9 @@ export default {
 					if (!dirs.length && !imgs.length) listEl.append(el("div", { class: "igt-hint", text: t("ws.empty") }));
 				} catch (err) {
 					listEl.innerHTML = "";
-					listEl.append(el("div", { class: "igt-error", text: t("msg.wsLoadFail", { msg: String(err.message ?? err) }) }));
+					listEl.append(
+						el("div", { class: "igt-error", text: t("msg.wsLoadFail", { msg: String(err.message ?? err) }) }),
+					);
 				}
 			}
 
@@ -948,16 +982,24 @@ export default {
 						hint: t("cmp.backgroundHint"),
 						when: (st) => isOpaqueFormat(outputMime(st, item.sourceType)),
 					},
-					{ type: "note", text: t("cmp.alphaWarn"), when: (st) => item.info.hasAlpha && isOpaqueFormat(outputMime(st, item.sourceType)) },
+					{
+						type: "note",
+						text: t("cmp.alphaWarn"),
+						when: (st) => item.info.hasAlpha && isOpaqueFormat(outputMime(st, item.sourceType)),
+					},
 					{
 						type: "warn",
 						text: t("crop.shapeAlphaWarn"),
 						actionLabel: t("crop.usePng"),
 						when: (st) => alphaFixForShape(st, item.sourceType) !== null,
 						action: (it) =>
-							commit(it, (s) => {
-								s.format = "png";
-							}, true),
+							commit(
+								it,
+								(s) => {
+									s.format = "png";
+								},
+								true,
+							),
 					},
 					{ type: "note", text: t("cmp.noQuality"), when: (st) => !isLossy(outputMime(st, item.sourceType)) },
 					{
@@ -967,29 +1009,41 @@ export default {
 							{
 								label: t("cmp.preset.web"),
 								onClick: (it) =>
-									commit(it, (st) => {
-										if (supportsMime("image/webp")) st.format = "webp";
-										st.quality = 0.8;
-										st.targetKB = 300;
-										st.resize = { ...st.resize, mode: "longEdge", longEdge: 1600, noUpscale: true };
-									}, true),
+									commit(
+										it,
+										(st) => {
+											if (supportsMime("image/webp")) st.format = "webp";
+											st.quality = 0.8;
+											st.targetKB = 300;
+											st.resize = { ...st.resize, mode: "longEdge", longEdge: 1600, noUpscale: true };
+										},
+										true,
+									),
 							},
 							{
 								label: t("cmp.preset.thumb"),
 								onClick: (it) =>
-									commit(it, (st) => {
-										st.format = "keep";
-										st.targetKB = 0;
-										st.resize = { ...st.resize, mode: "longEdge", longEdge: 400, noUpscale: true };
-									}, true),
+									commit(
+										it,
+										(st) => {
+											st.format = "keep";
+											st.targetKB = 0;
+											st.resize = { ...st.resize, mode: "longEdge", longEdge: 400, noUpscale: true };
+										},
+										true,
+									),
 							},
 							{
 								label: t("cmp.preset.origin"),
 								onClick: (it) =>
-									commit(it, (st) => {
-										st.targetKB = 0;
-										st.resize = { ...st.resize, mode: "none" };
-									}, true),
+									commit(
+										it,
+										(st) => {
+											st.targetKB = 0;
+											st.resize = { ...st.resize, mode: "none" };
+										},
+										true,
+									),
 							},
 						],
 					},
@@ -1024,10 +1078,30 @@ export default {
 						when: (st) => st.ratio === "custom",
 						after: () => cropper?.normalize(),
 					},
-					{ type: "num", label: t("crop.x"), get: (st) => Math.round(cropRect(item).x), set: (st, v) => setCrop(st, "x", v) },
-					{ type: "num", label: t("crop.y"), get: (st) => Math.round(cropRect(item).y), set: (st, v) => setCrop(st, "y", v) },
-					{ type: "num", label: t("crop.w"), get: (st) => Math.round(cropRect(item).w), set: (st, v) => setCrop(st, "w", v) },
-					{ type: "num", label: t("crop.h"), get: (st) => Math.round(cropRect(item).h), set: (st, v) => setCrop(st, "h", v) },
+					{
+						type: "num",
+						label: t("crop.x"),
+						get: (st) => Math.round(cropRect(item).x),
+						set: (st, v) => setCrop(st, "x", v),
+					},
+					{
+						type: "num",
+						label: t("crop.y"),
+						get: (st) => Math.round(cropRect(item).y),
+						set: (st, v) => setCrop(st, "y", v),
+					},
+					{
+						type: "num",
+						label: t("crop.w"),
+						get: (st) => Math.round(cropRect(item).w),
+						set: (st, v) => setCrop(st, "w", v),
+					},
+					{
+						type: "num",
+						label: t("crop.h"),
+						get: (st) => Math.round(cropRect(item).h),
+						set: (st, v) => setCrop(st, "h", v),
+					},
 					{
 						type: "buttons",
 						buttons: [
@@ -1052,22 +1126,31 @@ export default {
 											if (w / h > ratio) w = h * ratio;
 											else h = w / ratio;
 										}
-										st.crop = { x: Math.round((b.width - w) / 2), y: Math.round((b.height - h) / 2), w: Math.round(w), h: Math.round(h) };
+										st.crop = {
+											x: Math.round((b.width - w) / 2),
+											y: Math.round((b.height - h) / 2),
+											w: Math.round(w),
+											h: Math.round(h),
+										};
 									}),
 							},
 							{
 								label: t("crop.fromImage"),
 								title: t("crop.fromImageHint"),
 								onClick: (it) =>
-									commit(it, (st) => {
-										// 用「旋转后」的尺寸：用户看到的画面就是这个比例
-										const b = baseOf(it);
-										st.ratio = "custom";
-										st.ratioW = b.width;
-										st.ratioH = b.height;
-										// 光改比例数字不够：框还停在旧尺寸上。按这个比例取最大框（= 整幅）才算「还原」
-										st.crop = { x: 0, y: 0, w: Math.round(b.width), h: Math.round(b.height) };
-									}, true),
+									commit(
+										it,
+										(st) => {
+											// 用「旋转后」的尺寸：用户看到的画面就是这个比例
+											const b = baseOf(it);
+											st.ratio = "custom";
+											st.ratioW = b.width;
+											st.ratioH = b.height;
+											// 光改比例数字不够：框还停在旧尺寸上。按这个比例取最大框（= 整幅）才算「还原」
+											st.crop = { x: 0, y: 0, w: Math.round(b.width), h: Math.round(b.height) };
+										},
+										true,
+									),
 							},
 							{
 								label: t("crop.reset"),
@@ -1103,9 +1186,13 @@ export default {
 						actionLabel: t("crop.usePng"),
 						when: (st) => alphaFixForShape(st, item.sourceType) !== null,
 						action: (it) =>
-							commit(it, (s) => {
-								s.format = "png";
-							}, true),
+							commit(
+								it,
+								(s) => {
+									s.format = "png";
+								},
+								true,
+							),
 					},
 					{
 						type: "range",
@@ -1134,11 +1221,45 @@ export default {
 							{ value: "percent", label: t("rz.percent") },
 						],
 					},
-					{ type: "num", label: t("rz.longEdgePx"), path: "resize.longEdge", min: 1, max: 20000, when: (st) => st.resize.mode === "longEdge" },
-					{ type: "num", label: t("rz.widthPx"), path: "resize.width", min: 1, max: 20000, when: (st) => st.resize.mode === "width" },
-					{ type: "num", label: t("rz.heightPx"), path: "resize.height", min: 1, max: 20000, when: (st) => st.resize.mode === "height" },
-					{ type: "range", label: t("rz.percentPc"), path: "resize.percent", min: 1, max: 400, step: 1, when: (st) => st.resize.mode === "percent" },
-					{ type: "bool", label: t("rz.noUpscale"), path: "resize.noUpscale", when: (st) => st.resize.mode !== "none" && st.resize.mode !== "percent" },
+					{
+						type: "num",
+						label: t("rz.longEdgePx"),
+						path: "resize.longEdge",
+						min: 1,
+						max: 20000,
+						when: (st) => st.resize.mode === "longEdge",
+					},
+					{
+						type: "num",
+						label: t("rz.widthPx"),
+						path: "resize.width",
+						min: 1,
+						max: 20000,
+						when: (st) => st.resize.mode === "width",
+					},
+					{
+						type: "num",
+						label: t("rz.heightPx"),
+						path: "resize.height",
+						min: 1,
+						max: 20000,
+						when: (st) => st.resize.mode === "height",
+					},
+					{
+						type: "range",
+						label: t("rz.percentPc"),
+						path: "resize.percent",
+						min: 1,
+						max: 400,
+						step: 1,
+						when: (st) => st.resize.mode === "percent",
+					},
+					{
+						type: "bool",
+						label: t("rz.noUpscale"),
+						path: "resize.noUpscale",
+						when: (st) => st.resize.mode !== "none" && st.resize.mode !== "percent",
+					},
 					{
 						type: "select",
 						label: t("rz.smooth"),
@@ -1155,9 +1276,13 @@ export default {
 						buttons: [256, 512, 1080, 1920, 3840].map((n) => ({
 							label: String(n),
 							onClick: (it) =>
-								commit(it, (st) => {
-									st.resize = { ...st.resize, mode: "longEdge", longEdge: n };
-								}, true),
+								commit(
+									it,
+									(st) => {
+										st.resize = { ...st.resize, mode: "longEdge", longEdge: n };
+									},
+									true,
+								),
 						})),
 					},
 				],
@@ -1173,8 +1298,16 @@ export default {
 					{
 						type: "buttons",
 						buttons: [
-							{ label: t("rot.flipH"), toggle: (st) => st.flipH, onClick: (it) => commit(it, (st) => (st.flipH = !st.flipH)) },
-							{ label: t("rot.flipV"), toggle: (st) => st.flipV, onClick: (it) => commit(it, (st) => (st.flipV = !st.flipV)) },
+							{
+								label: t("rot.flipH"),
+								toggle: (st) => st.flipH,
+								onClick: (it) => commit(it, (st) => (st.flipH = !st.flipH)),
+							},
+							{
+								label: t("rot.flipV"),
+								toggle: (st) => st.flipV,
+								onClick: (it) => commit(it, (st) => (st.flipV = !st.flipV)),
+							},
 						],
 					},
 					{ type: "range", label: t("rot.angle"), path: "angle", min: -180, max: 180, step: 1 },
@@ -1210,9 +1343,28 @@ export default {
 							{ value: "image", label: t("wm.kind.image") },
 						],
 					},
-					{ type: "text", label: t("wm.content"), path: "watermark.text", hint: t("wm.vars"), when: (st) => st.watermark.enabled && st.watermark.kind === "text" },
-					{ type: "range", label: t("wm.size"), path: "watermark.fontSize", min: 1, max: 20, step: 0.5, when: (st) => st.watermark.enabled && st.watermark.kind === "text" },
-					{ type: "color", label: t("wm.color"), path: "watermark.color", when: (st) => st.watermark.enabled && st.watermark.kind === "text" },
+					{
+						type: "text",
+						label: t("wm.content"),
+						path: "watermark.text",
+						hint: t("wm.vars"),
+						when: (st) => st.watermark.enabled && st.watermark.kind === "text",
+					},
+					{
+						type: "range",
+						label: t("wm.size"),
+						path: "watermark.fontSize",
+						min: 1,
+						max: 20,
+						step: 0.5,
+						when: (st) => st.watermark.enabled && st.watermark.kind === "text",
+					},
+					{
+						type: "color",
+						label: t("wm.color"),
+						path: "watermark.color",
+						when: (st) => st.watermark.enabled && st.watermark.kind === "text",
+					},
 					{
 						type: "file",
 						label: t("wm.pick"),
@@ -1220,19 +1372,62 @@ export default {
 						onPick: (it, file) => void pickWatermark(it, file),
 						valueText: (it) => (it.wmImage ? `${it.wmImage.width}×${it.wmImage.height}` : t("wm.imageMissing")),
 					},
-					{ type: "range", label: t("wm.scale"), path: "watermark.imageScale", min: 1, max: 100, step: 1, when: (st) => st.watermark.enabled && st.watermark.kind === "image" },
-					{ type: "range", label: t("wm.opacity"), path: "watermark.opacity", min: 0, max: 100, step: 1, when: (st) => st.watermark.enabled },
-					{ type: "range", label: t("wm.rotate"), path: "watermark.rotate", min: -90, max: 90, step: 1, when: (st) => st.watermark.enabled },
-					{ type: "range", label: t("wm.margin"), path: "watermark.margin", min: 0, max: 20, step: 0.5, when: (st) => st.watermark.enabled && !st.watermark.tile },
+					{
+						type: "range",
+						label: t("wm.scale"),
+						path: "watermark.imageScale",
+						min: 1,
+						max: 100,
+						step: 1,
+						when: (st) => st.watermark.enabled && st.watermark.kind === "image",
+					},
+					{
+						type: "range",
+						label: t("wm.opacity"),
+						path: "watermark.opacity",
+						min: 0,
+						max: 100,
+						step: 1,
+						when: (st) => st.watermark.enabled,
+					},
+					{
+						type: "range",
+						label: t("wm.rotate"),
+						path: "watermark.rotate",
+						min: -90,
+						max: 90,
+						step: 1,
+						when: (st) => st.watermark.enabled,
+					},
+					{
+						type: "range",
+						label: t("wm.margin"),
+						path: "watermark.margin",
+						min: 0,
+						max: 20,
+						step: 0.5,
+						when: (st) => st.watermark.enabled && !st.watermark.tile,
+					},
 					{
 						type: "select",
 						label: t("wm.pos"),
 						path: "watermark.pos",
 						when: (st) => st.watermark.enabled && !st.watermark.tile,
-						options: ["tl", "tc", "tr", "ml", "center", "mr", "bl", "bc", "br"].map((p) => ({ value: p, label: t(`wm.pos.${p}`) })),
+						options: ["tl", "tc", "tr", "ml", "center", "mr", "bl", "bc", "br"].map((p) => ({
+							value: p,
+							label: t(`wm.pos.${p}`),
+						})),
 					},
 					{ type: "bool", label: t("wm.tile"), path: "watermark.tile", when: (st) => st.watermark.enabled },
-					{ type: "range", label: t("wm.gap"), path: "watermark.gap", min: 0, max: 30, step: 0.5, when: (st) => st.watermark.enabled && st.watermark.tile },
+					{
+						type: "range",
+						label: t("wm.gap"),
+						path: "watermark.gap",
+						min: 0,
+						max: 30,
+						step: 0.5,
+						when: (st) => st.watermark.enabled && st.watermark.tile,
+					},
 					{ type: "note", text: t("wm.note"), when: (st) => st.watermark.enabled },
 				],
 				filter: [
@@ -1256,11 +1451,15 @@ export default {
 							{
 								label: t("fl.reset"),
 								onClick: (it) =>
-									commit(it, (st) => {
-										const d = defaultState(app.cfg);
-										st.adjust = d.adjust;
-										st.filter = d.filter;
-									}, true),
+									commit(
+										it,
+										(st) => {
+											const d = defaultState(app.cfg);
+											st.adjust = d.adjust;
+											st.filter = d.filter;
+										},
+										true,
+									),
 							},
 						],
 					},
@@ -1282,9 +1481,13 @@ export default {
 		function autoAlphaForShape(item) {
 			const fix = alphaFixForShape(item.state, item.sourceType);
 			if (!fix || item.state.format !== "keep") return;
-			commit(item, (s) => {
-				s.format = fix;
-			}, true);
+			commit(
+				item,
+				(s) => {
+					s.format = fix;
+				},
+				true,
+			);
 			toast(t("crop.autoAlpha"), "info");
 		}
 
@@ -1322,10 +1525,14 @@ export default {
 		}
 
 		function rotate(item, steps) {
-			commit(item, (st) => {
-				st.rotate90 = (((st.rotate90 / 90 + steps) % 4) + 4) % 4 * 90;
-				st.crop = null; // 坐标系变了，裁剪重置（否则框会跳到别处）
-			}, true);
+			commit(
+				item,
+				(st) => {
+					st.rotate90 = ((((st.rotate90 / 90 + steps) % 4) + 4) % 4) * 90;
+					st.crop = null; // 坐标系变了，裁剪重置（否则框会跳到别处）
+				},
+				true,
+			);
 		}
 
 		async function pickWatermark(item, file) {
@@ -1407,7 +1614,10 @@ export default {
 			} else if (c.type === "select") {
 				const sel = el("select", { class: "igt-input" });
 				for (const o of c.options) {
-					const opt = el("option", { value: o.value, text: o.disabled ? `${o.label} · ${t("cmp.unsupported")}` : o.label });
+					const opt = el("option", {
+						value: o.value,
+						text: o.disabled ? `${o.label} · ${t("cmp.unsupported")}` : o.label,
+					});
 					if (o.disabled) opt.disabled = true;
 					if (o.value === get(s)) opt.selected = true;
 					sel.append(opt);
@@ -1425,7 +1635,11 @@ export default {
 				rec.input = cb;
 			} else if (c.type === "color") {
 				const val = get(s) || "#ffffff";
-				const input = el("input", { class: "igt-color", type: "color", value: /^#[0-9a-f]{6}$/i.test(val) ? val : "#ffffff" });
+				const input = el("input", {
+					class: "igt-color",
+					type: "color",
+					value: /^#[0-9a-f]{6}$/i.test(val) ? val : "#ffffff",
+				});
 				input.addEventListener("input", () => commit(item, (st) => set(st, input.value)));
 				label.append(el("span", { class: "igt-sp" }));
 				if (c.optional) {
@@ -1479,7 +1693,9 @@ export default {
 				label.remove();
 				const row = el("div", { class: "igt-warn" }, [el("span", { text: c.text })]);
 				if (c.action) {
-					row.append(el("button", { class: "igt-btn igt-mini igt-primary", text: c.actionLabel, onclick: () => c.action(item) }));
+					row.append(
+						el("button", { class: "igt-btn igt-mini igt-primary", text: c.actionLabel, onclick: () => c.action(item) }),
+					);
 				}
 				wrap.append(row);
 			} else if (c.type === "note") {
@@ -1611,7 +1827,10 @@ export default {
 			const mime = outputMime(item.state, item.sourceType);
 			const ot = el("table", { class: "igt-table" });
 			ot.append(
-				el("tr", {}, [el("th", { text: t("info.dims") }), el("td", { text: `${fmtInt(ov.width)}×${fmtInt(ov.height)}` })]),
+				el("tr", {}, [
+					el("th", { text: t("info.dims") }),
+					el("td", { text: `${fmtInt(ov.width)}×${fmtInt(ov.height)}` }),
+				]),
 				el("tr", {}, [el("th", { text: t("info.type") }), el("td", { text: extOfMime(mime).toUpperCase() })]),
 			);
 			box.append(ot);
@@ -1647,6 +1866,15 @@ export default {
 				]);
 				row.append(thumb, meta);
 				row.addEventListener("click", () => selectItem(it.id));
+				const refBtn = el("button", {
+					class: "igt-btn igt-mini",
+					text: "🎨",
+					title: t("queue.useAsRef"),
+					onclick: (e) => {
+						e.stopPropagation();
+						void useAsGenReference(it);
+					},
+				});
 				const del = el("button", {
 					class: "igt-x",
 					text: "×",
@@ -1656,7 +1884,7 @@ export default {
 						removeItem(it.id);
 					},
 				});
-				row.append(del);
+				row.append(refBtn, del);
 				ui.queueList.append(row);
 			}
 		}
@@ -1681,6 +1909,89 @@ export default {
 			}
 		}
 
+		function ensureGenHandle() {
+			if (!genHandle && genContainer) {
+				genHandle = mountGenView(genContainer, {
+					getLang: () => app.lang,
+					ctx,
+					hideTopbar: true,
+					onOpenInToolkit: async ({ path }) => {
+						try {
+							const buf = await ws.readImage(path);
+							const name = basename(path);
+							await addOne({ name, bytes: buf, path });
+							renderQueue();
+							const newest = app.items[app.items.length - 1];
+							if (newest) selectItem(newest.id);
+							setMode("edit");
+							toast(t("mode.edit") + " ✓");
+						} catch (err) {
+							toast(String(err?.message ?? err), "warn");
+						}
+					},
+				});
+			}
+			return genHandle;
+		}
+
+		async function useAsGenReference(item) {
+			if (!item) return;
+			let relPath = item.path;
+			try {
+				let blob;
+				if (item.history?.length > 1 || !relPath) {
+					const rendered = await renderToCanvas(item, { signal: null });
+					const mime = outputMime(item.state);
+					blob = await encodeCanvas(rendered.canvas, mime, item.state.format.quality);
+					const ext = extOfMime(mime) || "png";
+					const candidate = `temp/ref-${Date.now()}-${stem(item.name)}.${ext}`;
+					const res = await ws.saveImage(candidate, blob, false);
+					relPath = res.path;
+				}
+			} catch {
+				if (!relPath) {
+					try {
+						const ext = extOfMime(item.info?.mime) || "png";
+						const candidate = `temp/ref-${Date.now()}-${stem(item.name)}.${ext}`;
+						const res = await ws.saveImage(candidate, item.bytes, false);
+						relPath = res.path;
+					} catch {
+						/* 忽略保存失败 */
+					}
+				}
+			}
+			if (relPath) {
+				ensureGenHandle()?.addReference(relPath);
+				setMode("gen");
+				toast(t("queue.useAsRef") + " ✓");
+			} else {
+				toast(t("queue.useAsRef") + " ✗", "warn");
+			}
+		}
+
+		function setMode(nextMode) {
+			app.mode = nextMode;
+			if (!ui?.main || !genContainer) return;
+			for (const b of studioNavBtns) {
+				b.classList.toggle("on", b.dataset.mode === nextMode);
+			}
+			if (editActionGroup) {
+				editActionGroup.style.display = nextMode === "edit" ? "inline-flex" : "none";
+			}
+			if (genActionGroup) {
+				genActionGroup.style.display = nextMode === "gen" ? "inline-flex" : "none";
+			}
+			if (nextMode === "edit") {
+				ui.main.style.display = "flex";
+				genContainer.style.display = "none";
+				scheduleRender(true);
+			} else {
+				ui.main.style.display = "none";
+				genContainer.style.display = "flex";
+				ensureGenHandle()?.switchTab(nextMode);
+			}
+		}
+
 		// ------------------------------------------------------------------
 		// 外壳
 		// ------------------------------------------------------------------
@@ -1697,7 +2008,12 @@ export default {
 				title: t("cfg.title"),
 				onclick: () => openSettingsDialog(),
 			});
-			const importBtn = el("button", { class: "igt-btn igt-primary", text: t("app.import"), title: t("app.importHint"), onclick: () => fileInput.click() });
+			const importBtn = el("button", {
+				class: "igt-btn igt-primary",
+				text: t("app.import"),
+				title: t("app.importHint"),
+				onclick: () => fileInput.click(),
+			});
 			const wsBtn = el("button", { class: "igt-btn", text: t("app.fromWs"), onclick: () => openWorkspaceDialog() });
 			const clearBtn = el("button", {
 				class: "igt-btn",
@@ -1713,22 +2029,73 @@ export default {
 					scheduleRender(true);
 				},
 			});
+
+			const refreshBtn = el("button", {
+				class: "igt-btn",
+				text: t("app.refresh"),
+				onclick: () => ensureGenHandle()?.refreshJobs?.(),
+			});
+
+			editActionGroup = el(
+				"div",
+				{ class: "igt-top-group", style: app.mode === "edit" ? "display:inline-flex" : "display:none" },
+				[importBtn, wsBtn, clearBtn, cfgBtn],
+			);
+
+			genActionGroup = el(
+				"div",
+				{ class: "igt-top-group", style: app.mode === "gen" ? "display:inline-flex" : "display:none" },
+				[refreshBtn],
+			);
+
+			studioNavBtns = [
+				el("button", {
+					class: `igt-nav-tab${app.mode === "edit" ? " on" : ""}`,
+					"data-mode": "edit",
+					text: t("mode.edit"),
+					onclick: () => setMode("edit"),
+				}),
+				el("button", {
+					class: `igt-nav-tab${app.mode === "gen" ? " on" : ""}`,
+					"data-mode": "gen",
+					text: t("mode.gen"),
+					onclick: () => setMode("gen"),
+				}),
+				el("button", {
+					class: `igt-nav-tab${app.mode === "svc" ? " on" : ""}`,
+					"data-mode": "svc",
+					text: t("mode.svc"),
+					onclick: () => setMode("svc"),
+				}),
+				el("button", {
+					class: `igt-nav-tab${app.mode === "cfg" ? " on" : ""}`,
+					"data-mode": "cfg",
+					text: t("mode.cfg"),
+					onclick: () => setMode("cfg"),
+				}),
+			];
+			const studioNav = el("nav", { class: "igt-studio-nav" }, studioNavBtns);
+
+			const topActions = el("div", { class: "igt-top-actions" }, [editActionGroup, genActionGroup, langBtn]);
+
 			top.append(
-				el("b", { class: "igt-title", text: `🖼 ${t("app.title")}` }),
+				el("b", { class: "igt-title", text: `🎨 ${t("app.title")}` }),
 				el("span", { class: "igt-sub", text: t("app.subtitle") }),
 				el("span", { class: "igt-sp" }),
-				importBtn,
-				wsBtn,
-				clearBtn,
-				cfgBtn,
-				langBtn,
+				studioNav,
+				el("span", { class: "igt-sp" }),
+				topActions,
 			);
 
 			// 左：队列
 			const queueCount = el("b", { text: "0" });
 			const queueList = el("div", { class: "igt-queue-list" });
 			const queue = el("aside", { class: "igt-queue" }, [
-				el("div", { class: "igt-sec" }, [el("span", { text: t("queue.title") }), el("span", { class: "igt-sp" }), queueCount]),
+				el("div", { class: "igt-sec" }, [
+					el("span", { text: t("queue.title") }),
+					el("span", { class: "igt-sp" }),
+					queueCount,
+				]),
 				queueList,
 				el("div", { class: "igt-hint igt-pad", text: t("queue.emptyHint") }),
 			]);
@@ -1757,7 +2124,12 @@ export default {
 				onpointercancel: () => setCompare(false),
 			});
 			const stagebar = el("div", { class: "igt-stagebar" }, [
-				el("button", { class: "igt-btn igt-mini", text: "−", title: t("stage.zoomOut"), onclick: () => zoomBy(1 / 1.25) }),
+				el("button", {
+					class: "igt-btn igt-mini",
+					text: "−",
+					title: t("stage.zoomOut"),
+					onclick: () => zoomBy(1 / 1.25),
+				}),
 				el("button", {
 					class: "igt-btn igt-mini",
 					text: "＋",
@@ -1810,29 +2182,76 @@ export default {
 				tabbar.append(b);
 			}
 			const panelBody = el("div", { class: "igt-panel-body" });
-			const actions = el("div", { class: "igt-actions" }, [
-				el("button", { class: "igt-btn igt-primary", text: t("act.export"), onclick: () => void exportActive() }),
-				el("button", { class: "igt-btn", text: t("act.copy"), title: t("act.copyHint"), onclick: () => void copyActive() }),
-				el("button", { class: "igt-btn", text: t("act.saveWs"), onclick: () => openSaveDialog() }),
-				el("button", { class: "igt-btn", text: t("act.exportAll"), onclick: () => void exportAll() }),
-				el("button", { class: "igt-btn", text: t("queue.sync"), onclick: () => syncToAll() }),
-				el("button", { class: "igt-btn", text: t("act.undo"), title: "Ctrl+Z", onclick: () => active() && undo(active()) }),
-				el("button", { class: "igt-btn", text: t("act.redo"), title: "Ctrl+Shift+Z", onclick: () => active() && redo(active()) }),
+			const heroRow = el("div", { class: "igt-act-row igt-act-hero-row" }, [
+				el("button", {
+					class: "igt-btn igt-primary igt-act-hero",
+					text: t("act.export"),
+					onclick: () => void exportActive(),
+				}),
+			]);
+			const flowRow = el("div", { class: "igt-act-row igt-act-flow-row" }, [
+				el("button", {
+					class: "igt-btn igt-btn-savews",
+					text: t("act.saveWs"),
+					onclick: () => openSaveDialog(),
+				}),
+				el("button", {
+					class: "igt-btn igt-btn-flow",
+					text: t("act.useAsRef"),
+					onclick: () => {
+						const cur = active();
+						if (cur) void useAsGenReference(cur);
+					},
+				}),
+			]);
+			const batchRow = el("div", { class: "igt-act-row igt-act-batch-row" }, [
 				el("button", {
 					class: "igt-btn",
+					text: t("act.copy"),
+					title: t("act.copyHint"),
+					onclick: () => void copyActive(),
+				}),
+				el("button", { class: "igt-btn", text: t("act.exportAll"), onclick: () => void exportAll() }),
+				el("button", { class: "igt-btn", text: t("queue.sync"), onclick: () => syncToAll() }),
+			]);
+			const historyRow = el("div", { class: "igt-act-row igt-act-history-row" }, [
+				el("button", {
+					class: "igt-btn igt-mini",
+					text: t("act.undo"),
+					title: "Ctrl+Z",
+					onclick: () => active() && undo(active()),
+				}),
+				el("button", {
+					class: "igt-btn igt-mini",
+					text: t("act.redo"),
+					title: "Ctrl+Shift+Z",
+					onclick: () => active() && redo(active()),
+				}),
+				el("button", {
+					class: "igt-btn igt-mini",
 					text: t("act.reset"),
 					onclick: () => {
 						const it = active();
 						if (it) commit(it, () => (it.state = defaultState(app.cfg)), true);
 					},
 				}),
-				el("button", { class: "igt-btn", text: t("status.calc"), title: t("status.calcHint"), onclick: () => void measureExact() }),
+				el("button", {
+					class: "igt-btn",
+					text: t("status.calc"),
+					title: t("status.calcHint"),
+					onclick: () => void measureExact(),
+				}),
 			]);
+			const actions = el("div", { class: "igt-actions" }, [heroRow, flowRow, batchRow, historyRow]);
 			// 抽屉手柄：只在手机窄屏显示（桌面参数栏常驻，不需要开合）
 			const grip = el("button", { class: "igt-grip", type: "button", onclick: () => setSheetMin(!app.sheetMin) });
 			const panel = el("aside", { class: "igt-panel" }, [grip, tabbar, panelBody, actions]);
 
-			const main = el("div", { class: "igt-main" }, [queue, stage, panel]);
+			const main = el("div", { class: "igt-main", style: app.mode === "edit" ? "display:flex" : "display:none" }, [
+				queue,
+				stage,
+				panel,
+			]);
 			const fileInput = el("input", {
 				type: "file",
 				accept: "image/*",
@@ -1846,11 +2265,21 @@ export default {
 			const overlays = el("div", { class: "igt-overlays" });
 			const toasts = el("div", { class: "igt-toasts" });
 			const statusline = el("div", { class: "igt-statusline" });
-			const root = el("div", { class: "igt" }, [top, main, fileInput, overlays, toasts, statusline]);
+
+			genContainer = el("div", {
+				class: "igt-gen-wrap",
+				style: app.mode === "gen" || app.mode === "svc" || app.mode === "cfg" ? "display:flex" : "display:none",
+			});
+			const root = el("div", { class: "igt" }, [top, main, genContainer, fileInput, overlays, toasts, statusline]);
 			container.append(style, root);
+
+			if (app.mode !== "edit") {
+				ensureGenHandle()?.switchTab(app.mode);
+			}
 
 			ui = {
 				root,
+				main,
 				style,
 				queue,
 				panel,
@@ -1919,7 +2348,10 @@ export default {
 			const onPaste = (e) => {
 				if (!container.offsetParent) return;
 				const items = [...(e.clipboardData?.items ?? [])];
-				const files = items.filter((i) => i.type.startsWith("image/")).map((i) => i.getAsFile()).filter(Boolean);
+				const files = items
+					.filter((i) => i.type.startsWith("image/"))
+					.map((i) => i.getAsFile())
+					.filter(Boolean);
 				if (files.length) {
 					e.preventDefault();
 					void addFiles(files);
@@ -1977,6 +2409,7 @@ export default {
 		/** 切语言：整棵外壳重建（文案都长在 DOM 里，重建比逐节点替换更不容易漏）。 */
 		function switchLang() {
 			app.lang = app.lang === "zh" ? "en" : "zh";
+			if (genHandle?.load) genHandle.load(true);
 			rebuild();
 		}
 
@@ -2040,6 +2473,8 @@ export default {
 			cleanupFns = [];
 			cropper?.destroy();
 			cropper = null;
+			genHandle?.unmount?.();
+			genHandle = null;
 			for (const it of app.items) it.bitmap?.close?.();
 			container.innerHTML = "";
 		};
@@ -2050,10 +2485,17 @@ export default {
 const CSS = `
 .igt-root { position: relative; display: flex; flex-direction: column; overflow: hidden; }
 .igt { display: flex; flex-direction: column; flex: 1 1 auto; height: 100%; min-height: 0; font-size: 13px; color: var(--text, #e6e8ef); }
-.igt-top { display: flex; align-items: center; gap: 8px; padding: 9px 12px; border-bottom: 1px solid var(--border, #262a35); flex-wrap: wrap; }
-.igt-title { font-size: 14px; }
-.igt-sub { color: var(--text-faint, #6b7284); font-size: 12px; }
+.igt-top { display: flex; align-items: center; gap: 8px; padding: 8px 12px; border-bottom: 1px solid var(--border-soft, #1e2230); background: var(--topbar-bg, var(--bg-elev, #14161c)); flex-wrap: wrap; min-width: 0; }
+.igt-title { font-size: 14px; font-weight: 600; display: inline-flex; align-items: center; gap: 6px; }
+.igt-sub { color: var(--text-faint, #6b7284); font-size: 11.5px; }
 .igt-sp { flex: 1; }
+.igt-studio-nav { display: inline-flex; align-items: center; gap: 3px; padding: 3px; border-radius: 9px; background: var(--sunken-bg, rgba(0, 0, 0, .2)); border: 1px solid var(--border-soft, #1e2230); flex: none; }
+.igt-nav-tab { border: none; background: transparent; color: var(--text-dim, #9aa1b4); border-radius: 7px; padding: 4px 11px; cursor: pointer; font: inherit; font-size: 12px; display: inline-flex; align-items: center; gap: 5px; transition: background .12s ease, color .12s ease; }
+.igt-nav-tab:hover { color: var(--text, #e6e8ef); background: rgba(255, 255, 255, .05); }
+.igt-nav-tab.on { color: #fff; background: var(--card-bg, var(--bg-elev2, #1a1d26)); box-shadow: 0 1px 3px rgba(0, 0, 0, .35); font-weight: 500; }
+.igt-top-actions { display: inline-flex; align-items: center; gap: 6px; }
+.igt-top-group { display: inline-flex; align-items: center; gap: 6px; }
+.igt-gen-wrap { flex: 1 1 auto; width: 100%; height: 100%; min-height: 0; display: flex; flex-direction: column; overflow: hidden; }
 .igt-main { display: flex; flex: 1; min-height: 0; }
 .igt-queue { width: 236px; flex: none; border-right: 1px solid var(--border, #262a35); display: flex; flex-direction: column; min-height: 0; }
 .igt-sec { display: flex; align-items: center; gap: 6px; padding: 8px 10px; border-bottom: 1px solid var(--border-soft, #1e2230); font-size: 12px; color: var(--text-dim, #9aa1b4); }
@@ -2094,7 +2536,18 @@ const CSS = `
 .igt-tab:hover { color: var(--text, #e6e8ef); }
 .igt-tab.on { background: var(--accent-soft, rgba(139,92,246,.14)); border-color: var(--accent, #8b5cf6); color: var(--text, #e6e8ef); }
 .igt-panel-body { flex: 1; overflow-y: auto; padding: 10px; display: flex; flex-direction: column; gap: 9px; }
-.igt-actions { display: flex; flex-wrap: wrap; gap: 6px; padding: 9px; border-top: 1px solid var(--border-soft, #1e2230); }
+.igt-actions { display: flex; flex-direction: column; gap: 7px; padding: 10px 12px; border-top: 1px solid var(--border-soft, #1e2230); background: var(--bg-elev, #14161c); }
+.igt-act-row { display: grid; gap: 6px; width: 100%; box-sizing: border-box; }
+.igt-act-hero-row { grid-template-columns: 1fr; }
+.igt-act-hero { justify-content: center; padding: 8px 12px; font-weight: 600; font-size: 13px; border-radius: 8px; }
+.igt-act-flow-row { grid-template-columns: 1fr 1fr; }
+.igt-act-flow-row .igt-btn { justify-content: center; padding: 6px 8px; font-size: 11.5px; border-radius: 7px; }
+.igt-btn-flow { border-color: rgba(139, 92, 246, 0.45); color: var(--accent, #a78bfa); background: rgba(139, 92, 246, 0.08); font-weight: 500; }
+.igt-btn-flow:hover { background: rgba(139, 92, 246, 0.18); border-color: var(--accent, #8b5cf6); }
+.igt-act-batch-row { grid-template-columns: 1fr 1.3fr 1.3fr; }
+.igt-act-batch-row .igt-btn { justify-content: center; padding: 5px 4px; font-size: 11px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; border-radius: 6px; }
+.igt-act-history-row { grid-template-columns: 1fr 1fr 1.2fr 1.2fr; }
+.igt-act-history-row .igt-btn { justify-content: center; padding: 4px 4px; font-size: 10.5px; border-radius: 5px; }
 .igt-ctl { display: flex; flex-direction: column; gap: 4px; }
 .igt-ctl-hd { display: flex; align-items: center; gap: 6px; font-size: 12px; color: var(--text-dim, #9aa1b4); }
 .igt-ctl-label { font-size: 12px; color: var(--text-dim, #9aa1b4); }
@@ -2163,7 +2616,7 @@ const CSS = `
 .igt-crop-h { position: absolute; width: 11px; height: 11px; background: #fff; border: 1px solid rgba(0,0,0,.5); border-radius: 2px; }
 .igt-crop-nw { left: -6px; top: -6px; cursor: nwse-resize; }
 .igt-crop-n { left: 50%; top: -6px; margin-left: -5px; cursor: ns-resize; }
-.igt-crop-ne { right: -6px; top: -6px; cursor nesw-resize; }
+.igt-crop-ne { right: -6px; top: -6px; cursor: nesw-resize; }
 .igt-crop-e { right: -6px; top: 50%; margin-top: -5px; cursor: ew-resize; }
 .igt-crop-se { right: -6px; bottom: -6px; cursor: nwse-resize; }
 .igt-crop-s { left: 50%; bottom: -6px; margin-left: -5px; cursor: ns-resize; }
@@ -2212,7 +2665,9 @@ const CSS = `
 	.igt-tab { flex: none; padding: 7px 11px; }
 	.igt-panel-body { max-height: min(32vh, 280px); }
 	.igt-panel.igt-min .igt-panel-body { display: none; }
-	.igt-actions { flex-wrap: nowrap; overflow-x: auto; padding: 8px 10px; }
+	.igt-studio-nav { order: 3; width: 100%; justify-content: center; margin-top: 4px; }
+	.igt-actions { flex-direction: row; flex-wrap: nowrap; overflow-x: auto; padding: 8px 10px; gap: 6px; }
+	.igt-act-row { display: contents; }
 	.igt-actions .igt-btn { flex: none; padding: 7px 11px; }
 
 	/* 弹窗 / 浮层 / 工作区列表：小屏上别浪费宽度，行高按能点中做 */

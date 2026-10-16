@@ -57,6 +57,7 @@ import { TerminalManager, loadCommands, saveCommandsFile } from "../terminals.js
 import { saveUpload } from "../uploads.js";
 import type { PluginCommandDef } from "../plugins.js";
 import { checkAll as checkAllUpdates, collectTargets, resolveNpmRegistry } from "../update-check.js";
+import { collectInstalledEngineTargets } from "../engine-probe.js";
 import { previewKind } from "../text-sniff.js";
 import { removeQueuedByIndexOrText } from "../queue-utils.js";
 import type {
@@ -255,6 +256,7 @@ interface DshSettings {
 	keepRecentMessages: number;
 	showForkedParentSessions: boolean;
 	retainFinishedConversations: boolean;
+	openRecentSessionOnProjectSwitch: boolean;
 	disabledPlugins: string[];
 	/** 宿主 UI 布局偏好（插件 UI 贡献 + 内置条目；纯 UI，per-client；issue #146）。 */
 	uiLayout: UiLayoutPrefs;
@@ -320,6 +322,7 @@ const DEFAULT_SETTINGS: DshSettings = {
 	keepRecentMessages: DEFAULT_KEEP_RECENT_MESSAGES,
 	showForkedParentSessions: false,
 	retainFinishedConversations: false,
+	openRecentSessionOnProjectSwitch: true,
 	disabledPlugins: [],
 	uiLayout: {},
 	reviewPrompt: "",
@@ -542,6 +545,7 @@ export class DshClientSession {
 				keepRecentMessages: normalizeKeepRecentMessages(savedSettings.keepRecentMessages),
 				showForkedParentSessions: savedSettings.showForkedParentSessions ?? false,
 				retainFinishedConversations: savedSettings.retainFinishedConversations ?? false,
+				openRecentSessionOnProjectSwitch: savedSettings.openRecentSessionOnProjectSwitch ?? true,
 				disabledPlugins: savedSettings.disabledPlugins ?? [],
 				uiLayout: normalizeUiLayout(savedSettings.uiLayout),
 				reviewPrompt: savedSettings.reviewPrompt,
@@ -3909,6 +3913,7 @@ export class DshClientSession {
 			keepRecentMessages: normalizeKeepRecentMessages(this.settings.keepRecentMessages),
 			showForkedParentSessions: this.settings.showForkedParentSessions ?? false,
 			retainFinishedConversations: this.settings.retainFinishedConversations ?? false,
+			openRecentSessionOnProjectSwitch: this.settings.openRecentSessionOnProjectSwitch ?? true,
 			// DSH 无 skill 全文注入概念，给空保协议完整。
 			skillsFullText: [],
 			visionBridgeEnabled: false,
@@ -3982,6 +3987,7 @@ export class DshClientSession {
 		keepRecentMessages?: number;
 		showForkedParentSessions?: boolean;
 		retainFinishedConversations?: boolean;
+		openRecentSessionOnProjectSwitch?: boolean;
 		visionBridgeEnabled?: boolean;
 		visionBridgeModel?: string | null;
 		visionBridgePromptMode?: "append" | "replace";
@@ -4025,6 +4031,8 @@ export class DshClientSession {
 			this.settings.showForkedParentSessions = Boolean(partial.showForkedParentSessions);
 		if (partial.retainFinishedConversations !== undefined)
 			this.settings.retainFinishedConversations = Boolean(partial.retainFinishedConversations);
+		if (partial.openRecentSessionOnProjectSwitch !== undefined)
+			this.settings.openRecentSessionOnProjectSwitch = Boolean(partial.openRecentSessionOnProjectSwitch);
 		if (partial.disabledPlugins !== undefined) this.settings.disabledPlugins = partial.disabledPlugins;
 		if (partial.uiLayout !== undefined) this.settings.uiLayout = normalizeUiLayout(partial.uiLayout);
 		if (partial.reviewPrompt !== undefined) this.settings.reviewPrompt = partial.reviewPrompt;
@@ -4068,6 +4076,7 @@ export class DshClientSession {
 			keepRecentMessages: normalizeKeepRecentMessages(this.settings.keepRecentMessages),
 			showForkedParentSessions: this.settings.showForkedParentSessions ?? false,
 			retainFinishedConversations: this.settings.retainFinishedConversations ?? false,
+			openRecentSessionOnProjectSwitch: this.settings.openRecentSessionOnProjectSwitch ?? true,
 			disabledPlugins: this.settings.disabledPlugins,
 			uiLayout: normalizeUiLayout(this.settings.uiLayout),
 			reviewPrompt: this.settings.reviewPrompt,
@@ -4472,6 +4481,7 @@ export class DshClientSession {
 			keepRecentMessages: normalizeKeepRecentMessages(this.settings.keepRecentMessages),
 			showForkedParentSessions: this.settings.showForkedParentSessions ?? false,
 			retainFinishedConversations: this.settings.retainFinishedConversations ?? false,
+			openRecentSessionOnProjectSwitch: this.settings.openRecentSessionOnProjectSwitch ?? true,
 			disabledPlugins: this.settings.disabledPlugins,
 			uiLayout: normalizeUiLayout(this.settings.uiLayout),
 			reviewPrompt: this.settings.reviewPrompt,
@@ -5207,6 +5217,7 @@ export class DshClientSession {
 		try {
 			const targets = collectTargets(join(homedir(), ".pi", "agent"), DshClientSession.currentAppVersion(), undefined, {
 				projectCwd: this.cwd,
+				extraTargets: collectInstalledEngineTargets(),
 			});
 			const items = await checkAllUpdates(
 				targets,
@@ -5572,9 +5583,10 @@ export class DshClientSession {
 			const prev = this.conv;
 			prev.listed = this.shouldRetainDshConversation(prev) || prev.messages.length > 0;
 			// 新项目 → 恢复最近历史会话（若有）或新建空白会话
-			const recentFiles = findSessionFilesForCwd(this.sessionRoot, abs).filter(
-				(f) => !basename(dirname(f)).startsWith("review-"),
-			);
+			const openRecent = this.settings.openRecentSessionOnProjectSwitch ?? true;
+			const recentFiles = openRecent
+				? findSessionFilesForCwd(this.sessionRoot, abs).filter((f) => !basename(dirname(f)).startsWith("review-"))
+				: [];
 			let resumedConv: DshConversation | null = null;
 			for (const file of recentFiles) {
 				try {

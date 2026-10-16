@@ -13,8 +13,13 @@ export function el(tag, attrs = {}, children = []) {
 		else if (k === "html") node.innerHTML = String(v);
 		else if (k === "value") node.value = String(v);
 		else if (k === "checked") node.checked = Boolean(v);
-		else if (k === "style") node.style.cssText = String(v);
-		else if (k.startsWith("on")) node.addEventListener(k.slice(2), v);
+		else if (k === "style") {
+			if (typeof v === "object" && v !== null) {
+				Object.assign(node.style, v);
+			} else {
+				node.style.cssText = String(v);
+			}
+		} else if (k.startsWith("on")) node.addEventListener(k.slice(2), v);
 		else node.setAttribute(k, v === true ? "" : String(v));
 	}
 	for (const c of [].concat(children)) {
@@ -40,6 +45,15 @@ export function fmtInt(n) {
 	return Number(n).toLocaleString("en-US");
 }
 
+/** 文件名（带扩展名）。 */
+export function basename(p) {
+	return (
+		String(p ?? "")
+			.split(/[\\/]/)
+			.pop() || "image"
+	);
+}
+
 /** 去掉扩展名的文件名。 */
 export function stem(name) {
 	const i = String(name).lastIndexOf(".");
@@ -49,7 +63,11 @@ export function stem(name) {
 /** 扩展名（小写，不带点）。 */
 export function extOf(name) {
 	const i = String(name).lastIndexOf(".");
-	return i > 0 ? String(name).slice(i + 1).toLowerCase() : "";
+	return i > 0
+		? String(name)
+				.slice(i + 1)
+				.toLowerCase()
+		: "";
 }
 
 export function debounce(fn, ms) {
@@ -105,7 +123,10 @@ function crc32(u8) {
 
 /** DOS 时间/日期（ZIP 只用这两个 16 位字段）。 */
 function dosTime(d) {
-	return { time: (d.getHours() << 11) | (d.getMinutes() << 5) | (d.getSeconds() >> 1), date: ((d.getFullYear() - 1980) << 9) | ((d.getMonth() + 1) << 5) | d.getDate() };
+	return {
+		time: (d.getHours() << 11) | (d.getMinutes() << 5) | (d.getSeconds() >> 1),
+		date: ((d.getFullYear() - 1980) << 9) | ((d.getMonth() + 1) << 5) | d.getDate(),
+	};
 }
 
 /**

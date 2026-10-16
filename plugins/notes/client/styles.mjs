@@ -66,6 +66,132 @@ export const CSS = `
 .nt-inline-row { display: flex; gap: 6px; align-items: center; }
 .nt-inline-row .nt-input { flex: 1 1 auto; min-width: 0; }
 
+/* ---------------- 现代化闪念速记 Composer ---------------- */
+.nt-composer {
+	display: flex; flex-direction: column; gap: 6px; padding: 8px;
+	border-bottom: 1px solid var(--nt-border); background: var(--nt-elev); flex: none;
+}
+.nt-composer-box {
+	position: relative; display: flex; flex-direction: column;
+	background: var(--nt-bg); border: 1px solid var(--nt-border);
+	border-radius: 8px; overflow: hidden; transition: border-color 0.15s, box-shadow 0.15s;
+}
+.nt-composer-box:focus-within {
+	border-color: var(--nt-accent);
+	box-shadow: 0 0 0 2px var(--accent-soft, rgba(139, 92, 246, 0.15));
+}
+.nt-composer-text {
+	width: 100%; min-height: 52px; max-height: 220px; font: inherit; color: inherit;
+	background: transparent; border: 0; padding: 8px 10px; resize: none; outline: none;
+	line-height: 1.5; font-size: 13px;
+}
+.nt-composer-tools {
+	display: flex; align-items: center; gap: 6px; padding: 4px 8px 6px;
+	border-top: 1px solid transparent; flex-wrap: wrap;
+}
+.nt-composer-box:focus-within .nt-composer-tools {
+	border-top-color: var(--nt-border);
+}
+.nt-rem-chip {
+	display: inline-flex; align-items: center; gap: 4px; padding: 2px 7px;
+	border-radius: 999px; font-size: 11px; background: var(--accent-soft, rgba(139, 92, 246, 0.14));
+	color: var(--nt-text); border: 1px solid var(--nt-accent); cursor: pointer; user-select: none;
+}
+.nt-rem-chip.nt-overdue {
+	color: var(--nt-red, #f87171); background: var(--red-soft, rgba(248, 113, 113, 0.12));
+	border-color: var(--nt-red, #f87171);
+}
+.nt-rem-chip .nt-rem-x {
+	font-size: 12px; opacity: 0.65; cursor: pointer; padding: 0 2px; line-height: 1;
+}
+.nt-rem-chip .nt-rem-x:hover { opacity: 1; color: var(--nt-red, #f87171); }
+.nt-smart-tip {
+	display: inline-flex; align-items: center; gap: 3px; font-size: 11px;
+	color: var(--nt-amber, #fbbf24); background: rgba(251, 191, 36, 0.12);
+	border: 1px dashed var(--nt-amber, #fbbf24); border-radius: 6px; padding: 2px 6px;
+	cursor: pointer; transition: background 0.15s;
+}
+.nt-smart-tip:hover { background: rgba(251, 191, 36, 0.22); }
+.nt-btn-primary {
+	background: var(--nt-accent); color: #fff; border-color: var(--nt-accent); font-weight: 500;
+}
+.nt-btn-primary:hover { opacity: 0.92; color: #fff; }
+
+/* 提醒弹出快捷浮层 */
+.nt-pop-menu {
+	position: absolute; z-index: 50; display: flex; flex-direction: column;
+	background: var(--nt-elev2); border: 1px solid var(--nt-border); border-radius: 8px;
+	box-shadow: 0 8px 24px rgba(0, 0, 0, 0.35); padding: 4px; min-width: 160px;
+}
+.nt-pop-item {
+	display: flex; align-items: center; justify-content: space-between; gap: 8px;
+	padding: 5px 8px; font-size: 12px; color: var(--nt-text); border-radius: 5px;
+	cursor: pointer; background: transparent; border: 0; text-align: left; width: 100%;
+}
+.nt-pop-item:hover { background: var(--nt-elev); color: var(--nt-accent); }
+.nt-pop-custom { padding: 4px; border-top: 1px solid var(--nt-border); margin-top: 3px; }
+.nt-pop-custom input { font-size: 11px; padding: 3px 6px; width: 100%; }
+
+/* ---------------- 现代笔记流卡片 (Cards) ---------------- */
+.nt-cards { display: flex; flex-direction: column; gap: 8px; padding: 8px; }
+.nt-card {
+	display: flex; flex-direction: column; gap: 6px; padding: 8px 10px;
+	background: var(--nt-elev); border: 1px solid var(--nt-border); border-radius: 8px;
+	transition: border-color 0.15s, box-shadow 0.15s; position: relative;
+}
+.nt-card:hover { border-color: var(--nt-dim); }
+.nt-card.nt-pinned {
+	border-color: var(--nt-accent);
+	background: linear-gradient(to bottom, var(--accent-soft, rgba(139, 92, 246, 0.08)), var(--nt-elev));
+}
+.nt-card-head {
+	display: flex; align-items: center; gap: 6px; font-size: 11px; color: var(--nt-dim);
+}
+.nt-card-time { white-space: nowrap; }
+.nt-card-pin-icon { color: var(--nt-accent); font-size: 12px; }
+.nt-card-ops {
+	display: flex; align-items: center; gap: 2px; margin-left: auto; opacity: 0;
+	transition: opacity 0.15s;
+}
+.nt-card:hover .nt-card-ops, .nt-card-ops.nt-visible, .nt-card-ops:has(.nt-del-confirm) { opacity: 1; }
+.nt-op-btn {
+	background: transparent; border: 0; color: var(--nt-dim); cursor: pointer;
+	padding: 2px 5px; border-radius: 4px; font-size: 12px; line-height: 1;
+}
+.nt-op-btn:hover { color: var(--nt-text); background: var(--nt-elev2); }
+.nt-op-btn.nt-del:hover { color: var(--nt-red, #f87171); }
+.nt-op-btn.nt-del-confirm {
+	color: var(--nt-red, #f87171) !important; font-weight: bold; background: var(--red-soft, rgba(248, 113, 113, 0.14));
+}
+.nt-card-body {
+	font-size: 13px; line-height: 1.6; word-break: break-word; white-space: pre-wrap;
+	cursor: text;
+}
+.nt-card-body a { color: var(--nt-accent); text-decoration: underline; }
+.nt-card-body code {
+	font-family: var(--mono, monospace); font-size: 12px;
+	background: var(--nt-elev2); padding: 1px 4px; border-radius: 4px;
+}
+.nt-card-body ul, .nt-card-body ol { margin: 4px 0 4px 18px; padding: 0; }
+.nt-card-body .nt-task-box { cursor: pointer; margin-right: 4px; }
+.nt-card-tags { display: flex; flex-wrap: wrap; gap: 4px; margin-top: 2px; }
+
+/* 就地快速编辑态 */
+.nt-card.nt-editing {
+	border-color: var(--nt-accent);
+	box-shadow: 0 0 0 2px var(--accent-soft, rgba(139, 92, 246, 0.15));
+}
+.nt-card-edit-area {
+	width: 100%; min-height: 80px; max-height: 320px; font: inherit; color: inherit;
+	background: var(--nt-bg); border: 1px solid var(--nt-border); border-radius: 6px;
+	padding: 6px 8px; resize: vertical; line-height: 1.5; font-size: 13px; outline: none;
+}
+.nt-card-edit-area:focus { border-color: var(--nt-accent); }
+.nt-card-edit-foot {
+	display: flex; align-items: center; justify-content: space-between; gap: 6px;
+	flex-wrap: wrap; margin-top: 4px;
+}
+
 .nt-body { flex: 1 1 auto; min-height: 0; display: flex; }
 .nt-list { flex: 1 1 auto; min-width: 0; overflow: auto; padding: 6px; }
 .nt-editor {

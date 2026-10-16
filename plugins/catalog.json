@@ -213,11 +213,12 @@
 	},
 	{
 		"id": "image-toolkit",
-		"name": "image-toolkit",
-		"icon": "🖼",
-		"iconSvg": "<svg xmlns=\"http://www.w3.org/2000/svg\" viewBox=\"0 0 24 24\" fill=\"none\" stroke=\"currentColor\" stroke-width=\"2\" stroke-linecap=\"round\" stroke-linejoin=\"round\"><rect x=\"3\" y=\"3\" width=\"18\" height=\"18\" rx=\"2\" ry=\"2\"/><circle cx=\"8.5\" cy=\"8.5\" r=\"1.5\"/><polyline points=\"21 15 16 10 5 21\"/></svg>",
-		"description": "图片处理工作台：压缩（可按目标体积二分逼近）、裁剪、缩放、旋转/翻转、格式转换（PNG/JPEG/WebP/AVIF）、批量导出 ZIP、水印、滤镜调色、图片信息与 EXIF，可直接读写工作区图片；另给 AI 配了 4 个工具，让 agent 自己压缩/裁剪/缩放/加水印工作区里的图。",
-		"descriptionEn": "Image workbench: compress (with target-size binary search), crop, resize, rotate/flip, format conversion (PNG/JPEG/WebP/AVIF), batch ZIP export, watermark, filters, image info + EXIF, and direct workspace read/write. Ships 4 AI tools so the agent can compress/crop/resize/watermark workspace images itself.",
+		"name": "图片工作台",
+		"nameEn": "Image Studio & Toolkit",
+		"icon": "🎨",
+		"iconSvg": "<svg xmlns=\"http://www.w3.org/2000/svg\" viewBox=\"0 0 24 24\" fill=\"none\" stroke=\"currentColor\" stroke-width=\"2\" stroke-linecap=\"round\" stroke-linejoin=\"round\"><path d=\"M12 3l1.9 4.6L18.5 9.5l-4.6 1.9L12 16l-1.9-4.6L5.5 9.5l4.6-1.9z\"/><path d=\"M18 15l.9 2.1L21 18l-2.1.9L18 21l-.9-2.1L15 18l2.1-.9z\"/><path d=\"M4.5 19.5l2.5-2.5\"/></svg>",
+		"description": "一体化 AI 生图与图像处理工作台：一套配置同时接入通义万相、FLUX、OpenAI、Google Imagen/Gemini、智谱 CogView、火山豆包、Stability 与 ComfyUI 等主流生图服务；集成压缩（目标体积二分逼近）、裁剪、缩放、格式转换、水印、滤镜调色与 EXIF 分析；生图与处理在同一工作台内无缝流转。提供 7 个 AI 工具，让 agent 自己生图、配置供应商、分析并加工工作区图片。",
+		"descriptionEn": "All-in-one AI image generation & processing studio: configure DashScope (Wanx), FLUX, OpenAI, Google Imagen/Gemini, Zhipu CogView, Volcengine Seedream, Stability & ComfyUI side by side; compress (with binary search target size), crop, resize, format conversion, watermark, filters & EXIF analysis. Seamlessly flow between generation and editing in one unified workbench. Ships 7 AI tools for generation, provider configuration, analysis, and processing.",
 		"source": "xing-shuyin/pi-web-ui/plugins/image-toolkit",
 		"homepage": "https://github.com/xing-shuyin/pi-web-ui/tree/main/plugins/image-toolkit"
 	},
@@ -337,5 +338,27 @@
 		"descriptionEn": "Wallpaper Engine: scans Steam Workshop, supports video wallpapers, liquid frosted glass effects and a wallpaper library drawer.",
 		"source": "xing-shuyin/pi-web-ui/plugins/wallpaper-engine",
 		"homepage": "https://github.com/xing-shuyin/pi-web-ui/tree/main/plugins/wallpaper-engine"
+	},
+	{
+		"id": "response-speed",
+		"name": "响应速度",
+		"nameEn": "Response Speed",
+		"icon": "⚡",
+		"iconSvg": "<svg xmlns=\"http://www.w3.org/2000/svg\" viewBox=\"0 0 24 24\" fill=\"none\" stroke=\"currentColor\" stroke-width=\"2\" stroke-linecap=\"round\" stroke-linejoin=\"round\"><polygon points=\"13 2 3 14 12 14 11 22 21 10 12 10 13 2\"/></svg>",
+		"description": "AI 响应速度监控：实时统计并显示当前回答的 AI 首字响应耗时（TTFT，发送请求到首个响应的时间）以及底部状态栏的平均响应速度，支持点击底栏查看统计明细与历史趋势。",
+		"descriptionEn": "AI response speed monitoring: real-time tracking of Time to First Token (TTFT) latency for the current response and the average speed in the bottom status bar, with details and history dialog.",
+		"source": "xing-shuyin/pi-web-ui/plugins/response-speed",
+		"homepage": "https://github.com/xing-shuyin/pi-web-ui/tree/main/plugins/response-speed"
+	},
+	{
+		"id": "browser-use",
+		"name": "browser-use",
+		"nameEn": "browser-use",
+		"icon": "🌐",
+		"iconSvg": "<svg xmlns=\"http://www.w3.org/2000/svg\" viewBox=\"0 0 24 24\" fill=\"none\" stroke=\"currentColor\" stroke-width=\"2\" stroke-linecap=\"round\" stroke-linejoin=\"round\"><circle cx=\"12\" cy=\"12\" r=\"10\"/><path d=\"M12 2a14.5 14.5 0 0 0 0 20 14.5 14.5 0 0 0 0-20\"/><path d=\"M2 12h20\"/></svg>",
+		"description": "常驻 Chrome 自动化：自动拉起或接管常驻浏览器窗口，支持多标签页切换、精简交互元素快照（极省 Token）、智能点击输入、反爬穿透与状态跨任务持久。",
+		"descriptionEn": "Persistent Chrome automation: launches or attaches to a persistent Chrome instance, supports tab management, human-visible element snapshots, smart clicks and inputs, and anti-bot resilience across tasks.",
+		"source": "xing-shuyin/pi-web-ui/plugins/browser-use",
+		"homepage": "https://github.com/xing-shuyin/pi-web-ui/tree/main/plugins/browser-use"
 	}
 ]

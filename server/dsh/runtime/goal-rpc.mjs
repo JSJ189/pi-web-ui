@@ -475,7 +475,12 @@ class DshGoalJsonRpcServer extends HarnessSdkJsonRpcServer {
 		const agent = this.liveAgent(rec, params.sessionId);
 		const permission = this.ctx.permissionPresets;
 		if (!permission) throw new Error("permission/get: permission service unavailable");
-		return permission.selectFor(permission.permissionState(agent.session));
+		if (typeof permission.selectFor === "function") {
+			return permission.selectFor(permission.permissionState(agent.session));
+		}
+		const cat = typeof permission.catalog === "function" ? permission.catalog() : {};
+		const cur = typeof permission.current === "function" ? permission.current(agent.session) : undefined;
+		return { ...cat, currentValue: cur };
 	}
 
 	/** permission/set RPC：按会话热切换权限预设（写会话日志，无需重启；
@@ -497,10 +502,18 @@ class DshGoalJsonRpcServer extends HarnessSdkJsonRpcServer {
 			const rec = await this.getOrCreateSession(params.sessionId);
 			const agent = this.liveAgent(rec, params.sessionId);
 			permission.apply(agent.session, params.preset, (policy) => this.ctx.approval.setPolicy(agent, policy));
+			const snapshot =
+				typeof permission.selectFor === "function"
+					? permission.selectFor(permission.permissionState(agent.session))
+					: {
+							...(typeof permission.catalog === "function" ? permission.catalog() : {}),
+							currentValue:
+								typeof permission.current === "function" ? permission.current(agent.session) : params.preset,
+						};
 			return {
 				ok: true,
 				preset: params.preset,
-				...permission.selectFor(permission.permissionState(agent.session)),
+				...snapshot,
 			};
 		} catch (err) {
 			return { ok: false, code: "permission/error", message: err?.message ?? String(err) };

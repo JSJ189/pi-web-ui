@@ -1,5 +1,5 @@
 /**
- * wallpaper-engine 服务端入口 (v0.3.0) —— Steam 探测、壁纸扫描、流式媒体、收藏与外观预设服务。
+ * wallpaper-engine 服务端入口 (v0.3.1) —— Steam 探测、壁纸扫描、流式媒体、收藏与外观预设服务。
  *
  * 核心职责：
  * 1. 自动探测 Steam 与 Wallpaper Engine (AppID 431960) 创意工坊安装目录；
@@ -80,6 +80,15 @@ const MIME_MAP = {
 	".ttf": "font/ttf",
 	".otf": "font/otf",
 	".pkg": "application/octet-stream",
+	".frag": "text/plain; charset=utf-8",
+	".vert": "text/plain; charset=utf-8",
+	".fs": "text/plain; charset=utf-8",
+	".vs": "text/plain; charset=utf-8",
+	".tex": "application/octet-stream",
+	".mdl": "application/octet-stream",
+	".bin": "application/octet-stream",
+	".tga": "image/x-tga",
+	".dds": "image/vnd.ms-dds",
 };
 
 export default {
@@ -98,15 +107,19 @@ export default {
 						activeId: typeof data.activeId === "string" ? data.activeId : "",
 						favorites: Array.isArray(data.favorites) ? data.favorites : [],
 						settings: {
-							glassBlur: Number(data.settings?.glassBlur ?? 16),
-							glassOpacity: Number(data.settings?.glassOpacity ?? 80),
-							fpsLimit: String(data.settings?.fpsLimit ?? "60"),
+							glassBlur: Number(data.settings?.glassBlur ?? 0),
+							glassOpacity: Number(data.settings?.glassOpacity ?? 40),
+							wallpaperTheme: String(data.settings?.wallpaperTheme ?? "obsidian"),
+							fpsLimit: String(data.settings?.fpsLimit ?? "0"),
+							qualityPreset: String(data.settings?.qualityPreset ?? "performance"),
+							antiAliasing: String(data.settings?.antiAliasing ?? "off"),
 							interactive: Boolean(data.settings?.interactive ?? false),
 							muteAudio: Boolean(data.settings?.muteAudio ?? true),
 							pauseOnHidden: Boolean(data.settings?.pauseOnHidden ?? true),
 							audioReactive: Boolean(data.settings?.audioReactive ?? false),
 							autoRotateMinutes: String(data.settings?.autoRotateMinutes ?? "0"),
 							customSteamPath: String(data.settings?.customSteamPath ?? ""),
+							lightWallpaperMode: Boolean(data.settings?.lightWallpaperMode ?? false),
 						},
 					};
 				}
@@ -117,15 +130,19 @@ export default {
 				activeId: "",
 				favorites: [],
 				settings: {
-					glassBlur: 16,
-					glassOpacity: 80,
-					fpsLimit: "60",
+					glassBlur: 0,
+					glassOpacity: 40,
+					wallpaperTheme: "obsidian",
+					fpsLimit: "0",
+					qualityPreset: "high",
+					antiAliasing: "off",
 					interactive: false,
 					muteAudio: true,
 					pauseOnHidden: true,
 					audioReactive: false,
 					autoRotateMinutes: "0",
 					customSteamPath: "",
+					lightWallpaperMode: false,
 				},
 			};
 		}
@@ -145,6 +162,7 @@ export default {
 		let cachedSteamRoot = null;
 		let cachedLibraries = [];
 		let cachedWallpapers = null;
+		let cachedWallpaperMap = new Map();
 		let lastScanTime = 0;
 
 		async function probeSteamFromRegistry() {
@@ -300,8 +318,18 @@ export default {
 			}
 
 			cachedWallpapers = list;
+			cachedWallpaperMap = new Map(list.map((w) => [w.id, w]));
 			lastScanTime = now;
 			return list;
+		}
+
+		async function getWallpaperById(id) {
+			if (!id) return null;
+			if (cachedWallpaperMap.has(id)) {
+				return cachedWallpaperMap.get(id);
+			}
+			const list = await scanWallpapers(false);
+			return cachedWallpaperMap.get(id) || list.find((w) => w.id === id) || null;
 		}
 
 		function parseWallpaperProject(folderPath, id) {
@@ -321,6 +349,11 @@ export default {
 				const hasScenePkg = (rawFile.endsWith(".pkg") && existsSync(filePath)) || existsSync(scenePkgCand);
 				const pkgPath = hasScenePkg ? (rawFile.endsWith(".pkg") && existsSync(filePath) ? filePath : scenePkgCand) : "";
 
+				const sceneJsonCand = join(folderPath, "scene.json");
+				const hasSceneJson =
+					(rawFile.endsWith(".json") && existsSync(filePath)) || existsSync(sceneJsonCand) || rawFile.endsWith(".json");
+				const isLooseScene = !hasScenePkg && (rawType === "scene" || Boolean(hasSceneJson));
+
 				const webIndexCand = join(folderPath, "index.html");
 				const hasWebIndex = (rawFile.endsWith(".html") && existsSync(filePath)) || existsSync(webIndexCand);
 				const webFile = hasWebIndex ? (rawFile.endsWith(".html") ? rawFile : "index.html") : "";
@@ -328,7 +361,7 @@ export default {
 				let type = "unknown";
 				if (rawType === "video" || [".mp4", ".webm", ".m4v", ".mov"].includes(fileExt)) {
 					type = "video";
-				} else if (rawType === "scene" || hasScenePkg || [".pkg", ".json"].includes(fileExt)) {
+				} else if (rawType === "scene" || hasScenePkg || hasSceneJson || [".pkg", ".json"].includes(fileExt)) {
 					type = "scene";
 				} else if (rawType === "web" || hasWebIndex || [".html", ".htm"].includes(fileExt)) {
 					type = "web";
@@ -361,6 +394,8 @@ export default {
 					file: rawFile,
 					filePath: existsSync(filePath) ? filePath : "",
 					pkgPath,
+					hasSceneJson: Boolean(hasSceneJson),
+					isLooseScene: Boolean(isLooseScene),
 					webFile,
 					previewFile,
 					previewPath: existsSync(previewPath) ? previewPath : "",
@@ -408,8 +443,11 @@ export default {
 					id: w.id,
 					title: w.title,
 					type: w.type,
+					file: w.file,
 					hasVideo: w.type === "video" && Boolean(w.filePath),
-					hasScene: w.type === "scene" && Boolean(w.pkgPath),
+					hasScene: w.type === "scene" && (Boolean(w.pkgPath) || Boolean(w.hasSceneJson) || Boolean(w.isLooseScene)),
+					hasPkg: Boolean(w.pkgPath),
+					isLooseScene: Boolean(w.isLooseScene),
 					hasWeb: w.type === "web" && Boolean(w.webFile),
 					hasImage: w.type === "image" && Boolean(w.filePath),
 					hasPreview: Boolean(w.previewPath),
@@ -441,8 +479,11 @@ export default {
 					id: w.id,
 					title: w.title,
 					type: w.type,
+					file: w.file,
 					hasVideo: w.type === "video" && Boolean(w.filePath),
-					hasScene: w.type === "scene" && Boolean(w.pkgPath),
+					hasScene: w.type === "scene" && (Boolean(w.pkgPath) || Boolean(w.hasSceneJson) || Boolean(w.isLooseScene)),
+					hasPkg: Boolean(w.pkgPath),
+					isLooseScene: Boolean(w.isLooseScene),
 					hasWeb: w.type === "web" && Boolean(w.webFile),
 					hasImage: w.type === "image" && Boolean(w.filePath),
 					hasPreview: Boolean(w.previewPath),
@@ -462,8 +503,7 @@ export default {
 				return;
 			}
 
-			const list = await scanWallpapers(false);
-			const item = list.find((w) => w.id === id);
+			const item = await getWallpaperById(id);
 			if (!item || !item.previewPath || !existsSync(item.previewPath)) {
 				res.status(404).end("Preview not found");
 				return;
@@ -485,8 +525,7 @@ export default {
 				return;
 			}
 
-			const list = await scanWallpapers(false);
-			const item = list.find((w) => w.id === id);
+			const item = await getWallpaperById(id);
 			if (!item || !item.filePath || !existsSync(item.filePath)) {
 				res.status(404).end("Media file not found");
 				return;
@@ -536,8 +575,7 @@ export default {
 				return;
 			}
 
-			const list = await scanWallpapers(false);
-			const item = list.find((w) => w.id === id);
+			const item = await getWallpaperById(id);
 			if (!item || !item.pkgPath || !existsSync(item.pkgPath)) {
 				res.status(404).end("Scene package file not found");
 				return;
@@ -560,8 +598,7 @@ export default {
 				return;
 			}
 
-			const list = await scanWallpapers(false);
-			const item = list.find((w) => w.id === id);
+			const item = await getWallpaperById(id);
 			if (!item) {
 				res.status(404).end("Wallpaper not found");
 				return;
@@ -581,6 +618,45 @@ export default {
 			}
 		});
 
+		// 6.5 GET /api/scene-file —— 散装 Scene 场景工程文件安全读取服务 (支持官方内置散装工程与未封包壁纸)
+		registerRoute("GET", "/api/scene-file", async (req, res) => {
+			const id = String(req.query?.id || "");
+			const reqRelFile = String(req.query?.file || "");
+
+			if (!id || !reqRelFile) {
+				res.status(400).end("Missing wallpaper id or file");
+				return;
+			}
+
+			const item = await getWallpaperById(id);
+			if (!item || !item.folder || !existsSync(item.folder)) {
+				res.status(404).end("Wallpaper folder not found");
+				return;
+			}
+
+			const safeRel = reqRelFile.replace(/\\/g, "/").replace(/^\/+/, "");
+			const targetPath = resolve(item.folder, safeRel);
+			const normalizedBase = resolve(item.folder);
+
+			if (!targetPath.startsWith(normalizedBase) || !existsSync(targetPath)) {
+				res.status(404).end("File not found in wallpaper directory");
+				return;
+			}
+
+			const stat = statSync(targetPath);
+			if (!stat.isFile()) {
+				res.status(403).end("Cannot access directories directly");
+				return;
+			}
+
+			const ext = extname(targetPath).toLowerCase();
+			const contentType = MIME_MAP[ext] || "application/octet-stream";
+
+			res.setHeader("Content-Type", contentType);
+			res.setHeader("Cache-Control", "public, max-age=86400");
+			createReadStream(targetPath).pipe(res);
+		});
+
 		// 7. GET /api/web —— 网页壁纸静态资源沙箱服务
 		registerRoute("GET", "/api/web", async (req, res) => {
 			const id = String(req.query?.id || "");
@@ -591,8 +667,7 @@ export default {
 				return;
 			}
 
-			const list = await scanWallpapers(false);
-			const item = list.find((w) => w.id === id);
+			const item = await getWallpaperById(id);
 			if (!item || !item.folder || !existsSync(item.folder)) {
 				res.status(404).end("Wallpaper folder not found");
 				return;
@@ -619,6 +694,21 @@ export default {
 			if (ext === ".html" || ext === ".htm") {
 				let html = readFileSync(targetPath, "utf8");
 				const weShim = `
+<meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no" />
+<style>
+html, body {
+	width: 100% !important;
+	height: 100% !important;
+	margin: 0 !important;
+	padding: 0 !important;
+	overflow: hidden !important;
+	background: transparent !important;
+}
+canvas, video, img {
+	image-rendering: -webkit-optimize-contrast;
+	image-rendering: high-quality;
+}
+</style>
 <script>
 /* Wallpaper Engine API Shims */
 window.wallpaperPropertyListener = window.wallpaperPropertyListener || {};
@@ -726,8 +816,7 @@ window.wallpaperRegisterMediaListener = window.wallpaperRegisterMediaListener ||
 
 		// 10. GET /api/active —— 获取当前激活的壁纸与设置
 		registerRoute("GET", "/api/active", async (_req, res) => {
-			const list = await scanWallpapers(false);
-			const activeItem = list.find((w) => w.id === store.activeId) || null;
+			const activeItem = await getWallpaperById(store.activeId);
 
 			res.json({
 				ok: true,
@@ -763,13 +852,17 @@ window.wallpaperRegisterMediaListener = window.wallpaperRegisterMediaListener ||
 					...store.settings,
 					glassBlur: Number(body.settings.glassBlur ?? store.settings.glassBlur),
 					glassOpacity: Number(body.settings.glassOpacity ?? store.settings.glassOpacity),
+					wallpaperTheme: String(body.settings.wallpaperTheme ?? store.settings.wallpaperTheme),
 					fpsLimit: String(body.settings.fpsLimit ?? store.settings.fpsLimit),
+					qualityPreset: String(body.settings.qualityPreset ?? store.settings.qualityPreset),
+					antiAliasing: String(body.settings.antiAliasing ?? store.settings.antiAliasing),
 					interactive: Boolean(body.settings.interactive ?? store.settings.interactive),
 					muteAudio: Boolean(body.settings.muteAudio ?? store.settings.muteAudio),
 					pauseOnHidden: Boolean(body.settings.pauseOnHidden ?? store.settings.pauseOnHidden),
 					audioReactive: Boolean(body.settings.audioReactive ?? store.settings.audioReactive),
 					autoRotateMinutes: String(body.settings.autoRotateMinutes ?? store.settings.autoRotateMinutes),
 					customSteamPath: String(body.settings.customSteamPath ?? store.settings.customSteamPath),
+					lightWallpaperMode: Boolean(body.settings.lightWallpaperMode ?? store.settings.lightWallpaperMode),
 				};
 			}
 
@@ -790,7 +883,7 @@ window.wallpaperRegisterMediaListener = window.wallpaperRegisterMediaListener ||
 			});
 		});
 
-		host.log?.("info", "wallpaper-engine 插件服务端 (v0.3.0) 已就绪");
+		host.log?.("info", "wallpaper-engine 插件服务端 (v0.3.13) 已就绪");
 
 		return () => {
 			for (const off of offRoutes) {

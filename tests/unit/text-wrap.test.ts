@@ -276,15 +276,27 @@ describe("卡片头右端按钮列（窄屏对齐 / 不外溢）", () => {
 	});
 });
 
-describe("工具卡片内部滚动容器防穿透（overscroll-behavior: contain）", () => {
+describe("滚动容器防穿透与滚动链放行区分", () => {
 	it.each([".toolcall-output pre", ".toolcall-args pre", ".codemode-code"])(
-		"%s 声明 overscroll-behavior: contain 防止滚轮穿透打断主消息区吸底跟随",
+		"%s 不得声明 overscroll-behavior: contain，防止滚动黑洞锁死外部对话流",
 		(selector) => {
 			const body = bodyOf(selector);
 			expect(body, `${selector} 在 styles.css 里没有声明`).not.toBe("");
 			expect(
 				/overscroll-behavior(?:-y)?\s*:\s*contain/.test(body),
-				`${selector} 缺少 overscroll-behavior: contain（滚动到底顶时会穿透触发父级消息区 scroll 事件，打断跟随）`,
+				`${selector} 不得声明 overscroll-behavior: contain（流内卡片若声明 contain 会截断滚轮链式传递，即便内部不可滚动也会导致整个对话流被锁死；吸底保护由 MessageList.handleWheel 判定层统一守护）`,
+			).toBe(false);
+		},
+	);
+
+	it.each([".plan-board-steps", ".sandbox-diff-list", ".compacted-history-messages"])(
+		"%s 独立面板列表声明 overscroll-behavior: contain 防止整页滚动穿透",
+		(selector) => {
+			const body = bodyOf(selector);
+			expect(body, `${selector} 在 styles.css 里没有声明`).not.toBe("");
+			expect(
+				/overscroll-behavior(?:-y)?\s*:\s*contain/.test(body),
+				`${selector} 缺少 overscroll-behavior: contain（独立浮层/面板列表滚到底顶时应防穿透）`,
 			).toBe(true);
 		},
 	);

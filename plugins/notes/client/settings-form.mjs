@@ -93,8 +93,18 @@ export function createSettings({ t, data, onNotify, extra = [] }) {
 			el(
 				"div",
 				{ class: "nt-actions" },
-				el("button", { type: "button", class: "nt-btn", text: t("action.exportJson"), onClick: () => void data.download("json") }),
-				el("button", { type: "button", class: "nt-btn", text: t("action.exportMd"), onClick: () => void data.download("md") }),
+				el("button", {
+					type: "button",
+					class: "nt-btn",
+					text: t("action.exportJson"),
+					onClick: () => void data.download("json"),
+				}),
+				el("button", {
+					type: "button",
+					class: "nt-btn",
+					text: t("action.exportMd"),
+					onClick: () => void data.download("md"),
+				}),
 				el("button", { type: "button", class: "nt-btn", text: t("action.import"), onClick: () => importInput.click() }),
 			),
 			extra.length ? el("div", { class: "nt-actions" }, ...extra) : null,

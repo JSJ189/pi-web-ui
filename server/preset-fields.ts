@@ -83,6 +83,7 @@ export const PRESET_FIELD_GROUPS = {
 		"keepRecentMessages",
 		"showForkedParentSessions",
 		"retainFinishedConversations",
+		"openRecentSessionOnProjectSwitch",
 		"bgAutoCleanupMin",
 		"quickPhrases",
 		"quickPhrasesEnabled",
@@ -427,6 +428,13 @@ export const PRESET_FIELD_META = {
 		labelEn: "Retain Finished Running Conversations",
 		hintZh: "切换对话或新建对话时，已结束（空闲）的对话依然保留在运行列表中，直到手动移出",
 		hintEn: "Keep finished (idle) conversations in the Running Chats list when switching away until manually removed",
+	},
+	openRecentSessionOnProjectSwitch: {
+		labelZh: "切换项目时打开最近会话",
+		labelEn: "Open Recent Session on Project Switch",
+		hintZh: "切换到新项目时自动打开该项目最近的会话；关闭后切换项目将直接创建全新空白对话",
+		hintEn:
+			"Automatically resume the most recent session when switching projects. When off, always create a fresh blank chat",
 	},
 	quickPhrases: {
 		labelZh: "快捷短语列表",

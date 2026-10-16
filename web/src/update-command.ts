@@ -17,7 +17,7 @@
  */
 interface UpdateTarget {
 	name: string;
-	kind: "webui" | "pi-core" | "package" | "git-extension" | "plugin";
+	kind: "webui" | "pi-core" | "package" | "git-extension" | "plugin" | "engine";
 	/** git-extension only: `host/path` shorthand carried from update_status_all. */
 	source?: string;
 	/** plugin only: directory/install id, matches pluginId. */

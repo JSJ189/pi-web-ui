@@ -49,7 +49,16 @@ export const DEFAULT_WATERMARK = {
 	imageScale: 25,
 };
 
-export const RATIOS = { free: null, "1:1": 1, "4:3": 4 / 3, "3:2": 3 / 2, "16:9": 16 / 9, "9:16": 9 / 16, "3:4": 3 / 4, "2:3": 2 / 3 };
+export const RATIOS = {
+	free: null,
+	"1:1": 1,
+	"4:3": 4 / 3,
+	"3:2": 3 / 2,
+	"16:9": 16 / 9,
+	"9:16": 9 / 16,
+	"3:4": 3 / 4,
+	"2:3": 2 / 3,
+};
 
 /** 比例下拉的可选项（custom = 用 state.ratioW / ratioH 自己填）。 */
 export const RATIO_KEYS = ["free", "1:1", "4:3", "3:2", "16:9", "9:16", "3:4", "2:3", "custom"];
@@ -287,7 +296,8 @@ export function expandVars(text, vars = {}) {
 	return String(text ?? "").replace(/\{(name|date|w|h)\}/g, (_, k) => String(vars[k] ?? `{${k}}`));
 }
 
-const FONT_STACK = '"PingFang SC", "Hiragino Sans GB", "Microsoft YaHei", system-ui, -apple-system, "Segoe UI", sans-serif';
+const FONT_STACK =
+	'"PingFang SC", "Hiragino Sans GB", "Microsoft YaHei", system-ui, -apple-system, "Segoe UI", sans-serif';
 
 /** 画水印（文字或图片；支持九宫格定位与平铺）。 */
 function drawWatermark(ctx, W, H, wm, vars) {

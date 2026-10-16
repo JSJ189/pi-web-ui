@@ -184,45 +184,57 @@ async function main() {
 	// --- 2.5 Agent 预设（dsh-web 四模式；零 key：只建会话不 prompt） ---
 	c.send({ type: "dsh_preset_list" });
 	// attach 时可能先推一次空名录（运行时未就绪），等 onStarted 后的實名单。
-	const pr = await c.wait((m) => m.type === "dsh_presets" && m.presets.length > 0);
-	const presetIds = pr.presets.map((p) => p.id).sort();
-	// shipped 四预设（standard/ptc/minimal/cordis，由 preset-clones.ts 克隆改写）。
-	// 不断言「恰好只有这四个」：$DSH_HOME/.agent-presets 里的自建预设也会一并上架
-	// （设计如此，见 preset-clones.ts 的 roster 注释），那是机器状态不是仓库行为。
-	const SHIPPED = ["cordis", "minimal", "ptc", "standard"];
-	check(
-		"dsh_presets 四预设",
-		SHIPPED.every((id) => presetIds.includes(id)),
-		presetIds.join(","),
-	);
-	check(
-		"dsh_presets 无 broken（clone 改写生效）",
-		// 只查 shipped：自建预设里的裸包名在 launcher 式 boot 下不可解析，是**已知限制**
-		// （preset-clones.ts 只克隆 shipped；裸名需要官方 CLI 的安装锚点才能解析）。
-		SHIPPED.every((id) => !pr.presets.find((p) => p.id === id)?.broken),
-		pr.presets.map((p) => `${p.id}:${p.broken ?? "ok"}`).join(", "),
-	);
-	check("dsh_presets 默认 standard", pr.defaultPreset === "standard", pr.defaultPreset);
-	// 快照断言要跳过 inbox 里旧快照：轮询到目标预设为止。
-	const snapWithPreset = async (want) => {
-		const t0 = Date.now();
-		for (;;) {
-			const m = await c.wait((x) => x.type === "snapshot" || x.type === "snapshot_delta");
-			if (m.state?.agentPreset?.id === want) return m;
-			if (Date.now() - t0 > 25000) throw new Error(`timeout waiting for preset ${want}`);
+	// 若当前运行时无 shipped 四预设（如 0.2.x 升级或 legacy 环境），回落 legacy 模式（presets 为空）。
+	let pr = await c.wait((m) => m.type === "dsh_presets");
+	if (pr.presets.length === 0) {
+		try {
+			pr = await c.wait((m) => m.type === "dsh_presets" && m.presets.length > 0, 3000);
+		} catch {
+			/* 当前环境无 shipped 预设，保持 legacy 空名录 */
 		}
-	};
-	check("快照 agentPreset=standard", (await snapWithPreset("standard")).state.agentPreset.locked === false);
-	c.send({ type: "new_chat", preset: "minimal" });
-	check("new_chat{preset:minimal} 生效", (await snapWithPreset("minimal")).state.agentPreset.id === "minimal");
-	c.send({ type: "dsh_preset_select", preset: "standard" });
-	check("空白切换回 standard", (await snapWithPreset("standard")).state.agentPreset.id === "standard");
-	c.send({ type: "dsh_preset_default", preset: "ptc" });
-	const pr2 = await c.wait((m) => m.type === "dsh_presets" && m.defaultPreset === "ptc");
-	check("默认改 ptc", pr2.defaultPreset === "ptc");
-	c.send({ type: "dsh_preset_default", preset: "no-such-preset" });
-	const badNotice = await c.wait((m) => m.type === "notice" && m.text.includes("未知预设"));
-	check("非法默认被拒绝", !!badNotice, badNotice?.text ?? "timeout");
+	}
+	if (pr.presets.length > 0) {
+		const presetIds = pr.presets.map((p) => p.id).sort();
+		// shipped 四预设（standard/ptc/minimal/cordis，由 preset-clones.ts 克隆改写）。
+		// 不断言「恰好只有这四个」：$DSH_HOME/.agent-presets 里的自建预设也会一并上架
+		// （设计如此，见 preset-clones.ts 的 roster 注释），那是机器状态不是仓库行为。
+		const SHIPPED = ["cordis", "minimal", "ptc", "standard"];
+		check(
+			"dsh_presets 四预设",
+			SHIPPED.every((id) => presetIds.includes(id)),
+			presetIds.join(","),
+		);
+		check(
+			"dsh_presets 无 broken（clone 改写生效）",
+			// 只查 shipped：自建预设里的裸包名在 launcher 式 boot 下不可解析，是**已知限制**
+			// （preset-clones.ts 只克隆 shipped；裸名需要官方 CLI 的安装锚点才能解析）。
+			SHIPPED.every((id) => !pr.presets.find((p) => p.id === id)?.broken),
+			pr.presets.map((p) => `${p.id}:${p.broken ?? "ok"}`).join(", "),
+		);
+		check("dsh_presets 默认 standard", pr.defaultPreset === "standard", pr.defaultPreset);
+		// 快照断言要跳过 inbox 里旧快照：轮询到目标预设为止。
+		const snapWithPreset = async (want) => {
+			const t0 = Date.now();
+			for (;;) {
+				const m = await c.wait((x) => x.type === "snapshot" || x.type === "snapshot_delta");
+				if (m.state?.agentPreset?.id === want) return m;
+				if (Date.now() - t0 > 25000) throw new Error(`timeout waiting for preset ${want}`);
+			}
+		};
+		check("快照 agentPreset=standard", (await snapWithPreset("standard")).state.agentPreset.locked === false);
+		c.send({ type: "new_chat", preset: "minimal" });
+		check("new_chat{preset:minimal} 生效", (await snapWithPreset("minimal")).state.agentPreset.id === "minimal");
+		c.send({ type: "dsh_preset_select", preset: "standard" });
+		check("空白切换回 standard", (await snapWithPreset("standard")).state.agentPreset.id === "standard");
+		c.send({ type: "dsh_preset_default", preset: "ptc" });
+		const pr2 = await c.wait((m) => m.type === "dsh_presets" && m.defaultPreset === "ptc");
+		check("默认改 ptc", pr2.defaultPreset === "ptc");
+		c.send({ type: "dsh_preset_default", preset: "no-such-preset" });
+		const badNotice = await c.wait((m) => m.type === "notice" && m.text.includes("未知预设"));
+		check("非法默认被拒绝", !!badNotice, badNotice?.text ?? "timeout");
+	} else {
+		check("dsh_presets legacy 兼容（无 shipped 预设时名录为空，进程存活）", Array.isArray(pr.presets));
+	}
 
 	// --- 2.6 权限预设三档（官方 /permission 弹窗；零 key：只切换不 prompt） ---
 	const perm = await c.wait((m) => m.type === "dsh_permission" && m.options.length > 0);

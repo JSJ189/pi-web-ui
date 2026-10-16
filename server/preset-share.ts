@@ -359,6 +359,7 @@ const PRESET_FIELD_KINDS = {
 	keepRecentMessages: "number",
 	showForkedParentSessions: "bool",
 	retainFinishedConversations: "bool",
+	openRecentSessionOnProjectSwitch: "bool",
 	quickPhrases: "list",
 	quickPhrasesEnabled: "bool",
 	devNoCache: "bool",

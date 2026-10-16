@@ -1,6 +1,6 @@
-import { useState, useRef, useEffect } from "react";
-import { FiAperture, FiCheck } from "react-icons/fi";
-import { appSend, useAppGlobals } from "../app-globals";
+import { useState, useRef } from "react";
+import { FiAperture, FiCheck, FiDownload, FiRefreshCw } from "react-icons/fi";
+import { appSend, useAppGlobals, useEngineStatuses } from "../app-globals";
 import { useI18n } from "../i18n";
 import { Dropdown } from "./Dropdown";
 
@@ -19,6 +19,10 @@ export interface EngineMeta {
 	descKey: "settingsEnginePiDesc" | "settingsEngineDshDesc" | "settingsEngineClaudeDesc";
 	/** 样式色彩类 */
 	colorClass: string;
+	/** 对应的全局 npm 包名（如 "@deepseek-ai/dsh"） */
+	packageName?: string;
+	/** 全局安装执行命令（如 "npm i -g @deepseek-ai/dsh"） */
+	installCommand?: string;
 }
 
 /**
@@ -33,6 +37,8 @@ export const SUPPORTED_ENGINES: EngineMeta[] = [
 		tagKey: "engineTagFull",
 		descKey: "settingsEnginePiDesc",
 		colorClass: "engine-pi",
+		packageName: "@earendil-works/pi-coding-agent",
+		installCommand: "npm i -g @earendil-works/pi-coding-agent",
 	},
 	{
 		id: "dsh",
@@ -41,6 +47,8 @@ export const SUPPORTED_ENGINES: EngineMeta[] = [
 		tagKey: "engineTagFast",
 		descKey: "settingsEngineDshDesc",
 		colorClass: "engine-dsh",
+		packageName: "@deepseek-ai/dsh",
+		installCommand: "npm i -g @deepseek-ai/dsh",
 	},
 	{
 		id: "claude",
@@ -49,12 +57,14 @@ export const SUPPORTED_ENGINES: EngineMeta[] = [
 		tagKey: "engineTagUniversal",
 		descKey: "settingsEngineClaudeDesc",
 		colorClass: "engine-claude",
+		packageName: "@anthropic-ai/claude-code",
+		installCommand: "npm i -g @anthropic-ai/claude-code",
 	},
 ];
 
 interface EnginePickerProps {
-	/** 下拉展开方向："down"（顶栏用）或 "up"（底栏用） */
-	direction?: "down" | "up";
+	/** 下拉展开方向："down"（顶栏用）、"up"（底栏用）、"left"（右侧栏用）、"right"（左侧栏用） */
+	direction?: "down" | "up" | "left" | "right";
 	/** 对齐方向 */
 	align?: "left" | "right";
 	/** 附加样式类 */
@@ -65,43 +75,27 @@ interface EnginePickerProps {
 	caret?: boolean;
 	/** 当前所在栏 */
 	bar?: "top" | "bottom" | "left" | "right";
+	/** 是否将下拉菜单 portal 到 document.body（脱离父级 overflow 截断与包含块约束，底栏与侧边栏默认开启） */
+	portal?: boolean;
 }
 
-export function EnginePicker({ direction, align, className, label, caret = false, bar }: EnginePickerProps) {
+export function EnginePicker({ direction, align, className, label, caret = false, bar, portal }: EnginePickerProps) {
 	const { engine } = useAppGlobals();
+	const engines = useEngineStatuses();
 	const { t } = useI18n();
 	const [open, setOpen] = useState(false);
 	const wrapRef = useRef<HTMLDivElement>(null);
-	const [autoDirection, setAutoDirection] = useState<"down" | "up">(direction ?? (bar === "bottom" ? "up" : "down"));
-	const [autoAlign, setAutoAlign] = useState<"left" | "right">(align ?? "left");
-	const [fixedStyle, setFixedStyle] = useState<React.CSSProperties | undefined>(undefined);
 
-	// 动态检测位置：若位于底栏或距离视口底部空间不足 320px，以 fixed 浮层朝上弹出，彻底避免父容器 overflow 裁切
+	// 侧边栏向视口内侧弹出：左侧栏向右、右侧栏向左；底栏向上；顶栏向下
+	const effectiveDirection: "down" | "up" | "left" | "right" =
+		direction ?? (bar === "left" ? "right" : bar === "right" ? "left" : bar === "bottom" ? "up" : "down");
+	// 侧边栏和底栏带有 overflow 截断与包含块约束，必须 portal 到 body 防止菜单被裁切；若未指定则默认底栏/侧栏开启
+	const effectivePortal = portal ?? (bar === "left" || bar === "right" || bar === "bottom");
+
 	const handleOpenChange = (nextOpen: boolean) => {
-		if (nextOpen && wrapRef.current) {
-			const rect = wrapRef.current.getBoundingClientRect();
-			const spaceBelow = window.innerHeight - rect.bottom;
-			if (bar === "bottom" || spaceBelow < 320) {
-				setAutoDirection("up");
-				setFixedStyle({
-					position: "fixed",
-					left: Math.max(8, Math.min(rect.left, window.innerWidth - 340)),
-					bottom: Math.max(8, window.innerHeight - rect.top + 6),
-					top: "auto",
-					right: "auto",
-					zIndex: 9999,
-				});
-			} else {
-				setAutoDirection(direction ?? "down");
-				setFixedStyle(undefined);
-			}
-			if (window.innerWidth - rect.left < 340) {
-				setAutoAlign("right");
-			} else {
-				setAutoAlign(align ?? "left");
-			}
-		} else {
-			setFixedStyle(undefined);
+		if (nextOpen) {
+			// 展开下拉时自动请求服务端复查引擎安装状态，确保后台最新安装秒级感知
+			appSend({ type: "check_engines" });
 		}
 		setOpen(nextOpen);
 	};
@@ -140,11 +134,11 @@ export function EnginePicker({ direction, align, className, label, caret = false
 				trigger={trigger}
 				open={open}
 				onOpenChange={handleOpenChange}
-				direction={autoDirection}
-				align={autoAlign}
+				direction={effectiveDirection}
+				align={align ?? (bar === "right" ? "right" : "left")}
 				fit
 				caret={caret}
-				menuStyle={fixedStyle}
+				portal={effectivePortal}
 				triggerClassName={`bar-item chip engine-picker-btn ${activeEngine.colorClass}`}
 				menuClassName="engine-picker-menu"
 				tip={`${t("engineBadge")}: ${label ?? activeName} — ${t("engineSwitchTip")}`}
@@ -160,18 +154,78 @@ export function EnginePicker({ direction, align, className, label, caret = false
 				<div className="engine-picker-list" role="menu">
 					{SUPPORTED_ENGINES.map((item) => {
 						const isSelected = item.id === engine;
+						const status = engines.find((e) => e.id === item.id);
+						// pi 原生捆绑引擎恒可用，其余引擎按服务端探测结果判断是否安装
+						const isInstalled = item.id === "pi" || (status ? status.installed : false);
+						const hasUpdate = Boolean(isInstalled && status?.hasUpdate && status?.latestVersion);
+
+						const handleInstall = (e: React.MouseEvent) => {
+							e.stopPropagation();
+							setOpen(false);
+							if (item.installCommand) {
+								window.dispatchEvent(
+									new CustomEvent("pi-web-ui:plugin-run-command", {
+										detail: {
+											title: t("installEngineTabTitle", { name: item.badge }),
+											command: item.installCommand,
+										},
+									}),
+								);
+							}
+						};
+
+						const handleUpdate = (e: React.MouseEvent) => {
+							e.stopPropagation();
+							setOpen(false);
+							const pkg = status?.packageName ?? item.packageName;
+							if (pkg) {
+								window.dispatchEvent(
+									new CustomEvent("pi-web-ui:plugin-run-command", {
+										detail: {
+											title: t("updateEngineTabTitle", { name: item.badge }),
+											command: `npm i -g ${pkg}@latest`,
+										},
+									}),
+								);
+							}
+						};
+
+						const handleSelect = () => {
+							if (!isInstalled) {
+								// 未安装时不可切换，点击直接引导安装终端
+								setOpen(false);
+								if (item.installCommand) {
+									window.dispatchEvent(
+										new CustomEvent("pi-web-ui:plugin-run-command", {
+											detail: {
+												title: t("installEngineTabTitle", { name: item.badge }),
+												command: item.installCommand,
+											},
+										}),
+									);
+								}
+								return;
+							}
+							setOpen(false);
+							if (!isSelected) {
+								appSend({ type: "switch_engine", engine: item.id as "pi" | "dsh" | "claude" });
+							}
+						};
+
 						return (
-							<button
+							<div
 								key={item.id}
-								type="button"
 								role="menuitem"
-								className={`engine-picker-item ${item.colorClass}${isSelected ? " active" : ""}`}
-								onClick={() => {
-									setOpen(false);
-									if (!isSelected) {
-										appSend({ type: "switch_engine", engine: item.id as "pi" | "dsh" | "claude" });
+								tabIndex={0}
+								title={!isInstalled ? t("engineInstallTip") : undefined}
+								className={`engine-picker-item ${item.colorClass}${isSelected ? " active" : ""}${!isInstalled ? " uninstalled" : ""}`}
+								onKeyDown={(e) => {
+									if (e.key === "Enter" || e.key === " ") {
+										e.preventDefault();
+										handleSelect();
 									}
 								}}
+								onClick={handleSelect}
 							>
 								<div className="engine-picker-item-head">
 									<FiAperture className="engine-picker-item-icon" />
@@ -179,11 +233,48 @@ export function EnginePicker({ direction, align, className, label, caret = false
 									{t(item.titleKey) !== item.badge && (
 										<span className="engine-picker-item-name">{t(item.titleKey)}</span>
 									)}
-									<span className="engine-picker-item-tag">{t(item.tagKey)}</span>
+									<span
+										className={`engine-picker-item-tag${!isInstalled ? " uninstalled" : hasUpdate ? " update-available" : ""}`}
+										title={
+											hasUpdate
+												? t("engineUpdateTip", {
+														current: status?.version ?? "",
+														latest: status?.latestVersion ?? "",
+													})
+												: undefined
+										}
+									>
+										{!isInstalled ? t("engineNotInstalled") : hasUpdate ? t("engineUpdateAvailable") : t(item.tagKey)}
+									</span>
+									{!isInstalled && item.installCommand && (
+										<button
+											type="button"
+											className="engine-picker-install-btn"
+											title={t("engineInstallTip")}
+											onClick={handleInstall}
+										>
+											<FiDownload className="engine-install-icon" />
+											<span>{t("engineInstall")}</span>
+										</button>
+									)}
+									{hasUpdate && (
+										<button
+											type="button"
+											className="engine-picker-update-btn"
+											title={t("engineUpdateTip", {
+												current: status?.version ?? "",
+												latest: status?.latestVersion ?? "",
+											})}
+											onClick={handleUpdate}
+										>
+											<FiRefreshCw className="engine-update-icon" />
+											<span>{t("engineUpdate")}</span>
+										</button>
+									)}
 									{isSelected && <FiCheck className="engine-picker-check" />}
 								</div>
 								<div className="engine-picker-item-desc">{t(item.descKey)}</div>
-							</button>
+							</div>
 						);
 					})}
 				</div>

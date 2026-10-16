@@ -120,62 +120,70 @@ async function main() {
 		(await page.locator(".nt-panel-head").count()) === 1 && (await page.locator(".nt-grip").count()) === 1,
 	);
 
-	// -- 快速捕获：待办（自然语言） ---------------------------------------------------
-	const quick = page.locator(".nt-panel .nt-quick input").first();
-	await quick.fill("交周报 明天 18:00 #工作");
-	await quick.press("Enter");
-	await page.waitForSelector('.nt-panel .nt-item:has-text("交周报")', { timeout: 8000 });
-	const todoText = await page.locator(".nt-panel .nt-item").first().innerText();
-	check("待办从快速输入落进列表", todoText.includes("交周报"));
-	check("「明天 18:00」被解析成截止时间", /明天 18:00/.test(todoText));
-	check("#工作 被解析成标签", todoText.includes("#工作"));
-
-	// -- 拖动 + 位置/开合状态持久化 ---------------------------------------------------
-	const before = await page.locator(".nt-panel").boundingBox();
-	const head = await page.locator(".nt-panel-head .nt-panel-title").boundingBox();
-	await page.mouse.move(head.x + 20, head.y + 8);
-	await page.mouse.down();
-	await page.mouse.move(head.x + 20 - 140, head.y + 8 + 120, { steps: 8 });
-	await page.mouse.up();
-	await sleep(300);
-	const after = await page.locator(".nt-panel").boundingBox();
-	check("拖动真的移动了浮窗", Math.abs(after.x - before.x) > 60 && Math.abs(after.y - before.y) > 60);
-
-	await page.reload({ waitUntil: "domcontentloaded" });
-	await sleep(2500);
-	const restored = await page
-		.locator(".nt-panel")
-		.boundingBox()
-		.catch(() => null);
+	// -- 只有两个 Tab：笔记与日历 ---------------------------------------------------
+	const tabs = await page.locator(".nt-panel .nt-tab").allInnerTexts();
 	check(
-		"刷新后浮窗自动恢复（位置记忆）",
-		!!restored && Math.abs(restored.x - after.x) < 40 && Math.abs(restored.y - after.y) < 40,
+		"Tab 栏只保留「笔记」和「日历」两个选项卡",
+		tabs.length === 2 && tabs.includes("笔记") && tabs.includes("日历"),
 	);
 
-	// -- 快速捕获：提醒（重复档位解析） -----------------------------------------------
-	await page.locator(".nt-panel .nt-tab", { hasText: "提醒" }).first().click();
-	const quick2 = page.locator(".nt-panel .nt-quick input").first();
-	await quick2.fill("每天 9:00 吃药");
-	await quick2.press("Enter");
-	await page.waitForSelector('.nt-panel .nt-item:has-text("吃药")', { timeout: 8000 });
-	const remText = await page.locator(".nt-panel .nt-item").first().innerText();
-	check("提醒「每天 9:00」解析成每天 09:00", remText.includes("每天") && remText.includes("09:00"));
+	// -- 快速捕获笔记：直接记录文字、无标题、自动提取标签 ----------------------------
+	const composer = page.locator(".nt-panel .nt-composer-text").first();
+	await composer.fill("交周报 #工作\n这是一段详细记录。");
+	await composer.press("Control+Enter");
+	await page.waitForSelector('.nt-panel .nt-card:has-text("交周报")', { timeout: 8000 });
+	const noteCard = page.locator(".nt-panel .nt-card").first();
+	const noteCardText = await noteCard.innerText();
+	check("无标题速记：直接写文字 Ctrl+Enter 落入列表", noteCardText.includes("交周报"));
+	check("#工作 被解析成标签", noteCardText.includes("#工作"));
 
-	// -- 笔记：新建 → 编辑器改写 → 落库 ----------------------------------------------
-	await page.locator(".nt-panel .nt-tab", { hasText: "笔记" }).first().click();
-	const quick3 = page.locator(".nt-panel .nt-quick input").first();
-	await quick3.fill("会议要点");
-	await quick3.press("Enter");
-	await page.waitForSelector(".nt-panel .nt-editor textarea", { timeout: 8000 });
-	const titleInput = page.locator(".nt-panel .nt-editor input.nt-input").first();
-	check("笔记回车后打开编辑器并带标题", (await titleInput.inputValue()) === "会议要点");
-	await page.locator(".nt-panel .nt-editor textarea").first().fill("1. 排期\n2. 风险");
-	await sleep(900); // 输入即存（debounce 400ms）
+	// -- 笔记额外设置提醒：选择提醒档位并保存 -----------------------------------------
+	await composer.fill("明天交方案");
+	await page.locator('.nt-panel .nt-composer-tools button:has-text("设提醒")').first().click();
+	await page.waitForSelector(".nt-pop-menu", { timeout: 5000 });
+	await page.locator('.nt-pop-menu .nt-pop-item:has-text("明天 09:00")').first().click();
+	await sleep(200);
+	check("选择时间后输入框下方出现提醒药丸胶囊", (await page.locator(".nt-panel .nt-rem-chip").count()) >= 1);
+	await composer.press("Control+Enter");
+	await page.waitForSelector('.nt-panel .nt-card:has-text("明天交方案")', { timeout: 8000 });
+	const remCard = page.locator('.nt-panel .nt-card:has-text("明天交方案")').first();
+	check("保存后笔记卡片展示提醒状态胶囊", (await remCard.locator(".nt-rem-chip").count()) >= 1);
+
+	// -- 就地快速编辑（Inline Edit）：点击 ✏️ 原位修改正文与提醒 --------------------
+	await remCard.locator('button[title*="编辑"]').first().click();
+	await page.waitForSelector(".nt-panel .nt-card-edit-area", { timeout: 5000 });
+	check(
+		"点击 ✏️ 卡片原位变成就地编辑区（无需跳出或换栏）",
+		(await page.locator(".nt-panel .nt-card.nt-editing").count()) === 1,
+	);
+	const editArea = page.locator(".nt-panel .nt-card-edit-area").first();
+	await editArea.fill("明天交方案（已更新补充材料）\n- [ ] 打印签字");
+	await editArea.press("Control+Enter");
+	await sleep(600);
+	check("就地编辑 Ctrl+Enter 保存后恢复卡片展示", (await page.locator(".nt-panel .nt-card.nt-editing").count()) === 0);
 	let s = await store();
 	check(
-		"笔记正文落库（输入即存）",
-		s.notes.some((n) => n.body.includes("排期")),
+		"就地编辑正文落库",
+		s.notes.some((n) => n.body.includes("补充材料")),
 	);
+
+	// -- 删除：点击变为打勾按钮，再次点击确认删除 -----------------------------------
+	const targetCard = page.locator('.nt-panel .nt-card:has-text("补充材料")').first();
+	const delBtn = targetCard.locator("button.nt-del").first();
+	await delBtn.click();
+	await sleep(200);
+	const checkText = await delBtn.innerText();
+	const isConfirming =
+		(await delBtn.evaluate((el) => el.classList.contains("nt-del-confirm"))) && checkText.includes("✓");
+	check("点击删除按钮后变为打勾按钮（二次确认态）", isConfirming);
+	await delBtn.click();
+	await sleep(600);
+	check(
+		"再次点击打勾按钮后卡片被成功删除",
+		(await page.locator('.nt-panel .nt-card:has-text("补充材料")').count()) === 0,
+	);
+	s = await store();
+	check("删除笔记成功落库（库中不再存在）", !s.notes.some((n) => n.body.includes("补充材料")));
 
 	// -- 提醒到点：服务端 → 长轮询 → 浏览器确认 ----------------------------------------
 	const at = new Date(Date.now() + 6000);
@@ -197,22 +205,20 @@ async function main() {
 	check("一次性提醒触发后自动停用", fired?.enabled === false);
 	check("浏览器收到并确认了提醒（待送达队列清空）", s.meta.pending.length === 0);
 
-	// -- 浮窗里「点开一条 → 切 tab」不能变成全空面板（回归：nt-editing 类漏摘） -----------------
-	await page.locator(".nt-panel .nt-tab", { hasText: "待办" }).first().click();
-	await page.locator('.nt-panel .nt-item:has-text("交周报")').first().click();
+	// -- 浮窗里「点开编辑 → 切 tab」不能变成全空面板 ---------------------------------
+	await page.locator('.nt-panel .nt-card:has-text("交周报") button[title*="编辑"]').first().click();
 	await sleep(300);
-	check(
-		"浮窗里点开一行进入编辑态（列表让位给编辑器）",
-		(await page.locator(".nt-panel .nt-app.nt-editing").count()) === 1,
-	);
+	check("浮窗里点编辑进入就地编辑态", (await page.locator(".nt-panel .nt-card.nt-editing").count()) === 1);
+	await page.locator(".nt-panel .nt-tab", { hasText: "日历" }).first().click();
+	await sleep(300);
 	await page.locator(".nt-panel .nt-tab", { hasText: "笔记" }).first().click();
 	await sleep(300);
-	const rowsAfterTabSwitch = await page.locator(".nt-panel .nt-item").count();
-	const stillEditing = await page.locator(".nt-panel .nt-app.nt-editing").count();
+	const rowsAfterTabSwitch = await page.locator(".nt-panel .nt-card").count();
+	const stillEditing = await page.locator(".nt-panel .nt-card.nt-editing").count();
 	check("切 tab 后列表回来、编辑态退出（不出现全空面板）", rowsAfterTabSwitch > 0 && stillEditing === 0);
 
 	// -- 勾一个通知开关不能重建面板（否则正在打的字会丢） ---------------------------------
-	const noteQuick = page.locator(".nt-panel .nt-quick input").first();
+	const noteQuick = page.locator(".nt-panel .nt-composer-text").first();
 	await noteQuick.fill("切语言前的草稿");
 	let langSelCount = 0;
 	await page.locator(".nt-panel-head .nt-pill-hide").first().click(); // ⚙
@@ -238,13 +244,21 @@ async function main() {
 	check("插件不再有独立视图（页面里没有 .plugin-view）", (await page.locator(".plugin-view").count()) === 0);
 
 	// -- 月视图日历（重复提醒要画在当月每一天） --------------------------------------
+	await fetch(`${BASE}/plugins-api/notes/op`, {
+		method: "POST",
+		headers: { "content-type": "application/json" },
+		body: JSON.stringify({
+			op: "reminder.save",
+			item: { text: "吃药", schedule: { type: "daily", time: "09:00" }, enabled: true },
+		}),
+	});
 	await page.locator(".nt-panel .nt-tab", { hasText: "日历" }).first().click();
 	await sleep(600);
 	const cells = await page.locator(".nt-panel .nt-cal-cell").count();
 	const chips = await page.locator(".nt-panel .nt-cal-chip").count();
 	const calText = await page.locator(".nt-panel .nt-cal-detail").first().innerText();
 	check("日历画出 6×7 = 42 天格子", cells === 42);
-	check("「每天 9:00 吃药」在当月多天都有条目（chip 数 > 5）", chips > 5);
+	check("重复提醒在当月多天都有条目（chip 数 > 5）", chips > 5);
 	check("日历下方给出选中日的清单", /\d{4}-\d{2}-\d{2}/.test(calText));
 	// 窄窗裁剪回归：曾经的 .nt-body{display:block} 让列表按内容撑高（实测 600px），
 	// 日历会画到底栏、设置层上去；正文区必须自己收缩成可滚动的一块。
@@ -313,14 +327,11 @@ async function main() {
 	await sleep(200);
 	check("设置覆盖层的 ✕ 能关掉", (await page.locator(".nt-settings-pop.on").count()) === 0);
 
-	// -- 浮窗里改一条：待办编辑器写回库（切换重复档） -------------------------------
-	await page.locator(".nt-panel .nt-tab", { hasText: "待办" }).first().click();
-	await page.locator('.nt-panel .nt-item:has-text("交周报")').first().click();
-	await page.waitForSelector(".nt-panel .nt-editor select", { timeout: 8000 });
-	await page.locator(".nt-panel .nt-editor select").nth(1).selectOption("weekly"); // 第 1 个是优先级，第 2 个是重复
-	await sleep(900);
+	// -- 浮窗里改一条：点击置顶写回库 ---------------------------------------------
+	await page.locator('.nt-panel .nt-card:has-text("交周报") button[title*="置顶"]').first().click();
+	await sleep(600);
 	s = await store();
-	check("待办编辑器改动写回库（重复=每周）", s.todos.find((t) => t.text === "交周报")?.repeat === "weekly");
+	check("笔记卡片点击置顶写回库（pinned=true）", s.notes.find((n) => n.body.includes("交周报"))?.pinned === true);
 
 	// -- 插件热重载后旧实例必须收干净（否则会多出一个浮窗 + 第二条长轮询） -----------------
 	const reloadSock = new WebSocket(`ws://localhost:${PORT}/ws`);

@@ -855,4 +855,71 @@ describe("notes 服务端插件", () => {
 		expect(res.body.ok).toBe(true);
 		expect(storeOf(res).todos).toEqual([]);
 	});
+
+	it("现代闪念笔记：无标题直接记录文字，自动提取第一行，支持额外设置提醒并与调度器联动", async () => {
+		const { host } = makeHost();
+		notesPlugin.activate(host as any);
+
+		// 1. 无标题保存笔记：直接传 body，自动提取首行做 title
+		const saved1 = await callRoute(host, "POST", "/op", {
+			body: {
+				op: "note.save",
+				item: {
+					body: "# 灵感记录\n这是一段详细的想法描述。\n第二行。",
+				},
+			},
+		});
+		expect(saved1.body.ok).toBe(true);
+		expect(saved1.body.result.item.title).toBe("灵感记录");
+		expect(saved1.body.result.item.body).toContain("详细的想法描述");
+
+		// 2. 笔记带提醒：保存时附加 reminder，store.reminders 自动生成对应关联项
+		const stamp = "2026-05-20T09:00";
+		const saved2 = await callRoute(host, "POST", "/op", {
+			body: {
+				op: "note.save",
+				item: {
+					body: "找张三拿合同",
+					reminder: {
+						schedule: { type: "once", at: stamp },
+						enabled: true,
+					},
+				},
+			},
+		});
+		expect(saved2.body.ok).toBe(true);
+		const note2 = saved2.body.result.item;
+		expect(note2.title).toBe("找张三拿合同");
+		expect(note2.reminder).toBeTruthy();
+		expect(note2.reminder.schedule.type).toBe("once");
+
+		// store.reminders 中应该有关联 reminder
+		const storeRes = await callRoute(host, "GET", "/store");
+		const linkRem = storeRes.body.store.reminders.find((r: any) => r.noteId === note2.id);
+		expect(linkRem).toBeTruthy();
+		expect(linkRem.text).toBe("找张三拿合同");
+		expect(linkRem.schedule.at).toBe(stamp);
+
+		// 3. 删除带提醒的笔记：关联的 reminder 也会被一并清理
+		const delRes = await callRoute(host, "POST", "/op", {
+			body: { op: "note.delete", id: note2.id },
+		});
+		expect(delRes.body.ok).toBe(true);
+		const afterDel = await callRoute(host, "GET", "/store");
+		expect(afterDel.body.store.notes.some((n: any) => n.id === note2.id)).toBe(false);
+		expect(afterDel.body.store.reminders.some((r: any) => r.noteId === note2.id)).toBe(false);
+	});
+
+	it("纯函数：detectTimeFromText 文本时间嗅探", async () => {
+		const { detectTimeFromText, extractTitle } = await import("../../plugins/notes/client/store.mjs");
+		expect(extractTitle("")).toBe("");
+		expect(extractTitle("  \n## 架构设计大纲\n详细内容")).toBe("架构设计大纲");
+		expect(extractTitle("- [ ] 完成周报")).toBe("[ ] 完成周报");
+
+		const now = new Date(2026, 2, 26, 12, 0, 0, 0).getTime();
+		const res = detectTimeFromText("明天 18:00 开会", now);
+		expect(res).toBeTruthy();
+		expect(res?.stamp).toContain("2026-03-27T18:00");
+		expect(res?.timeLabel).toContain("明天 18:00");
+	});
 });

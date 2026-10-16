@@ -248,45 +248,53 @@ describe("FooterBar 连接状态", () => {
 	});
 
 	it("点击右下角 host:cwd 按钮后，按钮不消失且处于 active 状态，同时弹出 DirectoryBrowser，关闭后恢复", () => {
-		const chat = makeChatState({
-			state: {
-				cwd: "D:/projects/my-app",
-				queue: { steering: [], followUp: [] },
-			} as unknown as ChatState["state"],
-		});
-		const { container } = mountFooter(chat);
-		const cwdBtn = container.querySelector(".status-cwd") as HTMLButtonElement;
-		expect(cwdBtn).toBeTruthy();
-		expect(cwdBtn.textContent).toContain("my-app");
-		expect(container.querySelector(".cwd-picker")).toBeNull();
+		vi.useFakeTimers();
+		try {
+			const chat = makeChatState({
+				state: {
+					cwd: "D:/projects/my-app",
+					queue: { steering: [], followUp: [] },
+				} as unknown as ChatState["state"],
+			});
+			const { container } = mountFooter(chat);
+			const cwdBtn = container.querySelector(".status-cwd") as HTMLButtonElement;
+			expect(cwdBtn).toBeTruthy();
+			expect(cwdBtn.textContent).toContain("my-app");
+			expect(container.querySelector(".cwd-picker")).toBeNull();
 
-		// 点击路径切换按钮
-		act(() => {
-			cwdBtn.click();
-		});
+			// 点击路径切换按钮（触发 220ms 双击防抖定时器）
+			act(() => {
+				cwdBtn.click();
+			});
+			act(() => {
+				vi.advanceTimersByTime(250);
+			});
 
-		// 弹窗弹出
-		const picker = container.querySelector(".cwd-picker");
-		expect(picker).toBeTruthy();
+			// 弹窗弹出
+			const picker = container.querySelector(".cwd-picker");
+			expect(picker).toBeTruthy();
 
-		// 原按钮依然存在且不消失，并且带有 active 状态
-		const cwdBtnAfter = container.querySelector(".status-cwd") as HTMLButtonElement;
-		expect(cwdBtnAfter).toBeTruthy();
-		expect(cwdBtnAfter.classList.contains("active")).toBe(true);
+			// 原按钮依然存在且不消失，并且带有 active 状态
+			const cwdBtnAfter = container.querySelector(".status-cwd") as HTMLButtonElement;
+			expect(cwdBtnAfter).toBeTruthy();
+			expect(cwdBtnAfter.classList.contains("active")).toBe(true);
 
-		// 点击遮罩关闭弹窗
-		const backdrop = container.querySelector(".status-cwd-backdrop") as HTMLElement;
-		expect(backdrop).toBeTruthy();
-		act(() => {
-			backdrop.click();
-		});
+			// 点击遮罩关闭弹窗
+			const backdrop = container.querySelector(".status-cwd-backdrop") as HTMLElement;
+			expect(backdrop).toBeTruthy();
+			act(() => {
+				backdrop.click();
+			});
 
-		// 弹窗关闭
-		expect(container.querySelector(".cwd-picker")).toBeNull();
-		// 按钮依然存在，且取消 active 状态
-		const cwdBtnFinal = container.querySelector(".status-cwd") as HTMLButtonElement;
-		expect(cwdBtnFinal).toBeTruthy();
-		expect(cwdBtnFinal.classList.contains("active")).toBe(false);
+			// 弹窗关闭
+			expect(container.querySelector(".cwd-picker")).toBeNull();
+			// 按钮依然存在，且取消 active 状态
+			const cwdBtnFinal = container.querySelector(".status-cwd") as HTMLButtonElement;
+			expect(cwdBtnFinal).toBeTruthy();
+			expect(cwdBtnFinal.classList.contains("active")).toBe(false);
+		} finally {
+			vi.useRealTimers();
+		}
 	});
 
 	it("手机端极窄状态栏规则：插件底栏条目（如 sol-savings-badge）被移动端隐藏规则匹配，而核心指标不被隐藏", () => {

@@ -71,6 +71,7 @@ import {
 	sortUpdateItems,
 	type UpdateItem,
 } from "./update-check.js";
+import { collectInstalledEngineTargets } from "./engine-probe.js";
 import { checkPluginUpdates } from "./plugin-updater.js";
 import { getAppVersion } from "./pkg-info.js";
 import { isBundledInUse, sdkCopies } from "./sdk-origin.js";
@@ -719,6 +720,10 @@ export interface Conversation {
 	 *  此窗口内对话还不算 streaming，置换判定必须把它当作「有活干」保留，
 	 *  否则新建/切换对话会销毁其 runtime，正在投递的消息被静默丢弃。 */
 	promptInFlight?: boolean;
+	/** 本轮 turn 是否已经观察到首包响应（TTFT）——去重发 turn_first_token。 */
+	turnFirstTokenSeen?: boolean;
+	/** 本轮 turn 发起模型请求的时间戳毫秒。 */
+	turnStartAt?: number;
 	/** 最近一次 LLM 响应定稿时的 Base Tokens（生效提示词 + 工具 Schema 占用）。
 	 *  用于在对话中途切换预设或开关工具时计算上下文增量补偿。 */
 	lastTurnBaseTokens?: number;
@@ -3363,8 +3368,8 @@ export class ClientSession {
 					}),
 					// 延迟加载入口（延迟加载模式默认开）：系统提示词只给未加载工具的
 					// 名字 + 一行摘要，模型用本工具把要用的工具拉进本对话（schema 才随之下发）。
-					// 本事常在活跃集（见 applyToolGating 的 forceActive），关掉延迟加载后
-					// 它也无害（目录为空，调用会告诉模型没东西可加载）。
+					// 延迟加载开启时常驻在活跃集（见 applyToolGating 的 forceActive）；
+					// 延迟加载未开启时不激活、不暴露给模型。
 					makeLoadToolsTool(this.loadToolsHost(ownerId), () => this.getLang()),
 					// 技能全文按名加载（名录在 {{skills}} 段）：模型不再拼路径调 read。
 					// 子代理会话同样注册（owner 即真正派发的父对话，读该会话 loader）。
@@ -4692,6 +4697,14 @@ export class ClientSession {
 				// 每条 assistant 气泡流式结束 → 立即解析其中的内联标记：每个气泡各自
 				// 生效（不再等整轮 agent_end），同一轮里先前消息的标记也不再丢。
 				const mm = event.message as { role?: string; stopReason?: unknown; content?: unknown };
+				if (!conv.turnFirstTokenSeen && mm?.role === "assistant") {
+					conv.turnFirstTokenSeen = true;
+					const durationMs = conv.turnStartAt ? Math.max(1, Date.now() - conv.turnStartAt) : undefined;
+					this.emitRun(conv, {
+						type: "turn_first_token",
+						...(durationMs !== undefined ? { durationMs } : {}),
+					});
+				}
 				if (mm?.role === "user") {
 					// 用户消息定稿（无论是空闲首轮提问，还是流式期间从 steer/followUp 队列出队落盘）：
 					// SDK 在 _emit(message_end) 返回后的同一同步 tick 内执行 sessionManager.appendMessage，
@@ -4723,6 +4736,8 @@ export class ClientSession {
 				break;
 			}
 			case "turn_start": {
+				conv.turnFirstTokenSeen = false;
+				conv.turnStartAt = Date.now();
 				this.emitRun(conv, { type: "turn_start" });
 				break;
 			}
@@ -4731,6 +4746,14 @@ export class ClientSession {
 				break;
 			}
 			case "message_update": {
+				if (!conv.turnFirstTokenSeen) {
+					conv.turnFirstTokenSeen = true;
+					const durationMs = conv.turnStartAt ? Math.max(1, Date.now() - conv.turnStartAt) : undefined;
+					this.emitRun(conv, {
+						type: "turn_first_token",
+						...(durationMs !== undefined ? { durationMs } : {}),
+					});
+				}
 				// Live assistant-message increment, deliberately OUTSIDE the snapshot
 				// channel: send() drops snapshots under backpressure (big sessions),
 				// but this small message must always get through or the UI freezes on
@@ -6291,6 +6314,7 @@ export class ClientSession {
 		try {
 			const targets = collectTargets(this.agentDir, ClientSession.currentAppVersion(), undefined, {
 				projectCwd: this.convs.get(this.activeId)?.cwd ?? this.cwd,
+				extraTargets: collectInstalledEngineTargets(),
 			});
 			const items = await checkAllUpdates(targets, undefined, () => this.getLang(), resolveNpmRegistry(this.agentDir));
 
@@ -7620,9 +7644,11 @@ export class ClientSession {
 			} catch {
 				/* session 未就绪：下次创建/reload 会再应用 */
 			}
+		} else {
+			disabled.add(LOAD_TOOLS_TOOL_NAME);
 		}
 		applyAgentToolsGating(session, [...disabled], targetPreset, {
-			// load_tools 不在任何预设白名单里，又必须永远可用（ask 预设本来就无工具，不强加）。
+			// load_tools 不在任何预设白名单里，又必须在延迟加载开启时永远可用（ask 预设本来就无工具，不强加；非延迟加载模式不激活）。
 			forceActive: lazy && targetPreset !== "ask" ? [LOAD_TOOLS_TOOL_NAME] : [],
 		});
 		const ownerId = conv?.id;
@@ -12874,13 +12900,17 @@ export class ClientSession {
 			// safely switched away).
 			const displaced = this.displaceActive();
 
+			const openRecent = this.settingsSvc?.current.openRecentSessionOnProjectSwitch ?? true;
+
 			// Prefer the target project's own most recently active conversation;
 			// only create a fresh one (resuming its most recent session) when the
 			// project has none open yet.
 			let target: Conversation | undefined;
-			for (const c of this.convs.values()) {
-				if (c.cwd === abs && (!target || c.lastActiveAt > target.lastActiveAt)) {
-					target = c;
+			if (openRecent) {
+				for (const c of this.convs.values()) {
+					if (c.cwd === abs && (!target || c.lastActiveAt > target.lastActiveAt)) {
+						target = c;
+					}
 				}
 			}
 
@@ -12896,8 +12926,8 @@ export class ClientSession {
 					target: abs,
 					phase: "fs",
 					progress: 28,
-					text: `正在同步目录与检查最近会话：${abs}`,
-					textEn: `Validating workspace & checking recent session: ${abs}`,
+					text: openRecent ? `正在同步目录与检查最近会话：${abs}` : `正在切换工作目录：${abs}`,
+					textEn: openRecent ? `Validating workspace & checking recent session: ${abs}` : `Switching workspace: ${abs}`,
 				});
 				this.flushSnapshot();
 				// 让出事件循环，确保首帧进度在同步磁盘扫描前真正发往浏览器
@@ -12916,7 +12946,7 @@ export class ClientSession {
 				// blank instead.
 				let resumeSkipped: SessionOwnerInfo | null = null;
 				// 别处无可见行时不扫目录（首访切项目的常见情形零开销）。
-				if ((this.listExternalRunning?.() ?? []).length > 0) {
+				if (openRecent && (this.listExternalRunning?.() ?? []).length > 0) {
 					try {
 						const recentPath = await findMostRecentSessionFileFast(sessionBaseDir, abs);
 						const recent = recentPath ? resolve(recentPath) : undefined;
@@ -12933,7 +12963,10 @@ export class ClientSession {
 				// #235：manager＋runtime 一起建，转录链损坏时修最近文件后重试一次
 				// （见 openManagerAndRuntime）。blank（别处在跑）是全新空会话，不会坏。
 				const opened = await this.openManagerAndRuntime(
-					() => (resumeSkipped ? SessionManager.create(sessionBaseDir) : SessionManager.continueRecent(sessionBaseDir)),
+					() =>
+						resumeSkipped || !openRecent
+							? SessionManager.create(sessionBaseDir)
+							: SessionManager.continueRecent(sessionBaseDir),
 					(m) =>
 						createAgentSessionRuntime(this.makeRuntimeFactory(terminals, undefined, conversationId), {
 							cwd: sessionBaseDir,
@@ -12981,7 +13014,7 @@ export class ClientSession {
 				// #436：同 switchSession —— 续聊最近会话若从转录回放恢复了 planMode，
 				// 工厂里的门控当时读不到它，注册后补一次。
 				this.applyToolGating(conv.session, conv.agentPreset);
-				if (resumeSkipped) {
+				if (resumeSkipped && openRecent) {
 					this.emit(
 						resumeSkipped.isStreaming
 							? {

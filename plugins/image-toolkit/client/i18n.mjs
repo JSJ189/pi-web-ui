@@ -17,6 +17,11 @@ export const DICT = {
 		"app.clear": "清空",
 		"app.clearConfirm": "清空队列里的全部图片？（不会动工作区里的文件）",
 		"app.ws": "工作区",
+		"app.refresh": "刷新",
+		"mode.gen": "🎨 AI 生图",
+		"mode.edit": "🖼 图片处理",
+		"mode.svc": "🔌 服务商",
+		"mode.cfg": "⚙️ 设置",
 		"sheet.collapse": "收起参数面板",
 		"sheet.expand": "展开参数面板",
 
@@ -28,6 +33,7 @@ export const DICT = {
 		"queue.failed": "解码失败",
 		"queue.fromWs": "工作区",
 		"queue.synced": "已把当前参数同步到 {n} 张",
+		"queue.useAsRef": "用作生图参考图",
 
 		"stage.fit": "适应",
 		"stage.zoomOut": "缩小",
@@ -96,7 +102,8 @@ export const DICT = {
 		"crop.shape.heart": "心形",
 		"crop.shape.star": "星形",
 		"crop.shapeRadius": "圆角半径（% 短边）",
-		"crop.shapeNote": "形状只决定「导出时保留哪一块」：形状外会被裁掉（PNG/WebP 透明、JPEG 用底色填）。裁剪页里图片本身不会被变形，形状以轮廓+压暗呈现，切到「压缩」页就能看到成品。",
+		"crop.shapeNote":
+			"形状只决定「导出时保留哪一块」：形状外会被裁掉（PNG/WebP 透明、JPEG 用底色填）。裁剪页里图片本身不会被变形，形状以轮廓+压暗呈现，切到「压缩」页就能看到成品。",
 		"crop.shapeAlphaWarn": "JPEG 没有透明通道：形状外会被底色填满，抠图效果出不来。",
 		"crop.usePng": "改用 PNG（透明）",
 		"crop.autoAlpha": "形状抠图需要透明：输出格式已自动从「保持原格式」改为 PNG（JPEG 不支持透明，形状外会填底色）",
@@ -173,7 +180,8 @@ export const DICT = {
 		"fl.borderW": "边框宽度（% 短边）",
 		"fl.borderColor": "边框颜色",
 		"fl.reset": "重置滤镜",
-		"fl.note": "亮度/对比度/饱和度/色相/模糊由 GPU 实时预览；锐化与暗角按像素重算（预览用代理分辨率，导出时是全分辨率）。",
+		"fl.note":
+			"亮度/对比度/饱和度/色相/模糊由 GPU 实时预览；锐化与暗角按像素重算（预览用代理分辨率，导出时是全分辨率）。",
 
 		"info.file": "文件",
 		"info.type": "类型",
@@ -206,6 +214,7 @@ export const DICT = {
 		"act.copy": "复制到剪贴板",
 		"act.copyHint": "复制成 PNG（可以直接粘进对话输入框）",
 		"act.saveWs": "保存到工作区",
+		"act.useAsRef": "用作生图参考图",
 		"act.reset": "重置参数",
 		"act.undo": "撤销",
 		"act.redo": "重做",
@@ -264,6 +273,11 @@ export const DICT = {
 		"app.clear": "Clear",
 		"app.clearConfirm": "Clear every image in the queue? (workspace files are untouched)",
 		"app.ws": "workspace",
+		"app.refresh": "Refresh",
+		"mode.gen": "🎨 AI Gen",
+		"mode.edit": "🖼 Image Edit",
+		"mode.svc": "🔌 Providers",
+		"mode.cfg": "⚙️ Settings",
 		"sheet.collapse": "Hide settings panel",
 		"sheet.expand": "Show settings panel",
 
@@ -276,6 +290,7 @@ export const DICT = {
 		"queue.failed": "decode failed",
 		"queue.fromWs": "workspace",
 		"queue.synced": "Settings synced to {n} images",
+		"queue.useAsRef": "Use as reference",
 
 		"stage.fit": "Fit",
 		"stage.zoomOut": "Zoom out",
@@ -345,10 +360,13 @@ export const DICT = {
 		"crop.shape.heart": "Heart",
 		"crop.shape.star": "Star",
 		"crop.shapeRadius": "Corner radius (% of short edge)",
-		"crop.shapeNote": "The shape decides which part is kept when exporting: everything outside it is cut away (transparent in PNG/WebP, background colour in JPEG). The image itself is never warped on the Crop tab — the shape is shown as an outline + dimming; switch to Compress to see the result.",
-		"crop.shapeAlphaWarn": "JPEG has no alpha channel: everything outside the shape is filled with the background colour, so the cut-out never shows.",
+		"crop.shapeNote":
+			"The shape decides which part is kept when exporting: everything outside it is cut away (transparent in PNG/WebP, background colour in JPEG). The image itself is never warped on the Crop tab — the shape is shown as an outline + dimming; switch to Compress to see the result.",
+		"crop.shapeAlphaWarn":
+			"JPEG has no alpha channel: everything outside the shape is filled with the background colour, so the cut-out never shows.",
 		"crop.usePng": "Switch to PNG (transparent)",
-		"crop.autoAlpha": "A shaped cut-out needs transparency: output format switched from “keep original” to PNG (JPEG cannot store transparency and would fill the outside with the background colour).",
+		"crop.autoAlpha":
+			"A shaped cut-out needs transparency: output format switched from “keep original” to PNG (JPEG cannot store transparency and would fill the outside with the background colour).",
 		"status.shapeAlpha": "transparent outside shape",
 		"status.shapeFilled": "outside filled with {c}",
 
@@ -456,6 +474,7 @@ export const DICT = {
 		"act.copy": "Copy to clipboard",
 		"act.copyHint": "Copies as PNG — paste straight into the chat input",
 		"act.saveWs": "Save to workspace",
+		"act.useAsRef": "Use as Gen Reference",
 		"act.reset": "Reset settings",
 		"act.undo": "Undo",
 		"act.redo": "Redo",

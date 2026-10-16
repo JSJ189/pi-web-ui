@@ -114,7 +114,7 @@ import type {
 	PresetShareState,
 } from "../use-chat";
 import { PresetShareModal, type PresetShareTab } from "./PresetShareModal";
-import { appSend, useAppGlobals } from "../app-globals";
+import { appSend, useAppGlobals, useEngineStatuses } from "../app-globals";
 import { countPluginPhases, pluginPhase, type PluginPhase } from "../plugin-phase";
 import {
 	PLUGIN_LOG_LEVELS,
@@ -634,6 +634,8 @@ interface SettingsPatch {
 	showForkedParentSessions?: boolean;
 	/** 结束的对话切换时不自动从运行列表移出（默认 false）。 */
 	retainFinishedConversations?: boolean;
+	/** 切换项目时是否打开该项目最近的会话（默认 true 开）。关 → 切换项目时始终创建空白新对话。 */
+	openRecentSessionOnProjectSwitch?: boolean;
 	devNoCache?: boolean;
 	autoReload?: boolean;
 	skillsFullText?: string[];
@@ -722,6 +724,7 @@ export function SettingsModal({
 	const approvalPolicy = settings?.approvalPolicy;
 	// 全局运行态（引擎 / 受管）：不再从 App 一路传进来，见 web/src/app-globals.ts。
 	const { engine, managed } = useAppGlobals();
+	const engines = useEngineStatuses();
 	// 引擎特性分支判断：动态适应引擎，隐藏不可用的分区
 	const isDsh = engine === "dsh";
 	const isClaude = engine === "claude";
@@ -2083,6 +2086,25 @@ export function SettingsModal({
 								<div className="set-mode-row" role="radiogroup" aria-label={t("settingsEngineSection")}>
 									{SUPPORTED_ENGINES.map((item) => {
 										const isSelected = item.id === engine;
+										const status = engines.find((e) => e.id === item.id);
+										const isInstalled = item.id === "pi" || (status ? status.installed : false);
+										const hasUpdate = Boolean(isInstalled && status?.hasUpdate && status?.latestVersion);
+
+										const handleInstall = (e: React.MouseEvent) => {
+											e.stopPropagation();
+											if (item.installCommand) {
+												runTerminalCommand(t("installEngineTabTitle", { name: item.badge }), item.installCommand);
+											}
+										};
+
+										const handleUpdate = (e: React.MouseEvent) => {
+											e.stopPropagation();
+											const pkg = status?.packageName ?? item.packageName;
+											if (pkg) {
+												runTerminalCommand(t("updateEngineTabTitle", { name: item.badge }), `npm i -g ${pkg}@latest`);
+											}
+										};
+
 										return (
 											<button
 												key={item.id}
@@ -2090,20 +2112,73 @@ export function SettingsModal({
 												role="radio"
 												aria-checked={isSelected}
 												data-testid={`engine-switch-${item.id}`}
-												className={`set-mode-btn${isSelected ? " active" : ""}`}
+												title={!isInstalled ? t("engineInstallTip") : undefined}
+												className={`set-mode-btn${isSelected ? " active" : ""}${!isInstalled ? " uninstalled" : ""}`}
 												onClick={() => {
+													if (!isInstalled) {
+														if (item.installCommand) {
+															runTerminalCommand(t("installEngineTabTitle", { name: item.badge }), item.installCommand);
+														}
+														return;
+													}
 													if (!isSelected)
 														appSend({ type: "switch_engine", engine: item.id as "pi" | "dsh" | "claude" });
 												}}
 											>
-												<div className="set-mode-title">
-													{t(item.titleKey) !== item.badge ? (
-														<>
-															<span style={{ marginRight: 6 }}>{t(item.titleKey)}</span>
+												<div
+													className="set-mode-title"
+													style={{ display: "flex", alignItems: "center", justifyContent: "space-between", gap: 6 }}
+												>
+													<div style={{ display: "inline-flex", alignItems: "center", gap: 6, minWidth: 0 }}>
+														{t(item.titleKey) !== item.badge ? (
+															<>
+																<span>{t(item.titleKey)}</span>
+																<span className={`engine-badge ${item.colorClass}`}>{item.badge}</span>
+															</>
+														) : (
 															<span className={`engine-badge ${item.colorClass}`}>{item.badge}</span>
-														</>
-													) : (
-														<span className={`engine-badge ${item.colorClass}`}>{item.badge}</span>
+														)}
+														{!isInstalled ? (
+															<span className="engine-picker-item-tag uninstalled" style={{ marginLeft: 4 }}>
+																{t("engineNotInstalled")}
+															</span>
+														) : hasUpdate ? (
+															<span
+																className="engine-picker-item-tag update-available"
+																style={{ marginLeft: 4 }}
+																title={t("engineUpdateTip", {
+																	current: status?.version ?? "",
+																	latest: status?.latestVersion ?? "",
+																})}
+															>
+																{t("engineUpdateAvailable")}
+															</span>
+														) : null}
+													</div>
+													{!isInstalled && item.installCommand && (
+														<button
+															type="button"
+															className="engine-picker-install-btn"
+															title={t("engineInstallTip")}
+															onClick={handleInstall}
+														>
+															<FiDownload className="engine-install-icon" />
+															<span>{t("engineInstall")}</span>
+														</button>
+													)}
+													{hasUpdate && (
+														<button
+															type="button"
+															className="engine-picker-update-btn"
+															title={t("engineUpdateTip", {
+																current: status?.version ?? "",
+																latest: status?.latestVersion ?? "",
+															})}
+															onClick={handleUpdate}
+														>
+															<FiRefreshCw className="engine-update-icon" />
+															<span>{t("engineUpdate")}</span>
+														</button>
 													)}
 												</div>
 												<div className="set-mode-desc">{t(item.descKey)}</div>
@@ -2164,6 +2239,25 @@ export function SettingsModal({
 								<div className="set-mode-row" role="radiogroup" aria-label={t("settingsEngineSection")}>
 									{SUPPORTED_ENGINES.map((item) => {
 										const isSelected = item.id === engine;
+										const status = engines.find((e) => e.id === item.id);
+										const isInstalled = item.id === "pi" || (status ? status.installed : false);
+										const hasUpdate = Boolean(isInstalled && status?.hasUpdate && status?.latestVersion);
+
+										const handleInstall = (e: React.MouseEvent) => {
+											e.stopPropagation();
+											if (item.installCommand) {
+												runTerminalCommand(t("installEngineTabTitle", { name: item.badge }), item.installCommand);
+											}
+										};
+
+										const handleUpdate = (e: React.MouseEvent) => {
+											e.stopPropagation();
+											const pkg = status?.packageName ?? item.packageName;
+											if (pkg) {
+												runTerminalCommand(t("updateEngineTabTitle", { name: item.badge }), `npm i -g ${pkg}@latest`);
+											}
+										};
+
 										return (
 											<button
 												key={item.id}
@@ -2171,20 +2265,73 @@ export function SettingsModal({
 												role="radio"
 												aria-checked={isSelected}
 												data-testid={`engine-switch-${item.id}`}
-												className={`set-mode-btn${isSelected ? " active" : ""}`}
+												title={!isInstalled ? t("engineInstallTip") : undefined}
+												className={`set-mode-btn${isSelected ? " active" : ""}${!isInstalled ? " uninstalled" : ""}`}
 												onClick={() => {
+													if (!isInstalled) {
+														if (item.installCommand) {
+															runTerminalCommand(t("installEngineTabTitle", { name: item.badge }), item.installCommand);
+														}
+														return;
+													}
 													if (!isSelected)
 														appSend({ type: "switch_engine", engine: item.id as "pi" | "dsh" | "claude" });
 												}}
 											>
-												<div className="set-mode-title">
-													{t(item.titleKey) !== item.badge ? (
-														<>
-															<span style={{ marginRight: 6 }}>{t(item.titleKey)}</span>
+												<div
+													className="set-mode-title"
+													style={{ display: "flex", alignItems: "center", justifyContent: "space-between", gap: 6 }}
+												>
+													<div style={{ display: "inline-flex", alignItems: "center", gap: 6, minWidth: 0 }}>
+														{t(item.titleKey) !== item.badge ? (
+															<>
+																<span>{t(item.titleKey)}</span>
+																<span className={`engine-badge ${item.colorClass}`}>{item.badge}</span>
+															</>
+														) : (
 															<span className={`engine-badge ${item.colorClass}`}>{item.badge}</span>
-														</>
-													) : (
-														<span className={`engine-badge ${item.colorClass}`}>{item.badge}</span>
+														)}
+														{!isInstalled ? (
+															<span className="engine-picker-item-tag uninstalled" style={{ marginLeft: 4 }}>
+																{t("engineNotInstalled")}
+															</span>
+														) : hasUpdate ? (
+															<span
+																className="engine-picker-item-tag update-available"
+																style={{ marginLeft: 4 }}
+																title={t("engineUpdateTip", {
+																	current: status?.version ?? "",
+																	latest: status?.latestVersion ?? "",
+																})}
+															>
+																{t("engineUpdateAvailable")}
+															</span>
+														) : null}
+													</div>
+													{!isInstalled && item.installCommand && (
+														<button
+															type="button"
+															className="engine-picker-install-btn"
+															title={t("engineInstallTip")}
+															onClick={handleInstall}
+														>
+															<FiDownload className="engine-install-icon" />
+															<span>{t("engineInstall")}</span>
+														</button>
+													)}
+													{hasUpdate && (
+														<button
+															type="button"
+															className="engine-picker-update-btn"
+															title={t("engineUpdateTip", {
+																current: status?.version ?? "",
+																latest: status?.latestVersion ?? "",
+															})}
+															onClick={handleUpdate}
+														>
+															<FiRefreshCw className="engine-update-icon" />
+															<span>{t("engineUpdate")}</span>
+														</button>
 													)}
 												</div>
 												<div className="set-mode-desc">{t(item.descKey)}</div>
@@ -3321,6 +3468,16 @@ export function SettingsModal({
 									onToggle={() =>
 										setPartial({
 											retainFinishedConversations: !(settings.retainFinishedConversations ?? false),
+										})
+									}
+								/>
+								<ToggleRow
+									title={t("openRecentSessionOnProjectSwitch")}
+									tip={t("openRecentSessionOnProjectSwitchDesc")}
+									enabled={settings.openRecentSessionOnProjectSwitch ?? true}
+									onToggle={() =>
+										setPartial({
+											openRecentSessionOnProjectSwitch: !(settings.openRecentSessionOnProjectSwitch ?? true),
 										})
 									}
 								/>

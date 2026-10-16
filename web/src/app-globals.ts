@@ -35,7 +35,7 @@
  */
 
 import { useSyncExternalStore } from "react";
-import type { ClientMessage, ConnStatus, UiServiceInfo, AgentEngineCapabilities } from "./types";
+import type { ClientMessage, ConnStatus, UiServiceInfo, AgentEngineCapabilities, EngineStatus } from "./types";
 
 export const DEFAULT_ENGINE_CAPABILITIES: AgentEngineCapabilities = {
 	remoteSsh: true,
@@ -85,6 +85,8 @@ export interface AppGlobals {
 	desktopDir: string;
 	/** 当前底座能力声明（Capabilities）—— 前端据此自适应隐藏不支持的入口。 */
 	engineCapabilities: AgentEngineCapabilities;
+	/** 引擎安装探测结果列表（包含各引擎是否已在宿主中安装、对应包名与版本）。 */
+	engines?: EngineStatus[];
 }
 
 export const DEFAULT_APP_GLOBALS: AppGlobals = {
@@ -107,6 +109,18 @@ function sameArray(a?: string[], b?: string[]): boolean {
 	if (a === b) return true;
 	if (!a || !b || a.length !== b.length) return false;
 	return a.every((v, i) => v === b[i]);
+}
+
+function sameEngines(a?: EngineStatus[], b?: EngineStatus[]): boolean {
+	if (a === b) return true;
+	if (!a || !b || a.length !== b.length) return false;
+	return a.every(
+		(v, i) =>
+			v.id === b[i].id &&
+			v.installed === b[i].installed &&
+			v.version === b[i].version &&
+			v.packageName === b[i].packageName,
+	);
 }
 
 function sameCapabilities(a?: AgentEngineCapabilities, b?: AgentEngineCapabilities): boolean {
@@ -146,6 +160,7 @@ function same(a: AppGlobals, b: AppGlobals): boolean {
 		a.desktopDir === b.desktopDir &&
 		sameArray(a.tabs, b.tabs) &&
 		sameCapabilities(a.engineCapabilities, b.engineCapabilities) &&
+		sameEngines(a.engines, b.engines) &&
 		// ready 每次重连都会带一份新的 service 对象——比字段，避免白重渲染。
 		a.service?.name === b.service?.name &&
 		a.service?.supervisor === b.service?.supervisor
@@ -206,6 +221,11 @@ export function useAppField<K extends keyof AppGlobals>(key: K): AppGlobals[K] {
 /** 当前是否 DSH 引擎（最常用的那个判断：DSH 缺一堆 pi 才有的能力）。 */
 export function useIsDsh(): boolean {
 	return useAppField("engine") === "dsh";
+}
+
+/** 订阅全部引擎的探测安装状态列表。 */
+export function useEngineStatuses(): EngineStatus[] {
+	return useAppField("engines") ?? [];
 }
 
 /** 实例是否受管（PI_WEB_MANAGED=1）。 */

@@ -49,7 +49,7 @@ export function parsePiVersionOutput(stdout: string): string | null {
 	return stdout.match(/\d+\.\d+\.\d+/)?.[0] ?? null;
 }
 
-export type UpdateItemKind = "webui" | "pi-core" | "package" | "git-extension" | "plugin";
+export type UpdateItemKind = "webui" | "pi-core" | "package" | "git-extension" | "plugin" | "engine";
 
 export interface UpdateItem {
 	name: string;
@@ -624,7 +624,7 @@ export function collectTargets(
 	agentDir: string,
 	webuiVersion: string,
 	probePiCore: () => string | null = defaultProbePiCore,
-	opts?: { projectCwd?: string },
+	opts?: { projectCwd?: string; extraTargets?: LocalPackage[] },
 ): LocalPackage[] {
 	const targets: LocalPackage[] = [{ name: "pi-web-ui", version: webuiVersion, kind: "webui" }];
 	const coreVersion = probePiCore() ?? readVendoredPiCore(agentDir);
@@ -638,6 +638,9 @@ export function collectTargets(
 		kind: "pi-core",
 		...(coreVersion ? {} : { error: "pluginupdate.piCore.unknown" }),
 	});
+	if (opts?.extraTargets && opts.extraTargets.length > 0) {
+		targets.push(...opts.extraTargets);
+	}
 	targets.push(...listInstalledPackages(agentDir).filter((pkg) => !isHostProvidedPackage(pkg.name)));
 	targets.push(...listGitExtensions(agentDir, opts?.projectCwd));
 	return targets;
@@ -867,7 +870,8 @@ export async function checkAll(
  *  up-to-date ones, errors last. Stable within each bucket (Array.sort is
  *  stable) so registry order survives ties. */
 export function sortUpdateItems(items: UpdateItem[]): UpdateItem[] {
-	const kindRank = (k: UpdateItemKind): number => (k === "webui" ? 0 : k === "pi-core" ? 1 : k === "plugin" ? 2 : 3);
+	const kindRank = (k: UpdateItemKind): number =>
+		k === "webui" ? 0 : k === "pi-core" ? 1 : k === "engine" ? 2 : k === "plugin" ? 3 : 4;
 	return [...items].sort((a, b) => {
 		const ka = kindRank(a.kind);
 		const kb = kindRank(b.kind);

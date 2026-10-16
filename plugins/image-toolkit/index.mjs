@@ -1,26 +1,13 @@
 /**
- * image-toolkit 服务端入口 —— 工作区图片读写通道 + 4 个 AI 工具。
+ * image-toolkit 服务端入口 —— 一体化 AI 生图与图像处理工作台。
  *
- * 分工（重要）：像素处理的主力在**浏览器侧**（🖼 视图用 Canvas，零依赖、格式支持最全，
- * PNG/JPEG/WebP/GIF/AVIF 都能解）。本文件只做浏览器做不了的两件事：
- *
- *   1. 工作区集成 —— 给视图提供 HTTP 路由（host.route，暴露为
- *      /plugins-api/image-toolkit/*）：列目录 / 读图（原始字节，不走 base64）/
- *      存图（原始字节）/ 读元数据 / 读插件内部配置（GET）+ 存配置（POST）。
- *      全部走 host.fs，路径锚定当前工作区、越界拒绝（视图里那份是内存副本，
- *      写完文件树由主应用 watcher 刷新）。
- *
- *  配置存在插件自己的 storage（"config" 键），在 🖼 视图右上角 ⚙ 里改 ——
- *  不再走 ⚙ 面板 → 界面插件的声明式 settings（manifest 已删 settings，
- *  那里不再出现本插件）。
- *
- *   2. AI 工具 —— 让 agent 直接对工作区里的图片干活：用插件自带的**纯 JS 编解码**
- *      （PNG / BMP 自己实现，见 core/）+ 可选的纯 JS JPEG 包 jpeg-js（经
- *      host.ensureDeps 一次性安装到插件目录，视图 ⚙ 设置里可关）。WebP / GIF / AVIF
- *      的像素处理只在视图里提供，工具会给出明确提示而不是静默失败。
- *
- * 四个工具：image_info / image_transform / image_compress / image_watermark。
- * 都接受单文件 path 或批量 paths，支持 out / outDir / suffix / overwrite 命名控制。
+ * 核心能力：
+ *   1. 图像处理 —— 工作区图片读写、压缩（目标体积二分逼近）、裁剪、缩放、旋转、
+ *      图片水印、滤镜调色、EXIF 解析与直方图分析；
+ *   2. AI 生图 —— 多形状多端点 AI 生图（通义万相、FLUX、OpenAI、Google Imagen/Gemini、
+ *      智谱 CogView、火山豆包、Stability、ComfyUI、Antigravity 反代等），支持文生图与图生图；
+ *   3. AI 供应商配置 —— AI 智能体可直接配置、更新、测试生图服务商与模型（image_config_service）；
+ *   4. 无缝流转 —— 生图产物可直接传给图像处理工具二次加工，处理产物可作为参考图回传生图。
  */
 import { createRequire } from "node:module";
 import { basename, dirname, extname, join, resolve, sep } from "node:path";
@@ -37,47 +24,58 @@ import {
 	rotateArbitrary,
 	rotateImage,
 } from "./core/ops.mjs";
+import {
+	PRESETS,
+	defaultConfig as defaultGenConfig,
+	maskConfig,
+	normalizeConfig as normalizeGenConfig,
+	normalizeService,
+	pickService,
+	presetService,
+	secretKey,
+	findServiceInConfig,
+	upsertServiceInConfig,
+	removeServiceFromConfig,
+} from "./core/gen-config.mjs";
+import { planOutputPaths } from "./core/gen-output.mjs";
+import { ProviderError, SHAPE_LIST, generateImage, probeService } from "./core/gen-providers.mjs";
+import * as GU from "./core/gen-util.mjs";
 
 /** 认得的图片扩展名（列目录与 AI 扫描用）。 */
 const IMAGE_EXT = new Set([".png", ".jpg", ".jpeg", ".webp", ".gif", ".bmp", ".avif", ".svg", ".ico"]);
-
-/** 服务端**能**解码的格式（其余只能回浏览器）。 */
+/** 服务端能解码与编码的格式。 */
 const SERVER_DECODE = new Set(["png", "jpeg", "bmp"]);
-/** 服务端**能**编码的格式（quality 只对 jpeg 有意义）。 */
 const SERVER_ENCODE = new Set(["png", "jpeg", "bmp"]);
-
-/** 输出扩展名（jpeg → jpg，跟大多数站点/工具一致）。 */
 const EXT_OF = { jpeg: "jpg", png: "png", bmp: "bmp", webp: "webp", avif: "avif", gif: "gif" };
-
-/** 解码像素上限：防手滑传个 200MP 的图把服务进程吃爆。 */
 const MAX_PIXELS = 64_000_000;
+const MAX_REF_BYTES = 24 * 1024 * 1024;
+const JOB_CAP = 30;
+const MODEL_IMAGE_CAP = 4;
+const MAX_BODY_BYTES = 15 * 1024 * 1024;
 
 const isImageName = (name) => IMAGE_EXT.has(extname(name).toLowerCase());
 
-/** 统一成 posix 风格的相对路径（AI 常写 a\b.png；也容忍 ./a.png）。 */
 function normalizeRel(p) {
 	return String(p ?? "")
 		.replace(/\\/g, "/")
 		.replace(/^\.\//, "")
+		.replace(/^\/+/, "")
 		.trim();
 }
 
-/** 人类可读的体积。 */
 function fmtBytes(n) {
-	if (!Number.isFinite(n)) return "?";
+	if (!Number.isFinite(n) || n < 0) return "?";
 	if (n < 1024) return `${n} B`;
 	if (n < 1024 * 1024) return `${(n / 1024).toFixed(1)} KB`;
 	return `${(n / 1024 / 1024).toFixed(2)} MB`;
 }
 
-/** 展示用路径：工作区内尽量相对（更短更好读）。 */
 function pretty(cwd, rel) {
 	const abs = resolve(cwd, rel);
 	const relToCwd = abs.startsWith(resolve(cwd) + sep) ? abs.slice(resolve(cwd).length + 1) : abs;
 	return relToCwd.split(sep).join("/");
 }
 
-/** 颜色："#rrggbb" / "#rrggbbaa" / [r,g,b,a] → [r,g,b,a]。 */
 function parseColor(c) {
 	if (Array.isArray(c)) {
 		const [r, g, b, a = 255] = c.map(Number);
@@ -95,7 +93,6 @@ function parseColor(c) {
 	];
 }
 
-/** 工具入参里的路径列表：path / paths 二选一，去重去空。 */
 function pathList(params) {
 	const raw = [];
 	if (typeof params.path === "string" && params.path.trim()) raw.push(params.path);
@@ -113,8 +110,10 @@ function pathList(params) {
 
 export default {
 	activate(host) {
-		/** 插件内部配置（host.storage 的 "config" 键；视图右上角 ⚙ 里改）。 */
-		const DEFAULTS = {
+		// ------------------------------------------------------------------
+		// 1. 配置管理（处理配置 + 生图配置）
+		// ------------------------------------------------------------------
+		const TOOLKIT_DEFAULTS = {
 			defaultFormat: "keep",
 			quality: 0.82,
 			maxDim: 0,
@@ -122,12 +121,10 @@ export default {
 			overwrite: false,
 			aiTools: true,
 			allowServerDeps: true,
-			// 写路由额外放行的 Origin（反代/远程访问场景同源对不上时用；小写）。
 			allowedOrigins: [],
 		};
 
-		/** 入库前归一化：坏值回默认值，绝不让脏配置把工具/视图带崩。 */
-		function normalizeConfig(raw) {
+		function normalizeToolkitConfig(raw) {
 			const r = raw && typeof raw === "object" && !Array.isArray(raw) ? raw : {};
 			const fmt = String(r.defaultFormat ?? "keep");
 			const q = Number(r.quality ?? 0.82);
@@ -145,9 +142,7 @@ export default {
 			};
 		}
 
-		/** 读配置：storage.config 为准；空时把老版本 ⚙ 面板声明式设置
-		 *  （storage.json "settings" 键）搬过来（一次性迁移），再空就全默认。 */
-		function loadConfig() {
+		function loadToolkitConfig() {
 			let stored = {};
 			try {
 				stored = host.storage?.get("config", {}) ?? {};
@@ -155,7 +150,7 @@ export default {
 				stored = {};
 			}
 			if (stored && typeof stored === "object" && !Array.isArray(stored) && Object.keys(stored).length) {
-				return normalizeConfig({ ...DEFAULTS, ...stored });
+				return normalizeToolkitConfig({ ...TOOLKIT_DEFAULTS, ...stored });
 			}
 			let legacy = {};
 			try {
@@ -163,55 +158,113 @@ export default {
 			} catch {
 				legacy = {};
 			}
-			// manifest 已删声明式 settings，getSettings() 恒回 {} —— 再从 storage
-			// 整表里直接找老 "settings" 键（与 storage.config 同文件，不冲突）。
-			if (!legacy || typeof legacy !== "object" || !Object.keys(legacy).length) {
-				try {
-					const all = host.storage?.all?.() ?? {};
-					if (all && typeof all === "object" && all.settings && typeof all.settings === "object") {
-						legacy = all.settings;
-					}
-				} catch {
-					/* 读不到就当没有，不致命 */
-				}
-			}
 			if (legacy && typeof legacy === "object" && Object.keys(legacy).length) {
-				const migrated = normalizeConfig({ ...DEFAULTS, ...legacy });
+				const migrated = normalizeToolkitConfig({ ...TOOLKIT_DEFAULTS, ...legacy });
 				try {
 					host.storage?.set("config", migrated);
 				} catch {
-					/* 存不上就每次迁移一次，不致命 */
+					/* 忽略 */
 				}
-				host.log("已从老版本 ⚙ 面板设置迁移到插件内部配置");
 				return migrated;
 			}
-			return { ...DEFAULTS };
+			return { ...TOOLKIT_DEFAULTS };
 		}
 
-		let cfg = loadConfig();
+		let cfg = loadToolkitConfig();
 
-		/** 存配置：归一化 → 落盘 → 广播给视图 → 按需上/下架 AI 工具。 */
-		function saveConfig(patch) {
-			cfg = normalizeConfig({
+		function saveToolkitConfig(patch) {
+			cfg = normalizeToolkitConfig({
 				...cfg,
 				...(patch && typeof patch === "object" && !Array.isArray(patch) ? patch : {}),
 			});
 			try {
 				host.storage?.set("config", cfg);
 			} catch (err) {
-				host.log("配置保存失败：", err);
+				host.log("warn", "配置保存失败：", err);
 			}
 			host.broadcast({ kind: "settings", values: cfg });
 			syncTools();
 			return cfg;
 		}
 
-		/** AI 工具注销函数（设置里关掉「让 AI 处理图片」时用）。 */
-		let offTools = [];
-		let toolsOn = false;
+		// 生图配置独立键管理
+		let genCfg = normalizeGenConfig(readGenStored());
+
+		function readGenStored() {
+			try {
+				const fromGen = host.storage?.get("genConfig", null);
+				if (fromGen && typeof fromGen === "object") return fromGen;
+				// 兼容：若老生图插件迁移过来或在 storage 根配置中
+				const fromRoot = host.storage?.get("config", {});
+				if (Array.isArray(fromRoot?.services)) return fromRoot;
+				return {};
+			} catch {
+				return {};
+			}
+		}
+
+		function persistGen() {
+			try {
+				host.storage?.set("genConfig", genCfg);
+			} catch (err) {
+				host.log("warn", "生图配置保存失败：", err);
+			}
+		}
+
+		function keyOf(id) {
+			try {
+				return host.secrets?.get(secretKey(id)) ?? "";
+			} catch {
+				return "";
+			}
+		}
+
+		const hasKey = (id) => {
+			try {
+				return Boolean(host.secrets?.has(secretKey(id)));
+			} catch {
+				return false;
+			}
+		};
+
+		function publicGenConfig() {
+			return maskConfig(genCfg, hasKey);
+		}
+
+		function saveGenConfig(body) {
+			const next = normalizeGenConfig(body?.config);
+			if (!next.services.some((s) => s.id === next.defaultService)) next.defaultService = "";
+			genCfg = next;
+			persistGen();
+			const keys = body?.apiKeys && typeof body.apiKeys === "object" ? body.apiKeys : {};
+			for (const [id, key] of Object.entries(keys)) {
+				const sid = GU.slugId(id);
+				if (!genCfg.services.some((s) => s.id === sid)) continue;
+				try {
+					if (typeof key === "string" && key.trim()) host.secrets?.set(secretKey(sid), key.trim());
+					else if (key === "" || key === null) host.secrets?.delete(secretKey(sid));
+				} catch (err) {
+					host.log("warn", `保存 ${sid} 的密钥失败：`, err);
+				}
+			}
+			host.broadcast({ kind: "config", config: publicGenConfig() });
+			return publicGenConfig();
+		}
+
+		function addGenService(presetId) {
+			const svc = presetService(
+				presetId,
+				genCfg.services.map((s) => s.id),
+			);
+			genCfg = normalizeGenConfig({ ...genCfg, services: [...genCfg.services, svc] });
+			if (!genCfg.defaultService) genCfg.defaultService = svc.id;
+			persistGen();
+			host.broadcast({ kind: "config", config: publicGenConfig() });
+			return { service: svc, config: publicGenConfig() };
+		}
 
 		// ------------------------------------------------------------------
-		// JPEG 编解码器：纯 JS 的 jpeg-js，首次用到时才装（插件目录内）
+		// 2. 图像处理核心（解码/缩放/裁剪/滤镜/水印/落盘）
 		// ------------------------------------------------------------------
 		let jpegTried = false;
 		async function ensureJpeg() {
@@ -229,12 +282,11 @@ export default {
 				host.log("jpeg-js 已就绪（服务端可处理 JPEG）");
 				return true;
 			} catch (err) {
-				host.log("jpeg-js 加载失败：", err);
+				host.log("warn", "jpeg-js 加载失败：", err);
 				return false;
 			}
 		}
 
-		/** 读 + 解码工作区图片（不支持的格式给出可执行的建议）。 */
 		async function loadImage(rel) {
 			const buf = await host.fs.read(rel);
 			const format = sniffFormat(buf);
@@ -253,7 +305,6 @@ export default {
 			return { buf, format, img };
 		}
 
-		/** 列出目录（相对工作区），只回一层；给 AI 扫描与视图浏览共用。 */
 		async function listDir(relDir) {
 			const entries = await host.fs.list(relDir);
 			return entries
@@ -271,7 +322,6 @@ export default {
 				});
 		}
 
-		/** 递归扫描目录里的图片（AI 工具用；深度与数量都封顶）。 */
 		async function scanImages(relDir, depth, acc, depthLimit = 3) {
 			const entries = await listDir(relDir).catch(() => []);
 			for (const e of entries) {
@@ -285,7 +335,6 @@ export default {
 			return acc;
 		}
 
-		/** 输出相对路径：out 显式 > outDir + 新名 > 同目录 + 后缀；同名自动 -1/-2。 */
 		async function resolveOutPath(rel, ext, o) {
 			const suffix = typeof o.suffix === "string" ? o.suffix : String(cfg.suffix ?? "-min");
 			const explicit = Boolean(o.out);
@@ -312,7 +361,6 @@ export default {
 			return relOut;
 		}
 
-		/** 编码并落盘；返回结果摘要。 */
 		async function writeImage(img, format, quality, rel, o) {
 			if (!SERVER_ENCODE.has(format)) {
 				throw new Error(`服务端只能写出 PNG / JPEG / BMP，不能写 ${format}（WebP/AVIF 请在 🖼 视图里导出）。`);
@@ -323,16 +371,11 @@ export default {
 			return { out: pretty(host.cwd, relOut), outRel: relOut, bytes: buf.length };
 		}
 
-		/**
-		 * 单个文件的处理主流程：解码 → 一串几何/调色操作 → 编码落盘。
-		 * 返回值给工具拼文本摘要，也是为了批量时能逐项报错而不整体失败。
-		 */
 		async function processOne(rel, plan, o) {
 			const { buf: srcBuf, format: srcFormat, img: src } = await loadImage(rel);
 			let img = src;
 			const steps = [];
 
-			// 1) 旋转/翻转（几何，最先——裁剪坐标是「旋转后」的坐标系）
 			if (plan.rotate) {
 				img = rotateImage(img, Number(plan.rotate));
 				steps.push(`旋转 ${Number(plan.rotate)}°`);
@@ -346,7 +389,6 @@ export default {
 				img = rotateArbitrary(img, Number(plan.angle), { background: bg });
 				steps.push(`任意角度 ${Number(plan.angle)}°`);
 			}
-			// 2) 裁剪
 			if (plan.crop) {
 				const c = plan.crop;
 				img = cropImage(img, {
@@ -357,7 +399,6 @@ export default {
 				});
 				steps.push(`裁剪 ${img.width}×${img.height}`);
 			}
-			// 3) 缩放
 			if (plan.resize) {
 				const r = plan.resize;
 				const before = { w: img.width, h: img.height };
@@ -378,7 +419,6 @@ export default {
 					target.width = r.width ? Number(r.width) : undefined;
 					target.height = r.height ? Number(r.height) : undefined;
 				}
-				// 不放大：目标比原图还大时保持原样。例外：同时显式给了宽和高 = 明确要这个尺寸，放行。
 				const willUp = (target.width ?? img.width) > img.width || (target.height ?? img.height) > img.height;
 				const exactBoth = Boolean(r.width && r.height);
 				if (r.noUpscale === false || exactBoth || !willUp) {
@@ -386,13 +426,10 @@ export default {
 					steps.push(`缩放 ${before.w}×${before.h} → ${img.width}×${img.height}`);
 				}
 			}
-			// 4) 调色/滤镜
 			if (plan.adjust && Object.keys(plan.adjust).length) {
 				img = adjustImage(img, plan.adjust);
 				steps.push(`滤镜 ${Object.keys(plan.adjust).join("/")}`);
 			}
-
-			// 5) 水印（图片水印：叠加层的路径同样相对工作区）
 			if (plan.watermarkPath) {
 				const wmRel = normalizeRel(plan.watermarkPath);
 				const { img: wm } = await loadImage(wmRel);
@@ -424,7 +461,6 @@ export default {
 				steps.push(`水印 ${wmRel} @${position}`);
 			}
 
-			// 6) 输出格式与质量
 			const format = String(o.format ?? cfg.defaultFormat ?? "keep");
 			const outFormat = !format || format === "keep" ? (SERVER_ENCODE.has(srcFormat) ? srcFormat : "png") : format;
 			const quality = Math.round(Math.min(1, Math.max(0.05, Number(o.quality ?? cfg.quality ?? 0.82))) * 100);
@@ -444,7 +480,6 @@ export default {
 			};
 		}
 
-		/** 批量跑 processOne：单项失败不炸整批（结果里带 error）。 */
 		async function processMany(rels, plan, o) {
 			const results = [];
 			for (const rel of rels) {
@@ -457,7 +492,6 @@ export default {
 			return results;
 		}
 
-		/** 结果 → 给模型看的文本摘要。 */
 		function summarize(results, title) {
 			const ok = results.filter((r) => !r.error);
 			const bad = results.filter((r) => r.error);
@@ -472,15 +506,254 @@ export default {
 		}
 
 		// ------------------------------------------------------------------
-		// AI 工具注册（可用设置开关动态上/下架）
+		// 3. AI 生图执行与任务管理
+		// ------------------------------------------------------------------
+		async function loadRefs(paths) {
+			const list = (Array.isArray(paths) ? paths : []).map(GU.normalizeRel).filter(Boolean).slice(0, 8);
+			const out = [];
+			let total = 0;
+			for (const rel of list) {
+				let buf;
+				try {
+					buf = await host.fs.read(rel);
+				} catch (err) {
+					throw new Error(`参考图读不到：${rel}（${err instanceof Error ? err.message : String(err)}）`);
+				}
+				total += buf.length;
+				if (total > MAX_REF_BYTES) throw new Error("参考图总大小超过 24MB，请先压缩");
+				const mime = GU.sniffImageMime(buf) || GU.extToMime(extname(rel));
+				if (!/^image\//.test(mime)) throw new Error(`参考图不是图片格式：${rel}`);
+				out.push({ name: rel.split("/").pop() || "ref.png", mimeType: mime, data: buf });
+			}
+			return out;
+		}
+
+		function signalFor(service, external) {
+			const ms = (service.timeoutSec > 0 ? service.timeoutSec : genCfg.timeoutSec) * 1000;
+			const timeout = AbortSignal.timeout(ms);
+			if (!external) return timeout;
+			try {
+				return AbortSignal.any([external, timeout]);
+			} catch {
+				return timeout;
+			}
+		}
+
+		async function runGeneration(input, opts = {}) {
+			const service = pickService(genCfg, input?.service);
+			if (!service) {
+				const want = GU.slugId(input?.service, "");
+				const known = want ? (genCfg.services ?? []).find((s) => s.id === want) : null;
+				throw new Error(
+					known
+						? `服务 ${want} 已停用：请到视图或用 image_config_service 重新启用它`
+						: "还没有配置生图服务：请用 image_config_service 配置，或到视图添加一个服务商",
+				);
+			}
+			const prompt = GU.str(input?.prompt);
+			if (!prompt) throw new Error("prompt 不能为空");
+			const key = keyOf(service.id);
+			const refs = await loadRefs(input?.references);
+			const model = GU.str(input?.model) || service.defaultModel || "";
+			const size = GU.str(input?.size) || service.defaultSize || "";
+			const quality = GU.str(input?.quality) || service.defaultQuality || "";
+			const n = GU.clampInt(input?.n ?? 1, 1, genCfg.maxImages, 1);
+			const started = Date.now();
+			opts.onProgress?.({ stage: "start", detail: `${service.name} / ${model || "默认模型"}` });
+
+			const result = await generateImage(
+				service,
+				{ prompt, negative: input?.negative, model, size, quality, n, seed: input?.seed, refs, extra: input?.extra },
+				{
+					fetch: globalThis.fetch,
+					key,
+					timeoutMs: (service.timeoutSec > 0 ? service.timeoutSec : genCfg.timeoutSec) * 1000,
+					signal: signalFor(service, opts.signal),
+					onProgress: (ev) => opts.onProgress?.(ev),
+					readText: async (rel) => host.fs.readText(GU.normalizeRel(rel), 512 * 1024),
+				},
+			);
+
+			const planned = await planOutputPaths({
+				images: result.images,
+				out: input?.out,
+				outDir: input?.outDir,
+				outputDir: genCfg.outputDir,
+				template: genCfg.filenameTemplate,
+				prompt,
+				model,
+				exists: async (rel) => {
+					try {
+						await host.fs.stat(rel);
+						return true;
+					} catch {
+						return false;
+					}
+				},
+			});
+			const files = [];
+			for (const p of planned) {
+				const dir = dirname(p.rel);
+				if (dir && dir !== ".") {
+					try {
+						await host.fs.mkdir(dir);
+					} catch {
+						/* 已存在忽略 */
+					}
+				}
+				await host.fs.write(p.rel, p.img.data);
+				files.push({
+					path: p.rel,
+					bytes: p.img.data.length,
+					mime: GU.sniffImageMime(p.img.data) || p.img.mimeType || "image/png",
+				});
+			}
+			host.log(
+				`已生成 ${files.length} 张（${service.id} / ${model || "默认"}，${((Date.now() - started) / 1000).toFixed(1)}s）`,
+			);
+			return {
+				service: { id: service.id, name: service.name, shape: service.shape },
+				model,
+				size,
+				quality,
+				files,
+				text: GU.str(result.text).slice(0, 1500),
+				ms: Date.now() - started,
+				partial: Boolean(result.meta?.partial),
+			};
+		}
+
+		let jobs = loadJobsHistory();
+		function loadJobsHistory() {
+			try {
+				const raw = host.storage?.get("history", []);
+				return Array.isArray(raw) ? raw.filter((j) => j && typeof j === "object").slice(0, JOB_CAP) : [];
+			} catch {
+				return [];
+			}
+		}
+		function persistJobsHistory() {
+			try {
+				host.storage?.set(
+					"history",
+					jobs.slice(0, JOB_CAP).map((j) => ({ ...j, stage: undefined, detail: undefined })),
+				);
+			} catch {
+				/* 忽略 */
+			}
+		}
+		function publicJobs() {
+			return jobs.slice(0, JOB_CAP);
+		}
+		function pushJob(job) {
+			jobs = [job, ...jobs.filter((j) => j.id !== job.id)].slice(0, JOB_CAP);
+			host.broadcast({ kind: "jobs", jobs: publicJobs() });
+			return job;
+		}
+
+		function startJob(input) {
+			const job = {
+				id: `j${GU.randomHex(6)}`,
+				status: "running",
+				stage: "queued",
+				detail: "",
+				prompt: GU.truncate(GU.str(input?.prompt), 200),
+				serviceId: GU.str(input?.service),
+				model: GU.str(input?.model),
+				size: GU.str(input?.size),
+				quality: GU.str(input?.quality),
+				n: GU.clampInt(input?.n ?? 1, 1, genCfg.maxImages, 1),
+				startedAt: Date.now(),
+				ms: 0,
+				files: [],
+				error: "",
+			};
+			pushJob(job);
+			const done = (patch) => pushJob({ ...job, ...patch });
+			runGeneration(input, {
+				onProgress: (ev) =>
+					done({ stage: GU.str(ev?.stage) || "running", detail: GU.truncate(GU.str(ev?.detail), 120) }),
+			})
+				.then((r) => {
+					done({
+						status: "done",
+						stage: "done",
+						detail: "",
+						ms: r.ms,
+						files: r.files,
+						text: r.text,
+						partial: r.partial,
+						model: r.model || job.model,
+					});
+					persistJobsHistory();
+					if (r.files.length) {
+						host.notify(
+							"info",
+							`已生成 ${r.files.length} 张图片：${r.files[0].path}`,
+							`Generated ${r.files.length} image(s): ${r.files[0].path}`,
+						);
+					}
+				})
+				.catch((err) => {
+					done({
+						status: "error",
+						stage: "error",
+						error: GU.truncate(err instanceof Error ? err.message : String(err), 800),
+						ms: Date.now() - job.startedAt,
+					});
+					persistJobsHistory();
+				});
+			return job.id;
+		}
+
+		function servicesText() {
+			const list = genCfg.services ?? [];
+			if (!list.length) {
+				return "No image service configured yet. You can configure one with `image_config_service` (presets: dashscope, siliconflow, openai, google, openrouter, ark, zhipu, stability, comfyui, antigravity).";
+			}
+			const lines = list.map((s) => {
+				const bits = [
+					`${s.id}${s.id === genCfg.defaultService ? " (default)" : ""}${s.enabled === false ? " [disabled]" : ""}`,
+					`shape=${s.shape}`,
+					`base=${s.baseUrl || "-"}`,
+					`models=${s.models.length ? s.models.join("|") : "(any)"}`,
+					s.defaultModel ? `defaultModel=${s.defaultModel}` : "",
+					s.sizes?.length ? `sizes=${s.sizes.join("|")}` : "",
+					s.defaultSize ? `defaultSize=${s.defaultSize}` : "",
+					s.qualities?.length ? `qualities=${s.qualities.join("|")}` : "",
+					s.defaultQuality ? `defaultQuality=${s.defaultQuality}` : "",
+					SHAPE_LIST.find((x) => x.id === s.shape)?.caps?.edit === true ? "references=yes" : "references=no",
+					hasKey(s.id) ? "apiKey=set" : "apiKey=missing",
+				];
+				return `- ${bits.filter(Boolean).join(" ")}`;
+			});
+			return `Configured image services (${list.length}):\n${lines.join("\n")}\nOutput dir: ${genCfg.outputDir}/`;
+		}
+
+		async function imageBlocks(files) {
+			if (genCfg.returnImage === false) return [];
+			const blocks = [];
+			for (const f of files.slice(0, MODEL_IMAGE_CAP)) {
+				try {
+					const buf = await host.fs.read(f.path);
+					blocks.push({ type: "image", data: buf.toString("base64"), mimeType: GU.sniffImageMime(buf) || f.mime });
+				} catch {
+					/* 忽略 */
+				}
+			}
+			return blocks;
+		}
+
+		// ------------------------------------------------------------------
+		// 4. 7 个 AI 工具定义与无缝流转打通
 		// ------------------------------------------------------------------
 		const TOOLS = [
+			// 4.1 图片信息
 			{
 				name: "image_info",
 				label: "图片信息",
 				description:
-					"Inspect images in the workspace: format, pixel size, aspect ratio, file bytes, alpha, EXIF (camera/exposure/GPS), plus histogram/dominant colors on request. " +
-					"Accepts one path, several paths, or a directory to scan.",
+					"Inspect images in the workspace: format, pixel size, aspect ratio, file bytes, alpha, EXIF (camera/exposure/GPS), plus histogram/dominant colors on request. Accepts one path, several paths, or a directory to scan.",
 				promptSnippet: "inspect an image's size/format/EXIF",
 				promptGuidelines: [
 					"Before compressing or cropping an image, call image_info to learn its real dimensions and format.",
@@ -500,7 +773,6 @@ export default {
 				async execute(_id, params) {
 					const rels0 = pathList(params);
 					const dir = typeof params.dir === "string" ? normalizeRel(params.dir) : "";
-					// dir 显式给了就扫（空串 = 工作区根目录，也要扫）
 					if (typeof params.dir === "string") {
 						const found = await scanImages(dir, 0, []);
 						for (const f of found) if (!rels0.includes(f)) rels0.push(f);
@@ -554,18 +826,20 @@ export default {
 					return { content: [{ type: "text", text: JSON.stringify(rows, null, 2) }], details: { count: rows.length } };
 				},
 			},
+
+			// 4.2 几何变换与调色
 			{
 				name: "image_transform",
 				label: "图片几何/调色",
 				description:
-					"Transform workspace images: resize (width/height/longEdge/percent), crop, rotate 90/arbitrary, flip, and per-pixel adjust (brightness/contrast/saturation/hue/gamma/grayscale/sepia/invert/blur/sharpen/vignette). " +
-					"PNG/JPEG/BMP only — WebP/GIF/AVIF belong in the 🖼 view.",
+					"Transform workspace images: resize (width/height/longEdge/percent), crop, rotate 90/arbitrary, flip, and per-pixel adjust (brightness/contrast/saturation/hue/gamma/grayscale/sepia/invert/blur/sharpen/vignette). Output can directly be fed to image_generate references for img2img restyling.",
 				promptSnippet: "resize / crop / rotate / adjust images",
 				promptGuidelines: [
 					"image_transform never overwrites the source unless overwrite=true; by default it writes <name><suffix>.<ext> next to the original (or into outDir).",
 					"Crop coordinates from image_info are 1:1 pixels of the *current* file; if you also rotate, crop applies after rotation.",
 					"For 'make the long edge 1600px' use resize.longEdge=1600 (noUpscale defaults to true).",
 					"Passing both resize.width and resize.height means exact dimensions — that overrides the no-upscale default.",
+					"Output images can be passed directly as `references` to `image_generate` for image-to-image variations.",
 				],
 				parameters: {
 					type: "object",
@@ -578,22 +852,18 @@ export default {
 						},
 						resize: {
 							type: "object",
-							description: "Resize. Give one of: width/height (px), longEdge (px, the longer side), percent (%).",
+							description: "Target dimension (pick one mode).",
 							properties: {
 								width: { type: "number" },
 								height: { type: "number" },
-								longEdge: { type: "number" },
-								percent: { type: "number" },
-								noUpscale: {
-									type: "boolean",
-									description:
-										"Default true: never enlarge beyond the source. Ignored when both width and height are given.",
-								},
+								longEdge: { type: "number", description: "Set the longer edge; shorter edge keeps aspect ratio." },
+								percent: { type: "number", description: "Scale percentage: 50 = half size." },
+								noUpscale: { type: "boolean", description: "Default true: do not enlarge beyond original size." },
 							},
 						},
 						crop: {
 							type: "object",
-							description: "Crop rectangle in pixels of the rotated image (top-left origin).",
+							description: "Pixel-exact box (applied after rotation).",
 							properties: {
 								x: { type: "number" },
 								y: { type: "number" },
@@ -601,99 +871,97 @@ export default {
 								height: { type: "number" },
 							},
 						},
-						rotate: { type: "number", description: "90/180/270 (clockwise degrees)." },
-						flip: { type: "string", enum: ["h", "v"], description: "Horizontal or vertical mirror." },
-						angle: {
-							type: "number",
-							description: "Arbitrary rotation in degrees (canvas expands, background param fills).",
-						},
+						rotate: { type: "number", enum: [90, 180, 270], description: "Clockwise 90-degree step." },
+						flip: { type: "string", enum: ["h", "v"], description: "Flip horizontally or vertically." },
+						angle: { type: "number", description: "Arbitrary angle in degrees (expands canvas)." },
 						background: {
 							type: "string",
-							description: "Fill for arbitrary rotation, e.g. #ffffff or #ffffff00 (default transparent).",
+							description: "Background color for arbitrary rotation padding, e.g. #ffffff.",
 						},
 						adjust: {
 							type: "object",
-							description: "Per-pixel adjustments. Percentages default to 100 (=unchanged), strength fields 0..100.",
+							description: "Per-pixel color/filter tweaks.",
 							properties: {
-								brightness: { type: "number" },
-								contrast: { type: "number" },
-								saturation: { type: "number" },
-								hue: { type: "number", description: "Degrees, -180..180" },
-								gamma: { type: "number" },
-								grayscale: { type: "number" },
-								sepia: { type: "number" },
-								invert: { type: "number" },
-								blur: { type: "number", description: "0..50 px radius" },
-								sharpen: { type: "number" },
-								vignette: { type: "number" },
+								brightness: { type: "number", description: "-100..100 (0 = keep)" },
+								contrast: { type: "number", description: "-100..100" },
+								saturation: { type: "number", description: "-100..100" },
+								hue: { type: "number", description: "-180..180 degrees" },
+								gamma: { type: "number", description: "0.1..3.0 (1 = keep)" },
+								grayscale: { type: "number", description: "0..100%" },
+								sepia: { type: "number", description: "0..100%" },
+								invert: { type: "number", description: "0..100%" },
+								blur: { type: "number", description: "Radius in px (0..20)" },
+								sharpen: { type: "number", description: "0..100%" },
+								vignette: { type: "number", description: "0..100%" },
+								roundCorners: { type: "number", description: "Corner radius in px" },
+								borderWidth: { type: "number", description: "Border width in px" },
+								borderColor: { type: "string", description: "Border hex color, e.g. #000000" },
 							},
 						},
-						format: {
+						watermarkPath: { type: "string", description: "Overlay an image watermark." },
+						position: {
 							type: "string",
-							enum: ["png", "jpeg", "bmp", "keep"],
-							description: "Output format (default: plugin setting / keep).",
+							enum: ["tl", "tc", "tr", "ml", "center", "mr", "bl", "bc", "br"],
+							description: "Watermark position, default br.",
 						},
-						quality: { type: "number", description: "JPEG quality 0.1..1 (ignored by PNG/BMP)." },
+						opacity: { type: "number", description: "Watermark opacity 0..1, default 0.8" },
+						scale: { type: "number", description: "Watermark scale, default 1" },
+						margin: { type: "number", description: "Watermark margin in px" },
+						tile: { type: "boolean", description: "Tile watermark across image" },
+						gap: { type: "number", description: "Tiling gap in px, default 8" },
+						format: { type: "string", enum: ["keep", "jpeg", "png", "bmp"], description: "Default keep." },
+						quality: { type: "number", description: "0..1 (JPEG only, default 0.82)." },
+						suffix: { type: "string", description: "Filename suffix (default -min)." },
+						outDir: { type: "string", description: "Target directory (default: same as input)." },
 						out: { type: "string", description: "Explicit output path (single file only)." },
-						outDir: { type: "string", description: "Directory for outputs (created if missing)." },
-						suffix: {
-							type: "string",
-							description: "Filename suffix (default -min; changeable in the 🖼 view ⚙ settings).",
-						},
-						overwrite: { type: "boolean", description: "Allow replacing an existing file." },
+						overwrite: { type: "boolean", description: "Overwrite input file (default false)." },
 					},
 				},
 				async execute(_id, params) {
 					const rels = pathList(params);
 					if (!rels.length) throw new Error("缺少 path（或 paths）");
-					if (rels.length > 1 && params.out) throw new Error("批量处理时不能用 out（请用 outDir + suffix）");
+					if (params.out && rels.length > 1) throw new Error("批量处理时不能用 out（请用 outDir + suffix）");
 					const results = await processMany(rels, params, params);
-					// 服务端没写任何东西就告诉用户（水印走另一个工具）
 					return {
 						content: [{ type: "text", text: summarize(results, `处理 ${results.length} 个文件：`) }],
 						details: { results },
 					};
 				},
 			},
+
+			// 4.3 图片压缩
 			{
 				name: "image_compress",
-				label: "压缩图片",
+				label: "图片压缩",
 				description:
-					"Compress workspace images: convert format (png/jpeg/bmp) and/or hit a target file size with a quality binary search (plus downscaling when quality alone is not enough). Batch via `paths`.",
-				promptSnippet: "shrink images to a quality or file-size budget",
+					"Compress images: convert format (PNG/JPEG/BMP), tune quality, or specify targetKB to binary-search the optimal quality (and shrink dimensions if necessary).",
+				promptSnippet: "compress images or meet target file size",
 				promptGuidelines: [
-					"To hit a size budget, pass targetKB — do not guess quality by hand, the tool binary-searches it.",
-					"Compressing a PNG meaningfully usually means converting to jpeg or webp; jpeg is what the server can write (webp only in the 🖼 view).",
+					"Use targetKB to hit an exact file size limit (e.g. targetKB=300 for web assets).",
+					"PNG compression is lossless; to achieve higher compression ratios on photos, convert format to jpeg.",
+					"Output images can directly be passed to image_generate references or embedded into documents.",
 				],
 				parameters: {
 					type: "object",
 					properties: {
 						path: { type: "string" },
 						paths: { type: "array", items: { type: "string" } },
-						quality: {
-							type: "number",
-							description: "JPEG quality 0.1..1 (default 0.82; changeable in the 🖼 view ⚙ settings).",
-						},
-						targetKB: { type: "number", description: "Desired maximum file size in KB. Overrides quality." },
-						format: {
-							type: "string",
-							enum: ["jpeg", "png", "bmp", "keep"],
-							description: "Output format (default jpeg when compressing).",
-						},
-						maxLongEdge: {
-							type: "number",
-							description: "Optional cap on the longer side in px (applied before encoding).",
-						},
+						targetKB: { type: "number", description: "Target file size in KB. Will binary search quality." },
+						format: { type: "string", enum: ["keep", "jpeg", "png", "bmp"], description: "Default keep." },
+						quality: { type: "number", description: "0..1 (default 0.82)." },
+						maxLongEdge: { type: "number", description: "Optional long-edge clamp." },
+						suffix: { type: "string", description: "Default -min." },
 						outDir: { type: "string" },
-						suffix: { type: "string" },
+						out: { type: "string" },
 						overwrite: { type: "boolean" },
 					},
 				},
 				async execute(_id, params) {
 					const rels = pathList(params);
 					if (!rels.length) throw new Error("缺少 path（或 paths）");
-					const o = { ...params, format: params.format ?? "jpeg" };
-					const targetBytes = params.targetKB ? Number(params.targetKB) * 1024 : 0;
+					if (params.out && rels.length > 1) throw new Error("批量压缩时不能用 out（请用 outDir + suffix）");
+					const o = { ...params, suffix: params.suffix ?? "-min" };
+					const targetBytes = params.targetKB ? Math.round(Number(params.targetKB) * 1024) : 0;
 					const results = [];
 					for (const rel of rels) {
 						try {
@@ -709,14 +977,13 @@ export default {
 								String(o.format) === "keep" ? (SERVER_ENCODE.has(srcFormat) ? srcFormat : "jpeg") : String(o.format);
 							if (!SERVER_ENCODE.has(outFormat)) throw new Error(`服务端不能写 ${outFormat}`);
 							if (outFormat === "jpeg" && !(await ensureJpeg()))
-								throw new Error("需要 jpeg-js（🖼 视图右上角 ⚙ 设置里允许后重试）");
+								throw new Error("需要 jpeg-js（在 🖼 视图右上角 ⚙ 设置里允许后重试）");
 							if (!SERVER_ENCODE.has(srcFormat) && srcFormat === "jpeg") await ensureJpeg();
 
 							let quality = Math.round(Math.min(1, Math.max(0.1, Number(params.quality ?? cfg.quality ?? 0.82))) * 100);
 							let encoded = await encodeImage(img, outFormat, { quality });
 							let usedQuality = quality;
 							if (targetBytes > 0 && outFormat === "jpeg") {
-								// 二分逼近：7 次编码内收敛到目标以下（质量下限 10）
 								let lo = 10;
 								let hi = 100;
 								let best = null;
@@ -731,7 +998,6 @@ export default {
 									}
 									if (lo > hi) break;
 								}
-								// 质量压到底还是超 → 按面积比例降尺寸再压一次
 								if (!best) {
 									const shrink = Math.sqrt(targetBytes / encoded.length);
 									const w = Math.max(1, Math.round(img.width * shrink * 0.98));
@@ -767,6 +1033,8 @@ export default {
 					};
 				},
 			},
+
+			// 4.4 图片水印
 			{
 				name: "image_watermark",
 				label: "图片水印",
@@ -811,22 +1079,361 @@ export default {
 					};
 				},
 			},
+
+			// 4.5 生图服务与模型清单
+			{
+				name: "image_services",
+				label: "生图服务清单",
+				description:
+					"List configured AI image generation services (DashScope Wanx, FLUX, OpenAI, Google Imagen/Gemini, Zhipu CogView, Volcengine Seedream, Stability, ComfyUI, etc.), their models, default sizes/qualities, reference image support, and API key status.",
+				promptSnippet: "check which image endpoints and models exist",
+				promptGuidelines: [
+					"Call it before image_generate whenever the service id, model id or available sizes are unknown.",
+					"If no service is configured or key is missing, use image_config_service to configure it with presets.",
+				],
+				parameters: { type: "object", properties: {} },
+				async execute() {
+					return {
+						content: [{ type: "text", text: servicesText() }],
+						details: {
+							defaultService: genCfg.defaultService,
+							outputDir: genCfg.outputDir,
+							returnImage: genCfg.returnImage !== false,
+							services: (genCfg.services ?? []).map((s) => ({
+								id: s.id,
+								name: s.name,
+								shape: s.shape,
+								enabled: s.enabled !== false,
+								models: s.models,
+								defaultModel: s.defaultModel,
+								sizes: s.sizes,
+								qualities: s.qualities,
+								hasKey: hasKey(s.id),
+							})),
+						},
+					};
+				},
+			},
+
+			// 4.6 AI 生图（文生图 / 参考图生图 / 图像流转衔接）
+			{
+				name: "image_generate",
+				label: "生成图片",
+				description:
+					"Create images from a text prompt through a configured image service, or edit/restyle existing workspace images by passing them in `references`. Output images are saved to workspace and can be seamlessly passed to image_transform or image_compress for post-processing.",
+				promptSnippet: "draw a picture, logo, illustration or photo",
+				promptGuidelines: [
+					"Pass `references` with workspace-relative paths to edit or restyle existing images; without them it is plain text-to-image.",
+					"Each call spends user quota: reuse one call for n variants via `n` instead of calling again with a tweaked prompt.",
+					"If a call fails with an unknown model or missing key, run image_services or image_config_service.",
+					"Generated images can be seamlessly chained into image_transform (crop/resize/filter), image_compress (size reduction), or image_watermark for post-processing.",
+				],
+				parameters: {
+					type: "object",
+					properties: {
+						prompt: { type: "string", description: "What to draw (English usually works best; keep user wording)." },
+						service: { type: "string", description: "Service id from image_services (default: defaultService)." },
+						model: { type: "string", description: "Model id override (default: service default)." },
+						size: {
+							type: "string",
+							description: "Aspect ratio like 16:9 / 9:16 / 1:1, or explicit pixels like 1024x1024.",
+						},
+						quality: { type: "string", description: "Quality tier: 1k / 2k / 4k (mapped per service)." },
+						n: { type: "number", description: "How many images (1-8, capped by plugin setting)." },
+						references: {
+							type: "array",
+							items: { type: "string" },
+							description: "Workspace-relative image paths to use as reference/input images (img2img).",
+						},
+						negative: { type: "string", description: "Negative prompt (only some services support it)." },
+						seed: { type: "number", description: "Fixed seed for reproducibility (only some services support it)." },
+						out: { type: "string", description: "Explicit output path (single image only)." },
+						outDir: { type: "string", description: "Output directory (default: plugin setting)." },
+						extra: {
+							type: "object",
+							description:
+								"Extra request fields merged into the provider body (escape hatch for provider-specific params).",
+						},
+					},
+					required: ["prompt"],
+				},
+				async execute(_id, params, signal, onUpdate) {
+					const progress = (ev) => {
+						if (!onUpdate) return;
+						const stage = GU.str(ev?.stage);
+						const detail = GU.str(ev?.detail);
+						if (!stage) return;
+						onUpdate({ content: [{ type: "text", text: `image_generate: ${stage}${detail ? ` — ${detail}` : ""}` }] });
+					};
+					const r = await runGeneration(params ?? {}, { onProgress: progress, signal });
+					const lines = r.files.map((f) => `- ${f.path} (${fmtBytes(f.bytes)}, ${f.mime})`);
+					const head = `Generated ${r.files.length} image(s) with ${r.service.name} / ${r.model || "default model"} in ${(r.ms / 1000).toFixed(1)}s`;
+					const meta = [r.size ? `size=${r.size}` : "", r.quality ? `quality=${r.quality}` : ""]
+						.filter(Boolean)
+						.join(" ");
+					const text = [
+						meta ? `${head} (${meta}).` : `${head}.`,
+						...lines,
+						r.partial ? `Note: only ${r.files.length} of the requested images came back.` : "",
+						r.text ? `Provider note: ${GU.truncate(r.text, 400)}` : "",
+						"Workflow hint: You can now pass these generated images to `image_transform` (crop/resize/filter), `image_compress` (optimize size/format) or `image_watermark` for post-processing.",
+					]
+						.filter(Boolean)
+						.join("\n");
+					return {
+						content: [{ type: "text", text }, ...(await imageBlocks(r.files))],
+						details: {
+							service: r.service,
+							model: r.model,
+							size: r.size,
+							quality: r.quality,
+							ms: r.ms,
+							files: r.files,
+							providerNote: GU.truncate(r.text, 300),
+						},
+					};
+				},
+			},
+
+			// 4.7 AI 配置生图供应商（核心新增能力）
+			{
+				name: "image_config_service",
+				label: "配置生图服务",
+				description:
+					"Configure AI image generation providers and models: list presets & active configs, get details, add/update a service (with API key saved safely), probe connection, auto-fetch models, or remove/set default.",
+				promptSnippet: "configure image generation providers, models and API keys",
+				promptGuidelines: [
+					"Use action='list' to inspect available presets and current provider configs.",
+					"Use action='upsert' with preset or shape to configure a provider (e.g. dashscope/siliconflow/openai/google); pass apiKey to store it safely in secrets.",
+					"Use action='probe' or 'fetch_models' (with saveModels=true) to verify credentials and automatically pull the latest supported models list.",
+				],
+				parameters: {
+					type: "object",
+					properties: {
+						action: {
+							type: "string",
+							enum: ["list", "get", "upsert", "probe", "fetch_models", "delete", "set_default"],
+							description: "Configuration action to execute.",
+						},
+						id: { type: "string", description: "Service identifier (or slug name)." },
+						preset: {
+							type: "string",
+							description:
+								"Preset template id (e.g. dashscope, siliconflow, openai, google, openrouter, ark, zhipu, stability, comfyui, antigravity, generic).",
+						},
+						name: { type: "string", description: "Display name for the service." },
+						shape: {
+							type: "string",
+							enum: ["openai-images", "gemini", "openrouter-chat", "stability", "comfyui"],
+							description: "Wire protocol shape.",
+						},
+						baseUrl: { type: "string", description: "Endpoint base URL." },
+						apiKey: { type: "string", description: "API Key (stored securely into secrets, never plain in config)." },
+						models: { type: "array", items: { type: "string" }, description: "Supported model IDs." },
+						defaultModel: { type: "string", description: "Default model ID." },
+						sizes: { type: "array", items: { type: "string" }, description: "Supported aspect ratios or sizes." },
+						defaultSize: { type: "string", description: "Default aspect ratio or size." },
+						qualities: { type: "array", items: { type: "string" }, description: "Supported qualities (1k/2k/4k)." },
+						defaultQuality: { type: "string", description: "Default quality." },
+						extraHeaders: { type: "object", description: "Extra HTTP headers (supports {{key}} interpolation)." },
+						extraBody: { type: "object", description: "Extra request body fields." },
+						enabled: { type: "boolean", description: "Whether the service is enabled." },
+						setDefault: { type: "boolean", description: "Set as the global default service." },
+						saveModels: {
+							type: "boolean",
+							description: "In fetch_models: automatically save fetched models to the service config.",
+						},
+					},
+					required: ["action"],
+				},
+				async execute(_id, params) {
+					const act = GU.str(params?.action);
+					if (act === "list") {
+						const services = (genCfg.services ?? []).map((s) => ({
+							id: s.id,
+							name: s.name,
+							shape: s.shape,
+							baseUrl: s.baseUrl,
+							defaultModel: s.defaultModel,
+							modelsCount: s.models?.length ?? 0,
+							models: s.models,
+							defaultSize: s.defaultSize,
+							defaultQuality: s.defaultQuality,
+							enabled: s.enabled !== false,
+							isDefault: s.id === genCfg.defaultService,
+							hasKey: hasKey(s.id),
+						}));
+						const presets = PRESETS.map((p) => ({
+							id: p.id,
+							label: p.label,
+							labelEn: p.labelEn,
+							shape: p.service.shape,
+							defaultModel: p.service.defaultModel,
+							baseUrl: p.service.baseUrl,
+						}));
+						const text = [
+							`Configured services (${services.length}):`,
+							...services.map(
+								(s) =>
+									`- ${s.id}${s.isDefault ? " [DEFAULT]" : ""}${s.enabled ? "" : " [DISABLED]"}: ${s.name} (${s.shape}), models: ${s.defaultModel || "(none)"} (total ${s.modelsCount}), key: ${s.hasKey ? "set" : "missing"}`,
+							),
+							`\nAvailable presets (${presets.length}): ${presets.map((p) => p.id).join(", ")}`,
+						].join("\n");
+						return {
+							content: [{ type: "text", text }],
+							details: { defaultService: genCfg.defaultService, services, presets },
+						};
+					}
+
+					if (act === "get") {
+						const sid = GU.slugId(params?.id || params?.serviceId, "");
+						if (!sid) throw new Error("缺少 id 参数");
+						const s = findServiceInConfig(genCfg, sid);
+						if (!s) throw new Error(`未找到服务：${sid}`);
+						const info = {
+							...s,
+							isDefault: s.id === genCfg.defaultService,
+							hasKey: hasKey(s.id),
+						};
+						return {
+							content: [
+								{
+									type: "text",
+									text: `Service ${s.id}:\n- Name: ${s.name}\n- Shape: ${s.shape}\n- BaseUrl: ${s.baseUrl}\n- DefaultModel: ${s.defaultModel || "(none)"}\n- Models: ${s.models?.join(", ") || "(none)"}\n- Sizes: ${s.sizes?.join(", ") || "(default)"}\n- HasKey: ${hasKey(s.id)}`,
+								},
+							],
+							details: { service: info },
+						};
+					}
+
+					if (act === "upsert") {
+						const res = upsertServiceInConfig(genCfg, params ?? {});
+						genCfg = res.config;
+						persistGen();
+						const sid = res.service.id;
+						if (typeof params?.apiKey === "string") {
+							const k = params.apiKey.trim();
+							try {
+								if (k) host.secrets?.set(secretKey(sid), k);
+								else host.secrets?.delete(secretKey(sid));
+							} catch (err) {
+								host.log("warn", `保存 ${sid} 密钥失败：`, err);
+							}
+						}
+						host.broadcast({ kind: "config", config: publicGenConfig() });
+						const s = res.service;
+						const msg = `${res.isNew ? "Added" : "Updated"} service '${s.id}' (${s.name}) [shape=${s.shape}, defaultModel=${s.defaultModel || "-"}]${params?.setDefault ? " (set as default)" : ""}. Key status: ${hasKey(s.id) ? "set" : "missing"}.`;
+						return {
+							content: [{ type: "text", text: msg }],
+							details: { service: { ...s, hasKey: hasKey(s.id), isDefault: s.id === genCfg.defaultService } },
+						};
+					}
+
+					if (act === "probe") {
+						const sid = GU.slugId(params?.id || params?.serviceId, "");
+						let svc = sid ? findServiceInConfig(genCfg, sid) : null;
+						if (!svc && (params?.baseUrl || params?.shape || params?.preset)) {
+							svc = normalizeService(params, "probe-temp");
+						}
+						if (!svc) throw new Error("缺少有效的服务 id 或服务配置参数");
+						const key = GU.str(params?.apiKey) || (sid ? keyOf(sid) : "");
+						const out = await probeService(svc, { key, fetch: globalThis.fetch });
+						const text = `Probe ${svc.name || svc.id}: ${out.ok ? "SUCCESS" : "FAILED"}\nDetail: ${out.detail}\nModels found: ${out.models?.length ?? 0}`;
+						return {
+							content: [{ type: "text", text }],
+							details: { ok: out.ok, detail: out.detail, models: out.models },
+						};
+					}
+
+					if (act === "fetch_models") {
+						const sid = GU.slugId(params?.id || params?.serviceId, "");
+						if (!sid) throw new Error("缺少 id 参数");
+						const svc = findServiceInConfig(genCfg, sid);
+						if (!svc) throw new Error(`未找到服务：${sid}`);
+						const key = GU.str(params?.apiKey) || keyOf(sid);
+						const out = await probeService(svc, { key, fetch: globalThis.fetch });
+						if (!out.ok) {
+							throw new Error(`获取模型失败：${out.detail}`);
+						}
+						let updated = false;
+						if (params?.saveModels !== false && out.models && out.models.length > 0) {
+							const mergedModels = [...new Set([...(svc.models ?? []), ...out.models])];
+							const res = upsertServiceInConfig(genCfg, { id: sid, models: mergedModels });
+							genCfg = res.config;
+							persistGen();
+							host.broadcast({ kind: "config", config: publicGenConfig() });
+							updated = true;
+						}
+						return {
+							content: [
+								{
+									type: "text",
+									text: `Fetched ${out.models.length} model(s) for ${sid}.${updated ? " Automatically saved to service configuration." : ""}\nModels: ${out.models.slice(0, 30).join(", ")}${out.models.length > 30 ? "..." : ""}`,
+								},
+							],
+							details: { id: sid, models: out.models, saved: updated },
+						};
+					}
+
+					if (act === "delete") {
+						const sid = GU.slugId(params?.id || params?.serviceId, "");
+						if (!sid) throw new Error("缺少 id 参数");
+						const res = removeServiceFromConfig(genCfg, sid);
+						if (!res) throw new Error(`服务不存在或已被删除：${sid}`);
+						try {
+							host.secrets?.delete(secretKey(sid));
+						} catch {
+							/* 忽略 */
+						}
+						genCfg = res.config;
+						persistGen();
+						host.broadcast({ kind: "config", config: publicGenConfig() });
+						return {
+							content: [
+								{
+									type: "text",
+									text: `Deleted service ${sid}. Default service is now: ${genCfg.defaultService || "(none)"}`,
+								},
+							],
+							details: { removedId: sid, defaultService: genCfg.defaultService },
+						};
+					}
+
+					if (act === "set_default") {
+						const sid = GU.slugId(params?.id || params?.serviceId, "");
+						if (!sid) throw new Error("缺少 id 参数");
+						const svc = findServiceInConfig(genCfg, sid);
+						if (!svc) throw new Error(`未找到服务：${sid}`);
+						genCfg = normalizeGenConfig({ ...genCfg, defaultService: sid });
+						persistGen();
+						host.broadcast({ kind: "config", config: publicGenConfig() });
+						return {
+							content: [{ type: "text", text: `Set default image service to '${sid}' (${svc.name}).` }],
+							details: { defaultService: sid },
+						};
+					}
+
+					throw new Error(`未知操作：${act}`);
+				},
+			},
 		];
 
-		/** 按设置上架/下架 AI 工具（幂等）。 */
+		let offTools = [];
+		let toolsOn = false;
+
 		function syncTools() {
 			const want = cfg.aiTools !== false;
 			if (want === toolsOn) return;
 			if (want) {
 				offTools = TOOLS.map((t) => host.registerAgentTool(t));
 				toolsOn = true;
-				host.log(`AI 工具已注册：${TOOLS.map((t) => t.name).join(", ")}`);
+				host.log(`AI 工具已注册（7 个）：${TOOLS.map((t) => t.name).join(", ")}`);
 			} else {
 				for (const off of offTools) {
 					try {
 						off();
 					} catch {
-						/* 注销失败忽略 */
+						/* 忽略 */
 					}
 				}
 				offTools = [];
@@ -835,22 +1442,10 @@ export default {
 			}
 		}
 		syncTools();
-		// 内部配置改动走 POST /ws/settings（视图右上角 ⚙），见下方路由；
-		// manifest 已删声明式 settings，onSettingsChanged 不会再触发。
 
 		// ------------------------------------------------------------------
-		// HTTP 路由（视图用）
+		// 5. HTTP 路由整合（工作区处理 + 生图 API + 兼容别名）
 		// ------------------------------------------------------------------
-
-		/** 请求体上限 15MB（与 office-preview 的文件上限口径一致）：收包循环内
-		 *  实时累计，超限立即停收并 413，绝不全量缓存完再查（防大包吃爆内存）。 */
-		const MAX_BODY_BYTES = 15 * 1024 * 1024;
-
-		/**
-		 * 读请求体：JSON base64（小图）或原始二进制（大图，无 10mb JSON 上限）。
-		 * 用事件方式收包：超限时暂停读端并抛 413，safeRoute 先把响应写回再销毁
-		 * 请求（顺序反了浏览器只会看到断连，看不到 413）。
-		 */
 		async function readBody(req) {
 			const tooLarge = () =>
 				Object.assign(new Error(`请求体超过 ${fmtBytes(MAX_BODY_BYTES)} 上限`), { statusCode: 413 });
@@ -864,6 +1459,18 @@ export default {
 				if (b.length > MAX_BODY_BYTES) throw tooLarge();
 				return b;
 			}
+			// 兼容 async iterator 形式的 req（如 mock request）
+			if (typeof req[Symbol.asyncIterator] === "function" && typeof req.on !== "function") {
+				const chunks = [];
+				let total = 0;
+				for await (const c of req) {
+					const chunk = Buffer.isBuffer(c) ? c : Buffer.from(c);
+					total += chunk.length;
+					if (total > MAX_BODY_BYTES) throw tooLarge();
+					chunks.push(chunk);
+				}
+				return Buffer.concat(chunks);
+			}
 			return new Promise((resolve, reject) => {
 				const chunks = [];
 				let total = 0;
@@ -872,8 +1479,12 @@ export default {
 					if (done) return;
 					done = true;
 					if (err) {
-						req.pause(); // 停收（不销毁）：让 413 先送出去，safeRoute 再掐断
-						req.removeListener("data", onData);
+						try {
+							req.pause?.();
+							req.removeListener?.("data", onData);
+						} catch {
+							/* 忽略 */
+						}
 						reject(err);
 					} else resolve(val);
 				};
@@ -889,7 +1500,6 @@ export default {
 			});
 		}
 
-		// "host" / "host:port" → { hostname, port }，与主站 originAllowed 同口径。
 		function parseAuthority(a) {
 			try {
 				const u = new URL(`http://${a}`);
@@ -899,18 +1509,11 @@ export default {
 			}
 		}
 
-		/**
-		 * 写类路由（POST/PUT/DELETE）同源门：浏览器发的写请求必须与 Host 同源，
-		 * 或命中白名单（主站 PI_WEB_ALLOW_ORIGINS + 插件配置 allowedOrigins）；
-		 * 无 Origin（curl 等本机客户端）放行，"null"（file:// 页面）与跨域一律拒绝。
-		 * 主站 HTTP 层只有 Token 鉴权没有 Origin 校验，/ws/save 这种盲写工作区的
-		 * 路由必须在插件侧自己设防。
-		 */
 		function writeOriginOk(req) {
 			const origin = req.headers?.origin;
-			if (!origin) return true; // 非浏览器客户端，靠监听地址（默认 loopback）兜底
+			if (!origin) return true;
 			const o = String(origin).toLowerCase();
-			if (o === "null") return false; // file:// 等不可信来源
+			if (o === "null") return false;
 			const allowed = new Set(cfg.allowedOrigins);
 			for (const s of String(process.env.PI_WEB_ALLOW_ORIGINS ?? "").split(",")) {
 				const v = s.trim().toLowerCase();
@@ -922,12 +1525,6 @@ export default {
 			return Boolean(ori.hostname) && ori.hostname === hostHdr.hostname && ori.port === hostHdr.port;
 		}
 
-		/**
-		 * 路由包装：handler 内部任何抛错（读文件失败、越界、编码失败…）都转成 HTTP 4xx/5xx，
-		 * 绝不让 promise reject 出去——宿主 handleHttp 只 try/catch 同步抛错，异步 handler 的
-		 * rejection 会变成 unhandledRejection 直接把整个服务打挂（已实测）。
-		 * 写类路由先过同源门（防恶意网页盲写工作区）；413 先回响应再销毁请求。
-		 */
 		function safeRoute(method, path, handler) {
 			const isWrite = method !== "GET" && method !== "HEAD";
 			return host.route(method, path, async (req, res) => {
@@ -938,34 +1535,56 @@ export default {
 					}
 					await handler(req, res);
 				} catch (err) {
-					const status = Number(err?.statusCode ?? 400);
+					const status = Number(err?.statusCode) || (err instanceof ProviderError && err.status ? err.status : 400);
 					const msg = err instanceof Error ? err.message : String(err);
-					host.log(`http ${method} ${path} 失败：`, err);
-					if (!res.headersSent) res.status(status >= 400 && status < 600 ? status : 400).json({ error: msg });
+					if (!res.headersSent) res.status(status).json({ error: msg });
 					else res.end();
-					// 体超限：响应已写回，再销毁读端停止继续上传（先销毁会把响应一起掐掉）
-					if (status === 413) req.destroy();
 				}
 			});
 		}
 
-		const offList = safeRoute("GET", "/ws/list", async (req, res) => {
-			const dir = normalizeRel(req.query?.dir);
-			res.json({ cwd: host.cwd, dir, entries: await listDir(dir) });
+		const routeOffs = [];
+		const regRoute = (method, path, handler) => {
+			const off = safeRoute(method, path, handler);
+			routeOffs.push(off);
+			return off;
+		};
+
+		// 5.1 图片处理工作区路由（/ws/*）
+		regRoute("GET", "/ws/settings", async (_req, res) => {
+			res.json({
+				settings: cfg,
+				genSettings: publicGenConfig(),
+				serverFormats: [...SERVER_ENCODE],
+				jpegSupported: hasJpegCodec(),
+			});
 		});
 
-		const offImage = safeRoute("GET", "/ws/image", async (req, res) => {
+		regRoute("POST", "/ws/settings", async (req, res) => {
+			const b = req.body && typeof req.body === "object" ? req.body : {};
+			const saved = saveToolkitConfig(b);
+			res.json({ ok: true, settings: saved });
+		});
+
+		regRoute("GET", "/ws/list", async (req, res) => {
+			const dir = normalizeRel(req.query?.dir);
+			const entries = await listDir(dir);
+			res.json({ dir, entries });
+		});
+
+		regRoute("GET", "/ws/image", async (req, res) => {
 			const rel = normalizeRel(req.query?.path);
 			if (!rel) {
 				res.status(400).json({ error: "缺少 path" });
 				return;
 			}
 			const buf = await host.fs.read(rel);
-			res.setHeader("Cache-Control", "no-store");
-			res.type(mimeForFormat(sniffFormat(buf))).send(buf);
+			const ct = sniffFormat(buf);
+			res.type(mimeForFormat(ct) || "application/octet-stream");
+			res.send(buf);
 		});
 
-		const offProbe = safeRoute("GET", "/ws/probe", async (req, res) => {
+		regRoute("GET", "/ws/probe", async (req, res) => {
 			const rel = normalizeRel(req.query?.path);
 			if (!rel) {
 				res.status(400).json({ error: "缺少 path" });
@@ -983,7 +1602,7 @@ export default {
 			});
 		});
 
-		const offSave = safeRoute("POST", "/ws/save", async (req, res) => {
+		regRoute("POST", "/ws/save", async (req, res) => {
 			const rel = normalizeRel(req.query?.path);
 			if (!rel) {
 				res.status(400).json({ error: "缺少 path" });
@@ -995,41 +1614,139 @@ export default {
 				return;
 			}
 			const overwrite = String(req.query?.overwrite ?? "") === "1";
-			// 不覆盖时保留原名做主体，交给 resolveOutPath 的查重逻辑改名（a.png → a-1.png）
 			const relOut = overwrite
 				? rel
 				: await resolveOutPath(rel, extname(rel).replace(/^\./, "") || "bin", {
-						outDir: normalizeRel(dirname(rel)),
+						overwrite: false,
 						suffix: "",
 					});
 			await host.fs.write(relOut, data);
-			host.log(`已保存 ${pretty(host.cwd, relOut)}（${fmtBytes(data.length)}）`);
 			res.json({
 				ok: true,
 				path: relOut,
-				pretty: pretty(host.cwd, relOut),
 				bytes: data.length,
 				renamed: relOut !== rel,
 			});
 		});
 
-		const offSettingsRoute = safeRoute("GET", "/ws/settings", async (_req, res) => {
-			res.json({ cwd: host.cwd, settings: cfg, serverFormats: [...SERVER_ENCODE] });
+		regRoute("GET", "/ws/text", async (req, res) => {
+			const rel = normalizeRel(req.query?.path);
+			if (!rel) throw new Error("缺少 path");
+			const text = await host.fs.readText(rel, 512 * 1024);
+			res.json({ path: rel, text });
 		});
 
-		const offSaveSettings = safeRoute("POST", "/ws/settings", async (req, res) => {
-			const body = req.body && typeof req.body === "object" && !Buffer.isBuffer(req.body) ? req.body : {};
-			const patch = body.values && typeof body.values === "object" && !Array.isArray(body.values) ? body.values : body;
-			res.json({ ok: true, cwd: host.cwd, settings: saveConfig(patch) });
-		});
+		// 5.2 生图 API 路由（统一提供 /gen/*，并注册老 /config, /probe 等兼容别名）
+		const handleGetConfig = async (_req, res) => {
+			res.json({
+				cwd: host.cwd,
+				config: publicGenConfig(),
+				toolkitConfig: cfg,
+				shapes: SHAPE_LIST,
+				presets: PRESETS.map((p) => ({ id: p.id, label: p.label, labelEn: p.labelEn, service: p.service })),
+				jobs: publicJobs(),
+				defaults: defaultGenConfig(),
+			});
+		};
 
-		host.log(`已激活；工作区 ${host.cwd}；AI 工具 ${cfg.aiTools === false ? "关闭" : "开启"}`);
+		const handlePostConfig = async (req, res) => {
+			const b = req.body && typeof req.body === "object" ? req.body : {};
+			res.json({ ok: true, config: saveGenConfig(b) });
+		};
 
-		// 反激活：注销全部路由与工具订阅（插件目录被删 / 服务关停）
+		const handlePostPreset = async (req, res) => {
+			const b = req.body && typeof req.body === "object" ? req.body : {};
+			res.json({ ok: true, ...addGenService(GU.str(b.preset)) });
+		};
+
+		const handlePostProbe = async (req, res) => {
+			const b = req.body && typeof req.body === "object" ? req.body : {};
+			const inline = b.service && typeof b.service === "object" ? b.service : null;
+			const svc = inline
+				? normalizeService({ ...(pickService(genCfg, b.id) ?? {}), ...inline })
+				: pickService(genCfg, b.id ?? b.service);
+			if (!svc) throw new Error("没有这个服务");
+			const key = GU.str(b.apiKey) || keyOf(svc.id);
+			const out = await probeService(svc, { key, fetch: globalThis.fetch });
+			res.json({ ok: out.ok, detail: out.detail ?? "", models: out.models ?? [] });
+		};
+
+		const handlePostModels = async (req, res) => {
+			const b = req.body && typeof req.body === "object" ? req.body : {};
+			const inline = b.service && typeof b.service === "object" ? b.service : null;
+			const svc = inline
+				? normalizeService({ ...(pickService(genCfg, b.id) ?? {}), ...inline })
+				: pickService(genCfg, b.id ?? b.service);
+			if (!svc) throw new Error("没有这个服务");
+			const key = GU.str(b.apiKey) || keyOf(svc.id);
+			const out = await probeService(svc, { key, fetch: globalThis.fetch });
+			res.json({ ok: out.ok, detail: out.detail ?? "", models: out.models ?? [] });
+		};
+
+		const handlePostGenerate = async (req, res) => {
+			const b = req.body && typeof req.body === "object" ? req.body : {};
+			const jobId = startJob(b);
+			res.json({ ok: true, jobId });
+		};
+
+		const handleGetJobs = async (_req, res) => {
+			res.json({ jobs: publicJobs() });
+		};
+
+		const handleClearJobs = async (_req, res) => {
+			jobs = [];
+			persistJobsHistory();
+			host.broadcast({ kind: "jobs", jobs: [] });
+			res.json({ ok: true });
+		};
+
+		const handleRemoveJob = async (req, res) => {
+			const b = req.body && typeof req.body === "object" ? req.body : {};
+			const id = GU.str(b.id);
+			jobs = jobs.filter((j) => j.id !== id);
+			persistJobsHistory();
+			host.broadcast({ kind: "jobs", jobs: publicJobs() });
+			res.json({ ok: true });
+		};
+
+		const handleGetImage = async (req, res) => {
+			const rel = normalizeRel(req.query?.path);
+			if (!rel || rel.includes("..")) throw new Error(`非法路径：${rel}`);
+			const buf = await host.fs.read(rel);
+			const mime = GU.sniffImageMime(buf) || GU.extToMime(extname(rel));
+			res.setHeader("Content-Type", mime);
+			res.send(buf);
+		};
+
+		// 注册标准 /gen/* 路由
+		regRoute("GET", "/gen/config", handleGetConfig);
+		regRoute("POST", "/gen/config", handlePostConfig);
+		regRoute("POST", "/gen/service/preset", handlePostPreset);
+		regRoute("POST", "/gen/probe", handlePostProbe);
+		regRoute("POST", "/gen/models", handlePostModels);
+		regRoute("POST", "/gen/generate", handlePostGenerate);
+		regRoute("GET", "/gen/jobs", handleGetJobs);
+		regRoute("POST", "/gen/jobs/clear", handleClearJobs);
+		regRoute("POST", "/gen/jobs/remove", handleRemoveJob);
+		regRoute("GET", "/gen/image", handleGetImage);
+
+		// 兼容老客户端的短路由（/config, /probe 等）
+		regRoute("GET", "/config", handleGetConfig);
+		regRoute("POST", "/config", handlePostConfig);
+		regRoute("POST", "/service/preset", handlePostPreset);
+		regRoute("POST", "/probe", handlePostProbe);
+		regRoute("POST", "/models", handlePostModels);
+		regRoute("POST", "/generate", handlePostGenerate);
+		regRoute("GET", "/jobs", handleGetJobs);
+		regRoute("POST", "/jobs/clear", handleClearJobs);
+		regRoute("POST", "/jobs/remove", handleRemoveJob);
+		regRoute("GET", "/image", handleGetImage);
+
+		// 返回注销函数
 		return () => {
-			for (const off of [offList, offImage, offProbe, offSave, offSettingsRoute, offSaveSettings]) {
+			for (const off of routeOffs) {
 				try {
-					off?.();
+					off();
 				} catch {
 					/* 忽略 */
 				}
@@ -1042,7 +1759,7 @@ export default {
 				}
 			}
 			offTools = [];
-			host.log("已反激活");
+			toolsOn = false;
 		};
 	},
 };

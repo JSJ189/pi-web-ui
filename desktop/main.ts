@@ -171,9 +171,14 @@ async function createWindow(url: string): Promise<void> {
 	mainWin = new BrowserWindow({
 		width: 1280,
 		height: 860,
+		minWidth: 800,
+		minHeight: 600,
 		autoHideMenuBar: true,
+		// 自定义沉浸式标题栏：隐藏系统通用标题栏，使用无边框沉浸式窗口
+		titleBarStyle: process.platform === "darwin" ? "hiddenInset" : "hidden",
+		trafficLightPosition: process.platform === "darwin" ? { x: 12, y: 15 } : undefined,
 		webPreferences: {
-			preload: join(here, "preload.js"),
+			preload: join(here, "preload.cjs"),
 			contextIsolation: true,
 			nodeIntegration: false,
 			sandbox: true,
@@ -217,6 +222,18 @@ async function createWindow(url: string): Promise<void> {
 		console.log(`[desktop] will-navigate 拦截，已用系统浏览器打开：${target}`);
 		void shell.openExternal(target);
 	});
+	mainWin.on("enter-full-screen", () => {
+		mainWin?.webContents.send("pi-desktop:full-screen-change", true);
+	});
+	mainWin.on("leave-full-screen", () => {
+		mainWin?.webContents.send("pi-desktop:full-screen-change", false);
+	});
+	mainWin.on("maximize", () => {
+		mainWin?.webContents.send("pi-desktop:window-maximized-change", true);
+	});
+	mainWin.on("unmaximize", () => {
+		mainWin?.webContents.send("pi-desktop:window-maximized-change", false);
+	});
 	mainWin.on("closed", () => {
 		mainWin = null;
 	});
@@ -240,6 +257,7 @@ if (!app.requestSingleInstanceLock()) {
 void app.whenReady().then(async () => {
 	console.log("[desktop] app ready");
 	try {
+		wireWindowControls();
 		const url = await startServerSidecar();
 		await createWindow(url);
 		await wireAutoUpdater();
@@ -260,6 +278,61 @@ app.on("will-quit", () => {
 	serverProc?.kill();
 	serverProc = null;
 });
+
+// -- 沉浸式标题栏与窗口控制（Windows / Linux 前端一体化控制三键） ----------
+let windowControlsWired = false;
+function wireWindowControls(): void {
+	if (windowControlsWired) return;
+	windowControlsWired = true;
+
+	ipcMain.handle("pi-desktop:window-minimize", () => {
+		if (mainWin && !mainWin.isDestroyed()) {
+			mainWin.minimize();
+			return true;
+		}
+		return false;
+	});
+
+	ipcMain.handle("pi-desktop:window-toggle-maximize", () => {
+		if (mainWin && !mainWin.isDestroyed()) {
+			if (mainWin.isMaximized()) {
+				mainWin.unmaximize();
+			} else {
+				mainWin.maximize();
+			}
+			return true;
+		}
+		return false;
+	});
+
+	ipcMain.handle("pi-desktop:window-close", () => {
+		if (mainWin && !mainWin.isDestroyed()) {
+			mainWin.close();
+			return true;
+		}
+		return false;
+	});
+
+	ipcMain.handle("pi-desktop:window-is-maximized", () => {
+		if (mainWin && !mainWin.isDestroyed()) {
+			return mainWin.isMaximized();
+		}
+		return false;
+	});
+
+	ipcMain.handle("pi-desktop:set-title-bar-overlay", (_event, opts: { color?: string; symbolColor?: string }) => {
+		if (!mainWin || process.platform === "darwin") return false;
+		try {
+			if (typeof mainWin.setTitleBarOverlay === "function") {
+				mainWin.setTitleBarOverlay(opts);
+				return true;
+			}
+		} catch (err) {
+			console.warn(`[desktop] setTitleBarOverlay 失败：${(err as Error).message}`);
+		}
+		return false;
+	});
+}
 
 // -- 应用内自动更新（issue #180） ----------------------------------------------
 //

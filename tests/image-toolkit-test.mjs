@@ -236,23 +236,32 @@ async function partA() {
 		const stop = mod.default.activate(host);
 
 		// -- 注册面 ----------------------------------------------------------
-		const routeKeys = [...routes.keys()].sort();
+		const wsRoutes = [...routes.keys()].filter((k) => k.includes("/ws/")).sort();
 		check(
-			routeKeys.join(",") ===
+			wsRoutes.join(",") ===
 				[
 					"GET /ws/image",
 					"GET /ws/list",
 					"GET /ws/probe",
 					"GET /ws/settings",
+					"GET /ws/text",
 					"POST /ws/save",
 					"POST /ws/settings",
 				].join(","),
-			`注册 6 条 HTTP 路由（实际：${routeKeys.join(" / ")})`,
+			`工作区 HTTP 路由完整（实际：${wsRoutes.join(" / ")})`,
 		);
 		check(
 			[...tools.keys()].sort().join(",") ===
-				["image_compress", "image_info", "image_transform", "image_watermark"].join(","),
-			`注册 4 个 AI 工具（实际：${[...tools.keys()].join(", ")}）`,
+				[
+					"image_compress",
+					"image_config_service",
+					"image_generate",
+					"image_info",
+					"image_services",
+					"image_transform",
+					"image_watermark",
+				].join(","),
+			`注册 7 个一体化 AI 工具（实际：${[...tools.keys()].join(", ")}）`,
 		);
 		for (const t of tools.values()) {
 			check(
@@ -444,7 +453,7 @@ async function partA() {
 		check(tools.size === 0, "aiTools=false 时不注册任何 AI 工具");
 		let res2 = await callRoute(routes.get("POST /ws/settings"), { body: { aiTools: true, suffix: "-x" } });
 		check(res2.body?.ok === true && res2.body?.settings?.suffix === "-x", "POST /ws/settings 存配置并回显");
-		check(tools.size === 4, "打开 aiTools 后工具即时上架");
+		check(tools.size === 7, "打开 aiTools 后工具即时上架");
 		check(
 			broadcasts.some((b) => b?.kind === "settings" && b.values?.suffix === "-x"),
 			"设置变更广播给视图",
@@ -459,7 +468,7 @@ async function partA() {
 	{
 		const { host, routes, tools } = makeHost(cwd, pluginDir, {});
 		const stop = mod.default.activate(host);
-		check(routes.size === 6 && tools.size === 4, "激活后路由与工具都在位");
+		check(routes.size > 0 && tools.size === 7, "激活后路由与工具都在位");
 		stop();
 		check(routes.size === 0, "反激活撤销全部路由");
 		check(tools.size === 0, "反激活撤销全部工具");

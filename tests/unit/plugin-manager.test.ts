@@ -238,13 +238,16 @@ describe("PluginManager", () => {
 			manifest: { name: "浮窗", view: false, preload: true },
 		});
 		makePlugin("plain", "export default {};", { client: true, manifest: { name: "普通" } });
+		makePlugin("backend-only", "export default {};", { client: false, manifest: { name: "纯后端" } });
 		const list = await mgr.list();
 		const floaty = list.find((x) => x.id === "floaty");
 		expect(floaty?.view).toBe(false);
 		expect(floaty?.preload).toBe(true);
 		const plain = list.find((x) => x.id === "plain");
-		expect(plain?.view).toBe(true); // 缺省有视图
+		expect(plain?.view).toBe(true); // 有客户端代码时，缺省有视图
 		expect(plain?.preload).toBe(false); // 缺省不预加载
+		const backendOnly = list.find((x) => x.id === "backend-only");
+		expect(backendOnly?.view).toBe(false); // 无客户端代码时，缺省无视图，不生成顶栏/主视图条目
 	});
 });
 

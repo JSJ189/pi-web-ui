@@ -495,6 +495,9 @@ export function applyAgentToolsGating(
 			if (off.has(core)) names.delete(core);
 			else if (allNames.includes(core)) names.add(core);
 		}
+		// load_tools 是延迟加载模式下的脚手架工具：非延迟加载模式下绝不暴露给模型。
+		// 默认从候选集中剔除；仅当延迟加载开启且由 options.forceActive 显式指定时才加回。
+		names.delete(LOAD_TOOLS_TOOL_NAME);
 		const filtered = filterToolsByPreset(names, preset);
 		const active = new Set(filtered);
 		const baseline = new Set(allNames);

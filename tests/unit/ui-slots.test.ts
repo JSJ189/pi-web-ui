@@ -169,6 +169,7 @@ describe("buildUiSlots / 第 1 层：宿主默认", () => {
 			"host:update",
 			"host:new-chat",
 			"host:new-ephemeral-chat",
+			"host:new-sandbox",
 			"host:files",
 			// order 200：尾部条目 = 实测溢出的第一顺位被收起者（见 BUILTIN_UI_ITEMS 注释）
 			"host:github",
@@ -214,7 +215,7 @@ describe("buildUiSlots / 第 1 层：宿主默认", () => {
 	/** 缺省收起 = 低频 / 有替代入口的条目落进顶栏「⋯」（App.tsx 把 hidden 的 primary 条目
 	 *  塞进 uiOverflow → 菜单里能点，菜单型条目在菜单里是整块组件，功能不少）。
 	 *  这条断言是「顶栏默认长什么样」的唯一入口 —— 想改默认口径就改这里与 BUILTIN_UI_ITEMS。 */
-	it("缺省收进「⋯」的 6 条 + 常驻的 13 条", () => {
+	it("缺省收进「⋯」的 6 条 + 常驻的 14 条", () => {
 		const slots = build([]);
 		const top = slots["topbar.primary"];
 		expect(top.filter((e) => e.hidden).map((e) => e.id)).toEqual([
@@ -225,7 +226,7 @@ describe("buildUiSlots / 第 1 层：宿主默认", () => {
 			"host:update",
 			"host:github",
 		]);
-		// 常驻 = 「切视图（chat/terminal/git） / 起新活（new-chat/new-ephemeral-chat） /
+		// 常驻 = 「切视图（chat/terminal/git） / 起新活（new-chat/new-ephemeral-chat/new-sandbox） /
 		// 看运行态（tasks） / 进设置（settings）」四类，加品牌、项目、搜索、面板开关
 		expect(top.filter((e) => !e.hidden).map((e) => e.id)).toEqual([
 			"host:history",
@@ -241,6 +242,7 @@ describe("buildUiSlots / 第 1 层：宿主默认", () => {
 			"host:settings",
 			"host:new-chat",
 			"host:new-ephemeral-chat",
+			"host:new-sandbox",
 			"host:files",
 		]);
 		// 缺省收起是「内置默认」，不写成用户覆盖 —— 否则布局页会把它们标成「已自定义」，

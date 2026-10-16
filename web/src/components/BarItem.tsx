@@ -21,8 +21,8 @@ import {
 	FiTerminal,
 	FiVolume2,
 } from "react-icons/fi";
-import { LuMessageSquareDashed } from "react-icons/lu";
-import type { UiSlotEntry, UiSlotId } from "../ui-slots";
+import { LuFlaskConical, LuMessageSquareDashed } from "react-icons/lu";
+import { REQUIRED_TOPBAR_ITEM_IDS, restoreUiItem, type UiSlotEntry, type UiSlotId } from "../ui-slots";
 import type { ChatState } from "../use-chat";
 import { useFormattedCost } from "../cost-format";
 import { isZhLocale, useT, useI18n } from "../i18n";
@@ -69,6 +69,7 @@ export interface BarItemProps {
 	uiContextEntries?: UiSlotEntry[];
 	zenMode?: boolean;
 	onToggleZenMode?: () => void;
+	onOpenSandboxModal?: () => void;
 	dropdownProps?: {
 		sound?: SoundSettings;
 		onSoundChange?: (settings: SoundSettings) => void;
@@ -132,6 +133,7 @@ export function BarItem({
 	dropdownProps,
 	zenMode,
 	onToggleZenMode,
+	onOpenSandboxModal,
 }: BarItemProps) {
 	const t = useT();
 	const { locale, packs, setLocale } = useI18n();
@@ -165,18 +167,34 @@ export function BarItem({
 
 	const rate = isStreaming ? streamRate(samplesRef.current) : 0;
 
+	const cwdClickTimerRef = useRef<number | null>(null);
+	useEffect(() => {
+		return () => {
+			if (cwdClickTimerRef.current !== null) {
+				window.clearTimeout(cwdClickTimerRef.current);
+			}
+		};
+	}, []);
+
 	const handleContextMenu = (e: ReactMouseEvent) => {
 		e.preventDefault();
 		e.stopPropagation();
 
 		const setItemSlot = (targetSlot: UiSlotId) => {
 			const slots = { ...layout?.slots, [entry.id]: targetSlot };
-			appSend({ type: "set_settings", uiLayout: { ...layout, slots } });
+			const align = { ...layout?.align };
+			if ((targetSlot === "sidebar.left" || targetSlot === "sidebar.right") && !align[entry.id]) {
+				align[entry.id] = "center";
+			}
+			appSend({ type: "set_settings", uiLayout: { ...layout, slots, ...(align[entry.id] ? { align } : {}) } });
 		};
 		const hideItem = () => {
 			const hidden = new Set(layout?.hidden ?? []);
 			hidden.add(entry.id);
 			appSend({ type: "set_settings", uiLayout: { ...layout, hidden: [...hidden] } });
+		};
+		const restoreItem = () => {
+			appSend({ type: "set_settings", uiLayout: restoreUiItem(layout, entry.id) });
 		};
 
 		const menuEntries: UiSlotEntry[] = [];
@@ -236,18 +254,42 @@ export function BarItem({
 				arrangedBy: [],
 			});
 		}
-		menuEntries.push({
-			id: "host:hide-item",
-			slot: "contextmenu.topbar",
-			source: "host",
-			label: t("uiLayoutRestore"),
-			kind: "action",
-			order: 50,
-			align: "start",
-			hidden: false,
-			userOverrides: [],
-			arrangedBy: [],
-		});
+		if (!REQUIRED_TOPBAR_ITEM_IDS.has(entry.id)) {
+			menuEntries.push({
+				id: "host:hide-item",
+				slot: "contextmenu.topbar",
+				source: "host",
+				label: t("uiLayoutHide"),
+				kind: "action",
+				order: 50,
+				align: "start",
+				hidden: false,
+				userOverrides: [],
+				arrangedBy: [],
+			});
+		}
+		const hasOverrides =
+			(entry.userOverrides && entry.userOverrides.length > 0) ||
+			Boolean(
+				layout?.slots?.[entry.id] ||
+				layout?.labels?.[entry.id] ||
+				layout?.align?.[entry.id] ||
+				layout?.order?.includes(entry.id),
+			);
+		if (hasOverrides) {
+			menuEntries.push({
+				id: "host:restore-item",
+				slot: "contextmenu.topbar",
+				source: "host",
+				label: t("uiLayoutRestore"),
+				kind: "action",
+				order: 60,
+				align: "start",
+				hidden: false,
+				userOverrides: [],
+				arrangedBy: [],
+			});
+		}
 		if (uiContextEntries && uiContextEntries.length > 0) {
 			menuEntries.push(...uiContextEntries);
 		}
@@ -264,6 +306,7 @@ export function BarItem({
 				else if (actionEntry.id === "host:move-left") setItemSlot("sidebar.left");
 				else if (actionEntry.id === "host:move-right") setItemSlot("sidebar.right");
 				else if (actionEntry.id === "host:hide-item") hideItem();
+				else if (actionEntry.id === "host:restore-item") restoreItem();
 			},
 		});
 	};
@@ -353,10 +396,11 @@ export function BarItem({
 				style={{ display: "inline-flex", alignItems: "center" }}
 			>
 				<EnginePicker
-					direction={bar === "bottom" ? "up" : "down"}
-					align={bar === "right" ? "right" : "left"}
+					direction={bar === "bottom" ? "up" : bar === "left" ? "right" : bar === "right" ? "left" : "down"}
+					align={entry.align === "end" || bar === "right" ? "right" : "left"}
 					caret={false}
 					bar={bar}
+					portal={true}
 					label={entry.labelExplicit ? entry.label : undefined}
 				/>
 			</span>
@@ -582,11 +626,16 @@ export function BarItem({
 	}
 
 	// 9. 下拉面板类条目
+	const dropdownDirection: "down" | "up" | "left" | "right" =
+		bar === "bottom" ? "up" : bar === "left" ? "right" : bar === "right" ? "left" : "down";
+	const shouldPortalDropdown = true;
+
 	if (id === "host:sound") {
 		return (
 			<Dropdown
-				direction={bar === "bottom" ? "up" : "down"}
+				direction={dropdownDirection}
 				align={bar === "right" ? "right" : "left"}
+				portal={true}
 				open={soundOpen}
 				onOpenChange={setSoundOpen}
 				tip={named(t("sound"))}
@@ -616,8 +665,9 @@ export function BarItem({
 	if (id === "host:language") {
 		return (
 			<Dropdown
-				direction={bar === "bottom" ? "up" : "down"}
+				direction={dropdownDirection}
 				align={bar === "right" ? "right" : "left"}
+				portal={true}
 				open={langOpen}
 				onOpenChange={setLangOpen}
 				tip={named(t("language"))}
@@ -664,8 +714,9 @@ export function BarItem({
 		const currentTheme = dropdownProps?.theme ?? null;
 		return (
 			<Dropdown
-				direction={bar === "bottom" ? "up" : "down"}
+				direction={dropdownDirection}
 				align={bar === "right" ? "right" : "left"}
+				portal={true}
 				open={themeOpen}
 				onOpenChange={(v) => {
 					setThemeOpen(v);
@@ -757,8 +808,9 @@ export function BarItem({
 			</span>
 		) : (
 			<Dropdown
-				direction={bar === "bottom" ? "up" : "down"}
+				direction={dropdownDirection}
 				align={bar === "right" ? "right" : "left"}
+				portal={shouldPortalDropdown}
 				open={updateOpen}
 				onOpenChange={(v) => {
 					setUpdateOpen(v);
@@ -798,6 +850,7 @@ export function BarItem({
 	let extraClasses = "";
 	let tipOverride: string | undefined = undefined;
 	let onClick: ((e: ReactMouseEvent<HTMLButtonElement>) => void) | undefined = undefined;
+	let onDoubleClick: ((e: ReactMouseEvent<HTMLButtonElement>) => void) | undefined = undefined;
 
 	switch (id) {
 		case "host:chat":
@@ -841,6 +894,12 @@ export function BarItem({
 				appSend({ type: "new_chat", ephemeral: true });
 				focusComposer();
 			};
+			break;
+		case "host:new-sandbox":
+			iconNode = <LuFlaskConical className="bar-item-icon" />;
+			labelText = named(t("newSandbox"));
+			extraClasses = "chip newchat sandbox-chip";
+			onClick = () => onOpenSandboxModal?.();
 			break;
 		case "host:history":
 			if (view && view !== "chat") return null;
@@ -912,7 +971,26 @@ export function BarItem({
 			labelText = withName(state?.cwd ? state.cwd.split(/[/\\]/).pop() || state.cwd : t("openProject"));
 			extraClasses = "status-item status-cwd";
 			isActive = Boolean(isProjectPickerOpen);
-			onClick = () => onOpenProjectPicker?.();
+			onClick = () => {
+				if (cwdClickTimerRef.current !== null) {
+					window.clearTimeout(cwdClickTimerRef.current);
+					cwdClickTimerRef.current = null;
+				}
+				cwdClickTimerRef.current = window.setTimeout(() => {
+					onOpenProjectPicker?.();
+					cwdClickTimerRef.current = null;
+				}, 220);
+			};
+			onDoubleClick = (e) => {
+				e.preventDefault();
+				e.stopPropagation();
+				if (cwdClickTimerRef.current !== null) {
+					window.clearTimeout(cwdClickTimerRef.current);
+					cwdClickTimerRef.current = null;
+				}
+				appSend({ type: "new_chat" });
+				focusComposer();
+			};
 			break;
 		case "host:plugin-status":
 			if (chat.statuses.length === 0) return null;
@@ -977,6 +1055,7 @@ export function BarItem({
 			data-tip={tip}
 			aria-label={labelText}
 			onClick={onClick}
+			onDoubleClick={onDoubleClick}
 			onContextMenu={handleContextMenu}
 			data-bar-item={id}
 		>

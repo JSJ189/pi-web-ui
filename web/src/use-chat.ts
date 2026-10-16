@@ -50,6 +50,8 @@ import type {
 	RemoteSkillSummary,
 	DshPatchFileInfo,
 	DshMarketPlugin,
+	EngineStatus,
+	UpdateItemKind,
 } from "./types";
 
 import { applyMessageDelta, type MessageDeltaMsg } from "./message-delta";
@@ -108,7 +110,7 @@ export const isWsOpen = (ws?: WebSocket | null): ws is WebSocket => Boolean(ws &
 /** One component in an all-source update check (update_status_all). */
 export interface UpdateAllItem {
 	name: string;
-	kind: "webui" | "pi-core" | "package" | "git-extension" | "plugin";
+	kind: UpdateItemKind;
 	current: string;
 	latest: string | null;
 	latestPublishedAt?: string | null;
@@ -254,6 +256,8 @@ export interface ChatState {
 	serverVersion?: string;
 	/** 引擎标识（pi | dsh）—— ready 消息携带，底栏显示徽标。 */
 	engine?: string;
+	/** 引擎安装探测结果列表（包含各引擎是否已在宿主中安装、对应包名与版本）。 */
+	engines?: EngineStatus[];
 	/** PI_WEB_MANAGED=1 on the server: updates and plugin installs come from
 	 *  whoever deploys this instance, so the interface does not offer them.
 	 *  The server refuses those messages regardless (server/managed.ts). */
@@ -581,7 +585,9 @@ type Action =
 			tabs?: string[];
 			service?: UiServiceInfo;
 			latencyMs?: number | null;
+			engines?: EngineStatus[];
 	  }
+	| { type: "engines_status"; engines: EngineStatus[] }
 	| { type: "sessions"; sessions: SessionSummary[] }
 	| {
 			type: "conversations";
@@ -1000,6 +1006,7 @@ function reducer(state: ChatState, action: Action): ChatState {
 				managed: action.managed === true,
 				tabs: action.tabs,
 				ready: true,
+				...(action.engines ? { engines: action.engines } : {}),
 				...(engineChanged
 					? {
 							state: null,
@@ -1183,6 +1190,8 @@ function reducer(state: ChatState, action: Action): ChatState {
 				...state,
 				notices: state.notices.filter((n) => n.id !== action.id),
 			};
+		case "engines_status":
+			return { ...state, engines: action.engines };
 		case "sessions":
 			writeCachedSessions(state.state?.cwd, action.sessions, state.engine);
 			return { ...state, sessions: action.sessions };
@@ -2075,6 +2084,7 @@ export function useChat() {
 						serverVersion: msg.serverVersion,
 						service: msg.service,
 						...(msg.engineCapabilities ? { engineCapabilities: msg.engineCapabilities } : {}),
+						...(msg.engines ? { engines: msg.engines } : {}),
 					});
 					const initialLatencyMs = helloSentAt > 0 ? Math.max(0, Math.round(performance.now() - helloSentAt)) : null;
 					dispatch({
@@ -2087,6 +2097,7 @@ export function useChat() {
 						tabs: msg.tabs,
 						service: msg.service,
 						latencyMs: initialLatencyMs,
+						engines: msg.engines,
 					});
 					// Reconnect/attach: clear answered questions cache and stale dialog so
 					// freshly started server runs don't collide on restarted question counters (e.g. q-1).
@@ -2171,6 +2182,10 @@ export function useChat() {
 				}
 				case "transition_progress":
 					dispatch({ type: "transition_progress", msg });
+					break;
+				case "engines_status":
+					setAppGlobals({ engines: msg.engines });
+					dispatch({ type: "engines_status", engines: msg.engines });
 					break;
 				case "sessions":
 					dispatch({ type: "sessions", sessions: msg.sessions });

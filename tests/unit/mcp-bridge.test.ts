@@ -20,7 +20,8 @@ import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { dirname, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
-import { McpBridge, McpClient, mcpServerSnapshot, parseMcpConfig } from "../../server/mcp-bridge.js";
+import { McpBridge, McpClient, expandEnvVars, mcpServerSnapshot, parseMcpConfig } from "../../server/mcp-bridge.js";
+import { createServer, type Server } from "node:http";
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
 // 夹具服务器：转成 .mjs 直接给 node 跑
@@ -340,5 +341,366 @@ describe("parseMcpConfig：mcp.json 里的 protocolVersion", () => {
 	it("非 string 的 protocolVersion 按缺省丢弃（与 cwd 同策略）", () => {
 		const parsed = parseMcpConfig(JSON.stringify({ servers: { srv: { command: "node", protocolVersion: 42 } } }));
 		expect(parsed?.servers.srv.protocolVersion).toBeUndefined();
+	});
+});
+
+describe("expandEnvVars 环境变量占位符替换", () => {
+	it("替换 ${VAR} 为对应环境变量，不存在时回退为空串", () => {
+		process.env.TEST_MCP_KEY = "secret_123";
+		expect(expandEnvVars("Bearer ${TEST_MCP_KEY}")).toBe("Bearer secret_123");
+		expect(expandEnvVars("${TEST_MCP_KEY}:${NON_EXISTENT_VAR_ABC}")).toBe("secret_123:");
+		delete process.env.TEST_MCP_KEY;
+	});
+});
+
+describe("HTTP / streamable-http MCP 服务器支持 (Issue #641)", () => {
+	let server: Server;
+	let serverUrl: string;
+	let receivedHeaders: Record<string, string | string[] | undefined> = {};
+	let sessionDeleteCalled = false;
+	let forceSessionExpiredOnce = false;
+	let toolsListCount = 0;
+	let dynamicToolAdded = false;
+
+	beforeEach(async () => {
+		sessionDeleteCalled = false;
+		forceSessionExpiredOnce = false;
+		toolsListCount = 0;
+		dynamicToolAdded = false;
+		receivedHeaders = {};
+
+		server = createServer(async (req, res) => {
+			receivedHeaders = { ...req.headers };
+			if (req.method === "DELETE") {
+				sessionDeleteCalled = true;
+				res.writeHead(200);
+				res.end();
+				return;
+			}
+
+			let body = "";
+			for await (const chunk of req) {
+				body += chunk;
+			}
+			const json = body ? (JSON.parse(body) as { id?: number | string; method?: string; params?: any }) : {};
+
+			if (json.method === "initialize") {
+				res.setHeader("Content-Type", "application/json");
+				res.setHeader("Mcp-Session-Id", "sess-test-456");
+				res.writeHead(200);
+				res.end(
+					JSON.stringify({
+						jsonrpc: "2.0",
+						id: json.id,
+						result: {
+							protocolVersion: "2025-03-26",
+							capabilities: {},
+							serverInfo: { name: "mock-http-mcp", version: "1.0.0" },
+						},
+					}),
+				);
+				return;
+			}
+
+			if (json.method === "notifications/initialized") {
+				res.writeHead(202);
+				res.end();
+				return;
+			}
+
+			if (json.method === "tools/list") {
+				toolsListCount++;
+				const baseTools = [
+					{
+						name: "http_echo",
+						description: "Echo via HTTP",
+						inputSchema: { type: "object", properties: { val: { type: "string" } } },
+					},
+					{
+						name: "http_sse",
+						description: "Tool using SSE stream response",
+						inputSchema: { type: "object" },
+					},
+					{
+						name: "http_slow_with_progress",
+						description: "Tool with progress notification",
+						inputSchema: { type: "object" },
+					},
+				];
+				if (dynamicToolAdded) {
+					baseTools.push({
+						name: "dynamic_tool_v2",
+						description: "Dynamically added tool",
+						inputSchema: { type: "object" },
+					});
+				}
+				res.setHeader("Content-Type", "application/json");
+				res.writeHead(200);
+				res.end(
+					JSON.stringify({
+						jsonrpc: "2.0",
+						id: json.id,
+						result: { tools: baseTools },
+					}),
+				);
+				return;
+			}
+
+			if (json.method === "tools/call") {
+				const toolName = json.params?.name;
+
+				if (forceSessionExpiredOnce) {
+					forceSessionExpiredOnce = false;
+					res.setHeader("Content-Type", "application/json");
+					res.writeHead(404);
+					res.end(JSON.stringify({ error: "Session expired" }));
+					return;
+				}
+
+				if (toolName === "http_echo") {
+					res.setHeader("Content-Type", "application/json");
+					res.writeHead(200);
+					res.end(
+						JSON.stringify({
+							jsonrpc: "2.0",
+							id: json.id,
+							result: {
+								content: [{ type: "text", text: `echo:${json.params?.arguments?.val}` }],
+							},
+						}),
+					);
+					return;
+				}
+
+				if (toolName === "http_sse") {
+					res.setHeader("Content-Type", "text/event-stream");
+					res.writeHead(200);
+					res.write(
+						`event: message\ndata: ${JSON.stringify({
+							jsonrpc: "2.0",
+							id: json.id,
+							result: { content: [{ type: "text", text: "sse-stream-result" }] },
+						})}\n\n`,
+					);
+					res.end();
+					return;
+				}
+
+				if (toolName === "trigger_refresh") {
+					dynamicToolAdded = true;
+					res.setHeader("Content-Type", "text/event-stream");
+					res.writeHead(200);
+					// 先广播 notifications/tools/list_changed
+					res.write(
+						`event: message\ndata: ${JSON.stringify({
+							jsonrpc: "2.0",
+							method: "notifications/tools/list_changed",
+						})}\n\n`,
+					);
+					setTimeout(() => {
+						res.write(
+							`event: message\ndata: ${JSON.stringify({
+								jsonrpc: "2.0",
+								id: json.id,
+								result: { content: [{ type: "text", text: "refresh-done" }] },
+							})}\n\n`,
+						);
+						res.end();
+					}, 20);
+					return;
+				}
+
+				if (toolName === "http_slow_abortable") {
+					setTimeout(() => {
+						try {
+							res.writeHead(200);
+							res.end(JSON.stringify({ jsonrpc: "2.0", id: json.id, result: { content: [] } }));
+						} catch {}
+					}, 600);
+					return;
+				}
+
+				if (toolName === "http_slow_with_progress") {
+					res.setHeader("Content-Type", "text/event-stream");
+					res.writeHead(200);
+					const progressToken = json.params?._meta?.progressToken;
+					// 50ms 时发送 progress 通知，将 80ms 超时从 50ms 重新计时（延期至 130ms）
+					setTimeout(() => {
+						res.write(
+							`event: message\ndata: ${JSON.stringify({
+								jsonrpc: "2.0",
+								method: "notifications/progress",
+								params: { progressToken, progress: 50, total: 100 },
+							})}\n\n`,
+						);
+					}, 50);
+					// 100ms 发送结果（总耗时 100ms 超过原始 80ms 超时，但小于重置后的 130ms）
+					setTimeout(() => {
+						res.write(
+							`event: message\ndata: ${JSON.stringify({
+								jsonrpc: "2.0",
+								id: json.id,
+								result: { content: [{ type: "text", text: "progress-done" }] },
+							})}\n\n`,
+						);
+						res.end();
+					}, 100);
+					return;
+				}
+			}
+
+			res.writeHead(404);
+			res.end();
+		});
+
+		await new Promise<void>((resolve) => {
+			server.listen(0, "127.0.0.1", () => {
+				const addr = server.address() as { port: number };
+				serverUrl = `http://127.0.0.1:${addr.port}`;
+				resolve();
+			});
+		});
+	});
+
+	afterEach(async () => {
+		await new Promise<void>((resolve) => server.close(() => resolve()));
+	});
+
+	it("成功连接 HTTP MCP 服务器并完成握手与工具枚举", async () => {
+		process.env.TEST_AUTH_TOKEN = "bearer_token_xyz";
+		const client = new McpClient(
+			"http-test",
+			{
+				url: serverUrl,
+				headers: { Authorization: "Bearer ${TEST_AUTH_TOKEN}" },
+			},
+			() => {},
+		);
+		clients.push(client);
+
+		await client.start();
+		expect(client.isHttp).toBe(true);
+		expect(client.getTools().map((t) => t.name)).toEqual(["http_echo", "http_sse", "http_slow_with_progress"]);
+		// 请求头应展开环境变量，并且握手后记录了 Mcp-Session-Id
+		expect(receivedHeaders["authorization"]).toBe("Bearer bearer_token_xyz");
+		expect(receivedHeaders["mcp-session-id"]).toBe("sess-test-456");
+		delete process.env.TEST_AUTH_TOKEN;
+	});
+
+	it("调用常规 JSON 工具与 SSE 流式工具", async () => {
+		const client = new McpClient("http-test", { url: serverUrl }, () => {});
+		clients.push(client);
+		await client.start();
+
+		const echo = (await client.call("http_echo", { val: "hello" })) as { content: string };
+		expect(echo.content).toBe("echo:hello");
+
+		const sse = (await client.call("http_sse", {})) as { content: string };
+		expect(sse.content).toBe("sse-stream-result");
+	});
+
+	it("配置 timeout 生效：超时后正常抛出超时错误", async () => {
+		const client = new McpClient(
+			"http-timeout-test",
+			{
+				url: serverUrl,
+				// 配置 0.05 秒（50ms）超时
+				timeout: 0.05,
+			},
+			() => {},
+		);
+		clients.push(client);
+		await client.start();
+
+		// http_slow_with_progress 延迟 120ms，若传入微小超时且 progressToken 不匹配或未发 progress，会超时抛错
+		await expect(client.call("http_slow_with_progress", {}, 30)).rejects.toThrow(/超时/);
+	});
+
+	it("收到 progress 通知时重置超时计时器，长耗时调用成功返回", async () => {
+		const client = new McpClient(
+			"http-progress-test",
+			{
+				url: serverUrl,
+				timeout: 0.08, // 80ms 超时。但服务端在第 0ms 发送 progress，总耗时 120ms。重置后总窗口 80+80=160ms，可成功
+			},
+			() => {},
+		);
+		clients.push(client);
+		await client.start();
+
+		const res = (await client.call("http_slow_with_progress", {})) as { content: string };
+		expect(res.content).toBe("progress-done");
+	});
+
+	it("HTTP 会话失效时自动重新握手自愈", async () => {
+		const client = new McpClient("http-retry-test", { url: serverUrl }, () => {});
+		clients.push(client);
+		await client.start();
+
+		// 触发一次 404 session expired，客户端应自动重新握手恢复
+		forceSessionExpiredOnce = true;
+		const res = (await client.call("http_echo", { val: "after_expired" })) as { content: string };
+		expect(res.content).toBe("echo:after_expired");
+		expect(client.startCount).toBe(2);
+	});
+
+	it("关闭 HTTP 客户端时尝试向服务端发送 DELETE 注销", async () => {
+		const client = new McpClient("http-close-test", { url: serverUrl }, () => {});
+		clients.push(client);
+		await client.start();
+		expect(sessionDeleteCalled).toBe(false);
+
+		client.close();
+		// 给 DELETE 请求一点微任务时间
+		await new Promise((r) => setTimeout(r, 50));
+		expect(sessionDeleteCalled).toBe(true);
+	});
+
+	it("McpBridge 可以聚合 HTTP MCP 工具并执行调用", async () => {
+		const bridge = new McpBridge("/nonexistent", () => {}, {
+			specOverride: [{ name: "remote_srv", spec: { url: serverUrl, timeout: 5 } }],
+		});
+		await bridge.load();
+		const tools = bridge.getTools();
+		expect(tools.length).toBe(3);
+		const echoTool = tools.find((t) => t.name === "http_echo")!;
+		expect(echoTool.label).toContain("remote_srv");
+
+		const res = (await echoTool.execute("id", { val: "bridge_ok" })) as { content: string };
+		expect(res.content).toBe("echo:bridge_ok");
+		bridge.dispose();
+	});
+
+	it("notifications/tools/list_changed 通知自动重新拉取工具列表", async () => {
+		let toolsChangedCount = 0;
+		const bridge = new McpBridge("/nonexistent", () => {}, {
+			specOverride: [{ name: "remote_srv", spec: { url: serverUrl, timeout: 5 } }],
+			onToolsChanged: () => {
+				toolsChangedCount++;
+			},
+		});
+		await bridge.load();
+		expect(bridge.getTools().length).toBe(3);
+
+		// 调用触发 trigger_refresh，服务端发通知 tools/list_changed
+		const client = (bridge as any).clients[0] as McpClient;
+		await client.call("trigger_refresh", {});
+
+		// 等待异步拉取完成
+		await waitUntil(() => bridge.getTools().length === 4, 2000);
+		expect(bridge.getTools().map((t) => t.name)).toContain("dynamic_tool_v2");
+		expect(toolsChangedCount).toBeGreaterThanOrEqual(1);
+		bridge.dispose();
+	});
+
+	it("传入 AbortSignal 时可主动取消在途工具调用", async () => {
+		const client = new McpClient("http-abort-test", { url: serverUrl }, () => {});
+		clients.push(client);
+		await client.start();
+
+		const ac = new AbortController();
+		setTimeout(() => ac.abort(), 40);
+
+		await expect(client.call("http_slow_abortable", {}, 2000, ac.signal)).rejects.toThrow(/aborted/i);
 	});
 });

@@ -191,7 +191,8 @@ export interface PluginConversationSnapshot {
  * 文件改动 → 产出结果」聚成时间线；payload 全部截断封顶，可直接存/广播。
  */
 export interface PluginRunEvent {
-	type: "run_start" | "run_end" | "turn_start" | "turn_end" | "message" | "tool_start" | "tool_end";
+	type:
+		"run_start" | "run_end" | "turn_start" | "turn_end" | "turn_first_token" | "message" | "tool_start" | "tool_end";
 	/** 事件所属对话。 */
 	conversationId?: string;
 	/** 事件毫秒时间戳（服务端时钟）。 */
@@ -208,7 +209,7 @@ export interface PluginRunEvent {
 	argsText?: string;
 	/** tool_end：结果文本预览（截断 4k）。 */
 	resultText?: string;
-	/** tool_end：真实执行耗时毫秒 / 是否报错。 */
+	/** tool_end / turn_first_token：真实执行耗时毫秒（工具执行时间或首包响应 TTFT）/ 是否报错。 */
 	durationMs?: number;
 	isError?: boolean;
 	/** run_end：末条 assistant 的 stopReason（"aborted" 等，无则省略）。 */
@@ -585,7 +586,8 @@ export interface PluginHost {
 		create(spec: ProjectCreateSpec): Promise<ProjectCreateResult>;
 	};
 	/** 注册一个常驻后台任务（轮询器/连接池/后台 worker…）：出现在顶栏「后台任务」
-	 *  面板，用户可一键停止。返回 { update, unregister }。id 在插件内唯一。 */
+	 *  面板，用户可一键停止。返回 { update, unregister }。id 在插件内唯一。
+	 *  支持指定统一心跳探活回调 check 与间隔 intervalMs：探活连续失败将由宿主自动注销。 */
 	registerBackgroundTask(task: {
 		id: string;
 		/** 面板显示名（如「📬 邮件轮询」）。 */
@@ -594,6 +596,19 @@ export interface PluginHost {
 		stop?: () => void;
 		/** 可选初始状态文案，之后可经 update() 刷新。 */
 		status?: string;
+		/**
+		 * 可选存活心跳探活回调：
+		 * 宿主在后台按指定间隔定期调用。返回 false / 抛错 / { alive: false } 即记为一次探活失败。
+		 * 返回 true 或 { alive: true, status?: string } 判定存活（若带 status 自动更新面板文案）。
+		 */
+		check?: () =>
+			boolean | { alive: boolean; status?: string } | Promise<boolean | { alive: boolean; status?: string }>;
+		/** 心跳间隔毫秒数（缺省 3000ms，最小钳制 500ms）。 */
+		intervalMs?: number;
+		/** 连续探活失败判定死亡的阈值（缺省 2 次）。 */
+		maxFailures?: number;
+		/** 当因心跳探活连续失败而被宿主自动注销时的回调。 */
+		onDead?: (reason?: string) => void;
 	}): {
 		update(next: Partial<{ label: string; status: string; stop: () => void }>): void;
 		unregister(): void;
@@ -3034,6 +3049,7 @@ export class PluginManager {
 					overlayForScan.values,
 					{ has: (k) => new PluginSecrets(this.dataDir, dir).has(k) },
 				);
+				const hasClient = existsSync(join(dir, "client", "entry.mjs"));
 				out.push({
 					id: name,
 					name: typeof m.name === "string" && m.name ? m.name : name,
@@ -3042,7 +3058,7 @@ export class PluginManager {
 					homepage: typeof m.homepage === "string" && m.homepage.trim() ? m.homepage.trim() : undefined,
 					icon: typeof m.icon === "string" && m.icon.trim() ? m.icon.trim() : undefined,
 					iconSvg: normalizeIconSvg(m.iconSvg),
-					hasClient: existsSync(join(dir, "client", "entry.mjs")),
+					hasClient,
 					error: this.loaded.get(name)?.info.error,
 					// manifest 声明的能力清单（fs/net/tools…）——设置面板展示用
 					permissions: Array.isArray(m.permissions)
@@ -3136,8 +3152,8 @@ export class PluginManager {
 							.filter((x): x is NonNullable<typeof x> => x !== null);
 						return rows.length ? rows : undefined;
 					})(),
-					// 是否有独立视图 tab（manifest "view"，缺省 true）；纯 renderer 插件写 false
-					view: typeof m.view === "boolean" ? m.view : true,
+					// 是否有独立视图 tab（manifest "view"，缺省为是否有客户端 entry.mjs）；纯 renderer 插件写 false
+					view: typeof m.view === "boolean" ? m.view : hasClient,
 					// 客户端 bundle 是否常驻加载（manifest "preload"，缺省 false）：无视图
 					// （view:false）却要顶层代码一直跑（提醒轮询/快捷键/常驻浮窗…）的插件用它。
 					preload: m.preload === true,
@@ -4120,12 +4136,76 @@ export class PluginManager {
 					}
 				};
 				fire();
-				effects.add(`bgTask:${id}`, () => {
+
+				// 统一心跳探活循环调度
+				let heartbeatTimer: NodeJS.Timeout | null = null;
+				const stopHeartbeat = () => {
+					if (heartbeatTimer) {
+						clearInterval(heartbeatTimer);
+						heartbeatTimer = null;
+					}
+				};
+
+				const cleanup = () => {
+					stopHeartbeat();
 					if (bgTaskTable.delete(id)) {
 						if (bgTaskTable.size === 0) self.pluginBgTasks.delete(info.id);
 						fire();
 					}
-				});
+				};
+
+				const removeEffect = effects.add(`bgTask:${id}`, cleanup);
+
+				if (typeof task?.check === "function") {
+					const checkFn = task.check;
+					const interval = Math.max(50, Math.floor(task.intervalMs ?? 3000));
+					const maxFailures = Math.max(1, Math.floor(task.maxFailures ?? 2));
+					let consecutiveFailures = 0;
+					let inFlight = false;
+
+					heartbeatTimer = setInterval(async () => {
+						if (inFlight || !bgTaskTable.has(id)) return;
+						inFlight = true;
+						try {
+							const res = await checkFn();
+							let alive = false;
+							let nextStatus: string | undefined;
+							if (typeof res === "boolean") {
+								alive = res;
+							} else if (res && typeof res === "object") {
+								alive = !!res.alive;
+								if (typeof res.status === "string") {
+									nextStatus = res.status;
+								}
+							}
+							if (alive) {
+								consecutiveFailures = 0;
+								if (nextStatus !== undefined && nextStatus !== entry.status) {
+									entry.status = nextStatus;
+									fire();
+								}
+							} else {
+								consecutiveFailures++;
+							}
+						} catch {
+							consecutiveFailures++;
+						} finally {
+							inFlight = false;
+						}
+
+						if (consecutiveFailures >= maxFailures) {
+							removeEffect();
+							try {
+								task.onDead?.("heartbeat_failed");
+							} catch (e) {
+								console.error(`[plugin:${info.id}] bgTask onDead error:`, e);
+							}
+						}
+					}, interval);
+
+					heartbeatTimer.unref?.();
+				}
+
 				return {
 					update: (next) => {
 						if (!bgTaskTable.has(id)) return;
@@ -4135,10 +4215,7 @@ export class PluginManager {
 						fire();
 					},
 					unregister: () => {
-						if (bgTaskTable.delete(id)) {
-							if (bgTaskTable.size === 0) this.pluginBgTasks.delete(info.id);
-							fire();
-						}
+						removeEffect();
 					},
 				};
 			},
@@ -4698,11 +4775,14 @@ export class PluginManager {
 			// Node 对同一 URL 的 import() 永远返回缓存模块——追加 epoch 作查询串
 			// 击穿缓存，让 plugins_reload 后的重新激活能拿到磁盘上的新代码。
 			const mod = (await import(pathToFileURL(join(dir, "index.mjs")).href + `?e=${this.epochCounter}`)) as {
-				default?: {
-					activate?: (host: PluginHost) => void | (() => void) | Promise<void | (() => void)>;
-				};
+				default?:
+					| ((host: PluginHost) => void | (() => void) | Promise<void | (() => void)>)
+					| {
+							activate?: (host: PluginHost) => void | (() => void) | Promise<void | (() => void)>;
+					  };
 			};
-			const ret = await mod.default?.activate?.(host);
+			const activateFn = typeof mod.default === "function" ? mod.default : mod.default?.activate;
+			const ret = await activateFn?.(host);
 			const gateWarned = self.activatingGates.get(info.id)?.legacyWarned;
 			self.activatingGates.delete(info.id);
 			// activate() 执行期间经 host 注册产生的运行时诊断（重复工具/命令、ui 丢弃等）

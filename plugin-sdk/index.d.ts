@@ -303,8 +303,18 @@ export interface PluginHost {
 		): void;
 		clear(): void;
 	};
-	/** 常驻后台任务（顶栏「后台任务」面板；返回 update/unregister）。 */
-	registerBackgroundTask(task: { id: string; label: string; stop?: () => void; status?: string }): {
+	/** 常驻后台任务（顶栏「后台任务」面板；返回 update/unregister）。支持心跳探活回调 check 与间隔 intervalMs。 */
+	registerBackgroundTask(task: {
+		id: string;
+		label: string;
+		stop?: () => void;
+		status?: string;
+		check?: () =>
+			boolean | { alive: boolean; status?: string } | Promise<boolean | { alive: boolean; status?: string }>;
+		intervalMs?: number;
+		maxFailures?: number;
+		onDead?: (reason?: string) => void;
+	}): {
 		update(next: Partial<{ label: string; status: string; stop: () => void }>): void;
 		unregister(): void;
 	};

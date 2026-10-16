@@ -5,6 +5,7 @@ import { createRoot } from "react-dom/client";
 import { act } from "react-dom/test-utils";
 import { BarItem } from "../../web/src/components/BarItem.js";
 import { LanguageProvider } from "../../web/src/i18n.js";
+import { getContextMenu, resetContextMenu } from "../../web/src/context-menu-state.js";
 import type { UiSlotEntry } from "../../web/src/ui-slots.js";
 import type { ChatState } from "../../web/src/use-chat.js";
 
@@ -332,6 +333,18 @@ describe("上下左右四栏通用 BarItem 渲染测试", () => {
 		expect(css).toMatch(/\.topbar\.no-labels[\s\S]*?border-radius:\s*50%/);
 	});
 
+	it("styles.css 中锁定带角标/额外内容的顶栏按钮在 no-labels 模式下悬浮与常态均为 7px 圆角矩形，防止畸变为椭圆", () => {
+		const fs = require("node:fs");
+		const path = require("node:path");
+		const css = fs.readFileSync(path.join(__dirname, "../../web/src/styles.css"), "utf8");
+		// 悬浮 hover 选择器排除了带角标/额外内容的项，仅对纯图标应用 50%
+		expect(css).toMatch(
+			/\.topbar\.no-labels\s+\.chip:not\(:has\(svg ~ svg\)\):not\(:has\(\.bg-task-badge\)\):not\(:has\(\.update-badge\)\):not\(:has\(\.update-dot\)\):hover/,
+		);
+		// 带角标或额外内容的条目显式声明为 7px 圆角矩形
+		expect(css).toMatch(/\.topbar\.no-labels\s+\.chip:has\(\.bg-task-badge\)[\s\S]*?border-radius:\s*7px\s*!important/);
+	});
+
 	it("styles.css 中锁定侧边栏隐藏文字，且有文字时是小圆角（7px），默认不显示边框", () => {
 		const fs = require("node:fs");
 		const path = require("node:path");
@@ -468,12 +481,196 @@ describe("上下左右四栏通用 BarItem 渲染测试", () => {
 		act(() => {
 			triggerBtn?.click();
 		});
-		const items = container.querySelectorAll(".engine-picker-item");
+		// 底栏由于开启了 portal，下拉菜单挂载在 document.body 下的 .dd-portal-wrapper 中，彻底摆脱 statusbar-left 的 overflow 截断
+		const portalWrapper = document.body.querySelector(".dd-portal-wrapper.dd-up");
+		expect(portalWrapper).not.toBeNull();
+		const items = document.body.querySelectorAll(".engine-picker-item");
 		expect(items.length).toBeGreaterThanOrEqual(2);
 		// 菜单条目也包含引擎图标
-		const itemIcons = container.querySelectorAll(".engine-picker-item-icon");
+		const itemIcons = document.body.querySelectorAll(".engine-picker-item-icon");
 		expect(itemIcons.length).toBeGreaterThanOrEqual(2);
 		act(() => root.unmount());
 		container.remove();
+		portalWrapper?.remove();
+	});
+
+	it("侧边栏 host:engine 点击展开时通过 Portal 挂载到 document.body，彻底摆脱父容器截断", () => {
+		const engEntry: UiSlotEntry = {
+			id: "host:engine",
+			slot: "sidebar.left",
+			source: "host",
+			label: "引擎",
+			kind: "action",
+			order: 5,
+			align: "start",
+			hidden: false,
+			userOverrides: [],
+			arrangedBy: [],
+		};
+		const { container, root } = renderBarItem(engEntry, "left");
+		const triggerBtn = container.querySelector(".engine-picker-btn") as HTMLButtonElement | null;
+		expect(triggerBtn).not.toBeNull();
+
+		act(() => {
+			triggerBtn?.click();
+		});
+
+		// 验证：由于开启了 portal，下拉菜单挂载在 document.body 下的 .dd-portal-wrapper 中，不在原 container 内部
+		const portalWrapper = document.body.querySelector(".dd-portal-wrapper");
+		expect(portalWrapper).not.toBeNull();
+		const portalItems = document.body.querySelectorAll(".engine-picker-item");
+		expect(portalItems.length).toBeGreaterThanOrEqual(2);
+
+		act(() => root.unmount());
+		container.remove();
+		portalWrapper?.remove();
+	});
+
+	it("顶栏条目 host:new-sandbox 正常渲染启动沙盒按钮，带 sandbox-chip 类并触发 onOpenSandboxModal", () => {
+		let opened = false;
+		const entry: UiSlotEntry = {
+			id: "host:new-sandbox",
+			slot: "topbar.primary",
+			source: "host",
+			label: "启动沙盒",
+			kind: "action",
+			order: 96.6,
+			align: "end",
+			hidden: false,
+			userOverrides: [],
+			arrangedBy: [],
+		};
+
+		localStorage.setItem("pi-web-ui:lang", "zh");
+		const container = document.createElement("div");
+		document.body.appendChild(container);
+		const root = createRoot(container);
+		act(() => {
+			root.render(
+				createElement(
+					LanguageProvider,
+					null,
+					createElement(BarItem, {
+						entry,
+						bar: "top",
+						chat: chatStub,
+						view: "chat",
+						onOpenSandboxModal: () => {
+							opened = true;
+						},
+					}),
+				),
+			);
+		});
+
+		const btn = container.querySelector('button[data-bar-item="host:new-sandbox"]') as HTMLButtonElement | null;
+		expect(btn).not.toBeNull();
+		expect(btn?.className).toContain("chip");
+		expect(btn?.className).toContain("newchat");
+		expect(btn?.className).toContain("sandbox-chip");
+		expect(btn?.textContent).toContain("启动沙盒");
+
+		act(() => {
+			btn?.click();
+		});
+		expect(opened).toBe(true);
+
+		act(() => root.unmount());
+		container.remove();
+	});
+
+	it("条目右键菜单包含「隐藏」选项（host:hide-item，文案为隐藏），有覆盖时包含「恢复」选项（host:restore-item）", () => {
+		resetContextMenu();
+		const entry: UiSlotEntry = {
+			id: "host:new-sandbox",
+			slot: "topbar.primary",
+			source: "host",
+			label: "启动沙盒",
+			kind: "action",
+			order: 96.6,
+			align: "end",
+			hidden: false,
+			userOverrides: [],
+			arrangedBy: [],
+		};
+
+		localStorage.setItem("pi-web-ui:lang", "zh");
+		const container = document.createElement("div");
+		document.body.appendChild(container);
+		const root = createRoot(container);
+		act(() => {
+			root.render(
+				createElement(
+					LanguageProvider,
+					null,
+					createElement(BarItem, {
+						entry,
+						bar: "top",
+						chat: chatStub,
+						view: "chat",
+					}),
+				),
+			);
+		});
+
+		const btn = container.querySelector('button[data-bar-item="host:new-sandbox"]') as HTMLButtonElement | null;
+		expect(btn).not.toBeNull();
+
+		act(() => {
+			btn?.dispatchEvent(
+				new MouseEvent("contextmenu", { bubbles: true, cancelable: true, clientX: 100, clientY: 200 }),
+			);
+		});
+
+		const menu = getContextMenu();
+		expect(menu).not.toBeNull();
+		const hideOption = menu?.entries.find((e) => e.id === "host:hide-item");
+		expect(hideOption).toBeDefined();
+		expect(hideOption?.label).toBe("隐藏");
+		// 无覆盖时不应有恢复项
+		const restoreOptionNone = menu?.entries.find((e) => e.id === "host:restore-item");
+		expect(restoreOptionNone).toBeUndefined();
+
+		act(() => root.unmount());
+		container.remove();
+		resetContextMenu();
+
+		// 测试带 userOverrides 的条目
+		const entryWithOverrides: UiSlotEntry = {
+			...entry,
+			userOverrides: ["slot"],
+		};
+		const container2 = document.createElement("div");
+		document.body.appendChild(container2);
+		const root2 = createRoot(container2);
+		act(() => {
+			root2.render(
+				createElement(
+					LanguageProvider,
+					null,
+					createElement(BarItem, {
+						entry: entryWithOverrides,
+						bar: "top",
+						chat: chatStub,
+						view: "chat",
+					}),
+				),
+			);
+		});
+		const btn2 = container2.querySelector('button[data-bar-item="host:new-sandbox"]') as HTMLButtonElement | null;
+		act(() => {
+			btn2?.dispatchEvent(
+				new MouseEvent("contextmenu", { bubbles: true, cancelable: true, clientX: 100, clientY: 200 }),
+			);
+		});
+		const menu2 = getContextMenu();
+		expect(menu2).not.toBeNull();
+		const restoreOption = menu2?.entries.find((e) => e.id === "host:restore-item");
+		expect(restoreOption).toBeDefined();
+		expect(restoreOption?.label).toBe("恢复");
+
+		act(() => root2.unmount());
+		container2.remove();
+		resetContextMenu();
 	});
 });

@@ -1,0 +1,158 @@
+import { readFileSync } from "node:fs";
+import { resolve } from "node:path";
+import { describe, expect, it } from "vitest";
+
+describe("wallpaper-engine 性能优化与画质分级守卫测试", () => {
+	const manifestPath = resolve(process.cwd(), "plugins/wallpaper-engine/manifest.json");
+	const entryPath = resolve(process.cwd(), "plugins/wallpaper-engine/client/entry.mjs");
+	const stylesPath = resolve(process.cwd(), "plugins/wallpaper-engine/client/styles.mjs");
+	const indexPath = resolve(process.cwd(), "plugins/wallpaper-engine/index.mjs");
+
+	it("manifest.json 版本递增且提供 qualityPreset、antiAliasing 与 lightWallpaperMode 设置", () => {
+		const raw = readFileSync(manifestPath, "utf8");
+		const manifest = JSON.parse(raw);
+		expect(manifest.version).toBe("0.3.35");
+
+		const keys = manifest.settings.map((s: { key: string }) => s.key);
+		expect(keys).toContain("qualityPreset");
+		expect(keys).toContain("antiAliasing");
+		expect(keys).toContain("lightWallpaperMode");
+
+		const themeSetting = manifest.settings.find((s: { key: string }) => s.key === "wallpaperTheme");
+		expect(themeSetting.default).toBe("obsidian");
+
+		const qSetting = manifest.settings.find((s: { key: string }) => s.key === "qualityPreset");
+		expect(qSetting.default).toBe("high");
+
+		const aaSetting = manifest.settings.find((s: { key: string }) => s.key === "antiAliasing");
+		expect(aaSetting.default).toBe("off");
+
+		const fpsSetting = manifest.settings.find((s: { key: string }) => s.key === "fpsLimit");
+		expect(fpsSetting.default).toBe("0");
+
+		const opacitySetting = manifest.settings.find((s: { key: string }) => s.key === "glassOpacity");
+		expect(opacitySetting.default).toBe(40);
+
+		const lightSetting = manifest.settings.find((s: { key: string }) => s.key === "lightWallpaperMode");
+		expect(lightSetting.default).toBe(false);
+	});
+
+	it("styles.mjs 移除所有容器阴影，输入框胶囊、工具与思考文字全量提亮，折叠与复制图标采用 drop-shadow 矢量锁边，顶栏按钮裸幽灵化，消息带方案 B 超轻微柔雾且工具调用彻底裸透无框", () => {
+		const styles = readFileSync(stylesPath, "utf8");
+		// 严禁在消息文本中存在 16px 大半径多层模糊文本阴影
+		expect(styles).not.toContain("0 0 16px rgba(0, 0, 0");
+		// 严禁在视频元素上声明强制双三次/高负荷渲染
+		expect(styles).not.toContain("image-rendering: high-quality");
+		// 抽屉面板必须采用硬件加速 translate3d
+		expect(styles).toContain("translate3d");
+		// 用户气泡与卡片容器阴影已移除
+		expect(styles).toContain("box-shadow: none !important;");
+		// 解除最小 40% 限制
+		expect(styles).toContain("Math.max(0.0");
+		// 输入框底部胶囊文字彻底提亮
+		expect(styles).toContain(".composer-tools .chip-sub");
+		// 工具与思考文字彻底提亮并注入1px紧致微边缘
+		expect(styles).toContain(".toolcall-name");
+		expect(styles).toContain(".thinking-label");
+		// 折叠展开箭头与卡头复制按钮矢量锁边，折叠后浮层按钮 .panel-rail 适配透明
+		expect(styles).toContain(".chead-toggle");
+		expect(styles).toContain(".chead-copy");
+		expect(styles).toContain(".panel-rail");
+		expect(styles).toContain("drop-shadow(0 0 1px rgba(0, 0, 0, 0.95))");
+		// 顶栏按钮（含沙盒、临时对话等）默认彻底裸幽灵化，绝不残留突兀高亮边框或圆环
+		expect(styles).toContain(".topbar .sandbox-chip:not(:hover)");
+		// 工具调用与思考卡彻底裸透无框无底板（方案 B：连成一体无空隙）
+		expect(styles).toContain(
+			".toolcall,\n.thinking {\n\tbackground: transparent !important;\n\tborder: none !important;\n\tborder-radius: 0 !important;\n\tmargin: 0 !important;",
+		);
+		// 助手消息正文容器具备单个气泡独立圆角与轻微毛玻璃背景（无边缘阴影），正文消息与工具/思考对齐留出边距
+		expect(styles).toContain(
+			".msg-assistant .msg-body {\n\tbackground: rgba(12, 18, 32, 0.38) !important;\n\tborder: 1px solid rgba(255, 255, 255, 0.05) !important;\n\tborder-radius: 16px !important;\n\tbox-shadow: none !important;\n\tbackdrop-filter: blur(2px) saturate(115%) !important;\n\t-webkit-backdrop-filter: blur(2px) saturate(115%) !important;\n\toverflow: hidden !important;\n}",
+		);
+		expect(styles).toContain(".msg-text {\n\tpadding: 6px 12px !important;\n\tborder-radius: 8px !important;\n}");
+		// 输入框与快捷指令芯片均具备轻微毛玻璃模糊
+		expect(styles).toContain(".inputbox {\n\tbackground: rgba(12, 14, 20, 0.48) !important;");
+		expect(styles).toContain("backdrop-filter: blur(10px) saturate(130%) !important;");
+		expect(styles).toContain(".quick-chip {\n\tbackground: rgba(14, 16, 24, 0.45) !important;");
+		expect(styles).toContain("backdrop-filter: blur(8px) saturate(130%) !important;");
+		// 严禁下拉胶囊按钮在 hover 时变形为 50% 椭圆，必须锁定保持 8px 圆角
+		expect(styles).toContain("border-radius: 8px !important;");
+		expect(styles).not.toContain(".composer-tools-left button:hover");
+		// 支持亮色壁纸增强模式
+		expect(styles).toContain("lightWallpaperMode");
+	});
+
+	it("黑曜冷月专属主题 CSS 去除了所有容器 box-shadow，顶栏底栏无多余大模糊，消息正文带方案 B 超轻微柔雾且工具调用彻底裸透无框", () => {
+		const css = readFileSync(resolve(process.cwd(), "themes/wallpaper-obsidian.css"), "utf8");
+		// 用户气泡、输入框、卡片等容器均已设置为 box-shadow: none
+		expect(css).toContain("box-shadow: none !important;");
+		// 顶栏与底栏保持纯净无大模糊
+		expect(css).toContain(".topbar {\n\tbackground: rgba");
+		expect(css).toContain("backdrop-filter: none !important;");
+		// 单个气泡独立圆角与轻微毛玻璃背景（无边缘阴影），正文消息留出对齐边距
+		expect(css).toContain(
+			".msg-assistant .msg-body {\n\tbackground: rgba(12, 18, 32, 0.38) !important;\n\tborder: 1px solid rgba(255, 255, 255, 0.05) !important;\n\tborder-radius: 16px !important;\n\tbox-shadow: none !important;\n\tbackdrop-filter: blur(2px) saturate(115%) !important;\n\t-webkit-backdrop-filter: blur(2px) saturate(115%) !important;\n\toverflow: hidden !important;\n}",
+		);
+		expect(css).toContain(".msg-text {\n\tpadding: 6px 12px !important;\n\tborder-radius: 8px !important;\n}");
+		// 输入框与快捷指令芯片均具备轻微毛玻璃模糊
+		expect(css).toContain(".inputbox {\n\tbackground: rgba(12, 14, 20, 0.48) !important;");
+		expect(css).toContain("backdrop-filter: blur(10px) saturate(130%) !important;");
+		expect(css).toContain(".quick-chip {\n\tbackground: rgba(14, 16, 24, 0.45) !important;");
+		expect(css).toContain("backdrop-filter: blur(8px) saturate(130%) !important;");
+		// 工具调用与思考卡彻底移除硬边框并消除间隙连成一体
+		expect(css).toContain(
+			".toolcall,\n.thinking {\n\tbackground: transparent !important;\n\tborder: none !important;\n\tborder-radius: 0 !important;\n\tmargin: 0 !important;",
+		);
+		// 输入框底部胶囊文字提亮
+		expect(css).toContain(".composer-tools .chip-sub");
+		// 工具与思考文字提亮
+		expect(css).toContain(".toolcall-name");
+		expect(css).toContain(".thinking-label");
+		// 折叠与复制图标 drop-shadow 矢量锁边，折叠后浮层按钮 .panel-rail 适配透明
+		expect(css).toContain(".chead-toggle");
+		expect(css).toContain(".chead-copy");
+		expect(css).toContain(".panel-rail");
+		expect(css).toContain("drop-shadow(0 0 1px rgba(0, 0, 0, 0.95))");
+		// 顶栏按钮裸幽灵化，沙盒与临时会话在非 hover 时无突兀黄色圆圈高亮
+		expect(css).toContain(".topbar .sandbox-chip:not(:hover)");
+		// 严禁下拉胶囊在 hover 时变形为 50% 椭圆
+		expect(css).toContain("border-radius: 8px !important;");
+		expect(css).not.toContain(".composer-tools-left button:hover");
+		// 发送按钮适配：冷白高光底 + 深黑高对比箭头图标
+		expect(css).toContain(".inputbox .btn.send");
+		expect(css).toContain("color: #050507 !important;");
+		// 图标阴影唯一挂载在矢量笔画，span 容器保持 filter: none 杜绝双重嵌套浓黑阴影
+		expect(css).toContain("span.bar-item-icon");
+		expect(css).toContain("svg.bar-item-icon");
+	});
+
+	it("entry.mjs 提供清晰原生 QUALITY_PROFILES，优先加载打包 scene.pkg 杜绝降级模糊，抽屉包含亮色壁纸增强开关且清理了已删除的旧主题", () => {
+		const entry = readFileSync(entryPath, "utf8");
+		expect(entry).toContain("QUALITY_PROFILES");
+		// 抽屉主题下拉菜单已移除 cyber, synthwave, aurora, amber 等已删除主题
+		expect(entry).not.toContain('value="cyber"');
+		expect(entry).not.toContain('value="synthwave"');
+		expect(entry).not.toContain('value="aurora"');
+		expect(entry).not.toContain('value="amber"');
+		expect(entry).toContain('value="obsidian"');
+		// 严禁对纹理应用 0.75 降采样，保证原生 1:1 清晰
+		expect(entry).not.toContain("videoTexScale: 0.75");
+		// 优先拉取 scene.pkg
+		expect(entry).toContain("shouldTryPkg");
+		// 不再在 Scene 挂载中硬编码 msaa4
+		expect(entry).not.toContain(`antiAliasing: "msaa4", // 开启高质量抗锯齿`);
+		expect(entry).toContain("pi-we-quality-select");
+		expect(entry).toContain("pi-we-aa-select");
+		expect(entry).toContain("pi-we-lightmode-check");
+		expect(entry).toContain('antiAliasing: "off"');
+	});
+
+	it("index.mjs 支持 qualityPreset、antiAliasing 与 lightWallpaperMode 状态持久化，且下发 hasPkg 标识与 Map 索引加速", () => {
+		const index = readFileSync(indexPath, "utf8");
+		expect(index).toContain("qualityPreset");
+		expect(index).toContain("antiAliasing");
+		expect(index).toContain("lightWallpaperMode");
+		expect(index).toContain("cachedWallpaperMap");
+		expect(index).toContain("hasPkg: Boolean(w.pkgPath)");
+	});
+});

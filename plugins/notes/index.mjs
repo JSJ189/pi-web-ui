@@ -218,10 +218,12 @@ export default {
 			switch (String(op ?? "")) {
 				case "note.save":
 					return wrap(S.saveNote(store, payload.item ?? payload));
+				case "note.delete":
 				case "note.remove":
 					return S.removeNote(store, payload.id) ? { ok: true, result: { ok: true } } : notFound("note");
 				case "todo.save":
 					return wrap(S.saveTodo(store, payload.item ?? payload));
+				case "todo.delete":
 				case "todo.remove":
 					return S.removeTodo(store, payload.id) ? { ok: true, result: { ok: true } } : notFound("todo");
 				case "todo.toggle":
@@ -233,6 +235,7 @@ export default {
 				}
 				case "reminder.save":
 					return wrap(S.saveReminder(store, payload.item ?? payload));
+				case "reminder.delete":
 				case "reminder.remove":
 					return S.removeReminder(store, payload.id) ? { ok: true, result: { ok: true } } : notFound("reminder");
 				case "reminder.snooze":

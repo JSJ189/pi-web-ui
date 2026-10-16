@@ -236,6 +236,54 @@ check(
 	`len=${(settings?.effectiveSystemPrompt ?? "").length}`,
 );
 
+// ---------------------------------------------------------------------------
+// 验证：工具按需加载关闭时，绝不暴露 load_tools 工具
+// ---------------------------------------------------------------------------
+ws.send(JSON.stringify({ type: "set_settings", toolLazyLoading: false }));
+for (let i = 0; i < 50 && (state?.tools?.includes("load_tools") || settings?.toolLazyLoading !== false); i++) {
+	await sleep(50);
+}
+ws.send(JSON.stringify({ type: "get_settings" }));
+await sleep(400);
+
+check(
+	"关闭按需加载后，snapshot.tools 中不再包含 load_tools",
+	Array.isArray(state?.tools) && !state.tools.includes("load_tools"),
+	`tools=${state?.tools?.join(",")}`,
+);
+check(
+	"关闭按需加载后，effectiveSystemPrompt 不再提及 load_tools",
+	!/load_tools/.test(settings?.effectiveSystemPrompt ?? ""),
+	`promptPreview=${(settings?.effectiveSystemPrompt ?? "").slice(0, 200)}...`,
+);
+
+// 发起一次新会话并请求模型，验证发给模型的 tools 和 systemPrompt 均无 load_tools
+ws.send(JSON.stringify({ type: "new_chat" }));
+const prevConv = state?.conversationId;
+for (let i = 0; i < 50 && state?.conversationId === prevConv; i++) await sleep(50);
+check("已新建会话", Boolean(state?.conversationId && state.conversationId !== prevConv));
+
+ws.send(JSON.stringify({ type: "prompt", text: "test tools without lazy loading" }));
+const third = await waitRequest(2);
+check("已发出第三次模型请求", Boolean(third), `requests=${requests.length}`);
+const thirdTools = toolNames(third);
+check(
+	"关闭按需加载时，模型请求的 tools 数组绝不包含 load_tools",
+	!thirdTools.includes("load_tools"),
+	`thirdTools=${thirdTools.join(",")}`,
+);
+check(
+	"关闭按需加载时，核心工具依然正常暴露",
+	["bash", "read", "edit", "write"].every((n) => thirdTools.includes(n)),
+	`thirdTools=${thirdTools.join(",")}`,
+);
+const thirdSystem = systemText(third);
+check(
+	"关闭按需加载时，系统提示词绝不包含 load_tools 说明",
+	!/load_tools/.test(thirdSystem),
+	`system len=${thirdSystem.length}`,
+);
+
 check("服务进程仍然存活", server.exitCode === null, `exitCode=${server.exitCode}`);
 
 ws.close();

@@ -21,7 +21,7 @@ import {
 	FiVolume2,
 } from "react-icons/fi";
 import { GoTriangleDown } from "react-icons/go";
-import { LuMessageSquareDashed } from "react-icons/lu";
+import { LuFlaskConical, LuMessageSquareDashed } from "react-icons/lu";
 import type { ChatState, UpdateAllItem } from "../use-chat";
 import type { CommandDef } from "../types";
 import { buildUpdateCommand } from "../update-command";
@@ -38,6 +38,7 @@ import { isZhLocale, useI18n, localeShort } from "../i18n";
 import {
 	isPluginViewItem,
 	REQUIRED_TOPBAR_ITEM_IDS,
+	restoreUiItem,
 	setPluginViewOrder,
 	setPluginViewPinned,
 	type UiSlotEntry,
@@ -63,6 +64,7 @@ import { isDesktopShell } from "../desktop";
 import { desktopReleasesUrl, useDesktopUpdater } from "../desktop-updater";
 import { BarItem } from "./BarItem";
 import { EnginePicker } from "./EnginePicker";
+import { WindowControls } from "./WindowControls";
 
 /** 「安装全局引擎」按钮的目标（issue #321）：buildUpdateCommand 对 pi-core 生成
  *  `npm i -g <name>@latest`，装完重启服务即由 resolve-global-sdk 自动切到更新的那份。 */
@@ -218,6 +220,8 @@ interface TopBarProps {
 	/** 极简沉浸模式状态与切换回调 */
 	zenMode?: boolean;
 	onToggleZenMode?: () => void;
+	/** 打开启动沙盒项目弹窗 */
+	onOpenSandboxModal?: () => void;
 }
 
 export function TopBar({
@@ -245,6 +249,7 @@ export function TopBar({
 	onOpenIconEdit,
 	zenMode,
 	onToggleZenMode,
+	onOpenSandboxModal,
 }: TopBarProps) {
 	const { locale, setLocale, t, packs } = useI18n();
 	// 「⋯」溢出菜单的开关（宿主自己的菜单，插件不碰 DOM；顺序与设置面板里看到的一致）。
@@ -264,6 +269,14 @@ export function TopBar({
 	const isDsh = useIsDsh();
 	const capabilities = useEngineCapabilities();
 	const supportsEphemeral = Boolean(capabilities.ephemeralChat !== false && !isDsh);
+	const cwdClickTimerRef = useRef<number | null>(null);
+	useEffect(() => {
+		return () => {
+			if (cwdClickTimerRef.current !== null) {
+				window.clearTimeout(cwdClickTimerRef.current);
+			}
+		};
+	}, []);
 	// 溢出菜单触发按钮：portal 菜单按它的视口矩形锚定（issue #162）。
 	const moreBtnRef = useRef<HTMLButtonElement>(null);
 	/* PI_WEB_TABS: an instance can be set up to offer only some tabs — the
@@ -328,6 +341,7 @@ export function TopBar({
 		"host:github",
 		"host:new-chat",
 		"host:new-ephemeral-chat",
+		"host:new-sandbox",
 		"host:files",
 	];
 	const topEntries: { id: string; entry: UiSlotEntry | null }[] =
@@ -384,6 +398,9 @@ export function TopBar({
 				appSend({ type: "new_chat", ephemeral: true });
 				focusComposer();
 				return true;
+			case "host:new-sandbox":
+				onOpenSandboxModal?.();
+				return true;
 			case "host:open-project":
 				setProjectPickerOpen(true);
 				return true;
@@ -421,12 +438,19 @@ export function TopBar({
 		const layout = chat.settings?.uiLayout;
 		const setItemSlot = (targetSlot: UiSlotId) => {
 			const slots = { ...layout?.slots, [id]: targetSlot };
-			appSend({ type: "set_settings", uiLayout: { ...layout, slots } });
+			const align = { ...layout?.align };
+			if ((targetSlot === "sidebar.left" || targetSlot === "sidebar.right") && !align[id]) {
+				align[id] = "center";
+			}
+			appSend({ type: "set_settings", uiLayout: { ...layout, slots, ...(align[id] ? { align } : {}) } });
 		};
 		const hideItem = () => {
 			const hidden = new Set(layout?.hidden ?? []);
 			hidden.add(id);
 			appSend({ type: "set_settings", uiLayout: { ...layout, hidden: [...hidden] } });
+		};
+		const restoreItem = () => {
+			appSend({ type: "set_settings", uiLayout: restoreUiItem(layout, id) });
 		};
 		const menuEntries: UiSlotEntry[] = [
 			{
@@ -465,20 +489,41 @@ export function TopBar({
 				userOverrides: [],
 				arrangedBy: [],
 			},
-			{
+		];
+		if (!REQUIRED_TOPBAR_ITEM_IDS.has(id)) {
+			menuEntries.push({
 				id: "host:hide-item",
 				slot: "contextmenu.topbar",
 				source: "host",
-				label: t("uiLayoutRestore"),
+				label: t("uiLayoutHide"),
 				kind: "action",
 				order: 40,
 				align: "start",
 				hidden: false,
 				userOverrides: [],
 				arrangedBy: [],
-			},
-			...(uiContextTopbar ?? []),
-		];
+			});
+		}
+		const hasCustomization = Boolean(
+			layout?.slots?.[id] || layout?.labels?.[id] || layout?.align?.[id] || layout?.order?.includes(id),
+		);
+		if (hasCustomization) {
+			menuEntries.push({
+				id: "host:restore-item",
+				slot: "contextmenu.topbar",
+				source: "host",
+				label: t("uiLayoutRestore"),
+				kind: "action",
+				order: 50,
+				align: "start",
+				hidden: false,
+				userOverrides: [],
+				arrangedBy: [],
+			});
+		}
+		if (uiContextTopbar && uiContextTopbar.length > 0) {
+			menuEntries.push(...uiContextTopbar);
+		}
 		openContextMenu({
 			x: e.clientX,
 			y: e.clientY,
@@ -490,6 +535,7 @@ export function TopBar({
 				else if (entry.id === "host:move-left") setItemSlot("sidebar.left");
 				else if (entry.id === "host:move-right") setItemSlot("sidebar.right");
 				else if (entry.id === "host:hide-item") hideItem();
+				else if (entry.id === "host:restore-item") restoreItem();
 			},
 		});
 	};
@@ -712,11 +758,13 @@ export function TopBar({
 											? t("kindWebUi")
 											: item.kind === "pi-core"
 												? t("kindPiCore")
-												: item.kind === "git-extension"
-													? t("kindGitExtension")
-													: item.kind === "plugin"
-														? t("kindPlugin")
-														: t("kindPackage")}
+												: item.kind === "engine"
+													? t("kindEngine")
+													: item.kind === "git-extension"
+														? t("kindGitExtension")
+														: item.kind === "plugin"
+															? t("kindPlugin")
+															: t("kindPackage")}
 									</span>
 									<span
 										className="dd-all-vers"
@@ -1045,6 +1093,18 @@ export function TopBar({
 				<span>{t("newChatEphemeral")}</span>
 			</button>
 		),
+		"host:new-sandbox": (
+			<button
+				type="button"
+				className="chip newchat sandbox-chip"
+				data-tip={t("newSandboxTip")}
+				aria-label={t("newSandboxTip")}
+				onClick={() => onOpenSandboxModal?.()}
+			>
+				<LuFlaskConical />
+				<span>{t("newSandbox")}</span>
+			</button>
+		),
 		"host:chat": (
 			<button
 				type="button"
@@ -1350,7 +1410,26 @@ export function TopBar({
 				type="button"
 				className="chip"
 				data-tip={chat.state?.cwd ?? ""}
-				onClick={() => setProjectPickerOpen(true)}
+				onClick={() => {
+					if (cwdClickTimerRef.current !== null) {
+						window.clearTimeout(cwdClickTimerRef.current);
+						cwdClickTimerRef.current = null;
+					}
+					cwdClickTimerRef.current = window.setTimeout(() => {
+						setProjectPickerOpen(true);
+						cwdClickTimerRef.current = null;
+					}, 220);
+				}}
+				onDoubleClick={(e) => {
+					e.preventDefault();
+					e.stopPropagation();
+					if (cwdClickTimerRef.current !== null) {
+						window.clearTimeout(cwdClickTimerRef.current);
+						cwdClickTimerRef.current = null;
+					}
+					appSend({ type: "new_chat" });
+					focusComposer();
+				}}
 			>
 				<FiFolder />
 				<span className="chip-sub">{chat.state?.cwd?.split(/[/\\]/).pop() || chat.state?.cwd}</span>
@@ -1469,6 +1548,7 @@ export function TopBar({
 					uiContextEntries={uiContextTopbar}
 					zenMode={zenMode}
 					onToggleZenMode={onToggleZenMode}
+					onOpenSandboxModal={onOpenSandboxModal}
 					dropdownProps={{
 						sound,
 						onSoundChange,
@@ -1782,6 +1862,9 @@ export function TopBar({
 			{mobileAsideItems.map((it) => (
 				<Fragment key={it.id}>{it.node}</Fragment>
 			))}
+
+			{/* 桌面端自定义窗口控制按钮（Windows / Linux），视觉与顶栏按钮完全统一 */}
+			<WindowControls />
 
 			{localeModalOpen && <LocaleModal onClose={() => setLocaleModalOpen(false)} />}
 			{pluginMenuAnchor && (

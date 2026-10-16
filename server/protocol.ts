@@ -149,6 +149,24 @@ export interface AgentEngineCapabilities {
 	ephemeralChat?: boolean;
 }
 
+/**
+ * 引擎状态元数据：描述该引擎在宿主系统中的安装就绪状态。
+ */
+export interface EngineStatus {
+	/** 引擎唯一标识（如 "pi" | "dsh" | "claude"） */
+	id: string;
+	/** 是否已在宿主环境中检测到对应的全局包或 CLI 运行时 */
+	installed: boolean;
+	/** 对应的全局 npm 包名（如 "@deepseek-ai/dsh"） */
+	packageName?: string;
+	/** 检测到的本地已安装版本号（若可用） */
+	version?: string;
+	/** npm 远端最新版本号（若可用） */
+	latestVersion?: string | null;
+	/** 是否存在可用新版本 */
+	hasUpdate?: boolean;
+}
+
 export interface UiState {
 	clientId: string;
 	cwd: string;
@@ -691,6 +709,8 @@ export type ClientMessage =
 	| { type: "restart_service" }
 	/** Switch active agent engine ("pi" | "dsh" | "claude") for this client tab in-process without restarting. */
 	| { type: "switch_engine"; engine: "pi" | "dsh" | "claude" }
+	/** Re-check engine installation statuses (e.g. after installing an engine via terminal). */
+	| { type: "check_engines"; force?: boolean }
 	// -- pi agent setup ------------------------------------------------------
 	/** Auto-install the pi agent (mkdir config dir + npm i -g the CLI). */
 	| { type: "install_pi_agent" }
@@ -928,6 +948,8 @@ export type ClientMessage =
 			showForkedParentSessions?: boolean;
 			/** 结束的对话切换时不自动从运行列表移出（默认 false = 切走且未继续对话的会话自动移出）。 */
 			retainFinishedConversations?: boolean;
+			/** 切换项目时是否打开该项目最近的会话（默认 true 开）。关 → 切换项目时始终创建空白新对话。 */
+			openRecentSessionOnProjectSwitch?: boolean;
 			/** skill 全文注入名单（默认空 = 名录模式）。名单里的技能 {{skills}} 展开正文。 */
 			skillsFullText?: string[];
 			/** 子代理默认模型（"provider/id"；null/未设 = 子代理跟随主对话当前模型）。
@@ -3035,6 +3057,8 @@ export interface UiSettingsState {
 	showForkedParentSessions: boolean;
 	/** 结束的对话切换时不自动从运行列表移出（默认 false）。 */
 	retainFinishedConversations: boolean;
+	/** 切换项目时是否打开该项目最近的会话（默认 true 开）。关 → 切换项目时始终创建空白新对话。 */
+	openRecentSessionOnProjectSwitch: boolean;
 	/** skill 全文注入名单（默认空 = 名录模式）：名单里的技能 {{skills}} 展开正文。 */
 	skillsFullText: string[];
 	/** Vision bridge on/off (default on). Off → images are sent as-is. */
@@ -3146,6 +3170,8 @@ export interface DshMarketPlugin {
 	install?: string;
 }
 
+export type UpdateItemKind = "webui" | "pi-core" | "package" | "git-extension" | "plugin" | "engine";
+
 export type ServerMessage =
 	| {
 			/** 子代理同行直接交接协同通知（Peer-to-Peer Handoff Event） */
@@ -3216,6 +3242,13 @@ export type ServerMessage =
 			 *  foreground/dev/Docker: no supervisor, so the client hides the
 			 *  "restart service" action and the server refuses restart_service. */
 			service?: UiServiceInfo;
+			/** 引擎安装探测结果列表（pi、dsh、claude 等）。 */
+			engines?: EngineStatus[];
+	  }
+	| {
+			/** 引擎安装状态列表（按需/后台探测刷新下发） */
+			type: "engines_status";
+			engines: EngineStatus[];
 	  }
 	| { type: "snapshot"; state: UiState }
 	| {
@@ -3596,7 +3629,7 @@ export type ServerMessage =
 			type: "update_status_all";
 			items: {
 				name: string;
-				kind: "webui" | "pi-core" | "package" | "git-extension" | "plugin";
+				kind: UpdateItemKind;
 				current: string;
 				latest: string | null;
 				latestPublishedAt?: string | null;

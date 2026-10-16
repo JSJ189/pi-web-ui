@@ -20,13 +20,7 @@
  * 时间字段一律「本地时区的 'YYYY-MM-DDTHH:MM' 串或 ISO 串」（字符串比较即可排序，
  * 与 datetime-local 输入框同形）；`repeat` 是 'none'|'daily'|'weekly'|'monthly'。
  */
-import {
-	isSupportedEvery,
-	MAX_EVERY_MINUTES,
-	MIN_EVERY_MINUTES,
-	nextScheduleFire,
-	scheduleText,
-} from "./cron.mjs";
+import { isSupportedEvery, MAX_EVERY_MINUTES, MIN_EVERY_MINUTES, nextScheduleFire, scheduleText } from "./cron.mjs";
 
 export const STORE_VERSION = 1;
 
@@ -267,6 +261,17 @@ export function normalizeSchedule(raw) {
 	return null;
 }
 
+export function extractTitle(text) {
+	const strText = String(text ?? "").trim();
+	if (!strText) return "";
+	const lines = strText.split("\n");
+	for (const line of lines) {
+		const clean = line.replace(/^[#*->\s`]+/, "").trim();
+		if (clean) return clean.slice(0, 60);
+	}
+	return strText.slice(0, 60);
+}
+
 /** 空库。 */
 export function emptyStore() {
 	/** @type {Store} */
@@ -282,12 +287,25 @@ function normNote(raw) {
 	if (!id) return null;
 	if (!title && !body.trim()) return null;
 	const createdAt = stamp(raw.createdAt) ?? nowStamp();
+	let reminder = null;
+	if (raw.reminder && typeof raw.reminder === "object") {
+		const sched = normalizeSchedule(raw.reminder.schedule);
+		if (sched) {
+			reminder = {
+				schedule: sched,
+				enabled: raw.reminder.enabled === undefined ? true : bool(raw.reminder.enabled),
+				nextDue: stamp(raw.reminder.nextDue),
+				lastFired: stamp(raw.reminder.lastFired),
+			};
+		}
+	}
 	return {
 		id,
-		title: title || body.split("\n")[0].slice(0, 60),
+		title: title || extractTitle(body) || "未命名笔记",
 		body,
 		tags: tags(raw.tags),
 		pinned: bool(raw.pinned),
+		reminder,
 		createdAt,
 		updatedAt: stamp(raw.updatedAt) ?? createdAt,
 	};
@@ -400,6 +418,43 @@ export function findNote(store, id) {
 	return store.notes.find((n) => n.id === String(id ?? "")) ?? null;
 }
 
+function syncNoteReminder(store, note) {
+	const i = store.reminders.findIndex((r) => r.noteId === note.id);
+	if (!note.reminder || !note.reminder.schedule) {
+		if (i >= 0) store.reminders.splice(i, 1);
+		return;
+	}
+	const text = note.title || extractTitle(note.body) || "未命名笔记";
+	const schedule = note.reminder.schedule;
+	const enabled = note.reminder.enabled !== false;
+	const nextDue = nextDueStamp({ schedule, enabled }, Date.now());
+	if (i >= 0) {
+		const existing = store.reminders[i];
+		existing.text = text;
+		existing.schedule = schedule;
+		existing.enabled = enabled;
+		existing.nextDue = nextDue;
+		existing.updatedAt = nowStamp();
+	} else {
+		if (store.reminders.length < CAPS.reminders) {
+			store.reminders.unshift({
+				id: newId("r"),
+				text,
+				enabled,
+				schedule,
+				nextDue,
+				noteId: note.id,
+				todoId: null,
+				lastFired: null,
+				fireCount: 0,
+				snoozedFrom: null,
+				createdAt: nowStamp(),
+				updatedAt: nowStamp(),
+			});
+		}
+	}
+}
+
 /** 新建 / 更新笔记（patch.id 命中即更新）。返回 { ok, item?, error? }。 */
 export function saveNote(store, patch, at = nowStamp()) {
 	const p = patch && typeof patch === "object" ? patch : {};
@@ -411,23 +466,51 @@ export function saveNote(store, patch, at = nowStamp()) {
 		if (p.body !== undefined) note.body = str(p.body, CAPS.body);
 		if (p.tags !== undefined) note.tags = tags(p.tags);
 		if (p.pinned !== undefined) note.pinned = bool(p.pinned);
-		if (!note.title && note.body.trim()) note.title = note.body.split("\n")[0].slice(0, 60);
+		if (!note.title && note.body.trim()) note.title = extractTitle(note.body) || "未命名笔记";
 		if (!note.title && !note.body.trim()) return { ok: false, error: "empty note" };
+		if (p.reminder !== undefined) {
+			if (p.reminder && typeof p.reminder === "object" && p.reminder.schedule) {
+				const schedule = normalizeSchedule(p.reminder.schedule);
+				if (schedule) {
+					const remObj = {
+						schedule,
+						enabled: p.reminder.enabled !== false,
+						nextDue: nextDueStamp({ schedule, enabled: p.reminder.enabled !== false }, Date.now()),
+						lastFired: stamp(p.reminder.lastFired),
+					};
+					note.reminder = remObj;
+					syncNoteReminder(store, note);
+				}
+			} else {
+				note.reminder = null;
+				syncNoteReminder(store, note);
+			}
+		} else if (note.reminder) {
+			syncNoteReminder(store, note);
+		}
 		note.updatedAt = at;
 		return { ok: true, item: note };
 	}
+	const body = str(p.body ?? "", CAPS.body);
+	const rawTitle = str(p.title ?? "", CAPS.title).trim();
+	const title = rawTitle || extractTitle(body) || (body.trim() ? "未命名笔记" : "");
+	if (!title && !body.trim()) return { ok: false, error: "note needs content" };
 	const created = normNote({
 		id: newId("n"),
-		title: p.title,
-		body: p.body,
+		title,
+		body,
 		tags: p.tags,
 		pinned: p.pinned,
+		reminder: p.reminder,
 		createdAt: at,
 		updatedAt: at,
 	});
 	if (!created) return { ok: false, error: "note needs a title or a body" };
 	if (store.notes.length >= CAPS.notes) return { ok: false, error: `note limit reached (${CAPS.notes})` };
 	if (created.tags.length === 0 && p.tag !== undefined) created.tags = tags(p.tag);
+	if (created.reminder) {
+		syncNoteReminder(store, created);
+	}
 	store.notes.unshift(created);
 	return { ok: true, item: created };
 }
@@ -439,7 +522,11 @@ export function removeNote(store, id) {
 	if (i < 0) return false;
 	store.notes.splice(i, 1);
 	for (const t of store.todos) if (t.noteId === key) t.noteId = null;
-	for (const r of store.reminders) if (r.noteId === key) r.noteId = null;
+	for (let j = store.reminders.length - 1; j >= 0; j--) {
+		if (store.reminders[j].noteId === key) {
+			store.reminders.splice(j, 1);
+		}
+	}
 	return true;
 }
 
@@ -561,7 +648,8 @@ export function saveReminder(store, patch, at = nowStamp(), nowMs = Date.now()) 
 		updatedAt: at,
 	});
 	if (!created) return { ok: false, error: "reminder needs text and a valid schedule" };
-	if (store.reminders.length >= CAPS.reminders) return { ok: false, error: `reminder limit reached (${CAPS.reminders})` };
+	if (store.reminders.length >= CAPS.reminders)
+		return { ok: false, error: `reminder limit reached (${CAPS.reminders})` };
 	created.nextDue = nextDueStamp(created, nowMs, "now");
 	store.reminders.unshift(created);
 	return { ok: true, item: created };
@@ -625,6 +713,14 @@ export function markFired(store, id, nowMs = Date.now()) {
 	}
 	// 下一跳（停用则 null）
 	rem.nextDue = nextDueStamp(rem, nowMs);
+	if (rem.noteId) {
+		const note = findNote(store, rem.noteId);
+		if (note?.reminder) {
+			note.reminder.lastFired = at;
+			note.reminder.enabled = rem.enabled;
+			note.reminder.nextDue = rem.nextDue;
+		}
+	}
 	const item = {
 		id: newId("p"),
 		reminderId: rem.id,
@@ -690,7 +786,11 @@ export function searchItems(store, opts = {}) {
 		.toLowerCase();
 	const tag = String(opts.tag ?? "").trim();
 	const includeDone = opts.includeDone !== false;
-	const hit = (needle) => !q || String(needle ?? "").toLowerCase().includes(q);
+	const hit = (needle) =>
+		!q ||
+		String(needle ?? "")
+			.toLowerCase()
+			.includes(q);
 	const out = [];
 	if (tab === "all" || tab === "note") {
 		for (const n of store.notes) {
@@ -871,30 +971,18 @@ export function parseQuickReminder(input, nowMs = Date.now()) {
 	const weekly = /(?:每|下)?\s*(?:周|星期|礼拜)\s*([一二三四五六日天])/.exec(text);
 	const monthly = /每\s*月\s*(\d{1,2})\s*[日号]?/.exec(text);
 	if (daily && time) {
-		const body = text
-			.replace(daily[0], " ")
-			.replace(time.text, " ")
-			.replace(/\s+/g, " ")
-			.trim();
+		const body = text.replace(daily[0], " ").replace(time.text, " ").replace(/\s+/g, " ").trim();
 		if (!body) return null;
 		return { text: body, schedule: { type: "daily", time: hm(time) } };
 	}
 	if (monthly && time) {
 		const dom = Number(monthly[1]);
-		const body = text
-			.replace(monthly[0], " ")
-			.replace(time.text, " ")
-			.replace(/\s+/g, " ")
-			.trim();
+		const body = text.replace(monthly[0], " ").replace(time.text, " ").replace(/\s+/g, " ").trim();
 		if (!body || dom < 1 || dom > 31) return null;
 		return { text: body, schedule: { type: "monthly", time: hm(time), dom } };
 	}
 	if (weekly && time) {
-		const body = text
-			.replace(weekly[0], " ")
-			.replace(time.text, " ")
-			.replace(/\s+/g, " ")
-			.trim();
+		const body = text.replace(weekly[0], " ").replace(time.text, " ").replace(/\s+/g, " ").trim();
 		if (!body) return null;
 		return { text: body, schedule: { type: "weekly", time: hm(time), dow: [WEEKDAY_CN[weekly[1]]] } };
 	}
@@ -902,11 +990,7 @@ export function parseQuickReminder(input, nowMs = Date.now()) {
 	if (date && time) {
 		const d = new Date(date.ms);
 		d.setHours(time.h, time.m, 0, 0);
-		const body = text
-			.replace(date.text, " ")
-			.replace(time.text, " ")
-			.replace(/\s+/g, " ")
-			.trim();
+		const body = text.replace(date.text, " ").replace(time.text, " ").replace(/\s+/g, " ").trim();
 		if (!body) return null;
 		return { text: body, schedule: { type: "once", at: nowStamp(d.getTime()) } };
 	}
@@ -950,7 +1034,9 @@ export function toMarkdown(store, nowMs = Date.now()) {
 	}
 	lines.push(`## 提醒（${store.reminders.length} 条）`, "");
 	for (const r of store.reminders) {
-		lines.push(`- ${r.enabled ? "🔔" : "🔕"} ${r.text}  ${scheduleText(r.schedule)}${r.lastFired ? ` （上次 ${r.lastFired.replace("T", " ")}）` : ""}`);
+		lines.push(
+			`- ${r.enabled ? "🔔" : "🔕"} ${r.text}  ${scheduleText(r.schedule)}${r.lastFired ? ` （上次 ${r.lastFired.replace("T", " ")}）` : ""}`,
+		);
 	}
 	lines.push("");
 	return lines.join("\n");
@@ -996,4 +1082,26 @@ export function importStore(store, incoming, mode = "merge") {
 		}
 	}
 	return { ok: true, added, updated, skipped };
+}
+
+/** 从文本中识别日期时间（例如「明天 18:00 开会」→ { stamp: "...", timeLabel: "明天 18:00" }）。 */
+export function detectTimeFromText(input, nowMs = Date.now()) {
+	const text = String(input ?? "").trim();
+	if (!text) return null;
+	const date = parseDateText(text, nowMs);
+	const time = parseTimeText(text);
+	if (!date && !time) return null;
+	const d = new Date(date ? date.ms : nowMs);
+	if (time) {
+		d.setHours(time.h, time.m, 0, 0);
+	} else {
+		d.setHours(9, 0, 0, 0);
+	}
+	// 如果只给时间且时刻已过去，推到明天
+	if (!date && time && d.getTime() <= nowMs) {
+		d.setDate(d.getDate() + 1);
+	}
+	const stampStr = nowStamp(d.getTime());
+	const timeLabel = (date ? date.text : "") + (date && time ? " " : "") + (time ? time.text : "");
+	return { stamp: stampStr, timeLabel: timeLabel.trim() || stampStr };
 }

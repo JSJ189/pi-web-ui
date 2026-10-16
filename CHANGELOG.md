@@ -10,7 +10,16 @@
 
 ## [Unreleased]
 
-暂无未发布内容。
+<!-- auto-i18n:start -->
+### i18n
+
+- 前端新增 key（48）：`newSandbox`、`newSandboxTip`、`settingsEngineClaudeTitle`、`settingsEngineClaudeDesc`、`engineTagUniversal`、`engineNotInstalled`、`engineInstall`、`engineInstallTip`、`installEngineTabTitle`、`engineUpdate`、`engineUpdateAvailable`、`engineUpdateTip`、`updateEngineTabTitle`、`kindEngine`、`openRecentSessionOnProjectSwitch`、`openRecentSessionOnProjectSwitchDesc`、`uiLayoutHide`、`dshPlugins`、`dshPluginsDesc`、`dshPatchSpecPlaceholder`、`dshPatchAdd`、`dshPatchActive`、`dshPatchDisabled`、`dshPatchToggleOn`、`dshPatchToggleOff`、`dshPatchDeleteConfirm`、`dshMarketTitle`、`dshMarketSubtitle`、`dshMarketSubmit`、`dshMarketTabDiscover`、`dshMarketTabInstalled`、`dshMarketSearchPlaceholder`、`dshMarketAll`、`dshMarketInstall`、`dshMarketInstalled`、`dshMarketRefresh`、`dshMarketDisclaimerTitle`、`dshMarketDisclaimerText`、`dshMarketWebuiTag`、`dshMarketWebuiWarn`、`dshMarketPrevPage`、`dshMarketNextPage`、`dshMarketPageInfo`、`settingsModelsAndProviders`、`settingsModelsDesc`、`manageModelsAndProviders`、`manageModelsAndProvidersHint`、`openModelManager`
+- 前端删除 key（3）：`dshExtensionsNote`、`dshPatches`、`dshPatchesDesc`
+- 前端中文变更（5）：`engineTagFull`、`engineTagFast`、`settingsEnginePiTitle`、`settingsEngineDshTitle`、`settingsEngineDshDesc`
+- 前端英文变更（5）：`engineTagFull`、`engineTagFast`、`settingsEnginePiTitle`、`settingsEngineDshTitle`、`settingsEngineDshDesc`
+- 服务端文案变更（10）：`claimfiles.claim.ok`、`convread.list.history.more`、`convread.status.claims`、`mcp_manage.install.tools`、`plugininstaller.timeout`、`present.files.result.head`、`sched.task.bad.schedule`、`scm.commitmsg.timeout`、`skill.file.unreadable`、`worktree.create.success`
+- 服务端删除 key（6）：`dsh.provider.deepseek.official`、`dsh.provider.probing.unsupported`、`dsh.provider.custom.unsupported`、`dsh.provider.builtin.refresh.unsupported`、`dsh.provider.clone.unsupported`、`goal.role.card.result`
+<!-- auto-i18n:end -->
 
 ## [0.105.1] — 2026-10-13
 

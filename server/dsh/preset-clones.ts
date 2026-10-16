@@ -50,7 +50,17 @@ export function runtimeBaseCandidates(): string[] {
 	const out: string[] = [];
 	const explicit = process.env.PI_WEB_DSH_RUNTIME;
 	if (explicit) out.push(resolve(explicit));
-	out.push(resolve(join(dirname(fileURLToPath(import.meta.url)), "..", "..", "node_modules")));
+	let dir = dirname(fileURLToPath(import.meta.url));
+	for (let i = 0; i < 5; i++) {
+		const nm = join(dir, "node_modules");
+		if (existsSync(nm)) {
+			out.push(resolve(nm));
+			break;
+		}
+		const parent = dirname(dir);
+		if (parent === dir) break;
+		dir = parent;
+	}
 	out.push(join(dirname(process.execPath), "node_modules"));
 	try {
 		const prefixes = [

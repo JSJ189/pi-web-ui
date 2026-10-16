@@ -13,7 +13,8 @@
 		"registry": "https://registry.npmjs.org/"
 	},
 	"bin": {
-		"pi-web-ui": "bin/pi-web-ui.mjs"
+		"pi-web-ui": "bin/pi-web-ui.mjs",
+		"piwebui": "bin/pi-web-ui.mjs"
 	},
 	"main": "bin/pi-web-ui.mjs",
 	"files": [

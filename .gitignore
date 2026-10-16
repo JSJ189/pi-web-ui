@@ -28,7 +28,9 @@ tests/scratch/
 # 误落仓库根的临时包（npm pack / 手工下载的 tgz）
 *.tgz
 
-# Local editor and backup files
+# Python bytecode
+__pycache__/
+*.py[cod]
 .zcodeignore
 *.bak
 
@@ -40,3 +42,10 @@ plugin-registry/
 
 # 本地临时调试截图
 dev/wechat-shot*.png
+*.png
+*.jpg
+*.jpeg
+preview-*.html
+.tmp-verify-data/
+test-screenshots/
+generated/

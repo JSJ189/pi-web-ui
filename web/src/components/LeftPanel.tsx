@@ -2,9 +2,9 @@ import { memo, useEffect, useState, useCallback, useRef, useMemo, Fragment } fro
 import {
 	FiCheck,
 	FiChevronDown,
+	FiChevronLeft,
 	FiChevronRight,
 	FiChevronUp,
-	FiChevronsLeft,
 	FiEdit2,
 	FiFolder,
 	FiFolderPlus,
@@ -995,6 +995,20 @@ export const LeftPanel = memo(function LeftPanel({
 		]),
 	);
 
+	/** 双击左栏各分区列表空白处（非条目行、非交互元素）：快速创建新对话并聚焦输入框 */
+	const handleBlankDoubleClick = useCallback(
+		(e: React.MouseEvent) => {
+			const target = e.target as HTMLElement | null;
+			if (!target) return;
+			if (target.closest(".lp-row") || target.closest("button, input, select, textarea, a")) {
+				return;
+			}
+			panelSend({ type: "new_chat" });
+			focusComposer();
+		},
+		[panelSend],
+	);
+
 	// P2：分区节点（内容与改造前的 JSX 逐字相同，只是改由下面的计划按序挂载）。
 	const sectionNodes: Record<"projects" | "convs" | "sessions", React.ReactNode> = {
 		projects: (
@@ -1034,7 +1048,7 @@ export const LeftPanel = memo(function LeftPanel({
 						renderInlineEntries(uiProjectsActions, "lp-slot-section"),
 					)}
 					{projects.length > 0 && !collapseProjects && (
-						<div className="lp-section-body projects-scroll">
+						<div className="lp-section-body projects-scroll" onDoubleClick={handleBlankDoubleClick}>
 							{projects.map((p) => {
 								const norm = (v?: string) =>
 									(v ?? "")
@@ -1063,6 +1077,17 @@ export const LeftPanel = memo(function LeftPanel({
 											disabled={switching}
 											onClick={() => {
 												if (!active && !switching) panelSend({ type: "set_cwd", path: p.path });
+											}}
+											onDoubleClick={(e) => {
+												e.stopPropagation();
+												if (switching) return;
+												if (active) {
+													panelSend({ type: "new_chat" });
+												} else {
+													panelSend({ type: "set_cwd", path: p.path });
+													panelSend({ type: "new_chat" });
+												}
+												focusComposer();
 											}}
 										>
 											{switching ? (
@@ -1132,7 +1157,7 @@ export const LeftPanel = memo(function LeftPanel({
 							renderInlineEntries(uiRunningActions, "lp-slot-section"),
 						)}
 						{!collapseConvs && (
-							<div className="lp-section-body convs-scroll">
+							<div className="lp-section-body convs-scroll" onDoubleClick={handleBlankDoubleClick}>
 								{groupConversations(runningAll, cwd, activeConversationId).map((g) => (
 									<div key={g.cwd} className="panel-conv-group">
 										{!g.isCurrent && (
@@ -1140,6 +1165,12 @@ export const LeftPanel = memo(function LeftPanel({
 												className="panel-conv-group-title"
 												title={g.cwd}
 												onContextMenu={(e) => openProjectMenu(e, { path: g.cwd, lastUsed: 0 })}
+												onDoubleClick={(e) => {
+													e.stopPropagation();
+													panelSend({ type: "set_cwd", path: g.cwd });
+													panelSend({ type: "new_chat" });
+													focusComposer();
+												}}
 											>
 												{projectName(g.cwd)}
 											</div>
@@ -1532,6 +1563,7 @@ export const LeftPanel = memo(function LeftPanel({
 					{!collapseSessions && (
 						<div
 							className="lp-section-body sessions-scroll"
+							onDoubleClick={handleBlankDoubleClick}
 							onScroll={(e) => {
 								if (visibleSessions.length >= sessions.length) return;
 								const el = e.currentTarget;
@@ -1686,7 +1718,7 @@ export const LeftPanel = memo(function LeftPanel({
 		<aside ref={panelRef as React.RefObject<HTMLDivElement>} className="panel panel-left lp-panel">
 			{collapsible && onToggleCollapse && (
 				<button type="button" className="panel-collapse-btn" title={t("collapsePanel")} onClick={onToggleCollapse}>
-					<FiChevronsLeft />
+					<FiChevronLeft />
 				</button>
 			)}
 			{shownPlan.map(({ key }) => (

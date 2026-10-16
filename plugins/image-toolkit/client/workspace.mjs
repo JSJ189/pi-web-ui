@@ -50,6 +50,12 @@ export async function readImageBlob(path) {
 	return r.blob();
 }
 
+/** 取回图片原始字节（ArrayBuffer，供解码/分析使用）。 */
+export async function readImage(path) {
+	const blob = await readImageBlob(path);
+	return blob.arrayBuffer();
+}
+
 /** 保存字节到工作区（原始 body，绕开 JSON 体积上限）。 */
 export async function saveImage(path, blob, overwrite = false) {
 	const r = await fetch(url("/ws/save", { path, overwrite: overwrite ? "1" : "0" }), {

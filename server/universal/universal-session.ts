@@ -2074,6 +2074,7 @@ export class UniversalSession implements DispatchSession {
 			keepRecentMessages: s?.keepRecentMessages ?? 0,
 			showForkedParentSessions: false,
 			retainFinishedConversations: false,
+			openRecentSessionOnProjectSwitch: true,
 			skillsFullText: [],
 			visionBridgeEnabled: false,
 			visionBridgeModel: null,

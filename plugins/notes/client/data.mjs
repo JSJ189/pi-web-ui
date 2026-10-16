@@ -132,7 +132,7 @@ export function createDataClient(opts = {}) {
 		}
 	}
 
-		let disposed = false;
+	let disposed = false;
 
 	/** 长轮询主循环：rev 一变就回来，永远不发同一个 rev 的两份请求。 */
 	async function pollLoop() {
@@ -221,10 +221,10 @@ export function createDataClient(opts = {}) {
 			try {
 				const res = await fetch(`${apiBase}/export?format=${format}`, { credentials: "same-origin" });
 				if (!res.ok) {
-			const err = new Error(`HTTP ${res.status}`);
-			err.status = res.status; // 有状态码 = 服务端活着但拒绝（不是断线）
-			throw err;
-		}
+					const err = new Error(`HTTP ${res.status}`);
+					err.status = res.status; // 有状态码 = 服务端活着但拒绝（不是断线）
+					throw err;
+				}
 				const text = await res.text();
 				const stamp = S.nowStamp().replace(/[:T]/g, "-");
 				download(`${format === "md" ? "notes" : "notes-backup"}-${stamp}.${format}`, text);
