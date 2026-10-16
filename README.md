@@ -30,7 +30,7 @@ pi-web-ui is a full-featured web interface and desktop workspace for the pi codi
 
 ### 📁 Workspace, Multimodal & 🌐 Remote SSH Projects
 
-- **Multi-Root Workspaces**: Manage primary and up to 8 secondary workspace roots with live file watching and instant search (`Ctrl/Cmd+K`).
+- **Multi-Root Workspaces & Context-Rich File Tree**: Manage primary and up to 8 secondary workspace roots with live file watching and instant search (`Ctrl/Cmd+K`); full-featured file context menu supporting opening as project root, adding to workspace, reveal in file manager, directory zip-and-download, and instant path referencing in chat.
 - **🌐 Remote SSH Server Projects**: Connect directly to remote Linux servers (`ssh://user@host:port/path`):
   - **Credentials & Auth**: Supports passwords, SSH private keys (`~/.ssh/id_rsa` / `id_ed25519`), and SSH-Agent; credentials are encrypted locally with AES-256-GCM.
   - **Remote Environment Probe**: Automatically detects server architecture and installs missing dependencies (Git, Node.js, Bash, etc.).
@@ -47,13 +47,14 @@ pi-web-ui is a full-featured web interface and desktop workspace for the pi codi
 
 ### 🤖 Multi-Engine & Model Management
 
-- **Dual Agent Engines**: Native out-of-the-box support for the pi coding agent SDK and DeepSeek Harness (DSH).
+- **Seamless Multi-Agent Engine Hot-Switching**: Out-of-the-box native integration with pi coding agent SDK, DeepSeek Harness (DSH), and Claude official coding agent runtime. Hot-swap agent engines instantly without restarts; run different engines concurrently across separate browser tabs and sessions.
 - **Universal Provider Compatibility**: Works seamlessly with OpenAI, Anthropic (Claude), Google Gemini, DeepSeek, Ollama, OpenRouter, Azure, and custom API endpoints.
 - **Zero-Leak Credential Security**: API keys and authorization headers remain securely on the server and are never exposed to client browsers.
 - **Dynamic Context Budgeting**: Soft-cap threshold token compression and a 20-minute watchdog timer to prevent agent hangs and context overflow.
 
 ### 🧭 Advanced Agent Collaboration Modes
 
+- **Hard-Fenced Sandbox Project Mode**: Experiment freely with prototypes, destructive refactorings, or untrusted scripts in an isolated sandbox clone without touching your original workspace; supports project snapshot cloning or clean blank environments, with both ephemeral (auto-cleanup) and persistent lifecycles.
 - **Goal Mode 2.0**: The main conversation acts as a Reviewer while an automated Executor session carries out tasks, backed by evidence injection and stagnation circuit-breakers.
 - **Delegate Mode**: The main chat focuses on review and instructions while delegating execution to a background worker session with strict write gates.
 - **Plan Mode**: Enforces planning-only constraints, intercepting write tools and code dumping until the plan is approved.
@@ -68,16 +69,43 @@ pi-web-ui is a full-featured web interface and desktop workspace for the pi codi
 
 ### 🎨 Themes & Internationalization
 
-- **25+ Built-in Color Schemes**: Dark (default), Light (White), Cyberpunk, Nord, Dracula, and support for custom CSS stylesheets with live reloading.
+- **25+ Built-in Color Schemes & Wallpaper Engine Integration**: Dark (default), Light (White), Cyberpunk, Nord, Dracula, and custom CSS stylesheets with live reloading; native integration with **Wallpaper Engine** dynamic wallpapers, frosted glass blur, adjustable interface opacity, and audio visualizer spectrums.
 - **Comprehensive Internationalization**: Built-in support for English, Simplified Chinese, Traditional Chinese (TW/HK), and custom community locale packs.
 
 ---
 
 ## 🖼️ Screenshots
 
+### 🎬 Demo Video
+
+<div align="center">
+  <video src="https://raw.githubusercontent.com/xing-shuyin/pi-web-ui/main/assets/demo-video.mp4" poster="https://raw.githubusercontent.com/xing-shuyin/pi-web-ui/main/assets/demo-video-cover.png" controls width="100%" style="max-width: 900px; border-radius: 8px; box-shadow: 0 4px 20px rgba(0,0,0,0.35);">
+    <a href="https://raw.githubusercontent.com/xing-shuyin/pi-web-ui/main/assets/demo-video.mp4">
+      <img src="https://raw.githubusercontent.com/xing-shuyin/pi-web-ui/main/assets/demo-video-cover.png" alt="pi-web-ui demo video preview" width="100%" style="max-width: 900px; border-radius: 8px;" />
+    </a>
+  </video>
+  <p><em>(If the embedded player does not start, click the preview above or <a href="https://raw.githubusercontent.com/xing-shuyin/pi-web-ui/main/assets/demo-video.mp4">download the demo video</a> directly)</em></p>
+</div>
+
+### 📸 Feature Highlights
+
+<p align="center">
+  <img src="https://raw.githubusercontent.com/xing-shuyin/pi-web-ui/main/assets/portable-edition.png" alt="Portable edition cockpit interface" width="100%" style="max-width: 900px; border-radius: 8px; box-shadow: 0 4px 16px rgba(0,0,0,0.25);" />
+  <br>
+  <em>Portable Edition desktop cockpit (with frosted-glass dynamic wallpaper and prompt templates)</em>
+</p>
+
 |                                              Chat with Prompt Templates                                              |                                             Run Trajectory Timeline                                             |
 | :------------------------------------------------------------------------------------------------------------------: | :-------------------------------------------------------------------------------------------------------------: |
 | ![Chat with prompt templates](https://raw.githubusercontent.com/xing-shuyin/pi-web-ui/main/assets/chat-prompts.jpeg) | ![Run trajectory timeline](https://raw.githubusercontent.com/xing-shuyin/pi-web-ui/main/assets/trajectory.jpeg) |
+
+|                                             Multi-Agent Engine Hot-Switching                                              |                                             Hard-Fenced Sandbox Projects                                              |
+| :-----------------------------------------------------------------------------------------------------------------------: | :-------------------------------------------------------------------------------------------------------------------: |
+| ![Multi-Agent Engine Hot-Switching](https://raw.githubusercontent.com/xing-shuyin/pi-web-ui/main/assets/multi-engine.png) | ![Hard-Fenced Sandbox Projects](https://raw.githubusercontent.com/xing-shuyin/pi-web-ui/main/assets/sandbox-mode.png) |
+
+|                                                Full File Context Menu                                                |                                               Wallpaper Engine Integration                                                |
+| :------------------------------------------------------------------------------------------------------------------: | :-----------------------------------------------------------------------------------------------------------------------: |
+| ![Full File Context Menu](https://raw.githubusercontent.com/xing-shuyin/pi-web-ui/main/assets/file-context-menu.png) | ![Wallpaper Engine Integration](https://raw.githubusercontent.com/xing-shuyin/pi-web-ui/main/assets/wallpaper-engine.png) |
 
 |                                            Settings Panel                                            |                                            Built-in Terminal                                            |                                            Git Source Control                                             |
 | :--------------------------------------------------------------------------------------------------: | :-----------------------------------------------------------------------------------------------------: | :-------------------------------------------------------------------------------------------------------: |
@@ -115,6 +143,10 @@ npx pi-web-ui
 ### 3. 🖥️ Windows USB Portable Edition (Plug & Play, Zero Dependencies)
 
 A completely self-contained portable distribution designed for USB drives and external SSDs:
+
+<p align="center">
+  <img src="https://raw.githubusercontent.com/xing-shuyin/pi-web-ui/main/assets/portable-edition.png" alt="Windows USB Portable Edition" width="100%" style="max-width: 800px; border-radius: 8px; box-shadow: 0 4px 16px rgba(0,0,0,0.25);" />
+</p>
 
 - **[⬇️ Download `pi-web-ui-desktop-<version>-portable.zip` from Releases](https://github.com/xing-shuyin/pi-web-ui/releases/latest)**
 - **Zero Environment Dependencies**: Bundles PortableGit and bash/Linux CLI tools. **No pre-installed Node.js, Git, or Python is required** on the target computer.

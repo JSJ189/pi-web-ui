@@ -24,7 +24,7 @@ pi-web-ui 是基于 pi 智能体 SDK（`@earendil-works/pi-coding-agent`）与 D
 
 ### 📁 工作区、多模态与 🌐 远程 SSH 项目
 
-- **多根工作区（Multi-Root）与文件树**：支持主工作区及最多 8 个外部根目录，实时监控工作区变动与快速文件过滤。
+- **多根工作区（Multi-Root）与丰富文件树**：支持主工作区及最多 8 个外部根目录，实时监控工作区变动与快速文件过滤；配备全功能文件右键菜单，支持一键在资源管理器中显示、作为新项目/工作区根打开、整目录打包压缩并下载、路径一键链接到对话等。
 - **🌐 远程 SSH 服务器项目**：支持直接打开远程 Linux 服务器项目（`ssh://user@host:port/path`）：
   - **凭据与连接**：支持密码、SSH 私钥（`~/.ssh/id_rsa` / `id_ed25519`）及 SSH-Agent，配置经 AES-256-GCM 本地加密保存；
   - **远端环境探针**：自动探测远程 OS 架构及 Git/Node/Bash 依赖，缺失工具一键远程安装；
@@ -41,13 +41,14 @@ pi-web-ui 是基于 pi 智能体 SDK（`@earendil-works/pi-coding-agent`）与 D
 
 ### 🤖 多引擎与模型灵活路由
 
-- **双智能体引擎驱动**：原生无缝集成 pi 编码智能体 SDK，并深度支持 DeepSeek Harness (DSH) 引擎。
+- **多智能体引擎无缝热切换**：原生深度集成 pi 编码智能体 SDK、DeepSeek Harness (DSH) 引擎以及 Claude 官方智能体底座，支持零重启秒级切换引擎，不同标签页与会话可并发运行不同引擎。
 - **多服务商通用兼容**：支持 OpenAI、Anthropic (Claude)、Google Gemini、DeepSeek、Ollama、OpenRouter、Azure 等任意标准 API。
 - **零泄密凭据架构**：API Key 与敏感鉴权 Header 仅在服务端持久化并注入请求，绝对不下发至浏览器端。
 - **智能上下文预算与软上限**：动态注入软上限压缩阈值（Soft-Cap），配合 20 分钟死锁看门狗守护，避免会话卡死与 Token 浪费。
 
 ### 🧭 进阶代理协作模式
 
+- **硬围栏安全沙盒模式 (Sandbox Project)**：在受保护的独立副本中自由实验原型、执行破坏性命令或测试重构，一切修改绝不触碰原项目；支持从现有项目快照克隆或建立纯净空白沙盒，提供临时（用完即删）与永久双重生命周期。
 - **目标模式 2.0 (Goal Mode)**：主会话担任审查者（Reviewer），服务端自动编排后台落盘执行者（Executor）；具备执行证据注入与停滞熔断机制。
 - **审查者委派模式 (Delegate Mode)**：主会话专注规划与审查，Prompt 自动委派至常驻执行对话，写操作实施硬闸门拦截。
 - **计划模式 (Plan Mode)**：目标条一键开启「只规划」模式，硬闸门动态拦截写工具与大段代码倾倒，确认计划后一键转入实施。
@@ -62,16 +63,43 @@ pi-web-ui 是基于 pi 智能体 SDK（`@earendil-works/pi-coding-agent`）与 D
 
 ### 🎨 主题与无缝多语言
 
-- **25+ 套内置调色板**：深色（默认）、浅色（White）、Cyberpunk、Nord、Dracula 等，支持用户自定义 CSS 样式表热重载。
+- **25+ 套内置调色板与壁纸引擎联动**：内置深色、浅色、Cyberpunk、Dracula 等丰富主题，支持自定义 CSS 热重载；深度支持 **Wallpaper Engine** 动态壁纸库插件，界面透明度、毛玻璃模糊度、自动轮播与音乐频谱随心定制。
 - **全界面国际化**：内置简体中文、繁體中文（台灣/香港/通用）、English 等语言支持，语言包自动回落。
 
 ---
 
 ## 🖼️ 界面预览
 
+### 🎬 演示视频
+
+<div align="center">
+  <video src="https://raw.githubusercontent.com/xing-shuyin/pi-web-ui/main/assets/demo-video.mp4" poster="https://raw.githubusercontent.com/xing-shuyin/pi-web-ui/main/assets/demo-video-cover.png" controls width="100%" style="max-width: 900px; border-radius: 8px; box-shadow: 0 4px 20px rgba(0,0,0,0.35);">
+    <a href="https://raw.githubusercontent.com/xing-shuyin/pi-web-ui/main/assets/demo-video.mp4">
+      <img src="https://raw.githubusercontent.com/xing-shuyin/pi-web-ui/main/assets/demo-video-cover.png" alt="pi-web-ui 操作演示视频" width="100%" style="max-width: 900px; border-radius: 8px;" />
+    </a>
+  </video>
+  <p><em>（如无法直接内嵌播放，请点击上方封面或 <a href="https://raw.githubusercontent.com/xing-shuyin/pi-web-ui/main/assets/demo-video.mp4">直接下载观看演示视频</a>）</em></p>
+</div>
+
+### 📸 功能截屏
+
+<p align="center">
+  <img src="https://raw.githubusercontent.com/xing-shuyin/pi-web-ui/main/assets/portable-edition.png" alt="便携版全功能驾驶舱界面" width="100%" style="max-width: 900px; border-radius: 8px; box-shadow: 0 4px 16px rgba(0,0,0,0.25);" />
+  <br>
+  <em>便携版全功能桌面工作台（毛玻璃动态壁纸与提示词面板）</em>
+</p>
+
 |                                              智能对话与提示词模板                                              |                                             运行轨迹时间线                                             |
 | :------------------------------------------------------------------------------------------------------------: | :----------------------------------------------------------------------------------------------------: |
 | ![智能对话与提示词模板](https://raw.githubusercontent.com/xing-shuyin/pi-web-ui/main/assets/chat-prompts.jpeg) | ![运行轨迹时间线](https://raw.githubusercontent.com/xing-shuyin/pi-web-ui/main/assets/trajectory.jpeg) |
+
+|                                             多智能体引擎无缝切换                                              |                                             独立硬围栏安全沙盒                                              |
+| :-----------------------------------------------------------------------------------------------------------: | :---------------------------------------------------------------------------------------------------------: |
+| ![多智能体引擎无缝切换](https://raw.githubusercontent.com/xing-shuyin/pi-web-ui/main/assets/multi-engine.png) | ![独立硬围栏安全沙盒](https://raw.githubusercontent.com/xing-shuyin/pi-web-ui/main/assets/sandbox-mode.png) |
+
+|                                                文件列表全功能右键菜单                                                |                                               Wallpaper Engine 壁纸联动                                                |
+| :------------------------------------------------------------------------------------------------------------------: | :--------------------------------------------------------------------------------------------------------------------: |
+| ![文件列表全功能右键菜单](https://raw.githubusercontent.com/xing-shuyin/pi-web-ui/main/assets/file-context-menu.png) | ![Wallpaper Engine 壁纸联动](https://raw.githubusercontent.com/xing-shuyin/pi-web-ui/main/assets/wallpaper-engine.png) |
 
 |                                       设置面板与模型管理                                       |                                         内置 PTY 终端                                          |                                         Git 源代码管理                                          |
 | :--------------------------------------------------------------------------------------------: | :--------------------------------------------------------------------------------------------: | :---------------------------------------------------------------------------------------------: |
@@ -109,6 +137,10 @@ npx pi-web-ui
 ### 3. 🖥️ Windows U 盘便携版（Portable Edition，开箱即用零依赖）
 
 专为随身携带（U 盘、移动硬盘）打造的完全自包含便携版：
+
+<p align="center">
+  <img src="https://raw.githubusercontent.com/xing-shuyin/pi-web-ui/main/assets/portable-edition.png" alt="Windows 便携版" width="100%" style="max-width: 800px; border-radius: 8px; box-shadow: 0 4px 16px rgba(0,0,0,0.25);" />
+</p>
 
 - **[⬇️ 前往 Releases 下载 `pi-web-ui-desktop-<版本>-portable.zip`](https://github.com/xing-shuyin/pi-web-ui/releases/latest)**
 - **开箱即用 / 零开发环境依赖**：内置完整 PortableGit 与 bash/Linux 工具链，目标电脑**无需安装 Node.js、Git 或任何开发环境**。

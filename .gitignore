@@ -45,6 +45,7 @@ dev/wechat-shot*.png
 *.png
 *.jpg
 *.jpeg
+!assets/**
 preview-*.html
 .tmp-verify-data/
 test-screenshots/

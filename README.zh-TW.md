@@ -215,27 +215,42 @@ QQ 群組 1126050727
 | `Esc`                       | 關閉預覽、對話方塊、命令選擇器、問卷或擴充套件請求面板（預覽有未儲存改動時會先問）。                                                   |
 | 拖放                        | 視窗任意位置拖入檔案 = 附件到對話；拖到檔案樹 = 上傳到那一個目錄；不支援拖資料夾（展開後選檔案）。                                     |
 
-## 介面截圖
+## 介面截圖與展示
 
-![對話 + 提示詞範本](https://raw.githubusercontent.com/xing-shuyin/pi-web-ui/main/assets/chat-prompts.jpeg)
+### 🎬 操作演示影片
 
-_對話 + 提示詞範本_
+<div align="center">
+  <video src="https://raw.githubusercontent.com/xing-shuyin/pi-web-ui/main/assets/demo-video.mp4" poster="https://raw.githubusercontent.com/xing-shuyin/pi-web-ui/main/assets/demo-video-cover.png" controls width="100%" style="max-width: 900px; border-radius: 8px; box-shadow: 0 4px 20px rgba(0,0,0,0.35);">
+    <a href="https://raw.githubusercontent.com/xing-shuyin/pi-web-ui/main/assets/demo-video.mp4">
+      <img src="https://raw.githubusercontent.com/xing-shuyin/pi-web-ui/main/assets/demo-video-cover.png" alt="pi-web-ui 操作演示影片預覽" width="100%" style="max-width: 900px; border-radius: 8px;" />
+    </a>
+  </video>
+  <p><em>（如無法直接內嵌播放，請點擊上方封面或 <a href="https://raw.githubusercontent.com/xing-shuyin/pi-web-ui/main/assets/demo-video.mp4">直接下載觀看演示影片</a>）</em></p>
+</div>
 
-![執行軌跡時間線](https://raw.githubusercontent.com/xing-shuyin/pi-web-ui/main/assets/trajectory.jpeg)
+### 📸 功能截圖
 
-_執行軌跡時間線（run-trace 外掛）_
+<p align="center">
+  <img src="https://raw.githubusercontent.com/xing-shuyin/pi-web-ui/main/assets/portable-edition.png" alt="可攜版全功能工作台" width="100%" style="max-width: 900px; border-radius: 8px; box-shadow: 0 4px 16px rgba(0,0,0,0.25);" />
+  <br>
+  <em>可攜版全功能桌面工作台（毛玻璃動態桌布與提示詞面板）</em>
+</p>
 
-![設定面板](https://raw.githubusercontent.com/xing-shuyin/pi-web-ui/main/assets/settings.jpeg)
+|                                              對話 + 提示詞範本                                              |                                             執行軌跡時間線                                             |
+| :---------------------------------------------------------------------------------------------------------: | :----------------------------------------------------------------------------------------------------: |
+| ![對話 + 提示詞範本](https://raw.githubusercontent.com/xing-shuyin/pi-web-ui/main/assets/chat-prompts.jpeg) | ![執行軌跡時間線](https://raw.githubusercontent.com/xing-shuyin/pi-web-ui/main/assets/trajectory.jpeg) |
 
-_設定面板_
+|                                             多智慧體引擎無縫切換                                              |                                             獨立安全沙盒模式                                              |
+| :-----------------------------------------------------------------------------------------------------------: | :-------------------------------------------------------------------------------------------------------: |
+| ![多智慧體引擎無縫切換](https://raw.githubusercontent.com/xing-shuyin/pi-web-ui/main/assets/multi-engine.png) | ![獨立安全沙盒模式](https://raw.githubusercontent.com/xing-shuyin/pi-web-ui/main/assets/sandbox-mode.png) |
 
-![內建終端機](https://raw.githubusercontent.com/xing-shuyin/pi-web-ui/main/assets/terminal.jpeg)
+|                                                檔案列表完整右鍵選單                                                |                                               Wallpaper Engine 桌布連動                                                |
+| :----------------------------------------------------------------------------------------------------------------: | :--------------------------------------------------------------------------------------------------------------------: |
+| ![檔案列表完整右鍵選單](https://raw.githubusercontent.com/xing-shuyin/pi-web-ui/main/assets/file-context-menu.png) | ![Wallpaper Engine 桌布連動](https://raw.githubusercontent.com/xing-shuyin/pi-web-ui/main/assets/wallpaper-engine.png) |
 
-_內建終端機_
-
-![Git 原始碼管理面板](https://raw.githubusercontent.com/xing-shuyin/pi-web-ui/main/assets/git.jpeg)
-
-_Git 原始碼管理面板_
+|                                       設定面板與模型管理                                       |                                         內建 PTY 終端機                                          |                                         Git 原始碼管理                                          |
+| :--------------------------------------------------------------------------------------------: | :----------------------------------------------------------------------------------------------: | :---------------------------------------------------------------------------------------------: |
+| ![設定面板](https://raw.githubusercontent.com/xing-shuyin/pi-web-ui/main/assets/settings.jpeg) | ![內建終端機](https://raw.githubusercontent.com/xing-shuyin/pi-web-ui/main/assets/terminal.jpeg) | ![Git 原始碼管理](https://raw.githubusercontent.com/xing-shuyin/pi-web-ui/main/assets/git.jpeg) |
 
 ## 安裝
 
