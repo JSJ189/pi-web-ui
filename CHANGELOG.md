@@ -10,15 +10,46 @@
 
 ## [Unreleased]
 
+## [0.106.0] — 2026-10-16
+
+### Added
+
+- **多引擎通用驱动底座与 Claude 引擎深度适配**：
+  - 抽象并统一底层多智能体引擎接口，支持 Pi、Claude 等多引擎的平滑接入与无缝切换；
+  - 提供统一的提示词编排、流式推理、思考块解析与工具调用协议；支持运行环境缺失检测与一键安装引导终端。
+- **思考流实时可视化面板 (Thinking Stream)**：
+  - 针对大模型推理时的思考过程提供独立可视化面板与平滑流式动效，清晰呈现推理耗时与逻辑链条。
+- **官方动态壁纸插件 (live-wallpaper)**：
+  - 新增内置动态壁纸插件，支持流体渐变、星空粒子与视觉动效，支持个性化沉浸式工作台定制。
+- **持久化浏览器自动化操控工具族 (`browser-use`)**：
+  - 集成基于 DrissionPage 的 Chrome 浏览器控制工具族（`browser_use`），支持标签页管理、视口快照、智能元素定位（点击、输入、选择、滚动）、截图截屏与页面 JS 表达式执行。
+- **全能图像处理与生图工具箱 (`image-toolkit`)**：
+  - 新增 `image_info`（尺寸规格/元数据/直方图）、`image_transform`（裁剪/缩放/旋转/调色/滤镜）、`image_compress`（格式转换/质量调优/目标体积压缩）、`image_watermark`（图层水印贴图）、`image_generate`（文生图/图生图）与 `image_config_service`（多服务商凭据与模型管理）系列工具。
+- **新会话极简模式 (minimalNewChat) 沉浸式界面**：
+  - 设置页新增「新会话极简模式」偏好开关，新建对话时默认折叠多余工具与辅助面板，极简留白聚焦灵感与核心对话。
+- **土耳其语 (tr) 与葡萄牙语 (pt) 语言包**：
+  - 新增完整土耳其语（tr）语言包（覆盖 1942 处前端 UI 词条与 327 处服务端通知）；全面更新并补齐巴西葡萄牙语（pt-BR）翻译。
+
+### Fixed
+
+- **会话过户后 subagent 工具族按当前持有方正确解析** —— 跨标签页或断线重连接管会话后，`subagent` 的 `wait_all`、`spawn` 与状态轮询严格基于当前持有方解析，杜绝误报会话收口或子代理归属错位问题 (#637)。
+- **切走时保留已结束对话设置生效** —— 修复 `retainFinishedConversations` 偏好在会话切换时的参数转发与状态判定，彻底解决开关失效问题 (#635)。
+- **输入框焦点锁定与切换状态保持** —— 优化切换会话与新建会话时的输入焦点捕捉与草稿保持逻辑，避免界面过渡期间输入丢失 (#638)。
+- **模型切换错误通知与问卷快照即时广播** —— 修复 `/model` 错误提示通知，同步优化问卷快照即时同步，消除极端场景下的请求测试超时 (#642)。
+- **跨平台便携打包盘符格式兼容** —— 修复 Windows 环境下 `make-portable` 脚本遇到 GNU tar 驱动器冒号格式报错的问题。
+- **文档与部署指引优化** —— 优化 README 演示视频展示为高兼容海报卡片与点击播放，补充多引擎、沙盒隔离与便携版特性截图；对齐 `PI_WEB_SDK` 默认值与 Nginx 子路径反代文档。
+
 <!-- auto-i18n:start -->
+
 ### i18n
 
-- 前端新增 key（48）：`newSandbox`、`newSandboxTip`、`settingsEngineClaudeTitle`、`settingsEngineClaudeDesc`、`engineTagUniversal`、`engineNotInstalled`、`engineInstall`、`engineInstallTip`、`installEngineTabTitle`、`engineUpdate`、`engineUpdateAvailable`、`engineUpdateTip`、`updateEngineTabTitle`、`kindEngine`、`openRecentSessionOnProjectSwitch`、`openRecentSessionOnProjectSwitchDesc`、`uiLayoutHide`、`dshPlugins`、`dshPluginsDesc`、`dshPatchSpecPlaceholder`、`dshPatchAdd`、`dshPatchActive`、`dshPatchDisabled`、`dshPatchToggleOn`、`dshPatchToggleOff`、`dshPatchDeleteConfirm`、`dshMarketTitle`、`dshMarketSubtitle`、`dshMarketSubmit`、`dshMarketTabDiscover`、`dshMarketTabInstalled`、`dshMarketSearchPlaceholder`、`dshMarketAll`、`dshMarketInstall`、`dshMarketInstalled`、`dshMarketRefresh`、`dshMarketDisclaimerTitle`、`dshMarketDisclaimerText`、`dshMarketWebuiTag`、`dshMarketWebuiWarn`、`dshMarketPrevPage`、`dshMarketNextPage`、`dshMarketPageInfo`、`settingsModelsAndProviders`、`settingsModelsDesc`、`manageModelsAndProviders`、`manageModelsAndProvidersHint`、`openModelManager`
+- 前端新增 key（50）：`newSandbox`、`newSandboxTip`、`settingsEngineClaudeTitle`、`settingsEngineClaudeDesc`、`engineTagUniversal`、`engineNotInstalled`、`engineInstall`、`engineInstallTip`、`installEngineTabTitle`、`engineUpdate`、`engineUpdateAvailable`、`engineUpdateTip`、`updateEngineTabTitle`、`minimalNewChat`、`minimalNewChatDesc`、`kindEngine`、`openRecentSessionOnProjectSwitch`、`openRecentSessionOnProjectSwitchDesc`、`uiLayoutHide`、`dshPlugins`、`dshPluginsDesc`、`dshPatchSpecPlaceholder`、`dshPatchAdd`、`dshPatchActive`、`dshPatchDisabled`、`dshPatchToggleOn`、`dshPatchToggleOff`、`dshPatchDeleteConfirm`、`dshMarketTitle`、`dshMarketSubtitle`、`dshMarketSubmit`、`dshMarketTabDiscover`、`dshMarketTabInstalled`、`dshMarketSearchPlaceholder`、`dshMarketAll`、`dshMarketInstall`、`dshMarketInstalled`、`dshMarketRefresh`、`dshMarketDisclaimerTitle`、`dshMarketDisclaimerText`、`dshMarketWebuiTag`、`dshMarketWebuiWarn`、`dshMarketPrevPage`、`dshMarketNextPage`、`dshMarketPageInfo`、`settingsModelsAndProviders`、`settingsModelsDesc`、`manageModelsAndProviders`、`manageModelsAndProvidersHint`、`openModelManager`
 - 前端删除 key（3）：`dshExtensionsNote`、`dshPatches`、`dshPatchesDesc`
 - 前端中文变更（5）：`engineTagFull`、`engineTagFast`、`settingsEnginePiTitle`、`settingsEngineDshTitle`、`settingsEngineDshDesc`
 - 前端英文变更（5）：`engineTagFull`、`engineTagFast`、`settingsEnginePiTitle`、`settingsEngineDshTitle`、`settingsEngineDshDesc`
 - 服务端文案变更（10）：`claimfiles.claim.ok`、`convread.list.history.more`、`convread.status.claims`、`mcp_manage.install.tools`、`plugininstaller.timeout`、`present.files.result.head`、`sched.task.bad.schedule`、`scm.commitmsg.timeout`、`skill.file.unreadable`、`worktree.create.success`
 - 服务端删除 key（6）：`dsh.provider.deepseek.official`、`dsh.provider.probing.unsupported`、`dsh.provider.custom.unsupported`、`dsh.provider.builtin.refresh.unsupported`、`dsh.provider.clone.unsupported`、`goal.role.card.result`
+
 <!-- auto-i18n:end -->
 
 ## [0.105.1] — 2026-10-13
@@ -72,6 +103,7 @@
 - **流式思考与长内容首字视口锁定** —— 思考折叠与长工具卡延迟挂载，平滑收尾排水节奏优化。
 
 <!-- auto-i18n:start -->
+
 ### i18n
 
 - 前端新增 key（42）：`networkLatency`、`engineSwitchTip`、`engineTagFull`、`engineTagFast`、`enginePickerDesc`、`settingsEngineSection`、`settingsEngineHint`、`settingsEnginePiTitle`、`settingsEnginePiDesc`、`settingsEngineDshTitle`、`settingsEngineDshDesc`、`zenMode`、`zenModeTip`、`zenModeExit`、`zenModeExitTip`、`forkedSessionBadge`、`forkedSessionTip`、`piCoreUndetected`、`sessionInitializingNotice`、`showForkedParents`、`showForkedParentsDesc`、`retainFinishedConversations`、`retainFinishedConversationsDesc`、`hideModelRow`、`hideModelRowDesc`、`toolsWorktreeDesc`、`toolsWorktreeOffHint`、`worktreeBadgeLinked`、`worktreeBadgeDirtyCount`、`worktreeBannerActiveTitle`、`worktreeBannerActiveDesc`、`worktreeBannerUncleanedTitle`、`worktreeBannerUncleanedDesc`、`worktreeActionSwitchMain`、`worktreeActionSwitchMainTip`、`worktreeActionSwitchTo`、`worktreeActionSwitchToTip`、`worktreeActionRemove`、`worktreeActionRemoveTip`、`worktreeActionRemoveConfirm`、`worktreeActionCollapse`、`worktreeActionMore`
@@ -1816,6 +1848,7 @@ when?, children?}`，也收 `topbar` / `settings` 这类简写别名）；宿主
 [0.64.4]: https://github.com/xing-shuyin/pi-web-ui/releases/tag/v0.64.4
 [0.64.3]: https://github.com/xing-shuyin/pi-web-ui/releases/tag/v0.64.3
 [0.64.2]: https://github.com/xing-shuyin/pi-web-ui/releases/tag/v0.64.2
+[0.106.0]: https://github.com/xing-shuyin/pi-web-ui/releases/tag/v0.106.0
 [0.105.1]: https://github.com/xing-shuyin/pi-web-ui/releases/tag/v0.105.1
 [0.105.0]: https://github.com/xing-shuyin/pi-web-ui/releases/tag/v0.105.0
 [0.104.4]: https://github.com/xing-shuyin/pi-web-ui/releases/tag/v0.104.4

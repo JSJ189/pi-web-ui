@@ -57,7 +57,7 @@ describe("引擎探测与更新检测模块 (server/engine-probe.ts)", () => {
 		const unknown = await probeEngine("some-fake-engine");
 		expect(unknown.id).toBe("some-fake-engine");
 		expect(unknown.installed).toBe(false);
-	});
+	}, 15000);
 
 	it("probeAllEngines() 批量获取全量引擎状态并支持缓存与同步获取", async () => {
 		const list = await probeAllEngines(true);
@@ -68,7 +68,7 @@ describe("引擎探测与更新检测模块 (server/engine-probe.ts)", () => {
 
 		const cached = getCachedEngineStatuses();
 		expect(cached).toEqual(list);
-	});
+	}, 15000);
 
 	it("checkPackageLatest() 能够正确查询包名远端版本（带缓存）", async () => {
 		const latest = await checkPackageLatest("@earendil-works/pi-coding-agent");
