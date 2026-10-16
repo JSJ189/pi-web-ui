@@ -72,14 +72,13 @@ pi-web-ui 是基于 pi 智能体 SDK（`@earendil-works/pi-coding-agent`）与 D
 
 ### 🎬 演示视频
 
-<div align="center">
-  <video src="https://raw.githubusercontent.com/xing-shuyin/pi-web-ui/main/assets/demo-video.mp4" poster="https://raw.githubusercontent.com/xing-shuyin/pi-web-ui/main/assets/demo-video-cover.png" controls width="100%" style="max-width: 900px; border-radius: 8px; box-shadow: 0 4px 20px rgba(0,0,0,0.35);">
-    <a href="https://raw.githubusercontent.com/xing-shuyin/pi-web-ui/main/assets/demo-video.mp4">
-      <img src="https://raw.githubusercontent.com/xing-shuyin/pi-web-ui/main/assets/demo-video-cover.png" alt="pi-web-ui 操作演示视频" width="100%" style="max-width: 900px; border-radius: 8px;" />
-    </a>
-  </video>
-  <p><em>（如无法直接内嵌播放，请点击上方封面或 <a href="https://raw.githubusercontent.com/xing-shuyin/pi-web-ui/main/assets/demo-video.mp4">直接下载观看演示视频</a>）</em></p>
-</div>
+<p align="center">
+  <a href="https://raw.githubusercontent.com/xing-shuyin/pi-web-ui/main/assets/demo-video.mp4">
+    <img src="https://raw.githubusercontent.com/xing-shuyin/pi-web-ui/main/assets/demo-video-poster.png" alt="pi-web-ui 操作演示视频（点击播放）" width="100%" style="max-width: 900px; border-radius: 8px; box-shadow: 0 4px 20px rgba(0,0,0,0.35);" />
+  </a>
+  <br>
+  <em>🎬 点击上方预览图直接在浏览器中播放完整操作演示视频（或右键另存为下载）</em>
+</p>
 
 ### 📸 功能截屏
 

@@ -219,14 +219,13 @@ QQ 群組 1126050727
 
 ### 🎬 操作演示影片
 
-<div align="center">
-  <video src="https://raw.githubusercontent.com/xing-shuyin/pi-web-ui/main/assets/demo-video.mp4" poster="https://raw.githubusercontent.com/xing-shuyin/pi-web-ui/main/assets/demo-video-cover.png" controls width="100%" style="max-width: 900px; border-radius: 8px; box-shadow: 0 4px 20px rgba(0,0,0,0.35);">
-    <a href="https://raw.githubusercontent.com/xing-shuyin/pi-web-ui/main/assets/demo-video.mp4">
-      <img src="https://raw.githubusercontent.com/xing-shuyin/pi-web-ui/main/assets/demo-video-cover.png" alt="pi-web-ui 操作演示影片預覽" width="100%" style="max-width: 900px; border-radius: 8px;" />
-    </a>
-  </video>
-  <p><em>（如無法直接內嵌播放，請點擊上方封面或 <a href="https://raw.githubusercontent.com/xing-shuyin/pi-web-ui/main/assets/demo-video.mp4">直接下載觀看演示影片</a>）</em></p>
-</div>
+<p align="center">
+  <a href="https://raw.githubusercontent.com/xing-shuyin/pi-web-ui/main/assets/demo-video.mp4">
+    <img src="https://raw.githubusercontent.com/xing-shuyin/pi-web-ui/main/assets/demo-video-poster.png" alt="pi-web-ui 操作演示影片（點擊播放）" width="100%" style="max-width: 900px; border-radius: 8px; box-shadow: 0 4px 20px rgba(0,0,0,0.35);" />
+  </a>
+  <br>
+  <em>🎬 點擊上方預覽圖直接在瀏覽器中播放完整操作演示影片（或右鍵另存下載）</em>
+</p>
 
 ### 📸 功能截圖
 

@@ -78,14 +78,13 @@ pi-web-ui is a full-featured web interface and desktop workspace for the pi codi
 
 ### 🎬 Demo Video
 
-<div align="center">
-  <video src="https://raw.githubusercontent.com/xing-shuyin/pi-web-ui/main/assets/demo-video.mp4" poster="https://raw.githubusercontent.com/xing-shuyin/pi-web-ui/main/assets/demo-video-cover.png" controls width="100%" style="max-width: 900px; border-radius: 8px; box-shadow: 0 4px 20px rgba(0,0,0,0.35);">
-    <a href="https://raw.githubusercontent.com/xing-shuyin/pi-web-ui/main/assets/demo-video.mp4">
-      <img src="https://raw.githubusercontent.com/xing-shuyin/pi-web-ui/main/assets/demo-video-cover.png" alt="pi-web-ui demo video preview" width="100%" style="max-width: 900px; border-radius: 8px;" />
-    </a>
-  </video>
-  <p><em>(If the embedded player does not start, click the preview above or <a href="https://raw.githubusercontent.com/xing-shuyin/pi-web-ui/main/assets/demo-video.mp4">download the demo video</a> directly)</em></p>
-</div>
+<p align="center">
+  <a href="https://raw.githubusercontent.com/xing-shuyin/pi-web-ui/main/assets/demo-video.mp4">
+    <img src="https://raw.githubusercontent.com/xing-shuyin/pi-web-ui/main/assets/demo-video-poster.png" alt="pi-web-ui demo video (click to play)" width="100%" style="max-width: 900px; border-radius: 8px; box-shadow: 0 4px 20px rgba(0,0,0,0.35);" />
+  </a>
+  <br>
+  <em>🎬 Click the preview above to play the full demo video directly in your browser (or right-click to save)</em>
+</p>
 
 ### 📸 Feature Highlights
 
