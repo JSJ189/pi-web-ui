@@ -47,6 +47,7 @@ export const LOCALE_PACKS: LocalePackMeta[] = [
 	{ code: "ko", nativeName: "한국어" },
 	{ code: "pt", nativeName: "Português" },
 	{ code: "ru", nativeName: "Русский" },
+	{ code: "tr", nativeName: "Türkçe" },
 	// Traditional Chinese packs. Core "zh" is Simplified; generated from it
 	// by OpenCC + glossaries (scripts/zh-tw-locale).
 	{ code: "zh-Hant", nativeName: "繁體中文" },

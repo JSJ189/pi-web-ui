@@ -30,7 +30,7 @@ function placeholders(s: string): string[] {
 }
 
 describe("language packs", () => {
-	it("11 个语言包齐全（de/es/fr/it/ja/ko/pt/ru/zh-Hant/zh-HK/zh-TW）", () => {
+	it("12 个语言包齐全（de/es/fr/it/ja/ko/pt/ru/tr/zh-Hant/zh-HK/zh-TW）", () => {
 		expect([...packs.keys()].sort()).toEqual([
 			"de",
 			"es",
@@ -40,6 +40,7 @@ describe("language packs", () => {
 			"ko",
 			"pt",
 			"ru",
+			"tr",
 			"zh-HK",
 			"zh-Hant",
 			"zh-TW",
@@ -74,7 +75,7 @@ describe("language packs", () => {
 		}
 	});
 
-	it("非中文/非日文语言包（de/es/fr/it/ko/pt/ru）无中文假翻译残留 (issue #502)", () => {
+	it("非中文/非日文语言包（de/es/fr/it/ko/pt/ru/tr）无中文假翻译残留 (issue #502)", () => {
 		for (const [code, p] of packs) {
 			// zh / zh-TW / ja packs are written in Han characters by design.
 			if (code === "zh" || code.startsWith("zh-") || code === "ja") continue;

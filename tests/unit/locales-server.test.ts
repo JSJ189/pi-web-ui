@@ -36,9 +36,10 @@ function stubFetch(body: unknown, status = 200) {
 }
 
 describe("locales", () => {
-	it("isKnownPack 只认 manifest 里的 11 个包", () => {
+	it("isKnownPack 只认 manifest 里的 12 个包", () => {
 		expect(isKnownPack("ja")).toBe(true);
 		expect(isKnownPack("it")).toBe(true);
+		expect(isKnownPack("tr")).toBe(true);
 		expect(isKnownPack("zh-Hant")).toBe(true);
 		expect(isKnownPack("zh-HK")).toBe(true);
 		expect(isKnownPack("zh-TW")).toBe(true);
