@@ -6857,6 +6857,65 @@ body.is-desktop-mac:not(.is-desktop-fullscreen) .topbar {
 	color: var(--text-faint);
 }
 
+.dd-header-flex {
+	display: flex;
+	align-items: center;
+	justify-content: space-between;
+	gap: 8px;
+}
+
+.dd-scope-toggle {
+	display: inline-flex;
+	align-items: center;
+	gap: 4px;
+	padding: 1px 7px;
+	border: 1px solid var(--border);
+	border-radius: 999px;
+	background: var(--bg-elev);
+	color: var(--text-dim);
+	font-size: 10.5px;
+	font-weight: 500;
+	cursor: pointer;
+	text-transform: none;
+	letter-spacing: normal;
+	transition: all 0.15s ease;
+	line-height: 1.5;
+}
+
+.dd-scope-toggle:hover {
+	color: var(--text);
+	border-color: var(--accent);
+}
+
+.dd-scope-toggle.active {
+	background: var(--accent-soft);
+	color: var(--accent);
+	border-color: var(--accent);
+}
+
+.dd-scope-switch-link {
+	display: block;
+	margin: 6px auto 0;
+	padding: 2px 8px;
+	border: 1px dashed var(--border);
+	border-radius: 6px;
+	background: transparent;
+	color: var(--accent);
+	font-size: 12px;
+	cursor: pointer;
+	transition: all 0.15s ease;
+}
+
+.dd-scope-switch-link:hover {
+	background: var(--accent-soft);
+	border-color: var(--accent);
+}
+
+.dd-model-badge.out-of-scope {
+	opacity: 0.65;
+	font-size: 10px;
+}
+
 .dd-loading {
 	padding: 10px;
 	font-size: 12px;

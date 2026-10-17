@@ -1871,6 +1871,9 @@ export interface ModelInfo {
 	reasoning: boolean;
 	/** Whether the model accepts image input (SDK `input` includes "image"). */
 	vision: boolean;
+	/** Whether this model is enabled by the user's `enabledModels` scope pattern in settings.json.
+	 *  When omitted or true, the model is enabled. When false, excluded by enabledModels. */
+	enabled?: boolean;
 }
 
 // ---------------------------------------------------------------------------

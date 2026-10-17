@@ -85,8 +85,24 @@ export const ModelThinking = memo(function ModelThinking({
 		if (!modelOpen) {
 			setModelFilter("");
 			setProviderFilter(null);
+			setShowAllModels(false);
 		}
 	}, [modelOpen]);
+
+	// 是否配置了 enabledModels 白名单限定（列表中存在被排除的模型，issue #646）
+	const hasEnabledScope = useMemo(() => models.some((m) => m.enabled === false), [models]);
+	// 选定模型数量
+	const enabledCount = useMemo(() => models.filter((m) => m.enabled !== false).length, [models]);
+	// 是否显示全部模型（仅在 hasEnabledScope 时起效；默认 false 即遵循 enabledModels）
+	const [showAllModels, setShowAllModels] = useState(false);
+
+	// 当前范围内的可见模型：
+	// 若配置了 enabledModels 且未展开全部，则仅展示 enabled !== false 的模型（保留当前正在使用的模型以防漏显）
+	const visibleModels = useMemo(() => {
+		if (!hasEnabledScope || showAllModels) return models;
+		return models.filter((m) => m.enabled !== false || m.id === currentModelId);
+	}, [models, hasEnabledScope, showAllModels, currentModelId]);
+
 	// Sidebar filter entries (sorted by provider name). A provider with several
 	// stored keys yields ONE entry per key (shown as the provider name with the key
 	// name under it), so picking an entry narrows to that provider AND that key;
@@ -94,7 +110,7 @@ export const ModelThinking = memo(function ModelThinking({
 	// model count (keys never change the catalog, so every key entry shows the same).
 	const providerEntries = useMemo(() => {
 		const counts = new Map<string, number>();
-		for (const m of models) counts.set(m.provider, (counts.get(m.provider) ?? 0) + 1);
+		for (const m of visibleModels) counts.set(m.provider, (counts.get(m.provider) ?? 0) + 1);
 		const entries: { provider: string; keyName: string | null; count: number }[] = [];
 		for (const [name, count] of [...counts.entries()].sort((a, b) => a[0].localeCompare(b[0]))) {
 			const keys = providerKeys[name];
@@ -105,9 +121,9 @@ export const ModelThinking = memo(function ModelThinking({
 			}
 		}
 		return entries;
-	}, [models, providerKeys]);
+	}, [visibleModels, providerKeys]);
 	// 按使用次数降序（次数相同保持原有顺序，不重排未用过的模型）。
-	const sortedModels = useMemo(() => sortByUsage(models, usage), [models, usage]);
+	const sortedModels = useMemo(() => sortByUsage(visibleModels, usage), [visibleModels, usage]);
 	const filteredModels = useMemo(() => {
 		let list = sortedModels;
 		if (providerFilter) list = list.filter((m) => m.provider === providerFilter.provider);
@@ -194,7 +210,23 @@ export const ModelThinking = memo(function ModelThinking({
 
 	const modelMenuContent = (
 		<>
-			<div className="dd-header">{t("availableModels")}</div>
+			<div className="dd-header dd-header-flex">
+				<span>{t("availableModels")}</span>
+				{hasEnabledScope && (
+					<button
+						type="button"
+						className={`dd-scope-toggle ${showAllModels ? "active" : ""}`}
+						onClick={() => setShowAllModels((v) => !v)}
+						title={
+							showAllModels
+								? t("showEnabledModelsTitle", { n: enabledCount })
+								: t("showAllModelsTitle", { n: models.length })
+						}
+					>
+						{showAllModels ? t("showEnabledModels", { n: enabledCount }) : t("showAllModels", { n: models.length })}
+					</button>
+				)}
+			</div>
 			<div className="dd-search-row">
 				<FiSearch />
 				<input
@@ -243,7 +275,16 @@ export const ModelThinking = memo(function ModelThinking({
 				<div className="dd-model-scroll" ref={modelScrollRef}>
 					{(reqLoading || modelsLoading) && <div className="dd-loading">{t("loading")}</div>}
 					{models.length === 0 && !reqLoading && !modelsLoading && <div className="dd-loading">{t("noModels")}</div>}
-					{filteredModels.length === 0 && models.length > 0 && <div className="dd-loading">{t("noModelMatches")}</div>}
+					{filteredModels.length === 0 && visibleModels.length > 0 && (
+						<div className="dd-loading">
+							<div>{t("noModelMatches")}</div>
+							{hasEnabledScope && !showAllModels && (
+								<button type="button" className="dd-scope-switch-link" onClick={() => setShowAllModels(true)}>
+									{t("searchAllModelsHint", { n: models.length })}
+								</button>
+							)}
+						</div>
+					)}
 					{displayRows.map((row) => {
 						const m = row.model;
 						const isActive =
@@ -282,10 +323,13 @@ export const ModelThinking = memo(function ModelThinking({
 										{(usage[m.id] ?? 0) > 0 && (
 											<span className="dd-model-usage">{t("modelUsedCount", { n: usage[m.id] })}</span>
 										)}
-										{(m.reasoning || m.vision) && (
+										{(m.reasoning || m.vision || (showAllModels && m.enabled === false)) && (
 											<span className="dd-model-badges">
 												{m.reasoning && <span className="dd-model-badge">{t("reasoning")}</span>}
 												{m.vision && <span className="dd-model-badge">{t("vision")}</span>}
+												{showAllModels && m.enabled === false && (
+													<span className="dd-model-badge out-of-scope">{t("notInScopeBadge")}</span>
+												)}
 											</span>
 										)}
 									</span>

@@ -48,6 +48,7 @@ import {
 	createLsToolDefinition,
 	createToolSearchExtension,
 	createWriteToolDefinition,
+	resolveModelScopeWithDiagnostics,
 	getAgentDir,
 	SessionManager,
 	VERSION,
@@ -13372,13 +13373,31 @@ export class ClientSession {
 				// list must never fail because the catalog sync did
 			});
 			const available = await mr.getAvailable();
-			const models = available.map((m) => ({
-				id: `${m.provider}/${m.id}`,
-				name: this.cleanModelDisplayName(m.name),
-				provider: m.provider,
-				reasoning: m.reasoning,
-				vision: m.input?.includes("image") ?? false,
-			}));
+
+			// 遵循 ~/.pi/agent/settings.json 中的 enabledModels 白名单限定（issue #646）
+			let enabledSet: Set<string> | null = null;
+			try {
+				const sm = this.session?.settingsManager ?? (this.runtime as any)?.services?.settingsManager;
+				const patterns = sm?.getEnabledModels?.();
+				if (Array.isArray(patterns) && patterns.length > 0 && typeof resolveModelScopeWithDiagnostics === "function") {
+					const { scopedModels } = await resolveModelScopeWithDiagnostics(patterns, mr);
+					enabledSet = new Set(scopedModels.map((s) => `${s.model.provider}/${s.model.id}`));
+				}
+			} catch {
+				// 作用域解析异常时静默回退全量（enabledSet 保持 null）
+			}
+
+			const models = available.map((m) => {
+				const fullId = `${m.provider}/${m.id}`;
+				return {
+					id: fullId,
+					name: this.cleanModelDisplayName(m.name),
+					provider: m.provider,
+					reasoning: m.reasoning,
+					vision: m.input?.includes("image") ?? false,
+					...(enabledSet ? { enabled: enabledSet.has(fullId) } : {}),
+				};
+			});
 			this.emit({ type: "models", models });
 		} catch (err) {
 			this.emit({
