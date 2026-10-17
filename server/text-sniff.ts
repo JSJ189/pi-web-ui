@@ -6,7 +6,7 @@
  * 从 agent-service.ts 抽出，行为保持不变。
  */
 
-export type PreviewKind = "image" | "video" | "text" | "none";
+export type PreviewKind = "image" | "video" | "audio" | "text" | "none";
 
 const PREVIEW_IMAGE_EXTS = new Set([
 	"png",
@@ -153,6 +153,7 @@ export function previewKind(name: string): PreviewKind {
 	const ext = dot > 0 ? name.slice(dot + 1).toLowerCase() : "";
 	if (PREVIEW_IMAGE_EXTS.has(ext)) return "image";
 	if (PREVIEW_VIDEO_EXTS.has(ext)) return "video";
+	if (PREVIEW_AUDIO_EXTS.has(ext)) return "audio";
 	if (ext === "" || PREVIEW_TEXT_EXTS.has(ext)) return "text";
 	return "none";
 }

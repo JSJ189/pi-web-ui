@@ -11,43 +11,43 @@ import { synthesizeToWavBuffer } from "./lib/tts.mjs";
 
 const DOUBAO_SPEAKERS = {
 	yangguang: "zh_male_qingyiyuxuan_mars_bigtts", // 阳光阿辰
-	"阳光青年": "zh_male_qingyiyuxuan_mars_bigtts",
-	"阳光阿辰": "zh_male_qingyiyuxuan_mars_bigtts",
+	阳光青年: "zh_male_qingyiyuxuan_mars_bigtts",
+	阳光阿辰: "zh_male_qingyiyuxuan_mars_bigtts",
 
 	junyu: "zh_male_nuanxinshizhe_mars_bigtts", // 磁性俊宇
-	"磁性俊宇": "zh_male_nuanxinshizhe_mars_bigtts",
+	磁性俊宇: "zh_male_nuanxinshizhe_mars_bigtts",
 
 	nanda: "zh_male_junlangxize_mars_bigtts", // 清爽男大
-	"清爽男大": "zh_male_junlangxize_mars_bigtts",
+	清爽男大: "zh_male_junlangxize_mars_bigtts",
 
 	taozi: "zh_female_wenroutaozi_uranus_bigtts", // 温柔桃子
-	"温柔桃子": "zh_female_wenroutaozi_uranus_bigtts",
+	温柔桃子: "zh_female_wenroutaozi_uranus_bigtts",
 
 	tianmei: "zh_female_xiaohe_conversation_wvae_bigtts", // 阳光甜妹
-	"阳光甜妹": "zh_female_xiaohe_conversation_wvae_bigtts",
+	阳光甜妹: "zh_female_xiaohe_conversation_wvae_bigtts",
 
 	xiaotang: "zh_female_wenroutaozi_mars_bigtts", // 知性小棠
-	"知性小棠": "zh_female_wenroutaozi_mars_bigtts",
+	知性小棠: "zh_female_wenroutaozi_mars_bigtts",
 
 	shuangkuai: "zh_female_beijingdaniu_mars_bigtts", // 北京大妞
-	"北京大妞": "zh_female_beijingdaniu_mars_bigtts",
+	北京大妞: "zh_female_beijingdaniu_mars_bigtts",
 
 	bazong: "ICL_e0b9b93ee322", // 冷酷霸总
-	"冷酷霸总": "ICL_e0b9b93ee322",
+	冷酷霸总: "ICL_e0b9b93ee322",
 
 	bingjiao: "ICL_72afa6c5dc07", // 病娇少爷
-	"病娇少爷": "ICL_72afa6c5dc07",
+	病娇少爷: "ICL_72afa6c5dc07",
 };
 
 const DEEPSEEK_VOICES = {
 	echo: "echo", // 白浪 (明朗坚定男声)
-	"白浪": "echo",
+	白浪: "echo",
 	tide: "tide", // 暗潮 (低沉浑厚男声)
-	"暗潮": "tide",
+	暗潮: "tide",
 	mira: "mira", // 贝壳 (百变活泼女声)
-	"贝壳": "mira",
+	贝壳: "mira",
 	stella: "stella", // 海星 (俏皮甜美女声)
-	"海星": "stella",
+	海星: "stella",
 };
 
 const DOUBAO_WS_URL = "wss://ws-samantha.doubao.com/samantha/audio/tts";
@@ -189,10 +189,10 @@ export default {
 			if (apiKey) {
 				const officialVoiceMap = {
 					yangguang: "BV007_streaming",
-					"阳光青年": "BV007_streaming",
-					"阳光阿辰": "BV007_streaming",
+					阳光青年: "BV007_streaming",
+					阳光阿辰: "BV007_streaming",
 					taozi: "BV001_streaming",
-					"温柔桃子": "BV001_streaming",
+					温柔桃子: "BV001_streaming",
 					tianmei: "BV001_streaming",
 					junyu: "BV007_streaming",
 				};
@@ -301,7 +301,9 @@ export default {
 									try {
 										ws.close();
 									} catch {}
-									reject(new Error("触发豆包网页频次拦截 (710022002 block)，请稍等几分钟冷却或在设置中配置官方 API Key。"));
+									reject(
+										new Error("触发豆包网页频次拦截 (710022002 block)，请稍等几分钟冷却或在设置中配置官方 API Key。"),
+									);
 								}
 							} else if (msg.event === "error" || (msg.code && msg.code !== 0)) {
 								if (!resolved) {
@@ -345,7 +347,9 @@ export default {
 		async function synthesizeDeepSeek(text, voiceKey = "echo") {
 			const token = await readDeepSeekToken();
 			if (!token) {
-				throw new Error("尚未配置 DeepSeek 登录凭据，请在插件设置中填入 userToken 或通过配套扩展在 chat.deepseek.com 页面同步。");
+				throw new Error(
+					"尚未配置 DeepSeek 登录凭据，请在插件设置中填入 userToken 或通过配套扩展在 chat.deepseek.com 页面同步。",
+				);
 			}
 
 			const voiceId = DEEPSEEK_VOICES[voiceKey] || "echo";
@@ -544,31 +548,49 @@ export default {
 			}
 		});
 
-		// ── 4. AI Agent 工具注册 ────────────────────────────────────────
+		// ── 4. AI Agent 工具注册 (唯一统一工具: tts) ─────────────────────────
 		host.registerAgentTool?.({
-			name: "tts_speak",
-			description: "Synthesize text to speech audio file using Doubao or DeepSeek official voice models.",
+			name: "tts",
+			label: "TTS 语音合成",
+			promptSnippet: "synthesize speech audio file from text",
+			description: "Synthesize speech audio from text using configured Doubao or DeepSeek official voice engine.",
 			parameters: {
 				type: "object",
 				properties: {
-					text: { type: "string", description: "Text to convert to speech" },
+					text: { type: "string", description: "Text to convert to speech audio" },
 					engine: {
 						type: "string",
 						enum: ["doubao", "deepseek"],
-						description: "TTS engine to use (default: doubao)",
+						description: "TTS engine to use (default: doubao or plugin setting)",
 					},
 					speaker: {
 						type: "string",
 						description:
-							"Voice style. Doubao: yangguang, junyu, nanda, taozi, tianmei. DeepSeek: echo (male), tide (male), mira (female), stella (female).",
+							"Voice style. Doubao: yangguang, junyu, nanda, taozi, tianmei. DeepSeek: echo, tide, mira, stella.",
 					},
 					outFile: { type: "string", description: "Output path, e.g. voice.aac or voice.wav" },
 				},
 				required: ["text"],
 			},
-			execute: async (args) => {
+			execute: async (...callArgs) => {
+				const args =
+					callArgs.length >= 2 &&
+					typeof callArgs[0] === "string" &&
+					typeof callArgs[1] === "object" &&
+					callArgs[1] !== null
+						? callArgs[1]
+						: typeof callArgs[0] === "object" && callArgs[0] !== null
+							? callArgs[0]
+							: {};
+
 				const text = String(args.text || "").trim();
-				const engine = args.engine === "deepseek" ? "deepseek" : "doubao";
+				if (!text) {
+					throw new Error("Text parameter cannot be empty.");
+				}
+
+				const settings = host.getSettings?.() ?? {};
+				const defaultEngine = settings.defaultEngine === "deepseek" ? "deepseek" : "doubao";
+				const engine = args.engine === "deepseek" || args.engine === "doubao" ? args.engine : defaultEngine;
 				const speaker = String(args.speaker || (engine === "deepseek" ? "echo" : "yangguang"));
 
 				let buf;
@@ -584,29 +606,6 @@ export default {
 				await fs.writeFile(outPath, buf);
 
 				return { success: true, path: outPath, bytes: buf.length, engine, speaker };
-			},
-		});
-
-		// 兼容旧工具名
-		host.registerAgentTool?.({
-			name: "doubao_tts",
-			description: "Synthesize Chinese text to speech audio using Doubao voice.",
-			parameters: {
-				type: "object",
-				properties: {
-					text: { type: "string" },
-					outFile: { type: "string" },
-					speaker: { type: "string" },
-				},
-				required: ["text"],
-			},
-			execute: async (args) => {
-				const text = String(args.text || "").trim();
-				const buf = await synthesizeDoubao(text, args.speaker || "yangguang", 0, "aac");
-				const rawOut = args.outFile ? String(args.outFile).trim() : `doubao_${Date.now()}.aac`;
-				const outPath = path.isAbsolute(rawOut) ? rawOut : path.join(host.cwd, rawOut);
-				await fs.writeFile(outPath, buf);
-				return { success: true, path: outPath, bytes: buf.length };
 			},
 		});
 

@@ -566,6 +566,23 @@ export function FilePreview({
 					</div>
 				)}
 
+				{!loading && kind === "audio" && (
+					<div className="fp-media-wrap fp-audio-wrap">
+						<div className="fp-audio-card">
+							<div className="fp-audio-icon" aria-hidden="true">
+								🎵
+							</div>
+							<div className="fp-audio-info">
+								<div className="fp-audio-name" title={file.name}>
+									{file.name}
+								</div>
+								{loaded?.size ? <div className="fp-audio-size">{formatSize(loaded.size)}</div> : null}
+							</div>
+							<audio className="fp-audio-element" src={mediaUrl(file.path)} controls autoPlay preload="metadata" />
+						</div>
+					</div>
+				)}
+
 				{!loading && showHtml && loaded && (
 					<div className="fp-html">
 						<div className="fp-html-bar">

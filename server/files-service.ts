@@ -852,7 +852,7 @@ export class FilesService {
 			const kind = previewKind(name);
 			// Media previews stream over the /api/file HTTP endpoint, so only
 			// metadata is sent here — the raw bytes never touch the socket.
-			if (kind === "image" || kind === "video") {
+			if (kind === "image" || kind === "video" || kind === "audio") {
 				this.host.emit({
 					type: "file_content",
 					path: rel,
@@ -1848,6 +1848,20 @@ export class FilesService {
 				} catch {}
 			}
 			const kind = previewKind(name);
+			if (kind === "image" || kind === "video" || kind === "audio") {
+				this.host.emit({
+					type: "file_content",
+					path: t.rel,
+					name,
+					text: "",
+					truncated: false,
+					binary: true,
+					kind,
+					lines: 0,
+					size: st.size,
+				});
+				return;
+			}
 			const { data, size } = await sshSvc.sftpReadFile(rawCwd, t.abs, MAX_PREVIEW_BYTES);
 			if (looksLikeText(data)) {
 				this.host.emit({

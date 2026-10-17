@@ -45,7 +45,7 @@ export interface FileContent {
 	 * Preview category: media kinds render via the /api/file HTTP endpoint
 	 * (text stays empty); "none" means not previewable.
 	 */
-	kind: "image" | "video" | "text" | "none";
+	kind: "image" | "video" | "audio" | "text" | "none";
 	text: string;
 	truncated: boolean;
 	binary: boolean;

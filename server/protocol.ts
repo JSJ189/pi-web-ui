@@ -1836,7 +1836,7 @@ export interface FileEntry {
 	 * Preview category (files only; undefined for dirs). "none" files are
 	 * never previewed — the UI doesn't open them and read_file refuses them.
 	 */
-	kind?: "image" | "video" | "text" | "none";
+	kind?: "image" | "video" | "audio" | "text" | "none";
 }
 
 // -- source-control panel (wire shapes shared by scm_data) -------------------
@@ -3405,7 +3405,7 @@ export type ServerMessage =
 			 * Preview category: media kinds render via the /api/file HTTP
 			 * endpoint (text stays empty); "none" means not previewable.
 			 */
-			kind: "image" | "video" | "text" | "none";
+			kind: "image" | "video" | "audio" | "text" | "none";
 			text: string;
 			truncated: boolean;
 			binary: boolean;

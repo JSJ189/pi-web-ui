@@ -9,9 +9,12 @@ import {
 } from "../../server/text-sniff.js";
 
 describe("previewKind", () => {
-	it("分类图片/视频/文本/未知", () => {
+	it("分类图片/视频/音频/文本/未知", () => {
 		expect(previewKind("a.png")).toBe("image");
 		expect(previewKind("b.MP4")).toBe("video");
+		expect(previewKind("test.aac")).toBe("audio");
+		expect(previewKind("sample.MP3")).toBe("audio");
+		expect(previewKind("audio.wav")).toBe("audio");
 		expect(previewKind("c.ts")).toBe("text");
 		expect(previewKind("d.exe")).toBe("none");
 	});
