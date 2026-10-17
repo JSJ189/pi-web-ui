@@ -1042,7 +1042,14 @@ export default async function activate(host) {
 	});
 
 	// Handle UI client messages
-	host.onClientMessage?.(async (msg, reply) => {
+	// 回包回显请求里的 __rid：新宿主只有「上行 send / 下行 onData」，没有请求-回调
+	// 配对，客户端据此把回包配到发起的那次请求上（不带 __rid 时行为不变）。
+	host.onClientMessage?.(async (msg, replyRaw) => {
+		const __rid = msg && msg.__rid;
+		const reply = (payload) =>
+			__rid === undefined
+				? replyRaw(payload)
+				: replyRaw(payload && typeof payload === "object" && !Array.isArray(payload) ? { ...payload, __rid } : payload);
 		try {
 			switch (msg.type) {
 				case "get_state": {
