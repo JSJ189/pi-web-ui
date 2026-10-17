@@ -3,7 +3,11 @@
  * Client workbench UI for Feishu (Lark) plugin in pi-web-ui.
  */
 
-export default function activate(ctx) {
+// 视图入口：新版宿主（web/src/plugin-loader.ts）只认
+//   export default { mount(el, ctx) → cleanup? }
+// 旧版宿主才调 activate(ctx) + ctx.ui.registerView。这里两个契约都保留，
+// 避免升级宿主后报「entry.mjs 缺少 default.mount」。
+function activate(ctx) {
 	ctx.ui?.registerView?.({
 		id: "feishu",
 		label: "飞书",
@@ -13,6 +17,17 @@ export default function activate(ctx) {
 		},
 	});
 }
+
+activate.mount = function mount(el, ctx) {
+	renderFeishuWorkbench(el, ctx);
+	return () => {
+		try {
+			if (el) el.innerHTML = "";
+		} catch {}
+	};
+};
+
+export default activate;
 
 function escapeHtml(str) {
 	if (!str) return "";
@@ -387,9 +402,45 @@ function renderFeishuWorkbench(container, ctx) {
 			.catch(() => {});
 	}
 
+	// 新版宿主只给 ctx.send（上行）/ ctx.onData（下行）两条窄通道，没有请求-回调配对，
+	// 回包按 __rid 精确配对（由服务端 index.mjs 的 onClientMessage 回显）。
+	let ridSeq = 0;
+	const pendingReplies = new Map();
+	if (typeof ctx.onData === "function") {
+		ctx.onData((payload) => {
+			const rid = payload && payload.__rid;
+			if (rid) {
+				const waiter = pendingReplies.get(rid);
+				if (!waiter) return;
+				pendingReplies.delete(rid);
+				clearTimeout(waiter.timer);
+				waiter.resolve(payload);
+				return;
+			}
+		});
+	}
+
 	function sendHost(type, payload = {}) {
+		if (typeof ctx.send === "function") {
+			const rid = `fs-${++ridSeq}`;
+			return new Promise((resolve) => {
+				const timer = setTimeout(() => {
+					pendingReplies.delete(rid);
+					resolve({ success: false, message: "宿主回包超时" });
+				}, 60000);
+				pendingReplies.set(rid, { resolve, timer });
+				try {
+					ctx.send({ ...payload, type, __rid: rid });
+				} catch (err) {
+					pendingReplies.delete(rid);
+					clearTimeout(timer);
+					resolve({ success: false, message: String(err?.message || err) });
+				}
+			});
+		}
+		// 旧版宿主：postMessage 自带请求-回调配对
 		return new Promise((resolve) => {
-			ctx.postMessage({ type, ...payload }, (res) => {
+			ctx.postMessage?.({ type, ...payload }, (res) => {
 				resolve(res);
 			});
 		});
@@ -620,12 +671,16 @@ function renderFeishuWorkbench(container, ctx) {
 		const m = state.activeMessage;
 		const quoteText = `> 【飞书消息】${m.senderName} (${formatDate(m.date)})\n> ${m.text.replace(/\n/g, "\n> ")}\n\n`;
 
-		if (window.__piWebUiHost?.injectDraft) {
+		if (typeof window.__piWebUiHost?.compose === "function") {
+			window.__piWebUiHost.compose({ text: quoteText });
+			window.__piWebUiHost.setView?.("chat");
+		} else if (window.__piWebUiHost?.injectDraft) {
 			window.__piWebUiHost.injectDraft({
 				text: quoteText,
 				items: [{ label: `飞书: ${m.subject || m.id.slice(-6)}`, text: quoteText, key: m.id }],
 			});
-			if (ctx.ui?.setView) ctx.ui.setView("chat");
+			if (window.__piWebUiHost.setView) window.__piWebUiHost.setView("chat");
+			else if (ctx.ui?.setView) ctx.ui.setView("chat");
 		} else if (navigator.clipboard) {
 			navigator.clipboard.writeText(quoteText);
 			alert?.("已复制引用内容到剪贴板！");
