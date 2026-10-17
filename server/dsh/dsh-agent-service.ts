@@ -83,7 +83,11 @@ import type {
 } from "../protocol.js";
 import { launchOrigin, toServiceInfo } from "../launch-origin.js";
 import { DshRuntime, loadDeepSeekKey, type DshAgentPreset } from "./dsh-client.js";
-import { resolveProviderCredential, listCustomModelsFromConfig } from "../model-resolver.js";
+import {
+	resolveProviderCredential,
+	listCustomModelsFromConfig,
+	isModelProtocolSupportedByEngine,
+} from "../model-resolver.js";
 import { loadDshMarketData } from "./dsh-market-service.js";
 import { formatTextQuote, readTextQuote, messageTextWithQuotes } from "../text-quote.js";
 import { MarkerService } from "../marker-service.js";
@@ -3644,9 +3648,11 @@ export class DshClientSession {
 			});
 		}
 
-		// 3. 用户在 models.json 中配置的第三方自定义端点模型
+		// 3. 用户在 models.json 中配置的第三方自定义端点模型（针对性过滤 DSH 不支持的协议，如 anthropic-messages）
 		try {
-			const custom = listCustomModelsFromConfig(this.agentDir);
+			const custom = listCustomModelsFromConfig(this.agentDir, (entry) =>
+				isModelProtocolSupportedByEngine("dsh", entry),
+			);
 			for (const c of custom) {
 				const canonicalId = `${c.providerId}/${c.modelId}`;
 				if (seen.has(canonicalId)) continue;
@@ -3712,7 +3718,9 @@ export class DshClientSession {
 				};
 			} else {
 				try {
-					const customList = listCustomModelsFromConfig(this.agentDir);
+					const customList = listCustomModelsFromConfig(this.agentDir, (entry) =>
+						isModelProtocolSupportedByEngine("dsh", entry),
+					);
 					const hit = customList.find(
 						(c) => `${c.providerId}/${c.modelId}` === normId || c.modelId === normId || c.modelId === bareModelId,
 					);
@@ -5286,7 +5294,9 @@ export class DshClientSession {
 			if (cred.apiKey) return true;
 		}
 		try {
-			const custom = listCustomModelsFromConfig(this.agentDir);
+			const custom = listCustomModelsFromConfig(this.agentDir, (entry) =>
+				isModelProtocolSupportedByEngine("dsh", entry),
+			);
 			if (custom.length > 0) {
 				for (const c of custom) {
 					if (resolveProviderCredential(this.agentDir, c.providerId).apiKey) return true;

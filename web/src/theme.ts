@@ -50,6 +50,13 @@ function saveTheme(id: string | null): void {
 
 /** Inject/replace the theme <link>. null = bundled default (dark). */
 export function applyTheme(id: string | null): void {
+	if (typeof document !== "undefined") {
+		if (id) {
+			document.documentElement.dataset.theme = id;
+		} else {
+			delete document.documentElement.dataset.theme;
+		}
+	}
 	let link = document.getElementById(LINK_ID) as HTMLLinkElement | null;
 	if (!id) {
 		link?.remove();

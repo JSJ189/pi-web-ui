@@ -50,13 +50,25 @@ if exist "%PI_ROOT%\runtime\git\cmd\git.exe" (
     call :print_detail warn-git
 )
 
+rem ----- optional runtime check: PortableNode & npm -----
+if exist "%PI_ROOT%\runtime\node\node.exe" (
+    echo [Pi] Portable Node.js detected in runtime\node. Mounting npm environment...
+    if not exist "%PI_ROOT%\data\npm-global" mkdir "%PI_ROOT%\data\npm-global"
+    if not exist "%PI_ROOT%\data\npm-cache"  mkdir "%PI_ROOT%\data\npm-cache"
+    set "NPM_CONFIG_PREFIX=%PI_ROOT%\data\npm-global"
+    set "NPM_CONFIG_CACHE=%PI_ROOT%\data\npm-cache"
+    set "PATH=%PI_ROOT%\data\npm-global;%PI_ROOT%\runtime\node;%PATH%"
+)
+
 rem ----- ensure portable data directories exist -----
-if not exist "%PI_ROOT%\data\agent"     mkdir "%PI_ROOT%\data\agent"
-if not exist "%PI_ROOT%\data\web"       mkdir "%PI_ROOT%\data\web"
-if not exist "%PI_ROOT%\data\git"       mkdir "%PI_ROOT%\data\git"
-if not exist "%PI_ROOT%\data\home"      mkdir "%PI_ROOT%\data\home"
-if not exist "%PI_ROOT%\data\workspace" mkdir "%PI_ROOT%\data\workspace"
-if not exist "%PI_ROOT%\data\electron"  mkdir "%PI_ROOT%\data\electron"
+if not exist "%PI_ROOT%\data\agent"      mkdir "%PI_ROOT%\data\agent"
+if not exist "%PI_ROOT%\data\web"        mkdir "%PI_ROOT%\data\web"
+if not exist "%PI_ROOT%\data\git"        mkdir "%PI_ROOT%\data\git"
+if not exist "%PI_ROOT%\data\home"       mkdir "%PI_ROOT%\data\home"
+if not exist "%PI_ROOT%\data\workspace"  mkdir "%PI_ROOT%\data\workspace"
+if not exist "%PI_ROOT%\data\electron"   mkdir "%PI_ROOT%\data\electron"
+if not exist "%PI_ROOT%\data\npm-global" mkdir "%PI_ROOT%\data\npm-global"
+if not exist "%PI_ROOT%\data\npm-cache"  mkdir "%PI_ROOT%\data\npm-cache"
 
 rem ----- configure environment variables for total isolation -----
 set "PI_PORTABLE=1"

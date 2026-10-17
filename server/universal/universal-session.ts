@@ -366,6 +366,11 @@ export class UniversalSession implements DispatchSession {
 			this.store.saveConversation(this.cwd, initialConv);
 		}
 
+		// 记录当前客户端访问的工作区
+		if (typeof this.stateStore?.remember === "function" && this.cwd) {
+			this.stateStore.remember(this.clientId, this.cwd);
+		}
+
 		// 若驱动为 Claude Code，异步探测环境并下发安装指引
 		if (this.driver instanceof ClaudeCodeDriver) {
 			void probeClaudeCode().then((probe) => {
@@ -499,6 +504,8 @@ export class UniversalSession implements DispatchSession {
 		}
 		this.bg.push();
 		void this.refreshSessions();
+		void this.pushProjects();
+		this.flushSnapshot(true);
 	}
 
 	detachSink(send: (msg: ServerMessage) => void): void {
@@ -981,6 +988,10 @@ export class UniversalSession implements DispatchSession {
 		}
 		if (conv) {
 			this.activeConvId = conv.id;
+			// 同步底层驱动会话上下文（若存在）
+			if (conv.driverSessionId) {
+				await this.driver.resumeSession(conv.driverSessionId).catch(() => {});
+			}
 		} else {
 			this.emitNotice(
 				"warning",
@@ -989,6 +1000,7 @@ export class UniversalSession implements DispatchSession {
 			);
 		}
 		this.flushSnapshot(true);
+		void this.refreshSessions();
 	}
 
 	async switchSession(path: string, sessionId?: string): Promise<void> {
@@ -1044,7 +1056,16 @@ export class UniversalSession implements DispatchSession {
 	}
 
 	async deleteSession(path: string): Promise<void> {
-		await this.dismissConversation(path);
+		const targetId = path.trim() || this.activeConvId;
+		// 1. 从磁盘删除持久化会话记录
+		this.store.deleteConversation(this.cwd, targetId);
+		// 2. 若内存中存在该会话，将其从内存中移除
+		if (this.conversations.has(targetId)) {
+			await this.dismissConversation(targetId, true, true);
+		} else {
+			void this.refreshSessions();
+			this.flushSnapshot();
+		}
 	}
 
 	async dismissConversation(id: string, withFinishedSubagents = false, force = false): Promise<void> {
@@ -1066,9 +1087,7 @@ export class UniversalSession implements DispatchSession {
 			await this.stopSubagent(id);
 		}
 
-		if (!conv.isEphemeral) {
-			this.store.deleteConversation(this.cwd, id);
-		}
+		// 仅从运行中会话映射与草稿中移除，保留磁盘持久化记录（供历史面板随时回溯打开）
 		this.conversations.delete(id);
 		this.sessionDrafts.delete(id);
 
@@ -1201,6 +1220,19 @@ export class UniversalSession implements DispatchSession {
 		if (forkedMessages.length > 0) {
 			forkedConv.updatedAt = Date.now();
 		}
+
+		// 若底层驱动支持原生会话分叉（如 Durable 引擎的原生 CoW 分叉），保持事务级上下文关联
+		if (targetConv.driverSessionId && typeof this.driver.forkSession === "function") {
+			try {
+				const forkedSid = await this.driver.forkSession(targetConv.driverSessionId);
+				if (forkedSid) {
+					forkedConv.driverSessionId = forkedSid;
+				}
+			} catch {
+				/* fallback */
+			}
+		}
+
 		this.conversations.set(forkedConv.id, forkedConv);
 		if (!forkedConv.isEphemeral) {
 			this.store.saveConversation(this.cwd, forkedConv);
@@ -1244,6 +1276,19 @@ export class UniversalSession implements DispatchSession {
 		if (headMessages.length > 0) {
 			forkedConv.updatedAt = Date.now();
 		}
+
+		// 若底层驱动支持原生会话分叉（如 Durable 引擎），继承前序不可变记录
+		if (conv.driverSessionId && typeof this.driver.forkSession === "function") {
+			try {
+				const forkedSid = await this.driver.forkSession(conv.driverSessionId);
+				if (forkedSid) {
+					forkedConv.driverSessionId = forkedSid;
+				}
+			} catch {
+				/* fallback */
+			}
+		}
+
 		this.conversations.set(forkedConv.id, forkedConv);
 		if (!forkedConv.isEphemeral) {
 			this.store.saveConversation(this.cwd, forkedConv);
@@ -1334,11 +1379,15 @@ export class UniversalSession implements DispatchSession {
 	}
 
 	async pushProjects(): Promise<void> {
-		/* 由外层统一处理 */
+		if (typeof this.stateStore?.getRecentProjects !== "function") return;
+		const projects = await this.stateStore.getRecentProjects(this.clientId);
+		this.send({ type: "projects", projects });
 	}
 
-	async removeProject(): Promise<void> {
-		/* 由外层统一处理 */
+	async removeProject(path: string): Promise<void> {
+		if (typeof this.stateStore?.removeProject !== "function") return;
+		this.stateStore.removeProject(this.clientId, path);
+		await this.pushProjects();
 	}
 
 	async searchSessions(query: string, reqId: number): Promise<void> {
@@ -1610,6 +1659,10 @@ export class UniversalSession implements DispatchSession {
 
 		await this.refreshSessions();
 		await this.refreshWorktreeInfo();
+		if (typeof this.stateStore?.remember === "function") {
+			this.stateStore.remember(this.clientId, path);
+		}
+		void this.pushProjects();
 		// 切换目录后恢复该目录按引擎隔离的项目记忆模型
 		const savedModel =
 			this.stateStore?.getProjectModel(this.clientId, path, this.engine) ??

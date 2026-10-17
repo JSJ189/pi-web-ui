@@ -232,6 +232,46 @@ export function syncStreamRenderKeys(
 	return tracker.finalizedMap;
 }
 
+/** 判断消息是否为纯中间工具/思考调用（不含非空正文） */
+function isPureToolMessage(m: UiMessage): boolean {
+	// 排除明确标为非 assistant 的角色；流式首帧若 role 尚未注入，亦可由 toolCall/thinking 正确归组
+	if (m.role && m.role !== "assistant") return false;
+	if (m.customType) return false;
+	if (!Array.isArray(m.content) || m.content.length === 0) return false;
+	const hasText = m.content.some((b) => {
+		const t = asText(b);
+		return t && t.text.trim().length > 0;
+	});
+	if (hasText) return false;
+	return m.content.some((b) => b.type === "toolCall" || b.type === "thinking");
+}
+
+type MessageClusterItem =
+	{ type: "single"; message: UiMessage } | { type: "tool_cluster"; id: string; messages: UiMessage[] };
+
+function clusterMessages(list: readonly UiMessage[]): MessageClusterItem[] {
+	const out: MessageClusterItem[] = [];
+	let currentCluster: { type: "tool_cluster"; id: string; messages: UiMessage[] } | null = null;
+
+	for (const m of list) {
+		if (m.role === "system" || m.role === "toolResult") continue;
+		const fold = reviewFoldKind(m);
+
+		if (isPureToolMessage(m) && !fold) {
+			if (!currentCluster) {
+				currentCluster = { type: "tool_cluster", id: `cluster-${m.id}`, messages: [m] };
+				out.push(currentCluster);
+			} else {
+				currentCluster.messages.push(m);
+			}
+		} else {
+			currentCluster = null;
+			out.push({ type: "single", message: m });
+		}
+	}
+	return out;
+}
+
 interface MessageListProps {
 	/** 消息工具条条目（message.actions 槽位：内置 + 插件的最终结果）。 */
 	uiMessageActions?: import("../ui-slots").UiSlotEntry[];
@@ -452,6 +492,9 @@ export function MessageList({
 	const alwaysSet = pickAlways(messages, heightsRef.current, Math.max(ALWAYS_BUDGET, keepRecentCount * 120));
 	const alwaysRef = useRef(alwaysSet);
 	alwaysRef.current = alwaysSet;
+
+	// 同一任务回合内的连续中间工具与思考消息聚类为单行流式排布单元
+	const clusteredItems = useMemo(() => clusterMessages(messages), [messages]);
 
 	// 会话切换时：同步将新会话的非视口历史预置入 hidden，彻底杜绝大会话切换时的全量首帧挂载
 	const convKey = `${state.conversationId ?? ""}:${state.sessionFile ?? ""}`;
@@ -1175,12 +1218,44 @@ export function MessageList({
 						)}
 					</div>
 				)}
-				{messages.map((m) => {
-					// system 不占位——旧快照残留的空 SYSTEM 气泡直接丢掉，不进折叠行也不进 LazyMount。
-					if (m.role === "system") return null;
-					// toolResult content lives inside its toolCall card — nothing to show as top-level row.
-					if (m.role === "toolResult") return null;
+				{clusteredItems.map((item) => {
+					if (item.type === "tool_cluster") {
+						return (
+							<div key={item.id} className="turn-tools-trail" data-cluster-id={item.id}>
+								{item.messages.map((m) => {
+									const isStreamingThis =
+										(state.streamingMessage
+											? m.id === state.streamingMessage.id
+											: state.isStreaming && m.id === lastId) &&
+										(m.role === "assistant" || !m.role);
+									const renderKey = stableKeyMap.get(m.id) ?? m.id;
+									return (
+										<Message
+											uiMessageActions={uiMessageActions}
+											uiContextMessage={uiContextMessage}
+											uiContextToolCall={uiContextToolCall}
+											onUiAction={onUiAction}
+											key={renderKey}
+											message={m}
+											toolResults={toolResults}
+											liveOutputs={hasToolCall(m) ? liveOutputs : EMPTY_LIVE}
+											toolStatuses={toolStatuses}
+											streaming={isStreamingThis}
+											onKillBash={onKillBash}
+											toolsWrap={toolsWrap}
+											toolImages={toolImages}
+											thinkingWrap={thinkingWrap}
+											isLast={m.id === lastId}
+											onEdit={onEdit}
+											searchActive={searchOpen}
+										/>
+									);
+								})}
+							</div>
+						);
+					}
 
+					const m = item.message;
 					// 目标审查回合的指令与纯 verdict 结论默认折叠成摘要行（结论卡已有人话
 					// 翻译，裸 JSON 只留审计入口；点开展开看原文，记忆沿用 expanded）。
 					const fold = reviewFoldKind(m);
@@ -1204,7 +1279,7 @@ export function MessageList({
 					const show = !virtualOn || alwaysSet.has(m.id) || pinned.has(m.id) || !hidden.has(m.id);
 					const isStreamingThis =
 						(state.streamingMessage ? m.id === state.streamingMessage.id : state.isStreaming && m.id === lastId) &&
-						m.role === "assistant";
+						(m.role === "assistant" || !m.role);
 					const renderKey = stableKeyMap.get(m.id) ?? m.id;
 					return (
 						<LazyMount

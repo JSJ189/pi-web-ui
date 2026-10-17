@@ -30,8 +30,9 @@ function delta(partial: Partial<MessageDeltaMsg> = {}): MessageDeltaMsg {
 }
 
 describe("applyMessageDelta", () => {
-	it("appends text deltas onto an empty streaming message", () => {
+	it("appends text deltas onto an empty streaming message and guarantees role=assistant", () => {
 		const next = applyMessageDelta(makeUi(), delta({ assistantMessageEvent: { type: "text_delta", delta: "你好" } }));
+		expect(next.streamingMessage?.role).toBe("assistant");
 		expect(next.streamingMessage?.content).toEqual([{ type: "text", text: "你好" }]);
 	});
 
@@ -49,11 +50,13 @@ describe("applyMessageDelta", () => {
 		expect(first.streamingMessage?.content).toEqual([{ type: "text", text: "a" }]);
 	});
 
-	it("creates a separate thinking block then a text block", () => {
+	it("creates a separate thinking block then a text block with role=assistant preserved", () => {
 		let ui = makeUi();
 		ui = applyMessageDelta(ui, delta({ assistantMessageEvent: { type: "thinking_delta", delta: "想" } }));
+		expect(ui.streamingMessage?.role).toBe("assistant");
 		ui = applyMessageDelta(ui, delta({ assistantMessageEvent: { type: "thinking_delta", delta: "考" } }));
 		ui = applyMessageDelta(ui, delta({ assistantMessageEvent: { type: "text_delta", delta: "答" } }));
+		expect(ui.streamingMessage?.role).toBe("assistant");
 		expect(ui.streamingMessage?.content).toEqual([
 			{ type: "thinking", thinking: "想考" },
 			{ type: "text", text: "答" },

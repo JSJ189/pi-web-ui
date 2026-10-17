@@ -1,8 +1,9 @@
 import { useCallback, useEffect, useRef, useState } from "react";
-import { FiCheckCircle, FiCopy, FiCpu } from "react-icons/fi";
+import { FiCheck, FiCheckCircle, FiCopy, FiCpu } from "react-icons/fi";
 import { useT } from "../i18n";
 import { useCopyFeedback } from "../use-copy-feedback";
 import { CollapsibleHead } from "./CollapsibleHead";
+import { HalfRingSpinner } from "./HalfRingSpinner";
 import { useSmoothStreamText } from "./StreamMarkdown";
 
 /** 安全截断长度：允许占满 4K 大屏卡头，防止极端超长文本阻塞 DOM 布局 */
@@ -150,7 +151,10 @@ export function ThinkingBlock({ thinking, streaming, wrap = true, forceOpen = fa
 	const headTitle = shown ? t("collapseMsg") : preview ? `${t("expandMsg")} · ${preview}` : t("expandMsg");
 
 	return (
-		<div className={`thinking ${shown ? "open" : ""} ${activeStream ? "live" : ""}`}>
+		<div
+			className={`thinking ${shown ? "open" : ""} ${activeStream ? "live" : ""} ${activeStream ? "run" : "ok"}`}
+			data-thinking={thinking}
+		>
 			<CollapsibleHead
 				open={shown}
 				headClassName={`thinking-head${activeStream ? " thinking-live" : ""}`}
@@ -162,6 +166,13 @@ export function ThinkingBlock({ thinking, streaming, wrap = true, forceOpen = fa
 				titleClassName="thinking-label"
 				after={
 					<>
+						<span
+							className="thinking-status toolcall-status"
+							title={activeStream ? t("thinkingNow") : t("done")}
+							aria-label={activeStream ? t("thinkingNow") : t("done")}
+						>
+							{activeStream ? <HalfRingSpinner className="spin" /> : <FiCheck />}
+						</span>
 						{/* 卡头右端**只有复制键**：消息级按钮一律落在消息底部的 .msg-actions
 						    行（思考卡没有正文，不渲染那一行）。 */}
 						<button
@@ -179,17 +190,16 @@ export function ThinkingBlock({ thinking, streaming, wrap = true, forceOpen = fa
 					</>
 				}
 			>
+				<span className="thinking-name">think</span>
 				{activeStream && shown ? (
 					<span className="thinking-live-label">
 						{t("thinkingNow")}
 						<span className="dots" />
 					</span>
-				) : shown ? (
-					t("thinking")
 				) : activeStream ? (
 					preview ? (
 						<span className="thinking-preview-live">
-							<span className="thinking-preview-prefix">{t("thinkingPreview", { preview: "" })}</span>
+							<span className="thinking-preview-prefix"> · </span>
 							<span className="thinking-preview-viewport">
 								<span className="thinking-preview-track">
 									{preview}
@@ -204,10 +214,8 @@ export function ThinkingBlock({ thinking, streaming, wrap = true, forceOpen = fa
 						</span>
 					)
 				) : preview ? (
-					t("thinkingPreview", { preview })
-				) : (
-					t("thinking")
-				)}
+					<span className="thinking-summary-text"> · {preview}</span>
+				) : null}
 			</CollapsibleHead>
 			{shown && (
 				<div className="thinking-body">

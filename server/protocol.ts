@@ -150,10 +150,15 @@ export interface AgentEngineCapabilities {
 }
 
 /**
+ * 支持的智能体底座引擎标识。
+ */
+export type EngineId = "pi" | "dsh" | "claude" | "durable";
+
+/**
  * 引擎状态元数据：描述该引擎在宿主系统中的安装就绪状态。
  */
 export interface EngineStatus {
-	/** 引擎唯一标识（如 "pi" | "dsh" | "claude"） */
+	/** 引擎唯一标识（如 "pi" | "dsh" | "claude" | "durable" 或第三方扩展标识） */
 	id: string;
 	/** 是否已在宿主环境中检测到对应的全局包或 CLI 运行时 */
 	installed: boolean;
@@ -707,8 +712,8 @@ export type ClientMessage =
 	 *  this process exits and its supervisor brings it back). The server refuses
 	 *  when no supervisor manages this instance (foreground / dev / Docker). */
 	| { type: "restart_service" }
-	/** Switch active agent engine ("pi" | "dsh" | "claude") for this client tab in-process without restarting. */
-	| { type: "switch_engine"; engine: "pi" | "dsh" | "claude" }
+	/** Switch active agent engine ("pi" | "dsh" | "claude" | "durable") for this client tab in-process without restarting. */
+	| { type: "switch_engine"; engine: EngineId }
 	/** Re-check engine installation statuses (e.g. after installing an engine via terminal). */
 	| { type: "check_engines"; force?: boolean }
 	// -- pi agent setup ------------------------------------------------------

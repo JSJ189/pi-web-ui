@@ -69,6 +69,26 @@ export const DEFAULT_UNIVERSAL_CAPABILITIES: Readonly<AgentEngineCapabilities> =
 	ephemeralChat: true,
 });
 
+/** Pi Durable 引擎能力：事务化、任务图驱动的持久执行底座 */
+export const DEFAULT_DURABLE_CAPABILITIES: Readonly<AgentEngineCapabilities> = Object.freeze({
+	remoteSsh: false,
+	sandboxes: false,
+	workspaceRoots: true,
+	conversationRef: true,
+	pageRef: true,
+	presentFiles: true,
+	planMode: false,
+	delegateMode: false,
+	subagents: true,
+	toolPromptOverride: false,
+	lazyTools: false,
+	softCap: false,
+	treeFork: true,
+	messageEdit: true,
+	steer: true,
+	ephemeralChat: true,
+});
+
 /** 合并并归一化能力声明（默认回落到通用基座保守值） */
 export function resolveEngineCapabilities(
 	caps?: Partial<AgentEngineCapabilities> | null,

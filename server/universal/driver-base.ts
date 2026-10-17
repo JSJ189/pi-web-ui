@@ -151,6 +151,11 @@ export abstract class BaseAgentDriver {
 	/** 恢复/切换到一个已存在的会话 */
 	abstract resumeSession(sessionId: string): Promise<void>;
 
+	/** 原生分叉一个会话分支（返回分支会话的 sessionId） */
+	async forkSession?(_sessionId: string, _atEntryId?: number): Promise<string> {
+		return "";
+	}
+
 	/** 列出可用的模型列表（若不支持返回空数组） */
 	async listModels?(): Promise<Array<{ id: string; name: string }>> {
 		return [];

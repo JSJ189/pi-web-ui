@@ -25,7 +25,7 @@
  *
  * 本测试只读 web/src/styles.css：毫秒级、零端口、零浏览器（CI 必跑）。
  */
-import { readFileSync } from "node:fs";
+import { readdirSync, readFileSync } from "node:fs";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { describe, expect, it } from "vitest";
@@ -59,10 +59,10 @@ describe("输入框上方的带子里是消息正文", () => {
 		expect(wrap).not.toMatch(/top:/);
 	});
 
-	it("芯片是实底小卡片（压在正文上不能半透），行本身仍是流内项", () => {
+	it("芯片是悬浮半透明毛玻璃小卡片，行本身仍是流内项", () => {
 		const chip = bodyOf(".quick-chip");
-		expect(chip).toMatch(/background:\s*var\(--bg-elev\)/);
-		expect(chip, "压在正文上：不用 backdrop 模糊那一套（半透才需要它）").not.toMatch(/backdrop-filter/);
+		expect(chip).toMatch(/background:\s*color-mix\(in srgb,\s*var\(--bg-elev\)/);
+		expect(chip).toMatch(/backdrop-filter:\s*blur/);
 		// 行本身必须是流内项（浮动版会让行与药丸/浮标抢同一条带子）
 		const row = bodyOf(".quick-row");
 		expect(row).not.toMatch(/position:\s*absolute/);
@@ -122,5 +122,34 @@ describe("输入框上方的带子里是消息正文", () => {
 		const body = bodyOf(".messages");
 		expect(/mask(-image)?\s*:/.test(body), "滚动容器上出现 mask 会打歪 fixed 下拉/灯箱").toBe(false);
 		expect(/filter\s*:/.test(body), "滚动容器上出现 filter 同样会改包含块").toBe(false);
+	});
+
+	it("主题样式表 themes/*.css 中不得将 .inputbar 声明为实底背景，确保快捷短语所在带子能透出底层消息正文", () => {
+		const themesDir = join(ROOT, "themes");
+		const themeFiles = readdirSync(themesDir).filter((f) => f.endsWith(".css"));
+		for (const file of themeFiles) {
+			const content = readFileSync(join(themesDir, file), "utf8");
+			// 匹配包含 .inputbar 的规则块
+			const re = /(?:^|\})\s*([^}{]*\.inputbar[^}{]*)\{([^}]*)\}/gm;
+			let m: RegExpExecArray | null;
+			while ((m = re.exec(content)) !== null) {
+				const selector = m[1];
+				const block = m[2];
+				if (/\.inputbar\b/.test(selector)) {
+					const bgMatch = /background(?:-color)?\s*:\s*([^;]+);/i.exec(block);
+					if (bgMatch) {
+						const val = bgMatch[1]
+							.replace(/!important/i, "")
+							.trim()
+							.toLowerCase();
+						if (val !== "transparent" && val !== "none") {
+							expect.fail(
+								`${file} 中的 ${selector.trim()} 声明了非透明背景 (${val})，会导致快捷短语底部带子不透明遮挡正文`,
+							);
+						}
+					}
+				}
+			}
+		}
 	});
 });

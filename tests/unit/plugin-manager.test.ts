@@ -425,4 +425,44 @@ describe("PluginManager #542 客户端会话快照与模型事件", () => {
 
 		testMgr.dispose();
 	});
+
+	it("handleHttp 支持通配符路由匹配并透传 pluginPath", async () => {
+		const code = `export default {
+			activate(host) {
+				host.route("GET", "/assets/*", (req, res) => {
+					res.end("wildcard:" + req.pluginPath);
+				});
+				host.route("GET", "/assets/exact", (req, res) => {
+					res.end("exact");
+				});
+			}
+		};`;
+		makePlugin("wildcard-test", code);
+		const fake = () => {
+			const res = {
+				status: () => res,
+				end: (body?: string) => void (res.body = body),
+				body: undefined as string | undefined,
+			};
+			return res;
+		};
+		await mgr.ensureLoaded();
+
+		// 1. 精确匹配优先
+		let res = fake();
+		mgr.handleHttp("wildcard-test", "GET", "/assets/exact", {} as never, res as never);
+		expect(res.body).toBe("exact");
+
+		// 2. 通配符子路径匹配
+		res = fake();
+		const reqMock: Record<string, unknown> = {};
+		mgr.handleHttp("wildcard-test", "GET", "/assets/vendor/sub/file.js", reqMock as never, res as never);
+		expect(res.body).toBe("wildcard:/assets/vendor/sub/file.js");
+		expect(reqMock.pluginPath).toBe("/assets/vendor/sub/file.js");
+
+		// 3. 非前缀路径不匹配（404）
+		res = fake();
+		mgr.handleHttp("wildcard-test", "GET", "/other/path", {} as never, res as never);
+		expect(res.body).toBe("not found");
+	});
 });

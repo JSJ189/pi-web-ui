@@ -103,4 +103,33 @@ describe("P1-6 manifest 校验失败即拒", () => {
 			}
 		}
 	});
+
+	it("所有注册 HTTP 路由的内置官方插件必须在 manifest.json 中声明 http 权限 (#645)", () => {
+		const entries = readdirSync(PLUGINS_DIR, { withFileTypes: true }).filter((d) => d.isDirectory());
+		for (const dir of entries) {
+			const manifestPath = join(PLUGINS_DIR, dir.name, "manifest.json");
+			if (!existsSync(manifestPath)) continue;
+			const raw = JSON.parse(readFileSync(manifestPath, "utf8")) as { permissions?: string[]; server?: unknown };
+			const perms = new Set(raw.permissions ?? []);
+
+			const serverCandidates = [
+				"index.mjs",
+				"server.mjs",
+				"server/index.mjs",
+				typeof raw.server === "string" ? raw.server : undefined,
+			].filter((f): f is string => typeof f === "string" && Boolean(f));
+
+			for (const file of serverCandidates) {
+				const fullPath = join(PLUGINS_DIR, dir.name, file);
+				if (!existsSync(fullPath)) continue;
+				const code = readFileSync(fullPath, "utf8");
+				if (/\bhost\s*\.\s*(route|registerProxy)\b/.test(code)) {
+					expect(
+						perms.has("http"),
+						`插件 plugins/${dir.name} 在 ${file} 中调用了 host.route/registerProxy，但 manifest.permissions 缺少 "http" 能力声明`,
+					).toBe(true);
+				}
+			}
+		}
+	});
 });

@@ -2002,12 +2002,28 @@ export class PluginManager {
 		}
 		const table = this.loaded.get(pluginId)?.httpRoutes;
 		const path = "/" + pathIn.replace(/^\/+/, "");
-		const handler = table?.get(`${method.toUpperCase()} ${path}`);
+		let handler = table?.get(`${method.toUpperCase()} ${path}`);
+		if (!handler && table) {
+			const m = method.toUpperCase();
+			// 通配符路由支持（例如 host.route("GET", "/api/web/*", ...) 或以 "/*" 结尾的前缀）
+			for (const [key, fn] of table.entries()) {
+				if (!key.startsWith(`${m} `)) continue;
+				const routePath = key.slice(m.length + 1);
+				if (routePath.endsWith("/*")) {
+					const prefix = routePath.slice(0, -2);
+					if (path === prefix || path.startsWith(prefix + "/")) {
+						handler = fn;
+						break;
+					}
+				}
+			}
+		}
 		if (!handler) {
 			res.status(404).end("not found");
 			return;
 		}
 		try {
+			(req as unknown as { pluginPath?: string }).pluginPath = path;
 			// 异步 handler（`async (req, res) => …`）的 rejection 不会被这里的 try 接住，
 			// 会变成 unhandledRejection 直接杀掉整个服务（插件读文件失败、host.fs 越界
 			// 拒绝、上游超时…都会走到这条路上）——用 Promise.resolve().catch 兜住，

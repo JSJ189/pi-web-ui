@@ -9,6 +9,7 @@ import {
 	applyPortableEnvironment,
 	detectPortableRoot,
 	findPortableGit,
+	findPortableNode,
 	hasPortableMarkers,
 	resolvePortablePaths,
 	type PortablePaths,
@@ -46,6 +47,11 @@ describe("desktop/portable.ts 便携模式纯逻辑", () => {
 
 		it("包含 runtime/git 目录时返回 true", () => {
 			mkdirSync(join(tempDir, "runtime", "git"), { recursive: true });
+			expect(hasPortableMarkers(tempDir)).toBe(true);
+		});
+
+		it("包含 runtime/node 目录时返回 true", () => {
+			mkdirSync(join(tempDir, "runtime", "node"), { recursive: true });
 			expect(hasPortableMarkers(tempDir)).toBe(true);
 		});
 	});
@@ -110,6 +116,20 @@ describe("desktop/portable.ts 便携模式纯逻辑", () => {
 		});
 	});
 
+	describe("findPortableNode", () => {
+		it("在 runtime/node/node.exe 存在时能正确返回路径", () => {
+			const nodeDir = join(tempDir, "runtime", "node");
+			mkdirSync(nodeDir, { recursive: true });
+			writeFileSync(join(nodeDir, "node.exe"), "");
+
+			expect(findPortableNode(tempDir, join(tempDir, "app"))).toBe(nodeDir);
+		});
+
+		it("不存在 node.exe 时返回 null", () => {
+			expect(findPortableNode(tempDir, join(tempDir, "app"))).toBeNull();
+		});
+	});
+
 	describe("resolvePortablePaths", () => {
 		it("完整解析便携路径并尊重默认值与自定义覆盖", () => {
 			writeFileSync(join(tempDir, "Portable.flag"), "");
@@ -124,6 +144,10 @@ describe("desktop/portable.ts 便携模式纯逻辑", () => {
 			expect(paths!.webDataDir).toBe(join(tempDir, "data", "web"));
 			expect(paths!.agentDir).toBe(join(tempDir, "data", "agent"));
 			expect(paths!.workspaceDir).toBe(join(tempDir, "data", "workspace"));
+			expect(paths!.gitDir).toBeNull();
+			expect(paths!.nodeDir).toBeNull();
+			expect(paths!.npmGlobalDir).toBe(join(tempDir, "data", "npm-global"));
+			expect(paths!.npmCacheDir).toBe(join(tempDir, "data", "npm-cache"));
 			expect(paths!.gitConfigGlobal).toBe(join(tempDir, "data", "git", ".gitconfig"));
 			expect(paths!.userHome).toBe(join(tempDir, "data", "home"));
 
@@ -132,9 +156,13 @@ describe("desktop/portable.ts 便携模式纯逻辑", () => {
 				PI_PORTABLE_ROOT: tempDir,
 				PI_WEB_DATA_DIR: join(tempDir, "custom-web"),
 				PI_CODING_AGENT_DIR: join(tempDir, "custom-agent"),
+				NPM_CONFIG_PREFIX: join(tempDir, "custom-npm-global"),
+				NPM_CONFIG_CACHE: join(tempDir, "custom-npm-cache"),
 			});
 			expect(customPaths!.webDataDir).toBe(join(tempDir, "custom-web"));
 			expect(customPaths!.agentDir).toBe(join(tempDir, "custom-agent"));
+			expect(customPaths!.npmGlobalDir).toBe(join(tempDir, "custom-npm-global"));
+			expect(customPaths!.npmCacheDir).toBe(join(tempDir, "custom-npm-cache"));
 		});
 	});
 
@@ -153,6 +181,10 @@ describe("desktop/portable.ts 便携模式纯逻辑", () => {
 			writeFileSync(join(gitDir, "cmd", "git.exe"), "");
 			writeFileSync(join(gitDir, "usr", "bin", "bash.exe"), "");
 
+			const nodeDir = join(tempDir, "runtime", "node");
+			mkdirSync(nodeDir, { recursive: true });
+			writeFileSync(join(nodeDir, "node.exe"), "");
+
 			const paths: PortablePaths = {
 				isPortable: true,
 				portableRoot: tempDir,
@@ -162,6 +194,9 @@ describe("desktop/portable.ts 便携模式纯逻辑", () => {
 				agentDir: join(tempDir, "data", "agent"),
 				workspaceDir: join(tempDir, "data", "workspace"),
 				gitDir,
+				nodeDir,
+				npmGlobalDir: join(tempDir, "data", "npm-global"),
+				npmCacheDir: join(tempDir, "data", "npm-cache"),
 				gitConfigGlobal: join(tempDir, "data", "git", ".gitconfig"),
 				userHome: join(tempDir, "data", "home"),
 			};
@@ -188,6 +223,16 @@ describe("desktop/portable.ts 便携模式纯逻辑", () => {
 			expect(env.PI_WEB_SHELL).toBe(join(gitDir, "usr", "bin", "bash.exe"));
 			expect(env.PATH).toContain(join(gitDir, "cmd"));
 			expect(env.PATH).toContain(join(gitDir, "usr", "bin"));
+
+			// 校验 PortableNode & npm 隔离注入
+			expect(env.NPM_CONFIG_PREFIX).toBe(join(tempDir, "data", "npm-global"));
+			expect(env.NPM_CONFIG_CACHE).toBe(join(tempDir, "data", "npm-cache"));
+			expect(env.PATH).toContain(join(tempDir, "data", "npm-global"));
+			expect(env.PATH).toContain(nodeDir);
+			// npmGlobalDir 必须在 nodeDir 之前，以确保全局安装的 CLI 优先生效
+			const npmGlobalIdx = env.PATH!.indexOf(join(tempDir, "data", "npm-global"));
+			const nodeIdx = env.PATH!.indexOf(nodeDir);
+			expect(npmGlobalIdx).toBeLessThan(nodeIdx);
 		});
 	});
 });

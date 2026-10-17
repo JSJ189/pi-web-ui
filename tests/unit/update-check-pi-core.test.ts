@@ -79,6 +79,32 @@ describe("readPiCoreVersionFromDisk — sibling node_modules (Windows npm layout
 		});
 	});
 
+	it("selects the highest version when multiple PATH entries contain pi binaries", () => {
+		const olderDir = makeTmp("pi-older-");
+		writeFileSync(
+			join(olderDir, "pi"),
+			'#!/bin/sh\nbasedir=$(dirname "$0")\nexec node "$basedir/node_modules/@earendil-works/pi-coding-agent/dist/bundle/cli.js" "$@"\n',
+		);
+		writePiCorePackage(olderDir, "1.1.0");
+
+		const newerDir = makeTmp("pi-newer-");
+		writeFileSync(
+			join(newerDir, "pi"),
+			'#!/bin/sh\nbasedir=$(dirname "$0")\nexec node "$basedir/node_modules/@earendil-works/pi-coding-agent/dist/bundle/cli.js" "$@"\n',
+		);
+		writePiCorePackage(newerDir, "1.3.0");
+
+		// olderDir is first on PATH (simulating local node_modules/.bin shadowing global)
+		withPath([olderDir, newerDir], () => {
+			expect(readPiCoreVersionFromDisk()).toBe("1.3.0");
+		});
+
+		// reverse order also works
+		withPath([newerDir, olderDir], () => {
+			expect(readPiCoreVersionFromDisk()).toBe("1.3.0");
+		});
+	});
+
 	it("resolves from wrapper script pointing to sibling package", () => {
 		const binDir = makeTmp("pi-wrapper-bin-");
 		const targetDir = makeTmp("pi-target-");

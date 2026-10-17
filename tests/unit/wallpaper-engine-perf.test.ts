@@ -11,7 +11,7 @@ describe("wallpaper-engine 性能优化与画质分级守卫测试", () => {
 	it("manifest.json 版本递增且提供 qualityPreset、antiAliasing 与 lightWallpaperMode 设置", () => {
 		const raw = readFileSync(manifestPath, "utf8");
 		const manifest = JSON.parse(raw);
-		expect(manifest.version).toBe("0.3.35");
+		expect(manifest.version).toBe("0.3.57");
 
 		const keys = manifest.settings.map((s: { key: string }) => s.key);
 		expect(keys).toContain("qualityPreset");
@@ -20,6 +20,7 @@ describe("wallpaper-engine 性能优化与画质分级守卫测试", () => {
 
 		const themeSetting = manifest.settings.find((s: { key: string }) => s.key === "wallpaperTheme");
 		expect(themeSetting.default).toBe("obsidian");
+		expect(themeSetting.options.some((o: { value: string }) => o.value === "flow")).toBe(true);
 
 		const qSetting = manifest.settings.find((s: { key: string }) => s.key === "qualityPreset");
 		expect(qSetting.default).toBe("high");
@@ -129,12 +130,13 @@ describe("wallpaper-engine 性能优化与画质分级守卫测试", () => {
 	it("entry.mjs 提供清晰原生 QUALITY_PROFILES，优先加载打包 scene.pkg 杜绝降级模糊，抽屉包含亮色壁纸增强开关且清理了已删除的旧主题", () => {
 		const entry = readFileSync(entryPath, "utf8");
 		expect(entry).toContain("QUALITY_PROFILES");
-		// 抽屉主题下拉菜单已移除 cyber, synthwave, aurora, amber 等已删除主题
+		// 抽屉主题下拉菜单已移除 cyber, synthwave, aurora, amber 等已删除主题，包含 obsidian 与极简行文 flow
 		expect(entry).not.toContain('value="cyber"');
 		expect(entry).not.toContain('value="synthwave"');
 		expect(entry).not.toContain('value="aurora"');
 		expect(entry).not.toContain('value="amber"');
 		expect(entry).toContain('value="obsidian"');
+		expect(entry).toContain('value="flow"');
 		// 严禁对纹理应用 0.75 降采样，保证原生 1:1 清晰
 		expect(entry).not.toContain("videoTexScale: 0.75");
 		// 优先拉取 scene.pkg
@@ -145,6 +147,11 @@ describe("wallpaper-engine 性能优化与画质分级守卫测试", () => {
 		expect(entry).toContain("pi-we-aa-select");
 		expect(entry).toContain("pi-we-lightmode-check");
 		expect(entry).toContain('antiAliasing: "off"');
+		// 深度加载优化守卫：Scene 并行流水线、缩略图懒加载、直显秒开
+		expect(entry).toContain("Promise.all([");
+		expect(entry).toContain('loading="lazy"');
+		expect(entry).toContain('decoding="async"');
+		expect(entry).toContain("json.activeWallpaper");
 	});
 
 	it("index.mjs 支持 qualityPreset、antiAliasing 与 lightWallpaperMode 状态持久化，且下发 hasPkg 标识与 Map 索引加速", () => {
@@ -154,5 +161,59 @@ describe("wallpaper-engine 性能优化与画质分级守卫测试", () => {
 		expect(index).toContain("lightWallpaperMode");
 		expect(index).toContain("cachedWallpaperMap");
 		expect(index).toContain("hasPkg: Boolean(w.pkgPath)");
+		// 深度服务端加载优化守卫：磁盘缓存落盘、ETag 协商缓存、强缓存头
+		expect(index).toContain("cacheFile");
+		expect(index).toContain("loadCache()");
+		expect(index).toContain("persistCache()");
+		expect(index).toContain('res.setHeader("ETag"');
+		expect(index).toContain("304");
+	});
+
+	it("极简行文专属主题提供极致紧凑排版、正文零边框零背景色与微小紧致黑色阴影，保证 AI 回答如行云流水般流畅", () => {
+		const flowCss = readFileSync(resolve(process.cwd(), "themes/wallpaper-flow.css"), "utf8");
+		// 正文主体无背景、无边框、无阴影、无圆角
+		expect(flowCss).toContain(
+			".msg-assistant .msg-body {\n\tbackground: transparent !important;\n\tborder: none !important;\n\tborder-radius: 0 !important;",
+		);
+		// 正文文本无额外内边距与边框
+		expect(flowCss).toContain(
+			".msg-text,\n.msg-assistant .msg-text {\n\tbackground: transparent !important;\n\tborder: none !important;",
+		);
+		// 极致紧凑排版：段间距、行高、首尾段边距紧致
+		expect(flowCss).toContain(".msg-body p {\n\tmargin: 0.36em 0 !important;");
+		expect(flowCss).toContain(".msg-body p:first-child {\n\tmargin-top: 0 !important;\n}");
+		// 紧致微雕微小黑色阴影
+		expect(flowCss).toContain(
+			"text-shadow:\n\t\t0 0 1px rgba(0, 0, 0, 0.95),\n\t\t0 1px 1.5px rgba(0, 0, 0, 0.88) !important;",
+		);
+		// 工具与思考轻量行内代码胶囊融入行文，彻底隐藏原地展开内容
+		expect(flowCss).toContain(".thinking {\n\tdisplay: inline-flex !important;");
+		expect(flowCss).toContain(".toolcall-body,\n.thinking-body {\n\tdisplay: none !important;\n}");
+		// 极简行文模式隐藏思考摘要与预览，只保留胶囊名称与状态，支持回合工具流集群与特殊产物徽标
+		expect(flowCss).toContain(".thinking .thinking-summary-text");
+		expect(flowCss).toContain(".thinking-status");
+		expect(flowCss).toContain(".thinking-name");
+		expect(flowCss).toContain(".turn-tools-trail");
+		expect(flowCss).toContain(".toolcall-out-badge");
+		expect(flowCss).toContain(".toolcall-images");
+
+		const styles = readFileSync(stylesPath, "utf8");
+		expect(styles).toContain("WALLPAPER_THEMES");
+		expect(styles).toContain("flow:");
+		expect(styles).toContain("isFlowTheme");
+		expect(styles).toContain("字级输入流系统");
+		expect(styles).toContain(".turn-tools-trail");
+		expect(styles).toContain(".thinking-status");
+		expect(styles).toContain(".thinking .thinking-summary-text");
+		expect(styles).toContain(".toolcall-out-badge");
+		expect(styles).toContain(".toolcall-images");
+		expect(styles).toContain("pi-we-inspector-backdrop");
+		expect(styles).toContain("pi-we-inspector-dialog");
+
+		const entry = readFileSync(entryPath, "utf8");
+		expect(entry).toContain("createToolInspector");
+		expect(entry).toContain("setupToolInspectorClickListener");
+		expect(entry).toContain("toolcall-payload-output");
+		expect(entry).toContain("pi-we-inspector-images");
 	});
 });

@@ -1095,6 +1095,15 @@ button.session-item.elsewhere-item.confirm {
 	background: color-mix(in srgb, var(--accent) 18%, transparent);
 }
 
+.session-icon-wrap {
+	position: relative;
+	display: inline-flex;
+	align-items: center;
+	justify-content: center;
+	flex-shrink: 0;
+	line-height: 1;
+}
+
 .session-icon {
 	flex-shrink: 0;
 	color: var(--text-faint);
@@ -1235,24 +1244,45 @@ button.session-item.elsewhere-item.confirm {
 	margin: 6px 10px;
 }
 
-/* Streaming indicator on running-conversation entries (left panel). */
+/* Streaming indicator on running-conversation entries (left panel).
+   方案 1A：挂在左侧图标右下角的呼吸角标（在线状态徽标），释放右侧空间杜绝与关闭/重命名按钮重叠 */
 .conv-streaming {
-	width: 7px;
-	height: 7px;
+	width: 6.5px;
+	height: 6.5px;
 	border-radius: 50%;
 	flex-shrink: 0;
 	background: var(--green);
-	box-shadow: 0 0 4px var(--green);
-	animation: conv-pulse 1.2s ease-in-out infinite;
+	box-shadow:
+		0 0 0 1.5px var(--panel-bg, var(--bg-elev)),
+		0 0 5px var(--green);
+	animation: conv-pulse 1.4s ease-in-out infinite;
+	pointer-events: none;
+}
+.session-icon-wrap .conv-streaming {
+	position: absolute;
+	right: -2px;
+	bottom: -2px;
+}
+.session-item:hover .conv-streaming {
+	box-shadow:
+		0 0 0 1.5px var(--bg-elev2),
+		0 0 6px var(--green);
+}
+.session-item.active .conv-streaming {
+	box-shadow:
+		0 0 0 1.5px var(--accent-soft),
+		0 0 6px var(--green);
 }
 
 @keyframes conv-pulse {
 	0%,
 	100% {
 		opacity: 1;
+		transform: scale(1);
 	}
 	50% {
-		opacity: 0.25;
+		opacity: 0.35;
+		transform: scale(0.85);
 	}
 }
 .project-item {
@@ -1376,8 +1406,9 @@ button.session-item.elsewhere-item.confirm {
 	flex: none;
 	width: 12px;
 	height: 12px;
-	border: 2px solid var(--border);
+	border: 2px solid transparent;
 	border-top-color: var(--accent);
+	border-right-color: var(--accent);
 	border-radius: 50%;
 	animation: spin 0.75s linear infinite;
 }
@@ -2279,27 +2310,40 @@ button.session-item.elsewhere-item.confirm {
 	text-overflow: ellipsis;
 	white-space: nowrap;
 	padding: 3px 12px;
-	border: 1px solid var(--border);
-	border-radius: 9px;
-	/* 实底色（不再用 --card-bg 那层半透）：这一行现在压在正文上，半透明时字会从
-	   芯片里透出来、读不清。壁纸/全透主题想让它随壁纸透图，自己去覆盖
-	   .quick-chip（见 themes/translucent.css、transparent.css）。 */
-	background: var(--bg-elev);
+	border: 1px solid color-mix(in srgb, var(--border) 75%, transparent);
+	border-radius: 999px;
+	/* 悬浮透明毛玻璃：背景透明透光，强效磨砂模糊柔化下方正文，绝不死黑生硬 */
+	background: color-mix(in srgb, var(--bg-elev) 60%, transparent);
+	backdrop-filter: blur(14px) saturate(140%);
+	-webkit-backdrop-filter: blur(14px) saturate(140%);
 	color: var(--text-dim);
 	font-size: 12px;
 	cursor: pointer;
+	box-shadow:
+		0 4px 14px rgba(0, 0, 0, 0.22),
+		0 1px 3px rgba(0, 0, 0, 0.12);
 	transition:
 		border-color 0.15s ease,
 		color 0.15s ease,
-		background 0.15s ease;
+		background 0.15s ease,
+		transform 0.18s cubic-bezier(0.16, 1, 0.3, 1),
+		box-shadow 0.18s cubic-bezier(0.16, 1, 0.3, 1);
 	-webkit-user-select: none;
 	user-select: none;
 	-webkit-touch-callout: none;
 }
 .quick-chip:hover:not(:disabled) {
-	border-color: color-mix(in srgb, var(--accent) 55%, var(--border));
-	background: var(--accent-soft);
+	border-color: color-mix(in srgb, var(--accent) 65%, var(--border));
+	background: color-mix(in srgb, var(--accent-soft) 40%, var(--bg-elev));
 	color: var(--text);
+	transform: translateY(-2px);
+	box-shadow:
+		0 8px 20px rgba(0, 0, 0, 0.32),
+		0 2px 6px rgba(0, 0, 0, 0.18);
+}
+.quick-chip:active:not(:disabled) {
+	transform: translateY(0) scale(0.97);
+	box-shadow: 0 2px 6px rgba(0, 0, 0, 0.16);
 }
 .quick-chip:disabled {
 	opacity: 0.5;
@@ -2332,19 +2376,23 @@ button.session-item.elsewhere-item.confirm {
 	padding: 6px 14px;
 	border: 1px solid var(--border);
 	border-radius: 999px;
-	background: var(--card-bg, var(--bg-elev));
+	background: color-mix(in srgb, var(--card-bg, var(--bg-elev)) 60%, transparent);
+	backdrop-filter: blur(12px) saturate(130%);
+	-webkit-backdrop-filter: blur(12px) saturate(130%);
 	color: var(--text);
 	font-size: 13px;
 	font-weight: 500;
 	line-height: 1.4;
 	cursor: pointer;
-	box-shadow: 0 1px 2px rgba(0, 0, 0, 0.05);
+	box-shadow:
+		0 2px 8px rgba(0, 0, 0, 0.08),
+		0 1px 2px rgba(0, 0, 0, 0.05);
 	transition:
 		border-color 0.15s ease,
 		background-color 0.15s ease,
 		color 0.15s ease,
-		transform 0.1s ease,
-		box-shadow 0.15s ease;
+		transform 0.15s cubic-bezier(0.16, 1, 0.3, 1),
+		box-shadow 0.15s cubic-bezier(0.16, 1, 0.3, 1);
 	-webkit-user-select: none;
 	user-select: none;
 }
@@ -2352,10 +2400,13 @@ button.session-item.elsewhere-item.confirm {
 	border-color: var(--accent);
 	background: var(--accent-soft);
 	color: var(--accent);
-	box-shadow: 0 2px 6px rgba(0, 0, 0, 0.08);
+	transform: translateY(-1.5px);
+	box-shadow:
+		0 6px 16px rgba(0, 0, 0, 0.14),
+		0 2px 4px rgba(0, 0, 0, 0.08);
 }
 .action-suggestion-chip:active:not(:disabled) {
-	transform: scale(0.98);
+	transform: translateY(0) scale(0.98);
 }
 .action-suggestion-chip:disabled {
 	opacity: 0.5;
@@ -4530,6 +4581,10 @@ body.panel-resizing .scm-divider::after {
 	color: #fff;
 	background: linear-gradient(135deg, #d97706, #ea580c);
 }
+.engine-badge.engine-durable {
+	color: #fff;
+	background: linear-gradient(135deg, #059669, #0d9488);
+}
 
 /* 引擎选择器（EnginePicker：顶栏/底栏常驻显式切换胶囊，支持任意多引擎扩展） */
 .engine-picker-wrap {
@@ -4576,6 +4631,10 @@ body.panel-resizing .scm-divider::after {
 .engine-picker-btn.engine-claude .engine-picker-icon,
 .engine-picker-wrap.engine-claude .engine-picker-icon {
 	color: #ea580c;
+}
+.engine-picker-btn.engine-durable .engine-picker-icon,
+.engine-picker-wrap.engine-durable .engine-picker-icon {
+	color: #10b981;
 }
 .engine-picker-name {
 	font-size: 12px;
@@ -4662,6 +4721,10 @@ body.panel-resizing .scm-divider::after {
 .footer .engine-picker-btn.engine-claude .engine-picker-icon {
 	color: #f97316;
 }
+.statusbar .engine-picker-btn.engine-durable .engine-picker-icon,
+.footer .engine-picker-btn.engine-durable .engine-picker-icon {
+	color: #10b981;
+}
 .engine-picker-menu {
 	min-width: 290px;
 	max-width: 340px;
@@ -4742,6 +4805,9 @@ body.panel-resizing .scm-divider::after {
 }
 .engine-picker-item.engine-claude .engine-picker-item-icon {
 	color: #ea580c;
+}
+.engine-picker-item.engine-durable .engine-picker-item-icon {
+	color: #10b981;
 }
 .engine-picker-item-tag {
 	font-size: 10px;
@@ -4844,8 +4910,9 @@ body.panel-resizing .scm-divider::after {
 	width: 8px;
 	height: 8px;
 	border-radius: 50%;
-	border: 2px solid rgba(139, 92, 246, 0.25);
+	border: 2px solid transparent;
 	border-top-color: var(--accent);
+	border-right-color: var(--accent);
 	animation: spin 0.8s linear infinite;
 	flex-shrink: 0;
 }
@@ -5400,6 +5467,13 @@ body.panel-resizing .scm-divider::after {
 	to {
 		transform: rotate(360deg);
 	}
+}
+
+.half-ring-spin {
+	display: inline-block;
+	animation: spin 0.85s linear infinite;
+	transform-origin: center center;
+	transform-box: fill-box;
 }
 
 .topbar {
@@ -9354,6 +9428,28 @@ span.msg-editor-hint svg {
 	}
 }
 
+/* 回合工具流集群（Turn Tool Trail）：同一回合内的连续中间工具与思考消息容器。
+ * 默认模式与标准主题下保持优雅单列纵向卡片流，极简行文（Flow）模式下由专属主题激活为行内微流。 */
+.turn-tools-trail {
+	display: flex;
+	flex-direction: column;
+	width: 100%;
+	min-width: 0;
+	max-width: 100%;
+	margin: 4px 0 8px 0;
+	gap: 0;
+}
+.turn-tools-trail > .msg,
+.turn-tools-trail > .msg-assistant {
+	width: 100%;
+	min-width: 0;
+}
+.turn-tools-trail > .msg .msg-body,
+.turn-tools-trail > .msg-assistant .msg-body {
+	width: 100%;
+	min-width: 0;
+}
+
 /* --------------------------------------------------------------- toolcall */
 
 .toolcall {
@@ -9395,7 +9491,8 @@ span.msg-editor-hint svg {
 	font-size: 14px;
 	color: var(--text-faint);
 }
-.toolcall-status > svg {
+.toolcall-status > svg,
+.toolcall-status svg {
 	width: 14px;
 	height: 14px;
 }
@@ -9406,8 +9503,11 @@ span.msg-editor-hint svg {
 .toolcall.run .toolcall-status {
 	color: var(--amber);
 }
-.toolcall.run .toolcall-status > svg {
+.toolcall.run .toolcall-status > svg,
+.toolcall.run .toolcall-status svg {
 	animation: toolcall-spin 1s linear infinite;
+	transform-origin: center center;
+	transform-box: fill-box;
 }
 .toolcall.ok .toolcall-status {
 	color: var(--green);
@@ -20873,6 +20973,11 @@ a.set-uninstall:hover {
 	font-weight: 600;
 	line-height: 1;
 	margin-left: 2px;
+}
+
+.bar-item-badge.bg-task-badge {
+	background: var(--red);
+	color: #fff;
 }
 
 .bar-item-brand {

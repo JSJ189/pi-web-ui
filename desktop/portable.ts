@@ -18,6 +18,9 @@ export interface PortablePaths {
 	agentDir: string;
 	workspaceDir: string;
 	gitDir: string | null;
+	nodeDir: string | null;
+	npmGlobalDir: string;
+	npmCacheDir: string;
 	gitConfigGlobal: string;
 	userHome: string;
 }
@@ -35,7 +38,8 @@ export function hasPortableMarkers(dir: string): boolean {
 		existsSync(join(dir, "Portable.flag")) ||
 		existsSync(join(dir, "portable.flag")) ||
 		existsSync(join(dir, "data")) ||
-		existsSync(join(dir, "runtime", "git"))
+		existsSync(join(dir, "runtime", "git")) ||
+		existsSync(join(dir, "runtime", "node"))
 	);
 }
 
@@ -97,6 +101,25 @@ export function findPortableGit(portableRoot: string, exeDir: string): string | 
 }
 
 /**
+ * 自动寻找内置的 PortableNode 目录。
+ */
+export function findPortableNode(portableRoot: string, exeDir: string): string | null {
+	const candidates = [
+		join(portableRoot, "runtime", "node"),
+		join(portableRoot, "node"),
+		join(exeDir, "runtime", "node"),
+		join(exeDir, "node"),
+	];
+
+	for (const cand of candidates) {
+		if (existsSync(join(cand, "node.exe")) || existsSync(join(cand, "bin", "node"))) {
+			return cand;
+		}
+	}
+	return null;
+}
+
+/**
  * 解析便携模式下的全部关键路径。
  */
 export function resolvePortablePaths(execPath: string, env: NodeJS.ProcessEnv = process.env): PortablePaths | null {
@@ -112,6 +135,11 @@ export function resolvePortablePaths(execPath: string, env: NodeJS.ProcessEnv = 
 	const agentDir = env.PI_CODING_AGENT_DIR?.trim() ? resolve(env.PI_CODING_AGENT_DIR.trim()) : join(dataRoot, "agent");
 	const workspaceDir = env.PI_WEB_CWD?.trim() ? resolve(env.PI_WEB_CWD.trim()) : join(dataRoot, "workspace");
 	const gitDir = findPortableGit(portableRoot, exeDir);
+	const nodeDir = findPortableNode(portableRoot, exeDir);
+	const npmGlobalDir = env.NPM_CONFIG_PREFIX?.trim()
+		? resolve(env.NPM_CONFIG_PREFIX.trim())
+		: join(dataRoot, "npm-global");
+	const npmCacheDir = env.NPM_CONFIG_CACHE?.trim() ? resolve(env.NPM_CONFIG_CACHE.trim()) : join(dataRoot, "npm-cache");
 	const gitConfigGlobal = env.GIT_CONFIG_GLOBAL?.trim()
 		? resolve(env.GIT_CONFIG_GLOBAL.trim())
 		: join(dataRoot, "git", ".gitconfig");
@@ -130,6 +158,9 @@ export function resolvePortablePaths(execPath: string, env: NodeJS.ProcessEnv = 
 		agentDir,
 		workspaceDir,
 		gitDir,
+		nodeDir,
+		npmGlobalDir,
+		npmCacheDir,
 		gitConfigGlobal,
 		userHome,
 	};
@@ -151,6 +182,8 @@ export function applyPortableEnvironment(
 		paths.webDataDir,
 		paths.agentDir,
 		paths.workspaceDir,
+		paths.npmGlobalDir,
+		paths.npmCacheDir,
 		dirname(paths.gitConfigGlobal),
 		paths.userHome,
 	]) {
@@ -219,6 +252,25 @@ export function applyPortableEnvironment(
 			}
 		}
 	}
+
+	// 5. 挂载 PortableNode 与全局 npm 环境（若发现）
+	if (paths.nodeDir) {
+		env.NPM_CONFIG_PREFIX = paths.npmGlobalDir;
+		env.NPM_CONFIG_CACHE = paths.npmCacheDir;
+
+		const partsToAdd: string[] = [];
+		// npmGlobalDir 放在前面，确保全局安装的 CLI（如 claude, dsh, pi）优先于 node 自带的 npm 等
+		partsToAdd.push(paths.npmGlobalDir);
+		partsToAdd.push(paths.nodeDir);
+		const nodeBin = join(paths.nodeDir, "bin");
+		if (existsSync(nodeBin)) {
+			partsToAdd.push(nodeBin);
+		}
+
+		const pathSep = process.platform === "win32" ? ";" : ":";
+		const currentPath = env.PATH || "";
+		env.PATH = `${partsToAdd.join(pathSep)}${currentPath ? `${pathSep}${currentPath}` : ""}`;
+	}
 }
 
 /**
@@ -232,7 +284,7 @@ export function setupPortableMode(app?: ElectronAppPathSetter): PortablePaths | 
 	console.log(
 		`[desktop] [portable] 便携模式已激活：根目录=${paths.portableRoot}，数据=${paths.dataRoot}${
 			paths.gitDir ? `，内置Git=${paths.gitDir}` : "（未检测到内置PortableGit）"
-		}`,
+		}${paths.nodeDir ? `，内置Node=${paths.nodeDir}` : "（未检测到内置PortableNode）"}`,
 	);
 	return paths;
 }

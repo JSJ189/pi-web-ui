@@ -8,7 +8,6 @@ import {
 	FiEdit2,
 	FiFolder,
 	FiFolderPlus,
-	FiLoader,
 	FiMessageSquare,
 	FiMoreVertical,
 	FiPlus,
@@ -33,6 +32,7 @@ import { ProjectPicker } from "./ProjectPicker.js";
 // 宿主 UI 扩展点（issue #146）：会话行的右键菜单走「slot 条目」这一条通道。
 import { type UiSlotEntry } from "../ui-slots";
 import { contextMenuItems, openContextMenu, type ContextMenuRequest } from "../context-menu-state";
+import { HalfRingSpinner } from "./HalfRingSpinner";
 import { composeToComposer, focusComposer } from "../composer-bridge";
 import { buildSessionDeepLink, extractSessionIdFromPath } from "../session-url";
 import {
@@ -1091,7 +1091,7 @@ export const LeftPanel = memo(function LeftPanel({
 											}}
 										>
 											{switching ? (
-												<FiLoader className="project-icon spin" />
+												<HalfRingSpinner className="project-icon spin" />
 											) : sbx ? (
 												<LuFlaskConical className="project-icon sandbox-icon" />
 											) : (
@@ -1235,7 +1235,10 @@ export const LeftPanel = memo(function LeftPanel({
 																			: undefined
 																	}
 																>
-																	<FiMessageSquare className="session-icon" />
+																	<span className="session-icon-wrap">
+																		<FiMessageSquare className="session-icon" />
+																		{c.isStreaming && <span className="conv-streaming" title={t("streaming")} />}
+																	</span>
 																	<span className="session-info">
 																		<span className="session-title">
 																			<span className="elsewhere-badge">
@@ -1267,7 +1270,6 @@ export const LeftPanel = memo(function LeftPanel({
 																		</span>
 																		<span className="session-sub">{projectName(c.cwd)}</span>
 																	</span>
-																	{c.isStreaming && <span className="conv-streaming" title={t("streaming")} />}
 																</button>
 																{/* 触屏没有右键（contextmenu 不可靠）：给「另一处」行一个可见的操作钮，点开与右键同一个会话菜单
 															（过户 / 抢答问卷 / 复制 id）；槽位暂无可显示条目时不渲染（同右键路径的让路口径）。 */}
@@ -1327,7 +1329,10 @@ export const LeftPanel = memo(function LeftPanel({
 																	if (!active) panelSend({ type: "switch_conversation", id: c.id });
 																}}
 															>
-																<FiMessageSquare className="session-icon" />
+																<span className="session-icon-wrap">
+																	<FiMessageSquare className="session-icon" />
+																	{c.isStreaming && <span className="conv-streaming" title={t("streaming")} />}
+																</span>
 																<span className="session-info">
 																	{renaming === `conv:${c.id}` ? (
 																		<input
@@ -1424,7 +1429,6 @@ export const LeftPanel = memo(function LeftPanel({
 																		</span>
 																	)}
 																</span>
-																{c.isStreaming && <span className="conv-streaming" title={t("streaming")} />}
 															</button>
 															<button
 																type="button"
@@ -1513,13 +1517,6 @@ export const LeftPanel = memo(function LeftPanel({
 																);
 															})()}
 															{renderInlineEntries(runningRowEntries, "lp-slot-sessions")}
-															{c.isStreaming && (
-																<span
-																	className="lp-row-stalled"
-																	title={t("streaming")}
-																	style={{ position: "absolute", right: 28, top: "50%", transform: "translateY(-50%)" }}
-																/>
-															)}
 														</div>
 													);
 												},
@@ -1598,11 +1595,13 @@ export const LeftPanel = memo(function LeftPanel({
 												if (!active) panelSend({ type: "switch_session", path: s.path });
 											}}
 										>
-											{switching ? (
-												<FiLoader className="session-icon spin" />
-											) : (
-												<FiMessageSquare className="session-icon" />
-											)}
+											<span className="session-icon-wrap">
+												{switching ? (
+													<HalfRingSpinner className="session-icon spin" />
+												) : (
+													<FiMessageSquare className="session-icon" />
+												)}
+											</span>
 											<span className="session-info">
 												{renaming === s.path ? (
 													<input

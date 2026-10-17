@@ -14,7 +14,7 @@ import { normalizeSoftCapByModel, normalizeSoftCapTokens } from "./soft-cap.js";
 import { deriveLegacy, legacyToDisabled, normalizeDisabledAgentTools } from "./tool-manager.js";
 import { normalizeToolPromptOverrides, type ToolPromptOverrideMap } from "./tool-prompt-overrides.js";
 import { UI_SLOTS } from "./plugin-ui-slots.js";
-import type { UiAlign, UiLayoutPrefs, UiSlotId } from "./protocol.js";
+import type { EngineId, UiAlign, UiLayoutPrefs, UiSlotId } from "./protocol.js";
 
 /** System-prompt mode: append the custom text to the built prompt, or replace
  *  the whole system prompt with it. (遗留字段：主会话已迁移到 compose 模板，
@@ -612,10 +612,10 @@ export interface ClientState {
 	 *  English default, issue #91) for tool return values / AI prompts.
 	 *  Missing = never reported → English. */
 	locale?: string;
-	/** 客户端当前激活的智能体引擎（"pi" | "dsh" | "claude"，按标签页 clientId 独立记忆，刷新后保持）。 */
-	engine?: "pi" | "dsh" | "claude";
-	/** 全局默认智能体引擎（"pi" | "dsh" | "claude"，存于 __settings__ 下，新标签页与重启后默认跟随）。 */
-	defaultEngine?: "pi" | "dsh" | "claude";
+	/** 客户端当前激活的智能体引擎（"pi" | "dsh" | "claude" | "durable"，按标签页 clientId 独立记忆，刷新后保持）。 */
+	engine?: EngineId;
+	/** 全局默认智能体引擎（"pi" | "dsh" | "claude" | "durable"，存于 __settings__ 下，新标签页与重启后默认跟随）。 */
+	defaultEngine?: EngineId;
 	/** 客户端最近活跃时间（epoch ms）。服务端在 per-client 写路径上打点（内存态，
 	 *  随任意后续 save 落盘）；旧存档缺省时按 max(projects[].lastUsed, interrupted[].at)
 	 *  推断。仅用于死 clientId 清理（issue #441），不参与任何业务语义。 */
@@ -1620,13 +1620,13 @@ export class ClientStateStore {
 	}
 
 	/** 读取某客户端（标签页）上次使用的引擎（未设置返回 undefined）。 */
-	getClientEngine(clientId: string): "pi" | "dsh" | "claude" | undefined {
+	getClientEngine(clientId: string): EngineId | undefined {
 		const eng = this.load()[clientId]?.engine;
-		return eng === "dsh" || eng === "pi" || eng === "claude" ? eng : undefined;
+		return eng === "dsh" || eng === "pi" || eng === "claude" || eng === "durable" ? eng : undefined;
 	}
 
 	/** 保存某客户端（标签页）当前使用的引擎。 */
-	saveClientEngine(clientId: string, engine: "pi" | "dsh" | "claude"): void {
+	saveClientEngine(clientId: string, engine: EngineId): void {
 		const all = this.load();
 		const state = (all[clientId] ??= { projects: [] });
 		state.engine = engine;
@@ -1635,13 +1635,13 @@ export class ClientStateStore {
 	}
 
 	/** 读取全局默认引擎（存在 __settings__ 下，新标签页及服务重启后默认跟随）。 */
-	getDefaultEngine(): "pi" | "dsh" | "claude" | undefined {
+	getDefaultEngine(): EngineId | undefined {
 		const eng = this.load()[ClientStateStore.GLOBAL_SETTINGS_KEY]?.defaultEngine;
-		return eng === "dsh" || eng === "pi" || eng === "claude" ? eng : undefined;
+		return eng === "dsh" || eng === "pi" || eng === "claude" || eng === "durable" ? eng : undefined;
 	}
 
 	/** 保存全局默认引擎。 */
-	saveDefaultEngine(engine: "pi" | "dsh" | "claude"): void {
+	saveDefaultEngine(engine: EngineId): void {
 		const all = this.load();
 		const state = (all[ClientStateStore.GLOBAL_SETTINGS_KEY] ??= { projects: [] });
 		state.defaultEngine = engine;

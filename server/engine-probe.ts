@@ -1,6 +1,6 @@
 import { execFile } from "node:child_process";
 import { existsSync, readFileSync } from "node:fs";
-import { join } from "node:path";
+import { dirname, join } from "node:path";
 import { VERSION } from "@earendil-works/pi-coding-agent";
 import { runtimeBaseCandidates } from "./dsh/preset-clones.js";
 import type { EngineStatus } from "./protocol.js";
@@ -12,6 +12,7 @@ import {
 	NPM_DEFAULT_REGISTRY,
 	type LocalPackage,
 } from "./update-check.js";
+import { probeGlobalPackage } from "./global-loader.js";
 
 export interface EnginePackageMeta {
 	id: string;
@@ -35,6 +36,11 @@ export const ENGINE_PACKAGES: Record<string, EnginePackageMeta> = {
 		packageName: "@anthropic-ai/claude-code",
 		installCommand: "npm i -g @anthropic-ai/claude-code",
 	},
+	durable: {
+		id: "durable",
+		packageName: "@earendil-works/pi-durable",
+		installCommand: "npm i -g @earendil-works/pi-durable",
+	},
 };
 
 /** 探针缓存 TTL：5 秒（短时多次连接或 UI 打开时免除重复频繁执行进程调用） */
@@ -53,6 +59,7 @@ let cachedStatuses: EngineStatus[] = [
 	{ id: "pi", installed: true, packageName: ENGINE_PACKAGES.pi.packageName, version: VERSION },
 	{ id: "dsh", installed: false, packageName: ENGINE_PACKAGES.dsh.packageName },
 	{ id: "claude", installed: false, packageName: ENGINE_PACKAGES.claude.packageName },
+	{ id: "durable", installed: false, packageName: ENGINE_PACKAGES.durable.packageName },
 ];
 
 /**
@@ -111,6 +118,16 @@ export function probePi(): EngineStatus {
  */
 export async function probeDsh(): Promise<EngineStatus> {
 	const pkgName = ENGINE_PACKAGES.dsh.packageName;
+
+	// 0. 通用全局包探测器（覆盖 fnm / nvm / pnpm / 全局 prefix 等）
+	try {
+		const globalProbe = probeGlobalPackage(pkgName);
+		if (globalProbe.installed) {
+			return { id: "dsh", installed: true, packageName: pkgName, version: globalProbe.version };
+		}
+	} catch {
+		/* ignore */
+	}
 
 	// 1. 路径快速探测（纯 fs 访问，无进程派生开销）
 	try {
@@ -216,6 +233,28 @@ export async function probeClaude(): Promise<EngineStatus> {
 }
 
 /**
+ * 探测 Pi Durable 引擎状态。
+ * 检查当前项目或全局环境（npm -g, fnm, nvm 等）下是否安装了 @earendil-works/pi-durable。
+ */
+export async function probeDurable(force = false): Promise<EngineStatus> {
+	const pkgName = ENGINE_PACKAGES.durable.packageName;
+	try {
+		const probe = probeGlobalPackage(pkgName, { refresh: force });
+		if (probe.installed) {
+			return {
+				id: "durable",
+				installed: true,
+				packageName: pkgName,
+				version: probe.version,
+			};
+		}
+	} catch {
+		/* ignore */
+	}
+	return { id: "durable", installed: false, packageName: pkgName };
+}
+
+/**
  * 按引擎 ID 单独探测状态。
  */
 export async function probeEngine(id: string, force = false): Promise<EngineStatus> {
@@ -229,8 +268,10 @@ export async function probeEngine(id: string, force = false): Promise<EngineStat
 		result = await probeDsh();
 	} else if (id === "claude") {
 		result = await probeClaude();
+	} else if (id === "durable") {
+		result = await probeDurable();
 	} else {
-		result = { id, installed: false };
+		result = { id: id as any, installed: false };
 	}
 	await enrichWithUpdateInfo(result, force);
 	// 更新单项缓存
@@ -247,13 +288,14 @@ export async function probeAllEngines(force = false): Promise<EngineStatus[]> {
 	if (!force && Date.now() - lastProbeAt < CACHE_TTL_MS && cachedStatuses.length > 0) {
 		return cachedStatuses;
 	}
-	const [pi, dsh, claude] = await Promise.all([probePi(), probeDsh(), probeClaude()]);
+	const [pi, dsh, claude, durable] = await Promise.all([probePi(), probeDsh(), probeClaude(), probeDurable()]);
 	await Promise.all([
 		enrichWithUpdateInfo(pi, force),
 		enrichWithUpdateInfo(dsh, force),
 		enrichWithUpdateInfo(claude, force),
+		enrichWithUpdateInfo(durable, force),
 	]);
-	cachedStatuses = [pi, dsh, claude];
+	cachedStatuses = [pi, dsh, claude, durable];
 	lastProbeAt = Date.now();
 	return cachedStatuses;
 }

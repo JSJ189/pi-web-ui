@@ -1,8 +1,9 @@
 import { useEffect, useLayoutEffect, useRef, useState, type ReactNode } from "react";
-import { FiCheckCircle, FiCopy, FiLoader, FiX } from "react-icons/fi";
+import { FiCheckCircle, FiCopy, FiX } from "react-icons/fi";
 import { useT } from "../i18n";
 import { useEscapeKey } from "../shortcut-stack";
 import { closeExportImage, setExportImageIncludes, useExportImage } from "../export-image-state";
+import { HalfRingSpinner } from "./HalfRingSpinner";
 import {
 	isLightColor,
 	parseCssColor,
@@ -215,7 +216,13 @@ export function SaveImageDialog(): ReactNode {
 							disabled={busy || previewBusy || exp.selectedIds.length === 0}
 							title={t("copyImageBtn")}
 						>
-							{busy || previewBusy ? <FiLoader className="saveimg-spin" /> : copied ? <FiCheckCircle /> : <FiCopy />}
+							{busy || previewBusy ? (
+								<HalfRingSpinner className="saveimg-spin" />
+							) : copied ? (
+								<FiCheckCircle />
+							) : (
+								<FiCopy />
+							)}
 							<span>{busy || previewBusy ? t("savingImage") : copied ? t("copied") : t("copyImageBtn")}</span>
 						</button>
 					</div>

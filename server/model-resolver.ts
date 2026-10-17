@@ -220,7 +220,7 @@ export function resolveProviderCredential(
  */
 export function listCustomModelsFromConfig(
 	agentDir?: string,
-	filter?: (entry: { providerId: string; api?: string; baseUrl?: string }) => boolean,
+	filter?: (entry: { providerId: string; api?: string; baseUrl?: string; modelId?: string }) => boolean,
 ): CustomModelEntry[] {
 	const dir = defaultAgentDir(agentDir);
 	const { providers } = readModelsJson(dir);
@@ -231,16 +231,17 @@ export function listCustomModelsFromConfig(
 		const baseUrl = typeof p.baseUrl === "string" ? p.baseUrl.trim() : undefined;
 		const providerName = typeof p.name === "string" ? p.name.trim() : undefined;
 
-		if (filter && !filter({ providerId, api, baseUrl })) {
-			continue;
-		}
-
 		if (Array.isArray(p.models)) {
 			for (const m of p.models) {
 				if (!m || typeof m !== "object") continue;
 				const row = m as Record<string, unknown>;
 				const modelId = typeof row.id === "string" ? row.id.trim() : "";
 				if (!modelId) continue;
+
+				if (filter && !filter({ providerId, api, baseUrl, modelId })) {
+					continue;
+				}
+
 				const name = typeof row.name === "string" && row.name.trim() ? row.name.trim() : modelId;
 				results.push({
 					providerId,
@@ -257,4 +258,133 @@ export function listCustomModelsFromConfig(
 	}
 
 	return results;
+}
+
+/**
+ * 标准模型通信协议类型定义：
+ * - "openai-completions": OpenAI Chat Completions 规范 (/v1/chat/completions)
+ * - "openai-responses": OpenAI Responses 规范
+ * - "anthropic-messages": Anthropic Messages 规范 (/v1/messages)
+ * - "google-generative-ai": Google Gemini 规范
+ * - "ollama": Ollama 原生规范
+ * - "bedrock": AWS Bedrock 规范
+ */
+export type KnownModelProtocol =
+	| "openai-completions"
+	| "openai-responses"
+	| "anthropic-messages"
+	| "google-generative-ai"
+	| "ollama"
+	| "bedrock"
+	| string;
+
+/**
+ * 依据实际指定的 api 字段（或官方内置 Provider/模型特征）解析真实通信协议类型。
+ * 核心原则：优先遵循显式指定的 api 协议；未显式指定时，根据 providerId 与 modelId 特征合理推导默认协议。
+ */
+export function resolveModelProtocol(api?: string, providerId?: string, modelId?: string): KnownModelProtocol {
+	const rawApi = (api ?? "").trim().toLowerCase();
+	if (rawApi) {
+		if (rawApi === "anthropic-messages" || rawApi === "anthropic") return "anthropic-messages";
+		if (rawApi === "openai-completions" || rawApi === "openai") return "openai-completions";
+		if (rawApi === "openai-responses") return "openai-responses";
+		if (rawApi === "google-generative-ai" || rawApi === "gemini" || rawApi === "google") {
+			return "google-generative-ai";
+		}
+		return rawApi;
+	}
+
+	const pid = (providerId ?? "").trim().toLowerCase();
+	const mid = (modelId ?? "").trim().toLowerCase();
+
+	// 若未显式配置 api，优先根据 providerId 的命名特征识别协议：
+	if (
+		pid.includes("openai") ||
+		pid.includes("deepseek") ||
+		pid.includes("groq") ||
+		pid.includes("mistral") ||
+		pid.includes("openrouter")
+	) {
+		return "openai-completions";
+	}
+	if (pid === "anthropic" || pid.includes("claude") || pid.includes("anthropic")) {
+		return "anthropic-messages";
+	}
+	if (pid === "google" || pid === "gemini") {
+		return "google-generative-ai";
+	}
+	if (pid === "ollama") return "ollama";
+	if (pid === "bedrock") return "bedrock";
+
+	// 再次依据 modelId 的前缀特征辅助推导默认协议：
+	if (mid.startsWith("claude")) {
+		return "anthropic-messages";
+	}
+	if (mid.startsWith("gemini")) {
+		return "google-generative-ai";
+	}
+
+	// 其余绝大多数官方及自定义 Provider 均遵循 OpenAI 协议规范
+	return "openai-completions";
+}
+
+/**
+ * 严格按照实际的通信协议类型（Protocol Type）判断目标引擎是否支持。
+ * 核心原则：按协议本身做过滤，严禁无依据随意过滤。
+ *
+ * 1. Pi 原生引擎：支持全部协议全集；
+ * 2. DSH 引擎：仅支持 OpenAI 兼容协议（openai-completions / openai-responses），严格拒绝 Anthropic Messages 协议等；
+ * 3. Claude Code 引擎：仅支持 Anthropic Messages 协议（无论模型名称叫什么，只要走 Anthropic 协议即可）；
+ * 4. Durable 引擎：由 @earendil-works/pi-ai 驱动，支持主流开放标准协议（OpenAI, Anthropic, Google 等）。
+ */
+export function isProtocolSupportedByEngine(
+	engine: string,
+	api?: string,
+	providerId?: string,
+	modelId?: string,
+): boolean {
+	const normEngine = engine.toLowerCase().trim();
+	const protocol = resolveModelProtocol(api, providerId, modelId);
+
+	// 1. Pi 原生引擎支持全协议全集
+	if (normEngine === "pi") {
+		return true;
+	}
+
+	// 2. DSH 引擎：仅支持 OpenAI 兼容协议（openai-completions / openai-responses）
+	//    严格不支持 Anthropic Messages 协议、Google Generative AI 协议等！
+	if (normEngine === "dsh") {
+		return protocol === "openai-completions" || protocol === "openai-responses";
+	}
+
+	// 3. Claude Code 引擎：仅支持 Anthropic Messages 协议
+	if (normEngine === "claude") {
+		return protocol === "anthropic-messages";
+	}
+
+	// 4. Durable 引擎：基于 @earendil-works/pi-ai，支持主流标准协议
+	if (normEngine === "durable") {
+		return (
+			protocol === "openai-completions" ||
+			protocol === "openai-responses" ||
+			protocol === "anthropic-messages" ||
+			protocol === "google-generative-ai"
+		);
+	}
+
+	return true;
+}
+
+/**
+ * 结构化入参的协议校验重载包装（兼容既有调用点）。
+ */
+export function isModelProtocolSupportedByEngine(
+	engine: string,
+	meta: {
+		api?: string;
+		providerId: string;
+		modelId?: string;
+	},
+): boolean {
+	return isProtocolSupportedByEngine(engine, meta.api, meta.providerId, meta.modelId);
 }

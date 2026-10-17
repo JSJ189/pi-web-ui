@@ -18,8 +18,11 @@ import {
 	compositeOverlay,
 	cropImage,
 	dominantColors,
+	extractRegionPalette,
 	flipImage,
 	histogram,
+	pickColor,
+	pickColorsBatch,
 	resizeImage,
 	rotateArbitrary,
 	rotateImage,
@@ -1416,6 +1419,253 @@ export default {
 					throw new Error(`未知操作：${act}`);
 				},
 			},
+
+			// 4.8 像素取色与位置截图（单点/批量/全图色板提取）
+			{
+				name: "image_pick_color",
+				label: "图片取色",
+				description:
+					"Pick pixel color(s) on a workspace image. Supports single-pixel coordinate (x, y), batch coordinate points, or automatic region/image palette extraction. Returns exact HEX/RGB/HSL values and high-contrast crosshair screenshot crops with an overview contact sheet.",
+				promptSnippet: "pick pixel colors or extract key color palette with crops",
+				promptGuidelines: [
+					"Use image_pick_color to inspect exact pixel colors, verify visual elements, or extract entire color palettes.",
+					"Pass x and y for a single pixel, points for multiple coordinates, or omit them to automatically extract key dominant colors with their coordinates and crops.",
+					"The returned crop visually highlights target pixels with a high-contrast crosshair marker without obscuring the sampled pixel.",
+				],
+				parameters: {
+					type: "object",
+					properties: {
+						path: { type: "string", description: "Image path (workspace-relative or absolute)." },
+						x: { type: "number", description: "Single-point X coordinate in pixels (0-based, 0 <= x < width)." },
+						y: { type: "number", description: "Single-point Y coordinate in pixels (0-based, 0 <= y < height)." },
+						points: {
+							type: "array",
+							items: {
+								type: "object",
+								properties: {
+									x: { type: "number", description: "X coordinate in pixels." },
+									y: { type: "number", description: "Y coordinate in pixels." },
+									label: { type: "string", description: "Optional label (e.g. 'border', 'badge')." },
+								},
+								required: ["x", "y"],
+							},
+							description: "Batch sampling: array of coordinate points to sample simultaneously.",
+						},
+						region: {
+							type: "object",
+							properties: {
+								x: { type: "number" },
+								y: { type: "number" },
+								width: { type: "number" },
+								height: { type: "number" },
+							},
+							description: "Bounding box to analyze for dominant color palette (defaults to full image).",
+						},
+						maxColors: {
+							type: "number",
+							description: "Max dominant colors to extract in palette mode (default 6, range 1..16).",
+						},
+						sampleRadius: {
+							type: "number",
+							description: "Sampling radius in pixels: 0 = exact pixel, 1 = 3x3 average, 2 = 5x5 average (default 0).",
+						},
+						cropSize: {
+							type: "number",
+							description: "Size in pixels of context area around target before zoom (default 64, range 8..512).",
+						},
+						zoom: {
+							type: "number",
+							description: "Magnification scale for output crop (default 2, range 1..16).",
+						},
+						marker: {
+							type: "boolean",
+							description: "Whether to draw a high-contrast crosshair reticle on the crop (default true).",
+						},
+						out: { type: "string", description: "Optional file path to save the crop/palette image in workspace." },
+					},
+					required: ["path"],
+				},
+				async execute(_id, params) {
+					const p = typeof params?.path === "string" ? params.path.trim() : "";
+					if (!p) throw new Error("缺少 path（图片路径）");
+					const rel = normalizeRel(p);
+					const { img, format: srcFormat } = await loadImage(rel);
+
+					const hasPoints = Array.isArray(params?.points) && params.points.length > 0;
+					const hasSingle =
+						params?.x !== undefined && params?.x !== null && params?.y !== undefined && params?.y !== null;
+
+					// 1. 批量多点取色
+					if (hasPoints) {
+						const batchRes = pickColorsBatch(img, params.points, {
+							sampleRadius: params.sampleRadius,
+							cropSize: params.cropSize,
+							zoom: params.zoom,
+							marker: params.marker !== false,
+						});
+						const sheetPng = await encodeImage(batchRes.contactSheet, "png");
+						let savedPath = null;
+						if (typeof params.out === "string" && params.out.trim()) {
+							savedPath = normalizeRel(params.out);
+							await host.fs.write(savedPath, sheetPng);
+						}
+						const lines = [
+							`Batch sampled ${batchRes.points.length} points on ${pretty(host.cwd, rel)} (${img.width}×${img.height}, ${srcFormat}):`,
+							...batchRes.points.map((pt, i) => {
+								const c = pt.color;
+								return `- [${i + 1}] ${pt.label} at (${pt.coords.x}, ${pt.coords.y}): hex=${c.hex}, rgb=${c.rgb}, hsl=${c.hsl.css}, name=${c.name}`;
+							}),
+							`- Overview contact sheet generated (${batchRes.contactSheet.width}×${batchRes.contactSheet.height} px)${savedPath ? `. Saved to ${pretty(host.cwd, savedPath)}.` : "."}`,
+						];
+						const imgBlocks = [{ type: "image", data: sheetPng.toString("base64"), mimeType: "image/png" }];
+						for (const pt of batchRes.points.slice(0, 4)) {
+							const cropPng = await encodeImage(pt.cropImage, "png");
+							imgBlocks.push({ type: "image", data: cropPng.toString("base64"), mimeType: "image/png" });
+						}
+						return {
+							content: [{ type: "text", text: lines.join("\n") }, ...imgBlocks],
+							details: {
+								mode: "batch",
+								image: { path: pretty(host.cwd, rel), width: img.width, height: img.height, format: srcFormat },
+								points: batchRes.points.map((pt) => ({
+									label: pt.label,
+									coords: pt.coords,
+									color: pt.color,
+									cropBounds: pt.cropBounds,
+								})),
+								savedPath: savedPath ? pretty(host.cwd, savedPath) : undefined,
+							},
+						};
+					}
+
+					// 2. 单点精准取色
+					if (hasSingle) {
+						const x = Math.round(Number(params.x));
+						const y = Math.round(Number(params.y));
+						if (!Number.isFinite(x) || !Number.isFinite(y)) throw new Error("坐标 x 和 y 必须是有效数字");
+						if (x < 0 || x >= img.width || y < 0 || y >= img.height) {
+							throw new Error(
+								`坐标 (${x}, ${y}) 超出图片尺寸 ${img.width}×${img.height}（有效范围：x: 0..${img.width - 1}, y: 0..${img.height - 1}）`,
+							);
+						}
+
+						const picked = pickColor(img, {
+							x,
+							y,
+							sampleRadius: params.sampleRadius,
+							cropSize: params.cropSize,
+							zoom: params.zoom,
+							marker: params.marker !== false,
+						});
+
+						const cropPng = await encodeImage(picked.cropImage, "png");
+						let savedPath = null;
+						if (typeof params.out === "string" && params.out.trim()) {
+							savedPath = normalizeRel(params.out);
+							await host.fs.write(savedPath, cropPng);
+						}
+
+						const c = picked.color;
+						const lines = [
+							`Picked color at (${x}, ${y}) on ${pretty(host.cwd, rel)} (${img.width}×${img.height}, ${srcFormat}):`,
+							`- HEX: ${c.hex}`,
+							`- RGB: ${c.rgb}`,
+							`- RGBA: ${c.rgba}`,
+							`- HSL: ${c.hsl.css}`,
+							`- Luminance: ${c.luminance}`,
+							`- Approximate name: ${c.name}`,
+						];
+						if (c.sampled) {
+							lines.push(
+								`- Radius sample (r=${c.sampleRegion.radius}, ${c.sampleRegion.width}×${c.sampleRegion.height} px, count=${c.sampleRegion.pixelCount}): hex=${c.sampled.hex}, rgb=${c.sampled.rgb}, name=${c.sampled.name}`,
+							);
+						}
+						lines.push(
+							`- Location crop: ${picked.cropBounds.width}×${picked.cropBounds.height} px around target, zoomed ${picked.zoom}x (${picked.cropImage.width}×${picked.cropImage.height} px)${picked.hasMarker ? " with crosshair reticle" : ""}.${savedPath ? ` Saved to ${pretty(host.cwd, savedPath)}.` : ""}`,
+						);
+
+						return {
+							content: [
+								{ type: "text", text: lines.join("\n") },
+								{ type: "image", data: cropPng.toString("base64"), mimeType: "image/png" },
+							],
+							details: {
+								mode: "single",
+								coords: { x, y },
+								image: { path: pretty(host.cwd, rel), width: img.width, height: img.height, format: srcFormat },
+								color: c,
+								crop: {
+									bounds: picked.cropBounds,
+									targetInCrop: picked.targetInCrop,
+									zoom: picked.zoom,
+									size: `${picked.cropImage.width}×${picked.cropImage.height}`,
+									hasMarker: picked.hasMarker,
+									savedPath: savedPath ? pretty(host.cwd, savedPath) : undefined,
+								},
+							},
+						};
+					}
+
+					// 3. 区域 / 全图自动色板提取模式
+					const paletteRes = extractRegionPalette(img, {
+						region: params.region,
+						maxColors: params.maxColors,
+						cropSize: params.cropSize,
+						zoom: params.zoom,
+						marker: params.marker !== false,
+						sampleRadius: params.sampleRadius,
+					});
+
+					let sheetPng = null;
+					if (paletteRes.contactSheet) {
+						sheetPng = await encodeImage(paletteRes.contactSheet, "png");
+					}
+
+					let savedPath = null;
+					if (sheetPng && typeof params.out === "string" && params.out.trim()) {
+						savedPath = normalizeRel(params.out);
+						await host.fs.write(savedPath, sheetPng);
+					}
+
+					const reg = paletteRes.region;
+					const lines = [
+						`Extracted color palette for region [x=${reg.x}, y=${reg.y}, ${reg.width}×${reg.height}] on ${pretty(host.cwd, rel)} (${img.width}×${img.height}, ${srcFormat}):`,
+						...paletteRes.colors.map((item) => {
+							const c = item.color;
+							const pct = (item.share * 100).toFixed(1);
+							return `- Rank ${item.rank} (${pct}% share) '${item.label}': hex=${c.hex}, rgb=${c.rgb}, hsl=${c.hsl.css}, luminance=${c.luminance} -> Representative location: (${item.coords.x}, ${item.coords.y})`;
+						}),
+						`- Contact overview sheet: ${paletteRes.contactSheet ? `${paletteRes.contactSheet.width}×${paletteRes.contactSheet.height} px` : "none"}${savedPath ? `. Saved to ${pretty(host.cwd, savedPath)}.` : "."}`,
+					];
+
+					const imgBlocks = [];
+					if (sheetPng) {
+						imgBlocks.push({ type: "image", data: sheetPng.toString("base64"), mimeType: "image/png" });
+					}
+					for (const item of paletteRes.colors.slice(0, 4)) {
+						const cropPng = await encodeImage(item.cropImage, "png");
+						imgBlocks.push({ type: "image", data: cropPng.toString("base64"), mimeType: "image/png" });
+					}
+
+					return {
+						content: [{ type: "text", text: lines.join("\n") }, ...imgBlocks],
+						details: {
+							mode: "palette",
+							region: paletteRes.region,
+							image: { path: pretty(host.cwd, rel), width: img.width, height: img.height, format: srcFormat },
+							colors: paletteRes.colors.map((c) => ({
+								rank: c.rank,
+								share: c.share,
+								label: c.label,
+								coords: c.coords,
+								color: c.color,
+								cropBounds: c.cropBounds,
+							})),
+							savedPath: savedPath ? pretty(host.cwd, savedPath) : undefined,
+						},
+					};
+				},
+			},
 		];
 
 		let offTools = [];
@@ -1427,7 +1677,7 @@ export default {
 			if (want) {
 				offTools = TOOLS.map((t) => host.registerAgentTool(t));
 				toolsOn = true;
-				host.log(`AI 工具已注册（7 个）：${TOOLS.map((t) => t.name).join(", ")}`);
+				host.log(`AI 工具已注册（8 个）：${TOOLS.map((t) => t.name).join(", ")}`);
 			} else {
 				for (const off of offTools) {
 					try {
@@ -1634,6 +1884,98 @@ export default {
 			if (!rel) throw new Error("缺少 path");
 			const text = await host.fs.readText(rel, 512 * 1024);
 			res.json({ path: rel, text });
+		});
+
+		regRoute("GET", "/ws/pick-color", async (req, res) => {
+			const rel = normalizeRel(req.query?.path);
+			if (!rel) {
+				res.status(400).json({ error: "缺少 path" });
+				return;
+			}
+			const { img, format: srcFormat } = await loadImage(rel);
+
+			let points = null;
+			if (typeof req.query?.points === "string") {
+				try {
+					points = JSON.parse(req.query.points);
+				} catch {
+					/* 忽略 */
+				}
+			}
+
+			const x = req.query?.x !== undefined ? Number(req.query?.x) : undefined;
+			const y = req.query?.y !== undefined ? Number(req.query?.y) : undefined;
+			const sampleRadius = req.query?.sampleRadius ? Number(req.query.sampleRadius) : 0;
+			const cropSize = req.query?.cropSize ? Number(req.query.cropSize) : 64;
+			const zoom = req.query?.zoom ? Number(req.query.zoom) : 2;
+			const marker = req.query?.marker !== "0" && req.query?.marker !== "false";
+
+			// 1. 批量多点采样
+			if (Array.isArray(points) && points.length > 0) {
+				const r = pickColorsBatch(img, points, { sampleRadius, cropSize, zoom, marker });
+				const sheetPng = await encodeImage(r.contactSheet, "png");
+				res.json({
+					ok: true,
+					mode: "batch",
+					image: { path: rel, width: img.width, height: img.height, format: srcFormat },
+					points: r.points.map((pt) => ({
+						label: pt.label,
+						coords: pt.coords,
+						color: pt.color,
+						cropBounds: pt.cropBounds,
+					})),
+					contactSheetDataUrl: `data:image/png;base64,${sheetPng.toString("base64")}`,
+				});
+				return;
+			}
+
+			// 2. 单点精准采样
+			if (Number.isFinite(x) && Number.isFinite(y)) {
+				if (x < 0 || x >= img.width || y < 0 || y >= img.height) {
+					res.status(400).json({
+						error: `坐标 (${x}, ${y}) 超出图片尺寸 ${img.width}×${img.height}（有效范围：x: 0..${img.width - 1}, y: 0..${img.height - 1}）`,
+					});
+					return;
+				}
+				const picked = pickColor(img, { x, y, sampleRadius, cropSize, zoom, marker });
+				const cropPng = await encodeImage(picked.cropImage, "png");
+				res.json({
+					ok: true,
+					mode: "single",
+					coords: { x, y },
+					image: { path: rel, width: img.width, height: img.height, format: srcFormat },
+					color: picked.color,
+					crop: {
+						bounds: picked.cropBounds,
+						targetInCrop: picked.targetInCrop,
+						zoom: picked.zoom,
+						size: `${picked.cropImage.width}×${picked.cropImage.height}`,
+						hasMarker: picked.hasMarker,
+						dataUrl: `data:image/png;base64,${cropPng.toString("base64")}`,
+					},
+				});
+				return;
+			}
+
+			// 3. 区域或全图色板自动提取
+			const maxColors = req.query?.maxColors ? Number(req.query.maxColors) : 6;
+			const r = extractRegionPalette(img, { maxColors, cropSize, zoom, marker, sampleRadius });
+			const sheetPng = r.contactSheet ? await encodeImage(r.contactSheet, "png") : null;
+			res.json({
+				ok: true,
+				mode: "palette",
+				region: r.region,
+				image: { path: rel, width: img.width, height: img.height, format: srcFormat },
+				colors: r.colors.map((c) => ({
+					rank: c.rank,
+					share: c.share,
+					label: c.label,
+					coords: c.coords,
+					color: c.color,
+					cropBounds: c.cropBounds,
+				})),
+				contactSheetDataUrl: sheetPng ? `data:image/png;base64,${sheetPng.toString("base64")}` : null,
+			});
 		});
 
 		// 5.2 生图 API 路由（统一提供 /gen/*，并注册老 /config, /probe 等兼容别名）

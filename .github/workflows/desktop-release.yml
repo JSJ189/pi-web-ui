@@ -45,9 +45,9 @@ jobs:
       - name: Package Windows installer
         run: npx electron-builder -c desktop/electron-builder.yml --win --publish never
 
-      - name: Package Windows portable edition (with built-in Git)
+      - name: Package Windows portable edition (with built-in Git & Node.js)
         shell: bash
-        run: node scripts/make-portable.mjs --skip-pack --zip --with-git
+        run: node scripts/make-portable.mjs --skip-pack --zip --with-git --with-node
 
       # ───────────────────────────────────────────────────────────────────────────
       # SignPath 签名流程：

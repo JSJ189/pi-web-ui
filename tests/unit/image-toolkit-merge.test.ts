@@ -107,7 +107,7 @@ describe("image-toolkit manifest 与插件注册", () => {
 	it("manifest 过校验且 catalog 记录同步，图标沿用 AI 生图图标（🎨）", () => {
 		const v = validatePluginManifest(manifest, "image-toolkit");
 		expect(v.errors).toEqual([]);
-		expect(manifest.version).toBe("0.2.1");
+		expect(manifest.version).toBe("0.2.2");
 		expect(manifest.icon).toBe("🎨");
 		expect(manifest.iconSvg).toContain('path d="M12 3l1.9 4.6L18.5 9.5l-4.6 1.9L12 16l-1.9-4.6L5.5 9.5l4.6-1.9z"');
 		expect(manifest.permissions).toContain("tools");
@@ -121,7 +121,7 @@ describe("image-toolkit manifest 与插件注册", () => {
 		expect(entry?.description).toContain("一体化 AI 生图与图像处理工作台");
 	});
 
-	it("activate 注册 7 个一体化 AI 工具与全部路由", () => {
+	it("activate 注册 8 个一体化 AI 工具与全部路由", () => {
 		const { host } = makeEnv();
 		imageToolkit.activate(host);
 		const tools = host.mock.agentTools.map((t: any) => t.name).sort();
@@ -130,6 +130,7 @@ describe("image-toolkit manifest 与插件注册", () => {
 			"image_config_service",
 			"image_generate",
 			"image_info",
+			"image_pick_color",
 			"image_services",
 			"image_transform",
 			"image_watermark",
@@ -138,11 +139,12 @@ describe("image-toolkit manifest 与插件注册", () => {
 		const routes = host.mock.routes.map((r: any) => `${r.method} ${r.path}`);
 		expect(routes).toContain("GET /ws/settings");
 		expect(routes).toContain("POST /ws/save");
+		expect(routes).toContain("GET /ws/pick-color");
 		expect(routes).toContain("GET /gen/config");
 		expect(routes).toContain("POST /gen/generate");
 	});
 
-	it("所有 7 个工具提示词规范且纯英文", () => {
+	it("所有 8 个工具提示词规范且纯英文", () => {
 		const { host } = makeEnv();
 		imageToolkit.activate(host);
 		const CJK = /[\u4e00-\u9fff\u3040-\u30ff]/;
@@ -347,15 +349,47 @@ describe("图像生成与图像处理无缝流转", () => {
 		});
 		expect(editRes.details.files.length).toBe(1);
 		expect(files.has(editRes.details.files[0].path)).toBe(true);
+
+		// 7. AI 像素取色并获取局部放大截图（image_pick_color）
+		const pickTool = toolOf(host, "image_pick_color");
+		const pickRes: any = await pickTool.execute("pc1", {
+			path: genFilePath,
+			x: 10,
+			y: 10,
+			cropSize: 32,
+			zoom: 4,
+			marker: true,
+			out: "crops/picked.png",
+		});
+		expect(pickRes.content.length).toBe(2);
+		expect(pickRes.content[0].type).toBe("text");
+		expect(pickRes.content[0].text).toContain("Picked color at (10, 10)");
+		expect(pickRes.content[0].text).toContain("HEX:");
+		expect(pickRes.content[0].text).toContain("Location crop:");
+		expect(pickRes.content[1].type).toBe("image");
+		expect(pickRes.content[1].mimeType).toBe("image/png");
+		expect(typeof pickRes.content[1].data).toBe("string");
+		expect(pickRes.details.coords).toEqual({ x: 10, y: 10 });
+		expect(pickRes.details.color.hex).toBeDefined();
+		expect(files.has("crops/picked.png")).toBe(true);
+
+		// 坐标越界时给出明确友好的错误提示
+		await expect(
+			pickTool.execute("pc2", {
+				path: genFilePath,
+				x: 9999,
+				y: 9999,
+			}),
+		).rejects.toThrow(/超出图片尺寸/);
 	});
 });
 
 describe("image-toolkit 反激活", () => {
-	it("注销后全部路由与 7 个 AI 工具清空", () => {
+	it("注销后全部路由与 8 个 AI 工具清空", () => {
 		const { host } = makeEnv();
 		const off = imageToolkit.activate(host) as (() => void) | undefined;
 		expect(host.mock.routes.length).toBeGreaterThan(0);
-		expect(host.mock.agentTools.length).toBe(7);
+		expect(host.mock.agentTools.length).toBe(8);
 		off?.();
 		expect(host.mock.routes).toEqual([]);
 		expect(host.mock.agentTools).toEqual([]);

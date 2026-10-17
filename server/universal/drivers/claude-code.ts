@@ -19,7 +19,11 @@ import { homedir } from "node:os";
 import { join } from "node:path";
 import { BaseAgentDriver, type AgentCapabilities, type AgentEventSink, type AgentTurnMeta } from "../driver-base.js";
 import type { PromptAttachment, SlashCommandInfo } from "../../protocol.js";
-import { resolveProviderCredential, listCustomModelsFromConfig } from "../../model-resolver.js";
+import {
+	resolveProviderCredential,
+	listCustomModelsFromConfig,
+	isModelProtocolSupportedByEngine,
+} from "../../model-resolver.js";
 import { discoverDiskSkills } from "../../skill-discovery.js";
 
 export interface ClaudeCodeDriverOptions {
@@ -406,7 +410,10 @@ export class ClaudeCodeDriver extends BaseAgentDriver {
 
 		if (!this.agentDir) return official;
 
-		const custom = listCustomModelsFromConfig(this.agentDir);
+		// 仅继承 Claude / Anthropic 兼容协议的模型，过滤纯 OpenAI / Google 协议
+		const custom = listCustomModelsFromConfig(this.agentDir, (entry) =>
+			isModelProtocolSupportedByEngine("claude", entry),
+		);
 		const customRows = custom.map((c) => ({
 			id: `${c.providerId}/${c.modelId}`,
 			name: c.name,

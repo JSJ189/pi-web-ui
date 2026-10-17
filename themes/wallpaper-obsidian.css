@@ -154,6 +154,34 @@
 	box-shadow: none !important;
 }
 
+/* 回合工具集群在黑曜冷月模式下保持优雅垂直堆叠（方案 B：自上而下单列卡片，连成一体无空隙） */
+.turn-tools-trail {
+	display: flex !important;
+	flex-direction: column !important;
+	width: 100% !important;
+	min-width: 0 !important;
+	max-width: 100% !important;
+	margin: 4px 0 8px 0 !important;
+	gap: 0 !important;
+}
+.turn-tools-trail > .msg,
+.turn-tools-trail > .msg-assistant {
+	display: block !important;
+	width: 100% !important;
+	min-width: 0 !important;
+	margin: 0 !important;
+	padding: 0 !important;
+}
+.turn-tools-trail > .msg .msg-body,
+.turn-tools-trail > .msg-assistant .msg-body {
+	display: block !important;
+	width: 100% !important;
+	min-width: 0 !important;
+	border-radius: 12px !important;
+	margin: 2px 0 !important;
+	overflow: hidden !important;
+}
+
 .msg-assistant .msg-body {
 	background: rgba(12, 18, 32, 0.38) !important;
 	border: 1px solid rgba(255, 255, 255, 0.05) !important;
@@ -168,6 +196,10 @@
 .msg-text {
 	padding: 6px 12px !important;
 	border-radius: 8px !important;
+}
+
+.msg-assistant .msg-text {
+	display: block !important;
 }
 
 /* 4.1 全页面可见文字防眩光阴影（标题、项目名、会话名、正文字等），1像素紧致高锐度边缘，绝不晕染发糊 */
@@ -432,6 +464,10 @@ button:not(.icon-btn):not(.lp-section-action),
 	border: none !important;
 	border-radius: 0 !important;
 	margin: 0 !important;
+	display: block !important;
+	width: 100% !important;
+	min-width: 0 !important;
+	max-width: 100% !important;
 	box-shadow: none !important;
 	backdrop-filter: none !important;
 	-webkit-backdrop-filter: none !important;
@@ -439,6 +475,10 @@ button:not(.icon-btn):not(.lp-section-action),
 
 /* 折叠条（.chead）：紧凑平整悬浮，完全不设边框与独立外边距，内边距与 .msg-text 对齐 */
 .chead {
+	display: flex !important;
+	width: 100% !important;
+	min-width: 0 !important;
+	max-width: 100% !important;
 	background: transparent !important;
 	border: none !important;
 	border-radius: 0 !important;
@@ -535,6 +575,16 @@ pre {
 .quick-chip:hover {
 	background: rgba(255, 255, 255, 0.16) !important;
 	border-color: rgba(255, 255, 255, 0.4) !important;
+}
+
+/* 对话底栏建议按钮行：块级独占整行，绝不与上方正文文字重叠 */
+.action-suggestions {
+	display: block !important;
+	clear: both !important;
+	width: 100% !important;
+	min-width: 0 !important;
+	margin: 12px 0 16px 0 !important;
+	padding: 0 4px !important;
 }
 
 .dd-menu,

@@ -82,7 +82,7 @@ describe("引擎列表元数据与安装检测 (SUPPORTED_ENGINES & EnginePicker
 
 		// 检查 dsh 项的渲染
 		const items = container.querySelectorAll(".engine-picker-item");
-		expect(items.length).toBe(3);
+		expect(items.length).toBe(SUPPORTED_ENGINES.length);
 
 		const dshItem = Array.from(items).find((el) => el.classList.contains("engine-dsh")) as HTMLElement;
 		expect(dshItem).toBeTruthy();

@@ -10,6 +10,12 @@
 
 ## [Unreleased]
 
+<!-- auto-i18n:start -->
+### i18n
+
+- 前端新增 key（3）：`settingsEngineDurableTitle`、`settingsEngineDurableDesc`、`engineTagDurable`
+<!-- auto-i18n:end -->
+
 ## [0.106.0] — 2026-10-16
 
 ### Added

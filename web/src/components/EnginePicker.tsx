@@ -2,6 +2,7 @@ import { useState, useRef } from "react";
 import { FiAperture, FiCheck, FiDownload, FiRefreshCw } from "react-icons/fi";
 import { appSend, useAppGlobals, useEngineStatuses } from "../app-globals";
 import { useI18n } from "../i18n";
+import type { EngineId } from "../types";
 import { Dropdown } from "./Dropdown";
 
 /**
@@ -10,13 +11,14 @@ import { Dropdown } from "./Dropdown";
 export interface EngineMeta {
 	id: string;
 	/** 显示名称多语言键 */
-	titleKey: "settingsEnginePiTitle" | "settingsEngineDshTitle" | "settingsEngineClaudeTitle";
+	titleKey:
+		"settingsEnginePiTitle" | "settingsEngineDshTitle" | "settingsEngineClaudeTitle" | "settingsEngineDurableTitle";
 	/** 简短徽标标签 */
 	badge: string;
-	/** 特色定位标签（如「完整生态」「极速补丁」「通用驱动」） */
-	tagKey: "engineTagFull" | "engineTagFast" | "engineTagUniversal";
+	/** 特色定位标签（如「完整生态」「极速补丁」「通用驱动」「持久自愈」） */
+	tagKey: "engineTagFull" | "engineTagFast" | "engineTagUniversal" | "engineTagDurable";
 	/** 描述说明翻译键 */
-	descKey: "settingsEnginePiDesc" | "settingsEngineDshDesc" | "settingsEngineClaudeDesc";
+	descKey: "settingsEnginePiDesc" | "settingsEngineDshDesc" | "settingsEngineClaudeDesc" | "settingsEngineDurableDesc";
 	/** 样式色彩类 */
 	colorClass: string;
 	/** 对应的全局 npm 包名（如 "@deepseek-ai/dsh"） */
@@ -59,6 +61,16 @@ export const SUPPORTED_ENGINES: EngineMeta[] = [
 		colorClass: "engine-claude",
 		packageName: "@anthropic-ai/claude-code",
 		installCommand: "npm i -g @anthropic-ai/claude-code",
+	},
+	{
+		id: "durable",
+		titleKey: "settingsEngineDurableTitle",
+		badge: "DURABLE",
+		tagKey: "engineTagDurable",
+		descKey: "settingsEngineDurableDesc",
+		colorClass: "engine-durable",
+		packageName: "@earendil-works/pi-durable",
+		installCommand: "npm i -g @earendil-works/pi-durable",
 	},
 ];
 
@@ -208,7 +220,7 @@ export function EnginePicker({ direction, align, className, label, caret = false
 							}
 							setOpen(false);
 							if (!isSelected) {
-								appSend({ type: "switch_engine", engine: item.id as "pi" | "dsh" | "claude" });
+								appSend({ type: "switch_engine", engine: item.id as EngineId });
 							}
 						};
 

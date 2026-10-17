@@ -93,8 +93,8 @@ function scanPathForPi(out: SdkCopy[], env: NodeJS.ProcessEnv = process.env): vo
 function scanGlobalPrefixes(out: SdkCopy[], env: NodeJS.ProcessEnv = process.env): void {
 	const home = env.HOME || env.USERPROFILE || "";
 
-	// 1. npm_config_prefix / PREFIX
-	const prefix = env.npm_config_prefix || env.PREFIX;
+	// 1. NPM_CONFIG_PREFIX / npm_config_prefix / PREFIX
+	const prefix = env.NPM_CONFIG_PREFIX || env.npm_config_prefix || env.PREFIX;
 	if (prefix) {
 		addCopy(join(prefix, "lib", "node_modules", PKG, "package.json"), out);
 		addCopy(join(prefix, "node_modules", PKG, "package.json"), out);

@@ -500,11 +500,19 @@ function versionFromCandidate(bin: string): string | null {
 }
 
 /**
- * Read the pi core version from disk: resolve the `pi` bin on PATH (traversing all
- * matches until a valid version is found), then falling back to standard global
- * prefix directories.
+ * Read the pi core version from disk: resolve the `pi` bin on PATH and check standard
+ * global prefix directories, selecting the highest valid version found to avoid
+ * local/ancestor node_modules shadowing an updated global installation.
  */
 export function readPiCoreVersionFromDisk(env: NodeJS.ProcessEnv = process.env): string | null {
+	let bestVersion: string | null = null;
+	const updateBest = (v: string | null) => {
+		if (!v) return;
+		if (!bestVersion || compareVersions(v, bestVersion) > 0) {
+			bestVersion = v;
+		}
+	};
+
 	const rawPath = env.PATH ?? "";
 	const dirs = rawPath.split(delimiter).filter(Boolean);
 	const isWin = process.platform === "win32";
@@ -515,9 +523,14 @@ export function readPiCoreVersionFromDisk(env: NodeJS.ProcessEnv = process.env):
 			const candidate = join(dir, name);
 			if (!existsSync(candidate)) continue;
 			const version = versionFromCandidate(candidate);
-			if (version) return version;
+			if (version) {
+				updateBest(version);
+				break;
+			}
 		}
 	}
+
+	if (bestVersion) return bestVersion;
 
 	// Fallback to global prefix directories (npm global prefix, pnpm, etc.)
 	const home = env.HOME || env.USERPROFILE || "";
@@ -531,12 +544,12 @@ export function readPiCoreVersionFromDisk(env: NodeJS.ProcessEnv = process.env):
 
 	for (const p of prefixDirs) {
 		const v1 = readPiCoreVersionAt(join(p, "node_modules", ...PI_CORE_PACKAGE.split("/"), "package.json"));
-		if (v1) return v1;
+		if (v1) updateBest(v1);
 		const v2 = readPiCoreVersionAt(join(p, "lib", "node_modules", ...PI_CORE_PACKAGE.split("/"), "package.json"));
-		if (v2) return v2;
+		if (v2) updateBest(v2);
 	}
 
-	return null;
+	return bestVersion;
 }
 
 /**

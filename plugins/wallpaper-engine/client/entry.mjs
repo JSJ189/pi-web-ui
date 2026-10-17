@@ -1,7 +1,7 @@
 /**
  * wallpaper-engine 客户端入口 (v0.3.13) —— 视频/WebGL2 Scene/Web 全能渲染、多套专属主题热切换、音频联动与自动轮播。
  */
-import { DRAWER_CSS, getGlassThemeCss, WALLPAPER_THEMES } from "./styles.mjs";
+import { DRAWER_CSS, getGlassThemeCss, WALLPAPER_THEMES } from "./styles.mjs?v=0.3.46";
 
 const RUNTIME_KEY = "__piWallpaperEngineRuntime";
 
@@ -132,7 +132,7 @@ async function loadWebWallGL() {
 }
 
 // ------------------------------------------------------------ 音频响应律动模拟与采集
-function createAudioReactiveEngine() {
+function createAudioReactiveEngine(getBgLayer) {
 	let active = false;
 	let rafId = null;
 	const spectrum = new Float32Array(64);
@@ -171,6 +171,13 @@ function createAudioReactiveEngine() {
 			} catch {
 				/* ignore */
 			}
+		}
+
+		try {
+			const layer = typeof getBgLayer === "function" ? getBgLayer() : null;
+			layer?.dispatchAudio?.(spectrumArray);
+		} catch {
+			/* ignore */
 		}
 
 		rafId = requestAnimationFrame(tick);
@@ -219,7 +226,7 @@ function activateThemeLock() {
 				document.head.appendChild(link);
 			}
 			const hostBase = API_BASE.replace(/\/plugins-api\/wallpaper-engine$/, "");
-			link.href = `${hostBase}/themes/${encodeURIComponent(targetTheme)}.css?v=0.3.33`;
+			link.href = `${hostBase}/themes/${encodeURIComponent(targetTheme)}.css?v=0.3.45`;
 			window.dispatchEvent(new CustomEvent("pi-web-ui:theme-change"));
 		}
 	} catch {
@@ -271,7 +278,7 @@ function enforceThemeLock() {
 				document.head.appendChild(link);
 			}
 			const hostBase = API_BASE.replace(/\/plugins-api\/wallpaper-engine$/, "");
-			link.href = `${hostBase}/themes/${encodeURIComponent(targetTheme)}.css?v=0.3.33`;
+			link.href = `${hostBase}/themes/${encodeURIComponent(targetTheme)}.css?v=0.3.45`;
 			window.dispatchEvent(new CustomEvent("pi-web-ui:theme-change"));
 		}
 	} catch {
@@ -348,38 +355,58 @@ function createBackgroundLayer() {
 	let currentMediaEl = null;
 	let currentSceneInstance = null;
 	let currentSceneResizeHandler = null;
+	let currentPosterEl = null;
 	let currentItem = null;
+	let currentLoadEpoch = 0;
 
-	function cleanupCurrent() {
-		if (currentSceneResizeHandler) {
-			window.removeEventListener("resize", currentSceneResizeHandler);
-			currentSceneResizeHandler = null;
+	function safeDestroyMedia(el, sceneInst, resizeHandler) {
+		if (resizeHandler) {
+			window.removeEventListener("resize", resizeHandler);
 		}
-		if (currentSceneInstance) {
+		if (sceneInst) {
 			try {
-				currentSceneInstance.destroy?.();
+				sceneInst.destroy?.();
 			} catch {
 				/* ignore */
 			}
-			currentSceneInstance = null;
 		}
-		if (currentMediaEl instanceof HTMLVideoElement) {
+		if (el instanceof HTMLVideoElement) {
 			try {
-				currentMediaEl.pause();
-				currentMediaEl.removeAttribute("src");
-				currentMediaEl.load();
+				el.pause();
+				el.removeAttribute("src");
+				el.load();
 			} catch {
 				/* ignore */
 			}
+		}
+		try {
+			el?.remove();
+		} catch {
+			/* ignore */
+		}
+	}
+
+	function cleanupAll() {
+		currentLoadEpoch++;
+		safeDestroyMedia(currentMediaEl, currentSceneInstance, currentSceneResizeHandler);
+		currentMediaEl = null;
+		currentSceneInstance = null;
+		currentSceneResizeHandler = null;
+		if (currentPosterEl) {
+			try {
+				currentPosterEl.remove();
+			} catch {}
+			currentPosterEl = null;
 		}
 		container.innerHTML = "";
-		currentMediaEl = null;
 	}
 
 	async function setWallpaper(item, settings) {
+		const epoch = ++currentLoadEpoch;
 		currentItem = item;
+
 		if (!item) {
-			cleanupCurrent();
+			cleanupAll();
 			container.classList.remove("interactive");
 			updateGlassStyle(0, 100, false);
 			deactivateThemeLock();
@@ -403,7 +430,50 @@ function createBackgroundLayer() {
 			settings.lightWallpaperMode,
 		);
 
-		cleanupCurrent();
+		// 只有在冷启动（当前没有任何壁纸在播放）时，才需要一张海报做瞬时垫底；
+		// 若当前已有壁纸在播放，旧的高清壁纸继续保持渲染过渡，绝不中途插入低清糊图！
+		const isColdStart = !currentMediaEl;
+		let coldPoster = null;
+		if (isColdStart) {
+			coldPoster = document.createElement("img");
+			coldPoster.className = "pi-we-poster";
+			coldPoster.src = `${API_BASE}/api/preview?id=${encodeURIComponent(item.id)}`;
+			container.appendChild(coldPoster);
+		}
+
+		// 保存旧媒体的引用，待新媒体准备好后再平滑销毁（无缝双缓冲过渡）
+		const oldMediaEl = currentMediaEl;
+		const oldSceneInst = currentSceneInstance;
+		const oldResizeHandler = currentSceneResizeHandler;
+
+		// 标记媒体就绪并淡入激活
+		function markReady(newMediaEl, newSceneInst, newResizeHandler) {
+			if (epoch !== currentLoadEpoch) {
+				// 已被后续切换作废，清理新创建的资源
+				safeDestroyMedia(newMediaEl, newSceneInst, newResizeHandler);
+				coldPoster?.remove();
+				return false;
+			}
+			newMediaEl.classList.add("pi-we-ready");
+			currentMediaEl = newMediaEl;
+			currentSceneInstance = newSceneInst || null;
+			currentSceneResizeHandler = newResizeHandler || null;
+
+			// 旧媒体与冷启动海报延时 350ms 平滑移除，保证交叉淡入动画无缝完成
+			if (oldMediaEl && oldMediaEl !== newMediaEl) {
+				setTimeout(() => {
+					safeDestroyMedia(oldMediaEl, oldSceneInst, oldResizeHandler);
+				}, 350);
+			}
+			if (coldPoster) {
+				setTimeout(() => {
+					try {
+						coldPoster.remove();
+					} catch {}
+				}, 350);
+			}
+			return true;
+		}
 
 		// 1. 视频壁纸播放（硬件直通与原生无损分辨率）
 		if (item.type === "video" || item.hasVideo) {
@@ -420,24 +490,24 @@ function createBackgroundLayer() {
 			video.setAttribute("playsinline", "true");
 			video.setAttribute("webkit-playsinline", "true");
 
-			video.oncanplay = () => {
-				video.play().catch(() => {
-					// 若浏览器 autoplay policy 拦截非静音播放，先静音起播并等待首个手势解锁声音
-					video.muted = true;
-					void video.play();
-					if (!settings.muteAudio) {
-						const unlockAudio = () => {
-							video.muted = false;
-							video.volume = 1;
-							window.removeEventListener("pointerdown", unlockAudio);
-						};
-						window.addEventListener("pointerdown", unlockAudio, { once: true });
-					}
-				});
+			let activated = false;
+			const activateVideo = () => {
+				if (activated) return;
+				activated = true;
+				markReady(video);
 			};
+			video.oncanplay = activateVideo;
+			video.onplaying = activateVideo;
 
 			container.appendChild(video);
-			currentMediaEl = video;
+			video.play().catch(() => {
+				video.muted = true;
+				void video.play();
+			});
+			// 兜底：如果 400ms 内因浏览器策略未触发 oncanplay，强制淡入显示
+			setTimeout(() => {
+				if (epoch === currentLoadEpoch && !activated) activateVideo();
+			}, 400);
 			return;
 		}
 
@@ -446,25 +516,33 @@ function createBackgroundLayer() {
 			const mountEl = document.createElement("div");
 			mountEl.className = "pi-we-scene-mount";
 			container.appendChild(mountEl);
-			currentMediaEl = mountEl;
 
 			try {
-				const engine = await loadWebWallGL();
-				if (!engine) throw new Error("WebWallGL 引擎未就绪");
-
-				const projectRes = await fetch(`${API_BASE}/api/project?id=${encodeURIComponent(item.id)}`);
-				const projectJson = projectRes.ok ? await projectRes.json() : null;
-
-				let source = null;
-				// 优先拉取打包版 scene.pkg：除非明确标记为无 pkg 的纯散装工程，否则一律先试 pkg
+				const pkgUrl = `${API_BASE}/api/pkg?id=${encodeURIComponent(item.id)}`;
 				const shouldTryPkg = Boolean(item.hasPkg) || (!item.isLooseScene && item.hasPkg !== false);
 
-				// 1. 对于打包版壁纸，优先尝试拉取 scene.pkg
-				if (shouldTryPkg) {
+				// 完全并行流水线：并发拉取 WebGL 引擎、工程配置与 scene.pkg 二进制流，消除串行瀑布
+				const [engine, projectRes, pkgRes] = await Promise.all([
+					loadWebWallGL(),
+					fetch(`${API_BASE}/api/project?id=${encodeURIComponent(item.id)}`).catch(() => null),
+					shouldTryPkg ? fetch(pkgUrl).catch(() => null) : Promise.resolve(null),
+				]);
+
+				if (epoch !== currentLoadEpoch) {
+					mountEl.remove();
+					coldPoster?.remove();
+					return;
+				}
+				if (!engine) throw new Error("WebWallGL 引擎未就绪");
+
+				const projectJson = projectRes && projectRes.ok ? await projectRes.json().catch(() => null) : null;
+				let source = null;
+
+				// 1. 对于打包版壁纸，优先尝试构建 bytesSource
+				if (pkgRes && pkgRes.ok) {
 					try {
-						const pkgRes = await fetch(`${API_BASE}/api/pkg?id=${encodeURIComponent(item.id)}`);
-						if (pkgRes.ok) {
-							const pkgBuffer = await pkgRes.arrayBuffer();
+						const pkgBuffer = await pkgRes.arrayBuffer();
+						if (epoch === currentLoadEpoch) {
 							source = engine.bytesSource(pkgBuffer, projectJson, item.id);
 						}
 					} catch {
@@ -472,12 +550,11 @@ function createBackgroundLayer() {
 					}
 				}
 
-				// 2. 对于官方内置壁纸（如 demon_core、deep_space、beach、neon_sunset 等）或无 pkg 散装工程，使用松散源（Loose Source）
-				if (!source) {
+				// 2. 散装 scene.json 工程处理
+				if (!source && epoch === currentLoadEpoch) {
 					const entryFile = (projectJson?.file || item.file || "scene.json").replace(/\\/g, "/");
 					let totalBytes = 0;
 					const fileCache = new Map();
-
 					source = {
 						key: item.id,
 						async scenePkg() {
@@ -488,7 +565,6 @@ function createBackgroundLayer() {
 								if (!relPath) return null;
 								const safeRel = String(relPath).replace(/\\/g, "/").replace(/^\/+/, "");
 								if (fileCache.has(safeRel)) return fileCache.get(safeRel);
-
 								try {
 									const res = await fetch(
 										`${API_BASE}/api/scene-file?id=${encodeURIComponent(item.id)}&file=${encodeURIComponent(safeRel)}`,
@@ -504,23 +580,9 @@ function createBackgroundLayer() {
 									return null;
 								}
 							};
-
-							// 读取入口场景配置
 							const entryBuf = await read(entryFile, signal);
-							if (!entryBuf) {
-								const fallbackBuf = await read("scene.json", signal);
-								if (!fallbackBuf) {
-									throw new Error(`散装场景入口文件读取失败: ${entryFile}`);
-								}
-								return {
-									entry: "scene.json",
-									read,
-									bytes: () => totalBytes,
-								};
-							}
-
 							return {
-								entry: entryFile,
+								entry: entryBuf ? entryFile : "scene.json",
 								read,
 								bytes: () => totalBytes,
 							};
@@ -529,6 +591,11 @@ function createBackgroundLayer() {
 							return projectJson;
 						},
 					};
+				}
+
+				if (epoch !== currentLoadEpoch || !source) {
+					mountEl.remove();
+					return;
 				}
 
 				const q = getEffectiveQuality(settings);
@@ -547,26 +614,27 @@ function createBackgroundLayer() {
 					videoTexScale: q.videoTexScale,
 				});
 
-				currentSceneInstance = sceneInstance;
-				if (sceneInstance && typeof sceneInstance.setVolume === "function") {
-					try {
-						sceneInstance.setVolume(effectiveVolume);
-					} catch {}
+				if (epoch !== currentLoadEpoch) {
+					sceneInstance?.destroy?.();
+					mountEl.remove();
+					return;
 				}
 
-				// 响应窗口尺寸与 DPI 缩放变化，按当前画质上限计算 DPR
-				currentSceneResizeHandler = () => {
-					if (currentSceneInstance && typeof currentSceneInstance.setRenderDpr === "function") {
+				const resizeHandler = () => {
+					if (sceneInstance && typeof sceneInstance.setRenderDpr === "function") {
 						const curQ = getEffectiveQuality(settings);
-						currentSceneInstance.setRenderDpr(curQ.dpr);
+						sceneInstance.setRenderDpr(curQ.dpr);
 					}
 				};
-				window.addEventListener("resize", currentSceneResizeHandler, { passive: true });
+				window.addEventListener("resize", resizeHandler, { passive: true });
 
+				// 场景渲染挂载完成，平滑淡入激活！
+				markReady(mountEl, sceneInstance, resizeHandler);
 				return;
 			} catch (err) {
-				console.warn("[wallpaper-engine] Scene 壁纸渲染失败，平滑降级至缩略图预览：", err);
+				console.warn("[wallpaper-engine] Scene 壁纸渲染失败，平滑保持海报预览：", err);
 				mountEl.remove();
+				return;
 			}
 		}
 
@@ -578,14 +646,30 @@ function createBackgroundLayer() {
 			iframe.src = `${API_BASE}/api/web?id=${encodeURIComponent(item.id)}&file=${encodeURIComponent(webFile)}`;
 			iframe.sandbox = "allow-scripts allow-same-origin";
 			iframe.setAttribute("allow", "autoplay; audio *");
-			iframe.onload = () => {
+
+			let activated = false;
+			const activateWeb = () => {
+				if (activated) return;
+				activated = true;
 				const vol = settings.muteAudio ? 0 : 1;
 				try {
 					iframe.contentWindow?.postMessage({ __we: 1, op: "setVolume", v: vol }, "*");
 				} catch {}
+				markReady(iframe);
 			};
+
+			iframe.onload = () => {
+				// onload 触发后延时 60ms 确保脚本完成首帧布局与渲染，然后丝滑淡入
+				setTimeout(() => {
+					if (epoch === currentLoadEpoch) activateWeb();
+				}, 60);
+			};
+
 			container.appendChild(iframe);
-			currentMediaEl = iframe;
+			// 兜底：如果外部资源慢，最多 500ms 强制淡入，杜绝停滞
+			setTimeout(() => {
+				if (epoch === currentLoadEpoch && !activated) activateWeb();
+			}, 500);
 			return;
 		}
 
@@ -596,9 +680,13 @@ function createBackgroundLayer() {
 			? `${API_BASE}/api/media?id=${encodeURIComponent(item.id)}`
 			: `${API_BASE}/api/preview?id=${encodeURIComponent(item.id)}`;
 		img.src = mediaSrc;
-
+		img.onload = () => {
+			markReady(img);
+		};
 		container.appendChild(img);
-		currentMediaEl = img;
+		if (img.complete) {
+			markReady(img);
+		}
 	}
 
 	function pause() {
@@ -658,11 +746,21 @@ function createBackgroundLayer() {
 		document.getElementById("pi-we-glass-theme")?.remove();
 	}
 
+	function dispatchAudio(spectrumArray) {
+		if (currentMediaEl instanceof HTMLIFrameElement) {
+			try {
+				currentMediaEl.contentWindow?.__weReceiveAudio?.(spectrumArray);
+			} catch {
+				/* ignore */
+			}
+		}
+	}
+
 	function getCurrentItem() {
 		return currentItem;
 	}
 
-	return { setWallpaper, pause, resume, setMuted, setInteractive, getCurrentItem, destroy };
+	return { setWallpaper, pause, resume, setMuted, setInteractive, dispatchAudio, getCurrentItem, destroy };
 }
 
 // ------------------------------------------------------------ 壁纸库抽屉组件
@@ -682,10 +780,11 @@ function createDrawer(bgLayer, state, onStateChange, triggerRotate) {
 
 	drawer.innerHTML = `
 		<div class="pi-we-header">
-			<h3 class="pi-we-title">🖼️ 壁纸库 · Wallpaper Engine <span class="pi-we-theme-badge" title="设置壁纸时自动开启且锁定专属炫酷主题，保证文字清晰度与最佳观感">🎨 专属主题已联动</span></h3>
+			<h3 class="pi-we-title" title="Wallpaper Engine 壁纸库">🖼️ 壁纸库</h3>
 			<div class="pi-we-header-actions">
-				<button class="pi-we-icon-btn" id="pi-we-rescan-btn" title="重新扫描">🔄 刷新</button>
-				<button class="pi-we-icon-btn" id="pi-we-close-btn" title="关闭">✕</button>
+				<button class="pi-we-icon-btn" id="pi-we-toggle-settings-btn" title="折叠/展开外观与渲染配置">⚙️ <span class="pi-we-btn-label">配置</span> <span id="pi-we-toggle-settings-arrow">▾</span></button>
+				<button class="pi-we-icon-btn" id="pi-we-rescan-btn" title="重新扫描壁纸">🔄 <span class="pi-we-btn-label">刷新</span></button>
+				<button class="pi-we-icon-btn pi-we-close-btn" id="pi-we-close-btn" title="关闭壁纸库">✕</button>
 			</div>
 		</div>
 
@@ -693,7 +792,8 @@ function createDrawer(bgLayer, state, onStateChange, triggerRotate) {
 			<div class="pi-we-slider-row">
 				<span class="pi-we-slider-label">专属主题:</span>
 				<select class="pi-we-select" id="pi-we-theme-select" style="flex: 1;">
-					<option value="obsidian" selected>🌑 黑曜冷月（纯黑极简）</option>
+					<option value="obsidian" ${state.settings.wallpaperTheme === "obsidian" || !state.settings.wallpaperTheme ? "selected" : ""}>🌑 黑曜冷月（纯黑极简微透）</option>
+					<option value="flow" ${state.settings.wallpaperTheme === "flow" || state.settings.wallpaperTheme === "compact-flow" ? "selected" : ""}>🖋️ 极简行文（极致紧凑·无界正文）</option>
 				</select>
 			</div>
 			<div class="pi-we-slider-row">
@@ -821,11 +921,23 @@ function createDrawer(bgLayer, state, onStateChange, triggerRotate) {
 	const tabs = drawer.querySelectorAll(".pi-we-tab");
 	const modeBtn = drawer.querySelector("#pi-we-mode-btn");
 
+	let lastWallpapersFetchTime = 0;
+	const WALLPAPERS_CACHE_TTL = 120_000;
+
 	function open() {
 		ensureStyles();
 		backdrop.classList.add("open");
 		drawer.classList.add("open");
-		void loadWallpapers();
+
+		const now = Date.now();
+		if (wallpapers.length > 0 && now - lastWallpapersFetchTime < WALLPAPERS_CACHE_TTL) {
+			// 瞬时呈现已缓存的壁纸列表，零等待！
+			renderGrid();
+			// 后台静默刷新最新数据
+			void loadWallpapers(true);
+		} else {
+			void loadWallpapers(false);
+		}
 	}
 
 	function close() {
@@ -1030,6 +1142,38 @@ function createDrawer(bgLayer, state, onStateChange, triggerRotate) {
 		}
 	});
 
+	const settingsBar = drawer.querySelector(".pi-we-settings-bar");
+	const toggleSettingsBtn = drawer.querySelector("#pi-we-toggle-settings-btn");
+	const toggleSettingsArrow = drawer.querySelector("#pi-we-toggle-settings-arrow");
+
+	// 配置项支持优雅折叠：默认在小屏幕下折叠以给壁纸列表最大的纵向可视浏览空间
+	const isMobile = typeof window !== "undefined" && window.innerWidth <= 480;
+	const savedCollapsed = typeof localStorage !== "undefined" ? localStorage.getItem("pi-we:settings-collapsed") : null;
+	let isSettingsCollapsed = savedCollapsed !== null ? savedCollapsed === "1" : isMobile;
+
+	function applySettingsCollapsed(collapsed) {
+		if (collapsed) {
+			settingsBar?.classList.add("collapsed");
+			toggleSettingsBtn?.classList.remove("active");
+			if (toggleSettingsArrow) toggleSettingsArrow.textContent = "▾";
+		} else {
+			settingsBar?.classList.remove("collapsed");
+			toggleSettingsBtn?.classList.add("active");
+			if (toggleSettingsArrow) toggleSettingsArrow.textContent = "▴";
+		}
+	}
+	applySettingsCollapsed(isSettingsCollapsed);
+
+	toggleSettingsBtn?.addEventListener("click", () => {
+		isSettingsCollapsed = !isSettingsCollapsed;
+		applySettingsCollapsed(isSettingsCollapsed);
+		try {
+			localStorage.setItem("pi-we:settings-collapsed", isSettingsCollapsed ? "1" : "0");
+		} catch {
+			/* ignore */
+		}
+	});
+
 	drawer.querySelector("#pi-we-rescan-btn").addEventListener("click", async () => {
 		currentPage = 1;
 		gridEl.innerHTML = `<div class="pi-we-empty"><span>正在全盘重新扫描...</span></div>`;
@@ -1192,16 +1336,20 @@ function createDrawer(bgLayer, state, onStateChange, triggerRotate) {
 		return result;
 	}
 
-	async function loadWallpapers() {
+	async function loadWallpapers(silent = false) {
+		if (!silent && wallpapers.length === 0) {
+			gridEl.innerHTML = `<div class="pi-we-empty"><span>正在加载壁纸...</span></div>`;
+		}
 		try {
 			const res = await fetch(`${API_BASE}/api/wallpapers`);
 			const json = await res.json();
 			if (json.ok) {
 				wallpapers = json.wallpapers || [];
 				state.favorites = json.favorites || [];
-				currentPage = 1;
+				lastWallpapersFetchTime = Date.now();
+				if (!silent) currentPage = 1;
 				renderGrid();
-			} else {
+			} else if (!silent) {
 				gridEl.innerHTML = `
 					<div class="pi-we-empty">
 						<span>未检测到 Steam 或创意工坊壁纸</span>
@@ -1211,12 +1359,15 @@ function createDrawer(bgLayer, state, onStateChange, triggerRotate) {
 				updatePagination(0, 1, 1);
 			}
 		} catch (err) {
-			gridEl.innerHTML = `<div class="pi-we-empty"><span>加载失败：${err.message}</span></div>`;
-			updatePagination(0, 1, 1);
+			if (!silent) {
+				gridEl.innerHTML = `<div class="pi-we-empty"><span>加载失败：${err.message}</span></div>`;
+				updatePagination(0, 1, 1);
+			}
 		}
 	}
 
 	function renderGrid() {
+		ensureStyles();
 		const filtered = getFilteredWallpapers();
 		const totalCount = filtered.length;
 		const totalPages = Math.max(1, Math.ceil(totalCount / PAGE_SIZE));
@@ -1249,7 +1400,7 @@ function createDrawer(bgLayer, state, onStateChange, triggerRotate) {
 
 			card.innerHTML = `
 				<div class="pi-we-thumb-wrap pi-we-cover-wrap">
-					${previewUrl ? `<img class="pi-we-thumb pi-we-cover-img" src="${previewUrl}" alt="${w.title}" loading="lazy" />` : ""}
+					${previewUrl ? `<img class="pi-we-thumb pi-we-cover-img" src="${previewUrl}" alt="${w.title}" loading="lazy" decoding="async" fetchpriority="low" />` : ""}
 					<span class="pi-we-badge ${w.type}">${w.type}</span>
 					${isActive ? `<span class="pi-we-active-indicator">✓ 使用中</span>` : ""}
 				</div>
@@ -1320,6 +1471,258 @@ function createDrawer(bgLayer, state, onStateChange, triggerRotate) {
 	return { open, close, toggle, loadWallpapers, renderGrid, syncSettings, getWallpapers: () => wallpapers, destroy };
 }
 
+// ------------------------------------------------------------ 工具调用与思考流详情检查器（Inline Code Pill Inspector）
+function createToolInspector() {
+	const backdrop = document.createElement("div");
+	backdrop.className = "pi-we-inspector-backdrop";
+
+	const dialog = document.createElement("div");
+	dialog.className = "pi-we-inspector-dialog";
+
+	dialog.innerHTML = `
+		<div class="pi-we-inspector-header">
+			<div class="pi-we-inspector-title-group">
+				<div class="pi-we-inspector-icon" id="pi-we-ins-icon">⚡</div>
+				<div class="pi-we-inspector-title" id="pi-we-ins-title">工具详情</div>
+				<div class="pi-we-inspector-badge" id="pi-we-ins-badge">已完成</div>
+			</div>
+			<div class="pi-we-inspector-actions">
+				<button type="button" class="pi-we-inspector-btn" id="pi-we-ins-copy-btn">📋 复制全部</button>
+				<button type="button" class="pi-we-inspector-btn pi-we-inspector-close" id="pi-we-ins-close-btn" title="关闭 (ESC)">✕</button>
+			</div>
+		</div>
+		<div class="pi-we-inspector-body" id="pi-we-ins-body"></div>
+	`;
+
+	backdrop.appendChild(dialog);
+	document.body.appendChild(backdrop);
+
+	const iconEl = dialog.querySelector("#pi-we-ins-icon");
+	const titleEl = dialog.querySelector("#pi-we-ins-title");
+	const badgeEl = dialog.querySelector("#pi-we-ins-badge");
+	const bodyEl = dialog.querySelector("#pi-we-ins-body");
+	const copyBtn = dialog.querySelector("#pi-we-ins-copy-btn");
+	const closeBtn = dialog.querySelector("#pi-we-ins-close-btn");
+
+	let currentCopyText = "";
+
+	function close() {
+		backdrop.classList.remove("open");
+	}
+
+	function open(data) {
+		const { isThinking, name, status, statusClass, duration, args, output, images, error } = data;
+		currentCopyText = "";
+
+		if (isThinking) {
+			iconEl.textContent = "💭";
+			titleEl.textContent = "思考过程 (Thinking)";
+			badgeEl.textContent = duration || "已完成";
+			badgeEl.className = "pi-we-inspector-badge ok";
+
+			bodyEl.innerHTML = `
+				<div class="pi-we-inspector-section">
+					<div class="pi-we-inspector-label">💭 思考链路与分析过程</div>
+					<div class="pi-we-inspector-thinking-text"></div>
+				</div>
+			`;
+			const textEl = bodyEl.querySelector(".pi-we-inspector-thinking-text");
+			if (textEl) textEl.textContent = output || "(暂无思考文本)";
+			currentCopyText = output || "";
+		} else {
+			const toolIcons = {
+				bash: "⚡",
+				read: "📄",
+				write: "✏️",
+				edit: "✏️",
+				edit_soft: "✏️",
+				grep: "🔍",
+				find: "🧭",
+				codemode: "⚡",
+				eval: "⚡",
+				lsp: "💻",
+				subagent: "👥",
+				delegate_task: "👥",
+			};
+			iconEl.textContent = toolIcons[name] || "🔧";
+			titleEl.textContent = `${name}()`;
+
+			badgeEl.className = `pi-we-inspector-badge ${statusClass || "ok"}`;
+			badgeEl.textContent = duration ? `${status || "完成"} · ${duration}` : status || "完成";
+
+			let sectionsHtml = "";
+			if (args) {
+				sectionsHtml += `
+					<div class="pi-we-inspector-section">
+						<div class="pi-we-inspector-label">⚡ 调用入参 / 命令 (Arguments)</div>
+						<pre class="pi-we-inspector-codeblock" id="pi-we-ins-args-pre"></pre>
+					</div>
+				`;
+			}
+			if (images && images.length > 0) {
+				sectionsHtml += `
+					<div class="pi-we-inspector-section">
+						<div class="pi-we-inspector-label">🖼️ 工具输出图片 (${images.length})</div>
+						<div class="pi-we-inspector-images" style="display:flex;flex-wrap:wrap;gap:8px;margin-top:6px;">
+							${images.map((src, i) => `<img src="${src}" style="max-height:240px;max-width:100%;border-radius:6px;border:1px solid rgba(255,255,255,0.14);" alt="image ${i + 1}" />`).join("")}
+						</div>
+					</div>
+				`;
+			}
+			sectionsHtml += `
+				<div class="pi-we-inspector-section">
+					<div class="pi-we-inspector-label">${error ? "❌ 执行报错 (Error Output)" : "📄 执行输出 (Output)"}</div>
+					<pre class="pi-we-inspector-codeblock" id="pi-we-ins-output-pre"></pre>
+				</div>
+			`;
+			bodyEl.innerHTML = sectionsHtml;
+
+			const argsPre = bodyEl.querySelector("#pi-we-ins-args-pre");
+			if (argsPre) argsPre.textContent = args;
+
+			const outPre = bodyEl.querySelector("#pi-we-ins-output-pre");
+			if (outPre) {
+				outPre.textContent =
+					output || (statusClass === "run" ? "正在执行中，等待实时输出..." : "(执行成功，无文本返回)");
+			}
+
+			currentCopyText = (args ? `[Arguments]\n${args}\n\n` : "") + `[Output]\n${output || ""}`;
+		}
+
+		backdrop.classList.add("open");
+	}
+
+	copyBtn.addEventListener("click", () => {
+		if (currentCopyText) {
+			void navigator.clipboard?.writeText?.(currentCopyText);
+			const orig = copyBtn.textContent;
+			copyBtn.textContent = "✓ 已复制";
+			setTimeout(() => {
+				copyBtn.textContent = orig;
+			}, 1200);
+		}
+	});
+
+	closeBtn.addEventListener("click", close);
+	backdrop.addEventListener("click", (e) => {
+		if (e.target === backdrop) close();
+	});
+
+	function onKeyDown(e) {
+		if (e.key === "Escape" && backdrop.classList.contains("open")) {
+			e.stopPropagation();
+			close();
+		}
+	}
+	window.addEventListener("keydown", onKeyDown);
+
+	function destroy() {
+		window.removeEventListener("keydown", onKeyDown);
+		backdrop.remove();
+	}
+
+	return { open, close, destroy, isOpen: () => backdrop.classList.contains("open") };
+}
+
+function setupToolInspectorClickListener(inspector, state) {
+	function onClickCapture(e) {
+		const theme = state.settings?.wallpaperTheme;
+		const isFlow = theme === "flow" || theme === "compact-flow";
+		if (!isFlow) return;
+
+		const toolEl = e.target.closest(".toolcall");
+		const thinkEl = e.target.closest(".thinking");
+		if (!toolEl && !thinkEl) return;
+
+		// 豁免：如果点击了关闭/中断 bash 按钮或图片缩略图，不拦截，保证原生交互与大图灯箱有效
+		if (e.target.closest(".toolcall-kill, .toolcall-open, button.toolcall-image, .toolcall-image")) {
+			return;
+		}
+
+		// 拦截默认原地展开
+		e.preventDefault();
+		e.stopPropagation();
+
+		if (thinkEl) {
+			const output =
+				thinkEl.getAttribute("data-thinking") ||
+				thinkEl.querySelector(".thinking-body")?.textContent?.trim() ||
+				thinkEl.querySelector(".thinking-summary-text")?.textContent?.trim() ||
+				thinkEl.querySelector(".thinking-label")?.textContent?.trim() ||
+				"";
+			const duration = thinkEl.querySelector(".thinking-summary")?.textContent?.trim() || "";
+			inspector.open({
+				isThinking: true,
+				duration,
+				output,
+			});
+			return;
+		}
+
+		if (toolEl) {
+			const name = toolEl.querySelector(".toolcall-name")?.textContent?.trim() || "tool";
+			const isError = toolEl.classList.contains("err");
+			const isRun = toolEl.classList.contains("run");
+			const isOk = toolEl.classList.contains("ok");
+			const statusClass = isError ? "err" : isRun ? "run" : isOk ? "ok" : "idle";
+
+			const statusTitle = toolEl.querySelector(".toolcall-status")?.getAttribute("title") || "";
+			const duration = toolEl.querySelector(".toolcall-duration")?.textContent?.trim() || "";
+
+			const payloadArgs = toolEl.querySelector(".toolcall-payload-args")?.textContent;
+			const payloadOut = toolEl.querySelector(".toolcall-payload-output")?.textContent;
+
+			let args = "";
+			if (payloadArgs !== undefined && payloadArgs !== null && payloadArgs.trim()) {
+				args = payloadArgs;
+			} else {
+				const argsPre = toolEl.querySelector(".toolcall-args pre");
+				const cmdEl = toolEl.querySelector(".toolcall-args .terminal-cmd, .toolcall-cmd");
+				if (argsPre) {
+					args = argsPre.textContent || "";
+				} else if (cmdEl) {
+					args = cmdEl.textContent || "";
+				} else {
+					const pathEl = toolEl.querySelector(".toolcall-path");
+					if (pathEl) args = pathEl.getAttribute("title") || pathEl.textContent || "";
+				}
+			}
+
+			let output = "";
+			if (payloadOut !== undefined && payloadOut !== null && payloadOut.trim()) {
+				output = payloadOut;
+			} else {
+				const outPre = toolEl.querySelector(".toolcall-output pre");
+				if (outPre) {
+					output = outPre.textContent || "";
+				}
+			}
+
+			const imgEls = toolEl.querySelectorAll(".toolcall-images img");
+			const images = Array.from(imgEls)
+				.map((img) => img.src)
+				.filter(Boolean);
+
+			inspector.open({
+				isThinking: false,
+				name,
+				status: statusTitle || (isError ? "执行出错" : isRun ? "运行中" : "已完成"),
+				statusClass,
+				duration,
+				args: args.trim(),
+				output: output.trim(),
+				images,
+				error: isError,
+			});
+		}
+	}
+
+	document.addEventListener("click", onClickCapture, true);
+	return () => {
+		document.removeEventListener("click", onClickCapture, true);
+	};
+}
+
 // ------------------------------------------------------------ 运行时主流程（同步初始化 + 异步非阻塞加载）
 const state = {
 	activeId: "",
@@ -1341,7 +1744,7 @@ const state = {
 };
 
 const bgLayer = createBackgroundLayer();
-const audioEngine = createAudioReactiveEngine();
+const audioEngine = createAudioReactiveEngine(() => bgLayer);
 
 let saveTimer = null;
 function onStateChange() {
@@ -1407,6 +1810,8 @@ function scheduleAutoRotate() {
 
 // 同步创建抽屉面板（确保 UI 结构与事件监听立即就绪）
 const drawer = createDrawer(bgLayer, state, onStateChange, triggerRotate);
+const toolInspector = createToolInspector();
+const stopToolInspector = setupToolInspectorClickListener(toolInspector, state);
 
 const onVisibilityChange = () => {
 	if (state.settings.pauseOnHidden) {
@@ -1460,7 +1865,10 @@ globalThis[RUNTIME_KEY] = {
 	drawer,
 	bgLayer,
 	state,
+	toolInspector,
 	destroy() {
+		stopToolInspector();
+		toolInspector.destroy();
 		for (const off of teardown.splice(0)) {
 			try {
 				off();
@@ -1477,7 +1885,7 @@ globalThis[RUNTIME_KEY] = {
 	},
 };
 
-// ------------------------------------------------------------ 异步拉取激活状态与壁纸（非阻塞后台拉取）
+// ------------------------------------------------------------ 异步拉取激活状态与壁纸（极速秒开起播）
 async function loadInitialState() {
 	try {
 		const res = await fetch(`${API_BASE}/api/active`);
@@ -1491,21 +1899,24 @@ async function loadInitialState() {
 				audioEngine.start();
 			}
 			scheduleAutoRotate();
+
+			// 极速起播：若 /api/active 已直出激活壁纸的完整元数据，立即开播，彻底消除串行等待！
+			if (json.activeWallpaper && json.activeWallpaper.id === state.activeId) {
+				void bgLayer.setWallpaper(json.activeWallpaper, state.settings);
+				if (json.activeWallpaper.type === "scene" || json.activeWallpaper.hasScene) {
+					void loadWebWallGL();
+				}
+			}
 		}
 	} catch {
 		/* ignore */
 	}
 
-	if (state.activeId) {
-		fetch(`${API_BASE}/api/wallpapers`)
-			.then((r) => r.json())
-			.then((json) => {
-				if (json.ok) {
-					const item = json.wallpapers?.find((w) => w.id === state.activeId);
-					if (item) void bgLayer.setWallpaper(item, state.settings);
-				}
-			})
-			.catch(() => {});
+	// 闲时后台静默预热 WebWallGL 运行时引擎
+	if (typeof window !== "undefined" && "requestIdleCallback" in window) {
+		window.requestIdleCallback(() => void loadWebWallGL(), { timeout: 3000 });
+	} else {
+		setTimeout(() => void loadWebWallGL(), 1500);
 	}
 }
 

@@ -7,6 +7,7 @@
  *   3. 负责安静停机（quiesce）、状态汇总（serviceStatus）与生命周期销毁。
  */
 
+import { existsSync } from "node:fs";
 import type { EngineService, DispatchSession } from "../index.js";
 import type { ServerMessage, UiServiceInfo, AgentEngineCapabilities } from "../protocol.js";
 import type { ClientStateStore } from "../client-state.js";
@@ -58,10 +59,25 @@ export class UniversalAgentService implements EngineService {
 	async attach(clientId: string, send: (msg: ServerMessage) => void): Promise<DispatchSession> {
 		let session = this.sessions.get(clientId);
 		if (!session) {
-			const driver = this.driverFactory(this.cwd);
+			let effectiveCwd = this.cwd;
+			const saved = this.stateStore?.get(clientId);
+			if (saved?.lastCwd && saved.lastCwd !== this.cwd) {
+				try {
+					if (existsSync(saved.lastCwd)) {
+						effectiveCwd = saved.lastCwd;
+					}
+				} catch {
+					/* fallback */
+				}
+			}
+			if (typeof this.stateStore?.remember === "function") {
+				this.stateStore.remember(clientId, effectiveCwd);
+			}
+
+			const driver = this.driverFactory(effectiveCwd);
 			session = new UniversalSession({
 				clientId,
-				cwd: this.cwd,
+				cwd: effectiveCwd,
 				dataDir: this.dataDir,
 				agentDir: this.agentDir,
 				send,
@@ -74,6 +90,7 @@ export class UniversalAgentService implements EngineService {
 				onQuit: () => this.onQuit?.() ?? false,
 			});
 			this.sessions.set(clientId, session);
+			session.attachSink(send);
 		} else {
 			session.attachSink(send);
 		}

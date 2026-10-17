@@ -1,0 +1,65 @@
+import { readFileSync } from "node:fs";
+import { dirname, join } from "node:path";
+import { fileURLToPath } from "node:url";
+import { describe, expect, it } from "vitest";
+
+const ROOT = join(dirname(fileURLToPath(import.meta.url)), "..", "..");
+const STYLES_PATH = join(ROOT, "web", "src", "styles.css");
+const SPINNER_PATH = join(ROOT, "web", "src", "components", "HalfRingSpinner.tsx");
+const THINKING_PATH = join(ROOT, "web", "src", "components", "ThinkingBlock.tsx");
+const TOOLCALL_PATH = join(ROOT, "web", "src", "components", "ToolCallBlock.tsx");
+const LEFT_PANEL_PATH = join(ROOT, "web", "src", "components", "LeftPanel.tsx");
+const THEME_FLOW_PATH = join(ROOT, "themes", "flow.css");
+const THEME_WALLPAPER_FLOW_PATH = join(ROOT, "themes", "wallpaper-flow.css");
+
+describe("半圆环转动等待指示器 (HalfRingSpinner)", () => {
+	it("HalfRingSpinner 组件输出标准 180° 半圆弧 SVG", () => {
+		const src = readFileSync(SPINNER_PATH, "utf8");
+		expect(src).toContain("M 12 2 A 10 10 0 0 1 12 22");
+		expect(src).toContain('strokeLinecap="round"');
+		expect(src).toContain("half-ring-spin");
+	});
+
+	it("styles.css 包含 .half-ring-spin 旋转动画规则", () => {
+		const css = readFileSync(STYLES_PATH, "utf8");
+		expect(css).toMatch(/\.half-ring-spin\s*\{[^}]*animation:\s*spin/);
+	});
+
+	it("底栏 working-spin 与工作区 transition-spinner 均为半圆环转动结构", () => {
+		const css = readFileSync(STYLES_PATH, "utf8");
+		// working-spin
+		expect(css).toMatch(
+			/\.working-spin\s*\{[^}]*border:\s*2px solid transparent[^}]*border-top-color:[^}]*border-right-color:/,
+		);
+		// workspace-transition-spinner
+		expect(css).toMatch(
+			/\.workspace-transition-spinner\s*\{[^}]*border:\s*2px solid transparent[^}]*border-top-color:[^}]*border-right-color:/,
+		);
+	});
+
+	it("ThinkingBlock 与 ToolCallBlock 运行等待均接入 HalfRingSpinner", () => {
+		const thinkingSrc = readFileSync(THINKING_PATH, "utf8");
+		expect(thinkingSrc).toContain("HalfRingSpinner");
+		expect(thinkingSrc).not.toContain("FiLoader");
+
+		const toolcallSrc = readFileSync(TOOLCALL_PATH, "utf8");
+		expect(toolcallSrc).toContain("HalfRingSpinner");
+		expect(toolcallSrc).not.toContain("FiLoader");
+	});
+
+	it("LeftPanel 切换加载接入 HalfRingSpinner", () => {
+		const leftPanelSrc = readFileSync(LEFT_PANEL_PATH, "utf8");
+		expect(leftPanelSrc).toContain("HalfRingSpinner");
+		expect(leftPanelSrc).not.toContain("FiLoader");
+	});
+
+	it("极简行文 (flow / wallpaper-flow) 主题动画引用有效关键帧且支持旋转", () => {
+		const flowCss = readFileSync(THEME_FLOW_PATH, "utf8");
+		expect(flowCss).not.toContain("conv-spin");
+		expect(flowCss).toContain("animation: spin 0.85s linear infinite");
+
+		const wpFlowCss = readFileSync(THEME_WALLPAPER_FLOW_PATH, "utf8");
+		expect(wpFlowCss).not.toContain("conv-spin");
+		expect(wpFlowCss).toContain("animation: spin 0.85s linear infinite");
+	});
+});

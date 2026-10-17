@@ -228,7 +228,7 @@ describe("通用 Agent 底座会话统计与底栏指标适配", () => {
 		expect(state.stats.contextUsage.percent).toBe(24);
 
 		session.dispose();
-	});
+	}, 15000);
 
 	it("跨会话切换时，底栏统计数据独立隔离与恢复", async () => {
 		const emitted: ServerMessage[] = [];

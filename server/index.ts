@@ -74,7 +74,7 @@ import type { ServerLang } from "./i18n.js";
 import { McpBridge } from "./mcp-bridge.js";
 import { createMcpHotReload } from "./mcp-hot-reload.js";
 import { createHostMetricsSampler } from "./host-metrics.js";
-import { SchedulerStore, SchedulerValidationError } from "./scheduler-tasks.js";
+import { SchedulerStore } from "./scheduler-tasks.js";
 import { initHttpProxy } from "./http-proxy.js";
 import { globalLspPool } from "./lsp-tool.js";
 import { buildPiWebTokenCookie, decodeCookieToken, isTlsRequest } from "./auth-cookie.js";
@@ -394,22 +394,23 @@ if (AUTH_TOKEN) {
 /** 共享客户端持久化存储：双引擎（pi + dsh）共用同一份内存缓存与落盘通道，避免互相覆盖。 */
 const sharedStateStore = new ClientStateStore(join(DATA_DIR, "client-state.json"));
 
-/** 启动参数显式指定的引擎（--engine pi|dsh|claude 或 PI_WEB_ENGINE）。未显式传则优先读持久化默认引擎。 */
+/** 启动参数显式指定的引擎（--engine pi|dsh|claude|durable 或 PI_WEB_ENGINE）。未显式传则优先读持久化默认引擎。 */
 const EXPLICIT_ENGINE_ARG = cliFlag("--engine") ?? process.env.PI_WEB_ENGINE;
-let currentDefaultEngine: "pi" | "dsh" | "claude" =
-	EXPLICIT_ENGINE_ARG === "claude"
-		? "claude"
-		: EXPLICIT_ENGINE_ARG === "dsh"
-			? "dsh"
-			: EXPLICIT_ENGINE_ARG === "pi"
-				? "pi"
-				: (sharedStateStore.getDefaultEngine() ?? "pi");
+let currentDefaultEngine: EngineId =
+	EXPLICIT_ENGINE_ARG === "durable"
+		? "durable"
+		: EXPLICIT_ENGINE_ARG === "claude"
+			? "claude"
+			: EXPLICIT_ENGINE_ARG === "dsh"
+				? "dsh"
+				: EXPLICIT_ENGINE_ARG === "pi"
+					? "pi"
+					: (sharedStateStore.getDefaultEngine() ?? "pi");
 /** 默认引擎标识（兼容 /api/health 等读取）。 */
-const ENGINE: "pi" | "dsh" | "claude" = currentDefaultEngine;
 /** 每个客户端（浏览器标签页 clientId）当前激活的引擎。支持多标签页同时跑不同引擎 + 零重启热切。 */
-const clientEngines = new Map<string, "pi" | "dsh" | "claude">();
+const clientEngines = new Map<string, EngineId>();
 
-function resolveClientEngine(clientId: string): "pi" | "dsh" | "claude" {
+function resolveClientEngine(clientId: string): EngineId {
 	const mem = clientEngines.get(clientId);
 	if (mem) return mem;
 	if (!EXPLICIT_ENGINE_ARG) {
@@ -423,7 +424,7 @@ function resolveClientEngine(clientId: string): "pi" | "dsh" | "claude" {
 	return currentDefaultEngine;
 }
 
-function setClientEngine(clientId: string, engine: "pi" | "dsh" | "claude"): void {
+function setClientEngine(clientId: string, engine: EngineId): void {
 	clientEngines.set(clientId, engine);
 	currentDefaultEngine = engine;
 	sharedStateStore.saveClientEngine(clientId, engine);
@@ -675,7 +676,6 @@ app.get("/api/preview/*splat", async (req, res) => {
 // Production: serve the built frontend from web/dist. Resolve relative to this
 // module so it works when installed as a package (global/npx/Docker), not just
 // from the repo root. In dev, Vite serves the UI on :5173 and proxies /ws.
-const here = dirname(fileURLToPath(import.meta.url)); // <pkg>/dist/server or <pkg>/server
 // Resolve the package root robustly: dev runs from <repo>/server (tsx), prod
 // from <pkg>/dist/server — the ancestor that actually has package.json wins.
 function resolvePkgRoot(): string {
@@ -1154,10 +1154,13 @@ heartbeatTimer.unref?.();
 
 // 引擎分发：PI_WEB_ENGINE=dsh 时使用 DeepSeek Harness 引擎（server/dsh/），
 // PI_WEB_ENGINE=claude 时使用通用底座下的 Claude Code 驱动（server/universal/），
+// PI_WEB_ENGINE=durable 时使用 Pi Durable 引擎（server/durable/），
 // 默认 pi 引擎。同一 wire 协议，前端无感知（ready/health 携带 engine 字段）。
 import { DshAgentService } from "./dsh/dsh-agent-service.js";
 import { UniversalAgentService, ClaudeCodeDriver, probeClaudeCode } from "./universal/index.js";
+import { DurableAgentService } from "./durable/index.js";
 import { probeAllEngines, probeEngine, getCachedEngineStatuses } from "./engine-probe.js";
+import type { EngineId } from "./protocol.js";
 
 /** dispatch 表所需的方法契约（pi 的 ClientSession 与 dsh 的 DshClientSession
  *  都结构兼容；dsh 引擎对不支持的功能做简化实现）。 */
@@ -1554,6 +1557,7 @@ export interface EngineService {
 let piServiceInstance: AgentService | null = null;
 let dshServiceInstance: DshAgentService | null = null;
 let claudeServiceInstance: UniversalAgentService | null = null;
+let durableServiceInstance: DurableAgentService | null = null;
 let wireEngineHooks: ((svc: EngineService) => void) | null = null;
 let sharedSocketCount = 0;
 let sharedQuiesced = false;
@@ -1563,10 +1567,25 @@ function activeEngines(): EngineService[] {
 	if (piServiceInstance) list.push(piServiceInstance);
 	if (dshServiceInstance) list.push(dshServiceInstance);
 	if (claudeServiceInstance) list.push(claudeServiceInstance);
+	if (durableServiceInstance) list.push(durableServiceInstance);
 	return list;
 }
 
-function ensureEngine(engine: "pi" | "dsh" | "claude"): EngineService {
+function ensureEngine(engine: EngineId): EngineService {
+	if (engine === "durable") {
+		if (!durableServiceInstance) {
+			durableServiceInstance = new DurableAgentService({
+				cwd: CWD,
+				dataDir: DATA_DIR,
+				agentDir: getAgentDir(),
+				stateStore: sharedStateStore,
+			});
+			for (let i = 0; i < sharedSocketCount; i++) durableServiceInstance.noteSocketOpen();
+			if (sharedQuiesced) durableServiceInstance.quiesce();
+			wireEngineHooks?.(durableServiceInstance);
+		}
+		return durableServiceInstance;
+	}
 	if (engine === "claude") {
 		if (!claudeServiceInstance) {
 			claudeServiceInstance = new UniversalAgentService({
@@ -2468,14 +2487,22 @@ wss.on("connection", (ws) => {
 	};
 
 	const handleSwitchEngine = async (msg: Extract<ClientMessage, { type: "switch_engine" }>): Promise<void> => {
-		const targetEngine =
-			msg.engine === "claude" ? "claude" : msg.engine === "dsh" ? "dsh" : msg.engine === "pi" ? "pi" : null;
+		const targetEngine: EngineId | null =
+			msg.engine === "durable"
+				? "durable"
+				: msg.engine === "claude"
+					? "claude"
+					: msg.engine === "dsh"
+						? "dsh"
+						: msg.engine === "pi"
+							? "pi"
+							: null;
 		if (!targetEngine) {
 			send({
 				type: "notice",
 				level: "error",
-				text: `无效的引擎类型：${String(msg.engine)}（仅支持 pi / dsh / claude）`,
-				textEn: `Invalid engine "${String(msg.engine)}" (supported: pi, dsh, claude)`,
+				text: `无效的引擎类型：${String(msg.engine)}（仅支持 pi / dsh / claude / durable）`,
+				textEn: `Invalid engine "${String(msg.engine)}" (supported: pi, dsh, claude, durable)`,
 			});
 			return;
 		}

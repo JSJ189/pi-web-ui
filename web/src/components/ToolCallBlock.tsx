@@ -24,7 +24,6 @@ import {
 	FiHelpCircle,
 	FiImage,
 	FiLayers,
-	FiLoader,
 	FiLock,
 	FiMail,
 	FiMessageSquare,
@@ -46,6 +45,7 @@ import { openContextMenu } from "../context-menu-state";
 // 工具定义说明弹窗（模块级 store：卡片只负责发打开请求，弹窗挂在 App 上）。
 import { openToolInfo } from "../tool-info-state";
 import { CollapsibleHead } from "./CollapsibleHead";
+import { HalfRingSpinner } from "./HalfRingSpinner";
 import type { UiSlotEntry } from "../ui-slots";
 import {
 	parseCodemodeArgs,
@@ -262,6 +262,12 @@ export const ToolCallBlock = memo(function ToolCallBlock({
 		[isQuestionnaire, block.argumentsText],
 	);
 	// 展示文件卡片：参数（路径清单）在流式期间可能是半截 JSON，解析失败就回落到
+	const hasImages = resultImages.length > 0;
+	const hasMarkdown = useMemo(() => {
+		if (!output || output.length < 20) return false;
+		return /(?:```|#\s+|\|\s*[-:]+\s*\||^\s*[-*]\s+|\.md\b)/m.test(output);
+	}, [output]);
+	// 简单入参文本展示（不抛异常）。详情提取在 parsePresentArgs 里已做完。
 	// 原文展示；卡片内容本体不依赖 details（它只让 kind/size/摘录更准）。
 	const presentArgs = useMemo(
 		() => (isPresent ? parsePresentArgs(block.argumentsText) : null),
@@ -367,7 +373,11 @@ export const ToolCallBlock = memo(function ToolCallBlock({
 	};
 
 	return (
-		<div className={`toolcall ${statusClass}`}>
+		<div className={`toolcall ${statusClass}${resultImages.length > 0 ? " has-images" : ""}`}>
+			<div className="toolcall-hidden-payload" style={{ display: "none" }} aria-hidden="true">
+				<div className="toolcall-payload-args">{block.argumentsText || ""}</div>
+				<div className="toolcall-payload-output">{output}</div>
+			</div>
 			<CollapsibleHead
 				open={shown}
 				headClassName="toolcall-head"
@@ -390,13 +400,27 @@ export const ToolCallBlock = memo(function ToolCallBlock({
 							) : done ? (
 								<FiCheck />
 							) : running ? (
-								<FiLoader />
+								<HalfRingSpinner />
 							) : waitingModel ? (
 								<FiClock />
 							) : (
 								<FiMinus />
 							)}
 						</span>
+						{hasImages && (
+							<span
+								className="toolcall-out-badge img"
+								title={t("toolImageZoom") || "包含图片成果"}
+								aria-label="image output"
+							>
+								<FiImage />
+							</span>
+						)}
+						{hasMarkdown && (
+							<span className="toolcall-out-badge md" title="包含 Markdown 输出" aria-label="markdown output">
+								<FiFileText />
+							</span>
+						)}
 						{duration && (
 							<span
 								className="toolcall-duration toolcall-timeout"

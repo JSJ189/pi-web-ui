@@ -24,8 +24,11 @@ import {
 	compositeOverlay,
 	cropImage,
 	dominantColors,
+	extractRegionPalette,
 	flipImage,
 	histogram,
+	pickColor,
+	pickColorsBatch,
 	resizeImage,
 	rotateArbitrary,
 	rotateImage,
@@ -1317,6 +1320,126 @@ check("probeImage：带 EXIF 的 JPEG 仍能从 SOF0 读出宽高", () => {
 
 // ---------------------------------------------------------------------------
 // 14. 参数校验
+// ---------------------------------------------------------------------------
+// 14. 取色与位置截图（pickColor）
+// ---------------------------------------------------------------------------
+
+check("pickColor：精确单点取色与丰富色彩表示", () => {
+	// 创建 10×10 图像，在 (3, 4) 放置纯红 [255, 0, 0, 255]，在 (5, 5) 放置半透明绿 [0, 200, 0, 128]
+	const img = makeImageBy(10, 10, (x, y) => {
+		if (x === 3 && y === 4) return [255, 0, 0, 255];
+		if (x === 5 && y === 5) return [0, 200, 0, 128];
+		return [20, 20, 20, 255]; // 黑色背景
+	});
+
+	const resRed = pickColor(img, { x: 3, y: 4, cropSize: 8, zoom: 2, marker: false });
+	assert.equal(resRed.color.r, 255);
+	assert.equal(resRed.color.g, 0);
+	assert.equal(resRed.color.b, 0);
+	assert.equal(resRed.color.a, 255);
+	assert.equal(resRed.color.hex, "#ff0000");
+	assert.equal(resRed.color.rgb, "rgb(255, 0, 0)");
+	assert.equal(resRed.color.rgba, "rgb(255, 0, 0)");
+	assert.equal(resRed.color.hsl.h, 0);
+	assert.equal(resRed.color.hsl.s, 100);
+	assert.equal(resRed.color.hsl.l, 50);
+	assert.ok(resRed.color.name.includes("red"));
+	assert.equal(resRed.cropImage.width, 16); // 8 * 2
+	assert.equal(resRed.cropImage.height, 16);
+
+	const resGreen = pickColor(img, { x: 5, y: 5, cropSize: 8, zoom: 1 });
+	assert.equal(resGreen.color.r, 0);
+	assert.equal(resGreen.color.g, 200);
+	assert.equal(resGreen.color.b, 0);
+	assert.equal(resGreen.color.a, 128);
+	assert.ok(resGreen.color.hex.startsWith("#00c80080"));
+	assert.ok(resGreen.color.rgba.includes("rgba(0, 200, 0, 0.50)"));
+});
+
+check("pickColor：平滑采样与区域均值", () => {
+	// 创建 5×5 渐变图
+	const img = makeImageBy(5, 5, (x, y) => [x * 50, y * 50, 100, 255]);
+	const res = pickColor(img, { x: 2, y: 2, sampleRadius: 1 });
+	assert.ok(res.color.sampled);
+	assert.equal(res.color.sampleRegion.radius, 1);
+	assert.equal(res.color.sampleRegion.pixelCount, 9);
+	assert.equal(res.color.sampled.r, 100); // 50, 100, 150 的平均值
+	assert.equal(res.color.sampled.g, 100);
+});
+
+check("pickColor：准星标记绝不遮挡目标像素自身", () => {
+	const img = makeImageBy(20, 20, (x, y) => (x === 10 && y === 10 ? [123, 234, 45, 255] : [0, 0, 0, 255]));
+	const res = pickColor(img, { x: 10, y: 10, cropSize: 16, zoom: 4, marker: true });
+	assert.equal(res.hasMarker, true);
+	// 目标像素在放大截图中的几何区域为 [targetInCrop.x * zoom, targetInCrop.y * zoom]，尺寸为 zoom×zoom
+	const tx = res.targetInCrop.x * res.zoom;
+	const ty = res.targetInCrop.y * res.zoom;
+	for (let dy = 0; dy < res.zoom; dy++) {
+		for (let dx = 0; dx < res.zoom; dx++) {
+			const idx = ((ty + dy) * res.cropImage.width + (tx + dx)) * 4;
+			assert.equal(res.cropImage.data[idx], 123, "目标像素 R 未被准星遮挡");
+			assert.equal(res.cropImage.data[idx + 1], 234, "目标像素 G 未被准星遮挡");
+			assert.equal(res.cropImage.data[idx + 2], 45, "目标像素 B 未被准星遮挡");
+		}
+	}
+});
+
+check("pickColor：越界坐标与非法参数抛出明确错误", () => {
+	const img = makeImage(5, 5, [[0, 0, 0, 255]], false);
+	assert.throws(() => pickColor(img, { x: -1, y: 0 }), /超出图像尺寸/);
+	assert.throws(() => pickColor(img, { x: 5, y: 0 }), /超出图像尺寸/);
+	assert.throws(() => pickColor(img, { x: 0, y: 10 }), /超出图像尺寸/);
+	assert.throws(() => pickColor(img, { x: "abc", y: 0 }), /有效数字/);
+});
+
+check("pickColorsBatch：批量多点取色与拼接图输出", () => {
+	// 创建三色分区图：左红，中绿，右蓝
+	const img = makeImageBy(30, 10, (x) => {
+		if (x < 10) return [255, 0, 0, 255];
+		if (x < 20) return [0, 255, 0, 255];
+		return [0, 0, 255, 255];
+	});
+	const points = [
+		{ x: 5, y: 5, label: "red_region" },
+		{ x: 15, y: 5, label: "green_region" },
+		{ x: 25, y: 5, label: "blue_region" },
+	];
+	const res = pickColorsBatch(img, points, { cropSize: 8, zoom: 2 });
+	assert.equal(res.points.length, 3);
+	assert.equal(res.points[0].color.hex, "#ff0000");
+	assert.equal(res.points[1].color.hex, "#00ff00");
+	assert.equal(res.points[2].color.hex, "#0000ff");
+	assert.ok(res.contactSheet);
+	assert.ok(res.contactSheet.width > 0 && res.contactSheet.height > 0);
+});
+
+check("extractRegionPalette：全图/区域自动色板提取并定位代表像素", () => {
+	// 创建包含暗背景和两块不同色块的测试图（类似 UI 胶囊场景）
+	const img = makeImageBy(40, 20, (x, y) => {
+		if (x >= 5 && x < 15 && y >= 5 && y < 15) return [30, 144, 255, 255]; // 蓝色胶囊
+		if (x >= 25 && x < 35 && y >= 5 && y < 15) return [50, 205, 50, 255]; // 绿色胶囊
+		return [20, 20, 20, 255]; // 暗黑背景
+	});
+
+	const res = extractRegionPalette(img, { maxColors: 4, cropSize: 12, zoom: 2 });
+	assert.ok(res.colors.length >= 3, `提取出色板数量至少 3 种（实际：${res.colors.length}）`);
+	const hexes = res.colors.map((c) => c.color.hex.toLowerCase());
+	// 能够识别出深黑底色、蓝色、绿色
+	const hasBlue = hexes.some((h) => h.includes("1e90ff"));
+	const hasGreen = hexes.some((h) => h.includes("32cd32"));
+	const hasDark = hexes.some((h) => h.includes("141414"));
+	assert.ok(hasBlue, "提取出蓝色特征色");
+	assert.ok(hasGreen, "提取出绿色特征色");
+	assert.ok(hasDark, "提取出暗黑背景色");
+
+	// 且每种特征色都自动找到了有效的代表像素坐标及带准星截图
+	for (const item of res.colors) {
+		assert.ok(Number.isFinite(item.coords.x) && Number.isFinite(item.coords.y));
+		assert.ok(item.cropImage.width > 0 && item.cropImage.height > 0);
+	}
+	assert.ok(res.contactSheet, "生成总览 Contact Sheet 图像");
+});
+
 // ---------------------------------------------------------------------------
 
 await checkAsync("非法参数都抛中文错误", async () => {

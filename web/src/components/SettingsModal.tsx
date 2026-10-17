@@ -57,6 +57,7 @@ import type {
 	DshMarketPlugin,
 	DshPatchFileInfo,
 	DshPermissionOption,
+	EngineId,
 	RemoteMcpServer,
 	RemoteSkillSummary,
 	SchedulerTaskView,
@@ -2122,8 +2123,7 @@ export function SettingsModal({
 														}
 														return;
 													}
-													if (!isSelected)
-														appSend({ type: "switch_engine", engine: item.id as "pi" | "dsh" | "claude" });
+													if (!isSelected) appSend({ type: "switch_engine", engine: item.id as EngineId });
 												}}
 											>
 												<div
@@ -2275,8 +2275,7 @@ export function SettingsModal({
 														}
 														return;
 													}
-													if (!isSelected)
-														appSend({ type: "switch_engine", engine: item.id as "pi" | "dsh" | "claude" });
+													if (!isSelected) appSend({ type: "switch_engine", engine: item.id as EngineId });
 												}}
 											>
 												<div

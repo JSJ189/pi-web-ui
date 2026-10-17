@@ -8,7 +8,7 @@
  * 3. 初始化自包含 data/ 目录与 runtime/git 占位结构；
  * 4. 可选生成便于分发的 zip 压缩包。
  */
-import { cpSync, existsSync, mkdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { cpSync, existsSync, mkdirSync, readdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { execSync } from "node:child_process";
@@ -25,10 +25,14 @@ const args = process.argv.slice(2);
 const skipPack = args.includes("--skip-pack");
 const createZip = args.includes("--zip");
 const withGit = args.includes("--with-git") || process.env.PI_BUNDLE_PORTABLE_GIT === "1";
+const withNode = args.includes("--with-node") || process.env.PI_BUNDLE_PORTABLE_NODE === "1";
 
 const PORTABLE_GIT_URL =
 	"https://github.com/git-for-windows/git/releases/download/v2.48.1.windows.1/PortableGit-2.48.1-64-bit.7z.exe";
 const PORTABLE_GIT_FILE = "PortableGit-2.48.1-64-bit.7z.exe";
+
+const PORTABLE_NODE_URL = "https://nodejs.org/dist/v22.14.0/node-v22.14.0-win-x64.zip";
+const PORTABLE_NODE_FILE = "node-v22.14.0-win-x64.zip";
 
 function run(cmd) {
 	console.log(`[make-portable] 执行: ${cmd}`);
@@ -88,7 +92,7 @@ async function main() {
 
 	// 6. 初始化便携数据目录骨架（保持纯净空白，绝不夹带任何本机个人数据）
 	console.log(`[make-portable] 正在创建纯净数据隔离目录骨架...`);
-	const dataSubdirs = ["agent", "web", "git", "home", "workspace", "electron"];
+	const dataSubdirs = ["agent", "web", "git", "home", "workspace", "electron", "npm-global", "npm-cache"];
 	for (const sub of dataSubdirs) {
 		const targetDir = join(portableDir, "data", sub);
 		if (existsSync(targetDir)) {
@@ -168,9 +172,111 @@ async function main() {
 		);
 	}
 
+	// 8. 处理 PortableNode
+	const runtimeNodeDir = join(portableDir, "runtime", "node");
+	mkdirSync(runtimeNodeDir, { recursive: true });
+
+	if (withNode) {
+		const nodeExe = join(runtimeNodeDir, "node.exe");
+		if (existsSync(nodeExe)) {
+			console.log(`[make-portable] 检测到已有内置 PortableNode，跳过下载与解压: ${runtimeNodeDir}`);
+		} else {
+			const cacheDir = join(releaseDir, ".cache");
+			mkdirSync(cacheDir, { recursive: true });
+			const cacheArchive = join(cacheDir, PORTABLE_NODE_FILE);
+
+			// (1) 下载 PortableNode
+			if (!existsSync(cacheArchive) || readFileSync(cacheArchive).length < 20_000_000) {
+				console.log(`[make-portable] 正在下载 Portable Node.js (~30MB): ${PORTABLE_NODE_URL}`);
+				try {
+					execSync(`curl -fSL -o "${cacheArchive}" "${PORTABLE_NODE_URL}"`, {
+						cwd: repoRoot,
+						stdio: "inherit",
+					});
+				} catch (err) {
+					console.error(`✖ 下载 PortableNode 失败: ${err.message}`);
+					throw err;
+				}
+			} else {
+				console.log(`[make-portable] 复用已缓存的 PortableNode 安装包: ${cacheArchive}`);
+			}
+
+			// (2) 解压 PortableNode 到 runtime/node
+			console.log(`[make-portable] 正在解压 PortableNode 到 ${runtimeNodeDir}...`);
+			const tempExtractDir = join(cacheDir, "node-extract-temp");
+			if (existsSync(tempExtractDir)) {
+				rmSync(tempExtractDir, { recursive: true, force: true });
+			}
+			mkdirSync(tempExtractDir, { recursive: true });
+
+			let extractOk = false;
+			if (process.platform === "win32") {
+				try {
+					execSync(`tar -xf "${cacheArchive}" -C "${tempExtractDir}"`, {
+						cwd: repoRoot,
+						stdio: "inherit",
+					});
+					extractOk = true;
+				} catch {}
+				if (!extractOk) {
+					try {
+						execSync(`7z x "${cacheArchive}" -o"${tempExtractDir}" -y`, {
+							cwd: repoRoot,
+							stdio: "inherit",
+						});
+						extractOk = true;
+					} catch {}
+				}
+				if (!extractOk) {
+					try {
+						execSync(
+							`powershell -NoProfile -Command "Expand-Archive -Path '${cacheArchive}' -DestinationPath '${tempExtractDir}' -Force"`,
+							{ cwd: repoRoot, stdio: "inherit" },
+						);
+						extractOk = true;
+					} catch {}
+				}
+			} else {
+				try {
+					execSync(`unzip -q "${cacheArchive}" -d "${tempExtractDir}"`, {
+						cwd: repoRoot,
+						stdio: "inherit",
+					});
+					extractOk = true;
+				} catch {}
+			}
+
+			if (extractOk) {
+				// 提取内层文件夹（例如 node-v22.14.0-win-x64/）内容至 runtimeNodeDir
+				const items = readdirSync(tempExtractDir);
+				const subDir = items.find((item) => existsSync(join(tempExtractDir, item, "node.exe")));
+				const sourceDir = subDir ? join(tempExtractDir, subDir) : tempExtractDir;
+
+				cpSync(sourceDir, runtimeNodeDir, { recursive: true });
+				rmSync(tempExtractDir, { recursive: true, force: true });
+
+				if (existsSync(nodeExe)) {
+					console.log(`✔ PortableNode 已成功内置打包到: ${runtimeNodeDir}`);
+				} else {
+					console.warn(`⚠ PortableNode 解压未找到 node.exe，请检查源文件。`);
+				}
+			} else {
+				console.warn(`⚠ PortableNode 解压未成功，请检查依赖工具（tar/7z/powershell/unzip）。`);
+			}
+		}
+	} else {
+		writeFileSync(
+			join(runtimeNodeDir, "README.txt"),
+			"请将解压后的 Node.js 二进制文件（node.exe, npm.cmd, npx.cmd 等）放置在本目录下。\n" +
+				"启动脚本与桌面主程序将自动检测并挂载该便携 Node 与 npm 环境，无需宿主机安装 Node/npm。\n" +
+				"下载地址: https://nodejs.org/dist/v22.14.0/node-v22.14.0-win-x64.zip\n",
+			"utf8",
+		);
+	}
+
 	console.log(`✔ 便携版制作完成: ${portableDir}`);
 
-	// 8. 可选压缩成 zip
+	// 9. 可选压缩成 zip
 	if (createZip) {
 		const zipName = `pi-web-ui-desktop-${version}-portable.zip`;
 		const zipTarget = join(releaseDir, zipName);
@@ -216,7 +322,7 @@ async function main() {
 	console.log("\n便携版使用提示：");
 	console.log("1. 直接将 release/PiWebUI-Portable 目录拷贝至 U 盘；");
 	console.log("2. 在 U 盘根目录下双击 启动Pi.bat 即可随身运行；");
-	console.log("3. 如需完全脱离系统环境，可下载 PortableGit 解压至 runtime/git 目录。");
+	console.log("3. 如需完全脱离系统环境，可下载 PortableGit / Node.js 解压至 runtime/git 与 runtime/node 目录。");
 }
 
 main().catch((err) => {

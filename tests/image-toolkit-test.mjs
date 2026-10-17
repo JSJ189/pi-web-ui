@@ -242,6 +242,7 @@ async function partA() {
 				[
 					"GET /ws/image",
 					"GET /ws/list",
+					"GET /ws/pick-color",
 					"GET /ws/probe",
 					"GET /ws/settings",
 					"GET /ws/text",
@@ -257,11 +258,12 @@ async function partA() {
 					"image_config_service",
 					"image_generate",
 					"image_info",
+					"image_pick_color",
 					"image_services",
 					"image_transform",
 					"image_watermark",
 				].join(","),
-			`注册 7 个一体化 AI 工具（实际：${[...tools.keys()].join(", ")}）`,
+			`注册 8 个一体化 AI 工具（实际：${[...tools.keys()].join(", ")}）`,
 		);
 		for (const t of tools.values()) {
 			check(
@@ -444,6 +446,93 @@ async function partA() {
 		const wmPix = probeImage(wmOut);
 		check(wmPix.width === 40 && wmPix.height === 30, "水印不改变画布尺寸");
 		check(!wmOut.equals(png), "水印确实改了像素");
+
+		// -- image_pick_color 单点取色 -----------------------------------------
+		const pickRes = await tools.get("image_pick_color").execute("t15", {
+			path: "a.png",
+			x: 10,
+			y: 10,
+			cropSize: 16,
+			zoom: 2,
+			marker: true,
+			out: "picked-pos.png",
+		});
+		check(Array.isArray(pickRes.content) && pickRes.content.length === 2, "image_pick_color 返回 2 个 content block");
+		check(
+			pickRes.content[0].type === "text" && /Picked color at \(10, 10\)/.test(pickRes.content[0].text),
+			"文本描述取色结果",
+		);
+		check(pickRes.content[1].type === "image" && pickRes.content[1].mimeType === "image/png", "包含截图 image block");
+		check(Boolean(pickRes.details?.color?.hex), "details 包含 color 对象");
+		check(existsSync(join(cwd, "picked-pos.png")), "out 参数落盘截图成功");
+		const cropSavedPix = probeImage(readFileSync(join(cwd, "picked-pos.png")));
+		check(cropSavedPix.width === 32 && cropSavedPix.height === 32, "截图尺寸满足 cropSize * zoom (16 * 2 = 32)");
+
+		await rejects(
+			() => tools.get("image_pick_color").execute("t16", { path: "a.png", x: 999, y: 999 }),
+			/超出图片尺寸/,
+			"坐标越界时抛出明确提示",
+		);
+
+		// -- image_pick_color 批量多点取色 -------------------------------------
+		const batchRes = await tools.get("image_pick_color").execute("t17", {
+			path: "a.png",
+			points: [
+				{ x: 5, y: 5, label: "corner" },
+				{ x: 15, y: 15, label: "center" },
+			],
+			cropSize: 16,
+			zoom: 2,
+			out: "batch-sheet.png",
+		});
+		check(batchRes.details?.mode === "batch", "批量模式标记 mode=batch");
+		check(batchRes.details?.points?.length === 2, "批量模式返回 2 个采样点数据");
+		check(existsSync(join(cwd, "batch-sheet.png")), "批量拼贴总览图成功落盘");
+		check(
+			batchRes.content.some((c) => c.type === "image"),
+			"批量模式返回 image block",
+		);
+
+		// -- image_pick_color 全图/区域自动色板提取模式 -----------------------
+		const paletteRes = await tools.get("image_pick_color").execute("t18", {
+			path: "a.png",
+			maxColors: 4,
+			cropSize: 16,
+			zoom: 2,
+			out: "palette-sheet.png",
+		});
+		check(paletteRes.details?.mode === "palette", "色板模式标记 mode=palette");
+		check(paletteRes.details?.colors?.length > 0, "色板模式自动提取出特征颜色");
+		check(
+			paletteRes.content[0].type === "text" && /Extracted color palette/.test(paletteRes.content[0].text),
+			"文本描述色板分析",
+		);
+		check(existsSync(join(cwd, "palette-sheet.png")), "色板总览图成功落盘");
+
+		// -- /ws/pick-color 路由测试（单点 / 批量 / 色板） ---------------------
+		res = await callRoute(routes.get("GET /ws/pick-color"), { query: { path: "a.png", x: "10", y: "10" } });
+		check(
+			res.body?.ok === true && res.body?.color?.hex && typeof res.body?.crop?.dataUrl === "string",
+			"/ws/pick-color 单点模式返回取色与截图 dataUrl",
+		);
+		res = await callRoute(routes.get("GET /ws/pick-color"), {
+			query: {
+				path: "a.png",
+				points: JSON.stringify([
+					{ x: 5, y: 5 },
+					{ x: 15, y: 15 },
+				]),
+			},
+		});
+		check(
+			res.body?.ok === true && res.body?.mode === "batch" && typeof res.body?.contactSheetDataUrl === "string",
+			"/ws/pick-color 批量模式返回 contactSheetDataUrl",
+		);
+		res = await callRoute(routes.get("GET /ws/pick-color"), { query: { path: "a.png", maxColors: "3" } });
+		check(
+			res.body?.ok === true && res.body?.mode === "palette" && Array.isArray(res.body?.colors),
+			"/ws/pick-color 色板模式自动分析主要色彩",
+		);
 		stop();
 	}
 	{
@@ -453,7 +542,7 @@ async function partA() {
 		check(tools.size === 0, "aiTools=false 时不注册任何 AI 工具");
 		let res2 = await callRoute(routes.get("POST /ws/settings"), { body: { aiTools: true, suffix: "-x" } });
 		check(res2.body?.ok === true && res2.body?.settings?.suffix === "-x", "POST /ws/settings 存配置并回显");
-		check(tools.size === 7, "打开 aiTools 后工具即时上架");
+		check(tools.size === 8, "打开 aiTools 后工具即时上架");
 		check(
 			broadcasts.some((b) => b?.kind === "settings" && b.values?.suffix === "-x"),
 			"设置变更广播给视图",
@@ -468,7 +557,7 @@ async function partA() {
 	{
 		const { host, routes, tools } = makeHost(cwd, pluginDir, {});
 		const stop = mod.default.activate(host);
-		check(routes.size > 0 && tools.size === 7, "激活后路由与工具都在位");
+		check(routes.size > 0 && tools.size === 8, "激活后路由与工具都在位");
 		stop();
 		check(routes.size === 0, "反激活撤销全部路由");
 		check(tools.size === 0, "反激活撤销全部工具");

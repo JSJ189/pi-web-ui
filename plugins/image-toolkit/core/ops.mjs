@@ -785,3 +785,558 @@ export function dominantColors(img, count = 6) {
 		share: ns[k] / total,
 	}));
 }
+
+// ---------------------------------------------------------------------------
+// 取色与位置截图（Color Picker & Location Reticle Crop）
+// ---------------------------------------------------------------------------
+
+function rgbToHsl(r, g, b) {
+	const r0 = r / 255;
+	const g0 = g / 255;
+	const b0 = b / 255;
+	const max = Math.max(r0, g0, b0);
+	const min = Math.min(r0, g0, b0);
+	const delta = max - min;
+	const l = (max + min) / 2;
+	let h = 0;
+	let s = 0;
+	if (delta !== 0) {
+		s = l > 0.5 ? delta / (2 - max - min) : delta / (max + min);
+		if (max === r0) h = ((g0 - b0) / delta + (g0 < b0 ? 6 : 0)) / 6;
+		else if (max === g0) h = ((b0 - r0) / delta + 2) / 6;
+		else h = ((r0 - g0) / delta + 4) / 6;
+	}
+	const hDeg = Math.round(h * 360);
+	const sPct = Math.round(s * 100);
+	const lPct = Math.round(l * 100);
+	return {
+		h: hDeg,
+		s: sPct,
+		l: lPct,
+		css: `hsl(${hDeg}, ${sPct}%, ${lPct}%)`,
+	};
+}
+
+function describeColor(r, g, b, a) {
+	if (a < 32) return "transparent";
+	const r0 = r / 255;
+	const g0 = g / 255;
+	const b0 = b / 255;
+	const max = Math.max(r0, g0, b0);
+	const min = Math.min(r0, g0, b0);
+	const delta = max - min;
+	const l = (max + min) / 2;
+	const s = delta === 0 ? 0 : delta / (1 - Math.abs(2 * l - 1));
+
+	if (s < 0.12) {
+		if (l < 0.08) return "black";
+		if (l < 0.25) return "dark gray";
+		if (l < 0.7) return "gray";
+		if (l < 0.92) return "light gray";
+		return "white";
+	}
+
+	let h = 0;
+	if (max === r0) h = ((g0 - b0) / delta + (g0 < b0 ? 6 : 0)) / 6;
+	else if (max === g0) h = ((b0 - r0) / delta + 2) / 6;
+	else h = ((r0 - g0) / delta + 4) / 6;
+	const deg = Math.round(h * 360);
+
+	let tone = "";
+	if (l < 0.25) tone = "dark ";
+	else if (l > 0.8) tone = "light ";
+	else if (s > 0.75) tone = "vibrant ";
+
+	let name = "color";
+	if (deg >= 345 || deg < 15) name = "red";
+	else if (deg < 45) name = "orange";
+	else if (deg < 70) name = "yellow";
+	else if (deg < 165) name = "green";
+	else if (deg < 200) name = "cyan";
+	else if (deg < 255) name = "blue";
+	else if (deg < 290) name = "purple";
+	else if (deg < 345) name = "magenta";
+
+	return `${tone}${name}`.trim();
+}
+
+function formatHex(r, g, b, a = 255) {
+	const rh = r.toString(16).padStart(2, "0");
+	const gh = g.toString(16).padStart(2, "0");
+	const bh = b.toString(16).padStart(2, "0");
+	if (a < 255) {
+		const ah = a.toString(16).padStart(2, "0");
+		return `#${rh}${gh}${bh}${ah}`;
+	}
+	return `#${rh}${gh}${bh}`;
+}
+
+function zoomImageNearest(img, factor) {
+	if (factor <= 1) return copyImage(img);
+	const f = clampInt(Math.trunc(factor), 1, 16);
+	const { width: sw, height: sh, data: sdata } = img;
+	const dw = sw * f;
+	const dh = sh * f;
+	const out = newImage(dw, dh, img.hasAlpha);
+	const odata = out.data;
+
+	for (let y = 0; y < sh; y++) {
+		const sRow = y * sw * 4;
+		const dRowBase = y * f * dw * 4;
+		for (let x = 0; x < sw; x++) {
+			const si = sRow + x * 4;
+			const r = sdata[si];
+			const g = sdata[si + 1];
+			const b = sdata[si + 2];
+			const a = sdata[si + 3];
+
+			for (let dy = 0; dy < f; dy++) {
+				const rowOffset = dRowBase + dy * dw * 4;
+				for (let dx = 0; dx < f; dx++) {
+					const di = rowOffset + (x * f + dx) * 4;
+					odata[di] = r;
+					odata[di + 1] = g;
+					odata[di + 2] = b;
+					odata[di + 3] = a;
+				}
+			}
+		}
+	}
+	return out;
+}
+
+function drawReticle(img, targetRect) {
+	const { width: w, height: h, data } = img;
+	const setPixel = (px, py, r, g, b, a = 255) => {
+		if (px < 0 || px >= w || py < 0 || py >= h) return;
+		const idx = (py * w + px) * 4;
+		data[idx] = r;
+		data[idx + 1] = g;
+		data[idx + 2] = b;
+		data[idx + 3] = a;
+	};
+
+	const { x: tx, y: ty, width: tw, height: th } = targetRect;
+	const cx = Math.floor(tx + tw / 2);
+	const cy = Math.floor(ty + th / 2);
+
+	const drawRectOutline = (rx, ry, rw, rh, r, g, b) => {
+		for (let x = rx; x < rx + rw; x++) {
+			setPixel(x, ry, r, g, b);
+			setPixel(x, ry + rh - 1, r, g, b);
+		}
+		for (let y = ry; y < ry + rh; y++) {
+			setPixel(rx, y, r, g, b);
+			setPixel(rx + rw - 1, y, r, g, b);
+		}
+	};
+
+	// 目标像素外边框（不覆盖目标像素自身，贴着外缘绘制）
+	drawRectOutline(tx - 1, ty - 1, tw + 2, th + 2, 0, 0, 0);
+	if (tw >= 4) {
+		drawRectOutline(tx - 2, ty - 2, tw + 4, th + 4, 255, 255, 255);
+	}
+
+	// 十字准星线（从边缘到中心，留出中央间隔）
+	const gap = Math.max(3, Math.floor(tw / 2) + 2);
+
+	const drawHLine = (x0, x1, y) => {
+		for (let x = x0; x <= x1; x++) {
+			setPixel(x, y - 1, 0, 0, 0);
+			setPixel(x, y, 255, 255, 255);
+			setPixel(x, y + 1, 0, 0, 0);
+		}
+	};
+
+	const drawVLine = (x, y0, y1) => {
+		for (let y = y0; y <= y1; y++) {
+			setPixel(x - 1, y, 0, 0, 0);
+			setPixel(x, y, 255, 255, 255);
+			setPixel(x + 1, y, 0, 0, 0);
+		}
+	};
+
+	if (cx - gap > 0) drawHLine(0, cx - gap, cy);
+	if (cx + gap < w - 1) drawHLine(cx + gap, w - 1, cy);
+	if (cy - gap > 0) drawVLine(cx, 0, cy - gap);
+	if (cy + gap < h - 1) drawVLine(cx, cy + gap, h - 1);
+}
+
+/**
+ * 图像取色与定位截图：
+ * 提取坐标 (x, y) 处的像素颜色（精确值与半径均值），截取周边局部区域，放大并绘制高对比度瞄准准星。
+ */
+export function pickColor(img, { x, y, sampleRadius = 0, cropSize = 64, zoom = 2, marker = true } = {}) {
+	assertImage(img);
+	const px = Math.round(Number(x));
+	const py = Math.round(Number(y));
+	if (!Number.isFinite(px) || !Number.isFinite(py)) {
+		throw new Error("取色坐标 x 和 y 必须是有效数字");
+	}
+	const { width: w, height: h, data } = img;
+	if (px < 0 || px >= w || py < 0 || py >= h) {
+		throw new Error(`取色坐标 (${px}, ${py}) 超出图像尺寸 ${w}×${h}（有效范围：x: 0..${w - 1}, y: 0..${h - 1}）`);
+	}
+
+	const exactIdx = (py * w + px) * 4;
+	const r = data[exactIdx];
+	const g = data[exactIdx + 1];
+	const b = data[exactIdx + 2];
+	const a = data[exactIdx + 3];
+
+	const r0 = r / 255;
+	const g0 = g / 255;
+	const b0 = b / 255;
+	const luma = Number((0.2126 * r0 + 0.7152 * g0 + 0.0722 * b0).toFixed(3));
+	const hsl = rgbToHsl(r, g, b);
+	const hex = formatHex(r, g, b, a);
+	const name = describeColor(r, g, b, a);
+
+	const color = {
+		r,
+		g,
+		b,
+		a,
+		hex,
+		rgb: `rgb(${r}, ${g}, ${b})`,
+		rgba: a === 255 ? `rgb(${r}, ${g}, ${b})` : `rgba(${r}, ${g}, ${b}, ${(a / 255).toFixed(2)})`,
+		hsl,
+		luminance: luma,
+		name,
+	};
+
+	const rad = Math.min(16, Math.max(0, Math.round(Number(sampleRadius) || 0)));
+	if (rad > 0) {
+		let sr = 0;
+		let sg = 0;
+		let sb = 0;
+		let sa = 0;
+		let count = 0;
+		const minX = Math.max(0, px - rad);
+		const maxX = Math.min(w - 1, px + rad);
+		const minY = Math.max(0, py - rad);
+		const maxY = Math.min(h - 1, py + rad);
+
+		for (let sy = minY; sy <= maxY; sy++) {
+			for (let sx = minX; sx <= maxX; sx++) {
+				const idx = (sy * w + sx) * 4;
+				sr += data[idx];
+				sg += data[idx + 1];
+				sb += data[idx + 2];
+				sa += data[idx + 3];
+				count++;
+			}
+		}
+
+		if (count > 0) {
+			const avgR = Math.round(sr / count);
+			const avgG = Math.round(sg / count);
+			const avgB = Math.round(sb / count);
+			const avgA = Math.round(sa / count);
+			const avgLuma = Number((0.2126 * (avgR / 255) + 0.7152 * (avgG / 255) + 0.0722 * (avgB / 255)).toFixed(3));
+			color.sampled = {
+				r: avgR,
+				g: avgG,
+				b: avgB,
+				a: avgA,
+				hex: formatHex(avgR, avgG, avgB, avgA),
+				rgb: `rgb(${avgR}, ${avgG}, ${avgB})`,
+				rgba:
+					avgA === 255
+						? `rgb(${avgR}, ${avgG}, ${avgB})`
+						: `rgba(${avgR}, ${avgG}, ${avgB}, ${(avgA / 255).toFixed(2)})`,
+				hsl: rgbToHsl(avgR, avgG, avgB),
+				luminance: avgLuma,
+				name: describeColor(avgR, avgG, avgB, avgA),
+			};
+			color.sampleRegion = {
+				radius: rad,
+				x0: minX,
+				y0: minY,
+				x1: maxX,
+				y1: maxY,
+				width: maxX - minX + 1,
+				height: maxY - minY + 1,
+				pixelCount: count,
+			};
+		}
+	}
+
+	const cSize = clampInt(Math.round(Number(cropSize) || 64), 8, 512);
+	const half = Math.floor(cSize / 2);
+	const cropX = px - half;
+	const cropY = py - half;
+
+	const rawCrop = cropImage(img, { x: cropX, y: cropY, width: cSize, height: cSize });
+	const targetInCrop = { x: px - cropX, y: py - cropY };
+
+	const zFactor = clampInt(Math.round(Number(zoom) || 2), 1, 16);
+	const zoomed = zoomImageNearest(rawCrop, zFactor);
+
+	if (marker !== false) {
+		const targetRect = {
+			x: targetInCrop.x * zFactor,
+			y: targetInCrop.y * zFactor,
+			width: zFactor,
+			height: zFactor,
+		};
+		drawReticle(zoomed, targetRect);
+	}
+
+	return {
+		coords: { x: px, y: py },
+		color,
+		cropBounds: {
+			x: cropX,
+			y: cropY,
+			width: cSize,
+			height: cSize,
+		},
+		targetInCrop,
+		cropImage: zoomed,
+		zoom: zFactor,
+		hasMarker: marker !== false,
+	};
+}
+
+function colorDistSq(r1, g1, b1, r2, g2, b2) {
+	const dr = r1 - r2;
+	const dg = g1 - g2;
+	const db = b1 - b2;
+	return 2 * dr * dr + 4 * dg * dg + 3 * db * db;
+}
+
+/**
+ * 将若干个带准星的局部截图及对应色块拼接成一张综合 Contact Sheet
+ */
+function stitchCropsWithSwatches(items, { swatchHeight = 22, gap = 8, padding = 8 } = {}) {
+	if (!items.length) return null;
+	const n = items.length;
+	const itemW = items[0].cropImage.width;
+	const itemH = items[0].cropImage.height;
+	const blockH = itemH + swatchHeight + 4;
+
+	const cols = Math.min(n, 4);
+	const rows = Math.ceil(n / cols);
+
+	const totalW = padding * 2 + cols * itemW + (cols - 1) * gap;
+	const totalH = padding * 2 + rows * blockH + (rows - 1) * gap;
+
+	const sheet = newImage(totalW, totalH, true);
+	// 填充深色底板背景 #18191f
+	const bgR = 24;
+	const bgG = 25;
+	const bgB = 31;
+	const bgA = 255;
+	for (let i = 0; i < sheet.data.length; i += 4) {
+		sheet.data[i] = bgR;
+		sheet.data[i + 1] = bgG;
+		sheet.data[i + 2] = bgB;
+		sheet.data[i + 3] = bgA;
+	}
+
+	const setPx = (px, py, r, g, b, a = 255) => {
+		if (px < 0 || px >= totalW || py < 0 || py >= totalH) return;
+		const idx = (py * totalW + px) * 4;
+		sheet.data[idx] = r;
+		sheet.data[idx + 1] = g;
+		sheet.data[idx + 2] = b;
+		sheet.data[idx + 3] = a;
+	};
+
+	items.forEach((item, idx) => {
+		const c = idx % cols;
+		const r = Math.floor(idx / cols);
+		const startX = padding + c * (itemW + gap);
+		const startY = padding + r * (blockH + gap);
+
+		// 1. 复制局部截图像素
+		const src = item.cropImage;
+		for (let y = 0; y < src.height; y++) {
+			for (let x = 0; x < src.width; x++) {
+				const si = (y * src.width + x) * 4;
+				setPx(startX + x, startY + y, src.data[si], src.data[si + 1], src.data[si + 2], src.data[si + 3]);
+			}
+		}
+
+		// 2. 截图下方绘制分割线
+		const lineY = startY + itemH + 1;
+		for (let x = 0; x < itemW; x++) {
+			setPx(startX + x, lineY, 60, 64, 76, 255);
+		}
+
+		// 3. 绘制颜色色块
+		const swY = lineY + 2;
+		const { r: cr, g: cg, b: cb } = item.color;
+		for (let sy = 0; sy < swatchHeight; sy++) {
+			for (let sx = 0; sx < itemW; sx++) {
+				const isBorder = sy === 0 || sy === swatchHeight - 1 || sx === 0 || sx === itemW - 1;
+				if (isBorder) {
+					setPx(startX + sx, swY + sy, 40, 44, 52, 255);
+				} else {
+					setPx(startX + sx, swY + sy, cr, cg, cb, 255);
+				}
+			}
+		}
+	});
+
+	return sheet;
+}
+
+/**
+ * 批量多点取色：
+ * 对指定的多个点坐标依次取色并生成带准星截图，同时返回拼贴总览图。
+ */
+export function pickColorsBatch(img, points, options = {}) {
+	assertImage(img);
+	if (!Array.isArray(points) || !points.length) {
+		throw new Error("points 必须是非空坐标数组");
+	}
+	const results = points.map((pt, idx) => {
+		const px = Math.round(Number(pt.x));
+		const py = Math.round(Number(pt.y));
+		const picked = pickColor(img, { ...options, x: px, y: py });
+		return {
+			label: typeof pt.label === "string" && pt.label.trim() ? pt.label.trim() : `point_${idx + 1}`,
+			...picked,
+		};
+	});
+
+	const contactSheet = stitchCropsWithSwatches(results, {
+		swatchHeight: 20,
+		gap: 8,
+		padding: 8,
+	});
+
+	return {
+		points: results,
+		contactSheet,
+	};
+}
+
+/**
+ * 区域/全图色板提取与自动代表坐标定位：
+ * 分析画面中所有关键特征颜色（主背景、强调色、文字等），并自动为每个颜色在原图上定位出最佳代表坐标与局部准星截图。
+ */
+export function extractRegionPalette(
+	img,
+	{ region = {}, maxColors = 6, cropSize = 64, zoom = 2, marker = true, sampleRadius = 0 } = {},
+) {
+	assertImage(img);
+	const { width: w, height: h, data } = img;
+	const rx = Math.max(0, Math.trunc(region?.x ?? 0));
+	const ry = Math.max(0, Math.trunc(region?.y ?? 0));
+	const rw = Math.min(w - rx, Math.max(1, Math.trunc(region?.width ?? w)));
+	const rh = Math.min(h - ry, Math.max(1, Math.trunc(region?.height ?? h)));
+
+	const limit = clampInt(Math.trunc(maxColors) || 6, 1, 16);
+
+	const buckets = new Set();
+	let totalOpaque = 0;
+	const rs = new Float64Array(4096);
+	const gs = new Float64Array(4096);
+	const bs = new Float64Array(4096);
+	const ns = new Float64Array(4096);
+
+	for (let y = ry; y < ry + rh; y++) {
+		const rowOffset = y * w * 4;
+		for (let x = rx; x < rx + rw; x++) {
+			const idx = rowOffset + x * 4;
+			if (data[idx + 3] < 16) continue;
+			const key = ((data[idx] >> 4) << 8) | ((data[idx + 1] >> 4) << 4) | (data[idx + 2] >> 4);
+			if (ns[key] === 0) buckets.add(key);
+			rs[key] += data[idx];
+			gs[key] += data[idx + 1];
+			bs[key] += data[idx + 2];
+			ns[key]++;
+			totalOpaque++;
+		}
+	}
+
+	if (totalOpaque === 0) {
+		return {
+			region: { x: rx, y: ry, width: rw, height: rh },
+			colors: [],
+			contactSheet: null,
+		};
+	}
+
+	const sortedKeys = [...buckets].sort((a, b) => ns[b] - ns[a]);
+
+	const candidates = [];
+	const minDistanceSq = 35 * 35;
+
+	for (const key of sortedKeys) {
+		const r = Math.round(rs[key] / ns[key]);
+		const g = Math.round(gs[key] / ns[key]);
+		const b = Math.round(bs[key] / ns[key]);
+		const share = ns[key] / totalOpaque;
+
+		let tooClose = false;
+		for (const c of candidates) {
+			if (colorDistSq(r, g, b, c.rgb[0], c.rgb[1], c.rgb[2]) < minDistanceSq) {
+				tooClose = true;
+				break;
+			}
+		}
+		if (!tooClose) {
+			candidates.push({ rgb: [r, g, b], share });
+			if (candidates.length >= limit) break;
+		}
+	}
+
+	const sampledItems = [];
+
+	for (let i = 0; i < candidates.length; i++) {
+		const tgt = candidates[i].rgb;
+		let bestScore = Number.POSITIVE_INFINITY;
+		let bestX = rx + Math.floor(rw / 2);
+		let bestY = ry + Math.floor(rh / 2);
+
+		const step = Math.max(1, Math.floor(Math.sqrt((rw * rh) / 250000)));
+
+		for (let y = ry; y < ry + rh; y += step) {
+			const row = y * w * 4;
+			for (let x = rx; x < rx + rw; x += step) {
+				const idx = row + x * 4;
+				if (data[idx + 3] < 16) continue;
+				const dist = colorDistSq(data[idx], data[idx + 1], data[idx + 2], tgt[0], tgt[1], tgt[2]);
+				if (dist < bestScore) {
+					bestScore = dist;
+					bestX = x;
+					bestY = y;
+					if (dist === 0) break;
+				}
+			}
+			if (bestScore === 0) break;
+		}
+
+		const picked = pickColor(img, {
+			x: bestX,
+			y: bestY,
+			cropSize,
+			zoom,
+			marker,
+			sampleRadius,
+		});
+
+		sampledItems.push({
+			rank: i + 1,
+			share: Number(candidates[i].share.toFixed(3)),
+			label: `color_${i + 1} (${picked.color.name})`,
+			...picked,
+		});
+	}
+
+	const contactSheet = stitchCropsWithSwatches(sampledItems, {
+		swatchHeight: 22,
+		gap: 8,
+		padding: 8,
+	});
+
+	return {
+		region: { x: rx, y: ry, width: rw, height: rh },
+		colors: sampledItems,
+		contactSheet,
+	};
+}
