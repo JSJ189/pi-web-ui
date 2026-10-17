@@ -169,7 +169,9 @@ export function EnginePicker({ direction, align, className, label, caret = false
 						const status = engines.find((e) => e.id === item.id);
 						// pi 原生捆绑引擎恒可用，其余引擎按服务端探测结果判断是否安装
 						const isInstalled = item.id === "pi" || (status ? status.installed : false);
+						const isUpdating = Boolean(status?.updating);
 						const hasUpdate = Boolean(isInstalled && status?.hasUpdate && status?.latestVersion);
+						const showUpdate = hasUpdate || isUpdating;
 
 						const handleInstall = (e: React.MouseEvent) => {
 							e.stopPropagation();
@@ -188,18 +190,9 @@ export function EnginePicker({ direction, align, className, label, caret = false
 
 						const handleUpdate = (e: React.MouseEvent) => {
 							e.stopPropagation();
+							if (isUpdating) return;
 							setOpen(false);
-							const pkg = status?.packageName ?? item.packageName;
-							if (pkg) {
-								window.dispatchEvent(
-									new CustomEvent("pi-web-ui:plugin-run-command", {
-										detail: {
-											title: t("updateEngineTabTitle", { name: item.badge }),
-											command: `npm i -g ${pkg}@latest`,
-										},
-									}),
-								);
-							}
+							appSend({ type: "update_engine", engineId: item.id });
 						};
 
 						const handleSelect = () => {
@@ -246,7 +239,7 @@ export function EnginePicker({ direction, align, className, label, caret = false
 										<span className="engine-picker-item-name">{t(item.titleKey)}</span>
 									)}
 									<span
-										className={`engine-picker-item-tag${!isInstalled ? " uninstalled" : hasUpdate ? " update-available" : ""}`}
+										className={`engine-picker-item-tag${!isInstalled ? " uninstalled" : isUpdating || hasUpdate ? " update-available" : ""}`}
 										title={
 											hasUpdate
 												? t("engineUpdateTip", {
@@ -256,7 +249,13 @@ export function EnginePicker({ direction, align, className, label, caret = false
 												: undefined
 										}
 									>
-										{!isInstalled ? t("engineNotInstalled") : hasUpdate ? t("engineUpdateAvailable") : t(item.tagKey)}
+										{!isInstalled
+											? t("engineNotInstalled")
+											: isUpdating
+												? t("engineUpdating")
+												: hasUpdate
+													? t("engineUpdateAvailable")
+													: t(item.tagKey)}
 									</span>
 									{!isInstalled && item.installCommand && (
 										<button
@@ -269,18 +268,23 @@ export function EnginePicker({ direction, align, className, label, caret = false
 											<span>{t("engineInstall")}</span>
 										</button>
 									)}
-									{hasUpdate && (
+									{showUpdate && (
 										<button
 											type="button"
 											className="engine-picker-update-btn"
-											title={t("engineUpdateTip", {
-												current: status?.version ?? "",
-												latest: status?.latestVersion ?? "",
-											})}
+											disabled={isUpdating}
+											title={
+												isUpdating
+													? t("engineUpdating")
+													: t("engineUpdateTip", {
+															current: status?.version ?? "",
+															latest: status?.latestVersion ?? "",
+														})
+											}
 											onClick={handleUpdate}
 										>
-											<FiRefreshCw className="engine-update-icon" />
-											<span>{t("engineUpdate")}</span>
+											<FiRefreshCw className={`engine-update-icon${isUpdating ? " spinning" : ""}`} />
+											<span>{isUpdating ? t("engineUpdating") : t("engineUpdate")}</span>
 										</button>
 									)}
 									{isSelected && <FiCheck className="engine-picker-check" />}

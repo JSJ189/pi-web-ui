@@ -618,7 +618,9 @@ ${
 	padding: 0 !important;
 }
 .toolcall-status > svg,
-.thinking-status > svg {
+.toolcall-status svg,
+.thinking-status > svg,
+.thinking-status svg {
 	width: 10px !important;
 	height: 10px !important;
 	margin: 0 !important;
@@ -628,8 +630,10 @@ ${
 .toolcall-status .spin,
 .toolcall-status .half-ring-spin,
 .thinking-status .half-ring-spin,
-.toolcall.run .toolcall-status > svg {
-	animation: conv-spin 0.85s linear infinite !important;
+.toolcall.run .toolcall-status svg,
+.toolcall.run .toolcall-status-icon svg {
+	animation: spin 0.85s linear infinite !important;
+	transform-origin: center center !important;
 }
 
 /* 特殊输出代表性微标：图片 🖼️、Markdown 📝 等精致小徽标，行内零干扰 */

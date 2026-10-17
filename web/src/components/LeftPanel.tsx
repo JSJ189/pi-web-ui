@@ -1236,8 +1236,11 @@ export const LeftPanel = memo(function LeftPanel({
 																	}
 																>
 																	<span className="session-icon-wrap">
-																		<FiMessageSquare className="session-icon" />
-																		{c.isStreaming && <span className="conv-streaming" title={t("streaming")} />}
+																		{c.isStreaming ? (
+																			<span className="conv-streaming" title={t("streaming")} />
+																		) : (
+																			<FiMessageSquare className="session-icon" />
+																		)}
 																	</span>
 																	<span className="session-info">
 																		<span className="session-title">
@@ -1330,8 +1333,11 @@ export const LeftPanel = memo(function LeftPanel({
 																}}
 															>
 																<span className="session-icon-wrap">
-																	<FiMessageSquare className="session-icon" />
-																	{c.isStreaming && <span className="conv-streaming" title={t("streaming")} />}
+																	{c.isStreaming ? (
+																		<span className="conv-streaming" title={t("streaming")} />
+																	) : (
+																		<FiMessageSquare className="session-icon" />
+																	)}
 																</span>
 																<span className="session-info">
 																	{renaming === `conv:${c.id}` ? (

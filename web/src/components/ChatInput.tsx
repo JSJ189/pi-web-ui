@@ -1440,6 +1440,8 @@ export const ChatInput = memo(function ChatInput({
 				key={it.id}
 				type="button"
 				className="btn composer-plugin-action"
+				data-action={it.action}
+				data-plugin-slot-id={it.id}
 				title={it.hint || it.label}
 				aria-label={it.label}
 				onClick={() => onUiAction?.(it)}

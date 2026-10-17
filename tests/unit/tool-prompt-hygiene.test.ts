@@ -173,8 +173,8 @@ describe("tool prompt hygiene（工具提示词纯英文精简）", () => {
 				for (let i = 0; i < lines.length; i++) {
 					if (!/^\s*(description|promptSnippet|promptGuidelines)\s*[:=]/.test(lines[i])) continue;
 					// registerCommand 的 description/descriptionEn 是 UI 文案，跳过
-					const ahead = lines.slice(Math.max(0, i - 4), i + 1).join("\n");
-					if (ahead.includes("registerCommand") || ahead.includes("descriptionEn")) continue;
+					const context = lines.slice(Math.max(0, i - 4), Math.min(lines.length, i + 5)).join("\n");
+					if (context.includes("registerCommand") || context.includes("descriptionEn")) continue;
 					// 单行含中文即报（跨行描述的续行由同组审查保证）；变量插值/动态拼接跳过
 					const m = lines[i].match(/(["'`])((?:\\.|(?!\1).)*)\1/);
 					if (m && CJK.test(m[2])) offenders.push(`${p}:${i + 1} ${m[2].slice(0, 60)}`);

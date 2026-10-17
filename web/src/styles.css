@@ -164,6 +164,7 @@
 	--text-dim: #9aa1b4;
 	--text-faint: #6b7284;
 	--accent: #8b5cf6;
+	--accent-contrast: #ffffff;
 	--accent-soft: rgba(139, 92, 246, 0.14);
 	--green: #34d399;
 	--green-soft: rgba(52, 211, 153, 0.12);
@@ -242,6 +243,9 @@
 	--on-amber: #1a1a1a;
 	--search-active-fg: #1a1d26;
 	--switch-knob: #ffffff;
+	--switch-bg-off: var(--bg-elev2);
+	--switch-border-off: var(--border-soft);
+	--switch-bg-on: var(--green);
 	--bg-elev3: rgba(255, 255, 255, 0.06);
 	/* 凹陷内容面：「比所在底板低一层」的区域（右栏扩展 widgets 区、附件/技能卡正文）。
 	   深色主题=黑色低透压在面板上；浅色主题=极低透黑（见 make-light-theme.mjs 的
@@ -1102,9 +1106,13 @@ button.session-item.elsewhere-item.confirm {
 	justify-content: center;
 	flex-shrink: 0;
 	line-height: 1;
+	width: 16px;
+	height: 16px;
 }
 
 .session-icon {
+	width: 14px;
+	height: 14px;
 	flex-shrink: 0;
 	color: var(--text-faint);
 }
@@ -1245,33 +1253,28 @@ button.session-item.elsewhere-item.confirm {
 }
 
 /* Streaming indicator on running-conversation entries (left panel).
-   方案 1A：挂在左侧图标右下角的呼吸角标（在线状态徽标），释放右侧空间杜绝与关闭/重命名按钮重叠 */
+   呼吸指示灯：有呼吸灯时独占图标位置居中呈现，免除与消息气泡图标叠合的杂乱感 */
 .conv-streaming {
-	width: 6.5px;
-	height: 6.5px;
+	width: 7.5px;
+	height: 7.5px;
 	border-radius: 50%;
 	flex-shrink: 0;
 	background: var(--green);
 	box-shadow:
 		0 0 0 1.5px var(--panel-bg, var(--bg-elev)),
-		0 0 5px var(--green);
+		0 0 6px var(--green);
 	animation: conv-pulse 1.4s ease-in-out infinite;
 	pointer-events: none;
-}
-.session-icon-wrap .conv-streaming {
-	position: absolute;
-	right: -2px;
-	bottom: -2px;
 }
 .session-item:hover .conv-streaming {
 	box-shadow:
 		0 0 0 1.5px var(--bg-elev2),
-		0 0 6px var(--green);
+		0 0 7px var(--green);
 }
 .session-item.active .conv-streaming {
 	box-shadow:
 		0 0 0 1.5px var(--accent-soft),
-		0 0 6px var(--green);
+		0 0 8px var(--green);
 }
 
 @keyframes conv-pulse {
@@ -1432,6 +1435,8 @@ button.session-item.elsewhere-item.confirm {
 }
 
 .project-icon {
+	width: 14px;
+	height: 14px;
 	flex-shrink: 0;
 	color: var(--text-faint);
 }
@@ -4881,6 +4886,14 @@ body.panel-resizing .scm-divider::after {
 .engine-picker-update-btn:active {
 	transform: scale(0.96);
 }
+.engine-picker-update-btn:disabled {
+	opacity: 0.65;
+	cursor: not-allowed;
+	transform: none;
+}
+.engine-update-icon.spinning {
+	animation: spin 1s linear infinite;
+}
 .engine-install-icon,
 .engine-update-icon {
 	font-size: 11px;
@@ -5470,6 +5483,8 @@ body.panel-resizing .scm-divider::after {
 }
 
 .half-ring-spin {
+	width: 1em;
+	height: 1em;
 	display: inline-block;
 	animation: spin 0.85s linear infinite;
 	transform-origin: center center;
@@ -5515,6 +5530,13 @@ body.panel-resizing .scm-divider::after {
 	line-height: 1;
 	flex-shrink: 0;
 	box-shadow: 0 1px 3px rgba(0, 0, 0, 0.2);
+}
+
+.brand > img.brand-logo {
+	background: transparent !important;
+	object-fit: contain;
+	user-select: none;
+	-webkit-user-drag: none;
 }
 
 .brand-name {
@@ -14410,7 +14432,7 @@ div.chead[role="button"]:focus-visible,
 .btn.primary {
 	background: var(--accent);
 	border-color: var(--accent);
-	color: #fff;
+	color: var(--accent-contrast, #fff);
 }
 .btn.primary:hover:not(:disabled) {
 	filter: brightness(1.12);
@@ -14934,6 +14956,81 @@ div.chead[role="button"]:focus-visible,
 	overflow-y: auto;
 	padding: 2px;
 }
+/* ---- 设置弹窗：方案 1 侧栏搜索与分组 (Linear / Raycast 风格) ---- */
+.settings-search-wrap {
+	position: relative;
+	display: flex;
+	align-items: center;
+	padding: 2px 2px 8px;
+	margin-bottom: 4px;
+	border-bottom: 1px solid var(--border-soft);
+	flex-shrink: 0;
+}
+.settings-search-icon {
+	position: absolute;
+	left: 10px;
+	font-size: 13px;
+	color: var(--text-faint);
+	pointer-events: none;
+}
+.settings-search-input {
+	width: 100%;
+	height: 30px;
+	padding: 4px 26px 4px 28px;
+	background: var(--bg-elev);
+	border: 1px solid var(--border-soft);
+	border-radius: 8px;
+	color: var(--text);
+	font-size: 12px;
+	outline: none;
+	transition:
+		border-color 0.15s,
+		box-shadow 0.15s;
+}
+.settings-search-input:focus {
+	border-color: var(--accent);
+	box-shadow: 0 0 0 2px var(--accent-soft);
+}
+.settings-search-clear {
+	position: absolute;
+	right: 8px;
+	display: flex;
+	align-items: center;
+	justify-content: center;
+	width: 16px;
+	height: 16px;
+	padding: 0;
+	border: none;
+	border-radius: 50%;
+	background: var(--bg-elev2);
+	color: var(--text-faint);
+	font-size: 10px;
+	cursor: pointer;
+}
+.settings-search-clear:hover {
+	color: var(--text);
+}
+.settings-search-empty {
+	padding: 16px 8px;
+	text-align: center;
+	font-size: 12px;
+	color: var(--text-faint);
+}
+.settings-group {
+	display: flex;
+	flex-direction: column;
+	gap: 2px;
+	margin-bottom: 6px;
+}
+.settings-group-title {
+	font-size: 11px;
+	font-weight: 700;
+	letter-spacing: 0.5px;
+	color: var(--text-faint);
+	text-transform: uppercase;
+	padding: 6px 8px 2px;
+	user-select: none;
+}
 .settings-tab {
 	display: flex;
 	align-items: center;
@@ -15198,6 +15295,13 @@ div.chead[role="button"]:focus-visible,
 	.settings-rail::-webkit-scrollbar {
 		display: none;
 	}
+	.settings-search-wrap,
+	.settings-group-title {
+		display: none;
+	}
+	.settings-group {
+		display: contents;
+	}
 	.settings-tab {
 		flex: none;
 		width: auto;
@@ -15236,6 +15340,14 @@ div.chead[role="button"]:focus-visible,
 	.settings-modal .set-mode-row > .set-select {
 		width: 150px;
 	}
+	.settings-modal .set-mode-row[role="radiogroup"] {
+		grid-template-columns: repeat(2, 1fr);
+		gap: 8px;
+	}
+	.tool-sub-config-card {
+		margin-left: 6px;
+		padding: 8px 10px;
+	}
 	/* 触控：开关行加高，开关本体放大 */
 	.settings-modal .set-row,
 	.settings-modal .set-catalog-row,
@@ -15247,8 +15359,10 @@ div.chead[role="button"]:focus-visible,
 		height: 26px;
 	}
 	.settings-modal .set-switch-knob {
-		width: 22px;
-		height: 22px;
+		width: 20px;
+		height: 20px;
+		top: 2px;
+		left: 2px;
 	}
 	.settings-modal .set-switch.on .set-switch-knob {
 		left: 20px;
@@ -15436,19 +15550,159 @@ div.chead[role="button"]:focus-visible,
 	font-size: 12px;
 	font-weight: 400;
 }
+/* ---- 方案 1: 智能体引擎 Bento 卡片矩阵 (Linear 风格) ---- */
+.settings-modal .set-mode-row[role="radiogroup"] {
+	display: grid;
+	grid-template-columns: repeat(auto-fit, minmax(190px, 1fr));
+	gap: 10px;
+	padding: 4px 0 8px;
+	justify-content: normal;
+	align-items: stretch;
+}
+.settings-modal .set-mode-btn {
+	display: flex;
+	flex-direction: column;
+	justify-content: flex-start;
+	padding: 12px 14px;
+	border: 1px solid var(--border-soft);
+	border-radius: 12px;
+	background: var(--bg-elev);
+	color: var(--text);
+	cursor: pointer;
+	text-align: left;
+	min-height: 100px;
+	transition: all 0.18s cubic-bezier(0.16, 1, 0.3, 1);
+	position: relative;
+	overflow: hidden;
+}
+.settings-modal .set-mode-btn:hover {
+	border-color: var(--border);
+	background: var(--bg-elev2);
+	transform: translateY(-1.5px);
+	box-shadow: 0 4px 12px rgba(0, 0, 0, 0.25);
+}
+.settings-modal .set-mode-btn.active {
+	border-color: var(--accent);
+	background: color-mix(in srgb, var(--accent) 8%, var(--bg-elev));
+	box-shadow:
+		0 0 0 1px var(--accent),
+		0 8px 20px -4px var(--accent-soft);
+}
+.settings-modal .set-mode-title {
+	font-size: 13px;
+	font-weight: 600;
+	color: var(--text);
+	margin-bottom: 6px;
+	width: 100%;
+}
+.settings-modal .set-mode-desc {
+	font-size: 11.5px;
+	line-height: 1.45;
+	color: var(--text-dim);
+	display: -webkit-box;
+	-webkit-line-clamp: 3;
+	-webkit-box-orient: vertical;
+	overflow: hidden;
+}
+
+/* 变量药丸 Token Chip 交互升级 */
 .token-chip {
-	background: none;
-	border: 1px solid var(--border, #3a3f45);
-	color: var(--fg, #ddd);
+	background: var(--bg-elev);
+	border: 1px solid var(--border-soft);
+	color: var(--text-dim);
 	border-radius: 999px;
 	font-family: var(--mono, ui-monospace, monospace);
-	font-size: 11px;
-	padding: 2px 8px;
+	font-size: 11.5px;
+	padding: 3px 9px;
 	cursor: pointer;
+	transition: all 0.15s ease;
+	display: inline-flex;
+	align-items: center;
+	gap: 4px;
 }
 .token-chip:hover {
 	border-color: var(--accent);
+	color: var(--text);
+	background: var(--accent-soft);
+	transform: translateY(-1px);
+}
+.token-chip:active {
+	transform: scale(0.97);
+}
+
+/* ---- 工具内嵌子配置折叠卡片 (Linear 风格) ---- */
+.tool-sub-config-btn {
+	color: var(--text-dim);
+	display: inline-flex;
+	align-items: center;
+	justify-content: center;
+	transition:
+		color 0.15s,
+		background 0.15s,
+		box-shadow 0.15s;
+}
+.tool-sub-config-btn:hover {
+	color: var(--text);
+	background: var(--bg-elev2);
+}
+.tool-sub-config-btn.active {
 	color: var(--accent);
+	background: var(--accent-soft);
+	box-shadow: 0 0 0 1px var(--accent);
+}
+.tool-sub-config-card {
+	margin: 4px 0 10px 18px;
+	padding: 10px 14px;
+	border-radius: 8px;
+	background: var(--bg-elev);
+	border: 1px solid var(--border-soft);
+	border-left: 3px solid var(--accent);
+	display: flex;
+	flex-direction: column;
+	gap: 10px;
+	animation: toolSubConfigSlideDown 0.18s cubic-bezier(0.16, 1, 0.3, 1);
+	box-shadow: 0 2px 8px rgba(0, 0, 0, 0.16);
+}
+@keyframes toolSubConfigSlideDown {
+	from {
+		opacity: 0;
+		transform: translateY(-4px);
+	}
+	to {
+		opacity: 1;
+		transform: translateY(0);
+	}
+}
+.tool-sub-config-row {
+	display: flex;
+	align-items: center;
+	justify-content: space-between;
+	gap: 12px;
+}
+.tool-sub-config-row .set-field-label {
+	margin: 0;
+	font-size: 12.5px;
+	font-weight: 500;
+	color: var(--text-dim);
+	display: inline-flex;
+	align-items: center;
+	gap: 5px;
+}
+.tool-sub-config-row .set-select,
+.tool-sub-config-row .set-input {
+	background: var(--bg-elev2);
+	border: 1px solid var(--border-soft);
+	color: var(--text);
+	border-radius: 6px;
+	font-size: 12px;
+	transition:
+		border-color 0.15s,
+		box-shadow 0.15s;
+}
+.tool-sub-config-row .set-select:focus,
+.tool-sub-config-row .set-input:focus {
+	border-color: var(--accent);
+	box-shadow: 0 0 0 2px var(--accent-soft);
 }
 .override-row {
 	border: 1px solid var(--border, #3a3f45);
@@ -15605,6 +15859,127 @@ button.source-default-toggle {
 }
 
 /* 查看当前完整系统提示词与工具 schema（只读） */
+.set-token-meter-card {
+	display: flex;
+	flex-direction: column;
+	gap: 10px;
+	padding: 12px 14px;
+	background: var(--bg-elev);
+	border: 1px solid var(--border-soft);
+	border-radius: 10px;
+	margin-bottom: 12px;
+}
+.set-token-meter-header {
+	display: flex;
+	align-items: center;
+	justify-content: space-between;
+	gap: 8px;
+	flex-wrap: wrap;
+}
+.set-token-meter-stats {
+	display: flex;
+	align-items: center;
+	gap: 12px;
+	font-size: 12px;
+	flex-wrap: wrap;
+}
+.set-token-tag {
+	display: inline-flex;
+	align-items: center;
+	gap: 5px;
+	color: var(--text-dim);
+	font-size: 12px;
+}
+.set-token-tag.total-tag {
+	color: var(--text);
+	font-weight: 600;
+}
+.set-token-dot {
+	width: 7px;
+	height: 7px;
+	border-radius: 50%;
+	flex-shrink: 0;
+}
+.set-token-dot.prompt-dot {
+	background: #a78bfa;
+	box-shadow: 0 0 6px rgba(167, 139, 250, 0.4);
+}
+.set-token-dot.tools-dot {
+	background: #38bdf8;
+	box-shadow: 0 0 6px rgba(56, 189, 248, 0.4);
+}
+.set-token-safe-badge {
+	font-size: 11.5px;
+	font-weight: 500;
+	color: var(--green);
+	background: var(--green-soft);
+	padding: 2px 7px;
+	border-radius: 6px;
+	display: inline-flex;
+	align-items: center;
+	gap: 4px;
+}
+.set-token-bar-track {
+	height: 7px;
+	background: var(--bg-elev2);
+	border-radius: 4px;
+	overflow: hidden;
+	display: flex;
+	width: 100%;
+}
+.set-token-bar-segment.prompt-segment {
+	background: linear-gradient(90deg, #8b5cf6, #a78bfa);
+	transition: width 0.3s ease;
+}
+.set-token-bar-segment.tools-segment {
+	background: linear-gradient(90deg, #0284c7, #38bdf8);
+	transition: width 0.3s ease;
+}
+.set-token-bar-footer {
+	display: flex;
+	align-items: center;
+	justify-content: space-between;
+	gap: 8px;
+	flex-wrap: wrap;
+}
+.set-token-cache-hint {
+	font-size: 11.5px;
+	color: var(--text-faint);
+}
+
+/* ---- 设置弹窗：底栏操作与自动保存状态 ---- */
+.settings-modal-actions {
+	display: flex;
+	align-items: center;
+	justify-content: space-between;
+	gap: 12px;
+	width: 100%;
+}
+.settings-status-info {
+	display: flex;
+	align-items: center;
+	gap: 7px;
+	font-size: 12px;
+	color: var(--text-faint);
+}
+.settings-status-dot {
+	width: 6px;
+	height: 6px;
+	border-radius: 50%;
+	background: var(--green);
+	box-shadow: 0 0 6px var(--green);
+	flex-shrink: 0;
+}
+.settings-status-text {
+	overflow: hidden;
+	text-overflow: ellipsis;
+	white-space: nowrap;
+}
+.settings-action-btns {
+	display: flex;
+	align-items: center;
+	gap: 8px;
+}
 .set-prompt-view-triggers {
 	display: flex;
 	flex-wrap: wrap;
@@ -16604,25 +16979,35 @@ a.set-uninstall:hover {
 	position: relative;
 	width: 36px;
 	height: 20px;
-	border: none;
+	border: 1px solid var(--switch-border-off, var(--border-soft));
 	border-radius: 999px;
-	background: var(--border);
+	background: var(--switch-bg-off, var(--bg-elev2));
 	cursor: pointer;
-	transition: background 0.15s;
+	transition:
+		background 0.18s ease,
+		border-color 0.18s ease,
+		box-shadow 0.18s ease;
 	padding: 0;
+	box-sizing: border-box;
+}
+.set-switch:hover {
+	border-color: var(--border);
 }
 .set-switch.on {
-	background: var(--accent);
+	background: var(--switch-bg-on, var(--green));
+	border-color: transparent;
+	box-shadow: 0 0 6px var(--green-soft, rgba(16, 185, 129, 0.25));
 }
 .set-switch-knob {
 	position: absolute;
 	top: 2px;
 	left: 2px;
-	width: 16px;
-	height: 16px;
+	width: 14px;
+	height: 14px;
 	border-radius: 50%;
-	background: var(--switch-knob);
-	transition: left 0.15s;
+	background: var(--switch-knob, #ffffff);
+	box-shadow: 0 1px 3px rgba(0, 0, 0, 0.35);
+	transition: left 0.18s cubic-bezier(0.16, 1, 0.3, 1);
 }
 .set-switch.on .set-switch-knob {
 	left: 18px;
@@ -18206,6 +18591,8 @@ a.set-uninstall:hover {
 .sound-name {
 	font-size: 13px;
 	color: var(--text);
+	white-space: nowrap;
+	flex-shrink: 0;
 }
 
 .sound-desc {
@@ -18214,6 +18601,8 @@ a.set-uninstall:hover {
 	white-space: nowrap;
 	overflow: hidden;
 	text-overflow: ellipsis;
+	min-width: 0;
+	flex: 1;
 }
 
 /* 桌面通知块（NotifyToggle）：与声音区同一菜单内、加一条分隔线 */
@@ -18283,6 +18672,10 @@ a.set-uninstall:hover {
 	gap: 10px;
 	padding: 8px 10px;
 }
+.sound-volume .sound-name {
+	min-width: 64px;
+	flex-shrink: 0;
+}
 .sound-volume.disabled {
 	opacity: 0.45;
 	pointer-events: none;
@@ -18306,13 +18699,15 @@ a.set-uninstall:hover {
 }
 .tts-voice-select {
 	flex: 1;
-	max-width: 220px;
+	min-width: 0;
 	font-size: 12px;
-	padding: 3px 6px;
+	padding: 4px 8px;
+	border-radius: 6px;
 }
 .tts-preview {
-	margin-left: auto;
-	padding: 4px 12px;
+	flex-shrink: 0;
+	padding: 4px 10px;
+	height: 28px;
 }
 .tts-preview:disabled {
 	opacity: 0.4;
@@ -21028,7 +21423,7 @@ a.set-uninstall:hover {
 	padding: 0 3px;
 	border-radius: 999px;
 	background: var(--accent);
-	color: #fff;
+	color: var(--accent-contrast, #fff);
 	font-weight: 600;
 	line-height: 1;
 	margin-left: 2px;

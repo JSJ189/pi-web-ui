@@ -5,11 +5,13 @@ import {
 	ENGINE_PACKAGES,
 	enrichWithUpdateInfo,
 	getCachedEngineStatuses,
+	isEngineUpdating,
 	probeAllEngines,
 	probeClaude,
 	probeDsh,
 	probeEngine,
 	probePi,
+	updateEngineBackground,
 } from "../../server/engine-probe.js";
 import type { EngineStatus } from "../../server/protocol.js";
 
@@ -118,6 +120,22 @@ describe("引擎探测与更新检测模块 (server/engine-probe.ts)", () => {
 			expect(t.kind).toBe("engine");
 			expect(t.name).not.toBe("@earendil-works/pi-coding-agent");
 			expect(typeof t.version).toBe("string");
+		}
+	}, 15000);
+
+	it("updateEngineBackground() 安全拦截未知引擎，且正确维护 isEngineUpdating 状态与 updating 标记", async () => {
+		// 未知引擎直接返回失败
+		expect(isEngineUpdating("unknown-engine")).toBe(false);
+		const unknownRes = await updateEngineBackground("unknown-engine");
+		expect(unknownRes.ok).toBe(false);
+		expect(unknownRes.error).toContain("unknown-engine");
+
+		// 默认状态下所有已知引擎均为非更新中
+		expect(isEngineUpdating("dsh")).toBe(false);
+		expect(isEngineUpdating("claude")).toBe(false);
+		const initialStatuses = getCachedEngineStatuses();
+		for (const s of initialStatuses) {
+			expect(s.updating).toBeFalsy();
 		}
 	});
 });

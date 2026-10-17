@@ -54,8 +54,8 @@ function fakeSet(initial: string[] = []) {
 }
 
 describe("catalog", () => {
-	it("共 28 个可开关工具（终端 7＋子代理 1＋其他 20）", () => {
-		expect(AGENT_TOOL_CATALOG).toHaveLength(28);
+	it("共 27 个可开关工具（终端 7＋子代理 1＋其他 19）", () => {
+		expect(AGENT_TOOL_CATALOG).toHaveLength(27);
 		expect(TERMINAL_TOOL_NAMES).toHaveLength(7);
 		expect(SUBAGENT_TOOL_NAMES).toHaveLength(1);
 	});
@@ -74,7 +74,6 @@ describe("catalog", () => {
 		for (const n of SUBAGENT_TOOL_NAMES) expect(off.has(n)).toBe(false);
 		expect(off.has("delegate_task")).toBe(false);
 		expect(off.has(ASK_USER_QUESTION_TOOL_NAME)).toBe(false);
-		expect(off.has("todo_list")).toBe(false);
 		// 对话引用读取只读，默认开。
 		expect(off.has(CONVERSATION_READ_TOOL_NAME)).toBe(false);
 		// 技能全文按名加载只读，默认开。
@@ -94,11 +93,6 @@ describe("normalize", () => {
 	it("非数组回落默认；脏数据只保留已知工具名（去重）", () => {
 		expect(normalizeDisabledAgentTools(undefined)).toEqual(defaultDisabledAgentTools());
 		expect(normalizeDisabledAgentTools(["edit_soft", "nope", "edit_soft", 42])).toEqual(["edit_soft"]);
-	});
-
-	it("旧名 markers_list 迁移到 todo_list（已关闭保持关闭）", () => {
-		expect(normalizeDisabledAgentTools(["markers_list"])).toEqual(["todo_list"]);
-		expect(normalizeDisabledAgentTools(["markers_list", "todo_list"])).toEqual(["todo_list"]);
 	});
 
 	it("旧定时任务三件套迁移到合并后的 schedule（任一关闭都保持关闭）", () => {

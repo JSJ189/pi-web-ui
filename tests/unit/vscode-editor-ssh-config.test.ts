@@ -243,7 +243,7 @@ Host ea-gpu
 			else delete process.env.USERPROFILE;
 		});
 
-		const host = createMockHost({ cwd: homeDir, dataDir: homeDir } as any);
+		const host = createMockHost({ cwd: homeDir, dataDir: homeDir, dir: homeDir } as any);
 		await plugin.activate(host);
 
 		const sent: any[] = [];
@@ -296,7 +296,7 @@ Host ea-gpu
 			else delete process.env.USERPROFILE;
 		});
 
-		const host = createMockHost({ cwd: homeDir, dataDir: homeDir } as any);
+		const host = createMockHost({ cwd: homeDir, dataDir: homeDir, dir: homeDir } as any);
 		await plugin.activate(host);
 
 		const sent: any[] = [];
@@ -331,7 +331,7 @@ Host ea-gpu
 			else delete process.env.USERPROFILE;
 		});
 
-		const host = createMockHost({ cwd: homeDir, dataDir: homeDir } as any);
+		const host = createMockHost({ cwd: homeDir, dataDir: homeDir, dir: homeDir } as any);
 		const logs: any[] = [];
 		const origLog = host.log;
 		host.log = (...args: any[]) => {

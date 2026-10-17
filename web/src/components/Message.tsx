@@ -531,9 +531,9 @@ export const Message = memo(function Message({
 			stopSpeaking();
 			return;
 		}
-		// 手动朗读是明确意图，不受设置里 enabled 门控；但沿用语音/语速偏好。
+		// 手动朗读是明确意图，不受设置里 enabled 门控；放宽至 5000 字符，避免在代码块前被 600 字硬截断。
 		speak(
-			stripMarkdownForSpeech(messagePlainText(message.content)),
+			stripMarkdownForSpeech(messagePlainText(message.content), 5000),
 			{ ...loadTtsSettings(), enabled: true },
 			message.id,
 		);

@@ -199,7 +199,15 @@ describe("tts settings persistence", () => {
 	});
 
 	it("round-trips through saveTtsSettings", () => {
-		const s: TtsSettings = { enabled: true, announce: true, readReplies: true, rate: 1.3, voiceURI: "v1" };
+		const s: TtsSettings = {
+			enabled: true,
+			announce: true,
+			readReplies: true,
+			streamReplies: true,
+			rate: 1.3,
+			voiceURI: "v1",
+			engine: "builtin",
+		};
 		localStorage.setItem("pi-web-tts", JSON.stringify(s));
 		expect(loadTtsSettings()).toEqual(s);
 	});

@@ -47,16 +47,16 @@ describe("MarkerService.listForUi 语言感知", () => {
 	it("英文界面下发英文 guidance（不再恒为中文）", () => {
 		const en = makeService("en").listForUi();
 		const zh = makeService("zh").listForUi();
-		const enTodo = en.find((e) => e.name === "todo")?.guidance.join("\n") ?? "";
-		const zhTodo = zh.find((e) => e.name === "todo")?.guidance.join("\n") ?? "";
-		expect(enTodo).not.toEqual(zhTodo);
-		expect(zhTodo).toMatch(/[\u4e00-\u9fff]/);
-		expect(enTodo).not.toMatch(/[\u4e00-\u9fff]/);
+		const enAction = en.find((e) => e.name === "action")?.guidance.join("\n") ?? "";
+		const zhAction = zh.find((e) => e.name === "action")?.guidance.join("\n") ?? "";
+		expect(enAction).not.toEqual(zhAction);
+		expect(zhAction).toMatch(/[\u4e00-\u9fff]/);
+		expect(enAction).not.toMatch(/[\u4e00-\u9fff]/);
 	});
 
 	it("未接线 lang 时回退英文默认（非中文静态值）", () => {
 		const entries = makeService(undefined).listForUi();
-		const todo = entries.find((e) => e.name === "todo")?.guidance.join("\n") ?? "";
-		expect(todo).not.toMatch(/[\u4e00-\u9fff]/);
+		const action = entries.find((e) => e.name === "action")?.guidance.join("\n") ?? "";
+		expect(action).not.toMatch(/[\u4e00-\u9fff]/);
 	});
 });

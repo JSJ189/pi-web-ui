@@ -170,6 +170,8 @@ export interface EngineStatus {
 	latestVersion?: string | null;
 	/** 是否存在可用新版本 */
 	hasUpdate?: boolean;
+	/** 是否正在后台子进程执行更新 */
+	updating?: boolean;
 }
 
 export interface UiState {
@@ -716,6 +718,8 @@ export type ClientMessage =
 	| { type: "switch_engine"; engine: EngineId }
 	/** Re-check engine installation statuses (e.g. after installing an engine via terminal). */
 	| { type: "check_engines"; force?: boolean }
+	/** Update an agent engine to its latest version via background child process (npm i -g <pkg>@latest). */
+	| { type: "update_engine"; engineId: string }
 	// -- pi agent setup ------------------------------------------------------
 	/** Auto-install the pi agent (mkdir config dir + npm i -g the CLI). */
 	| { type: "install_pi_agent" }

@@ -23,9 +23,8 @@ import { existsSync, mkdirSync, readFileSync } from "node:fs";
 import { stat } from "node:fs/promises";
 import { createServer, request as proxyRequest, type IncomingMessage } from "node:http";
 import { createConnection } from "node:net";
-import { basename, delimiter, dirname, join, resolve, sep } from "node:path";
+import { basename, delimiter, join, resolve, sep } from "node:path";
 import { homedir } from "node:os";
-import { fileURLToPath } from "node:url";
 import { createHash, randomUUID, timingSafeEqual } from "node:crypto";
 import express from "express";
 import compression from "compression";
@@ -1159,8 +1158,15 @@ heartbeatTimer.unref?.();
 import { DshAgentService } from "./dsh/dsh-agent-service.js";
 import { UniversalAgentService, ClaudeCodeDriver, probeClaudeCode } from "./universal/index.js";
 import { DurableAgentService } from "./durable/index.js";
-import { probeAllEngines, probeEngine, getCachedEngineStatuses } from "./engine-probe.js";
-import type { EngineId } from "./protocol.js";
+import {
+	probeAllEngines,
+	probeEngine,
+	getCachedEngineStatuses,
+	updateEngineBackground,
+	isEngineUpdating,
+	ENGINE_PACKAGES,
+} from "./engine-probe.js";
+import type { EngineId, EngineStatus } from "./protocol.js";
 
 /** dispatch 表所需的方法契约（pi 的 ClientSession 与 dsh 的 DshClientSession
  *  都结构兼容；dsh 引擎对不支持的功能做简化实现）。 */
@@ -2617,6 +2623,91 @@ wss.on("connection", (ws) => {
 			});
 	};
 
+	const handleUpdateEngine = async (msg: Extract<ClientMessage, { type: "update_engine" }>): Promise<void> => {
+		const targetEngine = String(msg.engineId || "").trim();
+		const meta = ENGINE_PACKAGES[targetEngine];
+		if (!meta || !meta.packageName) {
+			send({
+				type: "notice",
+				level: "error",
+				text: `不支持或未知的引擎「${targetEngine}」`,
+				textEn: `Unsupported or unknown engine "${targetEngine}"`,
+			});
+			return;
+		}
+
+		const refusal = managedRefusal("update_engine", MANAGED);
+		if (refusal) {
+			send({ type: "notice", level: "error", text: refusal });
+			return;
+		}
+
+		if (isEngineUpdating(targetEngine)) {
+			send({
+				type: "notice",
+				level: "warning",
+				text: `引擎「${targetEngine.toUpperCase()}」正在后台更新中，请稍候…`,
+				textEn: `Engine "${targetEngine.toUpperCase()}" is already updating, please wait…`,
+			});
+			return;
+		}
+
+		const engineDisplayNames: Record<string, { zh: string; en: string }> = {
+			pi: { zh: "Pi", en: "Pi" },
+			dsh: { zh: "DSH", en: "DSH" },
+			claude: { zh: "Claude Code", en: "Claude Code" },
+			durable: { zh: "Pi Durable", en: "Pi Durable" },
+		};
+		const displayName = engineDisplayNames[targetEngine] ?? {
+			zh: targetEngine.toUpperCase(),
+			en: targetEngine.toUpperCase(),
+		};
+
+		const broadcastStatuses = (list: EngineStatus[]) => {
+			const payload = JSON.stringify({ type: "engines_status", engines: list });
+			for (const c of wss.clients) {
+				if (c.readyState === WebSocket.OPEN) {
+					try {
+						c.send(payload);
+					} catch {
+						/* ignore */
+					}
+				}
+			}
+		};
+
+		send({
+			type: "notice",
+			level: "info",
+			text: `正在后台更新 ${displayName.zh} 引擎（npm i -g ${meta.packageName}@latest）…`,
+			textEn: `Updating ${displayName.en} engine in background (npm i -g ${meta.packageName}@latest)…`,
+		});
+
+		const updatePromise = updateEngineBackground(targetEngine);
+		broadcastStatuses(getCachedEngineStatuses());
+
+		const res = await updatePromise;
+		const freshEngines = await probeAllEngines(true);
+		broadcastStatuses(freshEngines);
+
+		if (res.ok) {
+			send({
+				type: "notice",
+				level: "info",
+				text: `✅ ${displayName.zh} 引擎更新完成`,
+				textEn: `✅ ${displayName.en} engine updated successfully`,
+			});
+		} else {
+			const detail = res.error || (res.output ? res.output.slice(-200) : "");
+			send({
+				type: "notice",
+				level: "error",
+				text: `❌ ${displayName.zh} 引擎更新失败${detail ? `：${detail}` : ""}`,
+				textEn: `❌ Failed to update ${displayName.en} engine${detail ? `: ${detail}` : ""}`,
+			});
+		}
+	};
+
 	const dispatch = (msg: ClientMessage): void => {
 		if (!clientId) {
 			pending.push(msg);
@@ -2626,6 +2717,11 @@ wss.on("connection", (ws) => {
 		// switch_engine 为宿主级控制消息：豁免 cs 初始化与 attachDone 门禁，确保任何异常状态下都能自由切回！
 		if (msg.type === "switch_engine") {
 			void handleSwitchEngine(msg);
+			return;
+		}
+
+		if (msg.type === "update_engine") {
+			void handleUpdateEngine(msg);
 			return;
 		}
 

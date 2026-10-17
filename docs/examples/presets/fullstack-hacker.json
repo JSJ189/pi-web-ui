@@ -15,7 +15,6 @@
 		"patch",
 		"lsp",
 		"eval",
-		"todo_list",
 		"terminal_create",
 		"terminal_input",
 		"terminal_key",

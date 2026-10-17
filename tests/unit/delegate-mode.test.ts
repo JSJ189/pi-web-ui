@@ -53,7 +53,7 @@ describe("delegationDenial", () => {
 	});
 
 	it("只读/查询类工具放行", () => {
-		for (const name of ["read", "grep", "glob", "ls", "conversation_read", "present_files", "todo_list"]) {
+		for (const name of ["read", "grep", "glob", "ls", "conversation_read", "present_files"]) {
 			expect(delegationDenial(name, {}), name).toBeUndefined();
 		}
 	});

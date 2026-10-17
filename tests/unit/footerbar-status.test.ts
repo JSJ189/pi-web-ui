@@ -1,4 +1,6 @@
 // @vitest-environment jsdom
+import { readFileSync } from "node:fs";
+import { resolve } from "node:path";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { act, createElement } from "react";
 import { createRoot, type Root } from "react-dom/client";
@@ -397,5 +399,20 @@ describe("FooterBar 连接状态", () => {
 		expect(costItem?.matches(hideSelector)).toBe(false);
 		expect(cacheItem?.matches(hideSelector)).toBe(false);
 		expect(cwdItem?.matches(hideSelector)).toBe(false);
+	});
+
+	it("极简行文等主题中通用角标反色规则严格限定在顶栏作用域，避免底栏透明徽标（如 sol-savings-badge）被污染", () => {
+		const rootDir = resolve(process.cwd());
+		const themeFiles = ["themes/flow.css", "themes/flow-light.css", "themes/wallpaper-flow.css"];
+
+		for (const relPath of themeFiles) {
+			const css = readFileSync(resolve(rootDir, relPath), "utf8");
+			// 确保没有全局未限定作用域的 .bar-item-badge:not(.bg-task-badge)
+			const hasUnscopedBadgeRule = /(?:^|\n)\.bar-item-badge:not\(\.bg-task-badge\)/.test(css);
+			expect(hasUnscopedBadgeRule, `${relPath} 不得包含全局未限定在顶栏的 .bar-item-badge 覆盖规则`).toBe(false);
+
+			// 确保限定在 .topbar 内
+			expect(css).toContain(".topbar .bar-item-badge:not(.bg-task-badge)");
+		}
 	});
 });

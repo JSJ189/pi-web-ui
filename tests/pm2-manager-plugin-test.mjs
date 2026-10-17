@@ -160,7 +160,10 @@ async function main() {
 	);
 
 	// ── 3. 服务端入口真激活 ─────────────────────────────────────────────────
-	await new Promise((r) => setTimeout(r, 500));
+	const tWaitActivated = Date.now();
+	while (!serverLog.includes("pm2-manager activated") && Date.now() - tWaitActivated < 5000) {
+		await new Promise((r) => setTimeout(r, 100));
+	}
 	check("activate 跑完（日志可见）", serverLog.includes("pm2-manager activated"));
 	const pluginErrors = serverLog
 		.split(/\r?\n/)

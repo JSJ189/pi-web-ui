@@ -32,7 +32,6 @@ import {
 	FiSearch,
 	FiServer,
 	FiSquare,
-	FiTag,
 	FiTerminal,
 	FiTool,
 	FiUsers,
@@ -101,7 +100,6 @@ const TOOL_ICONS: Record<string, ReactNode> = {
 	conversation_read: <FiMessageSquare />,
 	claim_files: <FiLock />,
 	plan_update: <FiCheckSquare />,
-	todo_list: <FiCheckSquare />,
 	skill: <FiBookOpen />,
 	schedule: <FiClock />,
 	compact_context: <FiArchive />,
@@ -111,7 +109,6 @@ const TOOL_ICONS: Record<string, ReactNode> = {
 	sftp: <FiServer />,
 	mail: <FiMail />,
 	obs_recall: <FiDatabase />,
-	markers_list: <FiTag />,
 };
 
 const DEFAULT_TOOL_ICON: ReactNode = <FiTool />;
@@ -142,7 +139,6 @@ const TOOL_ICON_CLASSES: Record<string, string> = {
 	subagent: "toolcall-icon tc-tone-agent",
 	worktree: "toolcall-icon tc-tone-agent",
 	plan_update: "toolcall-icon tc-tone-agent",
-	todo_list: "toolcall-icon tc-tone-agent",
 	schedule: "toolcall-icon tc-tone-agent",
 	ask_user_question: "toolcall-icon tc-tone-ui",
 	[PRESENT_FILES_TOOL_NAME]: "toolcall-icon tc-tone-ui",
@@ -150,7 +146,6 @@ const TOOL_ICON_CLASSES: Record<string, string> = {
 	mail: "toolcall-icon tc-tone-ui",
 	mcp_manage: "toolcall-icon tc-tone-ui",
 	sandbox: "toolcall-icon tc-tone-ui",
-	markers_list: "toolcall-icon tc-tone-ui",
 };
 
 const DEFAULT_TOOL_ICON_CLASS = "toolcall-icon tc-tone-default";
@@ -395,17 +390,7 @@ export const ToolCallBlock = memo(function ToolCallBlock({
 							title={exitHint ? `${statusLabel} · ${exitHint}` : statusLabel}
 							aria-label={exitHint ? `${statusLabel} · ${exitHint}` : statusLabel}
 						>
-							{isError ? (
-								<FiX />
-							) : done ? (
-								<FiCheck />
-							) : running ? (
-								<HalfRingSpinner />
-							) : waitingModel ? (
-								<FiClock />
-							) : (
-								<FiMinus />
-							)}
+							{isError ? <FiX /> : done ? <FiCheck /> : running || waitingModel ? <HalfRingSpinner /> : <FiMinus />}
 						</span>
 						{hasImages && (
 							<span

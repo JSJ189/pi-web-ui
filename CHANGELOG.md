@@ -8,12 +8,46 @@
 每个版本的内容按"实际合入该版本发布的提交"归档（以 `package.json` 的 version 变更提交为准），
 而不是按提交日期聚类——连续快速发布的 patch 版本以此为准最准确。
 
-## [Unreleased]
+## [0.107.0] — 2026-10-18
+
+### Added
+
+- **设置面板全新结构化重构 (Settings Redesign)**：
+  - 设置页全新引入四大核心业务分组：「核心配置 (Core)」、「AI 与工具 (Tools)」、「界面与外观 (UI)」、「高级与扩展 (Advanced)」；
+  - 新增全局实时即搜即显搜索框，支持中英文关键词双向匹配高亮；
+  - 新增上下文安全区 (Context Safe Zone) 与供应商 Prompt Cache 缓存就绪状态指示器，带来沉浸式修改自动保存体验。
+- **通用多源 TTS 语音合成插件 (`plugins/tts`)**：
+  - 深度聚合字节豆包大模型语音（阳光阿辰、磁性俊宇、清爽男大、阳光甜妹等）与 DeepSeek 官方音色（Echo、Tide、Mira、Stella）；
+  - 内置配套 Chrome / Edge 伴侣扩展，支持在网页端一键无感同步双平台凭据；
+  - 原生接入系统设置中的语音引擎切换（浏览器内置 / 豆包语音 / DeepSeek 语音），并提供 `tts_speak` 智能体音频生成工具。
+- **流式语音伴读 (Streaming TTS)**：
+  - 新增智能分句流式伴读机制，模型流式吐字的同时自动分句并行预取语音，首句 200~300ms 极速发声，告别大段长文本的漫长等待。
+- **浅色流体主题 (Flow Light)**：
+  - 新增极简现代的「浅色流体」专属主题（`flow-light`），搭配细腻高光微透材质与清晰层次，日间编码更轻快舒适。
+
+### Changed
+
+- **官方插件体验升级**：
+  - 动态壁纸插件（`wallpaper-engine` 0.3.59）优化了渲染性能负载与抽屉展开交互；
+  - 语音与拍照输入插件（`voice-input` 0.4.2）强化了听写识别流程与状态同步稳定性。
+- **引擎探测与模型管理增强**：
+  - 改进多引擎（DSH、Claude 等）后台更新检测与版本同步；模型选择器支持在工作区范围与全量配置模型间自如切换。
+
+### Fixed
+
+- **标记系统精简与单测稳定性**：
+  - 清理废弃的内置 Todo 标记与孤立工具定义，精简智能体系统提示词上下文预算；
+  - 优化高并发测试环境下的引擎探测超时保护。
 
 <!-- auto-i18n:start -->
 ### i18n
 
-- 前端新增 key（3）：`settingsEngineDurableTitle`、`settingsEngineDurableDesc`、`engineTagDurable`
+- 前端新增 key（23）：`showAllModels`、`showEnabledModels`、`showAllModelsTitle`、`showEnabledModelsTitle`、`searchAllModelsHint`、`notInScopeBadge`、`settingsEngineDurableTitle`、`settingsEngineDurableDesc`、`engineTagDurable`、`engineUpdating`、`ttsStreamReplies`、`ttsStreamRepliesDesc`、`ttsEngine`、`ttsEngineBuiltin`、`settingsSearchPlaceholder`、`settingsSearchEmpty`、`settingsGroupCore`、`settingsGroupTools`、`settingsGroupUi`、`settingsGroupAdvanced`、`settingsAutoSavedTip`、`settingsContextSafeZone`、`settingsCacheReady`
+- 前端删除 key（4）：`updateEngineTabTitle`、`markerGroupTodo`、`todoListEnabledDesc`、`todoListOffHint`
+- 前端中文变更（2）：`ttsEnableDesc`、`settingsMarkersDesc`
+- 前端英文变更（2）：`ttsEnableDesc`、`settingsMarkersDesc`
+- 服务端文案变更（1）：`markers.service.guidance.frame`
+- 服务端删除 key（18）：`markers.service.describe.empty`、`markers.todo.guidance`、`markers.todo.new.requires.subject`、`markers.todo.new.created`、`markers.todo.set.invalid.id`、`markers.todo.set.invalid.status`、`markers.todo.set.task.missing`、`markers.todo.set.completed.no.pending`、`markers.todo.set.completed.no.inprogress`、`markers.todo.set.updated`、`markers.todo.remove.invalid.id`、`markers.todo.remove.task.missing`、`markers.todo.remove.deleted`、`markers.todo.dep.invalid.id`、`markers.todo.dep.task.missing`、`markers.todo.dep.invalid.dependencies`、`markers.todo.dep.blocks.updated`、`markers.todo.unknown.operation`
 <!-- auto-i18n:end -->
 
 ## [0.106.0] — 2026-10-16

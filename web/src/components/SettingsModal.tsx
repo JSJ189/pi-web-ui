@@ -137,17 +137,15 @@ import {
 	CORE_BUILTIN_TOOL_NAMES,
 	filterToolsByPreset,
 	presetShowsSkillCatalog,
-	MARKERS_LIST_TOOL_NAME,
 	SUBAGENT_TOOL_NAMES,
 	TERMINAL_TOOL_NAMES,
 } from "../../../server/tool-manager.js";
 
 /**
  * 设置页「其他」组开关行的渲染口径：目录即页面。目录里加一行，页面自动多一行
- * （文案走目录项的 descKey/offHintKey）；不再手写 ToggleRow。唯一例外是 todo_list，
- * 它的行固定在上面的 markers 分区（单测 settings-tool-rows 把这个例外锁死）。
+ * （文案走目录项的 descKey/offHintKey）；不再手写 ToggleRow。
  */
-const OTHER_AGENT_TOOLS = AGENT_TOOL_CATALOG.filter((e) => e.group === "other" && e.name !== MARKERS_LIST_TOOL_NAME);
+const OTHER_AGENT_TOOLS = AGENT_TOOL_CATALOG.filter((e) => e.group === "other");
 
 /** Minimal terminal-tab bridge (same shape SCMPanel uses). */
 interface SettingsTerminalBridge {
@@ -978,6 +976,16 @@ export function SettingsModal({
 	const [editingToolPrompt, setEditingToolPrompt] = useState<string | null>(null);
 	const toolPromptEdits = settings?.toolPromptOverrides ?? {};
 	const editedToolNames = useMemo(() => new Set(Object.keys(toolPromptEdits)), [toolPromptEdits]);
+	// 工具内嵌子配置的展开/收起集合（默认全部折叠，空 Set）
+	const [expandedToolConfigs, setExpandedToolConfigs] = useState<Set<string>>(() => new Set());
+	const toggleToolConfigExpand = (name: string) => {
+		setExpandedToolConfigs((prev) => {
+			const next = new Set(prev);
+			if (next.has(name)) next.delete(name);
+			else next.add(name);
+			return next;
+		});
+	};
 	/** 工具行右端的「编辑文案」按钮（三个工具列表共用）。DSH 引擎无 pi 工具注册面，不显示。 */
 	const toolEditAction = (name: string) =>
 		isDsh ? null : <ToolPromptButton name={name} edited={editedToolNames.has(name)} onEdit={setEditingToolPrompt} />;
@@ -1428,6 +1436,50 @@ export function SettingsModal({
 			pluginPage: { plugin: p.plugin, entry: p.entry },
 		})),
 	];
+
+	// 侧栏搜索与四维分组（方案 1: Linear 风格）
+	const [tabSearchQuery, setTabSearchQuery] = useState("");
+
+	const TAB_GROUPS: Record<string, "core" | "tools" | "ui" | "advanced"> = {
+		models: "core",
+		prompt: "core",
+		presets: "core",
+		"dsh-presets": "core",
+		"subagent-templates": "core",
+
+		tools: "tools",
+		"approval-rules": "tools",
+		question: "tools",
+		mcp: "tools",
+		skills: "tools",
+		extensions: "tools",
+
+		layout: "ui",
+		plugins: "ui",
+		display: "ui",
+		sound: "ui",
+		quick: "ui",
+		vision: "ui",
+
+		"prompt-history": "advanced",
+		scheduler: "advanced",
+		review: "advanced",
+	};
+
+	const GROUP_LABELS = {
+		core: t("settingsGroupCore"),
+		tools: t("settingsGroupTools"),
+		ui: t("settingsGroupUi"),
+		advanced: t("settingsGroupAdvanced"),
+	};
+
+	const GROUP_KEYS: Array<"core" | "tools" | "ui" | "advanced"> = ["core", "tools", "ui", "advanced"];
+
+	const filteredTabs = useMemo(() => {
+		const q = tabSearchQuery.trim().toLowerCase();
+		if (!q) return tabs;
+		return tabs.filter((t) => t.label.toLowerCase().includes(q) || t.id.toLowerCase().includes(q));
+	}, [tabs, tabSearchQuery]);
 
 	/** 导航纠偏：若当前 tab 不在当前引擎可用的分区列表（例如切换引擎、或插件被卸载）→ 自动回落到该引擎的首个可用分区。 */
 	useEffect(() => {
@@ -2059,22 +2111,74 @@ export function SettingsModal({
 				    fixed; only these sections scroll. */}
 				<div className="settings-layout">
 					<nav className="settings-rail" aria-label={t("settingsTitle")} ref={railRef}>
-						{tabs.map((tb) => (
-							<button
-								key={tb.id}
-								type="button"
-								data-tab={tb.id}
-								className={`settings-tab${tab === tb.id ? " active" : ""}`}
-								aria-current={tab === tb.id ? "true" : undefined}
-								title={tb.hint ?? tb.label}
-								onClick={() => handleTabChange(tb.id)}
-							>
-								<span className="settings-tab-icon">{tb.icon}</span>
-								<span className="settings-tab-label">{tb.label}</span>
-								{tb.count !== undefined && <span className="set-count">{tb.count}</span>}
-								{tb.dot && <span className="update-dot" style={{ marginLeft: 4 }} />}
-							</button>
-						))}
+						<div className="settings-search-wrap">
+							<FiSearch className="settings-search-icon" />
+							<input
+								type="text"
+								className="settings-search-input"
+								placeholder={t("settingsSearchPlaceholder")}
+								value={tabSearchQuery}
+								onChange={(e) => setTabSearchQuery(e.target.value)}
+							/>
+							{tabSearchQuery && (
+								<button
+									type="button"
+									className="settings-search-clear"
+									aria-label="Clear search"
+									onClick={() => setTabSearchQuery("")}
+								>
+									<FiX />
+								</button>
+							)}
+						</div>
+						{tabSearchQuery.trim() ? (
+							filteredTabs.length > 0 ? (
+								filteredTabs.map((tb) => (
+									<button
+										key={tb.id}
+										type="button"
+										data-tab={tb.id}
+										className={`settings-tab${tab === tb.id ? " active" : ""}`}
+										aria-current={tab === tb.id ? "true" : undefined}
+										title={tb.hint ?? tb.label}
+										onClick={() => handleTabChange(tb.id)}
+									>
+										<span className="settings-tab-icon">{tb.icon}</span>
+										<span className="settings-tab-label">{tb.label}</span>
+										{tb.count !== undefined && <span className="set-count">{tb.count}</span>}
+										{tb.dot && <span className="update-dot" style={{ marginLeft: 4 }} />}
+									</button>
+								))
+							) : (
+								<div className="settings-search-empty">{t("settingsSearchEmpty")}</div>
+							)
+						) : (
+							GROUP_KEYS.map((grpKey) => {
+								const grpTabs = tabs.filter((tb) => (TAB_GROUPS[tb.id] ?? "ui") === grpKey);
+								if (grpTabs.length === 0) return null;
+								return (
+									<div key={grpKey} className="settings-group">
+										<div className="settings-group-title">{GROUP_LABELS[grpKey]}</div>
+										{grpTabs.map((tb) => (
+											<button
+												key={tb.id}
+												type="button"
+												data-tab={tb.id}
+												className={`settings-tab${tab === tb.id ? " active" : ""}`}
+												aria-current={tab === tb.id ? "true" : undefined}
+												title={tb.hint ?? tb.label}
+												onClick={() => handleTabChange(tb.id)}
+											>
+												<span className="settings-tab-icon">{tb.icon}</span>
+												<span className="settings-tab-label">{tb.label}</span>
+												{tb.count !== undefined && <span className="set-count">{tb.count}</span>}
+												{tb.dot && <span className="update-dot" style={{ marginLeft: 4 }} />}
+											</button>
+										))}
+									</div>
+								);
+							})
+						)}
 					</nav>
 					<div className="modal-body" ref={bodyRef}>
 						{/* ---- models & providers (all engines) ------------------------ */}
@@ -2090,7 +2194,9 @@ export function SettingsModal({
 										const isSelected = item.id === engine;
 										const status = engines.find((e) => e.id === item.id);
 										const isInstalled = item.id === "pi" || (status ? status.installed : false);
+										const isUpdating = Boolean(status?.updating);
 										const hasUpdate = Boolean(isInstalled && status?.hasUpdate && status?.latestVersion);
+										const showUpdate = hasUpdate || isUpdating;
 
 										const handleInstall = (e: React.MouseEvent) => {
 											e.stopPropagation();
@@ -2101,10 +2207,8 @@ export function SettingsModal({
 
 										const handleUpdate = (e: React.MouseEvent) => {
 											e.stopPropagation();
-											const pkg = status?.packageName ?? item.packageName;
-											if (pkg) {
-												runTerminalCommand(t("updateEngineTabTitle", { name: item.badge }), `npm i -g ${pkg}@latest`);
-											}
+											if (isUpdating) return;
+											appSend({ type: "update_engine", engineId: item.id });
 										};
 
 										return (
@@ -2143,6 +2247,10 @@ export function SettingsModal({
 															<span className="engine-picker-item-tag uninstalled" style={{ marginLeft: 4 }}>
 																{t("engineNotInstalled")}
 															</span>
+														) : isUpdating ? (
+															<span className="engine-picker-item-tag update-available" style={{ marginLeft: 4 }}>
+																{t("engineUpdating")}
+															</span>
 														) : hasUpdate ? (
 															<span
 																className="engine-picker-item-tag update-available"
@@ -2167,18 +2275,23 @@ export function SettingsModal({
 															<span>{t("engineInstall")}</span>
 														</button>
 													)}
-													{hasUpdate && (
+													{showUpdate && (
 														<button
 															type="button"
 															className="engine-picker-update-btn"
-															title={t("engineUpdateTip", {
-																current: status?.version ?? "",
-																latest: status?.latestVersion ?? "",
-															})}
+															disabled={isUpdating}
+															title={
+																isUpdating
+																	? t("engineUpdating")
+																	: t("engineUpdateTip", {
+																			current: status?.version ?? "",
+																			latest: status?.latestVersion ?? "",
+																		})
+															}
 															onClick={handleUpdate}
 														>
-															<FiRefreshCw className="engine-update-icon" />
-															<span>{t("engineUpdate")}</span>
+															<FiRefreshCw className={`engine-update-icon${isUpdating ? " spinning" : ""}`} />
+															<span>{isUpdating ? t("engineUpdating") : t("engineUpdate")}</span>
 														</button>
 													)}
 												</div>
@@ -2242,7 +2355,9 @@ export function SettingsModal({
 										const isSelected = item.id === engine;
 										const status = engines.find((e) => e.id === item.id);
 										const isInstalled = item.id === "pi" || (status ? status.installed : false);
+										const isUpdating = Boolean(status?.updating);
 										const hasUpdate = Boolean(isInstalled && status?.hasUpdate && status?.latestVersion);
+										const showUpdate = hasUpdate || isUpdating;
 
 										const handleInstall = (e: React.MouseEvent) => {
 											e.stopPropagation();
@@ -2253,10 +2368,8 @@ export function SettingsModal({
 
 										const handleUpdate = (e: React.MouseEvent) => {
 											e.stopPropagation();
-											const pkg = status?.packageName ?? item.packageName;
-											if (pkg) {
-												runTerminalCommand(t("updateEngineTabTitle", { name: item.badge }), `npm i -g ${pkg}@latest`);
-											}
+											if (isUpdating) return;
+											appSend({ type: "update_engine", engineId: item.id });
 										};
 
 										return (
@@ -2295,6 +2408,10 @@ export function SettingsModal({
 															<span className="engine-picker-item-tag uninstalled" style={{ marginLeft: 4 }}>
 																{t("engineNotInstalled")}
 															</span>
+														) : isUpdating ? (
+															<span className="engine-picker-item-tag update-available" style={{ marginLeft: 4 }}>
+																{t("engineUpdating")}
+															</span>
 														) : hasUpdate ? (
 															<span
 																className="engine-picker-item-tag update-available"
@@ -2319,18 +2436,23 @@ export function SettingsModal({
 															<span>{t("engineInstall")}</span>
 														</button>
 													)}
-													{hasUpdate && (
+													{showUpdate && (
 														<button
 															type="button"
 															className="engine-picker-update-btn"
-															title={t("engineUpdateTip", {
-																current: status?.version ?? "",
-																latest: status?.latestVersion ?? "",
-															})}
+															disabled={isUpdating}
+															title={
+																isUpdating
+																	? t("engineUpdating")
+																	: t("engineUpdateTip", {
+																			current: status?.version ?? "",
+																			latest: status?.latestVersion ?? "",
+																		})
+															}
 															onClick={handleUpdate}
 														>
-															<FiRefreshCw className="engine-update-icon" />
-															<span>{t("engineUpdate")}</span>
+															<FiRefreshCw className={`engine-update-icon${isUpdating ? " spinning" : ""}`} />
+															<span>{isUpdating ? t("engineUpdating") : t("engineUpdate")}</span>
 														</button>
 													)}
 												</div>
@@ -2344,41 +2466,106 @@ export function SettingsModal({
 									{t("settingsSystemPrompt")}
 									<HintTip text={`${t("promptComposeHint")}\n${t("promptComposeDesc")}`} />
 								</div>
-								<div className="set-prompt-view-triggers">
-									<button
-										type="button"
-										className="set-view-prompt-btn"
-										aria-expanded={showFullPrompt}
-										onClick={() => setShowFullPrompt((v) => !v)}
-									>
-										<span>{t("settingsViewPrompt")}</span>
-										{promptTokenEstimate > 0 && (
-											<span className="set-prompt-token-est">
-												{t("settingsViewPromptTokens", { n: promptTokenEstimate.toLocaleString() })}
-											</span>
-										)}
-										<span>{showFullPrompt ? "▴" : "▾"}</span>
-									</button>
-									<button
-										type="button"
-										className="set-view-prompt-btn"
-										aria-expanded={showToolsSchema}
-										onClick={() => setShowToolsSchema((v) => !v)}
-									>
-										<span>{t("settingsViewToolsSchema")}</span>
-										{toolsSchemaTokenEstimate > 0 && (
-											<span className="set-prompt-token-est">
-												{t("settingsViewPromptTokens", { n: toolsSchemaTokenEstimate.toLocaleString() })}
-											</span>
-										)}
-										<span>{showToolsSchema ? "▴" : "▾"}</span>
-									</button>
-									{totalContextTokenEstimate > 0 && (
-										<span className="set-prompt-total-est">
-											{t("settingsPromptContextTotal", { n: totalContextTokenEstimate.toLocaleString() })}
-										</span>
-									)}
-								</div>
+								{totalContextTokenEstimate > 0 ? (
+									<div className="set-token-meter-card">
+										<div className="set-token-meter-header">
+											<div className="set-token-meter-stats">
+												<span className="set-token-tag prompt-tag">
+													<span className="set-token-dot prompt-dot" />
+													{t("settingsSystemPrompt")} {promptTokenEstimate.toLocaleString()}
+												</span>
+												<span className="set-token-tag tools-tag">
+													<span className="set-token-dot tools-dot" />
+													{t("settingsTools")} Schema {toolsSchemaTokenEstimate.toLocaleString()}
+												</span>
+												<span className="set-token-tag total-tag">
+													{t("settingsPromptContextTotal", { n: totalContextTokenEstimate.toLocaleString() })}
+												</span>
+											</div>
+											<span className="set-token-safe-badge">🛡️ {t("settingsContextSafeZone")}</span>
+										</div>
+										<div className="set-token-bar-track">
+											<div
+												className="set-token-bar-segment prompt-segment"
+												style={{
+													width: `${Math.max(2, Math.min(100, (promptTokenEstimate / totalContextTokenEstimate) * 100))}%`,
+												}}
+												title={`${t("settingsSystemPrompt")}: ${promptTokenEstimate.toLocaleString()} tokens`}
+											/>
+											<div
+												className="set-token-bar-segment tools-segment"
+												style={{
+													width: `${Math.max(2, Math.min(100, (toolsSchemaTokenEstimate / totalContextTokenEstimate) * 100))}%`,
+												}}
+												title={`Tools Schema: ${toolsSchemaTokenEstimate.toLocaleString()} tokens`}
+											/>
+										</div>
+										<div className="set-token-bar-footer">
+											<span className="set-token-cache-hint">✓ {t("settingsCacheReady")}</span>
+											<div className="set-prompt-view-triggers">
+												<button
+													type="button"
+													className="set-view-prompt-btn"
+													aria-expanded={showFullPrompt}
+													onClick={() => setShowFullPrompt((v) => !v)}
+												>
+													<span>{t("settingsViewPrompt")}</span>
+													{promptTokenEstimate > 0 && (
+														<span className="set-prompt-token-est">
+															{t("settingsViewPromptTokens", { n: promptTokenEstimate.toLocaleString() })}
+														</span>
+													)}
+													<span>{showFullPrompt ? "▴" : "▾"}</span>
+												</button>
+												<button
+													type="button"
+													className="set-view-prompt-btn"
+													aria-expanded={showToolsSchema}
+													onClick={() => setShowToolsSchema((v) => !v)}
+												>
+													<span>{t("settingsViewToolsSchema")}</span>
+													{toolsSchemaTokenEstimate > 0 && (
+														<span className="set-prompt-token-est">
+															{t("settingsViewPromptTokens", { n: toolsSchemaTokenEstimate.toLocaleString() })}
+														</span>
+													)}
+													<span>{showToolsSchema ? "▴" : "▾"}</span>
+												</button>
+											</div>
+										</div>
+									</div>
+								) : (
+									<div className="set-prompt-view-triggers">
+										<button
+											type="button"
+											className="set-view-prompt-btn"
+											aria-expanded={showFullPrompt}
+											onClick={() => setShowFullPrompt((v) => !v)}
+										>
+											<span>{t("settingsViewPrompt")}</span>
+											{promptTokenEstimate > 0 && (
+												<span className="set-prompt-token-est">
+													{t("settingsViewPromptTokens", { n: promptTokenEstimate.toLocaleString() })}
+												</span>
+											)}
+											<span>{showFullPrompt ? "▴" : "▾"}</span>
+										</button>
+										<button
+											type="button"
+											className="set-view-prompt-btn"
+											aria-expanded={showToolsSchema}
+											onClick={() => setShowToolsSchema((v) => !v)}
+										>
+											<span>{t("settingsViewToolsSchema")}</span>
+											{toolsSchemaTokenEstimate > 0 && (
+												<span className="set-prompt-token-est">
+													{t("settingsViewPromptTokens", { n: toolsSchemaTokenEstimate.toLocaleString() })}
+												</span>
+											)}
+											<span>{showToolsSchema ? "▴" : "▾"}</span>
+										</button>
+									</div>
+								)}
 								{showFullPrompt && (
 									<div className="set-prompt-view">
 										<div className="set-prompt-view-head">
@@ -3106,73 +3293,58 @@ export function SettingsModal({
 										<ToggleRow
 											key={m.name}
 											title={
-												m.name === "todo"
-													? t("markerGroupTodo")
-													: m.name === "notify"
-														? t("markerGroupNotify")
-														: m.name === "conv"
-															? t("markerGroupRename")
-															: m.name === "action"
-																? t("markerGroupAction")
-																: m.name
+												m.name === "notify"
+													? t("markerGroupNotify")
+													: m.name === "conv"
+														? t("markerGroupRename")
+														: m.name === "action"
+															? t("markerGroupAction")
+															: m.name
 											}
 											tip={m.guidance.join("\n")}
 											enabled={m.enabled}
 											onToggle={() => toggleMarker(m.name)}
 										/>
 									))}
-								<ToggleRow
-									title={MARKERS_LIST_TOOL_NAME}
-									tip={`${t("todoListEnabledDesc")}\n${t("todoListOffHint")}`}
-									action={toolEditAction(MARKERS_LIST_TOOL_NAME)}
-									subtitle={
-										isBlockedByPreset(MARKERS_LIST_TOOL_NAME)
-											? t("toolsBlockedByPreset", { name: piPresetName })
-											: undefined
-									}
-									enabled={!isBlockedByPreset(MARKERS_LIST_TOOL_NAME) && !disabledTools.has(MARKERS_LIST_TOOL_NAME)}
-									disabled={isBlockedByPreset(MARKERS_LIST_TOOL_NAME)}
-									onToggle={() => toggleAgentTool(MARKERS_LIST_TOOL_NAME)}
-								/>
 								<div className="set-field-label">{t("toolsSectionOther")}</div>
 								{OTHER_AGENT_TOOLS.map((tool) => {
 									const blocked = isBlockedByPreset(tool.name);
 									const isCodemodeActive = tool.name === "codemode" && !blocked && !disabledTools.has(tool.name);
+									const isConfigExpanded = expandedToolConfigs.has(tool.name);
+
+									const configToggleBtn = isCodemodeActive ? (
+										<button
+											type="button"
+											className={`set-icon-btn tool-sub-config-btn${isConfigExpanded ? " active" : ""}`}
+											title={isConfigExpanded ? t("collapseSection") : t("expandSection")}
+											aria-expanded={isConfigExpanded}
+											aria-label={isConfigExpanded ? t("collapseSection") : t("expandSection")}
+											onClick={() => toggleToolConfigExpand(tool.name)}
+										>
+											<FiSliders />
+										</button>
+									) : null;
+
 									return (
 										<div key={tool.name}>
 											<ToggleRow
 												title={tool.name}
 												tip={`${tt(tool.descKey ?? tool.name)}\n${tt(tool.offHintKey ?? tool.name)}`}
-												action={toolEditAction(tool.name)}
+												action={
+													<div style={{ display: "inline-flex", alignItems: "center", gap: 4 }}>
+														{configToggleBtn}
+														{toolEditAction(tool.name)}
+													</div>
+												}
 												subtitle={blocked ? t("toolsBlockedByPreset", { name: piPresetName }) : undefined}
 												enabled={!blocked && !disabledTools.has(tool.name)}
 												disabled={blocked}
 												onToggle={() => toggleAgentTool(tool.name)}
 											/>
-											{isCodemodeActive && (
-												<div
-													className="sub-settings-block"
-													style={{
-														marginLeft: 24,
-														marginTop: -6,
-														marginBottom: 12,
-														padding: "10px 14px",
-														borderRadius: 6,
-														backgroundColor: "var(--bg-elev2, rgba(255,255,255,0.03))",
-														border: "1px solid var(--border-subtle, rgba(255,255,255,0.08))",
-														display: "flex",
-														flexDirection: "column",
-														gap: 8,
-													}}
-												>
-													<div
-														style={{
-															display: "flex",
-															justifyContent: "space-between",
-															alignItems: "center",
-														}}
-													>
-														<label className="set-field-label" style={{ margin: 0, fontSize: 13 }}>
+											{isCodemodeActive && isConfigExpanded && (
+												<div className="tool-sub-config-card">
+													<div className="tool-sub-config-row">
+														<label className="set-field-label">
 															{t("codemodeModeLabel")}
 															<HintTip text={t("codemodeModeHint")} />
 														</label>
@@ -3186,14 +3358,8 @@ export function SettingsModal({
 															<option value="only">{t("codemodeModeOnly")}</option>
 														</select>
 													</div>
-													<div
-														style={{
-															display: "flex",
-															justifyContent: "space-between",
-															alignItems: "center",
-														}}
-													>
-														<label className="set-field-label" style={{ margin: 0, fontSize: 13 }}>
+													<div className="tool-sub-config-row">
+														<label className="set-field-label">
 															{t("codemodeInlineBudgetLabel")}
 															<HintTip text={t("codemodeInlineBudgetHint")} />
 														</label>
@@ -3986,11 +4152,7 @@ export function SettingsModal({
 														<p className="mcp-market-desc">{descText}</p>
 
 														<div className="skill-market-card-actions">
-															<button
-																type="button"
-																className="skill-inspect-btn"
-																onClick={() => setInspectingSkill(sk)}
-															>
+															<button type="button" className="skill-inspect-btn" onClick={() => openInspectSkill(sk)}>
 																<FiEye />
 																{t("skillInspectPrompt")}
 															</button>
@@ -6551,10 +6713,16 @@ export function SettingsModal({
 					</div>
 				</div>
 
-				<div className="modal-actions">
-					<button type="button" className="dd-refresh" onClick={handleClose}>
-						{t("close")}
-					</button>
+				<div className="modal-actions settings-modal-actions">
+					<div className="settings-status-info">
+						<span className="settings-status-dot" />
+						<span className="settings-status-text">{t("settingsAutoSavedTip")}</span>
+					</div>
+					<div className="settings-action-btns">
+						<button type="button" className="dd-refresh set-close-btn" onClick={handleClose}>
+							{t("close")}
+						</button>
+					</div>
 				</div>
 			</div>
 

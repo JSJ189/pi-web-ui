@@ -7,7 +7,7 @@
 	"tags": ["写作", "学术", "只读", "极简", "大上下文"],
 	"createdAt": "2026-03-31T08:30:00.000Z",
 	"appVersion": "0.99.0",
-	"enabledTools": ["read", "present_files", "todo_list"],
+	"enabledTools": ["read", "present_files"],
 	"settings": {
 		"promptMode": "append",
 		"customSystemPrompt": "你是一位拥有国际一流学术期刊审稿经验的资深学者与中英双语写作专家。精通学术论证逻辑、文献综述规范与严谨的同行评议标准。在行文润色中，杜绝空洞辞藻与陈词滥调，注重论证链条的严密性、术语概念的精确性以及学术语气的客观中立。",

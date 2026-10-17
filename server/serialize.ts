@@ -394,7 +394,7 @@ export function serializeMessage(m: AgentMessage, seq: number): UiMessage | null
 			};
 			// 结构化元数据（tool result details）也要下发：present_files 的预览卡片
 			// 就靠它拿 kind/size/excerpt（前端不能靠再打一次 HTTP 才知类型），
-			// ask_user_question/todo_list 同理。体积封顶，超限整丢（见 TOOL_DETAILS_CAP）。
+			// ask_user_question 同理。体积封顶，超限整丢（见 TOOL_DETAILS_CAP）。
 			if (m.details !== undefined) {
 				try {
 					const json = JSON.stringify(m.details);

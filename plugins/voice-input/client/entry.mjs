@@ -320,10 +320,154 @@ function hostApi() {
 /* 浮层（录音状态 + 中间结果 + 完成/取消，纯 DOM）                      */
 /* ------------------------------------------------------------------ */
 
+/**
+ * 探测 --accent 对比色（黑 / 白），杜绝浅色/纯白 accent（如 flow、wallpaper-flow 主题）下白底白字。
+ * 规则：优先认主题/宿主声明的 --accent-contrast；没有则计算当前 --accent 的相对亮度，>0.55 用深色。
+ */
+function getAccentContrastColor() {
+	try {
+		const hostVal = getComputedStyle(document.documentElement).getPropertyValue("--accent-contrast")?.trim();
+		if (hostVal) return hostVal;
+
+		const probe = document.createElement("div");
+		probe.style.cssText = "position:absolute;left:-9999px;top:-9999px;visibility:hidden;color:var(--accent,#7c5cff);";
+		document.body.append(probe);
+		const comp = getComputedStyle(probe).color;
+		probe.remove();
+
+		const m = comp.match(/rgba?\((\d+),\s*(\d+),\s*(\d+)/i);
+		if (m) {
+			const r = Number(m[1]) / 255;
+			const g = Number(m[2]) / 255;
+			const b = Number(m[3]) / 255;
+			const lum = 0.2126 * r + 0.7152 * g + 0.0722 * b;
+			return lum > 0.55 ? "#111111" : "#ffffff";
+		}
+	} catch {
+		/* ignore */
+	}
+	return "#ffffff";
+}
+
+/**
+ * 寻找触发浮层的宿主按钮（如输入框工具栏的 🎤 或 📷 按钮）。
+ */
+function findAnchorButton(actionName = ACTION) {
+	try {
+		// 1. 精确 data-action 属性（ChatInput 渲染时赋予）
+		let btn = document.querySelector(`button[data-action="${actionName}"]`);
+		if (btn && btn.offsetParent !== null) return btn;
+
+		// 2. 精确 data-plugin-slot-id（mic / camera）
+		const slotId = actionName === CAM_ACTION ? "camera" : "mic";
+		btn = document.querySelector(`button[data-plugin-slot-id="${slotId}"]`);
+		if (btn && btn.offsetParent !== null) return btn;
+
+		// 3. 语义属性（title / aria-label）
+		const kw = actionName === CAM_ACTION ? ["拍照", "相机", "Camera", "Photo"] : ["语音", "麦克风", "Voice", "Mic"];
+		for (const k of kw) {
+			const candidate = document.querySelector(
+				`.inputbox button[aria-label*="${k}" i], .inputbox button[title*="${k}" i]`,
+			);
+			if (candidate && candidate.offsetParent !== null) return candidate;
+		}
+
+		// 4. 输入框内插件操作按钮
+		const allPluginBtns = document.querySelectorAll(".inputbox .btn.composer-plugin-action");
+		if (allPluginBtns.length > 0) {
+			const idx = actionName === CAM_ACTION && allPluginBtns.length > 1 ? 1 : 0;
+			return allPluginBtns[idx] || allPluginBtns[0];
+		}
+
+		// 5. 回退：如果找不到具体的按钮，找输入框整体容器 .inputbox
+		const composer = document.querySelector(".inputbox") || document.querySelector(".composer-tools");
+		if (composer) return composer;
+	} catch {
+		/* ignore */
+	}
+	return null;
+}
+
+/**
+ * 动态计算浮层相对于触发按钮的坐标（position: fixed）。
+ * 规则：
+ * 1. 水平：以锚点左边缘为基准微调对齐，且严格钳制在视口左右安全边距内；
+ * 2. 垂直：优先位于锚点上方（使用 bottom 锚定，这样内容增高时向上生长，不遮挡麦克风图标）；
+ *    若上方空间不足且下方放得下，则翻转到锚点下方（使用 top 锚定）；
+ * 3. 找不到锚点时优雅降级到底部中央。
+ */
+function positionOverlayToAnchor(panelEl, actionName = ACTION) {
+	if (!panelEl) return;
+	const anchor = findAnchorButton(actionName);
+	if (!anchor) {
+		panelEl.style.left = "50%";
+		panelEl.style.top = "auto";
+		panelEl.style.bottom = "132px";
+		panelEl.style.transform = "translateX(-50%)";
+		return;
+	}
+
+	const aRect = anchor.getBoundingClientRect();
+	const pRect = panelEl.getBoundingClientRect();
+	const w = pRect.width || 360;
+	const h = pRect.height || 110;
+	const vw = window.innerWidth;
+	const vh = window.innerHeight;
+	const margin = 10;
+	const gap = 8;
+
+	// 水平位置：浮层左侧与锚点左侧微调对齐（偏左 6px 留出舒适内凹），带左右屏幕防溢出
+	let x = aRect.left - 6;
+	if (x + w > vw - margin) {
+		x = vw - margin - w;
+	}
+	if (x < margin) {
+		x = margin;
+	}
+
+	// 垂直位置：优先上方，上方放不下且下方放得下则翻转到下方
+	const fitsAbove = aRect.top - h - gap >= margin;
+	const fitsBelow = aRect.bottom + gap + h <= vh - margin;
+
+	if (fitsAbove || !fitsBelow) {
+		// 上方：以 bottom 锚定，文字增多变高时向上生长，永远不盖住麦克风按钮
+		const bottom = Math.max(margin, Math.round(vh - aRect.top + gap));
+		panelEl.style.bottom = `${bottom}px`;
+		panelEl.style.top = "auto";
+	} else {
+		// 下方：以 top 锚定
+		const top = Math.max(margin, Math.round(aRect.bottom + gap));
+		panelEl.style.top = `${top}px`;
+		panelEl.style.bottom = "auto";
+	}
+
+	panelEl.style.left = `${Math.round(x)}px`;
+	panelEl.style.transform = "none";
+}
+
 let overlay = null;
 let overlayTimer = 0;
+let overlayScrollHandler = null;
+let overlayResizeObserver = null;
+
+function cleanupOverlayPositioner() {
+	if (overlayScrollHandler) {
+		window.removeEventListener("resize", overlayScrollHandler);
+		window.removeEventListener("scroll", overlayScrollHandler, true);
+		overlayScrollHandler = null;
+	}
+	if (overlayResizeObserver) {
+		overlayResizeObserver.disconnect();
+		overlayResizeObserver = null;
+	}
+}
 
 function closeOverlay() {
+	cleanupOverlayPositioner();
+	if (overlayTimer) {
+		clearInterval(overlayTimer);
+		overlayTimer = 0;
+	}
 	if (overlay) {
 		overlay.remove();
 		overlay = null;
@@ -341,11 +485,13 @@ function openOverlay() {
 	}
 	const root = document.createElement("div");
 	root.className = "vi-overlay";
+	root.style.setProperty("--accent-contrast", getAccentContrastColor());
+	root.style.visibility = "hidden";
 	root.innerHTML = `
 <style>
 	.vi-overlay {
-		position: fixed; left: 50%; bottom: 132px; transform: translateX(-50%);
-		z-index: 9999; min-width: 300px; max-width: min(560px, 92vw);
+		position: fixed;
+		z-index: 9999; min-width: 300px; max-width: min(560px, calc(100vw - 24px));
 		background: var(--bg-elev, #16161d); color: inherit;
 		border: 1px solid var(--border, #333); border-radius: 12px;
 		padding: 12px 14px; font-size: 13px;
@@ -381,7 +527,13 @@ function openOverlay() {
 		padding: 5px 14px; cursor: pointer;
 	}
 	.vi-btns button:disabled { opacity: .45; cursor: default; }
-	.vi-btns .primary { background: var(--accent, #7c5cff); border-color: transparent; color: #fff; }
+	.vi-btns .primary {
+		background: var(--accent, #7c5cff);
+		border-color: transparent;
+		color: var(--accent-contrast, #fff);
+		font-weight: 500;
+	}
+	.vi-btns .primary:hover:not(:disabled) { filter: brightness(0.92); }
 	.vi-err { color: #e5484d; }
 	.vi-note { opacity: .65; font-size: 12px; margin: 6px 0 2px; line-height: 1.6; }
 </style>
@@ -405,6 +557,24 @@ function openOverlay() {
 	const timeEl = root.querySelector(".vi-time");
 	const btnsEl = root.querySelector(".vi-btns");
 	overlay = root;
+
+	const updatePos = () => {
+		if (overlay) positionOverlayToAnchor(overlay, ACTION);
+	};
+	updatePos();
+	root.style.visibility = "";
+
+	overlayScrollHandler = updatePos;
+	window.addEventListener("resize", updatePos, { passive: true });
+	window.addEventListener("scroll", updatePos, { capture: true, passive: true });
+
+	if (typeof ResizeObserver !== "undefined") {
+		overlayResizeObserver = new ResizeObserver(() => {
+			updatePos();
+		});
+		overlayResizeObserver.observe(root);
+	}
+
 	const t0 = Date.now();
 	overlayTimer = setInterval(() => {
 		if (!overlay) {
@@ -418,6 +588,7 @@ function openOverlay() {
 	return {
 		setStatus(s) {
 			statusEl.textContent = s;
+			requestAnimationFrame(updatePos);
 		},
 		setBadge(s) {
 			if (!badgeEl) return;
@@ -428,6 +599,7 @@ function openOverlay() {
 				badgeEl.style.display = "";
 				badgeEl.textContent = s;
 			}
+			requestAnimationFrame(updatePos);
 		},
 		setLevel(val) {
 			if (!meterEl || !meterBarEl) return;
@@ -445,6 +617,7 @@ function openOverlay() {
 		setText(s, isErr = false) {
 			textEl.textContent = s;
 			textEl.classList.toggle("vi-err", isErr);
+			requestAnimationFrame(updatePos);
 		},
 		setNote(s) {
 			if (!s) {
@@ -454,6 +627,7 @@ function openOverlay() {
 				noteEl.style.display = "";
 				noteEl.textContent = s;
 			}
+			requestAnimationFrame(updatePos);
 		},
 		setButtons(btns) {
 			btnsEl.innerHTML = "";
@@ -466,6 +640,7 @@ function openOverlay() {
 				el.addEventListener("click", b.onClick);
 				btnsEl.append(el);
 			}
+			requestAnimationFrame(updatePos);
 		},
 	};
 }
@@ -1487,8 +1662,24 @@ function stopCamStream() {
 	camStream = null;
 }
 
+let camScrollHandler = null;
+let camResizeObserver = null;
+
+function cleanupCamPositioner() {
+	if (camScrollHandler) {
+		window.removeEventListener("resize", camScrollHandler);
+		window.removeEventListener("scroll", camScrollHandler, true);
+		camScrollHandler = null;
+	}
+	if (camResizeObserver) {
+		camResizeObserver.disconnect();
+		camResizeObserver = null;
+	}
+}
+
 /** 关面板一律顺带停流：摄像头指示灯亮着而面板没了是最糟的收尾。 */
 function closeCameraPanel() {
+	cleanupCamPositioner();
 	stopCamStream();
 	if (camPanel) {
 		camPanel.remove();
@@ -1579,10 +1770,12 @@ function openCameraPanel() {
 	closeCameraPanel();
 	const root = document.createElement("div");
 	root.className = "vc-panel";
+	root.style.setProperty("--accent-contrast", getAccentContrastColor());
+	root.style.visibility = "hidden";
 	root.innerHTML = `
 <style>
 	.vc-panel {
-		position: fixed; left: 50%; bottom: 132px; transform: translateX(-50%);
+		position: fixed;
 		z-index: 9999; width: min(520px, 94vw);
 		background: var(--bg-elev, #16161d); color: inherit;
 		border: 1px solid var(--border, #333); border-radius: 12px;
@@ -1599,7 +1792,13 @@ function openCameraPanel() {
 	.vc-btns { display: flex; gap: 8px; justify-content: flex-end; margin-top: 10px; flex-wrap: wrap; }
 	.vc-btns button { border: 1px solid var(--border, #333); border-radius: 6px;
 		background: transparent; color: inherit; font: inherit; padding: 5px 14px; cursor: pointer; }
-	.vc-btns .primary { background: var(--accent, #7c5cff); border-color: transparent; color: #fff; }
+	.vc-btns .primary {
+		background: var(--accent, #7c5cff);
+		border-color: transparent;
+		color: var(--accent-contrast, #fff);
+		font-weight: 500;
+	}
+	.vc-btns .primary:hover:not(:disabled) { filter: brightness(0.92); }
 	.vc-btns button:disabled { opacity: .45; cursor: default; }
 	.vc-hide { display: none !important; }
 </style>
@@ -1614,6 +1813,23 @@ function openCameraPanel() {
 	document.body.append(root);
 	camPanel = root;
 
+	const updateCamPos = () => {
+		if (camPanel) positionOverlayToAnchor(camPanel, CAMERA_ACTION);
+	};
+	updateCamPos();
+	root.style.visibility = "";
+
+	camScrollHandler = updateCamPos;
+	window.addEventListener("resize", updateCamPos, { passive: true });
+	window.addEventListener("scroll", updateCamPos, { capture: true, passive: true });
+
+	if (typeof ResizeObserver !== "undefined") {
+		camResizeObserver = new ResizeObserver(() => {
+			updateCamPos();
+		});
+		camResizeObserver.observe(root);
+	}
+
 	const video = root.querySelector(".vc-video");
 	const hint = root.querySelector(".vc-hint");
 	const closeBtn = root.querySelector(".vc-x");
@@ -1622,8 +1838,12 @@ function openCameraPanel() {
 	const shotBtn = root.querySelector(".vc-shot");
 	const setHint = (t) => {
 		hint.textContent = t;
+		requestAnimationFrame(updateCamPos);
 	};
-	const show = (el, on) => el.classList.toggle("vc-hide", !on);
+	const show = (el, on) => {
+		el.classList.toggle("vc-hide", !on);
+		requestAnimationFrame(updateCamPos);
+	};
 
 	root.querySelector(".vc-title").textContent = T.camTitle;
 	closeBtn.title = T.close;

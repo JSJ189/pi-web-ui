@@ -384,8 +384,8 @@ describe("openModal/closeModal（宿主 API v10，modal.dialog 槽位）", () =>
 		expect(throwing.api.openModal("plugin:x")).toBe(false);
 		expect(throwing.api.closeModal()).toBe(true);
 	});
-	it("宿主 API 版本已升到 v11（issue #188：models.list + startChat/openSession 的 model）", () => {
-		expect(PLUGIN_HOST_API_VERSION).toBe(11);
+	it("宿主 API 版本已升到 v12（ttsProviders 通用语音合成支持）", () => {
+		expect(PLUGIN_HOST_API_VERSION).toBe(12);
 	});
 });
 
@@ -466,5 +466,21 @@ describe("createPluginHostApi.models + startChat/openSession 的 model（issue #
 		unsub();
 		emitPluginHostModel("anthropic/claude-sonnet-5");
 		expect(seen).toEqual(["openai/gpt-4o-mini"]);
+	});
+});
+
+describe("createPluginHostApi.ttsProviders（宿主 API v12）", () => {
+	it("ttsProviders.register / list / 取消注册正常工作", () => {
+		const { api } = harness();
+		const unreg = api.ttsProviders.register({
+			id: "mock-engine",
+			label: "Mock Engine",
+			play: () => () => {},
+		});
+		expect(api.ttsProviders.list()).toEqual(
+			expect.arrayContaining([{ id: "mock-engine", label: "Mock Engine", labelEn: undefined }]),
+		);
+		unreg();
+		expect(api.ttsProviders.list().find((p) => p.id === "mock-engine")).toBeUndefined();
 	});
 });

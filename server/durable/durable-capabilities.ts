@@ -10,6 +10,6 @@ export { DEFAULT_DURABLE_CAPABILITIES };
 export function resolveDurableCapabilities(caps?: Partial<AgentEngineCapabilities> | null): AgentEngineCapabilities {
 	return {
 		...DEFAULT_DURABLE_CAPABILITIES,
-		...(caps ?? {}),
+		...caps,
 	};
 }

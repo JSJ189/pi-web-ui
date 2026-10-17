@@ -1860,6 +1860,45 @@ whenBridge((bridge) => {
 	}
 });
 
+// ------------------------------------------------------------ 交互模式穿透滚轮转发
+// 当用户在动态壁纸中开启了「允许交互」时，.messages 会被设为 pointer-events: none 以便让鼠标
+// 事件穿透到底层动态场景；此时若在两侧空白区域滚动滚轮，事件落到了底层穿透层，原生无法滚动消息区。
+// 此处监听 wheel 并智能转发给当前活动的聊天滚动容器（.messages），兼顾粒子交互与自由滚动。
+function onInteractiveWheel(e) {
+	if (!state.settings?.interactive || !state.activeId) return;
+
+	const target = e.target;
+	// 如果事件目标本身在某个正常接收鼠标事件的 UI 部件或内部滚动区中，由其自身处理
+	if (
+		target &&
+		target.closest &&
+		target.closest(
+			".pi-we-drawer, .pi-we-inspector-dialog, .panel, .dialog-inline, .modal, .modal-body, .menu, .dropdown-menu, .settings-modal, .msg, .msg-body, .inputbar, .terminal-pane, .xterm, textarea, input, select, pre",
+		)
+	) {
+		return;
+	}
+
+	const messages = document.querySelector(".messages");
+	if (messages) {
+		let deltaY = e.deltaY;
+		let deltaX = e.deltaX;
+		if (e.deltaMode === 1) {
+			deltaY *= 33;
+			deltaX *= 33;
+		} else if (e.deltaMode === 2) {
+			deltaY *= 100;
+			deltaX *= 100;
+		}
+		messages.scrollBy({
+			top: deltaY,
+			left: deltaX,
+			behavior: "auto",
+		});
+	}
+}
+window.addEventListener("wheel", onInteractiveWheel, { passive: true });
+
 // 注册当前运行时（支持热重载与实例清理）
 globalThis[RUNTIME_KEY] = {
 	drawer,
@@ -1867,6 +1906,7 @@ globalThis[RUNTIME_KEY] = {
 	state,
 	toolInspector,
 	destroy() {
+		window.removeEventListener("wheel", onInteractiveWheel);
 		stopToolInspector();
 		toolInspector.destroy();
 		for (const off of teardown.splice(0)) {

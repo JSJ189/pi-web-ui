@@ -1,8 +1,9 @@
-import { execFile } from "node:child_process";
+import { execFile, spawn } from "node:child_process";
 import { existsSync, readFileSync } from "node:fs";
-import { dirname, join } from "node:path";
+import { join } from "node:path";
 import { VERSION } from "@earendil-works/pi-coding-agent";
 import { runtimeBaseCandidates } from "./dsh/preset-clones.js";
+import { killPidTree } from "./process-utils.js";
 import type { EngineStatus } from "./protocol.js";
 import { probeClaudeCode } from "./universal/drivers/claude-code.js";
 import {
@@ -55,6 +56,15 @@ interface RegistryCacheEntry {
 const registryCache = new Map<string, RegistryCacheEntry>();
 
 let lastProbeAt = 0;
+const updatingEngineIds = new Set<string>();
+
+function applyUpdatingFlag(list: EngineStatus[]): EngineStatus[] {
+	return list.map((s) => ({
+		...s,
+		...(updatingEngineIds.has(s.id) ? { updating: true } : {}),
+	}));
+}
+
 let cachedStatuses: EngineStatus[] = [
 	{ id: "pi", installed: true, packageName: ENGINE_PACKAGES.pi.packageName, version: VERSION },
 	{ id: "dsh", installed: false, packageName: ENGINE_PACKAGES.dsh.packageName },
@@ -278,7 +288,10 @@ export async function probeEngine(id: string, force = false): Promise<EngineStat
 	const idx = cachedStatuses.findIndex((e) => e.id === id);
 	if (idx >= 0) cachedStatuses[idx] = result;
 	else cachedStatuses.push(result);
-	return result;
+	return {
+		...result,
+		...(updatingEngineIds.has(id) ? { updating: true } : {}),
+	};
 }
 
 /**
@@ -286,7 +299,7 @@ export async function probeEngine(id: string, force = false): Promise<EngineStat
  */
 export async function probeAllEngines(force = false): Promise<EngineStatus[]> {
 	if (!force && Date.now() - lastProbeAt < CACHE_TTL_MS && cachedStatuses.length > 0) {
-		return cachedStatuses;
+		return applyUpdatingFlag(cachedStatuses);
 	}
 	const [pi, dsh, claude, durable] = await Promise.all([probePi(), probeDsh(), probeClaude(), probeDurable()]);
 	await Promise.all([
@@ -297,14 +310,114 @@ export async function probeAllEngines(force = false): Promise<EngineStatus[]> {
 	]);
 	cachedStatuses = [pi, dsh, claude, durable];
 	lastProbeAt = Date.now();
-	return cachedStatuses;
+	return applyUpdatingFlag(cachedStatuses);
 }
 
 /**
  * 同步获取当前缓存的引擎探测结果（握手帧或即时读取使用）。
  */
 export function getCachedEngineStatuses(): EngineStatus[] {
-	return [...cachedStatuses];
+	return applyUpdatingFlag(cachedStatuses);
+}
+
+/**
+ * 查询指定引擎是否正在执行后台更新子进程。
+ */
+export function isEngineUpdating(engineId: string): boolean {
+	return updatingEngineIds.has(engineId);
+}
+
+/**
+ * 在后台子进程中执行引擎全局包更新（npm i -g <pkg>@latest）。
+ * 避免在可见终端中通过 PTY 模拟输入导致命令首字母丢失或输入不全的问题。
+ */
+export async function updateEngineBackground(
+	engineId: string,
+	options?: { timeoutMs?: number },
+): Promise<{ ok: boolean; error?: string; output?: string }> {
+	const meta = ENGINE_PACKAGES[engineId];
+	if (!meta || !meta.packageName) {
+		return { ok: false, error: `不支持或未知的引擎「${engineId}」` };
+	}
+	if (updatingEngineIds.has(engineId)) {
+		return { ok: false, error: `引擎「${engineId}」正在后台更新中，请勿重复操作` };
+	}
+
+	updatingEngineIds.add(engineId);
+	const pkg = meta.packageName;
+	const timeoutMs = Math.max(10_000, Number(options?.timeoutMs ?? 300_000));
+	const isWin = process.platform === "win32";
+	const spawnCmd = isWin ? process.env.ComSpec || "cmd.exe" : "npm";
+	const spawnArgs = isWin ? ["/d", "/s", "/c", "npm", "i", "-g", `${pkg}@latest`] : ["i", "-g", `${pkg}@latest`];
+
+	try {
+		const child = spawn(spawnCmd, spawnArgs, {
+			windowsHide: true,
+			detached: !isWin,
+			stdio: ["ignore", "pipe", "pipe"],
+			env: {
+				...process.env,
+				NO_COLOR: "1",
+			},
+		});
+
+		let out = "";
+		const appendOut = (chunk: Buffer | string) => {
+			out = (out + chunk.toString()).slice(-8000);
+		};
+		child.stdout?.on("data", appendOut);
+		child.stderr?.on("data", appendOut);
+
+		const res = await new Promise<{ ok: boolean; code: number | null; error?: string }>((resolve) => {
+			let done = false;
+			const timer = setTimeout(() => {
+				if (done) return;
+				done = true;
+				if (child.pid) void killPidTree(child.pid);
+				resolve({ ok: false, code: null, error: `更新超时（超过 ${Math.round(timeoutMs / 1000)} 秒）` });
+			}, timeoutMs);
+
+			child.on("error", (err) => {
+				if (done) return;
+				done = true;
+				clearTimeout(timer);
+				resolve({ ok: false, code: null, error: err.message });
+			});
+
+			child.on("close", (code) => {
+				if (done) return;
+				done = true;
+				clearTimeout(timer);
+				resolve({
+					ok: code === 0,
+					code,
+					error: code === 0 ? undefined : `npm 退出码 ${code}`,
+				});
+			});
+		});
+
+		if (res.ok) {
+			registryCache.delete(pkg);
+			try {
+				await probeAllEngines(true);
+			} catch {
+				/* best effort */
+			}
+		}
+
+		return {
+			ok: res.ok,
+			error: res.error,
+			output: out.trim(),
+		};
+	} catch (err) {
+		return {
+			ok: false,
+			error: (err as Error).message,
+		};
+	} finally {
+		updatingEngineIds.delete(engineId);
+	}
 }
 
 /**

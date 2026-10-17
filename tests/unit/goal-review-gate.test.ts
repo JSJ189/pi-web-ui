@@ -26,13 +26,12 @@ describe("目标审查闸门 goalReviewDenial", () => {
 		}
 	});
 
-	it("只读工具放行（read/grep/scm/present/todo/conversation_read/subagent_get_result）", () => {
+	it("只读工具放行（read/grep/scm/present/conversation_read/subagent_get_result）", () => {
 		for (const name of [
 			"read",
 			"grep",
 			"scm",
 			"present_files",
-			"todo_list",
 			"conversation_read",
 			"subagent_get_result",
 			"subagent_list",

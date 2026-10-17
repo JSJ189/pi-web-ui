@@ -199,15 +199,14 @@ describe("引擎列表元数据与安装检测 (SUPPORTED_ENGINES & EnginePicker
 		expect(updateBtn).toBeTruthy();
 		expect(updateBtn.textContent).toContain("更新");
 
-		// 点击「更新」按钮，派发全局包更新命令（npm i -g @deepseek-ai/dsh@latest）
+		// 点击「更新」按钮，通过后台子进程执行更新（向服务端发送 update_engine，不触发可见终端模拟按键，以防命令输入不全）
 		sentMessages = [];
 		act(() => {
 			updateBtn.click();
 		});
 		expect(sentMessages.filter((m) => m.type === "switch_engine")).toHaveLength(0);
-		expect(runCommandEvents).toHaveLength(1);
-		expect(runCommandEvents[0].detail.command).toBe("npm i -g @deepseek-ai/dsh@latest");
-		expect(runCommandEvents[0].detail.title).toBe("更新 DSH 引擎");
+		expect(runCommandEvents).toHaveLength(0);
+		expect(sentMessages).toContainEqual({ type: "update_engine", engineId: "dsh" });
 
 		// 重新打开菜单，点击项本身（非更新按钮）仍可正常切换引擎
 		act(() => {
@@ -218,6 +217,57 @@ describe("引擎列表元数据与安装检测 (SUPPORTED_ENGINES & EnginePicker
 			newDshItem.click();
 		});
 		expect(sentMessages).toContainEqual({ type: "switch_engine", engine: "dsh" });
+	});
+
+	it("正在执行后台更新的引擎显示「更新中…」标签与禁用旋转按钮，点击不重复触发更新", () => {
+		// 设置 dsh 正在后台子进程更新中
+		setAppGlobals({
+			engine: "pi",
+			engines: [
+				{ id: "pi", installed: true, packageName: "@earendil-works/pi-coding-agent" },
+				{
+					id: "dsh",
+					installed: true,
+					packageName: "@deepseek-ai/dsh",
+					version: "0.1.0",
+					latestVersion: "0.2.0",
+					hasUpdate: true,
+					updating: true,
+				},
+			],
+		});
+
+		const root = createRoot(container);
+		act(() => {
+			root.render(createElement(LanguageProvider, null, createElement(EnginePicker, null)));
+		});
+
+		const triggerBtn = container.querySelector(".engine-picker-btn") as HTMLElement;
+		act(() => {
+			triggerBtn.click();
+		});
+
+		const dshItem = container.querySelector(".engine-picker-item.engine-dsh") as HTMLElement;
+		expect(dshItem).toBeTruthy();
+
+		// 显示「更新中…」标签
+		const updateTag = dshItem.querySelector(".engine-picker-item-tag.update-available");
+		expect(updateTag).toBeTruthy();
+		expect(updateTag?.textContent).toBe("更新中…");
+
+		// 显示「更新中…」禁用态按钮
+		const updateBtn = dshItem.querySelector(".engine-picker-update-btn") as HTMLButtonElement;
+		expect(updateBtn).toBeTruthy();
+		expect(updateBtn.disabled).toBe(true);
+		expect(updateBtn.textContent).toContain("更新中…");
+		expect(updateBtn.querySelector(".engine-update-icon.spinning")).toBeTruthy();
+
+		// 点击禁用中的更新按钮，不发送 update_engine 消息
+		sentMessages = [];
+		act(() => {
+			updateBtn.click();
+		});
+		expect(sentMessages.filter((m) => m.type === "update_engine")).toHaveLength(0);
 	});
 
 	it("底栏模式 (bar='bottom') 自动向上弹出 (direction='up') 且默认启用 Portal 挂载到 document.body", () => {

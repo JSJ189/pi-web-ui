@@ -37,6 +37,8 @@ describe("主题分组与现代经典主题测试", () => {
 		expect(builtinIds).toContain("cyberpunk");
 		expect(builtinIds).toContain("dazzle");
 		expect(builtinIds).toContain("aetheris");
+		expect(builtinIds).toContain("flow");
+		expect(builtinIds).toContain("flow-light");
 	});
 
 	it("resolveThemeFile 能解析新经典主题的 css 路径", () => {
@@ -102,6 +104,10 @@ describe("主题分组与现代经典主题测试", () => {
 		expect(byId.get("one-dark")?.scheme).toBe("dark");
 		// 原生内置浅色/深色
 		expect(byId.get("paper")?.scheme).toBe("light");
+		expect(byId.get("flow-light")?.scheme).toBe("light");
+		expect(byId.get("flow-light")?.name).toBe("极简行文");
+		expect(byId.get("flow-light")?.nameEn).toBe("Pure Flow Light");
+		expect(byId.get("flow")?.scheme).toBe("dark");
 		expect(byId.get("cyberpunk")?.scheme).toBe("dark");
 		expect(byId.get("aetheris")?.scheme).toBe("dark");
 		expect(byId.get("aetheris")?.name).toBe("以太座舱");

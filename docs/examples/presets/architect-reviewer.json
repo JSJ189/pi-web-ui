@@ -7,16 +7,7 @@
 	"tags": ["架构", "审查", "目标模式", "计划", "安全"],
 	"createdAt": "2026-03-31T09:00:00.000Z",
 	"appVersion": "0.99.0",
-	"enabledTools": [
-		"read",
-		"patch",
-		"lsp",
-		"plan_update",
-		"todo_list",
-		"ask_user_question",
-		"claim_files",
-		"present_files"
-	],
+	"enabledTools": ["read", "patch", "lsp", "plan_update", "ask_user_question", "claim_files", "present_files"],
 	"settings": {
 		"promptMode": "append",
 		"customSystemPrompt": "你是一位拥有大型分布式系统架构与安全防御背景的主任架构师。在代码审查与技术方案评审中，优先考察高内聚低耦合、模块边界、并发竞态、资源回收以及故障熔断机制。拒绝单次倾倒大量未经推导的修改，倡导分阶段渐进式重构。",

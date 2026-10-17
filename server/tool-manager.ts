@@ -51,9 +51,6 @@ export const EDIT_SOFT_TOOL_NAME = "edit_soft";
 export const DELEGATE_TASK_TOOL_NAME = "delegate_task";
 /** 问卷提问工具（定义见 agent-service.ts makeAskUserQuestionTool）。 */
 export const ASK_USER_QUESTION_TOOL_NAME = "ask_user_question";
-/** 任务列表只读查询工具（定义见 agent-service.ts makeMarkersListTool；只服务 todo）。
- * 曾用名 markers_list（名过其实，已迁移，见 normalizeDisabledAgentTools）。 */
-export const MARKERS_LIST_TOOL_NAME = "todo_list";
 /** 浏览器页面操作工具（定义见 agent-service.ts makeBrowserPageTool）：模型经
  *  page-picker 浏览器扩展读/操作用户已授权的页面。 */
 export const BROWSER_PAGE_TOOL_NAME = "browser_page";
@@ -102,8 +99,6 @@ export const TOOL_SEARCH_TOOL_NAME = "tool_search";
 export const LOAD_TOOLS_TOOL_NAME = "load_tools";
 /** 延迟加载模式下**永远活跃**的核心工具（其余全部先当未加载）。 */
 export const LAZY_CORE_TOOL_NAMES = ["bash", "read", "edit", "write"] as const;
-/** 旧工具名（持久化迁移用；新代码一律用 MARKERS_LIST_TOOL_NAME）。 */
-export const LEGACY_MARKERS_LIST_TOOL_NAME = "markers_list";
 
 export type AgentToolGroup = "terminal" | "subagent" | "other";
 
@@ -117,13 +112,13 @@ export interface AgentToolEntry {
 	/**
 	 * 设置页「其他」组开关行的文案 key（SettingsModal 用 tt 按名取；缺失回落工具名）。
 	 * 终端/子代理组走各自的通用文案不用填；「其他」组必填（单测强制），否则新工具
-	 * 的行就没有说明。顺序即设置页渲染顺序（todo_list 例外，见下）。
+	 * 的行就没有说明。顺序即设置页渲染顺序。
 	 */
 	descKey?: string;
 	offHintKey?: string;
 }
 
-/** 可开关的 Agent 工具总目录（共 25 个）。核心内置工具 bash/read/edit/write 不进
+/** 可开关的 Agent 工具总目录（共 24 个）。核心内置工具 bash/read/edit/write 不进
  *  目录——目录条目 = OTHER_AGENT_TOOLS 自动渲染的设置行，而这四个在设置页
  *  「核心工具」区单独开关（见 SettingsModal 的 CORE_BUILTIN_TOOL_NAMES 区块），
  *  禁用名单同样接受它们（normalizeDisabledAgentTools）。 */
@@ -315,16 +310,6 @@ export const AGENT_TOOL_CATALOG: AgentToolEntry[] = [
 		descKey: "toolsWorktreeDesc",
 		offHintKey: "toolsWorktreeOffHint",
 	},
-	// todo_list 唯一例外：行不在「其他」组，固定在上面的 markers 分区（设置页循环
-	// 跳过它，见 OTHER_AGENT_TOOLS；文案 key 照给，万一哪天搬家不用补）。
-	{
-		name: MARKERS_LIST_TOOL_NAME,
-		group: "other",
-		defaultOn: true,
-		dshVisible: true,
-		descKey: "todoListEnabledDesc",
-		offHintKey: "todoListOffHint",
-	},
 ];
 
 /** SDK 核心内置工具名（可被门控显式禁用或被预设白名单过滤）。 */
@@ -338,7 +323,7 @@ export function isCoreBuiltinTool(name: string): name is CoreBuiltinToolName {
 
 const KNOWN_NAMES = new Set(AGENT_TOOL_CATALOG.map((t) => t.name));
 
-/** 全部已知可开关工具与核心内置工具全集（共 31 个）。用于白名单收敛与默认关闭推导。 */
+/** 全部已知可开关工具与核心内置工具全集（共 30 个）。用于白名单收敛与默认关闭推导。 */
 export const ALL_KNOWN_AGENT_TOOL_NAMES: readonly string[] = [
 	...AGENT_TOOL_CATALOG.map((t) => t.name),
 	...CORE_BUILTIN_TOOL_NAMES,
@@ -375,8 +360,7 @@ export function normalizeDisabledAgentTools(v: unknown): string[] {
 	if (!Array.isArray(v)) return defaultDisabledAgentTools();
 	const out: string[] = [];
 	for (const x of v) {
-		// 旧名迁移：markers_list → todo_list（改名前已关闭的用户保持关闭）。
-		let name = x === LEGACY_MARKERS_LIST_TOOL_NAME ? MARKERS_LIST_TOOL_NAME : x;
+		let name = x;
 		// 旧版子代理工具迁移：任意旧 subagent_* 关闭均迁移为关闭 subagent 工具。
 		if (typeof name === "string" && (LEGACY_SUBAGENT_TOOL_NAMES as readonly string[]).includes(name)) {
 			name = SUBAGENT_TOOL_NAME;

@@ -58,7 +58,7 @@ describe("extractTouches 只算写不算读", () => {
 	});
 	it("未知工具即使带 path 也不算（白名单之外一律忽略）", () => {
 		expect(extractTouches([toolMsg("present_files", { path: "a.png" })])).toEqual([]);
-		expect(extractTouches([toolMsg("todo_list", {})])).toEqual([]);
+		expect(extractTouches([toolMsg("ask_user_question", {})])).toEqual([]);
 	});
 	it("无 toolCalls 字段时回落扫 content（历史脏数据也工作）", () => {
 		const m: TouchableMessage = {

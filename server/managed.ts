@@ -32,6 +32,8 @@ export const MANAGED_MESSAGES = [
 	"check_updates_all",
 	/** Installs the pi agent itself. */
 	"install_pi_agent",
+	/** Updates an agent engine package via background process. */
+	"update_engine",
 	/** Plugin market: fetches and installs a plugin from the network. */
 	"plugin_catalog_add",
 	/** Plugin install/update/uninstall run as a background job (issue #152). */

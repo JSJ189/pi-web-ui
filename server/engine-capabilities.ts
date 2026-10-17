@@ -96,6 +96,6 @@ export function resolveEngineCapabilities(
 ): AgentEngineCapabilities {
 	return {
 		...base,
-		...(caps ?? {}),
+		...caps,
 	};
 }

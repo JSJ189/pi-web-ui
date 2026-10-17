@@ -16,6 +16,7 @@
 	--text-dim: #cbd5e1;
 	--text-faint: #64748b;
 	--accent: #ffffff;
+	--accent-contrast: #000000;
 	--accent-soft: rgba(255, 255, 255, 0.12);
 	--green: #4ade80;
 	--green-soft: rgba(74, 222, 128, 0.12);
@@ -67,6 +68,8 @@
 	--scroll-thumb-hover: rgba(255, 255, 255, 0.45);
 	--send-blue: #f8fafc;
 	--send-blue-hover: #ffffff;
+	--switch-knob: #ffffff;
+	--switch-bg-on: #4ade80;
 }
 
 #root,
@@ -1140,7 +1143,16 @@ svg.bar-item-icon:hover,
 	stroke: #ffffff !important;
 }
 
-/* 角标防白底白字：当 --accent 为纯白时，通用角标（插件徽标等）反色为深色，后台任务保持红底白字 */
-.bar-item-badge:not(.bg-task-badge) {
+/* 角标防白底白字：当 --accent 为纯白时，顶栏实体胶囊角标反色为深色，后台任务保持红底白字（底栏透明徽标保持 var(--accent) 纯白高亮） */
+.topbar .bar-item-badge:not(.bg-task-badge) {
+	color: #000000 !important;
+}
+
+/* 主操作按钮防白底白字：--accent 为纯白时文字深色 */
+.btn.primary,
+.cwd-choose-btn.primary,
+.sandbox-banner-btn.primary,
+.worktree-banner-btn.primary,
+.chip.primary {
 	color: #000000 !important;
 }

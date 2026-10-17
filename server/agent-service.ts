@@ -231,7 +231,6 @@ import {
 	lazyLoadingDisabledTools,
 	LOAD_TOOLS_TOOL_NAME,
 	localizedName,
-	MARKERS_LIST_TOOL_NAME,
 	PI_AGENT_PRESETS,
 	PI_PERMISSION_OPTIONS,
 	PLAN_UPDATE_TOOL_NAME,
@@ -493,8 +492,6 @@ export {
 import { normalizeSolPlanToPlanSteps, makePlanUpdateTool } from "./plan-update-tool.js";
 export { normalizeSolPlanToPlanSteps, makePlanUpdateTool };
 
-import { makeMarkersListTool } from "./markers-list-tool.js";
-
 import { makeAskUserQuestionTool, shouldPopQuestion } from "./ask-user-question-tool.js";
 import {
 	type PageCallResult,
@@ -732,13 +729,10 @@ export interface Conversation {
 
 import {
 	MAX_TRANSCRIPT_SCAN_BYTES,
-	MAX_SEARCH_TEXT_CHARS,
 	sessionMatchesMetadata,
-	messageSearchText,
 	collectSessionAnchors,
 	piSessionsRoot,
 	isInsideSessionsDir,
-	readCwdFromSessionHeader,
 } from "./session-search.js";
 export { piSessionsRoot, isInsideSessionsDir };
 
@@ -2365,7 +2359,7 @@ export class ClientSession {
 	private readonly sandboxes: SandboxManager;
 	/** 当前工作区关联的 Git 工作树元数据（用于顶栏横幅与 AI 工具同步）。 */
 	private worktreeInfo: WorktreeInfo | null = null;
-	/** 内置标记服务（todo/notify/svc/rename 等，可全局/分组开关）。 */
+	/** 内置标记服务（action/notify/conv 等，可全局/分组开关）。 */
 	private readonly markerSvc: MarkerService;
 
 	// -----------------------------------------------------------------------
@@ -2455,7 +2449,7 @@ export class ClientSession {
 			// issue #91：标记引导/错误按客户端 UI 语言出中英（英文默认）。
 			lang: () => this.getLang(),
 		});
-		// 标记 widget 动态渲染「当前活动会话」的 todo/overlay：切换会话时只要刷新
+		// 标记 widget 动态渲染「当前活动会话」的 overlay：切换会话时只要刷新
 		// webUi（见 switchConversation/setCwd/newChat）就会显示对应会话的标记，
 		// 且与扩展 widget 合并下发、不会互相覆盖。
 		this.webUi.setDynamicWidget("markers", () => this.markerSvc.overlayLines(this.activeId));
@@ -3313,8 +3307,6 @@ export class ClientSession {
 					...(ownerId
 						? [makeDelegateTaskTool(withSubagentOwner(this.subagentHost, ownerId))]
 						: [makeDelegateTaskTool(this.subagentHost)]),
-					// 内置标记只读查询工具（todo/svc 状态查询，写操作走内联标记）。
-					makeMarkersListTool(() => this.activeId, this.markerSvc),
 					// 结构化任务计划更新（Plan Mode / Step State Machine）。
 					makePlanUpdateTool(
 						this.planManager,
@@ -4562,7 +4554,7 @@ export class ClientSession {
 				this.scheduleSessionsRefresh();
 				this.refreshConversationTitle(conv);
 				// 内联标记不在此兜底扫最后一条 assistant：每条气泡结束已走 message_end
-				// 即时解析（含中间文本块）；这里再扫会把最后一条标记重复执行（todo 重复建号）。
+				// 即时解析（含中间文本块）；这里再扫会把最后一条标记重复执行。
 
 				// Manual interrupt (Stop button / abort): the last assistant message
 				// carries stopReason "aborted". A half-finished run should NOT be

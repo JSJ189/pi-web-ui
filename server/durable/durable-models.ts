@@ -254,7 +254,7 @@ export async function setupDurableModels(agentDir?: string): Promise<any> {
 				}
 				if (cred.headers) {
 					const p = models.getProvider(providerId);
-					if (p) p.headers = { ...(p.headers ?? {}), ...cred.headers };
+					if (p) p.headers = { ...p.headers, ...cred.headers };
 				}
 			}
 		}

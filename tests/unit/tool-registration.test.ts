@@ -15,7 +15,6 @@
 import { readFileSync, readdirSync } from "node:fs";
 import { join } from "node:path";
 import { describe, expect, it } from "vitest";
-import { makeMarkersListTool } from "../../server/markers-list-tool.js";
 import {
 	AGENT_TOOL_CATALOG,
 	ASK_USER_QUESTION_TOOL_NAME,
@@ -32,7 +31,6 @@ import {
 	SANDBOX_TOOL_NAME,
 	WORKTREE_TOOL_NAME,
 	LOAD_TOOLS_TOOL_NAME,
-	MARKERS_LIST_TOOL_NAME,
 	PATCH_TOOL_NAME,
 	PLAN_UPDATE_TOOL_NAME,
 	PRESENT_FILES_TOOL_NAME,
@@ -63,7 +61,6 @@ const FACTORY_TOOLS: Record<string, string[]> = {
 	makeEditSoftTool: [EDIT_SOFT_TOOL_NAME],
 	makeSubagentTools: [...SUBAGENT_TOOL_NAMES],
 	makeDelegateTaskTool: [DELEGATE_TASK_TOOL_NAME],
-	makeMarkersListTool: [MARKERS_LIST_TOOL_NAME],
 	makeAskUserQuestionTool: [ASK_USER_QUESTION_TOOL_NAME],
 	makeBrowserPageTool: [BROWSER_PAGE_TOOL_NAME],
 	makeConversationReadTool: [CONVERSATION_READ_TOOL_NAME],
@@ -135,14 +132,7 @@ describe("注册→目录", () => {
 		expect([...INTRINSIC].filter((n) => known.has(n))).toEqual([]);
 	});
 
-	it("todo_list 与所有 Type.Unsafe 参数均显式声明 type（防 Moonshot 等严格端点 HTTP 400，#590）", () => {
-		const todoTool = makeMarkersListTool(() => "conv-1", { describe: () => "", getRawState: () => undefined });
-		const schema = todoTool.parameters as unknown as {
-			properties?: Record<string, { type?: string; enum?: string[] }>;
-		};
-		expect(schema.properties?.action?.type).toBe("string");
-		expect(schema.properties?.action?.enum).toEqual(["list"]);
-
+	it("所有 Type.Unsafe 参数均显式声明 type（防 Moonshot 等严格端点 HTTP 400，#590）", () => {
 		const serverDir = join(__dirname, "..", "..", "server");
 		const missingType: string[] = [];
 		for (const file of readdirSync(serverDir).filter((f) => f.endsWith(".ts"))) {

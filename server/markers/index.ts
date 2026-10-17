@@ -3,7 +3,6 @@
  */
 
 import { registerMarker } from "./registry.js";
-import { todoMarker } from "./builtins/todo.js";
 import { notifyMarker } from "./builtins/notify.js";
 import { renameMarker } from "./builtins/rename.js";
 import { actionMarker, suggestMarker } from "./builtins/action.js";
@@ -12,7 +11,6 @@ let initialized = false;
 
 export function ensureMarkersRegistered(): void {
 	if (initialized) return;
-	registerMarker(todoMarker);
 	registerMarker(notifyMarker);
 	registerMarker(renameMarker);
 	registerMarker(actionMarker);
@@ -20,7 +18,7 @@ export function ensureMarkersRegistered(): void {
 	initialized = true;
 }
 
-export { todoMarker, notifyMarker, renameMarker, actionMarker, suggestMarker };
+export { notifyMarker, renameMarker, actionMarker, suggestMarker };
 export * from "./marker.js";
 export * from "./registry.js";
 export * from "./store.js";

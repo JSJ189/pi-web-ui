@@ -65,6 +65,7 @@ import { desktopReleasesUrl, useDesktopUpdater } from "../desktop-updater";
 import { BarItem } from "./BarItem";
 import { EnginePicker } from "./EnginePicker";
 import { WindowControls } from "./WindowControls";
+import { appUrl } from "../base-url";
 
 /** 「安装全局引擎」按钮的目标（issue #321）：buildUpdateCommand 对 pi-core 生成
  *  `npm i -g <name>@latest`，装完重启服务即由 resolve-global-sdk 自动切到更新的那份。 */
@@ -1012,7 +1013,14 @@ export function TopBar({
 	const hostNodes: Record<string, ReactNode> = {
 		"host:brand": (
 			<span className="brand">
-				<span className="brand-logo">π</span>
+				<img
+					className="brand-logo"
+					src={appUrl("/icons/icon-192.png")}
+					alt="pi-web-ui"
+					width={26}
+					height={26}
+					draggable={false}
+				/>
 				<span className="brand-name">pi-web-ui</span>
 			</span>
 		),

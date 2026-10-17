@@ -14,7 +14,6 @@ import {
 	listMarkerNames,
 } from "./markers/index.js";
 import { loadStateFromBranch, appendSnapshot } from "./markers/store.js";
-import { TODO_NAMESPACE, type TodoState, initTodoState } from "./markers/builtins/todo.js";
 import { ACTION_NAMESPACE, type ActionState, initActionState } from "./markers/builtins/action.js";
 import type { MarkerContext } from "./markers/marker.js";
 
@@ -86,12 +85,12 @@ export class MarkerService {
 		return pick(
 			this.lang(),
 			"\n\n────────── 内联标记工具（重要）──────────\n" +
-				"状态类操作（任务、标记位、通知）请直接写在回答正文里，采用内联标记语法，而不要调用对应工具。\n" +
+				"状态类操作（操作建议、对话重命名、通知）请直接写在回答正文里，采用内联标记语法，而不要调用对应工具。\n" +
 				"插件会替你执行并把标记从展示文本中移除，不会中断你的回答。\n\n" +
 				linesText +
 				"\n──────────\n",
 			"\n\n────────── Inline marker tools (important) ──────────\n" +
-				"Write status operations (tasks, marker bits, notifications) directly in your reply text using inline marker syntax — do not call a tool for them.\n" +
+				"Write status operations (action suggestions, conversation renaming, notifications) directly in your reply text using inline marker syntax — do not call a tool for them.\n" +
 				"The plugin executes them and strips the markers from the displayed text without interrupting your reply.\n\n" +
 				linesText +
 				"\n──────────\n",
@@ -204,8 +203,7 @@ export class MarkerService {
 			const canonicalNs = ns === "suggest" ? ACTION_NAMESPACE : ns;
 			let st = states.get(canonicalNs);
 			if (st !== undefined) return st;
-			if (canonicalNs === TODO_NAMESPACE) st = this.getState(conversationId, canonicalNs, initTodoState);
-			else if (canonicalNs === ACTION_NAMESPACE) st = this.getState(conversationId, canonicalNs, initActionState);
+			if (canonicalNs === ACTION_NAMESPACE) st = this.getState(conversationId, canonicalNs, initActionState);
 			else {
 				const marker = getMarker(canonicalNs);
 				st = marker?.init ? (marker.init() as unknown) : {};
@@ -247,7 +245,7 @@ export class MarkerService {
 				};
 			}
 			if (result.applied) {
-				// todo 与 action 落库；notify/conv 即时生效（通知已发 / 对话已重命名），无需快照。
+				// action 落库；notify/conv 即时生效（通知已发 / 对话已重命名），无需快照。
 				const canonicalTool = token.tool === "suggest" ? ACTION_NAMESPACE : token.tool;
 				if (canonicalTool !== "notify" && canonicalTool !== "conv") {
 					dirty.add(canonicalTool);
@@ -292,8 +290,7 @@ export class MarkerService {
 			if (this.settings.disabledMarkers.includes(m.name)) continue;
 			if (!m.overlay) continue;
 			let state: unknown;
-			if (m.name === TODO_NAMESPACE) state = this.getState(conversationId, m.name, initTodoState);
-			else if (m.name === ACTION_NAMESPACE) state = this.getState(conversationId, m.name, initActionState);
+			if (m.name === ACTION_NAMESPACE) state = this.getState(conversationId, m.name, initActionState);
 			else {
 				state = this.getState(conversationId, m.name, () => (m.init?.() as unknown) ?? {});
 				if (state === undefined) continue;
@@ -311,16 +308,7 @@ export class MarkerService {
 		return lines;
 	}
 
-	describe(conversationId: string, tool: string, includeDeleted = false): string {
-		const st = this.getState<TodoState>(conversationId, TODO_NAMESPACE, initTodoState);
-		const visible = st.tasks.filter((t) => includeDeleted || t.status !== "deleted");
-		if (visible.length === 0)
-			return pick(this.lang(), "[todo] （空）", "[todo] (empty)", "markers.service.describe.empty");
-		return visible.map((t) => `[${t.status}] #${t.id}: ${t.subject}`).join("\n");
-	}
-
 	getRawState(conversationId: string, namespace: string): unknown {
-		if (namespace === TODO_NAMESPACE) return this.getState(conversationId, namespace, initTodoState);
 		if (namespace === ACTION_NAMESPACE || namespace === "suggest")
 			return this.getState(conversationId, ACTION_NAMESPACE, initActionState);
 		const m = getMarker(namespace);

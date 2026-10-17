@@ -114,7 +114,17 @@ import { fileToProcessedImage, isRasterImage, type ProcessedImage } from "./imag
 import { randomUuid } from "./uuid";
 import { recordModelUsage } from "./model-usage";
 import { loadSoundSettings, playSound, saveSoundSettings, type SoundKind, type SoundSettings } from "./sounds";
-import { assistantPlainText, loadTtsSettings, saveTtsSettings, speak, type TtsSettings } from "./tts";
+import {
+	assistantPlainText,
+	loadTtsSettings,
+	saveTtsSettings,
+	speak,
+	startStreamSpeech,
+	stripMarkdownForSpeech,
+	type StreamSpeechQueue,
+	type TtsSettings,
+} from "./tts";
+import { messagePlainText } from "./copy-text";
 import { shouldSuppressNotify, currentPresence } from "./notify";
 import { useWideChat, useHideModelRow } from "./chat-width-settings";
 import { registerFilePreviewHost } from "./file-preview-bridge";
@@ -1238,12 +1248,16 @@ export function App() {
 			if (activeFinished) {
 				// 前台活动对话完成
 				void notify(t("notifyDoneTitle"), t("notifyDoneBody"));
-				if (tts.enabled && !shouldSuppressNotify(currentPresence())) {
+				if (tts.enabled) {
 					if (tts.readReplies) {
-						const body = assistantPlainText(latestMessagesRef.current);
-						if (body) speak(body, tts);
-						else if (tts.announce) speak(t("ttsAnnounceDone"), tts);
-					} else if (tts.announce) {
+						// 若开启了流式伴读（边打字边开口），内容在生成过程中已经实时朗读，结尾不再重复念；
+						// 未开启流式伴读时，生成完毕后主动念出全文
+						if (!tts.streamReplies) {
+							const body = assistantPlainText(latestMessagesRef.current);
+							if (body) speak(body, tts);
+							else if (tts.announce && !shouldSuppressNotify(currentPresence())) speak(t("ttsAnnounceDone"), tts);
+						}
+					} else if (tts.announce && !shouldSuppressNotify(currentPresence())) {
 						speak(t("ttsAnnounceDone"), tts);
 					}
 				}
@@ -1259,6 +1273,64 @@ export function App() {
 			}
 		}
 	}, [chat.state?.conversationId, chat.state?.isStreaming, chat.conversations, sound, tts, t]);
+
+	// ── 流式边打字边开口说话管道（Token-to-Speech Streaming Pipeline） ──
+	const streamSpeechQueueRef = useRef<StreamSpeechQueue | null>(null);
+	const streamSpokenOffsetRef = useRef(0);
+
+	useEffect(() => {
+		const isStreaming = chat.state?.isStreaming ?? false;
+		const conversationId = chat.state?.conversationId;
+		const canStreamTts = tts.enabled && tts.readReplies && tts.streamReplies;
+
+		if (!canStreamTts || !isStreaming) {
+			// 流式结束：若队列还在，冲刷残余尾句并标记完成
+			if (streamSpeechQueueRef.current) {
+				const msgs = latestMessagesRef.current;
+				const lastMsg = Array.isArray(msgs) && msgs.length > 0 ? msgs[msgs.length - 1] : null;
+				if (lastMsg && lastMsg.role === "assistant") {
+					const fullRaw = messagePlainText(lastMsg.content);
+					if (fullRaw.length > streamSpokenOffsetRef.current) {
+						const tail = fullRaw.slice(streamSpokenOffsetRef.current);
+						const clean = stripMarkdownForSpeech(tail, 0);
+						if (clean) streamSpeechQueueRef.current.push(clean);
+					}
+				}
+				streamSpeechQueueRef.current.finish();
+				streamSpeechQueueRef.current = null;
+				streamSpokenOffsetRef.current = 0;
+			}
+			return;
+		}
+
+		// 正在流式生成时：追踪最新 assistant 消息
+		const msgs = chat.state?.messages;
+		const lastMsg = Array.isArray(msgs) && msgs.length > 0 ? msgs[msgs.length - 1] : null;
+		if (!lastMsg || lastMsg.role !== "assistant") return;
+
+		const fullRaw = messagePlainText(lastMsg.content);
+		if (fullRaw.length <= streamSpokenOffsetRef.current) return;
+
+		// 启动流式播放队列
+		if (!streamSpeechQueueRef.current) {
+			streamSpeechQueueRef.current = startStreamSpeech(tts, conversationId);
+			streamSpokenOffsetRef.current = 0;
+		}
+
+		// 在尚未消费的区间寻找标点断句
+		const unconsumed = fullRaw.slice(streamSpokenOffsetRef.current);
+		const match = unconsumed.match(/(?:[。！？!?；;\n]|(?<=.{25,})[，,])/);
+		if (match && typeof match.index === "number") {
+			const boundary = match.index + match[0].length;
+			const sentenceRaw = unconsumed.slice(0, boundary);
+			streamSpokenOffsetRef.current += boundary;
+
+			const cleanSentence = stripMarkdownForSpeech(sentenceRaw, 0);
+			if (cleanSentence) {
+				streamSpeechQueueRef.current.push(cleanSentence);
+			}
+		}
+	}, [chat.state?.messages, chat.state?.isStreaming, chat.state?.conversationId, tts]);
 
 	// Questionnaire cue — each new dialog id + each new DSH question id.
 	// dialog = 扩展 select/confirm/input；question = ask_user_question 问卷。

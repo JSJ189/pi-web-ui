@@ -113,8 +113,8 @@ QQ 群組 1126050727
 
 **代理工具與行內標記**
 
-- **工具開關** —— 設定 →「工具」把所有可選工具逐個列出：統一的 `subagent` 工具（預設開）、以及另外 15 個工具 —— `edit_soft`、`browser_page`、`eval` 與 `lsp` 預設關，`delegate_task` / `ask_user_question` / `todo_list` / `conversation_read` / `present_files` / `skill` / `schedule` / `claim_files` / `plan_update` / `patch` / `compact_context` 預設開。開關即時生效、不重新啟動，工具只是被停用仍保留註冊以便隨時開回；核心工具 `bash` 與 SDK 內建的 `read` / `write` / `edit` 走設定頁「核心工具」獨立區域管理。
-- **行內標記** —— 狀態改變不需要工具往返，AI 直接把標記寫進回覆：任務清單用 `[[todo:new:<主題>]]` / `[[todo:set:<id>,in_progress]]` / `[[todo:remove:<id>]]` / `[[todo:dep:<id>,blocks=<id>]]`，不打斷的提醒用 `[[notify:<級別>:<內容>]]`，改對話標題用 `[[conv:rename:<標題>]]`。氣泡定稿即執行，標記寫錯會以瀏覽器提示回顯；任務清單同時以常駐 widget 顯示在右欄檔案樹下方（`N/M done` + ✓/◐/○），跟隨目前對話，且因為存在該對話自己的工作階段分支裡，重新整理後仍在。設定 →「工具」另有總開關與逐標記開關（這兩項全域共享）。
+- **工具開關** —— 設定 →「工具」把所有可選工具逐個列出：統一的 `subagent` 工具（預設開）、以及另外 14 個工具 —— `edit_soft`、`browser_page`、`eval` 與 `lsp` 預設關，`delegate_task` / `ask_user_question` / `conversation_read` / `present_files` / `skill` / `schedule` / `claim_files` / `plan_update` / `patch` / `compact_context` 預設開。開關即時生效、不重新啟動，工具只是被停用仍保留註冊以便隨時開回；核心工具 `bash` 與 SDK 內建的 `read` / `write` / `edit` 走設定頁「核心工具」獨立區域管理。
+- **行內標記** —— 狀態改變不需要工具往返，AI 直接把標記寫進回覆：不打斷的提醒用 `[[notify:<級別>:<內容>]]`，改對話標題用 `[[conv:rename:<標題>]]`，建議操作用 `[[action:suggest:<文字>]]`。氣泡定稿即執行，標記寫錯會以瀏覽器提示回顯。設定 →「工具」另有總開關與逐標記開關（這兩項全域共享）。
 - **`edit_soft`** —— 更寬鬆的 `edit`（預設關）：縮排/空白導致內建工具失敗時用它，先精確子串、再按去空白逐行核心比對，`newText` 原樣寫入並保留檔案換行符/BOM，結果帶 diff 與 unified patch。
 - **`delegate_task`** —— 強制六段派單（TASK / EXPECTED OUTCOME / REQUIRED TOOLS / MUST DO / MUST NOT DO / CONTEXT）並在伺服器端校驗：範本不可用、任務少於 20 字或任一段為空都會被打回，並把可用範本清單回給模型。卡片按六段結構化展示，跑完後可一鍵跳到對應子代理對話。
 - **`ask_user_question`** —— pi 引擎本身沒有問卷工具，這是 pi-web-ui 加的：模型可以問結構化問題（單選/多選 + 富文字選項預覽 + 自由文字），以對話方塊彈出；回答作為工具結果回給模型，取消則以工具錯誤返回，等你回答的時間不受工具看門狗限制，未答的問卷重新整理/重連後會恢復。
