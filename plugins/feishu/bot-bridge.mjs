@@ -94,7 +94,7 @@ export class FeishuBotBridge {
 		this.log = log || ((level, msg) => console.log(`[feishu-bot:${level}] ${msg}`));
 
 		this.running = false;
-		this.ws = null;
+		this.wsClient = null;
 		this.pollTimer = null;
 		this.offRunEvent = null;
 
@@ -161,11 +161,11 @@ export class FeishuBotBridge {
 		this.status.connected = false;
 		this.status.state = "idle";
 
-		if (this.ws) {
+		if (this.wsClient) {
 			try {
-				this.ws.close();
+				this.wsClient.close();
 			} catch {}
-			this.ws = null;
+			this.wsClient = null;
 		}
 
 		if (this.pollTimer) {
@@ -182,8 +182,44 @@ export class FeishuBotBridge {
 	}
 
 	/**
-	 * Attempt outbound WebSocket connection to Feishu Event Stream,
-	 * or initialize lightweight polling fallback.
+	 * 加载官方 @larksuiteoapi/node-sdk。
+	 * 飞书长连接的帧是二进制 protobuf（pbbp2.Frame），必须交给官方 SDK 解析——
+	 * 旧实现把它当 JSON（TextDecoder + JSON.parse）并静默吞掉解析异常，所以永远
+	 * 收不到 im.message.receive_v1。SDK 已 vendor 在插件 node_modules 下；若被插件
+	 * 更新清掉，则请宿主（host.ensureDeps）npm 补装一次后重试。
+	 */
+	async loadSdk() {
+		if (FeishuBotBridge._sdk) return FeishuBotBridge._sdk;
+		const load = async () => {
+			const mod = await import("@larksuiteoapi/node-sdk");
+			// CJS bundle：node 下具名导出不一定齐全，兜底取 default
+			return mod?.WSClient ? mod : (mod?.default ?? mod);
+		};
+		try {
+			FeishuBotBridge._sdk = await load();
+		} catch (err) {
+			if (typeof this.host?.ensureDeps !== "function") throw err;
+			this.log("info", "Feishu SDK 缺失，请宿主补装 @larksuiteoapi/node-sdk");
+			await this.host.ensureDeps(["@larksuiteoapi/node-sdk"]);
+			FeishuBotBridge._sdk = await load();
+		}
+		return FeishuBotBridge._sdk;
+	}
+
+	/** 配置里的 preset / baseUrl → SDK domain（枚举或私有化 URL 字符串）。 */
+	resolveDomain(Lark, cfg) {
+		const custom = String(cfg?.baseUrl ?? "").trim();
+		if (custom && !/open\.(feishu\.cn|larksuite\.com)\/?$/i.test(custom)) return custom;
+		if (cfg?.domain === "lark" || /larksuite\.com/i.test(custom)) {
+			return Lark.Domain?.Lark ?? "https://open.larksuite.com";
+		}
+		return Lark.Domain?.Feishu ?? "https://open.feishu.cn";
+	}
+
+	/**
+	 * 通过官方 SDK 建立飞书长连接（出站 WebSocket，无需公网 IP / 回调地址）。
+	 * 事件由 EventDispatcher 分发；连接状态由 SDK 的 onReady/onError 等回调驱动，
+	 * 面板上的「在线/离线」从此反映真实链路状态。
 	 */
 	async connect() {
 		const cfg = this.getConfig();
@@ -193,118 +229,76 @@ export class FeishuBotBridge {
 			return;
 		}
 
-		const domain = cfg.domain === "lark" ? "https://open.larksuite.com" : "https://open.feishu.cn";
-		let wsUrl = null;
-
-		// 1. Try fetching official Feishu WebSocket endpoint
-		try {
-			const endpointUrl = `${domain}/callback/ws/endpoint`;
-			const res = await fetch(endpointUrl, {
-				method: "POST",
-				headers: {
-					"content-type": "application/json; charset=utf-8",
-					locale: "zh",
-				},
-				body: JSON.stringify({
-					AppID: cfg.appId.trim(),
-					AppSecret: cfg.appSecret.trim(),
-				}),
-				signal: AbortSignal.timeout(10000),
-			});
-
-			if (res.ok) {
-				const data = await res.json();
-				if (data.code === 0 && data.data?.URL) {
-					wsUrl = data.data.URL;
-				}
-			}
-		} catch (err) {
-			this.log("info", `Feishu WS endpoint probe note: ${err.message}`);
+		const Lark = await this.loadSdk();
+		if (typeof Lark?.WSClient !== "function" || typeof Lark?.EventDispatcher !== "function") {
+			throw new Error("@larksuiteoapi/node-sdk 缺少 WSClient/EventDispatcher 导出");
 		}
 
-		// 2. If WebSocket endpoint retrieved and global WebSocket is available
-		if (wsUrl && typeof globalThis.WebSocket !== "undefined") {
-			try {
-				const ws = new globalThis.WebSocket(wsUrl);
-				this.ws = ws;
-
-				ws.onopen = () => {
-					this.status.connected = true;
-					this.status.state = "connected";
-					this.status.lastError = null;
-					this.log("info", "Feishu WebSocket long-connection established");
-				};
-
-				ws.onmessage = (event) => {
-					this.handleWsMessage(event.data);
-				};
-
-				ws.onerror = (err) => {
-					this.status.lastError = err?.message || "WebSocket error";
-					this.log("warn", `Feishu WebSocket error: ${this.status.lastError}`);
-				};
-
-				ws.onclose = () => {
-					this.status.connected = false;
-					if (this.running) {
-						this.status.state = "connecting";
-						// Schedule reconnect in 5 seconds
-						setTimeout(() => {
-							if (this.running) this.connect().catch(() => {});
-						}, 5000);
-					} else {
-						this.status.state = "idle";
-					}
-				};
-
-				return;
-			} catch (wsErr) {
-				this.log("warn", `WebSocket instantiation failed: ${wsErr.message}, switching to polling`);
-			}
+		const appId = cfg.appId.trim();
+		if (!/^cli_[0-9a-fA-F]{16}$/.test(appId)) {
+			// SDK 对 appId 格式有强校验，格式不符时它会直接 return（不报错），这里显式提示
+			this.log("warn", `Feishu App ID 格式可疑：${appId}（SDK 期望 cli_ + 16 位十六进制）`);
 		}
 
-		// 3. Fallback: lightweight message polling loop (interval 5s)
-		// pollCycle 是空实现（只有注释）：降级后每 5 秒空转、面板显示"已连接"，
-		// 实际永远收不到消息，用户无从排查——如实置 error 并给原因
-		this.status.connected = false;
-		this.status.state = "error";
-		this.status.lastError =
-			"WebSocket endpoint unavailable and polling fallback is not implemented; bot cannot receive messages.";
-		this.log(
-			"warn",
-			"Feishu bot duplex: WebSocket endpoint unavailable, polling fallback not implemented — bot stays offline.",
-		);
-	}
-
-	/** Handle binary or text frames received over WebSocket. */
-	handleWsMessage(data) {
-		try {
-			let text = "";
-			if (typeof data === "string") {
-				text = data;
-			} else if (data instanceof ArrayBuffer || ArrayBuffer.isView(data)) {
-				text = new TextDecoder("utf-8").decode(data);
-			}
-
-			if (!text) return;
-			const parsed = JSON.parse(text);
-
-			// Handle ping/pong heartbeats
-			if (parsed.type === "ping") {
-				if (this.ws && this.ws.readyState === 1) {
-					this.ws.send(JSON.stringify({ type: "pong" }));
-				}
-				return;
-			}
-
-			// Handle event frame
-			if (parsed.event && parsed.header?.event_type === "im.message.receive_v1") {
-				this.onInboundMessage(parsed.event).catch((err) => {
+		const dispatcher = new Lark.EventDispatcher({}).register({
+			"im.message.receive_v1": async (data) => {
+				try {
+					await this.onInboundMessage(data);
+				} catch (err) {
 					this.log("warn", `Inbound message handling error: ${err.message}`);
-				});
-			}
+				}
+			},
+		});
+
+		const fmt = (...a) =>
+			a.map((x) => (typeof x === "string" ? x : (() => { try { return JSON.stringify(x); } catch { return String(x); } })())).join(" ");
+
+		const wsClient = new Lark.WSClient({
+			appId,
+			appSecret: cfg.appSecret.trim(),
+			domain: this.resolveDomain(Lark, cfg),
+			loggerLevel: Lark.LoggerLevel?.info,
+			logger: {
+				error: (...a) => this.log("error", `[lark.ws] ${fmt(...a)}`),
+				warn: (...a) => this.log("warn", `[lark.ws] ${fmt(...a)}`),
+				info: (...a) => this.log("info", `[lark.ws] ${fmt(...a)}`),
+				debug: () => {},
+				trace: () => {},
+			},
+			onReady: () => {
+				this.status.connected = true;
+				this.status.state = "connected";
+				this.status.lastError = null;
+				this.log("info", "Feishu 长连接已建立（官方 SDK）");
+			},
+			onReconnecting: () => {
+				this.status.connected = false;
+				this.status.state = "connecting";
+			},
+			onReconnected: () => {
+				this.status.connected = true;
+				this.status.state = "connected";
+				this.status.lastError = null;
+			},
+			onError: (err) => {
+				this.status.connected = false;
+				this.status.state = "error";
+				this.status.lastError = err?.message || String(err);
+				this.log("warn", `Feishu 长连接错误: ${this.status.lastError}`);
+			},
+		});
+
+		this.wsClient = wsClient;
+		this.status.state = "connecting";
+
+		try {
+			// start() 只负责拉起连接（内部异步重连），不等待握手完成
+			await wsClient.start({ eventDispatcher: dispatcher });
 		} catch (err) {
-			// Non-JSON or binary protobuf control frames can be safely ignored in mock/fallback
+			this.status.connected = false;
+			this.status.state = "error";
+			this.status.lastError = err?.message || String(err);
+			throw err;
 		}
 	}
 
@@ -389,7 +383,7 @@ export class FeishuBotBridge {
 			this.userConversations.set(openId, conversationId);
 		}
 
-		// Record pending run
+		// Record pending run（先用本地临时 id 占位；host.chat 返回后改键成宿主会话 id）
 		this.pendingRuns.set(conversationId, {
 			messageId,
 			chatId,
@@ -407,7 +401,37 @@ export class FeishuBotBridge {
 				conversationId,
 			};
 			if (workspace) chatReq.cwd = workspace;
-			await this.host.chat(chatReq);
+			// 宿主 host.chat 是 fire-and-forget：运行结果经 onRunEvent(run_end) 按
+			// 【宿主返回的】conversationId 关联。以前忽略回执、用本地编的 id 等事件，
+			// 所以永远等不到 → 只回一个 👍 就没下文（也不报错）。
+			const receipt = await this.host.chat(chatReq);
+			const hostConvId =
+				receipt && typeof receipt === "object" ? String(receipt.conversationId ?? "").trim() : "";
+			if (hostConvId) {
+				const pending = this.pendingRuns.get(conversationId);
+				if (pending) {
+					this.pendingRuns.delete(conversationId);
+					const early = this.earlyRuns.get(hostConvId);
+					if (early) {
+						if (early.accumulatedText) {
+							pending.accumulatedText = pending.accumulatedText
+								? `${early.accumulatedText}\n${pending.accumulatedText}`
+								: early.accumulatedText;
+						}
+						this.earlyRuns.delete(hostConvId);
+						if (early.ended) {
+							// 回执之前这轮就已经结束（极快/失败收尾）：直接补发
+							await this.deliverReply(pending);
+							this.userConversations.set(openId, hostConvId);
+							this.log("info", `host.chat 已结束并补发 → conversationId=${hostConvId}`);
+							return;
+						}
+					}
+					this.pendingRuns.set(hostConvId, pending);
+				}
+				this.userConversations.set(openId, hostConvId);
+				this.log("info", `host.chat 已投递 → conversationId=${hostConvId}`);
+			}
 		} catch (err) {
 			this.log("warn", `host.chat dispatch failed: ${err.message}`);
 			this.pendingRuns.delete(conversationId);
@@ -548,57 +572,65 @@ export class FeishuBotBridge {
 		// 2. Run completed
 		if (ev.type === "run_end") {
 			const run = this.pendingRuns.get(convId) || this.earlyRuns.get(convId);
-			if (!run) return;
-
+			if (!run) {
+				// run_end 先于 host.chat 回执到达：记「已结束」，回执到手时补发
+				const early = this.earlyRuns.get(convId) || { accumulatedText: "", ended: false };
+				early.ended = true;
+				this.earlyRuns.set(convId, early);
+				return;
+			}
 			this.pendingRuns.delete(convId);
 			this.earlyRuns.delete(convId);
+			await this.deliverReply(run);
+		}
+	}
 
-			const rawText = run.accumulatedText || "";
-			const cleanText = stripInternalMarkers(rawText);
-			const finalText = cleanText || "✅ 任务已完成（无文本输出）。";
+	/** 把一次运行累积的文本分块回发到飞书（run_end，或「回执前已结束」的补发）。 */
+	async deliverReply(run) {
+		const cfg = this.getConfig();
+		const rawText = run.accumulatedText || "";
+		const cleanText = stripInternalMarkers(rawText);
+		const finalText = cleanText || "✅ 任务已完成（无文本输出）。";
 
-			const cfg = this.getConfig();
+		// Use structure-aware chunking to protect code fences and respect Feishu char limits
+		const chunks = chunkMarkdownText(finalText, 3800);
 
-			// Use structure-aware chunking to protect code fences and respect Feishu char limits
-			const chunks = chunkMarkdownText(finalText, 3800);
-
-			try {
-				for (let i = 0; i < chunks.length; i++) {
-					const chunk = chunks[i];
-					if (i === 0 && run.messageId) {
-						// Reply to initial message
-						await this.replyMessage(cfg, {
-							messageId: run.messageId,
-							msgType: "interactive",
-							title: i === 0 ? "AI 助手回复" : undefined,
-							text: chunk,
-							cardTemplate: "blue",
-							replyInThread: false,
-						});
-					} else {
-						// Follow-up chunks sent to same chat
-						await this.sendMessage(cfg, {
-							receiveId: run.chatId,
-							receiveIdType: "chat_id",
-							msgType: "interactive",
-							text: chunk,
-							cardTemplate: "blue",
-						});
-					}
+		try {
+			for (let i = 0; i < chunks.length; i++) {
+				const chunk = chunks[i];
+				if (i === 0 && run.messageId) {
+					// Reply to initial message
+					await this.replyMessage(cfg, {
+						messageId: run.messageId,
+						msgType: "interactive",
+						title: "AI 助手回复",
+						text: chunk,
+						cardTemplate: "blue",
+						replyInThread: false,
+					});
+				} else {
+					// Follow-up chunks sent to same chat
+					await this.sendMessage(cfg, {
+						receiveId: run.chatId,
+						receiveIdType: "chat_id",
+						msgType: "interactive",
+						text: chunk,
+						cardTemplate: "blue",
+					});
 				}
-
-				this.status.messagesReplied++;
-				this.status.lastReplyAt = Date.now();
-
-				// Add DONE reaction
-				if (run.messageId) {
-					try {
-						await this.reactMessage(cfg, run.messageId, "DONE");
-					} catch {}
-				}
-			} catch (err) {
-				this.log("warn", `Feishu reply delivery failed: ${err.message}`);
 			}
+
+			this.status.messagesReplied++;
+			this.status.lastReplyAt = Date.now();
+
+			// Add DONE reaction
+			if (run.messageId) {
+				try {
+					await this.reactMessage(cfg, run.messageId, "DONE");
+				} catch {}
+			}
+		} catch (err) {
+			this.log("warn", `Feishu reply delivery failed: ${err.message}`);
 		}
 	}
 }
