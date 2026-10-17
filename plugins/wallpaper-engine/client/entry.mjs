@@ -1487,6 +1487,7 @@ function createToolInspector() {
 				<div class="pi-we-inspector-badge" id="pi-we-ins-badge">已完成</div>
 			</div>
 			<div class="pi-we-inspector-actions">
+				<button type="button" class="pi-we-inspector-btn" id="pi-we-ins-toggle-btn" style="display:none;">⚙️ 原始参数</button>
 				<button type="button" class="pi-we-inspector-btn" id="pi-we-ins-copy-btn">📋 复制全部</button>
 				<button type="button" class="pi-we-inspector-btn pi-we-inspector-close" id="pi-we-ins-close-btn" title="关闭 (ESC)">✕</button>
 			</div>
@@ -1501,20 +1502,201 @@ function createToolInspector() {
 	const titleEl = dialog.querySelector("#pi-we-ins-title");
 	const badgeEl = dialog.querySelector("#pi-we-ins-badge");
 	const bodyEl = dialog.querySelector("#pi-we-ins-body");
+	const toggleBtn = dialog.querySelector("#pi-we-ins-toggle-btn");
 	const copyBtn = dialog.querySelector("#pi-we-ins-copy-btn");
 	const closeBtn = dialog.querySelector("#pi-we-ins-close-btn");
 
 	let currentCopyText = "";
+	let currentData = null;
+	let currentMode = "preview"; // "preview" | "raw"
+
+	function tryParsePresentArgs(argsStr) {
+		if (!argsStr || typeof argsStr !== "string") return null;
+		try {
+			const obj = JSON.parse(argsStr);
+			if (obj && Array.isArray(obj.items) && obj.items.length > 0) {
+				return {
+					title: typeof obj.title === "string" ? obj.title.trim() : "",
+					note: typeof obj.note === "string" ? obj.note.trim() : "",
+					items: obj.items
+						.map((it) => {
+							if (typeof it === "string") return { path: it.trim(), caption: "" };
+							if (it && typeof it === "object") {
+								return {
+									path: String(it.path || "").trim(),
+									caption: String(it.caption || "").trim(),
+								};
+							}
+							return null;
+						})
+						.filter((it) => it && it.path),
+				};
+			}
+		} catch {}
+		return null;
+	}
+
+	function classifyMedia(filePath) {
+		const ext = String(filePath || "")
+			.split(".")
+			.pop()
+			.toLowerCase();
+		const audioExts = ["aac", "mp3", "wav", "wave", "ogg", "oga", "opus", "m4a", "flac", "weba"];
+		const imageExts = ["png", "jpg", "jpeg", "gif", "webp", "svg", "bmp", "ico", "avif"];
+		const videoExts = ["mp4", "webm", "mov", "mkv", "avi", "m4v"];
+		if (audioExts.includes(ext)) return "audio";
+		if (imageExts.includes(ext)) return "image";
+		if (videoExts.includes(ext)) return "video";
+		return "file";
+	}
+
+	function getMediaIcon(kind) {
+		if (kind === "audio") return "🎵";
+		if (kind === "image") return "🖼️";
+		if (kind === "video") return "🎬";
+		return "📄";
+	}
+
+	function buildFileUrl(filePath) {
+		return `/api/file?path=${encodeURIComponent(filePath)}`;
+	}
+
+	function renderRawView(data) {
+		const { name, args, output, images, error, statusClass } = data;
+		let sectionsHtml = "";
+		if (args) {
+			sectionsHtml += `
+				<div class="pi-we-inspector-section">
+					<div class="pi-we-inspector-label">⚡ 调用入参 / 命令 (Arguments)</div>
+					<pre class="pi-we-inspector-codeblock" id="pi-we-ins-args-pre"></pre>
+				</div>
+			`;
+		}
+		if (images && images.length > 0) {
+			sectionsHtml += `
+				<div class="pi-we-inspector-section">
+					<div class="pi-we-inspector-label">🖼️ 工具输出图片 (${images.length})</div>
+					<div class="pi-we-inspector-images" style="display:flex;flex-wrap:wrap;gap:8px;margin-top:6px;">
+						${images.map((src, i) => `<img src="${src}" style="max-height:240px;max-width:100%;border-radius:6px;border:1px solid rgba(255,255,255,0.14);" alt="image ${i + 1}" />`).join("")}
+					</div>
+				</div>
+			`;
+		}
+		sectionsHtml += `
+			<div class="pi-we-inspector-section">
+				<div class="pi-we-inspector-label">${error ? "❌ 执行报错 (Error Output)" : "📄 执行输出 (Output)"}</div>
+				<pre class="pi-we-inspector-codeblock" id="pi-we-ins-output-pre"></pre>
+			</div>
+		`;
+		bodyEl.innerHTML = sectionsHtml;
+
+		const argsPre = bodyEl.querySelector("#pi-we-ins-args-pre");
+		if (argsPre) argsPre.textContent = args;
+
+		const outPre = bodyEl.querySelector("#pi-we-ins-output-pre");
+		if (outPre) {
+			outPre.textContent = output || (statusClass === "run" ? "正在执行中，等待实时输出..." : "(执行成功，无文本返回)");
+		}
+	}
+
+	function renderPreviewView(presentData, data) {
+		const { title, note, items } = presentData;
+		const { error, output } = data;
+
+		let html = `<div class="pi-we-ins-preview-wrap">`;
+
+		if (title || note) {
+			html += `
+				<div class="pi-we-ins-preview-meta">
+					${title ? `<div class="pi-we-ins-preview-title">📦 ${escapeHtml(title)}</div>` : ""}
+					${note ? `<div class="pi-we-ins-preview-note">${escapeHtml(note)}</div>` : ""}
+				</div>
+			`;
+		}
+
+		for (const item of items) {
+			const kind = classifyMedia(item.path);
+			const icon = getMediaIcon(kind);
+			const fileName = item.path.split(/[\\/]/).pop() || item.path;
+			const fileUrl = buildFileUrl(item.path);
+
+			html += `
+				<div class="pi-we-ins-preview-card">
+					<div class="pi-we-ins-preview-head">
+						<div class="pi-we-ins-preview-info">
+							<span class="pi-we-ins-preview-icon">${icon}</span>
+							<span class="pi-we-ins-preview-name" title="${escapeHtml(item.path)}">${escapeHtml(fileName)}</span>
+							${item.caption ? `<span class="pi-we-ins-preview-caption">${escapeHtml(item.caption)}</span>` : ""}
+						</div>
+						<div class="pi-we-ins-preview-actions">
+							<a href="${fileUrl}&download=1" class="pi-we-ins-btn-sm" title="下载文件" download="${escapeHtml(fileName)}">⬇️ 下载</a>
+							<button type="button" class="pi-we-ins-btn-sm pi-we-ins-copy-path" data-path="${escapeHtml(item.path)}" title="复制相对路径">📋 路径</button>
+						</div>
+					</div>
+					<div class="pi-we-ins-preview-media">
+						${
+							kind === "audio"
+								? `<audio class="pi-we-ins-preview-audio" src="${fileUrl}" controls preload="metadata"></audio>`
+								: kind === "image"
+									? `<img class="pi-we-ins-preview-img" src="${fileUrl}" alt="${escapeHtml(fileName)}" loading="lazy" />`
+									: kind === "video"
+										? `<video class="pi-we-ins-preview-video" src="${fileUrl}" controls preload="metadata"></video>`
+										: `<div style="font-size:12px;color:#94a3b8;font-family:var(--mono, monospace);word-break:break-all;">${escapeHtml(item.path)}</div>`
+						}
+					</div>
+				</div>
+			`;
+		}
+
+		if (error) {
+			html += `
+				<div class="pi-we-inspector-section" style="margin-top:8px;">
+					<div class="pi-we-inspector-label">❌ 执行报错 (Error Output)</div>
+					<pre class="pi-we-inspector-codeblock">${escapeHtml(output)}</pre>
+				</div>
+			`;
+		}
+
+		html += `</div>`;
+		bodyEl.innerHTML = html;
+
+		// 绑定复制路径事件
+		bodyEl.querySelectorAll(".pi-we-ins-copy-path").forEach((btn) => {
+			btn.addEventListener("click", () => {
+				const p = btn.getAttribute("data-path");
+				if (p) {
+					void navigator.clipboard?.writeText?.(p);
+					const orig = btn.textContent;
+					btn.textContent = "✓ 已复制";
+					setTimeout(() => {
+						btn.textContent = orig;
+					}, 1200);
+				}
+			});
+		});
+	}
+
+	function escapeHtml(str) {
+		return String(str || "")
+			.replace(/&/g, "&amp;")
+			.replace(/</g, "&lt;")
+			.replace(/>/g, "&gt;")
+			.replace(/"/g, "&quot;")
+			.replace(/'/g, "&#039;");
+	}
 
 	function close() {
 		backdrop.classList.remove("open");
+		currentData = null;
 	}
 
 	function open(data) {
+		currentData = data;
 		const { isThinking, name, status, statusClass, duration, args, output, images, error } = data;
 		currentCopyText = "";
 
 		if (isThinking) {
+			toggleBtn.style.display = "none";
 			iconEl.textContent = "💭";
 			titleEl.textContent = "思考过程 (Thinking)";
 			badgeEl.textContent = duration || "已完成";
@@ -1543,6 +1725,7 @@ function createToolInspector() {
 				lsp: "💻",
 				subagent: "👥",
 				delegate_task: "👥",
+				present_files: "📦",
 			};
 			iconEl.textContent = toolIcons[name] || "🔧";
 			titleEl.textContent = `${name}()`;
@@ -1550,40 +1733,19 @@ function createToolInspector() {
 			badgeEl.className = `pi-we-inspector-badge ${statusClass || "ok"}`;
 			badgeEl.textContent = duration ? `${status || "完成"} · ${duration}` : status || "完成";
 
-			let sectionsHtml = "";
-			if (args) {
-				sectionsHtml += `
-					<div class="pi-we-inspector-section">
-						<div class="pi-we-inspector-label">⚡ 调用入参 / 命令 (Arguments)</div>
-						<pre class="pi-we-inspector-codeblock" id="pi-we-ins-args-pre"></pre>
-					</div>
-				`;
-			}
-			if (images && images.length > 0) {
-				sectionsHtml += `
-					<div class="pi-we-inspector-section">
-						<div class="pi-we-inspector-label">🖼️ 工具输出图片 (${images.length})</div>
-						<div class="pi-we-inspector-images" style="display:flex;flex-wrap:wrap;gap:8px;margin-top:6px;">
-							${images.map((src, i) => `<img src="${src}" style="max-height:240px;max-width:100%;border-radius:6px;border:1px solid rgba(255,255,255,0.14);" alt="image ${i + 1}" />`).join("")}
-						</div>
-					</div>
-				`;
-			}
-			sectionsHtml += `
-				<div class="pi-we-inspector-section">
-					<div class="pi-we-inspector-label">${error ? "❌ 执行报错 (Error Output)" : "📄 执行输出 (Output)"}</div>
-					<pre class="pi-we-inspector-codeblock" id="pi-we-ins-output-pre"></pre>
-				</div>
-			`;
-			bodyEl.innerHTML = sectionsHtml;
+			const presentData = name === "present_files" || args?.includes('"items"') ? tryParsePresentArgs(args) : null;
 
-			const argsPre = bodyEl.querySelector("#pi-we-ins-args-pre");
-			if (argsPre) argsPre.textContent = args;
-
-			const outPre = bodyEl.querySelector("#pi-we-ins-output-pre");
-			if (outPre) {
-				outPre.textContent =
-					output || (statusClass === "run" ? "正在执行中，等待实时输出..." : "(执行成功，无文本返回)");
+			if (presentData) {
+				// 支持切换展示视图与原有视图
+				toggleBtn.style.display = "inline-flex";
+				currentMode = "preview";
+				toggleBtn.textContent = "⚙️ 原始参数";
+				toggleBtn.title = "点击切换回原有代码块展示";
+				renderPreviewView(presentData, data);
+			} else {
+				toggleBtn.style.display = "none";
+				currentMode = "raw";
+				renderRawView(data);
 			}
 
 			currentCopyText = (args ? `[Arguments]\n${args}\n\n` : "") + `[Output]\n${output || ""}`;
@@ -1591,6 +1753,24 @@ function createToolInspector() {
 
 		backdrop.classList.add("open");
 	}
+
+	toggleBtn.addEventListener("click", () => {
+		if (!currentData) return;
+		const presentData = tryParsePresentArgs(currentData.args);
+		if (!presentData) return;
+
+		if (currentMode === "preview") {
+			currentMode = "raw";
+			toggleBtn.textContent = "🖼️ 文件展示";
+			toggleBtn.title = "点击切换回富媒体文件展示";
+			renderRawView(currentData);
+		} else {
+			currentMode = "preview";
+			toggleBtn.textContent = "⚙️ 原始参数";
+			toggleBtn.title = "点击切换回原有代码块展示";
+			renderPreviewView(presentData, currentData);
+		}
+	});
 
 	copyBtn.addEventListener("click", () => {
 		if (currentCopyText) {
