@@ -7,7 +7,9 @@
  *   2. 写入覆盖后：`get_tool_prompt` 回该覆盖、`get_tool_info` 回**生效文案**；
  *   3. `settings_state.toolsSchema` / `effectiveSystemPrompt` 用覆盖文案；
  *   4. **真正发给模型的那一次请求**里 bash 工具的 `description` 就是覆盖文案，
- *      系统提示词里是覆盖后的 snippet / guideline（验证 `_toolRegistry` 打补丁生效）；
+ *      系统提示词里是覆盖后的 snippet / guideline（验证 `_toolRegistry` 打补丁生效）。
+ *      注：codemode 声明存活时 SDK 会给每个工具描述**追加**一行调用提示，
+ *      所以只比对首段——覆盖必须是**替换**而不是叠字；
  *   5. 清空覆盖（空对象）后完整复原出厂默认（不层层叠字）。
  *
  * 端口 8926（≥8900 约定），临时 data-dir / 工作区 / agent 目录，结束自行清理。
@@ -249,8 +251,9 @@ check("模型请求里带上了 bash 工具", Boolean(req), `payloads=${payloads
 const bashTool = req?.tools?.find((t) => t.function?.name === "bash");
 check(
 	"模型看到的 bash description = 覆盖文案",
-	bashTool?.function?.description === CUSTOM_DESC,
-	`desc=${bashTool?.function?.description?.slice(0, 46)}`,
+	// 首段必须是覆盖文案（codemode 声明存活时 SDK 会在其后追加调用提示段）。
+	typeof bashTool?.function?.description === "string" && bashTool.function.description.split("\n")[0] === CUSTOM_DESC,
+	`desc=${bashTool?.function?.description?.slice(0, 80)}`,
 );
 const sys = req?.messages?.find((m) => m.role === "system");
 const sysText = typeof sys?.content === "string" ? sys.content : JSON.stringify(sys?.content ?? "");
