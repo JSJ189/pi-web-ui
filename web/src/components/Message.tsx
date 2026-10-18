@@ -1133,12 +1133,12 @@ export const Message = memo(function Message({
 							<span className="msg-editor-hint">
 								<FiImage /> {t("editAttachmentHint")}
 							</span>
-							<button type="button" className="chip" onClick={() => setEditing(false)}>
+							<button type="button" className="btn sm" onClick={() => setEditing(false)}>
 								{t("cancel")}
 							</button>
 							<button
 								type="button"
-								className="chip primary"
+								className="btn primary sm"
 								disabled={!draft.trim() && !editAttachments.some((a) => a.mode === "quote" && readTextQuote(a.quote))}
 								title={t("reaskFromHere")}
 								onClick={submitEdit}

@@ -81,6 +81,7 @@ export const PRESET_FIELD_GROUPS = {
 		"toolsWrap",
 		"toolImagesEnabled",
 		"keepRecentMessages",
+		"reversePagination",
 		"showForkedParentSessions",
 		"retainFinishedConversations",
 		"openRecentSessionOnProjectSwitch",
@@ -88,6 +89,7 @@ export const PRESET_FIELD_GROUPS = {
 		"quickPhrases",
 		"quickPhrasesEnabled",
 		"minimalNewChat",
+		"preserveDraftAcrossConversations",
 		"devNoCache",
 		"autoReload",
 	],
@@ -418,6 +420,12 @@ export const PRESET_FIELD_META = {
 		hintZh: "消息列表尾部保持完整渲染的消息条数；更早的折叠为摘要行",
 		hintEn: "Recent messages rendered in full; older ones collapse to summary rows",
 	},
+	reversePagination: {
+		labelZh: "向上分页加载",
+		labelEn: "Load Earlier Messages",
+		hintZh: "默认仅挂载最近消息，向上滚动或点击加载更早历史，完全跳过视口占位符获得原生流畅度",
+		hintEn: "Only mount recent messages; scroll up or click to load earlier history with zero placeholders",
+	},
 	showForkedParentSessions: {
 		labelZh: "显示已分支的父会话",
 		labelEn: "Show Forked Parent Sessions",
@@ -454,6 +462,14 @@ export const PRESET_FIELD_META = {
 		labelEn: "Minimalist New Chat",
 		hintZh: "新对话隐藏提示词模板并隐藏快捷短语，呈现现代极简风格",
 		hintEn: "Hide prompt templates and quick phrases on new chat for a clean modern look",
+	},
+	preserveDraftAcrossConversations: {
+		labelZh: "输入框文字跨对话保留",
+		labelEn: "Preserve Composer Text Across Conversations",
+		hintZh:
+			"开启：输入文字切换别的会话不清空；关闭：仅保留当前会话文字，切换其他会话时清空或显示该会话已保留文字，切回时恢复当前会话文字",
+		hintEn:
+			"Enabled: keep composer text when switching conversations. Disabled: retain text only for the current conversation",
 	},
 	devNoCache: {
 		labelZh: "开发者免缓存模式",

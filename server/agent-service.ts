@@ -873,6 +873,7 @@ export class ClientSession {
 		pluginTasks: () => this.pluginBgTasksProvider?.() ?? [],
 		// 「自动清理遗留实例」阈值（分钟；0 = 关）：每轮定时器实时读设置。
 		cleanupMinutes: () => this.settingsSvc.current.bgAutoCleanupMin ?? 0,
+		workspaceCwd: () => this.convs.get(this.activeId)?.cwd ?? this.cwd,
 	});
 
 	/** index.ts 注入（经 AgentService 拷贝到每个新会话）：把 SDK 工具执行事件转发给
@@ -6993,6 +6994,7 @@ export class ClientSession {
 		quickPhrases?: string[];
 		quickPhrasesEnabled?: boolean;
 		minimalNewChat?: boolean;
+		preserveDraftAcrossConversations?: boolean;
 	}): Promise<void> {
 		const { markersEnabled, disabledMarkers, quickPhrasesSeeded, ...rest } = partial as {
 			markersEnabled?: boolean;

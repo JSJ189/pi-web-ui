@@ -93,6 +93,7 @@ function makeCtx(opts: {
 			quickPhrases: [],
 			quickPhrasesEnabled: true,
 			minimalNewChat: false,
+			preserveDraftAcrossConversations: false,
 			questionnaireEnabled: true,
 			goalModeEnabled: true,
 			parallelReminderEnabled: true,

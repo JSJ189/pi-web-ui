@@ -350,6 +350,7 @@ export class UniversalSession implements DispatchSession {
 			isDisposed: () => this.disposed,
 			pluginTasks: () => [],
 			cleanupMinutes: () => 0,
+			workspaceCwd: () => this.cwd,
 		});
 
 		// 加载现有会话或创建初始会话
@@ -2170,6 +2171,7 @@ export class UniversalSession implements DispatchSession {
 			quickPhrases: s?.quickPhrases ?? [],
 			quickPhrasesEnabled: s?.quickPhrasesEnabled ?? true,
 			minimalNewChat: s?.minimalNewChat ?? false,
+			preserveDraftAcrossConversations: s?.preserveDraftAcrossConversations ?? false,
 			quickPhrasesSeeded: this.stateStore?.getQuickPhrasesSeeded() ?? true,
 		};
 		this.send({ type: "settings_state", settings });

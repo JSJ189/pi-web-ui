@@ -2271,6 +2271,7 @@ export function App() {
 										toolsWrap={chat.settings?.toolsWrap ?? true}
 										toolImages={chat.settings?.toolImagesEnabled ?? true}
 										keepRecent={chat.settings?.keepRecentMessages}
+										reversePagination={chat.settings?.reversePagination ?? false}
 										minimalNewChat={chat.settings?.minimalNewChat ?? false}
 										jumpTarget={searchJump}
 										onJumpDone={() => setSearchJump(null)}
@@ -2551,6 +2552,7 @@ export function App() {
 								conversationId={chat.activeConversationId || chat.state?.conversationId || ""}
 								sessionDraft={chat.state?.draft ?? null}
 								sessionId={chat.state?.sessionId ?? ""}
+								preserveDraftAcrossConversations={chat.settings?.preserveDraftAcrossConversations ?? false}
 							/>
 						</main>
 						{!isMobile && !rightCollapsed && <ResizeHandle side="right" width={rightWidth} onResize={resizeRight} />}

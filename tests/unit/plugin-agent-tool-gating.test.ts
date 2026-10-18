@@ -166,6 +166,7 @@ describe("禁用语义（会话同步层面）", () => {
 					quickPhrases: [],
 					quickPhrasesEnabled: true,
 					minimalNewChat: false,
+					preserveDraftAcrossConversations: false,
 					reviewPrompt: "",
 					reviewDisabledSkills: [],
 					disabledPlugins: [],

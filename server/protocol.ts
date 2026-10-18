@@ -953,6 +953,8 @@ export type ClientMessage =
 			/** 消息列表尾部保持完整渲染的消息条数（默认 15）；更早的折叠为摘要行。
 			 *  纯 UI 偏好，不需要 reload runtime。 */
 			keepRecentMessages?: number;
+			/** 向上分页加载模式（默认关）。纯 UI 偏好，不需要 reload runtime。 */
+			reversePagination?: boolean;
 			/** 历史对话列表中是否显示已被 fork 派生的父会话（默认 false = 仅显示链尾最新分支）。 */
 			showForkedParentSessions?: boolean;
 			/** 结束的对话切换时不自动从运行列表移出（默认 false = 切走且未继续对话的会话自动移出）。 */
@@ -999,6 +1001,8 @@ export type ClientMessage =
 			quickPhrasesEnabled?: boolean;
 			/** 极简新对话模式（默认关；开 = 新对话隐藏提示词模板并隐藏快捷短语，呈现现代极简风格）。 */
 			minimalNewChat?: boolean;
+			/** 输入框文字跨对话保留（默认关；开 = 切换别的会话不清空；关 = 仅保留当前会话文字，切换其他会话时清空或显示该会话已保留文字，切回时恢复当前会话文字）。 */
+			preserveDraftAcrossConversations?: boolean;
 			/** 上报「已 seed 一次默认快捷短语」（首次见空列表时客户端按语言填一批默认并置位；
 			 *  服务端存全局标记，跨会话/跨浏览器生效，避免删除默认后又被填回）。 */
 			quickPhrasesSeeded?: boolean;
@@ -3067,6 +3071,8 @@ export interface UiSettingsState {
 	/** 消息列表尾部保持完整渲染的消息条数（默认 15 = 与原硬编码一致）；更早的消息折叠为摘要行，
 	 *  点击摘要行可展开。纯 UI 偏好，不进预设。 */
 	keepRecentMessages: number;
+	/** 向上分页加载模式（默认关）。开 → 默认仅挂载最近历史消息，向上滚动或点击加载更早历史，完全跳过视口占位符获得原生流畅度。纯 UI 偏好，不进预设。 */
+	reversePagination?: boolean;
 	/** 历史对话列表中是否显示已被 fork 派生的父会话（默认 false = 仅显示链尾最新分支）。 */
 	showForkedParentSessions: boolean;
 	/** 结束的对话切换时不自动从运行列表移出（默认 false）。 */
@@ -3147,6 +3153,8 @@ export interface UiSettingsState {
 	quickPhrasesEnabled: boolean;
 	/** 极简新对话开关（默认关；开 = 新对话隐藏提示词模板并隐藏快捷短语）。 */
 	minimalNewChat: boolean;
+	/** 输入框文字跨对话保留开关（默认关；开 = 切换别的会话不清空；关 = 各会话独立保留）。 */
+	preserveDraftAcrossConversations: boolean;
 	/** 是否已在服务端 seed 过一次默认快捷短语（跨会话/跨浏览器，用于避免删除后被填回默认）。 */
 	quickPhrasesSeeded: boolean;
 	/** 已配置鉴权的全部模型（子代理默认模型/模板模型选择器）。 */

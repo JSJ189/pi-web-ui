@@ -303,6 +303,8 @@ interface MessageListProps {
 	toolsWrap?: boolean;
 	/** 工具结果图片直接显示（设置面板开关；false = 不渲染缩略图）。 */
 	toolImages?: boolean;
+	/** 向上分页加载开关（设置面板的 reversePagination；true = 默认仅挂载最近历史消息）。 */
+	reversePagination?: boolean;
 	/** 尾部保持完整渲染的消息条数（设置面板的 keepRecentMessages；缺省 = 默认值）。 */
 	keepRecent?: number;
 	/** 极简新对话模式（设置面板开关；开 = 新对话隐藏提示词模板并隐藏快捷短语）。 */
@@ -329,6 +331,7 @@ export function MessageList({
 	toolsWrap,
 	toolImages,
 	keepRecent,
+	reversePagination = false,
 	minimalNewChat = false,
 	jumpTarget,
 	onJumpDone,
@@ -470,6 +473,10 @@ export function MessageList({
 	/** 所有受管外层元素（sweep 测量用；挂载时注册，消息移除时清理）。 */
 	const elsRef = useRef(new Map<string, HTMLDivElement>());
 	const sweepRafRef = useRef(0);
+	/** 上次全量 sweep 时的 scrollTop 与消息条数：滚动位移小且总数未变时跳过全量 DOM 测量。 */
+	const lastSweepStRef = useRef(0);
+	const lastSweepCountRef = useRef(0);
+	const sweepIdleTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
 	/** 每条消息的当前内容指纹（id → fingerprint，随 state.messages 重算）。 */
 	const fingerprints = useMemo(() => {
 		const m = new Map<string, number>();
@@ -482,10 +489,56 @@ export function MessageList({
 	// 镜像最新值，供 rAF 回调 / 事件处理器读取而不重建（沿用 questionsRef 模式）
 	const hiddenRef = useRef(hidden);
 	hiddenRef.current = hidden;
-	/** 短会话与搜索打开期间不做窗口化（全量渲染，行为与旧版一致）。 */
-	const virtualOn = state.messages.length > VIRTUAL_MIN && !searchOpen;
+	/** 短会话、搜索打开或开启向上分页期间不做窗口化（分页模式下全量真实渲染已挂载切片，无占位符）。 */
+	const virtualOn = !reversePagination && state.messages.length > VIRTUAL_MIN && !searchOpen;
 	const virtualOnRef = useRef(virtualOn);
 	virtualOnRef.current = virtualOn;
+
+	// ---- 向上分页加载状态（Reverse Pagination）-----------------------------
+	const defaultPageSize = Math.max(30, keepRecentCount);
+	const [visibleCount, setVisibleCount] = useState<number>(() => defaultPageSize);
+	const convKey = `${state.conversationId ?? ""}:${state.sessionFile ?? ""}`;
+	const prevPagingConvKeyRef = useRef(convKey);
+	if (prevPagingConvKeyRef.current !== convKey) {
+		prevPagingConvKeyRef.current = convKey;
+		setVisibleCount(defaultPageSize);
+	}
+	const prevMsgLenRef = useRef(messages.length);
+	useEffect(() => {
+		const delta = messages.length - prevMsgLenRef.current;
+		prevMsgLenRef.current = messages.length;
+		if (delta > 0) {
+			setVisibleCount((cur) => cur + delta);
+		}
+	}, [messages.length]);
+
+	const isPagingActive = !!reversePagination && !exportImage.open && !searchOpen;
+	const effectiveVisibleCount = isPagingActive ? Math.min(messages.length, visibleCount) : messages.length;
+	const hasEarlier = isPagingActive && messages.length > effectiveVisibleCount;
+	const earlierCount = messages.length - effectiveVisibleCount;
+	const visibleMessages = hasEarlier ? messages.slice(-effectiveVisibleCount) : messages;
+
+	const loadEarlier = useCallback(
+		(count = 30) => {
+			const el = scrollRef.current;
+			if (!el) return;
+			const prevSh = el.scrollHeight;
+			const prevSt = el.scrollTop;
+			setVisibleCount((cur) => Math.min(messages.length, cur + count));
+			requestAnimationFrame(() => {
+				if (scrollRef.current) {
+					const delta = scrollRef.current.scrollHeight - prevSh;
+					scrollRef.current.scrollTop = prevSt + delta;
+				}
+			});
+		},
+		[messages.length],
+	);
+
+	const loadAllEarlier = useCallback(() => {
+		setVisibleCount(messages.length);
+	}, [messages.length]);
+
 	// 底部常驻区（永不占位）：随每次渲染按预算重算（读取最新实测高度），
 	// 结合 keepRecentCount 保障常驻预算，首次全量测量后巨型消息会被预算挤出常驻区、参与正常窗口化。
 	// 使用统一的 messages（包含当前流式消息），确保正在生成的末尾消息恒在常驻区内。
@@ -493,11 +546,8 @@ export function MessageList({
 	const alwaysRef = useRef(alwaysSet);
 	alwaysRef.current = alwaysSet;
 
-	// 同一任务回合内的连续中间工具与思考消息聚类为单行流式排布单元
-	const clusteredItems = useMemo(() => clusterMessages(messages), [messages]);
-
-	// 会话切换时：同步将新会话的非视口历史预置入 hidden，彻底杜绝大会话切换时的全量首帧挂载
-	const convKey = `${state.conversationId ?? ""}:${state.sessionFile ?? ""}`;
+	// 同一任务回合内的连续中间工具与思考消息聚类为单行流式排布单元（向上分页时只聚类可见切片）
+	const clusteredItems = useMemo(() => clusterMessages(visibleMessages), [visibleMessages]);
 	const streamKeyTrackerRef = useRef<StreamKeyTracker>({
 		convKey,
 		pending: null,
@@ -533,62 +583,6 @@ export function MessageList({
 		}
 	}
 
-	/** 全量测量受管元素 → 窗口计划（rAF 节流调用；也用于初始与特殊迁移后）。 */
-	const sweep = useCallback(() => {
-		const root = scrollRef.current;
-		if (!root) return;
-		if (!virtualOnRef.current) {
-			setHidden((prev) => (prev.size ? new Set<string>() : prev));
-			return;
-		}
-		const rootRect = root.getBoundingClientRect();
-		const mountViewport = {
-			top: rootRect.top - LAZY_MOUNT_MARGIN,
-			bottom: rootRect.bottom + LAZY_MOUNT_MARGIN,
-		};
-		const unmountViewport = {
-			top: rootRect.top - LAZY_UNMOUNT_MARGIN,
-			bottom: rootRect.bottom + LAZY_UNMOUNT_MARGIN,
-		};
-		const items: WinRect[] = [];
-		for (const [id, el] of elsRef.current) {
-			const b = el.getBoundingClientRect();
-			items.push({ id, top: b.top, bottom: b.bottom });
-			// 显示中的元素顺手记录实测高度——pickAlways 的预算与占位高度都靠它；
-			// 只在隐藏时测量的话，「初始就显示」的消息会永远停留在估算值。
-			if (!hiddenRef.current.has(id)) recordMeasured(id, b.bottom - b.top, fpRef.current.get(id));
-		}
-		const plan = planWindow(items, mountViewport, alwaysRef.current, hiddenRef.current, unmountViewport);
-		// 收起时用刚实测的高度做占位 ⇒ 流总高度不变 ⇒ 无需任何 scrollTop 补偿。
-		// （曾在此做 shrink 补偿：它触发的 scroll 事件会让缓冲带重新罩住刚收起的
-		// 元素 → 再挂载 → 再收起，自搏循环把用户钉在原地永远滚不到底。）
-		for (const id of plan.hide) {
-			const el = elsRef.current.get(id);
-			if (el) recordMeasured(id, el.offsetHeight, fpRef.current.get(id));
-		}
-		setHidden((prev) => applyPlan(prev, plan));
-	}, []);
-
-	const scheduleSweep = useCallback(() => {
-		if (sweepRafRef.current) return;
-		sweepRafRef.current = requestAnimationFrame(() => {
-			sweepRafRef.current = 0;
-			sweep();
-		});
-	}, [sweep]);
-
-	// 初始挂载与切换会话/消息集更新：首帧绘制前就把远端内容换成占位（大会话 attach 不再全量布局绘制）
-	useLayoutEffect(() => {
-		sweep();
-	}, [sweep, state.conversationId, state.sessionFile, state.messages.length]);
-
-	// 搜索关闭瞬间重新收起远端内容（打开期间强制全渲染以兼容 DOM 高亮/Range 收集）
-	const prevSearchRef = useRef(searchOpen);
-	useLayoutEffect(() => {
-		if (prevSearchRef.current && !searchOpen) sweep();
-		prevSearchRef.current = searchOpen;
-	}, [searchOpen, sweep]);
-
 	/** 实测高度统一入库：meta 始终记录；heights（pickAlways / 占位来源）仅在
 	 *  指纹与当前内容一致时更新——消息被编辑后旧实测高度立即作废。 */
 	const recordMeasured = useCallback((id: string, h: number, fp?: number) => {
@@ -603,6 +597,86 @@ export function MessageList({
 		},
 		[recordMeasured],
 	);
+
+	/** 全量测量受管元素 → 窗口计划（rAF 节流调用；也用于初始与特殊迁移后）。 */
+	const sweep = useCallback(
+		(force = false) => {
+			const root = scrollRef.current;
+			if (!root) return;
+			if (!virtualOnRef.current) {
+				setHidden((prev) => (prev.size ? new Set<string>() : prev));
+				return;
+			}
+
+			// 滚动节流优化：视口上下各有 1200px~2400px 的迟滞安全区；
+			// 若距上次测量位移不足 200px 且消息数未变，绝不可能跨越缓冲带，跳过本轮全量 DOM 测量。
+			if (!force) {
+				const dSt = Math.abs(root.scrollTop - lastSweepStRef.current);
+				if (dSt < 200 && state.messages.length === lastSweepCountRef.current) {
+					return;
+				}
+			}
+			lastSweepStRef.current = root.scrollTop;
+			lastSweepCountRef.current = state.messages.length;
+
+			const rootRect = root.getBoundingClientRect();
+			const mountViewport = {
+				top: rootRect.top - LAZY_MOUNT_MARGIN,
+				bottom: rootRect.bottom + LAZY_MOUNT_MARGIN,
+			};
+			const unmountViewport = {
+				top: rootRect.top - LAZY_UNMOUNT_MARGIN,
+				bottom: rootRect.bottom + LAZY_UNMOUNT_MARGIN,
+			};
+			const items: WinRect[] = [];
+			for (const [id, el] of elsRef.current) {
+				const b = el.getBoundingClientRect();
+				items.push({ id, top: b.top, bottom: b.bottom });
+				// 显示中的元素顺手记录实测高度——pickAlways 的预算与占位高度都靠它；
+				// 只在隐藏时测量的话，「初始就显示」的消息会永远停留在估算值。
+				if (!hiddenRef.current.has(id)) recordMeasured(id, b.bottom - b.top, fpRef.current.get(id));
+			}
+			const plan = planWindow(items, mountViewport, alwaysRef.current, hiddenRef.current, unmountViewport);
+			// 收起时用刚实测的高度做占位 ⇒ 流总高度不变 ⇒ 无需任何 scrollTop 补偿。
+			// （曾在此做 shrink 补偿：它触发的 scroll 事件会让缓冲带重新罩住刚收起的
+			// 元素 → 再挂载 → 再收起，自搏循环把用户钉在原地永远滚不到底。）
+			for (const id of plan.hide) {
+				const el = elsRef.current.get(id);
+				if (el) recordMeasured(id, el.offsetHeight, fpRef.current.get(id));
+			}
+			setHidden((prev) => applyPlan(prev, plan));
+		},
+		[recordMeasured, state.messages.length],
+	);
+
+	const scheduleSweep = useCallback(() => {
+		if (sweepIdleTimerRef.current) {
+			clearTimeout(sweepIdleTimerRef.current);
+		}
+		// 滚动静止后 120ms 执行一次最终收敛 sweep（force=true）
+		sweepIdleTimerRef.current = setTimeout(() => {
+			sweepIdleTimerRef.current = null;
+			sweep(true);
+		}, 120);
+
+		if (sweepRafRef.current) return;
+		sweepRafRef.current = requestAnimationFrame(() => {
+			sweepRafRef.current = 0;
+			sweep(false);
+		});
+	}, [sweep]);
+
+	// 初始挂载与切换会话/消息集更新：首帧绘制前就把远端内容换成占位（大会话 attach 不再全量布局绘制）
+	useLayoutEffect(() => {
+		sweep(true);
+	}, [sweep, state.conversationId, state.sessionFile, state.messages.length]);
+
+	// 搜索关闭瞬间重新收起远端内容（打开期间强制全渲染以兼容 DOM 高亮/Range 收集）
+	const prevSearchRef = useRef(searchOpen);
+	useLayoutEffect(() => {
+		if (prevSearchRef.current && !searchOpen) sweep(true);
+		prevSearchRef.current = searchOpen;
+	}, [searchOpen, sweep]);
 
 	/** 外层元素注册（sweep 测量用）；卸载侧由下方清理 effect 兑底（React 18 的
 	 *  ref(null) 回调拿不到 data-lazy-id，无法定点反注册）。 */
@@ -630,7 +704,13 @@ export function MessageList({
 		});
 	}, [state.messages, expanded]);
 
-	useEffect(() => () => cancelAnimationFrame(sweepRafRef.current), []);
+	useEffect(
+		() => () => {
+			cancelAnimationFrame(sweepRafRef.current);
+			if (sweepIdleTimerRef.current) clearTimeout(sweepIdleTimerRef.current);
+		},
+		[],
+	);
 
 	// All user questions of the current conversation — the source for the
 	// floating question-nav rail (memoized on the stable messages array).
@@ -663,6 +743,7 @@ export function MessageList({
 	/** Index of the question currently on screen (or last jumped to); -1 = none. */
 	const [activeIdx, setActiveIdx] = useState(-1);
 	const activeIdxRef = useRef(-1);
+	const activeRafRef = useRef(0);
 	// Scroll handlers read the latest questions without recreating.
 	const questionsRef = useRef(questions);
 	useEffect(() => {
@@ -688,7 +769,8 @@ export function MessageList({
 		const margin = 140;
 		let best = -1;
 		for (let i = 0; i < qs.length; i++) {
-			const node = el.querySelector<HTMLElement>(`[data-msg-id="${qs[i].id}"]`);
+			// 优先从已注册元素 Map O(1) 获取节点，彻底避免昂贵的全树 querySelector 遍历
+			const node = elsRef.current.get(qs[i].id) ?? el.querySelector<HTMLElement>(`[data-msg-id="${qs[i].id}"]`);
 			if (!node) continue;
 			if (node.getBoundingClientRect().top <= containerTop + margin) best = i;
 			else break;
@@ -698,6 +780,16 @@ export function MessageList({
 			setActiveIdx(best);
 		}
 	}, []);
+
+	const scheduleActiveFromScroll = useCallback(() => {
+		if (activeRafRef.current) return;
+		activeRafRef.current = requestAnimationFrame(() => {
+			activeRafRef.current = 0;
+			updateActiveFromScroll();
+		});
+	}, [updateActiveFromScroll]);
+
+	useEffect(() => () => cancelAnimationFrame(activeRafRef.current), []);
 
 	// Pick the initial active question when the message set changes (also
 	// covers expand/collapse since it re-renders with new DOM).
@@ -755,6 +847,14 @@ export function MessageList({
 	/** Scroll the conversation to a question; expand it first if it's collapsed. */
 	const jumpTo = useCallback(
 		(id: string) => {
+			if (isPagingActive) {
+				const targetIdx = messages.findIndex((m) => m.id === id);
+				if (targetIdx !== -1 && targetIdx < messages.length - visibleCount) {
+					flushSync(() => {
+						setVisibleCount(messages.length - targetIdx + 5);
+					});
+				}
+			}
 			// 占位中的目标或折叠中的目标先同步恢复真实渲染，再滚动定位——
 			// flushSync 保证本轮 commit 后 DOM 即为最终形态。
 			flushSync(() => {
@@ -863,7 +963,16 @@ export function MessageList({
 				if (innerScroll && innerScroll.scrollHeight > innerScroll.clientHeight && innerScroll.scrollTop > 0) {
 					return;
 				}
+				userUpwardGestureTimeRef.current = Date.now();
 				disengageStick();
+
+				// 向上分页模式下：若滚轮接近顶部且还有更早历史，自动静默预加载上一页
+				if (isPagingActive && hasEarlier) {
+					const el = scrollRef.current;
+					if (el && el.scrollTop <= 80) {
+						loadEarlier(30);
+					}
+				}
 			} else if (e.deltaY > 0) {
 				// 物理向下滚动：清除向上手势锁；若已接近底部，立即恢复吸底
 				userUpwardGestureTimeRef.current = 0;
@@ -959,9 +1068,9 @@ export function MessageList({
 		// treat them as upward user intent, or the stick gets undone instantly.
 		const programmatic = Date.now() < progUntilRef.current;
 
-		// 判定是否有真实物理向上意图：最近 500ms 内有滚轮向上/触屏向下拉/键盘向上，或按住拖动滚动条且向上运动
+		// 判定是否有真实物理向上意图：最近 800ms 内有滚轮向上/触屏向下拉/键盘向上，或按住拖动滚动条且向上运动
 		const hasUserUpwardIntent =
-			Date.now() - userUpwardGestureTimeRef.current < 500 || (isPointerDownRef.current && dSt < 0);
+			Date.now() - userUpwardGestureTimeRef.current < 800 || (isPointerDownRef.current && dSt < 0);
 
 		const decision = classifyScroll({
 			dSt,
@@ -996,10 +1105,11 @@ export function MessageList({
 				escapedRef.current = false;
 			}
 		}
-		setStickBottom(stickRef.current);
-		updateActiveFromScroll();
+		// 避免每帧滚动重复 dispatch 相同状态
+		setStickBottom((prev) => (prev !== stickRef.current ? stickRef.current : prev));
+		scheduleActiveFromScroll();
 		scheduleSweep();
-	}, [updateActiveFromScroll, scheduleSweep, pinToBottom, disengageStick]);
+	}, [scheduleActiveFromScroll, scheduleSweep, pinToBottom, disengageStick]);
 
 	const scrollToBottom = useCallback(() => {
 		const el = scrollRef.current;
@@ -1216,6 +1326,19 @@ export function MessageList({
 						{uiChatEmpty && uiChatEmpty.length > 0 && (
 							<div className="chat-empty-slots">{renderSlotToolbar(uiChatEmpty, onUiAction)}</div>
 						)}
+					</div>
+				)}
+				{hasEarlier && (
+					<div className="earlier-messages-bar">
+						<span className="earlier-messages-info">{t("earlierMessagesInfo", { count: earlierCount })}</span>
+						<div className="earlier-messages-actions">
+							<button type="button" className="earlier-messages-btn" onClick={() => loadEarlier(30)}>
+								↑ {t("loadEarlier", { count: Math.min(30, earlierCount) })}
+							</button>
+							<button type="button" className="earlier-messages-btn earlier-messages-btn-all" onClick={loadAllEarlier}>
+								{t("loadAllEarlier")}
+							</button>
+						</div>
 					</div>
 				)}
 				{clusteredItems.map((item) => {

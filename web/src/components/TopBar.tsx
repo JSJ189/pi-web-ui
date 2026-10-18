@@ -57,6 +57,7 @@ import {
 } from "../app-globals";
 import { ProjectPicker } from "./ProjectPicker";
 import { PluginMenu } from "./PluginMenu";
+import { PluginManagerModal } from "./PluginManagerModal";
 import { LocaleModal } from "./LocaleModal";
 import { focusComposer } from "../composer-bridge";
 import { useFloatingPanel } from "../use-floating-panel";
@@ -264,6 +265,8 @@ export function TopBar({
 	   面板本身渲染在 header 根上（不在 keep 包装里），否则会跟着 ⋯ 菜单一起被卸载。
 	   el 只用来认「再点一次同一个触发器 = 关」（且已被卸载的 el 不影响判断）。 */
 	const [pluginMenuAnchor, setPluginMenuAnchor] = useState<{ rect: DOMRect; el: HTMLElement } | null>(null);
+	const [pluginManagerOpen, setPluginManagerOpen] = useState(false);
+	const [pluginManagerFocusId, setPluginManagerFocusId] = useState<string | null>(null);
 	const cwd = useAppField("cwd");
 	const workspaceRoots = useAppField("workspaceRoots");
 	/* 临时会话能力由引擎底座 capabilities.ephemeralChat 事实源驱动（DSH 不提供，Pi 与 Universal 提供）。 */
@@ -1879,7 +1882,13 @@ export function TopBar({
 				<PluginMenu
 					anchorRect={pluginMenuAnchor.rect}
 					anchorEl={pluginMenuAnchor.el}
-					plugins={plugins}
+					plugins={plugins.map((p) => {
+						const full = (chat.plugins ?? []).find((cp) => cp.id === p.id);
+						return {
+							...p,
+							hasSettings: Boolean(full?.settingsSchema && full.settingsSchema.length > 0),
+						};
+					})}
 					pinnedIds={pinnedPluginIds}
 					orderedPluginIds={orderedPluginIds}
 					onTogglePin={(id, pinned) =>
@@ -1893,8 +1902,39 @@ export function TopBar({
 						setPluginMenuAnchor(null);
 						onViewChange(`plugin:${id}`);
 					}}
+					onOpenPluginSettings={(focusId) => {
+						setPluginManagerFocusId(focusId ?? null);
+						setPluginManagerOpen(true);
+					}}
 					onManagePlugins={onManagePlugins}
 					onClose={() => setPluginMenuAnchor(null)}
+				/>
+			)}
+			{pluginManagerOpen && (
+				<PluginManagerModal
+					open={pluginManagerOpen}
+					onClose={() => {
+						setPluginManagerOpen(false);
+						setPluginManagerFocusId(null);
+					}}
+					focusPluginId={pluginManagerFocusId}
+					plugins={chat.plugins ?? []}
+					disabledPlugins={chat.settings?.disabledPlugins ?? []}
+					models={chat.settings?.subagentModels ?? []}
+					onTogglePlugin={(p) => {
+						const disabled = new Set(chat.settings?.disabledPlugins ?? []);
+						if (disabled.has(p.id)) disabled.delete(p.id);
+						else disabled.add(p.id);
+						appSend({ type: "set_settings", disabledPlugins: [...disabled] });
+					}}
+					onOpenView={(id) => {
+						setPluginManagerOpen(false);
+						onViewChange(`plugin:${id}`);
+					}}
+					onOpenMarketplace={() => {
+						setPluginManagerOpen(false);
+						onManagePlugins();
+					}}
 				/>
 			)}
 			{projectPickerOpen && (

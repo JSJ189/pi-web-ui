@@ -662,6 +662,8 @@ export function handleSettingsMessage(msg: ClientMessage, cs: DispatchSession): 
 				quickPhrases: (msg as { quickPhrases?: string[] }).quickPhrases,
 				quickPhrasesEnabled: (msg as { quickPhrasesEnabled?: boolean }).quickPhrasesEnabled,
 				minimalNewChat: (msg as { minimalNewChat?: boolean }).minimalNewChat,
+				preserveDraftAcrossConversations: (msg as { preserveDraftAcrossConversations?: boolean })
+					.preserveDraftAcrossConversations,
 				quickPhrasesSeeded: (msg as { quickPhrasesSeeded?: boolean }).quickPhrasesSeeded,
 				uiLayout: (msg as { uiLayout?: unknown }).uiLayout,
 			});

@@ -166,6 +166,8 @@ interface ChatInputProps {
 	sessionDraft?: { text: string; ts: number } | null;
 	/** 当前会话的 sessionId（草稿跨重启的稳定 key；空 = 未就绪，不存不取）。 */
 	sessionId?: string;
+	/** 输入框文字跨对话保留（默认关；开 = 切换别的会话不清空；关 = 各会话独立保留草稿）。 */
+	preserveDraftAcrossConversations?: boolean;
 }
 
 export const ChatInput = memo(function ChatInput({
@@ -204,6 +206,7 @@ export const ChatInput = memo(function ChatInput({
 	conversationId,
 	sessionDraft,
 	sessionId,
+	preserveDraftAcrossConversations = false,
 }: ChatInputProps) {
 	const t = useT();
 	/** 连接/会话就绪：走全局（web/src/app-globals.ts），不再从 App 传。 */
@@ -421,6 +424,8 @@ export const ChatInput = memo(function ChatInput({
 	const draftTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
 	const draftScopeRef = useRef<string | null>(null);
 	const pendingCarryOverRef = useRef<{ text: string; userEditedAfterSwitch: boolean } | null>(null);
+	const preserveAcrossRef = useRef(preserveDraftAcrossConversations);
+	preserveAcrossRef.current = preserveDraftAcrossConversations;
 	/** 输入法守卫（issue #248：macOS 中文输入法下敲英文字母按 Enter 上屏时，浏览器会先派发
 	 *  compositionend 再派发 keydown(Enter, isComposing=false)，需通过时间差拦截误发送）。
 	 *  判定与 ask_user_question 问卷输入框同源：web/src/ime-guard.ts。 */
@@ -516,10 +521,7 @@ export const ChatInput = memo(function ChatInput({
 					persistComposerDraft(sid, localKey, curText, lastEditTsRef.current);
 				}
 				const switchTime = getLastSessionSwitchTime();
-				const isActivelyFocused = typeof document !== "undefined" && document.activeElement === taRef.current;
-				const userEditedAfterSwitch = Boolean(
-					(switchTime > 0 && lastEditTsRef.current >= switchTime) || isActivelyFocused,
-				);
+				const userEditedAfterSwitch = Boolean(switchTime > 0 && lastEditTsRef.current > switchTime);
 				pendingCarryOverRef.current = { text: curText, userEditedAfterSwitch };
 			} else {
 				pendingCarryOverRef.current = null;
@@ -548,6 +550,7 @@ export const ChatInput = memo(function ChatInput({
 			userEditedAfterSwitch,
 			messages.length,
 			hasExistingDraft,
+			preserveAcrossRef.current,
 		);
 
 		if (shouldPreserve && carryText !== null && draftLocalKey && sessionId) {
@@ -556,7 +559,9 @@ export const ChatInput = memo(function ChatInput({
 			textMirrorRef.current = carryText;
 			lastEditTsRef.current = appliedDraftTsRef.current;
 			setText(carryText);
-			persistComposerDraft(sessionId, draftLocalKey, carryText, lastEditTsRef.current);
+			if (!hasExistingDraft) {
+				persistComposerDraft(sessionId, draftLocalKey, carryText, lastEditTsRef.current);
+			}
 		} else {
 			touchedRef.current = false;
 			appliedDraftTsRef.current = 0;

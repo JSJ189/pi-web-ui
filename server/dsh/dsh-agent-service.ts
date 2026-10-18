@@ -275,6 +275,7 @@ interface DshSettings {
 	quickPhrases: string[];
 	quickPhrasesEnabled: boolean;
 	minimalNewChat: boolean;
+	preserveDraftAcrossConversations: boolean;
 	/** 组合模板与来源覆盖（保持与 pi 引擎 ClientSettings 一致）。 */
 	promptTemplate?: string;
 	promptOverrides?: Record<string, string>;
@@ -337,6 +338,7 @@ const DEFAULT_SETTINGS: DshSettings = {
 	quickPhrases: [],
 	quickPhrasesEnabled: true,
 	minimalNewChat: false,
+	preserveDraftAcrossConversations: false,
 	promptTemplate: "",
 	promptOverrides: {},
 };
@@ -486,6 +488,7 @@ export class DshClientSession {
 			isDisposed: () => this.disposed,
 			pluginTasks: () => this.pluginBgTasksProvider?.() ?? [],
 			cleanupMinutes: () => Number(this.settings.bgAutoCleanupMin ?? 0),
+			workspaceCwd: () => this.cwd,
 		});
 		this.markerSvc = new MarkerService({
 			clientId,
@@ -560,6 +563,7 @@ export class DshClientSession {
 				quickPhrases: savedSettings.quickPhrases ?? [],
 				quickPhrasesEnabled: savedSettings.quickPhrasesEnabled ?? true,
 				minimalNewChat: savedSettings.minimalNewChat ?? false,
+				preserveDraftAcrossConversations: savedSettings.preserveDraftAcrossConversations ?? false,
 				promptTemplate: savedSettings.promptTemplate ?? "",
 				promptOverrides: savedSettings.promptOverrides ?? {},
 				defaultAgentPreset: savedSettings.defaultAgentPreset ?? PRESET_DEFAULT_ID,
@@ -3976,6 +3980,7 @@ export class DshClientSession {
 			quickPhrases: [...this.settings.quickPhrases],
 			quickPhrasesEnabled: this.settings.quickPhrasesEnabled,
 			minimalNewChat: this.settings.minimalNewChat,
+			preserveDraftAcrossConversations: this.settings.preserveDraftAcrossConversations ?? false,
 			quickPhrasesSeeded: this.stateStore.getQuickPhrasesSeeded(),
 		};
 		this.emit({ type: "settings_state", settings });
@@ -4020,6 +4025,7 @@ export class DshClientSession {
 		quickPhrases?: string[];
 		quickPhrasesEnabled?: boolean;
 		minimalNewChat?: boolean;
+		preserveDraftAcrossConversations?: boolean;
 		quickPhrasesSeeded?: boolean;
 	}): Promise<void> {
 		if (partial.quickPhrasesSeeded) this.stateStore.markQuickPhrasesSeeded();
@@ -4067,6 +4073,8 @@ export class DshClientSession {
 		}
 		if (partial.quickPhrasesEnabled !== undefined) this.settings.quickPhrasesEnabled = partial.quickPhrasesEnabled;
 		if (partial.minimalNewChat !== undefined) this.settings.minimalNewChat = partial.minimalNewChat;
+		if (partial.preserveDraftAcrossConversations !== undefined)
+			this.settings.preserveDraftAcrossConversations = partial.preserveDraftAcrossConversations;
 		const prevMarkerGuidance = this.markerSvc.buildGuidance();
 		this.markerSvc.setAll({
 			markersEnabled: partial.markersEnabled,
@@ -4106,6 +4114,7 @@ export class DshClientSession {
 			quickPhrases: this.settings.quickPhrases,
 			quickPhrasesEnabled: this.settings.quickPhrasesEnabled,
 			minimalNewChat: this.settings.minimalNewChat,
+			preserveDraftAcrossConversations: this.settings.preserveDraftAcrossConversations,
 			defaultAgentPreset: this.settings.defaultAgentPreset,
 			promptTemplate: this.settings.promptTemplate ?? "",
 			promptOverrides: this.settings.promptOverrides ?? {},

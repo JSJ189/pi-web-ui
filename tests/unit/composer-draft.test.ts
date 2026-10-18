@@ -212,31 +212,38 @@ describe("shouldCarryOverDraft", () => {
 	});
 });
 
-describe("shouldPreserveDraftOnSwitch (issue #638)", () => {
-	it("用户在发起切换/新建后主动输入了内容 → 无论切到已有对话还是空白对话均必须保留，绝不清除", () => {
-		// 切到已有对话（messages.length > 0），用户在切换后打了字 → 保留！
-		expect(shouldPreserveDraftOnSwitch("帮我分析一下这个函数", true, 10, false)).toBe(true);
-		// 目标已有自身草稿，但用户在切换后主动输入了新内容 → 保留新内容！
-		expect(shouldPreserveDraftOnSwitch("帮我分析一下这个函数", true, 0, true)).toBe(true);
-		expect(shouldPreserveDraftOnSwitch("帮我分析一下这个函数", true, 5, true)).toBe(true);
-		// 切到全新空白对话，用户在切换后打了字 → 保留！
-		expect(shouldPreserveDraftOnSwitch("帮我分析一下这个函数", true, 0, false)).toBe(true);
+describe("shouldPreserveDraftOnSwitch (可开关跨对话保留)", () => {
+	it("开的时候（preserveDraftAcrossConversations=true） → 输入文字切换别的会话不清空", () => {
+		// 切到已有历史消息的对话 → 文本保留！不清空！
+		expect(shouldPreserveDraftOnSwitch("跨会话草稿内容", false, 5, false, true)).toBe(true);
+		// 切到已有自身草稿的对话 → 文本保留！不清空！
+		expect(shouldPreserveDraftOnSwitch("跨会话草稿内容", false, 5, true, true)).toBe(true);
+		// 切到空白新对话 → 文本保留！不清空！
+		expect(shouldPreserveDraftOnSwitch("跨会话草稿内容", false, 0, false, true)).toBe(true);
 	});
 
-	it("待结转/保留的文本为空或空白时 → 不保留", () => {
-		expect(shouldPreserveDraftOnSwitch("", true, 5, false)).toBe(false);
-		expect(shouldPreserveDraftOnSwitch("   ", true, 5, false)).toBe(false);
-		expect(shouldPreserveDraftOnSwitch(null, true, 5, false)).toBe(false);
-		expect(shouldPreserveDraftOnSwitch(undefined, true, 5, false)).toBe(false);
+	it("关的时候（preserveDraftAcrossConversations=false） → 只保留当前会话文字，切别的会话不清空旧草稿到新会话", () => {
+		// 切到已有历史消息的对话 → 不保留到目标会话（目标会话清空或恢复自身草稿）
+		expect(shouldPreserveDraftOnSwitch("旧会话草稿", false, 5, false, false)).toBe(false);
+		// 切到目标已有草稿的对话 → 不保留到目标会话
+		expect(shouldPreserveDraftOnSwitch("旧会话草稿", false, 0, true, false)).toBe(false);
+		// 切到全新空白对话 → 关只保留当前会话文字，切别的会话清空
+		expect(shouldPreserveDraftOnSwitch("旧会话草稿", false, 0, false, false)).toBe(false);
 	});
 
-	it("用户在发起切换前留下的旧草稿（切换后未主动输入，userEditedAfterSwitch=false） → 遵循空白新对话结转逻辑", () => {
-		// 切到全新空白对话且无自身草稿 → 承接旧草稿
-		expect(shouldPreserveDraftOnSwitch("/skill:do-task-workflow RJC-204", false, 0, false)).toBe(true);
-		// 切到已有历史消息的对话 → 不保留，避免旧草稿污染已有对话
-		expect(shouldPreserveDraftOnSwitch("旧对话草稿", false, 3, false)).toBe(false);
-		// 目标已有自身草稿 → 不保留，优先显示目标自身草稿
-		expect(shouldPreserveDraftOnSwitch("旧对话草稿", false, 0, true)).toBe(false);
+	it("用户在发起切换/新建后主动输入了内容（userEditedAfterSwitch=true） → 无论开关状态均保留当前积极输入", () => {
+		// 关的状态下，如果在切换后主动输入了内容 → 保留
+		expect(shouldPreserveDraftOnSwitch("切换中打的字", true, 10, false, false)).toBe(true);
+		// 开的状态下，在切换后主动输入了内容 → 保留
+		expect(shouldPreserveDraftOnSwitch("切换中打的字", true, 10, false, true)).toBe(true);
+	});
+
+	it("待结转/保留的文本为空或空白时 → 无论开关状态均不保留", () => {
+		expect(shouldPreserveDraftOnSwitch("", false, 5, false, true)).toBe(false);
+		expect(shouldPreserveDraftOnSwitch("   ", false, 5, false, true)).toBe(false);
+		expect(shouldPreserveDraftOnSwitch(null, false, 5, false, true)).toBe(false);
+		expect(shouldPreserveDraftOnSwitch(undefined, false, 5, false, true)).toBe(false);
+		expect(shouldPreserveDraftOnSwitch("", true, 5, false, false)).toBe(false);
 	});
 });
 

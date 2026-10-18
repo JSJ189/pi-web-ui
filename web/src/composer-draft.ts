@@ -152,23 +152,25 @@ export function shouldCarryOverDraft(
 }
 
 /**
- * 当会话切换完成（新会话就绪）时，判断是否应保留当前输入框中的文本（issue #638）：
+ * 当会话切换完成（新会话就绪）时，判断是否应保留当前输入框中的文本：
  * 1. 若用户在发起切换/新建之后主动编辑/输入了内容（userEditedAfterSwitch === true），
  *    说明该内容是用户为当前目标会话积极输入的，必须保留，绝不清除；
- * 2. 否则，沿用空白新对话结转逻辑（shouldCarryOverDraft）：
- *    仅当目标对话为完全空白对话（无历史消息）且无自身既有草稿时才承接；
- * 3. 其余情况（切到已有历史对话且用户在切换后未打字）不保留旧会话的内容，
- *    避免旧会话草稿污染已有对话。
+ * 2. 若开启了「输入框文字跨对话保留」（preserveDraftAcrossConversations === true）：
+ *    开的时候，输入文字切换别的会话不清空，跨会话保留输入框文字；
+ * 3. 否则（关，默认）：只保留当前会话的文字，切别的会话清空（无草稿）或恢复目标会话保留的文字，
+ *    切回原会话时文字照常保留恢复。
  */
 export function shouldPreserveDraftOnSwitch(
 	pendingCarry: string | null | undefined,
 	userEditedAfterSwitch: boolean,
 	targetMessageCount: number,
 	hasExistingDraftOnTarget: boolean,
+	preserveDraftAcrossConversations: boolean = false,
 ): boolean {
 	if (!pendingCarry || !pendingCarry.trim()) return false;
 	if (userEditedAfterSwitch) return true;
-	return shouldCarryOverDraft(pendingCarry, targetMessageCount, hasExistingDraftOnTarget);
+	if (preserveDraftAcrossConversations) return true;
+	return false;
 }
 
 /** 提示词模板填入非空输入框时的三种用户选择（issue #586）。 */

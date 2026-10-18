@@ -629,6 +629,8 @@ interface SettingsPatch {
 	toolImagesEnabled?: boolean;
 	/** 消息列表尾部常驻渲染的消息条数（纯 UI 偏好，默认 15）。 */
 	keepRecentMessages?: number;
+	/** 向上分页加载开关（纯 UI 偏好，默认关）。 */
+	reversePagination?: boolean;
 	/** 历史对话列表中是否显示已被 fork 派生的父会话（默认 false = 仅显示链尾最新分支）。 */
 	showForkedParentSessions?: boolean;
 	/** 结束的对话切换时不自动从运行列表移出（默认 false）。 */
@@ -641,6 +643,7 @@ interface SettingsPatch {
 	quickPhrases?: string[];
 	quickPhrasesEnabled?: boolean;
 	minimalNewChat?: boolean;
+	preserveDraftAcrossConversations?: boolean;
 	visionBridgeEnabled?: boolean;
 	visionBridgeModel?: string | null;
 	visionBridgePromptMode?: "append" | "replace";
@@ -3620,6 +3623,12 @@ export function SettingsModal({
 									/>
 								</FieldRow>
 								<ToggleRow
+									title={t("reversePagination")}
+									tip={t("reversePaginationDesc")}
+									enabled={settings.reversePagination ?? false}
+									onToggle={() => setPartial({ reversePagination: !(settings.reversePagination ?? false) })}
+								/>
+								<ToggleRow
 									title={t("showForkedParents")}
 									tip={t("showForkedParentsDesc")}
 									enabled={settings.showForkedParentSessions ?? false}
@@ -3652,6 +3661,16 @@ export function SettingsModal({
 									tip={t("minimalNewChatDesc")}
 									enabled={settings.minimalNewChat ?? false}
 									onToggle={() => setPartial({ minimalNewChat: !(settings.minimalNewChat ?? false) })}
+								/>
+								<ToggleRow
+									title={t("preserveDraftAcrossConversations")}
+									tip={t("preserveDraftAcrossConversationsDesc")}
+									enabled={settings.preserveDraftAcrossConversations ?? false}
+									onToggle={() =>
+										setPartial({
+											preserveDraftAcrossConversations: !(settings.preserveDraftAcrossConversations ?? false),
+										})
+									}
 								/>
 								<ToggleRow
 									title={t("presentAutoOpen")}
@@ -3836,6 +3855,16 @@ export function SettingsModal({
 									tip={t("minimalNewChatDesc")}
 									enabled={settings.minimalNewChat ?? false}
 									onToggle={() => setPartial({ minimalNewChat: !(settings.minimalNewChat ?? false) })}
+								/>
+								<ToggleRow
+									title={t("preserveDraftAcrossConversations")}
+									tip={t("preserveDraftAcrossConversationsDesc")}
+									enabled={settings.preserveDraftAcrossConversations ?? false}
+									onToggle={() =>
+										setPartial({
+											preserveDraftAcrossConversations: !(settings.preserveDraftAcrossConversations ?? false),
+										})
+									}
 								/>
 								{!settings.quickPhrasesEnabled && <p className="set-hint">{t("quickPhrasesOffHint")}</p>}
 								<div className="set-preset-save">

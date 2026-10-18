@@ -372,6 +372,8 @@ export interface ClientSettings {
 	/** 消息列表尾部保持完整渲染的消息条数（默认 15 = 与原硬编码一致）；更早的消息
 	 *  折叠为摘要行，点开再展开。纯 UI 偏好，不进预设。 */
 	keepRecentMessages: number;
+	/** 向上分页加载模式（默认关）。开 → 默认仅挂载最近历史消息，向上滚动或点击加载更早历史，完全跳过视口占位符获得原生流畅度。纯 UI 偏好，不进预设。 */
+	reversePagination?: boolean;
 	/** 历史对话列表中是否显示已被 fork 派生的父会话（默认 false = 仅显示每条 fork 链最新的链尾分支）。 */
 	showForkedParentSessions?: boolean;
 	/** 结束的对话切换时不自动从运行的对话消失（默认关）。开 → 对话结束（空闲）且切换到其他对话时，
@@ -401,6 +403,8 @@ export interface ClientSettings {
 	quickPhrasesEnabled: boolean;
 	/** 极简新对话开关（默认关；开 = 新对话隐藏提示词模板并隐藏快捷短语，呈现现代极简风格）。 */
 	minimalNewChat: boolean;
+	/** 输入框文字跨对话保留（默认关；开 = 切换别的会话不清空；关 = 各会话独立保留草稿）。 */
+	preserveDraftAcrossConversations: boolean;
 	/** DSH Agent 预设默认（新会话取值；pi 引擎忽略）。全局共享，不进设置预设。 */
 	defaultAgentPreset?: string;
 	/** DSH 新会话默认权限预设（三档之一；pi 引擎忽略）。全局共享，不进设置预设。 */
@@ -1103,6 +1107,7 @@ export class ClientStateStore {
 			toolsWrap: stored?.toolsWrap ?? true,
 			toolImagesEnabled: stored?.toolImagesEnabled ?? true,
 			keepRecentMessages: normalizeKeepRecentMessages(stored?.keepRecentMessages),
+			reversePagination: stored?.reversePagination ?? false,
 			showForkedParentSessions: stored?.showForkedParentSessions ?? false,
 			retainFinishedConversations: stored?.retainFinishedConversations ?? false,
 			openRecentSessionOnProjectSwitch: stored?.openRecentSessionOnProjectSwitch ?? true,
@@ -1122,6 +1127,7 @@ export class ClientStateStore {
 			quickPhrases: stored?.quickPhrases ?? [],
 			quickPhrasesEnabled: stored?.quickPhrasesEnabled ?? true,
 			minimalNewChat: stored?.minimalNewChat ?? false,
+			preserveDraftAcrossConversations: stored?.preserveDraftAcrossConversations ?? false,
 			reviewPrompt: stored?.reviewPrompt ?? "",
 			reviewDisabledSkills: stored?.reviewDisabledSkills ?? [],
 			disabledPlugins: stored?.disabledPlugins ?? [],
@@ -1179,6 +1185,7 @@ export class ClientStateStore {
 			keepRecentMessages: normalizeKeepRecentMessages(
 				settings.keepRecentMessages ?? cur.keepRecentMessages ?? DEFAULT_KEEP_RECENT_MESSAGES,
 			),
+			reversePagination: settings.reversePagination ?? cur.reversePagination ?? false,
 			showForkedParentSessions: settings.showForkedParentSessions ?? cur.showForkedParentSessions ?? false,
 			retainFinishedConversations: settings.retainFinishedConversations ?? cur.retainFinishedConversations ?? false,
 			openRecentSessionOnProjectSwitch:
@@ -1212,6 +1219,8 @@ export class ClientStateStore {
 			quickPhrases: settings.quickPhrases ?? cur.quickPhrases ?? [],
 			quickPhrasesEnabled: settings.quickPhrasesEnabled ?? cur.quickPhrasesEnabled ?? true,
 			minimalNewChat: settings.minimalNewChat ?? cur.minimalNewChat ?? false,
+			preserveDraftAcrossConversations:
+				settings.preserveDraftAcrossConversations ?? cur.preserveDraftAcrossConversations ?? false,
 			defaultAgentPreset: settings.defaultAgentPreset ?? cur.defaultAgentPreset ?? "standard",
 			defaultPermissionPreset:
 				settings.defaultPermissionPreset ?? cur.defaultPermissionPreset ?? "workspace-write-never",

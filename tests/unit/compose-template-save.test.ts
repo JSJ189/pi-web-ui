@@ -58,6 +58,7 @@ function makeMockHost(savedSettings: Record<string, unknown> = {}) {
 				quickPhrases: [],
 				quickPhrasesEnabled: true,
 				minimalNewChat: false,
+				preserveDraftAcrossConversations: false,
 				reviewPrompt: "",
 				reviewDisabledSkills: [],
 				disabledPlugins: [],

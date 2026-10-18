@@ -449,6 +449,7 @@ export class SettingsService {
 				quickPhrases: [...this.settings.quickPhrases],
 				quickPhrasesEnabled: this.settings.quickPhrasesEnabled,
 				minimalNewChat: this.settings.minimalNewChat,
+				preserveDraftAcrossConversations: this.settings.preserveDraftAcrossConversations ?? false,
 				quickPhrasesSeeded: this.host.stateStore.getQuickPhrasesSeeded(),
 				mcpServers: mcp.servers,
 				mcpGlobalConfigPath: mcp.globalPath,
@@ -569,6 +570,7 @@ export class SettingsService {
 		quickPhrases?: string[];
 		quickPhrasesEnabled?: boolean;
 		minimalNewChat?: boolean;
+		preserveDraftAcrossConversations?: boolean;
 	}): Promise<void> {
 		const needsReload =
 			partial.promptMode !== undefined ||
@@ -811,6 +813,9 @@ export class SettingsService {
 		}
 		if (partial.minimalNewChat !== undefined) {
 			this.settings.minimalNewChat = partial.minimalNewChat;
+		}
+		if (partial.preserveDraftAcrossConversations !== undefined) {
+			this.settings.preserveDraftAcrossConversations = Boolean(partial.preserveDraftAcrossConversations);
 		}
 		// 统一工具开关 live 生效（ActiveSet 加减；失败静默，下次创建/reload 重放）。
 		// 必须在 this.push() 前生效，保证 promptSnapshot 收集到的是最新的活跃工具集与完整提示词！
