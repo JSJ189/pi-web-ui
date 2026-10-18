@@ -8,6 +8,37 @@
 每个版本的内容按"实际合入该版本发布的提交"归档（以 `package.json` 的 version 变更提交为准），
 而不是按提交日期聚类——连续快速发布的 patch 版本以此为准最准确。
 
+## [0.108.0] — 2026-10-18
+
+### Added
+
+- **集中式「插件设置」面板 (Plugin Settings Center)**：
+  - 顶栏插件菜单新增「插件设置」入口，一屏集中管理所有插件的启用状态与参数配置，不必再逐个进设置页翻找；
+  - 支持「全部 / 可配置 / 已启用 / 已停用」筛选与插件名称、ID、描述关键词搜索，卡片直观标注「可配置 / 界面 / 后台 / N 个工具」徽标；
+  - 支持批量展开/折叠配置、单卡快速配置，并可一键跳转插件市场做高级管理。
+- **插件菜单分组**：插件菜单按「功能界面」与「扩展组件」分栏展示，界面插件与工具型扩展一目了然。
+- **向上分页加载 (Reverse Pagination)**：设置 › 界面 › 新增开关。开启后默认只挂载最近消息，向上滚动或点击「加载前 N 条 / 全部展开」按需取更早历史，完全不使用视口占位符，超长会话滚动更接近原生流畅度。
+- **输入框文字跨对话保留**：设置 › 界面 › 新增开关。开启后输入的文字在切换会话时不再清空，可跨对话延续；关闭时各会话草稿严格独立，切回原会话照常恢复。
+- **`browser-use` 插件升级 0.9.0：常驻 Chrome 自动化 + 智能搜索**：
+  - 新增 `browser_search` 搜索工具：专用工作标签页隔离、无图极速渲染（CDP 阻断图片/字体/媒体）、搜阅一体（搜索结果与首条正文一次返回）、时效过滤（24 小时 / 周 / 月 / 年）、官网与权威源认证置顶、域名多样性、真实落地页还原与反爬降级链重试；
+  - 新增插件设置项：无头模式（默认静默后台运行）、默认搜索引擎、极速搜索、搜索标签页隔离、闲置自动关闭时长；
+  - `read_page` 纯净阅读增强（表格转 Markdown、代码语法高亮）；后台任务面板统一精确管理，支持一键停止。
+
+### Changed
+
+- **后台服务误报治理**：新增「创建时序 + 进程链完整性 + 桌面安装路径」三重判定，WPS、腾讯 ima 等随桌面软件启动的常驻进程不再被误判为 AI 拉起，后台服务面板更贴近真实任务（#651）。
+- 消息编辑区的「取消 / 从这条重问」改用标准按钮样式，与其余操作区视觉统一。
+
+### Fixed
+
+- 会话切换结转草稿时，仅在目标会话没有自己的草稿时才写入，避免覆盖该会话已保留的输入内容。
+
+<!-- auto-i18n:start -->
+### i18n
+
+- 前端新增 key（30）：`preserveDraftAcrossConversations`、`preserveDraftAcrossConversationsDesc`、`reversePagination`、`reversePaginationDesc`、`earlierMessagesInfo`、`loadEarlier`、`loadAllEarlier`、`pluginMenuSettings`、`pluginGroupViews`、`pluginGroupExtensions`、`pluginManagerTitle`、`pluginManagerDesc`、`pluginFilterAll`、`pluginFilterConfigurable`、`pluginFilterEnabled`、`pluginFilterDisabled`、`pluginSearchPlaceholder`、`pluginQuickSettings`、`pluginToggleEnable`、`pluginToggleDisable`、`pluginExpandAll`、`pluginCollapseAll`、`pluginGoMarket`、`pluginCountSummary`、`pluginBadgeConfig`、`pluginBadgeView`、`pluginBadgeBg`、`pluginBadgeTools`、`pluginOpenView`、`pluginEmptyFilter`
+<!-- auto-i18n:end -->
+
 ## [0.107.0] — 2026-10-18
 
 ### Added
@@ -1824,7 +1855,8 @@ when?, children?}`，也收 `topbar` / `settings` 这类简写别名）；宿主
 - 0.35.1（2026-08-27）：编辑重问保留附件（#18）+ 全窗口拖放（#19）。
 - 0.29.0（2026-08-23）：全局搜索弹窗（Ctrl+K）+ 消息列表惰性窗口化。
 
-[Unreleased]: https://github.com/xing-shuyin/pi-web-ui/compare/v0.101.0...main
+[Unreleased]: https://github.com/xing-shuyin/pi-web-ui/compare/v0.108.0...main
+[0.108.0]: https://github.com/xing-shuyin/pi-web-ui/releases/tag/v0.108.0
 [0.103.3]: https://github.com/xing-shuyin/pi-web-ui/releases/tag/v0.103.3
 [0.103.2]: https://github.com/xing-shuyin/pi-web-ui/releases/tag/v0.103.2
 [0.103.1]: https://github.com/xing-shuyin/pi-web-ui/releases/tag/v0.103.1
