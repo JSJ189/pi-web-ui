@@ -9,11 +9,14 @@
  * - 动作控制：click / input / select / check / type / press / scroll / wait / js / shot / quit。
  */
 
-import { execFile } from "node:child_process";
+import { exec, execFile } from "node:child_process";
 import { existsSync, mkdirSync } from "node:fs";
 import { createConnection } from "node:net";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
+import { promisify } from "node:util";
+
+const execAsync = promisify(exec);
 
 const PLUGIN_DIR = dirname(fileURLToPath(import.meta.url));
 const SCRIPT_PATH = join(PLUGIN_DIR, "scripts", "dp_browser.py");
@@ -61,6 +64,30 @@ function checkPortAlive(port = DEFAULT_PORT, timeoutMs = 1500) {
 		socket.once("timeout", () => finish(false));
 		socket.once("error", () => finish(false));
 	});
+}
+
+async function forceKillPort(port = DEFAULT_PORT) {
+	try {
+		if (process.platform === "win32") {
+			const { stdout } = await execAsync(`netstat -ano | findstr :${port}`);
+			const lines = stdout.split(/\r?\n/).filter((l) => l.includes(`:${port}`) && l.includes("LISTENING"));
+			for (const line of lines) {
+				const parts = line.trim().split(/\s+/);
+				const pid = parts[parts.length - 1];
+				if (pid && /^\d+$/.test(pid) && pid !== "0" && pid !== String(process.pid)) {
+					try {
+						await execAsync(`taskkill /F /PID ${pid}`);
+					} catch {
+						// ignore
+					}
+				}
+			}
+		} else {
+			await execAsync(`fuser -k -n tcp ${port} 2>/dev/null || lsof -ti :${port} | xargs kill -9 2>/dev/null || true`);
+		}
+	} catch {
+		// ignore
+	}
 }
 
 function runPythonScript(pyExecutable, scriptArgs, { env = {}, timeout = DEFAULT_TIMEOUT_MS, signal } = {}) {
@@ -185,29 +212,104 @@ function formatTabsText(tabs) {
 	return lines.join("\n");
 }
 
+function formatSearchResultsText(resp) {
+	const parts = [];
+	const engineLabel = resp.engine || "bing";
+	const pageLabel = resp.page && resp.page > 1 ? ` · 第${resp.page}页` : "";
+	const fallbackInfo = resp.fallback_from ? ` (由 ${resp.fallback_from} 自动降级回退)` : "";
+	const timeFilterLabel = resp.time_range
+		? ` · 时效:${{ day: "过去24小时", week: "过去1周", month: "过去1个月", year: "过去1年" }[resp.time_range] || resp.time_range}`
+		: "";
+	parts.push(`🔍 搜索关键词: "${resp.query}" [${engineLabel}${pageLabel}${timeFilterLabel}${fallbackInfo}]`);
+
+	if (resp.instant_answer) {
+		parts.push(`\n💡 快速直达答案:\n${resp.instant_answer}\n`);
+	}
+
+	if (resp.top_content && resp.top_content.content) {
+		const topTitle = resp.top_content.title ? ` [${resp.top_content.title}]` : "";
+		parts.push(`\n📖 权威首条正文精选${topTitle} (${resp.top_content.url}):\n${resp.top_content.content}\n`);
+	}
+
+	const results = resp.results || [];
+	if (results.length === 0) {
+		parts.push(`未找到有效自然搜索结果。建议调整关键词或指定其他搜索引擎（如 google / baidu）。`);
+	} else {
+		parts.push(`\n共找到 ${results.length} 条自然搜索结果:`);
+		results.forEach((item, idx) => {
+			const badge = item.isOfficial ? "🏷️ [官网/权威] " : "";
+			const dateStr = item.date ? ` (${item.date})` : "";
+			parts.push(`\n[${idx + 1}] ${badge}${item.title}${dateStr}`);
+			parts.push(`    URL: ${item.url}`);
+			if (item.site) parts.push(`    来源: ${item.site}`);
+			if (item.snippet) parts.push(`    摘要: ${item.snippet}`);
+		});
+	}
+
+	const related = resp.related_queries || [];
+	if (related.length > 0) {
+		parts.push(`\n💡 相关搜索建议: ${related.join(" · ")}`);
+	}
+
+	return parts.join("\n");
+}
+
 const TOOL_GUIDELINES = [
 	"Use snapshot (or interactiveOnly: true) to inspect visible elements and their numerical IDs before clicking or typing.",
 	"Click target can be a numerical index from snapshot (e.g. '3'), CSS selector ('#submit'), or text ('Sign in').",
 	"Browser persists across calls; use tabs/switch to inspect or switch between tabs instead of reopening URLs.",
 ];
 
+const SEARCH_GUIDELINES = [
+	"Use browser_search when you need real-time web information, fresh documentation, or technical error solutions.",
+	"Default engine is bing; switch to google for global tech, or baidu for Chinese local topics.",
+	"Use clean URLs from results to inspect full pages with browser_use or read when detailed content is needed.",
+];
+
 export function activate(host) {
 	const userDataDir = join(host.dataDir, "browser-use-chrome-data");
 	mkdirSync(userDataDir, { recursive: true });
 
-	// 空闲自动关闭管理
+	// 空闲自动关闭管理与无头模式设置
 	let browserActive = false;
 	let lastActivityTime = Date.now();
 	let idleTimer = null;
 	let idleTimeoutMinutes = DEFAULT_IDLE_MINUTES;
+	let headlessMode = true; // 默认采用无头模式
+	let defaultEngine = "auto";
+	let fastSearch = true;
+	let searchTabIsolation = true;
 
 	try {
 		const stored = host.storage?.get?.("settings");
 		if (typeof stored?.idleTimeoutMinutes === "number") {
 			idleTimeoutMinutes = Math.max(0, Math.floor(stored.idleTimeoutMinutes));
 		}
+		if (typeof stored?.headless === "boolean") {
+			headlessMode = stored.headless;
+		}
+		if (typeof stored?.defaultEngine === "string" && stored.defaultEngine) {
+			defaultEngine = stored.defaultEngine;
+		}
+		if (typeof stored?.fastSearch === "boolean") {
+			fastSearch = stored.fastSearch;
+		}
+		if (typeof stored?.searchTabIsolation === "boolean") {
+			searchTabIsolation = stored.searchTabIsolation;
+		}
 	} catch {
 		// ignore
+	}
+
+	function buildBrowserEnv() {
+		return {
+			DP_BROWSER_PORT: String(DEFAULT_PORT),
+			DP_USER_DATA: userDataDir,
+			DP_HEADLESS: headlessMode ? "1" : "0",
+			DP_DEFAULT_ENGINE: defaultEngine,
+			DP_FAST_SEARCH: fastSearch ? "1" : "0",
+			DP_SEARCH_ISOLATION: searchTabIsolation ? "1" : "0",
+		};
 	}
 
 	function stopIdleTimer() {
@@ -221,11 +323,12 @@ export function activate(host) {
 	let bgTaskHandle = null;
 
 	function syncBackgroundTask(tabCount) {
+		const labelText = `🌐 常驻 Chrome (${headlessMode ? "无头静默" : "实体窗口"})`;
 		const statusText = `端口 ${DEFAULT_PORT}${typeof tabCount === "number" ? ` · ${tabCount} 个标签页` : " · 运行中"}`;
 		if (!bgTaskHandle) {
 			bgTaskHandle = host.registerBackgroundTask?.({
 				id: "browser-instance",
-				label: "🌐 常驻 Chrome",
+				label: labelText,
 				status: statusText,
 				intervalMs: 3000,
 				maxFailures: 2,
@@ -236,7 +339,7 @@ export function activate(host) {
 					browserActive = false;
 					stopIdleTimer();
 					bgTaskHandle = null;
-					host.log?.("info", "[browser-use] 检测到常驻 Chrome 已被手动关闭，已自动移除后台任务记录。");
+					host.log?.("info", "[browser-use] 检测到常驻 Chrome 已关闭，已自动移除后台任务记录。");
 				},
 				stop: async () => {
 					await quitBrowser();
@@ -244,7 +347,7 @@ export function activate(host) {
 			});
 		} else {
 			bgTaskHandle.update?.({
-				label: "🌐 常驻 Chrome",
+				label: labelText,
 				status: statusText,
 			});
 		}
@@ -263,13 +366,16 @@ export function activate(host) {
 		removeBackgroundTask();
 		try {
 			const py = resolvePython();
-			const env = {
-				DP_BROWSER_PORT: String(DEFAULT_PORT),
-				DP_USER_DATA: userDataDir,
-			};
-			await runPythonScript(py, ["quit"], { env, timeout: 15_000 });
+			const env = buildBrowserEnv();
+			await runPythonScript(py, ["quit"], { env, timeout: 5_000 });
 		} catch {
 			// ignore
+		}
+
+		// 精确强力释放端口（防止卡死或僵尸进程遗留）
+		const stillAlive = await checkPortAlive(DEFAULT_PORT, 600);
+		if (stillAlive) {
+			await forceKillPort(DEFAULT_PORT);
 		}
 	}
 
@@ -310,9 +416,26 @@ export function activate(host) {
 	}
 
 	const offSettings = host.onSettingsChanged?.((values) => {
-		if (values && typeof values.idleTimeoutMinutes === "number") {
-			idleTimeoutMinutes = Math.max(0, Math.floor(values.idleTimeoutMinutes));
-			armIdleTimer();
+		if (values) {
+			if (typeof values.idleTimeoutMinutes === "number") {
+				idleTimeoutMinutes = Math.max(0, Math.floor(values.idleTimeoutMinutes));
+				armIdleTimer();
+			}
+			if (typeof values.headless === "boolean" && values.headless !== headlessMode) {
+				headlessMode = values.headless;
+				if (browserActive) {
+					quitBrowser().catch(() => {});
+				}
+			}
+			if (typeof values.defaultEngine === "string" && values.defaultEngine) {
+				defaultEngine = values.defaultEngine;
+			}
+			if (typeof values.fastSearch === "boolean") {
+				fastSearch = values.fastSearch;
+			}
+			if (typeof values.searchTabIsolation === "boolean") {
+				searchTabIsolation = values.searchTabIsolation;
+			}
 		}
 	});
 
@@ -331,6 +454,8 @@ export function activate(host) {
 					enum: [
 						"open",
 						"new",
+						"search",
+						"read_page",
 						"tabs",
 						"switch",
 						"close",
@@ -353,6 +478,41 @@ export function activate(host) {
 					description: "Browser action to execute.",
 				},
 				url: { type: "string", description: "URL to open or navigate to (auto-prefixes https://)." },
+				query: { type: "string", description: "Search query string when action is 'search'." },
+				engine: {
+					type: "string",
+					enum: ["auto", "bing", "sogou", "so", "baidu", "google", "duckduckgo", "brave", "yahoo"],
+					description: "Search engine when action is 'search' (default: auto).",
+				},
+				timeRange: {
+					type: "string",
+					enum: ["all", "day", "week", "month", "year"],
+					description: "Optional freshness limit for search action.",
+				},
+				page: {
+					type: "number",
+					description: "Target page index when action is 'search' (default: 1).",
+				},
+				limit: {
+					type: "number",
+					description: "Max natural results to return when searching (1-20, default: 8).",
+				},
+				fetchTopContent: {
+					type: "boolean",
+					description: "Extract content of the top result during search.",
+				},
+				fallback: {
+					type: "boolean",
+					description: "Allow engine fallback on failure (default: true).",
+				},
+				officialOnly: {
+					type: "boolean",
+					description: "Only keep authoritative sources.",
+				},
+				maxChars: {
+					type: "number",
+					description: "Max chars for read_page (default: 5000).",
+				},
 				target: {
 					type: "string",
 					description:
@@ -390,6 +550,24 @@ export function activate(host) {
 				case "new":
 					if (!p.url) throw new Error("new 动作需要提供 url 参数");
 					scriptArgs.push("new", p.url);
+					break;
+				case "search": {
+					const q = p.query || p.text;
+					if (!q) throw new Error("search 动作需要提供 query 关键词");
+					scriptArgs.push("search", String(q));
+					if (p.engine) scriptArgs.push("--engine", String(p.engine));
+					if (p.timeRange) scriptArgs.push("--time-range", String(p.timeRange));
+					if (p.page && p.page > 1) scriptArgs.push("--page", String(p.page));
+					if (p.fetchTopContent) scriptArgs.push("--fetch-top");
+					if (p.limit) scriptArgs.push("--limit", String(p.limit));
+					if (p.officialOnly) scriptArgs.push("--official-only");
+					if (p.fallback === false) scriptArgs.push("--no-fallback");
+					break;
+				}
+				case "read_page":
+					scriptArgs.push("read_page");
+					if (p.url) scriptArgs.push(p.url);
+					if (p.maxChars) scriptArgs.push(String(p.maxChars));
 					break;
 				case "tabs":
 					scriptArgs.push("tabs");
@@ -467,10 +645,7 @@ export function activate(host) {
 			}
 
 			const py = resolvePython();
-			const env = {
-				DP_BROWSER_PORT: String(DEFAULT_PORT),
-				DP_USER_DATA: userDataDir,
-			};
+			const env = buildBrowserEnv();
 
 			const resp = await runPythonScript(py, scriptArgs, { env, signal });
 			if (!resp.ok) {
@@ -491,7 +666,11 @@ export function activate(host) {
 			}
 
 			let outputText = "";
-			if (action === "snapshot") {
+			if (action === "search") {
+				outputText = formatSearchResultsText(resp);
+			} else if (action === "read_page") {
+				outputText = `📖 页面正文: "${resp.title || ""}"\nURL: ${resp.url || ""}\n(总计约 ${resp.total_chars || 0} 字符${resp.truncated ? "，已按预算截断" : ""})\n\n${resp.content || ""}`;
+			} else if (action === "snapshot") {
 				outputText = formatSnapshotText(resp);
 			} else if (action === "tabs") {
 				outputText = formatTabsText(resp.tabs);
@@ -516,6 +695,17 @@ export function activate(host) {
 				url: resp.url,
 				title: resp.title,
 				count: resp.count,
+				page: resp.page,
+				time_range: resp.time_range,
+				related_queries: resp.related_queries,
+				top_content: resp.top_content
+					? {
+							title: resp.top_content.title,
+							url: resp.top_content.url,
+							snippet: resp.top_content.content ? resp.top_content.content.slice(0, 500) : undefined,
+						}
+					: undefined,
+				results: action === "search" ? (resp.results || []).slice(0, 8) : undefined,
 			};
 
 			return {
@@ -525,12 +715,117 @@ export function activate(host) {
 		},
 	};
 
-	host.registerAgentTool(tool);
+	const searchTool = {
+		name: "browser_search",
+		label: "Browser Search",
+		description:
+			"Search the web using a real headless Chrome instance with ad-filtering and direct SERP extraction. Returns structured natural results and instant answers across Bing, Sogou, 360, Baidu, Google, DuckDuckGo, Brave, and Yahoo.",
+		promptSnippet: "search the web via real browser with ad filtering and fast SERP extraction",
+		promptGuidelines: SEARCH_GUIDELINES,
+		parameters: {
+			type: "object",
+			properties: {
+				query: {
+					type: "string",
+					description: "Search keywords or advanced search query.",
+				},
+				engine: {
+					type: "string",
+					enum: ["auto", "bing", "sogou", "so", "baidu", "google", "duckduckgo", "brave", "yahoo"],
+					description: "Search engine to use (default: auto).",
+				},
+				timeRange: {
+					type: "string",
+					enum: ["all", "day", "week", "month", "year"],
+					description: "Time scope limit: 'day' (past 24h), 'week', 'month', or 'year'.",
+				},
+				page: {
+					type: "number",
+					description: "Result page number to inspect (1-20, default: 1).",
+				},
+				limit: {
+					type: "number",
+					description: "Maximum number of natural search results to return (1-20, default: 8).",
+				},
+				fetchTopContent: {
+					type: "boolean",
+					description: "Fetch pure markdown text excerpt of the top match.",
+				},
+				fallback: {
+					type: "boolean",
+					description: "Auto-retry alternative search engines on captcha or error.",
+				},
+				officialOnly: {
+					type: "boolean",
+					description: "Prefer verified domain results.",
+				},
+			},
+			required: ["query"],
+		},
+		async execute(_id, params, signal) {
+			const p = params ?? {};
+			if (!p.query) throw new Error("browser_search 需要提供 query 关键词");
+
+			const scriptArgs = ["search", String(p.query)];
+			if (p.engine) scriptArgs.push("--engine", String(p.engine));
+			if (p.timeRange) scriptArgs.push("--time-range", String(p.timeRange));
+			if (p.page && p.page > 1) scriptArgs.push("--page", String(p.page));
+			if (p.fetchTopContent) scriptArgs.push("--fetch-top");
+			if (p.limit) scriptArgs.push("--limit", String(p.limit));
+			if (p.officialOnly) scriptArgs.push("--official-only");
+			if (p.fallback === false) scriptArgs.push("--no-fallback");
+
+			const py = resolvePython();
+			const env = buildBrowserEnv();
+
+			const resp = await runPythonScript(py, scriptArgs, { env, signal });
+			if (!resp.ok) {
+				const errMsg = resp.error || "未知搜索错误";
+				const hintMsg = resp.hint ? `\n提示: ${resp.hint}` : "";
+				throw new Error(`[browser_search] ${errMsg}${hintMsg}`);
+			}
+
+			const tabCount =
+				typeof resp.tabs === "number" ? resp.tabs : Array.isArray(resp.tabs) ? resp.tabs.length : undefined;
+			recordActivity(tabCount);
+
+			const outputText = formatSearchResultsText(resp);
+			const detailsSafe = {
+				ok: true,
+				action: "search",
+				query: resp.query,
+				engine: resp.engine,
+				fallback_from: resp.fallback_from,
+				page: resp.page,
+				time_range: resp.time_range,
+				related_queries: resp.related_queries,
+				top_content: resp.top_content
+					? {
+							title: resp.top_content.title,
+							url: resp.top_content.url,
+							snippet: resp.top_content.content ? resp.top_content.content.slice(0, 500) : undefined,
+						}
+					: undefined,
+				count: resp.count,
+				results: (resp.results || []).slice(0, 8),
+			};
+
+			return {
+				content: [{ type: "text", text: outputText }],
+				details: detailsSafe,
+			};
+		},
+	};
+
+	const unregUse = host.registerAgentTool(tool);
+	const unregSearch = host.registerAgentTool(searchTool);
 
 	return function deactivate() {
 		stopIdleTimer();
 		removeBackgroundTask();
 		offSettings?.();
+		unregUse?.();
+		unregSearch?.();
 	};
 }
 

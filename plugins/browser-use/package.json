@@ -1,6 +1,6 @@
 {
 	"name": "browser-use-plugin",
-	"version": "0.3.2",
+	"version": "0.9.0",
 	"private": true,
 	"type": "module",
 	"description": "pi-web-ui browser-use plugin: persistent Chrome browser automation using DrissionPage."
