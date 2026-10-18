@@ -1551,7 +1551,7 @@ export const zh = {
 		"开启：read 工具传目录路径时列出目录条目（一行一项、目录带 / 后缀，此时 limit 是条目上限）；关闭：目录参数原样交给内置 read（报 EISDIR，看目录得用 bash 的 ls）。DSH 引擎没有该覆盖，仅 pi 引擎生效",
 	toolLazyLoading: "工具按需加载",
 	toolLazyLoadingDesc:
-		"开启（默认）：只有核心工具（bash/read/edit/write）与 load_tools 常驻，其余工具的完整参数 schema 不进上下文——系统提示词只列名字 + 一行摘要，模型要用时先调 load_tools 拉取（加载后本对话后续都能用）。大幅降低每轮固定开销，代价是模型多一步「先加载再用」。关闭：回到旧行为（按开关/预设直接全部可用）。只影响新会话与之后的门控重放；DSH 引擎不适用",
+		"开启：只有核心工具（bash/read/edit/write）与 load_tools 常驻，其余工具的完整参数 schema 不进上下文——系统提示词只列名字 + 一行摘要，模型要用时先调 load_tools 拉取（加载后本对话后续都能用）。大幅降低每轮固定开销，代价是模型多一步「先加载再用」，忘记加载时会先吃一次「工具不存在」（下一轮自动激活）。默认关闭：按开关/预设直接全部可用，与 pi 命令行一致。只影响新会话与之后的门控重放；DSH 引擎不适用",
 	toolWatchdogTimeout: "工具看门狗超时（分钟）",
 	toolWatchdogTimeoutDesc:
 		"单个工具调用的最长执行时长（默认 20 分钟，0 = 禁用看门狗）。超时自动终止以防挂死；若工具调用显式指定了更长超时（如 bash timeout），看门狗将自动顺延",
@@ -3810,7 +3810,7 @@ export const en: Record<keyof typeof zh, string> = {
 		"On: passing a directory path to read lists its entries (one per line, directories end with '/'; limit then caps the entry count); Off: a directory path goes to the built-in read unchanged (EISDIR — use bash ls to browse). DSH engine has no such override; pi engine only",
 	toolLazyLoading: "Load tools on demand",
 	toolLazyLoadingDesc:
-		"On (default): only the core tools (bash/read/edit/write) plus load_tools stay resident; other tools' parameter schemas are NOT in context — the system prompt lists them by name + one-line summary, and the model calls load_tools before using one (loaded tools stay usable for the rest of the conversation). Cuts the fixed per-turn overhead a lot, at the cost of one extra 'load then use' step. Off: previous behavior (everything enabled by toggles/preset is available immediately). Affects new conversations and later gating replays; not applicable to the DSH engine",
+		"On: only the core tools (bash/read/edit/write) plus load_tools stay resident; other tools' parameter schemas are NOT in context — the system prompt lists them by name + one-line summary, and the model calls load_tools before using one (loaded tools stay usable for the rest of the conversation). Cuts the fixed per-turn overhead a lot, at the cost of one extra 'load then use' step — and of one 'tool not found' when the model forgets to load (it activates on the next turn). Off by default: everything enabled by toggles/preset is available immediately, same as the pi CLI. Affects new conversations and later gating replays; not applicable to the DSH engine",
 	toolWatchdogTimeout: "Tool watchdog timeout (min)",
 	toolWatchdogTimeoutDesc:
 		"Max execution time for a single tool call (default 20 min, 0 = disable). Auto-aborts to prevent hangs; if a tool call explicitly specifies a longer timeout (e.g. bash timeout), the watchdog extends automatically",

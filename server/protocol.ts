@@ -3033,9 +3033,9 @@ export interface UiSettingsState {
 	/** 「后台任务」面板的自动清理阈值（分钟；0 = 关）。开着时服务端定期把**未钉住**且
 	 *  闲置超过该阈值的 AI 起后台实例杀掉并推一条通知（见 server/bg-servers.ts）。 */
 	bgAutoCleanupMin: number;
-	/** 工具**延迟加载**开关（默认开）：开 → 只有核心工具（bash/read/edit/write）+ `load_tools`
+	/** 工具**延迟加载**开关（默认关）：开 → 只有核心工具（bash/read/edit/write）+ `load_tools`
 	 *  常驻，其余工具在系统提示词里只有「名字 + 一行摘要」，模型用 `load_tools` 拉取后完整
-	 *  参数 schema 才进上下文（见 server/load-tools-tool.ts）。DSH 引擎无 pi 工具注册面，恒为 true。 */
+	 *  参数 schema 才进上下文（见 server/load-tools-tool.ts）。DSH 引擎无 pi 工具注册面，恒为 false。 */
 	toolLazyLoading: boolean;
 	/** codemode 执行模式："on"（常规模式，默认）| "only"（严格代码模式：其他工具对模型隐藏，所有调用都经由 codemode 脚本）。 */
 	codemodeMode: "on" | "only";

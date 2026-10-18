@@ -1381,7 +1381,7 @@
     "readDirEnabled": "read 讀目錄",
     "readDirEnabledDesc": "開啟：read 工具傳目錄路徑時列出目錄條目（一行一項、目錄帶 / 字尾，此時 limit 是條目上限）；關閉：目錄參數原樣交給內建 read（報 EISDIR，看目錄得用 bash 的 ls）。DSH 引擎沒有該覆蓋，僅 pi 引擎生效",
     "toolLazyLoading": "工具按需載入",
-    "toolLazyLoadingDesc": "開啟（預設）：只有核心工具（bash/read/edit/write）與 load_tools 常駐，其餘工具的完整參數 schema 不進上下文——系統提示詞只列名字 + 一行摘要，模型要用時先呼叫 load_tools 載入（載入後本對話後續都能用）。大幅降低每輪固定開銷，代價是模型多一步「先載入再用」。關閉：回到舊行為（按開關/預設集直接全部可用）。隻影響新工作階段與之後的門控重放；DSH 引擎不適用",
+    "toolLazyLoadingDesc": "開啟：只有核心工具（bash/read/edit/write）與 load_tools 常駐，其餘工具的完整參數 schema 不進上下文——系統提示詞只列名字 + 一行摘要，模型要用時先呼叫 load_tools 載入（載入後本對話後續都能用）。大幅降低每輪固定開銷，代價是模型多一步「先載入再用」。關閉（預設）：回到舊行為（按開關/預設集直接全部可用）。隻影響新工作階段與之後的門控重放；DSH 引擎不適用",
     "toolWatchdogTimeout": "工具看門狗逾時（分鐘）",
     "toolWatchdogTimeoutDesc": "單個工具呼叫的最長執行時長（預設 20 分鐘，0 = 停用看門狗）。逾時自動終止以防卡死；若工具呼叫顯式指定了更長逾時（如 bash timeout），看門狗將自動順延",
     "toolWatchdogOff": "0 = 停用",

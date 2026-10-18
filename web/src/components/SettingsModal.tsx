@@ -3062,8 +3062,8 @@ export function SettingsModal({
 									<ToggleRow
 										title={t("toolLazyLoading")}
 										tip={t("toolLazyLoadingDesc")}
-										enabled={settings.toolLazyLoading !== false}
-										onToggle={() => setPartial({ toolLazyLoading: settings.toolLazyLoading === false })}
+										enabled={settings.toolLazyLoading === true}
+										onToggle={() => setPartial({ toolLazyLoading: settings.toolLazyLoading !== true })}
 									/>
 								)}
 								<ToggleRow

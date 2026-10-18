@@ -3914,8 +3914,8 @@ export class DshClientSession {
 			// DSH 引擎无 customTool 注册面（工具来自 shipped preset），read 目录覆盖面不存在。
 			readDirEnabled: true,
 			bgAutoCleanupMin: Number(this.settings.bgAutoCleanupMin ?? 0),
-			// DSH 无 pi 工具注册面，不适用延迟加载；保协议完整。
-			toolLazyLoading: true,
+			// DSH 无 pi 工具注册面，不适用延迟加载；保协议完整（该字段恒为 false，设置页不显示这一行）。
+			toolLazyLoading: false,
 			codemodeMode: "on",
 			codemodeInlineBudget: 3000,
 			editSoftEnabled: this.settings.editSoftEnabled,

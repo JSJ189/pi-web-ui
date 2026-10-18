@@ -1381,7 +1381,7 @@
     "readDirEnabled": "read로 디렉터리 읽기",
     "readDirEnabledDesc": "켬: read에 디렉터리 경로를 넘기면 항목을 나열해요(한 줄에 하나, 디렉터리는 '/'로 끝나며 이때 limit은 항목 수 상한이에요). 끔: 디렉터리 경로는 내장 read로 그대로 전달돼요(EISDIR — 둘러보려면 bash ls). pi 엔진 전용이에요.",
     "toolLazyLoading": "필요할 때 도구 로드",
-    "toolLazyLoadingDesc": "켜짐(기본): 핵심 도구(bash/read/edit/write)와 load_tools만 상주합니다. 다른 도구의 매개변수 스키마는 컨텍스트에 들어가지 않고, 시스템 프롬프트에는 이름 + 한 줄 요약만 나열되며, 모델은 사용 전에 load_tools를 호출합니다(로드된 도구는 이 대화의 나머지 동안 사용 가능). 턴당 고정 비용을 크게 줄이지만 '로드 후 사용' 단계가 하나 늘어납니다. 꺼짐: 이전 동작(토글/프리셋으로 켠 것은 즉시 사용 가능). 새 대화와 이후 게이팅 재적용에 영향을 주며, DSH 엔진에는 적용되지 않습니다",
+    "toolLazyLoadingDesc": "켜짐: 핵심 도구(bash/read/edit/write)와 load_tools만 상주합니다. 다른 도구의 매개변수 스키마는 컨텍스트에 들어가지 않고, 시스템 프롬프트에는 이름 + 한 줄 요약만 나열되며, 모델은 사용 전에 load_tools를 호출합니다(로드된 도구는 이 대화의 나머지 동안 사용 가능). 턴당 고정 비용을 크게 줄이지만 '로드 후 사용' 단계가 하나 늘어납니다. 꺼짐(기본): 이전 동작(토글/프리셋으로 켠 것은 즉시 사용 가능). 새 대화와 이후 게이팅 재적용에 영향을 주며, DSH 엔진에는 적용되지 않습니다",
     "toolWatchdogTimeout": "Tool watchdog timeout (min)",
     "toolWatchdogTimeoutDesc": "Max execution time for a single tool call (default 20 min, 0 = disable). Auto-aborts to prevent hangs; if a tool call explicitly specifies a longer timeout (e.g. bash timeout), the watchdog extends automatically",
     "toolWatchdogOff": "0 = disable",

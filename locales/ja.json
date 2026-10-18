@@ -1381,7 +1381,7 @@
     "readDirEnabled": "read でディレクトリを読む",
     "readDirEnabledDesc": "オン：read にディレクトリのパスを渡すと中身を一覧します（1 行 1 項目、ディレクトリの末尾は '/'、このとき limit は項目数の上限）。オフ：ディレクトリのパスはそのまま組み込み read に渡します（EISDIR — 中身を見るには bash の ls）。pi エンジンのみ。",
     "toolLazyLoading": "ツールをオンデマンドで読み込む",
-    "toolLazyLoadingDesc": "オン（既定）：常駐するのはコアツール（bash/read/edit/write）と load_tools のみ。他のツールのパラメータスキーマはコンテキストに入らず、システムプロンプトには名前と 1 行要約だけが並びます。モデルは使う前に load_tools を呼びます（読み込んだツールはこの会話の残りで使えます）。1 ターンあたりの固定コストを大幅に下げられますが、「読み込んでから使う」一手間が増えます。オフ：以前の動作（トグル/プリセットで有効なものは即利用可能）。新しい会話と以後のゲーティング再適用に影響します。DSH エンジンには適用されません",
+    "toolLazyLoadingDesc": "オン：常駐するのはコアツール（bash/read/edit/write）と load_tools のみ。他のツールのパラメータスキーマはコンテキストに入らず、システムプロンプトには名前と 1 行要約だけが並びます。モデルは使う前に load_tools を呼びます（読み込んだツールはこの会話の残りで使えます）。1 ターンあたりの固定コストを大幅に下げられますが、「読み込んでから使う」一手間が増えます。オフ（既定）：以前の動作（トグル/プリセットで有効なものは即利用可能）。新しい会話と以後のゲーティング再適用に影響します。DSH エンジンには適用されません",
     "toolWatchdogTimeout": "Tool watchdog timeout (min)",
     "toolWatchdogTimeoutDesc": "Max execution time for a single tool call (default 20 min, 0 = disable). Auto-aborts to prevent hangs; if a tool call explicitly specifies a longer timeout (e.g. bash timeout), the watchdog extends automatically",
     "toolWatchdogOff": "0 = disable",

@@ -243,11 +243,12 @@ export function normalizeSkillList(v: unknown): string[] {
 	return Array.isArray(v) ? v.filter((x): x is string => typeof x === "string") : [];
 }
 
-/** 工具延迟加载的**出厂默认**（默认开；`PI_WEB_TOOL_LAZY_LOADING=0/false/off` 部署级关掉，
- *  给「不想让模型多一步 load_tools」的实例一个开关；用户在设置面板的选择优先于此）。 */
+/** 工具延迟加载的**出厂默认**（默认关：模型忘记加载会先吃一次 `Tool <name> not found`，
+ *  开箱即用优先——见 #652；`PI_WEB_TOOL_LAZY_LOADING=1/true/on/yes` 部署级打开，给
+ *  「想省上下文、愿意让模型多一步 load_tools」的实例一个开关；用户在设置面板的选择优先于此）。 */
 export const DEFAULT_TOOL_LAZY_LOADING = (() => {
 	const v = (process.env.PI_WEB_TOOL_LAZY_LOADING ?? "").trim().toLowerCase();
-	return !(v === "0" || v === "false" || v === "off" || v === "no");
+	return v === "1" || v === "true" || v === "on" || v === "yes";
 })();
 
 export const DEFAULT_CODEMODE_MODE: "on" | "only" = "on";

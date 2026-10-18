@@ -1,14 +1,16 @@
 /**
  * 工具延迟加载（load_tools）端到端回归 —— 零 token（本地 mock LLM，openai-completions SSE）。
  *
- * 验证三件事，且第三件是硬约束（缓存不能被我们打坏）：
- *   1. 默认只有核心工具（bash/read/edit/write）+ load_tools 常驻；
- *      其余工具在系统提示词里**只有名字 + 一行摘要**（目录），没有 schema。
- *   2. 模型调 load_tools(["patch"]) 之后，patch 出现在下一次请求的 tools 里
+ * 验证四件事，最后一件是硬约束（缓存不能被我们打坏）：
+ *   0. 按需加载**默认关**（#652 起）：显式打开后才只有核心工具（bash/read/edit/write）+
+ *      load_tools 常驻；其余工具在系统提示词里**只有名字 + 一行摘要**（目录），没有 schema。
+ *   1. 模型调 load_tools(["patch"]) 之后，patch 出现在下一次请求的 tools 里
  *      （参数 schema 到位），并能在同一对话后续轮次继续用。
- *   3. **系统提示词逐字节不变**：加载前后两次请求的 system 文本必须完全一致
+ *   2. **系统提示词逐字节不变**：加载前后两次请求的 system 文本必须完全一致
  *      （它一变，供应商的前缀缓存就整段失效）；tools 数组只允许**追加**——
  *      第二次的 tools 必须以第一次的 tools 为前缀（顺序/内容都不许动）。
+ *   3. 关掉开关后 load_tools 彻底不出现；模型直呼未加载工具时该工具**自动激活**，
+ *      原样重试即成功（#652 的死路）。
  *
  * 端口 8975，临时 data-dir / 工作区 / agent 目录，结束自行清理。
  */
@@ -189,13 +191,40 @@ ws.send(JSON.stringify({ type: "set_model", modelId: "main/lazy-tools-mock" }));
 for (let i = 0; i < 100 && state?.model?.id !== "lazy-tools-mock"; i++) await sleep(100);
 check("已切到 mock 模型", state?.model?.id === "lazy-tools-mock", `model=${state?.model?.id}`);
 
-// 延迟加载默认开：模型列表里应该只有目录（名字 + 摘要），没有完整 schema。
+// 按需加载**默认关**（#652 起）：刚启动的实例应当已经把全部工具挂在活跃集里，没有 load_tools。
+ws.send(JSON.stringify({ type: "get_settings" }));
+for (let i = 0; i < 50 && typeof settings?.toolLazyLoading !== "boolean"; i++) await sleep(50);
+check(
+	"默认关：开箱即用全部工具，load_tools 不出现",
+	settings?.toolLazyLoading === false &&
+		Array.isArray(state?.tools) &&
+		!state.tools.includes("load_tools") &&
+		state.tools.includes("patch"),
+	`lazy=${settings?.toolLazyLoading} tools=${state?.tools?.join(",")}`,
+);
+
+// 按需加载**默认关**（#652 起）：先显式打开，再验证「开」时的目录与缓存行为。
+// 新会话才有空种子（老会话按当时活跃集做种子，不会被反向清空），所以打开后另起一个对话。
+ws.send(JSON.stringify({ type: "set_settings", toolLazyLoading: true }));
+for (let i = 0; i < 50 && settings?.toolLazyLoading !== true; i++) await sleep(50);
+check("默认关：显式打开按需加载后设置生效", settings?.toolLazyLoading === true, `value=${settings?.toolLazyLoading}`);
+ws.send(JSON.stringify({ type: "new_chat" }));
+const lazPrevConv = state?.conversationId;
+for (let i = 0; i < 50 && state?.conversationId === lazPrevConv; i++) await sleep(50);
+for (let i = 0; i < 50 && !state?.tools?.includes("load_tools"); i++) await sleep(50);
+check(
+	"按需加载开的会话里，只有核心工具 + load_tools 常驻",
+	state?.tools?.includes("load_tools") && !state?.tools?.includes("patch"),
+	`tools=${state?.tools?.join(",")}`,
+);
+
+// 模型列表里应该只有目录（名字 + 摘要），没有完整 schema。
 ws.send(JSON.stringify({ type: "prompt", text: "load the patch tool" }));
 const first = await waitRequest(0);
 check("已发出第一次模型请求", Boolean(first), `requests=${requests.length}`);
 const firstTools = toolNames(first);
 check(
-	"默认只常驻核心工具 + load_tools",
+	"按需加载开：只常驻核心工具 + load_tools",
 	["bash", "read", "edit", "write", "load_tools"].every((n) => firstTools.includes(n)),
 	firstTools.join(","),
 );

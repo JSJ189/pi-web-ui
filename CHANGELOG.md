@@ -8,6 +8,21 @@
 每个版本的内容按"实际合入该版本发布的提交"归档（以 `package.json` 的 version 变更提交为准），
 而不是按提交日期聚类——连续快速发布的 patch 版本以此为准最准确。
 
+## [Unreleased]
+
+### Changed
+
+- **「工具按需加载」出厂默认关闭**：新装 / 未改过该开关的实例开箱即用全部工具，与 pi 命令行一致——模型不会因为忘记先 `load_tools` 而白吃一次「工具不存在」（#652）。需要省上下文的实例在 设置 → 工具 → 工具按需加载 里打开，或者用 `PI_WEB_TOOL_LAZY_LOADING=1` 把部署级默认改回去；**已存盘的设置不受影响**。
+
+<!-- auto-i18n:start -->
+
+### i18n
+
+- 前端中文变更（1）：`toolLazyLoadingDesc`
+- 前端英文变更（1）：`toolLazyLoadingDesc`
+
+<!-- auto-i18n:end -->
+
 ## [0.108.0] — 2026-10-18
 
 ### Added
@@ -34,9 +49,11 @@
 - 会话切换结转草稿时，仅在目标会话没有自己的草稿时才写入，避免覆盖该会话已保留的输入内容。
 
 <!-- auto-i18n:start -->
+
 ### i18n
 
 - 前端新增 key（30）：`preserveDraftAcrossConversations`、`preserveDraftAcrossConversationsDesc`、`reversePagination`、`reversePaginationDesc`、`earlierMessagesInfo`、`loadEarlier`、`loadAllEarlier`、`pluginMenuSettings`、`pluginGroupViews`、`pluginGroupExtensions`、`pluginManagerTitle`、`pluginManagerDesc`、`pluginFilterAll`、`pluginFilterConfigurable`、`pluginFilterEnabled`、`pluginFilterDisabled`、`pluginSearchPlaceholder`、`pluginQuickSettings`、`pluginToggleEnable`、`pluginToggleDisable`、`pluginExpandAll`、`pluginCollapseAll`、`pluginGoMarket`、`pluginCountSummary`、`pluginBadgeConfig`、`pluginBadgeView`、`pluginBadgeBg`、`pluginBadgeTools`、`pluginOpenView`、`pluginEmptyFilter`
+
 <!-- auto-i18n:end -->
 
 ## [0.107.0] — 2026-10-18
@@ -71,6 +88,7 @@
   - 优化高并发测试环境下的引擎探测超时保护。
 
 <!-- auto-i18n:start -->
+
 ### i18n
 
 - 前端新增 key（23）：`showAllModels`、`showEnabledModels`、`showAllModelsTitle`、`showEnabledModelsTitle`、`searchAllModelsHint`、`notInScopeBadge`、`settingsEngineDurableTitle`、`settingsEngineDurableDesc`、`engineTagDurable`、`engineUpdating`、`ttsStreamReplies`、`ttsStreamRepliesDesc`、`ttsEngine`、`ttsEngineBuiltin`、`settingsSearchPlaceholder`、`settingsSearchEmpty`、`settingsGroupCore`、`settingsGroupTools`、`settingsGroupUi`、`settingsGroupAdvanced`、`settingsAutoSavedTip`、`settingsContextSafeZone`、`settingsCacheReady`
@@ -79,6 +97,7 @@
 - 前端英文变更（2）：`ttsEnableDesc`、`settingsMarkersDesc`
 - 服务端文案变更（1）：`markers.service.guidance.frame`
 - 服务端删除 key（18）：`markers.service.describe.empty`、`markers.todo.guidance`、`markers.todo.new.requires.subject`、`markers.todo.new.created`、`markers.todo.set.invalid.id`、`markers.todo.set.invalid.status`、`markers.todo.set.task.missing`、`markers.todo.set.completed.no.pending`、`markers.todo.set.completed.no.inprogress`、`markers.todo.set.updated`、`markers.todo.remove.invalid.id`、`markers.todo.remove.task.missing`、`markers.todo.remove.deleted`、`markers.todo.dep.invalid.id`、`markers.todo.dep.task.missing`、`markers.todo.dep.invalid.dependencies`、`markers.todo.dep.blocks.updated`、`markers.todo.unknown.operation`
+
 <!-- auto-i18n:end -->
 
 ## [0.106.0] — 2026-10-16
@@ -875,6 +894,7 @@
 - 服务端新增 key（9）：`sched.not.wired`、`sched.task.bad.schedule`、`sched.task.interval.too.short`、`sched.task.empty.prompt`、`sched.task.no.cwd`、`sched.list.empty`、`sched.cancel.empty.id`、`sched.cancel.not.found`、`sched.cancel.ok`
 
 - 前端新增 key（26）：`fileCompress`、`fileExtract`、`fileCompressDownload`、`fileUploadFolder`、`fileChooseFolder`、`fileExtractDestination`、`fileConflictPolicy`、`fileConflictSkip`、`fileConflictOverwrite`、`fileConflictError`、`fileArchiveLimits`、`fileFolderUploadHint`、`fileTransferBusy`、`fileTransferFailed`、`tmuxNewWindow`、`tmuxTakeControl`、`tmuxTakeControlShort`、`tmuxRelease`、`tmuxReleaseShort`、`tmuxReadonly`、`tmuxAdopted`、`tmuxDetach`、`tmuxDetachShort`、`tmuxAdoptGroup`、`tmuxAdopt`、`tmuxNoAdoptable`
+
 <!-- auto-i18n:end -->
 
 ## [0.89.0] — 2026-09-17

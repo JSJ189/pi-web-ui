@@ -1493,9 +1493,9 @@ export class ClientSession {
 	 */
 	private readonly lazyLoadedBySession = new WeakMap<object, Set<string>>();
 
-	/** 延迟加载总开关（设置项，默认开；DSH 无 pi 工具注册面，走自己的服务）。 */
+	/** 延迟加载总开关（设置项，默认关；DSH 无 pi 工具注册面，走自己的服务）。 */
 	private lazyLoadingOn(): boolean {
-		return this.settingsSvc?.current.toolLazyLoading !== false;
+		return this.settingsSvc?.current.toolLazyLoading === true;
 	}
 
 	/** 会话是否已有转录内容 —— 区分「刚建的新会话」（种子为空）与「从转录恢复的会话」

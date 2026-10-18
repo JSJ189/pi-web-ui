@@ -2110,7 +2110,8 @@ export class UniversalSession implements DispatchSession {
 			toolWatchdogTimeoutMs: s?.toolWatchdogTimeoutMs ?? 1200000,
 			readDirEnabled: true,
 			bgAutoCleanupMin: s?.bgAutoCleanupMin ?? 0,
-			toolLazyLoading: true,
+			// 同一字段的含义在本引擎不适用（无 pi 工具注册面）：恒为 false 占位，保协议完整。
+			toolLazyLoading: false,
 			codemodeMode: "on",
 			codemodeInlineBudget: 3000,
 			editSoftEnabled: false,

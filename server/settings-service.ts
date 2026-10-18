@@ -384,7 +384,7 @@ export class SettingsService {
 				toolWatchdogTimeoutMs: this.settings.toolWatchdogTimeoutMs,
 				readDirEnabled: this.settings.readDirEnabled !== false,
 				bgAutoCleanupMin: normalizeBgCleanupMinutes(this.settings.bgAutoCleanupMin),
-				toolLazyLoading: this.settings.toolLazyLoading !== false,
+				toolLazyLoading: this.settings.toolLazyLoading === true,
 				codemodeMode: this.settings.codemodeMode ?? "on",
 				codemodeInlineBudget: this.settings.codemodeInlineBudget ?? 3000,
 				toolApprovalEnabled: this.settings.toolApprovalEnabled !== false,
@@ -674,11 +674,11 @@ export class SettingsService {
 		if (partial.bgAutoCleanupMin !== undefined) {
 			this.settings.bgAutoCleanupMin = normalizeBgCleanupMinutes(partial.bgAutoCleanupMin);
 		}
-		// 工具延迟加载开关（默认开）：门控每次实时读取，改动经 applyToolGating 重放生效
+		// 工具延迟加载开关（默认关，设置页可开）：门控每次实时读取，改动经 applyToolGating 重放生效
 		// （见 toolGatingChanged）——**只影响新会话与之后的门控重放**，已有对话的已加载
 		// 集合不会被反向清空（不想让在跑的对话凭空丢掉工具）。
 		if (partial.toolLazyLoading !== undefined) {
-			this.settings.toolLazyLoading = partial.toolLazyLoading !== false;
+			this.settings.toolLazyLoading = partial.toolLazyLoading === true;
 		}
 		let codemodeChanged = false;
 		if (partial.codemodeMode !== undefined && partial.codemodeMode !== this.settings.codemodeMode) {
