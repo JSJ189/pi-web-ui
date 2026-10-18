@@ -73,10 +73,19 @@ const mock = createServer((req, res) => {
 		const lastUser = messages.map((m) => m.role).lastIndexOf("user");
 		const tail = messages.slice(lastUser + 1);
 		const alreadyCalled = tail.some((m) => m.role === "tool");
+		const lastUserContent = messages[lastUser]?.content;
+		const lastUserText = typeof lastUserContent === "string" ? lastUserContent : JSON.stringify(lastUserContent ?? "");
 		res.writeHead(200, { "content-type": "text/event-stream", "cache-control": "no-cache" });
-		const chunks = alreadyCalled
-			? [delta(payload.model ?? "mock-model", { content: "done" })]
-			: [toolCall(payload.model ?? "mock-model", "load_tools", { tools: ["patch", "read"] })];
+		// issue #652：模型**直接**调用目录里尚未加载的工具（不走 load_tools），然后原样重试一次。
+		const jit = lastUserText.includes("jit direct call");
+		const toolResults = tail.filter((m) => m.role === "tool").length;
+		const chunks = jit
+			? toolResults >= 2
+				? [delta(payload.model ?? "mock-model", { content: "done" })]
+				: [toolCall(payload.model ?? "mock-model", "find", { pattern: "*", path: WS_DIR })]
+			: alreadyCalled
+				? [delta(payload.model ?? "mock-model", { content: "done" })]
+				: [toolCall(payload.model ?? "mock-model", "load_tools", { tools: ["patch", "read"] })];
 		for (const c of chunks) res.write(`data: ${JSON.stringify(c)}\n\n`);
 		res.write(
 			`data: ${JSON.stringify({
@@ -168,6 +177,12 @@ const toolNames = (req) => (req?.tools ?? []).map((t) => t.function?.name).filte
 const systemText = (req) => {
 	const sys = (req?.messages ?? []).find((m) => m.role === "system" || m.role === "developer");
 	return typeof sys?.content === "string" ? sys.content : JSON.stringify(sys?.content ?? "");
+};
+/** 最后一条 tool 结果消息的文本。 */
+const lastToolText = (req) => {
+	const tools = (req?.messages ?? []).filter((m) => m.role === "tool");
+	const c = tools[tools.length - 1]?.content;
+	return typeof c === "string" ? c : JSON.stringify(c ?? "");
 };
 
 ws.send(JSON.stringify({ type: "set_model", modelId: "main/lazy-tools-mock" }));
@@ -282,6 +297,44 @@ check(
 	"关闭按需加载时，系统提示词绝不包含 load_tools 说明",
 	!/load_tools/.test(thirdSystem),
 	`system len=${thirdSystem.length}`,
+);
+
+// ---------------------------------------------------------------------------
+// 验证：模型直接调用目录里尚未加载的工具 → 自动激活，重试即成功（issue #652）
+// ---------------------------------------------------------------------------
+ws.send(JSON.stringify({ type: "set_settings", toolLazyLoading: true }));
+for (let i = 0; i < 50 && settings?.toolLazyLoading !== true; i++) await sleep(50);
+ws.send(JSON.stringify({ type: "new_chat" }));
+const prevJitConv = state?.conversationId;
+for (let i = 0; i < 50 && state?.conversationId === prevJitConv; i++) await sleep(50);
+check("已新建 JIT 会话", Boolean(state?.conversationId && state.conversationId !== prevJitConv));
+
+ws.send(JSON.stringify({ type: "prompt", text: "jit direct call" }));
+const jitBase = requests.length;
+const jit1 = await waitRequest(jitBase);
+check(
+	"JIT：首次请求里 find 尚未加载（不在活跃 tools 里）",
+	Boolean(jit1) && !toolNames(jit1).includes("find"),
+	`tools=${toolNames(jit1).join(",")}`,
+);
+const jit2 = await waitRequest(jitBase + 1);
+const firstFindResult = lastToolText(jit2);
+check(
+	"JIT：直呼未加载工具时 SDK 仍回 not found（这是 SDK 侧行为，不是我们的死路）",
+	/not found/i.test(firstFindResult),
+	firstFindResult.slice(0, 120),
+);
+check(
+	"JIT：该工具已被自动激活（下一次请求的 tools 里已经出现）",
+	toolNames(jit2).includes("find"),
+	`tools=${toolNames(jit2).join(",")}`,
+);
+const jit3 = await waitRequest(jitBase + 2);
+const secondFindResult = lastToolText(jit3);
+check(
+	"JIT：原样重试即成功，不再回 not found（issue #652 的死路已解除）",
+	secondFindResult.length > 0 && !/not found/i.test(secondFindResult),
+	secondFindResult.slice(0, 120),
 );
 
 check("服务进程仍然存活", server.exitCode === null, `exitCode=${server.exitCode}`);

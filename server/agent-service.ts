@@ -1696,6 +1696,15 @@ export class ClientSession {
 		const disabled = new Set(effectiveDisabledAgentTools(this.settingsSvc.current));
 		if (conv?.planMode === true) for (const n of PLAN_MODE_BLOCKED_TOOL_NAMES) disabled.add(n);
 		const set = this.lazyLoadedFor(session, this.sessionHasTranscript(session));
+		// 「已加载集合」里有名字 ≠ 活跃集里有它：JIT 自动激活（见 autoActivateToolIfLoadable）
+		// 与任何只标记不重放门控的路径都会造出这种半吊子状态。按活跃集判定，
+		// 否则回一句「已经加载过了」就把模型堵死在死路上（issue #652）。
+		let activeNow = new Set<string>();
+		try {
+			activeNow = new Set(session.getActiveToolNames());
+		} catch {
+			/* session 未就绪：当作什么都不活跃，走正常加载路径 */
+		}
 		let changed = false;
 		for (const name of names) {
 			if (!known.has(name)) {
@@ -1717,7 +1726,7 @@ export class ClientSession {
 				});
 				continue;
 			}
-			if (set.has(name)) {
+			if (set.has(name) && activeNow.has(name)) {
 				rejected.push({ name, reason: pick(lang, "已经加载过了", "already loaded", "loadtools.already") });
 				continue;
 			}
@@ -1762,6 +1771,13 @@ export class ClientSession {
 	/**
 	 * JIT Auto-activation: if an allowed catalog tool is executed without prior load_tools,
 	 * automatically mark it as loaded so subsequent turns track it as fully active.
+	 *
+	 * 触发点包含「模型直接调了目录里尚未加载的工具」：SDK 在解析工具之前就派发了
+	 * `tool_execution_start`（见 pi-agent-core 的 executeToolCalls），随后因该工具不在
+	 * 活跃集而回一条 `Tool <name> not found`。此时只把名字塞进已加载集合是不够的
+	 * ——活跃集不会自己变，模型下一轮照样调不动，而 `load_tools` 又回「已经加载过了」，
+	 * 于是整条路被堵死（issue #652：模型要靠加载别的工具顺带触发门控才自愈）。
+	 * 因此这里必须立刻重放门控，让该工具从下一轮起真的活跃。
 	 */
 	private autoActivateToolIfLoadable(session: AgentSession, conv: Conversation, name: string): void {
 		if (
@@ -1775,9 +1791,12 @@ export class ClientSession {
 		const loaded = this.lazyLoadedFor(session, this.sessionHasTranscript(session));
 		if (loaded.has(name)) return;
 		const allowed = new Set(this.allowedToolNames(session, conv));
-		if (allowed.has(name)) {
-			loaded.add(name);
-		}
+		if (!allowed.has(name)) return;
+		loaded.add(name);
+		this.applyToolGating(session, conv.agentPreset);
+		this.sessionStatsCache = null;
+		this.cachedBaseTokens = null;
+		this.flushSnapshot();
 	}
 
 	/** 当前活动会话的工具/资源快照 → composer 输入。cwd 取活动对话的。 */
