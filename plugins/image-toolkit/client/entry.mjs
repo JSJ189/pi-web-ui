@@ -2559,7 +2559,7 @@ const CSS = `
 .igt-btn { background: var(--bg-elev, #14161c); color: inherit; border: 1px solid var(--border, #262a35); border-radius: 6px; padding: 4px 9px; cursor: pointer; font: inherit; font-size: 12px; white-space: nowrap; }
 .igt-btn:hover { border-color: var(--accent, #8b5cf6); }
 .igt-btn.on { background: var(--accent-soft, rgba(139,92,246,.14)); border-color: var(--accent, #8b5cf6); }
-.igt-btn.igt-primary { background: var(--accent, #8b5cf6); border-color: var(--accent, #8b5cf6); color: #fff; }
+.igt-btn.igt-primary { background: var(--accent, #8b5cf6); border-color: var(--accent, #8b5cf6); color: var(--accent-contrast, #fff); }
 .igt-btn.igt-mini { padding: 2px 7px; font-size: 11px; }
 .igt-btnrow { display: flex; flex-wrap: wrap; gap: 5px; }
 .igt-hint { font-size: 11px; color: var(--text-faint, #6b7284); line-height: 1.5; }

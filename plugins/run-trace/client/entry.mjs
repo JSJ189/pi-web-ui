@@ -249,7 +249,7 @@ export default {
 		.rtr-fgcols i { position: absolute; top: 0; bottom: 0; width: 1px; background: var(--border-soft, #1e2230); }
 		.rtr-fgtop b { position: absolute; top: 0; font-weight: 400; font-size: 11px; line-height: 20px; color: var(--text-faint, #6b7284); white-space: nowrap; font-variant-numeric: tabular-nums; }
 		.rtr-fgnow { position: absolute; top: 0; bottom: 0; width: 2px; margin-left: -1px; background: var(--accent, #8b5cff); box-shadow: 0 0 8px var(--accent-soft, rgba(139,92,246,.5)); }
-		.rtr-fgnow u { position: absolute; top: 0; left: 50%; transform: translateX(-50%); padding: 0 5px; border-radius: 0 0 4px 4px; background: var(--accent, #8b5cff); color: #fff; font-size: 10px; line-height: 15px; text-decoration: none; white-space: nowrap; font-variant-numeric: tabular-nums; }
+		.rtr-fgnow u { position: absolute; top: 0; left: 50%; transform: translateX(-50%); padding: 0 5px; border-radius: 0 0 4px 4px; background: var(--accent, #8b5cff); color: var(--accent-contrast, #fff); font-size: 10px; line-height: 15px; text-decoration: none; white-space: nowrap; font-variant-numeric: tabular-nums; }
 		.rtr-tlbody .vis-panel.vis-left, .rtr-tlbody .vis-panel.vis-center { border-color: var(--border-soft, #1e2230); }
 		.rtr-tlbody .vis-labelset .vis-label { color: var(--text-dim, #9aa1b4); border-color: var(--border-soft, #1e2230); background: transparent; }
 		.rtr-tlbody .vis-time-axis .vis-text { color: var(--text-faint, #6b7284); }

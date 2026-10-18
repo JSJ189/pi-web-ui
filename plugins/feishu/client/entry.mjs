@@ -69,7 +69,7 @@ function renderFeishuWorkbench(container, ctx) {
 				<div style="display: flex; align-items: center; gap: 8px; flex-wrap: wrap;">
 					<input type="text" class="feishu-search-input" placeholder="搜索消息或发送人..." style="padding: 5px 10px; border-radius: 4px; border: 1px solid var(--border); background: var(--bg); color: var(--text); font-size: 12px; width: 180px; outline: none;" />
 					<button class="feishu-btn feishu-btn-search" style="padding: 5px 10px; border-radius: 4px; border: 1px solid var(--border); background: var(--bg-elev2); color: var(--text); cursor: pointer; font-size: 12px;">搜索</button>
-					<button class="feishu-btn feishu-btn-compose" style="padding: 5px 12px; border-radius: 4px; border: none; background: var(--accent); color: #fff; cursor: pointer; font-size: 12px; font-weight: 500;">✏ 发消息 / 卡片</button>
+					<button class="feishu-btn feishu-btn-compose" style="padding: 5px 12px; border-radius: 4px; border: none; background: var(--accent); color: var(--accent-contrast, #fff); cursor: pointer; font-size: 12px; font-weight: 500;">✏ 发消息 / 卡片</button>
 					<button class="feishu-btn feishu-btn-refresh" style="padding: 5px 10px; border-radius: 4px; border: 1px solid var(--border); background: var(--bg-elev2); color: var(--text); cursor: pointer; font-size: 12px;" title="同步与轮询">⟳ 刷新</button>
 					<button class="feishu-btn feishu-btn-settings" style="padding: 5px 10px; border-radius: 4px; border: 1px solid var(--border); background: var(--bg-elev2); color: var(--text); cursor: pointer; font-size: 12px;" title="配置凭证与机器人">⚙ 配置</button>
 				</div>
@@ -213,7 +213,7 @@ function renderFeishuWorkbench(container, ctx) {
 					</div>
 					<div style="padding: 12px 16px; border-top: 1px solid var(--border); display: flex; justify-content: flex-end; gap: 8px;">
 						<button class="feishu-compose-cancel" style="padding: 6px 12px; border-radius: 4px; border: 1px solid var(--border); background: var(--bg-elev2); color: var(--text); cursor: pointer;">取消</button>
-						<button class="feishu-compose-submit" style="padding: 6px 16px; border-radius: 4px; border: none; background: var(--accent); color: #fff; cursor: pointer; font-weight: 500;">发送</button>
+						<button class="feishu-compose-submit" style="padding: 6px 16px; border-radius: 4px; border: none; background: var(--accent); color: var(--accent-contrast, #fff); cursor: pointer; font-weight: 500;">发送</button>
 					</div>
 				</div>
 			</div>
@@ -311,7 +311,7 @@ function renderFeishuWorkbench(container, ctx) {
 						<button class="feishu-settings-test" style="padding: 6px 12px; border-radius: 4px; border: 1px solid var(--border); background: var(--bg); color: var(--text); cursor: pointer;">🔌 测试连接</button>
 						<div style="display: flex; gap: 8px;">
 							<button class="feishu-settings-cancel" style="padding: 6px 12px; border-radius: 4px; border: 1px solid var(--border); background: var(--bg); color: var(--text); cursor: pointer;">取消</button>
-							<button class="feishu-settings-save" style="padding: 6px 16px; border-radius: 4px; border: none; background: var(--accent); color: #fff; cursor: pointer; font-weight: 500;">💾 保存配置</button>
+							<button class="feishu-settings-save" style="padding: 6px 16px; border-radius: 4px; border: none; background: var(--accent); color: var(--accent-contrast, #fff); cursor: pointer; font-weight: 500;">💾 保存配置</button>
 						</div>
 					</div>
 				</div>
@@ -537,7 +537,7 @@ function renderFeishuWorkbench(container, ctx) {
 				if (m.msgType === "post")
 					typeBadge = `<span style="font-size: 10px; padding: 1px 4px; border-radius: 3px; background: var(--bg-elev2); color: var(--text-dim);">富文本</span>`;
 				else if (m.msgType === "interactive")
-					typeBadge = `<span style="font-size: 10px; padding: 1px 4px; border-radius: 3px; background: var(--accent); color: #fff;">卡片</span>`;
+					typeBadge = `<span style="font-size: 10px; padding: 1px 4px; border-radius: 3px; background: var(--accent); color: var(--accent-contrast, #fff);">卡片</span>`;
 				else if (m.msgType === "image")
 					typeBadge = `<span style="font-size: 10px; padding: 1px 4px; border-radius: 3px; background: var(--bg-elev2); color: var(--text-dim);">图片</span>`;
 				else if (m.msgType === "file")

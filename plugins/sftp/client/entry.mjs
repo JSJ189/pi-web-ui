@@ -437,7 +437,7 @@ export default {
 		.sfx .chip.err { color: var(--red, #f87171); border-color: color-mix(in srgb, var(--red, #f87171) 40%, transparent); }
 		.sfx .chip.warn { color: var(--amber, #fbbf24); border-color: color-mix(in srgb, var(--amber, #fbbf24) 40%, transparent); }
 		.sfx button { background: var(--bg-elev, #16161d); color: inherit; border: 1px solid var(--border, #333); border-radius: 6px; padding: 3px 10px; cursor: pointer; font: inherit; font-size: 12px; }
-		.sfx button.primary { background: var(--accent, #7c5cff); color: #fff; border-color: transparent; }
+		.sfx button.primary { background: var(--accent, #7c5cff); color: var(--accent-contrast, #fff); border-color: transparent; }
 		.sfx button.danger { color: var(--red, #f87171); border-color: color-mix(in srgb, var(--red, #f87171) 45%, transparent); }
 		.sfx button:disabled { opacity: .45; cursor: default; }
 		.sfx input, .sfx select, .sfx textarea { background: var(--bg-elev, #16161d); color: inherit; border: 1px solid var(--border, #333); border-radius: 6px; padding: 4px 7px; font: inherit; font-size: 12px; }
@@ -456,7 +456,7 @@ export default {
 		.sfx .list { border: 1px solid var(--border, #333); border-radius: 7px; max-height: 280px; overflow: auto; overscroll-behavior: contain; }
 		.sfx .diff-tabs { display: flex; gap: 4px; flex-wrap: wrap; margin-top: 4px; }
 		.sfx .diff-tabs button { padding: 2px 8px; font-size: 11px; border-radius: 99px; }
-		.sfx .diff-tabs button.active { background: var(--accent, #7c5cff); color: #fff; border-color: transparent; }
+		.sfx .diff-tabs button.active { background: var(--accent, #7c5cff); color: var(--accent-contrast, #fff); border-color: transparent; }
 		.sfx .list .it { display: grid; grid-template-columns: 66px 1fr; gap: 8px; padding: 4px 8px; border-bottom: 1px solid color-mix(in srgb, var(--border, #333) 55%, transparent); font-size: 12px; }
 		.sfx .list .it:last-child { border-bottom: 0; }
 		.sfx .list .it .rel { overflow-wrap: anywhere; min-width: 0; }

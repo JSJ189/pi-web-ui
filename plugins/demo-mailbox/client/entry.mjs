@@ -32,7 +32,7 @@ export default {
 			font: inherit; resize: vertical;
 		}
 		.mbx button {
-			background: var(--accent, #7c5cff); color: #fff; border: 0;
+			background: var(--accent, #7c5cff); color: var(--accent-contrast, #fff); border: 0;
 			border-radius: 6px; padding: 6px 14px; cursor: pointer; font: inherit;
 		}
 		/* 手机竖屏：表单单列（textarea 本来就占 1/-1），大字号防 iOS 聚焦缩放，按钮全宽高点击区 */

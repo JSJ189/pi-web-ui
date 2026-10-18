@@ -138,7 +138,7 @@ function ensureStyles() {
  border-radius:7px;padding:3px 9px;font-size:12px;font-family:inherit}
 .pm2m-btn:hover{background:var(--bg-elev2)}
 .pm2m-btn[disabled]{opacity:.5;cursor:default}
-.pm2m-btn.primary{background:var(--accent);border-color:transparent;color:#fff}
+.pm2m-btn.primary{background:var(--accent);border-color:transparent;color: var(--accent-contrast, #fff)}
 .pm2m-btn.danger{color:var(--red);border-color:var(--red-soft)}
 .pm2m-banner{flex:none;padding:9px 11px;border:1px solid var(--amber);border-radius:9px;
  background:rgba(251,191,36,.08);display:flex;align-items:center;gap:10px;flex-wrap:wrap}

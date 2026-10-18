@@ -11,15 +11,17 @@
 	--border-soft: rgba(255, 255, 255, 0.04);
 	--text: #f0f3f8;
 	--text-dim: #8e96aa;
-	--text-faint: #525a70;
+	--text-faint: #5a637c;
 	--accent: #00f5d4;
+	--accent-contrast: #0a0c13;
 	--accent-soft: rgba(0, 245, 212, 0.12);
 	--green: #10b981;
 	--green-soft: rgba(16, 185, 129, 0.12);
 	--red: #ff4a6e;
+	--on-red: #1a1a1a;
 	--red-soft: rgba(255, 74, 110, 0.12);
 	--amber: #fbbf24;
-	--blue: #6366f1;
+	--blue: #6c6ff2;
 	--blue-soft: rgba(99, 102, 241, 0.12);
 
 	/* 终端 ANSI 调色板 */
@@ -73,12 +75,13 @@
 	--notice-warn-border: #fbbf24;
 	--notice-info-border: #6366f1;
 	--send-blue: #00f5d4;
+	--on-send-blue: #1a1a1a;
 	--send-blue-hover: #2dd4bf;
 	--stop-red: #ff4a6e;
 	--stop-red-hover: #e11d48;
 	--brand-grad-a: #00f5d4;
 	--brand-grad-b: #6366f1;
-	--on-amber: #040507;
+	--on-amber: #1a1a1a;
 	--search-active-fg: #040507;
 	--switch-knob: #ffffff;
 	--sunken-bg: rgba(0, 0, 0, 0.45);

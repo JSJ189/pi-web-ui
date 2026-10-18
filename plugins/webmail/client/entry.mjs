@@ -197,7 +197,7 @@ export default {
 		.wmx .head-actions button { padding: 2px 9px; opacity: .85; }
 		.wmx .head-actions button:hover { opacity: 1; border-color: var(--accent, #7c5cff); }
 		.wmx .btn-compose { color: var(--accent, #7c5cff); border-color: color-mix(in srgb, var(--accent, #7c5cff) 45%, transparent); background: transparent; opacity: 1; }
-		.wmx button.primary { background: var(--accent, #7c5cff); color: #fff; border-color: transparent; }
+		.wmx button.primary { background: var(--accent, #7c5cff); color: var(--accent-contrast, #fff); border-color: transparent; }
 		.wmx button.danger:hover { color: var(--red, #f87171); border-color: var(--red, #f87171); }
 		.wmx input, .wmx select, .wmx textarea {
 			background: var(--bg-elev, #16161d); color: inherit;

@@ -12,12 +12,14 @@
 	--text-faint: #818b98;
 	--accent: #0969da;
 	--accent-soft: rgba(9, 105, 218, 0.1);
-	--green: #059669;
+	--green: #04825b;
+	--on-green: #ffffff;
 	--green-soft: rgba(5, 150, 105, 0.12);
 	--red: #dc2626;
+	--on-red: #ffffff;
 	--red-soft: rgba(220, 38, 38, 0.1);
-	--amber: #d97706;
-	--blue: #3b82f6;
+	--amber: #a75c05;
+	--blue: #1469f4;
 	--blue-soft: rgba(59, 130, 246, 0.12);
 	--term-bg: #ffffff;
 	--term-fg: #1f2328;
@@ -57,8 +59,8 @@
 	--link-soft: #0969da;
 	--md-strong: #111827;
 	--skill-blue: #2563eb;
-	--plugin-purple: #b58cff;
-	--auth-green: #059669;
+	--plugin-purple: #8745ff;
+	--auth-green: #04825b;
 	--scroll-thumb: #c7ccd8;
 	--scroll-thumb-hover: #aab2c0;
 	--notice-err-bg: #eadadf;
@@ -73,7 +75,7 @@
 	--stop-red-hover: #dc2626;
 	--brand-grad-a: #8b5cf6;
 	--brand-grad-b: #6366f1;
-	--on-amber: #1a1a1a;
+	--on-amber: #ffffff;
 	--search-active-fg: #1a1d26;
 	--switch-knob: #ffffff;
 	--bg-elev3: rgba(0, 0, 0, 0.03);

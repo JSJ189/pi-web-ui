@@ -24,6 +24,7 @@
 	--red-soft: rgba(248, 113, 113, 0.12);
 	--amber: #fbbf24;
 	--blue: #94a3b8;
+	--on-blue: #1a1a1a;
 	--blue-soft: rgba(148, 163, 184, 0.14);
 
 	--term-bg: rgba(8, 8, 10, 0.72);
@@ -67,6 +68,7 @@
 	--scroll-thumb: rgba(255, 255, 255, 0.22);
 	--scroll-thumb-hover: rgba(255, 255, 255, 0.45);
 	--send-blue: #f8fafc;
+	--on-send-blue: #1a1a1a;
 	--send-blue-hover: #ffffff;
 	--switch-knob: #ffffff;
 	--switch-bg-on: #4ade80;

@@ -12,10 +12,13 @@
 	--text-dim: #a8a8b3;
 	--text-faint: #6e6e7a;
 	--accent: #31ac9d;
+	--accent-contrast: #17171c;
 	--accent-soft: #3a8c8a26;
 	--green: #2dd4bf;
 	--green-soft: #4ade801f;
 	--amber: #eab380;
+	/* 原样继承默认 --blue #3b82f6 时只有 4.30:1（正文升一档色阶后仍偏暗），单独声明 */
+	--blue: #4588f6;
 	--term-bg: #0b0b0e;
 	--term-fg: #ededf0;
 	--term-cursor: #2dd4bf;
@@ -56,7 +59,7 @@
 	--send-blue-hover: #0b5a54;
 	--brand-grad-a: #00ffe7;
 	--brand-grad-b: #202020;
-	--on-amber: #12121a;
+	--on-amber: #1a1a1a;
 	--search-active-fg: #0f0f12;
 	--switch-knob: #f5f5f7;
 	--bg-elev3: #ffffff0d;

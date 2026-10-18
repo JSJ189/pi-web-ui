@@ -51,7 +51,7 @@ export default {
           <div style="border-top: 1px dashed var(--border-subtle, rgba(255,255,255,0.08)); padding-top: 14px;">
             <div style="font-weight: 500; font-size: 13px; margin-bottom: 8px;">📦 伴侣扩展（一键提取双平台凭证）</div>
             <div style="display: flex; gap: 10px; flex-wrap: wrap; margin-bottom: 12px;">
-              <button id="btn-open-dir" style="background: #2563eb; color: #fff; border: none; padding: 7px 14px; border-radius: 6px; cursor: pointer; font-size: 13px; font-weight: 500; display: flex; align-items: center; gap: 6px;">
+              <button id="btn-open-dir" style="background: var(--blue); color: var(--on-blue); border: none; padding: 7px 14px; border-radius: 6px; cursor: pointer; font-size: 13px; font-weight: 500; display: flex; align-items: center; gap: 6px;">
                 📂 在电脑中定位扩展目录
               </button>
               <button id="btn-download-zip" style="background: rgba(255,255,255,0.08); color: inherit; border: 1px solid var(--border-subtle, #3f3f46); padding: 7px 14px; border-radius: 6px; cursor: pointer; font-size: 13px;">
@@ -95,7 +95,7 @@ export default {
           </div>
 
           <div style="display: flex; align-items: center; gap: 12px;">
-            <button id="btn-speak" style="background: #10b981; color: #fff; border: none; padding: 8px 20px; border-radius: 6px; cursor: pointer; font-size: 13px; font-weight: 600;">
+            <button id="btn-speak" style="background: var(--green); color: var(--on-green); border: none; padding: 8px 20px; border-radius: 6px; cursor: pointer; font-size: 13px; font-weight: 600;">
               ▶️ 开始试听合成
             </button>
             <span id="speak-status" style="font-size: 12px; color: var(--text-dim, #a1a1aa);"></span>

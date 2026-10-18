@@ -65,7 +65,7 @@ export default {
 								<textarea class="dingtalk-push-text" rows="4" placeholder="支持标准 Markdown 语法，如：### 项目构建完成\n- 状态：成功\n- 分支：main" style="width: 100%; box-sizing: border-box; padding: 8px 10px; border-radius: 4px; border: 1px solid var(--border); background: var(--bg); color: var(--text); resize: vertical; font-family: inherit;"></textarea>
 							</div>
 							<div style="display: flex; justify-content: flex-end; gap: 8px;">
-								<button class="dingtalk-btn-push" style="padding: 6px 16px; border-radius: 4px; border: none; background: var(--accent); color: #fff; cursor: pointer; font-weight: 500;">🚀 一键发送到钉钉群</button>
+								<button class="dingtalk-btn-push" style="padding: 6px 16px; border-radius: 4px; border: none; background: var(--accent); color: var(--accent-contrast, #fff); cursor: pointer; font-weight: 500;">🚀 一键发送到钉钉群</button>
 							</div>
 						</div>
 					</div>
@@ -132,7 +132,7 @@ export default {
 							<button class="dingtalk-btn-test-cfg" style="padding: 6px 12px; border-radius: 4px; border: 1px solid var(--border); background: var(--bg); color: var(--text); cursor: pointer;">🔌 测试连接</button>
 							<div style="display: flex; gap: 8px;">
 								<button class="dingtalk-modal-cancel" style="padding: 6px 12px; border-radius: 4px; border: 1px solid var(--border); background: var(--bg); color: var(--text); cursor: pointer;">取消</button>
-								<button class="dingtalk-btn-save-cfg" style="padding: 6px 16px; border-radius: 4px; border: none; background: var(--accent); color: #fff; cursor: pointer; font-weight: 500;">💾 保存配置</button>
+								<button class="dingtalk-btn-save-cfg" style="padding: 6px 16px; border-radius: 4px; border: none; background: var(--accent); color: var(--accent-contrast, #fff); cursor: pointer; font-weight: 500;">💾 保存配置</button>
 							</div>
 						</div>
 					</div>

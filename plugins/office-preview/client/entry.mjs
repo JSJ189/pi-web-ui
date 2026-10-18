@@ -41,7 +41,7 @@ export default {
 		.ofp .file.active { background: var(--bg-elev, #1a1d26); outline: 1px solid var(--accent, #7c5cff); }
 		.ofp .main { border: 1px solid var(--border, #333); border-radius: 8px; padding: 12px 14px; min-width: 0; }
 		.ofp .toolbar { display: flex; flex-wrap: wrap; gap: 8px; margin-bottom: 10px; align-items: center; }
-		.ofp button.act { background: var(--accent, #7c5cff); color: #fff; border: 0; border-radius: 6px;
+		.ofp button.act { background: var(--accent, #7c5cff); color: var(--accent-contrast, #fff); border: 0; border-radius: 6px;
 			padding: 6px 12px; cursor: pointer; font: inherit; }
 		.ofp button.ghost { background: transparent; color: inherit; border: 1px solid var(--border, #333);
 			border-radius: 6px; padding: 6px 12px; cursor: pointer; font: inherit; }

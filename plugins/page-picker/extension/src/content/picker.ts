@@ -61,19 +61,19 @@ const CSS = `
 :host { all: initial; }
 * { box-sizing: border-box; font-family: -apple-system, "Segoe UI", "Microsoft YaHei", sans-serif; }
 .hl, .pick { position: fixed; pointer-events: none; }
-.hl { border: 2px solid #3b82f6; background: rgba(59,130,246,.14); }
-.pick { border: 1px dashed #22c55e; background: rgba(34,197,94,.10); }
+.hl { border: 2px solid #2563eb; background: rgba(37,99,235,.14); }
+.pick { border: 1px dashed #15803d; background: rgba(21,128,61,.10); }
 .n {
   position: absolute; top: -9px; left: -9px; min-width: 18px; height: 18px; padding: 0 4px;
-  border-radius: 9px; background: #22c55e; color: #fff; font-size: 11px; line-height: 18px;
+  border-radius: 9px; background: #15803d; color: #fff; font-size: 11px; line-height: 18px;
   text-align: center; font-weight: 600;
 }
 .tag {
   position: absolute; left: -2px; bottom: -22px; max-width: 60vw; padding: 2px 6px;
-  background: #3b82f6; color: #fff; font-size: 11px; line-height: 16px; border-radius: 3px;
+  background: #2563eb; color: #fff; font-size: 11px; line-height: 16px; border-radius: 3px;
   white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
 }
-.pick .tag { background: #22c55e; }
+.pick .tag { background: #15803d; }
 .hud {
   position: fixed; top: 14px; left: 0; right: 0; z-index: 10;
   /* 宽度：fit-content + 两侧 auto 居中 —— 不能用 left:50% + translateX(-50%)，
@@ -115,7 +115,7 @@ const CSS = `
 .rows { max-height: 34vh; overflow: auto; display: flex; flex-direction: column; gap: 6px; }
 .row { display: flex; align-items: center; gap: 8px; }
 .idx {
-  flex: 0 0 20px; height: 20px; border-radius: 50%; background: #22c55e; color: #fff;
+  flex: 0 0 20px; height: 20px; border-radius: 50%; background: #15803d; color: #fff;
   font-size: 11px; line-height: 20px; text-align: center;
 }
 .sel {
@@ -139,7 +139,7 @@ button:hover { filter: brightness(1.15); }
   padding: 10px 14px; border-radius: 8px; background: rgba(17,24,39,.97); color: #e5e7eb;
   font-size: 13px; pointer-events: none; box-shadow: 0 8px 26px rgba(0,0,0,.4);
 }
-.toast.ok { border-left: 3px solid #22c55e; }
+.toast.ok { border-left: 3px solid #15803d; }
 .toast.err { border-left: 3px solid #ef4444; }
 /* 预设行：六个 chip 一键套组合，右边「调整项」展开逐项勾（默认收起，浮条只占一行） */
 .preset-box { margin-top: 10px; border-top: 1px solid #1f2937; padding-top: 10px; }

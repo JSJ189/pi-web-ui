@@ -240,7 +240,16 @@
 	--stop-red-hover: #dc2626;
 	--brand-grad-a: #8b5cf6;
 	--brand-grad-b: #6366f1;
+	/* 语义色（green/red/amber/blue）作**实底**时的前景：白字压在浅色语义色上会
+	   隐形（默认主题 --amber #fbbf24 白字仅 1.67:1、--green #34d399 仅 1.92:1）。
+	   规则：白字对比度 >= 3:1 用 #ffffff，否则用 #1a1a1a；主题按自己的语义色
+	   声明覆盖（守卫：tests/unit/semantic-contrast.test.ts）。 */
+	--on-green: #1a1a1a;
+	--on-red: #1a1a1a;
 	--on-amber: #1a1a1a;
+	--on-blue: #ffffff;
+	--on-send-blue: #ffffff;
+	--on-stop-red: #ffffff;
 	--search-active-fg: #1a1d26;
 	--switch-knob: #ffffff;
 	--switch-bg-off: var(--bg-elev2);
@@ -1158,8 +1167,8 @@ button.session-item.elsewhere-item.confirm {
 	padding: 0 5px;
 	border-radius: 999px;
 	border: 1px solid rgba(139, 92, 246, 0.4);
-	color: #a78bfa;
-	background: rgba(139, 92, 246, 0.1);
+	color: var(--plugin-purple);
+	background: color-mix(in srgb, var(--plugin-purple) 10%, transparent);
 	white-space: nowrap;
 	flex-shrink: 0;
 }
@@ -1621,17 +1630,17 @@ button.session-item.elsewhere-item.confirm {
 	border-color: var(--border);
 }
 .subagents-collapsed-badge.has-streaming {
-	background: rgba(34, 197, 94, 0.12);
+	background: color-mix(in srgb, var(--green) 12%, transparent);
 	color: var(--green);
 	border-color: rgba(34, 197, 94, 0.3);
 }
 .subagents-collapsed-badge.has-question {
-	background: rgba(245, 158, 11, 0.12);
+	background: color-mix(in srgb, var(--amber) 12%, transparent);
 	color: var(--amber);
 	border-color: rgba(245, 158, 11, 0.3);
 }
 .subagents-collapsed-badge.has-error {
-	background: rgba(239, 68, 68, 0.12);
+	background: color-mix(in srgb, var(--red) 12%, transparent);
 	color: var(--red);
 	border-color: rgba(239, 68, 68, 0.3);
 }
@@ -1721,7 +1730,7 @@ button.session-item.elsewhere-item.confirm {
 /* 确认态：红底白勾，一眼可辨 */
 .lp-row .lp-del.confirm,
 .lp-row .lp-del.confirm:hover {
-	color: #fff;
+	color: var(--on-red);
 	background: var(--red);
 }
 /* X 展开后的两个选项（仅关已结束 / 强行全关）：hover 才出现 */
@@ -1755,7 +1764,7 @@ button.session-item.elsewhere-item.confirm {
 .lp-del-opt.danger:hover {
 	background: var(--red);
 	border-color: var(--red);
-	color: #fff;
+	color: var(--on-red);
 }
 
 /* --------------------------------------------------------------------- files */
@@ -2167,7 +2176,7 @@ button.session-item.elsewhere-item.confirm {
 }
 .file-attach.download:hover {
 	background: var(--green);
-	color: #fff;
+	color: var(--on-green);
 }
 
 /* link icon : reference path only */
@@ -2191,7 +2200,7 @@ button.session-item.elsewhere-item.confirm {
 }
 .file-attach.copy.copied {
 	background: var(--green);
-	color: #fff;
+	color: var(--on-green);
 }
 
 /* --------------------------------------------------------------- attachments */
@@ -2524,7 +2533,7 @@ button.session-item.elsewhere-item.confirm {
 	color: var(--text-faint);
 	padding: 6px 10px;
 	border-bottom: 1px solid var(--border);
-	background: rgba(139, 92, 246, 0.06);
+	background: color-mix(in srgb, var(--accent) 6%, transparent);
 	/* 里面插的是文件名（可含无空格长 token）→ 允许断行 */
 	overflow-wrap: anywhere;
 }
@@ -3507,7 +3516,7 @@ select.plugin-topbar-item.plugin-topbar-select {
 }
 .pm-footer-btn.primary:hover {
 	background: var(--accent);
-	color: #fff;
+	color: var(--accent-contrast, #fff);
 }
 .pm-footer-btn svg {
 	flex: none;
@@ -3716,7 +3725,7 @@ select.plugin-topbar-item.plugin-topbar-select {
 }
 .cmd-run:hover {
 	background: var(--accent);
-	color: #fff;
+	color: var(--accent-contrast, #fff);
 }
 
 .cmd-main {
@@ -4859,7 +4868,7 @@ body.panel-resizing .scm-divider::after {
 }
 .statusbar .engine-picker-btn:hover,
 .footer .engine-picker-btn:hover {
-	background: rgba(255, 255, 255, 0.08) !important;
+	background: var(--glow-12) !important;
 	border-color: transparent !important;
 	color: var(--text) !important;
 }
@@ -4974,7 +4983,7 @@ body.panel-resizing .scm-divider::after {
 	flex-shrink: 0;
 }
 .engine-picker-item-tag.uninstalled {
-	background: rgba(251, 191, 36, 0.12);
+	background: color-mix(in srgb, var(--amber) 12%, transparent);
 	color: var(--amber);
 	border-color: rgba(251, 191, 36, 0.3);
 }
@@ -5000,7 +5009,7 @@ body.panel-resizing .scm-divider::after {
 	border-radius: 4px;
 	border: 1px solid rgba(139, 92, 246, 0.35);
 	background: var(--accent);
-	color: #fff;
+	color: var(--accent-contrast, #fff);
 	cursor: pointer;
 	flex-shrink: 0;
 	transition: all 0.15s ease;
@@ -5021,9 +5030,9 @@ body.panel-resizing .scm-divider::after {
 	font-size: 11px;
 	font-weight: 500;
 	border-radius: 4px;
-	border: 1px solid rgba(52, 211, 153, 0.4);
+	border: 1px solid color-mix(in srgb, var(--green) 40%, transparent);
 	background: var(--green);
-	color: #0b0d12;
+	color: var(--on-green);
 	cursor: pointer;
 	flex-shrink: 0;
 	transition: all 0.15s ease;
@@ -5612,13 +5621,13 @@ body.panel-resizing .scm-divider::after {
 }
 
 .cwd-ssh-tool-badge.ok {
-	background: rgba(34, 197, 94, 0.15);
-	color: #22c55e;
+	background: color-mix(in srgb, var(--green) 15%, transparent);
+	color: var(--green);
 }
 
 .cwd-ssh-tool-badge.missing {
-	background: rgba(239, 68, 68, 0.15);
-	color: #ef4444;
+	background: color-mix(in srgb, var(--red) 15%, transparent);
+	color: var(--red);
 }
 
 .cwd-ssh-install-box {
@@ -5628,7 +5637,7 @@ body.panel-resizing .scm-divider::after {
 	padding: 6px 8px;
 	border: 1px dashed var(--amber);
 	border-radius: 5px;
-	background: rgba(245, 158, 11, 0.08);
+	background: color-mix(in srgb, var(--amber) 8%, transparent);
 	font-size: 11px;
 }
 
@@ -5864,8 +5873,8 @@ body.is-desktop-mac:not(.is-desktop-fullscreen) .topbar {
 /* 关闭按钮：平时使用同系文字色，悬停时为柔和红底微光，按压时为红底白字 */
 .win-ctrl-btn.win-ctrl-close:hover {
 	border-color: transparent !important;
-	background: rgba(239, 68, 68, 0.18) !important;
-	color: #f87171 !important;
+	background: color-mix(in srgb, var(--red) 18%, transparent);
+	color: var(--red) !important;
 }
 
 .win-ctrl-btn.win-ctrl-close:active {
@@ -5996,7 +6005,7 @@ body.is-desktop-mac:not(.is-desktop-fullscreen) .topbar {
 	padding: 0 5px;
 	border-radius: 9px;
 	background: var(--red);
-	color: #fff;
+	color: var(--on-red);
 	font-size: 10.5px;
 	font-weight: 700;
 	line-height: 1;
@@ -6082,7 +6091,7 @@ body.is-desktop-mac:not(.is-desktop-fullscreen) .topbar {
 	font-size: 11px;
 	font-weight: 700;
 	color: var(--amber);
-	background: rgba(255, 193, 7, 0.12);
+	background: color-mix(in srgb, var(--amber) 12%, transparent);
 	border-radius: 9px;
 	padding: 1px 7px;
 }
@@ -6339,7 +6348,7 @@ body.is-desktop-mac:not(.is-desktop-fullscreen) .topbar {
 }
 .bg-task-stop:hover:not(:disabled) {
 	border-color: var(--red);
-	color: #fff;
+	color: var(--on-red);
 	background: var(--red);
 }
 .bg-task-foot {
@@ -6456,7 +6465,7 @@ body.is-desktop-mac:not(.is-desktop-fullscreen) .topbar {
 }
 .bg-task-stopall:hover:not(:disabled) {
 	background: var(--red);
-	color: #fff;
+	color: var(--on-red);
 }
 .bg-task-stopall:disabled {
 	opacity: 0.4;
@@ -6913,21 +6922,21 @@ body.is-desktop-mac:not(.is-desktop-fullscreen) .topbar {
 }
 /* 临时对话按鈕：紫色加深以区分普通新对话 */
 .chip.ephemeral-chat-btn {
-	color: #a78bfa;
+	color: var(--plugin-purple);
 	border-color: rgba(139, 92, 246, 0.5);
-	background: rgba(139, 92, 246, 0.07);
+	background: color-mix(in srgb, var(--plugin-purple) 7%, transparent);
 }
 .chip.ephemeral-chat-btn:hover {
-	background: rgba(139, 92, 246, 0.16);
+	background: color-mix(in srgb, var(--accent) 16%, transparent);
 }
 /* 启动沙盒项目按钮：琥珀/金黄色强调以区分普通对话与临时对话 */
 .chip.sandbox-chip {
 	color: var(--amber);
 	border-color: rgba(245, 158, 11, 0.45);
-	background: rgba(245, 158, 11, 0.08);
+	background: color-mix(in srgb, var(--amber) 8%, transparent);
 }
 .chip.sandbox-chip:hover {
-	background: rgba(245, 158, 11, 0.18);
+	background: color-mix(in srgb, var(--amber) 18%, transparent);
 	border-color: var(--amber);
 }
 /* GitHub repo link (top-right corner) — perfect circle. */
@@ -7366,7 +7375,7 @@ body.is-desktop-mac:not(.is-desktop-fullscreen) .topbar {
 .ctx-item.danger.armed,
 .ctx-item.danger.armed:hover {
 	background: var(--red);
-	color: #fff;
+	color: var(--on-red);
 }
 .ctx-item.danger.armed svg {
 	color: #fff;
@@ -7553,7 +7562,7 @@ body.is-desktop-mac:not(.is-desktop-fullscreen) .topbar {
 	z-index: 60;
 	padding: 6px 14px;
 	border-radius: 8px;
-	background: rgba(245, 158, 11, 0.12);
+	background: color-mix(in srgb, var(--amber) 12%, transparent);
 	border: 1px solid var(--amber);
 	color: var(--amber);
 	font-size: 12px;
@@ -7568,9 +7577,9 @@ body.is-desktop-mac:not(.is-desktop-fullscreen) .topbar {
 	margin: 8px auto 12px;
 	padding: 5px 8px 5px 14px;
 	border-radius: 8px;
-	background: rgba(139, 92, 246, 0.08);
+	background: color-mix(in srgb, var(--plugin-purple) 8%, transparent);
 	border: 1px solid rgba(139, 92, 246, 0.35);
-	color: #a78bfa;
+	color: var(--plugin-purple);
 	font-size: 12px;
 	width: fit-content;
 	max-width: 100%;
@@ -7581,13 +7590,13 @@ body.is-desktop-mac:not(.is-desktop-fullscreen) .topbar {
 	padding: 2px 8px;
 	border-radius: 6px;
 	border: 1px solid rgba(139, 92, 246, 0.45);
-	background: rgba(139, 92, 246, 0.12);
-	color: #c4b5fd;
+	background: color-mix(in srgb, var(--plugin-purple) 12%, transparent);
+	color: var(--plugin-purple);
 	font-size: 11px;
 	cursor: pointer;
 }
 .ephemeral-save:hover {
-	background: rgba(139, 92, 246, 0.22);
+	background: color-mix(in srgb, var(--accent) 22%, transparent);
 }
 
 /* ---- 沙盒项目横幅、左栏徽标与创建/导出弹窗 ---- */
@@ -7600,7 +7609,7 @@ body.is-desktop-mac:not(.is-desktop-fullscreen) .topbar {
 	margin: 6px 12px 4px;
 	padding: 7px 12px;
 	border-radius: 8px;
-	background: rgba(16, 185, 129, 0.08);
+	background: color-mix(in srgb, var(--green) 8%, transparent);
 	border: 1px solid rgba(16, 185, 129, 0.35);
 	color: var(--text);
 	font-size: 12px;
@@ -7663,11 +7672,11 @@ body.is-desktop-mac:not(.is-desktop-fullscreen) .topbar {
 }
 .sandbox-banner-btn.primary {
 	border-color: rgba(16, 185, 129, 0.45);
-	background: rgba(16, 185, 129, 0.14);
-	color: #6ee7b7;
+	background: color-mix(in srgb, var(--green) 14%, transparent);
+	color: var(--green);
 }
 .sandbox-banner-btn.primary:hover {
-	background: rgba(16, 185, 129, 0.24);
+	background: color-mix(in srgb, var(--green) 24%, transparent);
 }
 .sandbox-banner-btn.danger:hover {
 	border-color: var(--red);
@@ -7687,14 +7696,14 @@ body.is-desktop-mac:not(.is-desktop-fullscreen) .topbar {
 	flex-shrink: 0;
 }
 .lp-sandbox-badge.ephemeral {
-	background: rgba(245, 158, 11, 0.14);
+	background: color-mix(in srgb, var(--amber) 14%, transparent);
 	border: 1px solid rgba(245, 158, 11, 0.38);
 	color: var(--amber);
 }
 .lp-sandbox-badge.permanent {
-	background: rgba(16, 185, 129, 0.14);
+	background: color-mix(in srgb, var(--green) 14%, transparent);
 	border: 1px solid rgba(16, 185, 129, 0.38);
-	color: #34d399;
+	color: var(--green);
 }
 
 /* -------------------------------------------------------------------------
@@ -7715,11 +7724,11 @@ body.is-desktop-mac:not(.is-desktop-fullscreen) .topbar {
 	max-width: calc(100% - 24px);
 }
 .worktree-banner.linked {
-	background: rgba(16, 185, 129, 0.08);
+	background: color-mix(in srgb, var(--green) 8%, transparent);
 	border: 1px solid rgba(16, 185, 129, 0.35);
 }
 .worktree-banner.notice {
-	background: rgba(245, 158, 11, 0.08);
+	background: color-mix(in srgb, var(--amber) 8%, transparent);
 	border: 1px solid rgba(245, 158, 11, 0.35);
 }
 .worktree-banner-info {
@@ -7776,11 +7785,11 @@ body.is-desktop-mac:not(.is-desktop-fullscreen) .topbar {
 }
 .worktree-banner-btn.primary {
 	border-color: rgba(16, 185, 129, 0.45);
-	background: rgba(16, 185, 129, 0.14);
-	color: #6ee7b7;
+	background: color-mix(in srgb, var(--green) 14%, transparent);
+	color: var(--green);
 }
 .worktree-banner-btn.primary:hover {
-	background: rgba(16, 185, 129, 0.24);
+	background: color-mix(in srgb, var(--green) 24%, transparent);
 }
 .worktree-banner-btn.danger:hover {
 	border-color: var(--red);
@@ -7800,12 +7809,12 @@ body.is-desktop-mac:not(.is-desktop-fullscreen) .topbar {
 	flex-shrink: 0;
 }
 .lp-worktree-badge.linked {
-	background: rgba(16, 185, 129, 0.14);
+	background: color-mix(in srgb, var(--green) 14%, transparent);
 	border: 1px solid rgba(16, 185, 129, 0.38);
-	color: #34d399;
+	color: var(--green);
 }
 .lp-worktree-badge.dirty {
-	background: rgba(239, 68, 68, 0.14);
+	background: color-mix(in srgb, var(--red) 14%, transparent);
 	border: 1px solid rgba(239, 68, 68, 0.38);
 	color: var(--red);
 }
@@ -7901,7 +7910,7 @@ body.is-desktop-mac:not(.is-desktop-fullscreen) .topbar {
 }
 .sandbox-choice-card.active {
 	border-color: var(--accent);
-	background: rgba(59, 130, 246, 0.1);
+	background: color-mix(in srgb, var(--info-blue) 10%, transparent);
 }
 .sandbox-choice-title {
 	display: inline-flex;
@@ -8019,15 +8028,15 @@ body.is-desktop-mac:not(.is-desktop-fullscreen) .topbar {
 	flex-shrink: 0;
 }
 .sandbox-diff-tag.added {
-	background: rgba(16, 185, 129, 0.16);
-	color: #34d399;
+	background: color-mix(in srgb, var(--green) 16%, transparent);
+	color: var(--green);
 }
 .sandbox-diff-tag.modified {
-	background: rgba(245, 158, 11, 0.16);
+	background: color-mix(in srgb, var(--amber) 16%, transparent);
 	color: var(--amber);
 }
 .sandbox-diff-tag.deleted {
-	background: rgba(239, 68, 68, 0.14);
+	background: color-mix(in srgb, var(--red) 14%, transparent);
 	color: var(--red);
 }
 .sandbox-diff-path {
@@ -8402,14 +8411,14 @@ body:not(.has-wallpaper)::after {
 /* 壁纸模式下，侧边折叠/展开按钮（.panel-collapse-btn / .panel-rail）保持半透明微晶质感，杜绝黑块 */
 body.has-wallpaper .panel-collapse-btn,
 body.has-wallpaper .panel-rail {
-	background: rgba(255, 255, 255, 0.08);
+	background: var(--glow-12);
 	color: #f8fafc;
 	backdrop-filter: blur(8px);
 	-webkit-backdrop-filter: blur(8px);
 }
 body.has-wallpaper .panel-collapse-btn:hover,
 body.has-wallpaper .panel-rail:hover {
-	background: rgba(255, 255, 255, 0.18);
+	background: var(--glow-18);
 	color: #ffffff;
 }
 /* 容器背景优先于壁纸：各区域是否露图完全由自身背景决定（transparent → 露图，
@@ -9041,7 +9050,7 @@ select.notice-select:hover {
 	background: rgba(0, 0, 0, 0.55);
 }
 .msg-editor-img-remove:hover {
-	background: rgba(220, 38, 38, 0.85);
+	background: color-mix(in srgb, var(--red) 85%, transparent);
 }
 .msg-editor-img-remove svg {
 	width: 12px;
@@ -9056,7 +9065,7 @@ select.notice-select:hover {
 	padding: 2px 22px 2px 6px;
 	border-radius: 6px;
 	border: 1px solid rgba(96, 165, 250, 0.45);
-	background: rgba(96, 165, 250, 0.12);
+	background: color-mix(in srgb, var(--info-blue) 12%, transparent);
 	align-items: center;
 }
 .msg-editor-file {
@@ -9887,7 +9896,7 @@ span.msg-editor-hint svg {
 .toolcall-kill:hover {
 	background: var(--red);
 	border-color: var(--red);
-	color: #fff;
+	color: var(--on-red);
 }
 
 /* ---- 工具定义说明弹窗（ToolInfoDialog）----
@@ -10016,7 +10025,7 @@ span.msg-editor-hint svg {
 }
 
 .approval-danger-hit {
-	background: rgba(239, 68, 68, 0.2);
+	background: color-mix(in srgb, var(--red) 20%, transparent);
 	color: var(--red);
 	border: 1px solid rgba(239, 68, 68, 0.4);
 	padding: 1px 5px;
@@ -10051,7 +10060,7 @@ span.msg-editor-hint svg {
 
 /* 终端命令行中的高危命中片段高亮（issue #566） */
 .bash-danger-hit {
-	background: rgba(239, 68, 68, 0.22);
+	background: color-mix(in srgb, var(--red) 22%, transparent);
 	color: var(--red);
 	border-bottom: 2px solid var(--red);
 	padding: 1px 4px;
@@ -10962,7 +10971,7 @@ div.chead[role="button"]:focus-visible,
 }
 .queued-tag.steer {
 	color: var(--amber);
-	background: rgba(251, 191, 36, 0.14);
+	background: color-mix(in srgb, var(--amber) 14%, transparent);
 }
 .queued-tag.follow {
 	color: var(--text-dim);
@@ -11161,7 +11170,7 @@ div.chead[role="button"]:focus-visible,
 }
 
 .msg-retry-btn:hover {
-	background: rgba(248, 113, 113, 0.14);
+	background: color-mix(in srgb, var(--red) 14%, transparent);
 }
 
 /* 大模型 API 瞬时报错自动重试中的温和提示（琥珀色，非红）：替代一闪而过的红色报错 */
@@ -11214,7 +11223,7 @@ div.chead[role="button"]:focus-visible,
 	align-items: center;
 	gap: 8px;
 	color: var(--info-blue);
-	background: rgba(96, 165, 250, 0.08);
+	background: color-mix(in srgb, var(--info-blue) 8%, transparent);
 	border: 1px solid rgba(96, 165, 250, 0.3);
 	border-radius: 8px;
 	padding: 8px 12px;
@@ -11305,7 +11314,7 @@ div.chead[role="button"]:focus-visible,
 .compacted-history-toggle-btn:hover {
 	color: var(--text);
 	border-color: rgba(96, 165, 250, 0.4);
-	background: rgba(96, 165, 250, 0.06);
+	background: color-mix(in srgb, var(--info-blue) 6%, transparent);
 }
 
 .compacted-history-chevron {
@@ -11332,7 +11341,7 @@ div.chead[role="button"]:focus-visible,
 	align-items: center;
 	padding: 1px 6px;
 	border-radius: 10px;
-	background: rgba(96, 165, 250, 0.12);
+	background: color-mix(in srgb, var(--info-blue) 12%, transparent);
 	color: var(--info-blue);
 	font-size: 11px;
 	font-weight: 500;
@@ -11871,7 +11880,7 @@ div.chead[role="button"]:focus-visible,
 .template-btn.send {
 	background: var(--accent);
 	border-color: var(--accent);
-	color: #fff;
+	color: var(--accent-contrast, #fff);
 }
 .template-btn.send:hover {
 	filter: brightness(1.08);
@@ -12128,7 +12137,7 @@ div.chead[role="button"]:focus-visible,
 }
 .qn-list-item.active {
 	background: color-mix(in srgb, var(--accent) 30%, transparent);
-	color: #fff;
+	color: var(--text);
 }
 
 .qn-list-idx {
@@ -12138,15 +12147,16 @@ div.chead[role="button"]:focus-visible,
 	line-height: 17px;
 	text-align: center;
 	border-radius: 5px;
-	background: rgba(0, 0, 0, 0.35);
-	color: var(--text-faint);
+	/* 浅色主题下 rgba(0,0,0,.35) 会压成一块中灰，--text-faint 直接糊掉（mist 只有 1.09:1） */
+	background: var(--bg-elev3);
+	color: var(--text-dim);
 	font-size: 10px;
 	font-weight: 700;
 	font-family: var(--mono);
 }
 .qn-list-item.active .qn-list-idx {
 	background: var(--accent);
-	color: #fff;
+	color: var(--accent-contrast, #fff);
 }
 
 .qn-list-text {
@@ -12411,7 +12421,7 @@ div.chead[role="button"]:focus-visible,
 	border: none;
 	border-radius: 6px;
 	background: var(--accent);
-	color: #fff;
+	color: var(--accent-contrast, #fff);
 	font-size: 12px;
 	line-height: 1.5;
 	cursor: pointer;
@@ -12476,7 +12486,7 @@ div.chead[role="button"]:focus-visible,
 	right: -14px;
 	bottom: 0;
 	height: 2px;
-	background: rgba(255, 255, 255, 0.08);
+	background: var(--glow-12);
 	overflow: hidden;
 	pointer-events: none;
 }
@@ -12492,7 +12502,7 @@ div.chead[role="button"]:focus-visible,
 	bottom: 0;
 	width: 100%;
 	height: 2px;
-	background: rgba(255, 255, 255, 0.08);
+	background: var(--glow-12);
 	overflow: hidden;
 	pointer-events: none;
 }
@@ -12684,7 +12694,7 @@ div.chead[role="button"]:focus-visible,
 	line-height: 1.4;
 	white-space: nowrap;
 	background: var(--accent);
-	color: #fff;
+	color: var(--accent-contrast, #fff);
 	border: none;
 	border-radius: 8px;
 	padding: 5px 12px;
@@ -12944,22 +12954,22 @@ div.chead[role="button"]:focus-visible,
 
 .goalbar-chip.reviewing {
 	background: var(--green);
-	color: #fff;
+	color: var(--on-green);
 }
 
 .goalbar-chip.pass {
 	background: var(--green);
-	color: #fff;
+	color: var(--on-green);
 }
 
 .goalbar-chip.fail {
 	background: var(--red);
-	color: #fff;
+	color: var(--on-red);
 }
 
 .goalbar-chip.blocked {
 	background: var(--amber);
-	color: #fff;
+	color: var(--on-amber);
 }
 
 .goalbar-detail {
@@ -13530,7 +13540,7 @@ div.chead[role="button"]:focus-visible,
 .inputbox .btn.send {
 	background: var(--send-blue);
 	border-color: var(--send-blue);
-	color: #fff;
+	color: var(--on-send-blue);
 	box-shadow: 0 2px 10px rgba(59, 130, 246, 0.35);
 }
 .inputbox .btn.send:hover:not(:disabled) {
@@ -13544,7 +13554,7 @@ div.chead[role="button"]:focus-visible,
 .inputbox .btn.stop {
 	background: var(--stop-red);
 	border-color: var(--stop-red);
-	color: #fff;
+	color: var(--on-stop-red);
 	box-shadow: 0 2px 10px rgba(239, 68, 68, 0.4);
 	animation: stop-pulse 2s cubic-bezier(0.4, 0, 0.6, 1) infinite;
 }
@@ -14094,7 +14104,7 @@ div.chead[role="button"]:focus-visible,
 	padding: 0.12em 0.34em;
 	border: 1px solid var(--border-soft);
 	border-radius: 5px;
-	background: rgba(139, 92, 246, 0.1);
+	background: color-mix(in srgb, var(--accent) 10%, transparent);
 	color: var(--link-soft);
 	font-size: 0.88em;
 }
@@ -14126,7 +14136,7 @@ div.chead[role="button"]:focus-visible,
 	border-radius: 8px;
 	border: 1px solid var(--accent);
 	background: var(--accent);
-	color: #fff;
+	color: var(--accent-contrast, #fff);
 	cursor: pointer;
 	font-size: 13px;
 }
@@ -14341,7 +14351,7 @@ div.chead[role="button"]:focus-visible,
 	padding: 0.12em 0.34em;
 	border: 1px solid var(--border-soft);
 	border-radius: 5px;
-	background: rgba(139, 92, 246, 0.1);
+	background: color-mix(in srgb, var(--accent) 10%, transparent);
 	color: var(--link-soft);
 	font-size: 0.88em;
 	word-break: break-word;
@@ -14435,11 +14445,11 @@ div.chead[role="button"]:focus-visible,
 }
 .question-step-pill.active .question-step-pill-idx {
 	background: var(--accent);
-	color: #fff;
+	color: var(--accent-contrast, #fff);
 }
 .question-step-pill.done:not(.active) .question-step-pill-idx {
 	background: color-mix(in srgb, var(--accent) 35%, transparent);
-	color: #fff;
+	color: var(--text);
 }
 .question-step-pill-label {
 	max-width: 130px;
@@ -14565,7 +14575,7 @@ div.chead[role="button"]:focus-visible,
 	height: 16px;
 	border-radius: 50%;
 	background: var(--accent);
-	color: #fff;
+	color: var(--accent-contrast, #fff);
 	font-size: 10px;
 	flex: none;
 	font-weight: 700;
@@ -14770,8 +14780,8 @@ div.chead[role="button"]:focus-visible,
 	line-height: 1.6;
 }
 .browser-control-modal .bc-note.warn {
-	background: rgba(245, 158, 11, 0.13);
-	color: #fbbf24;
+	background: color-mix(in srgb, var(--amber) 13%, transparent);
+	color: var(--amber);
 }
 .browser-control-modal .bc-section {
 	margin: 14px 0 6px;
@@ -16805,8 +16815,8 @@ a.set-uninstall:hover {
 	line-height: 1.4;
 }
 .dsh-patch-badge.active {
-	background: rgba(34, 197, 94, 0.12);
-	color: #22c55e;
+	background: color-mix(in srgb, var(--green) 12%, transparent);
+	color: var(--green);
 	border: 1px solid rgba(34, 197, 94, 0.28);
 }
 .dsh-patch-badge.disabled {
@@ -16949,7 +16959,7 @@ a.set-uninstall:hover {
 	gap: 10px;
 	padding: 10px 14px;
 	border-radius: 8px;
-	background: rgba(245, 158, 11, 0.08);
+	background: color-mix(in srgb, var(--amber) 8%, transparent);
 	border: 1px solid rgba(245, 158, 11, 0.25);
 	color: var(--text);
 	font-size: 12.5px;
@@ -17112,8 +17122,8 @@ a.set-uninstall:hover {
 	opacity: 0.88;
 }
 .dsh-market-install-btn.installed {
-	background: rgba(34, 197, 94, 0.14);
-	color: #22c55e;
+	background: color-mix(in srgb, var(--green) 14%, transparent);
+	color: var(--green);
 	border-color: rgba(34, 197, 94, 0.35);
 }
 .dsh-market-card-meta {
@@ -17169,8 +17179,8 @@ a.set-uninstall:hover {
 }
 .dsh-market-tag.webui-warn {
 	border-color: rgba(245, 158, 11, 0.35);
-	background: rgba(245, 158, 11, 0.1);
-	color: #f59e0b;
+	background: color-mix(in srgb, var(--amber) 10%, transparent);
+	color: var(--amber);
 	font-weight: 500;
 }
 .dsh-market-pagination {
@@ -19154,7 +19164,7 @@ a.set-uninstall:hover {
 	border-radius: 99px;
 	font-size: 11px;
 	color: var(--auth-green);
-	background: rgba(52, 211, 153, 0.12);
+	background: color-mix(in srgb, var(--green) 12%, transparent);
 	border: 1px solid rgba(52, 211, 153, 0.25);
 	vertical-align: 1px;
 }
@@ -19392,7 +19402,7 @@ a.set-uninstall:hover {
 }
 .btn.sm.danger:hover {
 	background: var(--red);
-	color: #fff;
+	color: var(--on-red);
 }
 
 .iconbtn.danger {
@@ -19751,7 +19761,7 @@ a.set-uninstall:hover {
 .fp-attach.full.on {
 	background: var(--accent);
 	border-color: var(--accent);
-	color: #fff;
+	color: var(--accent-contrast, #fff);
 }
 .fp-attach:disabled {
 	opacity: 0.45;
@@ -19834,7 +19844,7 @@ a.set-uninstall:hover {
 	padding: 7px 14px;
 	font-size: 11.5px;
 	color: var(--amber);
-	background: rgba(251, 191, 36, 0.08);
+	background: color-mix(in srgb, var(--amber) 8%, transparent);
 	border-bottom: 1px solid var(--border-soft);
 	flex-shrink: 0;
 }
@@ -20139,7 +20149,7 @@ a.set-uninstall:hover {
 	border: 1px solid rgba(139, 92, 246, 0.2);
 	border-left: 4px solid var(--accent);
 	border-radius: 0 10px 10px 0;
-	background: rgba(139, 92, 246, 0.08);
+	background: color-mix(in srgb, var(--accent) 8%, transparent);
 	color: var(--text-dim);
 }
 .fp-markdown blockquote p:last-child {
@@ -20161,7 +20171,7 @@ a.set-uninstall:hover {
 	font-size: 13px;
 }
 .fp-markdown thead {
-	background: rgba(139, 92, 246, 0.12);
+	background: color-mix(in srgb, var(--accent) 12%, transparent);
 }
 .fp-markdown th,
 .fp-markdown td {
@@ -20181,7 +20191,7 @@ a.set-uninstall:hover {
 	background: var(--glow-025);
 }
 .fp-markdown tbody tr:hover {
-	background: rgba(139, 92, 246, 0.07);
+	background: color-mix(in srgb, var(--accent) 7%, transparent);
 }
 /* Office 预览（docx/xlsx 转 Markdown 下发）：表格是主体，紧凑排布。
  * Markdown 会在每个格子里包一层 <p>（自带 0.8em 边距），不杀掉行高直接翻倍。 */
@@ -20222,7 +20232,7 @@ a.set-uninstall:hover {
 	padding: 0.16em 0.42em;
 	border: 1px solid var(--border-soft);
 	border-radius: 5px;
-	background: rgba(139, 92, 246, 0.1);
+	background: color-mix(in srgb, var(--accent) 10%, transparent);
 	color: var(--link-soft);
 }
 .fp-markdown .codeblock {
@@ -20390,13 +20400,13 @@ a.set-uninstall:hover {
 	cursor: pointer;
 }
 .fp-line:hover {
-	background: rgba(139, 92, 246, 0.08);
+	background: color-mix(in srgb, var(--accent) 8%, transparent);
 }
 .fp-line.sel {
-	background: rgba(139, 92, 246, 0.22);
+	background: color-mix(in srgb, var(--accent) 22%, transparent);
 }
 .fp-code.dragging .fp-line.sel {
-	background: rgba(139, 92, 246, 0.3);
+	background: color-mix(in srgb, var(--accent) 30%, transparent);
 }
 
 .fp-num {
@@ -21320,7 +21330,7 @@ a.set-uninstall:hover {
 	padding: 1px 7px;
 	border-radius: 9px;
 	background: var(--amber);
-	color: #fff;
+	color: var(--on-amber);
 	font-size: 10.5px;
 	font-weight: 700;
 	line-height: 1.2;
@@ -21360,7 +21370,7 @@ a.set-uninstall:hover {
 	color: var(--text-dim);
 }
 .dd-all-item.warn {
-	background: rgba(245, 158, 11, 0.08);
+	background: color-mix(in srgb, var(--amber) 8%, transparent);
 	color: var(--amber);
 	flex-wrap: wrap;
 }
@@ -21383,7 +21393,7 @@ a.set-uninstall:hover {
 	margin-left: auto;
 }
 .dd-all-item.err {
-	background: rgba(248, 113, 113, 0.08);
+	background: color-mix(in srgb, var(--red) 8%, transparent);
 	color: var(--red);
 }
 .dd-all-name {
@@ -21438,7 +21448,7 @@ a.set-uninstall:hover {
 	padding: 1px 8px;
 	border: 1px solid rgba(245, 158, 11, 0.4);
 	border-radius: 6px;
-	background: rgba(245, 158, 11, 0.1);
+	background: color-mix(in srgb, var(--amber) 10%, transparent);
 	color: var(--amber);
 	font-size: 10.5px;
 	font-weight: 600;
@@ -21446,7 +21456,7 @@ a.set-uninstall:hover {
 	cursor: pointer;
 }
 .dd-update-btn:hover {
-	background: rgba(245, 158, 11, 0.22);
+	background: color-mix(in srgb, var(--amber) 22%, transparent);
 	border-color: rgba(245, 158, 11, 0.65);
 }
 
@@ -21963,7 +21973,9 @@ a.set-uninstall:hover {
 .file-pill:hover {
 	background: color-mix(in srgb, var(--accent) 16%, var(--bg-elev2));
 	border-color: var(--accent, #60a5fa);
-	color: var(--accent, #93c5fd);
+	/* 染色底会把 accent 文字的对比度再压低一档（vs-code-dark 只有 2.9:1），
+	   悬停态改用正文色，accent 仍由描边与底色表达 */
+	color: var(--text);
 	transform: translateY(-1px);
 }
 
@@ -22185,7 +22197,7 @@ a.set-uninstall:hover {
 	line-height: 13px;
 	border-radius: 7px;
 	background: var(--accent);
-	color: var(--bg);
+	color: var(--accent-contrast, #fff);
 	text-align: center;
 	padding: 0 2px;
 	font-weight: 600;
@@ -22383,7 +22395,7 @@ a.set-uninstall:hover {
 
 .bar-item-badge.bg-task-badge {
 	background: var(--red);
-	color: #fff;
+	color: var(--on-red);
 }
 
 .bar-item-brand {
@@ -22520,7 +22532,7 @@ a.set-uninstall:hover {
 .footer .bar-item:hover,
 .footer .bar-item.chip:hover,
 .footer .chip:hover {
-	background: rgba(255, 255, 255, 0.08) !important;
+	background: var(--glow-12) !important;
 	color: var(--text) !important;
 	border-color: transparent !important;
 	border-radius: 2px !important;
@@ -23238,14 +23250,14 @@ a.set-uninstall:hover {
 }
 
 .mcp-scope-badge.scope-global {
-	background: rgba(56, 189, 248, 0.14);
-	color: #38bdf8;
+	background: color-mix(in srgb, var(--info-blue) 14%, transparent);
+	color: var(--info-blue);
 	border: 1px solid rgba(56, 189, 248, 0.28);
 }
 
 .mcp-scope-badge.scope-project {
-	background: rgba(168, 85, 247, 0.14);
-	color: #c084fc;
+	background: color-mix(in srgb, var(--plugin-purple) 14%, transparent);
+	color: var(--plugin-purple);
 	border: 1px solid rgba(168, 85, 247, 0.28);
 }
 
@@ -23274,8 +23286,8 @@ a.set-uninstall:hover {
 }
 
 .mcp-status-pill.status-running {
-	background: rgba(34, 197, 94, 0.12);
-	color: #22c55e;
+	background: color-mix(in srgb, var(--green) 12%, transparent);
+	color: var(--green);
 }
 .mcp-status-pill.status-running .mcp-status-dot {
 	background: #22c55e;
@@ -23290,8 +23302,8 @@ a.set-uninstall:hover {
 }
 
 .mcp-status-pill.status-error {
-	background: rgba(239, 68, 68, 0.12);
-	color: #ef4444;
+	background: color-mix(in srgb, var(--red) 12%, transparent);
+	color: var(--red);
 }
 .mcp-status-pill.status-error .mcp-status-dot {
 	background: #ef4444;
@@ -23402,10 +23414,10 @@ a.set-uninstall:hover {
 	align-items: flex-start;
 	gap: 8px;
 	padding: 8px 10px;
-	background: rgba(239, 68, 68, 0.08);
+	background: color-mix(in srgb, var(--red) 8%, transparent);
 	border: 1px solid rgba(239, 68, 68, 0.25);
 	border-radius: 6px;
-	color: #ef4444;
+	color: var(--red);
 	font-size: 11.5px;
 	line-height: 1.4;
 }
@@ -23684,7 +23696,7 @@ a.set-uninstall:hover {
 
 .mcp-goto-market-btn:hover {
 	background: var(--accent);
-	color: #fff;
+	color: var(--accent-contrast, #fff);
 }
 
 .mcp-market-view,
@@ -23889,8 +23901,8 @@ a.set-uninstall:hover {
 	font-size: 10.5px;
 	padding: 1px 6px;
 	border-radius: 4px;
-	background: rgba(56, 189, 248, 0.12);
-	color: #38bdf8;
+	background: color-mix(in srgb, var(--info-blue) 12%, transparent);
+	color: var(--info-blue);
 	border: 1px solid rgba(56, 189, 248, 0.25);
 }
 
@@ -23942,13 +23954,13 @@ a.set-uninstall:hover {
 }
 
 .mcp-market-key-tag.none {
-	background: rgba(34, 197, 94, 0.1);
-	color: #22c55e;
+	background: color-mix(in srgb, var(--green) 10%, transparent);
+	color: var(--green);
 }
 
 .mcp-market-key-tag.required {
-	background: rgba(245, 158, 11, 0.1);
-	color: #f59e0b;
+	background: color-mix(in srgb, var(--amber) 10%, transparent);
+	color: var(--amber);
 }
 
 .mcp-market-card-actions {
@@ -23988,23 +24000,23 @@ a.set-uninstall:hover {
 }
 
 .mcp-btn-add.global {
-	background: rgba(56, 189, 248, 0.1);
+	background: color-mix(in srgb, var(--info-blue) 10%, transparent);
 	border: 1px solid rgba(56, 189, 248, 0.28);
-	color: #38bdf8;
+	color: var(--info-blue);
 }
 
 .mcp-btn-add.global:hover {
-	background: rgba(56, 189, 248, 0.2);
+	background: color-mix(in srgb, var(--info-blue) 20%, transparent);
 }
 
 .mcp-btn-add.project {
-	background: rgba(168, 85, 247, 0.1);
+	background: color-mix(in srgb, var(--plugin-purple) 10%, transparent);
 	border: 1px solid rgba(168, 85, 247, 0.28);
-	color: #c084fc;
+	color: var(--plugin-purple);
 }
 
 .mcp-btn-add.project:hover {
-	background: rgba(168, 85, 247, 0.2);
+	background: color-mix(in srgb, var(--accent) 20%, transparent);
 }
 
 /* Skill 市场专属样式 */

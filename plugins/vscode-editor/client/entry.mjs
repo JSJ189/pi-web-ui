@@ -40900,7 +40900,7 @@ var client_default = {
 		.vsc-modal .btns { display: flex; justify-content: flex-end; gap: 8px; margin-top: 14px; }
 		.vsc-modal .btns button { all: unset; cursor: pointer; padding: 6px 14px; border-radius: 7px; font-size: 13px;
 			border: 1px solid var(--border, #444); }
-		.vsc-modal .btns button.primary { background: var(--accent, #7c5cff); border-color: transparent; color: #fff; }
+		.vsc-modal .btns button.primary { background: var(--accent, #7c5cff); border-color: transparent; color: var(--accent-contrast, #fff); }
 		.vsc-modal .btns button:hover { filter: brightness(1.15); }
 		/* ---- 手机窄屏适配（≤640px）：桌面端零变化 ---- */
 		.vsc-mobilebar { display: none; }

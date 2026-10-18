@@ -8,9 +8,12 @@ const STYLES_PATH = join(ROOT, "web", "src", "styles.css");
 const THEMES_DIR = join(ROOT, "themes");
 
 describe("顶栏/底栏角标徽标对比度与样式防护", () => {
-	it("styles.css 中后台任务计数角标 (.bar-item-badge.bg-task-badge) 保持红色告警底与白字，不被通用 bar-item-badge 冲刷", () => {
+	it("styles.css 中后台任务计数角标 (.bar-item-badge.bg-task-badge) 保持红色告警底与反色前景，不被通用 bar-item-badge 冲刷", () => {
 		const css = readFileSync(STYLES_PATH, "utf8");
-		expect(css).toMatch(/\.bar-item-badge\.bg-task-badge\s*\{[^}]*background:\s*var\(--red\)[^}]*color:\s*#fff/);
+		// 前景走 --on-red（由主题按 --red 明暗反色），不再写死白字
+		expect(css).toMatch(
+			/\.bar-item-badge\.bg-task-badge\s*\{[^}]*background:\s*var\(--red\)[^}]*color:\s*var\(--on-red\)/,
+		);
 	});
 
 	it("纯白 --accent 主题（如 flow/wallpaper-flow）必须声明 bar-item-badge 文字深色反色，杜绝白底白字", () => {

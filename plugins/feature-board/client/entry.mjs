@@ -248,7 +248,7 @@ export default {
       }
       .fb-btn-primary {
         background: var(--accent, #7c5cff);
-        color: #fff;
+        color: var(--accent-contrast, #fff);
       }
       .fb-btn-primary:hover {
         filter: brightness(1.1);

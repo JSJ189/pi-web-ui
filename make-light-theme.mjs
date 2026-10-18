@@ -50,20 +50,188 @@ for (const line of rootBlock[0].split("\n")) {
 
 /** Emit a theme file: full :root (defaults + overrides) + optional tail. */
 const emitTheme = (name, overrides = {}, tail = "", nameEn = "", group = "") => {
+	// 1) 有效变量表 = styles.css 默认值 ∪ 调色板覆盖
+	const vars = new Map(defaults);
+	for (const [k, v] of Object.entries(overrides)) if (k !== "color-scheme") vars.set(k, v);
+	// 2) 文字令牌可读性下限（与 themes/ 手写主题的压暗规则同一算法）
+	applyTextFloors(vars);
 	const lines = ["/* theme-name: " + name + " */"];
 	if (nameEn) lines.push("/* theme-name-en: " + nameEn + " */");
 	if (group) lines.push("/* theme-group: " + group + " */");
 	lines.push(":root {");
 	// color-scheme: themes default to light unless told otherwise.
 	lines.push("\tcolor-scheme: " + (overrides["color-scheme"] ?? "light") + ";");
-	for (const [k, v] of defaults) {
-		lines.push(`\t${k}: ${overrides[k] ?? v};`);
+	for (const [k, v] of vars) {
+		const val =
+			k === "--accent-contrast"
+				? (overrides["--accent-contrast"] ?? accentContrast(vars))
+				: (semanticForeground(k, vars, overrides) ?? v);
+		lines.push(`\t${k}: ${val};`);
 	}
 	lines.push("}", "");
 	return lines.join("\n") + tail;
 };
 
-const writeTheme = (name, file, body) => writeFileSync(join(here, "themes", file), body, "utf8");
+/*
+ * 强调色实底上的前景色（--accent-contrast）：主操作按钮 / 徽标都是
+ * 「--accent 实底 + 该令牌」，白字压在浅色 accent 上会直接隐形（flow 主题
+ * 纯白 accent → 1:1）。这里按对比度自动反色，门槛与守卫
+ * tests/unit/accent-contrast.test.ts 一致；调色板可显式覆盖（更贴主题的深色）。
+ */
+const ACCENT_MIN_RATIO = 3.0;
+const parseHexColor = (value) => {
+	const m = /^#([0-9a-f]{6})$/i.exec(String(value ?? "").trim());
+	if (!m) return null;
+	const n = parseInt(m[1], 16);
+	return [(n >> 16) & 255, (n >> 8) & 255, n & 255];
+};
+const relLum = ([r, g, b]) =>
+	[r, g, b]
+		.map((v) => v / 255)
+		.map((x) => (x <= 0.03928 ? x / 12.92 : Math.pow((x + 0.055) / 1.055, 2.4)))
+		.reduce((sum, v, i) => sum + v * [0.2126, 0.7152, 0.0722][i], 0);
+const contrastRatio = (a, b) => {
+	const [x, y] = [relLum(a), relLum(b)];
+	return (Math.max(x, y) + 0.05) / (Math.min(x, y) + 0.05);
+};
+function accentContrast(vars) {
+	const accent = parseHexColor(vars.get("--accent"));
+	if (!accent) return vars.get("--accent-contrast") ?? "#ffffff";
+	if (contrastRatio([255, 255, 255], accent) >= ACCENT_MIN_RATIO) return "#ffffff";
+	const bgRaw = vars.get("--bg");
+	const bg = parseHexColor(bgRaw);
+	if (bg && contrastRatio(bg, accent) >= ACCENT_MIN_RATIO) return bgRaw;
+	return "#0b0d12";
+}
+
+/*
+ * 文字令牌可读性下限（--text-faint / 语义文字色 / 代码正文色）：亮色主题经常沿用
+ * 深色主题的浅色值（`--amber #fbbf24` 白底仅 1.67:1）。这里保持色相与饱和度、只调
+ * 明度直到目标表面都够对比（门槛与 tests/unit/theme-text-contrast.test.ts 一致）。
+ */
+const TEXT_FLOORS = {
+	"--text-faint": [3.05, ["--bg", "--bg-elev", "--bg-elev2", "--code-bg"]],
+	"--accent": [3.5, ["--bg", "--bg-elev2"]],
+	"--amber": [4.5, ["--bg", "--bg-elev2"]],
+	"--amber-text": [4.5, ["--bg", "--bg-elev2"]],
+	"--green": [4.5, ["--bg", "--bg-elev2"]],
+	"--red": [4.5, ["--bg", "--bg-elev2"]],
+	"--red-text": [4.5, ["--bg", "--bg-elev2"]],
+	"--err-text": [4.5, ["--bg", "--bg-elev2"]],
+	"--blue": [4.5, ["--bg", "--bg-elev2"]],
+	"--link": [4.5, ["--bg", "--bg-elev2"]],
+	"--link-soft": [4.5, ["--bg", "--bg-elev2"]],
+	"--info-blue": [4.5, ["--bg", "--bg-elev2"]],
+	"--skill-blue": [4.5, ["--bg", "--bg-elev2"]],
+	"--auth-green": [4.5, ["--bg", "--bg-elev2"]],
+	"--plugin-purple": [4.5, ["--bg", "--bg-elev2"]],
+	"--md-strong": [4.5, ["--bg", "--bg-elev2"]],
+	"--code-text": [4.5, ["--code-bg"]],
+};
+const toHsl = ([r, g, b]) => {
+	[r, g, b] = [r / 255, g / 255, b / 255];
+	const max = Math.max(r, g, b),
+		min = Math.min(r, g, b);
+	const l = (max + min) / 2,
+		d = max - min;
+	const sat = d === 0 ? 0 : d / (1 - Math.abs(2 * l - 1));
+	let h = 0;
+	if (d !== 0) {
+		if (max === r) h = ((g - b) / d) % 6;
+		else if (max === g) h = (b - r) / d + 2;
+		else h = (r - g) / d + 4;
+		h *= 60;
+		if (h < 0) h += 360;
+	}
+	return [h, sat, l];
+};
+const fromHsl = ([h, sat, l]) => {
+	const ll = Math.max(0, Math.min(1, l));
+	const c = (1 - Math.abs(2 * ll - 1)) * sat;
+	const x = c * (1 - Math.abs(((h / 60) % 2) - 1));
+	const m = ll - c / 2;
+	const seg = [
+		[c, x, 0],
+		[x, c, 0],
+		[0, c, x],
+		[0, x, c],
+		[x, 0, c],
+		[c, 0, x],
+	][Math.floor((h % 360) / 60)];
+	return seg.map((v) => Math.max(0, Math.min(255, (v + m) * 255)));
+};
+const hexOf = (c) =>
+	"#" +
+	c
+		.map((v) =>
+			Math.round(Math.max(0, Math.min(255, v)))
+				.toString(16)
+				.padStart(2, "0"),
+		)
+		.join("");
+function surfaceColor(vars, name) {
+	const raw = vars.get(name);
+	if (!raw) return null;
+	const c = parseHexColor(raw);
+	if (c) return c;
+	const ref = /^var\(\s*(--[a-z0-9-]+)/.exec(String(raw));
+	return ref ? surfaceColor(vars, ref[1]) : null;
+}
+function applyTextFloors(vars) {
+	for (const [token, [target, surfaceNames]] of Object.entries(TEXT_FLOORS)) {
+		const cur = parseHexColor(vars.get(token));
+		const surf = surfaceNames.map((n) => surfaceColor(vars, n));
+		if (!cur || surf.some((c) => !c)) continue;
+		const worst = (c) => Math.min(...surf.map((s) => contrastRatio(c, s)));
+		if (worst(cur) >= target) continue;
+		const [h, sat, l] = toHsl(cur);
+		const goDark = relLum(surf[0]) > 0.5;
+		let fixed = null;
+		for (let i = 1; i <= 100 && !fixed; i++) {
+			for (const dir of goDark ? [-1, 1] : [1, -1]) {
+				// 用取整后的 hex 评估，保证「生成器 ↔ 主题文件」是同一个不动点
+				const cand = parseHexColor(hexOf(fromHsl([h, sat, l + (dir * i) / 100])));
+				if (cand && worst(cand) >= target) {
+					fixed = cand;
+					break;
+				}
+			}
+		}
+		if (fixed) vars.set(token, hexOf(fixed));
+	}
+}
+
+/*
+ * 语义色（green/red/amber/blue/send-blue/stop-red）实底上的前景（--on-*）：
+ * 	白字压浅色语义色上会隐形（默认 --amber #fbbf24 仅 1.67:1），这里按对比度自动
+ * 	反色；门槛与守卫 tests/unit/semantic-contrast.test.ts 一致。
+ */
+const SEMANTIC_ON_TOKENS = {
+	// 状态色：取白/深里对比更高者（徽标、状态 chip 求最大可读）
+	"--on-green": ["--green", "max"],
+	"--on-red": ["--red", "max"],
+	"--on-amber": ["--amber", "max"],
+	// 动作色：白字够用就保留白字（主操作按钮的品牌实心观感）
+	"--on-blue": ["--blue", "whiteFirst"],
+	"--on-send-blue": ["--send-blue", "whiteFirst"],
+	"--on-stop-red": ["--stop-red", "whiteFirst"],
+};
+const ON_DARK = "#1a1a1a";
+function semanticForeground(token, vars, overrides) {
+	const spec = SEMANTIC_ON_TOKENS[token];
+	if (!spec) return null;
+	const [baseVar, mode] = spec;
+	if (overrides[token]) return overrides[token];
+	const base = parseHexColor(vars.get(baseVar));
+	if (!base) return null; // 交给默认值（由 styles.css 的 :root 提供）
+	const onWhite = contrastRatio([255, 255, 255], base);
+	const onDark = contrastRatio(parseHexColor(ON_DARK), base);
+	if (mode === "max") return onDark > onWhite ? ON_DARK : "#ffffff";
+	return onWhite >= ACCENT_MIN_RATIO ? "#ffffff" : ON_DARK;
+}
+
+const writeTheme = (name, file, body) =>
+	writeFileSync(join(process.env.PI_THEMES_OUT_DIR || join(here, "themes"), file), body, "utf8");
 
 // --- 2) palettes -----------------------------------------------------------
 // Only the variables that differ from the dark default are listed. The light
@@ -790,6 +958,7 @@ const CYBERPUNK = {
 	"--text-dim": "#9a9ac4",
 	"--text-faint": "#6a6a8e",
 	"--accent": "#00d4ff",
+	"--accent-contrast": "#12121e",
 	"--accent-soft": "rgba(0, 212, 255, 0.14)",
 	"--green": "#00ff41",
 	"--green-soft": "rgba(0, 255, 65, 0.12)",
@@ -837,6 +1006,7 @@ const DAZZLE = {
 	"--text-dim": "#a0a0c0",
 	"--text-faint": "#707090",
 	"--accent": "#818cf8",
+	"--accent-contrast": "#13131e",
 	"--accent-soft": "rgba(129, 140, 248, 0.14)",
 	"--green": "#34d399",
 	"--green-soft": "rgba(52, 211, 153, 0.12)",
@@ -882,6 +1052,7 @@ const CATPPUCCIN = {
 	"--text-dim": "#a6adc8",
 	"--text-faint": "#6c7086",
 	"--accent": "#89b4fa",
+	"--accent-contrast": "#24273a",
 	"--accent-soft": "rgba(137, 180, 250, 0.14)",
 	"--green": "#a6e3a1",
 	"--green-soft": "rgba(166, 227, 161, 0.12)",
@@ -993,6 +1164,7 @@ const TOKYO_NIGHT = {
 	"--text-dim": "#9aa5ce",
 	"--text-faint": "#565f89",
 	"--accent": "#7aa2f7",
+	"--accent-contrast": "#1a1b26",
 	"--accent-soft": "rgba(122, 162, 247, 0.14)",
 	"--green": "#9ece6a",
 	"--green-soft": "rgba(158, 206, 106, 0.12)",
@@ -1211,6 +1383,7 @@ const NORD = {
 	"--text-dim": "#e5e9f0",
 	"--text-faint": "#818c9f",
 	"--accent": "#88c0d0",
+	"--accent-contrast": "#2e3440",
 	"--accent-soft": "rgba(136, 192, 208, 0.14)",
 	"--green": "#a3be8c",
 	"--green-soft": "rgba(163, 190, 140, 0.12)",
@@ -1414,6 +1587,7 @@ const ONE_DARK = {
 	"--text-dim": "#828997",
 	"--text-faint": "#5c6370",
 	"--accent": "#61afef",
+	"--accent-contrast": "#21252b",
 	"--accent-soft": "rgba(97, 175, 239, 0.14)",
 	"--green": "#98c379",
 	"--green-soft": "rgba(152, 195, 121, 0.12)",
@@ -2136,6 +2310,7 @@ const AYU_LIGHT = {
 	"--text-dim": "#66727f",
 	"--text-faint": "#6a7582",
 	"--accent": "#f29718",
+	"--accent-contrast": "#0f1419",
 	"--accent-soft": "rgba(242, 151, 24, 0.14)",
 	"--green": "#86b300",
 	"--green-soft": "rgba(134, 179, 0, 0.12)",

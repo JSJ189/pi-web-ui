@@ -62,7 +62,7 @@ export default {
 			font-size: 12px; border: 1px solid var(--border, #444); color: inherit; }
 		.dbx-topbar select { background: var(--bg-elev2, #20202b); padding-right: 4px; }
 		.dbx-topbar button.act:hover, .dbx button.btn:hover { background: var(--bg-elev2, #20202b); }
-		.dbx-topbar button.primary, .dbx button.primary { background: var(--accent, #7c5cff); border-color: transparent; color: #fff; }
+		.dbx-topbar button.primary, .dbx button.primary { background: var(--accent, #7c5cff); border-color: transparent; color: var(--accent-contrast, #fff); }
 		.dbx-tabs { display: flex; gap: 4px; margin-left: 8px; }
 		.dbx-tab { all: unset; cursor: pointer; padding: 3px 12px; border-radius: 6px; font-size: 12.5px; opacity: .65; }
 		.dbx-tab.active { background: color-mix(in srgb, var(--accent, #7c5cff) 25%, transparent); opacity: 1; font-weight: 600; }
@@ -157,7 +157,7 @@ export default {
 		.dbx-modal .btns .right { display: flex; gap: 8px; }
 		.dbx-modal .btns button { all: unset; cursor: pointer; padding: 6px 16px; border-radius: 7px; font-size: 13px;
 			border: 1px solid var(--border, #444); color: inherit; }
-		.dbx-modal .btns button.primary { background: var(--accent, #7c5cff); border-color: transparent; color: #fff; }
+		.dbx-modal .btns button.primary { background: var(--accent, #7c5cff); border-color: transparent; color: var(--accent-contrast, #fff); }
 		.dbx-modal .btns button:hover { filter: brightness(1.15); }
 		.dbx-modal .hint { font-size: 11px; opacity: .5; margin-top: 6px; line-height: 1.6; }
 		.dbx-toast { position: absolute; bottom: 10px; left: 50%; transform: translateX(-50%); z-index: 40;

@@ -19,11 +19,13 @@
 	--text-faint: #6b7280;
 	--accent: #111827;
 	--accent-soft: rgba(17, 24, 39, 0.08);
-	--green: #059669;
+	--green: #047d58;
+	--on-green: #ffffff;
 	--green-soft: rgba(5, 150, 105, 0.12);
-	--red: #dc2626;
+	--red: #d52222;
+	--on-red: #ffffff;
 	--red-soft: rgba(220, 38, 38, 0.1);
-	--amber: #d97706;
+	--amber: #a75c05;
 	--blue: #2563eb;
 	--blue-soft: rgba(37, 99, 235, 0.12);
 
@@ -57,8 +59,8 @@
 	--code-border: rgba(0, 0, 0, 0.08);
 	--code-pad: 8px 10px;
 	--card-body-pad: 4px 14px 12px;
-	--err-text: #dc2626;
-	--red-text: #dc2626;
+	--err-text: #d52222;
+	--red-text: #d52222;
 	--amber-text: #b45309;
 	--info-blue: #2563eb;
 	--link: #0969da;
@@ -67,7 +69,7 @@
 	--md-strong: #000000;
 	--skill-blue: #2563eb;
 	--plugin-purple: #7c3aed;
-	--auth-green: #059669;
+	--auth-green: #047d58;
 	--scroll-thumb: rgba(0, 0, 0, 0.18);
 	--scroll-thumb-hover: rgba(0, 0, 0, 0.32);
 	--notice-err-bg: color-mix(in srgb, var(--bg-elev) 92%, var(--red));

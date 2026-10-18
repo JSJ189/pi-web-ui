@@ -630,7 +630,7 @@ function showModal(content, statusInfo) {
 			border-radius: 4px;
 			border: 1px solid var(--accent, #3b82f6);
 			background: var(--accent, #3b82f6);
-			color: #fff;
+			color: var(--accent-contrast, #fff);
 			cursor: pointer;
 			font-size: 12px;
 			font-weight: 500;
@@ -757,7 +757,7 @@ function showModal(content, statusInfo) {
 			border-radius: 4px;
 			border: 1px solid var(--accent, #3b82f6);
 			background: var(--accent, #3b82f6);
-			color: #fff;
+			color: var(--accent-contrast, #fff);
 			cursor: pointer;
 			font-size: 12px;
 			font-weight: 500;

@@ -99,7 +99,7 @@ export default {
 			border: 1px solid var(--border, #333); border-radius: 6px; padding: 6px 8px; font: inherit;
 		}
 		.wx button {
-			background: var(--accent, #7c5cff); color: #fff; border: 0;
+			background: var(--accent, #7c5cff); color: var(--accent-contrast, #fff); border: 0;
 			border-radius: 6px; padding: 6px 14px; cursor: pointer; font: inherit;
 		}
 		.wx button.ghost { background: transparent; border: 1px solid var(--border, #333); color: inherit; }
