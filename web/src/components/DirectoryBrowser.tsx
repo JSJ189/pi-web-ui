@@ -1,4 +1,5 @@
 import { useEffect, useRef, useState } from "react";
+import { createPortal } from "react-dom";
 import { FiFolder, FiGlobe, FiHardDrive, FiServer, FiTrash2, FiX } from "react-icons/fi";
 import { useT } from "../i18n";
 import { appSend, useEngineCapabilities } from "../app-globals";
@@ -380,7 +381,11 @@ export function DirectoryBrowser({
 		cur !== norm(currentCwd) &&
 		!workspaceRoots.some((r) => norm(r) === cur);
 
-	return (
+	/* Portal 到 body：选择器从底栏（.statusbar）或左栏打开时，祖先的 opacity<1 会把
+	   整个弹层层层相乘（主题里 `.statusbar *{opacity:.95}` → 底部按钮 0.95^5≈0.77，
+	   背景看起来透明），并且会把它锁进祖先的 stacking context，被侧边浮标等
+	   z-index>50 的元素压住。挂到 body 后 opacity 与层级都只取决于自身。 */
+	return createPortal(
 		<>
 			<div className={`status-cwd-backdrop ${backdropClassName ?? ""}`.trim()} onClick={onClose} />
 			<div className={`cwd-picker ${className ?? ""}`.trim()} role={role} aria-label={ariaLabel}>
@@ -886,6 +891,7 @@ export function DirectoryBrowser({
 					</div>
 				)}
 			</div>
-		</>
+		</>,
+		document.body,
 	);
 }

@@ -5471,6 +5471,17 @@ body.panel-resizing .scm-divider::after {
 	gap: 6px;
 }
 
+/* 表单内容比面板高（矮窗口/小屏很常见）：滚动容器里“连接并探测环境”必须粘底，
+   否则它会被裁在面板下沿之外 —— 用户只看到一条被切开的边，像是“背景变透明了”。
+   粘底元素自身在文档流末尾，滚到底时回到自然位置，不会永久遮住配置名称行。 */
+.cwd-ssh-form > .cwd-choose-btn.primary {
+	position: sticky;
+	bottom: 0;
+	z-index: 1;
+	background: var(--bg-elev);
+	box-shadow: 0 -8px 12px -8px rgba(0, 0, 0, 0.75);
+}
+
 .cwd-ssh-row {
 	display: flex;
 	gap: 6px;

@@ -262,7 +262,7 @@ describe("FooterBar 连接状态", () => {
 			const cwdBtn = container.querySelector(".status-cwd") as HTMLButtonElement;
 			expect(cwdBtn).toBeTruthy();
 			expect(cwdBtn.textContent).toContain("my-app");
-			expect(container.querySelector(".cwd-picker")).toBeNull();
+			expect(document.querySelector(".cwd-picker")).toBeNull();
 
 			// 点击路径切换按钮（触发 220ms 双击防抖定时器）
 			act(() => {
@@ -272,9 +272,12 @@ describe("FooterBar 连接状态", () => {
 				vi.advanceTimersByTime(250);
 			});
 
-			// 弹窗弹出
-			const picker = container.querySelector(".cwd-picker");
+			// 弹窗弹出（Portal 到 body：不留在底栏子树里，否则祖先 opacity/z-index 会波及它）
+			const picker = document.querySelector(".cwd-picker");
 			expect(picker).toBeTruthy();
+			expect(picker?.parentElement).toBe(document.body);
+			expect(container.querySelector(".cwd-picker")).toBeNull();
+			expect(picker?.closest(".statusbar")).toBeNull();
 
 			// 原按钮依然存在且不消失，并且带有 active 状态
 			const cwdBtnAfter = container.querySelector(".status-cwd") as HTMLButtonElement;
@@ -282,14 +285,14 @@ describe("FooterBar 连接状态", () => {
 			expect(cwdBtnAfter.classList.contains("active")).toBe(true);
 
 			// 点击遮罩关闭弹窗
-			const backdrop = container.querySelector(".status-cwd-backdrop") as HTMLElement;
+			const backdrop = document.querySelector(".status-cwd-backdrop") as HTMLElement;
 			expect(backdrop).toBeTruthy();
 			act(() => {
 				backdrop.click();
 			});
 
 			// 弹窗关闭
-			expect(container.querySelector(".cwd-picker")).toBeNull();
+			expect(document.querySelector(".cwd-picker")).toBeNull();
 			// 按钮依然存在，且取消 active 状态
 			const cwdBtnFinal = container.querySelector(".status-cwd") as HTMLButtonElement;
 			expect(cwdBtnFinal).toBeTruthy();

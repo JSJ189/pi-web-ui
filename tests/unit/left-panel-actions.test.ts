@@ -132,24 +132,24 @@ describe("LeftPanel 标题栏操作与项目管理", () => {
 		const projectActionBtn = container.querySelector<HTMLButtonElement>(".lp-project-action");
 		expect(projectActionBtn).toBeTruthy();
 
-		// 点击打开项目管理面板
+		// 点击打开项目管理面板（弹层 Portal 到 body，故用 document 查）
 		act(() => projectActionBtn!.click());
-		const dialog = container.querySelector("[role=dialog]");
+		const dialog = document.querySelector("[role=dialog]");
 		expect(dialog).toBeTruthy();
 
 		// 按 Escape 键关闭
 		act(() => {
 			window.dispatchEvent(new KeyboardEvent("keydown", { key: "Escape" }));
 		});
-		expect(container.querySelector("[role=dialog]")).toBeNull();
+		expect(document.querySelector("[role=dialog]")).toBeNull();
 
 		// 再次打开并点击遮罩关闭
 		act(() => projectActionBtn!.click());
-		expect(container.querySelector("[role=dialog]")).toBeTruthy();
-		const backdrop = container.querySelector(".status-cwd-backdrop, .project-picker-backdrop");
+		expect(document.querySelector("[role=dialog]")).toBeTruthy();
+		const backdrop = document.querySelector(".status-cwd-backdrop, .project-picker-backdrop");
 		expect(backdrop).toBeTruthy();
 		act(() => (backdrop as HTMLElement).click());
-		expect(container.querySelector("[role=dialog]")).toBeNull();
+		expect(document.querySelector("[role=dialog]")).toBeNull();
 	});
 
 	it("项目管理面板：非法项目名称（空或含分隔符）不能发送创建消息，合法名称发送 make_dir(setAsCwd: true)", () => {
@@ -159,14 +159,16 @@ describe("LeftPanel 标题栏操作与项目管理", () => {
 		const projectActionBtn = container.querySelector<HTMLButtonElement>(".lp-project-action");
 		act(() => projectActionBtn!.click());
 
+		expect(document.querySelector(".project-picker")?.parentElement).toBe(document.body);
+
 		// 展开新建项目输入框
-		const newBtn = container.querySelector<HTMLButtonElement>(".cwd-newbtn, .project-picker-newbtn");
+		const newBtn = document.querySelector<HTMLButtonElement>(".cwd-newbtn, .project-picker-newbtn");
 		expect(newBtn).toBeTruthy();
 		act(() => newBtn!.click());
 
-		const input = container.querySelector<HTMLInputElement>(".cwd-newrow input, .project-picker-newrow input");
+		const input = document.querySelector<HTMLInputElement>(".cwd-newrow input, .project-picker-newrow input");
 		expect(input).toBeTruthy();
-		const createBtn = container.querySelector<HTMLButtonElement>(
+		const createBtn = document.querySelector<HTMLButtonElement>(
 			".cwd-newrow button.primary, .project-picker-newrow button.primary",
 		);
 		expect(createBtn).toBeTruthy();
@@ -204,7 +206,7 @@ describe("LeftPanel 标题栏操作与项目管理", () => {
 		act(() => projectActionBtn!.click());
 
 		const chooseBtns = Array.from(
-			container.querySelectorAll<HTMLButtonElement>(".cwd-choose-btn, .project-picker-choose-btn"),
+			document.querySelectorAll<HTMLButtonElement>(".cwd-choose-btn, .project-picker-choose-btn"),
 		);
 		expect(chooseBtns.length).toBeGreaterThan(0);
 
