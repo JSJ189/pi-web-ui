@@ -9,10 +9,12 @@ function parentsOf(entries: Array<[number, number]>): Map<number, number> {
 describe("shouldTrackBackgroundServer", () => {
 	const SERVER = 1000;
 
-	it("命中黑名单进程名直接跳过（微信，大小写不敏感）", () => {
+	it("命中黑名单进程名直接跳过（微信、WPS、ima.copilot 等，大小写不敏感）", () => {
 		expect(shouldTrackBackgroundServer(42, undefined, new Set(), SERVER, "WeChat.exe")).toBe(false);
 		expect(shouldTrackBackgroundServer(42, undefined, new Set(), SERVER, "wechatappex.exe")).toBe(false);
 		expect(shouldTrackBackgroundServer(42, undefined, new Set(), SERVER, "QQ.EXE")).toBe(false);
+		expect(shouldTrackBackgroundServer(42, undefined, new Set(), SERVER, "wps.exe")).toBe(false);
+		expect(shouldTrackBackgroundServer(42, undefined, new Set(), SERVER, "ima.copilot.exe")).toBe(false);
 	});
 
 	it("黑名单优先于保守路径：进程树查不到也不记录微信", () => {
@@ -96,6 +98,69 @@ describe("shouldTrackBackgroundServer", () => {
 			[7778, 7777],
 		]);
 		expect(shouldTrackBackgroundServer(7777, parents, new Set([7777]), SERVER)).toBe(false);
+	});
+
+	it("Issue #651：进程启动时间早于当前 bash 启动时刻 → 直接跳过（排除已有桌面软件/游戏）", () => {
+		const now = Date.now();
+		const bashStart = now;
+		const alreadyRunningCreated = bashStart - 60_000; // 1 分钟前启动的桌面客户端
+		const parents = parentsOf([[29356, 88888]]); // 断链的孤儿进程
+		expect(
+			shouldTrackBackgroundServer(29356, parents, new Set([29356]), SERVER, "custom_client.exe", {
+				createdMs: alreadyRunningCreated,
+				startedBeforeMs: bashStart,
+			}),
+		).toBe(false);
+	});
+
+	it("Issue #651：祖先节点中命中 explorer.exe / services.exe 等系统外壳 → 直接跳过", () => {
+		const tree = new Map([
+			[12012, { ppid: 12000, name: "game.exe" }],
+			[12000, { ppid: 35596, name: "launcher.exe" }],
+			[35596, { ppid: 1812, name: "explorer.exe" }],
+		]);
+		expect(shouldTrackBackgroundServer(12012, tree, new Set([12012]), SERVER, "game.exe")).toBe(false);
+	});
+
+	it("Issue #651：断链但在 Program Files 目录下的桌面软件 → 跳过", () => {
+		const parents = parentsOf([[12640, 99999]]); // 99999 不在 parents
+		expect(
+			shouldTrackBackgroundServer(12640, parents, new Set([12640]), SERVER, "app.exe", {
+				commandLine: '"C:\\Program Files\\SomeApp\\app.exe" --listen 51789',
+			}),
+		).toBe(false);
+	});
+
+	it("断链但为典型开发运行时（node, python 等）→ 保留收录（哪怕安装在 Program Files 或 AppData 下）", () => {
+		const parents = parentsOf([[8001, 88888]]);
+		// 官方 Windows 安装路径：C:\Program Files\nodejs\node.exe
+		expect(
+			shouldTrackBackgroundServer(8001, parents, new Set([8001]), SERVER, "node.exe", {
+				commandLine: '"C:\\Program Files\\nodejs\\node.exe" server.js',
+			}),
+		).toBe(true);
+		// 官方 Windows 安装路径：AppData\Local\Programs\Python
+		expect(
+			shouldTrackBackgroundServer(8001, parents, new Set([8001]), SERVER, "python.exe", {
+				commandLine: '"C:\\Users\\c\\AppData\\Local\\Programs\\Python\\Python312\\python.exe" -m http.server 8000',
+			}),
+		).toBe(true);
+		// 普通桌面软件（非开发工具运行时）位于 Program Files 必须排除
+		expect(
+			shouldTrackBackgroundServer(8001, parents, new Set([8001]), SERVER, "wps.exe", {
+				commandLine: '"C:\\Program Files\\Kingsoft\\WPS Office\\wps.exe"',
+			}),
+		).toBe(false);
+	});
+
+	it("断链但命令行包含当前工作区路径 → 保留收录", () => {
+		const parents = parentsOf([[9001, 88888]]);
+		expect(
+			shouldTrackBackgroundServer(9001, parents, new Set([9001]), SERVER, "my_custom_server.exe", {
+				commandLine: "E:\\pi-web-ui\\bin\\my_custom_server.exe --port 9000",
+				workspaceCwd: "E:\\pi-web-ui",
+			}),
+		).toBe(true);
 	});
 });
 

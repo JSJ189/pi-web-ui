@@ -53,16 +53,28 @@ export async function snapshotListeningPorts(): Promise<Map<number, number>> {
 	return m;
 }
 
+export interface ProcessTreeNode {
+	ppid: number;
+	name?: string;
+}
+
+export interface ProcessDetails {
+	pid: number;
+	ppid?: number;
+	name?: string;
+	commandLine?: string;
+	createdMs?: number;
+}
+
 /**
- * Snapshot every process's parent pid → Map<pid, ppid>. Windows: one
- * PowerShell CIM pass (avoids spawning PowerShell once per pid); POSIX:
- * one `ps -Ao pid=,ppid=` pass. Returns undefined when the whole query
- * fails — callers should treat that as "cannot verify, stay conservative".
+ * Snapshot every process's parent pid & name → Map<pid, ProcessTreeNode>.
+ * Windows: one PowerShell CIM pass; POSIX: one `ps -Ao pid=,ppid=,comm=` pass.
+ * Returns undefined when query fails — callers should treat as unverified.
  */
-export async function snapshotProcessParents(): Promise<Map<number, number> | undefined> {
+export async function snapshotProcessTree(): Promise<Map<number, ProcessTreeNode> | undefined> {
 	try {
 		const { execFile } = await import("node:child_process");
-		const m = new Map<number, number>();
+		const m = new Map<number, ProcessTreeNode>();
 		if (process.platform === "win32") {
 			const out = await new Promise<string>((resolve, reject) =>
 				execFile(
@@ -71,19 +83,30 @@ export async function snapshotProcessParents(): Promise<Map<number, number> | un
 						"-NoProfile",
 						"-NonInteractive",
 						"-Command",
-						'Get-CimInstance Win32_Process | ForEach-Object { "$($_.ProcessId):$($_.ParentProcessId)" }',
+						'Get-CimInstance Win32_Process | ForEach-Object { "$($_.ProcessId):$($_.ParentProcessId):$($_.Name)" }',
 					],
 					{ windowsHide: true, timeout: 10000 },
 					(err, stdout) => (err ? reject(err) : resolve(stdout)),
 				),
 			);
 			for (const line of out.split(/\r?\n/)) {
-				const [pid, ppid] = line.trim().split(":").map(Number);
-				if (Number.isFinite(pid) && Number.isFinite(ppid)) m.set(pid, ppid);
+				const trimmed = line.trim();
+				if (!trimmed) continue;
+				const firstColon = trimmed.indexOf(":");
+				const secondColon = trimmed.indexOf(":", firstColon + 1);
+				if (firstColon === -1) continue;
+				const pid = Number(trimmed.slice(0, firstColon));
+				const ppid = Number(
+					secondColon === -1 ? trimmed.slice(firstColon + 1) : trimmed.slice(firstColon + 1, secondColon),
+				);
+				const name = secondColon === -1 ? undefined : trimmed.slice(secondColon + 1).trim() || undefined;
+				if (Number.isFinite(pid) && Number.isFinite(ppid)) {
+					m.set(pid, { ppid, ...(name ? { name } : {}) });
+				}
 			}
 		} else {
 			const out = await new Promise<string>((resolve, reject) =>
-				execFile("ps", ["-Ao", "pid=,ppid="], { timeout: 5000 }, (err, stdout) =>
+				execFile("ps", ["-Ao", "pid=,ppid=,comm="], { timeout: 5000 }, (err, stdout) =>
 					err ? reject(err) : resolve(stdout),
 				),
 			);
@@ -92,7 +115,10 @@ export async function snapshotProcessParents(): Promise<Map<number, number> | un
 				if (p.length >= 2) {
 					const pid = Number(p[0]);
 					const ppid = Number(p[1]);
-					if (Number.isFinite(pid) && Number.isFinite(ppid)) m.set(pid, ppid);
+					const name = p.slice(2).join(" ").trim() || undefined;
+					if (Number.isFinite(pid) && Number.isFinite(ppid)) {
+						m.set(pid, { ppid, ...(name ? { name } : {}) });
+					}
 				}
 			}
 		}
@@ -100,6 +126,113 @@ export async function snapshotProcessParents(): Promise<Map<number, number> | un
 	} catch {
 		return undefined;
 	}
+}
+
+/**
+ * Snapshot every process's parent pid → Map<pid, ppid>.
+ * Retained for backward compatibility; powered by snapshotProcessTree.
+ */
+export async function snapshotProcessParents(): Promise<Map<number, number> | undefined> {
+	const tree = await snapshotProcessTree();
+	if (!tree) return undefined;
+	const m = new Map<number, number>();
+	for (const [pid, node] of tree) {
+		m.set(pid, node.ppid);
+	}
+	return m;
+}
+
+/**
+ * Batch lookup detailed process info (pid, ppid, name, commandLine, createdMs).
+ * Windows: single PowerShell CIM pass with filter; POSIX: `ps -o pid=,ppid=,etimes=,comm=,command=`.
+ */
+export async function lookupProcessDetailsBatch(pids: number[]): Promise<Map<number, ProcessDetails>> {
+	const out = new Map<number, ProcessDetails>();
+	const validPids = [...new Set(pids.filter((p) => Number.isInteger(p) && p > 0))];
+	if (validPids.length === 0) return out;
+
+	try {
+		const { execFile } = await import("node:child_process");
+		if (process.platform === "win32") {
+			const filter = validPids.map((p) => `ProcessId=${p}`).join(" or ");
+			const command = [
+				`$filter = '${filter}';`,
+				`Get-CimInstance Win32_Process -Filter $filter | ForEach-Object {`,
+				`    $ts = if ($_.CreationDate) { [DateTimeOffset]::new($_.CreationDate).ToUnixTimeMilliseconds() } else { 0 };`,
+				`    $cmd = if ($_.CommandLine) { $_.CommandLine -replace "\\r?\\n", " " } else { "" };`,
+				`    "$($_.ProcessId)\`t$($_.ParentProcessId)\`t$($_.Name)\`t$ts\`t$cmd"`,
+				`}`,
+			].join(" ");
+
+			const stdout = await new Promise<string>((resolve, reject) =>
+				execFile(
+					"powershell.exe",
+					["-NoProfile", "-NonInteractive", "-Command", command],
+					{ windowsHide: true, timeout: 8000 },
+					(err, res) => (err ? reject(err) : resolve(res)),
+				),
+			);
+
+			for (const line of stdout.split(/\r?\n/)) {
+				const trimmed = line.trim();
+				if (!trimmed) continue;
+				const parts = trimmed.split("\t");
+				if (parts.length >= 3) {
+					const pid = Number(parts[0]);
+					const ppid = Number(parts[1]);
+					const name = parts[2] || undefined;
+					const ts = Number(parts[3]);
+					const cmd = parts.slice(4).join("\t").trim();
+					if (Number.isFinite(pid)) {
+						out.set(pid, {
+							pid,
+							...(Number.isFinite(ppid) ? { ppid } : {}),
+							...(name ? { name } : {}),
+							...(Number.isFinite(ts) && ts > 0 ? { createdMs: ts } : {}),
+							...(cmd ? { commandLine: cmd } : {}),
+						});
+					}
+				}
+			}
+			return out;
+		}
+
+		// POSIX (Linux / macOS)
+		const stdout = await new Promise<string>((resolve, reject) =>
+			execFile(
+				"ps",
+				["-o", "pid=,ppid=,etimes=,comm=,command=", "-p", validPids.join(",")],
+				{ timeout: 5000 },
+				(err, res) => (err ? reject(err) : resolve(res)),
+			),
+		);
+
+		const now = Date.now();
+		for (const line of stdout.split(/\r?\n/)) {
+			const trimmed = line.trim();
+			if (!trimmed) continue;
+			// 格式: pid ppid etimes comm command...
+			const match = trimmed.match(/^(\d+)\s+(\d+)\s+(\d+)\s+(\S+)(?:\s+(.*))?$/);
+			if (match) {
+				const pid = Number(match[1]);
+				const ppid = Number(match[2]);
+				const etimes = Number(match[3]);
+				const name = match[4];
+				const commandLine = match[5]?.trim();
+				const createdMs = Number.isFinite(etimes) ? now - etimes * 1000 : undefined;
+				out.set(pid, {
+					pid,
+					ppid,
+					name,
+					...(commandLine ? { commandLine } : {}),
+					...(createdMs !== undefined ? { createdMs } : {}),
+				});
+			}
+		}
+	} catch {
+		// best effort — lookup failure just returns empty map
+	}
+	return out;
 }
 
 /** Kill a pid and its whole process tree (cross-platform).
