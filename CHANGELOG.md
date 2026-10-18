@@ -8,20 +8,22 @@
 每个版本的内容按"实际合入该版本发布的提交"归档（以 `package.json` 的 version 变更提交为准），
 而不是按提交日期聚类——连续快速发布的 patch 版本以此为准最准确。
 
-## [Unreleased]
+## [0.109.0] — 2026-10-19
 
 ### Changed
 
 - **「工具按需加载」出厂默认关闭**：新装 / 未改过该开关的实例开箱即用全部工具，与 pi 命令行一致——模型不会因为忘记先 `load_tools` 而白吃一次「工具不存在」（#652）。需要省上下文的实例在 设置 → 工具 → 工具按需加载 里打开，或者用 `PI_WEB_TOOL_LAZY_LOADING=1` 把部署级默认改回去；**已存盘的设置不受影响**。
 
-<!-- auto-i18n:start -->
+### Fixed
+
+- **延迟加载下「直呼未加载工具」的死路（#652）**：模型直接调用目录里尚未加载的工具时，SDK 会回一条 `Tool <name> not found`，而旧实现只把工具名记进「已加载」集合、没有重放门控，`load_tools` 又回「已经加载过了」——只有改去加载别的工具才自愈。现在直呼即**自动激活**（下一轮就真的可用，原样重试成功），`load_tools` 的「已加载」也改按**活跃集**判断。
+- **浅色主题下按钮与标记文字隐形**：强调色 / 语义色（`--accent` / `--green` / `--red` / `--amber` / `--blue` 等）做实心底时写死的白字，在浅色主题里几乎看不见（flow 主题主按钮 1.00:1、默认主题 `--amber` 1.67:1）。新增 `--accent-contrast` 与 `--on-*` 前景令牌、由主题各自声明，30 套主题与 22 个内置插件同步；主题里「当文字用」的 16 个令牌补上了明暗下限（1120 组检查从 279 组不达标、最差 1.50:1 → 全部达标，最低 3.08:1），半透明染色底也改走语义令牌。
+- **目录选择器 / 项目管理弹层背景发虚、SSH 表单主按钮被裁**：两者改用 Portal 挂到 `body`（原先被底栏 `opacity` 层层相乘、又锁在祖先 stacking context 里），`.cwd-ssh-form` 的「选择目录」主按钮粘底，矮窗口下不再被面板下沿裁掉。
 
 ### i18n
 
 - 前端中文变更（1）：`toolLazyLoadingDesc`
 - 前端英文变更（1）：`toolLazyLoadingDesc`
-
-<!-- auto-i18n:end -->
 
 ## [0.108.0] — 2026-10-18
 
@@ -1877,6 +1879,7 @@ when?, children?}`，也收 `topbar` / `settings` 这类简写别名）；宿主
 
 [Unreleased]: https://github.com/xing-shuyin/pi-web-ui/compare/v0.108.0...main
 [0.108.0]: https://github.com/xing-shuyin/pi-web-ui/releases/tag/v0.108.0
+[0.109.0]: https://github.com/xing-shuyin/pi-web-ui/releases/tag/v0.109.0
 [0.103.3]: https://github.com/xing-shuyin/pi-web-ui/releases/tag/v0.103.3
 [0.103.2]: https://github.com/xing-shuyin/pi-web-ui/releases/tag/v0.103.2
 [0.103.1]: https://github.com/xing-shuyin/pi-web-ui/releases/tag/v0.103.1
