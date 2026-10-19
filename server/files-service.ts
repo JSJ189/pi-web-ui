@@ -18,7 +18,6 @@ import {
 	isRemoteWorkspaceUri,
 	parseRemoteWorkspaceUri,
 	resolveRemoteWorkspacePath,
-	shellQuotePosix,
 } from "./remote-ssh-service.js";
 
 export const IS_WIN32 = process.platform === "win32";

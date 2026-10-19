@@ -28,6 +28,10 @@ const listeners = new Set<() => void>();
 
 function notify(): void {
 	version += 1;
+	// Snapshot the listener set first: a listener may unsubscribe (or subscribe)
+	// from inside its own callback, and mutating a Set mid-iteration would skip
+	// the next listener.
+	// oxlint-disable-next-line unicorn/no-useless-spread -- deliberate snapshot
 	for (const fn of [...listeners]) {
 		try {
 			fn();

@@ -7,6 +7,58 @@ import { resolve } from "node:path";
  */
 
 /**
+ * 解析 Windows `netstat -ano -p tcp` 输出 → 端口→pid。纯函数，单测覆盖。
+ * 行形状：`TCP 0.0.0.0:5173 0.0.0.0:0 LISTENING 12345`。
+ */
+export function parseNetstatListening(stdout: string): Map<number, number> {
+	const m = new Map<number, number>();
+	for (const line of stdout.split(/\r?\n/)) {
+		const p = line.trim().split(/\s+/);
+		if (p.length >= 5 && p[0] === "TCP" && p[3] === "LISTENING") {
+			// 本地地址可能是 0.0.0.0:5173 / [::1]:5173 —— 取最后一段就是端口。
+			const port = Number(p[1].split(":").pop());
+			const pid = Number(p[4]);
+			if (Number.isFinite(port) && Number.isFinite(pid)) m.set(port, pid);
+		}
+	}
+	return m;
+}
+
+/**
+ * 解析 POSIX `lsof -iTCP -sTCP:LISTEN -P -n` 输出 → 端口→pid。纯函数，单测覆盖。
+ *
+ * NAME 列形如 `*:5173` / `127.0.0.1:5173` / `[::1]:5173`。监听态 `(LISTEN)`
+ * 在不同发行版上**要么贴在 NAME 里、要么自成最后一列**，所以“取最后一列”的
+ * 写法（旧实现）在后者上拿到的是 `(LISTEN)` 而不是地址 —— 整条 posix 端口探测
+ * 静默失效（后台任务面板就看不到 AI 拉起的服务）。这里改成扫列：第一个
+ * “以冒号+数字收尾”的列就是地址（FD/TYPE/DEVICE/SIZE-OFF/NODE 都不带这种形状）。
+ */
+export function parseLsofListening(stdout: string): Map<number, number> {
+	const m = new Map<number, number>();
+	for (const line of stdout.split(/\r?\n/)) {
+		const p = line.trim().split(/\s+/);
+		if (p.length < 5) continue;
+		const pid = Number(p[1]);
+		if (!Number.isFinite(pid) || pid <= 0) continue; // 表头 / 脏行
+		const port = findListenPort(p.slice(3));
+		if (port === null) continue;
+		m.set(port, pid);
+	}
+	return m;
+}
+
+/** 从 lsof 行尾列里找出监听端口（第一个 `:数字` 收尾的列）。 */
+function findListenPort(cols: string[]): number | null {
+	for (const col of cols) {
+		const mm = col.match(/:(\d{1,5})$/);
+		if (!mm) continue;
+		const port = Number(mm[1]);
+		if (port > 0 && port <= 65535) return port;
+	}
+	return null;
+}
+
+/**
  * Snapshot currently LISTENING TCP ports → owning pid. Windows: netstat;
  * POSIX: lsof. Used to detect servers the agent started in the background
  * (the bash tool itself exits, leaving e.g. `npm run dev &` listening).
@@ -21,32 +73,14 @@ export async function snapshotListeningPorts(): Promise<Map<number, number>> {
 					err ? reject(err) : resolve(stdout),
 				),
 			);
-			for (const line of out.split(/\r?\n/)) {
-				const p = line.trim().split(/\s+/);
-				// TCP 0.0.0.0:5173 0.0.0.0:0 LISTENING 12345
-				if (p.length >= 5 && p[0] === "TCP" && p[3] === "LISTENING") {
-					const port = Number(p[1].split(":").pop());
-					const pid = Number(p[4]);
-					if (Number.isFinite(port) && Number.isFinite(pid)) m.set(port, pid);
-				}
-			}
-		} else {
-			const out = await new Promise<string>((resolve, reject) =>
-				execFile("lsof", ["-iTCP", "-sTCP:LISTEN", "-P", "-n"], { timeout: 8000 }, (err, stdout) =>
-					err ? reject(err) : resolve(stdout),
-				),
-			);
-			for (const line of out.split(/\r?\n/).slice(1)) {
-				const p = line.trim().split(/\s+/);
-				if (p.length >= 9) {
-					// NAME column tail: "*:5173 (LISTEN)" or "[::1]:5173 (LISTEN)"
-					const mm = (p[p.length - 1] ?? "").match(/(\d+)\)?\s*$/);
-					const port = mm ? Number(mm[1]) : NaN;
-					const pid = Number(p[1]);
-					if (Number.isFinite(port) && Number.isFinite(pid)) m.set(port, pid);
-				}
-			}
+			return parseNetstatListening(out);
 		}
+		const out = await new Promise<string>((resolve, reject) =>
+			execFile("lsof", ["-iTCP", "-sTCP:LISTEN", "-P", "-n"], { timeout: 8000 }, (err, stdout) =>
+				err ? reject(err) : resolve(stdout),
+			),
+		);
+		return parseLsofListening(out);
 	} catch {
 		// best effort — snapshot failure just means no tracking this round
 	}

@@ -70,6 +70,15 @@ describe("decodeText", () => {
 		]);
 		expect(decodeText(gbk)).toBe("中文");
 	});
+
+	it("1~3 字节的非 UTF-8 小文件不会被截尾重试吃成空串", () => {
+		// 回归：截尾循环曾把 <=3 字节的 buffer 裁到长度 0，空 buffer 严格解码成功 → 返回 ""。
+		expect(decodeText(Buffer.from([0xd6, 0xd0]))).toBe("中");
+		expect(decodeText(Buffer.from([0xd6]))).toBe("\ufffd");
+		expect(decodeText(Buffer.from([0xd6, 0xd0, 0xce]))).toBe("中\ufffd");
+		// 空的 buffer 仍然是空串。
+		expect(decodeText(Buffer.alloc(0))).toBe("");
+	});
 });
 
 describe("sniffImageMime", () => {

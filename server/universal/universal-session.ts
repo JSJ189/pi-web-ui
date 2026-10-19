@@ -25,7 +25,6 @@ import type {
 	UiMessage,
 	UiState,
 	UiSettingsState,
-	UiSubagentTemplate,
 	UiContentBlock,
 	UiTextBlock,
 	UiThinkingBlock,
@@ -34,7 +33,7 @@ import type {
 	SlashCommandInfo,
 } from "../protocol.js";
 import { FilesService } from "../files-service.js";
-import { TerminalManager, makePersistentTerminalTools, TERMINAL_TOOLS_GUIDANCE } from "../terminals.js";
+import { TerminalManager, makePersistentTerminalTools } from "../terminals.js";
 import { TERMINAL_TOOL_NAMES } from "../tool-manager.js";
 import type { ToolDefinition } from "@earendil-works/pi-coding-agent";
 import { BgServerTracker } from "../bg-servers.js";

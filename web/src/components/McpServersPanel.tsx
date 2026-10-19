@@ -8,7 +8,6 @@ import {
 	FiExternalLink,
 	FiFolder,
 	FiGlobe,
-	FiKey,
 	FiLayers,
 	FiPlus,
 	FiRefreshCw,
@@ -24,8 +23,7 @@ import { CopyButton } from "./copy-button";
 import { HintTip } from "./HintTip";
 import { isZhLocale, useI18n, useT } from "../i18n";
 import type { McpScope, RemoteMcpServer, UiMcpServer, UiMcpToolInfo, UiSettingsState } from "../types";
-import type { ChatState } from "../use-chat";
-import { PUBLIC_MCP_SERVERS, type PublicMcpServer } from "../mcp-catalog";
+import { PUBLIC_MCP_SERVERS } from "../mcp-catalog";
 
 export interface McpServersPanelProps {
 	settings: UiSettingsState;

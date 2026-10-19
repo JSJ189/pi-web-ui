@@ -159,10 +159,9 @@ export function previewKind(name: string): PreviewKind {
 }
 
 /**
- * 扩展名是否为浏览器可直接播放的音频。与 previewKind 分开：PreviewKind 只有
- * image/video/text/none 四档（右栏图标、附件、预览弹窗都按它分支），把音频塞进去
- * 要动整条链路；而 /api/file 的媒体白名单与 present_files 的卡片只需要一个
- * 「能不能 inline 播」的布尔判断。
+ * 扩展名是否为浏览器可直接播放的音频。与 previewKind 分开：预览弹窗的媒体分支
+ * 只关心 image/video，音频得单独判一次；而 /api/file 的媒体白名单与
+ * present_files 的卡片只需要一个「能不能 inline 播」的布尔判断。
  */
 export function isAudioFile(name: string): boolean {
 	const dot = name.lastIndexOf(".");
@@ -183,7 +182,7 @@ export function looksLikeText(buf: Buffer): boolean {
 	let control = 0;
 	for (const ch of text) {
 		const c = ch.charCodeAt(0);
-		// Keep \t \n \r \f (and \b); everything else < 0x20 is binary-ish.
+		// Keep \t \n \f \r; everything else < 0x20 (including \b and \v) is binary-ish.
 		if (c < 0x20 && c !== 9 && c !== 10 && c !== 12 && c !== 13) control++;
 	}
 	return control / Math.max(text.length, 1) < 0.02;
@@ -195,8 +194,12 @@ export function looksLikeText(buf: Buffer): boolean {
  *  previews and inline attachments never show mojibake for GBK/GB2312 files
  *  nor for truncated UTF-8 files (issue #392). */
 export function decodeText(buf: Buffer): string {
-	for (let cut = 0; cut < 4; cut++) {
-		const slice = cut === 0 ? buf : buf.subarray(0, Math.max(0, buf.length - cut));
+	// `cut < buf.length` keeps the truncated-tail retry from eating the whole
+	// buffer: a 1–3 byte buffer of legacy bytes (GBK "中" = D6 D0) would
+	// otherwise trim down to an empty slice, decode "successfully" as UTF-8 and
+	// return "" — silently blanking every tiny non-UTF-8 preview.
+	for (let cut = 0; cut < 4 && cut < buf.length; cut++) {
+		const slice = cut === 0 ? buf : buf.subarray(0, buf.length - cut);
 		try {
 			return new TextDecoder("utf-8", { fatal: true }).decode(slice);
 		} catch {

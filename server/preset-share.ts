@@ -21,10 +21,9 @@
  * 与副作用（createPresetIssue / fetchPresetCatalog）分开，便于单测。
  */
 import { execFile } from "node:child_process";
-import { mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
-import { dirname, join } from "node:path";
-import { fileURLToPath } from "node:url";
+import { join } from "node:path";
 import { promisify } from "node:util";
 import { getAppVersion } from "./pkg-info.js";
 import {

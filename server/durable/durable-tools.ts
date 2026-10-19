@@ -19,7 +19,9 @@ export interface DurableToolsSetup {
  */
 export async function setupDurableRegistry(
 	cwd: string,
-	options?: {
+	// 预留位（尚未消费）：`allowDangerous` / `onToolOutput` 现在没有任何实现，
+	// 保留参数形状，后续接线时不必改调用方。
+	_options?: {
 		allowDangerous?: boolean;
 		onToolOutput?: (toolName: string, delta: string) => void;
 	},

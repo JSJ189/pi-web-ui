@@ -11,7 +11,7 @@
  */
 
 import { execFile } from "node:child_process";
-import { resolve, relative, normalize } from "node:path";
+import { resolve, normalize } from "node:path";
 import { promisify } from "node:util";
 import { existsSync } from "node:fs";
 import { pick, type ServerLang } from "./i18n.js";

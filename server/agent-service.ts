@@ -17,7 +17,6 @@ import "./patch-remote-catalog.js";
 import "./patch-turn-end-boundary.js";
 import { spawn } from "node:child_process";
 import { createHash, randomUUID } from "node:crypto";
-import { createRequire } from "node:module";
 import * as fsPromises from "node:fs/promises";
 import { DEFAULT_PI_CAPABILITIES } from "./engine-capabilities.js";
 import {
@@ -26,33 +25,26 @@ import {
 	readFileSync,
 	readdirSync,
 	rmSync,
-	statSync,
 	mkdirSync,
 	watch,
 	writeFileSync,
 } from "node:fs";
 import { homedir } from "node:os";
-import { basename, delimiter, dirname, join, resolve, sep } from "node:path";
-import { fileURLToPath } from "node:url";
-import { writeAtomicSync } from "./atomic-file.js";
+import { basename, delimiter, join, resolve } from "node:path";
 import {
 	createAgentSessionFromServices,
 	createAgentSessionRuntime,
 	createAgentSessionServices,
-	createBashToolDefinition,
 	createCodemodeExtension,
 	createEditToolDefinition,
 	createFindToolDefinition,
 	createGrepToolDefinition,
-	createLocalBashOperations,
 	createLsToolDefinition,
 	createToolSearchExtension,
-	createWriteToolDefinition,
 	resolveModelScopeWithDiagnostics,
 	getAgentDir,
 	SessionManager,
 	VERSION,
-	estimateTokens,
 	type AgentSession,
 	type AgentSessionEvent,
 	type AgentSessionRuntime,
@@ -61,7 +53,6 @@ import {
 	type SessionInfo,
 	type ToolDefinition,
 } from "@earendil-works/pi-coding-agent";
-import { Type } from "typebox";
 import { BG_CLEANUP_FALLBACK_MIN, BgServerTracker } from "./bg-servers.js";
 import {
 	checkAll as checkAllUpdates,
@@ -99,24 +90,13 @@ import {
 import { removeQueuedByIndexOrText } from "./queue-utils.js";
 import type {
 	PluginAgentTool,
-	PluginChatRequest,
-	PluginChatResult,
 	PluginCommandDef,
-	PluginConversationQuery,
 	PluginConversationSnapshot,
 	PluginRunEvent,
 	PluginToolEvent,
 } from "./plugins.js";
 import { syncPluginToolsIntoSession } from "./plugins.js";
-import { modelChangeKey, pickClientConversation, pickLatestClientSnapshot } from "./plugin-conversation-view.js";
-import {
-	denialText,
-	type GuardedToolName,
-	type ToolPostEdit,
-	type ToolPostRequest,
-	type ToolPreRequest,
-} from "./plugin-tool-guard.js";
-import { BASH_DESCRIPTION, BASH_PARAMETERS, BASH_PROMPT_GUIDELINES, BASH_PROMPT_SNIPPET } from "./tool-prompts.js";
+import { modelChangeKey, pickClientConversation } from "./plugin-conversation-view.js";
 import { SettingsService } from "./settings-service.js";
 import {
 	GoalService,
@@ -163,7 +143,7 @@ import {
 	pickTemplatePrompt,
 	type SubagentTemplate,
 } from "./subagent-templates.js";
-import { ApprovalRulesStore, extractTargetPath, type ApprovalRule } from "./approval-rules.js";
+import { ApprovalRulesStore } from "./approval-rules.js";
 import { ComposerDraftsStore } from "./composer-drafts.js";
 import { SandboxManager, evaluateSandboxJail, isSameOrSubpath, withSandboxJailGate } from "./sandbox-service.js";
 import { readPermissionFromSession } from "./permission-preset.js";
@@ -192,37 +172,28 @@ import {
 } from "./subagent-helpers.js";
 import { resolveUserMessageEntryId, resolveConversationMessageEntry } from "./message-entry-resolver.js";
 import { fillSkillContents } from "./skill-content-filler.js";
-import { hasSettledAssistantUsage, estimateNonSystemTokens, renderMainCompose } from "./prompt-assembler.js";
+import { estimateNonSystemTokens, renderMainCompose } from "./prompt-assembler.js";
 import { formatSubagentHandoffMessage, recordSubagentHandoff, type SubagentHandoffRecord } from "./subagent-handoff.js";
 import { executeContextBudgetPruning } from "./context-budget-runner.js";
-import { isPathInsideRoot } from "./approval-rules.js";
 import {
 	approvalSuppressionReason,
 	checkDangerousToolCall,
 	isApprovalPolicyEmpty,
-	pluginApprovalCategory,
 	type ApprovalPolicy,
 	type PendingApprovalEntry,
 	type ToolApprovalResolution,
 } from "./tool-approval.js";
 import { PlanManager } from "./plan-manager.js";
 import { buildPlanModePrompt, planModeDenial, planModeNoticeText, PLAN_MODE_BLOCKED_TOOL_NAMES } from "./plan-mode.js";
-import { DELEGATION_SYSTEM_PROMPT, delegationDenial, delegateNoticeText } from "./delegate-mode.js";
+import { DELEGATION_SYSTEM_PROMPT, delegateNoticeText } from "./delegate-mode.js";
 import { goalReviewDenial, shouldDeferPromptForReview } from "./goal-review-gate.js";
 import { readPlanModeFromSession, readPlanFromSession } from "./permission-preset.js";
 import { readDelegateModeFromSession } from "./permission-preset.js";
 
-import {
-	applyHeadTail,
-	makePersistentTerminalTools,
-	makeTerminalBashTool,
-	stripAnsi,
-	TERMINAL_TOOLS_GUIDANCE,
-} from "./terminals.js";
+import { makePersistentTerminalTools, makeTerminalBashTool, stripAnsi, TERMINAL_TOOLS_GUIDANCE } from "./terminals.js";
 import {
 	applyAgentToolsGating,
 	ASK_USER_QUESTION_TOOL_NAME,
-	BROWSER_PAGE_TOOL_NAME,
 	effectiveDisabledAgentTools,
 	filterToolsByPreset,
 	isAgentToolEnabled,
@@ -233,7 +204,6 @@ import {
 	localizedName,
 	PI_AGENT_PRESETS,
 	PI_PERMISSION_OPTIONS,
-	PLAN_UPDATE_TOOL_NAME,
 	PRESENT_FILES_TOOL_NAME,
 	presetAllowsPluginTools,
 	presetHasQuestionnaire,
@@ -243,8 +213,6 @@ import { makeLoadToolsTool, type LoadableToolInfo, type LoadToolsHost } from "./
 import { formatCompactSignature } from "./tool-signature.js";
 import { WebUIContext } from "./webui-context.js";
 import { DEFAULT_COMPACTION_RESERVE_TOKENS, effectiveSoftCap, softCapToReserve } from "./soft-cap.js";
-import { pruneContextHierarchically } from "./context-budget.js";
-import { decodeText } from "./text-sniff.js";
 import { makeEditSoftTool } from "./edit-soft-tool.js";
 // 覆盖 SDK 内置 read：路径是目录时列出目录条目（行为开关 readDirEnabled，默认开）。
 // 覆盖定义与「与扩展同名工具共存」的注入辅助分在两个文件（后者的依据见 tool-overrides.ts）。
@@ -283,19 +251,17 @@ import {
 	subagentTitle,
 	withSubagentOwner,
 	type SubagentSnapshot,
-	type SubagentState,
 	type SubagentToolHost,
 } from "./subagents.js";
 import { makeDelegateTaskTool } from "./delegate-task.js";
 import {
 	makeConversationReadTool,
-	parseTranscriptLines,
 	toTranscriptInput,
 	type ConversationReadHost,
 	type TranscriptInputMessage,
 } from "./conversation-read-tool.js";
 import { extractTouches, formatTouchesCompact, intersectTouches } from "./conversation-touches.js";
-import { ClaimStore, matchClaims, mergeTouchSidecar, readTouchSidecar, removeTouchSidecar } from "./claim-store.js";
+import { ClaimStore, matchClaims, mergeTouchSidecar, removeTouchSidecar } from "./claim-store.js";
 import { makeClaimFilesTool, type ClaimFilesHost } from "./claim-files-tool.js";
 import { makeSkillTool, type SkillToolHost } from "./skill-tool.js";
 import { getCompactedMessages, type SessionManagerLike } from "./compacted-history.js";
@@ -304,7 +270,7 @@ import { makePatchTool } from "./patch-tool.js";
 import { makeLspTool } from "./lsp-tool.js";
 import { makeMcpManageTool, type McpManageToolHost } from "./mcp-agent-tool.js";
 import { makeSandboxTool } from "./sandbox-tool.js";
-import { makeWorktreeTool, WORKTREE_TOOL_NAME } from "./worktree-tool.js";
+import { makeWorktreeTool } from "./worktree-tool.js";
 import { getWorktreeContext, removeWorktree, normalizeWirePath } from "./worktree-service.js";
 import type { WorktreeInfo } from "./protocol.js";
 import { sameSessionFile, type SchedulerStore } from "./scheduler-tasks.js";
@@ -320,7 +286,6 @@ import {
 	estimatePromptTokens,
 	renderPromptTemplate,
 	resolveSectionTexts,
-	splitExtensionWrap,
 	type PromptComposerInputs,
 } from "./prompt-composer.js";
 import type {
@@ -329,7 +294,6 @@ import type {
 	ConversationSummary,
 	ElsewhereRunning,
 	GoalStatus,
-	MessageAnchor,
 	ProjectSummary,
 	QuestionAnswer,
 	ServerMessage,
@@ -342,7 +306,6 @@ import type {
 	UiPluginUpdateInfo,
 	PromptAttachment,
 	UiQuestion,
-	UiServiceInfo,
 	UiState,
 	UiSubagentTemplate,
 	AgentEngineCapabilities,
@@ -359,14 +322,11 @@ import {
 } from "./mcp-manager.js";
 import { fetchRemoteMcpMarket, fetchRemoteSkillMarket, fetchRemoteSkillContent } from "./market-service.js";
 import type { McpBridge } from "./mcp-bridge.js";
-import { launchOrigin, toServiceInfo } from "./launch-origin.js";
 import {
-	findEntryByUiId,
 	serializeMessage,
 	serializeStreamingMessage,
 	stripTransientRetryErrors,
 	type AgentMessage,
-	type UiIdEntryLike,
 } from "./serialize.js";
 import { loadCommands, saveCommandsFile, TerminalManager } from "./terminals.js";
 
@@ -519,10 +479,8 @@ export {
 import {
 	RUN_TASK_CAP,
 	RUN_ARGS_CAP,
-	RUN_RESULT_CAP,
 	getMaxOpenConversations,
 	getMaxSubagents,
-	SUBAGENT_PROMPT_SNAPSHOT_CAP,
 	DEFAULT_CONV_TITLE,
 	truncRun,
 	previewToolResult,
@@ -728,7 +686,6 @@ export interface Conversation {
 }
 
 import {
-	MAX_TRANSCRIPT_SCAN_BYTES,
 	sessionMatchesMetadata,
 	collectSessionAnchors,
 	piSessionsRoot,

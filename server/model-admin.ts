@@ -98,11 +98,6 @@ export function graduateOverlayModels(
 	return graduated;
 }
 
-/** 原子写 JSON（tmp + rename）：进程崩溃不留半截文件。 */
-function atomicWriteJson(path: string, data: unknown): void {
-	writeJsonAtomicSync(path, data);
-}
-
 /** 原子写凭据 JSON 并修权限 0600（port from fork 50e723f，保留上游原子写语义）。
  *  chmod 覆盖已存在文件（mode 选项只对新建有效）。Windows 下尽力而为。 */
 function atomicWriteCredentialJson(path: string, data: unknown): void {

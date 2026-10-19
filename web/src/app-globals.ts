@@ -37,6 +37,10 @@
 import { useSyncExternalStore } from "react";
 import type { ClientMessage, ConnStatus, UiServiceInfo, AgentEngineCapabilities, EngineStatus } from "./types";
 
+/** 出厂默认能力声明：镜像 server/engine-capabilities.ts 的 DEFAULT_PI_CAPABILITIES。
+ *  老服务端不发 capabilities 时前端就用它（全能力）。
+ *  ⚠️ 协议里 `AgentEngineCapabilities` 新增字段时必须同步到此处，否则「缺省」方向上
+ *  消费方（`capabilities.steer !== false` 这类判式）会与真实引擎口经不一致。 */
 export const DEFAULT_ENGINE_CAPABILITIES: AgentEngineCapabilities = {
 	remoteSsh: true,
 	sandboxes: true,
@@ -52,6 +56,8 @@ export const DEFAULT_ENGINE_CAPABILITIES: AgentEngineCapabilities = {
 	softCap: true,
 	treeFork: true,
 	messageEdit: true,
+	steer: true,
+	ephemeralChat: true,
 };
 
 export interface AppGlobals {
@@ -111,37 +117,24 @@ function sameArray(a?: string[], b?: string[]): boolean {
 	return a.every((v, i) => v === b[i]);
 }
 
+/** 逐字段浅比：字段集合取两边 key 的并集，新增字段自动参与比较。
+ *  手写白名单漏字段 = 真变更被当成「没变」丢进黑洞（曾发生：引擎 `updating` /
+ *  `hasUpdate` 与能力 `steer` / `ephemeralChat` 漏比，界面上永远看不到「正在更新」
+ *  和引擎差异）；值都是标量，Object.is 足够。 */
+function sameShallow<T extends object>(a: T | undefined, b: T | undefined): boolean {
+	if (a === b) return true;
+	if (!a || !b) return false;
+	const keys = new Set([...Object.keys(a), ...Object.keys(b)]);
+	for (const key of keys) {
+		if (!Object.is((a as Record<string, unknown>)[key], (b as Record<string, unknown>)[key])) return false;
+	}
+	return true;
+}
+
 function sameEngines(a?: EngineStatus[], b?: EngineStatus[]): boolean {
 	if (a === b) return true;
 	if (!a || !b || a.length !== b.length) return false;
-	return a.every(
-		(v, i) =>
-			v.id === b[i].id &&
-			v.installed === b[i].installed &&
-			v.version === b[i].version &&
-			v.packageName === b[i].packageName,
-	);
-}
-
-function sameCapabilities(a?: AgentEngineCapabilities, b?: AgentEngineCapabilities): boolean {
-	if (a === b) return true;
-	if (!a || !b) return false;
-	return (
-		a.remoteSsh === b.remoteSsh &&
-		a.sandboxes === b.sandboxes &&
-		a.workspaceRoots === b.workspaceRoots &&
-		a.conversationRef === b.conversationRef &&
-		a.pageRef === b.pageRef &&
-		a.presentFiles === b.presentFiles &&
-		a.planMode === b.planMode &&
-		a.delegateMode === b.delegateMode &&
-		a.subagents === b.subagents &&
-		a.toolPromptOverride === b.toolPromptOverride &&
-		a.lazyTools === b.lazyTools &&
-		a.softCap === b.softCap &&
-		a.treeFork === b.treeFork &&
-		a.messageEdit === b.messageEdit
-	);
+	return a.every((v, i) => sameShallow(v, b[i]));
 }
 
 function same(a: AppGlobals, b: AppGlobals): boolean {
@@ -159,11 +152,10 @@ function same(a: AppGlobals, b: AppGlobals): boolean {
 		a.homeDir === b.homeDir &&
 		a.desktopDir === b.desktopDir &&
 		sameArray(a.tabs, b.tabs) &&
-		sameCapabilities(a.engineCapabilities, b.engineCapabilities) &&
+		sameShallow(a.engineCapabilities, b.engineCapabilities) &&
 		sameEngines(a.engines, b.engines) &&
 		// ready 每次重连都会带一份新的 service 对象——比字段，避免白重渲染。
-		a.service?.name === b.service?.name &&
-		a.service?.supervisor === b.service?.supervisor
+		sameShallow(a.service, b.service)
 	);
 }
 

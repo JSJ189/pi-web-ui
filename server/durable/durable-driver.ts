@@ -18,7 +18,7 @@ import {
 	resolveDurableModelChoice,
 	type DurableModelInfo,
 } from "./durable-models.js";
-import { loadDurableModule, loadDurablePeerModule, probeDurableInstallation } from "./durable-loader.js";
+import { loadDurableModule, loadDurablePeerModule } from "./durable-loader.js";
 
 export class DurableAgentDriver extends BaseAgentDriver {
 	readonly id = "durable";

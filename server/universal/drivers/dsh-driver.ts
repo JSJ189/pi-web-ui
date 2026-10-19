@@ -18,9 +18,9 @@ import { homedir } from "node:os";
 import { join } from "node:path";
 import { BaseAgentDriver, type AgentCapabilities, type AgentEventSink, type AgentTurnMeta } from "../driver-base.js";
 import type { PromptAttachment, SlashCommandInfo } from "../../protocol.js";
-import { DshRuntime, type DshAgentPreset } from "../../dsh/dsh-client.js";
+import { DshRuntime } from "../../dsh/dsh-client.js";
 import { normalizeDshUsage } from "../../dsh/dsh-usage.js";
-import { listCustomModelsFromConfig, resolveProviderCredential } from "../../model-resolver.js";
+import { listCustomModelsFromConfig } from "../../model-resolver.js";
 import { discoverDiskSkills } from "../../skill-discovery.js";
 
 const DEFAULT_MODEL = "deepseek-v4-flash";
