@@ -7,7 +7,7 @@
 import { defineView } from './sdk/index.mjs';
 
 const CSS = `
-.tnl-wrap { font-family: -apple-system, "PingFang SC", sans-serif; font-size: 13px; line-height: 1.7; max-width: 720px; padding: 18px; color: var(--text, inherit); }
+.tnl-wrap { font-family: -apple-system, "PingFang SC", sans-serif; font-size: 13px; line-height: 1.7; max-width: 720px; padding: 18px; color: var(--text, inherit); --green: #34c759; --green-soft: #34c75933; --green-text: #2e9e47; }
 .tnl-card { border: 1px solid var(--border, var(--border-soft, #8884)); border-radius: 12px; padding: 14px 16px; margin-bottom: 14px; background: var(--bg-elev, var(--bg, transparent)); box-shadow: 0 1px 3px #0001; }
 .tnl-row { display: flex; align-items: center; gap: 10px; margin: 5px 0; flex-wrap: wrap; }
 .tnl-dot { width: 12px; height: 12px; border-radius: 50%; background: var(--text-faint, #999); flex: none; }
@@ -474,7 +474,11 @@ export default defineView({
 				ok.style.display = 'inline';
 				setTimeout(() => { ok.style.display = 'none'; }, 2000);
 			} catch {
-				alert('复制失败：请手动选中命令块复制');
+				const ok = $('#tnl-copy-ok');
+				ok.textContent = '复制失败：请手动选中命令块复制';
+				ok.style.color = 'var(--red-text, var(--red, #ff3b30))';
+				ok.style.display = 'inline';
+				setTimeout(() => { ok.style.display = 'none'; ok.textContent = '已复制'; ok.style.color = ''; }, 2600);
 			}
 		};
 
