@@ -258,6 +258,7 @@ export default {
 							if (!agentById(state.activeAgentId)) state.activeAgentId = aid;
 							// 重连自动同步持久化配置（一次性标志，防 hello↔config 死循环：CLI 收 config 回 hello，server 又推 → 无限闪烁）
 							if (devCfg[a.name] && !a.cfgSent) { a.cfgSent = true; toAgent(aid, { t: 'config', ...devCfg[a.name] }); }
+							try { ws.send(JSON.stringify({ t: 'ver', v: 'p7' })); } catch {} // 握手下发最新 CLI 能力版本（旧版自更新；与 assets/cli.mjs 的 CLI_VER 保持一致）
 							break;
 						}
 						case 'audit': { // C 档 P1：CLI 批量上报的操作审计
@@ -388,7 +389,7 @@ export default {
 			res.setHeader('content-type', 'text/javascript; charset=utf-8');
 			res.end(cliCode(req));
 		});
-		const _offPiPkg = host.route('GET', '/pi-pkg', (_req, res) => { // pi agent 离线安装包（mac 自包含 tgz，设备免公网 npm）
+		host.route('GET', '/pi-pkg', (_req, res) => { // pi agent 离线安装包（mac 自包含 tgz，设备免公网 npm）
 			try {
 				const pkg = fs.readFileSync(path.join(__dirname, 'assets', 'pi-agent.tgz'));
 				res.setHeader('content-type', 'application/gzip');
@@ -454,7 +455,7 @@ export default {
 				res.end(JSON.stringify({ ok: true, name: nm, config: next, pending: !a }));
 			}
 		});
-			const _offDeviceFs = host.route('POST', '/device/fs', async (req, res) => { // P4: 面板浏览设备目录（选白名单路径用）
+			host.route('POST', '/device/fs', async (req, res) => { // P4: 面板浏览设备目录（选白名单路径用）
 				{
 					const j = await readBodyJson(req);
 					const id = String(j.id ?? ''), p = String(j.path || '~');
@@ -463,7 +464,7 @@ export default {
 					res.end(JSON.stringify(d.body));
 				}
 			});
-			const _offUninstall = host.route('POST', '/device/uninstall', async (req, res) => { // P4: 面板下发 CLI 自卸载
+			host.route('POST', '/device/uninstall', async (req, res) => { // P4: 面板下发 CLI 自卸载
 				{
 					const j = await readBodyJson(req);
 					const id = String(j.id ?? '');
@@ -475,7 +476,7 @@ export default {
 					res.end(JSON.stringify({ ok: true }));
 				}
 			});
-			const _offHw = host.route('POST', '/device/hw', async (req, res) => { // P4+: 查看设备硬件概览（只读）
+			host.route('POST', '/device/hw', async (req, res) => { // P4+: 查看设备硬件概览（只读）
 				{
 					const j = await readBodyJson(req);
 					const id = String(j.id ?? '');
@@ -484,7 +485,7 @@ export default {
 					res.end(JSON.stringify(d.body));
 				}
 			});
-			const _offTask = host.route('POST', '/device/task', async (req, res) => { // P4-B: 通用任务通道（指挥设备 pi agent）
+			host.route('POST', '/device/task', async (req, res) => { // P4-B: 通用任务通道（指挥设备 pi agent）
 				{
 					const j = await readBodyJson(req);
 					const id = String(j.id ?? '');
