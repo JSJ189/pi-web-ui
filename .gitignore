@@ -23,6 +23,7 @@ plugins/*/node_modules/
 plugins/*/storage/
 plugins/*/.pi-approved
 plugins/*/storage.json
+plugins/*/secrets.bin
 plugins/*/schedules.json
 plugins/webmail/package*.json
 

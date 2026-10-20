@@ -1198,7 +1198,9 @@ export const LeftPanel = memo(function LeftPanel({
 															? t("takeoverConfirm")
 															: isScheduler
 																? `${t("elsewherePseudoTip")}\n${c.cwd}`
-																: `${t(isOffline ? "elsewhereOfflineTip" : "elsewhereTip")}\n${c.cwd}`;
+																: isPseudo
+																	? `点击直接在电脑端打开此对话\n${c.cwd}`
+																	: `${t(isOffline ? "elsewhereOfflineTip" : "elsewhereTip")}\n${c.cwd}`;
 														return (
 															<div
 																className="lp-row"
@@ -1215,8 +1217,7 @@ export const LeftPanel = memo(function LeftPanel({
 																	})
 																}
 															>
-																{/* 「另一处」行本体：可过户时当按钮用（第一次点 = 确认，第二次点 = 过户）。
-    不可过户（旧条目无 owner/convId）时保持只读，无 onClick。 */}
+																{/* 「另一处」行本体：插件伪客户端（如微信/QQ）点击直接打开过户；真实多端保留两段确认防误触 */}
 																<button
 																	type="button"
 																	className={`session-item elsewhere-item${canTakeover ? "" : " elsewhere-static"}${confirming ? " confirm" : ""}`}
@@ -1225,6 +1226,14 @@ export const LeftPanel = memo(function LeftPanel({
 																	onClick={
 																		canTakeover
 																			? () => {
+																					if (isPseudo) {
+																						panelSend({
+																							type: "take_over_conversation",
+																							owner: elseOwner as string,
+																							id: elseConvId as string,
+																						});
+																						return;
+																					}
 																					if (!confirming) {
 																						setConfirmTakeover(c.id);
 																						return;

@@ -11889,12 +11889,12 @@ export class ClientSession {
 				return;
 			}
 			if (owner) {
-				if (AgentService.isPseudoClientId(owner.clientId)) {
+				if (owner.clientId.startsWith("scheduler:")) {
 					this.emit({
 						type: "notice",
 						level: "warning",
-						text: `该对话正在由后台任务使用（「${owner.title}」），为避免并发写入，已停止打开。`,
-						textEn: `This conversation is currently used by a background task ("${owner.title}"). Opening was blocked to prevent concurrent writes.`,
+						text: `该对话正在由后台定时任务使用（「${owner.title}」），为避免并发写入，已停止打开。可在后台任务面板查看进度。`,
+						textEn: `This conversation is currently used by a background scheduled task ("${owner.title}"). Opening was blocked to prevent concurrent writes.`,
 					});
 					this.flushSnapshot();
 					return;

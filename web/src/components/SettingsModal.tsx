@@ -4814,21 +4814,34 @@ export function SettingsModal({
 									/>
 									<span>{t("uiLayoutSideDockFloat")}</span>
 								</label>
-								{uiDiagnostics.length > 0 && (
-									<details className="set-ui-diag" open={uiDiagnostics.some((d) => d.level === "error")}>
-										<summary>⚠ {t("uiLayoutDiagTitle", { n: uiDiagnostics.length })}</summary>
-										<ul className="set-ui-diag-list">
-											{uiDiagnostics.map((d, i) => (
-												<li key={`${d.pluginId ?? "host"}:${d.entryId ?? i}`} className={`set-ui-diag-item ${d.level}`}>
-													{d.pluginId ? <code>{d.pluginId}</code> : null}
-													{d.entryId ? <code>{d.entryId}</code> : null}
-													<span>{d.message}</span>
-												</li>
-											))}
-										</ul>
-										<div className="set-ui-diag-hint">{t("uiLayoutDiagHint")}</div>
-									</details>
-								)}
+								{uiDiagnostics.length > 0 &&
+									(() => {
+										const hasIssues = uiDiagnostics.some((d) => d.level === "warn" || d.level === "error");
+										return (
+											<details
+												className={`set-ui-diag${hasIssues ? "" : " info-only"}`}
+												open={uiDiagnostics.some((d) => d.level === "error")}
+											>
+												<summary>
+													{hasIssues ? "⚠ " : "ℹ "}
+													{t("uiLayoutDiagTitle", { n: uiDiagnostics.length })}
+												</summary>
+												<ul className="set-ui-diag-list">
+													{uiDiagnostics.map((d, i) => (
+														<li
+															key={`${d.pluginId ?? "host"}:${d.entryId ?? i}`}
+															className={`set-ui-diag-item ${d.level}`}
+														>
+															{d.pluginId ? <code>{d.pluginId}</code> : null}
+															{d.entryId ? <code>{d.entryId}</code> : null}
+															<span>{d.message}</span>
+														</li>
+													))}
+												</ul>
+												<div className="set-ui-diag-hint">{t("uiLayoutDiagHint")}</div>
+											</details>
+										);
+									})()}
 								<input
 									className="set-ui-filter"
 									value={uiLayoutFilter}

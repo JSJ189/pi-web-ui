@@ -1220,10 +1220,20 @@ describe("buildUiSlots —— diagnostics（P0-1）", () => {
 			],
 			{ diagnostics, disabledPlugins: ["disabled-one"] },
 		);
-		expect(diagnostics.some((d) => d.pluginId === "disabled-one" && d.message.includes("disabled by the user"))).toBe(
-			true,
-		);
+		const disabledDiag = diagnostics.find((d) => d.pluginId === "disabled-one");
+		expect(disabledDiag).toBeDefined();
+		expect(disabledDiag?.message).toContain("disabled by the user");
+		expect(disabledDiag?.level).toBe("info");
 		expect(diagnostics.some((d) => d.pluginId === "broken-one" && d.level === "error")).toBe(true);
+	});
+
+	it("零 UI 项的插件被禁用 → 不产生无意义的假诊断（杜绝 0 UI items 假警告刷屏）", () => {
+		const diagnostics: UiDiagnostic[] = [];
+		build([plug("headless-one", { items: [], arrange: [] }), plug("no-ui-at-all")], {
+			diagnostics,
+			disabledPlugins: ["headless-one", "no-ui-at-all"],
+		});
+		expect(diagnostics).toEqual([]);
 	});
 
 	it("同 id 重复声明 → 诊断；跨插件同 itemId 不误报", () => {

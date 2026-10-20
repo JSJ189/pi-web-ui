@@ -157,8 +157,10 @@ export interface PluginHostSessionInfo {
 	/** 该会话所属的工作目录（绝对路径）。 */
 	cwd: string;
 	/** "running" = 本客户端已打开的对话（switchConversation）；
-	 *  "history" = 磁盘上的历史会话（switchSession）。 */
-	kind: "running" | "history";
+	 *  "history" = 磁盘上的历史会话（switchSession）；
+	 *  "elsewhere" = 另一处客户端/插件通道运行中的会话（可自动过户接入）。 */
+	kind: "running" | "history" | "elsewhere";
+	owner?: string;
 	/** 是否正在跑（运行中的对话才有意义）。 */
 	isStreaming?: boolean;
 }
@@ -767,6 +769,12 @@ export function createPluginHostApi(deps: PluginHostDeps): PluginHostApi {
 					if (!arrived) return { ok: false, error: `切换工作目录失败或超时：${info.cwd}` };
 				}
 				const before = deps.getConversationId();
+				if (info.kind === "elsewhere" && info.owner) {
+					deps.send({ type: "take_over_conversation", owner: info.owner, id: info.id });
+					const switched = await waitFor(() => deps.getConversationId() === info.id);
+					if (!switched) return { ok: false, error: `打开并接入会话超时：${info.title}` };
+					return { ok: true, sessionId: deps.getConversationId() ?? undefined };
+				}
 				if (info.kind === "running") deps.send({ type: "switch_conversation", id: info.id });
 				else deps.send({ type: "switch_session", path: info.id });
 				const switched = await waitFor(() => deps.getConversationId() !== before);

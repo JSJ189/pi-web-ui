@@ -212,20 +212,35 @@ export function createIlink({ base, version, getToken }) {
 			});
 		},
 		async sendMessage({ to, text, contextToken }) {
-			const body = {
+			const makeBody = (ctxToken) => ({
 				msg: {
 					from_user_id: "",
 					to_user_id: to,
 					client_id: uuid(),
 					message_type: 2,
 					message_state: 2,
-					...(contextToken ? { context_token: contextToken } : {}),
+					...(ctxToken ? { context_token: ctxToken } : {}),
 					item_list: [{ type: 1, text_item: { text: String(text ?? "") } }],
 				},
 				base_info: baseInfo(),
-			};
-			const r = await fetchJson(`${base}/ilink/bot/sendmessage`, { headers: authHeaders(), body });
+			});
+			const r = await fetchJson(`${base}/ilink/bot/sendmessage`, {
+				headers: authHeaders(),
+				body: makeBody(contextToken),
+			});
 			if (r && typeof r.ret === "number" && r.ret !== 0) {
+				// 若因 context_token 超时失效导致回复失败，去掉 context_token 降级主动重试一次
+				if (contextToken) {
+					try {
+						const fallback = await fetchJson(`${base}/ilink/bot/sendmessage`, {
+							headers: authHeaders(),
+							body: makeBody(undefined),
+						});
+						if (fallback && (fallback.ret === 0 || fallback.ret === undefined)) {
+							return fallback;
+						}
+					} catch {}
+				}
 				throw new Error(`sendmessage ret=${r.ret} ${r.errmsg ?? ""}`.trim());
 			}
 			return r;
