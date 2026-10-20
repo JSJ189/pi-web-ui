@@ -258,7 +258,7 @@ export default {
 							if (!agentById(state.activeAgentId)) state.activeAgentId = aid;
 							// 重连自动同步持久化配置（一次性标志，防 hello↔config 死循环：CLI 收 config 回 hello，server 又推 → 无限闪烁）
 							if (devCfg[a.name] && !a.cfgSent) { a.cfgSent = true; toAgent(aid, { t: 'config', ...devCfg[a.name] }); }
-							try { ws.send(JSON.stringify({ t: 'ver', v: 'p7' })); } catch {} // 握手下发最新 CLI 能力版本（旧版自更新；与 assets/cli.mjs 的 CLI_VER 保持一致）
+							try { ws.send(JSON.stringify({ t: 'ver', v: 'p8' })); } catch {} // 握手下发最新 CLI 能力版本（旧版自更新；与 assets/cli.mjs 的 CLI_VER 保持一致）
 							break;
 						}
 						case 'audit': { // C 档 P1：CLI 批量上报的操作审计
