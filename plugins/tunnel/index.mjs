@@ -85,12 +85,67 @@ export default {
 		}
 
 		const state = {
-			agents: new Map(),   // aid -> { ws, name, os, since }
+			agents: new Map(),   // aid -> { ws, name, os, since, ctrlPort }
 			activeAgentId: null, // 当前出口设备
 			conns: new Map(),    // cid -> { c, replied, aid }
 			nextId: 1, nextAid: 1,
 			totalServed: 0, lastNotifyAt: 0,
+			ctrlPending: new Map(), // P4: rid -> { resolve }（面板→设备控制请求-响应）
 		};
+		let ctrlSeq = 0;
+		// POST body 读取：宿主 express.json 已消费流时用 req.body（手动读会永远等不到 end → ECONNRESET，20261019 实战根因）；
+		// content-type 非 JSON（express.json 跳过）时兜底手动读。
+		const readBodyJson = req => new Promise(resolve => {
+			if (req.body !== undefined) return resolve(req.body ?? {});
+			let b = '';
+			req.on('data', c => { b += c; });
+			req.on('end', () => { try { resolve(JSON.parse(b || '{}')); } catch { resolve({}); } });
+			req.on('error', () => resolve({}));
+		});
+		// 面板经 server 中转到设备控制 API（复用 CLI 本机鉴权/审计，不走 SOCKS 开销）
+		const deviceCtrl = (aid, url, opts = {}, timeoutMs = 8000) => new Promise(resolve => {
+			const ag = agentById(aid);
+			if (!ag) return resolve({ status: 503, body: { error: '设备不在线' } });
+			if (!ag.ver) return resolve({ status: 400, body: { error: '该设备 CLI 为旧版，不支持此操作——请在面板「设备常驻化」重新安装后重试' } });
+			const rid = `r${++ctrlSeq}`;
+			const timer = setTimeout(() => { state.ctrlPending.delete(rid); resolve({ status: 504, body: { error: '设备响应超时' } }); }, timeoutMs);
+			state.ctrlPending.set(rid, { resolve: v => { clearTimeout(timer); resolve(v); } });
+			toAgent(aid, { t: 'ctrl', rid, url, method: opts.method || 'GET', body: opts.body });
+		});
+		// 模型三元组跟随：设备 pi 用 pi-web-ui 当前会话模型（自定义网关 provider 时桥接到对应网关）；解析失败返回 null，由面板手动兑底
+		const resolveModelEnv = () => {
+			try {
+				const manual = host.storage.get('modelEnv');
+				if (manual) {
+					const j = JSON.parse(manual);
+					if (j.baseUrl && j.apiKey && j.model) return { env: { OPENAI_BASE_URL: j.baseUrl, OPENAI_API_KEY: j.apiKey }, model: j.model };
+				}
+			} catch {}
+			try {
+				const home = os.homedir();
+				const cs = JSON.parse(fs.readFileSync(path.join(home, '.pi-web/client-state.json'), 'utf8'));
+				const m = JSON.stringify(cs).match(/"((?:wildwork|minimax-cn|ark|deepseek)\/[^"\\]+)"/); // 当前会话模型 ID（provider/渠道/型号）
+				if (!m) return null;
+				const full = m[1];
+				const prov = full.split('/')[0];
+				const gwModel = full.split('/').slice(1).join('/'); // 剥 provider 前缀 = 网关侧 ID
+				const keys = JSON.parse(fs.readFileSync(path.join(home, '.pi/agent/provider-keys.json'), 'utf8'));
+				const kv = keys?.[prov]?.keys?.[0];
+				const apiKey = typeof kv === 'string' ? kv : (kv?.apiKey || kv?.value || kv?.key || '');
+				if (!apiKey) return null;
+				let base = '';
+				if (prov === 'wildwork') base = lanIp ? `http://${lanIp}:${process.env.WILDWORK_GW_PORT || '7863'}/v1` : '';
+				else return { env: {}, model: full }; // 标准 provider：设备端需已 pi auth，只传模型 ID
+				if (!base) return null;
+				return { env: { OPENAI_BASE_URL: base, OPENAI_API_KEY: apiKey }, model: gwModel };
+			} catch { return null; }
+		};
+		// C 档 P1：审计环 + 设备能力配置（按 name 持久化，重连不丢授权）
+		const auditRing = [];
+		let devCfg = {};
+		try { devCfg = JSON.parse(host.storage.get('devcfg') || '{}'); } catch {}
+		const saveDevCfg = () => host.storage.set('devcfg', JSON.stringify(devCfg));
+		const capsOf = name => devCfg[name] ?? { fsRead: true, fsWrite: false, whitelist: ['~/Downloads'] };
 		const agentById = aid => {
 			const a = state.agents.get(aid);
 			return a && a.ws.readyState === 1 ? a : null;
@@ -116,11 +171,13 @@ export default {
 		const lanIp = detectLanIp(); // 面板生成常驻命令用（网络变化随插件重载自动更新）
 		const statusSnapshot = () => ({
 			running,
+			rev: 'c1-p3', // 代码版本标记：reload 后可观测新代码是否激活
 			lanIp,
 			agentOnline: !!activeAgent(), // 兼容旧面板语义：当前出口在线
 			activeAgentId: state.activeAgentId,
 			devices: [...state.agents.entries()].map(([id, a]) => ({
 				id, name: a.name || id, os: a.os || '', online: a.ws.readyState === 1, since: a.since,
+				ctrlPort: a.ctrlPort ?? 0, ver: a.ver || '', caps: capsOf(a.name || id),
 			})),
 			activeConns: state.conns.size,
 			totalServed: state.totalServed,
@@ -168,11 +225,47 @@ export default {
 					let m; try { m = JSON.parse(raw.toString()); } catch { return; }
 					const e = state.conns.get(m.id);
 					switch (m.t) {
-						case 'hello': {
+							case 'ping': { // 应用层心跳应答（CLI 25s 一发，服务端回 pong 供其判僵尸——TCP 半开时 onclose 不触发，靠这个自愈）
+								const pa = state.agents.get(aid);
+								if (pa) { try { pa.ws.send(JSON.stringify({ t: 'pong' })); } catch {} }
+								break;
+							}
+							case 'hello': {
 							const a = state.agents.get(aid);
-							if (a) { a.name = String(m.name ?? ''); a.os = String(m.os ?? ''); }
-							try { host.notify('info', `网络隧道：设备 ${a?.name || aid}（${a?.os || '未知系统'}）已就绪`); } catch {}
+							if (a) { a.name = String(m.name ?? ''); a.os = String(m.os ?? ''); a.ctrlPort = Number(m.ctrlPort) || 0; a.ver = String(m.ver || ''); }
+							// 同名设备：能力优先（ctrlPort>0 的 P1 版保留）——旧版重连被拒长退避，根治互踢循环
+							const twin = [...state.agents.entries()].find(([oid, oa]) => oid !== aid && oa.name && oa.name === a?.name && oa.ws.readyState === 1);
+							if (twin) {
+								const [oid, oa] = twin;
+								const newFull = a.ctrlPort > 0 && !(oa.ctrlPort > 0); // 新连接有控制 API 而在线的没有 → 新版接管
+								if (!newFull) {
+									// 新连接是旧版（或在线的也是新版）：拒绝本次连接，令其长退避
+									try { ws.send(JSON.stringify({ t: 'kicked', reason: '同名设备已有功能更全的实例在线' })); } catch {}
+									try { ws.close(); } catch {}
+									state.agents.delete(aid);
+									break;
+								}
+								try { oa.ws.send(JSON.stringify({ t: 'kicked', by: aid })); } catch {}
+								try { oa.ws.close(); } catch {}
+								state.agents.delete(oid);
+								for (const [cid2, e2] of state.conns) {
+									if (e2.aid !== oid) continue;
+									try { e2.c.destroy(); } catch {}
+									state.conns.delete(cid2);
+								}
+							}
+							try { notifyDebounced('info', `网络隧道：设备 ${a?.name || aid}（${a?.os || '未知系统'}）已就绪`); } catch {}
 							if (!agentById(state.activeAgentId)) state.activeAgentId = aid;
+							// 重连自动同步持久化配置（一次性标志，防 hello↔config 死循环：CLI 收 config 回 hello，server 又推 → 无限闪烁）
+							if (devCfg[a.name] && !a.cfgSent) { a.cfgSent = true; toAgent(aid, { t: 'config', ...devCfg[a.name] }); }
+							break;
+						}
+						case 'audit': { // C 档 P1：CLI 批量上报的操作审计
+							const nm = state.agents.get(aid)?.name || aid;
+							for (const it of (m.items ?? [])) {
+								auditRing.push({ ts: it.ts, device: nm, op: it.op, detail: it.detail });
+							}
+							if (auditRing.length > 500) auditRing.splice(0, auditRing.length - 500);
 							break;
 						}
 						case 'open':
@@ -181,10 +274,16 @@ export default {
 						case 'data': if (e) e.c.write(Buffer.from(m.b64, 'base64')); break;
 						case 'end': if (e) e.c.end(); break;
 						case 'err':
+							if (e) auditRing.push({ ts: Date.now(), device: state.agents.get(aid)?.name || aid, op: 'socks.connect.fail', detail: String(m.msg || '').slice(0, 200) + ' → ' + (e.lastTarget ?? '') });
 							if (e && !e.replied) { e.replied = true; socksReply(e.c, 5); }
 							if (e) e.c.destroy();
 							break;
 						case 'close': if (e) { e.c.destroy(); state.conns.delete(m.id); } break;
+						case 'ctrl-resp': { // P4: 设备控制响应回给等待中的面板请求
+							const p = state.ctrlPending.get(m.rid);
+							if (p) { state.ctrlPending.delete(m.rid); p.resolve({ status: m.status ?? 500, body: m.body ?? {} }); }
+							break;
+						}
 					}
 				});
 				ws.on('close', () => {
@@ -219,6 +318,7 @@ export default {
 				const req = parseSocksConnect(buf);
 				if (!req) { socksReply(c, 7); return c.destroy(); }
 				const ag = activeAgent();
+				console.log(`[tunnel] SOCKS CONNECT ${req.host}:${req.port} active=${state.activeAgentId} agentReady=${ag ? 1 : 0} agents=${state.agents.size}`);
 				if (!ag) { socksReply(c, 5); return c.destroy(); } // 无在线设备：拒绝，AI 侧表现为快速失败
 				const aid = state.activeAgentId;
 				const cid = `c${state.nextId++}`;
@@ -264,8 +364,19 @@ export default {
 			srv.listen(port, addr, () => resolve(true));
 		});
 		await startTunnel(); // 激活即运行，面板可随时停/启
+		// 心跳 + 半开检测：ping 后未回 pong 的连接判定为僵尸（进程退出未挥手/网络半开），
+		// terminate 触发 close → 从设备表移除（否则假在线残留，SOCKS 全部空响应，20261019 实战根因）
 		const heartbeat = setInterval(() => {
-			for (const [, a] of state.agents) if (a.ws.readyState === 1) a.ws.ping();
+			for (const [, a] of state.agents) {
+				if (a.ws.readyState !== 1) continue;
+				if (a.isAlive === false) {
+					try { a.ws.terminate(); } catch {}
+					continue;
+				}
+				a.isAlive = false;
+				a.ws.ping();
+				a.ws.once('pong', () => { a.isAlive = true; });
+			}
 		}, 30_000);
 
 		// ── 宿主集成：route（面板数据 + CLI 下载 + 令牌轮换 + 出口切换 + 启停）───────
@@ -276,6 +387,14 @@ export default {
 		const offCli = host.route('GET', '/cli', (req, res) => {
 			res.setHeader('content-type', 'text/javascript; charset=utf-8');
 			res.end(cliCode(req));
+		});
+		const _offPiPkg = host.route('GET', '/pi-pkg', (_req, res) => { // pi agent 离线安装包（mac 自包含 tgz，设备免公网 npm）
+			try {
+				const pkg = fs.readFileSync(path.join(__dirname, 'assets', 'pi-agent.tgz'));
+				res.setHeader('content-type', 'application/gzip');
+				res.setHeader('content-length', pkg.length);
+				res.end(pkg);
+			} catch { res.statusCode = 404; res.end('pi-agent.tgz not found'); }
 		});
 		const offRotate = host.route('POST', '/rotate', (_req, res) => {
 			token = crypto.randomBytes(16).toString('hex');
@@ -310,6 +429,80 @@ export default {
 				res.setHeader('content-type', 'application/json');
 				res.end(JSON.stringify({ ok: true, activeAgentId: id }));
 			});
+		});
+
+		// C 档 P1：设备能力/白名单下发（CLI 持久化并回 hello 确认）+ 审计查询
+		const offConfig = host.route('POST', '/agent/config', async (req, res) => {
+			{
+				const j = await readBodyJson(req);
+				let id = '', patch = {}, name = '';
+				id = String(j.id ?? ''); patch = j; name = String(j.name || '');
+				const a = state.agents.get(id);
+				const nm = a?.name || name; // 离线预配置：设备 crash/不在线时可直接传 name 持久化，重连自动下发（防 fsWrite 死锁）
+				res.setHeader('content-type', 'application/json');
+				if (!nm) return res.end(JSON.stringify({ ok: false, error: '设备不在线且未提供 name' }));
+				const cur = capsOf(nm);
+				const next = {
+					fsRead: typeof patch.fsRead === 'boolean' ? patch.fsRead : (cur.fsRead ?? true),
+					fsWrite: typeof patch.fsWrite === 'boolean' ? patch.fsWrite : (cur.fsWrite ?? false),
+					whitelist: Array.isArray(patch.whitelist) && patch.whitelist.length ? patch.whitelist : (cur.whitelist ?? ['~/Downloads']),
+				};
+				devCfg[nm] = next;
+				saveDevCfg();
+				if (a) toAgent(id, { t: 'config', ...next });
+				try { host.notify('info', `网络隧道：设备 ${nm} 配置已更新（fsWrite=${next.fsWrite}${a ? '' : '，待设备上线生效'}）`); } catch {}
+				res.end(JSON.stringify({ ok: true, name: nm, config: next, pending: !a }));
+			}
+		});
+			const _offDeviceFs = host.route('POST', '/device/fs', async (req, res) => { // P4: 面板浏览设备目录（选白名单路径用）
+				{
+					const j = await readBodyJson(req);
+					const id = String(j.id ?? ''), p = String(j.path || '~');
+					const d = id ? await deviceCtrl(id, '/fs/browse?path=' + encodeURIComponent(p)) : { status: 400, body: { error: '缺少设备 id' } };
+					res.setHeader('content-type', 'application/json');
+					res.end(JSON.stringify(d.body));
+				}
+			});
+			const _offUninstall = host.route('POST', '/device/uninstall', async (req, res) => { // P4: 面板下发 CLI 自卸载
+				{
+					const j = await readBodyJson(req);
+					const id = String(j.id ?? '');
+					const a = state.agents.get(id);
+					res.setHeader('content-type', 'application/json');
+					if (!a) return res.end(JSON.stringify({ ok: false, error: '设备不在线' }));
+					toAgent(id, { t: 'uninstall' });
+					try { host.notify('warning', `网络隧道：已下发卸载指令到 ${a.name || id}（停常驻+删文件）`); } catch {}
+					res.end(JSON.stringify({ ok: true }));
+				}
+			});
+			const _offHw = host.route('POST', '/device/hw', async (req, res) => { // P4+: 查看设备硬件概览（只读）
+				{
+					const j = await readBodyJson(req);
+					const id = String(j.id ?? '');
+					const d = id ? await deviceCtrl(id, '/sys/hw') : { status: 400, body: { error: '缺少设备 id' } };
+					res.setHeader('content-type', 'application/json');
+					res.end(JSON.stringify(d.body));
+				}
+			});
+			const _offTask = host.route('POST', '/device/task', async (req, res) => { // P4-B: 通用任务通道（指挥设备 pi agent）
+				{
+					const j = await readBodyJson(req);
+					const id = String(j.id ?? '');
+					const me = resolveModelEnv();
+					if (!me) {
+						res.setHeader('content-type', 'application/json');
+						return res.end(JSON.stringify({ error: '模型通道无法解析（未找到当前会话模型或网关 key）——可在面板设置手动配置 modelEnv' }));
+					}
+					const payload = JSON.stringify({ prompt: String(j.prompt ?? ''), tools: String(j.tools || 'read,grep,glob'), env: me.env, model: me.model, timeoutS: +j.timeoutS || 300 });
+					console.log(`[tunnel] task → ${id} model=${me.model} baseUrl=${me.env.OPENAI_BASE_URL || '-'} promptLen=${payload.length}`);
+					const d = id ? await deviceCtrl(id, '/task', { method: 'POST', body: payload }, (+j.timeoutS || 300) * 1000 + 30000) : { status: 400, body: { error: '缺少设备 id' } };
+					res.setHeader('content-type', 'application/json');
+					res.end(JSON.stringify(d.body));
+				}
+			});
+			const offAudit = host.route('GET', '/audit', (_req, res) => {
+			res.setHeader('content-type', 'application/json');
+			res.end(JSON.stringify({ items: auditRing.slice(-100).reverse() }));
 		});
 
 		// ── 宿主集成：AI 工具（数据面 = 当前出口设备所在网络）──────────────────────
@@ -359,7 +552,7 @@ export default {
 		// deactivate 清理（宿主 reload/停用时调用）
 		return () => {
 			clearInterval(heartbeat);
-			offStatus(); offCli(); offRotate(); offStart(); offStop(); offSelect(); offTool();
+			offStatus(); offCli(); offRotate(); offStart(); offStop(); offSelect(); offConfig(); offAudit(); offTool();
 			stopTunnel();
 			try { wss.close(); } catch {}
 		};
