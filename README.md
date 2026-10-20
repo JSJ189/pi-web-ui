@@ -262,12 +262,32 @@ npm uninstall -g pi-web-ui
 
 ## 🧩 Plugins & Extensions
 
-- **Plugin Market**: Browse, install, and configure extensions directly within the web UI (`Settings` → `Plugins`).
+- **Plugin Market**: Browse, install, and configure built-in and community-contributed extensions directly within the web UI (`Settings` → `Plugins`).
 - **CLI Plugin Installation**: Install directly from any GitHub repository or local directory:
   ```bash
   pi-web-ui install owner/repo
   ```
 - **Page Picker Extension**: Download `page-picker-extension.zip` from [Releases](https://github.com/xing-shuyin/pi-web-ui/releases/latest), unpack, and load it into Chrome/Edge as an unpacked extension.
+
+### 🚀 Submit Third-Party Community Plugins (Fully Automated CI Review & Instant Publish)
+
+Whether you develop custom AI tools, workspace views, platform bots (Telegram, Discord, Slack, etc.), or themes, you are warmly invited to submit your plugin to the official community registry!
+
+- 📦 **Community Plugin Registry Repository**: 👉 [**xing-shuyin/pi-web-ui-plugins**](https://github.com/xing-shuyin/pi-web-ui-plugins)
+- 📖 **Quick 4-Step Submission (Supports Web-Only Submission)**:
+  1. Prepare your open-source GitHub repository with a standard open-source license and a valid `manifest.json`;
+  2. Visit and Fork [xing-shuyin/pi-web-ui-plugins](https://github.com/xing-shuyin/pi-web-ui-plugins);
+  3. Create `plugins/<your-plugin-id>/plugin.json` with metadata (name, source, description, icon) — you can do this directly on GitHub web via "Add file";
+  4. Submit a Pull Request!
+
+#### 🌟 Key Benefits of Publishing to the Official Registry
+
+| Benefit                                  | Description                                                                                                                                                                                                                   |
+| :--------------------------------------- | :---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| ⚡ **Zero-Touch Auto-Merge**             | Low-risk plugins (standard tools/views without privileged permissions) are audited by the GitHub Actions bot in real time. **Once checks pass, the bot automatically approves and auto-merges the PR** with zero manual wait! |
+| 🌐 **Global Instant Exposure**           | This registry is the **out-of-the-box default catalog** for `pi-web-ui`. Within ~1 minute after merge, your plugin is searchable and installable with one click across all running `pi-web-ui` client markets worldwide.      |
+| 🛡️ **Continuous Security Audit & Trust** | Every submission and **subsequent PR update** automatically triggers strict CI security scanning (JSON Schema compliance, SVG icon XSS filtering, permission boundary checks, and author anti-tampering verification).        |
+| 🧩 **Zero Merge Conflicts**              | Each plugin uses an isolated `plugins/<id>/plugin.json` directory structure, ensuring parallel PRs from multiple authors never conflict.                                                                                      |
 
 ---
 

@@ -245,12 +245,32 @@ npm uninstall -g pi-web-ui
 
 pi-web-ui 擁有完整的外掛開發與擴充套件執行時：
 
-- **外掛市集**：在網頁端「設定」→「外掛市集」一鍵搜尋、安裝與啟用官方及社群外掛。
+- **外掛市集**：在網頁端「設定」→「外掛市集」一鍵搜尋、安裝與啟用官方內建與社群貢獻的外掛。
 - **CLI 一鍵安裝**：支援直接從 GitHub 儲存庫或本地目錄安裝外掛：
   ```bash
   pi-web-ui install owner/repo
   ```
-- **Page Picker 網頁拾取器**：前往 [Releases](https://github.com/xing-shuyin/pi-web-ui/releases/latest) 下載 `page-picker-extension.zip`，解壓縮後在 Chrome/Edge 的擴充套件程式中「載入已解壓縮的擴充套件程式」即可使用。
+- **Page Picker 網頁拾取器**：前往 [Releases](https://github.com/xing-shuyin/pi-web-ui/releases/latest) 下載 `page-picker-extension.zip`，解壓縮後在 Chrome/Edge 的擴充功能中「載入已解壓縮的擴充功能」即可使用。
+
+### 🚀 歡迎提交第三方社群外掛（全自動審查 · 秒級上架）
+
+無論你開發了特色 AI 工具、自訂檢視、第三方通訊機器人（Telegram/Discord/Slack等）還是主題桌布，都非常歡迎將外掛提交至官方社群清單！
+
+- 📦 **社群外掛清單官方儲存庫**：👉 [**xing-shuyin/pi-web-ui-plugins**](https://github.com/xing-shuyin/pi-web-ui-plugins)
+- 📖 **極簡提交流程（支援網頁端一鍵提交）**：
+  1. 準備你的開源外掛 GitHub 儲存庫（包含合法的開源協定與 `manifest.json`）；
+  2. 造訪並 Fork [xing-shuyin/pi-web-ui-plugins](https://github.com/xing-shuyin/pi-web-ui-plugins) 儲存庫；
+  3. 新增目錄 `plugins/<你的外掛id>/plugin.json` 並填寫元資料（名稱、來源、功能描述，可直接在 GitHub 網頁端點選「Add file」完成）；
+  4. 發起 Pull Request 即可！
+
+#### 🌟 提交到官方社群清單的核心優勢
+
+| 優勢特性                               | 說明                                                                                                                                                                         |
+| :------------------------------------- | :--------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| ⚡ **無人值守全自動合併 (Auto-Merge)** | 普通工具/檢視外掛（低風險）提交 PR 後，GitHub Actions 機器人即時觸發全自動安全審計，**校驗通過後機器人自動 Approve 並秒級自動合併**，無需等待人工排隊審批。                  |
+| 🌐 **全球用戶端即時曝光上架**          | 本清單是 `pi-web-ui` 伺服器端的**原廠預設訂閱源**。PR 一經合併，約 1 分鐘內全球所有使用者的「外掛市集」便能直接搜尋並一鍵安裝你的外掛，享受龐大的使用者生態。                |
+| 🛡️ **全流程安全審查與信譽背書**        | 提交以及後續的**每一次修改與更新**，CI 機器人均會自動執行嚴格的程式碼安全掃描（JSON Schema 檢驗、SVG 圖示 XSS 過濾、敏感權限審查及原作者防冒用篡改保護），讓使用者放心安裝。 |
+| 🧩 **獨立目錄架構零衝突**              | 採用 `plugins/<id>/plugin.json` 獨立隔離設計，多位開發者同時提交或更新不同外掛絕不產生 Git 合併衝突。                                                                        |
 
 ---
 
