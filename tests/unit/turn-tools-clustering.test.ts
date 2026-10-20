@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { clusterMessages, isPureToolMessage } from "../../web/src/components/MessageList.js";
+import { clusterMessages, estimateClusterHeight, isPureToolMessage } from "../../web/src/components/MessageList.js";
 import type { UiMessage } from "../../web/src/types.js";
 
 describe("回合工具流聚类与隔离机制 (Turn Tool Trail)", () => {
@@ -188,6 +188,49 @@ describe("回合工具流聚类与隔离机制 (Turn Tool Trail)", () => {
 		expect(clusteredWithText[2].type).toBe("single"); // stream-1 作为独立正文流
 		if (clusteredWithText[2].type === "single") {
 			expect(clusteredWithText[2].message.id).toBe("stream-1");
+		}
+	});
+
+	it("estimateClusterHeight 为未实测的工具集群提供稳定的基线高度", () => {
+		const emptyMessages: UiMessage[] = [];
+		expect(estimateClusterHeight(emptyMessages)).toBe(48);
+
+		const fiveTools: UiMessage[] = [
+			{ id: "a1" } as UiMessage,
+			{ id: "a2" } as UiMessage,
+			{ id: "a3" } as UiMessage,
+			{ id: "a4" } as UiMessage,
+			{ id: "a5" } as UiMessage,
+		];
+		// 5 * 52 = 260px
+		expect(estimateClusterHeight(fiveTools)).toBe(260);
+	});
+
+	it("密集工具流阈值校验：连续 4 个及以上工具时 cluster.messages.length 准确反映密集度", () => {
+		const smallTrail: UiMessage[] = [
+			{ id: "a1", role: "assistant", content: [{ type: "toolCall", id: "t1", name: "read" }] } as unknown as UiMessage,
+			{ id: "a2", role: "assistant", content: [{ type: "toolCall", id: "t2", name: "grep" }] } as unknown as UiMessage,
+			{ id: "a3", role: "assistant", content: [{ type: "toolCall", id: "t3", name: "bash" }] } as unknown as UiMessage,
+		];
+		const smallCluster = clusterMessages(smallTrail);
+		expect(smallCluster.length).toBe(1);
+		expect(smallCluster[0].type).toBe("tool_cluster");
+		if (smallCluster[0].type === "tool_cluster") {
+			// 小于 4 个工具，不触发密集收敛
+			expect(smallCluster[0].messages.length >= 4).toBe(false);
+		}
+
+		const denseTrail: UiMessage[] = [
+			...smallTrail,
+			{ id: "a4", role: "assistant", content: [{ type: "toolCall", id: "t4", name: "edit" }] } as unknown as UiMessage,
+			{ id: "a5", role: "assistant", content: [{ type: "toolCall", id: "t5", name: "bash" }] } as unknown as UiMessage,
+		];
+		const denseCluster = clusterMessages(denseTrail);
+		expect(denseCluster.length).toBe(1);
+		expect(denseCluster[0].type).toBe("tool_cluster");
+		if (denseCluster[0].type === "tool_cluster") {
+			// 达到 5 个工具，准确满足密集集群阈值（>= 4）
+			expect(denseCluster[0].messages.length >= 4).toBe(true);
 		}
 	});
 });

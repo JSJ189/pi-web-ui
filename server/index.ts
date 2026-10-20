@@ -47,6 +47,7 @@ import { isManaged, managedRefusal } from "./managed.js";
 import { launchOrigin, toServiceInfo } from "./launch-origin.js";
 import { parseTabs, tabsRefusal } from "./tabs.js";
 import { recordUnknownWsType } from "./ws-unknown-types.js";
+import { MessageWindowTap, readMessageWindowConfig } from "./message-window.js";
 import { validateClientId } from "./ws-client-id.js";
 import { PendingCommandQueue } from "./ws-pending-queue.js";
 import {
@@ -2447,7 +2448,9 @@ wss.on("connection", (ws) => {
 		}
 	});
 
-	const send = (msg: ServerMessage): void => {
+	/** 引擎→浏览器的**唯一发送漏斗**：历史消息窗口化（按需加载）在它前面一层，
+	 *  见下方 `send`。四个引擎（pi / DSH / claude / durable）都走这条漏斗，引擎侧零改动。 */
+	const sendRaw = (msg: ServerMessage): void => {
 		if (closed || ws.readyState !== WebSocket.OPEN) return;
 		// 发送背压（issue #11）：socket 消费不过来时（前端慢/网络差），堆里会堆积
 		// 每份可达 ~10MB 的全量 snapshot 字符串，低内存主机直接 OOM。snapshot 是全量
@@ -2482,6 +2485,12 @@ wss.on("connection", (ws) => {
 		if (msg.type === "snapshot") lastSnapshotBytes = wire.length * 2;
 		ws.send(wire);
 	};
+
+	/** 本连接的历史窗口状态（每标签页一份，见 server/message-window.ts）。
+	 *  `send` 必须包在 `sendRaw` **外面**：窗口先裁消息，再算背压字节数——否则
+	 *  背压阈值还在按未裁剪的 10MB 量级估。 */
+	const windowTap = new MessageWindowTap(sendRaw, readMessageWindowConfig(process.env));
+	const send = (msg: ServerMessage): void => windowTap.accept(msg);
 
 	// Plugins broadcast to every open socket; unregister on close below.
 	// Plugins broadcast to every open socket; unregister on close below. The
@@ -2752,6 +2761,12 @@ wss.on("connection", (ws) => {
 		if (!cs || !attachDone) {
 			// Session not ready yet (hello processing / plugin chain) — hold the command.
 			pending.push(msg);
+			return;
+		}
+		// 历史窗口按需加载：连接级窗口化直接服务（四个引擎通吃，不依赖引擎实现）。
+		// 放在引擎分发之前：它不是引擎能力，窗口化关闭时静默无回执（前端保持现状）。
+		if (msg.type === "load_earlier_messages") {
+			windowTap.loadEarlier(msg.count, msg.all);
 			return;
 		}
 		// Managed instances do not install software on themselves, and tabs this

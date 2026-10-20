@@ -207,6 +207,13 @@ export interface UiState {
 	 *  a mismatch means the client missed an update and must get_state resync. */
 	rev: number;
 	messages: UiMessage[];
+	/** 历史窗口起点（服务端按需加载，见 server/message-window.ts）：
+	 *  `messages` 是本对话全量消息的一个**尾部窗口**，本字段是该窗口首条消息在
+	 *  全量列表中的下标（0 = 窗口包含全部历史）。缺省 = 全量（引擎未做窗口化 /
+	 *  窗口化关闭 / 老服务端）。 */
+	historyStart?: number;
+	/** 窗口覆盖到的全量消息总数——「还有 N 条更早消息」的计数基准。缺省 = 未知。 */
+	historyTotal?: number;
 	/**
 	 * Live partial assistant message while a run is streaming. The SDK keeps the
 	 * in-progress message in agent.state.streamingMessage — it only enters
@@ -583,6 +590,11 @@ export type ClientMessage =
 	 *  persisted session transcripts — every user AND assistant message,
 	 *  AI output included. reqId echoes back in session_search_results. */
 	| { type: "search_sessions"; reqId: number; query: string }
+	/** 历史窗口按需加载（服务端窗口化，见 server/message-window.ts）：把当前对话的
+	 *  消息窗口往前扩一页，服务端回 `earlier_messages`（新增的更早一段，客户端前插）。
+	 *  `count` 缺省 = 一页；`all: true` = 一路拉到最早（「全部展开」/ 打开页内搜索）。
+	 *  窗口化关闭或服务端未实现时该消息被忽略（无回执），前端保持现状。 */
+	| { type: "load_earlier_messages"; count?: number; all?: boolean }
 	// -- source-control panel (read-only git queries, server-side execFile) --
 	/** SCM refresh payload: status + branches + numstat (history loads
 	 *  lazily via scm_history so big repos don't pay for it every refresh). */
@@ -3967,6 +3979,16 @@ export type ServerMessage =
 			conversationId: string;
 			messages: UiMessage[];
 			error?: string;
+	  }
+	// -- history window paging (on-demand earlier messages) ------------------
+	/** `load_earlier_messages` 的回执：`messages` 是比当前窗口更早的一段（前插即可）。
+	 *  `messages` 为空 = 已到最早（或服务端无缓存），客户端据此收起加载态。 */
+	| {
+			type: "earlier_messages";
+			conversationId: string;
+			messages: UiMessage[];
+			historyStart: number;
+			historyTotal: number;
 	  }
 	// -- remote SSH & probe results ------------------------------------------
 	| {

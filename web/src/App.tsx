@@ -89,6 +89,7 @@ import { PlanBoard } from "./components/PlanBoard";
 // 工具定义说明弹窗（工具卡右键 → 「显示工具详细信息」）：状态在 tool-info-state.ts 的模块级 store 里，
 // 这里只挂一份渲染（触发点在消息流里的每张工具卡）。
 import { ToolInfoDialog } from "./components/ToolInfoDialog";
+import { ToolInspectorModal } from "./components/ToolInspectorModal";
 import { GlobalSearchModal } from "./components/GlobalSearchModal";
 import { PluginModal } from "./components/PluginModal";
 import { TemplateProvider } from "./components/PromptTemplates";
@@ -441,10 +442,10 @@ export function App() {
 	// 面板隐藏或调序（偏好 per-client 持久化）。顺序与设置面板里看到的一致。
 	// 宿主 UI 扩展点全量计算（issue #146 完整版）：内置条目 + 插件贡献 + 插件 arrange
 	// + 用户偏好（最高优先级）→ 每个 slot 的最终条目。渲染层只负责摆位置。
-	const uiSlots = useMemo(() => {
+	const [uiSlots, uiDiagnostics] = useMemo(() => {
 		// 合并诊断（P0-1：失败不许静默）：未知 slot / 未知 kind / arrange 目标不存在 /
-		// 插件被禁用或激活失败 → 带归因的 diagnostics，这里 console.warn 一条，
-		// 设置面板「界面布局」页再展示给用户（同一份数据，两处都不吞）。
+		// 插件被禁用或激活失败 → 带归因的 diagnostics，
+		// 设置面板「界面布局」页展示给用户，控制台按级别分流输出（避免无意义的黄色警告与重复刷屏）。
 		const diagnostics: UiDiagnostic[] = [];
 		const slots = buildUiSlots(withPluginViewItems(chat.plugins), {
 			locale,
@@ -454,9 +455,25 @@ export function App() {
 			layout: chat.settings?.uiLayout,
 			diagnostics,
 		});
-		for (const d of diagnostics) console.warn(`[ui-slot] ${d.pluginId ? `[${d.pluginId}] ` : ""}${d.message}`);
-		return slots;
+		return [slots, diagnostics] as const;
 	}, [chat.plugins, chat.settings?.disabledPlugins, chat.settings?.uiLayout, locale, t]);
+
+	const lastUiDiagFingerprintRef = useRef("");
+	useEffect(() => {
+		const fp = uiDiagnostics.map((d) => `${d.level}:${d.pluginId ?? ""}:${d.entryId ?? ""}:${d.message}`).join("\n");
+		if (fp === lastUiDiagFingerprintRef.current) return;
+		lastUiDiagFingerprintRef.current = fp;
+		for (const d of uiDiagnostics) {
+			const prefix = `[ui-slot] ${d.pluginId ? `[${d.pluginId}] ` : ""}`;
+			if (d.level === "error") {
+				console.error(`${prefix}${d.message}`);
+			} else if (d.level === "warn") {
+				console.warn(`${prefix}${d.message}`);
+			} else {
+				console.debug(`${prefix}${d.message}`);
+			}
+		}
+	}, [uiDiagnostics]);
 	// 顶栏：主栏 = 非 hidden 的 topbar.primary；溢出 = hidden 的 primary + topbar.overflow。
 	// 这样插件把宿主条目 hide 掉之后，它仍在溢出菜单/布局页里找得回来（锁不死用户）。
 	const uiPrimary = useMemo(() => uiSlots["topbar.primary"].filter((e) => !e.hidden), [uiSlots]);
@@ -644,6 +661,16 @@ export function App() {
 							kind: "running" as const,
 							isStreaming: x.isStreaming,
 						})),
+						...(c.elsewhere ?? [])
+							.filter((w) => Boolean(w.convId && w.owner))
+							.map((w) => ({
+								id: w.convId!,
+								title: w.title,
+								cwd: w.cwd || cwd,
+								kind: "elsewhere" as const,
+								owner: w.owner,
+								isStreaming: w.isStreaming,
+							})),
 						...c.sessions.map((s) => ({
 							id: s.path,
 							title: s.displayName || s.name || s.firstMessage?.trim() || s.path,
@@ -2898,6 +2925,8 @@ export function App() {
 			)}
 			{/* 工具定义说明弹窗（工具卡右键菜单 host:tool-info）：自己订阅 store，无 props。 */}
 			<ToolInfoDialog />
+			{/* 工具执行详情与思考流检查器弹窗（极简行文模式微胶囊点击弹窗） */}
+			<ToolInspectorModal />
 			{/* 会话回滚确认弹窗（Dual-State Rollback） */}
 			<RollbackDialog />
 			{/* 人机协同拦截与「改写执行」审批弹窗 */}

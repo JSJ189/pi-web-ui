@@ -25,6 +25,18 @@
 
 `hello` 可带 `protocolVersion`，`ready` 回带服务端版本；前端比对不一致时显示持久刷新横幅（应用原地更新后「界面新的/WS 旧的」混跑防护）。常量在 server/ 与 web/ 各一份 protocol-version.ts，`check:protocol` 校验两份一致——改协议时必须同步 bump。
 
+### 历史消息按需加载（服务端窗口化，`server/message-window.ts`）
+
+前端「向上分页」只做到**不渲染**，数据仍是全量到手：实测一份 287 条 / 17MB 的转录序列化后快照 4MB，打开对话要等整份传完 + parse。所以再把窗口挪到服务端：
+
+- **挂载点**：每连接唯一的发送漏斗（`server/index.ts` 的 `send` 外包一层 `MessageWindowTap`）。四个引擎（pi / DSH / claude / durable）都经这条漏斗，引擎侧**零改动**、口径统一；将来新引擎自动继承。
+- **裁剪**：`snapshot` 的 `state.messages` 裁成尾部窗口并回填 `historyStart`（窗口首条在全量里的下标）/ `historyTotal`；条数上限 `PI_WEB_HISTORY_WINDOW`（默认 300）+ **字符预算** 150 万字符（截图/tool 输出会把窗口压更短，实测同一份会话 4.00MB → 1.28MB）。`snapshot_delta` 只把新追加的并入缓存并回填两个计数。
+- **翻页**：`load_earlier_messages {count|all}` → 服务端回 `earlier_messages`（新增的更早一段，客户端**前插**）。窗口起点**单调不增**：客户端翻过的页不会被后续全量快照（重连 / `get_state`）推回去。
+- **不碰 `rev`/`baseRev`**：各引擎增量语义不同，改写版本号会破坏它们的自愈链；翻页只是补齐更早内容，与 rev 无关。
+- **前端配合**（`web/src/components/MessageList.tsx`）：`hasEarlier` = 本地未展示 + `historyStart`；滚轮接近顶部/点「加载更早」时本地够用就本地撑开，否则向服务端要一页；打开页内搜索或「全部展开」时 `all: true` 一次拉全，保证搜得到全文。
+- **兼容**：两个字段都是可选的（缺省 = 全量）。旧前端连新服务端只是少了一段历史又无从翻页，故 `PROTOCOL_VERSION` bump 到 34 触发刷新横幅。
+- **回归**：`tests/unit/message-window.test.ts`（窗口起点/预算/翻页纯逻辑）+ `tests/message-window-test.mjs`（WS 报文级：首帧窗口、无缝翻页、`get_state` 不回退、`all` 到底回空页）。
+
 ## 协议单源（types.ts 是 re-export shim，不再手工同步）
 
 `server/protocol.ts` 是唯一事实源；`web/src/types.ts` 用 `export type * from "../../server/protocol"` 全量再导出（纯类型，构建时擦除），前端本地类型（FileContent/FileListing/ToolStatus）附在 shim 下方。

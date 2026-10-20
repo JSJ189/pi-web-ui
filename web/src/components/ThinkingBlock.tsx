@@ -2,6 +2,7 @@ import { useCallback, useEffect, useRef, useState } from "react";
 import { FiCheck, FiCheckCircle, FiCopy, FiCpu } from "react-icons/fi";
 import { useT } from "../i18n";
 import { useCopyFeedback } from "../use-copy-feedback";
+import { isFlowMode, openToolInspector } from "../tool-inspector-state";
 import { CollapsibleHead } from "./CollapsibleHead";
 import { HalfRingSpinner } from "./HalfRingSpinner";
 import { useSmoothStreamText } from "./StreamMarkdown";
@@ -150,17 +151,89 @@ export function ThinkingBlock({ thinking, streaming, wrap = true, forceOpen = fa
 
 	const headTitle = shown ? t("collapseMsg") : preview ? `${t("expandMsg")} · ${preview}` : t("expandMsg");
 
+	const rootRef = useRef<HTMLDivElement>(null);
+	const isFlow = isFlowMode(rootRef.current);
+
+	const handleOpenInspector = () => {
+		openToolInspector({
+			isThinking: true,
+			title: t("toolInspectorThinkingTitle"),
+			status: activeStream ? t("thinkingNow") : t("done"),
+			statusClass: activeStream ? "run" : "ok",
+			output: bodyText || thinking,
+			thinking,
+			streaming: activeStream,
+		});
+	};
+
+	const handleToggle = () => {
+		if (isFlowMode(rootRef.current)) {
+			handleOpenInspector();
+			return;
+		}
+		setOpen(!expanded);
+	};
+
+	if (isFlow) {
+		return (
+			<div
+				ref={rootRef}
+				className={`thinking ${activeStream ? "live run" : "ok"}`}
+				data-thinking={thinking}
+				onClick={(e) => {
+					e.preventDefault();
+					e.stopPropagation();
+					handleOpenInspector();
+				}}
+				onKeyDown={(e) => {
+					if (e.key === "Enter" || e.key === " ") {
+						e.preventDefault();
+						handleOpenInspector();
+					}
+				}}
+				role="button"
+				tabIndex={0}
+				title={t("toolInspectorThinkingTitle")}
+			>
+				<div className="thinking-head chead">
+					<span className="thinking-icon chead-icon">
+						<FiCpu />
+					</span>
+					<span className="thinking-name chead-title">think</span>
+					<span
+						className="thinking-status toolcall-status"
+						title={activeStream ? t("thinkingNow") : t("done")}
+						aria-label={activeStream ? t("thinkingNow") : t("done")}
+					>
+						{activeStream ? <HalfRingSpinner className="spin" /> : <FiCheck />}
+					</span>
+				</div>
+			</div>
+		);
+	}
+
 	return (
 		<div
+			ref={rootRef}
 			className={`thinking ${shown ? "open" : ""} ${activeStream ? "live" : ""} ${activeStream ? "run" : "ok"}`}
 			data-thinking={thinking}
+			onClick={(e) => {
+				if (!isFlowMode(rootRef.current)) return;
+				const target = e.target as HTMLElement | null;
+				if (target?.closest(".chead-copy, .toolcall-copy, .thinking-copy, a")) {
+					return;
+				}
+				e.preventDefault();
+				e.stopPropagation();
+				handleOpenInspector();
+			}}
 		>
 			<CollapsibleHead
-				open={shown}
+				open={!isFlow && shown}
 				headClassName={`thinking-head${activeStream ? " thinking-live" : ""}`}
 				toggleClassName="thinking-toggle"
 				titleText={headTitle}
-				onToggle={() => setOpen(!expanded)}
+				onToggle={handleToggle}
 				icon={<FiCpu />}
 				iconClassName="thinking-icon"
 				titleClassName="thinking-label"
@@ -217,7 +290,7 @@ export function ThinkingBlock({ thinking, streaming, wrap = true, forceOpen = fa
 					<span className="thinking-summary-text"> · {preview}</span>
 				) : null}
 			</CollapsibleHead>
-			{shown && (
+			{!isFlow && shown && (
 				<div className="thinking-body">
 					{bodyText}
 					{activeStream && <span className="stream-cursor" />}

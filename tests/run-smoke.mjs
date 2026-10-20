@@ -128,6 +128,8 @@ const ALL = [
 	"shutdown-test",
 	"slash-commands-test",
 	"snapshot-delta-test",
+	// 历史消息服务端按需加载（窗口化）：首份快照只带尾部窗口 + 往前翻页 + get_state 不回退。
+	"message-window-test",
 	"ssh-plugin-test",
 	"steer-queue-smoke",
 	"subagent-template-test",
@@ -175,6 +177,7 @@ const ALL = [
 // 超重插件（vscode 全链路 ~40s）放全量，由 main/nightly 覆盖。
 const CORE = [
 	"snapshot-delta-test", // 快照增量 rev 链（v0.95.0 回归过）
+	"message-window-test", // 历史窗口化（服务端按需加载，与快照/rev 链同一块）
 	"token-auth-test", // 鉴权
 	"quiesce-test", // 排空门禁 + 4403（v0.95.0 回归过）
 	"settings-test",

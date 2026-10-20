@@ -78,6 +78,7 @@ import { emitPluginData } from "./plugin-loader";
 import { ingestPluginLogsData } from "./plugin-logs";
 import { resolveCatalogSyncResult } from "./plugin-host";
 import { PROTOCOL_VERSION } from "./protocol-version";
+import { mergeEarlierPage } from "./history-window";
 import { enqueueNotice } from "./notice-policy";
 import { dispatchRemoteSshMessage } from "./remote-ssh-client";
 import {
@@ -568,6 +569,7 @@ type Action =
 	| { type: "status"; status: ConnStatus }
 	| { type: "snapshot"; state: UiState }
 	| { type: "snapshot_delta"; msg: Extract<ServerMessage, { type: "snapshot_delta" }> }
+	| { type: "earlier_messages"; msg: Extract<ServerMessage, { type: "earlier_messages" }> }
 	| { type: "protocol_mismatch" }
 	| { type: "tool_delta"; toolCallId: string; toolName: string; delta: string }
 	| { type: "message_delta"; msg: MessageDeltaMsg }
@@ -1077,9 +1079,17 @@ function reducer(state: ChatState, action: Action): ChatState {
 				toolStatuses: pruneToolStatuses(state.toolStatuses, reconciled.state),
 			};
 		}
+		case "earlier_messages": {
+			// 服务端历史窗口前扩页（按需加载）：合并规则（接缝校验/空页语义）见
+			// web/src/history-window.ts（纯函数，有单测）。
+			const ui = state.state;
+			const d = action.msg;
+			if (!ui || ui.conversationId !== d.conversationId) return state;
+			const merged = mergeEarlierPage(ui, d);
+			return merged ? { ...state, state: merged } : state;
+		}
 		case "snapshot_delta": {
-			// Incremental checkpoint from the server. Apply ONLY when it chains
-			// cleanly onto our current rev; a mismatch (dropped message under
+			// Incremental checkpoint from the server. Apply ONLY when it chains			// cleanly onto our current rev; a mismatch (dropped message under
 			// backpressure, stale tab) is ignored here — the ws handler schedules
 			// a get_state resync. Immutable merge: appended messages extend the
 			// array (element references preserved → React memo keeps working);
@@ -2148,6 +2158,10 @@ export function useChat() {
 					syncPendingQuestion(msg.state.pendingQuestion, msg.conversationId);
 					break;
 				}
+				case "earlier_messages":
+					// 历史窗口按需加载的回执（前插更早一段，不动 rev 链）。
+					dispatch({ type: "earlier_messages", msg });
+					break;
 				case "tool_delta":
 					noteDeltaSeq(msg.conversationId, msg.seq);
 					dispatch({

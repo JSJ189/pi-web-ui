@@ -54,6 +54,7 @@ server/
 ├── protocol-version.ts     # wire 协议版本（新旧端互斥时顶掉旧 tab）
 ├── agent-service.ts        # 核心：ClientSession（每客户端一个会话组，可并行多个对话）+ AgentService
 ├── serialize.ts            # SDK 消息 → UiMessage 序列化
+├── message-window.ts       # 历史消息服务端按需加载：尾部窗口（条数 + 字符预算）+ load_earlier_messages 往前翻页；挂在每连接 send 漏斗上，四引擎通吃
 ├── text-sniff.ts           # 文件预览纯函数（previewKind/looksLikeText/decodeText/sniffImageMime/hexDump/countLines）
 ├── queue-utils.ts          # 排队消息纯函数（removeFirstOccurrence：只移除第一条匹配，重复文本不连带删除）
 ├── process-utils.ts        # 进程工具：snapshotListeningPorts/killPidTree/lookupProcessName

@@ -8670,6 +8670,10 @@ body.has-wallpaper .panel-rail:hover {
 	contain: layout style;
 }
 
+.msg-lazy-ph-cluster {
+	margin: 4px 0 8px 0;
+}
+
 .msg {
 	margin: 0;
 	padding: 6px 0px 14px;
@@ -18645,6 +18649,9 @@ a.set-uninstall:hover {
 	color: var(--amber);
 	font-weight: 600;
 }
+.set-ui-diag.info-only > summary {
+	color: var(--text-dim, #b9bcc4);
+}
 .set-ui-diag-list {
 	margin: 6px 0 0;
 	padding-left: 18px;
@@ -24409,4 +24416,622 @@ a.set-uninstall:hover {
 .zen-exit-pill svg {
 	font-size: 13px;
 	flex-shrink: 0;
+}
+
+/* --------------------------------------------------------------- tool inspector modal */
+/* 工具执行详情与思考流检查器弹窗（Tool Inspector Modal）：
+ * 在极简行文（Flow）微胶囊形态下点击微胶囊时弹出，展示入参、执行输出、图片成果或思考链路。 */
+.tool-inspector-backdrop,
+.pi-we-inspector-backdrop {
+	position: fixed;
+	inset: 0;
+	z-index: 100000;
+	background: var(--sunken-bg, rgba(4, 6, 12, 0.72));
+	backdrop-filter: blur(10px) saturate(120%);
+	-webkit-backdrop-filter: blur(10px) saturate(120%);
+	display: flex;
+	align-items: center;
+	justify-content: center;
+	padding: 20px;
+	opacity: 0;
+	pointer-events: none;
+	transition: opacity 0.2s cubic-bezier(0.16, 1, 0.3, 1);
+}
+
+.tool-inspector-backdrop.open,
+.pi-we-inspector-backdrop.open {
+	opacity: 1;
+	pointer-events: auto;
+}
+
+.tool-inspector-dialog,
+.pi-we-inspector-dialog {
+	position: relative;
+	width: 880px;
+	max-width: 94vw;
+	max-height: 88vh;
+	display: flex;
+	flex-direction: column;
+	background: var(--card-bg, var(--bg-elev));
+	border: 1px solid color-mix(in srgb, var(--text) 18%, transparent);
+	border-radius: 14px;
+	box-shadow:
+		0 20px 50px rgba(0, 0, 0, 0.85),
+		0 0 20px var(--border);
+	color: var(--text);
+	font-family:
+		system-ui,
+		-apple-system,
+		sans-serif;
+	overflow: hidden;
+	transform: scale(0.96) translateY(10px);
+	transition: transform 0.22s cubic-bezier(0.16, 1, 0.3, 1);
+}
+
+.tool-inspector-backdrop.open .tool-inspector-dialog,
+.pi-we-inspector-backdrop.open .pi-we-inspector-dialog {
+	transform: scale(1) translateY(0);
+}
+
+.tool-inspector-header,
+.pi-we-inspector-header {
+	display: flex;
+	align-items: center;
+	justify-content: space-between;
+	padding: 12px 18px;
+	background: var(--bg-elev2, var(--bg-elev));
+	border-bottom: 1px solid var(--border);
+	gap: 12px;
+	flex-shrink: 0;
+}
+
+.tool-inspector-title-group,
+.pi-we-inspector-title-group {
+	display: flex;
+	align-items: center;
+	gap: 8px;
+	min-width: 0;
+}
+
+.tool-inspector-icon,
+.pi-we-inspector-icon {
+	width: 24px;
+	height: 24px;
+	border-radius: 6px;
+	background: color-mix(in srgb, var(--text) 10%, transparent);
+	display: flex;
+	align-items: center;
+	justify-content: center;
+	font-size: 13px;
+	color: var(--text);
+	flex-shrink: 0;
+}
+
+.tool-inspector-title,
+.pi-we-inspector-title {
+	font-family: var(--mono, monospace);
+	font-weight: 700;
+	font-size: 14.5px;
+	color: var(--text);
+	white-space: nowrap;
+	text-shadow: 0 1px 2px rgba(0, 0, 0, 0.9);
+}
+
+.tool-inspector-badge,
+.pi-we-inspector-badge {
+	font-family: var(--mono, monospace);
+	font-size: 11px;
+	padding: 2px 7px;
+	border-radius: 4px;
+	background: color-mix(in srgb, var(--text) 8%, transparent);
+	border: 1px solid var(--border);
+	color: var(--text-dim);
+	white-space: nowrap;
+}
+
+.tool-inspector-badge.ok,
+.pi-we-inspector-badge.ok {
+	background: rgba(74, 222, 128, 0.15);
+	border-color: rgba(74, 222, 128, 0.4);
+	color: var(--green);
+}
+
+.tool-inspector-badge.run,
+.pi-we-inspector-badge.run {
+	background: rgba(251, 191, 36, 0.15);
+	border-color: rgba(251, 191, 36, 0.4);
+	color: var(--amber);
+}
+
+.tool-inspector-badge.err,
+.pi-we-inspector-badge.err {
+	background: rgba(248, 113, 113, 0.15);
+	border-color: rgba(248, 113, 113, 0.4);
+	color: var(--red-text);
+}
+
+.tool-inspector-actions,
+.pi-we-inspector-actions {
+	display: flex;
+	align-items: center;
+	gap: 8px;
+	flex-shrink: 0;
+}
+
+/* 核心上下文横幅（Hero Banner：文件路径、执行命令、检索关键词） */
+.tool-inspector-hero-banner {
+	display: flex;
+	align-items: center;
+	gap: 12px;
+	padding: 10px 18px;
+	background: color-mix(in srgb, var(--accent) 6%, var(--bg-elev));
+	border-bottom: 1px solid var(--border);
+	flex-shrink: 0;
+}
+
+.tool-inspector-hero-icon {
+	width: 28px;
+	height: 28px;
+	border-radius: 6px;
+	background: color-mix(in srgb, var(--text) 12%, transparent);
+	color: var(--text);
+	display: flex;
+	align-items: center;
+	justify-content: center;
+	font-size: 14px;
+	flex-shrink: 0;
+}
+
+.tool-inspector-hero-content {
+	flex: 1;
+	min-width: 0;
+	display: flex;
+	flex-direction: column;
+	gap: 2px;
+}
+
+.tool-inspector-hero-label {
+	display: flex;
+	align-items: center;
+	gap: 8px;
+	font-size: 11px;
+	font-weight: 600;
+	text-transform: uppercase;
+	letter-spacing: 0.05em;
+	color: var(--text-dim);
+}
+
+.tool-inspector-hero-tag {
+	font-size: 10.5px;
+	padding: 1px 6px;
+	border-radius: 4px;
+	background: var(--bg-elev2);
+	color: var(--text);
+	font-family: var(--mono, monospace);
+}
+
+.tool-inspector-hero-val {
+	font-family: var(--mono, monospace);
+	font-size: 13.5px;
+	font-weight: 600;
+	color: var(--text);
+	white-space: nowrap;
+	overflow: hidden;
+	text-overflow: ellipsis;
+	user-select: text;
+}
+
+.tool-inspector-hero-copy-btn {
+	background: color-mix(in srgb, var(--text) 8%, transparent);
+	border: 1px solid color-mix(in srgb, var(--text) 18%, transparent);
+	border-radius: 6px;
+	color: var(--text);
+	font-size: 11.5px;
+	padding: 5px 10px;
+	cursor: pointer;
+	display: inline-flex;
+	align-items: center;
+	gap: 5px;
+	flex-shrink: 0;
+	transition: all 0.15s ease;
+	user-select: none;
+}
+
+.tool-inspector-hero-copy-btn:hover {
+	background: color-mix(in srgb, var(--text) 18%, transparent);
+	border-color: color-mix(in srgb, var(--text) 30%, transparent);
+}
+
+.tool-inspector-hero-bash .tool-inspector-hero-icon {
+	color: var(--blue, #38bdf8);
+	background: color-mix(in srgb, var(--blue, #38bdf8) 15%, transparent);
+}
+
+/* 顶部元数据标签条（Meta Chips Strip） */
+.tool-inspector-meta-strip {
+	display: flex;
+	align-items: center;
+	flex-wrap: wrap;
+	gap: 8px;
+	padding: 8px 18px;
+	background: color-mix(in srgb, var(--bg-elev) 80%, var(--bg));
+	border-bottom: 1px solid var(--border);
+	flex-shrink: 0;
+}
+
+.tool-inspector-chip {
+	display: inline-flex;
+	align-items: center;
+	gap: 6px;
+	padding: 3px 8px;
+	border-radius: 6px;
+	background: var(--bg-elev2, var(--card-bg));
+	border: 1px solid var(--border);
+	color: var(--text);
+	font-family: var(--mono, monospace);
+	font-size: 11.5px;
+	cursor: pointer;
+	user-select: none;
+	transition: all 0.15s ease;
+}
+
+.tool-inspector-chip:hover {
+	background: var(--border);
+	border-color: color-mix(in srgb, var(--text) 25%, transparent);
+}
+
+.tool-inspector-chip-icon {
+	font-size: 12px;
+	color: var(--text-dim);
+}
+
+.tool-inspector-chip-text {
+	max-width: 320px;
+	overflow: hidden;
+	text-overflow: ellipsis;
+	white-space: nowrap;
+}
+
+.tool-inspector-chip-copy {
+	font-size: 11px;
+	color: var(--text-faint);
+	margin-left: 2px;
+}
+
+.tool-inspector-btn,
+.pi-we-inspector-btn {
+	background: color-mix(in srgb, var(--text) 8%, transparent);
+	border: 1px solid color-mix(in srgb, var(--text) 18%, transparent);
+	border-radius: 6px;
+	color: var(--text);
+	font-size: 12px;
+	padding: 5px 10px;
+	cursor: pointer;
+	display: inline-flex;
+	align-items: center;
+	gap: 5px;
+	transition: all 0.15s ease;
+	text-shadow: 0 1px 1px rgba(0, 0, 0, 0.8);
+}
+
+.tool-inspector-btn:hover,
+.pi-we-inspector-btn:hover {
+	background: color-mix(in srgb, var(--text) 16%, transparent);
+	border-color: color-mix(in srgb, var(--text) 30%, transparent);
+	color: var(--text);
+}
+
+.tool-inspector-close,
+.pi-we-inspector-close {
+	padding: 5px 8px;
+	font-size: 14px;
+	line-height: 1;
+}
+
+.tool-inspector-body,
+.pi-we-inspector-body {
+	flex: 1;
+	overflow-y: auto;
+	overscroll-behavior: contain;
+	padding: 16px 20px 24px;
+	display: flex;
+	flex-direction: column;
+	gap: 16px;
+}
+
+.tool-inspector-section,
+.pi-we-inspector-section {
+	display: flex;
+	flex-direction: column;
+	gap: 6px;
+}
+
+.tool-inspector-label,
+.pi-we-inspector-label {
+	font-size: 12px;
+	font-weight: 600;
+	color: var(--text-dim);
+	text-transform: uppercase;
+	letter-spacing: 0.05em;
+	display: flex;
+	align-items: center;
+	gap: 6px;
+}
+
+.tool-inspector-label-row {
+	display: flex;
+	align-items: center;
+	justify-content: space-between;
+	gap: 10px;
+}
+
+.tool-inspector-label-actions {
+	display: flex;
+	align-items: center;
+	gap: 8px;
+}
+
+.tool-inspector-subinfo {
+	font-size: 11px;
+	color: var(--text-faint);
+	font-family: var(--mono, monospace);
+}
+
+.tool-inspector-btn-sm {
+	background: color-mix(in srgb, var(--text) 8%, transparent);
+	border: 1px solid color-mix(in srgb, var(--text) 18%, transparent);
+	border-radius: 4px;
+	color: var(--text);
+	font-size: 11px;
+	padding: 2px 7px;
+	cursor: pointer;
+	display: inline-flex;
+	align-items: center;
+	gap: 4px;
+	transition: all 0.15s ease;
+}
+
+.tool-inspector-btn-sm:hover {
+	background: color-mix(in srgb, var(--text) 18%, transparent);
+	border-color: color-mix(in srgb, var(--text) 30%, transparent);
+}
+
+.tool-inspector-thinking-container {
+	background: color-mix(in srgb, var(--bg-elev2) 90%, var(--plugin-purple, #c084fc));
+	border: 1px solid color-mix(in srgb, var(--plugin-purple, #c084fc) 25%, transparent);
+	border-radius: 8px;
+	padding: 14px 18px;
+	font-size: 13.5px;
+	line-height: 1.68;
+	color: var(--text);
+	max-height: 60vh;
+	overflow-y: auto;
+	margin: 0;
+}
+
+.tool-inspector-thinking-container .thinking-markdown {
+	color: var(--text);
+}
+
+.tool-inspector-empty-tip {
+	font-style: italic;
+	color: var(--text-faint);
+	font-size: 12px;
+}
+
+.tool-inspector-details-card {
+	margin-top: 10px;
+	border: 1px solid var(--border);
+	border-radius: 8px;
+	background: color-mix(in srgb, var(--text) 3%, transparent);
+	overflow: hidden;
+}
+
+.tool-inspector-details-toggle {
+	width: 100%;
+	display: flex;
+	align-items: center;
+	gap: 6px;
+	padding: 8px 12px;
+	background: transparent;
+	border: none;
+	color: var(--text-dim);
+	font-size: 12px;
+	font-weight: 500;
+	cursor: pointer;
+	text-align: left;
+	transition: background 0.15s ease;
+}
+
+.tool-inspector-details-toggle:hover {
+	background: var(--border-soft);
+	color: var(--text);
+}
+
+.tool-inspector-details-count {
+	font-size: 11px;
+	padding: 1px 6px;
+	border-radius: 999px;
+	background: var(--border);
+	color: var(--text-faint);
+	margin-left: auto;
+}
+
+.tool-inspector-details-code {
+	border: none !important;
+	border-top: 1px solid var(--border) !important;
+	border-radius: 0 !important;
+	margin: 0 !important;
+	max-height: 35vh !important;
+}
+
+.tool-inspector-codeblock,
+.pi-we-inspector-codeblock {
+	background: var(--code-bg, var(--bg-elev2));
+	border: 1px solid var(--border);
+	border-radius: 8px;
+	padding: 12px 14px;
+	font-family: var(--mono, monospace);
+	font-size: 12.5px;
+	line-height: 1.55;
+	color: var(--code-text, var(--text));
+	white-space: pre-wrap;
+	word-break: break-all;
+	overflow-x: auto;
+	max-height: 55vh;
+	margin: 0;
+}
+
+.tool-inspector-thinking-text,
+.pi-we-inspector-thinking-text {
+	background: color-mix(in srgb, var(--bg-elev2) 90%, var(--plugin-purple, #c084fc));
+	border: 1px solid color-mix(in srgb, var(--plugin-purple, #c084fc) 25%, transparent);
+	border-radius: 8px;
+	padding: 14px 16px;
+	font-size: 13.5px;
+	line-height: 1.68;
+	color: var(--text);
+	white-space: pre-wrap;
+	word-break: break-word;
+	max-height: 55vh;
+	overflow-y: auto;
+	margin: 0;
+}
+
+/* 富媒体文件展示预览（针对 present_files 与文件交付） */
+.pi-we-ins-preview-wrap {
+	display: flex;
+	flex-direction: column;
+	gap: 12px;
+}
+
+.pi-we-ins-preview-meta {
+	background: color-mix(in srgb, var(--text) 4%, transparent);
+	border: 1px solid var(--border);
+	border-radius: 8px;
+	padding: 12px 14px;
+	display: flex;
+	flex-direction: column;
+	gap: 6px;
+}
+
+.pi-we-ins-preview-title {
+	font-size: 14px;
+	font-weight: 600;
+	color: var(--text);
+	display: flex;
+	align-items: center;
+	gap: 6px;
+}
+
+.pi-we-ins-preview-note {
+	font-size: 12.5px;
+	line-height: 1.55;
+	color: var(--text-dim);
+	word-break: break-word;
+}
+
+.pi-we-ins-preview-card {
+	background: color-mix(in srgb, var(--text) 5%, transparent);
+	border: 1px solid var(--border);
+	border-radius: 10px;
+	padding: 12px 14px;
+	display: flex;
+	flex-direction: column;
+	gap: 10px;
+	box-shadow: 0 4px 16px rgba(0, 0, 0, 0.25);
+}
+
+.pi-we-ins-preview-head {
+	display: flex;
+	align-items: center;
+	justify-content: space-between;
+	gap: 10px;
+}
+
+.pi-we-ins-preview-info {
+	display: flex;
+	align-items: center;
+	gap: 8px;
+	min-width: 0;
+}
+
+.pi-we-ins-preview-icon {
+	font-size: 18px;
+	line-height: 1;
+}
+
+.pi-we-ins-preview-name {
+	font-family: var(--mono, monospace);
+	font-size: 13px;
+	font-weight: 600;
+	color: var(--text);
+	white-space: nowrap;
+	overflow: hidden;
+	text-overflow: ellipsis;
+}
+
+.pi-we-ins-preview-caption {
+	font-size: 11.5px;
+	color: var(--text-dim);
+	white-space: nowrap;
+	overflow: hidden;
+	text-overflow: ellipsis;
+}
+
+.pi-we-ins-preview-actions {
+	display: flex;
+	align-items: center;
+	gap: 6px;
+	flex-shrink: 0;
+}
+
+.pi-we-ins-btn-sm {
+	background: color-mix(in srgb, var(--text) 8%, transparent);
+	border: 1px solid color-mix(in srgb, var(--text) 18%, transparent);
+	border-radius: 4px;
+	color: var(--text);
+	font-size: 11px;
+	padding: 3px 7px;
+	cursor: pointer;
+	text-decoration: none;
+	display: inline-flex;
+	align-items: center;
+	gap: 4px;
+	transition: all 0.15s ease;
+}
+
+.pi-we-ins-btn-sm:hover {
+	background: color-mix(in srgb, var(--text) 18%, transparent);
+	border-color: color-mix(in srgb, var(--text) 30%, transparent);
+}
+
+.pi-we-ins-preview-media {
+	width: 100%;
+	display: flex;
+	justify-content: center;
+	align-items: center;
+	background: rgba(0, 0, 0, 0.35);
+	border-radius: 6px;
+	padding: 8px;
+	overflow: hidden;
+}
+
+.pi-we-ins-preview-img {
+	max-width: 100%;
+	max-height: 380px;
+	object-fit: contain;
+	border-radius: 4px;
+}
+
+.pi-we-ins-preview-audio {
+	width: 100%;
+	height: 36px;
+}
+
+.pi-we-ins-preview-video {
+	max-width: 100%;
+	max-height: 380px;
+	border-radius: 4px;
+	background: #000;
 }

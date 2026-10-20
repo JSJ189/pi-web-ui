@@ -66,4 +66,23 @@ describe("思考小胶囊按钮与流式状态结构守卫", () => {
 		expect(statusEl).not.toBeNull();
 		expect(statusEl!.querySelector(".spin")).not.toBeNull();
 	});
+
+	it("在 Flow 极简模式下仅渲染纯净微胶囊外壳，不挂载思考正文 DOM", () => {
+		document.documentElement.dataset.theme = "flow";
+		try {
+			const container = mount("Deep thinking with massive Markdown details...", false, false);
+			const thinkingRoot = container.querySelector(".thinking");
+			expect(thinkingRoot).not.toBeNull();
+
+			// 微胶囊具有基本标识与状态指示
+			expect(container.querySelector(".thinking-name")).not.toBeNull();
+			expect(container.querySelector(".thinking-status")).not.toBeNull();
+
+			// 纯净轻量：绝不挂载正文 .thinking-body 与大段 DOM
+			expect(container.querySelector(".thinking-body")).toBeNull();
+			expect(container.querySelector(".thinking-summary-text")).toBeNull();
+		} finally {
+			delete document.documentElement.dataset.theme;
+		}
+	});
 });

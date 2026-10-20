@@ -76,6 +76,7 @@
 		"check:protocol": "node scripts/check-protocol-sync.mjs",
 		"i18n:diff": "node scripts/i18n-diff.mjs",
 		"i18n:check": "node scripts/i18n-diff.mjs --check-packs",
+		"i18n:sync": "node scripts/sync-locales.mjs",
 		"release:notes": "node scripts/release-notes.mjs",
 		"changelog:i18n": "node scripts/release-notes.mjs --unreleased",
 		"test:freeze": "node tests/freeze-test.mjs",

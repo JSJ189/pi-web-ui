@@ -641,6 +641,8 @@ export function handleSettingsMessage(msg: ClientMessage, cs: DispatchSession): 
 				toolsWrap: msg.toolsWrap,
 				toolImagesEnabled: (msg as { toolImagesEnabled?: boolean }).toolImagesEnabled,
 				keepRecentMessages: (msg as { keepRecentMessages?: number }).keepRecentMessages,
+				// 向上分页加载：之前漏在白名单外，设置页的开关一直被静默丢弃（补回归见 message-window-test）。
+				reversePagination: (msg as { reversePagination?: boolean }).reversePagination,
 				showForkedParentSessions: (msg as { showForkedParentSessions?: boolean }).showForkedParentSessions,
 				retainFinishedConversations: msg.retainFinishedConversations,
 				openRecentSessionOnProjectSwitch: msg.openRecentSessionOnProjectSwitch,
