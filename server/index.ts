@@ -3222,6 +3222,7 @@ if (!bootCatalogDisabled) {
 		{ install: autoInstall },
 		{
 			customCatalogPath: pluginMgr.customCatalogPath,
+			communityCatalogPath: pluginMgr.communityCatalogPath,
 			pluginsDir: join(DATA_DIR, "plugins"),
 			installer: pluginInstaller,
 			// 默认仅同步市场列表；重载插件会重复触发其激活广播。

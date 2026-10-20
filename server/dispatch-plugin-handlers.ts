@@ -332,6 +332,7 @@ export function handlePluginMessage(msg: ClientMessage, ctx: PluginDispatchConte
 				{ install: msg.install === true, replace: msg.replace === true },
 				{
 					customCatalogPath: pluginMgr.customCatalogPath,
+					communityCatalogPath: pluginMgr.communityCatalogPath,
 					pluginsDir: join(dataDir, "plugins"),
 					installer: pluginInstaller,
 					afterWrite: () => (msg.install === true ? reloadPluginsAndPush(syncLang) : pluginMgr.pushCatalog()),

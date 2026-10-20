@@ -2604,6 +2604,12 @@ export interface UiPluginCatalogEntry {
 	overridesBuiltin?: boolean;
 	/** Optional project/homepage URL. */
 	homepage?: string;
+	/** Catalog origin category:
+	 *  - "builtin": Shipped with pi-web-ui repository
+	 *  - "community": Official community registry (pi-web-ui-plugins)
+	 *  - "custom": Manually added by user in settings UI
+	 */
+	origin?: "builtin" | "community" | "custom";
 }
 
 /** One of pi's built-in providers, with whether auth is configured. */

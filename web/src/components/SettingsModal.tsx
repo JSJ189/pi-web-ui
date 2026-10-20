@@ -1103,6 +1103,9 @@ export function SettingsModal({
 	const [quickNew, setQuickNew] = useState("");
 	// 快捷短语行内编辑（null = 未在编辑；输入框受控于 value，回显不打断输入）。
 	const [quickEdit, setQuickEdit] = useState<{ index: number; value: string } | null>(null);
+	// 插件市场标签分类：all = 全部合并显示；builtin = 官方内置；community = 社区生态；custom = 自定义
+	const [catalogFilter, setCatalogFilter] = useState<"all" | "builtin" | "community" | "custom">("all");
+	const [catalogSearch, setCatalogSearch] = useState("");
 	// DSH 用户补丁安装输入框草稿
 	const [dshPatchInput, setDshPatchInput] = useState("");
 	// DSH 插件市场子面板（探索 / 已安装）与搜索分类状态
@@ -5342,133 +5345,255 @@ export function SettingsModal({
 										</div>
 									</div>
 								)}
-								{chat.pluginCatalog.length === 0 ? (
-									<p className="set-empty">{t("noPluginCatalog")}</p>
-								) : (
-									<div className="set-list set-list-flat">
-										{chat.pluginCatalog.map((e) => {
-											const installed = installedPluginIds.has(e.id);
-											const upd = chat.pluginUpdates?.[e.id];
-											const isUpdatable = installed && upd?.updatable === true;
-											const isRunning = Boolean(jobFor(e.id) && jobFor(e.id)?.phase !== "done");
-											const name = !isZhLocale(locale) && e.nameEn ? e.nameEn : e.name;
-											const desc = !isZhLocale(locale) && e.descriptionEn ? e.descriptionEn : e.description;
-											return (
-												<div key={e.id} className="set-catalog-row">
-													<div className="set-catalog-main">
-														<div className="set-catalog-title">
-															<span>
-																<PluginIcon icon={e.icon} iconSvg={e.iconSvg} /> {name}
-															</span>
-															{installed && <span className="set-catalog-installed">{t("pluginInstalled")}</span>}
-															{!e.builtin && <span className="set-catalog-custom">{t("pluginCatalogCustom")}</span>}
-															{isUpdatable && (
-																<span
-																	className="set-catalog-update-badge"
-																	title={
-																		upd?.latestVersion
-																			? `${upd?.version ?? ""} → v${upd.latestVersion}`
-																			: (upd?.remoteSha ?? "")
-																	}
-																>
-																	{t("pluginUpdateAvailableBadge")}
-																	{upd?.latestVersion ? ` v${upd.latestVersion}` : ""}
-																</span>
-															)}
-														</div>
-														{desc && <div className="set-catalog-desc">{desc}</div>}
-														<div className="set-catalog-source">{e.source}</div>
-														{renderJobStatus(e.id)}
-													</div>
-													<div className="set-row-actions">
-														{pluginOfficialUrl(e) && (
-															<a
-																href={pluginOfficialUrl(e)!}
-																target="_blank"
-																rel="noreferrer noopener"
-																className="set-uninstall link"
-																title={t("pluginOfficialLinkHint")}
-															>
-																<FiExternalLink />
-																{t("pluginOfficialLink")}
-															</a>
-														)}
-														{installed ? (
-															<>
-																<button
-																	type="button"
-																	className={`set-uninstall${isUpdatable ? " accent" : ""}`}
-																	disabled={isRunning}
-																	title={
-																		isUpdatable && upd?.latestVersion
-																			? t("pluginUpdateAvailableDetail", { version: `v${upd.latestVersion}` })
-																			: t("pluginUpdateHint")
-																	}
-																	onClick={() => runUiPluginUpdate(e.id, e.source)}
-																>
-																	<FiRefreshCw className={isRunning ? "set-job-spin" : ""} />
-																	{isRunning ? t("pluginJobRunning") : t("pluginUpdate")}
-																</button>
-																{confirmUiUninstall === e.id ? (
-																	<button
-																		type="button"
-																		className="set-uninstall confirm"
-																		disabled={isRunning}
-																		title={t("pluginUninstallHint")}
-																		onClick={() => runUiPluginUninstall(e.id)}
-																	>
-																		{t("uninstallConfirm")}
-																	</button>
-																) : (
-																	<button
-																		type="button"
-																		className="set-uninstall"
-																		disabled={isRunning}
-																		title={t("pluginUninstallHint")}
-																		onClick={() => setConfirmUiUninstall(e.id)}
-																	>
-																		<FiTrash2 />
-																		{t("uninstallExt")}
-																	</button>
-																)}
-															</>
-														) : (
-															<button
-																type="button"
-																className="set-uninstall"
-																title={t("pluginInstallHint")}
-																disabled={isRunning}
-																onClick={() => runCatalogInstall(e)}
-															>
-																{isRunning ? (
-																	<>
-																		<FiRefreshCw className="set-job-spin" />
-																		{t("pluginJobRunning")}
-																	</>
-																) : (
-																	<>
-																		<FiDownload />
-																		{t("pluginInstall")}
-																	</>
-																)}
-															</button>
-														)}
-														{!e.builtin && (
-															<button
-																type="button"
-																className="set-uninstall"
-																title={t("pluginCatalogRemoveHint")}
-																onClick={() => runCatalogRemove(e.id)}
-															>
-																<FiX />
-															</button>
-														)}
-													</div>
+								{(() => {
+									const builtinCount = chat.pluginCatalog.filter(
+										(e) => (e.origin ?? (e.builtin ? "builtin" : "custom")) === "builtin",
+									).length;
+									const communityCount = chat.pluginCatalog.filter(
+										(e) => (e.origin ?? (e.builtin ? "builtin" : "custom")) === "community",
+									).length;
+									const customCount = chat.pluginCatalog.filter(
+										(e) => (e.origin ?? (e.builtin ? "builtin" : "custom")) === "custom",
+									).length;
+									const q = catalogSearch.trim().toLowerCase();
+									const filtered = chat.pluginCatalog.filter((e) => {
+										const origin = e.origin ?? (e.builtin ? "builtin" : "custom");
+										if (catalogFilter !== "all" && origin !== catalogFilter) return false;
+										if (!q) return true;
+										const name = (!isZhLocale(locale) && e.nameEn ? e.nameEn : e.name).toLowerCase();
+										const desc = (
+											!isZhLocale(locale) && e.descriptionEn ? e.descriptionEn : (e.description ?? "")
+										).toLowerCase();
+										return (
+											name.includes(q) ||
+											desc.includes(q) ||
+											e.id.toLowerCase().includes(q) ||
+											e.source.toLowerCase().includes(q)
+										);
+									});
+
+									return (
+										<>
+											<div className="set-catalog-tabs" role="tablist">
+												<button
+													type="button"
+													role="tab"
+													aria-selected={catalogFilter === "all"}
+													className={`set-catalog-tab-btn${catalogFilter === "all" ? " active" : ""}`}
+													onClick={() => setCatalogFilter("all")}
+												>
+													{t("pluginCatalogTabAll")}
+													<span className="set-catalog-tab-count">{chat.pluginCatalog.length}</span>
+												</button>
+												<button
+													type="button"
+													role="tab"
+													aria-selected={catalogFilter === "builtin"}
+													className={`set-catalog-tab-btn${catalogFilter === "builtin" ? " active" : ""}`}
+													onClick={() => setCatalogFilter("builtin")}
+												>
+													{t("pluginCatalogTabBuiltin")}
+													<span className="set-catalog-tab-count">{builtinCount}</span>
+												</button>
+												<button
+													type="button"
+													role="tab"
+													aria-selected={catalogFilter === "community"}
+													className={`set-catalog-tab-btn${catalogFilter === "community" ? " active" : ""}`}
+													onClick={() => setCatalogFilter("community")}
+												>
+													{t("pluginCatalogTabCommunity")}
+													<span className="set-catalog-tab-count">{communityCount}</span>
+												</button>
+												{(customCount > 0 || catalogFilter === "custom") && (
+													<button
+														type="button"
+														role="tab"
+														aria-selected={catalogFilter === "custom"}
+														className={`set-catalog-tab-btn${catalogFilter === "custom" ? " active" : ""}`}
+														onClick={() => setCatalogFilter("custom")}
+													>
+														{t("pluginCatalogTabCustom")}
+														<span className="set-catalog-tab-count">{customCount}</span>
+													</button>
+												)}
+											</div>
+
+											<div className="set-catalog-filter-bar">
+												<div className="set-catalog-search-wrap">
+													<FiSearch className="set-catalog-search-icon" />
+													<input
+														type="text"
+														className="set-catalog-search-input"
+														placeholder={t("pluginCatalogSearchPlaceholder")}
+														value={catalogSearch}
+														onChange={(e) => setCatalogSearch(e.target.value)}
+													/>
 												</div>
-											);
-										})}
-									</div>
-								)}
+											</div>
+
+											{catalogFilter === "community" && (
+												<div className="set-catalog-community-banner">
+													<span>{t("pluginCatalogCommunityDesc")}</span>
+													<a
+														href={OFFICIAL_PLUGINS_REPO_URL}
+														target="_blank"
+														rel="noreferrer noopener"
+														title={t("pluginCatalogCommunitySubmit")}
+													>
+														<FiExternalLink />
+														{t("pluginCatalogCommunitySubmit")}
+													</a>
+												</div>
+											)}
+
+											{chat.pluginCatalog.length === 0 ? (
+												<p className="set-empty">{t("noPluginCatalog")}</p>
+											) : filtered.length === 0 ? (
+												<p className="set-empty">
+													{catalogFilter === "community" ? t("pluginCatalogCommunityEmpty") : t("searchNoResults")}
+												</p>
+											) : (
+												<div className="set-list set-list-flat">
+													{filtered.map((e) => {
+														const origin = e.origin ?? (e.builtin ? "builtin" : "custom");
+														const installed = installedPluginIds.has(e.id);
+														const upd = chat.pluginUpdates?.[e.id];
+														const isUpdatable = installed && upd?.updatable === true;
+														const isRunning = Boolean(jobFor(e.id) && jobFor(e.id)?.phase !== "done");
+														const name = !isZhLocale(locale) && e.nameEn ? e.nameEn : e.name;
+														const desc = !isZhLocale(locale) && e.descriptionEn ? e.descriptionEn : e.description;
+														return (
+															<div key={e.id} className="set-catalog-row">
+																<div className="set-catalog-main">
+																	<div className="set-catalog-title">
+																		<span>
+																			<PluginIcon icon={e.icon} iconSvg={e.iconSvg} /> {name}
+																		</span>
+																		{installed && <span className="set-catalog-installed">{t("pluginInstalled")}</span>}
+																		{origin === "builtin" && (
+																			<span className="set-catalog-origin builtin">{t("pluginCatalogBuiltin")}</span>
+																		)}
+																		{origin === "community" && (
+																			<span className="set-catalog-origin community">
+																				{t("pluginCatalogCommunity")}
+																			</span>
+																		)}
+																		{origin === "custom" && (
+																			<span className="set-catalog-origin custom">{t("pluginCatalogCustom")}</span>
+																		)}
+																		{isUpdatable && (
+																			<span
+																				className="set-catalog-update-badge"
+																				title={
+																					upd?.latestVersion
+																						? `${upd?.version ?? ""} → v${upd.latestVersion}`
+																						: (upd?.remoteSha ?? "")
+																				}
+																			>
+																				{t("pluginUpdateAvailableBadge")}
+																				{upd?.latestVersion ? ` v${upd.latestVersion}` : ""}
+																			</span>
+																		)}
+																	</div>
+																	{desc && <div className="set-catalog-desc">{desc}</div>}
+																	<div className="set-catalog-source">{e.source}</div>
+																	{renderJobStatus(e.id)}
+																</div>
+																<div className="set-row-actions">
+																	{pluginOfficialUrl(e) && (
+																		<a
+																			href={pluginOfficialUrl(e)!}
+																			target="_blank"
+																			rel="noreferrer noopener"
+																			className="set-uninstall link"
+																			title={t("pluginOfficialLinkHint")}
+																		>
+																			<FiExternalLink />
+																			{t("pluginOfficialLink")}
+																		</a>
+																	)}
+																	{installed ? (
+																		<>
+																			<button
+																				type="button"
+																				className={`set-uninstall${isUpdatable ? " accent" : ""}`}
+																				disabled={isRunning}
+																				title={
+																					isUpdatable && upd?.latestVersion
+																						? t("pluginUpdateAvailableDetail", {
+																								version: `v${upd.latestVersion}`,
+																							})
+																						: t("pluginUpdateHint")
+																				}
+																				onClick={() => runUiPluginUpdate(e.id, e.source)}
+																			>
+																				<FiRefreshCw className={isRunning ? "set-job-spin" : ""} />
+																				{isRunning ? t("pluginJobRunning") : t("pluginUpdate")}
+																			</button>
+																			{confirmUiUninstall === e.id ? (
+																				<button
+																					type="button"
+																					className="set-uninstall confirm"
+																					disabled={isRunning}
+																					title={t("pluginUninstallHint")}
+																					onClick={() => runUiPluginUninstall(e.id)}
+																				>
+																					{t("uninstallConfirm")}
+																				</button>
+																			) : (
+																				<button
+																					type="button"
+																					className="set-uninstall"
+																					disabled={isRunning}
+																					title={t("pluginUninstallHint")}
+																					onClick={() => setConfirmUiUninstall(e.id)}
+																				>
+																					<FiTrash2 />
+																					{t("uninstallExt")}
+																				</button>
+																			)}
+																		</>
+																	) : (
+																		<button
+																			type="button"
+																			className="set-uninstall"
+																			title={t("pluginInstallHint")}
+																			disabled={isRunning}
+																			onClick={() => runCatalogInstall(e)}
+																		>
+																			{isRunning ? (
+																				<>
+																					<FiRefreshCw className="set-job-spin" />
+																					{t("pluginJobRunning")}
+																				</>
+																			) : (
+																				<>
+																					<FiDownload />
+																					{t("pluginInstall")}
+																				</>
+																			)}
+																		</button>
+																	)}
+																	{origin === "custom" && (
+																		<button
+																			type="button"
+																			className="set-uninstall"
+																			title={t("pluginCatalogRemoveHint")}
+																			onClick={() => runCatalogRemove(e.id)}
+																		>
+																			<FiX />
+																		</button>
+																	)}
+																</div>
+															</div>
+														);
+													})}
+												</div>
+											)}
+										</>
+									);
+								})()}
 							</div>
 						)}
 

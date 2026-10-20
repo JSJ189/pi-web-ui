@@ -19,7 +19,7 @@
 import { existsSync, readFileSync } from "node:fs";
 import { join } from "node:path";
 import { pick, type ServerLang } from "./i18n.js";
-import { normalizeSyncPayload, writeCustomCatalog } from "./plugin-catalog.js";
+import { normalizeSyncPayload, writeCustomCatalog, writeCommunityCatalog } from "./plugin-catalog.js";
 import { workspacePath } from "./files-service.js";
 import type { PluginInstaller } from "./plugin-installer.js";
 import type { UiPluginCatalogEntry } from "./protocol.js";
@@ -29,11 +29,15 @@ export interface CatalogSyncOptions {
 	install?: boolean;
 	/** 整体替换用户自定义列表（默认 false = 按 id upsert，保留未提到的旧条目）。 */
 	replace?: boolean;
+	/** 目标分类：写入官方社区生态清单还是用户自定义列表。未指定时若来源为官方社区清单则自动写入社区文件。 */
+	target?: "community" | "custom";
 }
 
 export interface CatalogSyncDeps {
 	/** <dataDir>/plugin-catalog.json。 */
 	customCatalogPath: string;
+	/** <dataDir>/community-catalog.json（官方社区生态清单）。 */
+	communityCatalogPath?: string;
 	/** <dataDir>/plugins —— 判断条目是否已装（决定 install 还是 update）。 */
 	pluginsDir: string;
 	installer: PluginInstaller;
@@ -185,7 +189,15 @@ export async function syncPluginCatalog(
 	const payload = normalizeSyncPayload(raw, lang);
 	if ("error" in payload) return { ok: false, error: payload.error };
 	// 到这里才动磁盘：校验失败的文档绝不覆盖一份有效目录。
-	writeCustomCatalog(deps.customCatalogPath, payload.entries, opts.replace === true);
+	const isCommunity =
+		opts.target === "community" ||
+		(Boolean(deps.communityCatalogPath) &&
+			(source.includes("pi-web-ui-plugins/catalog.json") || source.endsWith("/community-catalog.json")));
+	if (isCommunity && deps.communityCatalogPath) {
+		writeCommunityCatalog(deps.communityCatalogPath, payload.entries);
+	} else {
+		writeCustomCatalog(deps.customCatalogPath, payload.entries, opts.replace === true);
+	}
 	await deps.afterWrite();
 
 	let installed: { id: string; ok: boolean; error?: string }[] | undefined;

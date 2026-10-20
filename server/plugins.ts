@@ -1873,9 +1873,16 @@ export class PluginManager {
 		return join(this.dataDir, "plugin-catalog.json");
 	}
 
-	/** 合并后的插件市场列表（builtin + 用户自定义，同 id 用户覆盖）。 */
+	/** 官方社区生态插件清单文件（<dataDir>/community-catalog.json）。 */
+	get communityCatalogPath(): string {
+		return join(this.dataDir, "community-catalog.json");
+	}
+
+	/** 合并后的插件市场列表（builtin + community + 用户自定义，同 id 用户覆盖）。 */
 	catalog(): UiPluginCatalogEntry[] {
-		return this.builtinCatalogPath ? readCatalog(this.builtinCatalogPath, this.customCatalogPath) : [];
+		return this.builtinCatalogPath
+			? readCatalog(this.builtinCatalogPath, this.customCatalogPath, this.communityCatalogPath)
+			: [];
 	}
 
 	/** 插件市场列表纪元（随 plugin_catalog 消息下发）。 */
@@ -1906,7 +1913,7 @@ export class PluginManager {
 		}
 	}
 
-	/** 移除一条用户自定义条目（builtin 不可经此删除）；返回错误信息或 null。 */
+	/** 移除一条用户自定义条目（builtin / 社区条目不可经此删除）；返回错误信息或 null。 */
 	removeCatalogEntry(id: string, lang?: () => ServerLang): { error?: string } {
 		const l = lang?.() ?? "en";
 		try {
@@ -1915,8 +1922,8 @@ export class PluginManager {
 				return {
 					error: pick(
 						l,
-						"未找到该条目，或它是内置条目（不可移除）",
-						"Entry not found, or it is a built-in entry (cannot be removed)",
+						"未找到该条目，或它是内置/社区条目（不可移除）",
+						"Entry not found, or it is a built-in/community entry (cannot be removed)",
 						"plugins.catalog.entry.cannot.remove",
 					),
 				};

@@ -6,11 +6,18 @@ import { describe, expect, it, beforeEach, afterEach } from "vitest";
 import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { readCatalog, addCustomEntry, removeCustomEntry, deriveCatalogId } from "../../server/plugin-catalog.js";
+import {
+	readCatalog,
+	addCustomEntry,
+	removeCustomEntry,
+	deriveCatalogId,
+	writeCommunityCatalog,
+} from "../../server/plugin-catalog.js";
 
 let dir: string;
 let builtin: string;
 let custom: string;
+let community: string;
 
 const BUILTIN = [
 	{
@@ -31,6 +38,7 @@ beforeEach(() => {
 	dir = mkdtempSync(join(tmpdir(), "pi-web-ui-catalog-"));
 	builtin = join(dir, "catalog.json");
 	custom = join(dir, "custom.json");
+	community = join(dir, "community.json");
 	writeFileSync(builtin, JSON.stringify(BUILTIN));
 });
 
@@ -73,23 +81,49 @@ describe("readCatalog", () => {
 		expect(list[0]!.builtin).toBe(false);
 	});
 
-	it("非法条目被跳过（坏 source / 非法 id）", () => {
+	it("三层合并：builtin + community + custom 标记 origin 并分级优先级", () => {
+		// 社区列表包含一个第三方插件和一个试图重名覆盖 webmail 的条目
+		writeCommunityCatalog(community, [
+			{ id: "pi-web-multigit", name: "Multi Git", source: "EinErste/pi-web-multigit", builtin: false },
+			{ id: "webmail", name: "社区邮箱（应被内置阻挡）", source: "other/webmail", builtin: false },
+		]);
+		// 自定义列表包含一个全新的自定义插件和一个显式覆盖 mermaid 的条目
 		writeFileSync(
 			custom,
 			JSON.stringify({
 				entries: [
-					{ id: "ok", source: "a/b" },
-					{ id: "bad", source: "单段" },
-					{ id: "..", source: "a/b" },
-					{ id: "path", source: "/absolute/path" },
+					{ id: "my-custom", name: "私有插件", source: "me/my-custom" },
+					{ id: "mermaid", name: "我的 Mermaid", source: "me/mermaid" },
 				],
 			}),
 		);
-		const list = readCatalog(builtin, custom);
-		expect(list.find((e) => e.id === "bad")).toBeUndefined();
-		expect(list.find((e) => e.id === "..")).toBeUndefined();
-		expect(list.find((e) => e.id === "path")).toBeUndefined();
-		expect(list.find((e) => e.id === "ok")).toBeDefined();
+
+		const list = readCatalog(builtin, custom, community);
+		expect(list).toHaveLength(4);
+
+		// 1. webmail：属于内置，不被社区列表覆盖
+		const webmail = list.find((e) => e.id === "webmail")!;
+		expect(webmail.origin).toBe("builtin");
+		expect(webmail.builtin).toBe(true);
+		expect(webmail.name).toBe("webmail");
+
+		// 2. pi-web-multigit：来自社区生态
+		const multigit = list.find((e) => e.id === "pi-web-multigit")!;
+		expect(multigit.origin).toBe("community");
+		expect(multigit.builtin).toBe(false);
+		expect(multigit.name).toBe("Multi Git");
+
+		// 3. mermaid：被自定义列表覆盖
+		const mermaid = list.find((e) => e.id === "mermaid")!;
+		expect(mermaid.origin).toBe("custom");
+		expect(mermaid.builtin).toBe(false);
+		expect(mermaid.overridesBuiltin).toBe(true);
+		expect(mermaid.name).toBe("我的 Mermaid");
+
+		// 4. my-custom：独立自定义插件
+		const myCustom = list.find((e) => e.id === "my-custom")!;
+		expect(myCustom.origin).toBe("custom");
+		expect(myCustom.builtin).toBe(false);
 	});
 });
 
