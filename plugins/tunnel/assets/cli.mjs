@@ -16,7 +16,8 @@ const argSrv = process.argv.slice(2).find(a => /^wss?:\/\//.test(a)); // 只认 
 const SERVER = argSrv || '{{SERVER}}';
 const TOKEN  = process.env.PI_TUNNEL_TOKEN || '{{TOKEN}}';
 const sockMap = new Map();
-const CLI_VER = 'p6'; // 能力版本：server 据此识别旧版 CLI（无 ver 字段）并快速提示升级
+const CLI_VER = 'p7'; // 能力版本：server 握手下发最新版，本地旧则自更新（拉 /cli 原子替换后重启由 launchd 拉起）
+const SELF_PATH = process.argv[1] ? path.resolve(process.argv[1]) : ''; // 自更新定位自身文件
 const CFG_FILE = path.join(homedir(), '.pi-tunnel-cli.json');
 let piPath = ''; // pi agent 可执行路径（启动时探测；未装则 /task 提示安装）
 let taskBusy = false; // 设备端任务串行锁
@@ -24,6 +25,28 @@ let taskBusy = false; // 设备端任务串行锁
 if (typeof WebSocket === 'undefined') {
   console.error(`需要 Node >= 22 (全局 WebSocket)。当前 ${process.version}`);
   process.exit(1);
+}
+
+// ── 自更新：server 下发 ver > 本地 → 拉 /cli 原子替换自身 → 退出由 launchd KeepAlive 拉起新版 ──
+function selfUpdate(newVer) {
+  if (!SELF_PATH || !fs.existsSync(SELF_PATH)) { console.log('[tunnel] 自更新跳过：无法定位自身文件'); return; }
+  const httpUrl = SERVER.replace(/^ws/, 'http') + '/cli';
+  const req = http.get(httpUrl, r => {
+    let code = '';
+    r.on('data', c => code += c);
+    r.on('end', () => {
+      try {
+        if (!code.includes('CLI_VER') || code.length < 1000) throw new Error('内容校验失败');
+        const tmp = SELF_PATH + '.tmp';
+        fs.writeFileSync(tmp, code);
+        fs.renameSync(tmp, SELF_PATH); // 原子替换
+        console.log(`[tunnel] CLI ${CLI_VER} → ${newVer} 更新完成，2s 后退出重启加载新版…`);
+        setTimeout(() => process.exit(0), 2000); // launchd KeepAlive 自动拉起
+      } catch (e) { console.log('[tunnel] 自动更新失败，继续用当前版:', e.message); }
+    });
+  });
+  req.on('error', e => console.log('[tunnel] 自动更新失败，继续用当前版:', e.message));
+  req.setTimeout(15000, () => { req.destroy(); console.log('[tunnel] 自动更新超时，继续用当前版'); });
 }
 
 // ── 本地配置（白名单/能力开关）——server config 下发时覆盖并持久化 ──────────────
@@ -67,7 +90,7 @@ function listDevices(cb) {
     done();
   });
   if (plat === 'darwin') {
-    execFile('system_profiler', ['SPUSBDataType', '-json'], { timeout: 12000, maxBuffer: 8e6 }, (e, so) => {
+    execFile('system_profiler', ['SPUSBDataType', '-json'], { timeout: 12000, maxBuffer: 8e6 }, (_e, so) => {
       try {
         const j = JSON.parse(so);
         const walk = items => (items ?? []).forEach(it => {
@@ -294,6 +317,7 @@ function connect() {
   ws.onmessage = ev => {
     let m; try { m = JSON.parse(typeof ev.data === 'string' ? ev.data : Buffer.from(ev.data).toString()); } catch { return; }
     if (m.t === 'pong') { hbAlive = true; return; }
+    if (m.t === 'ver' && typeof m.v === 'string' && Number(m.v.slice(1)) > Number(CLI_VER.slice(1))) selfUpdate(m.v);
     if (m.t === 'connect') {
       const s = net.connect({ host: m.host, port: m.port }, () =>
         ws.send(JSON.stringify({ t: 'open', id: m.id })));
