@@ -132,28 +132,59 @@ body,
 
 /* ---------------- 2. 悬浮机载平显顶栏 (Avionics HUD Topbar) ---------------- */
 .topbar {
-	background: rgba(4, 5, 7, 0.6) !important;
-	backdrop-filter: blur(24px) saturate(180%) !important;
-	-webkit-backdrop-filter: blur(24px) saturate(180%) !important;
-	border-bottom: 1px solid rgba(255, 255, 255, 0.06) !important;
-	box-shadow: 0 4px 30px rgba(0, 0, 0, 0.5) !important;
+	background: rgba(4, 5, 7, 0.6);
+	backdrop-filter: blur(24px) saturate(180%);
+	-webkit-backdrop-filter: blur(24px) saturate(180%);
+	border-bottom: 1px solid rgba(255, 255, 255, 0.06);
+	box-shadow: 0 4px 30px rgba(0, 0, 0, 0.5);
 }
 
 .topbar .chip,
 .topbar .tb-tab,
 .topbar .plugin-topbar-item {
-	border-radius: 8px !important;
-	border: 1px solid rgba(255, 255, 255, 0.06) !important;
-	background: rgba(255, 255, 255, 0.02) !important;
-	transition: all 0.25s cubic-bezier(0.16, 1, 0.3, 1) !important;
+	border-radius: 8px;
+	border: 1px solid rgba(255, 255, 255, 0.06);
+	background: rgba(255, 255, 255, 0.02);
+	transition: all 0.25s cubic-bezier(0.16, 1, 0.3, 1);
+}
+
+/* 与基线「顶栏归一」契约对齐（分层后的显式复刻）：
+   基线 `@layer base` 里那三条顶栏归一规则（裸幽灵化常态 / .active 强调底 /
+   .newchat·.github 圆角组）原本靠优先级补丁与更具体的子选择器压过本主题的芯片底；
+   分层后 theme 恒胜，上面那块 HUD 芯片底会盖到它们身上。这里把它们**当时实际
+   生效的值**显式写回，与重构前的渲染结果逐像素一致（普通 `.chip` 当时就是本主题
+   的灰底，不受影响）。 */
+.topbar button.chip,
+.topbar .chip.active,
+.topbar .tb-tab.active,
+.topbar .plugin-topbar-item.active,
+.topbar .chip.github,
+.topbar .chip.newchat,
+.topbar .chip.ephemeral-chat-btn,
+.topbar .chip.sandbox-chip {
+	border-color: transparent;
+}
+
+.topbar button.chip,
+.topbar .chip.github,
+.topbar .chip.newchat,
+.topbar .chip.ephemeral-chat-btn,
+.topbar .chip.sandbox-chip {
+	background: transparent;
+}
+
+.topbar .chip.active,
+.topbar .tb-tab.active,
+.topbar .plugin-topbar-item.active {
+	background: var(--accent-soft);
 }
 
 .topbar .chip:hover,
 .topbar .tb-tab:hover,
 .topbar .plugin-topbar-item:hover {
-	border-color: rgba(0, 245, 212, 0.35) !important;
-	background: rgba(0, 245, 212, 0.07) !important;
-	box-shadow: 0 0 16px rgba(0, 245, 212, 0.12) !important;
+	border-color: rgba(0, 245, 212, 0.35);
+	background: rgba(0, 245, 212, 0.07);
+	box-shadow: 0 0 16px rgba(0, 245, 212, 0.12);
 	transform: translateY(-1px);
 }
 
@@ -169,124 +200,124 @@ body,
 /* ---------------- 3. 悬浮指挥中岛 (Floating Command Dock) ---------------- */
 /* 彻底打破贴底通栏传统，将输入框重构为居中浮空战术控制台 */
 .inputbar {
-	background: transparent !important;
+	background: transparent;
 	/* 上内边距走 --composer-pad-top（消息区的负 margin 按同一个值算），
 	   这个主题只是把下留白加大。 */
-	padding: var(--composer-pad-top) var(--chat-inset) 28px !important;
-	position: relative !important;
-	z-index: 30 !important;
-	border-top: none !important;
+	padding: var(--composer-pad-top) var(--chat-inset) 28px;
+	position: relative;
+	z-index: 30;
+	border-top: none;
 }
 
 .inputbox {
-	background: rgba(10, 12, 20, 0.84) !important;
-	backdrop-filter: blur(36px) saturate(220%) !important;
-	-webkit-backdrop-filter: blur(36px) saturate(220%) !important;
-	border: 1px solid rgba(255, 255, 255, 0.1) !important;
-	border-radius: 22px !important;
-	padding: 14px 16px 12px !important;
+	background: rgba(10, 12, 20, 0.84);
+	backdrop-filter: blur(36px) saturate(220%);
+	-webkit-backdrop-filter: blur(36px) saturate(220%);
+	border: 1px solid rgba(255, 255, 255, 0.1);
+	border-radius: 22px;
+	padding: 14px 16px 12px;
 	box-shadow:
 		0 28px 70px -12px rgba(0, 0, 0, 0.85),
 		0 0 0 1px rgba(255, 255, 255, 0.04),
-		inset 0 1px 0 rgba(255, 255, 255, 0.16) !important;
+		inset 0 1px 0 rgba(255, 255, 255, 0.16);
 	transition:
 		border-color 0.25s cubic-bezier(0.16, 1, 0.3, 1),
 		box-shadow 0.25s cubic-bezier(0.16, 1, 0.3, 1),
-		transform 0.25s cubic-bezier(0.16, 1, 0.3, 1) !important;
+		transform 0.25s cubic-bezier(0.16, 1, 0.3, 1);
 }
 
 .inputbox:focus-within {
-	border-color: rgba(0, 245, 212, 0.5) !important;
+	border-color: rgba(0, 245, 212, 0.5);
 	box-shadow:
 		0 36px 85px -12px rgba(0, 0, 0, 0.95),
 		0 0 35px rgba(0, 245, 212, 0.24),
-		inset 0 1px 0 rgba(255, 255, 255, 0.28) !important;
+		inset 0 1px 0 rgba(255, 255, 255, 0.28);
 	transform: translateY(-3px);
 }
 
 .composer-textarea {
-	font-size: 14.5px !important;
-	line-height: 1.65 !important;
+	font-size: 14.5px;
+	line-height: 1.65;
 }
 
 /* 发送按键高阶能量发光体 */
 .btn-send {
-	background: linear-gradient(135deg, #00f5d4 0%, #05d5b9 100%) !important;
-	color: #040507 !important;
-	font-weight: 700 !important;
-	border-radius: 12px !important;
-	box-shadow: 0 4px 16px rgba(0, 245, 212, 0.35) !important;
-	transition: all 0.2s cubic-bezier(0.16, 1, 0.3, 1) !important;
+	background: linear-gradient(135deg, #00f5d4 0%, #05d5b9 100%);
+	color: #040507;
+	font-weight: 700;
+	border-radius: 12px;
+	box-shadow: 0 4px 16px rgba(0, 245, 212, 0.35);
+	transition: all 0.2s cubic-bezier(0.16, 1, 0.3, 1);
 }
 
 .btn-send:hover {
 	transform: scale(1.05) translateY(-1px);
-	box-shadow: 0 6px 24px rgba(0, 245, 212, 0.6) !important;
+	box-shadow: 0 6px 24px rgba(0, 245, 212, 0.6);
 }
 
 /* ---------------- 4. 任务目标工单化 (Mission Objective Directives) ---------------- */
 /* 颠覆微信式右侧聊天气泡：用户提问直接升级为任务工程指令卡片 */
 .msg-user {
-	margin-top: 28px !important;
-	margin-bottom: 28px !important;
-	max-width: 100% !important;
+	margin-top: 28px;
+	margin-bottom: 28px;
+	max-width: 100%;
 }
 
 .msg-user .msg-meta {
-	display: flex !important;
-	align-items: center !important;
-	gap: 8px !important;
-	margin-bottom: 8px !important;
+	display: flex;
+	align-items: center;
+	gap: 8px;
+	margin-bottom: 8px;
 }
 
 .msg-user .msg-role::before {
-	content: "MISSION DIRECTIVE // " !important;
-	font-family: var(--mono) !important;
-	font-size: 10px !important;
-	letter-spacing: 0.15em !important;
-	font-weight: 700 !important;
-	color: var(--accent) !important;
+	content: "MISSION DIRECTIVE // ";
+	font-family: var(--mono);
+	font-size: 10px;
+	letter-spacing: 0.15em;
+	font-weight: 700;
+	color: var(--accent);
 	opacity: 0.9;
 }
 
 .msg-user .msg-body {
-	position: relative !important;
-	background: linear-gradient(145deg, rgba(16, 20, 32, 0.9) 0%, rgba(9, 11, 19, 0.9) 100%) !important;
-	border: 1px solid rgba(0, 245, 212, 0.24) !important;
-	border-left: 4px solid var(--accent) !important;
-	border-radius: 14px !important;
-	padding: 16px 20px !important;
+	position: relative;
+	background: linear-gradient(145deg, rgba(16, 20, 32, 0.9) 0%, rgba(9, 11, 19, 0.9) 100%);
+	border: 1px solid rgba(0, 245, 212, 0.24);
+	border-left: 4px solid var(--accent);
+	border-radius: 14px;
+	padding: 16px 20px;
 	box-shadow:
 		0 14px 36px -6px rgba(0, 0, 0, 0.55),
 		0 0 28px rgba(0, 245, 212, 0.06),
-		inset 0 1px 0 rgba(255, 255, 255, 0.12) !important;
-	backdrop-filter: blur(18px) !important;
-	-webkit-backdrop-filter: blur(18px) !important;
+		inset 0 1px 0 rgba(255, 255, 255, 0.12);
+	backdrop-filter: blur(18px);
+	-webkit-backdrop-filter: blur(18px);
 }
 
 /* ---------------- 5. 神经主导线与自动化流水线 (Execution Neural Spine) ---------------- */
 /* 为 Agent 回复构建统一的垂直神经脉络导轨，将零散的 toolcall 串联为高科技流水线 */
 .msg-assistant .msg-body {
-	position: relative !important;
-	padding-left: 20px !important;
-	border-left: 2px solid rgba(0, 245, 212, 0.2) !important;
-	margin-left: 6px !important;
+	position: relative;
+	padding-left: 20px;
+	border-left: 2px solid rgba(0, 245, 212, 0.2);
+	margin-left: 6px;
 }
 
 /* 工具调用节点微芯片化 */
 .toolcall {
-	position: relative !important;
-	border-radius: 10px !important;
-	border: 1px solid rgba(255, 255, 255, 0.08) !important;
-	background: rgba(9, 11, 18, 0.72) !important;
-	backdrop-filter: blur(14px) !important;
-	-webkit-backdrop-filter: blur(14px) !important;
-	box-shadow: 0 4px 16px rgba(0, 0, 0, 0.35) !important;
-	margin: 8px 0 !important;
+	position: relative;
+	border-radius: 10px;
+	border: 1px solid rgba(255, 255, 255, 0.08);
+	background: rgba(9, 11, 18, 0.72);
+	backdrop-filter: blur(14px);
+	-webkit-backdrop-filter: blur(14px);
+	box-shadow: 0 4px 16px rgba(0, 0, 0, 0.35);
+	margin: 8px 0;
 	transition:
 		border-color 0.2s cubic-bezier(0.16, 1, 0.3, 1),
 		box-shadow 0.2s cubic-bezier(0.16, 1, 0.3, 1),
-		transform 0.15s ease !important;
+		transform 0.15s ease;
 }
 
 /* 钉在神经导轨上的微型量子状态芯片引脚 */
@@ -306,29 +337,29 @@ body,
 }
 
 .toolcall:hover {
-	border-color: rgba(255, 255, 255, 0.2) !important;
+	border-color: rgba(255, 255, 255, 0.2);
 	transform: translateX(2px);
 }
 
 .toolcall-head {
-	padding: 6px 14px !important;
-	font-family: var(--mono) !important;
-	font-size: 13px !important;
+	padding: 6px 14px;
+	font-family: var(--mono);
+	font-size: 13px;
 }
 
 .toolcall-name {
-	color: #00f5d4 !important;
-	font-weight: 600 !important;
-	letter-spacing: 0.04em !important;
+	color: #00f5d4;
+	font-weight: 600;
+	letter-spacing: 0.04em;
 }
 
 /* 运行态量子发光流水线 */
 .toolcall.run {
-	border-color: rgba(0, 245, 212, 0.55) !important;
+	border-color: rgba(0, 245, 212, 0.55);
 	box-shadow:
 		0 0 24px rgba(0, 245, 212, 0.16),
-		inset 0 0 16px rgba(0, 245, 212, 0.06) !important;
-	animation: aetheris-pulse 2s ease-in-out infinite alternate !important;
+		inset 0 0 16px rgba(0, 245, 212, 0.06);
+	animation: aetheris-pulse 2s ease-in-out infinite alternate;
 }
 
 .msg-assistant .toolcall.run::before {
@@ -351,7 +382,7 @@ body,
 }
 
 .toolcall.ok {
-	border-color: rgba(16, 185, 129, 0.35) !important;
+	border-color: rgba(16, 185, 129, 0.35);
 }
 
 .msg-assistant .toolcall.ok::before {
@@ -361,13 +392,13 @@ body,
 }
 
 .toolcall.ok .toolcall-status {
-	color: #10b981 !important;
+	color: #10b981;
 	text-shadow: 0 0 10px rgba(16, 185, 129, 0.55);
 }
 
 .toolcall.err {
-	border-color: rgba(255, 74, 110, 0.5) !important;
-	box-shadow: 0 0 20px rgba(255, 74, 110, 0.18) !important;
+	border-color: rgba(255, 74, 110, 0.5);
+	box-shadow: 0 0 20px rgba(255, 74, 110, 0.18);
 }
 
 .msg-assistant .toolcall.err::before {
@@ -377,67 +408,67 @@ body,
 }
 
 .toolcall.err .toolcall-status {
-	color: #ff4a6e !important;
+	color: #ff4a6e;
 	text-shadow: 0 0 10px rgba(255, 74, 110, 0.65);
 }
 
 /* ---------------- 6. 神经思维链暗舱 (Neural Synapse Vault) ---------------- */
 .thinking {
-	position: relative !important;
-	border-radius: 12px !important;
-	border: 1px dashed rgba(99, 102, 241, 0.35) !important;
-	background: rgba(8, 10, 16, 0.65) !important;
-	backdrop-filter: blur(14px) !important;
-	-webkit-backdrop-filter: blur(14px) !important;
-	margin: 12px 0 !important;
-	transition: border-color 0.25s ease !important;
+	position: relative;
+	border-radius: 12px;
+	border: 1px dashed rgba(99, 102, 241, 0.35);
+	background: rgba(8, 10, 16, 0.65);
+	backdrop-filter: blur(14px);
+	-webkit-backdrop-filter: blur(14px);
+	margin: 12px 0;
+	transition: border-color 0.25s ease;
 }
 
 .thinking:hover {
-	border-color: rgba(99, 102, 241, 0.55) !important;
+	border-color: rgba(99, 102, 241, 0.55);
 }
 
 .thinking-head {
-	font-family: var(--mono) !important;
-	font-size: 12.5px !important;
-	letter-spacing: 0.05em !important;
-	color: #818cf8 !important;
+	font-family: var(--mono);
+	font-size: 12.5px;
+	letter-spacing: 0.05em;
+	color: #818cf8;
 }
 
 /* ---------------- 7. 工件画布与代码沉浸舱 (Artifact Canvas) ---------------- */
 /* 将代码产出物提升为主画布核心工件视觉 */
 .codeblock {
-	border-radius: 12px !important;
-	border: 1px solid rgba(255, 255, 255, 0.09) !important;
-	background: #06070c !important;
+	border-radius: 12px;
+	border: 1px solid rgba(255, 255, 255, 0.09);
+	background: #06070c;
 	box-shadow:
 		0 10px 30px -4px rgba(0, 0, 0, 0.65),
-		inset 0 1px 0 rgba(255, 255, 255, 0.08) !important;
-	overflow: hidden !important;
-	margin: 14px 0 !important;
+		inset 0 1px 0 rgba(255, 255, 255, 0.08);
+	overflow: hidden;
+	margin: 14px 0;
 }
 
 .codeblock-head {
-	background: rgba(255, 255, 255, 0.035) !important;
-	border-bottom: 1px solid rgba(255, 255, 255, 0.06) !important;
-	font-family: var(--mono) !important;
-	font-size: 12px !important;
-	letter-spacing: 0.04em !important;
+	background: rgba(255, 255, 255, 0.035);
+	border-bottom: 1px solid rgba(255, 255, 255, 0.06);
+	font-family: var(--mono);
+	font-size: 12px;
+	letter-spacing: 0.04em;
 }
 
 .codeblock pre {
-	background: #06070c !important;
+	background: #06070c;
 }
 
 /* ---------------- 8. 遥测指示底栏 (Avionics Statusbar) ---------------- */
 .statusbar {
-	background: rgba(4, 5, 7, 0.75) !important;
-	backdrop-filter: blur(24px) !important;
-	-webkit-backdrop-filter: blur(24px) !important;
-	border-top: 1px solid rgba(255, 255, 255, 0.06) !important;
-	font-family: var(--mono) !important;
-	font-size: 11.5px !important;
-	letter-spacing: 0.03em !important;
+	background: rgba(4, 5, 7, 0.75);
+	backdrop-filter: blur(24px);
+	-webkit-backdrop-filter: blur(24px);
+	border-top: 1px solid rgba(255, 255, 255, 0.06);
+	font-family: var(--mono);
+	font-size: 11.5px;
+	letter-spacing: 0.03em;
 }
 
 /* ---------------- 9. 极客悬浮滚动条 (Quiet Cybernetic Scrollbar) ---------------- */

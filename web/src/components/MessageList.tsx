@@ -22,6 +22,7 @@ import { collectQuestionAttachments } from "../question-attachments";
 import { parseSkillBlock } from "../skill-block";
 import { CollapsedMessage } from "./CollapsedMessage";
 import { reviewFoldKind } from "../goal-review-fold";
+import { useFlowStreamMode } from "../flow-mode";
 import { LazyMount } from "./LazyMount";
 import {
 	applyPlan,
@@ -265,10 +266,26 @@ export function isPureToolMessage(m: UiMessage): boolean {
 	return m.content.some((b) => b.type === "toolCall" || b.type === "thinking");
 }
 
+/** 助手产出（正文 / 思考 / 工具）——极简行文按回合合并的候选单位。 */
+function isAssistantFlowMessage(m: UiMessage): boolean {
+	if (m.customType) return false;
+	return m.role === "assistant" || !m.role;
+}
+
 export type MessageClusterItem =
 	{ type: "single"; message: UiMessage } | { type: "tool_cluster"; id: string; messages: UiMessage[] };
 
-export function clusterMessages(list: readonly UiMessage[]): MessageClusterItem[] {
+export interface ClusterOptions {
+	/**
+	 * 极简行文（字级输入流）：把**整个回合的助手产出**并成一个流单元，而不只是纯工具/思考。
+	 * 正文与胶囊因此同处一条行内流（壳在 `.flow-turn` 里是 display:contents），
+	 * 且一个回合仍然是一个可测量的惰性单元，窗口化粒度不变。
+	 */
+	mergeTurns?: boolean;
+}
+
+export function clusterMessages(list: readonly UiMessage[], opts?: ClusterOptions): MessageClusterItem[] {
+	const mergeTurns = !!opts?.mergeTurns;
 	const out: MessageClusterItem[] = [];
 	let currentCluster: { type: "tool_cluster"; id: string; messages: UiMessage[] } | null = null;
 
@@ -277,7 +294,7 @@ export function clusterMessages(list: readonly UiMessage[]): MessageClusterItem[
 		if (m.role === "system" || m.role === "toolResult") continue;
 		const fold = reviewFoldKind(m);
 
-		const isAssistantCandidate = (m.role === "assistant" || !m.role) && !m.customType;
+		const isAssistantCandidate = isAssistantFlowMessage(m);
 		const pureTool = isPureToolMessage(m);
 		// 当已有工具流集群正在进行中，且紧随其后的是末尾流式/生成中的助手消息时：
 		// 若当前消息尚未吐出实质正文（即尚无非空 text 且无折叠），将其作为流式工具候选平滑并入集群，
@@ -285,7 +302,10 @@ export function clusterMessages(list: readonly UiMessage[]): MessageClusterItem[
 		const isTrailingStreamCandidate =
 			!pureTool && !!currentCluster && isAssistantCandidate && !fold && i === list.length - 1 && !hasMeaningfulText(m);
 
-		if ((pureTool || isTrailingStreamCandidate) && !fold) {
+		// 极简行文：回合内所有助手消息（含带正文的）都进同一个流单元
+		const joinsCluster = fold ? false : mergeTurns ? isAssistantCandidate : pureTool || isTrailingStreamCandidate;
+
+		if (joinsCluster) {
 			if (!currentCluster) {
 				currentCluster = { type: "tool_cluster", id: `cluster-${m.id}`, messages: [m] };
 				out.push(currentCluster);
@@ -300,8 +320,11 @@ export function clusterMessages(list: readonly UiMessage[]): MessageClusterItem[
 	return out;
 }
 
-/** 未实测时回合工具流集群的兜底高度估算（折叠态单卡片基准约 52px） */
-export function estimateClusterHeight(messages: readonly UiMessage[]): number {
+/** 未实测时回合工具流集群的兜底高度估算（折叠态单卡片基准约 52px）。
+ *  merged = 极简行文的「整回合一条行内流」：胶囊每行能排好几个，正文段落按块计，
+ *  所以按「每 4 条一行的稠密行高」给个量级正确的粗估（实测值随后覆盖它）。 */
+export function estimateClusterHeight(messages: readonly UiMessage[], merged = false): number {
+	if (merged) return Math.max(48, Math.ceil(messages.length / 4) * 30);
 	return Math.max(48, messages.length * 52);
 }
 
@@ -311,6 +334,9 @@ interface LazyToolClusterProps {
 	placeholderHeight: number;
 	attachEl: (el: HTMLDivElement | null) => void;
 	onMeasured?: (id: string, h: number) => void;
+	/** 容器形态：trail = 逐消息块级壳外的工具流集群（普通主题，纵向卡片流）；
+	 *  flow = 极简行文的 `字级输入流`回合容器（壳透明化，正文与胶囊连排）。 */
+	variant?: "trail" | "flow";
 	children: ReactNode;
 }
 
@@ -320,6 +346,7 @@ const LazyToolCluster = memo(function LazyToolCluster({
 	placeholderHeight,
 	attachEl,
 	onMeasured,
+	variant = "trail",
 	children,
 }: LazyToolClusterProps) {
 	const trailRef = useRef<HTMLDivElement>(null);
@@ -351,7 +378,7 @@ const LazyToolCluster = memo(function LazyToolCluster({
 				trailRef.current = el;
 				attachEl(el);
 			}}
-			className="turn-tools-trail"
+			className={variant === "flow" ? "flow-turn" : "turn-tools-trail"}
 			data-cluster-id={id}
 			data-lazy-id={id}
 		>
@@ -541,6 +568,13 @@ export function MessageList({
 	// ---- 惰性窗口化（lazy windowing，纯函数见 lazy-window.ts）----------------
 	// 视口缓冲带之外的重型消息替换为等高占位 div；滚动临近时换回真实内容并
 	// 在同一帧内补偿 scrollTop。占位保留 data-msg-id，导航/跳转/搜索不受影响。
+	/** 极简行文（字级输入流）：按回合合并助手产出，正文与胶囊连成一条流。
+	 *  其它主题为 false —— 分组/容器/外观全部走原有路径，零改动。 */
+	const flowStream = useFlowStreamMode();
+	const clusterOptions = useMemo<ClusterOptions | undefined>(
+		() => (flowStream ? { mergeTurns: true } : undefined),
+		[flowStream],
+	);
 	/** 当前处于占位状态的消息 id。长对话首帧即预置非可见区，避免大会话初次挂载时全量绘制导致卡顿。 */
 	const [hidden, setHidden] = useState<Set<string>>(() => {
 		// 向上分页模式下没有占位符，开机即不必全量扫描预置（大会话首帧提速）。
@@ -550,7 +584,7 @@ export function MessageList({
 		for (const m of state.messages) {
 			if (!always.has(m.id)) init.add(m.id);
 		}
-		for (const it of clusterMessages(state.messages)) {
+		for (const it of clusterMessages(state.messages, clusterOptions)) {
 			if (it.type === "tool_cluster" && it.messages.every((m) => !always.has(m.id))) {
 				init.add(it.id);
 			}
@@ -691,7 +725,10 @@ export function MessageList({
 	}, [needsFullHistory, requestServerPage]);
 
 	// 同一任务回合内的连续中间工具与思考消息聚类为单行流式排布单元（向上分页时只聚类可见切片）
-	const clusteredItems = useMemo(() => clusterMessages(visibleMessages), [visibleMessages]);
+	const clusteredItems = useMemo(
+		() => clusterMessages(visibleMessages, clusterOptions),
+		[visibleMessages, clusterOptions],
+	);
 
 	/** 短会话、搜索打开或开启向上分页期间不做窗口化（分页模式下全量真实渲染已挂载切片，无占位符）。 */
 	const virtualOn = !reversePagination && state.messages.length > VIRTUAL_MIN && !searchOpen;
@@ -772,7 +809,7 @@ export function MessageList({
 			for (const m of state.messages) {
 				if (!newAlways.has(m.id)) nextHidden.add(m.id);
 			}
-			for (const it of clusterMessages(state.messages)) {
+			for (const it of clusterMessages(state.messages, clusterOptions)) {
 				if (it.type === "tool_cluster" && it.messages.every((m) => !newAlways.has(m.id))) {
 					nextHidden.add(it.id);
 				}
@@ -1572,10 +1609,11 @@ export function MessageList({
 									item.id,
 									fingerprints.get(item.id) ?? -1,
 									heightMetaRef.current,
-									estimateClusterHeight(item.messages),
+									estimateClusterHeight(item.messages, flowStream),
 								)}
 								attachEl={attachEl}
 								onMeasured={storeHeight}
+								variant={flowStream ? "flow" : "trail"}
 							>
 								{item.messages.map((m) => {
 									const isStreamingThis =

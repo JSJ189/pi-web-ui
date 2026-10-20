@@ -127,8 +127,21 @@ export function resolveThemeFile(builtinDir: string, userDir: string, id: string
  * - 限制递归深度（默认 3 层）防循环引用；
  * - 仅允许引入 .css 文件；
  * - 确保生产/开发模式下均能无缝组合共享形态基底（如 bases/flow-base.css），免去客户端多次瀑布流请求。
+ *
+ * 返回的整份样式表会被包进 `@layer theme { ... }`（与 `web/src/styles.css` 的
+ * `@layer guard, base, theme;` 声明配套：主题层永远压在 base 之上，主题之间不再靠
+ * `!important` 抢权重）。只包**最外层一次**——递归内联的子文件必须原样返回，
+ * 否则会形成嵌套层（嵌套层无法与顶层 base/theme 正确比较顺序）。
+ * 调用方（`server/index.ts` 的 `/themes/:id.css`）行为不变：仍直接写回响应。
  */
 export function readThemeCss(filePath: string, visited = new Set<string>(), depth = 0): string {
+	const css = inlineThemeImports(filePath, visited, depth);
+	if (depth > 0 || !css.trim()) return css;
+	return `@layer theme {\n${css.trimEnd()}\n}\n`;
+}
+
+/** `readThemeCss` 的内联主体：递归调用自身（不包层，见上文）。 */
+function inlineThemeImports(filePath: string, visited: Set<string>, depth: number): string {
 	if (depth > 3 || visited.has(filePath)) return "";
 	visited.add(filePath);
 	if (!existsSync(filePath) || !statSync(filePath).isFile()) return "";
@@ -138,6 +151,6 @@ export function readThemeCss(filePath: string, visited = new Set<string>(), dept
 	return content.replace(/@import\s+["'](\.[^"']+\.css)["'];?\r?\n?/g, (_match, relPath) => {
 		const targetPath = resolve(dir, relPath);
 		if (!existsSync(targetPath) || !statSync(targetPath).isFile()) return "";
-		return readThemeCss(targetPath, visited, depth + 1) + "\n";
+		return inlineThemeImports(targetPath, visited, depth + 1) + "\n";
 	});
 }

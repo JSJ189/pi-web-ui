@@ -109,10 +109,15 @@ describe("品牌徽标固定样式与全主题/纯图标模式守护", () => {
 	});
 
 	it("纯图标模式（.topbar.no-labels）下品牌徽标保持展示且不被塑形为 28px 圆形", () => {
-		const css = readFileSync(join(ROOT, "web/src/styles.css"), "utf8");
+		// styles.css 已整体并入 `@layer base { ... }`（内容多缩进一格）：去掉最外层那一格 Tab
+		// 还原成「顶层」口径再断言。
+		const css = readFileSync(join(ROOT, "web/src/styles.css"), "utf8").replace(/^\t/gm, "");
 		expect(css).toContain(".topbar.no-labels .bar-item.brand");
 		expect(css).toContain(".topbar.no-labels .bar-item-brand");
-		expect(css).toContain("display: inline-flex !important");
+		// 徽标保持 inline-flex 展示（!important 已随分层重构移除，声明值一字未改）
+		expect(css).toContain(
+			".topbar.no-labels .bar-item-brand > .brand-logo,\n.topbar.no-labels .bar-item-brand > .bar-item-brand-logo {\n\tdisplay: inline-flex;\n}",
+		);
 	});
 
 	it("themes/*.css 中不得覆盖 .brand-logo，保证品牌徽标不受主题影响", () => {

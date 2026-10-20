@@ -91,7 +91,9 @@
 		"format": "prettier --write server/ web/src/ extensions/ scripts/ bin/ desktop/ tests/*.mjs tests/unit/ *.mjs",
 		"format:check": "prettier --check server/ web/src/ extensions/ scripts/ bin/ desktop/ tests/*.mjs tests/unit/ *.mjs",
 		"lint": "oxlint server/ web/src/ extensions/ scripts/ bin/ desktop/",
-		"lint:fix": "oxlint --fix server/ web/src/ extensions/ scripts/ bin/ desktop/"
+		"lint:fix": "oxlint --fix server/ web/src/ extensions/ scripts/ bin/ desktop/",
+		"audit:themes": "node scripts/theme-audit.mjs --out .theme-audit/current",
+		"audit:diff": "node scripts/theme-diff.mjs .theme-audit/baseline .theme-audit/current"
 	},
 	"dependencies": {
 		"@deepseek-ai/dsh-sdk-jsonrpc-server": "^0.1.5-rc.3",

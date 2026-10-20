@@ -23,7 +23,10 @@ describe("主题基底解耦与 @import 服务端内联体系", () => {
 		const baseContent = readFileSync(FLOW_BASE_CSS, "utf8");
 		// 包含正文无界微流核心排版
 		expect(baseContent).toContain(".msg-assistant .msg-body");
-		expect(baseContent).toContain(".turn-tools-trail");
+		// 极简行文的「整回合一条行内流」容器（取代旧的 .turn-tools-trail）
+		expect(baseContent).toContain(".flow-turn");
+		// 主题能力声明：前端据它切换到按回合合并 + 行内流渲染
+		expect(baseContent).toContain("--flow-inline-stream: 1");
 		expect(baseContent).toContain(".toolcall");
 		expect(baseContent).toContain(".thinking");
 	});
@@ -54,11 +57,29 @@ describe("主题基底解耦与 @import 服务端内联体系", () => {
 		expect(inlinedLight).toContain(".thinking");
 	});
 
+	it("readThemeCss 返回的整份样式表被 @layer theme { } 包裹（且只包最外层一次）", () => {
+		for (const file of [FLOW_CSS, FLOW_LIGHT_CSS, ZHUPI_CSS, ZHUJIAN_CSS, OBSIDIAN_CSS]) {
+			const css = readThemeCss(file);
+			expect(css.trimStart().startsWith("@layer theme {"), `${file} 未以 @layer theme { 开头`).toBe(true);
+			expect(css.trimEnd().endsWith("}"), `${file} 未正确闭合 @layer theme`).toBe(true);
+			// 只包最外层：递归内联进来的基底文件不得再套一层（嵌套层会让层序比较失效）
+			expect(css.match(/@layer\s+theme\s*\{/g)?.length ?? 0, `${file} 出现了多层 @layer theme 嵌套`).toBe(1);
+			// 内联进来的基底内容落在同一个 theme 层里
+			const body = css.slice(css.indexOf("{") + 1, css.lastIndexOf("}"));
+			expect(body).toContain(".msg-assistant .msg-body");
+		}
+
+		// 子文件（递归内联路径）自身不带层，否则会嵌套
+		const baseOnly = readThemeCss(FLOW_BASE_CSS, new Set<string>(), 1);
+		expect(baseOnly).not.toContain("@layer theme {");
+		expect(baseOnly).toContain(".msg-assistant .msg-body");
+	});
+
 	it("flow-base.css 中主操作实底按钮与角标统一走语义变量，杜绝写死黑底黑字或白底白字", () => {
 		const baseContent = readFileSync(FLOW_BASE_CSS, "utf8");
-		// 发送按钮统一为强调色与反色前景
-		expect(baseContent).toContain(".inputbox .btn.send {\n\tbackground: var(--accent) !important;");
-		expect(baseContent).toContain("color: var(--accent-contrast, #fff) !important;");
+		// 发送按钮统一为强调色与反色前景（分层后不再依赖 !important，只校验声明本身）
+		expect(baseContent).toMatch(/\.inputbox \.btn\.send \{[^}]*background:\s*var\(--accent\)/);
+		expect(baseContent).toMatch(/color:\s*var\(--accent-contrast, #fff\)/);
 
 		// 顶栏角标走 --accent-contrast
 		expect(baseContent).toContain(".topbar .bar-item-badge:not(.bg-task-badge)");
@@ -96,6 +117,6 @@ describe("主题基底解耦与 @import 服务端内联体系", () => {
 
 		const inlinedObs = readThemeCss(OBSIDIAN_CSS);
 		expect(inlinedObs).toContain(".msg-assistant .msg-body");
-		expect(inlinedObs).toContain("box-shadow: none !important;");
+		expect(inlinedObs).toMatch(/box-shadow:\s*none/);
 	});
 });

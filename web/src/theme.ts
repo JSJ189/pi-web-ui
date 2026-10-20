@@ -26,6 +26,13 @@ const STORAGE_KEY = "pi-web-ui:theme";
 /** id of the bundled default theme (no extra link loaded). */
 const DEFAULT_THEME_ID = "dark";
 const LINK_ID = "theme-stylesheet";
+/**
+ * 主题样式表的版本戳（每次页面加载一个）：主题文件是**部署级资源**（服务端还会
+ * 把 `@import` 内联成单文件），URL 固定时浏览器会拿旧缓存，于是「改了主题样式却
+ * 没生效、非要硬刷」反复发生。带上版本戳保证每次加载都拿到最新主题，同一次会话内
+ * 切主题仍可复用同一份。
+ */
+const THEME_ASSET_REV = Date.now().toString(36);
 /** Broadcast when the active theme changes (after the <link> has loaded). */
 export const THEME_CHANGE_EVENT = "pi-web-ui:theme-change";
 
@@ -69,7 +76,7 @@ export function applyTheme(id: string | null): void {
 		link.rel = "stylesheet";
 		document.head.appendChild(link);
 	}
-	link.href = appUrl(`/themes/${encodeURIComponent(id)}.css`);
+	link.href = `${appUrl(`/themes/${encodeURIComponent(id)}.css`)}?v=${THEME_ASSET_REV}`;
 	// The xterm canvas needs to re-theme once the new stylesheet has applied
 	// (its colors are read from the CSS variables via buildTermTheme).
 	link.onload = () => window.dispatchEvent(new CustomEvent(THEME_CHANGE_EVENT));

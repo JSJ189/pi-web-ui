@@ -136,8 +136,10 @@ describe("主题分组与现代经典主题测试", () => {
 
 		for (const file of ["zhujian.css", "zhujian-dark.css"]) {
 			const css = readThemeCss(join(BUILTIN_DIR, file));
-			expect(css).toContain("border: 1px solid var(--border-soft) !important;");
-			expect(css).toContain("background: var(--code-bg) !important;");
+			// 思考流 = 笺纸凹版卡片：边框 + 墨色代码底（!important 已随 CSS 分层重构移除，值一字未改）
+			expect(css).toContain(
+				".thinking {\n\tmargin: 6px 0;\n\tborder: 1px solid var(--border-soft);\n\tborder-radius: 4px;\n\tbackground: var(--code-bg);",
+			);
 			expect(css).toContain(".thinking-body:empty::after");
 			expect(css).toContain("min-height: 2.4em;");
 		}

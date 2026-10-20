@@ -30,6 +30,9 @@ plugins/webmail/package*.json
 # Scratch/test temp files
 tests/scratch/
 
+# 主题视觉审计产物（scripts/theme-audit.mjs + theme-diff.mjs 的截图/差异图）
+.theme-audit/
+
 # 误落仓库根的临时包（npm pack / 手工下载的 tgz）
 *.tgz
 

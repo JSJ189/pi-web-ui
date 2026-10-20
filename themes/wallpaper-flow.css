@@ -88,35 +88,35 @@
 .chat-scroll,
 .messages,
 .inputbar {
-	background: transparent !important;
+	background: transparent;
 }
 
 .topbar {
-	background: rgba(6, 6, 8, 0.4) !important;
-	border-bottom: 1px solid rgba(255, 255, 255, 0.14) !important;
-	box-shadow: none !important;
+	background: rgba(6, 6, 8, 0.4);
+	border-bottom: 1px solid rgba(255, 255, 255, 0.14);
+	box-shadow: none;
 }
 
 .footer-bar,
 .statusbar {
-	background: rgba(6, 6, 8, 0.4) !important;
-	border-top: 1px solid rgba(255, 255, 255, 0.14) !important;
-	box-shadow: none !important;
+	background: rgba(6, 6, 8, 0.4);
+	border-top: 1px solid rgba(255, 255, 255, 0.14);
+	box-shadow: none;
 }
 
 .panel,
 .drawer-left .panel,
 .drawer-right .panel,
 .lp-panel {
-	background: rgba(8, 8, 12, 0.38) !important;
-	border-color: rgba(255, 255, 255, 0.12) !important;
-	box-shadow: none !important;
+	background: rgba(8, 8, 12, 0.38);
+	border-color: rgba(255, 255, 255, 0.12);
+	box-shadow: none;
 }
 
 .lp-conv-row.active,
 .ft-row:hover,
 .panel-item:hover {
-	background: rgba(255, 255, 255, 0.1) !important;
+	background: rgba(255, 255, 255, 0.1);
 }
 
 /* 壁纸文字边缘锁边微小紧致阴影 */
@@ -132,7 +132,7 @@
 .msg-assistant .msg-text h6 {
 	text-shadow:
 		0 0 1px rgba(0, 0, 0, 0.95),
-		0 1px 1.5px rgba(0, 0, 0, 0.88) !important;
+		0 1px 1.5px rgba(0, 0, 0, 0.88);
 }
 
 /* 底栏指标文字微调提亮 */
@@ -144,11 +144,11 @@
 .statusbar .bar-item-cwd *,
 .statusbar .status-cwd,
 .statusbar .status-cwd * {
-	color: #ffffff !important;
-	opacity: 0.98 !important;
+	color: #ffffff;
+	opacity: 0.98;
 	text-shadow:
 		0 0 1px rgba(0, 0, 0, 0.95),
-		0 1px 1.5px rgba(0, 0, 0, 0.85) !important;
+		0 1px 1.5px rgba(0, 0, 0, 0.85);
 }
 
 .statusbar-right .bar-item-icon svg,
@@ -156,9 +156,9 @@
 .statusbar .status-host-metrics svg,
 .statusbar .bar-item-cwd svg,
 .statusbar .status-cwd svg {
-	color: #ffffff !important;
-	stroke: #ffffff !important;
-	filter: drop-shadow(0 0 1px rgba(0, 0, 0, 0.95)) drop-shadow(0 1px 1.2px rgba(0, 0, 0, 0.85)) !important;
+	color: #ffffff;
+	stroke: #ffffff;
+	filter: drop-shadow(0 0 1px rgba(0, 0, 0, 0.95)) drop-shadow(0 1px 1.2px rgba(0, 0, 0, 0.85));
 }
 
 /* 语法高亮（hljs）—— 极简冷冽暗调 */

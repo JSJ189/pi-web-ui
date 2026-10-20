@@ -233,4 +233,67 @@ describe("回合工具流聚类与隔离机制 (Turn Tool Trail)", () => {
 			expect(denseCluster[0].messages.length >= 4).toBe(true);
 		}
 	});
+
+	it("极简行文字级输入流：mergeTurns 把整回合助手产出（含正文）并成一个流单元，且在用户提问处断开", () => {
+		const messages: UiMessage[] = [
+			{ id: "u1", role: "user", content: [{ type: "text", text: "清掉未使用 import 并提交" }] } as unknown as UiMessage,
+			{
+				id: "a1",
+				role: "assistant",
+				content: [
+					{ type: "thinking", thinking: "想" },
+					{ type: "toolCall", id: "tc1", name: "bash" },
+				],
+			} as unknown as UiMessage,
+			{
+				id: "a2",
+				role: "assistant",
+				// 带正文的消息在普通模式下会打断集群，极简行文下必须并入同一回合流
+				content: [
+					{ type: "text", text: "先清掉那个未使用 import。" },
+					{ type: "toolCall", id: "tc2", name: "bash" },
+				],
+			} as unknown as UiMessage,
+			{ id: "a3", role: "assistant", content: [{ type: "toolCall", id: "tc3", name: "edit" }] } as unknown as UiMessage,
+			{ id: "tr3", role: "toolResult" } as unknown as UiMessage,
+			{ id: "u2", role: "user", content: [{ type: "text", text: "继续" }] } as unknown as UiMessage,
+			{
+				id: "a4",
+				role: "assistant",
+				content: [{ type: "toolCall", id: "tc4", name: "write" }],
+			} as unknown as UiMessage,
+		];
+
+		const flow = clusterMessages(messages, { mergeTurns: true });
+		// u1 / 回合流(a1,a2,a3) / u2 / 回合流(a4)
+		expect(flow.map((it) => it.type)).toEqual(["single", "tool_cluster", "single", "tool_cluster"]);
+		const turn = flow[1];
+		expect(turn.type).toBe("tool_cluster");
+		if (turn.type === "tool_cluster") {
+			expect(turn.id).toBe("cluster-a1");
+			expect(turn.messages.map((m) => m.id)).toEqual(["a1", "a2", "a3"]);
+			// 正文与胶囊同处一条流 → 高度按行内流粗估，远小于逐消息块级估算
+			expect(estimateClusterHeight(turn.messages, true)).toBeLessThan(estimateClusterHeight(turn.messages));
+		}
+
+		// 对照：普通主题下同一串消息会被 a2 的正文打断（a1 单独一簇、a3 另起一簇）
+		const normal = clusterMessages(messages);
+		expect(normal.map((it) => it.type)).toEqual([
+			"single",
+			"tool_cluster",
+			"single",
+			"tool_cluster",
+			"single",
+			"tool_cluster",
+		]);
+	});
+
+	it("自定义消息与目标审查折叠消息不并入字级输入流，保持独立成块", () => {
+		const messages: UiMessage[] = [
+			{ id: "a1", role: "assistant", content: [{ type: "toolCall", id: "tc1", name: "bash" }] } as unknown as UiMessage,
+			{ id: "c1", role: "custom", customType: "file", content: [] } as unknown as UiMessage,
+		];
+		const flow = clusterMessages(messages, { mergeTurns: true });
+		expect(flow.map((it) => it.type)).toEqual(["tool_cluster", "single"]);
+	});
 });

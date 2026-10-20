@@ -75,7 +75,14 @@ try {
 		(userRes.headers.get("content-type") ?? "").includes("text/css"),
 		userRes.headers.get("content-type"),
 	);
-	check("user theme css body intact", (await userRes.text()) === USER_CSS);
+	const userBody = await userRes.text();
+	// 主题 CSS 整体被服务端包进 `@layer theme { … }`（分层契约），原文必须原样在其中。
+	check("user theme css body intact", userBody.includes(USER_CSS.trim()), userBody);
+	check(
+		"user theme css wrapped in @layer theme",
+		/^@layer theme \{\n[\s\S]*\n\}\n$/.test(userBody),
+		userBody.slice(0, 40),
+	);
 
 	const builtinRes = await fetch(`${URL}/themes/mist.css`);
 	check("builtin theme still 200", builtinRes.status === 200, `status=${builtinRes.status}`);

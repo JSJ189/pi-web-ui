@@ -160,5 +160,5 @@
 
 /* 角标防白底白字：当 --accent 为深黑时，顶栏实体胶囊角标字体为白色（底栏透明徽标保持 var(--accent) 深色高对比） */
 .topbar .bar-item-badge:not(.bg-task-badge) {
-	color: #ffffff !important;
+	color: #ffffff;
 }
