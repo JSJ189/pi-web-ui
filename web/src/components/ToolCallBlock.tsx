@@ -39,7 +39,7 @@ import {
 	FiZap,
 } from "react-icons/fi";
 import type { ToolStatus, UiImageBlock, UiMessage, UiToolCallBlock } from "../types";
-import { useT } from "../i18n";
+import { isZhLocale, useLocale, useT } from "../i18n";
 import { openContextMenu } from "../context-menu-state";
 // 工具定义说明弹窗（模块级 store：卡片只负责发打开请求，弹窗挂在 App 上）。
 import { openToolInfo } from "../tool-info-state";
@@ -189,6 +189,7 @@ export const ToolCallBlock = memo(function ToolCallBlock({
 	onUiAction?: (item: UiSlotEntry, value?: string) => void;
 }) {
 	const t = useT();
+	const isZh = isZhLocale(useLocale());
 	// null = 未手动点过 → 跟随开关：wrap=true（开）→ 全部展开；wrap=false（关）→ 全部折叠。
 	// 与 ThinkingBlock 一致——开关切换时自动折叠/展开所有未手动点过的工具。
 	// 例外：present_files（展示文件）默认展开——它的正文就是内容本身（图片/视频
@@ -393,16 +394,16 @@ export const ToolCallBlock = memo(function ToolCallBlock({
 							{isError ? <FiX /> : done ? <FiCheck /> : running || waitingModel ? <HalfRingSpinner /> : <FiMinus />}
 						</span>
 						{hasImages && (
-							<span
-								className="toolcall-out-badge img"
-								title={t("toolImageZoom") || "包含图片成果"}
-								aria-label="image output"
-							>
+							<span className="toolcall-out-badge img" title={t("toolImageZoom")} aria-label="image output">
 								<FiImage />
 							</span>
 						)}
 						{hasMarkdown && (
-							<span className="toolcall-out-badge md" title="包含 Markdown 输出" aria-label="markdown output">
+							<span
+								className="toolcall-out-badge md"
+								title={isZh ? "包含 Markdown 输出" : "Contains Markdown output"}
+								aria-label="markdown output"
+							>
 								<FiFileText />
 							</span>
 						)}

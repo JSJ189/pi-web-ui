@@ -2313,11 +2313,7 @@ export function SettingsModal({
 									<HintTip text={t("settingsModelsDesc")} />
 								</div>
 								<p className="set-desc" style={{ marginTop: 4, marginBottom: 12 }}>
-									{isClaude
-										? "当前由 Claude Code CLI 引擎驱动。您在「模型与服务商」中配置的 Anthropic 兼容端点 BaseURL、API 密钥以及自定义中转模型，将自动注入到 Claude CLI 子进程中运行（无需外部 cc-switch 工具）。"
-										: isDsh
-											? "当前由 DSH 引擎驱动。支持 DeepSeek 官方及第三方端点与模型密钥配置。在此处配置的模型（包括 OpenAI 兼容中转端点）将自动注入 BaseURL 与 API Key 到 DSH 运行时中供其调用执行。"
-											: "当前由 Pi 原生引擎驱动。支持任意 OpenAI / Anthropic / Gemini / DeepSeek 兼容端点、多密钥与模型元数据管理。"}
+									{isClaude ? t("engineClaudeModelDesc") : isDsh ? t("engineDshModelDesc") : t("enginePiModelDesc")}
 								</p>
 
 								{onOpenManageModels && (
@@ -6517,7 +6513,7 @@ export function SettingsModal({
 											<input
 												className="set-input"
 												value={ruleDraft.label}
-												placeholder="例如：拦截 Docker 危险操作"
+												placeholder={t("approvalRuleLabelPlaceholder")}
 												onChange={(e) => setRuleDraft({ ...ruleDraft, label: e.target.value })}
 											/>
 										</FieldRow>
@@ -6533,7 +6529,7 @@ export function SettingsModal({
 											<input
 												className="set-input"
 												value={ruleToolsText}
-												placeholder="bash, write, edit (或 * 通配)"
+												placeholder={t("approvalRuleToolsPlaceholder")}
 												onChange={(e) => {
 													setRuleToolsText(e.target.value);
 													const arr = e.target.value
@@ -6584,7 +6580,7 @@ export function SettingsModal({
 												</FieldRow>
 											</div>
 											<div style={{ flex: 1, minWidth: 160 }}>
-												<FieldRow label="命中动作">
+												<FieldRow label={t("approvalRuleActionLabel")}>
 													<select
 														className="set-select"
 														value={ruleDraft.action}
@@ -6607,7 +6603,7 @@ export function SettingsModal({
 												<input
 													className="set-input"
 													value={ruleDraft.value}
-													placeholder="匹配表达式或关键字…"
+													placeholder={t("approvalRuleValuePlaceholder")}
 													onChange={(e) => setRuleDraft({ ...ruleDraft, value: e.target.value })}
 												/>
 											</FieldRow>
@@ -6616,7 +6612,7 @@ export function SettingsModal({
 											<input
 												className="set-input"
 												value={ruleDraft.reason ?? ""}
-												placeholder="例如：检测到删除镜像或容器操作"
+												placeholder={t("approvalRuleReasonPlaceholder")}
 												onChange={(e) => setRuleDraft({ ...ruleDraft, reason: e.target.value })}
 											/>
 										</FieldRow>
@@ -6658,14 +6654,14 @@ export function SettingsModal({
 												className="btn btn-primary"
 												onClick={() => {
 													if (!ruleDraft.label.trim()) {
-														setRuleError("请填写规则名称");
+														setRuleError(t("approvalRuleLabelRequired"));
 														return;
 													}
 													if (ruleDraft.match === "regex") {
 														try {
 															new RegExp(ruleDraft.value);
 														} catch (err) {
-															setRuleError(`正则表达式非法：${(err as Error).message}`);
+															setRuleError(t("approvalRuleRegexInvalid", { msg: (err as Error).message }));
 															return;
 														}
 													}

@@ -23,6 +23,7 @@ import {
 	widgetRegistry,
 } from "../plugin-fence";
 import type { FenceRenderContext } from "../plugin-loader";
+import { isZhLocale, useLocale } from "../i18n";
 import { PluginFenceBlock } from "./PluginFenceBlock";
 import { openFilePreview } from "../file-preview-bridge";
 
@@ -121,6 +122,7 @@ function MdLink({ node: _node, href, children, ...rest }: JSX.IntrinsicElements[
 	// node 是 react-markdown 塞进 props 的内部 hast 节点（运行时存在、类型里没有），
 	// 必须在这里截下：透传给 <a> 会渲染成 node="[object Object]" 垃圾属性。
 	const target = String(href ?? "");
+	const isZh = isZhLocale(useLocale());
 	if (target.startsWith("pi-file://")) {
 		const rawPath = target.slice("pi-file://".length);
 		let filePath = rawPath;
@@ -135,7 +137,7 @@ function MdLink({ node: _node, href, children, ...rest }: JSX.IntrinsicElements[
 			<button
 				type="button"
 				className="file-pill"
-				title={"点击预览文件: " + filePath}
+				title={(isZh ? "点击预览文件: " : "Click to preview file: ") + filePath}
 				onClick={(e) => {
 					e.preventDefault();
 					e.stopPropagation();

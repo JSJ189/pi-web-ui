@@ -238,3 +238,35 @@ export async function installPack(
 	}
 	throw new Error(lastError || `download failed for ${code}`);
 }
+
+/**
+ * Resolve the system default fallback locale.
+ *
+ * Checks PI_WEB_LOCALE first, then inspects standard POSIX environment variables
+ * (LC_ALL, LC_MESSAGES, LANG, LANGUAGE). Normalizes tags (e.g. "en_US.UTF-8" -> "en").
+ */
+export function resolveSystemDefaultLocale(env: Record<string, string | undefined> = process.env): string | null {
+	const explicit = (env.PI_WEB_LOCALE ?? "").trim();
+	if (explicit) return explicit.toLowerCase();
+
+	const candidates = [env.LC_ALL, env.LC_MESSAGES, env.LANG, env.LANGUAGE];
+	for (const raw of candidates) {
+		const val = (raw ?? "").trim();
+		if (!val || val === "C" || val === "POSIX") continue;
+		// e.g. "en_US.UTF-8", "zh_CN.gbk", "zh_TW.UTF-8", "en-US", "de"
+		const cleaned = val.split(".")[0].split("@")[0].replace(/_/g, "-");
+		const lower = cleaned.toLowerCase();
+		if (lower === "zh-tw" || lower === "zh-hant" || lower === "zh-mo") {
+			return "zh-TW";
+		}
+		if (lower === "zh-hk") {
+			return "zh-HK";
+		}
+		if (lower === "zh" || lower.startsWith("zh-")) {
+			return "zh";
+		}
+		const primary = lower.split("-")[0];
+		if (primary) return primary;
+	}
+	return null;
+}

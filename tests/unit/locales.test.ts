@@ -6,6 +6,7 @@ import { describe, expect, it } from "vitest";
 import { readdirSync, readFileSync } from "node:fs";
 import { join } from "node:path";
 import { en, zh } from "../../web/src/i18n.js";
+import { resolveSystemDefaultLocale } from "../../server/locales.js";
 
 interface Pack {
 	code: string;
@@ -87,5 +88,25 @@ describe("language packs", () => {
 				expect(/[\u4e00-\u9fff]/.test(v), `${code}.${k} 包含中文残留: ${v}`).toBe(false);
 			}
 		}
+	});
+
+	it("resolveSystemDefaultLocale 解析系统环境变量 (issue #654)", () => {
+		// 显式 PI_WEB_LOCALE 优先
+		expect(resolveSystemDefaultLocale({ PI_WEB_LOCALE: "de", LANG: "en_US.UTF-8" })).toBe("de");
+		expect(resolveSystemDefaultLocale({ PI_WEB_LOCALE: "zh-TW" })).toBe("zh-tw");
+
+		// POSIX LANG / LANGUAGE / LC_ALL 环境变量解析
+		expect(resolveSystemDefaultLocale({ LANG: "en_US.UTF-8" })).toBe("en");
+		expect(resolveSystemDefaultLocale({ LANGUAGE: "en" })).toBe("en");
+		expect(resolveSystemDefaultLocale({ LC_ALL: "en_GB.UTF-8" })).toBe("en");
+		expect(resolveSystemDefaultLocale({ LC_MESSAGES: "fr_FR.UTF-8" })).toBe("fr");
+		expect(resolveSystemDefaultLocale({ LANG: "zh_CN.UTF-8" })).toBe("zh");
+		expect(resolveSystemDefaultLocale({ LANG: "zh_TW.UTF-8" })).toBe("zh-TW");
+		expect(resolveSystemDefaultLocale({ LANG: "zh_HK.UTF-8" })).toBe("zh-HK");
+
+		// C / POSIX / 空值忽略并回退 null
+		expect(resolveSystemDefaultLocale({ LANG: "C" })).toBe(null);
+		expect(resolveSystemDefaultLocale({ LANG: "POSIX" })).toBe(null);
+		expect(resolveSystemDefaultLocale({})).toBe(null);
 	});
 });

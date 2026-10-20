@@ -1,7 +1,7 @@
 import { useEffect, useRef, useState } from "react";
 import { createPortal } from "react-dom";
 import { FiFolder, FiGlobe, FiHardDrive, FiServer, FiTrash2, FiX } from "react-icons/fi";
-import { useT } from "../i18n";
+import { isZhLocale, useLocale, useT } from "../i18n";
 import { appSend, useEngineCapabilities } from "../app-globals";
 import {
 	deleteRemoteProfile,
@@ -86,6 +86,7 @@ export function DirectoryBrowser({
 	ariaLabel,
 }: DirectoryBrowserProps) {
 	const t = useT();
+	const isZh = isZhLocale(useLocale());
 	const capabilities = useEngineCapabilities();
 	const supportsRemoteSsh = capabilities.remoteSsh;
 
@@ -276,7 +277,7 @@ export function DirectoryBrowser({
 		const user = (overrideParams?.username ?? sshUser).trim();
 
 		if (!host || !user) {
-			setSshError("请填写主机地址和用户名");
+			setSshError(isZh ? "请填写主机地址和用户名" : "Please provide host address and username");
 			return;
 		}
 
@@ -303,7 +304,7 @@ export function DirectoryBrowser({
 		setConnecting(false);
 
 		if (!res.ok || !res.connectionId) {
-			setSshError(res.error || "连接远程服务器失败");
+			setSshError(res.error || (isZh ? "连接远程服务器失败" : "Failed to connect to remote server"));
 			return;
 		}
 
@@ -333,7 +334,7 @@ export function DirectoryBrowser({
 			setRemoteDraft(res.path);
 			setRemoteItems(res.items);
 		} else {
-			setSshError(res.error || "读取远程目录失败");
+			setSshError(res.error || (isZh ? "读取远程目录失败" : "Failed to read remote directory"));
 		}
 	};
 
@@ -348,10 +349,15 @@ export function DirectoryBrowser({
 		if (res.ok) {
 			setSuggestedTools((prev) => prev.filter((t) => t !== tool));
 			if (remoteTools && tool === "git") {
-				setRemoteTools({ ...remoteTools, git: { installed: true, version: "已安装" } });
+				setRemoteTools({ ...remoteTools, git: { installed: true, version: isZh ? "已安装" : "Installed" } });
 			}
 		} else {
-			setSshError(res.error || `安装 ${tool} 失败，可能需要远端 sudo 权限`);
+			setSshError(
+				res.error ||
+					(isZh
+						? `安装 ${tool} 失败，可能需要远端 sudo 权限`
+						: `Failed to install ${tool}, remote sudo permissions may be required`),
+			);
 		}
 	};
 
@@ -780,7 +786,12 @@ export function DirectoryBrowser({
 									{/* 工具缺失引导 */}
 									{suggestedTools.length > 0 && (
 										<div className="cwd-ssh-install-box">
-											<div>⚠️ 远端环境未检测到 Git / 基础工具，SCM 与执行功能可能受限。</div>
+											<div>
+												⚠️{" "}
+												{isZh
+													? "远端环境未检测到 Git / 基础工具，SCM 与执行功能可能受限。"
+													: "Git / essential tools not detected on remote host; SCM and execution features may be limited."}
+											</div>
 											<div style={{ display: "flex", gap: "6px", marginTop: "2px" }}>
 												<button
 													type="button"
@@ -853,7 +864,7 @@ export function DirectoryBrowser({
 								{/* 远程文件列表 */}
 								<div className="cwd-list">
 									{loadingRemoteDir ? (
-										<div className="cwd-empty">正在加载远程目录…</div>
+										<div className="cwd-empty">{isZh ? "正在加载远程目录…" : "Loading remote directory…"}</div>
 									) : remoteItems.length === 0 ? (
 										<div className="cwd-empty">{t("cwdEmpty")}</div>
 									) : (

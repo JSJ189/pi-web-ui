@@ -56,6 +56,7 @@ import {
 	loadServerStrings,
 	readPackFile,
 	removePack,
+	resolveSystemDefaultLocale,
 	unloadServerStrings,
 } from "./locales.js";
 import {
@@ -693,14 +694,14 @@ app.get("/api/themes", (_req, res) => {
 // 语言包：核心只随包发布中英，其余按需下载到 <dataDir>/locales/<code>.json。
 // 手工放进去的同名 JSON 也会被识别（离线安装）。PI_WEB_TOKEN 鉴权自动覆盖。
 /**
- * PI_WEB_LOCALE — the language a first visit falls back to.
+ * PI_WEB_LOCALE / system locale — the language a first visit falls back to.
  *
  * It is a fallback, not an override: an explicit choice, and then the
  * browser's own languages, come first (web/src/pick-locale.ts). It rides on
  * /api/locales because the client already asks for that at boot, so naming a
  * default costs no extra request.
  */
-const DEFAULT_LOCALE = (process.env.PI_WEB_LOCALE ?? "").trim().toLowerCase() || null;
+const DEFAULT_LOCALE = resolveSystemDefaultLocale();
 
 app.get("/api/locales", (_req, res) => {
 	res.json({ packs: listPacks(DATA_DIR), defaultLocale: DEFAULT_LOCALE });

@@ -91,7 +91,9 @@ export function ToolApprovalDialog({ approval }: ToolApprovalDialogProps) {
 				editedParams: edited,
 			});
 		} catch (err) {
-			setParseError(`JSON 格式错误：${(err as Error).message}`);
+			setParseError(
+				isZhLocale(locale) ? `JSON 格式错误：${(err as Error).message}` : `JSON parse error: ${(err as Error).message}`,
+			);
 		}
 	};
 

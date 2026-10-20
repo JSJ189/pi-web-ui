@@ -1,6 +1,7 @@
 import { memo } from "react";
 import { FiAlertCircle, FiAlertTriangle, FiCheckCircle, FiHelpCircle, FiInfo, FiX } from "react-icons/fi";
 import { dismissBanner, useBanners, type BannerNotice, type BannerType } from "../banner-notice";
+import { useT } from "../i18n";
 
 function BannerIcon({ type }: { type?: BannerType }) {
 	switch (type) {
@@ -19,6 +20,7 @@ function BannerIcon({ type }: { type?: BannerType }) {
 }
 
 const BannerCard = memo(function BannerCard({ banner }: { banner: BannerNotice }) {
+	const t = useT();
 	const hasAction = typeof banner.onClick === "function";
 
 	return (
@@ -60,7 +62,7 @@ const BannerCard = memo(function BannerCard({ banner }: { banner: BannerNotice }
 						dismissBanner(banner.id);
 					}}
 					aria-label="Close banner"
-					title="关闭通知"
+					title={t("close")}
 				>
 					<FiX />
 				</button>
