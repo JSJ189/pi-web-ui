@@ -2682,6 +2682,10 @@ button.session-item.elsewhere-item.confirm {
 	z-index: 60;
 	min-width: 180px;
 	max-width: 320px;
+	max-height: calc(100vh - 16px);
+	overflow-y: auto;
+	overflow-x: hidden;
+	overscroll-behavior: contain;
 	padding: 6px;
 	border: 1px solid var(--border-soft);
 	border-radius: 10px;
@@ -2691,6 +2695,18 @@ button.session-item.elsewhere-item.confirm {
 	-webkit-user-select: none;
 	user-select: none;
 	-webkit-touch-callout: none;
+}
+/* 当条目过多且视口宽度充裕时自适应分列排布（充分利用窗口横向空间） */
+.ctx-menu.is-multi-col {
+	min-width: 360px;
+	max-width: min(560px, calc(100vw - 24px));
+	columns: 2;
+	column-gap: 8px;
+	column-rule: 1px solid var(--border-soft);
+}
+.ctx-menu.is-multi-col .ctx-menu-itemwrap,
+.ctx-menu.is-multi-col .ctx-menu-sep {
+	break-inside: avoid;
 }
 .ctx-menu-itemwrap {
 	position: relative;
@@ -5322,16 +5338,23 @@ body.panel-resizing .scm-divider::after {
 	cursor: pointer;
 	white-space: nowrap;
 }
-.cwd-choose-btn:hover {
+.cwd-choose-btn:hover:not(:disabled) {
 	color: var(--text);
 	border-color: var(--accent);
 }
 .cwd-choose-btn.primary {
+	background: var(--accent);
 	border-color: var(--accent);
-	color: var(--accent);
+	color: var(--accent-contrast, #fff);
+	font-weight: 500;
 }
-.cwd-choose-btn.primary:hover {
-	background: var(--accent-soft);
+.cwd-choose-btn.primary:hover:not(:disabled) {
+	filter: brightness(1.12);
+	opacity: 0.92;
+}
+.cwd-choose-btn:disabled {
+	opacity: 0.45;
+	cursor: not-allowed;
 }
 
 .cwd-list {
@@ -7053,6 +7076,107 @@ body.is-desktop-mac:not(.is-desktop-fullscreen) .topbar {
 	align-items: center;
 	justify-content: space-between;
 	gap: 8px;
+	min-height: 28px;
+}
+
+.dd-header-title {
+	flex-shrink: 0;
+	font-weight: 700;
+}
+
+.dd-header-actions {
+	display: flex;
+	align-items: center;
+	gap: 6px;
+	margin-left: auto;
+	min-width: 0;
+	text-transform: none;
+	letter-spacing: normal;
+}
+
+.dd-header-default {
+	display: inline-flex;
+	align-items: center;
+	gap: 4px;
+	padding: 2px 7px;
+	border-radius: 6px;
+	background: color-mix(in srgb, var(--amber) 10%, transparent);
+	border: 1px solid color-mix(in srgb, var(--amber) 30%, transparent);
+	font-size: 11px;
+	font-weight: normal;
+	color: var(--text);
+	min-width: 0;
+	max-width: 180px;
+	box-sizing: border-box;
+}
+
+.dd-header-default-star {
+	color: var(--amber);
+	font-size: 11px;
+	flex-shrink: 0;
+	line-height: 1;
+}
+
+.dd-header-default-name {
+	font-family: var(--mono);
+	font-size: 11px;
+	color: var(--text);
+	overflow: hidden;
+	text-overflow: ellipsis;
+	white-space: nowrap;
+	min-width: 0;
+}
+
+.dd-header-default-clear {
+	display: inline-flex;
+	align-items: center;
+	justify-content: center;
+	width: 14px;
+	height: 14px;
+	padding: 0;
+	margin-left: 2px;
+	border: none;
+	border-radius: 50%;
+	background: transparent;
+	color: var(--text-faint);
+	font-size: 10px;
+	cursor: pointer;
+	flex-shrink: 0;
+	line-height: 1;
+	transition: all 0.12s ease;
+}
+
+.dd-header-default-clear:hover {
+	color: var(--amber);
+	background: color-mix(in srgb, var(--amber) 22%, transparent);
+}
+
+.dd-header-btn {
+	display: inline-flex;
+	align-items: center;
+	justify-content: center;
+	width: 24px;
+	height: 24px;
+	padding: 0;
+	border: 1px solid var(--border-soft);
+	border-radius: 6px;
+	background: var(--bg-elev);
+	color: var(--text-dim);
+	cursor: pointer;
+	font-size: 12.5px;
+	flex-shrink: 0;
+	line-height: 1;
+	transition: all 0.12s ease;
+}
+
+.dd-header-btn:hover {
+	color: var(--text);
+	background: var(--bg-elev3);
+	border-color: var(--accent);
+}
+
+.spin {
+	animation: spin 0.85s linear infinite;
 }
 
 .dd-scope-toggle {
@@ -7238,8 +7362,13 @@ body.is-desktop-mac:not(.is-desktop-fullscreen) .topbar {
    底部输入栏最高约 300px，预留 320px 保证任何输入框高度都不溢出视口。 */
 @media (min-width: 769px) {
 	.dropdown.dd-up .dd-menu.dd-menu-model {
-		max-height: none; /* 去掉 dd-up 的 360px 上限，改用固定高度 */
+		max-height: calc(100vh - 32px);
 		height: min(600px, calc(100vh - 320px));
+	}
+	/* 极简新对话模式下输入框垂直居中，向上空间受限，兜底限制高度防溢出 */
+	.main.main-minimal-empty .dropdown.dd-up .dd-menu.dd-menu-model {
+		height: min(480px, calc(50vh - 60px));
+		max-height: calc(50vh - 30px);
 	}
 }
 .dd-menu.dd-menu-model .dd-model-scroll {
@@ -7317,7 +7446,11 @@ body.is-desktop-mac:not(.is-desktop-fullscreen) .topbar {
 .ctx-menu {
 	position: fixed;
 	min-width: 200px;
-	max-width: 280px;
+	max-width: 320px;
+	max-height: calc(100vh - 16px);
+	overflow-y: auto;
+	overflow-x: hidden;
+	overscroll-behavior: contain;
 	padding: 5px;
 	background: var(--bg-elev2);
 	border: 1px solid var(--border);

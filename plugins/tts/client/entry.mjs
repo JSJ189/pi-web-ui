@@ -21,6 +21,16 @@ export default {
 
         <!-- 1. 双引擎凭据状态卡片 -->
         <div style="background: var(--bg-elev, rgba(255,255,255,0.03)); border: 1px solid var(--border-subtle, rgba(255,255,255,0.08)); border-radius: 10px; padding: 18px; margin-bottom: 20px;">
+          <!-- 封号风控警示与伪装加固卡片 -->
+          <div style="background: rgba(245, 158, 11, 0.08); border: 1px solid rgba(245, 158, 11, 0.25); border-radius: 8px; padding: 12px 14px; margin-bottom: 14px; font-size: 12px; line-height: 1.6;">
+            <div style="font-weight: 600; color: #fbbf24; display: flex; align-items: center; gap: 6px; margin-bottom: 4px;">
+              <span>🛡️</span> <span>已启用防风控伪装模型（专属会话复用 + 浏览器真实标头对齐）</span>
+            </div>
+            <div style="color: var(--text-dim, #a1a1aa);">
+              现已彻底移除脚本自曝特征，并采用<b>专属持久化会话复用</b>（杜绝频繁秒建秒删会话的高危特征）与人性化防抖排队。但因 DeepSeek 官方未开放独立 TTS 接口，长文本流式伴读仍存在被官方风控限制的可能，日常推荐优先使用<b>豆包语音</b>（正规 API Key 通道，稳定免封）。
+            </div>
+          </div>
+
           <div style="font-weight: 600; font-size: 14px; margin-bottom: 12px;">凭据就绪状态</div>
           
           <div style="display: grid; grid-template-columns: 1fr 1fr; gap: 12px; margin-bottom: 16px;">
@@ -44,6 +54,9 @@ export default {
               <div id="deepseek-detail" style="font-size: 11px; color: var(--text-dim, #71717a);">
                 支持 chat.deepseek.com 凭证
               </div>
+              <div style="font-size: 11px; color: #f59e0b; margin-top: 5px; display: flex; align-items: center; gap: 4px;">
+                <span>⚠️</span> 易触发网页封号风控，建议慎用
+              </div>
             </div>
           </div>
 
@@ -56,6 +69,9 @@ export default {
               </button>
               <button id="btn-download-zip" style="background: rgba(255,255,255,0.08); color: inherit; border: 1px solid var(--border-subtle, #3f3f46); padding: 7px 14px; border-radius: 6px; cursor: pointer; font-size: 13px;">
                 📥 下载扩展压缩包 (.zip)
+              </button>
+              <button id="btn-reset-ds-session" style="background: transparent; color: #fbbf24; border: 1px solid rgba(251, 191, 36, 0.3); padding: 7px 12px; border-radius: 6px; cursor: pointer; font-size: 12px;">
+                🔄 重置 DeepSeek 会话
               </button>
               <button id="btn-clear-creds" style="background: transparent; color: #ef4444; border: 1px solid rgba(239, 68, 68, 0.3); padding: 7px 12px; border-radius: 6px; cursor: pointer; font-size: 12px; margin-left: auto;">
                 清空本地凭证
@@ -72,6 +88,10 @@ export default {
         <div style="background: var(--bg-elev, rgba(255,255,255,0.03)); border: 1px solid var(--border-subtle, rgba(255,255,255,0.08)); border-radius: 10px; padding: 18px;">
           <h3 style="margin: 0 0 14px 0; font-size: 15px; font-weight: 600;">🎙️ 在线试听测试</h3>
           
+          <div id="engine-risk-tip" style="display: none; background: rgba(245, 158, 11, 0.1); border: 1px solid rgba(245, 158, 11, 0.25); border-radius: 6px; padding: 8px 12px; margin-bottom: 12px; font-size: 12px; color: #fbbf24; line-height: 1.5;">
+            🛡️ <b>提示</b>：当前选择 DeepSeek 语音引擎。已启用专属会话长期复用与真实浏览器标头伪装，已避免秒建秒删与机器人特征。高频长文本伴读仍建议优先使用豆包语音。
+          </div>
+
           <div style="display: flex; gap: 12px; margin-bottom: 12px; flex-wrap: wrap;">
             <div style="flex: 1; min-width: 140px;">
               <label style="display: block; font-size: 12px; color: var(--text-dim, #a1a1aa); margin-bottom: 6px;">语音引擎</label>
@@ -115,6 +135,7 @@ export default {
 
 		const selEngine = el.querySelector("#sel-engine");
 		const selSpeaker = el.querySelector("#sel-speaker");
+		const engineRiskTip = el.querySelector("#engine-risk-tip");
 		const btnSpeak = el.querySelector("#btn-speak");
 		const speakStatus = el.querySelector("#speak-status");
 		const audioPlayer = el.querySelector("#audio-player");
@@ -143,6 +164,9 @@ export default {
 			const engine = selEngine.value;
 			const list = engine === "deepseek" ? DEEPSEEK_VOICES : DOUBAO_VOICES;
 			selSpeaker.innerHTML = list.map((v) => `<option value="${v.id}">${v.name}</option>`).join("");
+			if (engineRiskTip) {
+				engineRiskTip.style.display = engine === "deepseek" ? "block" : "none";
+			}
 		}
 		selEngine.onchange = updateSpeakerOptions;
 		updateSpeakerOptions();
@@ -199,6 +223,10 @@ export default {
 		el.querySelector("#btn-refresh-status").onclick = refreshStatus;
 		el.querySelector("#btn-open-dir").onclick = () => fetch("/plugins-api/tts/open-folder", { method: "POST" });
 		el.querySelector("#btn-download-zip").onclick = () => window.open("/plugins-api/tts/download-extension", "_blank");
+		el.querySelector("#btn-reset-ds-session").onclick = () => {
+			ctx.send({ action: "reset-deepseek-session" });
+			alert("已重置 DeepSeek 专属语音会话，下次发音将自动创建并长期复用新会话。");
+		};
 		el.querySelector("#btn-clear-creds").onclick = () => {
 			if (confirm("确定清空本地保存的凭据吗？")) ctx.send({ action: "clear-credentials" });
 		};
@@ -393,8 +421,8 @@ export default {
 			unregs.push(
 				host.ttsProviders.register({
 					id: "deepseek-tts",
-					label: "DeepSeek 官方语音",
-					labelEn: "DeepSeek Voice",
+					label: "DeepSeek 官方语音 (⚠️易封号风险)",
+					labelEn: "DeepSeek Voice (⚠️Risk of Ban)",
 					getVoices: () => DEEPSEEK_VOICES.map((v) => ({ voiceURI: v.id, name: v.name, lang: "zh-CN" })),
 					play: createPipelinePlayer("deepseek", "echo"),
 				}),

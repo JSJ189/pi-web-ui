@@ -13,7 +13,7 @@ if not exist "%PI_ROOT%\app\pi-web-ui-desktop.exe" (
 
 echo Creating desktop shortcut...
 
-powershell -NoProfile -ExecutionPolicy Bypass -Command "& { $ws = New-Object -ComObject WScript.Shell; $desktop = [Environment]::GetFolderPath('Desktop'); $lnkPath = Join-Path $desktop 'Pi Web UI.lnk'; $s = $ws.CreateShortcut($lnkPath); $s.TargetPath = (Join-Path $env:PI_ROOT '启动Pi.bat'); $s.WorkingDirectory = $env:PI_ROOT; $s.IconLocation = ((Join-Path $env:PI_ROOT 'app\pi-web-ui-desktop.exe') + ',0'); $s.WindowStyle = 7; $s.Description = 'Pi Web UI Portable'; $s.Save(); Write-Host '[SUCCESS] Desktop shortcut created: ' -NoNewline; Write-Host $lnkPath -ForegroundColor Green }"
+powershell -NoProfile -ExecutionPolicy Bypass -Command "& { $ws = New-Object -ComObject WScript.Shell; $desktop = [Environment]::GetFolderPath('Desktop'); $lnkPath = Join-Path $desktop 'Pi Web UI.lnk'; $s = $ws.CreateShortcut($lnkPath); $targetBat = Join-Path $env:PI_ROOT 'PiPortable.bat'; if (Test-Path (Join-Path $env:PI_ROOT '启动Pi.bat')) { $targetBat = (Join-Path $env:PI_ROOT '启动Pi.bat') }; $s.TargetPath = $targetBat; $s.WorkingDirectory = $env:PI_ROOT; $s.IconLocation = ((Join-Path $env:PI_ROOT 'app\pi-web-ui-desktop.exe') + ',0'); $s.WindowStyle = 7; $s.Description = 'Pi Web UI Portable'; $s.Save(); Write-Host '[SUCCESS] Desktop shortcut created: ' -NoNewline; Write-Host $lnkPath -ForegroundColor Green; Write-Host '          Target: ' -NoNewline; Write-Host $targetBat -ForegroundColor Gray }"
 
 if %errorlevel% neq 0 (
     echo [ERROR] Failed to create shortcut.

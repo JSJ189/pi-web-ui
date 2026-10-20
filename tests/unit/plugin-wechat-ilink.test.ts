@@ -5,6 +5,7 @@ import wechatPlugin, {
 	assistantTextOf,
 	encodeClientVersion,
 	inboundTextOf,
+	checkCwdValid,
 } from "../../plugins/wechat-ilink/index.mjs";
 
 describe("wechat-ilink: stripInternalMarkers", () => {
@@ -48,6 +49,18 @@ describe("wechat-ilink: peerAccountId", () => {
 		const a1 = peerAccountId("user_12345");
 		const a2 = peerAccountId("user_12345");
 		expect(a1).toBe(a2);
+	});
+
+	it("传入 seq > 0 时实现会话隔离，且默认 seq=0 与不传保持向后兼容", () => {
+		const aDefault = peerAccountId("user_12345");
+		const aZero = peerAccountId("user_12345", 0);
+		expect(aDefault).toBe(aZero);
+
+		const aSeq1 = peerAccountId("user_12345", 1);
+		const aSeq2 = peerAccountId("user_12345", 2);
+		expect(aSeq1).not.toBe(aDefault);
+		expect(aSeq1).not.toBe(aSeq2);
+		expect(aSeq1).toMatch(/^wx_[a-f0-9]{16}$/);
 	});
 
 	it("不同 peer 映射出的 accountId 互不相同", () => {
@@ -259,5 +272,373 @@ describe("wechat-ilink: 完整入站、隔离与无竞态回包（issue #345）"
 		expect(encodeClientVersion("0.1.0")).toBe(String(0x00000100));
 		expect(inboundTextOf([{ text_item: { text: "你好" } }])).toBe("你好");
 		expect(inboundTextOf([{ image_item: {} }])).toBe("[图片]");
+	});
+});
+
+describe("wechat-ilink: checkCwdValid", () => {
+	it("空路径与空白返回错误", () => {
+		expect(checkCwdValid("").ok).toBe(false);
+		expect(checkCwdValid("   ").ok).toBe(false);
+	});
+
+	it("不存在的目录返回错误", () => {
+		const r = checkCwdValid("/non/existent/path/xyz-12345");
+		expect(r.ok).toBe(false);
+		expect(r.error).toContain("不存在或不是");
+	});
+
+	it("存在的目录返回绝对路径", () => {
+		const r = checkCwdValid(process.cwd());
+		expect(r.ok).toBe(true);
+		expect(typeof r.abs).toBe("string");
+	});
+
+	if (process.platform === "win32") {
+		it("Windows 下拒绝在系统根目录执行", () => {
+			const sysRoot = process.env.SystemRoot || "C:\\Windows";
+			const r = checkCwdValid(sysRoot);
+			expect(r.ok).toBe(false);
+			expect(r.error).toContain("拒绝在系统目录执行");
+		});
+	}
+});
+
+describe("wechat-ilink: 斜杠快捷指令 (Slash Commands)", () => {
+	it("支持 /help、/status、/cwd、/model、/clear、/new、/stop 及全角 ／ 容错", async () => {
+		const storageMap = new Map<string, unknown>();
+		storageMap.set("account", { base: "https://ilinkai.weixin.qq.com", botId: "wx_bot_tester", loginAt: Date.now() });
+		storageMap.set("allowedPeers", ["user_bob"]);
+
+		const mockStorage = {
+			get: vi.fn((k, def) => (storageMap.has(k) ? storageMap.get(k) : def)),
+			set: vi.fn((k, v) => storageMap.set(k, v)),
+		};
+
+		const mockSecrets = {
+			get: vi.fn((k) => (k === "bot_token" ? "fake_token_slash" : undefined)),
+			set: vi.fn(),
+			delete: vi.fn(),
+		};
+
+		const replies: string[] = [];
+		const mockQueue: Array<{
+			message_type: number;
+			from_user_id: string;
+			item_list: Array<{ type: number; text_item?: { text: string } }>;
+		}> = [];
+		let waitingResolver: (() => void) | null = null;
+		function enqueueMsg(text: string) {
+			mockQueue.push({
+				message_type: 1,
+				from_user_id: "user_bob",
+				item_list: [{ type: 1, text_item: { text } }],
+			});
+			if (waitingResolver) {
+				const r = waitingResolver;
+				waitingResolver = null;
+				r();
+			}
+		}
+
+		const origFetch = globalThis.fetch;
+		globalThis.fetch = vi.fn(async (url: string | URL | Request, init?: RequestInit) => {
+			const urlStr = String(url);
+			if (urlStr.includes("getupdates")) {
+				if (mockQueue.length === 0) {
+					await new Promise<void>((r) => {
+						waitingResolver = r;
+						setTimeout(r, 2000);
+					});
+				}
+				const msgs = mockQueue.splice(0, mockQueue.length);
+				return { ok: true, json: async () => ({ ret: 0, msgs }) } as Response;
+			}
+			if (urlStr.includes("sendmessage")) {
+				const body = JSON.parse(String(init?.body ?? "{}"));
+				const txt = body?.msg?.item_list?.[0]?.text_item?.text ?? "";
+				replies.push(txt);
+				return { ok: true, json: async () => ({ ret: 0 }) } as Response;
+			}
+			return { ok: true, json: async () => ({}) } as Response;
+		});
+
+		const hostChatSpy = vi.fn(async () => ({ conversationId: "conv_test_123", clientId: "client_test" }));
+		const hostAbortSpy = vi.fn(async () => ({ ok: true }));
+		const hostExecCommandSpy = vi.fn(async (name: string, args: string) => {
+			if (name === "todo") return { ok: true, result: `✅ 已加入待办：${args}` };
+			return { ok: false, error: "not found" };
+		});
+		const hostGetPluginCommandsSpy = vi.fn(() => [{ name: "todo", description: "加一条待办", argumentHint: "<内容>" }]);
+		const hostReloadSpy = vi.fn(async () => {});
+
+		const host = {
+			getSettings: () => ({ autoDrive: true, typing: false, model: "gpt-4o" }),
+			onSettingsChanged: () => () => {},
+			storage: mockStorage,
+			secrets: mockSecrets,
+			cwd: process.cwd(),
+			log: vi.fn(),
+			notify: vi.fn(),
+			broadcast: vi.fn(),
+			sendTo: vi.fn(),
+			onRunEvent: () => () => {},
+			onMessage: () => () => {},
+			onAttach: () => () => {},
+			registerAgentTool: vi.fn(),
+			registerBackgroundTask: vi.fn(() => ({ update: vi.fn(), unregister: vi.fn() })),
+			chat: hostChatSpy,
+			abortRun: hostAbortSpy,
+			execCommand: hostExecCommandSpy,
+			getPluginCommands: hostGetPluginCommandsSpy,
+			reload: hostReloadSpy,
+		};
+
+		const cleanup = wechatPlugin.activate(host as never);
+
+		try {
+			// 1. 测试 /help 指令及单独一个 "/" 或全角 "／" 或 "/?" 或 "/h" 作为 /help 别名，且包含精简序号
+			enqueueMsg("/help");
+			await vi.waitFor(() => expect(replies.length).toBeGreaterThanOrEqual(1));
+			const lastHelp = replies[replies.length - 1];
+			expect(lastHelp).toContain("可直接发送 /序号（如 /1 或 /2 <提示>）快捷操作：");
+			expect(lastHelp).toContain("1/cwd : 查看或切换当前项目根目录");
+			expect(lastHelp).toContain("2/new : 清空上下文开启全新会话 [提示]");
+			expect(lastHelp).toContain("5/thinking : 设置思考强度");
+			expect(lastHelp).toContain("6/plan : 开启或关闭计划模式");
+			expect(lastHelp).toContain("11/todo : 加一条待办 <内容>");
+			expect(hostChatSpy).not.toHaveBeenCalled();
+
+			enqueueMsg("/h");
+			await vi.waitFor(() => expect(replies.length).toBeGreaterThanOrEqual(2));
+			const hReply = replies[replies.length - 1];
+			expect(hReply).toContain("1/cwd : 查看或切换当前项目根目录");
+			expect(hReply).toContain("10/help : 显示全部命令 (或发 /)");
+
+			enqueueMsg("/");
+			await vi.waitFor(() => expect(replies.length).toBeGreaterThanOrEqual(3));
+			expect(replies[replies.length - 1]).toContain("1/cwd : 查看或切换当前项目根目录");
+
+			enqueueMsg("／");
+			await vi.waitFor(() => expect(replies.length).toBeGreaterThanOrEqual(4));
+			expect(replies[replies.length - 1]).toContain("1/cwd : 查看或切换当前项目根目录");
+
+			enqueueMsg("/?");
+			await vi.waitFor(() => expect(replies.length).toBeGreaterThanOrEqual(5));
+			expect(replies[replies.length - 1]).toContain("1/cwd : 查看或切换当前项目根目录");
+
+			// 2. 测试全角 ／status 指令
+			enqueueMsg("／status");
+			await vi.waitFor(() => expect(replies.length).toBeGreaterThanOrEqual(6));
+			const lastStatus = replies[replies.length - 1];
+			expect(lastStatus).toContain("微信通道运行状态");
+			expect(lastStatus).toContain("wx_bot_tester");
+			expect(lastStatus).toContain("已接收消息：");
+			expect(hostChatSpy).not.toHaveBeenCalled();
+
+			// 3. 测试 /cwd 查询
+			enqueueMsg("/cwd");
+			await vi.waitFor(() => expect(replies.length).toBeGreaterThanOrEqual(7));
+			expect(replies[replies.length - 1]).toContain("当前项目根目录：");
+
+			// 4. 测试 /cwd 切换为有效目录
+			enqueueMsg(`/cwd ${process.cwd()}`);
+			await vi.waitFor(() => expect(replies.length).toBeGreaterThanOrEqual(8));
+			expect(replies[replies.length - 1]).toContain("已将项目根目录切换为：");
+
+			// 5. 测试 /cwd default 恢复默认
+			enqueueMsg("/cwd default");
+			await vi.waitFor(() => expect(replies.length).toBeGreaterThanOrEqual(9));
+			expect(replies[replies.length - 1]).toContain("已恢复跟随全局根目录");
+
+			// 6. 测试 /model 查看与切换
+			enqueueMsg("/model");
+			await vi.waitFor(() => expect(replies.length).toBeGreaterThanOrEqual(10));
+			expect(replies[replies.length - 1]).toContain("当前模型：");
+
+			enqueueMsg("/model deepseek/deepseek-chat");
+			await vi.waitFor(() => expect(replies.length).toBeGreaterThanOrEqual(11));
+			expect(replies[replies.length - 1]).toContain("已将模型切换为：deepseek/deepseek-chat");
+
+			// 7. 测试 /clear 清空上下文
+			enqueueMsg("/clear");
+			await vi.waitFor(() => expect(replies.length).toBeGreaterThanOrEqual(12));
+			expect(replies[replies.length - 1]).toContain("对话上下文已清空，已为您开启全新会话！");
+
+			// 8. 测试 /new 带 prompt 参数
+			enqueueMsg("/new 请帮我写一段测试代码");
+			await vi.waitFor(() => expect(replies.length).toBeGreaterThanOrEqual(13));
+			expect(replies[replies.length - 1]).toContain("已为您开启全新会话，正在执行指令…");
+			// 此时应该调用了 host.chat
+			await vi.waitFor(() => expect(hostChatSpy).toHaveBeenCalled());
+			const firstChatCall = hostChatSpy.mock.calls[0] as unknown[] | undefined;
+			const chatArgs = (firstChatCall?.[0] ?? {}) as { text?: string; model?: string };
+			expect(chatArgs.text).toContain("请帮我写一段测试代码");
+			expect(chatArgs.model).toBe("deepseek/deepseek-chat");
+
+			// 9. 测试 /stop 中止正在进行的任务
+			enqueueMsg("/stop");
+			await vi.waitFor(() => expect(replies.length).toBeGreaterThanOrEqual(14));
+			expect(replies[replies.length - 1]).toContain("已中止当前正在执行的任务");
+			expect(hostAbortSpy).toHaveBeenCalledWith("conv_test_123");
+
+			// 10. 测试未知斜杠指令不被拦截，透传给 agent 执行
+			hostChatSpy.mockClear();
+			enqueueMsg("/unknown_magic_cmd 参数测试");
+			await vi.waitFor(() => expect(hostChatSpy).toHaveBeenCalled());
+			const unknownChatCall = hostChatSpy.mock.calls[0] as unknown[] | undefined;
+			const unknownChatArgs = (unknownChatCall?.[0] ?? {}) as { text?: string };
+			expect(unknownChatArgs.text).toContain("/unknown_magic_cmd 参数测试");
+
+			// 11. 测试数字序号快捷指令 (/1 ~ /6 及 /一 别名)
+			// /1 等同于 /cwd
+			enqueueMsg("/1");
+			await vi.waitFor(() => expect(replies.length).toBeGreaterThanOrEqual(15));
+			expect(replies[replies.length - 1]).toContain("当前项目根目录：");
+
+			// /一 也等同于 /cwd
+			enqueueMsg("/一");
+			await vi.waitFor(() => expect(replies.length).toBeGreaterThanOrEqual(16));
+			expect(replies[replies.length - 1]).toContain("当前项目根目录：");
+
+			// /2 等同于 /new
+			enqueueMsg("/2");
+			await vi.waitFor(() => expect(replies.length).toBeGreaterThanOrEqual(17));
+			expect(replies[replies.length - 1]).toContain("对话上下文已清空，已为您开启全新会话！");
+
+			// /3 等同于 /status
+			enqueueMsg("/3");
+			await vi.waitFor(() => expect(replies.length).toBeGreaterThanOrEqual(18));
+			expect(replies[replies.length - 1]).toContain("微信通道运行状态");
+
+			// /4 查看模型
+			enqueueMsg("/4");
+			await vi.waitFor(() => expect(replies.length).toBeGreaterThanOrEqual(19));
+			expect(replies[replies.length - 1]).toContain("当前模型：");
+
+			// 1/cwd 格式直接触发
+			enqueueMsg("1/cwd");
+			await vi.waitFor(() => expect(replies.length).toBeGreaterThanOrEqual(20));
+			expect(replies[replies.length - 1]).toContain("当前项目根目录：");
+
+			// /5 设置思考强度
+			enqueueMsg("/5 high");
+			await vi.waitFor(() => expect(replies.length).toBeGreaterThanOrEqual(21));
+			expect(replies[replies.length - 1]).toContain("已将思考强度设置为：high");
+
+			// /6 开启计划模式
+			enqueueMsg("/6 on");
+			await vi.waitFor(() => expect(replies.length).toBeGreaterThanOrEqual(22));
+			expect(replies[replies.length - 1]).toContain("计划模式已开启");
+
+			// /9 重载
+			enqueueMsg("/9");
+			await vi.waitFor(() => expect(replies.length).toBeGreaterThanOrEqual(23));
+			expect(replies[replies.length - 1]).toContain("已重新加载扩展、技能与提示模板");
+			expect(hostReloadSpy).toHaveBeenCalled();
+
+			// /10 查看帮助
+			enqueueMsg("/10");
+			await vi.waitFor(() => expect(replies.length).toBeGreaterThanOrEqual(24));
+			expect(replies[replies.length - 1]).toContain("1/cwd : 查看或切换当前项目根目录");
+
+			// 12. 测试第三方插件命令执行 (/todo 及序号 /11)
+			enqueueMsg("/todo 买菜 明天18:00");
+			await vi.waitFor(() => expect(replies.length).toBeGreaterThanOrEqual(25));
+			expect(replies[replies.length - 1]).toBe("✅ 已加入待办：买菜 明天18:00");
+
+			enqueueMsg("/11 买水果");
+			await vi.waitFor(() => expect(replies.length).toBeGreaterThanOrEqual(26));
+			expect(replies[replies.length - 1]).toBe("✅ 已加入待办：买水果");
+		} finally {
+			cleanup?.();
+			globalThis.fetch = origFetch;
+		}
+	});
+
+	it("配对成功后自动向微信用户发送简洁命令使用指南", async () => {
+		const storageMap = new Map<string, unknown>();
+		storageMap.set("account", { base: "https://ilinkai.weixin.qq.com", botId: "wx_bot_tester", loginAt: Date.now() });
+		storageMap.set("allowedPeers", []);
+		storageMap.set("pendingPeers", ["new_user_charlie"]);
+		storageMap.set("peerCtx", { new_user_charlie: "token_charlie_123" });
+
+		const mockStorage = {
+			get: vi.fn((k, def) => (storageMap.has(k) ? storageMap.get(k) : def)),
+			set: vi.fn((k, v) => storageMap.set(k, v)),
+		};
+
+		const mockSecrets = {
+			get: vi.fn((k) => (k === "bot_token" ? "fake_token" : undefined)),
+			set: vi.fn(),
+			delete: vi.fn(),
+		};
+
+		let messageHandler: ((payload: unknown, from?: string) => void) | undefined;
+		interface SendMessagePayload {
+			msg?: {
+				to_user_id?: string;
+				item_list?: Array<{ text_item?: { text: string } }>;
+			};
+		}
+		let pairWelcomePayload: SendMessagePayload | null = null;
+
+		const origFetch = globalThis.fetch;
+		globalThis.fetch = vi.fn(async (url: string | URL | Request, init?: RequestInit) => {
+			const urlStr = String(url);
+			if (urlStr.includes("getupdates")) {
+				await new Promise((r) => setTimeout(r, 5000));
+				return { ok: true, json: async () => ({ ret: 0, msgs: [] }) } as Response;
+			}
+			if (urlStr.includes("sendmessage")) {
+				pairWelcomePayload = JSON.parse(String(init?.body ?? "{}"));
+				return { ok: true, json: async () => ({ ret: 0 }) } as Response;
+			}
+			return { ok: true, json: async () => ({}) } as Response;
+		});
+
+		const host = {
+			getSettings: () => ({ autoDrive: true, typing: false }),
+			onSettingsChanged: () => () => {},
+			storage: mockStorage,
+			secrets: mockSecrets,
+			cwd: process.cwd(),
+			log: vi.fn(),
+			notify: vi.fn(),
+			broadcast: vi.fn(),
+			sendTo: vi.fn(),
+			onRunEvent: () => () => {},
+			onMessage: (h: (payload: unknown, from?: string) => void) => {
+				messageHandler = h;
+				return () => {};
+			},
+			onAttach: () => () => {},
+			registerAgentTool: vi.fn(),
+			registerBackgroundTask: vi.fn(() => ({ update: vi.fn(), unregister: vi.fn() })),
+			chat: vi.fn(),
+		};
+
+		const cleanup = wechatPlugin.activate(host as never);
+
+		try {
+			expect(messageHandler).toBeDefined();
+			// 模拟在视图中点击“允许配对”
+			messageHandler!({ action: "allow", peer: "new_user_charlie" });
+
+			await vi.waitFor(() => {
+				expect(pairWelcomePayload).not.toBeNull();
+			});
+
+			const sent = pairWelcomePayload as unknown as SendMessagePayload;
+			expect(sent?.msg?.to_user_id).toBe("new_user_charlie");
+			const text = sent?.msg?.item_list?.[0]?.text_item?.text ?? "";
+			expect(text).toContain("🎉 配对成功！");
+			expect(text).toContain("1/cwd : 查看或切换当前项目根目录");
+			expect(text).toContain("2/new : 清空上下文开启全新会话");
+			expect(text).toContain("8/stop : 中止当前正在执行的任务");
+			expect(text).toContain("10/help : 显示全部命令 (或发 /)");
+		} finally {
+			cleanup?.();
+			globalThis.fetch = origFetch;
+		}
 	});
 });

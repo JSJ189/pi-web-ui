@@ -316,6 +316,20 @@ export function createMockHost(overrides) {
 		cwd: typeof overrides.cwd === "string" ? overrides.cwd : "/mock-workspace",
 		onCwdChange: sub("onCwdChange"),
 		registerCommand: (cmd) => remember(commandStore, cmd),
+		execCommand: async (name, args, context) => {
+			const cmd = [...commandStore.values()].find((c) => c.name === name);
+			if (!cmd) return { ok: false, error: `Command /${name} not found` };
+			try {
+				const res = await cmd.run(args, context);
+				return { ok: true, result: typeof res === "string" ? res : "" };
+			} catch (err) {
+				return { ok: false, error: err?.message ?? String(err) };
+			}
+		},
+		getPluginCommands: () => [...commandStore.values()],
+		listProjects: () => ["/mock-workspace", "/mock-project-2"],
+		pickDirectory: async (opts) => ({ ok: true, path: opts?.initialPath || "/mock-workspace" }),
+		pickModel: async (opts) => ({ ok: true, modelId: opts?.currentModelId || "mock/test-model" }),
 		ui: {
 			// 内存注册表（同 id 覆盖、上限 32 条，与宿主合并语义同口径的精简版）：
 			// list() 真反映 register/update/remove，off() 只摘除本次注册的 id。

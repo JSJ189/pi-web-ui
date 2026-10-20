@@ -232,32 +232,46 @@ export function syncStreamRenderKeys(
 	return tracker.finalizedMap;
 }
 
+/** 判断消息是否含有实质非空正文文本 */
+function hasMeaningfulText(m: UiMessage): boolean {
+	if (!Array.isArray(m.content)) return false;
+	return m.content.some((b) => {
+		const t = asText(b);
+		return t && t.text.trim().length > 0;
+	});
+}
+
 /** 判断消息是否为纯中间工具/思考调用（不含非空正文） */
-function isPureToolMessage(m: UiMessage): boolean {
+export function isPureToolMessage(m: UiMessage): boolean {
 	// 排除明确标为非 assistant 的角色；流式首帧若 role 尚未注入，亦可由 toolCall/thinking 正确归组
 	if (m.role && m.role !== "assistant") return false;
 	if (m.customType) return false;
 	if (!Array.isArray(m.content) || m.content.length === 0) return false;
-	const hasText = m.content.some((b) => {
-		const t = asText(b);
-		return t && t.text.trim().length > 0;
-	});
-	if (hasText) return false;
+	if (hasMeaningfulText(m)) return false;
 	return m.content.some((b) => b.type === "toolCall" || b.type === "thinking");
 }
 
-type MessageClusterItem =
+export type MessageClusterItem =
 	{ type: "single"; message: UiMessage } | { type: "tool_cluster"; id: string; messages: UiMessage[] };
 
-function clusterMessages(list: readonly UiMessage[]): MessageClusterItem[] {
+export function clusterMessages(list: readonly UiMessage[]): MessageClusterItem[] {
 	const out: MessageClusterItem[] = [];
 	let currentCluster: { type: "tool_cluster"; id: string; messages: UiMessage[] } | null = null;
 
-	for (const m of list) {
+	for (let i = 0; i < list.length; i++) {
+		const m = list[i];
 		if (m.role === "system" || m.role === "toolResult") continue;
 		const fold = reviewFoldKind(m);
 
-		if (isPureToolMessage(m) && !fold) {
+		const isAssistantCandidate = (m.role === "assistant" || !m.role) && !m.customType;
+		const pureTool = isPureToolMessage(m);
+		// 当已有工具流集群正在进行中，且紧随其后的是末尾流式/生成中的助手消息时：
+		// 若当前消息尚未吐出实质正文（即尚无非空 text 且无折叠），将其作为流式工具候选平滑并入集群，
+		// 避免首帧因 toolCall 未就绪被短暂误判为 single 掉落至下一行、次帧就绪后再跳回上一行末尾。
+		const isTrailingStreamCandidate =
+			!pureTool && !!currentCluster && isAssistantCandidate && !fold && i === list.length - 1 && !hasMeaningfulText(m);
+
+		if ((pureTool || isTrailingStreamCandidate) && !fold) {
 			if (!currentCluster) {
 				currentCluster = { type: "tool_cluster", id: `cluster-${m.id}`, messages: [m] };
 				out.push(currentCluster);

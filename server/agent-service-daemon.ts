@@ -908,10 +908,10 @@ export class AgentService {
 			}
 			return;
 		}
-		if (AgentService.isPseudoClientId(ownerId)) {
+		if (ownerId.startsWith("scheduler:")) {
 			fail(
-				"定时任务/插件会话不支持过户 —— 报告会自动落回绑定的对话，可在后台任务面板查看进度",
-				"Scheduler/plugin sessions cannot be taken over — reports are saved to the bound conversation automatically; check progress in the Background Tasks panel.",
+				"定时任务会话不支持过户 —— 报告会自动落回绑定的对话，可在后台任务面板查看进度",
+				"Scheduler sessions cannot be taken over — reports are saved to the bound conversation automatically; check progress in the Background Tasks panel.",
 			);
 			return;
 		}

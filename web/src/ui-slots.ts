@@ -1711,6 +1711,7 @@ function toChildEntry(
 	const children = childEntries(id, slot, source, item.children, zh);
 	const hint = pluginHint(item, zh);
 	const options = toSlotOptions(item.options, zh);
+	const progress = clampProgress(item.progress);
 	return {
 		id,
 		slot,
@@ -1729,6 +1730,9 @@ function toChildEntry(
 		align: "start",
 		hidden: item.hidden ?? false,
 		...(item.badge ? { badge: item.badge } : {}),
+		...(typeof item.checked === "boolean" ? { checked: item.checked } : {}),
+		...(typeof item.value === "string" ? { value: item.value } : {}),
+		...(progress !== undefined ? { progress } : {}),
 		...(item.when ? { when: item.when } : {}),
 		...(options ? { options } : {}),
 		...(children.length > 0 ? { children } : {}),

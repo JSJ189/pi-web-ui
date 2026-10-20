@@ -1,5 +1,5 @@
 import { memo, useEffect, useMemo, useRef, useState } from "react";
-import { FiCpu, FiSearch, FiZap } from "react-icons/fi";
+import { FiCpu, FiRefreshCw, FiSearch, FiSettings, FiZap } from "react-icons/fi";
 import type { ModelInfo, ProviderKeyInfo, UiState } from "../types";
 import { Dropdown, DropdownItem } from "./Dropdown";
 import { useT } from "../i18n";
@@ -211,21 +211,66 @@ export const ModelThinking = memo(function ModelThinking({
 	const modelMenuContent = (
 		<>
 			<div className="dd-header dd-header-flex">
-				<span>{t("availableModels")}</span>
-				{hasEnabledScope && (
+				<span className="dd-header-title">{t("availableModels")}</span>
+				<div className="dd-header-actions">
+					{Boolean(defaultModel) && (
+						<div className="dd-header-default" title={`默认模型: ${defaultModel}`}>
+							<span className="dd-header-default-star">★</span>
+							<span className="dd-header-default-name">
+								{defaultModel!.includes("/") ? defaultModel!.split("/").slice(1).join("/") : defaultModel}
+							</span>
+							<button
+								type="button"
+								className="dd-header-default-clear"
+								title="清除全局默认模型"
+								onClick={(e) => {
+									e.stopPropagation();
+									appSend({ type: "clear_default_model" });
+								}}
+							>
+								✕
+							</button>
+						</div>
+					)}
+					{hasEnabledScope && (
+						<button
+							type="button"
+							className={`dd-scope-toggle ${showAllModels ? "active" : ""}`}
+							onClick={() => setShowAllModels((v) => !v)}
+							title={
+								showAllModels
+									? t("showEnabledModelsTitle", { n: enabledCount })
+									: t("showAllModelsTitle", { n: models.length })
+							}
+						>
+							{showAllModels ? t("showEnabledModels", { n: enabledCount }) : t("showAllModels", { n: models.length })}
+						</button>
+					)}
 					<button
 						type="button"
-						className={`dd-scope-toggle ${showAllModels ? "active" : ""}`}
-						onClick={() => setShowAllModels((v) => !v)}
-						title={
-							showAllModels
-								? t("showEnabledModelsTitle", { n: enabledCount })
-								: t("showAllModelsTitle", { n: models.length })
-						}
+						className="dd-header-btn dd-refresh-btn"
+						onClick={() => {
+							setReqLoading(true);
+							appSend({ type: "list_models" });
+						}}
+						title={t("refreshModels")}
+						aria-label={t("refreshModels")}
 					>
-						{showAllModels ? t("showEnabledModels", { n: enabledCount }) : t("showAllModels", { n: models.length })}
+						<FiRefreshCw className={reqLoading || modelsLoading ? "spin" : ""} />
 					</button>
-				)}
+					<button
+						type="button"
+						className="dd-header-btn dd-manage-btn"
+						onClick={() => {
+							setModelOpen(false);
+							onManageModels();
+						}}
+						title={t("manageModels")}
+						aria-label={t("manageModels")}
+					>
+						<FiSettings />
+					</button>
+				</div>
 			</div>
 			<div className="dd-search-row">
 				<FiSearch />
@@ -356,42 +401,6 @@ export const ModelThinking = memo(function ModelThinking({
 					})}
 				</div>
 			</div>
-			{/* Fixed footer — refresh / manage never scroll away. */}
-			<div className="dd-footer">
-				{/* 全局默认模型状态条 */}
-				{defaultModel !== undefined && defaultModel && (
-					<div className="dd-default-banner">
-						<div className="dd-default-banner-left">
-							<span className="dd-default-banner-star">★</span>
-							<span className="dd-default-banner-label">默认模型</span>
-							<span className="dd-default-banner-name" title={`默认模型: ${defaultModel}`}>
-								{defaultModel.split("/").slice(1).join("/")}
-							</span>
-						</div>
-						<button
-							type="button"
-							className="dd-default-banner-clear"
-							title="清除全局默认模型"
-							onClick={() => appSend({ type: "clear_default_model" })}
-						>
-							✕ 清除
-						</button>
-					</div>
-				)}
-				<button type="button" className="dd-refresh" onClick={() => appSend({ type: "list_models" })}>
-					{t("refreshModels")}
-				</button>
-				<button
-					type="button"
-					className="dd-refresh"
-					onClick={() => {
-						setModelOpen(false);
-						onManageModels();
-					}}
-				>
-					{t("manageModels")}
-				</button>
-			</div>
 		</>
 	);
 
@@ -434,6 +443,7 @@ export const ModelThinking = memo(function ModelThinking({
 			open={modelOpen}
 			onOpenChange={setModelOpen}
 			align="left"
+			portal={true}
 			menuClassName="dd-menu-model"
 			menuRef={menuRef}
 			menuStyle={menuWidth != null ? { width: menuWidth } : undefined}
@@ -458,6 +468,7 @@ export const ModelThinking = memo(function ModelThinking({
 			open={thinkingOpen}
 			onOpenChange={setThinkingOpen}
 			align="left"
+			portal={true}
 			direction="up"
 		>
 			{thinkingMenuContent}
@@ -486,6 +497,7 @@ export const ModelThinking = memo(function ModelThinking({
 				open={modelOpen}
 				onOpenChange={setModelOpen}
 				align="left"
+				portal={true}
 				menuClassName="dd-menu-model"
 				menuRef={menuRef}
 				menuStyle={menuWidth != null ? { width: menuWidth } : undefined}
@@ -505,6 +517,7 @@ export const ModelThinking = memo(function ModelThinking({
 				open={thinkingOpen}
 				onOpenChange={setThinkingOpen}
 				align="left"
+				portal={true}
 				direction="up"
 			>
 				{thinkingMenuContent}

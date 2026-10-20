@@ -2,6 +2,7 @@ import { readFileSync } from "node:fs";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { describe, expect, it } from "vitest";
+import { readThemeCss } from "../../server/themes.js";
 
 const ROOT = join(dirname(fileURLToPath(import.meta.url)), "..", "..");
 const STYLES_PATH = join(ROOT, "web", "src", "styles.css");
@@ -72,11 +73,11 @@ describe("半圆环转动等待指示器 (HalfRingSpinner)", () => {
 	});
 
 	it("极简行文 (flow / wallpaper-flow) 与壁纸插件主题动画引用有效关键帧且支持旋转", () => {
-		const flowCss = readFileSync(THEME_FLOW_PATH, "utf8");
+		const flowCss = readThemeCss(THEME_FLOW_PATH);
 		expect(flowCss).not.toContain("conv-spin");
 		expect(flowCss).toContain("animation: spin 0.85s linear infinite");
 
-		const wpFlowCss = readFileSync(THEME_WALLPAPER_FLOW_PATH, "utf8");
+		const wpFlowCss = readThemeCss(THEME_WALLPAPER_FLOW_PATH);
 		expect(wpFlowCss).not.toContain("conv-spin");
 		expect(wpFlowCss).toContain("animation: spin 0.85s linear infinite");
 

@@ -11,7 +11,7 @@
  *   - user   : <dataDir>/themes/*.css   (drop a css file here to add a theme)
  */
 import { existsSync, readdirSync, readFileSync, statSync } from "node:fs";
-import { join } from "node:path";
+import { dirname, join, resolve } from "node:path";
 
 export interface ThemeInfo {
 	id: string;
@@ -119,4 +119,25 @@ export function resolveThemeFile(builtinDir: string, userDir: string, id: string
 		return builtinPath;
 	}
 	return null;
+}
+
+/**
+ * 读取主题 CSS，并安全展开其中的 `@import "./..."` 相对导入。
+ * - 仅允许相对当前主题文件所在目录的子路径（或同级）；
+ * - 限制递归深度（默认 3 层）防循环引用；
+ * - 仅允许引入 .css 文件；
+ * - 确保生产/开发模式下均能无缝组合共享形态基底（如 bases/flow-base.css），免去客户端多次瀑布流请求。
+ */
+export function readThemeCss(filePath: string, visited = new Set<string>(), depth = 0): string {
+	if (depth > 3 || visited.has(filePath)) return "";
+	visited.add(filePath);
+	if (!existsSync(filePath) || !statSync(filePath).isFile()) return "";
+	const content = readFileSync(filePath, "utf8");
+	const dir = dirname(filePath);
+
+	return content.replace(/@import\s+["'](\.[^"']+\.css)["'];?\r?\n?/g, (_match, relPath) => {
+		const targetPath = resolve(dir, relPath);
+		if (!existsSync(targetPath) || !statSync(targetPath).isFile()) return "";
+		return readThemeCss(targetPath, visited, depth + 1) + "\n";
+	});
 }

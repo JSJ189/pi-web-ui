@@ -27,13 +27,18 @@ const REQUEST_TIMEOUT_MS = 30_000;
 const DEFAULT_WAIT_TIMEOUT_MS = 60_000;
 const POLL_INTERVAL_MS = 700;
 
-/** 让模型复述而不是自由发挥。 */
+const REPEAT_TEMPLATES = [
+	(t) => `请原样复述下面这段话，不要任何改动、翻译或前后缀：\n\n${t}`,
+	(t) => `请直接复述以下内容，不添加任何评论或说明：\n\n${t}`,
+	(t) => `请把下面这段文字原样输出一遍，不要加任何前后缀：\n\n${t}`,
+	(t) => `请完整复述以下文本内容，保持原文不变：\n\n${t}`,
+	(t) => `请将下列内容原文字符完整复述输出：\n\n${t}`,
+];
+
+/** 自然多样的复述 Prompt，避免固定机械模板被风控特征聚类命中。 */
 export function buildRepeatPrompt(text) {
-	return (
-		"请把下面这段文字原样输出一遍，不要翻译、不要总结、不要解释、" +
-		"不要加引号或任何前后缀，一个字都不要改：\n\n" +
-		text
-	);
+	const fn = REPEAT_TEMPLATES[Math.floor(Math.random() * REPEAT_TEMPLATES.length)] || REPEAT_TEMPLATES[0];
+	return fn(text);
 }
 
 /** 建一个空会话。 */
@@ -215,6 +220,7 @@ export function messageIdOf(m) {
 /** POST completion。返回未读的 Response，调用方自己决定drain 还是 abort。 */
 export async function postCompletion({
 	sessionId,
+	parentMessageId = null,
 	prompt,
 	powHeader,
 	token,
@@ -233,7 +239,7 @@ export async function postCompletion({
 
 	const body = {
 		chat_session_id: sessionId,
-		parent_message_id: null,
+		parent_message_id: parentMessageId,
 		model_type: modelType,
 		prompt,
 		ref_file_ids: [],

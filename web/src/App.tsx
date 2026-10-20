@@ -49,6 +49,8 @@ import {
 } from "./ui-slots";
 import { renderSlotToolbar } from "./slot-toolbar";
 import { ContextMenu } from "./components/ContextMenu";
+import { openContextMenu } from "./context-menu-state";
+import { isExtractableArchive } from "./file-transfer";
 import { BannerContainer } from "./components/BannerContainer";
 import { IconEditor } from "./components/IconEditor";
 import { showBanner, dismissBanner, dismissBannersWhere } from "./banner-notice";
@@ -73,6 +75,8 @@ import { findFileHandler, syncFileHandlers, type FileHandlerPlugin } from "./plu
 import { PiSetupModal } from "./components/PiSetupModal";
 import { isDesktopShell } from "./desktop";
 import { ModelConfigModal } from "./components/ModelConfigModal";
+import { DirectoryBrowser } from "./components/DirectoryBrowser";
+import { ModelPickerModal } from "./components/ModelPickerModal";
 
 import { SettingsModal } from "./components/SettingsModal";
 import { BgTasksModal } from "./components/BgTasksModal";
@@ -568,6 +572,16 @@ export function App() {
 	/** 插件弹窗（modal.dialog 槽位）：打开中的条目全局 id，同一时刻只开一个。
 	 *  条目被隐藏/卸载后 openModalEntry 即 undefined，弹窗自动消失。 */
 	const [openModalId, setOpenModalId] = useState<string | null>(null);
+	/** 供插件调起的系统级目录选择弹窗。 */
+	const [pluginDirPicker, setPluginDirPicker] = useState<{
+		initialPath?: string;
+		resolve: (res: { ok: boolean; path?: string; canceled?: boolean }) => void;
+	} | null>(null);
+	/** 供插件调起的系统级模型选择弹窗。 */
+	const [pluginModelPicker, setPluginModelPicker] = useState<{
+		currentModelId?: string | null;
+		resolve: (res: { ok: boolean; modelId?: string; name?: string; provider?: string; canceled?: boolean }) => void;
+	} | null>(null);
 	/** 当前打开的弹窗条目：id 对不上 / 被隐藏后即 undefined，弹窗自动消失。 */
 	const openModalEntry = openModalId
 		? uiSlots["modal.dialog"].find((e) => e.id === openModalId && !e.hidden)
@@ -677,6 +691,14 @@ export function App() {
 					return true;
 				},
 				closeModal: () => setOpenModalId(null),
+				pickDirectory: (opts) =>
+					new Promise((resolve) => {
+						setPluginDirPicker({ initialPath: opts?.initialPath, resolve });
+					}),
+				pickModel: (opts) =>
+					new Promise((resolve) => {
+						setPluginModelPicker({ currentModelId: opts?.currentModelId, resolve });
+					}),
 				// 宿主 API v8 对话框（本地插件对话框态撑起；已有未决直接回绝，不排队）。
 				dialogConfirm: (opts) =>
 					new Promise<boolean>((resolve) => {
@@ -745,6 +767,108 @@ export function App() {
 					const info = chatRefForPlugins.current.plugins.find((x) => x.id === pluginId);
 					if (!info) return Promise.resolve(false);
 					return ensurePluginViewLoaded(info, chatRefForPlugins.current.pluginsEpoch);
+				},
+				openFileContextMenu: (opts) => {
+					const cleanPath = String(opts.path ?? "")
+						.replace(/\\/g, "/")
+						.replace(/^\/+|\/+$/g, "");
+					const isRoot = !cleanPath;
+					const kind = opts.kind ?? (opts.path.endsWith("/") || isRoot ? "dir" : "file");
+					const label = opts.label ?? (cleanPath ? (cleanPath.split("/").pop() ?? cleanPath) : "workspace");
+					const target = { id: cleanPath, kind, label };
+
+					const isFile = kind === "file";
+					const isDir = kind === "dir" || isRoot;
+					const isList = kind === "list";
+
+					const entries = (uiSlotsRef.current["contextmenu.file"] ?? []).map((entry) => {
+						if (entry.source !== "host") {
+							// 插件条目的肯定形 when：如果明确是 file 专属但当前是 dir，或 dir 专属但当前是 file，直接隐藏，避免菜单膨胀
+							if (isDir && entry.when?.includes("file.isFile")) return { ...entry, hidden: true };
+							if (isFile && entry.when?.includes("file.isDir")) return { ...entry, hidden: true };
+							return entry;
+						}
+						switch (entry.id) {
+							case "host:file-compress":
+							case "host:file-compress-download":
+								return !isList ? entry : { ...entry, hidden: true };
+							case "host:file-extract":
+								return isFile && isExtractableArchive(label) ? entry : { ...entry, hidden: true };
+							case "host:file-upload":
+								return isDir || isList ? { ...entry, label: t("uploadToFolder") } : { ...entry, hidden: true };
+							case "host:file-upload-folder":
+								return isDir || isList ? entry : { ...entry, hidden: true };
+							case "host:file-open":
+							case "host:file-download":
+							case "host:file-open-default":
+								return isFile ? entry : { ...entry, hidden: true };
+							case "host:file-attach-ref":
+								return isFile ? entry : { ...entry, hidden: true };
+							case "host:file-attach-folder":
+								return isDir ? entry : { ...entry, hidden: true };
+							case "host:file-reveal":
+								return !isList ? entry : { ...entry, hidden: true };
+							case "host:file-enter":
+							case "host:file-open-project":
+							case "host:file-add-root":
+								return { ...entry, hidden: true };
+							case "host:file-new-file":
+							case "host:file-new-dir":
+							case "host:file-paste":
+								return isDir || isList ? entry : { ...entry, hidden: true };
+							case "host:file-rename":
+							case "host:file-duplicate":
+							case "host:file-cut":
+							case "host:file-copy":
+							case "host:file-delete":
+								return !isList && !isRoot ? entry : { ...entry, hidden: true };
+							case "host:file-copy-name":
+							case "host:file-copy-path":
+							case "host:file-copy-rel":
+								return !isList ? entry : { ...entry, hidden: true };
+							case "host:file-refresh":
+								return isList ? entry : { ...entry, hidden: true };
+							default:
+								return entry;
+						}
+					});
+
+					openContextMenu({
+						x: opts.x,
+						y: opts.y,
+						slot: "contextmenu.file",
+						target,
+						entries,
+						onHostAction: (entry, tg) => {
+							if (opts.onHostAction) {
+								const res = opts.onHostAction(entry.id, tg);
+								if (res !== undefined) return res;
+							}
+							switch (entry.id) {
+								case "host:file-reveal":
+									send({ type: "file_reveal", path: tg.id });
+									break;
+								case "host:file-open-default":
+									if (tg.kind === "file") send({ type: "file_open_default", path: tg.id });
+									break;
+								case "host:file-copy-name":
+									void navigator.clipboard?.writeText(tg.label ?? tg.id);
+									pushNotice("info", t("copied"));
+									break;
+								case "host:file-copy-rel":
+									void navigator.clipboard?.writeText(tg.id);
+									pushNotice("info", t("copied"));
+									break;
+								case "host:file-copy-path": {
+									const cwd = chatRefForPlugins.current.state?.cwd ?? "";
+									const full = cwd ? `${cwd.replace(/\\/g, "/").replace(/\/+$/, "")}/${tg.id}` : tg.id;
+									void navigator.clipboard?.writeText(full);
+									pushNotice("info", t("copied"));
+									break;
+								}
+							}
+						},
+					});
 				},
 			}),
 		);
@@ -2811,6 +2935,49 @@ export function App() {
 					openFile(path, name);
 				}}
 			/>
+			{pluginDirPicker && (
+				<DirectoryBrowser
+					currentCwd={pluginDirPicker.initialPath || chat.state?.cwd || ""}
+					pathCompletions={chat.pathCompletions}
+					workspaceRoots={chat.state?.workspaceRoots ?? []}
+					onClose={() => {
+						pluginDirPicker.resolve({ ok: false, canceled: true });
+						setPluginDirPicker(null);
+					}}
+					onSelectDirectory={(path) => {
+						pluginDirPicker.resolve({ ok: true, path });
+						setPluginDirPicker(null);
+					}}
+					mode="project"
+					className="project-picker"
+					backdropClassName="project-picker-backdrop"
+					role="dialog"
+					ariaLabel={t("projectPickerTitle")}
+				/>
+			)}
+			{pluginModelPicker && (
+				<ModelPickerModal
+					currentModelId={pluginModelPicker.currentModelId}
+					models={chat.models}
+					modelsLoading={chat.modelsLoading}
+					providerKeys={chat.providerKeys}
+					onManageModels={() => setManageModelsOpen(true)}
+					defaultModel={chat.defaultModel}
+					onClose={() => {
+						pluginModelPicker.resolve({ ok: false, canceled: true });
+						setPluginModelPicker(null);
+					}}
+					onSelect={(modelId, model) => {
+						pluginModelPicker.resolve({
+							ok: true,
+							modelId,
+							name: model?.name,
+							provider: model?.provider,
+						});
+						setPluginModelPicker(null);
+					}}
+				/>
+			)}
 			{/* 插件能力授权 / 目录访问确认顶层浮层：必须高于设置等弹窗（z-index > 300），确保安装插件或跨视图调用时无需叉掉设置页 */}
 			{(pendingPermRequest || pendingPathRequest || pluginPathConfirm) && (
 				<div className="modal-backdrop perm-modal-backdrop">

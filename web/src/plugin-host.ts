@@ -75,8 +75,35 @@ const PLUGIN_HOST_GLOBAL = "__piWebUiHost";
  *  11 = 新增 `models.list()`（已配置的模型目录，issue #188）与
  *      `startChat/openSession` 的 `model` 选项（canonical `provider/model`：
  *      newChat 时先建新对话再切到该模型，不动旧对话的模型；非法 id 直接拒绝）。
- *  12 = 新增 `ttsProviders`（通用语音合成提供者注册表：供插件对接系统朗读与播报）。 */
-export const PLUGIN_HOST_API_VERSION = 12;
+ *  12 = 新增 `ttsProviders`（通用语音合成提供者注册表：供插件对接系统朗读与播报）。
+ *  13 = 新增 `openFileContextMenu`（右键菜单 contextmenu.file 槽位通道：让插件文件树接入宿主统一右键菜单）。 */
+export const PLUGIN_HOST_API_VERSION = 14;
+
+export interface PluginHostPickDirectoryOptions {
+	initialPath?: string;
+	title?: string;
+}
+
+export interface PluginHostPickDirectoryResult {
+	ok: boolean;
+	path?: string;
+	canceled?: boolean;
+	error?: string;
+}
+
+export interface PluginHostPickModelOptions {
+	currentModelId?: string | null;
+	title?: string;
+}
+
+export interface PluginHostPickModelResult {
+	ok: boolean;
+	modelId?: string;
+	name?: string;
+	provider?: string;
+	canceled?: boolean;
+	error?: string;
+}
 
 interface PluginHostModelInfo {
 	/** canonical 模型 id（`provider/model`，与 set_model 的 modelId 同口径）。 */
@@ -331,6 +358,8 @@ interface PluginHostApi {
 	openSession(opts: PluginHostOpenSessionOptions): Promise<PluginHostOpenSessionResult>;
 	/** 会话列表 / 打开（宿主 API v2）。只给「本客户端现在能打开的东西」，不编造。 */
 	sessions: PluginHostSessionsApi;
+	/** 获取最近项目路径列表（与左侧边栏「最近项目」一致）。 */
+	listProjects(): string[];
 	/** 同步插件市场目录（受支持路径，service 端原子写 + 可选安装 + 重载）。 */
 	reloadCatalog(source: string, options?: PluginHostReloadCatalogOptions): Promise<PluginHostReloadCatalogResult>;
 	/** 接管 UI 条目的动作（manifest "ui" 里那条目声明的 `action`，或 host.ui.register
@@ -349,6 +378,10 @@ interface PluginHostApi {
 	/** 让浏览器扩展操作**被授权的页面**（AI 操作页面的通道）。
 	 *  永远 resolve：失败原因放在 `{ok:false,error}` 里回给模型，不抛给调用方。 */
 	pageCall(opts: PluginHostPageCallOptions): Promise<PluginHostPageResult>;
+	/** 调起系统级目录浏览器弹窗选择文件夹（宿主 API v14）。 */
+	pickDirectory(opts?: PluginHostPickDirectoryOptions): Promise<PluginHostPickDirectoryResult>;
+	/** 调起系统级模型选择器弹窗选择模型（宿主 API v14）。 */
+	pickModel(opts?: PluginHostPickModelOptions): Promise<PluginHostPickModelResult>;
 	/** 特权 DOM 插件的稳定挂载点（需 manifest 声明 `dom` 能力并经用户授权；
 	 *  未授权时 bundle 根本下发不下来（403），调到这里说明已授权）。 */
 	dom: {
@@ -392,6 +425,10 @@ interface PluginHostApi {
 	onTheme(handler: PluginHostThemeHandler): () => void;
 	onLocale(handler: PluginHostLocaleHandler): () => void;
 	onViewChange(handler: PluginHostViewHandler): () => void;
+	/** 打开文件右键菜单（contextmenu.file 槽位，宿主 API v13）。
+	 *  插件文件树（如 vscode-editor 本地树）可直接调用此方法呼出宿主统一右键菜单，
+	 *  自动包含宿主内置操作以及其他插件（如 @plugins/sftp）注册的全部动作。 */
+	openFileContextMenu?(opts: PluginHostFileContextMenuOptions): void;
 	/** 注册自定义成本格式化器（issue #607）：允许插件接管底栏/顶栏 host:cost 的货币符号与金额折算展示。返回取消函数。 */
 	setCostFormatter(formatter: CostFormatter | null): () => void;
 	/** 设置或读取成本显示的货币符号（默认 "$"；如设为 "¥"）。 */
@@ -414,6 +451,22 @@ type PluginHostPageResult = { ok: true; result?: unknown } | { ok: false; error:
 /** 扩展注入到页面主世界的桥（只用到 call 这一个方法）。 */
 interface PageBridgeLike {
 	call(req: { op: string; args?: unknown; to?: string; timeoutMs?: number }): Promise<unknown>;
+}
+
+/** 打开文件右键菜单的选项（host.openFileContextMenu 用）。 */
+export interface PluginHostFileContextMenuOptions {
+	/** 视口 X 坐标（如 MouseEvent.clientX）。 */
+	x: number;
+	/** 视口 Y 坐标（如 MouseEvent.clientY）。 */
+	y: number;
+	/** 文件或目录在工作区的相对路径（根目录可传 ""）。 */
+	path: string;
+	/** 类型："file" 文件 / "dir" 目录 / "list" 列表空白。缺省按 path 是否以 "/" 结尾推断。 */
+	kind?: "file" | "dir" | "list";
+	/** 显示名称（可选，缺省取路径末段）。 */
+	label?: string;
+	/** 宿主内置条目的自定处理器（可选；返回 true 表示已接管该动作）。 */
+	onHostAction?: (actionId: string, target: { id: string; kind?: string; label?: string }) => void | boolean;
 }
 
 interface PluginHostDeps {
@@ -467,6 +520,12 @@ interface PluginHostDeps {
 	openModal?: (id: string) => boolean;
 	/** 关掉当前打开的弹窗（没开着也无害）。 */
 	closeModal?: () => void;
+	/** 打开文件右键菜单（contextmenu.file 槽位）。 */
+	openFileContextMenu?: (opts: PluginHostFileContextMenuOptions) => void;
+	/** 调起系统级目录浏览器弹窗选择文件夹的宿主实现。 */
+	pickDirectory?: (opts?: PluginHostPickDirectoryOptions) => Promise<PluginHostPickDirectoryResult>;
+	/** 调起系统级模型选择器弹窗选择模型的宿主实现。 */
+	pickModel?: (opts?: PluginHostPickModelOptions) => Promise<PluginHostPickModelResult>;
 	/** 目录同步的等待超时（默认 180s —— 带 install 的同步会跑真实安装）。 */
 	catalogTimeoutMs?: number;
 }
@@ -909,6 +968,11 @@ export function createPluginHostApi(deps: PluginHostDeps): PluginHostApi {
 		onTheme: (handler) => subscribePluginHostTheme(handler),
 		onLocale: (handler) => subscribePluginHostLocale(handler),
 		onViewChange: (handler) => subscribePluginHostView(handler),
+		listProjects: () => deps.listProjects?.() ?? [],
+		pickDirectory: (opts) =>
+			deps.pickDirectory ? deps.pickDirectory(opts) : Promise.resolve({ ok: false, canceled: true }),
+		pickModel: (opts) => (deps.pickModel ? deps.pickModel(opts) : Promise.resolve({ ok: false, canceled: true })),
+		openFileContextMenu: (opts) => deps.openFileContextMenu?.(opts),
 		setCostFormatter: (formatter) => registerCostFormatter(formatter),
 		setCostCurrency: (symbol) => setCostCurrencySymbol(symbol),
 		getCostCurrency: () => getCostCurrencySymbol(),

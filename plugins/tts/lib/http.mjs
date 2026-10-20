@@ -11,12 +11,23 @@ import { DeepSeekTtsError, authError, codeHint, codeName, protocolError, usageEr
 
 export const TOKEN_ENV = "DS_TOKEN";
 
-/** 官方前端发的头。别的头要不要加没有实测过 —— 目前这套在 2026-09-12 是通的。 */
-export function jsonHeaders(token) {
+/** 真实 Chrome 浏览器标准请求头（完全对齐官方前端网络指纹，彻底剔除脚本特征） */
+export function jsonHeaders(token, extra = {}) {
 	const h = {
 		"content-type": "application/json",
-		accept: "application/json, text/plain, */*",
-		"user-agent": "deepseek-tts-api (unofficial; +https://github.com/Eyeing0721)",
+		accept: "*/*",
+		"accept-language": "zh-CN,zh;q=0.9,en;q=0.8,en-GB;q=0.7,en-US;q=0.6",
+		origin: "https://chat.deepseek.com",
+		referer: "https://chat.deepseek.com/",
+		"sec-ch-ua": '"Not(A:Brand";v="99", "Google Chrome";v="133", "Chromium";v="133"',
+		"sec-ch-ua-mobile": "?0",
+		"sec-ch-ua-platform": '"Windows"',
+		"sec-fetch-dest": "empty",
+		"sec-fetch-mode": "cors",
+		"sec-fetch-site": "same-origin",
+		"user-agent":
+			"Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/133.0.0.0 Safari/537.36",
+		...extra,
 	};
 	if (token) h.authorization = `Bearer ${token}`;
 	return h;

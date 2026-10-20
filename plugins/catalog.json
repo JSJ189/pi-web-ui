@@ -24,8 +24,8 @@
 		"name": "vscode-editor",
 		"icon": "📝",
 		"iconSvg": "<svg xmlns=\"http://www.w3.org/2000/svg\" viewBox=\"0 0 24 24\" fill=\"none\" stroke=\"currentColor\" stroke-width=\"2\" stroke-linecap=\"round\" stroke-linejoin=\"round\"><path d=\"m16 18 6-6-6-6\"/><path d=\"m8 6-6 6 6 6\"/></svg>",
-		"description": "类 VSCode 工作台：多根文件树 + CodeMirror 编辑器 + 底部终端 + Remote-SSH + SFTP 同步；向 AI 注册 SFTP/SSH/远端文件工具，可自主传代码。",
-		"descriptionEn": "VSCode-like workbench: multi-root file tree, CodeMirror editor, integrated terminal, Remote-SSH and SFTP sync; registers SFTP/SSH/remote-file tools so the AI can deploy code itself.",
+		"description": "类 VSCode 工作台：多根文件树 + CodeMirror 编辑器 + 底部终端 + Remote-SSH 远程文件浏览与编辑。",
+		"descriptionEn": "VSCode-like workbench: multi-root file tree, CodeMirror editor, integrated terminal, and Remote-SSH remote file browsing/editing.",
 		"source": "xing-shuyin/pi-web-ui/plugins/vscode-editor",
 		"homepage": "https://github.com/xing-shuyin/pi-web-ui/tree/main/plugins/vscode-editor"
 	},

@@ -11,6 +11,8 @@
  */
 
 import { createHash } from "node:crypto";
+import { existsSync, statSync } from "node:fs";
+import { resolve, sep } from "node:path";
 
 const API_DEFAULT = "https://ilinkai.weixin.qq.com";
 const APP_ID = "bot";
@@ -88,9 +90,42 @@ export function stripInternalMarkers(text) {
 		.trim();
 }
 
-/** 按微信 peer 生成稳定、无敏感明文且合规的 accountId（隔离每个微信用户的伪客户端与会话）。 */
-export function peerAccountId(peer) {
-	const raw = String(peer ?? "").trim();
+/** 校验工作目录合法性（防路径不存在或越界，Windows 下防 SystemRoot）。 */
+export function checkCwdValid(cwd) {
+	const trimmed = String(cwd ?? "").trim();
+	if (!trimmed) return { ok: false, error: "工作目录不能为空" };
+	let abs;
+	try {
+		abs =
+			process.platform === "win32" && /^[A-Za-z]:$/.test(trimmed) ? `${trimmed.toUpperCase()}${sep}` : resolve(trimmed);
+	} catch {
+		return { ok: false, error: `工作目录路径非法：${trimmed}` };
+	}
+	try {
+		if (!existsSync(abs) || !statSync(abs).isDirectory()) {
+			return { ok: false, error: `目标项目不存在或不是目录：${trimmed}` };
+		}
+	} catch {
+		return { ok: false, error: `无法访问目标项目：${trimmed}` };
+	}
+	if (process.platform === "win32") {
+		const sysRoot = (process.env.SystemRoot || process.env.windir || "C:\\Windows")
+			.replace(/\//g, "\\")
+			.replace(/\\+$/, "");
+		const norm = abs.replace(/\//g, "\\").replace(/\\+$/, "");
+		const low = norm.toLowerCase();
+		const rootLow = sysRoot.toLowerCase();
+		if (low === rootLow || low.startsWith(`${rootLow}\\`)) {
+			return { ok: false, error: `拒绝在系统目录执行：${abs}` };
+		}
+	}
+	return { ok: true, abs };
+}
+
+/** 按微信 peer 与会话序号生成稳定、无敏感明文且合规的 accountId（隔离每个微信用户的伪客户端与会话）。 */
+export function peerAccountId(peer, seq = 0) {
+	const base = String(peer ?? "").trim();
+	const raw = seq ? `${base}:${seq}` : base;
 	if (!raw) return "wx_default";
 	const hash = createHash("sha256").update(raw).digest("hex").slice(0, 16);
 	return `wx_${hash}`;
@@ -273,6 +308,19 @@ export default {
 			allowedPeers: [],
 			pendingPeers: [],
 			pairTipAt: {},
+			/** 统计指标 */
+			messagesReceived: 0,
+			messagesReplied: 0,
+			/** 用户独立工作空间：peer → string */
+			userWorkspaces: {},
+			/** 用户独立模型配置：peer → string */
+			userModels: {},
+			/** 用户独立思考强度配置：peer → string */
+			userThinkingLevels: {},
+			/** 用户独立计划模式：peer → boolean */
+			userPlanMode: {},
+			/** 用户独立会话序号（/clear /new 递增）：peer → number */
+			peerSessionSeq: {},
 			/** conversationId → { to, ctx, timer, noticed }。 */
 			pendingRuns: new Map(),
 			/** conversationId → 已累积的 assistant 文本。 */
@@ -291,6 +339,14 @@ export default {
 				st.allowedPeers = Array.isArray(store.get("allowedPeers", [])) ? store.get("allowedPeers", []) : [];
 				st.pendingPeers = Array.isArray(store.get("pendingPeers", [])) ? store.get("pendingPeers", []) : [];
 				st.peerCtx = store.get("peerCtx", {}) ?? {};
+				const stats = store.get("stats", {});
+				st.messagesReceived = typeof stats.messagesReceived === "number" ? stats.messagesReceived : 0;
+				st.messagesReplied = typeof stats.messagesReplied === "number" ? stats.messagesReplied : 0;
+				st.userWorkspaces = store.get("userWorkspaces", {}) ?? {};
+				st.userModels = store.get("userModels", {}) ?? {};
+				st.userThinkingLevels = store.get("userThinkingLevels", {}) ?? {};
+				st.userPlanMode = store.get("userPlanMode", {}) ?? {};
+				st.peerSessionSeq = store.get("peerSessionSeq", {}) ?? {};
 			} catch (err) {
 				host.log("load state failed:", err?.message ?? err);
 			}
@@ -303,6 +359,12 @@ export default {
 				const ctx = {};
 				for (const [k, v] of Object.entries(st.peerCtx).slice(-200)) ctx[k] = v;
 				store.set("peerCtx", ctx);
+				store.set("stats", { messagesReceived: st.messagesReceived, messagesReplied: st.messagesReplied });
+				store.set("userWorkspaces", st.userWorkspaces);
+				store.set("userModels", st.userModels);
+				store.set("userThinkingLevels", st.userThinkingLevels);
+				store.set("userPlanMode", st.userPlanMode);
+				store.set("peerSessionSeq", st.peerSessionSeq);
 			} catch (err) {
 				host.log("save state failed:", err?.message ?? err);
 			}
@@ -324,6 +386,21 @@ export default {
 				return "";
 			}
 		};
+		const resolveWorkspace = (peer) => {
+			const uws = st.userWorkspaces[peer];
+			if (uws && typeof uws === "string") return uws;
+			return getWorkspace() || getHostCwd();
+		};
+		const resolveModel = (peer) => {
+			const um = st.userModels[peer];
+			if (um && typeof um === "string") return um;
+			return String(settings().model ?? "").trim();
+		};
+		const resolveThinkingLevel = (peer) => {
+			const ut = st.userThinkingLevels[peer];
+			if (ut && typeof ut === "string") return ut;
+			return String(settings().thinkingLevel ?? "").trim();
+		};
 		function setWorkspace(rawPath) {
 			const clean = String(rawPath ?? "")
 				.trim()
@@ -340,6 +417,47 @@ export default {
 				"info",
 				clean ? `微信通道根目录已设为：${clean}` : "微信通道根目录已清空（跟随当前项目）",
 				clean ? `WeChat workspace root set to: ${clean}` : "WeChat workspace root cleared (follows current project)",
+			);
+			pushState();
+		}
+
+		function setModel(model, thinkingLevel) {
+			const cleanModel = String(model ?? "")
+				.trim()
+				.slice(0, 256);
+			const cleanThinking = String(thinkingLevel ?? "")
+				.trim()
+				.slice(0, 64);
+			cfg = { ...cfg, model: cleanModel, thinkingLevel: cleanThinking };
+			try {
+				const prev = store.get("settings", {});
+				const baseObj = prev && typeof prev === "object" && !Array.isArray(prev) ? prev : {};
+				store.set("settings", { ...baseObj, model: cleanModel, thinkingLevel: cleanThinking });
+			} catch (err) {
+				host.log("save model failed:", err?.message ?? err);
+			}
+			host.notify(
+				"info",
+				cleanModel ? `微信通道模型已设为：${cleanModel}` : "微信通道模型已设为跟随全局",
+				cleanModel ? `WeChat model set to: ${cleanModel}` : "WeChat model set to follow global",
+			);
+			pushState();
+		}
+
+		function setBindActive(bindActive) {
+			const active = Boolean(bindActive);
+			cfg = { ...cfg, bindActive: active };
+			try {
+				const prev = store.get("settings", {});
+				const baseObj = prev && typeof prev === "object" && !Array.isArray(prev) ? prev : {};
+				store.set("settings", { ...baseObj, bindActive: active });
+			} catch (err) {
+				host.log("save bindActive failed:", err?.message ?? err);
+			}
+			host.notify(
+				"info",
+				active ? "已开启电脑手机消息同步（投递到网页当前会话）" : "已切换为独立无头会话",
+				active ? "WeChat synced with active conversation" : "WeChat uses isolated headless session",
 			);
 			pushState();
 		}
@@ -362,6 +480,11 @@ export default {
 				pendingRuns: st.pendingRuns.size,
 				workspace: getWorkspace(),
 				hostCwd: getHostCwd(),
+				model: String(settings().model ?? "").trim(),
+				thinkingLevel: String(settings().thinkingLevel ?? "").trim(),
+				bindActive: settings().bindActive === true,
+				messagesReceived: st.messagesReceived,
+				messagesReplied: st.messagesReplied,
 			};
 		}
 		function pushState(to) {
@@ -414,10 +537,25 @@ export default {
 			}
 			try {
 				await client.sendMessage({ to, text, contextToken });
+				st.messagesReplied++;
+				save();
 			} finally {
 				if (ticket) await client.sendTyping(to, ticket, false);
 			}
 			pushInbox({ dir: "out", peer: to, text: cut(text, 500), at: Date.now() });
+		}
+
+		async function sendPairSuccess(peer) {
+			const text = [
+				"🎉 配对成功！直接发送消息即可对话。",
+				"",
+				"常用快捷操作（发送 / 查看全部）：",
+				"1/cwd : 查看或切换当前项目根目录",
+				"2/new : 清空上下文开启全新会话 [提示]",
+				"8/stop : 中止当前正在执行的任务",
+				"10/help : 显示全部命令 (或发 /)",
+			].join("\n");
+			await sendText(peer, text, st.peerCtx[peer]);
 		}
 
 		// ---- 驱动 agent ------------------------------------------------------
@@ -425,6 +563,8 @@ export default {
 		const EARLY_RUN_TTL_MS = 60_000;
 		/** conversationId → { text: string, ended: boolean, at: number }（承接 host.chat 返回前提前到达的事件）。 */
 		const earlyRuns = new Map();
+		const inFlightConvs = new Map();
+		let lastInFlightStartedAt = 0;
 
 		function trimEarlyRuns() {
 			const now = Date.now();
@@ -437,7 +577,7 @@ export default {
 			}
 		}
 
-		function trackRun(conversationId, to, contextToken) {
+		function trackRun(conversationId, to, contextToken, startedAt = 0) {
 			while (st.pendingRuns.size >= PENDING_RUN_CAP) {
 				const oldest = st.pendingRuns.keys().next().value;
 				dropRun(oldest);
@@ -445,7 +585,7 @@ export default {
 
 			// issue #345：检查在 host.chat() 结果返回前是否已提前收到运行事件
 			const early = earlyRuns.get(conversationId);
-			if (early) {
+			if (early && (!startedAt || early.at >= startedAt - 500)) {
 				earlyRuns.delete(conversationId);
 				if (early.text) {
 					st.runText.set(conversationId, early.text);
@@ -453,11 +593,13 @@ export default {
 				if (early.ended) {
 					const clean = stripInternalMarkers(st.runText.get(conversationId) ?? "");
 					const body = clean || "任务完成（无文本输出）。";
-					st.runText.delete(conversationId);
+					dropRun(conversationId);
 					const out = body.length > REPLY_CAP ? `${body.slice(0, REPLY_CAP)}\n…（超长截断）` : body;
 					sendText(to, out, contextToken).catch((err) => host.log("reply failed:", err?.message ?? err));
 					return;
 				}
+			} else {
+				earlyRuns.delete(conversationId);
 			}
 
 			const timeoutMs = Math.min(900, Math.max(30, Number(settings().replyTimeoutSec ?? 180))) * 1000;
@@ -469,7 +611,7 @@ export default {
 					host.log("timeout notice failed:", err?.message ?? err),
 				);
 			}, timeoutMs);
-			st.pendingRuns.set(conversationId, { to, ctx: contextToken, timer, noticed: false });
+			st.pendingRuns.set(conversationId, { to, ctx: contextToken, timer, noticed: false, startedAt });
 		}
 		function dropRun(conversationId) {
 			const p = st.pendingRuns.get(conversationId);
@@ -477,31 +619,50 @@ export default {
 			st.pendingRuns.delete(conversationId);
 			st.runText.delete(conversationId);
 			earlyRuns.delete(conversationId);
+			inFlightConvs.delete(conversationId);
 		}
 
 		async function drivePeer(peer, text, contextToken) {
 			const label = `微信:${peer}`;
 			// issue #226：透传宿主 host.chat 四件套（工作空间/模型/思考强度/绑定网页会话）。
-			// issue #345：按微信用户 ID 隔离 accountId，避免全员共享同一伪客户端与无头会话。
-			const req = { text: `[${label}] ${text}`, accountId: peerAccountId(peer) };
-			const workspace = getWorkspace() || getHostCwd();
+			// issue #345：按微信用户 ID 与会话序号隔离 accountId，避免全员共享同一伪客户端与无头会话。
+			const seq = st.peerSessionSeq[peer] || 0;
+			const req = { text: `[${label}] ${text}`, accountId: peerAccountId(peer, seq) };
+			const workspace = resolveWorkspace(peer);
 			if (workspace) req.cwd = workspace;
-			const model = String(settings().model ?? "").trim();
+			const model = resolveModel(peer);
 			if (model) req.model = model;
-			const thinkingLevel = String(settings().thinkingLevel ?? "").trim();
+			const thinkingLevel = resolveThinkingLevel(peer);
 			if (thinkingLevel) req.thinkingLevel = thinkingLevel;
+
+			let bindCid = null;
 			if (settings().bindActive === true) {
 				try {
 					const cid = host.getActiveConversation?.()?.conversationId;
-					if (typeof cid === "string" && cid.trim()) req.conversationId = cid.trim();
+					if (typeof cid === "string" && cid.trim()) {
+						bindCid = cid.trim();
+						req.conversationId = bindCid;
+						// 在投递前先彻底清空该会话历史残留的 runText 和 earlyRuns，杜绝跨轮叠加
+						dropRun(bindCid);
+					}
 				} catch {
 					/* 无打开对话则走无头，不阻断 */
 				}
 			}
+
+			const startedAt = Date.now();
+			if (bindCid) inFlightConvs.set(bindCid, startedAt);
+			lastInFlightStartedAt = startedAt;
+
 			try {
 				const r = await host.chat(req);
-				if (r?.conversationId) trackRun(r.conversationId, peer, contextToken);
+				if (r?.conversationId) {
+					inFlightConvs.delete(r.conversationId);
+					st.runText.delete(r.conversationId);
+					trackRun(r.conversationId, peer, contextToken, startedAt);
+				}
 			} catch (err) {
+				if (bindCid) inFlightConvs.delete(bindCid);
 				host.log("host.chat failed:", err?.message ?? err);
 				sendText(peer, `执行失败：${err?.message ?? err}`, contextToken).catch(() => {});
 			}
@@ -534,7 +695,11 @@ export default {
 				}
 
 				// issue #345：若 convId 暂未在 pendingRuns 登记（host.chat 的 Promise 还在微任务中）
-				// 暂存消息与完成态，避免极快结束或异常收尾时遗漏 run_end
+				// 关键安全守卫：只有确定是微信当前正在发起的调用会话，才作为 earlyRuns 收集；
+				// 绝不收录网页端自身手动发起的其他会话事件！
+				const isRelevant = inFlightConvs.has(convId) || Date.now() - lastInFlightStartedAt < 5000;
+				if (!isRelevant) return;
+
 				if (ev.type === "message" && ev.message) {
 					const t = assistantTextOf(ev.message);
 					if (t) {
@@ -565,6 +730,341 @@ export default {
 			}
 		});
 
+		// ---- 斜杠快捷指令 ----------------------------------------------------
+		const CORE_NUMBERED_COMMANDS = {
+			1: "cwd",
+			一: "cwd",
+			2: "new",
+			二: "new",
+			3: "status",
+			三: "status",
+			4: "model",
+			四: "model",
+			5: "thinking",
+			五: "thinking",
+			6: "plan",
+			六: "plan",
+			7: "compact",
+			七: "compact",
+			8: "stop",
+			八: "stop",
+			9: "reload",
+			九: "reload",
+			10: "help",
+			十: "help",
+		};
+
+		async function handleSlashCommand(cmdText, { peer, ctx }) {
+			const normalized = String(cmdText ?? "")
+				.trim()
+				.replace(/^／/, "/");
+
+			// 兼容 "1/cwd"、"2/new" 等无前导斜杠但带数字序号的格式
+			let raw = normalized;
+			if (/^\d+\/[a-zA-Z]/.test(raw)) {
+				raw = "/" + raw;
+			}
+			if (!raw.startsWith("/")) return false;
+
+			const match = /^\/([^\s]*)(?:\s+([\s\S]*))?$/.exec(raw);
+			if (!match) return false;
+
+			let rawCmd = match[1].toLowerCase();
+			const args = (match[2] ?? "").trim();
+
+			// 兼容形如 "1/cwd" 的命令片段，提取出 "cwd" 或 "1"
+			if (/^\d+\/.+/.test(rawCmd)) {
+				rawCmd = rawCmd.split("/")[1] || rawCmd.split("/")[0];
+			}
+
+			// 获取系统中已注册的插件命令
+			const pluginCmds = (host.getPluginCommands?.() ?? []).filter(
+				(c) => c && c.name && !CORE_NUMBERED_COMMANDS[c.name],
+			);
+			const pluginCmdMap = new Map();
+			pluginCmds.forEach((c, idx) => {
+				const numKey = String(11 + idx);
+				pluginCmdMap.set(numKey, c.name.toLowerCase());
+			});
+
+			const cmd = CORE_NUMBERED_COMMANDS[rawCmd] ?? pluginCmdMap.get(rawCmd) ?? rawCmd;
+
+			switch (cmd) {
+				case "":
+				case "?":
+				case "h":
+				case "help":
+				case "帮助": {
+					const lines = [
+						"可直接发送 /序号（如 /1 或 /2 <提示>）快捷操作：",
+						"1/cwd : 查看或切换当前项目根目录",
+						"2/new : 清空上下文开启全新会话 [提示]",
+						"3/status : 查看通道运行状态与指标",
+						"4/model : 查看或切换当前模型 [名称]",
+						"5/thinking : 设置思考强度 <off|low|high|max>",
+						"6/plan : 开启或关闭计划模式 [on|off]",
+						"7/compact : 压缩当前会话上下文 [说明]",
+						"8/stop : 中止当前正在执行的任务",
+						"9/reload : 重新加载扩展与配置",
+						"10/help : 显示全部命令 (或发 /)",
+					];
+					if (pluginCmds.length > 0) {
+						pluginCmds.forEach((c, idx) => {
+							const num = 11 + idx;
+							const hint = c.argumentHint ? ` ${c.argumentHint}` : "";
+							lines.push(`${num}/${c.name} : ${c.description || "插件命令"}${hint}`);
+						});
+					}
+					await sendText(peer, lines.join("\n"), ctx).catch((err) =>
+						host.log("reply slash failed:", err?.message ?? err),
+					);
+					return true;
+				}
+				case "cwd":
+				case "workspace": {
+					if (!args) {
+						const currentWs = resolveWorkspace(peer) || "(跟随宿主当前项目)";
+						const text = [
+							`📂 当前项目根目录：${currentWs}`,
+							"",
+							"提示：",
+							"• 发送 /cwd <目录绝对路径> 可切换根目录",
+							"• 发送 /cwd default 可恢复跟随全局配置",
+						].join("\n");
+						await sendText(peer, text, ctx).catch((err) => host.log("reply slash failed:", err?.message ?? err));
+						return true;
+					}
+					if (["default", "默认", "clear", "reset"].includes(args.toLowerCase())) {
+						delete st.userWorkspaces[peer];
+						st.peerSessionSeq[peer] = (st.peerSessionSeq[peer] || 0) + 1;
+						save();
+						const currentWs = resolveWorkspace(peer) || "(跟随宿主当前项目)";
+						await sendText(peer, `📂 已恢复跟随全局根目录：${currentWs}\n✨ 已自动为您开启全新会话！`, ctx).catch(
+							(err) => host.log("reply slash failed:", err?.message ?? err),
+						);
+						return true;
+					}
+					const chk = checkCwdValid(args);
+					if (!chk.ok) {
+						await sendText(peer, `⚠️ 切换失败：${chk.error}`, ctx).catch((err) =>
+							host.log("reply slash failed:", err?.message ?? err),
+						);
+						return true;
+					}
+					st.userWorkspaces[peer] = chk.abs;
+					st.peerSessionSeq[peer] = (st.peerSessionSeq[peer] || 0) + 1;
+					save();
+					await sendText(peer, `📂 已将项目根目录切换为：${chk.abs}\n✨ 已自动为您开启该目录下的全新会话！`, ctx).catch(
+						(err) => host.log("reply slash failed:", err?.message ?? err),
+					);
+					return true;
+				}
+				case "clear":
+				case "new": {
+					st.peerSessionSeq[peer] = (st.peerSessionSeq[peer] || 0) + 1;
+					save();
+					for (const [convId, run] of st.pendingRuns.entries()) {
+						if (run.to === peer) {
+							void host.abortRun?.(convId);
+							dropRun(convId);
+						}
+					}
+					if (args) {
+						await sendText(peer, "✨ 已为您开启全新会话，正在执行指令…", ctx).catch((err) =>
+							host.log("reply slash failed:", err?.message ?? err),
+						);
+						await drivePeer(peer, args, ctx);
+						return true;
+					}
+					await sendText(peer, "✨ 对话上下文已清空，已为您开启全新会话！", ctx).catch((err) =>
+						host.log("reply slash failed:", err?.message ?? err),
+					);
+					return true;
+				}
+				case "status": {
+					let stateStr = "已停止";
+					if (st.polling) {
+						if (Date.now() < st.pausedUntil) {
+							const mins = Math.max(1, Math.ceil((st.pausedUntil - Date.now()) / 60000));
+							stateStr = `暂停中 (会话受限，约 ${mins} 分钟后恢复)`;
+						} else {
+							stateStr = "在线 (长轮询中)";
+						}
+					} else if (isLoggedIn()) {
+						stateStr = "已登录 (未轮询)";
+					}
+					const currentWs = resolveWorkspace(peer) || "(跟随宿主当前项目)";
+					const currentModel = resolveModel(peer) || "(跟随全局默认)";
+					const currentThinking = String(settings().thinkingLevel ?? "").trim() || "(跟随全局设置)";
+					const bindActive = settings().bindActive === true ? "投递到网页活跃会话" : "独立无头会话";
+					const statusText = [
+						"🟢 微信通道运行状态",
+						"",
+						`• 账号 ID：${st.botId || "(未命名)"}`,
+						`• 通道状态：${stateStr}`,
+						`• 项目根目录：${currentWs}`,
+						`• 当前模型：${currentModel}`,
+						`• 思考强度：${currentThinking}`,
+						`• 投递模式：${bindActive}`,
+						`• 已接收消息：${st.messagesReceived} 条`,
+						`• 已回复消息：${st.messagesReplied} 条`,
+						`• 进行中任务：${st.pendingRuns.size} 个`,
+						st.loginAt ? `• 登录时间：${new Date(st.loginAt).toLocaleString()}` : "",
+					]
+						.filter(Boolean)
+						.join("\n");
+					await sendText(peer, statusText, ctx).catch((err) => host.log("reply slash failed:", err?.message ?? err));
+					return true;
+				}
+				case "model": {
+					if (!args) {
+						const currentModel = resolveModel(peer) || "(跟随全局默认)";
+						const text = [
+							`🤖 当前模型：${currentModel}`,
+							"",
+							"提示：",
+							"• 发送 /model <模型ID> 可切换微信通道模型（如 /model deepseek/deepseek-chat）",
+							"• 发送 /model default 可恢复跟随全局配置",
+						].join("\n");
+						await sendText(peer, text, ctx).catch((err) => host.log("reply slash failed:", err?.message ?? err));
+						return true;
+					}
+					if (["default", "默认", "clear", "reset"].includes(args.toLowerCase())) {
+						delete st.userModels[peer];
+						st.peerSessionSeq[peer] = (st.peerSessionSeq[peer] || 0) + 1;
+						save();
+						await sendText(peer, "🤖 已恢复跟随全局默认模型。\n✨ 已自动为您开启全新会话！", ctx).catch((err) =>
+							host.log("reply slash failed:", err?.message ?? err),
+						);
+						return true;
+					}
+					st.userModels[peer] = args;
+					st.peerSessionSeq[peer] = (st.peerSessionSeq[peer] || 0) + 1;
+					save();
+					await sendText(peer, `🤖 已将模型切换为：${args}\n✨ 已自动为您开启该模型下的全新会话！`, ctx).catch((err) =>
+						host.log("reply slash failed:", err?.message ?? err),
+					);
+					return true;
+				}
+				case "thinking": {
+					const ALIAS = {
+						off: "off",
+						minimal: "minimal",
+						low: "low",
+						medium: "medium",
+						high: "high",
+						xhigh: "xhigh",
+						max: "max",
+						关闭: "off",
+						极简: "minimal",
+						低: "low",
+						中: "medium",
+						高: "high",
+						极高: "xhigh",
+						最大: "max",
+					};
+					if (!args) {
+						const cur = resolveThinkingLevel(peer) || "(跟随全局设置)";
+						const text = [
+							`🧠 当前思考强度：${cur}`,
+							"",
+							"提示：",
+							"• 发送 /thinking <档位> 可切换（off/minimal/low/medium/high/xhigh/max）",
+							"• 发送 /thinking default 可恢复跟随全局设置",
+						].join("\n");
+						await sendText(peer, text, ctx).catch((err) => host.log("reply slash failed:", err?.message ?? err));
+						return true;
+					}
+					if (["default", "默认", "clear", "reset"].includes(args.toLowerCase())) {
+						delete st.userThinkingLevels[peer];
+						st.peerSessionSeq[peer] = (st.peerSessionSeq[peer] || 0) + 1;
+						save();
+						await sendText(peer, "🧠 已恢复跟随全局思考强度设置。\n✨ 已自动为您开启全新会话！", ctx).catch((err) =>
+							host.log("reply slash failed:", err?.message ?? err),
+						);
+						return true;
+					}
+					const mapped = ALIAS[args.toLowerCase()];
+					if (!mapped) {
+						await sendText(
+							peer,
+							`⚠️ 无效的思考强度：${args}。可用档位：off / minimal / low / medium / high / xhigh / max`,
+							ctx,
+						).catch((err) => host.log("reply slash failed:", err?.message ?? err));
+						return true;
+					}
+					st.userThinkingLevels[peer] = mapped;
+					st.peerSessionSeq[peer] = (st.peerSessionSeq[peer] || 0) + 1;
+					save();
+					await sendText(peer, `🧠 已将思考强度设置为：${mapped}\n✨ 已自动为您开启该档位下的全新会话！`, ctx).catch(
+						(err) => host.log("reply slash failed:", err?.message ?? err),
+					);
+					return true;
+				}
+				case "plan": {
+					const trimmed = args.toLowerCase();
+					const cur = Boolean(st.userPlanMode[peer]);
+					const next = trimmed === "on" ? true : trimmed === "off" ? false : !cur;
+					st.userPlanMode[peer] = next;
+					save();
+					const msg = next
+						? "📋 计划模式已开启：AI 仅生成计划方案，不实施写操作。"
+						: "📋 计划模式已关闭：恢复正常模式。";
+					await sendText(peer, msg, ctx).catch((err) => host.log("reply slash failed:", err?.message ?? err));
+					return true;
+				}
+				case "compact": {
+					await sendText(peer, "🗜️ 正在请求压缩当前会话上下文…", ctx).catch((err) =>
+						host.log("reply slash failed:", err?.message ?? err),
+					);
+					void drivePeer(peer, `/compact ${args}`.trim(), ctx);
+					return true;
+				}
+				case "reload": {
+					try {
+						await host.reload?.();
+						await sendText(peer, "🔄 已重新加载扩展、技能与提示模板。", ctx).catch(() => {});
+					} catch (err) {
+						await sendText(peer, `⚠️ 重载失败：${err?.message ?? err}`, ctx).catch(() => {});
+					}
+					return true;
+				}
+				case "stop":
+				case "abort": {
+					let stopped = 0;
+					for (const [convId, run] of st.pendingRuns.entries()) {
+						if (run.to === peer) {
+							void host.abortRun?.(convId);
+							dropRun(convId);
+							stopped++;
+						}
+					}
+					const msg = stopped > 0 ? "⏹️ 已中止当前正在执行的任务。" : "当前没有正在执行的任务。";
+					await sendText(peer, msg, ctx).catch((err) => host.log("reply slash failed:", err?.message ?? err));
+					return true;
+				}
+				default: {
+					// 尝试执行第三方插件命令（如 /todo, /note, /remind 等）
+					if (host.execCommand) {
+						try {
+							const execRes = await host.execCommand(cmd, args, {
+								clientId: `plugin:wechat-ilink:${peerAccountId(peer)}`,
+							});
+							if (execRes?.ok && typeof execRes.result === "string" && execRes.result.trim()) {
+								await sendText(peer, execRes.result.trim(), ctx).catch((err) =>
+									host.log("reply plugin cmd failed:", err?.message ?? err),
+								);
+								return true;
+							}
+						} catch {
+							/* 忽略并回退 */
+						}
+					}
+					return false;
+				}
+			}
+		}
+
 		// ---- 入站 ----------------------------------------------------------
 		/** 记 peer 最近来消息时刻：Map 增长有界（上限 PEER_LASTAT_CAP，FIFO 淘汰最旧的），
 		 *  与 pendingPeers/peerCtx 的既有上限风格一致，防陌生 peer 无限堆积。 */
@@ -591,6 +1091,8 @@ export default {
 				touchPeerLastAt(peer, Date.now());
 				pushInbox({ dir: "in", peer, text: cut(text || "(空消息)", 500), at: Date.now() });
 				if (!text) return;
+				st.messagesReceived++;
+				save();
 				if (!isAllowed(peer)) {
 					addPending(peer);
 					const last = st.pairTipAt[peer] ?? 0;
@@ -600,6 +1102,14 @@ export default {
 					}
 					return;
 				}
+
+				// Slash command handling (/help, /clear, /new, /status, /cwd, /workspace, /model, /stop, /abort)
+				const clean = text.trim();
+				if (clean.startsWith("/") || clean.startsWith("／") || /^\d+\/[a-zA-Z]/.test(clean)) {
+					const handled = await handleSlashCommand(clean, { peer, ctx });
+					if (handled) return;
+				}
+
 				if (settings().autoDrive === false) return; // 只收不执行
 				await drivePeer(peer, text, ctx);
 			} catch (err) {
@@ -826,7 +1336,11 @@ export default {
 						break;
 					case "allow": {
 						const peer = String(msg.peer ?? "").trim();
-						if (peer && !st.allowedPeers.includes(peer)) st.allowedPeers.push(peer);
+						const isNew = peer && !st.allowedPeers.includes(peer);
+						if (isNew) {
+							st.allowedPeers.push(peer);
+							sendPairSuccess(peer).catch((err) => host.log("pair welcome failed:", err?.message ?? err));
+						}
 						st.pendingPeers = st.pendingPeers.filter((p) => p !== peer);
 						save();
 						host.notify("info", `微信已配对：${peer}`, `WeChat paired: ${peer}`);
@@ -842,6 +1356,14 @@ export default {
 					}
 					case "set_workspace": {
 						setWorkspace(msg.workspace);
+						break;
+					}
+					case "set_model": {
+						setModel(msg.model, msg.thinkingLevel);
+						break;
+					}
+					case "set_bind_active": {
+						setBindActive(msg.bindActive);
 						break;
 					}
 					case "send": {

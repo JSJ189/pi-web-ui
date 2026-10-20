@@ -6,7 +6,6 @@
  * - plugins 清单含 vscode-editor 且 hasClient
  * - list / flatlist / read / write / create / rename / delete / copy / search 全链路
  *   （reqId 匹配、GBK 解码、路径越界拒绝、忽略目录跳过、磁盘落盘核对）
- * - AI 工具已注册（服务端日志含 vsc_* 注册行）
  * - client/entry.mjs 静态服务 200 + JS Content-Type
  *
  * 运行：先 npm run build:server，再 node tests/vscode-editor-plugin-test.mjs
@@ -155,13 +154,9 @@ try {
 		fail(`vscode-editor not listed correctly: ${JSON.stringify(me)}`);
 	} else console.log("✓ plugins 清单含 vscode-editor（hasClient）");
 
-	// -- 1b. AI 工具注册：serverLog 里应有注册行、无门控拒绝行。
-	// 注：me.agentTools 快照断言本更严谨，但它要新版 dist（含 agentToolsSnapshot），
-	// 当前 dist 较旧，只能用日志口径（静默拒绝一定会打「缺少能力声明」）。
-	const aiToolsHit = serverLog.match(/AI 工具已注册 (\d+) 个/);
-	if (!aiToolsHit || Number(aiToolsHit[1]) < 15) fail(`AI 工具注册异常: ${aiToolsHit?.[0] ?? "（无注册日志）"}`);
-	else if (serverLog.includes("缺少能力声明")) fail("AI 工具被能力门控拒绝（manifest 需声明 tools）");
-	else console.log(`✓ AI 工具已注册 ${aiToolsHit[1]} 个（vsc_sftp_*/vsc_ssh_*/vsc_remote_*，无门控拒绝）`);
+	// -- 1b. 插件激活状态：serverLog 里应有激活行
+	if (!serverLog.includes("activated; workspace root:")) fail("vscode-editor 服务端激活日志未找到");
+	else console.log("✓ vscode-editor 正常激活");
 
 	// -- 2. list：根目录（目录优先排序、node_modules 被跳过） -------------------
 	let r = await rpc(sock, { action: "list", dir: "" });

@@ -1,6 +1,7 @@
 import { readFileSync } from "node:fs";
 import { resolve } from "node:path";
 import { describe, expect, it } from "vitest";
+import { readThemeCss } from "../../server/themes.js";
 
 describe("wallpaper-engine 性能优化与画质分级守卫测试", () => {
 	const manifestPath = resolve(process.cwd(), "plugins/wallpaper-engine/manifest.json");
@@ -11,7 +12,7 @@ describe("wallpaper-engine 性能优化与画质分级守卫测试", () => {
 	it("manifest.json 版本递增且提供 qualityPreset、antiAliasing 与 lightWallpaperMode 设置", () => {
 		const raw = readFileSync(manifestPath, "utf8");
 		const manifest = JSON.parse(raw);
-		expect(manifest.version).toBe("0.3.62");
+		expect(manifest.version).toBe("0.3.64");
 
 		const keys = manifest.settings.map((s: { key: string }) => s.key);
 		expect(keys).toContain("qualityPreset");
@@ -84,7 +85,7 @@ describe("wallpaper-engine 性能优化与画质分级守卫测试", () => {
 	});
 
 	it("黑曜冷月专属主题 CSS 去除了所有容器 box-shadow，顶栏底栏无多余大模糊，消息正文带方案 B 超轻微柔雾且工具调用彻底裸透无框", () => {
-		const css = readFileSync(resolve(process.cwd(), "themes/wallpaper-obsidian.css"), "utf8");
+		const css = readThemeCss(resolve(process.cwd(), "themes/wallpaper-obsidian.css"));
 		// 用户气泡、输入框、卡片等容器均已设置为 box-shadow: none
 		expect(css).toContain("box-shadow: none !important;");
 		// 顶栏与底栏保持纯净无大模糊
@@ -170,7 +171,7 @@ describe("wallpaper-engine 性能优化与画质分级守卫测试", () => {
 	});
 
 	it("极简行文专属主题提供极致紧凑排版、正文零边框零背景色与微小紧致黑色阴影，保证 AI 回答如行云流水般流畅", () => {
-		const flowCss = readFileSync(resolve(process.cwd(), "themes/wallpaper-flow.css"), "utf8");
+		const flowCss = readThemeCss(resolve(process.cwd(), "themes/wallpaper-flow.css"));
 		// 正文主体无背景、无边框、无阴影、无圆角
 		expect(flowCss).toContain(
 			".msg-assistant .msg-body {\n\tbackground: transparent !important;\n\tborder: none !important;\n\tborder-radius: 0 !important;",

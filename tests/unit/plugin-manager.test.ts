@@ -301,12 +301,13 @@ describe("PluginManager cwd 跟随", () => {
 		expect(probe().seen).toHaveLength(1); // 正常钩子仍收到事件
 	});
 
-	it("dispose 反激活后旧钩子不再被触发", async () => {
+	it("dispose 反激活后旧钩子不再被触发且清理全局表与定时器", async () => {
 		makePlugin("ed", CWD_PLUGIN);
 		await mgr.ensureLoaded();
 		mgr.dispose();
 		mgr.notifyCwd(join(dir, "y"));
 		expect(probe().seen).toHaveLength(0);
+		expect(mgr.listCommands()).toHaveLength(0);
 	});
 });
 

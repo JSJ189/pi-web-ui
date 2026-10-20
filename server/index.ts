@@ -19,7 +19,7 @@
 // MUST be imported before the SDK is loaded so on-disk patches apply cleanly.
 import "./patch-remote-catalog.js";
 import "./patch-turn-end-boundary.js";
-import { existsSync, mkdirSync, readFileSync } from "node:fs";
+import { existsSync, mkdirSync, readFileSync, statSync } from "node:fs";
 import { stat } from "node:fs/promises";
 import { createServer, request as proxyRequest, type IncomingMessage } from "node:http";
 import { createConnection } from "node:net";
@@ -42,7 +42,7 @@ import { isAudioFile, previewKind } from "./text-sniff.js";
 import { startControlServer } from "./control-socket.js";
 import { scheduleUploadCleanup } from "./uploads.js";
 import { ensureWindowsBash, windowsBashDir } from "./ensure-bash.js";
-import { listThemes, resolveThemeFile } from "./themes.js";
+import { listThemes, readThemeCss, resolveThemeFile } from "./themes.js";
 import { isManaged, managedRefusal } from "./managed.js";
 import { launchOrigin, toServiceInfo } from "./launch-origin.js";
 import { parseTabs, tabsRefusal } from "./tabs.js";
@@ -747,7 +747,24 @@ app.delete("/api/locales/:code", (req, res) => {
 	unloadServerStrings(code);
 	res.json({ ok: true });
 });
+// Serve theme base stylesheets directly if requested (e.g. /themes/bases/flow-base.css).
+app.get("/themes/bases/:name.css", (req, res) => {
+	if (!/^[A-Za-z0-9_-]+$/.test(req.params.name)) {
+		res.status(404).end("base not found");
+		return;
+	}
+	const baseFile = join(BUILTIN_THEMES_DIR, "bases", `${req.params.name}.css`);
+	if (!existsSync(baseFile) || !statSync(baseFile).isFile()) {
+		res.status(404).end("base not found");
+		return;
+	}
+	res.setHeader("Content-Type", "text/css; charset=utf-8");
+	res.setHeader("Cache-Control", "no-cache");
+	res.sendFile(baseFile);
+});
+
 // Serve a theme's full CSS file so the frontend can swap the whole stylesheet.
+// Supports server-side @import inlining for shared theme bases (e.g. bases/flow-base.css).
 // Registered before the SPA catch-all below (otherwise it'd return index.html).
 app.get("/themes/:id.css", (req, res) => {
 	const file = resolveThemeFile(BUILTIN_THEMES_DIR, USER_THEMES_DIR, req.params.id);
@@ -757,10 +774,8 @@ app.get("/themes/:id.css", (req, res) => {
 	}
 	res.setHeader("Content-Type", "text/css; charset=utf-8");
 	res.setHeader("Cache-Control", "no-cache");
-	// dotfiles: allow — issue #223：Express 5 的 send 默认 dotfiles=ignore，主题文件位于
-	// 隐藏目录下（如 ~/.pi-web/themes、npm 全局目录 ~/.local/…）时会被判 404。路径已由
-	// resolveThemeFile 校验（id 白名单 + 仅已知目录 + isFile），放行安全。
-	res.sendFile(file, { dotfiles: "allow" });
+	const css = readThemeCss(file);
+	res.send(css);
 });
 
 // Plugin client bundles: <dataDir>/plugins/<id>/client/* served at

@@ -1,7 +1,7 @@
 import { describe, expect, it } from "vitest";
 import { join } from "node:path";
 import { readFileSync } from "node:fs";
-import { listThemes, resolveThemeFile } from "../../server/themes.js";
+import { listThemes, readThemeCss, resolveThemeFile } from "../../server/themes.js";
 
 const BUILTIN_DIR = join(__dirname, "../../themes");
 const USER_DIR = join(__dirname, "../../tests/fixtures/non-existent");
@@ -135,7 +135,7 @@ describe("主题分组与现代经典主题测试", () => {
 		expect(byId.get("zhujian-dark")?.scheme).toBe("dark");
 
 		for (const file of ["zhujian.css", "zhujian-dark.css"]) {
-			const css = readFileSync(join(BUILTIN_DIR, file), "utf8");
+			const css = readThemeCss(join(BUILTIN_DIR, file));
 			expect(css).toContain("border: 1px solid var(--border-soft) !important;");
 			expect(css).toContain("background: var(--code-bg) !important;");
 			expect(css).toContain(".thinking-body:empty::after");

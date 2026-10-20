@@ -115,7 +115,7 @@ export function computePortalDropdownPosition({
 	align = "right",
 	gap = 6,
 	margin = 8,
-}: PortalDropdownParams): { left: number; top: number } {
+}: PortalDropdownParams): { left: number; top: number; maxHeight?: number } {
 	if (menuWidth <= 0 || viewportWidth <= 0 || viewportHeight <= 0) {
 		return { left: Math.round(triggerRect.left), top: Math.round(triggerRect.bottom + gap) };
 	}
@@ -125,6 +125,10 @@ export function computePortalDropdownPosition({
 
 	let left = margin;
 	let top = margin;
+	let maxHeight: number | undefined;
+
+	const spaceAbove = Math.max(0, triggerRect.top - gap - margin);
+	const spaceBelow = Math.max(0, viewportHeight - triggerRect.bottom - gap - margin);
 
 	if (direction === "right") {
 		// 向右展开（左侧停靠栏）：默认挂在触发器右侧
@@ -141,6 +145,7 @@ export function computePortalDropdownPosition({
 			top = viewportHeight - margin - menuHeight;
 		}
 		top = Math.max(margin, Math.min(top, maxTop));
+		maxHeight = Math.max(0, viewportHeight - 2 * margin);
 	} else if (direction === "left") {
 		// 向左展开（右侧停靠栏）：默认挂在触发器左侧
 		left = triggerRect.left - menuWidth - gap;
@@ -156,33 +161,64 @@ export function computePortalDropdownPosition({
 			top = viewportHeight - margin - menuHeight;
 		}
 		top = Math.max(margin, Math.min(top, maxTop));
+		maxHeight = Math.max(0, viewportHeight - 2 * margin);
 	} else if (direction === "up") {
-		// 向上展开（底栏）：默认挂在触发器上方
-		top = triggerRect.top - menuHeight - gap;
-		// 上方放不下且下方放得下时翻到下方
-		if (top < margin && triggerRect.bottom + gap + menuHeight <= viewportHeight - margin) {
+		// 向上展开（底栏/居中输入框）：默认挂在触发器上方
+		if (spaceAbove >= menuHeight) {
+			// 上方空间充足
+			top = triggerRect.top - menuHeight - gap;
+			maxHeight = spaceAbove;
+		} else if (spaceBelow >= menuHeight) {
+			// 上方不足但下方充足，翻转到下方
 			top = triggerRect.bottom + gap;
+			maxHeight = spaceBelow;
+		} else if (spaceBelow > spaceAbove) {
+			// 两边都不足以容纳原尺寸，但下方空间更大，翻转到下方并限制高度
+			top = triggerRect.bottom + gap;
+			maxHeight = spaceBelow;
+		} else {
+			// 两边都不足，上方空间更大或相等，留在上方并限制高度
+			maxHeight = spaceAbove;
+			top = triggerRect.top - Math.min(menuHeight, spaceAbove) - gap;
 		}
-		top = Math.max(margin, Math.min(top, maxTop));
+		const boundedMaxTop = Math.max(margin, viewportHeight - margin - Math.min(menuHeight, maxHeight));
+		top = Math.max(margin, Math.min(top, boundedMaxTop));
 
 		// 水平方向：由 align 决定
 		const naturalLeft = align === "left" ? triggerRect.left : triggerRect.right - menuWidth;
 		left = Math.max(margin, Math.min(naturalLeft, maxLeft));
 	} else {
 		// 默认向下展开（顶栏）
-		top = triggerRect.bottom + gap;
-		// 下方放不下且上方放得下时翻到上方
-		if (top + menuHeight > viewportHeight - margin && triggerRect.top - menuHeight - gap >= margin) {
+		if (spaceBelow >= menuHeight) {
+			// 下方空间充足
+			top = triggerRect.bottom + gap;
+			maxHeight = spaceBelow;
+		} else if (spaceAbove >= menuHeight) {
+			// 下方不足但上方充足，翻转到上方
 			top = triggerRect.top - menuHeight - gap;
+			maxHeight = spaceAbove;
+		} else if (spaceAbove > spaceBelow) {
+			// 两边都不足以容纳原尺寸，但上方空间更大，翻转到上方并限制高度
+			top = triggerRect.top - Math.min(menuHeight, spaceAbove) - gap;
+			maxHeight = spaceAbove;
+		} else {
+			// 两边都不足，下方空间更大或相等，留在下方并限制高度
+			top = triggerRect.bottom + gap;
+			maxHeight = spaceBelow;
 		}
-		top = Math.max(margin, Math.min(top, maxTop));
+		const boundedMaxTop = Math.max(margin, viewportHeight - margin - Math.min(menuHeight, maxHeight));
+		top = Math.max(margin, Math.min(top, boundedMaxTop));
 
 		// 水平方向：由 align 决定
 		const naturalLeft = align === "left" ? triggerRect.left : triggerRect.right - menuWidth;
 		left = Math.max(margin, Math.min(naturalLeft, maxLeft));
 	}
 
-	return { left: Math.round(left), top: Math.round(top) };
+	return {
+		left: Math.round(left),
+		top: Math.round(top),
+		...(maxHeight !== undefined ? { maxHeight: Math.round(maxHeight) } : {}),
+	};
 }
 
 /** Click-outside-aware dropdown menu. */
@@ -207,7 +243,7 @@ export function Dropdown({
 	const ref = useRef<HTMLDivElement>(null);
 	const internalMenuRef = useRef<HTMLDivElement | null>(null);
 	const [shift, setShift] = useState(0);
-	const [portalPos, setPortalPos] = useState<{ left: number; top: number } | null>(null);
+	const [portalPos, setPortalPos] = useState<{ left: number; top: number; maxHeight?: number } | null>(null);
 
 	const setMenuNode = (node: HTMLDivElement | null) => {
 		internalMenuRef.current = node;
@@ -247,7 +283,11 @@ export function Dropdown({
 				gap: 6,
 				margin: 8,
 			});
-			setPortalPos((prev) => (prev?.left === nextPos.left && prev?.top === nextPos.top ? prev : nextPos));
+			setPortalPos((prev) =>
+				prev?.left === nextPos.left && prev?.top === nextPos.top && prev?.maxHeight === nextPos.maxHeight
+					? prev
+					: nextPos,
+			);
 		} else {
 			const w = menuRect.width;
 			const MARGIN = 8;
@@ -303,11 +343,20 @@ export function Dropdown({
 				position: "fixed",
 				left: portalPos ? `${portalPos.left}px` : "-9999px",
 				top: portalPos ? `${portalPos.top}px` : "-9999px",
+				maxHeight:
+					portalPos?.maxHeight != null
+						? menuStyle?.maxHeight != null
+							? `min(${portalPos.maxHeight}px, ${menuStyle.maxHeight})`
+							: `${portalPos.maxHeight}px`
+						: menuStyle?.maxHeight,
 				right: "auto",
 				bottom: "auto",
 				pointerEvents: "auto",
 				visibility: portalPos ? "visible" : "hidden",
 			};
+
+	const isPortalUp =
+		portalPos != null && ref.current ? portalPos.top < ref.current.getBoundingClientRect().top : direction === "up";
 
 	return (
 		<div className={`dropdown ${align} ${fit ? "fit" : ""} ${direction === "up" ? "dd-up" : ""}`} ref={ref}>
@@ -327,7 +376,7 @@ export function Dropdown({
 				(portal ? (
 					createPortal(
 						<div
-							className={`dd-portal-wrapper dropdown ${align} ${fit ? "fit" : ""} ${direction === "up" ? "dd-up" : ""}`}
+							className={`dd-portal-wrapper dropdown ${align} ${fit ? "fit" : ""} ${isPortalUp ? "dd-up" : ""}`}
 							style={{
 								position: "fixed",
 								left: 0,

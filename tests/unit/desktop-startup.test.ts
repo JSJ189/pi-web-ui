@@ -6,6 +6,7 @@ import { join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { describe, expect, it } from "vitest";
 import {
+	DEFAULT_DESKTOP_PORT,
 	DEFAULT_HEALTH_TIMEOUT_MS,
 	MIN_HEALTH_TIMEOUT_MS,
 	buildDesktopLoadUrl,
@@ -42,6 +43,10 @@ describe("desktop/electron-builder.yml 打包清单守卫 (issue #583)", () => {
 });
 
 describe("desktop/startup.ts 启动纯逻辑 (issue #584)", () => {
+	it("DEFAULT_DESKTOP_PORT 常量定义为 8790（保持桌面与网页版 8787 隔离）", () => {
+		expect(DEFAULT_DESKTOP_PORT).toBe(8790);
+	});
+
 	it("resolveHealthTimeoutMs 默认 60s，支持 PI_WEB_HEALTH_TIMEOUT_MS 覆盖并夹紧下限", () => {
 		expect(resolveHealthTimeoutMs({})).toBe(DEFAULT_HEALTH_TIMEOUT_MS);
 		expect(resolveHealthTimeoutMs({ PI_WEB_HEALTH_TIMEOUT_MS: "" })).toBe(DEFAULT_HEALTH_TIMEOUT_MS);

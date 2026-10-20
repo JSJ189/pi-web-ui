@@ -830,4 +830,23 @@ STEPS:
 		// 第 2 轮复用既有执行者，不得中断用户在主对话的新聊天
 		expect(interrupted).toEqual([]);
 	});
+
+	it("notifyTakeover 过户时失效 goalGeneration 并重置 reviewing 态与循环计数", () => {
+		const h = makeHarness();
+		const conv = h.conv();
+		conv.goalGeneration = 1;
+		conv.goal.reviewing = true;
+		conv.stagnantRounds = 1;
+		conv.failedRounds = 1;
+		conv.sameErrorRounds = 1;
+
+		h.svc.notifyTakeover(conv);
+
+		expect(conv.goalGeneration).toBe(2);
+		expect(conv.goal.reviewing).toBe(false);
+		expect(conv.goal.phase).toBe("idle");
+		expect(conv.stagnantRounds).toBe(0);
+		expect(conv.failedRounds).toBe(0);
+		expect(conv.sameErrorRounds).toBe(0);
+	});
 });

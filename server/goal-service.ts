@@ -929,6 +929,7 @@ export class GoalService {
 		let refinedGoal = "";
 		let parsedSteps: PlanStep[] = [];
 		let goalEphemeralDir: string | undefined;
+		let srvSession: AgentSession | undefined;
 		try {
 			const wmSpec = opts?.wizardModel ? parseModelSpec(opts.wizardModel) : null; // "provider/id" 解析（唯一事实源）
 			const services = await createAgentSessionServices({
@@ -1139,6 +1140,7 @@ export class GoalService {
 				tools: ["goal_ask", "read", "ls", "find", "grep"],
 				...(model ? { model } : {}),
 			});
+			srvSession = srv.session;
 			const wizard = srv.session;
 			this.wizardSession = wizard;
 			await wizard.bindExtensions({ mode: "rpc", uiContext: this.host.webUi });
@@ -1221,7 +1223,6 @@ export class GoalService {
 			const parsed = parseWizardOutput(rawAssistantText);
 			refinedGoal = parsed.goal;
 			parsedSteps = parsed.steps;
-			await srv.session.dispose();
 		} catch (err) {
 			this.host.emit({
 				type: "notice",
@@ -1239,6 +1240,12 @@ export class GoalService {
 			wgoal.wizard.status = "";
 			wgoal.wizard.statusEn = "";
 			this.wizardSession = null;
+			this.wizardAbort = null;
+			if (srvSession) {
+				try {
+					await srvSession.dispose();
+				} catch {}
+			}
 			if (goalEphemeralDir) {
 				try {
 					rmSync(goalEphemeralDir, { recursive: true, force: true });
@@ -1261,7 +1268,6 @@ export class GoalService {
 					`Goal survey cancelled${ac.signal.reason ? `: ${String((ac.signal.reason as Error)?.message ?? ac.signal.reason)}` : ""}` +
 					`. The initial goal draft is preserved in the conversation "${wizardConversationTitle}" — copy it and start over.`,
 			});
-			this.wizardAbort = null;
 			return;
 		}
 		if (!refinedGoal.trim()) {
@@ -1309,7 +1315,6 @@ export class GoalService {
 			autoStart: false,
 		});
 		this.wizardCancelled = false;
-		this.wizardAbort = null;
 		this.host.emit({
 			type: "notice",
 			level: "info",
@@ -1762,6 +1767,9 @@ export class GoalService {
 
 	/** 会话过户时清理目标审查态并唤醒等待者（issue #457）。 */
 	notifyTakeover(conv: GoalConversation): void {
+		conv.goalGeneration = (conv.goalGeneration ?? 0) + 1;
+		conv.goal.reviewing = false;
+		this.resetLoopCounters(conv);
 		this.delegatedPending.delete(conv.id);
 		conv.awaitingVerdict = undefined;
 		void this.flushDeferredPrompts(conv);
