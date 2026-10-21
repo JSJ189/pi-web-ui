@@ -77,25 +77,15 @@ export class MarkerService {
 	buildGuidance(): string {
 		if (!this.settings.markersEnabled) return "";
 		const disabled = new Set(this.settings.disabledMarkers);
-		const lines = collectGuidance(disabled, this.lang());
+		// AI guidance is strictly in concise English matching tool prompt guidelines.
+		const lines = collectGuidance(disabled, "en");
 		if (lines.length === 0) return "";
-		// The dynamic lines ride the `{lines}` slot so translator packs can
-		// place them (a static table value could never inline them).
 		const linesText = lines.join("\n");
-		return pick(
-			this.lang(),
-			"\n\n────────── 内联标记工具（重要）──────────\n" +
-				"状态类操作（操作建议、对话重命名、通知）请直接写在回答正文里，采用内联标记语法，而不要调用对应工具。\n" +
-				"插件会替你执行并把标记从展示文本中移除，不会中断你的回答。\n\n" +
-				linesText +
-				"\n──────────\n",
-			"\n\n────────── Inline marker tools (important) ──────────\n" +
-				"Write status operations (action suggestions, conversation renaming, notifications) directly in your reply text using inline marker syntax — do not call a tool for them.\n" +
-				"The plugin executes them and strips the markers from the displayed text without interrupting your reply.\n\n" +
-				linesText +
-				"\n──────────\n",
-			"markers.service.guidance.frame",
-			{ lines: linesText },
+		return (
+			"\n\n────────── Inline Markers ──────────\n" +
+			"Use inline markers in reply text for status actions (never call tools for them). Markers are executed and stripped before display.\n\n" +
+			linesText +
+			"\n──────────\n"
 		);
 	}
 
@@ -286,7 +276,7 @@ export class MarkerService {
 	overlayLines(conversationId: string): string[] {
 		const lines: string[] = [];
 		for (const m of allMarkers()) {
-			if (m.name === "suggest") continue;
+			if (m.isAlias || m.name === "suggest") continue;
 			if (this.settings.disabledMarkers.includes(m.name)) continue;
 			if (!m.overlay) continue;
 			let state: unknown;
@@ -338,7 +328,7 @@ export class MarkerService {
 		const seen = new Set<string>();
 		const out: Array<{ name: string; enabled: boolean; guidance: string[] }> = [];
 		for (const m of allMarkers()) {
-			if (m.name === "suggest") continue;
+			if (m.isAlias || m.name === "suggest") continue;
 			if (seen.has(m.name)) continue;
 			seen.add(m.name);
 			out.push({

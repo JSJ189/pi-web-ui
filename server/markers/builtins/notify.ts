@@ -8,11 +8,11 @@ import { getServerBlock, pick, type ServerLang } from "../../i18n.js";
 const NOTIFY_GUIDANCE_ZH: string[] = [
 	// #499：guidance 只能承诺协议真实支持的级别——success 从未存在于 notice 协议
 	// （protocol.ts 仅 info|warning|error），按指引用 success 会被静默降级成 info。
-	"- [[notify:<级别>:<内容>]] 仅向用户显示一个非打断性提醒，不会进入正文。级别为 info|warning|error。",
+	"- 浮动通知：[[notify:<级别>:<内容>]]（级别：info|warning|error，不进入正文）。",
 ];
 
 const NOTIFY_GUIDANCE_EN: string[] = [
-	"- [[notify:<level>:<message>]] shows a non-interruptive notice to the user only; it never enters the reply text. Levels: info|warning|error.",
+	"- Non-interruptive toast: [[notify:<level>:<message>]] (level: info|warning|error; omitted from reply).",
 ];
 
 /** 语言感知的 notify guidance（issue #91）：en 用英译、zh 用中文，默认英文。 */

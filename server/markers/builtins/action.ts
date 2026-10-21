@@ -33,15 +33,11 @@ export function initActionState(): ActionState {
 }
 
 const ACTION_GUIDANCE_ZH: string[] = [
-	"- 建议后续操作：[[action:suggest:<文字>]]（当期待用户操作时，如是否继续、后续步骤选择；在对话最底部生成按钮，用户点击即发送该文字）",
-	"- 可指定不同按钮显示与发送内容：[[action:suggest:<按钮显示>,prompt=<实际发送文本>]]",
-	"- 清空候选操作：[[action:clear:all]]",
+	"- 建议操作按钮：[[action:suggest:<按钮文字>]]（一个标记对应一个按钮；多个选项请输出多个独立标记：[[action:suggest:选项A]] [[action:suggest:选项B]]，切勿合并）。区分发送内容：[[action:suggest:<显示>,prompt=<发送>]]。清空：[[action:clear:all]]。",
 ];
 
 const ACTION_GUIDANCE_EN: string[] = [
-	"- Suggest next actions: [[action:suggest:<text>]] (when expecting user input, e.g. whether to continue, what to do next; creates buttons at the bottom of the conversation, clicked to send text immediately)",
-	"- Optional separate prompt: [[action:suggest:<label>,prompt=<text to send>]]",
-	"- Clear suggestions: [[action:clear:all]]",
+	"- Suggest action buttons: [[action:suggest:<label>]] (one marker per button; for multiple choices output separate markers: [[action:suggest:A]] [[action:suggest:B]], NEVER join options in one marker). Separate prompt: [[action:suggest:<label>,prompt=<text>]]. Clear: [[action:clear:all]].",
 ];
 
 /** 语言感知的 action guidance：en 用英译、zh 用中文，默认英文。 */
@@ -157,4 +153,7 @@ export const actionMarker: MarkerTool<ActionState> = {
 export const suggestMarker: MarkerTool<ActionState> = {
 	...actionMarker,
 	name: "suggest",
+	isAlias: true,
+	guidance: [],
+	getGuidance: () => [],
 };

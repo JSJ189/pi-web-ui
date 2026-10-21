@@ -24,8 +24,10 @@ export function allMarkers(): MarkerTool<unknown>[] {
 export function collectGuidance(disabled: Set<string> = new Set(), lang: ServerLang = "en"): string[] {
 	const out: string[] = [];
 	for (const m of allMarkers()) {
+		if (m.isAlias) continue;
 		if (disabled.has(m.name)) continue;
-		out.push(...(m.getGuidance?.(lang) ?? m.guidance));
+		const lines = m.getGuidance?.(lang) ?? m.guidance;
+		if (lines && lines.length > 0) out.push(...lines);
 	}
 	return out;
 }

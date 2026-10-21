@@ -21,10 +21,10 @@ function extractTitle(token: ParsedToken): string {
 	return fromArgs || fromKw;
 }
 
-const RENAME_GUIDANCE_ZH: string[] = ["- 重命名当前对话：[[conv:rename:<新标题>]]（在了解了用户需求后尽早重命名对话）"];
+const RENAME_GUIDANCE_ZH: string[] = ["- 重命名对话：[[conv:rename:<新标题>]]（明确意图后尽早调用一次）。"];
 
 const RENAME_GUIDANCE_EN: string[] = [
-	"- Rename the current conversation: [[conv:rename:<new title>]] (do it early, once you understand what the user needs)",
+	"- Rename conversation: [[conv:rename:<title>]] (call once early when user intent is clear).",
 ];
 
 /** 语言感知的 conv guidance（issue #91）：en 用英译、zh 用中文，默认英文。 */

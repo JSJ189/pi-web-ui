@@ -302,6 +302,90 @@ describe("findTurnBaseEntryId：带附件提问重问/分叉时的基准节点�
 		expect(findTurnBaseEntryId(sm, "e5")).toBe("e2");
 	});
 
+	it("真实 SDK 树结构：提问与附件间夹带 SDK system 截面时，跳过 system 与全部附件返回上一轮回复", () => {
+		const entries = [
+			{
+				id: "e1",
+				parentId: null,
+				type: "message",
+				message: { role: "user", content: [{ type: "text", text: "第1轮" }] },
+			},
+			{
+				id: "e2",
+				parentId: "e1",
+				type: "message",
+				message: { role: "assistant", content: [{ type: "text", text: "第1轮回复" }] },
+			},
+			// 第2轮的前置附件（对话引用 + 图片）
+			{ id: "e3", parentId: "e2", type: "custom_message", customType: "file", details: { mode: "conversation" } },
+			{ id: "e4", parentId: "e3", type: "custom_message", customType: "file", details: { mode: "image" } },
+			// SDK 在 prompt() 时注入的系统提示词截面
+			{ id: "e5", parentId: "e4", type: "message", message: { role: "system", content: [{ type: "text", text: "" }] } },
+			// 用户第2轮提问
+			{
+				id: "e6",
+				parentId: "e5",
+				type: "message",
+				message: { role: "user", content: [{ type: "text", text: "第2轮提问" }] },
+			},
+		];
+		const sm = makeMockSessionManager(entries);
+		// 必须穿透 e5 (system) 和 e4/e3 (file 附件)，精准返回 e2 (上一轮回复)，杜绝 fork 保留旧附件
+		expect(findTurnBaseEntryId(sm, "e6")).toBe("e2");
+	});
+
+	it("真实 SDK 树结构：首轮提问夹带 model_change、thinking_level_change、附件及 system 截面时，回退到根（null）", () => {
+		const entries = [
+			{ id: "e1", parentId: null, type: "model_change" },
+			{ id: "e2", parentId: "e1", type: "thinking_level_change" },
+			{ id: "e3", parentId: "e2", type: "custom_message", customType: "file", details: { mode: "conversation" } },
+			{ id: "e4", parentId: "e3", type: "custom_message", customType: "file", details: { mode: "image" } },
+			{ id: "e5", parentId: "e4", type: "message", message: { role: "system", content: [{ type: "text", text: "" }] } },
+			{
+				id: "e6",
+				parentId: "e5",
+				type: "message",
+				message: { role: "user", content: [{ type: "text", text: "首轮提问" }] },
+			},
+		];
+		const sm = makeMockSessionManager(entries);
+		// 追溯到顶部无任何前置对话轮次，返回 null 触发 newSession 彻底重建
+		expect(findTurnBaseEntryId(sm, "e6")).toBeNull();
+	});
+
+	it("多轮对话上一轮以 toolResult 结尾（无最终 assistant 回复）时，回退到 toolResult 节点", () => {
+		const entries = [
+			{
+				id: "e1",
+				parentId: null,
+				type: "message",
+				message: { role: "user", content: [{ type: "text", text: "执行操作" }] },
+			},
+			{
+				id: "e2",
+				parentId: "e1",
+				type: "message",
+				message: { role: "assistant", content: [{ type: "text", text: "好的" }] },
+			},
+			{
+				id: "e3",
+				parentId: "e2",
+				type: "message",
+				message: { role: "toolResult", content: [{ type: "text", text: "错误" }] },
+			},
+			{ id: "e4", parentId: "e3", type: "custom_message", customType: "file" },
+			{ id: "e5", parentId: "e4", type: "message", message: { role: "system" } },
+			{
+				id: "e6",
+				parentId: "e5",
+				type: "message",
+				message: { role: "user", content: [{ type: "text", text: "重试" }] },
+			},
+		];
+		const sm = makeMockSessionManager(entries);
+		expect(findTurnBaseEntryId(sm, "e6")).toBe("e3");
+	});
+
 	it("普通提问无附件：第一轮返回 null，后续轮返回前一条 entry", () => {
 		const entries = [
 			{

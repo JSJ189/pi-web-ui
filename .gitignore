@@ -26,6 +26,11 @@ plugins/*/storage.json
 plugins/*/secrets.bin
 plugins/*/schedules.json
 plugins/webmail/package*.json
+plugins/*/*.token*
+plugins/*/*.cookie*
+plugins/*/*_token*
+plugins/*/*_cookie*
+plugins/*/*_session*
 
 # Scratch/test temp files
 tests/scratch/

@@ -196,22 +196,20 @@ export function PluginManagerModal({
 			onClose={onClose}
 			className="plugin-mgr-modal"
 			ariaLabel={t("pluginManagerTitle")}
-			showCloseButton
+			showCloseButton={false}
 		>
 			<div className="plugin-mgr-head">
 				<div className="plugin-mgr-title-row">
-					<div className="plugin-mgr-title-left">
+					<div
+						className="plugin-mgr-title-left"
+						title={t("pluginCountSummary", {
+							total: counts.total,
+							enabled: counts.enabled,
+							configurable: counts.configurable,
+						})}
+					>
 						<FiBox className="plugin-mgr-title-icon" aria-hidden />
-						<div className="plugin-mgr-title-texts">
-							<h2 className="plugin-mgr-title">{t("pluginManagerTitle")}</h2>
-							<span className="plugin-mgr-subtitle">
-								{t("pluginCountSummary", {
-									total: counts.total,
-									enabled: counts.enabled,
-									configurable: counts.configurable,
-								})}
-							</span>
-						</div>
+						<h2 className="plugin-mgr-title">{t("pluginManagerTitle")}</h2>
 					</div>
 					<div className="plugin-mgr-title-actions">
 						<button
@@ -237,6 +235,15 @@ export function PluginManagerModal({
 								<span>{t("pluginGoMarket")}</span>
 							</button>
 						)}
+						<button
+							type="button"
+							className="plugin-mgr-close-btn"
+							aria-label={t("close")}
+							title={t("close")}
+							onClick={onClose}
+						>
+							<FiX aria-hidden />
+						</button>
 					</div>
 				</div>
 
