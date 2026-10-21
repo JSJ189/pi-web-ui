@@ -10,13 +10,10 @@
   （远程文件经 SFTP 写回）、CRLF 行尾保留、Ctrl+P 快速打开（本地）
 - **底部可拖拽终端面板**：每台已连接主机可开多个 shell（xterm.js），窗口
   尺寸同步、keepalive 保活；右键远端文件/文件夹可在所在目录打开终端
-- **SFTP 同步**（☁ 菜单）：工作区整体上传/下载、上传当前文件、保存自动上传
-  （uploadOnSave）；配置存工作区 `.vscode/sftp.json`，与 **vscode-sftp / Natizyskunk.sftp**
-  配置格式兼容——可直接把 VS Code 里的 `sftp.json` 拷过来用（Ctrl+S 即生效）。
-  支持的字段：`name` / `host` / `port` / `username` / `password` / `passphrase` /
-  `privateKey` / `privateKeyPath`（支持 `~` 展开，如 `~/.ssh/id_rsa`）/ `remotePath`（即
-  远端根目录）/ `ignore`（glob 排除规则）/ `uploadOnSave` / 旧版 `watcher.autoUpload` /
-  `agent`（如 `$SSH_AUTH_SOCK` 走 ssh-agent）。密码、私钥、agent 三者任选其一即可。
+- **右键菜单继承宿主扩展点（contextmenu.file）**：本地文件树右键直接呼出宿主
+  全局统一的右键菜单，自动继承宿主内置文件操作及所有其他插件注册的能力
+  （如配合 `@plugins/sftp` 插件时，右键自动出现「上传到远端 / 上传此目录 / 从远端下载 /
+  添加到 SFTP 忽略」等完整能力，无需在编辑器内单独配置与维护）
 - **下载到电脑**（右键菜单）：本地文件直下；远端文件/文件夹不经工作区映射、
   文件夹在远端就地 tar.gz 打包，保存位置自选
 - **上传文件**：工具栏 ⬆ 一键上传到工作区根目录；右键菜单「上传文件到此处…」
@@ -24,8 +21,6 @@
   首台已连 SSH 主机根；本地与远端 SFTP 均支持）；拖拽文件到文件树——文件夹行 →
   该文件夹、文件行 → 其所在目录、空白处 → 根目录（分片协议带覆盖确认与进度提示，
   树内拖拽会被插件拦截，不会触发主应用的「附加到对话」）
-- **AI 自主操作**：插件向 AI 注册 15 个 `vsc_sftp_*` / `vsc_ssh_*` / `vsc_remote_*`
-  工具（见下），模型可自己配置 SFTP/SSH、上传代码、读写远端文件，无需人类代点。
 
 原独立的 ssh 插件已合并进来：旧 `<pluginDir>/ssh-hosts.json` 主机配置在首次
 激活时自动迁移，无需手工搬。
@@ -53,10 +48,11 @@
   不整树重绘闪烁；收起零延迟
 - **选中高亮**：点/右键任意行都高亮选中，工具栏 ＋📄/＋📁 以当前选中目录
   为落点（选文件则落在其所在文件夹）；新建/创建副本成功后新条目成为选中项
-- **右键菜单**（本地与远端 SFTP 同口径，与右栏文件列表对齐）：新建 / 重命名 /
+- **右键菜单**：本地树无缝继承宿主 `contextmenu.file` 全局右键菜单，具备
+  完整的文件操作与第三方插件（如 `@plugins/sftp`）能力；远端树支持：新建 / 重命名 /
   删除（目录递归删）/ 剪切 / 复制 / 粘贴到此处（同 scope 内移动或复制）/
   创建副本（`foo_copy.js`，重名自动递增）/ 复制路径 / 上传文件到此处… /
-  双向同步（本地行）/ 下载到电脑 / 打开终端（远端行，scope 感知）
+  下载到电脑 / 打开终端（远端行，scope 感知）
 - **文件名搜索**：两棵树工具栏 🔍（本地全仓 / 远端以当前选中目录为起点收窄），
   结果复用 Ctrl+P 浮层（远端命中带 🌐 标记），点选即打开
 
@@ -69,40 +65,12 @@ fs 或该连接的 SFTP，前后端共用一套代码路径。`copy` 语义：`s
 调用方按 `_copy` 后缀算好），`move: true` 为移动/改名；`search` 为文件名
 大小写不敏感子串搜索（50 条封顶，本地 `base` 相对路径、远端 `baseDir` 绝对路径）。
 
-## AI 工具（模型自主配置 SFTP/SSH、上传代码）
-
-插件激活时经 `host.registerAgentTool` 注册 15 个工具（manifest 需声明 `tools`
-能力），与 UI 表单共用同一套 `upsert*/dial*/remote*` 后端——人类在界面上点
-的和 AI 调的走同一份校验与落盘逻辑：
-
-| 工具 | 一句话 |
-| --- | --- |
-| `vsc_sftp_get` | 读当前工作区 SFTP 配置（脱敏）+ 配置路径 |
-| `vsc_sftp_save` | 新建/更新 SFTP 配置（缺席字段沿用旧值，落盘 `.vscode/sftp.json`） |
-| `vsc_sftp_test` | 测试 SFTP 连接 + 远端根可达 |
-| `vsc_sftp_sync` | 同步上传/下载：`direction=up/down`，`scope=file/tree/all` |
-| `vsc_ssh_hosts` | 列主机（脱敏）+ 存活连接（含 `connId`） |
-| `vsc_ssh_save` | 新建/更新 SSH 主机（凭据进加密存储），返回主机 id |
-| `vsc_ssh_connect` | 按主机 id 拨号，返回 `connId` |
-| `vsc_ssh_disconnect` | 断开连接 |
-| `vsc_ssh_exec` | 远端执行命令（日志/重启/解压等），回 exitCode+输出 |
-| `vsc_remote_list` / `read` / `write` | 远端列目录 / 读 / 写（父目录自动补） |
-| `vsc_remote_copy` | 远端复制/移动（含目录递归，`dest` 已存在拒绝） |
-| `vsc_remote_delete` | 远端删除（目录含非空递归删，不可恢复） |
-| `vsc_remote_search` | 远端文件名搜索 |
-
-典型自主流程：`vsc_sftp_get` 看是否配过 → 没有就 `vsc_sftp_save`（用户给过
-主机/账号/密码或私钥路径）→ `vsc_sftp_test` → `vsc_sftp_sync(direction=up)`
-上传代码；临时操作远端用 `vsc_ssh_save` + `vsc_ssh_connect` + `vsc_remote_*` /
-`vsc_ssh_exec`，用完 `vsc_ssh_disconnect`。
-
 ## 目录结构
 
 ```
 vscode-editor/
 ├── manifest.json        # 插件清单（id/icon/name）
-├── index.mjs            # 服务端入口：本地文件 CRUD / SFTP 同步（.vscode/sftp.json）/
-│                        #   SSH 主机管理 + 连接池 + PTY shell + exec + 远程 SFTP 操作
+├── index.mjs            # 服务端入口：本地文件 CRUD / SSH 主机管理 + 连接池 + PTY shell + exec + 远程 SFTP 操作
 ├── src/client.js        # 客户端源码（CodeMirror 6 + xterm.js）
 ├── build.mjs            # esbuild 打包脚本（xterm CSS 内联为文本）
 ├── package.json         # 构建/依赖清单（ssh2 为 devDep，运行时由服务端自动补装）

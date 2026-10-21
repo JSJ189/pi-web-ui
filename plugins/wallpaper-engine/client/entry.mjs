@@ -1,7 +1,7 @@
 /**
  * wallpaper-engine 客户端入口 (v0.3.13) —— 视频/WebGL2 Scene/Web 全能渲染、多套专属主题热切换、音频联动与自动轮播。
  */
-import { DRAWER_CSS, getGlassThemeCss, WALLPAPER_THEMES } from "./styles.mjs?v=0.3.62";
+import { DRAWER_CSS, getGlassThemeCss, WALLPAPER_THEMES } from "./styles.mjs?v=0.3.65";
 
 const RUNTIME_KEY = "__piWallpaperEngineRuntime";
 
@@ -1473,6 +1473,15 @@ function createDrawer(bgLayer, state, onStateChange, triggerRotate) {
 
 // ------------------------------------------------------------ 工具调用与思考流详情检查器（Inline Code Pill Inspector）
 function createToolInspector() {
+	if (globalThis.__piToolInspectorActive) {
+		return {
+			open: () => {},
+			close: () => {},
+			destroy: () => {},
+			isOpen: () => false,
+		};
+	}
+
 	const backdrop = document.createElement("div");
 	backdrop.className = "pi-we-inspector-backdrop";
 
@@ -1591,11 +1600,26 @@ function createToolInspector() {
 		bodyEl.innerHTML = sectionsHtml;
 
 		const argsPre = bodyEl.querySelector("#pi-we-ins-args-pre");
-		if (argsPre) argsPre.textContent = args;
+		if (argsPre) {
+			let displayArgs = args;
+			try {
+				if (typeof args === "string" && (args.startsWith("{") || args.startsWith("["))) {
+					displayArgs = JSON.stringify(JSON.parse(args), null, 2);
+				}
+			} catch {}
+			argsPre.textContent = displayArgs;
+		}
 
 		const outPre = bodyEl.querySelector("#pi-we-ins-output-pre");
 		if (outPre) {
-			outPre.textContent = output || (statusClass === "run" ? "正在执行中，等待实时输出..." : "(执行成功，无文本返回)");
+			let displayOutput = output;
+			try {
+				if (typeof output === "string" && (output.startsWith("{") || output.startsWith("["))) {
+					displayOutput = JSON.stringify(JSON.parse(output), null, 2);
+				}
+			} catch {}
+			outPre.textContent =
+				displayOutput || (statusClass === "run" ? "正在执行中，等待实时输出..." : "(执行成功，无文本返回)");
 		}
 	}
 
@@ -1726,6 +1750,12 @@ function createToolInspector() {
 				subagent: "👥",
 				delegate_task: "👥",
 				present_files: "📦",
+				browser_search: "🔍",
+				browser_use: "🌐",
+				tunnel_fetch: "🌐",
+				conversation_read: "💬",
+				ask_user_question: "❓",
+				claim_files: "🔒",
 			};
 			iconEl.textContent = toolIcons[name] || "🔧";
 			titleEl.textContent = `${name}()`;
@@ -1805,9 +1835,23 @@ function createToolInspector() {
 }
 
 function setupToolInspectorClickListener(inspector, state) {
+	if (globalThis.__piToolInspectorActive) {
+		return () => {};
+	}
+
 	function onClickCapture(e) {
 		const theme = state.settings?.wallpaperTheme;
-		const isFlow = theme === "flow" || theme === "compact-flow";
+		const docTheme = document.documentElement?.dataset?.theme || "";
+		const linkHref = document.getElementById("theme-stylesheet")?.getAttribute("href") || "";
+		const inToolsTrail = Boolean(e.target.closest?.(".turn-tools-trail"));
+		const isFlow =
+			theme === "flow" ||
+			theme === "compact-flow" ||
+			docTheme === "flow" ||
+			docTheme === "flow-light" ||
+			docTheme === "wallpaper-flow" ||
+			linkHref.includes("flow") ||
+			inToolsTrail;
 		if (!isFlow) return;
 
 		const toolEl = e.target.closest(".toolcall");

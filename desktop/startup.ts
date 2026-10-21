@@ -10,6 +10,9 @@ export const DEFAULT_HEALTH_TIMEOUT_MS = 60_000;
 /** 最小允许的 `/api/health` 超时（1s），防止误配 `0` 或负数导致立判失败。 */
 export const MIN_HEALTH_TIMEOUT_MS = 1_000;
 
+/** 桌面默认固定端口（避开网页版 8787，使 Origin 稳定以持久化 localStorage）。 */
+export const DEFAULT_DESKTOP_PORT = 8790;
+
 /**
  * 解析 `/api/health` 启动等待超时（毫秒）：
  * - 优先读 `PI_WEB_HEALTH_TIMEOUT_MS`；

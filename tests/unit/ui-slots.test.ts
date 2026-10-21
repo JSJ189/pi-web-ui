@@ -394,6 +394,31 @@ describe("buildUiSlots / 第 2 层：插件贡献", () => {
 		expect(ids(slots["topbar.primary"]).some((id) => id.endsWith("#sub"))).toBe(false);
 	});
 
+	it("子项完整继承并透传 checked, value, progress", () => {
+		const custom = plugin("custom", {
+			items: [
+				{
+					id: "menu2",
+					slot: "topbar.primary",
+					label: "菜单",
+					kind: "menu",
+					children: [
+						{ id: "toggle1", slot: "topbar.primary", label: "开", kind: "toggle", checked: true },
+						{ id: "input1", slot: "topbar.primary", label: "输入", kind: "input", value: "hello" },
+						{ id: "prog1", slot: "topbar.primary", label: "进度", kind: "progress", progress: 65 },
+					],
+				},
+			],
+			arrange: [],
+		});
+		const slots = build([custom]);
+		const menu = slots["topbar.primary"].find((e) => e.id === "custom:menu2");
+		expect(menu?.children).toHaveLength(3);
+		expect(menu?.children?.[0]?.checked).toBe(true);
+		expect(menu?.children?.[1]?.value).toBe("hello");
+		expect(menu?.children?.[2]?.progress).toBe(65);
+	});
+
 	it("报错插件与整体禁用的插件整份丢弃", () => {
 		const broken = plugin(
 			"broken",
@@ -1195,10 +1220,20 @@ describe("buildUiSlots —— diagnostics（P0-1）", () => {
 			],
 			{ diagnostics, disabledPlugins: ["disabled-one"] },
 		);
-		expect(diagnostics.some((d) => d.pluginId === "disabled-one" && d.message.includes("disabled by the user"))).toBe(
-			true,
-		);
+		const disabledDiag = diagnostics.find((d) => d.pluginId === "disabled-one");
+		expect(disabledDiag).toBeDefined();
+		expect(disabledDiag?.message).toContain("disabled by the user");
+		expect(disabledDiag?.level).toBe("info");
 		expect(diagnostics.some((d) => d.pluginId === "broken-one" && d.level === "error")).toBe(true);
+	});
+
+	it("零 UI 项的插件被禁用 → 不产生无意义的假诊断（杜绝 0 UI items 假警告刷屏）", () => {
+		const diagnostics: UiDiagnostic[] = [];
+		build([plug("headless-one", { items: [], arrange: [] }), plug("no-ui-at-all")], {
+			diagnostics,
+			disabledPlugins: ["headless-one", "no-ui-at-all"],
+		});
+		expect(diagnostics).toEqual([]);
 	});
 
 	it("同 id 重复声明 → 诊断；跨插件同 itemId 不误报", () => {

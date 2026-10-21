@@ -1,9 +1,19 @@
-import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
+import {
+	memo,
+	startTransition,
+	useCallback,
+	useEffect,
+	useLayoutEffect,
+	useMemo,
+	useRef,
+	useState,
+	type ReactNode,
+} from "react";
 import { flushSync } from "react-dom";
 
 import type { CSSProperties } from "react";
 import { FiArrowDown } from "react-icons/fi";
-import type { PromptAttachment, ToolStatus, UiMessage, UiState } from "../types";
+import type { ClientMessage, PromptAttachment, ToolStatus, UiMessage, UiState } from "../types";
 import { Message, asText } from "./Message";
 import { Markdown } from "./Markdown";
 
@@ -12,6 +22,7 @@ import { collectQuestionAttachments } from "../question-attachments";
 import { parseSkillBlock } from "../skill-block";
 import { CollapsedMessage } from "./CollapsedMessage";
 import { reviewFoldKind } from "../goal-review-fold";
+import { useFlowStreamMode } from "../flow-mode";
 import { LazyMount } from "./LazyMount";
 import {
 	applyPlan,
@@ -39,6 +50,10 @@ import { resolveMessageIdForJump } from "../session-url";
 /** Stable shared empty map — passing this (instead of a fresh Map) lets
  *  React.memo skip messages that have no live tool output to show. */
 const EMPTY_LIVE = new Map<string, { toolName: string; text: string }>();
+/** 稳定共享空集合：窗口化关闭时（向上分页/短会话/搜索态）常驻区与占位指纹
+ *  一律返回它，避免每次渲染都扫一遍全量消息。 */
+const EMPTY_ID_SET: ReadonlySet<string> = new Set();
+const EMPTY_FP: ReadonlyMap<string, number> = new Map();
 
 /**
  * Messages beyond the most recent `keepRecent` are rendered as cheap collapsed
@@ -232,32 +247,65 @@ export function syncStreamRenderKeys(
 	return tracker.finalizedMap;
 }
 
+/** 判断消息是否含有实质非空正文文本 */
+function hasMeaningfulText(m: UiMessage): boolean {
+	if (!Array.isArray(m.content)) return false;
+	return m.content.some((b) => {
+		const t = asText(b);
+		return t && t.text.trim().length > 0;
+	});
+}
+
 /** 判断消息是否为纯中间工具/思考调用（不含非空正文） */
-function isPureToolMessage(m: UiMessage): boolean {
+export function isPureToolMessage(m: UiMessage): boolean {
 	// 排除明确标为非 assistant 的角色；流式首帧若 role 尚未注入，亦可由 toolCall/thinking 正确归组
 	if (m.role && m.role !== "assistant") return false;
 	if (m.customType) return false;
 	if (!Array.isArray(m.content) || m.content.length === 0) return false;
-	const hasText = m.content.some((b) => {
-		const t = asText(b);
-		return t && t.text.trim().length > 0;
-	});
-	if (hasText) return false;
+	if (hasMeaningfulText(m)) return false;
 	return m.content.some((b) => b.type === "toolCall" || b.type === "thinking");
 }
 
-type MessageClusterItem =
+/** 助手产出（正文 / 思考 / 工具）——极简行文按回合合并的候选单位。 */
+function isAssistantFlowMessage(m: UiMessage): boolean {
+	if (m.customType) return false;
+	return m.role === "assistant" || !m.role;
+}
+
+export type MessageClusterItem =
 	{ type: "single"; message: UiMessage } | { type: "tool_cluster"; id: string; messages: UiMessage[] };
 
-function clusterMessages(list: readonly UiMessage[]): MessageClusterItem[] {
+export interface ClusterOptions {
+	/**
+	 * 极简行文（字级输入流）：把**整个回合的助手产出**并成一个流单元，而不只是纯工具/思考。
+	 * 正文与胶囊因此同处一条行内流（壳在 `.flow-turn` 里是 display:contents），
+	 * 且一个回合仍然是一个可测量的惰性单元，窗口化粒度不变。
+	 */
+	mergeTurns?: boolean;
+}
+
+export function clusterMessages(list: readonly UiMessage[], opts?: ClusterOptions): MessageClusterItem[] {
+	const mergeTurns = !!opts?.mergeTurns;
 	const out: MessageClusterItem[] = [];
 	let currentCluster: { type: "tool_cluster"; id: string; messages: UiMessage[] } | null = null;
 
-	for (const m of list) {
+	for (let i = 0; i < list.length; i++) {
+		const m = list[i];
 		if (m.role === "system" || m.role === "toolResult") continue;
 		const fold = reviewFoldKind(m);
 
-		if (isPureToolMessage(m) && !fold) {
+		const isAssistantCandidate = isAssistantFlowMessage(m);
+		const pureTool = isPureToolMessage(m);
+		// 当已有工具流集群正在进行中，且紧随其后的是末尾流式/生成中的助手消息时：
+		// 若当前消息尚未吐出实质正文（即尚无非空 text 且无折叠），将其作为流式工具候选平滑并入集群，
+		// 避免首帧因 toolCall 未就绪被短暂误判为 single 掉落至下一行、次帧就绪后再跳回上一行末尾。
+		const isTrailingStreamCandidate =
+			!pureTool && !!currentCluster && isAssistantCandidate && !fold && i === list.length - 1 && !hasMeaningfulText(m);
+
+		// 极简行文：回合内所有助手消息（含带正文的）都进同一个流单元
+		const joinsCluster = fold ? false : mergeTurns ? isAssistantCandidate : pureTool || isTrailingStreamCandidate;
+
+		if (joinsCluster) {
 			if (!currentCluster) {
 				currentCluster = { type: "tool_cluster", id: `cluster-${m.id}`, messages: [m] };
 				out.push(currentCluster);
@@ -271,6 +319,73 @@ function clusterMessages(list: readonly UiMessage[]): MessageClusterItem[] {
 	}
 	return out;
 }
+
+/** 未实测时回合工具流集群的兜底高度估算（折叠态单卡片基准约 52px）。
+ *  merged = 极简行文的「整回合一条行内流」：胶囊每行能排好几个，正文段落按块计，
+ *  所以按「每 4 条一行的稠密行高」给个量级正确的粗估（实测值随后覆盖它）。 */
+export function estimateClusterHeight(messages: readonly UiMessage[], merged = false): number {
+	if (merged) return Math.max(48, Math.ceil(messages.length / 4) * 30);
+	return Math.max(48, messages.length * 52);
+}
+
+interface LazyToolClusterProps {
+	id: string;
+	show: boolean;
+	placeholderHeight: number;
+	attachEl: (el: HTMLDivElement | null) => void;
+	onMeasured?: (id: string, h: number) => void;
+	/** 容器形态：trail = 逐消息块级壳外的工具流集群（普通主题，纵向卡片流）；
+	 *  flow = 极简行文的 `字级输入流`回合容器（壳透明化，正文与胶囊连排）。 */
+	variant?: "trail" | "flow";
+	children: ReactNode;
+}
+
+const LazyToolCluster = memo(function LazyToolCluster({
+	id,
+	show,
+	placeholderHeight,
+	attachEl,
+	onMeasured,
+	variant = "trail",
+	children,
+}: LazyToolClusterProps) {
+	const trailRef = useRef<HTMLDivElement>(null);
+
+	useLayoutEffect(() => {
+		if (!show) return;
+		const el = trailRef.current;
+		if (!el) return;
+		const h = el.offsetHeight;
+		if (h > 0) onMeasured?.(id, h);
+	}, [show, id, onMeasured]);
+
+	if (!show) {
+		return (
+			<div
+				ref={attachEl}
+				className="msg-lazy-ph msg-lazy-ph-cluster"
+				data-cluster-id={id}
+				data-lazy-id={id}
+				style={{ height: placeholderHeight }}
+				aria-hidden="true"
+			/>
+		);
+	}
+
+	return (
+		<div
+			ref={(el) => {
+				trailRef.current = el;
+				attachEl(el);
+			}}
+			className={variant === "flow" ? "flow-turn" : "turn-tools-trail"}
+			data-cluster-id={id}
+			data-lazy-id={id}
+		>
+			{children}
+		</div>
+	);
+});
 
 interface MessageListProps {
 	/** 消息工具条条目（message.actions 槽位：内置 + 插件的最终结果）。 */
@@ -453,13 +568,26 @@ export function MessageList({
 	// ---- 惰性窗口化（lazy windowing，纯函数见 lazy-window.ts）----------------
 	// 视口缓冲带之外的重型消息替换为等高占位 div；滚动临近时换回真实内容并
 	// 在同一帧内补偿 scrollTop。占位保留 data-msg-id，导航/跳转/搜索不受影响。
+	/** 极简行文（字级输入流）：按回合合并助手产出，正文与胶囊连成一条流。
+	 *  其它主题为 false —— 分组/容器/外观全部走原有路径，零改动。 */
+	const flowStream = useFlowStreamMode();
+	const clusterOptions = useMemo<ClusterOptions | undefined>(
+		() => (flowStream ? { mergeTurns: true } : undefined),
+		[flowStream],
+	);
 	/** 当前处于占位状态的消息 id。长对话首帧即预置非可见区，避免大会话初次挂载时全量绘制导致卡顿。 */
 	const [hidden, setHidden] = useState<Set<string>>(() => {
-		if (state.messages.length <= VIRTUAL_MIN) return new Set();
+		// 向上分页模式下没有占位符，开机即不必全量扫描预置（大会话首帧提速）。
+		if (reversePagination || state.messages.length <= VIRTUAL_MIN) return new Set();
 		const always = pickAlways(state.messages, new Map(), Math.max(ALWAYS_BUDGET, keepRecentCount * 120));
 		const init = new Set<string>();
 		for (const m of state.messages) {
 			if (!always.has(m.id)) init.add(m.id);
+		}
+		for (const it of clusterMessages(state.messages, clusterOptions)) {
+			if (it.type === "tool_cluster" && it.messages.every((m) => !always.has(m.id))) {
+				init.add(it.id);
+			}
 		}
 		return init;
 	});
@@ -477,77 +605,184 @@ export function MessageList({
 	const lastSweepStRef = useRef(0);
 	const lastSweepCountRef = useRef(0);
 	const sweepIdleTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
-	/** 每条消息的当前内容指纹（id → fingerprint，随 state.messages 重算）。 */
+
+	// ---- 向上分页加载状态（Reverse Pagination）-----------------------------
+	const defaultPageSize = Math.max(30, keepRecentCount);
+	/** 分页模式首帧只挂最近这么多条，随后两帧内用 startTransition 补齐到整页：
+	 *  打开长对话时先看到最新内容，重 Markdown/代码高亮的成本被推到可中断的后续渲染里，
+	 *  不再白屏等一整页画完。 */
+	const FIRST_PAINT_COUNT = 10;
+	const firstPaintSize = Math.min(defaultPageSize, FIRST_PAINT_COUNT);
+	const [visibleCount, setVisibleCount] = useState<number>(() => firstPaintSize);
+	const convKey = `${state.conversationId ?? ""}:${state.sessionFile ?? ""}`;
+	const prevPagingConvKeyRef = useRef(convKey);
+	if (prevPagingConvKeyRef.current !== convKey) {
+		prevPagingConvKeyRef.current = convKey;
+		setVisibleCount(firstPaintSize);
+	}
+	const prevMsgLenRef = useRef(messages.length);
+	/** 服务端「更早一页」补到位后要补的滚动位置：内容插在视口上方，必须同步下移
+	 *  滚动条，否则用户眼前的内容会被推走（与本地撑开同一套补偿）。 */
+	const pendingScrollFixRef = useRef<{ sh: number; st: number } | null>(null);
+	/** 服务端翻页在途：滚轮在顶部会反复触发，只允许一个请求在路上。 */
+	const pagePendingRef = useRef(false);
+	useEffect(() => {
+		const delta = messages.length - prevMsgLenRef.current;
+		prevMsgLenRef.current = messages.length;
+		if (delta <= 0) return;
+		// 到达一页（或流式新增）：可见窗口跟着长，尾部内容不移位。
+		setVisibleCount((cur) => cur + delta);
+		pagePendingRef.current = false;
+		const fix = pendingScrollFixRef.current;
+		if (!fix) return;
+		pendingScrollFixRef.current = null;
+		requestAnimationFrame(() => {
+			const el = scrollRef.current;
+			if (!el) return;
+			el.scrollTop = fix.st + (el.scrollHeight - fix.sh);
+		});
+	}, [messages.length]);
+
+	const isPagingActive = !!reversePagination && !exportImage.open && !searchOpen;
+	/** 首屏预热中（首帧只画了 firstPaintSize 条，整页还在补齐）。 */
+	const pagingWarming = isPagingActive && visibleCount < defaultPageSize;
+	useEffect(() => {
+		if (!isPagingActive || visibleCount >= defaultPageSize) return;
+		let raf2 = 0;
+		const raf1 = requestAnimationFrame(() => {
+			raf2 = requestAnimationFrame(() => {
+				startTransition(() => setVisibleCount((cur) => (cur < defaultPageSize ? defaultPageSize : cur)));
+			});
+		});
+		return () => {
+			cancelAnimationFrame(raf1);
+			cancelAnimationFrame(raf2);
+		};
+	}, [isPagingActive, visibleCount, defaultPageSize, convKey]);
+	const effectiveVisibleCount = isPagingActive ? Math.min(messages.length, visibleCount) : messages.length;
+	/** 服务端窗口起点（>0 = 服务端还握着更早的历史没下发，见 server/message-window.ts）。
+	 *  老服务端/窗口化关闭时恒为 0，行为与之前完全一致。 */
+	const historyStart = Math.max(0, state.historyStart ?? 0);
+	const historyStartRef = useRef(historyStart);
+	historyStartRef.current = historyStart;
+	const hasEarlier = isPagingActive && (messages.length > effectiveVisibleCount || historyStart > 0);
+	/** 更早消息总数 = 本地还没展示的 + 服务端还没下发的。 */
+	const earlierCount = messages.length - effectiveVisibleCount + historyStart;
+	const visibleMessages = hasEarlier ? messages.slice(-effectiveVisibleCount) : messages;
+
+	/** 向服务端要一页更早的历史（窗口化扫码，前插到 messages 头部）。 */
+	const requestServerPage = useCallback((opts: { count?: number; all?: boolean }) => {
+		if (pagePendingRef.current) return;
+		pagePendingRef.current = true;
+		const el = scrollRef.current;
+		if (el) pendingScrollFixRef.current = { sh: el.scrollHeight, st: el.scrollTop };
+		appSend(
+			opts.all
+				? ({ type: "load_earlier_messages", all: true } satisfies ClientMessage)
+				: ({ type: "load_earlier_messages", count: opts.count ?? 30 } satisfies ClientMessage),
+		);
+		// 服务端窗口化关闭时不会有回执：兜底解锁，不影响继续点击（回执到也会提前清掉）。
+		setTimeout(() => {
+			pagePendingRef.current = false;
+		}, 3000);
+	}, []);
+
+	const loadEarlier = useCallback(
+		(count = 30) => {
+			// 本地还有没展示的更早消息：直接撑开，零网络。
+			if (messages.length - visibleCount >= count) {
+				const el = scrollRef.current;
+				if (!el) return;
+				const prevSh = el.scrollHeight;
+				const prevSt = el.scrollTop;
+				setVisibleCount((cur) => Math.min(messages.length, cur + count));
+				requestAnimationFrame(() => {
+					if (scrollRef.current) {
+						const delta = scrollRef.current.scrollHeight - prevSh;
+						scrollRef.current.scrollTop = prevSt + delta;
+					}
+				});
+				return;
+			}
+			// 本地已到底：先把没展示的撑开，再向服务端要更早一页（窗口化）。
+			if (messages.length > visibleCount) setVisibleCount(messages.length);
+			if (historyStartRef.current > 0) requestServerPage({ count });
+		},
+		[messages.length, visibleCount, requestServerPage],
+	);
+
+	const loadAllEarlier = useCallback(() => {
+		if (historyStartRef.current > 0) requestServerPage({ all: true });
+		setVisibleCount(messages.length);
+	}, [messages.length, requestServerPage]);
+
+	// 需要扫全文/全量的入口（页内搜索、导出图片）打开时：服务端窗口化时把更早历史
+	// 一次拉全，否则搜不到/导出缺前半段。（用户主动触发，一次付清）
+	const needsFullHistory = searchOpen || exportImage.open;
+	useEffect(() => {
+		if (!needsFullHistory) return;
+		if (historyStartRef.current > 0) requestServerPage({ all: true });
+	}, [needsFullHistory, requestServerPage]);
+
+	// 同一任务回合内的连续中间工具与思考消息聚类为单行流式排布单元（向上分页时只聚类可见切片）
+	const clusteredItems = useMemo(
+		() => clusterMessages(visibleMessages, clusterOptions),
+		[visibleMessages, clusterOptions],
+	);
+
+	/** 短会话、搜索打开或开启向上分页期间不做窗口化（分页模式下全量真实渲染已挂载切片，无占位符）。 */
+	const virtualOn = !reversePagination && state.messages.length > VIRTUAL_MIN && !searchOpen;
+	const virtualOnRef = useRef(virtualOn);
+	virtualOnRef.current = virtualOn;
+
+	// 底部常驻区（永不占位）：按预算 + 最新实测高度计算，结合 keepRecentCount 保障常驻预算，
+	// 首次全量测量后巨型消息会被预算挤出常驻区、参与正常窗口化。
+	// 使用统一的 messages（包含当前流式消息），确保正在生成的末尾消息恒在常驻区内。
+	//
+	// 只在窗口化真正开启时算：分页/短会话/搜索态下一条占位符都不会出现，此时每次渲染
+	// 全量扫一遍消息是纯浪费（长会话里这是最贵的「每帧固定成本」之一）。
+	const baseAlways = useMemo(
+		() =>
+			virtualOn
+				? pickAlways(messages, heightsRef.current, Math.max(ALWAYS_BUDGET, keepRecentCount * 120))
+				: EMPTY_ID_SET,
+		[virtualOn, messages, keepRecentCount],
+	);
+	const alwaysSet = useMemo(() => {
+		const set = new Set(baseAlways);
+		for (const it of clusteredItems) {
+			if (it.type === "tool_cluster" && it.messages.some((m) => baseAlways.has(m.id))) {
+				set.add(it.id);
+			}
+		}
+		return set;
+	}, [baseAlways, clusteredItems]);
+	const alwaysRef = useRef(alwaysSet);
+	alwaysRef.current = alwaysSet;
+
+	/** 每条消息的当前内容指纹（id → fingerprint，随 state.messages 重算）。
+	 *  同时计算回合工具集群的聚合指纹，集群内任意消息变动即失效对应实测高度缓存。
+	 *  指纹只服务于占位高度校验 —— 窗口化关闭时整段跳过。 */
 	const fingerprints = useMemo(() => {
+		if (!virtualOn) return EMPTY_FP;
 		const m = new Map<string, number>();
 		for (const msg of state.messages) m.set(msg.id, contentFingerprint(msg));
+		for (const it of clusteredItems) {
+			if (it.type === "tool_cluster") {
+				let sum = 0;
+				for (const msg of it.messages) sum += m.get(msg.id) ?? 0;
+				m.set(it.id, sum);
+			}
+		}
 		return m;
-	}, [state.messages]);
+	}, [virtualOn, state.messages, clusteredItems]);
 	// 镜像供 sweep（rAF 回调）读取而不重建依赖
 	const fpRef = useRef(fingerprints);
 	fpRef.current = fingerprints;
 	// 镜像最新值，供 rAF 回调 / 事件处理器读取而不重建（沿用 questionsRef 模式）
 	const hiddenRef = useRef(hidden);
 	hiddenRef.current = hidden;
-	/** 短会话、搜索打开或开启向上分页期间不做窗口化（分页模式下全量真实渲染已挂载切片，无占位符）。 */
-	const virtualOn = !reversePagination && state.messages.length > VIRTUAL_MIN && !searchOpen;
-	const virtualOnRef = useRef(virtualOn);
-	virtualOnRef.current = virtualOn;
 
-	// ---- 向上分页加载状态（Reverse Pagination）-----------------------------
-	const defaultPageSize = Math.max(30, keepRecentCount);
-	const [visibleCount, setVisibleCount] = useState<number>(() => defaultPageSize);
-	const convKey = `${state.conversationId ?? ""}:${state.sessionFile ?? ""}`;
-	const prevPagingConvKeyRef = useRef(convKey);
-	if (prevPagingConvKeyRef.current !== convKey) {
-		prevPagingConvKeyRef.current = convKey;
-		setVisibleCount(defaultPageSize);
-	}
-	const prevMsgLenRef = useRef(messages.length);
-	useEffect(() => {
-		const delta = messages.length - prevMsgLenRef.current;
-		prevMsgLenRef.current = messages.length;
-		if (delta > 0) {
-			setVisibleCount((cur) => cur + delta);
-		}
-	}, [messages.length]);
-
-	const isPagingActive = !!reversePagination && !exportImage.open && !searchOpen;
-	const effectiveVisibleCount = isPagingActive ? Math.min(messages.length, visibleCount) : messages.length;
-	const hasEarlier = isPagingActive && messages.length > effectiveVisibleCount;
-	const earlierCount = messages.length - effectiveVisibleCount;
-	const visibleMessages = hasEarlier ? messages.slice(-effectiveVisibleCount) : messages;
-
-	const loadEarlier = useCallback(
-		(count = 30) => {
-			const el = scrollRef.current;
-			if (!el) return;
-			const prevSh = el.scrollHeight;
-			const prevSt = el.scrollTop;
-			setVisibleCount((cur) => Math.min(messages.length, cur + count));
-			requestAnimationFrame(() => {
-				if (scrollRef.current) {
-					const delta = scrollRef.current.scrollHeight - prevSh;
-					scrollRef.current.scrollTop = prevSt + delta;
-				}
-			});
-		},
-		[messages.length],
-	);
-
-	const loadAllEarlier = useCallback(() => {
-		setVisibleCount(messages.length);
-	}, [messages.length]);
-
-	// 底部常驻区（永不占位）：随每次渲染按预算重算（读取最新实测高度），
-	// 结合 keepRecentCount 保障常驻预算，首次全量测量后巨型消息会被预算挤出常驻区、参与正常窗口化。
-	// 使用统一的 messages（包含当前流式消息），确保正在生成的末尾消息恒在常驻区内。
-	const alwaysSet = pickAlways(messages, heightsRef.current, Math.max(ALWAYS_BUDGET, keepRecentCount * 120));
-	const alwaysRef = useRef(alwaysSet);
-	alwaysRef.current = alwaysSet;
-
-	// 同一任务回合内的连续中间工具与思考消息聚类为单行流式排布单元（向上分页时只聚类可见切片）
-	const clusteredItems = useMemo(() => clusterMessages(visibleMessages), [visibleMessages]);
 	const streamKeyTrackerRef = useRef<StreamKeyTracker>({
 		convKey,
 		pending: null,
@@ -568,11 +803,16 @@ export function MessageList({
 	const prevLazyConvKeyRef = useRef(convKey);
 	if (prevLazyConvKeyRef.current !== convKey) {
 		prevLazyConvKeyRef.current = convKey;
-		if (state.messages.length > VIRTUAL_MIN) {
+		if (!reversePagination && state.messages.length > VIRTUAL_MIN) {
 			const newAlways = pickAlways(state.messages, heightsRef.current, Math.max(ALWAYS_BUDGET, keepRecentCount * 120));
 			const nextHidden = new Set<string>();
 			for (const m of state.messages) {
 				if (!newAlways.has(m.id)) nextHidden.add(m.id);
+			}
+			for (const it of clusterMessages(state.messages, clusterOptions)) {
+				if (it.type === "tool_cluster" && it.messages.every((m) => !newAlways.has(m.id))) {
+					nextHidden.add(it.id);
+				}
 			}
 			setHidden(nextHidden);
 			hiddenRef.current = nextHidden;
@@ -688,6 +928,9 @@ export function MessageList({
 	// （依赖用服务端缓存的消息数组——引用稳定，流式增量不会每帧重跑）
 	useEffect(() => {
 		const ids = new Set(state.messages.map((m) => m.id));
+		for (const it of clusteredItems) {
+			if (it.type === "tool_cluster") ids.add(it.id);
+		}
 		for (const id of elsRef.current.keys()) {
 			if (ids.has(id)) continue;
 			elsRef.current.delete(id);
@@ -702,7 +945,7 @@ export function MessageList({
 				else changed = true;
 			return changed ? next : prev;
 		});
-	}, [state.messages, expanded]);
+	}, [state.messages, clusteredItems, expanded]);
 
 	useEffect(
 		() => () => {
@@ -1328,7 +1571,7 @@ export function MessageList({
 						)}
 					</div>
 				)}
-				{hasEarlier && (
+				{hasEarlier && !pagingWarming && (
 					<div className="earlier-messages-bar">
 						<span className="earlier-messages-info">{t("earlierMessagesInfo", { count: earlierCount })}</span>
 						<div className="earlier-messages-actions">
@@ -1343,8 +1586,35 @@ export function MessageList({
 				)}
 				{clusteredItems.map((item) => {
 					if (item.type === "tool_cluster") {
+						const streamingId = state.streamingMessage?.id;
+						const isStreamingCluster =
+							(streamingId ? item.messages.some((m) => m.id === streamingId) : false) ||
+							(state.isStreaming && item.messages.some((m) => m.id === lastId));
+						const isClusterPinned = item.messages.some((m) => pinned.has(m.id));
+						const isClusterAlways = item.messages.some((m) => alwaysSet.has(m.id));
+						const isClusterHidden = hidden.has(item.id);
+						const showCluster =
+							!virtualOn || isStreamingCluster || isClusterPinned || isClusterAlways || !isClusterHidden;
+						// 密集批量工具流智能收敛：同一回合连续调用 ≥ 4 个工具时，
+						// 已完成的历史工具默认折叠为单行卡头（避免数万像素大卡片撑爆视口）；
+						// 正在实时生成的流式工具保持展开显示实时输出；少量工具（< 4）保持用户 toolsWrap 设置。
+						const isDenseCluster = item.messages.length >= 4;
+
 						return (
-							<div key={item.id} className="turn-tools-trail" data-cluster-id={item.id}>
+							<LazyToolCluster
+								key={item.id}
+								id={item.id}
+								show={showCluster}
+								placeholderHeight={getPlaceholderHeight(
+									item.id,
+									fingerprints.get(item.id) ?? -1,
+									heightMetaRef.current,
+									estimateClusterHeight(item.messages, flowStream),
+								)}
+								attachEl={attachEl}
+								onMeasured={storeHeight}
+								variant={flowStream ? "flow" : "trail"}
+							>
 								{item.messages.map((m) => {
 									const isStreamingThis =
 										(state.streamingMessage
@@ -1352,6 +1622,8 @@ export function MessageList({
 											: state.isStreaming && m.id === lastId) &&
 										(m.role === "assistant" || !m.role);
 									const renderKey = stableKeyMap.get(m.id) ?? m.id;
+									const effectiveToolsWrap = isDenseCluster ? (isStreamingThis ? toolsWrap : false) : toolsWrap;
+
 									return (
 										<Message
 											uiMessageActions={uiMessageActions}
@@ -1365,7 +1637,7 @@ export function MessageList({
 											toolStatuses={toolStatuses}
 											streaming={isStreamingThis}
 											onKillBash={onKillBash}
-											toolsWrap={toolsWrap}
+											toolsWrap={effectiveToolsWrap}
 											toolImages={toolImages}
 											thinkingWrap={thinkingWrap}
 											isLast={m.id === lastId}
@@ -1374,7 +1646,7 @@ export function MessageList({
 										/>
 									);
 								})}
-							</div>
+							</LazyToolCluster>
 						);
 					}
 

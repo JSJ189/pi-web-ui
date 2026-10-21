@@ -19,7 +19,7 @@
 // MUST be imported before the SDK is loaded so on-disk patches apply cleanly.
 import "./patch-remote-catalog.js";
 import "./patch-turn-end-boundary.js";
-import { existsSync, mkdirSync, readFileSync } from "node:fs";
+import { existsSync, mkdirSync, readFileSync, statSync } from "node:fs";
 import { stat } from "node:fs/promises";
 import { createServer, request as proxyRequest, type IncomingMessage } from "node:http";
 import { createConnection } from "node:net";
@@ -42,11 +42,12 @@ import { isAudioFile, previewKind } from "./text-sniff.js";
 import { startControlServer } from "./control-socket.js";
 import { scheduleUploadCleanup } from "./uploads.js";
 import { ensureWindowsBash, windowsBashDir } from "./ensure-bash.js";
-import { listThemes, resolveThemeFile } from "./themes.js";
+import { listThemes, readThemeCss, resolveThemeFile } from "./themes.js";
 import { isManaged, managedRefusal } from "./managed.js";
 import { launchOrigin, toServiceInfo } from "./launch-origin.js";
 import { parseTabs, tabsRefusal } from "./tabs.js";
 import { recordUnknownWsType } from "./ws-unknown-types.js";
+import { MessageWindowTap, readMessageWindowConfig } from "./message-window.js";
 import { validateClientId } from "./ws-client-id.js";
 import { PendingCommandQueue } from "./ws-pending-queue.js";
 import {
@@ -56,6 +57,7 @@ import {
 	loadServerStrings,
 	readPackFile,
 	removePack,
+	resolveSystemDefaultLocale,
 	unloadServerStrings,
 } from "./locales.js";
 import {
@@ -693,14 +695,14 @@ app.get("/api/themes", (_req, res) => {
 // 语言包：核心只随包发布中英，其余按需下载到 <dataDir>/locales/<code>.json。
 // 手工放进去的同名 JSON 也会被识别（离线安装）。PI_WEB_TOKEN 鉴权自动覆盖。
 /**
- * PI_WEB_LOCALE — the language a first visit falls back to.
+ * PI_WEB_LOCALE / system locale — the language a first visit falls back to.
  *
  * It is a fallback, not an override: an explicit choice, and then the
  * browser's own languages, come first (web/src/pick-locale.ts). It rides on
  * /api/locales because the client already asks for that at boot, so naming a
  * default costs no extra request.
  */
-const DEFAULT_LOCALE = (process.env.PI_WEB_LOCALE ?? "").trim().toLowerCase() || null;
+const DEFAULT_LOCALE = resolveSystemDefaultLocale();
 
 app.get("/api/locales", (_req, res) => {
 	res.json({ packs: listPacks(DATA_DIR), defaultLocale: DEFAULT_LOCALE });
@@ -747,7 +749,24 @@ app.delete("/api/locales/:code", (req, res) => {
 	unloadServerStrings(code);
 	res.json({ ok: true });
 });
+// Serve theme base stylesheets directly if requested (e.g. /themes/bases/flow-base.css).
+app.get("/themes/bases/:name.css", (req, res) => {
+	if (!/^[A-Za-z0-9_-]+$/.test(req.params.name)) {
+		res.status(404).end("base not found");
+		return;
+	}
+	const baseFile = join(BUILTIN_THEMES_DIR, "bases", `${req.params.name}.css`);
+	if (!existsSync(baseFile) || !statSync(baseFile).isFile()) {
+		res.status(404).end("base not found");
+		return;
+	}
+	res.setHeader("Content-Type", "text/css; charset=utf-8");
+	res.setHeader("Cache-Control", "no-cache");
+	res.sendFile(baseFile);
+});
+
 // Serve a theme's full CSS file so the frontend can swap the whole stylesheet.
+// Supports server-side @import inlining for shared theme bases (e.g. bases/flow-base.css).
 // Registered before the SPA catch-all below (otherwise it'd return index.html).
 app.get("/themes/:id.css", (req, res) => {
 	const file = resolveThemeFile(BUILTIN_THEMES_DIR, USER_THEMES_DIR, req.params.id);
@@ -757,10 +776,8 @@ app.get("/themes/:id.css", (req, res) => {
 	}
 	res.setHeader("Content-Type", "text/css; charset=utf-8");
 	res.setHeader("Cache-Control", "no-cache");
-	// dotfiles: allow — issue #223：Express 5 的 send 默认 dotfiles=ignore，主题文件位于
-	// 隐藏目录下（如 ~/.pi-web/themes、npm 全局目录 ~/.local/…）时会被判 404。路径已由
-	// resolveThemeFile 校验（id 白名单 + 仅已知目录 + isFile），放行安全。
-	res.sendFile(file, { dotfiles: "allow" });
+	const css = readThemeCss(file);
+	res.send(css);
 });
 
 // Plugin client bundles: <dataDir>/plugins/<id>/client/* served at
@@ -2431,7 +2448,9 @@ wss.on("connection", (ws) => {
 		}
 	});
 
-	const send = (msg: ServerMessage): void => {
+	/** 引擎→浏览器的**唯一发送漏斗**：历史消息窗口化（按需加载）在它前面一层，
+	 *  见下方 `send`。四个引擎（pi / DSH / claude / durable）都走这条漏斗，引擎侧零改动。 */
+	const sendRaw = (msg: ServerMessage): void => {
 		if (closed || ws.readyState !== WebSocket.OPEN) return;
 		// 发送背压（issue #11）：socket 消费不过来时（前端慢/网络差），堆里会堆积
 		// 每份可达 ~10MB 的全量 snapshot 字符串，低内存主机直接 OOM。snapshot 是全量
@@ -2466,6 +2485,12 @@ wss.on("connection", (ws) => {
 		if (msg.type === "snapshot") lastSnapshotBytes = wire.length * 2;
 		ws.send(wire);
 	};
+
+	/** 本连接的历史窗口状态（每标签页一份，见 server/message-window.ts）。
+	 *  `send` 必须包在 `sendRaw` **外面**：窗口先裁消息，再算背压字节数——否则
+	 *  背压阈值还在按未裁剪的 10MB 量级估。 */
+	const windowTap = new MessageWindowTap(sendRaw, readMessageWindowConfig(process.env));
+	const send = (msg: ServerMessage): void => windowTap.accept(msg);
 
 	// Plugins broadcast to every open socket; unregister on close below.
 	// Plugins broadcast to every open socket; unregister on close below. The
@@ -2736,6 +2761,12 @@ wss.on("connection", (ws) => {
 		if (!cs || !attachDone) {
 			// Session not ready yet (hello processing / plugin chain) — hold the command.
 			pending.push(msg);
+			return;
+		}
+		// 历史窗口按需加载：连接级窗口化直接服务（四个引擎通吃，不依赖引擎实现）。
+		// 放在引擎分发之前：它不是引擎能力，窗口化关闭时静默无回执（前端保持现状）。
+		if (msg.type === "load_earlier_messages") {
+			windowTap.loadEarlier(msg.count, msg.all);
 			return;
 		}
 		// Managed instances do not install software on themselves, and tabs this
@@ -3207,6 +3238,7 @@ if (!bootCatalogDisabled) {
 		{ install: autoInstall },
 		{
 			customCatalogPath: pluginMgr.customCatalogPath,
+			communityCatalogPath: pluginMgr.communityCatalogPath,
 			pluginsDir: join(DATA_DIR, "plugins"),
 			installer: pluginInstaller,
 			// 默认仅同步市场列表；重载插件会重复触发其激活广播。

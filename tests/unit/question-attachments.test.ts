@@ -210,4 +210,26 @@ describe("collectQuestionAttachments", () => {
 		const atts = collectQuestionAttachments([user("u1", "q"), aside]).get("u1") ?? [];
 		expect(atts).toEqual([{ path: "https://a.example", mode: "page", name: "A 页" }]);
 	});
+
+	it("防御性去重：历史会话中残留重复的对话引用/图片/文件附件时自动去重", () => {
+		const asideConv1 = fileCard("c1", [{ type: "text", text: "对话引用" }], {
+			mode: "conversation",
+			conversationId: "conv-1",
+			name: "对话A",
+		});
+		const asideImg1 = fileCard("c2", [{ type: "image", dataUrl: PNG }], { name: "image.png", mode: "image" });
+		const asideConvDuplicate = fileCard("c3", [{ type: "text", text: "对话引用" }], {
+			mode: "conversation",
+			conversationId: "conv-1",
+			name: "对话A",
+		});
+		const asideImgDuplicate = fileCard("c4", [{ type: "image", dataUrl: PNG }], { name: "image.png", mode: "image" });
+
+		const messages = [user("u1", "q"), asideConv1, asideImg1, asideConvDuplicate, asideImgDuplicate];
+		const atts = collectQuestionAttachments(messages).get("u1")!;
+		// 应当剔除重复项，只保留 1 个对话引用和 1 个图片
+		expect(atts).toHaveLength(2);
+		expect(atts[0].mode).toBe("conversation");
+		expect(atts[1].imageData).toBeDefined();
+	});
 });

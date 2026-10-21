@@ -32,7 +32,9 @@ import { describe, expect, it } from "vitest";
 
 // 锚到仓库根（不用 process.cwd()，同 text-wrap.test.ts 的理由）。
 const ROOT = join(dirname(fileURLToPath(import.meta.url)), "..", "..");
-const CSS = readFileSync(join(ROOT, "web/src/styles.css"), "utf8");
+// styles.css 整体包在 `@layer base { ... }` 里，内容比顶层口径多缩进一格；
+// 去掉最外层那一格 Tab 还原成写断言时的「顶层」形态（规则内容一字未改）。
+const CSS = readFileSync(join(ROOT, "web/src/styles.css"), "utf8").replace(/^\t/gm, "");
 
 function bodyOf(selector: string): string {
 	const re = new RegExp(`(?:^|\\})\\s*${selector.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")}\\s*\\{([^}]*)\\}`, "m");

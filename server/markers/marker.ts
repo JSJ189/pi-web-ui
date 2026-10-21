@@ -36,6 +36,8 @@ export interface MarkerContext {
 
 export interface MarkerTool<State = unknown> {
 	name: string;
+	/** 为 true 时表示该标记为别名（如 suggest 是 action 的别名），不参与提示词注入和 UI 列表。 */
+	isAlias?: boolean;
 	guidance: string[];
 	/** 语言感知的 guidance（issue #91）：en 用英译、zh 用中文。未提供时回退到静态 guidance。 */
 	getGuidance?: (lang: ServerLang) => string[];

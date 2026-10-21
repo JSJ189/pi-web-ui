@@ -64,7 +64,13 @@ function atomicWrite(path: string, data: unknown): void {
 }
 
 /** 把任意对象规范化为合法条目；非法则返回 null。 */
-function toEntry(raw: Record<string, unknown>, builtin: boolean): UiPluginCatalogEntry | null {
+function toEntry(
+	raw: Record<string, unknown>,
+	originOrBuiltin: "builtin" | "community" | "custom" | boolean,
+): UiPluginCatalogEntry | null {
+	const origin: "builtin" | "community" | "custom" =
+		typeof originOrBuiltin === "boolean" ? (originOrBuiltin ? "builtin" : "custom") : originOrBuiltin;
+	const builtin = origin === "builtin";
 	const source = typeof raw.source === "string" ? raw.source.trim() : "";
 	if (!isValidSource(source)) return null;
 	const id = deriveCatalogId(typeof raw.id === "string" ? raw.id.trim() : undefined, source);
@@ -83,6 +89,7 @@ function toEntry(raw: Record<string, unknown>, builtin: boolean): UiPluginCatalo
 		name,
 		source,
 		builtin,
+		origin,
 		...(nameEn ? { nameEn } : {}),
 		...(description ? { description } : {}),
 		...(descriptionEn ? { descriptionEn } : {}),
@@ -92,38 +99,70 @@ function toEntry(raw: Record<string, unknown>, builtin: boolean): UiPluginCatalo
 	};
 }
 
-/** 读合并后的目录：builtin 在前，custom 在后（同 id 时 custom 覆盖 builtin）。
+/** 读合并后的目录：
+ *   1. builtin : 项目随包内置核心插件（不可移除）；
+ *   2. community : 官方社区生态清单（pi-web-ui-plugins 自动化审核构建，不可移除）；
+ *   3. custom : 用户在设置面板手动填写的自定义条目（同 id 可覆盖 builtin/community，支持单独移除）。
  *  custom 覆盖 builtin 时强制打 `overridesBuiltin: true` 标记（builtin 同时为
- *  false）：显示字段（name/icon/description）来自用户可写来源，可能仿冒官方条目，
- *  前端据此把它标识为「自定义覆盖」。source 始终保留真实（custom）安装来源，
- *  不允许伪装成官方来源。 */
-export function readCatalog(builtinPath: string, customPath: string): UiPluginCatalogEntry[] {
+ *  false）：显示字段来自用户可写来源，前端据此把它标识为「自定义覆盖」。 */
+export function readCatalog(builtinPath: string, customPath: string, communityPath?: string): UiPluginCatalogEntry[] {
 	const out: UiPluginCatalogEntry[] = [];
+	const seenBuiltin = new Set<string>();
 	const seen = new Set<string>();
+
+	// 1. 内置核心插件
 	if (existsSync(builtinPath)) {
 		const raw = readJsonSafe<unknown>(builtinPath, []);
 		if (Array.isArray(raw)) {
 			for (const it of raw) {
-				const e = it && typeof it === "object" ? toEntry(it as Record<string, unknown>, true) : null;
+				const e = it && typeof it === "object" ? toEntry(it as Record<string, unknown>, "builtin") : null;
 				if (e && !seen.has(e.id)) {
+					seenBuiltin.add(e.id);
 					seen.add(e.id);
 					out.push(e);
 				}
 			}
 		}
 	}
+
+	// 2. 官方社区生态插件（若存在）
+	if (communityPath && existsSync(communityPath)) {
+		const rawCommunity = readJsonSafe<unknown>(communityPath, []);
+		const list = Array.isArray(rawCommunity)
+			? rawCommunity
+			: rawCommunity &&
+				  typeof rawCommunity === "object" &&
+				  Array.isArray((rawCommunity as { entries?: unknown[] }).entries)
+				? (rawCommunity as { entries: unknown[] }).entries
+				: [];
+		for (const it of list) {
+			const e = it && typeof it === "object" ? toEntry(it as Record<string, unknown>, "community") : null;
+			if (!e) continue;
+			// 内置插件绝对优先，不被社区同名条目替换
+			if (seenBuiltin.has(e.id)) continue;
+			const idx = out.findIndex((x) => x.id === e.id);
+			if (idx >= 0) {
+				out[idx] = e;
+			} else {
+				out.push(e);
+			}
+			seen.add(e.id);
+		}
+	}
+
+	// 3. 用户在设置面板手动添加的自定义条目
 	const rawCustom = readJsonSafe<{ entries?: unknown }>(customPath, {});
 	const list =
 		rawCustom && typeof rawCustom === "object" && Array.isArray((rawCustom as { entries?: unknown[] }).entries)
 			? (rawCustom as { entries: unknown[] }).entries
 			: [];
 	for (const it of list) {
-		const e = it && typeof it === "object" ? toEntry(it as Record<string, unknown>, false) : null;
+		const e = it && typeof it === "object" ? toEntry(it as Record<string, unknown>, "custom") : null;
 		if (!e) continue;
 		const idx = out.findIndex((x) => x.id === e.id);
 		if (idx >= 0) {
-			// 覆盖了同名 builtin 条目：强制带标识（不信任 custom 文件里的任何自标字段）。
-			out[idx] = { ...e, builtin: false, overridesBuiltin: true };
+			// 覆盖了同名 builtin/community 条目：强制带标识（不信任 custom 文件里的任何自标字段）。
+			out[idx] = { ...e, builtin: false, origin: "custom", overridesBuiltin: seenBuiltin.has(e.id) };
 		} else {
 			out.push(e);
 		}
@@ -278,5 +317,24 @@ export function writeCustomCatalog(customPath: string, incoming: UiPluginCatalog
 		...(e.homepage ? { homepage: e.homepage } : {}),
 	}));
 	atomicWrite(customPath, { entries });
+	return entries.length;
+}
+
+/**
+ * 原子写入官方社区生态清单（由远端构建的 catalog.json 同步而来，全量替换）。
+ */
+export function writeCommunityCatalog(communityPath: string, incoming: UiPluginCatalogEntry[]): number {
+	const entries = incoming.map((e) => ({
+		id: e.id,
+		source: e.source,
+		name: e.name,
+		...(e.nameEn ? { nameEn: e.nameEn } : {}),
+		...(e.description ? { description: e.description } : {}),
+		...(e.descriptionEn ? { descriptionEn: e.descriptionEn } : {}),
+		...(e.icon ? { icon: e.icon } : {}),
+		...(e.iconSvg ? { iconSvg: e.iconSvg } : {}),
+		...(e.homepage ? { homepage: e.homepage } : {}),
+	}));
+	atomicWrite(communityPath, { entries });
 	return entries.length;
 }

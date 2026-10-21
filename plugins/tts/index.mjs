@@ -5,7 +5,7 @@ import crypto from "node:crypto";
 import { exec } from "node:child_process";
 
 // 导入 DeepSeek 模块
-import { createSession, deleteSession, postCompletion } from "./lib/session.mjs";
+import { createSession, deleteSession, postCompletion, buildRepeatPrompt } from "./lib/session.mjs";
 import { obtainPowHeader, POW_TARGET_COMPLETION } from "./lib/pow.mjs";
 import { synthesizeToWavBuffer } from "./lib/tts.mjs";
 
@@ -141,6 +141,7 @@ export default {
 		const cookieFile = path.join(host.dir, "doubao_cookie.txt");
 		const legacyCookieFile = path.join(host.dir, "cookie.txt");
 		const dsTokenFile = path.join(host.dir, "deepseek_token.txt");
+		const dsSessionFile = path.join(host.dir, "deepseek_bridge_session.json");
 		const extDir = path.join(host.dir, "extension");
 
 		async function readDoubaoCookie() {
@@ -343,66 +344,156 @@ export default {
 			});
 		}
 
-		// ── 2. DeepSeek 官方语音合成 ────────────────────────────────────
-		async function synthesizeDeepSeek(text, voiceKey = "echo") {
-			const token = await readDeepSeekToken();
-			if (!token) {
-				throw new Error(
-					"尚未配置 DeepSeek 登录凭据，请在插件设置中填入 userToken 或通过配套扩展在 chat.deepseek.com 页面同步。",
-				);
-			}
+		// ── 2. DeepSeek 官方语音合成（专属会话复用 + 防风控伪装模型） ──────
+		let dsQueue = Promise.resolve();
+		let dsLastCallTime = 0;
 
-			const voiceId = DEEPSEEK_VOICES[voiceKey] || "echo";
+		function hashToken(token) {
+			return crypto.createHash("sha256").update(String(token)).digest("hex").slice(0, 16);
+		}
 
-			// 步骤 A：创建临时会话
-			const session = await createSession({ token });
-			const sessionId = session.id;
-
+		async function getOrCreateDeepSeekSession(token) {
 			try {
-				// 步骤 B：快速求解 PoW 算力证明 (~0.3秒)
-				const pow = await obtainPowHeader({
-					targetPath: POW_TARGET_COMPLETION,
-					token,
-				});
+				if (existsSync(dsSessionFile)) {
+					const info = JSON.parse(await fs.readFile(dsSessionFile, "utf-8"));
+					if (info && info.sessionId && info.tokenHash === hashToken(token)) {
+						return { sessionId: info.sessionId, lastMessageId: info.lastMessageId || null, isNew: false };
+					}
+				}
+			} catch {}
 
-				// 步骤 C：直连 SSE 流生成复述，秒级捕获 response_message_id (仅需 ~1 秒，杜绝 60 秒轮询)
-				const res = await postCompletion({
+			// 首次建立专属持久会话（长期保留在账号内，杜绝秒建秒删行为）
+			const session = await createSession({ token });
+			const info = {
+				sessionId: session.id,
+				tokenHash: hashToken(token),
+				lastMessageId: null,
+				createdAt: Date.now(),
+			};
+			try {
+				await fs.writeFile(dsSessionFile, JSON.stringify(info, null, 2), "utf-8");
+			} catch {}
+			host.log(`已建立 DeepSeek 专属语音会话: ${session.id}（已持久化复用）`);
+			return { sessionId: session.id, lastMessageId: null, isNew: true };
+		}
+
+		async function updateDeepSeekSessionMessage(sessionId, messageId, token) {
+			try {
+				const info = {
 					sessionId,
-					prompt: "请把下面这段文字原样输出一遍，不要加任何前后缀：\n\n" + text,
-					powHeader: pow.header,
-					token,
-					thinkingEnabled: false,
-					searchEnabled: false,
-				});
+					tokenHash: hashToken(token),
+					lastMessageId: messageId,
+					updatedAt: Date.now(),
+				};
+				await fs.writeFile(dsSessionFile, JSON.stringify(info, null, 2), "utf-8");
+			} catch {}
+		}
 
-				if (!res.ok) {
-					throw new Error(`DeepSeek completion 请求失败 (HTTP ${res.status})`);
+		async function clearDeepSeekSession() {
+			try {
+				if (existsSync(dsSessionFile)) {
+					await fs.unlink(dsSessionFile);
+				}
+			} catch {}
+		}
+
+		async function synthesizeDeepSeek(text, voiceKey = "echo") {
+			// 加入串行队列锁，避免并发请求产生机器脉冲
+			const run = async () => {
+				const token = await readDeepSeekToken();
+				if (!token) {
+					throw new Error(
+						"尚未配置 DeepSeek 登录凭据，请在插件设置中填入 userToken 或通过配套扩展在 chat.deepseek.com 页面同步。",
+					);
 				}
 
-				let messageId = 2;
-				const reader = res.body.getReader();
-				const decoder = new TextDecoder();
-				while (true) {
-					const { value, done } = await reader.read();
-					if (done) break;
-					const chunk = decoder.decode(value);
-					const m = chunk.match(/"response_message_id":(\d+)/);
-					if (m) messageId = Number(m[1]);
+				// 拟人化间隔防抖：两次请求之间至少保留 400ms 间歇，杜绝无间隔高频并发
+				const now = Date.now();
+				const elapsed = now - dsLastCallTime;
+				if (elapsed < 400) {
+					await new Promise((r) => setTimeout(r, 400 - elapsed));
 				}
+				dsLastCallTime = Date.now();
 
-				// 步骤 D：调用官方 WebSocket 接收 PCM 流并封装为标准 WAV
-				const { wav } = await synthesizeToWavBuffer({
-					sessionId,
-					messageId,
-					token,
-					voice: voiceId,
-				});
+				const voiceId = DEEPSEEK_VOICES[voiceKey] || "echo";
 
-				return wav;
-			} finally {
-				// 步骤 E：后台异步销毁临时会话
-				void deleteSession({ sessionIds: [sessionId], token }).catch(() => {});
-			}
+				// 自动重试机制（会话过期或被手动删除时自愈重建）
+				let attempts = 0;
+				while (attempts < 2) {
+					attempts++;
+					const { sessionId, lastMessageId } = await getOrCreateDeepSeekSession(token);
+
+					try {
+						// 步骤 A：快速求解 PoW 算力证明 (~0.3秒)
+						const pow = await obtainPowHeader({
+							targetPath: POW_TARGET_COMPLETION,
+							token,
+						});
+
+						// 步骤 B：使用多变自然模板，避免机械重复 prompt 聚类
+						const prompt = buildRepeatPrompt(text);
+
+						// 步骤 C：直连 SSE 流生成复述，秒级捕获 response_message_id
+						const res = await postCompletion({
+							sessionId,
+							parentMessageId: lastMessageId,
+							prompt,
+							powHeader: pow.header,
+							token,
+							thinkingEnabled: false,
+							searchEnabled: false,
+						});
+
+						if (!res.ok) {
+							if (res.status === 400 || res.status === 404 || res.status === 500) {
+								host.log(`DeepSeek 专属会话失效 (HTTP ${res.status})，正在自动自愈重建...`);
+								await clearDeepSeekSession();
+								if (attempts < 2) continue;
+							}
+							throw new Error(`DeepSeek completion 请求失败 (HTTP ${res.status})`);
+						}
+
+						let messageId = null;
+						const reader = res.body.getReader();
+						const decoder = new TextDecoder();
+						while (true) {
+							const { value, done } = await reader.read();
+							if (done) break;
+							const chunk = decoder.decode(value);
+							const m = chunk.match(/"response_message_id":(\d+)/);
+							if (m) messageId = Number(m[1]);
+						}
+
+						if (!messageId) {
+							messageId = 2;
+						}
+
+						// 记录当前最新消息 ID 作为下一轮的 parentMessageId
+						await updateDeepSeekSessionMessage(sessionId, messageId, token);
+
+						// 步骤 D：调用官方 WebSocket 接收 PCM 流并封装为标准 WAV
+						const { wav } = await synthesizeToWavBuffer({
+							sessionId,
+							messageId,
+							token,
+							voice: voiceId,
+						});
+
+						// 核心重构：绝对不调用 deleteSession！专属会话长期复用，杜绝秒建秒删高危特征
+						return wav;
+					} catch (err) {
+						if (attempts < 2 && (err.message.includes("400") || err.message.includes("session"))) {
+							await clearDeepSeekSession();
+							continue;
+						}
+						throw err;
+					}
+				}
+			};
+
+			const next = dsQueue.then(run, run);
+			dsQueue = next.catch(() => {});
+			return next;
 		}
 
 		// ── 3. HTTP 路由 ────────────────────────────────────────────────
@@ -511,6 +602,27 @@ export default {
 			res.end();
 		});
 
+		// 重置专属会话接口
+		host.route("POST", "/reset-deepseek-session", async (req, res) => {
+			await clearDeepSeekSession();
+			host.log("已手动重置 DeepSeek 专属语音会话");
+			res.writeHead(200, {
+				"Content-Type": "application/json",
+				"Access-Control-Allow-Origin": "*",
+				"Access-Control-Allow-Headers": "Content-Type",
+			});
+			res.end(JSON.stringify({ ok: true }));
+		});
+
+		host.route("OPTIONS", "/reset-deepseek-session", (req, res) => {
+			res.writeHead(204, {
+				"Access-Control-Allow-Origin": "*",
+				"Access-Control-Allow-Methods": "POST, OPTIONS",
+				"Access-Control-Allow-Headers": "Content-Type",
+			});
+			res.end();
+		});
+
 		// 目录与扩展下载
 		host.route("POST", "/open-folder", (req, res) => {
 			if (process.platform === "win32") exec(`explorer.exe "${extDir}"`);
@@ -561,7 +673,8 @@ export default {
 					engine: {
 						type: "string",
 						enum: ["doubao", "deepseek"],
-						description: "TTS engine to use (default: doubao or plugin setting)",
+						description:
+							"TTS engine to use (default: doubao or plugin setting). Note: deepseek simulates web sessions with ban risk; doubao is recommended.",
 					},
 					speaker: {
 						type: "string",
@@ -657,7 +770,13 @@ export default {
 				try {
 					if (existsSync(cookieFile)) await fs.unlink(cookieFile);
 					if (existsSync(dsTokenFile)) await fs.unlink(dsTokenFile);
+					await clearDeepSeekSession();
 					host.broadcast({ type: "status-response", hasDoubao: false, hasDeepseek: false });
+				} catch {}
+			} else if (msg.action === "reset-deepseek-session") {
+				try {
+					await clearDeepSeekSession();
+					host.broadcast({ type: "deepseek-session-reset", ok: true });
 				} catch {}
 			}
 		});

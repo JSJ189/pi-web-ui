@@ -328,29 +328,33 @@ describe("上下左右四栏通用 BarItem 渲染测试", () => {
 	it("styles.css 中锁定纯图标按钮在 no-labels 模式下边框为圆形（border-radius: 50%）", () => {
 		const fs = require("node:fs");
 		const path = require("node:path");
-		const css = fs.readFileSync(path.join(__dirname, "../../web/src/styles.css"), "utf8");
-		expect(css).toContain("border-radius: 50% !important;");
+		// styles.css 现在整体包在 `@layer base { ... }` 里，内容比原来的顶层口径多缩进一格：
+		// 去掉最外层那一格 Tab 还原成「顶层」形态再断言（!important 已随分层重构删除，值未变）。
+		const css = fs.readFileSync(path.join(__dirname, "../../web/src/styles.css"), "utf8").replace(/^\t/gm, "");
+		expect(css).toContain("border-radius: 50%;");
 		expect(css).toMatch(/\.topbar\.no-labels[\s\S]*?border-radius:\s*50%/);
 	});
 
 	it("styles.css 中锁定带角标/额外内容的顶栏按钮在 no-labels 模式下悬浮与常态均为 7px 圆角矩形，防止畸变为椭圆", () => {
 		const fs = require("node:fs");
 		const path = require("node:path");
-		const css = fs.readFileSync(path.join(__dirname, "../../web/src/styles.css"), "utf8");
+		// 同上：去掉 @layer base 带来的那一格缩进（多行选择器的换行缩进随之回到原样）
+		const css = fs.readFileSync(path.join(__dirname, "../../web/src/styles.css"), "utf8").replace(/^\t/gm, "");
 		// 悬浮 hover 选择器排除了带角标/额外内容的项，仅对纯图标应用 50%
 		expect(css).toMatch(
 			/\.topbar\.no-labels\s+\.chip:not\(:has\(svg ~ svg\)\):not\(:has\(\.bg-task-badge\)\):not\(:has\(\.update-badge\)\):not\(:has\(\.update-dot\)\):hover/,
 		);
-		// 带角标或额外内容的条目显式声明为 7px 圆角矩形
-		expect(css).toMatch(/\.topbar\.no-labels\s+\.chip:has\(\.bg-task-badge\)[\s\S]*?border-radius:\s*7px\s*!important/);
+		// 带角标或额外内容的条目显式声明为 7px 圆角矩形（分层后不再需要 !important）
+		expect(css).toMatch(/\.topbar\.no-labels\s+\.chip:has\(\.bg-task-badge\)[\s\S]*?border-radius:\s*7px;/);
 	});
 
 	it("styles.css 中锁定侧边栏隐藏文字，且有文字时是小圆角（7px），默认不显示边框", () => {
 		const fs = require("node:fs");
 		const path = require("node:path");
-		const css = fs.readFileSync(path.join(__dirname, "../../web/src/styles.css"), "utf8");
-		// 侧边栏只显示图标，隐藏文字
-		expect(css).toMatch(/\.side-dock\s+\.bar-item-text\s*\{[^}]*display:\s*none\s*!important/);
+		// 同上：去掉 @layer base 带来的那一格缩进
+		const css = fs.readFileSync(path.join(__dirname, "../../web/src/styles.css"), "utf8").replace(/^\t/gm, "");
+		// 侧边栏只显示图标，隐藏文字（分层后不再需要 !important）
+		expect(css).toMatch(/\.side-dock\s+\.bar-item-text\s*\{[^}]*display:\s*none;/);
 		// 默认不显示边框
 		expect(css).toMatch(/\.bar-item\s*\{[^}]*border:\s*1px\s*solid\s*transparent/);
 		// 有文字时是小圆角 7px

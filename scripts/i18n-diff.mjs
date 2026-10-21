@@ -659,7 +659,7 @@ function checkPacksMain() {
 		if (r.extra.length > 0) console.log(`  多余（死 key）：${r.extra.join("、")}`);
 	}
 	if (bad > 0) {
-		console.error(`语言包 ${bad}/${rows.length} 个与 zh 源头不一致：缺 key 按 zh 顺序补入，死 key 经译者确认后删除。`);
+		console.error(`语言包 ${bad}/${rows.length} 个与 zh 源头不一致：可运行 npm run i18n:sync 一键自动补全与对齐。`);
 		process.exit(1);
 	}
 	console.log(`${rows.length} 个语言包 key 与 zh 一一对应。`);

@@ -122,10 +122,37 @@ export default {
 		<div class="ws-status" data-ref="ws-status">读取中…</div>
 		<div class="row">
 			<input data-ref="ws-input" placeholder="留空 = 跟随当前网页项目根目录" style="flex:1;min-width:220px" />
+			<select data-ref="ws-select" style="min-width:140px;background:var(--bg-elev,#16161d);color:inherit;border:1px solid var(--border,#333);border-radius:6px;padding:6px 8px;font:inherit;">
+				<option value="">快速点选已有项目…</option>
+			</select>
+			<button class="ghost" data-ref="ws-browse">📂 浏览目录…</button>
 			<button data-ref="ws-save">设为根目录</button>
 			<button class="ghost" data-ref="ws-use-cwd">设为当前项目</button>
 			<button class="ghost" data-ref="ws-open-project">把项目改为此根目录</button>
 			<button class="ghost" data-ref="ws-clear">清空固定</button>
+		</div>
+	</section>
+	<section data-ref="sec-model">
+		<h3>AI 模型与思考强度</h3>
+		<div class="row">
+			<input data-ref="model-input" placeholder="留空 = 跟随全局默认模型（支持输入或选择）" style="flex:2;min-width:180px" />
+			<button class="ghost" data-ref="model-browse">✨ 选择模型…</button>
+			<select data-ref="thinking-select" style="min-width:120px;background:var(--bg-elev,#16161d);color:inherit;border:1px solid var(--border,#333);border-radius:6px;padding:6px 8px;font:inherit;">
+				<option value="">思考强度：跟随全局</option>
+				<option value="off">思考：关闭 (off)</option>
+				<option value="low">思考：低 (low)</option>
+				<option value="medium">思考：中 (medium)</option>
+				<option value="high">思考：高 (high)</option>
+				<option value="max">思考：最大 (max)</option>
+			</select>
+			<button data-ref="model-save">保存配置</button>
+			<button class="ghost" data-ref="model-clear">恢复默认</button>
+		</div>
+		<div style="margin-top:8px">
+			<label style="display:flex;align-items:center;gap:6px;cursor:pointer;font-size:12px;opacity:.9">
+				<input type="checkbox" data-ref="bind-active-check" />
+				<span>💻📱 电脑手机消息同步：投递到网页当前打开的对话（大屏实时看流式思考与工具输出）</span>
+			</label>
 		</div>
 	</section>
 	<section data-ref="sec-login"><h3>登录</h3><div data-ref="login"></div></section>
@@ -145,9 +172,15 @@ export default {
 		const pill = $("pill"),
 			wsStatusEl = $("ws-status"),
 			wsInputEl = $("ws-input"),
+			wsSelectEl = $("ws-select"),
 			wsUseCwdBtn = $("ws-use-cwd"),
 			wsOpenProjBtn = $("ws-open-project"),
 			wsClearBtn = $("ws-clear"),
+			modelInputEl = $("model-input"),
+			thinkingSelectEl = $("thinking-select"),
+			modelSaveBtn = $("model-save"),
+			modelClearBtn = $("model-clear"),
+			bindActiveCheckEl = $("bind-active-check"),
 			loginEl = $("login"),
 			pendingSec = $("sec-pair"),
 			pendingEl = $("pending"),
@@ -179,6 +212,48 @@ export default {
 			if (document.activeElement !== wsInputEl) {
 				wsInputEl.value = ws;
 			}
+
+			// 更新已有项目快捷下拉（包含当前项目、已固定根目录与全部已知项目列表）
+			if (wsSelectEl) {
+				const currentVal = wsSelectEl.value;
+				const options = [{ label: "选择最近项目…", value: "" }];
+				if (hostCwd) {
+					const name =
+						hostCwd
+							.replace(/[\\/]+$/, "")
+							.split(/[\\/]/)
+							.pop() || hostCwd;
+					options.push({ label: `当前网页项目：${name} (${hostCwd})`, value: hostCwd });
+				}
+				if (ws && ws !== hostCwd) {
+					const name =
+						ws
+							.replace(/[\\/]+$/, "")
+							.split(/[\\/]/)
+							.pop() || ws;
+					options.push({ label: `已固定根目录：${name} (${ws})`, value: ws });
+				}
+				try {
+					const hostProjects = globalThis.window?.__piWebUiHost?.listProjects?.() ?? [];
+					for (const p of hostProjects) {
+						if (p && !options.some((o) => o.value === p)) {
+							const name =
+								p
+									.replace(/[\\/]+$/, "")
+									.split(/[\\/]/)
+									.pop() || p;
+							options.push({ label: `${name} (${p})`, value: p });
+						}
+					}
+				} catch {}
+				wsSelectEl.innerHTML = options
+					.map((opt) => `<option value="${esc(opt.value)}">${esc(opt.label)}</option>`)
+					.join("");
+				if (currentVal && options.some((o) => o.value === currentVal)) {
+					wsSelectEl.value = currentVal;
+				}
+			}
+
 			if (ws) {
 				const diffNote =
 					hostCwd && hostCwd !== ws
@@ -202,6 +277,17 @@ export default {
 		function renderState(s) {
 			if (!s || s.kind !== "state") return;
 			renderWorkspace(s);
+
+			if (modelInputEl && document.activeElement !== modelInputEl) {
+				modelInputEl.value = s.model || "";
+			}
+			if (thinkingSelectEl) {
+				thinkingSelectEl.value = s.thinkingLevel || "";
+			}
+			if (bindActiveCheckEl) {
+				bindActiveCheckEl.checked = s.bindActive === true;
+			}
+
 			pill.textContent = s.loggedIn
 				? `已登录${s.botId ? ` · ${s.botId}` : ""}${s.polling ? " · 接收中" : ""}${s.paused ? " · 受限暂停" : ""}`
 				: "未连接";
@@ -254,8 +340,14 @@ export default {
 						.reverse()
 						.map(
 							(m) => `
-<li><div class="meta"><b>${m.dir === "in" ? "←" : "→"} ${esc(m.peer)}</b><span>${esc(timeStr(m.at))}</span></div>
-<div style="white-space:pre-wrap">${esc(m.text)}</div></li>`,
+<li>
+	<div class="meta">
+		<b>${m.dir === "in" ? "←" : "→"} ${esc(m.peer)}</b>
+		<span>${esc(timeStr(m.at))}</span>
+		<button class="ghost" data-act="open-session" style="padding:1px 8px;font-size:11px;margin-left:auto;height:22px;min-height:unset">在主界面打开对话流</button>
+	</div>
+	<div style="white-space:pre-wrap">${esc(m.text)}</div>
+</li>`,
 						)
 						.join("")
 				: `<li style="opacity:.5">暂无消息</li>`;
@@ -270,6 +362,12 @@ export default {
 			else if (act === "logout") ctx.send({ action: "logout" });
 			else if (act === "allow") ctx.send({ action: "allow", peer: btn.dataset.peer });
 			else if (act === "deny") ctx.send({ action: "deny", peer: btn.dataset.peer });
+			else if (act === "open-session") {
+				const target = currentWorkspace || currentHostCwd;
+				if (target) {
+					void globalThis.window?.__piWebUiHost?.openSession?.({ cwd: target, newChat: false });
+				}
+			}
 		});
 		$("ws-save").addEventListener("click", () => {
 			ctx.send({ action: "set_workspace", workspace: wsInputEl.value.trim() });
@@ -294,6 +392,70 @@ export default {
 			wsInputEl.value = "";
 			ctx.send({ action: "set_workspace", workspace: "" });
 		});
+		if (wsSelectEl) {
+			wsSelectEl.addEventListener("focus", () => {
+				renderWorkspace({ workspace: currentWorkspace, hostCwd: currentHostCwd });
+			});
+			wsSelectEl.addEventListener("change", () => {
+				const val = wsSelectEl.value.trim();
+				if (!val) return;
+				wsInputEl.value = val;
+				ctx.send({ action: "set_workspace", workspace: val });
+			});
+		}
+		const wsBrowseBtn = $("ws-browse");
+		if (wsBrowseBtn) {
+			wsBrowseBtn.addEventListener("click", async () => {
+				const host = globalThis.window?.__piWebUiHost;
+				if (typeof host?.pickDirectory !== "function") return;
+				const res = await host.pickDirectory({
+					initialPath: wsInputEl.value.trim() || currentWorkspace || currentHostCwd,
+				});
+				if (res?.ok && res.path) {
+					wsInputEl.value = res.path;
+					ctx.send({ action: "set_workspace", workspace: res.path });
+				}
+			});
+		}
+		const modelBrowseBtn = $("model-browse");
+		if (modelBrowseBtn) {
+			modelBrowseBtn.addEventListener("click", async () => {
+				const host = globalThis.window?.__piWebUiHost;
+				if (typeof host?.pickModel !== "function") return;
+				const res = await host.pickModel({
+					currentModelId: modelInputEl?.value?.trim() || undefined,
+				});
+				if (res?.ok && res.modelId) {
+					if (modelInputEl) modelInputEl.value = res.modelId;
+					ctx.send({
+						action: "set_model",
+						model: res.modelId,
+						thinkingLevel: thinkingSelectEl?.value ?? "",
+					});
+				}
+			});
+		}
+		if (modelSaveBtn) {
+			modelSaveBtn.addEventListener("click", () => {
+				ctx.send({
+					action: "set_model",
+					model: modelInputEl?.value?.trim() ?? "",
+					thinkingLevel: thinkingSelectEl?.value ?? "",
+				});
+			});
+		}
+		if (modelClearBtn) {
+			modelClearBtn.addEventListener("click", () => {
+				if (modelInputEl) modelInputEl.value = "";
+				if (thinkingSelectEl) thinkingSelectEl.value = "";
+				ctx.send({ action: "set_model", model: "", thinkingLevel: "" });
+			});
+		}
+		if (bindActiveCheckEl) {
+			bindActiveCheckEl.addEventListener("change", () => {
+				ctx.send({ action: "set_bind_active", bindActive: bindActiveCheckEl.checked });
+			});
+		}
 		$("send").addEventListener("click", () => {
 			errEl.textContent = "";
 			ctx.send({ action: "send", peer: $("to").value.trim(), text: $("text").value.trim() });

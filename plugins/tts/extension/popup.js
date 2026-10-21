@@ -111,7 +111,7 @@ btnSyncAll.onclick = async () => {
 			msg.style.color = "#4ade80";
 			const items = [];
 			if (doubaoCookie) items.push("豆包");
-			if (deepseekToken) items.push("DeepSeek");
+			if (deepseekToken) items.push("DeepSeek (⚠️易封号)");
 			msg.innerText = `🎉 成功同步: ${items.join(" + ")}！`;
 		} else {
 			msg.style.color = "#f87171";
@@ -154,7 +154,7 @@ btnSyncDeepseek.onclick = async () => {
 		}
 		const result = await syncPayload({ deepseekToken });
 		msg.style.color = result.ok ? "#4ade80" : "#f87171";
-		msg.innerText = result.ok ? "🎉 DeepSeek 凭据同步成功！" : `同步失败: ${result.error}`;
+		msg.innerText = result.ok ? "🎉 DeepSeek 凭据同步成功！(⚠️注意网页账号封禁风险)" : `同步失败: ${result.error}`;
 	} catch (err) {
 		msg.style.color = "#f87171";
 		msg.innerText = `连接失败: ${err.message}`;

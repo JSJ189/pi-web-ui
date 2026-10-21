@@ -19,11 +19,24 @@ web/dist/
 # Plugin dependencies (installed per-plugin)
 plugins/*/node_modules/
 
-# 插件运行期数据（书源/书架/进度等，属于用户数据不入库）
+# 插件运行期数据与权限标记（用户数据与运行时产物不入库）
 plugins/*/storage/
+plugins/*/.pi-approved
+plugins/*/storage.json
+plugins/*/secrets.bin
+plugins/*/schedules.json
+plugins/webmail/package*.json
+plugins/*/*.token*
+plugins/*/*.cookie*
+plugins/*/*_token*
+plugins/*/*_cookie*
+plugins/*/*_session*
 
 # Scratch/test temp files
 tests/scratch/
+
+# 主题视觉审计产物（scripts/theme-audit.mjs + theme-diff.mjs 的截图/差异图）
+.theme-audit/
 
 # 误落仓库根的临时包（npm pack / 手工下载的 tgz）
 *.tgz

@@ -16,8 +16,7 @@ const argSrv = process.argv.slice(2).find(a => /^wss?:\/\//.test(a)); // 只认 
 const SERVER = argSrv || '{{SERVER}}';
 const TOKEN  = process.env.PI_TUNNEL_TOKEN || '{{TOKEN}}';
 const sockMap = new Map();
-const ts = () => new Date().toTimeString().slice(0, 8); // 日志时间戳（诊断断线循环时序用）
-const CLI_VER = 'p8'; // 能力版本：server 握手下发最新版，本地旧则自更新（拉 /cli 原子替换后重启由 launchd 拉起）
+const CLI_VER = 'p7'; // 能力版本：server 握手下发最新版，本地旧则自更新（拉 /cli 原子替换后重启由 launchd 拉起）
 const SELF_PATH = process.argv[1] ? path.resolve(process.argv[1]) : ''; // 自更新定位自身文件
 const CFG_FILE = path.join(homedir(), '.pi-tunnel-cli.json');
 let piPath = ''; // pi agent 可执行路径（启动时探测；未装则 /task 提示安装）
@@ -311,7 +310,7 @@ function connect() {
   wsRef = ws;
   ws.onopen = () => {
     reconnectDelay = 5000; // 成功连接后恢复常规重连间隔
-    console.log(`[tunnel ${ts()}] 已连接 ${SERVER} @ ${os.hostname()}（控制API :${ctrlPort}）`);
+    console.log(`[tunnel] 已连接 ${SERVER} @ ${os.hostname()}（控制API :${ctrlPort}）`);
     ws.send(JSON.stringify({ t: 'hello', name: process.env.PI_TUNNEL_NAME || os.hostname(), os: `${os.platform()} ${os.release()} ${os.arch()}`, ctrlPort, ver: CLI_VER }));
     startHeartbeat(ws);
   };
@@ -389,7 +388,7 @@ function connect() {
   };
   ws.onclose = ev => {
     clearInterval(hbTimer);
-    console.log(`[tunnel ${ts()}] 断开(${ev.code ?? ''}) ${reconnectDelay / 1000}s后重连`);
+    console.log(`[tunnel] 断开(${ev.code ?? ''}) ${reconnectDelay / 1000}s后重连`);
     for (const s of sockMap.values()) s.destroy();
     sockMap.clear();
     setTimeout(connect, reconnectDelay);

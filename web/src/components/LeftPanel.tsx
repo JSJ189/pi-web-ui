@@ -439,9 +439,11 @@ export const LeftPanel = memo(function LeftPanel({
 				// （与悬停 ✎ 铅笔同一套内嵌输入框，见 dispatchHostSessionEntry）。
 				if (entry.id === "host:conv-rename")
 					return target.kind === "running" || target.kind === "history" ? entry : { ...entry, hidden: true };
-				// 过户：只在「另一处」行出现（无 owner/convId 的旧条目与无头伪客户端条目同样隐藏）。
-				if (entry.id === "host:conv-takeover")
-					return isElsewhere && takeId && target.owner && !target.pseudo ? entry : { ...entry, hidden: true };
+				// 过户：只在「另一处」行出现（无 owner/convId 的旧条目与定时任务 scheduler 条目隐藏；插件会话支持过户）。
+				if (entry.id === "host:conv-takeover") {
+					const isScheduler = Boolean(target.pseudo && target.owner?.startsWith("scheduler:"));
+					return isElsewhere && takeId && target.owner && !isScheduler ? entry : { ...entry, hidden: true };
+				}
 				// 关闭类是本会话口径，「另一处」行不适用。
 				if (isElsewhere && (entry.id === "host:conv-dismiss-subagents" || entry.id === "host:conv-force-dismiss"))
 					return { ...entry, hidden: true };
@@ -1187,14 +1189,18 @@ export const LeftPanel = memo(function LeftPanel({
 														// （搬 runtime 本体，不造第二个 writer），标「离线」说清原页面为什么不在。
 														const isOffline = Boolean((c as RowConv).ownerOffline) && !isPseudo;
 														// issue #290：可过户（有 owner + convId）时本行可点击，两段确认。
-														// issue #426：无头伪客户端（定时任务/插件）不支持过户，降级为只读行。
-														const canTakeover = Boolean(elseOwner && elseConvId) && !isPseudo;
+														// 定时任务（scheduler:）不支持过户；插件通道（如微信 plugin:）支持点击接管查看完整对话流并实时同步。
+														const isScheduler =
+															isPseudo && typeof elseOwner === "string" && elseOwner.startsWith("scheduler:");
+														const canTakeover = Boolean(elseOwner && elseConvId) && !isScheduler;
 														const confirming = confirmTakeover === c.id;
 														const tooltip = confirming
 															? t("takeoverConfirm")
-															: isPseudo
+															: isScheduler
 																? `${t("elsewherePseudoTip")}\n${c.cwd}`
-																: `${t(isOffline ? "elsewhereOfflineTip" : "elsewhereTip")}\n${c.cwd}`;
+																: isPseudo
+																	? `点击直接在电脑端打开此对话\n${c.cwd}`
+																	: `${t(isOffline ? "elsewhereOfflineTip" : "elsewhereTip")}\n${c.cwd}`;
 														return (
 															<div
 																className="lp-row"
@@ -1211,8 +1217,7 @@ export const LeftPanel = memo(function LeftPanel({
 																	})
 																}
 															>
-																{/* 「另一处」行本体：可过户时当按钮用（第一次点 = 确认，第二次点 = 过户）。
-    不可过户（旧条目无 owner/convId）时保持只读，无 onClick。 */}
+																{/* 「另一处」行本体：插件伪客户端（如微信/QQ）点击直接打开过户；真实多端保留两段确认防误触 */}
 																<button
 																	type="button"
 																	className={`session-item elsewhere-item${canTakeover ? "" : " elsewhere-static"}${confirming ? " confirm" : ""}`}
@@ -1221,6 +1226,14 @@ export const LeftPanel = memo(function LeftPanel({
 																	onClick={
 																		canTakeover
 																			? () => {
+																					if (isPseudo) {
+																						panelSend({
+																							type: "take_over_conversation",
+																							owner: elseOwner as string,
+																							id: elseConvId as string,
+																						});
+																						return;
+																					}
 																					if (!confirming) {
 																						setConfirmTakeover(c.id);
 																						return;

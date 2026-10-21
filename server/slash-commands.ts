@@ -139,9 +139,9 @@ export const NATIVE_COMMANDS: {
 export function parseSlash(text: string): { name: string; args: string } | null {
 	const trimmed = text.trim();
 	if (!trimmed.startsWith("/")) return null;
-	const m = trimmed.match(/^\/([^\s]+)\s*([\s\S]*)$/);
-	if (!m || !m[1]) return null;
-	return { name: m[1], args: m[2].trim() };
+	const m = trimmed.match(/^\/([^\s]*)\s*([\s\S]*)$/);
+	if (!m) return null;
+	return { name: m[1] ?? "", args: (m[2] ?? "").trim() };
 }
 
 export class SlashCommandsService {
@@ -477,7 +477,19 @@ export class SlashCommandsService {
 				}, 300);
 				return true;
 			}
-			case "help":
+			case "":
+			case "?":
+			case "help": {
+				void this.push();
+				const cmdList = NATIVE_COMMANDS.map((c) => `/${c.name} : ${c.description}`).join("\n");
+				this.host.emit({
+					type: "notice",
+					level: "info",
+					text: `可用斜杠指令：\n${cmdList}`,
+					textEn: `Available slash commands:\n${cmdList}`,
+				});
+				return true;
+			}
 			case "copy":
 				// Client-side UI actions — the client handles them before sending;
 				// swallow here so the SDK never sees them as plain prompt text.

@@ -795,14 +795,41 @@ export function isUserMessageEntry(entry: unknown): boolean {
 }
 
 /**
- * 从给定的 entry 节点开始，向上追溯属于该轮提问的前置附件 aside 节点（customType === "file" 等），
+ * 判断一个 entry 是否为上一轮对话结束时的有效业务节点
+ * （例如助手回复、工具返回、bash 执行、分支或压缩摘要，或者更早一轮的用户提问）。
+ */
+export function isConversationTurnEntry(entry: unknown): boolean {
+	if (!entry || typeof entry !== "object") return false;
+	const e = entry as {
+		type?: string;
+		role?: string;
+		message?: { role?: string };
+	};
+	if (e.type === "compaction" || e.type === "branch_summary") return true;
+	if (e.type === "message" && e.message) {
+		const role = e.message.role;
+		return (
+			role === "assistant" ||
+			role === "toolResult" ||
+			role === "bashExecution" ||
+			role === "branchSummary" ||
+			role === "compactionSummary" ||
+			role === "user"
+		);
+	}
+	return false;
+}
+
+/**
+ * 从给定的 entry 节点开始，向上追溯跳过属于该轮提问的前置附件 aside 节点（customType === "file" 等）、
+ * SDK 注入的系统截面（role === "system"）以及配置变更节点，
  * 返回该轮提问之前的基准 entry id（作为 fork/分支截断点）。
  * 如果追溯到会话根（即该提问是会话第一轮提问），返回 null。
  */
 export function findTurnBaseEntryId(sm: { getEntry(id: string): unknown }, entryId: string): string | null {
 	const target = sm.getEntry(entryId);
 	if (!target) return null;
-	// 只有针对用户消息，才需要向上跳过属于该提问的前置附件 aside 卡片
+	// 只有针对用户消息，才需要向上跳过属于该提问的前置附件 aside 卡片和系统截面
 	if (!isUserMessageEntry(target)) {
 		const parentId = (target as { parentId?: string | null }).parentId;
 		return parentId ?? null;
@@ -816,11 +843,10 @@ export function findTurnBaseEntryId(sm: { getEntry(id: string): unknown }, entry
 		if (!parentId) return null;
 		const parentEntry = sm.getEntry(parentId);
 		if (!parentEntry) return null;
-		if (isPromptAsideEntry(parentEntry)) {
-			currentId = parentId;
-		} else {
+		if (isConversationTurnEntry(parentEntry)) {
 			return parentId;
 		}
+		currentId = parentId;
 	}
 	return null;
 }

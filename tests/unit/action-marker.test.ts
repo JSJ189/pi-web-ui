@@ -273,4 +273,17 @@ describe("MarkerService 建议操作集成测试", () => {
 		await svc.handleAssistantText("conv-1", text);
 		expect(svc.getActionSuggestions("conv-1")).toBeNull();
 	});
+
+	it("buildGuidance 为精简纯英文且不重复注入别名", () => {
+		const { svc } = createService();
+		const guidance = svc.buildGuidance();
+		// 1. 系统提示词统一为纯英文（即便宿主语言是 zh）
+		expect(guidance).not.toMatch(/[\u4e00-\u9fff]/);
+		// 2. 别名 suggest 不得重复注入，action 条目只出现 1 次
+		const actionEntryMatches = guidance.match(/- Suggest action buttons:/g);
+		expect(actionEntryMatches?.length).toBe(1);
+		// 3. 包含一个标记一个按钮与多个独立标记的强指引
+		expect(guidance).toContain("one marker per button");
+		expect(guidance).toContain("NEVER join options in one marker");
+	});
 });

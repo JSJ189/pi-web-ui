@@ -405,6 +405,15 @@ export class FilesService {
 
 		// ---- 工作区相对视图（原有行为） ----
 		const target = raw ? resolve(root, raw) : root;
+		// 若工作区根目录自身尚不存在，自动自愈创建，避免首帧报错
+		if (raw === "") {
+			try {
+				const fsp = await import("node:fs/promises");
+				await fsp.mkdir(target, { recursive: true });
+			} catch {
+				/* ignore if exists */
+			}
+		}
 		const rawRel = relative(root, target);
 		if (rawRel.startsWith("..") || rawRel.includes(`${sep}..`)) {
 			this.host.emit({
@@ -1187,7 +1196,16 @@ export class FilesService {
 	/** destDir（wire，空串 = 工作区根）→ 原生绝对目录；不存在/非目录 → null（调用方报错）。 */
 	private async resolveOpDir(dir: string): Promise<{ abs: string; wire: string } | null> {
 		const fsp = await import("node:fs/promises");
-		if (!dir.trim()) return { abs: resolve(this.host.getCwd()), wire: "" };
+		if (!dir.trim()) {
+			const rootAbs = resolve(this.host.getCwd());
+			// 工作区根目录在首次运行可能尚未落地，自愈创建以确保后续操作成功
+			try {
+				await fsp.mkdir(rootAbs, { recursive: true });
+			} catch {
+				/* ignore if exists */
+			}
+			return { abs: rootAbs, wire: "" };
+		}
 		const t = this.resolveOpTarget(dir);
 		if (!t) return null;
 		const st = await fsp.stat(t.abs).catch(() => null);
@@ -1221,7 +1239,7 @@ export class FilesService {
 				err(`已存在：${safe}`, `Already exists: ${safe}`);
 				return;
 			}
-			if (kind === "dir") await fsp.mkdir(abs);
+			if (kind === "dir") await fsp.mkdir(abs, { recursive: true });
 			else await fsp.writeFile(abs, "");
 			this.host.emit({
 				type: "notice",

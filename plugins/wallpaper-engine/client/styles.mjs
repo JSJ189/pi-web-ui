@@ -363,11 +363,39 @@ ${
 	min-width: 0 !important;
 	max-width: fit-content !important;
 	flex: 0 0 auto !important;
+	flex-shrink: 0 !important;
 	height: 22px !important;
 	line-height: 20px !important;
 	margin: 0 !important;
 	padding: 0 7px !important;
 	overflow: hidden !important;
+	contain: layout paint !important;
+	white-space: nowrap !important;
+}
+
+/* 流式待定等待指示器：锁定微胶囊尺寸，杜绝首帧大文本撑宽换行引发闪现回跳 */
+.turn-tools-trail .thinking-wait {
+	display: inline-flex !important;
+	align-items: center !important;
+	justify-content: center !important;
+	vertical-align: middle !important;
+	box-sizing: border-box !important;
+	width: auto !important;
+	min-width: 0 !important;
+	max-width: fit-content !important;
+	height: 22px !important;
+	line-height: 20px !important;
+	padding: 0 7px !important;
+	margin: 0 !important;
+	font-size: 11px !important;
+	font-family: var(--mono, monospace) !important;
+	border-radius: 999px !important;
+	background: color-mix(in srgb, var(--text) 5%, transparent) !important;
+	border: 1px solid rgba(255, 255, 255, 0.09) !important;
+	flex: 0 0 auto !important;
+	flex-shrink: 0 !important;
+	contain: layout paint !important;
+	white-space: nowrap !important;
 }
 
 .msg-assistant .msg-body {
@@ -390,6 +418,7 @@ ${
 	min-width: 0 !important;
 	max-width: fit-content !important;
 	flex: 0 0 auto !important;
+	flex-shrink: 0 !important;
 	height: 23px !important;
 	line-height: 21px !important;
 	margin: 0 !important;
@@ -410,9 +439,9 @@ ${
 	transition:
 		background 0.15s cubic-bezier(0.16, 1, 0.3, 1),
 		border-color 0.15s cubic-bezier(0.16, 1, 0.3, 1),
-		box-shadow 0.15s cubic-bezier(0.16, 1, 0.3, 1),
-		transform 0.15s cubic-bezier(0.16, 1, 0.3, 1) !important;
+		box-shadow 0.15s cubic-bezier(0.16, 1, 0.3, 1) !important;
 	overflow: hidden !important;
+	contain: layout paint !important;
 	user-select: none !important;
 	text-decoration: none !important;
 }
@@ -425,6 +454,11 @@ ${
 		inset 0 1px 1px rgba(255, 255, 255, 0.35),
 		0 4px 10px rgba(0, 0, 0, 0.45) !important;
 	transform: translateY(-1px) !important;
+	transition:
+		background 0.15s cubic-bezier(0.16, 1, 0.3, 1),
+		border-color 0.15s cubic-bezier(0.16, 1, 0.3, 1),
+		box-shadow 0.15s cubic-bezier(0.16, 1, 0.3, 1),
+		transform 0.15s cubic-bezier(0.16, 1, 0.3, 1) !important;
 }
 
 /* 状态氛围微光点睛 */
@@ -494,6 +528,9 @@ ${
 	gap: 4px !important;
 	box-shadow: none !important;
 	line-height: 1 !important;
+	flex: 0 0 auto !important;
+	flex-shrink: 0 !important;
+	white-space: nowrap !important;
 }
 
 /* 彻底隐藏一切占位、折叠、复制等破坏行内流动性的元素：不需要折叠按钮、不需要长文本，所有按钮只显示名称与状态 */

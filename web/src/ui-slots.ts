@@ -67,7 +67,7 @@ export interface UiDiagnostic {
 	message: string;
 }
 
-type UiDiagnosticLevel = "warn" | "error";
+type UiDiagnosticLevel = "info" | "warn" | "error";
 
 /** 协议里的全部 kind（与 server/protocol.ts 的 UiItemKind 同口径；未知值只诊断不丢弃）。 */
 const UI_ITEM_KINDS: ReadonlySet<string> = new Set([
@@ -1711,6 +1711,7 @@ function toChildEntry(
 	const children = childEntries(id, slot, source, item.children, zh);
 	const hint = pluginHint(item, zh);
 	const options = toSlotOptions(item.options, zh);
+	const progress = clampProgress(item.progress);
 	return {
 		id,
 		slot,
@@ -1729,6 +1730,9 @@ function toChildEntry(
 		align: "start",
 		hidden: item.hidden ?? false,
 		...(item.badge ? { badge: item.badge } : {}),
+		...(typeof item.checked === "boolean" ? { checked: item.checked } : {}),
+		...(typeof item.value === "string" ? { value: item.value } : {}),
+		...(progress !== undefined ? { progress } : {}),
 		...(item.when ? { when: item.when } : {}),
 		...(options ? { options } : {}),
 		...(children.length > 0 ? { children } : {}),
@@ -1913,10 +1917,17 @@ export function buildUiSlots(
 	// ---- 第 2 层：插件贡献 ----
 	for (const plugin of plugins) {
 		if (disabled.has(plugin.id)) {
-			diag({
-				pluginId: plugin.id,
-				message: `plugin "${plugin.id}" is disabled by the user — its ${plugin.ui?.items?.length ?? 0} UI item(s) are not rendered`,
-			});
+			const itemCount = plugin.ui?.items?.length ?? 0;
+			const arrangeCount = plugin.ui?.arrange?.length ?? 0;
+			// 仅当插件声明了 UI 项或重排时才记录诊断；纯工具/后台插件（零 UI 贡献）不产生无意义的假诊断。
+			// 用户主动禁用是正常配置，诊断级别定为 info，避免在控制台与界面布局中被误报为警告。
+			if (itemCount > 0 || arrangeCount > 0) {
+				diag({
+					level: "info",
+					pluginId: plugin.id,
+					message: `plugin "${plugin.id}" is disabled by the user — its ${itemCount} UI item(s) are not rendered`,
+				});
+			}
 			continue;
 		}
 		if (plugin.error) {

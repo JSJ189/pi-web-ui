@@ -2,6 +2,7 @@ import { readFileSync, readdirSync } from "node:fs";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { describe, expect, it } from "vitest";
+import { readThemeCss } from "../../server/themes.js";
 
 const ROOT = join(dirname(fileURLToPath(import.meta.url)), "..", "..");
 const STYLES_PATH = join(ROOT, "web", "src", "styles.css");
@@ -19,7 +20,7 @@ describe("顶栏/底栏角标徽标对比度与样式防护", () => {
 	it("纯白 --accent 主题（如 flow/wallpaper-flow）必须声明 bar-item-badge 文字深色反色，杜绝白底白字", () => {
 		const files = readdirSync(THEMES_DIR).filter((f) => f.endsWith(".css"));
 		for (const file of files) {
-			const css = readFileSync(join(THEMES_DIR, file), "utf8");
+			const css = readThemeCss(join(THEMES_DIR, file));
 			const isPureWhiteAccent = /--accent\s*:\s*#ffffff\b/i.test(css);
 			if (isPureWhiteAccent) {
 				const hasBadgeContrastRule = /\.bar-item-badge[^}]*color:\s*#000000/i.test(css);

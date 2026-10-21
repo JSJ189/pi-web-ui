@@ -93,6 +93,16 @@
 				border-top: 1px solid #27272a;
 				padding-top: 8px;
 			}
+			.risk-warning {
+				margin-top: 10px;
+				padding: 8px;
+				background: rgba(239, 68, 68, 0.15);
+				border: 1px solid rgba(239, 68, 68, 0.35);
+				border-radius: 6px;
+				font-size: 11px;
+				color: #fca5a5;
+				line-height: 1.4;
+			}
 		</style>
 	</head>
 	<body>
@@ -107,6 +117,10 @@
 			<button id="btn-sync-deepseek" class="btn-secondary">⚡ 仅同步 DeepSeek 凭据 (chat.deepseek.com)</button>
 		</div>
 		<div id="msg"></div>
+		<div class="risk-warning">
+			⚠️ <b>高危警示</b>：DeepSeek 语音频繁使用极易触发官方风控导致 chat.deepseek.com
+			网页账号被封禁！日常推荐优先同步和使用豆包凭据。
+		</div>
 		<div class="hint">在当前浏览器中登录过豆包或 DeepSeek 后，点击上方按钮即可瞬间完成凭据上报。</div>
 		<script src="popup.js"></script>
 	</body>

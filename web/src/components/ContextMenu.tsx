@@ -58,6 +58,11 @@ export function ContextMenu({ onAction }: ContextMenuProps): JSX.Element | null 
 	 *  长度/顺序与 items 一一对应，rows/下标导航直接对着 menuItems 算。 */
 	const { items: menuItems, selectParents } = useMemo(() => expandSelectEntries(items), [items]);
 	const rows = useMemo(() => contextMenuRows(menuItems), [menuItems]);
+	// 当条目较多（可见行 > 14 行）且视口宽度充裕（>= 640px）时，自适应分列展开宽度
+	const isMultiCol = useMemo(() => {
+		if (typeof window === "undefined") return false;
+		return rows.length > 14 && window.innerWidth >= 640;
+	}, [rows.length]);
 	// 求值上下文：这次菜单是哪个槽位 + 右键了什么对象（file/dir/running/message）。
 	// 有它插件的肯定形 when（如 "file.isDir"）才能现场求值；没它走 legacy 语义。
 	const whenCtx = useMemo(
@@ -358,7 +363,7 @@ export function ContextMenu({ onAction }: ContextMenuProps): JSX.Element | null 
 	return createPortal(
 		<div
 			ref={rootRef}
-			className="ctx-menu"
+			className={`ctx-menu${isMultiCol ? " is-multi-col" : ""}`}
 			role="menu"
 			// 槽位 + 被右键对象给读屏用户一点上下文：没有菜单自身的 i18n 文案（那是宿主的事），
 			// 这里只给机器可读的定位信息。

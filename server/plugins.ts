@@ -17,7 +17,16 @@
  * - activate 抛错只标记 error 字段并记日志，绝不影响主进程。
  */
 import { mkdir, readdir, readFile, rm, stat, writeFile } from "node:fs/promises";
-import { cpSync, existsSync, readFileSync, readdirSync, renameSync, watch as fsWatch, writeFileSync } from "node:fs";
+import {
+	cpSync,
+	existsSync,
+	lstatSync,
+	readFileSync,
+	readdirSync,
+	renameSync,
+	watch as fsWatch,
+	writeFileSync,
+} from "node:fs";
 import { dirname, isAbsolute, join, relative, resolve, sep } from "node:path";
 import { pathToFileURL } from "node:url";
 import {
@@ -484,6 +493,14 @@ export interface PluginHost {
 	/** 注册一个斜杠命令（/name），出现在输入框命令选择器里，服务端拦截执行。
 	 *  返回注销函数；重名拒绝（内置命令优先，先注册的插件优先）。 */
 	registerCommand(cmd: PluginCommandDef): () => void;
+	/** 执行已注册的插件斜杠命令（如 /todo, /note 等）；返回结果或错误。 */
+	execCommand?(
+		name: string,
+		args: string,
+		context?: { clientId?: string },
+	): Promise<{ ok: boolean; result?: string; error?: string }>;
+	/** 获取当前系统注册的全部插件命令列表（供通道插件汇总帮助菜单使用）。 */
+	getPluginCommands?(): PluginCommandDef[];
 	/**
 	 * 宿主 UI 贡献（slot 框架，issue #146 完整版）。需要能力 "ui"。
 	 *
@@ -1856,9 +1873,16 @@ export class PluginManager {
 		return join(this.dataDir, "plugin-catalog.json");
 	}
 
-	/** 合并后的插件市场列表（builtin + 用户自定义，同 id 用户覆盖）。 */
+	/** 官方社区生态插件清单文件（<dataDir>/community-catalog.json）。 */
+	get communityCatalogPath(): string {
+		return join(this.dataDir, "community-catalog.json");
+	}
+
+	/** 合并后的插件市场列表（builtin + community + 用户自定义，同 id 用户覆盖）。 */
 	catalog(): UiPluginCatalogEntry[] {
-		return this.builtinCatalogPath ? readCatalog(this.builtinCatalogPath, this.customCatalogPath) : [];
+		return this.builtinCatalogPath
+			? readCatalog(this.builtinCatalogPath, this.customCatalogPath, this.communityCatalogPath)
+			: [];
 	}
 
 	/** 插件市场列表纪元（随 plugin_catalog 消息下发）。 */
@@ -1889,7 +1913,7 @@ export class PluginManager {
 		}
 	}
 
-	/** 移除一条用户自定义条目（builtin 不可经此删除）；返回错误信息或 null。 */
+	/** 移除一条用户自定义条目（builtin / 社区条目不可经此删除）；返回错误信息或 null。 */
 	removeCatalogEntry(id: string, lang?: () => ServerLang): { error?: string } {
 		const l = lang?.() ?? "en";
 		try {
@@ -1898,8 +1922,8 @@ export class PluginManager {
 				return {
 					error: pick(
 						l,
-						"未找到该条目，或它是内置条目（不可移除）",
-						"Entry not found, or it is a built-in entry (cannot be removed)",
+						"未找到该条目，或它是内置/社区条目（不可移除）",
+						"Entry not found, or it is a built-in/community entry (cannot be removed)",
 						"plugins.catalog.entry.cannot.remove",
 					),
 				};
@@ -2909,6 +2933,19 @@ export class PluginManager {
 		for (const prefix of this.proxyRoutes.keys()) {
 			if (pluginIds.has(this.proxyRoutes.get(prefix)!.pluginId)) this.proxyRoutes.delete(prefix);
 		}
+		if (this.panelPushTimer) {
+			clearTimeout(this.panelPushTimer);
+			this.panelPushTimer = null;
+		}
+		if (this.panelSweepTimer) {
+			clearInterval(this.panelSweepTimer);
+			this.panelSweepTimer = null;
+		}
+		this.agentTools.clear();
+		this.pluginCommands.clear();
+		this.uiRuntime.clear();
+		this.uiBase.clear();
+		this.proxyRoutes.clear();
 		this.pluginBgTasks.clear();
 		this.loaded.clear();
 		this.messageHandlers.clear();
@@ -2949,6 +2986,16 @@ export class PluginManager {
 			if (!ID_RE.test(name) || !builtinCatalogIds.has(name)) continue;
 			const targetDir = join(this.pluginsDir, name);
 			const sourceDir = join(builtinDir, name);
+
+			try {
+				if (lstatSync(targetDir).isSymbolicLink()) {
+					// 处于源码开发软链接模式（如 npm run plugins:link），直接使用源码，跳过随包文件覆盖
+					continue;
+				}
+			} catch {
+				/* lstat 失败走普通流程 */
+			}
+
 			const targetManifest = join(targetDir, "manifest.json");
 			const sourceManifest = join(sourceDir, "manifest.json");
 
@@ -3942,6 +3989,17 @@ export class PluginManager {
 				const off = this.registerCommand(info.id, cmd);
 				return effects.add(`command:/${String(cmd?.name ?? "?").replace(/^\/+/, "")}`, off);
 			},
+			execCommand: async (name, args, context) => {
+				const hit = this.findCommand(name);
+				if (!hit) return { ok: false, error: `未找到命令 /${name}` };
+				try {
+					const res = await hit.def.run(args, context ?? { clientId: `plugin:${info.id}` });
+					return { ok: true, result: typeof res === "string" ? res : "" };
+				} catch (err) {
+					return { ok: false, error: (err as Error).message };
+				}
+			},
+			getPluginCommands: () => this.listCommands(),
 			storage,
 			secrets,
 			ensureDeps: (specs, opts) => ensurePluginDeps(dir, specs ?? [], opts?.onProgress),

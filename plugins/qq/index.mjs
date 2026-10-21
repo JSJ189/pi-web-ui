@@ -2,12 +2,15 @@
  * plugins/qq/index.mjs
  * QQ Bot (腾讯开放平台 QQBot) integration for pi-web-ui.
  * Zero external dependencies (built-in fetch + node:crypto + native WebSocket).
- * Inspired by dsh-im: outbound WebSocket duplex chat (zero public IP),
+ * Inspired by dsh-im & wechat-ilink: outbound WebSocket duplex chat (zero public IP),
  * structure-aware Markdown chunks, isolated multi-turn sessions,
- * access control whitelist, and slash commands.
+ * access control whitelist, slash commands, model & thinkingLevel switches,
+ * and workspace cwd binding.
  */
 
 import { createHash } from "node:crypto";
+import { existsSync, statSync } from "node:fs";
+import { resolve, sep } from "node:path";
 import { chunkMarkdownText } from "./markdown-chunks.mjs";
 
 export const SECRET_CLIENT_SECRET = "qq.clientSecret";
@@ -23,9 +26,42 @@ export function stripInternalMarkers(text) {
 		.trim();
 }
 
-/** Generates a stable, privacy-preserving accountId from QQ user OpenID or user ID. */
-export function peerAccountId(userId, prefix = "qq") {
-	const raw = String(userId ?? "").trim();
+/** 校验工作目录合法性（防路径不存在或越界，Windows 下防 SystemRoot）。 */
+export function checkCwdValid(cwd) {
+	const trimmed = String(cwd ?? "").trim();
+	if (!trimmed) return { ok: false, error: "工作目录不能为空" };
+	let abs;
+	try {
+		abs =
+			process.platform === "win32" && /^[A-Za-z]:$/.test(trimmed) ? `${trimmed.toUpperCase()}${sep}` : resolve(trimmed);
+	} catch {
+		return { ok: false, error: `工作目录路径非法：${trimmed}` };
+	}
+	try {
+		if (!existsSync(abs) || !statSync(abs).isDirectory()) {
+			return { ok: false, error: `目标项目不存在或不是目录：${trimmed}` };
+		}
+	} catch {
+		return { ok: false, error: `无法访问目标项目：${trimmed}` };
+	}
+	if (process.platform === "win32") {
+		const sysRoot = (process.env.SystemRoot || process.env.windir || "C:\\Windows")
+			.replace(/\//g, "\\")
+			.replace(/\\+$/, "");
+		const norm = abs.replace(/\//g, "\\").replace(/\\+$/, "");
+		const low = norm.toLowerCase();
+		const rootLow = sysRoot.toLowerCase();
+		if (low === rootLow || low.startsWith(`${rootLow}\\`)) {
+			return { ok: false, error: `拒绝在系统目录执行：${abs}` };
+		}
+	}
+	return { ok: true, abs };
+}
+
+/** Generates a stable, privacy-preserving accountId from QQ user OpenID or user ID and session seq. */
+export function peerAccountId(userId, seq = 0, prefix = "qq") {
+	const base = String(userId ?? "").trim();
+	const raw = seq ? `${base}:${seq}` : base;
 	if (!raw) return `${prefix}_default`;
 	const hash = createHash("sha256").update(raw).digest("hex").slice(0, 16);
 	return `${prefix}_${hash}`;
@@ -67,7 +103,6 @@ export async function getQqAccessToken(appId, clientSecret, { timeoutMs = 15000 
 	}
 	return {
 		accessToken: json.access_token,
-		// 平台返回的时效（秒）；缺省按 2 小时量级保守估计，调用方据此提前刷新
 		expiresInSec: Number(json.expires_in) > 0 ? Number(json.expires_in) : 2 * 60 * 60,
 	};
 }
@@ -132,9 +167,21 @@ export class QqBotBridge {
 		this.seenMessageIds = new Set();
 		this.pendingRuns = new Map();
 		this.earlyRuns = new Map();
-		this.userConversations = new Map();
-		this.userWorkspaces = new Map();
+		this.inFlightConvs = new Set();
+		this.lastInFlightStartedAt = 0;
 
+		this.userWorkspaces = new Map();
+		this.userModels = new Map();
+		this.userThinkingLevels = new Map();
+		this.userPlanMode = new Map();
+		this.userActiveConvs = new Map(); // authorId -> conversationId (真实会话ID)
+		this.peerSessionSeq = new Map();
+
+		this.conversationBindings = new Map(); // convId -> { authorId, replyTarget, updatedAt }
+		this.recentChats = []; // Array<{ conversationId, authorId, lastUserText, lastAssistantText, updatedAt }>
+		this.webRunTexts = new Map(); // convId -> accumulatedText (电脑网页发起的双向同步累积)
+
+		this.currentIntents = (1 << 30) | (1 << 25); // PUBLIC_GUILD_MESSAGES | GROUP_AND_C2C
 		this.status = {
 			enabled: false,
 			connected: false,
@@ -152,8 +199,60 @@ export class QqBotBridge {
 		return { ...this.status };
 	}
 
+	getRecentChats() {
+		return [...this.recentChats];
+	}
+
+	recordRecentChat(conversationId, authorId, { userText, assistantText } = {}) {
+		if (!conversationId) return;
+		// 严防非 QQ 会话写入：必须属于 QQ 绑定或当前排队任务
+		if (!this.conversationBindings.has(conversationId) && !this.pendingRuns.has(conversationId)) {
+			return;
+		}
+		const seq = this.peerSessionSeq.get(authorId) || 0;
+		const pseudoOwner = `plugin:qq:${peerAccountId(authorId, seq)}`;
+		let item = this.recentChats.find((c) => c.conversationId === conversationId);
+		if (!item) {
+			item = {
+				conversationId,
+				authorId: String(authorId || "qq_user"),
+				ownerId: pseudoOwner,
+				lastUserText: "",
+				lastAssistantText: "",
+				updatedAt: Date.now(),
+			};
+			this.recentChats.unshift(item);
+		} else {
+			this.recentChats = this.recentChats.filter((c) => c.conversationId !== conversationId);
+			this.recentChats.unshift(item);
+		}
+		if (pseudoOwner) item.ownerId = pseudoOwner;
+		if (userText !== undefined) item.lastUserText = String(userText).slice(0, 300);
+		if (assistantText !== undefined) item.lastAssistantText = String(assistantText).slice(0, 300);
+		item.updatedAt = Date.now();
+		if (this.recentChats.length > 20) {
+			this.recentChats = this.recentChats.slice(0, 20);
+		}
+		this.host?.broadcast?.({ type: "recent_chats", recentChats: this.getRecentChats() });
+	}
+
 	resolveWorkspace(authorId, cfg) {
 		return String(this.userWorkspaces.get(authorId) || cfg?.workspace || this.host?.cwd || "").trim();
+	}
+
+	resolveModel(authorId, cfg) {
+		return String(this.userModels.get(authorId) || cfg?.model || "").trim();
+	}
+
+	resolveThinkingLevel(authorId, cfg) {
+		return String(this.userThinkingLevels.get(authorId) || cfg?.thinkingLevel || "").trim();
+	}
+
+	resolvePlanMode(authorId, cfg) {
+		if (this.userPlanMode.has(authorId)) {
+			return Boolean(this.userPlanMode.get(authorId));
+		}
+		return false;
 	}
 
 	async start() {
@@ -161,6 +260,7 @@ export class QqBotBridge {
 		this.running = true;
 		this.status.enabled = true;
 		this.status.state = "connecting";
+		this.currentIntents = (1 << 30) | (1 << 25);
 
 		const cfg = this.getConfig();
 		if (!cfg.appId || !cfg.clientSecret) {
@@ -219,14 +319,16 @@ export class QqBotBridge {
 			} catch {}
 			this.offRunEvent = null;
 		}
+
+		for (const run of this.pendingRuns.values()) {
+			if (run.timeoutTimer) clearTimeout(run.timeoutTimer);
+		}
+		this.pendingRuns.clear();
+		this.earlyRuns.clear();
+
+		this.host?.broadcast?.({ type: "bot_status", status: this.getStatus() });
 	}
 
-	/**
-	 * 确保持有未过期的 access token：QQ 开放平台 token 是短时效（expires_in 量级），
-	 * 此前只在 start() 取一次——到期后所有 REST 回复 401，WS 断线重连又拿旧 token
-	 * 请求 /gateway 也 401，进入每 5 秒一次的永久失败循环。
-	 * 提前 5 分钟刷新；并发调用共享同一次刷新。
-	 */
 	async ensureAccessToken() {
 		const cfg = this.getConfig();
 		const REFRESH_MARGIN_MS = 5 * 60 * 1000;
@@ -240,8 +342,6 @@ export class QqBotBridge {
 					this.accessToken = auth.accessToken;
 					this.tokenExpiresAt = Date.now() + auth.expiresInSec * 1000;
 				} catch (err) {
-					// 刷新失败不阻塞回复路径：手里还有旧 token 就先用（真过期时
-					// REST 会 401 并走重连循环，届时再次尝试刷新）
 					this.log("warn", `QQBot token refresh failed: ${err.message}`);
 				}
 				return this.accessToken;
@@ -287,19 +387,30 @@ export class QqBotBridge {
 			this.log("warn", `QQ Gateway error: ${this.status.lastError}`);
 		};
 
-		ws.onclose = () => {
+		ws.onclose = (event) => {
 			this.status.connected = false;
 			if (this.heartbeatTimer) {
 				clearInterval(this.heartbeatTimer);
 				this.heartbeatTimer = null;
 			}
+			const code = event?.code;
+			const reason = event?.reason || "";
+			if (code === 4014 || code === 4903) {
+				if (this.currentIntents !== 1 << 30) {
+					this.currentIntents = 1 << 30;
+					this.log?.("warn", `QQ Gateway reported ${code} (${reason}), falling back to base PUBLIC_GUILD_MESSAGES`);
+				}
+			}
 			if (this.running) {
 				this.status.state = "connecting";
+				if (reason) this.status.lastError = `Gateway close ${code || ""}: ${reason}`;
+				this.host?.broadcast?.({ type: "bot_status", status: this.getStatus() });
 				setTimeout(() => {
 					if (this.running) this.connectGateway().catch(() => {});
 				}, 5000);
 			} else {
 				this.status.state = "idle";
+				this.host?.broadcast?.({ type: "bot_status", status: this.getStatus() });
 			}
 		};
 	}
@@ -326,12 +437,11 @@ export class QqBotBridge {
 				}
 			}, interval);
 
-			// Identify: intents for public guild messages + group + direct messages
 			const identifyPayload = {
 				op: 2,
 				d: {
 					token: `QQBot ${this.accessToken}`,
-					intents: (1 << 30) | (1 << 25) | (1 << 12) | (1 << 9), // GROUP_AND_C2C | AT_MESSAGES | GUILD_MESSAGES
+					intents: this.currentIntents,
 					properties: {
 						$os: "linux",
 						$browser: "pi-web-ui",
@@ -357,6 +467,7 @@ export class QqBotBridge {
 				this.status.state = "connected";
 				this.status.lastError = null;
 				this.log("info", `QQBot connected as ${this.status.botUsername} (ID: ${this.botUser.id})`);
+				this.host?.broadcast?.({ type: "bot_status", status: this.getStatus() });
 			} else if (
 				t === "AT_MESSAGE_CREATE" ||
 				t === "DIRECT_MESSAGE_CREATE" ||
@@ -403,6 +514,7 @@ export class QqBotBridge {
 
 		this.status.messagesReceived++;
 		this.status.lastMessageAt = Date.now();
+		this.host?.broadcast?.({ type: "bot_status", status: this.getStatus() });
 
 		const replyTarget = {
 			eventType,
@@ -413,119 +525,440 @@ export class QqBotBridge {
 			msgId: messageId,
 		};
 
-		// Slash command handling (/help, /clear, /new, /status)
-		if (cleanText.startsWith("/")) {
+		// Slash command handling (/help, /clear, /new, /status, /model, /thinking...)
+		if (cleanText.startsWith("/") || /^\d+\/.+/.test(cleanText) || /^\d+$/.test(cleanText)) {
 			const handled = await this.handleSlashCommand(cleanText, { authorId, replyTarget, cfg });
 			if (handled) return;
 		}
 
-		// Prepare isolated agent session for this user
-		const accountId = peerAccountId(authorId);
-		let conversationId = this.userConversations.get(authorId);
-		if (!conversationId) {
-			conversationId = `qq_${String(authorId).slice(-8)}_${Date.now().toString(36)}`;
-			this.userConversations.set(authorId, conversationId);
+		await this.driveAuthor(authorId, cleanText, replyTarget);
+	}
+
+	async driveAuthor(authorId, cleanText, replyTarget) {
+		const cfg = this.getConfig();
+		const seq = this.peerSessionSeq.get(authorId) || 0;
+		const accountId = peerAccountId(authorId, seq);
+
+		let conversationId = `qq_${String(authorId).slice(-8)}_${seq}`;
+		let bindCid = null;
+
+		if (cfg.bindActive === true) {
+			try {
+				const active = this.host.getActiveConversation?.()?.conversationId;
+				if (typeof active === "string" && active.trim()) {
+					bindCid = active.trim();
+					conversationId = bindCid;
+				}
+			} catch {}
 		}
+
+		const timeoutSec = Math.max(15, Number(cfg.replyTimeoutSec) || 90);
+		const timeoutTimer = setTimeout(() => {
+			const run = this.pendingRuns.get(conversationId);
+			if (run && !run.noticed) {
+				run.noticed = true;
+				this.replyMessage(replyTarget, "⏳ 任务还在深度执行中，稍后把结果推给您…").catch(() => {});
+			}
+		}, timeoutSec * 1000);
 
 		this.pendingRuns.set(conversationId, {
 			authorId,
 			replyTarget,
 			accumulatedText: "",
 			startedAt: Date.now(),
+			timeoutTimer,
+			noticed: false,
 		});
+
+		this.conversationBindings.set(conversationId, {
+			authorId,
+			replyTarget,
+			updatedAt: Date.now(),
+		});
+		this.recordRecentChat(conversationId, authorId, { userText: cleanText });
 
 		try {
 			const workspace = this.resolveWorkspace(authorId, cfg);
+			const model = this.resolveModel(authorId, cfg);
+			const thinkingLevel = this.resolveThinkingLevel(authorId, cfg);
+			const planMode = this.resolvePlanMode(authorId, cfg);
+
 			const chatReq = {
 				text: cleanText,
 				accountId,
 				conversationId,
 			};
 			if (workspace) chatReq.cwd = workspace;
-			await this.host.chat(chatReq);
+			if (model) chatReq.model = model;
+			if (thinkingLevel) chatReq.thinkingLevel = thinkingLevel;
+			if (planMode) chatReq.planMode = true;
+
+			const startedAt = Date.now();
+			if (conversationId) this.inFlightConvs.add(conversationId);
+			this.lastInFlightStartedAt = startedAt;
+
+			const r = await this.host.chat(chatReq);
+			if (r?.conversationId) {
+				this.inFlightConvs.delete(r.conversationId);
+				this.inFlightConvs.delete(conversationId);
+				this.userActiveConvs.set(authorId, r.conversationId);
+				if (r.conversationId !== conversationId) {
+					const curRun = this.pendingRuns.get(conversationId);
+					if (curRun) {
+						curRun.canonicalId = r.conversationId;
+						curRun.aliasId = conversationId;
+						this.pendingRuns.set(r.conversationId, curRun);
+					}
+					const curBinding = this.conversationBindings.get(conversationId);
+					if (curBinding) {
+						this.conversationBindings.set(r.conversationId, curBinding);
+					}
+					// 关键修复：从 recentChats 中迁移旧的临时 conversationId，防止列表中同时出现两条相同的提问
+					const oldIndex = this.recentChats.findIndex((c) => c.conversationId === conversationId);
+					if (oldIndex >= 0) {
+						this.recentChats[oldIndex].conversationId = r.conversationId;
+						// 去重保障：避免重复
+						this.recentChats = this.recentChats.filter(
+							(c, i) => i === this.recentChats.findIndex((x) => x.conversationId === c.conversationId),
+						);
+						this.host?.broadcast?.({ type: "recent_chats", recentChats: this.getRecentChats() });
+					} else {
+						this.recordRecentChat(r.conversationId, authorId, { userText: cleanText });
+					}
+				}
+			}
 		} catch (err) {
 			this.log("warn", `QQBot host.chat dispatch failed: ${err.message}`);
+			const run = this.pendingRuns.get(conversationId);
+			if (run?.timeoutTimer) clearTimeout(run.timeoutTimer);
 			this.pendingRuns.delete(conversationId);
-			await this.replyMessage(replyTarget, `任务启动失败：${err.message}`).catch(() => {});
+			this.conversationBindings.delete(conversationId);
+			this.recentChats = this.recentChats.filter((c) => c.conversationId !== conversationId);
+			this.host?.broadcast?.({ type: "recent_chats", recentChats: this.getRecentChats() });
+			await this.replyMessage(replyTarget, `⚠️ 任务启动失败：${err.message}`).catch(() => {});
 		}
 	}
 
-	async replyMessage(target, text, msgSeq = 1) {
+	async replyMessage(target, text, explicitSeq = null) {
 		const cfg = this.getConfig();
 		const apiBase = cfg.useSandbox ? "https://sandbox.api.sgroup.qq.com" : QQ_API_BASE;
 		const token = await this.ensureAccessToken();
+
+		// 同一 target 维护单调自增序号，绝不重复发送相同的 msg_seq 避免腾讯 304026 冲突
+		if (!target.__nextSeq || typeof target.__nextSeq !== "number") {
+			target.__nextSeq = 1;
+		}
+		const msgSeq = explicitSeq !== null ? explicitSeq : target.__nextSeq++;
+
 		const payload = {
 			content: text,
-			msg_id: target.msgId,
-			// 同一 msg_id 的被动回复需 msg_seq 从 1 递增（上限 5），相同 seq 会被
-			// 平台去重丢弃——长回复分块后只有第一块能送达
 			msg_seq: msgSeq,
 		};
+		if (target.msgId) {
+			payload.msg_id = target.msgId;
+		}
 
-		if (target.channelId) {
-			await qqApi(token, "POST", `/channels/${target.channelId}/messages`, payload, { apiBase });
-		} else if (target.groupOpenid) {
-			await qqApi(token, "POST", `/v2/groups/${target.groupOpenid}/messages`, payload, { apiBase });
-		} else if (target.userOpenid) {
-			await qqApi(token, "POST", `/v2/users/${target.userOpenid}/messages`, payload, { apiBase });
+		try {
+			if (target.channelId) {
+				await qqApi(token, "POST", `/channels/${target.channelId}/messages`, payload, { apiBase });
+			} else if (target.groupOpenid) {
+				await qqApi(token, "POST", `/v2/groups/${target.groupOpenid}/messages`, payload, { apiBase });
+			} else if (target.userOpenid) {
+				await qqApi(token, "POST", `/v2/users/${target.userOpenid}/messages`, payload, { apiBase });
+			}
+		} catch (err) {
+			const errMsg = String(err?.message || "").toLowerCase();
+			const isExpiredOrSeq =
+				errMsg.includes("expire") ||
+				errMsg.includes("timeout") ||
+				errMsg.includes("304023") ||
+				errMsg.includes("304024") ||
+				errMsg.includes("304026") ||
+				errMsg.includes("40040003") ||
+				errMsg.includes("50006");
+
+			// 遇到被动回复过期或 seq 冲突时降级重试：
+			if (isExpiredOrSeq) {
+				if (target.channelId) {
+					// QQ 频道：去掉 msg_id/msg_seq 作为普通频道消息发送，100% 成功送达
+					try {
+						await qqApi(token, "POST", `/channels/${target.channelId}/messages`, { content: text }, { apiBase });
+						this.log("info", "QQ channel passive reply expired, fallback to active channel message succeeded");
+						return;
+					} catch (fallbackErr) {
+						this.log("warn", `QQ channel active fallback failed: ${fallbackErr.message}`);
+					}
+				} else if (target.groupOpenid || target.userOpenid) {
+					// QQ 群/单聊：尝试作为主动消息重发
+					try {
+						const activePayload = { content: text };
+						const path = target.groupOpenid
+							? `/v2/groups/${target.groupOpenid}/messages`
+							: `/v2/users/${target.userOpenid}/messages`;
+						await qqApi(token, "POST", path, activePayload, { apiBase });
+						this.log("info", "QQ group/c2c passive reply expired, fallback to active message succeeded");
+						return;
+					} catch (fallbackErr) {
+						this.log("warn", `QQ group/c2c active fallback failed: ${fallbackErr.message}`);
+					}
+				}
+			}
+			throw err;
 		}
 	}
 
 	async handleSlashCommand(cmdText, { authorId, replyTarget, cfg }) {
-		const parts = cmdText.trim().split(/\s+/);
-		const cmd = parts[0].toLowerCase();
+		const match = /^\/?([^\s]*)(?:\s+([\s\S]*))?$/.exec(cmdText.trim());
+		if (!match) return false;
+
+		let rawCmd = match[1].toLowerCase();
+		const args = (match[2] ?? "").trim();
+
+		const NUMBERED_COMMANDS = {
+			1: "cwd",
+			2: "new",
+			3: "status",
+			4: "model",
+			5: "thinking",
+			6: "plan",
+			7: "compact",
+			8: "stop",
+			9: "reload",
+			10: "help",
+		};
+		if (/^\d+\/.+/.test(rawCmd)) {
+			rawCmd = rawCmd.split("/")[1] || rawCmd.split("/")[0];
+		}
+		const cmd = NUMBERED_COMMANDS[rawCmd] ?? rawCmd;
 
 		switch (cmd) {
-			case "/help": {
-				const helpText = [
-					"🤖 **pi-web-ui QQ 机器人帮助**",
-					"",
-					"- 发送消息即可与 AI 助手对话，支持多轮上下文",
-					"- `/cwd [路径]` 或 `/workspace [路径]`：查看或切换当前项目根目录",
-					"- `/clear` 或 `/new`：清空当前上下文，开启全新会话",
-					"- `/status`：查看机器人运行状态与指标",
-					"- `/help`：展示本帮助信息",
-				].join("\n");
-				await this.replyMessage(replyTarget, helpText).catch(() => {});
+			case "":
+			case "?":
+			case "h":
+			case "help":
+			case "帮助": {
+				const lines = [
+					"🤖 **QQ 机器人帮助与快捷指令菜单**",
+					"可直接发送 /序号（如 /1 或 /2 <提示词>）快捷操作：",
+					"1/cwd : 查看或切换当前项目根目录",
+					"2/new : 清空上下文开启全新会话 [提示词]",
+					"3/status : 查看机器人运行状态与指标",
+					"4/model : 查看或切换当前模型 [模型ID]",
+					"5/thinking : 设置思考强度 <off|low|medium|high|max>",
+					"6/plan : 开启或关闭计划模式 [on|off]",
+					"7/compact : 压缩当前会话上下文 [说明]",
+					"8/stop : 中止当前正在执行的任务",
+					"9/reload : 重新加载扩展与配置",
+					"10/help : 显示全部命令 (或发 /)",
+				];
+				await this.replyMessage(replyTarget, lines.join("\n")).catch(() => {});
 				return true;
 			}
-			case "/cwd":
-			case "/workspace": {
-				const argPath = cmdText.replace(/^\/\S+/, "").trim();
-				if (!argPath) {
-					const currentWs = this.resolveWorkspace(authorId, cfg) || "(默认跟随宿主当前项目)";
-					await this.replyMessage(
-						replyTarget,
-						`📂 当前项目根目录：${currentWs}\n提示：发送 /cwd <目录路径> 可切换项目根目录。`,
-					).catch(() => {});
+			case "cwd":
+			case "workspace": {
+				if (!args) {
+					const cur = this.resolveWorkspace(authorId, cfg) || "(跟随宿主当前项目)";
+					const text = [
+						`📂 当前项目根目录：${cur}`,
+						"",
+						"提示：",
+						"• 发送 /cwd <目录绝对路径> 可切换根目录",
+						"• 发送 /cwd default 可恢复跟随全局配置",
+					].join("\n");
+					await this.replyMessage(replyTarget, text).catch(() => {});
 					return true;
 				}
-				this.userWorkspaces.set(authorId, argPath);
-				const newId = `qq_${String(authorId).slice(-8)}_${Date.now().toString(36)}`;
-				this.userConversations.set(authorId, newId);
+				if (["default", "默认", "clear", "reset"].includes(args.toLowerCase())) {
+					this.userWorkspaces.delete(authorId);
+					this.peerSessionSeq.set(authorId, (this.peerSessionSeq.get(authorId) || 0) + 1);
+					const cur = this.resolveWorkspace(authorId, cfg) || "(跟随宿主当前项目)";
+					await this.replyMessage(replyTarget, `📂 已恢复跟随全局根目录：${cur}\n✨ 已自动为您开启全新会话！`).catch(
+						() => {},
+					);
+					return true;
+				}
+				const chk = checkCwdValid(args);
+				if (!chk.ok) {
+					await this.replyMessage(replyTarget, `⚠️ 切换失败：${chk.error}`).catch(() => {});
+					return true;
+				}
+				this.userWorkspaces.set(authorId, chk.abs);
+				this.peerSessionSeq.set(authorId, (this.peerSessionSeq.get(authorId) || 0) + 1);
 				await this.replyMessage(
 					replyTarget,
-					`📂 已将项目根目录切换为：${argPath}\n✨ 已自动为您开启该目录下的全新会话！`,
+					`📂 已将项目根目录切换为：${chk.abs}\n✨ 已自动为您开启该目录下的全新会话！`,
 				).catch(() => {});
 				return true;
 			}
-			case "/clear":
-			case "/new": {
-				const newId = `qq_${String(authorId).slice(-8)}_${Date.now().toString(36)}`;
-				this.userConversations.set(authorId, newId);
+			case "clear":
+			case "new": {
+				this.peerSessionSeq.set(authorId, (this.peerSessionSeq.get(authorId) || 0) + 1);
+				for (const [convId, run] of this.pendingRuns.entries()) {
+					if (run.authorId === authorId) {
+						if (run.timeoutTimer) clearTimeout(run.timeoutTimer);
+						void this.host.abortRun?.(convId);
+						this.pendingRuns.delete(convId);
+					}
+				}
+				if (args) {
+					await this.replyMessage(replyTarget, "✨ 已为您开启全新会话，正在执行指令…").catch(() => {});
+					await this.driveAuthor(authorId, args, replyTarget);
+					return true;
+				}
 				await this.replyMessage(replyTarget, "✨ 对话上下文已清空，已为您开启全新会话！").catch(() => {});
 				return true;
 			}
-			case "/status": {
+			case "status": {
 				const s = this.status;
+				const currentWs = this.resolveWorkspace(authorId, cfg) || "(跟随宿主当前项目)";
+				const currentModel = this.resolveModel(authorId, cfg) || "(跟随全局默认)";
+				const currentThinking = this.resolveThinkingLevel(authorId, cfg) || "(跟随全局设置)";
+				const bindActive = cfg.bindActive === true ? "投递到网页活跃会话" : "独立无头会话";
+				const planMode = this.resolvePlanMode(authorId, cfg) ? "已开启" : "未开启";
+				let pendingCount = 0;
+				for (const run of this.pendingRuns.values()) {
+					if (run.authorId === authorId) pendingCount++;
+				}
 				const statusText = [
-					`🟢 **QQ 机器人状态**`,
-					`- 账号名称：${s.botUsername || "QQBot"}`,
-					`- 运行状态：在线 (WebSocket)`,
+					"🟢 **QQ 机器人状态与运行指标**",
+					"",
+					`- 账号名称：${s.botUsername || "QQBot"} (ID: ${this.botUser?.id || "--"})`,
+					`- 运行状态：${s.state === "connected" ? "在线 (WebSocket)" : s.state}`,
+					`- 项目根目录：${currentWs}`,
+					`- 当前模型：${currentModel}`,
+					`- 思考强度：${currentThinking}`,
+					`- 计划模式：${planMode}`,
+					`- 投递模式：${bindActive}`,
 					`- 已接收消息：${s.messagesReceived} 条`,
 					`- 已回复消息：${s.messagesReplied} 条`,
+					`- 进行中任务：${pendingCount} 个`,
 				].join("\n");
 				await this.replyMessage(replyTarget, statusText).catch(() => {});
+				return true;
+			}
+			case "model": {
+				if (!args) {
+					const cur = this.resolveModel(authorId, cfg) || "(跟随全局默认)";
+					const text = [
+						`🤖 当前模型：${cur}`,
+						"",
+						"提示：",
+						"• 发送 /model <模型ID> 可切换模型（如 /model deepseek/deepseek-chat）",
+						"• 发送 /model default 可恢复跟随全局默认模型",
+					].join("\n");
+					await this.replyMessage(replyTarget, text).catch(() => {});
+					return true;
+				}
+				if (["default", "默认", "clear", "reset"].includes(args.toLowerCase())) {
+					this.userModels.delete(authorId);
+					this.peerSessionSeq.set(authorId, (this.peerSessionSeq.get(authorId) || 0) + 1);
+					await this.replyMessage(replyTarget, "🤖 已恢复跟随全局默认模型。\n✨ 已自动为您开启全新会话！").catch(
+						() => {},
+					);
+					return true;
+				}
+				this.userModels.set(authorId, args);
+				this.peerSessionSeq.set(authorId, (this.peerSessionSeq.get(authorId) || 0) + 1);
+				await this.replyMessage(replyTarget, `🤖 已将模型切换为：${args}\n✨ 已自动为您开启该模型下的全新会话！`).catch(
+					() => {},
+				);
+				return true;
+			}
+			case "thinking": {
+				const ALIAS = {
+					off: "off",
+					minimal: "minimal",
+					low: "low",
+					medium: "medium",
+					high: "high",
+					xhigh: "xhigh",
+					max: "max",
+					关闭: "off",
+					极简: "minimal",
+					低: "low",
+					中: "medium",
+					高: "high",
+					极高: "xhigh",
+					最大: "max",
+				};
+				if (!args) {
+					const cur = this.resolveThinkingLevel(authorId, cfg) || "(跟随全局设置)";
+					const text = [
+						`🧠 当前思考强度：${cur}`,
+						"",
+						"提示：",
+						"• 发送 /thinking <档位> 可切换（off/minimal/low/medium/high/xhigh/max）",
+						"• 发送 /thinking default 可恢复跟随全局设置",
+					].join("\n");
+					await this.replyMessage(replyTarget, text).catch(() => {});
+					return true;
+				}
+				if (["default", "默认", "clear", "reset"].includes(args.toLowerCase())) {
+					this.userThinkingLevels.delete(authorId);
+					this.peerSessionSeq.set(authorId, (this.peerSessionSeq.get(authorId) || 0) + 1);
+					await this.replyMessage(replyTarget, "🧠 已恢复跟随全局思考强度设置。\n✨ 已自动为您开启全新会话！").catch(
+						() => {},
+					);
+					return true;
+				}
+				const mapped = ALIAS[args.toLowerCase()];
+				if (!mapped) {
+					await this.replyMessage(
+						replyTarget,
+						`⚠️ 无效的思考强度：${args}。可用档位：off / minimal / low / medium / high / xhigh / max`,
+					).catch(() => {});
+					return true;
+				}
+				this.userThinkingLevels.set(authorId, mapped);
+				this.peerSessionSeq.set(authorId, (this.peerSessionSeq.get(authorId) || 0) + 1);
+				await this.replyMessage(
+					replyTarget,
+					`🧠 已将思考强度设置为：${mapped}\n✨ 已自动为您开启该档位下的全新会话！`,
+				).catch(() => {});
+				return true;
+			}
+			case "plan": {
+				const trimmed = args.toLowerCase();
+				const cur = this.resolvePlanMode(authorId, cfg);
+				const next = trimmed === "on" ? true : trimmed === "off" ? false : !cur;
+				this.userPlanMode.set(authorId, next);
+				await this.replyMessage(replyTarget, `📋 计划模式已${next ? "开启" : "关闭"}`).catch(() => {});
+				return true;
+			}
+			case "compact": {
+				const seq = this.peerSessionSeq.get(authorId) || 0;
+				const convId = this.userActiveConvs.get(authorId) || `qq_${String(authorId).slice(-8)}_${seq}`;
+				try {
+					if (this.host.compactConversation) {
+						await this.host.compactConversation(convId, args || undefined);
+						await this.replyMessage(replyTarget, "🗜️ 已向 agent 触发会话压缩").catch(() => {});
+					} else {
+						await this.replyMessage(replyTarget, "⚠️ 当前宿主不支持手动触发会话压缩").catch(() => {});
+					}
+				} catch (err) {
+					await this.replyMessage(replyTarget, `⚠️ 压缩失败：${err.message}`).catch(() => {});
+				}
+				return true;
+			}
+			case "stop": {
+				let stopped = 0;
+				for (const [convId, run] of this.pendingRuns.entries()) {
+					if (run.authorId === authorId) {
+						if (run.timeoutTimer) clearTimeout(run.timeoutTimer);
+						void this.host.abortRun?.(convId);
+						this.pendingRuns.delete(convId);
+						stopped++;
+					}
+				}
+				if (stopped > 0) {
+					await this.replyMessage(replyTarget, `⏹️ 已中止 ${stopped} 个正在执行的任务`).catch(() => {});
+				} else {
+					await this.replyMessage(replyTarget, "⏹️ 当前没有正在执行的任务").catch(() => {});
+				}
+				return true;
+			}
+			case "reload": {
+				await this.replyMessage(replyTarget, "🔄 正在重新加载…").catch(() => {});
 				return true;
 			}
 			default:
@@ -536,6 +969,17 @@ export class QqBotBridge {
 	async handleRunEvent(ev) {
 		const convId = ev.conversationId;
 		if (!convId) return;
+
+		// 关键安全守卫（与微信通道同级）：只有确定是由 QQ 机器人当前发起的调用、
+		// 或已明确与 QQ 建立绑定关系的会话，才由本插件处理；
+		// 严禁收录用户在电脑网页端自己手动发起的其他无关日常对话！
+		const isPending = this.pendingRuns.has(convId);
+		const isBound = this.conversationBindings.has(convId);
+		const isInFlight = this.inFlightConvs.has(convId) || Date.now() - this.lastInFlightStartedAt < 5000;
+
+		if (!isPending && !isBound && !isInFlight) {
+			return; // 绝不让网页端普通对话进入 earlyRuns 或 recentChats！
+		}
 
 		if (ev.type === "message" && ev.message) {
 			const m = ev.message;
@@ -552,6 +996,9 @@ export class QqBotBridge {
 				if (this.pendingRuns.has(convId)) {
 					const r = this.pendingRuns.get(convId);
 					r.accumulatedText += (r.accumulatedText ? "\n" : "") + content;
+				} else if (this.conversationBindings.has(convId)) {
+					const prev = this.webRunTexts.get(convId) || "";
+					this.webRunTexts.set(convId, (prev ? "\n" : "") + content);
 				} else {
 					let early = this.earlyRuns.get(convId);
 					if (!early) {
@@ -566,26 +1013,69 @@ export class QqBotBridge {
 
 		if (ev.type === "run_end") {
 			const run = this.pendingRuns.get(convId) || this.earlyRuns.get(convId);
-			if (!run) return;
-
-			this.pendingRuns.delete(convId);
-			this.earlyRuns.delete(convId);
-
-			const rawText = run.accumulatedText || "";
-			const cleanText = stripInternalMarkers(rawText);
-			const finalText = cleanText || "✅ 任务已完成（无文本输出）。";
-
-			const chunks = chunkMarkdownText(finalText, 3000);
-
-			try {
-				for (let i = 0; i < chunks.length; i++) {
-					// msg_seq 从 1 递增：同一 msg_id 的第 2 块起若重复 seq 会被平台去重丢弃
-					await this.replyMessage(run.replyTarget, chunks[i], i + 1);
+			if (run) {
+				if (run.timeoutTimer) {
+					clearTimeout(run.timeoutTimer);
 				}
-				this.status.messagesReplied++;
-				this.status.lastReplyAt = Date.now();
-			} catch (err) {
-				this.log("warn", `QQ reply delivery failed: ${err.message}`);
+				this.pendingRuns.delete(convId);
+				if (run.aliasId) {
+					this.pendingRuns.delete(run.aliasId);
+					this.conversationBindings.delete(run.aliasId);
+				}
+				if (run.canonicalId) {
+					this.pendingRuns.delete(run.canonicalId);
+				}
+				this.earlyRuns.delete(convId);
+
+				const rawText = run.accumulatedText || "";
+				const cleanText = stripInternalMarkers(rawText);
+				const finalText = cleanText || "✅ 任务已完成（无文本输出）。";
+
+				const targetConvId = run.canonicalId || convId;
+				this.recordRecentChat(targetConvId, run.authorId, { assistantText: finalText });
+
+				const chunks = chunkMarkdownText(finalText, 3000);
+
+				try {
+					for (let i = 0; i < chunks.length; i++) {
+						const seq = (run.replyTarget.__nextSeq = (run.replyTarget.__nextSeq || 0) + 1);
+						await this.replyMessage(run.replyTarget, chunks[i], seq);
+					}
+					this.status.messagesReplied++;
+					this.status.lastReplyAt = Date.now();
+					this.host?.broadcast?.({ type: "bot_status", status: this.getStatus() });
+				} catch (err) {
+					this.log("warn", `QQ reply delivery failed: ${err.message}`);
+				}
+				return;
+			}
+
+			// 电脑网页端发起的运行 -> 双向同步给 QQ
+			const binding = this.conversationBindings.get(convId);
+			if (binding && this.webRunTexts.has(convId)) {
+				const webRaw = this.webRunTexts.get(convId) || "";
+				this.webRunTexts.delete(convId);
+				const cleanText = stripInternalMarkers(webRaw);
+				if (!cleanText) return;
+
+				this.recordRecentChat(convId, binding.authorId, { assistantText: cleanText });
+
+				const cfg = this.getConfig();
+				if (cfg.bindActive !== false && binding.replyTarget) {
+					const syncText = `💻 [来自电脑网页端同步]\n${cleanText}`;
+					const chunks = chunkMarkdownText(syncText, 3000);
+					try {
+						for (let i = 0; i < chunks.length; i++) {
+							const seq = (binding.replyTarget.__nextSeq = (binding.replyTarget.__nextSeq || 0) + 1);
+							await this.replyMessage(binding.replyTarget, chunks[i], seq);
+						}
+						this.status.messagesReplied++;
+						this.status.lastReplyAt = Date.now();
+						this.host?.broadcast?.({ type: "bot_status", status: this.getStatus() });
+					} catch (err) {
+						this.log("warn", `QQ web-to-bot sync delivery failed: ${err.message}`);
+					}
+				}
 			}
 		}
 	}
@@ -632,6 +1122,18 @@ export default async function activate(host) {
 			host.log?.("warn", `QQBot start note: ${err.message}`);
 		});
 	}
+
+	// Register project right-click context menu action
+	host.onUiAction?.("qq:set-workspace", (_itemId, _val, target) => {
+		const path = target?.id !== undefined && target?.id !== null ? String(target.id).trim() : "";
+		if (!path) return;
+		const chk = checkCwdValid(path);
+		if (chk.ok) {
+			localConfig.workspace = chk.abs;
+			void host.storage.set("config", stripSecretsFromConfig(localConfig));
+			host.notify?.("info", `已将 QQ 机器人根目录设为：${chk.abs}`, `Set QQ bot workspace root to: ${chk.abs}`);
+		}
+	});
 
 	// Register AI tool "qq" adhering strictly to tool-prompt-hygiene
 	host.registerTool?.({
@@ -693,7 +1195,14 @@ export default async function activate(host) {
 	});
 
 	// Handle UI client messages
-	host.onClientMessage?.(async (msg, reply) => {
+	// 回包回显请求里的 __rid：宿主为「上行 send / 下行 onData」，
+	// 客户端按 __rid 将回包精确配对到发起请求，保证 Promise 正常 resolve。
+	host.onClientMessage?.(async (msg, replyRaw) => {
+		const __rid = msg && msg.__rid;
+		const reply = (payload) =>
+			__rid === undefined
+				? replyRaw(payload)
+				: replyRaw(payload && typeof payload === "object" && !Array.isArray(payload) ? { ...payload, __rid } : payload);
 		try {
 			switch (msg.type) {
 				case "get_state": {
@@ -704,14 +1213,36 @@ export default async function activate(host) {
 							appId: localConfig.appId || "",
 							defaultChannelId: localConfig.defaultChannelId || "",
 							workspace: localConfig.workspace || "",
+							model: localConfig.model || "",
+							thinkingLevel: localConfig.thinkingLevel || "",
+							bindActive: Boolean(localConfig.bindActive),
+							replyTimeoutSec: Number(localConfig.replyTimeoutSec) || 90,
 							useSandbox: Boolean(localConfig.useSandbox),
 							botEnabled: Boolean(localConfig.botEnabled),
 							allowedUsers: localConfig.allowedUsers || [],
 							hasClientSecret: Boolean(secrets[SECRET_CLIENT_SECRET] || localConfig.clientSecret),
 						},
 						botStatus: botBridge.getStatus(),
+						recentChats: botBridge.getRecentChats(),
 						hostCwd: String(host.cwd ?? "").trim(),
 					});
+					break;
+				}
+
+				case "set_workspace": {
+					const ws = String(msg.workspace ?? "").trim();
+					if (!ws) {
+						localConfig.workspace = "";
+					} else {
+						const chk = checkCwdValid(ws);
+						if (!chk.ok) {
+							reply({ type: "set_workspace_done", success: false, message: chk.error });
+							break;
+						}
+						localConfig.workspace = chk.abs;
+					}
+					await host.storage.set("config", stripSecretsFromConfig(localConfig));
+					reply({ type: "set_workspace_done", success: true, workspace: localConfig.workspace });
 					break;
 				}
 
@@ -804,11 +1335,11 @@ export default async function activate(host) {
 				}
 
 				default:
-					reply({ type: "error", message: `Unknown message type: ${msg.type}` });
+					reply({ type: "error", success: false, message: `Unknown message type: ${msg.type}` });
 					break;
 			}
 		} catch (err) {
-			reply({ type: "error", message: err.message });
+			reply({ type: "error", success: false, message: err?.message || String(err) });
 		}
 	});
 

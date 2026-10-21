@@ -34,7 +34,7 @@ const QUERY_RE = /"(query|q|search)"\s*:\s*"((?:[^"\\\n]|\\.){0,400})"/;
 /** 超过这个值（秒）的 timeout 视为脏数据，不显示。 */
 const TIMEOUT_MAX = 1e9;
 
-interface ToolArgHints {
+export interface ToolArgHints {
 	/** 文件路径（读/写/编辑类工具），已剥离控制字符并按 VALUE_LIMIT 截断。 */
 	path?: string;
 	/** 超时提示文本，已带单位（"30s" / "1.5s" / "500ms"）。 */

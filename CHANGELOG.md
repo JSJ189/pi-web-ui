@@ -8,6 +8,37 @@
 每个版本的内容按"实际合入该版本发布的提交"归档（以 `package.json` 的 version 变更提交为准），
 而不是按提交日期聚类——连续快速发布的 patch 版本以此为准最准确。
 
+## [0.110.0] — 2026-10-21
+
+### Added
+
+- **网络隧道 (Tunnel) 插件**：内置开箱即用的公网穿透隧道支持，支持客户端一键连接、心跳自愈与断线重连、CLI 自动更新回路、四重探针健康探测，让私有部署轻松安全共享公网访问。
+- **拍板中心 (Approval Gate) 插件**：可视化集中审计与规则门禁，针对智能体敏感工具（如 bash、写操作等）提供对话内审批放行、白名单记忆管理及决策流日志。
+- **插件市场三层目录合并与生态检索**：插件管理面板重构支持「官方内置 / 社区扩展 / 本地自定义」三层目录无缝合并展示；新增「全部 / 内置 / 社区 / 自定义」分类标签与关键词实时检索；提供第三方社区插件提交向导与官方生态链接。
+- **工具详情抽屉面板 (Tool Inspector)**：对话流内工具调用卡片支持打开专有抽屉详情面板，结构化查看输入参数、执行输出、思考过程 (thinking)、报错详情与统计信息，支持一键复制入参和完整输出。
+- **极简行文字级输入流**：流式输出与输入行视觉优化，支持高响应度文字级输入流呈现。
+- **插件本地软链调试机制**：支持开发期通过软链（symlink）直接挂载本地插件至运行时目录，并支持即时调试与热重载。
+
+### Changed
+
+- **CSS 分层架构根治（`@layer guard, base, theme`）**：将全局防御样式、基础布局规范与主题覆盖样式严格解耦至原生 CSS @layer，彻底终结主题样式越权或被覆盖竞争问题，确保浅色与深色主题下的对比度和视觉层级坚如磐石。
+- **对话按需加载提速与协议升级 (v34)**：优化服务端首包下发体积与历史消息加载性能，升级跨端 Wire 协议至 v34，提升弱网与超长会话加载流畅度。
+- **通知与全局提示层级置顶**：通知横幅与弹窗提示（Notices / Banners）层级提升至 `100050`，杜绝被高层级 Modal 或 Portal 浮层遮挡。
+
+### Fixed
+
+- **会话分叉 (Fork) 边界定位与附件去重**：修复 Universal 引擎中带有前置附件或系统段落时分支边界判断异常的问题；完善提问附件的去重防御。
+- **全语言包与英文残留修复 (#654)**：补齐模型管理、提供商矩阵、设置弹窗及规则编辑器的 96 项前端国际化 key，修复英文环境下的中文残留；完善 POSIX 环境变量支持与端口解析健壮性。
+- **全栈审计与编码安全 (#655)**：修复文本解码截断 (GBK/UTF-8 边界)、引擎状态对比白名单，以及桌面端启动稳定性增强。
+- **内联标记规范化**：精简提示词为纯英文描述，解决建议操作 (action suggestion) 别名重复注入与多选按钮格式问题。
+
+### i18n
+
+- 前端新增 key（96）：`defaultModelLabel`、`clearDefaultModel`、`modelManagementTitle`、`defaultModelBadge`、`setDefaultModelBtn`、`setDefaultTooltip`、`cancelDefaultTooltip`、`refreshBuiltinCatalog`、`addCustomProvider`、`customProvidersCount`、`noCustomProviders`、`builtinProvidersCount`、`editProviderTitle`、`newCustomProviderTitle`、`deleteProviderTooltip`、`testConnection`、`testingConnection`、`connSuccess`、`connFailed`、`quickPresetsLabel`、`providerIdPlaceholder`、`modelMatrixCount`、`autoFetchAndAdopt`、`modelIdPlaceholder`、`modelAliasPrefix`、`modelAliasPlaceholder`、`visionCheckboxTitle`、`visionCheckboxLabel`、`reasoningCheckboxTitle`、`reasoningCheckboxLabel`、`contextWindowLabel`、`customOption`、`contextPlaceholder`、`maxOutputLabel`、`maxOutputPlaceholder`、`contextPresetTooltip`、`addModelRow`、`builtinProviderTitle`、`apiKeyManagement`、`addBuiltinOverlay`、`overlayModelIdPlaceholder`、`overlayModelNamePlaceholder`、`submitOverlayBtn`、`candidatePickerTitle`、`candidatePickerSubtitle`、`searchCandidatePlaceholder`、`deselectAll`、`noCandidateMatches`、`contextWindowTooltip`、`reasoningTooltip`、`visionTooltip`、`selectedCandidatesCount`、`adoptSelectedModels`、`presetTagOfficial`、`presetTagAggregator`、`presetTagCloud`、`presetTagLocal`、`presetTagProxy`、`engineClaudeModelDesc`、`engineDshModelDesc`、`enginePiModelDesc`、`approvalRuleActionLabel`、`approvalRuleLabelPlaceholder`、`approvalRuleToolsPlaceholder`、`approvalRuleValuePlaceholder`、`approvalRuleReasonPlaceholder`、`approvalRuleLabelRequired`、`approvalRuleRegexInvalid`、`toolInspectorTitle`、`toolInspectorThinkingTitle`、`toolInspectorThinkingSection`、`toolInspectorArgs`、`toolInspectorOutput`、`toolInspectorError`、`toolInspectorImages`、`toolInspectorToggleRaw`、`toolInspectorTogglePreview`、`toolInspectorCopyAll`、`toolInspectorCopied`、`toolInspectorEmptyOutput`、`toolInspectorRunningOutput`、`toolInspectorEmptyThinking`、`toolInspectorDetails`、`toolInspectorCopyArgs`、`toolInspectorCopyOutput`、`toolInspectorStats`、`pluginCatalogBuiltin`、`pluginCatalogCommunity`、`pluginCatalogTabAll`、`pluginCatalogTabBuiltin`、`pluginCatalogTabCommunity`、`pluginCatalogTabCustom`、`pluginCatalogCommunityDesc`、`pluginCatalogCommunityEmpty`、`pluginCatalogCommunitySubmit`、`pluginCatalogSearchPlaceholder`
+- 前端英文变更（1）：`pluginCatalogCustom`
+- 服务端文案变更（1）：`plugins.catalog.entry.cannot.remove`
+- 服务端删除 key（1）：`markers.service.guidance.frame`
+
 ## [0.109.0] — 2026-10-19
 
 ### Changed

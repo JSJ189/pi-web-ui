@@ -209,6 +209,51 @@ describe("computePortalDropdownPosition (侧边栏与 Portal 菜单定位)", () 
 		expect(posFlip.left).toBe(500);
 	});
 
+	it("底栏 (direction=up): 居中输入框大弹窗（两边均不足），留在空间更大一侧并限制 maxHeight 防溢出", () => {
+		// 视口高 800，触发器居中在 (top: 450, bottom: 485)，大弹窗高度 600
+		// spaceAbove = 450 - 6 - 8 = 436px
+		// spaceBelow = 800 - 485 - 6 - 8 = 301px
+		// 两边都放不下 600，但上方空间更大，留在上方；maxHeight = 436px，top = 450 - 436 - 6 = 8px
+		const posCenter = computePortalDropdownPosition({
+			triggerRect: { left: 500, right: 600, top: 450, bottom: 485 },
+			menuWidth: 450,
+			menuHeight: 600,
+			viewportWidth: 1200,
+			viewportHeight: 800,
+			direction: "up",
+			align: "left",
+			gap: 6,
+			margin: 8,
+		});
+		expect(posCenter.top).toBe(8);
+		expect(posCenter.maxHeight).toBe(436);
+		expect(posCenter.left).toBe(500);
+		// 确保顶部绝对不溢出视口且与触发器保留间距
+		expect(posCenter.top).toBeGreaterThanOrEqual(8);
+		expect(posCenter.top + (posCenter.maxHeight ?? 0) + 6).toBeLessThanOrEqual(450);
+	});
+
+	it("底栏 (direction=up): 触发器偏上居中且下方空间更大时，翻转到下方并限制 maxHeight", () => {
+		// 视口高 800，触发器在 (top: 300, bottom: 335)，弹窗高 600
+		// spaceAbove = 300 - 6 - 8 = 286px
+		// spaceBelow = 800 - 335 - 6 - 8 = 451px
+		// 下方空间显著更大，翻转到下方：top = 335 + 6 = 341px，maxHeight = 451px
+		const posFlipDown = computePortalDropdownPosition({
+			triggerRect: { left: 500, right: 600, top: 300, bottom: 335 },
+			menuWidth: 450,
+			menuHeight: 600,
+			viewportWidth: 1200,
+			viewportHeight: 800,
+			direction: "up",
+			align: "left",
+			gap: 6,
+			margin: 8,
+		});
+		expect(posFlipDown.top).toBe(341);
+		expect(posFlipDown.maxHeight).toBe(451);
+		expect(posFlipDown.top + (posFlipDown.maxHeight ?? 0)).toBeLessThanOrEqual(800 - 8);
+	});
+
 	it("顶栏 (direction=down): 默认在触发器下方弹出，下方不足时自动翻转到上方", () => {
 		// 正常顶栏触发器在 (top: 10, bottom: 40)
 		const posDown = computePortalDropdownPosition({

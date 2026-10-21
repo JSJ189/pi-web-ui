@@ -14,10 +14,29 @@
  * shell_exit / conn_closed / sync_progress 定向推送；kind:"state" 广播主机状态、
  * kind:"workspace" 广播工作区切换（主应用 set_cwd）。
  */
-import { EditorView, keymap, lineNumbers, highlightActiveLine, highlightActiveLineGutter, drawSelection, rectangularSelection, crosshairCursor, dropCursor, highlightSpecialChars } from "@codemirror/view";
+import {
+	EditorView,
+	keymap,
+	lineNumbers,
+	highlightActiveLine,
+	highlightActiveLineGutter,
+	drawSelection,
+	rectangularSelection,
+	crosshairCursor,
+	dropCursor,
+	highlightSpecialChars,
+} from "@codemirror/view";
 import { EditorState, Compartment, Prec } from "@codemirror/state";
 import { defaultKeymap, history, historyKeymap, indentWithTab } from "@codemirror/commands";
-import { bracketMatching, foldGutter, foldKeymap, indentOnInput, indentUnit, syntaxHighlighting, defaultHighlightStyle } from "@codemirror/language";
+import {
+	bracketMatching,
+	foldGutter,
+	foldKeymap,
+	indentOnInput,
+	indentUnit,
+	syntaxHighlighting,
+	defaultHighlightStyle,
+} from "@codemirror/language";
 import { autocompletion, closeBrackets, closeBracketsKeymap, completionKeymap } from "@codemirror/autocomplete";
 import { searchKeymap, highlightSelectionMatches } from "@codemirror/search";
 import { lintKeymap } from "@codemirror/lint";
@@ -33,9 +52,10 @@ import { FitAddon } from "@xterm/addon-fit";
 import xtermCss from "@xterm/xterm/css/xterm.css";
 
 function esc(s) {
-	return String(s ?? "").replace(/[&<>"']/g, (c) => (
-		{ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" }[c]
-	));
+	return String(s ?? "").replace(
+		/[&<>"']/g,
+		(c) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" })[c],
+	);
 }
 
 let reqSeq = 0;
@@ -57,17 +77,25 @@ const THEME_CHANGE_EVENT = "pi-web-ui:theme-change";
 function isLightTheme() {
 	try {
 		return getComputedStyle(document.documentElement).getPropertyValue("color-scheme").trim().startsWith("light");
-	} catch { return false; }
+	} catch {
+		return false;
+	}
 }
 /** --term-* 调色板 → xterm theme（与主应用 buildTermTheme 同源，见 web/src/theme.ts） */
 function buildTermTheme() {
 	let cs = null;
-	try { cs = getComputedStyle(document.documentElement); } catch { cs = null; }
+	try {
+		cs = getComputedStyle(document.documentElement);
+	} catch {
+		cs = null;
+	}
 	const v = (name, fallback) => {
 		try {
 			const val = cs?.getPropertyValue(name).trim();
 			return val || fallback;
-		} catch { return fallback; }
+		} catch {
+			return fallback;
+		}
 	};
 	return {
 		background: v("--term-bg", "#0b0d12"),
@@ -150,10 +178,29 @@ function iconFor(name, type) {
 	if (type === "dir") return "📁";
 	const ext = (name.match(/\.([^.]+)$/) || [, ""])[1].toLowerCase();
 	const map = {
-		js: "🟨", mjs: "🟨", cjs: "🟨", jsx: "⚛️", ts: "🟦", tsx: "⚛️",
-		json: "🔧", md: "📝", css: "🎨", html: "🌐", py: "🐍",
-		png: "🖼", jpg: "🖼", jpeg: "🖼", gif: "🖼", webp: "🖼", svg: "🖼",
-		lock: "🔒", yml: "⚙️", yaml: "⚙️", toml: "⚙️", sh: "💻", bat: "💻",
+		js: "🟨",
+		mjs: "🟨",
+		cjs: "🟨",
+		jsx: "⚛️",
+		ts: "🟦",
+		tsx: "⚛️",
+		json: "🔧",
+		md: "📝",
+		css: "🎨",
+		html: "🌐",
+		py: "🐍",
+		png: "🖼",
+		jpg: "🖼",
+		jpeg: "🖼",
+		gif: "🖼",
+		webp: "🖼",
+		svg: "🖼",
+		lock: "🔒",
+		yml: "⚙️",
+		yaml: "⚙️",
+		toml: "⚙️",
+		sh: "💻",
+		bat: "💻",
 	};
 	return map[ext] || "📄";
 }
@@ -163,7 +210,9 @@ function iconFor(name, type) {
 export function fuzzyScore(query, target) {
 	const q = query.toLowerCase();
 	const t = target.toLowerCase();
-	let qi = 0, score = 0, streak = 0;
+	let qi = 0,
+		score = 0,
+		streak = 0;
 	for (let ti = 0; ti < t.length && qi < q.length; ti++) {
 		if (t[ti] === q[qi]) {
 			streak++;
@@ -308,11 +357,7 @@ export default {
 			padding: 5px 10px; border-radius: 5px; font: inherit; }
 		.vsc-menu button:hover { background: color-mix(in srgb, var(--accent, #7c5cff) 30%, transparent); }
 		.vsc-menu button.dim { opacity: .55; }
-		/* 同步进度浮条 */
-		.vsc-sync-status { position: absolute; right: 14px; bottom: 44px; z-index: 25; max-width: 70%;
-			background: var(--bg-elev2, #20202b); border: 1px solid var(--accent, #7c5cff); border-radius: 8px;
-			padding: 6px 12px; font-size: 12px; box-shadow: 0 8px 24px rgba(0,0,0,.4); }
-		/* 弹层（主机表单 / 同步配置共用样式） */
+		/* 弹层（主机表单共用样式） */
 		.vsc-modal-bg { position: absolute; inset: 0; z-index: 50; background: rgba(0,0,0,.45);
 			display: grid; place-items: center; }
 		.vsc-modal { width: min(430px, 90%); max-height: 94%; overflow: auto; background: var(--bg-elev2, #20202b);
@@ -382,7 +427,6 @@ export default {
 				<button data-act="new-file" title="新建文件（当前选中的目录）">📄</button>
 				<button data-act="new-dir" title="新建文件夹（当前选中的目录）">📁</button>
 				<button data-act="upload" title="上传文件到工作区根目录（也可拖拽到文件树）">⬆</button>
-				<button data-act="sync-menu" title="同步到服务器（SFTP）">☁</button>
 				<button data-act="search" title="按文件名搜索（本地工作区）">🔍</button>
 				<button data-act="refresh" title="刷新">⟳</button>
 			</div>
@@ -442,27 +486,6 @@ export default {
 	</div>
 	<input type="file" multiple class="vsc-filepick vsc-hidden" />
 	<div class="vsc-menu vsc-hidden"></div>
-	<div class="vsc-sync-status vsc-hidden"></div>
-	<div class="vsc-modal-bg vsc-hidden">
-		<div class="vsc-modal">
-			<h3>同步配置（SFTP）</h3>
-			<label>名称（可选，仅作标识）</label><input name="s-name" placeholder="my-server" />
-			<label>主机地址 *</label><input name="s-host" placeholder="192.168.1.10" />
-			<div class="grid2">
-				<span><label>用户名</label><input name="s-user" value="root" /></span>
-				<span><label>端口</label><input name="s-port" value="22" /></span>
-			</div>
-			<label>密码（留空 = 保持不变）</label><input name="s-pass" type="password" autocomplete="off" />
-			<label>私钥（PEM，可选）</label><textarea name="s-key" rows="3" placeholder="-----BEGIN OPENSSH PRIVATE KEY-----"></textarea>
-			<label>私钥路径（可选，支持 ~ 展开如 ~/.ssh/id_rsa；填写则优先使用）</label><input name="s-keypath" placeholder="~/.ssh/id_rsa" />
-			<label>SSH agent socket（可选，如 $SSH_AUTH_SOCK；与密码/私钥二选一）</label><input name="s-agent" placeholder="$SSH_AUTH_SOCK" />
-			<label>远端根目录 *（项目同步到服务器的哪个目录）</label><input name="s-root" placeholder="/var/www/app" />
-			<label>排除项（vscode-sftp 风格 glob，逗号分隔）</label><input name="s-exclude" placeholder="node_modules/**, dist, *.log" />
-			<label style="display:flex;align-items:center;gap:6px"><input type="checkbox" name="s-autosave" style="width:auto" /> 保存时自动上传当前文件（vscode-sftp 的 uploadOnSave）</label>
-			<div class="hint">配置保存在工作区 <b>.vscode/sftp.json</b>（与 vscode-sftp / Natizyskunk.sftp 兼容格式），可直接编辑该文件、Ctrl+S 保存即生效。支持 name / passphrase / privateKeyPath（~ 展开）/ agent（\$SSH_AUTH_SOCK）/ ignore glob / watcher.autoUpload。</div>
-			<div class="btns"><button class="cancel">取消</button><button class="test">测试连接</button><button class="primary save-cfg">保存</button></div>
-		</div>
-	</div>
 	<div class="vsc-modal-bg vsc-host-bg vsc-hidden">
 		<div class="vsc-modal">
 			<h3 class="h-title">新建主机</h3>
@@ -502,8 +525,6 @@ export default {
 		const quickList = quick.querySelector("ul");
 		const menuEl = root.querySelector(".vsc-menu");
 		const filePick = root.querySelector(".vsc-filepick");
-		const syncStatusEl = root.querySelector(".vsc-sync-status");
-		const syncBg = root.querySelector(".vsc-modal-bg:not(.vsc-host-bg)");
 		const hostBg = root.querySelector(".vsc-host-bg");
 		const dragEl = root.querySelector(".vsc-termdrag");
 		const panelEl = root.querySelector(".vsc-termpanel");
@@ -513,7 +534,9 @@ export default {
 		// ---- 手机端抽屉（窄屏 ☰ 开关；桌面端无影响） ----
 		const burger = root.querySelector(".vsc-burger");
 		const backdrop = root.querySelector(".vsc-backdrop");
-		function closeDrawer() { root.classList.remove("drawer-open"); }
+		function closeDrawer() {
+			root.classList.remove("drawer-open");
+		}
 		if (burger) burger.addEventListener("click", () => root.classList.toggle("drawer-open"));
 		if (backdrop) backdrop.addEventListener("click", closeDrawer);
 
@@ -538,7 +561,10 @@ export default {
 			root.dispatchEvent(new CustomEvent("vsc-toast", { detail: text, bubbles: true }));
 			stState.textContent = text;
 			stState.classList.add("vsc-err");
-			setTimeout(() => { stState.textContent = ""; stState.classList.remove("vsc-err"); }, 4000);
+			setTimeout(() => {
+				stState.textContent = "";
+				stState.classList.remove("vsc-err");
+			}, 4000);
 		}
 
 		/** 复制路径（剪贴板 API 不可用时回落 textarea+execCommand，与右栏同口径） */
@@ -553,22 +579,35 @@ export default {
 					document.execCommand("copy");
 					document.body.removeChild(ta);
 					done();
-				} catch { toast("复制失败"); }
+				} catch {
+					toast("复制失败");
+				}
 			};
 			try {
 				if (navigator.clipboard?.writeText) void navigator.clipboard.writeText(text).then(done, fallback);
 				else fallback();
-			} catch { fallback(); }
+			} catch {
+				fallback();
+			}
 		}
 
 		async function pasteClipboardTo(scope, dir) {
-			if (!clipboard || clipboard.scope !== scope) { toast("剪贴板为空（先右键复制/剪切一个文件）"); return; }
+			if (!clipboard || clipboard.scope !== scope) {
+				toast("剪贴板为空（先右键复制/剪切一个文件）");
+				return;
+			}
 			const dest = dir ? `${dir.replace(/\/$/, "")}/${clipboard.src.split("/").pop()}` : clipboard.src.split("/").pop();
-			if (dest === clipboard.src) { toast("源与目标相同"); return; }
+			if (dest === clipboard.src) {
+				toast("源与目标相同");
+				return;
+			}
 			const wasCut = clipboard.cut;
 			const src = clipboard.src;
 			const r = await req(scope, { action: "copy", src, dest, move: wasCut });
-			if (!r.ok) { toast(`粘贴失败：${r.error}`); return; }
+			if (!r.ok) {
+				toast(`粘贴失败：${r.error}`);
+				return;
+			}
 			if (wasCut) {
 				clipboard = null;
 				for (const k of [...tabs.keys()]) {
@@ -601,13 +640,23 @@ export default {
 					await invalidateScope(scope);
 					return;
 				}
-				if (!String(r.error ?? "").includes("已存在")) { toast(`创建副本失败：${r.error}`); return; }
+				if (!String(r.error ?? "").includes("已存在")) {
+					toast(`创建副本失败：${r.error}`);
+					return;
+				}
 			}
 			toast("创建副本失败：重名次数过多");
 		}
 
 		// ---- 状态 ------------------------------------------------------------
-		let S = { depsReady: true, depsInstalling: false, hosts: [], conns: [], configHosts: [], configPath: "~/.ssh/config" }; // 服务端广播
+		let S = {
+			depsReady: true,
+			depsInstalling: false,
+			hosts: [],
+			conns: [],
+			configHosts: [],
+			configPath: "~/.ssh/config",
+		}; // 服务端广播
 		const conns = new Map(); // connId → { label, cwd }
 		const connecting = new Set(); // 正在连接中的 hostId
 		const expanded = new Set(["local:"]); // 已展开目录（scope:path）
@@ -656,21 +705,52 @@ export default {
 
 		function makeExtensions() {
 			return [
-				lineNumbers(), highlightActiveLineGutter(), highlightSpecialChars(),
-				history(), foldGutter(), drawSelection(), dropCursor(),
+				lineNumbers(),
+				highlightActiveLineGutter(),
+				highlightSpecialChars(),
+				history(),
+				foldGutter(),
+				drawSelection(),
+				dropCursor(),
 				EditorState.allowMultipleSelections.of(true),
-				indentOnInput(), indentUnit.of("    "), syntaxHighlighting(defaultHighlightStyle, { fallback: true }),
-				bracketMatching(), closeBrackets(), autocompletion(), rectangularSelection(),
-				crosshairCursor(), highlightActiveLine(), highlightSelectionMatches(),
+				indentOnInput(),
+				indentUnit.of("    "),
+				syntaxHighlighting(defaultHighlightStyle, { fallback: true }),
+				bracketMatching(),
+				closeBrackets(),
+				autocompletion(),
+				rectangularSelection(),
+				crosshairCursor(),
+				highlightActiveLine(),
+				highlightSelectionMatches(),
 				keymap.of([
-					...closeBracketsKeymap, ...defaultKeymap, ...searchKeymap,
-					...historyKeymap, ...foldKeymap, ...completionKeymap, ...lintKeymap,
+					...closeBracketsKeymap,
+					...defaultKeymap,
+					...searchKeymap,
+					...historyKeymap,
+					...foldKeymap,
+					...completionKeymap,
+					...lintKeymap,
 					indentWithTab,
 					// 最高优先级：编辑器内 Ctrl+S / Ctrl+P 不被默认 keymap 吃掉
-					Prec.highest(keymap.of([
-						{ key: "Mod-s", run: () => { void saveActive(); return true; } },
-						{ key: "Mod-p", run: () => { openQuickOpen(); return true; } },
-					])),
+					Prec.highest(
+						keymap.of([
+							{
+								key: "Mod-s",
+								run: () => {
+									void saveActive();
+									return true;
+								},
+							},
+							{
+								key: "Mod-p",
+								run: () => {
+									openQuickOpen();
+									return true;
+								},
+							},
+						]),
+					),
 				]),
 				langComp.of(langFor(parseTk(activeTk ?? "local:")?.path ?? "") ?? []),
 				themeComp.of(isLightTheme() ? cmLight : oneDark),
@@ -692,7 +772,9 @@ export default {
 
 		const view = new EditorView({ state: EditorState.create({ extensions: makeExtensions() }), parent: edHost });
 
-		function currentDoc() { return view.state.doc.toString(); }
+		function currentDoc() {
+			return view.state.doc.toString();
+		}
 
 		function updateStatus(state) {
 			const head = state.selection.main.head;
@@ -710,9 +792,13 @@ export default {
 			const key = tkey(scope, dirWire ?? "");
 			if (!dirCache.has(key)) {
 				const r = await req(scope, { action: "list", dir: dirWire ?? "" });
-				if (!r.ok) { toast(`读取目录失败：${r.error}`); return []; }
+				if (!r.ok) {
+					toast(`读取目录失败：${r.error}`);
+					return [];
+				}
 				dirCache.set(key, r.entries);
-				if (scope === "local") { // Ctrl+P 只索引本地
+				if (scope === "local") {
+					// Ctrl+P 只索引本地
 					for (const e of r.entries) {
 						if (e.type === "file") flatFiles.add(dirWire ? `${dirWire}/${e.name}` : e.name);
 					}
@@ -840,16 +926,27 @@ export default {
 			const live = [...conns.keys()].find((id) => (conns.get(id)?.label ?? "").startsWith(`${c.alias}（`));
 			const dotCls = busy ? "busy" : live ? "on" : "";
 			const via = c.proxyJump ? ` ⇢ ${esc(c.proxyJump)}` : c.proxyCommand ? " ⇢ ⬢" : "";
-			row.innerHTML = `<span class="dot ${dotCls}"></span>`
-				+ `<span class="nm" title="${esc(c.username)}@${esc(c.host)}:${c.port}${c.privateKeyPath ? ` · ${esc(c.privateKeyPath)}` : ""}">${esc(c.alias)}<span style="opacity:.5"> ${esc(c.username)}@${esc(c.host)}${via}</span></span>`
-				+ `<span class="ops">`
-				+ (live ? '<button data-hop="term" title="新建终端">🖥</button>' : '<button data-hop="conn" title="连接">⇄</button>')
-				+ `</span>`;
+			row.innerHTML =
+				`<span class="dot ${dotCls}"></span>` +
+				`<span class="nm" title="${esc(c.username)}@${esc(c.host)}:${c.port}${c.privateKeyPath ? ` · ${esc(c.privateKeyPath)}` : ""}">${esc(c.alias)}<span style="opacity:.5"> ${esc(c.username)}@${esc(c.host)}${via}</span></span>` +
+				`<span class="ops">` +
+				(live
+					? '<button data-hop="term" title="新建终端">🖥</button>'
+					: '<button data-hop="conn" title="连接">⇄</button>') +
+				`</span>`;
 			row.addEventListener("click", async (ev) => {
 				const btn = ev.target.closest("button[data-hop]");
-				if (btn?.dataset.hop === "term" && live) { showTermPanel(); void newTerm(live); return; }
+				if (btn?.dataset.hop === "term" && live) {
+					showTermPanel();
+					void newTerm(live);
+					return;
+				}
 				if (btn) ev.stopPropagation();
-				if (live) { showTermPanel(); void newTerm(live); return; }
+				if (live) {
+					showTermPanel();
+					void newTerm(live);
+					return;
+				}
 				await connectConfig(c.alias);
 			});
 			hostsEl.appendChild(row);
@@ -862,14 +959,15 @@ export default {
 			row.dataset.host = h.id;
 			const busy = connecting.has(h.id) || connMeta(connId)?.status === "connecting";
 			const dotCls = busy ? "busy" : connId ? "on" : "";
-			row.innerHTML = `<span class="dot ${dotCls}"></span>`
-				+ `<span class="nm" title="${esc(h.username)}@${esc(h.host)}:${h.port}">${esc(h.name || h.host)}</span>`
-				+ `<span class="ops">`
-				+ (connId
+			row.innerHTML =
+				`<span class="dot ${dotCls}"></span>` +
+				`<span class="nm" title="${esc(h.username)}@${esc(h.host)}:${h.port}">${esc(h.name || h.host)}</span>` +
+				`<span class="ops">` +
+				(connId
 					? '<button data-hop="term" title="新建终端">🖥</button><button data-hop="dis" title="断开">⏏</button>'
-					: '<button data-hop="conn" title="连接">⇄</button>')
-				+ '<button data-hop="edit" title="编辑">✎</button>'
-				+ '<button data-hop="del" title="删除">🗑</button></span>';
+					: '<button data-hop="conn" title="连接">⇄</button>') +
+				'<button data-hop="edit" title="编辑">✎</button>' +
+				'<button data-hop="del" title="删除">🗑</button></span>';
 			row.addEventListener("click", async (ev) => {
 				const btn = ev.target.closest("button[data-hop]");
 				if (btn) {
@@ -890,7 +988,10 @@ export default {
 					return;
 				}
 				// 点主机行：未连则连上（远程目录树出现在下方）；已连则直接开终端
-				if (!connId) { await connectHost(h); return; }
+				if (!connId) {
+					await connectHost(h);
+					return;
+				}
 				showTermPanel();
 				void newTerm(connId);
 			});
@@ -937,11 +1038,15 @@ export default {
 				row.dataset.depth = depth;
 				const ek = tkey(scope, p);
 				const isOpen = expanded.has(ek);
-				row.innerHTML = `<span class="caret">${e.type === "dir" ? (isOpen ? "▾" : "▸") : ""}</span>`
-					+ `<span>${iconFor(e.name, e.type)}</span><span class="nm">${esc(e.name)}</span>`;
+				row.innerHTML =
+					`<span class="caret">${e.type === "dir" ? (isOpen ? "▾" : "▸") : ""}</span>` +
+					`<span>${iconFor(e.name, e.type)}</span><span class="nm">${esc(e.name)}</span>`;
 				row.addEventListener("click", async () => {
 					selectNode(scope, p, e.type);
-					if (e.type !== "dir") { void openFile(scope, p); return; }
+					if (e.type !== "dir") {
+						void openFile(scope, p);
+						return;
+					}
 					// 原地展开/收起：只动这一行下面的子容器，不整棵重绘——
 					// 整树 innerHTML 清空 + 网络往返会让其它目录闪没再回来
 					const caret = row.querySelector(".caret");
@@ -960,6 +1065,17 @@ export default {
 					ev.preventDefault();
 					ev.stopPropagation();
 					selectNode(scope, p, e.type); // 右键同样选中：菜单里的新建以此为落点
+					if (scope === "local" && window.__piWebUiHost?.openFileContextMenu) {
+						window.__piWebUiHost.openFileContextMenu({
+							x: ev.clientX,
+							y: ev.clientY,
+							path: p,
+							kind: e.type === "dir" ? "dir" : "file",
+							label: p.split("/").pop() || p,
+							onHostAction: (actionId) => handleLocalHostAction(actionId, p, e.type),
+						});
+						return;
+					}
 					showMenu(ev.clientX, ev.clientY, scope, p, e.type);
 				});
 				parentEl.appendChild(row);
@@ -984,10 +1100,14 @@ export default {
 				sub.dataset.loaded = "0";
 				row.insertAdjacentElement("afterend", sub);
 			}
-			sub.innerHTML = `<div class="vsc-row loading" style="padding-left:${8 + (depth + 1) * 14}px">`
-				+ `<span class="caret"></span><span>⏳</span><span class="nm">加载中…</span></div>`;
+			sub.innerHTML =
+				`<div class="vsc-row loading" style="padding-left:${8 + (depth + 1) * 14}px">` +
+				`<span class="caret"></span><span>⏳</span><span class="nm">加载中…</span></div>`;
 			const entries = await ensureDir(scope, p);
-			if (!expanded.has(ek)) { sub.remove(); return; } // 等待期间用户又收起了
+			if (!expanded.has(ek)) {
+				sub.remove();
+				return;
+			} // 等待期间用户又收起了
 			sub.innerHTML = "";
 			sub.dataset.loaded = "1";
 			await renderEntries(scope, entries, p, sub, depth + 1);
@@ -1006,11 +1126,13 @@ export default {
 		async function downloadToPC(scope, pathW, isDir = false) {
 			const name = pathW.split("/").filter(Boolean).pop() || pathW;
 			toast(`正在下载 ${name}${isDir ? "（打包中）" : ""}…`);
-			const payload = scope === "local"
-				? { action: "download", path: pathW }
-				: { action: "download", connId: scope, path: pathW };
+			const payload =
+				scope === "local" ? { action: "download", path: pathW } : { action: "download", connId: scope, path: pathW };
 			const r = await request(payload);
-			if (!r.ok) { toast(`下载失败：${r.error}`); return; }
+			if (!r.ok) {
+				toast(`下载失败：${r.error}`);
+				return;
+			}
 			const bin = atob(r.b64);
 			const bytes = new Uint8Array(bin.length);
 			for (let i = 0; i < bin.length; i++) bytes[i] = bin.charCodeAt(i);
@@ -1019,16 +1141,21 @@ export default {
 
 		function saveBlob(blob, suggestedName) {
 			if (window.showSaveFilePicker) {
-				window.showSaveFilePicker({ suggestedName }).then(async (fh) => {
-					const w = await fh.createWritable();
-					await w.write(blob);
-					await w.close();
-					stState.textContent = `${suggestedName} 已保存`;
-					setTimeout(() => { stState.textContent = ""; }, 3000);
-				}).catch((e) => {
-					if (e?.name === "AbortError") return; // 用户取消保存对话框不算错误
-					fallbackAnchor();
-				});
+				window
+					.showSaveFilePicker({ suggestedName })
+					.then(async (fh) => {
+						const w = await fh.createWritable();
+						await w.write(blob);
+						await w.close();
+						stState.textContent = `${suggestedName} 已保存`;
+						setTimeout(() => {
+							stState.textContent = "";
+						}, 3000);
+					})
+					.catch((e) => {
+						if (e?.name === "AbortError") return; // 用户取消保存对话框不算错误
+						fallbackAnchor();
+					});
 				return;
 			}
 			fallbackAnchor();
@@ -1043,15 +1170,25 @@ export default {
 		}
 
 		function applySelHighlight() {
-			root.querySelectorAll(".vsc-row[data-scope]").forEach((el) =>
-				el.classList.toggle("sel", !!selNode
-					&& el.dataset.scope === selNode.scope && el.dataset.path === selNode.path));
+			root
+				.querySelectorAll(".vsc-row[data-scope]")
+				.forEach((el) =>
+					el.classList.toggle(
+						"sel",
+						!!selNode && el.dataset.scope === selNode.scope && el.dataset.path === selNode.path,
+					),
+				);
 		}
 
 		function renderTreeHighlight() {
-			treeEl.querySelectorAll(".vsc-row[data-path]").forEach((el) =>
-				el.classList.toggle("active",
-					activeTk === tkey(el.dataset.scope, el.dataset.path) && el.dataset.type === "file"));
+			treeEl
+				.querySelectorAll(".vsc-row[data-path]")
+				.forEach((el) =>
+					el.classList.toggle(
+						"active",
+						activeTk === tkey(el.dataset.scope, el.dataset.path) && el.dataset.type === "file",
+					),
+				);
 		}
 
 		// ---- 标签页 ----------------------------------------------------------
@@ -1060,10 +1197,11 @@ export default {
 			for (const [k, t] of tabs.entries()) {
 				const el = document.createElement("div");
 				el.className = "vsc-tab" + (k === activeTk ? " active" : "");
-				el.innerHTML = `<span>${t.scope !== "local" ? "🖥" : iconFor(t.name, "file")}</span>`
-					+ `<span class="tn">${esc(t.name)}</span>`
-					+ (t.dirty ? '<span class="dot">●</span>' : "")
-					+ `<button class="x" title="关闭">✕</button>`;
+				el.innerHTML =
+					`<span>${t.scope !== "local" ? "🖥" : iconFor(t.name, "file")}</span>` +
+					`<span class="tn">${esc(t.name)}</span>` +
+					(t.dirty ? '<span class="dot">●</span>' : "") +
+					`<button class="x" title="关闭">✕</button>`;
 				el.addEventListener("click", (ev) => {
 					if (ev.target.closest(".x")) return;
 					void activateTab(k);
@@ -1078,9 +1216,14 @@ export default {
 			const k = tkey(scope, p);
 			if (!tabs.has(k)) {
 				const r = await req(scope, { action: "read", path: p });
-				if (!r.ok) { toast(`打开失败：${r.error}`); return; }
+				if (!r.ok) {
+					toast(`打开失败：${r.error}`);
+					return;
+				}
 				tabs.set(k, {
-					scope, path: p, name: p.split("/").pop(),
+					scope,
+					path: p,
+					name: p.split("/").pop(),
 					savedText: r.text ?? "",
 					binary: !!r.binary,
 					dirty: false,
@@ -1097,10 +1240,12 @@ export default {
 			activeTk = k;
 			emptyEl.classList.add("vsc-hidden");
 			edHost.classList.remove("vsc-hidden");
-			view.setState(EditorState.create({
-				doc: t.binary ? "" : t.savedText,
-				extensions: makeExtensions(),
-			}));
+			view.setState(
+				EditorState.create({
+					doc: t.binary ? "" : t.savedText,
+					extensions: makeExtensions(),
+				}),
+			);
 			t.dirty = false; // 新载入的文档永远是干净的
 			view.dispatch({ effects: langComp.reconfigure(langFor(t.path) ?? []) });
 			stScope.textContent = t.scope !== "local" ? `🖥 ${connLabel(t.scope)}` : "本地";
@@ -1120,17 +1265,14 @@ export default {
 			// CRLF 文件写回原行尾，避免整个文件被重写成 LF
 			const wire = t.crlf ? text.replace(/\n/g, "\r\n") : text;
 			const r = await req(t.scope, { action: "write", path: t.path, text: wire });
-			if (!r.ok) { toast(`保存失败：${r.error}`); return true; }
+			if (!r.ok) {
+				toast(`保存失败：${r.error}`);
+				return true;
+			}
 			t.savedText = text;
 			t.dirty = false;
 			renderTabs();
 			updateStatus(view.state);
-			// 同步配置文件保存后刷新缓存（服务端每次直读文件，无需专门重载）
-			if (t.path === syncCfgPath) void refreshSyncCfg();
-			// 上传保存：配置开启且是本地文件 → 自动同步到远端（vscode-sftp uploadOnSave）
-			else if (syncCfgPub?.configured && syncCfgPub.uploadOnSave && t.scope === "local") {
-				void runSync("up", "file", t.path);
-			}
 			return true;
 		}
 
@@ -1145,7 +1287,10 @@ export default {
 					emptyEl.classList.remove("vsc-hidden");
 					edHost.classList.add("vsc-hidden");
 					stScope.textContent = "";
-					stPath.textContent = "—"; stLang.textContent = ""; stPos.textContent = ""; stState.textContent = "";
+					stPath.textContent = "—";
+					stLang.textContent = "";
+					stPos.textContent = "";
+					stState.textContent = "";
 					renderTabs();
 				}
 			} else renderTabs();
@@ -1163,7 +1308,10 @@ export default {
 					emptyEl.classList.remove("vsc-hidden");
 					edHost.classList.add("vsc-hidden");
 					stScope.textContent = "";
-					stPath.textContent = "—"; stLang.textContent = ""; stPos.textContent = ""; stState.textContent = "";
+					stPath.textContent = "—";
+					stLang.textContent = "";
+					stPos.textContent = "";
+					stState.textContent = "";
 				}
 			}
 			renderTabs();
@@ -1186,8 +1334,11 @@ export default {
 			}
 			closeTabsOfScope("local");
 			await renderTree();
-			toast(dirtyLost ? `工作区已切换${newRoot ? `：${newRoot}` : ""}（关闭了 ${dirtyLost} 个未保存的本地标签）` : `工作区已切换${newRoot ? `：${newRoot}` : ""}`);
-			void refreshSyncCfg(); // .vscode/sftp.json 每项目独立，重读同步配置
+			toast(
+				dirtyLost
+					? `工作区已切换${newRoot ? `：${newRoot}` : ""}（关闭了 ${dirtyLost} 个未保存的本地标签）`
+					: `工作区已切换${newRoot ? `：${newRoot}` : ""}`,
+			);
 		}
 
 		// ---- 快速打开（Ctrl+P，仅本地） ----------------------------------------
@@ -1207,14 +1358,15 @@ export default {
 		function quickMatches() {
 			const q = quickInput.value.trim().toLowerCase();
 			if (quickOverride) {
-				return quickOverride
-					.filter((x) => !q || x.path.toLowerCase().includes(q))
-					.slice(0, 100);
+				return quickOverride.filter((x) => !q || x.path.toLowerCase().includes(q)).slice(0, 100);
 			}
 			const all = [...flatFiles];
 			if (!q) return all.slice(0, 100).map((f) => ({ scope: "local", path: f, type: "file" }));
 			return all
-				.map((f) => ({ f, s: fuzzyScore(quickInput.value.trim(), f.split("/").pop()) + fuzzyScore(quickInput.value.trim(), f) * 0.3 }))
+				.map((f) => ({
+					f,
+					s: fuzzyScore(quickInput.value.trim(), f.split("/").pop()) + fuzzyScore(quickInput.value.trim(), f) * 0.3,
+				}))
 				.filter((x) => x.s >= 0)
 				.sort((a, b) => b.s - a.s)
 				.slice(0, 100)
@@ -1224,26 +1376,53 @@ export default {
 		function renderQuick() {
 			const ms = quickMatches();
 			quickSel = Math.min(quickSel, Math.max(0, ms.length - 1));
-			quickList.innerHTML = ms.map((x, i) =>
-				`<li data-s="${esc(x.scope)}" data-p="${esc(x.path)}" class="${i === quickSel ? "sel" : ""}">`
-				+ `${iconFor(x.path.split("/").pop(), x.type)} ${esc(x.path.split("/").pop())}${x.scope !== "local" ? " 🌐" : ""}<small>${esc(x.path)}</small></li>`).join("")
-				|| `<li style="opacity:.5;cursor:default">无匹配文件</li>`;
+			quickList.innerHTML =
+				ms
+					.map(
+						(x, i) =>
+							`<li data-s="${esc(x.scope)}" data-p="${esc(x.path)}" class="${i === quickSel ? "sel" : ""}">` +
+							`${iconFor(x.path.split("/").pop(), x.type)} ${esc(x.path.split("/").pop())}${x.scope !== "local" ? " 🌐" : ""}<small>${esc(x.path)}</small></li>`,
+					)
+					.join("") || `<li style="opacity:.5;cursor:default">无匹配文件</li>`;
 		}
 
 		function openQuickOpen() {
 			quickOverride = null; // 回到本地 Ctrl+P 模式
-			void loadFlat().then(() => { quickSel = 0; renderQuick(); quick.classList.remove("vsc-hidden"); quickInput.focus(); quickInput.select(); });
+			void loadFlat().then(() => {
+				quickSel = 0;
+				renderQuick();
+				quick.classList.remove("vsc-hidden");
+				quickInput.focus();
+				quickInput.select();
+			});
 		}
 
-		function closeQuickOpen() { quick.classList.add("vsc-hidden"); }
+		function closeQuickOpen() {
+			quick.classList.add("vsc-hidden");
+		}
 
-		quickInput.addEventListener("input", () => { quickSel = 0; renderQuick(); });
+		quickInput.addEventListener("input", () => {
+			quickSel = 0;
+			renderQuick();
+		});
 		quickInput.addEventListener("keydown", (ev) => {
 			const ms = quickMatches();
-			if (ev.key === "Escape") { closeQuickOpen(); view.focus(); }
-			else if (ev.key === "ArrowDown") { quickSel = Math.min(quickSel + 1, ms.length - 1); renderQuick(); ev.preventDefault(); }
-			else if (ev.key === "ArrowUp") { quickSel = Math.max(quickSel - 1, 0); renderQuick(); ev.preventDefault(); }
-			else if (ev.key === "Enter" && ms[quickSel] && ms[quickSel].type !== "dir") { const t = ms[quickSel]; closeQuickOpen(); void openFile(t.scope, t.path); }
+			if (ev.key === "Escape") {
+				closeQuickOpen();
+				view.focus();
+			} else if (ev.key === "ArrowDown") {
+				quickSel = Math.min(quickSel + 1, ms.length - 1);
+				renderQuick();
+				ev.preventDefault();
+			} else if (ev.key === "ArrowUp") {
+				quickSel = Math.max(quickSel - 1, 0);
+				renderQuick();
+				ev.preventDefault();
+			} else if (ev.key === "Enter" && ms[quickSel] && ms[quickSel].type !== "dir") {
+				const t = ms[quickSel];
+				closeQuickOpen();
+				void openFile(t.scope, t.path);
+			}
 		});
 		quickList.addEventListener("click", (ev) => {
 			const li = ev.target.closest("li[data-p]");
@@ -1254,7 +1433,8 @@ export default {
 				const hit = quickOverride.find((x) => x.scope === scope && x.path === li.dataset.p);
 				if (hit?.type === "dir") return;
 			}
-			closeQuickOpen(); void openFile(scope, li.dataset.p);
+			closeQuickOpen();
+			void openFile(scope, li.dataset.p);
 		});
 
 		/** 文件名搜索（本地走工作区全仓，远端以当前选中目录为起点收窄）：结果复用 Ctrl+P 浮层 */
@@ -1268,12 +1448,19 @@ export default {
 			}
 			const q = prompt("搜索文件名：");
 			if (!q || !q.trim()) return;
-			const r = scope === "local"
-				? await request({ action: "search", query: q.trim(), base })
-				: await request({ action: "search", connId: scope, query: q.trim(), baseDir: base || "/" });
-			if (!r.ok) { toast(`搜索失败：${r.error}`); return; }
+			const r =
+				scope === "local"
+					? await request({ action: "search", query: q.trim(), base })
+					: await request({ action: "search", connId: scope, query: q.trim(), baseDir: base || "/" });
+			if (!r.ok) {
+				toast(`搜索失败：${r.error}`);
+				return;
+			}
 			const list = r.results ?? [];
-			if (!list.length) { toast("无匹配"); return; }
+			if (!list.length) {
+				toast("无匹配");
+				return;
+			}
 			if (r.truncated) toast("结果较多，只显示前 50 项");
 			quickOverride = list.map((x) => ({ scope, path: x.path, type: x.type }));
 			quickSel = 0;
@@ -1282,6 +1469,78 @@ export default {
 			quick.classList.remove("vsc-hidden");
 			quickInput.focus();
 			quickInput.select();
+		}
+
+		// ---- 宿主 contextmenu.file 右键菜单桥（本地文件树直接继承宿主与插件条目） ----
+		function handleLocalHostAction(actionId, pathW, type) {
+			const _base = pathW.split("/").filter(Boolean).pop() || "";
+			const _dir = type === "dir" ? pathW : localParentOf(pathW);
+			switch (actionId) {
+				case "host:file-new-file":
+					void promptCreate("local", _dir, "file");
+					return true;
+				case "host:file-new-dir":
+					void promptCreate("local", _dir, "dir");
+					return true;
+				case "host:file-rename":
+					void (async () => {
+						const nn = prompt("新名称：", _base);
+						if (!nn || nn === _base) return;
+						const r = await req("local", { action: "rename", path: pathW, newName: nn });
+						if (!r.ok) {
+							toast(`重命名失败：${r.error}`);
+							return;
+						}
+						await invalidateScope("local");
+					})();
+					return true;
+				case "host:file-delete":
+					void (async () => {
+						if (!confirm(`确定删除「${pathW}」？${type === "dir" ? "（目录将递归删除，不可撤销）" : "（不可撤销）"}`))
+							return;
+						const r = await req("local", { action: "delete", path: pathW, isDir: type === "dir" });
+						if (!r.ok) {
+							toast(`删除失败：${r.error}`);
+							return;
+						}
+						for (const k of [...tabs.keys()]) {
+							const { scope: s, path } = parseTk(k);
+							if (s === "local" && (path === pathW || path.startsWith(pathW + "/"))) void closeTab(k);
+						}
+						await invalidateScope("local");
+					})();
+					return true;
+				case "host:file-duplicate":
+					void duplicateEntry("local", pathW, type);
+					return true;
+				case "host:file-cut":
+					clipboard = { scope: "local", src: pathW, cut: true };
+					toast(`已剪切「${_base}」（在目标目录右键粘贴）`);
+					return true;
+				case "host:file-copy":
+					clipboard = { scope: "local", src: pathW, cut: false };
+					toast(`已复制「${_base}」（在目标目录右键粘贴）`);
+					return true;
+				case "host:file-paste":
+					void pasteClipboardTo("local", _dir);
+					return true;
+				case "host:file-upload":
+					void (async () => {
+						const files = await pickFiles();
+						if (files.length) void uploadFilesTo("local", _dir, files);
+					})();
+					return true;
+				case "host:file-download":
+					void downloadToPC("local", pathW, type === "dir");
+					return true;
+				case "host:file-open":
+					if (type !== "dir") void openFile("local", pathW);
+					return true;
+				case "host:file-refresh":
+					void refreshAll();
+					return true;
+			}
+			return false;
 		}
 
 		// ---- 右键菜单（scope 感知） --------------------------------------------
@@ -1297,86 +1556,117 @@ export default {
 			const items = [];
 			if (type === "dir") {
 				items.push(
-					["新建文件", async () => { await promptCreate(scope, pathW, "file"); }],
-					["新建文件夹", async () => { await promptCreate(scope, pathW, "dir"); }],
-					["上传文件到此处…", async () => {
-						const files = await pickFiles();
-						if (files.length) void uploadFilesTo(scope, pathW, files);
-					}],
-				);
-			}
-			// 同步入右键菜单（vscode-sftp 风格）：本地行直接同步；远端行点击时即时解析相对路径
-			if (scope === "local") {
-				if (type === "dir") items.push(
-					["上传此文件夹 → 远端", () => void runSync("up", "tree", pathW)],
-					["下载远端 → 此文件夹", () => void runSync("down", "tree", pathW)],
-				);
-				else items.push(
-					["上传此文件 → 远端", () => void runSync("up", "file", pathW)],
-					["下载到电脑", () => void downloadToPC(pathW)],
+					[
+						"新建文件",
+						async () => {
+							await promptCreate(scope, pathW, "file");
+						},
+					],
+					[
+						"新建文件夹",
+						async () => {
+							await promptCreate(scope, pathW, "dir");
+						},
+					],
+					[
+						"上传文件到此处…",
+						async () => {
+							const files = await pickFiles();
+							if (files.length) void uploadFilesTo(scope, pathW, files);
+						},
+					],
 				);
 			} else {
-				// 远端与本地工作区无关：只提供「下载到电脑」（文件夹自动 tar.gz 打包）
-				items.push([type === "dir" ? "下载到电脑（压缩包）" : "下载到电脑",
-					() => void downloadToPC(scope, pathW, type === "dir")]);
+				items.push([
+					type === "dir" ? "下载到电脑（压缩包）" : "下载到电脑",
+					() => void downloadToPC(scope, pathW, type === "dir"),
+				]);
+				items.push([
+					"上传文件到此处…",
+					async () => {
+						const files = await pickFiles();
+						const dir = scope === "local" ? localParentOf(pathW) : parentOf(pathW);
+						if (files.length) void uploadFilesTo(scope, dir, files);
+					},
+				]);
 			}
-			// 文件行也可「上传文件到此处…」（落点 = 其所在目录，与拖拽规则一致）
-			if (type !== "dir") {
-				items.push(["上传文件到此处…", async () => {
-					const files = await pickFiles();
-					const dir = scope === "local" ? localParentOf(pathW) : parentOf(pathW);
-					if (files.length) void uploadFilesTo(scope, dir, files);
-				}]);
-			}
-			// 文件列表同款：剪切/复制/粘贴（同 scope 内）、创建副本、复制路径
+			// 剪切/复制/粘贴（同 scope 内）、创建副本、复制路径
 			const _base = pathW.split("/").pop();
-			const _rowDir = type === "dir" ? pathW : (scope === "local" ? localParentOf(pathW) : parentOf(pathW));
+			const _rowDir = type === "dir" ? pathW : scope === "local" ? localParentOf(pathW) : parentOf(pathW);
 			items.push(
-				["剪切", () => { clipboard = { scope, src: pathW, cut: true }; toast(`已剪切「${_base}」（在目标目录右键粘贴）`); }],
-				["复制", () => { clipboard = { scope, src: pathW, cut: false }; toast(`已复制「${_base}」（在目标目录右键粘贴）`); }],
+				[
+					"剪切",
+					() => {
+						clipboard = { scope, src: pathW, cut: true };
+						toast(`已剪切「${_base}」（在目标目录右键粘贴）`);
+					},
+				],
+				[
+					"复制",
+					() => {
+						clipboard = { scope, src: pathW, cut: false };
+						toast(`已复制「${_base}」（在目标目录右键粘贴）`);
+					},
+				],
 			);
 			if (clipboard && clipboard.scope === scope) {
-				items.push([clipboard.cut ? "粘贴（移动到此处）" : "粘贴到此处",
-					() => void pasteClipboardTo(scope, _rowDir)]);
+				items.push([clipboard.cut ? "粘贴（移动到此处）" : "粘贴到此处", () => void pasteClipboardTo(scope, _rowDir)]);
 			}
+			items.push(["创建副本", () => void duplicateEntry(scope, pathW, type)], ["复制路径", () => copyText(pathW)]);
 			items.push(
-				["创建副本", () => void duplicateEntry(scope, pathW, type)],
-				["复制路径", () => copyText(pathW)],
-			);
-			items.push(
-				["重命名", async () => {
-					const nn = prompt("新名称：", pathW.split("/").pop());
-					if (!nn || nn === pathW.split("/").pop()) return;
-					const r = await req(scope, { action: "rename", path: pathW, newName: nn });
-					if (!r.ok) { toast(`重命名失败：${r.error}`); return; }
-					await invalidateScope(scope);
-				}],
-				["删除", async () => {
-					if (!confirm(`确定删除「${pathW}」？${type === "dir" ? "（目录将递归删除，不可撤销）" : "（不可撤销）"}`)) return;
-					const r = await req(scope, { action: "delete", path: pathW, isDir: type === "dir" });
-					if (!r.ok) { toast(`删除失败：${r.error}`); return; }
-					// 关闭被删文件（或其子目录下）的活跃标签
-					for (const k of [...tabs.keys()]) {
-						const { scope: s, path } = parseTk(k);
-						if (s === scope && (path === pathW || path.startsWith(pathW + "/"))) void closeTab(k);
-					}
-					await invalidateScope(scope);
-				}],
+				[
+					"重命名",
+					async () => {
+						const nn = prompt("新名称：", pathW.split("/").pop());
+						if (!nn || nn === pathW.split("/").pop()) return;
+						const r = await req(scope, { action: "rename", path: pathW, newName: nn });
+						if (!r.ok) {
+							toast(`重命名失败：${r.error}`);
+							return;
+						}
+						await invalidateScope(scope);
+					},
+				],
+				[
+					"删除",
+					async () => {
+						if (!confirm(`确定删除「${pathW}」？${type === "dir" ? "（目录将递归删除，不可撤销）" : "（不可撤销）"}`))
+							return;
+						const r = await req(scope, { action: "delete", path: pathW, isDir: type === "dir" });
+						if (!r.ok) {
+							toast(`删除失败：${r.error}`);
+							return;
+						}
+						// 关闭被删文件（或其子目录下）的活跃标签
+						for (const k of [...tabs.keys()]) {
+							const { scope: s, path } = parseTk(k);
+							if (s === scope && (path === pathW || path.startsWith(pathW + "/"))) void closeTab(k);
+						}
+						await invalidateScope(scope);
+					},
+				],
 			);
 			if (scope !== "local") {
 				// 文件在其所在目录、文件夹在自身目录打开远程终端
-				items.push([type === "dir" ? "在此打开终端" : "在所在文件夹打开终端", async () => {
-					const dir = type === "dir" ? pathW : parentOf(pathW);
-					conns.get(scope).cwd = dir;
-					showTermPanel();
-					await newTerm(scope, dir);
-				}]);
+				items.push([
+					type === "dir" ? "在此打开终端" : "在所在文件夹打开终端",
+					async () => {
+						const dir = type === "dir" ? pathW : parentOf(pathW);
+						conns.get(scope).cwd = dir;
+						showTermPanel();
+						await newTerm(scope, dir);
+					},
+				]);
 			}
 			for (const [label, fn] of items) {
 				const b = document.createElement("button");
 				b.textContent = label;
 				if (!fn) b.className = "dim";
-				else b.addEventListener("click", () => { hideMenu(); void fn(); });
+				else
+					b.addEventListener("click", () => {
+						hideMenu();
+						void fn();
+					});
 				menuEl.appendChild(b);
 			}
 			menuEl.classList.remove("vsc-hidden");
@@ -1385,7 +1675,9 @@ export default {
 			menuEl.style.left = `${Math.min(x - rect.left, rect.width - 170)}px`;
 			menuEl.style.top = `${Math.min(y - rect.top, rect.height - items.length * 32 - 20)}px`;
 		}
-		function hideMenu() { menuEl.classList.add("vsc-hidden"); }
+		function hideMenu() {
+			menuEl.classList.add("vsc-hidden");
+		}
 		document.addEventListener("click", hideMenu);
 
 		/** 结构变化后清缓存重拉；keepTabs 内容不动 */
@@ -1393,7 +1685,10 @@ export default {
 			for (const key of [...dirCache.keys()]) {
 				if (key.startsWith(`${scope}:`)) dirCache.delete(key);
 			}
-			if (scope === "local") { flatFiles.clear(); flatLoaded = false; }
+			if (scope === "local") {
+				flatFiles.clear();
+				flatLoaded = false;
+			}
 			await renderTree();
 			renderHosts(); // 远端树也刷（invalidateScope 可能由远端操作触发）
 		}
@@ -1403,7 +1698,10 @@ export default {
 			if (!name) return;
 			const p = dirWire ? `${dirWire.replace(/\/$/, "")}/${name.trim()}` : name.trim();
 			const r = await req(scope, { action: "create", path: p, kind });
-			if (!r.ok) { toast(`创建失败：${r.error}`); return; }
+			if (!r.ok) {
+				toast(`创建失败：${r.error}`);
+				return;
+			}
 			expanded.add(tkey(scope, dirWire));
 			selNode = { scope, path: p, type: kind }; // 新条目成为当前选中，后续新建落在它旁边/里面
 			if (kind === "file") void openFile(scope, p);
@@ -1462,9 +1760,15 @@ export default {
 		/** 单个文件：begin（存在检查 + 覆盖确认）→ 逐片上传 → 末片落盘。返回是否成功 */
 		async function uploadOne(scope, dir, file) {
 			const name = file.name;
-			if (file.size > 100 * 1024 * 1024) { toast(`「${name}」超过 100MB 上限，已跳过`); return false; }
+			if (file.size > 100 * 1024 * 1024) {
+				toast(`「${name}」超过 100MB 上限，已跳过`);
+				return false;
+			}
 			const begin = await req(scope, { action: "upload_begin", dir, name, size: file.size });
-			if (!begin.ok) { toast(`上传失败：${begin.error}`); return false; }
+			if (!begin.ok) {
+				toast(`上传失败：${begin.error}`);
+				return false;
+			}
 			if (begin.exists && !confirm(`「${name}」已存在，是否覆盖？`)) {
 				void request({ action: "upload_abort", uploadId: begin.uploadId });
 				return false;
@@ -1489,7 +1793,10 @@ export default {
 		/** 批量上传到某个目录（本地/远端通用），完成后刷新对应树 + 汇总提示 */
 		async function uploadFilesTo(scope, dir, files) {
 			if (!files?.length) return;
-			if (uploading) { toast("正在上传，请稍候…"); return; }
+			if (uploading) {
+				toast("正在上传，请稍候…");
+				return;
+			}
 			uploading = true;
 			let ok = 0;
 			try {
@@ -1526,8 +1833,12 @@ export default {
 			if (row && row.dataset.scope) {
 				return {
 					scope: row.dataset.scope,
-					dir: row.dataset.type === "dir" ? row.dataset.path
-						: (row.dataset.scope === "local" ? localParentOf(row.dataset.path) : parentOf(row.dataset.path)),
+					dir:
+						row.dataset.type === "dir"
+							? row.dataset.path
+							: row.dataset.scope === "local"
+								? localParentOf(row.dataset.path)
+								: parentOf(row.dataset.path),
 				};
 			}
 			if (containerScope === "local") return { scope: "local", dir: "" };
@@ -1540,7 +1851,8 @@ export default {
 			if (!t) return;
 			// 具体目录落点：高亮那一行；根目录/远端根落点：高亮整个树容器
 			if (t.dir && t.dir !== "/") {
-				root.querySelector(`.vsc-row[data-scope="${CSS.escape(t.scope)}"][data-path="${CSS.escape(t.dir)}"]`)
+				root
+					.querySelector(`.vsc-row[data-scope="${CSS.escape(t.scope)}"][data-path="${CSS.escape(t.dir)}"]`)
 					?.classList.add("drop-target");
 			} else {
 				(t.scope === "local" ? treeEl : sshTreeEl).classList.add("drop-root");
@@ -1555,7 +1867,10 @@ export default {
 			if (appEl) appEl.dispatchEvent(new DragEvent("dragleave", { bubbles: true }));
 		}
 
-		for (const [el, containerScope] of [[treeEl, "local"], [sshTreeEl, null]]) {
+		for (const [el, containerScope] of [
+			[treeEl, "local"],
+			[sshTreeEl, null],
+		]) {
 			el.addEventListener("dragover", (ev) => {
 				if (!isFileDrag(ev)) return;
 				ev.preventDefault(); // 声明自己是合法落点，否则浏览器默认禁止 drop
@@ -1575,31 +1890,59 @@ export default {
 				clearDropTargets();
 				clearAppDropOverlay();
 				const files = [...(ev.dataTransfer?.files ?? [])];
-				if (!files.length) { toast("文件夹上传暂不支持，请选择文件"); return; }
+				if (!files.length) {
+					toast("文件夹上传暂不支持，请选择文件");
+					return;
+				}
 				const t = dropTargetFrom(ev, containerScope);
-				if (!t) { toast("请先连接一台 SSH 主机"); return; }
+				if (!t) {
+					toast("请先连接一台 SSH 主机");
+					return;
+				}
 				void uploadFilesTo(t.scope, t.dir, files);
 			});
 		}
 
 		// ---- 空白处右键（与拖拽空白落点一致：本地→工作区根；SSH 树→首台已连主机根） ----
-		for (const [el, containerScope] of [[treeEl, "local"], [sshTreeEl, null]]) {
+		for (const [el, containerScope] of [
+			[treeEl, "local"],
+			[sshTreeEl, null],
+		]) {
 			el.addEventListener("contextmenu", (ev) => {
 				const tgt = ev.target instanceof Element ? ev.target : el;
 				if (tgt.closest(".vsc-row")) return; // 行行自己有菜单（且已 stopPropagation）
 				ev.preventDefault();
 				ev.stopPropagation();
+				if (containerScope === "local" && window.__piWebUiHost?.openFileContextMenu) {
+					window.__piWebUiHost.openFileContextMenu({
+						x: ev.clientX,
+						y: ev.clientY,
+						path: "",
+						kind: "list",
+						label: "workspace",
+						onHostAction: (actionId) => handleLocalHostAction(actionId, "", "dir"),
+					});
+					return;
+				}
 				const t = dropTargetFrom(ev, containerScope); // 复用拖拽落点计算，空白→根
-				if (!t) { toast("请先连接一台 SSH 主机"); return; }
+				if (!t) {
+					toast("请先连接一台 SSH 主机");
+					return;
+				}
 				hideMenu();
 				const items = [];
-				items.push(["上传文件到此处…", async () => {
-					const files = await pickFiles();
-					if (files.length) void uploadFilesTo(t.scope, t.dir, files);
-				}]);
+				items.push([
+					"上传文件到此处…",
+					async () => {
+						const files = await pickFiles();
+						if (files.length) void uploadFilesTo(t.scope, t.dir, files);
+					},
+				]);
 				if (clipboard && clipboard.scope === t.scope) {
-					items.push([clipboard.cut ? "粘贴（移动到此处）" : "粘贴到此处",
-						() => void pasteClipboardTo(t.scope, t.dir)]);
+					items.push([
+						clipboard.cut ? "粘贴（移动到此处）" : "粘贴到此处",
+						() => void pasteClipboardTo(t.scope, t.dir),
+					]);
 				}
 				if (containerScope === "local" && t.dir === "") {
 					items.push(["刷新", () => void refreshAll()]);
@@ -1608,7 +1951,10 @@ export default {
 				for (const [label, fn] of items) {
 					const b = document.createElement("button");
 					b.textContent = label;
-					b.addEventListener("click", () => { hideMenu(); void fn(); });
+					b.addEventListener("click", () => {
+						hideMenu();
+						void fn();
+					});
 					menuEl.appendChild(b);
 				}
 				menuEl.classList.remove("vsc-hidden");
@@ -1621,16 +1967,18 @@ export default {
 		root.querySelector(".vsc-side-head").addEventListener("click", (ev) => {
 			const btn = ev.target.closest("button[data-act]");
 			if (!btn) return;
-			ev.stopPropagation(); // 阻断冒泡：否则 document 的「点任意处关菜单」会把刚打开的 ☁ 菜单立即隐藏
+			ev.stopPropagation();
 			const act = btn.dataset.act;
-			if (act === "refresh") { void refreshAll(); }
-			else if (act === "search") { void runSearch("local"); }
-			else if (act === "new-file") { void promptCreate("local", pickLocalDir(), "file"); }
-			else if (act === "new-dir") { void promptCreate("local", pickLocalDir(), "dir"); }
-			else if (act === "upload") { void pickFiles().then((files) => uploadFilesTo("local", "", files)); }
-			else if (act === "sync-menu") {
-				const rect = btn.getBoundingClientRect();
-				showSyncMenu(rect.left, rect.bottom + 4);
+			if (act === "refresh") {
+				void refreshAll();
+			} else if (act === "search") {
+				void runSearch("local");
+			} else if (act === "new-file") {
+				void promptCreate("local", pickLocalDir(), "file");
+			} else if (act === "new-dir") {
+				void promptCreate("local", pickLocalDir(), "dir");
+			} else if (act === "upload") {
+				void pickFiles().then((files) => uploadFilesTo("local", "", files));
 			}
 		});
 
@@ -1659,7 +2007,9 @@ export default {
 			q("h-host").focus();
 		}
 		hostBg.querySelector(".cancel").addEventListener("click", () => hostBg.classList.add("vsc-hidden"));
-		hostBg.addEventListener("click", (ev) => { if (ev.target === hostBg) hostBg.classList.add("vsc-hidden"); });
+		hostBg.addEventListener("click", (ev) => {
+			if (ev.target === hostBg) hostBg.classList.add("vsc-hidden");
+		});
 		hostBg.querySelector(".save-host").addEventListener("click", async () => {
 			const q = (n) => hostBg.querySelector(`[name="${n}"]`);
 			const body = {
@@ -1676,7 +2026,10 @@ export default {
 			};
 			if (modalEditId) body.id = modalEditId;
 			const r = await request({ action: "hosts_save", host: body });
-			if (!r.ok) { toast(`保存失败：${r.error}`); return; }
+			if (!r.ok) {
+				toast(`保存失败：${r.error}`);
+				return;
+			}
 			hostBg.classList.add("vsc-hidden");
 		});
 		hostBg.querySelector(".import-cfg").addEventListener("click", async () => {
@@ -1684,7 +2037,10 @@ export default {
 			panel.innerHTML = `<div class="hint">读取 ~/.ssh/config 中…</div>`;
 			panel.classList.remove("vsc-hidden");
 			const r = await request({ action: "sshconfig_list" });
-			if (!r.ok) { panel.innerHTML = `<div class="hint">读取失败：${esc(r.error)}</div>`; return; }
+			if (!r.ok) {
+				panel.innerHTML = `<div class="hint">读取失败：${esc(r.error)}</div>`;
+				return;
+			}
 			const fresh = (r.hosts ?? []).filter((x) => !x.imported);
 			if (!fresh.length) {
 				panel.innerHTML = `<div class="hint">共 ${(r.hosts ?? []).length} 台，均已导入。</div>`;
@@ -1701,8 +2057,8 @@ export default {
 				cb.style.width = "auto";
 				label.appendChild(cb);
 				const span = document.createElement("span");
-				span.textContent = `${x.alias} — ${x.username}@${x.host}:${x.port}`
-					+ (x.privateKeyPath ? `（${x.privateKeyPath}）` : "");
+				span.textContent =
+					`${x.alias} — ${x.username}@${x.host}:${x.port}` + (x.privateKeyPath ? `（${x.privateKeyPath}）` : "");
 				label.appendChild(span);
 				panel.appendChild(label);
 			}
@@ -1711,9 +2067,15 @@ export default {
 			btn.textContent = `导入选中`;
 			btn.addEventListener("click", async () => {
 				const aliases = [...panel.querySelectorAll("input[type=checkbox]:checked")].map((c) => c.value);
-				if (!aliases.length) { toast("请先勾选要导入的主机"); return; }
+				if (!aliases.length) {
+					toast("请先勾选要导入的主机");
+					return;
+				}
 				const r2 = await request({ action: "sshconfig_import", aliases });
-				if (!r2.ok) { toast(`导入失败：${r2.error}`); return; }
+				if (!r2.ok) {
+					toast(`导入失败：${r2.error}`);
+					return;
+				}
 				panel.classList.add("vsc-hidden");
 				panel.innerHTML = "";
 				hostBg.classList.add("vsc-hidden");
@@ -1734,7 +2096,11 @@ export default {
 			renderHosts();
 			const r = await request({ action: "config_connect", alias });
 			connecting.delete(key);
-			if (!r.ok) { toast(`连接失败：${r.error}`); renderHosts(); return null; }
+			if (!r.ok) {
+				toast(`连接失败：${r.error}`);
+				renderHosts();
+				return null;
+			}
 			let cwd = "/";
 			const pwd = await request({ action: "exec", connId: r.connId, cmd: "pwd" });
 			if (pwd.ok && pwd.exitCode === 0) {
@@ -1752,8 +2118,14 @@ export default {
 		/** 编辑 ~/.ssh/config 原文（与 VSCode 写法完全一样，保存自动备份 .bak + 刷新列表） */
 		async function openSshConfigEditor() {
 			const r = await request({ action: "sshconfig_get" });
-			if (!r.ok) { toast(`读取失败：${r.error}`); return; }
-			const text = prompt(`编辑 ${S.configPath ?? "~/.ssh/config"}（与 VSCode 写法完全一样）：\nHost 别名\n  HostName 主机\n  User 用户\n  Port 端口\n  IdentityFile 私钥路径\n  ProxyJump 跳板`, r.text ?? "");
+			if (!r.ok) {
+				toast(`读取失败：${r.error}`);
+				return;
+			}
+			const text = prompt(
+				`编辑 ${S.configPath ?? "~/.ssh/config"}（与 VSCode 写法完全一样）：\nHost 别名\n  HostName 主机\n  User 用户\n  Port 端口\n  IdentityFile 私钥路径\n  ProxyJump 跳板`,
+				r.text ?? "",
+			);
 			if (text === null) return; // 取消
 			const r2 = await request({ action: "sshconfig_save", text });
 			if (!r2.ok) toast(`保存失败：${r2.error}`);
@@ -1767,7 +2139,11 @@ export default {
 			renderTree();
 			const r = await request({ action: "connect", id: h.id });
 			connecting.delete(h.id);
-			if (!r.ok) { toast(`连接失败：${r.error}`); renderTree(); return; }
+			if (!r.ok) {
+				toast(`连接失败：${r.error}`);
+				renderTree();
+				return;
+			}
 			let cwd = "/";
 			const pwd = await request({ action: "exec", connId: r.connId, cmd: "pwd" });
 			if (pwd.ok && pwd.exitCode === 0) {
@@ -1802,18 +2178,6 @@ export default {
 
 		// ---- 底部终端面板（每台主机可多个 shell） ---------------------------------
 		const terms = new Map(); // termId → {id, connId, shellId, label, n, term, fit, el, opened, dead}
-		let syncCfgPub = null; // 最近一次 sync_get 的脱敏配置（uploadOnSave / remoteRoot 判断用）
-		let syncCfgPath = ".vscode/sftp.json";
-
-		/** 拉取同步配置缓存（服务端每次直读 .vscode/sftp.json，改完保存即生效） */
-		async function refreshSyncCfg() {
-			const r = await request({ action: "sync_get" });
-			if (r.ok) {
-				syncCfgPub = r.config;
-				syncCfgPath = r.configPath ?? syncCfgPath;
-			}
-			return r;
-		}
 		let termSeq = 0;
 		let activeTermId = null;
 		let lastConnId = null;
@@ -1837,24 +2201,41 @@ export default {
 			dragEl.classList.add("vsc-hidden");
 		}
 		function syncPanelVisibility() {
-			if (terms.size) showTermPanel(); else hideTermPanel();
+			if (terms.size) showTermPanel();
+			else hideTermPanel();
 		}
 		// 主题跟随：编辑器明暗 + 全部存活终端调色一起切换
 		function onThemeChange() {
-			try { view.dispatch({ effects: themeComp.reconfigure(isLightTheme() ? cmLight : oneDark) }); } catch {}
+			try {
+				view.dispatch({ effects: themeComp.reconfigure(isLightTheme() ? cmLight : oneDark) });
+			} catch {}
 			const th = buildTermTheme();
-			for (const [, t] of terms.entries()) { try { t.term.options.theme = th; } catch {} }
+			for (const [, t] of terms.entries()) {
+				try {
+					t.term.options.theme = th;
+				} catch {}
+			}
 		}
 		window.addEventListener(THEME_CHANGE_EVENT, onThemeChange);
 
 		async function newTerm(connId, startCwd) {
 			connId = connId ?? pickConnId();
-			if (!connId || !conns.has(connId)) { toast("请先连接一台 SSH 主机（左侧点主机名）"); return; }
+			if (!connId || !conns.has(connId)) {
+				toast("请先连接一台 SSH 主机（左侧点主机名）");
+				return;
+			}
 			const sameConn = [...terms.values()].filter((t) => t.connId === connId).length;
 			const t = {
-				id: `t${++termSeq}`, connId, shellId: null,
-				label: connLabel(connId), n: sameConn + 1, dead: false,
-				term: null, fit: null, el: null, opened: false,
+				id: `t${++termSeq}`,
+				connId,
+				shellId: null,
+				label: connLabel(connId),
+				n: sameConn + 1,
+				dead: false,
+				term: null,
+				fit: null,
+				el: null,
+				opened: false,
 			};
 			terms.set(t.id, t);
 			showTermPanel();
@@ -1872,7 +2253,9 @@ export default {
 			t.term = term;
 			t.fit = fit;
 			term.open(t.el);
-			try { fit.fit(); } catch {}
+			try {
+				fit.fit();
+			} catch {}
 			term.onData((d) => {
 				if (t.dead) return;
 				if (t.shellId) ctx.send({ action: "shell_input", connId: t.connId, shellId: t.shellId, b64: b64.enc(d) });
@@ -1883,8 +2266,10 @@ export default {
 			});
 			setActiveTerm(t.id);
 			const r = await request({
-				action: "shell_open", connId: t.connId,
-				cols: term.cols, rows: term.rows,
+				action: "shell_open",
+				connId: t.connId,
+				cols: term.cols,
+				rows: term.rows,
 			});
 			if (!r.ok) {
 				toast(`打开终端失败：${r.error}`);
@@ -1902,7 +2287,12 @@ export default {
 			inputQueue.delete(t.id);
 			// 指定起始目录：shell 就绪后补发一条 cd（与手动敲入等效）
 			if (startCwd && !t.dead) {
-				ctx.send({ action: "shell_input", connId: t.connId, shellId: t.shellId, b64: b64.enc(`cd ${shQuote(startCwd)}\n`) });
+				ctx.send({
+					action: "shell_input",
+					connId: t.connId,
+					shellId: t.shellId,
+					b64: b64.enc(`cd ${shQuote(startCwd)}\n`),
+				});
 			}
 			term.focus();
 		}
@@ -1911,7 +2301,13 @@ export default {
 			activeTermId = id;
 			for (const [tid, t] of terms.entries()) {
 				t.el.classList.toggle("vsc-hidden", tid !== id);
-				if (tid === id) requestAnimationFrame(() => { try { t.fit.fit(); } catch {} t.term?.focus(); });
+				if (tid === id)
+					requestAnimationFrame(() => {
+						try {
+							t.fit.fit();
+						} catch {}
+						t.term?.focus();
+					});
 			}
 			renderTermTabs();
 		}
@@ -1923,7 +2319,10 @@ export default {
 				el.className = "vsc-ttab" + (tid === activeTermId ? " active" : "");
 				el.innerHTML = `<span class="tn">🖥 ${esc(t.label)}${t.n > 1 ? ` ${t.n}` : ""}</span><button class="x" title="关闭">✕</button>`;
 				el.addEventListener("click", (ev) => {
-					if (ev.target.closest(".x")) { killTerm(t); return; }
+					if (ev.target.closest(".x")) {
+						killTerm(t);
+						return;
+					}
 					setActiveTerm(tid);
 				});
 				termTabsEl.appendChild(el);
@@ -1944,9 +2343,15 @@ export default {
 
 		function disposeTerm(t) {
 			t.dead = true;
-			try { t.ro?.disconnect(); } catch {}
-			try { t.term?.dispose(); } catch {}
-			try { t.el?.remove(); } catch {}
+			try {
+				t.ro?.disconnect();
+			} catch {}
+			try {
+				t.term?.dispose();
+			} catch {}
+			try {
+				t.el?.remove();
+			} catch {}
 			terms.delete(t.id);
 		}
 
@@ -1962,7 +2367,11 @@ export default {
 			const onMove = (e) => {
 				termH = Math.round(Math.min(Math.max(startH + (startY - e.clientY), 80), maxH));
 				panelEl.style.height = `${termH}px`;
-				for (const [, t] of terms.entries()) { try { t.fit.fit(); } catch {} }
+				for (const [, t] of terms.entries()) {
+					try {
+						t.fit.fit();
+					} catch {}
+				}
 			};
 			const onUp = () => {
 				document.removeEventListener("mousemove", onMove);
@@ -1970,103 +2379,6 @@ export default {
 			};
 			document.addEventListener("mousemove", onMove);
 			document.addEventListener("mouseup", onUp);
-		});
-
-		// ---- SFTP 同步（本地工作区 ↔ 远端目录，方向性覆盖） ------------------------
-		function showSyncMenu(x, y) {
-			menuEl.innerHTML = "";
-			const at = tabs.get(activeTk);
-			const items = [
-				["同步配置…", () => void openSyncModal()],
-				["编辑配置文件（.vscode/sftp.json）", () => void openConfigFile()],
-				["全部上传（本地 → 远端）", () => void runSync("up", "all", "")],
-				["全部下载（远端 → 本地）", () => void runSync("down", "all", "")],
-				[at && at.scope === "local" && !at.binary ? `上传当前文件（${at.name}）` : "上传当前文件（先打开本地文件）",
-					at && at.scope === "local" && !at.binary ? () => void runSync("up", "file", at.path) : null],
-			];
-			for (const [label, fn] of items) {
-				const b = document.createElement("button");
-				b.textContent = label;
-				if (!fn) b.className = "dim";
-				else b.addEventListener("click", () => { hideMenu(); fn(); });
-				menuEl.appendChild(b);
-			}
-			menuEl.classList.remove("vsc-hidden");
-			const rect = root.getBoundingClientRect();
-			menuEl.style.left = `${Math.min(x - rect.left, rect.width - 200)}px`;
-			menuEl.style.top = `${Math.min(y - rect.top, rect.height - items.length * 32 - 20)}px`;
-		}
-
-		function showSyncProgress(text) {
-			syncStatusEl.textContent = text;
-			syncStatusEl.classList.remove("vsc-hidden");
-		}
-		function hideSyncProgressSoon() {
-			setTimeout(() => syncStatusEl.classList.add("vsc-hidden"), 2500);
-		}
-
-		/** 打开 .vscode/sftp.json：不存在则先写模板/迁移，之后在编辑器里改、Ctrl+S 即生效 */
-		async function openConfigFile() {
-			const r = await request({ action: "sync_ensure" });
-			if (!r.ok) { toast(`打开配置失败：${r.error}`); return; }
-			void refreshSyncCfg();
-			void openFile("local", r.path);
-		}
-
-		async function runSync(dir, scope, path) {
-			showSyncProgress(dir === "up" ? "上传中…" : "下载中…");
-			const r = await request({ action: "sync_run", dir, scope, path });
-			if (!r.ok) { showSyncProgress(`同步失败：${r.error}`); hideSyncProgressSoon(); return; }
-			const bad = r.failed?.length ?? 0;
-			showSyncProgress(`${dir === "up" ? "上传" : "下载"}完成：${r.total - bad}/${r.total}${bad ? `（${bad} 个失败）` : ""}`);
-			hideSyncProgressSoon();
-			if (dir === "down") void refreshAll();
-		}
-
-		async function openSyncModal() {
-			const q = (n) => syncBg.querySelector(`[name="${n}"]`);
-			const r = await request({ action: "sync_get" });
-			const cfg = r.ok ? r.config : {};
-			q("s-name").value = cfg.name ?? "";
-			q("s-host").value = cfg.host ?? "";
-			q("s-user").value = cfg.username ?? "root";
-			q("s-port").value = cfg.port ?? 22;
-			q("s-pass").value = "";
-			q("s-key").value = "";
-			q("s-keypath").value = cfg.privateKeyPath ?? "";
-			q("s-agent").value = cfg.agent ?? "";
-			q("s-root").value = cfg.remoteRoot ?? "";
-			q("s-exclude").value = (cfg.exclude ?? []).join(", ");
-			q("s-autosave").checked = Boolean(cfg.uploadOnSave);
-			q("s-pass").placeholder = cfg.hasPass ? "已保存（留空保持不变）" : "";
-			q("s-keypath").placeholder = cfg.hasKey ? "已保存（留空保持不变）" : "~/.ssh/id_rsa";
-			syncBg.classList.remove("vsc-hidden");
-		}
-		syncBg.querySelector(".cancel").addEventListener("click", () => syncBg.classList.add("vsc-hidden"));
-		syncBg.querySelector(".test").addEventListener("click", async () => {
-			const r = await request({ action: "sync_test" });
-			toast(r.ok ? "连接成功 ✓" : `连接失败：${r.error}`);
-		});
-		syncBg.querySelector(".save-cfg").addEventListener("click", async () => {
-			const q = (n) => syncBg.querySelector(`[name="${n}"]`);
-			const body = {
-				name: q("s-name").value.trim(),
-				host: q("s-host").value.trim(),
-				port: Number(q("s-port").value) || 22,
-				username: q("s-user").value.trim() || "root",
-				password: q("s-pass").value || undefined,
-				privateKey: q("s-key").value.trim() || undefined,
-				privateKeyPath: q("s-keypath").value.trim(),
-				agent: q("s-agent").value.trim(),
-				remoteRoot: q("s-root").value.trim(),
-				exclude: q("s-exclude").value.split(",").map((s) => s.trim()).filter(Boolean),
-				uploadOnSave: q("s-autosave").checked,
-			};
-			const r = await request({ action: "sync_save", config: body });
-			if (!r.ok) { toast(`保存失败：${r.error}`); return; }
-			void refreshSyncCfg(); // 缓存同步（uploadOnSave 等立即生效）
-			syncBg.classList.add("vsc-hidden");
-			toast("已保存到 .vscode/sftp.json");
 		});
 
 		// ---- 服务端事件分发 -------------------------------------------------------
@@ -2082,11 +2394,13 @@ export default {
 			if (payload.res && !payload.reqId) {
 				console.warn("[vscode-editor] 收到无 reqId 的响应（已忽略），请用 request() 发请求：", payload.action);
 			}
-			if (payload.kind === "workspace") { // 服务端工作区切换（主应用 set_cwd）：重建树 + 关本地标签
+			if (payload.kind === "workspace") {
+				// 服务端工作区切换（主应用 set_cwd）：重建树 + 关本地标签
 				void applyWorkspace(payload.root);
 				return;
 			}
-			if (payload.kind === "state") { // 主机/连接列表广播（凭据脱敏）
+			if (payload.kind === "state") {
+				// 主机/连接列表广播（凭据脱敏）
 				applyState(payload.state);
 				return;
 			}
@@ -2111,9 +2425,6 @@ export default {
 				}
 				case "conn_closed":
 					handleConnClosed(payload.connId, payload.reason);
-					break;
-				case "sync_progress":
-					showSyncProgress(`同步中 ${payload.done}/${payload.total}：${payload.name ?? ""}`);
 					break;
 			}
 		});
@@ -2140,22 +2451,23 @@ export default {
 			ev.stopPropagation(); // 同上
 			if (btn.dataset.act === "add-host") openHostModal(null);
 			else if (btn.dataset.act === "deps") void request({ action: "deps_install" });
-			else if (btn.dataset.act === "new-term") { showTermPanel(); void newTerm(); }
-			else if (btn.dataset.act === "r-new-file" || btn.dataset.act === "r-new-dir") {
+			else if (btn.dataset.act === "new-term") {
+				showTermPanel();
+				void newTerm();
+			} else if (btn.dataset.act === "r-new-file" || btn.dataset.act === "r-new-dir") {
 				const t = pickRemoteDir();
 				if (t) void promptCreate(t.connId, t.dir, btn.dataset.act === "r-new-dir" ? "dir" : "file");
-			}
-			else if (btn.dataset.act === "r-upload") {
+			} else if (btn.dataset.act === "r-upload") {
 				const t = pickRemoteDir();
 				if (t) void pickFiles().then((files) => uploadFilesTo(t.connId, t.dir, files));
-			}
-			else if (btn.dataset.act === "r-search") {
+			} else if (btn.dataset.act === "r-search") {
 				const t = pickRemoteDir();
 				if (t) void runSearch(t.connId, t.dir);
-			}
-			else if (btn.dataset.act === "r-refresh") {
+			} else if (btn.dataset.act === "r-refresh") {
 				void refreshAll();
-				void request({ action: "state" }).then((r) => { if (r.ok && r.state) applyState(r.state); }); // 顺带重读 ~/.ssh/config
+				void request({ action: "state" }).then((r) => {
+					if (r.ok && r.state) applyState(r.state);
+				}); // 顺带重读 ~/.ssh/config
 			}
 		});
 		/** 本地工具栏（＋📄/＋📁）目标：最近点选的本地节点（文件取其所在目录），否则工作区根 */
@@ -2170,7 +2482,10 @@ export default {
 				return { connId: selNode.scope, dir: selNode.type === "dir" ? selNode.path : parentOf(selNode.path) };
 			}
 			const first = [...conns.keys()][0];
-			if (!first) { toast("请先连接一台 SSH 主机"); return null; }
+			if (!first) {
+				toast("请先连接一台 SSH 主机");
+				return null;
+			}
 			return { connId: first, dir: conns.get(first).cwd };
 		}
 
@@ -2180,7 +2495,6 @@ export default {
 		void request({ action: "state" }).then((r) => {
 			if (r.ok && r.state) applyState(r.state);
 		});
-		void refreshSyncCfg(); // 同步配置缓存（uploadOnSave / 远端根映射用）
 		void renderTree();
 		renderHosts();
 
@@ -2189,8 +2503,12 @@ export default {
 			document.removeEventListener("click", hideMenu);
 			window.removeEventListener(THEME_CHANGE_EVENT, onThemeChange);
 			for (const [, t] of terms.entries()) {
-				try { t.ro?.disconnect(); } catch {}
-				try { t.term?.dispose(); } catch {}
+				try {
+					t.ro?.disconnect();
+				} catch {}
+				try {
+					t.term?.dispose();
+				} catch {}
 			}
 			terms.clear();
 			offData();

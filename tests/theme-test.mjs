@@ -121,7 +121,9 @@ try {
 	await page.locator(".dd-item", { hasText: "白色" }).first().click();
 	await page.waitForTimeout(1500);
 	const hasLink = await page.evaluate(() => document.getElementById("theme-stylesheet")?.getAttribute("href"));
-	check("theme <link> injected for white", hasLink === "/themes/white.css", `href=${hasLink}`);
+	// 主题 <link> 带版本戳（?v=…，防止旧缓存把新主题样式顶掉），只校验路径部分
+	const isWhiteHref = typeof hasLink === "string" && /^\/themes\/white\.css(\?v=[^&]*)?$/.test(hasLink);
+	check("theme <link> injected for white", isWhiteHref, `href=${hasLink}`);
 	const bg = await page.evaluate(() => getComputedStyle(document.documentElement).getPropertyValue("--bg").trim());
 	check("white palette applied", bg === "#ffffff", `--bg=${bg}`);
 
@@ -135,7 +137,9 @@ try {
 	});
 	check(
 		"theme persists after reload",
-		afterReload.href === "/themes/white.css" && afterReload.bg === "#ffffff",
+		typeof afterReload.href === "string" &&
+			/^\/themes\/white\.css(\?v=[^&]*)?$/.test(afterReload.href) &&
+			afterReload.bg === "#ffffff",
 		`href=${afterReload.href} bg=${afterReload.bg}`,
 	);
 

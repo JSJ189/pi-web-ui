@@ -354,11 +354,15 @@ export async function synthesize({
 		}
 	};
 
-	// 建连。undici 的 WebSocket 支持第三个参数里塞 headers（非标准扩展），
-	// 浏览器那边是不能塞头的（官方前端也是裸 new WebSocket(url)），所以塞不进去也无所谓。
+	// 建连。带上标准的 Chrome 伪装头
 	let ws;
+	const wsHeaders = {
+		Origin: origin || "https://chat.deepseek.com",
+		"User-Agent":
+			"Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/133.0.0.0 Safari/537.36",
+	};
 	try {
-		ws = origin ? new webSocketImpl(url, { headers: { Origin: origin } }) : new webSocketImpl(url);
+		ws = new webSocketImpl(url, { headers: wsHeaders });
 	} catch {
 		try {
 			ws = new webSocketImpl(url);

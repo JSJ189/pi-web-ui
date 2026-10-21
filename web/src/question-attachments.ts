@@ -131,6 +131,42 @@ function parseFileCardAttachment(msg: { content: readonly unknown[]; details?: u
 	return null;
 }
 
+function attachmentDedupKey(att: EditPromptAttachment): string {
+	if (att.mode === "quote" && att.quote) {
+		return `quote:${att.quote.messageId ?? ""}:${att.quote.text}`;
+	}
+	if (att.mode === "conversation") {
+		return `conv:${att.conversationId ?? ""}:${att.sessionPath ?? ""}:${att.name ?? ""}`;
+	}
+	if (att.mode === "page") {
+		return `page:${att.path}`;
+	}
+	if (att.imageData) {
+		return `img:${att.name ?? ""}:${att.imageData.length}:${att.imageData.slice(0, 64)}`;
+	}
+	if (att.uploadPath) {
+		return `upload:${att.uploadPath}`;
+	}
+	if (att.path) {
+		const lines = att.lines ? `${att.lines.start}-${att.lines.end}` : "";
+		return `path:${att.mode ?? "ref"}:${att.path}:${lines}`;
+	}
+	return `unknown:${JSON.stringify(att)}`;
+}
+
+/** 剔除相同引用/附件（防止历史会话污染或多源重复收集时导致重复卡片）。 */
+export function deduplicateAttachments(atts: readonly EditPromptAttachment[]): EditPromptAttachment[] {
+	const seen = new Set<string>();
+	const result: EditPromptAttachment[] = [];
+	for (const a of atts) {
+		const key = attachmentDedupKey(a);
+		if (seen.has(key)) continue;
+		seen.add(key);
+		result.push(a);
+	}
+	return result;
+}
+
 export function collectQuestionAttachments(
 	messages: readonly {
 		id?: string;
@@ -171,7 +207,8 @@ export function collectQuestionAttachments(
 			const att = parseFileCardAttachment(messages[j]);
 			if (att) atts.push(att);
 		}
-		if (atts.length > 0) m.set(msg.id, atts);
+		const deduped = deduplicateAttachments(atts);
+		if (deduped.length > 0) m.set(msg.id, deduped);
 	}
 	return m;
 }

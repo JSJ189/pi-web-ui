@@ -55,3 +55,26 @@ describe("手机端通知与横幅宽度规则（≤768px 满宽防过窄）", (
 		expect(MOBILE_CSS).toMatch(/\.banner-card\s*\{[^}]*width:\s*100%/);
 	});
 });
+
+describe("通知与横幅层级规则（高于遮罩与弹窗）", () => {
+	it(".notices 的 z-index 处于顶层，高于一切弹窗与遮罩（如 .modal-backdrop 300）", () => {
+		const noticeZMatch = CSS.match(/\.notices\s*\{[^}]*z-index:\s*([0-9]+)/);
+		expect(noticeZMatch).not.toBeNull();
+		const noticeZ = Number(noticeZMatch![1]);
+
+		const modalBackdropZMatch = CSS.match(/\.modal-backdrop\s*\{[^}]*z-index:\s*([0-9]+)/);
+		expect(modalBackdropZMatch).not.toBeNull();
+		const modalBackdropZ = Number(modalBackdropZMatch![1]);
+
+		expect(noticeZ).toBeGreaterThan(modalBackdropZ);
+		// 高于最高层级弹窗（100000）
+		expect(noticeZ).toBeGreaterThan(100000);
+	});
+
+	it(".banner-container 的 z-index 处于顶层，高于遮罩与弹窗", () => {
+		const bannerZMatch = CSS.match(/\.banner-container\s*\{[^}]*z-index:\s*([0-9]+)/);
+		expect(bannerZMatch).not.toBeNull();
+		const bannerZ = Number(bannerZMatch![1]);
+		expect(bannerZ).toBeGreaterThan(100000);
+	});
+});

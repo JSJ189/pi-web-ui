@@ -149,7 +149,7 @@ function ipv4Bytes(hostname) {
  * 169.254/16、0/8 与广播 255.255.255.255；IPv6 覆盖 ::1、::、fe80::/10、fc00::/7；
  * `*.localhost` 一律视为本机。
  */
-function isPrivateHost(hostname) {
+export function isPrivateHost(hostname) {
 	const h = String(hostname ?? "")
 		.toLowerCase()
 		.replace(/\.$/, "");
@@ -166,7 +166,7 @@ function isPrivateHost(hostname) {
 			(a === 169 && b === 254) ||
 			(a === 172 && b >= 16 && b <= 31) ||
 			(a === 192 && b === 168) ||
-			(a === 198 && (b === 18 || b === 19)) || // benchmark 198.18/15
+			// 注意：不拦截 198.18.0.0/15，因 Clash / Surge / sing-box 等 TUN Fake-IP 模式会将公网域名解析至该段
 			(a >= 224 && a <= 255) // 组播/保留/广播
 		);
 	}

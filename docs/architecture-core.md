@@ -25,6 +25,18 @@
 
 `hello` 可带 `protocolVersion`，`ready` 回带服务端版本；前端比对不一致时显示持久刷新横幅（应用原地更新后「界面新的/WS 旧的」混跑防护）。常量在 server/ 与 web/ 各一份 protocol-version.ts，`check:protocol` 校验两份一致——改协议时必须同步 bump。
 
+### 历史消息按需加载（服务端窗口化，`server/message-window.ts`）
+
+前端「向上分页」只做到**不渲染**，数据仍是全量到手：实测一份 287 条 / 17MB 的转录序列化后快照 4MB，打开对话要等整份传完 + parse。所以再把窗口挪到服务端：
+
+- **挂载点**：每连接唯一的发送漏斗（`server/index.ts` 的 `send` 外包一层 `MessageWindowTap`）。四个引擎（pi / DSH / claude / durable）都经这条漏斗，引擎侧**零改动**、口径统一；将来新引擎自动继承。
+- **裁剪**：`snapshot` 的 `state.messages` 裁成尾部窗口并回填 `historyStart`（窗口首条在全量里的下标）/ `historyTotal`；条数上限 `PI_WEB_HISTORY_WINDOW`（默认 300）+ **字符预算** 150 万字符（截图/tool 输出会把窗口压更短，实测同一份会话 4.00MB → 1.28MB）。`snapshot_delta` 只把新追加的并入缓存并回填两个计数。
+- **翻页**：`load_earlier_messages {count|all}` → 服务端回 `earlier_messages`（新增的更早一段，客户端**前插**）。窗口起点**单调不增**：客户端翻过的页不会被后续全量快照（重连 / `get_state`）推回去。
+- **不碰 `rev`/`baseRev`**：各引擎增量语义不同，改写版本号会破坏它们的自愈链；翻页只是补齐更早内容，与 rev 无关。
+- **前端配合**（`web/src/components/MessageList.tsx`）：`hasEarlier` = 本地未展示 + `historyStart`；滚轮接近顶部/点「加载更早」时本地够用就本地撑开，否则向服务端要一页；打开页内搜索或「全部展开」时 `all: true` 一次拉全，保证搜得到全文。
+- **兼容**：两个字段都是可选的（缺省 = 全量）。旧前端连新服务端只是少了一段历史又无从翻页，故 `PROTOCOL_VERSION` bump 到 34 触发刷新横幅。
+- **回归**：`tests/unit/message-window.test.ts`（窗口起点/预算/翻页纯逻辑）+ `tests/message-window-test.mjs`（WS 报文级：首帧窗口、无缝翻页、`get_state` 不回退、`all` 到底回空页）。
+
 ## 协议单源（types.ts 是 re-export shim，不再手工同步）
 
 `server/protocol.ts` 是唯一事实源；`web/src/types.ts` 用 `export type * from "../../server/protocol"` 全量再导出（纯类型，构建时擦除），前端本地类型（FileContent/FileListing/ToolStatus）附在 shim 下方。
@@ -91,6 +103,24 @@
 - **变量必须先有定义（幽灵 token 陷阱）**：`var(--x)` 引用一个全仓没有任何 `--x:` 声明的自定义属性，按规范是 guaranteed-invalid —— 整条声明在计算值阶段失效（不带 fallback 的 `background` 直接**没有背景**；`box-shadow` 连投影与聚焦光环一起丢；带 fallback 的静默用硬编码值，浅色主题下必是深色块）。`--bg-elev1`（正确名是 `--bg-elev`）全史未定义却被 10 处引用，goalbar 因此一直没有填充。新增/改名变量后跑 `tests/unit/css-tokens.test.ts`（静态体检：扫 `web/src` + `plugins` + `themes` + `web/index.html` 的每个 `var()` 引用，带 fallback 的也查；运行时注入的变量与刻意写的中性兜底在该测试的豁免表里登记并写明理由——新增豁免要一并写理由）。
 - **终端跟随主题**：xterm 画布经 `web/src/theme.ts` 的 `buildTermTheme()` 读 `--term-*` 变量，主题切换时 `TermXterm.tsx` 监听 `pi-web-ui:theme-change` 事件用 `term.options.theme` 热更新画布；CSS 容器 `.term-main` / `.term-xterm .xterm-viewport` 用 `var(--term-bg)`，与画布自动融合。styles.css 改动后重跑 `node make-light-theme.mjs` 重新生成。
 - **回归**：`theme-test.mjs`（端口 8937，隔离 data-dir）：列表/内置/用户主题、注入 link、浅色生效、刷新持久、用户主题可应用、回默认移除 link。
+
+## CSS 分层（`@layer guard, base, theme;`）
+
+- **为什么分层**：`web/src/styles.css` 是共享基线、主题是后加载的完整样式表，两者在同一份文档里争权重。分层重构前，能跨文件夺权的唯一手段就是 `!important`：基线 218 处、主题侧 613 处（`bases/obsidian-base.css` 220、`bases/zhujian-base.css` 143、`bases/zhupi-base.css` 132、`aetheris.css` 118），主题要压住基线只能继续加码，越改越沉——典型的军备竞赛。改成显式分层后，胜负由**层序**决定，`!important` 回归为「压内联 style」的专用工具。
+- **三层职责**（顺序声明只有一处：`web/src/styles.css` 顶部的 `@layer guard, base, theme;`，早于所有层块，层序按此固定）：
+  - `@layer base`：整份基线样式（`web/src/styles.css` 内容）。默认层，正常写选择器，不加 `!important`。
+  - `@layer theme`：主题样式。**服务端统一下发**——`server/themes.ts` 的 `readThemeCss()` 内联展开 `@import` 后把整份文本包进 `@layer theme { … }`（只包最外层一次；递归内联的子文件原样返回，否则会变成嵌套层）。`themes/**/*.css` 源文件因此**不需要**自己写 `@layer`，也不需要 `!important`：只要写在主题里就天然压过 base。
+  - `@layer guard`：极少数必须压过内联 `style="…"` 或第三方 DOM 的例外。写法与原因就地注明（`/* 原因：压 xx 组件写入的内联样式 */`），别把普通样式挪进来偷懒。
+- **层序规则（两个方向相反，最容易踩）**：普通声明按**层声明顺序**后者胜（`theme` > `base` > `guard`）；带 `!important` 的声明**反向**——先声明的层胜（`guard` > `base` > `theme`）。所以 guard 层的价值恰在于它**先**声明：凡带 `!important` 的例外放进去就能盖住一切；而 base/theme 里写 `!important` 只会把自己钉在 theme 底层之下，越写越糟。另注：**未分层的样式永远胜过任何层内的普通声明**——分包引入的 CSS（如 `web/src/model-management.css`）与插件样式同样必须进层。
+- **新增样式时的规矩**：① 主题里**禁止** `!important`，一律靠 theme 层胜出；② 基线里非「压内联样式」不得使用 `!important`；③ 必须用时写明原因并放进 `@layer guard`；④ 需要提权重优先换更具体的选择器或调整层序，不要加 `!important`；⑤ 主题不要再写 `#root .foo` 这类 ID 加权选择器和基线抢权重（层序已解决，残余的 ID 加权属于历史包袱，改到即删）。守卫：`tests/unit/css-layers.test.ts`（基线 `!important` ≤ 25、`themes/**/*.css` 必须为 0、层声明与 guard 位置、文档契约）。
+- **视觉回归闸门**（改了任何样式都必须过）：`npm run audit:themes`（当前树截图 → `.theme-audit/current`）→ `npm run audit:diff`（与 `.theme-audit/baseline` 逐像素比对）。固定 fixture DOM（含气泡/Markdown/表格/代码/思考卡/工具卡/胶囊流/输入岛/顶栏/侧边停靠栏/快捷短语/插件图标/`hide-model-row` 紧凑模式）+ 每个主题一张图（35 个主题），单主题差异 > **0.05%** 即退出码 1。
+  - 基线快照 `.theme-audit/baseline` 是「分层重构完成时」的状态（已 gitignore）。要拿**重构前**的基线只能开一个 `HEAD` 的 git worktree 再拍：`git worktree add ../baseline HEAD` → `node scripts/theme-audit.mjs --root ../baseline --out .theme-audit/pristine`。
+  - 只有当差异确属「有意改进」时才允许重建基线；否则先查层序（`theme` 被 `base` 压住是最常见的错）。
+- **已接受的有意差异（主题为准）**：分层后 `theme` 层恒胜 `base`，以下 4 处历史上是基线的 `!important` 赢、现在按主题样式渲染 —— 这是**定案，不是缺陷**，不要再用对齐块把它们打回旧值（zhujian/zhupi/aetheris 顶栏那组对齐块是历史特例，后续新主题姿态请以主题直出为准）：
+  1. `flow` / `flow-light` / `wallpaper-flow`：`.msg-assistant` 上下 padding 取主题的 `0`（原被基线紧凑模式的 2px/4px 盖）——夹具差异 ~2.0%；
+  2. `flow` / `translucent` / `transparent`：`.quick-chip.active` 取主题底色（原被基线强调底盖）——差异 ~0.5%；
+  3. `aetheris`：`.chip` 圆角与 `.bar-item` 内边距取主题值；
+  4. `wallpaper-obsidian`：插件图标 `.plugin-icon-svg` 颜色取主题值。
 
 ## 中央列几何（消息列与输入框永远等宽对齐）
 

@@ -1269,8 +1269,17 @@ export class UniversalSession implements DispatchSession {
 			return;
 		}
 
-		// 截断到编辑点之前的所有历史消息，fork 一个新的 UniversalConversation
-		const headMessages = structuredClone(conv.messages.slice(0, idx));
+		// 截断到编辑点之前的所有历史消息（跳过属于本轮提问的前置附件卡片，避免 prompt 重新注入后附件重复），
+		// fork 一个新的 UniversalConversation
+		let cutIdx = idx;
+		while (
+			cutIdx > 0 &&
+			conv.messages[cutIdx - 1]?.role === "custom" &&
+			(conv.messages[cutIdx - 1] as { customType?: string })?.customType === "file"
+		) {
+			cutIdx--;
+		}
+		const headMessages = structuredClone(conv.messages.slice(0, cutIdx));
 		const forkedConv = this.createEmptyConversation(conv.title, Boolean(conv.isEphemeral));
 		forkedConv.messages = headMessages;
 		if (headMessages.length > 0) {

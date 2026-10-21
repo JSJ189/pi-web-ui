@@ -206,6 +206,26 @@ export interface PluginHost {
 	readonly cwd: string;
 	onCwdChange(handler: (cwd: string) => void): () => void;
 	registerCommand(cmd: PluginCommandDef): () => void;
+	/** 执行已注册的插件斜杠命令（如 /todo, /note 等）；返回结果或错误。 */
+	execCommand?(
+		name: string,
+		args: string,
+		context?: { clientId?: string },
+	): Promise<{ ok: boolean; result?: string; error?: string }>;
+	/** 获取当前系统注册的全部插件命令列表。 */
+	getPluginCommands?(): PluginCommandDef[];
+	/** 获取最近项目路径列表。 */
+	listProjects?(): string[];
+	/** 调起系统级目录浏览器弹窗选择文件夹。 */
+	pickDirectory?(opts?: {
+		initialPath?: string;
+		title?: string;
+	}): Promise<{ ok: boolean; path?: string; canceled?: boolean; error?: string }>;
+	/** 调起系统级模型选择器弹窗选择模型。 */
+	pickModel?(opts?: {
+		currentModelId?: string | null;
+		title?: string;
+	}): Promise<{ ok: boolean; modelId?: string; name?: string; provider?: string; canceled?: boolean; error?: string }>;
 	/** 挂载 HTTP 路由（实际暴露为 /plugins-api/<id><path>；要 "http" 能力；返回注销函数）。 */
 	route(
 		method: "GET" | "POST" | "PUT" | "DELETE",

@@ -39,10 +39,11 @@ import {
 	FiZap,
 } from "react-icons/fi";
 import type { ToolStatus, UiImageBlock, UiMessage, UiToolCallBlock } from "../types";
-import { useT } from "../i18n";
+import { isZhLocale, useLocale, useT } from "../i18n";
 import { openContextMenu } from "../context-menu-state";
 // 工具定义说明弹窗（模块级 store：卡片只负责发打开请求，弹窗挂在 App 上）。
 import { openToolInfo } from "../tool-info-state";
+import { isFlowMode, openToolInspector } from "../tool-inspector-state";
 import { CollapsibleHead } from "./CollapsibleHead";
 import { HalfRingSpinner } from "./HalfRingSpinner";
 import type { UiSlotEntry } from "../ui-slots";
@@ -158,16 +159,7 @@ function toolIconClass(name: string): string {
 	return TOOL_ICON_CLASSES[name] ?? DEFAULT_TOOL_ICON_CLASS;
 }
 
-export const ToolCallBlock = memo(function ToolCallBlock({
-	block,
-	view,
-	onKillBash,
-	wrap = true,
-	showImages = true,
-	forceOpen = false,
-	uiContextToolCall,
-	onUiAction,
-}: {
+export interface ToolCallBlockProps {
 	block: UiToolCallBlock;
 	view: ToolView;
 	/** Kill the running bash command (bash cards only, while running). */
@@ -187,8 +179,203 @@ export const ToolCallBlock = memo(function ToolCallBlock({
 	uiContextToolCall?: UiSlotEntry[];
 	/** 插件条目的动作分发（view 切视图 / action 交给插件）。 */
 	onUiAction?: (item: UiSlotEntry, value?: string) => void;
+}
+
+/** 极简行文模式（Flow 模式）纯净轻量微胶囊外壳：零多余 DOM，点击按需提取数据并弹出居中检查器 */
+const ToolCallCapsule = memo(function ToolCallCapsule({
+	block,
+	view,
+	uiContextToolCall,
+	onUiAction,
+	rootRef,
+}: {
+	block: UiToolCallBlock;
+	view: ToolView;
+	uiContextToolCall?: UiSlotEntry[];
+	onUiAction?: (item: UiSlotEntry, value?: string) => void;
+	rootRef: React.RefObject<HTMLDivElement | null>;
 }) {
 	const t = useT();
+	const isZh = isZhLocale(useLocale());
+	const isPresent = block.name === PRESENT_FILES_TOOL_NAME;
+
+	const running = !view.result && view.streaming && !view.status;
+	const done = view.result !== undefined;
+	const waitingModel = !view.result && !!view.status;
+	const isError = view.result?.isError ?? view.status?.isError ?? false;
+
+	const statusDuration = view.status?.durationMs;
+	const resultDuration = (view.result as unknown as { durationMs?: number } | undefined)?.durationMs;
+	const durationMs = typeof resultDuration === "number" ? resultDuration : statusDuration;
+
+	const statusClass = isError ? "err" : done ? "ok" : running || waitingModel ? "run" : "idle";
+	let statusLabel = isError
+		? t("error")
+		: done
+			? t("done")
+			: running
+				? t("running")
+				: waitingModel
+					? t("toolDoneWaitingModel")
+					: t("toolQueued");
+	const duration = (waitingModel || done) && durationMs !== undefined ? formatDuration(durationMs) : "";
+	if ((waitingModel || done) && duration) statusLabel = `${statusLabel} · ${duration}`;
+
+	const exitHint = waitingModel && view.status?.exitCode !== undefined ? `exit ${view.status.exitCode}` : "";
+
+	// 轻量检查输出类型（图片/Markdown），无需在每帧拼接和正则数万字的长文本
+	const hasImages = useMemo(() => {
+		const content = view.result?.content;
+		if (!Array.isArray(content)) return false;
+		return content.some((b) => b.type === "image");
+	}, [view.result?.content]);
+
+	const hasMarkdown = useMemo(() => {
+		const content = view.result?.content;
+		if (!Array.isArray(content)) return false;
+		for (const b of content) {
+			if (b.type === "text" && typeof (b as { text?: unknown }).text === "string") {
+				const str = (b as { text: string }).text;
+				if (/(?:```|#\s+|\|\s*[-:]+\s*\|)/m.test(str.slice(0, 500))) return true;
+			}
+		}
+		return false;
+	}, [view.result?.content]);
+
+	const ctxMenuAvailable = (uiContextToolCall ?? []).some((e) => e && e.hidden !== true && e.kind !== "divider");
+
+	const onHeadContextMenu = (e: React.MouseEvent<HTMLDivElement>) => {
+		if (!ctxMenuAvailable) return;
+		e.preventDefault();
+		e.stopPropagation();
+		openContextMenu({
+			x: e.clientX,
+			y: e.clientY,
+			slot: "contextmenu.toolcall",
+			target: { id: block.id, kind: "toolcall", label: block.name },
+			entries: uiContextToolCall ?? [],
+			onHostAction: (entry) => {
+				if (entry.id === "host:tool-info") {
+					openToolInfo(block.name);
+					return undefined;
+				}
+				onUiAction?.(entry);
+				return undefined;
+			},
+		});
+	};
+
+	const handleOpenInspector = () => {
+		// 点击时按需提取并组装输出与参数，未点击时零多余开销
+		const currentRaw = view.result
+			? view.result.content.map((b) => (b.type === "text" ? b.text : "")).join("")
+			: (view.liveOutput ?? "");
+		const currentOutput = currentRaw.replace(/…\[LIVE_OMIT:(\d+)\]…\n/, (_, n) => t("liveOutputOmitted", { n }));
+
+		const currentImages = (view.result?.content ?? [])
+			.filter(
+				(b): b is UiImageBlock =>
+					b.type === "image" &&
+					typeof (b as UiImageBlock).dataUrl === "string" &&
+					(((b as UiImageBlock).dataUrl as string).startsWith("data:") ||
+						((b as UiImageBlock).dataUrl as string).startsWith("/")),
+			)
+			.map((b) => b.dataUrl as string);
+
+		const currentPresentArgs = isPresent ? parsePresentArgs(block.argumentsText) : null;
+		const hints = toolArgHints(block.argumentsText);
+
+		openToolInspector({
+			isThinking: false,
+			name: block.name,
+			title: `${block.name}()`,
+			status: statusLabel,
+			statusClass,
+			duration,
+			durationMs,
+			exitHint,
+			hints,
+			args: block.argumentsText || "",
+			rawOutput: currentRaw,
+			output: currentOutput,
+			details: view.result?.details,
+			images: currentImages,
+			isError,
+			toolCallId: view.result?.toolCallId ?? block.id,
+			resultTimestamp: view.result?.timestamp,
+			presentData:
+				isPresent && currentPresentArgs
+					? {
+							title: currentPresentArgs.title,
+							note: currentPresentArgs.note,
+							items: currentPresentArgs.items,
+						}
+					: null,
+		});
+	};
+
+	return (
+		<div
+			ref={rootRef}
+			className={`toolcall ${statusClass}`}
+			onClick={(e) => {
+				e.preventDefault();
+				e.stopPropagation();
+				handleOpenInspector();
+			}}
+			onContextMenu={onHeadContextMenu}
+			onKeyDown={(e) => {
+				if (e.key === "Enter" || e.key === " ") {
+					e.preventDefault();
+					handleOpenInspector();
+				}
+			}}
+			role="button"
+			tabIndex={0}
+			title={`${block.name}() · ${statusLabel}`}
+		>
+			<div className="toolcall-head chead">
+				<span className={`toolcall-icon chead-icon ${toolIconClass(block.name)}`}>{toolIcon(block.name)}</span>
+				<span className="toolcall-name chead-title">{block.name}</span>
+				<span
+					className="toolcall-status"
+					title={exitHint ? `${statusLabel} · ${exitHint}` : statusLabel}
+					aria-label={exitHint ? `${statusLabel} · ${exitHint}` : statusLabel}
+				>
+					{isError ? <FiX /> : done ? <FiCheck /> : running || waitingModel ? <HalfRingSpinner /> : <FiMinus />}
+				</span>
+				{hasImages && (
+					<span className="toolcall-out-badge img" title={t("toolImageZoom")} aria-label="image output">
+						<FiImage />
+					</span>
+				)}
+				{hasMarkdown && (
+					<span
+						className="toolcall-out-badge md"
+						title={isZh ? "包含 Markdown 输出" : "Contains Markdown output"}
+						aria-label="markdown output"
+					>
+						<FiFileText />
+					</span>
+				)}
+			</div>
+		</div>
+	);
+});
+
+const ToolCallCard = memo(function ToolCallCard({
+	block,
+	view,
+	onKillBash,
+	wrap = true,
+	showImages = true,
+	forceOpen = false,
+	uiContextToolCall,
+	onUiAction,
+	rootRef,
+}: ToolCallBlockProps & { rootRef: React.RefObject<HTMLDivElement | null> }) {
+	const t = useT();
+	const isZh = isZhLocale(useLocale());
 	// null = 未手动点过 → 跟随开关：wrap=true（开）→ 全部展开；wrap=false（关）→ 全部折叠。
 	// 与 ThinkingBlock 一致——开关切换时自动折叠/展开所有未手动点过的工具。
 	// 例外：present_files（展示文件）默认展开——它的正文就是内容本身（图片/视频
@@ -211,16 +398,26 @@ export const ToolCallBlock = memo(function ToolCallBlock({
 
 	const outputPreRef = useRef<HTMLPreElement>(null);
 	const outputStickRef = useRef(true);
-	const rawOutput = view.result
-		? view.result.content.map((b) => (b.type === "text" ? b.text : "")).join("")
-		: (view.liveOutput ?? "");
-	const output = rawOutput.replace(/…\[LIVE_OMIT:(\d+)\]…\n/, (_, n) => t("liveOutputOmitted", { n }));
+
+	// 惰性求值：仅在展开态（shown）时才拼接与正则大输出文本，折叠态零开销
+	const rawOutput = useMemo(() => {
+		if (!shown) return "";
+		return view.result
+			? view.result.content.map((b) => (b.type === "text" ? b.text : "")).join("")
+			: (view.liveOutput ?? "");
+	}, [shown, view.result, view.liveOutput]);
+
+	const output = useMemo(() => {
+		if (!shown || !rawOutput) return "";
+		return rawOutput.replace(/…\[LIVE_OMIT:(\d+)\]…\n/, (_, n) => t("liveOutputOmitted", { n }));
+	}, [shown, rawOutput, t]);
 
 	useEffect(() => {
-		if ((running || waitingModel) && outputStickRef.current && outputPreRef.current) {
+		if (shown && (running || waitingModel) && outputStickRef.current && outputPreRef.current) {
 			outputPreRef.current.scrollTop = outputPreRef.current.scrollHeight;
 		}
-	}, [output, running, waitingModel]);
+	}, [shown, output, running, waitingModel]);
+
 	/** 工具结果里的图片（web_shot 截图、read 读到的图……）：开关开着就在卡片里
 	 *  直接出缩略图（折叠态也可见 —— 「直接显示出来」），点击进灯箱看大图。
 	 *  支持 data: 内联图与 CAS 附件短 URL（/api/attachment/）。 */
@@ -235,6 +432,7 @@ export const ToolCallBlock = memo(function ToolCallBlock({
 					((b as UiImageBlock).dataUrl as string).startsWith("/")),
 		);
 	}, [showImages, view.result]);
+
 	const [zoomed, setZoomed] = useState<string | null>(null);
 	useEffect(() => {
 		if (!zoomed) return;
@@ -244,38 +442,60 @@ export const ToolCallBlock = memo(function ToolCallBlock({
 		window.addEventListener("keydown", onKey);
 		return () => window.removeEventListener("keydown", onKey);
 	}, [zoomed]);
+
 	const isDelegate = block.name === "delegate_task";
-	const delegateArgs = isDelegate ? parseDelegateArgs(block.argumentsText) : {};
+	const delegateArgs = useMemo(() => {
+		if (!isDelegate || !shown) return {};
+		return parseDelegateArgs(block.argumentsText);
+	}, [isDelegate, shown, block.argumentsText]);
+
 	const isCodemode = block.name === "codemode";
 	const codemodeArgs = useMemo(
-		() => (isCodemode ? parseCodemodeArgs(block.argumentsText) : null),
-		[isCodemode, block.argumentsText],
+		() => (isCodemode && shown ? parseCodemodeArgs(block.argumentsText) : null),
+		[isCodemode, shown, block.argumentsText],
 	);
+
 	const isQuestionnaire = block.name === "ask_user_question";
 	const questionnaireArgs = useMemo(
-		() => (isQuestionnaire ? parseQuestionnaireArgs(block.argumentsText) : null),
-		[isQuestionnaire, block.argumentsText],
+		() => (isQuestionnaire && shown ? parseQuestionnaireArgs(block.argumentsText) : null),
+		[isQuestionnaire, shown, block.argumentsText],
 	);
-	// 展示文件卡片：参数（路径清单）在流式期间可能是半截 JSON，解析失败就回落到
+
+	// 展示文件卡片：参数（路径清单）在流式期间可能是半截 JSON，解析失败就回落到原文展示
 	const hasImages = resultImages.length > 0;
+	// 轻量探测 Markdown 特征，避免全文本正则扫描
 	const hasMarkdown = useMemo(() => {
-		if (!output || output.length < 20) return false;
-		return /(?:```|#\s+|\|\s*[-:]+\s*\||^\s*[-*]\s+|\.md\b)/m.test(output);
-	}, [output]);
-	// 简单入参文本展示（不抛异常）。详情提取在 parsePresentArgs 里已做完。
-	// 原文展示；卡片内容本体不依赖 details（它只让 kind/size/摘录更准）。
+		const content = view.result?.content;
+		if (!Array.isArray(content)) return false;
+		for (const b of content) {
+			if (b.type === "text" && typeof (b as { text?: unknown }).text === "string") {
+				const str = (b as { text: string }).text;
+				if (/(?:```|#\s+|\|\s*[-:]+\s*\|)/m.test(str.slice(0, 500))) return true;
+			}
+		}
+		return false;
+	}, [view.result?.content]);
+
 	const presentArgs = useMemo(
-		() => (isPresent ? parsePresentArgs(block.argumentsText) : null),
-		[isPresent, block.argumentsText],
+		() => (isPresent && shown ? parsePresentArgs(block.argumentsText) : null),
+		[isPresent, shown, block.argumentsText],
 	);
-	// 跳到子代理对话：首选结果 details 里的 convId（服务端拼装时写入），
-	// 老快照没有 details 时从结果文本里认 sa-<8hex>（与 spawn 文案格式对应）。
+
+	// 跳到子代理对话：首选结果 details 里的 convId（服务端拼装时写入）
 	const detailsConv =
 		isDelegate && view.result && typeof view.result.details === "object" && view.result.details !== null
 			? ((view.result.details as Record<string, unknown>).convId as string | undefined)
 			: undefined;
-	const delegateConvId =
-		typeof detailsConv === "string" && detailsConv ? detailsConv : /sa-[0-9a-f]{8}/.exec(rawOutput)?.[0];
+
+	const delegateConvId = useMemo(() => {
+		if (!isDelegate) return undefined;
+		if (detailsConv) return detailsConv;
+		const text = view.result?.content?.[0];
+		if (text && typeof text === "object" && "text" in text && typeof (text as { text: unknown }).text === "string") {
+			return /sa-[0-9a-f]{8}/.exec((text as { text: string }).text)?.[0];
+		}
+		return undefined;
+	}, [isDelegate, detailsConv, view.result?.content]);
 
 	// 记录工具执行耗时：
 	// 1. 优先取 view.result?.durationMs（若服务端在 toolResult 消息上附带了耗时）
@@ -367,18 +587,85 @@ export const ToolCallBlock = memo(function ToolCallBlock({
 		});
 	};
 
+	const isFlow = false;
+
+	const handleOpenInspector = () => {
+		// 点击时按需提取并组装输出与参数，未点击时零多余开销
+		const currentRaw = view.result
+			? view.result.content.map((b) => (b.type === "text" ? b.text : "")).join("")
+			: (view.liveOutput ?? "");
+		const currentOutput = currentRaw.replace(/…\[LIVE_OMIT:(\d+)\]…\n/, (_, n) => t("liveOutputOmitted", { n }));
+
+		const currentImages = (view.result?.content ?? [])
+			.filter(
+				(b): b is UiImageBlock =>
+					b.type === "image" &&
+					typeof (b as UiImageBlock).dataUrl === "string" &&
+					(((b as UiImageBlock).dataUrl as string).startsWith("data:") ||
+						((b as UiImageBlock).dataUrl as string).startsWith("/")),
+			)
+			.map((b) => b.dataUrl as string);
+
+		const currentPresentArgs = isPresent ? parsePresentArgs(block.argumentsText) : null;
+
+		openToolInspector({
+			isThinking: false,
+			name: block.name,
+			title: `${block.name}()`,
+			status: statusLabel,
+			statusClass,
+			duration,
+			durationMs,
+			exitHint,
+			hints,
+			args: block.argumentsText || "",
+			rawOutput: currentRaw,
+			output: currentOutput,
+			details: view.result?.details,
+			images: currentImages,
+			isError,
+			toolCallId: view.result?.toolCallId ?? block.id,
+			resultTimestamp: view.result?.timestamp,
+			presentData:
+				isPresent && currentPresentArgs
+					? {
+							title: currentPresentArgs.title,
+							note: currentPresentArgs.note,
+							items: currentPresentArgs.items,
+						}
+					: null,
+		});
+	};
+
+	const handleToggle = () => {
+		if (isFlowMode(rootRef.current)) {
+			handleOpenInspector();
+			return;
+		}
+		setOpen(!expanded);
+	};
+
 	return (
-		<div className={`toolcall ${statusClass}${resultImages.length > 0 ? " has-images" : ""}`}>
-			<div className="toolcall-hidden-payload" style={{ display: "none" }} aria-hidden="true">
-				<div className="toolcall-payload-args">{block.argumentsText || ""}</div>
-				<div className="toolcall-payload-output">{output}</div>
-			</div>
+		<div
+			ref={rootRef}
+			className={`toolcall ${statusClass}${resultImages.length > 0 ? " has-images" : ""}`}
+			onClick={(e) => {
+				if (!isFlowMode(rootRef.current)) return;
+				const target = e.target as HTMLElement | null;
+				if (target?.closest(".toolcall-kill, .toolcall-open, button.toolcall-image, .toolcall-image, a")) {
+					return;
+				}
+				e.preventDefault();
+				e.stopPropagation();
+				handleOpenInspector();
+			}}
+		>
 			<CollapsibleHead
-				open={shown}
+				open={!isFlow && shown}
 				headClassName="toolcall-head"
 				toggleClassName="toolcall-toggle"
 				titleText={shown ? t("collapseMsg") : t("expandMsg")}
-				onToggle={() => setOpen(!expanded)}
+				onToggle={handleToggle}
 				onHeadContextMenu={onHeadContextMenu}
 				icon={toolIcon(block.name)}
 				iconClassName={toolIconClass(block.name)}
@@ -393,16 +680,16 @@ export const ToolCallBlock = memo(function ToolCallBlock({
 							{isError ? <FiX /> : done ? <FiCheck /> : running || waitingModel ? <HalfRingSpinner /> : <FiMinus />}
 						</span>
 						{hasImages && (
-							<span
-								className="toolcall-out-badge img"
-								title={t("toolImageZoom") || "包含图片成果"}
-								aria-label="image output"
-							>
+							<span className="toolcall-out-badge img" title={t("toolImageZoom")} aria-label="image output">
 								<FiImage />
 							</span>
 						)}
 						{hasMarkdown && (
-							<span className="toolcall-out-badge md" title="包含 Markdown 输出" aria-label="markdown output">
+							<span
+								className="toolcall-out-badge md"
+								title={isZh ? "包含 Markdown 输出" : "Contains Markdown output"}
+								aria-label="markdown output"
+							>
 								<FiFileText />
 							</span>
 						)}
@@ -539,7 +826,7 @@ export const ToolCallBlock = memo(function ToolCallBlock({
 					</div>,
 					document.body,
 				)}
-			{shown && (
+			{!isFlow && shown && (
 				<div className="toolcall-body">
 					{isPresent && presentArgs ? (
 						<PresentedFiles
@@ -618,8 +905,26 @@ export const ToolCallBlock = memo(function ToolCallBlock({
 	);
 });
 
+export const ToolCallBlock = memo(function ToolCallBlock(props: ToolCallBlockProps) {
+	const rootRef = useRef<HTMLDivElement>(null);
+	const isFlow = isFlowMode(rootRef.current);
+
+	if (isFlow) {
+		return (
+			<ToolCallCapsule
+				block={props.block}
+				view={props.view}
+				uiContextToolCall={props.uiContextToolCall}
+				onUiAction={props.onUiAction}
+				rootRef={rootRef}
+			/>
+		);
+	}
+	return <ToolCallCard {...props} rootRef={rootRef} />;
+});
+
 /** Pretty-print a bash tool call's command line as a terminal row. */
-function TerminalCommand({ command }: { command: string }) {
+export function TerminalCommand({ command }: { command: string }) {
 	return (
 		<div className="termline">
 			<FiTerminal className="termline-icon" />
@@ -629,7 +934,7 @@ function TerminalCommand({ command }: { command: string }) {
 }
 
 /** tool_search 结果展示：已被 BM25 检索并加载激活的工具名徽标列表 */
-function ToolSearchDetails({ details }: { details?: unknown }) {
+export function ToolSearchDetails({ details }: { details?: unknown }) {
 	const t = useT();
 	const loaded = Array.isArray((details as { loaded?: unknown })?.loaded)
 		? (details as { loaded: string[] }).loaded
@@ -650,7 +955,7 @@ function ToolSearchDetails({ details }: { details?: unknown }) {
 }
 
 /** 派单卡片正文：六段式结构化展示（只渲染非空段；脏参数解析出空对象时回落原文）。 */
-function DelegateBrief({ args }: { args: Partial<Record<DelegateField | "agent" | "model", string>> }) {
+export function DelegateBrief({ args }: { args: Partial<Record<DelegateField | "agent" | "model", string>> }) {
 	const t = useT();
 	const sections: { field: DelegateField; label: string }[] = [
 		{ field: "task", label: t("delegateSecTask") },
@@ -685,7 +990,7 @@ interface CodemodeCallItem {
 }
 
 /** codemode 卡片正文：JavaScript 源码高亮 + 嵌套工具调用列表 + 选项标记 */
-function CodemodeCard({
+export function CodemodeCard({
 	code,
 	options,
 	details,

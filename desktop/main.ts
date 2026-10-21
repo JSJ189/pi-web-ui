@@ -13,14 +13,14 @@
  */
 import { app, BrowserWindow, ipcMain, shell } from "electron";
 import { spawn, type ChildProcess } from "node:child_process";
-import { existsSync } from "node:fs";
+import { existsSync, mkdirSync } from "node:fs";
 import { createServer } from "node:net";
 import { homedir } from "node:os";
 import { dirname, join } from "node:path";
 import { fileURLToPath, pathToFileURL } from "node:url";
 import { isAllowedExternalUrl } from "./external-url.js";
 import { setupPortableMode } from "./portable.js";
-import { buildDesktopLoadUrl, resolveHealthTimeoutMs, waitForHealth } from "./startup.js";
+import { buildDesktopLoadUrl, DEFAULT_DESKTOP_PORT, resolveHealthTimeoutMs, waitForHealth } from "./startup.js";
 
 // 便携模式初始化：在 app ready 之前完成 Electron userData 重定向与便携环境变量装载
 setupPortableMode(app);
@@ -69,16 +69,23 @@ function isPortFree(port: number): Promise<boolean> {
 }
 
 /**
- * 端口：默认随机空闲口。`PI_WEB_PORT` 显式指定时优先，但**已被占用就退回随机口**——
- * 从 pi-web-ui 自己的终端里跑 `desktop:dev` 会继承它的 `PI_WEB_PORT=8787`，
- * 硬用该值只会让 sidecar 一启动就 EADDRINUSE 崩掉（窗口转而连上那个网页版 server）。
+ * 端口解析：
+ * 1. 若显式指定 `PI_WEB_PORT`，优先使用该端口（若被占用则回落随机口）；
+ * 2. 默认优先尝试固定端口 `DEFAULT_DESKTOP_PORT`（8790），这样窗口 Origin 保持恒定，Chromium 的 localStorage
+ *    （主题选择、面板宽度、折叠状态等）在重启与多会话间能稳定持久化；
+ * 3. 若该端口已被占用，安全退回系统分配的随机空闲口。
  */
 async function resolvePort(): Promise<number> {
 	const want = Number(process.env.PI_WEB_PORT ?? 0);
 	if (want > 0) {
 		if (await isPortFree(want)) return want;
 		console.warn(`[desktop] PI_WEB_PORT=${want} 已被占用，改用随机空闲口（不影响在跑的那个 server）`);
+		return pickFreePort();
 	}
+	if (await isPortFree(DEFAULT_DESKTOP_PORT)) {
+		return DEFAULT_DESKTOP_PORT;
+	}
+	console.log(`[desktop] 默认端口 ${DEFAULT_DESKTOP_PORT} 已被占用，改用随机空闲口`);
 	return pickFreePort();
 }
 
@@ -114,6 +121,17 @@ async function startServerSidecar(): Promise<string> {
 	const port = await resolvePort();
 	const dataDir = process.env.PI_WEB_DATA_DIR ?? join(app.getPath("userData"), "data");
 	const cwd = process.env.PI_WEB_CWD ?? homedir();
+	// 确保工作区与数据目录在子进程启动前已实体创建，防止第一次打开找不到目录
+	try {
+		mkdirSync(dataDir, { recursive: true });
+	} catch {
+		/* ignore */
+	}
+	try {
+		mkdirSync(cwd, { recursive: true });
+	} catch {
+		/* ignore */
+	}
 	console.log(`[desktop] spawning server on 127.0.0.1:${port} (data: ${dataDir})`);
 	// ELECTRON_RUN_AS_NODE=1：让 Electron 二进制退化成纯 Node 跑 server，
 	// 无需额外捆一个 node，也不用改 server/index.ts。

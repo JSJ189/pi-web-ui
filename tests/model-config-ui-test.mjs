@@ -116,7 +116,9 @@ async function run() {
 		// Open the model dropdown (top-bar chip) → 管理模型.
 		const modelChip = page.locator(".chip-model").first();
 		await modelChip.click();
-		const manageBtn = page.locator(".dd-refresh", { hasText: "管理模型" }).first();
+		const manageBtn = page
+			.locator(".dd-header-btn.dd-manage-btn, .dd-header-btn[title*='管理模型'], .dd-refresh")
+			.first();
 		await manageBtn.waitFor({ timeout: 8000 });
 		await manageBtn.click();
 		await page.waitForSelector(".model-modal", { timeout: 10000 });

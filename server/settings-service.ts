@@ -400,6 +400,7 @@ export class SettingsService {
 				toolsWrap: this.settings.toolsWrap,
 				toolImagesEnabled: this.settings.toolImagesEnabled ?? true,
 				keepRecentMessages: normalizeKeepRecentMessages(this.settings.keepRecentMessages),
+				reversePagination: this.settings.reversePagination ?? false,
 				showForkedParentSessions: this.settings.showForkedParentSessions ?? false,
 				retainFinishedConversations: this.settings.retainFinishedConversations ?? false,
 				openRecentSessionOnProjectSwitch: this.settings.openRecentSessionOnProjectSwitch ?? true,
@@ -541,6 +542,8 @@ export class SettingsService {
 		toolImagesEnabled?: boolean;
 		/** 消息列表尾部常驻渲染的消息条数（默认 15 = 与原硬编码一致；纯 UI 偏好）。 */
 		keepRecentMessages?: number;
+		/** 向上分页加载（反向分页）：默认只挂载最近消息、滚动/点击加载更早。纯 UI 偏好。 */
+		reversePagination?: boolean;
 		/** 历史对话列表中是否显示已被 fork 派生的父会话（默认 false = 仅显示链尾最新分支）。 */
 		showForkedParentSessions?: boolean;
 		retainFinishedConversations?: boolean;
@@ -727,6 +730,10 @@ export class SettingsService {
 		}
 		if (partial.keepRecentMessages !== undefined) {
 			this.settings.keepRecentMessages = normalizeKeepRecentMessages(partial.keepRecentMessages);
+		}
+		// 向上分页加载：前端 MessageList 实时读它（纯渲染策略），无需 reload runtime。
+		if (partial.reversePagination !== undefined) {
+			this.settings.reversePagination = Boolean(partial.reversePagination);
 		}
 		if (partial.retainFinishedConversations !== undefined) {
 			this.settings.retainFinishedConversations = Boolean(partial.retainFinishedConversations);

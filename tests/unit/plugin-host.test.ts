@@ -21,7 +21,7 @@ interface Harness {
 	views: string[];
 }
 
-function harness(overrides: { pollMs?: number; timeoutMs?: number } = {}): Harness {
+function harness(overrides: Partial<Parameters<typeof createPluginHostApi>[0]> = {}): Harness {
 	const sent: ClientMessage[] = [];
 	const views: string[] = [];
 	let cwd = "";
@@ -44,6 +44,7 @@ function harness(overrides: { pollMs?: number; timeoutMs?: number } = {}): Harne
 		isConversationBlank: () => blank,
 		pollMs: overrides.pollMs ?? 2,
 		timeoutMs: overrides.timeoutMs ?? 200,
+		...overrides,
 	});
 	return {
 		api,
@@ -384,8 +385,28 @@ describe("openModal/closeModal（宿主 API v10，modal.dialog 槽位）", () =>
 		expect(throwing.api.openModal("plugin:x")).toBe(false);
 		expect(throwing.api.closeModal()).toBe(true);
 	});
-	it("宿主 API 版本已升到 v12（ttsProviders 通用语音合成支持）", () => {
-		expect(PLUGIN_HOST_API_VERSION).toBe(12);
+	it("宿主 API 版本已升到 v14（pickDirectory 与 pickModel 选择器通道）", () => {
+		expect(PLUGIN_HOST_API_VERSION).toBe(14);
+	});
+	it("pickDirectory 与 pickModel 转发调用到 deps", async () => {
+		const h = harness({
+			pickDirectory: async (opts) => ({ ok: true, path: opts?.initialPath || "/picked-dir" }),
+			pickModel: async (opts) => ({ ok: true, modelId: opts?.currentModelId || "test-model" }),
+		});
+		const dirRes = await h.api.pickDirectory({ initialPath: "/workspace/proj" });
+		expect(dirRes).toEqual({ ok: true, path: "/workspace/proj" });
+		const modelRes = await h.api.pickModel({ currentModelId: "gpt-4o" });
+		expect(modelRes).toEqual({ ok: true, modelId: "gpt-4o" });
+	});
+	it("openFileContextMenu 转发调用到 deps.openFileContextMenu", () => {
+		let received: any = null;
+		const h = harness({
+			openFileContextMenu: (opts) => {
+				received = opts;
+			},
+		});
+		h.api.openFileContextMenu?.({ x: 100, y: 200, path: "src/index.ts", kind: "file" });
+		expect(received).toEqual({ x: 100, y: 200, path: "src/index.ts", kind: "file" });
 	});
 });
 

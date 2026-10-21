@@ -4,6 +4,7 @@ import { resolve } from "node:path";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { act, createElement } from "react";
 import { createRoot, type Root } from "react-dom/client";
+import { readThemeCss } from "../../server/themes.js";
 import { FooterBar } from "../../web/src/components/FooterBar.js";
 import { LanguageProvider } from "../../web/src/i18n.js";
 import type { ChatState } from "../../web/src/use-chat.js";
@@ -409,7 +410,7 @@ describe("FooterBar 连接状态", () => {
 		const themeFiles = ["themes/flow.css", "themes/flow-light.css", "themes/wallpaper-flow.css"];
 
 		for (const relPath of themeFiles) {
-			const css = readFileSync(resolve(rootDir, relPath), "utf8");
+			const css = readThemeCss(resolve(rootDir, relPath));
 			// 确保没有全局未限定作用域的 .bar-item-badge:not(.bg-task-badge)
 			const hasUnscopedBadgeRule = /(?:^|\n)\.bar-item-badge:not\(\.bg-task-badge\)/.test(css);
 			expect(hasUnscopedBadgeRule, `${relPath} 不得包含全局未限定在顶栏的 .bar-item-badge 覆盖规则`).toBe(false);
