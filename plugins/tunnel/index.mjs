@@ -233,11 +233,11 @@ export default {
 							case 'hello': {
 							const a = state.agents.get(aid);
 							if (a) { a.name = String(m.name ?? ''); a.os = String(m.os ?? ''); a.ctrlPort = Number(m.ctrlPort) || 0; a.ver = String(m.ver || ''); }
-							// 同名设备：能力优先（ctrlPort>0 的 P1 版保留）——旧版重连被拒长退避，根治互踢循环
+							// 同名设备：新连接总是接管——它必然是最新鲜的实例（假在线/僵死实例永远在旧的）；旧逻辑能力相同时拒新，会与 launchd 拉起的新实例互踢循环（20261021 双进程实战根因）
 							const twin = [...state.agents.entries()].find(([oid, oa]) => oid !== aid && oa.name && oa.name === a?.name && oa.ws.readyState === 1);
 							if (twin) {
 								const [oid, oa] = twin;
-								const newFull = a.ctrlPort > 0 && !(oa.ctrlPort > 0); // 新连接有控制 API 而在线的没有 → 新版接管
+								const newFull = a.ctrlPort > 0 || !(oa.ctrlPort > 0); // 新版接管旧版；双方都旧版时也由新连接接管（它更新鲜）
 								if (!newFull) {
 									// 新连接是旧版（或在线的也是新版）：拒绝本次连接，令其长退避
 									try { ws.send(JSON.stringify({ t: 'kicked', reason: '同名设备已有功能更全的实例在线' })); } catch {}
