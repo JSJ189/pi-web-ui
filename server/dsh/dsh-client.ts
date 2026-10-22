@@ -231,6 +231,10 @@ export class DshRuntime {
 		return { env, activeProvider, bareModelId };
 	}
 
+	getStderrTail(): string {
+		return this.stderrTail;
+	}
+
 	/** 启动子进程 + initialize 握手（幂等；并发调用共享同一个启动任务）。 */
 	start(): Promise<void> {
 		if (this.disposed) {
@@ -293,10 +297,11 @@ export class DshRuntime {
 			if (this.proc !== spawned) return;
 			const intentional = this.closed;
 			this.debug("exit", { code, signal, intentional });
+			const stderrSnippet = this.stderrTail.trim().slice(-2000);
 			const err = new DshTransportError(
 				bilingual(
-					`DSH runtime exited (code=${code} signal=${signal}) stderr: ${this.stderrTail.slice(-400)}`,
-					`DSH runtime 已退出 (code=${code} signal=${signal}) stderr: ${this.stderrTail.slice(-400)}`,
+					`DSH runtime exited (code=${code} signal=${signal}) stderr: ${stderrSnippet}`,
+					`DSH runtime 已退出 (code=${code} signal=${signal}) stderr: ${stderrSnippet}`,
 				),
 			);
 			this.failPending(err);

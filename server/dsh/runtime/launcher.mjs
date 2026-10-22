@@ -23,18 +23,53 @@
 import { dirname, join, resolve } from "node:path";
 import { readdirSync } from "node:fs";
 import { fileURLToPath, pathToFileURL } from "node:url";
-import { resolveRuntimeBase } from "./runtime-root.mjs";
+import { resolveRuntimeBaseWithDetails, getExpectedDshVersion, getDshFamily } from "./runtime-root.mjs";
 
 const HERE = dirname(fileURLToPath(import.meta.url));
 const BIN_NAME = "pi-web-ui-dsh";
 
-const runtimeBase = await resolveRuntimeBase();
+const expectedVersion = getExpectedDshVersion();
+const expectedFamily = getDshFamily(expectedVersion);
+
+const { base: runtimeBase, scannedPaths, compatibility } = await resolveRuntimeBaseWithDetails();
 if (!runtimeBase) {
-	console.error(
-		`[${BIN_NAME}] 找不到 DSH 运行时树（含 @deepseek-ai/dsh-base 的 node_modules）。` +
-			"请先执行 npm i -g @deepseek-ai/dsh（或设置 PI_WEB_DSH_RUNTIME 指向其 node_modules）。",
+	const pathList = scannedPaths
+		.slice(0, 15)
+		.map((s) => `  - ${s.path} (${s.exists ? s.reason || "已存在但非有效运行时树" : "不存在"})`)
+		.join("\n");
+	const more = scannedPaths.length > 15 ? `\n  ... 另有 ${scannedPaths.length - 15} 处候选` : "";
+	process.stderr.write(
+		`[${BIN_NAME}] 找不到 DSH 运行时树（含 @deepseek-ai/dsh-base 的 node_modules）。\n` +
+			`请先执行 npm i -g @deepseek-ai/dsh@${expectedVersion}（或设置 PI_WEB_DSH_RUNTIME 指向其 node_modules 目录）。\n\n` +
+			`已探测的候选路径：\n${pathList}${more}\n\n` +
+			`详见文档 docs/dsh-engine.md。\n`,
 	);
 	process.exit(1);
+}
+
+// 检查版本族兼容性（如 0.1.x vs 0.2.x 之间 typert codec 不兼容）
+if (!compatibility?.compatible) {
+	const ignoreVer = process.env.PI_WEB_DSH_IGNORE_VERSION === "1" || process.env.PI_WEB_DSH_IGNORE_VERSION === "true";
+	const verMsg =
+		`[${BIN_NAME}] DSH 运行时版本族不匹配：\n` +
+		`  - 检测到运行时版本：${compatibility?.runtimeVersion ?? "未知"}（位于 ${runtimeBase}）\n` +
+		`  - pi-web-ui 期望版本族：${expectedFamily}（当前自带依赖 @deepseek-ai/dsh@${expectedVersion}）\n\n` +
+		`DSH 0.1.x 与 0.2.x 之间底层协议与 typert codec 不兼容，混装会导致启动失败。\n` +
+		`推荐解决方案：\n` +
+		`  1. 全局安装匹配版本的运行时：\n` +
+		`     npm i -g @deepseek-ai/dsh@${expectedVersion}\n` +
+		`  2. 或通过独立前缀安装并配置环境变量（推荐，不影响全局 CLI）：\n` +
+		`     npm i -g @deepseek-ai/dsh@${expectedVersion} --prefix ~/.pi-web/dsh-runtime-${expectedFamily}\n` +
+		`     并在启动 pi-web-ui 时设置环境变量：\n` +
+		`     PI_WEB_DSH_RUNTIME=~/.pi-web/dsh-runtime-${expectedFamily}/lib/node_modules\n\n` +
+		`详见文档 docs/dsh-engine.md。\n`;
+
+	if (ignoreVer) {
+		process.stderr.write(`[${BIN_NAME}] 警告: 已通过 PI_WEB_DSH_IGNORE_VERSION 跳过版本族检查。\n` + verMsg);
+	} else {
+		process.stderr.write(verMsg);
+		process.exit(1);
+	}
 }
 
 const runConfig = process.env.DSH_CORDIS_CONFIG ?? join(HERE, "cordis.yml");
@@ -143,10 +178,18 @@ try {
 	);
 } catch (err) {
 	const seen = new Set();
+	let isTypertFailure = false;
 	const walk = (e, depth) => {
 		if (!e || seen.has(e)) return;
 		seen.add(e);
 		const msg = e?.message ?? String(e);
+		if (
+			msg.includes("typert contributor") ||
+			msg.includes("codec has no create() factory") ||
+			msg.includes("typert-loader")
+		) {
+			isTypertFailure = true;
+		}
 		const indent = "    " + "  ".repeat(Math.min(depth, 6));
 		process.stderr.write(`${indent}${msg}\n`);
 		const kids = e?.aggregateErrors ?? e?.errors ?? (e?.cause ? [e.cause] : []);
@@ -154,6 +197,13 @@ try {
 	};
 	process.stderr.write(`[${BIN_NAME}] boot 失败: ${err?.message ?? String(err)}\n   runtime base: ${runtimeBase}\n`);
 	walk(err, 0);
+	if (isTypertFailure) {
+		process.stderr.write(
+			`\n[${BIN_NAME}] 诊断：检测到 typert codec 注册失败。\n` +
+				`这通常是因为外部运行时树（版本 ${compatibility?.runtimeVersion ?? "未知"}）与 pi-web-ui 依赖的 DSH 扩展插件（期望版本族 ${expectedFamily}）接口不兼容。\n` +
+				`请执行 npm i -g @deepseek-ai/dsh@${expectedVersion} 重新安装匹配版本的运行时。\n\n`,
+		);
+	}
 	process.exit(1);
 }
 

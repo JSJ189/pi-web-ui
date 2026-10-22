@@ -28,6 +28,7 @@
 		"extensions/",
 		"plugin-sdk/",
 		"plugins/catalog.json",
+		"docs/dsh-engine.md",
 		"CHANGELOG.md",
 		"README.md",
 		"LICENSE"

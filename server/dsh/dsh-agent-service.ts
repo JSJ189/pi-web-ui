@@ -633,11 +633,22 @@ export class DshClientSession {
 		// P0-5 启动重试：1s/3s/9s 指数退避，最终失败才发 notice。
 		void cs.startWithRetry().catch((err) => {
 			console.error(`[dsh] runtime.start 失败 (client=${clientId}): ${(err as Error).message}`);
+			const errMsg = (err as Error).message || "";
+			const isDepOrRuntimeIssue =
+				/找不到 DSH 运行时树|版本族不匹配|version mismatch|dsh-base|typert|codec|launcher|spawn|node_modules|not found|exit.*code/i.test(
+					errMsg,
+				);
+			const hintZh = isDepOrRuntimeIssue
+				? "请检查 @deepseek-ai/dsh 依赖安装与版本匹配（详见 docs/dsh-engine.md）。"
+				: "请检查 DeepSeek API key（~/.pi/agent/auth.json）与 dsh 依赖安装。";
+			const hintEn = isDepOrRuntimeIssue
+				? "Check @deepseek-ai/dsh installation and version compatibility (see docs/dsh-engine.md)."
+				: "Check the DeepSeek API key (~/.pi/agent/auth.json) and dsh dependencies.";
 			cs.pendingNotices.push({
 				type: "notice",
 				level: "error",
-				text: `DSH 运行时启动失败：${(err as Error).message}。请检查 DeepSeek API key（~/.pi/agent/auth.json）与 dsh 依赖安装。`,
-				textEn: `DSH runtime failed to start: ${(err as Error).message}. Check the DeepSeek API key (~/.pi/agent/auth.json) and dsh dependencies.`,
+				text: `DSH 运行时启动失败：${errMsg}。${hintZh}`,
+				textEn: `DSH runtime failed to start: ${errMsg}. ${hintEn}`,
 			});
 		});
 		// P0-3 convs 内存回收定时器（unref：不阻止进程退出）。
@@ -689,11 +700,19 @@ export class DshClientSession {
 		this.runtimeRestart.count += 1;
 		if (this.runtimeRestart.count > DshClientSession.RUNTIME_MAX_RESTARTS) {
 			console.error(`[dsh] runtime 反复崩溃 (code=${code} signal=${signal})，停止自动重启`);
+			const tail = this.runtime.getStderrTail();
+			const isDepOrRuntimeIssue = /找不到 DSH 运行时树|版本族不匹配|version mismatch|dsh-base|typert|codec/i.test(tail);
+			const hintZh = isDepOrRuntimeIssue
+				? "DSH 运行时反复崩溃，已停止自动重启。请检查 dsh 运行时依赖安装与版本匹配（详见 docs/dsh-engine.md）。"
+				: "DSH 运行时反复崩溃，已停止自动重启。请检查 DeepSeek API key 与 dsh 依赖安装。";
+			const hintEn = isDepOrRuntimeIssue
+				? "DSH runtime keeps crashing; auto-restart stopped. Check dsh runtime dependencies and version compatibility (see docs/dsh-engine.md)."
+				: "DSH runtime keeps crashing; auto-restart stopped. Check the DeepSeek API key and dsh dependencies.";
 			this.emit({
 				type: "notice",
 				level: "error",
-				text: "DSH 运行时反复崩溃，已停止自动重启。请检查 DeepSeek API key 与 dsh 依赖安装。",
-				textEn: "DSH runtime keeps crashing; auto-restart stopped. Check the DeepSeek API key and dsh dependencies.",
+				text: hintZh,
+				textEn: hintEn,
 			});
 			this.flushSnapshot();
 			return;

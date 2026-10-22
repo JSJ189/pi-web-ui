@@ -39,16 +39,25 @@ if (!key) {
 	process.exit(0);
 }
 let rtAvailable = false;
+let skipReason = "未找到 dsh 运行时树（需 npm i -g @deepseek-ai/dsh@0.1.5-rc.3 或 PI_WEB_DSH_RUNTIME）";
 try {
-	const { resolveRuntimeBase } = await import(
+	const { resolveRuntimeBaseWithDetails } = await import(
 		pathToFileURL(join(REPO, "server", "dsh", "runtime", "runtime-root.mjs")).href
 	);
-	rtAvailable = !!(await resolveRuntimeBase());
+	const { base, compatibility } = await resolveRuntimeBaseWithDetails();
+	if (base) {
+		const ignoreVer = process.env.PI_WEB_DSH_IGNORE_VERSION === "1" || process.env.PI_WEB_DSH_IGNORE_VERSION === "true";
+		if (compatibility?.compatible || ignoreVer) {
+			rtAvailable = true;
+		} else {
+			skipReason = `dsh 运行时版本不兼容（期望族 ${compatibility?.expectedFamily}，当前 ${compatibility?.runtimeVersion}，需 npm i -g @deepseek-ai/dsh@${compatibility?.expectedVersion}）`;
+		}
+	}
 } catch {
 	rtAvailable = false;
 }
 if (!rtAvailable) {
-	console.log("⏭ SKIP：未找到 dsh 运行时树（需 npm i -g @deepseek-ai/dsh@0.1.5-rc.3 或 PI_WEB_DSH_RUNTIME）");
+	console.log(`⏭ SKIP：${skipReason}`);
 	process.exit(0);
 }
 

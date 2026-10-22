@@ -39,18 +39,27 @@ if (!key) {
 	console.log("⏭ SKIP：无 DeepSeek API key（需 ~/.pi/agent/auth.json 的 deepseek.key 或 DEEPSEEK_API_KEY）");
 	process.exit(0);
 }
-// 运行时树检测：无树 → SKIP。
+// 运行时树检测：无树/版本不兼容 → SKIP。
 let rtAvailable = false;
+let skipReason = "未找到 dsh 运行时树（需 npm i -g @deepseek-ai/dsh@0.1.5-rc.3 或 PI_WEB_DSH_RUNTIME）";
 try {
-	const { resolveRuntimeBase } = await import(
+	const { resolveRuntimeBaseWithDetails } = await import(
 		(await import("node:url")).pathToFileURL(join(REPO, "server", "dsh", "runtime", "runtime-root.mjs")).href
 	);
-	rtAvailable = !!(await resolveRuntimeBase());
+	const { base, compatibility } = await resolveRuntimeBaseWithDetails();
+	if (base) {
+		const ignoreVer = process.env.PI_WEB_DSH_IGNORE_VERSION === "1" || process.env.PI_WEB_DSH_IGNORE_VERSION === "true";
+		if (compatibility?.compatible || ignoreVer) {
+			rtAvailable = true;
+		} else {
+			skipReason = `dsh 运行时版本不兼容（期望族 ${compatibility?.expectedFamily}，当前 ${compatibility?.runtimeVersion}，需 npm i -g @deepseek-ai/dsh@${compatibility?.expectedVersion}）`;
+		}
+	}
 } catch {
 	rtAvailable = false;
 }
 if (!rtAvailable) {
-	console.log("⏭ SKIP：未找到 dsh 运行时树（需 npm i -g @deepseek-ai/dsh@0.1.5-rc.3 或 PI_WEB_DSH_RUNTIME）");
+	console.log(`⏭ SKIP：${skipReason}`);
 	process.exit(0);
 }
 
