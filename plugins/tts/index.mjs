@@ -498,6 +498,33 @@ export default {
 
 		// ── 3. HTTP 路由 ────────────────────────────────────────────────
 		// 凭据同步接口（支持豆包与 DeepSeek 同时或分别同步）
+		// 跨域白名单：只允许本机受信来源调用本机 TTS 服务（豆包 cookie / DeepSeek token 都在
+		// 这里收，任意外站跨域读都会盗刷额度或投毒凭据）。允许：浏览器扩展
+		// （chrome-extension://*）、本机 WebUI（localhost / 127.0.0.1 / ::1 任意端口）与
+		// file:// 页面（Origin: null）；无 Origin 的同源/服务端调用一律视为受信。
+		function isTrustedOrigin(req) {
+			const origin = String(req?.headers?.origin ?? "");
+			if (!origin || origin === "null") return true;
+			if (origin.startsWith("chrome-extension://")) return true;
+			try {
+				const u = new URL(origin);
+				if (u.protocol !== "http:" && u.protocol !== "https:") return false;
+				return u.hostname === "localhost" || u.hostname === "127.0.0.1" || u.hostname === "::1";
+			} catch {
+				return false;
+			}
+		}
+		function corsJson(req, extra = {}) {
+			const headers = { "Content-Type": "application/json", ...extra };
+			if (isTrustedOrigin(req)) {
+				const origin = String(req?.headers?.origin ?? "");
+				headers["Access-Control-Allow-Origin"] = origin || "*";
+				headers["Access-Control-Allow-Headers"] = "Content-Type";
+				headers["Access-Control-Allow-Methods"] = "GET, POST, OPTIONS";
+			}
+			return headers;
+		}
+
 		host.route("POST", "/sync-credentials", async (req, res) => {
 			try {
 				let body = req.body;
@@ -525,24 +552,21 @@ export default {
 					hasDeepseek: Boolean(deepseekToken),
 				});
 
-				res.writeHead(200, {
-					"Content-Type": "application/json",
-					"Access-Control-Allow-Origin": "*",
-					"Access-Control-Allow-Headers": "Content-Type",
-				});
+				res.writeHead(200, corsJson(req));
 				res.end(JSON.stringify({ ok: true, updated }));
 			} catch (err) {
-				res.writeHead(500, { "Content-Type": "application/json", "Access-Control-Allow-Origin": "*" });
+				res.writeHead(500, corsJson(req));
 				res.end(JSON.stringify({ ok: false, error: err.message }));
 			}
 		});
 
 		host.route("OPTIONS", "/sync-credentials", (req, res) => {
-			res.writeHead(204, {
-				"Access-Control-Allow-Origin": "*",
-				"Access-Control-Allow-Methods": "POST, OPTIONS",
-				"Access-Control-Allow-Headers": "Content-Type",
-			});
+			const headers = { "Access-Control-Allow-Methods": "POST, OPTIONS" };
+			if (isTrustedOrigin(req)) {
+				headers["Access-Control-Allow-Origin"] = String(req?.headers?.origin ?? "") || "*";
+				headers["Access-Control-Allow-Headers"] = "Content-Type";
+			}
+			res.writeHead(204, headers);
 			res.end();
 		});
 
@@ -581,24 +605,21 @@ export default {
 					format = "aac";
 				}
 
-				res.writeHead(200, {
-					"Content-Type": "application/json",
-					"Access-Control-Allow-Origin": "*",
-					"Access-Control-Allow-Headers": "Content-Type",
-				});
+				res.writeHead(200, corsJson(req));
 				res.end(JSON.stringify({ ok: true, audioBase64: buf.toString("base64"), format }));
 			} catch (err) {
-				res.writeHead(500, { "Content-Type": "application/json", "Access-Control-Allow-Origin": "*" });
+				res.writeHead(500, corsJson(req));
 				res.end(JSON.stringify({ ok: false, error: err.message }));
 			}
 		});
 
 		host.route("OPTIONS", "/speak", (req, res) => {
-			res.writeHead(204, {
-				"Access-Control-Allow-Origin": "*",
-				"Access-Control-Allow-Methods": "POST, OPTIONS",
-				"Access-Control-Allow-Headers": "Content-Type",
-			});
+			const headers = { "Access-Control-Allow-Methods": "POST, OPTIONS" };
+			if (isTrustedOrigin(req)) {
+				headers["Access-Control-Allow-Origin"] = String(req?.headers?.origin ?? "") || "*";
+				headers["Access-Control-Allow-Headers"] = "Content-Type";
+			}
+			res.writeHead(204, headers);
 			res.end();
 		});
 
@@ -606,20 +627,17 @@ export default {
 		host.route("POST", "/reset-deepseek-session", async (req, res) => {
 			await clearDeepSeekSession();
 			host.log("已手动重置 DeepSeek 专属语音会话");
-			res.writeHead(200, {
-				"Content-Type": "application/json",
-				"Access-Control-Allow-Origin": "*",
-				"Access-Control-Allow-Headers": "Content-Type",
-			});
+			res.writeHead(200, corsJson(req));
 			res.end(JSON.stringify({ ok: true }));
 		});
 
 		host.route("OPTIONS", "/reset-deepseek-session", (req, res) => {
-			res.writeHead(204, {
-				"Access-Control-Allow-Origin": "*",
-				"Access-Control-Allow-Methods": "POST, OPTIONS",
-				"Access-Control-Allow-Headers": "Content-Type",
-			});
+			const headers = { "Access-Control-Allow-Methods": "POST, OPTIONS" };
+			if (isTrustedOrigin(req)) {
+				headers["Access-Control-Allow-Origin"] = String(req?.headers?.origin ?? "") || "*";
+				headers["Access-Control-Allow-Headers"] = "Content-Type";
+			}
+			res.writeHead(204, headers);
 			res.end();
 		});
 
