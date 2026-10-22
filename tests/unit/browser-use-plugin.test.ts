@@ -15,7 +15,7 @@ describe("browser-use 插件单元测试", () => {
 		const val = validatePluginManifest(manifest, "browser-use");
 		expect(val.errors).toEqual([]);
 		expect(manifest.id).toBe("browser-use");
-		expect(manifest.version).toBe("0.9.0");
+		expect(manifest.version).toBe("0.9.1");
 		expect(manifest.view).toBe(false);
 		expect(manifest.permissions).toContain("tools");
 		expect(manifest.description).toBeTruthy();

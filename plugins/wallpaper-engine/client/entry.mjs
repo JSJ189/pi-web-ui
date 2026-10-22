@@ -644,7 +644,9 @@ function createBackgroundLayer() {
 			iframe.className = "pi-we-bg-media";
 			const webFile = item.webFile || "index.html";
 			iframe.src = `${API_BASE}/api/web?id=${encodeURIComponent(item.id)}&file=${encodeURIComponent(webFile)}`;
-			iframe.sandbox = "allow-scripts allow-same-origin";
+			// 网页壁纸在独立 sandbox origin 渲染（禁 same-origin），与响应头 CSP sandbox 双保险：
+			// 壁纸脚本无法读取应用页面/存储/API。
+			iframe.sandbox = "allow-scripts allow-forms allow-popups allow-modals";
 			iframe.setAttribute("allow", "autoplay; audio *");
 
 			let activated = false;

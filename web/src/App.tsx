@@ -119,7 +119,7 @@ import type { Notice } from "./use-chat";
 import { fileToProcessedImage, isRasterImage, type ProcessedImage } from "./image-paste";
 import { randomUuid } from "./uuid";
 import { recordModelUsage } from "./model-usage";
-import { loadSoundSettings, playSound, saveSoundSettings, type SoundKind, type SoundSettings } from "./sounds";
+import { loadSoundSettings, playSound, saveSoundSettings, type SoundSettings } from "./sounds";
 import {
 	assistantPlainText,
 	loadTtsSettings,
@@ -2056,9 +2056,6 @@ export function App() {
 				onOpenGlobalSearch={() => setGlobalSearchOpen(true)}
 				onOpenIconEdit={() => setIconEditOpen(true)}
 				onOpenSandboxModal={() => setSandboxModalMode("create")}
-				sound={sound}
-				onSoundChange={setSound}
-				onSoundPreview={(kind: SoundKind) => playSound(kind, sound)}
 				themes={themes}
 				theme={theme}
 				onThemeChange={switchTheme}
@@ -2181,9 +2178,6 @@ export function App() {
 						view={view}
 						plugins={enabledPlugins}
 						dropdownProps={{
-							sound,
-							onSoundChange: setSound,
-							onSoundPreview: (kind: SoundKind) => playSound(kind, sound),
 							theme,
 							themes,
 							onThemeChange: switchTheme,
@@ -2794,9 +2788,6 @@ export function App() {
 						view={view}
 						plugins={enabledPlugins}
 						dropdownProps={{
-							sound,
-							onSoundChange: setSound,
-							onSoundPreview: (kind: SoundKind) => playSound(kind, sound),
 							theme,
 							themes,
 							onThemeChange: switchTheme,

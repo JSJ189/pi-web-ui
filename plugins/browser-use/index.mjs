@@ -67,6 +67,12 @@ function checkPortAlive(port = DEFAULT_PORT, timeoutMs = 1500) {
 }
 
 async function forceKillPort(port = DEFAULT_PORT) {
+	// 端口会拼进 shell 命令（netstat/fuser/lsof），先做白名单校验防注入。
+	const portStr = String(port ?? "");
+	if (!/^\d{1,5}$/.test(portStr)) return;
+	const portNum = Number(portStr);
+	if (portNum < 1 || portNum > 65535) return;
+	port = portNum;
 	try {
 		if (process.platform === "win32") {
 			const { stdout } = await execAsync(`netstat -ano | findstr :${port}`);
@@ -820,8 +826,15 @@ export function activate(host) {
 	const unregUse = host.registerAgentTool(tool);
 	const unregSearch = host.registerAgentTool(searchTool);
 
-	return function deactivate() {
+	return async function deactivate() {
+		// 卸载插件时把常驻 Chrome 一并关掉：否则反注册只是摘掉工具面，
+		// 9333 端口上带着登录态的浏览器进程会永远残留（僵尸 + 凭据面）。
 		stopIdleTimer();
+		try {
+			await quitBrowser();
+		} catch {
+			// 关闭失败不阻塞插件卸载
+		}
 		removeBackgroundTask();
 		offSettings?.();
 		unregUse?.();

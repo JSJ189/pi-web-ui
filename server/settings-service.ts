@@ -7,6 +7,7 @@
  * （reloadSession 里还会刷新斜杠命令目录）。
  */
 import { existsSync, readdirSync, readFileSync } from "node:fs";
+import { homedir } from "node:os";
 import { basename, dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 import type { AgentSession } from "@earendil-works/pi-coding-agent";
@@ -30,6 +31,8 @@ import {
 	normalizeRetryMaxAttempts,
 	normalizeKeepRecentMessages,
 	normalizeSkillList,
+	normalizeSkillsCatalogBudget,
+	normalizeSkillsCatalogMaxDesc,
 	normalizeToolWatchdogTimeoutMs,
 	normalizeUiLayout,
 	settingsPresetToUi,
@@ -162,8 +165,8 @@ export class SettingsService {
 		return v;
 	}
 
-	/** 判断某个 skill 名是否仍存在于磁盘任何来源（agent 区 / 项目 .pi / 祖先
-	 *  .agents/skills / npm 包内 skills）。被禁用且文件已删除的名字不应再
+	/** 判断某个 skill 名是否仍存在于磁盘任何来源（agent 区 / 用户级或祖先
+	 *  .agents/skills / 项目 .pi / npm 包内 skills）。被禁用且文件已删除的名字不应再
 	 *  出现在设置面板，也不应留在持久化记录里。 */
 	private skillStillOnDisk(name: string): boolean {
 		const cwd = this.host.cwd();
@@ -171,6 +174,8 @@ export class SettingsService {
 		const check = (base: string) => existsSync(join(base, name)) || existsSync(join(base, `${name}.md`));
 		// ① 用户区 <agentDir>/skills ② 项目 .pi/skills
 		if (check(join(agentDir, "skills"))) return true;
+		// SDK 始终扫描用户级 ~/.agents/skills，不依赖 cwd 的祖先链（issue #669）。
+		if (check(join(process.env.HOME || homedir(), ".agents", "skills"))) return true;
 		if (check(join(cwd, ".pi", "skills"))) return true;
 		// ③ 祖先链 .agents/skills（SDK collectAncestorAgentsSkillDirs 语义，最多上溯 6 层）
 		let dir: string = cwd;
@@ -417,6 +422,9 @@ export class SettingsService {
 				disabledPlugins: [...(this.settings.disabledPlugins ?? [])],
 				uiLayout: normalizeUiLayout(this.settings.uiLayout),
 				skillsFullText: [...normalizeSkillList(this.settings.skillsFullText)],
+				skillsCatalogMaxDesc: this.settings.skillsCatalogMaxDesc,
+				skillsCatalogShowLocation: this.settings.skillsCatalogShowLocation,
+				skillsCatalogBudget: this.settings.skillsCatalogBudget,
 				// The composed system prompt actually in effect (read-only view).
 				effectiveSystemPrompt: promptSnap.full,
 				// 每个来源未覆盖时的默认（自动）内容（「各来源」行预览用）。
@@ -551,6 +559,9 @@ export class SettingsService {
 		devNoCache?: boolean;
 		autoReload?: boolean;
 		skillsFullText?: string[];
+		skillsCatalogMaxDesc?: number;
+		skillsCatalogShowLocation?: boolean;
+		skillsCatalogBudget?: number;
 		visionBridgeEnabled?: boolean;
 		visionBridgeModel?: string | null;
 		visionBridgePromptMode?: PromptMode;
@@ -753,6 +764,15 @@ export class SettingsService {
 		// composeInputs + 指导块追加），开关下一轮即生效，无需 reload runtime。
 		if (partial.skillsFullText !== undefined) {
 			this.settings.skillsFullText = normalizeSkillList(partial.skillsFullText);
+		}
+		if (partial.skillsCatalogMaxDesc !== undefined) {
+			this.settings.skillsCatalogMaxDesc = normalizeSkillsCatalogMaxDesc(partial.skillsCatalogMaxDesc);
+		}
+		if (partial.skillsCatalogShowLocation !== undefined) {
+			this.settings.skillsCatalogShowLocation = Boolean(partial.skillsCatalogShowLocation);
+		}
+		if (partial.skillsCatalogBudget !== undefined) {
+			this.settings.skillsCatalogBudget = normalizeSkillsCatalogBudget(partial.skillsCatalogBudget);
 		}
 		if (partial.visionBridgeEnabled !== undefined) {
 			this.settings.visionBridgeEnabled = partial.visionBridgeEnabled;

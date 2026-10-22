@@ -19,11 +19,16 @@ function findZipEocd(buf) {
 }
 
 function extractZipBuffer(buf, targetDir) {
+	const MAX_ENTRIES = 20000; // 条目数上限：防 zip 炸弹（海量小文件撑爆目录项）
+	const MAX_FILE_BYTES = 512 * 1024 * 1024; // 单文件解压上限（Live2D 模型资源单文件极少超过此值）
+	const MAX_TOTAL_BYTES = 2 * 1024 * 1024 * 1024; // 解压总量上限：防 zip 炸弹（高压缩比）
 	const eocd = findZipEocd(buf);
 	const cdCount = buf.readUInt16LE(eocd + 10);
 	const cdOffset = buf.readUInt32LE(eocd + 16);
 	let p = cdOffset;
+	let totalOut = 0;
 	for (let i = 0; i < cdCount; i++) {
+		if (i >= MAX_ENTRIES) throw new Error("ZIP 条目数超出上限");
 		if (buf.readUInt32LE(p) !== 0x02014b50) throw new Error("ZIP 中央目录损坏");
 		const method = buf.readUInt16LE(p + 10);
 		const compSize = buf.readUInt32LE(p + 20);
@@ -43,7 +48,10 @@ function extractZipBuffer(buf, targetDir) {
 		const dataStart = lh + 30 + lhNameLen + lhExtraLen;
 		const raw = buf.subarray(dataStart, dataStart + compSize);
 
-		const outPath = path.join(targetDir, name);
+		// 规范化后再判界：防 Windows 反斜杠/混合分隔符等 `..` 变体逃逸出 targetDir。
+		const outPath = path.resolve(targetDir, name);
+		const root = path.resolve(targetDir);
+		if (outPath !== root && !outPath.startsWith(root + path.sep)) continue;
 		if (name.endsWith("/")) {
 			mkdirSync(outPath, { recursive: true });
 			continue;
@@ -54,10 +62,14 @@ function extractZipBuffer(buf, targetDir) {
 		if (method === 0) {
 			decompressed = raw;
 		} else if (method === 8) {
-			decompressed = inflateRawSync(raw);
+			// maxOutputLength：节点侧硬上限，超限直接抛错而不是打爆内存。
+			decompressed = inflateRawSync(raw, { maxOutputLength: MAX_FILE_BYTES + 1 });
 		} else {
 			continue;
 		}
+		if (decompressed.length > MAX_FILE_BYTES) throw new Error("ZIP 单文件解压超出上限");
+		totalOut += decompressed.length;
+		if (totalOut > MAX_TOTAL_BYTES) throw new Error("ZIP 解压总量超出上限");
 		writeFileSync(outPath, decompressed);
 	}
 }
@@ -351,8 +363,12 @@ export default {
 		route("GET", "/uploads/*", async (req, res) => {
 			const rawPath = req.pluginPath || req.url || "";
 			const rel = rawPath.replace(/^\/?(?:plugins-api\/live2d\/)?uploads\//, "");
-			const safeRel = path.normalize(rel).replace(/^(\.\.[\/\\])+/, "");
-			const fullPath = path.join(uploadsDir, safeRel);
+			// 规范化后必须仍在 uploadsDir 内：只剥开头 `..` 挡不住 `a/../../x` 中间段穿越。
+			const root = path.resolve(uploadsDir);
+			const fullPath = path.resolve(root, rel);
+			if (fullPath !== root && !fullPath.startsWith(root + path.sep)) {
+				return res.status(403).end("Forbidden");
+			}
 
 			if (!existsSync(fullPath)) {
 				return res.status(404).end("File not found");
@@ -392,13 +408,24 @@ export default {
 		});
 
 		// ── 上传 ZIP 模型压缩包 POST /upload-zip ────────────────────
+		const MAX_ZIP_BYTES = 1024 * 1024 * 1024; // 请求体上限 1GB：Live2D 模型包远小于此，纯防无界内存
 		route("POST", "/upload-zip", async (req, res) => {
 			const modelKey = "upload_" + Date.now();
 			const targetDir = path.join(uploadsDir, modelKey);
 			await fs.mkdir(targetDir, { recursive: true });
 
 			const chunks = [];
-			for await (const chunk of req) chunks.push(chunk);
+			let totalBytes = 0;
+			for await (const chunk of req) {
+				totalBytes += chunk.length;
+				if (totalBytes > MAX_ZIP_BYTES) {
+					try {
+						await fs.rm(targetDir, { recursive: true, force: true });
+					} catch {}
+					return res.status(413).json({ ok: false, error: "ZIP 包过大（> 1GB）" });
+				}
+				chunks.push(chunk);
+			}
 			const zipBuf = Buffer.concat(chunks);
 			try {
 				extractZipBuffer(zipBuf, targetDir);
@@ -438,11 +465,17 @@ export default {
 		route("POST", "/upload-file", async (req, res) => {
 			const query = req.query || {};
 			const modelKey = String(query.key || "").replace(/[^a-zA-Z0-9_-]/g, "");
-			const relPath = String(query.relPath || "").replace(/^(\.\.[\/\\])+/, "");
+			const relPath = String(query.relPath || "");
 			if (!modelKey || !relPath) {
 				return res.status(400).json({ ok: false, error: "missing key or relPath" });
 			}
-			const targetFile = path.join(uploadsDir, modelKey, relPath);
+			// 只剥开头 `..` 挡不住 `a/../../x` 这类中间段穿越：规范化后必须仍在
+			// <uploadsDir>/<modelKey>/ 内，否则可借上传接口任意写盘（覆盖配置/脚本）。
+			const root = path.resolve(uploadsDir, modelKey);
+			const targetFile = path.resolve(root, relPath);
+			if (targetFile !== root && !targetFile.startsWith(root + path.sep)) {
+				return res.status(400).json({ ok: false, error: "relPath 越界" });
+			}
 			await fs.mkdir(path.dirname(targetFile), { recursive: true });
 
 			const ws = createWriteStream(targetFile);

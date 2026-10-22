@@ -570,6 +570,9 @@ export interface Conversation {
 	 *  历史恢复、/model 命令）时必须重算，否则大窗口算出的 reserve 泄漏到
 	 *  小窗口模型上，压缩触发点被压成负数。undefined = 还没见过任何事件。 */
 	lastModelKey?: string | null;
+	/** 与 lastModelKey 同次记下的窗口。同一模型 key 的窗口从缺省 128K
+	 *  变成配置值时也要重算，不能只比 key。 */
+	lastContextWindow?: number;
 	/** Agent 预设 id（standard/minimal/code/reader/ask；默认 standard）。 */
 	agentPreset?: string;
 	/** 预设已锁定（首轮用户发言后；空白会话可切换）。 */
@@ -1178,6 +1181,10 @@ export class ClientSession {
 					});
 				}
 			}
+			// 换模型之后同步重算软上限。setModel 的 model_select 不进 session.subscribe，
+			// 首轮压缩检查会用到换模型前的 reserve（1M 窗口算出的 74 万泄漏到小窗口上，
+			// 触发点变成负数，上下文到几万 token 就压）。
+			this.refreshCompactionOverride(conv);
 			// 思考强度：模板指定则固定用它，否则跟随派发者当前强度（与「跟随派发者模型」
 			// 同一取数源：spawnerSession）。所以子代理默认与派发者一致，而不是默默回到
 			// SDK 默认档位。放在换模型之后：setModel 会按模型能力重算强度，我们先让它
@@ -1827,6 +1834,9 @@ export class ClientSession {
 			contextFiles: src.contextFiles,
 			skills: effectiveSkills,
 			skillsFullText: showSkills ? normalizeSkillList(this.settingsSvc.current.skillsFullText) : [],
+			skillsCatalogMaxDesc: this.settingsSvc.current.skillsCatalogMaxDesc,
+			skillsCatalogShowLocation: this.settingsSvc.current.skillsCatalogShowLocation,
+			skillsCatalogBudget: this.settingsSvc.current.skillsCatalogBudget,
 		};
 	}
 
@@ -1855,12 +1865,16 @@ export class ClientSession {
 		catalogTools?: string[];
 	}): string | undefined {
 		const preset = src.preset ?? this.conv?.agentPreset ?? this.settingsSvc.current.defaultAgentPreset ?? "standard";
+		const showSkills = presetShowsSkillCatalog(preset);
+		const effectiveSkills = showSkills ? this.fillSkillContents(src.skills) : [];
 		return renderMainCompose(this.composeInputs(src), {
 			promptTemplate: this.settingsSvc.current.promptTemplate,
 			promptOverrides: this.settingsSvc.current.promptOverrides,
 			preset,
 			disabledToolCount: effectiveDisabledAgentTools(this.settingsSvc.current).length,
 			isLazy: src.lazy,
+			hasSkills: effectiveSkills.length > 0,
+			hasSkillsFullText: (this.settingsSvc.current.skillsFullText?.length ?? 0) > 0,
 		});
 	}
 
@@ -6910,20 +6924,34 @@ export class ClientSession {
 		}
 	}
 
-	/** 会话模型变化时重放该会话的软上限覆盖。SDK 恢复历史会话的模型
+	/** 会话模型或窗口变化时重放该会话的软上限覆盖。SDK 恢复历史会话的模型
 	 *  （findInitialModel）与 /model 命令都不经过 pi-web-ui 的 setModel
 	 *  路径，注入过的 reserve 会停留在旧模型窗口的换算值上——例如默认
 	 *  模型（1M 窗口）算出 748576，泄漏到 500K 窗口的会话后压缩触发点
-	 *  变成负数，上下文几万 token 就被反复压缩。onEvent 每个事件比对
-	 *  一次 model key（O(1) 字符串比较），变化才重放。 */
+	 *  变成负数，上下文几万 token 就被反复压缩。onEvent 比对模型 key 与窗口，
+	 *  有变化才重放。setModel 本身不发 session 事件，子代理创建路径另有同步重算。 */
 	private reapplySoftCapIfModelChanged(conv: Conversation): void {
 		try {
 			const key = modelKeyOf(conv.session);
-			if (conv.lastModelKey === key) return;
+			const contextWindow = contextWindowOf(conv.session);
+			if (conv.lastModelKey === key && conv.lastContextWindow === contextWindow) return;
 			conv.lastModelKey = key;
+			conv.lastContextWindow = contextWindow;
 			if (key) this.applyCompactionOverrideForConv(conv, this.settingsSvc.current);
 		} catch {
 			// 会话未就绪或已释放 → 留给创建/换模型路径与后续事件重试。
+		}
+	}
+
+	/** setModel 只向扩展发 model_select，不走 session.subscribe，
+	 *  onEvent 里的重放赶不上首轮压缩检查。换完模型后必须同步重算。 */
+	private refreshCompactionOverride(conv: Conversation): void {
+		try {
+			this.applyCompactionOverrideForConv(conv, this.settingsSvc.current);
+			conv.lastModelKey = modelKeyOf(conv.session);
+			conv.lastContextWindow = contextWindowOf(conv.session);
+		} catch {
+			// 会话未就绪 → 首个 SDK 事件仍会走 reapplySoftCapIfModelChanged。
 		}
 	}
 
@@ -7623,10 +7651,12 @@ export class ClientSession {
 		}
 		// 延迟加载（默认开）：未加载的已登记工具一律当「临时禁用」——与用户禁用名单 /
 		// 计划模式闸门走同一条门控链，不做第二套机制。加载只是把名字从这份名单里拿出来。
+		let loadedNames: string[] = [];
 		const lazy = this.lazyLoadingOn();
 		if (lazy) {
 			try {
 				const loaded = this.lazyLoadedFor(session, this.sessionHasTranscript(session));
+				loadedNames = [...loaded];
 				for (const name of lazyLoadingDisabledTools(
 					session.getAllTools().map((t) => t.name),
 					loaded,
@@ -7641,7 +7671,10 @@ export class ClientSession {
 		}
 		applyAgentToolsGating(session, [...disabled], targetPreset, {
 			// load_tools 不在任何预设白名单里，又必须在延迟加载开启时永远可用（ask 预设本来就无工具，不强加；非延迟加载模式不激活）。
-			forceActive: lazy && targetPreset !== "ask" ? [LOAD_TOOLS_TOOL_NAME] : [],
+			// 显式 load_tools 加载过的名字一并强制激活：PATCH-B1 门控会无条件剔除
+			// exposure≠direct 的 MCP 工具（连 deferred 的也在内），若这里不把它们
+			// 加回活跃集，会复现 #652 的死路变体——「已加载且目录可见，但永不活跃」。
+			forceActive: lazy && targetPreset !== "ask" ? [LOAD_TOOLS_TOOL_NAME, ...loadedNames] : [],
 		});
 		const ownerId = conv?.id;
 		syncSubagentOverride(session as unknown as OverrideSessionLike, disabled.has("subagent"), () =>

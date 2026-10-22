@@ -1,7 +1,17 @@
 import { describe, expect, it } from "vitest";
 import { fileURLToPath, pathToFileURL } from "node:url";
 import { join } from "node:path";
-import { defineTool } from "@deepseek-ai/dsh-tools";
+import { resolveRuntimeBaseWithDetails } from "../../server/dsh/runtime/runtime-root.mjs";
+
+let defineTool: any;
+const { base: rtBase } = await resolveRuntimeBaseWithDetails();
+if (rtBase) {
+	const tools = await import(pathToFileURL(join(rtBase, "@deepseek-ai", "dsh-tools", "lib", "index.js")).href);
+	defineTool = tools.defineTool;
+} else {
+	const tools = await import(/* @vite-ignore */ "@deepseek-ai/dsh-tools" as any);
+	defineTool = tools.defineTool;
+}
 
 const ROOT = fileURLToPath(new URL("../..", import.meta.url));
 const GOAL_RPC_URL = pathToFileURL(join(ROOT, "server", "dsh", "runtime", "goal-rpc.mjs")).href;

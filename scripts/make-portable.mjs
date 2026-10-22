@@ -27,12 +27,13 @@ const createZip = args.includes("--zip");
 const withGit = args.includes("--with-git") || process.env.PI_BUNDLE_PORTABLE_GIT === "1";
 const withNode = args.includes("--with-node") || process.env.PI_BUNDLE_PORTABLE_NODE === "1";
 
+// CVE-2025-66413（git clone NTLM 凭据泄露）修复版：git-for-windows 2.53.0(2) 起不受影响。
 const PORTABLE_GIT_URL =
-	"https://github.com/git-for-windows/git/releases/download/v2.48.1.windows.1/PortableGit-2.48.1-64-bit.7z.exe";
-const PORTABLE_GIT_FILE = "PortableGit-2.48.1-64-bit.7z.exe";
+	"https://github.com/git-for-windows/git/releases/download/v2.53.0.windows.2/PortableGit-2.53.0.2-64-bit.7z.exe";
+const PORTABLE_GIT_FILE = "PortableGit-2.53.0.2-64-bit.7z.exe";
 
-const PORTABLE_NODE_URL = "https://nodejs.org/dist/v22.14.0/node-v22.14.0-win-x64.zip";
-const PORTABLE_NODE_FILE = "node-v22.14.0-win-x64.zip";
+const PORTABLE_NODE_URL = "https://nodejs.org/dist/v22.19.0/node-v22.19.0-win-x64.zip";
+const PORTABLE_NODE_FILE = "node-v22.19.0-win-x64.zip";
 
 function run(cmd) {
 	console.log(`[make-portable] 执行: ${cmd}`);
@@ -261,7 +262,11 @@ async function main() {
 					console.warn(`⚠ PortableNode 解压未找到 node.exe，请检查源文件。`);
 				}
 			} else {
-				console.warn(`⚠ PortableNode 解压未成功，请检查依赖工具（tar/7z/powershell/unzip）。`);
+				// 解压失败不应静默出包：内嵌 Node 缺失的便携包在目标机上直接起不来，
+				// CI 里也 check 不出来。fail-fast 让维护者在打包阶段就发现工具链问题。
+				throw new Error(
+					`PortableNode 解压未成功，请检查依赖工具（tar/7z/powershell/unzip）。` + ` 缓存归档：${cacheArchive}`,
+				);
 			}
 		}
 	} else {
@@ -269,7 +274,7 @@ async function main() {
 			join(runtimeNodeDir, "README.txt"),
 			"请将解压后的 Node.js 二进制文件（node.exe, npm.cmd, npx.cmd 等）放置在本目录下。\n" +
 				"启动脚本与桌面主程序将自动检测并挂载该便携 Node 与 npm 环境，无需宿主机安装 Node/npm。\n" +
-				"下载地址: https://nodejs.org/dist/v22.14.0/node-v22.14.0-win-x64.zip\n",
+				"下载地址: https://nodejs.org/dist/v22.19.0/node-v22.19.0-win-x64.zip\n",
 			"utf8",
 		);
 	}

@@ -24,7 +24,7 @@ import { fileURLToPath } from "node:url";
 const HERE = dirname(fileURLToPath(import.meta.url));
 
 /** 兜底固定的 DSH 版本族，与 package.json / lockfile 对齐 */
-export const FALLBACK_DSH_VERSION = "0.1.5-rc.3";
+export const FALLBACK_DSH_VERSION = "0.2.1-rc.2";
 
 /** Given a candidate node_modules root, return the bare-module base dir, or null. */
 export function runtimeBaseFor(root) {
@@ -66,17 +66,17 @@ export function findLocalPackageRoot(startDir = HERE) {
 
 /**
  * 提取 DSH 版本族。
- * 在 pre-release（0.x）阶段，minor 与 patch 均可能存在不兼容破坏（如 0.1.5 与 0.2.1 的 typert codec 断裂），
- * 故 0.x 按 major.minor.patch 分族；正式版（>=1.0）按 major 分族。
+ * 在 pre-release（0.x）阶段，按 major.minor 分族（如 0.1.x 同族，0.2.x 同族），
+ * 既隔离 0.1 与 0.2 底层重大协议断裂，又避免 patch/rc 微调时过度阻断；正式版（>=1.0）按 major 分族。
  */
 export function getDshFamily(version) {
 	if (!version || typeof version !== "string") return "";
 	const clean = version.replace(/^[v^~]/, "").trim();
-	const m = clean.match(/^(\d+)\.(\d+)\.(\d+)/);
+	const m = clean.match(/^(\d+)\.(\d+)/);
 	if (!m) return clean;
-	const [, major, minor, patch] = m;
+	const [, major, minor] = m;
 	if (major === "0") {
-		return `${major}.${minor}.${patch}`;
+		return `${major}.${minor}`;
 	}
 	return `${major}`;
 }

@@ -19,7 +19,6 @@ import {
 	FiSettings,
 	FiSun,
 	FiTerminal,
-	FiVolume2,
 } from "react-icons/fi";
 import { LuFlaskConical, LuMessageSquareDashed } from "react-icons/lu";
 import { REQUIRED_TOPBAR_ITEM_IDS, restoreUiItem, type UiSlotEntry, type UiSlotId } from "../ui-slots";
@@ -32,11 +31,8 @@ import { focusComposer } from "../composer-bridge";
 import { openContextMenu } from "../context-menu-state";
 import { cacheMetrics, estimateStreamTokens, streamRate, trimRateSamples, type RateSample } from "../cache-stats";
 import { Dropdown, DropdownItem } from "./Dropdown";
-import { SoundSettingsPanel } from "./SoundSettings";
-import { NotifyToggle } from "./NotifyToggle";
 import { BrowserControl } from "./BrowserControl";
 import { BROWSER_PAGE_TOOL_NAME } from "../../../server/tool-manager.js";
-import type { SoundKind, SoundSettings } from "../sounds";
 import { EnginePicker } from "./EnginePicker";
 import { appUrl } from "../base-url";
 
@@ -72,9 +68,6 @@ export interface BarItemProps {
 	onToggleZenMode?: () => void;
 	onOpenSandboxModal?: () => void;
 	dropdownProps?: {
-		sound?: SoundSettings;
-		onSoundChange?: (settings: SoundSettings) => void;
-		onSoundPreview?: (kind: SoundKind) => void;
 		theme?: string | null;
 		themes?: BarItemTheme[];
 		onThemeChange?: (themeId: string | null) => void;
@@ -141,7 +134,6 @@ export function BarItem({
 	const { engine } = useAppGlobals();
 	const isDsh = engine === "dsh";
 
-	const [soundOpen, setSoundOpen] = useState(false);
 	const [langOpen, setLangOpen] = useState(false);
 	const [themeOpen, setThemeOpen] = useState(false);
 	const [updateOpen, setUpdateOpen] = useState(false);
@@ -637,38 +629,6 @@ export function BarItem({
 	const dropdownDirection: "down" | "up" | "left" | "right" =
 		bar === "bottom" ? "up" : bar === "left" ? "right" : bar === "right" ? "left" : "down";
 	const shouldPortalDropdown = true;
-
-	if (id === "host:sound") {
-		return (
-			<Dropdown
-				direction={dropdownDirection}
-				align={bar === "right" ? "right" : "left"}
-				portal={true}
-				open={soundOpen}
-				onOpenChange={setSoundOpen}
-				tip={named(t("sound"))}
-				caret={false}
-				triggerClassName="bar-item chip"
-				onContextMenu={handleContextMenu}
-				dataBarItem={id}
-				trigger={
-					<>
-						<FiVolume2 className="bar-item-icon" />
-						<span className="chip-sub bar-item-text">{named(t("sound"))}</span>
-					</>
-				}
-			>
-				{dropdownProps?.sound && dropdownProps?.onSoundChange ? (
-					<SoundSettingsPanel
-						settings={dropdownProps.sound}
-						onChange={dropdownProps.onSoundChange}
-						onPreview={dropdownProps.onSoundPreview ?? (() => {})}
-					/>
-				) : null}
-				<NotifyToggle />
-			</Dropdown>
-		);
-	}
 
 	if (id === "host:language") {
 		return (

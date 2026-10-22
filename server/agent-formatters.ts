@@ -256,17 +256,21 @@ export function modelKeyOf(session: { model?: { provider?: unknown; id?: unknown
 	return `${m.provider}/${m.id}`;
 }
 
-/** 会话当前模型的上下文窗口（未知时 0）：live 统计优先，模型定义回落。 */
+/** 会话当前模型的上下文窗口（未知时 0）。
+ *  live 统计与模型定义取较大值：换模型前的快照（128000 缺省窗口常见）
+ *  不能盖住已经装上的更大配置窗口，否则软上限会被判成非法并回退到 16K reserve。 */
 export function contextWindowOf(session: {
 	getSessionStats?: () => { contextUsage?: { contextWindow?: unknown } | null };
 	model?: { contextWindow?: unknown } | null;
 }): number {
+	let live = 0;
 	try {
-		const live = session?.getSessionStats?.()?.contextUsage?.contextWindow;
-		if (typeof live === "number" && live > 0) return Math.floor(live);
+		const raw = session?.getSessionStats?.()?.contextUsage?.contextWindow;
+		if (typeof raw === "number" && raw > 0) live = Math.floor(raw);
 	} catch {
-		// 会话未就绪 → 回落模型定义。
+		// 会话未就绪 → 只用模型定义。
 	}
-	const def = (session as { model?: { contextWindow?: unknown } | null })?.model?.contextWindow;
-	return typeof def === "number" && def > 0 ? Math.floor(def) : 0;
+	const def = session?.model?.contextWindow;
+	const modelWindow = typeof def === "number" && def > 0 ? Math.floor(def) : 0;
+	return Math.max(live, modelWindow);
 }

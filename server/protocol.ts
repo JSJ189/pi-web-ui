@@ -661,8 +661,10 @@ export type ClientMessage =
 	/** 历史窗口按需加载（服务端窗口化，见 server/message-window.ts）：把当前对话的
 	 *  消息窗口往前扩一页，服务端回 `earlier_messages`（新增的更早一段，客户端前插）。
 	 *  `count` 缺省 = 一页；`all: true` = 一路拉到最早（「全部展开」/ 打开页内搜索）。
+	 *  `conversationId` 指明要翻页的会话（多标签/后台流式时 lastConversationId 不可靠）；
+	 *  缺省时回退服务端最近一次快照的会话（老客户端兼容）。
 	 *  窗口化关闭或服务端未实现时该消息被忽略（无回执），前端保持现状。 */
-	| { type: "load_earlier_messages"; count?: number; all?: boolean }
+	| { type: "load_earlier_messages"; count?: number; all?: boolean; conversationId?: string }
 	// -- source-control panel (read-only git queries, server-side execFile) --
 	/** SCM refresh payload: status + branches + numstat (history loads
 	 *  lazily via scm_history so big repos don't pay for it every refresh). */
@@ -1043,6 +1045,12 @@ export type ClientMessage =
 			openRecentSessionOnProjectSwitch?: boolean;
 			/** skill 全文注入名单（默认空 = 名录模式）。名单里的技能 {{skills}} 展开正文。 */
 			skillsFullText?: string[];
+			/** 技能名录单描述最大字符数截断（默认 250，0 = 不截断）。 */
+			skillsCatalogMaxDesc?: number;
+			/** 技能名录是否输出 location 物理路径（默认 false = 节省上下文并防止路径泄露）。 */
+			skillsCatalogShowLocation?: boolean;
+			/** 技能名录总字符预算（默认 20000，超限自动降级为紧凑 names-only 模式；0 = 不设限）。 */
+			skillsCatalogBudget?: number;
 			/** 子代理默认模型（"provider/id"；null/未设 = 子代理跟随主对话当前模型）。
 			 * 不改主会话模型，只在派生子代理时生效。 */
 			subagentDefaultModel?: string | null;
@@ -3188,6 +3196,12 @@ export interface UiSettingsState {
 	openRecentSessionOnProjectSwitch: boolean;
 	/** skill 全文注入名单（默认空 = 名录模式）：名单里的技能 {{skills}} 展开正文。 */
 	skillsFullText: string[];
+	/** 技能名录单描述最大字符数截断（默认 250，0 = 不截断）。 */
+	skillsCatalogMaxDesc: number;
+	/** 技能名录是否输出 location 物理路径（默认 false = 节省上下文并防止路径泄露）。 */
+	skillsCatalogShowLocation: boolean;
+	/** 技能名录总字符预算（默认 20000，超限自动降级为紧凑 names-only 模式；0 = 不设限）。 */
+	skillsCatalogBudget: number;
 	/** Vision bridge on/off (default on). Off → images are sent as-is. */
 	visionBridgeEnabled: boolean;
 	/** Preferred vision model as "provider/id", or null = auto-detect first. */

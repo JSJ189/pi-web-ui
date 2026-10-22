@@ -186,9 +186,19 @@ export default {
 		});
 		const cliCode = req => {
 			let code = fs.readFileSync(path.join(__dirname, 'assets', 'cli.mjs'), 'utf8');
+			// SERVER 必须是 WS 汇聚服务（独立 wsPort）的地址，而不是面板所在的宿主端口：
+			// 宿主 Route 的 headers.host 是 WebUI（8788/5173…）地址，那里没有 /agent upgrade，
+			// CLI 下载产物照抄 host 会永远连不上（主入口失效）。这里同一主机名、替换成 wsPort。
+			const raw = req?.headers?.host || '';
+			let hostname = '';
+			if (raw) {
+				try { hostname = new URL(`http://${raw}`).hostname; } catch { hostname = String(raw).split(':')[0]; }
+			}
+			if (!hostname) hostname = lanIp || '127.0.0.1';
+			const server = `ws://${hostname}:${wsPort}`;
 			return code
 				.replaceAll('{{TOKEN}}', token)
-				.replaceAll('{{SERVER}}', `ws://${req?.headers?.host || `${lanIp || '127.0.0.1'}:${wsPort}`}`);
+				.replaceAll('{{SERVER}}', server);
 		};
 		const notifyDebounced = (level, text) => {
 			const now = Date.now();
@@ -198,13 +208,26 @@ export default {
 		};
 
 		// ── WS 汇聚 + CLI 下载（:wsPort，全网卡——主人设备经 WG 连入）──────────────
+		// wsPort 暴露在非回环网卡：/cli 与 /status 必须与 /agent 一样校验 token，
+		// 否则任意同网可达主机都能拿到内嵌完整 token 的 CLI 代码冒充设备、踢掉真
+		// 设备、劫持 SOCKS 出口流量。/agent 之外均 401（非 GET 探测也统一拒绝）。
+		const deny = res => {
+			res.writeHead(401, { 'content-type': 'text/plain' });
+			res.end('unauthorized');
+		};
+		const authed = req => {
+			const url = new URL(req.url, 'http://local');
+			return url.searchParams.get('token') === token;
+		};
 		const httpSrv = http.createServer((req, res) => {
 			const url = new URL(req.url, 'http://local');
 			if (url.pathname === '/cli') {
+				if (!authed(req)) return deny(res);
 				res.writeHead(200, { 'content-type': 'text/javascript; charset=utf-8' });
 				return res.end(cliCode(req));
 			}
 			if (url.pathname === '/status') {
+				if (!authed(req)) return deny(res);
 				res.writeHead(200, { 'content-type': 'application/json' });
 				return res.end(JSON.stringify(statusSnapshot()));
 			}

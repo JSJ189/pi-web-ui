@@ -77,6 +77,7 @@ import type {
 } from "../types";
 import { SchedulerPanel } from "./SchedulerPanel";
 import { SoundSettingsPanel, TtsSettingsPanel } from "./SoundSettings";
+import { NotifyToggle } from "./NotifyToggle";
 import { playSound, type SoundSettings } from "../sounds";
 import { speak, type TtsSettings } from "../tts";
 import {
@@ -641,6 +642,9 @@ interface SettingsPatch {
 	devNoCache?: boolean;
 	autoReload?: boolean;
 	skillsFullText?: string[];
+	skillsCatalogMaxDesc?: number;
+	skillsCatalogShowLocation?: boolean;
+	skillsCatalogBudget?: number;
 	quickPhrases?: string[];
 	quickPhrasesEnabled?: boolean;
 	minimalNewChat?: boolean;
@@ -1211,6 +1215,10 @@ export function SettingsModal({
 	useEffect(() => {
 		setKeepRecentDraft(String(settings?.keepRecentMessages ?? 15));
 	}, [settings?.keepRecentMessages]);
+	const [skillsMaxDescDraft, setSkillsMaxDescDraft] = useState<string>(String(settings?.skillsCatalogMaxDesc ?? 250));
+	useEffect(() => {
+		setSkillsMaxDescDraft(String(settings?.skillsCatalogMaxDesc ?? 250));
+	}, [settings?.skillsCatalogMaxDesc]);
 	// 压缩软上限：本地草稿（空 = 关闭；失焦/回车提交）。
 	const [softCapDraft, setSoftCapDraft] = useState<string>(
 		settings?.softCapTokens && settings.softCapTokens > 0 ? formatTokenDraft(settings.softCapTokens) : "",
@@ -4117,6 +4125,7 @@ export function SettingsModal({
 									onChange={onSoundChange}
 									onPreview={(kind) => playSound(kind, sound)}
 								/>
+								<NotifyToggle />
 								<TtsSettingsPanel
 									settings={tts}
 									onChange={onTtsChange}
@@ -4317,6 +4326,45 @@ export function SettingsModal({
 										{!isDsh && piPresetFiltering && !presetShowsSkillCatalog(piPresetId ?? undefined) && (
 											<p className="set-catalog-hint warn">{t("skillsHiddenByPreset", { name: piPresetName })}</p>
 										)}
+										<div className="set-catalog-opts">
+											<FieldRow
+												label={t("skillsCatalogMaxDesc")}
+												tip={t("skillsCatalogMaxDescTip")}
+												htmlFor="skills-max-desc"
+											>
+												<input
+													id="skills-max-desc"
+													className="set-input"
+													type="number"
+													min={0}
+													max={2000}
+													step={50}
+													value={skillsMaxDescDraft}
+													onChange={(e) => setSkillsMaxDescDraft(e.target.value)}
+													onBlur={() => {
+														const raw = Math.floor(Number(skillsMaxDescDraft));
+														const n = Number.isFinite(raw) && raw >= 0 ? raw : 250;
+														setSkillsMaxDescDraft(String(n));
+														if (n !== settings.skillsCatalogMaxDesc) {
+															setPartial({ skillsCatalogMaxDesc: n });
+														}
+													}}
+													onKeyDown={(e) => {
+														if (e.key === "Enter") (e.target as HTMLInputElement).blur();
+													}}
+												/>
+											</FieldRow>
+											<ToggleRow
+												title={t("skillsCatalogShowLocation")}
+												tip={t("skillsCatalogShowLocationTip")}
+												enabled={settings.skillsCatalogShowLocation ?? false}
+												onToggle={() =>
+													setPartial({
+														skillsCatalogShowLocation: !(settings.skillsCatalogShowLocation ?? false),
+													})
+												}
+											/>
+										</div>
 										{settings.skills.length === 0 ? (
 											<div className="mcp-empty-card">
 												<div className="mcp-empty-icon">

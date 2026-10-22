@@ -2,7 +2,13 @@
  * canvas-dispatch.ts — 画布协作 WebSocket 客户端消息分发器。
  */
 import type { ClientMessage, ServerMessage } from "../protocol.js";
-import { deleteCanvasGraph, listCanvasGraphs, loadCanvasGraph, saveCanvasGraph } from "./canvas-store.js";
+import {
+	deleteCanvasGraph,
+	isSafeGraphId,
+	listCanvasGraphs,
+	loadCanvasGraph,
+	saveCanvasGraph,
+} from "./canvas-store.js";
 import type { CanvasOrchestrator } from "./canvas-orchestrator.js";
 
 export function handleCanvasMessage(
@@ -19,6 +25,7 @@ export function handleCanvasMessage(
 		}
 
 		case "canvas_load": {
+			if (!isSafeGraphId(msg.id)) return true;
 			try {
 				const graph = loadCanvasGraph(dataDir, msg.id);
 				send({ type: "canvas_graph_state", graph });
@@ -32,6 +39,7 @@ export function handleCanvasMessage(
 		}
 
 		case "canvas_save": {
+			if (!isSafeGraphId(msg.graph?.id)) return true;
 			saveCanvasGraph(dataDir, msg.graph);
 			send({ type: "canvas_graph_state", graph: msg.graph });
 			const graphs = listCanvasGraphs(dataDir);
@@ -40,6 +48,7 @@ export function handleCanvasMessage(
 		}
 
 		case "canvas_delete": {
+			if (!isSafeGraphId(msg.id)) return true;
 			deleteCanvasGraph(dataDir, msg.id);
 			const graphs = listCanvasGraphs(dataDir);
 			send({ type: "canvas_list_result", graphs });

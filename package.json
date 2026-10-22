@@ -97,8 +97,8 @@
 		"audit:diff": "node scripts/theme-diff.mjs .theme-audit/baseline .theme-audit/current"
 	},
 	"dependencies": {
-		"@deepseek-ai/dsh-sdk-jsonrpc-server": "^0.1.5-rc.3",
-		"@deepseek-ai/dsh-sdk-protocol": "^0.1.5-rc.3",
+		"@deepseek-ai/dsh-sdk-jsonrpc-server": "^0.2.1-rc.2",
+		"@deepseek-ai/dsh-sdk-protocol": "^0.2.1-rc.2",
 		"compression": "^1.8.2",
 		"electron-updater": "^6.8.9",
 		"express": "^5.2.1",

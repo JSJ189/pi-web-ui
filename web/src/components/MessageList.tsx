@@ -685,8 +685,16 @@ export function MessageList({
 		if (el) pendingScrollFixRef.current = { sh: el.scrollHeight, st: el.scrollTop };
 		appSend(
 			opts.all
-				? ({ type: "load_earlier_messages", all: true } satisfies ClientMessage)
-				: ({ type: "load_earlier_messages", count: opts.count ?? 30 } satisfies ClientMessage),
+				? ({
+						type: "load_earlier_messages",
+						all: true,
+						conversationId: state.conversationId ?? undefined,
+					} satisfies ClientMessage)
+				: ({
+						type: "load_earlier_messages",
+						count: opts.count ?? 30,
+						conversationId: state.conversationId ?? undefined,
+					} satisfies ClientMessage),
 		);
 		// 服务端窗口化关闭时不会有回执：兜底解锁，不影响继续点击（回执到也会提前清掉）。
 		setTimeout(() => {

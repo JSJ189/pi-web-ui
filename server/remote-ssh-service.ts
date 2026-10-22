@@ -1338,10 +1338,16 @@ fi
 		if (typeof sftp.createReadStream === "function") {
 			return sftp.createReadStream(remoteAbsPath, opts);
 		}
-		const { data } = await this.sftpReadFile(uri, remoteAbsPath);
+		// 回退路径：整文件读进内存再切片。必须设上限——不支持 createReadStream 的
+		// 实现（基本只有测试 mock）遇到 GB 级文件会直接打爆内存（OOM）。
+		const MAX_FALLBACK_BYTES = 512 * 1024 * 1024;
+		const capEnd = opts?.end !== undefined ? Math.min(opts.end, MAX_FALLBACK_BYTES - 1) : MAX_FALLBACK_BYTES - 1;
+		const { data } = await this.sftpReadFile(uri, remoteAbsPath, MAX_FALLBACK_BYTES);
+		const sliceStart = opts?.start ?? 0;
+		const sliceEnd = capEnd;
 		const slice =
-			opts?.start !== undefined || opts?.end !== undefined
-				? data.subarray(opts?.start ?? 0, opts?.end !== undefined ? opts.end + 1 : undefined)
+			sliceStart > 0 || sliceEnd < MAX_FALLBACK_BYTES - 1 || data.length === MAX_FALLBACK_BYTES
+				? data.subarray(sliceStart, sliceEnd + 1)
 				: data;
 		return Readable.from(slice);
 	}

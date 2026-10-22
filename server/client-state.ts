@@ -243,6 +243,25 @@ export function normalizeSkillList(v: unknown): string[] {
 	return Array.isArray(v) ? v.filter((x): x is string => typeof x === "string") : [];
 }
 
+export const DEFAULT_SKILLS_CATALOG_MAX_DESC = 250;
+export const DEFAULT_SKILLS_CATALOG_BUDGET = 20000;
+
+/** 归一化技能名录单描述字符数截断：>=0 整数，非法/未设置回退 250。0 为不截断。 */
+export function normalizeSkillsCatalogMaxDesc(v: unknown): number {
+	if (typeof v === "number" && Number.isFinite(v) && v >= 0) {
+		return Math.floor(v);
+	}
+	return DEFAULT_SKILLS_CATALOG_MAX_DESC;
+}
+
+/** 归一化技能名录总字符预算：>=0 整数，非法/未设置回退 20000。0 为不设限。 */
+export function normalizeSkillsCatalogBudget(v: unknown): number {
+	if (typeof v === "number" && Number.isFinite(v) && v >= 0) {
+		return Math.floor(v);
+	}
+	return DEFAULT_SKILLS_CATALOG_BUDGET;
+}
+
 /** 工具延迟加载的**出厂默认**（默认关：模型忘记加载会先吃一次 `Tool <name> not found`，
  *  开箱即用优先——见 #652；`PI_WEB_TOOL_LAZY_LOADING=1/true/on/yes` 部署级打开，给
  *  「想省上下文、愿意让模型多一步 load_tools」的实例一个开关；用户在设置面板的选择优先于此）。 */
@@ -386,6 +405,12 @@ export interface ClientSettings {
 	 *  （oh-my-pi 式全文注入；单文件 8KB、总量 32KB 封顶，超限回落名录）。
 	 *  进预设；逐 run 实时读取，改动下一轮即生效。 */
 	skillsFullText: string[];
+	/** 技能名录单描述最大字符数截断（默认 250，0 = 不截断）。 */
+	skillsCatalogMaxDesc: number;
+	/** 技能名录是否输出 <location> 物理路径行（默认 false = 节省上下文并防止路径泄露）。 */
+	skillsCatalogShowLocation: boolean;
+	/** 技能名录总字符预算（默认 20000，超限自动降级为紧凑 names-only 模式；0 = 不设限）。 */
+	skillsCatalogBudget: number;
 	/** 子代理默认模型 ("provider/id")；null/未设 = 跟随主对话当前模型。不改会话右侧栏的模型。 */
 	subagentDefaultModel?: string | null;
 	/** 大模型 API 出错自动重试次数（默认 6；0 = 失败即停）。SDK
@@ -1113,6 +1138,9 @@ export class ClientStateStore {
 			retainFinishedConversations: stored?.retainFinishedConversations ?? false,
 			openRecentSessionOnProjectSwitch: stored?.openRecentSessionOnProjectSwitch ?? true,
 			skillsFullText: normalizeSkillList(stored?.skillsFullText),
+			skillsCatalogMaxDesc: normalizeSkillsCatalogMaxDesc(stored?.skillsCatalogMaxDesc),
+			skillsCatalogShowLocation: Boolean(stored?.skillsCatalogShowLocation ?? false),
+			skillsCatalogBudget: normalizeSkillsCatalogBudget(stored?.skillsCatalogBudget),
 			visionBridgeEnabled: stored?.visionBridgeEnabled ?? true,
 			visionBridgeModel: stored?.visionBridgeModel ?? null,
 			visionBridgePromptMode: stored?.visionBridgePromptMode === "replace" ? "replace" : "append",
@@ -1192,6 +1220,16 @@ export class ClientStateStore {
 			openRecentSessionOnProjectSwitch:
 				settings.openRecentSessionOnProjectSwitch ?? cur.openRecentSessionOnProjectSwitch ?? true,
 			skillsFullText: normalizeSkillList(settings.skillsFullText ?? cur.skillsFullText),
+			skillsCatalogMaxDesc: normalizeSkillsCatalogMaxDesc(
+				settings.skillsCatalogMaxDesc ?? cur.skillsCatalogMaxDesc ?? DEFAULT_SKILLS_CATALOG_MAX_DESC,
+			),
+			skillsCatalogShowLocation:
+				settings.skillsCatalogShowLocation !== undefined
+					? Boolean(settings.skillsCatalogShowLocation)
+					: (cur.skillsCatalogShowLocation ?? false),
+			skillsCatalogBudget: normalizeSkillsCatalogBudget(
+				settings.skillsCatalogBudget ?? cur.skillsCatalogBudget ?? DEFAULT_SKILLS_CATALOG_BUDGET,
+			),
 			visionBridgeEnabled: settings.visionBridgeEnabled ?? cur.visionBridgeEnabled ?? true,
 			// 按键存在性合并：null 是合法值（清除语义），`null ?? cur` 会把旧值
 			// 复活到磁盘（设置面板清空后重启又回来）。settings-service 持久化

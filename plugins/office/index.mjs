@@ -328,7 +328,7 @@ export default {
 			if (!dlRes.ok) throw new Error(`下载 Univer 导出文件失败: HTTP ${dlRes.status}`);
 
 			const buf = Buffer.from(await dlRes.arrayBuffer());
-			const outPath = targetPath ? resolve(host.cwd, targetPath) : absPath;
+			const outPath = targetPath ? assertInWorkspace(resolve(host.cwd, targetPath)) : absPath;
 			const tmpOut = `${outPath}.${Date.now()}.tmp`;
 			writeFileSync(tmpOut, buf);
 			renameSync(tmpOut, outPath);
@@ -506,6 +506,19 @@ export default {
 		}
 
 		// 路由：查询运行时就绪状态与下载进度
+		/** 工作区边界：relPath/targetPath 解析后必须落在 host.cwd 内，防越界读写
+		 *  （`../../secret` 之类可借路由读写工作区外任意文件）。 */
+		function assertInWorkspace(absPath) {
+			const root = resolve(host.cwd);
+			const abs = resolve(absPath);
+			if (abs !== root && !abs.startsWith(root + path.sep)) {
+				const err = new Error("路径超出工作区范围");
+				err.statusCode = 403;
+				throw err;
+			}
+			return abs;
+		}
+
 		host.route("GET", "/status", async (_req, res) => {
 			res.json({
 				ok: true,
@@ -526,7 +539,7 @@ export default {
 				const result = await downloadAndExtractRuntime();
 				res.json(result);
 			} catch (err) {
-				res.status(500).json({ ok: false, error: err.message || String(err) });
+				res.status(err?.statusCode || 500).json({ ok: false, error: err.message || String(err) });
 			}
 		});
 
@@ -536,13 +549,13 @@ export default {
 				const relPath = String(req.query?.path ?? "").trim();
 				if (!relPath) return void res.status(400).json({ ok: false, error: "缺少 path 参数" });
 
-				const absPath = resolve(host.cwd, relPath);
+				const absPath = assertInWorkspace(resolve(host.cwd, relPath));
 				if (!existsSync(absPath)) return void res.status(404).json({ ok: false, error: "文件不存在" });
 
 				const docInfo = await prepareUniverDoc(absPath);
 				res.json({ ok: true, ...docInfo });
 			} catch (err) {
-				res.status(500).json({ ok: false, error: err.message || String(err) });
+				res.status(err?.statusCode || 500).json({ ok: false, error: err.message || String(err) });
 			}
 		});
 
@@ -551,13 +564,13 @@ export default {
 			try {
 				const relPath = String(req.body?.path ?? "").trim();
 				if (!relPath) return void res.status(400).json({ ok: false, error: "缺少 path 参数" });
-				const absPath = resolve(host.cwd, relPath);
+				const absPath = assertInWorkspace(resolve(host.cwd, relPath));
 				if (!existsSync(absPath)) return void res.status(404).json({ ok: false, error: "文件不存在" });
 
 				const saved = await saveUniverDoc(absPath, req.body?.targetPath);
 				res.json(saved);
 			} catch (err) {
-				res.status(500).json({ ok: false, error: err.message || String(err) });
+				res.status(err?.statusCode || 500).json({ ok: false, error: err.message || String(err) });
 			}
 		});
 
@@ -566,13 +579,13 @@ export default {
 			try {
 				const relPath = String(req.body?.path ?? "").trim();
 				if (!relPath) return void res.status(400).json({ ok: false, error: "缺少 path 参数" });
-				const absPath = resolve(host.cwd, relPath);
+				const absPath = assertInWorkspace(resolve(host.cwd, relPath));
 				if (!existsSync(absPath)) return void res.status(404).json({ ok: false, error: "文件不存在" });
 
 				const result = await inspectUniverDoc(absPath, req.body?.query);
 				res.json({ ok: true, result });
 			} catch (err) {
-				res.status(500).json({ ok: false, error: err.message || String(err) });
+				res.status(err?.statusCode || 500).json({ ok: false, error: err.message || String(err) });
 			}
 		});
 
@@ -581,7 +594,7 @@ export default {
 			try {
 				const relPath = String(req.body?.path ?? "").trim();
 				if (!relPath) return void res.status(400).json({ ok: false, error: "缺少 path 参数" });
-				const absPath = resolve(host.cwd, relPath);
+				const absPath = assertInWorkspace(resolve(host.cwd, relPath));
 				if (!existsSync(absPath)) return void res.status(404).json({ ok: false, error: "文件不存在" });
 
 				const autoSave = req.body?.save !== false;
@@ -600,7 +613,7 @@ export default {
 				});
 				res.json(result);
 			} catch (err) {
-				res.status(500).json({ ok: false, error: err.message || String(err) });
+				res.status(err?.statusCode || 500).json({ ok: false, error: err.message || String(err) });
 			}
 		});
 
@@ -619,7 +632,7 @@ export default {
 				}
 				res.json({ ok: true, files: [...new Set(files)].sort() });
 			} catch (err) {
-				res.status(500).json({ ok: false, error: err.message });
+				res.status(err?.statusCode || 500).json({ ok: false, error: err.message });
 			}
 		});
 
