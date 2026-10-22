@@ -30,7 +30,7 @@ import {
 	writeFileSync,
 } from "node:fs";
 import { homedir } from "node:os";
-import { basename, dirname, extname, isAbsolute, join, normalize, resolve } from "node:path";
+import { basename, dirname, extname, isAbsolute, join, normalize, resolve, sep } from "node:path";
 
 /** Wallpaper Engine App ID */
 const WE_APPID = "431960";
@@ -385,6 +385,15 @@ export default {
 			return cachedWallpaperMap.get(id) || list.find((w) => w.id === id) || null;
 		}
 
+		/** 将壁纸包内相对路径解析到包目录内；越出包目录返回 null。 */
+		function resolveInsideWallpaper(folderPath, rel) {
+			const target = resolve(folderPath, String(rel).replace(/\\/g, "/"));
+			const base = resolve(folderPath);
+			if (target === base) return target;
+			const prefix = base.endsWith(sep) ? base : base + sep;
+			return target.startsWith(prefix) ? target : null;
+		}
+
 		function parseWallpaperProject(folderPath, id) {
 			const projectJson = join(folderPath, "project.json");
 			if (!existsSync(projectJson)) return null;
@@ -404,12 +413,14 @@ export default {
 
 				const rawFile = json.file || "";
 				const rawFileNorm = rawFile ? rawFile.replace(/\\/g, "/") : "";
+				// 含路径的 file 必须解析回包目录内，禁止 ../ 逃逸读取任意文件。
+				const rawFileResolved = rawFileNorm.includes("/") ? resolveInsideWallpaper(folderPath, rawFileNorm) : null;
 				const hasFile = rawFile
-					? !rawFileNorm.includes("/")
-						? dirEntries.has(rawFile)
-						: existsSync(join(folderPath, rawFile))
+					? rawFileNorm.includes("/")
+						? rawFileResolved !== null && existsSync(rawFileResolved)
+						: dirEntries.has(rawFile)
 					: false;
-				const filePath = hasFile ? join(folderPath, rawFile) : "";
+				const filePath = hasFile ? (rawFileResolved ?? join(folderPath, rawFile)) : "";
 				const fileExt = extname(rawFile).toLowerCase();
 
 				const hasScenePkg = (rawFile.endsWith(".pkg") && hasFile) || dirEntries.has("scene.pkg");
@@ -439,11 +450,13 @@ export default {
 				}
 
 				let previewFile = json.preview || "";
-				let previewPath = previewFile ? join(folderPath, previewFile) : "";
+				// preview 同 file：含路径时强制解析回包目录内。
+				const previewResolved = previewFile && previewFile.includes("/") ? resolveInsideWallpaper(folderPath, previewFile) : null;
+				let previewPath = previewFile ? (previewResolved ?? join(folderPath, previewFile)) : "";
 				let hasPreview = previewFile
-					? !previewFile.includes("/")
-						? dirEntries.has(previewFile)
-						: existsSync(previewPath)
+					? previewFile.includes("/")
+						? previewResolved !== null && existsSync(previewPath)
+						: dirEntries.has(previewFile)
 					: false;
 
 				if (!hasPreview) {
@@ -745,8 +758,9 @@ export default {
 			const safeRel = reqRelFile.replace(/\\/g, "/").replace(/^\/+/, "");
 			const targetPath = resolve(item.folder, safeRel);
 			const normalizedBase = resolve(item.folder);
+			const basePrefix = normalizedBase.endsWith(sep) ? normalizedBase : normalizedBase + sep;
 
-			if (!targetPath.startsWith(normalizedBase) || !existsSync(targetPath)) {
+			if (targetPath !== normalizedBase && !targetPath.startsWith(basePrefix) || !existsSync(targetPath)) {
 				res.status(404).end("File not found in wallpaper directory");
 				return;
 			}
@@ -804,8 +818,9 @@ export default {
 			const safeRel = reqRelFile.replace(/\\/g, "/").replace(/^\/+/, "");
 			const targetPath = resolve(item.folder, safeRel);
 			const normalizedBase = resolve(item.folder);
+			const basePrefix = normalizedBase.endsWith(sep) ? normalizedBase : normalizedBase + sep;
 
-			if (!targetPath.startsWith(normalizedBase) || !existsSync(targetPath)) {
+			if (targetPath !== normalizedBase && !targetPath.startsWith(basePrefix) || !existsSync(targetPath)) {
 				res.status(404).end("File not found in wallpaper directory");
 				return;
 			}
@@ -983,6 +998,12 @@ canvas, video, img {
 				res.writeHead(200, {
 					"Content-Type": "text/html; charset=utf-8",
 					"Content-Length": Buffer.byteLength(html, "utf8"),
+					// 网页壁纸以独立沙箱 origin 渲染：禁 same-origin，脚本逃不出 opaque origin，
+					// 无法触及应用页面/API/存储；default-src 放开以兼容依赖远程资源的壁纸。
+					"Content-Security-Policy":
+						"sandbox allow-scripts allow-forms allow-popups allow-modals; " +
+						"default-src * data: blob:; script-src 'unsafe-inline' 'unsafe-eval' data: blob: *; " +
+						"style-src 'unsafe-inline' *; img-src * data: blob:; media-src * blob:",
 				});
 				res.end(html);
 				return;
