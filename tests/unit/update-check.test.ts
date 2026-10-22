@@ -4,10 +4,12 @@
  * 全程注入 fake fetcher，零网络。
  */
 import { describe, expect, it, vi } from "vitest";
+import { execFileSync } from "node:child_process";
 import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import {
+	buildLsRemotePatternsForRef,
 	checkAll,
 	collectTargets,
 	compareVersions,
@@ -23,6 +25,7 @@ import {
 	parseNpmrcAuth,
 	parseNpmrcRegistry,
 	parsePiVersionOutput,
+	pickRemoteShaForRef,
 	resolveNpmRegistry,
 	type Fetcher,
 	type GitCheckFn,
@@ -830,8 +833,220 @@ describe("checkAll git extensions (issue #178)", () => {
 	});
 });
 
-describe("defaultCheckGitExtension", () => {
-	it("is a function (real git covered by manual probe, not unit CI)", () => {
+describe("buildLsRemotePatternsForRef", () => {
+	it("expands shorthand into branches, tags, peeled tags, and bare name", () => {
+		expect(buildLsRemotePatternsForRef("dev")).toEqual([
+			"refs/heads/dev",
+			"refs/tags/dev",
+			"refs/tags/dev^{}",
+			"dev",
+			"dev^{}",
+		]);
+	});
+
+	it("keeps full refs/ path with peeled tag variant only", () => {
+		expect(buildLsRemotePatternsForRef("refs/heads/feature/x")).toEqual([
+			"refs/heads/feature/x",
+			"refs/heads/feature/x^{}",
+		]);
+		expect(buildLsRemotePatternsForRef("refs/tags/v1.0.0")).toEqual(["refs/tags/v1.0.0", "refs/tags/v1.0.0^{}"]);
+	});
+});
+
+describe("pickRemoteShaForRef", () => {
+	const SHA_BRANCH = "1111111111111111111111111111111111111111";
+	const SHA_TAG_OBJ = "2222222222222222222222222222222222222222";
+	const SHA_TAG_COMMIT = "3333333333333333333333333333333333333333";
+	const SHA_EXPLICIT = "4444444444444444444444444444444444444444";
+
+	it("matches branch ref", () => {
+		const out = `${SHA_BRANCH}\trefs/heads/dev\n`;
+		expect(pickRemoteShaForRef(out, "dev")).toBe(SHA_BRANCH);
+	});
+
+	it("prefers peeled tag (annotated tag commit) over unpeeled tag object", () => {
+		const out = `${SHA_TAG_OBJ}\trefs/tags/v1.0.0\n${SHA_TAG_COMMIT}\trefs/tags/v1.0.0^{}\n`;
+		expect(pickRemoteShaForRef(out, "v1.0.0")).toBe(SHA_TAG_COMMIT);
+	});
+
+	it("matches lightweight tag when no peeled line exists", () => {
+		const out = `${SHA_TAG_COMMIT}\trefs/tags/v1.0.0\n`;
+		expect(pickRemoteShaForRef(out, "v1.0.0")).toBe(SHA_TAG_COMMIT);
+	});
+
+	it("matches full refs/heads or refs/tags paths", () => {
+		const out = `${SHA_EXPLICIT}\trefs/heads/dev\n`;
+		expect(pickRemoteShaForRef(out, "refs/heads/dev")).toBe(SHA_EXPLICIT);
+	});
+
+	it("returns null when no matching ref is found", () => {
+		const out = `${SHA_BRANCH}\trefs/heads/main\n`;
+		expect(pickRemoteShaForRef(out, "dev")).toBeNull();
+		expect(pickRemoteShaForRef("", "dev")).toBeNull();
+	});
+});
+
+describe("checkAll git extensions with ref (issue #665)", () => {
+	const LOCAL_A = "a".repeat(40);
+	const REMOTE_DEV = "d".repeat(40);
+	const calls: Array<{ dir: string; ref?: string | null }> = [];
+	const gitCheck: GitCheckFn = async (dir: string, ref?: string | null) => {
+		calls.push({ dir, ref });
+		if (ref === "dev") return { localSha: LOCAL_A, remoteSha: LOCAL_A };
+		if (ref === "outdated") return { localSha: LOCAL_A, remoteSha: REMOTE_DEV };
+		return { localSha: LOCAL_A, remoteSha: LOCAL_A };
+	};
+
+	it("passes ref to gitCheck and respects upToDate result", async () => {
+		const targets: LocalPackage[] = [
+			{
+				name: "ref-ext",
+				version: "0.1.0",
+				kind: "git-extension",
+				source: "github.com/acme/widgets",
+				installDir: "/widgets",
+				ref: "dev",
+			},
+			{
+				name: "outdated-ext",
+				version: "0.1.0",
+				kind: "git-extension",
+				source: "github.com/acme/outdated",
+				installDir: "/outdated",
+				ref: "outdated",
+			},
+		];
+		const { fetcher } = makeFetcher({});
+		const items = await checkAll(targets, fetcher, undefined, undefined, gitCheck);
+		expect(calls).toEqual([
+			{ dir: "/widgets", ref: "dev" },
+			{ dir: "/outdated", ref: "outdated" },
+		]);
+		expect(items[0]).toMatchObject({
+			name: "ref-ext",
+			upToDate: true,
+			current: "0.1.0 (aaaaaaa)",
+			latest: "0.1.0 (aaaaaaa)",
+		});
+		expect(items[1]).toMatchObject({
+			name: "outdated-ext",
+			upToDate: false,
+			current: "0.1.0 (aaaaaaa)",
+			latest: "0.1.0 (ddddddd)",
+		});
+	});
+});
+
+describe("defaultCheckGitExtension (issue #665)", () => {
+	it("is a function", () => {
 		expect(typeof defaultCheckGitExtension).toBe("function");
 	});
+
+	it("resolves ref properly against remote without relying on checked-out upstream", async () => {
+		const root = mkdtempSync(join(tmpdir(), "upd-git-repo-"));
+		const remoteDir = join(root, "remote");
+		const cloneDir = join(root, "clone");
+
+		try {
+			// 1. Create a remote bare repo with main and dev branches + annotated tag
+			const git = (args: string[], cwd: string) =>
+				execFileSync("git", args, {
+					cwd,
+					encoding: "utf8",
+					env: {
+						...process.env,
+						GIT_AUTHOR_NAME: "tester",
+						GIT_AUTHOR_EMAIL: "tester@example.com",
+						GIT_COMMITTER_NAME: "tester",
+						GIT_COMMITTER_EMAIL: "tester@example.com",
+					},
+				}).trim();
+
+			mkdirSync(remoteDir, { recursive: true });
+			git(["init", "--bare", "-b", "main"], remoteDir);
+
+			// Temporary work dir to push initial commits
+			const workDir = join(root, "work");
+			mkdirSync(workDir, { recursive: true });
+			git(["init", "-b", "main"], workDir);
+			writeFileSync(join(workDir, "file.txt"), "main commit 1\n");
+			git(["add", "file.txt"], workDir);
+			const mainCommit1 = git(["commit", "-m", "main 1"], workDir);
+			git(["remote", "add", "origin", remoteDir], workDir);
+			git(["push", "-u", "origin", "main"], workDir);
+
+			// Create dev branch with another commit
+			git(["checkout", "-b", "dev"], workDir);
+			writeFileSync(join(workDir, "dev.txt"), "dev commit 1\n");
+			git(["add", "dev.txt"], workDir);
+			git(["commit", "-m", "dev 1"], workDir);
+			const devCommit = git(["rev-parse", "HEAD"], workDir);
+			git(["push", "-u", "origin", "dev"], workDir);
+
+			// Create annotated tag on dev commit
+			git(["tag", "-a", "v1.0.0", "-m", "tag v1.0.0", devCommit], workDir);
+			git(["push", "origin", "v1.0.0"], workDir);
+
+			// Add a new commit to main so main > mainCommit1
+			git(["checkout", "main"], workDir);
+			writeFileSync(join(workDir, "file.txt"), "main commit 2\n");
+			git(["add", "file.txt"], workDir);
+			git(["commit", "-m", "main 2"], workDir);
+			const mainCommit2 = git(["rev-parse", "HEAD"], workDir);
+			git(["push", "origin", "main"], workDir);
+
+			// 2. Clone repository: checked out on main, but reset to devCommit (simulating pi update state)
+			git(["clone", remoteDir, cloneDir], root);
+			// Symbolic-ref HEAD is still refs/heads/main, upstream is origin/main,
+			// but working tree & HEAD is set to devCommit
+			git(["reset", "--hard", devCommit], cloneDir);
+
+			const localSha = git(["rev-parse", "HEAD"], cloneDir);
+			const currentBranch = git(["symbolic-ref", "--short", "HEAD"], cloneDir);
+			expect(currentBranch).toBe("main");
+
+			// Case 1: with ref="dev" -> resolves to origin/dev (devCommit), NOT origin/main (mainCommit2)!
+			const resDev = await defaultCheckGitExtension(cloneDir, "dev");
+			expect(resDev.localSha).toBe(localSha);
+			expect(resDev.remoteSha).toBe(resDev.localSha); // Up-to-date with dev!
+
+			// Case 2: with ref="v1.0.0" -> resolves to peeled commit of annotated tag
+			const resTag = await defaultCheckGitExtension(cloneDir, "v1.0.0");
+			expect(resTag.localSha).toBe(localSha);
+			expect(resTag.remoteSha).toBe(resDev.localSha); // Same commit as tag!
+
+			// Case 3: with ref=commit SHA (exact or short sha)
+			const shortDev = localSha.slice(0, 7);
+			const resSha = await defaultCheckGitExtension(cloneDir, shortDev);
+			expect(resSha.localSha).toBe(localSha);
+			expect(resSha.remoteSha).toBe(localSha);
+
+			// Case 3b: commit SHA works even if remote is unreachable (e.g. offline)
+			// Point origin to a nonexistent local path that fails immediately without network DNS delay
+			git(["remote", "set-url", "origin", join(root, "nonexistent-remote")], cloneDir);
+			const resOfflineSha = await defaultCheckGitExtension(cloneDir, shortDev);
+			expect(resOfflineSha.localSha).toBe(localSha);
+			expect(resOfflineSha.remoteSha).toBe(localSha);
+			// Restore origin URL
+			git(["remote", "set-url", "origin", remoteDir], cloneDir);
+
+			// Case 4: with ref=commit SHA that does not match local HEAD
+			const shortMain = git(["rev-parse", "main"], workDir).slice(0, 7);
+			const resShaDiff = await defaultCheckGitExtension(cloneDir, shortMain);
+			expect(resShaDiff.localSha).toBe(localSha);
+			expect(resShaDiff.remoteSha).not.toBe(localSha);
+
+			// Case 5: nonexistent ref throws clear error
+			await expect(defaultCheckGitExtension(cloneDir, "nonexistent-branch")).rejects.toThrow(
+				/Failed to resolve remote ref/,
+			);
+
+			// Case 6: without ref -> falls back to upstream (origin/main == mainCommit2), so remoteSha != localSha
+			const resNoRef = await defaultCheckGitExtension(cloneDir);
+			expect(resNoRef.localSha).toBe(localSha);
+			expect(resNoRef.remoteSha).not.toBe(localSha);
+		} finally {
+			rmSync(root, { recursive: true, force: true });
+		}
+	}, 20_000);
 });

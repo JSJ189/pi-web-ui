@@ -369,16 +369,99 @@ export interface GitCheckResult {
 	remoteSha: string;
 }
 
-export type GitCheckFn = (installDir: string) => Promise<GitCheckResult>;
+export type GitCheckFn = (installDir: string, ref?: string | null) => Promise<GitCheckResult>;
+
+/**
+ * Patterns to query via `git ls-remote` for a requested ref name.
+ * Full `refs/` paths are queried directly (with peeled tag fallback);
+ * shorthand names look up branches, tags, and peeled tags.
+ */
+export function buildLsRemotePatternsForRef(ref: string): string[] {
+	if (ref.startsWith("refs/")) {
+		return [ref, `${ref}^{}`];
+	}
+	return [`refs/heads/${ref}`, `refs/tags/${ref}`, `refs/tags/${ref}^{}`, ref, `${ref}^{}`];
+}
+
+/**
+ * Pick the remote commit SHA corresponding to a requested ref from `git ls-remote` output.
+ *
+ * Precedence:
+ * 1. Full/explicit ref match (`refs/...^{}`, direct `refs/...`, or `HEAD`)
+ * 2. Branch ref: `refs/heads/<ref>`
+ * 3. Tag ref: peeled annotated tag (`refs/tags/<ref>^{}`) wins over lightweight tag (`refs/tags/<ref>`)
+ */
+export function pickRemoteShaForRef(output: string, ref: string): string | null {
+	const map = new Map<string, string>();
+	for (const line of output.split(/\r?\n/)) {
+		const match = line.trim().match(/^([0-9a-f]{40})\s+(\S+)$/i);
+		if (match) {
+			map.set(match[2], match[1]);
+		}
+	}
+	// Full / explicit ref match
+	if (map.has(`${ref}^{}`)) return map.get(`${ref}^{}`)!;
+	if (map.has(ref)) return map.get(ref)!;
+
+	// Branch: refs/heads/<ref>
+	const branchRef = `refs/heads/${ref}`;
+	if (map.has(branchRef)) return map.get(branchRef)!;
+
+	// Tag: peeled tag wins over unpeeled tag
+	const peeledTagRef = `refs/tags/${ref}^{}`;
+	if (map.has(peeledTagRef)) return map.get(peeledTagRef)!;
+	const tagRef = `refs/tags/${ref}`;
+	if (map.has(tagRef)) return map.get(tagRef)!;
+
+	return null;
+}
 
 /**
  * Compare a clone's HEAD against its remote (lightweight: `ls-remote` fetches
- * refs only, no objects). Upstream branch wins when configured, else origin
- * HEAD — the same order pi core `getRemoteGitHead` uses.
+ * refs only, no objects). When a configured ref (`@...`) is given, the remote
+ * benchmark is resolved from that ref (branch, tag, or commit sha) instead of
+ * blindly comparing against the checked-out branch's upstream (issue #665).
+ * When ref is absent, upstream branch wins when configured, else origin HEAD.
  */
-export async function defaultCheckGitExtension(installDir: string): Promise<GitCheckResult> {
+export async function defaultCheckGitExtension(installDir: string, ref?: string | null): Promise<GitCheckResult> {
 	const localSha = await runGit(["rev-parse", "HEAD"], installDir);
 	if (!/^[0-9a-f]{40}$/i.test(localSha)) throw new Error(`Bad local HEAD: ${localSha.slice(0, 20)}`);
+
+	const targetRef = ref?.trim() || null;
+	if (targetRef) {
+		let remoteSha: string | null = null;
+		let lsRemoteError: unknown = null;
+		try {
+			const patterns = buildLsRemotePatternsForRef(targetRef);
+			const out = await runGit(["ls-remote", "origin", ...patterns], installDir);
+			remoteSha = pickRemoteShaForRef(out, targetRef);
+		} catch (err) {
+			lsRemoteError = err;
+		}
+
+		if (!remoteSha && /^[0-9a-f]{7,40}$/i.test(targetRef)) {
+			// Commit SHA reference: if local HEAD already matches the requested SHA (prefix or exact),
+			// the clone is fully up to date.
+			if (localSha.toLowerCase().startsWith(targetRef.toLowerCase())) {
+				remoteSha = localSha;
+			} else {
+				try {
+					const parsed = await runGit(["rev-parse", `${targetRef}^{commit}`], installDir);
+					if (/^[0-9a-f]{40}$/i.test(parsed)) remoteSha = parsed;
+				} catch {
+					/* commit not present in local repo yet */
+				}
+				if (!remoteSha) remoteSha = targetRef;
+			}
+		}
+
+		if (!remoteSha) {
+			if (lsRemoteError) throw lsRemoteError;
+			throw new Error(`Failed to resolve remote ref: ${targetRef}`);
+		}
+		return { localSha, remoteSha };
+	}
+
 	let remoteSha: string | null = null;
 	try {
 		const upstream = await runGit(["rev-parse", "--abbrev-ref", "@{upstream}"], installDir);
@@ -843,8 +926,8 @@ export async function checkAll(
 			if (t.kind === "git-extension") {
 				try {
 					if (!t.installDir) throw new Error("missing install dir");
-					const { localSha, remoteSha } = await gitCheck(t.installDir);
-					const upToDate = localSha.trim() === remoteSha.trim();
+					const { localSha, remoteSha } = await gitCheck(t.installDir, t.ref);
+					const upToDate = localSha.trim().toLowerCase() === remoteSha.trim().toLowerCase();
 					results[i] = {
 						name: t.name,
 						kind: t.kind,
