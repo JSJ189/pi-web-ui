@@ -595,15 +595,14 @@ describe("TopBar 靠左图标提示向右偏移（防左缘溢出裁剪）", () 
 		expect(spacers[0]!.classList.contains("tb-spacer-end")).toBe(true);
 	});
 
-	it("下拉面板类条目（sound/language/theme/update）在顶栏只渲染单层触发按钮，不嵌套双层 data-tip", () => {
+	it("下拉面板类条目（language/theme/update）在顶栏只渲染单层触发按钮，不嵌套双层 data-tip", () => {
 		const { container } = mount("chat", [
-			{ ...hostEntry("host:sound"), align: "start" },
 			{ ...hostEntry("host:language"), align: "start" },
 			{ ...hostEntry("host:theme"), align: "start" },
 			{ ...hostEntry("host:update"), align: "start" },
 		]);
 		const dropdowns = container.querySelectorAll(".topbar-flow > .dropdown");
-		expect(dropdowns.length).toBe(4);
+		expect(dropdowns.length).toBe(3);
 		for (const dd of dropdowns) {
 			const buttons = dd.querySelectorAll("button");
 			expect(buttons.length).toBe(1);

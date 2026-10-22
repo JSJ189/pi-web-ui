@@ -189,9 +189,12 @@ export class MessageWindowTap {
 		this.send(msg);
 	}
 
-	/** 客户端往上翻页：把窗口起点往前扩 `count` 条（`all` = 一路拉到最早）。 */
-	loadEarlier(count?: number, all?: boolean): void {
-		const convId = this.lastConversationId;
+	/** 客户端往上翻页：把窗口起点往前扩 `count` 条（`all` = 一路拉到最早）。
+	 *  `conversationId` 缺省时回退最近一次快照的会话（老客户端兼容）；
+	 *  显式传入时只服务该会话——多标签/后台流式会顶掉 `lastConversationId`，
+	 *  若前端明确说自己正在看哪个会话就必须以它为准，避免跨会话串台。 */
+	loadEarlier(count?: number, all?: boolean, conversationId?: string): void {
+		const convId = conversationId || this.lastConversationId;
 		const entry = convId ? this.convs.get(convId) : undefined;
 		if (!entry || !convId) return;
 		const total = entry.full.length;

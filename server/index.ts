@@ -2855,7 +2855,7 @@ wss.on("connection", (ws) => {
 		// 历史窗口按需加载：连接级窗口化直接服务（四个引擎通吃，不依赖引擎实现）。
 		// 放在引擎分发之前：它不是引擎能力，窗口化关闭时静默无回执（前端保持现状）。
 		if (msg.type === "load_earlier_messages") {
-			windowTap.loadEarlier(msg.count, msg.all);
+			windowTap.loadEarlier(msg.count, msg.all, msg.conversationId);
 			return;
 		}
 		// Managed instances do not install software on themselves, and tabs this

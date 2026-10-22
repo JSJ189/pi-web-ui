@@ -334,6 +334,9 @@ const PRESET_FIELD_KINDS = {
 	disabledSkills: "list",
 	disabledExtensions: "list",
 	skillsFullText: "list",
+	skillsCatalogMaxDesc: "number",
+	skillsCatalogShowLocation: "bool",
+	skillsCatalogBudget: "number",
 	// -- ai --------------------------------------------------------------
 	retryMaxAttempts: "retry",
 	softCapTokens: "softCap",

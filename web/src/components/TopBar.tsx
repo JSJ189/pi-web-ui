@@ -18,7 +18,6 @@ import {
 	FiSettings,
 	FiLayers,
 	FiTerminal,
-	FiVolume2,
 } from "react-icons/fi";
 import { GoTriangleDown } from "react-icons/go";
 import { LuFlaskConical, LuMessageSquareDashed } from "react-icons/lu";
@@ -28,11 +27,8 @@ import { buildUpdateCommand } from "../update-command";
 import { randomUuid } from "../uuid";
 import { Dropdown, DropdownItem } from "./Dropdown";
 import type { ViewName } from "./BarItem";
-import { SoundSettingsPanel } from "./SoundSettings";
 import { BrowserControl } from "./BrowserControl";
 import { BROWSER_PAGE_TOOL_NAME } from "../../../server/tool-manager.js";
-import { NotifyToggle } from "./NotifyToggle";
-import type { SoundKind, SoundSettings } from "../sounds";
 import { PluginIcon } from "../plugin-icon";
 import { formatCostDisplay } from "../cost-format";
 import { isZhLocale, useI18n, localeShort } from "../i18n";
@@ -201,10 +197,6 @@ interface TopBarProps {
 	onOpenBgTasks: () => void;
 	/** Open the global search panel (sessions / projects / workspace files). */
 	onOpenGlobalSearch: () => void;
-	/** Sound notification settings + change handler (owned by App). */
-	sound: SoundSettings;
-	onSoundChange: (settings: SoundSettings) => void;
-	onSoundPreview: (kind: SoundKind) => void;
 	/** Theme list + current selection + switch handler (owned by App). */
 	themes: {
 		id: string;
@@ -242,9 +234,6 @@ export function TopBar({
 	onManagePlugins,
 	onOpenBgTasks,
 	onOpenGlobalSearch,
-	sound,
-	onSoundChange,
-	onSoundPreview,
 	themes,
 	theme,
 	onThemeChange,
@@ -340,7 +329,6 @@ export function TopBar({
 		"host:tasks",
 		"host:zen-mode",
 		"host:settings",
-		"host:sound",
 		"host:language",
 		"host:theme",
 		"host:update",
@@ -557,7 +545,6 @@ export function TopBar({
 	useEffect(() => {
 		if (restarting && chat.status === "open") setRestarting(false);
 	}, [restarting, chat.status]);
-	const [soundOpen, setSoundOpen] = useState(false);
 	const [langOpen, setLangOpen] = useState(false);
 	const [themeOpen, setThemeOpen] = useState(false);
 	const [updateOpen, setUpdateOpen] = useState(false);
@@ -1226,23 +1213,6 @@ export function TopBar({
 				<span className="chip-sub">{t("settings")}</span>
 			</button>
 		),
-		"host:sound": (
-			<Dropdown
-				trigger={
-					<>
-						<FiVolume2 />
-						<span className="chip-sub">{t("sound")}</span>
-					</>
-				}
-				tip={t("sound")}
-				open={soundOpen}
-				onOpenChange={setSoundOpen}
-				caret={false}
-			>
-				<SoundSettingsPanel settings={sound} onChange={onSoundChange} onPreview={onSoundPreview} />
-				<NotifyToggle />
-			</Dropdown>
-		),
 		"host:language": (
 			<Dropdown
 				trigger={
@@ -1469,14 +1439,7 @@ export function TopBar({
 	/** 溢出菜单里**整块搬进来**的宿主条目（菜单型：下拉/外链/自带面板）。
 	 *  其余宿主条目（history / files / new-chat / search / tasks / settings）在菜单里是一条扁平
 	 *  菜单项，由 dispatchHostOverflow 分派到本地处理器 —— 扁平的更像菜单，整块的才需要搬组件。 */
-	const OVERFLOW_AS_NODE_IDS = new Set([
-		"host:sound",
-		"host:language",
-		"host:theme",
-		"host:update",
-		"host:browser",
-		"host:engine",
-	]);
+	const OVERFLOW_AS_NODE_IDS = new Set(["host:language", "host:theme", "host:update", "host:browser", "host:engine"]);
 	/** TABS 白名单门禁（历史口径，不扩大）：search/tasks/settings 的显隐还受白名单管，
 	 *  其余宿主入口只看 slot（各节点工厂内部自行判断，见 hostNodes）。 */
 	const isTabGatedOff = (id: string) => TABS_GATED_IDS.has(id) && !tabOn(id.slice("host:".length));
@@ -1576,9 +1539,6 @@ export function TopBar({
 					onToggleZenMode={onToggleZenMode}
 					onOpenSandboxModal={onOpenSandboxModal}
 					dropdownProps={{
-						sound,
-						onSoundChange,
-						onSoundPreview,
 						theme,
 						themes,
 						onThemeChange,

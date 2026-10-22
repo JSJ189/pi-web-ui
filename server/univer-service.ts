@@ -97,8 +97,6 @@ export class UniverService {
 					join(dataDir, "plugins", "office"),
 					join(REPO_ROOT, "plugins", "office"),
 					join(REPO_ROOT, "..", "plugins", "office"),
-					join(dataDir, "plugins", "univer-office"),
-					join(REPO_ROOT, "plugins", "univer-office"),
 				];
 
 				let baseDir = "";

@@ -236,8 +236,10 @@ export async function createWorkspaceSnapshot(cwd: string): Promise<string | nul
 		}
 		if (!tree) return null;
 
-		// 异步更新持久化影子 index 缓存供下轮秒级复用
-		void copyFile(tempIndex, cachePath).catch(() => {});
+		// 异步更新持久化影子 index 缓存供下轮秒级复用。必须 await 后再进 finally：
+		// 否则 finally 里 rm(tempIndex) 会在拷贝中途删掉源文件，Windows 上拷贝要么
+		// EBUSY 失败、要么把半截内容写进 cachePath（下轮读坏缓存再回落，缓存失效）。
+		await copyFile(tempIndex, cachePath).catch(() => {});
 
 		// 优化 3：检查 tree 是否与该 cwd 上次快照完全一致
 		const normCwd = resolve(cwd);

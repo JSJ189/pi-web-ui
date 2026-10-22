@@ -113,6 +113,19 @@ export function createDefaultCanvasGraph(id = "default"): CanvasGraph {
 	};
 }
 
+/** 画布图/节点 id 白名单：抵挡路径穿越（../）与 git 分支参数注入载体。
+ *  限制字符集与长度，杜绝 join 拼接逃逸、worktree 目录逃逸、git 分支名注入。 */
+const SAFE_ID_RE = /^[A-Za-z0-9._-]{1,64}$/;
+
+/** id 是否可安全用作文件名片段 / worktree 目录名 / git 分支名。 */
+export function isSafeGraphId(id: unknown): id is string {
+	return typeof id === "string" && SAFE_ID_RE.test(id);
+}
+
+function assertSafeGraphId(id: string): void {
+	if (!isSafeGraphId(id)) throw new Error(`Invalid canvas graph id: ${JSON.stringify(id)}`);
+}
+
 /** 确保画布存储目录存在 */
 function ensureCanvasDir(dataDir: string): string {
 	const dir = join(dataDir, "canvas");
@@ -164,6 +177,7 @@ export function listCanvasGraphs(dataDir: string): CanvasGraphSummary[] {
 
 /** 读取指定画布工程 */
 export function loadCanvasGraph(dataDir: string, id: string): CanvasGraph {
+	assertSafeGraphId(id);
 	const dir = ensureCanvasDir(dataDir);
 	const path = join(dir, `${id}.json`);
 	if (!existsSync(path)) {
@@ -179,6 +193,7 @@ export function loadCanvasGraph(dataDir: string, id: string): CanvasGraph {
 
 /** 保存或更新画布工程 */
 export function saveCanvasGraph(dataDir: string, graph: CanvasGraph): void {
+	assertSafeGraphId(graph.id);
 	const dir = ensureCanvasDir(dataDir);
 	graph.updatedAt = Date.now();
 	const path = join(dir, `${graph.id}.json`);
@@ -187,6 +202,7 @@ export function saveCanvasGraph(dataDir: string, graph: CanvasGraph): void {
 
 /** 删除画布工程 */
 export function deleteCanvasGraph(dataDir: string, id: string): boolean {
+	assertSafeGraphId(id);
 	const dir = ensureCanvasDir(dataDir);
 	const path = join(dir, `${id}.json`);
 	if (existsSync(path)) {

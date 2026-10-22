@@ -47,28 +47,33 @@ if (!runtimeBase) {
 	process.exit(1);
 }
 
-// 检查版本族兼容性（如 0.1.x vs 0.2.x 之间 typert codec 不兼容）
-if (!compatibility?.compatible) {
-	const ignoreVer = process.env.PI_WEB_DSH_IGNORE_VERSION === "1" || process.env.PI_WEB_DSH_IGNORE_VERSION === "true";
-	const verMsg =
-		`[${BIN_NAME}] DSH 运行时版本族不匹配：\n` +
-		`  - 检测到运行时版本：${compatibility?.runtimeVersion ?? "未知"}（位于 ${runtimeBase}）\n` +
-		`  - pi-web-ui 期望版本族：${expectedFamily}（当前自带依赖 @deepseek-ai/dsh@${expectedVersion}）\n\n` +
-		`DSH 0.1.x 与 0.2.x 之间底层协议与 typert codec 不兼容，混装会导致启动失败。\n` +
-		`推荐解决方案：\n` +
-		`  1. 全局安装匹配版本的运行时：\n` +
-		`     npm i -g @deepseek-ai/dsh@${expectedVersion}\n` +
-		`  2. 或通过独立前缀安装并配置环境变量（推荐，不影响全局 CLI）：\n` +
-		`     npm i -g @deepseek-ai/dsh@${expectedVersion} --prefix ~/.pi-web/dsh-runtime-${expectedFamily}\n` +
-		`     并在启动 pi-web-ui 时设置环境变量：\n` +
-		`     PI_WEB_DSH_RUNTIME=~/.pi-web/dsh-runtime-${expectedFamily}/lib/node_modules\n\n` +
-		`详见文档 docs/dsh-engine.md。\n`;
+process.env.PI_WEB_DSH_RUNTIME_BASE = runtimeBase;
 
-	if (ignoreVer) {
-		process.stderr.write(`[${BIN_NAME}] 警告: 已通过 PI_WEB_DSH_IGNORE_VERSION 跳过版本族检查。\n` + verMsg);
+// 检查版本族兼容性（默认宽松尝试运行；若需严格匹配可设置 PI_WEB_DSH_STRICT_VERSION=1）
+if (!compatibility?.compatible) {
+	const strictVer = process.env.PI_WEB_DSH_STRICT_VERSION === "1" || process.env.PI_WEB_DSH_STRICT_VERSION === "true";
+	const verMsg =
+		`[${BIN_NAME}] 注意：检测到 DSH 运行时版本（${compatibility?.runtimeVersion ?? "未知"}）与期望版本（${expectedVersion}，版本族 ${expectedFamily}）不同。\n` +
+		`  - 运行时树位置：${runtimeBase}\n` +
+		`  - 默认以可用运行时树为准并尝试向前兼容启动。如需强制版本一致，可设置 PI_WEB_DSH_STRICT_VERSION=1。\n`;
+
+	if (strictVer) {
+		process.stderr.write(
+			`[${BIN_NAME}] DSH 运行时版本族不匹配（已开启 PI_WEB_DSH_STRICT_VERSION 严格模式）：\n` +
+				`  - 检测到运行时版本：${compatibility?.runtimeVersion ?? "未知"}（位于 ${runtimeBase}）\n` +
+				`  - pi-web-ui 期望版本族：${expectedFamily}（当前依赖 @deepseek-ai/dsh@${expectedVersion}）\n\n` +
+				`推荐解决方案：\n` +
+				`  1. 全局安装匹配版本的运行时：\n` +
+				`     npm i -g @deepseek-ai/dsh@${expectedVersion}\n` +
+				`  2. 或通过独立前缀安装并配置环境变量（推荐，不影响全局 CLI）：\n` +
+				`     npm i -g @deepseek-ai/dsh@${expectedVersion} --prefix ~/.pi-web/dsh-runtime-${expectedFamily}\n` +
+				`     并在启动 pi-web-ui 时设置环境变量：\n` +
+				`     PI_WEB_DSH_RUNTIME=~/.pi-web/dsh-runtime-${expectedFamily}/lib/node_modules\n\n` +
+				`详见文档 docs/dsh-engine.md。\n`,
+		);
+		process.exit(1);
 	} else {
 		process.stderr.write(verMsg);
-		process.exit(1);
 	}
 }
 
@@ -197,11 +202,10 @@ try {
 	};
 	process.stderr.write(`[${BIN_NAME}] boot 失败: ${err?.message ?? String(err)}\n   runtime base: ${runtimeBase}\n`);
 	walk(err, 0);
-	if (isTypertFailure) {
+	if (isTypertFailure || !compatibility?.compatible) {
 		process.stderr.write(
-			`\n[${BIN_NAME}] 诊断：检测到 typert codec 注册失败。\n` +
-				`这通常是因为外部运行时树（版本 ${compatibility?.runtimeVersion ?? "未知"}）与 pi-web-ui 依赖的 DSH 扩展插件（期望版本族 ${expectedFamily}）接口不兼容。\n` +
-				`请执行 npm i -g @deepseek-ai/dsh@${expectedVersion} 重新安装匹配版本的运行时。\n\n`,
+			`\n[${BIN_NAME}] 诊断：检测到启动失败。当前运行时版本为 ${compatibility?.runtimeVersion ?? "未知"}（期望版本族 ${expectedFamily}）。\n` +
+				`若因跨版本破坏性变更引起，请执行 npm i -g @deepseek-ai/dsh@${expectedVersion} 重新安装匹配版本的运行时。\n\n`,
 		);
 	}
 	process.exit(1);

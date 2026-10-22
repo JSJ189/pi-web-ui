@@ -14,6 +14,7 @@
  */
 
 import type { AgentSession } from "@earendil-works/pi-coding-agent";
+import { SOFT_CAP_MIN_HEADROOM } from "./soft-cap.js";
 
 export type AgentMessage = AgentSession["messages"][number];
 
@@ -372,10 +373,11 @@ export function pruneContextHierarchically(
 ): HierarchicalPruningResult {
 	const contextWindow = options.contextWindow > 0 ? options.contextWindow : 128_000;
 	const reserveTokens = options.reserveTokens > 0 ? options.reserveTokens : 16_384;
-	const effectiveCap =
-		options.softCap && options.softCap > 0
-			? Math.min(options.softCap, contextWindow - reserveTokens)
-			: Math.max(1, contextWindow - reserveTokens);
+	const room = contextWindow - reserveTokens;
+	// reserve 若是按更大窗口换算的（例如 1M - 256K = 744K），room 会变成负数，
+	// 70% 水位跟着变成负数，任意长度都会裁。只在 room 不为正时改按当前窗口收口。
+	const physicalCap = room > 0 ? room : Math.max(1, contextWindow - SOFT_CAP_MIN_HEADROOM);
+	const effectiveCap = options.softCap && options.softCap > 0 ? Math.min(options.softCap, physicalCap) : physicalCap;
 
 	const tier1Watermark = options.tier1Watermark ?? DEFAULT_PRUNE_WATERMARK;
 	const tier2Watermark = options.tier2Watermark ?? DEFAULT_STAGE2_WATERMARK;

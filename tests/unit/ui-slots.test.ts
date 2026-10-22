@@ -113,7 +113,7 @@ describe("BUILTIN_UI_ITEMS（宿主默认）", () => {
 
 	it("覆盖宿主既有入口（顶栏/底栏/右键菜单），且没有把 settings.pages 列成内置", () => {
 		const bySlot = (slot: UiSlotId) => BUILTIN_UI_ITEMS.filter((i) => i.slot === slot).map((i) => i.id);
-		// 顶栏：视图三连 + 搜索/浏览器/后台任务/设置/声音/语言/主题/更新
+		// 顶栏：视图三连 + 搜索/浏览器/后台任务/设置/语言/主题/更新
 		expect(bySlot("topbar.primary")).toEqual(
 			expect.arrayContaining([
 				"host:chat",
@@ -123,7 +123,6 @@ describe("BUILTIN_UI_ITEMS（宿主默认）", () => {
 				"host:browser",
 				"host:tasks",
 				"host:settings",
-				"host:sound",
 				"host:language",
 				"host:update",
 			]),
@@ -164,7 +163,6 @@ describe("buildUiSlots / 第 1 层：宿主默认", () => {
 			"host:tasks",
 			"host:zen-mode",
 			"host:settings",
-			"host:sound",
 			"host:language",
 			"host:theme",
 			"host:update",
@@ -216,12 +214,11 @@ describe("buildUiSlots / 第 1 层：宿主默认", () => {
 	/** 缺省收起 = 低频 / 有替代入口的条目落进顶栏「⋯」（App.tsx 把 hidden 的 primary 条目
 	 *  塞进 uiOverflow → 菜单里能点，菜单型条目在菜单里是整块组件，功能不少）。
 	 *  这条断言是「顶栏默认长什么样」的唯一入口 —— 想改默认口径就改这里与 BUILTIN_UI_ITEMS。 */
-	it("缺省收进「⋯」的 6 条 + 常驻的 14 条", () => {
+	it("缺省收进「⋯」的 5 条 + 常驻的 14 条", () => {
 		const slots = build([]);
 		const top = slots["topbar.primary"];
 		expect(top.filter((e) => e.hidden).map((e) => e.id)).toEqual([
 			"host:browser",
-			"host:sound",
 			"host:language",
 			"host:theme",
 			"host:update",

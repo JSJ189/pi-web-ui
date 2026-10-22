@@ -1314,6 +1314,16 @@ export default {
 						genCfg = res.config;
 						persistGen();
 						const sid = res.service.id;
+						// 端点变更即吊销已存密钥（密钥与 baseUrl 绑定）：防止 AI 改 baseUrl 后
+						//  旧 key 随新端点外呼（探测/拉模型/生成均会携带存量密钥）。
+						const prevBase = res.previous?.baseUrl;
+						if (prevBase && prevBase !== res.service.baseUrl) {
+							try {
+								host.secrets?.delete(secretKey(sid));
+							} catch (err) {
+								host.log("warn", `吊销 ${sid} 旧端点密钥失败：`, err);
+							}
+						}
 						if (typeof params?.apiKey === "string") {
 							const k = params.apiKey.trim();
 							try {
@@ -1339,7 +1349,9 @@ export default {
 							svc = normalizeService(params, "probe-temp");
 						}
 						if (!svc) throw new Error("缺少有效的服务 id 或服务配置参数");
-						const key = GU.str(params?.apiKey) || (sid ? keyOf(sid) : "");
+						// probe 不自动携带存量密钥：baseUrl 可由提示注入改写，
+						//  带 key 外呼即密钥外泄；显式传 apiKey 才允许带。
+						const key = GU.str(params?.apiKey) || "";
 						const out = await probeService(svc, { key, fetch: globalThis.fetch });
 						const text = `Probe ${svc.name || svc.id}: ${out.ok ? "SUCCESS" : "FAILED"}\nDetail: ${out.detail}\nModels found: ${out.models?.length ?? 0}`;
 						return {
@@ -2008,7 +2020,9 @@ export default {
 				? normalizeService({ ...(pickService(genCfg, b.id) ?? {}), ...inline })
 				: pickService(genCfg, b.id ?? b.service);
 			if (!svc) throw new Error("没有这个服务");
-			const key = GU.str(b.apiKey) || keyOf(svc.id);
+			// inline 覆盖 baseUrl 时不用存量密钥（防止旧 key 随新端点外呼），显式 apiKey 除外。
+			const inlineResetsEndpoint = inline && String(b.service?.baseUrl ?? "").trim() ? true : false;
+			const key = GU.str(b.apiKey) || (inlineResetsEndpoint ? "" : keyOf(svc.id ?? ""));
 			const out = await probeService(svc, { key, fetch: globalThis.fetch });
 			res.json({ ok: out.ok, detail: out.detail ?? "", models: out.models ?? [] });
 		};
@@ -2020,7 +2034,8 @@ export default {
 				? normalizeService({ ...(pickService(genCfg, b.id) ?? {}), ...inline })
 				: pickService(genCfg, b.id ?? b.service);
 			if (!svc) throw new Error("没有这个服务");
-			const key = GU.str(b.apiKey) || keyOf(svc.id);
+			const inlineResetsEndpoint = inline && String(b.service?.baseUrl ?? "").trim() ? true : false;
+			const key = GU.str(b.apiKey) || (inlineResetsEndpoint ? "" : keyOf(svc.id ?? ""));
 			const out = await probeService(svc, { key, fetch: globalThis.fetch });
 			res.json({ ok: out.ok, detail: out.detail ?? "", models: out.models ?? [] });
 		};

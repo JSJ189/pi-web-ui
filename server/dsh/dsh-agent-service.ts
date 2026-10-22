@@ -4015,6 +4015,9 @@ export class DshClientSession {
 			openRecentSessionOnProjectSwitch: this.settings.openRecentSessionOnProjectSwitch ?? true,
 			// DSH 无 skill 全文注入概念，给空保协议完整。
 			skillsFullText: [],
+			skillsCatalogMaxDesc: 250,
+			skillsCatalogShowLocation: false,
+			skillsCatalogBudget: 20000,
 			visionBridgeEnabled: false,
 			visionBridgeModel: null,
 			visionBridgePromptMode: "append",

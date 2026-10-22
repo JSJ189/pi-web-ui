@@ -12,7 +12,17 @@
  *   node scripts/link-plugins.mjs legado-web -u   # 仅恢复指定插件
  */
 
-import { cpSync, existsSync, lstatSync, mkdirSync, readFileSync, renameSync, rmSync, symlinkSync } from "node:fs";
+import {
+	cpSync,
+	existsSync,
+	lstatSync,
+	mkdirSync,
+	readFileSync,
+	readdirSync,
+	renameSync,
+	rmSync,
+	symlinkSync,
+} from "node:fs";
 import { homedir } from "node:os";
 import { dirname, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
@@ -106,8 +116,28 @@ export function unlinkPlugin(id, { repoDir = repoPluginsDir, targetDir = userPlu
 	return true;
 }
 
+export function cleanBrokenSymlinks({ targetDir = userPluginsDir } = {}) {
+	if (!existsSync(targetDir)) return [];
+	const removed = [];
+	try {
+		for (const name of readdirSync(targetDir)) {
+			const p = join(targetDir, name);
+			try {
+				const st = lstatSync(p);
+				if (st.isSymbolicLink() && !existsSync(p)) {
+					rmSync(p, { force: true });
+					console.log(`[link-plugins] 自动清理失效软链接: ${name}`);
+					removed.push(name);
+				}
+			} catch {}
+		}
+	} catch {}
+	return removed;
+}
+
 // 主流程执行（CLI 模式）
 if (process.argv[1] && resolve(process.argv[1]) === resolve(fileURLToPath(import.meta.url))) {
+	cleanBrokenSymlinks();
 	const ids = getBuiltinPluginIds();
 	if (ids.length === 0) {
 		console.log("[link-plugins] 未找到内置插件，退出。");

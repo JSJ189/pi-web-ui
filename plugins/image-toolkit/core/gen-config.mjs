@@ -506,7 +506,7 @@ export function upsertServiceInConfig(cfg, patch = {}) {
 		defaultService,
 	});
 
-	return { config: nextConfig, service: merged, isNew: !existing };
+	return { config: nextConfig, service: merged, isNew: !existing, previous: existing ? structuredClone(existing) : null };
 }
 
 /**

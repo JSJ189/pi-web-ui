@@ -77,13 +77,14 @@ describe("runtime-root resolution and version compatibility", () => {
 	});
 
 	describe("getDshFamily", () => {
-		it("extracts major.minor.patch for 0.x pre-releases", () => {
-			expect(getDshFamily("0.1.5-rc.3")).toBe("0.1.5");
-			expect(getDshFamily("0.1.5")).toBe("0.1.5");
-			expect(getDshFamily("^0.1.5-rc.3")).toBe("0.1.5");
-			expect(getDshFamily("v0.1.5-rc.2")).toBe("0.1.5");
-			expect(getDshFamily("~0.2.1-rc.2")).toBe("0.2.1");
-			expect(getDshFamily("0.2.1")).toBe("0.2.1");
+		it("extracts major.minor for 0.x pre-releases", () => {
+			expect(getDshFamily("0.1.5-rc.3")).toBe("0.1");
+			expect(getDshFamily("0.1.5")).toBe("0.1");
+			expect(getDshFamily("^0.1.5-rc.3")).toBe("0.1");
+			expect(getDshFamily("v0.1.5-rc.2")).toBe("0.1");
+			expect(getDshFamily("~0.2.1-rc.2")).toBe("0.2");
+			expect(getDshFamily("0.2.1")).toBe("0.2");
+			expect(getDshFamily("0.2.2")).toBe("0.2");
 		});
 
 		it("extracts major for >= 1.0 releases", () => {
@@ -105,26 +106,26 @@ describe("runtime-root resolution and version compatibility", () => {
 			const root = createTempDir();
 			const basePkgDir = join(root, "@deepseek-ai", "dsh-base");
 			mkdirSync(basePkgDir, { recursive: true });
-			writeFileSync(join(basePkgDir, "package.json"), JSON.stringify({ version: "0.1.5-rc.3" }));
+			writeFileSync(join(basePkgDir, "package.json"), JSON.stringify({ version: "0.2.1-rc.2" }));
 
-			const compat = checkDshRuntimeCompatibility(root, "0.1.5-rc.3");
+			const compat = checkDshRuntimeCompatibility(root, "0.2.1-rc.2");
 			expect(compat.compatible).toBe(true);
-			expect(compat.runtimeVersion).toBe("0.1.5-rc.3");
-			expect(compat.runtimeFamily).toBe("0.1.5");
-			expect(compat.expectedFamily).toBe("0.1.5");
+			expect(compat.runtimeVersion).toBe("0.2.1-rc.2");
+			expect(compat.runtimeFamily).toBe("0.2");
+			expect(compat.expectedFamily).toBe("0.2");
 		});
 
-		it("marks compatible across rc numbers in the same 0.x family", () => {
+		it("marks compatible across minor patch/rc versions in the same 0.x family", () => {
 			const root = createTempDir();
 			const basePkgDir = join(root, "@deepseek-ai", "dsh-base");
 			mkdirSync(basePkgDir, { recursive: true });
-			writeFileSync(join(basePkgDir, "package.json"), JSON.stringify({ version: "0.1.5-rc.2" }));
+			writeFileSync(join(basePkgDir, "package.json"), JSON.stringify({ version: "0.2.2" }));
 
-			const compat = checkDshRuntimeCompatibility(root, "0.1.5-rc.3");
+			const compat = checkDshRuntimeCompatibility(root, "0.2.1-rc.2");
 			expect(compat.compatible).toBe(true);
 		});
 
-		it("marks incompatible when 0.x minor/patch differs (e.g. 0.2.1 vs 0.1.5)", () => {
+		it("marks incompatible when 0.x minor differs (e.g. 0.2.1 vs 0.1.5)", () => {
 			const root = createTempDir();
 			const basePkgDir = join(root, "@deepseek-ai", "dsh-base");
 			mkdirSync(basePkgDir, { recursive: true });
@@ -133,8 +134,8 @@ describe("runtime-root resolution and version compatibility", () => {
 			const compat = checkDshRuntimeCompatibility(root, "0.1.5-rc.3");
 			expect(compat.compatible).toBe(false);
 			expect(compat.runtimeVersion).toBe("0.2.1-rc.2");
-			expect(compat.runtimeFamily).toBe("0.2.1");
-			expect(compat.expectedFamily).toBe("0.1.5");
+			expect(compat.runtimeFamily).toBe("0.2");
+			expect(compat.expectedFamily).toBe("0.1");
 		});
 
 		it("handles missing package.json as incompatible", () => {
@@ -184,7 +185,7 @@ describe("runtime-root resolution and version compatibility", () => {
 		it("reads expected DSH version from package dependencies or fallback", () => {
 			const expected = getExpectedDshVersion();
 			expect(expected).toBeTruthy();
-			expect(getDshFamily(expected)).toBe("0.1.5");
+			expect(getDshFamily(expected)).toBe("0.2");
 		});
 	});
 
@@ -197,7 +198,8 @@ describe("runtime-root resolution and version compatibility", () => {
 			mkdirSync(bootDir, { recursive: true });
 			writeFileSync(join(baseDir, "cordis.patch.yml"), "# patch");
 			writeFileSync(join(bootDir, "index.js"), "// boot");
-			writeFileSync(join(baseDir, "package.json"), JSON.stringify({ version: "0.1.5-rc.3" }));
+			const expectedVer = getExpectedDshVersion();
+			writeFileSync(join(baseDir, "package.json"), JSON.stringify({ version: expectedVer }));
 
 			const oldEnv = process.env.PI_WEB_DSH_RUNTIME;
 			process.env.PI_WEB_DSH_RUNTIME = root;

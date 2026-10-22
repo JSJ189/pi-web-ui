@@ -17,13 +17,52 @@ import { resolve } from "node:path";
 import { dirname, join } from "node:path";
 import { fileURLToPath, pathToFileURL } from "node:url";
 import { existsSync } from "node:fs";
-import { JsonRpcLineTransport } from "@deepseek-ai/dsh-sdk-protocol";
-import { defineTool } from "@deepseek-ai/dsh-tools";
+import { resolveRuntimeBase } from "./runtime-root.mjs";
 
 const HERE = dirname(fileURLToPath(import.meta.url));
 
-/** 官方 jsonrpc-server 入口（env 优先，兜底从本文件向上找 node_modules 里的官方包）。 */
+if (!process.env.PI_WEB_DSH_RUNTIME_BASE) {
+	try {
+		const detected = await resolveRuntimeBase();
+		if (detected) process.env.PI_WEB_DSH_RUNTIME_BASE = detected;
+	} catch {}
+}
+
+/** 动态解析并加载 DSH 相关模块（优先使用当前正在运行的运行时树，兜底本地依赖） */
+async function loadDshModule(pkgName) {
+	const rt = process.env.PI_WEB_DSH_RUNTIME_BASE;
+	if (rt) {
+		const candidate = join(rt, pkgName, "lib", "index.js");
+		if (existsSync(candidate)) {
+			return import(pathToFileURL(candidate).href);
+		}
+	}
+	let cur = HERE;
+	for (let i = 0; i < 6; i++) {
+		const candidate = join(cur, "node_modules", pkgName, "lib", "index.js");
+		if (existsSync(candidate)) {
+			return import(pathToFileURL(candidate).href);
+		}
+		cur = dirname(cur);
+	}
+	return import(pkgName);
+}
+
+const { JsonRpcLineTransport } = await loadDshModule("@deepseek-ai/dsh-sdk-protocol");
+const { defineTool } = await loadDshModule("@deepseek-ai/dsh-tools");
+
+/** 官方 jsonrpc-server 入口（优先运行时树，次选 env，兜底从项目依赖向上找）。 */
 function findOfficialEntry() {
+	if (process.env.PI_WEB_DSH_RUNTIME_BASE) {
+		const candidate = join(
+			process.env.PI_WEB_DSH_RUNTIME_BASE,
+			"@deepseek-ai",
+			"dsh-sdk-jsonrpc-server",
+			"lib",
+			"index.js",
+		);
+		if (existsSync(candidate)) return candidate;
+	}
 	if (process.env.PI_WEB_DSH_JSONRPC_ENTRY) return resolve(process.env.PI_WEB_DSH_JSONRPC_ENTRY);
 	let cur = HERE;
 	for (let i = 0; i < 6; i++) {

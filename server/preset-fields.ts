@@ -55,7 +55,14 @@ export const PRESET_FIELD_GROUPS = {
 	// 终端接管
 	terminal: ["terminalBash", "terminalBashIdleMs", "terminalBashMaxForegroundMs"],
 	// 技能与扩展
-	skills: ["disabledSkills", "disabledExtensions", "skillsFullText"],
+	skills: [
+		"disabledSkills",
+		"disabledExtensions",
+		"skillsFullText",
+		"skillsCatalogMaxDesc",
+		"skillsCatalogShowLocation",
+		"skillsCatalogBudget",
+	],
 	// 模型侧行为与各专用提示词
 	ai: [
 		"retryMaxAttempts",
@@ -297,6 +304,24 @@ export const PRESET_FIELD_META = {
 		labelEn: "Skills Full Text in Context",
 		hintZh: "将指定技能的完整正文直接注入上下文，跳过 skill 工具按需载入",
 		hintEn: "Inject full text of selected skills directly into context",
+	},
+	skillsCatalogMaxDesc: {
+		labelZh: "技能描述截断字符数",
+		labelEn: "Skill Description Cap",
+		hintZh: "名录中单条技能描述最大字符数（默认 250，0 为不截断）",
+		hintEn: "Max characters per skill description in catalog (default 250, 0 to disable)",
+	},
+	skillsCatalogShowLocation: {
+		labelZh: "名录显示物理路径",
+		labelEn: "Show Skill Location",
+		hintZh: "是否在技能名录中输出 location 文件绝对路径（默认关，避免浪费 token 和泄露路径）",
+		hintEn: "Whether to output file path in skill catalog (default off to save tokens and prevent path leak)",
+	},
+	skillsCatalogBudget: {
+		labelZh: "技能名录总字符预算",
+		labelEn: "Skill Catalog Budget",
+		hintZh: "技能名录字符上限（默认 20000），超限自动降级为紧凑名称索引",
+		hintEn: "Total catalog character limit (default 20000), falls back to compact name index when exceeded",
 	},
 	// ai
 	retryMaxAttempts: {
@@ -635,6 +660,16 @@ export function formatPresetFieldValue(
 				: `Pinned full text for ${list.length} skill(s): ${list.join(", ")}`,
 			detail: list.map((item) => `- ${item}`).join("\n"),
 		};
+	}
+
+	if (field === "skillsCatalogMaxDesc" || field === "skillsCatalogBudget") {
+		const n = Number(value);
+		const zeroText = isZh ? "不限" : "No limit";
+		const valText = n === 0 ? zeroText : isZh ? `${n} 字符` : `${n} chars`;
+		return { summary: valText };
+	}
+	if (field === "skillsCatalogShowLocation") {
+		return { summary: value ? (isZh ? "开启" : "Enabled") : isZh ? "关闭" : "Disabled" };
 	}
 
 	// 6. 提示词文本

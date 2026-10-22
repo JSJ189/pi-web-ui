@@ -73,12 +73,22 @@ export function shouldRenderMainCompose(opts: {
 	preset?: string;
 	disabledToolCount: number;
 	isLazy?: boolean;
+	hasSkills?: boolean;
+	hasSkillsFullText?: boolean;
 }): boolean {
 	const tpl = (opts.promptTemplate ?? "").trim();
 	const ovs = opts.promptOverrides ?? {};
 	const hasOverride = Object.values(ovs).some((v) => typeof v === "string" && v.trim());
 	const preset = opts.preset ?? "standard";
-	return !!tpl || hasOverride || preset !== "standard" || opts.disabledToolCount > 0 || opts.isLazy === true;
+	return (
+		!!tpl ||
+		hasOverride ||
+		preset !== "standard" ||
+		opts.disabledToolCount > 0 ||
+		opts.isLazy === true ||
+		opts.hasSkills === true ||
+		opts.hasSkillsFullText === true
+	);
 }
 
 /**
@@ -92,6 +102,8 @@ export function renderMainCompose(
 		preset?: string;
 		disabledToolCount: number;
 		isLazy?: boolean;
+		hasSkills?: boolean;
+		hasSkillsFullText?: boolean;
 	},
 ): string | undefined {
 	if (!shouldRenderMainCompose(opts)) return undefined;

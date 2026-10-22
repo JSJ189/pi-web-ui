@@ -19895,21 +19895,22 @@
 		display: flex;
 		flex-direction: column;
 		gap: 2px;
-		width: 300px;
+		width: 100%;
+		max-width: 100%;
 	}
 
 	.sound-row {
 		display: flex;
 		align-items: center;
 		justify-content: space-between;
-		gap: 10px;
+		gap: 12px;
 		padding: 8px 10px;
 		border-radius: 8px;
 		cursor: pointer;
 		transition: background 0.12s;
 	}
 	.sound-row:hover {
-		background: var(--bg-elev);
+		background: var(--bg-elev2);
 	}
 	.sound-row.disabled {
 		opacity: 0.45;
@@ -19929,6 +19930,7 @@
 		align-items: center;
 		gap: 8px;
 		min-width: 0;
+		flex: 1;
 	}
 
 	.sound-master .sound-name {
@@ -19957,11 +19959,12 @@
 		flex: 1;
 	}
 
-	/* 桌面通知块（NotifyToggle）：与声音区同一菜单内、加一条分隔线 */
+	/* 声音子模块间距与分隔线（声音提示 / 桌面通知 / 本地 TTS） */
+	.sound-menu + .sound-menu,
 	.notify-menu {
 		border-top: 1px solid var(--border-soft);
-		margin-top: 6px;
-		padding-top: 6px;
+		margin-top: 10px;
+		padding-top: 10px;
 	}
 
 	/* 整句说明（不可用原因 / Windows 系统层提示）：要换行显示，不能像
@@ -19995,6 +19998,7 @@
 		align-items: center;
 		gap: 8px;
 		flex-shrink: 0;
+		margin-left: auto;
 	}
 
 	.sound-preview {
