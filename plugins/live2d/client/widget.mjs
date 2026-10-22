@@ -8,6 +8,13 @@ import { WIDGET_CSS } from "./styles.mjs";
 const POS_STORAGE_KEY = "pi-web-ui:live2d-pos";
 const CONFIG_STORAGE_KEY = "pi-web-ui:live2d-config";
 
+/** HTML 转义：所有外部可控文本（模型名等）进 innerHTML 前必过此函数。 */
+function escapeHtml(value) {
+	return String(value ?? "").replace(/[&<>"']/g, (c) => {
+		return { "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" }[c];
+	});
+}
+
 function playChirpSound() {
 	try {
 		const Ctx = window.AudioContext || window.webkitAudioContext;
@@ -764,10 +771,10 @@ export class Live2DWidget {
 				row.style.cssText =
 					"display:flex; align-items:center; justify-content:space-between; padding:8px 12px; background:var(--bg-elev2,#1e222b); border-radius:6px;";
 				row.innerHTML = `
-					<div style="font-size:13px; font-weight:${isCur ? "600" : "400"}; color:${isCur ? "var(--accent,#3b82f6)" : "inherit"}; overflow:hidden; text-overflow:ellipsis; white-space:nowrap; max-width:260px;">${m.name}</div>
+					<div style="font-size:13px; font-weight:${isCur ? "600" : "400"}; color:${isCur ? "var(--accent,#3b82f6)" : "inherit"}; overflow:hidden; text-overflow:ellipsis; white-space:nowrap; max-width:260px;">${escapeHtml(m.name)}</div>
 					<div style="display:flex; gap:6px; align-items:center;">
-						${!isCur ? `<button class="pi-l2d-btn pi-l2d-btn-apply" data-key="${m.key}" style="padding:4px 8px; font-size:12px;">${this.t("settings.apply")}</button>` : '<span style="font-size:12px; color:var(--accent,#3b82f6);">✓</span>'}
-						${isCustom ? `<button class="pi-l2d-btn-del" data-key="${m.key}" title="${this.t("settings.del")}">🗑️</button>` : ""}
+						${!isCur ? `<button class="pi-l2d-btn pi-l2d-btn-apply" data-key="${escapeHtml(m.key)}" style="padding:4px 8px; font-size:12px;">${this.t("settings.apply")}</button>` : '<span style="font-size:12px; color:var(--accent,#3b82f6);">✓</span>'}
+						${isCustom ? `<button class="pi-l2d-btn-del" data-key="${escapeHtml(m.key)}" title="${this.t("settings.del")}">🗑️</button>` : ""}
 					</div>
 				`;
 				row.querySelector(".pi-l2d-btn-apply")?.addEventListener("click", () => {
