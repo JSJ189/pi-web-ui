@@ -7623,10 +7623,12 @@ export class ClientSession {
 		}
 		// 延迟加载（默认开）：未加载的已登记工具一律当「临时禁用」——与用户禁用名单 /
 		// 计划模式闸门走同一条门控链，不做第二套机制。加载只是把名字从这份名单里拿出来。
+		let loadedNames: string[] = [];
 		const lazy = this.lazyLoadingOn();
 		if (lazy) {
 			try {
 				const loaded = this.lazyLoadedFor(session, this.sessionHasTranscript(session));
+				loadedNames = [...loaded];
 				for (const name of lazyLoadingDisabledTools(
 					session.getAllTools().map((t) => t.name),
 					loaded,
@@ -7641,7 +7643,10 @@ export class ClientSession {
 		}
 		applyAgentToolsGating(session, [...disabled], targetPreset, {
 			// load_tools 不在任何预设白名单里，又必须在延迟加载开启时永远可用（ask 预设本来就无工具，不强加；非延迟加载模式不激活）。
-			forceActive: lazy && targetPreset !== "ask" ? [LOAD_TOOLS_TOOL_NAME] : [],
+			// 显式 load_tools 加载过的名字一并强制激活：PATCH-B1 门控会无条件剔除
+			// exposure≠direct 的 MCP 工具（连 deferred 的也在内），若这里不把它们
+			// 加回活跃集，会复现 #652 的死路变体——「已加载且目录可见，但永不活跃」。
+			forceActive: lazy && targetPreset !== "ask" ? [LOAD_TOOLS_TOOL_NAME, ...loadedNames] : [],
 		});
 		const ownerId = conv?.id;
 		syncSubagentOverride(session as unknown as OverrideSessionLike, disabled.has("subagent"), () =>
