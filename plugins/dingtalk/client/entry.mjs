@@ -110,9 +110,30 @@ export default {
 								<div>
 									<div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 4px;">
 										<label style="color: var(--text-dim);">📂 项目根目录 (Workspace Cwd，留空跟随当前项目，支持聊天发 /cwd 切换):</label>
-										<button type="button" class="dingtalk-cfg-use-cwd" style="padding: 2px 8px; font-size: 11px; border-radius: 4px; border: 1px solid var(--border); background: var(--bg); color: var(--text); cursor: pointer;">设为当前项目</button>
 									</div>
-									<input type="text" class="dingtalk-cfg-workspace" placeholder="如：E:/my-project (留空跟随当前项目)" style="width: 100%; box-sizing: border-box; padding: 6px 10px; border-radius: 4px; border: 1px solid var(--border); background: var(--bg); color: var(--text);" />
+									<div style="display: flex; gap: 8px; align-items: center; flex-wrap: wrap;">
+										<input type="text" class="dingtalk-cfg-workspace" placeholder="如：E:/my-project (留空跟随当前项目)" style="flex: 2; min-width: 180px; box-sizing: border-box; padding: 6px 10px; border-radius: 4px; border: 1px solid var(--border); background: var(--bg); color: var(--text); font-size: 12px; outline: none;" />
+										<select class="dingtalk-cfg-ws-select" style="min-width: 130px; box-sizing: border-box; padding: 6px 8px; border-radius: 4px; border: 1px solid var(--border); background: var(--bg); color: var(--text); font-size: 12px; outline: none;">
+											<option value="">快速点选已有项目...</option>
+										</select>
+										<button type="button" class="dingtalk-cfg-ws-browse" style="padding: 6px 10px; font-size: 11px; border-radius: 4px; border: 1px solid var(--border); background: var(--bg-elev2); color: var(--text); cursor: pointer;">📂 浏览...</button>
+										<button type="button" class="dingtalk-cfg-use-cwd" style="padding: 6px 10px; font-size: 11px; border-radius: 4px; border: 1px solid var(--border); background: var(--bg-elev2); color: var(--text); cursor: pointer;">设为当前项目</button>
+									</div>
+								</div>
+								<div style="margin-top: 10px;">
+									<label style="display: block; margin-bottom: 4px; color: var(--text-dim);">✨ AI 模型与思考强度 (留空跟随全局默认):</label>
+									<div style="display: flex; gap: 8px; align-items: center; flex-wrap: wrap;">
+										<input type="text" class="dingtalk-cfg-model" placeholder="留空 = 跟随全局默认模型（支持手输或点选）" style="flex: 2; min-width: 180px; box-sizing: border-box; padding: 6px 10px; border-radius: 4px; border: 1px solid var(--border); background: var(--bg); color: var(--text); font-size: 12px; outline: none;" />
+										<button type="button" class="dingtalk-cfg-model-browse" style="padding: 6px 10px; font-size: 11px; border-radius: 4px; border: 1px solid var(--border); background: var(--bg-elev2); color: var(--text); cursor: pointer;">✨ 选择模型...</button>
+										<select class="dingtalk-cfg-thinking" style="min-width: 130px; box-sizing: border-box; padding: 6px 8px; border-radius: 4px; border: 1px solid var(--border); background: var(--bg); color: var(--text); font-size: 12px; outline: none;">
+											<option value="">思考强度：跟随全局</option>
+											<option value="off">思考：关闭 (off)</option>
+											<option value="low">思考：低 (low)</option>
+											<option value="medium">思考：中 (medium)</option>
+											<option value="high">思考：高 (high)</option>
+											<option value="max">思考：最大 (max)</option>
+										</select>
+									</div>
 								</div>
 							</div>
 
@@ -153,6 +174,11 @@ export default {
 		const cfgBotEnabled = q(".dingtalk-cfg-bot-enabled");
 		const cfgAllowedSenders = q(".dingtalk-cfg-allowed-senders");
 		const cfgWorkspace = q(".dingtalk-cfg-workspace");
+		const cfgWsSelect = q(".dingtalk-cfg-ws-select");
+		const cfgWsBrowse = q(".dingtalk-cfg-ws-browse");
+		const cfgModel = q(".dingtalk-cfg-model");
+		const cfgModelBrowse = q(".dingtalk-cfg-model-browse");
+		const cfgThinking = q(".dingtalk-cfg-thinking");
 		const cfgWebhookUrl = q(".dingtalk-cfg-webhook-url");
 		const cfgWebhookSecret = q(".dingtalk-cfg-webhook-secret");
 
@@ -199,6 +225,26 @@ export default {
 			cfgBotEnabled.checked = Boolean(cfg.botEnabled);
 			cfgAllowedSenders.value = Array.isArray(cfg.allowedSenders) ? cfg.allowedSenders.join(", ") : "";
 			cfgWorkspace.value = cfg.workspace || "";
+			cfgModel.value = cfg.model || "";
+			cfgThinking.value = cfg.thinkingLevel || "";
+
+			try {
+				const hostProjects = globalThis.window?.__piWebUiHost?.listProjects?.() ?? [];
+				cfgWsSelect.innerHTML = '<option value="">快速点选已有项目...</option>';
+				for (const p of hostProjects) {
+					if (!p) continue;
+					const name =
+						p
+							.replace(/[\\/]+$/, "")
+							.split(/[\\/]/)
+							.pop() || p;
+					const opt = document.createElement("option");
+					opt.value = p;
+					opt.textContent = `${name} (${p})`;
+					cfgWsSelect.appendChild(opt);
+				}
+			} catch {}
+
 			cfgWebhookUrl.value = cfg.webhookUrl || "";
 			cfgWebhookSecret.value = "";
 			cfgWebhookSecret.placeholder = cfg.hasWebhookSecret
@@ -210,6 +256,30 @@ export default {
 
 		q(".dingtalk-cfg-use-cwd")?.addEventListener("click", () => {
 			if (currentState.hostCwd) cfgWorkspace.value = currentState.hostCwd;
+		});
+		cfgWsSelect?.addEventListener("change", () => {
+			if (cfgWsSelect.value) cfgWorkspace.value = cfgWsSelect.value;
+		});
+		cfgWsBrowse?.addEventListener("click", async () => {
+			const host = globalThis.window?.__piWebUiHost;
+			if (typeof host?.pickDirectory !== "function") return;
+			const res = await host.pickDirectory({
+				title: "选择钉钉机器人执行项目根目录",
+				initialPath: cfgWorkspace.value.trim() || currentState.hostCwd || "",
+			});
+			if (res?.ok && res.path) {
+				cfgWorkspace.value = res.path;
+			}
+		});
+		cfgModelBrowse?.addEventListener("click", async () => {
+			const host = globalThis.window?.__piWebUiHost;
+			if (typeof host?.pickModel !== "function") return;
+			const res = await host.pickModel({
+				currentModelId: cfgModel.value.trim() || undefined,
+			});
+			if (res?.ok && res.modelId) {
+				cfgModel.value = res.modelId;
+			}
 		});
 		q(".dingtalk-modal-close").addEventListener("click", () => (modal.style.display = "none"));
 		q(".dingtalk-modal-cancel").addEventListener("click", () => (modal.style.display = "none"));
@@ -247,6 +317,8 @@ export default {
 					.map((s) => s.trim())
 					.filter(Boolean),
 				workspace: cfgWorkspace.value.trim(),
+				model: cfgModel.value.trim(),
+				thinkingLevel: cfgThinking.value,
 				webhookUrl: cfgWebhookUrl.value.trim(),
 				webhookSecret: cfgWebhookSecret.value.trim(),
 			};

@@ -225,8 +225,9 @@ describe("插件面板的内容", () => {
 		expect(pinOf(bad!)).toBeNull();
 		expect(hud!.querySelector<HTMLButtonElement>(".pm-row-main")!.disabled).toBe(true);
 		expect(bad!.querySelector<HTMLButtonElement>(".pm-row-main")!.disabled).toBe(true);
-		// 报错原因要看得见（行内提示）
-		expect(bad!.textContent).toContain("manifest 解析失败");
+		// 报错原因要看得见（标签或提示）
+		const errTag = bad!.querySelector(".pm-err-tag");
+		expect(errTag?.getAttribute("title") || bad!.textContent).toContain("manifest 解析失败");
 	});
 
 	it("使用图钉按钮，并可用方向键调整插件顺序", () => {

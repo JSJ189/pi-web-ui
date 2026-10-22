@@ -11,9 +11,10 @@
  *    - 支持一键切换过去查看或一键清理。
  */
 
-import React, { useState } from "react";
+import React, { useState, useEffect } from "react";
 import type { WorktreeInfo } from "../types";
 import { useT } from "../i18n";
+import { FiX } from "react-icons/fi";
 
 export interface WorktreeBannerProps {
 	worktree: WorktreeInfo;
@@ -75,9 +76,40 @@ export const WorktreeBanner: React.FC<WorktreeBannerProps> = ({ worktree, onSwit
 
 	// 状态二：当前在主仓库，名下有子工作树
 	const linked = worktree.linkedWorktrees || [];
-	if (linked.length === 0) {
+	const linkedSig = linked
+		.map((w) => `${w.path}:${w.branch ?? ""}:${w.isDirty}`)
+		.sort()
+		.join(";");
+	const dismissKey = `pi-worktree-dismiss:${worktree.mainPath}`;
+
+	const [isDismissed, setIsDismissed] = useState(() => {
+		try {
+			return sessionStorage.getItem(dismissKey) === linkedSig;
+		} catch {
+			return false;
+		}
+	});
+
+	useEffect(() => {
+		try {
+			setIsDismissed(sessionStorage.getItem(dismissKey) === linkedSig);
+		} catch {
+			// ignore
+		}
+	}, [dismissKey, linkedSig]);
+
+	if (linked.length === 0 || isDismissed) {
 		return null;
 	}
+
+	const handleDismiss = () => {
+		setIsDismissed(true);
+		try {
+			sessionStorage.setItem(dismissKey, linkedSig);
+		} catch {
+			// ignore
+		}
+	};
 
 	const dirtyCount = linked.filter((w) => w.isDirty).length;
 	const namesSummary = linked
@@ -131,6 +163,15 @@ export const WorktreeBanner: React.FC<WorktreeBannerProps> = ({ worktree, onSwit
 						{expanded ? t("worktreeActionCollapse") : t("worktreeActionMore", { count: linked.length - 2 })}
 					</button>
 				)}
+				<button
+					type="button"
+					className="worktree-banner-close"
+					title={t("worktreeActionDismissTip")}
+					aria-label={t("worktreeActionDismiss")}
+					onClick={handleDismiss}
+				>
+					<FiX aria-hidden />
+				</button>
 			</div>
 			{expanded && linked.length > 2 && (
 				<div className="worktree-banner-expand">

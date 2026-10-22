@@ -2,7 +2,7 @@
  * marker-service.ts — 标记服务（内置版 pi-marker-tools）。
  */
 
-import type { ServerMessage, UiActionSuggestion } from "./protocol.js";
+import type { ServerMessage, UiActionSuggestion, UiMarkerInfo } from "./protocol.js";
 import type { ClientStateStore, MarkerSettings } from "./client-state.js";
 import { pick, type ServerLang } from "./i18n.js";
 import {
@@ -196,7 +196,7 @@ export class MarkerService {
 			if (canonicalNs === ACTION_NAMESPACE) st = this.getState(conversationId, canonicalNs, initActionState);
 			else {
 				const marker = getMarker(canonicalNs);
-				st = marker?.init ? (marker.init() as unknown) : {};
+				st = this.getState(conversationId, canonicalNs, () => (marker?.init ? (marker.init() as unknown) : {}));
 			}
 			states.set(canonicalNs, st);
 			return st;
@@ -324,15 +324,17 @@ export class MarkerService {
 
 	/** 供设置面板展示的 marker 目录（含启用状态）。 */
 	/** UI 过滤：rename/title 是 conv 的别名，suggest 是 action 的别名，不单独展示。 */
-	listForUi(): Array<{ name: string; enabled: boolean; guidance: string[] }> {
+	listForUi(): Array<UiMarkerInfo> {
 		const seen = new Set<string>();
-		const out: Array<{ name: string; enabled: boolean; guidance: string[] }> = [];
+		const out: Array<UiMarkerInfo> = [];
 		for (const m of allMarkers()) {
 			if (m.isAlias || m.name === "suggest") continue;
 			if (seen.has(m.name)) continue;
 			seen.add(m.name);
 			out.push({
 				name: m.name,
+				label: m.label,
+				pluginId: m.pluginId,
 				enabled: this.isMarkerEnabled(m.name),
 				guidance: m.getGuidance?.(this.lang()) ?? m.guidance,
 			});

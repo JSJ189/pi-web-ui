@@ -21,11 +21,41 @@ const TEXT = {
 		username: "用户名",
 		remotePath: "远端根目录",
 		authMethod: "认证方式",
-		authPassword: "密码",
+		authSecret: "加密机密（推荐）",
+		authPassword: "明文密码",
 		authKey: "密钥文件",
 		authAgent: "ssh-agent",
-		password: "密码",
-		passwordPlaceholder: "留空 = 不改；建议填 ${secret:名} 引用",
+		secretName: "机密名",
+		secretSelectPrompt: "选择已有同名机密 ▾",
+		secretSelectNone: "（暂无已建机密）",
+		secretQuickPick: "已有同名机密",
+		secretNamePlaceholder: "如 prod-password（可从右侧下拉选择）",
+		secretValue: "机密值",
+		secretValuePlaceholder: "输入密码/机密值（不会回显）",
+		secretValueReusePlaceholder: "已存在同名机密，留空直接复用",
+		secretValueReuseTip: "✓ 留空将直接复用本地同名机密；若输入新值将覆盖更新",
+		secretValueNewTip: "保存时将自动存入本地加密存储（AES-256），配置文件中只存代号",
+		secretExists: "✓ 已有同名机密（可直接复用）",
+		secretNew: "＋ 新机密（保存时自动创建）",
+		secretNameRequired: "请填写加密机密名称",
+		secretNameInvalid: "机密名只允许字母、数字、点、横线、下划线（1-64 字符）",
+		secretValueRequired: "机密「{name}」尚不存在，请填写机密值以完成创建",
+		password: "明文密码",
+		passwordPlaceholder: "留空 = 不改；直接输入明文密码",
+		passwordHelpTip: "点击查看密码与 ${secret:名} 变量使用说明",
+		passwordHelpTitle: "密码与变量引用说明",
+		helpPlainTitle: "直接输入明文",
+		helpPlainDesc: "个人电脑本地使用时，可直接在此填写服务器密码，简单直接。",
+		helpBlankTitle: "留空",
+		helpBlankDesc: "保持当前已保存的密码不变（如果此前已配置过）。",
+		helpSecretTitle: "推荐：${secret:名} 加密机密（防泄露）",
+		helpSecretDesc:
+			"点击下方「写入加密机密」存入本地（AES-256 加密存本机），在此填入 ${secret:名} 引用。项目配置文件 .pi/sftp.json 里只存代号，提交到 Git 或分享给他人也不会泄露真实密码。",
+		helpEnvFileTitle: "环境变量与本地文件",
+		helpEnvFileDesc:
+			"亦支持 ${env:环境变量名}（如 ${env:SFTP_PASSWORD}）或 ${file:文件路径}（如 ${file:~/.ssh/pass.txt}）。",
+		helpQuickSecret: "☞ 点击立即写入加密机密",
+		secretFilled: "✓ 已写入加密机密并自动填入密码框：{ref}",
 		privateKeyPath: "私钥路径",
 		passphrase: "私钥口令",
 		agent: "agent socket",
@@ -71,6 +101,7 @@ const TEXT = {
 		failed: "失败 {n} 个",
 		done: "完成：上传 {up} / 下载 {down} / 清理 {trash}",
 		running: "传输中",
+		otherProject: "其他项目",
 		remote: "远端文件",
 		refresh: "刷新",
 		goUp: "上一级",
@@ -131,11 +162,41 @@ const TEXT = {
 		username: "User",
 		remotePath: "Remote root",
 		authMethod: "Auth",
-		authPassword: "Password",
+		authSecret: "Encrypted Secret (Recommended)",
+		authPassword: "Plaintext Password",
 		authKey: "Key file",
 		authAgent: "ssh-agent",
+		secretName: "Secret Name",
+		secretSelectPrompt: "Select existing secret ▾",
+		secretSelectNone: "(No existing secrets)",
+		secretQuickPick: "Existing secrets",
+		secretNamePlaceholder: "e.g. prod-password (or pick from dropdown)",
+		secretValue: "Secret Value",
+		secretValuePlaceholder: "Enter secret value/password",
+		secretValueReusePlaceholder: "Secret exists; leave blank to reuse",
+		secretValueReuseTip: "✓ Leave blank to reuse existing secret; enter new value to overwrite",
+		secretValueNewTip: "Will be encrypted with AES-256 locally on save; config only stores reference",
+		secretExists: "✓ Secret exists (ready to reuse)",
+		secretNew: "+ New secret (will create on save)",
+		secretNameRequired: "Please enter a secret name",
+		secretNameInvalid: "Secret name may only contain letters, digits, dots, dashes, and underscores",
+		secretValueRequired: 'Secret "{name}" does not exist yet; please enter its value to create it',
 		password: "Password",
-		passwordPlaceholder: "blank = keep; prefer a ${secret:name} reference",
+		passwordPlaceholder: "blank = keep; enter plaintext password",
+		passwordHelpTip: "Click to see password and ${secret:name} variable guide",
+		passwordHelpTitle: "Password & Variable Reference Guide",
+		helpPlainTitle: "Plaintext Password",
+		helpPlainDesc: "For local personal use, enter your server password directly.",
+		helpBlankTitle: "Leave Blank",
+		helpBlankDesc: "Keeps the existing saved password unchanged.",
+		helpSecretTitle: "Recommended: ${secret:name} Encrypted Secret",
+		helpSecretDesc:
+			"Click “Store encrypted secret” below to save locally (AES-256 encrypted). Put ${secret:name} here to reference it. The config in .pi/sftp.json stores only the reference name, making it safe to commit to git.",
+		helpEnvFileTitle: "Environment Variables & Files",
+		helpEnvFileDesc:
+			"Also supports ${env:VAR_NAME} (e.g. ${env:SFTP_PASSWORD}) or ${file:path} (e.g. ${file:~/.ssh/pass.txt}).",
+		helpQuickSecret: "☞ Store encrypted secret now",
+		secretFilled: "✓ Encrypted secret stored and filled: {ref}",
 		keypathPlaceholder: "blank = probe ~/.ssh/ default keys (id_ed25519, etc.)",
 		copyKey: "Copy Key to Remote",
 		copyKeyPrompt: "Enter remote server password to install public key:",
@@ -207,6 +268,7 @@ const TEXT = {
 		failed: "{n} failed",
 		done: "Done: {up} up / {down} down / {trash} cleaned",
 		running: "Transferring",
+		otherProject: "other project",
 		remote: "Remote files",
 		refresh: "Refresh",
 		goUp: "Up",
@@ -447,6 +509,18 @@ export default {
 		.sfx .card { border: 1px solid var(--border, #333); border-radius: 8px; padding: 10px; display: grid; gap: 8px; min-width: 0; }
 		.sfx .grid2 { display: grid; grid-template-columns: auto 1fr; gap: 6px 8px; align-items: center; min-width: 0; }
 		.sfx .grid2 > label { opacity: .7; font-size: 12px; white-space: nowrap; }
+		.sfx .lbl-pass { display: inline-flex; align-items: center; gap: 4px; }
+		.sfx .help-q { display: inline-flex; align-items: center; justify-content: center; width: 15px; height: 15px; border-radius: 99px; font-size: 11px; font-weight: 700; line-height: 1; padding: 0; background: color-mix(in srgb, var(--border, #333) 70%, transparent); color: var(--text-faint, #a1a1aa); border: 1px solid var(--border, #333); cursor: pointer; vertical-align: middle; transition: all .15s ease; }
+		.sfx .help-q:hover, .sfx .help-q.active { background: var(--accent, #7c5cff); color: var(--accent-contrast, #fff); border-color: transparent; opacity: 1; }
+		.sfx .pass-help-card { grid-column: 1 / -1; background: color-mix(in srgb, var(--bg-elev, #16161d) 92%, var(--accent, #7c5cff) 8%); border: 1px solid color-mix(in srgb, var(--accent, #7c5cff) 35%, var(--border, #333)); border-radius: 7px; padding: 8px 10px; font-size: 12px; line-height: 1.5; display: grid; gap: 6px; margin: 2px 0 6px; }
+		.sfx .pass-help-card header { display: flex; align-items: center; justify-content: space-between; font-weight: 600; color: var(--accent, #7c5cff); }
+		.sfx .pass-help-card ul { margin: 0; padding-left: 16px; display: grid; gap: 4px; }
+		.sfx .pass-help-card li { opacity: .9; }
+		.sfx .pass-help-card .btn-close-help { background: transparent; border: none; cursor: pointer; opacity: .6; padding: 0 4px; font-size: 14px; line-height: 1; color: inherit; }
+		.sfx .pass-help-card .btn-close-help:hover { opacity: 1; }
+		.sfx .pass-help-card .pass-help-foot { display: flex; gap: 8px; margin-top: 2px; }
+		.sfx .pass-help-card .btn-help-secret { background: var(--accent, #7c5cff); color: var(--accent-contrast, #fff); border: none; border-radius: 4px; padding: 3px 8px; font-size: 11px; cursor: pointer; }
+		.sfx .pass-help-card .btn-help-secret:hover { opacity: .9; }
 		.sfx .row { display: flex; gap: 6px; align-items: center; flex-wrap: wrap; }
 		.sfx .grow { flex: 1; min-width: 0; }
 		.sfx .hint { opacity: .55; font-size: 11px; }
@@ -484,6 +558,12 @@ export default {
 		.sfx .tree .fr .sz { opacity: .5; font-size: 11px; white-space: nowrap; }
 		.sfx .editor { border: 1px solid var(--border, #333); border-radius: 7px; padding: 8px; display: grid; gap: 6px; }
 		.sfx .editor textarea { width: 100%; min-height: 200px; font-family: ui-monospace, monospace; box-sizing: border-box; }
+		.sfx .secret-name-status { font-size: 11px; min-height: 14px; margin-top: 2px; }
+		.sfx .secret-name-status.ok { color: var(--green, #4ade80); }
+		.sfx .secret-val-hint { font-size: 11px; min-height: 14px; opacity: .75; margin-top: 2px; }
+		.sfx .sfx-chip-btn { background: color-mix(in srgb, var(--bg-elev, #16161d) 80%, var(--border, #333)); color: var(--text, inherit); border: 1px solid var(--border, #333); border-radius: 99px; padding: 1px 8px; font-size: 11px; cursor: pointer; line-height: 1.4; transition: all .15s ease; white-space: nowrap; }
+		.sfx .sfx-chip-btn:hover { background: var(--accent, #7c5cff); color: var(--accent-contrast, #fff); border-color: transparent; }
+		.sfx .sfx-chip-btn.active { background: color-mix(in srgb, var(--green, #4ade80) 25%, var(--bg-elev, #16161d)); color: var(--green, #4ade80); border-color: color-mix(in srgb, var(--green, #4ade80) 50%, transparent); font-weight: 600; }
 		.sfx .hidden { display: none !important; }
 	</style>
 
@@ -510,19 +590,51 @@ export default {
 				<label class="l-remote"></label><input class="f-remote" placeholder="/srv/app" />
 				<label class="l-auth"></label>
 				<select class="f-auth">
+					<option value="secret"></option>
 					<option value="password"></option>
 					<option value="key"></option>
 					<option value="agent"></option>
 				</select>
-				<label class="l-pass"></label><input class="f-pass" type="password" autocomplete="new-password" />
-				<label class="l-keypath"></label><input class="f-keypath" placeholder="~/.ssh/id_ed25519" />
-				<label class="l-passphrase"></label><input class="f-passphrase" type="password" autocomplete="new-password" />
-				<label class="l-agent"></label><input class="f-agent" placeholder="$SSH_AUTH_SOCK" />
+				<label class="lbl-secret-name sfx-auth-row sfx-auth-secret"><span class="l-secret-name"></span></label>
+				<div class="sfx-auth-row sfx-auth-secret" style="display:grid;gap:4px;">
+					<div class="row" style="gap:6px;">
+						<input class="f-secret-name grow" list="sftp-secrets-list" autocomplete="off" />
+						<select class="f-secret-select" style="min-width: 140px; max-width: 220px;"></select>
+						<datalist id="sftp-secrets-list"></datalist>
+					</div>
+					<div class="secret-chips row hidden" style="gap:4px; flex-wrap:wrap;"></div>
+					<div class="secret-name-status hint"></div>
+				</div>
+				<label class="lbl-secret-val sfx-auth-row sfx-auth-secret"><span class="l-secret-val"></span></label>
+				<div class="sfx-auth-row sfx-auth-secret" style="display:grid;gap:2px;">
+					<input class="f-secret-val" type="password" autocomplete="new-password" />
+					<div class="secret-val-hint hint"></div>
+				</div>
+				<label class="lbl-pass sfx-auth-row sfx-auth-password"><span class="l-pass"></span><button type="button" class="btn-help-pass help-q">?</button></label>
+				<input class="f-pass sfx-auth-row sfx-auth-password" type="password" autocomplete="new-password" />
+				<div class="pass-help-card sfx-auth-row sfx-auth-password hidden">
+					<header>
+						<span class="pass-help-ttl"></span>
+						<button type="button" class="btn-close-help">×</button>
+					</header>
+					<ul class="pass-help-list">
+						<li><b class="help-plain-ttl"></b>：<span class="help-plain-desc"></span></li>
+						<li><b class="help-blank-ttl"></b>：<span class="help-blank-desc"></span></li>
+						<li><b class="help-secret-ttl"></b>：<span class="help-secret-desc"></span></li>
+						<li><b class="help-env-ttl"></b>：<span class="help-env-desc"></span></li>
+					</ul>
+					<div class="pass-help-foot">
+						<button type="button" class="btn-help-secret"></button>
+					</div>
+				</div>
+				<label class="l-keypath sfx-auth-row sfx-auth-key"></label><input class="f-keypath sfx-auth-row sfx-auth-key" placeholder="~/.ssh/id_ed25519" />
+				<label class="l-passphrase sfx-auth-row sfx-auth-key"></label><input class="f-passphrase sfx-auth-row sfx-auth-key" type="password" autocomplete="new-password" />
+				<label class="l-agent sfx-auth-row sfx-auth-agent"></label><input class="f-agent sfx-auth-row sfx-auth-agent" placeholder="$SSH_AUTH_SOCK" />
 				<label class="l-ignore"></label><textarea class="f-ignore" rows="2"></textarea>
 			</div>
 			<div class="row">
 				<button class="btn-save primary"></button>
-				<button class="btn-secret"></button>
+				<button class="btn-secret hidden"></button>
 				<span class="hint grow hint-settings"></span>
 			</div>
 			<div class="msg err hidden"></div>
@@ -599,7 +711,24 @@ export default {
 		setText(".l-user", t("username"));
 		setText(".l-remote", t("remotePath"));
 		setText(".l-auth", t("authMethod"));
+		setText(".l-secret-name", t("secretName"));
+		setText(".l-secret-val", t("secretValue"));
 		setText(".l-pass", t("password"));
+		const btnHelpPass = $(".btn-help-pass");
+		if (btnHelpPass) {
+			btnHelpPass.title = t("passwordHelpTip");
+			btnHelpPass.setAttribute("aria-label", t("passwordHelpTitle"));
+		}
+		setText(".pass-help-ttl", `🔑 ${t("passwordHelpTitle")}`);
+		setText(".help-plain-ttl", t("helpPlainTitle"));
+		setText(".help-plain-desc", t("helpPlainDesc"));
+		setText(".help-blank-ttl", t("helpBlankTitle"));
+		setText(".help-blank-desc", t("helpBlankDesc"));
+		setText(".help-secret-ttl", t("helpSecretTitle"));
+		setText(".help-secret-desc", t("helpSecretDesc"));
+		setText(".help-env-ttl", t("helpEnvFileTitle"));
+		setText(".help-env-desc", t("helpEnvFileDesc"));
+		setText(".btn-help-secret", t("helpQuickSecret"));
 		setText(".l-keypath", t("privateKeyPath"));
 		setText(".l-passphrase", t("passphrase"));
 		setText(".l-agent", t("agent"));
@@ -627,12 +756,14 @@ export default {
 		const opts = [
 			[".f-dir", ["up", "down", "both"], ["up", "down", "both"]],
 			[".f-scope", ["all", "tree", "file"], ["all", "tree", "file"]],
-			[".f-auth", ["password", "key", "agent"], ["authPassword", "authKey", "authAgent"]],
+			[".f-auth", ["secret", "password", "key", "agent"], ["authSecret", "authPassword", "authKey", "authAgent"]],
 		];
 		for (const [sel, values, keys] of opts) {
 			const el = $(sel);
 			el.innerHTML = values.map((v, i) => `<option value="${v}">${esc(t(keys[i]))}</option>`).join("");
 		}
+		$(".f-secret-name").placeholder = t("secretNamePlaceholder");
+		$(".f-secret-val").placeholder = t("secretValuePlaceholder");
 		$(".f-pass").placeholder = t("passwordPlaceholder");
 		$(".f-keypath").placeholder = t("keypathPlaceholder");
 		$(".f-path").placeholder = t("pathHint");
@@ -687,9 +818,164 @@ export default {
 			].join(" · ");
 		}
 
+		function updateAuthFieldsVisibility(method) {
+			const cur = method || $(".f-auth")?.value || "secret";
+			const rows = container.querySelectorAll(".sfx-auth-row");
+			for (const row of rows) {
+				if (row.classList.contains(`sfx-auth-${cur}`)) {
+					if (row.classList.contains("pass-help-card")) {
+						if (!$(".btn-help-pass")?.classList.contains("active")) {
+							row.classList.add("hidden");
+							continue;
+						}
+					}
+					row.classList.remove("hidden");
+				} else {
+					row.classList.add("hidden");
+				}
+			}
+		}
+
+		const KNOWN_SECRETS_KEY = "pi_sftp_known_secrets";
+		function loadStoredSecrets() {
+			try {
+				const raw = localStorage?.getItem?.(KNOWN_SECRETS_KEY);
+				const arr = JSON.parse(raw || "[]");
+				return Array.isArray(arr) ? arr.filter((x) => typeof x === "string" && x.trim()) : [];
+			} catch {
+				return [];
+			}
+		}
+
+		function saveStoredSecrets(list) {
+			try {
+				localStorage?.setItem?.(KNOWN_SECRETS_KEY, JSON.stringify(list));
+			} catch {}
+		}
+
+		const localKnownSecrets = new Set(loadStoredSecrets());
+
+		function addKnownSecret(name) {
+			const clean = String(name ?? "").trim();
+			if (!clean) return;
+			localKnownSecrets.add(clean);
+			saveStoredSecrets(Array.from(localKnownSecrets));
+		}
+
+		function getKnownSecretsList() {
+			if (Array.isArray(state?.secrets)) {
+				for (const s of state.secrets) if (s) localKnownSecrets.add(s);
+			}
+			const allConns = [state?.connection, ...(state?.profiles ?? [])];
+			for (const c of allConns) {
+				for (const f of [c?.auth?.password, c?.auth?.passphrase]) {
+					const s = String(f ?? "");
+					if (s.startsWith("secret:")) localKnownSecrets.add(s.slice(7));
+				}
+			}
+			saveStoredSecrets(Array.from(localKnownSecrets));
+			return Array.from(localKnownSecrets).sort();
+		}
+
+		function updateSecretsControls() {
+			const list = getKnownSecretsList();
+			const curName = $(".f-secret-name")?.value?.trim() ?? "";
+
+			// 1. 原生 datalist 补全
+			const dl = $("#sftp-secrets-list");
+			if (dl) {
+				dl.innerHTML = list.map((s) => `<option value="${esc(s)}"></option>`).join("");
+			}
+
+			// 2. 显式下拉菜单
+			const sel = $(".f-secret-select");
+			if (sel) {
+				if (!list.length) {
+					sel.innerHTML = `<option value="">${esc(t("secretSelectNone"))}</option>`;
+					sel.disabled = true;
+				} else {
+					sel.disabled = false;
+					const opts = [
+						`<option value="">${esc(t("secretSelectPrompt"))}</option>`,
+						...list.map((s) => `<option value="${esc(s)}"${s === curName ? " selected" : ""}>${esc(s)}</option>`),
+					];
+					sel.innerHTML = opts.join("");
+				}
+			}
+
+			// 3. 快捷药丸徽章
+			const chipsWrap = $(".secret-chips");
+			if (chipsWrap) {
+				if (!list.length) {
+					chipsWrap.innerHTML = "";
+					chipsWrap.classList.add("hidden");
+				} else {
+					chipsWrap.classList.remove("hidden");
+					chipsWrap.innerHTML =
+						`<span class="hint" style="align-self:center;font-size:11px;">${esc(t("secretQuickPick"))}：</span>` +
+						list
+							.map(
+								(s) =>
+									`<button type="button" class="sfx-chip-btn${s === curName ? " active" : ""}" data-sec="${esc(s)}" title="${esc(s)}">${esc(s)}</button>`,
+							)
+							.join("");
+				}
+			}
+		}
+
+		function updateSecretDetection() {
+			const nameInput = $(".f-secret-name");
+			const valInput = $(".f-secret-val");
+			const statusEl = $(".secret-name-status");
+			const hintEl = $(".secret-val-hint");
+			const sel = $(".f-secret-select");
+			if (!nameInput || !valInput) return;
+			const name = nameInput.value.trim();
+
+			// 同步 select 选项
+			if (sel && sel.value !== name) {
+				const hasOption = Array.from(sel.options).some((o) => o.value === name);
+				sel.value = hasOption ? name : "";
+			}
+
+			// 同步 chips 选中态
+			const chipBtns = container.querySelectorAll(".sfx-chip-btn");
+			for (const b of chipBtns) {
+				b.classList.toggle("active", b.getAttribute("data-sec") === name);
+			}
+
+			if (!name) {
+				if (statusEl) {
+					statusEl.textContent = "";
+					statusEl.className = "secret-name-status hint";
+				}
+				valInput.placeholder = t("secretValuePlaceholder");
+				if (hintEl) hintEl.textContent = "";
+				return;
+			}
+			const knownList = getKnownSecretsList();
+			const exists = knownList.includes(name);
+			if (exists) {
+				if (statusEl) {
+					statusEl.textContent = t("secretExists");
+					statusEl.className = "secret-name-status ok";
+				}
+				valInput.placeholder = t("secretValueReusePlaceholder");
+				if (hintEl) hintEl.textContent = t("secretValueReuseTip");
+			} else {
+				if (statusEl) {
+					statusEl.textContent = t("secretNew");
+					statusEl.className = "secret-name-status hint";
+				}
+				valInput.placeholder = t("secretValuePlaceholder");
+				if (hintEl) hintEl.textContent = t("secretValueNewTip");
+			}
+		}
+
 		let filledProfile = null;
 		function fillForm() {
 			updateProfileChrome();
+			updateSecretsControls();
 			const c = state?.connection;
 			filledProfile = state?.active ?? null;
 			if (!c) {
@@ -700,11 +986,31 @@ export default {
 			$(".f-port").value = c.port ?? 22;
 			$(".f-user").value = c.username ?? "";
 			$(".f-remote").value = c.remotePath ?? "";
-			$(".f-auth").value = c.auth?.method ?? "password";
+
+			const passSafe = String(c.auth?.password ?? "");
+			let authMethod = c.auth?.method ?? "";
+			let secretName = "";
+
+			if (passSafe.startsWith("secret:")) {
+				authMethod = "secret";
+				secretName = passSafe.slice(7);
+			} else if (authMethod === "secret") {
+				secretName = passSafe.startsWith("secret:") ? passSafe.slice(7) : c.name ? `${c.name}-password` : "";
+			} else if (!authMethod) {
+				authMethod = "secret";
+				secretName = c.name ? `${c.name}-password` : "";
+			}
+
+			$(".f-auth").value = authMethod || "secret";
+			$(".f-secret-name").value = secretName;
+			$(".f-secret-val").value = "";
 			$(".f-pass").value = "";
 			$(".f-passphrase").value = "";
 			$(".f-keypath").value = c.auth?.privateKeyPath ?? "";
 			$(".f-agent").value = c.auth?.agent ?? "";
+
+			updateAuthFieldsVisibility($(".f-auth").value);
+			updateSecretDetection();
 			// ignore 里剔除内置默认，只显示用户额外加的那部分（否则表单里全是噪音）
 			const builtin = new Set([
 				".git",
@@ -948,20 +1254,24 @@ export default {
 			}
 			bar.classList.remove("hidden");
 			prog.classList.remove("hidden");
+			const isOtherProj = Boolean(j.cwd && state?.cwd && j.cwd !== state.cwd);
+			const projTag = isOtherProj ? `[${j.projectName || t("otherProject")}] ` : "";
 			if (scanning) {
 				// 扫描没有「总量」：走不确定态条纹 + 实时计数，让用户看到它在动
 				bar.classList.add("indet");
-				prog.textContent = t("scanStat", {
-					side: j.scan?.side === "remote" ? t("sideRemote") : t("sideLocal"),
-					files: j.scan?.files ?? 0,
-					dirs: j.scan?.dirs ?? 0,
-				});
+				prog.textContent =
+					projTag +
+					t("scanStat", {
+						side: j.scan?.side === "remote" ? t("sideRemote") : t("sideLocal"),
+						files: j.scan?.files ?? 0,
+						dirs: j.scan?.dirs ?? 0,
+					});
 				return;
 			}
 			bar.classList.remove("indet");
 			const pct = Math.round((j.done / Math.max(1, j.total)) * 100);
 			bar.querySelector("i").style.width = `${pct}%`;
-			prog.textContent = `${t("running")} ${j.done}/${j.total} ${j.rel ? `· ${j.rel}` : ""}${j.reusedPlan ? ` · ${t("reusedPlan")}` : ""}`;
+			prog.textContent = `${projTag}${t("running")} ${j.done}/${j.total} ${j.rel ? `· ${j.rel}` : ""}${j.reusedPlan ? ` · ${t("reusedPlan")}` : ""}`;
 		}
 
 		async function refresh(fill = true) {
@@ -1205,6 +1515,46 @@ export default {
 			}
 		});
 
+		on(".f-auth", "change", (e) => {
+			const m = e.target.value;
+			updateAuthFieldsVisibility(m);
+			if (m === "secret") {
+				if (!$(".f-secret-name").value.trim()) {
+					const curName = $(".profile").value || "default";
+					$(".f-secret-name").value = `${curName}-password`;
+				}
+				updateSecretDetection();
+			}
+		});
+
+		on(".f-secret-name", "input", () => updateSecretDetection());
+		on(".f-secret-name", "change", () => updateSecretDetection());
+
+		on(".f-secret-select", "change", (e) => {
+			const val = e.target.value;
+			if (val) {
+				const nameInput = $(".f-secret-name");
+				if (nameInput) {
+					nameInput.value = val;
+					updateSecretDetection();
+				}
+			}
+		});
+
+		on(".secret-chips", "click", (e) => {
+			const btn = e.target.closest(".sfx-chip-btn");
+			if (!btn) return;
+			e.preventDefault();
+			const sec = btn.getAttribute("data-sec");
+			if (sec) {
+				const nameInput = $(".f-secret-name");
+				if (nameInput) {
+					nameInput.value = sec;
+					updateSecretDetection();
+				}
+			}
+		});
+
 		on(".btn-save", "click", async () => {
 			if (busy) return;
 			busy = true;
@@ -1212,6 +1562,7 @@ export default {
 			showError(".msg.ok", "");
 			try {
 				const name = $(".profile").value || "default";
+				const authMethod = $(".f-auth").value;
 				const patch = {
 					host: $(".f-host").value.trim(),
 					port: Number($(".f-port").value) || 22,
@@ -1221,11 +1572,44 @@ export default {
 						.value.split(/[\n,]/)
 						.map((x) => x.trim())
 						.filter(Boolean),
-					method: $(".f-auth").value,
+					method: authMethod,
 					privateKeyPath: $(".f-keypath").value.trim(),
 					agent: $(".f-agent").value.trim(),
 				};
-				if ($(".f-pass").value) patch.password = $(".f-pass").value;
+
+				if (authMethod === "secret") {
+					const secName = $(".f-secret-name").value.trim();
+					const secVal = $(".f-secret-val").value;
+					if (!secName) {
+						$(".f-secret-name").focus();
+						throw new Error(t("secretNameRequired"));
+					}
+					if (!/^[\w.-]{1,64}$/.test(secName)) {
+						$(".f-secret-name").focus();
+						throw new Error(t("secretNameInvalid"));
+					}
+					const known = getKnownSecretsList();
+					const exists = known.includes(secName);
+
+					if (secVal) {
+						const out = await api("/secret", { method: "POST", body: { name: secName, value: secVal } });
+						addKnownSecret(secName);
+						if (out?.secrets && Array.isArray(out.secrets)) {
+							for (const s of out.secrets) addKnownSecret(s);
+						}
+						updateSecretsControls();
+						$(".f-secret-val").value = "";
+					} else if (!exists) {
+						$(".f-secret-val").focus();
+						throw new Error(t("secretValueRequired", { name: secName }));
+					} else {
+						addKnownSecret(secName);
+					}
+					patch.password = `\${secret:${secName}}`;
+				} else if (authMethod === "password") {
+					if ($(".f-pass").value) patch.password = $(".f-pass").value;
+				}
+
 				if ($(".f-passphrase").value) patch.passphrase = $(".f-passphrase").value;
 				await api("/profile", { method: "POST", body: { name, patch, makeActive: true } });
 				showError(".msg.ok", "✓");
@@ -1237,6 +1621,26 @@ export default {
 			}
 		});
 
+		on(".btn-help-pass", "click", (e) => {
+			e.preventDefault();
+			const card = $(".pass-help-card");
+			const btn = $(".btn-help-pass");
+			const isHidden = card?.classList.contains("hidden");
+			card?.classList.toggle("hidden", !isHidden);
+			btn?.classList.toggle("active", isHidden);
+		});
+
+		on(".btn-close-help", "click", (e) => {
+			e.preventDefault();
+			$(".pass-help-card")?.classList.add("hidden");
+			$(".btn-help-pass")?.classList.remove("active");
+		});
+
+		on(".btn-help-secret", "click", (e) => {
+			e.preventDefault();
+			$(".btn-secret")?.click();
+		});
+
 		on(".btn-secret", "click", async () => {
 			const name = globalThis.prompt?.(t("secretPrompt")) ?? "";
 			if (!name) return;
@@ -1244,7 +1648,23 @@ export default {
 			if (!value) return;
 			try {
 				const out = await api("/secret", { method: "POST", body: { name, value } });
-				showError(".msg.ok", out.ref);
+				if (out?.secrets && Array.isArray(out.secrets)) {
+					for (const s of out.secrets) addKnownSecret(s);
+				} else {
+					addKnownSecret(name);
+				}
+				updateSecretsControls();
+				const secNameInput = $(".f-secret-name");
+				if (secNameInput) {
+					secNameInput.value = name;
+					updateSecretDetection();
+				}
+				const passInput = $(".f-pass");
+				if (passInput) {
+					passInput.value = out.ref;
+					passInput.focus();
+				}
+				showError(".msg.ok", t("secretFilled", { ref: out.ref }));
 			} catch (err) {
 				showError(".msg.err", String(err.message ?? err));
 			}
@@ -1289,7 +1709,12 @@ export default {
 					},
 				});
 			try {
-				let password = $(".f-pass").value.trim();
+				let password = "";
+				if ($(".f-auth").value === "secret") {
+					password = $(".f-secret-val")?.value?.trim() || "";
+				} else {
+					password = $(".f-pass")?.value?.trim() || "";
+				}
 				let out;
 				try {
 					out = await callCopy(password);
@@ -1300,7 +1725,8 @@ export default {
 						if (prompted) {
 							out = await callCopy(prompted);
 						} else {
-							$(".f-pass")?.focus?.();
+							if ($(".f-auth").value === "secret") $(".f-secret-val")?.focus?.();
+							else $(".f-pass")?.focus?.();
 							throw new Error(msg.replace(/^NEED_PASSWORD:\s*/, ""));
 						}
 					} else {

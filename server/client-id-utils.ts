@@ -43,7 +43,9 @@ export function checkPluginCwd(cwd: string): { ok: boolean; abs?: string; error?
 	return { ok: true, abs };
 }
 
-/** 插件/调度伪客户端：sink 常驻（fire-and-forget 的空函数），不能按浏览器存活判断。 */
+/** 插件/调度/Canvas伪客户端：sink 常驻或后台辅助专用通道，不参与聊天会话认领与感知。 */
 export function isPseudoClientId(id: string): boolean {
-	return id.startsWith("plugin:") || id.startsWith("scheduler:");
+	return (
+		id.startsWith("plugin:") || id.startsWith("scheduler:") || id.startsWith("canvas:") || id.startsWith("canvas-")
+	);
 }

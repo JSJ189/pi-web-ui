@@ -643,6 +643,7 @@ ${origHtml}
 		<select class="sel-reader-model" title="选择翻译使用的 AI 模型或引擎" style="padding:2px 6px;font-size:12px;height:28px;max-width:155px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;background:var(--bg-elev,#16161d);color:inherit;border:1px solid var(--border,#333);border-radius:6px;cursor:pointer">
 			${getModelOptionsHtml(curModel)}
 		</select>
+		<button class="act-browse-model" title="调起统一模型选择器点选模型" style="padding:2px 7px;font-size:11px;height:28px;background:var(--bg-elev2);border:1px solid var(--border,#333);border-radius:6px;cursor:pointer">✨</button>
 	</div>
 	<button class="act-quote-chat" title="将此邮件引用到主对话输入框">💬 引用到对话</button>
 	<button class="act-reply">回复</button>
@@ -735,6 +736,24 @@ ${origHtml}
 					// 若已经翻译过，切换模型自动重译
 					if (mail._translation) {
 						triggerTranslate(chosen);
+					}
+				};
+			}
+
+			const browseModelBtn = $(".act-browse-model");
+			if (browseModelBtn) {
+				browseModelBtn.onclick = async () => {
+					const host = globalThis.window?.__piWebUiHost;
+					if (typeof host?.pickModel !== "function") return;
+					const res = await host.pickModel({
+						currentModelId: st.transModel === "current" ? undefined : st.transModel,
+					});
+					if (res?.ok && res.modelId) {
+						st.transModel = res.modelId;
+						renderReader(mail);
+						if (mail._translation) {
+							triggerTranslate(res.modelId);
+						}
 					}
 				};
 			}

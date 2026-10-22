@@ -468,8 +468,76 @@ export interface PromptAttachment {
 	size?: number;
 }
 
+export type CanvasEngineId = "pi" | "dsh" | "claude" | "durable";
+export type CanvasNodeRole = "architect" | "coder" | "reviewer" | "tester" | "devops" | "custom";
+export type CanvasNodeStatus = "idle" | "queued" | "running" | "waiting_approval" | "done" | "error" | "paused";
+export type CanvasEdgeType = "handoff" | "review" | "parallel";
+
+export interface CanvasNode {
+	id: string;
+	title: string;
+	role: CanvasNodeRole;
+	x: number;
+	y: number;
+	width?: number;
+	height?: number;
+	engine: CanvasEngineId;
+	model: string;
+	thinkingLevel?: string;
+	cwd: string;
+	useWorktree: boolean;
+	systemPromptOverride?: string;
+	status: CanvasNodeStatus;
+	activeConvId?: string;
+	currentAction?: string;
+	lastOutputSummary?: string;
+	error?: string;
+}
+
+export interface CanvasEdge {
+	id: string;
+	sourceNodeId: string;
+	targetNodeId: string;
+	type: CanvasEdgeType;
+	label?: string;
+	maxLoopRetries?: number;
+	currentLoopCount?: number;
+	lastHandoffSummary?: string;
+}
+
+export interface CanvasGraph {
+	id: string;
+	name: string;
+	viewport: { x: number; y: number; zoom: number };
+	nodes: CanvasNode[];
+	edges: CanvasEdge[];
+	status: "idle" | "running" | "paused" | "completed";
+	executionMode?: "real" | "simulate";
+	createdAt: number;
+	updatedAt: number;
+}
+
+export interface CanvasGraphSummary {
+	id: string;
+	name: string;
+	nodeCount: number;
+	edgeCount: number;
+	updatedAt: number;
+}
+
 export type ClientMessage =
 	| { type: "hello"; clientId: string; protocolVersion?: number; locale?: string }
+	// -- canvas studio (多引擎多模型多目录画布协作工作室) --------------------
+	| { type: "canvas_list" }
+	| { type: "canvas_load"; id: string }
+	| { type: "canvas_save"; graph: CanvasGraph }
+	| { type: "canvas_delete"; id: string }
+	| { type: "canvas_run_all"; graphId: string; initialPrompt?: string }
+	| { type: "canvas_run_node"; graphId: string; nodeId: string; prompt?: string }
+	| { type: "canvas_stop_node"; graphId: string; nodeId: string }
+	| { type: "canvas_stop_all"; graphId: string }
+	| { type: "canvas_steer_node"; graphId: string; nodeId: string; message: string }
+	| { type: "canvas_reset_status"; graphId: string }
 	/** Browser UI language changed (or first report after hello) — server
 	 *  persists it per client and uses it for tool return values / AI-facing
 	 *  prompts. "zh" (zh-CN/…) → Chinese; anything else → English
@@ -1855,6 +1923,23 @@ export interface FileEntry {
 	kind?: "image" | "video" | "audio" | "text" | "none";
 }
 
+export interface PptxSlideImagePayload {
+	media: string;
+	name?: string;
+	descr?: string;
+}
+
+export interface PptxSlidePayload {
+	index: number;
+	title: string;
+	subtitle?: string;
+	paragraphs: string[];
+	tables?: string[][][];
+	images?: PptxSlideImagePayload[];
+	notes?: string;
+	bg?: string;
+}
+
 // -- source-control panel (wire shapes shared by scm_data) -------------------
 
 export interface ScmFileEntry {
@@ -3006,6 +3091,10 @@ export interface UiMarkerInfo {
 	name: string;
 	enabled: boolean;
 	guidance: string[];
+	/** 显示给用户的名称（设置面板中展示；缺省为 name）。 */
+	label?: string;
+	/** 归属插件 id（内置标记为 undefined）。 */
+	pluginId?: string;
 }
 
 /** 单个工具的用户覆盖文案（设置页「工具」区逐工具编辑；空字段/空串 = 用默认）。
@@ -3134,6 +3223,8 @@ export interface UiSettingsState {
 	 *  （设置面板「各来源」行只读预览用；键 = prompt-composer token，空串 =
 	 *  该来源目前无自动内容；会话未就绪时为空对象）。 */
 	promptSourceDefaults: Record<string, string>;
+	/** 各引擎组装的系统提示词 sections 明细（设置面板查看各段来源与字符数）。 */
+	promptSections?: { name: string; text: string; chars: number }[];
 	/** 发给模型的 function-calling 工具定义（name + description + parameters
 	 *  JSON Schema）只读文本 —— 设置面板「查看当前完整提示词」里与系统提示词
 	 *  正文并排展示，方便看到完整初始上下文；会话未就绪时为空串。 */
@@ -3215,6 +3306,23 @@ export interface DshMarketPlugin {
 export type UpdateItemKind = "webui" | "pi-core" | "package" | "git-extension" | "plugin" | "engine";
 
 export type ServerMessage =
+	| {
+			type: "canvas_list_result";
+			graphs: CanvasGraphSummary[];
+	  }
+	| {
+			type: "canvas_graph_state";
+			graph: CanvasGraph;
+	  }
+	| {
+			type: "canvas_node_event";
+			graphId: string;
+			nodeId: string;
+			event: "started" | "progress" | "action" | "done" | "error" | "paused";
+			currentAction?: string;
+			summary?: string;
+			error?: string;
+	  }
 	| {
 			/** 子代理同行直接交接协同通知（Peer-to-Peer Handoff Event） */
 			type: "subagent_handoff";
@@ -3439,6 +3547,8 @@ export type ServerMessage =
 			lines: number;
 			/** Total file size in bytes. */
 			size: number;
+			/** 可选：PPT 等富文档的结构化幻灯片数据，前端优先走 PPT 播放器渲染 */
+			slides?: PptxSlidePayload[];
 	  }
 	/** `get_tool_info` 的应答：一条工具的**定义说明**（不含本次调用数据）。
 	 *  parameters 是 JSON Schema（SDK 的 TypeBox schema 直接 JSON 化），超限整丢并置

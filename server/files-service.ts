@@ -850,6 +850,7 @@ export class FilesService {
 							kind: "text",
 							lines: countLines(Buffer.from(office.text)),
 							size: stat.size,
+							slides: office.slides,
 						});
 						return;
 					}
@@ -1657,9 +1658,15 @@ export class FilesService {
 	): { abs: string; rel: string; parentRel: string; absolute: boolean } | null {
 		const parsed = parseRemoteWorkspaceUri(rawCwd);
 		if (!parsed) return null;
-		const trimmed = (p || "").trim();
+		let trimmed = (p || "").trim();
 		if (trimmed === MACHINE_ROOT || trimmed === MACHINE_ROOT + "/") return null;
-		if (!trimmed) {
+		if (isRemoteWorkspaceUri(trimmed)) {
+			const parsedUri = parseRemoteWorkspaceUri(trimmed);
+			if (parsedUri) {
+				trimmed = parsedUri.remotePath;
+			}
+		}
+		if (!trimmed || trimmed === ".") {
 			if (!allowRoot) return null;
 			return { abs: parsed.remotePath, rel: "", parentRel: "", absolute: false };
 		}
@@ -1859,6 +1866,7 @@ export class FilesService {
 							kind: "text",
 							lines: countLines(Buffer.from(office.text)),
 							size: st.size,
+							slides: office.slides,
 						});
 						return;
 					}

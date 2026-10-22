@@ -30,6 +30,7 @@ import type { UiSlotEntry } from "../ui-slots";
 import { contextMenuItems, openContextMenu } from "../context-menu-state";
 import { SlotTabs, type SlotTab } from "./SlotTabs";
 import { copyTextToClipboard } from "../use-copy-feedback";
+import { isRemoteWorkspaceUri, parseRemoteWorkspaceUri } from "../remote-ssh-client";
 
 /** 机器根（此电脑/盘符列表）wire 字面量 —— 与 server/files-service.ts 的 MACHINE_ROOT 同值。 */
 const MACHINE_ROOT = "@root";
@@ -284,6 +285,23 @@ export const RightPanel = memo(function RightPanel({
 		[cwd],
 	);
 
+	/** 将当前选中的 wire 路径转换为传输对话框（压缩/解压/上传文件夹）所用的绝对路径：
+	 *  远程 SSH 项目转换为远程 posix 绝对路径；本地项目转换为本地绝对路径。 */
+	const transferAbsPathOf = useCallback(
+		(p: string): string => {
+			if (isRemoteWorkspaceUri(cwd)) {
+				const parsed = parseRemoteWorkspaceUri(cwd);
+				const root = parsed ? parsed.remotePath : "/";
+				if (!p) return root;
+				if (p.startsWith("/")) return p;
+				const cleanRoot = root.replace(/\/+$/, "") || "/";
+				return cleanRoot === "/" ? `/${p}` : `${cleanRoot}/${p}`;
+			}
+			return absPathOf(p);
+		},
+		[cwd, absPathOf],
+	);
+
 	/** 文件夹行 → set_cwd 可用的绝对路径：机器浏览（绝对 wire 路径）直接用；
 	 *  工作区相对路径拼上 cwd；机器根本身不能作项目。 */
 	const toProjectPath = useCallback(
@@ -534,8 +552,10 @@ export const RightPanel = memo(function RightPanel({
 									: "upload";
 					setTransfer({
 						action,
-						path: absPathOf(tg.id),
-						dir: absPathOf(action === "upload" ? (fileMenuRef.current?.dir ?? currentPath) : parentWireOf(tg.id)),
+						path: transferAbsPathOf(tg.id),
+						dir: transferAbsPathOf(
+							action === "upload" ? (fileMenuRef.current?.dir ?? currentPath) : parentWireOf(tg.id),
+						),
 					});
 					break;
 				}
@@ -1141,6 +1161,11 @@ export const RightPanel = memo(function RightPanel({
 																		className={`file-item dir${clipboard?.cut && clipboard.src === e.path ? " cut" : ""}`}
 																		data-type="dir"
 																		data-path={e.path}
+																		onClick={(ev) => {
+																			if (renamingPath === e.path) return;
+																			if ((ev.target as HTMLElement).closest(".file-attach")) return;
+																			openDir(e.path);
+																		}}
 																		onContextMenu={(ev) => openFileMenu(ev, { id: e.path, kind: "dir", label: e.name })}
 																	>
 																		{renamingPath === e.path ? (
@@ -1148,7 +1173,14 @@ export const RightPanel = memo(function RightPanel({
 																				setRenamingPath(null),
 																			)
 																		) : (
-																			<button type="button" className="file-dir-main" onClick={() => openDir(e.path)}>
+																			<button
+																				type="button"
+																				className="file-dir-main"
+																				onClick={(ev) => {
+																					ev.stopPropagation();
+																					openDir(e.path);
+																				}}
+																			>
 																				<FiFolder className="file-icon" />
 																				<span className="file-name">{e.name}</span>
 																			</button>
@@ -1158,7 +1190,10 @@ export const RightPanel = memo(function RightPanel({
 																			className="file-attach ref"
 																			data-tip={t("linkFolderTip")}
 																			aria-label={t("linkFolderTip")}
-																			onClick={() => onAttach(e.path, e.name, "reference", true)}
+																			onClick={(ev) => {
+																				ev.stopPropagation();
+																				onAttach(e.path, e.name, "reference", true);
+																			}}
 																		>
 																			<FiLink />
 																		</button>
@@ -1167,7 +1202,10 @@ export const RightPanel = memo(function RightPanel({
 																			className={`file-attach copy${copiedKey === `name:${e.path}` ? " copied" : ""}`}
 																			data-tip={t("copyName")}
 																			aria-label={t("copyName")}
-																			onClick={() => copyText(e.name, `name:${e.path}`)}
+																			onClick={(ev) => {
+																				ev.stopPropagation();
+																				copyText(e.name, `name:${e.path}`);
+																			}}
 																		>
 																			{copiedKey === `name:${e.path}` ? <FiCheck /> : <FiCopy />}
 																		</button>
@@ -1176,7 +1214,10 @@ export const RightPanel = memo(function RightPanel({
 																			className={`file-attach copy${copiedKey === `path:${e.path}` ? " copied" : ""}`}
 																			data-tip={t("copyPath")}
 																			aria-label={t("copyPath")}
-																			onClick={() => copyText(absPathOf(e.path), `path:${e.path}`)}
+																			onClick={(ev) => {
+																				ev.stopPropagation();
+																				copyText(absPathOf(e.path), `path:${e.path}`);
+																			}}
 																		>
 																			{copiedKey === `path:${e.path}` ? <FiCheck /> : <FiClipboard />}
 																		</button>
@@ -1187,6 +1228,11 @@ export const RightPanel = memo(function RightPanel({
 																		className={`file-item file${clipboard?.cut && clipboard.src === e.path ? " cut" : ""}`}
 																		data-type="file"
 																		data-path={e.path}
+																		onClick={(ev) => {
+																			if (renamingPath === e.path) return;
+																			if ((ev.target as HTMLElement).closest(".file-attach")) return;
+																			onPreview(e.path, e.name);
+																		}}
 																		onContextMenu={(ev) =>
 																			openFileMenu(ev, { id: e.path, kind: "file", label: e.name })
 																		}
@@ -1200,7 +1246,10 @@ export const RightPanel = memo(function RightPanel({
 																				type="button"
 																				className="file-name"
 																				title={`${e.path} — ${t("previewFile")}`}
-																				onClick={() => onPreview(e.path, e.name)}
+																				onClick={(ev) => {
+																					ev.stopPropagation();
+																					onPreview(e.path, e.name);
+																				}}
 																			>
 																				<FiFile className="file-icon" />
 																				<span className="file-name-text">{e.name}</span>
@@ -1213,7 +1262,10 @@ export const RightPanel = memo(function RightPanel({
 																			type="button"
 																			className="file-attach download"
 																			data-tip={t("downloadFile")}
-																			onClick={() => downloadEntry(e.path, e.name)}
+																			onClick={(ev) => {
+																				ev.stopPropagation();
+																				downloadEntry(e.path, e.name);
+																			}}
 																		>
 																			<FiDownload />
 																		</button>
@@ -1222,7 +1274,10 @@ export const RightPanel = memo(function RightPanel({
 																			className="file-attach ref"
 																			data-tip={t("referenceTip")}
 																			aria-label={t("referenceTip")}
-																			onClick={() => onAttach(e.path, e.name, "reference")}
+																			onClick={(ev) => {
+																				ev.stopPropagation();
+																				onAttach(e.path, e.name, "reference");
+																			}}
 																		>
 																			<FiLink />
 																		</button>
@@ -1231,7 +1286,10 @@ export const RightPanel = memo(function RightPanel({
 																			className={`file-attach copy${copiedKey === `name:${e.path}` ? " copied" : ""}`}
 																			data-tip={t("copyName")}
 																			aria-label={t("copyName")}
-																			onClick={() => copyText(e.name, `name:${e.path}`)}
+																			onClick={(ev) => {
+																				ev.stopPropagation();
+																				copyText(e.name, `name:${e.path}`);
+																			}}
 																		>
 																			{copiedKey === `name:${e.path}` ? <FiCheck /> : <FiCopy />}
 																		</button>
@@ -1240,7 +1298,10 @@ export const RightPanel = memo(function RightPanel({
 																			className={`file-attach copy${copiedKey === `path:${e.path}` ? " copied" : ""}`}
 																			data-tip={t("copyPath")}
 																			aria-label={t("copyPath")}
-																			onClick={() => copyText(absPathOf(e.path), `path:${e.path}`)}
+																			onClick={(ev) => {
+																				ev.stopPropagation();
+																				copyText(absPathOf(e.path), `path:${e.path}`);
+																			}}
 																		>
 																			{copiedKey === `path:${e.path}` ? <FiCheck /> : <FiClipboard />}
 																		</button>

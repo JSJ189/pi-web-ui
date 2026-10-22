@@ -4,17 +4,15 @@
  * 给「随处可看」用的：文件预览（files-service readFile）、附件等走 file_content
  * 下发 Markdown 文本，前端 FilePreview 按 Markdown 渲染表格/段落，无需改协议。
  *
- * 零依赖：docx / xlsx 本质是 zip 包，这里用 node:zlib + 手写 zip 中央目录解析
+ * 零依赖：docx / xlsx / pptx 本质是 zip 包，这里用 node:zlib + 手写 zip 中央目录解析
  * 做最小解包（只支持 stored / deflate，Office 写出的文件都是这两种）。
- *
- * 注意：plugins/office-preview/index.mjs 里有一份同逻辑的 JS 拷贝（插件必须
- * 自包含、不能 import 服务端 TS，见架构文档插件章）。两边改解析时请同步另一份。
  */
 import { inflateRawSync } from "node:zlib";
+import type { PptxSlideImagePayload, PptxSlidePayload } from "./protocol.js";
 
-const OFFICE_EXTS = new Set([".docx", ".xlsx", ".xlsm"]);
+const OFFICE_EXTS = new Set([".docx", ".xlsx", ".xlsm", ".pptx", ".pptm", ".ppsx", ".potx"]);
 
-/** 单个文件上限（与 office-preview 插件一致）。 */
+/** 单个文件上限（15MB）。 */
 export const OFFICE_MAX_FILE_BYTES = 15 * 1024 * 1024;
 /** 解包后总量上限（防 zip 炸弹：小包解出巨量内容）。 */
 export const OFFICE_MAX_UNCOMPRESSED_BYTES = 64 * 1024 * 1024;
@@ -110,6 +108,25 @@ export function unzipFiles(buf: Buffer, wanted: string[]): Map<string, Buffer> {
 		out.set(name, decompressed);
 	}
 	return out;
+}
+
+/** 列出 zip 中央目录里的全部条目名（不解压内容，快速探测）。 */
+export function listZipEntries(buf: Buffer): string[] {
+	const eocd = findEocd(buf);
+	const cdCount = buf.readUInt16LE(eocd + 10);
+	const cdOffset = buf.readUInt32LE(eocd + 16);
+	const names: string[] = [];
+	let p = cdOffset;
+	for (let i = 0; i < cdCount; i++) {
+		if (buf.readUInt32LE(p) !== 0x02014b50) throw new Error("zip 中央目录损坏");
+		const nameLen = buf.readUInt16LE(p + 28);
+		const extraLen = buf.readUInt16LE(p + 30);
+		const commentLen = buf.readUInt16LE(p + 32);
+		const name = buf.toString("utf8", p + 46, p + 46 + nameLen);
+		names.push(name);
+		p += 46 + nameLen + extraLen + commentLen;
+	}
+	return names;
 }
 
 const NAMED_ENTITIES: Record<string, string> = { lt: "<", gt: ">", amp: "&", quot: '"', apos: "'" };
@@ -338,6 +355,390 @@ function colName(i: number): string {
 	return s;
 }
 
+/* ---------------- PPTX 幻灯片解析 ---------------- */
+
+export const PPTX_MAX_SLIDES = 500;
+
+export type PptxSlideImage = PptxSlideImagePayload;
+export type PptxSlide = PptxSlidePayload;
+
+interface ShapePara {
+	text: string;
+	lvl: number;
+	isBullet: boolean;
+}
+
+function extractShapePlainText(spXml: string): string {
+	const parts: string[] = [];
+	for (const m of spXml.matchAll(/<a:(t|tab|br)\b[^>]*\/?>([^<]*)(?:<\/a:t>)?/g)) {
+		if (m[1] === "tab") parts.push("\t");
+		else if (m[1] === "br") parts.push(" ");
+		else parts.push(decodeEntities(m[2]));
+	}
+	return parts.join("").trim();
+}
+
+function extractShapeParagraphs(spXml: string, isBodyPlaceholder = false): ShapePara[] {
+	const out: ShapePara[] = [];
+	for (const pMatch of spXml.matchAll(/<a:p\b[\s\S]*?<\/a:p>/g)) {
+		const pXml = pMatch[0];
+		const pPr = /<a:pPr\b([^>]*)>([\s\S]*?)<\/a:pPr>|<a:pPr\b([^>]*)\/>/.exec(pXml);
+		let lvl = 0;
+		let hasBuNone = false;
+		let hasBuChar = false;
+		let hasBuAutoNum = false;
+		if (pPr) {
+			const attrs = pPr[1] ?? pPr[3] ?? "";
+			const inner = pPr[2] ?? "";
+			const lvlMatch = /\blvl=["'](\d+)["']/.exec(attrs);
+			if (lvlMatch) lvl = Number(lvlMatch[1]);
+			hasBuNone = /<a:buNone\b/.test(inner);
+			hasBuChar = /<a:buChar\b/.test(inner);
+			hasBuAutoNum = /<a:buAutoNum\b/.test(inner);
+		}
+		const isBullet = !hasBuNone && (hasBuChar || hasBuAutoNum || lvl > 0 || isBodyPlaceholder);
+
+		let text = "";
+		for (const m of pXml.matchAll(/<a:(t|tab|br)\b[^>]*\/?>([^<]*)(?:<\/a:t>)?/g)) {
+			if (m[1] === "tab") text += "\t";
+			else if (m[1] === "br") text += "\n";
+			else text += decodeEntities(m[2]);
+		}
+		text = text.trim();
+		if (text) {
+			out.push({ text, lvl, isBullet });
+		}
+	}
+	return out;
+}
+
+function parseTable(tblXml: string): string[][] {
+	const rows: string[][] = [];
+	for (const trMatch of tblXml.matchAll(/<a:tr\b[^>]*>([\s\S]*?)<\/a:tr>/g)) {
+		const rowXml = trMatch[1];
+		const row: string[] = [];
+		for (const tcMatch of rowXml.matchAll(/<a:tc\b[^>]*>([\s\S]*?)<\/a:tc>/g)) {
+			const cellXml = tcMatch[1];
+			const cellText: string[] = [];
+			for (const m of cellXml.matchAll(/<a:(t|tab|br)\b[^>]*\/?>([^<]*)(?:<\/a:t>)?/g)) {
+				if (m[1] === "tab") cellText.push("\t");
+				else if (m[1] === "br") cellText.push(" ");
+				else cellText.push(decodeEntities(m[2]));
+			}
+			row.push(cellText.join("").trim());
+		}
+		if (row.length > 0) rows.push(row);
+	}
+	return rows;
+}
+
+function tableToMarkdown(rows: string[][]): string {
+	if (rows.length === 0) return "";
+	const colCount = Math.max(...rows.map((r) => r.length));
+	if (colCount === 0) return "";
+	const pad = (r: string[]): string[] => {
+		const row = r.slice(0, colCount);
+		while (row.length < colCount) row.push("");
+		return row;
+	};
+	const headerRow = pad(rows[0]);
+	const separatorRow = Array(colCount).fill("---");
+	const dataRows = rows.slice(1).map(pad);
+	const lines = [headerRow, separatorRow, ...dataRows].map((r) => `| ${r.map(mdCell).join(" | ")} |`);
+	return lines.join("\n");
+}
+
+function slideToMarkdown(slide: PptxSlide): string {
+	const titlePart = slide.title ? `：${slide.title}` : "";
+	const head = `## 幻灯片 ${slide.index}${titlePart}`;
+	const bodyParts: string[] = [];
+	if (slide.subtitle) {
+		bodyParts.push(`*${slide.subtitle}*`);
+	}
+	if (slide.images && slide.images.length > 0) {
+		for (const img of slide.images) {
+			bodyParts.push(`🖼️ **图片**：${img.descr || img.media}`);
+		}
+	}
+	if (slide.paragraphs.length > 0) {
+		bodyParts.push(slide.paragraphs.join("\n"));
+	}
+	if (slide.tables && slide.tables.length > 0) {
+		for (const tbl of slide.tables) {
+			const mdTbl = tableToMarkdown(tbl);
+			if (mdTbl) bodyParts.push(mdTbl);
+		}
+	}
+	if (slide.notes) {
+		bodyParts.push(`> 💡 **备注**：${slide.notes}`);
+	}
+	if (bodyParts.length === 0) {
+		return `${head}\n\n（空幻灯片）`;
+	}
+	return `${head}\n\n${bodyParts.join("\n\n")}`;
+}
+
+/** pptx/pptm/ppsx/potx → 幻灯片数组。 */
+export function parsePptxSlides(buf: Buffer): PptxSlide[] {
+	const allEntries = new Set(listZipEntries(buf));
+	const probeTargets = ["ppt/presentation.xml", "ppt/_rels/presentation.xml.rels"].filter((n) => allEntries.has(n));
+	const probe = unzipFiles(buf, probeTargets);
+	const presXml = probe.get("ppt/presentation.xml")?.toString("utf8") ?? "";
+	const relsXml = probe.get("ppt/_rels/presentation.xml.rels")?.toString("utf8") ?? "";
+
+	const relTarget = new Map<string, string>();
+	for (const m of relsXml.matchAll(/<Relationship\b[^>]*>/gi)) {
+		const id = /\bId=["']([^"']+)["']/i.exec(m[0])?.[1];
+		const target = /\bTarget=["']([^"']+)["']/i.exec(m[0])?.[1];
+		if (id && target) {
+			const clean = target
+				.replace(/\\/g, "/")
+				.replace(/^\/+/, "")
+				.replace(/^ppt\//, "");
+			relTarget.set(id, clean);
+		}
+	}
+
+	const slideRids: string[] = [];
+	for (const m of presXml.matchAll(/<[a-zA-Z0-9:]*sldId\b[^>]*\br:id=["']([^"']+)["']/gi)) {
+		slideRids.push(m[1]);
+	}
+
+	let slideTargets = slideRids
+		.map((rid) => relTarget.get(rid))
+		.filter((t): t is string => Boolean(t))
+		.map((t) => (t.startsWith("ppt/") ? t : `ppt/${t}`));
+
+	// Fallback 1: presentation.xml.rels 中声明的 slide 关系
+	if (slideTargets.length === 0) {
+		for (const m of relsXml.matchAll(/<Relationship\b[^>]*>/gi)) {
+			const type = /\bType=["']([^"']+)["']/i.exec(m[0])?.[1] ?? "";
+			const target = /\bTarget=["']([^"']+)["']/i.exec(m[0])?.[1] ?? "";
+			if (type.endsWith("/slide") || target.includes("slides/slide")) {
+				const clean = target
+					.replace(/\\/g, "/")
+					.replace(/^\/+/, "")
+					.replace(/^ppt\//, "");
+				slideTargets.push(clean.startsWith("ppt/") ? clean : `ppt/${clean}`);
+			}
+		}
+		slideTargets.sort((a, b) => a.localeCompare(b, undefined, { numeric: true }));
+	}
+
+	// Fallback 2: 中央目录扫描 ppt/slides/slideN.xml
+	if (slideTargets.length === 0) {
+		slideTargets = Array.from(allEntries)
+			.filter((name) => /^ppt\/slides\/slide\d+\.xml$/i.test(name))
+			.sort((a, b) => a.localeCompare(b, undefined, { numeric: true }));
+	}
+
+	if (slideTargets.length === 0) {
+		throw new Error("PPTX 文件中未找到幻灯片内容");
+	}
+
+	const cappedSlideTargets = slideTargets.slice(0, PPTX_MAX_SLIDES);
+
+	// 扫描各幻灯片的 .rels 关系（查找图片与演讲者备注）
+	const slideRelsMap = new Map<string, Map<string, string>>();
+	const slideToNotes = new Map<string, string>();
+	const slideRelsToFetch: string[] = [];
+	for (const st of cappedSlideTargets) {
+		const base = st.split("/").pop();
+		const relsName = `ppt/slides/_rels/${base}.rels`;
+		if (allEntries.has(relsName)) slideRelsToFetch.push(relsName);
+	}
+	if (slideRelsToFetch.length > 0) {
+		const slideRelsData = unzipFiles(buf, slideRelsToFetch);
+		for (const [relsPath, relsBuf] of slideRelsData) {
+			const xml = relsBuf.toString("utf8");
+			const rMap = new Map<string, string>();
+			const base = relsPath
+				.split("/")
+				.pop()
+				?.replace(/\.rels$/, "");
+			const slideTarget = cappedSlideTargets.find((st) => st.endsWith(`/${base}`));
+			for (const m of xml.matchAll(/<Relationship\b[^>]*>/gi)) {
+				const id = /\bId=["']([^"']+)["']/i.exec(m[0])?.[1];
+				const target = /\bTarget=["']([^"']+)["']/i.exec(m[0])?.[1];
+				const type = /\bType=["']([^"']+)["']/i.exec(m[0])?.[1] ?? "";
+				if (id && target) {
+					rMap.set(id, target);
+				}
+				if ((type.endsWith("/notesSlide") || target?.includes("notesSlide")) && target && slideTarget) {
+					const clean = target
+						.replace(/\\/g, "/")
+						.replace(/^\.\.\//, "")
+						.replace(/^ppt\//, "");
+					const fullNotesPath = clean.startsWith("ppt/") ? clean : `ppt/${clean}`;
+					if (allEntries.has(fullNotesPath)) {
+						slideToNotes.set(slideTarget, fullNotesPath);
+					}
+				}
+			}
+			if (slideTarget) slideRelsMap.set(slideTarget, rMap);
+		}
+	}
+
+	const filesToUnzip = [...cappedSlideTargets, ...Array.from(new Set(slideToNotes.values()))];
+	const unzipped = unzipFiles(buf, filesToUnzip);
+
+	const slides: PptxSlide[] = [];
+	for (let i = 0; i < cappedSlideTargets.length; i++) {
+		const target = cappedSlideTargets[i];
+		const slideXml = unzipped.get(target)?.toString("utf8") ?? "";
+		if (!slideXml) continue;
+
+		if (slideXml.length > DOCX_MAX_XML_BYTES) {
+			throw new Error(`幻灯片内容过大（解压后 ${(slideXml.length / 1048576).toFixed(1)} MB，上限 20 MB），拒绝预览`);
+		}
+
+		let title = "";
+		let titleShapeXml: string | null = null;
+		let subtitle: string | undefined;
+
+		// 查找标题与副标题占位符
+		for (const spMatch of slideXml.matchAll(/<p:sp\b[\s\S]*?<\/p:sp>/g)) {
+			const sp = spMatch[0];
+			if (!title && /<p:ph\b[^>]*\btype=["'](?:title|ctrTitle)["']/i.test(sp)) {
+				const text = extractShapePlainText(sp);
+				if (text) {
+					title = text;
+					titleShapeXml = sp;
+				}
+			} else if (!subtitle && /<p:ph\b[^>]*\btype=["']subTitle["']/i.test(sp)) {
+				const text = extractShapePlainText(sp);
+				if (text) {
+					subtitle = text;
+				}
+			}
+		}
+
+		if (!title) {
+			for (const spMatch of slideXml.matchAll(/<p:sp\b[\s\S]*?<\/p:sp>/g)) {
+				const sp = spMatch[0];
+				const isTitle =
+					/<p:ph\b(?![^>]*type=)(?:[^>]*idx=["']0["'])?/i.test(sp) ||
+					/<p:cNvPr\b[^>]*name=["'][^"']*(?:Title|标题)/i.test(sp);
+				if (isTitle) {
+					const text = extractShapePlainText(sp);
+					if (text && text.length <= 120) {
+						title = text;
+						titleShapeXml = sp;
+						break;
+					}
+				}
+			}
+		}
+
+		if (!title) {
+			for (const spMatch of slideXml.matchAll(/<p:sp\b[\s\S]*?<\/p:sp>/g)) {
+				const sp = spMatch[0];
+				if (/<p:ph\b[^>]*type=["'](?:sldNum|dt|ftr)["']/i.test(sp)) continue;
+				const paras = extractShapeParagraphs(sp);
+				if (paras.length === 1 && paras[0].text.length <= 60 && !paras[0].isBullet) {
+					title = paras[0].text;
+					titleShapeXml = sp;
+					break;
+				}
+				if (paras.length > 0) break;
+			}
+		}
+
+		const paragraphs: string[] = [];
+		const tables: string[][][] = [];
+		const images: PptxSlideImage[] = [];
+
+		const rMap = slideRelsMap.get(target);
+
+		// 提取图片（<p:pic>）
+		for (const picMatch of slideXml.matchAll(/<p:pic\b[\s\S]*?<\/p:pic>/gi)) {
+			const pic = picMatch[0];
+			const rEmbed = /<a:blip\b[^>]*r:embed=["']([^"']+)["']/i.exec(pic)?.[1];
+			const imgTarget = rEmbed && rMap ? rMap.get(rEmbed) : null;
+			if (imgTarget) {
+				const media = imgTarget.replace(/\\/g, "/").split("/").pop() ?? "";
+				if (media && /^image\d+\./i.test(media)) {
+					const descr =
+						/<p:cNvPr\b[^>]*descr=["']([^"']*)["']/i.exec(pic)?.[1] ||
+						/<p:cNvPr\b[^>]*name=["']([^"']*)["']/i.exec(pic)?.[1];
+					images.push({ media, descr: descr?.trim() || undefined });
+				}
+			}
+		}
+
+		// 提取背景色
+		let bg: string | undefined;
+		const bgPrMatch = /<p:bgPr\b[\s\S]*?<a:srgbClr\b[^>]*val=["']([0-9a-fA-F]{6})["']/i.exec(slideXml);
+		if (bgPrMatch) {
+			bg = `#${bgPrMatch[1]}`;
+		} else {
+			const fullSp =
+				/<p:sp\b[\s\S]*?<a:ext\b[^>]*cx=["'](?:12\d{6}|9\d{6})["'][\s\S]*?<a:srgbClr\b[^>]*val=["']([0-9a-fA-F]{6})["']/i.exec(
+					slideXml,
+				);
+			if (fullSp) {
+				bg = `#${fullSp[1]}`;
+			}
+		}
+
+		for (const elemMatch of slideXml.matchAll(/<p:sp\b[\s\S]*?<\/p:sp>|<a:tbl\b[\s\S]*?<\/a:tbl>/g)) {
+			const elem = elemMatch[0];
+			if (elem.startsWith("<p:sp")) {
+				if (elem === titleShapeXml) continue;
+				if (/<p:ph\b[^>]*type=["'](?:sldNum|dt|ftr)["']/i.test(elem)) continue;
+				const isBodyPlaceholder = /<p:ph\b[^>]*type=["']body["']/i.test(elem);
+				const paras = extractShapeParagraphs(elem, isBodyPlaceholder);
+				for (const p of paras) {
+					if (p.isBullet) {
+						const clean = p.text.replace(/^[\s•·\-*]+\s*/, "");
+						paragraphs.push(`${"  ".repeat(p.lvl)}- ${clean}`);
+					} else {
+						paragraphs.push(p.text);
+					}
+				}
+			} else if (elem.startsWith("<a:tbl")) {
+				const tbl = parseTable(elem);
+				if (tbl.length > 0) tables.push(tbl);
+			}
+		}
+
+		let notes: string | undefined;
+		const notesPath = slideToNotes.get(target);
+		if (notesPath) {
+			const notesXml = unzipped.get(notesPath)?.toString("utf8");
+			if (notesXml) {
+				for (const spMatch of notesXml.matchAll(/<p:sp\b[\s\S]*?<\/p:sp>/g)) {
+					const sp = spMatch[0];
+					if (/<p:ph\b[^>]*type=["']body["']/i.test(sp)) {
+						const paras = extractShapeParagraphs(sp, false);
+						const noteText = paras
+							.map((p) => p.text)
+							.join("\n")
+							.trim();
+						if (noteText) {
+							notes = noteText;
+							break;
+						}
+					}
+				}
+			}
+		}
+
+		slides.push({
+			index: i + 1,
+			title,
+			subtitle,
+			paragraphs,
+			tables: tables.length > 0 ? tables : undefined,
+			images: images.length > 0 ? images : undefined,
+			notes,
+			bg,
+		});
+	}
+
+	return slides;
+}
+
 /**
  * 表头固定用 A/B/C…（与 Excel 列标一致），而不拿第一行数据冒充表头——
  * 很多表的第一行是通知/标题文字，染成紫色表头又怪又误导。
@@ -358,11 +759,17 @@ function sheetToMarkdown(sheet: XlsxSheet): string {
 	return [head, "", ...lines].join("\n");
 }
 
+export interface OfficeExtractResult {
+	text: string;
+	truncated: boolean;
+	slides?: PptxSlide[];
+}
+
 /**
  * Office 文件 → Markdown 预览文本（前端 FilePreview 按 Markdown 渲染）。
  * 非 office 扩展名返回 null；zip 损坏/加密等抛错（调用方回落旧的二进制嗅探）。
  */
-export function extractOfficeText(filename: string, buf: Buffer): { text: string; truncated: boolean } | null {
+export function extractOfficeText(filename: string, buf: Buffer): OfficeExtractResult | null {
 	const dot = String(filename ?? "")
 		.toLowerCase()
 		.lastIndexOf(".");
@@ -373,15 +780,20 @@ export function extractOfficeText(filename: string, buf: Buffer): { text: string
 	}
 	let text: string;
 	let truncated = false;
+	let slides: PptxSlide[] | undefined;
 	if (ext === ".docx") {
 		const paras = parseDocxParagraphs(buf);
 		text = paras.join("\n");
 		truncated = text.length > OFFICE_MAX_TEXT_CHARS;
+	} else if (ext === ".pptx" || ext === ".pptm" || ext === ".ppsx" || ext === ".potx") {
+		slides = parsePptxSlides(buf);
+		text = slides.map(slideToMarkdown).join("\n\n---\n\n");
+		truncated = text.length > OFFICE_MAX_TEXT_CHARS || slides.length >= PPTX_MAX_SLIDES;
 	} else {
 		const sheets = parseXlsxSheets(buf);
 		text = sheets.map(sheetToMarkdown).join("\n\n");
 		truncated = text.length > OFFICE_MAX_TEXT_CHARS || sheets.some((s) => s.truncated);
 	}
 	if (text.length > OFFICE_MAX_TEXT_CHARS) text = text.slice(0, OFFICE_MAX_TEXT_CHARS);
-	return { text, truncated };
+	return { text, truncated, slides };
 }

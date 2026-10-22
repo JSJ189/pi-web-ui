@@ -19,6 +19,12 @@ import { isAbsoluteWirePath, wireToAbs } from "./files-service.js";
 import { buildVisionBridgePrompt, findVisionModels, transcribeImages } from "./vision-bridge.js";
 import { saveAttachment } from "./attachment-store.js";
 import type { ClientSettings } from "./client-state.js";
+import {
+	getGlobalRemoteSshService,
+	isRemoteWorkspaceUri,
+	parseRemoteWorkspaceUri,
+	resolveRemoteWorkspacePath,
+} from "./remote-ssh-service.js";
 
 /** 跨快照的视觉转写缓存：批次 hash（名称 + base64 头 + 提示词）→ 转写文本。
  *  编辑重问重发相同图片不再重复耗视觉 token。进程级共享即可。
@@ -76,9 +82,39 @@ export async function buildAttachmentMessages(
 ): Promise<{ message: Parameters<AgentSession["sendCustomMessage"]>[0] }[]> {
 	if (!attachments || attachments.length === 0) return [];
 	const fs = await import("node:fs/promises");
-	const { resolve, sep, relative, extname, basename } = await import("node:path");
+	const { resolve, sep, relative, extname, basename, posix } = await import("node:path");
 
-	const root = resolve(ctx.cwd);
+	const isRemote = isRemoteWorkspaceUri(ctx.cwd);
+	const remoteParsed = isRemote ? parseRemoteWorkspaceUri(ctx.cwd) : null;
+	const remoteRoot = remoteParsed ? remoteParsed.remotePath : "/";
+	const sshSvc = isRemote ? getGlobalRemoteSshService() : null;
+	const root = isRemote ? "" : resolve(ctx.cwd);
+
+	const resolveTarget = (attPath: string): { abs: string; rel: string; isOutside: boolean } | null => {
+		if (isRemote) {
+			let clean = attPath.trim();
+			if (isRemoteWorkspaceUri(clean)) {
+				const p = parseRemoteWorkspaceUri(clean);
+				if (p) clean = p.remotePath;
+			}
+			if (clean.startsWith("/")) {
+				const abs = posix.normalize(clean);
+				const rawRel = posix.relative(remoteRoot, abs);
+				const isOutside = rawRel.startsWith("..") || rawRel.includes("/..");
+				return { abs, rel: isOutside ? abs : rawRel || ".", isOutside: false };
+			}
+			const w = resolveRemoteWorkspacePath(remoteRoot, clean);
+			if (!w) return null;
+			return { abs: w.abs, rel: w.rel || ".", isOutside: false };
+		}
+		const absPath = isAbsoluteWirePath(attPath);
+		const abs = absPath ? wireToAbs(attPath) : resolve(root, attPath);
+		const rawRel = absPath ? null : relative(root, abs);
+		const isOutside = !absPath && (rawRel!.startsWith("..") || rawRel!.includes(`${sep}..`));
+		const rel = absPath ? abs.split(sep).join("/") : rawRel!.split(sep).join("/");
+		return { abs, rel, isOutside };
+	};
+
 	const MAX_ATTACHMENT_BYTES = 200 * 1024;
 	const IMAGE_EXT = new Set([".png", ".jpg", ".jpeg", ".gif", ".webp", ".bmp", ".svg"]);
 	const MIME: Record<string, string> = {
@@ -159,21 +195,36 @@ export async function buildAttachmentMessages(
 		if (att.fileData || !att.path) continue;
 		const ext = extname(att.path).toLowerCase();
 		if (!IMAGE_EXT.has(ext) || ext === ".svg") continue;
-		// 机器浏览的绝对路径（盘符 / posix "/"）允许在工作区之外。
-		const absPath = isAbsoluteWirePath(att.path);
-		const abs = absPath ? wireToAbs(att.path) : resolve(root, att.path);
-		const rawRel = absPath ? null : relative(root, abs);
-		if (!absPath && (rawRel!.startsWith("..") || rawRel!.includes(`${sep}..`))) continue;
-		let st: { size: number; isFile(): boolean } | undefined;
+		const target = resolveTarget(att.path);
+		if (!target || target.isOutside) continue;
+		let st: { size: number; isFile: boolean } | undefined;
+		if (isRemote) {
+			if (!sshSvc) continue;
+			try {
+				const s = await sshSvc.sftpStat(ctx.cwd, target.abs);
+				st = { size: s.size, isFile: s.isFile };
+			} catch {
+				continue;
+			}
+		} else {
+			try {
+				const s = await fs.stat(target.abs);
+				st = { size: s.size, isFile: s.isFile() };
+			} catch {
+				continue;
+			}
+		}
+		if (!st.isFile || st.size === 0 || st.size > MAX_PATH_IMAGE_BYTES) {
+			continue;
+		}
+		let buf: Buffer;
 		try {
-			st = await fs.stat(abs);
+			buf = isRemote
+				? (await sshSvc!.sftpReadFile(ctx.cwd, target.abs, MAX_PATH_IMAGE_BYTES)).data
+				: await fs.readFile(target.abs);
 		} catch {
 			continue;
 		}
-		if (!st.isFile() || st.size === 0 || st.size > MAX_PATH_IMAGE_BYTES) {
-			continue;
-		}
-		const buf = await fs.readFile(abs);
 		const mime = sniffImageMime(buf, ext);
 		if (!mime) continue;
 		const raw = buf.toString("base64");
@@ -559,10 +610,8 @@ export async function buildAttachmentMessages(
 			continue;
 		}
 
-		const absPath = isAbsoluteWirePath(att.path);
-		const abs = absPath ? wireToAbs(att.path) : resolve(root, att.path);
-		const rawRel = absPath ? null : relative(root, abs);
-		if (!absPath && (rawRel!.startsWith("..") || rawRel!.includes(`${sep}..`))) {
+		const target = resolveTarget(att.path);
+		if (!target || target.isOutside) {
 			ctx.emit({
 				type: "notice",
 				level: "warning",
@@ -571,21 +620,46 @@ export async function buildAttachmentMessages(
 			});
 			continue;
 		}
-		// Normalize to forward slashes (relative() returns "\\" on Windows);
-		// <file path> and details.path must use the wire format. 机器浏览的绝对
-		// 路径直接按绝对路径引用（SDK 读文件工具接受绝对路径，与上传文件一致）。
-		const rel = absPath ? abs.split(sep).join("/") : rawRel!.split(sep).join("/");
+		const { abs, rel } = target;
 		let stat: { size: number; isFile(): boolean; isDirectory(): boolean } | undefined;
-		try {
-			stat = await fs.stat(abs);
-		} catch {
-			ctx.emit({
-				type: "notice",
-				level: "error",
-				text: `附件不存在：${att.path}`,
-				textEn: `Attachment does not exist: ${att.path}`,
-			});
-			continue;
+		if (isRemote) {
+			if (!sshSvc) {
+				ctx.emit({
+					type: "notice",
+					level: "error",
+					text: `远程 SSH 服务不可用：${att.path}`,
+					textEn: `Remote SSH service not available: ${att.path}`,
+				});
+				continue;
+			}
+			try {
+				const s = await sshSvc.sftpStat(ctx.cwd, abs);
+				stat = {
+					size: s.size,
+					isFile: () => s.isFile,
+					isDirectory: () => s.isDirectory,
+				};
+			} catch {
+				ctx.emit({
+					type: "notice",
+					level: "error",
+					text: `附件不存在：${att.path}`,
+					textEn: `Attachment does not exist: ${att.path}`,
+				});
+				continue;
+			}
+		} else {
+			try {
+				stat = await fs.stat(abs);
+			} catch {
+				ctx.emit({
+					type: "notice",
+					level: "error",
+					text: `附件不存在：${att.path}`,
+					textEn: `Attachment does not exist: ${att.path}`,
+				});
+				continue;
+			}
 		}
 
 		const name = att.path.split(/[\\/]/).pop() ?? att.path;
@@ -688,7 +762,14 @@ ${transcript}
 				});
 				continue;
 			}
-			const data = await fs.readFile(abs, "base64");
+			let data: string;
+			try {
+				data = isRemote
+					? (await sshSvc!.sftpReadFile(ctx.cwd, abs, MAX_ATTACHMENT_BYTES)).data.toString("base64")
+					: await fs.readFile(abs, "base64");
+			} catch {
+				continue;
+			}
 			out.push({
 				message: {
 					customType: "file",

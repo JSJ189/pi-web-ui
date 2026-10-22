@@ -533,6 +533,90 @@ class DshGoalJsonRpcServer extends HarnessSdkJsonRpcServer {
 		return { tools: schemas.map((s) => s.name).sort() };
 	}
 
+	/** prompt/inspect RPC：返回系统提示词全文、分段（sections）、上下文（contexts）与工具 schemas。 */
+	async promptInspect(params) {
+		let context = {};
+		if (typeof params?.sessionId === "string" && params.sessionId) {
+			try {
+				const rec = await this.getOrCreateSession(params.sessionId);
+				const agent = this.liveAgent(rec, params.sessionId);
+				context = { agent, scope: agent };
+			} catch {
+				/* ignore */
+			}
+		}
+		if (!context.agent) {
+			try {
+				const agent = await this.ensureInventoryAgent();
+				context = { agent, scope: agent };
+			} catch {
+				/* ignore */
+			}
+		}
+		const contexts = context.agent
+			? [{ agent: context.agent, scope: context.agent }, { scope: context.agent }, { scope: context.agent.ctx }, {}]
+			: [{}];
+		let asm = null;
+		let lastErr = null;
+		for (const ctx of contexts) {
+			try {
+				asm = await this.ctx.systemPrompt.assemble(ctx);
+				if (asm) break;
+			} catch (err) {
+				lastErr = err;
+			}
+		}
+		if (!asm) {
+			return {
+				prompt: "",
+				sections: [],
+				contexts: [],
+				tools: [],
+				error: String(lastErr?.message ?? lastErr ?? "assembly failed"),
+			};
+		}
+		const sections = Array.isArray(asm.sections)
+			? asm.sections.map((s) => ({
+					name: s.name,
+					text: typeof s.text === "string" ? s.text : String(s.text ?? ""),
+					chars: String(s.text ?? "").length,
+				}))
+			: [];
+		const promptContexts = Array.isArray(asm.contexts)
+			? asm.contexts.map((c) => ({
+					name: c.name,
+					text: typeof c.text === "string" ? c.text : String(c.text ?? ""),
+					chars: String(c.text ?? "").length,
+				}))
+			: [];
+		const tools = Array.isArray(asm.tools)
+			? asm.tools.map((t) => ({
+					name: t.name,
+					description: t.description,
+					parameters: t.parameters,
+				}))
+			: [];
+		const sectionTexts = sections.map((s) => s.text).filter(Boolean);
+		let fullPrompt = sectionTexts.join("\n\n");
+		if (promptContexts.length > 0) {
+			const ctxBody = promptContexts
+				.map((c) => c.text)
+				.filter(Boolean)
+				.join("\n\n");
+			if (ctxBody) {
+				fullPrompt +=
+					(fullPrompt ? "\n\n" : "") +
+					`Current runtime context. This snapshot supersedes earlier runtime-context snapshots.\n\n${ctxBody}`;
+			}
+		}
+		return {
+			prompt: fullPrompt,
+			sections,
+			contexts: promptContexts,
+			tools,
+		};
+	}
+
 	/** debug/assemble RPC（仅 DEBUG）：读一个会话 agent 视角的系统提示词 section 名录
 	 *  （零 token 验证 persona 遮蔽/complete 压制/自定义 section 用；不返回正文）。 */
 	async debugAssemble(params) {
@@ -721,6 +805,8 @@ class DshGoalJsonRpcServer extends HarnessSdkJsonRpcServer {
 				return this.setPermission(params);
 			case "preset/tools":
 				return this.presetTools(params);
+			case "prompt/inspect":
+				return this.promptInspect(params);
 			case "debug/assemble":
 				return this.debugAssemble(params);
 			default:

@@ -519,6 +519,24 @@ export class DshRuntime {
 		}>;
 	}
 
+	/** 检查并获取运行时当前的组装系统提示词、sections 明细和工具 schemas。 */
+	async inspectPrompt(sessionId?: string): Promise<{
+		prompt: string;
+		sections: { name: string; text: string; chars: number }[];
+		contexts: { name: string; text: string; chars: number }[];
+		tools: { name: string; description?: string; parameters?: unknown }[];
+		error?: string;
+	}> {
+		await this.start();
+		return this._request("prompt/inspect", sessionId ? { sessionId } : {}) as Promise<{
+			prompt: string;
+			sections: { name: string; text: string; chars: number }[];
+			contexts: { name: string; text: string; chars: number }[];
+			tools: { name: string; description?: string; parameters?: unknown }[];
+			error?: string;
+		}>;
+	}
+
 	/** 回传一个桥接工具的执行结果（isError=true 时 result 为错误信息）。 */
 	async toolsCallResult(id: string, result: string, isError?: boolean): Promise<unknown> {
 		await this.start();

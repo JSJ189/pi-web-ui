@@ -339,7 +339,7 @@ function pluginPromptFiles(): string[] {
 		for (const f of readdirSync(dir)) {
 			const p = join(dir, f);
 			if (statSync(p).isDirectory()) {
-				if (f !== "node_modules" && f !== "vendor") walk(p);
+				if (f !== "node_modules" && f !== "vendor" && f !== "artifacts") walk(p);
 				continue;
 			}
 			if (f.endsWith(".mjs")) out.push(p);

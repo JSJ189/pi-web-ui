@@ -20,6 +20,7 @@ import { Markdown } from "./Markdown";
 import { collectQuestionAttachments } from "../question-attachments";
 
 import { parseSkillBlock } from "../skill-block";
+import { computeEarlierCount } from "../history-window";
 import { CollapsedMessage } from "./CollapsedMessage";
 import { reviewFoldKind } from "../goal-review-fold";
 import { useFlowStreamMode } from "../flow-mode";
@@ -665,10 +666,16 @@ export function MessageList({
 	const historyStart = Math.max(0, state.historyStart ?? 0);
 	const historyStartRef = useRef(historyStart);
 	historyStartRef.current = historyStart;
-	const hasEarlier = isPagingActive && (messages.length > effectiveVisibleCount || historyStart > 0);
-	/** 更早消息总数 = 本地还没展示的 + 服务端还没下发的。 */
-	const earlierCount = messages.length - effectiveVisibleCount + historyStart;
-	const visibleMessages = hasEarlier ? messages.slice(-effectiveVisibleCount) : messages;
+	/** 更早消息总数 = 本地还没展示的（开启本地分页时） + 服务端还没下发的（窗口化截留）。 */
+	const earlierCount = computeEarlierCount({
+		isPagingActive,
+		totalMessages: messages.length,
+		visibleCount,
+		historyStart,
+	});
+	const hasEarlier = !exportImage.open && !searchOpen && earlierCount > 0;
+	const visibleMessages =
+		isPagingActive && effectiveVisibleCount < messages.length ? messages.slice(-effectiveVisibleCount) : messages;
 
 	/** 向服务端要一页更早的历史（窗口化扫码，前插到 messages 头部）。 */
 	const requestServerPage = useCallback((opts: { count?: number; all?: boolean }) => {
@@ -689,8 +696,8 @@ export function MessageList({
 
 	const loadEarlier = useCallback(
 		(count = 30) => {
-			// 本地还有没展示的更早消息：直接撑开，零网络。
-			if (messages.length - visibleCount >= count) {
+			// 本地还有没展示的更早消息（开启向上分页模式下）：直接撑开，零网络。
+			if (isPagingActive && messages.length - visibleCount >= count) {
 				const el = scrollRef.current;
 				if (!el) return;
 				const prevSh = el.scrollHeight;
@@ -704,17 +711,17 @@ export function MessageList({
 				});
 				return;
 			}
-			// 本地已到底：先把没展示的撑开，再向服务端要更早一页（窗口化）。
-			if (messages.length > visibleCount) setVisibleCount(messages.length);
+			// 本地已到底（或未开启分页模式）：先把本地没展示的撑开（若有），再向服务端要更早一页（窗口化）。
+			if (isPagingActive && messages.length > visibleCount) setVisibleCount(messages.length);
 			if (historyStartRef.current > 0) requestServerPage({ count });
 		},
-		[messages.length, visibleCount, requestServerPage],
+		[isPagingActive, messages.length, visibleCount, requestServerPage],
 	);
 
 	const loadAllEarlier = useCallback(() => {
 		if (historyStartRef.current > 0) requestServerPage({ all: true });
-		setVisibleCount(messages.length);
-	}, [messages.length, requestServerPage]);
+		if (isPagingActive) setVisibleCount(messages.length);
+	}, [historyStartRef.current, requestServerPage, isPagingActive, messages.length]);
 
 	// 需要扫全文/全量的入口（页内搜索、导出图片）打开时：服务端窗口化时把更早历史
 	// 一次拉全，否则搜不到/导出缺前半段。（用户主动触发，一次付清）
@@ -1209,8 +1216,8 @@ export function MessageList({
 				userUpwardGestureTimeRef.current = Date.now();
 				disengageStick();
 
-				// 向上分页模式下：若滚轮接近顶部且还有更早历史，自动静默预加载上一页
-				if (isPagingActive && hasEarlier) {
+				// 若滚轮接近顶部且还有更早历史，自动静默预加载上一页
+				if (hasEarlier) {
 					const el = scrollRef.current;
 					if (el && el.scrollTop <= 80) {
 						loadEarlier(30);
@@ -1347,6 +1354,9 @@ export function MessageList({
 				stickRef.current = true;
 				escapedRef.current = false;
 			}
+		}
+		if (dSt < 0 && el.scrollTop <= 80 && hasEarlier) {
+			loadEarlier(30);
 		}
 		// 避免每帧滚动重复 dispatch 相同状态
 		setStickBottom((prev) => (prev !== stickRef.current ? stickRef.current : prev));

@@ -300,6 +300,8 @@ export function FilePreview({
 	const kind = loaded?.kind ?? "text";
 	const isMarkdown = isMarkdownFile(file.name) || isOfficeFile(file.name);
 	const isHtml = isHtmlFile(file.name);
+	const isOffice = isOfficeFile(file.name);
+
 	const showMarkdown = isMarkdown && markdownPreview && !editing && kind === "text" && !isBinary;
 	const showHtml = isHtml && htmlPreview && !editing && kind === "text" && !isBinary;
 
@@ -511,7 +513,10 @@ export function FilePreview({
 				if (e.target === e.currentTarget) handleClose();
 			}}
 		>
-			<div className={`fp ${fullscreen ? "fullscreen" : ""}`} style={{ "--fp-zoom": zoom / 100 } as CSSProperties}>
+			<div
+				className={`fp ${fullscreen ? "fullscreen" : ""} ${isOffice ? "is-ppt" : ""}`}
+				style={{ "--fp-zoom": zoom / 100 } as CSSProperties}
+			>
 				<div
 					className="fp-head"
 					onDoubleClick={(e) => {
@@ -787,7 +792,15 @@ function isMarkdownFile(name: string): boolean {
 /** Office 文档：服务端已转成 Markdown 文本下发，这里按 Markdown 渲染即可随处可看。 */
 function isOfficeFile(name: string): boolean {
 	const lower = name.toLowerCase();
-	return lower.endsWith(".docx") || lower.endsWith(".xlsx") || lower.endsWith(".xlsm");
+	return (
+		lower.endsWith(".docx") ||
+		lower.endsWith(".xlsx") ||
+		lower.endsWith(".xlsm") ||
+		lower.endsWith(".pptx") ||
+		lower.endsWith(".pptm") ||
+		lower.endsWith(".ppsx") ||
+		lower.endsWith(".potx")
+	);
 }
 
 function isHtmlFile(name: string): boolean {

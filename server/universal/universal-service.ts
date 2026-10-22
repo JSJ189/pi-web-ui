@@ -194,6 +194,12 @@ export class UniversalAgentService implements EngineService {
 		/* no-op */
 	}
 
+	applyPluginMarkers(): void {
+		for (const session of this.sessions.values()) {
+			session.pushSettings();
+		}
+	}
+
 	refreshBackgroundServers(): void {
 		/* no-op */
 	}

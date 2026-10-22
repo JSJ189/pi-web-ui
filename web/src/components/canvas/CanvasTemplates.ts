@@ -1,0 +1,153 @@
+/**
+ * CanvasTemplates.ts — 经典数字战队开箱即用预设模板库 (Squad Presets)。
+ */
+import type { CanvasGraph } from "../../types";
+
+export interface SquadTemplate {
+	id: string;
+	title: string;
+	desc: string;
+	createGraph: () => CanvasGraph;
+}
+
+export const SQUAD_TEMPLATES: SquadTemplate[] = [
+	{
+		id: "fullstack_agile",
+		title: "🚀 全栈多引擎敏捷协同组",
+		desc: "Pi 负责总控拆解，DSH 极速搞定前端，Claude Code 深度打磨后端，Durable 持久自愈测试",
+		createGraph: () => ({
+			id: `squad_fullstack_${Date.now()}`,
+			name: "全栈多引擎敏捷协同工程",
+			viewport: { x: 50, y: 50, zoom: 1 },
+			status: "idle",
+			createdAt: Date.now(),
+			updatedAt: Date.now(),
+			nodes: [
+				{
+					id: "n_lead",
+					title: "架构总指挥 (Lead)",
+					role: "architect",
+					x: 60,
+					y: 180,
+					width: 300,
+					engine: "pi",
+					model: "anthropic/claude-3-7-sonnet",
+					cwd: ".",
+					useWorktree: false,
+					systemPromptOverride: "负责把业务需求拆解为前后端清晰的技术规约与数据契约，派发给对应工程师。",
+					status: "idle",
+				},
+				{
+					id: "n_fe",
+					title: "前端界面工程师",
+					role: "coder",
+					x: 460,
+					y: 60,
+					width: 300,
+					engine: "dsh",
+					model: "deepseek/deepseek-chat",
+					cwd: "web",
+					useWorktree: true,
+					systemPromptOverride: "基于契约快速编写组件与交互，专注前端体验。",
+					status: "idle",
+				},
+				{
+					id: "n_be",
+					title: "后端与核心引擎",
+					role: "coder",
+					x: 460,
+					y: 320,
+					width: 300,
+					engine: "claude",
+					model: "deepseek/deepseek-chat",
+					cwd: "server",
+					useWorktree: true,
+					systemPromptOverride: "实现后端路由、数据存取与核心计算逻辑。",
+					status: "idle",
+				},
+				{
+					id: "n_qa",
+					title: "测试与自愈运维",
+					role: "tester",
+					x: 860,
+					y: 180,
+					width: 300,
+					engine: "durable",
+					model: "anthropic/claude-3-5-haiku",
+					cwd: ".",
+					useWorktree: false,
+					systemPromptOverride: "执行集成测试并自动修复测试中暴露的问题。",
+					status: "idle",
+				},
+			],
+			edges: [
+				{ id: "e1", sourceNodeId: "n_lead", targetNodeId: "n_fe", type: "handoff", label: "前端需求" },
+				{ id: "e2", sourceNodeId: "n_lead", targetNodeId: "n_be", type: "handoff", label: "后端契约" },
+				{ id: "e3", sourceNodeId: "n_fe", targetNodeId: "n_qa", type: "handoff", label: "前端验证" },
+				{ id: "e4", sourceNodeId: "n_be", targetNodeId: "n_qa", type: "handoff", label: "后端测试" },
+			],
+		}),
+	},
+	{
+		id: "tdd_squad",
+		title: "🛡️ TDD 测试驱动与自愈攻坚组",
+		desc: "测试编写 ➔ 极速编码 ➔ 自动化运行与自愈闭环，保证代码质量 100% 达标",
+		createGraph: () => ({
+			id: `squad_tdd_${Date.now()}`,
+			name: "TDD 测试驱动开发流水线",
+			viewport: { x: 50, y: 50, zoom: 1 },
+			status: "idle",
+			createdAt: Date.now(),
+			updatedAt: Date.now(),
+			nodes: [
+				{
+					id: "n_spec",
+					title: "测试设计专家 (Spec)",
+					role: "architect",
+					x: 80,
+					y: 160,
+					width: 300,
+					engine: "pi",
+					model: "anthropic/claude-3-7-sonnet",
+					cwd: "tests",
+					useWorktree: false,
+					systemPromptOverride: "编写严格的单元测试与断言规范，先于业务逻辑设计测试用例。",
+					status: "idle",
+				},
+				{
+					id: "n_impl",
+					title: "功能实现工程师",
+					role: "coder",
+					x: 480,
+					y: 160,
+					width: 300,
+					engine: "dsh",
+					model: "deepseek/deepseek-chat",
+					cwd: ".",
+					useWorktree: true,
+					systemPromptOverride: "编写业务实现代码，确保让测试设计专家的测试全部通过。",
+					status: "idle",
+				},
+				{
+					id: "n_heal",
+					title: "执行与自愈修复 (Durable)",
+					role: "tester",
+					x: 880,
+					y: 160,
+					width: 300,
+					engine: "durable",
+					model: "anthropic/claude-3-5-haiku",
+					cwd: ".",
+					useWorktree: false,
+					systemPromptOverride: "运行测试套件，若失败自动连线驳回给功能实现工程师修复。",
+					status: "idle",
+				},
+			],
+			edges: [
+				{ id: "e1", sourceNodeId: "n_spec", targetNodeId: "n_impl", type: "handoff", label: "测试用例交付" },
+				{ id: "e2", sourceNodeId: "n_impl", targetNodeId: "n_heal", type: "handoff", label: "提交运行测试" },
+				{ id: "e3", sourceNodeId: "n_heal", targetNodeId: "n_impl", type: "review", label: "测试未过驳回重构" },
+			],
+		}),
+	},
+];

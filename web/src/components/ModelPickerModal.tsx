@@ -132,7 +132,7 @@ export const ModelPickerModal = memo(function ModelPickerModal({
 			}}
 		>
 			<div
-				className="modal dd-menu-model"
+				className="modal dd-menu dd-menu-model"
 				style={{
 					position: "relative",
 					top: "auto",
@@ -278,7 +278,11 @@ export const ModelPickerModal = memo(function ModelPickerModal({
 							})}
 						</div>
 					)}
-					<div className="dd-model-scroll" ref={modelScrollRef}>
+					<div
+						className="dd-model-scroll"
+						ref={modelScrollRef}
+						style={{ flex: "1 1 auto", minHeight: 0, minWidth: 0, maxHeight: "none", overflowY: "auto" }}
+					>
 						{modelsLoading && <div className="dd-loading">{t("loading")}</div>}
 						{models.length === 0 && !modelsLoading && <div className="dd-loading">{t("noModels")}</div>}
 						{filteredModels.length === 0 && visibleModels.length > 0 && (

@@ -42,6 +42,7 @@ import {
 } from "../client-state.js";
 import { normalizeUiLayout, normalizeKeepRecentMessages, DEFAULT_KEEP_RECENT_MESSAGES } from "../client-state.js";
 import { PLAN_MODE_SYSTEM_PROMPT } from "../plan-mode.js";
+import { buildToolsSchemaText, type ToolSchemaEntry } from "../prompt-composer.js";
 import { FilesService, workspacePath, desktopDirWire } from "../files-service.js";
 import { SandboxManager, isSameOrSubpath } from "../sandbox-service.js";
 import { QuiesceRejectedError } from "../agent-service.js";
@@ -419,6 +420,12 @@ export class DshClientSession {
 	/** clone 出来的预设 id（roster 名录校验用；空 = 未生成，走 legacy）。 */
 	private presetCloneIds: string[] = [];
 
+	/** 系统提示词缓存（从运行时 inspectPrompt 异步拉取；未就绪时兜底）。 */
+	private cachedEffectiveSystemPrompt = "";
+	private cachedToolsSchema = "";
+	private cachedPromptSections: { name: string; text: string; chars: number }[] = [];
+	private cachedPromptSourceDefaults: Record<string, string> = {};
+
 	private readonly files: FilesService;
 	private readonly bg: BgServerTracker;
 	private readonly sandboxes: SandboxManager;
@@ -616,6 +623,7 @@ export class DshClientSession {
 			void cs.refreshAgentPresets();
 			void cs.refreshPermissionOptions().catch(() => {});
 			void cs.refreshActivePermission().catch(() => {});
+			void cs.refreshPromptInfo().catch(() => {});
 		};
 		// P0-1 watchdog：意外退出（非 kill/close 主动触发）→ 限频自动重启，保持可用。
 		cs.runtime.onExit = (code, signal, intentional) => {
@@ -3896,7 +3904,55 @@ export class DshClientSession {
 	// 设置 / 系统提示词
 	// -----------------------------------------------------------------------
 
+	private buildFallbackPromptSections(): { name: string; text: string; chars: number }[] {
+		const identity = "You are an AI agent powered by DeepSeek Harness.";
+		const custom = this.settings.customSystemPrompt.trim();
+		const markerGuidance = this.markerSvc.buildGuidance().trim();
+		const effectiveCustom = [custom, markerGuidance].filter(Boolean).join("\n\n");
+		const sections: { name: string; text: string; chars: number }[] = [
+			{ name: "harness:identity", text: identity, chars: identity.length },
+		];
+		if (this.settings.promptMode === "replace") {
+			const persona =
+				effectiveCustom ||
+				`You are a coding agent powered by the ${this.model} model. Your working directory is ${this.cwd}.`;
+			sections.push({ name: "deployment:persona-prefix", text: persona, chars: persona.length });
+		} else {
+			const persona = `You are a coding agent powered by the ${this.model} model. Your working directory is ${this.cwd}.`;
+			sections.push({ name: "deployment:persona-prefix", text: persona, chars: persona.length });
+			if (effectiveCustom) {
+				sections.push({ name: "pi-webui:custom-prompt", text: effectiveCustom, chars: effectiveCustom.length });
+			}
+		}
+		return sections;
+	}
+
+	private buildFallbackSystemPrompt(): string {
+		return this.buildFallbackPromptSections()
+			.map((s) => s.text)
+			.filter(Boolean)
+			.join("\n\n");
+	}
+
+	private buildFallbackPromptSourceDefaults(): Record<string, string> {
+		const defs: Record<string, string> = {};
+		for (const s of this.buildFallbackPromptSections()) {
+			defs[s.name] = s.text;
+		}
+		return defs;
+	}
+
 	pushSettings(): void {
+		if (this.runtime?.alive && !this.cachedEffectiveSystemPrompt) {
+			void this.refreshPromptInfo().catch(() => {});
+		}
+		const effectiveSystemPrompt = this.cachedEffectiveSystemPrompt || this.buildFallbackSystemPrompt();
+		const promptSourceDefaults =
+			Object.keys(this.cachedPromptSourceDefaults).length > 0
+				? this.cachedPromptSourceDefaults
+				: this.buildFallbackPromptSourceDefaults();
+		const promptSections =
+			this.cachedPromptSections.length > 0 ? this.cachedPromptSections : this.buildFallbackPromptSections();
 		const settings: UiSettingsState = {
 			promptMode: this.settings.promptMode,
 			customSystemPrompt: this.settings.customSystemPrompt,
@@ -3959,10 +4015,11 @@ export class DshClientSession {
 			promptOverrides: this.settings.promptOverrides ?? {},
 			// DSH 无 pi 工具注册表面，逐工具文案覆盖不适用；保协议完整。
 			toolPromptOverrides: {},
-			effectiveSystemPrompt: this.settings.customSystemPrompt,
-			promptSourceDefaults: {},
-			// DSH 引擎不接标准 pi 的 customTool 工具 schema（走 goal-rpc），此处给空。
-			toolsSchema: "",
+			effectiveSystemPrompt,
+			promptSourceDefaults,
+			promptSections,
+			// DSH 运行时真实的工具 schema 文本（发给模型的工具列表 JSON Schema 格式化文本）。
+			toolsSchema: this.cachedToolsSchema,
 			visionBridgeDefaultPrompt: "",
 			scmCommitMsgDefaultPrompt: "",
 			visionModels: [],
@@ -4123,7 +4180,10 @@ export class DshClientSession {
 		// 其他设置（开关/隐藏插件等）只存不回写运行时。
 		const personaChanged =
 			partial.promptMode !== undefined || partial.customSystemPrompt !== undefined || markerGuidanceChanged;
-		if (personaChanged) await this.applyPersona();
+		if (personaChanged) {
+			await this.applyPersona();
+			void this.refreshPromptInfo().catch(() => {});
+		}
 		// 技能启停（#18）：禁用集变化 → 同步运行时（晚 pre-step 钩子过滤目录）并刷新技能列表。
 		if (partial.disabledSkills !== undefined) {
 			void this.pushDisabledSkillsToRuntime();
@@ -4157,6 +4217,33 @@ export class DshClientSession {
 			});
 		}
 		return Promise.resolve();
+	}
+
+	/** 从运行时异步拉取真实组装的系统提示词、sections 与工具 schema。 */
+	async refreshPromptInfo(): Promise<void> {
+		try {
+			if (!this.runtime.alive) return;
+			const res = await this.runtime.inspectPrompt();
+			if (res && !res.error) {
+				if (typeof res.prompt === "string" && res.prompt) {
+					this.cachedEffectiveSystemPrompt = res.prompt;
+				}
+				if (Array.isArray(res.sections)) {
+					this.cachedPromptSections = res.sections;
+					const defaults: Record<string, string> = {};
+					for (const s of res.sections) {
+						if (s.name) defaults[s.name] = s.text ?? "";
+					}
+					this.cachedPromptSourceDefaults = defaults;
+				}
+				if (Array.isArray(res.tools) && res.tools.length > 0) {
+					this.cachedToolsSchema = buildToolsSchemaText(res.tools as ToolSchemaEntry[]);
+				}
+				this.pushSettings();
+			}
+		} catch {
+			/* 忽略拉取失败，保持上一次缓存或兜底 */
+		}
 	}
 
 	async reloadExtensions(): Promise<void> {
@@ -4276,6 +4363,7 @@ export class DshClientSession {
 			conv.agentPreset = res.preset ?? target;
 			this.emitConversations();
 			this.pushSettings();
+			void this.refreshPromptInfo().catch(() => {});
 			this.flushSnapshot();
 		} catch (err) {
 			this.emit({
@@ -5950,6 +6038,10 @@ export class DshAgentService {
 
 	applyPluginCommandCatalog(): void {
 		for (const cs of this.clients.values()) void cs.pushSlashCommands();
+	}
+
+	applyPluginMarkers(): void {
+		for (const cs of this.clients.values()) cs.pushSettings();
 	}
 
 	refreshBackgroundServers(): void {

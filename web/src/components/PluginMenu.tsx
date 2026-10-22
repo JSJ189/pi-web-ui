@@ -195,7 +195,9 @@ export function PluginMenu({
 					)}
 					<span className="pm-name">{p.name}</span>
 					{p.error ? (
-						<span className="pm-sub">{p.error}</span>
+						<span className="pm-err-tag" title={p.error}>
+							{t("pluginPhaseFailed")}
+						</span>
 					) : isExtGroup ? (
 						<span className="pm-ext-tag" title={t("pluginMenuNoView")}>
 							{t("pluginBadgeBg")}

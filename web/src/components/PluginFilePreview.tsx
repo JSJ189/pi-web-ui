@@ -85,14 +85,20 @@ export function PluginFilePreview({
 		};
 	}, [file, plugin, declaration, epoch, send]);
 
+	const headContent = (
+		<div className="plugin-file-preview-title-row">
+			<span className="plugin-file-preview-name" title={file.path}>
+				{file.name || file.path}
+			</span>
+			{label ? <span className="plugin-file-preview-badge">{label}</span> : null}
+		</div>
+	);
+
 	return (
-		<Modal className="plugin-file-preview" title={label} icon={plugin.icon} onClose={onClose}>
+		<Modal className="plugin-file-preview" title={headContent} icon={plugin.icon} allowFullscreen onClose={onClose}>
 			<div className="modal-body plugin-file-preview-body">
-				<div className="plugin-file-preview-file" title={file.path}>
-					{file.name}
-				</div>
 				{error ? <div className="plugin-file-preview-error">{error}</div> : null}
-				{!error && !mounted ? <div>{t("loading")}</div> : null}
+				{!error && !mounted ? <div className="plugin-file-preview-loading">{t("loading")}</div> : null}
 				<div ref={ref} className="plugin-file-preview-host" />
 			</div>
 		</Modal>

@@ -4,14 +4,14 @@ import type { ChatState } from "../use-chat";
 import { groupByAlign, type UiSlotEntry } from "../ui-slots";
 import { ICON_EDIT_ALIGNS } from "../ui-layout-edit";
 import { useI18n } from "../i18n";
-import { BarItem, type BarItemProps } from "./BarItem";
+import { BarItem, type BarItemProps, type ViewName } from "./BarItem";
 
 interface SideDockProps {
 	side: "left" | "right";
 	items: UiSlotEntry[];
 	chat: ChatState;
-	view: "chat" | "terminal" | "git" | `plugin:${string}`;
-	onViewChange: (view: "chat" | "terminal" | "git" | `plugin:${string}`) => void;
+	view: ViewName;
+	onViewChange: (view: ViewName) => void;
 	onOpenPanel: (side: "left" | "right") => void;
 	onOpenSettings: (initialSection?: string) => void;
 	onOpenBgTasks: () => void;

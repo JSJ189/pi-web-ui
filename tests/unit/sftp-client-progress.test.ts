@@ -250,4 +250,35 @@ describe("sftp 面板：计划复用", () => {
 		expect(syncs[0]?.body.reuse).toBe(true);
 		expect(syncs[1]?.body.reuse).toBeUndefined();
 	});
+
+	it("后台正在跑其他项目的同步：进度条带项目名前缀，停止键可用", async () => {
+		document.documentElement.lang = "zh";
+		const s = baseState();
+		s.cwd = "E:/proj-b";
+		(s.job as Record<string, unknown>).running = true;
+		(s.job as Record<string, unknown>).phase = "upload";
+		(s.job as Record<string, unknown>).done = 3;
+		(s.job as Record<string, unknown>).total = 10;
+		(s.job as Record<string, unknown>).cwd = "E:/proj-a";
+		(s.job as Record<string, unknown>).projectName = "proj-a";
+		state = s;
+		stubFetch();
+		const el = mount();
+		await flush();
+
+		const prog = el.querySelector(".progress") as HTMLElement;
+		expect(prog.classList.contains("hidden")).toBe(false);
+		expect(prog.textContent).toContain("[proj-a]");
+		expect(prog.textContent).toContain("3/10");
+
+		const stopBtn = el.querySelector(".btn-stop") as HTMLButtonElement;
+		expect(stopBtn.classList.contains("hidden")).toBe(false);
+		expect(stopBtn.disabled).toBe(false);
+
+		// 点击停止依然能调用 /cancel
+		stopBtn.click();
+		await flush();
+		const cancel = posts.find((p) => p.path === "/cancel");
+		expect(cancel).toBeDefined();
+	});
 });

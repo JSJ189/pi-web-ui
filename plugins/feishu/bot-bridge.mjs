@@ -413,6 +413,8 @@ export class FeishuBotBridge {
 				conversationId,
 			};
 			if (workspace) chatReq.cwd = workspace;
+			if (cfg.model) chatReq.model = cfg.model;
+			if (cfg.thinkingLevel) chatReq.thinkingLevel = cfg.thinkingLevel;
 			// 宿主 host.chat 是 fire-and-forget：运行结果经 onRunEvent(run_end) 按
 			// 【宿主返回的】conversationId 关联。以前忽略回执、用本地编的 id 等事件，
 			// 所以永远等不到 → 只回一个 👍 就没下文（也不报错）。
@@ -534,10 +536,12 @@ export class FeishuBotBridge {
 				return true;
 			}
 			case "/model": {
+				const currentModel = cfg.model || "(默认跟随全局)";
+				const currentThinking = cfg.thinkingLevel || "(跟随全局)";
 				await this.replyMessage(cfg, {
 					messageId,
 					msgType: "text",
-					text: "当前使用模型由 pi-web-ui 宿主默认提供，可在 Web 控制台随时调整。",
+					text: `🤖 当前模型配置：\n- 模型 (Model)：${currentModel}\n- 思考强度 (Thinking)：${currentThinking}`,
 				});
 				return true;
 			}

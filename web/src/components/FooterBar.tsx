@@ -3,7 +3,7 @@ import type { ChatState } from "../use-chat";
 import { appSend, useAppField } from "../app-globals";
 import type { UiSlotEntry } from "../ui-slots";
 import { DirectoryBrowser } from "./DirectoryBrowser.js";
-import { BarItem } from "./BarItem";
+import { BarItem, type ViewName } from "./BarItem";
 
 interface FooterBarProps {
 	/** 底栏条目（bottombar 槽位：内置 + 插件的最终结果，宿主已排好序）。 */
@@ -12,7 +12,7 @@ interface FooterBarProps {
 	onUiAction?: (item: import("../ui-slots").UiSlotEntry, value?: string) => void;
 	chat: ChatState;
 	onOpenSettings?: () => void;
-	onViewChange?: (view: "chat" | "terminal" | "git" | `plugin:${string}`) => void;
+	onViewChange?: (view: ViewName) => void;
 	onOpenGlobalSearch?: () => void;
 	onOpenBgTasks?: () => void;
 }

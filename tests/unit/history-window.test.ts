@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { mergeEarlierPage } from "../../web/src/history-window.js";
+import { computeEarlierCount, mergeEarlierPage } from "../../web/src/history-window.js";
 import type { UiMessage, UiState } from "../../web/src/types.js";
 
 const m = (id: string): UiMessage => ({ id, role: "user", content: [] }) as UiMessage;
@@ -47,5 +47,37 @@ describe("mergeEarlierPage", () => {
 	it("老服务端（无窗口字段）视为起点 0，不接受任何更早页", () => {
 		const legacy = { conversationId: "c1", messages: [m("a")] } as unknown as UiState;
 		expect(mergeEarlierPage(legacy, { messages: [m("x")], historyStart: 0, historyTotal: 2 })).toBeNull();
+	});
+});
+
+describe("computeEarlierCount", () => {
+	it("关闭向上分页时：若服务端截留历史（historyStart > 0），正确返回截留条数", () => {
+		const count = computeEarlierCount({
+			isPagingActive: false,
+			totalMessages: 300,
+			visibleCount: 30,
+			historyStart: 27,
+		});
+		expect(count).toBe(27);
+	});
+
+	it("关闭向上分页且无服务端截留时：返回 0", () => {
+		const count = computeEarlierCount({
+			isPagingActive: false,
+			totalMessages: 50,
+			visibleCount: 30,
+			historyStart: 0,
+		});
+		expect(count).toBe(0);
+	});
+
+	it("开启向上分页时：本地未展示数 + 服务端截留数合并计算", () => {
+		const count = computeEarlierCount({
+			isPagingActive: true,
+			totalMessages: 100,
+			visibleCount: 30,
+			historyStart: 20,
+		});
+		expect(count).toBe(70 + 20);
 	});
 });

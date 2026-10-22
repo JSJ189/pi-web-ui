@@ -41,3 +41,22 @@ export function mergeEarlierPage(ui: UiState, page: EarlierPage): UiState | null
 		historyTotal: page.historyTotal,
 	};
 }
+
+/**
+ * 计算未展现的更早历史条数：
+ * - 开启本地向上分页时：未展示的本地消息数 + 服务端窗口截留数；
+ * - 关闭本地向上分页时：服务端窗口截留数（如首屏截断的 300 条以外的历史）。
+ */
+export function computeEarlierCount(opts: {
+	isPagingActive: boolean;
+	totalMessages: number;
+	visibleCount: number;
+	historyStart?: number;
+}): number {
+	const serverEarlier = Math.max(0, opts.historyStart ?? 0);
+	if (!opts.isPagingActive) {
+		return serverEarlier;
+	}
+	const localEarlier = Math.max(0, opts.totalMessages - Math.min(opts.totalMessages, opts.visibleCount));
+	return localEarlier + serverEarlier;
+}

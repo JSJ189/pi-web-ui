@@ -40,7 +40,7 @@ import type { SoundKind, SoundSettings } from "../sounds";
 import { EnginePicker } from "./EnginePicker";
 import { appUrl } from "../base-url";
 
-export type ViewName = "chat" | "terminal" | "git" | `plugin:${string}`;
+export type ViewName = "chat" | "terminal" | "git" | "canvas" | `plugin:${string}`;
 
 export interface BarItemTheme {
 	id: string;
@@ -881,6 +881,13 @@ export function BarItem({
 			isActive = view === "git";
 			isTab = true;
 			onClick = () => onViewChange?.("git");
+			break;
+		case "host:canvas":
+			iconNode = <FiLayers className="bar-item-icon" />;
+			labelText = named(t("canvasTab"));
+			isActive = view === "canvas";
+			isTab = true;
+			onClick = () => onViewChange?.("canvas");
 			break;
 		case "host:new-chat":
 			iconNode = <FiPlus className="bar-item-icon" />;

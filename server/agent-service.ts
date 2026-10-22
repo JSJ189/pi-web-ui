@@ -8195,6 +8195,12 @@ export class ClientSession {
 		for (const conv of this.convs.values()) this.syncPluginTools(conv.session);
 	}
 
+	/** index.ts 经 pluginMgr.onMarkersChanged 触发：刷新客户端 markers 设置与小部件。 */
+	refreshPluginMarkers(): void {
+		this.settingsSvc.push();
+		this.markerSvc.pushOverlay(this.activeId);
+	}
+
 	private async applySettingsReload(): Promise<void> {
 		// 兼容旧入口：reload + 刷目录在宿主回调里完成
 		return this.settingsSvc.applyRuntime();
@@ -8372,6 +8378,10 @@ export class ClientSession {
 		sessionFile?: string;
 		activity: number;
 	}[] {
+		// 画布专用客户端（CanvasStudio）绝不参与聊天会话列表感知，杜绝向 elsewhere 暴露任何条目
+		if (this.clientId?.startsWith("canvas:") || this.clientId?.startsWith("canvas-")) {
+			return [];
+		}
 		const out: {
 			title: string;
 			cwd: string;
@@ -10508,7 +10518,20 @@ export class ClientSession {
 
 	/** Switch the ACTIVE conversation without interrupting any other chat. */
 	async switchConversation(id: string): Promise<void> {
-		if (!this.convs.has(id) || id === this.activeId) return;
+		if (id === this.activeId) return;
+		if (!this.convs.has(id)) {
+			this.emit({
+				type: "transition_progress",
+				kind: "conversation",
+				target: id,
+				phase: "error",
+				progress: 100,
+				text: "对话已不存在或已结束",
+				textEn: "Conversation no longer exists or has finished",
+			});
+			this.flushSnapshot();
+			return;
+		}
 		const displaced = this.displaceActive();
 		this.activeId = id;
 		const newCwd = this.conv.cwd;
@@ -10524,10 +10547,29 @@ export class ClientSession {
 		this.emitConversations();
 		this.goalSvc.emitGoalStatus();
 		this.pushTerminals();
-		// The switched-to conversation has its own runtime (own resource cache).
-		void this.pushSlashCommands();
+
 		if (cwdChanged) {
 			this.cwd = newCwd;
+			this.files.unwatchGit();
+			this.roots = this.stateStore.getWorkspaceRoots(this.clientId, newCwd);
+		}
+
+		// 核心：快照与完成信号优先！在繁重的工作区扫描/设置推送之前第一时间发往
+		// 浏览器，0ms 呈现对话内容与状态，绝不让前端在空转中等待文件树与设置大包。
+		this.flushSnapshot();
+		this.emit({
+			type: "transition_progress",
+			kind: "conversation",
+			target: id,
+			phase: "done",
+			progress: 100,
+			text: "对话切换完成",
+			textEn: "Conversation switched",
+		});
+
+		// 工作区跟随副作用（命令/项目/会话/文件树/插件通知/设置）异步推进，不阻塞会话呈现
+		void this.pushSlashCommands();
+		if (cwdChanged) {
 			// 模型/key 恢复不挡快照：后台做，带代际 guard（用户又切走就跳过），
 			// 做完补一次 flush 刷新模型栏。
 			{
@@ -10551,7 +10593,6 @@ export class ClientSession {
 		// 当前打开对话变了 → 插件重拉（轨迹视图切会话后即刷新，不等轮询）。
 		this.notifyConversationChanged();
 		this.pushSettings();
-		this.flushSnapshot();
 	}
 
 	/** 左栏「运行的对话」的展示口径（issue #140）。
@@ -10917,11 +10958,11 @@ export class ClientSession {
 	}
 
 	/** 切项目时的会话列表刷新：sessionInfosCache 已按 cwdKey 隔离（30s TTL），
-	 *  若刚刚在 setCwd 并行预热过（<2s 内）则直接复用预热结果推送，不再清空重扫。 */
+	 *  若在 TTL 内则直接复用缓存推送，不再全盘清空重扫。 */
 	private refreshSessionsOnSwitch(): void {
 		const cwdKey = normalizePathKey(this.cwd);
 		const cached = ClientSession.sessionInfosCache.get(cwdKey);
-		if (!cached || Date.now() - cached.at > 2_000) {
+		if (!cached || Date.now() - cached.at > ClientSession.SESSION_INFO_CACHE_TTL) {
 			ClientSession.sessionInfosCache.delete(cwdKey);
 		}
 		if (this.sessionsRequested) void this.refreshSessions();
@@ -12012,6 +12053,7 @@ export class ClientSession {
 			// 计划模式的写类/旁路工具剥离对重开的会话同样生效。下同（forkSession/setCwd）。
 			this.applyToolGating(conv.session, conv.agentPreset);
 			this.cwd = targetCwd;
+			this.files.unwatchGit();
 			// 打开的历史会话可能属于另一个项目 —— 工作区跟随面（roots/文件树/
 			// 历史列表/命令目录/最近项目）必须跟着切，否则 UI 停在旧项目。
 			this.applyCwdSideEffects(targetCwd);

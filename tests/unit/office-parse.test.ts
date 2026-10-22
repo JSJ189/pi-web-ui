@@ -1,7 +1,14 @@
 /** office-parse 纯函数单测：内存拼最小 zip，不碰文件系统。 */
 import { deflateRawSync } from "node:zlib";
 import { describe, expect, it } from "vitest";
-import { extractOfficeText, isOfficeFile, parseDocxParagraphs, parseXlsxSheets } from "../../server/office-parse.js";
+import {
+	extractOfficeText,
+	isOfficeFile,
+	listZipEntries,
+	parseDocxParagraphs,
+	parsePptxSlides,
+	parseXlsxSheets,
+} from "../../server/office-parse.js";
 
 /** 最小 zip 写器（stored/deflate，带中央目录）。 */
 function makeZip(entries: { name: string; data: string; method?: number }[]): Buffer {
@@ -51,12 +58,17 @@ const DOC_XML =
 	"<w:p><w:r><w:t>A</w:t></w:r><w:r><w:t>&amp;B</w:t></w:r></w:p><w:p/></w:body></w:document>";
 
 describe("isOfficeFile", () => {
-	it("只认 docx/xlsx/xlsm（大小写不敏感），老格式与 csv 不认", () => {
+	it("只认 docx/xlsx/xlsm/pptx/pptm/ppsx/potx（大小写不敏感），老格式与 csv 不认", () => {
 		expect(isOfficeFile("报告.DOCX")).toBe(true);
 		expect(isOfficeFile("表.xlsx")).toBe(true);
 		expect(isOfficeFile("宏.xlsm")).toBe(true);
+		expect(isOfficeFile("汇报.PPTX")).toBe(true);
+		expect(isOfficeFile("宏.pptm")).toBe(true);
+		expect(isOfficeFile("放映.ppsx")).toBe(true);
+		expect(isOfficeFile("模板.potx")).toBe(true);
 		expect(isOfficeFile("老.doc")).toBe(false);
 		expect(isOfficeFile("老.xls")).toBe(false);
+		expect(isOfficeFile("老.ppt")).toBe(false);
 		expect(isOfficeFile("a.csv")).toBe(false);
 		expect(isOfficeFile("a.txt")).toBe(false);
 	});
@@ -112,6 +124,116 @@ describe("parseXlsxSheets", () => {
 	});
 });
 
+describe("listZipEntries", () => {
+	it("快速提取中央目录文件名，不解压内容", () => {
+		const zipBuf = makeZip([
+			{ name: "a.txt", data: "hello" },
+			{ name: "ppt/slides/slide1.xml", data: "<xml/>" },
+		]);
+		const entries = listZipEntries(zipBuf);
+		expect(entries).toEqual(["a.txt", "ppt/slides/slide1.xml"]);
+	});
+});
+
+describe("parsePptxSlides", () => {
+	it("严格遵循 presentation.xml 中的幻灯片排序（重排场景）", () => {
+		const presXml =
+			'<?xml version="1.0"?><p:presentation xmlns:p="http://schemas.openxmlformats.org/presentationml/2006/main" ' +
+			'xmlns:r="http://schemas.openxmlformats.org/officeDocument/2006/relationships">' +
+			'<p:sldIdLst><p:sldId id="257" r:id="rId2"/><p:sldId id="256" r:id="rId1"/></p:sldIdLst></p:presentation>';
+		const relsXml =
+			'<?xml version="1.0"?><Relationships xmlns="http://schemas.openxmlformats.org/package/2006/relationships">' +
+			'<Relationship Id="rId1" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/slide" Target="slides/slide1.xml"/>' +
+			'<Relationship Id="rId2" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/slide" Target="slides/slide2.xml"/>' +
+			"</Relationships>";
+		const slide1Xml =
+			'<?xml version="1.0"?><p:sld xmlns:p="http://schemas.openxmlformats.org/presentationml/2006/main" ' +
+			'xmlns:a="http://schemas.openxmlformats.org/drawingml/2006/main"><p:cSld><p:spTree>' +
+			'<p:sp><p:nvSpPr><p:nvPr><p:ph type="title"/></p:nvPr></p:nvSpPr><p:txBody><a:p><a:r><a:t>第一页</a:t></a:r></a:p></p:txBody></p:sp>' +
+			"</p:spTree></p:cSld></p:sld>";
+		const slide2Xml =
+			'<?xml version="1.0"?><p:sld xmlns:p="http://schemas.openxmlformats.org/presentationml/2006/main" ' +
+			'xmlns:a="http://schemas.openxmlformats.org/drawingml/2006/main"><p:cSld><p:spTree>' +
+			'<p:sp><p:nvSpPr><p:nvPr><p:ph type="title"/></p:nvPr></p:nvSpPr><p:txBody><a:p><a:r><a:t>第二页</a:t></a:r></a:p></p:txBody></p:sp>' +
+			"</p:spTree></p:cSld></p:sld>";
+
+		const zipBuf = makeZip([
+			{ name: "ppt/presentation.xml", data: presXml },
+			{ name: "ppt/_rels/presentation.xml.rels", data: relsXml },
+			{ name: "ppt/slides/slide1.xml", data: slide1Xml },
+			{ name: "ppt/slides/slide2.xml", data: slide2Xml },
+		]);
+
+		const slides = parsePptxSlides(zipBuf);
+		expect(slides).toHaveLength(2);
+		expect(slides[0].title).toBe("第二页");
+		expect(slides[1].title).toBe("第一页");
+	});
+
+	it("无 presentation.xml 时回落扫描中央目录中的幻灯片文件", () => {
+		const slideXml =
+			'<?xml version="1.0"?><p:sld xmlns:p="http://schemas.openxmlformats.org/presentationml/2006/main" ' +
+			'xmlns:a="http://schemas.openxmlformats.org/drawingml/2006/main"><p:cSld><p:spTree>' +
+			"<p:sp><p:txBody><a:p><a:r><a:t>独立页内容</a:t></a:r></a:p></p:txBody></p:sp>" +
+			"</p:spTree></p:cSld></p:sld>";
+		const zipBuf = makeZip([{ name: "ppt/slides/slide1.xml", data: slideXml }]);
+		const slides = parsePptxSlides(zipBuf);
+		expect(slides).toHaveLength(1);
+		expect(slides[0].title).toBe("独立页内容");
+	});
+
+	it("层级项目符号 (lvl) 自动缩进与实体解码", () => {
+		const slideXml =
+			'<?xml version="1.0"?><p:sld xmlns:p="http://schemas.openxmlformats.org/presentationml/2006/main" ' +
+			'xmlns:a="http://schemas.openxmlformats.org/drawingml/2006/main"><p:cSld><p:spTree>' +
+			'<p:sp><p:nvSpPr><p:nvPr><p:ph type="title"/></p:nvPr></p:nvSpPr><p:txBody><a:p><a:r><a:t>功能要点</a:t></a:r></a:p></p:txBody></p:sp>' +
+			"<p:sp><p:txBody>" +
+			'<a:p><a:pPr lvl="0"><a:buChar char="•"/></a:pPr><a:r><a:t>&lt;一级条目&gt;</a:t></a:r></a:p>' +
+			'<a:p><a:pPr lvl="1"/><a:r><a:t>二级子条目 &amp; 详情</a:t></a:r></a:p>' +
+			'<a:p><a:pPr lvl="2"/><a:r><a:t>三级细项</a:t></a:r></a:p>' +
+			"</p:txBody></p:sp>" +
+			"</p:spTree></p:cSld></p:sld>";
+
+		const zipBuf = makeZip([
+			{
+				name: "ppt/presentation.xml",
+				data: '<p:presentation xmlns:p="http://schemas.openxmlformats.org/presentationml/2006/main" xmlns:r="http://schemas.openxmlformats.org/officeDocument/2006/relationships"><p:sldIdLst><p:sldId id="1" r:id="r1"/></p:sldIdLst></p:presentation>',
+			},
+			{
+				name: "ppt/_rels/presentation.xml.rels",
+				data: '<Relationships xmlns="http://schemas.openxmlformats.org/package/2006/relationships"><Relationship Id="r1" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/slide" Target="slides/slide1.xml"/></Relationships>',
+			},
+			{ name: "ppt/slides/slide1.xml", data: slideXml },
+		]);
+
+		const slides = parsePptxSlides(zipBuf);
+		expect(slides[0].paragraphs).toEqual(["- <一级条目>", "  - 二级子条目 & 详情", "    - 三级细项"]);
+	});
+
+	it("空幻灯片与无幻灯片抛错", () => {
+		const emptySlide =
+			'<?xml version="1.0"?><p:sld xmlns:p="http://schemas.openxmlformats.org/presentationml/2006/main"><p:cSld><p:spTree></p:spTree></p:cSld></p:sld>';
+		const zipBuf = makeZip([
+			{
+				name: "ppt/presentation.xml",
+				data: '<p:presentation xmlns:p="http://schemas.openxmlformats.org/presentationml/2006/main" xmlns:r="http://schemas.openxmlformats.org/officeDocument/2006/relationships"><p:sldIdLst><p:sldId id="1" r:id="r1"/></p:sldIdLst></p:presentation>',
+			},
+			{
+				name: "ppt/_rels/presentation.xml.rels",
+				data: '<Relationships xmlns="http://schemas.openxmlformats.org/package/2006/relationships"><Relationship Id="r1" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/slide" Target="slides/slide1.xml"/></Relationships>',
+			},
+			{ name: "ppt/slides/slide1.xml", data: emptySlide },
+		]);
+		const slides = parsePptxSlides(zipBuf);
+		expect(slides).toHaveLength(1);
+		expect(slides[0].title).toBe("");
+		expect(slides[0].paragraphs).toHaveLength(0);
+
+		// 无幻灯片内容抛错
+		expect(() => parsePptxSlides(makeZip([{ name: "other.xml", data: "x" }]))).toThrow(/未找到幻灯片内容/);
+	});
+});
+
 describe("extractOfficeText", () => {
 	it("非 office 扩展名回 null", () => {
 		expect(extractOfficeText("a.txt", Buffer.from("hi"))).toBeNull();
@@ -132,6 +254,68 @@ describe("extractOfficeText", () => {
 		expect(r?.text).toContain("| A |");
 		expect(r?.text).toContain("| 品 |");
 		expect(r?.text).toContain("| --- |");
+	});
+	it("pptx 出 Markdown 幻灯片、表格与演讲者备注", () => {
+		const presXml =
+			'<?xml version="1.0"?><p:presentation xmlns:p="http://schemas.openxmlformats.org/presentationml/2006/main" ' +
+			'xmlns:r="http://schemas.openxmlformats.org/officeDocument/2006/relationships">' +
+			'<p:sldIdLst><p:sldId id="256" r:id="rId1"/><p:sldId id="257" r:id="rId2"/></p:sldIdLst></p:presentation>';
+		const relsXml =
+			'<?xml version="1.0"?><Relationships xmlns="http://schemas.openxmlformats.org/package/2006/relationships">' +
+			'<Relationship Id="rId1" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/slide" Target="slides/slide1.xml"/>' +
+			'<Relationship Id="rId2" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/slide" Target="slides/slide2.xml"/>' +
+			"</Relationships>";
+		const slide1Xml =
+			'<?xml version="1.0"?><p:sld xmlns:p="http://schemas.openxmlformats.org/presentationml/2006/main" ' +
+			'xmlns:a="http://schemas.openxmlformats.org/drawingml/2006/main"><p:cSld><p:spTree>' +
+			'<p:sp><p:nvSpPr><p:nvPr><p:ph type="title"/></p:nvPr></p:nvSpPr><p:txBody><a:p><a:r><a:t>架构设计汇报</a:t></a:r></a:p></p:txBody></p:sp>' +
+			'<p:sp><p:nvSpPr><p:nvPr><p:ph type="subTitle"/></p:nvPr></p:nvSpPr><p:txBody><a:p><a:r><a:t>2025 规划</a:t></a:r></a:p></p:txBody></p:sp>' +
+			'<p:sp><p:nvSpPr><p:nvPr><p:ph type="body"/></p:nvPr></p:nvSpPr><p:txBody><a:p><a:pPr lvl="0"/><a:r><a:t>效能提升 50%</a:t></a:r></a:p></p:txBody></p:sp>' +
+			"</p:spTree></p:cSld></p:sld>";
+		const slide2Xml =
+			'<?xml version="1.0"?><p:sld xmlns:p="http://schemas.openxmlformats.org/presentationml/2006/main" ' +
+			'xmlns:a="http://schemas.openxmlformats.org/drawingml/2006/main"><p:cSld><p:spTree>' +
+			'<p:sp><p:nvSpPr><p:nvPr><p:ph type="title"/></p:nvPr></p:nvSpPr><p:txBody><a:p><a:r><a:t>数据统计</a:t></a:r></a:p></p:txBody></p:sp>' +
+			"<p:graphicFrame><a:graphic><a:graphicData><a:tbl>" +
+			"<a:tr><a:tc><a:txBody><a:p><a:r><a:t>季度</a:t></a:r></a:p></a:txBody></a:tc><a:tc><a:txBody><a:p><a:r><a:t>营收</a:t></a:r></a:p></a:txBody></a:tc></a:tr>" +
+			"<a:tr><a:tc><a:txBody><a:p><a:r><a:t>Q1</a:t></a:r></a:p></a:txBody></a:tc><a:tc><a:txBody><a:p><a:r><a:t>1000万</a:t></a:r></a:p></a:txBody></a:tc></a:tr>" +
+			"</a:tbl></a:graphicData></a:graphic></p:graphicFrame>" +
+			"</p:spTree></p:cSld></p:sld>";
+		const slide2Rels =
+			'<?xml version="1.0"?><Relationships xmlns="http://schemas.openxmlformats.org/package/2006/relationships">' +
+			'<Relationship Id="rIdN" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/notesSlide" Target="../notesSlides/notesSlide2.xml"/>' +
+			"</Relationships>";
+		const notes2Xml =
+			'<?xml version="1.0"?><p:notes xmlns:p="http://schemas.openxmlformats.org/presentationml/2006/main" ' +
+			'xmlns:a="http://schemas.openxmlformats.org/drawingml/2006/main"><p:cSld><p:spTree>' +
+			'<p:sp><p:nvSpPr><p:nvPr><p:ph type="body"/></p:nvPr></p:nvSpPr><p:txBody><a:p><a:r><a:t>重点说明 Q1 增幅</a:t></a:r></a:p></p:txBody></p:sp>' +
+			"</p:spTree></p:cSld></p:notes>";
+
+		const zipBuf = makeZip([
+			{ name: "ppt/presentation.xml", data: presXml },
+			{ name: "ppt/_rels/presentation.xml.rels", data: relsXml },
+			{ name: "ppt/slides/slide1.xml", data: slide1Xml },
+			{ name: "ppt/slides/slide2.xml", data: slide2Xml },
+			{ name: "ppt/slides/_rels/slide2.xml.rels", data: slide2Rels },
+			{ name: "ppt/notesSlides/notesSlide2.xml", data: notes2Xml },
+		]);
+
+		const res = extractOfficeText("规划.pptx", zipBuf);
+		expect(res?.text).toContain("## 幻灯片 1：架构设计汇报");
+		expect(res?.text).toContain("2025 规划");
+		expect(res?.text).toContain("- 效能提升 50%");
+		expect(res?.text).toContain("---");
+		expect(res?.text).toContain("## 幻灯片 2：数据统计");
+		expect(res?.text).toContain("| 季度 | 营收 |");
+		expect(res?.text).toContain("| Q1 | 1000万 |");
+		expect(res?.text).toContain("> 💡 **备注**：重点说明 Q1 增幅");
+		expect(res?.truncated).toBe(false);
+
+		expect(res?.slides).toHaveLength(2);
+		expect(res?.slides?.[0].title).toBe("架构设计汇报");
+		expect(res?.slides?.[0].subtitle).toBe("2025 规划");
+		expect(res?.slides?.[1].tables?.[0]?.[1]?.[0]).toBe("Q1");
+		expect(res?.slides?.[1].notes).toBe("重点说明 Q1 增幅");
 	});
 	it("坏 zip 抛错", () => {
 		expect(() => extractOfficeText("坏.xlsx", Buffer.from("not a zip"))).toThrow();

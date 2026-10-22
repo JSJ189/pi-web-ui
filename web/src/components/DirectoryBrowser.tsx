@@ -218,7 +218,7 @@ export function DirectoryBrowser({
 
 	const handleCreateLocal = () => {
 		const trimmed = newName.trim();
-		if (!trimmed) return;
+		if (!trimmed || browsePath === MACHINE_ROOT) return;
 
 		if (mode === "project") {
 			if (!isValidProjectName(trimmed)) {
@@ -226,7 +226,12 @@ export function DirectoryBrowser({
 				return;
 			}
 			const fullPath = joinProjectPath(browsePath, trimmed);
-			onCreateProject?.(fullPath);
+			if (onCreateProject) {
+				onCreateProject(fullPath);
+			} else {
+				appSend({ type: "make_dir", path: fullPath });
+				onSelectDirectory(fullPath);
+			}
 			setShowNew(false);
 			setNewName("");
 			setLocalError(null);
@@ -393,8 +398,20 @@ export function DirectoryBrowser({
 	   z-index>50 的元素压住。挂到 body 后 opacity 与层级都只取决于自身。 */
 	return createPortal(
 		<>
-			<div className={`status-cwd-backdrop ${backdropClassName ?? ""}`.trim()} onClick={onClose} />
-			<div className={`cwd-picker ${className ?? ""}`.trim()} role={role} aria-label={ariaLabel}>
+			<div
+				className={`status-cwd-backdrop ${backdropClassName ?? ""}`.trim()}
+				onClick={onClose}
+				onPointerDown={(e) => e.stopPropagation()}
+				onMouseDown={(e) => e.stopPropagation()}
+			/>
+			<div
+				className={`cwd-picker ${className ?? ""}`.trim()}
+				role={role}
+				aria-label={ariaLabel}
+				onPointerDown={(e) => e.stopPropagation()}
+				onMouseDown={(e) => e.stopPropagation()}
+				onWheel={(e) => e.stopPropagation()}
+			>
 				{/* 模式切换 Tab（支持远程 SSH 时显示选项卡切换，不支持时仅显示本地目录模式） */}
 				{supportsRemoteSsh ? (
 					<div className="cwd-mode-tabs">
@@ -569,7 +586,12 @@ export function DirectoryBrowser({
 									</button>
 								</div>
 							) : (
-								<button type="button" className="cwd-newbtn" onClick={() => setShowNew(true)}>
+								<button
+									type="button"
+									className="cwd-newbtn"
+									disabled={browsePath === MACHINE_ROOT}
+									onClick={() => setShowNew(true)}
+								>
 									＋ {mode === "project" ? t("newProject") : t("cwdNewFolder")}
 								</button>
 							)}

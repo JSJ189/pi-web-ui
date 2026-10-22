@@ -387,7 +387,14 @@ export function Dropdown({
 								zIndex: 9999,
 							}}
 						>
-							<div className={`dd-menu ${menuClassName ?? ""}`} ref={setMenuNode} style={portalStyle}>
+							<div
+								className={`dd-menu ${menuClassName ?? ""}`}
+								ref={setMenuNode}
+								style={portalStyle}
+								onPointerDown={(e) => e.stopPropagation()}
+								onMouseDown={(e) => e.stopPropagation()}
+								onWheel={(e) => e.stopPropagation()}
+							>
 								{children}
 							</div>
 						</div>,
@@ -397,6 +404,9 @@ export function Dropdown({
 					<div
 						className={`dd-menu ${menuClassName ?? ""}`}
 						ref={setMenuNode}
+						onPointerDown={(e) => e.stopPropagation()}
+						onMouseDown={(e) => e.stopPropagation()}
+						onWheel={(e) => e.stopPropagation()}
 						style={
 							shift !== 0
 								? {

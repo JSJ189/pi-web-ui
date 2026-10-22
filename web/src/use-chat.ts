@@ -3,6 +3,7 @@ import { randomUuid } from "./uuid";
 import { withToken } from "./auth-token";
 import { appUrl } from "./base-url";
 import { notifySessionSwitch } from "./composer-bridge";
+import { syncKnownInlineMarkers } from "./components/Message";
 import type {
 	ClientMessage,
 	BgServer,
@@ -1539,31 +1540,99 @@ function reducer(state: ChatState, action: Action): ChatState {
 }
 
 const CLIENT_ID_KEY = "pi-web-client-id";
+const WINDOW_NAME_PREFIX = "pi-web-client-id:";
+const WINDOW_NAME_PI_CID = "__PI_CID__:";
+
 let cachedClientId: string | null = null;
 
-/**
- * 客户端标识 —— **每标签页独立**（sessionStorage 而非 localStorage）。
- *
- * 曾用 localStorage：同源所有标签页共享同一 clientId，后端把它们挂到同一个
- * ClientSession 上互为镜像——B 标签页切换对话会同步切走 A 页、甚至把 A 页
- * 正在输出的 agent 强制中断且状态持久化（issue #10）。改为 sessionStorage 后
- * 新开标签页即新客户端；刷新本页仍保留同一 id，client-state（最近项目等）不丢。
- */
-export function getClientId(): string {
-	if (cachedClientId) return cachedClientId;
-	let id: string | null = null;
+/** 从 window.name 或 sessionStorage 读取已记忆的 clientId（跨刷新守护）。 */
+function readStoredClientId(): string | null {
+	// 1. 优先尝试从 window.name 读取：生命周期严格绑定当前标签页，
+	// 即使在无痕/隐私模式、地址栏回车导航或强刷（Ctrl+F5）下，window.name 均 100% 保持稳定；
+	// 而新开标签页天然为空，绝不破坏多标签页隔离（issue #10）。
 	try {
-		id = sessionStorage.getItem(CLIENT_ID_KEY);
-		if (!id) {
-			id = randomUuid();
+		if (typeof window !== "undefined" && typeof window.name === "string" && window.name) {
+			const name = window.name;
+			if (name.startsWith(WINDOW_NAME_PREFIX)) {
+				const id = name.slice(WINDOW_NAME_PREFIX.length).trim();
+				if (id) return id;
+			}
+			const idx = name.indexOf(WINDOW_NAME_PI_CID);
+			if (idx !== -1) {
+				const id = name.slice(idx + WINDOW_NAME_PI_CID.length).trim();
+				if (id) return id;
+			}
+		}
+	} catch {
+		/* ignore */
+	}
+
+	// 2. 尝试从 sessionStorage 读取
+	try {
+		if (typeof sessionStorage !== "undefined") {
+			const id = sessionStorage.getItem(CLIENT_ID_KEY);
+			if (id) return id;
+		}
+	} catch {
+		/* ignore */
+	}
+
+	return null;
+}
+
+/** 将 clientId 同步持久化到 window.name 与 sessionStorage。 */
+function persistClientId(id: string): void {
+	// 1. 写入 window.name（兼容外部已有的 window.name 内容，不暴力破坏）
+	try {
+		if (typeof window !== "undefined") {
+			const current = typeof window.name === "string" ? window.name : "";
+			if (!current || current.startsWith(WINDOW_NAME_PREFIX)) {
+				window.name = `${WINDOW_NAME_PREFIX}${id}`;
+			} else {
+				const idx = current.indexOf(WINDOW_NAME_PI_CID);
+				const base = idx !== -1 ? current.slice(0, idx) : current;
+				window.name = `${base}${WINDOW_NAME_PI_CID}${id}`;
+			}
+		}
+	} catch {
+		/* ignore */
+	}
+
+	// 2. 写入 sessionStorage
+	try {
+		if (typeof sessionStorage !== "undefined") {
 			sessionStorage.setItem(CLIENT_ID_KEY, id);
 		}
 	} catch {
-		// storage 不可用（隐私模式等）：退化为页面生命周期内的一次性 id
-		id = id ?? randomUuid();
+		/* ignore */
 	}
+}
+
+/**
+ * 客户端标识 —— **每标签页独立**（window.name + sessionStorage 双通道守护）。
+ *
+ * 曾用 localStorage：同源所有标签页共享同一 clientId，后端把它们挂到同一个
+ * ClientSession 上互为镜像——B 标签页切换对话会同步切走 A 页、甚至把 A 页
+ * 正在输出的 agent 强制中断且状态持久化（issue #10）。
+ * 后改 sessionStorage：但在隐私/无痕模式、地址栏回车导航或部分浏览器安全策略下，
+ * 刷新页面时 sessionStorage 易丢失，每次刷新产生新 clientId，导致旧会话全部沦为“另一处”。
+ * 现采用 window.name（标签页生命周期原生隔离且刷新/跳转/无痕恒保留）+ sessionStorage 双重保障：
+ * 新开标签页天然为空新开客户端；本页无论以何种方式刷新均绝对保留同一 id，彻底根治“刷新全变另一处”。
+ */
+export function getClientId(): string {
+	if (cachedClientId) return cachedClientId;
+	let id = readStoredClientId();
+	if (!id) {
+		id = randomUuid();
+	}
+	persistClientId(id);
 	cachedClientId = id;
 	return id;
+}
+
+/** 仅供单元测试重置内存缓存。 */
+export function _resetClientIdCacheForTest(): void {
+	cachedClientId = null;
 }
 
 /**
@@ -2580,6 +2649,9 @@ export function useChat() {
 					dispatch({ type: "plan_updated", conversationId: msg.conversationId, plan: msg.plan });
 					break;
 				case "settings_state":
+					if (msg.settings?.markers) {
+						syncKnownInlineMarkers(msg.settings.markers.map((m) => m.name));
+					}
 					dispatch({ type: "settings", settings: msg.settings });
 					break;
 				case "mcp_servers":

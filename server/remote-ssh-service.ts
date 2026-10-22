@@ -118,7 +118,13 @@ export function formatRemoteWorkspaceUri(username: string, host: string, port: n
  */
 export function resolveRemoteWorkspacePath(remoteRoot: string, rawPath: string): { abs: string; rel: string } | null {
 	const root = path.posix.normalize(remoteRoot.replace(/\\/g, "/")).replace(/\/+$/, "") || "/";
-	const cleaned = (rawPath || "").replace(/\\/g, "/").trim();
+	let cleaned = (rawPath || "").replace(/\\/g, "/").trim();
+	if (isRemoteWorkspaceUri(cleaned)) {
+		const parsed = parseRemoteWorkspaceUri(cleaned);
+		if (parsed) {
+			cleaned = parsed.remotePath;
+		}
+	}
 	if (!cleaned || cleaned === ".") {
 		return { abs: root, rel: "" };
 	}

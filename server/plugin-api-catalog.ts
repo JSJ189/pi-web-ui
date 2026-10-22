@@ -113,6 +113,12 @@ export const HOST_METHODS: ReadonlyArray<CatalogHostMethod> = [
 		example: `host.registerAgentTool({ name: "mail", description: "…", execute: async () => ({}) })`,
 	},
 	{
+		name: "registerMarker",
+		needs: "tools",
+		summary: "注册内联状态标记（如 [[name:op:...]]；模型直接输出触发副作用，正文自动剥离）",
+		example: `host.registerMarker({ name: "flag", guidance: ["[[flag:mark:<id>]] mark item"], apply: (token, ctx) => ({ applied: true }) })`,
+	},
+	{
 		name: "onToolPre",
 		needs: "tools",
 		summary: "工具 pre 拦截（仅 bash/read）：allow/deny/ask，首个阻断胜出",

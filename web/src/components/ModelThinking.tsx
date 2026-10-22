@@ -15,13 +15,13 @@ import { appSend } from "../app-globals";
 interface Props {
 	state: Pick<UiState, "model" | "thinkingLevel" | "availableThinkingLevels"> | null;
 	models: ModelInfo[];
-	modelsLoading: boolean;
+	modelsLoading?: boolean;
 	/** Opens the custom-model config modal (App-level state). */
-	onManageModels: () => void;
+	onManageModels?: () => void;
 	/** Stored API keys per built-in provider (masked) — a provider with several
 	 *  keys renders its model list once per key so clicking a model under a key
 	 *  switches the active key on the fly (no static model-list copy). */
-	providerKeys: Record<string, ProviderKeyInfo[]>;
+	providerKeys?: Record<string, ProviderKeyInfo[]>;
 	/** 全局默认模型（"provider/id"，null = 未设置，undefined = 功能隐藏
 	 *  —— DSH 引擎无此概念，App 侧按 engine 传）。 */
 	defaultModel?: string | null;
@@ -29,6 +29,12 @@ interface Props {
 	compact?: boolean;
 	/** 只画其中一个 picker（输入框槽位化后模型/思考独立控制显隐；缺省两个都画）。 */
 	only?: "model" | "thinking";
+	/** 自定义模型选择回调（受控模式：若传则调用，不发送全局 set_model） */
+	onSelectModel?: (model: ModelInfo) => void;
+	/** 自定义思考档位选择回调（受控模式：若传则调用，不发送全局 set_thinking） */
+	onSelectThinking?: (level: string) => void;
+	/** 下拉菜单弹出方向（默认 upward，在卡片等上方空间不足时传 "down"） */
+	direction?: "up" | "down";
 }
 
 /** Model picker + thinking-level picker. Rendered in the composer toolbar
@@ -39,10 +45,13 @@ export const ModelThinking = memo(function ModelThinking({
 	models,
 	modelsLoading,
 	onManageModels,
-	providerKeys,
+	providerKeys = {},
 	defaultModel,
 	compact = false,
 	only,
+	onSelectModel,
+	onSelectThinking,
+	direction = "up",
 }: Props) {
 	const t = useT();
 	const model = state?.model;
@@ -258,18 +267,20 @@ export const ModelThinking = memo(function ModelThinking({
 					>
 						<FiRefreshCw className={reqLoading || modelsLoading ? "spin" : ""} />
 					</button>
-					<button
-						type="button"
-						className="dd-header-btn dd-manage-btn"
-						onClick={() => {
-							setModelOpen(false);
-							onManageModels();
-						}}
-						title={t("manageModels")}
-						aria-label={t("manageModels")}
-					>
-						<FiSettings />
-					</button>
+					{onManageModels && (
+						<button
+							type="button"
+							className="dd-header-btn dd-manage-btn"
+							onClick={() => {
+								setModelOpen(false);
+								onManageModels();
+							}}
+							title={t("manageModels")}
+							aria-label={t("manageModels")}
+						>
+							<FiSettings />
+						</button>
+					)}
 				</div>
 			</div>
 			<div className="dd-search-row">
@@ -341,6 +352,11 @@ export const ModelThinking = memo(function ModelThinking({
 								key={row.key ? `${m.id}::${row.key.name}` : m.id}
 								active={isActive}
 								onClick={() => {
+									if (onSelectModel) {
+										onSelectModel(m);
+										setModelOpen(false);
+										return;
+									}
 									// Clicking a model under a non-active key switches to it first,
 									// then selects the model (no static model-list copy — the
 									// provider's default system catalog is reused as-is).
@@ -414,6 +430,11 @@ export const ModelThinking = memo(function ModelThinking({
 					disabled={!l.supported}
 					title={l.supported ? undefined : t("thinkingUnsupported")}
 					onClick={() => {
+						if (onSelectThinking) {
+							onSelectThinking(l.value);
+							setThinkingOpen(false);
+							return;
+						}
 						if (state?.thinkingLevel !== l.value) {
 							appSend({ type: "set_thinking", level: l.value });
 						}
@@ -447,7 +468,7 @@ export const ModelThinking = memo(function ModelThinking({
 			menuClassName="dd-menu-model"
 			menuRef={menuRef}
 			menuStyle={menuWidth != null ? { width: menuWidth } : undefined}
-			direction="up"
+			direction={direction}
 		>
 			{modelMenuContent}
 		</Dropdown>
@@ -469,7 +490,7 @@ export const ModelThinking = memo(function ModelThinking({
 			onOpenChange={setThinkingOpen}
 			align="left"
 			portal={true}
-			direction="up"
+			direction={direction}
 		>
 			{thinkingMenuContent}
 		</Dropdown>
@@ -501,7 +522,7 @@ export const ModelThinking = memo(function ModelThinking({
 				menuClassName="dd-menu-model"
 				menuRef={menuRef}
 				menuStyle={menuWidth != null ? { width: menuWidth } : undefined}
-				direction="up"
+				direction={direction}
 			>
 				{modelMenuContent}
 			</Dropdown>
@@ -518,7 +539,7 @@ export const ModelThinking = memo(function ModelThinking({
 				onOpenChange={setThinkingOpen}
 				align="left"
 				portal={true}
-				direction="up"
+				direction={direction}
 			>
 				{thinkingMenuContent}
 			</Dropdown>

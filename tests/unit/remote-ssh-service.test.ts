@@ -6,6 +6,7 @@ import { PassThrough, Readable } from "node:stream";
 import {
 	expandHome,
 	RemoteSshService,
+	resolveRemoteWorkspacePath,
 	serveRemoteWorkspaceFile,
 	setGlobalRemoteSshService,
 } from "../../server/remote-ssh-service.js";
@@ -339,5 +340,28 @@ describe("serveRemoteWorkspaceFile 与 present_files 远程工作区支持", () 
 		} finally {
 			setGlobalRemoteSshService(null as any);
 		}
+	});
+
+	it("resolveRemoteWorkspacePath unwraps ssh:// URIs cleanly without nested prefixes", () => {
+		const root = "/root/workspace/ljz";
+		// 1. 完整的 ssh:// URI 指向工作区根
+		const res1 = resolveRemoteWorkspacePath(root, "ssh://root@39.99.235.208:22/root/workspace/ljz");
+		expect(res1).toEqual({ abs: "/root/workspace/ljz", rel: "" });
+
+		// 2. 完整的 ssh:// URI 指向子目录
+		const res2 = resolveRemoteWorkspacePath(root, "ssh://root@39.99.235.208:22/root/workspace/ljz/subfolder");
+		expect(res2).toEqual({ abs: "/root/workspace/ljz/subfolder", rel: "subfolder" });
+
+		// 3. 相对路径
+		const res3 = resolveRemoteWorkspacePath(root, "nested/file.txt");
+		expect(res3).toEqual({ abs: "/root/workspace/ljz/nested/file.txt", rel: "nested/file.txt" });
+
+		// 4. 空字符串与点
+		expect(resolveRemoteWorkspacePath(root, "")).toEqual({ abs: "/root/workspace/ljz", rel: "" });
+		expect(resolveRemoteWorkspacePath(root, ".")).toEqual({ abs: "/root/workspace/ljz", rel: "" });
+
+		// 5. 跨界 ssh:// URI 拦截
+		const resOutside = resolveRemoteWorkspacePath(root, "ssh://root@39.99.235.208:22/etc/passwd");
+		expect(resOutside).toBeNull();
 	});
 });

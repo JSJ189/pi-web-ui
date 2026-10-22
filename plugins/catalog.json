@@ -391,5 +391,27 @@
 		"descriptionEn": "Approval gate: centralized pending-decision list from scheduled tasks; click an item to jump into its conversation; red-dot badge on the tab shows pending count. A generic CLI lets any cron job register items.",
 		"source": "xing-shuyin/pi-web-ui/plugins/approval-gate",
 		"homepage": "https://github.com/xing-shuyin/pi-web-ui/tree/main/plugins/approval-gate"
+	},
+	{
+		"id": "live2d",
+		"name": "Live2D 看板娘",
+		"nameEn": "Live2D Companion",
+		"icon": "🐾",
+		"iconSvg": "<svg xmlns=\"http://www.w3.org/2000/svg\" viewBox=\"0 0 24 24\" fill=\"none\" stroke=\"currentColor\" stroke-width=\"2\" stroke-linecap=\"round\" stroke-linejoin=\"round\"><path d=\"M12 2C6.48 2 2 6.48 2 12s4.48 10 10 10 10-4.48 10-10S17.52 2 12 2zm0 18c-4.41 0-8-3.59-8-8s3.59-8 8-8 8 3.59 8 8-3.59 8-8 8zm-2-9c.55 0 1-.45 1-1s-.45-1-1-1-1 .45-1 1 .45 1 1 1zm4 0c.55 0 1-.45 1-1s-.45-1-1-1-1 .45-1 1 .45 1 1 1zm-2 5c1.66 0 3-1.34 3-3H9c0 1.66 1.34 3 3 3z\"/></svg>",
+		"description": "页面悬浮 Live2D 桌面看板娘宠物：支持 Cubism 2/3/4 模型渲染、鼠标视线跟随、触摸点击反应、气泡对话台词、伴随 AI 思考/回复情绪联动与 AI 动作表情操控工具。",
+		"descriptionEn": "Interactive Live2D companion on your screen: Cubism 2/3/4 models, mouse eye-tracking, tap reactions, speech bubbles, AI emotion reactivity, and agent tools.",
+		"source": "xing-shuyin/pi-web-ui/plugins/live2d",
+		"homepage": "https://github.com/xing-shuyin/pi-web-ui/tree/main/plugins/live2d"
+	},
+	{
+		"id": "office",
+		"name": "office",
+		"nameEn": "office",
+		"icon": "📑",
+		"iconSvg": "<svg xmlns=\"http://www.w3.org/2000/svg\" viewBox=\"0 0 24 24\" fill=\"none\" stroke=\"currentColor\" stroke-width=\"2\" stroke-linecap=\"round\" stroke-linejoin=\"round\"><path d=\"M14.5 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V7.5L14.5 2z\"/><polyline points=\"14 2 14 8 20 8\"/><line x1=\"16\" y1=\"13\" x2=\"8\" y2=\"13\"/><line x1=\"16\" y1=\"17\" x2=\"8\" y2=\"17\"/><line x1=\"10\" y1=\"9\" x2=\"8\" y2=\"9\"/></svg>",
+		"description": "基于 Univer 引擎的高保真 Office 原生画布预览与编辑：接管工作区 .pptx / .docx / .xlsx 真实渲染，支持 1:1 排版放映与 AI 结构化表格修改写回。",
+		"descriptionEn": "High-fidelity Office Canvas preview and editing powered by Univer: 1:1 true layouts for .pptx/.docx/.xlsx with AI structured editing and lossless disk save.",
+		"source": "xing-shuyin/pi-web-ui/plugins/office",
+		"homepage": "https://github.com/xing-shuyin/pi-web-ui/tree/main/plugins/office"
 	}
 ]

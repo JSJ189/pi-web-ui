@@ -38,6 +38,17 @@ export interface UiSelectOption {
 	labelEn?: string;
 }
 
+/** 插件注册的内联状态标记（Inline Marker）。 */
+export interface PluginMarkerDef<State = unknown> {
+	name: string;
+	label?: string;
+	guidance: string[];
+	getGuidance?: (lang: "zh" | "en") => string[];
+	apply: (token: any, ctx: any, state: State, lang?: any) => Promise<any> | any;
+	overlay?: (state: State, ctx: any) => any;
+	init?: () => State;
+}
+
 export type UiItemKind =
 	"view" | "action" | "badge" | "menu" | "page" | "organizer" | "divider" | "toggle" | "input" | "progress" | "select";
 
@@ -191,6 +202,8 @@ export interface PluginHost {
 	/** 订阅模型切换成功（回调带 clientId / conversationId / model / isSubagent… 的快照）。 */
 	onClientModelChanged(handler: (snap: unknown) => void): () => void;
 	registerAgentTool(tool: PluginAgentTool): () => void;
+	/** 注册一个内联标记（Inline Marker）。 */
+	registerMarker<State = unknown>(marker: any): () => void;
 	/** 注册一个供 AI 调用的工具（单参数 execute(args) 兼容接口，内部适配并转调 registerAgentTool）。 */
 	registerTool(tool: {
 		name: string;
@@ -201,6 +214,8 @@ export interface PluginHost {
 		parameters?: Record<string, unknown>;
 		execute(args: Record<string, unknown>): Promise<unknown>;
 	}): () => void;
+	/** 注册一个内联标记（Inline Marker），如 [[name:op:body]]。 */
+	registerMarker<State = unknown>(marker: PluginMarkerDef<State>): () => void;
 	dir: string;
 	dataDir: string;
 	readonly cwd: string;
@@ -502,6 +517,8 @@ export interface MockHostControls {
 	emitSettings(next?: Record<string, unknown>): Record<string, unknown>;
 	/** 已注册的 Agent 工具定义（活数组，注销即摘除；工具的 execute 可直接调）。 */
 	agentTools: Array<PluginAgentTool>;
+	/** 已注册的内联标记定义（活数组，注销即摘除）。 */
+	markers: Array<PluginMarkerDef<unknown>>;
 	/** 已注册的斜杠命令定义（活数组，注销即摘除）。 */
 	commands: Array<PluginCommandDef>;
 	/** 已挂载的路由表（活数组，注销即摘除）。 */

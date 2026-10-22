@@ -16,6 +16,8 @@
  *   的 send 函数），插件本身不接触 ws。
  * - activate 抛错只标记 error 字段并记日志，绝不影响主进程。
  */
+import type { ParsedToken, ApplyResult, MarkerOverlay, MarkerContext, MarkerTool } from "./markers/index.js";
+import { registerMarker, unregisterMarker, isBuiltinMarker } from "./markers/index.js";
 import { mkdir, readdir, readFile, rm, stat, writeFile } from "node:fs/promises";
 import {
 	cpSync,
@@ -261,6 +263,35 @@ export interface PluginConversationListItem {
 	isStreaming: boolean;
 }
 
+/** 插件注册的内联状态标记（Inline Marker）。 */
+export interface PluginMarkerDef<State = unknown> {
+	/** 标记工具名称，匹配 [[name:op:body]] 的第一段；需英文字母开头，只包含字母、数字、下划线、中划线。 */
+	name: string;
+	/** 显示给用户的名称（设置面板中展示；缺省为 name）。 */
+	label?: string;
+	/** 给模型的使用指南（建议纯英文、简洁规范，与内置 marker 对齐）。 */
+	guidance: string[];
+	/** 多语言 guidance（若提供，en 取英译，zh 取中文；未提供时回退到 guidance）。 */
+	getGuidance?: (lang: ServerLang) => string[];
+	/**
+	 * 当 AI 输出该标记时触发执行。
+	 * @param token 解析出的标记内容（tool, op, args, kwargs, raw）
+	 * @param ctx 执行上下文（含 conversationId、notify、renameConversation 等）
+	 * @param state 当前会话在属于该标记命名空间下的持久化状态（由 init 或历史快照恢复）
+	 * @param lang 当前语言
+	 */
+	apply: (
+		token: ParsedToken,
+		ctx: MarkerContext,
+		state: State,
+		lang?: ServerLang,
+	) => Promise<ApplyResult> | ApplyResult;
+	/** 可选：向 UI 提供该标记的侧边栏/小部件 overlay 展示文本。 */
+	overlay?: (state: State, ctx: MarkerContext) => MarkerOverlay | undefined;
+	/** 可选：初始化状态对象（默认回退为空对象 {}）。 */
+	init?: () => State;
+}
+
 /**
  * 插件注册的 AI 工具（结构化定义，与 SDK ToolDefinition 解耦——由
  * agent-service 负责转换）。execute 返回 { content, details? }（content 为
@@ -480,6 +511,13 @@ export interface PluginHost {
 		parameters?: Record<string, unknown>;
 		execute(args: Record<string, unknown>): Promise<unknown>;
 	}): () => void;
+	/**
+	 * 注册一个内联标记（Inline Marker），如 [[name:op:body]]。
+	 * 模型在回复中直接写入标记即可触发副作用，宿主在展示给用户前会自动剥离该标记，
+	 * 无需额外的工具调用往返。需要能力 "tools"。
+	 * 返回注销函数；插件反激活或重载时会自动注销。
+	 */
+	registerMarker<State = unknown>(marker: PluginMarkerDef<State>): () => void;
 	/** 插件自己的持久化目录（<dataDir>/plugins/<id>）——凭据等放这里。 */
 	dir: string;
 	/** 全局数据目录（~/.pi-web）。 */
@@ -1685,6 +1723,10 @@ export class PluginManager {
 	private pluginBgTasks = new Map<string, Map<string, PluginBgTask>>();
 	/** 任务集合变化回调（index.ts 接到 AgentService，重推 bg_servers）。 */
 	onBgTasksChanged: (() => void) | undefined = undefined;
+	/** 插件注册的内联标记：pluginId → (name → 定义)。 */
+	private pluginMarkers = new Map<string, Map<string, MarkerTool<unknown>>>();
+	/** 标记工具集合变化回调（index.ts 接到 AgentService，刷新各客户端 markers）。 */
+	onMarkersChanged: (() => void) | undefined = undefined;
 	/** P3：左栏插件运行条目（见 left-panel-running.ts）。 */
 	readonly panelRunning = new LeftPanelRunningStore();
 	private panelPushTimer: ReturnType<typeof setTimeout> | null = null;
@@ -2596,6 +2638,88 @@ export class PluginManager {
 		};
 	}
 
+	/** 注册内联标记（Inline Marker）：跨插件重名拒绝，系统内置标记冲突拒绝。 */
+	private registerMarker<State = unknown>(pluginId: string, marker: PluginMarkerDef<State>): () => void {
+		if (!marker || typeof marker !== "object") {
+			console.error(`[plugin:${pluginId}] registerMarker: 缺少 marker 参数，忽略`);
+			this.pushRuntimeDiag(pluginId, "registerMarker: missing marker parameter, ignored");
+			return () => {};
+		}
+		const name = String(marker.name ?? "").trim();
+		if (!/^[A-Za-z][A-Za-z0-9_-]*$/.test(name)) {
+			console.error(
+				`[plugin:${pluginId}] registerMarker: 非法名称「${marker.name}」（需英文字母开头，只允许字母数字_-），忽略`,
+			);
+			this.pushRuntimeDiag(
+				pluginId,
+				`registerMarker: invalid name "${String(marker.name ?? "").slice(0, 32)}", ignored`,
+			);
+			return () => {};
+		}
+		if (isBuiltinMarker(name)) {
+			console.error(`[plugin:${pluginId}] registerMarker: 名称「${name}」为系统内置标记保留名称，忽略冲突注册`);
+			this.pushRuntimeDiag(pluginId, `registerMarker: "${name}" conflicts with built-in marker, ignored`);
+			return () => {};
+		}
+		if (typeof marker.apply !== "function") {
+			console.error(`[plugin:${pluginId}] registerMarker: ${name} 缺少 apply 函数，忽略`);
+			this.pushRuntimeDiag(pluginId, `marker "${name}": missing apply function, ignored`);
+			return () => {};
+		}
+		if (!Array.isArray(marker.guidance) || marker.guidance.length === 0) {
+			console.error(`[plugin:${pluginId}] registerMarker: ${name} 缺少 guidance 引导说明，忽略`);
+			this.pushRuntimeDiag(pluginId, `marker "${name}": missing guidance, ignored`);
+			return () => {};
+		}
+		for (const [pid, other] of this.pluginMarkers) {
+			if (pid !== pluginId && other.has(name)) {
+				console.error(`[plugin:${pluginId}] 标记 "${name}" 已被插件 ${pid} 注册，忽略重复`);
+				this.pushRuntimeDiag(pluginId, `marker "${name}": already registered by plugin ${pid}, ignored`);
+				return () => {};
+			}
+		}
+		let table = this.pluginMarkers.get(pluginId);
+		if (!table) this.pluginMarkers.set(pluginId, (table = new Map()));
+		if (table.has(name)) {
+			console.error(`[plugin:${pluginId}] 标记 "${name}" 重复注册，忽略`);
+			this.pushRuntimeDiag(pluginId, `marker "${name}": duplicate registration, ignored`);
+			return () => {};
+		}
+
+		const markerTool: MarkerTool = {
+			name,
+			label: marker.label ? String(marker.label).slice(0, 80) : undefined,
+			pluginId,
+			guidance: [...marker.guidance],
+			getGuidance: marker.getGuidance,
+			apply: marker.apply as MarkerTool["apply"],
+			overlay: marker.overlay,
+			init: marker.init,
+		};
+
+		table.set(name, markerTool);
+		registerMarker(markerTool);
+		console.log(`[plugin:${pluginId}] registered inline marker: ${name}`);
+
+		try {
+			this.onMarkersChanged?.();
+		} catch (err) {
+			console.error("[plugins] onMarkersChanged failed:", err);
+		}
+
+		return () => {
+			if (table.delete(name)) {
+				if (table.size === 0) this.pluginMarkers.delete(pluginId);
+				unregisterMarker(name);
+				try {
+					this.onMarkersChanged?.();
+				} catch {
+					/* shutting down */
+				}
+			}
+		};
+	}
+
 	/** 注册斜杠命令：跨插件重名拒绝（先注册者胜出），onCommandsChanged 通知目录刷新。 */
 	private registerCommand(pluginId: string, cmd: PluginCommandDef): () => void {
 		const name = String(cmd?.name ?? "").replace(/^\/+/, ""); // 容忍误带的前导 /
@@ -2942,6 +3066,7 @@ export class PluginManager {
 			this.panelSweepTimer = null;
 		}
 		this.agentTools.clear();
+		this.pluginMarkers.clear();
 		this.pluginCommands.clear();
 		this.uiRuntime.clear();
 		this.uiBase.clear();
@@ -4043,6 +4168,11 @@ export class PluginManager {
 				if (!can("tools")) return () => {};
 				const off = this.registerAgentTool(info.id, tool);
 				return effects.add(`agentTool:${String(tool?.name ?? "?")}`, off);
+			},
+			registerMarker: (marker) => {
+				if (!can("tools")) return () => {};
+				const off = this.registerMarker(info.id, marker as PluginMarkerDef<any>);
+				return effects.add(`marker:${String(marker?.name ?? "?")}`, off);
 			},
 			registerTool: (tool) => {
 				if (!can("tools")) return () => {};

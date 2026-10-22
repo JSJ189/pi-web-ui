@@ -36,6 +36,10 @@ export interface MarkerContext {
 
 export interface MarkerTool<State = unknown> {
 	name: string;
+	/** 显示给用户的名称（设置面板中展示；缺省为 name）。 */
+	label?: string;
+	/** 归属插件 id（内置标记为 undefined）。 */
+	pluginId?: string;
 	/** 为 true 时表示该标记为别名（如 suggest 是 action 的别名），不参与提示词注入和 UI 列表。 */
 	isAlias?: boolean;
 	guidance: string[];
@@ -68,9 +72,54 @@ function splitArgs(body: string): { args: string[]; kwargs: Record<string, strin
 	return { args, kwargs };
 }
 
-const KNOWN_MARKER_TOOLS = new Set(["todo", "notify", "conv", "rename", "title", "action", "suggest"]);
+export const BUILTIN_MARKER_TOOLS: ReadonlySet<string> = new Set([
+	"todo",
+	"notify",
+	"conv",
+	"rename",
+	"title",
+	"action",
+	"suggest",
+]);
 
-const TRAILING_INCOMPLETE_MARKER_RE = /[ \t]*\[\[\s*(?:todo|notify|conv|rename|title|action|suggest)(?:\s*:[^\]]*)?$/i;
+const knownMarkerTools = new Set<string>(BUILTIN_MARKER_TOOLS);
+
+function escapeRegExp(s: string): string {
+	return s.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+}
+
+function buildTrailingIncompleteRegex(tools: Set<string>): RegExp {
+	const pattern = [...tools].map(escapeRegExp).join("|");
+	return new RegExp(`[ \\t]*\\[\\[\\s*(?:${pattern})(?:\\s*:[^\\]]*)?$`, "i");
+}
+
+let trailingIncompleteMarkerRe: RegExp = buildTrailingIncompleteRegex(knownMarkerTools);
+
+export function registerKnownMarkerTool(name: string): void {
+	if (!name) return;
+	const lower = name.toLowerCase();
+	if (!knownMarkerTools.has(lower)) {
+		knownMarkerTools.add(lower);
+		trailingIncompleteMarkerRe = buildTrailingIncompleteRegex(knownMarkerTools);
+	}
+}
+
+export function unregisterKnownMarkerTool(name: string): void {
+	if (!name) return;
+	const lower = name.toLowerCase();
+	if (BUILTIN_MARKER_TOOLS.has(lower)) return;
+	if (knownMarkerTools.delete(lower)) {
+		trailingIncompleteMarkerRe = buildTrailingIncompleteRegex(knownMarkerTools);
+	}
+}
+
+export function isKnownMarkerTool(name: string): boolean {
+	return !!name && knownMarkerTools.has(name.toLowerCase());
+}
+
+export function getKnownMarkerTools(): Set<string> {
+	return new Set(knownMarkerTools);
+}
 
 export function parseMarkers(text: string): ParsedToken[] {
 	const tokens: ParsedToken[] = [];
@@ -94,11 +143,11 @@ export function stripMarkers(text: string, options?: { stripTrailingIncomplete?:
 	if (!text || !text.includes("[[")) return text;
 	let out = text.replace(TOKEN_RE, (raw, tool: string, _op: string, body: string) => {
 		if (body.includes("[[")) return raw;
-		if (!KNOWN_MARKER_TOOLS.has(tool.toLowerCase())) return raw;
+		if (!isKnownMarkerTool(tool)) return raw;
 		return "";
 	});
 	if (options?.stripTrailingIncomplete) {
-		out = out.replace(TRAILING_INCOMPLETE_MARKER_RE, "");
+		out = out.replace(trailingIncompleteMarkerRe, "");
 	}
 	if (out === text) return text;
 	// 清理因剥离首尾标记残留在行首/段首/段尾的空行与空白

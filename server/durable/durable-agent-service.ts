@@ -173,6 +173,10 @@ export class DurableAgentService implements EngineService {
 		// 斜杠命令热重载通知
 	}
 
+	applyPluginMarkers(): void {
+		// 插件标记热重载通知
+	}
+
 	refreshBackgroundServers(): void {
 		for (const session of this.sessions.values()) {
 			session.listBgServers();

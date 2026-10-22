@@ -322,6 +322,8 @@ export class SlackBotBridge {
 				conversationId,
 			};
 			if (workspace) chatReq.cwd = workspace;
+			if (cfg.model) chatReq.model = cfg.model;
+			if (cfg.thinkingLevel) chatReq.thinkingLevel = cfg.thinkingLevel;
 			await this.host.chat(chatReq);
 		} catch (err) {
 			this.log("warn", `Slack host.chat dispatch failed: ${err.message}`);
@@ -345,6 +347,7 @@ export class SlackBotBridge {
 					"",
 					"- Send any message or mention the bot to chat with AI",
 					"- `/cwd [path]` or `/workspace [path]`: view or switch current workspace root",
+					"- `/model`: view current AI model and thinking level",
 					"- `/clear` or `/new`: reset context and start a fresh session",
 					"- `/status`: inspect bot connection and metrics",
 					"- `/help`: display this help guide",
@@ -353,6 +356,16 @@ export class SlackBotBridge {
 					channel: channelId,
 					thread_ts: threadTs,
 					text: helpText,
+				}).catch(() => {});
+				return true;
+			}
+			case "/model": {
+				const currentModel = cfg.model || "(default follows host global)";
+				const currentThinking = cfg.thinkingLevel || "(follows global)";
+				await slackApi(cfg.botToken, "chat.postMessage", {
+					channel: channelId,
+					thread_ts: threadTs,
+					text: `🤖 *Current Model & Thinking Config*\n- Model: \`${currentModel}\`\n- Thinking Level: \`${currentThinking}\``,
 				}).catch(() => {});
 				return true;
 			}
@@ -597,6 +610,8 @@ export default async function activate(host) {
 						config: {
 							defaultChannelId: localConfig.defaultChannelId || "",
 							workspace: localConfig.workspace || "",
+							model: localConfig.model || "",
+							thinkingLevel: localConfig.thinkingLevel || "",
 							botEnabled: Boolean(localConfig.botEnabled),
 							allowedUsers: localConfig.allowedUsers || [],
 							hasBotToken: Boolean(secrets[SECRET_BOT_TOKEN] || localConfig.botToken),

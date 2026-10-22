@@ -42,6 +42,7 @@ export function detectPluginVersionViolations(opts: {
 	changedFiles: string[];
 	getOldVersion: (id: string) => string | null;
 	getNewVersion: (id: string) => string | null;
+	isPluginDeleted?: (id: string) => boolean;
 }): Violation[] {
 	const violations: Violation[] = [];
 
@@ -77,6 +78,9 @@ export function detectPluginVersionViolations(opts: {
 		const newVer = opts.getNewVersion(pluginId);
 
 		if (!newVer) {
+			if (opts.isPluginDeleted?.(pluginId)) {
+				continue;
+			}
 			violations.push({
 				pluginId,
 				reason: `插件 ${pluginId} 修改了代码文件，但未声明有效的 version`,
@@ -210,6 +214,7 @@ describe("插件版本规范与递增守卫", () => {
 
 		const violations = detectPluginVersionViolations({
 			changedFiles: diffFiles,
+			isPluginDeleted: (pluginId) => !existsSync(join(PLUGINS_DIR, pluginId)),
 			getOldVersion: (pluginId) => {
 				const manifestRel =
 					pluginId === "page-picker"

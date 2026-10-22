@@ -27,6 +27,7 @@ import type { CommandDef } from "../types";
 import { buildUpdateCommand } from "../update-command";
 import { randomUuid } from "../uuid";
 import { Dropdown, DropdownItem } from "./Dropdown";
+import type { ViewName } from "./BarItem";
 import { SoundSettingsPanel } from "./SoundSettings";
 import { BrowserControl } from "./BrowserControl";
 import { BROWSER_PAGE_TOOL_NAME } from "../../../server/tool-manager.js";
@@ -167,8 +168,8 @@ interface TopBarProps {
 		}) => void;
 		restart: (id: string) => void;
 	};
-	view: "chat" | "terminal" | "git" | `plugin:${string}`;
-	onViewChange: (view: "chat" | "terminal" | "git" | `plugin:${string}`) => void;
+	view: ViewName;
+	onViewChange: (view: ViewName) => void;
 	/** Installed optional plugins (<dataDir>/plugins) — one view tab each
 	 *  (view:false renderer-only plugins are filtered out by the caller). */
 	plugins: {
@@ -332,6 +333,7 @@ export function TopBar({
 		"host:chat",
 		"host:terminal",
 		"host:git",
+		"host:canvas",
 		"host:plugins",
 		"host:search",
 		"host:browser",
@@ -1153,6 +1155,19 @@ export function TopBar({
 			>
 				<FiGitBranch />
 				<span>{t("scmTab")}</span>
+			</button>
+		) : null,
+		"host:canvas": tabOn("canvas") ? (
+			<button
+				type="button"
+				role="tab"
+				aria-selected={view === "canvas"}
+				className={`tb-tab${view === "canvas" ? " active" : ""}`}
+				data-tip={t("canvasTab")}
+				onClick={() => onViewChange("canvas")}
+			>
+				<FiLayers />
+				<span>{t("canvasTab")}</span>
 			</button>
 		) : null,
 		// 插件面板入口（Chrome 扩展图标那个位置）：列出全部已装插件，每行带「钉到顶栏」

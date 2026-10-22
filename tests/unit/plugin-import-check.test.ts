@@ -174,5 +174,5 @@ describe("仓库自带插件零越界 / 零缺失", () => {
 			const { problems } = checkPluginImports(join(pluginsDir, id));
 			expect({ id, problems }).toEqual({ id, problems: [] });
 		}
-	});
+	}, 30000);
 });

@@ -20,7 +20,7 @@
 import "./patch-remote-catalog.js";
 import "./patch-turn-end-boundary.js";
 import { existsSync, mkdirSync, readFileSync, statSync } from "node:fs";
-import { stat } from "node:fs/promises";
+import { readFile, stat } from "node:fs/promises";
 import { createServer, request as proxyRequest, type IncomingMessage } from "node:http";
 import { createConnection } from "node:net";
 import { basename, delimiter, join, resolve, sep } from "node:path";
@@ -39,6 +39,7 @@ import { httpHostAllowed } from "./host-guard.js";
 import { registerFileTransferRoutes } from "./file-transfer-routes.js";
 import { initAttachmentStore, readAttachment } from "./attachment-store.js";
 import { isAudioFile, previewKind } from "./text-sniff.js";
+import { isOfficeFile, OFFICE_MAX_FILE_BYTES, unzipFiles } from "./office-parse.js";
 import { startControlServer } from "./control-socket.js";
 import { scheduleUploadCleanup } from "./uploads.js";
 import { ensureWindowsBash, windowsBashDir } from "./ensure-bash.js";
@@ -101,6 +102,8 @@ import {
 	setGlobalRemoteSshService,
 } from "./remote-ssh-service.js";
 import { handlePluginMessage } from "./dispatch-plugin-handlers.js";
+import { CanvasOrchestrator } from "./canvas/canvas-orchestrator.js";
+import { handleCanvasMessage } from "./canvas/canvas-dispatch.js";
 import type {
 	BgServer,
 	ClientMessage,
@@ -584,6 +587,71 @@ app.get("/api/file", async (req, res) => {
 			}
 			res.sendFile(abs, { dotfiles: "allow" });
 		}
+	} catch {
+		res.status(404).end("not found");
+	}
+});
+
+/**
+ * PPTX 等 Office 内部媒体流式下发路由。
+ *   /api/office-media?path=<workspace-rel-path>&media=<image-name>&clientId=…
+ */
+app.get("/api/office-media", async (req, res) => {
+	try {
+		const rawPath = typeof req.query.path === "string" ? req.query.path : "";
+		const media = typeof req.query.media === "string" ? req.query.media : "";
+		if (!rawPath || !media) {
+			res.status(400).end("missing path or media");
+			return;
+		}
+		if (!/^image\d+\.(png|jpe?g|webp|gif|svg|bmp)$/i.test(media)) {
+			res.status(400).end("invalid media name");
+			return;
+		}
+		const cid = typeof req.query.clientId === "string" ? req.query.clientId : "";
+		const cs = cid ? service.get(cid) : undefined;
+		const root = cs?.cwd ?? CWD;
+		const absWire = isAbsoluteWirePath(rawPath);
+		let abs: string;
+		if (absWire) {
+			abs = wireToAbs(rawPath);
+		} else {
+			const wp = workspacePath(root, rawPath);
+			if (!wp) {
+				res.status(400).end("path outside workspace");
+				return;
+			}
+			abs = wp.abs;
+		}
+		if (!isOfficeFile(abs)) {
+			res.status(400).end("not an office file");
+			return;
+		}
+		const st = await stat(abs);
+		if (!st.isFile() || st.size > OFFICE_MAX_FILE_BYTES) {
+			res.status(400).end("file not found or too large");
+			return;
+		}
+		const data = await readFile(abs);
+		const zipFiles = unzipFiles(data, [`ppt/media/${media}`]);
+		const imgBuf = zipFiles.get(`ppt/media/${media}`);
+		if (!imgBuf) {
+			res.status(404).end("media not found");
+			return;
+		}
+		const ext = media.split(".").pop()?.toLowerCase() ?? "";
+		const mimeMap: Record<string, string> = {
+			png: "image/png",
+			jpg: "image/jpeg",
+			jpeg: "image/jpeg",
+			webp: "image/webp",
+			gif: "image/gif",
+			svg: "image/svg+xml",
+			bmp: "image/bmp",
+		};
+		res.setHeader("Content-Type", mimeMap[ext] || "application/octet-stream");
+		res.setHeader("Cache-Control", "public, max-age=86400, immutable");
+		res.send(imgBuf);
 	} catch {
 		res.status(404).end("not found");
 	}
@@ -1512,6 +1580,7 @@ export interface EngineService {
 	pendingMessages(): number;
 	applyPluginAgentTools(): void;
 	applyPluginCommandCatalog(): void;
+	applyPluginMarkers?(): void;
 	refreshBackgroundServers(): void;
 	/** 当前底座能力声明（Capabilities） */
 	getCapabilities?(): AgentEngineCapabilities;
@@ -1729,6 +1798,9 @@ const service: EngineService = {
 	},
 	applyPluginCommandCatalog() {
 		for (const s of activeEngines()) s.applyPluginCommandCatalog();
+	},
+	applyPluginMarkers() {
+		for (const s of activeEngines()) s.applyPluginMarkers?.();
 	},
 	refreshBackgroundServers() {
 		for (const s of activeEngines()) s.refreshBackgroundServers();
@@ -1949,6 +2021,21 @@ async function confirmPluginInstallHelper(items: Array<{ id: string; source: str
 // 远程 SSH 连接管理、环境探针与目录浏览服务
 const remoteSshService = new RemoteSshService(DATA_DIR);
 setGlobalRemoteSshService(remoteSshService);
+
+// 多引擎多模型多目录画布协作调度器 (Canvas Studio)
+const canvasOrchestrator = new CanvasOrchestrator(CWD, DATA_DIR, (eng) => ensureEngine(eng));
+canvasOrchestrator.setBroadcaster((msg) => {
+	const payload = JSON.stringify(msg);
+	for (const client of wss.clients) {
+		if (client.readyState !== WebSocket.OPEN) continue;
+		if (client.bufferedAmount > BROADCAST_BACKPRESSURE_MAX_BYTES) continue;
+		try {
+			client.send(payload);
+		} catch {
+			/* 客户端断开连接忽略 */
+		}
+	}
+});
 
 // 内置定时任务（issue #184）：全局 <dataDir>/scheduler-tasks.json，TTL 与
 // client-state 同级；Agent 工具建的任务优先唤醒发起对话（issue #193：
@@ -2207,6 +2294,8 @@ pluginMgr.onAgentToolsChanged = () => {
 };
 // 插件扩展点：插件斜杠命令（registerCommand）→ 命令选择器目录 + prompt 拦截执行。
 pluginMgr.onCommandsChanged = () => service.applyPluginCommandCatalog();
+// 插件扩展点：插件内联标记（registerMarker）→ 刷新客户端 markers 与设置状态。
+pluginMgr.onMarkersChanged = () => service.applyPluginMarkers?.();
 // 插件扩展点：插件常驻后台任务（registerBackgroundTask）→ 并入「后台任务」面板。
 pluginMgr.onBgTasksChanged = () => service.refreshBackgroundServers();
 // ---------------------------------------------------------------------------
@@ -2790,6 +2879,7 @@ wss.on("connection", (ws) => {
 			if (handleScheduleMessage(msg, scheduler, send)) return;
 			if (handleRemoteSshMessage(msg, remoteSshService, send)) return;
 			if (handleSettingsMessage(msg, cs)) return;
+			if (handleCanvasMessage(msg, DATA_DIR, canvasOrchestrator, send)) return;
 			if (handleInteractiveResponseMessage(msg, cs, service, clientId, send)) return;
 			if (
 				handlePluginMessage(msg, {

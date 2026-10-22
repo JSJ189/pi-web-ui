@@ -13,6 +13,7 @@ import { existsSync, statSync } from "node:fs";
 import { basename, isAbsolute, relative, resolve } from "node:path";
 import type { PromptAttachment, UiMessage } from "../protocol.js";
 import { readSkillInstruction, type DiscoveredSkill } from "../skill-discovery.js";
+import { isRemoteWorkspaceUri } from "../remote-ssh-service.js";
 
 export interface ScanResult {
 	detectedAttachments: PromptAttachment[];
@@ -47,6 +48,11 @@ export function scanAtMentions(
 		if (matchedSkillNames.has(bareName.toLowerCase()) || matchedSkillNames.has(sk.name.toLowerCase())) {
 			detectedSkills.push(sk);
 		}
+	}
+
+	// 远程 SSH 项目的工作区不在本地文件系统中，跳过本地相对路径与 existsSync 检查
+	if (isRemoteWorkspaceUri(cwd)) {
+		return { detectedAttachments, detectedSkills };
 	}
 
 	// 2. 扫描 @path/to/file 引用（避开邮箱格式，例如 a@b.com）

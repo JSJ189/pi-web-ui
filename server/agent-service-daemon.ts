@@ -1186,7 +1186,11 @@ export class AgentService {
 					// 也无需事后拆 runtime）。之前只拦 running：空闲持有照样恢复出双
 					// writer，两边轮流发送分叉历史。其他客户端不存在时不扫目录。
 					let createOpts: { blank?: boolean; blankTitle?: string; idleHeld?: boolean } | undefined;
-					if (this.clients.size > 0) {
+					const isPseudo = AgentService.isPseudoClientId(clientId);
+					if (isPseudo) {
+						// 伪客户端（插件无头调用、定时调度任务、Canvas专用通道等）：严禁自动恢复并占有工作区历史会话，强制空白
+						createOpts = { blank: true };
+					} else if (this.clients.size > 0) {
 						try {
 							const sessionBaseDir = resolveWorkspaceSessionDir(this.stateStore.dataDir, cwd);
 							const recentPath = await findMostRecentSessionFileFast(sessionBaseDir, cwd);
@@ -1285,6 +1289,11 @@ export class AgentService {
 		for (const cs of this.clients.values()) void cs.pushSlashCommands();
 	}
 
+	/** 插件内联标记变化时由 index.ts 触发：重推各客户端 markers 与设置状态。 */
+	applyPluginMarkers(): void {
+		for (const cs of this.clients.values()) cs.refreshPluginMarkers();
+	}
+
 	/** 插件常驻后台任务变化时由 index.ts 触发：重推各客户端的 bg_servers。 */
 	refreshBackgroundServers(): void {
 		for (const cs of this.clients.values()) cs.refreshBgTasks();
@@ -1295,14 +1304,22 @@ export class AgentService {
 		const cs = this.clients.get(clientId);
 		if (cs) {
 			cs.detachSink(send);
-			// 最后一个 sink 断开 = 该客户端不再在线 → 它的行从「另一处」变成「另一处
-			// （离线）」。立刻让其他客户端重推一次补上离线标记；宽限期
-			// （OFFLINE_ROW_TTL_MS）到期后再推一次，行随之消失（issue #291 的
-			// 「残骸不永久占位」仍然成立）。
-			if (!AgentService.isPseudoClientId(clientId) && cs.sinkCount() === 0) {
-				this.offlineSince.set(clientId, Date.now());
-				this.pokeExternalRunning(clientId);
-				this.armOfflineRowExpiry(clientId, cs);
+			if (cs.sinkCount() === 0) {
+				if (clientId.startsWith("canvas:") || clientId.startsWith("canvas-")) {
+					// Canvas 辅助连接一旦关闭，立即从客户端池回收并释放资源，绝不残留
+					this.clients.delete(clientId);
+					void cs.dispose().catch(() => {});
+					return;
+				}
+				// 最后一个 sink 断开 = 该客户端不再在线 → 它的行从「另一处」变成「另一处
+				// （离线）」。立刻让其他客户端重推一次补上离线标记；宽限期
+				// （OFFLINE_ROW_TTL_MS）到期后再推一次，行随之消失（issue #291 的
+				// 「残骸不永久占位」仍然成立）。
+				if (!AgentService.isPseudoClientId(clientId)) {
+					this.offlineSince.set(clientId, Date.now());
+					this.pokeExternalRunning(clientId);
+					this.armOfflineRowExpiry(clientId, cs);
+				}
 			}
 		} else if (this.pending.has(clientId)) {
 			// 连接在 attach 异步创建期间断开：记录待 detach 的 sink，attach 完成后清理，避免死连接泄漏

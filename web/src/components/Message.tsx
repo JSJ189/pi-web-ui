@@ -77,9 +77,48 @@ const MAX_EDIT_UPLOAD_BYTES = 20 * 1024 * 1024;
 // ---------------------------------------------------------------------------
 
 const INLINE_MARKER_TOKEN_RE = /\[\[\s*([A-Za-z][A-Za-z0-9_-]*)\s*:\s*([A-Za-z][A-Za-z0-9_-]*)\s*:(.*?)\s*\]\]/g;
-const KNOWN_INLINE_MARKER_TOOLS = new Set(["todo", "notify", "conv", "rename", "title", "action", "suggest"]);
-const TRAILING_INCOMPLETE_INLINE_MARKER_RE =
-	/[ \t]*\[\[\s*(?:todo|notify|conv|rename|title|action|suggest)(?:\s*:[^\]]*)?$/i;
+const BUILTIN_INLINE_MARKER_TOOLS: ReadonlySet<string> = new Set([
+	"todo",
+	"notify",
+	"conv",
+	"rename",
+	"title",
+	"action",
+	"suggest",
+]);
+const KNOWN_INLINE_MARKER_TOOLS = new Set<string>(BUILTIN_INLINE_MARKER_TOOLS);
+
+function escapeRegExp(s: string): string {
+	return s.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+}
+
+function buildTrailingIncompleteRegex(tools: Set<string>): RegExp {
+	const pattern = [...tools].map(escapeRegExp).join("|");
+	return new RegExp(`[ \\t]*\\[\\[\\s*(?:${pattern})(?:\\s*:[^\\]]*)?$`, "i");
+}
+
+let trailingIncompleteInlineMarkerRe = buildTrailingIncompleteRegex(KNOWN_INLINE_MARKER_TOOLS);
+
+/** 同步当前已知的内联标记列表（通常随 settings.markers 更新）。 */
+export function syncKnownInlineMarkers(names: Iterable<string>): void {
+	const next = new Set<string>(BUILTIN_INLINE_MARKER_TOOLS);
+	for (const n of names) {
+		if (n) next.add(n.toLowerCase());
+	}
+	KNOWN_INLINE_MARKER_TOOLS.clear();
+	for (const n of next) KNOWN_INLINE_MARKER_TOOLS.add(n);
+	trailingIncompleteInlineMarkerRe = buildTrailingIncompleteRegex(KNOWN_INLINE_MARKER_TOOLS);
+}
+
+/** 动态注册一个已知的内联标记。 */
+export function registerKnownInlineMarker(name: string): void {
+	if (!name) return;
+	const lower = name.toLowerCase();
+	if (!KNOWN_INLINE_MARKER_TOOLS.has(lower)) {
+		KNOWN_INLINE_MARKER_TOOLS.add(lower);
+		trailingIncompleteInlineMarkerRe = buildTrailingIncompleteRegex(KNOWN_INLINE_MARKER_TOOLS);
+	}
+}
 
 /**
  * 剥离助手回复中的内联状态标记（与服务端 stripMarkers 同构）。
@@ -95,7 +134,7 @@ export function stripInlineMarkers(text: string, stripTrailingIncomplete = false
 		return "";
 	});
 	if (stripTrailingIncomplete) {
-		out = out.replace(TRAILING_INCOMPLETE_INLINE_MARKER_RE, "");
+		out = out.replace(trailingIncompleteInlineMarkerRe, "");
 	}
 	if (out === text) return text;
 	return out

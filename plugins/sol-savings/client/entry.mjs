@@ -564,12 +564,29 @@ function showModal(content, statusInfo) {
 						currentCfg.evidencePreservingReducerModel || "",
 					)}" />
 				</div>
+				<div style="grid-column: span 2;">
+					<button type="button" id="sol-epr-pick-model" style="padding: 4px 10px; font-size: 11px; border-radius: 4px; border: 1px solid var(--border,#444); background: rgba(255,255,255,0.08); color: inherit; cursor: pointer;">✨ 调起统一模型选择器点选...</button>
+				</div>
 			</div>
 		`;
 		const providerInput = advBox.querySelector("#sol-epr-provider");
 		const modelInput = advBox.querySelector("#sol-epr-model");
+		const pickModelBtn = advBox.querySelector("#sol-epr-pick-model");
 		providerInput.oninput = () => updateJsonPreview();
 		modelInput.oninput = () => updateJsonPreview();
+		if (pickModelBtn) {
+			pickModelBtn.onclick = async () => {
+				const host = globalThis.window?.__piWebUiHost;
+				if (typeof host?.pickModel !== "function") return;
+				const cur = modelInput.value.trim() || undefined;
+				const res = await host.pickModel({ currentModelId: cur });
+				if (res?.ok && res.modelId) {
+					modelInput.value = res.modelId;
+					if (res.provider) providerInput.value = res.provider;
+					updateJsonPreview();
+				}
+			};
+		}
 		inputsMap.evidencePreservingReducerProvider = providerInput;
 		inputsMap.evidencePreservingReducerModel = modelInput;
 

@@ -358,6 +358,8 @@ export class DiscordBotBridge {
 				conversationId,
 			};
 			if (workspace) chatReq.cwd = workspace;
+			if (cfg.model) chatReq.model = cfg.model;
+			if (cfg.thinkingLevel) chatReq.thinkingLevel = cfg.thinkingLevel;
 			await this.host.chat(chatReq);
 		} catch (err) {
 			this.log("warn", `Discord host.chat dispatch failed: ${err.message}`);
@@ -379,12 +381,22 @@ export class DiscordBotBridge {
 					"### 🤖 pi-web-ui Discord 机器人帮助",
 					"- 直接发送文本即可与 AI 助手对话，支持多轮上下文",
 					"- `/cwd [路径]` 或 `/workspace [路径]`：查看或切换当前项目根目录",
+					"- `/model`：查看当前配置的 AI 模型与思考强度",
 					"- `/clear` 或 `/new`：清空当前上下文，开启全新对话",
 					"- `/status`：查看机器人运行状态与指标",
 					"- `/help`：展示本帮助信息",
 				].join("\n");
 				await discordApi(cfg.botToken, "POST", `/channels/${channelId}/messages`, {
 					content: helpText,
+					message_reference: { message_id: replyToId },
+				}).catch(() => {});
+				return true;
+			}
+			case "/model": {
+				const currentModel = cfg.model || "(默认跟随全局)";
+				const currentThinking = cfg.thinkingLevel || "(跟随全局)";
+				await discordApi(cfg.botToken, "POST", `/channels/${channelId}/messages`, {
+					content: `### 🤖 当前模型与思考配置\n- 模型 (Model)：\`${currentModel}\`\n- 思考强度 (Thinking)：\`${currentThinking}\``,
 					message_reference: { message_id: replyToId },
 				}).catch(() => {});
 				return true;
@@ -607,6 +619,8 @@ export default async function activate(host) {
 						config: {
 							defaultChannelId: localConfig.defaultChannelId || "",
 							workspace: localConfig.workspace || "",
+							model: localConfig.model || "",
+							thinkingLevel: localConfig.thinkingLevel || "",
 							botEnabled: Boolean(localConfig.botEnabled),
 							allowedUsers: localConfig.allowedUsers || [],
 							hasBotToken: Boolean(secrets[SECRET_BOT_TOKEN] || localConfig.botToken),

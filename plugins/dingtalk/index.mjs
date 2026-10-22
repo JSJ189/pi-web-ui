@@ -217,6 +217,8 @@ export class DingtalkBotBridge {
 				conversationId,
 			};
 			if (workspace) chatReq.cwd = workspace;
+			if (cfg.model) chatReq.model = cfg.model;
+			if (cfg.thinkingLevel) chatReq.thinkingLevel = cfg.thinkingLevel;
 			await this.host.chat(chatReq);
 		} catch (err) {
 			this.log("warn", `DingTalk host.chat dispatch failed: ${err.message}`);
@@ -242,6 +244,7 @@ export class DingtalkBotBridge {
 					"### 🤖 钉钉机器人帮助",
 					"- 直接发送文本即可与 AI 助手对话，支持多轮上下文",
 					"- `/cwd [路径]` 或 `/workspace [路径]`：查看或切换当前项目根目录",
+					"- `/model`：查看当前配置的 AI 模型与思考强度",
 					"- `/clear` 或 `/new`：清空当前上下文，开启全新对话",
 					"- `/status`：查看机器人运行状态与指标",
 					"- `/help`：展示本帮助信息",
@@ -250,6 +253,22 @@ export class DingtalkBotBridge {
 					method: "POST",
 					headers: { "content-type": "application/json; charset=utf-8" },
 					body: JSON.stringify(buildDingtalkMessage({ msgType: "markdown", title: "钉钉机器人帮助", text: helpText })),
+				}).catch(() => {});
+				return true;
+			}
+			case "/model": {
+				const currentModel = cfg.model || "(默认跟随全局)";
+				const currentThinking = cfg.thinkingLevel || "(跟随全局)";
+				await fetch(sessionWebhook, {
+					method: "POST",
+					headers: { "content-type": "application/json; charset=utf-8" },
+					body: JSON.stringify(
+						buildDingtalkMessage({
+							msgType: "markdown",
+							title: "模型配置",
+							text: `### 🤖 当前模型与思考配置\n- 模型 (Model)：\`${currentModel}\`\n- 思考强度 (Thinking)：\`${currentThinking}\``,
+						}),
+					),
 				}).catch(() => {});
 				return true;
 			}
@@ -539,6 +558,8 @@ export default async function activate(host) {
 							robotCode: localConfig.robotCode || "",
 							webhookUrl: localConfig.webhookUrl || "",
 							workspace: localConfig.workspace || "",
+							model: localConfig.model || "",
+							thinkingLevel: localConfig.thinkingLevel || "",
 							botEnabled: Boolean(localConfig.botEnabled),
 							allowedSenders: localConfig.allowedSenders || [],
 							hasAppSecret: Boolean(secrets[SECRET_APP_SECRET]),

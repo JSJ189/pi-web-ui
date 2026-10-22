@@ -16,6 +16,9 @@ web/dist/
 # Editor data
 .vscode/
 
+# Git worktrees
+.worktrees/
+
 # Plugin dependencies (installed per-plugin)
 plugins/*/node_modules/
 

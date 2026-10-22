@@ -155,7 +155,7 @@ export function createSshManager({ host, log = () => {}, secrets }) {
 		let privateKey = { value: "", source: "plain" };
 		let agent = { value: "", source: "plain" };
 
-		if (method === "password") {
+		if (method === "password" || method === "secret") {
 			password = await resolveRef(a.password, { secrets, label: `${conn.name}.auth.password` });
 		} else if (method === "agent") {
 			agent = await resolveRef(a.agent, { secrets, label: `${conn.name}.auth.agent` });
@@ -234,9 +234,12 @@ export function createSshManager({ host, log = () => {}, secrets }) {
 		}
 	}
 
-	function dropAll() {
+	function dropAll(exceptCwd) {
 		// Map 迭代中删除当前项是安全的（不会跳过未访问的项）
-		for (const key of pool.keys()) drop(key);
+		for (const key of pool.keys()) {
+			if (exceptCwd && key.startsWith(`${exceptCwd}\u0000`)) continue;
+			drop(key);
+		}
 	}
 
 	function shorten(entry) {
@@ -317,19 +320,19 @@ export function createSshManager({ host, log = () => {}, secrets }) {
 				client.on("close", () => {
 					const cur = pool.get(key);
 					if (cur?.client === client) drop(key);
-			});
-			client.on("ready", () => {
-				client.sftp((err, sftp) => {
-					if (err) return fail(err);
-					settled = true;
-					resolve({ client, sftp });
 				});
-			});
-			try {
-				client.connect(opts);
-			} catch (err) {
-				fail(err);
-			}
+				client.on("ready", () => {
+					client.sftp((err, sftp) => {
+						if (err) return fail(err);
+						settled = true;
+						resolve({ client, sftp });
+					});
+				});
+				try {
+					client.connect(opts);
+				} catch (err) {
+					fail(err);
+				}
 			});
 
 			const entry = { ...opened, fp, key, lastUsed: Date.now(), alive: true, conn };
@@ -762,6 +765,7 @@ export function createSshManager({ host, log = () => {}, secrets }) {
 		resolveAuth,
 		drop,
 		dropAll,
+		_pool: pool,
 		depState: () => ({ ...dep }),
 		poolState: () =>
 			[...pool.values()].map((e) => ({

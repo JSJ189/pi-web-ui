@@ -206,10 +206,14 @@ const importPluginBundle = createScopedImporter((url) => import(/* @vite-ignore 
 export async function loadPluginBundleModule(p: UiPluginInfo, epoch: number): Promise<PluginFileHandlerModule | null> {
 	if (!p.hasClient || p.error) return null;
 	try {
-		const mod = (await importPluginBundle(p.id, pluginEntryUrl(p.id, epoch))) as {
+		const mod = (await importPluginBundle(p.id, pluginEntryUrl(p.id, epoch))) as PluginFileHandlerModule & {
 			default?: PluginFileHandlerModule;
 		};
-		return mod.default ?? null;
+		const candidate = mod.default ?? mod;
+		return {
+			...candidate,
+			fileHandlers: candidate.fileHandlers ?? mod.fileHandlers,
+		};
 	} catch (err) {
 		console.error(`[plugin:${p.id}] 客户端 bundle 加载失败:`, err);
 		return null;

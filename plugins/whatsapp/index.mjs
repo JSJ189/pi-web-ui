@@ -251,6 +251,8 @@ export class WhatsappBotBridge {
 				conversationId,
 			};
 			if (workspace) chatReq.cwd = workspace;
+			if (cfg.model) chatReq.model = cfg.model;
+			if (cfg.thinkingLevel) chatReq.thinkingLevel = cfg.thinkingLevel;
 			await this.host.chat(chatReq);
 		} catch (err) {
 			this.log("warn", `WhatsApp host.chat dispatch failed: ${err.message}`);
@@ -274,6 +276,7 @@ export class WhatsappBotBridge {
 					"",
 					"- Send any text message to chat with your AI assistant",
 					"- `/cwd [path]` or `/workspace [path]`: view or switch current workspace root",
+					"- `/model`: view current AI model and thinking level",
 					"- `/clear` or `/new`: reset context and start a fresh session",
 					"- `/status`: inspect bot connection and metrics",
 					"- `/help`: display this help guide",
@@ -283,6 +286,20 @@ export class WhatsappBotBridge {
 					cfg.phoneNumberId,
 					"/messages",
 					buildWhatsappPayload(senderPhone, helpText),
+				).catch(() => {});
+				return true;
+			}
+			case "/model": {
+				const currentModel = cfg.model || "(default follows host global)";
+				const currentThinking = cfg.thinkingLevel || "(follows global)";
+				await whatsappApi(
+					cfg.accessToken,
+					cfg.phoneNumberId,
+					"/messages",
+					buildWhatsappPayload(
+						senderPhone,
+						`🤖 *Current Model & Thinking Config*\n- Model: \`${currentModel}\`\n- Thinking Level: \`${currentThinking}\``,
+					),
 				).catch(() => {});
 				return true;
 			}
@@ -514,6 +531,8 @@ export default async function activate(host) {
 							phoneNumberId: localConfig.phoneNumberId || "",
 							defaultRecipient: localConfig.defaultRecipient || "",
 							workspace: localConfig.workspace || "",
+							model: localConfig.model || "",
+							thinkingLevel: localConfig.thinkingLevel || "",
 							botEnabled: Boolean(localConfig.botEnabled),
 							allowedUsers: localConfig.allowedUsers || [],
 							hasAccessToken: Boolean(secrets[SECRET_ACCESS_TOKEN] || localConfig.accessToken),

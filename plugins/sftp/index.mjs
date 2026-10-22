@@ -81,7 +81,7 @@ export default {
 		// 引擎的非致命降级（快扫/批量打包用不了）只报一次，不然每次同步都刷屏
 		onEngineNote((msg) => log(msg, "warn"));
 
-		/** @type {{running:boolean, kind:string, startedAt:number, phase:string, done:number, total:number, rel:string, bytes:number, scan:{side:string, files:number, dirs:number}, error:string, cancelled:boolean, reusedPlan:boolean, result:any}} */
+		/** @type {{running:boolean, kind:string, startedAt:number, phase:string, done:number, total:number, rel:string, bytes:number, scan:{side:string, files:number, dirs:number}, error:string, cancelled:boolean, reusedPlan:boolean, result:any, cwd?:string}} */
 		let job = {
 			running: false,
 			kind: "",
@@ -96,7 +96,10 @@ export default {
 			cancelled: false,
 			reusedPlan: false,
 			result: null,
+			cwd: "",
 		};
+		/** 每个项目最后一次完成/停止的任务结果（切工作区后按 cwd 取，避免把项目 A 的完成结果显示在项目 B 上） */
+		const lastResultsByCwd = new Map();
 		/** 当前任务的取消控制器（无任务时为 null）。**在扫描开始前就装上** —— 扫描也能停。 */
 		let jobCtrl = null;
 		/** @type {any} */
@@ -132,8 +135,8 @@ export default {
 		 * 读配置：项目文件里的 defaults 优先于全局设置（项目约定的排除规则不该被机器级开关改掉），
 		 * 只有文件里没写的字段才回落设置页。
 		 */
-		async function load(profile) {
-			const cwd = host.cwd;
+		async function load(profile, targetCwd = host.cwd) {
+			const cwd = targetCwd || host.cwd;
 			const settings = readSettings();
 			const snapshot = await readConfig(cwd);
 			const raw = snapshot.raw ?? {};
@@ -191,8 +194,9 @@ export default {
 			signal,
 			onScan,
 			reuseToken,
+			cwd = host.cwd,
 		} = {}) {
-			const loaded = await load(profile);
+			const loaded = await load(profile, cwd);
 			const conn = requireConn(loaded);
 			const cleanScope = ["all", "tree", "file"].includes(scope) ? scope : "all";
 			const policy = deletePolicy ?? conn.sync.delete ?? loaded.settings.delete;
@@ -224,6 +228,7 @@ export default {
 			});
 			plan.settings = loaded.settings;
 			plan.connection = publicConnection(conn);
+			plan.cwd = loaded.cwd;
 			lastPlan = plan;
 			planCache = {
 				token: `p${Date.now().toString(36)}${Math.floor(Math.random() * 1e6).toString(36)}`,
@@ -250,8 +255,12 @@ export default {
 			dryRun = false,
 			reuseToken,
 			signal: external,
+			cwd = host.cwd,
 		} = {}) {
-			if (job.running) throw new Error("已有同步任务在运行 —— 请先点「停止」或等它结束");
+			if (job.running) {
+				const diff = job.cwd && job.cwd !== (cwd || host.cwd) ? `（项目：${path.basename(job.cwd)}）` : "";
+				throw new Error(`已有同步任务在运行${diff} —— 请先点「停止」或等它结束`);
+			}
 			const ctrl = new AbortController();
 			// 外部信号（工具看门狗 / 调用方）与面板的取消按钮都归到同一个控制器上
 			const forward = () => ctrl.abort(external?.reason instanceof Error ? external.reason : new Error("已取消"));
@@ -259,7 +268,9 @@ export default {
 				if (external.aborted) forward();
 				else external.addEventListener("abort", forward, { once: true });
 			}
+			const runCwd = cwd || host.cwd;
 			job = {
+				cwd: runCwd,
 				running: true,
 				kind: dryRun ? "plan" : "sync",
 				startedAt: Date.now(),
@@ -284,6 +295,7 @@ export default {
 					deletePolicy,
 					signal: ctrl.signal,
 					reuseToken,
+					cwd: runCwd,
 					onScan: (p) => {
 						job.scan = { side: p.side, files: p.files, dirs: p.dirs };
 					},
@@ -322,6 +334,7 @@ export default {
 						`☁ 同步已停止（已完成 ${result.done.upload} 上传 / ${result.done.download} 下载，不丢文件）`,
 						`☁ Sync stopped (${result.done.upload} up / ${result.done.download} down already done, nothing lost)`,
 					);
+					lastResultsByCwd.set(runCwd, { ...job, running: false });
 					return { dryRun: false, plan, result, cancelled: true };
 				}
 				// 同步完顺手清老垃圾桶（保留天数由设置决定）
@@ -345,6 +358,7 @@ export default {
 						}`,
 					);
 				}
+				lastResultsByCwd.set(runCwd, { ...job, running: false });
 				return { dryRun: false, plan, result, planToken, reused: Boolean(reused) };
 			} catch (err) {
 				// 取消（含扫描中途取消）走「已停止」而不是报错：这是用户主动按的，不是故障
@@ -352,12 +366,14 @@ export default {
 					job.cancelled = true;
 					job.phase = "cancelled";
 					host.notify("warning", "☁ 已停止（已完成的文件保留）", "☁ Stopped (finished files are kept)");
+					lastResultsByCwd.set(runCwd, { ...job, running: false });
 					return { dryRun, plan: null, result: null, cancelled: true };
 				}
 				job.error = String(err?.message ?? err);
 				job.phase = "error";
 				// 失败也发通知（以前只有成功/部分失败发，断连一类直接抛错时界面上看不见）
 				host.notify("error", `☁ 同步失败：${job.error}`, `☁ Sync failed: ${job.error}`);
+				lastResultsByCwd.set(runCwd, { ...job, running: false });
 				throw err;
 			} finally {
 				external?.removeEventListener?.("abort", forward);
@@ -401,6 +417,30 @@ export default {
 			const loaded = await load();
 			const settings = loaded.settings;
 			const vscodeAvailable = await fsExists(path.join(loaded.cwd, ".vscode", "sftp.json"));
+			let activeJobState;
+			if (job.running) {
+				activeJobState = {
+					...job,
+					projectName: job.cwd ? path.basename(job.cwd) : "",
+					isCurrentProject: Boolean(job.cwd && job.cwd === loaded.cwd),
+				};
+			} else {
+				const lastForThisCwd = lastResultsByCwd.get(loaded.cwd);
+				activeJobState = lastForThisCwd
+					? {
+							...lastForThisCwd,
+							projectName: path.basename(loaded.cwd),
+							isCurrentProject: true,
+						}
+					: {
+							...job,
+							result: null,
+							cancelled: false,
+							error: "",
+							projectName: path.basename(loaded.cwd),
+							isCurrentProject: true,
+						};
+			}
 			return {
 				cwd: loaded.cwd,
 				configPath: path.join(".pi", "sftp.json"),
@@ -415,18 +455,20 @@ export default {
 				plaintext: settings.plaintextWarn ? plaintextCredentials(loaded.doc) : [],
 				dep: ssh.depState(),
 				pool: ssh.poolState(),
-				job: { ...job },
-				lastPlan: lastPlan
-					? {
-							profile: lastPlan.profile,
-							at: lastPlan.at ?? null,
-							summary: lastPlan.summary,
-							direction: lastPlan.direction,
-							scope: lastPlan.scope,
-							target: lastPlan.target,
-						}
-					: null,
+				job: activeJobState,
+				lastPlan:
+					lastPlan && (!lastPlan.cwd || lastPlan.cwd === loaded.cwd)
+						? {
+								profile: lastPlan.profile,
+								at: lastPlan.at ?? null,
+								summary: lastPlan.summary,
+								direction: lastPlan.direction,
+								scope: lastPlan.scope,
+								target: lastPlan.target,
+							}
+						: null,
 				vscodeImportAvailable: Boolean(vscodeAvailable) && !loaded.existed,
+				secrets: typeof host.secrets?.list === "function" ? host.secrets.list() : [],
 			};
 		}
 
@@ -448,6 +490,10 @@ export default {
 		};
 
 		route("GET", "/state", () => publicState());
+
+		route("GET", "/secrets", () => ({
+			secrets: typeof host.secrets?.list === "function" ? host.secrets.list() : [],
+		}));
 
 		route("POST", "/profile", async (req) => {
 			const body = req.body ?? {};
@@ -480,7 +526,11 @@ export default {
 			if (!name) throw new Error("缺 name");
 			if (typeof value !== "string" || !value) throw new Error("缺 value");
 			host.secrets.set(name, value);
-			return { name, ref: `\${secret:${name}}` };
+			return {
+				name,
+				ref: `\${secret:${name}}`,
+				secrets: typeof host.secrets?.list === "function" ? host.secrets.list() : [],
+			};
 		});
 
 		route("POST", "/test", async (req) => {
@@ -646,6 +696,7 @@ export default {
 				direction,
 				deletePolicy: "none",
 				dryRun: false,
+				cwd: loaded.cwd,
 			});
 			return {
 				direction,
@@ -879,10 +930,11 @@ export default {
 					lines.push("检测到 .vscode/sftp.json 且项目还没配置，可在面板点「导入」迁移。");
 				}
 				if (job.running) {
+					const diffProj = job.cwd && job.cwd !== host.cwd ? `（项目：${path.basename(job.cwd)}）` : "";
 					lines.push(
 						job.phase === "scan"
-							? `⚠ 正在扫描${job.scan.side === "remote" ? "远端" : "本地"}：${job.scan.files} 个文件 / ${job.scan.dirs} 个目录（action=cancel 可停）`
-							: `⚠ 正在${job.kind === "plan" ? "扫描" : "同步"}：${job.done}/${job.total}${job.rel ? ` · ${job.rel}` : ""}（action=cancel 可停）`,
+							? `⚠ 正在扫描${diffProj}${job.scan.side === "remote" ? "远端" : "本地"}：${job.scan.files} 个文件 / ${job.scan.dirs} 个目录（action=cancel 可停）`
+							: `⚠ 正在${diffProj}${job.kind === "plan" ? "扫描" : "同步"}：${job.done}/${job.total}${job.rel ? ` · ${job.rel}` : ""}（action=cancel 可停）`,
 					);
 				}
 				return lines.join("\n");
@@ -1208,39 +1260,44 @@ export default {
 				// 扫描阶段没有 done/total（那要等计划出来）—— 数字换成已扫到的文件数，
 				// 否则大树上会长时间显示冷冰冰的 `SFTP 0/0`，看着就像卡死了。
 				const scanning = st.running && (st.phase === "scan" || st.phase === "cancelling");
+				const projName = st.cwd ? path.basename(st.cwd) : "";
+				const isOtherProj = Boolean(st.running && projName && st.cwd !== host.cwd);
+				const prefix = isOtherProj ? `[${projName}] ` : "";
 				const label = st.running
 					? scanning
-						? `SFTP 扫描 ${st.scan.files}`
-						: `SFTP ${st.done}/${st.total}`
+						? `${prefix}SFTP 扫描 ${st.scan.files}`
+						: `${prefix}SFTP ${st.done}/${st.total}`
 					: BASE_LABEL.zh;
 				const labelEn = st.running
 					? scanning
-						? `SFTP scan ${st.scan.files}`
-						: `SFTP ${st.done}/${st.total}`
+						? `${prefix}SFTP scan ${st.scan.files}`
+						: `${prefix}SFTP ${st.done}/${st.total}`
 					: BASE_LABEL.en;
 				// 路径截断：hint 在服务端限 200 字符，超了会落一条运行时诊断
 				const rel = st.rel ? ` · ${String(st.rel).slice(0, 80)}` : "";
 				const sideZh = st.scan.side === "remote" ? "远端" : "本地";
+				const otherHintZh = isOtherProj ? `正在同步项目「${projName}」：` : "";
+				const otherHintEn = isOtherProj ? `Syncing project "${projName}": ` : "";
 				const hint = st.running
 					? scanning
-						? `正在扫描${sideZh}：已找到 ${st.scan.files} 个文件 / ${st.scan.dirs} 个目录（点击打开面板可停止）`
-						: `正在同步 ${st.done}/${st.total}${rel}（点击打开面板可停止）`
+						? `${otherHintZh}正在扫描${sideZh}：已找到 ${st.scan.files} 个文件 / ${st.scan.dirs} 个目录（点击打开面板可停止）`
+						: `${otherHintZh}正在同步 ${st.done}/${st.total}${rel}（点击打开面板可停止）`
 					: st.cancelled
 						? "上次同步已停止（点击打开面板）"
 						: st.error
 							? `上次同步失败：${String(st.error).slice(0, 120)}（点击打开面板）`
-							: lastPlan
+							: lastPlan && (!lastPlan.cwd || lastPlan.cwd === host.cwd)
 								? `最近计划：待传 ${lastPlan.summary.upload + lastPlan.summary.download}（点击打开面板）`
 								: "打开 SFTP 同步面板（尚未配置连接）";
 				const hintEn = st.running
 					? scanning
-						? `Scanning ${st.scan.side}: ${st.scan.files} files / ${st.scan.dirs} dirs so far (click to open the panel and stop)`
-						: `Syncing ${st.done}/${st.total}${rel} (click to open the panel to stop)`
+						? `${otherHintEn}Scanning ${st.scan.side}: ${st.scan.files} files / ${st.scan.dirs} dirs so far (click to open the panel and stop)`
+						: `${otherHintEn}Syncing ${st.done}/${st.total}${rel} (click to open the panel to stop)`
 					: st.cancelled
 						? "Last sync was stopped (click to open the panel)"
 						: st.error
 							? `Last sync failed: ${String(st.error).slice(0, 120)} (click to open the panel)`
-							: lastPlan
+							: lastPlan && (!lastPlan.cwd || lastPlan.cwd === host.cwd)
 								? `Last plan: ${lastPlan.summary.upload + lastPlan.summary.download} pending (click to open the panel)`
 								: "Open the SFTP sync panel (no connection configured yet)";
 				const sig = `${label}|${hint}`;
@@ -1256,25 +1313,16 @@ export default {
 		if (typeof badgeTimer.unref === "function") badgeTimer.unref();
 
 		const offCwd = host.onCwdChange?.((next) => {
-			log(`工作区切到 ${next}，断开旧连接`);
+			log(`工作区切到 ${next}`);
+			planCache = null;
+			if (job.running) {
+				log(`后台仍有同步任务在运行（项目：${job.cwd}），保持其连接并在后台继续执行`);
+				ssh.dropAll(job.cwd);
+				paintBadge();
+				return;
+			}
 			ssh.dropAll();
 			lastPlan = null;
-			planCache = null;
-			job = {
-				running: false,
-				kind: "",
-				startedAt: 0,
-				phase: "",
-				done: 0,
-				total: 0,
-				rel: "",
-				bytes: 0,
-				scan: { side: "", files: 0, dirs: 0 },
-				error: "",
-				cancelled: false,
-				reusedPlan: false,
-				result: null,
-			};
 			paintBadge();
 		});
 

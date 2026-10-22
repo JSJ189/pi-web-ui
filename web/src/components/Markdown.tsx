@@ -209,7 +209,7 @@ function PlainCodeBlock({ children, ...props }: JSX.IntrinsicElements["pre"]) {
 								{i + 1}
 							</span>
 						)}
-						<code className="code-line-body hljs">{nodes}</code>
+						<code className="code-line-body">{nodes}</code>
 					</div>
 				))}
 			</pre>

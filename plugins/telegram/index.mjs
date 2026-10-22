@@ -310,6 +310,8 @@ export class TelegramBotBridge {
 				conversationId,
 			};
 			if (workspace) chatReq.cwd = workspace;
+			if (cfg.model) chatReq.model = cfg.model;
+			if (cfg.thinkingLevel) chatReq.thinkingLevel = cfg.thinkingLevel;
 			await this.host.chat(chatReq);
 		} catch (err) {
 			this.log("warn", `Telegram host.chat dispatch failed: ${err.message}`);
@@ -338,6 +340,7 @@ export class TelegramBotBridge {
 					"",
 					"- 直接发送文本即可与 AI 助手对话，支持多轮上下文",
 					"- `/cwd [路径]` 或 `/workspace [路径]`：查看或切换当前项目根目录",
+					"- `/model`：查看当前配置的 AI 模型与思考强度",
 					"- `/clear` 或 `/new`：清空当前上下文，开启全新对话",
 					"- `/status`：查看机器人运行状态与指标",
 					"- `/help`：展示本帮助信息",
@@ -348,6 +351,21 @@ export class TelegramBotBridge {
 					{
 						chat_id: chatId,
 						text: helpText,
+						parse_mode: "Markdown",
+					},
+					{ apiBase: cfg.apiBase || "https://api.telegram.org" },
+				).catch(() => {});
+				return true;
+			}
+			case "/model": {
+				const currentModel = cfg.model || "(默认跟随全局)";
+				const currentThinking = cfg.thinkingLevel || "(跟随全局)";
+				await telegramApi(
+					cfg.botToken,
+					"sendMessage",
+					{
+						chat_id: chatId,
+						text: `🤖 *当前模型与思考配置*\n- 模型 (Model)：\`${currentModel}\`\n- 思考强度 (Thinking)：\`${currentThinking}\``,
 						parse_mode: "Markdown",
 					},
 					{ apiBase: cfg.apiBase || "https://api.telegram.org" },
@@ -619,6 +637,8 @@ export default async function activate(host) {
 							apiBase: localConfig.apiBase || "https://api.telegram.org",
 							defaultChatId: localConfig.defaultChatId || "",
 							workspace: localConfig.workspace || "",
+							model: localConfig.model || "",
+							thinkingLevel: localConfig.thinkingLevel || "",
 							botEnabled: Boolean(localConfig.botEnabled),
 							allowedUsers: localConfig.allowedUsers || [],
 							hasBotToken: Boolean(secrets[SECRET_BOT_TOKEN] || localConfig.botToken),

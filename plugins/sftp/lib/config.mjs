@@ -24,7 +24,7 @@ const DELETE_POLICIES = new Set(["none", "remote-only", "both"]);
 const COMPARE_MODES = new Set(["mtime+size", "size", "always"]);
 const CONFLICT_MODES = new Set(["newer", "local", "remote", "skip"]);
 const DIRECTIONS = new Set(["up", "down", "both"]);
-const AUTH_METHODS = new Set(["password", "key", "agent"]);
+const AUTH_METHODS = new Set(["password", "key", "agent", "secret"]);
 const SYMLINK_MODES = new Set(["skip", "follow"]);
 
 /** 默认排除：本地开发产物 + 本插件自身配置（`.pi` 里是机器/账号相关的东西，不该外传）。
@@ -157,7 +157,11 @@ export function normalizeConnection(name, raw, defaults = {}, warnings = []) {
 		warn(`auth.method「${method}」不认识，按内容自动判定`);
 		method = "";
 	}
-	if (!method) method = password ? "password" : agent ? "agent" : "key";
+	if (!method) {
+		if (password && String(password).startsWith("${secret:")) method = "secret";
+		else method = password ? "password" : agent ? "agent" : "key";
+	}
+	if (method === "secret" && !password) warn("选了加密机密但没配机密");
 	if (method === "password" && !password) warn("选了密码登录但没配密码");
 	// method 为 key 且未给路径时，会自动探测 ~/.ssh/ 默认密钥，无需报警
 

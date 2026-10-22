@@ -266,6 +266,7 @@ export function createMockHost(overrides) {
 	const uiArrangeOps = [];
 	let uiAutoId = 0;
 	const agentToolStore = [];
+	const markerStore = [];
 	const commandStore = [];
 	const routeStore = [];
 	const proxyStore = [];
@@ -311,6 +312,7 @@ export function createMockHost(overrides) {
 		abortRun: async () => okFalse("runAborter（运行中止未接入）"),
 		onConversationChanged: sub("onConversationChanged"),
 		registerAgentTool: (tool) => remember(agentToolStore, tool),
+		registerMarker: (marker) => remember(markerStore, marker),
 		dir: typeof overrides.dir === "string" ? overrides.dir : "/mock-workspace/.mock-plugin",
 		dataDir: typeof overrides.dataDir === "string" ? overrides.dataDir : "/mock-data",
 		cwd: typeof overrides.cwd === "string" ? overrides.cwd : "/mock-workspace",
@@ -520,6 +522,9 @@ export function createMockHost(overrides) {
 			// fake 状态活视图（注册表；注销即摘除；reset() 不动它们）。
 			get agentTools() {
 				return agentToolStore;
+			},
+			get markers() {
+				return markerStore;
 			},
 			get commands() {
 				return commandStore;

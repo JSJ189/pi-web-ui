@@ -38,8 +38,8 @@ describe("设置面板多引擎动态自适应（分区条件隐藏与模型中�
 	});
 
 	it("Claude 引擎下彻底隐藏一切无法生效的 Pi/DSH 独有分区", () => {
-		// 系统提示词：仅 isPi 可见
-		expect(SETTINGS_SRC).toMatch(/\.\.\.\(isPi\s*\?\s*\[\s*\{\s*id:\s*"prompt"/);
+		// 系统提示词：仅 isPi / isDsh 可见
+		expect(SETTINGS_SRC).toMatch(/\.\.\.\((?:isPi|isPi\s*\|\|\s*isDsh)\s*\?\s*\[\s*\{\s*id:\s*"prompt"/);
 
 		// 定时任务：仅 isPi 可见
 		expect(SETTINGS_SRC).toMatch(/\.\.\.\(isPi\s*\?\s*\[\s*\{\s*id:\s*"scheduler"/);

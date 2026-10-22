@@ -1,5 +1,5 @@
 import { describe, it, expect } from "vitest";
-import { parseXlsxSheets } from "../../server/office-parse.js";
+import { parsePptxSlides, parseXlsxSheets } from "../../server/office-parse.js";
 import { deflateRawSync } from "node:zlib";
 
 function createMockZip(files: Record<string, Buffer>): Buffer {
@@ -122,5 +122,60 @@ describe("Office Parse DoS & Zip Bomb Protection (#337)", () => {
 		expect(sheet.nRows).toBe(999999999);
 		// 验证内存中 rows 数组受到严格限制，绝未预分配 999999999 个空行
 		expect(sheet.rows.length).toBeLessThanOrEqual(500);
+	});
+
+	it("safely rejects oversized slide XML (>20MB) to prevent regex DoS", () => {
+		const hugeSlideXml = Buffer.alloc(21 * 1024 * 1024, 0x20);
+		hugeSlideXml.write(
+			'<?xml version="1.0"?><p:sld xmlns:p="http://schemas.openxmlformats.org/presentationml/2006/main"><p:cSld><p:spTree></p:spTree></p:cSld></p:sld>',
+			0,
+		);
+
+		const mockZip = createMockZip({
+			"ppt/presentation.xml": Buffer.from(
+				`<?xml version="1.0"?><p:presentation xmlns:p="http://schemas.openxmlformats.org/presentationml/2006/main" xmlns:r="http://schemas.openxmlformats.org/officeDocument/2006/relationships"><p:sldIdLst><p:sldId id="256" r:id="rId1"/></p:sldIdLst></p:presentation>`,
+				"utf8",
+			),
+			"ppt/_rels/presentation.xml.rels": Buffer.from(
+				`<?xml version="1.0"?><Relationships xmlns="http://schemas.openxmlformats.org/package/2006/relationships"><Relationship Id="rId1" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/slide" Target="slides/slide1.xml"/></Relationships>`,
+				"utf8",
+			),
+			"ppt/slides/slide1.xml": hugeSlideXml,
+		});
+
+		expect(() => parsePptxSlides(mockZip)).toThrow(/幻灯片内容过大/);
+	});
+
+	it("caps slide count at PPTX_MAX_SLIDES (500) without memory explosion", () => {
+		const presEntries: string[] = [];
+		const relsEntries: string[] = [];
+		const files: Record<string, Buffer> = {};
+
+		const slideTemplate = Buffer.from(
+			'<?xml version="1.0"?><p:sld xmlns:p="http://schemas.openxmlformats.org/presentationml/2006/main" xmlns:a="http://schemas.openxmlformats.org/drawingml/2006/main"><p:cSld><p:spTree><p:sp><p:txBody><a:p><a:r><a:t>Page</a:t></a:r></a:p></p:txBody></p:sp></p:spTree></p:cSld></p:sld>',
+			"utf8",
+		);
+
+		// 模拟 550 页幻灯片
+		for (let i = 1; i <= 550; i++) {
+			presEntries.push(`<p:sldId id="${255 + i}" r:id="rId${i}"/>`);
+			relsEntries.push(
+				`<Relationship Id="rId${i}" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/slide" Target="slides/slide${i}.xml"/>`,
+			);
+			files[`ppt/slides/slide${i}.xml`] = slideTemplate;
+		}
+
+		files["ppt/presentation.xml"] = Buffer.from(
+			`<?xml version="1.0"?><p:presentation xmlns:p="http://schemas.openxmlformats.org/presentationml/2006/main" xmlns:r="http://schemas.openxmlformats.org/officeDocument/2006/relationships"><p:sldIdLst>${presEntries.join("")}</p:sldIdLst></p:presentation>`,
+			"utf8",
+		);
+		files["ppt/_rels/presentation.xml.rels"] = Buffer.from(
+			`<?xml version="1.0"?><Relationships xmlns="http://schemas.openxmlformats.org/package/2006/relationships">${relsEntries.join("")}</Relationships>`,
+			"utf8",
+		);
+
+		const mockZip = createMockZip(files);
+		const slides = parsePptxSlides(mockZip);
+		expect(slides.length).toBe(500);
 	});
 });

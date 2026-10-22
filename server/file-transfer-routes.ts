@@ -36,8 +36,14 @@ export function registerFileTransferRoutes(
 		if (typeof raw !== "string" || raw === "@root") throw new Error("Invalid path");
 		const parsed = parseRemoteWorkspaceUri(cwd);
 		if (!parsed) throw new Error("Invalid remote workspace");
-		const trimmed = raw.trim();
-		if (!trimmed) {
+		let trimmed = raw.trim();
+		if (isRemoteWorkspaceUri(trimmed)) {
+			const parsedRaw = parseRemoteWorkspaceUri(trimmed);
+			if (parsedRaw) {
+				trimmed = parsedRaw.remotePath;
+			}
+		}
+		if (!trimmed || trimmed === ".") {
 			if (!allowRoot) throw new Error("Invalid path");
 			return parsed.remotePath;
 		}
