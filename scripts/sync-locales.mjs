@@ -128,7 +128,14 @@ async function loadOpenCc(repoRoot) {
 			hant: (text) => applyRules(hantBase(text), PUNCT_RULES),
 			hk: (text) => applyRules(applyRules(hkBase(text), hkPost), PUNCT_RULES),
 		};
-	} catch {
+	} catch (err) {
+		// OpenCC 缺失时回退到基于词汇表的规则转换，但必须明示：静默降级会让
+		// zh-TW/zh-HK 包带上未经转换的简体字（用户看不到原因）。
+		console.warn(
+			`[sync-locales] 警告：OpenCC 未加载（${err?.message ?? "未知错误"}），` +
+				`繁中包将回退到内置规则转换，可能有未转换的简体字残留。` +
+				`建议安装：npm i -D opencc-js`,
+		);
 		return null;
 	}
 }

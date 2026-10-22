@@ -17,7 +17,12 @@ if (!beforeDir || !afterDir) {
 	process.exit(2);
 }
 const ti = process.argv.indexOf("--threshold");
-const THRESHOLD = ti > 0 ? Number(process.argv[ti + 1]) : 0.0005;
+const rawThreshold = ti > 0 ? process.argv[ti + 1] : undefined;
+const THRESHOLD = rawThreshold === undefined ? 0.0005 : Number(rawThreshold);
+if (!Number.isFinite(THRESHOLD) || THRESHOLD < 0) {
+	console.error(`--threshold 必须是 >= 0 的数字，收到: ${rawThreshold}`);
+	process.exit(2);
+}
 const OUT_DIR = join(afterDir, "..", "diff");
 const oi = process.argv.indexOf("--only");
 const ONLY = oi > 0 && process.argv[oi + 1] ? process.argv[oi + 1].split(",") : null;

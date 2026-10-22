@@ -133,6 +133,9 @@ const ALL = [
 	"ssh-plugin-test",
 	"steer-queue-smoke",
 	"subagent-template-test",
+	// 子代理接管（#652 变体）：被接管页面已加载子代理工具但不再活跃时，
+	// 目录里不能再出现「已加载却永不激活」的死路条目（见 PATCH-B1 门控）。
+	"subagent-takeover-test",
 	"subagent-thinking-test",
 	"subagent-ui-context-test",
 	"switch-session-background-test",

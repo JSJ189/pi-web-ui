@@ -79,3 +79,5 @@ for (const w of banned) {
 	if (ks.length) report(`含 "${w}" ×${ks.length}: ${ks.slice(0, 4).join(", ")}`);
 }
 console.log(bad ? `\n共 ${bad} 項問題` : "\n通過基本驗證（key／佔位符／重複詞／禁用詞）");
+// 有問題必須非零退出：CI 里 verify 一直绿会让失效的繁中包悄悄发布。
+process.exit(bad > 0 ? 1 : 0);
