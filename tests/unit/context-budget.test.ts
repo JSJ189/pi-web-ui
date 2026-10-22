@@ -211,4 +211,20 @@ describe("context-budget", () => {
 		});
 		expect(resCompacting.needsCompaction).toBe(true);
 	});
+
+	it("大窗口换算出的 reserve 泄漏到小窗口时，不把水位打成负数", () => {
+		const messages: AgentMessage[] = [
+			{ role: "user", content: "short prompt" },
+			{ role: "assistant", content: [{ type: "text", text: "short answer" }] },
+		] as unknown as AgentMessage[];
+		const res = pruneContextHierarchically(messages, {
+			contextWindow: 128_000,
+			// 1_000_000 - 256_000，按大窗口换算后泄漏到 128K 窗口。
+			reserveTokens: 744_000,
+			softCap: 256_000,
+		});
+		expect(res.reachedTier1).toBe(false);
+		expect(res.needsCompaction).toBe(false);
+		expect(res.tier1.trimmedCount).toBe(0);
+	});
 });
