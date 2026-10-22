@@ -10,9 +10,9 @@
  */
 
 import { existsSync, mkdirSync } from "node:fs";
-import { resolve } from "node:path";
+import { resolve, sep } from "node:path";
 import type { CanvasEngineId, CanvasGraph, CanvasNode, ServerMessage } from "../protocol.js";
-import { saveCanvasGraph, loadCanvasGraph } from "./canvas-store.js";
+import { saveCanvasGraph, loadCanvasGraph, isSafeGraphId } from "./canvas-store.js";
 import { isInsideGitRepo, normalizeWirePath } from "../worktree-service.js";
 import { execFile } from "node:child_process";
 import { promisify } from "node:util";
@@ -53,7 +53,14 @@ export class CanvasOrchestrator {
 
 	/** 确保该节点所需的真实工作目录（支持 Worktree 隔离） */
 	async resolveNodeCwd(node: CanvasNode): Promise<string> {
-		const targetDir = node.cwd ? resolve(this.baseCwd, node.cwd) : this.baseCwd;
+		// 标识与路径白名单：node.id 用于 worktree 目录名与 git 分支名，node.cwd 必须落在工作区内。
+		if (!isSafeGraphId(node.id)) throw new Error(`Invalid canvas node id: ${JSON.stringify(node.id)}`);
+		const base = resolve(this.baseCwd);
+		const targetDir = node.cwd ? resolve(base, node.cwd) : base;
+		const basePrefix = base.endsWith(sep) ? base : base + sep;
+		if (targetDir !== base && !targetDir.startsWith(basePrefix)) {
+			throw new Error(`canvas node.cwd 越出工作区: ${JSON.stringify(node.cwd)}`);
+		}
 		if (!node.useWorktree) {
 			if (!existsSync(targetDir)) {
 				mkdirSync(targetDir, { recursive: true });
