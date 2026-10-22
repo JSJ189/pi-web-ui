@@ -984,11 +984,14 @@ export class ClientSession {
 		} else {
 			// 空闲时不唤醒 agent——排队为 nextTurn 上下文，下次对话自动可见。
 			void session
-				.sendCustomMessage({
-					customType: "terminal-bash-done",
-					content: [{ type: "text", text }],
-					display: true,
-				})
+				.sendCustomMessage(
+					{
+						customType: "terminal-bash-done",
+						content: [{ type: "text", text }],
+						display: true,
+					},
+					{ deliverAs: "nextTurn" },
+				)
 				.catch(() => {});
 		}
 	}
@@ -8596,8 +8599,8 @@ export class ClientSession {
 		} catch {
 			// ignore
 		}
+		const s = this.session;
 		try {
-			const s = this.session;
 			// Native slash commands (see NATIVE_COMMANDS) are executed here and
 			// never reach the SDK. Extension / skill / template commands fall
 			// through — AgentSession.prompt() handles those itself.
@@ -8987,18 +8990,21 @@ export class ClientSession {
 					(s as unknown as { _pendingNextTurnMessages: unknown[] })._pendingNextTurnMessages = [];
 				}
 			} else {
+				// 空闲提问：必须携带 deliverAs: "nextTurn"，将附件（图片、文件引用、视觉证据等）
+				// 注入 SDK 的 _pendingNextTurnMessages，并在随后的 s.prompt() 中由 SDK 作为上下文消息
+				// 传递给 LLM 并落盘（fixes #667）。严禁在此清空 _pendingNextTurnMessages。
 				for (const aside of asides) {
-					await s.sendCustomMessage(aside.message);
+					await s.sendCustomMessage(aside.message, { deliverAs: "nextTurn" });
 				}
 				if (asides.length > 0) {
 					this.flushSnapshot();
 				}
-				if (Array.isArray((s as unknown as { _pendingNextTurnMessages?: unknown[] })._pendingNextTurnMessages)) {
-					(s as unknown as { _pendingNextTurnMessages: unknown[] })._pendingNextTurnMessages = [];
-				}
 			}
 			if (promptAc.signal.aborted) {
 				conv.activePromptAc = undefined;
+				if (Array.isArray((s as unknown as { _pendingNextTurnMessages?: unknown[] })._pendingNextTurnMessages)) {
+					(s as unknown as { _pendingNextTurnMessages: unknown[] })._pendingNextTurnMessages = [];
+				}
 				// #492：同上——前置阶段的 abort 也必须给回执，不能静默黑洞。
 				this.emit({
 					type: "notice",
@@ -9062,6 +9068,11 @@ export class ClientSession {
 			}
 		} catch (err) {
 			conv.activePromptAc = undefined;
+			if (
+				Array.isArray((conv.session as unknown as { _pendingNextTurnMessages?: unknown[] })?._pendingNextTurnMessages)
+			) {
+				(conv.session as unknown as { _pendingNextTurnMessages: unknown[] })._pendingNextTurnMessages = [];
+			}
 			this.emit({
 				type: "notice",
 				level: "error",
