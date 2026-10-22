@@ -1542,9 +1542,9 @@ export class ClientSession {
 				(session.getAllTools?.() ?? [])
 					.filter(
 						(t) =>
-							typeof t?.namespace?.name === 'string' &&
-							t.namespace.name.startsWith('mcp__') &&
-							(t.exposure ?? 'codemode') === 'deferred',
+							typeof t?.namespace?.name === "string" &&
+							t.namespace.name.startsWith("mcp__") &&
+							(t.exposure ?? "codemode") === "deferred",
 					)
 					.map((t) => t.name),
 			);

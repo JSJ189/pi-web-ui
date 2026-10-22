@@ -392,7 +392,11 @@ export interface ActiveToolSet {
 	setActiveToolsByName(names: string[]): void;
 	/** 全量工具基线（含被禁用的）。SDK 会话自带；没有它就无法区分「从未有过」
 	 *  与「被禁用」，门控复原会失真，因此必选。 */
-	getAllTools(): Array<{ name: string }>;
+	getAllTools(): Array<{
+		name: string;
+		namespace?: { name?: string };
+		exposure?: string;
+	}>;
 }
 
 /**
@@ -490,14 +494,14 @@ export function applyAgentToolsGating(
 		const allToolsSnapshot = session.getAllTools?.() ?? [];
 		let hasDeferredMcp = false;
 		for (const t of allToolsSnapshot) {
-			const ns = t?.namespace?.name ?? '';
-			if (typeof ns !== 'string' || !ns.startsWith('mcp__')) continue;
-			const exp = t.exposure ?? 'codemode';
-			if (exp === 'direct' || exp === 'model-only') continue;
+			const ns = t?.namespace?.name ?? "";
+			if (typeof ns !== "string" || !ns.startsWith("mcp__")) continue;
+			const exp = t.exposure ?? "codemode";
+			if (exp === "direct" || exp === "model-only") continue;
 			names.delete(t.name);
-			if (exp === 'deferred') hasDeferredMcp = true;
+			if (exp === "deferred") hasDeferredMcp = true;
 		}
-		if (hasDeferredMcp && allNames.includes('tool_search') && !off.has('tool_search')) names.add('tool_search');
+		if (hasDeferredMcp && allNames.includes("tool_search") && !off.has("tool_search")) names.add("tool_search");
 		const filtered = filterToolsByPreset(names, preset);
 		const active = new Set(filtered);
 		const baseline = new Set(allNames);

@@ -634,7 +634,8 @@ export function reconcileOptimisticPromptEchoes(
 		return { tracker: nextTracker, state: incomingState };
 	}
 
-	const messages = staleEchoIds.size > 0 ? incomingState.messages.filter((m) => !staleEchoIds.has(m.id)) : [...incomingState.messages];
+	const messages =
+		staleEchoIds.size > 0 ? incomingState.messages.filter((m) => !staleEchoIds.has(m.id)) : [...incomingState.messages];
 	const nextState: UiState = {
 		...incomingState,
 		messages: appendEchoes.length > 0 ? [...messages, ...appendEchoes] : messages,

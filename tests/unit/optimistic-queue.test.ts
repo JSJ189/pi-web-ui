@@ -334,26 +334,20 @@ describe("前端排队与插队消息乐观更新与快照对账 (optimistic-que
 		expect(afterLanded.tracker.echoes).toHaveLength(0);
 
 		// 4. 服务端拒绝（error/warning 通知）→ 回滚气泡
-		const sent2 = recordOptimisticPromptEcho(
-			createOptimisticQueueTracker(),
-			makeBaseState({ isStreaming: false }),
-			{ text: "会被拒绝的消息", now: 2000 },
-		);
+		const sent2 = recordOptimisticPromptEcho(createOptimisticQueueTracker(), makeBaseState({ isStreaming: false }), {
+			text: "会被拒绝的消息",
+			now: 2000,
+		});
 		const rolled = rollbackUnconfirmedOptimisticAdds(sent2.tracker, sent2.state);
 		expect(rolled.state?.messages).toHaveLength(1);
 		expect(rolled.tracker.echoes).toHaveLength(0);
 
 		// 5. TTL 兜底：超过 OPTIMISTIC_ECHO_TTL_MS 仍未落账 → 气泡移除、跟踪清空
-		const sent3 = recordOptimisticPromptEcho(
-			createOptimisticQueueTracker(),
-			makeBaseState({ isStreaming: false }),
-			{ text: "落账慢的消息", now: 3000 },
-		);
-		const expired = reconcileOptimisticPromptEchoes(
-			sent3.tracker,
-			sent3.state!,
-			3000 + OPTIMISTIC_ECHO_TTL_MS + 1,
-		);
+		const sent3 = recordOptimisticPromptEcho(createOptimisticQueueTracker(), makeBaseState({ isStreaming: false }), {
+			text: "落账慢的消息",
+			now: 3000,
+		});
+		const expired = reconcileOptimisticPromptEchoes(sent3.tracker, sent3.state!, 3000 + OPTIMISTIC_ECHO_TTL_MS + 1);
 		expect(expired.state.messages).toHaveLength(1);
 		expect(expired.tracker.echoes).toHaveLength(0);
 	});
@@ -361,9 +355,7 @@ describe("前端排队与插队消息乐观更新与快照对账 (optimistic-que
 	it("基线计数防误消解：先前已有同文本消息时，回显气泡等待新落账的那一条", () => {
 		const stateWithDup = makeBaseState({
 			isStreaming: false,
-			messages: [
-				{ id: "u-1", role: "user", content: [{ type: "text", text: "你好" }], timestamp: 900 },
-			],
+			messages: [{ id: "u-1", role: "user", content: [{ type: "text", text: "你好" }], timestamp: 900 }],
 		});
 		const sent = recordOptimisticPromptEcho(createOptimisticQueueTracker(), stateWithDup, { text: "你好", now: 1000 });
 		expect(sent.tracker.echoes[0].baselineUserMsgMatches).toBe(1);
@@ -371,9 +363,7 @@ describe("前端排队与插队消息乐观更新与快照对账 (optimistic-que
 		// 快照仍只有 1 条同文本（旧快照在途）→ 不消解
 		const staleSnap = makeBaseState({
 			isStreaming: false,
-			messages: [
-				{ id: "u-1", role: "user", content: [{ type: "text", text: "你好" }], timestamp: 900 },
-			],
+			messages: [{ id: "u-1", role: "user", content: [{ type: "text", text: "你好" }], timestamp: 900 }],
 		});
 		const afterStale = reconcileOptimisticPromptEchoes(sent.tracker, staleSnap, 1100);
 		expect(afterStale.tracker.echoes).toHaveLength(1);
@@ -401,9 +391,7 @@ describe("前端排队与插队消息乐观更新与快照对账 (optimistic-que
 		const streamingSnap = makeBaseState({
 			isStreaming: true,
 			rev: 5,
-			messages: [
-				{ id: "u-1", role: "user", content: [{ type: "text", text: "初始问题" }], timestamp: 1000 },
-			],
+			messages: [{ id: "u-1", role: "user", content: [{ type: "text", text: "初始问题" }], timestamp: 1000 }],
 		});
 		const after = reconcileOptimisticPromptEchoes(sent.tracker, streamingSnap, 1100);
 		expect(after.state.messages.map((m) => m.id)).toEqual(["u-1"]); // echo 被剥离
