@@ -192,8 +192,13 @@ export default {
 				content = JSON.parse(await fs.readFile(foundConfig.fullPath, "utf-8"));
 			} catch {}
 			const isCubism4 = foundConfig.relPath.toLowerCase().endsWith(".model3.json") || content.Version === 3;
-			const rawName =
-				content.name || fallbackName || path.basename(foundConfig.fullPath).replace(/\.model(?:3)?\.json$/i, "");
+			// 模型包内 name 外部可控：剥掉 HTML 危险字符并限长，展示层仍会二次转义。
+			const rawName = String(
+				content.name || fallbackName || path.basename(foundConfig.fullPath).replace(/\.model(?:3)?\.json$/i, ""),
+			)
+				.trim()
+				.slice(0, 64)
+				.replace(/[<>&"']/g, "");
 			const expressions = [];
 			const motions = [];
 
