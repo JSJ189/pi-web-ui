@@ -482,6 +482,22 @@ export function applyAgentToolsGating(
 		// load_tools 是延迟加载模式下的脚手架工具：非延迟加载模式下绝不暴露给模型。
 		// 默认从候选集中剔除；仅当延迟加载开启且由 options.forceActive 显式指定时才加回。
 		names.delete(LOAD_TOOLS_TOOL_NAME);
+		// PATCH-B1: MCP 工具尊重 exposure——codemode/deferred/hidden 不进门控基线。
+		// 全集基线会把非 direct 的 MCP 工具强制激活（schema 全量注入每轮请求，pi 本体的
+		// tool_search 按需加载被绕过，实测 deferred 配置下 241 个工具回归全量）。
+		// 现交给 pi 本体机制管理；存在 deferred 工具时保活 tool_search 发现通道
+		// （用户在禁用名单显式关掉 tool_search 时尊重其选择）。options.forceActive 可越过。
+		const allToolsSnapshot = session.getAllTools?.() ?? [];
+		let hasDeferredMcp = false;
+		for (const t of allToolsSnapshot) {
+			const ns = t?.namespace?.name ?? '';
+			if (typeof ns !== 'string' || !ns.startsWith('mcp__')) continue;
+			const exp = t.exposure ?? 'codemode';
+			if (exp === 'direct' || exp === 'model-only') continue;
+			names.delete(t.name);
+			if (exp === 'deferred') hasDeferredMcp = true;
+		}
+		if (hasDeferredMcp && allNames.includes('tool_search') && !off.has('tool_search')) names.add('tool_search');
 		const filtered = filterToolsByPreset(names, preset);
 		const active = new Set(filtered);
 		const baseline = new Set(allNames);
