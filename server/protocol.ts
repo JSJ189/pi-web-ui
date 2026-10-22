@@ -1043,6 +1043,12 @@ export type ClientMessage =
 			openRecentSessionOnProjectSwitch?: boolean;
 			/** skill 全文注入名单（默认空 = 名录模式）。名单里的技能 {{skills}} 展开正文。 */
 			skillsFullText?: string[];
+			/** 技能名录单描述最大字符数截断（默认 250，0 = 不截断）。 */
+			skillsCatalogMaxDesc?: number;
+			/** 技能名录是否输出 location 物理路径（默认 false = 节省上下文并防止路径泄露）。 */
+			skillsCatalogShowLocation?: boolean;
+			/** 技能名录总字符预算（默认 20000，超限自动降级为紧凑 names-only 模式；0 = 不设限）。 */
+			skillsCatalogBudget?: number;
 			/** 子代理默认模型（"provider/id"；null/未设 = 子代理跟随主对话当前模型）。
 			 * 不改主会话模型，只在派生子代理时生效。 */
 			subagentDefaultModel?: string | null;
@@ -3188,6 +3194,12 @@ export interface UiSettingsState {
 	openRecentSessionOnProjectSwitch: boolean;
 	/** skill 全文注入名单（默认空 = 名录模式）：名单里的技能 {{skills}} 展开正文。 */
 	skillsFullText: string[];
+	/** 技能名录单描述最大字符数截断（默认 250，0 = 不截断）。 */
+	skillsCatalogMaxDesc: number;
+	/** 技能名录是否输出 location 物理路径（默认 false = 节省上下文并防止路径泄露）。 */
+	skillsCatalogShowLocation: boolean;
+	/** 技能名录总字符预算（默认 20000，超限自动降级为紧凑 names-only 模式；0 = 不设限）。 */
+	skillsCatalogBudget: number;
 	/** Vision bridge on/off (default on). Off → images are sent as-is. */
 	visionBridgeEnabled: boolean;
 	/** Preferred vision model as "provider/id", or null = auto-detect first. */

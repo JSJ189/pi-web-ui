@@ -151,13 +151,10 @@ describe("resolveSectionTexts — 各来源自动内容", () => {
 		expect(none.context).toBe("");
 	});
 
-	it("skills：XML 转义 + <available_skills>；空技能为空串", () => {
+	it("skills：紧凑名录单行格式 + <available_skills>；空技能为空串", () => {
 		const auto = resolveSectionTexts(inputs());
 		expect(auto.skills).toContain("<available_skills>");
-		expect(auto.skills).toContain("<name>mermaid</name>");
-		expect(buildSkillsText([{ name: "a&b<c", description: 'x"y', filePath: "p" }])).toContain(
-			"<name>a&amp;b&lt;c</name>",
-		);
+		expect(auto.skills).toContain("- mermaid: render mermaid diagrams");
 		expect(resolveSectionTexts(inputs({ skills: [] })).skills).toBe("");
 	});
 
@@ -296,20 +293,55 @@ describe("buildSkillsText 全文/名单模式", () => {
 		expect(t).toContain("### Skill: code-review");
 		expect(t).toContain("> Review code");
 		expect(t).toContain("# Review\nCheck this.");
-		expect(t).toContain("<name>no-body</name>");
+		expect(t).toContain("- no-body: No body");
 	});
 
 	it("名单模式：只注入名单里的技能", () => {
 		const t = buildSkillsText(skills, "en", ["no-body"]);
 		expect(t).not.toContain("### Skill: code-review");
-		expect(t).toContain("<name>code-review</name>");
-		expect(t).toContain("<name>no-body</name>");
+		expect(t).toContain("- code-review: Review code");
+		expect(t).toContain("- no-body: No body");
 		expect(buildSkillsText(skills, "en", ["code-review"])).toContain("### Skill: code-review");
 	});
 
 	it("空技能列表两种模式都返回空串", () => {
 		expect(buildSkillsText([], "en", true)).toBe("");
 		expect(buildSkillsText([], "zh")).toBe("");
+	});
+
+	it("描述截断、路径控制、预算降级与稳定排序", () => {
+		const unordered = [
+			{
+				name: "zebra",
+				description: "Zebra skill with a very long description that needs truncating",
+				filePath: "/custom/path/zebra.md",
+			},
+			{ name: "alpha", description: "Alpha skill", filePath: "/custom/path/alpha.md" },
+		];
+		// 1. 稳定字母序排序
+		const sortedText = buildSkillsText(unordered, "en");
+		const alphaIdx = sortedText.indexOf("- alpha:");
+		const zebraIdx = sortedText.indexOf("- zebra:");
+		expect(alphaIdx).toBeGreaterThan(0);
+		expect(zebraIdx).toBeGreaterThan(alphaIdx);
+
+		// 2. 默认不输出 location 路径
+		expect(sortedText).not.toContain("/custom/path/alpha.md");
+		expect(sortedText).not.toContain("location:");
+
+		// 3. showLocation 为 true 时输出 location 路径
+		const withLoc = buildSkillsText(unordered, "en", false, { showLocation: true });
+		expect(withLoc).toContain("- alpha: Alpha skill (location: /custom/path/alpha.md)");
+
+		// 4. 描述截断
+		const truncated = buildSkillsText(unordered, "en", false, { maxDesc: 15 });
+		expect(truncated).toContain("- zebra: Zebra skill ...");
+
+		// 5. 预算超限自动降级为紧凑模式（names-only）
+		const compact = buildSkillsText(unordered, "en", false, { budget: 100 });
+		expect(compact).toContain("- alpha\n- zebra");
+		expect(compact).not.toContain("Alpha skill");
+		expect(compact).toContain("compact name index enabled");
 	});
 });
 

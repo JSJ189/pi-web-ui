@@ -2160,6 +2160,10 @@ export const zh = {
 	skillFullTextLabel: "技能全文注入",
 	skillFullTextDesc: "把技能文件正文直接展开进系统提示词（单文件 8KB、总量 32KB 封顶），否则只列名录由模型按需读取",
 	skillFullTextShort: "全文",
+	skillsCatalogMaxDesc: "技能描述截断字符数",
+	skillsCatalogMaxDescTip: "名录中单条技能描述字符上限（默认 250，设为 0 表示不截断，截断后追加 ...）",
+	skillsCatalogShowLocation: "名录中包含物理文件路径",
+	skillsCatalogShowLocationTip: "默认关闭以节省 Token 并避免暴露本地路径。模型通过 skill 工具可按需自动定位加载。",
 	/* 派单卡片（delegate_task 专用渲染） */
 	delegateOpenSubagent: "查看子代理",
 	delegateSecTask: "任务",
@@ -4568,6 +4572,12 @@ export const en: Record<keyof typeof zh, string> = {
 	skillFullTextDesc:
 		"Expand skill file contents inline into the system prompt (8KB per file, 32KB total cap); otherwise only a catalog is listed and the model reads files on demand",
 	skillFullTextShort: "Full",
+	skillsCatalogMaxDesc: "Skill Description Limit",
+	skillsCatalogMaxDescTip:
+		"Max characters per skill description in catalog (default 250, 0 to disable; appends ... when truncated)",
+	skillsCatalogShowLocation: "Include File Path in Catalog",
+	skillsCatalogShowLocationTip:
+		"Disabled by default to save tokens and avoid leaking local paths. Models can resolve and load skills automatically via the skill tool.",
 	/* Delegate card (delegate_task dedicated rendering) */
 	delegateOpenSubagent: "Open subagent",
 	delegateSecTask: "Task",

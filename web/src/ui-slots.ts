@@ -495,18 +495,6 @@ export const BUILTIN_UI_ITEMS: BuiltinUiItem[] = [
 		align: "end",
 	},
 	{
-		id: "host:sound",
-		slot: "topbar.primary",
-		labelKey: "sound",
-		icon: "sound",
-		kind: "action",
-		order: 70,
-		group: "system",
-		// 低频（设一次就不动），且菜单里是完整的声音/通知面板
-		hidden: true,
-		align: "end",
-	},
-	{
 		id: "host:language",
 		slot: "topbar.primary",
 		labelKey: "language",

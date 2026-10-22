@@ -1,8 +1,17 @@
-import { existsSync, lstatSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import {
+	existsSync,
+	lstatSync,
+	mkdirSync,
+	mkdtempSync,
+	readFileSync,
+	rmSync,
+	symlinkSync,
+	writeFileSync,
+} from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
-import { linkPlugin, unlinkPlugin } from "../../scripts/link-plugins.mjs";
+import { cleanBrokenSymlinks, linkPlugin, unlinkPlugin } from "../../scripts/link-plugins.mjs";
 
 describe("scripts/link-plugins", () => {
 	let testDir: string;
@@ -47,5 +56,25 @@ describe("scripts/link-plugins", () => {
 		const unlinked = unlinkPlugin("my-plugin", { repoDir, targetDir });
 		expect(unlinked).toBe(true);
 		expect(lstatSync(dest).isSymbolicLink()).toBe(false);
+	});
+
+	it("cleans up broken symlinks pointing to non-existent targets", () => {
+		const isWin = process.platform === "win32";
+		const deadTarget = join(repoDir, "ghost-plugin");
+		const deadLink = join(targetDir, "ghost-plugin");
+
+		symlinkSync(deadTarget, deadLink, isWin ? "junction" : "dir");
+		expect(lstatSync(deadLink).isSymbolicLink()).toBe(true);
+		expect(existsSync(deadLink)).toBe(false);
+
+		const removed = cleanBrokenSymlinks({ targetDir });
+		expect(removed).toContain("ghost-plugin");
+		expect(existsSync(deadLink)).toBe(false);
+		try {
+			lstatSync(deadLink);
+			expect.unreachable("deadLink should have been removed");
+		} catch (err: any) {
+			expect(err.code).toBe("ENOENT");
+		}
 	});
 });

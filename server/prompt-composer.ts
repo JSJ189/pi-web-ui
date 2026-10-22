@@ -129,6 +129,12 @@ export interface PromptComposerInputs {
 	/** skill 全文注入名单（默认空 = 名录模式）。名单里的技能有 content 则按
 	 * 全文展开；无 content 的条目回落名录行。 */
 	skillsFullText?: readonly string[];
+	/** 技能名录单描述最大字符数截断（默认 250，0 = 不截断）。 */
+	skillsCatalogMaxDesc?: number;
+	/** 技能名录是否输出 <location> 物理路径行（默认 false = 节省上下文并防止路径泄露）。 */
+	skillsCatalogShowLocation?: boolean;
+	/** 技能名录总字符预算（默认 20000，超限自动降级为紧凑 names-only 模式）。 */
+	skillsCatalogBudget?: number;
 	/**
 	 * 服务端语言（issue #91）：面向模型的提示词段（soul / guidelines / pi_docs /
 	 * context / skills）按此选英文版/中文版。缺省 "en"（英文默认；非 zh 一律英文）。
@@ -216,64 +222,115 @@ function buildGuidelinesText(inputs: PromptComposerInputs): string {
 	return `${pick(lang, "指导原则：", "Guidelines:", "prompt.guidelines.title")}\n${lines.map((l) => `- ${l}`).join("\n")}`;
 }
 
-function escapeXml(s: string): string {
-	return s
-		.replace(/&/g, "&amp;")
-		.replace(/</g, "&lt;")
-		.replace(/>/g, "&gt;")
-		.replace(/"/g, "&quot;")
-		.replace(/'/g, "&apos;");
+/** 技能名录配置选项。 */
+export interface BuildSkillsTextOptions {
+	/** 单技能描述最大字符数截断（默认 250；<=0 表示不截断）。 */
+	maxDesc?: number;
+	/** 技能名录是否输出 <location> 物理路径行（默认 false）。 */
+	showLocation?: boolean;
+	/** 技能名录总字符预算（默认 20000 字符；<=0 表示不设上限）。超限自动降级为紧凑 names-only 模式。 */
+	budget?: number;
 }
 
-/** 技能段文本（不含前导空行）。与 SDK formatSkillsForPrompt 一致。
+/** 技能段文本（不含前导空行）。
  * fullText = true 全员全文注入（oh-my-pi 式：标题 + 引用描述 + body 全文）；
- * 传技能名数组 = 只注入名单里的；content 缺失的条目回落列表行，不中断渲染。 */
+ * 传技能名数组 = 只注入名单里的；content 缺失的条目回落列表行，不中断渲染。
+ * 默认名录采用紧凑单行格式（- name: desc），抛弃多层 XML 标签通胀与多行冗余，
+ * 默认不输出宿主 location 物理路径以节约 token 且避免路径泄露。 */
 export function buildSkillsText(
 	skills: PromptComposerInputs["skills"],
 	lang: ServerLang = "en",
 	fullText: boolean | readonly string[] = false,
+	options?: BuildSkillsTextOptions,
 ): string {
-	const visible = skills.filter((s) => !(s as { disableModelInvocation?: boolean }).disableModelInvocation);
+	const visible = skills
+		.filter((s) => !(s as { disableModelInvocation?: boolean }).disableModelInvocation)
+		.slice()
+		.sort((a, b) => a.name.localeCompare(b.name));
 	if (visible.length === 0) return "";
-	const lines = [
-		pick(
-			lang,
-			"以下技能为特定任务提供专门的指令。",
-			"The following skills provide specialized instructions for specific tasks.",
-			"prompt.skills.intro.specialized",
-		),
-		pick(
-			lang,
-			"当任务与某技能的描述相符时，用 skill 工具按名称加载该技能全文。",
-			"Use the skill tool to load a skill's full text by name when the task matches its description.",
-			"prompt.skills.intro.use.skill",
-		),
-		pick(
-			lang,
-			"当技能文件引用相对路径时，以技能目录（SKILL.md 的父目录 / 该路径的 dirname）为基准解析，并在工具命令中使用解析后的绝对路径。",
-			"When a skill file references a relative path, resolve it against the skill directory (parent of SKILL.md / dirname of the path) and use that absolute path in tool commands.",
-			"prompt.skills.intro.resolve.path",
-		),
-		"",
-		"<available_skills>",
-	];
-	for (const skill of visible) {
-		// 全文模式且有内容：oh-my-pi 注入格式（### Skill: 名 / > 描述 / 全文）。
-		const inject = fullText === true || (Array.isArray(fullText) && fullText.includes(skill.name));
-		if (inject && skill.content?.trim()) {
-			lines.push(`### Skill: ${skill.name}`);
-			if (skill.description.trim()) lines.push(`> ${skill.description.trim()}`);
-			lines.push("", skill.content.trim(), "");
-			continue;
+
+	const maxDesc = options?.maxDesc !== undefined ? options.maxDesc : 250;
+	const showLocation = options?.showLocation ?? false;
+	const budget = options?.budget !== undefined ? options.budget : 20000;
+
+	// 单行化并截断描述文本
+	const formatDesc = (desc: string): string => {
+		const singleLine = desc.replace(/[\r\n]+/g, " ").trim();
+		if (maxDesc > 0 && singleLine.length > maxDesc) {
+			return singleLine.length > 3 ? `${singleLine.slice(0, maxDesc - 3)}...` : singleLine.slice(0, maxDesc);
 		}
-		lines.push("  <skill>");
-		lines.push(`    <name>${escapeXml(skill.name)}</name>`);
-		lines.push(`    <description>${escapeXml(skill.description)}</description>`);
-		lines.push(`    <location>${escapeXml(skill.filePath)}</location>`);
-		lines.push("  </skill>");
+		return singleLine;
+	};
+
+	const renderCatalog = (compact: boolean): string[] => {
+		const lines = [
+			pick(
+				lang,
+				"以下技能为特定任务提供专门的指令。",
+				"The following skills provide specialized instructions for specific tasks.",
+				"prompt.skills.intro.specialized",
+			),
+			pick(
+				lang,
+				"当任务与某技能的描述相符时，用 skill 工具按名称加载该技能全文。",
+				"Use the skill tool to load a skill's full text by name when the task matches its description.",
+				"prompt.skills.intro.use.skill",
+			),
+			pick(
+				lang,
+				"当技能文件引用相对路径时，以技能目录（SKILL.md 的父目录 / 该路径的 dirname）为基准解析，并在工具命令中使用解析后的绝对路径。",
+				"When a skill file references a relative path, resolve it against the skill directory (parent of SKILL.md / dirname of the path) and use that absolute path in tool commands.",
+				"prompt.skills.intro.resolve.path",
+			),
+		];
+
+		if (compact) {
+			lines.push(
+				pick(
+					lang,
+					"（技能名录庞大已启用紧凑索引，仅显示名称。请使用 skill 工具按名称载入或查询）",
+					"(Skill catalog is large; compact name index enabled. Use the skill tool to inspect or load by name.)",
+					"prompt.skills.catalog.compact",
+				),
+			);
+		}
+
+		lines.push("", "<available_skills>");
+
+		for (const skill of visible) {
+			// 全文模式且有内容：oh-my-pi 注入格式（### Skill: 名 / > 描述 / 全文）。
+			const inject = fullText === true || (Array.isArray(fullText) && fullText.includes(skill.name));
+			if (inject && skill.content?.trim()) {
+				lines.push(`### Skill: ${skill.name}`);
+				if (skill.description.trim()) lines.push(`> ${skill.description.trim()}`);
+				lines.push("", skill.content.trim(), "");
+				continue;
+			}
+
+			if (compact) {
+				lines.push(`- ${skill.name}`);
+			} else {
+				const d = formatDesc(skill.description);
+				let line = `- ${skill.name}`;
+				if (d) line += `: ${d}`;
+				if (showLocation && skill.filePath) {
+					line += ` (location: ${skill.filePath})`;
+				}
+				lines.push(line);
+			}
+		}
+		lines.push("</available_skills>");
+		return lines;
+	};
+
+	const standardLines = renderCatalog(false);
+	const standardText = standardLines.join("\n");
+
+	if (budget > 0 && standardText.length > budget) {
+		return renderCatalog(true).join("\n");
 	}
-	lines.push("</available_skills>");
-	return lines.join("\n");
+
+	return standardText;
 }
 
 /** 项目上下文块（不含前导空行）。 */
@@ -362,7 +419,11 @@ export function resolveSectionTexts(inputs: PromptComposerInputs): Record<Prompt
 		terminal: inputs.terminalGuidance,
 		markers: inputs.markersGuidance,
 		context: buildContextText(inputs.contextFiles, lang),
-		skills: buildSkillsText(inputs.skills, lang, inputs.skillsFullText ?? false),
+		skills: buildSkillsText(inputs.skills, lang, inputs.skillsFullText ?? false, {
+			maxDesc: inputs.skillsCatalogMaxDesc,
+			showLocation: inputs.skillsCatalogShowLocation,
+			budget: inputs.skillsCatalogBudget,
+		}),
 		cwd: `Current working directory: ${cwd}`,
 	};
 }

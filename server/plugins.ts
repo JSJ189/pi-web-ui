@@ -3163,7 +3163,13 @@ export class PluginManager {
 			if (!ID_RE.test(name)) continue;
 			const dir = join(this.pluginsDir, name);
 			try {
-				if (!(await stat(dir)).isDirectory()) continue;
+				const st = await stat(dir);
+				if (!st.isDirectory()) continue;
+			} catch {
+				// 目录不存在（如失效的软链接）或非目录/不可访问，跳过
+				continue;
+			}
+			try {
 				const raw = await readFile(join(dir, "manifest.json"), "utf8");
 				// wantsDom 快照供静态门禁用（manifest 坏了 → JSON.parse 抛 → catch 跳过，旧快照残留无害：门禁只拦「快照里要且没授权」的）。
 				const m = JSON.parse(raw) as {

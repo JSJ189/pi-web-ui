@@ -30,6 +30,8 @@ import {
 	normalizeRetryMaxAttempts,
 	normalizeKeepRecentMessages,
 	normalizeSkillList,
+	normalizeSkillsCatalogBudget,
+	normalizeSkillsCatalogMaxDesc,
 	normalizeToolWatchdogTimeoutMs,
 	normalizeUiLayout,
 	settingsPresetToUi,
@@ -417,6 +419,9 @@ export class SettingsService {
 				disabledPlugins: [...(this.settings.disabledPlugins ?? [])],
 				uiLayout: normalizeUiLayout(this.settings.uiLayout),
 				skillsFullText: [...normalizeSkillList(this.settings.skillsFullText)],
+				skillsCatalogMaxDesc: this.settings.skillsCatalogMaxDesc,
+				skillsCatalogShowLocation: this.settings.skillsCatalogShowLocation,
+				skillsCatalogBudget: this.settings.skillsCatalogBudget,
 				// The composed system prompt actually in effect (read-only view).
 				effectiveSystemPrompt: promptSnap.full,
 				// 每个来源未覆盖时的默认（自动）内容（「各来源」行预览用）。
@@ -551,6 +556,9 @@ export class SettingsService {
 		devNoCache?: boolean;
 		autoReload?: boolean;
 		skillsFullText?: string[];
+		skillsCatalogMaxDesc?: number;
+		skillsCatalogShowLocation?: boolean;
+		skillsCatalogBudget?: number;
 		visionBridgeEnabled?: boolean;
 		visionBridgeModel?: string | null;
 		visionBridgePromptMode?: PromptMode;
@@ -753,6 +761,15 @@ export class SettingsService {
 		// composeInputs + 指导块追加），开关下一轮即生效，无需 reload runtime。
 		if (partial.skillsFullText !== undefined) {
 			this.settings.skillsFullText = normalizeSkillList(partial.skillsFullText);
+		}
+		if (partial.skillsCatalogMaxDesc !== undefined) {
+			this.settings.skillsCatalogMaxDesc = normalizeSkillsCatalogMaxDesc(partial.skillsCatalogMaxDesc);
+		}
+		if (partial.skillsCatalogShowLocation !== undefined) {
+			this.settings.skillsCatalogShowLocation = Boolean(partial.skillsCatalogShowLocation);
+		}
+		if (partial.skillsCatalogBudget !== undefined) {
+			this.settings.skillsCatalogBudget = normalizeSkillsCatalogBudget(partial.skillsCatalogBudget);
 		}
 		if (partial.visionBridgeEnabled !== undefined) {
 			this.settings.visionBridgeEnabled = partial.visionBridgeEnabled;

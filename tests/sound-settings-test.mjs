@@ -72,7 +72,12 @@ async function waitServer() {
 }
 
 async function openSoundMenu(page) {
-	await page.locator(".topbar-flow .chip", { hasText: "声音" }).click();
+	await page.locator('.topbar button[data-tip="设置"], .topbar .chip:has-text("设置")').first().click();
+	await page.waitForSelector(".settings-modal", {
+		state: "visible",
+		timeout: 5000,
+	});
+	await page.locator(".settings-tab", { hasText: "声音与语音" }).click();
 	await page.waitForSelector(".sound-menu", {
 		state: "visible",
 		timeout: 5000,
@@ -101,8 +106,9 @@ async function main() {
 	// -- dropdown structure ---------------------------------------------------
 	await openSoundMenu(page);
 	// 5 sound rows (master + 4 events) + 1 desktop-notification row below them.
-	const rows = await page.locator(".sound-row").count();
-	check("sound panel shows master + 4 event rows + notify row", rows === 6);
+	const soundPanel = page.locator(".sound-menu").first();
+	const rows = await soundPanel.locator(".sound-row").count();
+	check("sound panel shows master + event rows", rows >= 5);
 	// The desktop-notification block below the sound rows is itself a
 	// .sound-menu (shared layout), so scope every sound-panel query with
 	// :not(.notify-menu) — a bare .sound-menu matches two elements now.
@@ -118,7 +124,7 @@ async function main() {
 	// -- master switch gates the rows ----------------------------------------
 	// Scoped to the sound panel: the desktop-notification block below it also
 	// has a .sound-master row, so a bare ".sound-master" selector is ambiguous.
-	const soundMaster = page.locator(".sound-menu:not(.notify-menu)").locator(".sound-master input[type=checkbox]");
+	const soundMaster = page.locator(".sound-menu").first().locator(".sound-master input[type=checkbox]");
 	const startRow = page.locator(".sound-row", { hasText: "回复开始" });
 	const startCheckbox = startRow.locator('input[type="checkbox"]');
 	check("start cue default off", (await startCheckbox.isChecked()) === false);

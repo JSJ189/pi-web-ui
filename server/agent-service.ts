@@ -1827,6 +1827,9 @@ export class ClientSession {
 			contextFiles: src.contextFiles,
 			skills: effectiveSkills,
 			skillsFullText: showSkills ? normalizeSkillList(this.settingsSvc.current.skillsFullText) : [],
+			skillsCatalogMaxDesc: this.settingsSvc.current.skillsCatalogMaxDesc,
+			skillsCatalogShowLocation: this.settingsSvc.current.skillsCatalogShowLocation,
+			skillsCatalogBudget: this.settingsSvc.current.skillsCatalogBudget,
 		};
 	}
 
@@ -1855,12 +1858,16 @@ export class ClientSession {
 		catalogTools?: string[];
 	}): string | undefined {
 		const preset = src.preset ?? this.conv?.agentPreset ?? this.settingsSvc.current.defaultAgentPreset ?? "standard";
+		const showSkills = presetShowsSkillCatalog(preset);
+		const effectiveSkills = showSkills ? this.fillSkillContents(src.skills) : [];
 		return renderMainCompose(this.composeInputs(src), {
 			promptTemplate: this.settingsSvc.current.promptTemplate,
 			promptOverrides: this.settingsSvc.current.promptOverrides,
 			preset,
 			disabledToolCount: effectiveDisabledAgentTools(this.settingsSvc.current).length,
 			isLazy: src.lazy,
+			hasSkills: effectiveSkills.length > 0,
+			hasSkillsFullText: (this.settingsSvc.current.skillsFullText?.length ?? 0) > 0,
 		});
 	}
 

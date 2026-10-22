@@ -9,7 +9,7 @@
  * - scan 跳过坏 manifest；epoch 在 reload 后递增且重激活
  */
 import { describe, expect, it, beforeEach, afterEach } from "vitest";
-import { mkdtempSync, mkdirSync, writeFileSync, rmSync } from "node:fs";
+import { mkdtempSync, mkdirSync, writeFileSync, rmSync, symlinkSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
 import { PluginManager, type PluginToolEvent } from "../../server/plugins.js";
@@ -177,6 +177,27 @@ describe("PluginManager", () => {
 		makePlugin("broken", THROW_PLUGIN);
 		const third = await mgr.ensureLoaded();
 		expect(third.find((p) => p.id === "broken")?.error).toContain("boom");
+	});
+
+	it("scan 优雅跳过失效的死链/非目录，不误报 manifest 缺失", async () => {
+		makePlugin("valid", DEACT_PLUGIN);
+		const deadTarget = join(dir, "does-not-exist");
+		const deadLink = join(dir, "plugins", "broken-link");
+		try {
+			symlinkSync(deadTarget, deadLink, process.platform === "win32" ? "junction" : "dir");
+		} catch {
+			// POSIX 或某些环境回退
+			try {
+				symlinkSync(deadTarget, deadLink);
+			} catch {
+				/* 环境不支持软链接跳过 */
+			}
+		}
+
+		const list = await mgr.ensureLoaded();
+		// broken-link 不应被误当成坏插件（无 manifest.json 报错占位），而是直接跳过
+		expect(list.find((p) => p.id === "broken-link")).toBeUndefined();
+		expect(list.find((p) => p.id === "valid")?.active).toBe(true);
 	});
 
 	/** 回归：`pi-web-ui install --force` 会先 rm 再 cp，插件目录在安装窗口内不存在。
