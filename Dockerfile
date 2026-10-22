@@ -41,6 +41,9 @@ COPY --from=deps /app/node_modules ./node_modules
 COPY --from=build /app/dist ./dist
 COPY --from=build /app/web/dist ./web/dist
 ENV PI_WEB_PORT=8787
+# 数据目录必须指向挂载卷：默认 homedir(~/.pi-web) 落在容器可写层，
+# docker compose down 即丢失全部会话与设置。compose 已挂 pi-web-data:/app/.pi-web。
+ENV PI_WEB_DATA_DIR=/app/.pi-web
 EXPOSE 8787
 # Session data (per-client chat history) lives here — mount a volume.
 VOLUME ["/app/.pi-web"]

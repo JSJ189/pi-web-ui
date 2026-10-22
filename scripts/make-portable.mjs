@@ -27,9 +27,10 @@ const createZip = args.includes("--zip");
 const withGit = args.includes("--with-git") || process.env.PI_BUNDLE_PORTABLE_GIT === "1";
 const withNode = args.includes("--with-node") || process.env.PI_BUNDLE_PORTABLE_NODE === "1";
 
+// CVE-2025-66413（git clone NTLM 凭据泄露）修复版：git-for-windows 2.53.0(2) 起不受影响。
 const PORTABLE_GIT_URL =
-	"https://github.com/git-for-windows/git/releases/download/v2.48.1.windows.1/PortableGit-2.48.1-64-bit.7z.exe";
-const PORTABLE_GIT_FILE = "PortableGit-2.48.1-64-bit.7z.exe";
+	"https://github.com/git-for-windows/git/releases/download/v2.53.0.windows.2/PortableGit-2.53.0.2-64-bit.7z.exe";
+const PORTABLE_GIT_FILE = "PortableGit-2.53.0.2-64-bit.7z.exe";
 
 const PORTABLE_NODE_URL = "https://nodejs.org/dist/v22.19.0/node-v22.19.0-win-x64.zip";
 const PORTABLE_NODE_FILE = "node-v22.19.0-win-x64.zip";

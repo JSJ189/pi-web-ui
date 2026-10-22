@@ -12,7 +12,7 @@
  */
 
 import { spawn, spawnSync } from "node:child_process";
-import { randomBytes } from "node:crypto";
+import { createHash, randomBytes } from "node:crypto";
 import { chmodSync, createWriteStream, existsSync, mkdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { homedir, tmpdir } from "node:os";
 import { dirname, join } from "node:path";
@@ -212,8 +212,6 @@ TMP_DIR="$(mktemp -d /tmp/frps-install-XXXXXX)"
 echo "📦 架构: linux_\${FRP_ARCH}，正在下载 \${TAR_NAME}..."
 
 DOWNLOAD_URLS=(
-    "https://ghfast.top/https://github.com/fatedier/frp/releases/download/v\${FRP_VERSION}/\${TAR_NAME}"
-    "https://ghproxy.net/https://github.com/fatedier/frp/releases/download/v\${FRP_VERSION}/\${TAR_NAME}"
     "https://github.com/fatedier/frp/releases/download/v\${FRP_VERSION}/\${TAR_NAME}"
 )
 
@@ -233,6 +231,38 @@ if [ "$DOWNLOAD_SUCCESS" -ne 1 ]; then
     echo "❌ 下载 frp 失败，请检查网络或配置代理" >&2
     rm -rf "$TMP_DIR"
     exit 1
+fi
+
+echo "🔐 校验下载文件 SHA256..."
+for cu in \
+    "https://github.com/fatedier/frp/releases/download/v\${FRP_VERSION}/frp_\${FRP_VERSION}_sha256_checksums.txt" \
+    "https://github.com/fatedier/frp/releases/download/v\${FRP_VERSION}/frp_sha256_checksums.txt"; do
+    if curl -fsSL --connect-timeout 10 -m 30 "$cu" -o "$TMP_DIR/checksums.txt" 2>/dev/null; then
+        break
+    fi
+done
+if [ -s "$TMP_DIR/checksums.txt" ]; then
+    EXPECTED=""
+    while read -r h f; do
+        fname="\${f#*}"
+        if [ "$fname" = "$TAR_NAME" ] && [ "\${#h}" -eq 64 ]; then
+            EXPECTED="$h"
+            break
+        fi
+    done < "$TMP_DIR/checksums.txt"
+    if [ -n "$EXPECTED" ]; then
+        ACTUAL="$(sha256sum "$TMP_DIR/$TAR_NAME" | awk '{print $1}')"
+        if [ "$ACTUAL" != "$EXPECTED" ]; then
+            echo "❌ SHA256 校验失败，下载文件可能被篡改，已中止安装" >&2
+            rm -rf "$TMP_DIR"
+            exit 1
+        fi
+        echo "✅ SHA256 校验通过"
+    else
+        echo "⚠ 未在官方 checksums 中找到 \${TAR_NAME}，跳过校验"
+    fi
+else
+    echo "⚠ 未获取到官方 checksums 文件，跳过校验"
 fi
 
 echo "📂 解压并安装到 /usr/local/bin/frps..."
@@ -304,11 +334,37 @@ echo "==========================================================================
 
 /** 候选下载 URL 列表 */
 export function getFrpDownloadUrls(version, archiveName) {
-	return [
-		`https://github.com/fatedier/frp/releases/download/v${version}/${archiveName}`,
-		`https://ghfast.top/https://github.com/fatedier/frp/releases/download/v${version}/${archiveName}`,
-		`https://ghproxy.net/https://github.com/fatedier/frp/releases/download/v${version}/${archiveName}`,
+	// 只使用官方 GitHub 发布源：第三方代理镜像（ghfast.top/ghproxy.net 等）可能被
+	// 接管换包，配合 root 安装即供应链投毒。需要加速请自行配置 HTTP(S) 代理。
+	return [`https://github.com/fatedier/frp/releases/download/v${version}/${archiveName}`];
+}
+
+/** 从官方 release 的 checksums 文件解析指定归档的 SHA256（两种文件名都试）。 */
+export async function fetchFrpSha256(version, archiveName) {
+	const candidates = [
+		`https://github.com/fatedier/frp/releases/download/v${version}/frp_${version}_sha256_checksums.txt`,
+		`https://github.com/fatedier/frp/releases/download/v${version}/frp_sha256_checksums.txt`,
 	];
+	for (const url of candidates) {
+		try {
+			const res = await fetch(url, { redirect: "follow", signal: AbortSignal.timeout(30_000) });
+			if (!res.ok) continue;
+			const lines = (await res.text()).split(/\r?\n/);
+			for (const line of lines) {
+				const parts = line.trim().split(/\s+/);
+				if (parts.length >= 2 && /^[0-9a-f]{64}$/.test(parts[0]) && parts[1].replace(/^\*+/, "") === archiveName) {
+					return parts[0];
+				}
+			}
+		} catch {
+			// 尝试下一个候选
+		}
+	}
+	return null;
+}
+
+function sha256File(filePath) {
+	return createHash("sha256").update(readFileSync(filePath)).digest("hex");
 }
 
 /** 从多个镜像源下载文件 */
@@ -445,6 +501,28 @@ export async function ensureLocalFrpc({ dataDir, version = DEFAULT_FRP_VERSION, 
 
 	try {
 		await downloadFileWithFallback(urls, tmpArchive);
+		// 供应链守卫：无论来自哪个源，下载物必须与官方 SHA256 一致，否则拒绝安装。
+		const expectedSha = await fetchFrpSha256(version, arcName);
+		if (!expectedSha) {
+			rmSync(tmpArchive, { force: true });
+			throw new Error(
+				pick(
+					`无法获取 ${arcName} 的官方 SHA256 校验和，已拒绝无校验安装（请升级 FRP_VERSION 或检查网络）`,
+					`Official SHA256 checksum for ${arcName} unavailable; refusing unsigned install`,
+				),
+			);
+		}
+		const actualSha = sha256File(tmpArchive);
+		if (actualSha !== expectedSha) {
+			rmSync(tmpArchive, { force: true });
+			throw new Error(
+				pick(
+					`SHA256 校验失败（期望 ${expectedSha}，实际 ${actualSha}），下载文件可能被篡改，已中止安装`,
+					`SHA256 mismatch (expected ${expectedSha}, got ${actualSha}); download may be tampered, install aborted`,
+				),
+			);
+		}
+		console.log(pick(`✅ SHA256 校验通过`, `✅ SHA256 verified`));
 		console.log(pick(`📦 下载完成，正在解压提取 ${binName}...`, `📦 Download complete, extracting ${binName}...`));
 
 		if (isZip) {
