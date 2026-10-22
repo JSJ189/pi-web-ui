@@ -1533,7 +1533,24 @@ export class ClientSession {
 		};
 		if (!session || !this.lazyLoadingOn()) return empty;
 		try {
-			const names = this.allowedToolNames(session, conv).filter((n) => n !== LOAD_TOOLS_TOOL_NAME);
+			// PATCH-F1: 目录排除 MCP deferred 工具——「恒定全集」在 MCP deferred 后会把
+			// 数百个工具摘要常驻 tools 节（实测 318 工具时 2042→20854 chars，+75K tok/轮）。
+			// deferred 工具按设计不声明给模型，其发现走 mcp 网关（searchTools）与
+			// tool_search 的 BM25 元数据（零 schema 注入）；目录里列出它们违背 deferred
+			// 语义且每轮全价。目录其余部分仍恒定（MCP deferred 集合会话内固定），不影响前缀缓存。
+			const mcpDeferred = new Set(
+				(session.getAllTools?.() ?? [])
+					.filter(
+						(t) =>
+							typeof t?.namespace?.name === 'string' &&
+							t.namespace.name.startsWith('mcp__') &&
+							(t.exposure ?? 'codemode') === 'deferred',
+					)
+					.map((t) => t.name),
+			);
+			const names = this.allowedToolNames(session, conv).filter(
+				(n) => n !== LOAD_TOOLS_TOOL_NAME && !mcpDeferred.has(n),
+			);
 			const snippets: Record<string, string> = {};
 			const signatures: Record<string, string> = {};
 			for (const name of names) {
