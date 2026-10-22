@@ -715,7 +715,15 @@ export default {
 				}
 
 				const rawOut = args.outFile ? String(args.outFile).trim() : `tts_${Date.now()}.${defaultExt}`;
-				const outPath = path.isAbsolute(rawOut) ? rawOut : path.join(host.cwd, rawOut);
+				// outFile 外部可控（AI/命令/前端表单）：任何写法都必须落回 host.cwd 内，
+				//  防止 ../ 或绝对路径覆盖工作区外任意文件（持久化写面）。
+				const cwdBase = path.resolve(host.cwd);
+				const resolvedOut = path.isAbsolute(rawOut) ? path.resolve(rawOut) : path.resolve(cwdBase, rawOut);
+				const cwdPrefix = cwdBase.endsWith(path.sep) ? cwdBase : cwdBase + path.sep;
+				if (resolvedOut !== cwdBase && !resolvedOut.startsWith(cwdPrefix)) {
+					throw new Error(`outFile 越出工作区: ${JSON.stringify(rawOut)}`);
+				}
+				const outPath = resolvedOut;
 				await fs.writeFile(outPath, buf);
 
 				return { success: true, path: outPath, bytes: buf.length, engine, speaker };
