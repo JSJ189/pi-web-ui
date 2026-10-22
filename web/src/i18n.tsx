@@ -163,6 +163,7 @@ export const zh = {
 	placeholderStreaming: "智能体正在工作中…回车插队发送，或点「排队」等回答结束后发送",
 	placeholderStreamingQueued: "智能体正在工作中…回车或点「排队」，回答完全结束后发送（本引擎不支持插队）",
 	placeholderIdle: "给 pi 发送消息 — Enter 发送，/ 查看命令",
+	placeholderIdleMod: "给 pi 发送消息 — Ctrl+Enter 发送，/ 查看命令",
 	placeholderConnecting: "正在连接服务器…",
 	stopAgent: "停止智能体",
 	stop: "停止",
@@ -197,11 +198,13 @@ export const zh = {
 	supplement: "排队",
 	supplementTip: "加入队列：AI 回答完全结束后才发送（不打断）",
 	steerTip: "插队：立即发送，本回合马上响应（Enter）",
+	steerTipMod: "插队：立即发送，本回合马上响应（Ctrl+Enter）",
 	queueSteerTag: "插队",
 	queueFollowTag: "排队",
 	queueRemoveTip: "移除此排队消息",
 	queueRecallTip: "撤回并放回输入框（可编辑后重发）",
 	sendTip: "发送（Enter）",
+	sendTipMod: "发送（Ctrl+Enter）",
 	composerResize: "拖拽调整输入框高度（双击恢复默认）",
 	quickPhrases: "快捷短语",
 	quickPhrasesDesc: "输入框上方的一排常用短语按钮，点击即发送（会带上当前已选的文件附件，不清空输入框草稿）",
@@ -224,6 +227,10 @@ export const zh = {
 	preserveDraftAcrossConversations: "输入框文字跨对话保留",
 	preserveDraftAcrossConversationsDesc:
 		"开启：输入文字切换别的会话不清空，跨对话保留输入框文字；关闭：仅保留当前会话文字，切换其他会话时清空或显示该会话已保留文字，切回时恢复当前会话文字",
+	sendKeyMode: "输入框回车行为",
+	sendKeyModeDesc: "选择输入框中回车键是发送消息还是换行",
+	sendKeyEnter: "Enter 发送，Shift+Enter 换行",
+	sendKeyModEnter: "Enter 换行，Ctrl+Enter 发送",
 
 	/* slash commands */
 	slashCommands: "命令",
@@ -2493,6 +2500,7 @@ export const en: Record<keyof typeof zh, string> = {
 	placeholderStreamingQueued:
 		"The agent is working… press Enter or click Queue — delivered after the reply finishes (this engine cannot steer)",
 	placeholderIdle: "Message pi — Enter to send, / for commands",
+	placeholderIdleMod: "Message pi — Ctrl+Enter to send, / for commands",
 	placeholderConnecting: "Connecting to server…",
 	stopAgent: "Stop agent",
 	stop: "Stop",
@@ -2529,11 +2537,13 @@ export const en: Record<keyof typeof zh, string> = {
 	supplement: "Queue",
 	supplementTip: "Add to queue: sent only after the whole run finishes (no interruption)",
 	steerTip: "Steer: send right away — the current turn responds immediately (Enter)",
+	steerTipMod: "Steer: send right away — the current turn responds immediately (Ctrl+Enter)",
 	queueSteerTag: "Steer",
 	queueFollowTag: "Queued",
 	queueRemoveTip: "Remove this queued message",
 	queueRecallTip: "Recall into the input box for editing",
 	sendTip: "Send (Enter)",
+	sendTipMod: "Send (Ctrl+Enter)",
 	composerResize: "Drag to resize the input height (double-click to reset)",
 	quickPhrases: "Quick phrases",
 	quickPhrasesDesc:
@@ -2558,6 +2568,10 @@ export const en: Record<keyof typeof zh, string> = {
 	preserveDraftAcrossConversations: "Preserve composer text across conversations",
 	preserveDraftAcrossConversationsDesc:
 		"Enabled: typed text is kept in the input box when switching between conversations. Disabled: drafts are strictly isolated per conversation (clears or restores that conversation's draft on switch, restores on return)",
+	sendKeyMode: "Enter key behavior",
+	sendKeyModeDesc: "Choose whether pressing Enter sends the message or inserts a line break",
+	sendKeyEnter: "Enter to send, Shift+Enter for new line",
+	sendKeyModEnter: "Enter for new line, Ctrl+Enter to send",
 
 	/* slash commands */
 	slashCommands: "Commands",

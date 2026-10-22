@@ -36,6 +36,7 @@ import {
 import { getLastBrowserControlPages, pokeBrowserControl } from "../browser-control";
 import { getPluginComposerProvider, listPluginComposerProviders } from "../plugin-host";
 import { detectTouchFirstDevice } from "../touch-device";
+import { resolveEnterAction, useEffectiveSendKey } from "../composer-keys";
 import { resolveBackspaceMention } from "../chat-input-backspace";
 import { copyTextToClipboard } from "../use-copy-feedback";
 import { useImeCompositionGuard } from "../use-ime-composition-guard";
@@ -217,6 +218,9 @@ export const ChatInput = memo(function ChatInput({
 	const capabilities = useEngineCapabilities();
 	const effectivePlanMode = Boolean(planMode && capabilities.planMode);
 	const { locale } = useI18n();
+	/** 发送按键语义偏好（issue #664）：显式设置优先；未配置时触屏设备回落 mod-enter，桌面回落 enter */
+	const effectiveSendKey = useEffectiveSendKey(IS_TOUCH);
+	const isModEnter = effectiveSendKey === "mod-enter";
 	/** 打开模板库（对话中途也可随时取用提示词模板）。 */
 	const { openPicker } = useTemplates();
 	const slashDesc = (c: SlashCommandInfo) =>
@@ -1387,19 +1391,22 @@ export const ChatInput = memo(function ChatInput({
 			});
 			return;
 		}
-		// Enter semantics: on touch-first devices (soft keyboard, no physical
-		// Shift — see touch-device.ts) Enter inserts a newline and sending goes
-		// through the on-screen button (Ctrl/Cmd+Enter also sends). Everywhere
-		// else (desktop, incl. Windows 触屏笔记本) plain Enter sends.
-		if (e.key === "Enter") {
-			if (IS_TOUCH) {
-				// Plain Return → default textarea behavior (insert a line break).
-				if (!e.shiftKey && !(e.ctrlKey || e.metaKey)) return;
-			}
-			if (!e.shiftKey) {
-				e.preventDefault();
-				submit();
-			}
+		// Enter semantics (issue #664): 由 resolveEnterAction 结合偏好与设备类型统一判定。
+		const enterAction = resolveEnterAction({
+			key: e.key,
+			shiftKey: e.shiftKey,
+			ctrlKey: e.ctrlKey,
+			metaKey: e.metaKey,
+			isTouch: IS_TOUCH,
+			pref: effectiveSendKey,
+		});
+		if (enterAction === "send") {
+			e.preventDefault();
+			submit();
+			return;
+		}
+		if (enterAction === "newline") {
+			return;
 		}
 	};
 
@@ -1492,7 +1499,7 @@ export const ChatInput = memo(function ChatInput({
 							<button
 								type="button"
 								className="split-steer"
-								title={t("steerTip")}
+								title={isModEnter ? t("steerTipMod") : t("steerTip")}
 								aria-label={t("queueSteerTag")}
 								onClick={() => submit()}
 							>
@@ -1509,7 +1516,15 @@ export const ChatInput = memo(function ChatInput({
 				<button
 					type="button"
 					className="btn send"
-					title={!connected ? t("netDisconnected") : !sessionReady ? t("sessionInitializingNotice") : t("sendTip")}
+					title={
+						!connected
+							? t("netDisconnected")
+							: !sessionReady
+								? t("sessionInitializingNotice")
+								: isModEnter
+									? t("sendTipMod")
+									: t("sendTip")
+					}
 					disabled={!canSubmit}
 					onClick={() => submit()}
 				>
@@ -1857,7 +1872,9 @@ export const ChatInput = memo(function ChatInput({
 									: t("placeholderStreaming")
 								: effectivePlanMode
 									? t("placeholderPlanMode")
-									: t("placeholderIdle")
+									: isModEnter
+										? t("placeholderIdleMod")
+										: t("placeholderIdle")
 							: t("placeholderConnecting")
 					}
 					disabled={!connected}

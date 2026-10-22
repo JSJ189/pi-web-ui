@@ -90,6 +90,7 @@ import { THINKING_VALUES } from "../thinking-levels";
 import { formatTokenDraft, parseTokenInput } from "../token-input";
 import { useWideChat, saveChatWidthSettings, useHideModelRow, saveHideModelRowSettings } from "../chat-width-settings";
 import { usePresentAutoOpen, savePresentAutoOpen } from "../present-settings";
+import { type SendKey, saveSendKeyPref, useEffectiveSendKey } from "../composer-keys";
 import { useProjectTitle, saveTitleSettings } from "../title-settings";
 import { sanitizeWallpaperUrl, fileToWallpaperUrl, saveWallpaperSettings, useWallpaperSettings } from "../wallpaper";
 import { isZhLocale, useT, useI18n } from "../i18n";
@@ -1031,6 +1032,8 @@ export function SettingsModal({
 	// 宽屏聊天列开关（纯前端 localStorage，见 chat-width-settings.ts）。
 	const wideChat = useWideChat();
 	const hideModelRow = useHideModelRow();
+	// 输入框回车行为（纯前端 localStorage，见 composer-keys.ts）。
+	const effectiveSendKey = useEffectiveSendKey();
 	// present_files 卡片：AI 标了「先看这个」时要不要自动弹预览窗（纯前端偏好，localStorage）。
 	const presentAutoOpen = usePresentAutoOpen();
 	const projectTitle = useProjectTitle();
@@ -3948,6 +3951,17 @@ export function SettingsModal({
 										})
 									}
 								/>
+								<FieldRow label={t("sendKeyMode")} tip={t("sendKeyModeDesc")} htmlFor="send-key-mode">
+									<select
+										id="send-key-mode"
+										className="set-select"
+										value={effectiveSendKey}
+										onChange={(e) => saveSendKeyPref(e.target.value as SendKey)}
+									>
+										<option value="enter">{t("sendKeyEnter")}</option>
+										<option value="mod-enter">{t("sendKeyModEnter")}</option>
+									</select>
+								</FieldRow>
 								<ToggleRow
 									title={t("presentAutoOpen")}
 									tip={t("presentAutoOpenDesc")}
