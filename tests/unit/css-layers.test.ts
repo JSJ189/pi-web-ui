@@ -1,13 +1,16 @@
 /**
  * CSS 分层契约守卫（`@layer guard, base, theme;`）。
  *
- * 背景：分层重构前，`!important` 是唯一的跨文件夺权手段 —— 基线 `web/src/styles.css`
+ * 背景：分层重构前，叹号 important 是唯一的跨文件夺权手段 —— 基线 `web/src/styles.css`
  * 218 处、主题侧 613 处，主题为了压住基线只能层层加码，形成军备竞赛。
- * 分层后权重由**层序**决定（普通声明：后声明的层胜；`!important`：先声明的层胜），
- * 于是 base 正常写、theme 正常写、只有真正要压内联样式的例外才进 guard。
+ * 分层后权重由**层序**决定（普通声明：后声明的层胜；叹号 important：先声明的层胜），
+ * base 正常写、theme 正常写；要盖过主题或未分层三方库的结构性复位（代码行清零、
+ * 折叠态抹皮）走 styles.css 末尾「无层覆盖区」（无层普通声明天然胜过任何层内
+ * 普通声明，无需提权）；唯一剩下的叹号 important 是 mermaid（运行时往 SVG 写
+ * 内联 style，普通声明压不住），收在 `@layer guard`。
  *
  * 本守卫只做静态文本断言（不渲染、不依赖他人改完的分层顺序），
- * 目的是给后续改样式的人一道硬闸门：任何人重新引入 `!important` 都会红。
+ * 目的是给后续改样式的人一道硬闸门：任何人重新引入叹号 important 都会红。
  */
 import { readdirSync, readFileSync } from "node:fs";
 import { dirname, join, relative } from "node:path";
@@ -20,8 +23,9 @@ const THEMES_DIR = join(ROOT, "themes");
 const FLOW_BASE_CSS = join(THEMES_DIR, "bases", "flow-base.css");
 const CORE_DOC = join(ROOT, "docs", "architecture-core.md");
 
-/** 基线上限：只允许真正需要压内联样式（行内 style / 第三方 DOM）的极少数例外。 */
-const MAX_BASE_IMPORTANT = 25;
+/** 基线上限：唯一活口是 mermaid（运行时内联 style，见 styles.css 末尾 guard 块）。
+ * 其余复位需求一律走同层复合类提权，或文件末尾无层覆盖区，不得新增叹号 important。 */
+const MAX_BASE_IMPORTANT = 1;
 
 function readText(path: string): string {
 	return readFileSync(path, "utf8");
@@ -81,9 +85,9 @@ describe("CSS 分层契约（@layer guard, base, theme）", () => {
 		const count = countImportant(readText(STYLES_CSS));
 		expect(
 			count,
-			`web/src/styles.css 现有 ${count} 处 !important，上限 ${MAX_BASE_IMPORTANT}。` +
-				"新增 !important 前先想清楚是否该用分层：改权重请调层序（guard/base/theme）或用具体选择器，" +
-				"只有在必须压过内联 style / 第三方 DOM 时才写，并写明原因、放进 @layer guard。",
+			`web/src/styles.css 现有 ${count} 处 !important，上限 ${MAX_BASE_IMPORTANT}（唯一活口：mermaid 运行时内联 style）。` +
+				"新增 !important 前先想：同层内用复合类提权；盖主题/三方库普通声明用文件末尾无层覆盖区；" +
+				"只有运行时内联 style（如 mermaid d3 .style()）才配写，并写明原因、收进 @layer guard。",
 		).toBeLessThanOrEqual(MAX_BASE_IMPORTANT);
 	});
 

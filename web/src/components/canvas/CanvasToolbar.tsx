@@ -1,11 +1,12 @@
 /**
  * CanvasToolbar.tsx — 画布协作工作室顶部浮动控制栏。
  *
- * 功能区：工程管理 | 新增队友与模板 | 调度控制 | 视口缩放
+ * 功能区：工程管理 | 通用节点库 + 战队模板 | 调度控制 | 视口缩放
  */
 import { useState, useRef, useEffect } from "react";
-import type { CanvasGraph, CanvasGraphSummary } from "../../types";
+import type { CanvasGraph, CanvasGraphSummary, CanvasNodeRole } from "../../types";
 import { SQUAD_TEMPLATES } from "./CanvasTemplates";
+import { NODE_GROUPS, ROLE_METAS } from "./CanvasTypes";
 import {
 	FiPlus,
 	FiPlay,
@@ -28,7 +29,7 @@ interface CanvasToolbarProps {
 	graphList: CanvasGraphSummary[];
 	onSelectGraph: (id: string) => void;
 	onSave: () => void;
-	onAddNode: () => void;
+	onAddNode: (role?: CanvasNodeRole) => void;
 	onApplyTemplate: (templateGraph: CanvasGraph) => void;
 	onRunAll: () => void;
 	onStopAll: () => void;
@@ -37,6 +38,10 @@ interface CanvasToolbarProps {
 	onDeleteGraph: (id: string) => void;
 	onRenameGraph: (name: string) => void;
 	onFitView: () => void;
+	onUndo: () => void;
+	onRedo: () => void;
+	onDuplicate: () => void;
+	onAutoLayout: () => void;
 	zoom: number;
 	onZoomChange: (newZoom: number) => void;
 	onResetViewport: () => void;
@@ -57,6 +62,10 @@ export function CanvasToolbar({
 	onDeleteGraph,
 	onRenameGraph,
 	onFitView,
+	onUndo,
+	onRedo,
+	onDuplicate,
+	onAutoLayout,
 	zoom,
 	onZoomChange,
 	onResetViewport,
@@ -64,6 +73,7 @@ export function CanvasToolbar({
 }: CanvasToolbarProps) {
 	const [showSquadMenu, setShowSquadMenu] = useState(false);
 	const [showGraphMenu, setShowGraphMenu] = useState(false);
+	const [showNodeMenu, setShowNodeMenu] = useState(false);
 	const [renamingGraph, setRenamingGraph] = useState(false);
 	const [renameValue, setRenameValue] = useState("");
 	const [creatingGraph, setCreatingGraph] = useState(false);
@@ -71,12 +81,13 @@ export function CanvasToolbar({
 
 	const squadMenuRef = useRef<HTMLDivElement>(null);
 	const graphMenuRef = useRef<HTMLDivElement>(null);
+	const nodeMenuRef = useRef<HTMLDivElement>(null);
 	const renameInputRef = useRef<HTMLInputElement>(null);
 	const createInputRef = useRef<HTMLInputElement>(null);
 
 	// 点击外部关闭下拉菜单
 	useEffect(() => {
-		if (!showSquadMenu && !showGraphMenu) return;
+		if (!showSquadMenu && !showGraphMenu && !showNodeMenu) return;
 		const handleClick = (e: MouseEvent) => {
 			if (showSquadMenu && squadMenuRef.current && !squadMenuRef.current.contains(e.target as Node)) {
 				setShowSquadMenu(false);
@@ -84,10 +95,13 @@ export function CanvasToolbar({
 			if (showGraphMenu && graphMenuRef.current && !graphMenuRef.current.contains(e.target as Node)) {
 				setShowGraphMenu(false);
 			}
+			if (showNodeMenu && nodeMenuRef.current && !nodeMenuRef.current.contains(e.target as Node)) {
+				setShowNodeMenu(false);
+			}
 		};
 		document.addEventListener("mousedown", handleClick);
 		return () => document.removeEventListener("mousedown", handleClick);
-	}, [showSquadMenu, showGraphMenu]);
+	}, [showSquadMenu, showGraphMenu, showNodeMenu]);
 
 	// 自动聚焦重命名输入框
 	useEffect(() => {
@@ -262,11 +276,62 @@ export function CanvasToolbar({
 
 			<div className="canvas-toolbar-divider" />
 
-			{/* 添加数字员工与预设战队 */}
+			{/* 通用节点库 + 预设战队 */}
 			<div className="canvas-toolbar-group">
-				<button type="button" className="canvas-toolbar-btn primary" onClick={onAddNode} title="新增数字员工节点">
+				<button
+					type="button"
+					className="canvas-toolbar-btn primary"
+					onClick={() => onAddNode("coder")}
+					title="快速新增一个研发工程师节点，更多类型请点右侧节点库"
+				>
 					<FiPlus /> 新增队友
 				</button>
+
+				<div className="canvas-dropdown-wrap" ref={nodeMenuRef}>
+					<button
+						type="button"
+						className="canvas-toolbar-btn"
+						onClick={() => setShowNodeMenu(!showNodeMenu)}
+						title="通用节点库：触发 / 智能体 / 逻辑控制 / 工具数据 / 评估收尾（对标 LangGraph / n8n / Dify）"
+					>
+						节点库 ▾
+					</button>
+
+					{showNodeMenu && (
+						<div
+							className="canvas-dropdown-menu canvas-node-palette"
+							onPointerDown={(e) => e.stopPropagation()}
+							onMouseDown={(e) => e.stopPropagation()}
+							onWheel={(e) => e.stopPropagation()}
+						>
+							{NODE_GROUPS.map((g) => (
+								<div key={g.id} className="canvas-palette-group">
+									<div className="canvas-palette-group-title">{g.labelZh}</div>
+									{(Object.values(ROLE_METAS) as (typeof ROLE_METAS)[keyof typeof ROLE_METAS][])
+										.filter((m) => m.group === g.id)
+										.map((m) => (
+											<button
+												key={m.role}
+												type="button"
+												className="canvas-dropdown-item"
+												onClick={() => {
+													onAddNode(m.role);
+													setShowNodeMenu(false);
+												}}
+												title={m.blurb}
+											>
+												<b>
+													<span style={{ marginRight: 6 }}>{m.icon}</span>
+													{m.labelZh}
+												</b>
+												<small>{m.blurb}</small>
+											</button>
+										))}
+								</div>
+							))}
+						</div>
+					)}
+				</div>
 
 				<div className="canvas-dropdown-wrap" ref={squadMenuRef}>
 					<button
@@ -320,6 +385,23 @@ export function CanvasToolbar({
 
 				<button type="button" className="canvas-toolbar-btn" onClick={onResetStatus} title="重置全队状态为待命 (idle)">
 					<FiRotateCcw /> 复位
+				</button>
+			</div>
+
+			<div className="canvas-toolbar-divider" />
+
+			<div className="canvas-toolbar-group">
+				<button type="button" className="canvas-toolbar-btn" onClick={onUndo} title="撤销 (Ctrl+Z)">
+					↩
+				</button>
+				<button type="button" className="canvas-toolbar-btn" onClick={onRedo} title="重做 (Ctrl+Shift+Z)">
+					↪
+				</button>
+				<button type="button" className="canvas-toolbar-btn" onClick={onDuplicate} title="复制选中节点 (Ctrl+D)">
+					⧉
+				</button>
+				<button type="button" className="canvas-toolbar-btn" onClick={onAutoLayout} title="一键自动布局">
+					⛶
 				</button>
 			</div>
 

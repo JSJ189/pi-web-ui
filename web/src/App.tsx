@@ -2757,6 +2757,7 @@ export function App() {
 					<div className={`view-pane ${view === "canvas" ? "" : "hidden"}`}>
 						<CanvasStudio
 							send={send}
+							active={view === "canvas"}
 							models={chat.models}
 							defaultModel={chat.defaultModel}
 							projects={chat.projects}

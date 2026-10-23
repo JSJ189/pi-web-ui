@@ -469,9 +469,48 @@ export interface PromptAttachment {
 }
 
 export type CanvasEngineId = "pi" | "dsh" | "claude" | "durable";
-export type CanvasNodeRole = "architect" | "coder" | "reviewer" | "tester" | "devops" | "custom";
+export type CanvasNodeRole =
+	| "architect"
+	| "coder"
+	| "reviewer"
+	| "tester"
+	| "devops"
+	| "custom"
+	// —— 通用工作流节点（对标 LangGraph / n8n / Dify / Coze 前沿范式）——
+	| "trigger"
+	| "planner"
+	| "researcher"
+	| "writer"
+	| "analyst"
+	| "condition"
+	| "loop"
+	| "human"
+	| "knowledge"
+	| "tool"
+	| "code"
+	| "api"
+	| "merge"
+	| "memory"
+	| "evaluator"
+	| "end"
+	| "subflow"
+	| "cron"
+	| "webhook"
+	| "transform";
 export type CanvasNodeStatus = "idle" | "queued" | "running" | "waiting_approval" | "done" | "error" | "paused";
-export type CanvasEdgeType = "handoff" | "review" | "parallel";
+export type CanvasEdgeType =
+	"handoff" | "review" | "parallel" | "condition_true" | "condition_false" | "loop_back" | "approve" | "reject";
+
+export type CanvasNodeLogKind =
+	"prompt" | "text" | "tool" | "error" | "steer" | "handoff" | "review" | "system" | "done";
+
+export interface CanvasNodeLogEntry {
+	id: string;
+	ts: number;
+	kind: CanvasNodeLogKind;
+	text: string;
+	toolName?: string;
+}
 
 export interface CanvasNode {
 	id: string;
@@ -487,6 +526,10 @@ export interface CanvasNode {
 	cwd: string;
 	useWorktree: boolean;
 	systemPromptOverride?: string;
+	/** 本轮任务指令（AI 可输入）：启动节点时优先于 systemPromptOverride，可用 {{上游摘要}} 引用上游产物 */
+	instruction?: string;
+	/** 通用工作流节点的可视化配置（条件表达式 / 循环次数 / 工具名 / API 地址等），键值均为标量 */
+	config?: Record<string, string | number | boolean | undefined>;
 	status: CanvasNodeStatus;
 	activeConvId?: string;
 	currentAction?: string;
@@ -494,11 +537,17 @@ export interface CanvasNode {
 	error?: string;
 }
 
+export type CanvasPortKey = string;
+
 export interface CanvasEdge {
 	id: string;
 	sourceNodeId: string;
 	targetNodeId: string;
 	type: CanvasEdgeType;
+	/** 源端子：result=主交付（默认） true/false=条件分支 approve/reject=审批裁决。缺省=历史单端口边，按 result 处理。 */
+	sourcePort?: CanvasPortKey;
+	/** 目标端子：contract=任务契约（默认） instruction=AI指令 system=角色规约 config=控制参数。缺省=contract。 */
+	targetPort?: CanvasPortKey;
 	label?: string;
 	maxLoopRetries?: number;
 	currentLoopCount?: number;
@@ -516,6 +565,8 @@ export interface CanvasGraph {
 	executionMode?: "real" | "simulate";
 	createdAt: number;
 	updatedAt: number;
+	/** 拓扑代次：每次全量保存 +1；运行态落盘不推进，只做合并写回，防 stale 回滚（F1） */
+	rev?: number;
 }
 
 export interface CanvasGraphSummary {
@@ -531,7 +582,7 @@ export type ClientMessage =
 	// -- canvas studio (多引擎多模型多目录画布协作工作室) --------------------
 	| { type: "canvas_list" }
 	| { type: "canvas_load"; id: string }
-	| { type: "canvas_save"; graph: CanvasGraph }
+	| { type: "canvas_save"; graph: CanvasGraph; baseRev?: number; requestId?: string }
 	| { type: "canvas_delete"; id: string }
 	| { type: "canvas_run_all"; graphId: string; initialPrompt?: string }
 	| { type: "canvas_run_node"; graphId: string; nodeId: string; prompt?: string }
@@ -540,6 +591,8 @@ export type ClientMessage =
 	| { type: "canvas_steer_node"; graphId: string; nodeId: string; message: string }
 	| { type: "canvas_review_node"; graphId: string; nodeId: string; decision: "approve" | "reject"; comment?: string }
 	| { type: "canvas_reset_status"; graphId: string }
+	| { type: "canvas_get_log"; graphId: string; nodeId: string }
+	| { type: "canvas_clear_log"; graphId: string; nodeId: string }
 	/** Browser UI language changed (or first report after hello) — server
 	 *  persists it per client and uses it for tool return values / AI-facing
 	 *  prompts. "zh" (zh-CN/…) → Chinese; anything else → English
@@ -3331,12 +3384,43 @@ export type ServerMessage =
 			graph: CanvasGraph;
 	  }
 	| {
+			type: "canvas_error";
+			code: "rev_conflict" | "not_found";
+			message: string;
+			graphId?: string;
+			graph?: CanvasGraph;
+			requestId?: string;
+	  }
+	| {
 			type: "canvas_node_event";
 			graphId: string;
 			nodeId: string;
 			event: "started" | "progress" | "action" | "done" | "error" | "paused";
 			currentAction?: string;
 			summary?: string;
+			error?: string;
+	  }
+	| {
+			type: "canvas_node_log";
+			graphId: string;
+			nodeId: string;
+			entry: CanvasNodeLogEntry;
+	  }
+	| {
+			type: "canvas_node_log_state";
+			graphId: string;
+			nodeId: string;
+			entries: CanvasNodeLogEntry[];
+			/** 复用的对话流消息（与主对话同构 UiMessage[]，抽屉直接复用 Message 组件渲染） */
+			messages: UiMessage[];
+	  }
+	| {
+			type: "canvas_node_messages";
+			graphId: string;
+			nodeId: string;
+			messages?: UiMessage[];
+			appended?: UiMessage[];
+			streaming?: boolean;
 			error?: string;
 	  }
 	| {

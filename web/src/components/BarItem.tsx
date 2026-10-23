@@ -20,7 +20,7 @@ import {
 	FiSun,
 	FiTerminal,
 } from "react-icons/fi";
-import { LuFlaskConical, LuMessageSquareDashed } from "react-icons/lu";
+import { LuFlaskConical, LuMessageSquareDashed, LuWorkflow } from "react-icons/lu";
 import { REQUIRED_TOPBAR_ITEM_IDS, restoreUiItem, type UiSlotEntry, type UiSlotId } from "../ui-slots";
 import type { ChatState } from "../use-chat";
 import { useFormattedCost } from "../cost-format";
@@ -184,7 +184,9 @@ export function BarItem({
 		const hideItem = () => {
 			const hidden = new Set(layout?.hidden ?? []);
 			hidden.add(entry.id);
-			appSend({ type: "set_settings", uiLayout: { ...layout, hidden: [...hidden] } });
+			// shown 后于 hidden 生效（见 buildUiSlots）：不清掉 shown，隐藏会被顶掉而无效。
+			const shown = (layout?.shown ?? []).filter((x) => x !== entry.id);
+			appSend({ type: "set_settings", uiLayout: { ...layout, hidden: [...hidden], shown } });
 		};
 		const restoreItem = () => {
 			appSend({ type: "set_settings", uiLayout: restoreUiItem(layout, entry.id) });
@@ -843,7 +845,7 @@ export function BarItem({
 			onClick = () => onViewChange?.("git");
 			break;
 		case "host:canvas":
-			iconNode = <FiLayers className="bar-item-icon" />;
+			iconNode = <LuWorkflow className="bar-item-icon" />;
 			labelText = named(t("canvasTab"));
 			isActive = view === "canvas";
 			isTab = true;

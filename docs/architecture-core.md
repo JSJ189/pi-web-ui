@@ -106,13 +106,14 @@
 
 ## CSS 分层（`@layer guard, base, theme;`）
 
-- **为什么分层**：`web/src/styles.css` 是共享基线、主题是后加载的完整样式表，两者在同一份文档里争权重。分层重构前，能跨文件夺权的唯一手段就是 `!important`：基线 218 处、主题侧 613 处（`bases/obsidian-base.css` 220、`bases/zhujian-base.css` 143、`bases/zhupi-base.css` 132、`aetheris.css` 118），主题要压住基线只能继续加码，越改越沉——典型的军备竞赛。改成显式分层后，胜负由**层序**决定，`!important` 回归为「压内联 style」的专用工具。
+- **为什么分层**：`web/src/styles.css` 是共享基线、主题是后加载的完整样式表，两者在同一份文档里争权重。分层重构前，能跨文件夺权的唯一手段就是 `!important`（叹号 important）：基线 218 处、主题侧 613 处（`bases/obsidian-base.css` 220、`bases/zhujian-base.css` 143、`bases/zhupi-base.css` 132、`aetheris.css` 118），主题要压住基线只能继续加码，越改越沉——典型的军备竞赛。改成显式分层 + 无层覆盖区后基线只剩 1 处（mermaid 运行时内联 style，见下），胜负由**层序**决定，叹号 important 不再是夺权工具。
 - **三层职责**（顺序声明只有一处：`web/src/styles.css` 顶部的 `@layer guard, base, theme;`，早于所有层块，层序按此固定）：
   - `@layer base`：整份基线样式（`web/src/styles.css` 内容）。默认层，正常写选择器，不加 `!important`。
   - `@layer theme`：主题样式。**服务端统一下发**——`server/themes.ts` 的 `readThemeCss()` 内联展开 `@import` 后把整份文本包进 `@layer theme { … }`（只包最外层一次；递归内联的子文件原样返回，否则会变成嵌套层）。`themes/**/*.css` 源文件因此**不需要**自己写 `@layer`，也不需要 `!important`：只要写在主题里就天然压过 base。
-  - `@layer guard`：极少数必须压过内联 `style="…"` 或第三方 DOM 的例外。写法与原因就地注明（`/* 原因：压 xx 组件写入的内联样式 */`），别把普通样式挪进来偷懒。
-- **层序规则（两个方向相反，最容易踩）**：普通声明按**层声明顺序**后者胜（`theme` > `base` > `guard`）；带 `!important` 的声明**反向**——先声明的层胜（`guard` > `base` > `theme`）。所以 guard 层的价值恰在于它**先**声明：凡带 `!important` 的例外放进去就能盖住一切；而 base/theme 里写 `!important` 只会把自己钉在 theme 底层之下，越写越糟。另注：**未分层的样式永远胜过任何层内的普通声明**——分包引入的 CSS（如 `web/src/model-management.css`）与插件样式同样必须进层。
-- **新增样式时的规矩**：① 主题里**禁止** `!important`，一律靠 theme 层胜出；② 基线里非「压内联样式」不得使用 `!important`；③ 必须用时写明原因并放进 `@layer guard`；④ 需要提权重优先换更具体的选择器或调整层序，不要加 `!important`；⑤ 主题不要再写 `#root .foo` 这类 ID 加权选择器和基线抢权重（层序已解决，残余的 ID 加权属于历史包袱，改到即删）。守卫：`tests/unit/css-layers.test.ts`（基线 `!important` ≤ 25、`themes/**/*.css` 必须为 0、层声明与 guard 位置、文档契约）。
+  - `@layer guard`：唯一活口是 mermaid——它用 d3 `.style()` 把字号写成 SVG 内联 `style`，任何普通声明都压不住，只能留这一处叹号 important（`styles.css` 末尾，写明原因）。guard 先声明，层序反转后它的 important 恒胜。别把普通样式挪进来偷懒。
+- **无层覆盖区**（`styles.css` 末尾、所有层块之后）：需要盖过主题或未分层三方库（highlight.js `github-dark.css`，bundle 里后加载）的结构性复位放这里——代码行清零（同为无层后靠更高权重盖过 `pre code.hljs`）、折叠态 `.goalbar.goalbar-collapsed` 抹皮（无层一句盖住 theme 层面板皮）。**未分层的普通声明永远胜过任何层内的普通声明**，所以这里不需要叹号 important。分包引入的 CSS（如 `web/src/model-management.css` 经 `@import … layer(base)`）与插件样式同样必须进层，不能裸奔成无层。
+- **层序规则（两个方向相反，最容易踩）**：普通声明按**层声明顺序**后者胜（`theme` > `base` > `guard`）；带叹号 important 的声明**反向**——先声明的层胜（`guard` > `base` > `theme`）。所以 guard 层的价值恰在于它**先**声明：mermaid 那一处例外放进去就能盖住运行时内联；而 base/theme 里写叹号 important 只会把自己钉死，越写越糟。另注：**未分层的样式永远胜过任何层内的普通声明**——这正是「无层覆盖区」能零提权盖住主题与 highlight.js 的原因。
+- **新增样式时的规矩**：① 主题里**禁止**叹号 important，一律靠 theme 层胜出；② 基线里同层权重不够时用**复合类提权**（如 `.canvas-dropdown-item.canvas-inline-create`），不准加叹号 important；③ 要盖主题/三方库普通声明时用文件末尾**无层覆盖区**，不准加叹号 important；④ 只有运行时内联 `style`（如 mermaid）才配写，必须写明原因并收进 `@layer guard`；⑤ 主题不要再写 `#root .foo` 这类 ID 加权选择器和基线抢权重（层序已解决，残余的 ID 加权属于历史包袱，改到即删）。守卫：`tests/unit/css-layers.test.ts`（基线叹号 important ≤ 1、`themes/**/*.css` 必须为 0、层声明与 guard 位置、文档契约）。
 - **视觉回归闸门**（改了任何样式都必须过）：`npm run audit:themes`（当前树截图 → `.theme-audit/current`）→ `npm run audit:diff`（与 `.theme-audit/baseline` 逐像素比对）。固定 fixture DOM（含气泡/Markdown/表格/代码/思考卡/工具卡/胶囊流/输入岛/顶栏/侧边停靠栏/快捷短语/插件图标/`hide-model-row` 紧凑模式）+ 每个主题一张图（35 个主题），单主题差异 > **0.05%** 即退出码 1。
   - 基线快照 `.theme-audit/baseline` 是「分层重构完成时」的状态（已 gitignore）。要拿**重构前**的基线只能开一个 `HEAD` 的 git worktree 再拍：`git worktree add ../baseline HEAD` → `node scripts/theme-audit.mjs --root ../baseline --out .theme-audit/pristine`。
   - 只有当差异确属「有意改进」时才允许重建基线；否则先查层序（`theme` 被 `base` 压住是最常见的错）。

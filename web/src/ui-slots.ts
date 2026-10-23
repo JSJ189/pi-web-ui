@@ -410,7 +410,7 @@ export const BUILTIN_UI_ITEMS: BuiltinUiItem[] = [
 		id: "host:canvas",
 		slot: "topbar.primary",
 		labelKey: "canvasTab",
-		icon: "layers",
+		icon: "share",
 		kind: "view",
 		view: "canvas",
 		order: 22.5,

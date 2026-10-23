@@ -65,7 +65,7 @@ import {
 	FiZap,
 	FiZoomIn,
 } from "react-icons/fi";
-import { LuFlaskConical } from "react-icons/lu";
+import { LuFlaskConical, LuWorkflow } from "react-icons/lu";
 import { PluginIcon } from "./plugin-icon";
 
 /** icon 名 → 预览节点。键就是 BUILTIN_UI_ITEMS 里出现过的全部 `icon` 值。 */
@@ -116,6 +116,7 @@ const HOST_ICON_NODES: Record<string, ReactNode> = {
 	refresh: <FiRefreshCw />,
 	sandbox: <LuFlaskConical />,
 	save: <FiSave />,
+	share: <LuWorkflow />,
 	search: <FiSearch />,
 	send: <FiSend />,
 	settings: <FiSettings />,

@@ -4,20 +4,51 @@
  * 采用现代化动态流动发光粒子 (Particle Flow) 取代笨重三角箭头，
  * 支持流动光斑、双层发光光轨、中继胶囊与拉线预览。
  */
-import { useMemo } from "react";
+import { useMemo, useState, useRef, useEffect } from "react";
 import type { CanvasEdge, CanvasNode } from "../../types";
-import { PORT_Y_OFFSET } from "./CanvasTypes";
+import { PORT_Y_OFFSET, inPortLabel, outPortLabel } from "./CanvasTypes";
 
 interface CanvasSvgEdgesProps {
 	nodes: CanvasNode[];
 	edges: CanvasEdge[];
-	connectingSource: { nodeId: string; x: number; y: number } | null;
+	connectingSource: { nodeId: string; x: number; y: number; sourcePort?: string } | null;
 	mousePos: { x: number; y: number } | null;
+	/** 各节点字段端子实测纵坐标（相对卡片顶部，画布 px），缺失时回退 PORT_Y_OFFSET */
+	portPositions?: Record<string, Record<string, number>>;
 	onDeleteEdge: (edgeId: string) => void;
+	/** 双击改备注（Studio handleUpdateEdge） */
+	onUpdateEdge?: (edgeId: string, patch: Partial<CanvasEdge>) => void;
 }
 
-export function CanvasSvgEdges({ nodes, edges, connectingSource, mousePos, onDeleteEdge }: CanvasSvgEdgesProps) {
+export function CanvasSvgEdges({
+	nodes,
+	edges,
+	connectingSource,
+	mousePos,
+	portPositions,
+	onDeleteEdge,
+	onUpdateEdge,
+}: CanvasSvgEdgesProps) {
 	const nodeMap = useMemo(() => new Map(nodes.map((n) => [n.id, n])), [nodes]);
+	/** 双击改备注：正在编辑的边 + 输入框草稿 */
+	const [editingEdgeId, setEditingEdgeId] = useState<string | null>(null);
+	const [editValue, setEditValue] = useState<string>("");
+	const editInputRef = useRef<HTMLInputElement | null>(null);
+	useEffect(() => {
+		editInputRef.current?.focus();
+		editInputRef.current?.select();
+	}, [editingEdgeId]);
+	/** 悬停才出小按钮：当前指针所在的边 */
+	const [hoverEdgeId, setHoverEdgeId] = useState<string | null>(null);
+	const beginEdit = (edge: CanvasEdge) => {
+		setEditingEdgeId(edge.id);
+		setEditValue(edge.label || "");
+	};
+	const commitEdit = (edge: CanvasEdge) => {
+		const v = editValue.trim().slice(0, 80);
+		if (v !== (edge.label || "")) onUpdateEdge?.(edge.id, { label: v });
+		setEditingEdgeId(null);
+	};
 
 	return (
 		<svg className="canvas-svg-layer">
@@ -28,30 +59,52 @@ export function CanvasSvgEdges({ nodes, edges, connectingSource, mousePos, onDel
 				if (!source || !target) return null;
 
 				const sourceX = source.x + (source.width ?? 300);
-				const sourceY = source.y + PORT_Y_OFFSET;
+				const sourceY = source.y + (portPositions?.[source.id]?.[edge.sourcePort || "result"] ?? PORT_Y_OFFSET);
 				const targetX = target.x;
-				const targetY = target.y + PORT_Y_OFFSET;
+				const targetY = target.y + (portPositions?.[target.id]?.[edge.targetPort || "contract"] ?? PORT_Y_OFFSET);
 
 				// 优雅的水平束状起始切线，避免多线分叉时产生毛刺折角
 				const dx = Math.max(Math.abs(targetX - sourceX) * 0.45, 50);
 				const d = `M ${sourceX} ${sourceY} C ${sourceX + dx} ${sourceY}, ${targetX - dx} ${targetY}, ${targetX} ${targetY}`;
 				const midX = (sourceX + targetX) / 2;
 				const midY = (sourceY + targetY) / 2;
+				const hasEdgeLabel = !!(edge.label && edge.label.trim());
+				const isEditingEdge = editingEdgeId === edge.id;
+				const isHoverEdge = hoverEdgeId === edge.id;
+				const capsuleW = isEditingEdge || hasEdgeLabel ? 140 : 30;
 
-				const isReview = edge.type === "review";
-				const isParallel = edge.type === "parallel";
+				const edgeKind = edge.type || "handoff";
+				const isReview = edgeKind === "review" || edgeKind === "reject" || edgeKind === "loop_back";
+				const isParallel = edgeKind === "parallel";
+				const isCondTrue = edgeKind === "condition_true" || edgeKind === "approve";
+				const isCondFalse = edgeKind === "condition_false";
 				const strokeColor = isReview
 					? "var(--amber, #f97316)"
 					: isParallel
 						? "var(--info-blue, #38bdf8)"
-						: "var(--accent, #a855f7)";
+						: isCondTrue
+							? "var(--green, #22c55e)"
+							: isCondFalse
+								? "var(--red, #ef4444)"
+								: "var(--accent, #a855f7)";
 
 				const isSourceRunning = source.status === "running";
 
 				return (
-					<g key={edge.id} className="canvas-edge-group">
+					<g
+						key={edge.id}
+						className="canvas-edge-group"
+						onMouseEnter={() => setHoverEdgeId(edge.id)}
+						onMouseLeave={() => setHoverEdgeId((cur) => (cur === edge.id ? null : cur))}
+						onDoubleClick={(e) => {
+							if ((e.target as HTMLElement).closest("button,input")) return;
+							beginEdit(edge);
+						}}
+					>
 						{/* 加粗透明命中区域，方便鼠标交互 */}
-						<path d={d} fill="none" stroke="transparent" strokeWidth="20" className="canvas-edge-hitbox" />
+						<path d={d} fill="none" stroke="transparent" strokeWidth="20" className="canvas-edge-hitbox">
+							<title>双击写备注，悬停显示删除按钮</title>
+						</path>
 
 						{/* 运行中外光晕层 */}
 						{isSourceRunning && (
@@ -86,24 +139,78 @@ export function CanvasSvgEdges({ nodes, edges, connectingSource, mousePos, onDel
 						/>
 
 						{/* 连线中间信息胶囊 */}
-						<foreignObject x={midX - 70} y={midY - 14} width="140" height="28" className="canvas-edge-label-container">
-							<div className="canvas-edge-badge">
-								<span className="canvas-edge-text" title={edge.label || edge.type}>
-									{edge.label || (isReview ? "审查驳回 ↺" : isParallel ? "并行派发 ❯❯" : "契约流转 ❯")}
-								</span>
-								<button
-									type="button"
-									className="canvas-edge-del"
-									title="删除此连线"
-									onClick={(e) => {
+						{(hasEdgeLabel || isHoverEdge || isEditingEdge) && (
+							<foreignObject
+								x={midX - capsuleW / 2}
+								y={midY - 14}
+								width={capsuleW}
+								height={28}
+								className="canvas-edge-label-container"
+							>
+								<div
+									className="canvas-edge-badge"
+									style={hasEdgeLabel || isEditingEdge ? undefined : { justifyContent: "center", padding: "2px 4px" }}
+									title={edge.label && edge.label.trim() ? undefined : "双击写备注，× 删除连线"}
+									onDoubleClick={(e) => {
+										if ((e.target as HTMLElement).closest("button,input")) return;
 										e.stopPropagation();
-										onDeleteEdge(edge.id);
+										beginEdit(edge);
 									}}
 								>
-									×
-								</button>
-							</div>
-						</foreignObject>
+									{editingEdgeId === edge.id ? (
+										<input
+											ref={editInputRef}
+											className="canvas-inline-input"
+											style={{ width: 110, fontSize: 11 }}
+											value={editValue}
+											onChange={(e) => setEditValue(e.target.value)}
+											onKeyDown={(e) => {
+												e.stopPropagation();
+												if (e.key === "Enter") commitEdit(edge);
+												else if (e.key === "Escape") setEditingEdgeId(null);
+											}}
+											onBlur={() => commitEdit(edge)}
+											onClick={(e) => e.stopPropagation()}
+											onPointerDown={(e) => e.stopPropagation()}
+											onDoubleClick={(e) => e.stopPropagation()}
+											placeholder="写备注…"
+										/>
+									) : edge.label && edge.label.trim() ? (
+										<span
+											className="canvas-edge-text"
+											title={
+												(edge.label ? edge.label + " ｜ " : "") +
+												outPortLabel(edge.sourcePort) +
+												" → " +
+												inPortLabel(edge.targetPort) +
+												"（" +
+												edge.type +
+												"）"
+											}
+											onDoubleClick={(e) => {
+												e.stopPropagation();
+												beginEdit(edge);
+											}}
+										>
+											{edge.label}
+										</span>
+									) : null}
+									{isHoverEdge && !isEditingEdge && (
+										<button
+											type="button"
+											className="canvas-edge-del"
+											title="删除此连线"
+											onClick={(e) => {
+												e.stopPropagation();
+												onDeleteEdge(edge.id);
+											}}
+										>
+											×
+										</button>
+									)}
+								</div>
+							</foreignObject>
+						)}
 					</g>
 				);
 			})}

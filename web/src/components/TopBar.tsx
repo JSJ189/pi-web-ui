@@ -20,7 +20,7 @@ import {
 	FiTerminal,
 } from "react-icons/fi";
 import { GoTriangleDown } from "react-icons/go";
-import { LuFlaskConical, LuMessageSquareDashed } from "react-icons/lu";
+import { LuFlaskConical, LuMessageSquareDashed, LuWorkflow } from "react-icons/lu";
 import type { ChatState, UpdateAllItem } from "../use-chat";
 import type { CommandDef } from "../types";
 import { buildUpdateCommand } from "../update-command";
@@ -441,7 +441,9 @@ export function TopBar({
 		const hideItem = () => {
 			const hidden = new Set(layout?.hidden ?? []);
 			hidden.add(id);
-			appSend({ type: "set_settings", uiLayout: { ...layout, hidden: [...hidden] } });
+			// shown 后于 hidden 生效（见 buildUiSlots）：不清掉 shown，隐藏会被顶掉而无效。
+			const shown = (layout?.shown ?? []).filter((x) => x !== id);
+			appSend({ type: "set_settings", uiLayout: { ...layout, hidden: [...hidden], shown } });
 		};
 		const restoreItem = () => {
 			appSend({ type: "set_settings", uiLayout: restoreUiItem(layout, id) });
@@ -1153,7 +1155,7 @@ export function TopBar({
 				data-tip={t("canvasTab")}
 				onClick={() => onViewChange("canvas")}
 			>
-				<FiLayers />
+				<LuWorkflow />
 				<span>{t("canvasTab")}</span>
 			</button>
 		) : null,

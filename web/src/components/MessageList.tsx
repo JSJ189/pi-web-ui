@@ -610,7 +610,10 @@ export function MessageList({
 	const sweepIdleTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
 
 	// ---- 向上分页加载状态（Reverse Pagination）-----------------------------
-	const defaultPageSize = Math.max(30, keepRecentCount);
+	const defaultPageSize = flowStream ? Math.max(120, keepRecentCount) : Math.max(30, keepRecentCount);
+	/** 向上翻页步长：极简行文下工具是行内小胶囊（约 4 条占一行），30 条只有 ~200px，
+	 *  每滚一点就触发下一页、体感卡顿；按高度折算放大到 120 条 ≈ 一屏，翻页次数减到约 1/4。 */
+	const earlierPageSize = flowStream ? 120 : 30;
 	/** 分页模式首帧只挂最近这么多条，随后两帧内用 startTransition 补齐到整页：
 	 *  打开长对话时先看到最新内容，重 Markdown/代码高亮的成本被推到可中断的后续渲染里，
 	 *  不再白屏等一整页画完。 */
@@ -621,20 +624,173 @@ export function MessageList({
 	const prevPagingConvKeyRef = useRef(convKey);
 	const prevMsgLenRef = useRef(messages.length);
 	const prevFirstMsgIdRef = useRef(messages[0]?.id);
-	/** 服务端「更早一页」补到位后要补的滚动位置：内容插在视口上方，必须同步下移
-	 *  滚动条，否则用户眼前的内容会被推走（与本地撑开同一套补偿）。 */
-	const pendingScrollFixRef = useRef<{ sh: number; st: number } | null>(null);
+	/** 前插锚点快照：捕获前插提交前的 scrollHeight/scrollTop + 视口顶部首个可见单元。
+	 *  复位优先按锚点残差（与原生滚动锚定可叠加收敛），锚点在集群接缝合并中消失时退化为高度差。 */
+	const pendingAnchorRef = useRef<{
+		sh: number;
+		st: number;
+		id: string | null;
+		top: number;
+		msgLen: number;
+		firstId: string | undefined;
+	} | null>(null);
 	/** 服务端翻页在途：滚轮在顶部会反复触发，只允许一个请求在路上。 */
 	const pagePendingRef = useRef(false);
+	/** 手动锚定期：前插复位 + 多帧沉降期间摘除原生 overflow-anchor，避免双重补偿打架；结束后恢复。 */
+	const [anchorLock, setAnchorLock] = useState(false);
+	const anchorLockRef = useRef(false);
+	const setAnchorLockBoth = useCallback((v: boolean) => {
+		anchorLockRef.current = v;
+		setAnchorLock(v);
+	}, []);
+	/** 沉降循环句柄与基线（复位后多帧吸收图片/高亮等滞后高度）。 */
+	const settleRafRef = useRef(0);
+	const settleBaseRef = useRef<{ id: string | null; top: number; sh: number; st: number } | null>(null);
+	/** 容器内首个可见的消息单元（data-lazy-id：单消息 LazyMount 与工具集群占位同名，隐藏占位同样可锚）。 */
+	const findTopAnchor = useCallback((): { id: string | null; top: number } | null => {
+		const el = scrollRef.current;
+		if (!el) return null;
+		const cTop = el.getBoundingClientRect().top;
+		const nodes = el.querySelectorAll<HTMLElement>("[data-lazy-id]");
+		for (let i = 0; i < nodes.length; i++) {
+			const node = nodes[i];
+			const r = node.getBoundingClientRect();
+			if (r.bottom > cTop + 2) return { id: node.dataset.lazyId ?? null, top: r.top - cTop };
+		}
+		return null;
+	}, []);
+	const cancelSettle = useCallback(() => {
+		if (settleRafRef.current) {
+			cancelAnimationFrame(settleRafRef.current);
+			settleRafRef.current = 0;
+		}
+		settleBaseRef.current = null;
+	}, []);
+	/** 前插前捕获：调用方在 setState/appSend 之前同步执行。 */
+	const capturePrependAnchor = useCallback(() => {
+		const el = scrollRef.current;
+		const a = findTopAnchor();
+		pendingAnchorRef.current = {
+			sh: el ? el.scrollHeight : 0,
+			st: el ? el.scrollTop : 0,
+			id: a?.id ?? null,
+			top: a?.top ?? 0,
+			msgLen: messages.length,
+			firstId: messages[0]?.id,
+		};
+	}, [findTopAnchor, messages]);
+	/** 锚点残差复位（layout 阶段同步执行，paint 前完成，无闪烁）。 */
+	const restorePrependAnchor = useCallback((pend: { sh: number; st: number; id: string | null; top: number }) => {
+		const el = scrollRef.current;
+		if (!el) return;
+		if (pend.id) {
+			let node: HTMLElement | null = null;
+			try {
+				node = el.querySelector<HTMLElement>('[data-lazy-id="' + CSS.escape(pend.id) + '"]');
+			} catch {
+				node = null;
+			}
+			if (node) {
+				const drift = node.getBoundingClientRect().top - el.getBoundingClientRect().top - pend.top;
+				if (drift !== 0) el.scrollTop += drift;
+				return;
+			}
+			// 锚点单元在集群接缝合并中被重建：高度差兜底（同步布局下精确）。
+		}
+		el.scrollTop = pend.st + (el.scrollHeight - pend.sh);
+	}, []);
+	/** 前插提交后：paint 前同步复位 + 多帧沉降吸收滞后高度；用户手势优先，绝不与之打架。 */
+	const settlePrepend = useCallback(() => {
+		const pend = pendingAnchorRef.current;
+		const el = scrollRef.current;
+		if (!el || !pend) return;
+		cancelSettle();
+		setAnchorLockBoth(true);
+		restorePrependAnchor(pend);
+		const cur = findTopAnchor();
+		settleBaseRef.current = {
+			id: cur?.id ?? null,
+			top: cur?.top ?? 0,
+			sh: el.scrollHeight,
+			st: el.scrollTop,
+		};
+		let frames = 0;
+		let still = 0;
+		const step = () => {
+			settleRafRef.current = 0;
+			const root = scrollRef.current;
+			const base = settleBaseRef.current;
+			if (!root || !base) {
+				setAnchorLockBoth(false);
+				return;
+			}
+			// 锁定期原生锚定已摘除，scrollTop 变化只可能来自我们上一帧的修正或用户手势；
+			// 用户一旦接管本帧只重建基线、不纠正，体感上绝不抢滚动条。
+			if (Math.abs(root.scrollTop - base.st) > 2) {
+				const fresh = findTopAnchor();
+				settleBaseRef.current = {
+					id: fresh?.id ?? null,
+					top: fresh?.top ?? 0,
+					sh: root.scrollHeight,
+					st: root.scrollTop,
+				};
+				still = 0;
+			} else {
+				let drift = 0;
+				let found = false;
+				if (base.id) {
+					let node: HTMLElement | null = null;
+					try {
+						node = root.querySelector<HTMLElement>('[data-lazy-id="' + CSS.escape(base.id) + '"]');
+					} catch {
+						node = null;
+					}
+					if (node) {
+						found = true;
+						drift = node.getBoundingClientRect().top - root.getBoundingClientRect().top - base.top;
+					}
+				}
+				if (!found) {
+					// 锚点暂不可见（集群接缝重建/惰性占位切换）：退化为高度差跟随，本帧重建基线。
+					drift = root.scrollHeight - base.sh;
+					const fresh = findTopAnchor();
+					if (drift !== 0) root.scrollTop += drift;
+					settleBaseRef.current = {
+						id: fresh?.id ?? null,
+						top: fresh?.top ?? 0,
+						sh: root.scrollHeight,
+						st: root.scrollTop,
+					};
+				} else {
+					if (drift !== 0) root.scrollTop += drift;
+					settleBaseRef.current = { ...base, sh: root.scrollHeight, st: root.scrollTop };
+				}
+				still = drift === 0 ? still + 1 : 0;
+			}
+			frames++;
+			// 连续 3 帧零漂移即提前收工；最多 30 帧（约 500ms）覆盖图片解码/字体回流，之后交还原生锚定。
+			if ((still >= 3 && frames >= 4) || frames >= 30) {
+				settleBaseRef.current = null;
+				setAnchorLockBoth(false);
+				return;
+			}
+			settleRafRef.current = requestAnimationFrame(step);
+		};
+		settleRafRef.current = requestAnimationFrame(step);
+	}, [cancelSettle, findTopAnchor, restorePrependAnchor, setAnchorLockBoth]);
 	if (prevPagingConvKeyRef.current !== convKey) {
 		prevPagingConvKeyRef.current = convKey;
 		setVisibleCount(firstPaintSize);
 		prevMsgLenRef.current = messages.length;
 		prevFirstMsgIdRef.current = messages[0]?.id;
-		pendingScrollFixRef.current = null;
+		pendingAnchorRef.current = null;
+		cancelSettle();
+		if (anchorLockRef.current) setAnchorLockBoth(false);
 		pagePendingRef.current = false;
 	}
-	useEffect(() => {
+	// 前插到达（messages 头部变化）只负责把可见窗口跟上 + 解锁翻页；
+	// 滚动复位统一放到下面的 visibleCount 布局效应里（窗口补齐、paint 前同步完成，#680）。
+	useLayoutEffect(() => {
 		const delta = messages.length - prevMsgLenRef.current;
 		prevMsgLenRef.current = messages.length;
 		const firstId = messages[0]?.id;
@@ -644,21 +800,33 @@ export function MessageList({
 		if (delta <= 0) return;
 		// 到达一页（或流式新增）：可见窗口跟着长，尾部内容不移位。
 		setVisibleCount((cur) => cur + delta);
-		pagePendingRef.current = false;
-
-		// 只有当服务端更早一页真正前插（isPrepend === true）到位时才消费滚动补偿；
+		// 流式尾部追加不解锁服务端翻页、不消费锚点；只有真正的更早前插才算一页到位。
 		// 严禁被并发在途的流式追加/新用户消息错误消费，彻底杜绝前插后视口跳动（#680）。
 		if (!isPrepend) return;
-		const fix = pendingScrollFixRef.current;
-		if (!fix) return;
-		pendingScrollFixRef.current = null;
-		requestAnimationFrame(() => {
-			const el = scrollRef.current;
-			if (!el) return;
-			el.scrollTop = fix.st + (el.scrollHeight - fix.sh);
-		});
+		pagePendingRef.current = false;
 		// eslint-disable-next-line react-hooks/exhaustive-deps
 	}, [messages.length]);
+	// 前插提交后的滚动复位（paint 前同步 + 多帧沉降）：本地展开与服务端前插都会改变
+	// visibleCount，在窗口补齐的同一提交里锚定复位，用户视角内容零位移；
+	// 流式尾部/首屏预热等其它 visibleCount 变化直接跳过。
+	useLayoutEffect(() => {
+		const pend = pendingAnchorRef.current;
+		if (!pend) return;
+		const firstId = messages[0]?.id;
+		const serverArrived = firstId !== pend.firstId;
+		const pureLocal = messages.length === pend.msgLen && !serverArrived;
+		// 中间提交（等待服务端页期间的流式追加）：既不复位也不清除，等真正的前插提交。
+		if (!serverArrived && !pureLocal) return;
+		if (pagePendingRef.current && pureLocal) {
+			// 本地余量已展开、服务端页仍在路上：复位本次，再为下一次前插重新武装。
+			settlePrepend();
+			capturePrependAnchor();
+			return;
+		}
+		pendingAnchorRef.current = null;
+		settlePrepend();
+		// eslint-disable-next-line react-hooks/exhaustive-deps
+	}, [visibleCount]);
 
 	const isPagingActive = !!reversePagination && !exportImage.open && !searchOpen;
 	/** 首屏预热中（首帧只画了 firstPaintSize 条，整页还在补齐）。 */
@@ -694,58 +862,62 @@ export function MessageList({
 		isPagingActive && effectiveVisibleCount < messages.length ? messages.slice(-effectiveVisibleCount) : messages;
 
 	/** 向服务端要一页更早的历史（窗口化扫码，前插到 messages 头部）。 */
-	const requestServerPage = useCallback((opts: { count?: number; all?: boolean }) => {
-		if (pagePendingRef.current) return;
-		pagePendingRef.current = true;
-		const el = scrollRef.current;
-		if (el) pendingScrollFixRef.current = { sh: el.scrollHeight, st: el.scrollTop };
-		appSend(
-			opts.all
-				? ({
-						type: "load_earlier_messages",
-						all: true,
-						conversationId: state.conversationId ?? undefined,
-					} satisfies ClientMessage)
-				: ({
-						type: "load_earlier_messages",
-						count: opts.count ?? 30,
-						conversationId: state.conversationId ?? undefined,
-					} satisfies ClientMessage),
-		);
-		// 服务端窗口化关闭时不会有回执：兜底解锁，不影响继续点击（回执到也会提前清掉）。
-		setTimeout(() => {
-			pagePendingRef.current = false;
-		}, 3000);
-	}, []);
+	const requestServerPage = useCallback(
+		(opts: { count?: number; all?: boolean }) => {
+			if (pagePendingRef.current) return;
+			pagePendingRef.current = true;
+			cancelSettle();
+			capturePrependAnchor();
+			appSend(
+				opts.all
+					? ({
+							type: "load_earlier_messages",
+							all: true,
+							conversationId: state.conversationId ?? undefined,
+						} satisfies ClientMessage)
+					: ({
+							type: "load_earlier_messages",
+							count: opts.count ?? earlierPageSize,
+							conversationId: state.conversationId ?? undefined,
+						} satisfies ClientMessage),
+			);
+			// 服务端窗口化关闭时不会有回执：兜底解锁，不影响继续点击（回执到也会提前清掉）。
+			setTimeout(() => {
+				pagePendingRef.current = false;
+			}, 3000);
+		},
+		[earlierPageSize, cancelSettle, capturePrependAnchor],
+	);
 
 	const loadEarlier = useCallback(
-		(count = 30) => {
-			// 本地还有没展示的更早消息（开启向上分页模式下）：直接撑开，零网络。
-			if (isPagingActive && messages.length - visibleCount >= count) {
-				const el = scrollRef.current;
-				if (!el) return;
-				const prevSh = el.scrollHeight;
-				const prevSt = el.scrollTop;
-				setVisibleCount((cur) => Math.min(messages.length, cur + count));
-				requestAnimationFrame(() => {
-					if (scrollRef.current) {
-						const delta = scrollRef.current.scrollHeight - prevSh;
-						scrollRef.current.scrollTop = prevSt + delta;
-					}
-				});
+		(count?: number) => {
+			const page = count ?? earlierPageSize;
+			cancelSettle();
+			// 本地还有没展示的更早消息（开启向上分页模式下）：直接撑开，零网络（同样锚定复位）。
+			if (isPagingActive && messages.length - visibleCount >= page) {
+				capturePrependAnchor();
+				setVisibleCount((cur) => Math.min(messages.length, cur + page));
 				return;
 			}
-			// 本地已到底（或未开启分页模式）：先把本地没展示的撑开（若有），再向服务端要更早一页（窗口化）。
-			if (isPagingActive && messages.length > visibleCount) setVisibleCount(messages.length);
-			if (historyStartRef.current > 0) requestServerPage({ count });
+			// 本地已到底（或未开启分页模式）：先把本地没展示的撑开（若有，锚定复位），
+			// 再向服务端要更早一页（窗口化，复位由 visibleCount 布局效应按两次提交各做一次）。
+			if (isPagingActive && messages.length > visibleCount) {
+				capturePrependAnchor();
+				setVisibleCount(messages.length);
+			}
+			if (historyStartRef.current > 0) requestServerPage({ count: page });
 		},
-		[isPagingActive, messages.length, visibleCount, requestServerPage],
+		[isPagingActive, messages, visibleCount, requestServerPage, earlierPageSize, cancelSettle, capturePrependAnchor],
 	);
 
 	const loadAllEarlier = useCallback(() => {
+		cancelSettle();
+		if (isPagingActive && messages.length > visibleCount) {
+			capturePrependAnchor();
+			setVisibleCount(messages.length);
+		}
 		if (historyStartRef.current > 0) requestServerPage({ all: true });
-		if (isPagingActive) setVisibleCount(messages.length);
-	}, [historyStartRef.current, requestServerPage, isPagingActive, messages.length]);
+	}, [historyStartRef, requestServerPage, isPagingActive, messages, visibleCount, cancelSettle, capturePrependAnchor]);
 
 	// 需要扫全文/全量的入口（页内搜索、导出图片）打开时：服务端窗口化时把更早历史
 	// 一次拉全，否则搜不到/导出缺前半段。（用户主动触发，一次付清）
@@ -981,8 +1153,10 @@ export function MessageList({
 	useEffect(
 		() => () => {
 			cancelAnimationFrame(sweepRafRef.current);
+			cancelSettle();
 			if (sweepIdleTimerRef.current) clearTimeout(sweepIdleTimerRef.current);
 		},
+		// eslint-disable-next-line react-hooks/exhaustive-deps
 		[],
 	);
 
@@ -1244,7 +1418,7 @@ export function MessageList({
 				if (hasEarlier) {
 					const el = scrollRef.current;
 					if (el && el.scrollTop <= 80) {
-						loadEarlier(30);
+						loadEarlier();
 					}
 				}
 			} else if (e.deltaY > 0) {
@@ -1410,7 +1584,7 @@ export function MessageList({
 			}
 		}
 		if (dSt < 0 && el.scrollTop <= 80 && hasEarlier) {
-			loadEarlier(30);
+			loadEarlier();
 		}
 		// 避免每帧滚动重复 dispatch 相同状态
 		setStickBottom((prev) => (prev !== stickRef.current ? stickRef.current : prev));
@@ -1619,7 +1793,8 @@ export function MessageList({
 			<div
 				// anchor-live：未钉底（逃逸阅读）时启用原生滚动锚定，兜住部分跨视口
 				// 边缘消息的占位⇄真身互换跳动；与钉底期的程序性再钉互斥（那时无此类）。
-				className={`messages${searchOpen ? "" : stickBottom && !escapedRef.current ? "" : " anchor-live"}`}
+				// 手动锚定期（anchorLock）摘除原生锚定，避免与 JS 复位双重补偿打架。
+				className={`messages${searchOpen || anchorLock ? "" : stickBottom && !escapedRef.current ? "" : " anchor-live"}`}
 				ref={scrollRef}
 				onScroll={onScroll}
 				onWheel={handleWheel}
@@ -1639,8 +1814,8 @@ export function MessageList({
 					<div className="earlier-messages-bar">
 						<span className="earlier-messages-info">{t("earlierMessagesInfo", { count: earlierCount })}</span>
 						<div className="earlier-messages-actions">
-							<button type="button" className="earlier-messages-btn" onClick={() => loadEarlier(30)}>
-								↑ {t("loadEarlier", { count: Math.min(30, earlierCount) })}
+							<button type="button" className="earlier-messages-btn" onClick={() => loadEarlier()}>
+								↑ {t("loadEarlier", { count: Math.min(earlierPageSize, earlierCount) })}
 							</button>
 							<button type="button" className="earlier-messages-btn earlier-messages-btn-all" onClick={loadAllEarlier}>
 								{t("loadAllEarlier")}

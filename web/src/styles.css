@@ -1,11 +1,11 @@
 @import "./model-management.css" layer(base);
 
 /* 级联分层（顺序即优先级）：
-   guard  = 必须压过内联样式/插件注入的极少数例外（保留 !important）
-   base   = 基线组件样式（普通声明）
+   guard  = 唯一活口：mermaid 运行时往 SVG 写内联 style，只能用叹号 important 压。
+   base   = 基线组件样式（普通声明，零叹号 important）
    theme  = 主题样式（服务端把主题文件包进这层，你不改）
-   普通声明：后面的层优先 → 主题恒压过基线。
-   !important：更早的层优先 → guard 的 !important 恒压过一切。 */
+   普通声明：后面的层优先 → 主题恒压过基线；未分层普通声明胜过任何层内普通声明。
+   需要盖过主题或未分层三方库的结构性复位，写在文件末尾「无层覆盖区」，不用叹号 important。 */
 @layer guard, base, theme;
 
 /* model-management.css 必须落在 base 层里：层外的普通声明会盖掉所有层
@@ -13354,9 +13354,9 @@
 	}
 
 	/* 兜底：折叠态一旦有人把 .goalbar 面板类带回来（插件塞的、浏览器里还活着的
-   老 bundle 缓存页），这一行就又变回一条通栏带子横在最后一条消息上；主题给
-   .goalbar 写的底色/上边框还带，只能同权重把面板皮抹掉 ——
-   折叠态只准剩药丸。 */
+   老 bundle 缓存页），这一行就又变回一条通栏带子横在最后一条消息上；面板皮
+   由文件末尾「无层结构性覆盖」区的 .goalbar.goalbar-collapsed 抹掉（无层胜过
+   theme 层，无需提权）——折叠态只准剩药丸。 */
 
 	/* 收起态的小药丸：尺寸保持原样（12px 字 / 4/10 内边距 / gap 7 / feather 图标默认
    尺寸），只把**贴边间距**从 8px 收到 4px（改 .goalbar-collapsed 的底 margin）。
@@ -15173,14 +15173,15 @@
 		padding: 6px;
 		transform: translateZ(0);
 	}
+	/* 全屏态：双类权重已高于 .modal，同层内后来居上，无需提权。 */
 	.modal.fullscreen {
-		width: 100vw !important;
-		height: 100% !important;
-		height: 100dvh !important;
-		max-width: none !important;
-		max-height: none !important;
-		border-radius: 0 !important;
-		border: none !important;
+		width: 100vw;
+		height: 100%;
+		height: 100dvh;
+		max-width: none;
+		max-height: none;
+		border-radius: 0;
+		border: none;
 	}
 	.modal.has-fullscreen-toggle > .modal-fullscreen-btn {
 		position: absolute;
@@ -25536,6 +25537,7 @@
 	.tool-inspector-body,
 	.pi-we-inspector-body {
 		flex: 1;
+		min-height: 0;
 		overflow-y: auto;
 		overscroll-behavior: contain;
 		padding: 16px 20px 24px;
@@ -25626,6 +25628,7 @@
 
 	.tool-inspector-details-card {
 		margin-top: 10px;
+		flex-shrink: 0;
 		border: 1px solid var(--border);
 		border-radius: 8px;
 		background: color-mix(in srgb, var(--text) 3%, transparent);
@@ -25668,6 +25671,7 @@
 		border-radius: 0;
 		margin: 0;
 		max-height: 35vh;
+		overflow: auto;
 	}
 
 	.tool-inspector-codeblock,
@@ -26163,9 +26167,9 @@
 	.canvas-port {
 		position: absolute;
 		top: 72px;
-		width: 14px;
-		height: 14px;
-		margin-top: -7px;
+		width: 12px;
+		height: 12px;
+		margin-top: -6px;
 		border-radius: 50%;
 		background: var(--bg-elev);
 		border: 2px solid var(--accent);
@@ -26216,12 +26220,12 @@
 
 	.canvas-port.port-in {
 		left: 0;
-		margin-left: -7px;
+		margin-left: -6px;
 	}
 
 	.canvas-port.port-out {
 		right: 0;
-		margin-right: -7px;
+		margin-right: -6px;
 	}
 
 	.canvas-node-header {
@@ -26282,10 +26286,10 @@
 	}
 
 	.canvas-node-body {
-		padding: 10px 12px;
+		padding: 8px 10px;
 		display: flex;
 		flex-direction: column;
-		gap: 8px;
+		gap: 6px;
 	}
 
 	.canvas-node-field-row {
@@ -26301,13 +26305,33 @@
 		gap: 4px;
 	}
 
+	/* 卡片内模型胶囊：占满一行不换行，超长模型名省略，思考强度段永不被挤掉 */
 	.canvas-node-card .model-thinking-capsule {
 		width: 100%;
 		max-width: 100%;
+		min-width: 0;
+		display: flex;
+		flex-wrap: nowrap;
+	}
+
+	.canvas-node-card .model-thinking-capsule .capsule-model {
+		flex: 1 1 auto;
+		min-width: 0;
+		overflow: hidden;
 	}
 
 	.canvas-node-card .model-thinking-capsule .capsule-model-name {
-		max-width: 160px;
+		flex: 1 1 auto;
+		min-width: 0;
+		max-width: none;
+		overflow: hidden;
+		text-overflow: ellipsis;
+		white-space: nowrap;
+	}
+
+	.canvas-node-card .model-thinking-capsule .capsule-thinking,
+	.canvas-node-card .model-thinking-capsule .capsule-divider {
+		flex: none;
 	}
 
 	/* 通用路径与目录选择器 (UniversalPathPicker) 样式 */
@@ -26466,10 +26490,12 @@
 		display: flex;
 		align-items: center;
 		gap: 4px;
-		font-size: 11.5px;
-		color: var(--text-faint);
+		font-size: 11px;
+		font-weight: 600;
+		color: var(--text-dim);
 		white-space: nowrap;
 		flex-shrink: 0;
+		position: relative;
 	}
 
 	.canvas-select,
@@ -26674,6 +26700,16 @@
 		gap: 8px;
 	}
 
+	/* 抽屉里的模型胶囊：父容器 ~440px，模型名靠基线里的 .dropdown 收缩+省略号，
+	 * 这里只把它拉满一行（收缩策略统一在 model-management.css 的胶囊基线里）。 */
+	.canvas-drawer-section .model-thinking-capsule {
+		display: flex;
+		width: 100%;
+		max-width: 100%;
+		min-width: 0;
+		flex-wrap: nowrap;
+	}
+
 	.canvas-section-title {
 		margin: 0;
 		font-size: 12.5px;
@@ -26775,10 +26811,41 @@
 		font-size: 12px;
 	}
 
+	/* 审查门禁状态徒标：用语义色区分，避免「失败也被当成 DONE」的观感误导 */
+	.canvas-review-status-row .status-badge {
+		border-color: currentColor;
+		font-weight: 600;
+	}
+
+	.canvas-review-status-row .status-badge.status-done {
+		color: var(--green);
+		background: color-mix(in srgb, var(--green) 14%, transparent);
+	}
+
+	.canvas-review-status-row .status-badge.status-error {
+		color: var(--red);
+		background: color-mix(in srgb, var(--red) 14%, transparent);
+	}
+
+	.canvas-review-status-row .status-badge.status-running {
+		color: var(--accent);
+		background: color-mix(in srgb, var(--accent) 14%, transparent);
+	}
+
+	.canvas-review-status-row .status-badge.status-waiting_approval {
+		color: var(--amber-text, var(--amber));
+		background: color-mix(in srgb, var(--amber) 16%, transparent);
+	}
+
 	.canvas-summary-box {
 		font-size: 12px;
 		color: var(--text);
 		line-height: 1.45;
+	}
+
+	.canvas-summary-error {
+		color: var(--red-text, var(--red));
+		overflow-wrap: anywhere;
 	}
 
 	.canvas-review-actions {
@@ -26838,6 +26905,106 @@
 		justify-content: center;
 	}
 
+	/* === 画布节点对话实录（复用主对话流 + 协同事件） === */
+	.canvas-log-section .canvas-log-header {
+		display: flex;
+		align-items: center;
+		justify-content: space-between;
+		gap: 8px;
+	}
+	.canvas-log-section .canvas-log-header .canvas-section-title {
+		margin: 0;
+	}
+	.canvas-log-tabs {
+		display: flex;
+		align-items: center;
+		gap: 6px;
+	}
+	.canvas-log-tab {
+		display: inline-flex;
+		align-items: center;
+		gap: 4px;
+		background: var(--bg-elev);
+		color: var(--text-faint);
+		border: 1px solid var(--border);
+		border-radius: 6px;
+		padding: 3px 10px;
+		font-size: 12px;
+		cursor: pointer;
+	}
+	.canvas-log-tab.active {
+		background: var(--accent);
+		color: var(--accent-contrast, #fff);
+		border-color: var(--accent);
+	}
+	.canvas-log-clear {
+		background: transparent;
+		color: var(--text-faint);
+		border: 1px solid var(--border);
+		border-radius: 6px;
+		padding: 3px 8px;
+		cursor: pointer;
+		display: inline-flex;
+		align-items: center;
+	}
+	.canvas-log-body {
+		max-height: 340px;
+		overflow-y: auto;
+		display: flex;
+		flex-direction: column;
+		gap: 8px;
+		padding: 8px;
+		background: var(--bg);
+		border: 1px solid var(--border);
+		border-radius: 8px;
+		margin-top: 8px;
+		min-width: 0;
+		max-width: 100%;
+		overscroll-behavior: contain;
+	}
+	.canvas-log-msg {
+		min-width: 0;
+		max-width: 100%;
+	}
+	.canvas-log-entry {
+		border: 1px solid var(--border);
+		border-radius: 8px;
+		padding: 6px 10px;
+		background: var(--bg-elev);
+		overflow-wrap: anywhere;
+		word-break: break-word;
+		min-width: 0;
+	}
+	.canvas-log-entry .canvas-log-kind {
+		font-size: 12px;
+		font-weight: 600;
+	}
+	.canvas-log-entry .canvas-log-time {
+		margin-left: 8px;
+		font-size: 11px;
+		color: var(--text-faint);
+	}
+	.canvas-log-entry .canvas-log-text {
+		margin-top: 4px;
+		font-size: 12.5px;
+		white-space: pre-wrap;
+		overflow-wrap: anywhere;
+		word-break: break-word;
+	}
+	.canvas-log-entry.kind-error {
+		border-color: var(--red);
+	}
+	.canvas-log-entry.kind-tool {
+		border-color: var(--info-blue, var(--accent));
+	}
+	.canvas-log-entry.kind-steer,
+	.canvas-log-entry.kind-handoff {
+		border-color: var(--amber);
+	}
+	.canvas-log-entry.kind-review,
+	.canvas-log-entry.kind-done {
+		border-color: var(--green);
+	}
 	.canvas-drawer-footer {
 		padding: 12px 18px;
 		border-top: 1px solid var(--border);
@@ -26867,11 +27034,12 @@
 		outline: none;
 	}
 
-	.canvas-inline-create {
-		display: flex !important;
+	/* 复合类提权：元素同时带 .canvas-dropdown-item，双类盖过它的底样式与 :hover。 */
+	.canvas-dropdown-item.canvas-inline-create {
+		display: flex;
 		gap: 4px;
-		padding: 6px 10px !important;
-		cursor: default !important;
+		padding: 6px 10px;
+		cursor: default;
 	}
 
 	.canvas-inline-input {
@@ -26900,16 +27068,16 @@
 		opacity: 0.85;
 	}
 
-	.canvas-dropdown-item-danger {
-		color: var(--red) !important;
-	}
-
-	.canvas-dropdown-item-danger b {
+	.canvas-dropdown-item.canvas-dropdown-item-danger {
 		color: var(--red);
 	}
 
-	.canvas-dropdown-item-danger:hover {
-		background: color-mix(in srgb, var(--red) 10%, transparent) !important;
+	.canvas-dropdown-item.canvas-dropdown-item-danger b {
+		color: var(--red);
+	}
+
+	.canvas-dropdown-item.canvas-dropdown-item-danger:hover {
+		background: color-mix(in srgb, var(--red) 10%, transparent);
 	}
 
 	.canvas-dropdown-item[disabled] {
@@ -26917,10 +27085,10 @@
 		pointer-events: none;
 	}
 
-	/* 未保存指示器 */
-	.canvas-unsaved {
-		color: var(--amber) !important;
-		border-color: color-mix(in srgb, var(--amber) 50%, var(--border)) !important;
+	/* 未保存指示器：双类盖过 .canvas-toolbar-btn（含它的 :hover，同权重后来居上）。 */
+	.canvas-toolbar-btn.canvas-unsaved {
+		color: var(--amber);
+		border-color: color-mix(in srgb, var(--amber) 50%, var(--border));
 		animation: canvasUnsavedPulse 2s ease-in-out infinite;
 	}
 
@@ -27081,36 +27249,485 @@
 	.canvas-prompt-actions .canvas-btn.primary:hover {
 		opacity: 0.85;
 	}
-}
 
+	/* ---- 画布通用节点库 + AI 指令可输入 (workflow upgrade) ---- */
+	.canvas-instruction-input {
+		background: var(--bg);
+		border: 1px solid var(--border);
+		color: var(--text);
+		border-radius: 6px;
+		padding: 6px 8px;
+		font-size: 12px;
+		line-height: 1.5;
+		width: 100%;
+		resize: vertical;
+		min-height: 54px;
+		outline: none;
+		overflow-wrap: anywhere;
+		word-break: break-word;
+	}
+	.canvas-instruction-input:focus {
+		border-color: var(--accent);
+	}
+	.canvas-instruction-textarea {
+		min-height: 110px;
+		font-size: 12.5px;
+	}
+	.canvas-instruction-title {
+		color: var(--accent, #a855f7);
+	}
+	.canvas-drawer-input {
+		background: var(--bg);
+		border: 1px solid var(--border);
+		color: var(--text);
+		border-radius: 6px;
+		padding: 6px 8px;
+		font-size: 12.5px;
+		width: 100%;
+		outline: none;
+	}
+	.canvas-drawer-input:focus {
+		border-color: var(--accent);
+	}
+	.canvas-config-row {
+		display: flex;
+		flex-direction: column;
+		gap: 6px;
+		margin-bottom: 10px;
+		font-size: 12px;
+		color: var(--text);
+	}
+	.canvas-config-row > span {
+		color: var(--text-faint);
+		font-size: 11.5px;
+	}
+	.canvas-config-hint {
+		cursor: pointer;
+		color: var(--text-faint);
+	}
+	.canvas-node-palette {
+		max-height: 480px;
+		overflow-y: auto;
+		min-width: 300px;
+		overscroll-behavior: contain;
+	}
+	.canvas-palette-group {
+		padding: 4px 0 8px;
+		border-bottom: 1px solid var(--border);
+	}
+	.canvas-palette-group:last-child {
+		border-bottom: none;
+	}
+	.canvas-palette-group-title {
+		font-size: 11px;
+		font-weight: 700;
+		color: var(--text-faint);
+		letter-spacing: 0.5px;
+		padding: 6px 12px 2px;
+	}
+
+	/* ---- 字段级端子：端口绑定卡片内具体数值 ---- */
+	.canvas-node-field-col {
+		position: relative;
+	}
+	.canvas-row-port {
+		position: absolute;
+		top: 50%;
+		width: 12px;
+		height: 12px;
+		margin-top: -6px;
+		border-radius: 50%;
+		background: var(--bg-elev);
+		border: 2px solid color-mix(in srgb, var(--accent) 70%, transparent);
+		cursor: crosshair;
+		z-index: 12;
+		display: flex;
+		align-items: center;
+		justify-content: center;
+	}
+	.canvas-row-port.in {
+		left: -17px;
+	}
+	.canvas-row-port.out {
+		right: -18px;
+		border-color: color-mix(in srgb, var(--green) 75%, transparent);
+	}
+	.canvas-row-port.connected {
+		box-shadow:
+			0 0 0 2px var(--bg-elev),
+			0 0 8px color-mix(in srgb, var(--accent) 40%, transparent);
+	}
+	.canvas-row-port:hover {
+		transform: scale(1.35);
+	}
+	.canvas-row-port-dot {
+		width: 4px;
+		height: 4px;
+		border-radius: 50%;
+		background: var(--accent);
+		pointer-events: none;
+	}
+	.canvas-node-branch-group {
+		display: flex;
+		flex-direction: column;
+		gap: 6px;
+	}
+	.canvas-branch-row {
+		position: relative;
+		display: flex;
+		align-items: center;
+		justify-content: space-between;
+		background: var(--bg);
+		border: 1px dashed var(--border);
+		border-radius: 6px;
+		padding: 4px 8px;
+		font-size: 11.5px;
+	}
+	.canvas-branch-label {
+		color: var(--text);
+		font-weight: 600;
+	}
+	.canvas-contract-ports {
+		display: flex;
+		align-items: center;
+		gap: 8px;
+		margin-top: 6px;
+		font-size: 11.5px;
+		color: var(--text-faint);
+	}
+	.canvas-contract-ports label {
+		display: flex;
+		align-items: center;
+		gap: 6px;
+		flex: 1;
+		min-width: 0;
+	}
+	.canvas-contract-ports .canvas-select {
+		flex: 1;
+		min-width: 0;
+		width: auto;
+	}
+	.canvas-port-tag {
+		display: inline-block;
+		margin-left: 6px;
+		padding: 0 6px;
+		border-radius: 4px;
+		background: color-mix(in srgb, var(--accent) 14%, transparent);
+		color: var(--text);
+		font-size: 10.5px;
+		font-weight: 400;
+	}
+
+	/* 端子圆心全部压在卡片边框线上（-17 = 10px 体内边距 + 1px 边框 + 6px 半个圆点）：
+	   label 起点距卡边 11px，12px 圆点 left:-17 + margin 清零 → 圆心正好落在边框上 */
+	.canvas-field-label > .canvas-row-port.in {
+		left: -17px;
+		top: 50%;
+	}
+	.canvas-field-label > .canvas-port.port-in {
+		left: -17px;
+		top: 50%;
+		margin-left: 0;
+	}
+	.canvas-field-label > .canvas-port.port-out {
+		right: -17px;
+		top: 50%;
+		margin-right: 0;
+	}
+	.canvas-muted-note {
+		font-size: 11px;
+		color: var(--text-faint);
+		line-height: 1.5;
+		overflow-wrap: anywhere;
+		word-break: break-word;
+	}
+	/* 卡片内所有输入框统一为 AI 指令同款：圆角 / 内边距 / 字号一致 */
+	.canvas-node-card .canvas-input,
+	.canvas-node-card .canvas-select,
+	.canvas-node-card .canvas-instruction-input {
+		border-radius: 6px;
+		padding: 6px 8px;
+		font-size: 12px;
+		line-height: 1.5;
+	}
+
+	/* 输出预览单行省略：卡片保持紧凑，悬停父容器看全文 */
+	.canvas-output-preview {
+		display: block;
+		min-width: 0;
+		overflow: hidden;
+		text-overflow: ellipsis;
+		white-space: nowrap;
+	}
+
+	.canvas-output-error {
+		color: var(--red-text, var(--red));
+	}
+} /* ← @layer base 收口：基线到此结束，后面两段不在任何层里。 */
+
+/* 唯一的 guard 例外：mermaid 用 d3 .style() 把字号写成 SVG 内联 style，
+   任何层内/无层普通声明都压不住它，只能留这一处叹号 important。
+   guard 先声明，层序反转后它的 important 恒胜。 */
 @layer guard {
-	/* guard: mermaid 运行时把字号写进 SVG（库硬编码 18px + foreignObject 内联），必须压过它运行时注入的样式 */
 	.mermaid-svg svg .titleText,
 	.mermaid-svg svg foreignObject .edgeLabel {
 		font-size: var(--mermaid-font-size) !important;
 	}
+}
 
-	/* guard: 外部库（highlight.js）未分层规则会给 pre code.hljs 施加 padding: 1em 与 display: block，
-	   每一行逻辑行 .code-line 内的 code 必须强制清零内边距、保持 pre 排版并支持正常行高 */
-	.codeblock code.code-line-body {
-		padding: 0 !important;
-		background: transparent !important;
-		border: none !important;
-		overflow-x: visible !important;
-		white-space: pre !important;
-		word-break: normal !important;
-	}
+/* ==== 无层结构性覆盖（unlayered，零叹号 important）====
+   无层普通声明天然胜过任何层内普通声明（含 theme 层主题与未分层的
+   highlight.js github-dark.css），下面两组复位不需要提权：
+   - 代码行复位：github-dark 的 `pre code.hljs`（0,1,2，后加载）靠「无层」赢了
+     base 层；这里同为无层后用更高权重（0,2,1）把它盖回去，顺序早晚都不怕。
+   - 折叠态清零：主题的 .goalbar 面板皮在 theme 层，无层一句话就盖住；
+     顺带防插件把 .goalbar 类带回折叠态（老 bundle 缓存页）：面板皮一并抹掉，
+     折叠态只准剩药丸。 */
+.codeblock code.code-line-body {
+	padding: 0;
+	background: transparent;
+	border: none;
+	overflow-x: visible;
+	white-space: pre;
+	word-break: normal;
+}
 
-	/* guard: 主题/插件给 .goalbar 写的底色/边框/圆角带 !important，折叠态必须抹掉面板皮（主题在 theme 层之上） */
-	.goalbar.goalbar-collapsed {
-		border: 0 !important;
-		background: none !important;
-		box-shadow: none !important;
-		padding: 0 !important;
-		/* 主题/插件可能用回贴（backdrop-filter）、圆角、阴影边做任何一丁点绘制；
+.goalbar.goalbar-collapsed {
+	border: 0;
+	background: none;
+	box-shadow: none;
+	padding: 0;
+	/* 主题/插件可能用回贴（backdrop-filter）、圆角、阴影边做任何一丁点绘制；
 	   折叠态的契约是「整行零绘制，只留中间那颗药丸」，一并粘掉。 */
-		backdrop-filter: none !important;
-		-webkit-backdrop-filter: none !important;
-		border-radius: 0 !important;
-	}
+	backdrop-filter: none;
+	-webkit-backdrop-filter: none;
+	border-radius: 0;
+}
+.canvas-minimap {
+	position: absolute;
+	right: 12px;
+	bottom: 12px;
+	width: 160px;
+	height: 110px;
+	background: var(--bg-elev, rgba(0, 0, 0, 0.5));
+	border: 1px solid var(--border);
+	border-radius: 8px;
+	overflow: hidden;
+	z-index: 5;
+}
+.canvas-minimap-dot {
+	position: absolute;
+	width: 10px;
+	height: 10px;
+	border-radius: 50%;
+	background: var(--text-faint, #888);
+	border: none;
+	cursor: pointer;
+	padding: 0;
+}
+.canvas-minimap-dot.active {
+	outline: 2px solid var(--accent);
+	background: var(--accent);
+}
+.canvas-minimap-dot.st-running {
+	background: var(--green, #22c55e);
+}
+.canvas-minimap-dot.st-error {
+	background: var(--red, #ef4444);
+}
+.canvas-minimap-dot.st-waiting_approval {
+	background: var(--amber, #f59e0b);
+}
+.canvas-timeline-toggle {
+	position: absolute;
+	right: 12px;
+	bottom: 130px;
+	z-index: 6;
+	font-size: 12px;
+	padding: 4px 10px;
+	border-radius: 999px;
+	border: 1px solid var(--border);
+	background: var(--bg-elev, rgba(0, 0, 0, 0.6));
+	color: var(--text);
+	cursor: pointer;
+}
+.canvas-timeline {
+	position: absolute;
+	right: 12px;
+	top: 56px;
+	width: 300px;
+	max-height: 60%;
+	overflow: auto;
+	z-index: 6;
+	background: var(--bg-elev, rgba(0, 0, 0, 0.75));
+	border: 1px solid var(--border);
+	border-radius: 10px;
+	padding: 10px;
+	font-size: 12px;
+}
+.canvas-timeline-head {
+	display: flex;
+	align-items: center;
+	gap: 8px;
+	margin-bottom: 8px;
+}
+.canvas-timeline-meta {
+	opacity: 0.7;
+	flex: 1;
+}
+.canvas-timeline-list {
+	display: flex;
+	flex-direction: column;
+	gap: 6px;
+}
+.canvas-timeline-row {
+	display: flex;
+	align-items: center;
+	gap: 8px;
+	padding: 6px 8px;
+	border: 1px solid var(--border);
+	border-radius: 8px;
+}
+.canvas-timeline-dot {
+	width: 8px;
+	height: 8px;
+	border-radius: 50%;
+	background: #888;
+	flex: none;
+}
+.st-running .canvas-timeline-dot {
+	background: #22c55e;
+}
+.st-error .canvas-timeline-dot,
+.canvas-timeline-row.st-error .canvas-timeline-dot {
+	background: #ef4444;
+}
+.st-waiting_approval .canvas-timeline-dot {
+	background: #f59e0b;
+}
+.st-done .canvas-timeline-dot {
+	background: #3b82f6;
+}
+.canvas-timeline-title {
+	background: none;
+	border: none;
+	color: var(--text);
+	cursor: pointer;
+	font-weight: 600;
+	padding: 0;
+	text-align: left;
+}
+.canvas-timeline-sub {
+	opacity: 0.7;
+	flex: 1;
+}
+.canvas-timeline-empty {
+	opacity: 0.6;
+	text-align: center;
+	padding: 12px;
+}
+.canvas-ai-fab {
+	position: absolute;
+	left: 12px;
+	bottom: 12px;
+	z-index: 6;
+	font-size: 12px;
+	padding: 6px 14px;
+	border-radius: 999px;
+	border: 1px solid var(--border);
+	background: var(--accent);
+	color: var(--accent-contrast, #fff);
+	cursor: pointer;
+}
+.canvas-ai-bar {
+	position: absolute;
+	left: 12px;
+	bottom: 12px;
+	z-index: 6;
+	display: flex;
+	gap: 8px;
+	align-items: center;
+	background: var(--bg-elev, rgba(0, 0, 0, 0.75));
+	border: 1px solid var(--border);
+	border-radius: 10px;
+	padding: 8px;
+}
+.canvas-ai-bar input {
+	width: 320px;
+	max-width: 50vw;
+	background: transparent;
+	border: 1px solid var(--border);
+	border-radius: 6px;
+	color: var(--text);
+	padding: 6px 10px;
+	font-size: 12px;
+}
+.canvas-dock {
+	position: absolute;
+	left: 12px;
+	bottom: 12px;
+	z-index: 6;
+	display: flex;
+	align-items: center;
+	gap: 2px;
+	background: color-mix(in srgb, var(--bg-elev) 88%, transparent);
+	backdrop-filter: blur(8px);
+	border: 1px solid var(--border);
+	border-radius: 999px;
+	padding: 4px 6px;
+	box-shadow: 0 4px 16px rgba(0, 0, 0, 0.25);
+}
+.canvas-dock .canvas-ai-fab {
+	position: static;
+	border: none;
+	background: transparent;
+	color: var(--text);
+	box-shadow: none;
+}
+.canvas-dock .canvas-ai-bar {
+	position: static;
+	border: none;
+	background: transparent;
+	padding: 0;
+}
+.canvas-export-bar {
+	position: static;
+	display: flex;
+	gap: 2px;
+	border-left: 1px solid var(--border);
+	padding-left: 6px;
+	margin-left: 4px;
+}
+.canvas-dock-btn {
+	border: none;
+	background: transparent;
+	color: var(--text-faint);
+	font-size: 12px;
+	padding: 6px 10px;
+	border-radius: 999px;
+	cursor: pointer;
+	white-space: nowrap;
+}
+.canvas-dock-btn:hover {
+	background: color-mix(in srgb, var(--accent) 15%, transparent);
+	color: var(--text);
+}
+.canvas-smart-banner {
+	position: absolute;
+	left: 50%;
+	top: 56px;
+	transform: translateX(-50%);
+	z-index: 7;
+	display: flex;
+	gap: 8px;
+	align-items: center;
+	background: var(--bg-elev, rgba(0, 0, 0, 0.85));
+	border: 1px solid var(--accent);
+	border-radius: 10px;
+	padding: 8px 12px;
+	font-size: 12px;
+	box-shadow: 0 4px 16px rgba(0, 0, 0, 0.3);
+}
+.canvas-smart-banner.error {
+	border-color: var(--red, #ef4444);
 }

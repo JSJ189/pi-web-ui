@@ -16,6 +16,7 @@ export function handleCanvasMessage(
 	dataDir: string,
 	orchestrator: CanvasOrchestrator,
 	send: (msg: ServerMessage) => void,
+	opts?: { runBase?: string },
 ): boolean {
 	switch (msg.type) {
 		case "canvas_list": {
@@ -40,7 +41,19 @@ export function handleCanvasMessage(
 
 		case "canvas_save": {
 			if (!isSafeGraphId(msg.graph?.id)) return true;
-			saveCanvasGraph(dataDir, msg.graph);
+			const res = saveCanvasGraph(dataDir, msg.graph, { expectedRev: msg.baseRev });
+			if (res.conflict) {
+				send({
+					type: "canvas_error",
+					code: "rev_conflict",
+					message: "stale",
+					graphId: msg.graph.id,
+					graph: res.graph,
+					requestId: msg.requestId,
+				});
+				send({ type: "canvas_graph_state", graph: res.graph });
+				return true;
+			}
 			send({ type: "canvas_graph_state", graph: msg.graph });
 			const graphs = listCanvasGraphs(dataDir);
 			send({ type: "canvas_list_result", graphs });
@@ -58,7 +71,7 @@ export function handleCanvasMessage(
 		case "canvas_run_all": {
 			try {
 				const graph = loadCanvasGraph(dataDir, msg.graphId);
-				void orchestrator.runAll(graph, msg.initialPrompt);
+				void orchestrator.runAll(graph, msg.initialPrompt, opts?.runBase);
 			} catch {
 				// 忽略
 			}
@@ -68,7 +81,7 @@ export function handleCanvasMessage(
 		case "canvas_run_node": {
 			try {
 				const graph = loadCanvasGraph(dataDir, msg.graphId);
-				void orchestrator.runNode(graph, msg.nodeId, msg.prompt);
+				void orchestrator.runNode(graph, msg.nodeId, msg.prompt, opts?.runBase);
 			} catch {
 				// 忽略
 			}
@@ -82,6 +95,37 @@ export function handleCanvasMessage(
 
 		case "canvas_stop_all": {
 			orchestrator.stopAll(msg.graphId);
+			return true;
+		}
+
+		case "canvas_steer_node": {
+			if (!isSafeGraphId(msg.graphId)) return true;
+			orchestrator.steerNode(msg.graphId, msg.nodeId, msg.message);
+			return true;
+		}
+
+		case "canvas_get_log": {
+			if (!isSafeGraphId(msg.graphId)) return true;
+			send({
+				type: "canvas_node_log_state",
+				graphId: msg.graphId,
+				nodeId: msg.nodeId,
+				entries: orchestrator.getNodeLog(msg.graphId, msg.nodeId),
+				messages: orchestrator.getNodeMessages(msg.graphId, msg.nodeId),
+			});
+			return true;
+		}
+
+		case "canvas_clear_log": {
+			if (!isSafeGraphId(msg.graphId)) return true;
+			orchestrator.clearNodeLog(msg.graphId, msg.nodeId);
+			send({
+				type: "canvas_node_log_state",
+				graphId: msg.graphId,
+				nodeId: msg.nodeId,
+				entries: [],
+				messages: [],
+			});
 			return true;
 		}
 

@@ -40,6 +40,8 @@ interface DropdownProps {
 	menuClassName?: string;
 	/** Ref to the menu panel (for measuring/sizing it). */
 	menuRef?: Ref<HTMLDivElement>;
+	/** Custom class for the outer dropdown container (default undefined). */
+	className?: string;
 	/** Custom class for the trigger button (default "chip"). */
 	triggerClassName?: string;
 	/** Optional contextmenu handler for the trigger button (e.g. BarItem layout menu). */
@@ -239,6 +241,7 @@ export function Dropdown({
 	dataBarItem,
 	menuRef,
 	menuStyle,
+	className,
 }: DropdownProps) {
 	const ref = useRef<HTMLDivElement>(null);
 	const internalMenuRef = useRef<HTMLDivElement | null>(null);
@@ -359,7 +362,10 @@ export function Dropdown({
 		portalPos != null && ref.current ? portalPos.top < ref.current.getBoundingClientRect().top : direction === "up";
 
 	return (
-		<div className={`dropdown ${align} ${fit ? "fit" : ""} ${direction === "up" ? "dd-up" : ""}`} ref={ref}>
+		<div
+			className={`dropdown ${align} ${fit ? "fit" : ""} ${direction === "up" ? "dd-up" : ""} ${className ?? ""}`.trim()}
+			ref={ref}
+		>
 			<button
 				type="button"
 				className={triggerClassName ?? "chip"}

@@ -103,6 +103,7 @@ import {
 } from "./remote-ssh-service.js";
 import { handlePluginMessage } from "./dispatch-plugin-handlers.js";
 import { CanvasOrchestrator } from "./canvas/canvas-orchestrator.js";
+import { setCanvasBroadcaster, setCanvasRuntime } from "./canvas/canvas-agent-tool.js";
 import { handleCanvasMessage } from "./canvas/canvas-dispatch.js";
 import type {
 	BgServer,
@@ -2024,6 +2025,21 @@ setGlobalRemoteSshService(remoteSshService);
 
 // 多引擎多模型多目录画布协作调度器 (Canvas Studio)
 const canvasOrchestrator = new CanvasOrchestrator(CWD, DATA_DIR, (eng) => ensureEngine(eng));
+setCanvasRuntime(canvasOrchestrator);
+// AI 工具改图广播：与 orchestrator 同一个 WS 广播，开着的画布实时刷新（免刷新）。
+const broadcastCanvas: Parameters<CanvasOrchestrator["setBroadcaster"]>[0] = (msg) => {
+	const payload = JSON.stringify(msg);
+	for (const client of wss.clients) {
+		if (client.readyState !== WebSocket.OPEN) continue;
+		if (client.bufferedAmount > BROADCAST_BACKPRESSURE_MAX_BYTES) continue;
+		try {
+			client.send(payload);
+		} catch {
+			/* 客户端断开连接忽略 */
+		}
+	}
+};
+setCanvasBroadcaster((msg) => broadcastCanvas(msg as never));
 canvasOrchestrator.setBroadcaster((msg) => {
 	const payload = JSON.stringify(msg);
 	for (const client of wss.clients) {
@@ -2892,7 +2908,7 @@ wss.on("connection", (ws) => {
 			if (handleScheduleMessage(msg, scheduler, send)) return;
 			if (handleRemoteSshMessage(msg, remoteSshService, send)) return;
 			if (handleSettingsMessage(msg, cs)) return;
-			if (handleCanvasMessage(msg, DATA_DIR, canvasOrchestrator, send)) return;
+			if (handleCanvasMessage(msg, DATA_DIR, canvasOrchestrator, send, { runBase: cs.cwd })) return;
 			if (handleInteractiveResponseMessage(msg, cs, service, clientId, send)) return;
 			if (
 				handlePluginMessage(msg, {

@@ -434,6 +434,53 @@
 	box-shadow: 0 1px 3px rgba(0, 0, 0, 0.12);
 	transition: all 0.15s ease;
 	user-select: none;
+	/* 窄容器（画布卡片/抽屉）里必须能收缩，否则整颗胶囊顶出父容器 */
+	max-width: 100%;
+	min-width: 0;
+}
+
+/* 收缩要落在「真 flex item」上：两段 trigger 都被 Dropdown 包了一层 .dropdown，
+ * 而 flex item 默认 min-width:auto（= min-content），模型名不省略就会把
+ * 思考强度段顶出容器（画布里表现为「极简」跑出卡片边界）。 */
+.model-thinking-capsule > .dropdown {
+	display: flex;
+	min-width: 0;
+	max-width: 100%;
+}
+
+.model-thinking-capsule > .capsule-model-dropdown,
+.model-thinking-capsule > .dropdown:has(.capsule-model) {
+	flex: 1 1 auto;
+	min-width: 0;
+	overflow: hidden;
+}
+
+.model-thinking-capsule > .capsule-thinking-dropdown,
+.model-thinking-capsule > .dropdown:has(.capsule-thinking) {
+	flex: 0 0 auto;
+}
+
+.model-thinking-capsule .capsule-segment {
+	min-width: 0;
+}
+
+.model-thinking-capsule .capsule-segment.capsule-model {
+	flex: 1 1 auto;
+	min-width: 0;
+	max-width: 100%;
+	overflow: hidden;
+}
+
+.model-thinking-capsule .capsule-model-name {
+	flex: 1 1 auto;
+	min-width: 0;
+	overflow: hidden;
+	text-overflow: ellipsis;
+	white-space: nowrap;
+}
+
+.model-thinking-capsule .capsule-divider {
+	flex: 0 0 auto;
 }
 
 .model-thinking-capsule:hover {
@@ -1198,11 +1245,11 @@
 
 .matrix-input-field {
 	flex: 1;
-	background: transparent !important;
-	border: none !important;
-	box-shadow: none !important;
+	background: transparent;
+	border: none;
+	box-shadow: none;
 	color: var(--text);
-	padding: 7px 0 !important;
+	padding: 7px 0;
 	font-size: 12.5px;
 	outline: none;
 	min-width: 0;
@@ -1334,9 +1381,10 @@
 	opacity: 0.8;
 }
 
-.dd-star-btn:hover {
-	opacity: 1 !important;
-	color: var(--amber) !important;
+/* 双类提权：盖过 .dd-item:hover .dd-star-btn（三类），hover 态无需提权。 */
+.dd-item:hover .dd-star-btn:hover {
+	opacity: 1;
+	color: var(--amber);
 	transform: scale(1.15);
 }
 

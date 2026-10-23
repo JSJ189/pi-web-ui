@@ -508,8 +508,8 @@ export const GoalBar = memo(function GoalBar({
 		const pillBar = renderMergedToolbar(goalZone(["host:goal-pill"]), goalHostNodes, onUiAction);
 		if (!pillBar) return null;
 		// 折叠态**刻意不带 `.goalbar` 类**：那一套是「整条面板」的皮（边框/底色/
-		// 圆角/内边距），主题还会用 `.goalbar { border-top: … !important }` 画一条
-		// 通栏细线 —— 收起时它就是一条横跨整列的带子，正好横在最后一条消息上把它
+		// 圆角/内边距），主题还可能用 `.goalbar { border-top: … }` 画一条通栏细线 ——
+		// 收起时它就是一条横跨整列的带子，正好横在最后一条消息上把它
 		// 切断（用户实报「折叠时一整行遮挡底部消息」）。折叠态只是消息区与输入框
 		// 之间的一枚小药丸：自带一个 flex 行、整行水平居中、不多占高度。
 		return <div className="goalbar-collapsed">{pillBar}</div>;

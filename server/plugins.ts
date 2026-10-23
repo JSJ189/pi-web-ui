@@ -582,11 +582,11 @@ export interface PluginHost {
 	/** 确保依赖就绪：缺了自动 npm install 到插件目录（单飞合并）。
 	 *  resolve 后的 import 才能成功——插件动态加载重型依赖前应 await 它。 */
 	ensureDeps(specs: string[], opts?: { onProgress?: (msg: string) => void }): Promise<boolean>;
-	/** 挂载 HTTP 路由：实际暴露为 /plugins-api/<id><path>（GET/POST/PUT/DELETE）。
+	/** 挂载 HTTP 路由：实际暴露为 /plugins-api/<id><path>（GET/POST/PUT/DELETE/OPTIONS，OPTIONS 供 CORS 预检）。
 	 *  主站的 PI_WEB_TOKEN 鉴权自动覆盖这些路由；body 已过 express.json 解析。
 	 *  handler 抛错由宿主转成 500，不炸进程。返回注销函数。需要能力 "http"。 */
 	route(
-		method: "GET" | "POST" | "PUT" | "DELETE",
+		method: "GET" | "POST" | "PUT" | "DELETE" | "OPTIONS",
 		path: string,
 		handler: (req: Request, res: Response) => void,
 	): () => void;
@@ -4138,7 +4138,7 @@ export class PluginManager {
 				if (!can("http")) return () => {};
 				const m = String(method ?? "GET").toUpperCase();
 				if (
-					!["GET", "POST", "PUT", "DELETE"].includes(m) ||
+					!["GET", "POST", "PUT", "DELETE", "OPTIONS"].includes(m) ||
 					typeof path !== "string" ||
 					!path.startsWith("/") ||
 					typeof handler !== "function"

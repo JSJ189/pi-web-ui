@@ -270,6 +270,7 @@ export const ModelThinking = memo(function ModelThinking({
 	return (
 		<div className="model-thinking-capsule">
 			<Dropdown
+				className="capsule-dropdown capsule-model-dropdown"
 				trigger={
 					<>
 						<FiCpu />
@@ -295,6 +296,7 @@ export const ModelThinking = memo(function ModelThinking({
 			</Dropdown>
 			<div className="capsule-divider" />
 			<Dropdown
+				className="capsule-dropdown capsule-thinking-dropdown"
 				trigger={
 					<>
 						<span className={`thinking-pulse-dot ${isThinkingOn ? "on" : ""}`} />

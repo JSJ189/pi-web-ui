@@ -33,6 +33,7 @@ export function createDefaultCanvasGraph(id = "default"): CanvasGraph {
 				useWorktree: false,
 				systemPromptOverride:
 					"你是团队首席架构师。负责拆解需求、明确模块边界与接口契约，向前后端开发派发清晰的任务卡。",
+				instruction: "把业务需求拆解为前后端清晰的技术规约与数据契约，可用 {{上游摘要}} 引用输入，派发任务卡给下游。",
 				status: "idle",
 			},
 			{
@@ -47,6 +48,7 @@ export function createDefaultCanvasGraph(id = "default"): CanvasGraph {
 				cwd: "web",
 				useWorktree: true,
 				systemPromptOverride: "你是前端专家。使用 DSH 极速 Hashline 补丁引擎，根据契约编写 React/Vite 界面与交互。",
+				instruction: "基于上游契约 {{上游摘要}} 快速编写组件与交互，保持最小改动。",
 				status: "idle",
 			},
 			{
@@ -62,6 +64,7 @@ export function createDefaultCanvasGraph(id = "default"): CanvasGraph {
 				useWorktree: true,
 				systemPromptOverride:
 					"你是后端服务专家。使用 Claude Code 引擎负责 Node/Express/WS 路由实现、数据持久化与核心逻辑处理。",
+				instruction: "按上游数据契约 {{上游摘要}} 实现后端路由与核心逻辑，保证可运行。",
 				status: "idle",
 			},
 			{
@@ -77,6 +80,7 @@ export function createDefaultCanvasGraph(id = "default"): CanvasGraph {
 				useWorktree: false,
 				systemPromptOverride:
 					"你是测试与自愈运维专家。使用 Durable 引擎持久化运行单元测试、类型检查与端到端验证，发现 Bug 即时自愈纠错。",
+				instruction: "运行测试套件并自动修复失败项，把验证结论交接归档。",
 				status: "idle",
 			},
 		],
@@ -191,13 +195,71 @@ export function loadCanvasGraph(dataDir: string, id: string): CanvasGraph {
 	return JSON.parse(readFileSync(path, "utf8")) as CanvasGraph;
 }
 
-/** 保存或更新画布工程 */
-export function saveCanvasGraph(dataDir: string, graph: CanvasGraph): void {
+/** 保存或更新画布工程（全量拓扑写：rev +1） */
+export function saveCanvasGraph(
+	dataDir: string,
+	graph: CanvasGraph,
+	opts?: { expectedRev?: number },
+): { conflict: boolean; graph: CanvasGraph } {
 	assertSafeGraphId(graph.id);
 	const dir = ensureCanvasDir(dataDir);
-	graph.updatedAt = Date.now();
 	const path = join(dir, `${graph.id}.json`);
+	let diskRev = 0;
+	if (existsSync(path)) {
+		try {
+			diskRev = (JSON.parse(readFileSync(path, "utf8")) as CanvasGraph).rev ?? 0;
+		} catch {
+			diskRev = 0;
+		}
+	}
+	if (opts?.expectedRev !== undefined && opts.expectedRev !== diskRev) {
+		return { conflict: true, graph: JSON.parse(readFileSync(path, "utf8")) as CanvasGraph };
+	}
+	graph.rev = diskRev + 1;
+	graph.updatedAt = Date.now();
 	writeJsonAtomicSync(path, graph);
+	return { conflict: false, graph };
+}
+
+const RUNTIME_FIELDS = [
+	"status",
+	"currentAction",
+	"lastOutputSummary",
+	"lastError",
+	"loopCount",
+	"needsReview",
+	"reviewDecision",
+] as const;
+
+/** 运行态落盘：只合并运行字段，拓扑（nodes 增删/edges/坐标/指令）以磁盘版为准，防 stale 回滚（F1）。不推进 rev。 */
+export function saveCanvasRuntimeState(dataDir: string, runtime: CanvasGraph): void {
+	assertSafeGraphId(runtime.id);
+	const dir = ensureCanvasDir(dataDir);
+	const path = join(dir, `${runtime.id}.json`);
+	if (!existsSync(path)) {
+		runtime.rev = runtime.rev ?? 1;
+		runtime.updatedAt = Date.now();
+		writeJsonAtomicSync(path, runtime);
+		return;
+	}
+	let disk: CanvasGraph;
+	try {
+		disk = JSON.parse(readFileSync(path, "utf8")) as CanvasGraph;
+	} catch {
+		return;
+	}
+	const rt = new Map(runtime.nodes.map((n) => [n.id, n]));
+	for (const n of disk.nodes) {
+		const r = rt.get(n.id);
+		if (!r) continue;
+		for (const f of RUNTIME_FIELDS)
+			(n as unknown as Record<string, unknown>)[f] = (r as unknown as Record<string, unknown>)[f];
+	}
+	disk.status = runtime.status;
+	disk.updatedAt = Date.now();
+	writeJsonAtomicSync(path, disk);
+	// 回填调用方，使广播带上最新 rev/拓扑
+	runtime.rev = disk.rev;
 }
 
 /** 删除画布工程 */

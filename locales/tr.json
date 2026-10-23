@@ -2089,6 +2089,8 @@
 		"sandboxActionDestroyConfirm": "Sandbox «{name}» ve tüm izole dosyaları kalıcı olarak yok edilsin mi? Bu işlem geri alınamaz.",
 		"toolsWorktreeDesc": "Git worktree'lerini yönetir; arayüz çalışma alanı eşzamanlı kalırken birden çok PR/dalda paralel çalışmayı destekler",
 		"toolsWorktreeOffHint": "Kapatıldığında AI worktree aracını kullanamaz; terminalde manuel işlem gerekir",
+		"canvasToolEnabledDesc": "Read and edit canvas pipelines: list graphs, add nodes/edges, replace the DAG",
+		"canvasToolOffHint": "When disabled, AI cannot create or edit canvases; edit by hand",
 		"worktreeBadgeLinked": "Worktree",
 		"worktreeBadgeDirtyCount": "{count} değişiklik",
 		"worktreeBannerActiveTitle": "Şu an Git worktree içinde: {branch}",
