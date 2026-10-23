@@ -231,7 +231,6 @@ export class CanvasOrchestrator {
 			// 已在运行中
 			return;
 		}
-
 		const controller = new AbortController();
 		this.activeExecutions.set(execKey, {
 			graphId: graph.id,
@@ -315,13 +314,42 @@ export class CanvasOrchestrator {
 			if (!isCanvasPassthroughRole(node.role) && node.role !== "transform" && cfgEntries.length > 0) {
 				configContext = `\n【本节点专属参数】:\n${cfgEntries.map((entry) => `${entry[0]}=${String(entry[1])}`).join("；")}\n`;
 			}
-			const prompt = isInputOnly
+			let prompt = isInputOnly
 				? `${contractContext}${configContext ? `\n${configContext}` : ""}`
 				: `${expandedInstruction || "按照你的角色职责进行开发"}\n${configContext}${contractContext}`;
 			this.appendLog(graph.id, nodeId, "prompt", prompt.slice(0, 2000));
 
 			let outputSummary = "";
 
+			// AI 条件裁决（config.aiJudge=true）：条件节点走一次轻量问答做语义判定，
+			// 只能回“结论：通过/不通过”，下游按它分流；失败回落关键词。未开启还是零 token 透传。
+			const wantAiJudge =
+				(node.role === "ai_judge" || (node.role === "condition" && node.config?.aiJudge === true)) &&
+				graph.executionMode !== "simulate" &&
+				!!this.engineGetter;
+			let judgeModel: string = node.model;
+			if (wantAiJudge) {
+				const condRef = String(node.config?.condition ?? "").trim() || "上游产物符合预期";
+				const instructionAsk = (node.instruction ?? "").trim().slice(0, 500);
+				const judgeAsk =
+					typeof node.config?.judge === "string" && node.config.judge.trim()
+						? String(node.config.judge).trim().slice(0, 500)
+						: instructionAsk || `判断上游产物是否满足【${condRef}】`;
+				const upstreamBlock = contractContext.trim()
+					? `上游产物摘要：\n${contractContext.slice(0, 4000)}\n问题：${judgeAsk}（以上游产物为依据）`
+					: `无上游产物，直接回答问题：${judgeAsk}`;
+				prompt = `你是流水线分支裁判。只做二选一语义判断，不干别的活，不调用任何工具。\n${upstreamBlock}\n要求：最后一行必须 exactly 输出“结论：通过”或“结论：不通过”，前面可附一行理由。`;
+				judgeModel =
+					typeof node.config?.judgeModel === "string" && node.config.judgeModel.trim()
+						? node.config.judgeModel.trim().slice(0, 120)
+						: node.model;
+				this.appendLog(
+					graph.id,
+					nodeId,
+					"system",
+					`AI 裁决启动（${node.engine}/${judgeModel}）：${judgeAsk.slice(0, 200)}`,
+				);
+			}
 			// 纯透传控制节点（条件/循环/人工/汇聚/记忆/结束）：不启动 LLM 会话，直接透传摘要。人工审批节点停留在 waiting_approval 等待抽屉批准，不自动向下游流转。
 			if (node.role === "transform") {
 				const transformed = executeTransformNode(graph, node);
@@ -342,7 +370,7 @@ export class CanvasOrchestrator {
 				await this.handleDownstreamEdges(graph, node);
 				return;
 			}
-			if (isCanvasPassthroughRole(node.role)) {
+			if (!wantAiJudge && isCanvasPassthroughRole(node.role)) {
 				const passthroughSummary = buildPassthroughSummary(node, contractContext, initialPrompt);
 				if (node.role === "human") {
 					node.status = "waiting_approval";
@@ -394,23 +422,29 @@ export class CanvasOrchestrator {
 				});
 				outputSummary = `[${node.title}] 演练完成，工作目录：${node.cwd || "."}`;
 			} else {
-				outputSummary = await this.executeRealEngineNode(
-					graph,
-					node,
-					resolvedCwd,
-					prompt,
-					controller.signal,
-					(action) => {
-						node.currentAction = action;
-						this.broadcast({
-							type: "canvas_node_event",
-							graphId: graph.id,
-							nodeId,
-							event: "action",
-							currentAction: action,
-						});
-					},
-				);
+				const savedModel = node.model;
+				if (wantAiJudge && judgeModel !== node.model) node.model = judgeModel;
+				try {
+					outputSummary = await this.executeRealEngineNode(
+						graph,
+						node,
+						resolvedCwd,
+						prompt,
+						controller.signal,
+						(action) => {
+							node.currentAction = action;
+							this.broadcast({
+								type: "canvas_node_event",
+								graphId: graph.id,
+								nodeId,
+								event: "action",
+								currentAction: action,
+							});
+						},
+					);
+				} finally {
+					node.model = savedModel;
+				}
 			}
 
 			if (controller.signal.aborted) {
@@ -422,6 +456,21 @@ export class CanvasOrchestrator {
 			node.status = "done";
 			node.currentAction = `已完成 (${node.engine.toUpperCase()})`;
 			node.lastOutputSummary = outputSummary;
+			if (wantAiJudge) {
+				const hits = [
+					...outputSummary.matchAll(/结论\s*[：:]\s*(通过|不通过|成立|不成立|是|否|真|假|true|false|yes|no)/gi),
+				];
+				const last = hits.length > 0 ? String(hits[hits.length - 1][1]).toLowerCase() : "";
+				node.aiVerdict = last ? ["通过", "成立", "是", "真", "true", "yes"].includes(last) : undefined;
+				this.appendLog(
+					graph.id,
+					nodeId,
+					"system",
+					node.aiVerdict === undefined
+						? "AI 裁决未给出有效结论（默认走不成立边）。"
+						: `AI 裁决结论：${node.aiVerdict ? "通过" : "不通过"}（独立判定，未混入关键词）。`,
+				);
+			}
 			this.appendLog(graph.id, nodeId, "done", outputSummary.slice(0, 2000));
 			this.activeExecutions.delete(execKey);
 			saveCanvasRuntimeState(this.dataDir, graph);
@@ -492,7 +541,8 @@ export class CanvasOrchestrator {
 			// 人工批准只走批准/主线边，不触发驳回回路边（reject / loop_back / review）
 			outEdges = outEdges.filter((e) => e.type !== "reject" && e.type !== "loop_back" && e.type !== "review");
 		}
-		if (completedNode.role === "condition") {
+		if (completedNode.role === "condition" || completedNode.role === "ai_judge") {
+			const aiMode = completedNode.role === "ai_judge" || completedNode.config?.aiJudge === true;
 			const condText = String(completedNode.config?.condition ?? "");
 			const upstreamText =
 				graph.edges
@@ -506,7 +556,19 @@ export class CanvasOrchestrator {
 				.split(/[\s,\uFF0C\u3001/()\u2014\u2014]+/)
 				.map((t) => t.trim())
 				.filter((t) => t.length >= 2);
-			const hit = tokens.length === 0 ? true : tokens.some((t) => summary.includes(t));
+			const hit = aiMode
+				? completedNode.aiVerdict === true
+				: tokens.length === 0
+					? true
+					: tokens.some((t) => summary.includes(t));
+			if (aiMode) {
+				this.appendLog(
+					graph.id,
+					completedNode.id,
+					"system",
+					`分支：${hit ? "成立边" : "不成立边"}（AI 独立裁决${completedNode.aiVerdict === undefined ? "，无结论默认不成立" : ""}）。`,
+				);
+			}
 			outEdges = outEdges.filter((e) => {
 				if (e.type === "condition_true") return hit;
 				if (e.type === "condition_false") return !hit;
@@ -701,6 +763,7 @@ export class CanvasOrchestrator {
 		graph.status = "idle";
 		for (const node of graph.nodes) {
 			node.status = "idle";
+			node.aiVerdict = undefined;
 			node.error = undefined;
 			node.currentAction = undefined;
 			node.lastOutputSummary = undefined;

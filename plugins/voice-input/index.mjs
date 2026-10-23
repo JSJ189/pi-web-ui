@@ -81,6 +81,33 @@ export function whisperLang(lang) {
 }
 
 /**
+ * 各语言默认 initial_prompt：Whisper 只有一个 chinese 标签，繁简靠统计偏好，
+ * 不干预时中文常见偏繁体；官方推荐用 initial_prompt 纠偏（#709）。
+ * 用户自定义（initialPrompt 设置）优先于这里；空串 = 不传。纯函数，单测覆盖。
+ */
+export const DEFAULT_INITIAL_PROMPTS = {
+	zh: "以下是普通话的句子，请使用简体中文。",
+	"zh-traditional": "以下是國語的句子，請使用臺灣繁體中文。",
+	en: "This is a sentence in English. Please transcribe it accurately.",
+	ja: "以下は日本語の文です。正確に書き起こしてください。",
+	ko: "다음은 한국어 문장입니다. 정확하게 받아써 주세요.",
+};
+
+/** 解析转写 initial_prompt：用户自定义 > 中文按 zhVariant 选繁简 > 按语言默认。纯函数，单测覆盖。 */
+export function resolveInitialPrompt(lang, cfg = {}) {
+	const custom = typeof cfg?.initialPrompt === "string" ? cfg.initialPrompt.trim() : "";
+	if (custom) return custom.slice(0, 500);
+	const l = str(lang).toLowerCase();
+	if (l.startsWith("zh")) {
+		const v = str(cfg?.zhVariant || "simplified").toLowerCase();
+		if (v.startsWith("trad")) return DEFAULT_INITIAL_PROMPTS["zh-traditional"];
+		return DEFAULT_INITIAL_PROMPTS.zh;
+	}
+	for (const k of ["en", "ja", "ko"]) if (l.startsWith(k)) return DEFAULT_INITIAL_PROMPTS[k];
+	return "";
+}
+
+/**
  * 插件语言 → 本地 transformers.js Whisper 的 language 参数（英文全名）。
  * 纯函数，单测覆盖。
  */
@@ -620,9 +647,11 @@ export default {
 			const capped = samples.length > 16000 * 480 ? samples.slice(0, 16000 * 480) : samples;
 			const pipe = await getPipe(modelId);
 			const fullLang = whisperFullLang(lang);
+			const initialPrompt = resolveInitialPrompt(lang, cfg);
 			const out = await pipe(capped, {
 				language: fullLang || undefined,
 				task: "transcribe",
+				...(initialPrompt ? { initial_prompt: initialPrompt } : {}),
 				chunk_length_s: 30,
 				stride_length_s: 5,
 			});
@@ -665,6 +694,8 @@ export default {
 			form.set("file", new Blob([audio], { type: mime }), `voice.${ext}`);
 			form.set("model", str(cfg.transcribeModel) || "whisper-1");
 			if (wl) form.set("language", wl);
+			const prompt = resolveInitialPrompt(lang, cfg);
+			if (prompt) form.set("prompt", prompt);
 			const ctrl = new AbortController();
 			const timer = setTimeout(() => ctrl.abort(), REMOTE_TRANSCRIBE_TIMEOUT_MS);
 			let r;

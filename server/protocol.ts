@@ -483,6 +483,7 @@ export type CanvasNodeRole =
 	| "writer"
 	| "analyst"
 	| "condition"
+	| "ai_judge"
 	| "loop"
 	| "human"
 	| "knowledge"
@@ -534,6 +535,8 @@ export interface CanvasNode {
 	activeConvId?: string;
 	currentAction?: string;
 	lastOutputSummary?: string;
+	/** AI 裁决结论（condition 开 aiJudge 后由模型写入）：true=成立边，false=不成立边；与关键词判定完全独立，不混用 */
+	aiVerdict?: boolean;
 	error?: string;
 }
 
@@ -569,6 +572,20 @@ export interface CanvasGraph {
 	rev?: number;
 }
 
+/** 自定义卡片：AI/用户沉淀的可复用节点模板（存 <dataDir>/canvas/custom-cards.json，永久有效）。落图时展开为普通节点（role 沿用内置角色），因此不需要改封闭的 CanvasNodeRole 联合类型。 */
+export interface CanvasCustomCard {
+	id: string;
+	title: string;
+	role: CanvasNodeRole;
+	instruction?: string;
+	systemPrompt?: string;
+	model?: string;
+	engine?: CanvasEngineId;
+	/** 行为参数（loop 次数 / condition 表达式 / cron / api 地址等）：落图时原样写入节点 config */
+	config?: Record<string, string | number | boolean>;
+	updatedAt: number;
+}
+
 export interface CanvasGraphSummary {
 	id: string;
 	name: string;
@@ -591,6 +608,8 @@ export type ClientMessage =
 	| { type: "canvas_steer_node"; graphId: string; nodeId: string; message: string }
 	| { type: "canvas_review_node"; graphId: string; nodeId: string; decision: "approve" | "reject"; comment?: string }
 	| { type: "canvas_reset_status"; graphId: string }
+	| { type: "canvas_cards" }
+	| { type: "canvas_card_delete"; id: string }
 	| { type: "canvas_get_log"; graphId: string; nodeId: string }
 	| { type: "canvas_clear_log"; graphId: string; nodeId: string }
 	/** Browser UI language changed (or first report after hello) — server
@@ -3382,6 +3401,10 @@ export type ServerMessage =
 	| {
 			type: "canvas_graph_state";
 			graph: CanvasGraph;
+	  }
+	| {
+			type: "canvas_cards_state";
+			cards: CanvasCustomCard[];
 	  }
 	| {
 			type: "canvas_error";

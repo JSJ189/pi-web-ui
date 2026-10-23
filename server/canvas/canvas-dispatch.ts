@@ -9,6 +9,7 @@ import {
 	loadCanvasGraph,
 	saveCanvasGraph,
 } from "./canvas-store.js";
+import { deleteCustomCard, listCustomCards } from "./canvas-cards.js";
 import type { CanvasOrchestrator } from "./canvas-orchestrator.js";
 
 export function handleCanvasMessage(
@@ -22,6 +23,21 @@ export function handleCanvasMessage(
 		case "canvas_list": {
 			const graphs = listCanvasGraphs(dataDir);
 			send({ type: "canvas_list_result", graphs });
+			return true;
+		}
+
+		case "canvas_cards": {
+			send({ type: "canvas_cards_state", cards: listCustomCards(dataDir) });
+			return true;
+		}
+
+		case "canvas_card_delete": {
+			try {
+				deleteCustomCard(dataDir, msg.id);
+			} catch {
+				// 非法 id 直接忽略
+			}
+			send({ type: "canvas_cards_state", cards: listCustomCards(dataDir) });
 			return true;
 		}
 

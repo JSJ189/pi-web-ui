@@ -12,6 +12,7 @@ import { defineTool, type ToolDefinition } from "@earendil-works/pi-coding-agent
 import { pick, type ServerLang } from "../i18n.js";
 import { CANVAS_TOOL_NAME } from "../tool-manager.js";
 import { deleteCanvasGraph, listCanvasGraphs, loadCanvasGraph, saveCanvasGraph } from "./canvas-store.js";
+import { addCustomCard, deleteCustomCard, listCustomCards, updateCustomCard } from "./canvas-cards.js";
 import type { CanvasEdge, CanvasGraph, CanvasNode, CanvasNodeRole, ServerMessage } from "../protocol.js";
 
 export interface CanvasToolHost {
@@ -61,6 +62,15 @@ export function setCanvasBroadcaster(fn: ((msg: ServerMessage) => void) | null):
 }
 
 /** 落盘 + 广播（开着的 Canvas Studio 实时刷新）。 */
+/** 自定义卡片变更广播：开着的画布工具栏实时刷新，无需重进。 */
+function pushCards(dataDir: string): void {
+	try {
+		canvasBroadcaster?.({ type: "canvas_cards_state", cards: listCustomCards(dataDir) });
+	} catch {
+		// 忽略
+	}
+}
+
 function saveAndPush(dataDir: string, graph: CanvasGraph): void {
 	saveCanvasGraph(dataDir, graph);
 	try {
@@ -87,6 +97,7 @@ const VALID_ROLES = new Set([
 	"evaluator",
 	"custom",
 	"condition",
+	"ai_judge",
 	"loop",
 	"human",
 	"merge",
@@ -114,6 +125,11 @@ const canvasSchema = Type.Object({
 		Type.Literal("get_log"),
 		Type.Literal("reset_status"),
 		Type.Literal("layout_graph"),
+		Type.Literal("card_list"),
+		Type.Literal("card_add"),
+		Type.Literal("card_update"),
+		Type.Literal("card_delete"),
+		Type.Literal("card_place"),
 		Type.Literal("add_node"),
 		Type.Literal("update_node"),
 		Type.Literal("delete_node"),
@@ -126,6 +142,7 @@ const canvasSchema = Type.Object({
 	role: Type.Optional(Type.String()),
 	instruction: Type.Optional(Type.String()),
 	nodeId: Type.Optional(Type.String()),
+	cardId: Type.Optional(Type.String({ description: "Custom card id (card_list shows them)" })),
 	cwd: Type.Optional(
 		Type.String({
 			description: "Working directory for a new node (absolute path pins a project; omit = current project)",
@@ -170,7 +187,7 @@ export function makeCanvasTool(host: CanvasToolHost, lang?: () => ServerLang): T
 		name: CANVAS_TOOL_NAME,
 		label: "Canvas pipeline",
 		description:
-			"Read and edit canvas workflow graphs: list/get/create/delete graphs, add/update/delete nodes and edges, replace the DAG, layout/rearrange nodes on a tidy grid, run all or one node, stop, steer a running node, approve/reject review gates, read node logs, reset status. Use it when the user asks to create, change, run, or debug a pipeline.",
+			"Read and edit canvas workflow graphs: list/get/create/delete graphs, add/update/delete nodes and edges, replace the DAG, layout/rearrange nodes on a tidy grid, run all or one node, stop, steer a running node, approve/reject review gates, read node logs, reset status, manage reusable custom cards. Use it when the user asks to create, change, run, or debug a pipeline.",
 		promptSnippet: "create or edit a canvas workflow pipeline",
 		promptGuidelines: [
 			"Always get the graph first before editing so node ids and roles are real",
@@ -179,6 +196,7 @@ export function makeCanvasTool(host: CanvasToolHost, lang?: () => ServerLang): T
 			"New nodes default their cwd to the user's current project (getCwd); pass an absolute cwd only to pin another project",
 			"After apply_dag or structural edits, summarize nodes and edges for the user to confirm on canvas",
 			"Never invent role names: only use roles already present in the graph or the known role set",
+			"Save repeating teammates as custom cards (card_add) and reuse them via card_place",
 		],
 		parameters: canvasSchema,
 		execute: async (_id, params, _signal, _onUpdate, _ctx) => {
@@ -197,6 +215,88 @@ export function makeCanvasTool(host: CanvasToolHost, lang?: () => ServerLang): T
 							{},
 						),
 						{ graphs },
+					);
+				}
+				const cardId = typeof p.cardId === "string" ? p.cardId : "";
+				const cardInput = {
+					title: p.title,
+					role: p.role,
+					instruction: p.instruction,
+					systemPrompt: (p.patch as Record<string, unknown> | undefined)?.systemPrompt,
+					model: (p.patch as Record<string, unknown> | undefined)?.model,
+					engine: (p.patch as Record<string, unknown> | undefined)?.engine,
+					config: (p.patch as Record<string, unknown> | undefined)?.config,
+				};
+				const isCardRole = (r: string): boolean => VALID_ROLES.has(r);
+				if (action === "card_list") {
+					const cards = listCustomCards(dataDir);
+					return text(
+						pick(
+							getLang(),
+							`自定义卡片 ${cards.length} 张：${cards.map((c) => `${c.title}(${c.id}, ${c.role})`).join("；") || "（空）"}`,
+							`Custom cards (${cards.length}): ${cards.map((c) => `${c.title} (${c.id}, ${c.role})`).join("; ") || "(empty)"}`,
+							"canvas.cards.listed",
+							{},
+						),
+						{ cards },
+					);
+				}
+				if (action === "card_add") {
+					const card = addCustomCard(dataDir, cardInput, isCardRole);
+					pushCards(dataDir);
+					return text(
+						pick(
+							getLang(),
+							`已保存自定义卡片 ${card.title}(${card.id})，已同步到画布工具栏。`,
+							`Saved custom card ${card.title} (${card.id}); toolbar updated.`,
+							"canvas.card.added",
+							{},
+						),
+						{ card },
+					);
+				}
+				if (action === "card_update") {
+					if (!cardId)
+						return text(
+							pick(
+								getLang(),
+								"缺少 cardId，先 card_list 查看。",
+								"Missing cardId; call card_list first.",
+								"canvas.card.missing",
+								{},
+							),
+							{ ok: false },
+						);
+					const card = updateCustomCard(dataDir, cardId, cardInput, isCardRole);
+					pushCards(dataDir);
+					return text(
+						pick(getLang(), `已更新卡片 ${card.title}。`, `Updated card ${card.title}.`, "canvas.card.updated", {}),
+						{ card },
+					);
+				}
+				if (action === "card_delete") {
+					if (!cardId)
+						return text(
+							pick(
+								getLang(),
+								"缺少 cardId，先 card_list 查看。",
+								"Missing cardId; call card_list first.",
+								"canvas.card.missing",
+								{},
+							),
+							{ ok: false },
+						);
+					const ok = deleteCustomCard(dataDir, cardId);
+					if (ok) pushCards(dataDir);
+					return text(
+						pick(
+							getLang(),
+							ok ? `已删除卡片 ${cardId}。` : `卡片不存在：${cardId}。`,
+							ok ? `Deleted card ${cardId}.` : `Card not found: ${cardId}.`,
+							"canvas.card.deleted",
+							{},
+						),
+						{ ok },
 					);
 				}
 				const graphId = typeof p.graphId === "string" ? p.graphId : "";
@@ -315,6 +415,65 @@ export function makeCanvasTool(host: CanvasToolHost, lang?: () => ServerLang): T
 					return text(summary, { graph: g });
 				}
 				const graph = loadCanvasGraph(dataDir, graphId);
+				if (action === "card_place") {
+					if (!cardId)
+						return text(
+							pick(
+								getLang(),
+								"缺少 cardId，先 card_list 查看。",
+								"Missing cardId; call card_list first.",
+								"canvas.card.missing",
+								{},
+							),
+							{ ok: false },
+						);
+					const card = listCustomCards(dataDir).find((c) => c.id === cardId);
+					if (!card)
+						return text(
+							pick(getLang(), `卡片不存在：${cardId}。`, `Card not found: ${cardId}.`, "canvas.card.missing", {}),
+							{ ok: false },
+						);
+					const role = VALID_ROLES.has(card.role) ? card.role : "coder";
+					const node: CanvasNode = {
+						id: `n_${Date.now()}_${Math.random().toString(36).slice(2, 6)}`,
+						title: card.title,
+						role,
+						x: 80 + (graph.nodes.length % 3) * 380,
+						y: 80 + Math.floor(graph.nodes.length / 3) * 260,
+						width: 300,
+						engine: (["pi", "dsh", "claude", "durable"] as const).includes(card.engine as never)
+							? (card.engine as CanvasNode["engine"])
+							: "pi",
+						model: card.model || graph.nodes[0]?.model || "pi/default",
+						cwd: defaultNodeCwd(host, p),
+						useWorktree: false,
+						status: "idle",
+						...(card.instruction ? { instruction: card.instruction } : {}),
+						...(card.systemPrompt ? { systemPromptOverride: card.systemPrompt } : {}),
+						...(card.config ? { config: { ...card.config } } : {}),
+					};
+					graph.nodes.push(node);
+					const src = typeof p.sourceNodeId === "string" ? p.sourceNodeId : "";
+					if (src && graph.nodes.some((x) => x.id === src)) {
+						graph.edges.push({
+							id: `e_${Date.now()}_${Math.random().toString(36).slice(2, 6)}`,
+							sourceNodeId: src,
+							targetNodeId: node.id,
+							type: "handoff",
+						});
+					}
+					saveAndPush(dataDir, graph);
+					return text(
+						pick(
+							getLang(),
+							`已落卡片 ${card.title} → 节点 ${node.id}，画布实时可见。`,
+							`Placed card ${card.title} as node ${node.id}.`,
+							"canvas.card.placed",
+							{},
+						),
+						{ node },
+					);
+				}
 				if (action === "add_node") {
 					const role = typeof p.role === "string" && VALID_ROLES.has(p.role) ? (p.role as CanvasNodeRole) : "coder";
 					const node: CanvasNode = {

@@ -130,6 +130,14 @@ export function CanvasNodeDrawer({
 					))}
 				</select>
 			);
+		} else if (f.kind === "boolean") {
+			control = (
+				<input
+					type="checkbox"
+					checked={drawerCfg[f.key] === true || (drawerCfg[f.key] === undefined && f.default === true)}
+					onChange={(e) => setF(e.target.checked)}
+				/>
+			);
 		} else if (f.kind !== "hint") {
 			control = (
 				<input

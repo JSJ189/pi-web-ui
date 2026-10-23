@@ -61,6 +61,7 @@ export class CanvasClient {
 					protocolVersion: PROTOCOL_VERSION,
 				});
 				this.send({ type: "canvas_list" });
+				this.send({ type: "canvas_cards" });
 				this.send({ type: "canvas_load", id: this.currentGraphId });
 			};
 

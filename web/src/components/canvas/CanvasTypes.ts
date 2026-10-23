@@ -224,6 +224,16 @@ export const ROLE_METAS: Record<CanvasNodeRole, RoleMeta> = {
 		defaultInstruction: "",
 		needsLlm: false,
 	},
+	ai_judge: {
+		role: "ai_judge",
+		labelZh: "AI 裁决",
+		labelEn: "AI Judge",
+		icon: "🧠",
+		group: "logic",
+		blurb: "模型语义判定走通过 / 打回两条边",
+		defaultInstruction: "",
+		needsLlm: true,
+	},
 	loop: {
 		role: "loop",
 		labelZh: "循环重试 (Loop)",
@@ -405,7 +415,7 @@ export const OUT_PORT_DEFS_BASE: CanvasPortDef[] = [
 /** 按角色追加分支输出端子（条件 / 人工 / 评估 / 审查）。 */
 export function outPortsForRole(role: CanvasNodeRole): CanvasPortDef[] {
 	const extra: CanvasPortDef[] = [];
-	if (role === "condition") {
+	if (role === "condition" || role === "ai_judge") {
 		extra.push(
 			{ key: "true", labelZh: "成立", desc: "条件成立走这条边（condition_true）" },
 			{ key: "false", labelZh: "不成立", desc: "条件不成立走这条边（condition_false）" },
@@ -444,7 +454,7 @@ export function outPortLabel(key: string | undefined): string {
  *  - 卡片：Agent 类渲染为「角色专属参数」组；纯代码类渲染为 utility 专属区（含 config 端子）
  *  - 抽屉：控制参数区同表驱动，保持两端一致
  *  - 调度器：Agent 节点的非空配置会拼入提示词「本节点专属参数」，所见即所得 */
-export type RoleFieldKind = "text" | "textarea" | "number" | "select" | "hint";
+export type RoleFieldKind = "text" | "textarea" | "number" | "select" | "hint" | "boolean";
 
 export interface RoleField {
 	key: string;
@@ -584,6 +594,16 @@ export const ROLE_FIELDS: Record<CanvasNodeRole, RoleField[]> = {
 			placeholder: "例：上游产物包含 成功 关键词",
 		},
 	],
+	ai_judge: [
+		{
+			key: "judge",
+			labelZh: "裁决问题",
+			kind: "textarea",
+			rows: 2,
+			placeholder: "例：回归摘要是否证明偶发不再复现？",
+			hint: "为空则读 AI 指令；都没有才按默认提问。无上游时直接答题，有上游以上游为据。模型只回结论通过/不通过。",
+		},
+	],
 	loop: [
 		{
 			key: "loopCount",
@@ -711,9 +731,10 @@ export const ROLE_IO_HELP: Record<CanvasNodeRole, RoleIoHelp> = {
 	custom: { input: "上游摘要 + AI 指令", output: "自定义交付摘要", usage: "人设写在角色规约里，指令写任务" },
 	condition: {
 		input: "上游产物文本",
-		output: "原样透传，按关键词走成立 / 不成立边",
-		usage: "条件写关键词，如：包含 成功 关键词",
+		output: "关键词或 AI 裁决结论走成立 / 不成立边",
+		usage: "默认关键词包含；开 AI 裁决后按模型结论分流",
 	},
+	ai_judge: { input: "上游产物文本", output: "模型结论走通过 / 打回边", usage: "写裁决问题，模型与思考强度走节点配置" },
 	loop: { input: "上游产物", output: "原样透传，循环 N 次调下游", usage: "重试 / 批量用，次数防熔断" },
 	human: { input: "待审产物", output: "批准后透传，驳回则暂停", usage: "高危操作前加人工确认" },
 	merge: { input: "多条分支产物", output: "汇总后透传下游", usage: "并行扇出后在此 Join 再往下走" },

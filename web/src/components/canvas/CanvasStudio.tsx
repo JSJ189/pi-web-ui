@@ -6,6 +6,7 @@
 import { useState, useEffect, useRef, useCallback, useMemo } from "react";
 import { toPng } from "html-to-image";
 import type {
+	CanvasCustomCard,
 	CanvasEdge,
 	CanvasNodeRole,
 	CanvasGraph,
@@ -65,6 +66,8 @@ export function CanvasStudio({
 	const graphIdRef = useRef(graph.id);
 	graphIdRef.current = graph.id;
 	const [graphList, setGraphList] = useState<CanvasGraphSummary[]>([]);
+	/** 自定义卡片（AI/用户沉淀，工具栏一键落图） */
+	const [customCards, setCustomCards] = useState<CanvasCustomCard[]>([]);
 	const [selectedNodeId, setSelectedNodeId] = useState<string | null>(null);
 	const [drawerNodeId, setDrawerNodeId] = useState<string | null>(null);
 	const [showTimeline, setShowTimeline] = useState(false);
@@ -150,6 +153,7 @@ export function CanvasStudio({
 		prevActiveRef.current = active;
 		if (active && !was) {
 			sendMessage({ type: "canvas_list" });
+			sendMessage({ type: "canvas_cards" });
 			sendMessage({ type: "canvas_load", id: graphIdRef.current });
 		}
 	}, [active, sendMessage]);
@@ -157,6 +161,8 @@ export function CanvasStudio({
 	const handleIncomingServerMessage = (msg: ServerMessage) => {
 		if (msg.type === "canvas_list_result") {
 			setGraphList(msg.graphs);
+		} else if (msg.type === "canvas_cards_state") {
+			setCustomCards(msg.cards ?? []);
 		} else if (msg.type === "canvas_graph_state") {
 			clientRef.current?.setCurrentGraphId(msg.graph.id);
 			// AI 改图广播 vs 本地未保存编辑：本地优先，不覆盖用户手头改动（下次切回/保存后再对齐）
@@ -501,6 +507,40 @@ export function CanvasStudio({
 			setSelectedNodeId(newNode.id);
 		},
 		[graph.nodes.length, viewport, resolveNodeModel, currentCwd],
+	);
+
+	// 自定义卡片落图：标题/角色/指令/人设/模型/行为参数原样展开为普通节点
+	const handlePlaceCard = useCallback(
+		(card: CanvasCustomCard) => {
+			const nid = "n_" + Date.now() + "_" + Math.random().toString(36).slice(2, 6);
+			const newNode: CanvasNode = {
+				id: nid,
+				title: card.title,
+				role: card.role,
+				x: Math.round(-viewport.x / viewport.zoom + 300 + Math.random() * 100),
+				y: Math.round(-viewport.y / viewport.zoom + 200 + Math.random() * 100),
+				width: 300,
+				engine: card.engine ?? "pi",
+				model: resolveNodeModel(card.model ?? ""),
+				cwd: currentCwd || ".",
+				useWorktree: false,
+				status: "idle",
+				...(card.instruction ? { instruction: card.instruction } : {}),
+				...(card.systemPrompt ? { systemPromptOverride: card.systemPrompt } : {}),
+				...(card.config ? { config: { ...card.config } } : {}),
+			};
+			setGraph((prev) => ({ ...prev, nodes: [...prev.nodes, newNode], updatedAt: Date.now() }));
+			setSelectedNodeId(newNode.id);
+		},
+		[viewport, resolveNodeModel, currentCwd],
+	);
+
+	// 自定义卡片删除（服务端删 + 广播回 state）
+	const handleDeleteCard = useCallback(
+		(id: string) => {
+			sendMessage({ type: "canvas_card_delete", id });
+		},
+		[sendMessage],
 	);
 
 	// 套用战队模板：模板内写死的示例模型一律映射为真实可用模型
@@ -938,6 +978,9 @@ export function CanvasStudio({
 				onSelectGraph={handleSelectGraph}
 				onSave={handleSave}
 				onAddNode={handleAddNode}
+				customCards={customCards}
+				onPlaceCard={handlePlaceCard}
+				onDeleteCard={handleDeleteCard}
 				onApplyTemplate={handleApplyTemplate}
 				onRunAll={handleRunAll}
 				onStopAll={handleStopAll}

@@ -4,7 +4,7 @@
  * 功能区：工程管理 | 通用节点库 + 战队模板 | 调度控制 | 视口缩放
  */
 import { useState, useRef, useEffect } from "react";
-import type { CanvasGraph, CanvasGraphSummary, CanvasNodeRole } from "../../types";
+import type { CanvasCustomCard, CanvasGraph, CanvasGraphSummary, CanvasNodeRole } from "../../types";
 import { SQUAD_TEMPLATES } from "./CanvasTemplates";
 import { NODE_GROUPS, ROLE_METAS } from "./CanvasTypes";
 import {
@@ -30,6 +30,9 @@ interface CanvasToolbarProps {
 	onSelectGraph: (id: string) => void;
 	onSave: () => void;
 	onAddNode: (role?: CanvasNodeRole) => void;
+	customCards?: CanvasCustomCard[];
+	onPlaceCard?: (card: CanvasCustomCard) => void;
+	onDeleteCard?: (id: string) => void;
 	onApplyTemplate: (templateGraph: CanvasGraph) => void;
 	onRunAll: () => void;
 	onStopAll: () => void;
@@ -54,6 +57,9 @@ export function CanvasToolbar({
 	onSelectGraph,
 	onSave,
 	onAddNode,
+	customCards = [],
+	onPlaceCard,
+	onDeleteCard,
 	onApplyTemplate,
 	onRunAll,
 	onStopAll,
@@ -304,6 +310,39 @@ export function CanvasToolbar({
 							onMouseDown={(e) => e.stopPropagation()}
 							onWheel={(e) => e.stopPropagation()}
 						>
+							{customCards.length > 0 && (
+								<div className="canvas-palette-group">
+									<div className="canvas-palette-group-title">自定义卡片（{customCards.length}）</div>
+									{customCards.map((c) => (
+										<div
+											key={c.id}
+											className="canvas-dropdown-item"
+											style={{ display: "flex", alignItems: "center", gap: 6 }}
+										>
+											<button
+												type="button"
+												style={{ flex: 1, textAlign: "left", background: "none", border: "none", cursor: "pointer" }}
+												onClick={() => {
+													onPlaceCard?.(c);
+													setShowNodeMenu(false);
+												}}
+												title={c.role + (c.instruction ? "：" + c.instruction.slice(0, 80) : "")}
+											>
+												<b>🧩 {c.title}</b>
+												<small>{c.role}</small>
+											</button>
+											<button
+												type="button"
+												className="canvas-toolbar-btn"
+												onClick={() => onDeleteCard?.(c.id)}
+												title={"删除卡片 " + c.title}
+											>
+												×
+											</button>
+										</div>
+									))}
+								</div>
+							)}
 							{NODE_GROUPS.map((g) => (
 								<div key={g.id} className="canvas-palette-group">
 									<div className="canvas-palette-group-title">{g.labelZh}</div>
