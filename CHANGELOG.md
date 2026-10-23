@@ -8,6 +8,22 @@
 每个版本的内容按"实际合入该版本发布的提交"归档（以 `package.json` 的 version 变更提交为准），
 而不是按提交日期聚类——连续快速发布的 patch 版本以此为准最准确。
 
+## [Unreleased]
+
+暂无未发布内容。
+
+## [0.111.0] — 2026-10-24
+
+### Added
+
+- **画布工作室升级（Canvas Studio）**：新增汇聚门（join gate）、节点认领状态同步、可复用自定义卡片与审查熔断器，编排运行更稳、 review 卡点更清晰。
+- **语音输入插件增强**：补齐连续语音输入能力与配置项。
+
+### Fixed
+
+- **安全加固合集**：画布 id 白名单化（路径穿越与 git 参数注入）、供应链加固（frp 镜像源移除 + SHA256 校验）、TTS 输出路径边界、Live2D 模型名存储型 XSS、壁纸包路径越界、image-toolkit 探测密钥外呼、插件路径穿越/zip 炸弹/CORS 常驻浏览器泄漏、隧道鉴权端点。
+- **稳定性修复**：多会话历史消息串台、子代理换模型后软上限重算、便携包 Node 陈旧与静默降级、空闲态图片附件未注入上下文。
+
 ## [0.110.0] — 2026-10-21
 
 ### Added
@@ -1908,7 +1924,8 @@ when?, children?}`，也收 `topbar` / `settings` 这类简写别名）；宿主
 - 0.35.1（2026-08-27）：编辑重问保留附件（#18）+ 全窗口拖放（#19）。
 - 0.29.0（2026-08-23）：全局搜索弹窗（Ctrl+K）+ 消息列表惰性窗口化。
 
-[Unreleased]: https://github.com/xing-shuyin/pi-web-ui/compare/v0.108.0...main
+[Unreleased]: https://github.com/xing-shuyin/pi-web-ui/compare/v0.111.0...main
+[0.111.0]: https://github.com/xing-shuyin/pi-web-ui/releases/tag/v0.111.0
 [0.108.0]: https://github.com/xing-shuyin/pi-web-ui/releases/tag/v0.108.0
 [0.109.0]: https://github.com/xing-shuyin/pi-web-ui/releases/tag/v0.109.0
 [0.103.3]: https://github.com/xing-shuyin/pi-web-ui/releases/tag/v0.103.3
