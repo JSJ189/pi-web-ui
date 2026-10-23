@@ -352,6 +352,21 @@ describe("前端排队与插队消息乐观更新与快照对账 (optimistic-que
 		expect(expired.tracker.echoes).toHaveLength(0);
 	});
 
+	it("跨会话回显按 TTL 过期：切走再回来不再幽灵展示（issue #705）", () => {
+		const tracker0 = createOptimisticQueueTracker();
+		const convA = makeBaseState({ isStreaming: false, conversationId: "conv-A" });
+		const sent = recordOptimisticPromptEcho(tracker0, convA, { text: "A 的待确认消息", now: 1000 });
+		expect(sent.tracker.echoes).toHaveLength(1);
+		const convB = makeBaseState({ isStreaming: false, conversationId: "conv-B" });
+		const onB = reconcileOptimisticPromptEchoes(sent.tracker, convB, 1100);
+		expect(onB.state.messages.some((m) => m.id.startsWith("echo-"))).toBe(false);
+		expect(onB.tracker.echoes).toHaveLength(1);
+		const backA = makeBaseState({ isStreaming: false, conversationId: "conv-A" });
+		const expired = reconcileOptimisticPromptEchoes(onB.tracker, backA, 1000 + OPTIMISTIC_ECHO_TTL_MS + 1);
+		expect(expired.state.messages.some((m) => m.id.startsWith("echo-"))).toBe(false);
+		expect(expired.tracker.echoes).toHaveLength(0);
+	});
+
 	it("基线计数防误消解：先前已有同文本消息时，回显气泡等待新落账的那一条", () => {
 		const stateWithDup = makeBaseState({
 			isStreaming: false,

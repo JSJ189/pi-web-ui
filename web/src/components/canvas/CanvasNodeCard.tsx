@@ -15,14 +15,21 @@ interface CanvasNodeCardProps {
 	hasIncoming?: boolean;
 	hasOutgoing?: boolean;
 	models: ModelInfo[];
+	/** 全局默认模型（"provider/model-id"），列表中找不到节点模型时的显示回退 */
+	defaultModel?: string | null;
 	projects: ProjectSummary[];
+	workspaceRoots?: string[];
+	pathCompletions?: { name: string; path: string; type: "dir" | "file" }[];
+	/** cwd 为 "." 时弹窗初始目录的回退（画布 currentCwd） */
+	baseCwd?: string;
+	/** 经画布通道下发 make_dir（缺省由通用选择器内置回退经主通道创建） */
+	onMakeDir?: (path: string) => void;
 	onSelect: (nodeId: string) => void;
 	onUpdate: (nodeId: string, patch: Partial<CanvasNode>) => void;
 	onDelete: (nodeId: string) => void;
 	onRun: (nodeId: string) => void;
 	onStop: (nodeId: string) => void;
 	onOpenDrawer: (nodeId: string) => void;
-	onBrowseFolder: (nodeId: string) => void;
 	onStartConnect: (nodeId: string, outX: number, outY: number) => void;
 	onEndConnect: (nodeId: string) => void;
 }
@@ -33,14 +40,18 @@ export function CanvasNodeCard({
 	hasIncoming,
 	hasOutgoing,
 	models,
+	defaultModel,
 	projects,
+	workspaceRoots = [],
+	pathCompletions = [],
+	baseCwd,
+	onMakeDir,
 	onSelect,
 	onUpdate,
 	onDelete,
 	onRun,
 	onStop,
 	onOpenDrawer,
-	onBrowseFolder,
 	onStartConnect,
 	onEndConnect,
 }: CanvasNodeCardProps) {
@@ -51,18 +62,23 @@ export function CanvasNodeCard({
 	const roleMeta = ROLE_METAS[node.role] || ROLE_METAS.coder;
 	const statusColor = STATUS_COLORS[node.status] || STATUS_COLORS.idle;
 
-	// 解析出与 ModelThinking 兼容的当前模型对象
+	// 解析出与 ModelThinking 兼容的当前模型对象：绝不杜撰，不存在时回退到全局默认/列表第一个
 	const selectedModelObj = useMemo(() => {
 		const raw = node.model;
 		const found = models.find((m) => m.id === raw || `${m.provider}/${m.id}` === raw);
 		if (found) return found;
+		if (defaultModel) {
+			const def = models.find((m) => `${m.provider}/${m.id}` === defaultModel || m.id === defaultModel);
+			if (def) return def;
+		}
+		if (models.length > 0) return models[0];
 		const parts = raw.split("/");
 		return {
 			id: raw,
 			name: parts.length > 1 ? parts.slice(1).join("/") : raw,
 			provider: parts.length > 1 ? parts[0] : "custom",
 		} as ModelInfo;
-	}, [node.model, models]);
+	}, [node.model, models, defaultModel]);
 
 	// 处理按住卡头拖拽节点位置
 	const handlePointerDown = (e: ReactPointerEvent<HTMLDivElement>) => {
@@ -208,8 +224,19 @@ export function CanvasNodeCard({
 					<UniversalPathPicker
 						cwd={node.cwd}
 						onSelectCwd={(c) => onUpdate(node.id, { cwd: c })}
-						onOpenProjectPicker={() => onBrowseFolder(node.id)}
 						projects={projects}
+						workspaceRoots={workspaceRoots}
+						pathCompletions={pathCompletions}
+						baseCwd={baseCwd}
+						mode="project"
+						onCreateProject={
+							onMakeDir
+								? (p) => {
+										onMakeDir(p);
+										onUpdate(node.id, { cwd: p });
+									}
+								: undefined
+						}
 					/>
 				</div>
 

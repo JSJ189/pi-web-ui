@@ -14,13 +14,21 @@ interface CanvasNodeDrawerProps {
 	edges: CanvasEdge[];
 	allNodes: CanvasNode[];
 	models: ModelInfo[];
+	/** 全局默认模型（"provider/model-id"），列表中找不到节点模型时的显示回退 */
+	defaultModel?: string | null;
 	projects: ProjectSummary[];
+	workspaceRoots?: string[];
+	pathCompletions?: { name: string; path: string; type: "dir" | "file" }[];
+	/** cwd 为 "." 时弹窗初始目录的回退（画布 currentCwd） */
+	baseCwd?: string;
+	/** 经画布通道下发 make_dir（缺省由通用选择器内置回退经主通道创建） */
+	onMakeDir?: (path: string) => void;
 	onClose: () => void;
 	onUpdate: (nodeId: string, patch: Partial<CanvasNode>) => void;
 	onRun: (nodeId: string) => void;
 	onStop: (nodeId: string) => void;
 	onSteer: (nodeId: string, message: string) => void;
-	onBrowseFolder: (nodeId: string) => void;
+	onReview?: (nodeId: string, decision: "approve" | "reject", comment?: string) => void;
 }
 
 export function CanvasNodeDrawer({
@@ -28,13 +36,18 @@ export function CanvasNodeDrawer({
 	edges,
 	allNodes,
 	models,
+	defaultModel,
 	projects,
+	workspaceRoots = [],
+	pathCompletions = [],
+	baseCwd,
+	onMakeDir,
 	onClose,
 	onUpdate,
 	onRun,
 	onStop,
 	onSteer,
-	onBrowseFolder,
+	onReview,
 }: CanvasNodeDrawerProps) {
 	const [steerInput, setSteerInput] = useState("");
 
@@ -50,19 +63,24 @@ export function CanvasNodeDrawer({
 		return () => window.removeEventListener("keydown", handleKeyDown);
 	}, [node, onClose]);
 
-	// 解析出与 ModelThinking 兼容的当前模型对象
+	// 解析出与 ModelThinking 兼容的当前模型对象：绝不杜撰，不存在时回退到全局默认/列表第一个
 	const selectedModelObj = useMemo(() => {
 		if (!node) return null;
 		const raw = node.model;
 		const found = models.find((m) => m.id === raw || `${m.provider}/${m.id}` === raw);
 		if (found) return found;
+		if (defaultModel) {
+			const def = models.find((m) => `${m.provider}/${m.id}` === defaultModel || m.id === defaultModel);
+			if (def) return def;
+		}
+		if (models.length > 0) return models[0];
 		const parts = raw.split("/");
 		return {
 			id: raw,
 			name: parts.length > 1 ? parts.slice(1).join("/") : raw,
 			provider: parts.length > 1 ? parts[0] : "custom",
 		} as ModelInfo;
-	}, [node, models]);
+	}, [node, models, defaultModel]);
 
 	if (!node) return null;
 
@@ -152,8 +170,19 @@ export function CanvasNodeDrawer({
 						<UniversalPathPicker
 							cwd={node.cwd}
 							onSelectCwd={(c) => onUpdate(node.id, { cwd: c })}
-							onOpenProjectPicker={() => onBrowseFolder(node.id)}
 							projects={projects}
+							workspaceRoots={workspaceRoots}
+							pathCompletions={pathCompletions}
+							baseCwd={baseCwd}
+							mode="project"
+							onCreateProject={
+								onMakeDir
+									? (p) => {
+											onMakeDir(p);
+											onUpdate(node.id, { cwd: p });
+										}
+									: undefined
+							}
 						/>
 						<label className="canvas-checkbox-row" style={{ marginTop: "8px" }}>
 							<input
@@ -221,7 +250,8 @@ export function CanvasNodeDrawer({
 												type="button"
 												className="canvas-btn green"
 												onClick={() => {
-													onUpdate(node.id, { status: "done", currentAction: "人工审查批准合流" });
+													if (onReview) onReview(node.id, "approve");
+													else onUpdate(node.id, { status: "done", currentAction: "人工审查批准合流" });
 												}}
 											>
 												<FiCheckCircle /> 审查通过并批准
@@ -230,10 +260,12 @@ export function CanvasNodeDrawer({
 												type="button"
 												className="canvas-btn orange"
 												onClick={() => {
-													onUpdate(node.id, {
-														status: "waiting_approval",
-														currentAction: "人工驳回：需补充完善测试与注释",
-													});
+													if (onReview) onReview(node.id, "reject");
+													else
+														onUpdate(node.id, {
+															status: "waiting_approval",
+															currentAction: "人工驳回：需补充完善测试与注释",
+														});
 												}}
 											>
 												<FiAlertCircle /> 驳回修改

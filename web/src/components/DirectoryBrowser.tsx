@@ -1,8 +1,23 @@
 import { useEffect, useRef, useState } from "react";
 import { createPortal } from "react-dom";
-import { FiFolder, FiGlobe, FiHardDrive, FiServer, FiTrash2, FiX } from "react-icons/fi";
+import {
+	FiArrowRight,
+	FiArrowUp,
+	FiBookmark,
+	FiCheck,
+	FiFolder,
+	FiFolderPlus,
+	FiGlobe,
+	FiHardDrive,
+	FiHome,
+	FiMonitor,
+	FiServer,
+	FiTrash2,
+	FiX,
+} from "react-icons/fi";
 import { isZhLocale, useLocale, useT } from "../i18n";
-import { appSend, useEngineCapabilities } from "../app-globals";
+import { appSend, useAppField, useEngineCapabilities } from "../app-globals";
+import { TipButton } from "./HintTip.js";
 import {
 	deleteRemoteProfile,
 	formatRemoteWorkspaceUri,
@@ -89,6 +104,9 @@ export function DirectoryBrowser({
 	const isZh = isZhLocale(useLocale());
 	const capabilities = useEngineCapabilities();
 	const supportsRemoteSsh = capabilities.remoteSsh;
+	// 常用目录跳转（快照直给的绝对路径；旧服务空串则不渲染对应按钮）
+	const homeDir = useAppField("homeDir");
+	const desktopDir = useAppField("desktopDir");
 
 	// 模式 Tab：本地 vs 远程 SSH（底座不支持远程 SSH 时强制本地）
 	const [activeTab, setActiveTab] = useState<"local" | "remote">(() =>
@@ -135,6 +153,10 @@ export function DirectoryBrowser({
 	const [remoteDraft, setRemoteDraft] = useState("/");
 	const [remoteItems, setRemoteItems] = useState<RemoteSshDirItem[]>([]);
 	const [loadingRemoteDir, setLoadingRemoteDir] = useState(false);
+	// 远程新建文件夹/项目状态（与本地 showNew/newName 镜像，服务端 make_dir 已支持 ssh:// URI）
+	const [showRemoteNew, setShowRemoteNew] = useState(false);
+	const [remoteNewName, setRemoteNewName] = useState("");
+	const [remoteCreateError, setRemoteCreateError] = useState<string | null>(null);
 
 	const dirs = pathCompletions.filter((c) => c.type === "dir");
 
@@ -179,10 +201,13 @@ export function DirectoryBrowser({
 	useEffect(() => {
 		const handleKeyDown = (e: KeyboardEvent) => {
 			if (e.key === "Escape") {
-				if (showNew) {
+				if (showNew || showRemoteNew) {
 					setShowNew(false);
 					setNewName("");
 					setLocalError(null);
+					setShowRemoteNew(false);
+					setRemoteNewName("");
+					setRemoteCreateError(null);
 				} else {
 					onClose();
 				}
@@ -190,7 +215,7 @@ export function DirectoryBrowser({
 		};
 		window.addEventListener("keydown", handleKeyDown);
 		return () => window.removeEventListener("keydown", handleKeyDown);
-	}, [showNew, onClose]);
+	}, [showNew, showRemoteNew, onClose]);
 
 	// 本地目录浏览请求（60ms 防抖）
 	useEffect(() => {
@@ -214,6 +239,14 @@ export function DirectoryBrowser({
 		const trimmed = path.trim();
 		if (!trimmed || trimmed === MACHINE_ROOT) return;
 		onSelectDirectory(trimmed);
+	};
+
+	// 常用目录一键跳转：此电脑 / 用户目录 / 桌面（与右侧文件树 crumbs 同一条路）
+	const goQuickJump = (target: string) => {
+		setBrowsePath(target);
+		setDraft(target);
+		setCompIndex(-1);
+		setLocalError(null);
 	};
 
 	const handleCreateLocal = () => {
@@ -380,7 +413,46 @@ export function DirectoryBrowser({
 		onClose();
 	};
 
+	// 远程新建：在当前远端目录下 mkdir（经 appSend make_dir 下发 ssh:// URI，服务端走 sftpMkdirRecursive）
+	const handleCreateRemote = () => {
+		const trimmed = remoteNewName.trim();
+		if (!trimmed || !connectionId) return;
+		if (!isValidProjectName(trimmed)) {
+			setRemoteCreateError(t("invalidProjectName"));
+			return;
+		}
+		const port = parseInt(sshPort, 10) || 22;
+		const base = remoteCwd.replace(/\/+$/, "") || "/";
+		const abs = base === "/" ? `/${trimmed}` : `${base}/${trimmed}`;
+		const uri = formatRemoteWorkspaceUri(sshUser, sshHost, port, abs);
+		if (mode === "project") {
+			if (onCreateProject) {
+				onCreateProject(uri);
+			} else {
+				appSend({ type: "make_dir", path: uri });
+				onSelectDirectory(uri);
+			}
+			setShowRemoteNew(false);
+			setRemoteNewName("");
+			setRemoteCreateError(null);
+			onClose();
+		} else {
+			appSend({ type: "make_dir", path: uri });
+			setRemoteNewName("");
+			setShowRemoteNew(false);
+			setRemoteCreateError(null);
+			// 远端 mkdir 经 SSH 往返，稍后刷新列表
+			const conn = connectionId;
+			const dir = remoteCwd;
+			setTimeout(() => {
+				void loadRemoteDir(conn, dir);
+			}, 300);
+		}
+	};
+
 	const upPath = parentOf(browsePath);
+	// 远程上级目录（".." 行用；根目录时 parentOf 返回 null 即不渲染）
+	const remoteUpPath = parentOf(remoteCwd);
 	const norm = (p: string) => {
 		const f = p.replace(/\\/g, "/").replace(/\/+$/, "");
 		return /^[A-Za-z]:/.test(f) ? f.toLowerCase() : f;
@@ -452,47 +524,104 @@ export function DirectoryBrowser({
 								{browsePath === MACHINE_ROOT ? <FiHardDrive /> : <FiFolder />}
 								<span>{browsePath === MACHINE_ROOT ? t("computer") : browsePath}</span>
 							</span>
-							<button
-								type="button"
-								className="cwd-up"
-								disabled={browsePath === MACHINE_ROOT}
-								title={t("computer")}
-								aria-label={t("computer")}
-								onClick={() => {
-									setBrowsePath(MACHINE_ROOT);
-									setDraft(MACHINE_ROOT);
-									setCompIndex(-1);
-								}}
+						</div>
+						{/* 单行图标工具栏（旧 head 三按钮与跳转行合并，去掉重复的此电脑）：跳转 | 导航 | 新建 | 选定 */}
+						<div className="cwd-toolbar" role="toolbar" aria-label={t("projectPickerTitle")}>
+							<TipButton
+								className={`cwd-jump ${browsePath === MACHINE_ROOT ? "active" : ""}`}
+								tip={t("computer")}
+								onClick={() => goQuickJump(MACHINE_ROOT)}
 							>
 								<FiHardDrive />
-							</button>
-							<button
-								type="button"
-								className="cwd-up"
-								disabled={!upPath}
-								title={t("cwdGoUp")}
+							</TipButton>
+							{homeDir !== "" && (
+								<TipButton
+									className={`cwd-jump ${norm(browsePath) === norm(homeDir) ? "active" : ""}`}
+									tip={`${t("homeDir")} ${homeDir}`}
+									onClick={() => goQuickJump(homeDir)}
+								>
+									<FiHome />
+								</TipButton>
+							)}
+							{desktopDir !== "" && (
+								<TipButton
+									className={`cwd-jump ${norm(browsePath) === norm(desktopDir) ? "active" : ""}`}
+									tip={`${t("desktopDir")} ${desktopDir}`}
+									onClick={() => goQuickJump(desktopDir)}
+								>
+									<FiMonitor />
+								</TipButton>
+							)}
+							<span className="cwd-toolbar-sep" aria-hidden="true" />
+							<TipButton
+								className="cwd-jump tool-up"
+								tip={
+									upPath ? `${t("cwdGoUp")} · ${upPath}` : `${t("cwdGoUp")} · ${isZh ? "已在顶层" : "already at top"}`
+								}
+								aria-disabled={!upPath}
 								onClick={() => {
-									if (upPath) {
-										setBrowsePath(upPath);
-										setDraft(upPath);
-										setCompIndex(-1);
-									}
+									if (upPath) goQuickJump(upPath);
 								}}
 							>
-								↑ {t("cwdGoUp")}
-							</button>
-							<button
-								type="button"
-								className="cwd-up"
-								disabled={!canAddRoot}
-								title={t("addWorkspaceRootHint")}
+								<FiArrowUp />
+							</TipButton>
+							<TipButton
+								className="cwd-jump tool-root"
+								tip={
+									canAddRoot
+										? t("addWorkspaceRootHint")
+										: browsePath === MACHINE_ROOT
+											? `${t("addWorkspaceRoot")} · ${isZh ? "此电脑本身不是目录" : "This PC is not a directory"}`
+											: cur === norm(currentCwd)
+												? `${t("addWorkspaceRoot")} · ${isZh ? "已是当前项目目录" : "Already the current project"}`
+												: `${t("addWorkspaceRoot")} · ${isZh ? "已在工作区根中" : "Already a workspace root"}`
+								}
+								aria-disabled={!canAddRoot}
 								onClick={() => {
 									if (!canAddRoot) return;
 									appSend({ type: "set_workspace_roots", roots: [...workspaceRoots, browsePath] });
 								}}
 							>
-								＋ {t("addWorkspaceRoot")}
-							</button>
+								<FiBookmark />
+							</TipButton>
+							<TipButton
+								className={`cwd-jump tool-new ${showNew ? "active" : ""}`}
+								tip={
+									browsePath === MACHINE_ROOT
+										? `${t("cwdNewFolder")} · ${isZh ? "此电脑下不能新建" : "Cannot create here"}`
+										: showNew
+											? t("cwdCancel")
+											: t("cwdNewFolder")
+								}
+								aria-disabled={browsePath === MACHINE_ROOT}
+								onClick={() => {
+									if (browsePath === MACHINE_ROOT) return;
+									if (showNew) {
+										setShowNew(false);
+										setNewName("");
+										setLocalError(null);
+									} else {
+										setNewName("");
+										setLocalError(null);
+										setShowNew(true);
+									}
+								}}
+							>
+								<FiFolderPlus />
+							</TipButton>
+							<span className="cwd-toolbar-spacer" />
+							<TipButton
+								className="cwd-jump primary tool-pick"
+								tip={
+									browsePath === MACHINE_ROOT
+										? `${t("cwdPickCurrent")} · ${isZh ? "此电脑不能作为工作目录" : "This PC cannot be a workspace"}`
+										: `${t("cwdPickCurrent")} · ${browsePath}`
+								}
+								aria-disabled={browsePath === MACHINE_ROOT}
+								onClick={() => commitLocal(browsePath)}
+							>
+								<FiCheck />
+							</TipButton>
 						</div>
 						<div className="cwd-picker-row">
 							<input
@@ -507,18 +636,34 @@ export function DirectoryBrowser({
 								}}
 								onKeyDown={onLocalKeyDown}
 							/>
-							<button
-								type="button"
-								className="cwd-choose-btn primary"
-								title={t("cwdPickCurrent")}
-								disabled={browsePath === MACHINE_ROOT}
-								onClick={() => commitLocal(browsePath)}
-							>
-								{t("cwdPickCurrent")}
-							</button>
+							{draft.trim() !== "" && draft !== browsePath && (
+								<TipButton
+									className="cwd-jump tool-enter"
+									tip={`${t("cwdEnter")} · ${draft.trim()}`}
+									onClick={() => {
+										setBrowsePath(draft.trim());
+										setCompIndex(-1);
+									}}
+								>
+									<FiArrowRight />
+								</TipButton>
+							)}
 						</div>
 						<div className="cwd-list">
-							{dirs.length === 0 && <div className="cwd-empty">{t("cwdEmpty")}</div>}
+							{upPath && (
+								<div key=".." className="cwd-item">
+									<button
+										type="button"
+										className="cwd-enter"
+										title={`${t("cwdGoUp")} · ${upPath}`}
+										onClick={() => goQuickJump(upPath)}
+									>
+										<FiFolder />
+										<span className="cwd-name">..</span>
+									</button>
+								</div>
+							)}
+							{dirs.length === 0 && !upPath && <div className="cwd-empty">{t("cwdEmpty")}</div>}
 							{dirs.map((d) => (
 								<div key={d.path} className="cwd-item">
 									<button
@@ -534,26 +679,25 @@ export function DirectoryBrowser({
 										<FiFolder />
 										<span className="cwd-name">{d.name}</span>
 									</button>
-									<button
-										type="button"
-										className="cwd-choose-btn"
-										title={t("cwdChoose")}
+									<TipButton
+										className="cwd-jump tool-choose"
+										tip={`${t("cwdChoose")} · ${d.path}`}
 										onClick={() => commitLocal(d.path)}
 									>
-										{t("cwdChoose")}
-									</button>
+										<FiCheck />
+									</TipButton>
 								</div>
 							))}
 						</div>
-						<div className="cwd-picker-foot">
-							{showNew ? (
+						{showNew && (
+							<div className="cwd-picker-foot">
 								<div className="cwd-newrow">
 									<input
 										ref={newInputRef}
 										value={newName}
 										autoFocus
 										spellCheck={false}
-										placeholder={mode === "project" ? t("projectName") : t("cwdNewName")}
+										placeholder={t("cwdNewName")}
 										onChange={(e) => {
 											setNewName(e.target.value);
 											if (localError) setLocalError(null);
@@ -570,40 +714,31 @@ export function DirectoryBrowser({
 											}
 										}}
 									/>
-									<button type="button" className="cwd-choose-btn primary" onClick={handleCreateLocal}>
-										{mode === "project" ? t("createAndOpenProject") : t("cwdCreate")}
-									</button>
-									<button
-										type="button"
-										className="cwd-choose-btn"
+									<TipButton className="cwd-jump primary" tip={t("cwdCreate")} onClick={handleCreateLocal}>
+										<FiCheck />
+									</TipButton>
+									<TipButton
+										className="cwd-jump"
+										tip={t("cwdCancel")}
 										onClick={() => {
 											setShowNew(false);
 											setNewName("");
 											setLocalError(null);
 										}}
 									>
-										{t("cwdCancel")}
-									</button>
+										<FiX />
+									</TipButton>
 								</div>
-							) : (
-								<button
-									type="button"
-									className="cwd-newbtn"
-									disabled={browsePath === MACHINE_ROOT}
-									onClick={() => setShowNew(true)}
-								>
-									＋ {mode === "project" ? t("newProject") : t("cwdNewFolder")}
-								</button>
-							)}
-							{localError && (
-								<div
-									className="project-picker-error"
-									style={{ color: "var(--red)", fontSize: "11px", marginTop: "4px" }}
-								>
-									{localError}
-								</div>
-							)}
-						</div>
+								{localError && (
+									<div
+										className="project-picker-error"
+										style={{ color: "var(--red)", fontSize: "11px", marginTop: "4px" }}
+									>
+										{localError}
+									</div>
+								)}
+							</div>
+						)}
 					</>
 				)}
 
@@ -837,18 +972,32 @@ export function DirectoryBrowser({
 										<FiGlobe />
 										<span>{remoteCwd}</span>
 									</span>
-									<button
-										type="button"
-										className="cwd-up"
-										disabled={remoteCwd === "/" || loadingRemoteDir}
-										title={t("cwdGoUp")}
+								</div>
+								<div className="cwd-toolbar" role="toolbar" aria-label={t("workspaceModeRemote")}>
+									<TipButton
+										className="cwd-jump tool-up"
+										tip={
+											remoteCwd === "/"
+												? `${t("cwdGoUp")} · ${isZh ? "已在顶层" : "already at top"}`
+												: `${t("cwdGoUp")} · ${parentOf(remoteCwd) || "/"}`
+										}
+										aria-disabled={remoteCwd === "/" || loadingRemoteDir}
 										onClick={() => {
-											const parent = parentOf(remoteCwd) || "/";
-											if (connectionId) void loadRemoteDir(connectionId, parent);
+											if (loadingRemoteDir) return;
+											const parent = parentOf(remoteCwd);
+											if (parent && connectionId) void loadRemoteDir(connectionId, parent);
 										}}
 									>
-										↑ {t("cwdGoUp")}
-									</button>
+										<FiArrowUp />
+									</TipButton>
+									<TipButton
+										className={`cwd-jump tool-new ${showRemoteNew ? "active" : ""}`}
+										tip={showRemoteNew ? t("cwdCancel") : t("cwdNewFolder")}
+										onClick={() => setShowRemoteNew((v) => !v)}
+									>
+										<FiFolderPlus />
+									</TipButton>
+									<span className="cwd-toolbar-spacer" />
 								</div>
 
 								<div className="cwd-picker-row">
@@ -865,26 +1014,40 @@ export function DirectoryBrowser({
 										}}
 									/>
 									{remoteDraft.trim() && remoteDraft.trim() !== remoteCwd && connectionId && (
-										<button
-											type="button"
-											className="cwd-choose-btn"
-											disabled={loadingRemoteDir}
+										<TipButton
+											className="cwd-jump tool-enter"
+											tip={`${t("cwdEnter")} · ${remoteDraft.trim()}`}
 											onClick={() => void loadRemoteDir(connectionId, remoteDraft)}
 										>
-											{t("cwdEnter")}
-										</button>
+											<FiArrowRight />
+										</TipButton>
 									)}
-									<button
-										type="button"
-										className="cwd-choose-btn primary"
+									<TipButton
+										className="cwd-jump primary tool-pick"
+										tip={`${t("sshOpenRemoteWorkspace")} · ${remoteDraft.trim() || remoteCwd}`}
 										onClick={() => commitRemote(remoteDraft.trim() || remoteCwd)}
 									>
-										{t("sshOpenRemoteWorkspace")}
-									</button>
+										<FiCheck />
+									</TipButton>
 								</div>
 
 								{/* 远程文件列表 */}
 								<div className="cwd-list">
+									{!loadingRemoteDir && remoteUpPath && (
+										<div key=".." className="cwd-item">
+											<button
+												type="button"
+												className="cwd-enter"
+												title={`${t("cwdGoUp")} · ${remoteUpPath}`}
+												onClick={() => {
+													if (connectionId) void loadRemoteDir(connectionId, remoteUpPath);
+												}}
+											>
+												<FiFolder />
+												<span className="cwd-name">..</span>
+											</button>
+										</div>
+									)}
 									{loadingRemoteDir ? (
 										<div className="cwd-empty">{isZh ? "正在加载远程目录…" : "Loading remote directory…"}</div>
 									) : remoteItems.length === 0 ? (
@@ -906,19 +1069,68 @@ export function DirectoryBrowser({
 													<span className="cwd-name">{item.name}</span>
 												</button>
 												{item.type === "dir" && (
-													<button
-														type="button"
-														className="cwd-choose-btn"
-														title={t("cwdChoose")}
+													<TipButton
+														className="cwd-jump tool-choose"
+														tip={`${t("cwdChoose")} · ${item.path}`}
 														onClick={() => commitRemote(item.path)}
 													>
-														{t("cwdChoose")}
-													</button>
+														<FiCheck />
+													</TipButton>
 												)}
 											</div>
 										))
 									)}
 								</div>
+								{/* 远程新建文件夹/项目（需已连接） */}
+								{connectionId && showRemoteNew && (
+									<div className="cwd-picker-foot">
+										<div className="cwd-newrow">
+											<input
+												value={remoteNewName}
+												autoFocus
+												spellCheck={false}
+												placeholder={t("cwdNewName")}
+												onChange={(e) => {
+													setRemoteNewName(e.target.value);
+													if (remoteCreateError) setRemoteCreateError(null);
+												}}
+												onKeyDown={(e) => {
+													if (e.key === "Enter" && !e.nativeEvent.isComposing) {
+														e.preventDefault();
+														handleCreateRemote();
+													} else if (e.key === "Escape") {
+														e.stopPropagation();
+														setShowRemoteNew(false);
+														setRemoteNewName("");
+														setRemoteCreateError(null);
+													}
+												}}
+											/>
+											<TipButton className="cwd-jump primary" tip={t("cwdCreate")} onClick={handleCreateRemote}>
+												<FiCheck />
+											</TipButton>
+											<TipButton
+												className="cwd-jump"
+												tip={t("cwdCancel")}
+												onClick={() => {
+													setShowRemoteNew(false);
+													setRemoteNewName("");
+													setRemoteCreateError(null);
+												}}
+											>
+												<FiX />
+											</TipButton>
+										</div>
+										{remoteCreateError && (
+											<div
+												className="project-picker-error"
+												style={{ color: "var(--red)", fontSize: "11px", marginTop: "4px" }}
+											>
+												{remoteCreateError}
+											</div>
+										)}
+									</div>
+								)}
 							</>
 						)}
 					</div>

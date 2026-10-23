@@ -481,6 +481,8 @@ export function MessageList({
 	const userUpwardGestureTimeRef = useRef(0);
 	/** 用户指针是否在容器内按下（用于识别按住滚动条滑块拖动）。 */
 	const isPointerDownRef = useRef(false);
+	/** 鼠标中键是否按下（中键自动滚动 autoscroll 期间同样视为用户物理意图，#684）。 */
+	const middleDownRef = useRef(false);
 	/** 触摸起始 clientY。 */
 	const touchStartYRef = useRef(0);
 
@@ -617,23 +619,36 @@ export function MessageList({
 	const [visibleCount, setVisibleCount] = useState<number>(() => firstPaintSize);
 	const convKey = `${state.conversationId ?? ""}:${state.sessionFile ?? ""}`;
 	const prevPagingConvKeyRef = useRef(convKey);
-	if (prevPagingConvKeyRef.current !== convKey) {
-		prevPagingConvKeyRef.current = convKey;
-		setVisibleCount(firstPaintSize);
-	}
 	const prevMsgLenRef = useRef(messages.length);
+	const prevFirstMsgIdRef = useRef(messages[0]?.id);
 	/** 服务端「更早一页」补到位后要补的滚动位置：内容插在视口上方，必须同步下移
 	 *  滚动条，否则用户眼前的内容会被推走（与本地撑开同一套补偿）。 */
 	const pendingScrollFixRef = useRef<{ sh: number; st: number } | null>(null);
 	/** 服务端翻页在途：滚轮在顶部会反复触发，只允许一个请求在路上。 */
 	const pagePendingRef = useRef(false);
+	if (prevPagingConvKeyRef.current !== convKey) {
+		prevPagingConvKeyRef.current = convKey;
+		setVisibleCount(firstPaintSize);
+		prevMsgLenRef.current = messages.length;
+		prevFirstMsgIdRef.current = messages[0]?.id;
+		pendingScrollFixRef.current = null;
+		pagePendingRef.current = false;
+	}
 	useEffect(() => {
 		const delta = messages.length - prevMsgLenRef.current;
 		prevMsgLenRef.current = messages.length;
+		const firstId = messages[0]?.id;
+		const isPrepend = firstId !== prevFirstMsgIdRef.current;
+		prevFirstMsgIdRef.current = firstId;
+
 		if (delta <= 0) return;
 		// 到达一页（或流式新增）：可见窗口跟着长，尾部内容不移位。
 		setVisibleCount((cur) => cur + delta);
 		pagePendingRef.current = false;
+
+		// 只有当服务端更早一页真正前插（isPrepend === true）到位时才消费滚动补偿；
+		// 严禁被并发在途的流式追加/新用户消息错误消费，彻底杜绝前插后视口跳动（#680）。
+		if (!isPrepend) return;
 		const fix = pendingScrollFixRef.current;
 		if (!fix) return;
 		pendingScrollFixRef.current = null;
@@ -642,6 +657,7 @@ export function MessageList({
 			if (!el) return;
 			el.scrollTop = fix.st + (el.scrollHeight - fix.sh);
 		});
+		// eslint-disable-next-line react-hooks/exhaustive-deps
 	}, [messages.length]);
 
 	const isPagingActive = !!reversePagination && !exportImage.open && !searchOpen;
@@ -1273,19 +1289,39 @@ export function MessageList({
 		[disengageStick],
 	);
 
-	const handlePointerDown = useCallback((e: React.PointerEvent<HTMLDivElement>) => {
-		if (e.button !== 0) return;
-		const el = e.currentTarget;
-		// 仅当直接点击在 .messages 容器自身的右侧滚动条槽位（clientX 落在 clientWidth 之外）时，
-		// 才标记为按住滚动条滑块拖动；点击内部子元素（如建议按钮、折叠卡头、正文）绝不置位！
-		if (e.target === el && e.clientX >= el.getBoundingClientRect().left + el.clientWidth) {
-			isPointerDownRef.current = true;
-		}
-	}, []);
+	const handlePointerDown = useCallback(
+		(e: React.PointerEvent<HTMLDivElement>) => {
+			if (e.button === 1) {
+				// 鼠标中键按下（用户准备使用中键滚轮 autoscroll 滚动）：立即切断吸底并标记物理手势（#684）
+				userUpwardGestureTimeRef.current = Date.now();
+				disengageStick();
+				return;
+			}
+			if (e.button !== 0) return;
+			const el = e.currentTarget;
+			// 仅当直接点击在 .messages 容器自身的右侧滚动条槽位（clientX 落在 clientWidth 之外）时，
+			// 才标记为按住滚动条滑块拖动；点击内部子元素（如建议按钮、折叠卡头、正文）绝不置位！
+			if (e.target === el && e.clientX >= el.getBoundingClientRect().left + el.clientWidth) {
+				isPointerDownRef.current = true;
+			}
+		},
+		[disengageStick],
+	);
 
 	useEffect(() => {
-		const onPointerUp = () => {
+		const onPointerUp = (e?: MouseEvent | PointerEvent) => {
 			isPointerDownRef.current = false;
+			// 中键释放才清除按住态；左/右键释放不影响中键拖滚动（#684）
+			if (!e || (e as MouseEvent).button === 1) middleDownRef.current = false;
+		};
+		const onPointerDownGlobal = (e: MouseEvent | PointerEvent) => {
+			if (e.button === 1) {
+				// 浏览器窗口内任一位置按下鼠标中键，均切断吸底并赋予向上物理意图时间戳；
+				// 按住期间 onScroll 的负位移一律视为用户向上意图，pinToBottom 总阀门拒绝吸底（#684）
+				middleDownRef.current = true;
+				userUpwardGestureTimeRef.current = Date.now();
+				disengageStick();
+			}
 		};
 		const onKeyDown = (e: KeyboardEvent) => {
 			const target = e.target as HTMLElement | null;
@@ -1300,10 +1336,12 @@ export function MessageList({
 		};
 		window.addEventListener("pointerup", onPointerUp);
 		window.addEventListener("pointercancel", onPointerUp);
+		window.addEventListener("pointerdown", onPointerDownGlobal, { capture: true });
 		window.addEventListener("keydown", onKeyDown);
 		return () => {
 			window.removeEventListener("pointerup", onPointerUp);
 			window.removeEventListener("pointercancel", onPointerUp);
+			window.removeEventListener("pointerdown", onPointerDownGlobal, { capture: true });
 			window.removeEventListener("keydown", onKeyDown);
 		};
 	}, [disengageStick]);
@@ -1326,9 +1364,17 @@ export function MessageList({
 		// treat them as upward user intent, or the stick gets undone instantly.
 		const programmatic = Date.now() < progUntilRef.current;
 
-		// 判定是否有真实物理向上意图：最近 800ms 内有滚轮向上/触屏向下拉/键盘向上，或按住拖动滚动条且向上运动
+		// 中键按住自动滚动期间持续刷新手势时间戳：autoscroll 只产生 scroll 事件
+		// 不产生 wheel 事件，靠按住态兜底，否则会被误判为布局抖动而反复吸底（#684）
+		if (middleDownRef.current && dSt < 0) {
+			userUpwardGestureTimeRef.current = Date.now();
+			disengageStick();
+		}
+		// 判定是否有真实物理向上意图：最近 800ms 内有滚轮向上/触屏向下拉/键盘向上/中键自动滚动，或按住拖动滚动条且向上运动
 		const hasUserUpwardIntent =
-			Date.now() - userUpwardGestureTimeRef.current < 800 || (isPointerDownRef.current && dSt < 0);
+			Date.now() - userUpwardGestureTimeRef.current < 800 ||
+			(isPointerDownRef.current && dSt < 0) ||
+			middleDownRef.current;
 
 		const decision = classifyScroll({
 			dSt,

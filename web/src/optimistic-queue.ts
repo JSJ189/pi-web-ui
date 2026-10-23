@@ -588,6 +588,11 @@ export function reconcileOptimisticPromptEchoes(
 		const staleIds = new Set<string>();
 		const kept: PendingPromptEcho[] = [];
 		for (const e of echoesOf(tracker)) {
+			// 超 TTL 的跨会话回显同样丢弃，不再无限跟踪（#705）
+			if (now - e.createdAt >= OPTIMISTIC_ECHO_TTL_MS) {
+				if (e.conversationId === incomingState.conversationId) staleIds.add(e.messageId);
+				continue;
+			}
 			if (e.conversationId === incomingState.conversationId) staleIds.add(e.messageId);
 			else kept.push(e);
 		}
@@ -605,10 +610,13 @@ export function reconcileOptimisticPromptEchoes(
 	const appendEchoes: UiMessage[] = [];
 
 	for (const echo of echoesOf(tracker)) {
-		if (echo.conversationId !== convId || now - echo.createdAt >= OPTIMISTIC_ECHO_TTL_MS) {
-			// 过期或非本会话：过期项的气泡要移除（不在本帧追加），跨会话项继续跟踪
+		if (now - echo.createdAt >= OPTIMISTIC_ECHO_TTL_MS) {
+			// 超 TTL 全会话统一过期：跨会话回显同样丢弃，不再无限跟踪成幽灵轮次（#705）
 			if (echo.conversationId === convId) staleEchoIds.add(echo.messageId);
-			if (echo.conversationId === convId) continue;
+			continue;
+		}
+		if (echo.conversationId !== convId) {
+			// 非本会话且未过期：继续跟踪（切回后仍可对账），但绝不追加到当前会话视图
 			keptEchoes.push(echo);
 			continue;
 		}

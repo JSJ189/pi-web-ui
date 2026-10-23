@@ -4,6 +4,7 @@ import type { GoalStatus, ModelInfo } from "../types";
 import { isZhLocale, useT, useI18n } from "../i18n";
 import { appSend, useIsDsh, useEngineCapabilities } from "../app-globals";
 import { Dropdown, DropdownItem } from "./Dropdown";
+import { UniversalModelPicker, matchesModelId } from "./UniversalModelPicker";
 import type { UiSlotEntry } from "../ui-slots";
 import { renderMergedToolbar } from "../slot-toolbar";
 
@@ -270,41 +271,38 @@ export const GoalBar = memo(function GoalBar({
 				onOpenChange={setModelOpen}
 				direction="up"
 			>
-				<div className="dd-header">{t("goalBarReviewModel")}</div>
-				{(reqLoading || modelsLoading) && <div className="dd-loading">{t("loading")}</div>}
-				{models.length === 0 && !reqLoading && !modelsLoading && <div className="dd-loading">{t("noModels")}</div>}
-				<DropdownItem
-					active={reviewModel === ""}
-					onClick={() => {
-						setReviewModel("");
-						setModelOpen(false);
-						appSend({ type: "set_goal_prefs", reviewModel: "" });
+				<UniversalModelPicker
+					models={models}
+					modelsLoading={modelsLoading}
+					currentModelId={reviewModel || null}
+					active={modelOpen}
+					onEnsureModels={() => {
+						if (models.length === 0 && !modelsLoading && !reqLoading) {
+							setReqLoading(true);
+							appSend({ type: "list_models" });
+						}
 					}}
-				>
-					{t("goalBarUseMainModel")}
-				</DropdownItem>
-				{models.map((m) => (
-					<DropdownItem
-						key={m.id}
-						active={reviewModel === m.id}
-						onClick={() => {
-							setReviewModel(m.id);
-							setModelOpen(false);
-							appSend({ type: "set_goal_prefs", reviewModel: m.id });
-						}}
-					>
-						<span className="dd-model-cell">
-							<span className="dd-model-name">{m.name}</span>
-							<span className="dd-model-meta">
-								<span className="dd-model-provider">{m.provider}</span>
-								<span className="dd-model-id">{m.id.split("/").slice(1).join("/")}</span>
-							</span>
-						</span>
-					</DropdownItem>
-				))}
-				<button type="button" className="dd-refresh" onClick={() => appSend({ type: "list_models" })}>
-					{t("refreshModels")}
-				</button>
+					loading={reqLoading}
+					onRefresh={() => appSend({ type: "list_models" })}
+					onPickModel={(m) => {
+						setReviewModel(m.id);
+						setModelOpen(false);
+						appSend({ type: "set_goal_prefs", reviewModel: m.id });
+					}}
+					isRowActive={(m) => matchesModelId(m, reviewModel)}
+					extraTopRow={
+						<DropdownItem
+							active={reviewModel === ""}
+							onClick={() => {
+								setReviewModel("");
+								setModelOpen(false);
+								appSend({ type: "set_goal_prefs", reviewModel: "" });
+							}}
+						>
+							{t("goalBarUseMainModel")}
+						</DropdownItem>
+					}
+				/>
 			</Dropdown>
 		),
 		"host:goal-rounds": (
@@ -350,38 +348,38 @@ export const GoalBar = memo(function GoalBar({
 				onOpenChange={setExecModelOpen}
 				direction="up"
 			>
-				<div className="dd-header">{t("goalBarExecModel")}</div>
-				{(reqLoading || modelsLoading) && <div className="dd-loading">{t("loading")}</div>}
-				{models.length === 0 && !reqLoading && !modelsLoading && <div className="dd-loading">{t("noModels")}</div>}
-				<DropdownItem
-					active={execModel === ""}
-					onClick={() => {
-						setExecModel("");
-						setExecModelOpen(false);
-						appSend({ type: "set_goal_prefs", execModel: "" });
+				<UniversalModelPicker
+					models={models}
+					modelsLoading={modelsLoading}
+					currentModelId={execModel || null}
+					active={execModelOpen}
+					onEnsureModels={() => {
+						if (models.length === 0 && !modelsLoading && !reqLoading) {
+							setReqLoading(true);
+							appSend({ type: "list_models" });
+						}
 					}}
-				>
-					{t("goalBarUseMainModel")}
-				</DropdownItem>
-				{models.map((m) => (
-					<DropdownItem
-						key={m.id}
-						active={execModel === m.id}
-						onClick={() => {
-							setExecModel(m.id);
-							setExecModelOpen(false);
-							appSend({ type: "set_goal_prefs", execModel: m.id });
-						}}
-					>
-						<span className="dd-model-cell">
-							<span className="dd-model-name">{m.name}</span>
-							<span className="dd-model-meta">
-								<span className="dd-model-provider">{m.provider}</span>
-								<span className="dd-model-id">{m.id.split("/").slice(1).join("/")}</span>
-							</span>
-						</span>
-					</DropdownItem>
-				))}
+					loading={reqLoading}
+					onRefresh={() => appSend({ type: "list_models" })}
+					onPickModel={(m) => {
+						setExecModel(m.id);
+						setExecModelOpen(false);
+						appSend({ type: "set_goal_prefs", execModel: m.id });
+					}}
+					isRowActive={(m) => matchesModelId(m, execModel)}
+					extraTopRow={
+						<DropdownItem
+							active={execModel === ""}
+							onClick={() => {
+								setExecModel("");
+								setExecModelOpen(false);
+								appSend({ type: "set_goal_prefs", execModel: "" });
+							}}
+						>
+							{t("goalBarUseMainModel")}
+						</DropdownItem>
+					}
+				/>
 			</Dropdown>
 		),
 	};

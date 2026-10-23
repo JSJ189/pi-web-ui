@@ -361,6 +361,36 @@ export default {
 				return res.json({ ok: true, model });
 			}
 
+			if (action === "play_audio") {
+				const url = payload.url;
+				if (!url) return res.status(400).json({ ok: false, error: "missing 'url' field" });
+				host.broadcast({
+					type: "live2d:action",
+					action: "play_audio",
+					url,
+					name: payload.name || "",
+					volume: payload.volume,
+				});
+				return res.json({ ok: true, url });
+			}
+
+			if (action === "stop_audio") {
+				host.broadcast({
+					type: "live2d:action",
+					action: "stop_audio",
+				});
+				return res.json({ ok: true });
+			}
+
+			if (action === "blink") {
+				host.broadcast({
+					type: "live2d:action",
+					action: "blink",
+					blinkType: payload.blinkType || "both",
+				});
+				return res.json({ ok: true });
+			}
+
 			res.status(400).json({ ok: false, error: `unknown action: ${action}` });
 		});
 
@@ -794,6 +824,101 @@ export default {
 							model,
 						});
 						return `Live2D model switched to: ${found.name}`;
+					},
+				}),
+			);
+
+			// 8) live2d_play_audio
+			untools.push(
+				host.registerAgentTool({
+					name: "live2d_play_audio",
+					label: "播放音乐口型对齐",
+					description: "Play music or speech audio with real-time mouth lip sync on the Live2D companion.",
+					promptSnippet: "play audio with pet lip-sync",
+					promptGuidelines: ["Use an accessible audio URL to play music or speech through the pet."],
+					parameters: {
+						type: "object",
+						required: ["url"],
+						properties: {
+							url: {
+								type: "string",
+								description: "Direct audio URL (e.g. mp3/wav/ogg/aac link) or base64 data URI.",
+							},
+							name: {
+								type: "string",
+								description: "Optional track name or speech title for display.",
+							},
+							volume: {
+								type: "number",
+								description: "Playback volume from 0.0 to 1.0 (default 0.85).",
+							},
+						},
+					},
+					async execute(_id, params) {
+						const url = params?.url;
+						if (!url) return "Error: 'url' parameter is required.";
+						const name = params?.name || "";
+						const volume = typeof params?.volume === "number" ? params.volume : 0.85;
+						host.broadcast({
+							type: "live2d:action",
+							action: "play_audio",
+							url,
+							name,
+							volume,
+						});
+						return `Playing audio on Live2D pet with lip sync: ${name || url}`;
+					},
+				}),
+			);
+
+			// 9) live2d_stop_audio
+			untools.push(
+				host.registerAgentTool({
+					name: "live2d_stop_audio",
+					label: "停止播放音频",
+					description: "Stop currently playing music or audio playback on the Live2D companion.",
+					promptSnippet: "stop pet audio playback",
+					promptGuidelines: ["Call when user asks to stop playing music or voice on the companion."],
+					parameters: {
+						type: "object",
+						properties: {},
+					},
+					async execute() {
+						host.broadcast({
+							type: "live2d:action",
+							action: "stop_audio",
+						});
+						return "Live2D pet audio playback stopped.";
+					},
+				}),
+			);
+
+			// 10) live2d_trigger_blink
+			untools.push(
+				host.registerAgentTool({
+					name: "live2d_trigger_blink",
+					label: "看板娘眨眼动作",
+					description: "Trigger a cute blinking or winking eye animation on the Live2D companion.",
+					promptSnippet: "blink or wink companion eyes",
+					promptGuidelines: ["type can be 'both', 'wink_left', or 'wink_right'."],
+					parameters: {
+						type: "object",
+						properties: {
+							type: {
+								type: "string",
+								enum: ["both", "wink_left", "wink_right"],
+								description: "Blink type: 'both' for natural double blink, or 'wink_left'/'wink_right' for winking.",
+							},
+						},
+					},
+					async execute(_id, params) {
+						const blinkType = params?.type || "both";
+						host.broadcast({
+							type: "live2d:action",
+							action: "blink",
+							blinkType,
+						});
+						return `Live2D pet triggered ${blinkType} eye animation.`;
 					},
 				}),
 			);

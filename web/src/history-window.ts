@@ -32,8 +32,8 @@ export function mergeEarlierPage(ui: UiState, page: EarlierPage): UiState | null
 	}
 	// 接缝校验：这一页的末尾必须正好接在当前窗口的第一条之前
 	if (page.historyStart + page.messages.length !== curStart) return null;
-	// 总数对不上同样视为错位（对话在这期间被压缩/改写）
-	if (page.historyTotal !== curTotal) return null;
+	// 总数更新：流式生成或在途新消息会增加总数，保留已返回消息并同步最新总数，
+	// 绝不因总数更新而丢弃整页导致服务端游标前移后历史永久不可达（issue #703）
 	return {
 		...ui,
 		messages: [...page.messages, ...ui.messages],

@@ -512,6 +512,7 @@ export interface CanvasGraph {
 	nodes: CanvasNode[];
 	edges: CanvasEdge[];
 	status: "idle" | "running" | "paused" | "completed";
+	/** 恒为 real。simulate（演练模式）已下线，仅为兼容旧存量数据保留，服务端与前端一律按真实执行处理。 */
 	executionMode?: "real" | "simulate";
 	createdAt: number;
 	updatedAt: number;
@@ -537,6 +538,7 @@ export type ClientMessage =
 	| { type: "canvas_stop_node"; graphId: string; nodeId: string }
 	| { type: "canvas_stop_all"; graphId: string }
 	| { type: "canvas_steer_node"; graphId: string; nodeId: string; message: string }
+	| { type: "canvas_review_node"; graphId: string; nodeId: string; decision: "approve" | "reject"; comment?: string }
 	| { type: "canvas_reset_status"; graphId: string }
 	/** Browser UI language changed (or first report after hello) — server
 	 *  persists it per client and uses it for tool return values / AI-facing

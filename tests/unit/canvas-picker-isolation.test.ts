@@ -6,7 +6,7 @@ import { act } from "react-dom/test-utils";
 import { DirectoryBrowser, MACHINE_ROOT } from "../../web/src/components/DirectoryBrowser.js";
 import { Dropdown } from "../../web/src/components/Dropdown.js";
 import { LanguageProvider } from "../../web/src/i18n.js";
-import { setAppSend } from "../../web/src/app-globals.js";
+import { setAppGlobals, resetAppGlobals, setAppSend } from "../../web/src/app-globals.js";
 import { CanvasStudio } from "../../web/src/components/canvas/CanvasStudio.js";
 
 let root: Root | null = null;
@@ -167,7 +167,7 @@ describe("Canvas & Picker 事件隔离与关闭防护", () => {
 		});
 
 		// 1. 点击展开新建输入行
-		const newBtn = document.body.querySelector(".cwd-newbtn") as HTMLButtonElement;
+		const newBtn = document.body.querySelector(".cwd-toolbar .tool-new") as HTMLButtonElement;
 		expect(newBtn).toBeTruthy();
 		act(() => {
 			newBtn.click();
@@ -231,7 +231,7 @@ describe("Canvas & Picker 事件隔离与关闭防护", () => {
 			root!.render(createElement(TestPicker));
 		});
 
-		const newBtn = document.body.querySelector(".cwd-newbtn") as HTMLButtonElement;
+		const newBtn = document.body.querySelector(".cwd-toolbar .tool-new") as HTMLButtonElement;
 		act(() => {
 			newBtn.click();
 		});
@@ -252,7 +252,7 @@ describe("Canvas & Picker 事件隔离与关闭防护", () => {
 		expect(onClose).toHaveBeenCalledTimes(1);
 	});
 
-	it("DirectoryBrowser: 在 MACHINE_ROOT 机器根下新建按钮应为 disabled", () => {
+	it("DirectoryBrowser: 在 MACHINE_ROOT 机器根下新建按钮应为 aria-disabled 且有原因提示", () => {
 		function TestPicker() {
 			return createElement(
 				LanguageProvider,
@@ -276,9 +276,20 @@ describe("Canvas & Picker 事件隔离与关闭防护", () => {
 			root!.render(createElement(TestPicker));
 		});
 
-		const newBtn = document.body.querySelector(".cwd-newbtn") as HTMLButtonElement;
+		const newBtn = document.body.querySelector(".cwd-toolbar .tool-new") as HTMLButtonElement;
 		expect(newBtn).toBeTruthy();
-		expect(newBtn.disabled).toBe(true);
+		// 不可用态走 aria-disabled（保留悬浮提示解释原因，而非原生 disabled 直接吞掉 hover）
+		expect(newBtn.getAttribute("aria-disabled")).toBe("true");
+		act(() => {
+			newBtn.dispatchEvent(new MouseEvent("mouseover", { bubbles: true }));
+		});
+		const bubble = document.body.querySelector(".set-tip-bubble.open");
+		expect(bubble).toBeTruthy();
+		// 点击无效果：不会展开新建输入行
+		act(() => {
+			newBtn.click();
+		});
+		expect(document.body.querySelector(".cwd-newrow input")).toBeNull();
 	});
 
 	it("CanvasStudio: 节点通过 ProjectPicker '创建并打开' 时应向服务端发送 make_dir 消息", () => {
@@ -306,7 +317,7 @@ describe("Canvas & Picker 事件隔离与关闭防护", () => {
 			root!.render(createElement(TestCanvas));
 		});
 
-		// 找到一个节点卡片上的“浏览...”按钮（UniversalPathPicker）
+		// 找到一个节点卡片上的浏览图标按钮（UniversalPathPicker，纯图标）
 		const browseBtns = document.body.querySelectorAll(".universal-path-browse-btn");
 		expect(browseBtns.length).toBeGreaterThan(0);
 
@@ -319,8 +330,8 @@ describe("Canvas & Picker 事件隔离与关闭防护", () => {
 		const picker = document.body.querySelector(".project-picker");
 		expect(picker).toBeTruthy();
 
-		// 点击展开新建项目行
-		const newBtn = document.body.querySelector(".cwd-newbtn") as HTMLButtonElement;
+		// 点击展开新建项目行（工具栏 ➕ 图标）
+		const newBtn = document.body.querySelector(".cwd-toolbar .tool-new") as HTMLButtonElement;
 		expect(newBtn).toBeTruthy();
 		act(() => {
 			newBtn.click();
@@ -346,5 +357,69 @@ describe("Canvas & Picker 事件隔离与关闭防护", () => {
 		const makeDirMsg = sentMessages.find((m) => m.type === "make_dir");
 		expect(makeDirMsg).toBeTruthy();
 		expect(makeDirMsg.path).toBe("E:/t/c");
+	});
+
+	it("DirectoryBrowser: 常用跳转行按快照渲染 此电脑/用户/桌面，点击跳转到对应目录", () => {
+		setAppGlobals({ homeDir: "C:/Users/test", desktopDir: "C:/Users/test/Desktop" });
+		setAppSend(() => true);
+		try {
+			function TestJumps() {
+				return createElement(
+					LanguageProvider,
+					null,
+					createElement(DirectoryBrowser, {
+						currentCwd: "C:/Users/test/Documents",
+						pathCompletions: [],
+						workspaceRoots: [],
+						onClose: () => {},
+						onSelectDirectory: () => {},
+					}),
+				);
+			}
+
+			const container = document.createElement("div");
+			document.body.appendChild(container);
+			root = createRoot(container);
+
+			act(() => {
+				root!.render(createElement(TestJumps));
+			});
+
+			const jumps = document.body.querySelectorAll(".cwd-toolbar .cwd-jump");
+			// 工具栏共 7 个纯图标按钮：此电脑 / 用户 / 桌面 / 上级 / 加根 / 新建 / 选定
+			expect(jumps.length).toBe(7);
+			// 纯图标：按钮内无文字
+			expect((jumps[1] as HTMLButtonElement).textContent).toBe("");
+
+			// 点击“用户目录”跳转：输入框应切到 homeDir（防抖 complete_path 不在此断言）
+			act(() => {
+				(jumps[1] as HTMLButtonElement).click();
+			});
+			const input = document.body.querySelector(".cwd-picker-row .cwd-picker-input") as HTMLInputElement;
+			expect(input).toBeTruthy();
+			expect(input.value).toBe("C:/Users/test");
+			expect((jumps[1] as HTMLButtonElement).classList.contains("active")).toBe(true);
+
+			// 悬浮即时气泡：同步弹出，文案带目标路径（无原生 title 延迟）
+			act(() => {
+				(jumps[1] as HTMLButtonElement).dispatchEvent(new MouseEvent("mouseover", { bubbles: true }));
+			});
+			const bubble = document.body.querySelector(".set-tip-bubble.open");
+			expect(bubble).toBeTruthy();
+			expect(bubble!.textContent).toContain("C:/Users/test");
+
+			// ".." 上级行：从用户目录点 .. 回到上层
+			const upRow = Array.from(document.body.querySelectorAll(".cwd-list .cwd-item .cwd-name")).find(
+				(el) => el.textContent === "..",
+			);
+			expect(upRow).toBeTruthy();
+			act(() => {
+				(upRow!.closest(".cwd-item")!.querySelector("button") as HTMLButtonElement).click();
+			});
+			expect(input.value).toBe("C:/Users");
+		} finally {
+			resetAppGlobals();
+			setAppSend(null);
+		}
 	});
 });

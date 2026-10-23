@@ -25,6 +25,10 @@ const exec = promisify(execFile);
 /** 单次 git 快照/还原命令超时时间（毫秒）。 */
 const GIT_SNAPSHOT_TIMEOUT_MS = 15_000;
 
+/** 物理还原互斥链（#697）：同一 cwd 的 git read-tree/clean 序列串行执行，
+ *  杜绝并发回滚交错破坏 index/工作区；key 为 resolve 后的 cwd。 */
+const pendingRestores = new Map<string, Promise<void>>();
+
 /** 执行单条 git 命令，返回 stdout。 */
 async function runGit(cwd: string, args: string[], envExtra?: NodeJS.ProcessEnv): Promise<string> {
 	const { stdout } = await exec("git", ["-c", "core.quotepath=false", ...args], {
@@ -301,6 +305,33 @@ export async function createWorkspaceSnapshot(cwd: string): Promise<string | nul
  * 同仓库的兄弟目录在以上任何一步都不受影响。
  */
 export async function restoreWorkspaceSnapshot(
+	cwd: string,
+	snapshotRef: string,
+): Promise<{ success: boolean; error?: string }> {
+	const key = resolve(cwd);
+	const prev = pendingRestores.get(key);
+	let release!: () => void;
+	const gate = new Promise<void>((r) => {
+		release = r;
+	});
+	const mine = (prev ?? Promise.resolve()).then(() => gate);
+	pendingRestores.set(key, mine);
+	if (prev) {
+		try {
+			await prev;
+		} catch {
+			// 前一还原失败不阻塞后继
+		}
+	}
+	try {
+		return await restoreWorkspaceSnapshotInner(cwd, snapshotRef);
+	} finally {
+		if (pendingRestores.get(key) === mine) pendingRestores.delete(key);
+		release();
+	}
+}
+
+async function restoreWorkspaceSnapshotInner(
 	cwd: string,
 	snapshotRef: string,
 ): Promise<{ success: boolean; error?: string }> {

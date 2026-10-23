@@ -1,3 +1,4 @@
+import { readFileSync } from "node:fs";
 import { describe, expect, it, vi } from "vitest";
 
 vi.mock("../../web/src/components/copy-button.js", () => ({ CopyButton: () => null }));
@@ -86,5 +87,46 @@ describe("backslash math delimiters", () => {
 	);
 	it("does not crash on invalid TeX", () => {
 		expect(() => render(String.raw`\[\notARealCommand{x}\]`)).not.toThrow();
+	});
+
+	it("renders boxed math expressions with valid stretchy fbox markup (issue #670)", () => {
+		const html = render(String.raw`\[\boxed{A}\]`);
+		expect(html).toContain('class="katex-display"');
+		expect(html).not.toContain("katex-error");
+		expect(html).toMatch(/class="[^"]*(?:stretchy|katex-stretchy)[^"]*fbox[^"]*"/);
+	});
+
+	it("renders complex boxed expression without error (issue #670 reproduction case)", () => {
+		const html = render("$$\n\\boxed{\\mathbb{CP}^{n}\\cong\\mathcal O_{H_0}.}\n$$");
+		expect(html).toContain('class="katex-display"');
+		expect(html).not.toContain("katex-error");
+		expect(html).toMatch(/class="[^"]*(?:stretchy|katex-stretchy)[^"]*fbox[^"]*"/);
+	});
+
+	it("ensures katex package version satisfies rehype-katex requirements (issue #670)", () => {
+		const pkg = JSON.parse(readFileSync(new URL("../../package.json", import.meta.url), "utf8")) as {
+			devDependencies?: Record<string, string>;
+			dependencies?: Record<string, string>;
+		};
+		const rehypePkg = JSON.parse(
+			readFileSync(new URL("../../node_modules/rehype-katex/package.json", import.meta.url), "utf8"),
+		) as {
+			dependencies?: Record<string, string>;
+		};
+		const katexVersion = pkg.devDependencies?.katex || pkg.dependencies?.katex;
+		const requiredKatex = rehypePkg.dependencies?.katex;
+		expect(katexVersion).toBeDefined();
+		expect(requiredKatex).toBeDefined();
+		// rehype-katex 依赖 ^0.16.0，根目录 katex 必须同样处于 0.16.x 避免类名分裂（.stretchy vs .katex-stretchy）
+		expect(katexVersion).toMatch(/^\^?0\.16\./);
+	});
+
+	it("ensures katex css or application stylesheet defines layout rules for stretchy containers (issue #670)", () => {
+		const katexCss = readFileSync(new URL("../../node_modules/katex/dist/katex.css", import.meta.url), "utf8");
+		const stylesCss = readFileSync(new URL("../../web/src/styles.css", import.meta.url), "utf8");
+		const hasStretchyInKatex = katexCss.includes(".stretchy") || katexCss.includes(".katex-stretchy");
+		const hasStretchyInStyles = stylesCss.includes(".stretchy") && stylesCss.includes(".katex-stretchy");
+		expect(hasStretchyInKatex).toBe(true);
+		expect(hasStretchyInStyles).toBe(true);
 	});
 });

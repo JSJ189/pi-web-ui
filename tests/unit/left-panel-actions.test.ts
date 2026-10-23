@@ -161,8 +161,8 @@ describe("LeftPanel 标题栏操作与项目管理", () => {
 
 		expect(document.querySelector(".project-picker")?.parentElement).toBe(document.body);
 
-		// 展开新建项目输入框
-		const newBtn = document.querySelector<HTMLButtonElement>(".cwd-newbtn, .project-picker-newbtn");
+		// 展开新建项目输入框（工具栏 ➕ 图标）
+		const newBtn = document.querySelector<HTMLButtonElement>(".cwd-toolbar .tool-new");
 		expect(newBtn).toBeTruthy();
 		act(() => newBtn!.click());
 
@@ -206,7 +206,7 @@ describe("LeftPanel 标题栏操作与项目管理", () => {
 		act(() => projectActionBtn!.click());
 
 		const chooseBtns = Array.from(
-			document.querySelectorAll<HTMLButtonElement>(".cwd-choose-btn, .project-picker-choose-btn"),
+			document.querySelectorAll<HTMLButtonElement>(".cwd-toolbar .tool-pick, .cwd-toolbar .tool-choose"),
 		);
 		expect(chooseBtns.length).toBeGreaterThan(0);
 

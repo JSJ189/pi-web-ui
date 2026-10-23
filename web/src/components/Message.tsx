@@ -1322,8 +1322,12 @@ export const Message = memo(function Message({
 							))
 						)}
 						{isEmptyStreaming && (
-							<div className="thinking-wait">
-								{t("thinkingWait")}
+							<div
+								className="thinking-wait minimal"
+								title={t("thinkingWait")}
+								aria-label={t("thinkingWait")}
+								role="status"
+							>
 								<span className="dot" />
 							</div>
 						)}

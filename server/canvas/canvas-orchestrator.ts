@@ -125,7 +125,10 @@ export class CanvasOrchestrator {
 
 		try {
 			const resolvedCwd = await this.resolveNodeCwd(node);
-			if (controller.signal.aborted) return;
+			if (controller.signal.aborted) {
+				this.activeExecutions.delete(execKey);
+				return;
+			}
 
 			node.currentAction = `[${node.engine.toUpperCase()}] 启动 ${node.model} 执行中 (${node.role})...`;
 			this.broadcast({
@@ -182,7 +185,10 @@ export class CanvasOrchestrator {
 				);
 			}
 
-			if (controller.signal.aborted) return;
+			if (controller.signal.aborted) {
+				this.activeExecutions.delete(execKey);
+				return;
+			}
 
 			// 节点完成
 			node.status = "done";
@@ -196,13 +202,17 @@ export class CanvasOrchestrator {
 				graphId: graph.id,
 				nodeId,
 				event: "done",
+				currentAction: node.currentAction,
 				summary: node.lastOutputSummary,
 			});
 
 			// 触发下游交接或审查
 			await this.handleDownstreamEdges(graph, node);
 		} catch (err: unknown) {
-			if (controller.signal.aborted) return;
+			if (controller.signal.aborted) {
+				this.activeExecutions.delete(execKey);
+				return;
+			}
 			const msg = (err as Error).message || String(err);
 			node.status = "error";
 			node.error = msg;
@@ -215,6 +225,7 @@ export class CanvasOrchestrator {
 				graphId: graph.id,
 				nodeId,
 				event: "error",
+				currentAction: node.currentAction,
 				error: msg,
 			});
 		}
@@ -332,6 +343,43 @@ export class CanvasOrchestrator {
 		}
 	}
 
+	/** 审查门禁裁决（#707）：批准/驳回落盘持久化并广播；执行中的节点同步收到审查意见 */
+	reviewNode(graphId: string, nodeId: string, decision: "approve" | "reject", comment?: string): CanvasGraph | null {
+		if (!isSafeGraphId(graphId)) return null;
+		let graph = this.runningGraphs.get(graphId);
+		if (!graph) {
+			try {
+				graph = loadCanvasGraph(this.dataDir, graphId);
+			} catch {
+				return null;
+			}
+		}
+		const node = graph.nodes.find((n) => n.id === nodeId);
+		if (!node) return null;
+		const cleanComment = (comment ?? "").slice(0, 500);
+		if (decision === "approve") {
+			node.status = "done";
+			node.currentAction = cleanComment ? `人工审查批准合流：${cleanComment}` : "人工审查批准合流";
+		} else {
+			node.status = "waiting_approval";
+			node.currentAction = cleanComment ? `人工驳回：${cleanComment}` : "人工驳回：需补充完善测试与注释";
+		}
+		graph.updatedAt = Date.now();
+		saveCanvasGraph(this.dataDir, graph);
+		this.runningGraphs.set(graphId, graph);
+		// 执行中的节点同步收到审查意见（复用节点事件通道，currentAction 即裁决正文）
+		if (this.activeExecutions.has(`${graphId}:${nodeId}`)) {
+			this.broadcast({
+				type: "canvas_node_event",
+				graphId,
+				nodeId,
+				event: decision === "approve" ? "done" : "paused",
+				currentAction: node.currentAction,
+			});
+		}
+		return graph;
+	}
+
 	/** 向节点插话干预 (Steer) */
 	steerNode(graphId: string, nodeId: string, message: string): void {
 		let graph = this.runningGraphs.get(graphId);
@@ -430,7 +478,8 @@ export class CanvasOrchestrator {
 
 		onAction(`[${node.engine.toUpperCase()}] 正在接入真实引擎运行时...`);
 
-		const cs = await engineSvc.attach(clientId, (msg: ServerMessage) => {
+		// sink 具名持有：finally 必须用同一引用 detach，否则旧闭包永久残留串台（#698）
+		const sink = (msg: ServerMessage) => {
 			if (signal.aborted) return;
 			if (msg.type === "message_delta") {
 				const delta = (msg as any).delta || "";
@@ -446,7 +495,9 @@ export class CanvasOrchestrator {
 					}
 				}
 			}
-		});
+		};
+
+		const cs = await engineSvc.attach(clientId, sink);
 
 		try {
 			if (cs.cwd !== resolvedCwd) {
@@ -524,7 +575,7 @@ export class CanvasOrchestrator {
 				? `${collectedText.slice(-300)}${diffSummary}`
 				: `[${node.title}] 交付完成${diffSummary || "（未产生文件修改）"}`;
 		} finally {
-			engineSvc.detach(clientId, () => {});
+			engineSvc.detach(clientId, sink);
 		}
 	}
 }

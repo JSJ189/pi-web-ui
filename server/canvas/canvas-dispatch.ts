@@ -85,8 +85,15 @@ export function handleCanvasMessage(
 			return true;
 		}
 
-		case "canvas_steer_node": {
-			orchestrator.steerNode(msg.graphId, msg.nodeId, msg.message);
+		case "canvas_review_node": {
+			// 审查门禁真动作：落盘持久化 + 广播，非本地假状态（#707）
+			if (!isSafeGraphId(msg.graphId)) return true;
+			try {
+				const graph = orchestrator.reviewNode(msg.graphId, msg.nodeId, msg.decision, msg.comment);
+				if (graph) send({ type: "canvas_graph_state", graph });
+			} catch {
+				// 忽略
+			}
 			return true;
 		}
 

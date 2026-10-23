@@ -122,6 +122,9 @@ export class UniversalSession implements DispatchSession {
 	private conversations = new Map<string, UniversalConversation>();
 
 	public isStreaming = false;
+	/** 在途回合归属的会话 id（#700/#701）：prompt 开始时锚定，finalizeTurn 收尾时消费并清空。
+	 *  会话切换/回滚不再让流式回写与回合收尾锚错会话，避免跨对话内容污染落盘。 */
+	private turnConvId: string | null = null;
 	private streamingMessage: UiMessage | null = null;
 	private streamingThinking = "";
 	private streamingText = "";
@@ -555,8 +558,9 @@ export class UniversalSession implements DispatchSession {
 			conversationId: conv.id,
 			rev: this.rev,
 			messages: conv.messages,
-			streamingMessage: this.streamingMessage,
-			isStreaming: this.isStreaming,
+			// 回合归属会话才携带流式态：切走后的前台会话快照不再混入后台回合内容（#701）
+			streamingMessage: !this.turnConvId || this.turnConvId === conv.id ? this.streamingMessage : null,
+			isStreaming: !this.turnConvId || this.turnConvId === conv.id ? this.isStreaming : false,
 			isEphemeral: Boolean(conv.isEphemeral),
 			draft: this.sessionDrafts.get(conv.id) ?? null,
 			model: {
@@ -683,6 +687,7 @@ export class UniversalSession implements DispatchSession {
 
 		this.isStreaming = true;
 		const conv = this.activeConv;
+		this.turnConvId = conv.id;
 		const now = Date.now();
 
 		// 2. 扫描用户文本中的 @ 提及（文件路径与技能指令）
@@ -846,7 +851,7 @@ export class UniversalSession implements DispatchSession {
 		if (!this.streamingMessage) return;
 		this.send({
 			type: "message_delta",
-			conversationId: this.activeConvId,
+			conversationId: this.turnConvId ?? this.activeConvId,
 			seq: ++this.deltaSeq,
 			messageId: this.streamingMessage.id,
 			usage: null,
@@ -860,18 +865,22 @@ export class UniversalSession implements DispatchSession {
 			this.snapshotTimer = null;
 		}
 
+		// 回合收尾锚定回合归属会话：中途切走/回滚不再把本轮内容写进别的会话（#700/#701）
+		const turnId = this.turnConvId;
+		this.turnConvId = null;
+		const conv = (turnId && this.conversations.get(turnId)) || this.activeConv;
+
 		if (this.streamingMessage) {
-			this.activeConv.messages.push(this.streamingMessage);
+			conv.messages.push(this.streamingMessage);
 			this.streamingMessage = null;
 		}
 
 		if (this.pendingToolResults.length > 0) {
-			this.activeConv.messages.push(...this.pendingToolResults);
+			conv.messages.push(...this.pendingToolResults);
 			this.pendingToolResults = [];
 		}
 
 		// 累计会话统计与上下文占用（底座统一驱动底栏上下文环、Token 计数、缓存命中率与累计成本）
-		const conv = this.activeConv;
 		if (!conv.stats) {
 			conv.stats = {
 				tokens: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, total: 0 },
@@ -906,21 +915,21 @@ export class UniversalSession implements DispatchSession {
 		// 回写 Claude 分配的 session ID（保证多轮上下文连续）
 		if (typeof (this.driver as any).getActiveSessionId === "function") {
 			const activeSid = (this.driver as any).getActiveSessionId();
-			if (activeSid && this.activeConv.driverSessionId !== activeSid) {
-				this.activeConv.driverSessionId = activeSid;
+			if (activeSid && conv.driverSessionId !== activeSid) {
+				conv.driverSessionId = activeSid;
 			}
 		}
 
 		this.isStreaming = false;
 		this.streamingThinking = "";
 		this.streamingText = "";
-		this.activeConv.updatedAt = Date.now();
-		if (!this.activeConv.isEphemeral) {
-			this.store.saveConversation(this.cwd, this.activeConv);
+		conv.updatedAt = Date.now();
+		if (!conv.isEphemeral) {
+			this.store.saveConversation(this.cwd, conv);
 		}
 		// 解析本轮生成的内联标记（如 [[conv:rename:...]] / [[action:suggest:...]]）
 		if (this.streamingText && this.streamingText.includes("[[")) {
-			void this.markerSvc.handleAssistantText(this.activeConv.id, this.streamingText);
+			void this.markerSvc.handleAssistantText(conv.id, this.streamingText);
 		}
 		this.flushSnapshot();
 		void this.refreshSessions();
@@ -1151,6 +1160,12 @@ export class UniversalSession implements DispatchSession {
 			? (this.conversations.get(conversationId) ?? this.store.loadConversation(this.cwd, conversationId) ?? undefined)
 			: undefined;
 		if (!targetConv) {
+			targetConv = this.activeConv;
+		}
+
+		// 回滚与在途回合互斥：先落定在途回合再截断，否则 finalize 与 slice 交错导致截断/错位（#700）
+		if (targetConv.id === this.activeConvId && (this.isStreaming || this.streamingMessage)) {
+			await this.abort();
 			targetConv = this.activeConv;
 		}
 

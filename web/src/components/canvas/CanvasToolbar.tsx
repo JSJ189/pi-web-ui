@@ -1,7 +1,9 @@
 /**
  * CanvasToolbar.tsx — 画布协作工作室顶部浮动控制栏。
+ *
+ * 功能区：工程管理 | 新增队友与模板 | 调度控制 | 视口缩放
  */
-import { useState } from "react";
+import { useState, useRef, useEffect } from "react";
 import type { CanvasGraph, CanvasGraphSummary } from "../../types";
 import { SQUAD_TEMPLATES } from "./CanvasTemplates";
 import {
@@ -15,6 +17,10 @@ import {
 	FiUsers,
 	FiFolder,
 	FiSave,
+	FiTrash2,
+	FiEdit3,
+	FiFilePlus,
+	FiTarget,
 } from "react-icons/fi";
 
 interface CanvasToolbarProps {
@@ -27,10 +33,14 @@ interface CanvasToolbarProps {
 	onRunAll: () => void;
 	onStopAll: () => void;
 	onResetStatus: () => void;
-	onToggleExecutionMode: (mode: "real" | "simulate") => void;
+	onCreateGraph: (name: string) => void;
+	onDeleteGraph: (id: string) => void;
+	onRenameGraph: (name: string) => void;
+	onFitView: () => void;
 	zoom: number;
 	onZoomChange: (newZoom: number) => void;
 	onResetViewport: () => void;
+	hasUnsavedChanges?: boolean;
 }
 
 export function CanvasToolbar({
@@ -43,31 +53,209 @@ export function CanvasToolbar({
 	onRunAll,
 	onStopAll,
 	onResetStatus,
-	onToggleExecutionMode,
+	onCreateGraph,
+	onDeleteGraph,
+	onRenameGraph,
+	onFitView,
 	zoom,
 	onZoomChange,
 	onResetViewport,
+	hasUnsavedChanges,
 }: CanvasToolbarProps) {
 	const [showSquadMenu, setShowSquadMenu] = useState(false);
+	const [showGraphMenu, setShowGraphMenu] = useState(false);
+	const [renamingGraph, setRenamingGraph] = useState(false);
+	const [renameValue, setRenameValue] = useState("");
+	const [creatingGraph, setCreatingGraph] = useState(false);
+	const [createValue, setCreateValue] = useState("");
+
+	const squadMenuRef = useRef<HTMLDivElement>(null);
+	const graphMenuRef = useRef<HTMLDivElement>(null);
+	const renameInputRef = useRef<HTMLInputElement>(null);
+	const createInputRef = useRef<HTMLInputElement>(null);
+
+	// 点击外部关闭下拉菜单
+	useEffect(() => {
+		if (!showSquadMenu && !showGraphMenu) return;
+		const handleClick = (e: MouseEvent) => {
+			if (showSquadMenu && squadMenuRef.current && !squadMenuRef.current.contains(e.target as Node)) {
+				setShowSquadMenu(false);
+			}
+			if (showGraphMenu && graphMenuRef.current && !graphMenuRef.current.contains(e.target as Node)) {
+				setShowGraphMenu(false);
+			}
+		};
+		document.addEventListener("mousedown", handleClick);
+		return () => document.removeEventListener("mousedown", handleClick);
+	}, [showSquadMenu, showGraphMenu]);
+
+	// 自动聚焦重命名输入框
+	useEffect(() => {
+		if (renamingGraph && renameInputRef.current) {
+			renameInputRef.current.focus();
+			renameInputRef.current.select();
+		}
+	}, [renamingGraph]);
+
+	// 自动聚焦新建输入框
+	useEffect(() => {
+		if (creatingGraph && createInputRef.current) {
+			createInputRef.current.focus();
+		}
+	}, [creatingGraph]);
+
+	const handleRenameSubmit = () => {
+		const trimmed = renameValue.trim();
+		if (trimmed && trimmed !== graph.name) {
+			onRenameGraph(trimmed);
+		}
+		setRenamingGraph(false);
+	};
+
+	const handleCreateSubmit = () => {
+		const trimmed = createValue.trim();
+		if (trimmed) {
+			onCreateGraph(trimmed);
+		}
+		setCreatingGraph(false);
+		setCreateValue("");
+	};
+
+	const handleDeleteCurrentGraph = () => {
+		if (graphList.length <= 1) return; // 至少保留一个工程
+		const confirmed = window.confirm(`确定要删除画布工程「${graph.name}」吗？\n此操作不可撤销。`);
+		if (confirmed) {
+			onDeleteGraph(graph.id);
+		}
+	};
 
 	return (
 		<div className="canvas-toolbar">
-			{/* 工程列表选择 */}
+			{/* 工程管理区 */}
 			<div className="canvas-toolbar-group">
 				<FiFolder className="canvas-toolbar-icon" />
-				<select
-					className="canvas-toolbar-select"
-					value={graph.id}
-					onChange={(e) => onSelectGraph(e.target.value)}
-					title="切换画布工程"
+
+				{renamingGraph ? (
+					<input
+						ref={renameInputRef}
+						className="canvas-toolbar-rename-input"
+						value={renameValue}
+						onChange={(e) => setRenameValue(e.target.value)}
+						onKeyDown={(e) => {
+							if (e.key === "Enter") handleRenameSubmit();
+							else if (e.key === "Escape") setRenamingGraph(false);
+						}}
+						onBlur={handleRenameSubmit}
+						placeholder="工程名称"
+					/>
+				) : (
+					<select
+						className="canvas-toolbar-select"
+						value={graph.id}
+						onChange={(e) => onSelectGraph(e.target.value)}
+						title="切换画布工程"
+					>
+						{graphList.map((g) => (
+							<option key={g.id} value={g.id}>
+								{g.name} ({g.nodeCount}人)
+							</option>
+						))}
+					</select>
+				)}
+
+				<div className="canvas-dropdown-wrap" ref={graphMenuRef}>
+					<button
+						type="button"
+						className="canvas-toolbar-btn"
+						onClick={() => setShowGraphMenu(!showGraphMenu)}
+						title="工程管理菜单"
+					>
+						▾
+					</button>
+					{showGraphMenu && (
+						<div
+							className="canvas-dropdown-menu"
+							onPointerDown={(e) => e.stopPropagation()}
+							onMouseDown={(e) => e.stopPropagation()}
+							onWheel={(e) => e.stopPropagation()}
+						>
+							{creatingGraph ? (
+								<div className="canvas-dropdown-item canvas-inline-create" onPointerDown={(e) => e.stopPropagation()}>
+									<input
+										ref={createInputRef}
+										className="canvas-inline-input"
+										value={createValue}
+										onChange={(e) => setCreateValue(e.target.value)}
+										onKeyDown={(e) => {
+											if (e.key === "Enter") {
+												handleCreateSubmit();
+												setShowGraphMenu(false);
+											} else if (e.key === "Escape") {
+												setCreatingGraph(false);
+											}
+										}}
+										placeholder="输入新工程名称..."
+										onClick={(e) => e.stopPropagation()}
+									/>
+									<button
+										type="button"
+										className="canvas-inline-confirm"
+										onClick={(e) => {
+											e.stopPropagation();
+											handleCreateSubmit();
+											setShowGraphMenu(false);
+										}}
+									>
+										✓
+									</button>
+								</div>
+							) : (
+								<button type="button" className="canvas-dropdown-item" onClick={() => setCreatingGraph(true)}>
+									<b>
+										<FiFilePlus style={{ verticalAlign: "middle" }} /> 新建画布工程
+									</b>
+									<small>创建一个全新的空白画布</small>
+								</button>
+							)}
+							<button
+								type="button"
+								className="canvas-dropdown-item"
+								onClick={() => {
+									setRenameValue(graph.name);
+									setRenamingGraph(true);
+									setShowGraphMenu(false);
+								}}
+							>
+								<b>
+									<FiEdit3 style={{ verticalAlign: "middle" }} /> 重命名当前工程
+								</b>
+								<small>修改「{graph.name}」的名称</small>
+							</button>
+							<button
+								type="button"
+								className="canvas-dropdown-item canvas-dropdown-item-danger"
+								onClick={() => {
+									handleDeleteCurrentGraph();
+									setShowGraphMenu(false);
+								}}
+								disabled={graphList.length <= 1}
+								title={graphList.length <= 1 ? "至少需保留一个画布工程" : ""}
+							>
+								<b>
+									<FiTrash2 style={{ verticalAlign: "middle" }} /> 删除当前工程
+								</b>
+								<small>{graphList.length <= 1 ? "仅剩一个工程，无法删除" : `永久删除「${graph.name}」`}</small>
+							</button>
+						</div>
+					)}
+				</div>
+
+				<button
+					type="button"
+					className={`canvas-toolbar-btn ${hasUnsavedChanges ? "canvas-unsaved" : ""}`}
+					onClick={onSave}
+					title={hasUnsavedChanges ? "有未保存的更改 (Ctrl+S)" : "保存当前工程 (Ctrl+S)"}
 				>
-					{graphList.map((g) => (
-						<option key={g.id} value={g.id}>
-							{g.name} ({g.nodeCount}人)
-						</option>
-					))}
-				</select>
-				<button type="button" className="canvas-toolbar-btn" onClick={onSave} title="保存当前工程">
 					<FiSave />
 				</button>
 			</div>
@@ -80,7 +268,7 @@ export function CanvasToolbar({
 					<FiPlus /> 新增队友
 				</button>
 
-				<div className="canvas-dropdown-wrap">
+				<div className="canvas-dropdown-wrap" ref={squadMenuRef}>
 					<button
 						type="button"
 						className="canvas-toolbar-btn"
@@ -93,7 +281,6 @@ export function CanvasToolbar({
 					{showSquadMenu && (
 						<div
 							className="canvas-dropdown-menu"
-							onClick={() => setShowSquadMenu(false)}
 							onPointerDown={(e) => e.stopPropagation()}
 							onMouseDown={(e) => e.stopPropagation()}
 							onWheel={(e) => e.stopPropagation()}
@@ -103,7 +290,10 @@ export function CanvasToolbar({
 									key={tmpl.id}
 									type="button"
 									className="canvas-dropdown-item"
-									onClick={() => onApplyTemplate(tmpl.createGraph())}
+									onClick={() => {
+										onApplyTemplate(tmpl.createGraph());
+										setShowSquadMenu(false);
+									}}
 								>
 									<b>{tmpl.title}</b>
 									<small>{tmpl.desc}</small>
@@ -131,20 +321,6 @@ export function CanvasToolbar({
 				<button type="button" className="canvas-toolbar-btn" onClick={onResetStatus} title="重置全队状态为待命 (idle)">
 					<FiRotateCcw /> 复位
 				</button>
-
-				{/* 真实执行 vs 拓扑演练模式切换 */}
-				<button
-					type="button"
-					className={`canvas-toolbar-btn ${graph.executionMode !== "simulate" ? "real-mode" : "sim-mode"}`}
-					onClick={() => onToggleExecutionMode(graph.executionMode === "simulate" ? "real" : "simulate")}
-					title={
-						graph.executionMode === "simulate"
-							? "当前为拓扑演练模式（不耗 Token，快速演示流程；点击切换为真实引擎调用）"
-							: "当前为真实智能体编码模式（真实调用所选模型与工具修改项目代码；点击切换为演练模式）"
-					}
-				>
-					{graph.executionMode === "simulate" ? "🧪 演练模式" : "⚡ 真实执行"}
-				</button>
 			</div>
 
 			<div className="canvas-toolbar-divider" />
@@ -169,6 +345,9 @@ export function CanvasToolbar({
 					title="放大"
 				>
 					<FiZoomIn />
+				</button>
+				<button type="button" className="canvas-toolbar-btn" onClick={onFitView} title="适配所有节点到视口 (Ctrl+0)">
+					<FiTarget />
 				</button>
 			</div>
 		</div>

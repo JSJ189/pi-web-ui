@@ -12397,6 +12397,13 @@ export class ClientSession {
 			if (targetConv.session.isStreaming) {
 				await targetConv.session.abort();
 			}
+			// 回滚开始时的会话长度：物理还原前复核，若期间已有新回合写入则跳过还原保新改动（#697）
+			let sessionLenAtRollback = -1;
+			try {
+				sessionLenAtRollback = targetConv.session.agent.state.messages.length;
+			} catch {
+				// best effort
+			}
 
 			// 重置分支 leaf 到目标 entry.id
 			targetConv.session.sessionManager.branch(entry.id);
@@ -12453,16 +12460,32 @@ export class ClientSession {
 				const matched = findMatchingWorkspaceSnapshot(targetConv.workspaceSnapshots ?? [], entry.id, entryTs);
 
 				if (matched) {
-					const res = await restoreWorkspaceSnapshot(targetConv.cwd, matched.snapshotRef);
-					if (res.success) {
-						workspaceRestored = true;
-					} else {
+					let sessionLenNow = -1;
+					try {
+						sessionLenNow = targetConv.session.agent.state.messages.length;
+					} catch {
+						// best effort
+					}
+					if (sessionLenAtRollback >= 0 && sessionLenNow > sessionLenAtRollback) {
 						this.emit({
 							type: "notice",
 							level: "warning",
-							text: `会话已回滚，但工作区物理文件还原失败：${res.error}`,
-							textEn: `Session rolled back, but workspace file restore failed: ${res.error}`,
+							text: "检测到回滚期间已有新对话写入，为保护新改动已跳过工作区物理文件还原（会话历史仍已回滚）。",
+							textEn:
+								"New messages arrived during rollback; skipped workspace file restore to protect new changes (history still rolled back).",
 						});
+					} else {
+						const res = await restoreWorkspaceSnapshot(targetConv.cwd, matched.snapshotRef);
+						if (res.success) {
+							workspaceRestored = true;
+						} else {
+							this.emit({
+								type: "notice",
+								level: "warning",
+								text: `会话已回滚，但工作区物理文件还原失败：${res.error}`,
+								textEn: `Session rolled back, but workspace file restore failed: ${res.error}`,
+							});
+						}
 					}
 				} else {
 					this.emit({

@@ -52,6 +52,12 @@ function onPluginData(e) {
 			}
 		} else if (action === "model_switch") {
 			if (payload.model) widget.switchModel(payload.model);
+		} else if (action === "play_audio") {
+			if (payload.url) void widget.playAudio(payload.url, payload.name, payload.volume);
+		} else if (action === "stop_audio") {
+			widget.stopAudio();
+		} else if (action === "blink") {
+			widget.triggerBlink(payload.blinkType || "both");
 		}
 	} else if (payload.type === "live2d:agent-event") {
 		const { status } = payload;
@@ -95,6 +101,18 @@ function onPluginData(e) {
 		}
 		if (s.reactToAgent !== undefined) {
 			widget.config.reactToAgent = Boolean(s.reactToAgent);
+		}
+		if (s.autoBlink !== undefined) {
+			widget.config.autoBlink = Boolean(s.autoBlink);
+			widget.stage?.setAutoBlink(widget.config.autoBlink);
+		}
+		if (s.voiceOnly !== undefined) {
+			widget.config.voiceOnly = Boolean(s.voiceOnly);
+			widget.stage?.setVoiceOnly(widget.config.voiceOnly);
+		}
+		if (typeof s.lipSyncSensitivity === "number") {
+			widget.config.lipSyncSensitivity = s.lipSyncSensitivity;
+			widget.stage?.setLipSyncSensitivity(s.lipSyncSensitivity);
 		}
 	}
 }

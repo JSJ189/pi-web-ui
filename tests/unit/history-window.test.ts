@@ -29,13 +29,16 @@ describe("mergeEarlierPage", () => {
 		expect(merged).toBeNull();
 	});
 
-	it("总数变了（期间被压缩/改写）也丢弃", () => {
+	it("总数变了（期间收到新消息/流式追加）依然正常保留前插并更新总数（issue #703）", () => {
 		const merged = mergeEarlierPage(ui(["m10", "m11"], 10, 12), {
 			messages: [m("m8"), m("m9")],
 			historyStart: 8,
 			historyTotal: 99,
 		});
-		expect(merged).toBeNull();
+		expect(merged).not.toBeNull();
+		expect(merged?.messages.map((x) => x.id)).toEqual(["m8", "m9", "m10", "m11"]);
+		expect(merged?.historyStart).toBe(8);
+		expect(merged?.historyTotal).toBe(99);
 	});
 
 	it("空页 = 已到最早：对齐计数，即使起点没变也返回（用于收起加载态）", () => {

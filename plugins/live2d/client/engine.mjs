@@ -3,6 +3,8 @@
  * 本地依赖优先 + CDN 自动降级，支持 Cubism 2 / 3 / 4 模型
  */
 import { EMOTION_ALIAS_MAP } from "./models.mjs";
+import { AudioLipSyncEngine } from "./audio-lipsync.mjs";
+import { EyeBlinkEngine } from "./eye-blink.mjs";
 
 function loadScript(src) {
 	return new Promise((resolve, reject) => {
@@ -88,6 +90,22 @@ export class Live2DStage {
 		this.expressions = [];
 		this.motions = [];
 		this._onMouseMove = this._handleMouseMove.bind(this);
+
+		// 音频口型对齐与自然眨眼引擎
+		this.audioSync = new AudioLipSyncEngine({
+			sensitivity: options.lipSyncSensitivity ?? 1.25,
+			voiceOnly: options.voiceOnly !== false,
+			onBeat: () => {
+				this.eyeBlink?.onMusicBeat();
+			},
+		});
+		this.eyeBlink = new EyeBlinkEngine({
+			enabled: options.autoBlink !== false,
+		});
+		this._onBeforeModelUpdate = null;
+		this._lastMouthOpen = 0.0;
+		this._lastTickerTime = performance.now();
+		this._beatGroove = 0.0;
 	}
 
 	async init() {
@@ -192,8 +210,170 @@ export class Live2DStage {
 		this.expressions = this._extractExpressions(newModel, modelConfig);
 		this.motions = this._extractMotions(newModel, modelConfig);
 
+		// 挂钩口型与眨眼更新管线
+		this._hookModelLipSyncAndBlink(newModel);
+
 		// 开启默认模式
 		this.setMode(this.mode);
+	}
+
+	_hookModelLipSyncAndBlink(model) {
+		const internal = model?.internalModel;
+		if (!internal) return;
+
+		// 避免重复绑定
+		if (this._onBeforeModelUpdate) {
+			internal.off?.("beforeModelUpdate", this._onBeforeModelUpdate);
+		}
+
+		this._onBeforeModelUpdate = () => {
+			if (this.disposed || !this.model) return;
+			const core = this.model.internalModel?.coreModel;
+			if (!core) return;
+
+			const now = performance.now();
+			const deltaMs = Math.max(1, Math.min(100, now - this._lastTickerTime));
+			this._lastTickerTime = now;
+
+			// 1. 自然与节拍眨眼驱动
+			if (this.eyeBlink) {
+				const blink = this.eyeBlink.update(deltaMs);
+				this._applyBlink(core, blink);
+			}
+
+			// 2. 音频音乐口型对齐驱动
+			if (this.audioSync) {
+				const mouthOpen = this.audioSync.update();
+				if (mouthOpen > 0.001 || this._lastMouthOpen > 0.001) {
+					this._applyMouth(core, mouthOpen);
+					this._lastMouthOpen = mouthOpen;
+				}
+
+				// 3. 伴随音乐节拍轻微律动微摆 (Groove)
+				if (this.audioSync.isPlaying()) {
+					if (this.audioSync.isBeat) {
+						this._beatGroove = 1.0;
+					}
+					if (this._beatGroove > 0.01) {
+						this._applyBeatGroove(core, this._beatGroove);
+						this._beatGroove *= 0.88;
+					}
+				}
+			}
+		};
+
+		internal.on("beforeModelUpdate", this._onBeforeModelUpdate);
+	}
+
+	_applyBlink(core, blink) {
+		// Cubism 4 Core
+		if (typeof core.setParameterValueById === "function") {
+			try {
+				let curL = core.getParameterValueById("ParamEyeLOpen");
+				let curR = core.getParameterValueById("ParamEyeROpen");
+				if (curL === undefined || isNaN(curL)) curL = 1.0;
+				if (curR === undefined || isNaN(curR)) curR = 1.0;
+
+				core.setParameterValueById("ParamEyeLOpen", curL * blink.left);
+				core.setParameterValueById("ParamEyeROpen", curR * blink.right);
+
+				// 兜底其它可能在 eyeBlinkIds 中的特殊眼睛参数
+				const blinkIds = this.model?.internalModel?.eyeBlinkIds;
+				if (Array.isArray(blinkIds)) {
+					for (const id of blinkIds) {
+						if (id !== "ParamEyeLOpen" && id !== "ParamEyeROpen") {
+							const v = core.getParameterValueById(id);
+							core.setParameterValueById(id, (isNaN(v) ? 1.0 : v) * blink.left);
+						}
+					}
+				}
+			} catch {}
+			return;
+		}
+
+		// Cubism 2 Core
+		if (typeof core.setParamFloat === "function") {
+			try {
+				let curL = typeof core.getParamFloat === "function" ? core.getParamFloat("PARAM_EYE_L_OPEN") : 1.0;
+				let curR = typeof core.getParamFloat === "function" ? core.getParamFloat("PARAM_EYE_R_OPEN") : 1.0;
+				if (curL === undefined || isNaN(curL)) curL = 1.0;
+				if (curR === undefined || isNaN(curR)) curR = 1.0;
+				core.setParamFloat("PARAM_EYE_L_OPEN", curL * blink.left);
+				core.setParamFloat("PARAM_EYE_R_OPEN", curR * blink.right);
+			} catch {}
+		}
+	}
+
+	_applyMouth(core, mouthOpen) {
+		// 夸张放大一级, 让中小音量下嘴型依然清晰可见 (上限钳制 1.0)
+		// 基底只垫 0.03: VAD 关门时间奏真正闭嘴, 不会一直半张着
+		const v = Math.max(0.0, Math.min(1.0, mouthOpen * 1.25 + (mouthOpen > 0.03 ? 0.03 : 0)));
+		// Cubism 4 Core
+		if (typeof core.setParameterValueById === "function") {
+			try {
+				core.setParameterValueById("ParamMouthOpenY", v);
+				core.setParameterValueById("PARAM_MOUTH_OPEN_Y", v);
+
+				const lipSyncIds = this.model?.internalModel?.lipSyncIds;
+				if (Array.isArray(lipSyncIds)) {
+					for (const id of lipSyncIds) {
+						core.setParameterValueById(id, v);
+					}
+				}
+				// 注意: 不再每帧覆盖 ParamMouthForm, 该参数控制嘴角形态会被表情/动作接管,
+				// 强行写入会把嘴收窄反而让张嘴看起来不明显
+			} catch {}
+			return;
+		}
+
+		// Cubism 2 Core
+		if (typeof core.setParamFloat === "function") {
+			try {
+				core.setParamFloat("PARAM_MOUTH_OPEN_Y", v);
+			} catch {}
+			try {
+				core.setParamFloat("ParamMouthOpenY", v);
+			} catch {}
+		}
+	}
+
+	_applyBeatGroove(core, groove) {
+		const swayZ = Math.sin(performance.now() / 160) * groove * 1.5;
+		const swayX = Math.cos(performance.now() / 200) * groove * 0.8;
+		// Cubism 4 Core
+		if (typeof core.addParameterValueById === "function") {
+			try {
+				core.addParameterValueById("ParamAngleZ", swayZ);
+				core.addParameterValueById("ParamBodyAngleX", swayX);
+			} catch {}
+			return;
+		}
+		// Cubism 2 Core
+		if (typeof core.addToParamFloat === "function") {
+			try {
+				core.addToParamFloat("PARAM_ANGLE_Z", swayZ);
+			} catch {}
+		}
+	}
+
+	triggerBlink() {
+		this.eyeBlink?.triggerBlink();
+	}
+
+	triggerWink(side = "right") {
+		this.eyeBlink?.triggerWink(side);
+	}
+
+	setAutoBlink(enabled) {
+		this.eyeBlink?.setEnabled(enabled);
+	}
+
+	setLipSyncSensitivity(sens) {
+		this.audioSync?.setSensitivity(sens);
+	}
+
+	setVoiceOnly(enabled) {
+		this.audioSync?.setVoiceOnly(enabled);
 	}
 
 	_extractExpressions(model, modelConfig) {
@@ -358,6 +538,12 @@ export class Live2DStage {
 	destroy() {
 		this.disposed = true;
 		window.removeEventListener("mousemove", this._onMouseMove);
+		if (this.audioSync) {
+			try {
+				this.audioSync.destroy();
+			} catch {}
+			this.audioSync = null;
+		}
 		if (this.model) {
 			try {
 				this.model.destroy();

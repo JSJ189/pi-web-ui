@@ -5347,6 +5347,66 @@
 		background: var(--red-soft);
 	}
 
+	/* 单行图标工具栏：常用跳转 | 导航操作 | 新建 | 选定（本地 / 远程共用） */
+	.cwd-toolbar {
+		display: flex;
+		align-items: center;
+		gap: 6px;
+		min-width: 0;
+		max-width: 100%;
+	}
+	.cwd-toolbar-sep {
+		width: 1px;
+		align-self: stretch;
+		background: var(--border);
+		margin: 0 2px;
+		flex: none;
+	}
+	.cwd-toolbar-spacer {
+		flex: 1;
+		min-width: 4px;
+	}
+	.cwd-jump {
+		display: inline-flex;
+		align-items: center;
+		justify-content: center;
+		flex: none;
+		padding: 3px 7px;
+		border: 1px solid var(--border);
+		border-radius: 5px;
+		background: var(--bg-elev);
+		color: var(--text-dim);
+		font-size: 12px;
+		line-height: 1;
+		cursor: pointer;
+	}
+	.cwd-jump:hover {
+		color: var(--text);
+		border-color: var(--accent);
+	}
+	.cwd-jump.active {
+		color: var(--accent-contrast, #fff);
+		background: var(--accent);
+		border-color: var(--accent);
+	}
+	.cwd-jump.primary {
+		background: var(--accent);
+		border-color: var(--accent);
+		color: var(--accent-contrast, #fff);
+		font-weight: 500;
+	}
+	.cwd-jump.primary:hover {
+		filter: brightness(1.12);
+		color: var(--accent-contrast, #fff);
+	}
+	.cwd-jump[aria-disabled="true"] {
+		opacity: 0.45;
+		cursor: default;
+	}
+	.cwd-jump[aria-disabled="true"]:hover {
+		color: var(--text-dim);
+		border-color: var(--border);
+	}
 	.cwd-picker-row {
 		display: flex;
 		align-items: center;
@@ -9636,6 +9696,22 @@
 	.msg-text .katex {
 		font-size: 1.05em;
 	}
+	/* KaTeX \boxed 等可伸缩容器兼容（issue #670）：
+	 * KaTeX 0.16 产出 .stretchy，0.17+ 产出 .katex-stretchy。
+	 * 保证 stretchy / katex-stretchy 双向有效，彻底避免 \boxed 容器宽度塌缩为一条竖线。 */
+	.katex .stretchy,
+	.katex .katex-stretchy {
+		width: 100%;
+		display: block;
+		position: relative;
+		overflow: hidden;
+	}
+	.katex .stretchy::before,
+	.katex .stretchy::after,
+	.katex .katex-stretchy::before,
+	.katex .katex-stretchy::after {
+		content: "";
+	}
 
 	.codeblock {
 		position: relative;
@@ -9929,6 +10005,10 @@
 		color: var(--text-dim);
 		font-size: 13px;
 		padding: 2px 0;
+	}
+
+	.thinking-wait.minimal {
+		min-height: 20px;
 	}
 
 	.thinking-wait .dot {
@@ -13556,13 +13636,21 @@
 		gap: 6px;
 		padding-top: 6px;
 		border-top: 1px solid var(--border-soft);
+		/* 单行不换行：放不下时左侧 chip 文字省略（见下面的收缩链），图标按钮定宽不挤，
+	   下拉菜单 absolute 定位不受影响（不设 overflow 裁切，只禁换行）。 */
+		flex-wrap: nowrap;
+		min-width: 0;
+		max-width: 100%;
 	}
 	.composer-tools-left {
 		display: flex;
 		align-items: center;
 		gap: 6px;
 		min-width: 0;
-		flex-wrap: wrap;
+		max-width: 100%;
+		flex: 1 1 auto;
+		/* 单行自适应：不再折行，空间不足时 chip 文字优先省略（收缩链见下）。 */
+		flex-wrap: nowrap;
 	}
 	/* 输入框插件动作中间组（align=center）：左右两组之间居中，空时不渲染。 */
 	.composer-tools-center {
@@ -13570,19 +13658,24 @@
 		align-items: center;
 		gap: 4px;
 		min-width: 0;
+		max-width: 100%;
+		flex: 0 1 auto;
+		/* 单行自适应：不折行，溢出靠子项收缩消化。 */
+		flex-wrap: nowrap;
 	}
 	/* 左侧 chip（模型 / 思考）必须能一路收缩到只剩图标，而不是溢出到右侧的
  * 发送 / 停止 / 排队 按钮底下：chip 本身给 min-width:0，两个标签 span 给
- * min-width:0 + 省略号（模型的 id 常常是一个无空格长串，min-content 就是整串，
- * 不给 min-width:0 它根本不缩）。空间不够时优先截断文字，再不够才轮到窄屏的
- * 「只剩图标」（见 ≤560px 的阈值规则）。只作用于工具条里的这两个 chip。 */
+ * min-width:0 + 直接截断（不要省略号“...”，太难看；模型的 id 常常是一个无空格长串，
+ * min-content 就是整串，不给 min-width:0 它根本不缩）。空间不够时优先截断文字，
+ * 再不够才轮到窄屏的「只剩图标」（见 ≤560px 的阈值规则）。只作用于工具条里的这些 chip。 */
 	.composer-tools .chip {
 		flex-shrink: 1;
 		min-width: 0;
 	}
 	/* chip 外面还套了一层 .dropdown（菜单锚点），它同样要能让位：否则它是
  * min-width:auto 的 flex 项，会按 chip 的 min-content 撑住宽度，里面再缩也没用。 */
-	.composer-tools-left > .dropdown {
+	.composer-tools-left > .dropdown,
+	.composer-tools-center > .dropdown {
 		flex-shrink: 1;
 		min-width: 0;
 	}
@@ -13604,7 +13697,7 @@
 		flex: 0 1 auto;
 		min-width: 0;
 		overflow: hidden;
-		text-overflow: ellipsis;
+		text-overflow: clip;
 		white-space: nowrap;
 	}
 	.composer-tools-right {
@@ -21725,11 +21818,11 @@
 			   min-height 30px：格子被挤到 24~30px 时至少还留一个接近方形的
 			   点按目标（不为了纯方块把点按区缩成一条）。 */
 				align-items: center;
-				/* 极端情况（插件贡献的入口很多）容错：条目多于一行时折行，而不是
-			   顶穿 24px 下限后横向溢出（手机上裁掉的按钮点不到，比不齐更糟）。
-			   常规条目数（≤9）下依旧单行，外观与之前完全一致。 */
-				flex-wrap: wrap;
-				row-gap: 4px;
+				/* 极端情况（插件贡献的入口很多）也不折行：单行自适应，
+			   放不下时靠 min-width 链收缩（文字已在阈值规则里收成纯图标），
+			   而不是顶穿后换行把发送键挤到第二行。 */
+				flex-wrap: nowrap;
+				row-gap: 0;
 			}
 			.composer-tools-left > *:not(select),
 			.composer-tools-center > *:not(select),
@@ -21787,14 +21880,14 @@
 				width: auto;
 			}
 			/* 没有图标的纯文字插件动作：保留胶囊形态（方块里塞两三个汉字更看不懂），
-		   但不许长到一格之外，宽出部分省略号收尾，完整名字在 title 里。 */
+		   但不许长到一格之外，宽出部分直接截断（不加省略号），完整名字在 title 里。 */
 			.inputbox .composer-tools-left .btn.composer-plugin-action:not(:has(svg)),
 			.inputbox .composer-tools-center .btn.composer-plugin-action:not(:has(svg)) {
 				width: auto;
 				max-width: 44px;
 				padding: 0 8px;
 				overflow: hidden;
-				text-overflow: ellipsis;
+				text-overflow: clip;
 			}
 			/* select 类插件动作（kind="select"）同样进栅格：只留一格宽 + 省略。 */
 			.composer-tools-left select.composer-plugin-select,
@@ -26281,13 +26374,14 @@
 	.universal-path-browse-btn {
 		display: inline-flex;
 		align-items: center;
-		gap: 4px;
+		justify-content: center;
 		background: var(--bg);
 		border: 1px solid var(--border);
 		color: var(--text);
 		border-radius: 6px;
-		padding: 4px 8px;
-		font-size: 11.5px;
+		padding: 4px 7px;
+		font-size: 13px;
+		line-height: 1;
 		cursor: pointer;
 		white-space: nowrap;
 		flex-shrink: 0;
@@ -26759,6 +26853,233 @@
 
 	.canvas-text-muted {
 		color: var(--text-faint);
+	}
+
+	/* === 工程管理菜单与内联编辑 === */
+	.canvas-toolbar-rename-input {
+		background: var(--bg);
+		border: 1px solid var(--accent);
+		color: var(--text);
+		border-radius: 5px;
+		padding: 3px 8px;
+		font-size: 12px;
+		width: 140px;
+		outline: none;
+	}
+
+	.canvas-inline-create {
+		display: flex !important;
+		gap: 4px;
+		padding: 6px 10px !important;
+		cursor: default !important;
+	}
+
+	.canvas-inline-input {
+		flex: 1;
+		background: var(--bg);
+		border: 1px solid var(--accent);
+		color: var(--text);
+		border-radius: 4px;
+		padding: 4px 8px;
+		font-size: 12px;
+		outline: none;
+	}
+
+	.canvas-inline-confirm {
+		background: var(--accent);
+		color: var(--accent-contrast, #fff);
+		border: none;
+		border-radius: 4px;
+		padding: 4px 10px;
+		cursor: pointer;
+		font-size: 13px;
+		font-weight: 600;
+	}
+
+	.canvas-inline-confirm:hover {
+		opacity: 0.85;
+	}
+
+	.canvas-dropdown-item-danger {
+		color: var(--red) !important;
+	}
+
+	.canvas-dropdown-item-danger b {
+		color: var(--red);
+	}
+
+	.canvas-dropdown-item-danger:hover {
+		background: color-mix(in srgb, var(--red) 10%, transparent) !important;
+	}
+
+	.canvas-dropdown-item[disabled] {
+		opacity: 0.4;
+		pointer-events: none;
+	}
+
+	/* 未保存指示器 */
+	.canvas-unsaved {
+		color: var(--amber) !important;
+		border-color: color-mix(in srgb, var(--amber) 50%, var(--border)) !important;
+		animation: canvasUnsavedPulse 2s ease-in-out infinite;
+	}
+
+	@keyframes canvasUnsavedPulse {
+		0%,
+		100% {
+			opacity: 1;
+		}
+		50% {
+			opacity: 0.6;
+		}
+	}
+
+	/* === 空画布引导状态 === */
+	.canvas-empty-state {
+		position: absolute;
+		top: 50%;
+		left: 50%;
+		transform: translate(-50%, -50%);
+		z-index: 10;
+		text-align: center;
+		pointer-events: auto;
+		user-select: none;
+	}
+
+	.canvas-empty-icon {
+		font-size: 48px;
+		margin-bottom: 12px;
+		opacity: 0.7;
+	}
+
+	.canvas-empty-title {
+		margin: 0 0 6px;
+		font-size: 18px;
+		font-weight: 600;
+		color: var(--text);
+	}
+
+	.canvas-empty-desc {
+		margin: 0 0 18px;
+		font-size: 13px;
+		color: var(--text-faint);
+		line-height: 1.5;
+	}
+
+	.canvas-empty-actions {
+		display: flex;
+		justify-content: center;
+		gap: 10px;
+		margin-bottom: 20px;
+	}
+
+	.canvas-empty-actions .canvas-btn {
+		padding: 8px 18px;
+		font-size: 13px;
+	}
+
+	.canvas-empty-actions .canvas-btn.primary {
+		background: var(--accent);
+		color: var(--accent-contrast, #fff);
+		border-color: var(--accent);
+	}
+
+	.canvas-empty-actions .canvas-btn.primary:hover {
+		opacity: 0.85;
+	}
+
+	.canvas-empty-shortcuts {
+		display: flex;
+		justify-content: center;
+		gap: 16px;
+		font-size: 11px;
+		color: var(--text-faint);
+	}
+
+	.canvas-empty-shortcuts kbd {
+		background: var(--bg-elev);
+		border: 1px solid var(--border);
+		border-radius: 3px;
+		padding: 1px 5px;
+		font-size: 10px;
+		font-family: var(--mono, monospace);
+		color: var(--text);
+	}
+
+	/* === 初始 Prompt 对话框 === */
+	.canvas-prompt-overlay {
+		position: absolute;
+		inset: 0;
+		background: rgba(0, 0, 0, 0.45);
+		z-index: 120;
+		display: flex;
+		align-items: center;
+		justify-content: center;
+	}
+
+	.canvas-prompt-dialog {
+		background: var(--bg-elev);
+		border: 1px solid var(--border);
+		border-radius: 12px;
+		padding: 24px;
+		width: 480px;
+		max-width: 90vw;
+		box-shadow: 0 12px 40px rgba(0, 0, 0, 0.4);
+	}
+
+	.canvas-prompt-title {
+		margin: 0 0 6px;
+		font-size: 15px;
+		font-weight: 600;
+		color: var(--text);
+	}
+
+	.canvas-prompt-desc {
+		margin: 0 0 14px;
+		font-size: 12.5px;
+		color: var(--text-faint);
+		line-height: 1.5;
+	}
+
+	.canvas-prompt-input {
+		width: 100%;
+		box-sizing: border-box;
+		background: var(--bg);
+		border: 1px solid var(--border);
+		border-radius: 8px;
+		color: var(--text);
+		padding: 10px 12px;
+		font-size: 13px;
+		resize: vertical;
+		outline: none;
+		line-height: 1.5;
+		min-height: 80px;
+	}
+
+	.canvas-prompt-input:focus {
+		border-color: var(--accent);
+	}
+
+	.canvas-prompt-input::placeholder {
+		color: var(--text-faint);
+		opacity: 0.6;
+	}
+
+	.canvas-prompt-actions {
+		display: flex;
+		justify-content: flex-end;
+		gap: 8px;
+		margin-top: 14px;
+	}
+
+	.canvas-prompt-actions .canvas-btn.primary {
+		background: var(--accent);
+		color: var(--accent-contrast, #fff);
+		border-color: var(--accent);
+	}
+
+	.canvas-prompt-actions .canvas-btn.primary:hover {
+		opacity: 0.85;
 	}
 }
 

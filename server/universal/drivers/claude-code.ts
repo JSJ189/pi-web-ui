@@ -89,6 +89,9 @@ export class ClaudeCodeDriver extends BaseAgentDriver {
 	private activeSessionId: string | null = null;
 	private activeProcess: ChildProcess | null = null;
 	private aborted = false;
+	/** 单槽回合代际（#702）：abort/新回合 +1；在途旧进程的迟到事件（close/stdout）一律按过期丢弃，
+	 *  不再清空新回合的 activeProcess、不再向旧 sink 误发输出。 */
+	private turnSeq = 0;
 	private lastErrorHint = "";
 	private turnHadText = false;
 	private turnCompleteEmitted = false;
@@ -117,6 +120,7 @@ export class ClaudeCodeDriver extends BaseAgentDriver {
 	}
 
 	async sendPrompt(prompt: string, attachments: PromptAttachment[] | undefined, sink: AgentEventSink): Promise<void> {
+		const mySeq = ++this.turnSeq;
 		this.aborted = false;
 		this.lastErrorHint = "";
 		this.turnHadText = false;
@@ -219,6 +223,7 @@ export class ClaudeCodeDriver extends BaseAgentDriver {
 			const rl = createInterface({ input: proc.stdout, terminal: false });
 
 			rl.on("line", (line: string) => {
+				if (mySeq !== this.turnSeq) return;
 				const trimmed = line.trim();
 				if (!trimmed || !trimmed.startsWith("{")) return;
 
@@ -240,7 +245,11 @@ export class ClaudeCodeDriver extends BaseAgentDriver {
 
 		return new Promise<void>((resolve) => {
 			proc.on("error", (err: Error) => {
-				this.activeProcess = null;
+				if (mySeq !== this.turnSeq) {
+					resolve();
+					return;
+				}
+				if (this.activeProcess === proc) this.activeProcess = null;
 				if (!this.aborted) {
 					sink.onError(`Claude Code 进程启动失败: ${err.message}`);
 				}
@@ -248,7 +257,11 @@ export class ClaudeCodeDriver extends BaseAgentDriver {
 			});
 
 			proc.on("close", (code: number | null) => {
-				this.activeProcess = null;
+				if (mySeq !== this.turnSeq) {
+					resolve();
+					return;
+				}
+				if (this.activeProcess === proc) this.activeProcess = null;
 				if (this.aborted) {
 					resolve();
 					return;
@@ -380,6 +393,7 @@ export class ClaudeCodeDriver extends BaseAgentDriver {
 	}
 
 	async abort(): Promise<void> {
+		this.turnSeq++;
 		this.aborted = true;
 		if (this.activeProcess) {
 			try {

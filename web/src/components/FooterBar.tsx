@@ -2,7 +2,7 @@ import { Fragment, useState, type ReactNode } from "react";
 import type { ChatState } from "../use-chat";
 import { appSend, useAppField } from "../app-globals";
 import type { UiSlotEntry } from "../ui-slots";
-import { DirectoryBrowser } from "./DirectoryBrowser.js";
+import { ProjectPicker } from "./ProjectPicker.js";
 import { BarItem, type ViewName } from "./BarItem";
 
 interface FooterBarProps {
@@ -116,7 +116,8 @@ export function FooterBar({
 			{centerItems.length > 0 && <div className="statusbar-center">{renderGroup(centerItems)}</div>}
 			<div className="statusbar-right">{renderGroup(rightItems)}</div>
 			{editing && (
-				<DirectoryBrowser
+				<ProjectPicker
+					open
 					currentCwd={state.cwd}
 					pathCompletions={chat.pathCompletions}
 					workspaceRoots={workspaceRoots}

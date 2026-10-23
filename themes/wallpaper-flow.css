@@ -161,6 +161,188 @@
 	filter: drop-shadow(0 0 1px rgba(0, 0, 0, 0.95)) drop-shadow(0 1px 1.2px rgba(0, 0, 0, 0.85));
 }
 
+/* ========================================================
+   底部状态栏按钮同步极简行文（基线方案 C 纯平流）
+   与 flow-base 一致：按钮只走基线形态，不做提亮/描边/白字覆盖。
+   ======================================================== */
+.statusbar *,
+.footer-bar *,
+.footer * {
+	text-shadow: none;
+}
+.statusbar .bar-item,
+.statusbar .bar-item.chip,
+.statusbar .chip,
+.footer .bar-item,
+.footer .bar-item.chip,
+.footer .chip,
+.footer-bar .bar-item,
+.footer-bar .bar-item.chip,
+.footer-bar .chip {
+	height: 18px;
+	min-height: 18px;
+	padding: 0 4px;
+	font-size: 11px;
+	line-height: 18px;
+	gap: 3px;
+	color: var(--text-dim);
+	background: transparent;
+	border: 1px solid transparent;
+	border-radius: 2px;
+	box-shadow: none;
+	opacity: 1;
+	filter: none;
+	text-shadow: none;
+	cursor: pointer;
+	transform: none;
+}
+.statusbar .bar-item:hover,
+.statusbar .bar-item.chip:hover,
+.statusbar .chip:hover,
+.footer .bar-item:hover,
+.footer .bar-item.chip:hover,
+.footer .chip:hover,
+.footer-bar .bar-item:hover,
+.footer-bar .bar-item.chip:hover,
+.footer-bar .chip:hover {
+	background: var(--glow-12);
+	color: var(--text);
+	border-color: transparent;
+	border-radius: 2px;
+	box-shadow: none;
+	opacity: 1;
+	filter: none;
+	text-shadow: none;
+	transform: none;
+}
+.statusbar .bar-item.active,
+.statusbar .bar-item.chip.active,
+.statusbar .chip.active,
+.footer .bar-item.active,
+.footer .bar-item.chip.active,
+.footer .chip.active,
+.footer-bar .bar-item.active,
+.footer-bar .bar-item.chip.active,
+.footer-bar .chip.active {
+	background: var(--bg-elev2);
+	color: var(--text);
+}
+.statusbar .bar-item-text,
+.footer .bar-item-text,
+.footer-bar .bar-item-text {
+	font-size: 11px;
+	line-height: 1.2;
+	color: inherit;
+	opacity: 1;
+	text-shadow: none;
+}
+.statusbar .bar-item-char,
+.footer .bar-item-char,
+.footer-bar .bar-item-char {
+	font-size: 11px;
+	line-height: 1;
+	font-weight: 600;
+	color: var(--text-faint);
+	opacity: 0.85;
+	text-shadow: none;
+}
+.statusbar .bar-item.status-cost,
+.footer .bar-item.status-cost,
+.footer-bar .bar-item.status-cost {
+	gap: 0;
+}
+.statusbar .bar-item-icon,
+.footer .bar-item-icon,
+.footer-bar .bar-item-icon {
+	font-size: 11px;
+	width: 11px;
+	height: 11px;
+	min-width: 11px;
+	opacity: 0.75;
+	color: inherit;
+	filter: none;
+	text-shadow: none;
+}
+.statusbar .bar-item:hover .bar-item-icon,
+.footer .bar-item:hover .bar-item-icon,
+.footer-bar .bar-item:hover .bar-item-icon {
+	opacity: 1;
+	color: inherit;
+	filter: none;
+}
+.statusbar .bar-item-icon svg,
+.footer .bar-item-icon svg,
+.footer-bar .bar-item-icon svg,
+.statusbar .bar-item-glyph,
+.footer .bar-item-glyph,
+.footer-bar .bar-item-glyph {
+	width: 11px;
+	height: 11px;
+	color: inherit;
+	stroke: currentColor;
+	filter: none;
+	text-shadow: none;
+}
+.statusbar .bar-item:hover .bar-item-icon svg,
+.footer .bar-item:hover .bar-item-icon svg,
+.footer-bar .bar-item:hover .bar-item-icon svg {
+	color: inherit;
+	stroke: currentColor;
+	filter: none;
+}
+.statusbar .bar-item-badge,
+.footer .bar-item-badge,
+.footer-bar .bar-item-badge {
+	background: none;
+	color: var(--accent);
+	font-size: 10px;
+	font-weight: 700;
+	min-width: 0;
+	height: auto;
+	padding: 0;
+	margin-left: 0;
+	border-radius: 0;
+	opacity: 1;
+	text-shadow: none;
+	box-shadow: none;
+}
+/* 右下角指标（主机 CPU/内存、工作区路径等）回归继承，不再强制白字锁边 */
+.statusbar-right,
+.statusbar-right *,
+.statusbar .bar-item-host-metrics,
+.statusbar .bar-item-host-metrics *,
+.statusbar .status-host-metrics,
+.statusbar .status-host-metrics *,
+.statusbar .bar-item-cwd,
+.statusbar .bar-item-cwd *,
+.statusbar .status-cwd,
+.statusbar .status-cwd * {
+	color: inherit;
+	opacity: 1;
+	text-shadow: none;
+}
+/* 底栏引擎选择器回归基线纯平微矩形 */
+.statusbar .engine-picker-btn,
+.footer .engine-picker-btn,
+.footer-bar .engine-picker-btn {
+	background: transparent;
+	border: 1px solid transparent;
+	border-radius: 2px;
+	padding: 0 4px;
+	color: var(--text-dim);
+	box-shadow: none;
+	opacity: 1;
+	filter: none;
+	text-shadow: none;
+}
+.statusbar .engine-picker-btn:hover,
+.footer .engine-picker-btn:hover,
+.footer-bar .engine-picker-btn:hover {
+	background: var(--glow-12);
+	border-color: transparent;
+	color: var(--text);
+}
+
 /* 语法高亮（hljs）—— 极简冷冽暗调 */
 .hljs {
 	color: #f2f2f2;

@@ -2,11 +2,11 @@
 	"id": "live2d",
 	"name": "Live2D 看板娘",
 	"nameEn": "Live2D Companion",
-	"version": "0.1.8",
+	"version": "0.1.14",
 	"icon": "🐾",
 	"iconSvg": "<svg xmlns=\"http://www.w3.org/2000/svg\" viewBox=\"0 0 24 24\" fill=\"none\" stroke=\"currentColor\" stroke-width=\"2\" stroke-linecap=\"round\" stroke-linejoin=\"round\"><path d=\"M12 2C6.48 2 2 6.48 2 12s4.48 10 10 10 10-4.48 10-10S17.52 2 12 2zm0 18c-4.41 0-8-3.59-8-8s3.59-8 8-8 8 3.59 8 8-3.59 8-8 8zm-2-9c.55 0 1-.45 1-1s-.45-1-1-1-1 .45-1 1 .45 1 1 1zm4 0c.55 0 1-.45 1-1s-.45-1-1-1-1 .45-1 1 .45 1 1 1zm-2 5c1.66 0 3-1.34 3-3H9c0 1.66 1.34 3 3 3z\"/></svg>",
-	"description": "页面悬浮 Live2D 桌面看板娘宠物：支持 Cubism 2/3/4 模型、透明与完全点击穿透、本地模型 ZIP/文件夹一键上传、鼠标视线跟随、触摸点击反应、气泡对话台词与 AI 表情操控工具。",
-	"descriptionEn": "Interactive Live2D companion on your screen: Cubism 2/3/4 models, click-through & transparent pass, local ZIP/folder model upload, mouse eye-tracking, tap reactions, bubbles, and agent tools.",
+	"description": "页面悬浮 Live2D 桌面看板娘宠物：支持 Cubism 2/3/4 模型、音乐音频实时口型对齐 (Lip Sync)、自然眨眼与抛媚眼、透明与完全点击穿透、本地模型一键上传、鼠标视线跟随与 AI 操控工具。",
+	"descriptionEn": "Interactive Live2D companion on your screen: Cubism 2/3/4 models, real-time music audio lip-sync, natural blinking & wink, click-through, local model upload, eye-tracking, and AI agent tools.",
 	"apiVersion": 2,
 	"view": false,
 	"preload": true,
@@ -70,6 +70,27 @@
 			"label": "点击与台词轻提示音",
 			"default": true,
 			"hint": "点击看板娘或气泡弹出时播放清脆轻柔的 WebAudio 提示音。"
+		},
+		{
+			"key": "autoBlink",
+			"type": "boolean",
+			"label": "自然眨眼与连眨",
+			"default": true,
+			"hint": "开启后看板娘在待机和视线跟随状态下拥有真实的生理随机眨眼与灵动连眨。"
+		},
+		{
+			"key": "lipSyncSensitivity",
+			"type": "number",
+			"label": "音乐口型开合灵敏度",
+			"default": 1.25,
+			"hint": "播放音乐伴奏或语音时嘴巴张合的幅度灵敏度倍率（0.5 到 2.5）。"
+		},
+		{
+			"key": "voiceOnly",
+			"type": "boolean",
+			"label": "只跟人声（间奏闭嘴）",
+			"default": true,
+			"hint": "开启后只在检测到唱歌人声时张嘴，纯伴奏间奏自动闭嘴；关闭则跟随整曲音量律动。"
 		}
 	],
 	"ui": {

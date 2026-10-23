@@ -2758,6 +2758,7 @@ export function App() {
 						<CanvasStudio
 							send={send}
 							models={chat.models}
+							defaultModel={chat.defaultModel}
 							projects={chat.projects}
 							workspaceRoots={chat.state?.workspaceRoots ?? []}
 							pathCompletions={chat.pathCompletions}

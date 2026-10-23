@@ -2523,6 +2523,8 @@ wss.on("connection", (ws) => {
 	 *  ready 先行后，ready 只代表传输通，插件命令目录/首快照都还没好，直接分发
 	 *  会撞「未知命令」/ rev 链断裂。 */
 	let attachDone = false;
+	/** attach 代际（#699）：hello/switch 每次发起 attach 前 +1，慢 attach 落定时代际过期则只 detach 清理，绝不 flush/replay。 */
+	let attachGen = 0;
 	/** 背压丢快照后的延迟重发定时器（去重：一次只排一个）。 */
 	let snapshotRetryTimer: ReturnType<typeof setTimeout> | null = null;
 
@@ -2661,10 +2663,16 @@ wss.on("connection", (ws) => {
 		}
 		const cid = clientId;
 		const nextSvc = ensureEngine(targetEngine);
+		const switchGen = ++attachGen;
 		nextSvc
 			.attach(cid, send)
 			.then((newCs) => {
 				if (closed) {
+					nextSvc.detach(cid, send);
+					return;
+				}
+				if (switchGen !== attachGen) {
+					// 期间又有新的 switch/hello attach：本会话已是孤儿，只清理不接管（#699）
 					nextSvc.detach(cid, send);
 					return;
 				}
@@ -2718,9 +2726,14 @@ wss.on("connection", (ws) => {
 			.catch((err: unknown) => {
 				// 切换失败时事务回滚：原样切回 prevEngine，避免状态悬挂
 				setClientEngine(cid, prevEngine);
+				const rollbackGen = ++attachGen;
 				ensureEngine(prevEngine)
 					.attach(cid, send)
 					.then((rollbackCs) => {
+						if (closed || rollbackGen !== attachGen) {
+							ensureEngine(prevEngine).detach(cid, send);
+							return;
+						}
 						rollbackCs.flushSnapshot(true);
 						attachDone = true;
 						for (const m of pending.drain()) dispatch(m);
@@ -3128,12 +3141,19 @@ wss.on("connection", (ws) => {
 					textEn: "Session init is taking a while (possibly scanning the workspace) — hang on…",
 				});
 			}, ATTACH_SLOW_NOTICE_MS);
-			service
+			const helloSvc = ensureEngine(resolveClientEngine(cid));
+			const helloGen = ++attachGen;
+			helloSvc
 				.attach(cid, send)
 				.then((cs) => {
 					clearTimeout(slowTimer);
 					if (closed) {
-						service.detach(cid, send);
+						helloSvc.detach(cid, send);
+						return;
+					}
+					if (helloGen !== attachGen) {
+						// hello 慢 attach 落定前用户已 switch_engine：旧引擎会话成孤儿，只清理（#699）
+						helloSvc.detach(cid, send);
 						return;
 					}
 					// Plugin catalog: re-scan + activate new dirs on every attach so

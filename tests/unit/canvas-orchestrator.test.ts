@@ -135,6 +135,28 @@ describe("Canvas Orchestrator", () => {
 		expect(qaNode.currentAction).toContain("已达审查重试上限");
 	});
 
+	it("审查门禁真动作：批准/驳回落盘持久化并广播（issue #707）", () => {
+		const graph = createDefaultCanvasGraph("review_gate_test");
+		saveCanvasGraph(tempDir, graph);
+
+		const approved = orchestrator.reviewNode(graph.id, "node_fe", "approve");
+		expect(approved?.nodes.find((n) => n.id === "node_fe")?.status).toBe("done");
+		expect(loadCanvasGraph(tempDir, graph.id).nodes.find((n) => n.id === "node_fe")?.status).toBe("done");
+		// 非执行中节点不广播节点事件（广播由 dispatch 统一发 graph_state）
+		expect(events.length).toBe(0);
+
+		const rejected = orchestrator.reviewNode(graph.id, "node_architect", "reject", "缺测试");
+		const arch = rejected?.nodes.find((n) => n.id === "node_architect");
+		expect(arch?.status).toBe("waiting_approval");
+		expect(arch?.currentAction).toContain("缺测试");
+		expect(loadCanvasGraph(tempDir, graph.id).nodes.find((n) => n.id === "node_architect")?.currentAction).toContain(
+			"缺测试",
+		);
+
+		expect(orchestrator.reviewNode(graph.id, "node_missing", "approve")).toBeNull();
+		expect(orchestrator.reviewNode("../evil", "node_fe", "approve")).toBeNull();
+	});
+
 	it("支持复位状态 (resetStatus)", () => {
 		const graph = createDefaultCanvasGraph("reset_test");
 		graph.nodes[0].status = "done";

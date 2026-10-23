@@ -393,12 +393,12 @@ describe("TopBar「打开项目」入口（host:open-project）", () => {
 		const { sent } = mountWithPicker();
 		const btn = document.querySelector<HTMLButtonElement>("button.open-project")!;
 		act(() => btn.click());
-		act(() => document.querySelector<HTMLButtonElement>(".cwd-choose-btn.primary")!.click());
+		act(() => document.querySelector<HTMLButtonElement>(".cwd-toolbar .tool-pick")!.click());
 		expect(sent.filter((m) => m.type === "set_cwd")).toEqual([{ type: "set_cwd", path: "/test" }]);
 
 		// 再打开一次，走「＋ 新建项目」：合法名称 → make_dir + setAsCwd
 		act(() => btn.click());
-		act(() => document.querySelector<HTMLButtonElement>(".cwd-newbtn")!.click());
+		act(() => document.querySelector<HTMLButtonElement>(".cwd-toolbar .tool-new")!.click());
 		const nameInput = document.querySelector<HTMLInputElement>(".cwd-newrow input")!;
 		act(() => setInput(nameInput, "my-project"));
 		act(() => document.querySelector<HTMLButtonElement>(".cwd-newrow button.primary")!.click());

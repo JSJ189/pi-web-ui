@@ -52,38 +52,54 @@ export function useSmoothStreamText(text: string, active = true, finishing = fal
 	targetRef.current = text;
 	const lenRef = useRef(displayedLen);
 	lenRef.current = displayedLen;
+	const activeRef = useRef(active);
+	activeRef.current = active;
 	const finishingRef = useRef(finishing);
 	finishingRef.current = finishing;
 	const onSettledRef = useRef(onSettled);
 	onSettledRef.current = onSettled;
+	const rafIdRef = useRef(0);
+	const lastTickTimeRef = useRef(0);
 
 	useEffect(() => {
 		if (typeof document === "undefined") return;
 		const handleVisibility = () => {
 			if (document.hidden) {
 				// 切至后台：直接追平现有长度并结算，不堆积后台动画积压
+				if (rafIdRef.current) {
+					cancelAnimationFrame(rafIdRef.current);
+					rafIdRef.current = 0;
+				}
 				lenRef.current = targetRef.current.length;
 				setDisplayedLen(targetRef.current.length);
-				if (finishingRef.current || !active) {
+				if (finishingRef.current || !activeRef.current) {
 					onSettledRef.current?.();
 				}
 			} else {
 				// 切回前台：在后台期间收到的所有文字全部直接显示；
 				// 若流已结束（finishing/非活跃），立即结算并不再播放文字流动画；
 				// 若流仍在继续，已有文字直接就绪，后续新到 chunk 才平滑流淌。
+				if (rafIdRef.current) {
+					cancelAnimationFrame(rafIdRef.current);
+					rafIdRef.current = 0;
+				}
 				lenRef.current = targetRef.current.length;
 				setDisplayedLen(targetRef.current.length);
-				if (finishingRef.current || !active) {
+				if (finishingRef.current || !activeRef.current) {
 					onSettledRef.current?.();
 				}
 			}
 		};
 		document.addEventListener("visibilitychange", handleVisibility);
 		return () => document.removeEventListener("visibilitychange", handleVisibility);
-	}, [active]);
+	}, []);
 
 	useEffect(() => {
 		if (!active) {
+			if (rafIdRef.current) {
+				cancelAnimationFrame(rafIdRef.current);
+				rafIdRef.current = 0;
+			}
 			if (lenRef.current !== text.length) {
 				lenRef.current = text.length;
 				setDisplayedLen(text.length);
@@ -91,6 +107,10 @@ export function useSmoothStreamText(text: string, active = true, finishing = fal
 			return;
 		}
 		if (isDocumentHidden()) {
+			if (rafIdRef.current) {
+				cancelAnimationFrame(rafIdRef.current);
+				rafIdRef.current = 0;
+			}
 			if (lenRef.current !== text.length) {
 				lenRef.current = text.length;
 				setDisplayedLen(text.length);
@@ -106,34 +126,48 @@ export function useSmoothStreamText(text: string, active = true, finishing = fal
 			return;
 		}
 		if (lenRef.current >= text.length) {
-			onSettledRef.current?.();
+			if (!rafIdRef.current) {
+				onSettledRef.current?.();
+			}
 			return;
 		}
 
-		let raf = 0;
-		let lastTickTime = 0;
+		// 若当前平滑推进动画已在运行，绝不因为新 chunk 到达而频繁 cancelAnimationFrame
+		// （消除 Debounce / Cancel Starvation，彻底根治流式展开思考块冻结卡死 #708）
+		if (rafIdRef.current) return;
+
 		const tick = (now: number) => {
+			rafIdRef.current = 0;
+			if (!activeRef.current) return;
 			const paceMs = finishingRef.current ? FINISHING_PACE_MS : SMOOTH_PACE_MS;
-			if (lastTickTime > 0 && now - lastTickTime < paceMs) {
-				raf = requestAnimationFrame(tick);
+			if (lastTickTimeRef.current > 0 && now - lastTickTimeRef.current < paceMs) {
+				rafIdRef.current = requestAnimationFrame(tick);
 				return;
 			}
-			lastTickTime = now;
+			lastTickTimeRef.current = now;
 			const target = targetRef.current;
 			const next = stepSmoothStream(target, lenRef.current, finishingRef.current);
 			if (next !== lenRef.current) {
 				lenRef.current = next;
 				setDisplayedLen(next);
 			}
-			if (next < target.length) {
-				raf = requestAnimationFrame(tick);
+			if (next < targetRef.current.length) {
+				rafIdRef.current = requestAnimationFrame(tick);
 			} else {
 				onSettledRef.current?.();
 			}
 		};
-		raf = requestAnimationFrame(tick);
-		return () => cancelAnimationFrame(raf);
+		rafIdRef.current = requestAnimationFrame(tick);
 	}, [text, active, finishing]);
+
+	useEffect(() => {
+		return () => {
+			if (rafIdRef.current) {
+				cancelAnimationFrame(rafIdRef.current);
+				rafIdRef.current = 0;
+			}
+		};
+	}, []);
 
 	if (!active || displayedLen >= text.length) return text;
 	return text.slice(0, displayedLen);

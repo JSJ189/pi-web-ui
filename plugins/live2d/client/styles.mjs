@@ -429,4 +429,332 @@ export const WIDGET_CSS = `
 	color: var(--red, #ef4444);
 	background: color-mix(in srgb, var(--red, #ef4444) 15%, transparent);
 }
+
+/* ── 音乐口型对齐控制浮动面板 ──────────────────────────────────── */
+.pi-l2d-music-panel {
+	position: fixed;
+	z-index: 9995;
+	width: 320px;
+	max-width: calc(100vw - 32px);
+	background: var(--bg-elev2, #1e222b);
+	border: 1px solid var(--border, #334155);
+	border-radius: 14px;
+	box-shadow: 0 16px 40px rgba(0, 0, 0, 0.4);
+	backdrop-filter: blur(20px);
+	-webkit-backdrop-filter: blur(20px);
+	color: var(--text, #f1f5f9);
+	font-size: 13px;
+	pointer-events: auto;
+	display: flex;
+	flex-direction: column;
+	opacity: 0;
+	transform: scale(0.95) translateY(8px);
+	transition: opacity 0.2s cubic-bezier(0.16, 1, 0.3, 1), transform 0.2s cubic-bezier(0.16, 1, 0.3, 1);
+}
+
+.pi-l2d-music-panel.pi-l2d-music-visible {
+	opacity: 1;
+	transform: scale(1) translateY(0);
+}
+
+.pi-l2d-music-head {
+	display: flex;
+	align-items: center;
+	justify-content: space-between;
+	padding: 12px 14px 10px;
+	border-bottom: 1px solid var(--border, #334155);
+	font-weight: 600;
+	font-size: 13.5px;
+}
+
+.pi-l2d-music-title {
+	display: flex;
+	align-items: center;
+	gap: 6px;
+	min-width: 0;
+	overflow: hidden;
+	text-overflow: ellipsis;
+	white-space: nowrap;
+}
+
+.pi-l2d-music-body {
+	padding: 14px;
+	display: flex;
+	flex-direction: column;
+	gap: 12px;
+	overflow-y: auto;
+	max-height: 480px;
+}
+
+/* 音频来源操作行 */
+.pi-l2d-music-source-row {
+	display: flex;
+	gap: 8px;
+}
+
+.pi-l2d-music-source-btn {
+	flex: 1;
+	min-width: 0;
+	padding: 7px 10px;
+	background: var(--bg, #0d0f14);
+	border: 1px solid var(--border, #334155);
+	border-radius: 8px;
+	color: var(--text, #f1f5f9);
+	font-size: 12px;
+	cursor: pointer;
+	display: flex;
+	align-items: center;
+	justify-content: center;
+	gap: 5px;
+	transition: all 0.15s ease;
+	white-space: nowrap;
+	overflow: hidden;
+	text-overflow: ellipsis;
+}
+
+.pi-l2d-music-source-btn:hover {
+	border-color: var(--accent, #3b82f6);
+	background: color-mix(in srgb, var(--accent, #3b82f6) 12%, transparent);
+	color: var(--accent, #3b82f6);
+}
+
+/* 当前曲目与播放进度卡片 */
+.pi-l2d-music-track-card {
+	padding: 10px 12px;
+	background: var(--bg, #0d0f14);
+	border: 1px solid var(--border, #334155);
+	border-radius: 10px;
+	display: flex;
+	flex-direction: column;
+	gap: 8px;
+}
+
+.pi-l2d-track-name {
+	font-size: 12.5px;
+	font-weight: 500;
+	color: var(--text, #f1f5f9);
+	overflow: hidden;
+	text-overflow: ellipsis;
+	white-space: nowrap;
+}
+
+.pi-l2d-progress-wrap {
+	display: flex;
+	flex-direction: column;
+	gap: 4px;
+}
+
+.pi-l2d-progress-bar {
+	width: 100%;
+	height: 6px;
+	background: var(--bg-elev2, #1e222b);
+	border-radius: 3px;
+	cursor: pointer;
+	position: relative;
+	overflow: hidden;
+}
+
+.pi-l2d-progress-fill {
+	height: 100%;
+	width: 0%;
+	background: var(--accent, #3b82f6);
+	border-radius: 3px;
+	transition: width 0.08s linear;
+}
+
+.pi-l2d-progress-time {
+	display: flex;
+	justify-content: space-between;
+	font-size: 11px;
+	color: var(--text-faint, #64748b);
+	font-variant-numeric: tabular-nums;
+}
+
+/* 播放主控制按钮组 */
+.pi-l2d-music-controls {
+	display: flex;
+	align-items: center;
+	justify-content: center;
+	gap: 12px;
+}
+
+.pi-l2d-music-panel .pi-l2d-ctrl-btn {
+	border: 1px solid var(--border, #334155);
+	background: var(--bg-elev2, #1e222b);
+	color: var(--text, #f1f5f9);
+	border-radius: 50%;
+	display: inline-flex;
+	align-items: center;
+	justify-content: center;
+	cursor: pointer;
+	transition: all 0.15s ease;
+	/* 硬约束圆形: 防宿主/主题全局 button 样式把播放键拉成椭圆 */
+	flex: none !important;
+	flex-grow: 0 !important;
+	flex-shrink: 0 !important;
+	box-sizing: border-box !important;
+	padding: 0 !important;
+	margin: 0 !important;
+	line-height: 1 !important;
+	aspect-ratio: 1 / 1 !important;
+}
+
+.pi-l2d-music-panel .pi-l2d-ctrl-btn:hover {
+	border-color: var(--accent, #3b82f6);
+	background: color-mix(in srgb, var(--accent, #3b82f6) 15%, transparent);
+	color: var(--accent, #3b82f6);
+}
+
+.pi-l2d-music-panel .pi-l2d-ctrl-btn.main {
+	width: 44px !important;
+	height: 44px !important;
+	min-width: 44px !important;
+	max-width: 44px !important;
+	min-height: 44px !important;
+	max-height: 44px !important;
+	font-size: 16px;
+	background: var(--accent, #3b82f6);
+	color: var(--accent-contrast, #ffffff);
+	border-color: transparent;
+	box-shadow: 0 4px 14px color-mix(in srgb, var(--accent, #3b82f6) 40%, transparent);
+}
+
+.pi-l2d-music-panel .pi-l2d-ctrl-btn.main:hover {
+	transform: scale(1.06);
+	filter: brightness(1.1);
+}
+
+.pi-l2d-music-panel .pi-l2d-ctrl-btn.sub {
+	width: 34px !important;
+	height: 34px !important;
+	min-width: 34px !important;
+	max-width: 34px !important;
+	min-height: 34px !important;
+	max-height: 34px !important;
+	font-size: 13px;
+}
+
+/* 实时口型与音量可视化指示 */
+.pi-l2d-lip-meter-wrap {
+	display: flex;
+	align-items: center;
+	gap: 10px;
+	padding: 8px 12px;
+	background: var(--bg, #0d0f14);
+	border: 1px solid var(--border, #334155);
+	border-radius: 8px;
+}
+
+.pi-l2d-lip-icon {
+	font-size: 18px;
+	transition: transform 0.08s ease;
+	display: inline-block;
+}
+
+.pi-l2d-meter-track {
+	flex: 1;
+	height: 8px;
+	background: var(--bg-elev2, #1e222b);
+	border-radius: 4px;
+	overflow: hidden;
+	position: relative;
+}
+
+.pi-l2d-meter-bar {
+	height: 100%;
+	width: 0%;
+	background: linear-gradient(90deg, var(--green, #22c55e), var(--accent, #3b82f6), var(--red, #ef4444));
+	border-radius: 4px;
+	transition: width 0.06s linear;
+}
+
+/* 参数调节滑块行 */
+.pi-l2d-slider-row {
+	display: flex;
+	align-items: center;
+	justify-content: space-between;
+	gap: 10px;
+	font-size: 12px;
+}
+
+.pi-l2d-slider-label {
+	color: var(--text-faint, #64748b);
+	white-space: nowrap;
+	min-width: 80px;
+}
+
+.pi-l2d-slider-input {
+	flex: 1;
+	accent-color: var(--accent, #3b82f6);
+	cursor: pointer;
+}
+
+.pi-l2d-slider-val {
+	font-variant-numeric: tabular-nums;
+	color: var(--text, #f1f5f9);
+	font-size: 11.5px;
+	min-width: 36px;
+	text-align: right;
+}
+
+/* 眨眼互动按键行 */
+.pi-l2d-blink-actions {
+	display: flex;
+	gap: 8px;
+}
+
+.pi-l2d-blink-btn {
+	flex: 1;
+	padding: 6px 8px;
+	border: 1px solid var(--border, #334155);
+	background: var(--bg-elev2, #1e222b);
+	color: var(--text, #f1f5f9);
+	border-radius: 6px;
+	font-size: 12px;
+	cursor: pointer;
+	display: flex;
+	align-items: center;
+	justify-content: center;
+	gap: 4px;
+	transition: all 0.15s ease;
+}
+
+.pi-l2d-blink-btn:hover {
+	border-color: var(--accent, #3b82f6);
+	background: color-mix(in srgb, var(--accent, #3b82f6) 15%, transparent);
+	color: var(--accent, #3b82f6);
+}
+
+/* 正在播放时挂件上的漂浮音符徽章 */
+.pi-l2d-music-badge {
+	position: absolute;
+	top: -6px;
+	right: 12px;
+	background: var(--accent, #3b82f6);
+	color: var(--accent-contrast, #ffffff);
+	font-size: 11px;
+	padding: 2px 7px;
+	border-radius: 10px;
+	cursor: pointer;
+	box-shadow: 0 4px 12px rgba(0, 0, 0, 0.25);
+	display: none;
+	align-items: center;
+	gap: 3px;
+	animation: piL2dPulse 1.4s ease-in-out infinite;
+	pointer-events: auto;
+	z-index: 9992;
+}
+
+.pi-l2d-music-badge.visible {
+	display: flex;
+}
+
+@keyframes piL2dPulse {
+	0%, 100% {
+		transform: scale(1);
+	}
+	50% {
+		transform: scale(1.08) translateY(-2px);
+	}
+}
 `;
