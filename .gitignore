@@ -77,3 +77,6 @@ provider-keys.json
 test-driver-prompt.ts
 capsule-palettes.html
 
+# 本地流水线实跑产物（画布 demo 任务与 AI 生成的 output，不入库）
+/pipelines/
+
