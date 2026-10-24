@@ -596,6 +596,7 @@ interface SettingsPatch {
 	customSystemPrompt?: string;
 	promptTemplate?: string;
 	promptOverrides?: Record<string, string>;
+	promptDisabled?: string[];
 	/** 逐工具文案覆盖（工具名 → description/snippet/guidelines；空对象 = 清除该工具覆盖）。 */
 	toolPromptOverrides?: Record<string, UiToolPromptOverride>;
 	disabledSkills?: string[];
@@ -2069,7 +2070,7 @@ export function SettingsModal({
 		promptTemplateDraftRef.current = DEFAULT_PROMPT_TEMPLATE;
 		setPromptOverridesDraft({});
 		promptOverridesDraftRef.current = {};
-		setPartial({ promptTemplate: DEFAULT_PROMPT_TEMPLATE, promptOverrides: {} });
+		setPartial({ promptTemplate: DEFAULT_PROMPT_TEMPLATE, promptOverrides: {}, promptDisabled: [] });
 	};
 
 	/** 点击 token 芯片追加：立即更新草稿并立即提交保存，不依赖后续失焦。 */
@@ -2701,14 +2702,32 @@ export function SettingsModal({
 												const def = settings.promptSourceDefaults?.[tk] ?? "";
 												const editing = editingSource === tk;
 												const isLong = def.split("\n").length > 6 || def.length > 480;
+												// 该块有效 token（估算）：禁用 = 0，否则按覆盖/自动内容的实际生效文本算。
+												const tkDisabled = (settings.promptDisabled ?? []).includes(tk);
+												const tkEffTokens = tkDisabled ? 0 : estimatePromptTokens(v.trim() ? v : def);
 												if (isReadonlyPromptSource(tk)) {
 													const shown = v.trim() ? v : def;
 													return (
 														<div className="override-row readonly" key={tk}>
 															<div className="override-row-head">
+																<label className="set-check">
+																	<input
+																		type="checkbox"
+																		checked={!(settings.promptDisabled ?? []).includes(tk)}
+																		title={t("promptToggleEnabled")}
+																		onChange={(e) => {
+																			const cur = new Set(settings.promptDisabled ?? []);
+																			if (e.target.checked) cur.delete(tk);
+																			else cur.add(tk);
+																			setPartial({ promptDisabled: [...cur] });
+																		}}
+																	/>
+																	{t("promptToggleEnabled")}
+																</label>
 																{`{{${tk}}}`}
 																<span className="set-muted">
-																	{tt(`promptTok_${tk}`)} <HintTip text={tt(`promptTok_${tk}_desc`)} />
+																	{tt(`promptTok_${tk}`)} <HintTip text={tt(`promptTok_${tk}_desc`)} /> · ≈
+																	{tkEffTokens.toLocaleString()}
 																</span>
 																{v.trim() ? (
 																	<button
@@ -2767,9 +2786,24 @@ export function SettingsModal({
 												return (
 													<div className="override-row" key={tk}>
 														<div className="override-row-head">
+															<label className="set-check">
+																<input
+																	type="checkbox"
+																	checked={!(settings.promptDisabled ?? []).includes(tk)}
+																	title={t("promptToggleEnabled")}
+																	onChange={(e) => {
+																		const cur = new Set(settings.promptDisabled ?? []);
+																		if (e.target.checked) cur.delete(tk);
+																		else cur.add(tk);
+																		setPartial({ promptDisabled: [...cur] });
+																	}}
+																/>
+																{t("promptToggleEnabled")}
+															</label>
 															{`{{${tk}}}`}
 															<span className="set-muted">
-																{tt(`promptTok_${tk}`)} <HintTip text={tt(`promptTok_${tk}_desc`)} />
+																{tt(`promptTok_${tk}`)} <HintTip text={tt(`promptTok_${tk}_desc`)} /> · ≈
+																{tkEffTokens.toLocaleString()}
 															</span>
 															{v.trim() ? (
 																<button type="button" className="set-btn-mini" onClick={() => resetOverride(tk)}>

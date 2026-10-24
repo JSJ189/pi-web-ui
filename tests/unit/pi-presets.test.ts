@@ -26,7 +26,7 @@ describe("pi 引擎 Agent 预设（Agent Presets）", () => {
 	});
 
 	it("filterToolsByPreset: code 仅保留代码读写与执行工具", () => {
-		const tools = ["bash", "read", "edit", "write", "edit_soft", "browser_page", "notes_list"];
+		const tools = ["bash", "read", "edit", "write", "edit_soft", "browser_page", "notes"];
 		expect(filterToolsByPreset(tools, "code")).toEqual(["bash", "read", "edit", "write", "edit_soft"]);
 	});
 
@@ -40,10 +40,10 @@ describe("pi 引擎 Agent 预设（Agent Presets）", () => {
 			"edit_soft",
 			"terminal_create",
 			"office_read",
-			"notes_list",
+			"notes",
 		];
 		const filtered = filterToolsByPreset(tools, "reader");
-		expect(filtered).toEqual(["read", "office_read", "notes_list"]);
+		expect(filtered).toEqual(["read", "office_read", "notes"]);
 	});
 
 	it("filterToolsByPreset: ask 禁用全部工具（纯对话）", () => {

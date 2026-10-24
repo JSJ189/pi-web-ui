@@ -1267,6 +1267,7 @@
 		"promptInsertTokens": "Block einfügen:",
 		"promptResetAll": "Standardvorlage wiederherstellen und alle Überschreibungen löschen",
 		"promptResetSource": "Standard wiederherstellen",
+		"promptToggleEnabled": "Enabled",
 		"promptAutoBadge": "auto",
 		"promptOverridePlaceholder": "Überschreibungstext eingeben (leer lassen = automatischer Inhalt)…",
 		"promptSourceDefaultEmpty": "(Diese Quelle hat derzeit keinen automatischen Inhalt)",

@@ -1267,6 +1267,7 @@
 		"promptInsertTokens": "Insertar segmento:",
 		"promptResetAll": "Restaurar la plantilla predeterminada y borrar todas las sobrescrituras",
 		"promptResetSource": "Restaurar valor predeterminado",
+		"promptToggleEnabled": "Enabled",
 		"promptAutoBadge": "Automático",
 		"promptOverridePlaceholder": "Introduzca el contenido de sobrescritura (vacío = usar contenido automático)…",
 		"promptSourceDefaultEmpty": "(Esta fuente no tiene contenido automático actualmente)",

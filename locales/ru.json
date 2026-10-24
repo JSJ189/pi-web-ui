@@ -1267,6 +1267,7 @@
 		"promptInsertTokens": "Вставить блок:",
 		"promptResetAll": "Восстановить шаблон по умолчанию и очистить все переопределения",
 		"promptResetSource": "Восстановить по умолчанию",
+		"promptToggleEnabled": "Enabled",
 		"promptAutoBadge": "авто",
 		"promptOverridePlaceholder": "Введите текст переопределения (пусто = автоматическое содержимое)…",
 		"promptSourceDefaultEmpty": "(У этого источника сейчас нет автоматического содержимого)",

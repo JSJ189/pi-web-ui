@@ -1319,7 +1319,7 @@ export const LeftPanel = memo(function LeftPanel({
 														<div
 															className={`lp-row${depth > 0 ? " lp-sub" : ""}${hasKids ? " lp-has-kids" : ""}`}
 															key={c.id}
-															style={depth > 0 ? { marginLeft: depth * 18 } : undefined}
+															style={depth > 0 ? ({ "--depth": Math.min(depth, 4) } as React.CSSProperties) : undefined}
 															onMouseLeave={() => setConfirmDel((k) => (k === `conv:${c.id}` ? null : k))}
 															onContextMenu={(e) => openSessionMenu(e, { id: c.id, kind: "running", label: c.title })}
 														>

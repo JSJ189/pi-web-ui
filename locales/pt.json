@@ -1267,6 +1267,7 @@
 		"promptInsertTokens": "Inserir bloco: ",
 		"promptResetAll": "Restaurar a predefinição padrão e limpar todas as substituições",
 		"promptResetSource": "Restaurar padrão",
+		"promptToggleEnabled": "Enabled",
 		"promptAutoBadge": "auto",
 		"promptOverridePlaceholder": "Texto de substituição (deixe vazio = conteúdo automático)…",
 		"promptSourceDefaultEmpty": "(sem conteúdo automático para esta fonte no momento)",

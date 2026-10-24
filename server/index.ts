@@ -80,6 +80,7 @@ import { SchedulerStore } from "./scheduler-tasks.js";
 import { initHttpProxy } from "./http-proxy.js";
 import { globalLspPool } from "./lsp-tool.js";
 import { buildPiWebTokenCookie, decodeCookieToken, isTlsRequest } from "./auth-cookie.js";
+import { isLoopbackAddress, loadServerFileConfig, saveServerFileConfig, tokenWarning } from "./server-config.js";
 import { getAppVersion, getPkgRoot } from "./pkg-info.js";
 import {
 	handleFileMessage,
@@ -148,14 +149,6 @@ function cliFlag(name: string): string | undefined {
 	return undefined;
 }
 
-const PORT = Number(cliFlag("--port") ?? process.env.PI_WEB_PORT ?? 8787);
-// #506：直启路径与 bin 层对齐做端口校验——`--port abc` / `PI_WEB_PORT=abc` 之前会
-// listen(NaN) 被 Node 当 0 绑到随机端口，且日志打印 http://localhost:NaN。
-if (!Number.isInteger(PORT) || PORT <= 0 || PORT > 65535) {
-	console.error(`无效端口: ${cliFlag("--port") ?? process.env.PI_WEB_PORT} (--port / PI_WEB_PORT)`);
-	console.error(`Invalid port: ${cliFlag("--port") ?? process.env.PI_WEB_PORT} (--port / PI_WEB_PORT)`);
-	process.exit(1);
-}
 const CWD = resolve(cliFlag("--cwd") ?? process.env.PI_WEB_CWD ?? process.cwd());
 const DATA_DIR = resolve(cliFlag("--data-dir") ?? process.env.PI_WEB_DATA_DIR ?? join(homedir(), ".pi-web"));
 // The data dir is where the control socket, client state, plugins, themes and
@@ -173,6 +166,16 @@ try {
 	mkdirSync(CWD, { recursive: true });
 } catch (err) {
 	console.warn(`[cwd] 无法创建工作区目录 ${CWD}: ${(err as Error).message}`);
+}
+/** 本地 setup 页持久化：<dataDir>/server-config.json（命令行 > 环境变量 > 本文件 > 默认）。 */
+const FILE_CFG = loadServerFileConfig(DATA_DIR);
+const PORT = Number(cliFlag("--port") ?? process.env.PI_WEB_PORT ?? FILE_CFG.port ?? 8787);
+// #506：直启路径与 bin 层对齐做端口校验——`--port abc` / `PI_WEB_PORT=abc` 之前会
+// listen(NaN) 被 Node 当 0 绑到随机端口，且日志打印 http://localhost:NaN。
+if (!Number.isInteger(PORT) || PORT <= 0 || PORT > 65535) {
+	console.error(`无效端口: ${cliFlag("--port") ?? process.env.PI_WEB_PORT} (--port / PI_WEB_PORT)`);
+	console.error(`Invalid port: ${cliFlag("--port") ?? process.env.PI_WEB_PORT} (--port / PI_WEB_PORT)`);
+	process.exit(1);
 }
 // issue #295：工作区直接就是家目录时，SDK 初始化期的同步目录扫描会落在 $HOME 上
 // （iCloud 占位符/外部卷坏挂载 → scandir/open 内核挂起 → 事件循环假死，hello 后无
@@ -204,24 +207,24 @@ function readDevNoCacheSetting(): boolean | undefined {
 /** Bind address. Default is loopback ONLY — the service is a local personal
  *  tool and should not be reachable from the network unless explicitly asked
  *  (e.g. PI_WEB_HOST=0.0.0.0 for LAN access / Docker port mapping). */
-const HOST = cliFlag("--host") ?? process.env.PI_WEB_HOST ?? "127.0.0.1";
+const HOST = cliFlag("--host") ?? process.env.PI_WEB_HOST ?? FILE_CFG.host ?? "127.0.0.1";
 /** Optional strict hostname allowlist (comma-separated) — only used when set.
  *  Origin / Host same-authority matching happens regardless. */
-const ALLOW_HOSTS = (process.env.PI_WEB_ALLOW_HOSTS ?? "")
+const ALLOW_HOSTS = (process.env.PI_WEB_ALLOW_HOSTS ?? FILE_CFG.allowHosts ?? "")
 	.split(",")
 	.map((s) => s.trim().toLowerCase())
 	.filter(Boolean);
 /** Optional extra Origins allowed through the same-authority check (comma-
  *  separated, e.g. reverse-proxy setups where the browser origin differs
  *  from the Host the backend sees). */
-const ALLOW_ORIGINS = (process.env.PI_WEB_ALLOW_ORIGINS ?? "")
+const ALLOW_ORIGINS = (process.env.PI_WEB_ALLOW_ORIGINS ?? FILE_CFG.allowOrigins ?? "")
 	.split(",")
 	.map((s) => s.trim().toLowerCase())
 	.filter(Boolean);
 /** 可选共享口令（PI_WEB_TOKEN）：设置后所有 HTTP/WS 请求必须携带——
  *  Authorization: Bearer / X-PI-Token 头、?token= 查询参数或 pi_web_token cookie
  *  任一匹配即可；供 0.0.0.0 / 反代等暴露场景兜底，未设置则行为不变。 */
-const AUTH_TOKEN = process.env.PI_WEB_TOKEN?.trim() ?? "";
+let AUTH_TOKEN = (process.env.PI_WEB_TOKEN ?? FILE_CFG.token ?? "").trim();
 /** 语言包下载根（语言包仓库的 raw 文件地址；版本 tag 优先、main 兜底，见 locales.ts）。 */
 const LOCALE_BASE_URL =
 	process.env.PI_WEB_LOCALE_BASE_URL?.trim() || "https://raw.githubusercontent.com/xing-shuyin/pi-web-ui";
@@ -291,6 +294,153 @@ app.use((req, res, next) => {
 });
 app.use(express.json({ limit: "10mb" }));
 
+/**
+ * 只能本地访问的配置页（/setup + /api/setup/*）。
+ *
+ * - 挂在 token 鉴权中间件之前：忘记口令时正是要靠它重设。
+ * - 回环地址硬门禁：非 127/8、::1 进来直接 403（反代/局域网打不到）。
+ * - token 修改热生效；host/port/allowlist 写文件后需重启服务。
+ */
+function setupGate(
+	req: { socket?: { remoteAddress?: string } },
+	res: { status: (c: number) => { end: (m: string) => void } },
+	next: () => void,
+): void {
+	if (!isLoopbackAddress(req.socket?.remoteAddress)) {
+		res.status(403).end("setup page is only available from localhost");
+		return;
+	}
+	next();
+}
+
+const SETUP_PAGE = `<!doctype html><html lang="zh"><head><meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>pi-web-ui 本地配置</title>
+<style>body{font-family:system-ui,sans-serif;max-width:560px;margin:40px auto;padding:0 16px;
+background:#16181d;color:#e6e6e6}label{display:block;margin:14px 0 4px;color:#9aa}input{width:100%;
+box-sizing:border-box;padding:8px;border-radius:6px;border:1px solid #444;background:#222;color:#eee}
+button{margin-top:18px;padding:9px 22px;border:0;border-radius:6px;background:#4c8dff;color:#fff;
+font-size:15px;cursor:pointer}.hint{color:#9aa;font-size:13px;margin-top:4px}#msg{margin-top:14px;
+white-space:pre-wrap}.warn{color:#e0a63c}.ok{color:#6fbf73}.err{color:#e06c6c}</style></head><body>
+<h2>pi-web-ui 本地配置</h2>
+<p class="hint">本页只能在本机打开（回环地址）。token 修改立即生效；监听地址 / 端口 /
+白名单保存后需重启服务（<code>pi-web-ui server restart</code>）。命令行旗标与环境变量
+的优先级高于这里的保存值。</p>
+<label>访问口令 token（留空 = 清除）</label><input id="token" type="password" autocomplete="new-password">
+<div class="hint" id="twarn"></div>
+<label>监听地址 host（127.0.0.1 仅本机，0.0.0.0 允许局域网）</label><input id="host">
+<label>端口 port</label><input id="port" inputmode="numeric">
+<label>Host 白名单（逗号分隔，空 = 关闭严格模式）</label><input id="allowHosts">
+<label>额外 Origin 白名单（反代场景，逗号分隔）</label><input id="allowOrigins">
+<div><button id="save">保存</button></div>
+<div id="msg"></div>
+<script>
+const $=id=>document.getElementById(id);
+const msg=(t,c)=>{const m=$("msg");m.className=c||"";m.textContent=t;};
+fetch("/api/setup/status").then(r=>{if(!r.ok)throw new Error(r.status+" "+r.statusText);return r.json();})
+.then(s=>{$("host").value=s.host||"";$("port").value=s.port||"";
+$("allowHosts").value=s.allowHosts||"";$("allowOrigins").value=s.allowOrigins||"";
+$("twarn").textContent=s.tokenSet?("已设置口令"+(s.tokenWarning?"："+s.tokenWarning:"")):"当前未设置口令（本机直连无需口令）";})
+.catch(e=>msg("读取状态失败："+e.message,"err"));
+$("save").onclick=()=>{msg("保存中…","");
+fetch("/api/setup/save",{method:"POST",headers:{"Content-Type":"application/json"},
+body:JSON.stringify({token:$("token").value,host:$("host").value,port:$("port").value,
+allowHosts:$("allowHosts").value,allowOrigins:$("allowOrigins").value})})
+.then(r=>r.json().then(j=>({st:r.status,j})))
+.then(({st,j})=>{if(!j.ok){msg("保存失败："+(j.error||st),"err");return;}
+msg((j.restartRequired?"已保存，token 已生效；host/port/白名单需重启服务后生效。"
+:"已保存并生效。")+"\n"+JSON.stringify(j.saved,null,2),"ok");$("token").value="";})
+.catch(e=>msg("请求失败："+e.message,"err"});};
+</script></body></html>`;
+
+app.get("/setup", setupGate, (_req, res) => {
+	res.setHeader("Content-Type", "text/html; charset=utf-8");
+	res.end(SETUP_PAGE);
+});
+
+app.get("/api/setup/status", setupGate, (_req, res) => {
+	res.json({
+		ok: true,
+		tokenSet: AUTH_TOKEN.length > 0,
+		tokenWarning: AUTH_TOKEN ? tokenWarning(AUTH_TOKEN) : "",
+		host: HOST,
+		port: PORT,
+		allowHosts: ALLOW_HOSTS.join(","),
+		allowOrigins: ALLOW_ORIGINS.join(","),
+		configFile: `${DATA_DIR}/server-config.json`,
+	});
+});
+
+app.post("/api/setup/save", setupGate, (req, res) => {
+	const body = (req.body ?? {}) as Record<string, unknown>;
+	const prev = loadServerFileConfig(DATA_DIR);
+	const next: Record<string, unknown> = { ...prev };
+	let tokenChanged = false;
+	if (typeof body.token === "string") {
+		const t = body.token.trim();
+		if (t) next.token = t;
+		else delete next.token;
+		tokenChanged = t !== AUTH_TOKEN;
+		AUTH_TOKEN = t;
+	}
+	const setStr = (
+		key: "host" | "allowHosts" | "allowOrigins",
+		v: unknown,
+		valid: (s: string) => boolean,
+		what: string,
+	): boolean => {
+		if (v === undefined) return true;
+		if (typeof v !== "string") {
+			res.status(400).json({ ok: false, error: `${what} 必须是字符串` });
+			return false;
+		}
+		const s = v.trim();
+		if (s && !valid(s)) {
+			res.status(400).json({ ok: false, error: `${what} 格式不合法：${s}` });
+			return false;
+		}
+		if (s) next[key] = s;
+		else delete next[key];
+		return true;
+	};
+	if (!setStr("host", body.host, (s) => /^[A-Za-z0-9.:_-]+$/.test(s) && s.length <= 253, "host")) return;
+	if (!setStr("allowHosts", body.allowHosts, (s) => /^[A-Za-z0-9.,:_\-\s]+$/.test(s), "allowHosts")) return;
+	if (!setStr("allowOrigins", body.allowOrigins, (s) => s.length <= 2000, "allowOrigins")) return;
+	if (body.port !== undefined && body.port !== "" && body.port !== null) {
+		const p = Number(body.port);
+		if (!Number.isInteger(p) || p <= 0 || p > 65535) {
+			res.status(400).json({ ok: false, error: `port 必须是 1-65535：${String(body.port)}` });
+			return;
+		}
+		next.port = p;
+	} else if (body.port === "") {
+		delete next.port;
+	}
+	try {
+		saveServerFileConfig(DATA_DIR, next);
+	} catch (err) {
+		res.status(500).json({ ok: false, error: `写入配置失败：${(err as Error).message}` });
+		return;
+	}
+	const norm = (s: string) =>
+		s
+			.split(",")
+			.map((x) => x.trim().toLowerCase())
+			.filter(Boolean)
+			.join(",");
+	const restartRequired =
+		(typeof body.host === "string" && body.host.trim() !== HOST) ||
+		(body.port !== undefined && body.port !== "" && body.port !== null && Number(body.port) !== PORT) ||
+		(typeof body.allowHosts === "string" && norm(body.allowHosts) !== ALLOW_HOSTS.join(",")) ||
+		(typeof body.allowOrigins === "string" && norm(body.allowOrigins) !== ALLOW_ORIGINS.join(","));
+	res.json({
+		ok: true,
+		tokenApplied: tokenChanged,
+		restartRequired,
+		saved: next,
+	});
+});
+
 /** 从请求中提取候选 token：头 / 查询参数 / cookie（浏览器导航场景靠 cookie 续命）。 */
 function requestTokens(req: { headers: IncomingMessage["headers"]; url?: string }): string[] {
 	const out: string[] = [];
@@ -356,45 +506,49 @@ function splatParam(req: { params: unknown }): string {
 	return String(v ?? "");
 }
 
-if (AUTH_TOKEN) {
+// 常挂载：本地 /setup 页支持运行时设置/清除口令（AUTH_TOKEN 是 let，热旋转）。
+// 无口令时直接放行，保持原有行为不变。
+app.use((req, res, next) => {
+	if (!AUTH_TOKEN) {
+		next();
+		return;
+	}
 	// /api/health 保持开放：无敏感信息，容器/监控探针需要它。
 	// 但绝不能因命中 /api/health 就反射下发真实 token cookie（安全漏洞：issue #45）。
-	app.use((req, res, next) => {
-		const ok = tokenOk(req);
-		const cookie = cookieToken(req);
-		// 浏览器经 ?token= 首次进入后下发 HttpOnly cookie，后续导航/资源请求免带参数。
-		// 重要：只要请求携带着有效 token（query/header/cookie 任一匹配）就把 cookie 刷新为
-		// 当前 AUTH_TOKEN——服务端重启改了 PI_WEB_TOKEN 后，旧 cookie 经一次正确的
-		// ?token= 进入即被重新同步，无需用户清缓存（issue #71）。
-		// Secure 只在 TLS 连接上加：常加会让明文 HTTP（默认 loopback）收不到 cookie。
-		const secure = isTlsRequest(req);
-		if (ok) {
-			// cookieToken 已解码成原文（issue #261），所以直接和原始口令比 ——
-			// 以前拿 `encodeURIComponent(AUTH_TOKEN)` 比，含 `=` / 非 ASCII 的口令
-			// 永远不相等（于是每个请求都重发 cookie，且带 cookie 的请求反而 401）。
-			if (!sameSecret(cookie)) {
-				res.setHeader("Set-Cookie", buildPiWebTokenCookie(encodeURIComponent(AUTH_TOKEN), 31536000, secure));
-			}
-		} else if (cookie) {
-			// 请求带的 cookie 已是失效旧值（服务端口令已更换）——立即让其过期，
-			// 避免浏览器被残留 cookie 卡死一年（本来也不该再信任它鉴权）。
-			// Secure 与非 Secure 在浏览器里是两个独立 cookie：只清一种会因种植时的
-			// 协议不同而残留，所以两种属性组合各发一遍（HTTP 下 Secure 那条被忽略，无害）。
-			res.setHeader("Set-Cookie", [buildPiWebTokenCookie("", 0, false), buildPiWebTokenCookie("", 0, true)]);
+	const ok = tokenOk(req);
+	const cookie = cookieToken(req);
+	// 浏览器经 ?token= 首次进入后下发 HttpOnly cookie，后续导航/资源请求免带参数。
+	// 重要：只要请求携带着有效 token（query/header/cookie 任一匹配）就把 cookie 刷新为
+	// 当前 AUTH_TOKEN——服务端重启改了 PI_WEB_TOKEN 后，旧 cookie 经一次正确的
+	// ?token= 进入即被重新同步，无需用户清缓存（issue #71）。
+	// Secure 只在 TLS 连接上加：常加会让明文 HTTP（默认 loopback）收不到 cookie。
+	const secure = isTlsRequest(req);
+	if (ok) {
+		// cookieToken 已解码成原文（issue #261），所以直接和原始口令比 ——
+		// 以前拿 `encodeURIComponent(AUTH_TOKEN)` 比，含 `=` / 非 ASCII 的口令
+		// 永远不相等（于是每个请求都重发 cookie，且带 cookie 的请求反而 401）。
+		if (!sameSecret(cookie)) {
+			res.setHeader("Set-Cookie", buildPiWebTokenCookie(encodeURIComponent(AUTH_TOKEN), 31536000, secure));
 		}
-		if (req.path === "/api/health" || ok) {
-			next();
-			return;
-		}
-		res
-			.status(401)
-			.send(
-				cookie
-					? "unauthorized: PI_WEB_TOKEN required — 服务端口令已变更？已清除旧 token cookie，请用当前 ?token= 重新进入"
-					: "unauthorized: PI_WEB_TOKEN required (?token=…)",
-			);
-	});
-}
+	} else if (cookie) {
+		// 请求带的 cookie 已是失效旧值（服务端口令已更换）——立即让其过期，
+		// 避免浏览器被残留 cookie 卡死一年（本来也不该再信任它鉴权）。
+		// Secure 与非 Secure 在浏览器里是两个独立 cookie：只清一种会因种植时的
+		// 协议不同而残留，所以两种属性组合各发一遍（HTTP 下 Secure 那条被忽略，无害）。
+		res.setHeader("Set-Cookie", [buildPiWebTokenCookie("", 0, false), buildPiWebTokenCookie("", 0, true)]);
+	}
+	if (req.path === "/api/health" || ok) {
+		next();
+		return;
+	}
+	res
+		.status(401)
+		.send(
+			cookie
+				? "unauthorized: PI_WEB_TOKEN required — 服务端口令已变更？已清除旧 token cookie，请用当前 ?token= 重新进入"
+				: "unauthorized: PI_WEB_TOKEN required (?token=…)",
+		);
+});
 
 /** 共享客户端持久化存储：双引擎（pi + dsh）共用同一份内存缓存与落盘通道，避免互相覆盖。 */
 const sharedStateStore = new ClientStateStore(join(DATA_DIR, "client-state.json"));
@@ -3339,6 +3493,7 @@ httpServer.listen(PORT, HOST, () => {
 		console.log(`    pi SDK note : ${sdkNote}`);
 	}
 	console.log(`    bind        : ${HOST}:${PORT}`);
+	console.log(`    setup       : http://127.0.0.1:${PORT}/setup （仅本机：配 token/监听/白名单）`);
 	console.log("");
 });
 

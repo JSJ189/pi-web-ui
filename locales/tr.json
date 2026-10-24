@@ -1267,6 +1267,7 @@
 		"promptInsertTokens": "Blok ekle: ",
 		"promptResetAll": "Varsayılan şablonu geri yükle ve tüm üzerine yazmaları temizle",
 		"promptResetSource": "Varsayılana dön",
+		"promptToggleEnabled": "Enabled",
 		"promptAutoBadge": "otomatik",
 		"promptOverridePlaceholder": "Üzerine yazma metnini girin (boş = otomatik içerik)…",
 		"promptSourceDefaultEmpty": "(bu kaynağın şu an otomatik içeriği yok)",

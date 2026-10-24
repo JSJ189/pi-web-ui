@@ -618,6 +618,7 @@ export function handleSettingsMessage(msg: ClientMessage, cs: DispatchSession): 
 				customSystemPrompt: msg.customSystemPrompt,
 				promptTemplate: (msg as { promptTemplate?: string }).promptTemplate,
 				promptOverrides: (msg as { promptOverrides?: Record<string, string> }).promptOverrides,
+				promptDisabled: (msg as { promptDisabled?: string[] }).promptDisabled,
 				toolPromptOverrides: (msg as { toolPromptOverrides?: Record<string, unknown> }).toolPromptOverrides,
 				disabledSkills: msg.disabledSkills,
 				disabledExtensions: msg.disabledExtensions,

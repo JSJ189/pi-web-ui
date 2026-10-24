@@ -1267,6 +1267,7 @@
 		"promptInsertTokens": "插入段落：",
 		"promptResetAll": "恢復默認模板並清空所有覆蓋",
 		"promptResetSource": "恢復默認",
+		"promptToggleEnabled": "啟用",
 		"promptAutoBadge": "自動",
 		"promptOverridePlaceholder": "輸入覆蓋內容（留空 = 用自動內容）…",
 		"promptSourceDefaultEmpty": "（該來源當前無自動內容）",

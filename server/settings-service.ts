@@ -379,6 +379,7 @@ export class SettingsService {
 				customSystemPrompt: this.settings.customSystemPrompt,
 				promptTemplate: this.settings.promptTemplate ?? "",
 				promptOverrides: { ...this.settings.promptOverrides },
+				promptDisabled: [...(this.settings.promptDisabled ?? [])],
 				toolPromptOverrides: { ...this.settings.toolPromptOverrides },
 				disabledAgentTools: [...normalizeDisabledAgentTools(this.settings.disabledAgentTools)],
 				disabledPluginTools: [...normalizeDisabledPluginTools(this.settings.disabledPluginTools)],
@@ -572,6 +573,7 @@ export class SettingsService {
 		planModePrompt?: string;
 		reviewPrompt?: string;
 		reviewDisabledSkills?: string[];
+		promptDisabled?: string[];
 		disabledPlugins?: string[];
 		/** 宿主 UI 布局偏好（插件 UI 贡献 + 内置条目的隐藏/排序/分组；纯 UI，per-client）。 */
 		uiLayout?: UiLayoutPrefs;
@@ -591,6 +593,7 @@ export class SettingsService {
 			partial.customSystemPrompt !== undefined ||
 			partial.promptTemplate !== undefined ||
 			partial.promptOverrides !== undefined ||
+			partial.promptDisabled !== undefined ||
 			partial.disabledSkills !== undefined ||
 			partial.disabledExtensions !== undefined;
 		// 统一工具开关 live 生效（ActiveSet 加减，无需 reload），见末尾 applyToolGating。
@@ -619,6 +622,7 @@ export class SettingsService {
 			}
 			this.settings.promptOverrides = next;
 		}
+		if (partial.promptDisabled !== undefined) this.settings.promptDisabled = [...partial.promptDisabled];
 		if (partial.toolPromptOverrides !== undefined) {
 			// 逐工具合并：给出的键整体替换（归一化后为空 = 清除该工具覆盖）。
 			const next = { ...this.settings.toolPromptOverrides };

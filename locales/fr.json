@@ -1267,6 +1267,7 @@
 		"promptInsertTokens": "Insérer des paragraphes :",
 		"promptResetAll": "Restaurer le modèle par défaut et effacer toutes les surcharges",
 		"promptResetSource": "Restaurer",
+		"promptToggleEnabled": "Enabled",
 		"promptAutoBadge": "Auto",
 		"promptOverridePlaceholder": "Saisissez le contenu de surcharge (vide = contenu auto)…",
 		"promptSourceDefaultEmpty": "(cette source n'a aucun contenu auto pour l'instant)",
