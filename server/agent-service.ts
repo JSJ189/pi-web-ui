@@ -10980,19 +10980,46 @@ export class ClientSession {
 		const sessionBaseDir = resolveWorkspaceSessionDir(this.stateStore?.dataDir, targetCwd);
 		const run = (async (): Promise<SessionInfo[]> => {
 			try {
-				const sessionDir = piSessionsRoot()
-					? resolve(piSessionsRoot()!)
-					: SessionManager.create(sessionBaseDir).getSessionDir();
-				if (!existsSync(sessionDir)) return [];
+				const projectDir = SessionManager.create(sessionBaseDir).getSessionDir();
+				const extraRoot = piSessionsRoot() ? resolve(piSessionsRoot()!) : undefined;
 
-				const dirEntries = await fsPromises.readdir(sessionDir);
-				const files = dirEntries.filter((f) => f.endsWith(".jsonl"));
-				if (files.length === 0) return [];
+				const candidateFiles = new Map<string, string>();
+				if (existsSync(projectDir)) {
+					const dirEntries = await fsPromises.readdir(projectDir);
+					for (const f of dirEntries) {
+						if (f.endsWith(".jsonl")) {
+							const fp = join(projectDir, f);
+							candidateFiles.set(normalizePathKey(fp), fp);
+						}
+					}
+				}
+				if (extraRoot && existsSync(extraRoot)) {
+					const dirEntries = await fsPromises.readdir(extraRoot);
+					for (const f of dirEntries) {
+						if (f.endsWith(".jsonl")) {
+							const fp = join(extraRoot, f);
+							candidateFiles.set(normalizePathKey(fp), fp);
+						}
+					}
+					const extraSubdir = join(extraRoot, basename(projectDir));
+					if (normalizePathKey(extraSubdir) !== normalizePathKey(projectDir) && existsSync(extraSubdir)) {
+						try {
+							const subEntries = await fsPromises.readdir(extraSubdir);
+							for (const f of subEntries) {
+								if (f.endsWith(".jsonl")) {
+									const fp = join(extraSubdir, f);
+									candidateFiles.set(normalizePathKey(fp), fp);
+								}
+							}
+						} catch {}
+					}
+				}
+
+				if (candidateFiles.size === 0) return [];
 
 				// Stat files to detect modified/new files (takes only ~8ms for 600+ files)
 				const stats = await Promise.all(
-					files.map(async (f) => {
-						const fp = join(sessionDir, f);
+					Array.from(candidateFiles.values()).map(async (fp) => {
 						try {
 							const st = await fsPromises.stat(fp);
 							return { path: fp, mtime: st.mtimeMs, size: st.size };
@@ -11030,17 +11057,42 @@ export class ClientSession {
 					(info) =>
 						info.cwd !== "" && (normalizePathKey(info.cwd) === cwdKey || normalizePathKey(info.cwd) === baseDirKey),
 				);
-				const candidates = ownInfos.slice(0, 200);
+				const seenIds = new Set<string>();
+				const dedupedOwnInfos: SessionInfo[] = [];
+				for (const info of ownInfos) {
+					if (info.id) {
+						if (seenIds.has(info.id)) continue;
+						seenIds.add(info.id);
+					}
+					dedupedOwnInfos.push(info);
+				}
+				const candidates = dedupedOwnInfos.slice(0, 200);
 				candidates.sort((a, b) => b.modified.getTime() - a.modified.getTime());
 				ClientSession.sessionInfosCache.set(cwdKey, { infos: candidates, at: Date.now() });
 				return candidates;
 			} catch {
 				try {
-					const fallback = await SessionManager.list(sessionBaseDir, piSessionsRoot());
-					// 统一口径：列表缓存一律不带转录全文（issue #440），搜索按需另行加载
-					const stripped = fallback.map((s) => ({ ...s, allMessagesText: "" }));
-					ClientSession.sessionInfosCache.set(cwdKey, { infos: stripped, at: Date.now() });
-					return stripped;
+					const projectInfos = await SessionManager.list(sessionBaseDir).catch(() => []);
+					const extraInfos = piSessionsRoot()
+						? await SessionManager.list(sessionBaseDir, piSessionsRoot()).catch(() => [])
+						: [];
+					const seenPath = new Set<string>();
+					const seenId = new Set<string>();
+					const combined: SessionInfo[] = [];
+					for (const s of [...projectInfos, ...extraInfos]) {
+						const key = normalizePathKey(s.path);
+						if (seenPath.has(key)) continue;
+						seenPath.add(key);
+						if (s.id) {
+							if (seenId.has(s.id)) continue;
+							seenId.add(s.id);
+						}
+						// 统一口径：列表缓存一律不带转录全文（issue #440），搜索按需另行加载
+						combined.push({ ...s, allMessagesText: "" });
+					}
+					combined.sort((a, b) => b.modified.getTime() - a.modified.getTime());
+					ClientSession.sessionInfosCache.set(cwdKey, { infos: combined, at: Date.now() });
+					return combined;
 				} catch {
 					return [];
 				}

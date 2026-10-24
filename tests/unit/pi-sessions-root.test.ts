@@ -87,4 +87,12 @@ describe("isInsideSessionsDir", () => {
 		process.env.PI_CODING_AGENT_SESSION_DIR = "/tmp/custom-sessions";
 		expect(isInsideSessionsDir(agentDir, inside)).toBe(true);
 	});
+
+	it("Windows 盘符大小写不敏感（C: vs c: 均放行）", () => {
+		if (process.platform === "win32") {
+			const winAgent = "C:\\Users\\test\\.pi\\agent";
+			const lowerTarget = "c:\\users\\test\\.pi\\agent\\sessions\\sub\\a.jsonl";
+			expect(isInsideSessionsDir(winAgent, lowerTarget)).toBe(true);
+		}
+	});
 });

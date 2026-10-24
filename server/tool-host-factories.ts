@@ -7,8 +7,8 @@
  * 从 agent-service.ts 抽出为独立模块。
  */
 import { readFileSync, statSync } from "node:fs";
-import { resolve } from "node:path";
-import { SessionManager } from "@earendil-works/pi-coding-agent";
+import { SessionManager, type SessionInfo } from "@earendil-works/pi-coding-agent";
+import { normalizePathKey } from "./client-state.js";
 import type { ScheduleToolHost } from "./schedule-agent-tool.js";
 import type { SchedulerStore } from "./scheduler-tasks.js";
 import type { ConversationReadHost } from "./conversation-read-tool.js";
@@ -99,10 +99,36 @@ export function createConversationReadHost(ctx: {
 			return { title: c.title, cwd: c.cwd, isSubagent: !!c.isSubagent, messages: ctx.getConvTranscript(c) };
 		},
 		listHistorySessions: async (scope, cwd) => {
-			const infos =
-				scope === "all"
-					? await SessionManager.listAll(piSessionsRoot())
-					: await SessionManager.list(cwd || ctx.getCwd(), piSessionsRoot());
+			let infos: SessionInfo[];
+			const targetCwd = cwd || ctx.getCwd();
+			const extra = piSessionsRoot();
+			if (scope === "all") {
+				const defaultAll = await SessionManager.listAll().catch(() => []);
+				const extraAll = extra ? await SessionManager.listAll(extra).catch(() => []) : [];
+				const seen = new Set<string>();
+				infos = [];
+				for (const s of [...defaultAll, ...extraAll]) {
+					const key = normalizePathKey(s.path);
+					if (!seen.has(key)) {
+						seen.add(key);
+						infos.push(s);
+					}
+				}
+				infos.sort((a, b) => b.modified.getTime() - a.modified.getTime());
+			} else {
+				const projectInfos = await SessionManager.list(targetCwd).catch(() => []);
+				const extraInfos = extra ? await SessionManager.list(targetCwd, extra).catch(() => []) : [];
+				const seen = new Set<string>();
+				infos = [];
+				for (const s of [...projectInfos, ...extraInfos]) {
+					const key = normalizePathKey(s.path);
+					if (!seen.has(key)) {
+						seen.add(key);
+						infos.push(s);
+					}
+				}
+				infos.sort((a, b) => b.modified.getTime() - a.modified.getTime());
+			}
 			return infos.map((s) => ({
 				path: s.path,
 				name: s.name,
@@ -131,12 +157,20 @@ export function createConversationReadHost(ctx: {
 			}
 		},
 		readHistorySession: async (path) => {
-			const all = await SessionManager.listAll(piSessionsRoot());
-			const norm = (p: string): string => {
-				const r = resolve(p);
-				return process.platform === "win32" ? r.toLowerCase() : r;
-			};
-			const hit = all.find((s) => norm(s.path) === norm(path));
+			const extra = piSessionsRoot();
+			const defaultAll = await SessionManager.listAll().catch(() => []);
+			const extraAll = extra ? await SessionManager.listAll(extra).catch(() => []) : [];
+			const seen = new Set<string>();
+			const all: SessionInfo[] = [];
+			for (const s of [...defaultAll, ...extraAll]) {
+				const key = normalizePathKey(s.path);
+				if (!seen.has(key)) {
+					seen.add(key);
+					all.push(s);
+				}
+			}
+			const targetKey = normalizePathKey(path);
+			const hit = all.find((s) => normalizePathKey(s.path) === targetKey);
 			if (!hit) return undefined;
 			try {
 				if (statSync(hit.path).size > MAX_TRANSCRIPT_SCAN_BYTES) return undefined;

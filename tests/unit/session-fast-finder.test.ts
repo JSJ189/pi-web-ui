@@ -7,10 +7,11 @@
  * 3. 当指定 targetCwd 时，仅读取首行 header 过滤匹配该 cwd 的最新会话；
  * 4. 忽略非 .jsonl 文件。
  */
-import { mkdtemp, rm, utimes, writeFile } from "node:fs/promises";
+import { mkdir, mkdtemp, rm, utimes, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
+import { SessionManager } from "@earendil-works/pi-coding-agent";
 import { findMostRecentSessionFileFast } from "../../server/session-parser.js";
 
 let tmpDirs: string[] = [];
@@ -107,6 +108,38 @@ describe("findMostRecentSessionFileFast", () => {
 			} else {
 				delete process.env.PI_CODING_AGENT_SESSION_DIR;
 			}
+		}
+	});
+
+	it("PI_CODING_AGENT_SESSION_DIR 设为根目录时优先返回项目子目录中更新的会话（issue #711）", async () => {
+		const agentDir = await makeTmpDir("agent");
+		const workdir = await makeTmpDir("workspace");
+		const sessionsRoot = join(agentDir, "sessions");
+		await mkdir(sessionsRoot, { recursive: true });
+		const prevSessionDir = process.env.PI_CODING_AGENT_SESSION_DIR;
+		const prevAgentDir = process.env.PI_CODING_AGENT_DIR;
+		try {
+			process.env.PI_CODING_AGENT_DIR = agentDir;
+			process.env.PI_CODING_AGENT_SESSION_DIR = sessionsRoot;
+
+			// 旧扁平会话在 sessionsRoot 顶层
+			const legacyFile = join(sessionsRoot, "legacy.jsonl");
+			await writeFile(legacyFile, JSON.stringify({ type: "session", id: "s-legacy", cwd: workdir }) + "\n", "utf8");
+			await utimes(legacyFile, new Date(1_000), new Date(1_000));
+
+			// 新会话在专属子目录
+			const projectDir = SessionManager.create(workdir).getSessionDir();
+			const newFile = join(projectDir, "new.jsonl");
+			await writeFile(newFile, JSON.stringify({ type: "session", id: "s-new", cwd: workdir }) + "\n", "utf8");
+			await utimes(newFile, new Date(10_000), new Date(10_000));
+
+			const result = await findMostRecentSessionFileFast(workdir, workdir);
+			expect(result).toBe(newFile);
+		} finally {
+			if (prevSessionDir !== undefined) process.env.PI_CODING_AGENT_SESSION_DIR = prevSessionDir;
+			else delete process.env.PI_CODING_AGENT_SESSION_DIR;
+			if (prevAgentDir !== undefined) process.env.PI_CODING_AGENT_DIR = prevAgentDir;
+			else delete process.env.PI_CODING_AGENT_DIR;
 		}
 	});
 });

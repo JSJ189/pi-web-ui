@@ -190,3 +190,59 @@ describe("loadSessionInfos — 默认分层布局行为不变", () => {
 		expect(existsSync(dirB)).toBe(true);
 	});
 });
+
+describe("loadSessionInfos — PI_CODING_AGENT_SESSION_DIR 指向会话根时兼收新旧会话（issue #711）", () => {
+	it("同时读取项目专属子目录中的新会话与根目录下的扁平旧会话", async () => {
+		const agentDir = await makeTmpDir("agent");
+		const cwdA = await makeTmpDir("proj-a");
+		const cwdB = await makeTmpDir("proj-b");
+		process.env.PI_CODING_AGENT_DIR = agentDir;
+		const sessionsRoot = join(agentDir, "sessions");
+		await setFlatRoot(sessionsRoot);
+
+		// 1. 新引擎在项目专属子目录（SessionManager.create(cwd).getSessionDir()）创建的新会话
+		const dirA = SessionManager.create(cwdA).getSessionDir();
+		const newSession1 = await writeSession(dirA, { cwd: cwdA, atMs: 5_000, id: "new-1" });
+		const newSession2 = await writeSession(dirA, { cwd: cwdA, atMs: 6_000, id: "new-2" });
+
+		// 2. 根目录下的历史扁平会话（属于 cwdA）
+		const legacySession = await writeSession(sessionsRoot, { cwd: cwdA, atMs: 1_000, id: "legacy-1" });
+
+		// 3. 根目录与子目录下的其他项目会话（属于 cwdB）
+		const otherLegacy = await writeSession(sessionsRoot, { cwd: cwdB, atMs: 2_000, id: "other-legacy" });
+		const dirB = SessionManager.create(cwdB).getSessionDir();
+		const otherNew = await writeSession(dirB, { cwd: cwdB, atMs: 7_000, id: "other-new" });
+
+		const infos = await loadSessionInfos.call(fakeThis(cwdA));
+		const ids = infos.map((i) => i.id);
+
+		// 必须包含新创建的会话与旧扁平会话
+		expect(ids).toContain(newSession1.id);
+		expect(ids).toContain(newSession2.id);
+		expect(ids).toContain(legacySession.id);
+
+		// 不应包含其他项目的会话
+		expect(ids).not.toContain(otherLegacy.id);
+		expect(ids).not.toContain(otherNew.id);
+
+		// 按 modified 降序排序：newSession2 (6000) > newSession1 (5000) > legacySession (1000)
+		expect(ids).toEqual([newSession2.id, newSession1.id, legacySession.id]);
+	});
+
+	it("同一个 sessionId 重复出现在两处时按最新版本去重", async () => {
+		const agentDir = await makeTmpDir("agent");
+		const cwdA = await makeTmpDir("proj-a");
+		process.env.PI_CODING_AGENT_DIR = agentDir;
+		const sessionsRoot = join(agentDir, "sessions");
+		await setFlatRoot(sessionsRoot);
+
+		const dirA = SessionManager.create(cwdA).getSessionDir();
+		// 同一个 id，子目录里的较新
+		await writeSession(sessionsRoot, { cwd: cwdA, atMs: 1_000, id: "dup-id" });
+		const newer = await writeSession(dirA, { cwd: cwdA, atMs: 8_000, id: "dup-id" });
+
+		const infos = await loadSessionInfos.call(fakeThis(cwdA));
+		expect(infos.filter((i) => i.id === "dup-id")).toHaveLength(1);
+		expect(infos[0].path).toBe(newer.path);
+	});
+});

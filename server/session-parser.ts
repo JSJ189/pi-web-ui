@@ -7,8 +7,9 @@
  *
  * 从 agent-service.ts 抽出为独立模块。
  */
+import { existsSync } from "node:fs";
 import * as fsPromises from "node:fs/promises";
-import { join, resolve } from "node:path";
+import { basename, join, resolve } from "node:path";
 import { SessionManager, type SessionInfo } from "@earendil-works/pi-coding-agent";
 import type { ProjectSummary } from "./protocol.js";
 import { normalizePathKey } from "./client-state.js";
@@ -343,28 +344,60 @@ export async function findMostRecentSessionFileFast(
 			return undefined;
 		}
 		let jsonlFiles = dirEntries.filter((f) => f.endsWith(".jsonl"));
-		if (jsonlFiles.length === 0) {
+		const candidateFiles = new Map<string, string>();
+		if (jsonlFiles.length > 0) {
+			for (const f of jsonlFiles) {
+				const fp = join(targetDir, f);
+				candidateFiles.set(normalizePathKey(fp), fp);
+			}
+		} else {
 			// 如果 targetDir 下没有 .jsonl 文件，可能是工作区根目录（sessionBaseDir），尝试解析物理存储目录
 			try {
-				const extra = piSessionsRoot();
-				const resolvedStorageDir = extra ? resolve(extra) : SessionManager.create(targetDir).getSessionDir();
-				if (resolvedStorageDir && resolvedStorageDir !== targetDir) {
+				const projectDir = SessionManager.create(targetDir).getSessionDir();
+				if (existsSync(projectDir)) {
 					try {
-						const storageEntries = await fsPromises.readdir(resolvedStorageDir);
-						const storageJsonl = storageEntries.filter((f) => f.endsWith(".jsonl"));
-						if (storageJsonl.length > 0) {
-							targetDir = resolvedStorageDir;
-							jsonlFiles = storageJsonl;
+						const entries = await fsPromises.readdir(projectDir);
+						for (const f of entries) {
+							if (f.endsWith(".jsonl")) {
+								const fp = join(projectDir, f);
+								candidateFiles.set(normalizePathKey(fp), fp);
+							}
 						}
 					} catch {}
 				}
+				const extra = piSessionsRoot();
+				if (extra) {
+					const resolvedExtra = resolve(extra);
+					if (existsSync(resolvedExtra)) {
+						try {
+							const entries = await fsPromises.readdir(resolvedExtra);
+							for (const f of entries) {
+								if (f.endsWith(".jsonl")) {
+									const fp = join(resolvedExtra, f);
+									candidateFiles.set(normalizePathKey(fp), fp);
+								}
+							}
+						} catch {}
+						const extraSubdir = join(resolvedExtra, basename(projectDir));
+						if (normalizePathKey(extraSubdir) !== normalizePathKey(projectDir) && existsSync(extraSubdir)) {
+							try {
+								const subEntries = await fsPromises.readdir(extraSubdir);
+								for (const f of subEntries) {
+									if (f.endsWith(".jsonl")) {
+										const fp = join(extraSubdir, f);
+										candidateFiles.set(normalizePathKey(fp), fp);
+									}
+								}
+							} catch {}
+						}
+					}
+				}
 			} catch {}
 		}
-		if (jsonlFiles.length === 0) return undefined;
+		if (candidateFiles.size === 0) return undefined;
 
 		const stats = await Promise.all(
-			jsonlFiles.map(async (f) => {
-				const fp = join(targetDir, f);
+			Array.from(candidateFiles.values()).map(async (fp) => {
 				try {
 					const st = await fsPromises.stat(fp);
 					return { path: fp, mtime: st.mtimeMs };
