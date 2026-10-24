@@ -1994,6 +1994,10 @@ export const zh = {
 	subagentFollowMain: "跟随主对话当前模型",
 	subagentDefaultModelHint:
 		"所有子代理的兜底模型（模板里指定的模型和 subagent_spawn 的 model 参数优先级更高）；不改主对话模型。",
+	subagentMaxDepth: "子代理最大嵌套层数",
+	subagentMaxDepthDesc:
+		"主对话下面最多几层子代理。不限制（默认）：子代理都能继续派发。1：主对话派出的子代理不能再派发。2：子代理可以再派一层，第二层不能再派。到上限的子代理不注入 subagent / delegate_task；只影响之后新派生的子代理，持久化对话不受影响。",
+	subagentMaxDepthUnlimited: "不限制",
 	subagentNoModels: "暂无可用的模型（需要先配置服务商 API Key）——子代理将跟随主对话模型。",
 	tplNamePlaceholder: "模板名（AI 用 subagent_spawn 的 template 参数引用）…",
 	tplDescriptionPlaceholder: "简介（AI 据此判断适用场景）…",
@@ -4399,6 +4403,10 @@ export const en: Record<keyof typeof zh, string> = {
 	subagentFollowMain: "Follow the main conversation's current model",
 	subagentDefaultModelHint:
 		"Fallback model for all subagents (a template's own model and the subagent_spawn model param take priority); does not change the main conversation's model.",
+	subagentMaxDepth: "Max subagent nesting depth",
+	subagentMaxDepthDesc:
+		"How many subagent layers may sit below the main conversation. Unlimited (default): every subagent can keep dispatching. 1: subagents spawned by the main conversation cannot dispatch. 2: subagents can dispatch one more layer, which cannot dispatch further. Subagents at the limit get neither subagent nor delegate_task; only affects subagents spawned afterwards, persistent conversations are unaffected.",
+	subagentMaxDepthUnlimited: "Unlimited",
 	subagentNoModels:
 		"No usable models yet (configure a provider API key first) — subagents will follow the main conversation's model.",
 	tplNamePlaceholder: "Template name (referenced by AI via subagent_spawn's template param)…",

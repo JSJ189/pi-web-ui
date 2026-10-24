@@ -353,6 +353,8 @@ const DELTA_ACTIVE_WINDOW_MS = 1500;
  */
 const STATS_CACHE_MS = 250;
 const WIDGET_REFRESH_MS = 2000;
+/** 创建时未注入派发工具的子代理会话（模块级：过户跨 ClientSession 仍认得），syncSubagentOverride 不得再补回内置 subagent。 */
+const SPAWN_TOOLS_BARRED = new WeakSet<object>();
 /** Model-stall watchdog: warn (don't abort — deep thinking can be legitimately
  *  quiet for minutes) when a streaming run produced NO SDK events for this long.
  *  Covers the failure class the per-tool watchdog cannot see: half-open API
@@ -1083,11 +1085,15 @@ export class ClientSession {
 					(sessionManager as unknown as { sessionDir: string }).sessionDir = ephemeralDir;
 				} catch {}
 			}
-			const runtime = await createAgentSessionRuntime(this.makeRuntimeFactory(terminals, apply, conversationId), {
-				cwd: sessionBaseDir,
-				agentDir: this.agentDir,
-				sessionManager,
-			});
+			const noSpawnTools = !persist && this.subagentAtDepthLimit(parentId ?? this.activeId ?? undefined);
+			const runtime = await createAgentSessionRuntime(
+				this.makeRuntimeFactory(terminals, apply, conversationId, undefined, undefined, noSpawnTools),
+				{
+					cwd: sessionBaseDir,
+					agentDir: this.agentDir,
+					sessionManager,
+				},
+			);
 			const conv = this.makeConversation(runtime, conversationId, terminals);
 			conv.cwd = resolvedCwd;
 			conv.isSubagent = !persist;
@@ -1244,6 +1250,23 @@ export class ClientSession {
 		if (this.convs.has(convId)) return this.getSubagentSnapshot(convId);
 		const found = this.findSubagentOwner?.(convId);
 		return found && found.session !== this ? found.session.getSubagentSnapshot(found.convId) : undefined;
+	}
+
+	/** 由该父对话派出的子代理处在主对话下第几层：沿 parentId 链数祖先（主对话派的 = 1）。 */
+	private subagentDepthUnder(parentId: string | undefined): number {
+		let depth = 0;
+		const seen = new Set<string>();
+		for (let id = parentId; id && !seen.has(id); id = this.subagentSnapshotAnywhere(id)?.parentId) {
+			seen.add(id);
+			depth++;
+		}
+		return depth;
+	}
+
+	/** 设了嵌套上限（subagentMaxDepth > 0）且已到上限那一层的内存子代理，创建时不注入派发工具。 */
+	private subagentAtDepthLimit(parentId: string | undefined): boolean {
+		const max = this.settingsSvc.current.subagentMaxDepth ?? 0;
+		return max > 0 && this.subagentDepthUnder(parentId) >= max;
 	}
 
 	/** B20：convId 当前由哪个 ClientSession 持有（本会话优先；查不到兜底本会话）。 */
@@ -2866,6 +2889,7 @@ export class ClientSession {
 		ownerId?: string,
 		initialModel?: Parameters<AgentSession["setModel"]>[0],
 		targetPreset?: string,
+		noSpawnTools?: boolean,
 	): CreateAgentSessionRuntimeFactory {
 		return async ({ cwd: effectiveCwd, sessionManager }) => {
 			const services = await createAgentSessionServices({
@@ -3301,30 +3325,35 @@ export class ClientSession {
 					// 空白名单 = 跟随主会话（插件工具照常进入子代理）。
 					...(apply && apply.enabledExtensions.length > 0 ? [] : this.enabledPluginToolDefs()),
 					// 第一方子代理工具（spawn/get_result/steer/list/stop）。子代理会话
-					// 也注册了它们，因此可自然嵌套派发。host 按 ownerId 包装：子代理的
+					// 默认也注册了它们，因此可自然嵌套派发；设置了 subagentMaxDepth 且子代理
+					// 已到上限层时 noSpawnTools=true，连同下面的 delegate_task 一起不注入。host 按 ownerId 包装：子代理的
 					// 父对话 = 真正调用 spawn 的那个会话（本 runtime 所属会话），而不是
 					// 派发瞬间的 active——后台对话继续产出时用户可能已切到别的项目，用
 					// activeId 会把孩子记到无关会话名下、沉到别的组/底部（issue #95）。
 					// ownerId 即本 runtime 所属会话（创建时就已知，见各调用点），一身二任：
 					// spawn 的 parentId（子代理记到真正的派发会话名下）+ wait_all 的
 					// selfConvId（调用者自身永不计入等待，防 self-wait deadlock）。
-					...(ownerId
-						? makeSubagentTools(
-								withSubagentOwner(this.subagentHost, ownerId),
-								undefined,
-								// B20：selfId 必须调用时刻解析，不能死用建时旧 id —— 过户撞 id
-								// 改名后 wait_all 的「排除自身/展开后代」要按 runtime 的当前归属查。
-								() =>
-									bridgeAnchor.session
-										? (this.findConversationHome?.(bridgeAnchor.session)?.convId ?? ownerId)
-										: ownerId,
-							)
-						: makeSubagentTools(this.subagentHost)),
+					...(noSpawnTools
+						? []
+						: ownerId
+							? makeSubagentTools(
+									withSubagentOwner(this.subagentHost, ownerId),
+									undefined,
+									// B20：selfId 必须调用时刻解析，不能死用建时旧 id —— 过户撞 id
+									// 改名后 wait_all 的「排除自身/展开后代」要按 runtime 的当前归属查。
+									() =>
+										bridgeAnchor.session
+											? (this.findConversationHome?.(bridgeAnchor.session)?.convId ?? ownerId)
+											: ownerId,
+								)
+							: makeSubagentTools(this.subagentHost)),
 					// 结构化派单（六段式 + 服务端校验；执行体复用子代理 spawn 通道）。
 					// owner 包装与上面同理：子代理记到真正的派发会话名下。
-					...(ownerId
-						? [makeDelegateTaskTool(withSubagentOwner(this.subagentHost, ownerId))]
-						: [makeDelegateTaskTool(this.subagentHost)]),
+					...(noSpawnTools
+						? []
+						: ownerId
+							? [makeDelegateTaskTool(withSubagentOwner(this.subagentHost, ownerId))]
+							: [makeDelegateTaskTool(this.subagentHost)]),
 					// 结构化任务计划更新（Plan Mode / Step State Machine）。
 					makePlanUpdateTool(
 						this.planManager,
@@ -3468,6 +3497,7 @@ export class ClientSession {
 			// 桥接工具归属锚点：SDK 会话对象在本 runtime 生命周期内稳定，过户只搬对话
 			// 不改它（见 ClientSession.findConversationHome）。
 			bridgeAnchor.session = created.session;
+			if (noSpawnTools) SPAWN_TOOLS_BARRED.add(created.session);
 			// read / write / edit 三处覆盖在会话建好后注入（见 tool-overrides.ts）：SDK 的合并链是
 			// [...扩展工具, ...customTools] 后写赢 ⇒ 创建时塞进 customTools 会**恒定顶掉**第三方
 			// 扩展注册的同名工具（官方 docs/extensions.md 明写扩展可覆盖 read/write/edit）。
@@ -7020,6 +7050,7 @@ export class ClientSession {
 		scmCommitMsgPromptMode?: PromptMode;
 		scmCommitMsgPrompt?: string;
 		subagentDefaultModel?: string | null;
+		subagentMaxDepth?: number;
 		retryMaxAttempts?: number;
 		softCapTokens?: number;
 		softCapByModel?: Record<string, number>;
@@ -7690,7 +7721,8 @@ export class ClientSession {
 			forceActive: lazy && targetPreset !== "ask" ? [LOAD_TOOLS_TOOL_NAME, ...loadedNames] : [],
 		});
 		const ownerId = conv?.id;
-		syncSubagentOverride(session as unknown as OverrideSessionLike, disabled.has("subagent"), () =>
+		const subagentOff = disabled.has("subagent") || SPAWN_TOOLS_BARRED.has(session);
+		syncSubagentOverride(session as unknown as OverrideSessionLike, subagentOff, () =>
 			ownerId
 				? makeSubagentTools(withSubagentOwner(this.subagentHost, ownerId), undefined, ownerId)[0]
 				: makeSubagentTools(this.subagentHost)[0],
@@ -9590,11 +9622,21 @@ export class ClientSession {
 				(m) =>
 					// 子代理带模板时按原模板重建（conv.subagentTemplate 是派发时工厂
 					// 用的同一快照）；普通对话 undefined，行为不变。
-					createAgentSessionRuntime(this.makeRuntimeFactory(conv.terminals, conv.subagentTemplate, conv.id), {
-						cwd: sessionBaseDir,
-						agentDir: this.agentDir,
-						sessionManager: m,
-					}),
+					createAgentSessionRuntime(
+						this.makeRuntimeFactory(
+							conv.terminals,
+							conv.subagentTemplate,
+							conv.id,
+							undefined,
+							undefined,
+							conv.isSubagent && this.subagentAtDepthLimit(conv.parentId),
+						),
+						{
+							cwd: sessionBaseDir,
+							agentDir: this.agentDir,
+							sessionManager: m,
+						},
+					),
 				async () => (ownFile && existsSync(ownFile) ? ownFile : undefined),
 			);
 			const runtime = opened.runtime;

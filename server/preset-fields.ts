@@ -70,6 +70,7 @@ export const PRESET_FIELD_GROUPS = {
 		"softCapTokens",
 		"softCapByModel",
 		"subagentDefaultModel",
+		"subagentMaxDepth",
 		"visionBridgeEnabled",
 		"visionBridgeModel",
 		"visionBridgePromptMode",
@@ -354,6 +355,12 @@ export const PRESET_FIELD_META = {
 		labelEn: "Subagent Default Model",
 		hintZh: "派生子代理时优先使用的专用模型（留空跟随主对话）",
 		hintEn: "Dedicated model for subagents (empty to follow main chat)",
+	},
+	subagentMaxDepth: {
+		labelZh: "子代理最大嵌套层数",
+		labelEn: "Subagent Max Depth",
+		hintZh: "主对话下最多几层子代理（0 = 不限制，1 = 子代理不能再派发）",
+		hintEn: "Max subagent layers below the main chat (0 = unlimited, 1 = subagents cannot spawn)",
 	},
 	visionBridgeEnabled: {
 		labelZh: "视觉桥 (看图转写)",
