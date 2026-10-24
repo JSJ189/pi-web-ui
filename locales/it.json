@@ -1267,6 +1267,7 @@
 		"promptInsertTokens": "Inserisci blocco: ",
 		"promptResetAll": "Ripristina il template predefinito e azzera tutti i rimpiazzi",
 		"promptResetSource": "Ripristina predefinito",
+		"promptToggleEnabled": "Enabled",
 		"promptAutoBadge": "auto",
 		"promptOverridePlaceholder": "Testo di rimpiazzo (lascia vuoto = contenuto automatico)…",
 		"promptSourceDefaultEmpty": "(nessun contenuto automatico per questa sorgente al momento)",

@@ -36,18 +36,20 @@ pi-web-ui install xing-shuyin/pi-web-ui/plugins/notes
 | 批量整理        | 浮窗 ⚙（设置覆盖层）里导出 JSON / Markdown、导入 JSON（合并或整库覆盖）                                                                |
 | 镜像给 Obsidian | 设置 →「界面插件」→ 笔记 → 勾「镜像成 Markdown 文件」+ 填绝对目录（首次写入浏览器会要一次目录授权）；也可 `/notes-mirror` 手动同步一次 |
 
-### 给 AI 用（设置 →「工具」页可逐条关）
+### 给 AI 用（设置 →「工具」页可开关）
 
-| 工具             | 作用                                                                                                                   |
-| ---------------- | ---------------------------------------------------------------------------------------------------------------------- |
-| `notes_list`     | 读笔记/待办/提醒（带 id；支持 `kind` / `query` / `tag` / `include_done` / `limit`）                                    |
-| `notes_add`      | 记一条笔记（Markdown 正文）                                                                                            |
-| `notes_update`   | 按 id 改/删笔记（`append` 追加正文）                                                                                   |
-| `notes_todo`     | 待办增改勾删（`add`/`update`/`done`/`undone`/`remove`/`clear_done`，可带 `due`/`priority`/`repeat`/`tags`）            |
-| `notes_reminder` | 提醒增改删/推迟（`at` / `daily_at` / `weekly_at`+`weekdays` / `monthly_at`+`day_of_month` / `every_minutes` / `cron`） |
+单个工具 `notes`，用 `op` 分流（读之前先 `op=list` 拿 id）：
+
+| `op`          | 作用                                                                                                                   |
+| ------------- | ---------------------------------------------------------------------------------------------------------------------- |
+| `list`        | 读笔记/待办/提醒（带 id；支持 `kind` / `query` / `tag` / `include_done` / `limit`）                                    |
+| `note_add`    | 记一条笔记（Markdown 正文）                                                                                            |
+| `note_update` | 按 id 改/删笔记（`append` 追加正文）                                                                                   |
+| `todo`        | 待办增改勾删（`action`=`add`/`update`/`done`/`undone`/`remove`/`clear_done`，可带 `due`/`priority`/`repeat`）          |
+| `reminder`    | 提醒增改删/推迟（`at` / `daily_at` / `weekly_at`+`weekdays` / `monthly_at`+`day_of_month` / `every_minutes` / `cron`） |
 
 对着对话说「记一下今天会上定的三件事」「提醒我周五 18:00 交周报」「我还有什么没做的」，
-agent 就会自己调这些工具；注册的工具也能在设置里逐条关掉（与其它插件工具同一套开关）。
+agent 就会自己调这个工具；不想要就去设置里把它关掉（与其它插件工具同一套开关）。
 
 ## 数据与边界
 

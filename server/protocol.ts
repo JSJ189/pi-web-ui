@@ -1052,6 +1052,8 @@ export type ClientMessage =
 			promptTemplate?: string;
 			/** 各来源 token 的独立覆盖（空 = 用自动内容）。 */
 			promptOverrides?: Record<string, string>;
+			/** 禁用的提示词分段 token（模板中命中直接展开为空串，覆盖也不生效）。 */
+			promptDisabled?: string[];
 			/** 逐工具文案覆盖：键 = 工具名，值 = 该工具的 description/promptSnippet/
 			 *  promptGuidelines（只合并给出的键；整项给空对象/空字段 = 清除该项覆盖）。 */
 			toolPromptOverrides?: Record<string, UiToolPromptOverride>;
@@ -2994,6 +2996,8 @@ export interface UiSettingsPreset {
 	customSystemPrompt: string;
 	promptTemplate: string;
 	promptOverrides: Record<string, string>;
+	/** 禁用的提示词分段 token（模板中命中直接展开为空串，覆盖也不生效）。 */
+	promptDisabled: string[];
 	disabledSkills: string[];
 	disabledExtensions: string[];
 	/** Extra instructions and skill toggles for the isolated goal-reviewer. */
@@ -3055,6 +3059,7 @@ export interface UiPresetImportPreview {
 	reviewPrompt: string;
 	disabledSkills: string[];
 	disabledExtensions: string[];
+	promptDisabled: string[];
 }
 
 /** 一个子代理模板（设置面板「子代理模板」区的 CRUD 实体，也是 AI 派生子代理
@@ -3196,6 +3201,8 @@ export interface UiSettingsState {
 	 *  = 模板里 {{token}} 展开各来源提示词；覆盖优先于自动内容。 */
 	promptTemplate: string;
 	promptOverrides: Record<string, string>;
+	/** 禁用的提示词分段 token（模板中命中直接展开为空串，覆盖也不生效）。 */
+	promptDisabled: string[];
 	/** 逐工具文案覆盖（工具名 → description/snippet/guidelines；缺省 = 全部默认）。 */
 	toolPromptOverrides: Record<string, UiToolPromptOverride>;
 	disabledSkills: string[];

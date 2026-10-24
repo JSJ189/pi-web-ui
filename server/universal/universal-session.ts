@@ -2173,6 +2173,7 @@ export class UniversalSession implements DispatchSession {
 			uiLayout: normalizeUiLayout(s?.uiLayout),
 			promptTemplate: s?.promptTemplate ?? "",
 			promptOverrides: s?.promptOverrides ?? {},
+			promptDisabled: [...(s?.promptDisabled ?? [])],
 			toolPromptOverrides: {},
 			effectiveSystemPrompt: "",
 			promptSourceDefaults: {},
@@ -2385,6 +2386,7 @@ export class UniversalSession implements DispatchSession {
 			customSystemPrompt: s.customSystemPrompt,
 			promptTemplate: s.promptTemplate,
 			promptOverrides: s.promptOverrides ? { ...s.promptOverrides } : {},
+			promptDisabled: [...(s.promptDisabled ?? [])],
 			disabledSkills: [...(s?.disabledSkills ?? [])],
 			disabledExtensions: [...(s?.disabledExtensions ?? [])],
 			reviewPrompt: s.reviewPrompt ?? "",
@@ -2409,6 +2411,7 @@ export class UniversalSession implements DispatchSession {
 		this.stateStore.saveSettings(this.clientId, {
 			promptMode: found.promptMode,
 			customSystemPrompt: found.customSystemPrompt,
+			promptDisabled: [...(found.promptDisabled ?? [])],
 			disabledSkills: [...(found.disabledSkills ?? [])],
 			disabledExtensions: [...(found.disabledExtensions ?? [])],
 			reviewPrompt: found.reviewPrompt ?? "",

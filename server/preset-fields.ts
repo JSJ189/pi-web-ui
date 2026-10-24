@@ -34,6 +34,7 @@ export const PRESET_FIELD_GROUPS = {
 		"customSystemPrompt",
 		"promptTemplate",
 		"promptOverrides",
+		"promptDisabled",
 		"reviewPrompt",
 		"reviewDisabledSkills",
 	],
@@ -186,6 +187,12 @@ export const PRESET_FIELD_META = {
 		labelEn: "Skills Disabled in Review",
 		hintZh: "仅在目标审查阶段禁止审查者调用的技能列表",
 		hintEn: "Skills unavailable to the reviewer in Goal Mode",
+	},
+	promptDisabled: {
+		labelZh: "禁用的提示词段",
+		labelEn: "Disabled Prompt Sections",
+		hintZh: "组合模板中不渲染的提示词段（如 soul/skills）",
+		hintEn: "Prompt sections excluded from the composed template",
 	},
 	// tools
 	disabledAgentTools: {
@@ -635,7 +642,12 @@ export function formatPresetFieldValue(
 	}
 
 	// 4. 技能 / 扩展禁用列表
-	if (field === "disabledSkills" || field === "disabledExtensions" || field === "reviewDisabledSkills") {
+	if (
+		field === "disabledSkills" ||
+		field === "disabledExtensions" ||
+		field === "reviewDisabledSkills" ||
+		field === "promptDisabled"
+	) {
 		const list = Array.isArray(value) ? value.filter((x): x is string => typeof x === "string" && Boolean(x)) : [];
 		if (list.length === 0) {
 			return { summary: isZh ? "全部启用（无禁用）" : "All enabled (none disabled)" };

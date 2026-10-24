@@ -280,6 +280,7 @@ interface DshSettings {
 	/** 组合模板与来源覆盖（保持与 pi 引擎 ClientSettings 一致）。 */
 	promptTemplate?: string;
 	promptOverrides?: Record<string, string>;
+	promptDisabled?: string[];
 }
 
 /** 把插件工具 execute 的原始返回值归一化成模型可读文本。
@@ -342,6 +343,7 @@ const DEFAULT_SETTINGS: DshSettings = {
 	preserveDraftAcrossConversations: false,
 	promptTemplate: "",
 	promptOverrides: {},
+	promptDisabled: [],
 };
 
 // ---------------------------------------------------------------------------
@@ -573,6 +575,7 @@ export class DshClientSession {
 				preserveDraftAcrossConversations: savedSettings.preserveDraftAcrossConversations ?? false,
 				promptTemplate: savedSettings.promptTemplate ?? "",
 				promptOverrides: savedSettings.promptOverrides ?? {},
+				promptDisabled: savedSettings.promptDisabled ?? [],
 				defaultAgentPreset: savedSettings.defaultAgentPreset ?? PRESET_DEFAULT_ID,
 				defaultPermissionPreset:
 					savedSettings.defaultPermissionPreset && PERMISSION_OFFERED.includes(savedSettings.defaultPermissionPreset)
@@ -4035,6 +4038,7 @@ export class DshClientSession {
 			uiLayout: normalizeUiLayout(this.settings.uiLayout),
 			promptTemplate: this.settings.promptTemplate ?? "",
 			promptOverrides: this.settings.promptOverrides ?? {},
+			promptDisabled: [...(this.settings.promptDisabled ?? [])],
 			// DSH 无 pi 工具注册表面，逐工具文案覆盖不适用；保协议完整。
 			toolPromptOverrides: {},
 			effectiveSystemPrompt,
@@ -4070,6 +4074,7 @@ export class DshClientSession {
 		customSystemPrompt?: string;
 		promptTemplate?: string;
 		promptOverrides?: Record<string, string>;
+		promptDisabled?: string[];
 		disabledSkills?: string[];
 		disabledExtensions?: string[];
 		disabledPlugins?: string[];
@@ -4112,6 +4117,7 @@ export class DshClientSession {
 		if (partial.customSystemPrompt !== undefined) this.settings.customSystemPrompt = partial.customSystemPrompt;
 		if (partial.promptTemplate !== undefined) this.settings.promptTemplate = partial.promptTemplate;
 		if (partial.promptOverrides !== undefined) this.settings.promptOverrides = partial.promptOverrides;
+		if (partial.promptDisabled !== undefined) this.settings.promptDisabled = [...partial.promptDisabled];
 		if (partial.disabledSkills !== undefined) this.settings.disabledSkills = partial.disabledSkills;
 		if (partial.disabledExtensions !== undefined) this.settings.disabledExtensions = partial.disabledExtensions;
 		if (partial.terminalToolsEnabled !== undefined) this.settings.terminalToolsEnabled = partial.terminalToolsEnabled;
@@ -4197,6 +4203,7 @@ export class DshClientSession {
 			defaultAgentPreset: this.settings.defaultAgentPreset,
 			promptTemplate: this.settings.promptTemplate ?? "",
 			promptOverrides: this.settings.promptOverrides ?? {},
+			promptDisabled: [...(this.settings.promptDisabled ?? [])],
 		});
 		// 仅系统提示词或内联标记指引变化才重启运行时（DSH_PERSONA 由 launcher env 注入）；
 		// 其他设置（开关/隐藏插件等）只存不回写运行时。
@@ -4552,6 +4559,7 @@ export class DshClientSession {
 			customSystemPrompt: this.settings.customSystemPrompt,
 			promptTemplate: "",
 			promptOverrides: {},
+			promptDisabled: [],
 			disabledSkills: this.settings.disabledSkills,
 			disabledExtensions: this.settings.disabledExtensions,
 			// DSH engine: no unified tool gating (no subagent/edit_soft); empty keeps protocol complete.
@@ -4663,6 +4671,7 @@ export class DshClientSession {
 					customSystemPrompt: s.customSystemPrompt,
 					promptTemplate: "",
 					promptOverrides: {},
+					promptDisabled: [],
 					disabledSkills: [...(s.disabledSkills ?? [])],
 					disabledExtensions: [...(s.disabledExtensions ?? [])],
 					disabledAgentTools: [],

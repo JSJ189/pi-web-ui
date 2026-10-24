@@ -294,6 +294,8 @@ export interface ClientSettings {
 	promptTemplate: string;
 	/** 每个来源 token 的独立覆盖文本（空串/缺省 = 用该来源的自动内容）。 */
 	promptOverrides: Record<string, string>;
+	/** 禁用的提示词分段 token（模板命中直接展开为空串，覆盖也不生效）。 */
+	promptDisabled: string[];
 	/** 逐工具文案覆盖（工具名 → description/promptSnippet/promptGuidelines；
 	 *  缺省 = 全部默认，见 server/tool-prompt-overrides.ts）。 */
 	toolPromptOverrides: ToolPromptOverrideMap;
@@ -457,6 +459,7 @@ export function settingsPresetToUi(p: SettingsPreset): import("./protocol.js").U
 		customSystemPrompt: p.customSystemPrompt ?? "",
 		promptTemplate: p.promptTemplate ?? "",
 		promptOverrides: { ...p.promptOverrides },
+		promptDisabled: [...(p.promptDisabled ?? [])],
 		disabledSkills: [...(p.disabledSkills ?? [])],
 		disabledExtensions: [...(p.disabledExtensions ?? [])],
 		reviewPrompt: p.reviewPrompt ?? "",
@@ -1097,6 +1100,7 @@ export class ClientStateStore {
 			customSystemPrompt: stored?.customSystemPrompt ?? "",
 			promptTemplate,
 			promptOverrides,
+			promptDisabled: stored?.promptDisabled ?? [],
 			toolPromptOverrides: normalizeToolPromptOverrides(stored?.toolPromptOverrides),
 			disabledSkills: stored?.disabledSkills ?? [],
 			disabledExtensions: stored?.disabledExtensions ?? [],
@@ -1182,6 +1186,7 @@ export class ClientStateStore {
 			customSystemPrompt: settings.customSystemPrompt ?? cur.customSystemPrompt ?? "",
 			promptTemplate: settings.promptTemplate ?? cur.promptTemplate ?? "",
 			promptOverrides: { ...(settings.promptOverrides ?? cur.promptOverrides) },
+			promptDisabled: settings.promptDisabled ?? cur.promptDisabled ?? [],
 			toolPromptOverrides: normalizeToolPromptOverrides(settings.toolPromptOverrides ?? cur.toolPromptOverrides),
 			disabledSkills: settings.disabledSkills ?? cur.disabledSkills ?? [],
 			disabledExtensions: settings.disabledExtensions ?? cur.disabledExtensions ?? [],

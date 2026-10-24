@@ -1871,6 +1871,7 @@ export class ClientSession {
 		return renderMainCompose(this.composeInputs(src), {
 			promptTemplate: this.settingsSvc.current.promptTemplate,
 			promptOverrides: this.settingsSvc.current.promptOverrides,
+			promptDisabled: this.settingsSvc.current.promptDisabled ?? [],
 			preset,
 			disabledToolCount: effectiveDisabledAgentTools(this.settingsSvc.current).length,
 			isLazy: src.lazy,
@@ -1953,7 +1954,12 @@ export class ClientSession {
 			const tpl = (this.settingsSvc.current.promptTemplate ?? "").trim();
 			const ovs = this.settingsSvc.current.promptOverrides ?? {};
 			const hasOverride = Object.values(ovs).some((v) => typeof v === "string" && v.trim());
-			const rendered = renderPromptTemplate(tpl || DEFAULT_PROMPT_TEMPLATE, texts, hasOverride ? ovs : undefined);
+			const rendered = renderPromptTemplate(
+				tpl || DEFAULT_PROMPT_TEMPLATE,
+				texts,
+				hasOverride ? ovs : undefined,
+				new Set(this.settingsSvc.current.promptDisabled ?? []),
+			);
 			return { texts, full: rendered, toolsSchema: buildToolsSchemaText(schemaEntries) };
 		} catch {
 			// Session not ready yet.

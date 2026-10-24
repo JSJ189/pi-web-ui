@@ -1573,12 +1573,15 @@
 			animation: none;
 		}
 	}
-	/* Subagent tree branch. Parent and child remain full, independent links. */
+	/* Subagent tree branch: padding indent keeps full row width (margin would squeeze the title). Depth capped at 4 in tsx. */
+	.lp-row.lp-sub {
+		padding-left: calc(var(--depth, 1) * 14px);
+	}
 	.lp-row.lp-sub::before {
 		content: "";
 		position: absolute;
-		left: -10px;
-		top: -5px;
+		left: calc(var(--depth, 1) * 14px - 8px);
+		top: -4px;
 		width: 8px;
 		height: calc(50% + 5px);
 		border-left: 1px solid var(--border);

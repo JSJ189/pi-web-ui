@@ -70,6 +70,7 @@ export function estimateNonSystemTokens(messages: unknown[], streamingMessage?: 
 export function shouldRenderMainCompose(opts: {
 	promptTemplate?: string;
 	promptOverrides?: Record<string, string>;
+	promptDisabled?: string[];
 	preset?: string;
 	disabledToolCount: number;
 	isLazy?: boolean;
@@ -83,6 +84,7 @@ export function shouldRenderMainCompose(opts: {
 	return (
 		!!tpl ||
 		hasOverride ||
+		(opts.promptDisabled?.length ?? 0) > 0 ||
 		preset !== "standard" ||
 		opts.disabledToolCount > 0 ||
 		opts.isLazy === true ||
@@ -99,6 +101,7 @@ export function renderMainCompose(
 	opts: {
 		promptTemplate?: string;
 		promptOverrides?: Record<string, string>;
+		promptDisabled?: string[];
 		preset?: string;
 		disabledToolCount: number;
 		isLazy?: boolean;
@@ -111,5 +114,10 @@ export function renderMainCompose(
 	const tpl = (opts.promptTemplate ?? "").trim();
 	const ovs = opts.promptOverrides ?? {};
 	const hasOverride = Object.values(ovs).some((v) => typeof v === "string" && v.trim());
-	return renderPromptTemplate(tpl || DEFAULT_PROMPT_TEMPLATE, texts, hasOverride ? ovs : undefined);
+	return renderPromptTemplate(
+		tpl || DEFAULT_PROMPT_TEMPLATE,
+		texts,
+		hasOverride ? ovs : undefined,
+		new Set(opts.promptDisabled ?? []),
+	);
 }

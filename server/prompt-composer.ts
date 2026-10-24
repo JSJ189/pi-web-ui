@@ -23,7 +23,7 @@ import { getServerBlock, pick, type ServerLang } from "./i18n.js";
 /** 全部来源 token。默认模板顺序即此数组顺序。 */
 export const PROMPT_TOKENS = [
 	"soul", // 内置灵魂提示词（persona；有 SYSTEM.md 时其内容）
-	"tools", // Available tools 工具列表（含各工具 snippet + "In addition…" 句）
+	"tools", // Available tools 工具列表（仅延迟加载时展开；关闭时为空）
 	"guidelines", // Guidelines 行为准则段
 	"pi_docs", // Pi documentation 文档指引（指向 pi 包路径）
 	"append", // 追加段（APPEND_SYSTEM.md 内容；覆盖 = 自定义追加文字）
@@ -210,15 +210,6 @@ function buildGuidelinesText(inputs: PromptComposerInputs): string {
 		);
 	}
 	for (const g of inputs.toolGuidelines) add(g);
-	add(pick(lang, "回答要简洁", "Be concise in your responses", "prompt.guidelines.be.concise"));
-	add(
-		pick(
-			lang,
-			"处理文件时清楚地给出文件路径",
-			"Show file paths clearly when working with files",
-			"prompt.guidelines.show.paths",
-		),
-	);
 	return `${pick(lang, "指导原则：", "Guidelines:", "prompt.guidelines.title")}\n${lines.map((l) => `- ${l}`).join("\n")}`;
 }
 
@@ -347,13 +338,15 @@ function buildContextText(files: PromptComposerInputs["contextFiles"], lang: Ser
 	].join("\n");
 }
 
-/** 工具列表块：工具列表（延迟加载时列完整目录）+ 恒定提示 + "In addition…" 句。
+/** 工具列表块：仅延迟加载时生效（列完整目录 + load_tools 说明 + "In addition…" 句）。
+ * 非懒加载下全量 schema 已下发，目录纯属重复，直接返回空串省 token。
  *
  * 延迟加载下这里**只依赖目录本身**（不依赖「哪些已加载」）：系统提示词是供应商
  * 前缀缓存的第一段，只要它不变，加载工具造成的只是 tools 数组的追加（前缀不变的
  * 增量），缓存才不会被我们自已打坏。 */
 function buildToolsText(inputs: PromptComposerInputs, lang: ServerLang): string {
-	const listed = inputs.lazy ? (inputs.catalogTools ?? inputs.selectedTools) : inputs.selectedTools;
+	if (!inputs.lazy) return "";
+	const listed = inputs.catalogTools ?? inputs.selectedTools;
 	const visible = listed.filter((n) => !!inputs.toolSnippets[n]);
 	const toolsList =
 		visible.length > 0
@@ -409,6 +402,9 @@ export function resolveSectionTexts(inputs: PromptComposerInputs): Record<Prompt
 	if (lang === "zh" && soul === BUILTIN_SOUL) soul = BUILTIN_SOUL_ZH;
 	else if (soul === BUILTIN_SOUL)
 		soul = getServerBlock(lang, "prompt.soul", BUILTIN_SOUL_ZH.split("\n"), BUILTIN_SOUL.split("\n")).join("\n");
+	// 通用写作要求归 soul 段（原在 guidelines 末尾的两行固定文案移至此处，
+	// guidelines 只保留各工具 promptGuidelines 聚合 + 文件操作引导）。
+	soul = `${soul}\nBe concise in your responses\nShow file paths clearly when working with files`;
 	return {
 		soul,
 		tools: buildToolsText(inputs, lang),
@@ -434,8 +430,11 @@ export function renderPromptTemplate(
 	template: string,
 	texts: Record<string, string>,
 	overrides: Record<string, string> | undefined,
+	disabled?: Set<string> | string[],
 ): string {
+	const dis = disabled instanceof Set ? disabled : new Set(disabled ?? []);
 	return effectiveTemplate(template).replace(TOKEN_RE, (full, name: string) => {
+		if (dis.has(name)) return "";
 		const ov = overrideOf(overrides, name);
 		if (ov) return ov;
 		return Object.prototype.hasOwnProperty.call(texts, name) ? (texts[name] ?? "") : full;
@@ -443,8 +442,8 @@ export function renderPromptTemplate(
 }
 
 /** 用默认模板渲染（不覆盖）——等价于「恢复默认」后的成品。 */
-export function renderDefaultPrompt(texts: Record<string, string>): string {
-	return renderPromptTemplate(DEFAULT_PROMPT_TEMPLATE, texts, undefined);
+export function renderDefaultPrompt(texts: Record<string, string>, disabled?: Set<string> | string[]): string {
+	return renderPromptTemplate(DEFAULT_PROMPT_TEMPLATE, texts, undefined, disabled);
 }
 
 const CJK_RE = /[\u3040-\u30ff\u3400-\u4dbf\u4e00-\u9fff\uf900-\ufaff\uac00-\ud7af]/gu;

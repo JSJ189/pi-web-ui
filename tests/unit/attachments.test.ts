@@ -61,6 +61,7 @@ function makeCtx(opts: {
 			customSystemPrompt: "",
 			promptTemplate: "",
 			promptOverrides: {},
+			promptDisabled: [],
 			toolPromptOverrides: {},
 			toolLazyLoading: true,
 			codemodeMode: "on" as const,

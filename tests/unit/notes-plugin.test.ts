@@ -349,13 +349,7 @@ describe("notes 服务端插件", () => {
 		expect(existsSync(join(dataDir, "notes", "store.json"))).toBe(true);
 		// 能力声明齐全时不该有门控拒绝日志
 		expect(host.mock.calls("route").length).toBeGreaterThanOrEqual(4);
-		expect(host.mock.agentTools.map((t: any) => t.name).sort()).toEqual([
-			"notes_add",
-			"notes_list",
-			"notes_reminder",
-			"notes_todo",
-			"notes_update",
-		]);
+		expect(host.mock.agentTools.map((t: any) => t.name).sort()).toEqual(["notes"]);
 		expect(host.mock.commands.map((c: any) => c.name).sort()).toEqual(["note", "notes-mirror", "remind", "todo"]);
 
 		// GET /store → 空库
@@ -440,21 +434,22 @@ describe("notes 服务端插件", () => {
 	it("AI 工具：能记、能改、能勾、能设提醒，并回可读结果", async () => {
 		const { host } = makeHost();
 		notesPlugin.activate(host as any);
-		const tool = (name: string) => host.mock.agentTools.find((t: any) => t.name === name);
+		const tool = (_name?: string) => host.mock.agentTools.find((t: any) => t.name === "notes");
 
-		const added = await tool("notes_add").execute("id", { title: "想法", body: "试试看" });
+		const added = await tool("notes").execute("id", { op: "note_add", title: "想法", body: "试试看" });
 		expect(String(added)).toContain("想法");
 		const noteId = /id (n_[\w]+)/.exec(String(added))?.[1];
 		expect(noteId).toBeTruthy();
 
-		const listed = await tool("notes_list").execute("id", { kind: "note" });
+		const listed = await tool("notes").execute("id", { op: "list", kind: "note" });
 		expect(String(listed)).toContain("想法");
 		expect(String(listed)).toContain(noteId);
 
-		const updated = await tool("notes_update").execute("id", { id: noteId, append: "\n补充一句" });
+		const updated = await tool("notes").execute("id", { op: "note_update", id: noteId, append: "\n补充一句" });
 		expect(String(updated)).toContain("已更新");
 
-		const todoOut = await tool("notes_todo").execute("id", {
+		const todoOut = await tool("notes").execute("id", {
+			op: "todo",
 			action: "add",
 			text: "交周报",
 			due: "2026-06-01 18:00",
@@ -462,52 +457,73 @@ describe("notes 服务端插件", () => {
 		});
 		expect(String(todoOut)).toContain("已加入待办");
 		const todoId = /id (t_[\w]+)/.exec(String(todoOut))?.[1];
-		const doneOut = await tool("notes_todo").execute("id", { action: "done", id: todoId });
+		const doneOut = await tool("notes").execute("id", { op: "todo", action: "done", id: todoId });
 		expect(String(doneOut)).toContain("已完成");
 
-		const remOut = await tool("notes_reminder").execute("id", { action: "add", text: "吃药", daily_at: "09:00" });
+		const remOut = await tool("notes").execute("id", {
+			op: "reminder",
+			action: "add",
+			text: "吃药",
+			daily_at: "09:00",
+		});
 		expect(String(remOut)).toContain("每天 09:00");
 		const remId = /id (r_[\w]+)/.exec(String(remOut))?.[1];
-		const badRem = await tool("notes_reminder").execute("id", { action: "add", text: "x" });
+		const badRem = await tool("notes").execute("id", { op: "reminder", action: "add", text: "x" });
 		expect(String(badRem)).toContain("缺少时间");
-		const pastRem = await tool("notes_reminder").execute("id", { action: "add", text: "x", at: "2000-01-01 09:00" });
+		const pastRem = await tool("notes").execute("id", {
+			op: "reminder",
+			action: "add",
+			text: "x",
+			at: "2000-01-01 09:00",
+		});
 		expect(String(pastRem)).toContain("过去的时间");
-		const snoozed = await tool("notes_reminder").execute("id", { action: "snooze", id: remId, minutes: 5 });
+		const snoozed = await tool("notes").execute("id", { op: "reminder", action: "snooze", id: remId, minutes: 5 });
 		expect(String(snoozed)).toContain("已推迟");
 
 		// update 不重述时间也要能过（改名 / 停用 / 挂关联）——曾经统一报「缺少时间」
-		const renamed = await tool("notes_reminder").execute("id", { action: "update", id: remId, text: "吃药（饭后）" });
+		const renamed = await tool("notes").execute("id", {
+			op: "reminder",
+			action: "update",
+			id: remId,
+			text: "吃药（饭后）",
+		});
 		expect(String(renamed)).toContain("已更新提醒");
-		const disabled = await tool("notes_reminder").execute("id", { action: "update", id: remId, enabled: false });
+		const disabled = await tool("notes").execute("id", { op: "reminder", action: "update", id: remId, enabled: false });
 		expect(String(disabled)).toContain("已更新提醒");
 		const offStore = (await callRoute(host, "GET", "/store")).body.store;
 		expect(offStore.reminders.find((r: { id: string }) => r.id === remId).enabled).toBe(false);
 		expect(offStore.reminders.find((r: { id: string }) => r.id === remId).nextDue).toBe(null);
 		// every 只认白名单档位（90 分钟这种既非因数又非整小时的直接拒，别存成死提醒）
-		const okEvery = await tool("notes_reminder").execute("id", {
+		const okEvery = await tool("notes").execute("id", {
+			op: "reminder",
 			action: "add",
 			text: "每 90 分钟起身",
 			every_minutes: 90,
 		});
 		expect(String(okEvery)).toContain("每 1 小时 30 分");
-		const badEvery = await tool("notes_reminder").execute("id", { action: "add", text: "x", every_minutes: 20_000 });
+		const badEvery = await tool("notes").execute("id", {
+			op: "reminder",
+			action: "add",
+			text: "x",
+			every_minutes: 20_000,
+		});
 		expect(String(badEvery)).toContain("every_minutes");
 
 		// action 可以省略：没给 id = 新建，给了 id = 改（模型少填一个字段就少一次失败）
-		const noActionTodo = await tool("notes_todo").execute("id", { text: "顺手记的待办" });
+		const noActionTodo = await tool("notes").execute("id", { op: "todo", text: "顺手记的待办" });
 		expect(String(noActionTodo)).toContain("已加入待办");
-		const renamedTodo = await tool("notes_todo").execute("id", { id: todoId, text: "交周报（改过）" });
+		const renamedTodo = await tool("notes").execute("id", { op: "todo", id: todoId, text: "交周报（改过）" });
 		expect(String(renamedTodo)).toContain("已更新待办");
-		const noActionRem = await tool("notes_reminder").execute("id", { text: "顺手记的提醒", daily_at: "07:30" });
+		const noActionRem = await tool("notes").execute("id", { op: "reminder", text: "顺手记的提醒", daily_at: "07:30" });
 		expect(String(noActionRem)).toContain("已设提醒");
 
 		// agenda：用户问「我今天要做什么」时的一屏（逾期/今天/未来/无日期 + 接下来的提醒）
-		const agenda = String(await tool("notes_list").execute("id", { kind: "agenda" }));
+		const agenda = String(await tool("notes").execute("id", { op: "list", kind: "agenda" }));
 		expect(agenda).toContain("## 逾期未完成");
 		expect(agenda).toContain("## 没有截止时间");
 		expect(agenda).toContain("## 接下来的提醒");
 
-		const bad = await tool("notes_update").execute("id", { id: "nope", title: "x" });
+		const bad = await tool("notes").execute("id", { op: "note_update", id: "nope", title: "x" });
 		expect(String(bad)).toContain("找不到");
 	});
 
@@ -586,21 +602,22 @@ describe("notes 服务端插件", () => {
 	it("AI 工具：能记、能改、能勾、能设提醒，并回可读结果", async () => {
 		const { host } = makeHost();
 		notesPlugin.activate(host as any);
-		const tool = (name: string) => host.mock.agentTools.find((t: any) => t.name === name);
+		const tool = (_name?: string) => host.mock.agentTools.find((t: any) => t.name === "notes");
 
-		const added = await tool("notes_add").execute("id", { title: "想法", body: "试试看" });
+		const added = await tool("notes").execute("id", { op: "note_add", title: "想法", body: "试试看" });
 		expect(String(added)).toContain("想法");
 		const noteId = /id (n_[\w]+)/.exec(String(added))?.[1];
 		expect(noteId).toBeTruthy();
 
-		const listed = await tool("notes_list").execute("id", { kind: "note" });
+		const listed = await tool("notes").execute("id", { op: "list", kind: "note" });
 		expect(String(listed)).toContain("想法");
 		expect(String(listed)).toContain(noteId);
 
-		const updated = await tool("notes_update").execute("id", { id: noteId, append: "\n补充一句" });
+		const updated = await tool("notes").execute("id", { op: "note_update", id: noteId, append: "\n补充一句" });
 		expect(String(updated)).toContain("已更新");
 
-		const todoOut = await tool("notes_todo").execute("id", {
+		const todoOut = await tool("notes").execute("id", {
+			op: "todo",
 			action: "add",
 			text: "交周报",
 			due: "2026-06-01 18:00",
@@ -608,20 +625,30 @@ describe("notes 服务端插件", () => {
 		});
 		expect(String(todoOut)).toContain("已加入待办");
 		const todoId = /id (t_[\w]+)/.exec(String(todoOut))?.[1];
-		const doneOut = await tool("notes_todo").execute("id", { action: "done", id: todoId });
+		const doneOut = await tool("notes").execute("id", { op: "todo", action: "done", id: todoId });
 		expect(String(doneOut)).toContain("已完成");
 
-		const remOut = await tool("notes_reminder").execute("id", { action: "add", text: "吃药", daily_at: "09:00" });
+		const remOut = await tool("notes").execute("id", {
+			op: "reminder",
+			action: "add",
+			text: "吃药",
+			daily_at: "09:00",
+		});
 		expect(String(remOut)).toContain("每天 09:00");
 		const remId = /id (r_[\w]+)/.exec(String(remOut))?.[1];
-		const badRem = await tool("notes_reminder").execute("id", { action: "add", text: "x" });
+		const badRem = await tool("notes").execute("id", { op: "reminder", action: "add", text: "x" });
 		expect(String(badRem)).toContain("缺少时间");
-		const pastRem = await tool("notes_reminder").execute("id", { action: "add", text: "x", at: "2000-01-01 09:00" });
+		const pastRem = await tool("notes").execute("id", {
+			op: "reminder",
+			action: "add",
+			text: "x",
+			at: "2000-01-01 09:00",
+		});
 		expect(String(pastRem)).toContain("过去的时间");
-		const snoozed = await tool("notes_reminder").execute("id", { action: "snooze", id: remId, minutes: 5 });
+		const snoozed = await tool("notes").execute("id", { op: "reminder", action: "snooze", id: remId, minutes: 5 });
 		expect(String(snoozed)).toContain("已推迟");
 
-		const bad = await tool("notes_update").execute("id", { id: "nope", title: "x" });
+		const bad = await tool("notes").execute("id", { op: "note_update", id: "nope", title: "x" });
 		expect(String(bad)).toContain("找不到");
 	});
 

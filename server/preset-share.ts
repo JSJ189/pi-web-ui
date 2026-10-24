@@ -310,6 +310,7 @@ const PRESET_FIELD_KINDS = {
 	customSystemPrompt: "text",
 	promptTemplate: "text",
 	promptOverrides: "textMap",
+	promptDisabled: "list",
 	reviewPrompt: "text",
 	reviewDisabledSkills: "list",
 	// -- tools -----------------------------------------------------------
@@ -1207,6 +1208,7 @@ export function buildImportPreview(
 		reviewPrompt: (preset.reviewPrompt ?? "").slice(0, PREVIEW_TEXT_MAX),
 		disabledSkills: preset.disabledSkills ?? [],
 		disabledExtensions: preset.disabledExtensions ?? [],
+		promptDisabled: preset.promptDisabled ?? [],
 	};
 }
 

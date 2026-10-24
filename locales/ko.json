@@ -1267,6 +1267,7 @@
 		"promptInsertTokens": "문단 삽입:",
 		"promptResetAll": "기본 템플릿으로 되돌리고 모든 덮어쓰기를 지워요",
 		"promptResetSource": "기본값으로 되돌리기",
+		"promptToggleEnabled": "Enabled",
 		"promptAutoBadge": "자동",
 		"promptOverridePlaceholder": "덮어쓸 내용을 입력하세요 (비워 두면 자동 내용 사용)…",
 		"promptSourceDefaultEmpty": "(이 출처에는 현재 자동 내용이 없어요)",

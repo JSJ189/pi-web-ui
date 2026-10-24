@@ -76,20 +76,20 @@ function isKnown(t: string): boolean {
 }
 
 describe("resolveSectionTexts — 各来源自动内容", () => {
-	it("soul：无 SYSTEM.md 用内置默认；有则用文件内容", () => {
+	it("soul：无 SYSTEM.md 用内置默认；有则用文件内容（均附通用写作要求）", () => {
 		const auto = resolveSectionTexts(inputs());
-		expect(auto.soul).toBe(BUILTIN_SOUL);
+		expect(auto.soul.startsWith(BUILTIN_SOUL)).toBe(true);
+		expect(auto.soul).toContain("Be concise in your responses");
+		expect(auto.soul).toContain("Show file paths clearly when working with files");
 		const custom = "我的自定义人格文件";
 		const withFile = resolveSectionTexts(inputs({ systemPromptFile: custom }));
-		expect(withFile.soul).toBe(custom);
+		expect(withFile.soul.startsWith(custom)).toBe(true);
+		expect(withFile.soul).toContain("Be concise in your responses");
 	});
 
-	it("tools：列出活动工具 snippet + In addition 句", () => {
+	it("tools：非懒加载返回空串（全量 schema 已下发，目录不重复）", () => {
 		const auto = resolveSectionTexts(inputs());
-		expect(auto.tools).toContain("Available tools:");
-		expect(auto.tools).toContain("- read: Read file contents");
-		expect(auto.tools).toContain("In addition to the tools above");
-		expect(auto.tools).not.toContain("{{");
+		expect(auto.tools).toBe("");
 	});
 
 	it("tools（lazy 模式）：声明核心工具常驻且其他工具按需 load_tools", () => {
@@ -114,12 +114,12 @@ describe("resolveSectionTexts — 各来源自动内容", () => {
 		expect(zhAuto.tools).toContain("调用前先用 `load_tools` 附加上完整参数");
 	});
 
-	it("guidelines：探索引导 + 工具引导去重 + 固定两行", () => {
+	it("guidelines：探索引导 + 工具引导去重（无固定文案，固定文案已移 soul）", () => {
 		const auto = resolveSectionTexts(inputs());
 		expect(auto.guidelines).toContain("Guidelines:\n- Use bash for file operations like ls, rg, find");
 		expect(auto.guidelines).toContain("- Use read to examine files instead of cat or sed.");
-		expect(auto.guidelines).toContain("- Be concise in your responses");
-		expect(auto.guidelines).toContain("- Show file paths clearly when working with files");
+		expect(auto.guidelines).not.toContain("Be concise in your responses");
+		expect(auto.guidelines).not.toContain("Show file paths clearly when working with files");
 		// 无 grep/find/ls 时不重复输出探索引导（去重生效）
 		expect(auto.guidelines.match(/Use bash for file operations/g)?.length).toBe(1);
 	});
@@ -177,8 +177,6 @@ describe("renderPromptTemplate — 组合与覆盖", () => {
 	it("默认渲染 ≈ SDK 默认拼装：顺序、关键段、无残留花括号", () => {
 		const order = [
 			"You are an expert coding assistant",
-			"Available tools:",
-			"In addition to the tools above",
 			"Guidelines:",
 			"Pi documentation (read only",
 			"Current working directory: E:/pi-web-ui",
@@ -200,7 +198,7 @@ describe("renderPromptTemplate — 组合与覆盖", () => {
 		const out = renderPromptTemplate(DEFAULT_PROMPT_TEMPLATE, texts, { soul: "你是降世神龙，专精代码重构。" });
 		expect(out.startsWith("你是降世神龙，专精代码重构。")).toBe(true);
 		expect(out).not.toContain("You are an expert coding assistant");
-		expect(out).toContain("Available tools:");
+		expect(out).toContain("Guidelines:");
 		expect(out).toContain(AGENTS_CONTENT);
 		expect(out).toContain("Current working directory: E:/pi-web-ui");
 	});
@@ -236,7 +234,7 @@ describe("renderPromptTemplate — 组合与覆盖", () => {
 
 	it("override 优先于自动内容；空白 override 视为未覆盖", () => {
 		const out = renderPromptTemplate("{{soul}}", texts, { soul: "   \n" });
-		expect(out).toBe(BUILTIN_SOUL);
+		expect(out).toBe(texts.soul);
 	});
 });
 

@@ -127,8 +127,8 @@ try {
 		fail(`顶栏动作没下发：${JSON.stringify(info?.ui?.items ?? null)}`);
 	}
 	const toolNames = (info?.agentTools ?? []).map((t) => t.name).sort();
-	if (toolNames.length === 5 && toolNames.includes("notes_reminder") && toolNames.includes("notes_add")) {
-		ok(`AI 工具 5 个：${toolNames.join(", ")}`);
+	if (toolNames.length === 1 && toolNames[0] === "notes") {
+		ok(`AI 工具 1 个：${toolNames.join(", ")}`);
 	} else {
 		fail(`AI 工具清单不对：${JSON.stringify(toolNames)}`);
 	}

@@ -1267,6 +1267,7 @@
 		"promptInsertTokens": "段落を挿入：",
 		"promptResetAll": "デフォルトのテンプレートに戻し、すべての上書きを消去します",
 		"promptResetSource": "デフォルトに戻します",
+		"promptToggleEnabled": "Enabled",
 		"promptAutoBadge": "自動",
 		"promptOverridePlaceholder": "上書き内容を入力してください（空欄 = 自動内容を使用）…",
 		"promptSourceDefaultEmpty": "（このソースには現在自動内容がありません）",
