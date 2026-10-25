@@ -1164,6 +1164,17 @@ export default {
 			return entries;
 		}
 
+		async function mkdirpRemote(sftp, rpath) {
+			const segs = String(rpath ?? "")
+				.split("/")
+				.filter(Boolean);
+			let cur = rpath.startsWith("/") ? "" : ".";
+			for (const s of segs) {
+				cur = cur === "." ? s : `${cur}/${s}`;
+				await sftpCall(sftp, "mkdir", cur).catch(() => {});
+			}
+		}
+
 		async function remoteRead(c, p) {
 			const sftp = await getSftp(c);
 			const stat = await sftpCall(sftp, "stat", p);
