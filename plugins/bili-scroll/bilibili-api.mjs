@@ -70,13 +70,20 @@ export class BilibiliApiClient {
 		this.wbiExpiry = 0;
 	}
 
+	/** 统一带超时的 fetch：停滞连接按 undici 默认可拖 300 秒/请求，一轮巡检
+	 *  几十个请求全部裸奔会把 running 标志拖成长时间假性 busy。已有 signal 的
+	 *  调用（更长的图片下载）保留原值。 */
+	async _fetch(url, opts = {}) {
+		return fetch(url, { ...opts, signal: opts.signal ?? AbortSignal.timeout(15_000) });
+	}
+
 	async getWbiKeys() {
 		const now = Date.now();
 		if (this.wbiCache && now < this.wbiExpiry) {
 			return this.wbiCache;
 		}
 		try {
-			const res = await fetch("https://api.bilibili.com/x/web-interface/nav", {
+			const res = await this._fetch("https://api.bilibili.com/x/web-interface/nav", {
 				headers: this.cred.getHeaders(),
 			});
 			const json = await res.json();
@@ -100,7 +107,7 @@ export class BilibiliApiClient {
 
 	// ── 扫码登录 ──
 	async startLogin() {
-		const res = await fetch(
+		const res = await this._fetch(
 			"https://passport.bilibili.com/x/passport-login/web/qrcode/generate?source=main-fe-header",
 			{ headers: this.cred.getHeaders() },
 		);
@@ -116,7 +123,7 @@ export class BilibiliApiClient {
 
 	async pollLogin(key) {
 		const pollUrl = `https://passport.bilibili.com/x/passport-login/web/qrcode/poll?qrcode_key=${encodeURIComponent(key)}&source=main-fe-header`;
-		const res = await fetch(pollUrl, {
+		const res = await this._fetch(pollUrl, {
 			headers: this.cred.getHeaders(),
 			redirect: "manual",
 		});
@@ -147,7 +154,7 @@ export class BilibiliApiClient {
 			}
 			if (!jar.buvid3) {
 				try {
-					const spiRes = await fetch("https://api.bilibili.com/x/frontend/finger/spi", {
+					const spiRes = await this._fetch("https://api.bilibili.com/x/frontend/finger/spi", {
 						headers: this.cred.getHeaders(),
 					});
 					const spiJson = await spiRes.json();
@@ -182,7 +189,7 @@ export class BilibiliApiClient {
 		};
 		const query = encWbi(params, imgKey, subKey);
 		const url = `https://api.bilibili.com/x/web-interface/wbi/search/type?${query}`;
-		const res = await fetch(url, { headers: this.cred.getHeaders() });
+		const res = await this._fetch(url, { headers: this.cred.getHeaders() });
 		const json = await res.json();
 		if (json.code !== 0) {
 			throw new Error(json.message || `搜索失败 (code: ${json.code})`);
@@ -208,11 +215,11 @@ export class BilibiliApiClient {
 	// ── 视频详情 ──
 	async getVideoInfo(bvid) {
 		const url = `https://api.bilibili.com/x/web-interface/view?bvid=${encodeURIComponent(bvid)}`;
-		let res = await fetch(url, { headers: this.cred.getHeaders() }).catch(() => null);
+		let res = await this._fetch(url, { headers: this.cred.getHeaders() }).catch(() => null);
 		let json = res ? await res.json().catch(() => ({ code: -1 })) : { code: -1 };
 		if (json.code !== 0) {
 			const cleanHeaders = { "User-Agent": DEFAULT_UA, Referer: "https://www.bilibili.com" };
-			res = await fetch(url, { headers: cleanHeaders }).catch(() => null);
+			res = await this._fetch(url, { headers: cleanHeaders }).catch(() => null);
 			json = res ? await res.json().catch(() => ({ code: -1 })) : { code: -1 };
 		}
 		if (json.code !== 0) {
@@ -286,7 +293,7 @@ export class BilibiliApiClient {
 		try {
 			const { imgKey, subKey } = await this.getWbiKeys();
 			const query = encWbi({ aid, cid, bvid }, imgKey, subKey);
-			const pRes = await fetch(`https://api.bilibili.com/x/player/wbi/v2?${query}`, {
+			const pRes = await this._fetch(`https://api.bilibili.com/x/player/wbi/v2?${query}`, {
 				headers: this.cred.getHeaders(),
 			});
 			const pJson = await pRes.json();
@@ -301,7 +308,7 @@ export class BilibiliApiClient {
 				let subUrl = target.subtitle_url || "";
 				if (subUrl.startsWith("//")) subUrl = `https:${subUrl}`;
 
-				const subDataRes = await fetch(subUrl, { headers: this.cred.getHeaders() });
+				const subDataRes = await this._fetch(subUrl, { headers: this.cred.getHeaders() });
 				const subData = await subDataRes.json();
 				const body = subData.body || [];
 
@@ -337,7 +344,7 @@ export class BilibiliApiClient {
 		// 2. 尝试从 B 站官方 AI 总结提取要点 (Conclusion API)
 		try {
 			const cUrl = `https://api.bilibili.com/x/web-interface/view/conclusion/get?bvid=${encodeURIComponent(bvid)}&cid=${cid}`;
-			const cRes = await fetch(cUrl, { headers: this.cred.getHeaders() });
+			const cRes = await this._fetch(cUrl, { headers: this.cred.getHeaders() });
 			const cJson = await cRes.json();
 			if (cJson.code === 0 && cJson.data?.model_result) {
 				const mr = cJson.data.model_result;
@@ -387,7 +394,7 @@ export class BilibiliApiClient {
 	// ── 热门视频 ──
 	async getPopularVideos({ pn = 1, ps = 20 } = {}) {
 		const url = `https://api.bilibili.com/x/web-interface/popular?pn=${Math.max(1, Number(pn) || 1)}&ps=${Math.max(1, Math.min(Number(ps) || 20, 50))}`;
-		const res = await fetch(url, { headers: this.cred.getHeaders() });
+		const res = await this._fetch(url, { headers: this.cred.getHeaders() });
 		const json = await res.json();
 		if (json.code !== 0) throw new Error(json.message || `获取热门视频失败 (code: ${json.code})`);
 		return (json.data?.list || []).map((item) => ({
@@ -409,7 +416,7 @@ export class BilibiliApiClient {
 	// ── 排行榜 ──
 	async getRankVideos({ rid = 0, type = "all" } = {}) {
 		const url = `https://api.bilibili.com/x/web-interface/ranking/v2?rid=${Number(rid) || 0}&type=${encodeURIComponent(type || "all")}`;
-		const res = await fetch(url, { headers: this.cred.getHeaders() });
+		const res = await this._fetch(url, { headers: this.cred.getHeaders() });
 		const json = await res.json();
 		if (json.code !== 0) throw new Error(json.message || `获取排行榜失败 (code: ${json.code})`);
 		return (json.data?.list || []).map((item) => ({
@@ -446,7 +453,7 @@ export class BilibiliApiClient {
 		// 2. 强力容灾回退：直接访问视频网页 HTML 匹配 aid（绕过 API 接口偶发的 -412 风控）
 		try {
 			const pageUrl = `https://www.bilibili.com/video/${encodeURIComponent(cleanBvid)}`;
-			const pageRes = await fetch(pageUrl, {
+			const pageRes = await this._fetch(pageUrl, {
 				headers: { "User-Agent": DEFAULT_UA, Referer: "https://www.bilibili.com/" },
 			}).catch(() => null);
 			if (pageRes && pageRes.ok) {
@@ -471,7 +478,7 @@ export class BilibiliApiClient {
 		}
 
 		const url = `https://api.bilibili.com/x/v2/reply?type=1&oid=${aid}&sort=${Number(sort) || 1}&pn=${Math.max(1, Number(page) || 1)}&ps=${Math.max(1, Math.min(Number(pageSize) || 20, 50))}`;
-		const res = await fetch(url, { headers: this.cred.getHeaders() });
+		const res = await this._fetch(url, { headers: this.cred.getHeaders() });
 		const json = await res.json();
 		if (json.code !== 0) throw new Error(json.message || `获取评论失败 (code: ${json.code})`);
 
@@ -511,7 +518,7 @@ export class BilibiliApiClient {
 			body.append("parent", String(parent || rpid));
 		}
 
-		const res = await fetch("https://api.bilibili.com/x/v2/reply/add", {
+		const res = await this._fetch("https://api.bilibili.com/x/v2/reply/add", {
 			method: "POST",
 			headers: {
 				...this.cred.getHeaders({ "Content-Type": "application/x-www-form-urlencoded" }),
@@ -558,7 +565,7 @@ export class BilibiliApiClient {
 		body.append("csrf", cred.bili_jct);
 		body.append("csrf_token", cred.bili_jct);
 
-		const res = await fetch("https://api.vc.bilibili.com/web_im/v1/web_im/send_msg", {
+		const res = await this._fetch("https://api.vc.bilibili.com/web_im/v1/web_im/send_msg", {
 			method: "POST",
 			headers: this.cred.getHeaders({
 				"Content-Type": "application/x-www-form-urlencoded",
@@ -582,7 +589,7 @@ export class BilibiliApiClient {
 	async getRelatedVideos(bvid) {
 		if (!bvid) return [];
 		const url = `https://api.bilibili.com/x/web-interface/archive/related?bvid=${encodeURIComponent(bvid)}`;
-		const res = await fetch(url, { headers: this.cred.getHeaders() });
+		const res = await this._fetch(url, { headers: this.cred.getHeaders() });
 		const json = await res.json();
 		if (json.code !== 0) return [];
 		const list = json.data || [];
@@ -607,7 +614,7 @@ export class BilibiliApiClient {
 		if (!mid) return [];
 		const url = `https://api.bilibili.com/x/space/wbi/arc/search?mid=${encodeURIComponent(mid)}&ps=${Math.max(1, Math.min(Number(ps) || 10, 30))}&pn=1`;
 		try {
-			const res = await fetch(url, { headers: this.cred.getHeaders() });
+			const res = await this._fetch(url, { headers: this.cred.getHeaders() });
 			const json = await res.json();
 			if (json.code !== 0) return [];
 			const list = json.data?.list?.vlist || [];
@@ -632,7 +639,7 @@ export class BilibiliApiClient {
 	async getCoverProxy(bvid) {
 		if (!/^BV[0-9A-Za-z]{10}$/.test(bvid)) return null;
 		try {
-			const viewRes = await fetch(`https://api.bilibili.com/x/web-interface/view?bvid=${bvid}`, {
+			const viewRes = await this._fetch(`https://api.bilibili.com/x/web-interface/view?bvid=${bvid}`, {
 				signal: AbortSignal.timeout(8000),
 				headers: { "User-Agent": "Mozilla/5.0", Referer: "https://www.bilibili.com/" },
 			});
@@ -641,7 +648,7 @@ export class BilibiliApiClient {
 			const picUrl = viewJson?.data?.pic || "";
 			if (!picUrl) return null;
 
-			const imgRes = await fetch(picUrl, {
+			const imgRes = await this._fetch(picUrl, {
 				signal: AbortSignal.timeout(10000),
 				headers: { "User-Agent": "Mozilla/5.0", Referer: "https://www.bilibili.com/" },
 			});
