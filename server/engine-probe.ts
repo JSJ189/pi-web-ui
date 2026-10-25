@@ -56,6 +56,10 @@ interface RegistryCacheEntry {
 const registryCache = new Map<string, RegistryCacheEntry>();
 
 let lastProbeAt = 0;
+/** 单项探测（probeEngine）各自的完成时间：probeAllEngines 的全局 lastProbeAt
+ *  不会随单项探测更新，只看全局会让 TTL 过后每次 probeEngine 都重新派生
+ *  探针子进程（execFile dsh --version 等）——与 5 秒防抖的设计意图相悖。 */
+const lastEngineProbeAt = new Map<string, number>();
 const updatingEngineIds = new Set<string>();
 
 function applyUpdatingFlag(list: EngineStatus[]): EngineStatus[] {
@@ -269,9 +273,12 @@ export async function probeDurable(force = false): Promise<EngineStatus> {
  */
 export async function probeEngine(id: string, force = false): Promise<EngineStatus> {
 	if (id === "pi") return probePi();
-	if (!force && Date.now() - lastProbeAt < CACHE_TTL_MS) {
+	const lastAt = Math.max(lastEngineProbeAt.get(id) ?? 0, lastProbeAt);
+	if (!force && Date.now() - lastAt < CACHE_TTL_MS) {
 		const found = cachedStatuses.find((e) => e.id === id);
-		if (found) return found;
+		// 缓存命中也要带 updating 标志：恰逢后台引擎更新时，直接返回裸缓存
+		// 会让 UI 丢失"更新中"状态。
+		if (found) return applyUpdatingFlag([found])[0];
 	}
 	let result: EngineStatus;
 	if (id === "dsh") {
@@ -284,10 +291,11 @@ export async function probeEngine(id: string, force = false): Promise<EngineStat
 		result = { id: id as any, installed: false };
 	}
 	await enrichWithUpdateInfo(result, force);
-	// 更新单项缓存
+	// 更新单项缓存与单项时间戳
 	const idx = cachedStatuses.findIndex((e) => e.id === id);
 	if (idx >= 0) cachedStatuses[idx] = result;
 	else cachedStatuses.push(result);
+	lastEngineProbeAt.set(id, Date.now());
 	return {
 		...result,
 		...(updatingEngineIds.has(id) ? { updating: true } : {}),
@@ -309,7 +317,11 @@ export async function probeAllEngines(force = false): Promise<EngineStatus[]> {
 		enrichWithUpdateInfo(durable, force),
 	]);
 	cachedStatuses = [pi, dsh, claude, durable];
-	lastProbeAt = Date.now();
+	const now = Date.now();
+	lastProbeAt = now;
+	for (const s of cachedStatuses) {
+		lastEngineProbeAt.set(s.id, now);
+	}
 	return applyUpdatingFlag(cachedStatuses);
 }
 

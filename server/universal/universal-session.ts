@@ -947,14 +947,18 @@ export class UniversalSession implements DispatchSession {
 
 		this.isStreaming = false;
 		this.streamingThinking = "";
+		// 先取本轮全文再清空：内联标记解析在清空之后读 streamingText，
+		// 条件恒为 false，[[conv:rename]]/[[action:suggest]] 在 universal
+		// 引擎（claude/durable 等驱动）下从不被解析。
+		const finalText = this.streamingText;
 		this.streamingText = "";
 		conv.updatedAt = Date.now();
 		if (!conv.isEphemeral) {
 			this.store.saveConversation(this.cwd, conv);
 		}
 		// 解析本轮生成的内联标记（如 [[conv:rename:...]] / [[action:suggest:...]]）
-		if (this.streamingText && this.streamingText.includes("[[")) {
-			void this.markerSvc.handleAssistantText(conv.id, this.streamingText);
+		if (finalText && finalText.includes("[[")) {
+			void this.markerSvc.handleAssistantText(conv.id, finalText);
 		}
 		this.flushSnapshot();
 		void this.refreshSessions();
