@@ -32,6 +32,7 @@ import {
 } from "./plugin-tool-guard.js";
 import type { UiApprovalCategory, UiApprovalHit } from "./protocol.js";
 import type { AnyToolDefinition } from "./tool-overrides.js";
+import type { ToolAuditRecordFn } from "./approval-audit.js";
 import {
 	createRemoteSdkOperations,
 	isRemoteWorkspaceUri,
@@ -138,6 +139,106 @@ export function withGoalReviewGate(
 }
 
 /**
+ * 标记某个工具已包含审批/安全规则防护（防重复包装）。
+ */
+export const APPROVAL_GUARDED = Symbol.for("pi.approvalGuarded");
+
+/**
+ * 通用工具审批门禁（Issue #722）：
+ * 对任意工具（包括插件工具、MCP 动态接入工具、自定义扩展工具）执行审批规则判定（checkDangerousToolCall）。
+ * - 若命中 deny 规则，直接阻断并返回错误；
+ * - 若命中 ask 规则，唤起人机协同审批（Human-in-the-Loop）；
+ * - 若命中 allow 规则或未命中高危规则，透传执行底层 execute。
+ */
+export function withApprovalGate(
+	def: ToolDefinition,
+	opts: {
+		cwd: () => string;
+		getRoots?: () => string[];
+		getRules?: () => ApprovalRule[];
+		getLang: () => ServerLang;
+		conversationId?: () => string | undefined;
+		askApproval?: AskApprovalFn;
+		onAudit?: ToolAuditRecordFn;
+	},
+): ToolDefinition {
+	if ((def as unknown as Record<symbol, unknown>)[APPROVAL_GUARDED]) {
+		return def;
+	}
+
+	const wrapped: ToolDefinition = {
+		...def,
+		execute: (async (toolCallId: string, params: unknown, signal: unknown, onUpdate: unknown, ctx: unknown) => {
+			const lang = opts.getLang();
+			const conversationId = opts.conversationId?.();
+			const cwd = opts.cwd();
+			const roots = opts.getRoots?.() ?? [];
+			const rules = opts.getRules?.();
+
+			const danger = checkDangerousToolCall(def.name, params, cwd, roots, rules);
+			if (danger.denied) {
+				opts.onAudit?.({
+					conversationId,
+					toolName: def.name,
+					params,
+					decision: "denied",
+					decisionSource: "rule_denied",
+					categoryId: danger.category?.id,
+					reason: danger.reason,
+				});
+				const reasonText = danger.reason ? ` 原因：${danger.reason}` : "";
+				const reasonTextEn = danger.reasonEn ? ` Reason: ${danger.reasonEn}` : "";
+				const text = pick(
+					lang,
+					`【工具执行被审批规则直接阻断】${reasonText}`,
+					`[Tool execution blocked by approval rule]${reasonTextEn}`,
+				);
+				return {
+					content: [{ type: "text", text }],
+					details: { guardDenied: true, ruleDenied: true, reason: danger.reason },
+					isError: true,
+				} as never;
+			}
+
+			let effectiveParams = params;
+			if (danger.dangerous && opts.askApproval) {
+				const res = await opts.askApproval(
+					toolCallId,
+					def.name,
+					params,
+					danger.reason,
+					danger.reasonEn,
+					conversationId,
+					danger.category,
+					danger.hits,
+				);
+				if (res.decision === "deny") {
+					const reasonText = res.reason ? ` 原因：${res.reason}` : "";
+					const reasonTextEn = res.reason ? ` Reason: ${res.reason}` : "";
+					return {
+						content: [
+							{
+								type: "text",
+								text: pick(lang, `【操作被用户拒绝】${reasonText}`, `[Operation denied by user]${reasonTextEn}`),
+							},
+						],
+						details: { guardDenied: true, userDenied: true, reason: res.reason },
+						isError: true,
+					} as never;
+				} else if (res.decision === "edit") {
+					effectiveParams = res.editedParams ?? params;
+				}
+			}
+
+			return (def.execute as (...args: unknown[]) => unknown)(toolCallId, effectiveParams, signal, onUpdate, ctx);
+		}) as ToolDefinition["execute"],
+	};
+
+	Object.assign(wrapped, { [APPROVAL_GUARDED]: true });
+	return wrapped;
+}
+
+/**
  * 审查者模式闸门（server/delegate-mode.ts）：主对话只审阅不施工 ——
  * 写类工具、非常规 bash、派发类工具一律拒。形状与 withPlanModeGate 同构，
  * 串在它**外层**（两者都开时，先问计划模式还是审查者模式都不影响结果：
@@ -195,6 +296,7 @@ export function withToolGuard(
 		getRoots?: () => string[];
 		askApproval?: AskApprovalFn;
 		getRules?: () => ApprovalRule[];
+		onAudit?: ToolAuditRecordFn;
 	},
 ): ToolDefinition {
 	const guard = opts.guard;
@@ -226,6 +328,15 @@ export function withToolGuard(
 			if (opts.cwd && opts.askApproval) {
 				danger = checkDangerousToolCall(toolName, params, opts.cwd, opts.getRoots?.() ?? [], opts.getRules?.());
 				if (danger.denied) {
+					opts.onAudit?.({
+						conversationId,
+						toolName,
+						params,
+						decision: "denied",
+						decisionSource: "rule_denied",
+						categoryId: danger.category?.id,
+						reason: danger.reason,
+					});
 					const reasonText = danger.reason ? ` 原因：${danger.reason}` : "";
 					const reasonTextEn = danger.reasonEn ? ` Reason: ${danger.reasonEn}` : "";
 					const text = pick(
@@ -339,6 +450,7 @@ export function withToolGuard(
 			}
 			return result as never;
 		}) as never,
+		[APPROVAL_GUARDED]: true,
 	} as ToolDefinition;
 }
 
@@ -485,6 +597,7 @@ export function wrapWriteToolWithPermission(
 			}
 			return result as never;
 		},
+		[APPROVAL_GUARDED]: true,
 	} as ToolDefinition;
 }
 
@@ -634,6 +747,7 @@ export function wrapEditToolWithPermission(
 			}
 			return result as never;
 		},
+		[APPROVAL_GUARDED]: true,
 	} as ToolDefinition;
 }
 
@@ -754,7 +868,8 @@ export function wrapEditSoftToolWithPermission(
 			}
 			return result as never;
 		},
-	};
+		[APPROVAL_GUARDED]: true,
+	} as ToolDefinition;
 }
 
 /** 为 patch 工具包装会话级权限沙箱与人机协同审批。
@@ -916,7 +1031,8 @@ export function wrapPatchToolWithPermission(
 			}
 			return result as never;
 		},
-	};
+		[APPROVAL_GUARDED]: true,
+	} as ToolDefinition;
 }
 
 /** 为 bash 工具包装只读拦截。 */

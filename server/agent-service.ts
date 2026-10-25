@@ -193,6 +193,8 @@ import {
 	type ToolApprovalResolution,
 } from "./tool-approval.js";
 import { PlanManager } from "./plan-manager.js";
+import { ApprovalAuditLogger } from "./approval-audit.js";
+export { ApprovalAuditLogger };
 import { buildPlanModePrompt, planModeDenial, planModeNoticeText, PLAN_MODE_BLOCKED_TOOL_NAMES } from "./plan-mode.js";
 import { DELEGATE_MODE_BLOCKED_TOOL_NAMES, DELEGATION_SYSTEM_PROMPT, delegateNoticeText } from "./delegate-mode.js";
 import { goalReviewDenial, shouldDeferPromptForReview } from "./goal-review-gate.js";
@@ -447,6 +449,7 @@ import {
 	withDelegationGate,
 	makeLateToolGuard,
 	withToolGuard,
+	withApprovalGate,
 	isInsideWorkspaceRoots,
 	wrapWriteToolWithPermission,
 	EDIT_DESCRIPTION,
@@ -464,6 +467,7 @@ export {
 	withDelegationGate,
 	makeLateToolGuard,
 	withToolGuard,
+	withApprovalGate,
 	isInsideWorkspaceRoots,
 	wrapWriteToolWithPermission,
 	EDIT_DESCRIPTION,
@@ -2598,6 +2602,8 @@ export class ClientSession {
 	private readonly subagentTemplates: SubagentTemplatesStore;
 	/** 审批规则库（全局共享，<dataDir>/approval-rules.json）。 */
 	private readonly approvalRules: ApprovalRulesStore;
+	/** 审批审计日志追加器（<dataDir>/audit/approvals.jsonl，Issue #722）。 */
+	private readonly auditLogger: ApprovalAuditLogger;
 	/** 未发送输入框草稿（全局共享，<dataDir>/composer-drafts.json，按 sessionId 键入，见 server/composer-drafts.ts）。 */
 	private readonly drafts: ComposerDraftsStore;
 	/** 隔离沙盒项目管理器（全局共享，<dataDir>/sandboxes/registry.json）。 */
@@ -2664,6 +2670,7 @@ export class ClientSession {
 		this.roots = stateStore.getWorkspaceRoots(clientId, cwd);
 		this.subagentTemplates = new SubagentTemplatesStore(join(stateStore.dataDir, "subagent-templates.json"));
 		this.approvalRules = new ApprovalRulesStore(join(stateStore.dataDir, "approval-rules.json"));
+		this.auditLogger = new ApprovalAuditLogger(stateStore.dataDir);
 		this.drafts = new ComposerDraftsStore(join(stateStore.dataDir, "composer-drafts.json"));
 		this.sandboxes = new SandboxManager(stateStore.dataDir);
 		this.planManager = new PlanManager(join(stateStore.dataDir, "plans.json"));
@@ -3427,6 +3434,7 @@ export class ClientSession {
 								askApproval: (toolCallId, toolName, params, reason, reasonEn, convId, category) =>
 									this.askApproval(toolCallId, toolName, params, reason, reasonEn, convId, category),
 								getRules: () => this.approvalRules.list(),
+								onAudit: (entry) => this.auditLogger.record(entry),
 							},
 						),
 						() =>
@@ -3760,29 +3768,7 @@ export class ClientSession {
 						lang: () => this.getLang(),
 						getCwd: () => (ownerId ? this.convs.get(ownerId)?.cwd : undefined) ?? effectiveCwd,
 					}),
-				].map((t) =>
-					// 目标审查闸门在最外层（理由最贴合此刻）；插件工具也在这个数组里，
-					// 创建时注册的同样被闸门覆盖（后续动态补入的走 syncPluginTools，与
-					// 计划/审查者闸门同口径不在覆盖面，见 goal-review-gate.ts 头注）。
-					withGoalReviewGate(
-						withDelegationGate(
-							withPlanModeGate(
-								withSandboxJailGate(
-									t,
-									() => this.sandboxes.getByCwd(effectiveCwd),
-									() => effectiveCwd,
-									() => this.getLang(),
-								),
-								() => this.planModeOf(ownerId),
-								() => this.getLang(),
-							),
-							() => this.delegateModeOf(ownerId),
-							() => this.getLang(),
-						),
-						() => this.goalReviewTurnOf(ownerId),
-						() => this.getLang(),
-					),
-				),
+				].map((t) => this.wrapGenericTool(t, ownerId, effectiveCwd)),
 			});
 			// 桥接工具归属锚点：SDK 会话对象在本 runtime 生命周期内稳定，过户只搬对话
 			// 不改它（见 ClientSession.findConversationHome）。
@@ -5768,8 +5754,25 @@ export class ClientSession {
 				conv?.approvalPolicy,
 				this.settingsSvc.current.toolApprovalEnabled !== false,
 				category?.id,
+				toolName,
+				params,
 			);
 			if (suppression) {
+				// 记录静默放行审计日志（Issue #722）
+				this.auditLogger.record({
+					conversationId,
+					toolName,
+					params,
+					decision: "approved",
+					decisionSource:
+						suppression === "disabled"
+							? "suppressed_disabled"
+							: suppression === "allow-all"
+								? "suppressed_all"
+								: "suppressed_category",
+					categoryId: category?.id,
+					reason,
+				});
 				// 放行但不弹窗：不记 pending，不发消息，模型继续跑。
 				resolve({ decision: "approve" });
 				return;
@@ -5837,6 +5840,18 @@ export class ClientSession {
 		const convId = pending.conversationId ?? this.activeId;
 		const conv = this.convs.get(convId);
 		this.pendingApprovals.delete(id);
+		// 记录用户主动决策审计日志（Issue #722）
+		this.auditLogger.record({
+			conversationId: convId,
+			toolName: pending.toolName,
+			params: decision === "edit" ? editedParams : pending.params,
+			decision: decision === "approve" ? "approved" : decision === "edit" ? "edited" : "denied",
+			decisionSource: "user_dialog",
+			scope: decision === "approve" ? scope : undefined,
+			userEdited: decision === "edit",
+			categoryId: pending.category?.id,
+			reason: decision === "deny" ? reason : pending.reason,
+		});
 		pending.resolve({ decision, editedParams, reason });
 		this.emit({ type: "tool_approval_resolved", id });
 		if (decision === "approve" && scope && scope !== "once" && conv) {
@@ -5862,8 +5877,17 @@ export class ClientSession {
 		// eslint-disable-next-line unicorn/no-useless-spread -- 快照：循环里会从 map 删项（迭代中改集合）
 		for (const [oid, o] of [...this.pendingApprovals]) {
 			if ((o.conversationId ?? this.activeId) !== convId) continue;
-			if (!approvalSuppressionReason(policy, true, o.category?.id)) continue;
+			if (!approvalSuppressionReason(policy, true, o.category?.id, o.toolName, o.params)) continue;
 			this.pendingApprovals.delete(oid);
+			this.auditLogger.record({
+				conversationId: convId,
+				toolName: o.toolName,
+				params: o.params,
+				decision: "approved",
+				decisionSource: "batch_approved_policy",
+				categoryId: o.category?.id,
+				reason: o.reason,
+			});
 			o.resolve({ decision: "approve" });
 			this.emit({ type: "tool_approval_resolved", id: oid });
 			n++;
@@ -5901,6 +5925,15 @@ export class ClientSession {
 		// eslint-disable-next-line unicorn/no-useless-spread -- 快照：循环里会从 map 删项（迭代中改集合）
 		for (const [oid, o] of [...this.pendingApprovals]) {
 			this.pendingApprovals.delete(oid);
+			this.auditLogger.record({
+				conversationId: o.conversationId,
+				toolName: o.toolName,
+				params: o.params,
+				decision: "approved",
+				decisionSource: "batch_approved_disabled",
+				categoryId: o.category?.id,
+				reason: o.reason,
+			});
 			o.resolve({ decision: "approve" });
 			this.emit({ type: "tool_approval_resolved", id: oid });
 			n++;
@@ -5927,6 +5960,11 @@ export class ClientSession {
 			allowAll: policy?.allowAll ?? false,
 			categories: policy ? [...policy.categories.values()] : [],
 		};
+	}
+
+	/** 获取审批决策审计日志记录器（Issue #722）。 */
+	getAuditLogger(): ApprovalAuditLogger {
+		return this.auditLogger;
 	}
 
 	/**
@@ -7887,6 +7925,7 @@ export class ClientSession {
 			getRoots: () => this.roots,
 			askApproval: approve,
 			getRules: () => this.approvalRules.list(),
+			onAudit: (entry) => this.auditLogger.record(entry),
 		};
 		// 写/编的权限沙箱包装：同一个函数，有扩展同名工具时把它的定义当基底（末参）。
 		// 目标审查闸门包在**最外层**（权限沙箱之前）：审查回合只读核实，写类直接拒。
@@ -8565,6 +8604,47 @@ export class ClientSession {
 		this.flushSnapshot();
 	}
 
+	/**
+	 * 统一工具安全流水线（Issue #722）：
+	 * 将通用工具（包括插件 AI 工具、MCP 桥接工具、第一方辅助工具等）统一包裹：
+	 * 1. withApprovalGate：检查审批规则（checkDangerousToolCall）与人机协同审批；
+	 * 2. withSandboxJailGate：工作区沙箱越界拦截；
+	 * 3. withPlanModeGate：计划模式只读拦截；
+	 * 4. withDelegationGate：审查者委派拦截；
+	 * 5. withGoalReviewGate：目标审查回合拦截。
+	 * 无论是会话创建时的静态 customTools 还是 syncPluginTools 动态注入的工具，均无差别经由此管道。
+	 */
+	private wrapGenericTool(def: ToolDefinition, ownerId?: string, cwdOverride?: string): ToolDefinition {
+		const getEffectiveCwd = () => (ownerId ? this.convs.get(ownerId)?.cwd : undefined) ?? cwdOverride ?? this.cwd;
+		return withGoalReviewGate(
+			withDelegationGate(
+				withPlanModeGate(
+					withSandboxJailGate(
+						withApprovalGate(def, {
+							cwd: getEffectiveCwd,
+							getRoots: () => this.roots,
+							getRules: () => this.approvalRules.list(),
+							getLang: () => this.getLang(),
+							conversationId: () => ownerId,
+							askApproval: (toolCallId, toolName, params, reason, reasonEn, convId, category, hits) =>
+								this.askApproval(toolCallId, toolName, params, reason, reasonEn, convId, category, hits),
+							onAudit: (entry) => this.auditLogger.record(entry),
+						}),
+						() => this.sandboxes.getByCwd(getEffectiveCwd()),
+						getEffectiveCwd,
+						() => this.getLang(),
+					),
+					() => this.planModeOf(ownerId),
+					() => this.getLang(),
+				),
+				() => this.delegateModeOf(ownerId),
+				() => this.getLang(),
+			),
+			() => this.goalReviewTurnOf(ownerId),
+			() => this.getLang(),
+		);
+	}
+
 	/** 当前启用的插件 AI 工具定义（provider 快照按 disabledPlugins 与 disabledPluginTools 过滤；
 	 *  未知/已卸载插件的禁用条目保留但不影响现有工具）。
 	 *  预设是第二层门控（见 tool-manager.ts 语义总表）：非 standard 预设下插件工具
@@ -8584,16 +8664,19 @@ export class ClientSession {
 	/** 把插件 AI 工具同步进一个已存在的会话（新增/更新/移除；禁用工具同步移除）。
 	 *  实际 diff 逻辑在 plugins.ts 的 syncPluginToolsIntoSession（可单测）。
 	 *  模板白名单的子代理（subagentBarsPluginTools）跳过：工厂期就没注册，这里
-	 *  不回补，否则白名单等于没关门。 */
+	 *  不回补，否则白名单等于没关门。
+	 *  动态补入的工具统一经 wrapGenericTool 包裹，具备模式硬闸门与审批规则防护（Issue #722）。 */
 	private syncPluginTools(session: AgentSession, preset?: string): void {
 		let targetPreset = preset;
-		for (const conv of this.convs.values()) {
+		let ownerId: string | undefined;
+		for (const [id, conv] of this.convs.entries()) {
 			if (conv.session !== session) continue;
+			ownerId = id;
 			if (conv.subagentBarsPluginTools) return;
 			targetPreset ??= conv.agentPreset;
 		}
 		try {
-			const defs = this.enabledPluginToolDefs(targetPreset);
+			const defs = this.enabledPluginToolDefs(targetPreset).map((t) => this.wrapGenericTool(t, ownerId));
 			// 移除口径 = 已同步过的 ∪ 全量插件宇宙：创建时工厂直接注册进
 			// _customTools 的工具不在 applied 表里，首轮同步（defs 为空时）否则删不掉。
 			const universe = new Set([

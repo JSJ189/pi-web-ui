@@ -334,6 +334,8 @@ export const zh = {
 	toolApprovalEnabled: "工具执行审批（人机协同）",
 	toolApprovalEnabledDesc:
 		"开：高危操作（rm -rf / 破坏性 git / 敏感文件 / 工作区外写入 / 插件要求确认）弹窗等你批准、拒绝或改参数；关：一切审批都不弹（内置高危检测直接放行，插件要求确认也按放行处理）。",
+	toolApprovalDshNotice:
+		"DSH 引擎运行于远程沙箱容器，交互式审批规则在 DSH 下不生效；命令与文件权限由下方的沙箱预设统一管控。",
 	toolApprovalPolicyTitle: "已记住的放行（本对话）",
 	toolApprovalPolicyAllowAll: "本对话全部允许审批",
 	toolApprovalPolicyRevoke: "撤销",
@@ -2690,6 +2692,8 @@ export const en: Record<keyof typeof zh, string> = {
 	toolApprovalEnabled: "Tool execution approval (human-in-the-loop)",
 	toolApprovalEnabledDesc:
 		"On: high-risk operations (rm -rf / destructive git / sensitive files / writes outside the workspace / plugin confirmation requests) pop a dialog for you to approve, deny or edit the parameters. Off: no approvals at all (built-in detection passes silently, plugin confirmation requests are treated as allowed).",
+	toolApprovalDshNotice:
+		"DSH engine runs in a remote sandbox container; interactive approval rules do not take effect under DSH. Permissions are governed by the sandbox preset below.",
 	toolApprovalPolicyTitle: "Remembered allowances (this conversation)",
 	toolApprovalPolicyAllowAll: "All approvals allowed in this conversation",
 	toolApprovalPolicyRevoke: "Revoke",

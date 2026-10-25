@@ -304,6 +304,7 @@
 		"toolApprovalAllowConversationHint": "Pare de perguntar por qualquer operação de risco nesta conversa (revogável em Configurações → Ferramentas)",
 		"toolApprovalEnabled": "Aprovação de execução de ferramenta (humano no circuito)",
 		"toolApprovalEnabledDesc": "Ligado: operações de risco (rm -rf / git destrutivo / arquivos sensíveis / escrita fora da área de trabalho / pedidos de confirmação de plugin) abrem um diálogo para você aprovar, negar ou editar os parâmetros. Desligado: nenhuma aprovação (a detecção embutida libera em silêncio e pedidos de confirmação de plugin são tratados como permitidos).",
+		"toolApprovalDshNotice": "DSH engine runs in a remote sandbox container; interactive approval rules do not take effect under DSH. Permissions are governed by the sandbox preset below.",
 		"toolApprovalPolicyTitle": "Liberações lembradas (nesta conversa)",
 		"toolApprovalPolicyAllowAll": "Todas as aprovações liberadas nesta conversa",
 		"toolApprovalPolicyRevoke": "Revogar",

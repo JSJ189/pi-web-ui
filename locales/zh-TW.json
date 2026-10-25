@@ -304,6 +304,7 @@
 		"toolApprovalAllowConversationHint": "本對話內所有高風險操作後續都不再詢問（設定 →「工具」頁可撤銷）",
 		"toolApprovalEnabled": "工具執行核准（人機協同）",
 		"toolApprovalEnabledDesc": "開：高風險操作（rm -rf / 破壞性 git / 敏感檔案 / 工作區外寫入 / 外掛要求確認）彈出視窗等你核准、拒絕或改參數；關：一切核准都不彈（內建高風險偵測直接允許，外掛要求確認也按允許處理）。",
+		"toolApprovalDshNotice": "DSH 引擎运行于远程沙箱容器，交互式审批规则在 DSH 下不生效；命令与檔案权限由下方的沙箱预设统一管控。",
 		"toolApprovalPolicyTitle": "已記住的允許（本對話）",
 		"toolApprovalPolicyAllowAll": "本對話已全部允許",
 		"toolApprovalPolicyRevoke": "撤銷",

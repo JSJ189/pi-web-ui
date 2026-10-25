@@ -304,6 +304,7 @@
 		"toolApprovalAllowConversationHint": "Bu konuşmada hiçbir yüksek riskli işlem için sorulmaz (Ayarlar → «Araçlar» sayfasından geri alınabilir)",
 		"toolApprovalEnabled": "Araç yürütme onayı (insan denetimli)",
 		"toolApprovalEnabledDesc": "Açık: yüksek riskli işlemler (rm -rf / yıkıcı git / hassas dosyalar / çalışma alanı dışına yazma / eklenti onay istekleri) onaylayın, reddedin veya parametreleri düzenleyin diye bir iletişim kutusu açar. Kapalı: hiçbir onay istenmez (yerleşik yüksek risk algılama doğrudan geçirir, eklenti onay istekleri de izin verilmiş sayılır).",
+		"toolApprovalDshNotice": "DSH engine runs in a remote sandbox container; interactive approval rules do not take effect under DSH. Permissions are governed by the sandbox preset below.",
 		"toolApprovalPolicyTitle": "Anımsanan izinler (bu konuşma)",
 		"toolApprovalPolicyAllowAll": "Bu konuşmada tüm onaylara izin verildi",
 		"toolApprovalPolicyRevoke": "Geri al",

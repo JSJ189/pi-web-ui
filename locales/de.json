@@ -304,6 +304,7 @@
 		"toolApprovalAllowConversationHint": "Stop asking for any high-risk operation in this conversation (revocable under Settings → Tools)",
 		"toolApprovalEnabled": "Tool execution approval (human-in-the-loop)",
 		"toolApprovalEnabledDesc": "On: high-risk operations (rm -rf / destructive git / sensitive files / writes outside the workspace / plugin confirmation requests) pop a dialog for you to approve, deny or edit the parameters. Off: no approvals at all (built-in detection passes silently, plugin confirmation requests are treated as allowed).",
+		"toolApprovalDshNotice": "DSH engine runs in a remote sandbox container; interactive approval rules do not take effect under DSH. Permissions are governed by the sandbox preset below.",
 		"toolApprovalPolicyTitle": "Remembered allowances (this conversation)",
 		"toolApprovalPolicyAllowAll": "All approvals allowed in this conversation",
 		"toolApprovalPolicyRevoke": "Revoke",

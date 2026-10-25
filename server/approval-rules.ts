@@ -38,6 +38,16 @@ import { DEFAULT_APPROVAL_RULES } from "./approval-default-rules.js";
 export { DEFAULT_APPROVAL_RULES };
 import type { UiApprovalCategory } from "./protocol.js";
 
+/**
+ * 检测命令字符串中是否包含 Shell 复合操作符或子命令执行结构（分号、逻辑与/或、管道、反引号、换行、$()）。
+ * 用于白名单（allow）规则防止借由安全前缀在复合命令中夹带高危操作（Issue #722）。
+ */
+export const SHELL_COMPOUND_OPERATOR_RE = /(?:[;&|`\n]|\$\()/;
+
+export function hasShellCompoundOperator(command: string): boolean {
+	return SHELL_COMPOUND_OPERATOR_RE.test(command);
+}
+
 /** 工具调用审批命中动作：需审批 / 直接拒绝 / 直接放行（白名单）。 */
 export type ApprovalRuleAction = "ask" | "deny" | "allow";
 
@@ -206,6 +216,10 @@ export function matchApprovalRuleDetails(
 	if (rule.match === "regex") {
 		const fieldValue = extractRuleFieldValue(rule.field, toolName, params);
 		if (!fieldValue) return [];
+		if (rule.action === "allow" && rule.field === "command" && hasShellCompoundOperator(fieldValue)) {
+			const single = matchApprovalRuleDetail(rule, toolName, params, cwd, workspaceRoots);
+			return single ? [single] : [];
+		}
 		let re: RegExp;
 		try {
 			re = new RegExp(rule.value, "gi");
@@ -259,59 +273,77 @@ export function matchApprovalRuleDetail(
 	if (!fieldValue) return null;
 
 	// 4. 按 match kind 进行文本判定并提取命中区间
+	let matched: { index: number; length: number; text: string } | null = null;
 	switch (rule.match) {
 		case "regex": {
 			try {
 				const re = new RegExp(rule.value, "i");
 				const m = re.exec(fieldValue);
 				if (m) {
-					return {
+					matched = {
 						index: m.index,
 						length: m[0].length,
 						text: m[0],
 					};
 				}
-				return null;
 			} catch {
 				return null;
 			}
+			break;
 		}
 		case "glob": {
 			try {
 				const re = globToRegex(rule.value);
 				const normalized = fieldValue.replace(/\\/g, "/");
 				if (re.test(normalized)) {
-					return { index: 0, length: fieldValue.length, text: fieldValue };
+					matched = { index: 0, length: fieldValue.length, text: fieldValue };
 				}
-				return null;
 			} catch {
 				return null;
 			}
+			break;
 		}
 		case "contains": {
 			const idx = fieldValue.toLowerCase().indexOf(rule.value.toLowerCase());
 			if (idx >= 0) {
-				return {
+				matched = {
 					index: idx,
 					length: rule.value.length,
 					text: fieldValue.slice(idx, idx + rule.value.length),
 				};
 			}
-			return null;
+			break;
 		}
 		case "prefix": {
 			if (fieldValue.toLowerCase().startsWith(rule.value.toLowerCase())) {
-				return {
+				matched = {
 					index: 0,
 					length: rule.value.length,
 					text: fieldValue.slice(0, rule.value.length),
 				};
 			}
-			return null;
+			break;
 		}
 		default:
 			return null;
 	}
+
+	if (!matched) return null;
+
+	// 复合命令白名单防逃逸（Issue #722）：
+	// 当动作为 allow（免审放行）且字段为 command 时，如果整段命令包含复合操作符（; && || | \n $() `），
+	// 且该白名单匹配未完全覆盖整条命令输入，禁止仅凭前缀、子串或通配符放行整条复合命令，
+	// 防止如 `git status && rm -rf /` 借由安全前缀绕过后续的高危规则拦截。
+	if (
+		rule.action === "allow" &&
+		rule.field === "command" &&
+		hasShellCompoundOperator(fieldValue) &&
+		matched.text.trim().length < fieldValue.trim().length
+	) {
+		return null;
+	}
+
+	return matched;
 }
 
 /**

@@ -3388,9 +3388,13 @@ export function SettingsModal({
 								)}
 								<ToggleRow
 									title={t("toolApprovalEnabled")}
-									tip={t("toolApprovalEnabledDesc")}
-									enabled={settings.toolApprovalEnabled !== false}
-									onToggle={() => setPartial({ toolApprovalEnabled: settings.toolApprovalEnabled === false })}
+									tip={isDsh ? t("toolApprovalDshNotice") : t("toolApprovalEnabledDesc")}
+									enabled={!isDsh && settings.toolApprovalEnabled !== false}
+									disabled={isDsh}
+									onToggle={() => {
+										if (isDsh) return;
+										setPartial({ toolApprovalEnabled: settings.toolApprovalEnabled === false });
+									}}
 									action={
 										!isDsh ? (
 											<button
@@ -3404,6 +3408,11 @@ export function SettingsModal({
 										) : undefined
 									}
 								/>
+								{isDsh && (
+									<p className="set-catalog-hint warn" style={{ marginTop: 4, marginBottom: 8 }}>
+										{t("toolApprovalDshNotice")}
+									</p>
+								)}
 								{chat.dshPermission && chat.dshPermission.options.length > 0 && (
 									<div className="set-mode-row" style={{ marginTop: 8, marginBottom: 8 }}>
 										<label className="set-field-label">
