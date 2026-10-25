@@ -10,8 +10,8 @@ describe("bili-scroll plugin 2.0 verification", () => {
 		const manifest = JSON.parse(readFileSync(join(pluginDir, "manifest.json"), "utf8"));
 		const pkg = JSON.parse(readFileSync(join(pluginDir, "package.json"), "utf8"));
 
-		expect(manifest.version).toBe("2.0.4");
-		expect(pkg.version).toBe("2.0.4");
+		expect(manifest.version).toBe("2.0.5");
+		expect(pkg.version).toBe("2.0.5");
 		expect(manifest.apiVersion).toBe(2);
 		expect(manifest.permissions).toContain("tools");
 		expect(manifest.permissions).toContain("ui");
@@ -125,6 +125,32 @@ describe("bili-scroll plugin 2.0 verification", () => {
 			cleanup();
 		} finally {
 			rmSync(tempDir, { recursive: true, force: true });
+		}
+	});
+
+	it("_fetch() 统一注入 15s 超时信号，并优先保留调用方指定的 signal", async () => {
+		const { BilibiliApiClient } = await import(join(pluginDir, "bilibili-api.mjs"));
+		const client = new BilibiliApiClient({ getHeaders: () => ({}) });
+
+		let capturedSignal: AbortSignal | undefined;
+		const originalFetch = globalThis.fetch;
+		try {
+			globalThis.fetch = (async (_url: any, opts: any) => {
+				capturedSignal = opts?.signal;
+				return new Response(JSON.stringify({ code: 0 }));
+			}) as any;
+
+			// 未传 signal 时自动注入兜底 AbortSignal
+			await (client as any)._fetch("https://api.bilibili.com/test");
+			expect(capturedSignal).toBeDefined();
+			expect(capturedSignal instanceof AbortSignal).toBe(true);
+
+			// 显式传 signal 时优先保留调用方的 signal
+			const customController = new AbortController();
+			await (client as any)._fetch("https://api.bilibili.com/test", { signal: customController.signal });
+			expect(capturedSignal).toBe(customController.signal);
+		} finally {
+			globalThis.fetch = originalFetch;
 		}
 	});
 });

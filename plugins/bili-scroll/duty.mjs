@@ -700,9 +700,30 @@ export class BiliDutyEngine {
 							const asrText = await new Promise((resolve) => {
 								const c = spawn(asrPy, [asrScript, item.bvid], { cwd: this.storageDir, windowsHide: true });
 								let out = "";
-								c.stdout?.on("data", (d) => (out += d));
-								c.on("exit", () => resolve(out.trim()));
-								c.on("error", () => resolve(""));
+								let settled = false;
+								let timer = null;
+								const finish = (v) => {
+									if (settled) return;
+									settled = true;
+									if (timer) clearTimeout(timer);
+									resolve(v);
+								};
+								c.stdout?.on("data", (d) => {
+									if (out.length < 2_000_000) out += d;
+								});
+								// whisper/ffmpeg 把进度日志打到 stderr：不排水会填满 OS 管道
+								// 缓冲，子进程阻塞在写日志上 exit 永不触发，这里的 await 连同
+								// 整条巡检循环永久挂起（this.running 卡 true）。
+								c.stderr?.on("data", () => {});
+								// 长视频本地转写要几分钟，但不能无限等：15 分钟兜底杀进程。
+								timer = setTimeout(() => {
+									try {
+										c.kill();
+									} catch {}
+									finish("");
+								}, 15 * 60_000);
+								c.on("close", () => finish(out.trim()));
+								c.on("error", () => finish(""));
 							});
 							if (asrText && asrText.length > 30) {
 								rawSubtitleText = asrText;
