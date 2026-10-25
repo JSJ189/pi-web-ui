@@ -31,12 +31,16 @@ if (typeof WebSocket === 'undefined') {
 // ── 自更新：server 下发 ver > 本地 → 拉 /cli 原子替换自身 → 退出由 launchd KeepAlive 拉起新版 ──
 function selfUpdate(newVer) {
   if (!SELF_PATH || !fs.existsSync(SELF_PATH)) { console.log('[tunnel] 自更新跳过：无法定位自身文件'); return; }
-  const httpUrl = SERVER.replace(/^ws/, 'http') + '/cli';
+  // /cli 自 v1.5 起强制 ?token= 校验——不带 token 必 401，响应体没有 CLI_VER，
+  // 会落进「内容校验失败」分支：任何 CLI_VER 提升都无法下发，设备锁死旧版
+  // （也让未来设备侧安全修复不可达）。必须与 /agent 握手同源带 token。
+  const httpUrl = SERVER.replace(/^ws/, 'http') + '/cli?token=' + encodeURIComponent(TOKEN);
   const req = http.get(httpUrl, r => {
     let code = '';
     r.on('data', c => code += c);
     r.on('end', () => {
       try {
+        if (r.statusCode !== 200) throw new Error(`HTTP ${r.statusCode}`);
         if (!code.includes('CLI_VER') || code.length < 1000) throw new Error('内容校验失败');
         const tmp = SELF_PATH + '.tmp';
         fs.writeFileSync(tmp, code);

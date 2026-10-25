@@ -259,10 +259,17 @@ if [ -s "$TMP_DIR/checksums.txt" ]; then
         fi
         echo "✅ SHA256 校验通过"
     else
-        echo "⚠ 未在官方 checksums 中找到 \${TAR_NAME}，跳过校验"
+        # fail-closed：这是 root 权限安装到 /usr/local/bin 的脚本——「找不到条目」
+        # 同样可能是 checksums 被污染/降级，与本地 frpc 安装路径同口径直接中止，
+        # 不给「阻断 checksums 请求即降级为无校验 root 安装」留面。
+        echo "❌ 未在官方 checksums 中找到 \${TAR_NAME}，无法校验，已中止安装" >&2
+        rm -rf "$TMP_DIR"
+        exit 1
     fi
 else
-    echo "⚠ 未获取到官方 checksums 文件，跳过校验"
+    echo "❌ 未获取到官方 checksums 文件，无法校验，已中止安装（请检查网络后重试）" >&2
+    rm -rf "$TMP_DIR"
+    exit 1
 fi
 
 echo "📂 解压并安装到 /usr/local/bin/frps..."
