@@ -37,6 +37,19 @@ const DEFAULT_RUNTIME_URL =
 	process.env.PI_WEB_UNIVER_RUNTIME_URL ||
 	"https://github.com/xing-shuyin/pi-web-ui/releases/download/v0.110.0/univer-artifacts.tar.gz";
 
+/** 工作区边界：relPath/targetPath 解析后必须落在 cwd 内，防越界读写
+ *  （`../../secret` 之类可借路由读写工作区外任意文件）。 */
+export function assertInWorkspace(absPath, cwd) {
+	const root = resolve(cwd);
+	const abs = resolve(absPath);
+	if (abs !== root && !abs.startsWith(root + sep)) {
+		const err = new Error("路径超出工作区范围");
+		err.statusCode = 403;
+		throw err;
+	}
+	return abs;
+}
+
 function getUnitTypeAndFormat(extOrPath) {
 	const ext = extname(extOrPath).toLowerCase();
 	switch (ext) {
@@ -181,13 +194,18 @@ export default {
 
 				let downloaded = 0;
 				while (true) {
+					if (streamError) throw streamError;
 					const { done, value } = await reader.read();
 					if (done) break;
-					fileStream.write(Buffer.from(value));
-					downloaded += value.length;
-					provisioningState.downloaded = downloaded;
-					if (total > 0) {
-						provisioningState.progress = Math.round((downloaded / total) * 100);
+					if (value) {
+						if (!fileStream.write(Buffer.from(value))) {
+							await new Promise((r) => fileStream.once("drain", r));
+						}
+						downloaded += value.length;
+						provisioningState.downloaded = downloaded;
+						if (total > 0) {
+							provisioningState.progress = Math.round((downloaded / total) * 100);
+						}
 					}
 				}
 				await new Promise((r) => fileStream.end(r));
@@ -535,19 +553,8 @@ export default {
 		}
 
 		// 路由：查询运行时就绪状态与下载进度
-		/** 工作区边界：relPath/targetPath 解析后必须落在 host.cwd 内，防越界读写
-		 *  （`../../secret` 之类可借路由读写工作区外任意文件）。 */
-		function assertInWorkspace(absPath) {
-			const root = resolve(host.cwd);
-			const abs = resolve(absPath);
-			// 此前引用了未导入的默认导出 `path`（模块顶部只有命名导入），非根路径
-			// 必抛 ReferenceError 被路由 catch 成 500——边界守卫从未生效过。
-			if (abs !== root && !abs.startsWith(root + sep)) {
-				const err = new Error("路径超出工作区范围");
-				err.statusCode = 403;
-				throw err;
-			}
-			return abs;
+		function assertInWorkspaceLocal(absPath) {
+			return assertInWorkspace(absPath, host.cwd);
 		}
 
 		host.route("GET", "/status", async (_req, res) => {
@@ -580,7 +587,7 @@ export default {
 				const relPath = String(req.query?.path ?? "").trim();
 				if (!relPath) return void res.status(400).json({ ok: false, error: "缺少 path 参数" });
 
-				const absPath = assertInWorkspace(resolve(host.cwd, relPath));
+				const absPath = assertInWorkspaceLocal(resolve(host.cwd, relPath));
 				if (!existsSync(absPath)) return void res.status(404).json({ ok: false, error: "文件不存在" });
 
 				const docInfo = await prepareUniverDoc(absPath);
@@ -595,7 +602,7 @@ export default {
 			try {
 				const relPath = String(req.body?.path ?? "").trim();
 				if (!relPath) return void res.status(400).json({ ok: false, error: "缺少 path 参数" });
-				const absPath = assertInWorkspace(resolve(host.cwd, relPath));
+				const absPath = assertInWorkspaceLocal(resolve(host.cwd, relPath));
 				if (!existsSync(absPath)) return void res.status(404).json({ ok: false, error: "文件不存在" });
 
 				const saved = await saveUniverDoc(absPath, req.body?.targetPath);
@@ -610,7 +617,7 @@ export default {
 			try {
 				const relPath = String(req.body?.path ?? "").trim();
 				if (!relPath) return void res.status(400).json({ ok: false, error: "缺少 path 参数" });
-				const absPath = assertInWorkspace(resolve(host.cwd, relPath));
+				const absPath = assertInWorkspaceLocal(resolve(host.cwd, relPath));
 				if (!existsSync(absPath)) return void res.status(404).json({ ok: false, error: "文件不存在" });
 
 				const result = await inspectUniverDoc(absPath, req.body?.query);
@@ -625,7 +632,7 @@ export default {
 			try {
 				const relPath = String(req.body?.path ?? "").trim();
 				if (!relPath) return void res.status(400).json({ ok: false, error: "缺少 path 参数" });
-				const absPath = assertInWorkspace(resolve(host.cwd, relPath));
+				const absPath = assertInWorkspaceLocal(resolve(host.cwd, relPath));
 				if (!existsSync(absPath)) return void res.status(404).json({ ok: false, error: "文件不存在" });
 
 				const autoSave = req.body?.save !== false;
