@@ -722,7 +722,7 @@ export class BiliDutyEngine {
 									} catch {}
 									finish("");
 								}, 15 * 60_000);
-								c.on("exit", () => finish(out.trim()));
+								c.on("close", () => finish(out.trim()));
 								c.on("error", () => finish(""));
 							});
 							if (asrText && asrText.length > 30) {
