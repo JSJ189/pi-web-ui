@@ -16,13 +16,14 @@ import {
 	mkdirSync,
 	readFileSync,
 	renameSync,
+	rmSync,
 	statSync,
 	unlinkSync,
 	writeFileSync,
 } from "node:fs";
 import { createServer } from "node:net";
 import { tmpdir } from "node:os";
-import { basename, dirname, extname, join, resolve } from "node:path";
+import { basename, dirname, extname, join, resolve, sep } from "node:path";
 import { fileURLToPath } from "node:url";
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
@@ -120,8 +121,14 @@ export default {
 
 			gatewayProc = spawn(process.execPath, [GATEWAY_ENTRY], {
 				env: childEnv,
-				stdio: ["ignore", "pipe", "pipe"],
+				// pipe 却不排水：子进程输出填满 OS 管道缓冲（约 4-64KB）后每次
+				// console.log 都会阻塞，网关整体冻结且表现为"就绪后渲染全部超时"。
+				// 网关日志量大，这里直接丢弃。
+				stdio: ["ignore", "ignore", "ignore"],
 				windowsHide: true,
+			});
+			gatewayProc.on("error", (err) => {
+				host.log(`Univer Gateway 进程错误: ${err.message}`);
 			});
 
 			gatewayReady = await waitForGateway(gatewayOrigin);
@@ -154,13 +161,21 @@ export default {
 			const targetTar = join(__dirname, "univer-artifacts.tar.gz");
 			try {
 				host.log(`正在从 ${DEFAULT_RUNTIME_URL} 下载 Univer 运行时压缩包...`);
-				const res = await fetch(DEFAULT_RUNTIME_URL);
+				// 停滞连接（对端不发 RST）会让裸 fetch 挂数分钟，期间
+				// provisioningState.downloading 卡在 true，一键安装只回
+				// "Download already in progress"——整体 10 分钟兜底超时。
+				const res = await fetch(DEFAULT_RUNTIME_URL, { signal: AbortSignal.timeout(600_000) });
 				if (!res.ok) throw new Error(`下载 Univer 运行时失败: HTTP ${res.status}`);
 
 				const total = Number(res.headers.get("content-length") || 0);
 				provisioningState.total = total;
 
 				const fileStream = createWriteStream(targetTar);
+				// 写盘失败（磁盘满/权限）默认不会抛到 await 链，必须显式监听
+				let streamError = null;
+				fileStream.on("error", (e) => {
+					streamError = e;
+				});
 				const reader = res.body?.getReader();
 				if (!reader) throw new Error("无法读取响应体流");
 
@@ -176,11 +191,25 @@ export default {
 					}
 				}
 				await new Promise((r) => fileStream.end(r));
+				if (streamError) throw streamError;
 
 				host.log("下载完成，正在解压 Univer 运行时组件...");
-				// 执行 tar 解压
-				const extractCmd = `tar -xzf "${targetTar}" -C "${__dirname}"`;
-				execSync(extractCmd, { windowsHide: true });
+				// 解压到 staging 目录、成功后整体替换：tar 顺序解压中途失败（磁盘满/
+				// 进程被杀/压缩包截断）会在 artifacts/ 留下 gateway.cjs 已解出而 viewer
+				// 只解一半的半成品——所有 existsSync 门禁随即误判"已安装"，且下载
+				// 函数开头 short-circuit，再无自愈通道，用户永远只看到"网关启动超时"。
+				const stagingDir = join(__dirname, `.univer-staging-${Date.now()}`);
+				mkdirSync(stagingDir, { recursive: true });
+				try {
+					execSync(`tar -xzf "${targetTar}" -C "${stagingDir}"`, { windowsHide: true });
+					rmSync(join(__dirname, "artifacts"), { recursive: true, force: true });
+					renameSync(join(stagingDir, "artifacts"), join(__dirname, "artifacts"));
+				} catch (e) {
+					rmSync(join(__dirname, "artifacts"), { recursive: true, force: true });
+					throw e;
+				} finally {
+					rmSync(stagingDir, { recursive: true, force: true });
+				}
 				try {
 					unlinkSync(targetTar);
 				} catch {}
@@ -511,7 +540,9 @@ export default {
 		function assertInWorkspace(absPath) {
 			const root = resolve(host.cwd);
 			const abs = resolve(absPath);
-			if (abs !== root && !abs.startsWith(root + path.sep)) {
+			// 此前引用了未导入的默认导出 `path`（模块顶部只有命名导入），非根路径
+			// 必抛 ReferenceError 被路由 catch 成 500——边界守卫从未生效过。
+			if (abs !== root && !abs.startsWith(root + sep)) {
 				const err = new Error("路径超出工作区范围");
 				err.statusCode = 403;
 				throw err;
