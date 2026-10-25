@@ -434,6 +434,7 @@ import {
 	wrapEditToolWithPermission,
 	wrapEditSoftToolWithPermission,
 	wrapBashToolWithPermission,
+	wrapPatchToolWithPermission,
 } from "./tool-guards.js";
 export {
 	type ToolGuardHook,
@@ -450,6 +451,7 @@ export {
 	wrapEditToolWithPermission,
 	wrapEditSoftToolWithPermission,
 	wrapBashToolWithPermission,
+	wrapPatchToolWithPermission,
 };
 
 import { normalizeSolPlanToPlanSteps, makePlanUpdateTool } from "./plan-update-tool.js";
@@ -3430,8 +3432,24 @@ export class ClientSession {
 						ownerId,
 						lang: () => this.getLang(),
 					}),
-					// 高可靠行补丁工具（patch，基于内容哈希与语法块级替换）。
-					makePatchTool({ cwd: effectiveCwd, ownerId, lang: () => this.getLang() }),
+					// 高可靠行补丁工具（patch，基于内容哈希与语法块级替换）。写目标
+					// （含 REM/MV）内嵌在补丁文本里，权限预设与敏感文件审批规则要靠
+					// 包装器解析段头后求值——否则 read-only/workspace 沙箱与 .env 等
+					// 规则会被 patch 整体旁路（write/edit 会拦的操作改走 patch 即落地）。
+					wrapPatchToolWithPermission(
+						makePatchTool({ cwd: effectiveCwd, ownerId, lang: () => this.getLang() }),
+						effectiveCwd,
+						() =>
+							(ownerId ? this.convs.get(ownerId)?.permissionPreset : undefined) ??
+							this.settingsSvc.current.defaultPermissionPreset ??
+							"workspace-write-never",
+						() => this.roots,
+						() => this.getLang(),
+						(toolCallId, toolName, params, reason, reasonEn, convId, category, hits) =>
+							this.askApproval(toolCallId, toolName, params, reason, reasonEn, convId, category, hits),
+						() => ownerId,
+						() => this.approvalRules.list(),
+					),
 					// 原生语言服务器工具（lsp，定义跳转/引用/悬停/诊断）。
 					makeLspTool({ cwd: effectiveCwd, ownerId, lang: () => this.getLang() }),
 					// MCP 服务器检测与安装管理工具（mcp_manage：list/check/install/remove/reload）。
