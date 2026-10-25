@@ -138,4 +138,20 @@ describe("引擎探测与更新检测模块 (server/engine-probe.ts)", () => {
 			expect(s.updating).toBeFalsy();
 		}
 	});
+
+	it("probeEngine() 单项探测与 probeAllEngines() 全量刷新具备联动 TTL 缓存防抖", async () => {
+		// 单项探测写入缓存与时间戳
+		const first = await probeEngine("claude", true);
+		expect(first.id).toBe("claude");
+
+		// 5 秒内再次调用，命中单项缓存
+		const second = await probeEngine("claude");
+		expect(second.id).toBe("claude");
+		expect(second.version).toBe(first.version);
+
+		// 全量刷新后，单项探测也能享受到全量刷新的时间戳防抖
+		await probeAllEngines(true);
+		const afterAll = await probeEngine("claude");
+		expect(afterAll.id).toBe("claude");
+	}, 15000);
 });

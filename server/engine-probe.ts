@@ -273,7 +273,8 @@ export async function probeDurable(force = false): Promise<EngineStatus> {
  */
 export async function probeEngine(id: string, force = false): Promise<EngineStatus> {
 	if (id === "pi") return probePi();
-	if (!force && Date.now() - (lastEngineProbeAt.get(id) ?? lastProbeAt) < CACHE_TTL_MS) {
+	const lastAt = Math.max(lastEngineProbeAt.get(id) ?? 0, lastProbeAt);
+	if (!force && Date.now() - lastAt < CACHE_TTL_MS) {
 		const found = cachedStatuses.find((e) => e.id === id);
 		// 缓存命中也要带 updating 标志：恰逢后台引擎更新时，直接返回裸缓存
 		// 会让 UI 丢失"更新中"状态。
@@ -316,7 +317,11 @@ export async function probeAllEngines(force = false): Promise<EngineStatus[]> {
 		enrichWithUpdateInfo(durable, force),
 	]);
 	cachedStatuses = [pi, dsh, claude, durable];
-	lastProbeAt = Date.now();
+	const now = Date.now();
+	lastProbeAt = now;
+	for (const s of cachedStatuses) {
+		lastEngineProbeAt.set(s.id, now);
+	}
 	return applyUpdatingFlag(cachedStatuses);
 }
 

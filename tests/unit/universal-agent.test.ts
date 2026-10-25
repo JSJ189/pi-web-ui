@@ -20,6 +20,7 @@ import {
 	ClaudeCodeDriver,
 	type UniversalConversation,
 } from "../../server/universal/index.js";
+import "../../server/markers/index.js";
 import type { ServerMessage } from "../../server/protocol.js";
 
 describe("Universal Agent 底座体系单测", () => {
@@ -317,6 +318,28 @@ describe("Universal Agent 底座体系单测", () => {
 			if (convMsg && convMsg.type === "conversations") {
 				expect(convMsg.conversations.length).toBeGreaterThanOrEqual(1);
 			}
+
+			session.dispose();
+		});
+
+		it("本轮回复中的内联标记（如 [[action:suggest:...]]）在 finalizeTurn 中能被正确捕获与解析", async () => {
+			const store = new UniversalSessionStore(tempDir);
+			const sentMessages: ServerMessage[] = [];
+			const driver = new MockAgentDriver(tempDir);
+
+			const session = new UniversalSession({
+				clientId: "test-client-marker",
+				cwd: tempDir,
+				send: (msg) => sentMessages.push(msg),
+				store,
+				driver,
+			});
+
+			await session.prompt("please suggest [[action:suggest:QuickAction]]");
+			await new Promise((r) => setTimeout(r, 50));
+			const activeId = (session as any).activeConvId;
+			const suggestions = (session as any).markerSvc.getActionSuggestions(activeId);
+			expect(suggestions?.some((s: any) => s.label === "QuickAction")).toBe(true);
 
 			session.dispose();
 		});
