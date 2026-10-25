@@ -177,7 +177,8 @@ export default {
 				// 停滞连接（对端不发 RST）会让裸 fetch 挂数分钟，期间
 				// provisioningState.downloading 卡在 true，一键安装只回
 				// "Download already in progress"——整体 10 分钟兜底超时。
-				const res = await fetch(DEFAULT_RUNTIME_URL, { signal: AbortSignal.timeout(600_000) });
+				const fetchFn = typeof host.fetch === "function" ? host.fetch.bind(host) : fetch;
+				const res = await fetchFn(DEFAULT_RUNTIME_URL, { timeoutMs: 600_000, signal: AbortSignal.timeout(600_000) });
 				if (!res.ok) throw new Error(`下载 Univer 运行时失败: HTTP ${res.status}`);
 
 				const total = Number(res.headers.get("content-length") || 0);
@@ -554,6 +555,9 @@ export default {
 
 		// 路由：查询运行时就绪状态与下载进度
 		function assertInWorkspaceLocal(absPath) {
+			if (typeof host.resolveInWorkspace === "function") {
+				return host.resolveInWorkspace(absPath);
+			}
 			return assertInWorkspace(absPath, host.cwd);
 		}
 

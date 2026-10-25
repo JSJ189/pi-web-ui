@@ -798,6 +798,20 @@ export interface PluginHost {
 	 *  dispose 幂等由调用方保证（宿主可能先经返回值撤一次、再在反激活时逆序回卷一次）；
 	 *  dispose 抛错只记一条诊断，不阻断其它清理。 */
 	effect(label: string, dispose: () => void): () => void;
+	/**
+	 * 安全解析工作区相对/绝对路径：
+	 * 确保目标路径严格位于主工作区（host.cwd）或多根工作区（workspace roots）内，
+	 * 越界时抛出带 statusCode=403 的标准错误，免除插件自行手写边界守卫。
+	 */
+	resolveInWorkspace(relOrAbsPath: string): string;
+	/**
+	 * 带有默认超时（默认 30s）与插件生命周期绑定的安全 fetch：
+	 * 插件卸载或重载时自动 abort 挂起中的请求，避免连接泄露与假死。
+	 */
+	fetch(
+		input: string | URL | globalThis.Request,
+		init?: RequestInit & { timeoutMs?: number },
+	): Promise<globalThis.Response>;
 }
 
 /** 插件运行时 UI 注册（host.ui.*）——与 manifest 基线合并后随 plugins 清单下发。 */
@@ -4029,6 +4043,12 @@ export class PluginManager {
 			if (thinkingLevel) passthrough.thinkingLevel = thinkingLevel.slice(0, 64);
 			return self.chatProvider(info.id, passthrough);
 		};
+		const pluginAbort = new AbortController();
+		effects.add("plugin:fetch-abort", () => {
+			try {
+				pluginAbort.abort();
+			} catch {}
+		});
 		const host: PluginHost = {
 			broadcast: (payload) => this.broadcast(info.id, payload),
 			notify: (level, text, textEn) => this.notifyAll(level, text, textEn),
@@ -5142,6 +5162,28 @@ export class PluginManager {
 						.trim()
 						.slice(0, 64) || "anonymous";
 				return effects.add(`plugin:${name}`, dispose);
+			},
+			resolveInWorkspace: (relOrAbsPath: string) => {
+				const target = resolve(self.cwdValue, String(relOrAbsPath ?? ""));
+				if (!self.isInsideWorkspace(target)) {
+					const err: any = new Error("路径超出工作区范围");
+					err.statusCode = 403;
+					throw err;
+				}
+				return target;
+			},
+			fetch: async (input, init) => {
+				const timeoutMs = Math.max(100, Math.min(Number(init?.timeoutMs ?? 30_000) || 30_000, 600_000));
+				const timeoutSignal = AbortSignal.timeout(timeoutMs);
+				const signals = [pluginAbort.signal, timeoutSignal];
+				if (init?.signal) signals.push(init.signal);
+				const combinedSignal = (AbortSignal as any).any
+					? (AbortSignal as any).any(signals)
+					: init?.signal || timeoutSignal;
+				return await fetch(input as any, {
+					...init,
+					signal: combinedSignal,
+				});
 			},
 		};
 		try {

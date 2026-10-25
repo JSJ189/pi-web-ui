@@ -296,6 +296,10 @@ export interface PluginHost {
 	 *  走同一个 effect 栈，这里只用于「宿主管不到的那些」—— 挂进来就不怕漏注销
 	 *  （热重载后定时器叠加、监听器堆积都是这个漏法的症状）。dispose 请写成幂等的。 */
 	effect(label: string, dispose: () => void): () => void;
+	/** 安全解析工作区相对/绝对路径：落在工作区或额外根内放行，越界抛带 statusCode=403 的错误。 */
+	resolveInWorkspace(relOrAbsPath: string): string;
+	/** 带有默认超时（默认 30s）与插件生命周期绑定的安全 fetch。 */
+	fetch(input: string | URL | Request, init?: RequestInit & { timeoutMs?: number }): Promise<Response>;
 	/** 无头调用：把外部通道文本投给 agent（要 "chat" 能力；宿主未接 chatProvider
 	 *  时 reject（由 chatWait 包成 {ok:false}，插件侧用 chatWait 更省心）。 */
 	chat(req: { text: string; accountId?: string }): Promise<{

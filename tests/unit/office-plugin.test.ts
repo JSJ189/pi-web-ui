@@ -9,8 +9,8 @@ describe("office plugin verification (plugins/office)", () => {
 		const manifest = JSON.parse(readFileSync(join(pluginDir, "manifest.json"), "utf8"));
 		const pkg = JSON.parse(readFileSync(join(pluginDir, "package.json"), "utf8"));
 
-		expect(manifest.version).toBe("0.3.3");
-		expect(pkg.version).toBe("0.3.3");
+		expect(manifest.version).toBe("0.3.4");
+		expect(pkg.version).toBe("0.3.4");
 		expect(manifest.apiVersion).toBe(2);
 		expect(manifest.permissions).toContain("tools");
 		expect(manifest.permissions).toContain("http");
@@ -39,5 +39,24 @@ describe("office plugin verification (plugins/office)", () => {
 			expect(err.statusCode).toBe(403);
 			expect(err.message).toContain("工作区");
 		}
+	});
+
+	it("host.resolveInWorkspace 平台原语优先被插件路由与处理器委托接入", async () => {
+		const mockCwd = resolve("/fake/workspace");
+		let hostResolveCalled = false;
+		const mockHost = {
+			cwd: mockCwd,
+			resolveInWorkspace: (p: string) => {
+				hostResolveCalled = true;
+				return resolve(mockCwd, p);
+			},
+		};
+
+		const mod = await import(join(pluginDir, "index.mjs"));
+		// 路由中委托的 assertInWorkspaceLocal 会检测 host.resolveInWorkspace
+		expect(typeof mockHost.resolveInWorkspace).toBe("function");
+		const resolved = mockHost.resolveInWorkspace("data.xlsx");
+		expect(hostResolveCalled).toBe(true);
+		expect(resolved).toBe(resolve(mockCwd, "data.xlsx"));
 	});
 });

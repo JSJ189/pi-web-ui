@@ -55,26 +55,54 @@ interface RegistryCacheEntry {
 }
 const registryCache = new Map<string, RegistryCacheEntry>();
 
-let lastProbeAt = 0;
-/** 单项探测（probeEngine）各自的完成时间：probeAllEngines 的全局 lastProbeAt
- *  不会随单项探测更新，只看全局会让 TTL 过后每次 probeEngine 都重新派生
- *  探针子进程（execFile dsh --version 等）——与 5 秒防抖的设计意图相悖。 */
-const lastEngineProbeAt = new Map<string, number>();
-const updatingEngineIds = new Set<string>();
-
-function applyUpdatingFlag(list: EngineStatus[]): EngineStatus[] {
-	return list.map((s) => ({
-		...s,
-		...(updatingEngineIds.has(s.id) ? { updating: true } : {}),
-	}));
+interface EngineEntry {
+	status: EngineStatus;
+	probedAt: number;
+	updating: boolean;
 }
 
-let cachedStatuses: EngineStatus[] = [
-	{ id: "pi", installed: true, packageName: ENGINE_PACKAGES.pi.packageName, version: VERSION },
-	{ id: "dsh", installed: false, packageName: ENGINE_PACKAGES.dsh.packageName },
-	{ id: "claude", installed: false, packageName: ENGINE_PACKAGES.claude.packageName },
-	{ id: "durable", installed: false, packageName: ENGINE_PACKAGES.durable.packageName },
-];
+/** 引擎状态原子字典：单一事实源，收敛 status / probedAt / updating 三元组，杜绝独立状态撕裂 */
+const engineRegistry = new Map<string, EngineEntry>([
+	[
+		"pi",
+		{
+			status: { id: "pi", installed: true, packageName: ENGINE_PACKAGES.pi.packageName, version: VERSION },
+			probedAt: 0,
+			updating: false,
+		},
+	],
+	[
+		"dsh",
+		{
+			status: { id: "dsh", installed: false, packageName: ENGINE_PACKAGES.dsh.packageName },
+			probedAt: 0,
+			updating: false,
+		},
+	],
+	[
+		"claude",
+		{
+			status: { id: "claude", installed: false, packageName: ENGINE_PACKAGES.claude.packageName },
+			probedAt: 0,
+			updating: false,
+		},
+	],
+	[
+		"durable",
+		{
+			status: { id: "durable", installed: false, packageName: ENGINE_PACKAGES.durable.packageName },
+			probedAt: 0,
+			updating: false,
+		},
+	],
+]);
+
+function toPublicStatus(entry: EngineEntry): EngineStatus {
+	return {
+		...entry.status,
+		...(entry.updating ? { updating: true } : {}),
+	};
+}
 
 /**
  * 查询全局包在 npm 远端的最新版本号（带 5 分钟缓存）。
@@ -273,12 +301,9 @@ export async function probeDurable(force = false): Promise<EngineStatus> {
  */
 export async function probeEngine(id: string, force = false): Promise<EngineStatus> {
 	if (id === "pi") return probePi();
-	const lastAt = Math.max(lastEngineProbeAt.get(id) ?? 0, lastProbeAt);
-	if (!force && Date.now() - lastAt < CACHE_TTL_MS) {
-		const found = cachedStatuses.find((e) => e.id === id);
-		// 缓存命中也要带 updating 标志：恰逢后台引擎更新时，直接返回裸缓存
-		// 会让 UI 丢失"更新中"状态。
-		if (found) return applyUpdatingFlag([found])[0];
+	const entry = engineRegistry.get(id);
+	if (!force && entry && entry.probedAt > 0 && Date.now() - entry.probedAt < CACHE_TTL_MS) {
+		return toPublicStatus(entry);
 	}
 	let result: EngineStatus;
 	if (id === "dsh") {
@@ -291,23 +316,24 @@ export async function probeEngine(id: string, force = false): Promise<EngineStat
 		result = { id: id as any, installed: false };
 	}
 	await enrichWithUpdateInfo(result, force);
-	// 更新单项缓存与单项时间戳
-	const idx = cachedStatuses.findIndex((e) => e.id === id);
-	if (idx >= 0) cachedStatuses[idx] = result;
-	else cachedStatuses.push(result);
-	lastEngineProbeAt.set(id, Date.now());
-	return {
-		...result,
-		...(updatingEngineIds.has(id) ? { updating: true } : {}),
+	const updatedEntry: EngineEntry = {
+		status: result,
+		probedAt: Date.now(),
+		updating: entry?.updating ?? false,
 	};
+	engineRegistry.set(id, updatedEntry);
+	return toPublicStatus(updatedEntry);
 }
 
 /**
  * 探测全部已知引擎并返回最新状态列表（带 TTL 缓存防抖）。
  */
 export async function probeAllEngines(force = false): Promise<EngineStatus[]> {
-	if (!force && Date.now() - lastProbeAt < CACHE_TTL_MS && cachedStatuses.length > 0) {
-		return applyUpdatingFlag(cachedStatuses);
+	const now = Date.now();
+	const entries = Array.from(engineRegistry.values());
+	const allFresh = entries.every((e) => e.probedAt > 0 && now - e.probedAt < CACHE_TTL_MS);
+	if (!force && allFresh && entries.length > 0) {
+		return entries.map(toPublicStatus);
 	}
 	const [pi, dsh, claude, durable] = await Promise.all([probePi(), probeDsh(), probeClaude(), probeDurable()]);
 	await Promise.all([
@@ -316,27 +342,31 @@ export async function probeAllEngines(force = false): Promise<EngineStatus[]> {
 		enrichWithUpdateInfo(claude, force),
 		enrichWithUpdateInfo(durable, force),
 	]);
-	cachedStatuses = [pi, dsh, claude, durable];
-	const now = Date.now();
-	lastProbeAt = now;
-	for (const s of cachedStatuses) {
-		lastEngineProbeAt.set(s.id, now);
+	const timestamp = Date.now();
+	const results = [pi, dsh, claude, durable];
+	for (const res of results) {
+		const existing = engineRegistry.get(res.id);
+		engineRegistry.set(res.id, {
+			status: res,
+			probedAt: timestamp,
+			updating: existing?.updating ?? false,
+		});
 	}
-	return applyUpdatingFlag(cachedStatuses);
+	return Array.from(engineRegistry.values()).map(toPublicStatus);
 }
 
 /**
  * 同步获取当前缓存的引擎探测结果（握手帧或即时读取使用）。
  */
 export function getCachedEngineStatuses(): EngineStatus[] {
-	return applyUpdatingFlag(cachedStatuses);
+	return Array.from(engineRegistry.values()).map(toPublicStatus);
 }
 
 /**
  * 查询指定引擎是否正在执行后台更新子进程。
  */
 export function isEngineUpdating(engineId: string): boolean {
-	return updatingEngineIds.has(engineId);
+	return engineRegistry.get(engineId)?.updating ?? false;
 }
 
 /**
@@ -351,11 +381,12 @@ export async function updateEngineBackground(
 	if (!meta || !meta.packageName) {
 		return { ok: false, error: `不支持或未知的引擎「${engineId}」` };
 	}
-	if (updatingEngineIds.has(engineId)) {
+	const currentEntry = engineRegistry.get(engineId);
+	if (currentEntry?.updating) {
 		return { ok: false, error: `引擎「${engineId}」正在后台更新中，请勿重复操作` };
 	}
 
-	updatingEngineIds.add(engineId);
+	if (currentEntry) currentEntry.updating = true;
 	const pkg = meta.packageName;
 	const timeoutMs = Math.max(10_000, Number(options?.timeoutMs ?? 300_000));
 	const isWin = process.platform === "win32";
@@ -428,7 +459,8 @@ export async function updateEngineBackground(
 			error: (err as Error).message,
 		};
 	} finally {
-		updatingEngineIds.delete(engineId);
+		const finalEntry = engineRegistry.get(engineId);
+		if (finalEntry) finalEntry.updating = false;
 	}
 }
 
@@ -437,7 +469,8 @@ export async function updateEngineBackground(
  */
 export function collectInstalledEngineTargets(): LocalPackage[] {
 	const out: LocalPackage[] = [];
-	for (const status of cachedStatuses) {
+	for (const entry of engineRegistry.values()) {
+		const status = entry.status;
 		// pi-core 在 collectTargets 中已有独立专属条目（PI_CORE_PACKAGE），此处收纳其他已安装引擎全局包
 		if (status.id !== "pi" && status.installed && status.packageName && status.version) {
 			out.push({

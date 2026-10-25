@@ -38,6 +38,8 @@
  * 零依赖、纯 ESM，直接拷走就能用（renderer 插件的裸 ESM 约束同样满足）。
  */
 
+import { resolve, sep } from "node:path";
+
 /**
  * SDK 版本（单源：与 plugin-sdk/package.json 的 version 保持一致，
  * tests/unit/plugin-sdk-mock.test.ts 锁定）。脚手架拷贝 sdk/index.mjs 时连版本号
@@ -523,6 +525,22 @@ export function createMockHost(overrides) {
 		effect: (label, dispose) => {
 			const entry = { label, dispose };
 			return remember(effectStore, entry);
+		},
+		resolveInWorkspace: (relOrAbsPath) => {
+			record("resolveInWorkspace", [relOrAbsPath]);
+			const cwdValue = typeof overrides.cwd === "string" ? overrides.cwd : "/mock-workspace";
+			const target = resolve(cwdValue, String(relOrAbsPath ?? ""));
+			const root = resolve(cwdValue);
+			if (target !== root && !target.startsWith(root + sep)) {
+				const err = new Error("路径超出工作区范围");
+				err.statusCode = 403;
+				throw err;
+			}
+			return target;
+		},
+		fetch: async (input, init) => {
+			record("fetch", [input, init]);
+			return fetch(input, init);
 		},
 		// 浏览器桥兼容（client 侧逻辑单测也能用同一个 mock）：无注入回退语义。
 		dialogs: {
