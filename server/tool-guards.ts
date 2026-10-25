@@ -22,6 +22,7 @@ import { goalReviewDenial } from "./goal-review-gate.js";
 import { delegationDenial } from "./delegate-mode.js";
 import { isPathInsideRoot, extractTargetPath, type ApprovalRule } from "./approval-rules.js";
 import { checkDangerousToolCall, pluginApprovalCategory, type ToolApprovalResolution } from "./tool-approval.js";
+import { parseHashlinePatch } from "./hashline-engine.js";
 import {
 	denialText,
 	type GuardedToolName,
@@ -735,6 +736,168 @@ export function wrapEditSoftToolWithPermission(
 					} else if (res.decision === "edit") {
 						effectiveParams = res.editedParams ?? params;
 						userEdited = true;
+					}
+				}
+			}
+
+			const result = (await tool.execute(toolCallId, effectiveParams as never, signal, onUpdate, ctx)) as unknown as {
+				details?: Record<string, unknown>;
+				[k: string]: unknown;
+			};
+			if (userEdited && result && typeof result === "object") {
+				result.details = {
+					...result.details,
+					userEdited: true,
+					originalParams: params,
+					executedParams: effectiveParams,
+				};
+			}
+			return result as never;
+		},
+	};
+}
+
+/** 为 patch 工具包装会话级权限沙箱与人机协同审批。
+ *
+ * patch 的写目标（含 REM 删除与 MV 改名的目标路径）内嵌在补丁文本的 [path#TAG]
+ * 段头里，规则引擎的 path 字段提取对它取到空串——若不单独解析，read-only /
+ * workspace-write-never 权限预设与敏感文件规则（.env/SSH 密钥等）会被整体旁路：
+ * write/edit 会拦的操作，模型改走 patch 即可原样落地（与 write/edit 同级的写面工具）。
+ * 路径提取复用引擎自己的 parseHashlinePatch，保证与实际执行面一致、无漏判。 */
+export function wrapPatchToolWithPermission(
+	tool: ToolDefinition,
+	cwd: string,
+	getPermission: () => string,
+	getRoots: () => string[],
+	getLang: () => ServerLang,
+	askApproval?: AskApprovalFn,
+	getConversationId?: () => string | undefined,
+	getRules?: () => ApprovalRule[],
+): ToolDefinition {
+	return {
+		...tool,
+		execute: async (toolCallId, params, signal, onUpdate, ctx) => {
+			const patchText =
+				typeof (params as { patch?: unknown })?.patch === "string" ? (params as { patch: string }).patch : "";
+			// 解析失败/空补丁不拦：引擎自己会报错，不会发生任何写。
+			let targets: string[] = [];
+			try {
+				const sections = parseHashlinePatch(patchText);
+				for (const sec of sections) {
+					targets.push(sec.filePath);
+					for (const h of sec.hunks) {
+						if (h.kind === "move_file" && h.targetPath) targets.push(h.targetPath);
+					}
+				}
+				targets = [...new Set(targets.filter((t) => t.trim()))];
+			} catch {
+				targets = [];
+			}
+
+			const perm = getPermission();
+			if (perm === "read-only") {
+				return {
+					content: [
+						{
+							type: "text",
+							text: pick(
+								getLang(),
+								"【权限被拒绝】当前会话处于「只读模式」（read-only），禁止应用补丁修改文件。若需修改请切换权限预设。",
+								"[Permission Denied] The current session is in 'read-only' mode; applying patches is forbidden. Switch permission preset if needed.",
+							),
+						},
+					],
+					isError: true,
+				} as never;
+			}
+			if (perm === "workspace-write-never") {
+				const outside = targets.filter((p) => !isInsideWorkspaceRoots(p, cwd, getRoots()));
+				if (outside.length > 0) {
+					return {
+						content: [
+							{
+								type: "text",
+								text: pick(
+									getLang(),
+									`【权限被拒绝】当前会话处于「工作区内修改」（workspace-write-never）模式，禁止修改工作区外部文件（${outside.map((p) => `"${p}"`).join("、")}）。若需修改请切换至「完全权限」。`,
+									`[Permission Denied] The current session is in 'workspace-write-never' mode; patching files outside the workspace (${outside.map((p) => `"${p}"`).join(", ")}) is forbidden. Switch to 'danger-full-access' if needed.`,
+								),
+							},
+						],
+						isError: true,
+					} as never;
+				}
+			}
+
+			// 审批规则：逐目标路径以 { patch, path } 合成参数求值——path 规则
+			// （敏感文件等）由此命中；field:params 规则仍能看到补丁全文。任一路径
+			// 命中 deny 即整体阻断；命中 ask 只弹一次（合成参数带首个敏感路径与全文）。
+			let effectiveParams = params;
+			let userEdited = false;
+			if (askApproval) {
+				let denied: ReturnType<typeof checkDangerousToolCall> | undefined;
+				let asked: ReturnType<typeof checkDangerousToolCall> | undefined;
+				let askedPath = "";
+				for (const p of targets) {
+					const synth = { ...(params as Record<string, unknown>), path: p };
+					const danger = checkDangerousToolCall("patch", synth, cwd, getRoots(), getRules?.());
+					if (danger.denied) {
+						denied = danger;
+						break;
+					}
+					if (danger.dangerous && !asked) {
+						asked = danger;
+						askedPath = p;
+					}
+				}
+				if (denied) {
+					return {
+						content: [
+							{
+								type: "text",
+								text: pick(
+									getLang(),
+									`【补丁被审批规则直接阻断】${denied.reason ? ` 原因：${denied.reason}` : ""}`,
+									`[Patch blocked by approval rule]${denied.reason ? ` Reason: ${denied.reason}` : ""}`,
+								),
+							},
+						],
+						details: { guardDenied: true, ruleDenied: true, reason: denied.reason },
+						isError: true,
+					} as never;
+				}
+				if (asked) {
+					const res = await askApproval(
+						toolCallId,
+						"patch",
+						{ ...(params as Record<string, unknown>), path: askedPath },
+						asked.reason,
+						asked.reasonEn,
+						getConversationId?.(),
+						asked.category,
+						asked.hits,
+					);
+					if (res.decision === "deny") {
+						return {
+							content: [
+								{
+									type: "text",
+									text: pick(
+										getLang(),
+										`【补丁被用户拒绝】${res.reason ? ` 原因：${res.reason}` : ""}`,
+										`[Patch denied by user]${res.reason ? ` Reason: ${res.reason}` : ""}`,
+									),
+								},
+							],
+							details: { guardDenied: true, userDenied: true, reason: res.reason },
+							isError: true,
+						} as never;
+					} else if (res.decision === "edit") {
+						const editedPatch = (res.editedParams as { patch?: unknown } | undefined)?.patch;
+						if (typeof editedPatch === "string" && editedPatch !== patchText) {
+							effectiveParams = { ...(params as Record<string, unknown>), patch: editedPatch };
+							userEdited = true;
+						}
 					}
 				}
 			}
