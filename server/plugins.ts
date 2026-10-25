@@ -4043,12 +4043,7 @@ export class PluginManager {
 			if (thinkingLevel) passthrough.thinkingLevel = thinkingLevel.slice(0, 64);
 			return self.chatProvider(info.id, passthrough);
 		};
-		const pluginAbort = new AbortController();
-		effects.add("plugin:fetch-abort", () => {
-			try {
-				pluginAbort.abort();
-			} catch {}
-		});
+		let pluginAbort: AbortController | null = null;
 		const host: PluginHost = {
 			broadcast: (payload) => this.broadcast(info.id, payload),
 			notify: (level, text, textEn) => this.notifyAll(level, text, textEn),
@@ -5173,6 +5168,14 @@ export class PluginManager {
 				return target;
 			},
 			fetch: async (input, init) => {
+				if (!pluginAbort) {
+					pluginAbort = new AbortController();
+					effects.add("plugin:fetch-abort", () => {
+						try {
+							pluginAbort?.abort();
+						} catch {}
+					});
+				}
 				const timeoutMs = Math.max(100, Math.min(Number(init?.timeoutMs ?? 30_000) || 30_000, 600_000));
 				const timeoutSignal = AbortSignal.timeout(timeoutMs);
 				const signals = [pluginAbort.signal, timeoutSignal];
