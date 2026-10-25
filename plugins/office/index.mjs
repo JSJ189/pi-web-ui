@@ -16,13 +16,14 @@ import {
 	mkdirSync,
 	readFileSync,
 	renameSync,
+	rmSync,
 	statSync,
 	unlinkSync,
 	writeFileSync,
 } from "node:fs";
 import { createServer } from "node:net";
 import { tmpdir } from "node:os";
-import { basename, dirname, extname, join, resolve } from "node:path";
+import { basename, dirname, extname, join, resolve, sep } from "node:path";
 import { fileURLToPath } from "node:url";
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
@@ -35,6 +36,19 @@ const PLUGIN_NODE_MODULES = join(__dirname, "node_modules");
 const DEFAULT_RUNTIME_URL =
 	process.env.PI_WEB_UNIVER_RUNTIME_URL ||
 	"https://github.com/xing-shuyin/pi-web-ui/releases/download/v0.110.0/univer-artifacts.tar.gz";
+
+/** 工作区边界：relPath/targetPath 解析后必须落在 cwd 内，防越界读写
+ *  （`../../secret` 之类可借路由读写工作区外任意文件）。 */
+export function assertInWorkspace(absPath, cwd) {
+	const root = resolve(cwd);
+	const abs = resolve(absPath);
+	if (abs !== root && !abs.startsWith(root + sep)) {
+		const err = new Error("路径超出工作区范围");
+		err.statusCode = 403;
+		throw err;
+	}
+	return abs;
+}
 
 function getUnitTypeAndFormat(extOrPath) {
 	const ext = extname(extOrPath).toLowerCase();
@@ -120,8 +134,14 @@ export default {
 
 			gatewayProc = spawn(process.execPath, [GATEWAY_ENTRY], {
 				env: childEnv,
-				stdio: ["ignore", "pipe", "pipe"],
+				// pipe 却不排水：子进程输出填满 OS 管道缓冲（约 4-64KB）后每次
+				// console.log 都会阻塞，网关整体冻结且表现为"就绪后渲染全部超时"。
+				// 网关日志量大，这里直接丢弃。
+				stdio: ["ignore", "ignore", "ignore"],
 				windowsHide: true,
+			});
+			gatewayProc.on("error", (err) => {
+				host.log(`Univer Gateway 进程错误: ${err.message}`);
 			});
 
 			gatewayReady = await waitForGateway(gatewayOrigin);
@@ -154,33 +174,60 @@ export default {
 			const targetTar = join(__dirname, "univer-artifacts.tar.gz");
 			try {
 				host.log(`正在从 ${DEFAULT_RUNTIME_URL} 下载 Univer 运行时压缩包...`);
-				const res = await fetch(DEFAULT_RUNTIME_URL);
+				// 停滞连接（对端不发 RST）会让裸 fetch 挂数分钟，期间
+				// provisioningState.downloading 卡在 true，一键安装只回
+				// "Download already in progress"——整体 10 分钟兜底超时。
+				const res = await fetch(DEFAULT_RUNTIME_URL, { signal: AbortSignal.timeout(600_000) });
 				if (!res.ok) throw new Error(`下载 Univer 运行时失败: HTTP ${res.status}`);
 
 				const total = Number(res.headers.get("content-length") || 0);
 				provisioningState.total = total;
 
 				const fileStream = createWriteStream(targetTar);
+				// 写盘失败（磁盘满/权限）默认不会抛到 await 链，必须显式监听
+				let streamError = null;
+				fileStream.on("error", (e) => {
+					streamError = e;
+				});
 				const reader = res.body?.getReader();
 				if (!reader) throw new Error("无法读取响应体流");
 
 				let downloaded = 0;
 				while (true) {
+					if (streamError) throw streamError;
 					const { done, value } = await reader.read();
 					if (done) break;
-					fileStream.write(Buffer.from(value));
-					downloaded += value.length;
-					provisioningState.downloaded = downloaded;
-					if (total > 0) {
-						provisioningState.progress = Math.round((downloaded / total) * 100);
+					if (value) {
+						if (!fileStream.write(Buffer.from(value))) {
+							await new Promise((r) => fileStream.once("drain", r));
+						}
+						downloaded += value.length;
+						provisioningState.downloaded = downloaded;
+						if (total > 0) {
+							provisioningState.progress = Math.round((downloaded / total) * 100);
+						}
 					}
 				}
 				await new Promise((r) => fileStream.end(r));
+				if (streamError) throw streamError;
 
 				host.log("下载完成，正在解压 Univer 运行时组件...");
-				// 执行 tar 解压
-				const extractCmd = `tar -xzf "${targetTar}" -C "${__dirname}"`;
-				execSync(extractCmd, { windowsHide: true });
+				// 解压到 staging 目录、成功后整体替换：tar 顺序解压中途失败（磁盘满/
+				// 进程被杀/压缩包截断）会在 artifacts/ 留下 gateway.cjs 已解出而 viewer
+				// 只解一半的半成品——所有 existsSync 门禁随即误判"已安装"，且下载
+				// 函数开头 short-circuit，再无自愈通道，用户永远只看到"网关启动超时"。
+				const stagingDir = join(__dirname, `.univer-staging-${Date.now()}`);
+				mkdirSync(stagingDir, { recursive: true });
+				try {
+					execSync(`tar -xzf "${targetTar}" -C "${stagingDir}"`, { windowsHide: true });
+					rmSync(join(__dirname, "artifacts"), { recursive: true, force: true });
+					renameSync(join(stagingDir, "artifacts"), join(__dirname, "artifacts"));
+				} catch (e) {
+					rmSync(join(__dirname, "artifacts"), { recursive: true, force: true });
+					throw e;
+				} finally {
+					rmSync(stagingDir, { recursive: true, force: true });
+				}
 				try {
 					unlinkSync(targetTar);
 				} catch {}
@@ -506,17 +553,8 @@ export default {
 		}
 
 		// 路由：查询运行时就绪状态与下载进度
-		/** 工作区边界：relPath/targetPath 解析后必须落在 host.cwd 内，防越界读写
-		 *  （`../../secret` 之类可借路由读写工作区外任意文件）。 */
-		function assertInWorkspace(absPath) {
-			const root = resolve(host.cwd);
-			const abs = resolve(absPath);
-			if (abs !== root && !abs.startsWith(root + path.sep)) {
-				const err = new Error("路径超出工作区范围");
-				err.statusCode = 403;
-				throw err;
-			}
-			return abs;
+		function assertInWorkspaceLocal(absPath) {
+			return assertInWorkspace(absPath, host.cwd);
 		}
 
 		host.route("GET", "/status", async (_req, res) => {
@@ -549,7 +587,7 @@ export default {
 				const relPath = String(req.query?.path ?? "").trim();
 				if (!relPath) return void res.status(400).json({ ok: false, error: "缺少 path 参数" });
 
-				const absPath = assertInWorkspace(resolve(host.cwd, relPath));
+				const absPath = assertInWorkspaceLocal(resolve(host.cwd, relPath));
 				if (!existsSync(absPath)) return void res.status(404).json({ ok: false, error: "文件不存在" });
 
 				const docInfo = await prepareUniverDoc(absPath);
@@ -564,7 +602,7 @@ export default {
 			try {
 				const relPath = String(req.body?.path ?? "").trim();
 				if (!relPath) return void res.status(400).json({ ok: false, error: "缺少 path 参数" });
-				const absPath = assertInWorkspace(resolve(host.cwd, relPath));
+				const absPath = assertInWorkspaceLocal(resolve(host.cwd, relPath));
 				if (!existsSync(absPath)) return void res.status(404).json({ ok: false, error: "文件不存在" });
 
 				const saved = await saveUniverDoc(absPath, req.body?.targetPath);
@@ -579,7 +617,7 @@ export default {
 			try {
 				const relPath = String(req.body?.path ?? "").trim();
 				if (!relPath) return void res.status(400).json({ ok: false, error: "缺少 path 参数" });
-				const absPath = assertInWorkspace(resolve(host.cwd, relPath));
+				const absPath = assertInWorkspaceLocal(resolve(host.cwd, relPath));
 				if (!existsSync(absPath)) return void res.status(404).json({ ok: false, error: "文件不存在" });
 
 				const result = await inspectUniverDoc(absPath, req.body?.query);
@@ -594,7 +632,7 @@ export default {
 			try {
 				const relPath = String(req.body?.path ?? "").trim();
 				if (!relPath) return void res.status(400).json({ ok: false, error: "缺少 path 参数" });
-				const absPath = assertInWorkspace(resolve(host.cwd, relPath));
+				const absPath = assertInWorkspaceLocal(resolve(host.cwd, relPath));
 				if (!existsSync(absPath)) return void res.status(404).json({ ok: false, error: "文件不存在" });
 
 				const autoSave = req.body?.save !== false;
