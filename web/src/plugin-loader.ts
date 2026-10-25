@@ -63,6 +63,9 @@ export interface PluginFileHandlerModule {
 
 export interface PluginViewModule extends PluginFileHandlerModule {
 	mount(container: HTMLElement, ctx: PluginViewContext): void | (() => void);
+	/** 可选：声明开启客户端 Shadow DOM 样式隔离 */
+	isolated?: boolean;
+	shadow?: boolean;
 	/** 可选：fenced-code 渲染器（manifest "renderers" 声明的语言）。 */
 	renderers?: Record<string, FenceRenderer>;
 }
@@ -70,6 +73,77 @@ export interface PluginViewModule extends PluginFileHandlerModule {
 export interface LoadedPluginView {
 	info: UiPluginInfo;
 	module: PluginViewModule;
+}
+
+/**
+ * 为支持样式隔离的插件准备挂载目标。
+ * 若插件或模块声明了 isolated / shadow，创建 open 模式的 ShadowRoot 并注入基础继承样式；
+ * 否则直接返回宿主 DOM 容器。
+ */
+export function preparePluginMountContainer(
+	hostEl: HTMLElement,
+	options?: { isolated?: boolean },
+): { container: HTMLElement; isShadow: boolean; cleanup: () => void } {
+	if (!options?.isolated) {
+		return {
+			container: hostEl,
+			isShadow: false,
+			cleanup: () => {
+				hostEl.replaceChildren();
+			},
+		};
+	}
+
+	let shadow = hostEl.shadowRoot;
+	if (!shadow) {
+		try {
+			shadow = hostEl.attachShadow({ mode: "open" });
+		} catch {
+			shadow = hostEl.shadowRoot;
+		}
+	}
+	if (!shadow) {
+		return {
+			container: hostEl,
+			isShadow: false,
+			cleanup: () => {
+				hostEl.replaceChildren();
+			},
+		};
+	}
+
+	shadow.replaceChildren();
+	const style = document.createElement("style");
+	style.textContent = `
+		:host {
+			display: block;
+			width: 100%;
+			height: 100%;
+			box-sizing: border-box;
+			color: var(--text, inherit);
+			font-family: inherit;
+			font-size: var(--text-base, 13.5px);
+			line-height: 1.5;
+		}
+		*, *::before, *::after {
+			box-sizing: inherit;
+		}
+	`;
+	shadow.appendChild(style);
+
+	const root = document.createElement("div");
+	root.className = "plugin-isolated-root";
+	root.style.cssText = "width:100%;height:100%;display:flex;flex-direction:column;";
+	shadow.appendChild(root);
+
+	return {
+		container: root,
+		isShadow: true,
+		cleanup: () => {
+			root.replaceChildren();
+			shadow?.replaceChildren();
+		},
+	};
 }
 
 const PLUGIN_DATA_EVENT = "pi-web-ui:plugin-data";

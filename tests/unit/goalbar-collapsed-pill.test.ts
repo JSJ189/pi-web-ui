@@ -152,12 +152,12 @@ describe("目标条折叠态", () => {
 	});
 
 	it("CSS：兜底把 .goalbar 面板皮从折叠态抹掉（老 bundle/插件带回面板类也不画带子）", () => {
-		// 主题对 .goalbar 的底色/上边框写的是 !important，只能同权重压。
+		// 面板皮由文件末尾「无层结构性覆盖」区抹掉（无层胜过 theme 层，无需提权）
 		const body = bodyOf(".goalbar.goalbar-collapsed");
 		expect(body).not.toBe("");
-		expect(/border:\s*0\s*!important/.test(body)).toBe(true);
-		expect(/background:\s*none\s*!important/.test(body)).toBe(true);
-		expect(/box-shadow:\s*none\s*!important/.test(body)).toBe(true);
-		expect(/padding:\s*0\s*!important/.test(body)).toBe(true);
+		expect(/border:\s*0/.test(body)).toBe(true);
+		expect(/background:\s*none/.test(body)).toBe(true);
+		expect(/box-shadow:\s*none/.test(body)).toBe(true);
+		expect(/padding:\s*0/.test(body)).toBe(true);
 	});
 });

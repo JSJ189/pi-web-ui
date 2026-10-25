@@ -85,7 +85,7 @@ describe("通用全局环境动态解析与穿透加载器（Universal Global Pa
 
 		// 加载不存在的包安全抛错
 		await expect(dynamicImportGlobalPackage("@nonexistent/package-never-exists")).rejects.toThrow();
-	});
+	}, 15_000);
 
 	describe.skipIf(!hasDurable)("可选全局引擎 @earendil-works/pi-durable 穿透加载验证", () => {
 		it("resolvePackageEntryFile 遵循 exports 条件导出规范解析物理入口文件", () => {

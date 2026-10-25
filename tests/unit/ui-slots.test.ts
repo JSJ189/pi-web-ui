@@ -55,7 +55,7 @@ const ids = (entries: { id: string }[]) => entries.map((e) => e.id);
 
 describe("UI slot cardinality（P1-4）", () => {
 	it("所有现有挂载点都有显式 list 规格，新增 single 不会改变现有入口语义", () => {
-		expect(UI_SLOT_SPECS).toHaveLength(33);
+		expect(UI_SLOT_SPECS).toHaveLength(34);
 		expect(UI_SLOT_SPECS.every((spec) => spec.cardinality === "list")).toBe(true);
 		expect(new Set(UI_SLOT_SPECS.map((spec) => spec.slot)).size).toBe(UI_SLOT_SPECS.length);
 	});
@@ -194,7 +194,7 @@ describe("buildUiSlots / 第 1 层：宿主默认", () => {
 		expect(settings?.hidden).toBe(false);
 		expect(settings?.order).toBe(60);
 		// 没用到的槽位是空数组（渲染层不必判空），且全部槽位都在
-		expect(Object.keys(slots)).toHaveLength(33);
+		expect(Object.keys(slots)).toHaveLength(34);
 		expect(slots["composer.leading"]).toEqual([]);
 		// 输入框动作区有 7 个宿主内置（上传/模板/模型/思考/DSH×2/发送），发送簇 align=end
 		// （计划模式已搬到目标条 host:goal-plan）
@@ -280,6 +280,7 @@ describe("buildUiSlots / 第 1 层：宿主默认", () => {
 			"contextmenu.project",
 			"contextmenu.file",
 			"contextmenu.toolcall",
+			"tool.card.footer",
 			"settings.pages",
 			"tasks.panel",
 			"modal.dialog",
@@ -449,7 +450,7 @@ describe("buildUiSlots / 第 2 层：插件贡献", () => {
 			arrange: [],
 		});
 		const slots = build([dirty]);
-		expect(Object.keys(slots)).toHaveLength(33);
+		expect(Object.keys(slots)).toHaveLength(34);
 		expect(ids(Object.values(slots).flat()).some((id) => id === "dirty:bad")).toBe(false);
 	});
 });
@@ -1373,5 +1374,15 @@ describe("左栏插件自定义分区（P4 · leftpanel.sections 接受 kind=vie
 		});
 		const slots = build([p]);
 		expect(slots["leftpanel.sections"].find((e) => e.id === "notes:fav")?.hidden).toBe(true);
+	});
+
+	it("插件向 tool.card.footer 槽位贡献条目正常生效", () => {
+		const p = plugin("custom-tool", {
+			items: [{ id: "btn", slot: "tool.card.footer", kind: "action", label: "测试按钮" }],
+			arrange: [],
+		});
+		const slots = build([p]);
+		expect(slots["tool.card.footer"].map((e) => e.id)).toEqual(["custom-tool:btn"]);
+		expect(slots["tool.card.footer"][0]?.label).toBe("测试按钮");
 	});
 });

@@ -667,13 +667,20 @@ export default {
 			const body = req.body || {};
 			const what = String(body.what || "out");
 			if (what === "url") {
-				const u = String(body.u || "");
-				if (!/^https?:\/\//i.test(u)) {
-					res.json({ ok: false, error: "只允许打开 http/https 链接" });
+				const u = String(body.u || "").trim();
+				let validUrl = false;
+				try {
+					const parsed = new URL(u);
+					if ((parsed.protocol === "http:" || parsed.protocol === "https:") && !/[\s"&|^%<>]/.test(u)) {
+						validUrl = true;
+					}
+				} catch {}
+				if (!validUrl) {
+					res.json({ ok: false, error: "只允许打开合法的 http/https 链接" });
 					return;
 				}
 				if (process.platform === "win32") {
-					spawn("cmd.exe", ["/c", "start", "", u], { detached: true, stdio: "ignore" });
+					spawn("explorer.exe", [u], { detached: true, stdio: "ignore" });
 				} else {
 					const opener = process.platform === "darwin" ? "open" : "xdg-open";
 					spawn(opener, [u], { detached: true, stdio: "ignore" });
@@ -684,7 +691,7 @@ export default {
 
 			const targetDir = what === "home" ? storageDir : outDir;
 			if (process.platform === "win32") {
-				spawn("cmd.exe", ["/c", "start", "", targetDir], { detached: true, stdio: "ignore" });
+				spawn("explorer.exe", [targetDir], { detached: true, stdio: "ignore" });
 			} else {
 				const opener = process.platform === "darwin" ? "open" : "xdg-open";
 				spawn(opener, [targetDir], { detached: true, stdio: "ignore" });

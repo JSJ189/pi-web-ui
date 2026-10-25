@@ -12,6 +12,14 @@
 		<meta name="mobile-web-app-capable" content="yes" />
 		<meta name="apple-mobile-web-app-status-bar-style" content="black-translucent" />
 		<title>pi-web-ui — pi 编码智能体</title>
+		<!-- 插件公共依赖 Import Maps（支持子路径反代部署） -->
+		<script type="importmap">
+			{
+				"imports": {
+					"@pi-web-ui/plugin-sdk/client": "./plugins-shared/client-utils.mjs"
+				}
+			}
+		</script>
 	</head>
 	<body>
 		<div id="root"></div>

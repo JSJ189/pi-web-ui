@@ -1618,6 +1618,7 @@
 		"uiLayoutContextSession": "Menu de contexto de conversa",
 		"uiLayoutContextFile": "Menu de contexto de arquivo",
 		"uiLayoutContextToolcall": "Menu de contexto do cartão de ferramenta",
+		"uiLayoutToolCardFooter": "Tool-card footer",
 		"uiLayoutLeftSessions": "Linhas de conversas do painel esquerdo",
 		"uiLayoutLeftProjectsActions": "Painel esquerdo · botões do cabeçalho de projetos",
 		"uiLayoutLeftProject": "Painel esquerdo · linhas de projeto",

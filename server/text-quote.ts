@@ -86,6 +86,87 @@ export function formatStreamingPrompt(
 	return parts.join("\n\n");
 }
 
+export interface StreamingPayload {
+	promptImages: { type: "image"; data: string; mimeType: string }[];
+	textAsides: string[];
+	imageNames: string[];
+	quotes: TextQuote[];
+}
+
+export interface AsideMessageLike {
+	message: {
+		content?: unknown;
+		details?: unknown;
+	};
+}
+
+/**
+ * 将附件消息（asides）解构为流式排队/插队可消费的载荷。
+ * 统一作为单源解析，杜绝空闲/流式分支错位造成的丢图、漏附件与非视觉模型静默丢弃。
+ */
+export function extractStreamingPayload(
+	asides: readonly AsideMessageLike[],
+	initialQuotes: readonly TextQuote[] = [],
+	mainSupportsVision: boolean = false,
+	modelLabel: string = "unknown",
+): StreamingPayload {
+	const promptImages: { type: "image"; data: string; mimeType: string }[] = [];
+	const textAsides: string[] = [];
+	const imageNames: string[] = [];
+	const quotes: TextQuote[] = [...initialQuotes];
+
+	for (const aside of asides) {
+		const details = aside.message?.details as { name?: string; mode?: string; quote?: unknown } | undefined;
+		const isBridged = details?.mode === "bridged";
+		const isQuote = details?.mode === "quote";
+
+		if (isQuote && details?.quote) {
+			const q = readTextQuote(details.quote);
+			if (q) {
+				quotes.push(q);
+				continue;
+			}
+		}
+
+		const rawContent = aside.message?.content;
+		if (typeof rawContent === "string") {
+			if (rawContent.trim()) textAsides.push(rawContent.trim());
+			continue;
+		}
+		const content = Array.isArray(rawContent) ? rawContent : [];
+		for (const b of content) {
+			if (typeof b === "string") {
+				if (b.trim()) textAsides.push(b.trim());
+				continue;
+			}
+			if (!b || typeof b !== "object") continue;
+
+			const block = b as { type?: unknown; data?: unknown; mimeType?: unknown; text?: unknown };
+			if (block.type === "image" && typeof block.data === "string") {
+				const imgName = details?.name ?? "image.png";
+				if (mainSupportsVision) {
+					promptImages.push({
+						type: "image",
+						data: block.data,
+						mimeType: typeof block.mimeType === "string" && block.mimeType ? block.mimeType : "image/png",
+					});
+					imageNames.push(imgName);
+				} else if (!isBridged) {
+					imageNames.push(imgName);
+					textAsides.push(`[Attached image "${imgName}" omitted: model (${modelLabel}) does not support vision]`);
+				}
+			} else if (block.type === "text" && typeof block.text === "string" && block.text.trim()) {
+				textAsides.push(block.text.trim());
+				if (isBridged && details?.name) {
+					imageNames.push(details.name);
+				}
+			}
+		}
+	}
+
+	return { promptImages, textAsides, imageNames, quotes };
+}
+
 /** 排队项把引用与附件随提问一起保存；展示时拆分末尾的引用块与附件标记。 */
 export function splitQuotedPrompt(value: string): ParsedQuotedPrompt {
 	let text = value;

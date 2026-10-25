@@ -23,7 +23,7 @@ import type {
 } from "../protocol.js";
 import { existsSync as fsExistsSync, mkdirSync as fsMkdirSync, readFileSync, unlinkSync, writeFileSync } from "node:fs";
 import { join as pathJoin } from "node:path";
-import { saveCanvasRuntimeState, loadCanvasGraph, isSafeGraphId } from "./canvas-store.js";
+import { saveCanvasRuntimeState, loadCanvasGraph, saveCanvasGraph, isSafeGraphId } from "./canvas-store.js";
 import { isInsideGitRepo, normalizeWirePath } from "../worktree-service.js";
 import { execFile } from "node:child_process";
 import { promisify } from "node:util";
@@ -38,6 +38,7 @@ interface ActiveNodeExecution {
 	nodeId: string;
 	abortController?: AbortController;
 	timeoutId?: ReturnType<typeof setTimeout>;
+	session?: any;
 }
 
 export class CanvasOrchestrator {
@@ -171,18 +172,25 @@ export class CanvasOrchestrator {
 	}
 
 	/** 确保该节点所需的真实工作目录（支持 Worktree 隔离） */
-	/** 有效运行基准：显式 runBase（本地绝对路径）优先，否则服务启动目录 */
+	/** 有效运行基准：显式 runBase（本地绝对路径或远程 SSH URI）优先，否则服务启动目录 */
 	private pickRunBase(runBase?: string): string {
 		const r = (runBase ?? "").trim();
-		if (r && isAbsolute(r) && !isRemoteWorkspaceUri(r)) return resolve(r);
+		if (r && (isRemoteWorkspaceUri(r) || isAbsolute(r))) return isRemoteWorkspaceUri(r) ? r : resolve(r);
 		return resolve(this.baseCwd);
 	}
 
 	async resolveNodeCwd(node: CanvasNode, runBase?: string): Promise<string> {
 		// node.id 用于 worktree 目录名与 git 分支名；node.cwd 允许工作区外任意绝对路径。
 		if (!isSafeGraphId(node.id)) throw new Error(`Invalid canvas node id: ${JSON.stringify(node.id)}`);
-		const base = this.pickRunBase(runBase);
 		const raw = (node.cwd ?? "").trim();
+		// 远程 SSH 工作区路径（如 ssh://user@host:22/path）原生透传给引擎，不走本地目录与 worktree
+		if (isRemoteWorkspaceUri(raw)) {
+			return raw;
+		}
+		const base = this.pickRunBase(runBase);
+		if (isRemoteWorkspaceUri(base)) {
+			return !raw || raw === "." ? base : `${base.replace(/\/+$/, "")}/${raw.replace(/^\/+/, "")}`;
+		}
 		// 空 = 运行基准；相对路径 = 相对运行基准（默认服务工作区，运行时可被当前项目覆盖）；绝对路径 = 原样使用（不再拦截越出工作区）。
 		const targetDir = !raw ? base : isAbsolute(raw) ? resolve(raw) : resolve(base, raw);
 		if (!node.useWorktree) {
@@ -317,7 +325,15 @@ export class CanvasOrchestrator {
 			let prompt = isInputOnly
 				? `${contractContext}${configContext ? `\n${configContext}` : ""}`
 				: `${expandedInstruction || "按照你的角色职责进行开发"}\n${configContext}${contractContext}`;
-			this.appendLog(graph.id, nodeId, "prompt", prompt.slice(0, 2000));
+
+			if (
+				!contractContext.trim() &&
+				!initialPrompt?.trim() &&
+				!node.instruction?.trim() &&
+				!isCanvasPassthroughRole(node.role)
+			) {
+				prompt += `\n\n【首节点启动指引】: 当前为流水线首节点。请结合当前工作区代码库现状，排查梳理项目架构规范与待实现的核心任务，输出明确的分工契约交由下游节点接力执行。`;
+			}
 
 			let outputSummary = "";
 
@@ -349,7 +365,13 @@ export class CanvasOrchestrator {
 					"system",
 					`AI 裁决启动（${node.engine}/${judgeModel}）：${judgeAsk.slice(0, 200)}`,
 				);
+			} else if (!isCanvasPassthroughRole(node.role) && node.role !== "transform") {
+				prompt += `\n\n【流水线自动化执行安全公约】:
+1. 自治推进：这是无人值守的自动化协同流水线，严禁停留在向用户提问或等待人工决策阶段；遇分支情况请按最佳工程实践自主裁决并推进；
+2. 避免前台阻塞：如需启动服务或验证测试，严禁启动阻塞终端的前台长进程；遇到端口占用（如 3000/3001 等）先检测并释放，验证完成后务必确保退出并清理所有后台子进程；
+3. 交付明确：完成时请提供清晰的修改摘要、接口契约与当前状态，供下游节点或审查门禁接力。`;
 			}
+			this.appendLog(graph.id, nodeId, "prompt", prompt.slice(0, 2000));
 			// 纯透传控制节点（条件/循环/人工/汇聚/记忆/结束）：不启动 LLM 会话，直接透传摘要。人工审批节点停留在 waiting_approval 等待抽屉批准，不自动向下游流转。
 			if (node.role === "transform") {
 				const transformed = executeTransformNode(graph, node);
@@ -602,6 +624,7 @@ export class CanvasOrchestrator {
 					});
 					continue;
 				}
+				edge.currentLoopCount = current + 1;
 			}
 
 			// 触发下游目标节点
@@ -731,7 +754,7 @@ export class CanvasOrchestrator {
 	}
 
 	/** 向节点插话干预 (Steer) */
-	steerNode(graphId: string, nodeId: string, message: string): void {
+	async steerNode(graphId: string, nodeId: string, message: string): Promise<void> {
 		let graph = this.runningGraphs.get(graphId);
 		if (!graph) {
 			try {
@@ -755,6 +778,26 @@ export class CanvasOrchestrator {
 			event: "action",
 			currentAction: node.currentAction,
 		});
+
+		// 真正投递给底层会话（若节点正在执行）
+		const execKey = `${graphId}:${nodeId}`;
+		const execution = this.activeExecutions.get(execKey);
+		if (execution?.session && typeof execution.session.prompt === "function") {
+			try {
+				await execution.session.prompt(message);
+				this.appendLog(graphId, nodeId, "system", "已将插话实时投递进正在运行的智能体会话。");
+			} catch (err: unknown) {
+				const errMsg = err instanceof Error ? err.message : String(err);
+				this.appendLog(graphId, nodeId, "error", `插话投递底层会话失败: ${errMsg}`);
+			}
+		} else if (node.status !== "running") {
+			const cleanMsg = message.trim();
+			if (cleanMsg) {
+				node.instruction = node.instruction ? `${node.instruction}\n\n[人工指导补充]: ${cleanMsg}` : cleanMsg;
+				saveCanvasGraph(this.dataDir, graph);
+				this.appendLog(graphId, nodeId, "system", "节点未在运行，指导意见已暂存为该节点下一次执行指令。");
+			}
+		}
 	}
 
 	/** 重置全图节点状态为 idle */
@@ -820,7 +863,11 @@ export class CanvasOrchestrator {
 		if (!this.engineGetter) {
 			throw new Error("引擎服务提供者未注入");
 		}
-		const engineSvc = this.engineGetter(node.engine);
+		let engineSvc = this.engineGetter(node.engine);
+		if (!engineSvc && node.engine !== "pi") {
+			engineSvc = this.engineGetter("pi");
+			this.appendLog(graph.id, node.id, "system", `引擎 ${node.engine} 不可用，已自动切换为 Pi 原生引擎。`);
+		}
 		if (!engineSvc) {
 			throw new Error(`找不到智能体引擎：${node.engine}`);
 		}
@@ -878,6 +925,11 @@ export class CanvasOrchestrator {
 		};
 
 		const cs = await engineSvc.attach(clientId, sink);
+		const execKey = `${graph.id}:${node.id}`;
+		const execution = this.activeExecutions.get(execKey);
+		if (execution) {
+			execution.session = cs;
+		}
 
 		try {
 			if (cs.cwd !== resolvedCwd) {
@@ -890,7 +942,23 @@ export class CanvasOrchestrator {
 				try {
 					await (cs as any).switchModelOrThrow(normalizeCanvasModelId(node.model));
 				} catch (err) {
-					throw new Error(`模型未配置或不可用 [${node.model}]: ${(err as Error).message}`);
+					// 尝试安全回退到当前引擎默认可用模型，避免特定模型未配置导致整张画布崩溃
+					let fallbackOk = false;
+					if (typeof (cs as any).switchModel === "function") {
+						try {
+							await (cs as any).switchModel("");
+							fallbackOk = true;
+							this.appendLog(
+								graph.id,
+								node.id,
+								"system",
+								`指定模型 [${node.model}] 不可用，已自动回落至引擎默认模型。`,
+							);
+						} catch {}
+					}
+					if (!fallbackOk) {
+						throw new Error(`模型未配置或不可用 [${node.model}]: ${(err as Error).message}`);
+					}
 				}
 			}
 
@@ -952,16 +1020,18 @@ export class CanvasOrchestrator {
 				}
 			}
 
-			// 真实检测代码变更统计
+			// 真实检测代码变更统计（仅本地项目支持本地 git diff）
 			let diffSummary = "";
 			try {
-				const { stdout: diffStat } = await exec("git", ["diff", "--stat"], {
-					cwd: resolvedCwd,
-					timeout: 5000,
-					windowsHide: true,
-				});
-				if (diffStat.trim()) {
-					diffSummary = `\n【代码变更统计】:\n${diffStat.trim()}`;
+				if (!isRemoteWorkspaceUri(resolvedCwd)) {
+					const { stdout: diffStat } = await exec("git", ["diff", "--stat"], {
+						cwd: resolvedCwd,
+						timeout: 5000,
+						windowsHide: true,
+					});
+					if (diffStat.trim()) {
+						diffSummary = `\n【代码变更统计】:\n${diffStat.trim()}`;
+					}
 				}
 			} catch {}
 
@@ -974,6 +1044,9 @@ export class CanvasOrchestrator {
 			if (replyText) return `${replyText.slice(-300)}${diffSummary}`;
 			return `[${node.title}] 交付完成${diffSummary || "（未产生文件修改）"}`;
 		} finally {
+			if (execution) {
+				execution.session = undefined;
+			}
 			engineSvc.detach(clientId, sink);
 		}
 	}
@@ -1110,17 +1183,19 @@ function buildPassthroughSummary(node: CanvasNode, contractContext: string, init
 			return `【人工审批 ${node.title}】${cfgText ? `审批提示：${cfgText}` : ""}\n待人工在抽屉中批准/驳回。上游产物：\n${contract}`;
 		case "trigger": {
 			const popup = (initialPrompt ?? "").trim();
-			const payload = popup || String(cfg["payload"] ?? "").trim();
+			const payload = popup || String(cfg["payload"] ?? "").trim() || String(node.instruction ?? "").trim();
 			const extra = contractContext ? contractContext.slice(0, 1000) : "";
 			if (payload)
 				return (
-					"【手动触发 " +
+					"【手动触发 · 业务需求输入 " +
 					node.title +
-					"】启动载荷：\n" +
+					"】任务内容：\n" +
 					payload.slice(0, 1500) +
 					(extra ? "\n上游输入：\n" + extra : "")
 				);
-			return "【手动触发 " + node.title + "】" + (extra ? "上游输入：\n" + extra : "（无载荷，直接启动）");
+			return (
+				"【手动触发 · 业务需求输入 " + node.title + "】" + (extra ? "上游输入：\n" + extra : "（无载荷，直接启动）")
+			);
 		}
 		case "cron":
 			return (

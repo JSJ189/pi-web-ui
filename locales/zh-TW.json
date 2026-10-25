@@ -1618,6 +1618,7 @@
 		"uiLayoutContextSession": "工作階段右鍵選單",
 		"uiLayoutContextFile": "檔案右鍵選單",
 		"uiLayoutContextToolcall": "工具卡右鍵選單",
+		"uiLayoutToolCardFooter": "工具卡底部",
 		"uiLayoutLeftSessions": "左欄工作階段行",
 		"uiLayoutLeftProjectsActions": "左欄·專案標題按鈕",
 		"uiLayoutLeftProject": "左欄·專案行",

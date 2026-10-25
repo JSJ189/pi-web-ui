@@ -20,6 +20,7 @@ import { createNotesApp } from "./app.mjs";
 import { el } from "./dom.mjs";
 import { createSettings } from "./settings-form.mjs";
 import * as S from "./store.mjs";
+import { hostApi } from "@pi-web-ui/plugin-sdk/client";
 
 const POS_KEY = "notes:panel";
 const MIN_W = 260;
@@ -120,7 +121,7 @@ export function createPanel(options) {
 	function appendToAnchor() {
 		let anchor = null;
 		try {
-			anchor = globalThis.window?.__piWebUiHost?.dom?.anchors?.()?.app ?? null;
+			anchor = hostApi()?.dom?.anchors?.()?.app ?? globalThis.window?.__piWebUiHost?.dom?.anchors?.()?.app ?? null;
 		} catch {
 			anchor = null;
 		}

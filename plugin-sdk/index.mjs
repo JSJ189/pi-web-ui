@@ -272,6 +272,8 @@ export function createMockHost(overrides) {
 	const proxyStore = [];
 	const scheduleStore = [];
 	const effectStore = [];
+	const serviceMap = new Map();
+	const serviceListeners = new Map();
 	// 注册类：存定义体 + 返回只摘除本次注册的注销函数（与宿主同语义）。
 	const remember = (store, entry) => {
 		if (entry !== undefined) store.push(entry);
@@ -371,8 +373,61 @@ export function createMockHost(overrides) {
 			delete: (key) => {
 				storeMap.delete(key);
 			},
+			has: (key) => storeMap.has(key),
+			keys: () => [...storeMap.keys()],
+			clear: () => {
+				storeMap.clear();
+			},
 			all: () => Object.fromEntries(storeMap),
 		},
+		services: {
+			provide: (name, service) => {
+				serviceMap.set(name, service);
+				const listeners = serviceListeners.get(name);
+				if (listeners) {
+					for (const fn of listeners) {
+						try {
+							fn(service);
+						} catch {}
+					}
+				}
+				return () => {
+					if (serviceMap.get(name) === service) {
+						serviceMap.delete(name);
+						const currListeners = serviceListeners.get(name);
+						if (currListeners) {
+							for (const fn of currListeners) {
+								try {
+									fn(undefined);
+								} catch {}
+							}
+						}
+					}
+				};
+			},
+			get: (name) => serviceMap.get(name),
+			has: (name) => serviceMap.has(name),
+			list: () => [...serviceMap.keys()].map((k) => ({ name: k, pluginId: "mock" })),
+			on: (name, handler) => {
+				let listeners = serviceListeners.get(name);
+				if (!listeners) {
+					listeners = new Set();
+					serviceListeners.set(name, listeners);
+				}
+				listeners.add(handler);
+				if (serviceMap.has(name)) {
+					try {
+						handler(serviceMap.get(name));
+					} catch {}
+				}
+				return () => {
+					listeners.delete(handler);
+				};
+			},
+		},
+		provide: (name, service) => host.services.provide(name, service),
+		get: (name) => host.services.get(name),
+		onService: (name, handler) => host.services.on(name, handler),
 		secrets: {
 			set: (name, value) => {
 				secretMap.set(name, value);

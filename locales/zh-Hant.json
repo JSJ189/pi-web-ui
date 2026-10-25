@@ -1618,6 +1618,7 @@
 		"uiLayoutContextSession": "會話右鍵菜單",
 		"uiLayoutContextFile": "文件右鍵菜單",
 		"uiLayoutContextToolcall": "工具卡右鍵菜單",
+		"uiLayoutToolCardFooter": "工具卡底部",
 		"uiLayoutLeftSessions": "左欄會話行",
 		"uiLayoutLeftProjectsActions": "左欄·項目標題按鈕",
 		"uiLayoutLeftProject": "左欄·項目行",

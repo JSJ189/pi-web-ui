@@ -112,6 +112,9 @@ import { promisify } from "node:util";
 /** 合法插件 id：字母/数字/下划线/连字符，防路径穿越（同 themes.ts 的做法）。 */
 const ID_RE = /^[A-Za-z0-9_-]+$/;
 
+/** 合法服务名：字母/数字/下划线/点/连字符，1-64 字符。 */
+const SERVICE_NAME_RE = /^[A-Za-z0-9_.-]+$/;
+
 /** 插件收到的工具执行事件（agent-service 的 SDK tool_execution_start/end 转发）。 */
 export interface PluginToolEvent {
 	phase: "start" | "end";
@@ -567,8 +570,38 @@ export interface PluginHost {
 		get<T>(key: string, fallback?: T): T | undefined;
 		set(key: string, value: unknown): void;
 		delete(key: string): void;
+		has(key: string): boolean;
+		keys(): string[];
+		clear(preserveSettings?: boolean): void;
 		all(): Record<string, unknown>;
 	};
+	/**
+	 * 插件间服务总线（Service Registry / Bus）：
+	 * 允许插件发布服务实例（类、对象、工具集），供其它插件获取或监听。
+	 * 自动绑定当前插件的 PluginEffectStack：插件禁用/重载/卸载时自动撤销并通知监听者。
+	 */
+	services: {
+		/** 发布一个命名服务。返回手动注销函数（亦会在插件反激活时自动回卷）。
+		 *  同名冲突且被其它插件占用时抛出 Error（先到先得）。 */
+		provide<T>(name: string, service: T): () => void;
+		/** 同步获取已发布的服务实例；不存在则返回 undefined。 */
+		get<T>(name: string): T | undefined;
+		/** 检查服务是否存在。 */
+		has(name: string): boolean;
+		/** 获取当前所有已发布服务的清单（调试/自查用）。 */
+		list(): Array<{ name: string; pluginId: string }>;
+		/** 监听服务的上线与下线。
+		 *  若注册时服务已存在，会立即以当前实例同步回调一次；
+		 *  服务撤销时以 undefined 回调；重新提供时再次以新实例回调。
+		 *  返回注销函数（亦随插件反激活自动回卷）。 */
+		on<T>(name: string, handler: (service: T | undefined) => void): () => void;
+	};
+	/** 顶级快捷方式（等价于 host.services.provide）。 */
+	provide<T>(name: string, service: T): () => void;
+	/** 顶级快捷方式（等价于 host.services.get）。 */
+	get<T>(name: string): T | undefined;
+	/** 顶级快捷方式（等价于 host.services.on）。 */
+	onService<T>(name: string, handler: (service: T | undefined) => void): () => void;
 	/** 加密机密存储（AES-256-GCM；存密码/API key/token 等）。
 	 *  明文绝不落盘；拷到别的机器因无宿主密钥解不开。 */
 	secrets: {
@@ -1042,6 +1075,7 @@ export const UI_SLOT_ALIASES: Readonly<Record<string, string>> = {
 	"sidebar.right": "sidebar.right",
 	leftbar: "sidebar.left",
 	rightbar: "sidebar.right",
+	"tool.footer": "tool.card.footer",
 };
 
 /** 合法的条目种类（缺省 action；settings.pages 缺省 page）。 */
@@ -1768,6 +1802,10 @@ export class PluginManager {
 	 *  不落盘、随进程走；只经 plugin_data 按需拉取，绝不进 60ms 快照
 	 *  （与 diagnostics 的“只读诊断随清单下发”正交，互不冲突）。 */
 	private pluginLogs = new Map<string, PluginLogEntry[]>();
+	/** 插件间发布的服务表：serviceName → { pluginId: string; service: unknown } */
+	private pluginServices = new Map<string, { pluginId: string; service: unknown }>();
+	/** 服务监听者表：serviceName → Set<(service: unknown | undefined) => void> */
+	private serviceListeners = new Map<string, Set<(service: unknown | undefined) => void>>();
 
 	constructor(
 		private readonly dataDir: string,
@@ -2124,6 +2162,95 @@ export class PluginManager {
 		if (!p) return false;
 		if (this.proxyRoutes.get(p)?.pluginId !== pluginId) return false;
 		return this.proxyRoutes.delete(p);
+	}
+
+	/**
+	 * 插件发布一个命名服务。
+	 * 同名且被其它插件占有时抛错；同一插件重复 provide 时覆盖。
+	 * 返回注销函数（撤销自身发布并广播 undefined）。
+	 */
+	provideService(pluginId: string, name: string, service: unknown): () => void {
+		const trimmed = String(name ?? "").trim();
+		if (!trimmed || !SERVICE_NAME_RE.test(trimmed) || trimmed.length > 64) {
+			throw new Error(`provide: 非法服务名 "${name}"（需由字母、数字、下划线、点或短横线组成，1-64 字符）`);
+		}
+		const existing = this.pluginServices.get(trimmed);
+		if (existing && existing.pluginId !== pluginId) {
+			throw new Error(`provide: 服务 "${trimmed}" 已由插件 "${existing.pluginId}" 注册`);
+		}
+		this.pluginServices.set(trimmed, { pluginId, service });
+		const listeners = this.serviceListeners.get(trimmed);
+		if (listeners) {
+			for (const fn of listeners) {
+				try {
+					fn(service);
+				} catch (err) {
+					console.error(`[plugin:${pluginId}] service listener failed for "${trimmed}":`, err);
+				}
+			}
+		}
+		let revoked = false;
+		return () => {
+			if (revoked) return;
+			revoked = true;
+			const current = this.pluginServices.get(trimmed);
+			if (current && current.pluginId === pluginId) {
+				this.pluginServices.delete(trimmed);
+				const currentListeners = this.serviceListeners.get(trimmed);
+				if (currentListeners) {
+					for (const fn of currentListeners) {
+						try {
+							fn(undefined);
+						} catch (err) {
+							console.error(`[plugin:${pluginId}] service revoked listener failed for "${trimmed}":`, err);
+						}
+					}
+				}
+			}
+		};
+	}
+
+	getService<T>(name: string): T | undefined {
+		const trimmed = String(name ?? "").trim();
+		return this.pluginServices.get(trimmed)?.service as T | undefined;
+	}
+
+	hasService(name: string): boolean {
+		const trimmed = String(name ?? "").trim();
+		return this.pluginServices.has(trimmed);
+	}
+
+	listServices(): Array<{ name: string; pluginId: string }> {
+		const res: Array<{ name: string; pluginId: string }> = [];
+		for (const [name, entry] of this.pluginServices.entries()) {
+			res.push({ name, pluginId: entry.pluginId });
+		}
+		return res;
+	}
+
+	onService<T>(name: string, handler: (service: T | undefined) => void): () => void {
+		const trimmed = String(name ?? "").trim();
+		if (!trimmed || typeof handler !== "function") return () => {};
+		let set = this.serviceListeners.get(trimmed);
+		if (!set) {
+			set = new Set();
+			this.serviceListeners.set(trimmed, set);
+		}
+		set.add(handler as (service: unknown | undefined) => void);
+		const current = this.pluginServices.get(trimmed);
+		if (current !== undefined) {
+			try {
+				handler(current.service as T);
+			} catch (err) {
+				console.error(`[service:${trimmed}] initial onService handler failed:`, err);
+			}
+		}
+		return () => {
+			set?.delete(handler as (service: unknown | undefined) => void);
+			if (set && set.size === 0) {
+				this.serviceListeners.delete(trimmed);
+			}
+		};
 	}
 
 	/** index.ts 转发/upgrade 共用：请求路径的最长前缀命中（无命中返回 undefined）。
@@ -2992,6 +3119,20 @@ export class PluginManager {
 		for (const [prefix, hit] of this.proxyRoutes) {
 			if (hit.pluginId === p.info.id) this.proxyRoutes.delete(prefix);
 		}
+		// ③ 兜底：回收该插件发布的服务
+		for (const [name, hit] of this.pluginServices) {
+			if (hit.pluginId === p.info.id) {
+				this.pluginServices.delete(name);
+				const listeners = this.serviceListeners.get(name);
+				if (listeners) {
+					for (const fn of listeners) {
+						try {
+							fn(undefined);
+						} catch {}
+					}
+				}
+			}
+		}
 	}
 
 	/** 反激活单个插件：deactivate + 注销 AI 工具 + 清缓存。
@@ -3057,6 +3198,9 @@ export class PluginManager {
 		for (const prefix of this.proxyRoutes.keys()) {
 			if (pluginIds.has(this.proxyRoutes.get(prefix)!.pluginId)) this.proxyRoutes.delete(prefix);
 		}
+		// ④ 兜底：清理插件间服务
+		this.pluginServices.clear();
+		this.serviceListeners.clear();
 		if (this.panelPushTimer) {
 			clearTimeout(this.panelPushTimer);
 			this.panelPushTimer = null;
@@ -3195,6 +3339,8 @@ export class PluginManager {
 					view?: unknown;
 					preload?: unknown;
 					ui?: unknown;
+					isolated?: unknown;
+					shadow?: unknown;
 				};
 				const wantsDom = declarationWantsDom(m.permissions);
 				this.domWants.set(name, wantsDom);
@@ -3299,6 +3445,7 @@ export class PluginManager {
 					settingsSchema: settingsSchemaForScan,
 					settingsValues: resolvedSettingsForScan.values,
 					settingsSources: resolvedSettingsForScan.sources,
+					isolated: m.isolated === true || m.shadow === true ? true : undefined,
 					// 可渲染的 fenced-code 语言（manifest "renderers"）——前端据此按需加载
 					renderers: Array.isArray(m.renderers)
 						? m.renderers.filter((r): r is string => typeof r === "string" && r.length > 0).slice(0, 32)
@@ -3755,7 +3902,7 @@ export class PluginManager {
 			const targetReal = realPathOfNearest(abs);
 			if (!targetReal) throw new Error(`无法解析真实路径：${abs}`);
 			const granted = self.grants.list().find((g) => g.pluginId === info.id)?.paths ?? [];
-			for (const r of [self.cwdValue, ...granted]) {
+			for (const r of [self.cwdValue, ...self.workspaceRoots, ...granted]) {
 				const rootReal = realPathOfNearest(resolve(r)) ?? resolve(r);
 				if (isInsideRoot(rootReal, targetReal)) return;
 			}
@@ -4132,6 +4279,22 @@ export class PluginManager {
 			},
 			getPluginCommands: () => this.listCommands(),
 			storage,
+			services: {
+				provide: (name, service) => {
+					const revoke = self.provideService(info.id, name, service);
+					return effects.add(`service:${name}`, revoke);
+				},
+				get: (name) => self.getService(name),
+				has: (name) => self.hasService(name),
+				list: () => self.listServices(),
+				on: (name, handler) => {
+					const off = self.onService(name, handler);
+					return effects.add(`service_listener:${name}`, off);
+				},
+			},
+			provide: (name, service) => host.services.provide(name, service),
+			get: (name) => host.services.get(name),
+			onService: (name, handler) => host.services.on(name, handler),
 			secrets,
 			ensureDeps: (specs, opts) => ensurePluginDeps(dir, specs ?? [], opts?.onProgress),
 			route: (method, path, handler) => {
@@ -5062,12 +5225,21 @@ export function resolvePluginClientFile(pluginsDir: string, id: string, rest: st
 	return abs;
 }
 
+/** 解析插件公共模块静态文件绝对路径（防止路径穿越）。 */
+export function resolvePluginSharedFile(sharedDir: string, rest: string): string | null {
+	const root = resolve(sharedDir);
+	const abs = resolve(root, rest);
+	if (abs !== root && !abs.startsWith(root + sep)) return null;
+	return abs;
+}
+
 /** 通用代理前缀的保留字：命中即拒绝注册（宿主自用路径，代理抢了会吞掉主站功能）。 */
 export const PROXY_RESERVED_PREFIXES = [
 	"/api",
 	"/ws",
 	"/plugins",
 	"/plugins-api",
+	"/plugins-shared",
 	"/assets",
 	"/icons",
 	"/themes",

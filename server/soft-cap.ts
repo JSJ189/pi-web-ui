@@ -1,15 +1,17 @@
 /**
- * 自定义上下文压缩阈值（Soft Cap，issue #229）。
+ * 自定义上下文压缩阈值（Soft Cap，issue #229，issue #716）。
  *
  * 背景：SDK 的自动压缩只看物理上限（shouldCompact：tokens > window - reserveTokens，
  * reserveTokens 默认 16384）。对 1M 上下文的模型会堆到 ~900K 才压；对 Grok 这类
  * 200K 起阶梯翻倍计费的模型，会在高价区跑很久，还伴随长上下文降智。
  *
- * 实现：软上限 C 转成 reserveTokens = W - C，经
- * session.settingsManager.applyOverrides({ compaction: { reserveTokens } })
- * 注入（与重试次数覆盖同一 live 机制，reload/建会话/换模型后重放）。
- * 关掉软上限时回填 SDK 默认（DEFAULT_COMPACTION_SETTINGS.reserveTokens），
- * 不让旧覆盖泄漏。
+ * 实现机制（控制权反转与主动压缩）：
+ * 1. SDK 的 compaction.reserveTokens 始终保持默认值 16384，只负责物理防爆兜底；
+ * 2. 软上限（Soft Cap）不由 SDK reserve 反推注入，从数学上根除切模型时的公式混乱；
+ * 3. 当有效上下文 token 达到用户设置的软上限时，由 pi-web-ui 在空闲态（回合结算后
+ *    或新一轮提问前）主动调用 session.compact() 执行压缩。
+ *
+ * softCapToReserve 作为分层上下文预算裁剪（context-budget-runner）的工具函数保留。
  */
 import { DEFAULT_COMPACTION_SETTINGS } from "@earendil-works/pi-coding-agent";
 

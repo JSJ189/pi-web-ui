@@ -227,6 +227,11 @@ export function focusPresentItem(items: PresentCardItem[]): PresentCardItem | un
 	return items.find((i) => i.focus && previewablePresentKind(i.kind));
 }
 
+/** 优先获取应打开预览的条目：优先标了 focus 的条目，其次首个可预览条目。 */
+export function primaryPreviewItem(items: PresentCardItem[]): PresentCardItem | undefined {
+	return focusPresentItem(items) ?? items.find((i) => previewablePresentKind(i.kind));
+}
+
 /**
  * 自动打开预览弹窗的判定（纯函数）：开关开着、条目被标了 focus、卡片是「刚发生」
  * 的（时间窗内），三者全中才开。翻旧会话/窗口化惰性挂载时 timestamp 远在过去，

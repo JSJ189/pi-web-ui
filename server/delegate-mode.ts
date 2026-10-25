@@ -17,8 +17,8 @@
  */
 import { bashCommandIsReadOnly, SESSION_DISPATCH_TOOLS } from "./plan-mode.js";
 
-/** 审查者模式下确定禁止的工具：与计划模式同名单（写 / 改 / 增删 / git 写 / 形态变换）。 */
-const BLOCKED_TOOLS = new Set([
+/** 审查者模式下确定禁止的工具名单（写 / 改 / 增删 / git 写 / 派发类）。 */
+export const DELEGATE_MODE_BLOCKED_TOOL_NAMES: readonly string[] = [
 	"write",
 	"create",
 	"create_file",
@@ -57,7 +57,11 @@ const BLOCKED_TOOLS = new Set([
 	"prettier",
 	"lint_fix",
 	"autofix",
-]);
+	"subagent",
+	...SESSION_DISPATCH_TOOLS,
+];
+
+const BLOCKED_TOOLS = new Set(DELEGATE_MODE_BLOCKED_TOOL_NAMES);
 
 /**
  * 审查者模式下也禁掉的「派发类」工具：派活是**服务端**的活（自动路由），

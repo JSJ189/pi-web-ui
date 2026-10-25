@@ -1,0 +1,3 @@
+- insert:
+    - id: dsh-pi-ui
+      name: '@local/dsh-pi-ui'

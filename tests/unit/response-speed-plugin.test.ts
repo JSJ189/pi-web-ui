@@ -90,7 +90,7 @@ describe("response-speed 插件测试", () => {
 
 			expect(validation.errors).toEqual([]);
 			expect(validation.apiVersion).toBe(2);
-			expect(raw.version).toBe("0.3.1");
+			expect(raw.version).toBe("0.3.2");
 			expect(validation.permissions).toContain("ui");
 			expect(validation.permissions).toContain("http");
 			expect(validation.permissions).toContain("storage");

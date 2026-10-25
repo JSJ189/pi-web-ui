@@ -44,9 +44,18 @@ describe("Approval System Security Bypass & Path Traversal Fixes (#333)", () => 
 				expect(isPathInsideRoot("c:\\workspace\\project\\file.txt", "C:\\workspace\\project")).toBe(true);
 				// 越界路径判定
 				expect(isPathInsideRoot("C:\\workspace\\other\\file.txt", "C:\\workspace\\project")).toBe(false);
+				// 盘根判定：C:\ 下的路径必须判定为在 C:\ 内
+				expect(isPathInsideRoot("C:\\workspace\\project\\file.txt", "C:\\")).toBe(true);
+				expect(isPathInsideRoot("c:/file.txt", "C:\\")).toBe(true);
+				// 跨盘拒绝
+				expect(isPathInsideRoot("D:\\file.txt", "C:\\")).toBe(false);
 			} else {
 				expect(isPathInsideRoot("/workspace/project/src/index.ts", "/workspace/project")).toBe(true);
 				expect(isPathInsideRoot("/workspace/other/file.txt", "/workspace/project")).toBe(false);
+				// 根目录判定：/ 下的路径必须在 / 内
+				expect(isPathInsideRoot("/workspace/project/src/index.ts", "/")).toBe(true);
+				// 前缀假命中拦截：/foo 不应包含 /foobar
+				expect(isPathInsideRoot("/foobar", "/foo")).toBe(false);
 			}
 		});
 	});

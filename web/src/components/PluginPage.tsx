@@ -19,7 +19,13 @@
  */
 import { useEffect, useRef, useState } from "react";
 import type { JSX } from "react";
-import { ensurePluginViewLoaded, makePluginContext, pluginEntryUrl, type PluginViewModule } from "../plugin-loader";
+import {
+	ensurePluginViewLoaded,
+	makePluginContext,
+	pluginEntryUrl,
+	preparePluginMountContainer,
+	type PluginViewModule,
+} from "../plugin-loader";
 import { withPluginScopeAsync } from "../plugin-host";
 import { isZhLocale, useI18n, useT, type Translate } from "../i18n";
 import type { UiPluginInfo } from "../types";
@@ -125,8 +131,10 @@ export function PluginPage({ plugin, epoch, send, className }: PluginPageProps):
 					throw new Error("client/entry.mjs 没有导出 default.mount()");
 				}
 				mounting = true;
+				const isIsolated = Boolean(plugin.isolated || m.isolated || m.shadow);
+				const { container } = preparePluginMountContainer(el, { isolated: isIsolated });
 				cleanup = m.mount(
-					el,
+					container,
 					makePluginContext(plugin.id, (msg) => sendRef.current(msg)),
 				);
 			} catch (err) {
@@ -147,7 +155,7 @@ export function PluginPage({ plugin, epoch, send, className }: PluginPageProps):
 				}
 			}
 			// 容器归宿主管：下次 mount 前清干净，避免残留节点闪一下旧界面。
-			el.textContent = "";
+			el.replaceChildren();
 		};
 		// 依赖故意只取身份与纪元：plugin 对象来自快照，每次推送都可能是新对象，
 		// 按对象身份做依赖会让插件被反复重挂（见上面 sendRef 的说明）。

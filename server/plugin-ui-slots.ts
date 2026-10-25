@@ -16,6 +16,7 @@ export const UI_SLOTS: ReadonlySet<string> = new Set([
 	"contextmenu.project",
 	"contextmenu.file",
 	"contextmenu.toolcall",
+	"tool.card.footer",
 	"settings.pages",
 	"tasks.panel",
 	"leftpanel.projects.actions",

@@ -24,6 +24,7 @@ const ROOT = join(dirname(fileURLToPath(import.meta.url)), "..", "..");
 
 /** 运行时注入的自定义属性：不在任何 CSS 文件里声明，只由 JS 设置。 */
 const RUNTIME_TOKENS = new Map<string, string>([
+	["--depth", "web/src/components/LeftPanel.tsx（inline style，子代理树缩进深度）"],
 	["--fp-zoom", "web/src/components/FilePreview.tsx（inline style）"],
 	["--left-w", "web/src/App.tsx（inline style，面板拖拽宽度）"],
 	["--right-w", "web/src/App.tsx（inline style，面板拖拽宽度）"],
@@ -37,7 +38,15 @@ const RUNTIME_TOKENS = new Map<string, string>([
  * 刻意写的外部中性兜底：这些名字属于「组件在宿主之外也能看」的写法，fallback 就是
  * 设计本身（transparent / var(--border) / 中性灰），保持原样。
  */
-const GUEST_FALLBACK_TOKENS = new Set(["--bg-input", "--border-subtle", "--muted", "--warning"]);
+const GUEST_FALLBACK_TOKENS = new Set([
+	"--bg-input",
+	"--border-subtle",
+	"--muted",
+	"--warning",
+	"--text-base",
+	"--radius-sm",
+	"--text-muted",
+]);
 
 /** 第三方 vendored 前缀：monaco 编辑器自带一大票 --vscode-* 变量；mermaid 12 的
  * vendor 包用 --mermaid-* 做主题覆盖钩子（var(--mermaid-*, fallback)，fallback 即设计）。 */

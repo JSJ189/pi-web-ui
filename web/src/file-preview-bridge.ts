@@ -13,6 +13,8 @@
  * 的概率极低，而弹提示反而更吵）。
  */
 
+import { closeToolInspector } from "./tool-inspector-state";
+
 /** 预览目标（与 FilePreview 的 PreviewFile 结构一致：path + name）。 */
 interface PreviewTarget {
 	path: string;
@@ -50,6 +52,7 @@ export function resetFilePreviewHost(): void {
 /** 打开文件预览弹窗，返回是否受理。 */
 export function openFilePreview(file: PreviewTarget): boolean {
 	if (!openSink || !file?.path) return false;
+	closeToolInspector();
 	openSink(file);
 	return true;
 }

@@ -1618,6 +1618,7 @@
 		"uiLayoutContextSession": "Session context menu",
 		"uiLayoutContextFile": "File context menu",
 		"uiLayoutContextToolcall": "도구 카드 컨텍스트 메뉴",
+		"uiLayoutToolCardFooter": "Tool-card footer",
 		"uiLayoutLeftSessions": "Left-panel session rows",
 		"uiLayoutLeftProjectsActions": "Left panel · projects header buttons",
 		"uiLayoutLeftProject": "Left panel · project rows",

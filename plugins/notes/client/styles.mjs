@@ -20,9 +20,13 @@ export const CSS = `
 	--nt-dim: var(--text-dim, #9aa1b4);
 	--nt-faint: var(--text-faint, #6b7284);
 	--nt-accent: var(--accent, #8b5cf6);
+	--nt-accent-contrast: var(--accent-contrast, #ffffff);
 	--nt-green: var(--green, #34d399);
 	--nt-red: var(--red, #f87171);
 	--nt-amber: var(--amber, #fbbf24);
+	--nt-on-green: var(--on-green, #1a1a1a);
+	--nt-on-red: var(--on-red, #1a1a1a);
+	--nt-on-amber: var(--on-amber, #1a1a1a);
 	color: var(--nt-text);
 	font-size: 13px;
 	line-height: 1.5;
@@ -113,9 +117,9 @@ export const CSS = `
 }
 .nt-smart-tip:hover { background: rgba(251, 191, 36, 0.22); }
 .nt-btn-primary {
-	background: var(--nt-accent); color: #fff; border-color: var(--nt-accent); font-weight: 500;
+	background: var(--nt-accent); color: var(--nt-accent-contrast, #fff); border-color: var(--nt-accent); font-weight: 500;
 }
-.nt-btn-primary:hover { opacity: 0.92; color: #fff; }
+.nt-btn-primary:hover { opacity: 0.92; color: var(--nt-accent-contrast, #fff); }
 
 /* 提醒弹出快捷浮层 */
 .nt-pop-menu {
@@ -364,7 +368,7 @@ export const CSS = `
 .nt-panel .nt-foot-rem { flex: 0 1 auto; min-width: 0; overflow: hidden; text-overflow: ellipsis; }
 .nt-pill-count {
 	display: inline-block; min-width: 16px; text-align: center; font-size: 11px;
-	border-radius: 999px; padding: 0 5px; background: var(--nt-accent, #8b5cf6); color: #fff;
+	border-radius: 999px; padding: 0 5px; background: var(--nt-accent, #8b5cf6); color: var(--nt-accent-contrast, #fff);
 }
 .nt-pill-count.nt-zero { background: var(--nt-elev, #14161c); color: var(--nt-dim, #9aa1b4); }
 .nt-grip {

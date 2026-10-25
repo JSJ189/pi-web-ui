@@ -46,6 +46,7 @@ import { openToolInfo } from "../tool-info-state";
 import { isFlowMode, openToolInspector } from "../tool-inspector-state";
 import { CollapsibleHead } from "./CollapsibleHead";
 import { HalfRingSpinner } from "./HalfRingSpinner";
+import { slotIcon } from "./Message";
 import type { UiSlotEntry } from "../ui-slots";
 import {
 	parseCodemodeArgs,
@@ -56,7 +57,8 @@ import {
 	type DelegateField,
 } from "../tool-args";
 import { PRESENT_FILES_TOOL_NAME } from "../../../server/tool-manager.js";
-import { parsePresentArgs } from "../present-items";
+import { parsePresentArgs, presentCardItems, primaryPreviewItem } from "../present-items";
+import { openFilePreview } from "../file-preview-bridge";
 import { useCopyFeedback } from "../use-copy-feedback";
 import { PresentedFiles } from "./PresentedFiles";
 import { QuestionnaireCard } from "./QuestionnaireCard";
@@ -177,8 +179,20 @@ export interface ToolCallBlockProps {
 	 *  （工具名那一行）时弹宿主唯一的右键菜单。宿主内置的 `host:tool-info` 由本组件
 	 *  自己分派（打开定义弹窗），其余条目交回 onUiAction（插件动作）。 */
 	uiContextToolCall?: UiSlotEntry[];
+	/** 工具卡底部操作条目（tool.card.footer 槽位）。 */
+	uiToolCardFooter?: UiSlotEntry[];
 	/** 插件条目的动作分发（view 切视图 / action 交给插件）。 */
 	onUiAction?: (item: UiSlotEntry, value?: string) => void;
+}
+
+/** 极简行文（Flow）模式下尝试直接打开 present_files 的首选预览项，返回是否成功受理。 */
+function tryOpenPresentPreview(argumentsText: string | undefined, details: unknown): boolean {
+	const args = parsePresentArgs(argumentsText);
+	if (!args) return false;
+	const items = presentCardItems(args, details);
+	const target = primaryPreviewItem(items);
+	if (!target) return false;
+	return openFilePreview({ path: target.target, name: target.name });
 }
 
 /** 极简行文模式（Flow 模式）纯净轻量微胶囊外壳：零多余 DOM，点击按需提取数据并弹出居中检查器 */
@@ -314,6 +328,16 @@ const ToolCallCapsule = memo(function ToolCallCapsule({
 		});
 	};
 
+	const handleClick = (e?: React.MouseEvent | React.KeyboardEvent) => {
+		// 极简行文模式下，present_files 点击优先直接显示文件预览；按住 Alt 时仍可强制打开检查器
+		if (isPresent && !e?.altKey) {
+			if (tryOpenPresentPreview(block.argumentsText, view.result?.details)) {
+				return;
+			}
+		}
+		handleOpenInspector();
+	};
+
 	return (
 		<div
 			ref={rootRef}
@@ -321,13 +345,13 @@ const ToolCallCapsule = memo(function ToolCallCapsule({
 			onClick={(e) => {
 				e.preventDefault();
 				e.stopPropagation();
-				handleOpenInspector();
+				handleClick(e);
 			}}
 			onContextMenu={onHeadContextMenu}
 			onKeyDown={(e) => {
 				if (e.key === "Enter" || e.key === " ") {
 					e.preventDefault();
-					handleOpenInspector();
+					handleClick(e);
 				}
 			}}
 			role="button"
@@ -371,6 +395,7 @@ const ToolCallCard = memo(function ToolCallCard({
 	showImages = true,
 	forceOpen = false,
 	uiContextToolCall,
+	uiToolCardFooter,
 	onUiAction,
 	rootRef,
 }: ToolCallBlockProps & { rootRef: React.RefObject<HTMLDivElement | null> }) {
@@ -637,9 +662,18 @@ const ToolCallCard = memo(function ToolCallCard({
 		});
 	};
 
+	const handleFlowClick = (e?: React.MouseEvent | React.KeyboardEvent) => {
+		if (isPresent && !e?.altKey) {
+			if (tryOpenPresentPreview(block.argumentsText, view.result?.details)) {
+				return;
+			}
+		}
+		handleOpenInspector();
+	};
+
 	const handleToggle = () => {
 		if (isFlowMode(rootRef.current)) {
-			handleOpenInspector();
+			handleFlowClick();
 			return;
 		}
 		setOpen(!expanded);
@@ -657,7 +691,7 @@ const ToolCallCard = memo(function ToolCallCard({
 				}
 				e.preventDefault();
 				e.stopPropagation();
-				handleOpenInspector();
+				handleFlowClick(e);
 			}}
 		>
 			<CollapsibleHead
@@ -897,6 +931,34 @@ const ToolCallCard = memo(function ToolCallCard({
 					{waitingModel && output.length === 0 && (
 						<div className="toolcall-waiting">
 							<span className="cursor" /> {t("waitingModel")}
+						</div>
+					)}
+					{uiToolCardFooter && uiToolCardFooter.length > 0 && (
+						<div className="toolcall-footer">
+							{uiToolCardFooter
+								.filter((e) => e && e.hidden !== true)
+								.map((entry, idx) => {
+									const label = entry.label || entry.id;
+									if (entry.kind === "badge") {
+										return (
+											<span key={`${entry.id}#${idx}`} className="toolcall-footer-badge" title={label}>
+												{entry.badge ?? label}
+											</span>
+										);
+									}
+									return (
+										<button
+											key={`${entry.id}#${idx}`}
+											type="button"
+											className="toolcall-footer-item"
+											title={label}
+											onClick={() => onUiAction?.(entry)}
+										>
+											{entry.icon && slotIcon(entry.icon)}
+											<span>{label}</span>
+										</button>
+									);
+								})}
 						</div>
 					)}
 				</div>

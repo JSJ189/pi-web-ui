@@ -7,12 +7,7 @@
  * 样式自带 <style>，颜色走主应用的 CSS 变量（主题切换自动跟随）。
  */
 
-function esc(s) {
-	return String(s ?? "").replace(
-		/[&<>"']/g,
-		(c) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" })[c],
-	);
-}
+import { esc } from "@pi-web-ui/plugin-sdk/client";
 
 function fmtDate(iso) {
 	if (!iso) return "";

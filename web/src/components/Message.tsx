@@ -218,7 +218,7 @@ const SLOT_ICONS: Record<string, ReactNode> = {
 };
 
 /** 条目图标：词表命中 → react-icons；emoji/符号短串 → 原样文本；其余（含空）→ 通用图标。 */
-function slotIcon(icon?: string): ReactNode {
+export function slotIcon(icon?: string): ReactNode {
 	const s = (icon ?? "").trim();
 	if (!s) return <FiZap />;
 	const known = SLOT_ICONS[s.toLowerCase()];
@@ -293,6 +293,8 @@ interface MessageProps {
 	 *  弹菜单（今天只有宿主内置的「显示工具详细信息」，插件也可贡献）。
 	 *  与 uiContextMessage 同一口径：数组顺序 = 渲染顺序，hidden 跳过。 */
 	uiContextToolCall?: UiSlotEntry[];
+	/** 工具卡底部操作条目（tool.card.footer 槽位）。 */
+	uiToolCardFooter?: UiSlotEntry[];
 	/** 点一个插件条目的回调（宿主按 kind 分发 view/action）。内置条目（host:msg-*）由本
 	 *  组件自己处理，不会走这里 —— 避免「宿主与组件都处理一遍」的双分发。 */
 	onUiAction?: (item: UiSlotEntry, value?: string) => void;
@@ -324,6 +326,7 @@ export const Message = memo(function Message({
 	uiMessageActions,
 	uiContextMessage,
 	uiContextToolCall,
+	uiToolCardFooter,
 	onUiAction,
 	readOnly = false,
 }: MessageProps) {
@@ -1263,6 +1266,7 @@ export const Message = memo(function Message({
 											role={message.role}
 											showCopy={copyAllowed}
 											uiContextToolCall={uiContextToolCall}
+											uiToolCardFooter={uiToolCardFooter}
 											onUiAction={onUiAction}
 										/>
 									),
@@ -1290,6 +1294,7 @@ export const Message = memo(function Message({
 										role={message.role}
 										showCopy={copyAllowed}
 										uiContextToolCall={uiContextToolCall}
+										uiToolCardFooter={uiToolCardFooter}
 										onUiAction={onUiAction}
 									/>
 								))}
@@ -1315,6 +1320,7 @@ export const Message = memo(function Message({
 										role={message.role}
 										showCopy={copyAllowed}
 										uiContextToolCall={uiContextToolCall}
+										uiToolCardFooter={uiToolCardFooter}
 										onUiAction={onUiAction}
 									/>
 									{i === anchorIndex && showMessageActions && renderMessageActions()}
@@ -1730,6 +1736,7 @@ function Block({
 	role,
 	showCopy,
 	uiContextToolCall,
+	uiToolCardFooter,
 	onUiAction,
 }: {
 	block: UiContentBlock;
@@ -1759,6 +1766,8 @@ function Block({
 	showCopy?: boolean;
 	/** `contextmenu.toolcall` 槽位的条目（工具卡右键菜单），原样透传给 ToolCallBlock。 */
 	uiContextToolCall?: UiSlotEntry[];
+	/** `tool.card.footer` 槽位的条目（工具卡底部内嵌操作栏）。 */
+	uiToolCardFooter?: UiSlotEntry[];
 	/** 插件条目动作分发（透传给 ToolCallBlock；内置的 host:tool-info 由它自己分派）。 */
 	onUiAction?: (item: UiSlotEntry, value?: string) => void;
 }) {
@@ -1877,6 +1886,7 @@ function Block({
 				showImages={toolImages ?? true}
 				forceOpen={searchActive || forceTools}
 				uiContextToolCall={uiContextToolCall}
+				uiToolCardFooter={uiToolCardFooter}
 				onUiAction={onUiAction}
 			/>
 		);

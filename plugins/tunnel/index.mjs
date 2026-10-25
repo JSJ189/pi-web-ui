@@ -78,6 +78,11 @@ function socksReply(c, code) {
 	c.write(Buffer.from([5, code, 0, 1, 0, 0, 0, 0, 0, 0]));
 }
 
+export function sanitizeHostHeader(rawHost, fallback = "127.0.0.1:8765") {
+	const h = typeof rawHost === "string" ? rawHost.trim() : "";
+	return /^[a-zA-Z0-9.:_-]+$/.test(h) ? h : fallback;
+}
+
 export default {
 	async activate(host) {
 		const { WebSocketServer } = loadWs();
@@ -172,7 +177,11 @@ export default {
 			return typeof kv === "string" ? kv : kv?.apiKey || kv?.value || kv?.key || "";
 		};
 		const devReachableBase = (url) =>
-			!url ? "" : url.replace(/^(https?:\/\/)(127\.0\.0\.1|localhost)((?::\d+)?)/i, (_m, sch, _h, port) => (lanIp ? `${sch}${lanIp}${port}` : url));
+			!url
+				? ""
+				: url.replace(/^(https?:\/\/)(127\.0\.0\.1|localhost)((?::\d+)?)/i, (_m, sch, _h, port) =>
+						lanIp ? `${sch}${lanIp}${port}` : url,
+					);
 		const buildModelChannel = (providers, keys, prov, pdef, fullModel, source) => {
 			if (!pdef) return { error: `未知 provider：${prov}` };
 			if (pdef.api !== "openai-completions")
@@ -274,9 +283,9 @@ export default {
 		});
 		const cliCode = (req) => {
 			let code = fs.readFileSync(path.join(__dirname, "assets", "cli.mjs"), "utf8");
-			return code
-				.replaceAll("{{TOKEN}}", token)
-				.replaceAll("{{SERVER}}", `ws://${req?.headers?.host || `${lanIp || "127.0.0.1"}:${wsPort}`}`);
+			const safeHost = sanitizeHostHeader(req?.headers?.host, `${lanIp || "127.0.0.1"}:${wsPort}`);
+			const safeToken = /^[a-zA-Z0-9_-]+$/.test(token) ? token : "";
+			return code.replaceAll("{{TOKEN}}", safeToken).replaceAll("{{SERVER}}", `ws://${safeHost}`);
 		};
 		const notifyDebounced = (level, text) => {
 			const now = Date.now();
@@ -479,9 +488,16 @@ export default {
 								meshPending.delete(m.msgId);
 							}
 							const to = String(m.to || pm?.to || "");
-							const text = m.ok ? String(m.text || "").slice(0, 8000) || "（设备端无文本回复）" : `任务失败：${String(m.err || "未知错误").slice(0, 300)}`;
+							const text = m.ok
+								? String(m.text || "").slice(0, 8000) || "（设备端无文本回复）"
+								: `任务失败：${String(m.err || "未知错误").slice(0, 300)}`;
 							if (to) meshDeliver(to, nm, text, m.msgId);
-							auditRing.push({ ts: Date.now(), device: dn, op: "mesh.reply", detail: `${m.msgId} → ${to} | ${text.slice(0, 60)}` });
+							auditRing.push({
+								ts: Date.now(),
+								device: dn,
+								op: "mesh.reply",
+								detail: `${m.msgId} → ${to} | ${text.slice(0, 60)}`,
+							});
 							try {
 								const f = meshRegistryFile(nm);
 								if (fs.existsSync(f)) {
@@ -562,10 +578,17 @@ export default {
 		const meshQueue = []; // 待投递消息（设备离线时滞留，上线扫描补发）
 		let meshBusy = false;
 		let meshWatcher = null;
-		function meshEnabled() { return host.storage.get("meshEnabled") === "1"; } // function 声明带提升：hello/离线钩子可在 startTunnel await 让出期触发（const 箭头 TDZ 竞态已两次致 activate failed）
+		function meshEnabled() {
+			return host.storage.get("meshEnabled") === "1";
+		} // function 声明带提升：hello/离线钩子可在 startTunnel await 让出期触发（const 箭头 TDZ 竞态已两次致 activate failed）
 		const meshAgentName = (devName) =>
 			"Remote" +
-			String(devName || "").replace(/\.local$/i, "").split(/[-_\s]+/).filter(Boolean).map((w) => w[0].toUpperCase() + w.slice(1)).join("");
+			String(devName || "")
+				.replace(/\.local$/i, "")
+				.split(/[-_\s]+/)
+				.filter(Boolean)
+				.map((w) => w[0].toUpperCase() + w.slice(1))
+				.join("");
 		const meshRegistryFile = (nm) => path.join(MESH_DIR, "registry", `${nm}.json`);
 		function meshRegistry(nm, devName, online) {
 			try {
@@ -606,8 +629,18 @@ export default {
 			try {
 				const dir = path.join(MESH_DIR, "inbox", to);
 				fs.mkdirSync(dir, { recursive: true });
-				const msg = { id: crypto.randomUUID(), from: fromName, to, text, timestamp: new Date().toISOString(), replyTo: replyTo ?? null };
-				fs.writeFileSync(path.join(dir, `${Date.now()}-${Math.random().toString(36).slice(2, 8)}.json`), JSON.stringify(msg, null, 2));
+				const msg = {
+					id: crypto.randomUUID(),
+					from: fromName,
+					to,
+					text,
+					timestamp: new Date().toISOString(),
+					replyTo: replyTo ?? null,
+				};
+				fs.writeFileSync(
+					path.join(dir, `${Date.now()}-${Math.random().toString(36).slice(2, 8)}.json`),
+					JSON.stringify(msg, null, 2),
+				);
 				return true;
 			} catch {
 				return false;
@@ -624,11 +657,17 @@ export default {
 					const item = meshQueue.shift();
 					const { file, msg, nm } = item;
 					// registry <nm>.json 里存的 devName（物理设备名）→ state.agents 里找 aid
-					let targetAid = null, devName = null;
+					let targetAid = null,
+						devName = null;
 					try {
 						devName = JSON.parse(fs.readFileSync(meshRegistryFile(nm), "utf8")).device || null;
 					} catch {}
-					if (devName) for (const [id, a] of state.agents) if (a?.name === devName) { targetAid = id; break; }
+					if (devName)
+						for (const [id, a] of state.agents)
+							if (a?.name === devName) {
+								targetAid = id;
+								break;
+							}
 					if (!targetAid) {
 						meshQueue.unshift(item);
 						break; // 目标设备不在线：滞留等上线补发（meshScanInbox 会重新入队）
@@ -636,7 +675,9 @@ export default {
 					const me = resolveModelEnv(); // mesh 任务走三级解析默认路径
 					if (!me || me.error) {
 						meshDeliver(msg.from, nm, `投递失败：模型通道无法解析${me?.error ? "：" + me.error : ""}`, msg.id);
-						try { fs.renameSync(file, file + ".done"); } catch {}
+						try {
+							fs.renameSync(file, file + ".done");
+						} catch {}
 						continue;
 					}
 					const payload = JSON.stringify({
@@ -649,24 +690,35 @@ export default {
 						model: me.model,
 						timeoutS: 600,
 					});
-					auditRing.push({ ts: Date.now(), device: devName, op: "mesh.deliver", detail: `from=${msg.from} | ${String(msg.text ?? "").slice(0, 60)}` });
+					auditRing.push({
+						ts: Date.now(),
+						device: devName,
+						op: "mesh.deliver",
+						detail: `from=${msg.from} | ${String(msg.text ?? "").slice(0, 60)}`,
+					});
 					const d = await deviceCtrl(targetAid, "/task", { method: "POST", body: payload }, 65_000);
 					if (d.status === 200) {
-						try { fs.renameSync(file, file + ".done"); } catch {} // 投递成功即标记（server 重启不重投；结果由 msg-res 异步回）
-						meshPending.set(
-							msg.id,
-							{
-								to: msg.from,
-								from: nm,
-								timer: setTimeout(() => {
-									meshPending.delete(msg.id);
-									meshDeliver(msg.from, nm, "任务超时（10min）——设备端可能仍在执行，结果将被丢弃。", msg.id);
-								}, 600_000),
-							},
-						);
+						try {
+							fs.renameSync(file, file + ".done");
+						} catch {} // 投递成功即标记（server 重启不重投；结果由 msg-res 异步回）
+						meshPending.set(msg.id, {
+							to: msg.from,
+							from: nm,
+							timer: setTimeout(() => {
+								meshPending.delete(msg.id);
+								meshDeliver(msg.from, nm, "任务超时（10min）——设备端可能仍在执行，结果将被丢弃。", msg.id);
+							}, 600_000),
+						});
 					} else {
-						meshDeliver(msg.from, nm, `投递失败：设备返回 ${d.status} ${JSON.stringify(d.body ?? {}).slice(0, 200)}`, msg.id);
-						try { fs.renameSync(file, file + ".done"); } catch {}
+						meshDeliver(
+							msg.from,
+							nm,
+							`投递失败：设备返回 ${d.status} ${JSON.stringify(d.body ?? {}).slice(0, 200)}`,
+							msg.id,
+						);
+						try {
+							fs.renameSync(file, file + ".done");
+						} catch {}
 					}
 				}
 			} finally {
@@ -683,12 +735,20 @@ export default {
 			// 上线补发：inbox/<nm>/ 未处理消息按时间序，限最近 5 条，更旧标记跳过并回写发起方
 			try {
 				const dir = path.join(MESH_DIR, "inbox", nm);
-				const files = fs.readdirSync(dir).filter((f) => f.endsWith(".json")).map((f) => path.join(dir, f));
+				const files = fs
+					.readdirSync(dir)
+					.filter((f) => f.endsWith(".json"))
+					.map((f) => path.join(dir, f));
 				files.sort((a, b) => fs.statSync(a).mtimeMs - fs.statSync(b).mtimeMs);
 				for (const old of files.slice(0, -5)) {
 					try {
 						const m = JSON.parse(fs.readFileSync(old, "utf8"));
-						meshDeliver(m.from, nm, "消息过于陈旧（积压超过 5 条），已被跳过：" + String(m.text ?? "").slice(0, 80), m.id);
+						meshDeliver(
+							m.from,
+							nm,
+							"消息过于陈旧（积压超过 5 条），已被跳过：" + String(m.text ?? "").slice(0, 80),
+							m.id,
+						);
 						fs.renameSync(old, old + ".done");
 					} catch {}
 				}
@@ -700,7 +760,9 @@ export default {
 		function startMeshBridge() {
 			if (meshWatcher || !meshEnabled()) return;
 			const inbox = path.join(MESH_DIR, "inbox");
-			try { fs.mkdirSync(inbox, { recursive: true }); } catch {}
+			try {
+				fs.mkdirSync(inbox, { recursive: true });
+			} catch {}
 			meshWatcher = fs.watch(inbox, { recursive: true }, (_evt, fname) => {
 				if (!fname) return;
 				const ag = activeAgent();
@@ -721,7 +783,9 @@ export default {
 		}
 		function stopMeshBridge() {
 			if (meshWatcher) {
-				try { meshWatcher.close(); } catch {}
+				try {
+					meshWatcher.close();
+				} catch {}
 				meshWatcher = null;
 			}
 			for (const [, p] of meshPending) clearTimeout(p.timer);
@@ -759,22 +823,45 @@ export default {
 			const u = new URL(req.url, "http://local");
 			let aid = state.activeAgentId;
 			const qn = u.searchParams.get("agent");
-			if (qn) for (const [id, a] of state.agents) if (a?.name === qn) { aid = id; break; }
+			if (qn)
+				for (const [id, a] of state.agents)
+					if (a?.name === qn) {
+						aid = id;
+						break;
+					}
 			res.setHeader("content-type", "application/json");
 			if (!aid) return res.end(JSON.stringify({ ok: false, error: "设备不在线" }));
 			const d = await deviceCtrl(aid, "/session", { method: "GET" }, 10_000);
-			res.end(JSON.stringify(d.status === 200 ? { ok: true, ...(d.body || {}) } : { ok: false, error: `设备返回 ${d.status}` }));
+			res.end(
+				JSON.stringify(
+					d.status === 200 ? { ok: true, ...(d.body || {}) } : { ok: false, error: `设备返回 ${d.status}` },
+				),
+			);
 		});
 		// P3b: 重置设备端 mesh 会话（删 session.json，下次消息开新会话）
 		host.route("POST", "/mesh/reset", async (req, res) => {
 			const j = await readBodyJson(req);
 			res.setHeader("content-type", "application/json");
 			let aid = state.activeAgentId;
-			if (j.agentName) for (const [id, a] of state.agents) if (a?.name === j.agentName) { aid = id; break; }
+			if (j.agentName)
+				for (const [id, a] of state.agents)
+					if (a?.name === j.agentName) {
+						aid = id;
+						break;
+					}
 			if (!aid) return res.end(JSON.stringify({ ok: false, error: "设备不在线" }));
 			const d = await deviceCtrl(aid, "/session/reset", { method: "POST", body: "{}" }, 10_000);
-			auditRing.push({ ts: Date.now(), device: state.agents.get(aid)?.name || aid, op: "mesh.sessionReset", detail: JSON.stringify(d.body || {}).slice(0, 120) });
-			res.end(JSON.stringify(d.status === 200 ? { ok: true, ...(d.body || {}) } : { ok: false, error: `设备返回 ${d.status}` }));
+			auditRing.push({
+				ts: Date.now(),
+				device: state.agents.get(aid)?.name || aid,
+				op: "mesh.sessionReset",
+				detail: JSON.stringify(d.body || {}).slice(0, 120),
+			});
+			res.end(
+				JSON.stringify(
+					d.status === 200 ? { ok: true, ...(d.body || {}) } : { ok: false, error: `设备返回 ${d.status}` },
+				),
+			);
 		});
 
 		// ── 服务启停（面板按钮 / POST /start /stop 控制；插件激活时默认启动）────────
@@ -786,13 +873,14 @@ export default {
 			running = upWs || upSocks;
 			if (running) notifyDebounced("info", "网络隧道服务已启动");
 			// P3a: mesh 桥的启动移到 hello 钩子（设备上线后注册+补发），此处不依赖块级 meshEnabled
-			if (running) setTimeout(() => {
-				try {
-					if (host.storage.get("meshEnabled") === "1") startMeshBridge();
-				} catch (e) {
-					console.log("[tunnel] mesh 桥启动失败:", e && e.message);
-				}
-			}, 0);
+			if (running)
+				setTimeout(() => {
+					try {
+						if (host.storage.get("meshEnabled") === "1") startMeshBridge();
+					} catch (e) {
+						console.log("[tunnel] mesh 桥启动失败:", e && e.message);
+					}
+				}, 0);
 
 			return running;
 		}
@@ -1014,7 +1102,10 @@ export default {
 					res.setHeader("content-type", "application/json");
 					return res.end(
 						JSON.stringify({
-							error: "模型通道无法解析" + (me?.error ? `：${me.error}` : "") + "——可在面板「网络隧道 → 模型通道」手动指定，或检查 models.json / provider-keys.json",
+							error:
+								"模型通道无法解析" +
+								(me?.error ? `：${me.error}` : "") +
+								"——可在面板「网络隧道 → 模型通道」手动指定，或检查 models.json / provider-keys.json",
 						}),
 					);
 				}
@@ -1056,9 +1147,15 @@ export default {
 			res.end(
 				JSON.stringify({
 					manual,
-					resolved: r && !r.error
-						? { model: r.model, source: r.source, baseUrl: r.baseUrl, keyTail: String(r.env.OPENAI_API_KEY || "").slice(-4) }
-						: null,
+					resolved:
+						r && !r.error
+							? {
+									model: r.model,
+									source: r.source,
+									baseUrl: r.baseUrl,
+									keyTail: String(r.env.OPENAI_API_KEY || "").slice(-4),
+								}
+							: null,
 					resolveError: r?.error || null,
 					candidates,
 				}),

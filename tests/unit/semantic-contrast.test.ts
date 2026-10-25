@@ -64,7 +64,23 @@ function tokenValue(css: string, token: string): string | null {
 // ---------------------------------------------------------------- 静态扫描
 
 const WHITE_DECL = /(?:^|[\s;])color\s*:\s*(#fff(?:fff)?|white)\s*(?:!important)?\s*(?=;|$)/i;
-const SEM_BG = /var\(--(green|red|amber|blue|send-blue|stop-red)\s*(?:,[^)]*)?\)/;
+
+/** 动态匹配语义色实底变量（含原生与别名如 --nt-green）。 */
+function makeSemanticSolidRegex(text?: string): RegExp {
+	const names = new Set<string>(["green", "red", "amber", "blue", "send-blue", "stop-red"]);
+	if (text) {
+		for (const m of text.matchAll(/--([a-zA-Z0-9_-]+)\s*:\s*var\(--(green|red|amber|blue|send-blue|stop-red)\b/gi)) {
+			names.add(m[1]!);
+		}
+		for (const m of text.matchAll(/var\(--([a-zA-Z0-9_-]*(?:green|red|amber|blue)[a-zA-Z0-9_-]*)\b/gi)) {
+			names.add(m[1]!);
+		}
+	}
+	const pattern = Array.from(names)
+		.map((n) => n.replace(/[.*+?^${}()|[\]\\]/g, "\\$&"))
+		.join("|");
+	return new RegExp(`var\\(--(${pattern})\\s*(?:,[^)]*)?\\)`);
+}
 
 /** 取片段里最后一条 background 声明的值（层叠最后一条生效）。 */
 function lastBackground(fragment: string): string | null {
@@ -76,15 +92,16 @@ function lastBackground(fragment: string): string | null {
 /** 该片段是否「语义色（或语义色半透明染色）作底 + 硬编码白字」。 */
 function findViolations(text: string): string[] {
 	const bad: string[] = [];
+	const semRegex = makeSemanticSolidRegex(text);
 	const check = (where: string, body: string) => {
 		const bg = lastBackground(body);
 		if (!bg) return;
-		const m = SEM_BG.exec(bg);
+		const m = semRegex.exec(bg);
 		if (!m) return;
 		if (/-soft/.test(bg)) return;
 		const fg = WHITE_DECL.exec(body);
 		if (!fg) return;
-		bad.push(`${where} → background: ${bg.trim()} 配 color: ${fg[1]}（应为 var(--on-${m[1]})）`);
+		bad.push(`${where} → background: ${bg.trim()} 配 color: ${fg[1]}（应按 var(--on-*) 配对前景令牌）`);
 	};
 	for (const m of text.matchAll(/([^{}\n;]{1,400})\{([^{}]{0,6000})\}/g))
 		check(`块 ${m[1]!.trim().replace(/\s+/g, " ").slice(-50)}`, m[2]!);
@@ -146,7 +163,7 @@ describe("语义色实底的前景对比度", () => {
 		for (const f of files) {
 			if (statSync(f).size > 4_000_000) continue;
 			const text = readFileSync(f, "utf8");
-			if (!/var\(--(green|red|amber|blue|send-blue|stop-red)/.test(text)) continue;
+			if (!/var\(--[a-zA-Z0-9_-]*(?:green|red|amber|blue|send-blue|stop-red)\b/i.test(text)) continue;
 			const rel = relative(ROOT, f).replace(/\\/g, "/");
 			for (const v of findViolations(text)) bad.push(`${rel}: ${v}`);
 		}

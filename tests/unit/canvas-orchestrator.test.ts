@@ -13,6 +13,7 @@ import {
 	deleteCanvasGraph,
 } from "../../server/canvas/canvas-store.js";
 import { CanvasOrchestrator } from "../../server/canvas/canvas-orchestrator.js";
+import { makeCanvasTool } from "../../server/canvas/canvas-agent-tool.js";
 import type { ServerMessage, CanvasNode, CanvasNodeRole, CanvasEdge, UiMessage } from "../../server/protocol.js";
 
 /** 测试用节点工厂：严格类型，避免隐式 any */
@@ -454,5 +455,145 @@ describe("Canvas Orchestrator", () => {
 
 		expect(graph.nodes[0].status).toBe("idle");
 		expect(graph.nodes[1].status).toBe("idle");
+	});
+
+	it("审查回路递增重试计数并在达到上限时熔断暂停", async () => {
+		const graph = createDefaultCanvasGraph("loop_fuse_test");
+		graph.nodes = [{ ...mkTestNode("rev", "reviewer"), lastOutputSummary: "需修改" }, mkTestNode("work", "coder")];
+		const loopEdge: CanvasEdge = {
+			id: "e_loop",
+			sourceNodeId: "rev",
+			targetNodeId: "work",
+			type: "loop_back",
+			maxLoopRetries: 2,
+			currentLoopCount: 1,
+		};
+		graph.edges = [loopEdge];
+		saveCanvasGraph(tempDir, graph);
+
+		// 第 1 次流转：未达上限，currentLoopCount 递增到 2
+		await (orchestrator as any).handleDownstreamEdges(graph, graph.nodes[0]);
+		expect(loopEdge.currentLoopCount).toBe(2);
+
+		// 第 2 次流转：currentLoopCount 达到上限 2，触发熔断
+		await (orchestrator as any).handleDownstreamEdges(graph, graph.nodes[0]);
+		const revNode = graph.nodes.find((n) => n.id === "rev")!;
+		expect(revNode.status).toBe("waiting_approval");
+		expect(revNode.currentAction).toContain("审查重试上限");
+	});
+
+	it("canvas tool 连边防线：拒绝自环边与重复连边", async () => {
+		const graph = createDefaultCanvasGraph("tool_edge_test");
+		graph.nodes = [mkTestNode("n1", "coder"), mkTestNode("n2", "reviewer")];
+		graph.edges = [];
+		saveCanvasGraph(tempDir, graph);
+
+		const tool = makeCanvasTool({ dataDir: tempDir, lang: () => "zh" });
+
+		// 自环边
+		const selfRes = await tool.execute(
+			"call1",
+			{
+				action: "add_edge",
+				graphId: "tool_edge_test",
+				sourceNodeId: "n1",
+				targetNodeId: "n1",
+			},
+			undefined as any,
+			undefined as any,
+			{} as any,
+		);
+		expect(String((selfRes as any)?.content?.[0]?.text)).toContain("自环");
+
+		// 正常加边
+		const addRes = await tool.execute(
+			"call2",
+			{
+				action: "add_edge",
+				graphId: "tool_edge_test",
+				sourceNodeId: "n1",
+				targetNodeId: "n2",
+			},
+			undefined as any,
+			undefined as any,
+			{} as any,
+		);
+		expect(String((addRes as any)?.content?.[0]?.text)).toContain("已连边");
+
+		// 重复加边
+		const dupRes = await tool.execute(
+			"call3",
+			{
+				action: "add_edge",
+				graphId: "tool_edge_test",
+				sourceNodeId: "n1",
+				targetNodeId: "n2",
+			},
+			undefined as any,
+			undefined as any,
+			{} as any,
+		);
+		expect(String((dupRes as any)?.content?.[0]?.text)).toContain("已存在");
+	});
+
+	it("steerNode 真正将插话投递进正在运行的底层会话，未运行时暂存为待命指令", async () => {
+		const graph = createDefaultCanvasGraph("steer_test");
+		graph.nodes = [mkTestNode("lead", "architect")];
+		graph.edges = [];
+		saveCanvasGraph(tempDir, graph);
+
+		const promptedMessages: string[] = [];
+		const mockSession = {
+			cwd: tempDir,
+			prompt: async (text: string) => {
+				promptedMessages.push(text);
+			},
+			readConversationForPlugins: () => ({ isStreaming: true, messages: [] }),
+		};
+
+		const orch = new CanvasOrchestrator(tempDir, tempDir, () => ({
+			attach: async () => mockSession,
+			detach: () => {},
+		}));
+
+		// 1. 节点未运行状态下插话：应作为指令暂存落盘
+		await orch.steerNode(graph.id, "lead", "优先使用 Fastify 代替 Express");
+		const loaded = loadCanvasGraph(tempDir, graph.id);
+		expect(loaded.nodes[0].instruction).toContain("优先使用 Fastify");
+		const logIdle = orch.getNodeLog(graph.id, "lead");
+		expect(logIdle.some((e) => e.text.includes("已暂存为该节点下一次执行指令"))).toBe(true);
+
+		// 2. 节点运行时插话：应真正投递进底层会话 session.prompt()
+		const runPromise = orch.runNode(graph, "lead");
+		await new Promise((r) => setTimeout(r, 50));
+		await orch.steerNode(graph.id, "lead", "检测 3001 端口并释放");
+		expect(promptedMessages).toContain("检测 3001 端口并释放");
+		const logRunning = orch.getNodeLog(graph.id, "lead");
+		expect(logRunning.some((e) => e.text.includes("已将插话实时投递进正在运行的智能体会话"))).toBe(true);
+
+		orch.stopAll(graph.id);
+		await runPromise.catch(() => {});
+	});
+
+	it("resolveNodeCwd 完整支持远程 SSH 工作区项目与路径解析", async () => {
+		const orch = new CanvasOrchestrator(tempDir, tempDir);
+
+		// 1. 节点显式配置绝对 ssh:// URI：应直接原样返回，不走本地目录与 worktree
+		const sshNode = mkTestNode("ssh_node", "coder", {
+			cwd: "ssh://user@example.com:2222/var/www/my-project",
+			useWorktree: true,
+		});
+		const res1 = await orch.resolveNodeCwd(sshNode);
+		expect(res1).toBe("ssh://user@example.com:2222/var/www/my-project");
+
+		// 2. 运行基准 runBase 为远程 SSH URI 时，相对子目录应正确拼接入远端路径
+		const subNode = mkTestNode("sub_node", "coder", { cwd: "packages/api" });
+		const res2 = await orch.resolveNodeCwd(subNode, "ssh://user@example.com:2222/var/www/my-project");
+		expect(res2).toBe("ssh://user@example.com:2222/var/www/my-project/packages/api");
+
+		// 3. 空 cwd 自动回退为远程基准
+		const emptyNode = mkTestNode("empty_node", "coder", { cwd: "" });
+		const res3 = await orch.resolveNodeCwd(emptyNode, "ssh://user@example.com:2222/var/www/my-project");
+		expect(res3).toBe("ssh://user@example.com:2222/var/www/my-project");
 	});
 });

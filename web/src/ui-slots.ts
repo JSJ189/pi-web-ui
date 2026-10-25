@@ -162,6 +162,7 @@ const SLOT_IDS: UiSlotId[] = [
 	"contextmenu.project",
 	"contextmenu.file",
 	"contextmenu.toolcall",
+	"tool.card.footer",
 	"settings.pages",
 	"tasks.panel",
 	"modal.dialog",

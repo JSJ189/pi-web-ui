@@ -297,6 +297,8 @@ const TEXT = {
 };
 
 /** 从 bundle 自己的 URL 推 API 前缀：<base>/plugins/sftp/client/entry.mjs → <base>/plugins-api/sftp */
+import { esc } from "@pi-web-ui/plugin-sdk/client";
+
 function resolveApiBase(importMetaUrl) {
 	const s = String(importMetaUrl);
 	const i = s.indexOf("/plugins/");
@@ -305,13 +307,6 @@ function resolveApiBase(importMetaUrl) {
 }
 
 const API = resolveApiBase(import.meta.url);
-
-function esc(s) {
-	return String(s ?? "").replace(
-		/[&<>"']/g,
-		(c) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" })[c],
-	);
-}
 
 function fmtSize(n) {
 	if (n === null || n === undefined) return "—";

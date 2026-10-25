@@ -43,6 +43,8 @@ interface CanvasToolbarProps {
 	onFitView: () => void;
 	onUndo: () => void;
 	onRedo: () => void;
+	canUndo?: boolean;
+	canRedo?: boolean;
 	onDuplicate: () => void;
 	onAutoLayout: () => void;
 	zoom: number;
@@ -70,6 +72,8 @@ export function CanvasToolbar({
 	onFitView,
 	onUndo,
 	onRedo,
+	canUndo,
+	canRedo,
 	onDuplicate,
 	onAutoLayout,
 	zoom,
@@ -430,10 +434,22 @@ export function CanvasToolbar({
 			<div className="canvas-toolbar-divider" />
 
 			<div className="canvas-toolbar-group">
-				<button type="button" className="canvas-toolbar-btn" onClick={onUndo} title="撤销 (Ctrl+Z)">
+				<button
+					type="button"
+					className="canvas-toolbar-btn"
+					onClick={onUndo}
+					disabled={canUndo === false}
+					title="撤销 (Ctrl+Z)"
+				>
 					↩
 				</button>
-				<button type="button" className="canvas-toolbar-btn" onClick={onRedo} title="重做 (Ctrl+Shift+Z)">
+				<button
+					type="button"
+					className="canvas-toolbar-btn"
+					onClick={onRedo}
+					disabled={canRedo === false}
+					title="重做 (Ctrl+Shift+Z / Ctrl+Y)"
+				>
 					↪
 				</button>
 				<button type="button" className="canvas-toolbar-btn" onClick={onDuplicate} title="复制选中节点 (Ctrl+D)">

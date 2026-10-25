@@ -1,22 +1,10 @@
 /**
  * office 客户端入口 —— 接管 .pptx / .docx / .xlsx 文件的 1:1 Canvas 真实渲染与双向编辑。
  */
-
-function esc(s) {
-	return String(s ?? "").replace(
-		/[&<>"']/g,
-		(c) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" })[c],
-	);
-}
+import { esc, apiBase as getSharedApiBase } from "@pi-web-ui/plugin-sdk/client";
 
 function apiBase() {
-	try {
-		let p = location.pathname.replace(/index\.html$/i, "");
-		if (!p.endsWith("/")) p += "/";
-		return `${p}plugins-api/office`;
-	} catch {
-		return "/plugins-api/office";
-	}
+	return getSharedApiBase("office");
 }
 
 function resolveApi(ctx, path, params) {

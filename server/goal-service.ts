@@ -1786,6 +1786,14 @@ export class GoalService {
 		conv.goal.phase = "idle";
 	}
 
+	/** 会话关闭/移除时（removeConversation）彻底终止目标循环并清理关联的执行者与向导。 */
+	notifyConversationRemoved(conv: GoalConversation): void {
+		this.notifyTakeover(conv);
+		if (this.wizardOwnerId === conv.id) {
+			void this.abortWizard();
+		}
+	}
+
 	/** 读某会话累计用量（取不到返回 undefined；getSessionStats 会遍历转写，只在轮次边界调）。 */
 	private sessionUsage(session: GoalConversation["session"]): { input: number; output: number } | undefined {
 		try {

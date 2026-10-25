@@ -29,6 +29,7 @@
 import { defineTool, type ToolDefinition } from "@earendil-works/pi-coding-agent";
 import { Type } from "typebox";
 import { pick, type ServerLang } from "./i18n.js";
+import { THINKING_LEVELS } from "./subagent-templates.js";
 
 /** 子代理的状态（由 conversation 派生的轻量视图）。 */
 export type SubagentState = "running" | "queued" | "done" | "canceled";
@@ -82,6 +83,8 @@ export interface SubagentSnapshot {
 	messageCount: number;
 	/** 会话模型 id（可空）。 */
 	model?: string;
+	/** 会话思考强度（可空）。 */
+	thinkingLevel?: string;
 	/** 已收集的 assistant 最后文本（运行中为最新输出）。 */
 	output: string;
 	/** 父对话 id（派发者会话；主对话派发时为普通对话 id，子代理嵌套派发时为父子代理 id）。
@@ -119,6 +122,8 @@ export interface SubagentToolHost {
 		model?: string,
 		parentId?: string,
 		persist?: boolean,
+		thinking?: string,
+		notifyOnDone?: boolean,
 	): Promise<string>;
 	/** 取单个子代理快照（按 convId）。 */
 	getSubagent(convId: string): SubagentSnapshot | undefined;
@@ -145,6 +150,8 @@ export interface SubagentToolHost {
 	isTemplateUsable(name: string): boolean;
 	/** 将任务产物或指令从一个子代理直接交接给另一个同行子代理（对等协作路由）。 */
 	handoffSubagent(fromRunId: string, toRunId: string, payload: string): Promise<void>;
+	/** 标记指定子代理已被父会话消费（通过 wait_all 或 get_result），后续避免重复发送终态通知。 */
+	markSubagentsConsumed?(runIds: string[]): void;
 	/** 可选语言（主会话按客户端 locale 提供 getLang；缺省英文）。 */
 	lang?: () => ServerLang;
 }
@@ -167,9 +174,10 @@ export function subagentTitle(prompt: string): string {
 export function withSubagentOwner(host: SubagentToolHost, ownerId: string): SubagentToolHost {
 	return {
 		...host,
-		spawnSubagent: (prompt, type, cwd, templateName, model, _parentId, persist) =>
-			host.spawnSubagent(prompt, type, cwd, templateName, model, ownerId, persist),
+		spawnSubagent: (prompt, type, cwd, templateName, model, _parentId, persist, thinking, notifyOnDone) =>
+			host.spawnSubagent(prompt, type, cwd, templateName, model, ownerId, persist, thinking, notifyOnDone),
 		handoffSubagent: (fromRunId, toRunId, payload) => host.handoffSubagent(fromRunId || ownerId, toRunId, payload),
+		markSubagentsConsumed: (runIds) => host.markSubagentsConsumed?.(runIds),
 	};
 }
 
@@ -282,6 +290,18 @@ export function makeSubagentTool(
 					description: 'spawn: model override "provider/id".',
 				}),
 			),
+			thinking: Type.Optional(
+				Type.String({
+					enum: [...THINKING_LEVELS],
+					description:
+						'spawn: thinking budget level ("off" | "minimal" | "low" | "medium" | "high" | "xhigh" | "max").',
+				}),
+			),
+			notifyOnDone: Type.Optional(
+				Type.Boolean({
+					description: "spawn: notify and wake parent conversation when finished (default: true).",
+				}),
+			),
 			cwd: Type.Optional(
 				Type.String({
 					description: "spawn: working directory (default = current).",
@@ -342,6 +362,17 @@ export function makeSubagentTool(
 							),
 						);
 					}
+					if (p.thinking && !THINKING_LEVELS.includes(p.thinking as (typeof THINKING_LEVELS)[number])) {
+						return text(
+							pick(
+								getLang(),
+								`非法思考强度：${p.thinking}。可选档位：${THINKING_LEVELS.join(", ")}。`,
+								`Invalid thinking level: ${p.thinking}. Allowed levels: ${THINKING_LEVELS.join(", ")}.`,
+								"subagents.spawn.thinking.invalid",
+								{ thinking: p.thinking, levels: THINKING_LEVELS.join(", ") },
+							),
+						);
+					}
 					let convId: string;
 					try {
 						convId = await host.spawnSubagent(
@@ -352,6 +383,8 @@ export function makeSubagentTool(
 							p.model,
 							undefined,
 							p.persist,
+							p.thinking,
+							p.notifyOnDone,
 						);
 					} catch (err) {
 						const msg = err instanceof Error ? err.message : String(err);
@@ -367,14 +400,18 @@ export function makeSubagentTool(
 					const templateLineEn = p.template ? `\nTemplate: ${p.template}` : "";
 					const modelLineZh = p.model ? `\n模型：${p.model}` : "";
 					const modelLineEn = p.model ? `\nModel: ${p.model}` : "";
+					const thinkingLineZh = p.thinking ? `\n思考强度：${p.thinking}` : "";
+					const thinkingLineEn = p.thinking ? `\nThinking: ${p.thinking}` : "";
+					const notifyLineZh = p.notifyOnDone === false ? "\n自动通知：已关闭" : "";
+					const notifyLineEn = p.notifyOnDone === false ? "\nAuto-notify: disabled" : "";
 					const kindLabelZh = p.persist ? "普通持久化对话" : "子代理";
 					const kindLabelEn = p.persist ? "Persistent conversation" : "Subagent";
 					return text(
 						pick(
 							getLang(),
-							`${kindLabelZh}已启动（运行列表可见）：${convId}\n类型：${subagentType} · 标题：${subagentTitleText}${templateLineZh}${modelLineZh}` +
+							`${kindLabelZh}已启动（运行列表可见）：${convId}\n类型：${subagentType} · 标题：${subagentTitleText}${templateLineZh}${modelLineZh}${thinkingLineZh}${notifyLineZh}` +
 								`\n用 subagent(action="wait_all") 一次等全部完成（不用轮询），subagent(action="get_result") 取单个结果，subagent(action="list") 看运行态，subagent(action="steer") 改向，subagent(action="stop") 停止。`,
-							`${kindLabelEn} started (visible in the running list): ${convId}\nType: ${subagentType} · Title: ${subagentTitleText}${templateLineEn}${modelLineEn}` +
+							`${kindLabelEn} started (visible in the running list): ${convId}\nType: ${subagentType} · Title: ${subagentTitleText}${templateLineEn}${modelLineEn}${thinkingLineEn}${notifyLineEn}` +
 								`\nUse subagent(action="wait_all") to wait for all at once (no polling), subagent(action="get_result") for a single result, subagent(action="list") for live status, subagent(action="steer") to redirect, subagent(action="stop") to stop.`,
 							"subagents.spawn.started",
 							{
@@ -383,16 +420,28 @@ export function makeSubagentTool(
 								subagentTitleText,
 								"p.template": p.template,
 								"p.model": p.model,
+								"p.thinking": p.thinking,
 								templateLineZh,
 								templateLineEn,
 								modelLineZh,
 								modelLineEn,
+								thinkingLineZh,
+								thinkingLineEn,
+								notifyLineZh,
+								notifyLineEn,
 								kindLabel: kindLabelEn,
 								kindLabelEn,
 								kindLabelZh,
 							},
 						),
-						{ convId, template: p.template, model: p.model, persisted: !!p.persist },
+						{
+							convId,
+							template: p.template,
+							model: p.model,
+							thinking: p.thinking,
+							persisted: !!p.persist,
+							notifyOnDone: p.notifyOnDone !== false,
+						},
 					);
 				}
 
@@ -424,27 +473,30 @@ export function makeSubagentTool(
 					const doneId = shortId(r.convId);
 					const doneDetail = verdictText(r, getLang());
 					const doneOutput = r.output || (getLang() === "zh" ? "（无结果）" : "(no result)");
+					const modelTag = r.model ? ` · ${r.model}${r.thinkingLevel ? `:${r.thinkingLevel}` : ""}` : "";
 					if (r.streaming || r.state === "running") {
 						const runningId = shortId(r.convId);
 						const runningOutput = r.output || (getLang() === "zh" ? "（暂无输出）" : "(no output yet)");
 						return text(
 							pick(
 								getLang(),
-								`子代理 ${runningId}（${r.type}）仍在运行（状态 ${r.state}）。\n当前输出：\n${runningOutput}`,
-								`Subagent ${runningId} (${r.type}) is still running (state ${r.state}).\nCurrent output:\n${runningOutput}`,
+								`子代理 ${runningId}（${r.type}${modelTag}）仍在运行（状态 ${r.state}）。\n当前输出：\n${runningOutput}`,
+								`Subagent ${runningId} (${r.type}${modelTag}) is still running (state ${r.state}).\nCurrent output:\n${runningOutput}`,
 								"subagents.get.running",
-								{ runningId, "r.type": r.type, "r.state": r.state, runningOutput },
+								{ runningId, "r.type": r.type, modelTag, "r.state": r.state, runningOutput },
 							),
 							r,
 						);
 					}
+					// 终态结果被父对话取走，标记已消费，避免后续重复触发自动通知
+					host.markSubagentsConsumed?.([p.runId]);
 					return text(
 						pick(
 							getLang(),
-							`子代理 ${doneId}（${r.type}）状态：${verdict}\n${doneDetail}\n${doneOutput}`,
-							`Subagent ${doneId} (${r.type}) status: ${verdict}\n${doneDetail}\n${doneOutput}`,
+							`子代理 ${doneId}（${r.type}${modelTag}）状态：${verdict}\n${doneDetail}\n${doneOutput}`,
+							`Subagent ${doneId} (${r.type}${modelTag}) status: ${verdict}\n${doneDetail}\n${doneOutput}`,
 							"subagents.get.done",
-							{ doneId, "r.type": r.type, verdict, doneDetail, doneOutput },
+							{ doneId, "r.type": r.type, modelTag, verdict, doneDetail, doneOutput },
 						),
 						r,
 					);
@@ -516,8 +568,9 @@ export function makeSubagentTool(
 							: tLang === "zh"
 								? "子代理"
 								: "subagent";
+						const modelTag = r.model ? ` · ${r.model}${r.thinkingLevel ? `:${r.thinkingLevel}` : ""}` : "";
 						return (
-							`- ${r.convId} · ${r.type} · ${subagentVerdict(r, tLang)} · ${r.title}` +
+							`- ${r.convId} · ${r.type}${modelTag} · ${subagentVerdict(r, tLang)} · ${r.title}` +
 							(tLang === "zh" ? `（${tag} · msg: ${r.messageCount}）` : ` (${tag} · msg: ${r.messageCount})`)
 						);
 					});
@@ -687,6 +740,15 @@ export function makeSubagentTool(
 						const r = host.getSubagent(id);
 						return !isSubagentTerminal(r);
 					});
+
+					// 收口的子代理标记已消费，避免后续重复自动通知打扰父对话
+					const finishedIds = Array.from(wanted).filter((id) => {
+						const r = host.getSubagent(id);
+						return r === undefined || isSubagentTerminal(r);
+					});
+					if (finishedIds.length > 0) {
+						host.markSubagentsConsumed?.(finishedIds);
+					}
 
 					const head =
 						remaining.length === 0

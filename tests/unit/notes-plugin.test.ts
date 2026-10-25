@@ -517,6 +517,16 @@ describe("notes 服务端插件", () => {
 		const noActionRem = await tool("notes").execute("id", { op: "reminder", text: "顺手记的提醒", daily_at: "07:30" });
 		expect(String(noActionRem)).toContain("已设提醒");
 
+		// 模型常将非当前字段置为空字符串（例如传了 cron，其他字段为 ""），不应误伤
+		const emptyParamRem = await tool("notes").execute("id", {
+			op: "reminder",
+			text: "空参数容错提醒",
+			cron: "0 9 * * *",
+			every_minutes: "",
+			at: "",
+		});
+		expect(String(emptyParamRem)).toContain("已设提醒");
+
 		// agenda：用户问「我今天要做什么」时的一屏（逾期/今天/未来/无日期 + 接下来的提醒）
 		const agenda = String(await tool("notes").execute("id", { op: "list", kind: "agenda" }));
 		expect(agenda).toContain("## 逾期未完成");

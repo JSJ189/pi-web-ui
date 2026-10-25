@@ -338,16 +338,19 @@ function buildContextText(files: PromptComposerInputs["contextFiles"], lang: Ser
 	].join("\n");
 }
 
-/** 工具列表块：仅延迟加载时生效（列完整目录 + load_tools 说明 + "In addition…" 句）。
- * 非懒加载下全量 schema 已下发，目录纯属重复，直接返回空串省 token。
+/** 工具列表块：延迟加载时列完整目录 + load_tools 说明 + "In addition…" 句。
+ * 非懒加载下平时省略目录省 token（全量 schema 已下发），但有 snippet 就必须列出：
+ * 实测活体链路里 `load_tools` 被禁用使 disabledToolCount≥1，shouldRenderMainCompose
+ * 恒为真，模型实际拿到的永远是我们自渲染的提示词而非 SDK 组装——藏目录等于把
+ * promptSnippet 覆盖静默吞掉（含默认 snippet，见 tool-prompt-test）。
  *
  * 延迟加载下这里**只依赖目录本身**（不依赖「哪些已加载」）：系统提示词是供应商
  * 前缀缓存的第一段，只要它不变，加载工具造成的只是 tools 数组的追加（前缀不变的
  * 增量），缓存才不会被我们自已打坏。 */
 function buildToolsText(inputs: PromptComposerInputs, lang: ServerLang): string {
-	if (!inputs.lazy) return "";
 	const listed = inputs.catalogTools ?? inputs.selectedTools;
 	const visible = listed.filter((n) => !!inputs.toolSnippets[n]);
+	if (!inputs.lazy && visible.length === 0) return "";
 	const toolsList =
 		visible.length > 0
 			? visible

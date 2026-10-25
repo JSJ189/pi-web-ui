@@ -23,6 +23,7 @@ function makeHostSpies() {
 		steerSubagent: vi.fn(async () => {}),
 		stopSubagent: vi.fn(async () => {}),
 		handoffSubagent: vi.fn(async () => {}),
+		markSubagentsConsumed: vi.fn(),
 		listTemplates: vi.fn(() => [{ name: "reviewer", description: "只读审查" }]),
 		isTemplateUsable: vi.fn((name: string) => name === "reviewer"),
 	};
@@ -110,6 +111,8 @@ describe("subagents tools", () => {
 			"anthropic/claude-opus-4-5",
 			undefined,
 			undefined,
+			undefined,
+			undefined,
 		);
 		const text = result.content[0].text;
 		expect(text).toContain("sa-explore-abc");
@@ -140,6 +143,8 @@ describe("subagents tools", () => {
 			undefined,
 			undefined,
 			undefined,
+			undefined,
+			undefined,
 		);
 	});
 
@@ -161,6 +166,8 @@ describe("subagents tools", () => {
 			undefined,
 			undefined,
 			true,
+			undefined,
+			undefined,
 		);
 		expect(result.content[0].text).toContain("普通持久化对话已启动");
 	});
@@ -837,7 +844,17 @@ describe("withSubagentOwner (issue #95)", () => {
 		await subagent.execute!("t1", { action: "spawn", prompt: "p" } as never, undefined, undefined, {
 			cwd: "/p1",
 		} as never);
-		expect(host.spawnSubagent).toHaveBeenCalledWith("p", "general", "/p1", undefined, undefined, "c1", undefined);
+		expect(host.spawnSubagent).toHaveBeenCalledWith(
+			"p",
+			"general",
+			"/p1",
+			undefined,
+			undefined,
+			"c1",
+			undefined,
+			undefined,
+			undefined,
+		);
 	});
 
 	it("包装不影响其余 host 方法透传", async () => {
@@ -945,5 +962,135 @@ describe("active subagent quota & retention decoupling (issue #589)", () => {
 			if (prev === undefined) delete process.env.PI_WEB_MAX_SUBAGENTS;
 			else process.env.PI_WEB_MAX_SUBAGENTS = prev;
 		}
+	});
+});
+
+describe("Issue #713 subagent thinking, notification & information flow", () => {
+	it("spawn 支持指定 thinking 与 notifyOnDone 参数", async () => {
+		const host = makeHostSpies();
+		const [subagent] = makeSubagentTools(host, () => "zh");
+		const res = (await subagent.execute!(
+			"t1",
+			{
+				action: "spawn",
+				prompt: "深度排查",
+				thinking: "high",
+				notifyOnDone: false,
+			} as never,
+			undefined,
+			undefined,
+			{ cwd: "/proj" } as never,
+		)) as { content: { text: string }[]; details: Record<string, unknown> };
+
+		expect(host.spawnSubagent).toHaveBeenCalledWith(
+			"深度排查",
+			"general",
+			"/proj",
+			undefined,
+			undefined,
+			undefined,
+			undefined,
+			"high",
+			false,
+		);
+		expect(res.content[0].text).toContain("思考强度：high");
+		expect(res.content[0].text).toContain("自动通知：已关闭");
+		expect(res.details.thinking).toBe("high");
+		expect(res.details.notifyOnDone).toBe(false);
+	});
+
+	it("spawn 非法思考强度直接拦截并报错", async () => {
+		const host = makeHostSpies();
+		const [subagent] = makeSubagentTools(host, () => "zh");
+		const res = (await subagent.execute!(
+			"t1",
+			{
+				action: "spawn",
+				prompt: "测试",
+				thinking: "ultra-huge",
+			} as never,
+			undefined,
+			undefined,
+			{ cwd: "/proj" } as never,
+		)) as { content: { text: string }[] };
+
+		expect(host.spawnSubagent).not.toHaveBeenCalled();
+		expect(res.content[0].text).toContain("非法思考强度：ultra-huge");
+		expect(res.content[0].text).toContain("可选档位");
+	});
+
+	it("get_result 在终态时展示 model与thinking 并标记 markSubagentsConsumed", async () => {
+		const host = makeHostSpies();
+		(host.getSubagent as any).mockReturnValue({
+			convId: "sa-test-1234",
+			type: "explore",
+			title: "寻找瓶颈",
+			prompt: "寻找瓶颈",
+			state: "done",
+			streaming: false,
+			messageCount: 5,
+			model: "anthropic/claude-3-7-sonnet",
+			thinkingLevel: "high",
+			output: "发现问题所在",
+		});
+		const [subagent] = makeSubagentTools(host, () => "zh");
+		const res = (await subagent.execute!(
+			"t1",
+			{ action: "get_result", runId: "sa-test-1234" } as never,
+			undefined,
+			undefined,
+			{} as never,
+		)) as { content: { text: string }[] };
+
+		expect(res.content[0].text).toContain("anthropic/claude-3-7-sonnet:high");
+		expect(host.markSubagentsConsumed).toHaveBeenCalledWith(["sa-test-1234"]);
+	});
+
+	it("list 展示子代理实际模型与思考强度", async () => {
+		const host = makeHostSpies();
+		(host.listSubagents as any).mockReturnValue([
+			{
+				convId: "sa-1",
+				type: "explore",
+				title: "任务1",
+				prompt: "任务1",
+				state: "done",
+				streaming: false,
+				messageCount: 2,
+				model: "openai/gpt-4o",
+				thinkingLevel: "low",
+				output: "ok",
+			},
+		]);
+		const [subagent] = makeSubagentTools(host, () => "zh");
+		const res = (await subagent.execute!("t1", { action: "list" } as never, undefined, undefined, {} as never)) as {
+			content: { text: string }[];
+		};
+
+		expect(res.content[0].text).toContain("sa-1 · explore · openai/gpt-4o:low · done");
+	});
+
+	it("wait_all 收集终态子代理后标记 markSubagentsConsumed", async () => {
+		const host = makeHostSpies();
+		(host.getSubagent as any).mockImplementation((id: string) => ({
+			convId: id,
+			type: "explore",
+			title: `Task ${id}`,
+			prompt: `Task ${id}`,
+			state: "done",
+			streaming: false,
+			messageCount: 3,
+			output: "finished",
+		}));
+		const [subagent] = makeSubagentTools(host, () => "zh");
+		await subagent.execute!(
+			"t1",
+			{ action: "wait_all", runIds: ["sa-1", "sa-2"] } as never,
+			undefined,
+			undefined,
+			{} as never,
+		);
+
+		expect(host.markSubagentsConsumed).toHaveBeenCalledWith(expect.arrayContaining(["sa-1", "sa-2"]));
 	});
 });

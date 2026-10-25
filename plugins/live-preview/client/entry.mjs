@@ -10,6 +10,8 @@
  * 点击后直接 window.open 新标签（同源，鉴权靠 cookie）。
  */
 
+import { hostApi } from "@pi-web-ui/plugin-sdk/client";
+
 const OPEN = "live-preview:open";
 const OPEN_MD = "live-preview:open-md";
 
@@ -37,14 +39,6 @@ function parentDir(wire) {
 	const segs = encPath(wire).split("/").filter(Boolean);
 	segs.pop();
 	return segs.join("/");
-}
-
-function hostApi() {
-	try {
-		return window.__piWebUiHost ?? null;
-	} catch {
-		return null;
-	}
 }
 
 function openTab(prefix, rel, isDir) {

@@ -82,6 +82,8 @@ const TEXT = {
 	},
 };
 
+import { esc, formatBytes as bytes } from "@pi-web-ui/plugin-sdk/client";
+
 function currentLang() {
 	try {
 		const lang = document.documentElement?.lang ?? navigator.language ?? "zh";
@@ -89,26 +91,6 @@ function currentLang() {
 	} catch {
 		return "zh";
 	}
-}
-
-function esc(s) {
-	return String(s ?? "").replace(
-		/[&<>"']/g,
-		(c) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" })[c],
-	);
-}
-
-function bytes(n) {
-	const v = Number(n) || 0;
-	if (v <= 0) return "0 B";
-	const units = ["B", "KB", "MB", "GB"];
-	let x = v;
-	let i = 0;
-	while (x >= 1024 && i < units.length - 1) {
-		x /= 1024;
-		i++;
-	}
-	return `${i === 0 || x >= 100 ? Math.round(x) : x.toFixed(1)} ${units[i]}`;
 }
 
 function uptime(startedAt) {

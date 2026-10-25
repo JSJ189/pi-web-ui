@@ -85,9 +85,8 @@ const I18N = {
 	},
 };
 
-function esc(s) {
-	return String(s ?? "").replace(/[&<>"']/g, (c) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" }[c]));
-}
+import { esc } from "@pi-web-ui/plugin-sdk/client";
+
 function fmtClock(t) {
 	try { return new Date(t).toLocaleTimeString(); } catch { return ""; }
 }

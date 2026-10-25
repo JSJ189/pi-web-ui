@@ -326,16 +326,31 @@ export function CanvasNodeDrawer({
 											: undefined
 									}
 								/>
-								<label className="canvas-checkbox-row" style={{ marginTop: "8px" }}>
-									<input
-										type="checkbox"
-										checked={node.useWorktree}
-										onChange={(e) => onUpdate(node.id, { useWorktree: e.target.checked })}
-									/>
-									<span className="canvas-checkbox-label">
-										<FiGitBranch /> 启用独立 Git Worktree 物理隔离 (.worktrees/canvas-{node.id})
-									</span>
-								</label>
+								{(() => {
+									const isRemote = (node.cwd ?? "").trim().startsWith("ssh://");
+									return (
+										<label
+											className={`canvas-checkbox-row ${isRemote ? "disabled" : ""}`}
+											style={{ marginTop: "8px" }}
+											title={
+												isRemote
+													? "远程 SSH 工作区项目直接在目标远端执行，不走本地 Git Worktree"
+													: "为该数字员工拉取独立的 Git Worktree 沙箱，避免文件并发冲突"
+											}
+										>
+											<input
+												type="checkbox"
+												checked={!isRemote && node.useWorktree}
+												disabled={isRemote}
+												onChange={(e) => onUpdate(node.id, { useWorktree: e.target.checked })}
+											/>
+											<span className="canvas-checkbox-label">
+												<FiGitBranch /> 启用独立 Git Worktree 物理隔离 (.worktrees/canvas-{node.id})
+												{isRemote && <small style={{ opacity: 0.65, marginLeft: 4 }}>(远程环境免隔离)</small>}
+											</span>
+										</label>
+									);
+								})()}
 							</div>
 
 							{/* 角色职责与 System Prompt（基座人设） */}
@@ -501,12 +516,30 @@ export function CanvasNodeDrawer({
 									</div>
 								) : node.lastOutputSummary ? (
 									<div>
+										{node.status === "running" ? (
+											<div
+												style={{
+													marginBottom: 8,
+													padding: "6px 10px",
+													borderRadius: 4,
+													fontSize: 12,
+													backgroundColor: "color-mix(in srgb, var(--amber, #f59e0b) 12%, transparent)",
+													color: "var(--amber-text, #f59e0b)",
+													border: "1px solid color-mix(in srgb, var(--amber, #f59e0b) 30%, transparent)",
+												}}
+											>
+												⚠️ 节点正在执行新任务中，以下为上一轮产出摘要。执行完成前不可裁决。
+											</div>
+										) : null}
 										<p className="canvas-summary-text">{node.lastOutputSummary}</p>
 										<div className="canvas-review-actions">
 											<button
 												type="button"
 												className="canvas-btn green"
+												disabled={node.status === "running"}
+												style={node.status === "running" ? { opacity: 0.5, cursor: "not-allowed" } : undefined}
 												onClick={() => {
+													if (node.status === "running") return;
 													if (onReview) onReview(node.id, "approve");
 													else onUpdate(node.id, { status: "done", currentAction: "人工审查批准合流" });
 												}}
@@ -516,7 +549,10 @@ export function CanvasNodeDrawer({
 											<button
 												type="button"
 												className="canvas-btn orange"
+												disabled={node.status === "running"}
+												style={node.status === "running" ? { opacity: 0.5, cursor: "not-allowed" } : undefined}
 												onClick={() => {
+													if (node.status === "running") return;
 													if (onReview) onReview(node.id, "reject");
 													else
 														onUpdate(node.id, {

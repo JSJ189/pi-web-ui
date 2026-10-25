@@ -1,6 +1,15 @@
 import { defineConfig } from "vitest/config";
+import { fileURLToPath } from "node:url";
+import { dirname, join } from "node:path";
+
+const root = dirname(fileURLToPath(import.meta.url));
 
 export default defineConfig({
+	resolve: {
+		alias: {
+			"@pi-web-ui/plugin-sdk/client": join(root, "plugin-sdk", "client-utils.mjs"),
+		},
+	},
 	test: {
 		// 纯函数单测：毫秒级、零 token、零端口 —— CI 必跑。
 		// 端到端脚本（tests/*-test.mjs）不在这里：它们自起 server，用

@@ -44,6 +44,8 @@ interface CanvasNodeCardProps {
 	onOpenDrawer: (nodeId: string) => void;
 	onStartConnect: (nodeId: string, outX: number, outY: number, sourcePort?: string) => void;
 	onEndConnect: (nodeId: string, targetPort?: string) => void;
+	/** 拖拽卡片前通知父级保存快照（支持拖动撤销） */
+	onDragStart?: () => void;
 	/** 上报卡片内各字段端子的纵向中心（相对卡片顶部，画布坐标 px），供连线层按实测位置绘制 */
 	onPortPositions?: (nodeId: string, positions: Record<string, number>) => void;
 	/** 已连线的端子（高亮用）：{ in: [targetPort...], out: [sourcePort...] } */
@@ -75,9 +77,11 @@ export function CanvasNodeCard({
 	onPortPositions,
 	activePorts,
 	incomingPreview,
+	onDragStart,
 }: CanvasNodeCardProps) {
 	const [isDragging, setIsDragging] = useState(false);
 	const [dragStart, setDragStart] = useState({ x: 0, y: 0, nodeX: 0, nodeY: 0 });
+	const hasMovedRef = useRef(false);
 
 	const engineMeta = ENGINE_METAS[node.engine] || ENGINE_METAS.pi;
 	const roleMeta = ROLE_METAS[node.role] || ROLE_METAS.coder;
@@ -270,6 +274,7 @@ export function CanvasNodeCard({
 		e.stopPropagation();
 		onSelect(node.id);
 		setIsDragging(true);
+		hasMovedRef.current = false;
 		setDragStart({
 			x: e.clientX,
 			y: e.clientY,
@@ -283,10 +288,16 @@ export function CanvasNodeCard({
 		if (!isDragging) return;
 		const dx = e.clientX - dragStart.x;
 		const dy = e.clientY - dragStart.y;
-		onUpdate(node.id, {
-			x: Math.round(dragStart.nodeX + dx),
-			y: Math.round(dragStart.nodeY + dy),
-		});
+		if (!hasMovedRef.current && (Math.abs(dx) > 3 || Math.abs(dy) > 3)) {
+			hasMovedRef.current = true;
+			onDragStart?.();
+		}
+		if (hasMovedRef.current) {
+			onUpdate(node.id, {
+				x: Math.round(dragStart.nodeX + dx),
+				y: Math.round(dragStart.nodeY + dy),
+			});
+		}
 	};
 
 	const handlePointerUp = (e: ReactPointerEvent<HTMLDivElement>) => {
@@ -523,16 +534,30 @@ export function CanvasNodeCard({
 						</div>
 
 						{/* Git Worktree 物理隔离开关 */}
-						<label className="canvas-checkbox-row" title="为该数字员工拉取独立的 Git Worktree 沙箱，避免文件并发冲突">
-							<input
-								type="checkbox"
-								checked={node.useWorktree}
-								onChange={(e) => onUpdate(node.id, { useWorktree: e.target.checked })}
-							/>
-							<span className="canvas-checkbox-label">
-								<FiGitBranch /> 启用独立 Git Worktree 物理隔离
-							</span>
-						</label>
+						{(() => {
+							const isRemote = (node.cwd ?? "").trim().startsWith("ssh://");
+							return (
+								<label
+									className={`canvas-checkbox-row ${isRemote ? "disabled" : ""}`}
+									title={
+										isRemote
+											? "远程 SSH 工作区项目直接在目标远端执行，不走本地 Git Worktree"
+											: "为该数字员工拉取独立的 Git Worktree 沙箱，避免文件并发冲突"
+									}
+								>
+									<input
+										type="checkbox"
+										checked={!isRemote && node.useWorktree}
+										disabled={isRemote}
+										onChange={(e) => onUpdate(node.id, { useWorktree: e.target.checked })}
+									/>
+									<span className="canvas-checkbox-label">
+										<FiGitBranch /> 启用独立 Git Worktree 物理隔离
+										{isRemote && <small style={{ opacity: 0.65, marginLeft: 4 }}>(远程环境免隔离)</small>}
+									</span>
+								</label>
+							);
+						})()}
 					</>
 				)}
 

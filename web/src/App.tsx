@@ -1842,10 +1842,10 @@ export function App() {
 		[send],
 	);
 
-	// Remove one queued prompt (the ✕ on a pending bubble). `index` = bubble position.
+	// Remove one queued prompt (the ✕ on a pending bubble). `id` = entry unique id, `index` = bubble position.
 	const onRemoveQueued = useCallback(
-		(kind: "steer" | "followUp", text: string, index: number) => {
-			send({ type: "queue_remove", kind, text, index });
+		(kind: "steer" | "followUp", text: string, index: number, id?: string) => {
+			send({ type: "queue_remove", kind, text, index, id });
 		},
 		[send],
 	);
@@ -1855,8 +1855,8 @@ export function App() {
 	const [recallDrafts, setRecallDrafts] = useState<{ text: string; seq: number }[]>([]);
 	const recallSeqRef = useRef(0);
 	const onRecallQueued = useCallback(
-		(kind: "steer" | "followUp", text: string, index: number) => {
-			send({ type: "queue_remove", kind, text, index });
+		(kind: "steer" | "followUp", text: string, index: number, id?: string) => {
+			send({ type: "queue_remove", kind, text, index, id });
 			recallSeqRef.current += 1;
 			const parsed = splitQuotedPrompt(text);
 			const item = { text: parsed.text, seq: recallSeqRef.current };
@@ -2383,6 +2383,7 @@ export function App() {
 										/* 工具调用卡片的工具名右键菜单（contextmenu.toolcall）：条目已合并好，
 										   工具卡只管开菜单 + 分派它自己的 host:tool-info。 */
 										uiContextToolCall={uiSlots["contextmenu.toolcall"]}
+										uiToolCardFooter={uiSlots["tool.card.footer"]}
 										uiChatEmpty={uiChatEmpty}
 										onUiAction={onUiAction}
 										key={

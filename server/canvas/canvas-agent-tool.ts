@@ -542,6 +542,18 @@ export function makeCanvasTool(host: CanvasToolHost, lang?: () => ServerLang): T
 				if (action === "add_edge") {
 					const s = p.sourceNodeId as string;
 					const t = p.targetNodeId as string;
+					if (s === t) {
+						return text(
+							pick(
+								getLang(),
+								"不能连接自环边（源与目标相同）。",
+								"Self-loop edges are not allowed (source equals target).",
+								"canvas.edge.self",
+								{},
+							),
+							{ ok: false },
+						);
+					}
 					if (!graph.nodes.some((x) => x.id === s) || !graph.nodes.some((x) => x.id === t)) {
 						return text(
 							pick(
@@ -549,6 +561,18 @@ export function makeCanvasTool(host: CanvasToolHost, lang?: () => ServerLang): T
 								"边的端点节点不存在，先 get 确认 id。",
 								"Edge endpoint not found; get the graph first.",
 								"canvas.edge.missing",
+								{},
+							),
+							{ ok: false },
+						);
+					}
+					if (graph.edges.some((e) => e.sourceNodeId === s && e.targetNodeId === t)) {
+						return text(
+							pick(
+								getLang(),
+								`两节点间已存在连接（${s} → ${t}）。`,
+								`Edge already exists between ${s} and ${t}.`,
+								"canvas.edge.duplicate",
 								{},
 							),
 							{ ok: false },

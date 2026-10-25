@@ -65,11 +65,11 @@ export interface RoleMeta {
 export const ROLE_METAS: Record<CanvasNodeRole, RoleMeta> = {
 	trigger: {
 		role: "trigger",
-		labelZh: "手动触发 (Trigger)",
-		labelEn: "Trigger / Start",
-		icon: "▶️",
+		labelZh: "业务需求输入 (Input)",
+		labelEn: "Task Input / Trigger",
+		icon: "📋",
 		group: "trigger",
-		blurb: "手动启动：携带启动载荷进入流水线",
+		blurb: "流水线入口：填写本次业务需求或启动输入，触发全队流转",
 		defaultInstruction: "",
 		needsLlm: false,
 	},
@@ -472,7 +472,13 @@ export interface RoleField {
 
 export const ROLE_FIELDS: Record<CanvasNodeRole, RoleField[]> = {
 	trigger: [
-		{ key: "payload", labelZh: "启动载荷", kind: "textarea", rows: 3, placeholder: "JSON 或文本，作为流水线初始输入…" },
+		{
+			key: "payload",
+			labelZh: "业务需求 / 任务输入",
+			kind: "textarea",
+			rows: 4,
+			placeholder: "在此输入本次要实现的功能需求、修改目标或业务背景（例如：实现深色模式切换并记住用户偏好）…",
+		},
 	],
 	cron: [
 		{

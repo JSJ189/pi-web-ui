@@ -7,7 +7,12 @@ import {
 	createAgentSessionFromServices,
 	SessionManager,
 } from "@earendil-works/pi-coding-agent";
-import { formatStreamingPrompt, splitQuotedPrompt, formatTextQuote } from "../../server/text-quote.js";
+import {
+	extractStreamingPayload,
+	formatStreamingPrompt,
+	splitQuotedPrompt,
+	formatTextQuote,
+} from "../../server/text-quote.js";
 import type { TextQuote } from "../../server/protocol.js";
 import { serializeMessage } from "../../server/serialize.js";
 import type { AgentMessage } from "../../server/serialize.js";
@@ -333,5 +338,294 @@ describe("排队消息附件处理与隔离 (queued-attachments)", () => {
 		} finally {
 			fs.rmSync(tmpDir, { recursive: true, force: true });
 		}
+	});
+
+	it("extractStreamingPayload: 视觉模型完整解构图片、文本附件与引用 (fixes #717)", () => {
+		const asides = [
+			{
+				message: {
+					customType: "file",
+					content: [
+						{
+							type: "image",
+							data: "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mNk+M9QDwADhgGAWjR9awAAAABJRU5ErkJggg==",
+							mimeType: "image/png",
+						},
+					],
+					display: true,
+					details: { name: "arch.png", mode: "image" },
+				},
+			},
+			{
+				message: {
+					customType: "file",
+					content: [{ type: "text", text: '<file path="src/server.ts" />' }],
+					display: true,
+					details: { name: "server.ts", path: "src/server.ts", mode: "reference" },
+				},
+			},
+			{
+				message: {
+					customType: "file",
+					content: [{ type: "text", text: formatTextQuote(sampleQuote) }],
+					display: true,
+					details: { mode: "quote", quote: sampleQuote },
+				},
+			},
+		];
+
+		const payload = extractStreamingPayload(asides, [], true, "claude-3-5-sonnet");
+
+		// 图片被提取至 promptImages 与 imageNames
+		expect(payload.promptImages.length).toBe(1);
+		expect(payload.promptImages[0]!.mimeType).toBe("image/png");
+		expect(payload.imageNames).toEqual(["arch.png"]);
+
+		// 文件被提取至 textAsides
+		expect(payload.textAsides).toEqual(['<file path="src/server.ts" />']);
+
+		// 引用被独立提取至 quotes，不被混入普通的 textAsides
+		expect(payload.quotes).toEqual([sampleQuote]);
+	});
+
+	it("extractStreamingPayload: 非视觉模型补充占位提示，杜绝排队发图静默消失 (fixes #717)", () => {
+		const asides = [
+			{
+				message: {
+					customType: "file",
+					content: [
+						{
+							type: "image",
+							data: "raw_image_data",
+							mimeType: "image/jpeg",
+						},
+					],
+					display: true,
+					details: { name: "photo.jpg", mode: "image" },
+				},
+			},
+			{
+				message: {
+					customType: "file",
+					content: [
+						{ type: "text", text: "<vision-bridge>\n识别为折线图\n</vision-bridge>" },
+						{ type: "image", data: "bridge_raw", mimeType: "image/png" },
+					],
+					display: true,
+					details: { name: "chart.png", mode: "bridged" },
+				},
+			},
+		];
+
+		const payload = extractStreamingPayload(asides, [], false, "deepseek-coder");
+
+		// 非视觉模型：promptImages 不得塞入图片（防止底层报错）
+		expect(payload.promptImages.length).toBe(0);
+
+		// imageNames 依然包含所有图片名称，确保 UI 标签能够被正常渲染
+		expect(payload.imageNames).toEqual(["photo.jpg", "chart.png"]);
+
+		// 纯图片自动补充明确的占位说明，视觉桥图片使用原有转写文本
+		expect(payload.textAsides.length).toBe(2);
+		expect(payload.textAsides[0]).toContain(
+			'[Attached image "photo.jpg" omitted: model (deepseek-coder) does not support vision]',
+		);
+		expect(payload.textAsides[1]).toBe("<vision-bridge>\n识别为折线图\n</vision-bridge>");
+	});
+
+	it("空闲发送 await 期间转入 streaming 时自愈：排空 _pendingNextTurnMessages 且排队 prompt 携带完整附件 (fixes #717)", async () => {
+		// 模拟 AgentSession
+		const session = {
+			isStreaming: false,
+			model: { name: "gpt-4o", input: ["text", "image"] },
+			_pendingNextTurnMessages: [] as unknown[],
+			promptsReceived: [] as { text: string; options?: unknown }[],
+			async sendCustomMessage(msg: unknown, opts?: { deliverAs?: string }) {
+				if (opts?.deliverAs === "nextTurn") {
+					this._pendingNextTurnMessages.push(msg);
+				}
+			},
+			async prompt(text: string, options?: { streamingBehavior?: string; images?: unknown[] }) {
+				if (this.isStreaming) {
+					this.promptsReceived.push({ text, options });
+					return;
+				}
+				const injected = [...this._pendingNextTurnMessages];
+				this._pendingNextTurnMessages = [];
+				this.promptsReceived.push({ text, options: { ...options, injected } });
+			},
+		};
+
+		const asides = [
+			{
+				message: {
+					customType: "file",
+					content: [{ type: "image", data: "flowchart_base64", mimeType: "image/png" }],
+					display: true,
+					details: { name: "flowchart.png", mode: "image" },
+				},
+			},
+			{
+				message: {
+					customType: "file",
+					content: [{ type: "text", text: '<file path="server/agent-service.ts" />' }],
+					display: true,
+					details: { name: "agent-service.ts", path: "server/agent-service.ts", mode: "reference" },
+				},
+			},
+		];
+
+		// 模拟进入 ClientSession.prompt：此时 s.isStreaming 为 false
+		expect(session.isStreaming).toBe(false);
+
+		// 执行空闲注入阶段
+		for (const aside of asides) {
+			await session.sendCustomMessage(aside.message, { deliverAs: "nextTurn" });
+		}
+		expect(session._pendingNextTurnMessages.length).toBe(2);
+
+		// 模拟竞态发生：在 await 让出期间，同会话另一个请求或自动任务触发了流式运行
+		session.isStreaming = true;
+
+		// 模拟 agent-service 的自愈与流式排队分流逻辑（fixes #717）
+		const deliverStreamingPrompt = async (text: string) => {
+			if (Array.isArray(session._pendingNextTurnMessages)) {
+				session._pendingNextTurnMessages = [];
+			}
+			const { promptImages, textAsides, imageNames, quotes } = extractStreamingPayload(
+				asides,
+				[],
+				session.model.input.includes("image"),
+				session.model.name,
+			);
+			const fullPromptText = formatStreamingPrompt(text, textAsides, quotes, imageNames);
+			await session.prompt(fullPromptText, {
+				streamingBehavior: "steer",
+				images: promptImages.length > 0 ? promptImages : undefined,
+			});
+		};
+
+		// 触发临界区检查自愈
+		if (session.isStreaming) {
+			await deliverStreamingPrompt("请帮我看下这个流程图和代码");
+		}
+
+		// 核心验证 1：SDK 的 _pendingNextTurnMessages 被立即清空排空，杜绝跨轮泄漏！
+		expect(session._pendingNextTurnMessages.length).toBe(0);
+
+		// 核心验证 2：排队 prompt 成功发送，并且完整携带了图片与附件标签！
+		expect(session.promptsReceived.length).toBe(1);
+		const queuedPrompt = session.promptsReceived[0]!;
+		expect(queuedPrompt.text).toContain("请帮我看下这个流程图和代码");
+		expect(queuedPrompt.text).toContain('<attached-image name="flowchart.png" />');
+		expect(queuedPrompt.text).toContain('<file path="server/agent-service.ts" />');
+		expect(queuedPrompt.options).toEqual({
+			streamingBehavior: "steer",
+			images: [{ type: "image", data: "flowchart_base64", mimeType: "image/png" }],
+		});
+
+		// 模拟流式结束并完成回复
+		session.isStreaming = false;
+
+		// 核心验证 3：下一轮发起正常提问时，绝不会收到来自上一轮的任何残留附件
+		await session.prompt("下一个问题：怎么重构？");
+		expect(session.promptsReceived.length).toBe(2);
+		const nextTurnPrompt = session.promptsReceived[1]!;
+		expect(nextTurnPrompt.text).toBe("下一个问题：怎么重构？");
+		expect((nextTurnPrompt.options as { injected: unknown[] }).injected).toEqual([]);
+	});
+
+	it("同文本不同图排队：删除 index 1 时幸存的 index 0 重新入队携带原本图片，杜绝串台覆盖 (fixes #718)", async () => {
+		const imgA = [{ type: "image" as const, data: "imgA_base64", mimeType: "image/png" }];
+		const imgB = [{ type: "image" as const, data: "imgB_base64", mimeType: "image/png" }];
+
+		// 模拟 AgentSession
+		const session = {
+			isStreaming: true,
+			steeringQueue: [] as Array<{ text: string; images?: typeof imgA }>,
+			followUpQueue: [] as Array<{ text: string; images?: typeof imgA }>,
+			clearQueue() {
+				const steering = this.steeringQueue.map((e) => e.text);
+				const followUp = this.followUpQueue.map((e) => e.text);
+				this.steeringQueue = [];
+				this.followUpQueue = [];
+				return { steering, followUp };
+			},
+			async followUp(text: string, images?: typeof imgA) {
+				this.followUpQueue.push({ text, images });
+			},
+		};
+
+		// 模拟 AgentService Conversation 状态
+		let queuedFollowUpEntries = [
+			{ text: "继续处理", images: imgA },
+			{ text: "继续处理", images: imgB },
+		];
+		await session.followUp("继续处理", imgA);
+		await session.followUp("继续处理", imgB);
+
+		// 用户点击删除 index = 1（第二条）排队消息
+		const targetIndex = 1;
+		const targetText = "继续处理";
+
+		const { followUp } = session.clearQueue();
+		const currentFollowUpEntries = queuedFollowUpEntries; // 对账
+
+		// 移除 targetIndex 处条目
+		const kept = [...currentFollowUpEntries.slice(0, targetIndex), ...currentFollowUpEntries.slice(targetIndex + 1)];
+		queuedFollowUpEntries = [];
+
+		// 重新入队
+		for (const entry of kept) {
+			queuedFollowUpEntries.push(entry);
+			await session.followUp(entry.text, entry.images);
+		}
+
+		// 核心验证：幸存的第 0 条精准保留自己的 imgA，未被第二条的 imgB 覆盖或置换
+		expect(session.followUpQueue.length).toBe(1);
+		expect(session.followUpQueue[0]!.text).toBe("继续处理");
+		expect(session.followUpQueue[0]!.images).toEqual(imgA);
+	});
+
+	it("同文本不同图排队：删除 index 0 时幸存的 index 1 重新入队携带原本图片 (fixes #718)", async () => {
+		const imgA = [{ type: "image" as const, data: "imgA_base64", mimeType: "image/png" }];
+		const imgB = [{ type: "image" as const, data: "imgB_base64", mimeType: "image/png" }];
+
+		const session = {
+			isStreaming: true,
+			followUpQueue: [] as Array<{ text: string; images?: typeof imgA }>,
+			clearQueue() {
+				const followUp = this.followUpQueue.map((e) => e.text);
+				this.followUpQueue = [];
+				return { steering: [], followUp };
+			},
+			async followUp(text: string, images?: typeof imgA) {
+				this.followUpQueue.push({ text, images });
+			},
+		};
+
+		let queuedFollowUpEntries = [
+			{ text: "继续处理", images: imgA },
+			{ text: "继续处理", images: imgB },
+		];
+		await session.followUp("继续处理", imgA);
+		await session.followUp("继续处理", imgB);
+
+		// 用户点击删除 index = 0（第一条）排队消息
+		const targetIndex = 0;
+
+		session.clearQueue();
+		const kept = [...queuedFollowUpEntries.slice(0, targetIndex), ...queuedFollowUpEntries.slice(targetIndex + 1)];
+		queuedFollowUpEntries = [];
+
+		for (const entry of kept) {
+			queuedFollowUpEntries.push(entry);
+			await session.followUp(entry.text, entry.images);
+		}
+
+		// 核心验证：幸存者为第二条，精准保留原本的 imgB
+		expect(session.followUpQueue.length).toBe(1);
+		expect(session.followUpQueue[0]!.text).toBe("继续处理");
+		expect(session.followUpQueue[0]!.images).toEqual(imgB);
 	});
 });

@@ -7,6 +7,8 @@
  *  3. 纯净设计：不显示“响应中…”，直接显示上一次的耗时，不注入右上角常驻计时器，不 hack 底层 WebSocket，完全由服务端权威精准测速驱动。
  */
 
+import { apiBase as getSharedApiBase } from "@pi-web-ui/plugin-sdk/client";
+
 const ACTION_SHOW_DETAILS = "response-speed:show-details";
 const STYLE_ID = "response-speed-styles";
 const MODAL_ID = "response-speed-modal-root";
@@ -33,18 +35,8 @@ function getRating(ms) {
 	return { label: "偏慢", color: "#ef4444" };
 }
 
-function appRoot() {
-	try {
-		const u = new URL(import.meta.url);
-		const i = u.pathname.indexOf("/plugins/");
-		return `${u.origin}${i >= 0 ? u.pathname.slice(0, i) : ""}`;
-	} catch {
-		return "";
-	}
-}
-
 function apiBase() {
-	return `${appRoot()}/plugins-api/response-speed`;
+	return getSharedApiBase("response-speed");
 }
 
 // ── 客户端统计数据缓存 ─────────────────────────────────────────

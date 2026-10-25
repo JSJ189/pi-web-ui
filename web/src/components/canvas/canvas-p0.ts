@@ -60,9 +60,15 @@ export class HistoryStack {
 	private future: GraphSnap[] = [];
 	constructor(private limit = 50) {}
 	push(s: GraphSnap) {
+		const top = this.past[this.past.length - 1];
+		if (top && this.isEqual(top, s)) return;
 		this.past.push(structuredClone(s));
 		if (this.past.length > this.limit) this.past.shift();
 		this.future = [];
+	}
+	private isEqual(a: GraphSnap, b: GraphSnap): boolean {
+		if (a.nodes.length !== b.nodes.length || a.edges.length !== b.edges.length) return false;
+		return JSON.stringify(a) === JSON.stringify(b);
 	}
 	undo(cur: GraphSnap): GraphSnap | null {
 		const prev = this.past.pop();
@@ -81,5 +87,9 @@ export class HistoryStack {
 	}
 	get canRedo() {
 		return this.future.length > 0;
+	}
+	clear() {
+		this.past = [];
+		this.future = [];
 	}
 }

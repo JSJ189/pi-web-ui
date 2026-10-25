@@ -57,6 +57,7 @@ import type { PluginCommandDef } from "../plugins.js";
 import { scmCommitContext } from "../scm.js";
 import { buildCommitMsgInput, sanitizeCommitMessage } from "../scm-commitmsg.js";
 import { getAppVersion } from "../pkg-info.js";
+import { createQueuedEntry, removeQueuedEntry, toQueuedPromptItems, type QueuedMessageEntry } from "../queue-utils.js";
 import {
 	SubagentTemplatesStore,
 	DEFAULT_TEMPLATES,
@@ -132,7 +133,7 @@ export class UniversalSession implements DispatchSession {
 	private snapshotTimer: NodeJS.Timeout | null = null;
 	private pendingToolResults: UiMessage[] = [];
 	private readonly sessionDrafts = new Map<string, { text: string; ts: number }>();
-	private followUpQueue: Array<{ text: string; attachments?: PromptAttachment[] }> = [];
+	private followUpQueue: QueuedMessageEntry[] = [];
 
 	private readonly engine: string;
 	private currentModel = "claude-3-7-sonnet-20250219";
@@ -186,8 +187,19 @@ export class UniversalSession implements DispatchSession {
 		this.subagentTemplates = new SubagentTemplatesStore(templatesPath);
 
 		this.subagentHost = {
-			spawnSubagent: async (prompt, type, cwd, templateName, model, parentId, persist) => {
-				const { convId } = await this.spawnSubagent(prompt, type, cwd, templateName, model, parentId, persist);
+			spawnSubagent: async (prompt, type, cwd, templateName, model, parentId, persist, thinking, notifyOnDone) => {
+				const { convId } = await this.spawnSubagent(
+					prompt,
+					type,
+					cwd,
+					templateName,
+					model,
+					parentId,
+					persist,
+					undefined,
+					thinking,
+					notifyOnDone,
+				);
 				return convId;
 			},
 			getSubagent: (convId: string) => {
@@ -198,6 +210,7 @@ export class UniversalSession implements DispatchSession {
 			listSubagents: (scope?: "all" | "subagent" | "persistent") => this.listSubagents(scope),
 			steerSubagent: (convId: string, message: string) => this.steerSubagent(convId, message),
 			stopSubagent: (convId: string) => this.stopSubagent(convId),
+			markSubagentsConsumed: (_runIds: string[]) => {},
 			listTemplates: () =>
 				this.subagentTemplates
 					.list()
@@ -574,6 +587,10 @@ export class UniversalSession implements DispatchSession {
 			queue: {
 				steering: [],
 				followUp: this.followUpQueue.map((q) => q.text),
+				entries: {
+					steering: [],
+					followUp: toQueuedPromptItems(this.followUpQueue),
+				},
 			},
 			tools: [],
 			version: this.version,
@@ -620,7 +637,8 @@ export class UniversalSession implements DispatchSession {
 	async prompt(text: string, attachments?: PromptAttachment[], _queue?: boolean): Promise<void> {
 		if (this.isStreaming) {
 			if (_queue === true) {
-				this.followUpQueue.push({ text, attachments });
+				const entry = createQueuedEntry(text, { attachments });
+				this.followUpQueue.push(entry);
 				this.flushSnapshot();
 				this.emitNotice(
 					"info",
@@ -969,8 +987,14 @@ export class UniversalSession implements DispatchSession {
 		}
 	}
 
-	removeQueued(): void {
-		/* 通用底座暂无插队队列 */
+	removeQueued(kind: "steer" | "followUp", text: string, index?: number, id?: string): void {
+		if (kind === "followUp") {
+			const next = removeQueuedEntry(this.followUpQueue, { id, text, index });
+			if (next.length !== this.followUpQueue.length) {
+				this.followUpQueue = next;
+				this.flushSnapshot();
+			}
+		}
 	}
 
 	// ---------------------------------------------------------------------------
@@ -2673,6 +2697,8 @@ export class UniversalSession implements DispatchSession {
 		parentId?: string,
 		persist = false,
 		title?: string,
+		_thinking?: string,
+		_notifyOnDone?: boolean,
 	): Promise<{ convId: string }> {
 		const maxSubagents = Number(process.env.PI_WEB_MAX_SUBAGENTS) || 8;
 		const liveCount = this.getLiveSubagentsCount();

@@ -885,14 +885,15 @@ export default {
 		}
 
 		function restartPoller() {
+			if (st.dead) return;
 			if (st.pollTimer) clearInterval(st.pollTimer);
 			st.pollTimer = null;
 			st.lastUnseenUids.clear();
 			st.firstPollDone = false;
 			const sec = Math.max(15, Math.floor(Number(st.config?.pollSec) || 60));
 			if (st.config?.imap?.host && st.depsOk) {
-				st.pollTimer = setInterval(() => void serialized(pollOnce), sec * 1000);
-				void serialized(pollOnce); // 立即来一轮
+				st.pollTimer = setInterval(() => void serialized(pollOnce).catch(() => {}), sec * 1000);
+				void serialized(pollOnce).catch(() => {}); // 立即来一轮
 				// 常驻任务进「后台任务」面板：可见 + 可一键停止轮询。
 				if (st.bgTask) st.bgTask.update({ label: "📬 邮件轮询", status: `每 ${sec}s` });
 				else {
@@ -1151,10 +1152,14 @@ export default {
 		void (async () => {
 			try {
 				st.config = await loadConfigSecure();
+				if (st.dead) return;
 				await loadDeps();
+				if (st.dead) return;
 				await refreshModels();
+				if (st.dead) return;
 				if (!st.depsOk) installDeps(true); // 缺依赖就自动装，不等配置保存
 				await refreshAiTools();
+				if (st.dead) return;
 				restartPoller();
 				broadcastState();
 				host.log("activated", st.depsOk ? "(依赖就绪)" : "(装依赖中)");

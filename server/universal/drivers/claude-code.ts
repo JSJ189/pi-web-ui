@@ -147,7 +147,11 @@ export class ClaudeCodeDriver extends BaseAgentDriver {
 			}
 		}
 
-		const args = ["-p", finalPrompt, "--output-format", "stream-json", "--verbose", ...this.extraArgs];
+		// 提示词通过 stdin 管道写入，argv 仅保留参数选项：
+		// 1. 规避 Windows 下 shell: true 拼接命令行导致的注入与 DEP0190 警告；
+		// 2. 杜绝 Windows cmd.exe 遇换行 (\n) 截断丢弃后续多行 prompt 的严重缺陷；
+		// 3. 避免单次 prompt 超出 Windows 命令行 8191 字符上限。
+		const args = ["-p", "--output-format", "stream-json", "--verbose", ...this.extraArgs];
 
 		// 解析目标模型与对应服务商凭据
 		let targetModel = this.currentModel;
@@ -205,8 +209,11 @@ export class ClaudeCodeDriver extends BaseAgentDriver {
 				shell: process.platform === "win32",
 				detached: process.platform !== "win32",
 			});
-			// 立即关闭 stdin，防止 CLI 因等待流式输入而挂死
-			proc.stdin?.end();
+			// 经 stdin 写入 prompt 并关闭管道，CLI 读完后流式处理
+			if (proc.stdin) {
+				proc.stdin.write(finalPrompt);
+				proc.stdin.end();
+			}
 		} catch (err: unknown) {
 			const msg = err instanceof Error ? err.message : String(err);
 			sink.onError(

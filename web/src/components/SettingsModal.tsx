@@ -1830,6 +1830,7 @@ export function SettingsModal({
 		{ slot: "contextmenu.project", labelKey: "uiLayoutContextProject" },
 		{ slot: "contextmenu.file", labelKey: "uiLayoutContextFile" },
 		{ slot: "contextmenu.toolcall", labelKey: "uiLayoutContextToolcall" },
+		{ slot: "tool.card.footer", labelKey: "uiLayoutToolCardFooter" },
 		{ slot: "settings.pages", labelKey: "uiLayoutSettingsPages" },
 		{ slot: "tasks.panel", labelKey: "uiLayoutTasksPanel" },
 		{ slot: "modal.dialog", labelKey: "uiLayoutModal" },

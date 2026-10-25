@@ -1,0 +1,1634 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+	<meta charset="UTF-8" />
+	<meta name="viewport" content="width=device-width, initial-scale=1.0" />
+	<title>子代理会话列表对齐排版优化方案 — 交互预览</title>
+	<link rel="stylesheet" href="../web/src/styles.css" />
+	<style>
+		:root {
+			--bg: #0d0e12;
+			--bg-elev: #14161d;
+			--bg-elev2: #1c1f2a;
+			--bg-elev3: #262a38;
+			--border: rgba(255, 255, 255, 0.08);
+			--border-subtle: rgba(255, 255, 255, 0.04);
+			--text: #e6e8ef;
+			--text-dim: #9aa1b4;
+			--text-faint: #636b80;
+			--accent: #8b5cf6;
+			--accent-soft: rgba(139, 92, 246, 0.14);
+			--accent-contrast: #ffffff;
+			--green: #22c55e;
+			--amber: #f59e0b;
+			--red: #ef4444;
+			--guide-color: rgba(239, 68, 68, 0.7);
+			--guide-sub: rgba(59, 130, 246, 0.6);
+		}
+
+		* {
+			box-sizing: border-box;
+		}
+
+		body {
+			margin: 0;
+			padding: 0;
+			background: var(--bg);
+			color: var(--text);
+			font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, "Helvetica Neue", Arial, sans-serif;
+			-webkit-font-smoothing: antialiased;
+		}
+
+		.page-shell {
+			max-width: 1280px;
+			margin: 0 auto;
+			padding: 28px 24px 96px;
+		}
+
+		/* 顶部标题区 */
+		.page-header {
+			margin-bottom: 24px;
+		}
+
+		.page-header h1 {
+			margin: 0 0 8px;
+			font-size: 24px;
+			font-weight: 700;
+			display: flex;
+			align-items: center;
+			gap: 10px;
+		}
+
+		.badge-tag {
+			font-size: 12px;
+			padding: 2px 8px;
+			border-radius: 999px;
+			background: var(--accent-soft);
+			color: var(--accent);
+			border: 1px solid rgba(139, 92, 246, 0.3);
+			font-weight: 500;
+		}
+
+		.page-desc {
+			color: var(--text-dim);
+			font-size: 14px;
+			line-height: 1.6;
+			margin: 0 0 16px;
+		}
+
+		/* 交互控制条 */
+		.top-toolbar {
+			position: sticky;
+			top: 16px;
+			z-index: 100;
+			display: flex;
+			flex-wrap: wrap;
+			align-items: center;
+			justify-content: space-between;
+			gap: 16px;
+			padding: 12px 20px;
+			background: color-mix(in srgb, var(--bg-elev2) 88%, transparent);
+			backdrop-filter: blur(16px);
+			-webkit-backdrop-filter: blur(16px);
+			border: 1px solid var(--border);
+			border-radius: 12px;
+			box-shadow: 0 8px 30px rgba(0, 0, 0, 0.45);
+			margin-bottom: 28px;
+		}
+
+		.toolbar-group {
+			display: flex;
+			align-items: center;
+			gap: 12px;
+		}
+
+		.toolbar-label {
+			font-size: 12px;
+			color: var(--text-faint);
+			font-weight: 500;
+		}
+
+		.seg-btn-group {
+			display: inline-flex;
+			background: var(--bg-elev);
+			border: 1px solid var(--border);
+			border-radius: 8px;
+			padding: 2px;
+		}
+
+		.seg-btn {
+			background: transparent;
+			border: none;
+			color: var(--text-dim);
+			font-size: 12.5px;
+			padding: 6px 12px;
+			border-radius: 6px;
+			cursor: pointer;
+			transition: all 0.15s ease;
+		}
+
+		.seg-btn:hover {
+			color: var(--text);
+		}
+
+		.seg-btn.active {
+			background: var(--accent);
+			color: var(--accent-contrast);
+			font-weight: 500;
+			box-shadow: 0 2px 8px rgba(139, 92, 246, 0.35);
+		}
+
+		.toggle-btn {
+			display: inline-flex;
+			align-items: center;
+			gap: 6px;
+			background: var(--bg-elev);
+			border: 1px solid var(--border);
+			color: var(--text-dim);
+			padding: 6px 12px;
+			border-radius: 8px;
+			font-size: 12.5px;
+			cursor: pointer;
+			transition: all 0.15s ease;
+		}
+
+		.toggle-btn:hover {
+			border-color: var(--accent);
+			color: var(--text);
+		}
+
+		.toggle-btn.active {
+			background: rgba(239, 68, 68, 0.15);
+			border-color: var(--red);
+			color: #fca5a5;
+		}
+
+		.slider-wrap {
+			display: flex;
+			align-items: center;
+			gap: 8px;
+			font-size: 12px;
+			color: var(--text-dim);
+		}
+
+		.slider-wrap input[type="range"] {
+			width: 100px;
+			accent-color: var(--accent);
+		}
+
+		/* 现状问题剖析卡片 */
+		.problem-card {
+			background: var(--bg-elev);
+			border: 1px solid rgba(239, 68, 68, 0.3);
+			border-radius: 12px;
+			padding: 18px 20px;
+			margin-bottom: 32px;
+			box-shadow: 0 4px 20px rgba(239, 68, 68, 0.05);
+		}
+
+		.problem-title {
+			color: #f87171;
+			font-size: 15px;
+			font-weight: 600;
+			margin: 0 0 10px;
+			display: flex;
+			align-items: center;
+			gap: 8px;
+		}
+
+		.problem-grid {
+			display: grid;
+			grid-template-columns: repeat(auto-fit, minmax(240px, 1fr));
+			gap: 14px;
+		}
+
+		.problem-item {
+			background: rgba(239, 68, 68, 0.04);
+			border: 1px dashed rgba(239, 68, 68, 0.2);
+			border-radius: 8px;
+			padding: 10px 14px;
+		}
+
+		.problem-item h4 {
+			margin: 0 0 4px;
+			font-size: 13px;
+			color: #fca5a5;
+		}
+
+		.problem-item p {
+			margin: 0;
+			font-size: 12px;
+			color: var(--text-dim);
+			line-height: 1.5;
+		}
+
+		/* 方案展示栅格 */
+		.proposals-grid {
+			display: grid;
+			grid-template-columns: repeat(auto-fit, minmax(350px, 1fr));
+			gap: 24px;
+		}
+
+		.proposal-card {
+			background: var(--bg-elev);
+			border: 1px solid var(--border);
+			border-radius: 14px;
+			padding: 20px;
+			display: flex;
+			flex-direction: column;
+			gap: 16px;
+			transition: border-color 0.2s, box-shadow 0.2s;
+			position: relative;
+		}
+
+		.proposal-card:hover {
+			border-color: rgba(139, 92, 246, 0.4);
+			box-shadow: 0 8px 32px rgba(0, 0, 0, 0.3);
+		}
+
+		.proposal-card.recommended {
+			border-color: rgba(139, 92, 246, 0.6);
+			background: linear-gradient(180deg, rgba(139, 92, 246, 0.03) 0%, var(--bg-elev) 100%);
+		}
+
+		.rec-badge {
+			position: absolute;
+			top: -10px;
+			right: 18px;
+			background: linear-gradient(135deg, #8b5cf6, #6d28d9);
+			color: #fff;
+			font-size: 11px;
+			font-weight: 600;
+			padding: 2px 10px;
+			border-radius: 999px;
+			box-shadow: 0 2px 8px rgba(139, 92, 246, 0.4);
+			letter-spacing: 0.5px;
+		}
+
+		.proposal-header {
+			border-bottom: 1px solid var(--border-subtle);
+			padding-bottom: 12px;
+		}
+
+		.proposal-header h3 {
+			margin: 0 0 6px;
+			font-size: 16px;
+			font-weight: 600;
+			display: flex;
+			align-items: center;
+			justify-content: space-between;
+		}
+
+		.proposal-summary {
+			font-size: 12.5px;
+			color: var(--text-dim);
+			line-height: 1.5;
+			margin: 0;
+		}
+
+		.proposal-features {
+			display: flex;
+			flex-wrap: wrap;
+			gap: 6px;
+			margin-top: 8px;
+		}
+
+		.feat-tag {
+			font-size: 11px;
+			padding: 2px 6px;
+			border-radius: 4px;
+			background: var(--bg-elev2);
+			color: var(--text-dim);
+			border: 1px solid var(--border);
+		}
+
+		/* 侧边栏模拟窗体 */
+		.sidebar-preview-frame {
+			background: #111318;
+			border: 1px solid #20232d;
+			border-radius: 10px;
+			padding: 12px 10px;
+			min-height: 240px;
+			position: relative;
+			overflow: hidden;
+			transition: width 0.15s ease;
+			width: 100%;
+			max-width: 320px;
+			margin: 0 auto;
+		}
+
+		.sidebar-title-bar {
+			display: flex;
+			align-items: center;
+			justify-content: space-between;
+			padding: 0 6px 10px;
+			border-bottom: 1px solid rgba(255, 255, 255, 0.05);
+			margin-bottom: 8px;
+			font-size: 11.5px;
+			color: var(--text-faint);
+		}
+
+		.sidebar-title-bar span {
+			display: flex;
+			align-items: center;
+			gap: 6px;
+			font-weight: 500;
+		}
+
+		/* 对齐参考线图层 */
+		.guideline-overlay {
+			position: absolute;
+			top: 0;
+			left: 0;
+			right: 0;
+			bottom: 0;
+			pointer-events: none;
+			z-index: 80;
+			display: none;
+		}
+
+		body.show-guides .guideline-overlay {
+			display: block;
+		}
+
+		.guide-line {
+			position: absolute;
+			top: 0;
+			bottom: 0;
+			width: 1px;
+			background: var(--guide-color);
+			opacity: 0.85;
+			z-index: 90;
+		}
+
+		.guide-line.blue {
+			background: var(--guide-sub);
+		}
+
+		.guide-line::after {
+			content: attr(data-label);
+			position: absolute;
+			top: 4px;
+			left: 3px;
+			font-size: 9px;
+			color: #fff;
+			background: rgba(0, 0, 0, 0.7);
+			padding: 1px 3px;
+			border-radius: 2px;
+			white-space: nowrap;
+			transform: scale(0.85);
+			transform-origin: top left;
+		}
+
+		/* 通用基础按钮 */
+		.c-btn {
+			border: none;
+			background: transparent;
+			padding: 0;
+			cursor: pointer;
+			color: inherit;
+			font: inherit;
+			outline: none;
+		}
+
+		/* =========================================================================
+		   方案 0：原状还原（现状缺陷回放）
+		   ========================================================================= */
+		.curr-row {
+			position: relative;
+			display: flex;
+			align-items: center;
+			margin-bottom: 2px;
+		}
+
+		.curr-caret {
+			width: 18px;
+			height: 18px;
+			margin: 0 2px;
+			display: flex;
+			align-items: center;
+			justify-content: center;
+			color: var(--text-dim);
+			border: none;
+			background: transparent;
+			cursor: pointer;
+		}
+
+		.curr-item {
+			flex: 1 1 auto;
+			min-width: 0;
+			display: flex;
+			align-items: center;
+			gap: 8px;
+			padding: 8px 10px;
+			border-radius: 8px;
+			background: transparent;
+			border: none;
+			color: var(--text-dim);
+			text-align: left;
+			cursor: pointer;
+		}
+
+		.curr-item.active {
+			background: var(--accent-soft);
+			color: var(--text);
+			border: 1px solid rgba(139, 92, 246, 0.3);
+			padding: 7px 9px;
+		}
+
+		.curr-row.is-sub {
+			padding-left: 14px;
+		}
+
+		.curr-row.is-sub::before {
+			content: "";
+			position: absolute;
+			left: 6px; /* 14 - 8 = 6px */
+			top: -4px;
+			width: 8px;
+			height: calc(50% + 5px);
+			border-left: 1px solid var(--border);
+			border-bottom: 1px solid var(--border);
+			border-radius: 0 0 0 5px;
+		}
+
+		.curr-badge {
+			display: inline-block;
+			vertical-align: 1px;
+			margin-right: 6px;
+			font-size: 9.5px;
+			line-height: 1.4;
+			padding: 0 5px;
+			border-radius: 999px;
+			border: 1px solid var(--border);
+			color: var(--accent);
+			background: color-mix(in srgb, var(--accent) 8%, transparent);
+			white-space: nowrap;
+		}
+
+		/* =========================================================================
+		   方案 A：【IDE 树状导轨网格 (VS Code / Zed 规范)】
+		   核心改进：卡片左边缘 100% 齐平！箭头内置于统一导轨槽；树线精确对准箭头中轴；
+		   用极简分支图标替换长文本徽标。
+		   ========================================================================= */
+		.plan-a-list {
+			display: flex;
+			flex-direction: column;
+			gap: 2px;
+			position: relative;
+		}
+
+		.plan-a-row {
+			position: relative;
+			display: flex;
+			align-items: center;
+			width: 100%;
+		}
+
+		.plan-a-card {
+			display: flex;
+			align-items: center;
+			gap: 8px;
+			width: 100%;
+			padding: 7px 8px;
+			border-radius: 7px;
+			border: 1px solid transparent;
+			background: transparent;
+			color: var(--text-dim);
+			font-size: 12.5px;
+			cursor: pointer;
+			transition: all 0.15s ease;
+		}
+
+		.plan-a-card:hover {
+			background: var(--bg-elev2);
+			color: var(--text);
+		}
+
+		.plan-a-card.active {
+			background: var(--accent-soft);
+			border-color: rgba(139, 92, 246, 0.35);
+			color: var(--text);
+		}
+
+		/* 统一导轨槽位（20px）：有子项的放折叠钮，普通项放常规图标或留空 */
+		.plan-a-gutter {
+			width: 18px;
+			height: 18px;
+			display: inline-flex;
+			align-items: center;
+			justify-content: center;
+			flex-shrink: 0;
+			position: relative;
+		}
+
+		.plan-a-caret {
+			width: 18px;
+			height: 18px;
+			border: none;
+			background: transparent;
+			color: var(--text-faint);
+			cursor: pointer;
+			display: flex;
+			align-items: center;
+			justify-content: center;
+			border-radius: 4px;
+			padding: 0;
+			transition: transform 0.15s, color 0.15s;
+		}
+
+		.plan-a-caret:hover {
+			color: var(--text);
+			background: var(--bg-elev3);
+		}
+
+		.plan-a-caret.collapsed svg {
+			transform: rotate(-90deg);
+		}
+
+		/* 树枝分支线：由父卡片内的槽位连向子项，绝对同轴在 17px 位置 */
+		.plan-a-row.is-sub {
+			padding-left: 20px;
+		}
+
+		.plan-a-row.is-sub::before {
+			content: "";
+			position: absolute;
+			left: 17px;
+			top: -4px;
+			width: 10px;
+			height: 50%;
+			border-left: 1.5px solid rgba(255, 255, 255, 0.16);
+			border-bottom: 1.5px solid rgba(255, 255, 255, 0.16);
+			border-bottom-left-radius: 6px;
+		}
+
+		/* 贯通竖线（当有多个子代理时穿透） */
+		.plan-a-row.is-sub.has-more-siblings::after {
+			content: "";
+			position: absolute;
+			left: 17px;
+			top: 50%;
+			bottom: -4px;
+			width: 1.5px;
+			background: rgba(255, 255, 255, 0.16);
+		}
+
+		.plan-a-icon {
+			width: 15px;
+			height: 15px;
+			flex-shrink: 0;
+			color: var(--text-faint);
+		}
+
+		.plan-a-card.active .plan-a-icon {
+			color: var(--accent);
+		}
+
+		.plan-a-branch-icon {
+			color: var(--accent);
+		}
+
+		.plan-a-info {
+			flex: 1;
+			min-width: 0;
+			display: flex;
+			flex-direction: column;
+		}
+
+		.plan-a-title-row {
+			display: flex;
+			align-items: center;
+			gap: 6px;
+			overflow: hidden;
+			text-overflow: ellipsis;
+			white-space: nowrap;
+			font-size: 12.5px;
+		}
+
+		.plan-a-title-text {
+			overflow: hidden;
+			text-overflow: ellipsis;
+			white-space: nowrap;
+		}
+
+		.plan-a-sub {
+			font-size: 11px;
+			color: var(--text-faint);
+			display: flex;
+			align-items: center;
+			gap: 6px;
+		}
+
+		.dot-indicator {
+			width: 6px;
+			height: 6px;
+			border-radius: 50%;
+			background: var(--green);
+			box-shadow: 0 0 6px var(--green);
+			flex-shrink: 0;
+		}
+
+		/* =========================================================================
+		   方案 B：【嵌套任务组/折叠抽屉架 (Linear Subtask Shelf)】
+		   核心改进：父子会话作为一个整体 Card Group；子代理在浅底色内嵌架子中，
+		   以左侧 Accent 色柱为索引，零断线、极高整体感。
+		   ========================================================================= */
+		.plan-b-group {
+			border: 1px solid var(--border);
+			border-radius: 9px;
+			background: rgba(255, 255, 255, 0.015);
+			overflow: hidden;
+			margin-bottom: 4px;
+		}
+
+		.plan-b-group.is-open {
+			border-color: rgba(139, 92, 246, 0.25);
+			background: rgba(139, 92, 246, 0.02);
+		}
+
+		.plan-b-parent {
+			display: flex;
+			align-items: center;
+			gap: 8px;
+			padding: 8px 10px;
+			cursor: pointer;
+			color: var(--text-dim);
+		}
+
+		.plan-b-parent:hover {
+			background: var(--bg-elev2);
+			color: var(--text);
+		}
+
+		.plan-b-parent.active {
+			background: var(--accent-soft);
+			color: var(--text);
+		}
+
+		.plan-b-sub-shelf {
+			border-top: 1px solid rgba(255, 255, 255, 0.05);
+			background: rgba(0, 0, 0, 0.15);
+			padding: 4px 6px 6px 14px;
+			position: relative;
+		}
+
+		/* 左侧竖直 Accent 提示导轨 */
+		.plan-b-sub-shelf::before {
+			content: "";
+			position: absolute;
+			left: 8px;
+			top: 6px;
+			bottom: 6px;
+			width: 2px;
+			background: color-mix(in srgb, var(--accent) 40%, rgba(255, 255, 255, 0.1));
+			border-radius: 2px;
+		}
+
+		.plan-b-sub-item {
+			display: flex;
+			align-items: center;
+			gap: 8px;
+			padding: 6px 8px;
+			border-radius: 6px;
+			font-size: 12px;
+			color: var(--text-dim);
+			cursor: pointer;
+			margin-bottom: 2px;
+		}
+
+		.plan-b-sub-item:hover {
+			background: var(--bg-elev2);
+			color: var(--text);
+		}
+
+		.plan-b-sub-item.active {
+			background: rgba(139, 92, 246, 0.18);
+			color: var(--text);
+			font-weight: 500;
+		}
+
+		.plan-b-sub-pill {
+			font-size: 9.5px;
+			padding: 1px 5px;
+			border-radius: 4px;
+			background: color-mix(in srgb, var(--accent) 15%, transparent);
+			color: var(--accent);
+			border: 1px solid rgba(139, 92, 246, 0.25);
+			flex-shrink: 0;
+		}
+
+		/* =========================================================================
+		   方案 C：【极简丝滑曲线 (Smooth Curved Thread)】
+		   核心改进：卡片左右统一宽度；用更轻的 14px 缩进 + 柔和弧线；
+		   子代理徽标移至副标题行，把整条主标题空间还给用户。
+		   ========================================================================= */
+		.plan-c-row {
+			position: relative;
+			display: flex;
+			align-items: center;
+			margin-bottom: 2px;
+		}
+
+		.plan-c-card {
+			display: flex;
+			align-items: center;
+			gap: 8px;
+			width: 100%;
+			padding: 7px 10px;
+			border-radius: 8px;
+			color: var(--text-dim);
+			cursor: pointer;
+			text-align: left;
+			border: 1px solid transparent;
+		}
+
+		.plan-c-card:hover {
+			background: var(--bg-elev2);
+			color: var(--text);
+		}
+
+		.plan-c-card.active {
+			background: var(--accent-soft);
+			border-color: rgba(139, 92, 246, 0.3);
+			color: var(--text);
+		}
+
+		/* 子代理缩进并带有平滑弧线 */
+		.plan-c-row.is-sub {
+			margin-left: 14px;
+			width: calc(100% - 14px);
+		}
+
+		.plan-c-row.is-sub .plan-c-card {
+			padding: 6px 9px;
+			font-size: 12px;
+		}
+
+		.plan-c-row.is-sub::before {
+			content: "";
+			position: absolute;
+			left: -8px;
+			top: -6px;
+			width: 10px;
+			height: 22px;
+			border-left: 1.5px solid rgba(139, 92, 246, 0.4);
+			border-bottom: 1.5px solid rgba(139, 92, 246, 0.4);
+			border-bottom-left-radius: 8px;
+		}
+
+		.plan-c-badge-inline {
+			display: inline-flex;
+			align-items: center;
+			gap: 3px;
+			font-size: 10px;
+			color: var(--accent);
+		}
+
+		/* =========================================================================
+		   方案 D：【分级紧凑标签页 (Thread Pill & Flush Bar)】
+		   核心改进：子卡片高度略微紧凑（30px vs 40px），左侧带色标，标题零截断。
+		   ========================================================================= */
+		.plan-d-row {
+			position: relative;
+			margin-bottom: 3px;
+		}
+
+		.plan-d-card {
+			display: flex;
+			align-items: center;
+			gap: 8px;
+			padding: 8px 10px;
+			border-radius: 8px;
+			color: var(--text-dim);
+			cursor: pointer;
+		}
+
+		.plan-d-card:hover {
+			background: var(--bg-elev2);
+			color: var(--text);
+		}
+
+		.plan-d-card.active {
+			background: var(--accent-soft);
+			color: var(--text);
+		}
+
+		.plan-d-sub-wrap {
+			margin-left: 12px;
+			padding-left: 8px;
+			border-left: 2px solid rgba(255, 255, 255, 0.08);
+			display: flex;
+			flex-direction: column;
+			gap: 2px;
+			margin-top: 2px;
+		}
+
+		.plan-d-sub-card {
+			display: flex;
+			align-items: center;
+			gap: 6px;
+			padding: 5px 8px;
+			border-radius: 6px;
+			font-size: 12px;
+			color: var(--text-dim);
+			cursor: pointer;
+		}
+
+		.plan-d-sub-card:hover {
+			background: var(--bg-elev2);
+			color: var(--text);
+		}
+
+		.plan-d-sub-card.active {
+			background: rgba(139, 92, 246, 0.2);
+			color: var(--text);
+		}
+
+		.plan-d-dot {
+			width: 6px;
+			height: 6px;
+			border-radius: 50%;
+			background: var(--accent);
+			flex-shrink: 0;
+		}
+
+		/* 方案对比表 */
+		.comparison-table-wrap {
+			margin-top: 48px;
+			background: var(--bg-elev);
+			border: 1px solid var(--border);
+			border-radius: 12px;
+			overflow: hidden;
+		}
+
+		.comparison-table {
+			width: 100%;
+			border-collapse: collapse;
+			text-align: left;
+			font-size: 13px;
+		}
+
+		.comparison-table th,
+		.comparison-table td {
+			padding: 12px 16px;
+			border-bottom: 1px solid var(--border-subtle);
+		}
+
+		.comparison-table th {
+			background: var(--bg-elev2);
+			color: var(--text);
+			font-weight: 600;
+		}
+
+		.comparison-table tr:last-child td {
+			border-bottom: none;
+		}
+
+		.table-badge {
+			display: inline-block;
+			padding: 2px 6px;
+			border-radius: 4px;
+			font-size: 11px;
+			font-weight: 500;
+		}
+
+		.tb-best {
+			background: rgba(34, 197, 94, 0.15);
+			color: var(--green);
+			border: 1px solid rgba(34, 197, 94, 0.3);
+		}
+
+		.tb-good {
+			background: rgba(139, 92, 246, 0.15);
+			color: var(--accent);
+			border: 1px solid rgba(139, 92, 246, 0.3);
+		}
+
+		.tb-mid {
+			background: rgba(245, 158, 11, 0.15);
+			color: var(--amber);
+			border: 1px solid rgba(245, 158, 11, 0.3);
+		}
+
+		.tb-bad {
+			background: rgba(239, 68, 68, 0.15);
+			color: #f87171;
+			border: 1px solid rgba(239, 68, 68, 0.3);
+		}
+
+		/* 代码建议区域 */
+		.code-summary {
+			margin-top: 36px;
+			background: var(--bg-elev);
+			border: 1px solid var(--border);
+			border-radius: 12px;
+			padding: 20px;
+		}
+
+		.code-summary h3 {
+			margin: 0 0 10px;
+			font-size: 15px;
+			color: var(--text);
+		}
+
+		.code-summary p {
+			font-size: 13px;
+			color: var(--text-dim);
+			line-height: 1.6;
+			margin: 0 0 12px;
+		}
+
+		pre.code-block {
+			background: #090a0f;
+			border: 1px solid #1e2230;
+			border-radius: 8px;
+			padding: 14px 16px;
+			color: #cbd5e1;
+			font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace;
+			font-size: 12px;
+			overflow-x: auto;
+			line-height: 1.5;
+			margin: 0;
+		}
+	</style>
+</head>
+<body>
+	<div class="page-shell">
+		<header class="page-header">
+			<h1>
+				子代理左栏会话对齐与排版优化方案
+				<span class="badge-tag">UI / UX 提案</span>
+			</h1>
+			<p class="page-desc">
+				针对当前版本中子代理会话<strong>「卡片边缘参差不齐（0px / 22px / 14px 狗牙错位）、树枝导轨偏离箭头中轴 5px、"子代理"长字徽标挤爆标题、副标题与主标题纵向脱节」</strong>的问题，制作了 4 组高保真深色交互原型方案。
+			</p>
+		</header>
+
+		<!-- 交互控制器 -->
+		<div class="top-toolbar">
+			<div class="toolbar-group">
+				<span class="toolbar-label">对齐标尺：</span>
+				<button type="button" class="toggle-btn active" id="btnToggleGuides" onclick="toggleGuides()">
+					<svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+						<line x1="4" y1="2" x2="4" y2="22"></line>
+						<line x1="12" y1="2" x2="12" y2="22"></line>
+						<line x1="20" y1="2" x2="20" y2="22"></line>
+					</svg>
+					显示纵向对齐参考线 (Guides)
+				</button>
+			</div>
+
+			<div class="toolbar-group">
+				<span class="toolbar-label">子代理状态联动：</span>
+				<div class="seg-btn-group">
+					<button type="button" class="seg-btn active" onclick="setSubagentStatus('streaming')">运行中 (Streaming)</button>
+					<button type="button" class="seg-btn" onclick="setSubagentStatus('idle')">已结束 (Idle)</button>
+					<button type="button" class="seg-btn" onclick="setSubagentStatus('question')">待答复 (?)</button>
+				</div>
+			</div>
+
+			<div class="toolbar-group">
+				<div class="slider-wrap">
+					<span>侧栏宽度:</span>
+					<input type="range" id="widthSlider" min="200" max="320" value="260" oninput="resizeSidebars(this.value)" />
+					<span id="widthVal">260px</span>
+				</div>
+			</div>
+		</div>
+
+		<!-- 现状问题剖析 -->
+		<section class="problem-card">
+			<div class="problem-title">
+				<svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+					<circle cx="12" cy="12" r="10"></circle>
+					<line x1="12" y1="8" x2="12" y2="12"></line>
+					<line x1="12" y1="16" x2="12.01" y2="16"></line>
+				</svg>
+				当前版本为什么让人“感觉很难受”？（4 处严重几何对齐错位）
+			</div>
+			<div class="problem-grid">
+				<div class="problem-item">
+					<h4>1. 卡片外框三级狗牙错位</h4>
+					<p>普通卡片从 <code>0px</code> 起始；父卡片因外部挂了 18px 箭头被推到 <code>22px</code>；子卡片又有 <code>padding-left: 14px</code>。三个卡片的外边缘没有一个是齐的！</p>
+				</div>
+				<div class="problem-item">
+					<h4>2. 树枝引导线脱节（偏离 5px）</h4>
+					<p>现存 CSS 中的 <code>::before</code> 折角线硬编码在 <code>left: 6px</code>，而上方展开箭头的旋转中心点在 <code>left: 11px</code>，导致连线悬空在箭头左侧，没有对准。</p>
+				</div>
+				<div class="problem-item">
+					<h4>3. 长字 Badge 挤占主标题空间</h4>
+					<p>在窄侧栏（220~260px）里，“子代理”胶囊占去近 50px，加上消息图标和缩进，导致任务标题只能露 4~5 个汉字（如“请计算 12...”），信息完全不可读。</p>
+				</div>
+				<div class="problem-item">
+					<h4>4. 标题与副标题纵向脱节</h4>
+					<p>主标题被“子代理”徽标向右硬推，而第二行的“7 条消息”没有缩进，依然顶格，导致上下两行文字左边距完全不对齐，视觉极为毛糙。</p>
+				</div>
+			</div>
+		</section>
+
+		<!-- 方案展示 -->
+		<div class="proposals-grid">
+
+			<!-- 方案 0：现状缺陷精准重现 -->
+			<div class="proposal-card">
+				<div class="proposal-header">
+					<h3>
+						<span>现存版本 (Current Baseline)</span>
+						<span class="feat-tag" style="color:#f87171; border-color:rgba(239,68,68,0.3)">有明显错位</span>
+					</h3>
+					<p class="proposal-summary">
+						完全还原用户截图中的代码结构与样式表现。注意观察红线辅助线下卡片边缘和文字基线的错位。
+					</p>
+					<div class="proposal-features">
+						<span class="feat-tag">外挂折叠箭头</span>
+						<span class="feat-tag">6px 偏心折线</span>
+						<span class="feat-tag">行内徽标顶推</span>
+					</div>
+				</div>
+
+				<div class="sidebar-preview-frame" id="frameCurr">
+					<div class="guideline-overlay">
+						<div class="guide-line" style="left: 10px;" data-label="普通卡片边: 0px"></div>
+						<div class="guide-line" style="left: 32px;" data-label="父卡片边: 22px"></div>
+						<div class="guide-line" style="left: 24px;" data-label="子卡片边: 14px"></div>
+						<div class="guide-line blue" style="left: 21px;" data-label="箭头中心: 11px"></div>
+						<div class="guide-line" style="left: 16px;" data-label="树线位置: 6px"></div>
+					</div>
+
+					<div class="sidebar-title-bar">
+						<span>运行的对话 (2)</span>
+						<span>10/23</span>
+					</div>
+
+					<!-- 普通会话：外框对齐 0px -->
+					<div class="curr-row">
+						<button class="curr-item" type="button">
+							<svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" style="color:var(--text-faint)">
+								<path d="M21 15a2 2 0 0 1-2 2H7l-4 4V5a2 2 0 0 1 2-2h14a2 2 0 0 1 2 2z"></path>
+							</svg>
+							<div style="flex:1; min-width:0">
+								<div style="overflow:hidden; text-overflow:ellipsis; white-space:nowrap; font-size:12.5px;">普通主对话任务</div>
+								<div style="font-size:11px; color:var(--text-faint)">3 条消息</div>
+							</div>
+						</button>
+					</div>
+
+					<!-- 父会话：外挂 caret，卡片被右推 22px -->
+					<div class="curr-row">
+						<button class="curr-caret" type="button">
+							<svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+								<polyline points="6 9 12 15 18 9"></polyline>
+							</svg>
+						</button>
+						<button class="curr-item active" type="button">
+							<span class="dot-indicator"></span>
+							<div style="flex:1; min-width:0">
+								<div style="overflow:hidden; text-overflow:ellipsis; white-space:nowrap; font-size:12.5px;">测试下子代理功能</div>
+								<div style="font-size:11px; color:var(--text-faint)">当前</div>
+							</div>
+						</button>
+					</div>
+
+					<!-- 子代理会话：padding-left 14px，卡片在 14px，线在 6px -->
+					<div class="curr-row is-sub">
+						<button class="curr-item" type="button">
+							<svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" style="color:var(--text-faint)">
+								<path d="M21 15a2 2 0 0 1-2 2H7l-4 4V5a2 2 0 0 1 2-2h14a2 2 0 0 1 2 2z"></path>
+							</svg>
+							<div style="flex:1; min-width:0">
+								<div style="overflow:hidden; text-overflow:ellipsis; white-space:nowrap; font-size:12.5px;">
+									<span class="curr-badge">子代理</span>
+									<span>请计算 12345 + 54321, 并回答“子代理测试成功”</span>
+								</div>
+								<div style="font-size:11px; color:var(--text-faint)">7 条消息</div>
+							</div>
+						</button>
+					</div>
+				</div>
+			</div>
+
+			<!-- 方案 A：【IDE 树状导轨网格 (VS Code / Zed 规范)】—— 强烈推荐 -->
+			<div class="proposal-card recommended">
+				<div class="rec-badge">强烈推荐 · 最工整</div>
+				<div class="proposal-header">
+					<h3>
+						<span>方案 A：IDE 树状同轴导轨 (Tree Guide)</span>
+						<span class="feat-tag" style="color:var(--green); border-color:rgba(34,197,94,0.3)">100% 网格对齐</span>
+					</h3>
+					<p class="proposal-summary">
+						卡片外框基线 100% 齐平！箭头内置在卡片左侧统一槽位；树线与上级箭头绝对同轴居中；专属分支图标释放整行标题。
+					</p>
+					<div class="proposal-features">
+						<span class="feat-tag">外框零狗牙</span>
+						<span class="feat-tag">同轴导轨线 (17px)</span>
+						<span class="feat-tag">专用分支图标</span>
+						<span class="feat-tag">上下行对齐</span>
+					</div>
+				</div>
+
+				<div class="sidebar-preview-frame" id="frameA">
+					<div class="guideline-overlay">
+						<div class="guide-line" style="left: 10px;" data-label="所有卡片左边界齐平"></div>
+						<div class="guide-line blue" style="left: 27px;" data-label="箭头中心与树导轨同轴"></div>
+						<div class="guide-line" style="left: 45px;" data-label="标题正文对齐线"></div>
+					</div>
+
+					<div class="sidebar-title-bar">
+						<span>运行的对话 (2)</span>
+						<span>10/23</span>
+					</div>
+
+					<div class="plan-a-list">
+						<!-- 普通主会话：卡片从 0 起始，槽位预留或放图标 -->
+						<div class="plan-a-row">
+							<button class="plan-a-card" type="button" onclick="selectCard(this)">
+								<div class="plan-a-gutter">
+									<svg class="plan-a-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+										<path d="M21 15a2 2 0 0 1-2 2H7l-4 4V5a2 2 0 0 1 2-2h14a2 2 0 0 1 2 2z"></path>
+									</svg>
+								</div>
+								<div class="plan-a-info">
+									<div class="plan-a-title-row">
+										<span class="plan-a-title-text">普通主对话任务</span>
+									</div>
+									<div class="plan-a-sub">3 条消息</div>
+								</div>
+							</button>
+						</div>
+
+						<!-- 父会话：卡片外框依然齐平！折叠箭头内置在卡片头部 -->
+						<div class="plan-a-row">
+							<button class="plan-a-card active" type="button" onclick="selectCard(this)">
+								<div class="plan-a-gutter">
+									<span class="plan-a-caret" onclick="togglePlanATree(event, this)">
+										<svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+											<polyline points="6 9 12 15 18 9"></polyline>
+										</svg>
+									</span>
+								</div>
+								<div class="plan-a-info">
+									<div class="plan-a-title-row">
+										<span class="dot-indicator"></span>
+										<span class="plan-a-title-text" style="font-weight: 500;">测试下子代理功能</span>
+									</div>
+									<div class="plan-a-sub">当前会话 · 1 个子代理</div>
+								</div>
+							</button>
+						</div>
+
+						<!-- 子代理项：导轨竖线 100% 对齐到上方箭头的中心 (17px) -->
+						<div class="plan-a-row is-sub" id="subagentA1">
+							<button class="plan-a-card" type="button" onclick="selectCard(this)">
+								<div class="plan-a-gutter">
+									<!-- 专用的子代理分支图标，比通用气泡更专业且省空间 -->
+									<svg class="plan-a-icon plan-a-branch-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+										<line x1="6" y1="3" x2="6" y2="15"></line>
+										<circle cx="18" cy="6" r="3"></circle>
+										<circle cx="6" cy="18" r="3"></circle>
+										<path d="M18 9a9 9 0 0 1-9 9"></path>
+									</svg>
+								</div>
+								<div class="plan-a-info">
+									<div class="plan-a-title-row">
+										<span class="sub-status-target plan-a-title-text">请计算 12345 + 54321, 并回答“子代理测试成功”</span>
+									</div>
+									<div class="plan-a-sub">
+										<span style="color:var(--accent); font-weight:500;">子代理</span>
+										<span>·</span>
+										<span>7 条消息</span>
+									</div>
+								</div>
+							</button>
+						</div>
+
+						<!-- 额外演示：第二个子代理展示贯通竖线 -->
+						<div class="plan-a-row is-sub" id="subagentA2" style="display:none;">
+							<button class="plan-a-card" type="button" onclick="selectCard(this)">
+								<div class="plan-a-gutter">
+									<svg class="plan-a-icon plan-a-branch-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+										<line x1="6" y1="3" x2="6" y2="15"></line>
+										<circle cx="18" cy="6" r="3"></circle>
+										<circle cx="6" cy="18" r="3"></circle>
+										<path d="M18 9a9 9 0 0 1-9 9"></path>
+									</svg>
+								</div>
+								<div class="plan-a-info">
+									<div class="plan-a-title-row">
+										<span class="plan-a-title-text">代码重构审查任务</span>
+									</div>
+									<div class="plan-a-sub">
+										<span style="color:var(--accent);">子代理</span>
+										<span>·</span>
+										<span>已完成</span>
+									</div>
+								</div>
+							</button>
+						</div>
+					</div>
+				</div>
+			</div>
+
+			<!-- 方案 B：【嵌套任务组 (Linear Subtask Shelf)】 -->
+			<div class="proposal-card">
+				<div class="proposal-header">
+					<h3>
+						<span>方案 B：嵌套任务抽屉架 (Group Shelf)</span>
+						<span class="feat-tag" style="color:var(--accent); border-color:rgba(139,92,246,0.3)">现代包裹感</span>
+					</h3>
+					<p class="proposal-summary">
+						将父任务与子代理整体包装进一个群组卡片。子任务在微底色抽屉架内收纳，左侧辅以 2px 品牌竖光柱，从属关系自然。
+					</p>
+					<div class="proposal-features">
+						<span class="feat-tag">任务卡槽容器</span>
+						<span class="feat-tag">左侧柔光柱</span>
+						<span class="feat-tag">零零碎拐角线</span>
+					</div>
+				</div>
+
+				<div class="sidebar-preview-frame" id="frameB">
+					<div class="guideline-overlay">
+						<div class="guide-line" style="left: 10px;" data-label="群组卡片边界齐平"></div>
+						<div class="guide-line" style="left: 24px;" data-label="内部子卡片对齐"></div>
+					</div>
+
+					<div class="sidebar-title-bar">
+						<span>运行的对话 (2)</span>
+						<span>10/23</span>
+					</div>
+
+					<!-- 普通主会话 -->
+					<div class="curr-row" style="margin-bottom: 4px;">
+						<button class="curr-item" type="button" onclick="selectCard(this)">
+							<svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" style="color:var(--text-faint)">
+								<path d="M21 15a2 2 0 0 1-2 2H7l-4 4V5a2 2 0 0 1 2-2h14a2 2 0 0 1 2 2z"></path>
+							</svg>
+							<div style="flex:1; min-width:0">
+								<div style="font-size:12.5px;">普通主对话任务</div>
+								<div style="font-size:11px; color:var(--text-faint)">3 条消息</div>
+							</div>
+						</button>
+					</div>
+
+					<!-- 群组任务卡片容器 -->
+					<div class="plan-b-group is-open">
+						<!-- 父项 Header -->
+						<div class="plan-b-parent active" onclick="selectCard(this)">
+							<span class="plan-a-caret" onclick="togglePlanBGroup(event, this)">
+								<svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+									<polyline points="6 9 12 15 18 9"></polyline>
+								</svg>
+							</span>
+							<span class="dot-indicator"></span>
+							<div style="flex:1; min-width:0">
+								<div style="font-size:12.5px; font-weight:500; overflow:hidden; text-overflow:ellipsis; white-space:nowrap;">测试下子代理功能</div>
+								<div style="font-size:11px; color:var(--text-faint)">主会话 · 运行中</div>
+							</div>
+						</div>
+
+						<!-- 子代理收纳架 -->
+						<div class="plan-b-sub-shelf" id="shelfB">
+							<div class="plan-b-sub-item" onclick="selectCard(this)">
+								<span class="plan-b-sub-pill">SUB</span>
+								<div style="flex:1; min-width:0">
+									<div class="sub-status-target" style="overflow:hidden; text-overflow:ellipsis; white-space:nowrap;">请计算 12345 + 54321, 并回答“子代理测试成功”</div>
+									<div style="font-size:10.5px; color:var(--text-faint); margin-top:1px;">7 条消息</div>
+								</div>
+							</div>
+						</div>
+					</div>
+				</div>
+			</div>
+
+			<!-- 方案 C：【极简丝滑曲线 (Smooth Curved Thread)】 -->
+			<div class="proposal-card">
+				<div class="proposal-header">
+					<h3>
+						<span>方案 C：极简弧线分支 (Curved Thread)</span>
+						<span class="feat-tag" style="color:#60a5fa; border-color:rgba(96,165,250,0.3)">轻盈通透</span>
+					</h3>
+					<p class="proposal-summary">
+						借鉴现代协作软件的分支曲线。不使用僵硬的直角拐角，改用大圆角平滑弧线；徽标收纳至副标题，标题阅读一气呵成。
+					</p>
+					<div class="proposal-features">
+						<span class="feat-tag">8px 平滑贝塞尔弧角</span>
+						<span class="feat-tag">副标题行徽标</span>
+						<span class="feat-tag">空间利用率高</span>
+					</div>
+				</div>
+
+				<div class="sidebar-preview-frame" id="frameC">
+					<div class="guideline-overlay">
+						<div class="guide-line" style="left: 10px;" data-label="主卡片左齐平"></div>
+						<div class="guide-line" style="left: 24px;" data-label="子卡片统一缩进 14px"></div>
+					</div>
+
+					<div class="sidebar-title-bar">
+						<span>运行的对话 (2)</span>
+						<span>10/23</span>
+					</div>
+
+					<div class="plan-c-row">
+						<button class="plan-c-card" type="button" onclick="selectCard(this)">
+							<svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" style="color:var(--text-faint)">
+								<path d="M21 15a2 2 0 0 1-2 2H7l-4 4V5a2 2 0 0 1 2-2h14a2 2 0 0 1 2 2z"></path>
+							</svg>
+							<div style="flex:1; min-width:0">
+								<div style="font-size:12.5px;">普通主对话任务</div>
+								<div style="font-size:11px; color:var(--text-faint)">3 条消息</div>
+							</div>
+						</button>
+					</div>
+
+					<!-- 父会话 -->
+					<div class="plan-c-row">
+						<button class="plan-c-card active" type="button" onclick="selectCard(this)">
+							<span class="plan-a-caret" onclick="togglePlanCTree(event, this)">
+								<svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+									<polyline points="6 9 12 15 18 9"></polyline>
+								</svg>
+							</span>
+							<span class="dot-indicator"></span>
+							<div style="flex:1; min-width:0">
+								<div style="font-size:12.5px; font-weight:500; overflow:hidden; text-overflow:ellipsis; white-space:nowrap;">测试下子代理功能</div>
+								<div style="font-size:11px; color:var(--text-faint)">当前会话</div>
+							</div>
+						</button>
+					</div>
+
+					<!-- 子会话：顺滑弧线接驳 -->
+					<div class="plan-c-row is-sub" id="subagentC">
+						<button class="plan-c-card" type="button" onclick="selectCard(this)">
+							<div style="flex:1; min-width:0">
+								<div class="sub-status-target" style="font-size:12px; overflow:hidden; text-overflow:ellipsis; white-space:nowrap;">请计算 12345 + 54321, 并回答“子代理测试成功”</div>
+								<div style="font-size:10.5px; color:var(--text-faint); margin-top:1px; display:flex; align-items:center; gap:6px;">
+									<span class="plan-c-badge-inline">
+										<svg width="10" height="10" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5">
+											<circle cx="18" cy="6" r="3"></circle>
+											<circle cx="6" cy="18" r="3"></circle>
+											<path d="M18 9a9 9 0 0 1-9 9"></path>
+										</svg>
+										子代理
+									</span>
+									<span>·</span>
+									<span>7 条消息</span>
+								</div>
+							</div>
+						</button>
+					</div>
+				</div>
+			</div>
+
+			<!-- 方案 D：【无连线光柱流 (Status Pillar & Zero Lines)】 -->
+			<div class="proposal-card">
+				<div class="proposal-header">
+					<h3>
+						<span>方案 D：无连线纯净光柱 (Pure Pillar)</span>
+						<span class="feat-tag" style="color:#a78bfa; border-color:rgba(167,139,250,0.3)">无连线杂音</span>
+					</h3>
+					<p class="proposal-summary">
+						完全摒弃老式折线，通过左侧贯穿微光柱与网格内缩来体现层级。界面极度纯净，杜绝任何连线对齐难题。
+					</p>
+					<div class="proposal-features">
+						<span class="feat-tag">零连线干扰</span>
+						<span class="feat-tag">左侧 2px 索引柱</span>
+						<span class="feat-tag">紧凑高度 (30px)</span>
+					</div>
+				</div>
+
+				<div class="sidebar-preview-frame" id="frameD">
+					<div class="guideline-overlay">
+						<div class="guide-line" style="left: 10px;" data-label="主卡片左齐平"></div>
+						<div class="guide-line" style="left: 22px;" data-label="贯穿光柱位"></div>
+					</div>
+
+					<div class="sidebar-title-bar">
+						<span>运行的对话 (2)</span>
+						<span>10/23</span>
+					</div>
+
+					<div class="plan-d-row">
+						<div class="plan-d-card" onclick="selectCard(this)">
+							<svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" style="color:var(--text-faint)">
+								<path d="M21 15a2 2 0 0 1-2 2H7l-4 4V5a2 2 0 0 1 2-2h14a2 2 0 0 1 2 2z"></path>
+							</svg>
+							<div style="flex:1; min-width:0">
+								<div style="font-size:12.5px;">普通主对话任务</div>
+								<div style="font-size:11px; color:var(--text-faint)">3 条消息</div>
+							</div>
+						</div>
+					</div>
+
+					<!-- 父卡片 -->
+					<div class="plan-d-row">
+						<div class="plan-d-card active" onclick="selectCard(this)">
+							<span class="plan-a-caret" onclick="togglePlanDTree(event, this)">
+								<svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+									<polyline points="6 9 12 15 18 9"></polyline>
+								</svg>
+							</span>
+							<span class="dot-indicator"></span>
+							<div style="flex:1; min-width:0">
+								<div style="font-size:12.5px; font-weight:500; overflow:hidden; text-overflow:ellipsis; white-space:nowrap;">测试下子代理功能</div>
+								<div style="font-size:11px; color:var(--text-faint)">当前会话</div>
+							</div>
+						</div>
+
+						<!-- 子代理折叠带 -->
+						<div class="plan-d-sub-wrap" id="wrapD">
+							<div class="plan-d-sub-card" onclick="selectCard(this)">
+								<span class="plan-d-dot"></span>
+								<div style="flex:1; min-width:0">
+									<div class="sub-status-target" style="font-size:12px; overflow:hidden; text-overflow:ellipsis; white-space:nowrap;">请计算 12345 + 54321, 并回答“子代理测试成功”</div>
+									<div style="font-size:10.5px; color:var(--text-faint);">7 条消息 · 子代理</div>
+								</div>
+							</div>
+						</div>
+					</div>
+				</div>
+			</div>
+
+		</div>
+
+		<!-- 方案横向全方位对比表格 -->
+		<section class="comparison-table-wrap">
+			<table class="comparison-table">
+				<thead>
+					<tr>
+						<th style="width: 18%;">方案维度</th>
+						<th style="width: 20%;">方案 A：IDE 树状导轨 (推荐)</th>
+						<th style="width: 20%;">方案 B：嵌套抽屉架</th>
+						<th style="width: 20%;">方案 C：极简弧线分支</th>
+						<th style="width: 22%;">方案 D：无连线纯净柱</th>
+					</tr>
+				</thead>
+				<tbody>
+					<tr>
+						<td><strong>外边缘对齐性</strong></td>
+						<td><span class="table-badge tb-best">完美 100% 齐平</span></td>
+						<td><span class="table-badge tb-best">完美（外框包裹）</span></td>
+						<td><span class="table-badge tb-good">良好（子级均匀缩进）</span></td>
+						<td><span class="table-badge tb-best">完美 100% 齐平</span></td>
+					</tr>
+					<tr>
+						<td><strong>导轨对齐精度</strong></td>
+						<td><span class="table-badge tb-best">像素级同轴 (17px)</span></td>
+						<td><span class="table-badge tb-best">无连线，零偏差</span></td>
+						<td><span class="table-badge tb-good">弧线柔和，容错高</span></td>
+						<td><span class="table-badge tb-best">整柱贯穿，无偏差</span></td>
+					</tr>
+					<tr>
+						<td><strong>窄侧栏标题可见度</strong></td>
+						<td><span class="table-badge tb-best">极佳（多露 45% 字符）</span></td>
+						<td><span class="table-badge tb-good">良好（紧凑微标）</span></td>
+						<td><span class="table-badge tb-best">极佳（徽标下移）</span></td>
+						<td><span class="table-badge tb-best">极高（无文字徽标）</span></td>
+					</tr>
+					<tr>
+						<td><strong>上下行垂直对齐</strong></td>
+						<td><span class="table-badge tb-best">绝对统一对齐线</span></td>
+						<td><span class="table-badge tb-good">架内统一</span></td>
+						<td><span class="table-badge tb-best">绝对统一对齐线</span></td>
+						<td><span class="table-badge tb-best">绝对统一对齐线</span></td>
+					</tr>
+					<tr>
+						<td><strong>现有代码改造量</strong></td>
+						<td><span class="table-badge tb-good">约 20 行 CSS + 少量 JSX</span></td>
+						<td><span class="table-badge tb-mid">需重构外层容器</span></td>
+						<td><span class="table-badge tb-best">仅改几行 CSS 即可</span></td>
+						<td><span class="table-badge tb-good">改动较小</span></td>
+					</tr>
+				</tbody>
+			</table>
+		</section>
+
+		<!-- 推荐改造方案要点 -->
+		<section class="code-summary">
+			<h3>🛠️ 落地建议与极简重构思路（首选方案 A）</h3>
+			<p>
+				要彻底解决用户指出的“对不齐感觉难受”，最立竿见影且工程成本极低的做法是采用<strong>方案 A</strong>：
+			</p>
+			<ol style="font-size:13px; color:var(--text-dim); line-height:1.7; padding-left:20px; margin:0 0 16px;">
+				<li><strong>消灭外框狗牙错位</strong>：将 <code>.lp-tree-caret</code> 从 <code>.lp-row</code> 的左侧挤压位移，收纳进 <code>.session-item</code> 内统一的 18px <code>.session-icon-wrap</code> 槽位中，或者让父会话的卡片左边缘与普通会话保持严格 <code>0px</code> 齐平。</li>
+				<li><strong>同轴校准树枝线</strong>：现有的 <code>.lp-row.lp-sub::before</code> 的 <code>left: 6px</code> 是导致与 <code>11px</code> 箭头偏心的罪魁祸首。统一将基准锚点锁定在 <code>left: 17px</code>，树线直插箭头正下方，严丝合缝。</li>
+				<li><strong>精简子代理徽标</strong>：将 <code>subagent-badge</code> 改为专用的分支图标（如 <code>FiGitBranch</code>）或将其移至副标题行的“7 条消息 · 子代理”，释放长达 50px 的标题宽度，窄屏侧栏下不再把标题腰斩。</li>
+			</ol>
+			<pre class="code-block"><code>/* 核心 CSS 修复示意 (仅需在 styles.css 微调即可治愈强迫症) */
+.lp-row {
+    position: relative;
+    width: 100%;
+}
+
+/* 父会话卡片左侧不再外挂孤立按钮，保持外框 100% 齐平 */
+.lp-row.lp-has-kids .session-item {
+    margin-left: 0;
+}
+
+/* 树枝折角线精准对齐上级展开箭头中轴线 */
+.lp-row.lp-sub {
+    padding-left: 20px;
+}
+.lp-row.lp-sub::before {
+    left: 17px;        /* 修正原 6px 偏移，精确居中于 18px 槽位中轴 */
+    top: -4px;
+    width: 10px;
+    height: 50%;
+    border-left: 1.5px solid var(--border);
+    border-bottom: 1.5px solid var(--border);
+    border-bottom-left-radius: 5px;
+}</code></pre>
+		</section>
+	</div>
+
+	<script>
+		// 参考线开关
+		function toggleGuides() {
+			const btn = document.getElementById("btnToggleGuides");
+			document.body.classList.toggle("show-guides");
+			btn.classList.toggle("active");
+		}
+		// 初始默认开启参考线
+		document.body.classList.add("show-guides");
+
+		// 侧边栏宽度动态缩放
+		function resizeSidebars(val) {
+			document.getElementById("widthVal").textContent = val + "px";
+			const frames = document.querySelectorAll(".sidebar-preview-frame");
+			frames.forEach(f => {
+				f.style.maxWidth = val + "px";
+			});
+		}
+
+		// 模拟子代理状态切换（运行中 / 结束 / 问卷）
+		function setSubagentStatus(st) {
+			const btns = document.querySelectorAll(".seg-btn");
+			btns.forEach(b => b.classList.remove("active"));
+			event.target.classList.add("active");
+
+			const targets = document.querySelectorAll(".sub-status-target");
+			targets.forEach(t => {
+				if (st === 'streaming') {
+					t.innerHTML = '<span class="dot-indicator" style="display:inline-block; margin-right:6px;"></span>请计算 12345 + 54321, 并回答“子代理测试成功”';
+				} else if (st === 'idle') {
+					t.textContent = '请计算 12345 + 54321, 并回答“子代理测试成功”';
+				} else if (st === 'question') {
+					t.innerHTML = '<span style="display:inline-flex; align-items:center; justify-content:center; width:14px; height:14px; border-radius:50%; background:var(--amber); color:#000; font-size:10px; font-weight:bold; margin-right:6px;">?</span>请确认是否继续执行下一步？';
+				}
+			});
+		}
+
+		// 会话选中激活模拟
+		function selectCard(el) {
+			const frame = el.closest(".sidebar-preview-frame");
+			if (!frame) return;
+			frame.querySelectorAll(".active").forEach(item => item.classList.remove("active"));
+			el.classList.add("active");
+		}
+
+		// 方案 A 树折叠/展开
+		function togglePlanATree(e, btn) {
+			e.stopPropagation();
+			const sub1 = document.getElementById("subagentA1");
+			const sub2 = document.getElementById("subagentA2");
+			const isCollapsed = btn.classList.toggle("collapsed");
+			if (isCollapsed) {
+				sub1.style.display = "none";
+				sub2.style.display = "none";
+			} else {
+				sub1.style.display = "flex";
+			}
+		}
+
+		// 方案 B 群组折叠
+		function togglePlanBGroup(e, btn) {
+			e.stopPropagation();
+			const shelf = document.getElementById("shelfB");
+			const group = btn.closest(".plan-b-group");
+			const isCollapsed = btn.classList.toggle("collapsed");
+			if (isCollapsed) {
+				shelf.style.display = "none";
+				group.classList.remove("is-open");
+			} else {
+				shelf.style.display = "block";
+				group.classList.add("is-open");
+			}
+		}
+
+		// 方案 C 折叠
+		function togglePlanCTree(e, btn) {
+			e.stopPropagation();
+			const sub = document.getElementById("subagentC");
+			const isCollapsed = btn.classList.toggle("collapsed");
+			sub.style.display = isCollapsed ? "none" : "flex";
+		}
+
+		// 方案 D 折叠
+		function togglePlanDTree(e, btn) {
+			e.stopPropagation();
+			const wrap = document.getElementById("wrapD");
+			const isCollapsed = btn.classList.toggle("collapsed");
+			wrap.style.display = isCollapsed ? "none" : "flex";
+		}
+	</script>
+</body>
+</html>

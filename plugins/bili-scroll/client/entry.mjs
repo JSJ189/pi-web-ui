@@ -5,13 +5,7 @@
  */
 
 import qrcode from "./vendor/qrcode.js";
-
-function esc(s) {
-	return String(s ?? "").replace(
-		/[&<>"']/g,
-		(c) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" })[c],
-	);
-}
+import { esc } from "@pi-web-ui/plugin-sdk/client";
 
 export default {
 	async mount(el, ctx) {

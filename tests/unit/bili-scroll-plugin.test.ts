@@ -10,8 +10,8 @@ describe("bili-scroll plugin 2.0 verification", () => {
 		const manifest = JSON.parse(readFileSync(join(pluginDir, "manifest.json"), "utf8"));
 		const pkg = JSON.parse(readFileSync(join(pluginDir, "package.json"), "utf8"));
 
-		expect(manifest.version).toBe("2.0.1");
-		expect(pkg.version).toBe("2.0.1");
+		expect(manifest.version).toBe("2.0.3");
+		expect(pkg.version).toBe("2.0.3");
 		expect(manifest.apiVersion).toBe(2);
 		expect(manifest.permissions).toContain("tools");
 		expect(manifest.permissions).toContain("ui");
@@ -79,6 +79,48 @@ describe("bili-scroll plugin 2.0 verification", () => {
 			expect(registeredTools).toContain("bili_resolve_uid");
 			expect(registeredTools).toContain("bili_fav_folders");
 			expect(registeredTools).toContain("bili_fav_add");
+
+			cleanup();
+		} finally {
+			rmSync(tempDir, { recursive: true, force: true });
+		}
+	});
+
+	it("/open 路由严格拦截非法或注入 URL", async () => {
+		const tempDir = mkdtempSync(join(tmpdir(), "pi-test-bili-open-"));
+		const mod = await import(join(pluginDir, "index.mjs"));
+		const routes = new Map<string, Function>();
+		const mockHost = {
+			dataDir: tempDir,
+			log: () => {},
+			route: (_method: string, path: string, handler: Function) => {
+				routes.set(path, handler);
+				return () => {};
+			},
+			getSettings: () => ({ perDay: 5, dmMode: "only" }),
+			registerAgentTool: () => () => {},
+			onClientMessage: () => () => {},
+		};
+
+		try {
+			const cleanup = mod.default.activate(mockHost);
+			const openHandler = routes.get("/open")!;
+			expect(openHandler).toBeTruthy();
+
+			// 恶意注入链接：带 & 命令分隔符
+			let resp: any;
+			const fakeRes = {
+				json: (d: any) => {
+					resp = d;
+				},
+			};
+			openHandler({ body: { what: "url", u: "http://example.com & calc.exe" } }, fakeRes);
+			expect(resp?.ok).toBe(false);
+			expect(resp?.error).toContain("合法");
+
+			// 非 http/https 链接
+			openHandler({ body: { what: "url", u: "file:///etc/passwd" } }, fakeRes);
+			expect(resp?.ok).toBe(false);
 
 			cleanup();
 		} finally {

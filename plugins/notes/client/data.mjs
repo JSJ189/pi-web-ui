@@ -14,10 +14,14 @@
  * 权威值；浏览器时区不同也不会显示错），我们单独存，不混进 store（免得回传污染）。
  */
 import * as S from "./store.mjs";
+import { apiBase as getSharedApiBase } from "@pi-web-ui/plugin-sdk/client";
 
-/** 从 bundle 自己的 URL 推 API 前缀：<base>/plugins/notes/client/data.mjs → <base>/plugins-api/notes
- *  这样 nginx 子路径反代（页面在 /pi/ 下）不用任何额外配置。 */
+/** 从 bundle 自己的 URL 推 API 前缀：优先使用公共 apiBase，回落相对路径推导。 */
 export function resolveApiBase(importMetaUrl) {
+	try {
+		const base = getSharedApiBase("notes");
+		if (base) return base;
+	} catch {}
 	const base = String(importMetaUrl);
 	const idx = base.indexOf("/plugins/");
 	const root = idx >= 0 ? base.slice(0, idx) : base.replace(/\/[^/]*$/, "");

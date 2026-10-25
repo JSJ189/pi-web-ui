@@ -163,6 +163,30 @@ export class PluginStorage {
 		});
 	}
 
+	has(key: string): boolean {
+		return key in this.load();
+	}
+
+	keys(): string[] {
+		return Object.keys(this.load());
+	}
+
+	clear(preserveSettings = true): void {
+		void withFileRmwLock(this.file, () => {
+			const store = this.readFromDisk();
+			const newStore: Record<string, unknown> = {};
+			if (preserveSettings && "settings" in store) {
+				newStore.settings = store.settings;
+			}
+			try {
+				atomicWrite(this.file, JSON.stringify(newStore));
+				this.cache = newStore;
+			} catch (err) {
+				console.error(`[plugin-storage] 写入失败 (${this.file}):`, err);
+			}
+		});
+	}
+
 	delete(key: string): void {
 		// 同 set：写前重读 + RMW 锁，不拿旧快照回写。
 		void withFileRmwLock(this.file, () => {

@@ -232,6 +232,8 @@ check(
 	typeof client.settings?.toolsSchema === "string" && client.settings.toolsSchema.includes(CUSTOM_DESC),
 	`toolsSchema len=${client.settings?.toolsSchema?.length ?? 0}`,
 );
+// 非延迟模式平时隐藏工具目录省 token，但被覆盖的 snippet 必须列出（活体链路恒走自渲染）：
+// 预览与实发都要含覆盖的 snippet / guideline。
 check(
 	"effectiveSystemPrompt 含覆盖的 snippet / guideline",
 	typeof client.settings?.effectiveSystemPrompt === "string" &&

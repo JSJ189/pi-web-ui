@@ -62,6 +62,8 @@ export function CanvasStudio({
 
 	// 画布工程全量状态
 	const [graph, setGraph] = useState<CanvasGraph>(() => SQUAD_TEMPLATES[0].createGraph());
+	const graphRef = useRef(graph);
+	graphRef.current = graph;
 	/** 当前工程 id 镜像：canvas_node_event 按 graphId 过滤，跨工程事件直接丢弃（#706） */
 	const graphIdRef = useRef(graph.id);
 	graphIdRef.current = graph.id;
@@ -110,6 +112,32 @@ export function CanvasStudio({
 	}, [hasUnsavedChanges]);
 
 	const canvasRef = useRef<HTMLDivElement>(null);
+
+	// P0：撤销/重做栈（只记录结构性变更）
+	const historyRef = useRef(new HistoryStack(50));
+	const [, setHistoryVersion] = useState(0);
+	const pushHistory = useCallback((g: CanvasGraph) => {
+		historyRef.current.push({ nodes: g.nodes, edges: g.edges });
+		setHistoryVersion((v) => v + 1);
+	}, []);
+	const handleUndo = useCallback(() => {
+		const prev = historyRef.current.undo({ nodes: graph.nodes, edges: graph.edges });
+		if (prev) {
+			setGraph((p) => ({ ...p, nodes: prev.nodes, edges: prev.edges, updatedAt: Date.now() }));
+			setSelectedNodeId((cur) => (cur && !prev.nodes.some((n) => n.id === cur) ? null : cur));
+			setDrawerNodeId((cur) => (cur && !prev.nodes.some((n) => n.id === cur) ? null : cur));
+			setHistoryVersion((v) => v + 1);
+		}
+	}, [graph.nodes, graph.edges]);
+	const handleRedo = useCallback(() => {
+		const nxt = historyRef.current.redo({ nodes: graph.nodes, edges: graph.edges });
+		if (nxt) {
+			setGraph((p) => ({ ...p, nodes: nxt.nodes, edges: nxt.edges, updatedAt: Date.now() }));
+			setSelectedNodeId((cur) => (cur && !nxt.nodes.some((n) => n.id === cur) ? null : cur));
+			setDrawerNodeId((cur) => (cur && !nxt.nodes.some((n) => n.id === cur) ? null : cur));
+			setHistoryVersion((v) => v + 1);
+		}
+	}, [graph.nodes, graph.edges]);
 
 	// 统一发送消息：优先走画布专用连接（回包就在这条连接上订阅，#switch-race）。
 	// 主 WS 只做工程 id 同步追踪，保证重连恢复当前工程（#704）。
@@ -167,9 +195,18 @@ export function CanvasStudio({
 			clientRef.current?.setCurrentGraphId(msg.graph.id);
 			// AI 改图广播 vs 本地未保存编辑：本地优先，不覆盖用户手头改动（下次切回/保存后再对齐）
 			if (unsavedRef.current && msg.graph.id === graphIdRef.current) return;
+			// 切换工程时清理撤销栈，防止跨工程回滚
+			if (msg.graph.id !== graphIdRef.current) {
+				historyRef.current.clear();
+				setHistoryVersion((v) => v + 1);
+			}
 			// 演练模式已下线：旧存量图若还是 simulate，一律纠正为真实执行
 			const normalized =
 				msg.graph.executionMode === "real" ? msg.graph : { ...msg.graph, executionMode: "real" as const };
+			// 若同一工程中图结构被远端实际变更（例如 AI 助手调用 canvas 工具改图），记录快照支持用户一键撤回
+			if (msg.graph.id === graphIdRef.current && JSON.stringify(graphRef.current) !== JSON.stringify(normalized)) {
+				pushHistory(graphRef.current);
+			}
 			setGraph(normalized);
 			lastSavedRef.current = JSON.stringify(normalized);
 			setHasUnsavedChanges(false);
@@ -410,12 +447,13 @@ export function CanvasStudio({
 					sourcePort,
 					targetPort,
 				};
-				setGraph((prev) => ({ ...prev, edges: [...prev.edges, newEdge] }));
+				pushHistory(graph);
+				setGraph((prev) => ({ ...prev, edges: [...prev.edges, newEdge], updatedAt: Date.now() }));
 			}
 			setConnectingSource(null);
 			setMousePos(null);
 		},
-		[connectingSource, graph.edges, graph.nodes],
+		[connectingSource, graph, pushHistory],
 	);
 
 	/**
@@ -503,10 +541,11 @@ export function CanvasStudio({
 				if (f.default !== undefined) roleDefaults[f.key] = f.default;
 			}
 			if (Object.keys(roleDefaults).length > 0) newNode.config = { ...roleDefaults, ...newNode.config };
+			pushHistory(graph);
 			setGraph((prev) => ({ ...prev, nodes: [...prev.nodes, newNode], updatedAt: Date.now() }));
 			setSelectedNodeId(newNode.id);
 		},
-		[graph.nodes.length, viewport, resolveNodeModel, currentCwd],
+		[graph, viewport, resolveNodeModel, currentCwd, pushHistory],
 	);
 
 	// 自定义卡片落图：标题/角色/指令/人设/模型/行为参数原样展开为普通节点
@@ -529,10 +568,11 @@ export function CanvasStudio({
 				...(card.systemPrompt ? { systemPromptOverride: card.systemPrompt } : {}),
 				...(card.config ? { config: { ...card.config } } : {}),
 			};
+			pushHistory(graph);
 			setGraph((prev) => ({ ...prev, nodes: [...prev.nodes, newNode], updatedAt: Date.now() }));
 			setSelectedNodeId(newNode.id);
 		},
-		[viewport, resolveNodeModel, currentCwd],
+		[graph, viewport, resolveNodeModel, currentCwd, pushHistory],
 	);
 
 	// 自定义卡片删除（服务端删 + 广播回 state）
@@ -546,6 +586,7 @@ export function CanvasStudio({
 	// 套用战队模板：模板内写死的示例模型一律映射为真实可用模型
 	const handleApplyTemplate = useCallback(
 		(tmpl: CanvasGraph) => {
+			pushHistory(graph);
 			const remapped: CanvasGraph = {
 				...tmpl,
 				nodes: tmpl.nodes.map((n) => ({ ...n, model: resolveNodeModel(n.model) })),
@@ -553,7 +594,7 @@ export function CanvasStudio({
 			setGraph(remapped);
 			sendMessage({ type: "canvas_save", graph: remapped });
 		},
-		[resolveNodeModel, sendMessage],
+		[graph, pushHistory, resolveNodeModel, sendMessage],
 	);
 
 	// 每个节点已占用的端子（供卡片端子高亮）：in=被连入的 targetPort，out=被连出的 sourcePort
@@ -579,12 +620,17 @@ export function CanvasStudio({
 	}, [graph.edges]);
 
 	// 更新单条连线（抽屉中重指定端子 / 类型）
-	const handleUpdateEdge = useCallback((edgeId: string, patch: Partial<CanvasEdge>) => {
-		setGraph((prev) => ({
-			...prev,
-			edges: prev.edges.map((e) => (e.id === edgeId ? { ...e, ...patch } : e)),
-		}));
-	}, []);
+	const handleUpdateEdge = useCallback(
+		(edgeId: string, patch: Partial<CanvasEdge>) => {
+			pushHistory(graph);
+			setGraph((prev) => ({
+				...prev,
+				edges: prev.edges.map((e) => (e.id === edgeId ? { ...e, ...patch } : e)),
+				updatedAt: Date.now(),
+			}));
+		},
+		[graph, pushHistory],
+	);
 
 	// P2：导出 PNG / JSON / 导入 JSON
 	const exportRef = useRef<HTMLDivElement>(null);
@@ -620,7 +666,9 @@ export function CanvasStudio({
 				try {
 					const g = JSON.parse(String(reader.result)) as CanvasGraph;
 					if (!g || !Array.isArray(g.nodes) || !Array.isArray(g.edges)) return;
-					handleApplyTemplate({ ...g, id: `graph_${Date.now()}`, updatedAt: Date.now() });
+					const nodeIds = new Set(g.nodes.map((n) => n.id));
+					const validEdges = g.edges.filter((e) => nodeIds.has(e.sourceNodeId) && nodeIds.has(e.targetNodeId));
+					handleApplyTemplate({ ...g, edges: validEdges, id: `graph_${Date.now()}`, updatedAt: Date.now() });
 				} catch (e) {
 					console.error("import json failed", e);
 				}
@@ -630,19 +678,6 @@ export function CanvasStudio({
 		input.click();
 	}, [handleApplyTemplate]);
 
-	// P0：撤销/重做栈（只记录结构性变更）
-	const historyRef = useRef(new HistoryStack(50));
-	const pushHistory = useCallback((g: CanvasGraph) => {
-		historyRef.current.push({ nodes: g.nodes, edges: g.edges });
-	}, []);
-	const handleUndo = useCallback(() => {
-		const prev = historyRef.current.undo({ nodes: graph.nodes, edges: graph.edges });
-		if (prev) setGraph((p) => ({ ...p, nodes: prev.nodes, edges: prev.edges, updatedAt: Date.now() }));
-	}, [graph.nodes, graph.edges]);
-	const handleRedo = useCallback(() => {
-		const nxt = historyRef.current.redo({ nodes: graph.nodes, edges: graph.edges });
-		if (nxt) setGraph((p) => ({ ...p, nodes: nxt.nodes, edges: nxt.edges, updatedAt: Date.now() }));
-	}, [graph.nodes, graph.edges]);
 	// 复制/粘贴选中节点
 	const handleDuplicateNode = useCallback(() => {
 		if (!selectedNodeId) return;
@@ -667,28 +702,42 @@ export function CanvasStudio({
 		setGraph((p) => ({ ...p, nodes: autoLayout(p.nodes, p.edges), updatedAt: Date.now() }));
 	}, [graph, pushHistory]);
 
-	// 删除节点（带确认）
+	// 删除节点
 	const handleDeleteNode = useCallback(
 		(nodeId: string) => {
+			if (connectingSource?.nodeId === nodeId) {
+				setConnectingSource(null);
+				setMousePos(null);
+			}
+			const targetNode = graph.nodes.find((n) => n.id === nodeId);
+			if (targetNode?.status === "running") {
+				sendMessage({ type: "canvas_stop_node", graphId: graph.id, nodeId });
+			}
 			pushHistory(graph);
 			setGraph((prev) => ({
 				...prev,
 				nodes: prev.nodes.filter((n) => n.id !== nodeId),
 				edges: prev.edges.filter((e) => e.sourceNodeId !== nodeId && e.targetNodeId !== nodeId),
+				updatedAt: Date.now(),
 			}));
 			setSelectedNodeId((prev) => (prev === nodeId ? null : prev));
 			setDrawerNodeId((prev) => (prev === nodeId ? null : prev));
 		},
-		[graph, pushHistory],
+		[graph, pushHistory, connectingSource, sendMessage],
 	);
 
 	// 删除连线
-	const handleDeleteEdge = useCallback((edgeId: string) => {
-		setGraph((prev) => ({
-			...prev,
-			edges: prev.edges.filter((e) => e.id !== edgeId),
-		}));
-	}, []);
+	const handleDeleteEdge = useCallback(
+		(edgeId: string) => {
+			pushHistory(graph);
+			setGraph((prev) => ({
+				...prev,
+				edges: prev.edges.filter((e) => e.id !== edgeId),
+				updatedAt: Date.now(),
+			}));
+		},
+		[graph, pushHistory],
+	);
 
 	// 更新节点属性（本地乐观更新）
 	const handleUpdateNode = useCallback((nodeId: string, patch: Partial<CanvasNode>) => {
@@ -697,6 +746,11 @@ export function CanvasStudio({
 			nodes: prev.nodes.map((n) => (n.id === nodeId ? { ...n, ...patch } : n)),
 		}));
 	}, []);
+
+	// 节点卡片拖拽开始前记录快照（支持拖动位置撤回）
+	const handleNodeDragStart = useCallback(() => {
+		pushHistory(graph);
+	}, [graph, pushHistory]);
 
 	// 保存工程
 	const handleSave = useCallback(() => {
@@ -886,11 +940,16 @@ export function CanvasStudio({
 			const tag = (e.target as HTMLElement)?.tagName?.toLowerCase();
 			if (tag === "input" || tag === "textarea" || tag === "select") return;
 
-			// Ctrl+Z / Ctrl+Shift+Z → 撤销/重做
+			// Ctrl+Z / Ctrl+Shift+Z / Ctrl+Y → 撤销/重做
 			if ((e.ctrlKey || e.metaKey) && e.key.toLowerCase() === "z") {
 				e.preventDefault();
 				if (e.shiftKey) handleRedo();
 				else handleUndo();
+				return;
+			}
+			if ((e.ctrlKey || e.metaKey) && e.key.toLowerCase() === "y") {
+				e.preventDefault();
+				handleRedo();
 				return;
 			}
 			// Ctrl+D → 复制选中节点
@@ -920,8 +979,13 @@ export function CanvasStudio({
 				return;
 			}
 
-			// Escape → 取消选中 / 关闭抽屉
+			// Escape → 取消连线拉取 / 关闭抽屉 / 取消选中
 			if (e.key === "Escape") {
+				if (connectingSource) {
+					setConnectingSource(null);
+					setMousePos(null);
+					return;
+				}
 				if (drawerNodeId) {
 					setDrawerNodeId(null);
 					return;
@@ -934,6 +998,7 @@ export function CanvasStudio({
 		window.addEventListener("keydown", handleKeyDown);
 		return () => window.removeEventListener("keydown", handleKeyDown);
 	}, [
+		connectingSource,
 		selectedNodeId,
 		drawerNodeId,
 		handleSave,
@@ -991,6 +1056,8 @@ export function CanvasStudio({
 				onFitView={handleFitView}
 				onUndo={handleUndo}
 				onRedo={handleRedo}
+				canUndo={historyRef.current.canUndo}
+				canRedo={historyRef.current.canRedo}
 				onDuplicate={handleDuplicateNode}
 				onAutoLayout={handleAutoLayout}
 				zoom={viewport.zoom}
@@ -1034,6 +1101,7 @@ export function CanvasStudio({
 							workspaceRoots={workspaceRoots}
 							pathCompletions={pathCompletions}
 							baseCwd={currentCwd}
+							onDragStart={handleNodeDragStart}
 							onMakeDir={(p) => sendMessage({ type: "make_dir", path: p })}
 							onSelect={setSelectedNodeId}
 							onUpdate={handleUpdateNode}

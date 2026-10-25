@@ -30,22 +30,16 @@
  * 自家服务端的 HTTP 路由（配置/转写/安装）。拿不到 React 状态，也不需要。
  */
 
+import { hostApi, apiBase as getSharedApiBase } from "@pi-web-ui/plugin-sdk/client";
+
 const ACTION = "voice-input:toggle";
 /** 最长录音 5 分钟（16k 单声道 WAV ≈ 9.6MB，服务端 15MB 上限内）。 */
 const MAX_RECORD_MS = 5 * 60 * 1000;
 /** 浏览器静默自动断句后悄悄续听，最多续 2 次，防无限空转。 */
 const MAX_SR_RESTARTS = 2;
 
-/** 应用根前缀 + 本插件服务端基址（import.meta.url 推导，子路径反代也对）。 */
 function apiBase() {
-	try {
-		const u = new URL(import.meta.url);
-		const i = u.pathname.indexOf("/plugins/");
-		const prefix = i >= 0 ? u.pathname.slice(0, i) : "";
-		return `${u.origin}${prefix}/plugins-api/voice-input`;
-	} catch {
-		return "/plugins-api/voice-input";
-	}
+	return getSharedApiBase("voice-input");
 }
 
 const isZh = (() => {
@@ -306,14 +300,6 @@ async function getSettings() {
 	};
 	settingsAt = Date.now();
 	return settingsCache;
-}
-
-function hostApi() {
-	try {
-		return window.__piWebUiHost ?? null;
-	} catch {
-		return null;
-	}
 }
 
 /* ------------------------------------------------------------------ */

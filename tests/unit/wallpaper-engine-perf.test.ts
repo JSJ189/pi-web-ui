@@ -12,7 +12,7 @@ describe("wallpaper-engine 性能优化与画质分级守卫测试", () => {
 	it("manifest.json 版本递增且提供 qualityPreset、antiAliasing 与 lightWallpaperMode 设置", () => {
 		const raw = readFileSync(manifestPath, "utf8");
 		const manifest = JSON.parse(raw);
-		expect(manifest.version).toBe("0.3.66");
+		expect(manifest.version).toBe("0.3.67");
 
 		const keys = manifest.settings.map((s: { key: string }) => s.key);
 		expect(keys).toContain("qualityPreset");
@@ -231,5 +231,11 @@ describe("wallpaper-engine 性能优化与画质分级守卫测试", () => {
 		expect(entry).toContain("setupToolInspectorClickListener");
 		expect(entry).toContain("toolcall-payload-output");
 		expect(entry).toContain("pi-we-inspector-images");
+	});
+
+	it("index.mjs 静态资源服务对 SVG 注入 CSP sandbox 防范跨站", () => {
+		const indexSrc = readFileSync(indexPath, "utf8");
+		expect(indexSrc).toContain('headers["Content-Security-Policy"] = "sandbox"');
+		expect(indexSrc).toContain('headers["X-Content-Type-Options"] = "nosniff"');
 	});
 });

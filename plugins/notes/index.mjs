@@ -822,14 +822,14 @@ export default {
 			if (!["at", "daily_at", "weekly_at", "monthly_at", "cron", "every_minutes"].some((k) => given(params[k]))) {
 				return {};
 			}
-			if (params.every_minutes !== undefined) {
+			if (given(params.every_minutes)) {
 				const minutes = Number(params.every_minutes);
 				if (!isSupportedEvery(minutes)) {
 					return { error: `every_minutes 需在 ${MIN_EVERY_MINUTES}..${MAX_EVERY_MINUTES} 分钟之间（7 天）` };
 				}
 				return { schedule: { type: "every", minutes } };
 			}
-			if (params.cron !== undefined) {
+			if (given(params.cron)) {
 				const spec = String(params.cron).trim().replace(/\s+/g, " ");
 				if (!parseCron(spec)) return { error: `cron 表达式不合法：${spec}（需要 5 段：分 时 日 月 周）` };
 				return { schedule: { type: "cron", spec } };
@@ -841,11 +841,11 @@ export default {
 				const mi = Number(m[2]);
 				return h <= 23 && mi <= 59 ? `${String(h).padStart(2, "0")}:${String(mi).padStart(2, "0")}` : null;
 			};
-			if (params.daily_at !== undefined) {
+			if (given(params.daily_at)) {
 				const time = timeOf(params.daily_at);
 				return time ? { schedule: { type: "daily", time } } : { error: `daily_at 需要 HH:MM：${params.daily_at}` };
 			}
-			if (params.weekly_at !== undefined) {
+			if (given(params.weekly_at)) {
 				const time = timeOf(params.weekly_at);
 				if (!time) return { error: `weekly_at 需要 HH:MM：${params.weekly_at}` };
 				const byName = { sun: 0, mon: 1, tue: 2, wed: 3, thu: 4, fri: 5, sat: 6 };
@@ -861,7 +861,7 @@ export default {
 					? { schedule: { type: "weekly", time, dow } }
 					: { error: 'weekly_at 需要 weekdays（如 ["mon","fri"]）' };
 			}
-			if (params.monthly_at !== undefined) {
+			if (given(params.monthly_at)) {
 				const time = timeOf(params.monthly_at);
 				if (!time) return { error: `monthly_at 需要 HH:MM：${params.monthly_at}` };
 				const dom = Number(params.day_of_month ?? 1);

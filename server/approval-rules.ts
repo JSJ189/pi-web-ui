@@ -31,7 +31,7 @@
  */
 
 import { existsSync, readFileSync, statSync } from "node:fs";
-import { resolve, sep } from "node:path";
+import { isAbsolute, relative, resolve, sep } from "node:path";
 import { writeJsonAtomicSync } from "./atomic-file.js";
 import { DEFAULT_APPROVAL_RULES } from "./approval-default-rules.js";
 
@@ -52,16 +52,11 @@ export type ApprovalRuleMatchKind = "regex" | "glob" | "contains" | "prefix" | "
  * 针对 Windows 盘符大小写不敏感及正反斜杠统一进行规范化，防止 .. 路径穿越逃逸。
  */
 export function isPathInsideRoot(target: string, root: string): boolean {
-	const normTarget = resolve(target);
-	const normRoot = resolve(root);
-	if (process.platform === "win32") {
-		const lowerTarget = normTarget.toLowerCase();
-		const lowerRoot = normRoot.toLowerCase();
-		return (
-			lowerTarget === lowerRoot || lowerTarget.startsWith(lowerRoot + sep) || lowerTarget.startsWith(lowerRoot + "/")
-		);
-	}
-	return normTarget === normRoot || normTarget.startsWith(normRoot + sep);
+	const fold = (p: string) => (process.platform === "win32" ? p.toLowerCase() : p);
+	const rel = relative(fold(resolve(root)), fold(resolve(target)));
+	if (rel === "") return true;
+	if (isAbsolute(rel)) return false;
+	return rel !== ".." && !rel.startsWith(`..${sep}`) && !rel.startsWith("../");
 }
 
 /** 审批规则定义（也与 wire 协议 UiApprovalRule 同形）。 */

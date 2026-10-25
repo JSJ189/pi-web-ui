@@ -123,6 +123,7 @@ import {
 } from "../preset-share.js";
 import { getAppVersion } from "../pkg-info.js";
 import { getMaxOpenConversations } from "../agent-formatters.js";
+import type { PluginChatRequest, PluginConversationQuery, PluginConversationSnapshot } from "../plugins.js";
 
 const SNAPSHOT_INTERVAL_MS = 60;
 /** 用户主目录（wire 格式）：进程内不变，模块加载时求值一次（右栏 🏠）。 */
@@ -2079,7 +2080,7 @@ export class DshClientSession {
 	 * cancel). `index` is the clicked bubble's position (duplicate texts need
 	 * it); mismatch or omission falls back to first-occurrence text match.
 	 */
-	removeQueued(kind: "steer" | "followUp", text: string, index?: number): void {
+	removeQueued(kind: "steer" | "followUp", text: string, index?: number, _id?: string): void {
 		const conv = this.conv;
 		const arr = kind === "steer" ? conv.queue.steering : conv.queue.followUp;
 		const next = removeQueuedByIndexOrText(arr, text, index);
@@ -5837,6 +5838,139 @@ export class DshClientSession {
 			/* ignore */
 		}
 	}
+
+	// -----------------------------------------------------------------------
+	// 插件扩展点（与 pi 引擎的 *ForPlugins 对齐）
+	// -----------------------------------------------------------------------
+
+	activeConversationId(): string {
+		return this.activeId;
+	}
+
+	readConversationForPlugins(opts?: { clientId?: string }): PluginConversationSnapshot | null {
+		if (opts?.clientId && opts.clientId !== this.clientId) return null;
+		const conv = this.convs.get(this.activeId) ?? [...this.convs.values()][0];
+		if (!conv) return null;
+		return {
+			clientId: this.clientId,
+			conversationId: conv.id,
+			isSubagent: false,
+			sessionId: conv.sessionId,
+			sessionFile: conv.sessionFile,
+			title: conv.title,
+			model: `${this.modelProvider}/${this.model}`,
+			at: conv.lastEventAt || conv.createdAt,
+			isStreaming: conv.isStreaming,
+			messages: conv.messages,
+			streamingMessage: conv.isStreaming && conv.messages.length ? conv.messages[conv.messages.length - 1] : null,
+			stats: {
+				totalMessages: conv.messages.length,
+				tokens: { input: 0, output: 0, total: 0 },
+				cost: 0,
+			},
+		};
+	}
+
+	listRunningForPlugins(): { id: string; title: string; cwd: string; kind: "running"; isStreaming: boolean }[] {
+		const out: { id: string; title: string; cwd: string; kind: "running"; isStreaming: boolean }[] = [];
+		for (const conv of this.convs.values()) {
+			out.push({ id: conv.id, title: conv.title, cwd: conv.cwd, kind: "running", isStreaming: conv.isStreaming });
+		}
+		return out;
+	}
+
+	async listHistoryForPlugins(
+		limit = 50,
+	): Promise<{ id: string; title: string; cwd: string; kind: "history"; isStreaming: false }[]> {
+		try {
+			const files = findSessionFilesForCwd(this.sessionRoot, this.cwd);
+			const out: { id: string; title: string; cwd: string; kind: "history"; isStreaming: false }[] = [];
+			for (const file of files.slice(0, Math.max(0, limit))) {
+				try {
+					const { events } = readSessionLog(file);
+					const title = sessionLogTitle(events) || firstUserText(events, this.getLang()) || basename(dirname(file));
+					out.push({
+						id: file,
+						title: title.slice(0, 60),
+						cwd: this.cwd,
+						kind: "history",
+						isStreaming: false,
+					});
+				} catch {
+					// 忽略损坏的会话日志
+				}
+			}
+			return out;
+		} catch {
+			return [];
+		}
+	}
+
+	async searchForPlugins(query: string, limit = 20): Promise<{ id: string; title: string }[]> {
+		const q = query.trim().toLowerCase();
+		if (!q) return [];
+		const out: { id: string; title: string }[] = [];
+		for (const conv of this.convs.values()) {
+			if (conv.title.toLowerCase().includes(q)) out.push({ id: conv.id, title: conv.title });
+			if (out.length >= limit) return out;
+		}
+		try {
+			const files = findSessionFilesForCwd(this.sessionRoot, this.cwd);
+			for (const file of files) {
+				try {
+					const { events } = readSessionLog(file);
+					const title = sessionLogTitle(events) || firstUserText(events, this.getLang()) || basename(dirname(file));
+					if (title.toLowerCase().includes(q)) {
+						out.push({ id: file, title: title.slice(0, 60) });
+						if (out.length >= limit) break;
+					}
+				} catch {}
+			}
+		} catch {}
+		return out;
+	}
+
+	async writeForPlugins(id: string, text: string): Promise<{ ok: boolean; error?: string }> {
+		try {
+			const conv = this.convs.get(id);
+			if (!conv) return { ok: false, error: `未知对话：${id}` };
+			if (!text.trim()) return { ok: false, error: "投递文本为空" };
+			if (id !== this.activeId) await this.switchConversation(id);
+			await this.prompt(text);
+			return { ok: true };
+		} catch (err) {
+			return { ok: false, error: (err as Error).message };
+		}
+	}
+
+	async abortForPlugins(id: string): Promise<{ ok: boolean; error?: string }> {
+		try {
+			const conv = this.convs.get(id);
+			if (!conv) return { ok: false, error: `未知对话：${id}` };
+			if (conv.isStreaming) {
+				await this.abort();
+			}
+			return { ok: true };
+		} catch (err) {
+			return { ok: false, error: (err as Error).message };
+		}
+	}
+
+	async steerForPlugins(conversationId: string, text: string): Promise<{ ok: boolean; error?: string }> {
+		try {
+			if (!text.trim()) return { ok: false, error: "空消息" };
+			const conv = this.convs.get(conversationId);
+			if (!conv) return { ok: false, error: `未知对话：${conversationId}` };
+			conv.queue.followUp.push(text.trim());
+			return { ok: true };
+		} catch (err) {
+			return { ok: false, error: (err as Error).message };
+		}
+	}
+
+	async listModelsForPlugins(): Promise<{ id: string; provider: string; vision: boolean }[]> {
+		return [{ id: `${this.modelProvider}/${this.model}`, provider: this.modelProvider, vision: this.modelVision }];
+	}
 }
 
 // ---------------------------------------------------------------------------
@@ -6105,5 +6239,69 @@ export class DshAgentService {
 	/** dsh engine keeps no interrupted-run record — resume is pi-only. */
 	recordInterruptedRuns(): void {
 		/* no-op */
+	}
+
+	// -----------------------------------------------------------------------
+	// 插件扩展点适配层（AAL - Agent Adapter Layer）
+	// -----------------------------------------------------------------------
+
+	pluginClient(): DshClientSession | undefined {
+		let fallback: DshClientSession | undefined;
+		for (const cs of this.clients.values()) {
+			if (!fallback) fallback = cs;
+			try {
+				if (cs.activeConversations() > 0) return cs;
+			} catch {}
+		}
+		return fallback;
+	}
+
+	readConversationForPlugins(opts?: PluginConversationQuery): PluginConversationSnapshot | null {
+		const targetId = opts?.clientId;
+		if (targetId) {
+			const cs = this.clients.get(targetId);
+			return cs ? cs.readConversationForPlugins({ clientId: targetId }) : null;
+		}
+		for (const cs of this.clients.values()) {
+			const s = cs.readConversationForPlugins();
+			if (s) return s;
+		}
+		return null;
+	}
+
+	async chatFromPlugin(
+		pluginId: string,
+		req: PluginChatRequest,
+	): Promise<{ conversationId: string; clientId: string }> {
+		const cs = this.pluginClient();
+		if (!cs) throw new Error("无可用客户端会话");
+		const targetConvId = req.conversationId || cs.activeConversationId();
+		await cs.prompt(req.text);
+		return { conversationId: targetConvId, clientId: cs.clientId };
+	}
+
+	async completeForPlugins(
+		pluginId: string,
+		req: { prompt?: string; system?: string; model?: string; maxChars?: number; timeoutMs?: number },
+	): Promise<{
+		ok: boolean;
+		text?: string;
+		model?: string;
+		usage?: { input: number; output: number };
+		error?: string;
+	}> {
+		try {
+			if (this.quiesced) return { ok: false, error: "插件 LLM 调用被拒绝，请等服务器恢复后重试" };
+			const cs = this.pluginClient();
+			const agentDir = this.agentDir ?? process.env.PI_CODING_AGENT_DIR ?? "";
+			const env = { cwd: cs?.cwd ?? this.cwd, agentDir };
+			const mod = await import("../plugin-llm.js");
+			const r = await mod.completeWithIsolatedSession(env, { ...req, prompt: String(req?.prompt ?? "") });
+			if (!r.ok) return r;
+			console.log(`[plugin:${pluginId}] dsh llm.complete ok（模型 ${r.model}，输出 ${r.text.length} 字）`);
+			return r;
+		} catch (err) {
+			return { ok: false, error: (err as Error).message };
+		}
 	}
 }

@@ -118,10 +118,11 @@ export function piSessionsRoot(): string | undefined {
  *  Shared by deleteSession/renameSession/switchSession so the open path cannot
  *  escape the confinement the write paths already enforce. */
 export function isInsideSessionsDir(agentDir: string, targetPath: string): boolean {
-	const abs = resolve(targetPath);
-	const roots = [resolve(agentDir, "sessions")];
+	const fold = (p: string) => (process.platform === "win32" ? p.toLowerCase() : p);
+	const abs = fold(resolve(targetPath));
+	const roots = [fold(resolve(agentDir, "sessions"))];
 	const extra = piSessionsRoot();
-	if (extra) roots.push(resolve(extra));
+	if (extra) roots.push(fold(resolve(extra)));
 	return roots.some((root) => abs.startsWith(root + sep));
 }
 

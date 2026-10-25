@@ -19,6 +19,7 @@ import {
 	presentNote,
 	presentTitle,
 	previewablePresentKind,
+	primaryPreviewItem,
 	shouldAutoOpenPresent,
 	type PresentArgs,
 } from "../../web/src/present-items.js";
@@ -160,6 +161,29 @@ describe("focusPresentItem", () => {
 	});
 	it("focus 落在目录/缺失上时跳过", () => {
 		expect(focusPresentItem([item("d", "dir", true), item("x", "missing", true)])).toBeUndefined();
+	});
+});
+
+describe("primaryPreviewItem", () => {
+	const item = (path: string, kind: string, focus: boolean) =>
+		({ path, target: path, name: path, kind, focus }) as unknown as Parameters<typeof primaryPreviewItem>[0][number];
+
+	it("优先取标了 focus 的可预览条目", () => {
+		expect(primaryPreviewItem([item("a.png", "image", false), item("b.md", "markdown", true)])?.path).toBe("b.md");
+	});
+
+	it("无 focus 时取第一个可预览条目", () => {
+		expect(primaryPreviewItem([item("a.png", "image", false), item("b.md", "markdown", false)])?.path).toBe("a.png");
+	});
+
+	it("跳过目录和缺失条目", () => {
+		expect(
+			primaryPreviewItem([item("d", "dir", false), item("m", "missing", false), item("c.txt", "text", false)])?.path,
+		).toBe("c.txt");
+	});
+
+	it("全部不可预览时返回 undefined", () => {
+		expect(primaryPreviewItem([item("d", "dir", true), item("m", "missing", false)])).toBeUndefined();
 	});
 });
 

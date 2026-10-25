@@ -21,6 +21,7 @@ import { createPanel } from "./panel.mjs";
 import { detectLang, makeT } from "./i18n.mjs";
 import { ensureStyles } from "./styles.mjs";
 import { loadPrefs, onPrefs } from "./prefs.mjs";
+import { hostApi } from "@pi-web-ui/plugin-sdk/client";
 
 ensureStyles();
 
@@ -63,7 +64,7 @@ const panel = createPanel({
 /** 站内通知条（宿主 API v8 的 notifyAction；带一个「查看」按钮）。 */
 async function toast(text, withAction = true) {
 	try {
-		const bridge = globalThis.window?.__piWebUiHost;
+		const bridge = hostApi() ?? globalThis.window?.__piWebUiHost;
 		if (typeof bridge?.notifyAction !== "function") return;
 		const actions = withAction ? [{ id: "open", label: t("notify.view") }] : [];
 		const picked = await bridge.notifyAction({ text, actions });
@@ -144,7 +145,7 @@ const teardown = [];
 
 /** 等桥就绪（宿主先挂 App 再 import 插件 bundle，但按需加载时可能抢先一步）。 */
 function whenBridge(fn, tries = 40) {
-	const bridge = globalThis.window?.__piWebUiHost;
+	const bridge = hostApi() ?? globalThis.window?.__piWebUiHost;
 	if (bridge && typeof bridge === "object") {
 		fn(bridge);
 		return;

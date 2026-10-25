@@ -6,13 +6,9 @@
  * 不依赖 React —— 纯 DOM 即可，也可以打包任意框架（自带实例，与主应用隔离）。
  */
 
-let uid = 0;
+import { esc } from "@pi-web-ui/plugin-sdk/client";
 
-function esc(s) {
-	return String(s).replace(/[&<>"']/g, (c) => (
-		{ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" }[c]
-	));
-}
+let uid = 0;
 
 export default {
 	mount(container, ctx) {

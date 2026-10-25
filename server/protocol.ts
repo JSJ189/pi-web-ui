@@ -239,7 +239,15 @@ export interface UiState {
 	/** Queued prompt TEXTS per conversation. steering = 插队（当前回合结算后
 	 *  立即注入），followUp = 排队（整个 run 结束后才发送）。UI renders them
 	 *  as pending user bubbles in the real message list. */
-	queue: { steering: string[]; followUp: string[] };
+	queue: {
+		steering: string[];
+		followUp: string[];
+		/** 跨引擎统一结构化条目：包含唯一 ID、结构化附件与时间戳，彻底避免下标漂移与弱文本映射 */
+		entries?: {
+			steering: QueuedPromptItem[];
+			followUp: QueuedPromptItem[];
+		};
+	};
 	errorMessage?: string;
 	/**
 	 * Transient LLM auto-retry state — set while the SDK backs off and retries
@@ -468,6 +476,22 @@ export interface PromptAttachment {
 	size?: number;
 }
 
+/**
+ * 跨端/跨引擎统一排队条目数据契约（Unified Queued Prompt Item）。
+ * 各智能体引擎（Pi, DSH, Claude Code / Universal 等）统一使用该契约承载排队消息，
+ * 彻底消除弱关联映射、同文本覆盖、下标漂移以及多模态附件断层问题。
+ */
+export interface QueuedPromptItem {
+	/** 全局/会话内唯一条目 ID */
+	id: string;
+	/** 提示词原始文本 */
+	text: string;
+	/** 关联结构化附件列表（图片、引用、文件切片等） */
+	attachments?: PromptAttachment[];
+	/** 入队时间戳（毫秒） */
+	createdAt?: number;
+}
+
 export type CanvasEngineId = "pi" | "dsh" | "claude" | "durable";
 export type CanvasNodeRole =
 	| "architect"
@@ -646,6 +670,8 @@ export type ClientMessage =
 			/** Bubble position in queue.steering / queue.followUp. Optional: old
 			 *  clients send text only (first-occurrence fallback). */
 			index?: number;
+			/** 统一契约条目唯一 ID：当提供时优先按 ID 绝对精准剔除，杜绝并发下标漂移 */
+			id?: string;
 	  }
 	// -- unsent composer draft (issue #166, 单中心文件方案) -------------------------
 	/** Save the current unsent composer text for the ACTIVE conversation
@@ -2406,6 +2432,8 @@ export interface UiPluginInfo {
 	 *  用户 overlay（<dataDir>/plugin-overrides/<id>.json，不 fork 改官方默认）/
 	 *  stored = 面板保存的 storage.json 值（最高）。secret 字段永为 default/stored。 */
 	settingsSources?: Record<string, "default" | "override" | "stored">;
+	/** 是否开启客户端 Shadow DOM 样式隔离（manifest.json `isolated` 或 `shadow`）。 */
+	isolated?: boolean;
 	/** Install source recorded by `pi-web-ui install` (<dir>/.pi-source.json):
 	 *  the original spec the user typed (owner/repo, URL or local path). The
 	 *  settings panel offers an Update button only when this exists. */
@@ -2497,6 +2525,8 @@ export type UiSlotId =
 	| "contextmenu.file"
 	/** 工具调用卡片的**工具名**右键菜单（ToolCallBlock；宿主内置条目只有「显示工具详细信息」）。 */
 	| "contextmenu.toolcall"
+	/** 工具调用卡片底部内嵌区（ToolCallBlock 底部自定义操作/徽标/统计）。 */
+	| "tool.card.footer"
 	/** 设置面板里的一整页（插件用 mount() 自己渲染）。 */
 	| "settings.pages"
 	/** 左栏「最近项目」分区标题栏按钮（宿主「管理项目」按钮之后追加）。 */
@@ -2879,6 +2909,10 @@ export interface ConversationSummary {
 	canceled?: boolean;
 	/** 父对话 id（Running 面板嵌套展示用）。 */
 	parentId?: string;
+	/** 当前对话使用的模型标识（如 provider/id）。 */
+	model?: string;
+	/** 当前对话生效的思考强度（如 low/high）。 */
+	thinkingLevel?: string;
 	/** 稳定会话 UUID（供 `#s=<sessionId>` URL 深链与右键「复制会话链接」使用，issue #587）。 */
 	sessionId?: string;
 	/** 落盘会话文件（persisted conversation 才有；inMemory 子代理缺省）。

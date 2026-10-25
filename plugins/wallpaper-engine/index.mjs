@@ -451,7 +451,8 @@ export default {
 
 				let previewFile = json.preview || "";
 				// preview 同 file：含路径时强制解析回包目录内。
-				const previewResolved = previewFile && previewFile.includes("/") ? resolveInsideWallpaper(folderPath, previewFile) : null;
+				const previewResolved =
+					previewFile && previewFile.includes("/") ? resolveInsideWallpaper(folderPath, previewFile) : null;
 				let previewPath = previewFile ? (previewResolved ?? join(folderPath, previewFile)) : "";
 				let hasPreview = previewFile
 					? previewFile.includes("/")
@@ -760,7 +761,7 @@ export default {
 			const normalizedBase = resolve(item.folder);
 			const basePrefix = normalizedBase.endsWith(sep) ? normalizedBase : normalizedBase + sep;
 
-			if (targetPath !== normalizedBase && !targetPath.startsWith(basePrefix) || !existsSync(targetPath)) {
+			if ((targetPath !== normalizedBase && !targetPath.startsWith(basePrefix)) || !existsSync(targetPath)) {
 				res.status(404).end("File not found in wallpaper directory");
 				return;
 			}
@@ -820,7 +821,7 @@ export default {
 			const normalizedBase = resolve(item.folder);
 			const basePrefix = normalizedBase.endsWith(sep) ? normalizedBase : normalizedBase + sep;
 
-			if (targetPath !== normalizedBase && !targetPath.startsWith(basePrefix) || !existsSync(targetPath)) {
+			if ((targetPath !== normalizedBase && !targetPath.startsWith(basePrefix)) || !existsSync(targetPath)) {
 				res.status(404).end("File not found in wallpaper directory");
 				return;
 			}
@@ -1009,11 +1010,17 @@ canvas, video, img {
 				return;
 			}
 
-			res.writeHead(200, {
+			const headers = {
 				"Content-Type": contentType,
 				"Content-Length": stat.size,
 				"Cache-Control": "public, max-age=3600",
-			});
+			};
+			if (ext === ".svg") {
+				// SVG 文档形态沙箱化（防内嵌脚本跨站）
+				headers["Content-Security-Policy"] = "sandbox";
+				headers["X-Content-Type-Options"] = "nosniff";
+			}
+			res.writeHead(200, headers);
 			createReadStream(targetPath).pipe(res);
 		}
 

@@ -1,20 +1,7 @@
 /**
  * feature-board 客户端入口
  */
-
-function esc(s) {
-	return String(s ?? "").replace(
-		/[&<>"']/g,
-		(c) =>
-			({
-				"&": "&amp;",
-				"<": "&lt;",
-				">": "&gt;",
-				'"': "&quot;",
-				"'": "&#39;",
-			})[c],
-	);
-}
+import { esc } from "@pi-web-ui/plugin-sdk/client";
 
 function timeAgo(dateStr) {
 	if (!dateStr) return "";

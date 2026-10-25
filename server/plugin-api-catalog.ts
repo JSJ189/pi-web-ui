@@ -33,6 +33,7 @@ export const SLOT_EXAMPLES: Readonly<Record<string, string>> = {
 	"contextmenu.project": `{ "ui": { "contextmenu.project": [{ "id": "m", "label": "项目菜单", "kind": "action", "action": "my:m" }] } }`,
 	"contextmenu.file": `{ "contextmenu.file": [{ "id": "mail", "label": "发到邮箱", "kind": "action", "action": "my:send" }] }`,
 	"contextmenu.toolcall": `{ "ui": { "contextmenu.toolcall": [{ "id": "m", "label": "工具菜单", "kind": "action", "action": "my:m" }] } }`,
+	"tool.card.footer": `{ "ui": { "tool.card.footer": [{ "id": "m", "label": "工具卡底部", "kind": "action", "action": "my:m" }] } }`,
 	"settings.pages": `{ "settings": [{ "id": "conf", "label": "邮箱设置", "kind": "page" }] }`,
 	"tasks.panel": `{ "ui": { "tasks.panel": [{ "id": "pm2", "label": "pm2 托管的应用", "kind": "view" }] } }`,
 	"leftpanel.projects.actions": `{ "ui": { "leftpanel.projects.actions": [{ "id": "m", "label": "项目标题按钮", "kind": "action", "action": "my:m" }] } }`,

@@ -255,8 +255,22 @@ export interface PluginHost {
 		get<T>(key: string, fallback?: T): T | undefined;
 		set(key: string, value: unknown): void;
 		delete(key: string): void;
+		has(key: string): boolean;
+		keys(): string[];
+		clear(preserveSettings?: boolean): void;
 		all(): Record<string, unknown>;
 	};
+	/** 插件间服务总线（Service Registry / Bus）：跨插件服务发布与获取。 */
+	services: {
+		provide<T>(name: string, service: T): () => void;
+		get<T>(name: string): T | undefined;
+		has(name: string): boolean;
+		list(): Array<{ name: string; pluginId: string }>;
+		on<T>(name: string, handler: (service: T | undefined) => void): () => void;
+	};
+	provide<T>(name: string, service: T): () => void;
+	get<T>(name: string): T | undefined;
+	onService<T>(name: string, handler: (service: T | undefined) => void): () => void;
 	secrets: {
 		set(name: string, value: string): void;
 		get(name: string): string | undefined;

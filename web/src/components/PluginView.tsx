@@ -1,5 +1,5 @@
 import { useEffect, useRef } from "react";
-import { makePluginContext, type LoadedPluginView } from "../plugin-loader";
+import { makePluginContext, preparePluginMountContainer, type LoadedPluginView } from "../plugin-loader";
 import { useT } from "../i18n";
 import { appSend } from "../app-globals";
 
@@ -18,15 +18,17 @@ export function PluginView({ entry }: PluginViewProps) {
 	useEffect(() => {
 		const el = ref.current;
 		if (!el) return;
+		const isIsolated = Boolean(entry.info.isolated || entry.module.isolated || entry.module.shadow);
+		const { container, cleanup: containerCleanup } = preparePluginMountContainer(el, { isolated: isIsolated });
 		let cleanup: void | (() => void);
 		try {
 			cleanup = entry.module.mount(
-				el,
+				container,
 				makePluginContext(entry.info.id, (msg) => appSend(msg)),
 			);
 		} catch (err) {
 			console.error(`[plugin:${entry.info.id}] mount failed:`, err);
-			el.textContent = t("pluginMountFailed", { name: entry.info.name });
+			container.textContent = t("pluginMountFailed", { name: entry.info.name });
 		}
 		return () => {
 			if (typeof cleanup === "function") {
@@ -36,7 +38,7 @@ export function PluginView({ entry }: PluginViewProps) {
 					console.error(`[plugin:${entry.info.id}] cleanup failed:`, err);
 				}
 			}
-			el.textContent = "";
+			containerCleanup();
 		};
 	}, [entry]);
 	return <div className="plugin-view" ref={ref} />;

@@ -55,8 +55,17 @@ describe("host.storage", () => {
 		expect(existsSync(join(dir, "plugins", "a", "storage.json"))).toBe(true);
 
 		h.storage.set("k", 1);
+		expect(h.storage.has("k")).toBe(true);
+		expect(h.storage.has("nonexistent")).toBe(false);
+		expect(h.storage.keys()).toContain("k");
+		expect(h.storage.keys()).toContain("layout");
+
 		h.storage.delete("k");
 		expect(h.storage.get("k")).toBeUndefined();
+		expect(h.storage.has("k")).toBe(false);
+
+		h.storage.clear();
+		expect(h.storage.keys()).toEqual([]);
 	});
 
 	it("宿主直写 storage.json 后，插件 set() 不抹掉外部写入的键（回归：设置重启即丢）", () => {

@@ -35,7 +35,7 @@ import { PROTOCOL_VERSION } from "./protocol-version.js";
 import { AgentService, workspacePath, QuiesceRejectedError, ClientSession } from "./agent-service.js";
 import { ClientStateStore } from "./client-state.js";
 import { WS_MAX_PAYLOAD_BYTES, isAbsoluteWirePath, wireToAbs } from "./files-service.js";
-import { httpHostAllowed } from "./host-guard.js";
+import { httpHostAllowed, isLoopbackHost, hostWithoutPort } from "./host-guard.js";
 import { registerFileTransferRoutes } from "./file-transfer-routes.js";
 import { initAttachmentStore, readAttachment } from "./attachment-store.js";
 import { isAudioFile, previewKind } from "./text-sniff.js";
@@ -64,6 +64,7 @@ import {
 import {
 	PluginManager,
 	resolvePluginClientFile,
+	resolvePluginSharedFile,
 	type PluginChatRequest,
 	type PluginConversationQuery,
 	type PluginConversationSnapshot,
@@ -301,14 +302,41 @@ app.use(express.json({ limit: "10mb" }));
  * - 回环地址硬门禁：非 127/8、::1 进来直接 403（反代/局域网打不到）。
  * - token 修改热生效；host/port/allowlist 写文件后需重启服务。
  */
-function setupGate(
-	req: { socket?: { remoteAddress?: string } },
+export function setupGate(
+	req: { socket?: { remoteAddress?: string }; headers: Record<string, string | string[] | undefined> },
 	res: { status: (c: number) => { end: (m: string) => void } },
 	next: () => void,
 ): void {
+	// 1. 回环 IP 门禁：TCP 连接必须来自本机
 	if (!isLoopbackAddress(req.socket?.remoteAddress)) {
 		res.status(403).end("setup page is only available from localhost");
 		return;
+	}
+	// 2. 严禁反代转发：x-forwarded-for / x-real-ip 说明请求来自反代（即使反代在本机回环端口）
+	if (req.headers["x-forwarded-for"] || req.headers["x-real-ip"]) {
+		res.status(403).end("setup page cannot be accessed through a reverse proxy");
+		return;
+	}
+	// 3. Host 头必须是回环地址（防 DNS rebinding）
+	const hostHeader = typeof req.headers.host === "string" ? req.headers.host : "";
+	const host = hostWithoutPort(hostHeader);
+	if (!host || !isLoopbackHost(host)) {
+		res.status(403).end("setup page Host header must be localhost");
+		return;
+	}
+	// 4. Origin 头防跨站（CSRF）：若浏览器带了 Origin，必须是回环域
+	const origin = typeof req.headers.origin === "string" ? req.headers.origin : "";
+	if (origin) {
+		try {
+			const u = new URL(origin);
+			if (!isLoopbackHost(u.hostname)) {
+				res.status(403).end("cross-origin setup request rejected");
+				return;
+			}
+		} catch {
+			res.status(403).end("invalid origin");
+			return;
+		}
 	}
 	next();
 }
@@ -806,6 +834,11 @@ app.get("/api/office-media", async (req, res) => {
 		};
 		res.setHeader("Content-Type", mimeMap[ext] || "application/octet-stream");
 		res.setHeader("Cache-Control", "public, max-age=86400, immutable");
+		if (ext === "svg") {
+			// 与 /api/attachment 和 /api/file 同理：SVG 文档形态的 <script> 沙箱化（审查 #352 P0-1）
+			res.setHeader("Content-Security-Policy", "sandbox");
+			res.setHeader("X-Content-Type-Options", "nosniff");
+		}
 		res.send(imgBuf);
 	} catch {
 		res.status(404).end("not found");
@@ -1099,6 +1132,27 @@ app.get("/plugins/:id/client/*splat", (req, res) => {
 	}
 	res.setHeader("Cache-Control", "no-cache"); // 开发期改文件即生效
 	// dotfiles: allow — issue #223：插件目录默认在 ~/.pi-web/plugins（隐藏目录段），同上需放行。
+	res.sendFile(abs, { dotfiles: "allow" }, (err) => {
+		if (err && !res.headersSent)
+			res
+				.status((err as NodeJS.ErrnoException & { statusCode?: number }).statusCode === 404 ? 404 : 500)
+				.end("not found");
+	});
+});
+// 插件公共客户端依赖共享库（@pi-web-ui/plugin-sdk/client 等）：
+// 静态托管在 /plugins-shared/*，配合前端 Import Maps 免去各插件重复打包。
+const PLUGIN_SHARED_DIR = join(pkgRoot, "plugin-sdk");
+app.get("/plugins-shared/*splat", (req, res) => {
+	const rest = splatParam(req);
+	const abs = resolvePluginSharedFile(PLUGIN_SHARED_DIR, rest);
+	if (!abs || !existsSync(abs)) {
+		res.status(404).end("shared module not found");
+		return;
+	}
+	if (/\.(mjs|js)$/.test(abs)) {
+		res.setHeader("Content-Type", "text/javascript; charset=utf-8");
+	}
+	res.setHeader("Cache-Control", "no-cache");
 	res.sendFile(abs, { dotfiles: "allow" }, (err) => {
 		if (err && !res.headersSent)
 			res
@@ -1433,8 +1487,9 @@ export interface DispatchSession {
 	cwd: string;
 	prompt(text: string, attachments?: PromptAttachment[], queue?: boolean): Promise<void>;
 	/** Remove one queued prompt (steer/followUp) — the ✕ on a pending bubble.
-	 *  `index` is the bubble position (identity); omitted = text fallback. */
-	removeQueued(kind: "steer" | "followUp", text: string, index?: number): void;
+	 *  `id` is the item unique ID (highest priority); `index` is the bubble position
+	 *  (identity); omitted = text fallback. */
+	removeQueued(kind: "steer" | "followUp", text: string, index?: number, id?: string): void;
 	/** Save the unsent composer draft for the given session (pi engine only;
 	 *  DSH sessions don't implement it — dispatch uses `?.` so it's skipped there). */
 	saveDraft?(sessionId: string, text: string, ts: number): void;
@@ -2578,18 +2633,21 @@ pluginMgr.onBgTasksChanged = () => service.refreshBackgroundServers();
 		}
 	};
 	// llmProvider：插件直调模型（孤立无工具的一次性补全，不建对话）。
-	// 标准 pi 引擎走 service.completeForPlugins；DSH/未知引擎回 {ok:false}，绝不抛错。
+	// 双引擎适配层：支持 pi 与 dsh 引擎。
 	(pm as any).llmProvider = async (pluginId: string, req: unknown) => {
 		try {
-			// SAFETY: Only invoked after the optional method is checked; request fields are narrowed below.
+			for (const s of activeEngines()) {
+				if (s && typeof (s as any).completeForPlugins === "function") {
+					return await (s as any).completeForPlugins(pluginId, (req ?? {}) as { prompt?: string });
+				}
+			}
 			const svc = ensureEngine("pi") as unknown as {
 				completeForPlugins?: (
 					pluginId: string,
 					req: { prompt?: string; system?: string; model?: string; maxChars?: number; timeoutMs?: number },
 				) => Promise<{ ok: boolean; text?: string; model?: string; error?: string }>;
 			};
-			if (typeof svc.completeForPlugins !== "function")
-				return { ok: false, error: "当前引擎不支持 LLM 直调（仅标准 pi 引擎）" };
+			if (typeof svc.completeForPlugins !== "function") return { ok: false, error: "当前引擎不支持 LLM 直调" };
 			return await svc.completeForPlugins(pluginId, (req ?? {}) as { prompt?: string });
 		} catch (err) {
 			return { ok: false, error: (err as Error).message };
@@ -3105,7 +3163,7 @@ wss.on("connection", (ws) => {
 				case "queue_remove":
 					// #491：removeQueued 是 async——dispatch 是 fire-and-forget，缺 void 时
 					// 内部抛错即 unhandledRejection，而全仓没有兜底 handler，Node ≥15 直接崩进程。
-					void cs.removeQueued(msg.kind, msg.text, msg.index);
+					void cs.removeQueued(msg.kind, msg.text, msg.index, msg.id);
 					break;
 				case "draft_update":
 					cs.saveDraft?.(msg.sessionId, msg.text, msg.ts);

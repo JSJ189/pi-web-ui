@@ -89,9 +89,17 @@ export function toSubagentSnapshot(conv: Conversation): SubagentSnapshot {
 	} catch {
 		// session being replaced — report defaults
 	}
+	let thinkingLevel: string | undefined;
+	try {
+		thinkingLevel = conv.session.thinkingLevel ?? conv.subagentThinking;
+	} catch {
+		thinkingLevel = conv.subagentThinking;
+	}
 	const fullPrompt = conv.subagentPrompt ?? "";
 	const sm = (conv.session as unknown as { sessionManager?: { isPersisted?: () => boolean } }).sessionManager;
 	const isPersisted = !conv.isSubagent || (typeof sm?.isPersisted === "function" && sm.isPersisted());
+	const m = conv.session.model;
+	const modelKey = m ? `${m.provider}/${m.id}` : (conv.subagentTemplate?.model ?? undefined);
 	return {
 		convId: conv.id,
 		type: conv.subagentType ?? "general",
@@ -105,7 +113,8 @@ export function toSubagentSnapshot(conv: Conversation): SubagentSnapshot {
 		error,
 		canceled,
 		messageCount,
-		model: conv.session.model?.id,
+		model: modelKey,
+		thinkingLevel,
 		output: conv.session.getLastAssistantText() ?? "",
 		parentId: conv.parentId,
 		persisted: isPersisted,

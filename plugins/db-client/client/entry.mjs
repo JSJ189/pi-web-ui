@@ -1,9 +1,7 @@
 /* db-client 客户端 bundle —— 由 npm run build 生成，源码在 src/client.js */
+import { esc } from "@pi-web-ui/plugin-sdk/client";
 
 // src/client.js
-function esc(s) {
-  return String(s ?? "").replace(/[&<>"']/g, (c) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" })[c]);
-}
 var reqSeq = 0;
 var client_default = {
   mount(container, ctx) {

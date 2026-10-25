@@ -1,33 +1,9 @@
 /**
  * sol-savings 客户端 —— 无独立视图（manifest view:false），接底栏动作。
  */
+import { esc, hostApi, formatBytes, apiBase as getSharedApiBase } from "@pi-web-ui/plugin-sdk/client";
 
 const ACTION_DETAILS = "sol-savings:details";
-
-/** innerHTML 插值转义：configPath 是服务端文件路径，进 HTML 前必须过一遍。 */
-function esc(s) {
-	return String(s ?? "")
-		.replace(/&/g, "&amp;")
-		.replace(/</g, "&lt;")
-		.replace(/>/g, "&gt;")
-		.replace(/"/g, "&quot;")
-		.replace(/'/g, "&#39;");
-}
-
-function hostApi() {
-	try {
-		return window.__piWebUiHost ?? null;
-	} catch {
-		return null;
-	}
-}
-
-function formatBytes(bytes) {
-	const n = Number(bytes) || 0;
-	if (n >= 1024 * 1024) return `${(n / (1024 * 1024)).toFixed(1)} MB`;
-	if (n >= 1024) return `${(n / 1024).toFixed(1)} KB`;
-	return `${n} B`;
-}
 
 function formatPlanSummary(plan) {
 	if (!Array.isArray(plan) || plan.length === 0) return null;
@@ -42,20 +18,8 @@ function formatPlanSummary(plan) {
 	};
 }
 
-/** 应用根（含 nginx 子路径前缀），由本 bundle URL 推导。 */
-function appRoot() {
-	try {
-		const u = new URL(import.meta.url);
-		const i = u.pathname.indexOf("/plugins/");
-		return `${u.origin}${i >= 0 ? u.pathname.slice(0, i) : ""}`;
-	} catch {
-		return "";
-	}
-}
-
 function apiBase() {
-	const root = appRoot();
-	return `${root}/plugins-api/sol-savings`;
+	return getSharedApiBase("sol-savings");
 }
 
 async function fetchStatus() {

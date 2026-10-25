@@ -60,12 +60,7 @@ function loadQrFactory() {
 	return qrFactoryPromise;
 }
 
-function esc(s) {
-	return String(s ?? "").replace(
-		/[&<>"']/g,
-		(c) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" })[c],
-	);
-}
+import { esc } from "@pi-web-ui/plugin-sdk/client";
 
 function timeStr(at) {
 	try {

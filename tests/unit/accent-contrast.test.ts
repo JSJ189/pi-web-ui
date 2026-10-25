@@ -48,7 +48,6 @@ function contrast(a: [number, number, number], b: [number, number, number]): num
 // ---------------------------------------------------------------- 声明片段扫描
 
 const WHITE_VALUE = /^(#fff|#ffffff|white)$/i;
-const ACCENT_SOLID = /var\(--accent\s*(?:,[^)]*)?\)/;
 const ACCENT_SOFT = /var\(--accent-soft/;
 
 /** 片段里最后一条 background 声明的值（层叠最后一条生效）。 */
@@ -58,12 +57,32 @@ function lastBackground(fragment: string): string | null {
 	return last;
 }
 
+/** 动态生成当前上下文（文件/片段）中的 accent 变量匹配正则。
+ * 包含原生 --accent、插件自定义命名空间别名（如 --nt-accent）以及任何带有 accent 的主题变量。 */
+function makeAccentSolidRegex(text?: string): RegExp {
+	const names = new Set<string>(["accent"]);
+	if (text) {
+		for (const m of text.matchAll(/--([a-zA-Z0-9_-]+)\s*:\s*var\(--accent\b/gi)) {
+			names.add(m[1]!);
+		}
+		for (const m of text.matchAll(/var\(--([a-zA-Z0-9_-]*accent[a-zA-Z0-9_-]*)\b/gi)) {
+			names.add(m[1]!);
+		}
+	}
+	const pattern = Array.from(names)
+		.map((n) => n.replace(/[.*+?^${}()|[\]\\]/g, "\\$&"))
+		.join("|");
+	return new RegExp(`var\\(--(?:${pattern})\\s*(?:,[^)]*)?\\)`);
+}
+
 /** 该片段的 accent 底色种类：solid = 实底（需要反色令牌）；tint = 半透明染色（需要 --text）。 */
-function accentBackgroundKind(fragment: string): "solid" | "tint" | null {
+function accentBackgroundKind(fragment: string, fileContext?: string): "solid" | "tint" | null {
 	const bg = lastBackground(fragment);
-	if (!bg || ACCENT_SOFT.test(bg) || !ACCENT_SOLID.test(bg)) return null;
+	if (!bg || ACCENT_SOFT.test(bg)) return null;
+	const accentSolidRegex = makeAccentSolidRegex(fileContext ?? fragment);
+	if (!accentSolidRegex.test(bg)) return null;
 	if (/color-mix\(/i.test(bg)) {
-		const pct = /var\(--accent\b[^)]*\)\s*(\d+(?:\.\d+)?)%/.exec(bg);
+		const pct = /var\(--[a-zA-Z0-9_-]*accent\b[^)]*\)\s*(\d+(?:\.\d+)?)%/.exec(bg);
 		if (pct && Number(pct[1]) < 100) return "tint";
 	}
 	return "solid";
@@ -93,7 +112,7 @@ function styleFragments(text: string): { where: string; body: string }[] {
 function findAccentWhiteViolations(text: string): string[] {
 	const bad: string[] = [];
 	for (const { where, body } of styleFragments(text)) {
-		const kind = accentBackgroundKind(body);
+		const kind = accentBackgroundKind(body, text);
 		if (!kind) continue;
 		const decl = /(?:^|[\s;])color\s*:\s*(#fff(?:fff)?|white)\s*(?:!important)?\s*(?=;|$)/i.exec(body);
 		if (!decl) continue;
@@ -157,8 +176,8 @@ describe("强调色实底的前景对比度", () => {
 		for (const f of files) {
 			if (statSync(f).size > 4_000_000) continue;
 			const text = readFileSync(f, "utf8");
-			// 廉价预筛：既没有 accent 变量也没有白色字面的文件直接跳过
-			if (!/var\(--accent/.test(text) || !/(#fff(?:fff)?|white)/i.test(text)) continue;
+			// 廉价预筛：既没有 accent 相关变量也没有白色字面的文件直接跳过
+			if (!/var\(--[a-zA-Z0-9_-]*(?:accent|acc)\b/i.test(text) || !/(#fff(?:fff)?|white)/i.test(text)) continue;
 			const rel = relative(ROOT, f).replace(/\\/g, "/");
 			for (const v of findAccentWhiteViolations(text)) bad.push(`${rel}: ${v}`);
 		}

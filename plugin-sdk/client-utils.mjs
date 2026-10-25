@@ -22,7 +22,7 @@ export function esc(s) {
  * @returns {any} 宿主 API 对象或 null
  */
 export function hostApi() {
-	return typeof window !== "undefined" ? window.__piWebUiHost ?? null : null;
+	return typeof window !== "undefined" ? (window.__piWebUiHost ?? null) : null;
 }
 
 /**
@@ -58,10 +58,7 @@ export function formatBytes(bytes, decimals = 1) {
  * @returns {Promise<T>}
  */
 export function withTimeout(promise, timeoutMs, errorMsg = "Operation timed out") {
-	return Promise.race([
-		promise,
-		new Promise((_, reject) => setTimeout(() => reject(new Error(errorMsg)), timeoutMs)),
-	]);
+	return Promise.race([promise, new Promise((_, reject) => setTimeout(() => reject(new Error(errorMsg)), timeoutMs))]);
 }
 
 /**
@@ -89,4 +86,69 @@ export function normalizeRel(p) {
 		.replace(/\\/g, "/")
 		.replace(/^\.?\/+/, "")
 		.replace(/\/+$/, "");
+}
+
+/**
+ * 为容器创建 Shadow DOM 并注入基础主题继承样式。
+ * @param {HTMLElement} hostEl 宿主容器元素
+ * @param {string} [customCss] 额外注入该组件的隔离样式
+ * @returns {ShadowRoot} 创建或已存在的 open 模式 ShadowRoot
+ */
+export function attachShadowRoot(hostEl, customCss = "") {
+	let shadow = hostEl.shadowRoot;
+	if (!shadow) {
+		try {
+			shadow = hostEl.attachShadow({ mode: "open" });
+		} catch {
+			shadow = hostEl.shadowRoot;
+		}
+	}
+	if (!shadow) return hostEl;
+
+	shadow.replaceChildren();
+	const style = document.createElement("style");
+	style.textContent = `
+		:host {
+			display: block;
+			width: 100%;
+			height: 100%;
+			box-sizing: border-box;
+			color: var(--text, inherit);
+			font-family: inherit;
+			font-size: var(--text-base, 13.5px);
+			line-height: 1.5;
+		}
+		*, *::before, *::after {
+			box-sizing: inherit;
+		}
+		${customCss}
+	`;
+	shadow.appendChild(style);
+	return shadow;
+}
+
+/**
+ * 带有 Shadow DOM 样式隔离的视图挂载辅助器。
+ * @param {HTMLElement} container 挂载目标容器
+ * @param {(root: HTMLElement) => void | (() => void)} mountFn 实际挂载函数
+ * @param {string} [customCss] 隔离样式
+ * @returns {() => void} 清理函数
+ */
+export function mountIsolated(container, mountFn, customCss = "") {
+	const shadow = attachShadowRoot(container, customCss);
+	const inner = document.createElement("div");
+	inner.className = "plugin-isolated-body";
+	inner.style.cssText = "width:100%;height:100%;display:flex;flex-direction:column;";
+	shadow.appendChild(inner);
+
+	const cleanup = mountFn(inner);
+	return () => {
+		if (typeof cleanup === "function") {
+			try {
+				cleanup();
+			} catch {}
+		}
+		inner.replaceChildren();
+		shadow.replaceChildren();
+	};
 }

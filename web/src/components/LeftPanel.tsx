@@ -8,6 +8,7 @@ import {
 	FiEdit2,
 	FiFolder,
 	FiFolderPlus,
+	FiGitBranch,
 	FiMessageSquare,
 	FiMoreVertical,
 	FiPlus,
@@ -1346,8 +1347,12 @@ export const LeftPanel = memo(function LeftPanel({
 																}}
 															>
 																<span className="session-icon-wrap">
-																	{c.isStreaming ? (
+																	{hasKids ? (
+																		<span className="session-icon-placeholder" />
+																	) : c.isStreaming ? (
 																		<span className="conv-streaming" title={t("streaming")} />
+																	) : c.isSubagent ? (
+																		<FiGitBranch className="session-icon subagent-icon" />
 																	) : (
 																		<FiMessageSquare className="session-icon" />
 																	)}
@@ -1380,7 +1385,9 @@ export const LeftPanel = memo(function LeftPanel({
 																					📌
 																				</span>
 																			)}
-																			{c.isSubagent && <span className="subagent-badge">{t("subagentBadge")}</span>}
+																			{hasKids && c.isStreaming && (
+																				<span className="conv-streaming-dot" title={t("streaming")} />
+																			)}
 																			{c.isEphemeral && <span className="ephemeral-badge">{t("ephemeralBadge")}</span>}
 																			{c.forkFrom && (
 																				<span
@@ -1444,6 +1451,8 @@ export const LeftPanel = memo(function LeftPanel({
 																	)}
 																	{renaming === `conv:${c.id}` ? null : (
 																		<span className="session-sub">
+																			{c.isSubagent && <span className="subagent-tag">{t("subagentBadge")}</span>}
+																			{c.isSubagent ? " · " : null}
 																			{active ? t("current") : t("messageCount", { n: c.messageCount })}
 																		</span>
 																	)}

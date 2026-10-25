@@ -102,6 +102,7 @@ function QueuedMessage({
 	kind,
 	text,
 	index,
+	id,
 	onRemoveQueued,
 	onRecallQueued,
 }: {
@@ -109,9 +110,10 @@ function QueuedMessage({
 	text: string;
 	/** Position in queue.steering / queue.followUp — the ✕ removes THIS bubble. */
 	index: number;
-	onRemoveQueued?: (kind: "steer" | "followUp", text: string, index: number) => void;
+	id?: string;
+	onRemoveQueued?: (kind: "steer" | "followUp", text: string, index: number, id?: string) => void;
 	/** 撤回：把这条排队/插队消息从队列里取回，文字放回输入框（可编辑后重发）。 */
-	onRecallQueued?: (kind: "steer" | "followUp", text: string, index: number) => void;
+	onRecallQueued?: (kind: "steer" | "followUp", text: string, index: number, id?: string) => void;
 }) {
 	const t = useT();
 	const parsed = splitQuotedPrompt(text);
@@ -129,7 +131,7 @@ function QueuedMessage({
 							className="msg-queued-recall"
 							title={t("queueRecallTip")}
 							aria-label={t("queueRecallTip")}
-							onClick={() => onRecallQueued(kind, text, index)}
+							onClick={() => onRecallQueued(kind, text, index, id)}
 						>
 							↩
 						</button>
@@ -140,7 +142,7 @@ function QueuedMessage({
 							className="msg-queued-remove"
 							title={t("queueRemoveTip")}
 							aria-label={t("queueRemoveTip")}
-							onClick={() => onRemoveQueued(kind, text, index)}
+							onClick={() => onRemoveQueued(kind, text, index, id)}
 						>
 							✕
 						</button>
@@ -395,6 +397,8 @@ interface MessageListProps {
 	uiContextMessage?: import("../ui-slots").UiSlotEntry[];
 	/** 工具卡的工具名右键菜单条目（contextmenu.toolcall 槽位）。 */
 	uiContextToolCall?: import("../ui-slots").UiSlotEntry[];
+	/** 工具卡底部操作条目（tool.card.footer 槽位）。 */
+	uiToolCardFooter?: import("../ui-slots").UiSlotEntry[];
 	/** 空对话占位区条目（chat.empty 槽位：纯插件新增位，无条目时不渲染）。 */
 	uiChatEmpty?: import("../ui-slots").UiSlotEntry[];
 	/** 条目的动作分发（view 切视图 / action 交给插件）。 */
@@ -409,10 +413,10 @@ interface MessageListProps {
 	/** Manually retry the last failed model call (forwarded to the red error
 	 *  on the last message; sends the server `retry_last` message). */
 	onRetry?: () => void;
-	/** Remove one queued prompt (the ✕ on a pending bubble). `index` = bubble position. */
-	onRemoveQueued?: (kind: "steer" | "followUp", text: string, index: number) => void;
+	/** Remove one queued prompt (the ✕ on a pending bubble). `id` = entry unique id, `index` = bubble position. */
+	onRemoveQueued?: (kind: "steer" | "followUp", text: string, index: number, id?: string) => void;
 	/** 撤回一条排队/插队消息（取回队列 + 文字回到输入框）。 */
-	onRecallQueued?: (kind: "steer" | "followUp", text: string, index: number) => void;
+	onRecallQueued?: (kind: "steer" | "followUp", text: string, index: number, id?: string) => void;
 	/** 思考文本是否换行（设置面板开关；false = 不换行横向滚动）。 */
 	thinkingWrap?: boolean;
 	/** 工具调用是否默认展开（设置面板开关；false = 默认折叠）。 */
@@ -456,6 +460,7 @@ export function MessageList({
 	uiMessageActions,
 	uiContextMessage,
 	uiContextToolCall,
+	uiToolCardFooter,
 	uiChatEmpty,
 	onUiAction,
 }: MessageListProps) {
@@ -1868,6 +1873,7 @@ export function MessageList({
 											uiMessageActions={uiMessageActions}
 											uiContextMessage={uiContextMessage}
 											uiContextToolCall={uiContextToolCall}
+											uiToolCardFooter={uiToolCardFooter}
 											onUiAction={onUiAction}
 											key={renderKey}
 											message={m}
@@ -1934,6 +1940,7 @@ export function MessageList({
 								uiMessageActions={uiMessageActions}
 								uiContextMessage={uiContextMessage}
 								uiContextToolCall={uiContextToolCall}
+								uiToolCardFooter={uiToolCardFooter}
 								onUiAction={onUiAction}
 								key={renderKey}
 								message={m}
@@ -1980,26 +1987,38 @@ export function MessageList({
 					但即使结束信号丢失也要凭 compaction 字段显示，直到 compaction_end） */}
 				{state.compaction && <CompactionBanner compaction={state.compaction} />}
 				{state.isStreaming && messages.length === 0 && <div className="streaming-wait">{t("waitingResponse")}</div>}
-				{state.queue.steering.map((text, i) => (
-					<QueuedMessage
-						key={`q-steer-${i}`}
-						kind="steer"
-						text={text}
-						index={i}
-						onRemoveQueued={onRemoveQueued}
-						onRecallQueued={onRecallQueued}
-					/>
-				))}
-				{state.queue.followUp.map((text, i) => (
-					<QueuedMessage
-						key={`q-fu-${i}`}
-						kind="followUp"
-						text={text}
-						index={i}
-						onRemoveQueued={onRemoveQueued}
-						onRecallQueued={onRecallQueued}
-					/>
-				))}
+				{(state.queue.entries?.steering ?? state.queue.steering).map((item, i) => {
+					const isObj = typeof item !== "string";
+					const text = isObj ? item.text : item;
+					const id = isObj ? item.id : undefined;
+					return (
+						<QueuedMessage
+							key={id || `q-steer-${i}`}
+							kind="steer"
+							text={text}
+							index={i}
+							id={id}
+							onRemoveQueued={onRemoveQueued}
+							onRecallQueued={onRecallQueued}
+						/>
+					);
+				})}
+				{(state.queue.entries?.followUp ?? state.queue.followUp).map((item, i) => {
+					const isObj = typeof item !== "string";
+					const text = isObj ? item.text : item;
+					const id = isObj ? item.id : undefined;
+					return (
+						<QueuedMessage
+							key={id || `q-fu-${i}`}
+							kind="followUp"
+							text={text}
+							index={i}
+							id={id}
+							onRemoveQueued={onRemoveQueued}
+							onRecallQueued={onRecallQueued}
+						/>
+					);
+				})}
 				{state.actionSuggestions && state.actionSuggestions.length > 0 && (
 					<div className="action-suggestions" aria-label={t("actionSuggestions")}>
 						<div className="action-suggestions-list">

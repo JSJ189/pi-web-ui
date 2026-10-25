@@ -130,6 +130,22 @@
   `actionHandler` / `getSetting` / `selectOptions`，零依赖纯 ESM，直接拷进插件目录）+
   `index.d.ts`（宿主接口精简类型，编辑器补全用）+ `README.md`（含 P0 新能力速览）。
 
+### 插件样式与统一色彩契约（Plugin Style & Theme Contract）
+
+所有挂载于宿主视图、抽屉、浮层或插槽的插件界面，必须遵循统一的主题色彩契约：
+
+1. **统一继承宿主 CSS 变量**：
+   插件挂载在宿主 DOM 树中，全局继承 `:root` 主题令牌（`--bg`, `--bg-elev`, `--border`, `--text`, `--accent`, `--accent-contrast` 等）。每一项可附加合理硬编码回退值保证无宿主时独立打开可用。
+2. **实底配对反色令牌铁律（杜绝打地鼠白底白字）**：
+   - **强调色实底**：`background: var(--accent)` 必须且只能配对前景 `color: var(--accent-contrast, #fff)`；严禁硬编码 `color: #fff`（在 `flow`/`wallpaper-flow` 等浅色/纯白强调色主题下会变成白底白字隐形）；
+   - **别名变量必须成对声明**：插件若因作用域隔离私设命名空间变量（如 `--nt-accent`），**必须同时声明** `--nt-accent-contrast: var(--accent-contrast, #fff)`，严禁只别名底色而漏掉前景反色；
+   - **语义色实底**：`background: var(--green|--amber|--red|--blue)` 必须配对 `color: var(--on-green|--on-amber|--on-red|--on-blue)`；
+   - **染色/半透明底**：使用 `--accent-soft` 或 `color-mix(...)` 底色的控件，前景跟随常规正文色 `color: var(--text)`。
+3. **推荐复用宿主组件基线**：
+   宿主已全局注入 `.btn` 和 `.btn.primary`（已内置对比度与 hover 滤镜），主操作按钮推荐优先复用宿主 `.btn.primary`，避免重复手写。
+4. **CI 静态体检硬拦截**：
+   `tests/unit/accent-contrast.test.ts` 与 `tests/unit/semantic-contrast.test.ts` 会动态追溯所有内置插件代码中的别名与前缀变量，一旦出现未配对或硬编码白字即刻红牌阻断。
+
 ### 能力声明与强制（manifest.permissions）
 
 宿主自控 API 按**能力族**强制拦截，未声明的族拒绝并报「缺哪族」：

@@ -1618,6 +1618,7 @@
 		"uiLayoutContextSession": "Oturum sağ tık menüsü",
 		"uiLayoutContextFile": "Dosya sağ tık menüsü",
 		"uiLayoutContextToolcall": "Araç kartı sağ tık menüsü",
+		"uiLayoutToolCardFooter": "Tool-card footer",
 		"uiLayoutLeftSessions": "Sol panel oturum satırları",
 		"uiLayoutLeftProjectsActions": "Sol panel · proje başlığı düğmeleri",
 		"uiLayoutLeftProject": "Sol panel · proje satırları",

@@ -21,6 +21,7 @@ import {
 } from "./cron.mjs";
 import { el } from "./dom.mjs";
 import { createSettings } from "./settings-form.mjs";
+import { hostApi } from "@pi-web-ui/plugin-sdk/client";
 
 const pad2 = (n) => String(n).padStart(2, "0");
 
@@ -1237,7 +1238,7 @@ export function createNotesApp(options) {
 	function quoteItemText(text) {
 		let ok = false;
 		try {
-			ok = globalThis.window?.__piWebUiHost?.compose?.({ text }) ?? false;
+			ok = (hostApi() ?? globalThis.window?.__piWebUiHost)?.compose?.({ text }) ?? false;
 		} catch {
 			ok = false;
 		}

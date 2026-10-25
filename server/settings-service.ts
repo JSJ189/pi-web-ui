@@ -90,6 +90,8 @@ export interface SettingsHost {
 	applyCompactionOverrides: () => void;
 	/** 把 codemode 运行模式与内联预算即时注入各会话的 SettingsManager（无需 reload）。 */
 	applyCodemodeOverrides?: () => void;
+	/** 统一收口重放配置覆盖与工具门控（包含 retry/compaction/codemode 与 toolGating）。 */
+	applySessionOverrides?: () => void;
 	/** 把统一工具开关即时应用到活动会话的 ActiveSet（无需 reload；
 	 *  reload/创建后由调用方重放，见 agent-service applyToolGating）。 */
 	applyToolGating: () => void;
@@ -929,14 +931,18 @@ export class SettingsService {
 			editSoftEnabled: presetLegacy.editSoftEnabled,
 		};
 		this.host.stateStore.saveSettings(this.host.clientId, this.settings);
-		// 预设可能改了重试次数：即时注入（流式中延迟的 reload 之后还会由调用方重放）。
-		this.host.applyRetryOverrides();
+		// 统一收口重放配置覆盖与工具门控（包含 retry/compaction/codemode 与 toolGating）
+		if (this.host.applySessionOverrides) {
+			this.host.applySessionOverrides();
+		} else {
+			this.host.applyRetryOverrides();
+			this.host.applyCodemodeOverrides?.();
+			this.host.applyToolGating();
+		}
 		this.push();
 		if ((this.settings.showForkedParentSessions ?? false) !== prevShowForked) {
 			this.host.onSessionsFilterChanged?.();
 		}
-		// 预设带了工具开关：live 应用（reload 路径会重放，流式中延迟到 agent_end）。
-		this.host.applyToolGating();
 		await this.applyRuntime();
 	}
 

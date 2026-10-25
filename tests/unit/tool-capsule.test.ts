@@ -6,6 +6,7 @@ import { act } from "react-dom/test-utils";
 import { ToolCallBlock } from "../../web/src/components/ToolCallBlock.js";
 import { LanguageProvider } from "../../web/src/i18n.js";
 import { getToolInspectorState, closeToolInspector } from "../../web/src/tool-inspector-state.js";
+import { registerFilePreviewHost, resetFilePreviewHost } from "../../web/src/file-preview-bridge.js";
 import type { UiToolCallBlock, UiMessage } from "../../web/src/types.js";
 
 let root: Root | null = null;
@@ -35,6 +36,7 @@ afterEach(() => {
 	root = null;
 	document.body.innerHTML = "";
 	closeToolInspector();
+	resetFilePreviewHost();
 	delete document.documentElement.dataset.theme;
 	vi.restoreAllMocks();
 });
@@ -134,5 +136,175 @@ describe("工具微胶囊纯净轻量化与按需检查机制 (ToolCallCapsule)"
 		expect(inspectorState!.name).toBe("bash");
 		expect(inspectorState!.rawOutput).toContain("On branch main");
 		expect(inspectorState!.args).toBe(sampleBlock.argumentsText);
+	});
+
+	it("Flow 极简行文模式下点击 present_files 微胶囊直接优先唤起文件预览，不打开 ToolInspector", () => {
+		document.documentElement.dataset.theme = "flow";
+		const previewMock = vi.fn();
+		registerFilePreviewHost({ open: previewMock });
+
+		const presentBlock: UiToolCallBlock = {
+			type: "toolCall",
+			id: "tc_present_1",
+			name: "present_files",
+			argumentsText: JSON.stringify({
+				items: [{ path: "docs/architecture.png" }],
+			}),
+		};
+		const presentView = {
+			streaming: false,
+			result: {
+				id: "tr_present_1",
+				role: "toolResult",
+				toolCallId: "tc_present_1",
+				content: [{ type: "text", text: "ok" }],
+				details: {
+					items: [
+						{
+							path: "docs/architecture.png",
+							name: "architecture.png",
+							abs: "E:/project/docs/architecture.png",
+							kind: "image",
+						},
+					],
+				},
+			} as unknown as UiMessage,
+		};
+
+		const container = mountTool(presentBlock, presentView, true);
+		const capsule = container.querySelector(".toolcall") as HTMLElement;
+		expect(capsule).not.toBeNull();
+
+		act(() => {
+			capsule.click();
+		});
+
+		// 优先打开文件预览弹窗，且传入规范化的 target 与 name
+		expect(previewMock).toHaveBeenCalledTimes(1);
+		expect(previewMock).toHaveBeenCalledWith({
+			path: "E:/project/docs/architecture.png",
+			name: "architecture.png",
+		});
+		// 检查器不应被打开
+		expect(getToolInspectorState()).toBeNull();
+	});
+
+	it("Flow 极简行文模式下 present_files 多文件时优先预览标了 focus 的条目", () => {
+		document.documentElement.dataset.theme = "flow";
+		const previewMock = vi.fn();
+		registerFilePreviewHost({ open: previewMock });
+
+		const presentBlock: UiToolCallBlock = {
+			type: "toolCall",
+			id: "tc_present_2",
+			name: "present_files",
+			argumentsText: JSON.stringify({
+				items: [{ path: "summary.txt" }, { path: "chart.png", focus: true }],
+			}),
+		};
+		const presentView = {
+			streaming: false,
+			result: {
+				id: "tr_present_2",
+				role: "toolResult",
+				toolCallId: "tc_present_2",
+				content: [{ type: "text", text: "ok" }],
+				details: {
+					items: [
+						{ path: "summary.txt", name: "summary.txt", abs: "/w/summary.txt", kind: "text" },
+						{ path: "chart.png", name: "chart.png", abs: "/w/chart.png", kind: "image" },
+					],
+				},
+			} as unknown as UiMessage,
+		};
+
+		const container = mountTool(presentBlock, presentView, true);
+		const capsule = container.querySelector(".toolcall") as HTMLElement;
+
+		act(() => {
+			capsule.click();
+		});
+
+		expect(previewMock).toHaveBeenCalledWith({
+			path: "/w/chart.png",
+			name: "chart.png",
+		});
+		expect(getToolInspectorState()).toBeNull();
+	});
+
+	it("Flow 极简行文模式下 present_files 无可预览条目或预览宿主未就绪时降级打开 ToolInspector", () => {
+		document.documentElement.dataset.theme = "flow";
+		// 不注册 preview host（或者都是 missing 条目）
+		const presentBlock: UiToolCallBlock = {
+			type: "toolCall",
+			id: "tc_present_3",
+			name: "present_files",
+			argumentsText: JSON.stringify({
+				items: [{ path: "missing.png" }],
+			}),
+		};
+		const presentView = {
+			streaming: false,
+			result: {
+				id: "tr_present_3",
+				role: "toolResult",
+				toolCallId: "tc_present_3",
+				content: [{ type: "text", text: "failed" }],
+				details: {
+					items: [{ path: "missing.png", name: "missing.png", abs: "/w/missing.png", kind: "missing" }],
+				},
+			} as unknown as UiMessage,
+		};
+
+		const container = mountTool(presentBlock, presentView, true);
+		const capsule = container.querySelector(".toolcall") as HTMLElement;
+
+		act(() => {
+			capsule.click();
+		});
+
+		// 无法预览时降级打开 ToolInspector
+		const state = getToolInspectorState();
+		expect(state).not.toBeNull();
+		expect(state!.name).toBe("present_files");
+	});
+
+	it("Flow 极简行文模式下按住 Alt 点击 present_files 仍可强制打开 ToolInspector", () => {
+		document.documentElement.dataset.theme = "flow";
+		const previewMock = vi.fn();
+		registerFilePreviewHost({ open: previewMock });
+
+		const presentBlock: UiToolCallBlock = {
+			type: "toolCall",
+			id: "tc_present_4",
+			name: "present_files",
+			argumentsText: JSON.stringify({
+				items: [{ path: "chart.png" }],
+			}),
+		};
+		const presentView = {
+			streaming: false,
+			result: {
+				id: "tr_present_4",
+				role: "toolResult",
+				toolCallId: "tc_present_4",
+				content: [{ type: "text", text: "ok" }],
+				details: {
+					items: [{ path: "chart.png", name: "chart.png", abs: "/w/chart.png", kind: "image" }],
+				},
+			} as unknown as UiMessage,
+		};
+
+		const container = mountTool(presentBlock, presentView, true);
+		const capsule = container.querySelector(".toolcall") as HTMLElement;
+
+		act(() => {
+			capsule.dispatchEvent(new MouseEvent("click", { bubbles: true, cancelable: true, altKey: true }));
+		});
+
+		expect(previewMock).not.toHaveBeenCalled();
+		const state = getToolInspectorState();
+		expect(state).not.toBeNull();
+		expect(state!.name).toBe("present_files");
 	});
 });
