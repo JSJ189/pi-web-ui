@@ -166,3 +166,69 @@ describe("reapplySoftCapIfModelChanged", () => {
 		expect(() => reapply.call(svc({ softCapTokens: 300000, softCapByModel: {} }), conv)).not.toThrow();
 	});
 });
+
+describe("refreshCompactionOverride（setModel 后同步重算；editMessage/子代理路径）", () => {
+	const refresh = (ClientSession.prototype as unknown as Record<string, (this: unknown, conv: unknown) => void>)
+		.refreshCompactionOverride;
+
+	function convWith(model: { provider: string; id: string } | null, window: number) {
+		const applyOverrides = vi.fn();
+		const conv = {
+			session: {
+				model,
+				getSessionStats: () => ({ contextUsage: { tokens: 1000, contextWindow: window, percent: 1 } }),
+				settingsManager: { applyOverrides },
+			},
+			lastModelKey: undefined as string | null | undefined,
+			lastContextWindow: undefined as number | undefined,
+			_captured: applyOverrides,
+		};
+		return conv;
+	}
+
+	const svc = (settings: { softCapTokens: number; softCapByModel: Record<string, number> }) => {
+		const s = Object.create(ClientSession.prototype) as {
+			settingsSvc: { current: typeof settings };
+		};
+		s.settingsSvc = { current: settings };
+		return s;
+	};
+
+	it("按换模型后的窗口重算并记录 key/窗口（editMessage 泄漏回归）", () => {
+		// 场景：会话早段用默认 1M 模型，用户切到 500K 模型后回到早段历史编辑重问。
+		// fork 分支上没有 model_change → SDK 回落 1M 默认模型，bindSession 按 1M
+		// 算出 reserve=748576；setModel 恢复 500K 模型后必须同步重算，否则触发点
+		// 500000-748576 < 0，分支转录几万 token 就被压缩。
+		const conv = convWith({ provider: "xai", id: "grok-4.6" }, 500000);
+		conv.lastModelKey = "xai/grok-4.6"; // fork 前原会话已记下（事件兜底因此比对不出变化）
+		conv.lastContextWindow = 500000;
+		refresh.call(svc({ softCapTokens: 300000, softCapByModel: {} }), conv);
+		expect(conv._captured).toHaveBeenCalledWith({ compaction: { reserveTokens: 200000 } });
+		expect(conv.lastModelKey).toBe("xai/grok-4.6");
+		expect(conv.lastContextWindow).toBe(500000);
+	});
+
+	it("重算后事件兜底不重复注入", () => {
+		const conv = convWith({ provider: "xai", id: "grok-4.6" }, 500000);
+		const s = svc({ softCapTokens: 300000, softCapByModel: {} });
+		refresh.call(s, conv);
+		expect(conv._captured).toHaveBeenCalledTimes(1);
+		const reapply = (ClientSession.prototype as unknown as Record<string, (this: unknown, conv: unknown) => void>)
+			.reapplySoftCapIfModelChanged;
+		reapply.call(s, conv);
+		reapply.call(s, conv);
+		expect(conv._captured).toHaveBeenCalledTimes(1);
+	});
+
+	it("会话未就绪抛错不外泄，状态留给首个 SDK 事件兜底", () => {
+		const conv = {
+			session: {
+				getSessionStats: () => {
+					throw new Error("not ready");
+				},
+				settingsManager: { applyOverrides: () => {} },
+			},
+		};
+		expect(() => refresh.call(svc({ softCapTokens: 300000, softCapByModel: {} }), conv)).not.toThrow();
+	});
+});

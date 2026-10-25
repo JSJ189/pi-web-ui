@@ -12711,6 +12711,14 @@ export class ClientSession {
 					// model no longer resolvable — keep the default
 				}
 			}
+			// runtime.fork 重建的分支会话若从转录恢复不出原模型（分支上没有
+			// model_change——例如在「换模型之前」的历史段上编辑重问——或当时 auth
+			// 不可用），bindSession 注入的软上限 reserve 是按回落模型的窗口换算的。
+			// setModel 只发 model_select 不进 session.subscribe，而 conv.lastModelKey
+			// 前后同为原模型，onEvent 的模型变化兜底比对不出差异——必须在首轮
+			// prompt 前同步重算，否则大窗口 reserve 泄漏到小窗口上，编辑重问后
+			// 上下文几万 token 就莫名压缩（与子代理路径 #683 同一缺口）。
+			this.refreshCompactionOverride(this.conv);
 			if (prevThinking) {
 				try {
 					this.session.setThinkingLevel(prevThinking as Parameters<AgentSession["setThinkingLevel"]>[0]);
