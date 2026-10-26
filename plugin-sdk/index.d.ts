@@ -654,3 +654,9 @@ export declare function uuid(): string;
 
 /** 归一化相对路径（反斜杠转斜杠、去除首尾多余斜杠与 "./"）。 */
 export declare function normalizeRel(p: string): string;
+
+/** 计算安全的截断位置，避免割裂 UTF-16 代理对。 */
+export declare function safeSliceIndex(value: string, limit: number): number;
+
+/** 结构感知 Markdown 分块工具（保护代码围栏不跨块破坏）。 */
+export declare function chunkMarkdownText(text: string, limit?: number): string[];

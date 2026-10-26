@@ -172,8 +172,8 @@ export abstract class BaseAgentDriver {
 	}
 
 	/** 获取该驱动/运行态支持的思考档位列表（默认回落为标准档位） */
-	getSupportedThinkingLevels?(): string[] {
-		return ["off", "low", "medium", "high"];
+	getSupportedThinkingLevels?(_modelId?: string): string[] {
+		return ["off", "minimal", "low", "medium", "high", "xhigh", "max"];
 	}
 
 	/** 转换为标准底座能力声明（AgentEngineCapabilities）供前端与快照使用 */

@@ -13,7 +13,7 @@ describe("plugins/live2d 挂件隐藏与穿透守卫", () => {
 	it("manifest.json 版本号已正确声明", () => {
 		const manifest = JSON.parse(readFileSync(join(LIVE2D_DIR, "manifest.json"), "utf-8"));
 		expect(manifest.id).toBe("live2d");
-		expect(manifest.version).toBe("0.1.14");
+		expect(manifest.version).toBe("0.1.15");
 	});
 
 	it("styles.mjs 中隐藏状态必须对容器及所有子元素强制 visibility: hidden 与 pointer-events: none", () => {

@@ -2939,6 +2939,8 @@ export interface ConversationSummary {
 	isEphemeral?: boolean;
 	/** 用户钉住（常驻运行列表）：切走也不释放，左栏行带 📌 标记。 */
 	pinned?: boolean;
+	/** 该对话当前有存活且用过的用户终端（阻断普通移出，点 X 提示两段确认强制移出）。 */
+	hasUserTerminals?: boolean;
 	/** 派生源信息（若本会话是从另一会话的消息派生而来）。 */
 	forkFrom?: {
 		conversationId: string;

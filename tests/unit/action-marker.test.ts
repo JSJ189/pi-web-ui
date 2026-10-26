@@ -286,4 +286,22 @@ describe("MarkerService 建议操作集成测试", () => {
 		expect(guidance).toContain("one marker per button");
 		expect(guidance).toContain("NEVER join options in one marker");
 	});
+
+	it("handleAssistantText 执行完毕后 chains 自动清理归零（自洁无泄漏）", async () => {
+		const { svc } = createService();
+		const text = "[[action:suggest:自洁测试]]";
+		const p = svc.handleAssistantText("conv-leak-test", text);
+		// 执行期间存在链
+		const chains = (svc as unknown as { chains: Map<string, Promise<void>> }).chains;
+		expect(chains.has("conv-leak-test")).toBe(true);
+		await p;
+		// 执行完毕后自动清理，保持零内存驻留
+		expect(chains.has("conv-leak-test")).toBe(false);
+
+		// clearConversation 显式清理验证
+		chains.set("conv-manual", Promise.resolve());
+		expect(chains.has("conv-manual")).toBe(true);
+		svc.clearConversation("conv-manual");
+		expect(chains.has("conv-manual")).toBe(false);
+	});
 });

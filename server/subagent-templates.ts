@@ -30,6 +30,7 @@ import { writeJsonAtomicSync } from "./atomic-file.js";
 import type { PromptMode } from "./client-state.js";
 import { isTraditionalLocale, type ServerLang } from "./i18n.js";
 import { BUILTIN_TEMPLATES_HANT } from "./subagent-templates-hant.js";
+import type { SubagentSecurityMode } from "./subagent-security-gate.js";
 
 /**
  * 思考强度取值：与 SDK 的 THINKING_LEVEL_OPTIONS（前端 ModelThinking 的 THINKING_VALUES）
@@ -65,6 +66,8 @@ export interface SubagentTemplate {
 	thinkingLevel: string;
 	/** false = 停用：设置面板可见可重开，但不出现在 AI 工具清单里（也不能被选择）。 */
 	enabled: boolean;
+	/** 安全模式："normal"（默认全功能） | "readonly"（只读，仅允许只读命令与工具） | "verify"（审查验证，允许只读命令 + 测试套件） */
+	securityMode?: SubagentSecurityMode;
 }
 
 /** 按语言选模板简介：zh 用 description；en 优先 descriptionEn、缺失回落 description。 */
@@ -190,6 +193,7 @@ export const DEFAULT_TEMPLATES: SubagentTemplate[] = [
 		model: "",
 		thinkingLevel: "",
 		enabled: true,
+		securityMode: "verify",
 	},
 	{
 		name: "implement",
@@ -237,6 +241,7 @@ export const DEFAULT_TEMPLATES: SubagentTemplate[] = [
 		model: "",
 		thinkingLevel: "",
 		enabled: true,
+		securityMode: "normal",
 	},
 	{
 		name: "research",
@@ -280,6 +285,7 @@ export const DEFAULT_TEMPLATES: SubagentTemplate[] = [
 		model: "",
 		thinkingLevel: "",
 		enabled: true,
+		securityMode: "readonly",
 	},
 	{
 		name: "scout",
@@ -327,6 +333,7 @@ export const DEFAULT_TEMPLATES: SubagentTemplate[] = [
 		model: "",
 		thinkingLevel: "",
 		enabled: true,
+		securityMode: "readonly",
 	},
 	{
 		name: "audit",
@@ -357,6 +364,7 @@ export const DEFAULT_TEMPLATES: SubagentTemplate[] = [
 		model: "",
 		thinkingLevel: "",
 		enabled: true,
+		securityMode: "verify",
 	},
 	{
 		name: "delegate",
@@ -416,6 +424,7 @@ export const DEFAULT_TEMPLATES: SubagentTemplate[] = [
 		model: "",
 		thinkingLevel: "",
 		enabled: true,
+		securityMode: "readonly",
 	},
 	{
 		name: "librarian",
@@ -444,6 +453,7 @@ export const DEFAULT_TEMPLATES: SubagentTemplate[] = [
 		model: "",
 		thinkingLevel: "",
 		enabled: true,
+		securityMode: "readonly",
 	},
 	{
 		name: "explore",
@@ -480,6 +490,7 @@ export const DEFAULT_TEMPLATES: SubagentTemplate[] = [
 		model: "",
 		thinkingLevel: "",
 		enabled: true,
+		securityMode: "readonly",
 	},
 	{
 		name: "metis",

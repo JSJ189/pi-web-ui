@@ -2,6 +2,7 @@
  * plugins/feishu/client/entry.mjs
  * Client workbench UI for Feishu (Lark) plugin in pi-web-ui.
  */
+import { esc as escapeHtml } from "@pi-web-ui/plugin-sdk/client";
 
 // 视图入口：新版宿主（web/src/plugin-loader.ts）只认
 //   export default { mount(el, ctx) → cleanup? }
@@ -28,16 +29,6 @@ activate.mount = function mount(el, ctx) {
 };
 
 export default activate;
-
-function escapeHtml(str) {
-	if (!str) return "";
-	return String(str)
-		.replace(/&/g, "&amp;")
-		.replace(/</g, "&lt;")
-		.replace(/>/g, "&gt;")
-		.replace(/"/g, "&quot;")
-		.replace(/'/g, "&#039;");
-}
 
 function formatDate(isoStr) {
 	if (!isoStr) return "";

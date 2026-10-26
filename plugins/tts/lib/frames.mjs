@@ -41,7 +41,7 @@ export function parseAudioFrame(input) {
 }
 
 /** 反过来：给一段负载加上 seq 头（测试和造假帧用）。 */
-export function encodeAudioFrame(seq, payload) {
+function encodeAudioFrame(seq, payload) {
 	const body = payload instanceof Uint8Array ? payload : new Uint8Array(payload);
 	const out = new Uint8Array(FRAME_HEADER_BYTES + body.length);
 	new DataView(out.buffer).setUint32(0, seq >>> 0, false);
@@ -220,7 +220,7 @@ export class FrameAssembler {
 }
 
 /** 一次性把一组 {seq, payload} 拼起来（给测试和离线分析用）。 */
-export function assembleFrames(entries) {
+function assembleFrames(entries) {
 	const asm = new FrameAssembler();
 	for (const e of entries) asm.push(e.seq, e.payload);
 	return asm.audit();

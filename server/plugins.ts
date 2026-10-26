@@ -27,18 +27,10 @@ import {
 	type PluginAssetProgress,
 } from "./plugin-assets.js";
 import { mkdir, readdir, readFile, rm, stat, writeFile } from "node:fs/promises";
-import {
-	cpSync,
-	existsSync,
-	lstatSync,
-	readFileSync,
-	readdirSync,
-	renameSync,
-	watch as fsWatch,
-	writeFileSync,
-} from "node:fs";
+import { cpSync, existsSync, lstatSync, readFileSync, readdirSync, watch as fsWatch, writeFileSync } from "node:fs";
 import { dirname, isAbsolute, join, relative, resolve, sep } from "node:path";
 import { pathToFileURL } from "node:url";
+import { writeJsonAtomicSync } from "./atomic-file.js";
 import {
 	type ServerMessage,
 	type UiMessage,
@@ -1765,9 +1757,7 @@ function saveSettingsValues(
 			} catch {
 				/* 首次 */
 			}
-			const tmp = `${file}.tmp-${process.pid}`;
-			writeFileSync(tmp, JSON.stringify({ ...existing, settings: persist }));
-			renameSync(tmp, file);
+			writeJsonAtomicSync(file, { ...existing, settings: persist }, 0);
 		});
 	} catch (err) {
 		console.error(`[plugins] settings persist failed (${dir}):`, err);
@@ -3268,6 +3258,17 @@ export class PluginManager {
 		if (!this.builtinCatalogPath || !existsSync(this.builtinCatalogPath)) return;
 		const builtinDir = dirname(this.builtinCatalogPath);
 		if (!existsSync(builtinDir)) return;
+
+		// 确保数据目录下同步最新 plugin-sdk（供官方与自定义插件共享纯 ESM 工具层）
+		const builtinSdkDir = join(dirname(builtinDir), "plugin-sdk");
+		const targetSdkDir = join(this.dataDir, "plugin-sdk");
+		if (existsSync(builtinSdkDir)) {
+			try {
+				cpSync(builtinSdkDir, targetSdkDir, { recursive: true });
+			} catch {
+				/* best-effort */
+			}
+		}
 
 		let names: string[];
 		try {

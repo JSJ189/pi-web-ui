@@ -21,7 +21,6 @@ import {
 	fetchText,
 	importPresetFromUrlVia,
 	importPresetVia,
-	isBlockedHost,
 	normalizeCatalogEntry,
 	normalizeTags,
 	parseCatalog,
@@ -47,11 +46,11 @@ import {
 	sharePresetVia,
 	slugifyPresetName,
 	toSettingsPreset,
-	validateFetchUrl,
 	type PresetCatalogCache,
 	type PresetSharePort,
 	type TextFetcher,
 } from "../../server/preset-share.js";
+import { isBlockedHost, validateFetchUrl } from "../../server/net-guard.js";
 import type { ClientMessage, ServerMessage, UiPresetCatalogEntry } from "../../server/protocol.js";
 import {
 	formatPresetFieldValue,

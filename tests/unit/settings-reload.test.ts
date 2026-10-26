@@ -189,4 +189,20 @@ describe("SettingsService.applyRuntime", () => {
 		expect(svc.consumePendingReload()).toBe(true);
 		expect(svc.hasPendingReload()).toBe(false);
 	});
+
+	it("applyReload 中途 isStreaming 变 true 也会被防御并转为 pendingReload (TOCTOU 防御)", async () => {
+		const reload = vi.fn(async () => {});
+		let streaming = false;
+		const host = makeHost({
+			isStreaming: () => streaming,
+			reloadSession: reload,
+		});
+		const svc = new SettingsService(host, templates);
+		// 模拟微任务间隙：刚进 applyRuntime 时 false，进 applyReload 时变为 true
+		streaming = true;
+		await (svc as unknown as { applyReload: () => Promise<void> }).applyReload();
+		expect(reload).not.toHaveBeenCalled();
+		expect(svc.hasPendingReload()).toBe(true);
+		expect(svc.consumePendingReload()).toBe(true);
+	});
 });

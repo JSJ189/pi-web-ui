@@ -648,6 +648,7 @@ registerFileTransferRoutes(app, (clientId) => service.get(clientId)?.cwd);
 app.get("/api/health", (_req, res) => {
 	// 审查 #352：该端点对未鉴权开放（监控探针需要），故只保留版本/引擎与 SDK
 	// 副本诊断信息，不再暴露 cwd（工作区路径披露）与 pid（指纹/信息收集面）。
+	// issue #763: 支持多实例区分的环境变量 (PI_WEB_INSTANCE_NAME / PI_WEB_FAVICON_COLOR)。
 	res.json({
 		ok: true,
 		piVersion: VERSION,
@@ -655,6 +656,8 @@ app.get("/api/health", (_req, res) => {
 		// 用户就不用猜「为什么升了全局 SDK 不生效」。（纯新增字段，piVersion 语义不变。）
 		piSdkCopies: sdkCopies(),
 		engine: currentDefaultEngine,
+		instanceName: process.env.PI_WEB_INSTANCE_NAME?.trim() || undefined,
+		faviconColor: process.env.PI_WEB_FAVICON_COLOR?.trim() || undefined,
 	});
 });
 

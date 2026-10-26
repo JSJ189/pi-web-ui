@@ -113,6 +113,8 @@ describe("subagents tools", () => {
 			undefined,
 			undefined,
 			undefined,
+			undefined,
+			{ securityMode: "verify" },
 		);
 		const text = result.content[0].text;
 		expect(text).toContain("sa-explore-abc");
@@ -774,6 +776,44 @@ describe("subagents tools", () => {
 		expect(text).toContain("sa-other");
 		expect(text).not.toContain("sa-parent");
 	});
+
+	it("subagent action=wait_all 动态遵从实时的看门狗时钟（防止看门狗下调后误杀）", async () => {
+		const host = makeHostSpies();
+		let watchdog = 1_200_000;
+		(host as unknown as { getWatchdogTimeoutMs: () => number }).getWatchdogTimeoutMs = () => watchdog;
+		const [subagent] = makeSubagentTools(host, () => "zh");
+		// 动态调低看门狗：兜底下限 5000ms
+		watchdog = 6_000; // computeWaitCapMs: Math.max(4800, 5000) = 5000ms (5s)
+		const runningList = [
+			{
+				convId: "sa-dyn",
+				type: "general",
+				title: "慢任务",
+				prompt: "",
+				state: "running" as const,
+				streaming: true,
+				messageCount: 1,
+				output: "",
+			},
+		];
+		(host.listSubagents as ReturnType<typeof vi.fn>).mockReturnValue(runningList);
+		(host.getSubagent as ReturnType<typeof vi.fn>).mockImplementation((id: string) =>
+			runningList.find((x) => x.convId === id),
+		);
+		const start = Date.now();
+		// 传入 timeoutSeconds: 60，应当被 liveCapSeconds (5s) 压制，在 ~5s 超时而非 60s
+		const result = (await subagent.execute!(
+			"t1",
+			{ action: "wait_all", timeoutSeconds: 60 } as never,
+			undefined,
+			undefined,
+			{} as never,
+		)) as { content: { text: string }[] };
+		const elapsed = Date.now() - start;
+		expect(elapsed).toBeGreaterThanOrEqual(4900);
+		expect(elapsed).toBeLessThan(7000);
+		expect(result.content[0].text).toContain("超时");
+	}, 10_000);
 });
 
 describe("collectSubagentDescendantIds 纯函数", () => {

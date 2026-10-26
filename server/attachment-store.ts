@@ -9,9 +9,10 @@
  */
 
 import { createHash, randomUUID } from "node:crypto";
-import { mkdirSync, existsSync, readdirSync, writeFileSync, renameSync, rmSync } from "node:fs";
+import { mkdirSync, existsSync, readdirSync } from "node:fs";
 import { readFile, rename, rm, writeFile, stat } from "node:fs/promises";
 import { join, extname } from "node:path";
+import { writeAtomicSync } from "./atomic-file.js";
 
 let storeDir = "";
 
@@ -118,14 +119,9 @@ export function saveAttachmentSync(
 	const filePath = join(storeDir, fileName);
 
 	if (!existsSync(filePath)) {
-		const tmpPath = `${filePath}.${randomUUID()}.tmp`;
 		try {
-			writeFileSync(tmpPath, buffer);
-			renameSync(tmpPath, filePath);
+			writeAtomicSync(filePath, buffer);
 		} catch (err) {
-			try {
-				rmSync(tmpPath, { force: true });
-			} catch {}
 			const code = (err as NodeJS.ErrnoException).code;
 			if (code === "EEXIST") {
 				// 并发写同哈希：目标已在，按「已存在」成功路径返回
@@ -136,6 +132,11 @@ export function saveAttachmentSync(
 				// 坏记录，消息里图片 404；抛出让 serialize 回退 dataUrl（转录里 base64 仍在）
 				throw err;
 			}
+		}
+		if (!existsSync(filePath)) {
+			const err = new Error(`EPERM: target file does not exist after write ${filePath}`) as NodeJS.ErrnoException;
+			err.code = "EPERM";
+			throw err;
 		}
 	}
 

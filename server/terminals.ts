@@ -1029,6 +1029,19 @@ export function parseTerminalLineStream(previousPending: string, inputChunk: str
  * socket attached to the client session). Failed spawns emit an error notice and
  * terminal_exit instead of throwing into the WebSocket dispatcher.
  */
+/**
+ * 识别是否属于终端仿真器自动回传的握手/探测序列（如光标位置报告 CPR、设备属性 DA1/DA2、焦点通知等）。
+ * 这些序列由 xterm.js 接收到 Shell/ConPTY 发出的探针后自动回复，绝非用户真实键盘输入。
+ * 收到此类自动响应时不应把 pristine 裸 shell 标记为 used，否则点开终端自动建的空 shell 会被永久误判为
+ * “用户动过的终端”并阻断会话移出。
+ */
+export const TERMINAL_QUERY_RESPONSE_RE =
+	/^(?:\x1b\[(?:\??|>|<)?\d*(?:;\d+)*(?:\$?y|[cRnIOt])|\x1b\]\d+;[^\x07\x1b]*(?:\x07|\x1b\\))+$/;
+
+export function isTerminalQueryResponse(data: string): boolean {
+	return TERMINAL_QUERY_RESPONSE_RE.test(data);
+}
+
 export class TerminalManager {
 	/** Live PTYs only. Exited entries move to history so they no longer consume
 	 * the live-terminal limit while their output remains readable/replayable. */
@@ -1662,11 +1675,13 @@ export class TerminalManager {
 			);
 		// 已武装的纪元里任何人（含用户手动敲键盘）写了输入都算新活动，重置倒计时。
 		// 成功的输入同时把终端标为“用过”（见 used）：动过的 shell 才参与对话保留/
-		// 关闭拦截，没动过的空 shell 不算。
+		// 关闭拦截，没动过的空 shell 不算。仿真器自动应答探针（CPR/DA 等）不计入用过。
 		entry.lastActivityAt = Date.now();
 		if (entry.idleTimer) this.armIdleWatch(entry);
 		entry.pty.write(data);
-		entry.used = true;
+		if (data.length > 0 && !isTerminalQueryResponse(data)) {
+			entry.used = true;
+		}
 		return null;
 	}
 

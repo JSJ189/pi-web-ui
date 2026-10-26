@@ -4,32 +4,9 @@
  * 统一委托给通用全局加载器，消除代码冗余。
  */
 
-import {
-	dynamicImportGlobalPackage,
-	probeGlobalPackage,
-	resolvePackageRoot,
-	resolvePackageEntryFile,
-} from "../global-loader.js";
+import { dynamicImportGlobalPackage } from "../global-loader.js";
 
 const DURABLE_PKG = "@earendil-works/pi-durable";
-
-/**
- * 解析并定位 @earendil-works/pi-durable 包的物理安装根目录。
- */
-export function findDurablePackageRoot(forceRefresh = false): string | null {
-	return resolvePackageRoot(DURABLE_PKG, { refresh: forceRefresh });
-}
-
-/**
- * 探测 Pi Durable 引擎的安装元数据（包版本号与物理路径）。
- */
-export function probeDurableInstallation(forceRefresh = false): {
-	installed: boolean;
-	version?: string;
-	packagePath?: string;
-} {
-	return probeGlobalPackage(DURABLE_PKG, { refresh: forceRefresh });
-}
 
 /**
  * 动态加载 @earendil-works/pi-durable 核心模块或其子路径模块。
@@ -49,5 +26,3 @@ export async function loadDurablePeerModule<T = any>(packageName: string, subpat
 		return null;
 	}
 }
-
-export { resolvePackageEntryFile };

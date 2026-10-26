@@ -29,6 +29,7 @@
 import { defineTool, type ToolDefinition } from "@earendil-works/pi-coding-agent";
 import { Type } from "typebox";
 import { pick, type ServerLang } from "./i18n.js";
+import { type SubagentSpawnExtra, resolveSecurityMode } from "./subagent-security-gate.js";
 import { THINKING_LEVELS } from "./subagent-templates.js";
 
 /** 子代理的状态（由 conversation 派生的轻量视图）。 */
@@ -135,6 +136,7 @@ export interface SubagentToolHost {
 		thinking?: string,
 		notifyOnDone?: boolean,
 		isolation?: string,
+		extra?: SubagentSpawnExtra,
 	): Promise<string>;
 	/** 取单个子代理快照（按 convId）。 */
 	getSubagent(convId: string): SubagentSnapshot | undefined;
@@ -187,20 +189,27 @@ export function subagentTitle(prompt: string): string {
 export function withSubagentOwner(host: SubagentToolHost, ownerId: string): SubagentToolHost {
 	return {
 		...host,
-		spawnSubagent: (prompt, type, cwd, templateName, model, _parentId, persist, thinking, notifyOnDone, isolation) => {
-			const args: [string, string, string, string?, string?, string?, boolean?, string?, boolean?, string?] = [
-				prompt,
-				type,
-				cwd,
-				templateName,
-				model,
-				ownerId,
-				persist,
-				thinking,
-				notifyOnDone,
-			];
-			if (isolation !== undefined) args.push(isolation);
-			return host.spawnSubagent(...args);
+		spawnSubagent: (
+			prompt,
+			type,
+			cwd,
+			templateName,
+			model,
+			_parentId,
+			persist,
+			thinking,
+			notifyOnDone,
+			isolation,
+			extra,
+		) => {
+			const args: unknown[] = [prompt, type, cwd, templateName, model, ownerId, persist, thinking, notifyOnDone];
+			if (isolation !== undefined || extra !== undefined) {
+				args.push(isolation);
+			}
+			if (extra !== undefined) {
+				args.push(extra);
+			}
+			return host.spawnSubagent(...(args as Parameters<SubagentToolHost["spawnSubagent"]>));
 		},
 		handoffSubagent: (fromRunId, toRunId, payload) => host.handoffSubagent(fromRunId || ownerId, toRunId, payload),
 		markSubagentsConsumed: (runIds) => host.markSubagentsConsumed?.(runIds),
@@ -304,7 +313,8 @@ export function makeSubagentTool(
 			),
 			type: Type.Optional(
 				Type.String({
-					description: "spawn: role/type (e.g. explore/implement/review, default: general).",
+					description:
+						"spawn: role/type (e.g. explore/implement/review, default: general). When matching a template name, the template and its security profile (e.g. readonly for explore, verify for review) are automatically applied.",
 				}),
 			),
 			template: Type.Optional(
@@ -385,16 +395,22 @@ export function makeSubagentTool(
 							),
 						);
 					}
-					if (p.template && !host.isTemplateUsable(p.template)) {
-						return text(
-							pick(
-								getLang(),
-								`子代理模板不可用：${p.template}（不存在或已停用）。用 subagent(action="templates") 查看当前可用模板清单；不传 template 则按默认配置运行。`,
-								`Subagent template unavailable: ${p.template} (missing or disabled). Use subagent(action="templates") to list available templates; omit template to run with defaults.`,
-								"subagents.spawn.template.unavailable",
-								{ "p.template": p.template },
-							),
-						);
+					let templateName: string | undefined;
+					if (p.template) {
+						if (!host.isTemplateUsable(p.template)) {
+							return text(
+								pick(
+									getLang(),
+									`子代理模板不可用：${p.template}（不存在或已停用）。用 subagent(action="templates") 查看当前可用模板清单；不传 template 则按默认配置运行。`,
+									`Subagent template unavailable: ${p.template} (missing or disabled). Use subagent(action="templates") to list available templates; omit template to run with defaults.`,
+									"subagents.spawn.template.unavailable",
+									{ "p.template": p.template },
+								),
+							);
+						}
+						templateName = p.template.trim();
+					} else if (p.type && typeof p.type === "string" && host.isTemplateUsable(p.type.trim())) {
+						templateName = p.type.trim();
 					}
 					if (p.thinking && !THINKING_LEVELS.includes(p.thinking as (typeof THINKING_LEVELS)[number])) {
 						return text(
@@ -420,20 +436,41 @@ export function makeSubagentTool(
 						);
 					}
 					let convId: string;
+					const subagentType = p.type ?? "general";
+					const matchedTemplate = templateName ? host.listTemplates().find((t) => t.name === templateName) : undefined;
+					const securityMode = resolveSecurityMode(subagentType, matchedTemplate);
+					const extra: SubagentSpawnExtra | undefined = securityMode !== "normal" ? { securityMode } : undefined;
+
 					try {
-						const spawnArgs: [string, string, string, string?, string?, string?, boolean?, string?, boolean?, string?] =
-							[
-								p.prompt,
-								p.type ?? "general",
-								p.cwd ?? ctx.cwd,
-								p.template,
-								p.model,
-								undefined,
-								p.persist,
-								p.thinking,
-								p.notifyOnDone,
-							];
-						if (isolationMode === "worktree") spawnArgs.push("worktree");
+						const spawnArgs: [
+							string,
+							string,
+							string,
+							string?,
+							string?,
+							string?,
+							boolean?,
+							string?,
+							boolean?,
+							string?,
+							SubagentSpawnExtra?,
+						] = [
+							p.prompt,
+							subagentType,
+							p.cwd ?? ctx.cwd,
+							templateName,
+							p.model,
+							undefined,
+							p.persist,
+							p.thinking,
+							p.notifyOnDone,
+						];
+						if (isolationMode === "worktree" || extra !== undefined) {
+							spawnArgs.push(isolationMode === "worktree" ? "worktree" : undefined);
+						}
+						if (extra !== undefined) {
+							spawnArgs.push(extra);
+						}
 						convId = await host.spawnSubagent(...spawnArgs);
 					} catch (err) {
 						const msg = err instanceof Error ? err.message : String(err);
@@ -443,10 +480,9 @@ export function makeSubagentTool(
 							}),
 						);
 					}
-					const subagentType = p.type ?? "general";
 					const subagentTitleText = subagentTitle(p.prompt);
-					const templateLineZh = p.template ? `\n模板：${p.template}` : "";
-					const templateLineEn = p.template ? `\nTemplate: ${p.template}` : "";
+					const templateLineZh = templateName ? `\n模板：${templateName}` : "";
+					const templateLineEn = templateName ? `\nTemplate: ${templateName}` : "";
 					const modelLineZh = p.model ? `\n模型：${p.model}` : "";
 					const modelLineEn = p.model ? `\nModel: ${p.model}` : "";
 					const thinkingLineZh = p.thinking ? `\n思考强度：${p.thinking}` : "";
@@ -771,7 +807,12 @@ export function makeSubagentTool(
 						);
 					}
 
-					const timeoutMs = Math.min(Math.max(p.timeoutSeconds ?? capSeconds, 1), capSeconds) * 1000;
+					const liveWaitCapMs =
+						typeof host.getWatchdogTimeoutMs === "function"
+							? computeWaitCapMs(host.getWatchdogTimeoutMs())
+							: currentWaitCapMs;
+					const liveCapSeconds = Math.floor(liveWaitCapMs / 1000);
+					const timeoutMs = Math.min(Math.max(p.timeoutSeconds ?? liveCapSeconds, 1), liveCapSeconds) * 1000;
 					const startedAt = Date.now();
 					const POLL_INTERVAL_MS = 250;
 

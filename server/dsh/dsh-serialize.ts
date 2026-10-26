@@ -46,7 +46,7 @@ interface DshContentBlock {
 }
 
 /** DSH user-role content blocks → UiContentBlock[]。 */
-export function serializeUserBlocks(blocks: DshContentBlock[]): UiContentBlock[] {
+function serializeUserBlocks(blocks: DshContentBlock[]): UiContentBlock[] {
 	if (!Array.isArray(blocks) || blocks.length === 0) {
 		return [{ type: "text", text: "" }];
 	}

@@ -8,7 +8,6 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { detectReasoningCapability } from "../../server/model-admin.js";
 import { ClaudeCodeDriver } from "../../server/universal/drivers/claude-code.js";
-import { DshAgentDriver } from "../../server/universal/drivers/dsh-driver.js";
 import { UniversalSession } from "../../server/universal/universal-session.js";
 import { UniversalSessionStore } from "../../server/universal/session-store.js";
 import type { ServerMessage } from "../../server/protocol.js";
@@ -80,11 +79,6 @@ describe("Claude Code 引擎思考强度与 CLI 参数协商", () => {
 		driver.setThinkingLevel("high");
 		// 校验内部档位更新（通过再次获取或行为断言）
 		expect(driver.getSupportedThinkingLevels()).toContain("high");
-	});
-
-	it("DshAgentDriver 仅声明支持 high 档位", () => {
-		const driver = new DshAgentDriver(process.cwd(), { agentDir: testAgentDir });
-		expect(driver.getSupportedThinkingLevels()).toEqual(["high"]);
 	});
 });
 

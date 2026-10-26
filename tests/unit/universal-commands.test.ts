@@ -21,7 +21,6 @@ import {
 	UniversalSessionStore,
 	MockAgentDriver,
 	ClaudeCodeDriver,
-	DshAgentDriver,
 } from "../../server/universal/index.js";
 import { discoverDiskSkills, readSkillInstruction } from "../../server/skill-discovery.js";
 import {
@@ -329,41 +328,7 @@ describe("通用底座与多引擎 / 和 @ 命令体系测试", () => {
 		});
 	});
 
-	describe("5. DSH 驱动命令与技能列表扩展", () => {
-		it("DshAgentDriver 提供 /skills 与 /clear 命令，并暴露运行时与磁盘技能", async () => {
-			const driver = new DshAgentDriver(workspaceDir, { agentDir });
-			const slashCmds = await driver.getSlashCommands();
-			const cmdNames = slashCmds.map((c) => c.name);
-
-			expect(cmdNames).toContain("skills");
-			expect(cmdNames).toContain("clear");
-
-			// 写入本地技能
-			const skillDir = join(workspaceDir, ".pi", "skills", "dsh-helper");
-			mkdirSync(skillDir, { recursive: true });
-			writeFileSync(
-				join(skillDir, "SKILL.md"),
-				`---\nname: dsh-helper\ndescription: DSH 辅助技能\n---\n协助 DSH 开发。`,
-				"utf8",
-			);
-
-			const skills = await driver.getSkills();
-			expect(skills.some((s) => s.name === "dsh-helper")).toBe(true);
-
-			const notices: string[] = [];
-			const context = {
-				emitNotice: (_level: string, text: string) => notices.push(text),
-			};
-
-			const skillsHandled = await driver.execSlashCommand("skills", "", context as any);
-			expect(skillsHandled).toBe(true);
-			expect(notices.some((n) => n.includes("dsh-helper"))).toBe(true);
-
-			driver.dispose();
-		});
-	});
-
-	describe("6. 通用底座运行中排队与插队机制 (Queue & Steer)", () => {
+	describe("5. 通用底座运行中排队与插队机制 (Queue & Steer)", () => {
 		it("支持在生成中以 queue: true 排队并在当前轮次完成后自动触发执行", async () => {
 			const store = new UniversalSessionStore(tempDir);
 			const driver = new MockAgentDriver(workspaceDir);

@@ -279,11 +279,7 @@ E:/pi-web-ui/server/dsh/
 - **设置面板**：第二轮后全量存储回显（promptMode/customSystemPrompt/terminalToolsEnabled/terminalBash/thinkingWrap/toolsWrap/disabledSkills/disabledExtensions/disabledPlugins/reviewPrompt 经 ClientStateStore 持久化，跨重连存活）；仅 prompt 相关变化才重启运行时（DSH_PERSONA env 注入）；引擎专属设置项扩展机制（Engine-Contributed Settings）动态呈现 DSH 预设与三档权限、补丁与市场、问卷调研；通用底座设置项全量兼容。
 - **视觉桥**：✅ 完成（§2.7）—— 真 image block（attachment/save + read RPC + vision-exp 模型 + 回放补图）。图片附件/工作区图片文件都走附件存储。注意：仅 deepseek-v4-flash-vision-exp 模型看图。
 - **第三方自定义端点与模型接入（models.json）**：✅ 完成 —— DSH 引擎接入公共模型底座，自动枚举 `models.json` 中配置的第三方自定义端点模型（如 `antigravity-openai/gemini-3.8-flash` 等）；切换时动态解析 BaseURL 与 API Key 并注入子进程环境变量 `DEEPSEEK_BASE_URL` 与 `DEEPSEEK_API_KEY`，RPC 握手传递真实模型 ID，实现第三方 OpenAI 兼容端点在 DSH 运行时的直接调用执行。
-- **Universal Agent 底座驱动化（DshAgentDriver）**：✅ 完成 —— 在 `server/universal/drivers/dsh-driver.ts` 中完整实现 `BaseAgentDriver` 契约，使 DSH 能作为标准驱动插装至 Universal Agent 底座（`server/universal/`）：
-  - 具备完整的能力矩阵声明（`AgentCapabilities`: `supportsModelSwitch: true, supportsThinkingLevels: true, supportsAskUser: true`）；
-  - 将 DSH stdio JSON-RPC 的 `assistant/chunk`（`reasoning-delta` / `text-delta`）、`tool/call`、`tool/result` 与 `assistant/message` 统一投影至底座的 `AgentEventSink`（`onThinkingDelta` / `onTextDelta` / `onToolStart` / `onToolEnd` / `onTurnComplete`）；
-  - 自动结合 `normalizeDshUsage` 计算 Token 四桶统计与成本；
-  - `UniversalSession` 原生适配 DSH 默认高思考等级与预设模型，实现真正的驱动插拔式底座化！
+- **Universal Agent 底座驱动化（DshAgentDriver）**：⚠️ 已退役 —— 曾尝试在 `server/universal/drivers/dsh-driver.ts` 实现 `BaseAgentDriver`，但由于 DSH 为具备 4 预设克隆挂载、独立 RPC 守护进程与原生 Goal 状态机的复合引擎（非简单单进程驱动），将复合引擎降格为轻量 Driver 存在抽象层级错配。为避免产生未经检验的第三套 DSH 运行时，该驱动已于 #733 彻底清理；DSH 与通用底座的收敛未来统一走 #469（自顶向下抽取共享 `BaseAgentService`）。
 - **对话框（dialog_response）/ 扩展 UI 桥**：DSH 侧已有提问桥（question_pending/question_answer，§2.7）；pi 扩展 dialog（dialog_response）v1 仍忽略。
 - **目标调研向导（startGoalWizard）**：✅ 完成（§2.7）—— 交互式（模型 ask_user_question 逐题提问 + 前端对话框 + GOAL: 收敛 + 自动设目标）。
 

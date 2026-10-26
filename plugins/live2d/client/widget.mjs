@@ -4,16 +4,10 @@
 import { Live2DStage, ensureLive2dEngine } from "./engine.mjs";
 import { getAllModels, saveCustomModels, loadCustomModels } from "./models.mjs";
 import { WIDGET_CSS } from "./styles.mjs";
+import { esc as escapeHtml } from "@pi-web-ui/plugin-sdk/client";
 
 const POS_STORAGE_KEY = "pi-web-ui:live2d-pos";
 const CONFIG_STORAGE_KEY = "pi-web-ui:live2d-config";
-
-/** HTML 转义：所有外部可控文本（模型名等）进 innerHTML 前必过此函数。 */
-function escapeHtml(value) {
-	return String(value ?? "").replace(/[&<>"']/g, (c) => {
-		return { "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" }[c];
-	});
-}
 
 function playChirpSound() {
 	try {

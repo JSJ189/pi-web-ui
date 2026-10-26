@@ -163,6 +163,10 @@ export class SettingsService {
 		return this.pendingReload;
 	}
 
+	setPendingReload(v: boolean): void {
+		this.pendingReload = v;
+	}
+
 	consumePendingReload(): boolean {
 		const v = this.pendingReload;
 		this.pendingReload = false;
@@ -1162,6 +1166,17 @@ export class SettingsService {
 
 	/** session.reload() + refresh the slash-command catalog + push state. */
 	private async applyReload(): Promise<void> {
+		if (this.host.isDisposed()) return;
+		if (this.host.isStreaming()) {
+			this.pendingReload = true;
+			this.host.emit({
+				type: "notice",
+				level: "info",
+				text: "当前回复进行中，设置将在回复结束后自动应用",
+				textEn: "A reply is in progress; settings will apply when it finishes",
+			});
+			return;
+		}
 		try {
 			await this.host.reloadSession();
 			this.push();

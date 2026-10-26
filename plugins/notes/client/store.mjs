@@ -830,17 +830,6 @@ export function searchItems(store, opts = {}) {
 	return out;
 }
 
-/** 库里的标签清单（按出现次数排序，视图做标签筛选用）。 */
-export function allTags(store) {
-	const count = new Map();
-	const add = (list) => {
-		for (const t of list ?? []) count.set(t, (count.get(t) ?? 0) + 1);
-	};
-	for (const n of store.notes) add(n.tags);
-	for (const t of store.todos) add(t.tags);
-	return [...count.entries()].sort((a, b) => b[1] - a[1] || a[0].localeCompare(b[0])).map(([tag]) => tag);
-}
-
 /** 顶栏/浮窗上的计数：未完成且今天到期或已逾期的待办 + 未送达提醒 + 库总量。 */
 export function counts(store, nowMs = Date.now()) {
 	let dueTodos = 0;

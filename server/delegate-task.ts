@@ -19,6 +19,7 @@ import { defineTool, type ToolDefinition } from "@earendil-works/pi-coding-agent
 import { pick, type ServerLang } from "./i18n.js";
 import { DELEGATE_TASK_TOOL_NAME } from "./tool-manager.js";
 import { subagentTitle, type SubagentToolHost } from "./subagents.js";
+import { parseRequiredTools, resolveSecurityMode, type SubagentSpawnExtra } from "./subagent-security-gate.js";
 
 /** 工具名（唯一值在 tool-manager.ts；本别名保留：前端派单卡片与旧导入沿用它）。 */
 export const DELEGATE_TOOL_NAME = DELEGATE_TASK_TOOL_NAME;
@@ -205,6 +206,16 @@ export function makeDelegateTaskTool(host: SubagentToolHost, lang?: () => Server
 			const err = validateDelegation(input, usable, getLang());
 			if (err) return text(err, { delegated: false, agent: input.agent });
 			const prompt = buildDelegationPrompt(input, getLang());
+			const parsedTools = parseRequiredTools(input.required_tools);
+			const matchedTemplate = host.listTemplates().find((t) => t.name === input.agent);
+			let securityMode = resolveSecurityMode(input.agent, matchedTemplate);
+			if (parsedTools.requestedReadOnly && securityMode === "normal") {
+				securityMode = "readonly";
+			}
+			const extra: SubagentSpawnExtra = {
+				allowedTools: parsedTools.allowedTools,
+				securityMode,
+			};
 			// 与 subagent_spawn 同理：spawn 通道是唯一的失败面（数量上限 / runtime
 			// 创建失败都经由 host 抛错），转成返回文本让 AI 能读到原因并修正重试。
 			let convId: string;
@@ -217,6 +228,10 @@ export function makeDelegateTaskTool(host: SubagentToolHost, lang?: () => Server
 					input.model,
 					undefined,
 					input.persist,
+					undefined,
+					undefined,
+					undefined,
+					extra,
 				);
 			} catch (err) {
 				const msg = err instanceof Error ? err.message : String(err);
@@ -230,13 +245,18 @@ export function makeDelegateTaskTool(host: SubagentToolHost, lang?: () => Server
 			const title = subagentTitle(prompt);
 			const modelLineZh = input.model ? `\n模型：${input.model}` : "";
 			const modelLineEn = input.model ? `\nModel: ${input.model}` : "";
+			const toolsLineZh = parsedTools.allowedTools ? `\n工具白名单：${parsedTools.allowedTools.join(", ")}` : "";
+			const toolsLineEn = parsedTools.allowedTools ? `\nAllowed tools: ${parsedTools.allowedTools.join(", ")}` : "";
+			const securityLineZh =
+				securityMode !== "normal" ? `\n安全模式：${securityMode === "readonly" ? "严格只读" : "审查验证"}` : "";
+			const securityLineEn = securityMode !== "normal" ? `\nSecurity mode: ${securityMode}` : "";
 			return text(
 				pick(
 					getLang(),
-					`已派单：${convId}\n模板：${input.agent} · 标题：${title}${modelLineZh}` +
+					`已派单：${convId}\n模板：${input.agent} · 标题：${title}${modelLineZh}${toolsLineZh}${securityLineZh}` +
 						`\n子代理已在左栏运行列表中。用 subagent(action="wait_all") 一次等全部完成（不用轮询）、subagent(action="get_result") 取单个结果；` +
 						`追问请在同一子代理会话里继续（subagent(action="steer")），不要重复派单。拿到结果后必须验证再汇报。`,
-					`Delegated: ${convId}\nTemplate: ${input.agent} · Title: ${title}${modelLineEn}` +
+					`Delegated: ${convId}\nTemplate: ${input.agent} · Title: ${title}${modelLineEn}${toolsLineEn}${securityLineEn}` +
 						`\nThe subagent is in the left running list. Use subagent(action="wait_all") to wait for all at once (no polling), ` +
 						`subagent(action="get_result") for a single result; continue follow-ups in the SAME subagent session (subagent(action="steer")), ` +
 						`do not delegate again. Verify the result before reporting.`,

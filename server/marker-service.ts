@@ -177,9 +177,18 @@ export class MarkerService {
 			.then(() => this.processAssistantText(conversationId, text))
 			.catch((e) => {
 				console.error("[markers] handleAssistantText failed:", e);
+			})
+			.finally(() => {
+				if (this.chains.get(conversationId) === next) {
+					this.chains.delete(conversationId);
+				}
 			});
 		this.chains.set(conversationId, next);
 		return next;
+	}
+
+	clearConversation(conversationId: string): void {
+		this.chains.delete(conversationId);
 	}
 
 	private async processAssistantText(conversationId: string, text: string): Promise<void> {

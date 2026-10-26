@@ -11,7 +11,7 @@
  * 供 Claude Code CLI 驱动、DSH 引擎与 Pi 引擎统一调用，消除各引擎间的配置孤岛。
  */
 
-import { existsSync, readFileSync } from "node:fs";
+import { existsSync, readFileSync, writeFileSync } from "node:fs";
 import { homedir } from "node:os";
 import { join } from "node:path";
 
@@ -40,46 +40,8 @@ export interface CustomModelEntry {
 	vision?: boolean;
 }
 
-/** 剥离 JSON 字符串中的 // 和 /* *\/ 注释（保护字符串字面量内的 URL） */
-export function stripJsonComments(src: string): string {
-	let out = "";
-	let inString = false;
-	let i = 0;
-	while (i < src.length) {
-		const c = src[i];
-		const next = src[i + 1];
-		if (inString) {
-			out += c;
-			if (c === "\\") {
-				out += next ?? "";
-				i += 2;
-				continue;
-			}
-			if (c === '"') inString = false;
-			i++;
-			continue;
-		}
-		if (c === '"') {
-			inString = true;
-			out += c;
-			i++;
-			continue;
-		}
-		if (c === "/" && next === "/") {
-			while (i < src.length && src[i] !== "\n") i++;
-			continue;
-		}
-		if (c === "/" && next === "*") {
-			i += 2;
-			while (i < src.length && !(src[i] === "*" && src[i + 1] === "/")) i++;
-			i += 2;
-			continue;
-		}
-		out += c;
-		i++;
-	}
-	return out;
-}
+import { stripJsonComments, parseJsonWithComments } from "./json-utils.js";
+export { stripJsonComments, parseJsonWithComments };
 
 /** 读取并解析 models.json（容忍注释） */
 export function readModelsJson(agentDir?: string): { providers: Record<string, Record<string, unknown>> } {
@@ -373,6 +335,73 @@ export function isProtocolSupportedByEngine(
 	}
 
 	return true;
+}
+
+export interface GlobalAgentSettings {
+	defaultThinkingLevel?: string;
+	modelThinkingLevels?: Record<string, string>;
+	[key: string]: unknown;
+}
+
+/** 读取全局 settings.json */
+export function readGlobalSettings(agentDir?: string): GlobalAgentSettings {
+	const dir = defaultAgentDir(agentDir);
+	const filePath = join(dir, "settings.json");
+	if (!existsSync(filePath)) return {};
+	try {
+		const raw = readFileSync(filePath, "utf8");
+		return JSON.parse(stripJsonComments(raw)) as GlobalAgentSettings;
+	} catch {
+		return {};
+	}
+}
+
+/** 获取特定模型在 settings.json 中的思考强度记忆或全局默认思考强度 */
+export function getModelThinkingLevelFromSettings(modelId?: string, agentDir?: string): string | undefined {
+	if (!modelId) return undefined;
+	const settings = readGlobalSettings(agentDir);
+	const levels = settings.modelThinkingLevels;
+	if (levels && typeof levels === "object") {
+		// 1. 尝试全量匹配 "provider/model"
+		if (levels[modelId]) return levels[modelId];
+		// 2. 尝试裸 modelId 匹配
+		const slashIdx = modelId.indexOf("/");
+		const bareId = slashIdx >= 0 ? modelId.slice(slashIdx + 1) : modelId;
+		for (const [k, v] of Object.entries(levels)) {
+			if (k === bareId || k.endsWith(`/${bareId}`)) {
+				return v;
+			}
+		}
+	}
+	return settings.defaultThinkingLevel;
+}
+
+/** 保存特定模型的思考强度到 settings.json */
+export function saveModelThinkingLevelToSettings(modelId: string, level: string, agentDir?: string): void {
+	if (!modelId || !level) return;
+	const dir = defaultAgentDir(agentDir);
+	const filePath = join(dir, "settings.json");
+	try {
+		let current: Record<string, unknown> = {};
+		if (existsSync(filePath)) {
+			try {
+				current = JSON.parse(stripJsonComments(readFileSync(filePath, "utf8")));
+			} catch {
+				/* start fresh */
+			}
+		}
+		const existingLevels = (
+			current.modelThinkingLevels && typeof current.modelThinkingLevels === "object"
+				? { ...(current.modelThinkingLevels as Record<string, string>) }
+				: {}
+		) as Record<string, string>;
+		existingLevels[modelId] = level;
+		current.modelThinkingLevels = existingLevels;
+		const formatted = JSON.stringify(current, null, 2);
+		writeFileSync(filePath, formatted, "utf8");
+	} catch {
+		/* best effort */
+	}
 }
 
 /**

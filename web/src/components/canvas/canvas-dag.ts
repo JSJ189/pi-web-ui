@@ -9,7 +9,7 @@ export function extractDagJson(text: string): string | null {
 	return m ? m[1].trim() : null;
 }
 
-export interface ParsedDag {
+interface ParsedDag {
 	nodes: { title: string; role: CanvasNodeRole; instruction?: string }[];
 	edges: { from: number; to: number }[];
 }

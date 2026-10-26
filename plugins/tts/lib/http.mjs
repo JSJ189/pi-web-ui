@@ -45,7 +45,7 @@ export function resolveToken(explicit, env = process.env) {
 }
 
 /** 一个很松的合理性检查：64 字符不透明串（不是 JWT）。只用来提醒，不用来拦截。 */
-export function looksLikeToken(token) {
+function looksLikeToken(token) {
 	return typeof token === "string" && token.length === 64;
 }
 
@@ -272,7 +272,7 @@ export async function resolveDemoUrl({
 }
 
 /** 下载任意 URL 成 Buffer。 */
-export async function fetchBinary(url, { signal, fetchImpl = globalThis.fetch, maxBytes } = {}) {
+async function fetchBinary(url, { signal, fetchImpl = globalThis.fetch, maxBytes } = {}) {
 	let res;
 	try {
 		res = await fetchImpl(url, { method: "GET", signal });

@@ -6,6 +6,7 @@ import { DEFAULT_DURABLE_CAPABILITIES, resolveEngineCapabilities } from "../../s
 import { ENGINE_PACKAGES, probeDurable } from "../../server/engine-probe.js";
 import { DurableAgentService } from "../../server/durable/durable-agent-service.js";
 import { DurableAgentDriver } from "../../server/durable/durable-driver.js";
+import { calculateSupportedThinkingLevels, resolveDurableThinkingLevels } from "../../server/durable/durable-models.js";
 import type { ServerMessage } from "../../server/protocol.js";
 
 describe("Pi Durable 独立引擎接入规范", () => {
@@ -41,6 +42,14 @@ describe("Pi Durable 独立引擎接入规范", () => {
 			expect(driver.id).toBe("durable");
 			expect(driver.capabilities.supportsTreeFork).toBe(true);
 			expect(driver.capabilities.supportsAskUser).toBe(true);
+
+			// 验证引擎完整能力事实源正确接线（非通用全 false 默认）
+			const engineCaps = driver.getEngineCapabilities();
+			expect(engineCaps).toEqual(DEFAULT_DURABLE_CAPABILITIES);
+			expect(engineCaps.workspaceRoots).toBe(true);
+			expect(engineCaps.presentFiles).toBe(true);
+			expect(engineCaps.treeFork).toBe(true);
+			expect(engineCaps.subagents).toBe(true);
 
 			const sessionId = await driver.createSession();
 			expect(sessionId).toBeTruthy();
@@ -107,6 +116,50 @@ describe("Pi Durable 独立引擎接入规范", () => {
 			} catch {
 				/* ignore */
 			}
+		}
+	});
+
+	it("Durable 思考强度能力计算与动态过滤（支持 xhigh / max 与模型 mapping）", () => {
+		// 1. 无配置或未知模型：兜底开放全部 7 档
+		expect(calculateSupportedThinkingLevels()).toEqual(["off", "minimal", "low", "medium", "high", "xhigh", "max"]);
+
+		// 2. 明确不支持思考的模型：仅 off
+		expect(calculateSupportedThinkingLevels({ reasoning: false })).toEqual(["off"]);
+
+		// 3. 普通 reasoning 模型（未显式配置 xhigh/max）：返回基础 5 档
+		expect(calculateSupportedThinkingLevels({ reasoning: true })).toEqual(["off", "minimal", "low", "medium", "high"]);
+
+		// 4. 具备 thinkingLevelMap 的高级模型（如 Beam Free / Muse Spark）：
+		// 严格遵循 mapping，支持 xhigh / max，剔除 mapped: null
+		const beamFreeMap = {
+			off: null,
+			minimal: null,
+			low: "low",
+			medium: "medium",
+			high: "high",
+			xhigh: "xhigh",
+			max: "max",
+		};
+		const beamFreeLevels = calculateSupportedThinkingLevels({
+			reasoning: true,
+			thinkingLevelMap: beamFreeMap,
+		});
+		expect(beamFreeLevels).toEqual(["low", "medium", "high", "xhigh", "max"]);
+		expect(beamFreeLevels.includes("xhigh")).toBe(true);
+		expect(beamFreeLevels.includes("max")).toBe(true);
+		expect(beamFreeLevels.includes("off")).toBe(false);
+
+		// 5. Driver getSupportedThinkingLevels 动态感知
+		const driver = new DurableAgentDriver(process.cwd());
+		try {
+			driver.setThinkingLevel("xhigh");
+			// 未指定模型时返回全部可用档位，绝不硬编码为 4 档阉割版
+			const levels = driver.getSupportedThinkingLevels();
+			expect(levels).toContain("xhigh");
+			expect(levels).toContain("max");
+			expect(levels).toContain("minimal");
+		} finally {
+			driver.dispose();
 		}
 	});
 });

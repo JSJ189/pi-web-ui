@@ -134,6 +134,7 @@ import { shouldSuppressNotify, currentPresence } from "./notify";
 import { useWideChat, useHideModelRow } from "./chat-width-settings";
 import { registerFilePreviewHost } from "./file-preview-bridge";
 import { projectNameFromCwd, useProjectTitle } from "./title-settings";
+import { useFaviconSettings, resolveInstanceName, syncServerFaviconConfig } from "./favicon-settings";
 import { notify } from "./notify";
 import { diffStreamingCues } from "./streaming-cues";
 import { getNoticeDurationMs } from "./notice-policy";
@@ -366,13 +367,21 @@ export function App() {
 			});
 		}
 	}, [chat.ready, chat.settings, send, locale]);
-	// 浏览器标题：开关开启时显示当前项目（工作目录文件夹名），否则固定应用名。
+	// 浏览器标题：开关开启时显示当前项目（工作目录文件夹名），否则固定应用名。支持多实例名称前缀 (Issue #763)。
 	const cwd = chat.state?.cwd ?? "";
 	const projectTitle = useProjectTitle();
+	const faviconSettings = useFaviconSettings();
+	const instanceName = resolveInstanceName(faviconSettings);
+
+	useEffect(() => {
+		void syncServerFaviconConfig();
+	}, []);
+
 	useEffect(() => {
 		const name = projectTitle ? projectNameFromCwd(cwd) : "";
-		document.title = name ? `${name} — pi-web-ui` : t("docTitle");
-	}, [cwd, projectTitle, t]);
+		const base = name ? `${name} — pi-web-ui` : t("docTitle");
+		document.title = instanceName ? `[${instanceName}] ${base}` : base;
+	}, [cwd, projectTitle, instanceName, t]);
 	const [attachments, setAttachments] = useState<PendingAttachment[]>([]);
 	// 宿主注入的待发附件（浏览器元素拾取扩展的截图 → window.__piWebUiHost.compose）：
 	// 只追加不覆盖，判重口径与下面的 attach() 一致（见 composer-draft.ts）。

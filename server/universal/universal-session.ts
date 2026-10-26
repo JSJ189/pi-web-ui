@@ -44,7 +44,11 @@ import { ClaudeCodeDriver, probeClaudeCode } from "./drivers/claude-code.js";
 import type { UniversalSessionStore } from "./session-store.js";
 import type { UniversalConversation } from "./universal-types.js";
 import { type ClientStateStore, normalizeUiLayout, type ClientSettings, settingsPresetToUi } from "../client-state.js";
-import { readModelsJson } from "../model-resolver.js";
+import {
+	readModelsJson,
+	getModelThinkingLevelFromSettings,
+	saveModelThinkingLevelToSettings,
+} from "../model-resolver.js";
 import { DEFAULT_UNIVERSAL_CAPABILITIES } from "../engine-capabilities.js";
 import { unsupportedToolInfo } from "../tool-info.js";
 import { SandboxManager } from "../sandbox-service.js";
@@ -91,6 +95,20 @@ import {
 } from "../preset-share.js";
 
 const SNAPSHOT_INTERVAL_MS = 60;
+
+function clampThinkingLevelToSupported(supported: string[], current: string): string {
+	if (supported.includes(current)) return current;
+	const order = ["off", "minimal", "low", "medium", "high", "xhigh", "max"];
+	const curIdx = order.indexOf(current);
+	if (curIdx === -1) return supported[0] ?? "off";
+	for (let i = curIdx; i < order.length; i++) {
+		if (supported.includes(order[i])) return order[i];
+	}
+	for (let i = curIdx - 1; i >= 0; i--) {
+		if (supported.includes(order[i])) return order[i];
+	}
+	return supported[0] ?? "off";
+}
 
 export class UniversalSession implements DispatchSession {
 	public cwd: string;
@@ -198,6 +216,7 @@ export class UniversalSession implements DispatchSession {
 				thinking,
 				notifyOnDone,
 				_isolation,
+				_extra,
 			) => {
 				const { convId } = await this.spawnSubagent(
 					prompt,
@@ -348,6 +367,19 @@ export class UniversalSession implements DispatchSession {
 			opts.stateStore?.getDefaultModel(this.engine);
 		if (savedModel) {
 			this.currentModel = savedModel;
+		}
+
+		// 恢复思考强度记忆：模型专属记忆 > 全局默认 > 既有默认
+		const rememberedThinking = getModelThinkingLevelFromSettings(this.currentModel, this.agentDir);
+		if (rememberedThinking) {
+			this.thinkingLevel = rememberedThinking;
+		}
+
+		if (typeof this.driver.getSupportedThinkingLevels === "function") {
+			const supported = this.driver.getSupportedThinkingLevels(this.currentModel);
+			if (supported.length > 0 && !supported.includes(this.thinkingLevel)) {
+				this.thinkingLevel = clampThinkingLevelToSupported(supported, this.thinkingLevel);
+			}
 		}
 
 		if (typeof this.driver.setThinkingLevel === "function") {
@@ -601,8 +633,8 @@ export class UniversalSession implements DispatchSession {
 			thinkingLevel: this.thinkingLevel,
 			availableThinkingLevels:
 				typeof this.driver.getSupportedThinkingLevels === "function"
-					? this.driver.getSupportedThinkingLevels()
-					: ["off", "low", "medium", "high"],
+					? this.driver.getSupportedThinkingLevels(this.currentModel)
+					: ["off", "minimal", "low", "medium", "high", "xhigh", "max"],
 			queue: {
 				steering: [],
 				followUp: this.followUpQueue.map((q) => q.text),
@@ -1676,6 +1708,22 @@ export class UniversalSession implements DispatchSession {
 		if (this.driver.setModel) {
 			await this.driver.setModel(modelId);
 		}
+		// 优先恢复该模型的全局思考强度记忆或全局默认强度
+		const remembered = getModelThinkingLevelFromSettings(modelId, this.agentDir);
+		if (remembered) {
+			this.thinkingLevel = remembered;
+		}
+		// 校验并平滑适应新模型支持的思考强度
+		if (typeof this.driver.getSupportedThinkingLevels === "function") {
+			const supported = this.driver.getSupportedThinkingLevels(modelId);
+			if (supported.length > 0 && !supported.includes(this.thinkingLevel)) {
+				const clamped = clampThinkingLevelToSupported(supported, this.thinkingLevel);
+				this.thinkingLevel = clamped;
+			}
+		}
+		if (typeof this.driver.setThinkingLevel === "function") {
+			this.driver.setThinkingLevel(this.thinkingLevel);
+		}
 		const info = this.resolveCurrentModelInfo();
 		this.emitNotice("info", `已切换到模型：${info.name}`, `Switched to model: ${info.name}`);
 		this.flushSnapshot();
@@ -1707,6 +1755,10 @@ export class UniversalSession implements DispatchSession {
 		this.thinkingLevel = level;
 		if (typeof this.driver.setThinkingLevel === "function") {
 			this.driver.setThinkingLevel(level);
+		}
+		// 同步持久化至全局 settings.json 的 modelThinkingLevels
+		if (this.currentModel) {
+			saveModelThinkingLevelToSettings(this.currentModel, level, this.agentDir);
 		}
 		this.flushSnapshot();
 	}

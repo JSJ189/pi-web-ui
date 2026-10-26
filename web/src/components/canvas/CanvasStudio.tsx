@@ -362,7 +362,6 @@ export function CanvasStudio({
 			target.closest(".status-cwd-backdrop") ||
 			target.closest(".dd-menu") ||
 			target.closest(".canvas-empty-state") ||
-			target.closest(".canvas-prompt-dialog") ||
 			target.closest("button, input, select, textarea, a, [role='dialog'], [role='menu']")
 		) {
 			return;

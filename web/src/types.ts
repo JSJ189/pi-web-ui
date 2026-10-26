@@ -11,8 +11,8 @@
 export type * from "../../server/protocol";
 
 // 本地类型引用到的协议类型（export type * 不会把名字带进本地作用域）
-import type { FileEntry, PptxSlidePayload, PptxSlideImagePayload } from "../../server/protocol";
-export type { FileEntry, PptxSlidePayload, PptxSlideImagePayload };
+import type { FileEntry } from "../../server/protocol";
+export type { FileEntry };
 
 // ---------------------------------------------------------------------------
 // 前端本地类型（server 不发送/接收这些结构本身，或仅作为消息字段的一部分）
@@ -51,7 +51,6 @@ export interface FileContent {
 	binary: boolean;
 	lines: number;
 	size: number;
-	slides?: PptxSlidePayload[];
 }
 
 /** A tool FINISHED executing (payload of the tool_status ServerMessage). */

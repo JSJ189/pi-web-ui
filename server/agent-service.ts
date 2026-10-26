@@ -27,6 +27,7 @@ import {
 	readdirSync,
 	rmSync,
 	mkdirSync,
+	statSync,
 	watch,
 	writeFileSync,
 } from "node:fs";
@@ -36,12 +37,10 @@ import {
 	createAgentSessionFromServices,
 	createAgentSessionRuntime,
 	createAgentSessionServices,
-	createCodemodeExtension,
 	createEditToolDefinition,
 	createFindToolDefinition,
 	createGrepToolDefinition,
 	createLsToolDefinition,
-	createToolSearchExtension,
 	resolveModelScopeWithDiagnostics,
 	getAgentDir,
 	SessionManager,
@@ -54,6 +53,7 @@ import {
 	type SessionInfo,
 	type ToolDefinition,
 } from "@earendil-works/pi-coding-agent";
+import { getSdkBuiltinExtensionFactories, SDK_DISABLED_BUILTIN_EXTENSIONS } from "./sdk-builtin-extensions.js";
 import { BG_CLEANUP_FALLBACK_MIN, BgServerTracker } from "./bg-servers.js";
 import {
 	checkAll as checkAllUpdates,
@@ -247,6 +247,14 @@ import {
 	type OverrideSessionLike,
 	type ToolOverrideSpec,
 } from "./tool-overrides.js";
+import {
+	type SubagentSecurityMode,
+	type SubagentSpawnExtra,
+	resolveSecurityMode,
+	subagentSecurityDenial,
+	withSubagentSecurityGate,
+	SUBAGENT_WRITE_TOOL_NAMES,
+} from "./subagent-security-gate.js";
 // 展示文件给用户（present_files）：图片/视频内联、文本开预览弹窗、本地打开按钮。
 import { makePresentFilesTool } from "./present-files-tool.js";
 // 主动压缩上下文工具（compact_context）：AI 主动根据当前问题精简上下文并自主控制范围。
@@ -586,6 +594,10 @@ export interface Conversation {
 	subagentWorktree?: import("./worktree-service.js").SubagentWorktreeContext;
 	/** finalizeSubagentWorktree 进行中的 Promise（防并发重复判定清理，issue #728）。 */
 	subagentWorktreePromise?: Promise<import("./worktree-service.js").SubagentWorktreeContext | undefined>;
+	/** 子代理安全规格模式（"normal" | "readonly" | "verify"，issue #727）。 */
+	subagentSecurityMode?: SubagentSecurityMode;
+	/** 子代理显式工具白名单（仅放行白名单内的工具，issue #727）。 */
+	subagentAllowedTools?: Set<string>;
 	/** 自动唤醒触发熔断/挂起期间已完成但尚未向父对话交付的子代理集合（防通知丢失，issue #726）。 */
 	suspendedSubagents?: Set<Conversation>;
 	/** 连续由子代理唤醒后、未发生任何工具操作或行动的空转轮次（用于空转熔断，issue #726）。 */
@@ -816,6 +828,37 @@ export interface TakeoverPayload {
 }
 
 import { processTreeKillPlan, resolveCwdTarget } from "./process-utils.js";
+/**
+ * 清扫异常退出/崩溃后遗留的孤儿临时会话目录（subagent-sessions / ephemeral-sessions）。
+ * 默认清理超过 TTL（24h）的临时目录，避免无上限累积。
+ */
+export function cleanupOrphanedSessionDirs(agentDir: string, maxAgeMs = 24 * 3600_000): void {
+	const cutoff = Date.now() - maxAgeMs;
+	for (const sub of ["subagent-sessions", "ephemeral-sessions"]) {
+		const root = join(agentDir, sub);
+		if (!existsSync(root)) continue;
+		try {
+			const entries = readdirSync(root, { withFileTypes: true });
+			for (const e of entries) {
+				if (!e.isDirectory()) continue;
+				const p = join(root, e.name);
+				try {
+					const st = statSync(p);
+					if (st.mtimeMs < cutoff) {
+						rmSync(p, { recursive: true, force: true });
+					}
+				} catch {
+					/* skip inaccessible */
+				}
+			}
+		} catch {
+			/* skip unreadable root */
+		}
+	}
+}
+
+let ephemeralCleanupScheduled = false;
+
 export { processTreeKillPlan, resolveCwdTarget };
 
 export class ClientSession {
@@ -1089,6 +1132,7 @@ export class ClientSession {
 		thinking?: string,
 		notifyOnDone?: boolean,
 		isolation?: string,
+		extra?: SubagentSpawnExtra,
 	): Promise<string> {
 		// 数量上限先行：每个子代理都是完整 runtime + TerminalManager，无上限时一次
 		// 并行派发几十个会把服务进程拖垮。持久化普通对话则受项目会话上限限制。
@@ -1212,6 +1256,15 @@ export class ClientSession {
 			conv.subagentPrompt = prompt;
 			conv.subagentThinking = thinking;
 			conv.notifyOnDone = notifyOnDone !== false;
+			// 安全模式与工具白名单（issue #727）：优先从 extra 取，缺省按 type 与模板自动推导
+			const securityMode = extra?.securityMode ?? resolveSecurityMode(type, apply);
+			conv.subagentSecurityMode = securityMode;
+			if (extra?.allowedTools && extra.allowedTools.length > 0) {
+				conv.subagentAllowedTools = new Set(extra.allowedTools);
+			}
+			if (securityMode === "readonly" && !conv.permissionPreset) {
+				conv.permissionPreset = "read-only";
+			}
 			// 模板快照留在对话上：forceReset 重建 runtime 时工厂要按同一模板组装
 			// （system prompt/技能/扩展白名单），否则重建后回落主会话设置。
 			conv.subagentTemplate = apply;
@@ -1453,6 +1506,7 @@ export class ClientSession {
 		thinking?: string,
 		notifyOnDone?: boolean,
 		isolation?: string,
+		extra?: SubagentSpawnExtra,
 	): Promise<string> {
 		// 模板：存在且启用时应用；传了名字但不可用 → 抛错让工具转给 AI。
 		const tpl = templateName ? this.subagentTemplates.get(templateName) : undefined;
@@ -1482,6 +1536,7 @@ export class ClientSession {
 			thinking,
 			notifyOnDone,
 			isolation,
+			extra,
 		);
 	}
 
@@ -1978,6 +2033,16 @@ export class ClientSession {
 		const allowed = new Set(filterToolsByPreset(all, preset));
 		const disabled = new Set(effectiveDisabledAgentTools(this.settingsSvc.current));
 		if (conv?.planMode === true) for (const n of PLAN_MODE_BLOCKED_TOOL_NAMES) disabled.add(n);
+		if (conv?.subagentAllowedTools && conv.subagentAllowedTools.size > 0) {
+			for (const t of all) {
+				if (!conv.subagentAllowedTools.has(t)) disabled.add(t);
+			}
+		}
+		if (conv?.subagentSecurityMode === "readonly" || conv?.subagentSecurityMode === "verify") {
+			for (const toolName of SUBAGENT_WRITE_TOOL_NAMES) {
+				disabled.add(toolName);
+			}
+		}
 		return all.filter((n) => allowed.has(n) && !disabled.has(n));
 	}
 
@@ -2072,6 +2137,16 @@ export class ClientSession {
 		const allowed = new Set(filterToolsByPreset(all, preset));
 		const disabled = new Set(effectiveDisabledAgentTools(this.settingsSvc.current));
 		if (conv?.planMode === true) for (const n of PLAN_MODE_BLOCKED_TOOL_NAMES) disabled.add(n);
+		if (conv?.subagentAllowedTools && conv.subagentAllowedTools.size > 0) {
+			for (const t of all) {
+				if (!conv.subagentAllowedTools.has(t)) disabled.add(t);
+			}
+		}
+		if (conv?.subagentSecurityMode === "readonly" || conv?.subagentSecurityMode === "verify") {
+			for (const toolName of SUBAGENT_WRITE_TOOL_NAMES) {
+				disabled.add(toolName);
+			}
+		}
 		const set = this.lazyLoadedFor(session, this.sessionHasTranscript(session));
 		// 「已加载集合」里有名字 ≠ 活跃集里有它：JIT 自动激活（见 autoActivateToolIfLoadable）
 		// 与任何只标记不重放门控的路径都会造出这种半吊子状态。按活跃集判定，
@@ -2520,7 +2595,19 @@ export class ClientSession {
 	}
 
 	private subagentHost: SubagentToolHost = {
-		spawnSubagent: (prompt, type, cwd, templateName, model, parentId, persist, thinking, notifyOnDone, isolation) => {
+		spawnSubagent: (
+			prompt,
+			type,
+			cwd,
+			templateName,
+			model,
+			parentId,
+			persist,
+			thinking,
+			notifyOnDone,
+			isolation,
+			extra,
+		) => {
 			// B20：过户后 parentId 的主对话可能已搬去另一个 ClientSession ——
 			// 委托给真正持有父对话的会话 spawn（模板/上限/注册/左栏全随它），
 			// 否则新子代理注册进旧会话、目标页左栏「不见/错位」。
@@ -2536,6 +2623,7 @@ export class ClientSession {
 				thinking,
 				notifyOnDone,
 				isolation,
+				extra,
 			);
 		},
 		finalizeSubagentWorktree: async (convId: string) => {
@@ -2929,8 +3017,12 @@ export class ClientSession {
 				getSession: () => this.session,
 				cwd: () => this.cwd,
 				agentDir: () => this.agentDir,
-				isStreaming: () => this.session.isStreaming,
+				isStreaming: () => this.session.isStreaming || Boolean(this.conv?.promptInFlight),
 				reloadSession: async () => {
+					if (this.session.isStreaming || Boolean(this.conv?.promptInFlight)) {
+						this.settingsSvc.setPendingReload(true);
+						return;
+					}
 					await this.session.reload();
 					// reload() 重读磁盘 settings.json，统一收口重放配置覆盖与工具门控
 					this.applySessionOverrides(this.conv);
@@ -3147,6 +3239,13 @@ export class ClientSession {
 		// Prune dead background tasks every 30s (only spawns netstat/lsof while
 		// the list is non-empty). unref: must not keep the process alive.
 		this.bg.start();
+		if (!ephemeralCleanupScheduled) {
+			ephemeralCleanupScheduled = true;
+			const timer = setTimeout(() => {
+				cleanupOrphanedSessionDirs(this.agentDir);
+			}, 5000);
+			timer.unref?.();
+		}
 	}
 
 	static async create(
@@ -3313,6 +3412,7 @@ export class ClientSession {
 		noSpawnTools?: boolean,
 	): CreateAgentSessionRuntimeFactory {
 		return async ({ cwd: effectiveCwd, sessionManager }) => {
+			const sdkBuiltins = await getSdkBuiltinExtensionFactories();
 			const services = await createAgentSessionServices({
 				cwd: effectiveCwd,
 				modelRuntime: this.sharedModelRuntime,
@@ -3438,19 +3538,9 @@ export class ClientSession {
 					// agent run 前触发，SDK 此时已用最新工具/资源拼好基础提示词；若配置了模板或
 					// 覆盖，则用 composer 把 {{token}} 展开为各来源文本（工具列表/项目上下文/技能
 					// 等都取自本次 run 的 systemPromptOptions，永远最新）。
+					disabledBuiltinExtensions: SDK_DISABLED_BUILTIN_EXTENSIONS,
 					extensionFactories: [
-						{
-							name: "codemode",
-							hidden: true,
-							replaceable: true,
-							factory: createCodemodeExtension(),
-						},
-						{
-							name: "tool-search",
-							hidden: true,
-							replaceable: true,
-							factory: createToolSearchExtension(),
-						},
+						...sdkBuiltins,
 						{
 							name: "pi-webui-persona",
 							hidden: true,
@@ -3626,6 +3716,17 @@ export class ClientSession {
 							// 目标审查回合：常驻终端同样只放只读命令（审查者跑测试可以，改文件不行）。
 							if (this.goalReviewTurnOf(ownerId)) {
 								const denied = goalReviewDenial("bash", { command: cmd });
+								if (denied) return { blocked: true, reason: denied.reason, reasonEn: denied.reasonEn };
+							}
+							// 子代理安全规格硬闸门（issue #727）：受限子代理（readonly/verify）或工具白名单
+							const subagentMode = this.subagentSecurityModeOf(ownerId);
+							if (subagentMode !== "normal" || this.subagentAllowedToolsOf(ownerId)) {
+								const denied = subagentSecurityDenial(
+									subagentMode,
+									"bash",
+									{ command: cmd },
+									this.subagentAllowedToolsOf(ownerId),
+								);
 								if (denied) return { blocked: true, reason: denied.reason, reasonEn: denied.reasonEn };
 							}
 							const perm =
@@ -8160,22 +8261,29 @@ export class ClientSession {
 		// 快照并发门禁包裹在工具执行最前沿，确保写操作前快照必定已就绪。
 		const planGate = (def: ToolDefinition): ToolDefinition =>
 			withWorkspaceSnapshotGate(
-				withGoalReviewGate(
-					withDelegationGate(
-						withPlanModeGate(
-							withSandboxJailGate(
-								def,
-								() => this.sandboxes.getByCwd(cwd),
-								() => cwd,
+				withSubagentSecurityGate(
+					withGoalReviewGate(
+						withDelegationGate(
+							withPlanModeGate(
+								withSandboxJailGate(
+									def,
+									() => this.sandboxes.getByCwd(cwd),
+									() => cwd,
+									() => this.getLang(),
+								),
+								() => this.planModeOf(ownerId),
 								() => this.getLang(),
 							),
-							() => this.planModeOf(ownerId),
+							() => this.delegateModeOf(ownerId),
 							() => this.getLang(),
 						),
-						() => this.delegateModeOf(ownerId),
+						() => this.goalReviewTurnOf(ownerId),
 						() => this.getLang(),
 					),
-					() => this.goalReviewTurnOf(ownerId),
+					() => ({
+						mode: this.subagentSecurityModeOf(ownerId),
+						allowedTools: this.subagentAllowedToolsOf(ownerId),
+					}),
 					() => this.getLang(),
 				),
 				() => this.awaitPendingWorkspaceSnapshot(ownerId),
@@ -8350,6 +8458,20 @@ export class ClientSession {
 			}
 		} else if (isDelegateMode) {
 			for (const toolName of DELEGATE_MODE_BLOCKED_TOOL_NAMES) {
+				disabled.add(toolName);
+			}
+		}
+		if (conv?.subagentAllowedTools && conv.subagentAllowedTools.size > 0) {
+			try {
+				for (const t of session.getAllTools()) {
+					if (!conv.subagentAllowedTools.has(t.name)) {
+						disabled.add(t.name);
+					}
+				}
+			} catch {}
+		}
+		if (conv?.subagentSecurityMode === "readonly" || conv?.subagentSecurityMode === "verify") {
+			for (const toolName of SUBAGENT_WRITE_TOOL_NAMES) {
 				disabled.add(toolName);
 			}
 		}
@@ -8550,6 +8672,18 @@ export class ClientSession {
 	private goalReviewTurnOf(ownerId: string | undefined): boolean {
 		const id = ownerId ?? this.activeId;
 		return (this.convs.get(id) as unknown as GoalConversation | undefined)?.awaitingVerdict != null;
+	}
+
+	/** 子代理安全规格模式（"normal" | "readonly" | "verify"，issue #727）。 */
+	private subagentSecurityModeOf(ownerId: string | undefined): SubagentSecurityMode {
+		const id = ownerId ?? this.activeId;
+		return this.convs.get(id)?.subagentSecurityMode ?? "normal";
+	}
+
+	/** 子代理显式允许的工具白名单集合（issue #727）。 */
+	private subagentAllowedToolsOf(ownerId: string | undefined): Set<string> | undefined {
+		const id = ownerId ?? this.activeId;
+		return this.convs.get(id)?.subagentAllowedTools;
 	}
 
 	/** 等待该会话正在并发生成的影子快照完成，确保写操作发生在快照完成之后。 */
@@ -8909,36 +9043,44 @@ export class ClientSession {
 	 * 2. withSandboxJailGate：工作区沙箱越界拦截；
 	 * 3. withPlanModeGate：计划模式只读拦截；
 	 * 4. withDelegationGate：审查者委派拦截；
-	 * 5. withGoalReviewGate：目标审查回合拦截。
+	 * 5. withGoalReviewGate：目标审查回合拦截；
+	 * 6. withSubagentSecurityGate：子代理安全规格拦截（只读/审查/工具白名单，issue #727）。
 	 * 无论是会话创建时的静态 customTools 还是 syncPluginTools 动态注入的工具，均无差别经由此管道。
 	 */
 	private wrapGenericTool(def: ToolDefinition, ownerId?: string, cwdOverride?: string): ToolDefinition {
 		const getEffectiveCwd = () => (ownerId ? this.convs.get(ownerId)?.cwd : undefined) ?? cwdOverride ?? this.cwd;
-		return withGoalReviewGate(
-			withDelegationGate(
-				withPlanModeGate(
-					withSandboxJailGate(
-						withApprovalGate(def, {
-							cwd: getEffectiveCwd,
-							getRoots: () => this.roots,
-							getRules: () => this.approvalRules.list(),
-							getLang: () => this.getLang(),
-							conversationId: () => ownerId,
-							askApproval: (toolCallId, toolName, params, reason, reasonEn, convId, category, hits) =>
-								this.askApproval(toolCallId, toolName, params, reason, reasonEn, convId, category, hits),
-							onAudit: (entry) => this.auditLogger.record(entry),
-						}),
-						() => this.sandboxes.getByCwd(getEffectiveCwd()),
-						getEffectiveCwd,
+		return withSubagentSecurityGate(
+			withGoalReviewGate(
+				withDelegationGate(
+					withPlanModeGate(
+						withSandboxJailGate(
+							withApprovalGate(def, {
+								cwd: getEffectiveCwd,
+								getRoots: () => this.roots,
+								getRules: () => this.approvalRules.list(),
+								getLang: () => this.getLang(),
+								conversationId: () => ownerId,
+								askApproval: (toolCallId, toolName, params, reason, reasonEn, convId, category, hits) =>
+									this.askApproval(toolCallId, toolName, params, reason, reasonEn, convId, category, hits),
+								onAudit: (entry) => this.auditLogger.record(entry),
+							}),
+							() => this.sandboxes.getByCwd(getEffectiveCwd()),
+							getEffectiveCwd,
+							() => this.getLang(),
+						),
+						() => this.planModeOf(ownerId),
 						() => this.getLang(),
 					),
-					() => this.planModeOf(ownerId),
+					() => this.delegateModeOf(ownerId),
 					() => this.getLang(),
 				),
-				() => this.delegateModeOf(ownerId),
+				() => this.goalReviewTurnOf(ownerId),
 				() => this.getLang(),
 			),
-			() => this.goalReviewTurnOf(ownerId),
+			() => ({
+				mode: this.subagentSecurityModeOf(ownerId),
+				allowedTools: this.subagentAllowedToolsOf(ownerId),
+			}),
 			() => this.getLang(),
 		);
 	}
@@ -11063,6 +11205,7 @@ export class ClientSession {
 		}
 		this.pluginModelKeys?.delete(id);
 		this.planManager.unbindConversation(id);
+		this.markerSvc.clearConversation(id);
 		this.clearConversationToolStates(conv);
 		this.goalSvc.notifyConversationRemoved(conv as unknown as import("./goal-service.js").GoalConversation);
 		// 关对话 → 连它的 eval 内核（Python/Node 子进程 + 临时沙箱目录）一起回收：
@@ -11207,7 +11350,7 @@ export class ClientSession {
 		const approvals: TakeoverApproval[] = [];
 		for (const conv of convs) {
 			if (conv.pendingApprovals && conv.pendingApprovals.size > 0) {
-				for (const [aid, a] of conv.pendingApprovals) {
+				for (const [, a] of conv.pendingApprovals) {
 					approvals.push({
 						resolve: a.resolve,
 						toolCallId: a.toolCallId,
@@ -11585,6 +11728,7 @@ export class ClientSession {
 					: (conv.subagentTemplate?.model ?? undefined),
 				thinkingLevel: conv.session.thinkingLevel ?? conv.subagentThinking ?? undefined,
 				...(conv.pinned ? { pinned: true as const } : {}),
+				...(conv.terminals.countUserBlockingLive() > 0 ? { hasUserTerminals: true as const } : {}),
 				...(conv.forkFrom ? { forkFrom: conv.forkFrom } : {}),
 			});
 		}
@@ -12445,8 +12589,8 @@ export class ClientSession {
 			this.emit({
 				type: "notice",
 				level: "warning",
-				text: `对话「${conv.title}」还有未关闭的终端，请先关闭终端后再移出`,
-				textEn: `Conversation "${conv.title}" still has open terminals — close them before removing`,
+				text: `对话「${conv.title}」还有未关闭的终端，请先关闭终端或右键选择「强行关闭」后再移出`,
+				textEn: `Conversation "${conv.title}" still has open terminals — close them or right-click to force-dismiss`,
 			});
 			return;
 		}
@@ -14388,6 +14532,8 @@ export class ClientSession {
 				};
 			});
 			this.emit({ type: "models", models });
+			// 联网刷新拉回动态本地模型（如 llama.cpp）后，若当前对话尚处于未发消息阶段，尝试自愈恢复记忆模型
+			void this.restoreProjectModelForCwd(this.cwd);
 		} catch (err) {
 			this.emit({
 				type: "notice",

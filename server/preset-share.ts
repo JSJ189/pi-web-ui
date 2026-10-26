@@ -44,17 +44,9 @@ import {
 	resolveEnabledAgentTools,
 } from "./tool-manager.js";
 import { normalizeToolPromptOverrides } from "./tool-prompt-overrides.js";
-import {
-	isBlockedHost,
-	isNativeGlobalFetch,
-	resolveAndValidateUrl,
-	validateFetchUrl,
-	type LookupAllFn,
-} from "./net-guard.js";
+import { isNativeGlobalFetch, resolveAndValidateUrl, validateFetchUrl, type LookupAllFn } from "./net-guard.js";
 import { PRESET_FIELD_NAMES, normalizePresetFieldSelection } from "./preset-fields.js";
 import { defaultFetcher } from "./update-check.js";
-
-export { isBlockedHost, resolveAndValidateUrl, validateFetchUrl, type LookupAllFn };
 
 const execFileAsync = promisify(execFile);
 

@@ -93,6 +93,13 @@ import { useWideChat, saveChatWidthSettings, useHideModelRow, saveHideModelRowSe
 import { usePresentAutoOpen, savePresentAutoOpen } from "../present-settings";
 import { type SendKey, saveSendKeyPref, useEffectiveSendKey } from "../composer-keys";
 import { useProjectTitle, saveTitleSettings } from "../title-settings";
+import {
+	useFaviconSettings,
+	saveFaviconSettings,
+	PRESET_FAVICON_COLORS,
+	DEFAULT_FAVICON_COLOR,
+	sanitizeHexColor,
+} from "../favicon-settings";
 import { sanitizeWallpaperUrl, fileToWallpaperUrl, saveWallpaperSettings, useWallpaperSettings } from "../wallpaper";
 import { isZhLocale, useT, useI18n } from "../i18n";
 import { useEscapeKey } from "../shortcut-stack";
@@ -1044,6 +1051,7 @@ export function SettingsModal({
 	// present_files 卡片：AI 标了「先看这个」时要不要自动弹预览窗（纯前端偏好，localStorage）。
 	const presentAutoOpen = usePresentAutoOpen();
 	const projectTitle = useProjectTitle();
+	const faviconSettings = useFaviconSettings();
 	// 聊天背景图（纯前端 localStorage，见 wallpaper.ts）：地址输入框用本地草稿，
 	// 失焦/回车才提交（避免边输边校验）；压暗/模糊滑杆直接提交即时预览。
 	const wallpaper = useWallpaperSettings();
@@ -4059,6 +4067,80 @@ export function SettingsModal({
 									enabled={projectTitle}
 									onToggle={() => saveTitleSettings({ projectName: !projectTitle })}
 								/>
+								<hr className="set-sep" />
+								<div className="set-row">
+									<div className="set-row-info">
+										<div className="set-row-name">
+											{t("instanceName")}
+											<HintTip text={t("instanceNameDesc")} />
+										</div>
+										<div style={{ marginTop: "6px" }}>
+											<input
+												className="set-input"
+												style={{ maxWidth: "260px" }}
+												placeholder={t("instanceNamePh")}
+												value={faviconSettings.instanceName ?? ""}
+												maxLength={50}
+												spellCheck={false}
+												onChange={(e) => saveFaviconSettings({ ...faviconSettings, instanceName: e.target.value })}
+											/>
+										</div>
+									</div>
+								</div>
+								<div className="set-row">
+									<div className="set-row-info">
+										<div className="set-row-name">
+											{t("faviconColor")}
+											<HintTip text={t("faviconColorDesc")} />
+										</div>
+										<div className="favicon-picker-row">
+											<button
+												type="button"
+												className={`favicon-swatch ${faviconSettings.color === "default" ? "active" : ""}`}
+												title={t("themeDefault")}
+												onClick={() => saveFaviconSettings({ ...faviconSettings, color: "default" })}
+											>
+												<span className="favicon-dot" style={{ background: DEFAULT_FAVICON_COLOR }} />
+												<span className="favicon-label">{t("themeDefault")}</span>
+											</button>
+											<button
+												type="button"
+												className={`favicon-swatch ${faviconSettings.color === "auto" ? "active" : ""}`}
+												title={t("faviconColorAuto")}
+												onClick={() => saveFaviconSettings({ ...faviconSettings, color: "auto" })}
+											>
+												<span className="favicon-dot favicon-dot-auto" />
+												<span className="favicon-label">{t("faviconColorAuto")}</span>
+											</button>
+											{PRESET_FAVICON_COLORS.filter((p) => p.id !== "violet").map((preset) => (
+												<button
+													key={preset.id}
+													type="button"
+													className={`favicon-swatch ${faviconSettings.color === preset.id ? "active" : ""}`}
+													title={preset.hex}
+													onClick={() => saveFaviconSettings({ ...faviconSettings, color: preset.id })}
+												>
+													<span className="favicon-dot" style={{ background: preset.hex }} />
+												</button>
+											))}
+											<div className="favicon-custom-wrap">
+												<input
+													type="color"
+													className="favicon-color-input"
+													value={sanitizeHexColor(faviconSettings.customHex) || "#3b82f6"}
+													title={t("customColor")}
+													onChange={(e) =>
+														saveFaviconSettings({
+															...faviconSettings,
+															color: "custom",
+															customHex: e.target.value,
+														})
+													}
+												/>
+											</div>
+										</div>
+									</div>
+								</div>
 								<hr className="set-sep" />
 								<div className="set-row">
 									<div className="set-row-info">

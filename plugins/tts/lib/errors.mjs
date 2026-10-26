@@ -30,7 +30,7 @@ export function codeName(code) {
 	return CODE_NAMES[code] ?? `UNKNOWN(${code})`;
 }
 
-export function isSuccessCode(code) {
+function isSuccessCode(code) {
 	return code === ErrorCode.SUCCESS;
 }
 

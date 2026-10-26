@@ -158,7 +158,7 @@ const DSH_PRICE_CACHE_READ = 0.0028;
 const DSH_PRICE_OUTPUT = 0.28;
 
 /** 会话 root：<dataDir>/dsh-sessions（与 pi 引擎的会话目录隔离）。 */
-export function dshSessionRoot(dataDir: string): string {
+function dshSessionRoot(dataDir: string): string {
 	return join(dataDir, "dsh-sessions");
 }
 
@@ -287,7 +287,7 @@ interface DshSettings {
 /** 把插件工具 execute 的原始返回值归一化成模型可读文本。
  *  兼容：`{content:[{type:"text",text}...],details}` → text 拼接；string → 原串；
  *  其它对象 → JSON.stringify；null/undefined → 空串。 */
-export function normalizeToolResult(result: unknown): string {
+function normalizeToolResult(result: unknown): string {
 	if (typeof result === "string") return result;
 	if (result === null || result === undefined) return "";
 	if (typeof result === "object") {
@@ -768,16 +768,20 @@ export class DshClientSession {
 		const cutoff = Date.now() - DshClientSession.SESSION_RETENTION_MS;
 		try {
 			const { readdirSync, rmSync } = await import("node:fs");
-			const dirLastModified = (dir: string): number => {
+			const dirLastModified = (dir: string, cutoffMs: number): number => {
 				let max = 0;
 				try {
 					for (const e of readdirSync(dir, { withFileTypes: true })) {
 						const p = join(dir, e.name);
 						try {
 							if (e.isDirectory()) {
-								max = Math.max(max, dirLastModified(p));
+								const subMax = dirLastModified(p, cutoffMs);
+								if (subMax >= cutoffMs) return subMax;
+								max = Math.max(max, subMax);
 							} else {
-								max = Math.max(max, statSync(p).mtimeMs);
+								const m = statSync(p).mtimeMs;
+								if (m >= cutoffMs) return m;
+								max = Math.max(max, m);
 							}
 						} catch {
 							/* skip unreadable */
@@ -799,8 +803,9 @@ export class DshClientSession {
 				for (const e of entries) {
 					const p = join(dir, e.name);
 					if (!e.isDirectory()) continue;
-					if (dirLastModified(p) === 0) continue; // 空目录不删
-					if (dirLastModified(p) < cutoff) {
+					const lastMod = dirLastModified(p, cutoff);
+					if (lastMod === 0) continue; // 空目录不删
+					if (lastMod < cutoff) {
 						rmSync(p, { recursive: true, force: true });
 						removed++;
 					} else {
@@ -1850,6 +1855,7 @@ export class DshClientSession {
 				isStreaming: conv.isStreaming,
 				isSubagent: false,
 				pinned: isPinned,
+				...(conv.terminals.countUserBlockingLive() > 0 ? { hasUserTerminals: true as const } : {}),
 				// DSH Agent 预设（左栏徽标/详情用；pi 引擎不填）。
 				agentPreset: conv.agentPreset,
 				presetLocked: conv.presetLocked,
@@ -2142,6 +2148,8 @@ export class DshClientSession {
 		// issue #145 同项目并行提醒：只进运行时上下文，不进用户气泡。
 		sysPrefix = "",
 	): Promise<void> {
+		let optimisticId: string | undefined;
+		let followUpAdded = false;
 		try {
 			if (this.quiesceBlocked()) return;
 			conv.promptedSinceActive = true;
@@ -2194,14 +2202,18 @@ export class DshClientSession {
 						.filter((q) => q !== null),
 				},
 			};
+			optimisticId = optimistic.id;
 			this.appendMessage(conv, optimistic);
 			if (conv.isStreaming) {
 				// DSH 无 mid-run steering：isStreaming 时入队（followUp），
 				// 运行时 inbox 在 run 结束后消费。入队后立即 flushSnapshot 让排队气泡上屏。
 				conv.queue.followUp.push(text);
+				followUpAdded = true;
 				this.flushSnapshot();
 				await this.runtime.prompt(conv.sessionId, blocks);
-				conv.queue.followUp = conv.queue.followUp.filter((t) => t !== text);
+				const qIdx = conv.queue.followUp.indexOf(text);
+				if (qIdx !== -1) conv.queue.followUp.splice(qIdx, 1);
+				followUpAdded = false;
 			} else {
 				this.flushSnapshot();
 				await this.runtime.prompt(conv.sessionId, blocks);
@@ -2212,6 +2224,18 @@ export class DshClientSession {
 				this.emitConversations();
 			}
 		} catch (err) {
+			// 发送失败事务补偿：回滚乐观用户消息与排队气泡
+			if (optimisticId) {
+				const optIdx = conv.messages.findIndex((m) => m.id === optimisticId);
+				if (optIdx !== -1) {
+					conv.messages.splice(optIdx, 1);
+					conv.messageIds.delete(optimisticId);
+				}
+			}
+			if (followUpAdded) {
+				const qIdx = conv.queue.followUp.indexOf(text);
+				if (qIdx !== -1) conv.queue.followUp.splice(qIdx, 1);
+			}
 			this.emit({
 				type: "notice",
 				level: "error",
@@ -2815,8 +2839,8 @@ export class DshClientSession {
 			this.emit({
 				type: "notice",
 				level: "warning",
-				text: `对话「${conv.title}」还有未关闭的终端，请先关闭终端后再移出`,
-				textEn: `Conversation "${conv.title}" still has open terminals — close them before removing`,
+				text: `对话「${conv.title}」还有未关闭的终端，请先关闭终端或右键选择「强行关闭」后再移出`,
+				textEn: `Conversation "${conv.title}" still has open terminals — close them or right-click to force-dismiss`,
 			});
 			return;
 		}

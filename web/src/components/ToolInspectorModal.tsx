@@ -1,5 +1,6 @@
 import { useEffect, useMemo, useState, type ReactNode } from "react";
 import { createPortal } from "react-dom";
+import { useCopyFeedback } from "../use-copy-feedback";
 import {
 	FiBookOpen,
 	FiCheck,
@@ -72,11 +73,11 @@ function ToolInspectorDialog({ state }: { state: ToolInspectorState }) {
 	const t = useT();
 
 	const [currentMode, setCurrentMode] = useState<"preview" | "raw">("preview");
-	const [copiedAll, setCopiedAll] = useState(false);
-	const [copiedArgs, setCopiedArgs] = useState(false);
-	const [copiedOutput, setCopiedOutput] = useState(false);
-	const [copiedPath, setCopiedPath] = useState(false);
-	const [copiedCmd, setCopiedCmd] = useState(false);
+	const copyAll = useCopyFeedback({ duration: 1200 });
+	const copyArgs = useCopyFeedback({ duration: 1200 });
+	const copyOutput = useCopyFeedback({ duration: 1200 });
+	const copyPath = useCopyFeedback({ duration: 1200 });
+	const copyCmd = useCopyFeedback({ duration: 1200 });
 	const [detailsExpanded, setDetailsExpanded] = useState(false);
 
 	// ESC 键关闭
@@ -193,35 +194,27 @@ function ToolInspectorDialog({ state }: { state: ToolInspectorState }) {
 			if (output) text += `[Output]\n${output}\n`;
 		}
 		if (!text) return;
-		void navigator.clipboard?.writeText(text);
-		setCopiedAll(true);
-		setTimeout(() => setCopiedAll(false), 1200);
+		void copyAll.copy(text);
 	};
 
 	const handleCopyArgs = () => {
 		if (!args) return;
-		void navigator.clipboard?.writeText(args);
-		setCopiedArgs(true);
-		setTimeout(() => setCopiedArgs(false), 1200);
+		void copyArgs.copy(args);
 	};
 
 	const handleCopyOutput = () => {
 		if (!output) return;
-		void navigator.clipboard?.writeText(output);
-		setCopiedOutput(true);
-		setTimeout(() => setCopiedOutput(false), 1200);
-	};
-
-	const handleCopyPath = (path: string) => {
-		void navigator.clipboard?.writeText(path);
-		setCopiedPath(true);
-		setTimeout(() => setCopiedPath(false), 1200);
+		void copyOutput.copy(output);
 	};
 
 	const handleCopyCmd = (cmd: string) => {
-		void navigator.clipboard?.writeText(cmd);
-		setCopiedCmd(true);
-		setTimeout(() => setCopiedCmd(false), 1200);
+		if (!cmd) return;
+		void copyCmd.copy(cmd);
+	};
+
+	const handleCopyPath = (path: string) => {
+		if (!path) return;
+		void copyPath.copy(path);
 	};
 
 	let formattedArgs = args || "";
@@ -287,7 +280,7 @@ function ToolInspectorDialog({ state }: { state: ToolInspectorState }) {
 							</button>
 						)}
 						<button type="button" className="tool-inspector-btn pi-we-inspector-btn" onClick={handleCopyAll}>
-							{copiedAll ? (
+							{copyAll.copied ? (
 								<>
 									<FiCheck /> {t("toolInspectorCopied")}
 								</>
@@ -333,8 +326,8 @@ function ToolInspectorDialog({ state }: { state: ToolInspectorState }) {
 							onClick={() => handleCopyPath(targetPath)}
 							title="复制文件路径"
 						>
-							{copiedPath ? <FiCheck /> : <FiCopy />}
-							<span>{copiedPath ? "已复制" : "复制路径"}</span>
+							{copyPath.copied ? <FiCheck /> : <FiCopy />}
+							<span>{copyPath.copied ? "已复制" : "复制路径"}</span>
 						</button>
 					</div>
 				)}
@@ -366,8 +359,8 @@ function ToolInspectorDialog({ state }: { state: ToolInspectorState }) {
 							onClick={() => handleCopyCmd(targetCommand)}
 							title="复制命令行"
 						>
-							{copiedCmd ? <FiCheck /> : <FiCopy />}
-							<span>{copiedCmd ? "已复制" : "复制代码"}</span>
+							{copyCmd.copied ? <FiCheck /> : <FiCopy />}
+							<span>{copyCmd.copied ? "已复制" : "复制代码"}</span>
 						</button>
 					</div>
 				)}
@@ -503,7 +496,7 @@ function ToolInspectorDialog({ state }: { state: ToolInspectorState }) {
 													onClick={handleCopyOutput}
 													title={t("toolInspectorCopyOutput")}
 												>
-													{copiedOutput ? `✓ ${t("toolInspectorCopied")}` : t("toolInspectorCopyOutput")}
+													{copyOutput.copied ? `✓ ${t("toolInspectorCopied")}` : t("toolInspectorCopyOutput")}
 												</button>
 											)}
 										</div>
@@ -529,7 +522,7 @@ function ToolInspectorDialog({ state }: { state: ToolInspectorState }) {
 											onClick={handleCopyArgs}
 											title={t("toolInspectorCopyArgs")}
 										>
-											{copiedArgs ? `✓ ${t("toolInspectorCopied")}` : t("toolInspectorCopyArgs")}
+											{copyArgs.copied ? `✓ ${t("toolInspectorCopied")}` : t("toolInspectorCopyArgs")}
 										</button>
 									</div>
 									<pre className="tool-inspector-codeblock pi-we-inspector-codeblock">{formattedArgs}</pre>
@@ -569,7 +562,7 @@ function ToolInspectorDialog({ state }: { state: ToolInspectorState }) {
 												onClick={handleCopyOutput}
 												title={t("toolInspectorCopyOutput")}
 											>
-												{copiedOutput ? `✓ ${t("toolInspectorCopied")}` : t("toolInspectorCopyOutput")}
+												{copyOutput.copied ? `✓ ${t("toolInspectorCopied")}` : t("toolInspectorCopyOutput")}
 											</button>
 										)}
 									</div>

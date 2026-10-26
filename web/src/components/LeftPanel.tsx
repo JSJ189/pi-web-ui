@@ -1478,7 +1478,17 @@ export const LeftPanel = memo(function LeftPanel({
 																const nRunning = countRunningSubagentDescendants(conversations, c.id);
 																const nAll = countScopeSubagents(conversations, c.id);
 																// 无子代理 + 空闲：两段确认直接移出（active 也可，后端自动让出）。
+																// 若该对话持有未退出的用户终端，二次确认文案明确提示并带 force 强行关闭，避免死锁拦截。
 																if (nAll === 0 && !c.isStreaming) {
+																	if (c.hasUserTerminals) {
+																		return delButton(
+																			key,
+																			t("dismissConversation"),
+																			t("dismissTerminalsConfirm"),
+																			() => panelSend({ type: "dismiss_conversation", id: c.id, force: true }),
+																			<FiX />,
+																		);
+																	}
 																	return delButton(
 																		key,
 																		t("dismissConversation"),

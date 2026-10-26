@@ -14,6 +14,7 @@ import { isZhLocale, useI18n, useT } from "../i18n";
 import { appSend } from "../app-globals";
 import { saveDownloadBlob } from "../download";
 import { randomUuid } from "../uuid";
+import { useCopyFeedback, copyTextToClipboard } from "../use-copy-feedback";
 import {
 	groupPresetFields,
 	presetFieldLabel,
@@ -107,7 +108,7 @@ export function PresetShareModal({
 	const [description, setDescription] = useState("");
 	const [tags, setTags] = useState("");
 	const [author, setAuthor] = useState("");
-	const [copied, setCopied] = useState(false);
+	const copyFeedback = useCopyFeedback({ duration: 1500 });
 	const [sharing, setSharing] = useState(false);
 
 	// ---- 导入页签 ----------------------------------------------------------
@@ -146,7 +147,7 @@ export function PresetShareModal({
 		lastShare.current = presetShare.receivedAt;
 		setSharing(false);
 		if (presetShare.method === "browser") {
-			if (presetShare.json) void navigator.clipboard?.writeText(presetShare.json).catch(() => {});
+			if (presetShare.json) void copyTextToClipboard(presetShare.json);
 			if (presetShare.url) window.open(presetShare.url, "_blank", "noopener,noreferrer");
 			return;
 		}
@@ -197,13 +198,7 @@ export function PresetShareModal({
 	};
 	const copyExport = () => {
 		if (!presetExport?.json) return;
-		void navigator.clipboard
-			?.writeText(presetExport.json)
-			.then(() => {
-				setCopied(true);
-				window.setTimeout(() => setCopied(false), 1500);
-			})
-			.catch(() => {});
+		void copyFeedback.copy(presetExport.json);
 	};
 
 	/** 发一次 dryRun 预览（粘贴/文件 → preset_import；网址 → preset_import_url）。 */
@@ -387,14 +382,11 @@ export function PresetShareModal({
 											className="btn"
 											onClick={() => {
 												if (presetShare.json) {
-													void navigator.clipboard?.writeText(presetShare.json).then(() => {
-														setCopied(true);
-														window.setTimeout(() => setCopied(false), 1500);
-													});
+													void copyFeedback.copy(presetShare.json);
 												}
 											}}
 										>
-											{copied ? t("copied") : t("presetShareCopyJson")}
+											{copyFeedback.copied ? t("copied") : t("presetShareCopyJson")}
 										</button>
 									)}
 								</div>
@@ -422,7 +414,7 @@ export function PresetShareModal({
 							<>
 								<div className="preset-share-actions">
 									<button type="button" className="btn" onClick={copyExport}>
-										{copied ? t("copied") : t("copy")}
+										{copyFeedback.copied ? t("copied") : t("copy")}
 									</button>
 									<button type="button" className="btn" onClick={downloadExport}>
 										<FiDownload /> {t("presetExportDownload")}

@@ -9,16 +9,18 @@
  */
 
 import { BaseAgentDriver, type AgentCapabilities, type AgentEventSink } from "../universal/driver-base.js";
-import type { PromptAttachment, SlashCommandInfo } from "../protocol.js";
+import type { AgentEngineCapabilities, PromptAttachment, SlashCommandInfo } from "../protocol.js";
 import { openDurableStorage } from "./durable-storage.js";
 import { setupDurableRegistry } from "./durable-tools.js";
 import {
 	listGlobalAvailableModels,
 	setupDurableModels,
 	resolveDurableModelChoice,
+	resolveDurableThinkingLevels,
 	type DurableModelInfo,
 } from "./durable-models.js";
 import { loadDurableModule, loadDurablePeerModule } from "./durable-loader.js";
+import { DEFAULT_DURABLE_CAPABILITIES } from "../engine-capabilities.js";
 
 export class DurableAgentDriver extends BaseAgentDriver {
 	readonly id = "durable";
@@ -33,6 +35,10 @@ export class DurableAgentDriver extends BaseAgentDriver {
 		supportsSubagents: true,
 	};
 
+	override getEngineCapabilities(): AgentEngineCapabilities {
+		return DEFAULT_DURABLE_CAPABILITIES;
+	}
+
 	private readonly dataDir: string;
 	private readonly agentDir?: string;
 	private currentModelId?: string;
@@ -44,6 +50,7 @@ export class DurableAgentDriver extends BaseAgentDriver {
 	private storage: any = null;
 	private harness: any = null;
 	private backgroundContext: any = null;
+	private models: any = null;
 	private initPromise: Promise<void> | null = null;
 	private initError: string | null = null;
 	private currentConversationId: string | null = null;
@@ -59,10 +66,34 @@ export class DurableAgentDriver extends BaseAgentDriver {
 
 	override setThinkingLevel(level: string): void {
 		this.currentThinkingLevel = level;
+		// 动态应用到当前活动或持久会话，确保后续思考轮次即刻生效
+		if (this.currentRunningConv && typeof this.currentRunningConv.configure === "function") {
+			try {
+				void this.currentRunningConv.configure({ thinkingLevel: level }, this.backgroundContext).catch(() => {});
+			} catch {
+				/* best effort */
+			}
+		} else if (this.harness && this.currentConversationId) {
+			const numericId = Number(this.currentConversationId);
+			if (Number.isSafeInteger(numericId) && numericId > 0 && typeof this.harness.conversation === "function") {
+				void this.harness
+					.conversation(numericId, this.backgroundContext)
+					.then((conv: any) => {
+						if (conv && typeof conv.configure === "function") {
+							return conv.configure({ thinkingLevel: level }, this.backgroundContext);
+						}
+					})
+					.catch(() => {});
+			}
+		}
 	}
 
-	override getSupportedThinkingLevels(): string[] {
-		return ["off", "low", "medium", "high"];
+	override getSupportedThinkingLevels(modelId?: string): string[] {
+		return resolveDurableThinkingLevels(modelId || this.currentModelId, {
+			modelsContainer: this.models,
+			cachedModels: this.cachedModels,
+			agentDir: this.agentDir,
+		});
 	}
 
 	/**
@@ -93,6 +124,7 @@ export class DurableAgentDriver extends BaseAgentDriver {
 
 				// 5. 继承全局模型配置（读取 models.json、auth.json 并装配 Providers）
 				const models = await setupDurableModels(this.agentDir);
+				this.models = models;
 
 				// 6. 动态加载本地执行环境（支撑 read/write/edit/bash 等官方编码工具）
 				const envModule = await loadDurableModule("env/node").catch(() => null);
@@ -138,7 +170,12 @@ export class DurableAgentDriver extends BaseAgentDriver {
 		if (this.harness && typeof this.harness.createConversation === "function") {
 			try {
 				const modelChoice = resolveDurableModelChoice(this.currentModelId, this.cachedModels, this.agentDir);
-				const agentOpts = modelChoice ? { agent: { model: modelChoice } } : {};
+				const agentOpts = {
+					agent: {
+						...(modelChoice ? { model: modelChoice } : {}),
+						thinkingLevel: this.currentThinkingLevel,
+					},
+				};
 				const conv = await this.harness.createConversation(
 					{
 						ownership: { kind: "ownerless" },
@@ -169,7 +206,13 @@ export class DurableAgentDriver extends BaseAgentDriver {
 			typeof this.harness.conversation === "function"
 		) {
 			try {
-				await this.harness.conversation(numericId, this.backgroundContext);
+				const conv = await this.harness.conversation(numericId, this.backgroundContext);
+				if (conv && typeof conv.agent === "function") {
+					const agent = await conv.agent(this.backgroundContext).catch(() => null);
+					if (agent?.thinkingLevel) {
+						this.currentThinkingLevel = agent.thinkingLevel;
+					}
+				}
 			} catch {
 				/* fallback */
 			}
@@ -189,7 +232,12 @@ export class DurableAgentDriver extends BaseAgentDriver {
 			const parentConv = await this.harness.conversation(numericId, this.backgroundContext);
 			if (parentConv && typeof parentConv.fork === "function") {
 				const modelChoice = resolveDurableModelChoice(this.currentModelId, this.cachedModels, this.agentDir);
-				const agentOpts = modelChoice ? { agent: { model: modelChoice } } : {};
+				const agentOpts = {
+					agent: {
+						...(modelChoice ? { model: modelChoice } : {}),
+						thinkingLevel: this.currentThinkingLevel,
+					},
+				};
 				const forked = await parentConv.fork(
 					atEntryId,
 					{
@@ -234,7 +282,12 @@ export class DurableAgentDriver extends BaseAgentDriver {
 		try {
 			// 获取当前活动会话或工作区根会话
 			const modelChoice = resolveDurableModelChoice(this.currentModelId, this.cachedModels, this.agentDir);
-			const agentOpts = modelChoice ? { agent: { model: modelChoice } } : undefined;
+			const agentOpts = {
+				agent: {
+					...(modelChoice ? { model: modelChoice } : {}),
+					thinkingLevel: this.currentThinkingLevel,
+				},
+			};
 
 			let targetConv: any = null;
 			const numericId = this.currentConversationId ? Number(this.currentConversationId) : NaN;
@@ -251,10 +304,16 @@ export class DurableAgentDriver extends BaseAgentDriver {
 			}
 			if (this.aborted) return;
 
-			// 若指定了模型选择，确保目标会话已应用最新模型配置
-			if (modelChoice && typeof targetConv.configure === "function") {
+			// 若指定了模型选择或思考强度，确保目标会话已应用最新配置
+			if (typeof targetConv.configure === "function") {
 				try {
-					await targetConv.configure({ model: modelChoice }, this.backgroundContext);
+					await targetConv.configure(
+						{
+							...(modelChoice ? { model: modelChoice } : {}),
+							thinkingLevel: this.currentThinkingLevel,
+						},
+						this.backgroundContext,
+					);
 				} catch {
 					/* best effort */
 				}
@@ -500,7 +559,13 @@ export class DurableAgentDriver extends BaseAgentDriver {
 					if (conv && typeof conv.configure === "function") {
 						const choice = resolveDurableModelChoice(modelId, this.cachedModels, this.agentDir);
 						if (choice) {
-							await conv.configure({ model: choice }, this.backgroundContext);
+							await conv.configure(
+								{
+									model: choice,
+									thinkingLevel: this.currentThinkingLevel,
+								},
+								this.backgroundContext,
+							);
 						}
 					}
 				} catch {

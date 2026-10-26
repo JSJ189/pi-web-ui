@@ -5,6 +5,7 @@ import { LanguageProvider } from "./i18n";
 import "./styles.css";
 import "highlight.js/styles/github-dark.css";
 import { applyTheme, loadTheme } from "./theme";
+import { applyFavicon } from "./favicon-settings";
 import { setupDesktopWindowDecorations } from "./desktop";
 import { initAuthToken } from "./auth-token";
 import { installScrollbarGutterVar } from "./scrollbar-gutter";
@@ -88,6 +89,8 @@ initAuthToken();
 // Apply the persisted theme before first render so there's no flash of the
 // wrong palette. The full stylesheet swap happens via an injected <link>.
 applyTheme(loadTheme());
+// Issue #763: 首屏渲染前应用 Favicon 颜色，防止多机器标签页图标闪烁
+applyFavicon();
 // 桌面端初始化沉浸式标题栏窗口装饰与避让
 setupDesktopWindowDecorations();
 // 首帧前实测滚动条宽（scrollbar-gutter 预留 gutter 的宽度）→ 宽屏消息列与

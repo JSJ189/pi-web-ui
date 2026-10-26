@@ -97,7 +97,7 @@ export function pcmToWav(pcm, options = {}) {
 }
 
 /** 读回 WAV 头，测试和 `dstts wav --info` 用。 */
-export function parseWavHeader(buf) {
+function parseWavHeader(buf) {
 	const b = Buffer.isBuffer(buf) ? buf : Buffer.from(buf);
 	if (b.length < WAV_HEADER_BYTES) {
 		throw usageError(`WAV 至少要 ${WAV_HEADER_BYTES} 字节，只有 ${b.length}`);

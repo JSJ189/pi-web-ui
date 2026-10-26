@@ -109,7 +109,7 @@ const WS_OPEN = typeof WebSocket !== "undefined" && WebSocket.OPEN !== undefined
 const WS_CLOSING = typeof WebSocket !== "undefined" && WebSocket.CLOSING !== undefined ? WebSocket.CLOSING : 2;
 const WS_CLOSED = typeof WebSocket !== "undefined" && WebSocket.CLOSED !== undefined ? WebSocket.CLOSED : 3;
 
-export const isWsOpen = (ws?: WebSocket | null): ws is WebSocket => Boolean(ws && ws.readyState === WS_OPEN);
+const isWsOpen = (ws?: WebSocket | null): ws is WebSocket => Boolean(ws && ws.readyState === WS_OPEN);
 
 /** One component in an all-source update check (update_status_all). */
 export interface UpdateAllItem {

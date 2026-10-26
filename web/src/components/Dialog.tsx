@@ -13,6 +13,7 @@ import { appSend } from "../app-globals";
 import { useEscapeKey } from "../shortcut-stack";
 import { composeToComposer, focusComposer } from "../composer-bridge";
 import { Markdown } from "./Markdown";
+import { useCopyFeedback } from "../use-copy-feedback";
 
 interface DialogProps {
 	dialog: {
@@ -117,20 +118,14 @@ export function parseCommandPrompt(text: string): {
 /** 命令专用审计盒：等宽代码排版、行号高亮、一键复制、超长折叠与高危警告 */
 export function CommandInspectorBox({ command, hasRisk }: { command: string; hasRisk?: boolean }) {
 	const t = useT();
-	const [copied, setCopied] = useState(false);
+	const { copied, copy } = useCopyFeedback({ duration: 2000 });
 	const [expanded, setExpanded] = useState(false);
 
 	const lines = useMemo(() => command.split("\n"), [command]);
 	const isLong = lines.length > 8;
 
 	const handleCopy = () => {
-		try {
-			void navigator.clipboard.writeText(command);
-			setCopied(true);
-			setTimeout(() => setCopied(false), 2000);
-		} catch {
-			/* clipboard fallback */
-		}
+		void copy(command);
 	};
 
 	return (

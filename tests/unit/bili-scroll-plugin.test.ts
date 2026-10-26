@@ -10,8 +10,8 @@ describe("bili-scroll plugin 2.0 verification", () => {
 		const manifest = JSON.parse(readFileSync(join(pluginDir, "manifest.json"), "utf8"));
 		const pkg = JSON.parse(readFileSync(join(pluginDir, "package.json"), "utf8"));
 
-		expect(manifest.version).toBe("2.0.5");
-		expect(pkg.version).toBe("2.0.5");
+		expect(manifest.version).toBe("2.0.6");
+		expect(pkg.version).toBe("2.0.6");
 		expect(manifest.apiVersion).toBe(2);
 		expect(manifest.permissions).toContain("tools");
 		expect(manifest.permissions).toContain("ui");
@@ -30,7 +30,6 @@ describe("bili-scroll plugin 2.0 verification", () => {
 			"lib/verify.mjs",
 			"lib/uvfetch.mjs",
 			"lib/favops.mjs",
-			"lib/favops.py",
 			"lib/asr.py",
 			"client/entry.mjs",
 		];
@@ -38,6 +37,16 @@ describe("bili-scroll plugin 2.0 verification", () => {
 		for (const f of files) {
 			expect(existsSync(join(pluginDir, f)), `File ${f} must exist`).toBe(true);
 		}
+	});
+
+	it("catalog.json 正确收录 bili-scroll 插件", () => {
+		const raw = readFileSync(join(process.cwd(), "plugins", "catalog.json"), "utf8");
+		const catalog = JSON.parse(raw);
+		const item = catalog.find((p: any) => p.id === "bili-scroll");
+		expect(item).toBeDefined();
+		expect(item.name).toBe("bili-scroll");
+		expect(item.source).toContain("bili-scroll");
+		expect(item.icon).toBe("📺");
 	});
 
 	it("duty.md includes 2.0 charter principles", () => {

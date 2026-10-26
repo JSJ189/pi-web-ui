@@ -14,6 +14,7 @@
 import { chmodSync, existsSync, mkdirSync, readFileSync, renameSync, writeFileSync } from "node:fs";
 import { dirname, join } from "node:path";
 import { writeJsonAtomicSync } from "./atomic-file.js";
+import { stripJsonComments } from "./json-utils.js";
 import type { ModelRuntime } from "@earendil-works/pi-coding-agent";
 import type {
 	ServerMessage,
@@ -107,47 +108,6 @@ function atomicWriteCredentialJson(path: string, data: unknown): void {
 	} catch {
 		/* best-effort (win) */
 	}
-}
-
-/** Strip // and /* *\/ comments without touching string literals (URLs contain //). */
-function stripJsonComments(src: string): string {
-	let out = "";
-	let inString = false;
-	let i = 0;
-	while (i < src.length) {
-		const c = src[i];
-		const next = src[i + 1];
-		if (inString) {
-			out += c;
-			if (c === "\\") {
-				out += next ?? "";
-				i += 2;
-				continue;
-			}
-			if (c === '"') inString = false;
-			i++;
-			continue;
-		}
-		if (c === '"') {
-			inString = true;
-			out += c;
-			i++;
-			continue;
-		}
-		if (c === "/" && next === "/") {
-			while (i < src.length && src[i] !== "\n") i++;
-			continue;
-		}
-		if (c === "/" && next === "*") {
-			i += 2;
-			while (i < src.length && !(src[i] === "*" && src[i + 1] === "/")) i++;
-			i += 2;
-			continue;
-		}
-		out += c;
-		i++;
-	}
-	return out;
 }
 
 /** Merge a UI-submitted provider config into the existing models.json entry.
@@ -612,7 +572,17 @@ export class ModelAdminService {
 		} catch {
 			// runtime not ready
 		}
-		for (const id of ["anthropic", "openai", "google", "deepseek", "groq", "mistral", "openrouter", "ollama"]) {
+		for (const id of [
+			"anthropic",
+			"openai",
+			"google",
+			"deepseek",
+			"groq",
+			"mistral",
+			"openrouter",
+			"ollama",
+			"llama.cpp",
+		]) {
 			ids.add(id);
 		}
 		return [...ids];
@@ -627,7 +597,17 @@ export class ModelAdminService {
 		} catch {
 			// no file yet / unparsable — start fresh
 		}
-		data[pid] = { type: "api_key", key: apiKey };
+		if (pid === "llama.cpp") {
+			const prevLlama = (data[pid] ?? {}) as { env?: { LLAMA_BASE_URL?: string } };
+			const baseUrl = prevLlama.env?.LLAMA_BASE_URL || process.env.LLAMA_BASE_URL || "http://127.0.0.1:8080";
+			data[pid] = {
+				type: "api_key",
+				key: apiKey || "local",
+				env: { LLAMA_BASE_URL: baseUrl },
+			};
+		} else {
+			data[pid] = { type: "api_key", key: apiKey };
+		}
 		atomicWriteCredentialJson(authPath, data);
 		try {
 			chmodSync(this.providerKeysPath(), CREDENTIAL_FILE_MODE);
@@ -1243,6 +1223,7 @@ export class ModelAdminService {
 				{ id: "groq", name: "Groq" },
 				{ id: "mistral", name: "Mistral" },
 				{ id: "ollama", name: "Ollama" },
+				{ id: "llama.cpp", name: "llama.cpp" },
 			];
 			const allIds = new Set<string>();
 			providers = [];
@@ -1254,7 +1235,8 @@ export class ModelAdminService {
 					(b.id === "deepseek" && process.env.DEEPSEEK_API_KEY) ||
 					(b.id === "openai" && process.env.OPENAI_API_KEY) ||
 					(b.id === "openrouter" && process.env.OPENROUTER_API_KEY) ||
-					(b.id === "google" && (process.env.GEMINI_API_KEY || process.env.GOOGLE_API_KEY)),
+					(b.id === "google" && (process.env.GEMINI_API_KEY || process.env.GOOGLE_API_KEY)) ||
+					(b.id === "llama.cpp" && process.env.LLAMA_BASE_URL),
 				);
 				providers.push({
 					id: b.id,
@@ -1300,47 +1282,6 @@ export class ModelAdminService {
 
 	private modelsConfigPath(): string {
 		return join(this.host.agentDir, "models.json");
-	}
-
-	/** Strip // and /* *\/ comments without touching string literals (URLs contain //). */
-	private static stripJsonComments(src: string): string {
-		let out = "";
-		let inString = false;
-		let i = 0;
-		while (i < src.length) {
-			const c = src[i];
-			const next = src[i + 1];
-			if (inString) {
-				out += c;
-				if (c === "\\") {
-					out += next ?? "";
-					i += 2;
-					continue;
-				}
-				if (c === '"') inString = false;
-				i++;
-				continue;
-			}
-			if (c === '"') {
-				inString = true;
-				out += c;
-				i++;
-				continue;
-			}
-			if (c === "/" && next === "/") {
-				while (i < src.length && src[i] !== "\n") i++;
-				continue;
-			}
-			if (c === "/" && next === "*") {
-				i += 2;
-				while (i < src.length && !(src[i] === "*" && src[i + 1] === "/")) i++;
-				i += 2;
-				continue;
-			}
-			out += c;
-			i++;
-		}
-		return out;
 	}
 
 	/** Read + parse models.json (tolerating // and /* *\/ comments like the SDK). */

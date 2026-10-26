@@ -10,18 +10,41 @@
 
 ## [Unreleased]
 
-<!-- auto-i18n:start -->
+## [0.112.0] — 2026-10-26
 
+### Added
+
+- **消息滚动与逃逸生命周期管理器（useChatScroll）与平滑无感向上预加载**：彻底解耦手势感知、程序吸底保护窗（grace window）及用户逃逸阅读状态，解决会话切换 key 突变引发的重挂载掉帧与误吸底；逆向分页升级为水库双缓冲预加载模型，到达预警水位线静默拉取并基于锚点无缝前插，移除突兀的手动加载条幅（#764）。
+- **会话级隔离审批与 0.0.0.0 零信任自愈口令**：高危工具审批状态由全局下沉至 Conversation 隔离，彻底消除多会话并发审批串台与幽灵弹窗；监听 0.0.0.0 且未配置 token 时自动生成高熵随机自愈口令并在终端显式提示，杜绝未授权暴露（#762）。
+- **子代理 Worktree 隔离模式、依赖桥接与自动清理**：`subagent(action="spawn")` 支持 `isolation: "worktree"`，为任务创建独立临时工作树与 Git 分支，跨树桥接 node_modules 等依赖，任务结束后自动安全清理或保留（#728, #761）。
+- **确认对话框三段式视窗架构、命令专用审计盒与拒绝附言反馈闭环**：确认对话框重构为三段式视窗，自适应吸收长标题；新增高危命令专用审计盒与多行语法高亮；拒绝授权时支持输入附言并直接注入智能体上下文，实现拒绝反馈闭环（#747, #759）。
+- **宿主重资产流水线规范、国内镜像自动回退与 SHA-256 验签**：官方插件外部大资产统一流水线下载与验签；office 等重量级插件增加空闲自动休眠与按需唤醒（#760）。
+- **子代理递归深度与连续唤醒保护**：新增 `subagentMaxDepth`（最大嵌套层数）与 `subagentAutoWakeMaxTurns`（连续自动唤醒上限轮数）设置项；智能熔断防误拦、挂起通知零丢失（#712, #726, #754）。
+- **Favicon 状态指示与自定义颜色设置**：支持根据智能体运行态展示 Favicon 动态徽标，设置面板提供自定义颜色配置（#763）。
+- **工具卡片与检查器技能标识**：工具调用卡片与 Tool Inspector 抽屉支持显示关联的 skill 技能名称（#734, #743）。
+- **Durable 引擎思考强度自适应与 Llama 模型支持**：完善各主流服务商（DeepSeek, Claude, GPT, Llama 等）思考强度的跨模型自适应映射与诊断提示。
+
+### Changed
+
+- **共享公共工具函数收敛与规范守卫**：收敛 `stripJsonComments`、`writeAtomicSync`、`markdown-chunks` 至 `plugin-sdk/client-utils.mjs` 与服务端共享模块，建立防回潮守卫（#730）。
+- **官方插件体系同步升级**：清理废弃的 feature-board 插件及 univer-service 陈旧代码；14 个官方内置插件同步更新并递增版本号。
+
+### Fixed
+
+- **安全加固**：网络隧道（Tunnel）令牌脱敏、Mesh 未授权注入防护与生命周期泄漏修复（#724, #765）；审批归属门禁与部署姿态告警（#723, #752）；常驻终端补异步审批与跨调用行缓冲防拆行绕过（#721, #736）；统一审批流水线与命令防逃逸（#722）；patch 工具补权限预设与审批规则包装（#720）。
+- **跨平台与执行管道**：修复 Windows 环境下 Python eval 管道编码导致非 ASCII 字符传输中断（#757, #758）；bash 工具纳入 tool-overrides 覆盖管线，与第三方扩展同名 bash 叠加共存（#750）。
+- **界面与交互**：修复引擎切换死键、滚轮翻页闭包、问卷串台、断线过渡遮罩与 TTS 卡顿（#740, #744）；历史按需加载不可变锚点翻页与过渡期沙箱隔离（#719, #735）；工具文案覆盖 snippet 预览与实发对齐；会话目录兼收专属子目录与扁平旧会话（#711）。
+
+<!-- auto-i18n:start -->
 ### i18n
 
-- 前端新增 key（19）：`toolApprovalDshNotice`、`cmdInspectorTitle`、`cmdInspectorLines`、`cmdInspectorExpand`、`cmdInspectorCollapse`、`cmdInspectorRisk`、`cmdCopied`、`rejectWithNote`、`rejectWithNoteSubmit`、`rejectNotePlaceholder`、`rejectFeedbackPrefix`、`promptToggleEnabled`、`uiLayoutToolCardFooter`、`subagentMaxDepth`、`subagentMaxDepthDesc`、`subagentMaxDepthUnlimited`、`subagentAutoWakeMaxTurns`、`subagentAutoWakeMaxTurnsDesc`、`subagentAutoWakeMaxTurnsUnlimited`
+- 前端新增 key（27）：`dismissTerminalsConfirm`、`toolApprovalDshNotice`、`cmdInspectorTitle`、`cmdInspectorLines`、`cmdInspectorExpand`、`cmdInspectorCollapse`、`cmdInspectorRisk`、`cmdCopied`、`rejectWithNote`、`rejectWithNoteSubmit`、`rejectNotePlaceholder`、`rejectFeedbackPrefix`、`promptToggleEnabled`、`instanceName`、`instanceNameDesc`、`instanceNamePh`、`faviconColor`、`faviconColorDesc`、`faviconColorAuto`、`customColor`、`uiLayoutToolCardFooter`、`subagentMaxDepth`、`subagentMaxDepthDesc`、`subagentMaxDepthUnlimited`、`subagentAutoWakeMaxTurns`、`subagentAutoWakeMaxTurnsDesc`、`subagentAutoWakeMaxTurnsUnlimited`
 - 前端删除 key（3）：`earlierMessagesInfo`、`loadEarlier`、`loadAllEarlier`
 - 前端中文变更（3）：`promptTok_tools_desc`、`promptTok_guidelines_desc`、`reversePaginationDesc`
 - 前端英文变更（3）：`promptTok_tools_desc`、`promptTok_guidelines_desc`、`reversePaginationDesc`
 - 服务端新增 key（25）：`agent.subagent.worktree.remote_unsupported`、`agent.subagent.model.failed`、`agent.subagent.model.not.found`、`canvas.edge.self`、`canvas.edge.duplicate`、`subagents.notify.fallback`、`subagents.notify.header`、`subagents.notify.status.failed`、`subagents.notify.status.canceled`、`subagents.notify.status.done`、`subagents.notify.goal`、`subagents.notify.worktree`、`subagents.notify.worktree.cleaned`、`subagents.notify.worktree.preserved`、`subagents.notify.worktree.path`、`subagents.notify.summary`、`subagents.notify.footer`、`subagents.spawn.thinking.invalid`、`subagents.spawn.isolation.invalid`、`subagents.get.worktree.cleaned`、`subagents.get.worktree.preserved`、`terminals.operation.denied`、`terminals.input.edited_sent`、`terminals.key.edited_sent`、`worktree.isolation.not_git`
-- 服务端文案变更（4）：`subagents.spawn.started`、`subagents.get.running`、`subagents.get.done`、`terminals.command.blocked`
+- 服务端文案变更（5）：`delegate.started`、`subagents.spawn.started`、`subagents.get.running`、`subagents.get.done`、`terminals.command.blocked`
 - 服务端删除 key（2）：`prompt.guidelines.be.concise`、`prompt.guidelines.show.paths`
-
 <!-- auto-i18n:end -->
 
 ## [0.111.0] — 2026-10-24
@@ -1936,7 +1959,8 @@ when?, children?}`，也收 `topbar` / `settings` 这类简写别名）；宿主
 - 0.35.1（2026-08-27）：编辑重问保留附件（#18）+ 全窗口拖放（#19）。
 - 0.29.0（2026-08-23）：全局搜索弹窗（Ctrl+K）+ 消息列表惰性窗口化。
 
-[Unreleased]: https://github.com/xing-shuyin/pi-web-ui/compare/v0.111.0...main
+[Unreleased]: https://github.com/xing-shuyin/pi-web-ui/compare/v0.112.0...main
+[0.112.0]: https://github.com/xing-shuyin/pi-web-ui/releases/tag/v0.112.0
 [0.111.0]: https://github.com/xing-shuyin/pi-web-ui/releases/tag/v0.111.0
 [0.108.0]: https://github.com/xing-shuyin/pi-web-ui/releases/tag/v0.108.0
 [0.109.0]: https://github.com/xing-shuyin/pi-web-ui/releases/tag/v0.109.0

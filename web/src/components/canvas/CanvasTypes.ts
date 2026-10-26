@@ -50,7 +50,7 @@ export const ENGINE_METAS: Record<CanvasEngineId, EngineMeta> = {
 	},
 };
 
-export interface RoleMeta {
+interface RoleMeta {
 	role: CanvasNodeRole;
 	labelZh: string;
 	labelEn: string;
@@ -337,7 +337,7 @@ export const ROLE_METAS: Record<CanvasNodeRole, RoleMeta> = {
 	},
 };
 
-export interface NodeGroupMeta {
+interface NodeGroupMeta {
 	id: RoleMeta["group"];
 	labelZh: string;
 	labelEn: string;
@@ -352,7 +352,7 @@ export const NODE_GROUPS: NodeGroupMeta[] = [
 ];
 
 /** 纯透传控制节点：无需启动 LLM 会话，直接标记完成并向下游透传摘要 */
-export const PASSTHROUGH_ROLES: ReadonlySet<CanvasNodeRole> = new Set([
+const PASSTHROUGH_ROLES: ReadonlySet<CanvasNodeRole> = new Set([
 	"condition",
 	"loop",
 	"human",
@@ -395,7 +395,7 @@ export const STATUS_COLORS: Record<CanvasNodeStatus, { text: string; bg: string;
  *  - 输入端（左侧）：contract=任务契约（主输入） instruction=AI指令 system=角色规约 config=控制参数
  *  - 输出端（右侧）：result=交付产物（主输出） true/false=条件分支 approve/reject=审批裁决
  *  位置由卡片 DOM 实测（offsetTop）上报，SvgEdges 按实测 Y 绘制，历史无端口边回退 PORT_Y_OFFSET。 */
-export interface CanvasPortDef {
+interface CanvasPortDef {
 	key: string;
 	labelZh: string;
 	desc: string;
@@ -408,9 +408,7 @@ export const IN_PORT_DEFS: CanvasPortDef[] = [
 	{ key: "config", labelZh: "控制参数", desc: "写入条件表达式 / 循环次数等控制参数上下文" },
 ];
 
-export const OUT_PORT_DEFS_BASE: CanvasPortDef[] = [
-	{ key: "result", labelZh: "交付产物", desc: "主输出：本节点交付摘要" },
-];
+const OUT_PORT_DEFS_BASE: CanvasPortDef[] = [{ key: "result", labelZh: "交付产物", desc: "主输出：本节点交付摘要" }];
 
 /** 按角色追加分支输出端子（条件 / 人工 / 评估 / 审查）。 */
 export function outPortsForRole(role: CanvasNodeRole): CanvasPortDef[] {
@@ -454,7 +452,7 @@ export function outPortLabel(key: string | undefined): string {
  *  - 卡片：Agent 类渲染为「角色专属参数」组；纯代码类渲染为 utility 专属区（含 config 端子）
  *  - 抽屉：控制参数区同表驱动，保持两端一致
  *  - 调度器：Agent 节点的非空配置会拼入提示词「本节点专属参数」，所见即所得 */
-export type RoleFieldKind = "text" | "textarea" | "number" | "select" | "hint" | "boolean";
+type RoleFieldKind = "text" | "textarea" | "number" | "select" | "hint" | "boolean";
 
 export interface RoleField {
 	key: string;
@@ -673,7 +671,7 @@ export const ROLE_FIELDS: Record<CanvasNodeRole, RoleField[]> = {
 };
 
 /** 每个角色的输入输出速查（卡片 ? 提示用）：输入要什么 / 输出给什么 / 一句话用法 */
-export interface RoleIoHelp {
+interface RoleIoHelp {
 	input: string;
 	output: string;
 	usage: string;

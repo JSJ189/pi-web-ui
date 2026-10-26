@@ -110,16 +110,6 @@ export function syncKnownInlineMarkers(names: Iterable<string>): void {
 	trailingIncompleteInlineMarkerRe = buildTrailingIncompleteRegex(KNOWN_INLINE_MARKER_TOOLS);
 }
 
-/** 动态注册一个已知的内联标记。 */
-export function registerKnownInlineMarker(name: string): void {
-	if (!name) return;
-	const lower = name.toLowerCase();
-	if (!KNOWN_INLINE_MARKER_TOOLS.has(lower)) {
-		KNOWN_INLINE_MARKER_TOOLS.add(lower);
-		trailingIncompleteInlineMarkerRe = buildTrailingIncompleteRegex(KNOWN_INLINE_MARKER_TOOLS);
-	}
-}
-
 /**
  * 剥离助手回复中的内联状态标记（与服务端 stripMarkers 同构）。
  * 实时 message_delta 增量流直接拼接原始 token，前端渲染前同步剥离可避免：

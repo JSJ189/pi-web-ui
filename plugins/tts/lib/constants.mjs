@@ -49,7 +49,7 @@ export const PCM = Object.freeze({
 export const PLAYED_SEQ_UNIT_MS = 100;
 
 /** ticket 有效期。实测返回体里带 expires_in_secs: 600。 */
-export const TICKET_TTL_SECONDS = 600;
+const TICKET_TTL_SECONDS = 600;
 
 /**
  * 四个音色。
@@ -113,10 +113,10 @@ export const VOICES = Object.freeze([
 	}),
 ]);
 
-export const VOICE_IDS = Object.freeze(VOICES.map((v) => v.id));
+const VOICE_IDS = Object.freeze(VOICES.map((v) => v.id));
 
 /** 只支持 10 种语言的那两个音色支持哪些语言（来自逆向备忘，未逐语言实测）。 */
-export const SHORT_LANGUAGE_CODES = Object.freeze(["ar", "en", "id", "ja", "ko", "ms", "th", "vi", "yue", "zh"]);
+const SHORT_LANGUAGE_CODES = Object.freeze(["ar", "en", "id", "ja", "ko", "ms", "th", "vi", "yue", "zh"]);
 
 export function getVoice(id) {
 	if (typeof id !== "string") return undefined;

@@ -1,5 +1,15 @@
 import { describe, expect, it } from "vitest";
-import { esc, apiBase, formatBytes, withTimeout, uuid, normalizeRel, hostApi } from "../../plugin-sdk/client-utils.mjs";
+import {
+	esc,
+	apiBase,
+	formatBytes,
+	withTimeout,
+	uuid,
+	normalizeRel,
+	hostApi,
+	safeSliceIndex,
+	chunkMarkdownText,
+} from "../../plugin-sdk/client-utils.mjs";
 
 describe("plugin-sdk client-utils", () => {
 	it("esc: 安全转义 HTML 特殊字符", () => {
@@ -47,5 +57,35 @@ describe("plugin-sdk client-utils", () => {
 
 	it("hostApi: 非浏览器环境安全返回 null", () => {
 		expect(hostApi()).toBeNull();
+	});
+
+	it("safeSliceIndex: 不拆分 UTF-16 代理对 Emoji", () => {
+		const text = "Hello 🎉 World";
+		// '🎉' 的 UTF-16 编码占用 2 个代码单元，位于索引 6 和 7
+		const cutAtSurrogate = safeSliceIndex(text, 7);
+		expect(cutAtSurrogate).toBe(6);
+		const cutAfter = safeSliceIndex(text, 8);
+		expect(cutAfter).toBe(8);
+	});
+
+	it("chunkMarkdownText: 空内容或短内容直接返回", () => {
+		expect(chunkMarkdownText("")).toEqual([]);
+		expect(chunkMarkdownText(null as any)).toEqual([]);
+		expect(chunkMarkdownText("hello", 100)).toEqual(["hello"]);
+	});
+
+	it("chunkMarkdownText: 跨分块边界保护代码围栏不被撕裂", () => {
+		const md = ["# Header", "```typescript", "const a = 1;", "const b = 2;", "const c = 3;", "```", "Footer text"].join(
+			"\n",
+		);
+
+		// 限制单块较短以触发跨块
+		const chunks = chunkMarkdownText(md, 60);
+		expect(chunks.length).toBeGreaterThan(1);
+		// 第一个分块中打开了 ```typescript，应当在末尾闭合 ```
+		expect(chunks[0]).toContain("```typescript");
+		expect(chunks[0].endsWith("```")).toBe(true);
+		// 第二个分块应当重新以 ```typescript 开头
+		expect(chunks[1].startsWith("```typescript")).toBe(true);
 	});
 });

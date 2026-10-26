@@ -286,6 +286,7 @@ export const zh = {
 	renameSessionPlaceholder: "输入新名称…",
 	dismissConversation: "从运行列表移出（历史记录保留）",
 	dismissConversationConfirm: "确认移出",
+	dismissTerminalsConfirm: "存在未关闭终端，确认一并关闭并移出？",
 	pinConversation: "钉住（切换其他对话也不移出）",
 	unpinConversation: "取消钉住",
 	pinnedConversation: "已钉住：切换到其他对话时，本对话会一直留在「运行的对话」里，直到被手动移出",
@@ -1658,6 +1659,15 @@ export const zh = {
 	projectTitle: "标题显示项目名",
 	projectTitleDesc:
 		"开启：浏览器标签页标题为「项目目录名 — pi-web-ui」，切项目即时更新（多标签页开多个项目时好区分）；关闭：固定显示应用名",
+	instanceName: "实例标识名称",
+	instanceNameDesc:
+		"自定义机器标识名称，将显示在浏览器标签页标题前缀中（如「[GPU-1] 项目名 — pi-web-ui」），方便多台机器部署时区分；留空不显示",
+	instanceNamePh: "例如：开发机 / GPU-1 / Home",
+	faviconColor: "标签页图标颜色",
+	faviconColorDesc:
+		"自定义浏览器标签页的 Favicon 图标底色，多台机器部署时一目了然。支持经典默认、根据主机名自动匹配、预设色板与自定义颜色",
+	faviconColorAuto: "自动（根据主机名）",
+	customColor: "自定义颜色",
 	terminalBashTakeover: "终端接管 bash",
 	terminalBashTakeoverDesc:
 		"此开关决定 bash 是否覆盖为终端版：关 = 原生 SDK bash（纯进程、不开终端）；开 = 跑进可见终端，且 persist 参数在本开关的基础上决定一次性（false，命令跑完进程退出、输出留档）还是持久（true，shell 状态跨调用保留、静默自动转后台并通知 AI）",
@@ -2652,6 +2662,7 @@ export const en: Record<keyof typeof zh, string> = {
 	renameSessionPlaceholder: "Type a new name…",
 	dismissConversation: "Dismiss from running (keep in history)",
 	dismissConversationConfirm: "Confirm dismiss",
+	dismissTerminalsConfirm: "Has open terminals — close them and dismiss?",
 	pinConversation: "Pin to running list (keep across switches)",
 	unpinConversation: "Unpin",
 	pinnedConversation: "Pinned: stays in Running chats when you switch away, until you explicitly dismiss it",
@@ -4066,6 +4077,15 @@ export const en: Record<keyof typeof zh, string> = {
 	projectTitle: "Show project name in title",
 	projectTitleDesc:
 		"On: the browser tab title becomes “<project folder> — pi-web-ui” and updates when you switch projects (handy with several tabs open); Off: always show the app name",
+	instanceName: "Instance name",
+	instanceNameDesc:
+		'Custom machine identifier displayed as a browser tab title prefix (e.g. "[GPU-1] project — pi-web-ui") to help distinguish multiple machines; leave empty to hide',
+	instanceNamePh: "e.g. Dev-Server / GPU-1 / Home",
+	faviconColor: "Tab icon color",
+	faviconColorDesc:
+		"Customize the browser tab favicon background color to distinguish instances across machines. Supports classic default, auto hash by host, presets, and custom hex",
+	faviconColorAuto: "Auto (by host)",
+	customColor: "Custom color",
 	terminalBashTakeover: "Terminal-backed bash",
 	terminalBashTakeoverDesc:
 		"This switch decides whether bash is overridden to a terminal version: OFF = native SDK bash (process spawn, no terminal); ON = runs in a visible terminal, where the persist parameter decides (on top of the switch) one-shot (false — process exits when the command finishes, output retained) vs persistent (true — shell state retained across calls, silent commands move to the background and notify the AI)",

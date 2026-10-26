@@ -50,4 +50,17 @@ describe("plugin manifest icons", () => {
 		}
 		expect(checked).toBeGreaterThan(0);
 	});
+
+	it("所有内置业务插件均已在 catalog.json 市场清单中收录", () => {
+		const catalog = JSON.parse(readFileSync(join(pluginsDir, "catalog.json"), "utf8")) as { id: string }[];
+		const catalogIds = new Set(catalog.map((e) => e.id));
+		// demo-mailbox 纯为开发者示例模板，不进正式市场清单
+		const EXEMPTIONS = new Set(["demo-mailbox"]);
+
+		const list = manifests();
+		for (const { id } of list) {
+			if (EXEMPTIONS.has(id)) continue;
+			expect(catalogIds.has(id), `内置插件 plugins/${id} 必须在 plugins/catalog.json 中登记上架`).toBe(true);
+		}
+	});
 });

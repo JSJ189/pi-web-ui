@@ -318,3 +318,125 @@ export function resolveDurableModelChoice(
 		modelId: trimmed,
 	};
 }
+
+/**
+ * 根据模型配置（reasoning 与 thinkingLevelMap）解析支持的思考强度档位。
+ */
+export function calculateSupportedThinkingLevels(modelDef?: {
+	reasoning?: boolean;
+	thinkingLevelMap?: Record<string, string | null>;
+}): string[] {
+	if (!modelDef) {
+		return ["off", "minimal", "low", "medium", "high", "xhigh", "max"];
+	}
+	if (modelDef.reasoning === false) {
+		return ["off"];
+	}
+	const allLevels = ["off", "minimal", "low", "medium", "high", "xhigh", "max"];
+	if (modelDef.thinkingLevelMap && typeof modelDef.thinkingLevelMap === "object") {
+		return allLevels.filter((lvl) => {
+			const mapped = modelDef.thinkingLevelMap?.[lvl];
+			if (mapped === null) return false;
+			if (lvl === "xhigh" || lvl === "max") return mapped !== undefined;
+			return true;
+		});
+	}
+	// 默认具备 reasoning 能力时支持 off, minimal, low, medium, high
+	return ["off", "minimal", "low", "medium", "high"];
+}
+
+/**
+ * 快速同步解析指定模型的思考能力（优先 models 容器，次之 models.json / models-store.json / cachedModels）。
+ */
+export function resolveDurableThinkingLevels(
+	modelId?: string,
+	options?: {
+		modelsContainer?: any;
+		cachedModels?: DurableModelInfo[];
+		agentDir?: string;
+	},
+): string[] {
+	if (!modelId || !modelId.trim() || modelId === "default") {
+		return ["off", "minimal", "low", "medium", "high", "xhigh", "max"];
+	}
+	const choice = resolveDurableModelChoice(modelId, options?.cachedModels, options?.agentDir);
+	const provider = choice?.provider;
+	const bareModelId = choice?.modelId;
+
+	// 1. 尝试从已装配的 models 容器中取
+	if (options?.modelsContainer && typeof options.modelsContainer.getModel === "function" && provider && bareModelId) {
+		try {
+			const m = options.modelsContainer.getModel(provider, bareModelId);
+			if (m) {
+				return calculateSupportedThinkingLevels(m);
+			}
+		} catch {
+			/* ignore */
+		}
+	}
+
+	// 2. 尝试从 models.json 中取
+	try {
+		const { providers } = readModelsJson(options?.agentDir);
+		if (provider && providers[provider]?.models && Array.isArray(providers[provider].models)) {
+			const list = providers[provider].models;
+			const found = list.find((m: any) => m.id === bareModelId);
+			if (found) {
+				return calculateSupportedThinkingLevels(found);
+			}
+		}
+		// 若按 provider 未匹配，遍历所有 provider 寻找裸模型 ID 匹配
+		for (const pConfig of Object.values(providers)) {
+			if (Array.isArray((pConfig as any)?.models)) {
+				const found = (pConfig as any).models.find((m: any) => m.id === bareModelId);
+				if (found) {
+					return calculateSupportedThinkingLevels(found);
+				}
+			}
+		}
+	} catch {
+		/* ignore */
+	}
+
+	// 3. 尝试从 models-store.json 中取
+	try {
+		const userAgentDir = options?.agentDir || join(homedir(), ".pi", "agent");
+		const storePath = join(userAgentDir, "models-store.json");
+		if (existsSync(storePath)) {
+			const store = JSON.parse(readFileSync(storePath, "utf8"));
+			if (provider && Array.isArray(store[provider]?.models)) {
+				const found = store[provider].models.find((m: any) => m.id === bareModelId);
+				if (found) {
+					return calculateSupportedThinkingLevels(found);
+				}
+			}
+			// 若按 provider 未匹配，遍历 store 所有 provider 寻找裸模型 ID 匹配
+			for (const pData of Object.values(store)) {
+				if (Array.isArray((pData as any)?.models)) {
+					const found = (pData as any).models.find((m: any) => m.id === bareModelId);
+					if (found) {
+						return calculateSupportedThinkingLevels(found);
+					}
+				}
+			}
+		}
+	} catch {
+		/* ignore */
+	}
+
+	// 4. 尝试从 cachedModels 中取
+	if (options?.cachedModels && options.cachedModels.length > 0) {
+		const found = options.cachedModels.find(
+			(m) =>
+				m.id === modelId ||
+				m.id.endsWith(`/${bareModelId}`) ||
+				(provider && m.provider === provider && m.id.endsWith(bareModelId!)),
+		);
+		if (found && found.reasoning === false) {
+			return ["off"];
+		}
+	}
+
+	// 未明确识别或通用兜底
+	return ["off", "minimal", "low", "medium", "high", "xhigh", "max"];
+}

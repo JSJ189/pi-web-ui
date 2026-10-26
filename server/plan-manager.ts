@@ -18,8 +18,8 @@
  * - 历史文件清洗：严格过滤形如 /^c\d+$/ 的易变短 ID，防止服务重启后新会话被上一个会话的任务附体。
  */
 
-import { mkdirSync, readFileSync, renameSync, writeFileSync } from "node:fs";
-import { dirname } from "node:path";
+import { readFileSync } from "node:fs";
+import { writeJsonAtomicSync } from "./atomic-file.js";
 import type { PlanState, PlanStep, PlanStepStatus } from "./protocol.js";
 
 const VALID_STATUSES = new Set<PlanStepStatus>(["pending", "in_progress", "done", "failed"]);
@@ -63,16 +63,13 @@ export class PlanManager {
 	private save(): void {
 		if (!this.filePath) return;
 		try {
-			mkdirSync(dirname(this.filePath), { recursive: true });
 			const obj: Record<string, PlanState> = {};
 			for (const [k, v] of this.plansBySession.entries()) {
 				// 双重防护：临时 conversationId 绝不落盘
 				if (isEphemeralConvId(k)) continue;
 				obj[k] = v;
 			}
-			const tmp = `${this.filePath}.tmp.${Date.now()}`;
-			writeFileSync(tmp, JSON.stringify(obj, null, 2), "utf8");
-			renameSync(tmp, this.filePath);
+			writeJsonAtomicSync(this.filePath, obj);
 		} catch {
 			// 持久化失败绝不阻断主流程
 		}
