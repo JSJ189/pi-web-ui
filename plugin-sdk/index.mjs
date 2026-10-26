@@ -560,6 +560,16 @@ export function createMockHost(overrides) {
 			register: freshOff,
 			list: () => [],
 		},
+		assets: {
+			ensure: async (spec, opts) => {
+				record("assets.ensure", [spec, opts]);
+				return { ok: true, ready: true, path: spec?.targetDir || "" };
+			},
+			status: (spec) => {
+				record("assets.status", [spec]);
+				return { ready: true, downloading: false };
+			},
+		},
 		calls,
 		logs,
 		mock: {
@@ -640,6 +650,7 @@ export function createMockHost(overrides) {
 		"shortcuts",
 		"searchProviders",
 		"composerProviders",
+		"assets",
 	];
 	for (const [key, value] of Object.entries(overrides)) {
 		if (key === "settings" || key === "cwd" || key === "dir" || key === "dataDir") continue;

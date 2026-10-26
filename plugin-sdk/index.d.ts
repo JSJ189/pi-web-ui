@@ -282,6 +282,10 @@ export interface PluginHost {
 	ensureDeps(specs: string[], opts?: { onProgress?: (msg: string) => void }): Promise<boolean>;
 	fs: PluginHostFs;
 	schedule(spec: string | number, fn: () => void, opts?: PluginHostScheduleOptions): () => void;
+	assets: {
+		ensure(spec: any, opts?: any): Promise<{ ok: boolean; ready?: boolean; error?: string; path?: string }>;
+		status(spec: any): { ready: boolean; downloading?: boolean; error?: string };
+	};
 	requestPermission(req: PluginPermissionRequest): Promise<boolean>;
 	getSettings(): Record<string, unknown>;
 	onSettingsChanged(handler: (values: Record<string, unknown>) => void): () => void;

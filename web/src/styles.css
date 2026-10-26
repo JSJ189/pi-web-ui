@@ -14218,8 +14218,8 @@
 		/* 与消息列/输入框同宽：同一条列 token（见 .main） */
 		width: auto;
 		margin: 0 var(--chat-inset) 8px;
-		max-height: 45vh;
-		overflow-y: auto;
+		max-height: min(520px, 60vh);
+		overflow: hidden;
 		position: relative;
 		z-index: 10;
 		background: var(--bg-elev);
@@ -14231,6 +14231,10 @@
 		padding: 10px 12px;
 		animation: dialog-slide-up 0.18s ease-out;
 		overscroll-behavior: contain;
+	}
+
+	.dialog-inline:not(:has(.dialog-scroll-body)) {
+		overflow-y: auto;
 	}
 
 	.dialog-inline.collapsed {
@@ -14408,6 +14412,215 @@
 		flex-direction: column;
 		gap: 8px;
 		flex-shrink: 0;
+	}
+
+	/* 三段式架构：独立滚动正文与常驻底栏 */
+	.dialog-scroll-body {
+		flex: 1 1 auto;
+		min-height: 0;
+		overflow-y: auto;
+		overscroll-behavior: contain;
+		display: flex;
+		flex-direction: column;
+		gap: 8px;
+		padding: 2px 2px 6px;
+	}
+
+	.dialog-footer {
+		flex-shrink: 0;
+		border-top: 1px solid var(--border-soft);
+		padding-top: 8px;
+		display: flex;
+		flex-direction: column;
+		gap: 6px;
+	}
+
+	.dialog-opt-badge {
+		flex-shrink: 0;
+		font-family: var(--mono);
+		font-size: 10.5px;
+		font-weight: 700;
+		line-height: 1;
+		padding: 2px 5px;
+		border-radius: 4px;
+		border: 1px solid var(--border);
+		background: var(--bg-elev2);
+		color: var(--text-dim);
+	}
+
+	.dialog-option-text {
+		flex: 1;
+		min-width: 0;
+	}
+
+	.dialog-option.opt-affirmative {
+		border-color: color-mix(in srgb, var(--green, #10b981) 40%, var(--border));
+	}
+	.dialog-option.opt-affirmative.sel,
+	.dialog-option.opt-affirmative:hover {
+		border-color: var(--green, #10b981);
+		background: color-mix(in srgb, var(--green, #10b981) 12%, transparent);
+	}
+	.dialog-option.opt-negative {
+		border-color: color-mix(in srgb, var(--red, #ef4444) 40%, var(--border));
+	}
+	.dialog-option.opt-negative.sel,
+	.dialog-option.opt-negative:hover {
+		border-color: var(--red, #ef4444);
+		background: color-mix(in srgb, var(--red, #ef4444) 12%, transparent);
+	}
+
+	/* 拒绝并说明原因反馈闭环 */
+	.dialog-reject-box {
+		margin-top: 2px;
+		display: flex;
+		flex-direction: column;
+		gap: 4px;
+	}
+	.dialog-reject-toggle {
+		background: none;
+		border: none;
+		padding: 2px 4px;
+		font-size: 11.5px;
+		color: var(--text-faint);
+		cursor: pointer;
+		display: inline-flex;
+		align-items: center;
+		gap: 4px;
+		align-self: flex-start;
+		border-radius: 4px;
+	}
+	.dialog-reject-toggle:hover {
+		color: var(--text);
+		background: var(--bg-elev2);
+	}
+	.dialog-reject-input-row {
+		display: flex;
+		align-items: center;
+		gap: 6px;
+	}
+	.dialog-reject-input {
+		flex: 1;
+		font-size: 12.5px;
+		padding: 6px 10px;
+	}
+
+	/* 命令专用审计盒 */
+	.dialog-cmd-box {
+		border: 1px solid var(--border);
+		border-radius: 8px;
+		background: var(--bg-elev);
+		overflow: hidden;
+		margin: 4px 0;
+	}
+	.dialog-cmd-box.has-risk {
+		border-color: color-mix(in srgb, var(--amber) 60%, var(--border));
+	}
+	.dialog-cmd-risk {
+		background: color-mix(in srgb, var(--amber) 15%, transparent);
+		border-bottom: 1px solid color-mix(in srgb, var(--amber) 40%, transparent);
+		color: var(--amber-text, #f59e0b);
+		padding: 5px 10px;
+		font-size: 11.5px;
+		font-weight: 600;
+		display: flex;
+		align-items: center;
+		gap: 6px;
+	}
+	.dialog-cmd-head {
+		display: flex;
+		align-items: center;
+		justify-content: space-between;
+		padding: 5px 10px;
+		background: var(--bg-elev2);
+		border-bottom: 1px solid var(--border-soft);
+		font-size: 11.5px;
+	}
+	.dialog-cmd-tag {
+		display: flex;
+		align-items: center;
+		gap: 5px;
+		font-weight: 600;
+		color: var(--text-dim);
+	}
+	.dialog-cmd-badge {
+		font-size: 10px;
+		padding: 1px 5px;
+		border-radius: 999px;
+		background: var(--bg);
+		border: 1px solid var(--border-soft);
+		color: var(--text-faint);
+		margin-left: 2px;
+	}
+	.dialog-cmd-actions {
+		display: flex;
+		align-items: center;
+		gap: 6px;
+	}
+	.cmd-btn-text {
+		background: none;
+		border: 1px solid var(--border-soft);
+		border-radius: 4px;
+		padding: 2px 7px;
+		font-size: 11px;
+		color: var(--text-dim);
+		cursor: pointer;
+		display: inline-flex;
+		align-items: center;
+		gap: 4px;
+		transition: all 0.12s;
+	}
+	.cmd-btn-text:hover {
+		color: var(--text);
+		border-color: var(--border);
+		background: var(--bg);
+	}
+	.dialog-cmd-code {
+		font-family: var(--mono);
+		font-size: 12px;
+		line-height: 1.5;
+		padding: 6px 0;
+		max-height: 180px;
+		overflow-y: auto;
+		overflow-x: auto;
+		background: var(--bg);
+	}
+	.dialog-cmd-code.expanded {
+		max-height: 380px;
+	}
+	.dialog-cmd-code pre {
+		margin: 0;
+		padding: 0;
+	}
+	.dialog-cmd-code code {
+		display: block;
+		background: none;
+		border: none;
+		padding: 0;
+		font-family: inherit;
+		color: var(--code-text, inherit);
+	}
+	.dialog-cmd-line {
+		display: flex;
+		padding: 1px 10px;
+	}
+	.dialog-cmd-line:hover {
+		background: var(--bg-elev);
+	}
+	.cmd-line-num {
+		flex-shrink: 0;
+		width: 28px;
+		text-align: right;
+		padding-right: 12px;
+		color: var(--text-faint);
+		user-select: none;
+		font-size: 11px;
+		line-height: 1.5;
+	}
+	.cmd-line-text {
+		flex: 1;
+		white-space: pre;
+		min-width: 0;
 	}
 	.dialog-options > .dialog-actions {
 		position: sticky;

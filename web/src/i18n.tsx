@@ -716,6 +716,16 @@ export const zh = {
 
 	/* dialog */
 	pluginRequest: "插件请求",
+	cmdInspectorTitle: "待确认指令",
+	cmdInspectorLines: "{n} 行",
+	cmdInspectorExpand: "展开全部",
+	cmdInspectorCollapse: "收起",
+	cmdInspectorRisk: "⚠️ 检测到破坏性/高危系统指令，请仔细审计",
+	cmdCopied: "已复制",
+	rejectWithNote: "拒绝并说明原因",
+	rejectWithNoteSubmit: "拒绝并填入指示",
+	rejectNotePlaceholder: "说明拒绝原因，将自动填入输入框引导助手调整…",
+	rejectFeedbackPrefix: "关于未执行指令的补充指示：",
 	tuiOverlayTitle: "TUI 终端交互",
 	modelQuestion: "模型提问",
 	modelQuestionCustom: "补充回答（可选）",
@@ -3085,6 +3095,16 @@ export const en: Record<keyof typeof zh, string> = {
 
 	/* dialog */
 	pluginRequest: "Plugin request",
+	cmdInspectorTitle: "Command to Confirm",
+	cmdInspectorLines: "{n} lines",
+	cmdInspectorExpand: "Expand all",
+	cmdInspectorCollapse: "Collapse",
+	cmdInspectorRisk: "⚠️ High-risk system command detected, please review carefully",
+	cmdCopied: "Copied",
+	rejectWithNote: "Reject with note",
+	rejectWithNoteSubmit: "Reject and draft note",
+	rejectNotePlaceholder: "Explain why, will be put into chat composer to guide the assistant…",
+	rejectFeedbackPrefix: "Instruction regarding the rejected command: ",
 	tuiOverlayTitle: "TUI Terminal Interface",
 	modelQuestion: "Model question",
 	modelQuestionCustom: "Custom answer (optional)",
