@@ -85,6 +85,27 @@ describe("eval tool (persistent sandbox)", () => {
 		expect(res3.details.result).toBe("300");
 	});
 
+	it("handles non-ASCII UTF-8 code and output in Python without breaking IPC", async () => {
+		const tool = makeEvalTool({ cwd: process.cwd(), ownerId: "test-py-utf8" });
+		const res = await run(tool, {
+			language: "py",
+			code: 'msg = "你好，世界！🚀"\nprint(f"输出: {msg}")\nmsg',
+		});
+		expect(res.details.error).toBeNull();
+		expect(res.details.ok).toBe(true);
+		expect(res.details.stdout).toContain("你好，世界！🚀");
+		expect(res.details.result).toContain("你好，世界！🚀");
+
+		// Cell 2: verify state persistence with Chinese identifiers/strings
+		const res2 = await run(tool, {
+			language: "py",
+			code: 'print("你好，世界")',
+		});
+		expect(res2.details.error).toBeNull();
+		expect(res2.details.ok).toBe(true);
+		expect(res2.details.stdout).toContain("你好，世界");
+	});
+
 	it("supports Python reset to clear state", async () => {
 		const tool = makeEvalTool({ cwd: process.cwd(), ownerId: "test-py-reset" });
 

@@ -76,6 +76,16 @@ function resolvePythonCmd(): string | null {
 const PYTHON_DRIVER_SCRIPT = `
 import sys, io, ast, json, traceback, os
 
+# 跨平台编码对齐：Windows 默认代码页（如 CP936/GBK）读取 UTF-8 管道会导致多字节截断、
+# 反斜杠被吞噬破坏 JSON 结构（报 Expecting ',' delimiter）或触发 UnicodeDecodeError。
+# 强制标准流一律按 UTF-8 重配。
+if hasattr(sys.stdin, "reconfigure"):
+    sys.stdin.reconfigure(encoding="utf-8")
+if hasattr(sys.stdout, "reconfigure"):
+    sys.stdout.reconfigure(encoding="utf-8")
+if hasattr(sys.stderr, "reconfigure"):
+    sys.stderr.reconfigure(encoding="utf-8")
+
 WORKDIR = os.environ.get('PI_EVAL_WORKDIR', '')
 PROJECT_DIR = os.environ.get('PI_EVAL_PROJECT_DIR', '')
 
@@ -299,6 +309,8 @@ class EvalKernel {
 				...sanitizeEvalEnv(process.env),
 				PI_EVAL_WORKDIR: this.workdir,
 				PI_EVAL_PROJECT_DIR: this.cwd,
+				PYTHONUTF8: "1",
+				PYTHONIOENCODING: "utf-8",
 			},
 		};
 
@@ -307,7 +319,7 @@ class EvalKernel {
 			if (!pyCmd) {
 				throw new Error("Python executable not found in PATH. Please install Python or use language: 'js'.");
 			}
-			this.proc = spawn(pyCmd, ["-u", "-c", PYTHON_DRIVER_SCRIPT], spawnOpts);
+			this.proc = spawn(pyCmd, ["-X", "utf8", "-u", "-c", PYTHON_DRIVER_SCRIPT], spawnOpts);
 		} else {
 			// js / ts：独立 node -e 驱动，ts 时带 --experimental-strip-types 支持 TypeScript 原生剥离执行。
 			const nodeArgs =
