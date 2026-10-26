@@ -1,6 +1,6 @@
 import { describe, it, expect, afterAll } from "vitest";
 import { basename } from "node:path";
-import { makeEvalTool, disposeAllEvalKernels, EVAL_TOOL_NAME } from "../../server/eval-tool.js";
+import { makeEvalTool, disposeAllEvalKernels, EVAL_TOOL_NAME, toAsciiJson } from "../../server/eval-tool.js";
 
 async function run(
 	tool: ReturnType<typeof makeEvalTool>,
@@ -83,6 +83,44 @@ describe("eval tool (persistent sandbox)", () => {
 		});
 		expect(res3.details.ok).toBe(true);
 		expect(res3.details.result).toBe("300");
+	});
+
+	it("handles non-ASCII UTF-8 code and output in Python without breaking IPC", async () => {
+		const tool = makeEvalTool({ cwd: process.cwd(), ownerId: "test-py-utf8" });
+		// Cell 1: 包含中文（末字节落在 0x81~0xFE 的汉字如“界”后接转义引号）、Emoji 与换行注释
+		const res = await run(tool, {
+			language: "py",
+			code: '# 测试\nmsg = "界"\nfull = f"你好，{msg}！🚀"\nprint(full)\nfull',
+		});
+		expect(res.details.error).toBeNull();
+		expect(res.details.ok).toBe(true);
+		expect(res.details.stdout).toContain("你好，界！🚀");
+		expect(res.details.result).toContain("你好，界！🚀");
+
+		// Cell 2: verify state persistence with Chinese identifiers/strings
+		const res2 = await run(tool, {
+			language: "py",
+			code: 'print(f"再次验证: {full}")',
+		});
+		expect(res2.details.error).toBeNull();
+		expect(res2.details.ok).toBe(true);
+		expect(res2.details.stdout).toContain("再次验证: 你好，界！🚀");
+	});
+
+	it("toAsciiJson safely escapes non-ASCII characters to 7-bit ASCII for cross-platform IPC", () => {
+		// 1. ASCII 快速路径返回原串
+		const asciiInput = { action: "eval", code: "print('hello world')" };
+		expect(toAsciiJson(asciiInput)).toBe(JSON.stringify(asciiInput));
+
+		// 2. 包含中文、特殊符号与 Emoji 的输入必须完全消除非 ASCII 字节（> 0x7F）
+		const unicodeInput = { action: "eval", code: 'msg = "界"\n# 测试\nprint("🚀")' };
+		const escaped = toAsciiJson(unicodeInput);
+		expect(/[^\x00-\x7F]/.test(escaped)).toBe(false);
+		expect(escaped).toContain("\\u754c"); // "界"
+		expect(escaped).toContain("\\ud83d\\ude80"); // "🚀" surrogate pair
+
+		// 3. 反序列化无损还原
+		expect(JSON.parse(escaped)).toEqual(unicodeInput);
 	});
 
 	it("supports Python reset to clear state", async () => {
