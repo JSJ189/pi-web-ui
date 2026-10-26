@@ -304,6 +304,40 @@ export interface PluginHost {
 	resolveInWorkspace(relOrAbsPath: string): string;
 	/** 带有默认超时（默认 30s）与插件生命周期绑定的安全 fetch。 */
 	fetch(input: string | URL | Request, init?: RequestInit & { timeoutMs?: number }): Promise<Response>;
+	/** 宿主重资产流水线（Heavy Asset Pipeline）。 */
+	assets: {
+		ensure(
+			spec: {
+				id: string;
+				targetDir: string;
+				urls: string[];
+				sha256?: string;
+				testFile?: string;
+				size?: number;
+				description?: string;
+			},
+			opts?: {
+				onProgress?: (progress: { downloaded: number; total: number; percent: number; url: string }) => void;
+				timeoutMs?: number;
+			},
+		): Promise<{ ok: boolean; targetDir: string; cached?: boolean; sha256?: string; error?: string }>;
+		status(spec: {
+			id: string;
+			targetDir: string;
+			urls: string[];
+			sha256?: string;
+			testFile?: string;
+			size?: number;
+			description?: string;
+		}): {
+			ready: boolean;
+			downloading: boolean;
+			progress: number;
+			downloaded: number;
+			total: number;
+			error: string | null;
+		};
+	};
 	/** 无头调用：把外部通道文本投给 agent（要 "chat" 能力；宿主未接 chatProvider
 	 *  时 reject（由 chatWait 包成 {ok:false}，插件侧用 chatWait 更省心）。 */
 	chat(req: { text: string; accountId?: string }): Promise<{
@@ -512,7 +546,7 @@ export interface MockHostLogEntry {
 
 /** createMockHost(overrides?)：settings/cwd/dir/dataDir 是专用键；命名空间键
  *  （fs/ui/llm/conversations/scm/net/events/models/storage/secrets/project/dialogs/
- *  shortcuts/searchProviders/composerProviders）传对象 = 按子键合并覆盖；其余键整体
+ *  shortcuts/searchProviders/composerProviders/assets）传对象 = 按子键合并覆盖；其余键整体
  *  替换对应方法（仍进 calls 记录）。`calls`/`logs`/`mock`/`reset` 不可覆盖。 */
 export interface MockHostOverrides {
 	settings?: Record<string, unknown>;

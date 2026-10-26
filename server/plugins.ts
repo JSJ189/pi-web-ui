@@ -18,6 +18,14 @@
  */
 import type { ParsedToken, ApplyResult, MarkerOverlay, MarkerContext, MarkerTool } from "./markers/index.js";
 import { registerMarker, unregisterMarker, isBuiltinMarker } from "./markers/index.js";
+import {
+	ensurePluginAsset,
+	getPluginAssetStatus,
+	type PluginAssetSpec,
+	type PluginAssetStatus,
+	type PluginAssetResult,
+	type PluginAssetProgress,
+} from "./plugin-assets.js";
 import { mkdir, readdir, readFile, rm, stat, writeFile } from "node:fs/promises";
 import {
 	cpSync,
@@ -812,6 +820,20 @@ export interface PluginHost {
 		input: string | URL | globalThis.Request,
 		init?: RequestInit & { timeoutMs?: number },
 	): Promise<globalThis.Response>;
+	/**
+	 * 宿主重资产流水线（Heavy Asset Pipeline）：
+	 * 统一提供按需下载、多源国内镜像加速回落、SHA-256 完整性验签、
+	 * 并发防重入锁与安全原子解压支持。
+	 */
+	assets: {
+		/** 确保指定重资产已就绪；若未就绪则自动从候选镜像源安全下载解压。 */
+		ensure(
+			spec: PluginAssetSpec,
+			opts?: { onProgress?: (progress: PluginAssetProgress) => void; timeoutMs?: number },
+		): Promise<PluginAssetResult>;
+		/** 查询资产当前就绪状态或正在下载的进度。 */
+		status(spec: PluginAssetSpec): PluginAssetStatus;
+	};
 }
 
 /** 插件运行时 UI 注册（host.ui.*）——与 manifest 基线合并后随 plugins 清单下发。 */
@@ -5187,6 +5209,16 @@ export class PluginManager {
 					...init,
 					signal: combinedSignal,
 				});
+			},
+			assets: {
+				ensure: (spec, opts) => {
+					return ensurePluginAsset(dir, spec, {
+						...opts,
+						signal: pluginAbort?.signal,
+						log: (msg) => host.log(msg),
+					});
+				},
+				status: (spec) => getPluginAssetStatus(dir, spec),
 			},
 		};
 		try {

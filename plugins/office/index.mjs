@@ -33,9 +33,19 @@ const WORKER_ENTRY = join(__dirname, "artifacts", "unit-content-worker.mjs");
 const VIEWER_ROOT = join(__dirname, "artifacts", "viewer");
 const PLUGIN_NODE_MODULES = join(__dirname, "node_modules");
 
-const DEFAULT_RUNTIME_URL =
-	process.env.PI_WEB_UNIVER_RUNTIME_URL ||
-	"https://github.com/xing-shuyin/pi-web-ui/releases/download/v0.111.0/univer-artifacts.tar.gz";
+const UNIVER_ASSET_SPEC = {
+	id: "univer-runtime",
+	targetDir: "artifacts",
+	urls: [
+		process.env.PI_WEB_UNIVER_RUNTIME_URL,
+		"https://github.com/xing-shuyin/pi-web-ui/releases/download/v0.111.0/univer-artifacts.tar.gz",
+		"https://github.com/xing-shuyin/pi-web-ui/releases/download/v0.110.0/univer-artifacts.tar.gz",
+	].filter(Boolean),
+	sha256: "9d172e72dc9ca657967434b9cf7b4dd89df7f7eb25dcf7ab1f1ea8592014f196",
+	testFile: "gateway.cjs",
+	size: 35380332,
+	description: "Univer Office 1:1 Canvas runtime rendering and editing gateway",
+};
 
 /** 工作区边界：relPath/targetPath 解析后必须落在 cwd 内，防越界读写
  *  （`../../secret` 之类可借路由读写工作区外任意文件）。 */
@@ -107,6 +117,41 @@ export default {
 		let gatewayOrigin = "";
 		let gatewayProc = null;
 		let gatewayReady = false;
+		let lastActivityTime = 0;
+		let idleTimer = null;
+
+		// 默认 15 分钟无活动自动休眠，释放系统内存与端口
+		const IDLE_TIMEOUT_MS = Math.max(
+			60_000,
+			Number(process.env.PI_WEB_OFFICE_IDLE_TIMEOUT_MS ?? 15 * 60 * 1000) || 15 * 60 * 1000,
+		);
+
+		function touchActivity() {
+			lastActivityTime = Date.now();
+			if (!idleTimer) {
+				idleTimer = setInterval(() => {
+					if (!gatewayReady || !gatewayProc) return;
+					if (Date.now() - lastActivityTime >= IDLE_TIMEOUT_MS) {
+						stopGateway("idle");
+					}
+				}, 15_000);
+			}
+		}
+
+		function stopGateway(reason = "manual") {
+			if (gatewayProc) {
+				try {
+					gatewayProc.kill();
+				} catch {}
+				gatewayProc = null;
+			}
+			gatewayReady = false;
+			if (reason === "idle") {
+				host.log(`Univer Gateway 网关已进入空闲休眠（已释放系统内存与端口 ${gatewayPort}）`);
+			}
+			gatewayPort = 0;
+			gatewayOrigin = "";
+		}
 
 		const provisioningState = {
 			downloading: false,
@@ -117,6 +162,7 @@ export default {
 		};
 
 		async function startGateway() {
+			touchActivity();
 			if (gatewayReady) return true;
 			if (!existsSync(GATEWAY_ENTRY) || !existsSync(VIEWER_ROOT)) {
 				return false;
@@ -134,9 +180,6 @@ export default {
 
 			gatewayProc = spawn(process.execPath, [GATEWAY_ENTRY], {
 				env: childEnv,
-				// pipe 却不排水：子进程输出填满 OS 管道缓冲（约 4-64KB）后每次
-				// console.log 都会阻塞，网关整体冻结且表现为"就绪后渲染全部超时"。
-				// 网关日志量大，这里直接丢弃。
 				stdio: ["ignore", "ignore", "ignore"],
 				windowsHide: true,
 			});
@@ -153,21 +196,32 @@ export default {
 			return gatewayReady;
 		}
 
-		// 检查本地已有资产并尝试自启
-		if (existsSync(GATEWAY_ENTRY) && existsSync(VIEWER_ROOT)) {
-			await startGateway();
-		} else {
+		// 检查本地已有资产：遵循按需冷启动原则，初次加载时不强占后台进程
+		if (!existsSync(GATEWAY_ENTRY) || !existsSync(VIEWER_ROOT)) {
 			host.log("Univer 运行时资产尚未就绪，将在首次需要时按需下载（约 34MB）");
 		}
 
 		let activeDownloadPromise = null;
 
-		/** 流式下载并解压运行时压缩包 */
-		async function downloadAndExtractRuntime() {
+		/** 确保运行时资产就绪（优先走宿主重资产流水线，支持国内镜像加速与 SHA-256 强校验） */
+		async function ensureRuntime() {
+			touchActivity();
 			if (existsSync(GATEWAY_ENTRY) && existsSync(VIEWER_ROOT)) {
-				await startGateway();
 				return { ok: true, message: "Runtime already present" };
 			}
+
+			if (host.assets?.ensure) {
+				return await host.assets.ensure(UNIVER_ASSET_SPEC, {
+					onProgress: (p) => {
+						provisioningState.downloading = true;
+						provisioningState.downloaded = p.downloaded;
+						provisioningState.total = p.total;
+						provisioningState.progress = p.percent;
+					},
+				});
+			}
+
+			// 宿主未接入时的纯净自愈降级回落
 			if (activeDownloadPromise) {
 				return await activeDownloadPromise;
 			}
@@ -179,19 +233,16 @@ export default {
 
 				const targetTar = join(__dirname, "univer-artifacts.tar.gz");
 				try {
-					host.log(`正在从 ${DEFAULT_RUNTIME_URL} 下载 Univer 运行时压缩包...`);
-					// 停滞连接（对端不发 RST）会让裸 fetch 挂数分钟，期间
-					// provisioningState.downloading 卡在 true，一键安装只回
-					// "Download already in progress"——整体 10 分钟兜底超时。
+					const dlUrl = UNIVER_ASSET_SPEC.urls[0] || UNIVER_ASSET_SPEC.urls[1];
+					host.log(`正在下载 Univer 运行时压缩包 (${dlUrl})...`);
 					const fetchFn = typeof host.fetch === "function" ? host.fetch.bind(host) : fetch;
-					const res = await fetchFn(DEFAULT_RUNTIME_URL, { timeoutMs: 600_000, signal: AbortSignal.timeout(600_000) });
+					const res = await fetchFn(dlUrl, { timeoutMs: 600_000, signal: AbortSignal.timeout(600_000) });
 					if (!res.ok) throw new Error(`下载 Univer 运行时失败: HTTP ${res.status}`);
 
 					const total = Number(res.headers.get("content-length") || 0);
 					provisioningState.total = total;
 
 					const fileStream = createWriteStream(targetTar);
-					// 写盘失败（磁盘满/权限）默认不会抛到 await 链，必须显式监听
 					let streamError = null;
 					fileStream.on("error", (e) => {
 						streamError = e;
@@ -219,14 +270,10 @@ export default {
 					if (streamError) throw streamError;
 
 					host.log("下载完成，正在解压 Univer 运行时组件...");
-					// 解压到 staging 目录、成功后整体替换：tar 顺序解压中途失败（磁盘满/
-					// 进程被杀/压缩包截断）会在 artifacts/ 留下 gateway.cjs 已解出而 viewer
-					// 只解一半的半成品——所有 existsSync 门禁随即误判"已安装"，且下载
-					// 函数开头 short-circuit，再无自愈通道，用户永远只看到"网关启动超时"。
 					const stagingDir = join(__dirname, `.univer-staging-${Date.now()}`);
 					mkdirSync(stagingDir, { recursive: true });
 					try {
-						execSync(`tar -xzf "${targetTar}" -C "${stagingDir}"`, { windowsHide: true });
+						execSync(`tar --force-local -xzf "${targetTar}" -C "${stagingDir}"`, { windowsHide: true });
 						const extracted = existsSync(join(stagingDir, "artifacts")) ? join(stagingDir, "artifacts") : stagingDir;
 						rmSync(join(__dirname, "artifacts"), { recursive: true, force: true });
 						renameSync(extracted, join(__dirname, "artifacts"));
@@ -242,11 +289,6 @@ export default {
 
 					provisioningState.downloading = false;
 					provisioningState.progress = 100;
-
-					const started = await startGateway();
-					if (!started) throw new Error("运行时解压成功但启动网关守护进程失败");
-
-					host.log("Univer 运行时就绪且网关已成功拉起！");
 					return { ok: true };
 				} catch (err) {
 					provisioningState.downloading = false;
@@ -254,7 +296,6 @@ export default {
 					try {
 						unlinkSync(targetTar);
 					} catch {}
-					host.log(`Univer 运行时自动安装失败: ${provisioningState.error}`);
 					throw err;
 				}
 			})().finally(() => {
@@ -264,22 +305,26 @@ export default {
 			return await activeDownloadPromise;
 		}
 
+		async function ensureGatewayReady() {
+			touchActivity();
+			if (gatewayReady) return true;
+			if (!existsSync(GATEWAY_ENTRY) || !existsSync(VIEWER_ROOT)) {
+				host.log("Univer 运行时资产未就绪，正在按需自动下载解压 (~34MB)...");
+				await ensureRuntime();
+			}
+			const ok = await startGateway();
+			if (!ok) {
+				throw new Error("Univer 渲染网关尚未就绪，请先安装运行时组件");
+			}
+			return true;
+		}
+
 		// 内存缓存：filePath:mtime -> { univerPath, unitId }
 		const conversionCache = new Map();
 
 		/** 将工作区 Office 文件转换并注册为 Univer Unit */
 		async function prepareUniverDoc(absPath) {
-			if (!gatewayReady) {
-				if (!existsSync(GATEWAY_ENTRY) || !existsSync(VIEWER_ROOT)) {
-					host.log("Univer 运行时资产未就绪，正在按需自动下载解压 (~34MB)...");
-					await downloadAndExtractRuntime();
-				} else {
-					await startGateway();
-				}
-				if (!gatewayReady) {
-					throw new Error("Univer 渲染网关尚未就绪，请先安装运行时组件");
-				}
-			}
+			await ensureGatewayReady();
 
 			const st = statSync(absPath);
 			const cacheKey = `${absPath}:${st.mtimeMs}`;
@@ -581,24 +626,42 @@ export default {
 		}
 
 		host.route("GET", "/status", async (_req, res) => {
+			const assetStatus = host.assets?.status
+				? host.assets.status(UNIVER_ASSET_SPEC)
+				: {
+						ready: existsSync(GATEWAY_ENTRY) && existsSync(VIEWER_ROOT),
+						downloading: provisioningState.downloading,
+						progress: provisioningState.progress,
+						downloaded: provisioningState.downloaded,
+						total: provisioningState.total,
+						error: provisioningState.error,
+					};
+
 			res.json({
 				ok: true,
 				ready: gatewayReady,
 				origin: gatewayOrigin,
 				port: gatewayPort,
-				hasArtifacts: existsSync(GATEWAY_ENTRY) && existsSync(VIEWER_ROOT),
-				...provisioningState,
+				hasArtifacts: assetStatus.ready,
+				downloading: assetStatus.downloading,
+				progress: assetStatus.progress,
+				total: assetStatus.total,
+				downloaded: assetStatus.downloaded,
+				error: assetStatus.error,
 			});
 		});
 
 		// 路由：一键下载并激活运行时
 		host.route("POST", "/provision-runtime", async (_req, res) => {
 			try {
-				if (provisioningState.downloading) {
-					return res.json({ ok: true, message: "Download already in progress", state: provisioningState });
+				const current = host.assets?.status?.(UNIVER_ASSET_SPEC) || provisioningState;
+				if (current.downloading) {
+					return res.json({ ok: true, message: "Download already in progress", state: current });
 				}
-				const result = await downloadAndExtractRuntime();
-				res.json(result);
+				await ensureRuntime();
+				const started = await startGateway();
+				if (!started) throw new Error("运行时解压成功但启动网关守护进程超时");
+				res.json({ ok: true });
 			} catch (err) {
 				res.status(err?.statusCode || 500).json({ ok: false, error: err.message || String(err) });
 			}
@@ -814,14 +877,11 @@ export default {
 		});
 
 		return () => {
-			host.log("正在关闭 Univer Gateway 服务...");
-			if (gatewayProc) {
-				try {
-					gatewayProc.kill();
-				} catch {}
-				gatewayProc = null;
-				gatewayReady = false;
+			if (idleTimer) {
+				clearInterval(idleTimer);
+				idleTimer = null;
 			}
+			stopGateway("shutdown");
 		};
 	},
 };

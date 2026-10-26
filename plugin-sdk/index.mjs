@@ -542,6 +542,16 @@ export function createMockHost(overrides) {
 			record("fetch", [input, init]);
 			return fetch(input, init);
 		},
+		assets: {
+			ensure: async (spec, opts) => {
+				record("assets.ensure", [spec, opts]);
+				return { ok: true, targetDir: spec?.targetDir ?? "artifacts", cached: true };
+			},
+			status: (spec) => {
+				record("assets.status", [spec]);
+				return { ready: true, downloading: false, progress: 100, downloaded: 0, total: 0, error: null };
+			},
+		},
 		// 浏览器桥兼容（client 侧逻辑单测也能用同一个 mock）：无注入回退语义。
 		dialogs: {
 			select: async () => ({ ok: false }),

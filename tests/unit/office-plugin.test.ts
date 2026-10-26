@@ -9,8 +9,8 @@ describe("office plugin verification (plugins/office)", () => {
 		const manifest = JSON.parse(readFileSync(join(pluginDir, "manifest.json"), "utf8"));
 		const pkg = JSON.parse(readFileSync(join(pluginDir, "package.json"), "utf8"));
 
-		expect(manifest.version).toBe("0.3.5");
-		expect(pkg.version).toBe("0.3.5");
+		expect(manifest.version).toBe("0.3.6");
+		expect(pkg.version).toBe("0.3.6");
 		expect(manifest.apiVersion).toBe(2);
 		expect(manifest.permissions).toContain("tools");
 		expect(manifest.permissions).toContain("http");
@@ -98,6 +98,52 @@ describe("office plugin verification (plugins/office)", () => {
 		// 工具正确注册
 		expect(registeredTool).toBeTruthy();
 		expect(registeredTool.name).toBe("office");
+
+		if (typeof cleanup === "function") cleanup();
+	});
+
+	it("宿主重资产流水线接入：host.assets.ensure 与 status 协同联动", async () => {
+		const mod = await import(join(pluginDir, "index.mjs"));
+		const routes: Record<string, Function> = {};
+		let assetEnsureCalled = false;
+		let assetStatusCalled = false;
+
+		const mockHost = {
+			cwd: resolve("/fake/workspace"),
+			log: () => {},
+			route: (method: string, path: string, handler: Function) => {
+				routes[`${method} ${path}`] = handler;
+			},
+			registerTool: () => {},
+			assets: {
+				ensure: async (spec: any) => {
+					assetEnsureCalled = true;
+					expect(spec.id).toBe("univer-runtime");
+					expect(spec.sha256).toBeTruthy();
+					return { ok: true, targetDir: "/fake/artifacts" };
+				},
+				status: (spec: any) => {
+					assetStatusCalled = true;
+					expect(spec.id).toBe("univer-runtime");
+					return {
+						ready: false,
+						downloading: false,
+						progress: 0,
+						downloaded: 0,
+						total: 35380332,
+						error: null,
+					};
+				},
+			},
+		};
+
+		const cleanup = await mod.default.activate(mockHost);
+
+		// status 路由应委托 host.assets.status
+		let statusJson: any = null;
+		await routes["GET /status"]({}, { json: (d: any) => (statusJson = d) });
+		expect(assetStatusCalled).toBe(true);
+		expect(statusJson.hasArtifacts).toBe(false);
 
 		if (typeof cleanup === "function") cleanup();
 	});
