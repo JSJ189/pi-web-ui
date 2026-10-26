@@ -78,13 +78,13 @@ import sys, io, ast, json, traceback, os
 
 # 跨平台编码对齐：Windows 默认代码页（如 CP936/GBK）读取 UTF-8 管道会导致多字节截断、
 # 反斜杠被吞噬破坏 JSON 结构（报 Expecting ',' delimiter）或触发 UnicodeDecodeError。
-# 强制标准流一律按 UTF-8 重配。
+# 强制标准流一律按 UTF-8 重配并附带容错替换策略，避免解码死锁。
 if hasattr(sys.stdin, "reconfigure"):
-    sys.stdin.reconfigure(encoding="utf-8")
+    sys.stdin.reconfigure(encoding="utf-8", errors="replace")
 if hasattr(sys.stdout, "reconfigure"):
-    sys.stdout.reconfigure(encoding="utf-8")
+    sys.stdout.reconfigure(encoding="utf-8", errors="backslashreplace")
 if hasattr(sys.stderr, "reconfigure"):
-    sys.stderr.reconfigure(encoding="utf-8")
+    sys.stderr.reconfigure(encoding="utf-8", errors="backslashreplace")
 
 WORKDIR = os.environ.get('PI_EVAL_WORKDIR', '')
 PROJECT_DIR = os.environ.get('PI_EVAL_PROJECT_DIR', '')
@@ -135,7 +135,7 @@ for line in sys.stdin:
     except Exception as e:
         resp = {'ok': False, 'stdout': '', 'stderr': '', 'result': None, 'error': traceback.format_exc()}
     
-    sys.stdout.write('__PI_EVAL_RES__' + json.dumps(resp, ensure_ascii=False) + '\\n')
+    sys.stdout.write('__PI_EVAL_RES__' + json.dumps(resp, ensure_ascii=True) + '\\n')
     sys.stdout.flush()
 `;
 
@@ -275,6 +275,20 @@ export function sanitizeEvalEnv(sourceEnv: NodeJS.ProcessEnv): NodeJS.ProcessEnv
 		}
 	}
 	return cleanEnv;
+}
+
+/**
+ * 传输层 ASCII 安全序列化：
+ * 将所有非 ASCII 字符（> 0x7F，含中文、特殊符号与 Emoji 代理对）转义为标准 JSON \uXXXX 格式。
+ * 纯 7-bit ASCII 传输流在跨平台任何操作系统本地代码页（如 Windows CP936/GBK/Shift-JIS）下
+ * 绝不会发生反斜杠 0x5C 被多字节汉字首字节“吞噬”导致 JSON 结构损毁或崩溃的问题。
+ */
+export function toAsciiJson(data: unknown): string {
+	const raw = JSON.stringify(data);
+	if (!/[^\x00-\x7F]/.test(raw)) {
+		return raw;
+	}
+	return raw.replace(/[^\x00-\x7F]/g, (c) => "\\u" + c.charCodeAt(0).toString(16).padStart(4, "0"));
 }
 
 /** 单个持久内核工作进程包装。 */
@@ -437,7 +451,7 @@ class EvalKernel {
 		const item = this.queue.shift()!;
 		this.current = item;
 		try {
-			this.proc!.stdin!.write(JSON.stringify(item.req) + "\n");
+			this.proc!.stdin!.write(toAsciiJson(item.req) + "\n");
 		} catch (err) {
 			this.current = null;
 			this.settle(item, {
