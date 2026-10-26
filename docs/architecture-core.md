@@ -237,14 +237,15 @@ SDK 内置 `read` 只处理文件（`read("server")` 直接 `EISDIR: illegal ope
 
 参数上额外接受 `file_path` 作为 `path` 的别名（部分客户端/模型习惯发 `file_path`）：schema 里 `path` 仍必填，靠 `prepareArguments` 在校验前把只有 `file_path` 的调用归一成 `path`（两者都给时 `path` 为准），转发内置实现时也带上归一后的 `path`。前端工具卡头的路径提示（`web/src/tool-args.ts`）本来就同时认这两个名（SDK 自带 renderers 亦然）。
 
-**基底也可能是第三方扩展注册的 `read`**：SDK 的合并链是 `[...扩展注册的工具, ...customTools]` 逐个后写赢，所以覆盖层若直接进创建时的 `customTools` 就会**静默顶掉**扩展的同名工具 —— 而官方 `docs/extensions.md` §Overriding Built-in Tools 明写扩展可以覆盖 `read`/`edit`/`write` 等（逐个列出了 `read`）。因此 `read` / `write` / `edit` 三处覆盖**不在创建时注册**，改由 `server/tool-overrides.ts` 在会话建好后注入，基底优先取扩展实现 —— 详见下一节「覆盖与第三方扩展同名工具共存」。
+**基底也可能是第三方扩展注册的 `read` 或 `bash`**：SDK 的合并链是 `[...扩展注册的工具, ...customTools]` 逐个后写赢，所以覆盖层若直接进创建时的 `customTools` 就会**静默顶掉**扩展的同名工具 —— 而官方 `docs/extensions.md` §Overriding Built-in Tools 明写扩展可以覆盖 `read`/`bash`/`edit`/`write` 等。因此 `bash` / `read` / `write` / `edit` 四处覆盖**不在创建时注册**，改由 `server/tool-overrides.ts` 在会话建好后注入，基底优先取扩展实现 —— 详见下一节「覆盖与第三方扩展同名工具共存」。
 
 ### 覆盖与第三方扩展同名工具共存（`server/tool-overrides.ts`）
 
-pi-web-ui 覆盖了 SDK 内置 `read` / `write` / `edit`（bash 覆盖是另一个先例）。SDK 的注册表合并链是 `allCustomTools = [...扩展注册的工具, ...customTools]` 再逐个 `definitionRegistry.set(name, …)` —— **后写赢**：创建时把覆盖塞进 `customTools`，等于让 `docs/extensions.md`「扩展可覆盖内置工具」那句承诺失效（第三方扩展的同名工具永远轮不到，且症状会伪装：覆盖层转发内置实现 ⇒ 读文件/图片/目录都正常，只有扩展特有的能力没有，例如 `pi-better-edit` 的 read 不出 `HASH│content` 锚、它的 `edit` 随后一律 `E_UNKNOWN_ANCHOR`）。
+pi-web-ui 覆盖了 SDK 内置 `bash` / `read` / `write` / `edit`。SDK 的注册表合并链是 `allCustomTools = [...扩展注册的工具, ...customTools]` 再逐个 `definitionRegistry.set(name, …)` —— **后写赢**：创建时把覆盖塞进 `customTools`，等于让 `docs/extensions.md`「扩展可覆盖内置工具」那句承诺失效（第三方扩展的同名工具永远轮不到，且审查/沙盒类扩展被彻底架空，例如 `@buyong/pi-codex-auto-review` 的 bash 审查完全不触发，命令直接裸奔，issue #750）。
 
-现在的做法：这三处覆盖在**会话建好后**由 `installToolOverrides(session, specs)` 注入 —— 逐个按名字从 `session.extensionRunner.getAllRegisteredTools()` 取扩展实现当基底（取不到才用 pi-web-ui 自己的完整实现），交给 `composeWith` 装饰后**前置**写回 `session._customTools` 并 `_refreshToolRegistry()`（与插件工具同步 `syncPluginToolsIntoSession` 同一手法）：
+现在的做法：这四处核心覆盖在**会话建好后**由 `installToolOverrides(session, specs)` 注入 —— 逐个按名字从 `session.extensionRunner.getAllRegisteredTools()` 取扩展实现当基底（取不到才用 pi-web-ui 自己的完整实现），交给 `composeWith` 装饰后**前置**写回 `session._customTools` 并 `_refreshToolRegistry()`（与插件工具同步 `syncPluginToolsIntoSession` 同一手法）：
 
+- `bash`：有扩展 bash → 保留扩展自身的一切定义与独有参数（如审查参数 `sandbox_permissions`），外层包裹宿主硬安全闸门（目标审查回合只读 / 审查者模式拦截 / 计划模式硬闸门 / 沙箱越界硬围栏 / 会话只读权限 / 审批规则引擎 / 插件守卫），并桥接 `bashKills`（使 UI 中断按钮可中断扩展内部命令）与 `applyHeadTail`；没有 → 原生可中断 bash 与 PTY 终端 bash 自适应分流（`makeAdaptiveBashTool`）。检测到扩展接管时通过 notice 告知用户终端接管已让位。
 - `read`：有扩展 read → `withReadDirSupport(扩展定义)` —— 基底的 name/label/描述/参数 schema/`prepareArguments`/render 槽位全部原样保留，只补一句目录说明、一条目录指引与目录分支（目录分支仍复用 SDK `ls` 的排序/`/` 后缀/截断口径）；没有 → `makeReadDirTool()`（内置基底 + 英文描述 + `file_path` 别名）。转发基底时**不改写扩展的参数**（`file_path` 归一只属于内置那份，扩展自带 `prepareArguments`）。
 - `write` / `edit`：有扩展同名工具 → 把它的定义当权限沙箱包装的**基底**（执行时先过只读 / 工作区外拦截与审批，再委托扩展实现）；没有 → 包装 SDK 内置实现。
 

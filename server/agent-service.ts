@@ -202,7 +202,13 @@ import { goalReviewDenial, shouldDeferPromptForReview } from "./goal-review-gate
 import { readPlanModeFromSession, readPlanFromSession } from "./permission-preset.js";
 import { readDelegateModeFromSession } from "./permission-preset.js";
 
-import { makePersistentTerminalTools, makeTerminalBashTool, stripAnsi, TERMINAL_TOOLS_GUIDANCE } from "./terminals.js";
+import {
+	applyHeadTail,
+	makePersistentTerminalTools,
+	makeTerminalBashTool,
+	stripAnsi,
+	TERMINAL_TOOLS_GUIDANCE,
+} from "./terminals.js";
 import {
 	applyAgentToolsGating,
 	ASK_USER_QUESTION_TOOL_NAME,
@@ -3600,57 +3606,10 @@ export class ClientSession {
 				services,
 				sessionManager,
 				model: sessionModel,
-				// 覆盖 SDK 内置 bash（customTools 按 name 覆盖）。双实现分流：
-				// 「默认 bash 覆盖」开关（terminalBash）关 → 原生 SDK bash（纯进程、不开终端）；
-				// 开 → 终端接管 bash（persist 决定一次性/持久，可静默自动转后台）。
-				// 整列工具统一过计划模式闸门（只规划不实施，写类/旁路工具执行前拒），
-				// read/write/edit 三处覆盖在会话建好后另注入（见 installToolOverrides）。
+				// bash / read / write / edit 四处覆盖统一在会话建好后另注入（见 installToolOverrides）。
+				// 原因是创建时的 customTools 恒顶掉第三方扩展注册的同名工具（SDK 的合并链是
+				// [...扩展注册的工具, ...customTools] 后写赢，issue #750）。
 				customTools: [
-					// P1-5：bash/read 包插件拦截（pre 拒/问即拦、post 脱敏补上下文；
-					// 未注入 toolGuard 时 withToolGuard 原样返回，零开销）。
-					// 权限沙箱拦截（只读模式拦截终端执行）。
-					wrapBashToolWithPermission(
-						withToolGuard(
-							withWorkspaceSnapshotGate(
-								makeAdaptiveBashTool(
-									// issue #91：bash 返回按客户端 UI 语言出中英（英文默认）。
-									makeKillableBashTool(effectiveCwd, this.bashKills, () => this.getLang()),
-									makeTerminalBashTool(terminals, {
-										cwd: effectiveCwd,
-										// 设置开 = 用终端；此分支里 persist 未显式给时默认一次性（false）。
-										defaultPersist: () => false,
-										idleMs: () => Math.max(0, Math.floor(this.settingsSvc.current.terminalBashIdleMs) || 0),
-										maxForegroundMs: () =>
-											Math.max(0, Math.floor(this.settingsSvc.current.terminalBashMaxForegroundMs) || 0),
-										kills: this.bashKills,
-										notifyBackgroundDone: (info) => this.notifyTerminalBashDone(terminals, info),
-										// issue #91：bash 返回按客户端 UI 语言出中英（英文默认）。
-										lang: () => this.getLang(),
-									}),
-									// 设置关 → 原生 bash；开 → 终端 bash。
-									() => this.settingsSvc.current.terminalBash,
-								),
-								() => this.awaitPendingWorkspaceSnapshot(ownerId),
-							),
-							{
-								toolName: "bash",
-								guard: this.lateToolGuard,
-								conversationId: () => ownerId,
-								getLang: () => this.getLang(),
-								cwd: effectiveCwd,
-								getRoots: () => this.roots,
-								askApproval: (toolCallId, toolName, params, reason, reasonEn, convId, category) =>
-									this.askApproval(toolCallId, toolName, params, reason, reasonEn, convId, category),
-								getRules: () => this.approvalRules.list(),
-								onAudit: (entry) => this.auditLogger.record(entry),
-							},
-						),
-						() =>
-							(ownerId ? this.convs.get(ownerId)?.permissionPreset : undefined) ??
-							this.settingsSvc.current.defaultPermissionPreset ??
-							"workspace-write-never",
-						() => this.getLang(),
-					),
 					...makePersistentTerminalTools(terminals, effectiveCwd, () => this.getLang(), {
 						checkSafety: async (cmd, ctx) => {
 							// 沙盒硬围栏：禁止引用源项目路径或跳出沙盒根。
@@ -3772,7 +3731,7 @@ export class ClientSession {
 							return {};
 						},
 					}).map((tool) => withWorkspaceSnapshotGate(tool, () => this.awaitPendingWorkspaceSnapshot(ownerId))),
-					// read / write / edit 三处覆盖**不在这里注册**：创建时的 customTools 恒胜、与
+					// bash / read / write / edit 四处覆盖**不在这里注册**：创建时的 customTools 恒胜、与
 					// 扩展加载顺序无关，直接塞进来会静默顶掉第三方扩展注册的同名工具（见
 					// tool-overrides.ts）；它们改在会话建好后由 installToolOverrides 注入。
 					// 不覆盖内置 edit 的独立宽松编辑工具（缩进不敏感匹配；开关看设置；带权限沙箱拦截与人机协同）。
@@ -3982,12 +3941,25 @@ export class ClientSession {
 			// 不改它（见 ClientSession.findConversationHome）。
 			bridgeAnchor.session = created.session;
 			if (noSpawnTools) SPAWN_TOOLS_BARRED.add(created.session);
-			// read / write / edit 三处覆盖在会话建好后注入（见 tool-overrides.ts）：SDK 的合并链是
+			// bash / read / write / edit 四处覆盖在会话建好后注入（见 tool-overrides.ts）：SDK 的合并链是
 			// [...扩展工具, ...customTools] 后写赢 ⇒ 创建时塞进 customTools 会**恒定顶掉**第三方
-			// 扩展注册的同名工具（官方 docs/extensions.md 明写扩展可覆盖 read/write/edit）。
+			// 扩展注册的同名工具（官方 docs/extensions.md 明写扩展可覆盖 bash/read/write/edit，issue #750）。
 			installToolOverrides(
 				created.session as unknown as OverrideSessionLike,
-				this.toolOverrideSpecs(ownerId, effectiveCwd),
+				this.toolOverrideSpecs(ownerId, effectiveCwd, terminals),
+				{
+					onComposed: (name) => {
+						if (name === "bash") {
+							this.emit({
+								type: "notice",
+								level: "info",
+								text: "已接入第三方扩展注册的 bash 工具（扩展审查/沙箱已生效，内置终端接管已让位）。",
+								textEn:
+									"Third-party extension bash tool is active (extension review/sandbox enabled; built-in terminal takeover yielded).",
+							});
+						}
+					},
+				},
 			);
 			// 终端工具开关与预设门控从创建起就生效（工具始终注册进注册表，只调活跃集）。
 			this.applyToolGating(created.session, targetPreset);
@@ -8156,11 +8128,11 @@ export class ClientSession {
 	}
 
 	/**
-	 * read / write / edit 三处覆盖的注入规格：基底 = 扩展注册的同名工具优先，否则 SDK 内置实现
-	 * （见 tool-overrides.ts —— 这三处覆盖不能塞进创建时的 `customTools`，那会静默顶掉扩展的
-	 * 同名工具，而官方 docs/extensions.md 明写扩展可覆盖 read/write/edit）。
+	 * bash / read / write / edit 四处覆盖的注入规格：基底 = 扩展注册的同名工具优先，否则 SDK 内置实现
+	 * （见 tool-overrides.ts —— 这四处覆盖不能塞进创建时的 `customTools`，那会静默顶掉扩展的
+	 * 同名工具，而官方 docs/extensions.md 明写扩展可覆盖 bash/read/write/edit，issue #750）。
 	 */
-	private toolOverrideSpecs(ownerId: string | undefined, cwd: string): ToolOverrideSpec[] {
+	private toolOverrideSpecs(ownerId: string | undefined, cwd: string, terminals?: TerminalManager): ToolOverrideSpec[] {
 		const currentPermission = (): string =>
 			(ownerId ? this.convs.get(ownerId)?.permissionPreset : undefined) ??
 			this.settingsSvc.current.defaultPermissionPreset ??
@@ -8183,7 +8155,7 @@ export class ClientSession {
 			getRules: () => this.approvalRules.list(),
 			onAudit: (entry) => this.auditLogger.record(entry),
 		};
-		// 写/编的权限沙箱包装：同一个函数，有扩展同名工具时把它的定义当基底（末参）。
+		// 写/编/终端的权限沙箱包装：同一个函数，有扩展同名工具时把它的定义当基底（末参）。
 		// 目标审查闸门包在**最外层**（权限沙箱之前）：审查回合只读核实，写类直接拒。
 		// 快照并发门禁包裹在工具执行最前沿，确保写操作前快照必定已就绪。
 		const planGate = (def: ToolDefinition): ToolDefinition =>
@@ -8234,8 +8206,78 @@ export class ClientSession {
 					base,
 				),
 			);
+		const composeBash = (base?: AnyToolDefinition): ToolDefinition => {
+			let core: ToolDefinition;
+			if (base) {
+				// 扩展提供了同名 bash：以扩展定义为基底，保留其 schema/描述/guidelines，
+				// 同时挂载 abort_bash 信号中断支持与 head/tail 输出后处理。
+				core = {
+					...base,
+					execute: async (toolCallId, params, signal, onUpdate, ctx) => {
+						const ac = new AbortController();
+						this.bashKills.add(ac);
+						try {
+							const signals = [signal, ac.signal].filter((s): s is AbortSignal => s !== undefined);
+							const combinedSignal = signals.length > 1 ? AbortSignal.any(signals) : signals[0];
+							const result = (await base.execute(toolCallId, params as never, combinedSignal, onUpdate, ctx)) as {
+								content?: Array<{ type: string; text?: string }>;
+							};
+							const p = params as { head?: number; tail?: number };
+							if ((p?.head || p?.tail) && result?.content?.[0]?.text != null) {
+								result.content![0].text = applyHeadTail(result.content![0].text!, p.head, p.tail, this.getLang());
+							}
+							return result as never;
+						} finally {
+							this.bashKills.delete(ac);
+						}
+					},
+				};
+			} else {
+				// 没有扩展 bash：完整的原生与终端自适应分流 bash（行为与改动前逐字一致）。
+				core = makeAdaptiveBashTool(
+					makeKillableBashTool(cwd, this.bashKills, () => this.getLang()),
+					terminals
+						? makeTerminalBashTool(terminals, {
+								cwd,
+								defaultPersist: () => false,
+								idleMs: () => Math.max(0, Math.floor(this.settingsSvc.current.terminalBashIdleMs) || 0),
+								maxForegroundMs: () =>
+									Math.max(0, Math.floor(this.settingsSvc.current.terminalBashMaxForegroundMs) || 0),
+								kills: this.bashKills,
+								notifyBackgroundDone: (info) => this.notifyTerminalBashDone(terminals, info),
+								lang: () => this.getLang(),
+							})
+						: makeKillableBashTool(cwd, this.bashKills, () => this.getLang()),
+					() => Boolean(terminals && this.settingsSvc.current.terminalBash),
+				);
+			}
+
+			const guarded = withToolGuard(
+				withWorkspaceSnapshotGate(core, () => this.awaitPendingWorkspaceSnapshot(ownerId)),
+				{
+					toolName: "bash",
+					guard: this.lateToolGuard,
+					conversationId: () => ownerId,
+					getLang: () => this.getLang(),
+					cwd,
+					getRoots: () => this.roots,
+					askApproval: approve,
+					getRules: () => this.approvalRules.list(),
+					onAudit: (entry) => this.auditLogger.record(entry),
+				},
+			);
+
+			const permissionWrapped = wrapBashToolWithPermission(guarded, currentPermission, () => this.getLang());
+
+			return this.wrapGenericTool(permissionWrapped, ownerId, cwd);
+		};
 		const remoteOps = createRemoteSdkOperations(cwd);
 		const specs: ToolOverrideSpec[] = [
+			{
+				name: "bash",
+				fallback: () => composeBash(),
+				composeWith: (base) => composeBash(base),
+			},
 			{
 				name: "read",
 				// 没有扩展 read：完整覆盖（内置基底 + 英文描述 + file_path 别名）。

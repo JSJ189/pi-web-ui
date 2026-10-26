@@ -8,6 +8,7 @@ import { describe, expect, it, vi } from "vitest";
 import {
 	extensionToolDefinition,
 	installToolOverrides,
+	isExtensionToolProvided,
 	type AnyToolDefinition,
 	type OverrideSessionLike,
 } from "../../server/tool-overrides.js";
@@ -51,6 +52,13 @@ describe("extensionToolDefinition", () => {
 	it("扩展注册表缺失（SDK 改结构）→ undefined，不抛异常", () => {
 		expect(extensionToolDefinition({} as OverrideSessionLike, "read")).toBeUndefined();
 		expect(extensionToolDefinition({ extensionRunner: {} } as OverrideSessionLike, "read")).toBeUndefined();
+	});
+
+	it("isExtensionToolProvided 正确判断扩展工具是否存在", () => {
+		const ext = tool("bash", ":ext");
+		const { session } = makeSession([{ definition: ext }]);
+		expect(isExtensionToolProvided(session, "bash")).toBe(true);
+		expect(isExtensionToolProvided(session, "read")).toBe(false);
 	});
 });
 
@@ -105,5 +113,37 @@ describe("installToolOverrides", () => {
 	it("对象不兼容时返回 null 静默降级（与 syncPluginToolsIntoSession 同款）", () => {
 		expect(installToolOverrides({} as OverrideSessionLike, [])).toBeNull();
 		expect(installToolOverrides({ _customTools: [] } as OverrideSessionLike, [])).toBeNull();
+	});
+
+	it("命中扩展同名工具且被 composeWith 包装时触发 onComposed 回调", () => {
+		const extBash = tool("bash", ":ext-reviewer");
+		const composedBash = tool("bash", ":composed-reviewer");
+		const { session } = makeSession([{ definition: extBash }]);
+		const composeWith = vi.fn(() => composedBash);
+		const onComposed = vi.fn();
+
+		const names = installToolOverrides(
+			session,
+			[{ name: "bash", fallback: () => tool("bash", ":builtin"), composeWith }],
+			{ onComposed },
+		);
+
+		expect(names).toEqual(["bash"]);
+		expect(composeWith).toHaveBeenCalledWith(extBash);
+		expect(onComposed).toHaveBeenCalledWith("bash", extBash);
+		expect(session._customTools).toEqual([composedBash]);
+	});
+
+	it("未命中扩展工具时不触发 onComposed 回调", () => {
+		const { session } = makeSession();
+		const builtinBash = tool("bash", ":builtin");
+		const onComposed = vi.fn();
+
+		installToolOverrides(session, [{ name: "bash", fallback: () => builtinBash, composeWith: (base) => base }], {
+			onComposed,
+		});
+
+		expect(onComposed).not.toHaveBeenCalled();
+		expect(session._customTools).toEqual([builtinBash]);
 	});
 });
