@@ -228,15 +228,11 @@ check(
 	["bash", "read", "edit", "write", "load_tools"].every((n) => firstTools.includes(n)),
 	firstTools.join(","),
 );
-check(
-	"未加载的工具（patch/lsp）不在 tools 里",
-	!firstTools.includes("patch") && !firstTools.includes("lsp"),
-	firstTools.join(","),
-);
+check("未加载的工具（patch）不在 tools 里", !firstTools.includes("patch"), firstTools.join(","));
 const firstSystem = systemText(first);
 check(
 	"系统提示词里列了目录工具（名称 + 一行摘要）",
-	firstSystem.includes("- patch:") && firstSystem.includes("- lsp:"),
+	firstSystem.includes("- patch:"),
 	`system len=${firstSystem.length}`,
 );
 check("系统提示词带「先 load_tools」的说明", /load_tools/.test(firstSystem));

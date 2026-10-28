@@ -281,6 +281,7 @@ try {
 		c.send({ type: "get_state" });
 		await c.waitForState((s) => Boolean(s.conversationId));
 		if (withModel) {
+			c.send({ type: "set_settings", disabledAgentTools: [] });
 			c.send({ type: "set_model", modelId: `mock/${MODEL_ID}` });
 			await c.waitForState((s) => s.model?.id === MODEL_ID);
 		}
