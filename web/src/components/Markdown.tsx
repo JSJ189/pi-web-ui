@@ -26,6 +26,8 @@ import type { FenceRenderContext } from "../plugin-loader";
 import { isZhLocale, useLocale } from "../i18n";
 import { PluginFenceBlock } from "./PluginFenceBlock";
 import { openFilePreview } from "../file-preview-bridge";
+import { useAppField } from "../app-globals";
+import { isExternalOrProtocolLink, resolveWorkspaceFileUrl, normalizeTargetFilePath } from "../workspace-file-url";
 
 interface MarkdownProps {
 	text: string;
@@ -36,6 +38,9 @@ interface MarkdownProps {
 	 *  空格，用户自己输入/粘贴的多行纯文本因此显示成一整串。默认关闭（助手输出
 	 *  走标准 markdown 段落语义）；用户气泡开启以忠实呈现用户原文的换行。 */
 	hardBreaks?: boolean;
+	/** 禁用 KaTeX 数学公式解析（remarkMath/rehypeKatex）。
+	 *  用于命令审核弹窗、代码审查对话框等系统级交互，彻底杜绝 Shell 变量（如 `$VAR`）被误渲染为公式。 */
+	disableMath?: boolean;
 }
 
 /** Shared markdown pipeline + codeblock chrome (copy button). Exported so
@@ -43,15 +48,19 @@ interface MarkdownProps {
  *  as this full-document renderer — streaming preview and final render must
  *  be visually identical. */
 const remarkPlugins = [remarkGfm, remarkMath, remarkBackslashMath];
+/** Math-free pipeline for system dialogs/inspectors. */
+const remarkPluginsNoMath = [remarkGfm];
 /** Same pipeline + hard line breaks — used for USER bubbles so typed/pasted
  *  multi-line text keeps every line break (see MarkdownProps.hardBreaks). */
 const remarkPluginsHardBreaks = [remarkGfm, remarkBreaks, remarkMath, remarkBackslashMath];
+const remarkPluginsHardBreaksNoMath = [remarkGfm, remarkBreaks];
 const rehypePlugins: PluggableList = [
 	// KaTeX 在 highlight 之前：两者目标节点不相交（.math vs pre code），
 	// 公式解析失败时只显示红色源码（throwOnError: false），不打断整条消息。
 	[rehypeKatex, { strict: false, throwOnError: false }],
 	[rehypeHighlight, { detect: false, ignoreMissing: true }],
 ];
+const rehypePluginsNoMath: PluggableList = [[rehypeHighlight, { detect: false, ignoreMissing: true }]];
 
 /**
  * 把正文中的 @file.ext 提及安全转换为 pi-file:// 链接，供 MdLink 渲染为小药丸微标。
@@ -77,10 +86,12 @@ export function MarkdownBody({
 	text,
 	rawHtml = false,
 	hardBreaks = false,
+	disableMath = false,
 }: {
 	text: string;
 	rawHtml?: boolean;
 	hardBreaks?: boolean;
+	disableMath?: boolean;
 }) {
 	// rawHtml 时在 highlight 之前插入 rehype-raw：先把它内嵌的原始 HTML 解析成
 	// hast 节点，再统一交给 highlight 做代码高亮，顺序不可颠倒。
@@ -89,13 +100,21 @@ export function MarkdownBody({
 	// 常用标签与 markdown 生成的结构（含 language-* 类名，KaTeX 的 language-math
 	// 走同一前缀）保留。sanitize 必须在 katex/highlight 之前：它们后续添加的
 	// class/元素不会被白名单误伤。非 rawHtml 路径本来就没有原始 HTML，不接 sanitize。
-	const rh: PluggableList = rawHtml ? [rehypeRaw, rehypeSanitize, ...rehypePlugins] : rehypePlugins;
+	const baseRehype = disableMath ? rehypePluginsNoMath : rehypePlugins;
+	const rh: PluggableList = rawHtml ? [rehypeRaw, rehypeSanitize, ...baseRehype] : baseRehype;
 	const processedText = useMemo(() => linkifyFileMentions(text), [text]);
+	const activeRemarks = disableMath
+		? hardBreaks
+			? remarkPluginsHardBreaksNoMath
+			: remarkPluginsNoMath
+		: hardBreaks
+			? remarkPluginsHardBreaks
+			: remarkPlugins;
 	return (
 		<ReactMarkdown
-			remarkPlugins={hardBreaks ? remarkPluginsHardBreaks : remarkPlugins}
+			remarkPlugins={activeRemarks}
 			rehypePlugins={rh}
-			components={{ pre: PreWithCopy, a: MdLink }}
+			components={{ pre: PreWithCopy, a: MdLink, img: MdImage }}
 		>
 			{processedText}
 		</ReactMarkdown>
@@ -103,10 +122,15 @@ export function MarkdownBody({
 }
 
 /** GFM markdown with syntax highlighting; code blocks get a copy button. */
-export const Markdown = memo(function Markdown({ text, rawHtml = false, hardBreaks = false }: MarkdownProps) {
+export const Markdown = memo(function Markdown({
+	text,
+	rawHtml = false,
+	hardBreaks = false,
+	disableMath = false,
+}: MarkdownProps) {
 	return (
 		<div className="md">
-			<MarkdownBody text={text} rawHtml={rawHtml} hardBreaks={hardBreaks} />
+			<MarkdownBody text={text} rawHtml={rawHtml} hardBreaks={hardBreaks} disableMath={disableMath} />
 		</div>
 	);
 });
@@ -123,6 +147,7 @@ function MdLink({ node: _node, href, children, ...rest }: JSX.IntrinsicElements[
 	// 必须在这里截下：透传给 <a> 会渲染成 node="[object Object]" 垃圾属性。
 	const target = String(href ?? "");
 	const isZh = isZhLocale(useLocale());
+	const cwd = useAppField("cwd");
 	if (target.startsWith("pi-file://")) {
 		const rawPath = target.slice("pi-file://".length);
 		let filePath = rawPath;
@@ -151,6 +176,15 @@ function MdLink({ node: _node, href, children, ...rest }: JSX.IntrinsicElements[
 			</button>
 		);
 	}
+	if (!isExternalOrProtocolLink(target)) {
+		// 本地/工作区相对路径或绝对路径链接：重写为直接可在浏览器打开预览的安全服务 URL
+		const webUrl = resolveWorkspaceFileUrl(target, cwd);
+		return (
+			<a {...rest} href={webUrl} target="_blank" rel="noreferrer noopener">
+				{children}
+			</a>
+		);
+	}
 	if (!/^(https?:|mailto:|tel:)/i.test(target)) {
 		return (
 			<a href={href} {...rest}>
@@ -166,6 +200,17 @@ function MdLink({ node: _node, href, children, ...rest }: JSX.IntrinsicElements[
 			{children}
 		</a>
 	);
+}
+
+/** Markdown 内部的图片：若为工作区文件或本地文件，重写为 /api/file 走安全代理下发。 */
+function MdImage({ node: _node, src, alt, ...rest }: JSX.IntrinsicElements["img"] & { node?: unknown }) {
+	const rawSrc = String(src ?? "");
+	const cwd = useAppField("cwd");
+	let effectiveSrc = rawSrc;
+	if (rawSrc && !isExternalOrProtocolLink(rawSrc) && !rawSrc.startsWith("data:") && !rawSrc.startsWith("blob:")) {
+		effectiveSrc = resolveWorkspaceFileUrl(rawSrc, cwd);
+	}
+	return <img {...rest} src={effectiveSrc} alt={alt} loading="lazy" />;
 }
 
 function PreWithCopy({ children, ...props }: JSX.IntrinsicElements["pre"]) {

@@ -4,6 +4,7 @@ import { useT } from "../i18n";
 import { appSend } from "../app-globals";
 import { DOWNLOAD_FILE_NOT_FOUND, downloadFile, downloadUrl } from "../download";
 import { isFilePreviewOpen, openFilePreview } from "../file-preview-bridge";
+import { isLoopbackAccess, resolveWorkspaceFileUrl } from "../workspace-file-url";
 import {
 	focusPresentItem,
 	formatPresentSize,
@@ -107,6 +108,8 @@ function PresentRow({ item }: { item: PresentCardItem }) {
 	const size = formatPresentSize(item.size);
 	const missing = item.kind === "missing";
 	const target = { path: item.target, name: item.name };
+	const isRemote = !isLoopbackAccess();
+	const webFileUrl = resolveWorkspaceFileUrl(item.target);
 
 	const copyPath = () => {
 		void copy(item.path);
@@ -145,24 +148,39 @@ function PresentRow({ item }: { item: PresentCardItem }) {
 								<FiEye />
 							</button>
 						)}
-						<button
-							type="button"
-							className="present-btn labeled"
-							title={t("fileOpenDefault")}
-							onClick={() => appSend({ type: "file_open_default", path: item.target })}
-						>
-							<FiExternalLink />
-							<span>{t("presentOpenLocal")}</span>
-						</button>
-						<button
-							type="button"
-							className="present-btn"
-							title={t("fileReveal")}
-							aria-label={t("fileReveal")}
-							onClick={() => appSend({ type: "file_reveal", path: item.target })}
-						>
-							<FiFolder />
-						</button>
+						{isRemote ? (
+							<a
+								className="present-btn labeled"
+								href={webFileUrl}
+								target="_blank"
+								rel="noreferrer noopener"
+								title={t("openInNewTab")}
+							>
+								<FiExternalLink />
+								<span>{t("openInNewTab")}</span>
+							</a>
+						) : (
+							<button
+								type="button"
+								className="present-btn labeled"
+								title={t("fileOpenDefault")}
+								onClick={() => appSend({ type: "file_open_default", path: item.target })}
+							>
+								<FiExternalLink />
+								<span>{t("presentOpenLocal")}</span>
+							</button>
+						)}
+						{!isRemote && (
+							<button
+								type="button"
+								className="present-btn"
+								title={t("fileReveal")}
+								aria-label={t("fileReveal")}
+								onClick={() => appSend({ type: "file_reveal", path: item.target })}
+							>
+								<FiFolder />
+							</button>
+						)}
 						<button
 							type="button"
 							className="present-btn"

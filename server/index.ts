@@ -82,6 +82,7 @@ import { initHttpProxy } from "./http-proxy.js";
 import { globalLspPool } from "./lsp-tool.js";
 import { buildPiWebTokenCookie, decodeCookieToken, isTlsRequest } from "./auth-cookie.js";
 import { isLoopbackAddress, loadServerFileConfig, saveServerFileConfig, tokenWarning } from "./server-config.js";
+import { renderSetupHtml } from "./setup-page.js";
 import { getAppVersion, getPkgRoot } from "./pkg-info.js";
 import {
 	handleFileMessage,
@@ -389,57 +390,32 @@ export function setupGate(
 			return;
 		}
 	}
+	// 5. 跨站 Fetch 探测防御（Sec-Fetch-Site 防御）：
+	// 如果是来自外部网站的跨站子资源探测/嵌入（非顶层页面导航），直接拦截。
+	// 浏览器地址栏直接输入/回车或者外链跳转到 setup 页时，sec-fetch-site 可能是 cross-site/none，
+	// 但其 sec-fetch-dest 是 document / mode 是 navigate；只有跨站的子请求（如 fetch/xhr/image/iframe）才需要阻断。
+	const secFetchSite =
+		typeof req.headers["sec-fetch-site"] === "string" ? req.headers["sec-fetch-site"].toLowerCase() : "";
+	const secFetchMode =
+		typeof req.headers["sec-fetch-mode"] === "string" ? req.headers["sec-fetch-mode"].toLowerCase() : "";
+	if (secFetchSite === "cross-site" && secFetchMode !== "navigate") {
+		res.status(403).end("cross-site request to setup rejected");
+		return;
+	}
 	next();
 }
 
-const SETUP_PAGE = `<!doctype html><html lang="zh"><head><meta charset="utf-8">
-<meta name="viewport" content="width=device-width,initial-scale=1">
-<title>pi-web-ui 本地配置</title>
-<style>body{font-family:system-ui,sans-serif;max-width:560px;margin:40px auto;padding:0 16px;
-background:#16181d;color:#e6e6e6}label{display:block;margin:14px 0 4px;color:#9aa}input{width:100%;
-box-sizing:border-box;padding:8px;border-radius:6px;border:1px solid #444;background:#222;color:#eee}
-button{margin-top:18px;padding:9px 22px;border:0;border-radius:6px;background:#4c8dff;color:#fff;
-font-size:15px;cursor:pointer}.hint{color:#9aa;font-size:13px;margin-top:4px}#msg{margin-top:14px;
-white-space:pre-wrap}.warn{color:#e0a63c}.ok{color:#6fbf73}.err{color:#e06c6c}</style></head><body>
-<h2>pi-web-ui 本地配置</h2>
-<p class="hint">本页只能在本机打开（回环地址）。token 修改立即生效；监听地址 / 端口 /
-白名单保存后需重启服务（<code>pi-web-ui server restart</code>）。命令行旗标与环境变量
-的优先级高于这里的保存值。</p>
-<label>访问口令 token（留空 = 清除）</label><input id="token" type="password" autocomplete="new-password">
-<div class="hint" id="twarn"></div>
-<label>监听地址 host（127.0.0.1 仅本机，0.0.0.0 允许局域网）</label><input id="host">
-<label>端口 port</label><input id="port" inputmode="numeric">
-<label>Host 白名单（逗号分隔，空 = 关闭严格模式）</label><input id="allowHosts">
-<label>额外 Origin 白名单（反代场景，逗号分隔）</label><input id="allowOrigins">
-<div><button id="save">保存</button></div>
-<div id="msg"></div>
-<script>
-const $=id=>document.getElementById(id);
-const msg=(t,c)=>{const m=$("msg");m.className=c||"";m.textContent=t;};
-fetch("/api/setup/status").then(r=>{if(!r.ok)throw new Error(r.status+" "+r.statusText);return r.json();})
-.then(s=>{$("host").value=s.host||"";$("port").value=s.port||"";
-$("allowHosts").value=s.allowHosts||"";$("allowOrigins").value=s.allowOrigins||"";
-$("twarn").textContent=s.tokenSet?("已设置口令"+(s.tokenWarning?"："+s.tokenWarning:"")):"当前未设置口令（本机直连无需口令）";})
-.catch(e=>msg("读取状态失败："+e.message,"err"));
-$("save").onclick=()=>{msg("保存中…","");
-fetch("/api/setup/save",{method:"POST",headers:{"Content-Type":"application/json"},
-body:JSON.stringify({token:$("token").value,host:$("host").value,port:$("port").value,
-allowHosts:$("allowHosts").value,allowOrigins:$("allowOrigins").value})})
-.then(r=>r.json().then(j=>({st:r.status,j})))
-.then(({st,j})=>{if(!j.ok){msg("保存失败："+(j.error||st),"err");return;}
-msg((j.restartRequired?"已保存，token 已生效；host/port/白名单需重启服务后生效。"
-:"已保存并生效。")+"\n"+JSON.stringify(j.saved,null,2),"ok");$("token").value="";})
-.catch(e=>msg("请求失败："+e.message,"err"});};
-</script></body></html>`;
-
 app.get("/setup", setupGate, (_req, res) => {
 	res.setHeader("Content-Type", "text/html; charset=utf-8");
-	res.end(SETUP_PAGE);
+	res.setHeader("Cache-Control", "no-store, no-cache, must-revalidate");
+	res.end(renderSetupHtml());
 });
 
 app.get("/api/setup/status", setupGate, (_req, res) => {
+	res.setHeader("Cache-Control", "no-store, no-cache, must-revalidate");
 	res.json({
 		ok: true,
+		token: AUTH_TOKEN,
 		tokenSet: AUTH_TOKEN.length > 0,
 		tokenWarning: AUTH_TOKEN ? tokenWarning(AUTH_TOKEN) : "",
 		host: HOST,
@@ -512,6 +488,16 @@ app.post("/api/setup/save", setupGate, (req, res) => {
 		(body.port !== undefined && body.port !== "" && body.port !== null && Number(body.port) !== PORT) ||
 		(typeof body.allowHosts === "string" && norm(body.allowHosts) !== ALLOW_HOSTS.join(",")) ||
 		(typeof body.allowOrigins === "string" && norm(body.allowOrigins) !== ALLOW_ORIGINS.join(","));
+
+	// 如果设置了新 token，直接给当前回环浏览器下发匹配的 cookie，避免保存后直接 401
+	if (AUTH_TOKEN) {
+		const secure = isTlsRequest(req);
+		res.setHeader("Set-Cookie", buildPiWebTokenCookie(encodeURIComponent(AUTH_TOKEN), 31536000, secure));
+	} else if (tokenChanged && !AUTH_TOKEN) {
+		// 清除了 token，同时清理旧 cookie
+		res.setHeader("Set-Cookie", [buildPiWebTokenCookie("", 0, false), buildPiWebTokenCookie("", 0, true)]);
+	}
+
 	res.json({
 		ok: true,
 		tokenApplied: tokenChanged,
@@ -758,7 +744,7 @@ app.get("/api/file", async (req, res) => {
 				res,
 				root,
 				raw,
-				{ isDownload: req.query.download === "1", allowAllTypes: false },
+				{ isDownload: req.query.download === "1", allowAllTypes: true },
 				remoteSshService,
 			);
 			return;
@@ -784,10 +770,6 @@ app.get("/api/file", async (req, res) => {
 		const lower = name.toLowerCase();
 		const isHtmlPreview = lower.endsWith(".html") || lower.endsWith(".htm") || lower.endsWith(".xhtml");
 		const isAudioPreview = isAudioFile(name);
-		if (!isDownload && kind !== "image" && kind !== "video" && !isHtmlPreview && !isAudioPreview) {
-			res.status(400).end("not a previewable media file");
-			return;
-		}
 		const st = await stat(abs);
 		if (!st.isFile()) {
 			res.status(400).end("not a file");
@@ -3734,7 +3716,12 @@ if (!bootCatalogDisabled) {
 
 // Local control socket (status / quiesce / unquiesce) — same data dir the
 // CLI uses, so `pi-web-ui server status|quiesce|unquiesce` just works.
-const stopControl = startControlServer({ service, dataDir: DATA_DIR, port: PORT });
+const stopControl = startControlServer({
+	service,
+	dataDir: DATA_DIR,
+	port: PORT,
+	authToken: () => AUTH_TOKEN,
+});
 
 /**
  * Graceful shutdown budget (issue #172): disposeAll() can hang forever on a
