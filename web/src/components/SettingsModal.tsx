@@ -6381,7 +6381,8 @@ export function SettingsModal({
 														>
 															<FiFileText className="smart-chip-icon" />
 															<span>
-																{t("pluginLogTitle")} ({logsCount}) · {isLogOpen ? t("pluginLogHide") : t("pluginLogShow")}
+																{t("pluginLogTitle")} ({logsCount}) ·{" "}
+																{isLogOpen ? t("pluginLogHide") : t("pluginLogShow")}
 															</span>
 															<span style={{ fontSize: 10, opacity: 0.7 }}>{isLogOpen ? "▲" : "▼"}</span>
 														</button>
@@ -6394,7 +6395,8 @@ export function SettingsModal({
 															>
 																<FiAlertTriangle className="smart-chip-icon" />
 																<span>
-																	{t("pluginDiagTitle")} ({diagCount}) · {isDiagOpen ? t("pluginDiagHide") : t("pluginDiagShow")}
+																	{t("pluginDiagTitle")} ({diagCount}) ·{" "}
+																	{isDiagOpen ? t("pluginDiagHide") : t("pluginDiagShow")}
 																</span>
 																<span style={{ fontSize: 10, opacity: 0.7 }}>{isDiagOpen ? "▲" : "▼"}</span>
 															</button>
