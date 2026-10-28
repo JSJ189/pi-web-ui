@@ -7,7 +7,12 @@
  *
  * 从 agent-service.ts 抽出，行为保持不变。
  */
-import { initTheme, Theme, type ExtensionUIContext } from "@earendil-works/pi-coding-agent";
+import {
+	initTheme,
+	Theme,
+	type ExtensionUIContext,
+	type ExtensionUIDialogOptions,
+} from "@earendil-works/pi-coding-agent";
 import type { Component, OverlayHandle, OverlayOptions } from "@earendil-works/pi-tui";
 import type { ServerMessage } from "./protocol.js";
 import { VirtualTuiBridge } from "./virtual-tui.js";
@@ -253,24 +258,36 @@ export class WebUIContext {
 	private dialogSeq = 0;
 	private pendingDialogs = new Map<number, (value: string | boolean | null) => void>();
 
-	select = (title: string, options: string[]): Promise<string | undefined> =>
-		this.openDialog("select", title, [options]) as Promise<string | undefined>;
-	confirm = (title: string, message: string): Promise<boolean> =>
-		this.openDialog("confirm", title, [message]) as Promise<boolean>;
-	input = (title: string, placeholder?: string): Promise<string | undefined> =>
-		this.openDialog("input", title, [placeholder ?? ""]) as Promise<string | undefined>;
+	select = (
+		title: string,
+		options: string[],
+		opts?: ExtensionUIDialogOptions & { code?: { content: string; language?: string; hasRisk?: boolean } },
+	): Promise<string | undefined> =>
+		this.openDialog("select", title, [options], opts?.code) as Promise<string | undefined>;
+	confirm = (
+		title: string,
+		message: string,
+		opts?: ExtensionUIDialogOptions & { code?: { content: string; language?: string; hasRisk?: boolean } },
+	): Promise<boolean> => this.openDialog("confirm", title, [message], opts?.code) as Promise<boolean>;
+	input = (
+		title: string,
+		placeholder?: string,
+		opts?: ExtensionUIDialogOptions & { code?: { content: string; language?: string; hasRisk?: boolean } },
+	): Promise<string | undefined> =>
+		this.openDialog("input", title, [placeholder ?? ""], opts?.code) as Promise<string | undefined>;
 
 	private openDialog(
 		kind: "select" | "confirm" | "input",
 		title: string,
 		args: unknown[],
+		code?: { content: string; language?: string; hasRisk?: boolean },
 	): Promise<string | boolean | null> {
 		// headless：没人能应答，立刻按「取消」结束（与 cancelPendingDialogs 同值）。
 		if (this.headless) return Promise.resolve(null);
 		return new Promise((resolve) => {
 			const id = ++this.dialogSeq;
 			this.pendingDialogs.set(id, resolve);
-			this.emit({ type: "dialog", id, kind, title, args });
+			this.emit({ type: "dialog", id, kind, title, args, ...(code ? { code } : {}) });
 		});
 	}
 

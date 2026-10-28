@@ -177,10 +177,27 @@ function MdLink({ node: _node, href, children, ...rest }: JSX.IntrinsicElements[
 		);
 	}
 	if (!isExternalOrProtocolLink(target)) {
-		// 本地/工作区相对路径或绝对路径链接：重写为直接可在浏览器打开预览的安全服务 URL
+		// 本地/工作区相对路径或绝对路径链接：点击唤起内置文件预览弹窗，并提供在新标签页打开作为兜底
+		const cleanPath = normalizeTargetFilePath(target, cwd);
+		const fileName =
+			typeof children === "string" && children.trim() ? children.trim() : (cleanPath.split("/").pop() ?? cleanPath);
 		const webUrl = resolveWorkspaceFileUrl(target, cwd);
 		return (
-			<a {...rest} href={webUrl} target="_blank" rel="noreferrer noopener">
+			<a
+				{...rest}
+				href={webUrl}
+				onClick={(e) => {
+					// 仅拦截普通左键单击（非 Ctrl/Cmd/Shift/中键点击）
+					if (e.button === 0 && !e.ctrlKey && !e.metaKey && !e.shiftKey && !e.altKey) {
+						e.preventDefault();
+						e.stopPropagation();
+						openFilePreview({ path: cleanPath, name: fileName });
+					}
+				}}
+				target="_blank"
+				rel="noreferrer noopener"
+				title={(isZh ? "点击预览: " : "Click to preview: ") + cleanPath}
+			>
 				{children}
 			</a>
 		);

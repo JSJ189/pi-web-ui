@@ -799,6 +799,14 @@ export const BUILTIN_UI_ITEMS: BuiltinUiItem[] = [
 	{ id: "host:fp-wrap", slot: "file.preview.toolbar", labelKey: "enableWrap", icon: "wrap", kind: "action", order: 40 },
 	{ id: "host:fp-zoom", slot: "file.preview.toolbar", labelKey: "zoomIn", icon: "zoom", kind: "action", order: 50 },
 	{
+		id: "host:fp-download",
+		slot: "file.preview.toolbar",
+		labelKey: "downloadFile",
+		icon: "download",
+		kind: "action",
+		order: 60,
+	},
+	{
 		id: "host:fp-ref",
 		slot: "file.preview.toolbar",
 		labelKey: "referenceTip",

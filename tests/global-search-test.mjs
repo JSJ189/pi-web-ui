@@ -138,6 +138,25 @@ async function run() {
 	const r4 = await c.next((m) => m.type === "search_files_result" && m.reqId === 45, "result #45");
 	check("空 query 返回空列表", r4.ok && r4.results.length === 0);
 
+	// 5) 相对路径输入匹配
+	c.send({ type: "search_files", reqId: 46, query: "src/alpha" });
+	const r5 = await c.next((m) => m.type === "search_files_result" && m.reqId === 46, "result #46");
+	check(
+		"相对路径 src/alpha 命中 alpha-util.ts",
+		(r5.results ?? []).some((r) => r.path === "src/alpha-util.ts"),
+		JSON.stringify(r5.results),
+	);
+
+	// 6) 绝对路径直接探测匹配
+	const absTarget = join(workDir, "src", "beta.txt");
+	c.send({ type: "search_files", reqId: 47, query: absTarget });
+	const r6 = await c.next((m) => m.type === "search_files_result" && m.reqId === 47, "result #47");
+	check(
+		"绝对路径直接命中 src/beta.txt",
+		(r6.results ?? []).some((r) => r.name === "beta.txt"),
+		JSON.stringify(r6.results),
+	);
+
 	c.ws.close();
 }
 

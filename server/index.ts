@@ -38,7 +38,6 @@ import { WS_MAX_PAYLOAD_BYTES, isAbsoluteWirePath, wireToAbs } from "./files-ser
 import { httpHostAllowed, isLoopbackHost, hostWithoutPort } from "./host-guard.js";
 import { registerFileTransferRoutes } from "./file-transfer-routes.js";
 import { initAttachmentStore, readAttachment } from "./attachment-store.js";
-import { isAudioFile, previewKind } from "./text-sniff.js";
 import { isOfficeFile, OFFICE_MAX_FILE_BYTES, unzipFiles } from "./office-parse.js";
 import { startControlServer } from "./control-socket.js";
 import { scheduleUploadCleanup } from "./uploads.js";
@@ -762,14 +761,12 @@ app.get("/api/file", async (req, res) => {
 			abs = wp.abs;
 		}
 		const name = basename(abs);
-		const kind = previewKind(name);
 		const isDownload = req.query.download === "1";
 		// HTML files preview through a sandboxed <iframe> in the file modal
 		// (FilePreview.tsx). They are text as far as previewKind goes, so
 		// allowlist them explicitly here.
 		const lower = name.toLowerCase();
 		const isHtmlPreview = lower.endsWith(".html") || lower.endsWith(".htm") || lower.endsWith(".xhtml");
-		const isAudioPreview = isAudioFile(name);
 		const st = await stat(abs);
 		if (!st.isFile()) {
 			res.status(400).end("not a file");

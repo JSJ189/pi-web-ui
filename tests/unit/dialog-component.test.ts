@@ -73,6 +73,21 @@ describe("Command Prompt Parser (issue #747)", () => {
 		expect(parsed.command).toBe("rm -rf /tmp/test-dir");
 	});
 
+	it("parses multiline bash script with set -e and variable assignments without indentation (issue #780)", () => {
+		const raw = [
+			"set -e",
+			'TEST_DIR="$(mktemp -d /tmp/pi-dialog-layout-test.XXXXXX)"',
+			"printf 'step  1: initialize test workspace at %s\\n' \"$TEST_DIR\"",
+			'touch "$TEST_DIR/alpha"',
+			'rm -rf "$TEST_DIR"',
+		].join("\n");
+		const parsed = parseCommandPrompt(raw);
+		expect(parsed.hasRisk).toBe(true);
+		expect(parsed.command).toContain("set -e");
+		expect(parsed.command).toContain('TEST_DIR="$(mktemp -d /tmp/pi-dialog-layout-test.XXXXXX)"');
+		expect(parsed.command).toContain('rm -rf "$TEST_DIR"');
+	});
+
 	it("leaves plain non-command text intact", () => {
 		const raw = "Please select the target environment to deploy.";
 		const parsed = parseCommandPrompt(raw);
@@ -264,5 +279,25 @@ describe("Dialog component: 3-tier layout, command inspector, and reject-with-fe
 			window.dispatchEvent(new KeyboardEvent("keydown", { key: "y" }));
 		});
 		expect(sent).toEqual([{ type: "dialog_response", id: 7, value: true }]);
+	});
+
+	it("renders structured code box directly when code prop is supplied", () => {
+		const script = 'rm -rf "$TARGET_DIR"\necho "cleaned"';
+		const { container } = mount({
+			id: 8,
+			kind: "select",
+			title: "Dangerous operation requested",
+			args: [["Yes", "No"]],
+			code: {
+				content: script,
+				language: "bash",
+				hasRisk: true,
+			},
+		});
+
+		const cmdBox = container.querySelector(".dialog-cmd-box");
+		expect(cmdBox).not.toBeNull();
+		expect(cmdBox?.textContent).toContain('rm -rf "$TARGET_DIR"');
+		expect(cmdBox?.classList.contains("has-risk")).toBe(true);
 	});
 });

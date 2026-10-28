@@ -589,13 +589,27 @@ export interface MockHostControls {
 
 /** 浏览器桥兼容（client 侧逻辑单测也能用同一个 mock）：无注入回退语义。 */
 export interface MockHostDialogs {
-	select(opts: { title?: string; options?: unknown; [key: string]: unknown }): Promise<{
+	select(opts: {
+		title?: string;
+		options?: unknown;
+		code?: { content: string; language?: string; hasRisk?: boolean };
+		[key: string]: unknown;
+	}): Promise<{
 		ok: boolean;
 		selected?: string[];
 		error?: string;
 	}>;
-	confirm(opts: { title?: string; text?: string; [key: string]: unknown }): Promise<boolean>;
-	input(opts: { title?: string; [key: string]: unknown }): Promise<{ ok: boolean; value?: string }>;
+	confirm(opts: {
+		title?: string;
+		text?: string;
+		code?: { content: string; language?: string; hasRisk?: boolean };
+		[key: string]: unknown;
+	}): Promise<boolean>;
+	input(opts: {
+		title?: string;
+		code?: { content: string; language?: string; hasRisk?: boolean };
+		[key: string]: unknown;
+	}): Promise<{ ok: boolean; value?: string }>;
 }
 
 /** createMockHost 返回的 mock host（PluginHost 全量 + harness 字段 + 桥兼容）。 */

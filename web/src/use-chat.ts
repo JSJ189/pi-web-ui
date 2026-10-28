@@ -348,6 +348,11 @@ export interface ChatState {
 		kind: "select" | "confirm" | "input";
 		title: string;
 		args: unknown[];
+		code?: {
+			content: string;
+			language?: string;
+			hasRisk?: boolean;
+		};
 	} | null;
 	/** Active TUI modal overlay (from ctx.ui.custom) awaiting user interaction. */
 	tuiOverlay: {
@@ -589,7 +594,7 @@ type Action =
 	| { type: "snapshot_delta"; msg: Extract<ServerMessage, { type: "snapshot_delta" }> }
 	| { type: "earlier_messages"; msg: Extract<ServerMessage, { type: "earlier_messages" }> }
 	| { type: "protocol_mismatch" }
-	| { type: "tool_delta"; toolCallId: string; toolName: string; delta: string }
+	| { type: "tool_delta"; toolCallId: string; toolName: string; delta: string; mode?: "append" | "replace" }
 	| { type: "message_delta"; msg: MessageDeltaMsg }
 	| { type: "tool_status"; status: ToolStatus }
 	| { type: "notice"; notice: Notice }
@@ -713,6 +718,11 @@ type Action =
 				kind: "select" | "confirm" | "input";
 				title: string;
 				args: unknown[];
+				code?: {
+					content: string;
+					language?: string;
+					hasRisk?: boolean;
+				};
 			} | null;
 	  }
 	| {
@@ -1216,12 +1226,25 @@ function reducer(state: ChatState, action: Action): ChatState {
 			return { ...state, approval: action.approval };
 		case "tool_delta": {
 			const prev = state.liveOutputs.get(action.toolCallId);
+			const prevText = prev?.text ?? "";
+			// issue #782: Transmission mode resolution.
+			// 1) Explicit "replace": overwrite with incoming snapshot (from tool_execution_update).
+			// 2) Self-healing fallback: if action.delta already starts with prevText, treat as cumulative snapshot.
+			// 3) Explicit or default "append": accumulate incrementally.
+			let text: string;
+			if (action.mode === "replace") {
+				text = action.delta;
+			} else if (prevText.length > 0 && action.delta.startsWith(prevText)) {
+				text = action.delta;
+			} else {
+				text = prevText + action.delta;
+			}
+
 			// Keep the TAIL when over the cap (not the head): for a long-running
 			// tool what matters is the LATEST output — keeping the head would show
 			// only the earliest 200K chars and freeze visually while the tool is
 			// still streaming. The terminal-bridge buffer below already keeps the
 			// newest data; this unifies the semantics.
-			const text = (prev?.text ?? "") + action.delta;
 			const capped =
 				text.length > MAX_LIVE_OUTPUT
 					? `…[${LIVE_OMIT_MARK}:${text.length - MAX_LIVE_OUTPUT}]…\n` + text.slice(text.length - MAX_LIVE_OUTPUT)
@@ -2389,6 +2412,7 @@ export function useChat() {
 						toolCallId: msg.toolCallId,
 						toolName: msg.toolName,
 						delta: msg.delta,
+						...(msg.mode ? { mode: msg.mode } : {}),
 					});
 					break;
 				case "tool_status":
@@ -2630,6 +2654,7 @@ export function useChat() {
 							kind: msg.kind,
 							title: msg.title,
 							args: msg.args,
+							code: msg.code,
 						},
 					});
 					break;

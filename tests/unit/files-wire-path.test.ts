@@ -4,7 +4,7 @@
  * 与 uploadFile 的保留名 / 尾点 / 已存在拒绝语义。
  */
 import { afterEach, describe, expect, it } from "vitest";
-import { existsSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { FilesService, isAbsoluteWirePath, workspacePath } from "../../server/files-service.js";
@@ -128,5 +128,30 @@ describe("uploadFile 文件名与覆盖语义", () => {
 		expect(readFileSync(join(cwd, "sub", "b.txt"), "utf8")).toBe("hello");
 		const errs = seen.filter((m) => m.type === "notice" && m.level === "error");
 		expect(errs.length).toBe(0);
+	});
+});
+
+describe("searchFiles 支持相对路径和绝对路径匹配", () => {
+	it("支持相对路径检索与直接路径匹配", async () => {
+		const cwd = tempRoot();
+		const subDir = join(cwd, "nested", "deep");
+		mkdirSync(subDir, { recursive: true });
+		writeFileSync(join(subDir, "target.txt"), "content");
+		const { svc, seen } = makeService(cwd);
+
+		// 相对路径子串匹配
+		await svc.searchFiles("nested/deep", 101);
+		const res1 = seen.find((m) => m.type === "search_files_result" && m.reqId === 101) as any;
+		expect(res1).toBeDefined();
+		expect(res1.ok).toBe(true);
+		expect(res1.results.some((r: any) => r.path === "nested/deep/target.txt")).toBe(true);
+
+		// 绝对路径直接匹配
+		const absFile = join(subDir, "target.txt");
+		await svc.searchFiles(absFile, 102);
+		const res2 = seen.find((m) => m.type === "search_files_result" && m.reqId === 102) as any;
+		expect(res2).toBeDefined();
+		expect(res2.ok).toBe(true);
+		expect(res2.results.some((r: any) => r.name === "target.txt")).toBe(true);
 	});
 });

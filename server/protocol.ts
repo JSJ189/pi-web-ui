@@ -3640,6 +3640,9 @@ export type ServerMessage =
 			toolCallId: string;
 			toolName: string;
 			delta: string;
+			/** issue #782: Transmission mode. "replace" = full/tail snapshot (default for tool_execution_update);
+			 *  "append" = incremental text delta. Omit defaults to "append" for wire backward-compat. */
+			mode?: "append" | "replace";
 	  }
 	/** Live assistant-message increment (thinking/text deltas + usage) that
 	 *  deliberately BYPASSES the snapshot channel: send() drops snapshots under
@@ -3944,6 +3947,12 @@ export type ServerMessage =
 			kind: "select" | "confirm" | "input";
 			title: string;
 			args: unknown[];
+			/** 结构化代码/命令审计信息（可选）：如果有，直接渲染为代码审计盒，无需启发式猜测。 */
+			code?: {
+				content: string;
+				language?: string;
+				hasRisk?: boolean;
+			};
 	  }
 	/** The server resolved (or abandoned) a dialog — the client must close it. */
 	| { type: "dialog_closed"; id: number }

@@ -8716,6 +8716,8 @@
 	.messages {
 		flex: 1;
 		overflow-y: auto;
+		/* 抑制 Safari 等浏览器到底时的剧烈弹性回弹与向外传导，避免产生虚假反向位移 */
+		overscroll-behavior-y: contain;
 		/* 提升为主滚动独立合成层（GPU 硬件加速），滚动直接由合成线程处理，杜绝主线程重绘卡顿 */
 		transform: translateZ(0);
 		will-change: scroll-position;
@@ -11358,7 +11360,8 @@
 		text-overflow: ellipsis;
 	}
 
-	.file-diff-inspector-title-group .file-diff-lang {
+	.file-diff-inspector-title-group .file-diff-lang,
+	.file-diff-inspector-title-group .file-diff-pattern {
 		padding: 1px 5px;
 		border-radius: 3px;
 		background: var(--bg-elev3);
@@ -15194,6 +15197,13 @@
 		overscroll-behavior: contain;
 	}
 
+	/* 三段式视窗架构：顶栏自适应，正文独立滚，底栏常驻且物理隔离（绝不与正文重叠） */
+	.dialog-inline:has(.dialog-scroll-body) {
+		display: grid;
+		grid-template-rows: auto minmax(0, 1fr) auto;
+		gap: 6px;
+	}
+
 	.dialog-inline:not(:has(.dialog-scroll-body)) {
 		overflow-y: auto;
 	}
@@ -15377,7 +15387,6 @@
 
 	/* 三段式架构：独立滚动正文与常驻底栏 */
 	.dialog-scroll-body {
-		flex: 1 1 auto;
 		min-height: 0;
 		overflow-y: auto;
 		overscroll-behavior: contain;
@@ -15388,12 +15397,13 @@
 	}
 
 	.dialog-footer {
-		flex-shrink: 0;
 		border-top: 1px solid var(--border-soft);
 		padding-top: 8px;
 		display: flex;
 		flex-direction: column;
 		gap: 6px;
+		position: relative;
+		z-index: 1;
 	}
 
 	.dialog-opt-badge {
@@ -16991,7 +17001,11 @@
 	.settings-live-text {
 		letter-spacing: -0.1px;
 	}
-	.settings-modal-close {
+	.settings-modal-close,
+	.settings-modal .modal-close.settings-modal-close {
+		position: static;
+		margin: 0;
+		align-self: auto;
 		display: inline-flex;
 		align-items: center;
 		justify-content: center;
@@ -22446,6 +22460,7 @@
 	.fp-attach.toc.on,
 	.fp-attach.edit:hover,
 	.fp-attach.edit.on,
+	.fp-attach.download:hover,
 	.fp-attach.zoom-in:hover,
 	.fp-attach.zoom-out:hover,
 	.fp-attach.full:hover,
@@ -23271,8 +23286,8 @@
 			border-radius: 0;
 		}
 		.fp-head {
-			padding: 8px 10px;
-			gap: 6px;
+			padding: 12px 16px;
+			gap: 8px;
 		}
 		.fp-path {
 			display: none;
@@ -23750,9 +23765,8 @@
 		}
 
 		/* ---- overlays: near-fullscreen bottom sheets ---- */
-		.modal-backdrop,
 		.fp-overlay {
-			padding: 10px;
+			padding: 8px 6px calc(8px + env(safe-area-inset-bottom, 0px));
 			align-items: flex-end;
 		}
 		/* 问卷内联面板：宽度跟着列 token（= 输入框同宽），这里只限高 */
@@ -23771,10 +23785,23 @@
 		}
 		.fp {
 			height: 92vh;
+			display: flex;
+			flex-direction: column;
+			overflow: hidden;
 		}
 		.fp-markdown {
-			padding: 16px 14px 24px;
-			font-size: 13.5px;
+			padding: 16px 16px calc(24px + env(safe-area-inset-bottom, 0px));
+			font-size: 14px;
+			line-height: 1.75;
+		}
+		.fp-markdown-zoom > .md {
+			padding: 0;
+			margin: 0;
+		}
+		.fp-markdown h1 {
+			margin-top: 4px;
+			font-size: 20px;
+			line-height: 1.35;
 		}
 		.fp-markdown img {
 			max-height: 50vh;
@@ -23836,7 +23863,13 @@
 	 * 像状态栏一样，手机端隐藏路径、元信息、大号缩放控件和引用按钮；
 	 * 关闭按钮独立在最右侧并放大，保证任何窄屏下绝不被挤出屏幕。 */
 		.fp-head {
-			padding: 8px 10px;
+			padding: 12px 16px;
+			gap: 8px;
+		}
+		.fp-name {
+			font-size: 13.5px;
+		}
+		.fp-head-actions {
 			gap: 6px;
 		}
 		.fp-path,
@@ -23846,14 +23879,14 @@
 			display: none;
 		}
 		.fp-close {
-			width: 34px;
-			height: 34px;
+			width: 32px;
+			height: 32px;
 			font-size: 16px;
 			background: var(--bg-elev);
 			border-color: var(--border-soft);
 			color: var(--text);
 			flex-shrink: 0;
-			margin-left: 4px;
+			margin-left: 2px;
 		}
 		@media (max-width: 480px) {
 			.fp-attach.full {

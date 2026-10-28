@@ -72,13 +72,20 @@ export interface ControlStatus {
 	connectedClients?: number;
 	activeConversations?: number;
 	pendingMessages?: number;
+	/** 当前生效的鉴权口令（若未配置口令则为空字符串；用于 CLI server status/install 获取访问凭据） */
+	authToken?: string;
 	/** 托管本实例的平台服务（null = 前台/dev/Docker）——CLI 显示启动方式。 */
 	service?: UiServiceInfo | null;
 }
 
 /** Start the control socket; returns a stop function. */
-export function startControlServer(opts: { service: ControlService; dataDir: string; port: number }): () => void {
-	const { service, dataDir, port } = opts;
+export function startControlServer(opts: {
+	service: ControlService;
+	dataDir: string;
+	port: number;
+	authToken?: () => string;
+}): () => void {
+	const { service, dataDir, port, authToken } = opts;
 	const path = controlPath(dataDir, port);
 	let server: Server;
 	// 只有本实例真正 bind 成功才允许 stop 时删 socket 文件：探测发现活实例而
@@ -152,7 +159,11 @@ export function startControlServer(opts: { service: ControlService; dataDir: str
 				let resp: ControlStatus;
 				switch (req.cmd) {
 					case "status":
-						resp = { ok: true, ...service.serviceStatus() };
+						resp = {
+							ok: true,
+							...service.serviceStatus(),
+							...(authToken ? { authToken: authToken() } : {}),
+						};
 						break;
 					case "quiesce":
 						service.quiesce();

@@ -28,6 +28,9 @@ update_out.txt
 
 # Plugin dependencies (installed per-plugin)
 plugins/*/node_modules/
+plugins/*/package-lock.json
+plugins/voice-input/package*.json
+plugins/voice-input/whisper-cache/
 
 # 插件运行期数据与权限标记（用户数据与运行时产物不入库）
 plugins/*/storage/

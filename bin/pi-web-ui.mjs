@@ -50,7 +50,7 @@ import {
 	rmSync,
 	writeFileSync,
 } from "node:fs";
-import { homedir, tmpdir, userInfo } from "node:os";
+import { homedir, networkInterfaces, tmpdir, userInfo } from "node:os";
 import { dirname, isAbsolute, join, relative, resolve } from "node:path";
 import { pathToFileURL } from "node:url";
 import { fileURLToPath } from "node:url";
@@ -1338,10 +1338,10 @@ function installLaunchd(opts) {
 	mkdirSync(dirname(plist), { recursive: true });
 	writeFileSync(plist, content);
 	run("launchctl", ["bootstrap", `gui/${uid()}`, plist]);
+	if (opts.print) return;
 	console.log(ZH ? `✅ 已安装并启动 launchd 服务 ${label}` : `✅ launchd service installed and started ${label}`);
 	console.log(ZH ? `   端口 : ${port}` : `   Port      : ${port}`);
 	console.log(ZH ? `   目录 : ${cwd}` : `   Directory : ${cwd}`);
-	console.log(ZH ? `   访问 : http://localhost:${port}` : `   URL       : http://localhost:${port}`);
 	console.log(
 		ZH ? `   日志 : /tmp/pi-web-ui.log  /tmp/pi-web-ui.err` : `   Log       : /tmp/pi-web-ui.log  /tmp/pi-web-ui.err`,
 	);
@@ -1399,7 +1399,6 @@ function installSystemd(opts) {
 	);
 	console.log(ZH ? `   端口 : ${port}` : `   Port      : ${port}`);
 	console.log(ZH ? `   目录 : ${cwd}` : `   Directory : ${cwd}`);
-	console.log(ZH ? `   访问 : http://localhost:${port}` : `   URL       : http://localhost:${port}`);
 	console.log(ZH ? `   日志 : journalctl -u ${name}.service -f` : `   Log       : journalctl -u ${name}.service -f`);
 	console.log(
 		ZH
@@ -1495,7 +1494,6 @@ function installWindows(opts) {
 	console.log(ZH ? `   窗口 : wscript 隐藏启动，无黑窗` : `   Window    : wscript hidden launch, no console`);
 	console.log(ZH ? `   端口 : ${port}` : `   Port      : ${port}`);
 	console.log(ZH ? `   目录 : ${cwd}` : `   Directory : ${cwd}`);
-	console.log(ZH ? `   访问 : http://localhost:${port}` : `   URL       : http://localhost:${port}`);
 	console.log(ZH ? `   日志 : ${winLogPath(name)}` : `   Log       : ${winLogPath(name)}`);
 	console.log(
 		ZH
@@ -1585,6 +1583,88 @@ function controlCommand(opts, cmd) {
 	});
 }
 
+function isLocalLoopback(addr) {
+	if (!addr) return false;
+	const s = addr.trim().toLowerCase();
+	return (
+		s === "localhost" ||
+		s.endsWith(".localhost") ||
+		s === "127.0.0.1" ||
+		s.startsWith("127.") ||
+		s === "::1" ||
+		s.startsWith("::ffff:127.")
+	);
+}
+
+function getLocalLanIpv4s() {
+	const ips = [];
+	try {
+		const ifaces = networkInterfaces();
+		for (const list of Object.values(ifaces)) {
+			if (!list) continue;
+			for (const iface of list) {
+				if (iface && iface.family === "IPv4" && !iface.internal) {
+					ips.push(iface.address);
+				}
+			}
+		}
+	} catch {
+		// best-effort
+	}
+	return ips;
+}
+
+/** 格式化打印服务的访问链接（包含本机、局域网 IP 与 Token / Setup 入口） */
+function printServiceUrls(port, host, token = "") {
+	const tokenSuffix = token ? `?token=${token}` : "";
+	const isLoopback = !host || isLocalLoopback(host);
+	console.log(
+		ZH
+			? `   本机访问 : http://127.0.0.1:${port}/${tokenSuffix}`
+			: `   Local URL : http://127.0.0.1:${port}/${tokenSuffix}`,
+	);
+
+	if (!isLoopback) {
+		const lanIps = getLocalLanIpv4s();
+		if (lanIps.length > 0) {
+			for (const ip of lanIps) {
+				console.log(
+					ZH
+						? `   局域网   : http://${ip}:${port}/${tokenSuffix}`
+						: `   LAN URL   : http://${ip}:${port}/${tokenSuffix}`,
+				);
+			}
+		} else if (host !== "0.0.0.0") {
+			console.log(
+				ZH
+					? `   访问地址 : http://${host}:${port}/${tokenSuffix}`
+					: `   Host URL  : http://${host}:${port}/${tokenSuffix}`,
+			);
+		}
+	}
+	if (token) {
+		console.log(ZH ? `   访问密钥 : ${token}` : `   Token     : ${token}`);
+	}
+	console.log(
+		ZH
+			? `   配置管理 : http://127.0.0.1:${port}/setup （仅本机）`
+			: `   Setup     : http://127.0.0.1:${port}/setup (local only)`,
+	);
+}
+
+/** 轮询等待后台服务就绪并打印包含实时 token 的访问信息 */
+async function printRunningServiceAccess(opts, host, fallbackToken = "") {
+	const t0 = Date.now();
+	let st = null;
+	while (Date.now() - t0 < 3500) {
+		st = await controlCommand(opts, "status");
+		if (st && st.ok) break;
+		await new Promise((r) => setTimeout(r, 200));
+	}
+	const token = (st && typeof st.authToken === "string" ? st.authToken : fallbackToken).trim();
+	printServiceUrls(effectivePort(opts), host, token);
+}
+
 /** Append the live server status (via the control socket) to `server status`. */
 async function printLiveStatus(opts) {
 	const st = await controlCommand(opts, "status");
@@ -1597,6 +1677,10 @@ async function printLiveStatus(opts) {
 		return;
 	}
 	console.log(ZH ? "   --- 实时状态 (control socket) ---" : "   --- live status (control socket) ---");
+	if (st.authToken) {
+		const host = process.env.PI_WEB_HOST || "";
+		printServiceUrls(effectivePort(opts), host, st.authToken);
+	}
 	console.log(ZH ? `   版本 : ${st.version} · PID ${st.pid}` : `   Version   : ${st.version} · PID ${st.pid}`);
 	console.log(ZH ? `   目录 : ${st.cwd}` : `   Directory : ${st.cwd}`);
 	// 启动来源（server/launch-origin.ts）：有 supervisor = 这个进程退出后会被自动
@@ -3845,6 +3929,10 @@ async function serverCmd(argv) {
 					ZH ? `不支持的系统服务平台: ${process.platform}` : `Unsupported system service platform: ${process.platform}`,
 				);
 			}
+			if (!opts.print) {
+				const fallbackToken = process.env.PI_WEB_TOKEN || "";
+				await printRunningServiceAccess(opts, opts.host ?? process.env.PI_WEB_HOST, fallbackToken);
+			}
 			break;
 		}
 		case "uninstall": {
@@ -3862,8 +3950,13 @@ async function serverCmd(argv) {
 			break;
 		}
 		case "start":
+		case "restart": {
+			controlService(action, opts);
+			const fallbackToken = process.env.PI_WEB_TOKEN || "";
+			await printRunningServiceAccess(opts, opts.host ?? process.env.PI_WEB_HOST, fallbackToken);
+			break;
+		}
 		case "stop":
-		case "restart":
 			controlService(action, opts);
 			break;
 		case "status":

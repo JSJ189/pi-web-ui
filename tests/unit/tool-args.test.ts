@@ -329,4 +329,18 @@ describe("resolveToolHeadline — 元数据驱动关键信息统一提取", () =
 		expect(hl?.text).toBe("terminal");
 		expect(hl?.className).toBe("toolcall-query");
 	});
+
+	it("grep: 提取 pattern 搜索表达式与卡头", () => {
+		expect(toolArgHints('{"pattern":"QUERY_RE","path":"src"}')).toMatchObject({
+			query: "QUERY_RE",
+			path: "src",
+		});
+
+		const hl = resolveToolHeadline({
+			name: "grep",
+			argumentsText: '{"pattern":"function resolveToolHeadline","path":"src/tool-args.ts"}',
+		});
+		expect(hl?.text).toBe("function resolveToolHeadline");
+		expect(hl?.className).toBe("toolcall-query");
+	});
 });

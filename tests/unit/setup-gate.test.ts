@@ -120,4 +120,22 @@ describe("setupGate", () => {
 		expect(res.status).toBe(403);
 		expect(res.message).toContain("cross-origin setup request rejected");
 	});
+
+	it("Sec-Fetch-Site: cross-site 非 navigate 请求阻断", () => {
+		const res = runGate({
+			remoteAddress: "127.0.0.1",
+			headers: { host: "localhost:8787", "sec-fetch-site": "cross-site", "sec-fetch-mode": "cors" },
+		});
+		expect(res.passed).toBe(false);
+		expect(res.status).toBe(403);
+		expect(res.message).toContain("cross-site request to setup rejected");
+	});
+
+	it("Sec-Fetch-Site: cross-site 顶层导航放行", () => {
+		const res = runGate({
+			remoteAddress: "127.0.0.1",
+			headers: { host: "localhost:8787", "sec-fetch-site": "cross-site", "sec-fetch-mode": "navigate" },
+		});
+		expect(res.passed).toBe(true);
+	});
 });

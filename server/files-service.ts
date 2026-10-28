@@ -462,8 +462,8 @@ export class FilesService {
 		}
 		const { join } = await import("node:path");
 		const fsp = await import("node:fs/promises");
-		const q = query.trim().toLowerCase();
-		if (!q) {
+		const rawQuery = query.trim();
+		if (!rawQuery) {
 			this.host.emit({ type: "search_files_result", reqId, ok: true, results: [] });
 			return;
 		}
@@ -476,6 +476,51 @@ export class FilesService {
 		const results: FileSearchResult[] = [];
 		let visited = 0;
 		let truncated = false;
+
+		// 1) 优先精确探测输入是否为已存在的绝对路径或相对路径
+		const normQuery = rawQuery.replace(/\\/g, "/");
+		const q = normQuery.toLowerCase();
+		try {
+			if (
+				isAbsoluteWirePath(normQuery) ||
+				(normQuery.startsWith("~") && (normQuery === "~" || normQuery.startsWith("~/")))
+			) {
+				const { homedir } = await import("node:os");
+				const home = homedir();
+				const targetAbs = normQuery.startsWith("~")
+					? normQuery === "~"
+						? home
+						: join(home, normQuery.slice(2))
+					: wireToAbs(normQuery);
+				const st = await fsp.stat(targetAbs).catch(() => null);
+				if (st) {
+					const wp = workspacePath(root, targetAbs);
+					const wirePath = wp ? wp.rel : targetAbs.split(sep).join("/");
+					const baseName = targetAbs.split(/[\\/]/).pop() || wirePath;
+					results.push({
+						path: wirePath,
+						name: baseName,
+						type: st.isDirectory() ? "dir" : "file",
+					});
+				}
+			} else {
+				const directWp = workspacePath(root, normQuery);
+				if (directWp) {
+					const st = await fsp.stat(directWp.abs).catch(() => null);
+					if (st) {
+						const baseName = directWp.abs.split(/[\\/]/).pop() || directWp.rel;
+						results.push({
+							path: directWp.rel,
+							name: baseName,
+							type: st.isDirectory() ? "dir" : "file",
+						});
+					}
+				}
+			}
+		} catch {
+			/* ignore probe failure */
+		}
+
 		const budgetLeft = () => results.length < MAX_RESULTS && visited < MAX_VISITED && Date.now() - start < MAX_MS;
 		// Breadth-first-ish iterative stack; depth cap is a symlink-cycle guard.
 		const walk = async (abs: string, rel: string, depth: number): Promise<void> => {
@@ -507,7 +552,9 @@ export class FilesService {
 						isDir = false; // broken link — treat as file
 					}
 				}
-				if (d.name.toLowerCase().includes(q)) {
+				const childRelLower = childRel.toLowerCase();
+				const nameLower = d.name.toLowerCase();
+				if ((nameLower.includes(q) || childRelLower.includes(q)) && !results.some((r) => r.path === childRel)) {
 					results.push({
 						path: childRel,
 						name: d.name,
@@ -1782,8 +1829,8 @@ export class FilesService {
 	}
 
 	private async searchRemoteFiles(rawCwd: string, query: string, reqId: number): Promise<void> {
-		const q = query.trim().toLowerCase();
-		if (!q) {
+		const rawQuery = query.trim();
+		if (!rawQuery) {
 			this.host.emit({ type: "search_files_result", reqId, ok: true, results: [] });
 			return;
 		}
@@ -1793,16 +1840,38 @@ export class FilesService {
 			return;
 		}
 		try {
+			const normQuery = rawQuery.replace(/\\/g, "/");
+			const q = normQuery.toLowerCase();
+			const results: FileSearchResult[] = [];
+			let truncated = false;
+
+			// 优先精确检查直接目标
+			const target = this.resolveRemoteTarget(rawCwd, normQuery);
+			if (target) {
+				try {
+					const st = await sshSvc.sftpStat(rawCwd, target.abs);
+					const name = posix.basename(target.abs) || target.rel;
+					results.push({
+						path: target.rel,
+						name,
+						type: st.isDirectory ? "dir" : "file",
+					});
+				} catch {
+					/* ignore stat error */
+				}
+			}
+
 			const cmd = `find . -maxdepth 8 \\( -name node_modules -o -name .git -o -name .pi-web \\) -prune -o -print 2>/dev/null | head -n 5000`;
 			const res = await sshSvc.execInWorkspace(rawCwd, cmd, { timeoutMs: 8000 });
 			const lines = res.stdout.split(/\r?\n/);
-			const results: FileSearchResult[] = [];
-			let truncated = false;
 			for (const line of lines) {
 				const clean = line.trim().replace(/^\.\//, "");
 				if (!clean || clean === ".") continue;
 				const name = posix.basename(clean);
-				if (name.toLowerCase().includes(q)) {
+				if (
+					(name.toLowerCase().includes(q) || clean.toLowerCase().includes(q)) &&
+					!results.some((r) => r.path === clean)
+				) {
 					results.push({
 						path: clean,
 						name,

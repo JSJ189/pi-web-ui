@@ -78,13 +78,7 @@ pi-web-ui is a full-featured web interface and desktop workspace for the pi codi
 
 ### 🎬 Demo Video
 
-<p align="center">
-  <a href="https://raw.githubusercontent.com/xing-shuyin/pi-web-ui/main/assets/demo-video.mp4">
-    <img src="https://raw.githubusercontent.com/xing-shuyin/pi-web-ui/main/assets/demo-video-poster.png" alt="pi-web-ui demo video (click to play)" width="100%" style="max-width: 900px; border-radius: 8px; box-shadow: 0 4px 20px rgba(0,0,0,0.35);" />
-  </a>
-  <br>
-  <em>🎬 Click the preview above to play the full demo video directly in your browser (or right-click to save)</em>
-</p>
+https://github.com/user-attachments/assets/ddb911ca-eb94-4adf-9455-2f15a64e835e
 
 ### 📸 Feature Highlights
 

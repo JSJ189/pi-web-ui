@@ -72,13 +72,7 @@ pi-web-ui 是基于 pi 智能体 SDK（`@earendil-works/pi-coding-agent`）与 D
 
 ### 🎬 演示视频
 
-<p align="center">
-  <a href="https://raw.githubusercontent.com/xing-shuyin/pi-web-ui/main/assets/demo-video.mp4">
-    <img src="https://raw.githubusercontent.com/xing-shuyin/pi-web-ui/main/assets/demo-video-poster.png" alt="pi-web-ui 操作演示视频（点击播放）" width="100%" style="max-width: 900px; border-radius: 8px; box-shadow: 0 4px 20px rgba(0,0,0,0.35);" />
-  </a>
-  <br>
-  <em>🎬 点击上方预览图直接在浏览器中播放完整操作演示视频（或右键另存为下载）</em>
-</p>
+https://github.com/user-attachments/assets/ddb911ca-eb94-4adf-9455-2f15a64e835e
 
 ### 📸 功能截屏
 

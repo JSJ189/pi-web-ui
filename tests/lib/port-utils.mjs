@@ -29,10 +29,9 @@ export function portUp(port, host = "127.0.0.1", timeoutMs = 500) {
 export function freePort(port) {
 	try {
 		if (process.platform === "win32") {
-			const out = execSync(
-				`netstat -ano -p tcp | findstr LISTENING | findstr ":${port} "`,
-				{ stdio: ["ignore", "pipe", "ignore"] },
-			).toString();
+			const out = execSync(`netstat -ano -p tcp | findstr LISTENING | findstr ":${port} "`, {
+				stdio: ["ignore", "pipe", "ignore"],
+			}).toString();
 			const pids = new Set(
 				out
 					.split("\n")

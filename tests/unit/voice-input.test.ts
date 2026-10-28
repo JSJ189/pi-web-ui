@@ -25,6 +25,7 @@ import { createMockHost } from "../../plugin-sdk/index.mjs";
 import voiceInput, {
 	applyHfEndpoint,
 	decodeWav16k,
+	DEFAULT_INITIAL_PROMPTS,
 	ensureSharpStub,
 	hasCachedModelOnDisk,
 	hfEndpointHost,
@@ -32,6 +33,7 @@ import voiceInput, {
 	LOCAL_MODELS,
 	pkgEntryCandidates,
 	resampleLinear,
+	resolveInitialPrompt,
 	resolveLocalModel,
 	whisperFullLang,
 	whisperLang,
@@ -257,6 +259,22 @@ describe("resolveLocalModel", () => {
 		expect(resolveLocalModel("")).toBeNull();
 		expect(resolveLocalModel(null)).toBeNull();
 		expect(resolveLocalModel(undefined)).toBeNull();
+	});
+});
+
+describe("resolveInitialPrompt", () => {
+	it("用户自定义 prompt 优先", () => {
+		expect(resolveInitialPrompt("zh-CN", { initialPrompt: "自定义术语" })).toBe("自定义术语");
+	});
+	it("中文默认简体", () => {
+		expect(resolveInitialPrompt("zh-CN")).toBe(DEFAULT_INITIAL_PROMPTS.zh);
+		expect(resolveInitialPrompt("zh-Hans", { zhVariant: "simplified" })).toBe(DEFAULT_INITIAL_PROMPTS.zh);
+	});
+	it("中文繁体模式匹配繁体提示词", () => {
+		expect(resolveInitialPrompt("zh-CN", { zhVariant: "traditional" })).toBe(DEFAULT_INITIAL_PROMPTS["zh-traditional"]);
+	});
+	it("英文匹配英文提示词", () => {
+		expect(resolveInitialPrompt("en-US")).toBe(DEFAULT_INITIAL_PROMPTS.en);
 	});
 });
 

@@ -5150,13 +5150,19 @@ export class ClientSession {
 			case "tool_execution_update": {
 				const text = extractPartialText(event.partialResult);
 				if (text) {
+					// issue #782: SDK onUpdate(partialResult) sends a cumulative snapshot (e.g. bash).
+					// To avoid O(n^2) bandwidth inflation for long outputs while retaining realtime view,
+					// slice the latest tail (64KB cap). Send with mode="replace" so the client replaces
+					// rather than accumulating prev + delta.
+					const safeText = text.length > 64 * 1024 ? text.slice(text.length - 64 * 1024) : text;
 					this.emit({
 						type: "tool_delta",
 						conversationId: conv.id,
 						seq: ++conv.deltaSeq,
 						toolCallId: event.toolCallId,
 						toolName: event.toolName,
-						delta: text,
+						delta: safeText,
+						mode: "replace",
 					});
 				}
 				break;

@@ -21,6 +21,11 @@ interface DialogProps {
 		kind: "select" | "confirm" | "input";
 		title: string;
 		args: unknown[];
+		code?: {
+			content: string;
+			language?: string;
+			hasRisk?: boolean;
+		};
 	};
 }
 
@@ -76,9 +81,10 @@ export function parseCommandPrompt(text: string): {
 		const line = lines[i];
 		const trimmed = line.trim();
 		const isCmdLine =
-			/^(printf|rm|npm|npx|git|pnpm|yarn|docker|curl|cat|sh|bash|sudo|cp|mv|find|kill|echo|node|python|cargo|make)\b/i.test(
+			/^(printf|rm|npm|npx|git|pnpm|yarn|docker|curl|cat|sh|bash|sudo|cp|mv|find|kill|echo|node|python|cargo|make|set|export|source|env|touch|mkdir|chmod|chown)\b/i.test(
 				trimmed,
 			) ||
+			/^[A-Za-z_][A-Za-z0-9_]*=/.test(trimmed) ||
 			(line.startsWith("  ") && trimmed.length > 0) ||
 			line.startsWith("$ ");
 
@@ -176,23 +182,39 @@ export function CommandInspectorBox({ command, hasRisk }: { command: string; has
 	);
 }
 
-/** 渲染提示文本或命令审计盒 */
-export function DialogPromptContent({ text }: { text: string }) {
-	const parsed = useMemo(() => parseCommandPrompt(text), [text]);
+/** 渲染提示文本或命令审计盒（系统交互禁用数学公式解析，杜绝 Shell 变量被误当成公式） */
+export function DialogPromptContent({
+	text,
+	structuredCode,
+}: {
+	text: string;
+	structuredCode?: { content: string; language?: string; hasRisk?: boolean };
+}) {
+	const parsed = useMemo(() => {
+		if (structuredCode) {
+			return {
+				hasRisk: structuredCode.hasRisk ?? false,
+				intro: text,
+				command: structuredCode.content,
+				outro: "",
+			};
+		}
+		return parseCommandPrompt(text);
+	}, [text, structuredCode]);
 
 	if (!parsed.command) {
 		return (
 			<div className="dialog-prompt dialog-body">
-				<Markdown text={text} rawHtml />
+				<Markdown text={text} rawHtml disableMath />
 			</div>
 		);
 	}
 
 	return (
 		<div className="dialog-prompt dialog-body">
-			{parsed.intro && <Markdown text={parsed.intro} rawHtml />}
+			{parsed.intro && <Markdown text={parsed.intro} rawHtml disableMath />}
 			<CommandInspectorBox command={parsed.command} hasRisk={parsed.hasRisk} />
-			{parsed.outro && <Markdown text={parsed.outro} rawHtml />}
+			{parsed.outro && <Markdown text={parsed.outro} rawHtml disableMath />}
 		</div>
 	);
 }
@@ -304,16 +326,16 @@ export function Dialog({ dialog }: DialogProps) {
 
 			{/* 2. 独立滚动正文区（任何长命令/长提示仅在此处滚动，绝对不挤压动作栏） */}
 			<div className="dialog-scroll-body">
-				{dialog.kind === "select" && <DialogPromptContent text={titleText} />}
+				{dialog.kind === "select" && <DialogPromptContent text={titleText} structuredCode={dialog.code} />}
 
 				{dialog.kind === "confirm" && (
 					<>
-						{titleText && (titleText.includes("\n") || titleText.length > 50 || !message) && (
-							<DialogPromptContent text={titleText} />
+						{titleText && (titleText.includes("\n") || titleText.length > 50 || !message || dialog.code) && (
+							<DialogPromptContent text={titleText} structuredCode={dialog.code} />
 						)}
 						{message && (
 							<div className="dialog-prompt dialog-body">
-								<Markdown text={message} rawHtml />
+								<Markdown text={message} rawHtml disableMath />
 							</div>
 						)}
 					</>
@@ -321,7 +343,7 @@ export function Dialog({ dialog }: DialogProps) {
 
 				{dialog.kind === "input" && (
 					<>
-						{titleText && <DialogPromptContent text={titleText} />}
+						{titleText && <DialogPromptContent text={titleText} structuredCode={dialog.code} />}
 						<input
 							className="dialog-input"
 							value={inputValue}
@@ -356,7 +378,7 @@ export function Dialog({ dialog }: DialogProps) {
 										onClick={() => respond(opt)}
 									>
 										<span className="dialog-option-text">
-											<Markdown text={opt} rawHtml />
+											<Markdown text={opt} rawHtml disableMath />
 										</span>
 										{shortcutKey && <kbd className="dialog-opt-badge">{shortcutKey}</kbd>}
 									</button>

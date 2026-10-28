@@ -969,6 +969,7 @@ describe("面板 chrome 宿主条目（file.preview / goalbar / scm / terminal /
 			"host:fp-edit",
 			"host:fp-wrap",
 			"host:fp-zoom",
+			"host:fp-download",
 			"host:fp-ref",
 			"host:fp-full",
 			"host:fp-close",

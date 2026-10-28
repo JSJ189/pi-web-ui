@@ -452,7 +452,7 @@ function ReadInspectorDialog({
 	const hints = state.hints || toolArgHints(args);
 	const targetPath = hints.path || "";
 	const targetQuery = hints.query || "";
-	const titleText = targetPath || targetQuery || name;
+	const titleText = targetQuery ? (targetPath ? `${targetQuery} (${targetPath})` : targetQuery) : targetPath || name;
 
 	const isImage = useMemo(() => {
 		if (images && images.length > 0) return true;
@@ -525,6 +525,14 @@ function ReadInspectorDialog({
 						<span className="file-diff-path" title={titleText}>
 							{titleText}
 						</span>
+						{targetQuery && (
+							<span
+								className="file-diff-pattern"
+								title={isZh ? `搜索表达式: ${targetQuery}` : `Pattern: ${targetQuery}`}
+							>
+								{name === "grep" ? "REGEX" : "QUERY"}
+							</span>
+						)}
 						{targetPath && (
 							<span className="file-diff-lang">{targetPath.split(".").pop()?.toUpperCase() || "FILE"}</span>
 						)}

@@ -795,13 +795,15 @@ async function finishWithText(text, engineBadge = "") {
 	]);
 }
 
-function showError(msg, note = "") {
+function showError(msg, note = "", actions = []) {
 	resetSession();
 	const ui = openOverlay();
 	ui.setStatus("🎤");
 	ui.setText(msg, true);
 	if (note) ui.setNote(note);
-	ui.setButtons([{ label: T.close, primary: true, onClick: closeOverlay }]);
+	const btns = Array.isArray(actions) && actions.length ? [...actions] : [];
+	btns.push({ label: T.close, primary: btns.length === 0, onClick: closeOverlay });
+	ui.setButtons(btns);
 }
 
 /* ---------------- 浏览器原生识别（Web Speech API） ---------------- */
@@ -864,18 +866,34 @@ function startByEngine(cfg) {
 		return;
 	}
 	if (route === "install-local") {
-		showInstallPrompt(T.localNotInstalled);
+		showInstallPrompt(T.localNotInstalled, cfg);
 		return;
 	}
 	if (route === "remote-missing") {
-		showError(T.remoteNotConfigured);
+		showError(T.remoteNotConfigured, "", [
+			{
+				label: T.switchEngine,
+				primary: true,
+				onClick: () => {
+					showEnginePicker(cfg);
+				},
+			},
+		]);
 		return;
 	}
 	if (route === "fallback-off") {
-		showError(T.serverFallbackOff);
+		showError(T.serverFallbackOff, "", [
+			{
+				label: T.switchEngine,
+				primary: true,
+				onClick: () => {
+					showEnginePicker(cfg);
+				},
+			},
+		]);
 		return;
 	}
-	showInstallPrompt(T.noSpeech);
+	showInstallPrompt(T.noSpeech, cfg);
 }
 
 /** 把引擎选择写回服务端（= 声明式设置里的 `engine`）。失败不抛：本次仍照用。 */
@@ -1460,16 +1478,23 @@ async function handleRecorded(samples, cfg, timedOut, mode = "compose") {
 
 /* ---------------- 一键安装本地 Whisper ---------------- */
 
-function showInstallPrompt(why) {
+function showInstallPrompt(why, cfg = null) {
 	resetSession();
 	const ui = openOverlay();
 	ui.setStatus("🎤");
 	ui.setText(why || T.serverMissing);
 	ui.setNote(T.installNote);
-	ui.setButtons([
-		{ label: T.installLocal, primary: true, onClick: () => void runLocalInstall() },
-		{ label: T.close, onClick: closeOverlay },
-	]);
+	const btns = [{ label: T.installLocal, primary: true, onClick: () => void runLocalInstall() }];
+	if (cfg) {
+		btns.push({
+			label: T.switchEngine,
+			onClick: () => {
+				showEnginePicker(cfg);
+			},
+		});
+	}
+	btns.push({ label: T.close, onClick: closeOverlay });
+	ui.setButtons(btns);
 }
 
 async function fetchLocalStatus() {

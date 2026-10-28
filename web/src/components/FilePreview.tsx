@@ -4,6 +4,7 @@ import {
 	FiCheck,
 	FiCode,
 	FiCornerDownLeft,
+	FiDownload,
 	FiEdit3,
 	FiExternalLink,
 	FiEye,
@@ -27,6 +28,7 @@ import { withToken } from "../auth-token";
 import { appUrl } from "../base-url";
 import { appSend } from "../app-globals";
 import { formatSize } from "../format-bytes";
+import { downloadFile } from "../download";
 
 /** Cap rendered lines so a pathological file can't freeze the modal. */
 const MAX_PREVIEW_LINES = 5000;
@@ -450,6 +452,16 @@ export function FilePreview({
 					</button>
 				</span>
 			) : null,
+		"host:fp-download": (
+			<button
+				type="button"
+				className="fp-attach download"
+				data-tip={t("downloadFile")}
+				onClick={() => void downloadFile(file.path, file.name)}
+			>
+				<FiDownload />
+			</button>
+		),
 		"host:fp-ref": (
 			<button
 				type="button"
@@ -482,6 +494,7 @@ export function FilePreview({
 					"host:fp-edit",
 					"host:fp-wrap",
 					"host:fp-zoom",
+					"host:fp-download",
 					"host:fp-ref",
 					"host:fp-full",
 				].map((id) => ({ id, source: "host" }) as UiSlotEntry)

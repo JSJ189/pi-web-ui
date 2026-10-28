@@ -31,7 +31,7 @@ const AGENT_RE = /"agent"\s*:\s*"((?:[^"\\\n]|\\.){0,200})"/;
 const SKILL_RE = /"(?:name|skill)"\s*:\s*"((?:[^"\\\n]|\\.){0,4000})"/;
 const TIMEOUT_RE =
 	/"(timeout|timeoutSeconds|timeout_seconds|timeoutSec|timeoutMs|timeout_ms|timeoutMilliseconds)"\s*:\s*(-?\d+(?:\.\d+)?)(?![0-9eE.])/;
-const QUERY_RE = /"(query|q|search)"\s*:\s*"((?:[^"\\\n]|\\.){0,400})"/;
+const QUERY_RE = /"(query|q|search|pattern)"\s*:\s*"((?:[^"\\\n]|\\.){0,400})"/;
 
 /** 超过这个值（秒）的 timeout 视为脏数据，不显示。 */
 const TIMEOUT_MAX = 1e9;
@@ -141,7 +141,8 @@ export function resolveToolHeadline(args: {
 				className: "toolcall-timeout",
 			};
 		}
-		case "tool_search": {
+		case "tool_search":
+		case "grep": {
 			if (!hints.query) return null;
 			return {
 				text: hints.query,

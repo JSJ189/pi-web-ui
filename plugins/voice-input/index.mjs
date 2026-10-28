@@ -648,10 +648,16 @@ export default {
 			const pipe = await getPipe(modelId);
 			const fullLang = whisperFullLang(lang);
 			const initialPrompt = resolveInitialPrompt(lang, cfg);
+			const generateKwargs = {};
+			if (initialPrompt) {
+				generateKwargs.initial_prompt = initialPrompt;
+				generateKwargs.prompt = initialPrompt;
+			}
 			const out = await pipe(capped, {
 				language: fullLang || undefined,
 				task: "transcribe",
-				...(initialPrompt ? { initial_prompt: initialPrompt } : {}),
+				...(initialPrompt ? { initial_prompt: initialPrompt, prompt: initialPrompt } : {}),
+				generate_kwargs: generateKwargs,
 				chunk_length_s: 30,
 				stride_length_s: 5,
 			});

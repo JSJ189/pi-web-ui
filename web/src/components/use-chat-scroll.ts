@@ -304,10 +304,7 @@ export function useChatScroll(opts: UseChatScrollOptions): UseChatScrollReturn {
 		const nearBottom = el.scrollHeight - el.scrollTop - el.clientHeight < 36;
 		const programmatic = Date.now() < progUntilRef.current;
 
-		// 只要发生非程序性的真实向上位移（无论来自拖动滑块、触控板、滚轮或键盘），当场切断吸底
-		if (!programmatic && dSt < -1) {
-			disengageStick();
-		}
+		// 判定是否存在真实的用户物理向上意图（来自滚轮、触控板、触屏滑动手势、按住滑块向上拖动或中键滚动）
 		if (middleDownRef.current && dSt < 0) {
 			userUpwardGestureTimeRef.current = Date.now();
 			disengageStick();
