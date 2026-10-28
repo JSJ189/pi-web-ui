@@ -102,13 +102,17 @@ export const LOAD_TOOLS_TOOL_NAME = "load_tools";
 /** 延迟加载模式下**永远活跃**的核心工具（其余全部先当未加载）。 */
 export const LAZY_CORE_TOOL_NAMES = ["bash", "read", "edit", "write"] as const;
 
-export type AgentToolGroup = "terminal" | "subagent" | "other";
+export type AgentToolGroup = "core" | "terminal" | "subagent" | "other";
 
 export interface AgentToolEntry {
 	name: string;
 	group: AgentToolGroup;
-	/** 默认开关（终端组/edit_soft/browser_page 默认关，其余默认开：AI 动用户浏览器须 opt-in）。 */
+	/** 默认开关（终端组/edit_soft/browser_page/powershell 默认关，其余默认开）。 */
 	defaultOn: boolean;
+	/** 操作系统限制（如 "win32"；未定义表示跨平台通用）。 */
+	platform?: "win32" | "posix";
+	/** 安全维度：是否允许 AI 自主开关（默认 true；bash/read 等核心底层工具为 false，显式防自杀）。 */
+	allowAgentToggle?: boolean;
 	/** DSH 引擎是否展示（DSH 无子代理/edit_soft 概念；目前 DSH 不用本表，预留）。 */
 	dshVisible: boolean;
 	/**
@@ -327,26 +331,86 @@ export const CORE_BUILTIN_TOOL_NAMES = ["bash", "read", "edit", "write", "powers
 
 export type CoreBuiltinToolName = (typeof CORE_BUILTIN_TOOL_NAMES)[number];
 
+export interface CoreToolEntry {
+	name: CoreBuiltinToolName;
+	group: "core";
+	defaultOn: boolean;
+	platform?: "win32" | "posix";
+	allowAgentToggle?: boolean;
+	descKey: string;
+}
+
+/**
+ * SDK 核心内置工具的声明式元数据目录。
+ * 核心工具不进 AGENT_TOOL_CATALOG（避免被 AI 自杀式通过 tool_manage 禁用，且不占设置页「其他」组目录行），
+ * 但拥有与目录工具完全对齐的元数据（默认开关、文案 key、分类、平台与安全维度），共同构成全系统统一的工具事实源。
+ */
+export const CORE_TOOL_CATALOG: readonly CoreToolEntry[] = [
+	{ name: "bash", group: "core", defaultOn: true, allowAgentToggle: false, descKey: "toolCoreBashDesc" },
+	{ name: "read", group: "core", defaultOn: true, allowAgentToggle: false, descKey: "toolCoreReadDesc" },
+	{ name: "edit", group: "core", defaultOn: true, allowAgentToggle: false, descKey: "toolCoreEditDesc" },
+	{ name: "write", group: "core", defaultOn: true, allowAgentToggle: false, descKey: "toolCoreWriteDesc" },
+	{
+		name: "powershell",
+		group: "core",
+		defaultOn: false,
+		platform: "win32",
+		allowAgentToggle: false,
+		descKey: "toolCorePowershellDesc",
+	},
+	{ name: "ls", group: "core", defaultOn: true, allowAgentToggle: false, descKey: "toolCoreLsDesc" },
+	{ name: "grep", group: "core", defaultOn: true, allowAgentToggle: false, descKey: "toolCoreGrepDesc" },
+	{ name: "find", group: "core", defaultOn: true, allowAgentToggle: false, descKey: "toolCoreFindDesc" },
+] as const;
+
+/** 系统全部已知可开关工具的统一声明式条目集合（核心内置 8 个 ∪ 宿主扩展 28 个，共 36 个）。 */
+export const ALL_AGENT_TOOL_ENTRIES: readonly AgentToolEntry[] = [
+	...CORE_TOOL_CATALOG.map((c): AgentToolEntry => ({
+		name: c.name,
+		group: "core",
+		defaultOn: c.defaultOn,
+		platform: c.platform,
+		allowAgentToggle: c.allowAgentToggle,
+		dshVisible: false,
+		descKey: c.descKey,
+	})),
+	...AGENT_TOOL_CATALOG,
+];
+
+const ALL_AGENT_TOOL_MAP = new Map<string, AgentToolEntry>(ALL_AGENT_TOOL_ENTRIES.map((t) => [t.name, t]));
+
+/** 获取任意已知工具的元数据规范条目。未知名返回 undefined。 */
+export function getAgentToolEntry(name: string): AgentToolEntry | undefined {
+	return ALL_AGENT_TOOL_MAP.get(name);
+}
+
+/** 判断工具是否在指定操作系统平台上受支持（默认检查当前宿主 process.platform）。 */
+export function isToolSupportedOnPlatform(name: string, platform: NodeJS.Platform = process.platform): boolean {
+	const entry = ALL_AGENT_TOOL_MAP.get(name);
+	if (!entry?.platform) return true;
+	if (entry.platform === "win32") return platform === "win32";
+	if (entry.platform === "posix") return platform !== "win32";
+	return true;
+}
+
 export function isCoreBuiltinTool(name: string): name is CoreBuiltinToolName {
 	return (CORE_BUILTIN_TOOL_NAMES as readonly string[]).includes(name);
 }
 
-const KNOWN_NAMES = new Set(AGENT_TOOL_CATALOG.map((t) => t.name));
+const ALL_KNOWN_SET = new Set(ALL_AGENT_TOOL_ENTRIES.map((t) => t.name));
 
-/** 全部已知可开关工具与核心内置工具全集（共 30 个）。用于白名单收敛与默认关闭推导。 */
-export const ALL_KNOWN_AGENT_TOOL_NAMES: readonly string[] = [
-	...AGENT_TOOL_CATALOG.map((t) => t.name),
-	...CORE_BUILTIN_TOOL_NAMES,
-];
+/** 全部已知可开关工具与核心内置工具全集（共 36 个）。用于白名单收敛与默认关闭推导。 */
+export const ALL_KNOWN_AGENT_TOOL_NAMES: readonly string[] = ALL_AGENT_TOOL_ENTRIES.map((t) => t.name);
 
-/** 是否为本表登记的可开关工具（未知名一律 false，不抛错）。 */
+/** 是否为 AI 可通过 tool_manage 自主开关的工具（显式检查 allowAgentToggle !== false，防自杀式关核心工具）。 */
 export function isKnownAgentTool(name: string): boolean {
-	return KNOWN_NAMES.has(name);
+	const entry = ALL_AGENT_TOOL_MAP.get(name);
+	return Boolean(entry && entry.allowAgentToggle !== false);
 }
 
-/** 是否为预设可配置的有效工具（目录登记工具 ∪ 核心内置工具）。 */
+/** 是否为预设可配置的有效工具（宿主目录登记工具 ∪ 核心内置工具）。 */
 export function isConfigurableAgentTool(name: string): boolean {
-	return KNOWN_NAMES.has(name) || isCoreBuiltinTool(name);
+	return ALL_KNOWN_SET.has(name);
 }
 
 /** 根据禁用名单计算出当前系统中真正启用的可用工具列表（只取当前系统可用的配置）。 */
@@ -379,16 +443,16 @@ export function normalizeDisabledAgentTools(v: unknown): string[] {
 		if (typeof name === "string" && (LEGACY_SCHEDULE_TOOL_NAMES as readonly string[]).includes(name)) {
 			name = SCHEDULE_TOOL_NAME;
 		}
-		if (typeof name === "string" && (KNOWN_NAMES.has(name) || isCoreBuiltinTool(name)) && !out.includes(name)) {
+		if (typeof name === "string" && ALL_KNOWN_SET.has(name) && !out.includes(name)) {
 			out.push(name);
 		}
 	}
 	return out;
 }
 
-/** 默认禁用名单（= 目录里 defaultOn=false 的那些）。 */
+/** 默认禁用名单：统一由全部工具条目的 !defaultOn 声明式推导，绝无任何手写特例。 */
 export function defaultDisabledAgentTools(): string[] {
-	return AGENT_TOOL_CATALOG.filter((t) => !t.defaultOn).map((t) => t.name);
+	return ALL_AGENT_TOOL_ENTRIES.filter((t) => !t.defaultOn).map((t) => t.name);
 }
 
 /** 单个工具是否启用（禁用名单里没有 = 启用）。 */
@@ -747,16 +811,18 @@ export interface LegacyToolSwitches {
 }
 
 /**
- * 旧存档迁移：已有新字段直接归一化；否则按遗留三开关折算
- * （语义与改动前一致：terminal/edit 未设/关 = 禁用对应组；问卷未设/开 = 启用）。
+ * 旧存档迁移：已有新字段直接归一化；否则按遗留三开关折算。
+ * 以统一默认禁用名单为基底，遗留三开关仅在显式指定时加减偏好。
  */
 export function legacyToDisabled(s: LegacyToolSwitches): string[] {
 	if (Array.isArray(s.disabledAgentTools)) return normalizeDisabledAgentTools(s.disabledAgentTools);
-	const off: string[] = [];
-	if (s.terminalToolsEnabled !== true) off.push(...TERMINAL_TOOL_NAMES);
-	if (s.editSoftEnabled !== true) off.push(EDIT_SOFT_TOOL_NAME);
-	if (s.questionnaireEnabled === false) off.push(ASK_USER_QUESTION_TOOL_NAME);
-	return normalizeDisabledAgentTools(off);
+	const off = new Set(defaultDisabledAgentTools());
+	if (s.terminalToolsEnabled === true) {
+		for (const n of TERMINAL_TOOL_NAMES) off.delete(n);
+	}
+	if (s.editSoftEnabled === true) off.delete(EDIT_SOFT_TOOL_NAME);
+	if (s.questionnaireEnabled === false) off.add(ASK_USER_QUESTION_TOOL_NAME);
+	return normalizeDisabledAgentTools([...off]);
 }
 
 /** 由禁用名单推导遗留三开关（协议兼容用；终端组按“全开才算开”的全有/全无视图）。 */

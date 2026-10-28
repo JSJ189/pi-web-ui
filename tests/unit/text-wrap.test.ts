@@ -291,15 +291,51 @@ describe("滚动容器防穿透与滚动链放行区分", () => {
 		},
 	);
 
-	it.each([".plan-board-steps", ".sandbox-diff-list", ".compacted-history-messages"])(
-		"%s 独立面板列表声明 overscroll-behavior: contain 防止整页滚动穿透",
+	it.each([
+		".plan-board-steps",
+		".sandbox-diff-list",
+		".compacted-history-messages",
+		".bash-terminal-viewport",
+		".generic-inspector-viewport",
+	])("%s 独立面板列表声明 overscroll-behavior: contain 防止整页滚动穿透", (selector) => {
+		const body = bodyOf(selector);
+		expect(body, `${selector} 在 styles.css 里没有声明`).not.toBe("");
+		expect(
+			/overscroll-behavior(?:-y)?\s*:\s*contain/.test(body),
+			`${selector} 缺少 overscroll-behavior: contain（独立浮层/面板列表滚到底顶时应防穿透）`,
+		).toBe(true);
+	});
+});
+
+describe("工具调用检查器视口滚动能力（Tool Inspector Modal Viewports）", () => {
+	it.each([".bash-terminal-viewport", ".generic-inspector-viewport"])(
+		"%s 视口容器拥有 height: 100% 与 overflow: auto 确保长输出可正常滚动",
 		(selector) => {
 			const body = bodyOf(selector);
 			expect(body, `${selector} 在 styles.css 里没有声明`).not.toBe("");
-			expect(
-				/overscroll-behavior(?:-y)?\s*:\s*contain/.test(body),
-				`${selector} 缺少 overscroll-behavior: contain（独立浮层/面板列表滚到底顶时应防穿透）`,
-			).toBe(true);
+			expect(/height\s*:\s*100%/.test(body), `${selector} 缺 height: 100%`).toBe(true);
+			expect(/overflow(-y)?\s*:\s*auto/.test(body), `${selector} 缺 overflow: auto`).toBe(true);
 		},
 	);
+
+	it("file-diff-inspector-body 直接子视口全覆盖滚动规则", () => {
+		// 覆盖 bash, generic, read, raw, unified diff, write code table, thinking 与 fallback pre
+		const requiredViewports = [
+			".read-inspector-viewport",
+			".file-diff-raw-body",
+			".diff-unified-view",
+			".diff-code-table",
+			".thinking-inspector-content",
+			".bash-terminal-viewport",
+			".generic-inspector-viewport",
+			".file-diff-pre",
+		];
+		for (const vp of requiredViewports) {
+			const sel = `.file-diff-inspector-body > ${vp}`;
+			const body = bodyOf(sel);
+			expect(body, `${sel} 未设置滚动规则`).not.toBe("");
+			expect(/overflow(-y)?\s*:\s*auto/.test(body), `${sel} 缺 overflow: auto`).toBe(true);
+			expect(/height\s*:\s*100%/.test(body), `${sel} 缺 height: 100%`).toBe(true);
+		}
+	});
 });

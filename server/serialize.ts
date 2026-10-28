@@ -14,7 +14,7 @@ export type AgentMessage = AgentSession["messages"][number];
 
 export const TEXT_CAP = 200_000;
 export const TOOL_OUTPUT_CAP = 100_000;
-export const ARGS_CAP = 20_000;
+export const ARGS_CAP = 200_000;
 /**
  * toolResult 里单张图片进快照的上限（dataUrl 字符数 ≈ 1.5MB 二进制）。
  * 视口/元素截图随便过；超大整页截图回落成占位文本（模型侧不受影响 —— 图它

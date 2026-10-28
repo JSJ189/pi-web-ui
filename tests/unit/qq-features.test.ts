@@ -6,6 +6,9 @@
  */
 
 import { describe, expect, it, vi } from "vitest";
+import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
 import activate, {
 	checkCwdValid,
 	extractQqText,
@@ -320,6 +323,113 @@ describe("QqBotBridge 双工逻辑测试", () => {
 		expect(testReply.message).toContain("未填入 AppID 或 ClientSecret");
 	});
 
+	it("工作台发媒体：本地文件自动上传（file_data）后以 msg_type=7 发出", async () => {
+		const dir = mkdtempSync(join(tmpdir(), "qq-send-"));
+		try {
+			writeFileSync(join(dir, "pic.png"), Buffer.from("PNGDATA"));
+			const calls: any[] = [];
+			vi.stubGlobal(
+				"fetch",
+				vi.fn(async (url: any, init?: any) => {
+					const u = String(url);
+					const body = init?.body ? JSON.parse(String(init.body)) : null;
+					calls.push({ url: u, body });
+					if (u.includes("getAppAccessToken")) {
+						return { ok: true, json: async () => ({ access_token: "tk", expires_in: 7200 }) } as Response;
+					}
+					if (u.endsWith("/files")) return { ok: true, json: async () => ({ file_info: "FI_LOCAL" }) } as Response;
+					if (u.endsWith("/messages")) return { ok: true, json: async () => ({ id: "m_media" }) } as Response;
+					return { ok: true, json: async () => ({}) } as Response;
+				}),
+			);
+
+			let clientHandler: ((msg: any, reply: (payload: any) => void) => Promise<void>) | null = null;
+			const mockHost = {
+				storage: {
+					get: async () => ({ appId: "102030", clientSecret: "sec", workspace: dir }),
+					set: async () => {},
+				},
+				secrets: { getAll: async () => ({}) },
+				onClientMessage: (fn: any) => {
+					clientHandler = fn;
+				},
+				registerTool: vi.fn(),
+			};
+			await activate(mockHost as any);
+
+			let replyData: any = null;
+			await clientHandler!(
+				{ type: "send_message", media: "pic.png", openid: "openid-u1", openidType: "user", text: "看图" },
+				(res: any) => {
+					replyData = res;
+				},
+			);
+
+			expect(replyData?.success).toBe(true);
+			const upload = calls.find((c) => c.url.endsWith("/files"));
+			expect(upload.url).toContain("/v2/users/openid-u1/files");
+			expect(upload.body.file_type).toBe(1);
+			expect(upload.body.file_data).toBe(Buffer.from("PNGDATA").toString("base64"));
+			const msg = calls.find((c) => c.url.endsWith("/messages"));
+			expect(msg.body).toMatchObject({ msg_type: 7, media: { file_info: "FI_LOCAL" }, content: "看图" });
+		} finally {
+			rmSync(dir, { recursive: true, force: true });
+			vi.unstubAllGlobals();
+		}
+	});
+
+	it("工作台发媒体：子频道只接受公网 URL（本地文件明确报错）", async () => {
+		const dir = mkdtempSync(join(tmpdir(), "qq-send-ch-"));
+		try {
+			writeFileSync(join(dir, "pic.png"), Buffer.from("PNGDATA"));
+			let clientHandler: ((msg: any, reply: (payload: any) => void) => Promise<void>) | null = null;
+			const mockHost = {
+				storage: {
+					get: async () => ({ appId: "102030", clientSecret: "sec", workspace: dir, defaultChannelId: "ch1" }),
+					set: async () => {},
+				},
+				secrets: { getAll: async () => ({}) },
+				onClientMessage: (fn: any) => {
+					clientHandler = fn;
+				},
+				registerTool: vi.fn(),
+			};
+			vi.stubGlobal(
+				"fetch",
+				vi.fn(async () => ({ ok: true, json: async () => ({}) }) as Response),
+			);
+			await activate(mockHost as any);
+
+			let replyData: any = null;
+			await clientHandler!({ type: "send_message", media: "pic.png", channelId: "ch1" }, (res: any) => {
+				replyData = res;
+			});
+			expect(replyData?.success).toBe(false);
+			expect(String(replyData?.message)).toContain("公网 http(s)");
+		} finally {
+			rmSync(dir, { recursive: true, force: true });
+			vi.unstubAllGlobals();
+		}
+	});
+
+	it("get_state 回传 inboundMedia 开关（默认开启）", async () => {
+		let clientHandler: ((msg: any, reply: (payload: any) => void) => Promise<void>) | null = null;
+		const mockHost = {
+			storage: { get: async () => ({ appId: "1" }), set: async () => {} },
+			secrets: { getAll: async () => ({}) },
+			onClientMessage: (fn: any) => {
+				clientHandler = fn;
+			},
+			registerTool: vi.fn(),
+		};
+		await activate(mockHost as any);
+		let replyData: any = null;
+		await clientHandler!({ type: "get_state" }, (res: any) => {
+			replyData = res;
+		});
+		expect(replyData.config.inboundMedia).toBe(true);
+	});
+
 	it("checkCwdValid 能够正确拦截非法或不存在的路径", () => {
 		expect(checkCwdValid("").ok).toBe(false);
 		expect(checkCwdValid("Z:/non_existent_path_xyz_123").ok).toBe(false);
@@ -591,5 +701,192 @@ describe("QqBotBridge 双工逻辑测试", () => {
 		expect(chatsAfter[0].conversationId).toBe("c5");
 
 		await bridge.stop();
+	});
+
+	it("频道通知广播：AI 提问待确认 (ask_user_question) 自动格式化并推送到指定频道，支持防重复", async () => {
+		const fetchMock = vi.fn().mockResolvedValue({
+			ok: true,
+			status: 200,
+			json: async () => ({ access_token: "mock_qq_token", id: "m_broadcast_1" }),
+		});
+		vi.stubGlobal("fetch", fetchMock);
+
+		const bridge = new QqBotBridge({
+			host: {
+				broadcast: vi.fn(),
+			},
+			getConfig: () => ({
+				appId: "102030",
+				clientSecret: "mock_secret",
+				defaultChannelId: "channel_broad_123",
+				notifyOnQuestion: true,
+			}),
+		});
+
+		bridge.accessToken = "mock_token";
+		bridge.tokenExpiresAt = Date.now() + 3600 * 1000;
+		bridge.running = true;
+
+		// 触发网页端普通会话中的 ask_user_question
+		const args = JSON.stringify({
+			questions: [
+				{
+					id: "confirm_deploy",
+					header: "部署确认",
+					question: "是否确认将代码推送到生产环境？",
+					options: [{ label: "确认继续", recommended: true }, { label: "取消操作" }],
+				},
+			],
+		});
+
+		await bridge.handleRunEvent({
+			conversationId: "web_conv_888",
+			type: "tool_start",
+			toolName: "ask_user_question",
+			toolCallId: "call_ask_1",
+			argsText: args,
+		});
+
+		expect(fetchMock).toHaveBeenCalledWith(
+			expect.stringContaining("/channels/channel_broad_123/messages"),
+			expect.objectContaining({
+				method: "POST",
+				body: expect.stringContaining("部署确认"),
+			}),
+		);
+
+		// 重复调用同一 toolCallId 应该防重跳过
+		fetchMock.mockClear();
+		await bridge.handleRunEvent({
+			conversationId: "web_conv_888",
+			type: "tool_start",
+			toolName: "ask_user_question",
+			toolCallId: "call_ask_1",
+			argsText: args,
+		});
+		expect(fetchMock).not.toHaveBeenCalled();
+
+		await bridge.stop();
+		vi.unstubAllGlobals();
+	});
+
+	it("频道通知广播：普通网页会话在 run_end 时根据 notifyOnRunEnd 推送完成摘要", async () => {
+		const fetchMock = vi.fn().mockResolvedValue({
+			ok: true,
+			status: 200,
+			json: async () => ({ access_token: "mock_qq_token", id: "m_broadcast_2" }),
+		});
+		vi.stubGlobal("fetch", fetchMock);
+
+		const bridge = new QqBotBridge({
+			host: {
+				broadcast: vi.fn(),
+			},
+			getConfig: () => ({
+				appId: "102030",
+				clientSecret: "mock_secret",
+				broadcastChannelId: "channel_custom_999",
+				notifyOnRunEnd: true,
+			}),
+		});
+
+		bridge.accessToken = "mock_token";
+		bridge.tokenExpiresAt = Date.now() + 3600 * 1000;
+		bridge.running = true;
+
+		// 模拟网页端会话流程
+		await bridge.handleRunEvent({
+			conversationId: "web_conv_999",
+			type: "run_start",
+			task: "修复登录接口 500 异常",
+			at: Date.now() - 5000,
+		});
+
+		await bridge.handleRunEvent({
+			conversationId: "web_conv_999",
+			type: "message",
+			message: {
+				role: "assistant",
+				content: "已查明空指针原因并已修复，全部 12 项单元测试通过。",
+			},
+		});
+
+		await bridge.handleRunEvent({
+			conversationId: "web_conv_999",
+			type: "run_end",
+			stopReason: "stop",
+		});
+
+		expect(fetchMock).toHaveBeenCalledWith(
+			expect.stringContaining("/channels/channel_custom_999/messages"),
+			expect.objectContaining({
+				method: "POST",
+				body: expect.stringContaining("已查明空指针原因并已修复"),
+			}),
+		);
+
+		await bridge.stop();
+		vi.unstubAllGlobals();
+	});
+});
+
+describe("QQ：对话被过户（改名 + 换客户端）后仍按 runId 回包", () => {
+	it("conversationId 改名、clientId 变成浏览器后，run_end 仍回复到原频道", async () => {
+		// 过户回归：用户在网页左栏点开 running 对话 = take_over_conversation —— 对话搬到浏览器
+		// 会话（clientId 变），目标会话已有同名 id（各会话独立从 c1 编号）时还会就地改名
+		// （conversationId 也变）。两个键全失效，只有 host.chat 回执里的 runId 不变。
+		const fetchMock = vi.fn().mockResolvedValue({
+			ok: true,
+			status: 200,
+			json: async () => ({ access_token: "mock_qq_token", id: "m_reply_9" }),
+		});
+		vi.stubGlobal("fetch", fetchMock);
+
+		let runHandler: ((ev: any) => void) | null = null;
+		const chatSpy = vi.fn().mockResolvedValue({ conversationId: "c1", clientId: "plugin:qq:x", runId: "pr-qq-9" });
+
+		const bridge = new QqBotBridge({
+			host: {
+				chat: chatSpy,
+				onRunEvent: (fn: any) => {
+					runHandler = fn;
+					return () => {};
+				},
+			},
+			getConfig: () => ({ appId: "102030", clientSecret: "mock_secret" }),
+		});
+
+		await bridge.start();
+		await bridge.onInboundMessage(
+			{
+				id: "msg_qq_takeover",
+				channel_id: "c_123",
+				author: { id: "ALLOWED_USER_1", bot: false },
+				content: "查一下磁盘占用",
+			},
+			"AT_MESSAGE_CREATE",
+		);
+
+		runHandler!({
+			conversationId: "c7",
+			clientId: "client_browser_tab1",
+			runId: "pr-qq-9",
+			type: "message",
+			message: { role: "assistant", content: "磁盘还剩 42GB。" },
+		});
+		await runHandler!({
+			conversationId: "c7",
+			clientId: "client_browser_tab1",
+			runId: "pr-qq-9",
+			type: "run_end",
+		});
+
+		expect(fetchMock).toHaveBeenCalledWith(
+			expect.stringContaining("/channels/c_123/messages"),
+			expect.objectContaining({ body: expect.stringContaining("磁盘还剩 42GB") }),
+		);
+
+		await bridge.stop();
+		vi.unstubAllGlobals();
 	});
 });

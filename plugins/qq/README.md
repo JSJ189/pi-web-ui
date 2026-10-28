@@ -10,6 +10,18 @@
 - 🛡️ **安全白名单控制**：支持设置允许对话的 QQ OpenID / 用户 ID 白名单，未授权人员友好拦截，防止 Bot 被陌生人滥用。
 - 💬 **被动消息引用与多端支持**：支持 QQ 频道子频道（@机器人）、QQ 群聊（@机器人）以及单聊好友消息，自动关联 `msg_id` 被动回复。
 - 🛠️ **AI 工具**：向 AI 助手注册 `qq` 工具，AI 可自主向 QQ 频道推送消息与通知。
+- 🖼️ **富媒体双向（图片/语音/视频/文件）**：
+  - **收**：QQ 发来的附件（事件里的 `attachments`，腾讯 CDN、有实效）下载后落到工作区
+    `.pi-qq-media/`，正文给绝对路径，agent 用 `read` 直接看；语音优先用 `voice_wav_url`
+    并带上官方 ASR 文本。单件上限 25MB，超限/下载失败降级为占位文字（绝不吞消息）；
+    设置里可开关「接收图片/文件落地」。
+  - **发**：`qq` 工具新增 `image` / `file`（本地路径或 http(s) URL）与 `user_openid` /
+    `group_openid` 目标。链路 = `POST /v2/{users|groups}/{openid}/files`
+    （本地文件 ≤ 5MB 走 base64 `file_data`，更大自动走 `upload_prepare` → 分片 PUT →
+    `upload_part_finish` → 合并拿 `file_info`）→ `msg_type=7` + `media.file_info`。
+    超过软限制（图片 20MB / 视频 30MB / 语音 20MB）由 QQ 侧降级为文件卡片。
+  - **频道限制**：QQ 频道子频道只接受**公网 http(s) URL** 的 `image` 字段，本地文件没有
+    上传通道 —— 要么先用单聊/群聊发，要么给公网链接（工作台会直接报错提示）。
 
 ## 配置指南
 

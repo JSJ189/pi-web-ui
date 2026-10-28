@@ -40,6 +40,16 @@
 		"homepage": "https://github.com/xing-shuyin/pi-web-ui/tree/main/plugins/sftp"
 	},
 	{
+		"id": "remote-workbench",
+		"name": "remote-workbench",
+		"icon": "🖥️",
+		"iconSvg": "<svg xmlns=\"http://www.w3.org/2000/svg\" viewBox=\"0 0 24 24\" fill=\"none\" stroke=\"currentColor\" stroke-width=\"2\" stroke-linecap=\"round\" stroke-linejoin=\"round\"><rect width=\"20\" height=\"14\" x=\"2\" y=\"3\" rx=\"2\"/><line x1=\"8\" x2=\"16\" y1=\"21\" y2=\"21\"/><line x1=\"12\" x2=\"12\" y1=\"17\" y2=\"21\"/><path d=\"m7 8 2 2-2 2\"/><path d=\"M12 12h4\"/></svg>",
+		"description": "远程工作台：多主机资产管理与 Web SSH 远程交互终端，统一共享 global-hosts.json 事实源，与远程工作区及 SFTP 插件无缝联动，支持一键终端直连、环境探针与多标签会话。",
+		"descriptionEn": "Remote Workbench: multi-host inventory & Web SSH terminal connected to unified global-hosts.json, supporting one-click terminal sessions and SFTP integration.",
+		"source": "xing-shuyin/pi-web-ui/plugins/remote-workbench",
+		"homepage": "https://github.com/xing-shuyin/pi-web-ui/tree/main/plugins/remote-workbench"
+	},
+	{
 		"id": "mermaid",
 		"name": "mermaid",
 		"icon": "📊",

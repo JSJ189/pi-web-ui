@@ -159,12 +159,31 @@ export default {
 						<div style="font-weight: 600; font-size: 14px; margin-bottom: 12px;">📤 快捷向 QQ 频道子频道发送测试消息</div>
 						<div style="display: flex; flex-direction: column; gap: 10px;">
 							<div>
-								<label style="display: block; margin-bottom: 4px; color: var(--text-dim);">目标子频道 Channel ID:</label>
-								<input type="text" class="qq-send-channelid" placeholder="如：12345678 (留空使用默认频道)" style="width: 100%; box-sizing: border-box; padding: 6px 10px; border-radius: 4px; border: 1px solid var(--border); background: var(--bg); color: var(--text);" />
+								<div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 4px;">
+									<label style="color: var(--text-dim);">目标子频道 Channel ID:</label>
+									<button class="qq-btn-fetch-channels" style="font-size: 11px; padding: 2px 8px; border-radius: 4px; border: 1px solid var(--border); background: var(--bg); color: var(--text); cursor: pointer;">🔍 自动读取我的子频道</button>
+								</div>
+								<select class="qq-channels-dropdown" style="display: none; width: 100%; box-sizing: border-box; margin-bottom: 6px; padding: 6px 10px; border-radius: 4px; border: 1px solid var(--accent); background: var(--bg-elev); color: var(--text);"></select>
+								<input type="text" class="qq-send-channelid" placeholder="如：12345678 (注意：是具体的文字子频道ID，不是大频道号)" style="width: 100%; box-sizing: border-box; padding: 6px 10px; border-radius: 4px; border: 1px solid var(--border); background: var(--bg); color: var(--text);" />
 							</div>
 							<div>
 								<label style="display: block; margin-bottom: 4px; color: var(--text-dim);">消息文本内容:</label>
 								<textarea class="qq-send-text" rows="2" placeholder="输入要发送的消息内容..." style="width: 100%; box-sizing: border-box; padding: 8px 10px; border-radius: 4px; border: 1px solid var(--border); background: var(--bg); color: var(--text); resize: vertical; font-family: inherit;"></textarea>
+							</div>
+							<div>
+								<label style="display: block; margin-bottom: 4px; color: var(--text-dim);">媒体（可选：本地文件路径或 http(s) URL）:</label>
+								<input type="text" class="qq-send-media" placeholder="如 C:\\pic\\a.png 或 https://…/a.png" style="width: 100%; box-sizing: border-box; padding: 6px 10px; border-radius: 4px; border: 1px solid var(--border); background: var(--bg); color: var(--text);" />
+								<div style="font-size: 11px; color: var(--text-dim); margin-top: 4px;">子频道（Channel ID）只支持公网 URL（官方限制）；发本地文件请填下面的单聊/群聊 openid。</div>
+							</div>
+							<div>
+								<label style="display: block; margin-bottom: 4px; color: var(--text-dim);">单聊 / 群聊 openid（可选，填了就发它而不是频道）:</label>
+								<div style="display: flex; gap: 8px;">
+									<select class="qq-send-openid-type" style="padding: 6px 8px; border-radius: 4px; border: 1px solid var(--border); background: var(--bg); color: var(--text);">
+										<option value="user">单聊 user_openid</option>
+										<option value="group">群聊 group_openid</option>
+									</select>
+									<input type="text" class="qq-send-openid" placeholder="留空 = 发到上方子频道" style="flex: 1; min-width: 0; box-sizing: border-box; padding: 6px 10px; border-radius: 4px; border: 1px solid var(--border); background: var(--bg); color: var(--text);" />
+								</div>
 							</div>
 							<div style="display: flex; justify-content: flex-end; gap: 8px;">
 								<button class="qq-btn-send" style="padding: 6px 16px; border-radius: 4px; border: none; background: var(--accent); color: var(--accent-contrast, #fff); cursor: pointer; font-weight: 500;">🚀 发送消息</button>
@@ -199,6 +218,25 @@ export default {
 							<div>
 								<label style="display: block; margin-bottom: 4px; color: var(--text-dim);">默认发送子频道 Channel ID (可选，非 AppSecret，不使用可留空):</label>
 								<input type="text" class="qq-cfg-default-channel" placeholder="如：12345678 (不用频道请留空)" style="width: 100%; box-sizing: border-box; padding: 6px 10px; border-radius: 4px; border: 1px solid var(--border); background: var(--bg); color: var(--text);" />
+							</div>
+
+							<div style="border-top: 1px solid var(--border); padding-top: 12px;">
+								<div style="font-weight: 600; margin-bottom: 6px;">📢 频道通知广播</div>
+								<div style="font-size: 12px; color: var(--text-dim); margin-bottom: 8px;">借助私人频道接收 AI 状态推送，无需时刻守在电脑前。</div>
+								<div style="margin-bottom: 8px;">
+									<label style="display: block; margin-bottom: 4px; color: var(--text-dim);">广播通知子频道 ID (留空默认使用上方默认子频道):</label>
+									<input type="text" class="qq-cfg-broadcast-channel" placeholder="留空使用上方默认子频道" style="width: 100%; box-sizing: border-box; padding: 6px 10px; border-radius: 4px; border: 1px solid var(--border); background: var(--bg); color: var(--text);" />
+								</div>
+								<div style="display: flex; flex-direction: column; gap: 6px;">
+									<div style="display: flex; align-items: center; gap: 8px;">
+										<input type="checkbox" id="qq-cfg-notify-question" class="qq-cfg-notify-question" style="cursor: pointer;" />
+										<label for="qq-cfg-notify-question" style="font-size: 12px; cursor: pointer; user-select: none;">AI 提问待确认时发送频道通知 (ask_user_question)</label>
+									</div>
+									<div style="display: flex; align-items: center; gap: 8px;">
+										<input type="checkbox" id="qq-cfg-notify-runend" class="qq-cfg-notify-runend" style="cursor: pointer;" />
+										<label for="qq-cfg-notify-runend" style="font-size: 12px; cursor: pointer; user-select: none;">AI 任务执行完成时发送频道通知 (run_end 摘要)</label>
+									</div>
+								</div>
 							</div>
 
 							<div style="border-top: 1px solid var(--border); padding-top: 12px;">
@@ -258,6 +296,10 @@ export default {
 		const cfgClientSecret = q(".qq-cfg-clientsecret");
 		const cfgSandbox = q(".qq-cfg-sandbox");
 		const cfgDefaultChannel = q(".qq-cfg-default-channel");
+		const cfgBroadcastChannel = q(".qq-cfg-broadcast-channel");
+		const cfgNotifyQuestion = q(".qq-cfg-notify-question");
+		const cfgInboundMedia = q(".qq-cfg-inbound-media");
+		const cfgNotifyRunEnd = q(".qq-cfg-notify-runend");
 		const cfgBotEnabled = q(".qq-cfg-bot-enabled");
 		const cfgAllowedUsers = q(".qq-cfg-allowed-users");
 		const cfgTimeout = q(".qq-cfg-timeout");
@@ -477,7 +519,13 @@ export default {
 		async function refresh() {
 			const res = await sendHost("get_state");
 			if (!res || res.type !== "state") return;
-			currentState = res;
+			currentState = {
+				...res,
+				config: {
+					...(currentState.config || {}),
+					...(res.config || {}),
+				},
+			};
 			updateStatusView(res.botStatus || {});
 			renderWorkspace(res);
 			renderModelAndThinking(res);
@@ -600,6 +648,10 @@ export default {
 				: "填入 AppSecret (机器人密钥)";
 			cfgSandbox.checked = Boolean(cfg.useSandbox);
 			cfgDefaultChannel.value = cfg.defaultChannelId || "";
+			cfgBroadcastChannel.value = cfg.broadcastChannelId || "";
+			cfgNotifyQuestion.checked = cfg.notifyOnQuestion !== false;
+			if (cfgInboundMedia) cfgInboundMedia.checked = cfg.inboundMedia !== false;
+			cfgNotifyRunEnd.checked = Boolean(cfg.notifyOnRunEnd);
 			cfgBotEnabled.checked = Boolean(cfg.botEnabled);
 			cfgAllowedUsers.value = Array.isArray(cfg.allowedUsers) ? cfg.allowedUsers.join(", ") : "";
 			cfgTimeout.value = cfg.replyTimeoutSec || 90;
@@ -666,6 +718,10 @@ export default {
 					clientSecret,
 					useSandbox: Boolean(cfgSandbox.checked),
 					defaultChannelId: cfgDefaultChannel.value.trim(),
+					broadcastChannelId: cfgBroadcastChannel.value.trim(),
+					notifyOnQuestion: Boolean(cfgNotifyQuestion.checked),
+					notifyOnRunEnd: Boolean(cfgNotifyRunEnd.checked),
+					inboundMedia: Boolean(cfgInboundMedia.checked),
 					botEnabled: Boolean(cfgBotEnabled.checked),
 					allowedUsers: cfgAllowedUsers.value
 						.split(/[,，\s]+/)
@@ -676,6 +732,10 @@ export default {
 
 				const res = await sendHost("save_config", { config: newCfg });
 				if (res?.success) {
+					currentState.config = {
+						...(currentState.config || {}),
+						...newCfg,
+					};
 					modal.style.display = "none";
 					await refresh();
 				} else {
@@ -694,26 +754,81 @@ export default {
 			await refresh();
 		});
 
+		const fetchChannelsBtn = q(".qq-btn-fetch-channels");
+		const channelsDropdown = q(".qq-channels-dropdown");
+		const channelInput = q(".qq-send-channelid");
+
+		fetchChannelsBtn?.addEventListener("click", async () => {
+			fetchChannelsBtn.disabled = true;
+			fetchChannelsBtn.textContent = "读取中...";
+			try {
+				const res = await sendHost("list_channels");
+				if (!res?.success) {
+					alert?.(res?.message ? `读取失败: ${res.message}` : "读取失败: 请确认机器人是否已加入频道并在线");
+					return;
+				}
+				const guilds = Array.isArray(res.guilds) ? res.guilds : [];
+				if (guilds.length === 0) {
+					alert?.("未找到机器人加入的频道。请先在 QQ 开放平台将机器人邀请进您的频道！");
+					return;
+				}
+				channelsDropdown.innerHTML = '<option value="">-- 点击选择下方读取到的子频道 --</option>';
+				let count = 0;
+				for (const g of guilds) {
+					for (const c of g.channels || []) {
+						count++;
+						const opt = document.createElement("option");
+						opt.value = c.id;
+						opt.textContent = `【${g.guildName}】#${c.name} (ID: ${c.id})`;
+						channelsDropdown.appendChild(opt);
+					}
+				}
+				if (count > 0) {
+					channelsDropdown.style.display = "block";
+					channelsDropdown.addEventListener("change", () => {
+						if (channelsDropdown.value) {
+							channelInput.value = channelsDropdown.value;
+						}
+					});
+					alert?.(`成功读取到 ${count} 个子频道！已在下方列出，请直接在下拉框中选择。`);
+				} else {
+					alert?.("已找到频道，但未获取到子频道列表。请检查机器人是否有子频道访问权限。");
+				}
+			} finally {
+				fetchChannelsBtn.disabled = false;
+				fetchChannelsBtn.textContent = "🔍 自动读取我的子频道";
+			}
+		});
+
 		q(".qq-btn-send").addEventListener("click", async () => {
 			const channelInput = q(".qq-send-channelid");
 			const textInput = q(".qq-send-text");
+			const mediaInput = q(".qq-send-media");
+			const openidInput = q(".qq-send-openid");
+			const openidTypeSel = q(".qq-send-openid-type");
 			const text = textInput.value.trim();
-			if (!text) {
-				alert?.("请输入要发送的消息文本");
+			const media = mediaInput?.value?.trim?.() || "";
+			const openid = openidInput?.value?.trim?.() || "";
+			if (!text && !media) {
+				alert?.("请输入消息文本或媒体路径");
 				return;
 			}
 
 			const btn = q(".qq-btn-send");
 			btn.disabled = true;
-			btn.textContent = "发送中...";
+			btn.textContent = media ? "上传中..." : "发送中...";
 			try {
 				const res = await sendHost("send_message", {
 					channelId: channelInput.value.trim(),
 					text,
+					media,
+					openid,
+					openidType: openidTypeSel?.value === "group" ? "group" : "user",
 				});
 				if (res?.success) {
-					alert?.("✅ QQ 消息发送成功！");
+					alert?.(media ? "✅ QQ 媒体发送成功！" : "✅ QQ 消息发送成功！");
 					textInput.value = "";
+					if (mediaInput) mediaInput.value = "";
 				} else {
 					alert?.(`发送失败: ${res?.message || "未知错误"}`);
 				}

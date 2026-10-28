@@ -4,7 +4,10 @@
 
 ## 终端管理
 
-- 每个 `Conversation` 一个 `TerminalManager`；agent 可调用 `terminal_create`、`terminal_list`、`terminal_close`、`terminal_input`、`terminal_key`、`terminal_read`、`terminal_wait`，支持命名多终端、增量 cursor、Enter/Tab/方向键及 Ctrl/Alt 组合。PTY 工作目录限制在该对话工作区，最多 16 个**用户**终端，输入/读取有大小与等待上限；终端接管 bash 的 `ai-bash` 终端不计入这 16 个名额（`ensureSpawnAllowed` 只统计 `agentBash=false` 的 live PTY），常驻也不挤占用户配额。
+- **用户终端与 Agent 终端分层**：
+  - **用户直接创建的终端**（UI 加号新建、运行自定义命令，`agentBash !== true`）：归属于 `ClientSession`（工作区级别），按客户端存活；在终端列表中**始终显示**，不再受单个对话切换、回退、删除或生命周期的影响和过滤；输出实时直接下发；只有用户手动关闭或进程自身退出时才销毁。
+  - **Agent 内部接管/调用的终端**（`agentBash: true` 或 agent 工具调用的交互终端）：归属于单个 `Conversation`，跟随该对话的生命周期与活力检测（静默 ≥15s 注入 steer 提醒）。
+- **统一列表推送与路由**：服务端 `pushTerminals()` 自动合并用户终端与当前对话的 Agent 终端；`handleTerminalMessage` 对输入（`terminal_input`）、大小调整（`terminal_resize`）、关闭（`terminal_kill`）、重命名（`rename_terminal`）通过 `findTerminalManager` 全局索引匹配目标终端，跨对话操作无缝直达。
 - **所有 spawn 路径统一准入**：`terminal_create`（浏览器/agent）与 `run_command`（命令列表）共用 `validateId`（字母/数字/.-_:/≤80 字符）+ `ensureSpawnAllowed`（新 live PTY 需低于 `MAX_TERMINALS`；已在运行的同名终端原地重启不占新名额；**history 里的已退出终端不保留名额**——满员时重跑已退出终端同样拒绝，堵住"唯一 ID 无限生成 PTY"的洞）；失败统一走 `fail()`（notice + 终端内红色报错 + terminal_exit）。
 
 ## terminal_key 按键编码

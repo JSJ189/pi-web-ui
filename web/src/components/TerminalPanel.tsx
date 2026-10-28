@@ -460,7 +460,7 @@ export function TerminalPanel({ chat, terminal, uiTerminalToolbar, onUiAction }:
 				) : (
 					chat.terminals.map((t) => (
 						<TermXterm
-							key={`${t.conversationId}:${t.id}`}
+							key={t.id}
 							conversationId={t.conversationId}
 							terminalId={t.id}
 							command={t.command}

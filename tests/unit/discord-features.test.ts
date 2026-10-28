@@ -116,7 +116,7 @@ describe("DiscordBotBridge 双工逻辑测试", () => {
 		vi.stubGlobal("fetch", fetchMock);
 
 		let runHandler: ((ev: any) => void) | null = null;
-		const chatSpy = vi.fn().mockResolvedValue({ conversationId: "conv_dc_1" });
+		const chatSpy = vi.fn().mockResolvedValue({ conversationId: "c1", clientId: "plugin:discord:x", runId: "pr-dc-1" });
 
 		const bridge = new DiscordBotBridge({
 			host: {
@@ -147,10 +147,12 @@ describe("DiscordBotBridge 双工逻辑测试", () => {
 			}),
 		);
 
-		const convId = chatSpy.mock.calls[0][0].conversationId;
+		// 真实链路：宿主返回它自己的会话 id（本地编的 dc_xxx 只是占位），事件按它下发。
+		const convId = "c1";
 
 		runHandler!({
 			conversationId: convId,
+			runId: "pr-dc-1",
 			type: "message",
 			message: {
 				role: "assistant",
@@ -160,6 +162,7 @@ describe("DiscordBotBridge 双工逻辑测试", () => {
 
 		await runHandler!({
 			conversationId: convId,
+			runId: "pr-dc-1",
 			type: "run_end",
 		});
 
@@ -168,6 +171,60 @@ describe("DiscordBotBridge 双工逻辑测试", () => {
 			expect.objectContaining({
 				body: expect.stringContaining("function test()"),
 			}),
+		);
+
+		await bridge.stop();
+		vi.unstubAllGlobals();
+	});
+});
+
+describe("Discord：对话被过户（改名 + 换客户端）后仍按 runId 回包", () => {
+	it("conversationId 改名、clientId 变成浏览器后，run_end 仍回复到原频道", async () => {
+		// 过户回归：用户在网页左栏点开 running 对话 = take_over_conversation —— 对话搬到浏览器
+		// 会话（clientId 变），目标会话已有同名 id（各会话独立从 c1 编号）时还会改名（conversationId
+		// 也变）。两个键全失效，只有 host.chat 回执里的 runId 不变，插件必须按它认领回包。
+		const fetchMock = vi.fn().mockResolvedValue({ ok: true, status: 200, json: async () => ({ id: "m_1" }) });
+		vi.stubGlobal("fetch", fetchMock);
+
+		let runHandler: ((ev: any) => void) | null = null;
+		const chatSpy = vi.fn().mockResolvedValue({ conversationId: "c1", clientId: "plugin:discord:x", runId: "pr-dc-9" });
+
+		const bridge = new DiscordBotBridge({
+			host: {
+				chat: chatSpy,
+				onRunEvent: (fn: any) => {
+					runHandler = fn;
+					return () => {};
+				},
+			},
+			getConfig: () => ({ botToken: "test_bot_token" }),
+		});
+
+		await bridge.start();
+		await bridge.onInboundMessage({
+			id: "m_in_takeover",
+			channel_id: "c_123",
+			author: { id: "11111", bot: false },
+			content: "查一下磁盘占用",
+		});
+
+		runHandler!({
+			conversationId: "c7",
+			clientId: "client_browser_tab1",
+			runId: "pr-dc-9",
+			type: "message",
+			message: { role: "assistant", content: "磁盘还剩 42GB。" },
+		});
+		await runHandler!({
+			conversationId: "c7",
+			clientId: "client_browser_tab1",
+			runId: "pr-dc-9",
+			type: "run_end",
+		});
+
+		expect(fetchMock).toHaveBeenCalledWith(
+			expect.stringContaining("/channels/c_123/messages"),
+			expect.objectContaining({ body: expect.stringContaining("磁盘还剩 42GB") }),
 		);
 
 		await bridge.stop();

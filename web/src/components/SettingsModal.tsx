@@ -50,8 +50,9 @@ import { PluginPage } from "./PluginPage";
 import { PluginSettingsForm } from "./PluginSettingsForm";
 import { ToolPromptEditor } from "./ToolPromptEditor";
 import { McpServersPanel } from "./McpServersPanel";
-import { PUBLIC_SKILLS, type PublicSkill } from "../skill-catalog";
+import { SKILL_MARKETS, type SkillMarketCategory } from "../skill-catalog";
 import { SUPPORTED_ENGINES } from "./EnginePicker";
+import { Markdown } from "./Markdown";
 import type {
 	CommandDef,
 	DshMarketPlugin,
@@ -141,9 +142,10 @@ import {
 	estimatePromptTokens,
 	isReadonlyPromptSource,
 } from "../../../server/prompt-composer.js";
+import { isWindowsPlatform } from "../notify";
 import {
 	AGENT_TOOL_CATALOG,
-	CORE_BUILTIN_TOOL_NAMES,
+	CORE_TOOL_CATALOG,
 	filterToolsByPreset,
 	presetShowsSkillCatalog,
 	SUBAGENT_TOOL_NAMES,
@@ -318,6 +320,8 @@ function ToggleRow({
 	onToggle,
 	action,
 	disabled,
+	onInfoClick,
+	infoTitle,
 }: {
 	title: React.ReactNode;
 	subtitle?: string;
@@ -329,11 +333,18 @@ function ToggleRow({
 	action?: React.ReactNode;
 	/** 被默认预设过滤时禁用开关（展示实效 off，底层禁用名单原样保留）。 */
 	disabled?: boolean;
+	onInfoClick?: () => void;
+	infoTitle?: string;
 }) {
 	const t = useT();
 	return (
 		<div className="set-row">
-			<div className="set-row-info">
+			<div
+				className={`set-row-info${onInfoClick ? " clickable" : ""}`}
+				onClick={onInfoClick}
+				title={infoTitle}
+				style={onInfoClick ? { cursor: "pointer" } : undefined}
+			>
 				<div className="set-row-name">
 					{title}
 					{tip && <HintTip text={tip} />}
@@ -408,7 +419,7 @@ export function pluginOfficialUrl(entry?: { homepage?: string; source?: string }
 	return null;
 }
 
-/** 插件清单汇总条（只读）：四相计数 + 各相圆点，明细在下方列表行里看。 */
+/** 插件清单汇总条（只读）：四相计数 + 各相微芯片，明细在下方列表行里看。 */
 function PluginInventoryStrip({ plugins, disabledIds }: { plugins: UiPluginInfo[]; disabledIds: ReadonlySet<string> }) {
 	const t = useT();
 	const counts = countPluginPhases(plugins, disabledIds);
@@ -420,11 +431,12 @@ function PluginInventoryStrip({ plugins, disabledIds }: { plugins: UiPluginInfo[
 	};
 	const order: PluginPhase[] = ["active", "disabled", "failed", "idle"];
 	return (
-		<div className="set-note inv-strip">
+		<div className="smart-inv-bar">
 			{order.map((ph) => (
-				<span key={ph} className="inv-item" title={labels[ph]}>
+				<span key={ph} className={`smart-inv-chip ${ph}`} title={labels[ph]}>
 					<InvDot phase={ph} label={labels[ph]} />
-					{counts[ph]}
+					<span className="smart-inv-label">{labels[ph]}</span>
+					<span className="smart-inv-count">{counts[ph]}</span>
 				</span>
 			))}
 		</div>
@@ -763,165 +775,65 @@ export function SettingsModal({
 		railRef.current?.querySelector(".settings-tab.active")?.scrollIntoView({ block: "nearest", inline: "nearest" });
 	}, [tab]);
 
-	// 技能市场子页签、远程仓库与筛选
+	// 技能市场子页签与市场链接筛选
 	const [skillSubTab, setSkillSubTab] = useState<"installed" | "market">("installed");
-	const [skillMarketCategory, setSkillMarketCategory] = useState<string>("all");
+	const [skillMarketCategory, setSkillMarketCategory] = useState<SkillMarketCategory | "all">("all");
 	const [skillMarketSearch, setSkillMarketSearch] = useState<string>("");
-	const [skillMarketRepo, setSkillMarketRepo] = useState<string>("anthropics/skills");
-	const [customSkillRepo, setCustomSkillRepo] = useState<string>("");
-	const [skillMarketLoading, setSkillMarketLoading] = useState<boolean>(false);
-	const [inspectingSkill, setInspectingSkill] = useState<PublicSkill | null>(null);
-	const [skillContentDraft, setSkillContentDraft] = useState<Record<string, string>>({});
-	const [fetchingSkillContentId, setFetchingSkillContentId] = useState<string | null>(null);
+	const [copiedMarketId, setCopiedMarketId] = useState<string | null>(null);
 
-	const installedSkillNames = useMemo(() => {
-		return new Set((settings?.skills ?? []).map((s) => s.name.toLowerCase()));
-	}, [settings?.skills]);
-
-	const effectiveSkillRepo = skillMarketRepo === "custom" ? customSkillRepo.trim() : skillMarketRepo;
-
-	const fetchSkillMarket = (refresh = false) => {
-		if (!effectiveSkillRepo) return;
-		setSkillMarketLoading(true);
-		appSend({
-			type: "fetch_skill_market",
-			repo: effectiveSkillRepo,
-			refresh,
-		});
-	};
+	// 技能指令正文详情模态框状态（点击已安装技能行的名称/描述等其他地方查看具体内容）
+	const [inspectingSkill, setInspectingSkill] = useState<{ name: string; content?: string } | null>(null);
+	const [inspectLoading, setInspectLoading] = useState(false);
+	const [inspectCopied, setInspectCopied] = useState(false);
 
 	useEffect(() => {
-		if (tab !== "skills" || skillSubTab !== "market") return;
-		if (!effectiveSkillRepo) return;
-		setSkillMarketLoading(true);
-		const timer = setTimeout(() => {
-			appSend({
-				type: "fetch_skill_market",
-				repo: effectiveSkillRepo,
-			});
-		}, 350);
-		return () => clearTimeout(timer);
-	}, [tab, skillSubTab, skillMarketRepo, customSkillRepo]);
-
-	useEffect(() => {
-		if (chat.skillMarketResult) {
-			setSkillMarketLoading(false);
-		}
-	}, [chat.skillMarketResult]);
-
-	useEffect(() => {
-		if (chat.skillContentResult?.ok && chat.skillContentResult.skillId) {
-			const id = chat.skillContentResult.skillId;
-			const content = chat.skillContentResult.content;
-			setSkillContentDraft((prev) => ({ ...prev, [id]: content }));
-			setFetchingSkillContentId(null);
-			if (inspectingSkill && inspectingSkill.id === id) {
-				setInspectingSkill((prev) => (prev ? { ...prev, content } : null));
-			}
+		if (chat.skillContentResult && inspectingSkill && chat.skillContentResult.skillId === inspectingSkill.name) {
+			setInspectingSkill((prev) => (prev ? { ...prev, content: chat.skillContentResult?.content || "" } : null));
+			setInspectLoading(false);
 		}
 	}, [chat.skillContentResult]);
 
-	const remoteSkills = useMemo(() => {
-		if (chat.skillMarketResult?.ok && chat.skillMarketResult.skills?.length > 0) {
-			return chat.skillMarketResult.skills.map((s) => ({
-				id: s.id,
-				name: s.name,
-				nameZh: s.name,
-				description: s.description,
-				descriptionZh: s.description,
-				category: "workflow" as const,
-				content: skillContentDraft[s.id] || "",
-			}));
-		}
-		return PUBLIC_SKILLS;
-	}, [chat.skillMarketResult, skillContentDraft]);
+	const handleOpenSkillInspect = (skillName: string) => {
+		setInspectingSkill({ name: skillName });
+		setInspectLoading(true);
+		appSend({ type: "fetch_skill_content", repo: "local", skillId: skillName });
+	};
 
-	const filteredMarketSkills = useMemo(() => {
-		return remoteSkills.filter((sk) => {
-			if (skillMarketCategory !== "all" && sk.category !== skillMarketCategory) {
+	const handleCopyMarketUrl = (id: string, url: string) => {
+		navigator.clipboard.writeText(url).then(
+			() => {
+				setCopiedMarketId(id);
+				setTimeout(() => setCopiedMarketId(null), 1500);
+			},
+			() => {},
+		);
+	};
+
+	const filteredSkillMarkets = useMemo(() => {
+		const q = skillMarketSearch.trim().toLowerCase();
+		return SKILL_MARKETS.filter((item) => {
+			if (skillMarketCategory !== "all" && item.category !== skillMarketCategory) {
 				return false;
 			}
-			if (skillMarketSearch.trim()) {
-				const q = skillMarketSearch.trim().toLowerCase();
-				const matchName = sk.name.toLowerCase().includes(q) || sk.nameZh.toLowerCase().includes(q);
-				const matchDesc = sk.description.toLowerCase().includes(q) || sk.descriptionZh.toLowerCase().includes(q);
-				return matchName || matchDesc;
-			}
-			return true;
+			if (!q) return true;
+			const matchName = item.name.toLowerCase().includes(q) || item.nameZh.toLowerCase().includes(q);
+			const matchDesc = item.description.toLowerCase().includes(q) || item.descriptionZh.toLowerCase().includes(q);
+			const matchUrl = item.url.toLowerCase().includes(q);
+			const matchTags = item.tags?.some((tag) => tag.toLowerCase().includes(q));
+			return matchName || matchDesc || matchUrl || matchTags;
 		});
-	}, [remoteSkills, skillMarketCategory, skillMarketSearch]);
+	}, [skillMarketCategory, skillMarketSearch]);
 
-	const openInspectSkill = (sk: { id: string; name: string; description: string; content?: string }) => {
-		const cached = skillContentDraft[sk.id] || sk.content;
-		if (cached) {
-			setInspectingSkill({
-				id: sk.id,
-				name: sk.name,
-				nameZh: sk.name,
-				description: sk.description,
-				descriptionZh: sk.description,
-				category: "workflow",
-				content: cached,
-			});
-		} else {
-			setFetchingSkillContentId(sk.id);
-			setInspectingSkill({
-				id: sk.id,
-				name: sk.name,
-				nameZh: sk.name,
-				description: sk.description,
-				descriptionZh: sk.description,
-				category: "workflow",
-				content: "",
-			});
-			appSend({
-				type: "fetch_skill_content",
-				repo: effectiveSkillRepo,
-				skillId: sk.id,
-			});
-		}
-	};
-
-	const handleInstallSkill = (skill: { id: string; content?: string }, scope: "global" | "project") => {
-		const content = skillContentDraft[skill.id] || skill.content;
-		if (content) {
-			appSend({
-				type: "install_skill",
-				name: skill.id,
-				scope,
-				content,
-			});
-			setInspectingSkill(null);
-		} else {
-			setFetchingSkillContentId(skill.id);
-			appSend({
-				type: "fetch_skill_content",
-				repo: effectiveSkillRepo,
-				skillId: skill.id,
-			});
-		}
-	};
-
-	const handleUninstallSkill = (name: string, scope: "global" | "project") => {
-		appSend({
-			type: "uninstall_skill",
-			name,
-			scope,
-		});
-	};
-
-	const skillCategoryBadge = (category: string) => {
+	const skillMarketCategoryBadge = (category: SkillMarketCategory | string) => {
 		switch (category) {
-			case "quality":
-				return t("skillCatQuality");
-			case "workflow":
-				return t("skillCatWorkflow");
-			case "architecture":
-				return t("skillCatArchitecture");
-			case "devops":
-				return t("skillCatDevops");
-			case "stack":
-				return t("skillCatStack");
+			case "official":
+				return t("skillCatOfficial");
+			case "marketplace":
+				return t("skillCatMarketplace");
+			case "community":
+				return t("skillCatCommunity");
+			case "directory":
+				return t("skillCatDirectory");
 			default:
 				return t("skillCatAll");
 		}
@@ -1147,6 +1059,8 @@ export function SettingsModal({
 	// 插件市场标签分类：all = 全部合并显示；builtin = 官方内置；community = 社区生态；custom = 自定义
 	const [catalogFilter, setCatalogFilter] = useState<"all" | "builtin" | "community" | "custom">("all");
 	const [catalogSearch, setCatalogSearch] = useState("");
+	// 插件市场方案 3：精炼单行展开查看详情的插件 ID
+	const [expandedPluginId, setExpandedPluginId] = useState<string | null>(null);
 	// DSH 用户补丁安装输入框草稿
 	const [dshPatchInput, setDshPatchInput] = useState("");
 	// DSH 插件市场子面板（探索 / 已安装）与搜索分类状态
@@ -1493,8 +1407,43 @@ export function SettingsModal({
 		})),
 	];
 
-	// 侧栏搜索与四维分组（方案 1: Linear 风格）
+	// 侧栏搜索与四维分组（方案 1: Linear 穿透命令流）
 	const [tabSearchQuery, setTabSearchQuery] = useState("");
+	const searchInputRef = useRef<HTMLInputElement>(null);
+
+	// 即时同步状态指示（Linear / Raycast 风格：操作即生效，右上角微脉冲反馈）
+	const [syncState, setSyncState] = useState<"idle" | "syncing" | "synced">("idle");
+	const syncTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+
+	const triggerSyncState = () => {
+		setSyncState("syncing");
+		if (syncTimerRef.current) clearTimeout(syncTimerRef.current);
+		syncTimerRef.current = setTimeout(() => {
+			setSyncState("synced");
+			syncTimerRef.current = setTimeout(() => setSyncState("idle"), 2400);
+		}, 300);
+	};
+
+	// 全局快捷键支持：Ctrl+K / Cmd+K 或 / 直接唤起并聚焦 Command 搜索栏
+	useEffect(() => {
+		const handleKeyDown = (e: KeyboardEvent) => {
+			if ((e.ctrlKey || e.metaKey) && e.key.toLowerCase() === "k") {
+				e.preventDefault();
+				searchInputRef.current?.focus();
+				searchInputRef.current?.select();
+			} else if (
+				e.key === "/" &&
+				document.activeElement?.tagName !== "INPUT" &&
+				document.activeElement?.tagName !== "TEXTAREA"
+			) {
+				e.preventDefault();
+				searchInputRef.current?.focus();
+				searchInputRef.current?.select();
+			}
+		};
+		window.addEventListener("keydown", handleKeyDown);
+		return () => window.removeEventListener("keydown", handleKeyDown);
+	}, []);
 
 	const TAB_GROUPS: Record<string, "core" | "tools" | "ui" | "advanced"> = {
 		models: "core",
@@ -1522,6 +1471,78 @@ export function SettingsModal({
 		review: "advanced",
 	};
 
+	// 穿透搜索语义词库（输入 TTS、宽屏、软上限、延迟加载、只读等具体参数可穿透定位到所属 Tab）
+	const TAB_KEYWORDS: Record<string, string[]> = {
+		models: [
+			"模型",
+			"服务商",
+			"baseurl",
+			"api key",
+			"provider",
+			"token",
+			"deepseek",
+			"claude",
+			"openai",
+			"gemini",
+			"ollama",
+			"glm",
+			"minimax",
+			"qwen",
+			"中转",
+			"自定义模型",
+			"推理",
+			"r1",
+		],
+		prompt: ["系统提示词", "system prompt", "前缀", "角色", "instructions", "设定", "提示词", "自定义提示词"],
+		"prompt-history": ["历史", "输入历史", "prompt history", "记录", "清除历史", "对话历史"],
+		scheduler: ["定时", "定时任务", "cron", "scheduler", "自动化", "后台", "排期", "计划任务"],
+		tools: [
+			"工具",
+			"bash",
+			"终端",
+			"read",
+			"edit",
+			"write",
+			"延迟加载",
+			"lazy",
+			"只读",
+			"powershell",
+			"grep",
+			"find",
+			"目录",
+			"工具开关",
+			"prompt cache",
+			"前缀缓存",
+		],
+		"approval-rules": [
+			"审批",
+			"安全",
+			"规则",
+			"approval",
+			"deny",
+			"allow",
+			"二次确认",
+			"白名单",
+			"权限",
+			"拦截",
+			"高危",
+		],
+		question: ["问卷", "提问", "questionnaire", "dsh"],
+		display: ["显示", "排版", "宽屏", "wide", "隐藏模型", "avatar", "头像", "折叠", "紧凑", "样式", "气泡", "字号"],
+		sound: ["声音", "音效", "语音", "tts", "朗读", "音量", "提示音", "静音", "播报"],
+		quick: ["快捷", "短语", "quick phrase", "常用语", "快捷短语", "快捷回复"],
+		skills: ["技能", "skills", "slash", "斜杠", "技能库", "市场"],
+		extensions: ["扩展", "extensions", "补丁", "patches", "dsh"],
+		plugins: ["插件", "ui plugins", "市场", "catalog", "更新", "组件"],
+		mcp: ["mcp", "servers", "stdio", "sse", "协议", "服务器", "外部工具"],
+		layout: ["布局", "layout", "顶栏", "底栏", "图标", "icons", "排列", "按钮", "侧栏", "dock"],
+		review: ["审查", "review", "目标", "gate", "审阅"],
+		vision: ["视觉", "vision", "截图", "图片", "视觉桥", "屏幕"],
+		presets: ["预设", "presets", "分享", "导出", "导入", "社区预设"],
+		"dsh-presets": ["dsh", "预设", "权限", "ptc", "极简模式"],
+		"subagent-templates": ["子代理", "subagent", "templates", "模板", "并发", "角色模板"],
+	};
+
 	const GROUP_LABELS = {
 		core: t("settingsGroupCore"),
 		tools: t("settingsGroupTools"),
@@ -1534,8 +1555,36 @@ export function SettingsModal({
 	const filteredTabs = useMemo(() => {
 		const q = tabSearchQuery.trim().toLowerCase();
 		if (!q) return tabs;
-		return tabs.filter((t) => t.label.toLowerCase().includes(q) || t.id.toLowerCase().includes(q));
+		return tabs.filter((t) => {
+			if (t.label.toLowerCase().includes(q) || t.id.toLowerCase().includes(q)) return true;
+			const kw = TAB_KEYWORDS[t.id];
+			if (kw && kw.some((k) => k.toLowerCase().includes(q) || q.includes(k.toLowerCase()))) return true;
+			return false;
+		});
 	}, [tabs, tabSearchQuery]);
+
+	// 当搜索过滤发生变更时，若当前选中的 Tab 不在结果内，自动激活首个匹配 Tab
+	useEffect(() => {
+		if (!tabSearchQuery.trim()) return;
+		if (filteredTabs.length > 0 && !filteredTabs.some((t) => t.id === tab)) {
+			setTab(filteredTabs[0].id);
+		}
+	}, [filteredTabs, tab, tabSearchQuery]);
+
+	const handleSearchKeyDown = (e: React.KeyboardEvent<HTMLInputElement>) => {
+		if (e.key === "Escape") {
+			if (tabSearchQuery) {
+				e.preventDefault();
+				e.stopPropagation();
+				setTabSearchQuery("");
+			}
+		} else if (e.key === "Enter") {
+			if (filteredTabs.length > 0) {
+				e.preventDefault();
+				handleTabChange(filteredTabs[0].id);
+			}
+		}
+	};
 
 	/** 导航纠偏：若当前 tab 不在当前引擎可用的分区列表（例如切换引擎、或插件被卸载）→ 自动回落到该引擎的首个可用分区。 */
 	useEffect(() => {
@@ -1555,6 +1604,7 @@ export function SettingsModal({
 	const disabledExts = new Set(settings.disabledExtensions);
 
 	const setPartial = (patch: SettingsPatch) => {
+		triggerSyncState();
 		// 审查 #2：先把补丁盖进本地未确认层（显示立即生效，下一次点击的「全量新值」
 		// 计算也基于它），再原样发服务端（服务端只合并给出的字段）。快照回程后由
 		// 上方 rebase effect 对账落层。
@@ -1622,17 +1672,10 @@ export function SettingsModal({
 		subagent_wait_all: t("toolDescSubagentWaitAll"),
 		subagent_templates: t("toolDescSubagentTemplates"),
 	};
-	// 核心内置工具的「?」说明（key 与 tool-manager.ts 的 CORE_BUILTIN_TOOL_NAMES 对齐）。
-	const CORE_TOOL_TIPS: Record<string, string> = {
-		bash: t("toolCoreBashDesc"),
-		read: t("toolCoreReadDesc"),
-		edit: t("toolCoreEditDesc"),
-		write: t("toolCoreWriteDesc"),
-		powershell: t("toolCorePowershellDesc"),
-		ls: t("toolCoreLsDesc"),
-		grep: t("toolCoreGrepDesc"),
-		find: t("toolCoreFindDesc"),
-	};
+	// 核心内置工具的「?」说明（由 CORE_TOOL_CATALOG 声明式派生，双端事实源统一）。
+	const CORE_TOOL_TIPS: Record<string, string> = Object.fromEntries(
+		CORE_TOOL_CATALOG.map((c) => [c.name, t(c.descKey as any)]),
+	);
 	// 统一工具开关（工具 tab 逐工具；与 toggleSkill 同模式）。
 	const toggleAgentTool = (name: string) => {
 		const next = new Set(disabledTools);
@@ -2149,6 +2192,7 @@ export function SettingsModal({
 
 	// 按 Escape 键安全退出：先 flush 草稿再关闭；子弹窗开启时放行给子弹窗。
 	useEscapeKey(handleClose, !tplDraft && !ruleDraft && !editingToolPrompt && !presetShareFor && !inspectingSkill);
+	useEscapeKey(() => setInspectingSkill(null), Boolean(inspectingSkill));
 
 	// 组件卸载清理：兜底提交任何在途草稿。
 	useEffect(() => {
@@ -2164,40 +2208,70 @@ export function SettingsModal({
 	return (
 		<div className="modal-backdrop" onClick={handleClose}>
 			<div className="modal settings-modal" onClick={(e) => e.stopPropagation()}>
-				<button type="button" className="modal-close" aria-label={t("close")} onClick={handleClose}>
-					<FiX />
-				</button>
-				<div className="modal-head">
-					<FiSettings className="modal-head-icon" />
-					<h2>{t("settingsTitle")}</h2>
-					{/* 长说明收起为「？」悬浮提示，不再平铺占版面 */}
-					<HintTip text={t("settingsDesc")} />
+				<div className="modal-head settings-cmd-head">
+					<div className="settings-head-brand">
+						<FiSettings className="modal-head-icon" />
+						<h2>{t("settingsTitle")}</h2>
+						<HintTip text={t("settingsDesc")} />
+					</div>
+
+					<div className="settings-cmd-wrap">
+						<FiSearch className="settings-cmd-icon" />
+						<input
+							ref={searchInputRef}
+							type="text"
+							className="settings-cmd-input"
+							placeholder={t("settingsSearchPlaceholder")}
+							value={tabSearchQuery}
+							onChange={(e) => setTabSearchQuery(e.target.value)}
+							onKeyDown={handleSearchKeyDown}
+						/>
+						{tabSearchQuery ? (
+							<button
+								type="button"
+								className="settings-cmd-clear"
+								aria-label="Clear search"
+								onClick={() => setTabSearchQuery("")}
+							>
+								<FiX />
+							</button>
+						) : (
+							<span className="settings-kbd-chip">
+								{typeof navigator !== "undefined" && /mac/i.test(navigator.userAgent) ? "⌘K" : "Ctrl K"}
+							</span>
+						)}
+					</div>
+
+					<div className="settings-head-actions">
+						<div
+							className={`settings-live-pill${syncState === "syncing" ? " syncing" : ""}`}
+							title={t("settingsAutoSavedTip")}
+						>
+							<span className="settings-live-dot" />
+							<span className="settings-live-text">
+								{syncState === "syncing"
+									? isZhLocale(locale)
+										? "同步中..."
+										: "Syncing..."
+									: isZhLocale(locale)
+										? "已即时生效"
+										: "Live synced"}
+							</span>
+						</div>
+						<button
+							type="button"
+							className="modal-close settings-modal-close"
+							aria-label={t("close")}
+							onClick={handleClose}
+						>
+							<FiX />
+						</button>
+					</div>
 				</div>
 
-				{/* Scrollable body — head above and the actions bar below stay
-				    fixed; only these sections scroll. */}
+				{/* Scrollable body — head above stays fixed; only these sections scroll. */}
 				<div className="settings-layout">
 					<nav className="settings-rail" aria-label={t("settingsTitle")} ref={railRef}>
-						<div className="settings-search-wrap">
-							<FiSearch className="settings-search-icon" />
-							<input
-								type="text"
-								className="settings-search-input"
-								placeholder={t("settingsSearchPlaceholder")}
-								value={tabSearchQuery}
-								onChange={(e) => setTabSearchQuery(e.target.value)}
-							/>
-							{tabSearchQuery && (
-								<button
-									type="button"
-									className="settings-search-clear"
-									aria-label="Clear search"
-									onClick={() => setTabSearchQuery("")}
-								>
-									<FiX />
-								</button>
-							)}
-						</div>
 						{tabSearchQuery.trim() ? (
 							filteredTabs.length > 0 ? (
 								filteredTabs.map((tb) => (
@@ -3515,7 +3589,10 @@ export function SettingsModal({
 									{t("toolsSectionCore")}
 									<HintTip text={t("toolsCoreHint")} />
 								</div>
-								{CORE_BUILTIN_TOOL_NAMES.map((n) => {
+								{CORE_TOOL_CATALOG.filter(
+									(c) => !c.platform || (c.platform === "win32" ? isWindowsPlatform() : true),
+								).map((c) => {
+									const n = c.name;
 									const blocked = isBlockedByPreset(n);
 									return (
 										<ToggleRow
@@ -4444,7 +4521,7 @@ export function SettingsModal({
 									>
 										<FiShoppingBag />
 										<span>{t("skillTabMarket")}</span>
-										<span className="set-count">{PUBLIC_SKILLS.length}</span>
+										<span className="set-count">{SKILL_MARKETS.length}</span>
 									</button>
 								</div>
 
@@ -4507,25 +4584,41 @@ export function SettingsModal({
 											</div>
 										) : (
 											<div className="set-list">
-												{settings.skills.map((s) => (
-													<ToggleRow
-														key={s.name}
-														title={s.name}
-														subtitle={s.description}
-														enabled={s.enabled}
-														onToggle={() => toggleSkill(s)}
-														action={
-															<button
-																type="button"
-																className={`tpl-chip${fullTextSkills.has(s.name) ? " on" : ""}`}
-																title={t("skillFullTextDesc")}
-																onClick={() => toggleSkillFullText(s.name)}
-															>
-																{t("skillFullTextShort")}
-															</button>
-														}
-													/>
-												))}
+												{settings.skills.map((s) => {
+													const isFull = fullTextSkills.has(s.name);
+													return (
+														<ToggleRow
+															key={s.name}
+															title={
+																<span className="skill-row-title-wrap">
+																	<span className="skill-row-name">{s.name}</span>
+																	<span className="skill-row-inspect-hint" title={t("skillClickToInspect")}>
+																		<FiEye style={{ verticalAlign: "middle" }} />
+																	</span>
+																</span>
+															}
+															subtitle={s.description}
+															enabled={s.enabled}
+															onToggle={() => toggleSkill(s)}
+															onInfoClick={() => handleOpenSkillInspect(s.name)}
+															infoTitle={t("skillClickToInspect")}
+															action={
+																<button
+																	type="button"
+																	className={`skill-fulltext-chip${isFull ? " on" : ""}`}
+																	title={t("skillFullTextDesc")}
+																	onClick={(e) => {
+																		e.stopPropagation();
+																		toggleSkillFullText(s.name);
+																	}}
+																>
+																	{isFull && <span className="skill-fulltext-check">✓</span>}
+																	{t("skillFullTextShort")}
+																</button>
+															}
+														/>
+													);
+												})}
 											</div>
 										)}
 									</>
@@ -4534,46 +4627,16 @@ export function SettingsModal({
 								{/* 2. 技能市场列表 */}
 								{skillSubTab === "market" && (
 									<div className="skill-market-view">
-										<div className="mcp-market-toolbar">
-											{/* GitHub 仓库源选择 */}
-											<div className="mcp-market-source-row">
-												<div className="mcp-source-select-wrap">
-													<label className="mcp-source-label">{t("skillRepoSelect")}:</label>
-													<select
-														className="set-select mcp-source-select"
-														value={skillMarketRepo}
-														onChange={(e) => setSkillMarketRepo(e.target.value)}
-													>
-														<option value="anthropics/skills">{t("skillRepoDefault")}</option>
-														<option value="custom">{t("skillRepoCustom")}</option>
-													</select>
-												</div>
-												<button
-													type="button"
-													className={`set-save-btn mcp-sync-btn${skillMarketLoading ? " spinning" : ""}`}
-													title={t("mcpReload")}
-													onClick={() => fetchSkillMarket(true)}
-												>
-													<FiRefreshCw />
-													<span>{t("mcpReload")}</span>
-												</button>
+										{/* 顶部说明引导栏 */}
+										<div className="skill-market-notice">
+											<FiShoppingBag className="skill-market-notice-icon" />
+											<div className="skill-market-notice-content">
+												<div className="skill-market-notice-title">{t("skillMarketNoticeTitle")}</div>
+												<p className="skill-market-notice-desc">{t("skillMarketNoticeDesc")}</p>
 											</div>
+										</div>
 
-											{skillMarketRepo === "custom" && (
-												<div className="mcp-custom-source-row">
-													<input
-														type="text"
-														className="set-input mcp-custom-input"
-														placeholder={t("skillRepoCustomPlaceholder")}
-														value={customSkillRepo}
-														onChange={(e) => setCustomSkillRepo(e.target.value)}
-														onKeyDown={(e) => {
-															if (e.key === "Enter") fetchSkillMarket(true);
-														}}
-													/>
-												</div>
-											)}
-
+										<div className="mcp-market-toolbar">
 											<div className="mcp-search-wrap">
 												<FiSearch className="mcp-search-icon" />
 												<input
@@ -4592,17 +4655,16 @@ export function SettingsModal({
 											<div className="mcp-category-chips">
 												{[
 													{ id: "all", label: t("skillCatAll") },
-													{ id: "quality", label: t("skillCatQuality") },
-													{ id: "workflow", label: t("skillCatWorkflow") },
-													{ id: "architecture", label: t("skillCatArchitecture") },
-													{ id: "devops", label: t("skillCatDevops") },
-													{ id: "stack", label: t("skillCatStack") },
+													{ id: "official", label: t("skillCatOfficial") },
+													{ id: "marketplace", label: t("skillCatMarketplace") },
+													{ id: "community", label: t("skillCatCommunity") },
+													{ id: "directory", label: t("skillCatDirectory") },
 												].map((cat) => (
 													<button
 														key={cat.id}
 														type="button"
 														className={`mcp-cat-chip${skillMarketCategory === cat.id ? " active" : ""}`}
-														onClick={() => setSkillMarketCategory(cat.id)}
+														onClick={() => setSkillMarketCategory(cat.id as SkillMarketCategory | "all")}
 													>
 														{cat.label}
 													</button>
@@ -4610,144 +4672,95 @@ export function SettingsModal({
 											</div>
 										</div>
 
-										{/* 错误提示 */}
-										{chat.skillMarketResult?.error && (
-											<div className="mcp-error-box">
-												<FiAlertTriangle className="mcp-error-icon" />
-												<div className="mcp-error-text">{chat.skillMarketResult.error}</div>
-												<button type="button" className="mcp-mini-btn" onClick={() => fetchSkillMarket(true)}>
-													{t("skillMarketRetry")}
+										{filteredSkillMarkets.length === 0 ? (
+											<div className="mcp-empty-card">
+												<div className="mcp-empty-icon">
+													<FiSearch />
+												</div>
+												<div className="mcp-empty-title">{t("skillMarketEmpty")}</div>
+												<button
+													type="button"
+													className="mcp-mini-btn"
+													onClick={() => {
+														setSkillMarketSearch("");
+														setSkillMarketCategory("all");
+													}}
+												>
+													{t("skillMarketEmptyClear")}
 												</button>
 											</div>
-										)}
+										) : (
+											<div className="mcp-market-grid">
+												{filteredSkillMarkets.map((market) => {
+													const descText = isZhLocale(locale) ? market.descriptionZh : market.description;
+													const badgeText = isZhLocale(locale)
+														? market.badgeZh || skillMarketCategoryBadge(market.category)
+														: market.badge || skillMarketCategoryBadge(market.category);
 
-										{/* 加载指示器 */}
-										{skillMarketLoading && (
-											<div className="mcp-market-loading">
-												<FiRefreshCw className="spinning" />
-												<span>{t("skillMarketLoading")}</span>
-											</div>
-										)}
-
-										<div className="mcp-market-grid">
-											{filteredMarketSkills.map((sk) => {
-												const isInstalled = installedSkillNames.has(sk.id.toLowerCase());
-												const descText = isZhLocale(locale) ? sk.descriptionZh : sk.description;
-												const nameText = isZhLocale(locale) ? sk.nameZh : sk.name;
-												return (
-													<div key={sk.id} className="mcp-market-card skill-market-card">
-														<div className="mcp-market-card-head">
-															<div className="mcp-market-title-wrap">
-																<span className="mcp-market-name">{sk.name}</span>
-																{isZhLocale(locale) && <span className="mcp-market-subname">({nameText})</span>}
+													return (
+														<div key={market.id} className="mcp-market-card skill-market-card">
+															<div className="mcp-market-card-head">
+																<div className="mcp-market-title-wrap">
+																	<span className="mcp-market-name">{market.name}</span>
+																	{isZhLocale(locale) && market.nameZh !== market.name && (
+																		<span className="mcp-market-subname">({market.nameZh})</span>
+																	)}
+																</div>
+																<span className="mcp-badge-official">{badgeText}</span>
 															</div>
-															<span className="mcp-badge-official">{skillCategoryBadge(sk.category)}</span>
-														</div>
 
-														<p className="mcp-market-desc">{descText}</p>
+															<p className="mcp-market-desc">{descText}</p>
 
-														<div className="skill-market-card-actions">
-															<button type="button" className="skill-inspect-btn" onClick={() => openInspectSkill(sk)}>
-																<FiEye />
-																{t("skillInspectPrompt")}
-															</button>
-															<div className="skill-action-btns">
-																{isInstalled ? (
-																	<div className="skill-installed-group">
-																		<span className="mcp-market-configured-badge">
-																			<FiCheck />
-																			{t("skillInstalled")}
+															<div className="skill-market-url-row" title={market.url}>
+																<FiGlobe className="skill-market-url-icon" />
+																<span className="skill-market-url-text">{market.url}</span>
+															</div>
+
+															{market.tags && market.tags.length > 0 && (
+																<div className="skill-market-tags">
+																	{market.tags.map((tag) => (
+																		<span key={tag} className="skill-market-tag-chip">
+																			#{tag}
 																		</span>
-																		<button
-																			type="button"
-																			className="icon-btn delete-btn"
-																			title={t("uninstallTitle")}
-																			onClick={() => handleUninstallSkill(sk.id, "global")}
-																		>
-																			<FiTrash2 />
-																		</button>
-																	</div>
-																) : (
-																	<div className="mcp-market-add-btns">
-																		<button
-																			type="button"
-																			className="mcp-btn-add global"
-																			title={t("skillInstallGlobalHint")}
-																			onClick={() => handleInstallSkill(sk, "global")}
-																		>
-																			<FiPlus />
-																			{t("skillInstallGlobal")}
-																		</button>
-																		<button
-																			type="button"
-																			className="mcp-btn-add project"
-																			title={t("skillInstallProjectHint")}
-																			onClick={() => handleInstallSkill(sk, "project")}
-																		>
-																			<FiPlus />
-																			{t("skillInstallProject")}
-																		</button>
-																	</div>
-																)}
+																	))}
+																</div>
+															)}
+
+															<div className="skill-market-card-actions">
+																<button
+																	type="button"
+																	className="skill-market-copy-btn"
+																	title={market.url}
+																	onClick={() => handleCopyMarketUrl(market.id, market.url)}
+																>
+																	{copiedMarketId === market.id ? (
+																		<>
+																			<FiCheck />
+																			<span>{t("skillMarketCopied")}</span>
+																		</>
+																	) : (
+																		<>
+																			<FiShare2 />
+																			<span>{t("skillMarketCopyLink")}</span>
+																		</>
+																	)}
+																</button>
+																<a
+																	href={market.url}
+																	target="_blank"
+																	rel="noopener noreferrer"
+																	className="skill-market-open-btn"
+																	title={t("skillMarketVisit")}
+																>
+																	<span>{t("skillMarketVisit")}</span>
+																	<FiExternalLink />
+																</a>
 															</div>
 														</div>
-													</div>
-												);
-											})}
-										</div>
-									</div>
-								)}
-
-								{/* 技能提示词详情弹窗 */}
-								{inspectingSkill && (
-									<div className="modal-backdrop sub-modal" onClick={() => setInspectingSkill(null)}>
-										<div className="modal skill-inspect-modal" onClick={(e) => e.stopPropagation()}>
-											<button
-												type="button"
-												className="modal-close"
-												aria-label={t("close")}
-												onClick={() => setInspectingSkill(null)}
-											>
-												<FiX />
-											</button>
-											<div className="modal-head">
-												<FiCpu className="modal-head-icon" />
-												<h3>{t("skillInspectModalTitle", { name: inspectingSkill.name })}</h3>
+													);
+												})}
 											</div>
-											<div className="modal-body skill-inspect-body">
-												{fetchingSkillContentId === inspectingSkill.id && !inspectingSkill.content ? (
-													<div className="mcp-market-loading">
-														<FiRefreshCw className="spinning" />
-														<span>{t("skillContentLoading")}</span>
-													</div>
-												) : (
-													<pre className="skill-code-preview">
-														<code>{inspectingSkill.content}</code>
-													</pre>
-												)}
-											</div>
-											<div className="modal-actions">
-												<button type="button" className="set-cancel-btn" onClick={() => setInspectingSkill(null)}>
-													{t("close")}
-												</button>
-												<button
-													type="button"
-													className="set-save-btn global"
-													onClick={() => handleInstallSkill(inspectingSkill, "global")}
-												>
-													<FiPlus />
-													<span>{t("skillInstallGlobal")}</span>
-												</button>
-												<button
-													type="button"
-													className="set-save-btn project"
-													onClick={() => handleInstallSkill(inspectingSkill, "project")}
-												>
-													<FiPlus />
-													<span>{t("skillInstallProject")}</span>
-												</button>
-											</div>
-										</div>
+										)}
 									</div>
 								)}
 							</div>
@@ -5645,44 +5658,46 @@ export function SettingsModal({
 						)}
 						{tab === "plugins" && !managed && pluginSub === "market" && (
 							<div className="set-section">
-								<div className="set-section-title">
-									<FiPackage className="set-section-icon" />
-									{t("pluginMarket")}
-									<span className="set-count">{chat.pluginCatalog.length}</span>
-								</div>
-								<div className="set-toolbar">
-									<a
-										href={OFFICIAL_PLUGINS_REPO_URL}
-										target="_blank"
-										rel="noreferrer noopener"
-										className="set-uninstall link"
-										title={t("pluginOfficialMarketHint")}
-									>
-										<FiExternalLink />
-										{t("pluginOfficialMarket")}
-									</a>
-									<label className="set-catalog-build" title={t("pluginBuildHint")}>
-										<input type="checkbox" checked={catBuild} onChange={(ev) => setCatBuild(ev.target.checked)} />
-										{t("pluginBuildSource")}
-									</label>
-									<button
-										type="button"
-										className="set-uninstall"
-										title={t("pluginCatalogSyncHint")}
-										onClick={() => setShowCatSync((v) => !v)}
-									>
-										<FiRefreshCw />
-										{t("pluginCatalogSync")}
-									</button>
-									<button
-										type="button"
-										className="set-uninstall"
-										title={t("pluginCatalogAddHint")}
-										onClick={() => setShowCatAdd((v) => !v)}
-									>
-										<FiPlus />
-										{t("pluginCatalogAdd")}
-									</button>
+								<div className="smart-market-head">
+									<div className="smart-market-title">
+										<FiPackage className="set-section-icon" />
+										<span>{t("pluginMarket")}</span>
+										<span className="set-count">{chat.pluginCatalog.length}</span>
+									</div>
+									<div className="smart-market-tools">
+										<label className="smart-build-toggle" title={t("pluginBuildHint")}>
+											<input type="checkbox" checked={catBuild} onChange={(ev) => setCatBuild(ev.target.checked)} />
+											<span>{t("pluginBuildSource")}</span>
+										</label>
+										<button
+											type="button"
+											className={`smart-tool-btn${showCatSync ? " active" : ""}`}
+											title={t("pluginCatalogSyncHint")}
+											onClick={() => setShowCatSync((v) => !v)}
+										>
+											<FiRefreshCw />
+											<span>{t("pluginCatalogSync")}</span>
+										</button>
+										<button
+											type="button"
+											className={`smart-tool-btn${showCatAdd ? " active" : ""}`}
+											title={t("pluginCatalogAddHint")}
+											onClick={() => setShowCatAdd((v) => !v)}
+										>
+											<FiPlus />
+											<span>{t("pluginCatalogAdd")}</span>
+										</button>
+										<a
+											href={OFFICIAL_PLUGINS_REPO_URL}
+											target="_blank"
+											rel="noreferrer noopener"
+											className="smart-tool-link"
+											title={t("pluginOfficialMarketHint")}
+										>
+											<FiExternalLink />
+											<span>{t("pluginOfficialMarket")}</span>
+										</a>
+									</div>
 								</div>
 								{showCatSync && (
 									<div className="set-catalog-add">
@@ -5850,61 +5865,71 @@ export function SettingsModal({
 
 									return (
 										<>
-											<div className="set-catalog-tabs" role="tablist">
-												<button
-													type="button"
-													role="tab"
-													aria-selected={catalogFilter === "all"}
-													className={`set-catalog-tab-btn${catalogFilter === "all" ? " active" : ""}`}
-													onClick={() => setCatalogFilter("all")}
-												>
-													{t("pluginCatalogTabAll")}
-													<span className="set-catalog-tab-count">{chat.pluginCatalog.length}</span>
-												</button>
-												<button
-													type="button"
-													role="tab"
-													aria-selected={catalogFilter === "builtin"}
-													className={`set-catalog-tab-btn${catalogFilter === "builtin" ? " active" : ""}`}
-													onClick={() => setCatalogFilter("builtin")}
-												>
-													{t("pluginCatalogTabBuiltin")}
-													<span className="set-catalog-tab-count">{builtinCount}</span>
-												</button>
-												<button
-													type="button"
-													role="tab"
-													aria-selected={catalogFilter === "community"}
-													className={`set-catalog-tab-btn${catalogFilter === "community" ? " active" : ""}`}
-													onClick={() => setCatalogFilter("community")}
-												>
-													{t("pluginCatalogTabCommunity")}
-													<span className="set-catalog-tab-count">{communityCount}</span>
-												</button>
-												{(customCount > 0 || catalogFilter === "custom") && (
+											<div className="smart-filter-bar">
+												<div className="smart-filter-tabs" role="tablist">
 													<button
 														type="button"
 														role="tab"
-														aria-selected={catalogFilter === "custom"}
-														className={`set-catalog-tab-btn${catalogFilter === "custom" ? " active" : ""}`}
-														onClick={() => setCatalogFilter("custom")}
+														aria-selected={catalogFilter === "all"}
+														className={`smart-tab-pill${catalogFilter === "all" ? " active" : ""}`}
+														onClick={() => setCatalogFilter("all")}
 													>
-														{t("pluginCatalogTabCustom")}
-														<span className="set-catalog-tab-count">{customCount}</span>
+														{t("pluginCatalogTabAll")}
+														<span className="smart-pill-count">{chat.pluginCatalog.length}</span>
 													</button>
-												)}
-											</div>
+													<button
+														type="button"
+														role="tab"
+														aria-selected={catalogFilter === "builtin"}
+														className={`smart-tab-pill${catalogFilter === "builtin" ? " active" : ""}`}
+														onClick={() => setCatalogFilter("builtin")}
+													>
+														{t("pluginCatalogTabBuiltin")}
+														<span className="smart-pill-count">{builtinCount}</span>
+													</button>
+													<button
+														type="button"
+														role="tab"
+														aria-selected={catalogFilter === "community"}
+														className={`smart-tab-pill${catalogFilter === "community" ? " active" : ""}`}
+														onClick={() => setCatalogFilter("community")}
+													>
+														{t("pluginCatalogTabCommunity")}
+														<span className="smart-pill-count">{communityCount}</span>
+													</button>
+													{(customCount > 0 || catalogFilter === "custom") && (
+														<button
+															type="button"
+															role="tab"
+															aria-selected={catalogFilter === "custom"}
+															className={`smart-tab-pill${catalogFilter === "custom" ? " active" : ""}`}
+															onClick={() => setCatalogFilter("custom")}
+														>
+															{t("pluginCatalogTabCustom")}
+															<span className="smart-pill-count">{customCount}</span>
+														</button>
+													)}
+												</div>
 
-											<div className="set-catalog-filter-bar">
-												<div className="set-catalog-search-wrap">
-													<FiSearch className="set-catalog-search-icon" />
+												<div className="smart-search-wrap">
+													<FiSearch className="smart-search-icon" />
 													<input
 														type="text"
-														className="set-catalog-search-input"
+														className="smart-search-input"
 														placeholder={t("pluginCatalogSearchPlaceholder")}
 														value={catalogSearch}
 														onChange={(e) => setCatalogSearch(e.target.value)}
 													/>
+													{catalogSearch && (
+														<button
+															type="button"
+															className="smart-search-clear"
+															aria-label="Clear search"
+															onClick={() => setCatalogSearch("")}
+														>
+															<FiX />
+														</button>
+													)}
 												</div>
 											</div>
 
@@ -5930,7 +5955,7 @@ export function SettingsModal({
 													{catalogFilter === "community" ? t("pluginCatalogCommunityEmpty") : t("searchNoResults")}
 												</p>
 											) : (
-												<div className="set-list set-list-flat">
+												<div className="smart-plugin-list">
 													{filtered.map((e) => {
 														const origin = e.origin ?? (e.builtin ? "builtin" : "custom");
 														const installed = installedPluginIds.has(e.id);
@@ -5939,129 +5964,186 @@ export function SettingsModal({
 														const isRunning = Boolean(jobFor(e.id) && jobFor(e.id)?.phase !== "done");
 														const name = !isZhLocale(locale) && e.nameEn ? e.nameEn : e.name;
 														const desc = !isZhLocale(locale) && e.descriptionEn ? e.descriptionEn : e.description;
+														const isExpanded = expandedPluginId === e.id;
+
 														return (
-															<div key={e.id} className="set-catalog-row">
-																<div className="set-catalog-main">
-																	<div className="set-catalog-title">
-																		<span>
-																			<PluginIcon icon={e.icon} iconSvg={e.iconSvg} /> {name}
-																		</span>
-																		{installed && <span className="set-catalog-installed">{t("pluginInstalled")}</span>}
-																		{origin === "builtin" && (
-																			<span className="set-catalog-origin builtin">{t("pluginCatalogBuiltin")}</span>
-																		)}
-																		{origin === "community" && (
-																			<span className="set-catalog-origin community">
-																				{t("pluginCatalogCommunity")}
-																			</span>
-																		)}
-																		{origin === "custom" && (
-																			<span className="set-catalog-origin custom">{t("pluginCatalogCustom")}</span>
-																		)}
-																		{isUpdatable && (
-																			<span
-																				className="set-catalog-update-badge"
-																				title={
-																					upd?.latestVersion
-																						? `${upd?.version ?? ""} → v${upd.latestVersion}`
-																						: (upd?.remoteSha ?? "")
-																				}
-																			>
-																				{t("pluginUpdateAvailableBadge")}
-																				{upd?.latestVersion ? ` v${upd.latestVersion}` : ""}
-																			</span>
-																		)}
+															<div key={e.id} className={`smart-plugin-row${isExpanded ? " expanded" : ""}`}>
+																<div className="smart-row-wrapper">
+																	<div
+																		className="smart-row-main"
+																		onClick={() => setExpandedPluginId(isExpanded ? null : e.id)}
+																	>
+																		<div className="smart-plugin-icon">
+																			<PluginIcon icon={e.icon} iconSvg={e.iconSvg} />
+																		</div>
+																		<div className="smart-plugin-info">
+																			<div className="smart-plugin-title-row">
+																				<span className="smart-plugin-name">{name}</span>
+																				{installed && (
+																					<span className="smart-badge smart-badge-installed">
+																						{t("pluginInstalled")}
+																					</span>
+																				)}
+																				{origin === "builtin" && (
+																					<span className="smart-badge smart-badge-builtin">
+																						{t("pluginCatalogBuiltin")}
+																					</span>
+																				)}
+																				{origin === "community" && (
+																					<span className="smart-badge smart-badge-community">
+																						{t("pluginCatalogCommunity")}
+																					</span>
+																				)}
+																				{origin === "custom" && (
+																					<span className="smart-badge smart-badge-custom">
+																						{t("pluginCatalogCustom")}
+																					</span>
+																				)}
+																				{isUpdatable && (
+																					<span
+																						className="smart-badge smart-badge-update"
+																						title={
+																							upd?.latestVersion
+																								? `${upd?.version ?? ""} → v${upd.latestVersion}`
+																								: (upd?.remoteSha ?? "")
+																						}
+																					>
+																						{t("pluginUpdateAvailableBadge")}
+																						{upd?.latestVersion ? ` v${upd.latestVersion}` : ""}
+																					</span>
+																				)}
+																				<span className="smart-plugin-source" title={e.source}>
+																					{e.source}
+																				</span>
+																			</div>
+																			<div className="smart-plugin-desc" title={desc}>
+																				{desc || e.id}
+																			</div>
+																		</div>
 																	</div>
-																	{desc && <div className="set-catalog-desc">{desc}</div>}
-																	<div className="set-catalog-source">{e.source}</div>
-																	{renderJobStatus(e.id)}
-																</div>
-																<div className="set-row-actions">
-																	{pluginOfficialUrl(e) && (
-																		<a
-																			href={pluginOfficialUrl(e)!}
-																			target="_blank"
-																			rel="noreferrer noopener"
-																			className="set-uninstall link"
-																			title={t("pluginOfficialLinkHint")}
-																		>
-																			<FiExternalLink />
-																			{t("pluginOfficialLink")}
-																		</a>
-																	)}
-																	{installed ? (
-																		<>
+
+																	<div className="smart-plugin-actions">
+																		{pluginOfficialUrl(e) && (
+																			<a
+																				href={pluginOfficialUrl(e)!}
+																				target="_blank"
+																				rel="noreferrer noopener"
+																				className="smart-icon-btn"
+																				title={t("pluginOfficialLinkHint")}
+																			>
+																				<FiExternalLink />
+																			</a>
+																		)}
+																		{installed ? (
+																			<>
+																				{isUpdatable ? (
+																					<button
+																						type="button"
+																						className="smart-btn-action update"
+																						disabled={isRunning}
+																						title={
+																							isUpdatable && upd?.latestVersion
+																								? t("pluginUpdateAvailableDetail", {
+																										version: `v${upd.latestVersion}`,
+																									})
+																								: t("pluginUpdateHint")
+																						}
+																						onClick={() => runUiPluginUpdate(e.id, e.source)}
+																					>
+																						<FiRefreshCw className={isRunning ? "set-job-spin" : ""} />
+																						<span>{isRunning ? t("pluginJobRunning") : t("pluginUpdate")}</span>
+																					</button>
+																				) : (
+																					<span className="smart-tag-installed">
+																						<FiCheck style={{ fontSize: 12 }} />
+																						{t("pluginInstalled")}
+																					</span>
+																				)}
+																				{confirmUiUninstall === e.id ? (
+																					<button
+																						type="button"
+																						className="smart-btn-action danger"
+																						disabled={isRunning}
+																						title={t("pluginUninstallHint")}
+																						onClick={() => runUiPluginUninstall(e.id)}
+																					>
+																						{t("uninstallConfirm")}
+																					</button>
+																				) : (
+																					<button
+																						type="button"
+																						className="smart-icon-btn danger"
+																						disabled={isRunning}
+																						title={t("pluginUninstallHint")}
+																						onClick={() => setConfirmUiUninstall(e.id)}
+																					>
+																						<FiTrash2 />
+																					</button>
+																				)}
+																			</>
+																		) : (
 																			<button
 																				type="button"
-																				className={`set-uninstall${isUpdatable ? " accent" : ""}`}
+																				className="smart-btn-action install"
+																				title={t("pluginInstallHint")}
 																				disabled={isRunning}
-																				title={
-																					isUpdatable && upd?.latestVersion
-																						? t("pluginUpdateAvailableDetail", {
-																								version: `v${upd.latestVersion}`,
-																							})
-																						: t("pluginUpdateHint")
-																				}
-																				onClick={() => runUiPluginUpdate(e.id, e.source)}
+																				onClick={() => runCatalogInstall(e)}
 																			>
-																				<FiRefreshCw className={isRunning ? "set-job-spin" : ""} />
-																				{isRunning ? t("pluginJobRunning") : t("pluginUpdate")}
+																				{isRunning ? (
+																					<>
+																						<FiRefreshCw className="set-job-spin" />
+																						<span>{t("pluginJobRunning")}</span>
+																					</>
+																				) : (
+																					<>
+																						<FiDownload />
+																						<span>{t("pluginInstall")}</span>
+																					</>
+																				)}
 																			</button>
-																			{confirmUiUninstall === e.id ? (
-																				<button
-																					type="button"
-																					className="set-uninstall confirm"
-																					disabled={isRunning}
-																					title={t("pluginUninstallHint")}
-																					onClick={() => runUiPluginUninstall(e.id)}
-																				>
-																					{t("uninstallConfirm")}
-																				</button>
-																			) : (
-																				<button
-																					type="button"
-																					className="set-uninstall"
-																					disabled={isRunning}
-																					title={t("pluginUninstallHint")}
-																					onClick={() => setConfirmUiUninstall(e.id)}
-																				>
-																					<FiTrash2 />
-																					{t("uninstallExt")}
-																				</button>
-																			)}
-																		</>
-																	) : (
+																		)}
+																		{origin === "custom" && !installed && (
+																			<button
+																				type="button"
+																				className="smart-icon-btn danger"
+																				title={t("pluginCatalogRemoveHint")}
+																				disabled={isRunning}
+																				onClick={() => runCatalogRemove(e.id)}
+																			>
+																				<FiX />
+																			</button>
+																		)}
 																		<button
 																			type="button"
-																			className="set-uninstall"
-																			title={t("pluginInstallHint")}
-																			disabled={isRunning}
-																			onClick={() => runCatalogInstall(e)}
+																			className="smart-expand-btn"
+																			title={isExpanded ? t("collapseSection") : t("expandSection")}
+																			aria-label={isExpanded ? t("collapseSection") : t("expandSection")}
+																			onClick={() => setExpandedPluginId(isExpanded ? null : e.id)}
 																		>
-																			{isRunning ? (
-																				<>
-																					<FiRefreshCw className="set-job-spin" />
-																					{t("pluginJobRunning")}
-																				</>
-																			) : (
-																				<>
-																					<FiDownload />
-																					{t("pluginInstall")}
-																				</>
-																			)}
+																			{isExpanded ? <FiChevronUp /> : <FiChevronDown />}
 																		</button>
-																	)}
-																	{origin === "custom" && (
-																		<button
-																			type="button"
-																			className="set-uninstall"
-																			title={t("pluginCatalogRemoveHint")}
-																			onClick={() => runCatalogRemove(e.id)}
-																		>
-																			<FiX />
-																		</button>
-																	)}
+																	</div>
 																</div>
+
+																{isExpanded && (
+																	<div className="smart-plugin-detail-panel">
+																		{desc && (
+																			<div className="smart-detail-desc">
+																				<strong>{t("pluginCatalogDesc")}：</strong>
+																				<p>{desc}</p>
+																			</div>
+																		)}
+																		<div className="smart-detail-meta">
+																			<span className="smart-detail-meta-item">
+																				<strong>ID：</strong> <code>{e.id}</code>
+																			</span>
+																			<span className="smart-detail-meta-item">
+																				<strong>{t("pluginCatalogSource")}：</strong> <code>{e.source}</code>
+																			</span>
+																		</div>
+																		{renderJobStatus(e.id)}
+																	</div>
+																)}
 															</div>
 														);
 													})}
@@ -6076,39 +6158,43 @@ export function SettingsModal({
 						{/* ---- UI plugins（<dataDir>/plugins，纯 UI 隐藏） ----------------- */}
 						{tab === "plugins" && pluginSub === "installed" && (
 							<div className="set-section">
-								<div className="set-section-title">
-									<FiBox className="set-section-icon" />
-									{t("pluginListTab")}
-									<span className="set-count">{chat.plugins.length}</span>
-									<a
-										href={OFFICIAL_PLUGINS_REPO_URL}
-										target="_blank"
-										rel="noreferrer noopener"
-										className="set-uninstall link"
-										title={t("pluginOfficialMarketHint")}
-									>
-										<FiExternalLink />
-										{t("pluginOfficialMarket")}
-									</a>
-									<button
-										type="button"
-										className="set-uninstall"
-										title={t("pluginCheckUpdatesHint")}
-										disabled={chat.checkingPluginUpdates}
-										onClick={() => appSend({ type: "check_plugin_updates" })}
-									>
-										<FiRefreshCw className={chat.checkingPluginUpdates ? "spin" : ""} />
-										{chat.checkingPluginUpdates ? t("checkingUpdate") : t("pluginCheckUpdates")}
-									</button>
-									<button
-										type="button"
-										className="set-uninstall"
-										title={t("pluginRescanHint")}
-										onClick={() => appSend({ type: "plugins_reload" })}
-									>
-										<FiRefreshCw />
-										{t("pluginRescan")}
-									</button>
+								<div className="smart-market-head">
+									<div className="smart-market-title">
+										<FiBox className="set-section-icon" />
+										<span>{t("pluginListTab")}</span>
+										<span className="set-count">{chat.plugins.length}</span>
+									</div>
+									<div className="smart-market-tools">
+										<button
+											type="button"
+											className="smart-tool-btn"
+											title={t("pluginCheckUpdatesHint")}
+											disabled={chat.checkingPluginUpdates}
+											onClick={() => appSend({ type: "check_plugin_updates" })}
+										>
+											<FiRefreshCw className={chat.checkingPluginUpdates ? "set-job-spin" : ""} />
+											<span>{chat.checkingPluginUpdates ? t("checkingUpdate") : t("pluginCheckUpdates")}</span>
+										</button>
+										<button
+											type="button"
+											className="smart-tool-btn"
+											title={t("pluginRescanHint")}
+											onClick={() => appSend({ type: "plugins_reload" })}
+										>
+											<FiRefreshCw />
+											<span>{t("pluginRescan")}</span>
+										</button>
+										<a
+											href={OFFICIAL_PLUGINS_REPO_URL}
+											target="_blank"
+											rel="noreferrer noopener"
+											className="smart-tool-link"
+											title={t("pluginOfficialMarketHint")}
+										>
+											<FiExternalLink />
+											<span>{t("pluginOfficialMarket")}</span>
+										</a>
+									</div>
 								</div>
 								{chat.plugins.length > 0 && (
 									<PluginInventoryStrip plugins={chat.plugins} disabledIds={disabledPlugins} />
@@ -6116,206 +6202,249 @@ export function SettingsModal({
 								{chat.plugins.length === 0 ? (
 									<p className="set-empty">{t("noUiPlugins")}</p>
 								) : (
-									<div className="set-list set-list-flat">
+									<div className="smart-plugin-list">
 										{chat.plugins.map((p) => {
 											const upd = chat.pluginUpdates?.[p.id];
 											const isUpdatable = upd?.updatable === true;
 											const isRunning = Boolean(jobFor(p.id) && jobFor(p.id)?.phase !== "done");
+											const isDisabled = disabledPlugins.has(p.id);
+											const hasSettings = Boolean(p.settingsSchema && p.settingsSchema.length > 0);
+											const isSettingsOpen = Boolean(settingsOpen[p.id]);
+											const isLogOpen = logOpen === p.id;
+											const isDiagOpen = diagOpen === p.id;
+											const logsCount = getPluginLogs(p.id).length;
+											const diagCount = p.diagnostics?.length ?? 0;
+
 											return (
-												<Fragment key={p.id}>
-													<ToggleRow
-														key={p.id}
-														title={
-															<>
-																<InvDot
-																	phase={pluginPhase(p, disabledPlugins.has(p.id))}
-																	label={tt(phaseLabelKey(pluginPhase(p, disabledPlugins.has(p.id))))}
-																/>
-																<PluginIcon icon={p.icon} iconSvg={p.iconSvg} /> {p.name}
-																{isUpdatable && (
-																	<span
-																		className="set-catalog-update-badge"
-																		title={
-																			upd?.latestVersion
-																				? `v${p.version ?? "0.0.0"} → v${upd.latestVersion}`
-																				: (upd?.remoteSha ?? "")
-																		}
-																	>
-																		{t("pluginUpdateAvailableBadge")}
-																		{upd?.latestVersion ? ` v${upd.latestVersion}` : ""}
-																	</span>
-																)}
-															</>
-														}
-														subtitle={
-															(p.error
-																? `${p.id} · ${p.error}`
-																: p.source
-																	? `${p.id} · ${p.source}`
-																	: `${p.id} · ${t("uiPluginNoSource")}`) +
-															(p.permissions?.length ? ` · ${t("uiPluginPerms")}: ${p.permissions.join(", ")}` : "")
-														}
-														enabled={!disabledPlugins.has(p.id) && !p.error}
-														onToggle={() => !p.error && togglePlugin(p)}
-														action={
-															<div className="set-row-actions">
-																{(() => {
-																	const url =
-																		pluginOfficialUrl(chat.pluginCatalog.find((c) => c.id === p.id)) ||
-																		pluginOfficialUrl(p);
-																	return url ? (
-																		<a
-																			href={url}
-																			target="_blank"
-																			rel="noreferrer noopener"
-																			className="set-uninstall link"
-																			title={t("pluginOfficialLinkHint")}
-																		>
-																			<FiExternalLink />
-																			{t("pluginOfficialLink")}
-																		</a>
-																	) : null;
-																})()}
-																{p.source && (
-																	<button
-																		type="button"
-																		className={`set-uninstall${isUpdatable ? " accent" : ""}`}
-																		disabled={isRunning}
-																		title={
-																			isUpdatable && upd?.latestVersion
-																				? t("pluginUpdateAvailableDetail", { version: `v${upd.latestVersion}` })
-																				: t("pluginUpdateHint")
-																		}
-																		onClick={() => runUiPluginUpdate(p.id, p.source!)}
-																	>
-																		<FiRefreshCw className={isRunning ? "set-job-spin" : ""} />
-																		{isRunning ? t("pluginJobRunning") : t("pluginUpdate")}
-																	</button>
-																)}
-																{confirmUiUninstall === p.id ? (
-																	<button
-																		type="button"
-																		className="set-uninstall confirm"
-																		disabled={isRunning}
-																		title={t("pluginUninstallHint")}
-																		onClick={() => runUiPluginUninstall(p.id)}
-																	>
-																		{t("uninstallConfirm")}
-																	</button>
-																) : (
-																	<button
-																		type="button"
-																		className="set-uninstall"
-																		disabled={isRunning}
-																		title={t("pluginUninstallHint")}
-																		onClick={() => setConfirmUiUninstall(p.id)}
-																	>
-																		<FiTrash2 />
-																		{t("uninstallExt")}
-																	</button>
-																)}
+												<div key={p.id} className={`smart-installed-card${isDisabled ? " disabled" : ""}`}>
+													<div className="smart-installed-head">
+														<div className="smart-installed-lead">
+															<InvDot
+																phase={pluginPhase(p, isDisabled)}
+																label={tt(phaseLabelKey(pluginPhase(p, isDisabled)))}
+															/>
+															<div className="smart-plugin-icon">
+																<PluginIcon icon={p.icon} iconSvg={p.iconSvg} />
 															</div>
-														}
-													/>
-													{renderJobStatus(p.id)}
-													{/* 注册的 AI 工具开关统一收口到「工具」tab 汇总区，这里只保留一行入口（免得已装列表太长；DSH 无工具 tab 则不显示） */}
-													{p.agentTools && p.agentTools.length > 0 && !isDsh && (
-														<div className="set-row" title={t("pluginToolOffHint")}>
-															<span className="set-ui-source">
-																{t("pluginToolsSection")} ({p.agentTools.length})
-																{p.agentTools.some((tool) => disabledPluginTools.has(tool.name))
-																	? ` · ${t("settingsDisabled")}`
-																	: ""}
-															</span>
-															<div className="set-row-actions">
-																<button type="button" className="set-uninstall" onClick={() => setTab("tools")}>
-																	{t("settingsTools")} →
-																</button>
+															<div className="smart-installed-titles">
+																<div className="smart-plugin-title-row">
+																	<span className="smart-plugin-name">{p.name}</span>
+																	{isUpdatable && (
+																		<span
+																			className="smart-badge smart-badge-update"
+																			title={
+																				upd?.latestVersion
+																					? `v${p.version ?? "0.0.0"} → v${upd.latestVersion}`
+																					: (upd?.remoteSha ?? "")
+																			}
+																		>
+																			{t("pluginUpdateAvailableBadge")}
+																			{upd?.latestVersion ? ` v${upd.latestVersion}` : ""}
+																		</span>
+																	)}
+																	<span className="smart-plugin-source" title={p.id}>
+																		{p.id}
+																	</span>
+																</div>
+																<div className="smart-plugin-desc">
+																	{p.error ? (
+																		<span className="smart-desc-error">{p.error}</span>
+																	) : (
+																		<span>
+																			{p.source ?? t("uiPluginNoSource")}
+																			{p.permissions?.length
+																				? ` · ${t("uiPluginPerms")}: ${p.permissions.join(", ")}`
+																				: ""}
+																		</span>
+																	)}
+																</div>
 															</div>
 														</div>
-													)}
-													{/* 运行时日志：host.log 分级缓冲，按需拉取（不进快照），与诊断互不干扰 */}
-													<div className="set-row set-log-row">
+
+														<div className="smart-installed-ctrls">
+															{(() => {
+																const url =
+																	pluginOfficialUrl(chat.pluginCatalog.find((c) => c.id === p.id)) ||
+																	pluginOfficialUrl(p);
+																return url ? (
+																	<a
+																		href={url}
+																		target="_blank"
+																		rel="noreferrer noopener"
+																		className="smart-icon-btn"
+																		title={t("pluginOfficialLinkHint")}
+																	>
+																		<FiExternalLink />
+																	</a>
+																) : null;
+															})()}
+															{p.source && isUpdatable && (
+																<button
+																	type="button"
+																	className="smart-btn-action update"
+																	disabled={isRunning}
+																	title={
+																		upd?.latestVersion
+																			? t("pluginUpdateAvailableDetail", {
+																					version: `v${upd.latestVersion}`,
+																				})
+																			: t("pluginUpdateHint")
+																	}
+																	onClick={() => runUiPluginUpdate(p.id, p.source!)}
+																>
+																	<FiRefreshCw className={isRunning ? "set-job-spin" : ""} />
+																	<span>{isRunning ? t("pluginJobRunning") : t("pluginUpdate")}</span>
+																</button>
+															)}
+															{confirmUiUninstall === p.id ? (
+																<button
+																	type="button"
+																	className="smart-btn-action danger"
+																	disabled={isRunning}
+																	title={t("pluginUninstallHint")}
+																	onClick={() => runUiPluginUninstall(p.id)}
+																>
+																	{t("uninstallConfirm")}
+																</button>
+															) : (
+																<button
+																	type="button"
+																	className="smart-icon-btn danger"
+																	disabled={isRunning}
+																	title={t("pluginUninstallHint")}
+																	onClick={() => setConfirmUiUninstall(p.id)}
+																>
+																	<FiTrash2 />
+																</button>
+															)}
+															<label
+																className="smart-switch"
+																title={!isDisabled ? t("pluginPhaseActive") : t("pluginPhaseDisabled")}
+															>
+																<input
+																	type="checkbox"
+																	checked={!isDisabled && !p.error}
+																	disabled={Boolean(p.error)}
+																	onChange={() => !p.error && togglePlugin(p)}
+																/>
+																<span className="smart-switch-slider" />
+															</label>
+														</div>
+													</div>
+
+													{renderJobStatus(p.id)}
+
+													{/* 功能微胶囊栏：将 AI 工具、配置、日志、DOM 特权、诊断平铺为整洁的横向胶囊 */}
+													<div className="smart-installed-chips">
+														{p.agentTools && p.agentTools.length > 0 && !isDsh && (
+															<button
+																type="button"
+																className="smart-feature-chip"
+																title={t("pluginToolOffHint")}
+																onClick={() => setTab("tools")}
+															>
+																<FiTool className="smart-chip-icon" />
+																<span>
+																	{t("pluginToolsSection")} ({p.agentTools.length})
+																</span>
+																{p.agentTools.some((tool) => disabledPluginTools.has(tool.name)) && (
+																	<span className="smart-chip-tag">{t("settingsDisabled")}</span>
+																)}
+																<span style={{ opacity: 0.6 }}>→</span>
+															</button>
+														)}
+
+														{hasSettings && (
+															<button
+																type="button"
+																className={`smart-feature-chip${isSettingsOpen ? " active" : ""}`}
+																onClick={() => setSettingsOpen((prev) => ({ ...prev, [p.id]: !prev[p.id] }))}
+															>
+																<FiSliders className="smart-chip-icon" />
+																<span>
+																	{t("pluginSettingsTitle")} ({p.settingsSchema!.length})
+																</span>
+																<span style={{ fontSize: 10, opacity: 0.7 }}>{isSettingsOpen ? "▲" : "▼"}</span>
+															</button>
+														)}
+
 														<button
 															type="button"
-															className="set-diag-toggle"
+															className={`smart-feature-chip${isLogOpen ? " active" : ""}`}
 															onClick={() => {
-																if (logOpen === p.id) setLogOpen(null);
+																if (isLogOpen) setLogOpen(null);
 																else {
 																	setLogOpen(p.id);
 																	appSend(pluginLogsFetch(p.id));
 																}
 															}}
 														>
-															<FiFileText />
-															{t("pluginLogTitle")} ({getPluginLogs(p.id).length}) ·{" "}
-															{logOpen === p.id ? t("pluginLogHide") : t("pluginLogShow")}
-														</button>
-														{logOpen === p.id && <PluginLogView pluginId={p.id} />}
-													</div>
-													{/* 诊断记录：manifest/ui 解析丢弃原因 + 运行时 warning/error 摘要 */}
-													{p.diagnostics && p.diagnostics.length > 0 && (
-														<div className="set-row set-diag-row">
-															<button
-																type="button"
-																className="set-diag-toggle"
-																onClick={() => setDiagOpen(diagOpen === p.id ? null : p.id)}
-															>
-																<FiAlertTriangle />
-																{t("pluginDiagTitle")} ({p.diagnostics.length}) ·{" "}
-																{diagOpen === p.id ? t("pluginDiagHide") : t("pluginDiagShow")}
-															</button>
-															{diagOpen === p.id && (
-																<ul className="set-diag-list">
-																	{p.diagnostics.map((d, i) => (
-																		<li key={`${p.id}-${i}`}>{d}</li>
-																	))}
-																</ul>
-															)}
-														</div>
-													)}
-													{/* 特权 DOM：声明了 dom 能力的插件，bundle 默认 403，需用户逐个授权 */}
-													{p.wantsDom && (
-														<div className="set-row" title={t("pluginDomDesc")}>
-															<span className="set-ui-source">
-																{p.domGranted ? t("pluginDomGranted") : t("pluginDomNeed")}
+															<FiFileText className="smart-chip-icon" />
+															<span>
+																{t("pluginLogTitle")} ({logsCount}) · {isLogOpen ? t("pluginLogHide") : t("pluginLogShow")}
 															</span>
-															<div className="set-row-actions">
-																<button
-																	type="button"
-																	className={`set-uninstall${p.domGranted ? "" : " confirm"}`}
-																	title={t("pluginDomDesc")}
-																	onClick={() =>
-																		appSend({
-																			type: "plugin_dom_consent",
-																			pluginId: p.id,
-																			granted: !p.domGranted,
-																		})
-																	}
-																>
-																	{p.domGranted ? t("pluginDomRevoke") : t("pluginDomGrant")}
-																</button>
-															</div>
-														</div>
-													)}
-													{/* 声明式设置：manifest settings schema → 自动渲染表单（可折叠，默认折叠） */}
-													{p.settingsSchema && p.settingsSchema.length > 0 && (
-														<div className="set-row set-settings-row">
+															<span style={{ fontSize: 10, opacity: 0.7 }}>{isLogOpen ? "▲" : "▼"}</span>
+														</button>
+
+														{diagCount > 0 && (
 															<button
 																type="button"
-																className="set-diag-toggle"
-																onClick={() => setSettingsOpen((prev) => ({ ...prev, [p.id]: !prev[p.id] }))}
+																className={`smart-feature-chip warn${isDiagOpen ? " active" : ""}`}
+																onClick={() => setDiagOpen(isDiagOpen ? null : p.id)}
 															>
-																<FiSliders />
-																{t("pluginSettingsTitle")} ({p.settingsSchema.length}) ·{" "}
-																{settingsOpen[p.id] ? t("pluginSettingsHide") : t("pluginSettingsShow")}
+																<FiAlertTriangle className="smart-chip-icon" />
+																<span>
+																	{t("pluginDiagTitle")} ({diagCount}) · {isDiagOpen ? t("pluginDiagHide") : t("pluginDiagShow")}
+																</span>
+																<span style={{ fontSize: 10, opacity: 0.7 }}>{isDiagOpen ? "▲" : "▼"}</span>
 															</button>
-															{settingsOpen[p.id] && (
-																<PluginSettingsForm plugin={p} models={settings?.subagentModels ?? []} />
-															)}
+														)}
+
+														{p.wantsDom && (
+															<button
+																type="button"
+																className={`smart-feature-chip${p.domGranted ? " success" : " warn"}`}
+																title={t("pluginDomDesc")}
+																onClick={() =>
+																	appSend({
+																		type: "plugin_dom_consent",
+																		pluginId: p.id,
+																		granted: !p.domGranted,
+																	})
+																}
+															>
+																<span>
+																	{p.domGranted
+																		? `✓ ${t("pluginDomGranted")} (${t("pluginDomRevoke")})`
+																		: `! ${t("pluginDomNeed")} (${t("pluginDomGrant")})`}
+																</span>
+															</button>
+														)}
+													</div>
+
+													{/* 展开的抽屉区域 */}
+													{isSettingsOpen && p.settingsSchema && (
+														<div className="smart-card-drawer">
+															<PluginSettingsForm plugin={p} models={settings?.subagentModels ?? []} />
 														</div>
 													)}
-												</Fragment>
+
+													{isLogOpen && (
+														<div className="smart-card-drawer">
+															<PluginLogView pluginId={p.id} />
+														</div>
+													)}
+
+													{isDiagOpen && p.diagnostics && (
+														<div className="smart-card-drawer">
+															<ul className="set-diag-list">
+																{p.diagnostics.map((d, i) => (
+																	<li key={`${p.id}-${i}`}>{d}</li>
+																))}
+															</ul>
+														</div>
+													)}
+												</div>
 											);
 										})}
 									</div>
@@ -7381,18 +7510,6 @@ export function SettingsModal({
 						)}
 					</div>
 				</div>
-
-				<div className="modal-actions settings-modal-actions">
-					<div className="settings-status-info">
-						<span className="settings-status-dot" />
-						<span className="settings-status-text">{t("settingsAutoSavedTip")}</span>
-					</div>
-					<div className="settings-action-btns">
-						<button type="button" className="dd-refresh set-close-btn" onClick={handleClose}>
-							{t("close")}
-						</button>
-					</div>
-				</div>
 			</div>
 
 			{/* 预设分享面板（导入 / 导出 / 浏览共享仓库）—— 自己一层 portal，盖在设置页上。 */}
@@ -7407,6 +7524,75 @@ export function SettingsModal({
 					initialTab={presetShareFor.tab}
 					onClose={() => setPresetShareFor(null)}
 				/>
+			)}
+
+			{/* 技能指令正文详情模态框（点击已安装技能行的名称/描述等其他地方查看具体内容） */}
+			{inspectingSkill && (
+				<div className="modal-backdrop" onClick={() => setInspectingSkill(null)} style={{ zIndex: 1200 }}>
+					<div className="modal-dialog skill-inspect-dialog" onClick={(e) => e.stopPropagation()}>
+						<div className="modal-header">
+							<div className="modal-title" style={{ display: "flex", alignItems: "center", gap: 8 }}>
+								<span>📦</span>
+								<span>{t("skillInspectModalTitle", { name: inspectingSkill.name })}</span>
+							</div>
+							<button
+								type="button"
+								className="modal-close"
+								onClick={() => setInspectingSkill(null)}
+								aria-label={t("close")}
+							>
+								<FiX />
+							</button>
+						</div>
+						<div className="skill-inspect-body">
+							{inspectLoading && !inspectingSkill.content ? (
+								<div style={{ textAlign: "center", padding: "48px 0", color: "var(--text-dim)" }}>
+									<FiRefreshCw
+										className="spin"
+										style={{ fontSize: "24px", marginBottom: "12px", display: "inline-block" }}
+									/>
+									<div>{t("skillContentLoading")}</div>
+								</div>
+							) : inspectingSkill.content ? (
+								<div className="skill-inspect-markdown">
+									<Markdown text={inspectingSkill.content} />
+								</div>
+							) : (
+								<div style={{ textAlign: "center", padding: "48px 0", color: "var(--text-faint)" }}>暂无指令内容</div>
+							)}
+						</div>
+						<div className="skill-inspect-footer">
+							<div style={{ display: "flex", gap: "8px", alignItems: "center" }}>
+								{inspectingSkill.content && (
+									<button
+										type="button"
+										className="btn small"
+										onClick={() => {
+											navigator.clipboard.writeText(inspectingSkill.content || "").then(() => {
+												setInspectCopied(true);
+												setTimeout(() => setInspectCopied(false), 1500);
+											});
+										}}
+									>
+										{inspectCopied ? t("copiedSkillContent") : t("copySkillContent")}
+									</button>
+								)}
+								<button
+									type="button"
+									className={`skill-fulltext-chip${fullTextSkills.has(inspectingSkill.name) ? " on" : ""}`}
+									title={t("skillFullTextDesc")}
+									onClick={() => toggleSkillFullText(inspectingSkill.name)}
+								>
+									{fullTextSkills.has(inspectingSkill.name) && <span className="skill-fulltext-check">✓</span>}
+									{t("skillFullTextShort")}
+								</button>
+							</div>
+							<button type="button" className="btn primary small" onClick={() => setInspectingSkill(null)}>
+								{t("close")}
+							</button>
+						</div>
+					</div>
+				</div>
 			)}
 		</div>
 	);

@@ -125,7 +125,9 @@ describe("DingtalkBotBridge 双工逻辑测试", () => {
 		vi.stubGlobal("fetch", fetchMock);
 
 		let runHandler: ((ev: any) => void) | null = null;
-		const chatSpy = vi.fn().mockResolvedValue({ conversationId: "conv_dt_1" });
+		const chatSpy = vi
+			.fn()
+			.mockResolvedValue({ conversationId: "c1", clientId: "plugin:dingtalk:x", runId: "pr-dt-1" });
 
 		const bridge = new DingtalkBotBridge({
 			host: {
@@ -154,11 +156,14 @@ describe("DingtalkBotBridge 双工逻辑测试", () => {
 			}),
 		);
 
-		const convId = chatSpy.mock.calls[0][0].conversationId;
+		// 真实链路：宿主返回的是**它自己的**会话 id（本地编的 dt_xxx 只是占位），
+		// 事件也按这个 id 下发；这里用回执里的 id + 回执里的 runId。
+		const convId = "c1";
 
 		// 模拟流式增量与结束
 		runHandler!({
 			conversationId: convId,
+			runId: "pr-dt-1",
 			type: "message",
 			message: {
 				role: "assistant",
@@ -168,6 +173,7 @@ describe("DingtalkBotBridge 双工逻辑测试", () => {
 
 		await runHandler!({
 			conversationId: convId,
+			runId: "pr-dt-1",
 			type: "run_end",
 		});
 
@@ -177,6 +183,116 @@ describe("DingtalkBotBridge 双工逻辑测试", () => {
 				method: "POST",
 				body: expect.stringContaining("console.log('DingTalk')"),
 			}),
+		);
+
+		await bridge.stop();
+		vi.unstubAllGlobals();
+	});
+});
+
+describe("钉钉：对话被过户（改名 + 换客户端）后仍按 runId 回包", () => {
+	it("conversationId 改名、clientId 变成浏览器后，run_end 仍推送到会话 webhook", async () => {
+		// 过户回归（issue：通道插件的回包认领）：微信/钉钉/Discord/飞书等通道靠 host.chat
+		// 回执关联 run_end。用户在网页左栏点开 running 对话 = take_over_conversation：对话被搬到
+		// 浏览器会话（clientId 变成对方的），目标会话已有同名 id（各会话独立从 c1 编号）时还会
+		// 就地改名 —— clientId 与 conversationId 双双失效，只有回执里的 runId 不变。
+		const fetchMock = vi.fn().mockResolvedValue({ ok: true, json: async () => ({ errcode: 0 }) });
+		vi.stubGlobal("fetch", fetchMock);
+
+		let runHandler: ((ev: any) => void) | null = null;
+		const chatSpy = vi
+			.fn()
+			.mockResolvedValue({ conversationId: "c1", clientId: "plugin:dingtalk:x", runId: "pr-dt-9" });
+
+		const bridge = new DingtalkBotBridge({
+			host: {
+				chat: chatSpy,
+				onRunEvent: (fn: any) => {
+					runHandler = fn;
+					return () => {};
+				},
+			},
+			getConfig: () => ({}),
+		});
+
+		await bridge.start();
+		await bridge.onInboundMessage({
+			msgId: "msg_takeover",
+			senderStaffId: "staff_02",
+			sessionWebhook: "https://oapi.dingtalk.com/robot/sendBySession?session=xyz",
+			text: { content: "查一下磁盘占用" },
+		});
+
+		// 过户后：持有方换成浏览器标签页，对话 id 因撞车改名 c1 → c7
+		runHandler!({
+			conversationId: "c7",
+			clientId: "client_browser_tab1",
+			runId: "pr-dt-9",
+			type: "message",
+			message: { role: "assistant", content: "磁盘还剩 42GB。" },
+		});
+		await runHandler!({
+			conversationId: "c7",
+			clientId: "client_browser_tab1",
+			runId: "pr-dt-9",
+			type: "run_end",
+		});
+
+		expect(fetchMock).toHaveBeenCalledWith(
+			"https://oapi.dingtalk.com/robot/sendBySession?session=xyz",
+			expect.objectContaining({ body: expect.stringContaining("磁盘还剩 42GB") }),
+		);
+
+		await bridge.stop();
+		vi.unstubAllGlobals();
+	});
+
+	it("runId 不同则不认领（绝不把别处的运行回合推给钉钉会话）", async () => {
+		const fetchMock = vi.fn().mockResolvedValue({ ok: true, json: async () => ({ errcode: 0 }) });
+		vi.stubGlobal("fetch", fetchMock);
+
+		let runHandler: ((ev: any) => void) | null = null;
+		const chatSpy = vi
+			.fn()
+			.mockResolvedValue({ conversationId: "c1", clientId: "plugin:dingtalk:x", runId: "pr-mine" });
+
+		const bridge = new DingtalkBotBridge({
+			host: {
+				chat: chatSpy,
+				onRunEvent: (fn: any) => {
+					runHandler = fn;
+					return () => {};
+				},
+			},
+			getConfig: () => ({}),
+		});
+
+		await bridge.start();
+		await bridge.onInboundMessage({
+			msgId: "msg_other",
+			senderStaffId: "staff_03",
+			sessionWebhook: "https://oapi.dingtalk.com/robot/sendBySession?session=abc",
+			text: { content: "在吗" },
+		});
+		fetchMock.mockClear();
+
+		runHandler!({
+			conversationId: "c9",
+			clientId: "client_browser_tab3",
+			runId: "pr-someone-else",
+			type: "message",
+			message: { role: "assistant", content: "不该推给钉钉的内容" },
+		});
+		await runHandler!({
+			conversationId: "c9",
+			clientId: "client_browser_tab3",
+			runId: "pr-someone-else",
+			type: "run_end",
+		});
+		await new Promise((r) => setTimeout(r, 20));
+		expect(fetchMock).not.toHaveBeenCalledWith(
+			expect.stringContaining("sendBySession"),
+			expect.objectContaining({ body: expect.stringContaining("不该推给钉钉") }),
 		);
 
 		await bridge.stop();

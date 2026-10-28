@@ -1490,7 +1490,7 @@ export interface TerminalManagerLike {
 		rows: number,
 		fallbackCwd: string,
 		title?: string,
-		opts?: { forceBash?: boolean; locale?: string },
+		opts?: { forceBash?: boolean; locale?: string; agentBash?: boolean },
 	): void;
 	input(id: string, data: string): void;
 	resize(id: string, cols: number, rows: number): void;
@@ -1646,6 +1646,8 @@ export interface DispatchSession {
 	enrichModels(reqId: number, ids: string[], hints?: Record<string, string>): Promise<void>;
 	abortEnrichModels(reqId?: number): void;
 	getTerminalManager(conversationId?: string): TerminalManagerLike | undefined;
+	getUserTerminalManager?(): TerminalManagerLike | undefined;
+	findTerminalManager?(terminalId: string, conversationId?: string): TerminalManagerLike | undefined;
 	getTerminalCwd(conversationId?: string): string;
 	listCommands(): Promise<void>;
 	saveCommands(commands: CommandDef[]): Promise<void>;
@@ -2251,6 +2253,7 @@ async function confirmPluginInstallHelper(items: Array<{ id: string; source: str
 // 远程 SSH 连接管理、环境探针与目录浏览服务
 const remoteSshService = new RemoteSshService(DATA_DIR);
 setGlobalRemoteSshService(remoteSshService);
+pluginMgr.provideService("host", "remoteSsh", remoteSshService);
 
 // 多引擎多模型多目录画布协作调度器 (Canvas Studio)
 const canvasOrchestrator = new CanvasOrchestrator(CWD, DATA_DIR, (eng) => ensureEngine(eng));

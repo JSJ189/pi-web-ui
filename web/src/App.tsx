@@ -2777,6 +2777,7 @@ export function App() {
 							active={view === "canvas"}
 							models={chat.models}
 							defaultModel={chat.defaultModel}
+							installedSkills={chat.settings?.skills}
 							projects={chat.projects}
 							workspaceRoots={chat.state?.workspaceRoots ?? []}
 							pathCompletions={chat.pathCompletions}

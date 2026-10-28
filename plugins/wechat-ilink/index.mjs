@@ -6,16 +6,26 @@
  *   getupdates 收消息 → host.chat 投给 agent → run_end 经 sendmessage 回包。
  * 全程出站 HTTPS，无需公网 IP / 开端口。
  *
- * v1 范围：单账号、文本双工；媒体只占位；默认只回私聊；每个已配对微信用户独立伪客户端/独立会话。
+ * v1 范围：单账号；文本全双工 + 图片/文件双向（出站经 CDN AES-128-ECB 加密上传，
+ * 入站下载解密落地到工作区 `.pi-wechat-media/` 供 agent 用 read 工具查看）；语音仍为占位；
+ * 默认只回私聊；每个已配对微信用户独立伪客户端/独立会话。
  * bot_token 存 host.secrets（AES-256-GCM，拷机解不开）；游标/配对存 storage。
  */
 
-import { createHash } from "node:crypto";
-import { existsSync, statSync } from "node:fs";
-import { resolve, sep } from "node:path";
+import { createCipheriv, createDecipheriv, createHash, randomBytes } from "node:crypto";
+import { existsSync, mkdirSync, readFileSync, statSync, writeFileSync } from "node:fs";
+import { basename, extname, join, resolve, sep } from "node:path";
 
 const API_DEFAULT = "https://ilinkai.weixin.qq.com";
+/** 媒体 CDN 基址（协议默认值）；服务端给了 upload_full_url / full_url 时优先用服务端的。 */
+const CDN_DEFAULT = "https://novac2c.cdn.weixin.qq.com/c2c";
 const APP_ID = "bot";
+/** 媒体入站落地目录（相对工作区）：agent 用 read 工具即可看图。 */
+const MEDIA_DIR = ".pi-wechat-media";
+/** 单文件媒体上限（收发同口径，防止把大文件怼进微信或吃满内存）。 */
+const MEDIA_MAX_BYTES = 25 * 1024 * 1024;
+/** CDN 上传重试次数（4xx 立即失败，其余含缺 x-encrypted-param 都算可重试）。 */
+const CDN_UPLOAD_RETRIES = 3;
 /** 二维码状态轮询间隔。 */
 const QR_POLL_MS = 2000;
 /** getupdates 服务端长轮询约 35s，客户端掐 65s 超时。 */
@@ -141,34 +151,202 @@ export function assistantTextOf(msg) {
 	return stripInternalMarkers(raw);
 }
 
-/** 入站 item_list → 文本（文本直取，媒体占位，未知键嗅探）。 */
-export function inboundTextOf(itemList) {
+/** 媒体占位文案：入站非文本 item 的默认描述。 */
+export const MEDIA_LABEL = { image: "图片", voice: "语音", video: "视频", file: "文件", unknown: "不支持的消息类型" };
+
+/** 单个 item 的媒体类型（先看 type 字段，再回落到 *_item 子对象）。 */
+export function inboundMediaKind(item) {
+	const type = Number(item?.type ?? 0);
+	if (type === 2) return "image";
+	if (type === 3) return "voice";
+	if (type === 4) return "file";
+	if (type === 5) return "video";
+	if (item?.image_item) return "image";
+	if (item?.voice_item) return "voice";
+	if (item?.file_item) return "file";
+	if (item?.video_item) return "video";
+	return "unknown";
+}
+
+/**
+ * 入站 item_list → 有序片段：{ kind: "text", text } 或 { kind: "image"|"voice"|"video"|"file"|"unknown", item }。
+ * 文本直取（任意 *text* 子对象里的 text），媒体按 item 字段识别（不再靠 JSON 字符串嗅探，
+ * 避免 text_item 里出现 "image" 字样被误判）。
+ */
+export function inboundPartsOf(itemList) {
 	const parts = [];
 	for (const it of itemList ?? []) {
 		if (!it || typeof it !== "object") continue;
-		const keys = Object.keys(it);
 		let handled = false;
-		for (const k of keys) {
+		for (const k of Object.keys(it)) {
 			const v = it[k];
 			if (v && typeof v === "object" && typeof v.text === "string" && /text/i.test(k)) {
-				if (v.text.trim()) parts.push(v.text);
+				if (v.text.trim()) parts.push({ kind: "text", text: v.text });
 				handled = true;
 				break;
 			}
 		}
 		if (handled) continue;
-		const blob = JSON.stringify(it).toLowerCase();
-		if (blob.includes("image")) parts.push("[图片]");
-		else if (blob.includes("voice") || blob.includes("audio") || blob.includes("silk")) parts.push("[语音]");
-		else if (blob.includes("video")) parts.push("[视频]");
-		else if (blob.includes("file")) parts.push("[文件]");
-		else parts.push("[不支持的消息类型]");
+		parts.push({ kind: inboundMediaKind(it), item: it });
 	}
-	return parts.join("\n").trim();
+	return parts;
+}
+
+/** 入站 item_list → 文本（文本直取，媒体占位）。 */
+export function inboundTextOf(itemList) {
+	return inboundPartsOf(itemList)
+		.map((p) => (p.kind === "text" ? p.text : `[${MEDIA_LABEL[p.kind] ?? MEDIA_LABEL.unknown}]`))
+		.join("\n")
+		.trim();
+}
+
+// ---- 媒体（CDN 收发）辅助 ----------------------------------------------------
+
+/** ilink proto: UploadMediaType。 */
+export const UploadMediaType = { IMAGE: 1, VIDEO: 2, FILE: 3, VOICE: 4 };
+/** ilink proto: MessageItemType。 */
+export const MessageItemType = { TEXT: 1, IMAGE: 2, VOICE: 3, FILE: 4, VIDEO: 5 };
+
+const MIME_BY_EXT = {
+	".jpg": "image/jpeg",
+	".jpeg": "image/jpeg",
+	".png": "image/png",
+	".gif": "image/gif",
+	".webp": "image/webp",
+	".bmp": "image/bmp",
+	".heic": "image/heic",
+	".mp4": "video/mp4",
+	".mov": "video/quicktime",
+	".mkv": "video/x-matroska",
+	".webm": "video/webm",
+	".mp3": "audio/mpeg",
+	".wav": "audio/wav",
+	".ogg": "audio/ogg",
+	".pdf": "application/pdf",
+	".txt": "text/plain",
+	".md": "text/markdown",
+	".json": "application/json",
+	".zip": "application/zip",
+};
+
+/** 按扩展名推断 MIME（仅用于分流 image/video/file，不做严格校）。 */
+export function mimeOfPath(filePath) {
+	return MIME_BY_EXT[extname(String(filePath ?? "")).toLowerCase()] ?? "application/octet-stream";
+}
+
+/** MIME → ilink 媒体分流：image / video / file。 */
+export function mediaKindOfMime(mime) {
+	const m = String(mime ?? "").toLowerCase();
+	if (m.startsWith("image/")) return "image";
+	if (m.startsWith("video/")) return "video";
+	return "file";
+}
+
+/** 魔数嗅探图片扩展名（下载时服务端不一定给 Content-Type，tmp 文件需要带对的扩展名）。 */
+export function sniffImageExt(buf) {
+	const b = buf ?? Buffer.alloc(0);
+	if (b.length >= 3 && b[0] === 0xff && b[1] === 0xd8 && b[2] === 0xff) return ".jpg";
+	if (b.length >= 4 && b[0] === 0x89 && b[1] === 0x50 && b[2] === 0x4e && b[3] === 0x47) return ".png";
+	if (b.length >= 4 && b[0] === 0x47 && b[1] === 0x49 && b[2] === 0x46) return ".gif";
+	if (b.length >= 12 && b.toString("latin1", 0, 4) === "RIFF" && b.toString("latin1", 8, 12) === "WEBP") return ".webp";
+	if (b.length >= 2 && b[0] === 0x42 && b[1] === 0x4d) return ".bmp";
+	return "";
+}
+
+/** AES-128-ECB + PKCS#7 填充后的密文长度（getUploadUrl.filesize 要的就是这个）。 */
+export function aesEcbPaddedSize(plaintextSize) {
+	return Math.ceil((Number(plaintextSize) + 1) / 16) * 16;
+}
+
+export function encryptAesEcb(plaintext, key) {
+	const cipher = createCipheriv("aes-128-ecb", key, null);
+	return Buffer.concat([cipher.update(plaintext), cipher.final()]);
+}
+
+export function decryptAesEcb(ciphertext, key) {
+	const decipher = createDecipheriv("aes-128-ecb", key, null);
+	return Buffer.concat([decipher.update(ciphertext), decipher.final()]);
+}
+
+/**
+ * 解析 CDN 的 aes_key：兼容三种写法——16 字节原始密钥的 base64、32 位 hex 字符串的 base64
+ * （upstream 发送侧就用这个）、裸 32 位 hex。解析不出来返回 null（按明文处理）。
+ */
+export function parseAesKey(raw) {
+	const s = String(raw ?? "").trim();
+	if (!s) return null;
+	if (/^[0-9a-fA-F]{32}$/.test(s)) return Buffer.from(s, "hex");
+	let decoded;
+	try {
+		decoded = Buffer.from(s, "base64");
+	} catch {
+		return null;
+	}
+	if (decoded.length === 16) return decoded;
+	if (decoded.length === 32 && /^[0-9a-fA-F]{32}$/.test(decoded.toString("latin1"))) {
+		return Buffer.from(decoded.toString("latin1"), "hex");
+	}
+	return null;
+}
+
+/** 出站媒体引用（CDNMedia）：aes_key 按 upstream 口径 = hex 字符串再 base64。 */
+export function buildMediaRef({ downloadParam, aeskeyHex, encryptType = 1 }) {
+	return {
+		encrypt_query_param: String(downloadParam ?? ""),
+		aes_key: Buffer.from(String(aeskeyHex ?? "")).toString("base64"),
+		encrypt_type: encryptType,
+	};
+}
+
+/** 出站 image_item（type=2）。mid_size = 密文字节数。 */
+export function buildImageItem({ downloadParam, aeskeyHex, cipherSize }) {
+	return {
+		type: MessageItemType.IMAGE,
+		image_item: { media: buildMediaRef({ downloadParam, aeskeyHex }), mid_size: Number(cipherSize) || 0 },
+	};
+}
+
+/** 出站 video_item（type=5）。 */
+export function buildVideoItem({ downloadParam, aeskeyHex, cipherSize }) {
+	return {
+		type: MessageItemType.VIDEO,
+		video_item: { media: buildMediaRef({ downloadParam, aeskeyHex }), video_size: Number(cipherSize) || 0 },
+	};
+}
+
+/** 出站 file_item（type=4）。len 是明文字节数的十进制字符串（协议规定）。 */
+export function buildFileItem({ downloadParam, aeskeyHex, fileName, rawSize }) {
+	return {
+		type: MessageItemType.FILE,
+		file_item: {
+			media: buildMediaRef({ downloadParam, aeskeyHex }),
+			file_name: String(fileName ?? "file").slice(0, 200),
+			len: String(Number(rawSize) || 0),
+		},
+	};
+}
+
+/** 按 MIME 分流选出出站媒体 item。 */
+export function buildMediaItem({ kind, downloadParam, aeskeyHex, cipherSize, fileName, rawSize }) {
+	if (kind === "image") return buildImageItem({ downloadParam, aeskeyHex, cipherSize });
+	if (kind === "video") return buildVideoItem({ downloadParam, aeskeyHex, cipherSize });
+	return buildFileItem({ downloadParam, aeskeyHex, fileName, rawSize });
+}
+
+/** CDN 上传 URL（服务端没给 upload_full_url 时的兼容拼接）。 */
+export function buildCdnUploadUrl({ cdnBase, uploadParam, filekey }) {
+	const b = String(cdnBase || CDN_DEFAULT).replace(/\/+$/, "");
+	return `${b}/upload?encrypted_query_param=${encodeURIComponent(String(uploadParam ?? ""))}&filekey=${encodeURIComponent(String(filekey ?? ""))}`;
+}
+
+/** CDN 下载 URL（服务端没给 full_url 时的兼容拼接）。 */
+export function buildCdnDownloadUrl({ cdnBase, encryptQueryParam }) {
+	const b = String(cdnBase || CDN_DEFAULT).replace(/\/+$/, "");
+	return `${b}/download?encrypted_query_param=${encodeURIComponent(String(encryptQueryParam ?? ""))}`;
 }
 
 /** ilink API 裸客户端（token 经 getToken 回调取，轮换/登出即时生效）。 */
-export function createIlink({ base, version, getToken }) {
+export function createIlink({ base, cdnBase, version, getToken }) {
 	const appHeaders = () => ({
 		"Content-Type": "application/json",
 		"iLink-App-Id": APP_ID,
@@ -181,6 +359,28 @@ export function createIlink({ base, version, getToken }) {
 		"X-WECHAT-UIN": randUin(),
 	});
 	const baseInfo = () => ({ channel_version: String(version ?? ""), bot_agent: "pi-web-ui" });
+	/** sendmessage 统一落地：context_token 失效（ret≠0）时去掉 token 降级重试一次。 */
+	async function postMessage(body, contextToken) {
+		const send = (token) =>
+			fetchJson(`${base}/ilink/bot/sendmessage`, {
+				headers: authHeaders(),
+				body: { ...body, msg: { ...body.msg, ...(token ? { context_token: token } : {}) } },
+			});
+		const r = await send(contextToken);
+		if (r && typeof r.ret === "number" && r.ret !== 0) {
+			// 若因 context_token 超时失效导致回复失败，去掉 context_token 降级主动重试一次
+			if (contextToken) {
+				try {
+					const fallback = await send(undefined);
+					if (fallback && (fallback.ret === 0 || fallback.ret === undefined)) {
+						return fallback;
+					}
+				} catch {}
+			}
+			throw new Error(`sendmessage ret=${r.ret} ${r.errmsg ?? ""}`.trim());
+		}
+		return r;
+	}
 	return {
 		/** 取码：只带应用头 + AuthorizationType/UIN，不带 Authorization/base_info。 */
 		async getQr(localTokens) {
@@ -212,38 +412,130 @@ export function createIlink({ base, version, getToken }) {
 			});
 		},
 		async sendMessage({ to, text, contextToken }) {
-			const makeBody = (ctxToken) => ({
-				msg: {
-					from_user_id: "",
-					to_user_id: to,
-					client_id: uuid(),
-					message_type: 2,
-					message_state: 2,
-					...(ctxToken ? { context_token: ctxToken } : {}),
-					item_list: [{ type: 1, text_item: { text: String(text ?? "") } }],
+			return postMessage(
+				{
+					msg: {
+						from_user_id: "",
+						to_user_id: to,
+						client_id: uuid(),
+						message_type: 2,
+						message_state: 2,
+						item_list: [{ type: 1, text_item: { text: String(text ?? "") } }],
+					},
+					base_info: baseInfo(),
 				},
-				base_info: baseInfo(),
-			});
-			const r = await fetchJson(`${base}/ilink/bot/sendmessage`, {
-				headers: authHeaders(),
-				body: makeBody(contextToken),
-			});
-			if (r && typeof r.ret === "number" && r.ret !== 0) {
-				// 若因 context_token 超时失效导致回复失败，去掉 context_token 降级主动重试一次
-				if (contextToken) {
-					try {
-						const fallback = await fetchJson(`${base}/ilink/bot/sendmessage`, {
-							headers: authHeaders(),
-							body: makeBody(undefined),
-						});
-						if (fallback && (fallback.ret === 0 || fallback.ret === undefined)) {
-							return fallback;
-						}
-					} catch {}
-				}
-				throw new Error(`sendmessage ret=${r.ret} ${r.errmsg ?? ""}`.trim());
+				contextToken,
+			);
+		},
+		/** 逐条发 MessageItem（每个请求 item_list 恰好一个 item，与 upstream 客户端一致）。 */
+		async sendItems({ to, items, contextToken }) {
+			const out = [];
+			for (const item of items ?? []) {
+				out.push(
+					await postMessage(
+						{
+							msg: {
+								from_user_id: "",
+								to_user_id: to,
+								client_id: uuid(),
+								message_type: 2,
+								message_state: 2,
+								item_list: [item],
+							},
+							base_info: baseInfo(),
+						},
+						contextToken,
+					),
+				);
 			}
-			return r;
+			return out;
+		},
+		/** 申请媒体上传参数。filesize 是 AES-128-ECB 填充后的密文长度。 */
+		async getUploadUrl({ filekey, mediaType, to, rawsize, rawfilemd5, filesize, aeskeyHex }) {
+			return fetchJson(`${base}/ilink/bot/getuploadurl`, {
+				headers: authHeaders(),
+				body: {
+					filekey,
+					media_type: mediaType,
+					to_user_id: to,
+					rawsize,
+					rawfilemd5,
+					filesize,
+					no_need_thumb: true,
+					aeskey: aeskeyHex,
+					base_info: baseInfo(),
+				},
+			});
+		},
+		/**
+		 * AES-128-ECB 加密后 POST 到 CDN，拿响应头 x-encrypted-param（即下载参数）。
+		 * 判定与重试策略照协议：200 + 该头非空才算成功；4xx 立即失败；其余（含缺头）重试 3 次。
+		 */
+		async uploadMedia({ plaintext, aeskey, filekey, uploadFullUrl, uploadParam, label }) {
+			const ciphertext = encryptAesEcb(plaintext, aeskey);
+			const full = String(uploadFullUrl ?? "").trim();
+			const url = full
+				? full
+				: uploadParam
+					? buildCdnUploadUrl({ cdnBase: cdnBase ?? CDN_DEFAULT, uploadParam, filekey })
+					: "";
+			if (!url) throw new Error(`${label}: getUploadUrl 未返回 upload_full_url / upload_param`);
+			let lastErr;
+			for (let attempt = 1; attempt <= CDN_UPLOAD_RETRIES; attempt++) {
+				const ac = new AbortController();
+				const timer = setTimeout(() => ac.abort(), API_FETCH_MS);
+				try {
+					const res = await fetch(url, {
+						method: "POST",
+						headers: { "Content-Type": "application/octet-stream" },
+						body: new Uint8Array(ciphertext),
+						signal: ac.signal,
+					});
+					if (res.status >= 400 && res.status < 500) {
+						const msg = res.headers.get("x-error-message") || (await res.text().catch(() => ""));
+						throw new Error(`${label}: CDN 上传被拒 ${res.status}${msg ? `: ${cut(msg, 200)}` : ""}`);
+					}
+					if (res.status !== 200) {
+						const msg = res.headers.get("x-error-message") || `status ${res.status}`;
+						throw new Error(`${label}: CDN 上传失败 ${msg}`);
+					}
+					const downloadParam = res.headers.get("x-encrypted-param");
+					if (!downloadParam) throw new Error(`${label}: CDN 响应缺少 x-encrypted-param`);
+					return downloadParam;
+				} catch (err) {
+					lastErr = err;
+					if (String(err?.message ?? "").includes("上传被拒")) break;
+					if (attempt === CDN_UPLOAD_RETRIES) break;
+					await new Promise((r) => setTimeout(r, 500 * attempt));
+				} finally {
+					clearTimeout(timer);
+				}
+			}
+			throw lastErr instanceof Error ? lastErr : new Error(`${label}: CDN 上传失败`);
+		},
+		/** 下载并解密入站媒体（图片优先 image_item.aeskey，其次 media.aes_key；都没有则按明文）。 */
+		async downloadMedia(item) {
+			const ref = item?.media ?? item?.thumb_media;
+			if (!ref || typeof ref !== "object") throw new Error("缺少媒体引用（media/full_url）");
+			const full = String(ref.full_url ?? "").trim();
+			const url = full
+				? full
+				: ref.encrypt_query_param
+					? buildCdnDownloadUrl({ cdnBase: cdnBase ?? CDN_DEFAULT, encryptQueryParam: ref.encrypt_query_param })
+					: "";
+			if (!url) throw new Error("取不到媒体下载地址");
+			const ac = new AbortController();
+			const timer = setTimeout(() => ac.abort(), API_FETCH_MS);
+			try {
+				const res = await fetch(url, { signal: ac.signal });
+				if (!res.ok) throw new Error(`媒体下载失败 HTTP ${res.status}`);
+				const buf = Buffer.from(await res.arrayBuffer());
+				if (buf.length > MEDIA_MAX_BYTES) throw new Error(`媒体超过 ${MEDIA_MAX_BYTES / 1024 / 1024}MB 上限`);
+				const key = parseAesKey(item?.aeskey) ?? parseAesKey(ref.aes_key);
+				return key ? decryptAesEcb(buf, key) : buf;
+			} finally {
+				clearTimeout(timer);
+			}
 		},
 		async typingTicket(userId, contextToken) {
 			const r = await fetchJson(`${base}/ilink/bot/getconfig`, {
@@ -282,7 +574,7 @@ export function createIlink({ base, version, getToken }) {
 
 export default {
 	activate(host) {
-		const VERSION = "0.1.0";
+		const VERSION = "0.5.0";
 		let cfg = {};
 		try {
 			cfg = host.getSettings?.() ?? {};
@@ -336,8 +628,11 @@ export default {
 			userPlanMode: {},
 			/** 用户独立会话序号（/clear /new 递增）：peer → number */
 			peerSessionSeq: {},
-			/** conversationId → { to, ctx, timer, noticed }。 */
+			/** runKey(clientId:conversationId) → { to, ctx, timer, noticed, conversationId, clientId, runId }。 */
 			pendingRuns: new Map(),
+			/** host.chat 回执的稳定 runId → runKey（过户更换持有客户端 / 对话撞 id 改名后，
+			 *  clientId 与 conversationId 都会变，只有 runId 不变 —— 回包靠它认领）。 */
+			runIdIndex: new Map(),
 			/** conversationId → 已累积的 assistant 文本。 */
 			runText: new Map(),
 			toolOff: null,
@@ -392,7 +687,7 @@ export default {
 			}
 		};
 		const isLoggedIn = () => !!getToken();
-		const ilink = () => createIlink({ base: st.base, version: VERSION, getToken });
+		const ilink = () => createIlink({ base: st.base, cdnBase: CDN_DEFAULT, version: VERSION, getToken });
 		const getWorkspace = () => String(settings().workspace ?? "").trim();
 		const getHostCwd = () => {
 			try {
@@ -551,13 +846,32 @@ export default {
 				}
 			}
 			try {
-				await client.sendMessage({ to, text, contextToken });
+				const r = await client.sendMessage({ to, text, contextToken });
 				st.messagesReplied++;
 				save();
+				const hasMsgId = Boolean(r?.message_id);
+				if (!hasMsgId) {
+					host.log(
+						`[wechat-ilink] 提示：向 ${to} 发送消息已受理，但未包含 message_id（若手机微信未显示，可能触发微信平台临时频控限制或内容过滤）`,
+					);
+				}
+				pushInbox({ dir: "out", peer: to, text: cut(text, 500), at: Date.now(), delivered: hasMsgId });
+			} catch (err) {
+				const errMsg = err?.message ?? String(err);
+				host.log(`[wechat-ilink] 发送微信消息失败：${errMsg}`);
+				st.lastError = `回复微信失败：${errMsg}`;
+				pushState();
+				pushInbox({
+					dir: "out",
+					peer: to,
+					text: `[发送失败] ${cut(text, 200)}: ${errMsg}`,
+					at: Date.now(),
+					error: true,
+				});
+				throw err;
 			} finally {
 				if (ticket) await client.sendTyping(to, ticket, false);
 			}
-			pushInbox({ dir: "out", peer: to, text: cut(text, 500), at: Date.now() });
 		}
 
 		async function sendPairSuccess(peer) {
@@ -573,13 +887,176 @@ export default {
 			await sendText(peer, text, st.peerCtx[peer]);
 		}
 
+		// ---- 媒体（图片/文件收发） ---------------------------------------------
+
+		/** 媒体落地目录：工作区下 `.pi-wechat-media`（不存在则建）。 */
+		function mediaDir(peer) {
+			const base = resolveWorkspace(peer) || getHostCwd() || process.cwd();
+			const dir = join(base, MEDIA_DIR);
+			mkdirSync(dir, { recursive: true });
+			return dir;
+		}
+
+		/** 文件名净化（去路径分隔符与 Windows 非法字符，防穿透）。 */
+		function safeName(raw, fallback = "file") {
+			const s = basename(String(raw ?? ""))
+				.replace(/[\\/:*?"<>|\u0000-\u001f]/g, "_")
+				.replace(/^\.+/, "")
+				.slice(0, 120);
+			return s || fallback;
+		}
+
+		/** 入站媒体 → 本文件（下载 + AES 解密 + 落盘），返回 { kind, path, size }。 */
+		async function saveInboundMedia(part, peer) {
+			const inner = part.item?.[`${part.kind}_item`] ?? part.item;
+			const buf = await ilink().downloadMedia(inner);
+			if (!buf.length) throw new Error("媒体内容为空");
+			const stamp = new Date().toISOString().replace(/[:.]/g, "-").slice(0, 19);
+			const tag = createHash("sha256")
+				.update(String(peer ?? ""))
+				.digest("hex")
+				.slice(0, 8);
+			const ext = sniffImageExt(buf) || extname(String(inner?.url ?? "")).toLowerCase() || ".jpg";
+			const name =
+				part.kind === "image"
+					? `wx-${tag}-${stamp}-img${ext}`
+					: `wx-${tag}-${stamp}-${safeName(inner?.file_name, "file")}`;
+			const abs = join(mediaDir(peer), safeName(name, "media"));
+			writeFileSync(abs, buf);
+			return { kind: part.kind, path: abs, size: buf.length };
+		}
+
+		/** 入站消息片段 → 投给 agent 的正文（媒体换成本地路径引用，agent 用 read 工具看图）。 */
+		async function buildInboundPrompt(parts, peer) {
+			const wantMedia = settings().inboundMedia !== false;
+			const lines = [];
+			for (const p of parts) {
+				if (p.kind === "text") {
+					lines.push(p.text);
+					continue;
+				}
+				const label = MEDIA_LABEL[p.kind] ?? MEDIA_LABEL.unknown;
+				// 语音仍是占位（silk 转码未接）；其余媒体按开关落地。
+				if (!wantMedia || (p.kind !== "image" && p.kind !== "file")) {
+					lines.push(`[${label}]`);
+					continue;
+				}
+				try {
+					const saved = await saveInboundMedia(p, peer);
+					lines.push(
+						saved.kind === "image"
+							? `[图片已保存：${saved.path}（用 read 工具可直接查看）]`
+							: `[文件已保存：${saved.path}（${saved.size} 字节）]`,
+					);
+				} catch (err) {
+					const msg = err?.message ?? String(err);
+					host.log(`[wechat-ilink] 入站${label}处理失败：${msg}`);
+					lines.push(`[${label}（下载失败：${msg}）]`);
+				}
+			}
+			return lines.join("\n").trim();
+		}
+
+		/** 出站媒体源 → 本地绝对路径（支持 http(s) URL 先落地；相对路径以当前工作区为基准）。 */
+		async function resolveOutboundPath(spec, peer) {
+			const s = String(spec ?? "").trim();
+			if (!s) throw new Error("媒体路径/URL 为空");
+			if (/^https?:\/\//i.test(s)) {
+				const res = await fetch(s);
+				if (!res.ok) throw new Error(`下载媒体失败 HTTP ${res.status}`);
+				const buf = Buffer.from(await res.arrayBuffer());
+				if (buf.length > MEDIA_MAX_BYTES) {
+					throw new Error(`媒体超过 ${MEDIA_MAX_BYTES / 1024 / 1024}MB 上限`);
+				}
+				const ext = sniffImageExt(buf) || extname(new URL(s).pathname).toLowerCase() || ".bin";
+				const abs = join(mediaDir(peer), `wx-remote-${Date.now()}${ext}`);
+				writeFileSync(abs, buf);
+				return abs;
+			}
+			const abs = resolve(resolveWorkspace(peer) || process.cwd(), s);
+			try {
+				if (!existsSync(abs) || !statSync(abs).isFile()) throw new Error("not-a-file");
+			} catch {
+				throw new Error(`媒体文件不存在：${abs}`);
+			}
+			if (statSync(abs).size > MEDIA_MAX_BYTES) {
+				throw new Error(`媒体超过 ${MEDIA_MAX_BYTES / 1024 / 1024}MB 上限`);
+			}
+			return abs;
+		}
+
+		/** 上传本地媒体并发送：image/video/file 按 MIME 分流（均走 CDN 加密上传）。 */
+		async function sendMediaFile(to, filePath, contextToken) {
+			const buf = readFileSync(filePath);
+			if (!buf.length) throw new Error("媒体文件为空");
+			if (buf.length > MEDIA_MAX_BYTES) {
+				throw new Error(`媒体超过 ${MEDIA_MAX_BYTES / 1024 / 1024}MB 上限`);
+			}
+			const mime = mimeOfPath(filePath);
+			const kind = mediaKindOfMime(mime);
+			const mediaType =
+				kind === "image" ? UploadMediaType.IMAGE : kind === "video" ? UploadMediaType.VIDEO : UploadMediaType.FILE;
+			const rawsize = buf.length;
+			const rawfilemd5 = createHash("md5").update(buf).digest("hex");
+			const filesize = aesEcbPaddedSize(rawsize);
+			// 每次发送独立 filekey + AES 密钥（不复用，避免泄密面变大）。
+			const filekey = randomBytes(16).toString("hex");
+			const aeskey = randomBytes(16);
+			const aeskeyHex = aeskey.toString("hex");
+			const client = ilink();
+			const up = await client.getUploadUrl({
+				filekey,
+				mediaType,
+				to,
+				rawsize,
+				rawfilemd5,
+				filesize,
+				aeskeyHex,
+			});
+			const downloadParam = await client.uploadMedia({
+				plaintext: buf,
+				aeskey,
+				filekey,
+				uploadFullUrl: up?.upload_full_url,
+				uploadParam: up?.upload_param,
+				label: `发送${MEDIA_LABEL[kind] ?? "媒体"}`,
+			});
+			const item = buildMediaItem({
+				kind,
+				downloadParam,
+				aeskeyHex,
+				cipherSize: filesize,
+				fileName: basename(filePath),
+				rawSize: rawsize,
+			});
+			await client.sendItems({ to, items: [item], contextToken });
+			st.messagesReplied++;
+			save();
+			pushInbox({
+				dir: "out",
+				peer: to,
+				text: `[${MEDIA_LABEL[kind] ?? "媒体"}] ${basename(filePath)}`,
+				at: Date.now(),
+				delivered: true,
+			});
+			return kind;
+		}
+
 		// ---- 驱动 agent ------------------------------------------------------
 		const EARLY_RUN_CAP = 30;
 		const EARLY_RUN_TTL_MS = 60_000;
-		/** conversationId → { text: string, ended: boolean, at: number }（承接 host.chat 返回前提前到达的事件）。 */
+		/** runKey(clientId, conversationId) → { text: string, ended: boolean, at: number }（承接 host.chat 返回前提前到达的事件）。 */
 		const earlyRuns = new Map();
+		/** clientId → startedAt（正在等待 host.chat 返回的微信独立伪客户端）。 */
+		const inFlightClients = new Map();
+		/** conversationId → startedAt（仅当投递到指定绑定会话时）。 */
 		const inFlightConvs = new Map();
-		let lastInFlightStartedAt = 0;
+
+		function makeRunKey(clientId, conversationId) {
+			const c = String(clientId ?? "").trim();
+			const id = String(conversationId ?? "").trim();
+			return c ? `${c}:${id}` : id;
+		}
 
 		function trimEarlyRuns() {
 			const now = Date.now();
@@ -592,49 +1069,86 @@ export default {
 			}
 		}
 
-		function trackRun(conversationId, to, contextToken, startedAt = 0) {
+		function trackRun({ conversationId, clientId, to, contextToken, startedAt = 0, runId = "" }) {
+			const key = makeRunKey(clientId, conversationId);
 			while (st.pendingRuns.size >= PENDING_RUN_CAP) {
 				const oldest = st.pendingRuns.keys().next().value;
 				dropRun(oldest);
 			}
 
 			// issue #345：检查在 host.chat() 结果返回前是否已提前收到运行事件
-			const early = earlyRuns.get(conversationId);
+			// 优先精确 runKey 匹配，未命中时尝试 conversationId 匹配（兼容 ev 未带 clientId 的测试 mock）
+			const early = earlyRuns.get(key) ?? earlyRuns.get(conversationId);
 			if (early && (!startedAt || early.at >= startedAt - 500)) {
+				earlyRuns.delete(key);
 				earlyRuns.delete(conversationId);
 				if (early.text) {
-					st.runText.set(conversationId, early.text);
+					st.runText.set(key, early.text);
 				}
 				if (early.ended) {
-					const clean = stripInternalMarkers(st.runText.get(conversationId) ?? "");
+					const clean = stripInternalMarkers(st.runText.get(key) ?? "");
 					const body = clean || "任务完成（无文本输出）。";
-					dropRun(conversationId);
+					dropRun(key);
 					const out = body.length > REPLY_CAP ? `${body.slice(0, REPLY_CAP)}\n…（超长截断）` : body;
-					sendText(to, out, contextToken).catch((err) => host.log("reply failed:", err?.message ?? err));
+					sendText(to, out, contextToken).catch((err) => {
+						const errMsg = err?.message ?? String(err);
+						host.log("reply failed:", errMsg);
+						host.notify?.("warning", `回复微信失败：${errMsg}`, `Failed to reply to WeChat: ${errMsg}`);
+					});
 					return;
 				}
 			} else {
+				earlyRuns.delete(key);
 				earlyRuns.delete(conversationId);
 			}
 
 			const timeoutMs = Math.min(900, Math.max(30, Number(settings().replyTimeoutSec ?? 180))) * 1000;
 			const timer = setTimeout(() => {
-				const p = st.pendingRuns.get(conversationId);
+				const p = st.pendingRuns.get(key);
 				if (!p || p.noticed) return;
 				p.noticed = true;
 				sendText(to, "还在执行，稍后把结果推给你。", contextToken).catch((err) =>
 					host.log("timeout notice failed:", err?.message ?? err),
 				);
 			}, timeoutMs);
-			st.pendingRuns.set(conversationId, { to, ctx: contextToken, timer, noticed: false, startedAt });
+			st.pendingRuns.set(key, {
+				to,
+				ctx: contextToken,
+				timer,
+				noticed: false,
+				startedAt,
+				conversationId,
+				clientId,
+				...(runId ? { runId } : {}),
+			});
+			if (runId) st.runIdIndex.set(runId, key);
 		}
-		function dropRun(conversationId) {
-			const p = st.pendingRuns.get(conversationId);
+		function dropRun(runKey) {
+			const p = st.pendingRuns.get(runKey);
 			if (p) clearTimeout(p.timer);
-			st.pendingRuns.delete(conversationId);
-			st.runText.delete(conversationId);
-			earlyRuns.delete(conversationId);
-			inFlightConvs.delete(conversationId);
+			st.pendingRuns.delete(runKey);
+			st.runText.delete(runKey);
+			earlyRuns.delete(runKey);
+			for (const [rid, key] of st.runIdIndex) {
+				if (key === runKey) st.runIdIndex.delete(rid);
+			}
+			if (p?.conversationId) {
+				earlyRuns.delete(p.conversationId);
+				inFlightConvs.delete(p.conversationId);
+			}
+			if (p?.clientId) {
+				inFlightClients.delete(p.clientId);
+			}
+		}
+
+		function dropRunByConv(convId) {
+			for (const [k, p] of st.pendingRuns.entries()) {
+				if (p.conversationId === convId || k === convId) {
+					dropRun(k);
+				}
+			}
+			earlyRuns.delete(convId);
+			inFlightConvs.delete(convId);
 		}
 
 		async function drivePeer(peer, text, contextToken) {
@@ -642,7 +1156,9 @@ export default {
 			// issue #226：透传宿主 host.chat 四件套（工作空间/模型/思考强度/绑定网页会话）。
 			// issue #345：按微信用户 ID 与会话序号隔离 accountId，避免全员共享同一伪客户端与无头会话。
 			const seq = st.peerSessionSeq[peer] || 0;
-			const req = { text: `[${label}] ${text}`, accountId: peerAccountId(peer, seq) };
+			const acct = peerAccountId(peer, seq);
+			const expectedPseudoClientId = `plugin:wechat-ilink:${acct}`;
+			const req = { text: `[${label}] ${text}`, accountId: acct };
 			const workspace = resolveWorkspace(peer);
 			if (workspace) req.cwd = workspace;
 			const model = resolveModel(peer);
@@ -658,7 +1174,7 @@ export default {
 						bindCid = cid.trim();
 						req.conversationId = bindCid;
 						// 在投递前先彻底清空该会话历史残留的 runText 和 earlyRuns，杜绝跨轮叠加
-						dropRun(bindCid);
+						dropRunByConv(bindCid);
 					}
 				} catch {
 					/* 无打开对话则走无头，不阻断 */
@@ -667,17 +1183,25 @@ export default {
 
 			const startedAt = Date.now();
 			if (bindCid) inFlightConvs.set(bindCid, startedAt);
-			lastInFlightStartedAt = startedAt;
+			inFlightClients.set(expectedPseudoClientId, startedAt);
 
 			try {
 				const r = await host.chat(req);
-				if (r?.conversationId) {
-					inFlightConvs.delete(r.conversationId);
-					st.runText.delete(r.conversationId);
-					trackRun(r.conversationId, peer, contextToken, startedAt);
+				const conversationId = r?.conversationId;
+				const clientId = r?.clientId || expectedPseudoClientId;
+				// 宿主给的稳定运行 id（过户换持有客户端 / 对话撞 id 改名后仍然不变）。
+				const runId = typeof r?.runId === "string" ? r.runId.trim() : "";
+				if (conversationId) {
+					inFlightConvs.delete(conversationId);
+					inFlightClients.delete(expectedPseudoClientId);
+					const key = makeRunKey(clientId, conversationId);
+					st.runText.delete(key);
+					st.runText.delete(conversationId);
+					trackRun({ conversationId, clientId, to: peer, contextToken, startedAt, runId });
 				}
 			} catch (err) {
 				if (bindCid) inFlightConvs.delete(bindCid);
+				inFlightClients.delete(expectedPseudoClientId);
 				host.log("host.chat failed:", err?.message ?? err);
 				sendText(peer, `执行失败：${err?.message ?? err}`, contextToken).catch(() => {});
 			}
@@ -687,42 +1211,88 @@ export default {
 			try {
 				const convId = ev.conversationId;
 				if (!convId) return;
+				const evClientId = ev.clientId;
+				const evRunId = typeof ev.runId === "string" ? ev.runId.trim() : "";
 
-				if (st.pendingRuns.has(convId)) {
+				// 查找在 pendingRuns 中的匹配项（顺序即优先级）：
+				// 1. runId：宿主给的稳定令牌——身份证。过户（take_over_conversation）把对话搬到
+				//    浏览器会话时 clientId 变成对方的，目标会话已有同名 id（c1/c2 各会话独立编号）时
+				//    对话还会被就地改名，conversationId 也随之失效；只有它不变。
+				// 2. 精确 makeRunKey(clientId, conversationId)：旧宿主（无 runId）/ bindActive 路径。
+				// 3. 仅当 ev 不带 clientId 时按 conversationId 回退匹配（兼容单测或旧宿主）。
+				let matchedKey = null;
+				let matchedRun = null;
+				if (evRunId) {
+					const key = st.runIdIndex.get(evRunId);
+					if (key && st.pendingRuns.has(key)) {
+						matchedKey = key;
+						matchedRun = st.pendingRuns.get(key);
+					}
+				}
+				if (!matchedKey && evClientId) {
+					const key = makeRunKey(evClientId, convId);
+					if (st.pendingRuns.has(key)) {
+						matchedKey = key;
+						matchedRun = st.pendingRuns.get(key);
+					}
+				}
+				if (!matchedKey && !evClientId) {
+					if (st.pendingRuns.has(convId)) {
+						matchedKey = convId;
+						matchedRun = st.pendingRuns.get(convId);
+					} else {
+						for (const [k, p] of st.pendingRuns.entries()) {
+							if (p.conversationId === convId) {
+								matchedKey = k;
+								matchedRun = p;
+								break;
+							}
+						}
+					}
+				}
+
+				if (matchedKey && matchedRun) {
 					if (ev.type === "message" && ev.message) {
 						const t = assistantTextOf(ev.message);
 						if (t) {
-							const prev = st.runText.get(convId) ?? "";
-							st.runText.set(convId, cut(`${prev}\n${t}`.trim(), REPLY_CAP + 200));
+							const prev = st.runText.get(matchedKey) ?? "";
+							st.runText.set(matchedKey, cut(`${prev}\n${t}`.trim(), REPLY_CAP + 200));
 						}
 						return;
 					}
 					if (ev.type !== "run_end") return;
-					const p = st.pendingRuns.get(convId);
-					if (!p) return;
-					const raw = (st.runText.get(convId) ?? "").trim();
+					const raw = (st.runText.get(matchedKey) ?? "").trim();
 					const clean = stripInternalMarkers(raw);
 					const body = clean || "任务完成（无文本输出）。";
-					dropRun(convId); // 先取值再清（dropRun 会删 runText）。
+					dropRun(matchedKey); // 先取值再清（dropRun 会删 runText）。
 					const out = body.length > REPLY_CAP ? `${body.slice(0, REPLY_CAP)}\n…（超长截断）` : body;
-					sendText(p.to, out, p.ctx).catch((err) => host.log("reply failed:", err?.message ?? err));
+					sendText(matchedRun.to, out, matchedRun.ctx).catch((err) => {
+						const errMsg = err?.message ?? String(err);
+						host.log("reply failed:", errMsg);
+						host.notify?.("warning", `回复微信失败：${errMsg}`, `Failed to reply to WeChat: ${errMsg}`);
+					});
 					return;
 				}
 
 				// issue #345：若 convId 暂未在 pendingRuns 登记（host.chat 的 Promise 还在微任务中）
-				// 关键安全守卫：只有确定是微信当前正在发起的调用会话，才作为 earlyRuns 收集；
-				// 绝不收录网页端自身手动发起的其他会话事件！
-				const isRelevant = inFlightConvs.has(convId) || Date.now() - lastInFlightStartedAt < 5000;
+				// 关键安全守卫（彻底杜绝串台）：
+				// 若 evClientId 存在，必须命中正在执行的微信客户端 (inFlightClients) 或绑定的活跃会话 (inFlightConvs)；
+				// 绝不收录来自浏览器网页端（client-xxx）等其它客户端的无关事件！
+				const isRelevant = evClientId
+					? inFlightClients.has(evClientId) || inFlightConvs.has(convId)
+					: inFlightConvs.has(convId) || inFlightClients.size > 0;
 				if (!isRelevant) return;
+
+				const earlyKey = evClientId ? makeRunKey(evClientId, convId) : convId;
 
 				if (ev.type === "message" && ev.message) {
 					const t = assistantTextOf(ev.message);
 					if (t) {
 						trimEarlyRuns();
-						let rec = earlyRuns.get(convId);
+						let rec = earlyRuns.get(earlyKey);
 						if (!rec) {
 							rec = { text: "", ended: false, at: Date.now() };
-							earlyRuns.set(convId, rec);
+							earlyRuns.set(earlyKey, rec);
 						}
 						rec.text = cut(`${rec.text}\n${t}`.trim(), REPLY_CAP + 200);
 						rec.at = Date.now();
@@ -731,10 +1301,10 @@ export default {
 				}
 				if (ev.type === "run_end") {
 					trimEarlyRuns();
-					let rec = earlyRuns.get(convId);
+					let rec = earlyRuns.get(earlyKey);
 					if (!rec) {
 						rec = { text: "", ended: true, at: Date.now() };
-						earlyRuns.set(convId, rec);
+						earlyRuns.set(earlyKey, rec);
 					} else {
 						rec.ended = true;
 						rec.at = Date.now();
@@ -878,10 +1448,10 @@ export default {
 				case "new": {
 					st.peerSessionSeq[peer] = (st.peerSessionSeq[peer] || 0) + 1;
 					save();
-					for (const [convId, run] of st.pendingRuns.entries()) {
+					for (const [runKey, run] of st.pendingRuns.entries()) {
 						if (run.to === peer) {
-							void host.abortRun?.(convId);
-							dropRun(convId);
+							void host.abortRun?.(run.conversationId || runKey);
+							dropRun(runKey);
 						}
 					}
 					if (args) {
@@ -1047,10 +1617,10 @@ export default {
 				case "stop":
 				case "abort": {
 					let stopped = 0;
-					for (const [convId, run] of st.pendingRuns.entries()) {
+					for (const [runKey, run] of st.pendingRuns.entries()) {
 						if (run.to === peer) {
-							void host.abortRun?.(convId);
-							dropRun(convId);
+							void host.abortRun?.(run.conversationId || runKey);
+							dropRun(runKey);
 							stopped++;
 						}
 					}
@@ -1102,10 +1672,12 @@ export default {
 					st.peerCtx[peer] = ctx;
 					save();
 				}
-				const text = inboundTextOf(m.item_list);
+				const parts = inboundPartsOf(m.item_list);
+				const plain = inboundTextOf(m.item_list);
+				const hasMedia = parts.some((p) => p.kind !== "text");
 				touchPeerLastAt(peer, Date.now());
-				pushInbox({ dir: "in", peer, text: cut(text || "(空消息)", 500), at: Date.now() });
-				if (!text) return;
+				pushInbox({ dir: "in", peer, text: cut(plain || "(空消息)", 500), at: Date.now() });
+				if (!plain && !hasMedia) return;
 				st.messagesReceived++;
 				save();
 				if (!isAllowed(peer)) {
@@ -1118,9 +1690,13 @@ export default {
 					return;
 				}
 
+				// 媒体落地（下载 + 解密 + 写本地文件）：只对已配对用户做，不替陌生人取文件。
+				const text = await buildInboundPrompt(parts, peer);
+				if (!text) return;
+
 				// Slash command handling (/help, /clear, /new, /status, /cwd, /workspace, /model, /stop, /abort)
 				const clean = text.trim();
-				if (clean.startsWith("/") || clean.startsWith("／") || /^\d+\/[a-zA-Z]/.test(clean)) {
+				if (!hasMedia && (clean.startsWith("/") || clean.startsWith("／") || /^\d+\/[a-zA-Z]/.test(clean))) {
 					const handled = await handleSlashCommand(clean, { peer, ctx });
 					if (handled) return;
 				}
@@ -1309,22 +1885,42 @@ export default {
 				st.toolOff = host.registerAgentTool({
 					name: "wechat_send",
 					label: "发微信消息",
-					description: "Send a text message over the WeChat channel (only to users who have been paired).",
+					description:
+						"Send a text and/or a local media file (image/video/file) over the WeChat channel to a paired user. Relative paths resolve against the channel workspace; http(s) URLs are downloaded first.",
 					parameters: {
 						type: "object",
 						properties: {
 							to: { type: "string", description: "WeChat user ID (visible in the view's inbox)" },
-							text: { type: "string", description: "Message text" },
+							text: { type: "string", description: "Message text (optional when media is given)" },
+							image: {
+								type: "string",
+								description: "Image file path or http(s) URL to send",
+							},
+							file: {
+								type: "string",
+								description: "Any other file path or http(s) URL (video/pdf/zip/...)",
+							},
 						},
-						required: ["to", "text"],
+						required: ["to"],
 					},
 					async execute(_id, params) {
 						const to = String(params?.to ?? "").trim();
 						const text = String(params?.text ?? "").trim();
-						if (!to || !text) throw new Error("wechat_send 需要 to + text");
+						const image = String(params?.image ?? "").trim();
+						const file = String(params?.file ?? "").trim();
+						if (!to) throw new Error("wechat_send 需要 to");
+						if (!text && !image && !file) throw new Error("wechat_send 需要 text / image / file 至少一个");
 						if (!isAllowed(to)) throw new Error(`未配对用户：${to}（先在 💬 视图允许）`);
-						await sendText(to, cut(stripInternalMarkers(text), REPLY_CAP), st.peerCtx[to]);
-						return `已发送给 ${to}`;
+						// 配文先发（独立 request），再逐条发媒体（image 优先于 file）。
+						if (text) await sendText(to, cut(stripInternalMarkers(text), REPLY_CAP), st.peerCtx[to]);
+						const sent = [];
+						for (const spec of [image, file]) {
+							if (!spec) continue;
+							const abs = await resolveOutboundPath(spec, to);
+							const kind = await sendMediaFile(to, abs, st.peerCtx[to]);
+							sent.push(`${MEDIA_LABEL[kind] ?? "媒体"}:${basename(abs)}`);
+						}
+						return sent.length ? `已发送给 ${to}：${sent.join("、")}` : `已发送给 ${to}`;
 					},
 				});
 			} catch (err) {
@@ -1384,14 +1980,25 @@ export default {
 					case "send": {
 						const peer = String(msg.peer ?? "").trim();
 						const text = String(msg.text ?? "").trim();
-						if (!peer || !text) break;
+						const media = String(msg.media ?? "").trim();
+						if (!peer || (!text && !media)) break;
 						if (!isAllowed(peer)) {
 							if (from) host.sendTo(from, { kind: "error", error: `未配对用户：${peer}` });
 							break;
 						}
-						sendText(peer, cut(text, REPLY_CAP), st.peerCtx[peer]).catch((err) => {
-							if (from) host.sendTo(from, { kind: "error", error: String(err?.message ?? err) });
-						});
+						if (text) {
+							sendText(peer, cut(text, REPLY_CAP), st.peerCtx[peer]).catch((err) => {
+								if (from) host.sendTo(from, { kind: "error", error: String(err?.message ?? err) });
+							});
+						}
+						if (media) {
+							// 手动发送媒体：路径或 URL，按 MIME 自动分流 image/video/file。
+							resolveOutboundPath(media, peer)
+								.then((abs) => sendMediaFile(peer, abs, st.peerCtx[peer]))
+								.catch((err) => {
+									if (from) host.sendTo(from, { kind: "error", error: String(err?.message ?? err) });
+								});
+						}
 						break;
 					}
 					default:

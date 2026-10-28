@@ -278,6 +278,8 @@ export function createSkillToolHost(ctx: {
 						name: s.name,
 						description: s.description ?? "",
 						filePath: (s as { filePath?: string }).filePath ?? "",
+						source: (s as { source?: string }).source,
+						scope: (s as { scope?: string }).scope,
 					}));
 			} catch {
 				return [];

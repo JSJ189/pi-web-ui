@@ -149,6 +149,20 @@ export function createSshManager({ host, log = () => {}, secrets }) {
 		const a = conn.auth ?? {};
 		const method = String(a.method ?? "").trim();
 
+		// 若连接引用了全局主机（global-hosts.json），自动回填全局凭据
+		const remoteSsh = typeof host?.get === "function" ? host.get("remoteSsh") : null;
+		if (conn.useGlobal && remoteSsh) {
+			const globalDecrypted = await remoteSsh.getDecryptedProfile(conn.useGlobal).catch(() => null);
+			if (globalDecrypted) {
+				if (!conn.host && globalDecrypted.profile.host) conn.host = globalDecrypted.profile.host;
+				if (!conn.port && globalDecrypted.profile.port) conn.port = globalDecrypted.profile.port;
+				if (!conn.username && globalDecrypted.profile.username) conn.username = globalDecrypted.profile.username;
+				if (globalDecrypted.profile.remotePath && (!conn.remotePath || conn.remotePath === "/")) {
+					conn.remotePath = globalDecrypted.profile.remotePath;
+				}
+			}
+		}
+
 		// 按认证方式按需解析引用，避免选了密钥登录却因残留的密码机密引用报错
 		let password = { value: "", source: "plain" };
 		let passphrase = { value: "", source: "plain" };
@@ -176,6 +190,26 @@ export function createSshManager({ host, log = () => {}, secrets }) {
 
 		let key = privateKey.value;
 		let keySource = privateKey.source;
+
+		// 若密码或私钥尚未就绪，且指定了 useGlobal，尝试使用全局解密凭据
+		if (conn.useGlobal && remoteSsh && !password.value && !key) {
+			const globalDecrypted = await remoteSsh.getDecryptedProfile(conn.useGlobal).catch(() => null);
+			if (globalDecrypted) {
+				if (globalDecrypted.password && !password.value) {
+					password = { value: globalDecrypted.password, source: "global" };
+				}
+				if (globalDecrypted.passphrase && !passphrase.value) {
+					passphrase = { value: globalDecrypted.passphrase, source: "global" };
+				}
+				if (globalDecrypted.profile.privateKeyPath && !key) {
+					const file = expandHome(globalDecrypted.profile.privateKeyPath);
+					try {
+						key = await fs.readFile(file, "utf8");
+						keySource = "global-path";
+					} catch {}
+				}
+			}
+		}
 		if (!key && a.privateKeyPath) {
 			const file = expandHome(a.privateKeyPath);
 			try {

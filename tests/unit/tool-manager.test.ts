@@ -17,6 +17,11 @@ import {
 	PLAN_UPDATE_TOOL_NAME,
 	PRESENT_FILES_TOOL_NAME,
 	SKILL_TOOL_NAME,
+	ALL_AGENT_TOOL_ENTRIES,
+	CORE_BUILTIN_TOOL_NAMES,
+	CORE_TOOL_CATALOG,
+	getAgentToolEntry,
+	isToolSupportedOnPlatform,
 	applyAgentToolsGating,
 	defaultDisabledAgentTools,
 	deriveLegacy,
@@ -54,6 +59,40 @@ function fakeSet(initial: string[] = []) {
 }
 
 describe("catalog", () => {
+	it("核心工具目录 CORE_TOOL_CATALOG 声明完整（8 个工具，powershell 默认关，其余默认开）", () => {
+		expect(CORE_TOOL_CATALOG).toHaveLength(8);
+		expect(CORE_TOOL_CATALOG.map((c) => c.name)).toEqual([...CORE_BUILTIN_TOOL_NAMES]);
+		const ps = CORE_TOOL_CATALOG.find((c) => c.name === "powershell");
+		expect(ps?.defaultOn).toBe(false);
+		expect(CORE_TOOL_CATALOG.filter((c) => c.name !== "powershell").every((c) => c.defaultOn)).toBe(true);
+	});
+
+	it("ALL_AGENT_TOOL_ENTRIES 汇总 36 个工具，defaultDisabledAgentTools 纯声明式派生", () => {
+		expect(ALL_AGENT_TOOL_ENTRIES).toHaveLength(36);
+		const expectedOff = ALL_AGENT_TOOL_ENTRIES.filter((t) => !t.defaultOn).map((t) => t.name);
+		expect(defaultDisabledAgentTools()).toEqual(expectedOff);
+	});
+
+	it("跨平台感知：powershell 仅在 win32 受支持，其他工具全平台通用", () => {
+		expect(isToolSupportedOnPlatform("powershell", "win32")).toBe(true);
+		expect(isToolSupportedOnPlatform("powershell", "linux")).toBe(false);
+		expect(isToolSupportedOnPlatform("powershell", "darwin")).toBe(false);
+		expect(isToolSupportedOnPlatform("bash", "linux")).toBe(true);
+		expect(isToolSupportedOnPlatform("bash", "win32")).toBe(true);
+		expect(getAgentToolEntry("powershell")?.platform).toBe("win32");
+		expect(getAgentToolEntry("bash")?.platform).toBeUndefined();
+	});
+
+	it("安全维度：核心工具显式声明 allowAgentToggle: false，防自杀式下架", () => {
+		expect(getAgentToolEntry("bash")?.allowAgentToggle).toBe(false);
+		expect(getAgentToolEntry("read")?.allowAgentToggle).toBe(false);
+		expect(getAgentToolEntry("powershell")?.allowAgentToggle).toBe(false);
+		expect(isKnownAgentTool("bash")).toBe(false);
+		expect(isKnownAgentTool("powershell")).toBe(false);
+		expect(isKnownAgentTool("subagent")).toBe(true);
+		expect(isKnownAgentTool("edit_soft")).toBe(true);
+	});
+
 	it("共 28 个可开关工具（终端 7＋子代理 1＋其他 20）", () => {
 		expect(AGENT_TOOL_CATALOG).toHaveLength(28);
 		expect(TERMINAL_TOOL_NAMES).toHaveLength(7);
@@ -69,6 +108,7 @@ describe("catalog", () => {
 		expect(off.has(CODEMODE_TOOL_NAME)).toBe(true);
 		expect(off.has(TOOL_SEARCH_TOOL_NAME)).toBe(true);
 		expect(off.has(MCP_MANAGE_TOOL_NAME)).toBe(true);
+		expect(off.has("powershell")).toBe(true);
 		expect(off.has(PATCH_TOOL_NAME)).toBe(false);
 		expect(off.has(SANDBOX_TOOL_NAME)).toBe(false);
 		for (const n of SUBAGENT_TOOL_NAMES) expect(off.has(n)).toBe(false);
@@ -117,6 +157,7 @@ describe("legacy sync", () => {
 		const d = legacyToDisabled({});
 		for (const n of TERMINAL_TOOL_NAMES) expect(d).toContain(n);
 		expect(d).toContain("edit_soft");
+		expect(d).toContain("powershell");
 		expect(d).not.toContain(ASK_USER_QUESTION_TOOL_NAME);
 		// 新字段优先，遗留值忽略。
 		expect(legacyToDisabled({ disabledAgentTools: [], terminalToolsEnabled: false })).toEqual([]);

@@ -1,0 +1,29 @@
+{
+	"id": "remote-workbench",
+	"name": "远程工作台",
+	"nameEn": "Remote Workbench",
+	"version": "0.4.3",
+	"icon": "🖥️",
+	"iconSvg": "<svg xmlns=\"http://www.w3.org/2000/svg\" viewBox=\"0 0 24 24\" fill=\"none\" stroke=\"currentColor\" stroke-width=\"2\" stroke-linecap=\"round\" stroke-linejoin=\"round\"><rect width=\"20\" height=\"14\" x=\"2\" y=\"3\" rx=\"2\"/><line x1=\"8\" x2=\"16\" y1=\"21\" y2=\"21\"/><line x1=\"12\" x2=\"12\" y1=\"17\" y2=\"21\"/><path d=\"m7 8 2 2-2 2\"/><path d=\"M12 12h4\"/></svg>",
+	"description": "多主机资产管理与 Web SSH 远程交互终端：统一共享 global-hosts.json 配置源，具备画布分屏矩阵查看（标签/双列/四格/自适应画布）、多机广播同步输入、AI 批处理执行工具、Sudo 外带凭据直通、ANSI 噪音折叠、~/.ssh/config 发现导入、轻量 SFTP 树浏览与端口转发能力。",
+	"descriptionEn": "Multi-host inventory & Web SSH terminal: shares unified global-hosts.json, equipped with canvas/grid terminal dashboard, cluster broadcast input, AI execution tool, out-of-band credential prompt, ANSI compaction, ~/.ssh/config discovery, lightweight SFTP explorer, and port forwarding.",
+	"apiVersion": 2,
+	"permissions": ["ui", "http", "tools"],
+	"ui": {
+		"topbar": [
+			{
+				"id": "__view",
+				"label": "远程工作台",
+				"labelEn": "Remote Workbench",
+				"icon": "🖥️",
+				"iconSvg": "<svg xmlns=\"http://www.w3.org/2000/svg\" viewBox=\"0 0 24 24\" fill=\"none\" stroke=\"currentColor\" stroke-width=\"2\" stroke-linecap=\"round\" stroke-linejoin=\"round\"><rect width=\"20\" height=\"14\" x=\"2\" y=\"3\" rx=\"2\"/><line x1=\"8\" x2=\"16\" y1=\"21\" y2=\"21\"/><line x1=\"12\" x2=\"12\" y1=\"17\" y2=\"21\"/><path d=\"m7 8 2 2-2 2\"/><path d=\"M12 12h4\"/></svg>",
+				"kind": "view",
+				"view": "plugin:remote-workbench",
+				"align": "end",
+				"order": 24,
+				"hint": "打开远程工作台（全局主机资产、多标签 Web SSH 终端与 SFTP 联动）",
+				"hintEn": "Open Remote Workbench (global hosts inventory, multi-tab Web SSH terminal, and SFTP integration)"
+			}
+		]
+	}
+}

@@ -31,6 +31,7 @@ import {
 	FiActivity,
 } from "react-icons/fi";
 import { Message } from "../Message";
+import { PSTACK_SKILLS_MAP, PSTACK_CATEGORIES } from "./pstack-skills-data";
 
 interface CanvasNodeDrawerProps {
 	node: CanvasNode | null;
@@ -39,6 +40,7 @@ interface CanvasNodeDrawerProps {
 	models: ModelInfo[];
 	/** 全局默认模型（"provider/model-id"），列表中找不到节点模型时的显示回退 */
 	defaultModel?: string | null;
+	installedSkills?: { name: string; description: string }[];
 	projects: ProjectSummary[];
 	workspaceRoots?: string[];
 	pathCompletions?: { name: string; path: string; type: "dir" | "file" }[];
@@ -66,6 +68,7 @@ export function CanvasNodeDrawer({
 	allNodes,
 	models,
 	defaultModel,
+	installedSkills = [],
 	projects,
 	workspaceRoots = [],
 	pathCompletions = [],
@@ -84,6 +87,7 @@ export function CanvasNodeDrawer({
 }: CanvasNodeDrawerProps) {
 	const [steerInput, setSteerInput] = useState("");
 	const [logTab, setLogTab] = useState<"chat" | "events">("chat");
+	const [showSkillDoc, setShowSkillDoc] = useState(false);
 	const logScrollRef = useRef<HTMLDivElement | null>(null);
 
 	// 支持按 Escape 键关闭抽屉（必须放在顶部，保证 Hook 调用数量恒定）
@@ -95,7 +99,25 @@ export function CanvasNodeDrawer({
 		const strVal = String(drawerCfg[f.key] ?? f.default ?? "");
 		const setF = (v: string | number | boolean) => onUpdate(node!.id, { config: { ...node!.config, [f.key]: v } });
 		let control: ReactNode = null;
-		if (f.kind === "textarea") {
+		if (f.key === "skillName") {
+			control = (
+				<select className="canvas-drawer-input" value={strVal} onChange={(e) => setF(e.target.value)}>
+					{installedSkills && installedSkills.length > 0 ? (
+						installedSkills.map((s) => (
+							<option key={s.name} value={s.name} title={s.description}>
+								📦 {s.name}
+								{s.description ? ` — ${s.description}` : ""}
+							</option>
+						))
+					) : (
+						<option value="" disabled>
+							（暂未检测到已安装技能，可在系统设置中添加）
+						</option>
+					)}
+					{strVal && !installedSkills?.some((s) => s.name === strVal) && <option value={strVal}>📦 {strVal}</option>}
+				</select>
+			);
+		} else if (f.kind === "textarea") {
 			control = (
 				<textarea
 					className="canvas-drawer-textarea"
@@ -395,6 +417,144 @@ export function CanvasNodeDrawer({
 							{visibleRoleFields(node.role, drawerCfg).map((f) => renderDrawerField(f))}
 						</div>
 					)}
+
+					{/* Pstack 专项规约与工作依据详情 */}
+					{node.role === "pstack" &&
+						(() => {
+							const curSkillKey = String(drawerCfg.skill || "poteto-mode");
+							const skillItem = PSTACK_SKILLS_MAP[curSkillKey] || PSTACK_SKILLS_MAP["poteto-mode"];
+							if (!skillItem) return null;
+							return (
+								<div
+									className="canvas-drawer-section"
+									style={{
+										background: "var(--bg-elev)",
+										border: "1px solid var(--border)",
+										borderRadius: "8px",
+										padding: "12px",
+									}}
+								>
+									<div
+										style={{
+											display: "flex",
+											alignItems: "center",
+											justifyContent: "space-between",
+											marginBottom: "8px",
+										}}
+									>
+										<h4
+											className="canvas-section-title"
+											style={{ margin: 0, display: "flex", alignItems: "center", gap: "6px" }}
+										>
+											<span>{skillItem.icon}</span>
+											<span>{skillItem.nameZh}</span>
+											<code style={{ fontSize: "11px", opacity: 0.7 }}>({skillItem.id})</code>
+										</h4>
+										<span className="canvas-port-tag">
+											{PSTACK_CATEGORIES[skillItem.category]?.zh || skillItem.category}
+										</span>
+									</div>
+									<p
+										style={{
+											fontSize: "12px",
+											color: "var(--text-muted)",
+											lineHeight: 1.5,
+											margin: "0 0 10px 0",
+										}}
+									>
+										{skillItem.description}
+									</p>
+									<div style={{ display: "flex", gap: "8px", flexWrap: "wrap", marginBottom: "8px" }}>
+										<button
+											type="button"
+											className="btn small"
+											title="将此 Skill 的工作依据规范追加/同步到 AI 指令输入框"
+											onClick={() => {
+												const snippet = `【Pstack ${skillItem.nameZh} (${skillItem.id}) 准则】\n${skillItem.description}\n\n请严格践行此准则开展本节点工作，给出实证交付。`;
+												onUpdate(node.id, {
+													instruction: node.instruction ? `${node.instruction}\n\n${snippet}` : snippet,
+												});
+											}}
+										>
+											📝 载入此 Skill 到任务指令
+										</button>
+										<button type="button" className="btn small" onClick={() => setShowSkillDoc((prev) => !prev)}>
+											{showSkillDoc ? "收起规约" : "📖 查看完整规约 (SKILL.md)"}
+										</button>
+									</div>
+									{showSkillDoc && (
+										<pre
+											style={{
+												maxHeight: "260px",
+												overflowY: "auto",
+												background: "var(--bg-elev2)",
+												padding: "10px",
+												borderRadius: "6px",
+												fontSize: "11.5px",
+												lineHeight: 1.45,
+												whiteSpace: "pre-wrap",
+												wordBreak: "break-word",
+												border: "1px solid var(--border)",
+												marginTop: "8px",
+											}}
+										>
+											{skillItem.content}
+										</pre>
+									)}
+								</div>
+							);
+						})()}
+
+					{/* Skill 角色：已安装与公开技能灵魂选择 */}
+					{node.role === "skill" &&
+						(() => {
+							const curSkill = String(drawerCfg.skillName || "");
+							return (
+								<div
+									className="canvas-drawer-section"
+									style={{
+										background: "var(--bg-elev)",
+										border: "1px solid var(--border)",
+										borderRadius: "8px",
+										padding: "12px",
+									}}
+								>
+									<h4 className="canvas-section-title" style={{ marginTop: 0, marginBottom: "8px" }}>
+										✨ 注入已安装技能作为智能体灵魂
+									</h4>
+									<p style={{ fontSize: "12px", color: "var(--text-muted)", margin: "0 0 10px 0" }}>
+										点击下列已安装的技能，快速注入为该节点的执行灵魂：
+									</p>
+									<div
+										style={{
+											display: "flex",
+											flexWrap: "wrap",
+											gap: "6px",
+											maxHeight: "140px",
+											overflowY: "auto",
+										}}
+									>
+										{installedSkills && installedSkills.length > 0 ? (
+											installedSkills.map((s: { name: string; description: string }) => (
+												<button
+													key={s.name}
+													type="button"
+													className={`btn small ${curSkill === s.name ? "primary" : ""}`}
+													onClick={() => onUpdate(node.id, { config: { ...node.config, skillName: s.name } })}
+													title={s.description}
+												>
+													📦 {s.name}
+												</button>
+											))
+										) : (
+											<span style={{ fontSize: "12px", color: "var(--text-faint)" }}>
+												暂未检测到已安装技能，可在系统设置中添加。
+											</span>
+										)}
+									</div>
+								</div>
+							);
+						})()}
 
 					{/* 上游任务契约 (Incoming Contracts) */}
 					{incomingEdges.length > 0 && (

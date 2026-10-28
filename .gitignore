@@ -12,6 +12,13 @@ web/dist/
 .pi/
 .pi-web/
 .pi-subagents/
+# 微信通道入站媒体落地目录（图片/文件下载解密后的本地副本）
+.pi-wechat-media/
+# QQ 通道入站媒体落地目录（图片/语音/视频/文件下载后的本地副本）
+.pi-qq-media/
+.tmp-test-data/
+update_err.txt
+update_out.txt
 
 # Editor data
 .vscode/

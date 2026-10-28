@@ -15,6 +15,17 @@ const TEXT = {
 		title: "SFTP 同步",
 		subtitle: "项目级配置 · 差异预览 · 删除保护",
 		profile: "连接",
+		addProfile: "新建连接",
+		addProfilePrompt: "新连接名称（如 dev, prod）",
+		confirmAdd: "创建",
+		cancel: "取消",
+		delProfile: "删除当前连接",
+		delProfileConfirm: "确定要删除连接「{name}」吗？（仅删除该连接配置，不会删除文件）",
+		profileNameRequired: "请填写新连接名称",
+		profileNameInvalid: "连接名只允许字母、数字、点、横线、下划线（1-48 字符）",
+		profileExists: "已存在同名连接「{name}」",
+		profileCreated: "✓ 已创建连接「{name}」，请在下方填写信息并保存",
+		profileDeleted: "✓ 已删除连接「{name}」",
 		noProfile: "（未配置）",
 		host: "主机",
 		port: "端口",
@@ -156,6 +167,18 @@ const TEXT = {
 		title: "SFTP Sync",
 		subtitle: "Project config · diff preview · delete protection",
 		profile: "Connection",
+		addProfile: "New connection",
+		addProfilePrompt: "New connection name (e.g. dev, prod)",
+		confirmAdd: "Create",
+		cancel: "Cancel",
+		delProfile: "Delete current connection",
+		delProfileConfirm:
+			"Are you sure you want to delete connection “{name}”? (Only deletes configuration, no files will be removed)",
+		profileNameRequired: "Please enter connection name",
+		profileNameInvalid: "Connection name only allows letters, digits, dot, dash, underscore (1-48 chars)",
+		profileExists: "Connection “{name}” already exists",
+		profileCreated: "✓ Connection “{name}” created. Fill in details below and save.",
+		profileDeleted: "✓ Connection “{name}” deleted",
 		noProfile: "(none)",
 		host: "Host",
 		port: "Port",
@@ -493,12 +516,14 @@ export default {
 		.sfx .chip.ok { color: var(--green, #4ade80); border-color: color-mix(in srgb, var(--green, #4ade80) 40%, transparent); }
 		.sfx .chip.err { color: var(--red, #f87171); border-color: color-mix(in srgb, var(--red, #f87171) 40%, transparent); }
 		.sfx .chip.warn { color: var(--amber, #fbbf24); border-color: color-mix(in srgb, var(--amber, #fbbf24) 40%, transparent); }
-		.sfx button { background: var(--bg-elev, #16161d); color: inherit; border: 1px solid var(--border, #333); border-radius: 6px; padding: 3px 10px; cursor: pointer; font: inherit; font-size: 12px; }
+		.sfx button, .sfx select, .sfx input { box-sizing: border-box; height: 28px; font: inherit; font-size: 12px; }
+		.sfx button { background: var(--bg-elev, #16161d); color: inherit; border: 1px solid var(--border, #333); border-radius: 6px; padding: 0 10px; cursor: pointer; display: inline-flex; align-items: center; justify-content: center; line-height: 1; white-space: nowrap; }
 		.sfx button.primary { background: var(--accent, #7c5cff); color: var(--accent-contrast, #fff); border-color: transparent; }
 		.sfx button.danger { color: var(--red, #f87171); border-color: color-mix(in srgb, var(--red, #f87171) 45%, transparent); }
 		.sfx button:disabled { opacity: .45; cursor: default; }
-		.sfx input, .sfx select, .sfx textarea { background: var(--bg-elev, #16161d); color: inherit; border: 1px solid var(--border, #333); border-radius: 6px; padding: 4px 7px; font: inherit; font-size: 12px; }
-		.sfx textarea { resize: vertical; min-width: 0; }
+		.sfx .btn-profile-op { width: 28px; min-width: 28px; padding: 0; flex: 0 0 28px; }
+		.sfx input, .sfx select { background: var(--bg-elev, #16161d); color: inherit; border: 1px solid var(--border, #333); border-radius: 6px; padding: 0 7px; }
+		.sfx textarea { background: var(--bg-elev, #16161d); color: inherit; border: 1px solid var(--border, #333); border-radius: 6px; padding: 4px 7px; font: inherit; font-size: 12px; resize: vertical; min-width: 0; box-sizing: border-box; }
 		.sfx .cols { display: grid; grid-template-columns: minmax(320px, 1fr) minmax(340px, 1.15fr); gap: 12px; align-items: start; }
 		@media (max-width: 860px) { .sfx .cols { grid-template-columns: 1fr; } }
 		.sfx .card { border: 1px solid var(--border, #333); border-radius: 8px; padding: 10px; display: grid; gap: 8px; min-width: 0; }
@@ -524,7 +549,7 @@ export default {
 		.sfx .ok { color: var(--green, #4ade80); font-size: 12px; }
 		.sfx .list { border: 1px solid var(--border, #333); border-radius: 7px; max-height: 280px; overflow: auto; overscroll-behavior: contain; }
 		.sfx .diff-tabs { display: flex; gap: 4px; flex-wrap: wrap; margin-top: 4px; }
-		.sfx .diff-tabs button { padding: 2px 8px; font-size: 11px; border-radius: 99px; }
+		.sfx .diff-tabs button { height: 22px; padding: 0 8px; font-size: 11px; border-radius: 99px; }
 		.sfx .diff-tabs button.active { background: var(--accent, #7c5cff); color: var(--accent-contrast, #fff); border-color: transparent; }
 		.sfx .list .it { display: grid; grid-template-columns: 66px 1fr; gap: 8px; padding: 4px 8px; border-bottom: 1px solid color-mix(in srgb, var(--border, #333) 55%, transparent); font-size: 12px; }
 		.sfx .list .it:last-child { border-bottom: 0; }
@@ -574,9 +599,20 @@ export default {
 			<h3>🔌 <span class="ttl-profile"></span></h3>
 			<div class="row">
 				<select class="profile grow"></select>
+				<button type="button" class="btn-profile-op btn-add-profile" title="">
+					<svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><line x1="12" y1="5" x2="12" y2="19"></line><line x1="5" y1="12" x2="19" y2="12"></line></svg>
+				</button>
+				<button type="button" class="btn-profile-op btn-del-profile" title="">
+					<svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M3 6h18"></path><path d="M19 6v14c0 1-1 2-2 2H7c-1 0-2-1-2-2V6"></path><path d="M8 6V4c0-1 1-2 2-2h4c1 0 2 1 2 2v2"></path></svg>
+				</button>
 				<button class="btn-test"></button>
 				<button class="btn-copy-key"></button>
 				<button class="btn-import"></button>
+			</div>
+			<div class="row new-profile-row hidden" style="gap:6px; margin-top:2px;">
+				<input class="f-new-profile-name grow" style="min-width:140px;" placeholder="" />
+				<button type="button" class="btn-confirm-add-profile primary"></button>
+				<button type="button" class="btn-cancel-add-profile"></button>
 			</div>
 			<div class="grid2">
 				<label class="l-host"></label><input class="f-host" placeholder="example.com" />
@@ -733,6 +769,13 @@ export default {
 		setText(".btn-save", t("save"));
 		setText(".btn-secret", t("secretBtn"));
 		setText(".btn-test", t("test"));
+		$(".btn-add-profile")?.setAttribute("title", t("addProfile"));
+		$(".btn-add-profile")?.setAttribute("aria-label", t("addProfile"));
+		$(".btn-del-profile")?.setAttribute("title", t("delProfile"));
+		$(".btn-del-profile")?.setAttribute("aria-label", t("delProfile"));
+		setText(".btn-confirm-add-profile", t("confirmAdd"));
+		setText(".btn-cancel-add-profile", t("cancel"));
+		$(".f-new-profile-name")?.setAttribute("placeholder", t("addProfilePrompt"));
 		setText(".btn-copy-key", t("copyKey"));
 		setText(".btn-import", t("import"));
 		setText(".btn-plan", t("plan"));
@@ -798,10 +841,18 @@ export default {
 			const sig = list.map((p) => `${p.name}:${p.ready ? 1 : 0}`).join(",") + `#${state?.active ?? ""}`;
 			if (sig !== profileSig) {
 				profileSig = sig;
-				$(".profile").innerHTML = list.length
-					? list.map((p) => `<option value="${esc(p.name)}">${esc(p.name)}${p.ready ? "" : " ⚠"}</option>`).join("")
-					: `<option value="">${esc(t("noProfile"))}</option>`;
+				$(".profile").innerHTML =
+					(list.length
+						? list.map((p) => `<option value="${esc(p.name)}">${esc(p.name)}${p.ready ? "" : " ⚠"}</option>`).join("")
+						: `<option value="">${esc(t("noProfile"))}</option>`) +
+					`<option value="__new__">+ ${esc(t("addProfile"))}…</option>`;
 				if (state?.active) $(".profile").value = state.active;
+			}
+			const hasActive = Boolean(state?.active && list.some((p) => p.name === state.active));
+			const btnDel = $(".btn-del-profile");
+			if (btnDel) {
+				btnDel.disabled = !hasActive;
+				btnDel.title = hasActive ? t("delProfile") : "";
 			}
 			$(".btn-import").classList.toggle("hidden", !state?.vscodeImportAvailable);
 			$(".banner.warn-profile").classList.toggle("hidden", !(state?.warnings?.length || state?.plaintext?.length));
@@ -975,6 +1026,18 @@ export default {
 			filledProfile = state?.active ?? null;
 			if (!c) {
 				$(".f-host").value = "";
+				$(".f-port").value = 22;
+				$(".f-user").value = "";
+				$(".f-remote").value = "";
+				$(".f-secret-name").value = "";
+				$(".f-secret-val").value = "";
+				$(".f-pass").value = "";
+				$(".f-passphrase").value = "";
+				$(".f-keypath").value = "";
+				$(".f-agent").value = "";
+				$(".f-ignore").value = "";
+				updateAuthFieldsVisibility($(".f-auth").value);
+				updateSecretDetection();
 				return;
 			}
 			$(".f-host").value = c.host ?? "";
@@ -1501,12 +1564,121 @@ export default {
 			if (el) el.addEventListener(ev, fn);
 		};
 
+		function toggleNewProfileRow(show) {
+			const row = $(".new-profile-row");
+			if (!row) return;
+			const willShow = show !== undefined ? Boolean(show) : row.classList.contains("hidden");
+			row.classList.toggle("hidden", !willShow);
+			if (willShow) {
+				const input = $(".f-new-profile-name");
+				if (input) {
+					input.value = "";
+					input.focus();
+				}
+				showError(".msg.err", "");
+			} else {
+				const input = $(".f-new-profile-name");
+				if (input) input.value = "";
+			}
+		}
+
+		async function handleAddProfile() {
+			if (busy) return;
+			const input = $(".f-new-profile-name");
+			const name = input?.value?.trim?.() ?? "";
+			if (!name) {
+				input?.focus();
+				showError(".msg.err", t("profileNameRequired"));
+				return;
+			}
+			if (!/^[\w.-]{1,48}$/.test(name)) {
+				input?.focus();
+				showError(".msg.err", t("profileNameInvalid"));
+				return;
+			}
+			const list = state?.profiles ?? [];
+			if (list.some((p) => p.name === name)) {
+				input?.focus();
+				showError(".msg.err", t("profileExists", { name }));
+				return;
+			}
+			busy = true;
+			showError(".msg.err", "");
+			showError(".msg.ok", "");
+			try {
+				await api("/profile", {
+					method: "POST",
+					body: {
+						name,
+						patch: { host: "", port: 22, username: "root", remotePath: "/" },
+						makeActive: true,
+					},
+				});
+				toggleNewProfileRow(false);
+				showError(".msg.ok", t("profileCreated", { name }));
+				await refresh();
+				$(".f-host")?.focus();
+			} catch (err) {
+				showError(".msg.err", String(err.message ?? err));
+			} finally {
+				busy = false;
+			}
+		}
+
 		on(".profile", "change", async (e) => {
+			if (e.target.value === "__new__") {
+				e.target.value = state?.active || "";
+				toggleNewProfileRow(true);
+				return;
+			}
 			try {
 				await api("/active", { method: "POST", body: { name: e.target.value } });
 				await refresh();
 			} catch (err) {
 				showError(".msg.err", String(err.message ?? err));
+			}
+		});
+
+		on(".btn-add-profile", "click", () => {
+			const isHidden = $(".new-profile-row")?.classList.contains("hidden");
+			toggleNewProfileRow(isHidden);
+		});
+
+		on(".btn-confirm-add-profile", "click", () => {
+			handleAddProfile();
+		});
+
+		on(".btn-cancel-add-profile", "click", () => {
+			toggleNewProfileRow(false);
+		});
+
+		on(".f-new-profile-name", "keydown", (e) => {
+			if (e.key === "Enter") {
+				e.preventDefault();
+				handleAddProfile();
+			} else if (e.key === "Escape") {
+				e.preventDefault();
+				toggleNewProfileRow(false);
+			}
+		});
+
+		on(".btn-del-profile", "click", async () => {
+			if (busy) return;
+			const curName = state?.active || $(".profile")?.value;
+			if (!curName || curName === "__new__") return;
+			const ok = globalThis.confirm ? globalThis.confirm(t("delProfileConfirm", { name: curName })) : true;
+			if (!ok) return;
+			busy = true;
+			showError(".msg.err", "");
+			showError(".msg.ok", "");
+			try {
+				await api("/remove", { method: "POST", body: { name: curName } });
+				showError(".msg.ok", t("profileDeleted", { name: curName }));
+				await refresh();
+			} catch (err) {
+				showError(".msg.err", String(err.message ?? err));
+			} finally {
+				busy = false;
 			}
 		});
 

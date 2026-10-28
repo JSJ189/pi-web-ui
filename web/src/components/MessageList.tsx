@@ -952,12 +952,38 @@ export function MessageList({
 		}
 		return m;
 	}, [virtualOn, state.messages, clusteredItems]);
+	const hiddenRef = useRef(hidden);
+	let effectiveHidden = hidden;
+	const prevLazyConvKeyRef = useRef(convKey);
+	if (prevLazyConvKeyRef.current !== convKey) {
+		prevLazyConvKeyRef.current = convKey;
+		elsRef.current.clear();
+		if (!reversePagination && state.messages.length > VIRTUAL_MIN) {
+			const newAlways = pickAlways(state.messages, heightsRef.current, Math.max(ALWAYS_BUDGET, keepRecentCount * 120));
+			const nextHidden = new Set<string>();
+			for (const m of state.messages) {
+				if (!newAlways.has(m.id)) nextHidden.add(m.id);
+			}
+			for (const it of clusterMessages(state.messages, clusterOptions)) {
+				if (it.type === "tool_cluster" && it.messages.every((m) => !newAlways.has(m.id))) {
+					nextHidden.add(it.id);
+				}
+			}
+			effectiveHidden = nextHidden;
+			setHidden(nextHidden);
+			hiddenRef.current = nextHidden;
+		} else if (hidden.size > 0) {
+			const empty = new Set<string>();
+			effectiveHidden = empty;
+			setHidden(empty);
+			hiddenRef.current = empty;
+		}
+	}
+	hiddenRef.current = effectiveHidden;
+
 	// 镜像供 sweep（rAF 回调）读取而不重建依赖
 	const fpRef = useRef(fingerprints);
 	fpRef.current = fingerprints;
-	// 镜像最新值，供 rAF 回调 / 事件处理器读取而不重建（沿用 questionsRef 模式）
-	const hiddenRef = useRef(hidden);
-	hiddenRef.current = hidden;
 
 	const streamKeyTrackerRef = useRef<StreamKeyTracker>({
 		convKey,
@@ -976,28 +1002,6 @@ export function MessageList({
 			}
 		},
 	);
-	const prevLazyConvKeyRef = useRef(convKey);
-	if (prevLazyConvKeyRef.current !== convKey) {
-		prevLazyConvKeyRef.current = convKey;
-		if (!reversePagination && state.messages.length > VIRTUAL_MIN) {
-			const newAlways = pickAlways(state.messages, heightsRef.current, Math.max(ALWAYS_BUDGET, keepRecentCount * 120));
-			const nextHidden = new Set<string>();
-			for (const m of state.messages) {
-				if (!newAlways.has(m.id)) nextHidden.add(m.id);
-			}
-			for (const it of clusterMessages(state.messages, clusterOptions)) {
-				if (it.type === "tool_cluster" && it.messages.every((m) => !newAlways.has(m.id))) {
-					nextHidden.add(it.id);
-				}
-			}
-			setHidden(nextHidden);
-			hiddenRef.current = nextHidden;
-		} else if (hidden.size > 0) {
-			const empty = new Set<string>();
-			setHidden(empty);
-			hiddenRef.current = empty;
-		}
-	}
 
 	/** 实测高度统一入库：meta 始终记录；heights（pickAlways / 占位来源）仅在
 	 *  指纹与当前内容一致时更新——消息被编辑后旧实测高度立即作废。 */
@@ -1082,10 +1086,10 @@ export function MessageList({
 		});
 	}, [sweep]);
 
-	// 初始挂载与切换会话/消息集更新：首帧绘制前就把远端内容换成占位（大会话 attach 不再全量布局绘制）
-	useLayoutEffect(() => {
-		sweep(true);
-	}, [sweep, state.conversationId, state.sessionFile, state.messages.length]);
+	// 初始挂载与切换会话/消息集更新：首屏极速绘制上屏后，在空闲帧内调度测量校准，避免阻塞渲染与主线程排版
+	useEffect(() => {
+		scheduleSweep();
+	}, [scheduleSweep, state.conversationId, state.sessionFile, state.messages.length]);
 
 	// 搜索关闭瞬间重新收起远端内容（打开期间强制全渲染以兼容 DOM 高亮/Range 收集）
 	const prevSearchRef = useRef(searchOpen);
@@ -1463,7 +1467,7 @@ export function MessageList({
 							(state.isStreaming && item.messages.some((m) => m.id === lastId));
 						const isClusterPinned = item.messages.some((m) => pinned.has(m.id));
 						const isClusterAlways = item.messages.some((m) => alwaysSet.has(m.id));
-						const isClusterHidden = hidden.has(item.id);
+						const isClusterHidden = effectiveHidden.has(item.id);
 						const showCluster =
 							!virtualOn || isStreamingCluster || isClusterPinned || isClusterAlways || !isClusterHidden;
 						// 密集批量工具流智能收敛：同一回合连续调用 ≥ 4 个工具时，
@@ -1543,7 +1547,7 @@ export function MessageList({
 						);
 					}
 					const qIdx = m.role === "user" ? qnIndex.get(m.id) : undefined;
-					const show = !virtualOn || alwaysSet.has(m.id) || pinned.has(m.id) || !hidden.has(m.id);
+					const show = !virtualOn || alwaysSet.has(m.id) || pinned.has(m.id) || !effectiveHidden.has(m.id);
 					const isStreamingThis =
 						(state.streamingMessage ? m.id === state.streamingMessage.id : state.isStreaming && m.id === lastId) &&
 						(m.role === "assistant" || !m.role);

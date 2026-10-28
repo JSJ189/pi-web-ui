@@ -128,4 +128,22 @@ describe("global .agents/skills settings (issue #669)", () => {
 		expect(saved.reviewDisabledSkills).toEqual([]);
 		expect(saved.skillsFullText).toEqual([]);
 	});
+
+	it("dynamically discovers external newly-installed skills on disk even if loader hasn't reloaded", () => {
+		const svc = makeService();
+		// Initial push: no disk skills
+		svc.push();
+		let state = emitted.filter((msg) => msg.type === "settings_state").at(-1);
+		expect(state?.settings.skills.some((s: any) => s.name === "newly-installed")).toBe(false);
+
+		// Install new skill on disk externally
+		const base = join(home, ".agents", "skills", "newly-installed");
+		mkdirSync(base, { recursive: true });
+		writeFileSync(join(base, "SKILL.md"), `---\nname: newly-installed\ndescription: Dynamically installed\n---\nBody`);
+
+		// Next push: should immediately discover and include the new skill
+		svc.push();
+		state = emitted.filter((msg) => msg.type === "settings_state").at(-1);
+		expect(state?.settings.skills.some((s: any) => s.name === "newly-installed")).toBe(true);
+	});
 });

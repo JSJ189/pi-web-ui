@@ -182,13 +182,6 @@ export function DirectoryBrowser({
 		setCompIndex(-1);
 	}, [currentCwd]);
 
-	// 打开远程 Tab 时拉取已保存的 profiles
-	useEffect(() => {
-		if (activeTab === "remote") {
-			void requestRemoteProfiles().then((p) => setProfiles(p));
-		}
-	}, [activeTab]);
-
 	// 打开后聚焦输入框
 	useEffect(() => {
 		const frame = requestAnimationFrame(() => {
@@ -351,8 +344,9 @@ export function DirectoryBrowser({
 		setRemoteTools(res.tools ?? null);
 		setSuggestedTools(res.suggestedInstall ?? []);
 
-		// 默认进入远端主目录
-		const targetDir = res.system?.homeDir || "/";
+		// 优先使用传入的远程路径（若为合法的非根路径），否则回退到远端用户主目录
+		const parsedRemotePath = isRemoteWorkspaceUri(currentCwd) ? parseRemoteWorkspaceUri(currentCwd)?.remotePath : null;
+		const targetDir = parsedRemotePath && parsedRemotePath !== "/" ? parsedRemotePath : res.system?.homeDir || "/";
 		setRemoteCwd(targetDir);
 		setRemoteDraft(targetDir);
 		void loadRemoteDir(res.connectionId, targetDir);
@@ -360,6 +354,50 @@ export function DirectoryBrowser({
 		// 刷新已保存列表
 		void requestRemoteProfiles().then((p) => setProfiles(p));
 	};
+
+	// 打开远程 Tab 时拉取已保存的 profiles；若初始路径为远程 SSH URI 且未连接，自动匹配 profile 建立连接
+	const autoConnectedRef = useRef(false);
+	useEffect(() => {
+		if (activeTab === "remote") {
+			void requestRemoteProfiles().then((p) => {
+				setProfiles(p);
+				if (!autoConnectedRef.current && !connectionId && !connecting && isRemoteWorkspaceUri(currentCwd)) {
+					const parsed = parseRemoteWorkspaceUri(currentCwd);
+					if (parsed) {
+						const matched =
+							p.find(
+								(item) =>
+									item.host === parsed.host &&
+									(item.username === parsed.username || !parsed.username) &&
+									(item.port === parsed.port || (!parsed.port && item.port === 22)),
+							) ||
+							p.find((item) => item.host === parsed.host && item.username === parsed.username) ||
+							p.find((item) => item.host === parsed.host);
+						if (matched) {
+							autoConnectedRef.current = true;
+							setSshHost(matched.host);
+							setSshPort(String(matched.port));
+							setSshUser(matched.username);
+							setSshAuthType(matched.authType);
+							if (matched.privateKeyPath) setSshKeyPath(matched.privateKeyPath);
+							void handleConnectAndProbe({
+								host: matched.host,
+								port: matched.port,
+								username: matched.username,
+								profileName: matched.name,
+								auth:
+									matched.authType === "password"
+										? { type: "password", password: "" }
+										: matched.authType === "key"
+											? { type: "key", privateKeyPath: matched.privateKeyPath }
+											: { type: "agent" },
+							});
+						}
+					}
+				}
+			});
+		}
+	}, [activeTab, currentCwd, connectionId, connecting]);
 
 	const loadRemoteDir = async (connId: string, dirPath: string) => {
 		setLoadingRemoteDir(true);

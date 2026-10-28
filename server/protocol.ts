@@ -521,7 +521,10 @@ export type CanvasNodeRole =
 	| "subflow"
 	| "cron"
 	| "webhook"
-	| "transform";
+	| "transform"
+	// —— 严谨工程与技能注入角色 ——
+	| "pstack"
+	| "skill";
 export type CanvasNodeStatus = "idle" | "queued" | "running" | "waiting_approval" | "done" | "error" | "paused";
 export type CanvasEdgeType =
 	"handoff" | "review" | "parallel" | "condition_true" | "condition_false" | "loop_back" | "approve" | "reject";
@@ -1645,7 +1648,7 @@ export type ClientMessage =
 
 // -- Remote SSH & Probe types -----------------------------------------------
 export type RemoteSshAuth =
-	| { type: "password"; password: string }
+	| { type: "password"; password?: string }
 	| { type: "key"; privateKeyPath?: string; privateKey?: string; passphrase?: string }
 	| { type: "agent" };
 
@@ -1664,6 +1667,8 @@ export interface RemoteSshSystemInfo {
 	hostname: string;
 	homeDir: string;
 	user: string;
+	cores?: number;
+	totalMemMb?: number;
 }
 
 export interface RemoteSshToolsInfo {
@@ -1689,6 +1694,8 @@ export interface RemoteSshProfileSummary {
 	authType: "password" | "key" | "agent";
 	privateKeyPath?: string;
 	lastConnected?: number;
+	remotePath?: string;
+	description?: string;
 }
 
 // ---------------------------------------------------------------------------

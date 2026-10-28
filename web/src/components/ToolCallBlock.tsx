@@ -63,6 +63,8 @@ import { useCopyFeedback } from "../use-copy-feedback";
 import { PresentedFiles } from "./PresentedFiles";
 import { QuestionnaireCard } from "./QuestionnaireCard";
 import { renderHighlightedCommand } from "../bash-danger";
+import { FileChangeCard } from "./FileChangeCard";
+import { parseFileMutationArgs } from "../file-diff";
 
 export interface ToolView {
 	/** Tool result message if the tool already finished. */
@@ -488,6 +490,14 @@ const ToolCallCard = memo(function ToolCallCard({
 		[isQuestionnaire, shown, block.argumentsText],
 	);
 
+	const isFileChange =
+		block.name === "edit" || block.name === "write" || block.name === "edit_soft" || block.name === "patch";
+
+	const fileChangeData = useMemo(() => {
+		if (!isFileChange) return null;
+		return parseFileMutationArgs(block.name, block.argumentsText, view.result?.details, output);
+	}, [isFileChange, block.name, block.argumentsText, view.result?.details, output]);
+
 	// 展示文件卡片：参数（路径清单）在流式期间可能是半截 JSON，解析失败就回落到原文展示
 	const hasImages = resultImages.length > 0;
 	// 轻量探测 Markdown 特征，避免全文本正则扫描
@@ -691,7 +701,9 @@ const ToolCallCard = memo(function ToolCallCard({
 			onClick={(e) => {
 				if (!isFlowMode(rootRef.current)) return;
 				const target = e.target as HTMLElement | null;
-				if (target?.closest(".toolcall-kill, .toolcall-open, button.toolcall-image, .toolcall-image, a")) {
+				if (
+					target?.closest("button, a, .toolcall-kill, .toolcall-open, .toolcall-image, .file-diff-action-btn, .btn-tag")
+				) {
 					return;
 				}
 				e.preventDefault();
@@ -745,6 +757,15 @@ const ToolCallCard = memo(function ToolCallCard({
 							<span className={headline.className} title={headline.title ?? headline.text}>
 								{headline.prefix}
 								{headline.text}
+							</span>
+						)}
+						{fileChangeData && (fileChangeData.stats.additions > 0 || fileChangeData.stats.deletions > 0) && (
+							<span
+								className="toolcall-diff-badge"
+								title={`+${fileChangeData.stats.additions} -${fileChangeData.stats.deletions}`}
+							>
+								{fileChangeData.stats.additions > 0 && <span className="add">+{fileChangeData.stats.additions}</span>}
+								{fileChangeData.stats.deletions > 0 && <span className="del">-{fileChangeData.stats.deletions}</span>}
 							</span>
 						)}
 						{hints.timeout && <span className="toolcall-timeout">⏱ {hints.timeout}</span>}
@@ -866,6 +887,15 @@ const ToolCallCard = memo(function ToolCallCard({
 							output={output}
 							isError={isError}
 							waiting={running || waitingModel}
+						/>
+					) : isFileChange ? (
+						<FileChangeCard
+							toolName={block.name}
+							argumentsText={block.argumentsText}
+							details={view.result?.details}
+							output={output}
+							isError={isError}
+							onOpenInspector={handleOpenInspector}
 						/>
 					) : (
 						block.argumentsText && (

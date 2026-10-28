@@ -1,17 +1,24 @@
 /**
- * 自定义上下文压缩阈值（Soft Cap，issue #229，issue #716）。
+ * 自定义上下文压缩阈值（Soft Cap，issue #229，issue #716，issue #773）。
  *
  * 背景：SDK 的自动压缩只看物理上限（shouldCompact：tokens > window - reserveTokens，
  * reserveTokens 默认 16384）。对 1M 上下文的模型会堆到 ~900K 才压；对 Grok 这类
  * 200K 起阶梯翻倍计费的模型，会在高价区跑很久，还伴随长上下文降智。
  *
- * 实现机制（控制权反转与主动压缩）：
- * 1. SDK 的 compaction.reserveTokens 始终保持默认值 16384，只负责物理防爆兜底；
- * 2. 软上限（Soft Cap）不由 SDK reserve 反推注入，从数学上根除切模型时的公式混乱；
- * 3. 当有效上下文 token 达到用户设置的软上限时，由 pi-web-ui 在空闲态（回合结算后
- *    或新一轮提问前）主动调用 session.compact() 执行压缩。
+ * 实现机制（双层管控，两层共用同一个软上限 cap）：
+ * 1. 回合内层（SDK reserve，issue #773）：把 compaction.reserveTokens 逐会话算成
+ *    cw - cap（下限仍是默认 16384），让 SDK 在**每次工具调用间隙**的
+ *    _compactBeforeNextAssistantResponse 里就能在 cap 处压缩。自治长跑（子代理、
+ *    单回合几十次工具调用）全程没有空闲态，只有这一层能拦住它。
+ *    必须是「逐会话无状态重算」（各自用自己当前模型算），否则换模型会残留上一模型的
+ *    W - C，这正是 #716 当初撤掉注入的原因；重算点见 applyCompactionOverrides。
+ * 2. 空闲态层（pi-web-ui 主动压缩）：回合结算后 / 新一轮提问前，若有效 token 已达 cap
+ *    则主动 session.compact()。它负责 reserve 管不到的场景：cap 中途下调、附件注入
+ *    超阈、从磁盘恢复的已超阈会话（首个请求前没有任何检查点）。
+ * 3. 物理防爆始终在：reserve 只取 max(默认 16384, cw - cap)，触发点永远不晚于
+ *    cw - 16384；cap 关闭/非法时 reserve 回落默认值，等于原样的物理兜底线。
  *
- * softCapToReserve 作为分层上下文预算裁剪（context-budget-runner）的工具函数保留。
+ * softCapToReserve / softCapReserveFor 同时服务分层上下文预算裁剪（context-budget-runner）。
  */
 import { DEFAULT_COMPACTION_SETTINGS } from "@earendil-works/pi-coding-agent";
 
@@ -94,4 +101,19 @@ export function softCapToReserve(contextWindow: number, cap: number): number | n
 	const reserve = Math.floor(contextWindow - cap);
 	if (reserve < SOFT_CAP_MIN_HEADROOM) return null;
 	return reserve;
+}
+
+/** 注入 SDK 的 reserveTokens（issue #773）：软上限合法时 = cw - cap，否则回落默认值。
+ *
+ * 额外守卫（keepRecentTokens）：SDK 压缩按 keepRecentTokens（默认 20000）留尾部，
+ * 若 cap ≤ keepRecent + SOFT_CAP_MIN_HEADROOM，压完立刻又超阈 → 回合内每个工具间隙
+ * 都重压一次（每次都要付摘要请求的钱），比撞墙还贵。这种「压不下来」的 cap 一律不注射，
+ * 交给空闲态层与物理兜底。keepRecentTokens 未知（0/非法）时不做该守卫。 */
+export function softCapReserveFor(contextWindow: number, cap: number, keepRecentTokens = 0): number | null {
+	const reserve = softCapToReserve(contextWindow, cap);
+	if (reserve === null) return null;
+	if (Number.isFinite(keepRecentTokens) && keepRecentTokens > 0 && cap <= keepRecentTokens + SOFT_CAP_MIN_HEADROOM) {
+		return null;
+	}
+	return Math.max(DEFAULT_COMPACTION_RESERVE_TOKENS, reserve);
 }

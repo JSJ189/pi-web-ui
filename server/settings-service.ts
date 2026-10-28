@@ -6,8 +6,7 @@
  * 预设存取 + 何时需要 reload」，真正动 runtime 的 session.reload() 走宿主回调
  * （reloadSession 里还会刷新斜杠命令目录）。
  */
-import { existsSync, readdirSync, readFileSync } from "node:fs";
-import { homedir } from "node:os";
+import { existsSync, readFileSync } from "node:fs";
 import { basename, dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 import type { AgentSession } from "@earendil-works/pi-coding-agent";
@@ -47,6 +46,7 @@ import { findVisionModels, SYSTEM_PROMPT } from "./vision-bridge.js";
 import { COMMITMSG_SYSTEM_PROMPT } from "./scm-commitmsg.js";
 import { PLAN_MODE_SYSTEM_PROMPT } from "./plan-mode.js";
 import { DEFAULT_TEMPLATES, localizeTemplate, type SubagentTemplatesStore } from "./subagent-templates.js";
+import { discoverDiskSkills, isSkillStillOnDisk } from "./skill-discovery.js";
 import type { ApprovalRulesStore } from "./approval-rules.js";
 import { deriveLegacy, foldLegacyIntoDisabled, normalizeDisabledAgentTools } from "./tool-manager.js";
 import { normalizeToolPromptOverrides } from "./tool-prompt-overrides.js";
@@ -86,9 +86,9 @@ export interface SettingsHost {
 	/** 把设置面板的出错重试次数即时注入各会话（无需 reload；reload 后由
 	 *  调用方重放，见 agent-service applyRetryOverrides）。 */
 	applyRetryOverrides: () => void;
-	/** 把压缩软上限即时换算成各会话的 compaction reserveTokens 覆盖
-	 *  （无需 reload；reload/建会话/换模型后由调用方重放，见
-	 *  agent-service applyCompactionOverrides，issue #229）。 */
+	/** 把压缩软上限逐会话重算成 compaction reserveTokens 覆盖（各用自己当前模型
+	 *  与生效软上限，不累加、不残留；无需 reload；reload/建会话/换模型后由调用方
+	 *  重放，见 agent-service applyCompactionOverrides，issue #229/#773）。 */
 	applyCompactionOverrides: () => void;
 	/** 把 codemode 运行模式与内联预算即时注入各会话的 SettingsManager（无需 reload）。 */
 	applyCodemodeOverrides?: () => void;
@@ -173,43 +173,13 @@ export class SettingsService {
 		return v;
 	}
 
-	/** 判断某个 skill 名是否仍存在于磁盘任何来源（agent 区 / 用户级或祖先
-	 *  .agents/skills / 项目 .pi / npm 包内 skills）。被禁用且文件已删除的名字不应再
-	 *  出现在设置面板，也不应留在持久化记录里。 */
+	/** 判断某个 skill 名是否仍存在于磁盘任何来源（各类 Agent 项目区 / 全局 / 祖先 / npm 包等）。
+	 *  被禁用且文件已删除的名字不应再出现在设置面板，也不应留在持久化记录里。 */
 	private skillStillOnDisk(name: string): boolean {
-		const cwd = this.host.cwd();
-		const agentDir = this.host.agentDir();
-		const check = (base: string) => existsSync(join(base, name)) || existsSync(join(base, `${name}.md`));
-		// ① 用户区 <agentDir>/skills ② 项目 .pi/skills
-		if (check(join(agentDir, "skills"))) return true;
-		// SDK 始终扫描用户级 ~/.agents/skills，不依赖 cwd 的祖先链（issue #669）。
-		if (check(join(process.env.HOME || homedir(), ".agents", "skills"))) return true;
-		if (check(join(cwd, ".pi", "skills"))) return true;
-		// ③ 祖先链 .agents/skills（SDK collectAncestorAgentsSkillDirs 语义，最多上溯 6 层）
-		let dir: string = cwd;
-		for (let i = 0; i < 6 && dir !== dirname(dir); i++, dir = dirname(dir)) {
-			if (check(join(dir, ".agents", "skills"))) return true;
-		}
-		// ④ npm 包内 skills（agent 级 + 项目级，含 @scope 两级子包）
-		for (const npmRoot of [join(agentDir, "npm", "node_modules"), join(cwd, ".pi", "npm", "node_modules")]) {
-			try {
-				for (const entry of readdirSync(npmRoot, { withFileTypes: true })) {
-					if (!entry.isDirectory()) continue;
-					if (!entry.name.startsWith("@")) {
-						if (check(join(npmRoot, entry.name, "skills"))) return true;
-					} else {
-						for (const sub of readdirSync(join(npmRoot, entry.name), { withFileTypes: true })) {
-							if (sub.isDirectory() && check(join(npmRoot, entry.name, sub.name, "skills"))) {
-								return true;
-							}
-						}
-					}
-				}
-			} catch {
-				// npm 目录不存在/不可读 → 不是来源
-			}
-		}
-		return false;
+		return isSkillStillOnDisk(name, {
+			cwd: this.host.cwd(),
+			agentDir: this.host.agentDir(),
+		});
 	}
 
 	/** 判断某个扩展 id 是否仍存在（loader 之外的兜底，供禁用残留清理用）：
@@ -264,10 +234,21 @@ export class SettingsService {
 			const loadedExts = allLoadedExts.filter((e) => !isInternalExtension(e));
 			loadedSkillNames = new Set(loadedSkills.map((s) => s.name));
 			loadedExtNames = new Set(loadedExts.map((e) => extensionKey(e)));
+
+			// 实时全源磁盘扫描：动态发现外部新安装/更新的各类 Agent 全局与本地技能
+			const diskSkills = discoverDiskSkills({
+				cwd: this.host.cwd(),
+				agentDir: this.host.agentDir(),
+			});
+
 			// Prune entries that no longer exist on disk AND aren't disabled
 			// (e.g. a skill/extension file was deleted). Disabled entries are
 			// kept so they can be re-enabled even when filtered out of the loader.
-			const keepSkills = new Set<string>([...loadedSkills.map((s) => s.name), ...this.settings.disabledSkills]);
+			const keepSkills = new Set<string>([
+				...loadedSkills.map((s) => s.name),
+				...diskSkills.map((s) => s.name),
+				...this.settings.disabledSkills,
+			]);
 			const keepExts = new Set<string>([
 				...loadedExts.map((e) => extensionKey(e)),
 				...this.settings.disabledExtensions.filter((id) => !isInternalExtension({ path: id })),
@@ -287,6 +268,17 @@ export class SettingsService {
 					enabled: true,
 				});
 			}
+			for (const ds of diskSkills) {
+				if (!this.knownSkills.has(ds.name)) {
+					this.knownSkills.set(ds.name, {
+						name: ds.name,
+						description: ds.description,
+						enabled: !disabledSkills.has(ds.name),
+					});
+				} else if (!this.knownSkills.get(ds.name)!.description && ds.description) {
+					this.knownSkills.get(ds.name)!.description = ds.description;
+				}
+			}
 			for (const e of loadedExts) {
 				const id = extensionKey(e);
 				const p = e.sourceInfo?.path ?? e.path;
@@ -296,6 +288,12 @@ export class SettingsService {
 					path: p,
 					enabled: true,
 				});
+			}
+
+			// 若发现磁盘新增了 loader 尚未加载的技能，触发会话后台异步 reload 以刷新提示词和技能工具
+			const hasUnloadedDiskSkills = diskSkills.some((ds) => !loadedSkillNames!.has(ds.name));
+			if (hasUnloadedDiskSkills && !this.host.isStreaming()) {
+				void this.host.reloadSession();
 			}
 		} catch {
 			// Session not ready yet — keep whatever we already know.
@@ -311,7 +309,7 @@ export class SettingsService {
 					...this.settings.reviewDisabledSkills,
 					...normalizeSkillList(this.settings.skillsFullText),
 				]),
-			].filter((name) => !loadedSkillNames!.has(name) && !this.skillStillOnDisk(name));
+			].filter((name) => !this.knownSkills.has(name) && !this.skillStillOnDisk(name));
 			if (stale.length > 0) {
 				this.settings.disabledSkills = this.settings.disabledSkills.filter((n) => !stale.includes(n));
 				this.settings.reviewDisabledSkills = this.settings.reviewDisabledSkills.filter((n) => !stale.includes(n));

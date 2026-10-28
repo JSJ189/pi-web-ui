@@ -73,7 +73,7 @@ server/
 ├── compact-context-tool.ts # ★ 主动压缩上下文工具（compact_context）：AI 主动根据当前任务精简上下文，自主控制保留范围并在回合后生效
 ├── compaction-markers.ts   # 压缩 transcript 标记 + 修复（issue #235）
 ├── context-budget.ts       # 多级分层上下文预算裁剪（触发 LLM 全文摘要之前的梯度裁剪）
-├── soft-cap.ts             # 自定义上下文压缩软上限（Soft Cap，issue #229；纯函数 normalize/effective/softCapToReserve）
+├── soft-cap.ts             # 自定义上下文压缩软上限（Soft Cap，issue #229/#773；纯函数 normalize/effective/softCapToReserve/softCapReserveFor：后者算出注入 SDK 的 reserve=cw-cap，回合内工具间隙即压）
 ├── dangling-tools.ts       # 悬空 toolCall 检测与修复（issue #280）
 ├── edit-soft-tool.ts       # 独立宽松编辑工具 edit_soft（行核心匹配，忽略缩进差异；开关走统一工具 tab）
 ├── read-tool.ts            # 覆盖内置 read：路径是目录时列目录条目（复用 SDK ls 的口径，其余原样转发内置；行为开关 readDirEnabled 在设置「工具」页，不入 AGENT_TOOL_CATALOG）

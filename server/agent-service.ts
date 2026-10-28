@@ -117,6 +117,7 @@ import {
 } from "./goal-service.js";
 import { buildEvidenceDigest, sessionMessagesOf } from "./goal-evidence.js";
 import { MarkerService } from "./marker-service.js";
+import { discoverDiskSkills, mergeSkillCollections, readSkillInstruction } from "./skill-discovery.js";
 import { SlashCommandsService, parseSlash } from "./slash-commands.js";
 import { ModelAdminService } from "./model-admin.js";
 import { FilesService, MACHINE_ROOT, desktopDirWire, workspacePath } from "./files-service.js";
@@ -235,6 +236,7 @@ import {
 	effectiveSoftCap,
 	SOFT_CAP_MIN_TOKENS,
 	SOFT_CAP_MIN_HEADROOM,
+	softCapReserveFor,
 } from "./soft-cap.js";
 import { makeEditSoftTool } from "./edit-soft-tool.js";
 // 覆盖 SDK 内置 read：路径是目录时列出目录条目（行为开关 readDirEnabled，默认开）。
@@ -724,6 +726,16 @@ export interface Conversation {
 	/** 下一轮 agent_start 消费的用户任务文本（prompt() 暂存，轨迹插件的 run_start 用；
 	 *  steer/内部续跑无暂存时为空，由插件回退为「继续执行」）。 */
 	pendingTask?: string;
+	/** 通道插件（host.chat）本轮运行的稳定标识：随运行轨迹事件下发（PluginRunEvent.runId）。
+	 *  为什么不能靠 clientId + conversationId 认领：过户会把对话搬到另一个客户端会话，
+	 *  clientId 随之变成对方的；目标会话已有同名 id（c1/c2 各会话独立编号）时对话会被
+	 *  就地改名 —— 两个键都失效，插件认不回自己那一轮，微信/钉钉等通道就只剩
+	 *  「还在执行」再也没下文。这个 token 跟着对话对象（＝runtime）本体走，两者都不影响。 */
+	pluginRunId?: string;
+	/** 插件投递时先登记的待认领 token：prompt() 真的开跑（agent_start）才转正为
+	 *  pluginRunId。这样「投递后被拒/提前返回」不会把 token 留在对话上，污染用户
+	 *  自己下一轮运行的事件归属。 */
+	pendingPluginRunId?: string;
 	/** 子代理首回合的投递 Promise（spawn 里 fire-and-forget 的 sendUserMessage）。
 	 *  目标模式「等本回合结束」必须先等它落定，否则会把「还没开跑」误判成「已跑完」。 */
 	kickoff?: Promise<unknown>;
@@ -916,6 +928,8 @@ export class ClientSession {
 	private bashKills = new Set<AbortController>();
 	/** Background-server tracking (port snapshots + 后台任务 panel state) —
 	 *  自包含模块，见 bg-servers.ts。列表按 CLIENT 存活，不随对话切换/结束消失。 */
+	/** 用户直接创建的交互式终端（按 CLIENT/工作区 存活，始终显示，不受单个对话切换、生命周期与过滤影响） */
+	private userTerminals!: TerminalManager;
 	/** 文件树 / 预览读写 / SCM 查询 / watcher —— 自包含模块，见 files-service.ts。 */
 	private readonly files = new FilesService({
 		emit: (msg) => this.emit(msg),
@@ -1019,12 +1033,49 @@ export class ClientSession {
 		return this.conv.terminals;
 	}
 
+	getUserTerminalManager(): TerminalManager {
+		return this.userTerminals;
+	}
+
+	findTerminalManager(terminalId: string, conversationId?: string): TerminalManager | undefined {
+		if (this.userTerminals?.has(terminalId)) {
+			return this.userTerminals;
+		}
+		if (conversationId) {
+			const convTm = this.convs.get(conversationId)?.terminals;
+			if (convTm?.has(terminalId)) return convTm;
+		}
+		if (this.conv?.terminals?.has(terminalId)) {
+			return this.conv.terminals;
+		}
+		for (const conv of this.convs.values()) {
+			if (conv.terminals?.has(terminalId)) return conv.terminals;
+		}
+		return this.getTerminalManager(conversationId);
+	}
+
 	getTerminalManager(conversationId?: string): TerminalManager | undefined {
 		return (conversationId ? this.convs.get(conversationId) : this.convs.get(this.activeId))?.terminals;
 	}
 
 	getTerminalCwd(conversationId?: string): string {
 		return (conversationId ? this.convs.get(conversationId) : this.convs.get(this.activeId))?.cwd ?? this.cwd;
+	}
+
+	private makeUserTerminalManager(): TerminalManager {
+		const mgr = new TerminalManager(
+			(msg) => {
+				if (msg.type === "terminal_list") {
+					this.pushTerminals();
+					return;
+				}
+				// 用户终端的输出、退出无条件向前端广播，绝不受 activeId 限制
+				this.emit(msg);
+			},
+			this.cwd,
+			() => this.getLang(),
+		);
+		return mgr;
 	}
 
 	private makeTerminalManager(conversationId: string, cwd: string): TerminalManager {
@@ -1283,8 +1334,6 @@ export class ClientSession {
 			// message_delta 流式增量、快照也不刷新，只能靠切走切回时的 flushSnapshot
 			// 看到新内容（dismiss/释放流程本来就会 unsubscribe，不泄漏）。
 			conv.unsubscribe = conv.session.subscribe((event) => this.onEvent(conv, event));
-			// 子代理不走 bindSession——统一收口注入配置覆盖与工具门控
-			this.applySessionOverrides(conv);
 			// 扩展绑定（rpc 模式）；用 headless 的 Web UI context：
 			// 扩展绑定时不会因缺方法崩，UI 输出也不下发（不会与主对话的 widget/status 冲突）。
 			try {
@@ -1323,7 +1372,7 @@ export class ClientSession {
 						// 先恢复该 provider 的项目密钥（setModel 的鉴权检查要用），再换模型。
 						// 按子代理自己的目录恢复（跨目录派发时派发者的密钥不一定适用）。
 						await this.restoreKeyForModel(followModel, resolvedCwd);
-						await conv.session.setModel(m);
+						await this.applySessionModel(conv.session, m);
 					} catch (err) {
 						if (explicitModel) {
 							throw new Error(
@@ -1379,6 +1428,10 @@ export class ClientSession {
 					});
 				}
 			}
+			// 子代理不走 bindSession——统一收口注入配置覆盖与工具门控。
+			// 必须在上面换模型（followModel 块）之后调：压缩 reserveTokens 按会话当前
+			// 模型的窗口算，提前调就会把子代理的判定线钉在派发者模型上（issue #773）。
+			this.applySessionOverrides(conv);
 			// 触发回合（后台执行；失败转识为通知）。把 Promise 挂在对话上：目标模式的
 			// 「等本回合结束」要先等它落定，才能区分「还没开跑」与「已跑完」。
 			conv.kickoff = conv.session
@@ -1871,18 +1924,32 @@ export class ClientSession {
 	}
 
 	private pushTerminals(conversation = this.conv): void {
+		const userList = this.userTerminals ? this.userTerminals.list() : [];
+		const convList = conversation ? conversation.terminals.list() : [];
 		this.emit({
 			type: "terminal_list",
-			conversationId: conversation.id,
-			terminals: conversation.terminals.list(),
+			conversationId: conversation?.id,
+			terminals: [...userList, ...convList],
 		});
-		for (const output of conversation.terminals.replay()) {
-			this.emit({
-				type: "terminal_output",
-				conversationId: conversation.id,
-				terminalId: output.terminalId,
-				data: output.data,
-			});
+		if (this.userTerminals) {
+			for (const output of this.userTerminals.replay()) {
+				this.emit({
+					type: "terminal_output",
+					conversationId: conversation?.id,
+					terminalId: output.terminalId,
+					data: output.data,
+				});
+			}
+		}
+		if (conversation) {
+			for (const output of conversation.terminals.replay()) {
+				this.emit({
+					type: "terminal_output",
+					conversationId: conversation.id,
+					terminalId: output.terminalId,
+					data: output.data,
+				});
+			}
 		}
 	}
 
@@ -3257,6 +3324,7 @@ export class ClientSession {
 		// Prune dead background tasks every 30s (only spawns netstat/lsof while
 		// the list is non-empty). unref: must not keep the process alive.
 		this.bg.start();
+		this.userTerminals = this.makeUserTerminalManager();
 		if (!ephemeralCleanupScheduled) {
 			ephemeralCleanupScheduled = true;
 			const timer = setTimeout(() => {
@@ -3520,16 +3588,22 @@ export class ClientSession {
 					// 否则按主会话禁用集过滤。预设拿掉 skill 加载器时（minimal/code/ask）
 					// 名录同步隐藏——列出来但调不动只是噪音（见 tool-manager.ts 语义总表）。
 					skillsOverride: (res) => {
+						const discovered = discoverDiskSkills({
+							cwd: effectiveCwd,
+							agentDir: this.agentDir,
+							workspaceRoots: this.roots,
+						});
+						const allSkills = mergeSkillCollections(res.skills, discovered);
 						if (apply && apply.enabledSkills.length > 0) {
 							const set = new Set(apply.enabledSkills);
-							return { ...res, skills: res.skills.filter((s) => set.has(s.name)) };
+							return { ...res, skills: allSkills.filter((s) => set.has(s.name)) };
 						}
 						const preset =
 							this.convs.get(ownerId ?? "")?.agentPreset ?? this.settingsSvc.current.defaultAgentPreset ?? "standard";
 						if (!presetShowsSkillCatalog(preset)) return { ...res, skills: [] };
 						return {
 							...res,
-							skills: res.skills.filter((s) => !this.settingsSvc.current.disabledSkills.includes(s.name)),
+							skills: allSkills.filter((s) => !this.settingsSvc.current.disabledSkills.includes(s.name)),
 						};
 					},
 					// 插件：模板非空扩展白名单时只加载白名单里的；否则按主会话禁用集过滤。
@@ -4567,10 +4641,34 @@ export class ClientSession {
 	private emitRun(conv: Conversation, ev: Omit<PluginRunEvent, "conversationId" | "at">): void {
 		if (!this.onRunEvent) return;
 		try {
-			this.onRunEvent({ ...ev, conversationId: conv.id, at: Date.now() });
+			this.onRunEvent({
+				...ev,
+				conversationId: conv.id,
+				clientId: this.clientId,
+				// 通道插件按它认领「自己那一轮」——过户换持有客户端、对话被改 id 都不影响。
+				...(conv.pluginRunId ? { runId: conv.pluginRunId } : {}),
+				at: Date.now(),
+			});
 		} catch (err) {
 			console.error("[agent-service] onRunEvent failed:", err);
 		}
+	}
+
+	/** 插件无头调用（host.chat）标记「本轮由该插件驱动」，返回被打标的对话 id。
+	 *  已在流式中（steer 并入在途运行）立即生效；否则等 agent_start 认领。
+	 *  token 在 run_end 清掉，用户随后自己接着聊的那一轮不会被误认成插件的。 */
+	markPluginRun(runId: string, conv?: Conversation): string {
+		const target = conv ?? this.conv;
+		const id = String(runId ?? "").trim();
+		if (!target || !id) return target?.id ?? "";
+		try {
+			if (target.session.isStreaming) target.pluginRunId = id;
+			else target.pendingPluginRunId = id;
+		} catch {
+			/* isStreaming 读不到就按未启动处理 */
+			target.pendingPluginRunId = id;
+		}
+		return target.id;
 	}
 
 	/** 当前打开对话变了 → 通知插件重拉（切历史会话/切 running 对话/新对话）。
@@ -4759,6 +4857,13 @@ export class ClientSession {
 		if (!conv?.session) return undefined;
 		await conv.session.sendUserMessage(text, conv.session.isStreaming ? { deliverAs: "steer" } : undefined);
 		return { ok: true };
+	}
+
+	/** 按 id 取本会话持有的对话（不存在返回 undefined）。
+	 *  host.chat 命中已有会话时，用它在**对方**会话里校验/定位被唤醒的那条对话。 */
+	getConversation(id: string): Conversation | undefined {
+		const key = String(id ?? "").trim();
+		return key ? this.convs.get(key) : undefined;
 	}
 
 	/** issue #231：本客户端内按稳定键定位调度唤醒目标。
@@ -5172,6 +5277,10 @@ export class ClientSession {
 						conv,
 						lastAssistant?.stopReason ? { type: "run_end", stopReason: lastAssistant.stopReason } : { type: "run_end" },
 					);
+					// 本轮已收尾：插件运行 token 到刺杀 —— 用户随后在同一对话里自己接着聊的
+					// 那一轮不得再被当成插件驱动的（否则微信会回传网页端用户的轮次）。
+					conv.pluginRunId = undefined;
+					conv.pendingPluginRunId = undefined;
 				} catch {
 					/* 轨迹尽力而为 */
 				}
@@ -5385,6 +5494,11 @@ export class ClientSession {
 			case "agent_start": {
 				// 本轮已正式进入流式（session.isStreaming=true），清除首轮启动期投递标记（#589）。
 				conv.promptInFlight = false;
+				// 插件投递的待认领 token 在本轮真的开跑时转正（未开跑的不认领，避免污染下一轮）。
+				if (conv.pendingPluginRunId) {
+					conv.pluginRunId = conv.pendingPluginRunId;
+					conv.pendingPluginRunId = undefined;
+				}
 				// 轨迹事件：新一轮开始（任务文本由 prompt() 暂存；steer/内部续跑
 				// 无暂存时省略，插件回退为「继续执行」）。
 				const task = conv.pendingTask;
@@ -7563,7 +7677,7 @@ export class ClientSession {
 				}
 				return;
 			}
-			await this.session.setModel(model);
+			await this.applySessionModel(this.session, model);
 		} catch {
 			// model no longer resolvable / key gone — keep the conversation default
 		}
@@ -7583,7 +7697,7 @@ export class ClientSession {
 	/**
 	 * 统一会话配置与门控收口方法（单一事实源）。
 	 * 无论是新建、切换、回滚、编辑重问、看门狗重置还是设置变更：
-	 * 统一应用重试次数、压缩防爆保留值、codemode 预算以及工具门控（含 planMode/delegateMode/禁用名单/权限预设）。
+	 * 统一应用重试次数、压缩保留值（按会话自己的模型与软上限重算）、codemode 预算以及工具门控（含 planMode/delegateMode/禁用名单/权限预设）。
 	 * 彻底杜绝各业务入口散落调用与遗漏。
 	 */
 	applySessionOverrides(target?: Conversation): void {
@@ -7615,19 +7729,59 @@ export class ClientSession {
 		}
 	}
 
-	/** 确保各存活会话的 SDK compaction reserveTokens 保持默认值（issue #716）。
-	 *  软上限由 pi-web-ui 主动管控（triggerSoftCapCompactionIfExceeded），
-	 *  不再将 W - C 注入 SDK reserveTokens，从数学上杜绝换模型重算泄漏。 */
+	/** 逐会话重算 SDK compaction reserveTokens（issue #229 → #716 → #773）。
+	 *  软上限双层管控：
+	 *  - 回合内层：reserve = max(默认 16384, cw - cap)。SDK 在每次工具调用间隙的
+	 *    _compactBeforeNextAssistantResponse 就会在 cap 处压缩——自治长跑（子代理、
+	 *    单回合几十次工具调用）全程没有空闲态，只有这一层拦得住（issue #773）。
+	 *  - 空闲态层：triggerSoftCapCompactionIfExceeded，负责 reserve 管不到的场景
+	 *    （cap 中途下调 / 附件注入超阈 / 从磁盘恢复的已超阈会话）。
+	 *
+	 *  #716 当初把 reserve 锁死在默认值，怕的是「换模型残留上一模型的 W - C」。
+	 *  所以这里必须用**每个会话自己的活模型**算，且每次都完整重算、不累加——
+	 *  残留状态不存在，泄漏也就无从发生（换模型一律走 applySessionModel，其他重算点：
+	 *  新建/切换、设置变更、reload、AI 主动压缩后，见 applySessionOverrides 等）。
+	 *  cap 关闭/非法/压不下来时回落默认 16384 = 原样的物理兜底线。 */
 	applyCompactionOverrides(): void {
+		const s = this.settingsSvc.current;
 		for (const c of this.convs.values()) {
+			let reserve = DEFAULT_COMPACTION_RESERVE_TOKENS;
 			try {
-				c.session.settingsManager.applyOverrides({
-					compaction: { reserveTokens: DEFAULT_COMPACTION_RESERVE_TOKENS },
-				});
+				const cw = contextWindowOf(c.session);
+				if (cw > 0) {
+					const cap = effectiveSoftCap(s.softCapTokens, s.softCapByModel, modelKeyOf(c.session));
+					// keepRecentTokens 读活值：用户可在 settings.json 覆盖，压缩尾部就按它留。
+					let keepRecent = 0;
+					try {
+						keepRecent = c.session.settingsManager.getCompactionKeepRecentTokens(c.session.model) ?? 0;
+					} catch {
+						keepRecent = 0;
+					}
+					reserve = softCapReserveFor(cw, cap, keepRecent) ?? DEFAULT_COMPACTION_RESERVE_TOKENS;
+				}
+			} catch {
+				// 会话未就绪/已释放 → 只回默认值，不连累其他会话。
+			}
+			try {
+				c.session.settingsManager.applyOverrides({ compaction: { reserveTokens: reserve } });
 			} catch {
 				// 会话未就绪或已释放 → 其 runtime 创建时统一注入。
 			}
 		}
+	}
+
+	/** 会话换模型的唯一入口（issue #716/#773）：先把模型换上，立即按新模型的窗口
+	 *  重算该会话的 compaction reserveTokens。
+	 *
+	 *  reserve 依赖会话**当前**模型（cw - cap），任何绕过此处的裸 session.setModel()
+	 *  都会让判定线卡在上一模型的 W - C 上（子代理因此在长回合里不压缩，issue #773）。
+	 *  新增换模型路径必须走这里，不要直接 setModel。 */
+	private async applySessionModel(
+		session: AgentSession,
+		model: Parameters<AgentSession["setModel"]>[0],
+	): Promise<void> {
+		await session.setModel(model);
+		this.applyCompactionOverrides();
 	}
 
 	/** 把 codemode 运行模式与内联预算即时注入各存活会话的 SDK SettingsManager。 */
@@ -7679,7 +7833,9 @@ export class ClientSession {
 			const session = conv.session;
 			if (!session || session.isStreaming) return false;
 			const contextWindow = contextWindowOf(session);
-			const cap = this.activeSoftCap(contextWindow);
+			// 用**本会话**的模型算按模型覆盖：子代理/后台对话的模型未必等于当前活动对话，
+			// 串用会拿错 cap（issue #773）。
+			const cap = this.activeSoftCap(contextWindow, session);
 			if (!cap || cap <= 0) return false;
 
 			const currentTokens = this.getEffectiveContextTokens(conv);
@@ -7703,11 +7859,12 @@ export class ClientSession {
 		}
 	}
 
-	/** 当前活动对话的生效软上限（快照底栏标记线用；null = 关闭/未知）。 */
-	activeSoftCap(contextWindow: number): number | null {
+	/** 生效软上限（快照底栏标记线用；null = 关闭/未知）。
+	 *  session 缺省 = 当前活动会话；压缩触发方必须传自己那个会话来算按模型覆盖。 */
+	activeSoftCap(contextWindow: number, session = this.session): number | null {
 		try {
 			const s = this.settingsSvc.current;
-			const cap = effectiveSoftCap(s.softCapTokens, s.softCapByModel, modelKeyOf(this.session));
+			const cap = effectiveSoftCap(s.softCapTokens, s.softCapByModel, modelKeyOf(session));
 			if (!cap || cap < SOFT_CAP_MIN_TOKENS) return null;
 			if (contextWindow > 0 && cap >= contextWindow - SOFT_CAP_MIN_HEADROOM) return null;
 			return cap;
@@ -7750,6 +7907,13 @@ export class ClientSession {
 		toolImagesEnabled?: boolean;
 		showForkedParentSessions?: boolean;
 		retainFinishedConversations?: boolean;
+		openRecentSessionOnProjectSwitch?: boolean;
+		devNoCache?: boolean;
+		autoReload?: boolean;
+		skillsFullText?: string[];
+		skillsCatalogMaxDesc?: number;
+		skillsCatalogShowLocation?: boolean;
+		skillsCatalogBudget?: number;
 		visionBridgeEnabled?: boolean;
 		visionBridgeModel?: string | null;
 		visionBridgePromptMode?: PromptMode;
@@ -8200,8 +8364,25 @@ export class ClientSession {
 		});
 	}
 
-	/** 从远程仓库拉取单个技能的完整 SKILL.md 内容 */
+	/** 拉取单个技能的完整 SKILL.md 内容（支持本地已安装与远程仓库） */
 	async fetchSkillContent(repo: string, skillId: string): Promise<void> {
+		if (repo === "local" || !repo) {
+			const diskSkills = discoverDiskSkills({
+				cwd: this.cwd,
+				agentDir: this.agentDir,
+			});
+			const matched = diskSkills.find((s) => s.name.toLowerCase() === skillId.toLowerCase());
+			if (matched) {
+				const content = readSkillInstruction(matched.filePath);
+				this.emit({
+					type: "skill_content_result",
+					ok: true,
+					skillId,
+					content,
+				});
+				return;
+			}
+		}
 		const res = await fetchRemoteSkillContent({
 			repo,
 			skillId,
@@ -10514,6 +10695,10 @@ export class ClientSession {
 			conv.unsubscribe?.();
 			conv.unsubscribe = undefined;
 			this.clearConversationToolStates(conv);
+			// 强杀重建：上一轮的运行已经没了（agent_end 不会再发，run_end 不会到达带 runId），
+			// 残留的插件运行 token 必须清掉——否则用户随后自己聊的那一轮会被当插件驱动。
+			conv.pluginRunId = undefined;
+			conv.pendingPluginRunId = undefined;
 			disposeEvalSession(conv.id);
 			await conv.runtime.dispose();
 			// #485：dispose 挂起期间会话可能已被强行关闭移出（forceDismiss 走
@@ -10759,7 +10944,7 @@ export class ClientSession {
 					const mid = `${p}/${(prevModel as unknown as { id: string }).id}`;
 					// 先恢复 provider key，再 setModel（否则 checkAuth 鉴权失败）
 					await this.restoreKeyForModel(mid, this.cwd);
-					await this.session.setModel(prevModel);
+					await this.applySessionModel(this.session, prevModel);
 					modelRestored = true;
 				} catch {
 					// model no longer resolvable
@@ -13399,7 +13584,7 @@ export class ClientSession {
 				try {
 					const pm = prevModel as unknown as { provider: string; id: string };
 					await this.restoreKeyForModel(`${pm.provider}/${pm.id}`, targetConv.cwd);
-					await this.session.setModel(prevModel);
+					await this.applySessionModel(this.session, prevModel);
 				} catch {
 					// keep default
 				}
@@ -13654,7 +13839,7 @@ export class ClientSession {
 					const pm = prevModel as unknown as { provider: string; id: string };
 					// 先恢复 provider key，再 setModel（否则 checkAuth 鉴权失败）
 					await this.restoreKeyForModel(`${pm.provider}/${pm.id}`, this.cwd);
-					await this.session.setModel(prevModel);
+					await this.applySessionModel(this.session, prevModel);
 				} catch {
 					// model no longer resolvable — keep the default
 				}
@@ -14647,13 +14832,12 @@ export class ClientSession {
 			if (!model) throw new Error(`模型不存在：${modelId}`);
 			// 先恢复 provider key，再 setModel（否则 checkAuth 鉴权失败）
 			await this.restoreKeyForModel(modelId, this.cwd);
-			await this.session.setModel(model);
+			await this.applySessionModel(this.session, model);
 			// Immediately remember the model + the key it uses for the current
 			// project (not only after a turn). This is what makes project switching
 			// restore both the model and the provider key.
 			this.rememberProjectModel(modelId);
-			// 换模型后按新模型的窗口重算软上限覆盖（按模型覆盖可能不同，issue #229）。
-			this.applyCompactionOverrides();
+			// 换模型后按新模型的窗口重算软上限覆盖已由 applySessionModel 完成（issue #229/#773）。
 			// 切换成功 → 立即通知插件（#542：不发消息也能收到）；失败路径落在 catch 里，不发。
 			this.notifyPluginModelChange();
 		} catch (err) {
@@ -14800,6 +14984,7 @@ export class ClientSession {
 		// 关机路径：Windows 下跳过 pty.kill()（issue #215 ConPTY 死锁），只做
 		// TerminateProcess + 状态清理，句柄由 OS 在进程退出时回收。
 		for (const conv of this.convs.values()) conv.terminals.killAll({ shutdown: true });
+		this.userTerminals?.killAll({ shutdown: true });
 		if (this.snapshotTimer) {
 			clearTimeout(this.snapshotTimer);
 			this.snapshotTimer = null;

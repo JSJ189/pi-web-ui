@@ -30,6 +30,8 @@ export interface SkillCatalogEntry {
 	name: string;
 	description: string;
 	filePath: string;
+	source?: string;
+	scope?: string;
 }
 
 /** 由 ClientSession 实现的数据宿主（已按 disabledSkills 过滤）。 */
@@ -66,8 +68,33 @@ export function formatSkillCatalog(skills: SkillCatalogEntry[], lang: ServerLang
 		"skill.catalog.title",
 		{ count: skills.length },
 	);
-	const lines = skills.map((s) => `- ${s.name}${s.description.trim() ? ` — ${s.description.trim()}` : ""}`);
+	const lines = skills.map((s) => {
+		const tag = s.source ? ` [${s.source.toUpperCase()}]` : "";
+		return `- ${s.name}${tag}${s.description.trim() ? ` — ${s.description.trim()}` : ""}`;
+	});
 	return `${head}\n${lines.join("\n")}`;
+}
+
+/** 生成多智能体技能整合分布统计报告文本 */
+export function formatSkillSourcesReport(skills: SkillCatalogEntry[], lang: ServerLang): string {
+	const counts: Record<string, number> = {};
+	for (const s of skills) {
+		const src = (s.source || "custom").toLowerCase();
+		counts[src] = (counts[src] || 0) + 1;
+	}
+	const isZh = lang === "zh";
+	const lines: string[] = [];
+	lines.push(
+		isZh
+			? `【跨智能体技能整合报告】共整合 ${skills.length} 个可用技能：`
+			: `[Universal Skills Report] Total ${skills.length} available skills:`,
+	);
+	for (const [src, num] of Object.entries(counts)) {
+		lines.push(`  - ${src.toUpperCase()}: ${num}`);
+	}
+	lines.push("");
+	lines.push(formatSkillCatalog(skills, lang));
+	return lines.join("\n");
 }
 
 /** 技能全文块（与 SDK 的 /skill:name 展开格式一致，前端按 skill 卡片渲染）。 */
@@ -94,6 +121,12 @@ export function makeSkillTool(host: SkillToolHost, lang?: () => ServerLang): Too
 					description: "Exact skill name from the catalog. Omit to list the current catalog.",
 				}),
 			),
+			action: Type.Optional(
+				Type.String({
+					description:
+						"Action: omit or 'read' to load skill text; 'list' to show catalog; 'report' to view multi-agent sources.",
+				}),
+			),
 		}),
 		execute: async (_id, p) => {
 			let skills: SkillCatalogEntry[] = [];
@@ -103,9 +136,15 @@ export function makeSkillTool(host: SkillToolHost, lang?: () => ServerLang): Too
 				skills = [];
 			}
 			const L = getLang();
+			const action = typeof p.action === "string" ? p.action.trim().toLowerCase() : "";
 			const name = typeof p.name === "string" ? p.name.trim() : "";
-			// 无名 → 名录 + 用法。
-			if (!name) {
+
+			if (action === "report") {
+				return text(formatSkillSourcesReport(skills, L), { count: skills.length });
+			}
+
+			// 无名或请求列表 → 名录 + 用法。
+			if (!name || action === "list") {
 				const hint = pick(
 					L,
 					"用 skill({name}) 按名取全文。",

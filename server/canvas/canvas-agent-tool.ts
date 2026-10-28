@@ -108,6 +108,8 @@ const VALID_ROLES = new Set([
 	"api",
 	"memory",
 	"end",
+	"pstack",
+	"skill",
 ]);
 
 const canvasSchema = Type.Object({

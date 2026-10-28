@@ -15,11 +15,13 @@ browser-use — DrissionPage 常驻浏览器控制后端
   或: python dp_browser.py help
 """
 
+import contextlib
 import json
 import os
 import re
 import subprocess
 import sys
+import tempfile
 import time
 import traceback
 from collections import Counter
@@ -361,6 +363,7 @@ def cmd_open(browser, args):
     tab = browser.latest_tab if tabs else None
     if tab is None:
         tab = browser.new_tab()
+    ensure_console_hook(tab)
     tab.get(url)
     out(
         {
@@ -377,7 +380,9 @@ def cmd_new(browser, args):
     if not args:
         fail("new 需要网址参数: new <url>")
     url = _norm_url(args[0])
-    tab = browser.new_tab(url)
+    tab = browser.new_tab()
+    ensure_console_hook(tab)
+    tab.get(url)
     out(
         {
             "ok": True,
@@ -489,6 +494,7 @@ def cmd_forward(browser, args):
 
 def cmd_refresh(browser, args):
     tab = need_tab(browser)
+    ensure_console_hook(tab)
     tab.refresh()
     out({"ok": True, "cmd": CMD, "url": tab.url, "title": tab.title})
 
@@ -777,6 +783,209 @@ def cmd_js(browser, args):
     out({"ok": True, "cmd": CMD, "result": _sanitize(r)})
 
 
+# ---------------------------------------------------------------- 控制台捕获与日志读取
+
+CONSOLE_HOOK_JS = r"""
+(function() {
+  if (window.__pi_console_installed) return;
+  window.__pi_console_installed = true;
+  window.__pi_console_logs = window.__pi_console_logs || [];
+  const MAX_LOGS = 300;
+  const MAX_STR_LEN = 2000;
+
+  function safeSerialize(arg) {
+    if (arg === undefined) return 'undefined';
+    if (arg === null) return 'null';
+    if (arg instanceof Error) return arg.stack || (arg.name + ': ' + arg.message);
+    if (typeof arg === 'function') return '[Function: ' + (arg.name || 'anonymous') + ']';
+    if (typeof arg === 'symbol') return arg.toString();
+    if (typeof arg === 'object') {
+      if (arg.nodeType && typeof arg.nodeName === 'string') {
+        const id = arg.id ? '#' + arg.id : '';
+        const cls = arg.className ? '.' + String(arg.className).trim().split(/\s+/).join('.') : '';
+        return '<' + arg.nodeName.toLowerCase() + id + cls + '>';
+      }
+      try {
+        const seen = new WeakSet();
+        const json = JSON.stringify(arg, (key, value) => {
+          if (typeof value === 'object' && value !== null) {
+            if (seen.has(value)) return '[Circular]';
+            seen.add(value);
+          }
+          if (value instanceof Error) {
+            return { name: value.name, message: value.message, stack: value.stack };
+          }
+          return value;
+        });
+        return json.length > MAX_STR_LEN ? json.slice(0, MAX_STR_LEN) + '... (truncated)' : json;
+      } catch (e) {
+        return Object.prototype.toString.call(arg);
+      }
+    }
+    const str = String(arg);
+    return str.length > MAX_STR_LEN ? str.slice(0, MAX_STR_LEN) + '... (truncated)' : str;
+  }
+
+  function pushLog(level, text, source) {
+    const d = new Date();
+    const timeStr = [
+      String(d.getHours()).padStart(2, '0'),
+      String(d.getMinutes()).padStart(2, '0'),
+      String(d.getSeconds()).padStart(2, '0')
+    ].join(':');
+    window.__pi_console_logs.push({
+      level: level,
+      text: text,
+      time: timeStr,
+      source: source || null
+    });
+    if (window.__pi_console_logs.length > MAX_LOGS) {
+      window.__pi_console_logs.shift();
+    }
+  }
+
+  ['log', 'info', 'warn', 'error', 'debug'].forEach(level => {
+    const orig = console[level];
+    console[level] = function(...args) {
+      try {
+        const text = args.map(safeSerialize).join(' ');
+        pushLog(level, text);
+      } catch (_) {}
+      if (typeof orig === 'function') {
+        return orig.apply(console, args);
+      }
+    };
+  });
+
+  window.addEventListener('error', function(e) {
+    try {
+      if (e.error) {
+        pushLog('error', 'Uncaught ' + safeSerialize(e.error), e.filename ? (e.filename + ':' + e.lineno + ':' + e.colno) : null);
+      } else if (e.target && (e.target.src || e.target.href)) {
+        const src = e.target.src || e.target.href;
+        const tag = (e.target.tagName || 'ELEMENT').toLowerCase();
+        pushLog('error', 'Resource load failed: <' + tag + '> ' + src);
+      } else {
+        pushLog('error', 'Uncaught error: ' + (e.message || String(e)), e.filename ? (e.filename + ':' + e.lineno + ':' + e.colno) : null);
+      }
+    } catch (_) {}
+  }, true);
+
+  window.addEventListener('unhandledrejection', function(e) {
+    try {
+      pushLog('error', 'Unhandled Promise Rejection: ' + safeSerialize(e.reason));
+    } catch (_) {}
+  });
+})();
+"""
+
+GET_CONSOLE_LOGS_JS = r"""
+const args = arguments;
+const level = (args[0] || 'all').toLowerCase();
+const filter = (args[1] || '').toLowerCase();
+const limit = Math.max(1, Math.min(300, parseInt(args[2], 10) || 100));
+const clear = !!args[3];
+
+const allLogs = window.__pi_console_logs || [];
+let filtered = allLogs;
+if (level && level !== 'all') {
+  filtered = filtered.filter(item => (item.level || '').toLowerCase() === level);
+}
+if (filter) {
+  filtered = filtered.filter(item => (item.text || '').toLowerCase().includes(filter));
+}
+
+const result = filtered.slice(-limit);
+
+if (clear) {
+  if (level === 'all' && !filter) {
+    window.__pi_console_logs = [];
+  } else {
+    const matchSet = new Set(result);
+    window.__pi_console_logs = allLogs.filter(item => !matchSet.has(item));
+  }
+}
+
+return JSON.stringify({
+  total: allLogs.length,
+  matched: filtered.length,
+  returned: result.length,
+  logs: result
+});
+"""
+
+
+def ensure_console_hook(tab):
+    if tab is None:
+        return
+    try:
+        tab.add_init_js(CONSOLE_HOOK_JS)
+    except Exception:
+        pass
+    try:
+        tab.run_js(CONSOLE_HOOK_JS)
+    except Exception:
+        pass
+
+
+def cmd_console(browser, args):
+    tab = need_tab(browser)
+    ensure_console_hook(tab)
+
+    level = "all"
+    clear = False
+    limit = 100
+    filter_query = ""
+
+    i = 0
+    while i < len(args):
+        a = args[i]
+        if a == "--level" and i + 1 < len(args):
+            level = args[i + 1].strip().lower()
+            i += 2
+        elif a == "--clear":
+            clear = True
+            i += 1
+        elif a == "--limit" and i + 1 < len(args):
+            try:
+                limit = int(args[i + 1])
+            except ValueError:
+                pass
+            i += 2
+        elif (a == "--filter" or a == "--query") and i + 1 < len(args):
+            filter_query = args[i + 1].strip()
+            i += 2
+        else:
+            if a.lower() in ("all", "error", "warn", "info", "log", "debug"):
+                level = a.lower()
+            elif a == "clear":
+                clear = True
+            else:
+                filter_query = a
+            i += 1
+
+    try:
+        raw = tab.run_js(GET_CONSOLE_LOGS_JS, level, filter_query, limit, clear)
+        data = json.loads(raw) if isinstance(raw, str) else (raw or {})
+    except Exception as e:
+        fail(f"读取控制台日志失败: {e}")
+
+    out(
+        {
+            "ok": True,
+            "cmd": CMD,
+            "url": tab.url,
+            "title": tab.title,
+            "level": level,
+            "filter": filter_query or None,
+            "total": data.get("total", 0),
+            "matched": data.get("matched", 0),
+            "cleared": clear,
+            "logs": data.get("logs", []),
+        }
+    )
+
+
 SEARCH_EXTRACT_JS = r"""
 const rawEngine = (arguments[0] || 'bing').toLowerCase();
 const limit = Math.max(1, Math.min(20, parseInt(arguments[1], 10) || 8));
@@ -798,20 +1007,69 @@ function textOf(el, maxLen) {
 
 try {
   // 1. 全局验证码 / 反爬 / 安全检测拦截识别
+  // 关键：拦截必须与「真的没有结果」区分开，否则用户只会看到「未找到有效自然搜索结果」，根因被掩盖。
   const pageText = (document.body ? document.body.innerText : '') || '';
   const pageTitle = document.title || '';
-  let blocked = false;
+  const pageUrl = location.href || '';
+  const bodyText = pageTitle + ' ' + pageText;
 
-  if (/百度安全验证|网络不给力，请稍后重试|系统检测到异常访问/i.test(pageTitle + pageText)) blocked = true;
-  if (/搜狗验证码|验证码拦截|请输入验证码/i.test(pageTitle + pageText)) blocked = true;
-  if (/360安全验证|访问过于频繁/i.test(pageTitle + pageText)) blocked = true;
-  if (document.querySelector('form#captcha-form, #recaptcha, div.g-recaptcha, iframe[src*="recaptcha"]')) blocked = true;
-  if (/Please show you're not a robot|verify you are human|Access Denied|Security Challenge/i.test(pageText) && pageText.length < 1200) blocked = true;
-  if (location.href.includes('google.com/sorry') || location.href.includes('wappass.baidu.com/static/captcha')) blocked = true;
-
-  if (blocked) {
-    return JSON.stringify({ blocked: true, engine: rawEngine, error: '搜索引擎返回人机验证或反爬拦截' });
+  // 1.1 网络不可达 / 导航失败的空白页（无标题、几乎无正文）
+  if (!pageTitle.trim() && pageText.trim().length < 40) {
+    return JSON.stringify({
+      blocked: true,
+      kind: 'network',
+      engine: rawEngine,
+      error: '页面空白（网络不可达或导航失败，可能是境外引擎被墙或缺少代理）'
+    });
   }
+
+  // 1.1b Chrome 错误页（ERR_CONNECTION_TIMED_OUT / 无法访问此网站 等）
+  const errMatch = (bodyText.match(/ERR_[A-Z_]+|net::ERR_[A-Z_]+/) || [])[0];
+  if (
+    errMatch ||
+    /无法访问此网站|网页无法打开|此网站无法提供安全连接|This site can'?t be reached|This page isn'?t working/i.test(bodyText) ||
+    document.querySelector('#main-frame-error, .error-page-container, #error-information-button, .neterror')
+  ) {
+    return JSON.stringify({
+      blocked: true,
+      kind: 'network',
+      engine: rawEngine,
+      error: '浏览器网络错误' + (errMatch ? '（' + errMatch + '）' : '') + '：域名不可达，境内环境需给浏览器配置代理'
+    });
+  }
+
+  // 1.2 各引擎的验证码 / 反爬页面（URL 特征优先，避免正文里提到「验证码」造成误判）
+  const urlSignals = [
+    [/wappass\.baidu\.com|\/static\/captcha/i, '百度安全验证'],
+    [/antispider/i, '搜狗反爬拦截'],
+    [/qcaptcha\.so\.com|captcha\.so\.com/i, '360 访问异常验证'],
+    [/google\.[a-z.]+\/sorry|\/consent\./i, 'Google 人机验证'],
+    [/\/captcha|\/challenge|\/verify/i, '人机验证页面'],
+  ];
+  for (const [re, label] of urlSignals) {
+    if (re.test(pageUrl)) {
+      return JSON.stringify({ blocked: true, kind: 'blocked', engine: rawEngine, error: label + '（页面被重定向到验证页 ' + pageUrl.slice(0, 120) + '）' });
+    }
+  }
+
+  const textSignals = [
+    [/百度安全验证|网络不给力，请稍后重试|系统检测到异常访问/, '百度安全验证'],
+    [/搜狗验证码|验证码拦截|请输入验证码/, '搜狗人机验证'],
+    [/360安全验证|访问异常页面|访问过于频繁/, '360 访问异常验证'],
+    [/Please show you're not a robot|verify you are human|unusual traffic|Access Denied|Security Challenge|Too Many Requests/i, '反爬拦截'],
+  ];
+  for (const [re, label] of textSignals) {
+    if (re.test(bodyText)) {
+      return JSON.stringify({ blocked: true, kind: 'blocked', engine: rawEngine, error: label });
+    }
+  }
+  if (document.querySelector('form#captcha-form, #recaptcha, div.g-recaptcha, iframe[src*="recaptcha"], iframe[src*="captcha"]')) {
+    return JSON.stringify({ blocked: true, kind: 'blocked', engine: rawEngine, error: '页面出现验证码控件' });
+  }
+
+  // 1.3 引擎自述「没有结果」——这是真的没结果，不是被拦
+  const emptySignals = /没有找到|未找到|找不到和|没有与此相关的结果|No results found|did not match any documents|找不到该搜索/i;
+  const declaredEmpty = emptySignals.test(pageText);
 
   let instantAnswer = null;
   const items = [];
@@ -1207,9 +1465,25 @@ try {
   // 置顶官方认证条目
   finalResults.sort((a, b) => (b.isOfficial ? 1 : 0) - (a.isOfficial ? 1 : 0));
 
+  if (finalResults.length === 0 && !declaredEmpty) {
+    // 没有任何结果、也没有解析到拦截特征：多半是版式变化或 JS 未就绪，如实报告而不是谎称「搜不到」
+    return JSON.stringify({
+      ok: true,
+      engine: rawEngine,
+      empty: true,
+      parse_miss: true,
+      instantAnswer: instantAnswer,
+      count: 0,
+      related_queries: relatedQueries,
+      results: []
+    });
+  }
+
   return JSON.stringify({
     ok: true,
     engine: rawEngine,
+    empty: finalResults.length === 0,
+    declared_empty: finalResults.length === 0 && declaredEmpty,
     instantAnswer: instantAnswer,
     count: finalResults.length,
     related_queries: relatedQueries,
@@ -1312,7 +1586,13 @@ def _execute_search_on_tab(
     try:
         tab.get(url, timeout=6.0)
     except Exception as nav_err:
-        return {"ok": False, "error": f"导航加载超时: {nav_err}"}
+        return {
+            "ok": False,
+            "kind": "network",
+            "blocked": True,
+            "engine": engine,
+            "error": f"导航加载超时（{_safe_host(url)}）：{nav_err}",
+        }
 
     # 1. 等待文档加载完成
     try:
@@ -1396,7 +1676,173 @@ def _apply_domain_diversity(items: list, max_per_domain: int = 2) -> list:
     return filtered
 
 
+# ---------------------------------------------------------------- 搜索：互斥锁 / 引擎健康
+
+SEARCH_WORKER_NAME = "__dp_search_worker__"
+
+# 引擎域名（用于 TCP 可达性探测）
+ENGINE_HOSTS = {
+    "bing": "www.bing.com",
+    "baidu": "www.baidu.com",
+    "sogou": "www.sogou.com",
+    "so": "www.so.com",
+    "google": "www.google.com",
+    "duckduckgo": "html.duckduckgo.com",
+    "brave": "search.brave.com",
+    "yahoo": "search.yahoo.com",
+}
+
+
+def _safe_host(url: str) -> str:
+    try:
+        from urllib.parse import urlparse
+
+        return urlparse(url).hostname or url[:60]
+    except Exception:
+        return url[:60]
+
+
+def _env_float(name: str, default: float) -> float:
+    try:
+        v = float(os.environ.get(name, "").strip())
+        return v if v >= 0 else default
+    except Exception:
+        return default
+
+
+def _search_state_dir() -> Path:
+    """搜索状态目录（互斥锁 + 引擎健康缓存），跟随 DP_USER_DATA 落在插件数据目录下。"""
+    ud = os.environ.get("DP_USER_DATA", "").strip()
+    base = (Path(ud).parent if ud else Path(tempfile.gettempdir())) / "search-state"
+    try:
+        base.mkdir(parents=True, exist_ok=True)
+    except Exception:
+        pass
+    return base
+
+
+def _health_path() -> Path:
+    return _search_state_dir() / "engine-health.json"
+
+
+def _load_health() -> dict:
+    try:
+        data = json.loads(_health_path().read_text("utf-8"))
+        return data if isinstance(data, dict) else {}
+    except Exception:
+        return {}
+
+
+def _save_health(data: dict) -> None:
+    try:
+        _health_path().write_text(json.dumps(data, ensure_ascii=False), "utf-8")
+    except Exception:
+        pass
+
+
+def _tcp_reachable(host: str, timeout: float = 2.5) -> bool:
+    import socket
+
+    try:
+        with socket.create_connection((host, 443), timeout=timeout):
+            return True
+    except Exception:
+        return False
+
+
+def _engine_reachable(health: dict, engine: str, ttl: float):
+    """TCP 探测引擎可达性（带缓存）。返回 (reachable, note)。"""
+    host = ENGINE_HOSTS.get(engine)
+    if not host:
+        return True, ""
+    entry = health.get(host) or {}
+    now = time.time()
+    if isinstance(entry.get("tcp"), bool) and now - float(entry.get("at") or 0) < ttl:
+        return bool(entry["tcp"]), "探测结果缓存"
+    ok = _tcp_reachable(host)
+    health[host] = {"tcp": ok, "at": now}
+    _save_health(health)
+    return ok, "TCP 连接超时（无代理或网络被阻）"
+
+
+def _mark_engine_unreachable(health: dict, engine: str) -> None:
+    host = ENGINE_HOSTS.get(engine)
+    if host:
+        health[host] = {"tcp": False, "at": time.time()}
+        _save_health(health)
+
+
+def _mark_engine_reachable(health: dict, engine: str) -> None:
+    host = ENGINE_HOSTS.get(engine)
+    if host and (health.get(host) or {}).get("tcp") is not True:
+        health[host] = {"tcp": True, "at": time.time()}
+        _save_health(health)
+
+
+def _engine_blocked_reason(health: dict, engine: str, ttl: float) -> str:
+    entry = health.get(f"blocked:{engine}") or {}
+    if entry and time.time() - float(entry.get("at") or 0) < ttl:
+        return str(entry.get("reason") or "反爬拦截")
+    return ""
+
+
+def _mark_engine_blocked(health: dict, engine: str, reason: str) -> None:
+    health[f"blocked:{engine}"] = {"at": time.time(), "reason": reason}
+    _save_health(health)
+
+
+def _clear_engine_blocked(health: dict, engine: str) -> None:
+    if health.pop(f"blocked:{engine}", None) is not None:
+        _save_health(health)
+
+
+@contextlib.contextmanager
+def _search_lock():
+    """跟进程互斥：并发搜索共用同一个 worker 标签页会互相踩，结果串味/误报无结果。
+    用 O_CREAT|O_EXCL 文件锁串行化；超时（默认 90s）后放弃加锁，宁可并发也不卡死。
+    """
+    path = _search_state_dir() / "search.lock"
+    timeout = _env_float("DP_SEARCH_LOCK_TIMEOUT", 90.0)
+    stale = _env_float("DP_SEARCH_LOCK_STALE", 120.0)
+    deadline = time.time() + timeout
+    fd = None
+    while True:
+        try:
+            fd = os.open(str(path), os.O_CREAT | os.O_EXCL | os.O_WRONLY)
+            os.write(fd, str(os.getpid()).encode("ascii", "ignore"))
+            break
+        except FileExistsError:
+            try:
+                if time.time() - path.stat().st_mtime > stale:
+                    path.unlink()
+                    continue
+            except Exception:
+                pass
+            if time.time() >= deadline:
+                break
+            time.sleep(0.2)
+        except Exception:
+            break
+    try:
+        yield
+    finally:
+        if fd is not None:
+            try:
+                os.close(fd)
+            except Exception:
+                pass
+            try:
+                path.unlink()
+            except Exception:
+                pass
+
+
 def cmd_search(browser, args):
+    with _search_lock():
+        _search_locked(browser, args)
+
+
+def _search_locked(browser, args):
     if not args:
         fail(
             "search 需要关键词: search <query> [--engine <auto|bing|sogou|so|baidu|google|duckduckgo|brave|yahoo>] "
@@ -1458,21 +1904,32 @@ def cmd_search(browser, args):
     original_tab = browser.latest_tab if tabs else None
 
     # 标签页隔离逻辑：专用后台 search worker 标签页
+    # 用 window.name 而非 JS 全局做标记 —— window.name 能跨导航存活，
+    # 页面被验证码劫持/跳转后仍能找回同一个 worker，根除「每次搜索新开一个标签页」的泄漏。
     search_tab = None
     if tab_isolation and tabs:
+        orphans = []
         for t in tabs:
             try:
-                is_worker = t.run_js("return !!window.__dp_search_worker;")
-                if is_worker:
-                    search_tab = t
-                    break
+                if t.run_js("return window.name") == SEARCH_WORKER_NAME:
+                    if search_tab is None:
+                        search_tab = t
+                    else:
+                        orphans.append(t)
+            except Exception:
+                pass
+        for t in orphans:
+            try:
+                t.close()
             except Exception:
                 pass
 
         if search_tab is None:
             search_tab = browser.new_tab()
             try:
-                search_tab.run_js("window.__dp_search_worker = true; document.title = 'Search Worker';")
+                search_tab.run_js(
+                    "window.name = '" + SEARCH_WORKER_NAME + "'; document.title = 'Search Worker';"
+                )
             except Exception:
                 pass
     else:
@@ -1488,11 +1945,42 @@ def cmd_search(browser, args):
             if fb not in candidate_engines:
                 candidate_engines.append(fb)
 
-    last_error = None
+    # 引擎健康自检（TCP 可达性 + 近期拦截记录）：避免每个搜索都白等四个境外引擎超时
+    health = _load_health()
+    health_ttl = _env_float("DP_ENGINE_HEALTH_TTL", 600.0)
+    block_ttl = _env_float("DP_ENGINE_BLOCK_TTL", 900.0)
+
     fallback_from = None
+    attempts = []
 
     try:
         for eng in candidate_engines:
+            is_primary = eng == primary_engine
+
+            # a) 网络层自检：非首选引擎若确认不可达，直接记原因跳过（省掉一次 6s 导航超时）
+            reachable, net_note = _engine_reachable(health, eng, health_ttl)
+            if not reachable and not is_primary:
+                attempts.append(
+                    {
+                        "engine": eng,
+                        "kind": "network",
+                        "reason": f"{ENGINE_HOSTS.get(eng, eng)} 不可达（{net_note}）",
+                    }
+                )
+                if not fallback_from and eng != candidate_engines[-1]:
+                    fallback_from = eng
+                continue
+
+            # b) 近期刚被拦截过的引擎：非首选时跳过，不再白跑一遍验证码
+            recent_block = _engine_blocked_reason(health, eng, block_ttl)
+            if recent_block and not is_primary:
+                attempts.append(
+                    {"engine": eng, "kind": "blocked", "reason": f"{recent_block}（近期已拦截，跳过）"}
+                )
+                if not fallback_from and eng != candidate_engines[-1]:
+                    fallback_from = eng
+                continue
+
             try:
                 res = _execute_search_on_tab(
                     search_tab,
@@ -1504,79 +1992,111 @@ def cmd_search(browser, args):
                     page=page,
                     fast_search=fast_search,
                 )
-                if isinstance(res, dict):
-                    if res.get("blocked") or res.get("error"):
-                        last_error = res.get("error") or "页面被拦截或验证码"
-                        if fallback and eng != candidate_engines[-1]:
-                            if not fallback_from:
-                                fallback_from = eng
-                            continue
-                    results = res.get("results") or []
-                    if not results and fallback and eng != candidate_engines[-1]:
-                        if not fallback_from:
-                            fallback_from = eng
-                        continue
+            except Exception as e:
+                attempts.append({"engine": eng, "kind": "error", "reason": f"{type(e).__name__}: {e}"})
+                if not fallback_from and eng != candidate_engines[-1]:
+                    fallback_from = eng
+                continue
 
-                    # 1. 域名多样性过滤
-                    results = _apply_domain_diversity(results, max_per_domain=2)
-                    # 2. 限制 limit
-                    results = results[:limit]
+            if not isinstance(res, dict):
+                attempts.append({"engine": eng, "kind": "error", "reason": "搜索结果解析失败"})
+                continue
 
-                    # 3. 搜阅一体模式：使用独立临时标签页提取首条纯净正文（不污染 search_tab）
-                    top_content = None
-                    if fetch_top and results:
-                        first_url = results[0].get("url")
-                        if first_url and first_url.startswith("http"):
-                            content_tab = None
+            if res.get("blocked") or res.get("error"):
+                reason = res.get("error") or "页面被拦截或验证码"
+                kind = res.get("kind") or "blocked"
+                attempts.append({"engine": eng, "kind": kind, "reason": str(reason)})
+                if kind == "network":
+                    _mark_engine_unreachable(health, eng)
+                else:
+                    _mark_engine_blocked(health, eng, str(reason))
+                if not fallback_from and eng != candidate_engines[-1]:
+                    fallback_from = eng
+                continue
+
+            _mark_engine_reachable(health, eng)
+            results = res.get("results") or []
+            if not results:
+                empty_note = "该引擎确实没有结果" if res.get("declared_empty") else "版式变化，未解析到结果"
+                attempts.append({"engine": eng, "kind": "empty", "reason": empty_note})
+                if not fallback_from and eng != candidate_engines[-1]:
+                    fallback_from = eng
+                continue
+
+            _clear_engine_blocked(health, eng)
+
+            # 1. 域名多样性过滤
+            results = _apply_domain_diversity(results, max_per_domain=2)
+            # 2. 限制 limit
+            results = results[:limit]
+
+            # 3. 搜阅一体模式：使用独立临时标签页提取首条纯净正文（不污染 search_tab）
+            top_content = None
+            if fetch_top and results:
+                first_url = results[0].get("url")
+                if first_url and first_url.startswith("http"):
+                    content_tab = None
+                    try:
+                        content_tab = browser.new_tab(first_url)
+                        try:
+                            content_tab.wait.doc_loaded(timeout=4.0)
+                            content_tab.wait.ele_loaded("article, main, body", timeout=3.0)
+                        except Exception:
+                            pass
+                        raw_top = content_tab.run_js(ARTICLE_EXTRACT_JS, 2000)
+                        top_data = json.loads(raw_top) if isinstance(raw_top, str) else raw_top
+                        if top_data and top_data.get("ok"):
+                            top_content = {
+                                "title": top_data.get("title") or results[0].get("title"),
+                                "url": first_url,
+                                "content": top_data.get("content", ""),
+                            }
+                    except Exception:
+                        pass
+                    finally:
+                        if content_tab is not None:
                             try:
-                                content_tab = browser.new_tab(first_url)
-                                try:
-                                    content_tab.wait.doc_loaded(timeout=4.0)
-                                    content_tab.wait.ele_loaded("article, main, body", timeout=3.0)
-                                except Exception:
-                                    pass
-                                raw_top = content_tab.run_js(ARTICLE_EXTRACT_JS, 2000)
-                                top_data = json.loads(raw_top) if isinstance(raw_top, str) else raw_top
-                                if top_data and top_data.get("ok"):
-                                    top_content = {
-                                        "title": top_data.get("title") or results[0].get("title"),
-                                        "url": first_url,
-                                        "content": top_data.get("content", ""),
-                                    }
+                                content_tab.close()
                             except Exception:
                                 pass
-                            finally:
-                                if content_tab is not None:
-                                    try:
-                                        content_tab.close()
-                                    except Exception:
-                                        pass
 
-                    out(
-                        {
-                            "ok": True,
-                            "cmd": CMD,
-                            "query": query,
-                            "engine": eng,
-                            "fallback_from": fallback_from,
-                            "time_range": time_range if time_range != "all" else None,
-                            "page": page,
-                            "count": len(results),
-                            "instant_answer": res.get("instantAnswer"),
-                            "related_queries": res.get("related_queries") or [],
-                            "top_content": top_content,
-                            "results": results,
-                        }
-                    )
-                    return
-            except Exception as e:
-                last_error = str(e)
-                if fallback and eng != candidate_engines[-1]:
-                    if not fallback_from:
-                        fallback_from = eng
-                    continue
+            out(
+                {
+                    "ok": True,
+                    "cmd": CMD,
+                    "query": query,
+                    "engine": eng,
+                    "fallback_from": fallback_from,
+                    "time_range": time_range if time_range != "all" else None,
+                    "page": page,
+                    "count": len(results),
+                    "instant_answer": res.get("instantAnswer"),
+                    "related_queries": res.get("related_queries") or [],
+                    "top_content": top_content,
+                    "results": results,
+                    "attempts": attempts,
+                }
+            )
+            return
 
-        fail(f"搜索执行失败 ({last_error or '无结果'})")
+        # 所有引擎都没拿到结果：如实交代「为什么」，而不是统一伪装成「搜不到」
+        out(
+            {
+                "ok": True,
+                "cmd": CMD,
+                "query": query,
+                "engine": None,
+                "fallback_from": None,
+                "time_range": time_range if time_range != "all" else None,
+                "page": page,
+                "count": 0,
+                "instant_answer": None,
+                "related_queries": [],
+                "top_content": None,
+                "results": [],
+                "attempts": attempts,
+            }
+        )
     finally:
         # 如果启用了隔离，切回原前台活动标签页
         if tab_isolation and original_tab is not None and original_tab != search_tab:
@@ -1854,6 +2374,7 @@ COMMANDS = {
     "wait_ele": cmd_wait_ele,
     "js": cmd_js,
     "jsx": cmd_js,
+    "console": cmd_console,
     "screenshot": cmd_screenshot,
     "quit": cmd_quit,
 }
@@ -1895,6 +2416,8 @@ HELP = """browser-use — 常驻 Chrome 浏览器控制后端
 JS / 其它
   js <代码>             执行 JS(函数体形式, 可用 return)
   jsx <表达式>          执行 JS 表达式
+  console [--level <all|error|warn|info|log>] [--clear] [--limit <N>] [--filter <关键词>]
+                        查看浏览器控制台日志(自动捕获 log/warn/error 与未捕获异常)
   screenshot [路径] [--full]    截图(PNG)
   quit                  关闭常驻浏览器(结束会话)
   help                  本帮助

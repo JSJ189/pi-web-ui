@@ -34,6 +34,7 @@ import {
 	restoreBackup as restorePluginBackup,
 	checkPluginUpdates,
 	resolveRemoteSha,
+	compareVersions,
 } from "../dist/server/plugin-updater.js";
 import {
 	chmodSync,
@@ -279,6 +280,7 @@ function parseFlags(argv) {
 		dir: undefined,
 		template: undefined,
 		withTest: false,
+		remote: false,
 		help: false,
 	};
 	const positionals = [];
@@ -352,6 +354,9 @@ function parseFlags(argv) {
 				break;
 			case "--with-test":
 				opts.withTest = true;
+				break;
+			case "--remote":
+				opts.remote = true;
 				break;
 			case "--help":
 			case "-h":
@@ -1877,6 +1882,7 @@ const PLUGIN_HELP = ZH
   --name <id>       插件目录名/id（默认取仓库名或 manifest.id，仅限字母数字-_）
   --data-dir <dir>  数据目录（默认 ~/.pi-web 或 $PI_WEB_DATA_DIR）
   --force           目标目录已存在时覆盖（覆盖前自动备份旧版本）
+  --remote          强制从远端拉取最新代码（跳过本地随包内置插件快速路径）
   --build           强制源码构建：在隔离临时目录里按插件声明安装构建依赖并编译
                     （manifest.build 或 package.json 的 scripts.build），
                     成功且产物齐全后才替换目标目录，失败不留半装状态
@@ -1921,6 +1927,7 @@ Source formats (choose one):
   --name <id>       plugin directory name/id (default: repo name or manifest.id; alphanumeric -_ only)
   --data-dir <dir>  data directory (default ~/.pi-web or $PI_WEB_DATA_DIR)
   --force           overwrite if target directory exists (auto-backup before overwrite)
+  --remote          force pulling from remote (skip local bundled builtin fast path)
   --build           force source build: install build deps and compile in an isolated temp directory
                     (manifest.build or package.json scripts.build),
                     replaces target only on success with complete artifacts; no partial state on failure
@@ -1971,10 +1978,34 @@ function parsePluginSource(rawSpec) {
 		if (url) [, spec] = url;
 	}
 	const segs = spec.split("/").filter(Boolean);
-	if (segs.length < 2)
+	if (segs.length < 2) {
+		// 单段名称（如 browser-use）：若本地随包官方插件或 catalog 存在该 id，自动补齐为官方插件源
+		if (segs.length === 1 && PLUGIN_ID_RE.test(segs[0])) {
+			const id = segs[0];
+			const pkgRoot = resolve(BIN_DIR, "..");
+			const catalogPath = join(pkgRoot, "plugins", "catalog.json");
+			const pluginDir = join(pkgRoot, "plugins", id);
+			let isOfficial = existsSync(join(pluginDir, "manifest.json"));
+			if (!isOfficial && existsSync(catalogPath)) {
+				try {
+					const cat = JSON.parse(readFileSync(catalogPath, "utf8"));
+					if (Array.isArray(cat) && cat.some((e) => e?.id === id)) isOfficial = true;
+				} catch {}
+			}
+			if (isOfficial) {
+				return {
+					owner: "xing-shuyin",
+					repo: "pi-web-ui",
+					ref,
+					subpath: `plugins/${id}`,
+					cloneUrl: "https://github.com/xing-shuyin/pi-web-ui.git",
+				};
+			}
+		}
 		fail(
 			ZH ? `无法识别的插件源 "${rawSpec}"\n${PLUGIN_HELP}` : `Unrecognized plugin source "${rawSpec}"\n${PLUGIN_HELP}`,
 		);
+	}
 	for (const s of segs) {
 		if (s === "." || s === "..")
 			fail(
@@ -2014,28 +2045,172 @@ function cleanStalePluginTmpDirs() {
 	} catch {}
 }
 
-/** 把仓库拉到 tmpDir 并返回检出根目录。优先 git clone --depth 1，失败回退 codeload tarball + 系统 tar。 */
-async function acquireRepo(src, tmpDir) {
+/**
+ * 尝试定位随包自带的内置官方插件目录。
+ * 命中条件：
+ *   1. 未开启强制远端拉取标志（opts.remote / PI_WEB_PLUGIN_FORCE_REMOTE）；
+ *   2. 未显式指定非主干 git ref（除 main/master/HEAD 之外的 ref 说明用户想试特定提交）；
+ *   3. 属于官方仓库（xing-shuyin/pi-web-ui）的 plugins/<id> 子路径，且随包目录存在合法 manifest.json。
+ */
+function resolveLocalBuiltinPluginDir(rawSpec, src, opts = {}) {
+	if (opts.remote === true || process.env.PI_WEB_PLUGIN_FORCE_REMOTE === "1") return null;
+	if (src?.ref && src.ref !== "main" && src.ref !== "master" && src.ref !== "HEAD") return null;
+
+	const pkgRoot = resolve(BIN_DIR, "..");
+	let pluginSubdir = null;
+
+	if (src?.owner === "xing-shuyin" && src?.repo === "pi-web-ui" && src?.subpath) {
+		pluginSubdir = src.subpath.startsWith("plugins/") ? src.subpath.slice("plugins/".length) : src.subpath;
+	} else if (!src && typeof rawSpec === "string" && !rawSpec.includes("/") && PLUGIN_ID_RE.test(rawSpec.trim())) {
+		pluginSubdir = rawSpec.trim();
+	}
+
+	if (!pluginSubdir) return null;
+	const localDir = join(pkgRoot, "plugins", pluginSubdir);
+	if (existsSync(join(localDir, "manifest.json"))) {
+		return localDir;
+	}
+	return null;
+}
+
+/**
+ * 把仓库拉到 tmpDir 并返回检出根目录。
+ * 优化策略：
+ *   1. 共享缓存复用：同一批量操作/同源仓库共享检出，增量 sparse-checkout add，杜绝反复 clone；
+ *   2. 稀疏拉取（Sparse Checkout + Blobless filter）：只拉取元数据与目标子目录，免除全量下载数十兆整仓；
+ *   3. 健壮降级：稀疏失败平滑降级常规 shallow clone，再失败回退 tarball 直连。
+ */
+async function acquireRepo(src, tmpDir, opts = {}) {
+	const sharedCache = opts.sharedCache;
+	const cacheKey = sharedCache ? `${src.cloneUrl}#${src.ref || "HEAD"}` : null;
+	const normalizedSubpath = src.subpath ? src.subpath.split(/[\\/]/).filter(Boolean).join("/") : null;
+
+	// 1. 尝试从共享缓存中复用已有检出
+	if (sharedCache && cacheKey && sharedCache.has(cacheKey)) {
+		const cached = sharedCache.get(cacheKey);
+		if (existsSync(cached.dir)) {
+			if (!normalizedSubpath || (cached.subpaths && cached.subpaths.has(normalizedSubpath))) {
+				console.log(
+					ZH
+						? `· 复用已拉取仓库 ${src.cloneUrl}${normalizedSubpath ? ` (${normalizedSubpath})` : ""}`
+						: `· Reusing cached repo ${src.cloneUrl}${normalizedSubpath ? ` (${normalizedSubpath})` : ""}`,
+				);
+				return cached.dir;
+			}
+			if (cached.isSparse && normalizedSubpath) {
+				console.log(
+					ZH
+						? `· 复用已拉取仓库，增量检出 ${normalizedSubpath}…`
+						: `· Reusing cached repo, incrementally checking out ${normalizedSubpath}…`,
+				);
+				const addRes = spawnSync("git", ["sparse-checkout", "add", normalizedSubpath], {
+					cwd: cached.dir,
+					stdio: "inherit",
+					env: { ...process.env, GIT_TERMINAL_PROMPT: "0", GCM_INTERACTIVE: "never" },
+					timeout: Number(process.env.PI_WEB_GIT_TIMEOUT_MS) || 45_000,
+				});
+				if (addRes.status === 0) {
+					cached.subpaths.add(normalizedSubpath);
+					return cached.dir;
+				}
+			}
+		}
+	}
+
 	const dst = join(tmpDir, "src");
 	const hasGit = spawnSync("git", ["--version"], { stdio: "ignore", timeout: 10_000 }).status === 0;
 	if (hasGit) {
 		const gitTimeout = Number(process.env.PI_WEB_GIT_TIMEOUT_MS) || 45_000;
+		const gitEnv = { ...process.env, GIT_TERMINAL_PROMPT: "0", GCM_INTERACTIVE: "never" };
+
+		// 2. 稀疏拉取：当指定了 subpath 时，优先尝试 --filter=blob:none --sparse
+		if (normalizedSubpath) {
+			const sparseArgs = [
+				"-c",
+				"connect.timeout=15",
+				"clone",
+				"--depth",
+				"1",
+				"--filter=blob:none",
+				"--sparse",
+				"--no-checkout",
+			];
+			if (src.ref) sparseArgs.push("--branch", src.ref);
+			sparseArgs.push(src.cloneUrl, dst);
+			console.log(
+				`· git clone --depth 1 --filter=blob:none --sparse ${src.cloneUrl}${src.ref ? ` (${src.ref})` : ""} [${normalizedSubpath}]`,
+			);
+			const cloneRes = spawnSync("git", sparseArgs, {
+				stdio: "inherit",
+				env: gitEnv,
+				timeout: gitTimeout,
+			});
+			if (cloneRes.status === 0 && existsSync(dst)) {
+				const setRes = spawnSync("git", ["sparse-checkout", "set", normalizedSubpath], {
+					cwd: dst,
+					stdio: "inherit",
+					env: gitEnv,
+					timeout: gitTimeout,
+				});
+				if (setRes.status === 0) {
+					const coRes = spawnSync("git", ["checkout"], {
+						cwd: dst,
+						stdio: "inherit",
+						env: gitEnv,
+						timeout: gitTimeout,
+					});
+					if (coRes.status === 0 && existsSync(dst)) {
+						if (sharedCache && cacheKey) {
+							sharedCache.set(cacheKey, {
+								dir: dst,
+								tmpDir,
+								isSparse: true,
+								subpaths: new Set([normalizedSubpath]),
+							});
+						}
+						return dst;
+					}
+				}
+			}
+			// 稀疏拉取失败，清理已产生的残骸，准备降级
+			if (existsSync(dst)) {
+				try {
+					rmSync(dst, { recursive: true, force: true });
+				} catch {}
+			}
+			console.log(
+				ZH ? "· 稀疏拉取不可用，降级为常规 git clone…" : "· Sparse checkout failed, falling back to regular git clone…",
+			);
+		}
+
+		// 3. 常规 shallow clone（未指定 subpath 或稀疏拉取失败时的降级通路）
 		const args = ["-c", "connect.timeout=15", "clone", "--depth", "1", "--single-branch"];
 		if (src.ref) args.push("--branch", src.ref);
 		args.push(src.cloneUrl, dst);
 		console.log(`· git clone --depth 1 ${src.cloneUrl}${src.ref ? ` (${src.ref})` : ""}`);
 		const res = spawnSync("git", args, {
 			stdio: "inherit",
-			env: { ...process.env, GIT_TERMINAL_PROMPT: "0", GCM_INTERACTIVE: "never" },
+			env: gitEnv,
 			timeout: gitTimeout,
 		});
-		if (res.status === 0 && existsSync(dst)) return dst;
+		if (res.status === 0 && existsSync(dst)) {
+			if (sharedCache && cacheKey) {
+				sharedCache.set(cacheKey, {
+					dir: dst,
+					tmpDir,
+					isSparse: false,
+					subpaths: normalizedSubpath ? new Set([normalizedSubpath]) : new Set(),
+				});
+			}
+			return dst;
+		}
 		console.log(
 			ZH
 				? "· git clone 失败，回退到 tarball 直连下载…"
 				: "· git clone failed, falling back to direct tarball download…",
 		);
 	}
+
 	const url = `https://codeload.github.com/${src.owner}/${src.repo}/tar.gz/${src.ref || "HEAD"}`;
 	console.log(ZH ? `· 下载 ${url}` : `· Downloading ${url}`);
 	// 注意：这里不用 fail()/process.exit —— async 上下文里还有未关闭的 socket 时
@@ -2108,9 +2283,9 @@ function findManifestDirs(root) {
 function locatePluginRoot(checkout, subpath, repoLabel) {
 	if (subpath) {
 		const dir = join(checkout, ...subpath.split("/"));
-		if (!existsSync(join(dir, "manifest.json")))
-			fail(ZH ? `子目录 "${subpath}" 里没有 manifest.json` : `Subdirectory "${subpath}" has no manifest.json`);
-		return dir;
+		if (existsSync(join(dir, "manifest.json"))) return dir;
+		if (existsSync(join(checkout, "manifest.json"))) return checkout;
+		fail(ZH ? `子目录 "${subpath}" 里没有 manifest.json` : `Subdirectory "${subpath}" has no manifest.json`);
 	}
 	if (existsSync(join(checkout, "manifest.json"))) return checkout;
 	const hits = findManifestDirs(checkout);
@@ -2282,19 +2457,86 @@ async function confirmSourceBuild(plan) {
  * 覆盖（备份+保留 config.json）→ 落盘 → 记录来源/sha。
  * 失败抛 Error（目录模式逐条 try/catch 继续下一条，单源模式由调用方转 fail）。
  */
-async function installOnePlugin({ rawSpec, name, force, build, noBuild, dataDir, isCatalog = false }) {
+async function installOnePlugin({
+	rawSpec,
+	name,
+	force,
+	build,
+	noBuild,
+	dataDir,
+	isCatalog = false,
+	sharedCache = null,
+	remote = false,
+}) {
 	cleanStalePluginTmpDirs();
 	const pluginsDir = join(dataDir, "plugins");
-	const localCandidate = resolve(rawSpec.replace(/^file:\/\//, ""));
+	let localCandidate = rawSpec;
+	if (/^file:\/\//i.test(rawSpec)) {
+		try {
+			localCandidate = fileURLToPath(rawSpec);
+		} catch {
+			localCandidate = rawSpec.replace(/^file:\/\//i, "");
+		}
+	}
+	localCandidate = resolve(localCandidate);
 	const isLocal = existsSync(localCandidate);
 	const src = isLocal ? null : parsePluginSource(rawSpec);
+
+	// 随包内置插件快速路径：若随包已自带官方插件且满足版本条件，优先走本地快速通路
+	const localBuiltinDir = isLocal ? null : resolveLocalBuiltinPluginDir(rawSpec, src, { remote });
+	let fastPathCandidate = null;
+	if (localBuiltinDir) {
+		const sourceName = src?.subpath ? src.subpath.split("/").pop() : src?.repo;
+		const fallbackId =
+			String(name ?? sourceName)
+				.replace(/[^A-Za-z0-9_-]/g, "-")
+				.replace(/^-+|-+$/g, "") || "plugin";
+		const id = name ?? fallbackId;
+		const target = join(pluginsDir, id);
+		if (!existsSync(target)) {
+			// 未安装：全新安装直接采用本地随包
+			fastPathCandidate = localBuiltinDir;
+		} else if (force) {
+			// 覆盖更新：对比随包版本与已装版本
+			try {
+				const tgtM = JSON.parse(readFileSync(join(target, "manifest.json"), "utf8"));
+				const srcM = JSON.parse(readFileSync(join(localBuiltinDir, "manifest.json"), "utf8"));
+				if (srcM?.version && tgtM?.version && compareVersions(srcM.version, tgtM.version) > 0) {
+					// 随包版本比已装版本更新（刚升级了主程序），优先直接使用本地随包
+					fastPathCandidate = localBuiltinDir;
+				}
+			} catch {}
+		}
+	}
+
 	const tmp = mkdtempSync(join(tmpdir(), "pi-web-ui-plugin-"));
 	try {
 		let checkout;
-		try {
-			checkout = isLocal ? localCandidate : await acquireRepo(src, tmp);
-		} catch (err) {
-			throw new Error(`${err?.message ?? err}`);
+		if (isLocal) {
+			checkout = localCandidate;
+		} else if (fastPathCandidate) {
+			checkout = fastPathCandidate;
+			console.log(
+				ZH
+					? `· 优先使用本地随包内置插件: ${relative(resolve(BIN_DIR, ".."), checkout).replace(/\\/g, "/")}`
+					: `· Using local bundled plugin: ${relative(resolve(BIN_DIR, ".."), checkout).replace(/\\/g, "/")}`,
+			);
+		} else {
+			try {
+				checkout = await acquireRepo(src, tmp, { sharedCache });
+			} catch (err) {
+				// 若远端拉取失败，且属于官方插件，优雅回退到本地随包（离线与断网容错保护）
+				if (localBuiltinDir && existsSync(join(localBuiltinDir, "manifest.json"))) {
+					console.warn(
+						ZH
+							? `⚠ 远端拉取失败（${err?.message ?? err}），回退到本地随包内置插件…`
+							: `⚠ Remote fetch failed (${err?.message ?? err}), falling back to bundled local plugin…`,
+					);
+					checkout = localBuiltinDir;
+				} else {
+					throw new Error(`${err?.message ?? err}`);
+				}
+			}
 		}
 		const repoLabel = isLocal ? localCandidate : `${src.owner}/${src.repo}`;
 		const pluginRoot = locatePluginRoot(checkout, src?.subpath, repoLabel);
@@ -2445,10 +2687,22 @@ async function installOnePlugin({ rawSpec, name, force, build, noBuild, dataDir,
 		}
 		return { id, target, manifest, buildMode: decision.mode };
 	} finally {
-		try {
-			rmSync(tmp, { recursive: true, force: true });
-		} catch {
-			/* Windows 等平台杀毒/进程占用可能抛 EBUSY，不应翻转已成功的安装 */
+		// 若当前 tmp 正在被 sharedCache 共享复用，不在此清理，留给批量操作统一释放
+		let isCached = false;
+		if (sharedCache) {
+			for (const c of sharedCache.values()) {
+				if (c.tmpDir === tmp) {
+					isCached = true;
+					break;
+				}
+			}
+		}
+		if (!isCached) {
+			try {
+				rmSync(tmp, { recursive: true, force: true });
+			} catch {
+				/* Windows 等平台杀毒/进程占用可能抛 EBUSY，不应翻转已成功的安装 */
+			}
 		}
 	}
 }
@@ -2637,33 +2891,47 @@ async function installCatalogCmd(opts) {
 	let okCount = 0;
 	let failCount = 0;
 	let skipCount = 0;
-	for (const e of entries) {
-		if (existsSync(join(pluginsDir, e.id)) && !opts.force) {
-			console.log(
-				ZH
-					? `· 跳过 ${e.id}（已安装，加 --force 更新）`
-					: `· Skipping ${e.id} (already installed, use --force to update)`,
-			);
-			skipCount++;
-			continue;
+	const sharedCache = new Map();
+	try {
+		for (const e of entries) {
+			if (existsSync(join(pluginsDir, e.id)) && !opts.force) {
+				console.log(
+					ZH
+						? `· 跳过 ${e.id}（已安装，加 --force 更新）`
+						: `· Skipping ${e.id} (already installed, use --force to update)`,
+				);
+				skipCount++;
+				continue;
+			}
+			try {
+				await installOnePlugin({
+					rawSpec: e.source,
+					name: e.id,
+					force: true,
+					build: opts.build === true,
+					noBuild: opts.noBuild === true,
+					dataDir,
+					isCatalog: true,
+					sharedCache,
+					remote: opts.remote === true,
+				});
+				console.log(ZH ? `✔ ${e.id} 安装成功` : `✔ ${e.id} installed`);
+				okCount++;
+			} catch (err) {
+				console.error(
+					ZH ? `✖ ${e.id} 安装失败：${err?.message ?? err}` : `✖ ${e.id} failed to install: ${err?.message ?? err}`,
+				);
+				failCount++;
+			}
 		}
-		try {
-			await installOnePlugin({
-				rawSpec: e.source,
-				name: e.id,
-				force: true,
-				build: opts.build === true,
-				noBuild: opts.noBuild === true,
-				dataDir,
-				isCatalog: true,
-			});
-			console.log(ZH ? `✔ ${e.id} 安装成功` : `✔ ${e.id} installed`);
-			okCount++;
-		} catch (err) {
-			console.error(
-				ZH ? `✖ ${e.id} 安装失败：${err?.message ?? err}` : `✖ ${e.id} failed to install: ${err?.message ?? err}`,
-			);
-			failCount++;
+	} finally {
+		// 统一清理同批任务复用的共享缓存检出目录
+		for (const entry of sharedCache.values()) {
+			if (entry.tmpDir) {
+				try {
+					rmSync(entry.tmpDir, { recursive: true, force: true });
+				} catch {}
+			}
 		}
 	}
 	console.log(
@@ -3346,6 +3614,7 @@ async function pluginInstallCmd(argv) {
 			build: opts.build === true,
 			noBuild: opts.noBuild === true,
 			dataDir: pluginDataDir(opts),
+			remote: opts.remote === true,
 		});
 		console.log(
 			ZH

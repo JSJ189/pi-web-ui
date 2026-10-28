@@ -14,6 +14,7 @@
  */
 import { join, resolve } from "node:path";
 import { statSync } from "node:fs";
+import { randomUUID } from "node:crypto";
 import { VERSION, getAgentDir, type AgentSession } from "@earendil-works/pi-coding-agent";
 import { ClientStateStore } from "./client-state.js";
 import { ClaimStore } from "./claim-store.js";
@@ -625,12 +626,28 @@ export class AgentService {
 		const text = String(req?.text ?? "");
 		if (!text.trim()) throw new Error("chatFromPlugin: text 为空");
 		if (this.quiesced) throw new QuiesceRejectedError("插件无头调用被拒绝，请等服务器恢复后重试");
+		// 本轮运行的稳定标识：随该轮所有 run 事件下发。为何需要：过户会把对话搬到
+		// 别的客户端会话（clientId 变），目标会话已有同名 id 时还会就地改名
+		// （conversationId 变）——两个键全失效，通道插件靠它认领自己的回包。
+		const runId = `pr-${randomUUID()}`;
 		// 1. 绑定已有会话：steer 语义投递，网页端实时可见（微信当远程遥控器用）。
 		// miss/已回收时不抛错，回落无头伪客户端（浏览器关着时微信照常可用）。
 		const target = String(req?.conversationId ?? "").trim();
 		if (target) {
 			const w = await this.wakeConversation(target, text);
-			if (w.ok) return { conversationId: target, clientId: w.clientId ?? clientId };
+			if (w.ok) {
+				// 投递成功：给该对话打上运行 token（过户后事件依旧带它）。
+				const owner = w.clientId ? this.clients.get(w.clientId) : undefined;
+				if (owner) {
+					try {
+						const conv = w.conversationId ? owner.getConversation(w.conversationId) : undefined;
+						owner.markPluginRun(runId, conv);
+					} catch {
+						/* 打标尽力而为，不影响已投递的请求 */
+					}
+				}
+				return { conversationId: w.conversationId ?? target, clientId: w.clientId ?? clientId, runId };
+			}
 		}
 		// 2. 工作空间：不传回落伪客户端当前目录；传了必须存在且非系统目录。
 		const cwdReq = String(req?.cwd ?? "").trim();
@@ -662,9 +679,16 @@ export class AgentService {
 				throw new Error(`chatFromPlugin: 切换思考强度失败（${thinking}）：${(err as Error).message}`);
 			}
 		}
-		const conversationId = cs.readConversationForPlugins()?.conversationId ?? "";
+		// 打运行 token（没真跑起来就不认领，不会污染用户自己下一轮的事件归属）。
+		let stampedId = "";
+		try {
+			stampedId = cs.markPluginRun(runId);
+		} catch {
+			/* 打标尽力而为 */
+		}
+		const conversationId = stampedId || (cs.readConversationForPlugins()?.conversationId ?? "");
 		void cs.prompt(text);
-		return { conversationId, clientId };
+		return { conversationId, clientId, runId };
 	}
 
 	/** 内置定时任务的无头执行（issue #184，server/scheduler-tasks.ts 的 executor）。

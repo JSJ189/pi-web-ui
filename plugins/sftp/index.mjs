@@ -441,6 +441,14 @@ export default {
 							isCurrentProject: true,
 						};
 			}
+			const remoteSsh = typeof host.get === "function" ? host.get("remoteSsh") : null;
+			let globalHosts = [];
+			if (remoteSsh) {
+				try {
+					globalHosts = await remoteSsh.listProfiles();
+				} catch {}
+			}
+
 			return {
 				cwd: loaded.cwd,
 				configPath: path.join(".pi", "sftp.json"),
@@ -450,6 +458,15 @@ export default {
 				active: loaded.doc.active,
 				connection: publicConnection(loaded.conn),
 				profiles: Object.values(loaded.doc.connections).map((c) => publicConnection(c)),
+				globalHosts: (globalHosts || []).map((p) => ({
+					name: p.name,
+					host: p.host,
+					port: p.port,
+					username: p.username,
+					authType: p.authType,
+					remotePath: p.remotePath,
+					description: p.description,
+				})),
 				settings,
 				warnings: loaded.doc.warnings,
 				plaintext: settings.plaintextWarn ? plaintextCredentials(loaded.doc) : [],
@@ -518,6 +535,27 @@ export default {
 			const out = await removeConnection(host.cwd, String(req.body?.name ?? ""));
 			ssh.dropAll();
 			return out;
+		});
+
+		route("POST", "/use-global", async (req) => {
+			const globalName = String(req.body?.globalName ?? "").trim();
+			if (!globalName) throw new Error("缺 globalName（全局主机名）");
+			const profileName = String(req.body?.name ?? "").trim() || globalName.replace(/[^a-zA-Z0-9_.-]/g, "_");
+			const remotePath = String(req.body?.remotePath ?? "").trim() || "/";
+			const out = await upsertConnection(
+				host.cwd,
+				profileName,
+				{
+					useGlobal: globalName,
+					remotePath: remotePath.startsWith("/") ? remotePath : `/${remotePath}`,
+				},
+				{
+					target: "base",
+					makeActive: true,
+				},
+			);
+			ssh.dropAll();
+			return { ...out, connection: publicConnection((await load(profileName)).conn) };
 		});
 
 		route("POST", "/secret", async (req) => {

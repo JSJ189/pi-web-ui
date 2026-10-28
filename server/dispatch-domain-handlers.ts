@@ -367,7 +367,13 @@ export function handleModelAndProviderMessage(msg: ClientMessage, cs: DispatchSe
 export function handleTerminalMessage(msg: ClientMessage, cs: DispatchSession): boolean {
 	switch (msg.type) {
 		case "terminal_create": {
-			const tm = cs.getTerminalManager(msg.conversationId);
+			const isAgentBash = msg.agentBash === true;
+			// 用户直接创建的终端（!agentBash）进入会话/工作区级用户终端管理器，
+			// 始终存活并全局显示，不受单个对话切换、生命周期与过滤影响；
+			// 仅 AI 内部接管的 bash 终端（agentBash: true）放入对应对话的终端管理器。
+			const tm = isAgentBash
+				? cs.getTerminalManager(msg.conversationId)
+				: (cs.getUserTerminalManager?.() ?? cs.getTerminalManager(msg.conversationId));
 			if (tm) {
 				const createOpts =
 					msg.locale !== undefined || msg.agentBash !== undefined
@@ -385,27 +391,40 @@ export function handleTerminalMessage(msg: ClientMessage, cs: DispatchSession): 
 			}
 			return true;
 		}
-		case "terminal_input":
-			cs.getTerminalManager(msg.conversationId)?.input(msg.terminalId, msg.data);
+		case "terminal_input": {
+			const tm = cs.findTerminalManager
+				? cs.findTerminalManager(msg.terminalId, msg.conversationId)
+				: cs.getTerminalManager(msg.conversationId);
+			tm?.input(msg.terminalId, msg.data);
 			return true;
-		case "terminal_resize":
-			cs.getTerminalManager(msg.conversationId)?.resize(msg.terminalId, msg.cols, msg.rows);
+		}
+		case "terminal_resize": {
+			const tm = cs.findTerminalManager
+				? cs.findTerminalManager(msg.terminalId, msg.conversationId)
+				: cs.getTerminalManager(msg.conversationId);
+			tm?.resize(msg.terminalId, msg.cols, msg.rows);
 			return true;
-		case "terminal_kill":
-			cs.getTerminalManager(msg.conversationId)?.kill(msg.terminalId);
+		}
+		case "terminal_kill": {
+			const tm = cs.findTerminalManager
+				? cs.findTerminalManager(msg.terminalId, msg.conversationId)
+				: cs.getTerminalManager(msg.conversationId);
+			tm?.kill(msg.terminalId);
 			return true;
-		case "rename_terminal":
-			cs.getTerminalManager(msg.conversationId)?.rename(msg.terminalId, msg.title);
+		}
+		case "rename_terminal": {
+			const tm = cs.findTerminalManager
+				? cs.findTerminalManager(msg.terminalId, msg.conversationId)
+				: cs.getTerminalManager(msg.conversationId);
+			tm?.rename(msg.terminalId, msg.title);
 			return true;
-		case "run_command":
-			cs.getTerminalManager(msg.conversationId)?.runCommand(
-				msg.terminalId,
-				msg.command,
-				msg.cols,
-				msg.rows,
-				cs.getTerminalCwd(msg.conversationId),
-			);
+		}
+		case "run_command": {
+			// 用户从命令列表中运行的终端属于用户直接创建的终端
+			const tm = cs.getUserTerminalManager?.() ?? cs.getTerminalManager(msg.conversationId);
+			tm?.runCommand(msg.terminalId, msg.command, msg.cols, msg.rows, cs.getTerminalCwd(msg.conversationId));
 			return true;
+		}
 		default:
 			return false;
 	}

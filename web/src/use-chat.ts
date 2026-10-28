@@ -917,6 +917,23 @@ function makeTerminalBridge() {
 				}
 				return;
 			}
+			// 若按 (conversationId, terminalId) 未命中精确 writer，
+			// 在已注册的 writers 中按 terminalId 兜底派发（支持用户直接创建的终端跨对话持续接收输出）
+			let dispatched = false;
+			for (const [k, wSet] of writers.entries()) {
+				if (k.endsWith(`:${terminalId}`) && wSet.size > 0) {
+					for (const w of wSet) {
+						try {
+							w.write(data);
+						} catch {
+							// best effort
+						}
+					}
+					dispatched = true;
+				}
+			}
+			if (dispatched) return;
+
 			const prev = buffers.get(writerKey) ?? "";
 			const next = prev.length + data.length > MAX_TERM_BUFFER ? data : prev + data;
 			buffers.set(writerKey, next);
@@ -939,6 +956,19 @@ function makeTerminalBridge() {
 					// best effort
 				}
 				buffers.delete(writerKey);
+			} else {
+				// 检查是否有以 :${terminalId} 结尾的缓冲（例如在其他 conversationId 下缓冲的数据）
+				for (const [k, buf] of buffers.entries()) {
+					if (k.endsWith(`:${terminalId}`) && buf) {
+						try {
+							writer.write(buf);
+						} catch {
+							// best effort
+						}
+						buffers.delete(k);
+						break;
+					}
+				}
 			}
 			return () => {
 				const s = writers.get(writerKey);
@@ -1489,12 +1519,6 @@ function reducer(state: ChatState, action: Action): ChatState {
 				terminals: state.terminals.filter((t) => t.id !== action.id),
 			};
 		case "terminal_exit":
-			if (
-				action.conversationId &&
-				(state.activeConversationId || state.state?.conversationId) &&
-				action.conversationId !== (state.activeConversationId || state.state?.conversationId)
-			)
-				return state;
 			return {
 				...state,
 				terminals: state.terminals.map((t) =>
@@ -1509,21 +1533,51 @@ function reducer(state: ChatState, action: Action): ChatState {
 					t.id === action.terminalId ? { ...t, running: true, exitCode: null } : t,
 				),
 			};
-		case "terminal_list":
-			if (
-				action.conversationId &&
-				(state.activeConversationId || state.state?.conversationId) &&
-				action.conversationId !== (state.activeConversationId || state.state?.conversationId)
-			) {
-				return state;
+		case "terminal_list": {
+			const incomingMap = new Map(action.terminals.map((t) => [t.id, t]));
+			const userTerms: TerminalMeta[] = [];
+
+			// 1. 保留并更新本地已有的用户终端（不受对话切换或过滤影响）
+			for (const current of state.terminals) {
+				if (!current.agentBash) {
+					const incoming = incomingMap.get(current.id);
+					if (incoming) {
+						userTerms.push({
+							...current,
+							...incoming,
+							conversationId: current.conversationId,
+						});
+					} else {
+						userTerms.push(current);
+					}
+				}
 			}
-			return {
-				...state,
-				terminals: action.terminals.map((terminal) => ({
+
+			// 2. 将服务端推来的新用户终端加入列表
+			for (const incoming of action.terminals) {
+				if (!incoming.agentBash && !state.terminals.some((t) => t.id === incoming.id)) {
+					if (incoming.running || state.terminals.length === 0) {
+						userTerms.push({
+							...incoming,
+							conversationId: action.conversationId ?? state.state?.conversationId ?? "",
+						});
+					}
+				}
+			}
+
+			// 3. AI 终端（agentBash: true）仅保留属于当前推送对话的
+			const agentTerms: TerminalMeta[] = action.terminals
+				.filter((t) => t.agentBash)
+				.map((terminal) => ({
 					...terminal,
 					conversationId: action.conversationId ?? state.state?.conversationId ?? "",
-				})),
+				}));
+
+			return {
+				...state,
+				terminals: [...userTerms, ...agentTerms],
 			};
+		}
 		case "terminal_active":
 			return { ...state, terminalActiveId: action.id };
 		case "transition_start": {
@@ -3179,3 +3233,5 @@ export function useChat() {
 	};
 	return chatApi.current;
 }
+
+export { reducer as _chatReducerForTest };

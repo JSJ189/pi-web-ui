@@ -209,6 +209,14 @@ export interface PluginRunEvent {
 		"run_start" | "run_end" | "turn_start" | "turn_end" | "turn_first_token" | "message" | "tool_start" | "tool_end";
 	/** 事件所属对话。 */
 	conversationId?: string;
+	/** 事件来源客户端 ID（用于区分浏览器各标签页、微信通道或定时任务等无头客户端，多客户端隔离）。
+	 *  ⚠️ 它是「当前看着这条对话的客户端」，会随过户（take_over_conversation）变成对方；
+	 *  插件要认领自己的运行请用下面稳定的 `runId`，不要靠它（否则过户后整轮事件都认不回来）。 */
+	clientId?: string;
+	/** 本轮运行的稳定标识：由 host.chat 回执 `runId` 给出，原样透传到该轮所有事件。
+	 *  过户把对话搬到别的客户端会话（clientId 变了）或撞 id 改名（conversationId 变了）后
+	 *  仍然不变——通道类插件（微信/钉钉/Discord 等）靠它关联回包，别再用 clientId+conversationId。 */
+	runId?: string;
 	/** 事件毫秒时间戳（服务端时钟）。 */
 	at: number;
 	/** run_start：触发本轮的用户任务文本（截断 500 字；steer 等内部续跑为空）。 */
@@ -256,6 +264,9 @@ export interface PluginChatRequest {
 export interface PluginChatResult {
 	conversationId: string;
 	clientId: string;
+	/** 本轮运行的稳定标识（见 PluginRunEvent.runId）。插件应记住它并按它认领后续
+	 *  事件：过户 / 撞 id 改名后 conversationId 与 clientId 都可能变，这个不会。 */
+	runId?: string;
 }
 /** host.conversations.list 的条目（running/history 等，kind 原样透传）。 */
 export interface PluginConversationListItem {
@@ -2557,8 +2568,8 @@ export class PluginManager {
 	readonly streamingHandlers = new Set<(ev: { conversationId?: string; delta: string }) => void>();
 	/** 插件间总线订阅：topic → 处理器集合（host.events.on 注册；反激活时清理该插件全部订阅）。 */
 	readonly busHandlers = new Map<string, Set<(ev: PluginBusEvent) => void>>();
-	/** host.chatWait 的 run_end 等待者（emitRunEvent 里按 conversationId 唤醒）。 */
-	private chatWaiters: Array<{ conversationId: string; done: (ended: boolean) => void }> = [];
+	/** host.chatWait 的 run_end 等待者（emitRunEvent 里按 runId / conversationId 唤醒）。 */
+	private chatWaiters: Array<{ conversationId: string; runId?: string; done: (ended: boolean) => void }> = [];
 	/** 激活期插件的能力门控快照（activate 开头写入、落盘 loaded 或失败即删）：
 	 *  canUse 在 host 对象可用之前（loaded.set 之前）也要能判定。 */
 	private activatingGates = new Map<string, GateRecord>();
@@ -2625,11 +2636,13 @@ export class PluginManager {
 		return legacy(fam);
 	}
 
-	/** host.chatWait 等待指定对话的 run_end（默认 120s 超时由调用方钳制后传入）。 */
-	private waitRunEnd(conversationId: string, timeoutMs: number): Promise<boolean> {
+	/** host.chatWait 等待指定对话的 run_end（默认 120s 超时由调用方钳制后传入）。
+	 *  runId 优先：过户换持有方 / 撞 id 改名后 conversationId 已经对不上了。 */
+	private waitRunEnd(conversationId: string, timeoutMs: number, runId?: string): Promise<boolean> {
 		return new Promise<boolean>((resolve) => {
 			const entry = {
 				conversationId,
+				...(runId ? { runId } : {}),
 				done: (ended: boolean) => {
 					clearTimeout(timer);
 					const i = this.chatWaiters.indexOf(entry);
@@ -2692,9 +2705,11 @@ export class PluginManager {
 	 *  与 emitToolEvent 同级；订阅者崩了只记日志，不影响主流程）。
 	 *  run_end 顺带唤醒 host.chatWait 的等待者（按 conversationId 匹配）。 */
 	emitRunEvent(ev: PluginRunEvent): void {
-		if (ev.type === "run_end" && ev.conversationId) {
+		if (ev.type === "run_end" && (ev.conversationId || ev.runId)) {
 			for (const w of this.chatWaiters) {
-				if (w.conversationId !== ev.conversationId) continue;
+				const byRun = Boolean(ev.runId && w.runId && ev.runId === w.runId);
+				const byConv = Boolean(ev.conversationId) && w.conversationId === ev.conversationId && !w.runId;
+				if (!byRun && !byConv) continue;
 				try {
 					w.done(true);
 				} catch (err) {
@@ -4131,7 +4146,7 @@ export class PluginManager {
 					if (!cid) return { ok: false, error: "无头调用未返回 conversationId" };
 					// 默认 120s 超时；上下钳制防 100ms 误杀与无限等待。
 					const timeoutMs = Math.max(1000, Math.min(Number(opts?.timeoutMs ?? 120_000) || 120_000, 600_000));
-					const ended = await self.waitRunEnd(cid, timeoutMs);
+					const ended = await self.waitRunEnd(cid, timeoutMs, sent?.runId);
 					if (!ended)
 						return { ok: false, conversationId: cid, error: `等待运行结束超时（约${Math.round(timeoutMs / 1000)}s）` };
 					return { ok: true, conversationId: cid };

@@ -15,7 +15,7 @@ describe("browser-use 插件单元测试", () => {
 		const val = validatePluginManifest(manifest, "browser-use");
 		expect(val.errors).toEqual([]);
 		expect(manifest.id).toBe("browser-use");
-		expect(manifest.version).toBe("0.9.1");
+		expect(manifest.version).toBe("0.10.0");
 		expect(manifest.view).toBe(false);
 		expect(manifest.permissions).toContain("tools");
 		expect(manifest.description).toBeTruthy();
@@ -119,6 +119,7 @@ describe("browser-use 插件单元测试", () => {
 		expect(actionProp.enum).toContain("select");
 		expect(actionProp.enum).toContain("scroll");
 		expect(actionProp.enum).toContain("press");
+		expect(actionProp.enum).toContain("console");
 		expect(actionProp.enum).toContain("screenshot");
 		expect(actionProp.enum).toContain("quit");
 
@@ -177,5 +178,28 @@ describe("browser-use 插件单元测试", () => {
 		// deactivate 清理测试
 		expect(typeof plugin).toBe("function");
 		expect(() => (plugin as () => void)()).not.toThrow();
+	});
+
+	it("搜索零结果时必须暴露引擎级失败原因，而不是伪装成「搜不到」（回归）", () => {
+		const src = readFileSync(join(PLUGIN_DIR, "index.mjs"), "utf8");
+		// 旧版统一话术会把「被反爬拦截 / 境外引擎不可达」伪装成「没有结果」
+		expect(src).not.toContain("未找到有效自然搜索结果。建议调整关键词或指定其他搜索引擎（如 google / baidu）。");
+		expect(src).toContain("formatSearchFailureText");
+		expect(src).toContain("attempts");
+		// 并发搜索共用同一个 worker 标签页会串味，必须有串行队列
+		expect(src).toContain("enqueueSearch");
+
+		const py = readFileSync(join(PLUGIN_DIR, "scripts", "dp_browser.py"), "utf8");
+		// 跟进程互斥（文件锁）与跨导航存活的工作标签页标记
+		expect(py).toContain("_search_lock");
+		expect(py).toContain("SEARCH_WORKER_NAME");
+		expect(py).toContain("window.name");
+		// 拦截特征必须覆盖百度/搜狗/360 的验证页与 Chrome 错误页
+		expect(py).toContain("antispider");
+		expect(py).toContain("qcaptcha");
+		expect(py).toContain("ERR_");
+		// 引擎健康自检：跳过不可达引擎，避免每次搜索白等超时
+		expect(py).toContain("_engine_reachable");
+		expect(py).toContain("DP_ENGINE_HEALTH_TTL");
 	});
 });

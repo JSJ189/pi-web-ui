@@ -39,6 +39,7 @@ interface CanvasStudioProps {
 	models?: ModelInfo[];
 	/** 全局默认模型（"provider/model-id" 格式），新节点与模板套用的首选模型 */
 	defaultModel?: string | null;
+	installedSkills?: { name: string; description: string }[];
 	projects?: ProjectSummary[];
 	workspaceRoots?: string[];
 	pathCompletions?: { name: string; path: string; type: "dir" | "file" }[];
@@ -52,6 +53,7 @@ export function CanvasStudio({
 	lastMessage: propLastMessage,
 	models = [],
 	defaultModel = null,
+	installedSkills = [],
 	projects = [],
 	workspaceRoots = [],
 	pathCompletions = [],
@@ -1096,6 +1098,7 @@ export function CanvasStudio({
 							hasOutgoing={outgoingSet.has(node.id)}
 							models={models}
 							defaultModel={defaultModel}
+							installedSkills={installedSkills}
 							projects={projects}
 							workspaceRoots={workspaceRoots}
 							pathCompletions={pathCompletions}
@@ -1253,6 +1256,7 @@ export function CanvasStudio({
 					models={models}
 					defaultModel={defaultModel}
 					projects={projects}
+					installedSkills={installedSkills}
 					workspaceRoots={workspaceRoots}
 					pathCompletions={pathCompletions}
 					baseCwd={currentCwd}

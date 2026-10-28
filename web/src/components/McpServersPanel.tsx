@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useState } from "react";
+import { useMemo, useState } from "react";
 import {
 	FiAlertTriangle,
 	FiCheck,
@@ -13,6 +13,7 @@ import {
 	FiRefreshCw,
 	FiSearch,
 	FiServer,
+	FiShare2,
 	FiShoppingBag,
 	FiTerminal,
 	FiTrash2,
@@ -22,17 +23,19 @@ import { appSend } from "../app-globals";
 import { CopyButton } from "./copy-button";
 import { HintTip } from "./HintTip";
 import { isZhLocale, useI18n, useT } from "../i18n";
-import type { McpScope, RemoteMcpServer, UiMcpServer, UiMcpToolInfo, UiSettingsState } from "../types";
-import { PUBLIC_MCP_SERVERS } from "../mcp-catalog";
+import type { McpScope, UiMcpServer, UiMcpToolInfo, UiSettingsState } from "../types";
+import { MCP_MARKETS } from "../mcp-catalog";
+
+export type McpMarketCategoryFilter = "all" | "cn" | "marketplace" | "community" | "official";
 
 export interface McpServersPanelProps {
 	settings: UiSettingsState;
-	chat: {
+	chat?: {
 		mcpMarketResult?: {
 			ok: boolean;
-			servers: RemoteMcpServer[];
+			servers?: unknown[];
 			total?: number;
-			source: string;
+			source?: string;
 			error?: string;
 		} | null;
 	};
@@ -117,15 +120,14 @@ const MCP_PRESETS: McpPresetTemplate[] = [
 	},
 ];
 
-export function McpServersPanel({ settings, chat }: McpServersPanelProps) {
+export function McpServersPanel({ settings, chat: _chat }: McpServersPanelProps) {
 	const t = useT();
 	const { locale } = useI18n();
 	const [viewMode, setViewMode] = useState<"configured" | "market">("configured");
 	const [scopeFilter, setScopeFilter] = useState<"all" | McpScope>("all");
-	const [marketSource, setMarketSource] = useState<string>("smithery");
-	const [customSourceUrl, setCustomSourceUrl] = useState<string>("");
+	const [marketCategory, setMarketCategory] = useState<McpMarketCategoryFilter>("all");
 	const [marketSearch, setMarketSearch] = useState<string>("");
-	const [marketLoading, setMarketLoading] = useState<boolean>(false);
+	const [copiedMarketId, setCopiedMarketId] = useState<string | null>(null);
 	const [expandedTools, setExpandedTools] = useState<Record<string, boolean>>({});
 	const [reloading, setReloading] = useState(false);
 	const [draft, setDraft] = useState<McpDraft | null>(null);
@@ -141,62 +143,34 @@ export function McpServersPanel({ settings, chat }: McpServersPanelProps) {
 		return servers.filter((s) => s.scope === scopeFilter);
 	}, [servers, scopeFilter]);
 
-	const configuredServerIds = useMemo(() => {
-		return new Set(servers.map((s) => s.name.toLowerCase()));
-	}, [servers]);
-
-	const fetchMarket = (refresh = false) => {
-		const source = marketSource === "custom" ? customSourceUrl.trim() : marketSource;
-		if (!source) return;
-		setMarketLoading(true);
-		appSend({
-			type: "fetch_mcp_market",
-			source,
-			query: marketSearch.trim() || undefined,
-			refresh,
-		});
+	const handleCopyMarketUrl = (id: string, url: string) => {
+		navigator.clipboard.writeText(url).then(
+			() => {
+				setCopiedMarketId(id);
+				setTimeout(() => setCopiedMarketId(null), 1500);
+			},
+			() => {},
+		);
 	};
 
-	useEffect(() => {
-		if (viewMode !== "market") return;
-		const source = marketSource === "custom" ? customSourceUrl.trim() : marketSource;
-		if (!source) return;
-		setMarketLoading(true);
-		const timer = setTimeout(() => {
-			appSend({
-				type: "fetch_mcp_market",
-				source,
-				query: marketSearch.trim() || undefined,
-			});
-		}, 350);
-		return () => clearTimeout(timer);
-	}, [viewMode, marketSource, marketSearch, customSourceUrl]);
+	const filteredMcpMarkets = useMemo(() => {
+		const q = marketSearch.trim().toLowerCase();
+		return MCP_MARKETS.filter((item) => {
+			if (marketCategory === "cn" && item.region !== "cn") return false;
+			if (marketCategory === "marketplace" && item.category !== "marketplace") return false;
+			if (marketCategory === "community" && item.category !== "community") return false;
+			if (marketCategory === "official" && item.category !== "official" && item.category !== "directory") {
+				return false;
+			}
 
-	useEffect(() => {
-		if (chat.mcpMarketResult) {
-			setMarketLoading(false);
-		}
-	}, [chat.mcpMarketResult]);
-
-	const remoteServers: RemoteMcpServer[] = useMemo(() => {
-		if (chat.mcpMarketResult?.ok && chat.mcpMarketResult.servers?.length > 0) {
-			return chat.mcpMarketResult.servers;
-		}
-		// 回退至内置预备列表
-		return PUBLIC_MCP_SERVERS.map((s) => ({
-			id: s.id,
-			name: s.name,
-			displayName: isZhLocale(locale) ? s.nameZh : s.name,
-			description: isZhLocale(locale) ? s.descriptionZh : s.description,
-			homepage: s.homepage,
-			package: s.package,
-			command: s.command,
-			args: s.args,
-			transport: s.transport,
-			source: "builtin",
-			verified: s.official,
-		}));
-	}, [chat.mcpMarketResult, locale]);
+			if (!q) return true;
+			const matchName = item.name.toLowerCase().includes(q) || item.nameZh.toLowerCase().includes(q);
+			const matchDesc = item.description.toLowerCase().includes(q) || item.descriptionZh.toLowerCase().includes(q);
+			const matchUrl = item.url.toLowerCase().includes(q);
+			const matchTags = item.tags?.some((t) => t.toLowerCase().includes(q));
+			return matchName || matchDesc || matchUrl || matchTags;
+		});
+	}, [marketCategory, marketSearch]);
 
 	const globalCount = useMemo(() => servers.filter((s) => s.scope === "global").length, [servers]);
 	const projectCount = useMemo(() => servers.filter((s) => s.scope === "project").length, [servers]);
@@ -244,31 +218,6 @@ export function McpServersPanel({ settings, chat }: McpServersPanelProps) {
 			headers: [],
 			timeout: "",
 			description: "",
-			enabled: true,
-			isNew: true,
-		});
-	};
-
-	const openFromRemoteMarket = (srv: RemoteMcpServer, scope: McpScope) => {
-		const envList: Array<{ key: string; value: string }> = [];
-		if (srv.env) {
-			for (const [k, v] of Object.entries(srv.env)) {
-				envList.push({ key: k, value: String(v) });
-			}
-		}
-		setSelectedPresetId("custom");
-		setDraft({
-			name: srv.id,
-			scope,
-			transport: srv.transport || (srv.url ? "http" : "stdio"),
-			command: srv.command || (srv.package ? "npx" : "npx"),
-			args: srv.args?.length ? srv.args.join(" ") : srv.package ? `-y ${srv.package}` : "",
-			cwd: "",
-			env: envList,
-			url: srv.url || "",
-			headers: [],
-			timeout: "",
-			description: srv.description || "",
 			enabled: true,
 			isNew: true,
 		});
@@ -422,7 +371,7 @@ export function McpServersPanel({ settings, chat }: McpServersPanelProps) {
 				>
 					<FiShoppingBag />
 					<span>{t("mcpTabMarket")}</span>
-					<span className="set-count">{PUBLIC_MCP_SERVERS.length}</span>
+					<span className="set-count">{MCP_MARKETS.length}</span>
 				</button>
 			</div>
 
@@ -641,51 +590,11 @@ export function McpServersPanel({ settings, chat }: McpServersPanelProps) {
 			)}
 
 			{/* ========================================================= */}
-			{/* 2. MCP 市场视图（支持远程 Smithery / GitHub / 自定义 API 源） */}
+			{/* 2. MCP 市场视图（各大 MCP 插件市场与目录列表）             */}
 			{/* ========================================================= */}
 			{viewMode === "market" && (
-				<div className="mcp-market-view">
+				<div className="mcp-market-view skill-market-view">
 					<div className="mcp-market-toolbar">
-						{/* 源选择器与自定义输入 */}
-						<div className="mcp-market-source-row">
-							<div className="mcp-source-select-wrap">
-								<label className="mcp-source-label">{t("mcpSourceSelectLabel")}:</label>
-								<select
-									className="set-select mcp-source-select"
-									value={marketSource}
-									onChange={(e) => setMarketSource(e.target.value)}
-								>
-									<option value="smithery">{t("mcpSourceSmithery")}</option>
-									<option value="github">{t("mcpSourceGithub")}</option>
-									<option value="custom">{t("mcpSourceCustom")}</option>
-								</select>
-							</div>
-							<button
-								type="button"
-								className={`set-save-btn mcp-sync-btn${marketLoading ? " spinning" : ""}`}
-								title={t("mcpReload")}
-								onClick={() => fetchMarket(true)}
-							>
-								<FiRefreshCw />
-								<span>{t("mcpReload")}</span>
-							</button>
-						</div>
-
-						{marketSource === "custom" && (
-							<div className="mcp-custom-source-row">
-								<input
-									type="text"
-									className="set-input mcp-custom-input"
-									placeholder={t("mcpSourceCustomPlaceholder")}
-									value={customSourceUrl}
-									onChange={(e) => setCustomSourceUrl(e.target.value)}
-									onKeyDown={(e) => {
-										if (e.key === "Enter") fetchMarket(true);
-									}}
-								/>
-							</div>
-						)}
-
 						<div className="mcp-search-wrap">
 							<FiSearch className="mcp-search-icon" />
 							<input
@@ -701,100 +610,127 @@ export function McpServersPanel({ settings, chat }: McpServersPanelProps) {
 								</button>
 							)}
 						</div>
+						<div className="mcp-category-chips">
+							{[
+								{ id: "all", label: `${t("mcpCatAll")} (${MCP_MARKETS.length})` },
+								{
+									id: "cn",
+									label: `${t("mcpCatCn")} (${MCP_MARKETS.filter((m) => m.region === "cn").length})`,
+								},
+								{
+									id: "marketplace",
+									label: `${t("mcpCatMarketplace")} (${MCP_MARKETS.filter((m) => m.category === "marketplace").length})`,
+								},
+								{
+									id: "community",
+									label: `${t("mcpCatCommunity")} (${MCP_MARKETS.filter((m) => m.category === "community").length})`,
+								},
+								{
+									id: "official",
+									label: `${t("mcpCatOfficial")} (${MCP_MARKETS.filter((m) => m.category === "official" || m.category === "directory").length})`,
+								},
+							].map((cat) => (
+								<button
+									key={cat.id}
+									type="button"
+									className={`mcp-cat-chip${marketCategory === cat.id ? " active" : ""}`}
+									onClick={() => setMarketCategory(cat.id as McpMarketCategoryFilter)}
+								>
+									{cat.label}
+								</button>
+							))}
+						</div>
 					</div>
 
-					{/* 错误提示 */}
-					{chat.mcpMarketResult?.error && (
-						<div className="mcp-error-box">
-							<FiAlertTriangle className="mcp-error-icon" />
-							<div className="mcp-error-text">{chat.mcpMarketResult.error}</div>
-							<button type="button" className="mcp-mini-btn" onClick={() => fetchMarket(true)}>
-								{t("mcpMarketRetry")}
+					{filteredMcpMarkets.length === 0 ? (
+						<div className="mcp-empty-card">
+							<div className="mcp-empty-icon">
+								<FiSearch />
+							</div>
+							<div className="mcp-empty-title">{t("mcpMarketEmpty")}</div>
+							<button
+								type="button"
+								className="mcp-mini-btn"
+								onClick={() => {
+									setMarketSearch("");
+									setMarketCategory("all");
+								}}
+							>
+								{t("mcpMarketEmptyClear")}
 							</button>
 						</div>
-					)}
+					) : (
+						<div className="mcp-market-grid">
+							{filteredMcpMarkets.map((market) => {
+								const descText = isZhLocale(locale) ? market.descriptionZh : market.description;
+								const badgeText = isZhLocale(locale) ? market.badgeZh || market.badge : market.badge || market.badgeZh;
 
-					{/* 加载指示器 */}
-					{marketLoading && (
-						<div className="mcp-market-loading">
-							<FiRefreshCw className="spinning" />
-							<span>{t("mcpMarketLoading")}</span>
-						</div>
-					)}
-
-					{/* 市场服务器卡片网格 */}
-					<div className="mcp-market-grid">
-						{remoteServers.map((srv) => {
-							const isConfigured = configuredServerIds.has(srv.id.toLowerCase());
-							return (
-								<div key={`${srv.source}-${srv.id}`} className="mcp-market-card">
-									<div className="mcp-market-card-head">
-										<div className="mcp-market-title-wrap">
-											{srv.iconUrl ? (
-												<img src={srv.iconUrl} alt="" className="mcp-market-icon-img" />
-											) : (
-												<FiServer className="mcp-market-icon-fallback" />
-											)}
-											<span className="mcp-market-name">{srv.displayName || srv.name}</span>
-											{srv.displayName && srv.displayName !== srv.name && (
-												<span className="mcp-market-subname">({srv.name})</span>
-											)}
-											{srv.verified && <span className="mcp-badge-official">{t("mcpBadgeOfficial")}</span>}
+								return (
+									<div key={market.id} className="mcp-market-card skill-market-card">
+										<div className="mcp-market-card-head">
+											<div className="mcp-market-title-wrap">
+												<span className="mcp-market-name">{market.name}</span>
+												{isZhLocale(locale) && market.nameZh !== market.name && (
+													<span className="mcp-market-subname">({market.nameZh})</span>
+												)}
+											</div>
+											{badgeText && <span className="mcp-badge-official">{badgeText}</span>}
 										</div>
-										{srv.homepage && (
-											<a
-												href={srv.homepage}
-												target="_blank"
-												rel="noreferrer"
-												className="mcp-market-link"
-												title={srv.homepage}
+
+										<p className="mcp-market-desc">{descText}</p>
+
+										{/* 市场列表链接行 */}
+										<div className="skill-market-url-row" title={market.url}>
+											<FiGlobe className="skill-market-url-icon" />
+											<span className="skill-market-url-text">{market.url}</span>
+										</div>
+
+										{/* 标签 */}
+										{market.tags && market.tags.length > 0 && (
+											<div className="skill-market-tags">
+												{market.tags.map((tag) => (
+													<span key={tag} className="skill-market-tag-chip">
+														#{tag}
+													</span>
+												))}
+											</div>
+										)}
+
+										<div className="skill-market-card-actions">
+											<button
+												type="button"
+												className="skill-market-copy-btn"
+												title={market.url}
+												onClick={() => handleCopyMarketUrl(market.id, market.url)}
 											>
+												{copiedMarketId === market.id ? (
+													<>
+														<FiCheck />
+														<span>{t("mcpMarketCopied")}</span>
+													</>
+												) : (
+													<>
+														<FiShare2 />
+														<span>{t("mcpMarketCopyLink")}</span>
+													</>
+												)}
+											</button>
+											<a
+												href={market.url}
+												target="_blank"
+												rel="noopener noreferrer"
+												className="skill-market-open-btn"
+												title={t("mcpMarketVisit")}
+											>
+												<span>{t("mcpMarketVisit")}</span>
 												<FiExternalLink />
 											</a>
-										)}
-									</div>
-
-									<p className="mcp-market-desc">{srv.description}</p>
-
-									<div className="mcp-market-pkg">
-										<code className="mcp-market-pkg-code">{srv.package || srv.id}</code>
-										{typeof srv.downloads === "number" && srv.downloads > 0 && (
-											<span className="mcp-downloads-tag">{srv.downloads.toLocaleString()} downloads</span>
-										)}
-									</div>
-
-									<div className="mcp-market-card-actions">
-										{isConfigured && (
-											<span className="mcp-market-configured-badge">
-												<FiCheck />
-												{t("mcpConfigured")}
-											</span>
-										)}
-										<div className="mcp-market-add-btns">
-											<button
-												type="button"
-												className="mcp-btn-add global"
-												title={t("mcpAddGlobalHint")}
-												onClick={() => openFromRemoteMarket(srv, "global")}
-											>
-												<FiPlus />
-												{t("mcpAddGlobal")}
-											</button>
-											<button
-												type="button"
-												className="mcp-btn-add project"
-												title={t("mcpAddProjectHint")}
-												onClick={() => openFromRemoteMarket(srv, "project")}
-											>
-												<FiPlus />
-												{t("mcpAddProject")}
-											</button>
 										</div>
 									</div>
-								</div>
-							);
-						})}
-					</div>
+								);
+							})}
+						</div>
+					)}
 				</div>
 			)}
 

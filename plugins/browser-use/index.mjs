@@ -96,6 +96,19 @@ async function forceKillPort(port = DEFAULT_PORT) {
 	}
 }
 
+// 搜索串行队列：同一个 worker 标签页被并发导航会互相踩（结果串味/误报无结果），
+// 进程内先排队，再由 dp_browser.py 的文件锁做跟进程互斥。
+let searchChain = Promise.resolve();
+
+function enqueueSearch(fn) {
+	const run = searchChain.then(fn, fn);
+	searchChain = run.then(
+		() => undefined,
+		() => undefined,
+	);
+	return run;
+}
+
 function runPythonScript(pyExecutable, scriptArgs, { env = {}, timeout = DEFAULT_TIMEOUT_MS, signal } = {}) {
 	return new Promise((resolve, reject) => {
 		const childEnv = {
@@ -220,7 +233,7 @@ function formatTabsText(tabs) {
 
 function formatSearchResultsText(resp) {
 	const parts = [];
-	const engineLabel = resp.engine || "bing";
+	const engineLabel = resp.engine || "全部引擎";
 	const pageLabel = resp.page && resp.page > 1 ? ` · 第${resp.page}页` : "";
 	const fallbackInfo = resp.fallback_from ? ` (由 ${resp.fallback_from} 自动降级回退)` : "";
 	const timeFilterLabel = resp.time_range
@@ -239,7 +252,7 @@ function formatSearchResultsText(resp) {
 
 	const results = resp.results || [];
 	if (results.length === 0) {
-		parts.push(`未找到有效自然搜索结果。建议调整关键词或指定其他搜索引擎（如 google / baidu）。`);
+		parts.push(formatSearchFailureText(resp.attempts));
 	} else {
 		parts.push(`\n共找到 ${results.length} 条自然搜索结果:`);
 		results.forEach((item, idx) => {
@@ -260,10 +273,41 @@ function formatSearchResultsText(resp) {
 	return parts.join("\n");
 }
 
+const ATTEMPT_KIND_LABEL = {
+	blocked: "人机验证/反爬拦截",
+	network: "网络不可达",
+	empty: "引擎无结果",
+	error: "执行出错",
+};
+
+/** 零结果时必须说清「被拦」还是「真没有」，禁止统一降级成“未找到有效自然搜索结果”。 */
+function formatSearchFailureText(attempts) {
+	const list = Array.isArray(attempts) ? attempts.filter((a) => a && a.engine) : [];
+	if (list.length === 0) {
+		return "未找到有效自然搜索结果（引擎返回 0 条，可能是关键词过于生僻）。";
+	}
+	const lines = ["⚠️ 没有拿到任何结果，但这不等于「搜不到」——各引擎实际回报："];
+	for (const a of list) {
+		const kindLabel = ATTEMPT_KIND_LABEL[a.kind] || "未知原因";
+		lines.push(`    · ${a.engine} — ${kindLabel}：${a.reason || ""}`);
+	}
+	const kinds = new Set(list.map((a) => a.kind));
+	if (kinds.has("blocked") || kinds.has("network")) {
+		const blockedCount = list.filter((a) => a.kind === "blocked").length;
+		const networkCount = list.filter((a) => a.kind === "network").length;
+		lines.push("");
+		lines.push(`诊断：${blockedCount} 个引擎被人机验证/反爬拦截，${networkCount} 个网络不可达。`);
+		lines.push("这通常是网络与风控问题，不是关键词没结果：境外引擎需要代理，国内引擎高频请求会触发验证码。");
+		lines.push("建议：等几分钟重试 / 换更具体的关键词 / 配置代理后重试；或直接给我 URL，我用 browser_use 打开。");
+	}
+	return lines.join("\n");
+}
+
 const TOOL_GUIDELINES = [
 	"Use snapshot (or interactiveOnly: true) to inspect visible elements and their numerical IDs before clicking or typing.",
 	"Click target can be a numerical index from snapshot (e.g. '3'), CSS selector ('#submit'), or text ('Sign in').",
 	"Browser persists across calls; use tabs/switch to inspect or switch between tabs instead of reopening URLs.",
+	"Use console action to inspect JavaScript errors, warnings, and uncaught exceptions when diagnosing web app issues.",
 ];
 
 const SEARCH_GUIDELINES = [
@@ -271,6 +315,34 @@ const SEARCH_GUIDELINES = [
 	"Default engine is bing; switch to google for global tech, or baidu for Chinese local topics.",
 	"Use clean URLs from results to inspect full pages with browser_use or read when detailed content is needed.",
 ];
+
+function formatConsoleLogsText(resp) {
+	const logs = Array.isArray(resp.logs) ? resp.logs : [];
+	const total = resp.total ?? logs.length;
+	const matched = resp.matched ?? logs.length;
+	const filterParts = [];
+	if (resp.level && resp.level !== "all") filterParts.push(`level=${resp.level}`);
+	if (resp.filter) filterParts.push(`filter="${resp.filter}"`);
+	const filterDesc = filterParts.length > 0 ? ` [${filterParts.join(", ")}]` : "";
+
+	if (logs.length === 0) {
+		return `🖥️ 浏览器控制台 (Console)${filterDesc}\n当前无${resp.level && resp.level !== "all" ? ` [${resp.level}] 级别` : ""}输出内容。(页面日志捕获器已就绪)`;
+	}
+
+	const lines = [
+		`🖥️ 浏览器控制台日志 (共捕获 ${total} 条${matched !== total ? `，符合条件 ${matched} 条` : ""}，显示最近 ${logs.length} 条${resp.cleared ? "，已清空缓冲区" : ""}):`,
+		"",
+	];
+
+	for (const item of logs) {
+		const lvl = (item.level || "log").toUpperCase();
+		const time = item.time ? `[${item.time}] ` : "";
+		const src = item.source ? ` (${item.source})` : "";
+		lines.push(`${time}[${lvl}] ${item.text || ""}${src}`);
+	}
+
+	return lines.join("\n");
+}
 
 export function activate(host) {
 	const userDataDir = join(host.dataDir, "browser-use-chrome-data");
@@ -449,8 +521,8 @@ export function activate(host) {
 		name: "browser_use",
 		label: "Browser Use",
 		description:
-			"Control a persistent Chrome browser via DrissionPage (port 9333). Actions: open/new tab, list tabs, switch tab, close tab, snapshot human-visible elements, click, input, select dropdown, check/uncheck, type, press key, hover, scroll, wait, execute JS, screenshot, and quit. State (cookies, logins, tabs) persists across commands.",
-		promptSnippet: "automate a persistent Chrome browser (tabs, snapshot, click, type)",
+			"Control a persistent Chrome browser via DrissionPage (port 9333). Actions: open/new tab, list tabs, switch tab, close tab, snapshot human-visible elements, click, input, select dropdown, check/uncheck, type, press key, hover, scroll, wait, execute JS, inspect console logs, screenshot, and quit. State (cookies, logins, tabs) persists across commands.",
+		promptSnippet: "automate a persistent Chrome browser (tabs, snapshot, click, type, console)",
 		promptGuidelines: TOOL_GUIDELINES,
 		parameters: {
 			type: "object",
@@ -478,6 +550,7 @@ export function activate(host) {
 						"wait",
 						"js",
 						"jsx",
+						"console",
 						"screenshot",
 						"quit",
 					],
@@ -527,6 +600,15 @@ export function activate(host) {
 				text: { type: "string", description: "Text to enter (for input/type actions)." },
 				key: { type: "string", description: "Key or combination to press (e.g. 'Enter', 'ctrl+a', 'Escape')." },
 				option: { type: "string", description: "Option text, value, or index for dropdown select." },
+				level: {
+					type: "string",
+					enum: ["all", "error", "warn", "info", "log", "debug"],
+					description: "Log level filter for console action (default: all).",
+				},
+				clear: {
+					type: "boolean",
+					description: "If true, clear captured console logs after reading.",
+				},
 				interactiveOnly: {
 					type: "boolean",
 					description: "If true, snapshot returns only interactive elements with IDs.",
@@ -638,6 +720,13 @@ export function activate(host) {
 					if (!p.code) throw new Error("jsx 动作需要提供 code 参数 (表达式)");
 					scriptArgs.push("jsx", p.code);
 					break;
+				case "console":
+					scriptArgs.push("console");
+					if (p.level) scriptArgs.push("--level", String(p.level));
+					if (p.clear) scriptArgs.push("--clear");
+					if (p.limit) scriptArgs.push("--limit", String(p.limit));
+					if (p.query || p.text) scriptArgs.push("--filter", String(p.query || p.text));
+					break;
 				case "screenshot":
 					scriptArgs.push("screenshot");
 					if (p.path) scriptArgs.push(p.path);
@@ -653,7 +742,9 @@ export function activate(host) {
 			const py = resolvePython();
 			const env = buildBrowserEnv();
 
-			const resp = await runPythonScript(py, scriptArgs, { env, signal });
+			const runScript = () => runPythonScript(py, scriptArgs, { env, signal });
+			// search 走串行队列，其余动作直接执行
+			const resp = action === "search" ? await enqueueSearch(runScript) : await runScript();
 			if (!resp.ok) {
 				const errMsg = resp.error || "未知错误";
 				const hintMsg = resp.hint ? `\n提示: ${resp.hint}` : "";
@@ -690,6 +781,8 @@ export function activate(host) {
 				outputText = `[input] 成功向 "${resp.target}" 输入 ${resp.len || 0} 个字符`;
 			} else if (action === "press") {
 				outputText = `[press] 已触发按键: ${resp.keys}`;
+			} else if (action === "console") {
+				outputText = formatConsoleLogsText(resp);
 			} else {
 				outputText = JSON.stringify(resp, null, 2);
 			}
@@ -712,6 +805,8 @@ export function activate(host) {
 						}
 					: undefined,
 				results: action === "search" ? (resp.results || []).slice(0, 8) : undefined,
+				attempts: action === "search" ? resp.attempts : undefined,
+				logs: action === "console" ? (resp.logs || []).slice(0, 50) : undefined,
 			};
 
 			return {
@@ -784,7 +879,7 @@ export function activate(host) {
 			const py = resolvePython();
 			const env = buildBrowserEnv();
 
-			const resp = await runPythonScript(py, scriptArgs, { env, signal });
+			const resp = await enqueueSearch(() => runPythonScript(py, scriptArgs, { env, signal }));
 			if (!resp.ok) {
 				const errMsg = resp.error || "未知搜索错误";
 				const hintMsg = resp.hint ? `\n提示: ${resp.hint}` : "";
@@ -814,6 +909,7 @@ export function activate(host) {
 					: undefined,
 				count: resp.count,
 				results: (resp.results || []).slice(0, 8),
+				attempts: resp.attempts,
 			};
 
 			return {

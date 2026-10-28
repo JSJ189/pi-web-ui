@@ -165,8 +165,9 @@ export function normalizeConnection(name, raw, defaults = {}, warnings = []) {
 	if (method === "password" && !password) warn("选了密码登录但没配密码");
 	// method 为 key 且未给路径时，会自动探测 ~/.ssh/ 默认密钥，无需报警
 
+	const useGlobal = String(c.useGlobal ?? "").trim();
 	const host = String(c.host ?? "").trim();
-	if (!host) warn("缺 host（主机地址）");
+	if (!host && !useGlobal) warn("缺 host（主机地址）");
 
 	const remotePath = normalizeRemotePath(c.remotePath ?? c.remoteRoot);
 	if (host && !remotePath.startsWith("/")) warn("remotePath 必须是绝对路径（以 / 开头）");
@@ -223,8 +224,9 @@ export function normalizeConnection(name, raw, defaults = {}, warnings = []) {
 		mappings,
 		roots,
 		ignore,
+		useGlobal: useGlobal || undefined,
 		/** 是否配置齐全到可连接（host + 远端根绝对路径）。 */
-		ready: Boolean(host && remotePath.startsWith("/")),
+		ready: Boolean((host || useGlobal) && remotePath.startsWith("/")),
 	};
 }
 
@@ -463,6 +465,7 @@ export function publicConnection(conn) {
 	if (!conn) return null;
 	return {
 		name: conn.name,
+		useGlobal: conn.useGlobal,
 		host: conn.host,
 		port: conn.port,
 		username: conn.username,

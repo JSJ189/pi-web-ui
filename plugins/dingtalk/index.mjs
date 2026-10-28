@@ -95,6 +95,9 @@ export class DingtalkBotBridge {
 		this.seenMessageIds = new Set();
 		this.pendingRuns = new Map();
 		this.earlyRuns = new Map();
+		/** host.chat 回执的稳定 runId → pendingRuns 的 key（对话被过户 / 撞 id 改名后
+		 *  conversationId 会变，只有 runId 不变；钉钉靠它认领自己那一轮的回包）。 */
+		this.runIdIndex = new Map();
 		this.userConversations = new Map();
 		this.userWorkspaces = new Map();
 
@@ -219,7 +222,30 @@ export class DingtalkBotBridge {
 			if (workspace) chatReq.cwd = workspace;
 			if (cfg.model) chatReq.model = cfg.model;
 			if (cfg.thinkingLevel) chatReq.thinkingLevel = cfg.thinkingLevel;
-			await this.host.chat(chatReq);
+			const res = await this.host.chat(chatReq);
+			// 回执里的宿主会话 id 才是真实键（本地编的 dt_xxx 只是占位）：
+			// 以前忽略回执，pendingRuns 永远等不到事件 → 只在超时后回一句就没了下文。
+			const hostConvId = String(res?.conversationId ?? "").trim();
+			if (hostConvId && hostConvId !== conversationId) {
+				const pending = this.pendingRuns.get(conversationId);
+				if (pending) {
+					// 回执前已到达的事件记在宿主 id 下，先并回本条运行
+					const early = this.earlyRuns.get(hostConvId);
+					if (early) {
+						if (early.accumulatedText) {
+							pending.accumulatedText = pending.accumulatedText
+								? `${early.accumulatedText}
+${pending.accumulatedText}`
+								: early.accumulatedText;
+						}
+						this.earlyRuns.delete(hostConvId);
+					}
+					this.pendingRuns.delete(conversationId);
+					this.pendingRuns.set(hostConvId, pending);
+				}
+				this.userConversations.set(senderId, hostConvId);
+			}
+			this.rememberRunId(hostConvId || conversationId, res?.runId);
 		} catch (err) {
 			this.log("warn", `DingTalk host.chat dispatch failed: ${err.message}`);
 			this.pendingRuns.delete(conversationId);
@@ -337,8 +363,32 @@ export class DingtalkBotBridge {
 		}
 	}
 
+	/** 记住某个对话「本轮」的稳定 runId（host.chat 回执给出；旧宿主没有就跳过）。 */
+	rememberRunId(conversationId, runId) {
+		const rid = typeof runId === "string" ? runId.trim() : "";
+		if (!rid || !conversationId || !this.pendingRuns.has(conversationId)) return;
+		this.pendingRuns.get(conversationId).runId = rid;
+		this.runIdIndex.set(rid, conversationId);
+	}
+
+	/** 事件归属的 pendingRuns key：优先稳定 runId（过户改名后 conversationId 已对不上）。 */
+	resolveRunKey(ev) {
+		const rid = typeof ev?.runId === "string" ? ev.runId.trim() : "";
+		const mapped = rid ? this.runIdIndex.get(rid) : undefined;
+		// 映射已失效（该轮已收尾/被清理）时回落当前 conversationId，别拿旧 key 误吞事件。
+		return mapped && this.pendingRuns.has(mapped) ? mapped : ev.conversationId;
+	}
+
+	/** 运行收尾：清掉该 key 关联的 runId 索引，防陈旧映射把后续运行认错。 */
+	forgetRun(key) {
+		if (key) this.pendingRuns.delete(key);
+		for (const [rid, k] of this.runIdIndex) {
+			if (k === key) this.runIdIndex.delete(rid);
+		}
+	}
+
 	async handleRunEvent(ev) {
-		const convId = ev.conversationId;
+		const convId = this.resolveRunKey(ev);
 		if (!convId) return;
 
 		if (ev.type === "message" && ev.message) {
@@ -372,7 +422,7 @@ export class DingtalkBotBridge {
 			const run = this.pendingRuns.get(convId) || this.earlyRuns.get(convId);
 			if (!run) return;
 
-			this.pendingRuns.delete(convId);
+			this.forgetRun(convId);
 			this.earlyRuns.delete(convId);
 
 			const rawText = run.accumulatedText || "";

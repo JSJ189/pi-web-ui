@@ -27,6 +27,8 @@ import { saveCanvasRuntimeState, loadCanvasGraph, saveCanvasGraph, isSafeGraphId
 import { isInsideGitRepo, normalizeWirePath } from "../worktree-service.js";
 import { execFile } from "node:child_process";
 import { promisify } from "node:util";
+import { PSTACK_SKILLS_MAP } from "./pstack-skills-data.js";
+import { discoverDiskSkills, readSkillInstruction } from "../skill-discovery.js";
 
 const exec = promisify(execFile);
 
@@ -273,7 +275,13 @@ export class CanvasOrchestrator {
 				return;
 			}
 
-			node.currentAction = `[${node.engine.toUpperCase()}] 启动 ${node.model} 执行中 (${node.role})...`;
+			const roleDetail =
+				node.role === "pstack"
+					? `pstack: ${String(node.config?.skill || "poteto-mode")}`
+					: node.role === "skill"
+						? `skill: ${String(node.config?.skillName || node.config?.skill || "soul")}`
+						: node.role;
+			node.currentAction = `[${node.engine.toUpperCase()}] 启动 ${node.model} 执行中 (${roleDetail})...`;
 			this.broadcast({
 				type: "canvas_node_event",
 				graphId: graph.id,
@@ -333,6 +341,37 @@ export class CanvasOrchestrator {
 				!isCanvasPassthroughRole(node.role)
 			) {
 				prompt += `\n\n【首节点启动指引】: 当前为流水线首节点。请结合当前工作区代码库现状，排查梳理项目架构规范与待实现的核心任务，输出明确的分工契约交由下游节点接力执行。`;
+			}
+
+			if (node.role === "pstack") {
+				const skillKey = String(node.config?.skill ?? "poteto-mode").trim();
+				const item = PSTACK_SKILLS_MAP[skillKey] || PSTACK_SKILLS_MAP["poteto-mode"];
+				const skillTitle = item ? `${item.icon} ${item.nameZh} (${item.id})` : skillKey;
+				const skillDoc = item?.content ? item.content.slice(0, 4500) : "";
+				prompt = `【Pstack 严谨工程专项工作依据 · ${skillTitle}】\n${skillDoc}\n\n【Pstack 执行守则】\n1. 深入优先、拒绝 AI 废话（Unslop）：严禁生成无实质意义的虚浮描述和表面修补代码；\n2. 拿实证说话：完成修改后必须提供可复现的验证依据（测试输出、运行诊断或精确行为证据）；\n3. 遵循所选 Skill（${skillKey}）的全部非妥协原则（Non-negotiables）开展本节点任务。\n\n【本节点任务与上下文】\n${prompt}`;
+			} else if (node.role === "skill") {
+				const targetSkillName = String(node.config?.skillName ?? node.config?.skill ?? "").trim();
+				let skillInstruction = "";
+				let foundSkillTitle = targetSkillName || "未指定技能";
+				if (targetSkillName) {
+					const diskSkills = discoverDiskSkills({
+						cwd: resolvedCwd || this.baseCwd,
+						dataDir: this.dataDir,
+						scanAncestors: true,
+					});
+					const matched = diskSkills.find((s) => s.name.toLowerCase() === targetSkillName.toLowerCase());
+					if (matched) {
+						skillInstruction = readSkillInstruction(matched.filePath);
+						foundSkillTitle = matched.name;
+					} else {
+						const pstackItem = PSTACK_SKILLS_MAP[targetSkillName.toLowerCase()];
+						if (pstackItem) {
+							skillInstruction = pstackItem.content;
+							foundSkillTitle = `${pstackItem.icon} ${pstackItem.nameZh} (${pstackItem.id})`;
+						}
+					}
+				}
+				prompt = `【技能之魂 (Soul of Skill) · ${foundSkillTitle}】\n${skillInstruction ? `你当前以此 Skill 的规约与方法论作为你的核心灵魂与行动指南：\n${skillInstruction.slice(0, 4500)}` : `以「${foundSkillTitle}」技能要求为核心灵魂与行为准则。`}\n\n【执行契约】\n必须完全以该 Skill 的专业角色与标准推进工作，结合上游交付物严谨执行。\n\n【本节点任务与上下文】\n${prompt}`;
 			}
 
 			let outputSummary = "";

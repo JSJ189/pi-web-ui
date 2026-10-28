@@ -55,14 +55,20 @@ import { TextQuoteCard } from "./TextQuoteCard";
  *  否则回车只换行、发不出去). */
 const IS_TOUCH = detectTouchFirstDevice();
 
-/** 输入框高度的拖拽范围（px）：composerH 是手动拉出的**保底高度**（默认没拖过是
- * 自适应、上限 220，与历史行为一致）。拖过之后：内容少时撑到这个高度（主动拉高
- * 可见），内容变多照样跟着长高到 720 才滚——自适应和手动两边都要；双击拖拽条
- * 恢复默认。持久化在 localStorage。 */
+/** 输入框高度的拖拽与自适应范围（px）：
+ *  1. 最低高度开始写：走自适应高度（从最低高度单行开始随内容自动长高，清空时自动缩回最低行）。
+ *  2. 手动拖拽拉高后：固定为用户拉高的高度，不随内容自适应；内容溢出时在框内纵向滚动。
+ *  3. 双击手柄或拖回最低高度：一键恢复最低高度自适应模式。
+ *  4. 无论自适应还是手动拉高，都严格受到最大高度限制（COMPOSER_MAX_H + 视口保护），绝不挤爆正文。 */
 const COMPOSER_MIN_H = 40;
-const COMPOSER_AUTO_H = 220;
-const COMPOSER_MAX_H = 720;
+const COMPOSER_MAX_H = 320;
 const COMPOSER_H_KEY = "pi-web-ui:composer-height";
+
+/** 计算当前环境下的安全最大高度上限（结合视口比例与硬上限），保证上方消息正文始终可见。 */
+function getComposerSafeMaxH(): number {
+	if (typeof window === "undefined") return COMPOSER_MAX_H;
+	return Math.max(160, Math.min(COMPOSER_MAX_H, Math.floor(window.innerHeight * 0.42)));
+}
 
 /** Props are deliberately NARROW (no whole-ChatState object): every field is
  *  stable while tokens stream in (the messages ARRAY reference is kept stable
@@ -228,12 +234,15 @@ export const ChatInput = memo(function ChatInput({
 	const slashHint = (c: SlashCommandInfo) =>
 		!isZhLocale(locale) && c.argumentHintEn ? c.argumentHintEn : (c.argumentHint ?? "");
 	const [text, setText] = useState("");
-	/** 手动拉出的保底高度：null = 没拖过（纯自适应，上限 220）；数字 = 保底（持久化）。
-	 * 注意：这是下限不是固定值——内容少时撑到它，内容多时继续往上长。 */
+	/** 手动拉出的固定高度：
+	 *  null = 处于最低高度（自适应模式，随内容自动伸缩）；
+	 *  数字 = 手动拉高固定高度（不随内容自适应，内容溢出时内部滚动）。 */
 	const [composerH, setComposerH] = useState<number | null>(() => {
 		try {
 			const v = Number(localStorage.getItem(COMPOSER_H_KEY));
-			if (Number.isFinite(v) && v >= COMPOSER_MIN_H && v <= COMPOSER_MAX_H) return v;
+			if (Number.isFinite(v) && v > COMPOSER_MIN_H + 4) {
+				return Math.min(v, COMPOSER_MAX_H);
+			}
 		} catch {
 			/* 无痕/配额满：用自适应 */
 		}
@@ -1002,41 +1011,42 @@ export const ChatInput = memo(function ChatInput({
 		return () => window.removeEventListener("keydown", onKey);
 	}, [showHelp, pendingFill]);
 
-	// Auto-grow the textarea; no scrollbar until it hits the height cap.
-	// composerH 是手动拉出的**保底高度**：没拖过走老逻辑（贴合内容，上限 220）；
-	// 拖过之后高度 = max(内容高度, 保底)，上探到 720 才滚——内容少时手动拉高可见，
-	// 内容多时照样自适应长高。maxHeight 写行内：样式表写死的 220px 会盖掉拖拽值，
-	// 这里覆盖它（styles.css 那边另有改动在飞，不碰它；null 分支要写回 220，
-	// 不然之前拖过的行内 720 会残留）。
-	// Pin the anchor row: the composer sits BELOW the message list, so its
-	// growth shrinks the list box from the bottom. Hold the row above the
-	// composer stationary by scrolling down the exact grown amount, pre-paint.
-	// Without this the input covers one more line per row. Runs in useEffect
-	// on purpose: the layout effect measured the composer BEFORE the browser
-	// applied the new textarea height (getBoundingClientRect reads the stale
-	// box), so lines 2+ computed delta 0. The passive effect runs after the
-	// flex layout settles — the measured delta is real each line.
+	// Auto-grow textarea or hold manual fixed height; no scrollbar until content overflows.
+	// 1. 手动拉高了高度（composerH > COMPOSER_MIN_H + 4）：固定高度不自适应；超长在框内滚动。
+	// 2. 最低高度开始写（composerH == null）：从最低行开始随输入内容自适应长高。
+	// 3. 两者均严格受 getComposerSafeMaxH() 最大高度限制截断，杜绝遮挡正文。
 	const composerRef = useRef<HTMLDivElement>(null);
 	useEffect(() => {
 		const ta = taRef.current;
 		const box = composerRef.current;
 		if (!ta || !box) return;
-		// Save BEFORE the auto reset below: collapsing the textarea transiently
-		// grows the list box, which clamps its scrollTop down. Restore after.
 		const list = ta.closest("main")?.querySelector<HTMLElement>(".messages");
 		const hBefore = box.getBoundingClientRect().height;
 		const stBefore = list?.scrollTop ?? 0;
-		ta.style.height = "auto"; // natural height first, then clamp
-		const cap = composerH != null ? COMPOSER_MAX_H : COMPOSER_AUTO_H;
-		ta.style.maxHeight = `${cap}px`;
-		const h = Math.min(Math.max(ta.scrollHeight, composerH ?? 0), cap);
+
+		const maxCap = getComposerSafeMaxH();
+		ta.style.maxHeight = `${maxCap}px`;
+
+		const isManualFixed = composerH != null && composerH > COMPOSER_MIN_H + 4;
+		let h: number;
+
+		// natural height measurement first
+		ta.style.height = "auto";
+		const naturalH = ta.scrollHeight;
+
+		if (isManualFixed) {
+			// 手动拖拽拉高了高度：不自适应，固定为拉高高度（上限截断）
+			h = Math.min(composerH, maxCap);
+		} else {
+			// 最低高度开始写：自适应高度，从最低行随内容长高（上限截断）
+			h = Math.min(Math.max(naturalH, COMPOSER_MIN_H), maxCap);
+		}
+
 		ta.style.height = `${h}px`;
-		ta.style.overflowY = ta.scrollHeight > h ? "auto" : "hidden";
+		ta.style.overflowY = naturalH > h ? "auto" : "hidden";
+
 		if (list) {
 			const grew = box.getBoundingClientRect().height - hBefore;
-			// Pre-transient position plus net growth: the row above the composer
-			// stays stationary, pinned or reading history. grew=0 still
-			// restores (undoes the transient clamp).
 			list.scrollTop = stBefore + grew;
 		}
 	}, [text, composerH]);
@@ -1795,45 +1805,52 @@ export const ChatInput = memo(function ChatInput({
 				</div>
 			)}
 			<div className="inputbox" data-pi-anchor="composer">
-				{/* 顶部拖拽条：上下拖动定保底高度（40–720px，localStorage 持久化；
-				 * 内容少时撑到这个高度，内容多时继续往上长），双击恢复默认。 */}
+				{/* 顶部拖拽条：上下拖动固定高度，最低高度或双击复位自适应。 */}
 				<div
-					className="composer-resize"
-					title={t("composerResize")}
-					aria-label={t("composerResize")}
+					className={`composer-resize${composerH != null && composerH > COMPOSER_MIN_H + 4 ? " is-manual" : ""}`}
+					aria-label={
+						composerH != null && composerH > COMPOSER_MIN_H + 4 ? t("composerResizeFixed") : t("composerResize")
+					}
 					role="separator"
 					aria-orientation="horizontal"
-					aria-valuenow={Math.round(composerH ?? COMPOSER_AUTO_H)}
+					aria-valuenow={Math.round(composerH ?? COMPOSER_MIN_H)}
 					aria-valuemin={COMPOSER_MIN_H}
 					aria-valuemax={COMPOSER_MAX_H}
 					onPointerDown={(e) => {
 						e.currentTarget.setPointerCapture?.(e.pointerId);
-						// 从当前渲染高度起算：第一次拖也没有跳变（保底语义下起算点只影响
-						// 本次拖拽的手感，松手后高度仍由内容+保底重算）。
 						const cur = taRef.current?.getBoundingClientRect().height;
 						dragResizeRef.current = {
 							startY: e.clientY,
-							startH: typeof cur === "number" && Number.isFinite(cur) ? cur : (composerH ?? COMPOSER_AUTO_H),
+							startH: typeof cur === "number" && Number.isFinite(cur) ? cur : (composerH ?? COMPOSER_MIN_H),
 							next: null,
 						};
 					}}
 					onPointerMove={(e) => {
 						const d = dragResizeRef.current;
 						if (!d) return;
-						// 往上拖（clientY 变小）= 抬保底，往下拖 = 压保底，所见即所得
-						//（内容少时输入框跟着变高/变矮；内容很多时撑着内容，往下压暂不可见）。
-						const next = Math.min(COMPOSER_MAX_H, Math.max(COMPOSER_MIN_H, d.startH + (d.startY - e.clientY)));
+						const maxCap = getComposerSafeMaxH();
+						// 往上拖（clientY 变小）= 拉高，往下拖 = 压低
+						const next = Math.min(maxCap, Math.max(COMPOSER_MIN_H, d.startH + (d.startY - e.clientY)));
 						d.next = next;
-						setComposerH(next);
+						if (next <= COMPOSER_MIN_H + 4) {
+							setComposerH(null);
+						} else {
+							setComposerH(next);
+						}
 					}}
 					onPointerUp={() => {
 						const next = dragResizeRef.current?.next;
 						dragResizeRef.current = null;
-						// 没拖动过的纯点击不写盘（否则一次点击就把保底变成当前高度）；
-						// 读 ref 不读 state：连续 move 下 state 可能落后一次渲染。
 						if (next == null) return;
 						try {
-							localStorage.setItem(COMPOSER_H_KEY, String(Math.round(next)));
+							if (next <= COMPOSER_MIN_H + 4) {
+								setComposerH(null);
+								localStorage.removeItem(COMPOSER_H_KEY);
+							} else {
+								const rounded = Math.round(next);
+								setComposerH(rounded);
+								localStorage.setItem(COMPOSER_H_KEY, String(rounded));
+							}
 						} catch {
 							/* 配额满：本次生效，下次回默认 */
 						}
@@ -1849,7 +1866,11 @@ export const ChatInput = memo(function ChatInput({
 							/* ignore */
 						}
 					}}
-				/>
+				>
+					<span className="composer-resize-tip">
+						{composerH != null && composerH > COMPOSER_MIN_H + 4 ? t("composerResizeFixed") : t("composerResize")}
+					</span>
+				</div>
 				<input
 					ref={fileInputRef}
 					type="file"

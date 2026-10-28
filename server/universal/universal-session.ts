@@ -1639,6 +1639,14 @@ export class UniversalSession implements DispatchSession {
 		return this.terminals;
 	}
 
+	getUserTerminalManager(): TerminalManagerLike {
+		return this.terminals;
+	}
+
+	findTerminalManager(): TerminalManagerLike {
+		return this.terminals;
+	}
+
 	getTerminalCwd(): string {
 		return this.cwd;
 	}

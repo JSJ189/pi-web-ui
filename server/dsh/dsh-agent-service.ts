@@ -362,6 +362,8 @@ export class DshClientSession {
 	private readonly dataDir: string;
 	/** pi 配置目录（auth.json 所在；尊重 PI_CODING_AGENT_DIR）。 */
 	private readonly agentDir: string;
+	/** 用户直接创建的交互式终端（按 CLIENT/工作区 存活，始终显示，不受单个对话切换、生命周期与过滤影响） */
+	private userTerminals: TerminalManager;
 
 	private runtime!: DshRuntime;
 	private convs = new Map<string, DshConversation>();
@@ -516,6 +518,17 @@ export class DshClientSession {
 			},
 			lang: () => this.getLang(),
 		});
+		this.userTerminals = new TerminalManager(
+			(msg) => {
+				if (msg.type === "terminal_list") {
+					this.pushTerminals();
+					return;
+				}
+				this.emit(msg);
+			},
+			this.cwd,
+			() => this.getLang(),
+		);
 	}
 
 	static create(
@@ -1760,12 +1773,48 @@ export class DshClientSession {
 	}
 
 	private pushTerminals(): void {
-		for (const conv of this.convs.values()) {
-			const terminals = conv.terminals.list();
-			if (terminals.length > 0) {
-				this.emit({ type: "terminal_list", conversationId: conv.id, terminals });
+		const userList = this.userTerminals ? this.userTerminals.list() : [];
+		const activeConv = this.convs.get(this.activeId) ?? this.conv;
+		const convList = activeConv ? activeConv.terminals.list() : [];
+		const allTerminals = [...userList, ...convList];
+		this.emit({ type: "terminal_list", conversationId: activeConv?.id, terminals: allTerminals });
+		if (this.userTerminals) {
+			for (const output of this.userTerminals.replay()) {
+				this.emit({
+					type: "terminal_output",
+					conversationId: activeConv?.id,
+					terminalId: output.terminalId,
+					data: output.data,
+				});
 			}
 		}
+		if (activeConv) {
+			for (const output of activeConv.terminals.replay()) {
+				this.emit({
+					type: "terminal_output",
+					conversationId: activeConv.id,
+					terminalId: output.terminalId,
+					data: output.data,
+				});
+			}
+		}
+	}
+
+	getUserTerminalManager(): TerminalManager {
+		return this.userTerminals;
+	}
+
+	findTerminalManager(terminalId: string, conversationId?: string): TerminalManager | undefined {
+		if (this.userTerminals?.has(terminalId)) return this.userTerminals;
+		if (conversationId) {
+			const convTm = this.convs.get(conversationId)?.terminals;
+			if (convTm?.has(terminalId)) return convTm;
+		}
+		if (this.conv?.terminals.has(terminalId)) return this.conv.terminals;
+		for (const conv of this.convs.values()) {
+			if (conv.terminals.has(terminalId)) return conv.terminals;
+		}
+		return this.getTerminalManager(conversationId);
 	}
 
 	getTerminalManager(conversationId?: string): TerminalManager | undefined {
@@ -5856,6 +5905,7 @@ export class DshClientSession {
 		this.bg.stop();
 		this.modelAdmin.dispose();
 		for (const conv of this.convs.values()) conv.terminals.killAll();
+		this.userTerminals?.killAll();
 		try {
 			await this.runtime.close();
 		} catch {

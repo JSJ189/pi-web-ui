@@ -447,7 +447,8 @@ export interface ClientSettings {
 	retryMaxAttempts: number;
 	/** 上下文压缩软上限（tokens，0 = 关闭）：会话 tokens 达到即触发压缩，
 	 *  而不是堆到物理上限。防阶梯计费翻倍 + 长上下文降智（issue #229）。
-	 *  经 compaction reserveTokens 覆盖注入 SDK（见 server/soft-cap.ts）。 */
+	 *  双层生效：回合内靠 compaction reserveTokens 逐会话重算注入（issue #773），
+	 *  空闲态靠 pi-web-ui 主动 compact（见 server/soft-cap.ts）。 */
 	softCapTokens: number;
 	/** 按模型覆盖软上限（key = "provider/id"，value > 0 才生效，缺省用全局）。 */
 	softCapByModel: Record<string, number>;

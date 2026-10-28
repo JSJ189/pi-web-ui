@@ -4,9 +4,6 @@ import { useCopyFeedback } from "../use-copy-feedback";
 import {
 	FiBookOpen,
 	FiCheck,
-	FiChevronDown,
-	FiChevronRight,
-	FiClock,
 	FiCode,
 	FiCompass,
 	FiCopy,
@@ -18,7 +15,9 @@ import {
 	FiGlobe,
 	FiHelpCircle,
 	FiLayers,
+	FiMaximize2,
 	FiMessageSquare,
+	FiMinimize2,
 	FiPackage,
 	FiSearch,
 	FiTerminal,
@@ -26,7 +25,7 @@ import {
 	FiX,
 	FiZap,
 } from "react-icons/fi";
-import { useT } from "../i18n";
+import { isZhLocale, useLocale, useT } from "../i18n";
 import { closeToolInspector, useToolInspectorState, type ToolInspectorState } from "../tool-inspector-state";
 import {
 	parseCodemodeArgs,
@@ -36,10 +35,14 @@ import {
 	toolArgHints,
 } from "../tool-args";
 import { parsePresentArgs } from "../present-items";
+import { openFilePreview } from "../file-preview-bridge";
+import { parseFileMutationArgs } from "../file-diff";
+import { appUrl } from "../base-url";
 import { PresentedFiles } from "./PresentedFiles";
 import { QuestionnaireCard } from "./QuestionnaireCard";
 import { CodemodeCard, DelegateBrief, TerminalCommand, ToolSearchDetails } from "./ToolCallBlock";
 import { Markdown } from "./Markdown";
+import { SplitDiffView, UnifiedDiffView, WriteCodeView } from "./FileChangeCard";
 
 const TOOL_ICONS: Record<string, ReactNode> = {
 	bash: <FiTerminal />,
@@ -66,19 +69,14 @@ const TOOL_ICONS: Record<string, ReactNode> = {
 export function ToolInspectorModal() {
 	const state = useToolInspectorState();
 	if (!state || typeof document === "undefined") return null;
-	return createPortal(<ToolInspectorDialog state={state} />, document.body);
+	return createPortal(<ToolInspectorRouter state={state} />, document.body);
 }
 
-function ToolInspectorDialog({ state }: { state: ToolInspectorState }) {
-	const t = useT();
-
-	const [currentMode, setCurrentMode] = useState<"preview" | "raw">("preview");
-	const copyAll = useCopyFeedback({ duration: 1200 });
-	const copyArgs = useCopyFeedback({ duration: 1200 });
-	const copyOutput = useCopyFeedback({ duration: 1200 });
-	const copyPath = useCopyFeedback({ duration: 1200 });
-	const copyCmd = useCopyFeedback({ duration: 1200 });
-	const [detailsExpanded, setDetailsExpanded] = useState(false);
+/**
+ * 方案 D 全局分发路由器：将所有工具检查窗口统一收敛至精炼三段式架构
+ */
+function ToolInspectorRouter({ state }: { state: ToolInspectorState }) {
+	const [isMaximized, setIsMaximized] = useState(false);
 
 	// ESC 键关闭
 	useEffect(() => {
@@ -92,353 +90,993 @@ function ToolInspectorDialog({ state }: { state: ToolInspectorState }) {
 		return () => window.removeEventListener("keydown", onKeyDown);
 	}, []);
 
-	const isPresent = state.name === "present_files";
-	const isDelegate = state.name === "delegate_task";
-	const isCodemode = state.name === "codemode";
-	const isQuestionnaire = state.name === "ask_user_question";
-	const isBash = state.name === "bash";
-	const isSkill = state.name === "skill";
+	const onToggleMaximize = () => setIsMaximized((prev) => !prev);
 
-	const presentArgs = useMemo(
-		() => (isPresent && state.args ? parsePresentArgs(state.args) : null),
-		[isPresent, state.args],
-	);
-
-	const delegateArgs = useMemo(
-		() => (isDelegate && state.args ? parseDelegateArgs(state.args) : {}),
-		[isDelegate, state.args],
-	);
-
-	const codemodeArgs = useMemo(
-		() => (isCodemode && state.args ? parseCodemodeArgs(state.args) : null),
-		[isCodemode, state.args],
-	);
-
-	const questionnaireArgs = useMemo(
-		() => (isQuestionnaire && state.args ? parseQuestionnaireArgs(state.args) : null),
-		[isQuestionnaire, state.args],
-	);
-
-	// 解析参数对象
-	const parsedArgsObj = useMemo(() => {
-		if (!state.args || typeof state.args !== "string") return null;
-		try {
-			const parsed = JSON.parse(state.args);
-			if (parsed && typeof parsed === "object" && !Array.isArray(parsed)) {
-				return parsed as Record<string, unknown>;
-			}
-		} catch {}
-		return null;
-	}, [state.args]);
-
-	const {
-		isThinking,
-		name,
-		title,
-		status,
-		statusClass,
-		duration,
-		exitHint,
-		hints: propHints,
-		args,
-		output,
-		details,
-		images,
-		isError,
-		toolCallId,
-		resultTimestamp,
-		thinking,
-	} = state;
-
-	// 优先从 propHints 取，没有则从 args 现解析
-	const hints = propHints || toolArgHints(args);
-
-	// 提取关键文件路径（read, write, edit, grep 等）
-	const targetPath =
-		(typeof parsedArgsObj?.path === "string" ? parsedArgsObj.path : undefined) ||
-		(typeof parsedArgsObj?.file_path === "string" ? parsedArgsObj.file_path : undefined) ||
-		hints?.path;
-
-	// 提取搜索 pattern / query
-	const targetQuery =
-		(typeof parsedArgsObj?.pattern === "string" ? parsedArgsObj.pattern : undefined) ||
-		(typeof parsedArgsObj?.query === "string" ? parsedArgsObj.query : undefined) ||
-		hints?.query;
-
-	// 提取 bash 命令
-	const targetCommand =
-		hints?.command ||
-		(typeof parsedArgsObj?.command === "string" ? parsedArgsObj.command : undefined) ||
-		(isBash ? args : undefined);
-
-	// 提取行号范围（针对 read offset / limit）
-	let rangeHint: string | null = null;
-	if (parsedArgsObj && (parsedArgsObj.offset !== undefined || parsedArgsObj.limit !== undefined)) {
-		const offset = Number(parsedArgsObj.offset) || 1;
-		const limit = parsedArgsObj.limit !== undefined ? Number(parsedArgsObj.limit) : undefined;
-		if (limit !== undefined) {
-			rangeHint = `行 ${offset} ~ ${offset + limit - 1}`;
-		} else {
-			rangeHint = `从第 ${offset} 行开始`;
-		}
+	// 1. 思考流视口
+	if (state.isThinking) {
+		return <ThinkingInspectorDialog state={state} isMaximized={isMaximized} onToggleMaximize={onToggleMaximize} />;
 	}
 
-	const handleCopyAll = () => {
-		let text = "";
-		if (isThinking) {
-			text = thinking || output || "";
-		} else {
-			if (targetPath) text += `[Path]\n${targetPath}\n\n`;
-			if (targetCommand) text += `[Command]\n${targetCommand}\n\n`;
-			if (args) text += `[Arguments]\n${args}\n\n`;
-			if (output) text += `[Output]\n${output}\n`;
-		}
-		if (!text) return;
-		void copyAll.copy(text);
-	};
+	const name = state.name || "";
 
-	const handleCopyArgs = () => {
-		if (!args) return;
-		void copyArgs.copy(args);
-	};
-
-	const handleCopyOutput = () => {
-		if (!output) return;
-		void copyOutput.copy(output);
-	};
-
-	const handleCopyCmd = (cmd: string) => {
-		if (!cmd) return;
-		void copyCmd.copy(cmd);
-	};
-
-	const handleCopyPath = (path: string) => {
-		if (!path) return;
-		void copyPath.copy(path);
-	};
-
-	let formattedArgs = args || "";
-	try {
-		if (typeof args === "string" && (args.trim().startsWith("{") || args.trim().startsWith("["))) {
-			formattedArgs = JSON.stringify(JSON.parse(args), null, 2);
-		}
-	} catch {}
-
-	let formattedDetails = "";
-	if (details && typeof details === "object" && Object.keys(details).length > 0) {
-		try {
-			formattedDetails = JSON.stringify(details, null, 2);
-		} catch {}
+	// 2. 文件编辑与写入视口（edit, write, edit_soft, patch）
+	const isFileChange = name === "edit" || name === "write" || name === "edit_soft" || name === "patch";
+	if (isFileChange) {
+		return <FileDiffInspectorDialog state={state} isMaximized={isMaximized} onToggleMaximize={onToggleMaximize} />;
 	}
 
-	const toolIconNode = isThinking ? <FiCpu /> : name && TOOL_ICONS[name] ? TOOL_ICONS[name] : <FiPackage />;
+	// 3. 命令行终端视口（bash）
+	if (name === "bash") {
+		return <BashInspectorDialog state={state} isMaximized={isMaximized} onToggleMaximize={onToggleMaximize} />;
+	}
 
-	const badgeText = duration ? `${status || t("done")} · ${duration}` : status || t("done");
-	const badgeClass = statusClass || (isError ? "err" : "ok");
+	// 4. 文件与内容读取/检索视口（read, ls, grep, find, tool_search）
+	const isReadOrSearch =
+		name === "read" || name === "ls" || name === "grep" || name === "find" || name === "tool_search";
+	if (isReadOrSearch) {
+		return <ReadInspectorDialog state={state} isMaximized={isMaximized} onToggleMaximize={onToggleMaximize} />;
+	}
 
-	const outputChars = output ? output.length : 0;
-	const outputLines = output ? output.split("\n").length : 0;
-	const statsText = output ? t("toolInspectorStats", { chars: outputChars, lines: outputLines }) : "";
+	// 5. 通用/插件工具视口
+	return <GenericInspectorDialog state={state} isMaximized={isMaximized} onToggleMaximize={onToggleMaximize} />;
+}
 
-	const hasRichView =
-		(isPresent && presentArgs) ||
-		(isDelegate && Object.keys(delegateArgs).length > 0) ||
-		(isCodemode && codemodeArgs?.code) ||
-		(isQuestionnaire && questionnaireArgs) ||
-		(isBash && targetCommand);
-
-	const headline = name ? resolveToolHeadline({ name, argumentsText: args, hints }) : null;
+/**
+ * 方案 D：1. 思考流（Thinking）纯粹沉浸式 Markdown 视口
+ */
+function ThinkingInspectorDialog({
+	state,
+	isMaximized,
+	onToggleMaximize,
+}: {
+	state: ToolInspectorState;
+	isMaximized: boolean;
+	onToggleMaximize: () => void;
+}) {
+	const t = useT();
+	const { copy, copied } = useCopyFeedback({ duration: 1200 });
+	const text = state.thinking || state.output || "";
+	const chars = text.length;
+	const lines = text ? text.split("\n").length : 0;
 
 	return (
 		<div
-			className="tool-inspector-backdrop pi-we-inspector-backdrop open"
+			className={`tool-inspector-backdrop pi-we-inspector-backdrop open${isMaximized ? " is-maximized" : ""}`}
 			onClick={(e) => {
 				if (e.target === e.currentTarget) closeToolInspector();
 			}}
 		>
-			<div className="tool-inspector-dialog pi-we-inspector-dialog" role="dialog" aria-modal="true">
+			<div
+				className={`tool-inspector-dialog pi-we-inspector-dialog is-file-diff${isMaximized ? " is-maximized" : ""}`}
+				role="dialog"
+				aria-modal="true"
+			>
 				{/* 顶栏 Header */}
-				<div className="tool-inspector-header pi-we-inspector-header">
-					<div className="tool-inspector-title-group pi-we-inspector-title-group">
-						<div className="tool-inspector-icon pi-we-inspector-icon">{toolIconNode}</div>
-						<div className="tool-inspector-title pi-we-inspector-title">
-							{isThinking
-								? t("toolInspectorThinkingTitle")
-								: title || (name ? (headline ? `${name}(${headline.text})` : `${name}()`) : t("toolInspectorTitle"))}
-						</div>
-						<div className={`tool-inspector-badge pi-we-inspector-badge ${badgeClass}`}>{badgeText}</div>
-						{exitHint && <div className="tool-inspector-badge pi-we-inspector-badge">{exitHint}</div>}
+				<div className="file-diff-inspector-header" onDoubleClick={onToggleMaximize}>
+					<div className="file-diff-inspector-title-group">
+						<FiCpu className="file-diff-file-icon" />
+						<span className="file-diff-path">{t("toolInspectorThinkingSection").replace(/^💭\s*/, "")}</span>
+						<span className="file-diff-lang">{t("toolInspectorStats", { chars, lines })}</span>
+						<span className={`file-diff-status-pill ${state.streaming ? "run" : "ok"}`}>
+							{state.streaming ? "⚡ 思考中..." : "✓ 完成"}
+						</span>
 					</div>
-					<div className="tool-inspector-actions pi-we-inspector-actions">
-						{hasRichView && (
-							<button
-								type="button"
-								className="tool-inspector-btn pi-we-inspector-btn"
-								onClick={() => setCurrentMode(currentMode === "preview" ? "raw" : "preview")}
-							>
-								{currentMode === "preview" ? t("toolInspectorToggleRaw") : t("toolInspectorTogglePreview")}
-							</button>
-						)}
-						<button type="button" className="tool-inspector-btn pi-we-inspector-btn" onClick={handleCopyAll}>
-							{copyAll.copied ? (
-								<>
-									<FiCheck /> {t("toolInspectorCopied")}
-								</>
-							) : (
-								<>
-									<FiCopy /> {t("toolInspectorCopyAll")}
-								</>
-							)}
+
+					<div className="file-diff-inspector-actions">
+						<button
+							type="button"
+							className={`file-diff-action-btn${copied ? " copied" : ""}`}
+							title={copied ? t("toolInspectorCopied") : t("toolInspectorCopyAll")}
+							onClick={(e) => {
+								e.stopPropagation();
+								void copy(text);
+							}}
+						>
+							{copied ? <FiCheck /> : <FiCopy />}
 						</button>
 						<button
 							type="button"
-							className="tool-inspector-btn tool-inspector-close pi-we-inspector-btn pi-we-inspector-close"
-							onClick={closeToolInspector}
+							className="file-diff-action-btn"
+							title={isMaximized ? t("diffRestoreScreen") : t("diffFullscreen")}
+							onClick={(e) => {
+								e.stopPropagation();
+								onToggleMaximize();
+							}}
+						>
+							{isMaximized ? <FiMinimize2 /> : <FiMaximize2 />}
+						</button>
+						<button
+							type="button"
+							className="file-diff-action-btn"
 							title={`${t("close")} (ESC)`}
-							aria-label={t("close")}
+							onClick={(e) => {
+								e.stopPropagation();
+								closeToolInspector();
+							}}
 						>
 							<FiX />
 						</button>
 					</div>
 				</div>
 
-				{/* 醒目的核心上下文横幅（Hero Banner）：针对文件、命令或搜索词直接大字呈现 */}
-				{!isThinking && targetPath && (
-					<div className="tool-inspector-hero-banner">
-						<div className="tool-inspector-hero-icon">
-							<FiFolder />
-						</div>
-						<div className="tool-inspector-hero-content">
-							<div className="tool-inspector-hero-label">
-								<span>目标文件路径 (Target File Path)</span>
-								{rangeHint && <span className="tool-inspector-hero-tag">{rangeHint}</span>}
-								{hints?.codeLines !== undefined && (
-									<span className="tool-inspector-hero-tag">λ {hints.codeLines} L</span>
-								)}
+				{/* 中间正文：无缝沉浸式 Markdown 思考流 */}
+				<div className="file-diff-inspector-body">
+					<div className="thinking-inspector-content">
+						{text ? (
+							<div className="markdown thinking-markdown">
+								<Markdown text={text} />
 							</div>
-							<div className="tool-inspector-hero-val" title={targetPath}>
-								{targetPath}
-							</div>
+						) : (
+							<div className="diff-empty-tip">{t("toolInspectorEmptyThinking")}</div>
+						)}
+					</div>
+				</div>
+
+				{/* 底部微型状态栏 */}
+				<div className="file-diff-inspector-footer">
+					<div className="file-diff-footer-status">
+						<span className="file-diff-status-icon">💭</span>
+						<span className="file-diff-status-text">
+							{state.streaming ? "思考分析链路生成中..." : `分析记录共 ${lines} 行`}
+						</span>
+					</div>
+					{state.duration && (
+						<div className="file-diff-footer-meta">
+							<span>耗时: {state.duration}</span>
 						</div>
+					)}
+				</div>
+			</div>
+		</div>
+	);
+}
+
+/**
+ * 方案 D：2. 命令行终端（Bash）极客终端直通视口
+ */
+function BashInspectorDialog({
+	state,
+	isMaximized,
+	onToggleMaximize,
+}: {
+	state: ToolInspectorState;
+	isMaximized: boolean;
+	onToggleMaximize: () => void;
+}) {
+	const t = useT();
+	const isZh = isZhLocale(useLocale());
+	const [viewMode, setViewMode] = useState<"preview" | "raw">("preview");
+	const copyCmd = useCopyFeedback({ duration: 1200 });
+	const copyOut = useCopyFeedback({ duration: 1200 });
+
+	const { args = "", output = "", details, isError = false, status, duration, exitHint } = state;
+	const hints = state.hints || toolArgHints(args);
+	const command = hints.command || (args && !args.startsWith("{") ? args : "");
+
+	const formattedDetails = useMemo(() => {
+		if (!details || typeof details !== "object") return "";
+		try {
+			return JSON.stringify(details, null, 2);
+		} catch {
+			return "";
+		}
+	}, [details]);
+
+	const badgeText = isError ? t("error") : duration ? `${t("done")} (${duration})` : status || t("done");
+	const badgeClass = isError ? "err" : "ok";
+
+	const lines = output ? output.split("\n").length : 0;
+	const detailsKeysCount =
+		details && typeof details === "object" ? Object.keys(details as Record<string, unknown>).length : 0;
+
+	return (
+		<div
+			className={`tool-inspector-backdrop pi-we-inspector-backdrop open${isMaximized ? " is-maximized" : ""}`}
+			onClick={(e) => {
+				if (e.target === e.currentTarget) closeToolInspector();
+			}}
+		>
+			<div
+				className={`tool-inspector-dialog pi-we-inspector-dialog is-file-diff${isMaximized ? " is-maximized" : ""}`}
+				role="dialog"
+				aria-modal="true"
+			>
+				{/* 顶栏 Header */}
+				<div className="file-diff-inspector-header" onDoubleClick={onToggleMaximize}>
+					<div className="file-diff-inspector-title-group">
+						<FiTerminal className="file-diff-file-icon" />
+						<span className="file-diff-path" title={command || "bash"}>
+							{command ? `$ ${command}` : "bash"}
+						</span>
+						{exitHint && <span className="file-diff-lang">{exitHint}</span>}
+						<span className={`file-diff-status-pill ${badgeClass}`}>✓ {badgeText}</span>
+					</div>
+
+					<div className="file-diff-inspector-actions">
+						<div className="btn-group-diff" role="group">
+							<button
+								type="button"
+								className={`btn-tag${viewMode === "preview" ? " active" : ""}`}
+								onClick={(e) => {
+									e.stopPropagation();
+									setViewMode("preview");
+								}}
+							>
+								{isZh ? "终端输出" : "Terminal"}
+							</button>
+							<button
+								type="button"
+								className={`btn-tag${viewMode === "raw" ? " active" : ""}`}
+								onClick={(e) => {
+									e.stopPropagation();
+									setViewMode("raw");
+								}}
+							>
+								{t("diffViewRaw")}
+							</button>
+						</div>
+
+						{command && (
+							<button
+								type="button"
+								className={`file-diff-action-btn${copyCmd.copied ? " copied" : ""}`}
+								title={copyCmd.copied ? t("toolInspectorCopied") : t("toolInspectorCopyArgs")}
+								onClick={(e) => {
+									e.stopPropagation();
+									void copyCmd.copy(command);
+								}}
+							>
+								{copyCmd.copied ? <FiCheck /> : <FiCode />}
+							</button>
+						)}
+
 						<button
 							type="button"
-							className="tool-inspector-hero-copy-btn"
-							onClick={() => handleCopyPath(targetPath)}
-							title="复制文件路径"
+							className={`file-diff-action-btn${copyOut.copied ? " copied" : ""}`}
+							title={copyOut.copied ? t("toolInspectorCopied") : t("toolInspectorCopyOutput")}
+							onClick={(e) => {
+								e.stopPropagation();
+								void copyOut.copy(output);
+							}}
 						>
-							{copyPath.copied ? <FiCheck /> : <FiCopy />}
-							<span>{copyPath.copied ? "已复制" : "复制路径"}</span>
+							{copyOut.copied ? <FiCheck /> : <FiCopy />}
 						</button>
-					</div>
-				)}
 
-				{!isThinking && !targetPath && targetQuery && (
-					<div className="tool-inspector-hero-banner">
-						<div className="tool-inspector-hero-icon">
-							<FiSearch />
-						</div>
-						<div className="tool-inspector-hero-content">
-							<div className="tool-inspector-hero-label">检索关键词 / 模式 (Pattern)</div>
-							<div className="tool-inspector-hero-val">{targetQuery}</div>
-						</div>
-					</div>
-				)}
-
-				{!isThinking && isBash && targetCommand && (
-					<div className="tool-inspector-hero-banner tool-inspector-hero-bash">
-						<div className="tool-inspector-hero-icon">
-							<FiTerminal />
-						</div>
-						<div className="tool-inspector-hero-content">
-							<div className="tool-inspector-hero-label">执行命令行 (Shell Command)</div>
-							<div className="tool-inspector-hero-val tool-inspector-mono">{targetCommand}</div>
-						</div>
 						<button
 							type="button"
-							className="tool-inspector-hero-copy-btn"
-							onClick={() => handleCopyCmd(targetCommand)}
-							title="复制命令行"
+							className="file-diff-action-btn"
+							title={isMaximized ? t("diffRestoreScreen") : t("diffFullscreen")}
+							onClick={(e) => {
+								e.stopPropagation();
+								onToggleMaximize();
+							}}
 						>
-							{copyCmd.copied ? <FiCheck /> : <FiCopy />}
-							<span>{copyCmd.copied ? "已复制" : "复制代码"}</span>
+							{isMaximized ? <FiMinimize2 /> : <FiMaximize2 />}
+						</button>
+
+						<button
+							type="button"
+							className="file-diff-action-btn"
+							title={`${t("close")} (ESC)`}
+							onClick={(e) => {
+								e.stopPropagation();
+								closeToolInspector();
+							}}
+						>
+							<FiX />
 						</button>
 					</div>
-				)}
+				</div>
 
-				{/* 次要元数据标签条（Meta Chips Strip）：展示 Agent、Skill、超时、退出码等 */}
-				{!isThinking && (hints?.agent || (isSkill && hints?.skillName) || hints?.timeout || exitHint) && (
-					<div className="tool-inspector-meta-strip">
-						{hints?.agent && (
-							<div className="tool-inspector-chip" title={hints.agent}>
-								<FiUsers className="tool-inspector-chip-icon" />
-								<span>Agent: {hints.agent}</span>
+				{/* 中间正文：直通黑底终端视口 */}
+				<div className="file-diff-inspector-body">
+					{viewMode === "raw" ? (
+						<div className="file-diff-raw-body">
+							<div className="file-diff-raw-section">
+								<div className="file-diff-raw-title">⚡ {t("toolInspectorArgs")}</div>
+								<pre className="file-diff-pre">{args || "(无入参参数 / No arguments)"}</pre>
 							</div>
-						)}
-						{isSkill && hints?.skillName && (
-							<div className="tool-inspector-chip" title={`Skill: ${hints.skillName}`}>
-								<FiBookOpen className="tool-inspector-chip-icon" />
-								<span>Skill: {hints.skillName}</span>
-							</div>
-						)}
-						{hints?.timeout && (
-							<div className="tool-inspector-chip" title={`超时设置: ${hints.timeout}`}>
-								<FiClock className="tool-inspector-chip-icon" />
-								<span>超时: {hints.timeout}</span>
-							</div>
-						)}
-					</div>
-				)}
-
-				{/* 正文区域 */}
-				<div className="tool-inspector-body pi-we-inspector-body">
-					{isThinking ? (
-						<div className="tool-inspector-section pi-we-inspector-section">
-							<div className="tool-inspector-label-row">
-								<span className="tool-inspector-label pi-we-inspector-label">{t("toolInspectorThinkingSection")}</span>
-								{thinking && (
-									<span className="tool-inspector-subinfo">
-										{t("toolInspectorStats", { chars: thinking.length, lines: thinking.split("\n").length })}
-									</span>
-								)}
-							</div>
-							<div className="tool-inspector-thinking-container">
-								{thinking || output ? (
-									<div className="markdown thinking-markdown">
-										<Markdown text={thinking || output || ""} />
+							{formattedDetails && (
+								<div className="file-diff-raw-section">
+									<div className="file-diff-raw-title">
+										<span>⚙ {t("toolInspectorDetails")}</span>
+										<span className="file-diff-raw-count">{detailsKeysCount} keys</span>
 									</div>
-								) : (
-									<div className="tool-inspector-empty-tip">{t("toolInspectorEmptyThinking")}</div>
-								)}
-							</div>
-						</div>
-					) : currentMode === "preview" && hasRichView ? (
-						<div className="tool-inspector-rich-wrap">
-							{/* bash 富终端行展示 */}
-							{isBash && targetCommand && (
-								<div className="tool-inspector-section pi-we-inspector-section">
-									<div className="tool-inspector-label-row">
-										<span className="tool-inspector-label pi-we-inspector-label">
-											<FiTerminal /> Bash Command
-										</span>
-									</div>
-									<TerminalCommand command={targetCommand} />
+									<pre className="file-diff-pre">{formattedDetails}</pre>
 								</div>
 							)}
+						</div>
+					) : (
+						<div className="bash-terminal-viewport">
+							{command && <TerminalCommand command={command} />}
+							<pre className="bash-output-pre">
+								{output ||
+									(state.statusClass === "run" ? t("toolInspectorRunningOutput") : t("toolInspectorEmptyOutput"))}
+							</pre>
+						</div>
+					)}
+				</div>
 
-							{/* present_files 原生富卡片展示 */}
+				{/* 底部微型状态栏 */}
+				<div className="file-diff-inspector-footer">
+					<div className={`file-diff-footer-status${isError ? " err" : ""}`}>
+						<span className="file-diff-status-icon">{isError ? "✕" : "✓"}</span>
+						<span className="file-diff-status-text">
+							{exitHint || (isError ? "命令执行失败" : "执行完成")} · {lines} 行输出 · {output.length} 字符
+						</span>
+					</div>
+					<div className="file-diff-footer-meta">
+						{detailsKeysCount > 0 && <span>details: {detailsKeysCount} keys</span>}
+						{detailsKeysCount > 0 && <span className="meta-sep">|</span>}
+						<button
+							type="button"
+							className="file-diff-footer-link"
+							onClick={(e) => {
+								e.stopPropagation();
+								setViewMode(viewMode === "raw" ? "preview" : "raw");
+							}}
+						>
+							{viewMode === "raw"
+								? isZh
+									? "返回终端输出"
+									: "Back to terminal"
+								: isZh
+									? "查看完整日志与详情"
+									: "View raw & details"}
+						</button>
+					</div>
+				</div>
+			</div>
+		</div>
+	);
+}
+
+/**
+ * 方案 D：3. 文件与检索类（Read, Ls, Grep, Find, ToolSearch）内容直通阅读器
+ */
+function ReadInspectorDialog({
+	state,
+	isMaximized,
+	onToggleMaximize,
+}: {
+	state: ToolInspectorState;
+	isMaximized: boolean;
+	onToggleMaximize: () => void;
+}) {
+	const t = useT();
+	const isZh = isZhLocale(useLocale());
+	const [viewMode, setViewMode] = useState<"preview" | "raw">("preview");
+	const copyOut = useCopyFeedback({ duration: 1200 });
+
+	const { name = "read", args = "", output = "", details, isError = false, status, duration, images } = state;
+	const hints = state.hints || toolArgHints(args);
+	const targetPath = hints.path || "";
+	const targetQuery = hints.query || "";
+	const titleText = targetPath || targetQuery || name;
+
+	const isImage = useMemo(() => {
+		if (images && images.length > 0) return true;
+		if (targetPath) {
+			const ext = targetPath.split(".").pop()?.toLowerCase();
+			return ext && ["png", "jpg", "jpeg", "gif", "webp", "svg", "ico", "bmp"].includes(ext);
+		}
+		return false;
+	}, [images, targetPath]);
+
+	const startLine = useMemo(() => {
+		if (!args) return 1;
+		try {
+			const parsed = JSON.parse(args);
+			if (typeof parsed?.offset === "number" && parsed.offset > 0) {
+				return parsed.offset;
+			}
+			if (typeof parsed?.startLine === "number" && parsed.startLine > 0) {
+				return parsed.startLine;
+			}
+		} catch {
+			const match = /"(?:offset|startLine|start)"\s*:\s*(\d+)/.exec(args);
+			if (match) {
+				const n = parseInt(match[1], 10);
+				if (n > 0) return n;
+			}
+		}
+		return 1;
+	}, [args]);
+
+	const formattedDetails = useMemo(() => {
+		if (!details || typeof details !== "object") return "";
+		try {
+			return JSON.stringify(details, null, 2);
+		} catch {
+			return "";
+		}
+	}, [details]);
+
+	const badgeText = isError ? t("error") : duration ? `${t("done")} (${duration})` : status || t("done");
+	const badgeClass = isError ? "err" : "ok";
+
+	const lines = output ? output.split("\n").length : 0;
+	const detailsKeysCount =
+		details && typeof details === "object" ? Object.keys(details as Record<string, unknown>).length : 0;
+
+	const handleOpenFile = (e: React.MouseEvent) => {
+		e.stopPropagation();
+		if (!targetPath) return;
+		const fileName = targetPath.split("/").pop() || targetPath;
+		openFilePreview({ path: targetPath, name: fileName });
+	};
+
+	return (
+		<div
+			className={`tool-inspector-backdrop pi-we-inspector-backdrop open${isMaximized ? " is-maximized" : ""}`}
+			onClick={(e) => {
+				if (e.target === e.currentTarget) closeToolInspector();
+			}}
+		>
+			<div
+				className={`tool-inspector-dialog pi-we-inspector-dialog is-file-diff${isMaximized ? " is-maximized" : ""}`}
+				role="dialog"
+				aria-modal="true"
+			>
+				{/* 顶栏 Header */}
+				<div className="file-diff-inspector-header" onDoubleClick={onToggleMaximize}>
+					<div className="file-diff-inspector-title-group">
+						<span className="file-diff-file-icon">{TOOL_ICONS[name] ?? <FiFileText />}</span>
+						<span className="file-diff-path" title={titleText}>
+							{titleText}
+						</span>
+						{targetPath && (
+							<span className="file-diff-lang">{targetPath.split(".").pop()?.toUpperCase() || "FILE"}</span>
+						)}
+						{startLine > 1 && (
+							<span className="file-diff-lang" title={`起始偏移量: 第 ${startLine} 行`}>
+								L{startLine}~L{startLine + lines - 1}
+							</span>
+						)}
+						<span className={`file-diff-status-pill ${badgeClass}`}>✓ {badgeText}</span>
+					</div>
+
+					<div className="file-diff-inspector-actions">
+						<div className="btn-group-diff" role="group">
+							<button
+								type="button"
+								className={`btn-tag${viewMode === "preview" ? " active" : ""}`}
+								onClick={(e) => {
+									e.stopPropagation();
+									setViewMode("preview");
+								}}
+							>
+								{isZh ? "内容查看" : "Content"}
+							</button>
+							<button
+								type="button"
+								className={`btn-tag${viewMode === "raw" ? " active" : ""}`}
+								onClick={(e) => {
+									e.stopPropagation();
+									setViewMode("raw");
+								}}
+							>
+								{t("diffViewRaw")}
+							</button>
+						</div>
+
+						{targetPath && (
+							<button type="button" className="file-diff-action-btn" title={t("diffOpenFile")} onClick={handleOpenFile}>
+								<FiFolder />
+							</button>
+						)}
+
+						<button
+							type="button"
+							className={`file-diff-action-btn${copyOut.copied ? " copied" : ""}`}
+							title={copyOut.copied ? t("toolInspectorCopied") : t("toolInspectorCopyOutput")}
+							onClick={(e) => {
+								e.stopPropagation();
+								void copyOut.copy(output);
+							}}
+						>
+							{copyOut.copied ? <FiCheck /> : <FiCopy />}
+						</button>
+
+						<button
+							type="button"
+							className="file-diff-action-btn"
+							title={isMaximized ? t("diffRestoreScreen") : t("diffFullscreen")}
+							onClick={(e) => {
+								e.stopPropagation();
+								onToggleMaximize();
+							}}
+						>
+							{isMaximized ? <FiMinimize2 /> : <FiMaximize2 />}
+						</button>
+
+						<button
+							type="button"
+							className="file-diff-action-btn"
+							title={`${t("close")} (ESC)`}
+							onClick={(e) => {
+								e.stopPropagation();
+								closeToolInspector();
+							}}
+						>
+							<FiX />
+						</button>
+					</div>
+				</div>
+
+				{/* 中间正文：直通源码/输出视口 */}
+				<div className="file-diff-inspector-body">
+					{viewMode === "raw" ? (
+						<div className="file-diff-raw-body">
+							<div className="file-diff-raw-section">
+								<div className="file-diff-raw-title">⚡ {t("toolInspectorArgs")}</div>
+								<pre className="file-diff-pre">{args || "(无入参参数 / No arguments)"}</pre>
+							</div>
+							{formattedDetails && (
+								<div className="file-diff-raw-section">
+									<div className="file-diff-raw-title">
+										<span>⚙ {t("toolInspectorDetails")}</span>
+										<span className="file-diff-raw-count">{detailsKeysCount} keys</span>
+									</div>
+									<pre className="file-diff-pre">{formattedDetails}</pre>
+								</div>
+							)}
+						</div>
+					) : (
+						<div className="read-inspector-viewport">
+							{name === "tool_search" && <ToolSearchDetails details={details} />}
+							{isImage && images && images.length > 0 ? (
+								<div className="read-image-viewport">
+									{images.map((img, i) => {
+										const src = img.startsWith("/") ? appUrl(img) : img;
+										return (
+											<div key={i} className="read-image-container">
+												<a href={src} target="_blank" rel="noreferrer" title="点击新窗口查看原图">
+													<img src={src} alt={targetPath || `Image ${i + 1}`} className="read-image-item" />
+												</a>
+											</div>
+										);
+									})}
+									{output && <div className="read-image-caption">{output}</div>}
+								</div>
+							) : output ? (
+								<WriteCodeView content={output} startLine={startLine} />
+							) : (
+								<div className="diff-empty-tip">
+									{state.statusClass === "run" ? t("toolInspectorRunningOutput") : t("toolInspectorEmptyOutput")}
+								</div>
+							)}
+						</div>
+					)}
+				</div>
+
+				{/* 底部微型状态栏 */}
+				<div className="file-diff-inspector-footer">
+					<div className={`file-diff-footer-status${isError ? " err" : ""}`}>
+						<span className="file-diff-status-icon">{isError ? "✕" : "✓"}</span>
+						<span className="file-diff-status-text">{t("toolInspectorStats", { chars: output.length, lines })}</span>
+					</div>
+					<div className="file-diff-footer-meta">
+						{detailsKeysCount > 0 && <span>details: {detailsKeysCount} keys</span>}
+						{detailsKeysCount > 0 && <span className="meta-sep">|</span>}
+						<button
+							type="button"
+							className="file-diff-footer-link"
+							onClick={(e) => {
+								e.stopPropagation();
+								setViewMode(viewMode === "raw" ? "preview" : "raw");
+							}}
+						>
+							{viewMode === "raw" ? (isZh ? "返回内容" : "Back to content") : isZh ? "查看完整参数" : "View raw"}
+						</button>
+					</div>
+				</div>
+			</div>
+		</div>
+	);
+}
+
+/**
+ * 方案 D：4. 统一文件改动审查视口（Edit, Write, Edit_Soft, Patch）
+ */
+function FileDiffInspectorDialog({
+	state,
+	isMaximized,
+	onToggleMaximize,
+}: {
+	state: ToolInspectorState;
+	isMaximized: boolean;
+	onToggleMaximize: () => void;
+}) {
+	const t = useT();
+	const isZh = isZhLocale(useLocale());
+	const [viewMode, setViewMode] = useState<"unified" | "split" | "raw">("unified");
+	const { copied, copy } = useCopyFeedback({ duration: 1200 });
+
+	const { name = "edit", args = "", details, output = "", isError = false, status, duration } = state;
+	const data = useMemo(() => parseFileMutationArgs(name, args, details, output), [name, args, details, output]);
+
+	const detailsKeysCount =
+		details && typeof details === "object" ? Object.keys(details as Record<string, unknown>).length : 0;
+
+	const formattedDetails = useMemo(() => {
+		if (!details || typeof details !== "object") return "";
+		try {
+			return JSON.stringify(details, null, 2);
+		} catch {
+			return "";
+		}
+	}, [details]);
+
+	const badgeText = isError ? t("error") : duration ? `${t("done")} (${duration})` : status || t("done");
+	const badgeClass = isError ? "err" : "ok";
+
+	const handleCopy = (e: React.MouseEvent) => {
+		e.stopPropagation();
+		if (data?.isWrite && data.content) {
+			void copy(data.content);
+		} else if (args) {
+			void copy(args);
+		}
+	};
+
+	const handleOpenFile = (e: React.MouseEvent) => {
+		e.stopPropagation();
+		if (!data?.filePath) return;
+		const fileName = data.filePath.split("/").pop() || data.filePath;
+		openFilePreview({ path: data.filePath, name: fileName });
+	};
+
+	return (
+		<div
+			className={`tool-inspector-backdrop pi-we-inspector-backdrop open${isMaximized ? " is-maximized" : ""}`}
+			onClick={(e) => {
+				if (e.target === e.currentTarget) closeToolInspector();
+			}}
+		>
+			<div
+				className={`tool-inspector-dialog pi-we-inspector-dialog is-file-diff${isMaximized ? " is-maximized" : ""}`}
+				role="dialog"
+				aria-modal="true"
+			>
+				{/* 顶栏 Header */}
+				<div className="file-diff-inspector-header" onDoubleClick={onToggleMaximize}>
+					<div className="file-diff-inspector-title-group">
+						<FiFileText className="file-diff-file-icon" />
+						<span className="file-diff-path" title={data?.filePath || name}>
+							{data?.filePath || name}
+						</span>
+						{data?.language && data.language !== "plaintext" && <span className="file-diff-lang">{data.language}</span>}
+						{data?.stats.isNewFile ? (
+							<span className="file-diff-stat-new">{t("diffNewFile")}</span>
+						) : (
+							data?.stats.additions !== undefined &&
+							(data.stats.additions > 0 || data.stats.deletions > 0) && (
+								<span className="file-diff-stat-badge">
+									{data.stats.additions > 0 && <span className="add">+{data.stats.additions}</span>}
+									{data.stats.deletions > 0 && <span className="del">-{data.stats.deletions}</span>}
+								</span>
+							)
+						)}
+						<span className={`file-diff-status-pill ${badgeClass}`}>✓ {badgeText}</span>
+					</div>
+
+					<div className="file-diff-inspector-actions">
+						<div className="btn-group-diff" role="group">
+							<button
+								type="button"
+								className={`btn-tag${viewMode === "unified" ? " active" : ""}`}
+								onClick={(e) => {
+									e.stopPropagation();
+									setViewMode("unified");
+								}}
+							>
+								{t("diffViewUnified")}
+							</button>
+							{!data?.isWrite && (
+								<button
+									type="button"
+									className={`btn-tag${viewMode === "split" ? " active" : ""}`}
+									onClick={(e) => {
+										e.stopPropagation();
+										setViewMode("split");
+									}}
+								>
+									{t("diffViewSplit")}
+								</button>
+							)}
+							<button
+								type="button"
+								className={`btn-tag${viewMode === "raw" ? " active" : ""}`}
+								onClick={(e) => {
+									e.stopPropagation();
+									setViewMode("raw");
+								}}
+							>
+								{t("diffViewRaw")}
+							</button>
+						</div>
+
+						<button
+							type="button"
+							className={`file-diff-action-btn${copied ? " copied" : ""}`}
+							title={data?.isWrite ? t("diffCopyContent") : t("diffCopyPatch")}
+							aria-label={data?.isWrite ? t("diffCopyContent") : t("diffCopyPatch")}
+							onClick={handleCopy}
+						>
+							{copied ? <FiCheck /> : <FiCopy />}
+						</button>
+
+						{data?.filePath && (
+							<button
+								type="button"
+								className="file-diff-action-btn"
+								title={t("diffOpenFile")}
+								aria-label={t("diffOpenFile")}
+								onClick={handleOpenFile}
+							>
+								<FiFolder />
+							</button>
+						)}
+
+						<button
+							type="button"
+							className="file-diff-action-btn"
+							title={isMaximized ? t("diffRestoreScreen") : t("diffFullscreen")}
+							aria-label={isMaximized ? t("diffRestoreScreen") : t("diffFullscreen")}
+							onClick={(e) => {
+								e.stopPropagation();
+								onToggleMaximize();
+							}}
+						>
+							{isMaximized ? <FiMinimize2 /> : <FiMaximize2 />}
+						</button>
+
+						<button
+							type="button"
+							className="file-diff-action-btn"
+							title={`${t("close")} (ESC)`}
+							aria-label={t("close")}
+							onClick={(e) => {
+								e.stopPropagation();
+								closeToolInspector();
+							}}
+						>
+							<FiX />
+						</button>
+					</div>
+				</div>
+
+				{/* 中间 Diff 视口 */}
+				<div className="file-diff-inspector-body">
+					{viewMode === "raw" ? (
+						<div className="file-diff-raw-body">
+							<div className="file-diff-raw-section">
+								<div className="file-diff-raw-title">⚡ {t("toolInspectorArgs")}</div>
+								<pre className="file-diff-pre">{args || "(无入参参数 / No arguments)"}</pre>
+							</div>
+							{formattedDetails && (
+								<div className="file-diff-raw-section">
+									<div className="file-diff-raw-title">
+										<span>⚙ {t("toolInspectorDetails")}</span>
+										<span className="file-diff-raw-count">{detailsKeysCount} keys</span>
+									</div>
+									<pre className="file-diff-pre">{formattedDetails}</pre>
+								</div>
+							)}
+						</div>
+					) : data?.isWrite ? (
+						<WriteCodeView content={data.content || ""} />
+					) : viewMode === "split" ? (
+						<SplitDiffView hunks={data?.hunks || []} isStreaming={data?.isStreamingPartial} fallbackText={args} />
+					) : (
+						<UnifiedDiffView hunks={data?.hunks || []} isStreaming={data?.isStreamingPartial} fallbackText={args} />
+					)}
+				</div>
+
+				{/* 底部微型状态栏 */}
+				<div className="file-diff-inspector-footer">
+					<div className={`file-diff-footer-status${isError ? " err" : ""}`}>
+						<span className="file-diff-status-icon">{isError ? "✕" : "✓"}</span>
+						<span className="file-diff-status-text">
+							{output ||
+								(state.statusClass === "run" ? t("toolInspectorRunningOutput") : t("toolInspectorEmptyOutput"))}
+						</span>
+					</div>
+					<div className="file-diff-footer-meta">
+						{detailsKeysCount > 0 && <span>details: {detailsKeysCount} keys</span>}
+						{detailsKeysCount > 0 && <span className="meta-sep">|</span>}
+						<button
+							type="button"
+							className="file-diff-footer-link"
+							onClick={(e) => {
+								e.stopPropagation();
+								setViewMode(viewMode === "raw" ? "unified" : "raw");
+							}}
+						>
+							{viewMode === "raw" ? (isZh ? "返回差异对比" : "Back to diff") : isZh ? "查看完整日志" : "View raw logs"}
+						</button>
+					</div>
+				</div>
+			</div>
+		</div>
+	);
+}
+
+/**
+ * 方案 D：5. 通用工具（Generic / Plugin）三段式精炼视口
+ */
+function GenericInspectorDialog({
+	state,
+	isMaximized,
+	onToggleMaximize,
+}: {
+	state: ToolInspectorState;
+	isMaximized: boolean;
+	onToggleMaximize: () => void;
+}) {
+	const t = useT();
+	const isZh = isZhLocale(useLocale());
+	const [viewMode, setViewMode] = useState<"preview" | "raw">("preview");
+	const copyAll = useCopyFeedback({ duration: 1200 });
+
+	const { name = "tool", args = "", details, output = "", isError = false, status, duration, images } = state;
+	const hints = state.hints || toolArgHints(args);
+	const headline = resolveToolHeadline({ name, argumentsText: args, hints });
+	const displayTitle = headline ? `${name}(${headline.text})` : name ? `${name}()` : t("toolInspectorTitle");
+
+	const formattedDetails = useMemo(() => {
+		if (!details || typeof details !== "object") return "";
+		try {
+			return JSON.stringify(details, null, 2);
+		} catch {
+			return "";
+		}
+	}, [details]);
+
+	const badgeText = isError ? t("error") : duration ? `${t("done")} (${duration})` : status || t("done");
+	const badgeClass = isError ? "err" : "ok";
+	const detailsKeysCount =
+		details && typeof details === "object" ? Object.keys(details as Record<string, unknown>).length : 0;
+
+	// 特殊富组件参数解析
+	const isPresent = name === "present_files";
+	const presentArgs = useMemo(() => (isPresent && args ? parsePresentArgs(args) : null), [isPresent, args]);
+
+	const isDelegate = name === "delegate_task";
+	const delegateArgs = useMemo(() => (isDelegate && args ? parseDelegateArgs(args) : {}), [isDelegate, args]);
+
+	const isCodemode = name === "codemode";
+	const codemodeArgs = useMemo(() => (isCodemode && args ? parseCodemodeArgs(args) : null), [isCodemode, args]);
+
+	const isQuestionnaire = name === "ask_user_question";
+	const questionnaireArgs = useMemo(
+		() => (isQuestionnaire && args ? parseQuestionnaireArgs(args) : null),
+		[isQuestionnaire, args],
+	);
+
+	const hasRichView = Boolean(
+		(isPresent && presentArgs) ||
+		(isDelegate && Object.keys(delegateArgs).length > 0) ||
+		(isCodemode && codemodeArgs?.code) ||
+		(isQuestionnaire && questionnaireArgs),
+	);
+
+	return (
+		<div
+			className={`tool-inspector-backdrop pi-we-inspector-backdrop open${isMaximized ? " is-maximized" : ""}`}
+			onClick={(e) => {
+				if (e.target === e.currentTarget) closeToolInspector();
+			}}
+		>
+			<div
+				className={`tool-inspector-dialog pi-we-inspector-dialog is-file-diff${isMaximized ? " is-maximized" : ""}`}
+				role="dialog"
+				aria-modal="true"
+			>
+				{/* 顶栏 Header */}
+				<div className="file-diff-inspector-header" onDoubleClick={onToggleMaximize}>
+					<div className="file-diff-inspector-title-group">
+						<span className="file-diff-file-icon">{TOOL_ICONS[name] ?? <FiPackage />}</span>
+						<span className="file-diff-path" title={displayTitle}>
+							{displayTitle}
+						</span>
+						<span className={`file-diff-status-pill ${badgeClass}`}>✓ {badgeText}</span>
+					</div>
+
+					<div className="file-diff-inspector-actions">
+						{hasRichView && (
+							<div className="btn-group-diff" role="group">
+								<button
+									type="button"
+									className={`btn-tag${viewMode === "preview" ? " active" : ""}`}
+									onClick={(e) => {
+										e.stopPropagation();
+										setViewMode("preview");
+									}}
+								>
+									{isZh ? "视图" : "View"}
+								</button>
+								<button
+									type="button"
+									className={`btn-tag${viewMode === "raw" ? " active" : ""}`}
+									onClick={(e) => {
+										e.stopPropagation();
+										setViewMode("raw");
+									}}
+								>
+									{t("diffViewRaw")}
+								</button>
+							</div>
+						)}
+
+						<button
+							type="button"
+							className={`file-diff-action-btn${copyAll.copied ? " copied" : ""}`}
+							title={copyAll.copied ? t("toolInspectorCopied") : t("toolInspectorCopyAll")}
+							onClick={(e) => {
+								e.stopPropagation();
+								void copyAll.copy(`[Arguments]\n${args}\n\n[Output]\n${output}`);
+							}}
+						>
+							{copyAll.copied ? <FiCheck /> : <FiCopy />}
+						</button>
+
+						<button
+							type="button"
+							className="file-diff-action-btn"
+							title={isMaximized ? t("diffRestoreScreen") : t("diffFullscreen")}
+							onClick={(e) => {
+								e.stopPropagation();
+								onToggleMaximize();
+							}}
+						>
+							{isMaximized ? <FiMinimize2 /> : <FiMaximize2 />}
+						</button>
+
+						<button
+							type="button"
+							className="file-diff-action-btn"
+							title={`${t("close")} (ESC)`}
+							onClick={(e) => {
+								e.stopPropagation();
+								closeToolInspector();
+							}}
+						>
+							<FiX />
+						</button>
+					</div>
+				</div>
+
+				{/* 中间正文：富组件或无缝代码视口 */}
+				<div className="file-diff-inspector-body">
+					{viewMode === "raw" ? (
+						<div className="file-diff-raw-body">
+							<div className="file-diff-raw-section">
+								<div className="file-diff-raw-title">⚡ {t("toolInspectorArgs")}</div>
+								<pre className="file-diff-pre">{args || "(无入参参数 / No arguments)"}</pre>
+							</div>
+							{formattedDetails && (
+								<div className="file-diff-raw-section">
+									<div className="file-diff-raw-title">
+										<span>⚙ {t("toolInspectorDetails")}</span>
+										<span className="file-diff-raw-count">{detailsKeysCount} keys</span>
+									</div>
+									<pre className="file-diff-pre">{formattedDetails}</pre>
+								</div>
+							)}
+						</div>
+					) : (
+						<div className="generic-inspector-viewport">
 							{isPresent && presentArgs && (
 								<PresentedFiles
 									args={presentArgs}
 									details={details}
-									toolCallId={toolCallId ?? ""}
-									resultTimestamp={resultTimestamp}
+									toolCallId={state.toolCallId ?? ""}
+									resultTimestamp={state.resultTimestamp}
 								/>
 							)}
-
-							{/* delegate_task 派单卡片展示 */}
 							{isDelegate && <DelegateBrief args={delegateArgs} />}
-
-							{/* codemode 卡片展示 */}
 							{isCodemode && codemodeArgs?.code && (
 								<CodemodeCard
 									code={codemodeArgs.code}
@@ -447,30 +1085,25 @@ function ToolInspectorDialog({ state }: { state: ToolInspectorState }) {
 									output={output}
 								/>
 							)}
-
-							{/* ask_user_question 问卷卡片展示 */}
 							{isQuestionnaire && questionnaireArgs && (
 								<QuestionnaireCard
 									questions={questionnaireArgs.questions}
 									details={details}
 									output={output}
 									isError={isError}
-									waiting={statusClass === "run"}
+									waiting={state.statusClass === "run"}
 								/>
 							)}
 
-							{/* tool_search 扩展卡片展示 */}
-							{name === "tool_search" && <ToolSearchDetails details={details} />}
-
-							{/* 图片输出 */}
+							{/* 图片列表 */}
 							{images && images.length > 0 && (
-								<div className="tool-inspector-section pi-we-inspector-section" style={{ marginTop: 12 }}>
+								<div className="tool-inspector-section pi-we-inspector-section" style={{ padding: "8px 14px" }}>
 									<div className="tool-inspector-label-row">
 										<span className="tool-inspector-label pi-we-inspector-label">
 											{t("toolInspectorImages")} ({images.length})
 										</span>
 									</div>
-									<div className="tool-inspector-images pi-we-inspector-images">
+									<div className="tool-inspector-images">
 										{images.map((src, i) => (
 											<a key={i} href={src} target="_blank" rel="noreferrer" title="点击新窗口打开图片">
 												<img src={src} alt={`output image ${i + 1}`} loading="lazy" />
@@ -480,117 +1113,45 @@ function ToolInspectorDialog({ state }: { state: ToolInspectorState }) {
 								</div>
 							)}
 
-							{/* 结果输出区 */}
-							{!(isQuestionnaire && questionnaireArgs) && (
-								<div className="tool-inspector-section pi-we-inspector-section" style={{ marginTop: 12 }}>
-									<div className="tool-inspector-label-row">
-										<span className="tool-inspector-label pi-we-inspector-label">
-											{isError ? t("toolInspectorError") : t("toolInspectorOutput")}
-										</span>
-										<div className="tool-inspector-label-actions">
-											{statsText && <span className="tool-inspector-subinfo">{statsText}</span>}
-											{output && (
-												<button
-													type="button"
-													className="tool-inspector-btn-sm"
-													onClick={handleCopyOutput}
-													title={t("toolInspectorCopyOutput")}
-												>
-													{copyOutput.copied ? `✓ ${t("toolInspectorCopied")}` : t("toolInspectorCopyOutput")}
-												</button>
-											)}
-										</div>
-									</div>
-									<pre className="tool-inspector-codeblock pi-we-inspector-codeblock">
-										{output ||
-											(statusClass === "run" ? t("toolInspectorRunningOutput") : t("toolInspectorEmptyOutput"))}
-									</pre>
-								</div>
-							)}
-						</div>
-					) : (
-						/* 常规视图或 Raw 视图：全面展示 Arguments、Images、Output */
-						<div className="tool-inspector-raw-wrap">
-							{/* 入参区 */}
-							{formattedArgs && (
-								<div className="tool-inspector-section pi-we-inspector-section">
-									<div className="tool-inspector-label-row">
-										<span className="tool-inspector-label pi-we-inspector-label">{t("toolInspectorArgs")}</span>
-										<button
-											type="button"
-											className="tool-inspector-btn-sm"
-											onClick={handleCopyArgs}
-											title={t("toolInspectorCopyArgs")}
-										>
-											{copyArgs.copied ? `✓ ${t("toolInspectorCopied")}` : t("toolInspectorCopyArgs")}
-										</button>
-									</div>
-									<pre className="tool-inspector-codeblock pi-we-inspector-codeblock">{formattedArgs}</pre>
-								</div>
-							)}
-
-							{/* 图片区 */}
-							{images && images.length > 0 && (
-								<div className="tool-inspector-section pi-we-inspector-section">
-									<div className="tool-inspector-label-row">
-										<span className="tool-inspector-label pi-we-inspector-label">
-											{t("toolInspectorImages")} ({images.length})
-										</span>
-									</div>
-									<div className="tool-inspector-images pi-we-inspector-images">
-										{images.map((src, i) => (
-											<a key={i} href={src} target="_blank" rel="noreferrer" title="点击新窗口打开图片">
-												<img src={src} alt={`output image ${i + 1}`} loading="lazy" />
-											</a>
-										))}
-									</div>
-								</div>
-							)}
-
-							{/* 输出区 */}
-							<div className="tool-inspector-section pi-we-inspector-section">
-								<div className="tool-inspector-label-row">
-									<span className="tool-inspector-label pi-we-inspector-label">
-										{isError ? t("toolInspectorError") : t("toolInspectorOutput")}
-									</span>
-									<div className="tool-inspector-label-actions">
-										{statsText && <span className="tool-inspector-subinfo">{statsText}</span>}
-										{output && (
-											<button
-												type="button"
-												className="tool-inspector-btn-sm"
-												onClick={handleCopyOutput}
-												title={t("toolInspectorCopyOutput")}
-											>
-												{copyOutput.copied ? `✓ ${t("toolInspectorCopied")}` : t("toolInspectorCopyOutput")}
-											</button>
-										)}
-									</div>
-								</div>
-								<pre className="tool-inspector-codeblock pi-we-inspector-codeblock">
-									{output || (statusClass === "run" ? t("toolInspectorRunningOutput") : t("toolInspectorEmptyOutput"))}
+							{/* 普通输出：方案 D 顶格无缝通栏展示，彻底消除多余标签行与四周外层边框 */}
+							{!hasRichView && (
+								<pre className="generic-output-pre">
+									{output ||
+										(state.statusClass === "run" ? t("toolInspectorRunningOutput") : t("toolInspectorEmptyOutput"))}
 								</pre>
-							</div>
-						</div>
-					)}
-
-					{/* 结构化 Details 展开面板（若有服务端扩展数据） */}
-					{formattedDetails && (
-						<div className="tool-inspector-details-card">
-							<button
-								type="button"
-								className="tool-inspector-details-toggle"
-								onClick={() => setDetailsExpanded(!detailsExpanded)}
-							>
-								{detailsExpanded ? <FiChevronDown /> : <FiChevronRight />}
-								<span>{t("toolInspectorDetails")}</span>
-								<span className="tool-inspector-details-count">{Object.keys(details as object).length} keys</span>
-							</button>
-							{detailsExpanded && (
-								<pre className="tool-inspector-codeblock tool-inspector-details-code">{formattedDetails}</pre>
 							)}
 						</div>
 					)}
+				</div>
+
+				{/* 底部微型状态栏 */}
+				<div className="file-diff-inspector-footer">
+					<div className={`file-diff-footer-status${isError ? " err" : ""}`}>
+						<span className="file-diff-status-icon">{isError ? "✕" : "✓"}</span>
+						<span className="file-diff-status-text">
+							{output ? `${output.split("\n").length} 行输出 · ${output.length} 字符` : "执行完成"}
+						</span>
+					</div>
+					<div className="file-diff-footer-meta">
+						{detailsKeysCount > 0 && <span>details: {detailsKeysCount} keys</span>}
+						{detailsKeysCount > 0 && <span className="meta-sep">|</span>}
+						<button
+							type="button"
+							className="file-diff-footer-link"
+							onClick={(e) => {
+								e.stopPropagation();
+								setViewMode(viewMode === "raw" ? "preview" : "raw");
+							}}
+						>
+							{viewMode === "raw"
+								? isZh
+									? "返回视图"
+									: "Back to view"
+								: isZh
+									? "查看完整参数与详情"
+									: "View raw & details"}
+						</button>
+					</div>
 				</div>
 			</div>
 		</div>

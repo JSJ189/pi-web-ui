@@ -157,6 +157,7 @@ export default {
 		<div class="row">
 			<input data-ref="to" placeholder="微信用户 ID" style="flex:1;min-width:140px" />
 			<input data-ref="text" placeholder="文本内容" style="flex:2;min-width:180px" />
+			<input data-ref="media" placeholder="图片/文件路径或 URL（可选）" style="flex:2;min-width:180px" />
 			<button data-ref="send">发送</button>
 		</div>
 		<div class="err" data-ref="err" style="margin-top:6px"></div>
@@ -453,8 +454,14 @@ export default {
 		}
 		$("send").addEventListener("click", () => {
 			errEl.textContent = "";
-			ctx.send({ action: "send", peer: $("to").value.trim(), text: $("text").value.trim() });
+			ctx.send({
+				action: "send",
+				peer: $("to").value.trim(),
+				text: $("text").value.trim(),
+				media: $("media").value.trim(),
+			});
 			$("text").value = "";
+			$("media").value = "";
 		});
 
 		const off = ctx.onData((p) => {

@@ -2,24 +2,16 @@
 	"apiVersion": 2,
 	"name": "qq",
 	"nameEn": "QQ",
-	"version": "0.1.12",
-	"description": "QQ 机器人：腾讯官方开放平台 QQBot 出站 WebSocket 双工长连接（零公网 IP / 智能 Markdown 分块 / 多轮会话隔离）/ 用户白名单准入 / AI qq 工具（密钥加密存储，零外部依赖）",
-	"descriptionEn": "QQ Bot: official Tencent QQBot outbound WebSocket duplex chat (zero public IP, structure-aware Markdown chunks, isolated multi-turn sessions), access control whitelist, and AI qq tool.",
+	"version": "0.1.15",
+	"description": "QQ 机器人：腾讯官方开放平台 QQBot 出站 WebSocket 双工长连接（零公网 IP / 智能 Markdown 分块 / 多轮会话隔离）/ 图片语音视频文件双向富媒体（本地文件自动上传）/ 用户白名单准入 / AI qq 工具（密钥加密存储，零外部依赖）",
+	"descriptionEn": "QQ Bot: official Tencent QQBot outbound WebSocket duplex chat (zero public IP, structure-aware Markdown chunks, isolated multi-turn sessions), two-way image/voice/video/file media with automatic local-file upload, access control whitelist, and AI qq tool.",
 	"author": "pi-web-ui",
 	"homepage": "https://github.com/xing-shuyin/pi-web-ui/tree/main/plugins/qq",
 	"icon": "🐧",
 	"iconSvg": "<svg xmlns=\"http://www.w3.org/2000/svg\" viewBox=\"0 0 24 24\" fill=\"none\" stroke=\"currentColor\" stroke-width=\"2\" stroke-linecap=\"round\" stroke-linejoin=\"round\"><path d=\"M12 2a8 8 0 0 0-8 8c0 3 1.5 5 2 7-1 .5-2 1.5-2 3h16c0-1.5-1-2.5-2-3 .5-2 2-4 2-7a8 8 0 0 0-8-8z\"/><circle cx=\"9\" cy=\"9\" r=\"1\"/><circle cx=\"15\" cy=\"9\" r=\"1\"/><path d=\"M10 13h4\"/></svg>",
 	"server": "index.mjs",
 	"client": "client/entry.mjs",
-	"permissions": [
-		"ui",
-		"tools",
-		"notify",
-		"storage",
-		"secrets",
-		"llm",
-		"chat"
-	],
+	"permissions": ["ui", "tools", "notify", "storage", "secrets", "llm", "chat"],
 	"ui": {
 		"views": [
 			{
@@ -116,6 +108,34 @@
 			"min": 15,
 			"max": 600,
 			"hint": "AI 执行超过此时长先发送“还在执行”，任务完成后再追发结果"
+		},
+		{
+			"key": "inboundMedia",
+			"type": "boolean",
+			"label": "接收图片/文件落地",
+			"default": true,
+			"hint": "QQ 发来的图片/语音/视频/文件下载后存到工作区 .pi-qq-media/，AI 可用 read 直接查看；关 = 只收占位文字"
+		},
+		{
+			"key": "broadcastChannelId",
+			"type": "text",
+			"label": "广播通知子频道 ID",
+			"default": "",
+			"hint": "AI 提问与任务完成时推送通知的 QQ 频道子频道 ID；留空默认使用默认发送子频道"
+		},
+		{
+			"key": "notifyOnQuestion",
+			"type": "boolean",
+			"label": "AI 提问待确认时发送频道通知",
+			"default": true,
+			"hint": "开 = AI 调用 ask_user_question 等待用户确认时，向私人频道推送待办提醒"
+		},
+		{
+			"key": "notifyOnRunEnd",
+			"type": "boolean",
+			"label": "AI 任务执行完成时发送频道通知",
+			"default": false,
+			"hint": "开 = 任务执行完毕后，向私人频道推送结果摘要与完成提醒"
 		}
 	]
 }

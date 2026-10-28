@@ -59,6 +59,8 @@ interface StoredProfile {
 	encryptedPassword?: { iv: string; tag: string; ct: string };
 	encryptedPassphrase?: { iv: string; tag: string; ct: string };
 	lastConnected: number;
+	remotePath?: string;
+	description?: string;
 }
 
 interface StoredProfilesFile {
@@ -454,6 +456,10 @@ export class RemoteSshService {
 	}
 
 	private get profilesFilePath(): string {
+		return path.join(this.dataDir, "global-hosts.json");
+	}
+
+	private get legacyProfilesFilePath(): string {
 		return path.join(this.dataDir, "ssh-profiles.json");
 	}
 
@@ -465,6 +471,15 @@ export class RemoteSshService {
 				if (parsed && parsed.version === 1 && typeof parsed.profiles === "object") {
 					return parsed;
 				}
+			} else if (existsSync(this.legacyProfilesFilePath)) {
+				const content = await fs.readFile(this.legacyProfilesFilePath, "utf8");
+				const parsed = JSON.parse(content) as StoredProfilesFile;
+				if (parsed && parsed.version === 1 && typeof parsed.profiles === "object") {
+					// 迁移到新的 global-hosts.json
+					await fs.mkdir(this.dataDir, { recursive: true });
+					await fs.writeFile(this.profilesFilePath, JSON.stringify(parsed, null, 2), "utf8");
+					return parsed;
+				}
 			}
 		} catch {}
 		return { version: 1, profiles: {} };
@@ -473,7 +488,10 @@ export class RemoteSshService {
 	private async saveProfilesData(data: StoredProfilesFile): Promise<void> {
 		try {
 			await fs.mkdir(this.dataDir, { recursive: true });
-			await fs.writeFile(this.profilesFilePath, JSON.stringify(data, null, 2), "utf8");
+			const json = JSON.stringify(data, null, 2);
+			await fs.writeFile(this.profilesFilePath, json, "utf8");
+			// 同时保持旧文件同步（防止外部或旧调用方异常）
+			await fs.writeFile(this.legacyProfilesFilePath, json, "utf8").catch(() => {});
 		} catch (err) {
 			console.error("[remote-ssh] 无法保存 profiles 文件:", err);
 		}
@@ -491,8 +509,43 @@ export class RemoteSshService {
 				authType: p.authType,
 				privateKeyPath: p.privateKeyPath,
 				lastConnected: p.lastConnected,
+				remotePath: p.remotePath,
+				description: p.description,
 			}))
 			.sort((a, b) => (b.lastConnected ?? 0) - (a.lastConnected ?? 0));
+	}
+
+	/** 获取解密后的 profile 凭据（仅供受信任的服务端内部模块使用） */
+	async getDecryptedProfile(name: string): Promise<{
+		profile: RemoteSshProfileSummary;
+		password?: string;
+		passphrase?: string;
+	} | null> {
+		const data = await this.loadProfilesData();
+		const p = data.profiles[name];
+		if (!p) return null;
+		let password: string | undefined;
+		let passphrase: string | undefined;
+		if (p.authType === "password" && p.encryptedPassword) {
+			password = await this.unseal(p.encryptedPassword);
+		} else if (p.authType === "key" && p.encryptedPassphrase) {
+			passphrase = await this.unseal(p.encryptedPassphrase);
+		}
+		return {
+			profile: {
+				name: p.name,
+				host: p.host,
+				port: p.port,
+				username: p.username,
+				authType: p.authType,
+				privateKeyPath: p.privateKeyPath,
+				lastConnected: p.lastConnected,
+				remotePath: p.remotePath,
+				description: p.description,
+			},
+			password,
+			passphrase,
+		};
 	}
 
 	/** 删除一个已保存的 profile */
@@ -505,7 +558,11 @@ export class RemoteSshService {
 	}
 
 	/** 记录或更新一个 profile */
-	async saveProfile(name: string, params: RemoteSshProbeParams): Promise<void> {
+	async saveProfile(
+		name: string,
+		params: RemoteSshProbeParams,
+		meta?: { remotePath?: string; description?: string },
+	): Promise<void> {
 		const data = await this.loadProfilesData();
 		const existing = data.profiles[name];
 		const auth = params.auth;
@@ -517,6 +574,8 @@ export class RemoteSshService {
 			authType: auth.type,
 			privateKeyPath: auth.type === "key" ? auth.privateKeyPath : undefined,
 			lastConnected: Date.now(),
+			remotePath: meta?.remotePath ?? existing?.remotePath,
+			description: meta?.description ?? existing?.description,
 		};
 
 		if (auth.type === "password") {
@@ -770,18 +829,29 @@ export class RemoteSshService {
 	}> {
 		let client: Client;
 		let hydrated: RemoteSshProbeParams;
-		try {
-			const res = await this.createClient(params);
-			client = res.client;
-			hydrated = res.hydrated;
-		} catch (err) {
-			return {
-				ok: false,
-				error: (err as Error).message || String(err),
-			};
-		}
+		let conn: ActiveConnection;
 
-		const conn = this.registerConnection(client, hydrated);
+		const port = params.port ?? 22;
+		const hostKey = `${params.username}@${params.host}:${port}`;
+		const existingId = this.hostConnections.get(hostKey);
+		const existingConn = existingId ? this.connections.get(existingId) : undefined;
+		if (existingConn && existingConn.alive) {
+			conn = existingConn;
+			client = existingConn.client;
+			hydrated = existingConn.params;
+		} else {
+			try {
+				const res = await this.createClient(params);
+				client = res.client;
+				hydrated = res.hydrated;
+				conn = this.registerConnection(client, hydrated);
+			} catch (err) {
+				return {
+					ok: false,
+					error: (err as Error).message || String(err),
+				};
+			}
+		}
 
 		// 无论是否显式勾选，连接成功都持久化凭据以便打开远程工作区后能够跨请求/跨重启自动重连
 		if (params.saveProfile !== false) {
@@ -796,6 +866,8 @@ uname -m
 uname -n
 echo "$USER"
 echo "$HOME"
+(nproc 2>/dev/null || grep -c ^processor /proc/cpuinfo 2>/dev/null || sysctl -n hw.ncpu 2>/dev/null || echo "1")
+(awk '/MemTotal/ {print int($2/1024)}' /proc/meminfo 2>/dev/null || free -m 2>/dev/null | awk '/Mem:/ {print $2}' || sysctl -n hw.memsize 2>/dev/null | awk '{print int($1/1024/1024)}' || echo "0")
 echo "===GIT==="
 which git 2>/dev/null && git --version 2>/dev/null || echo "NONE"
 echo "===NODE==="
@@ -858,6 +930,8 @@ done
 		const hostname = sysLines[2] || "";
 		const user = sysLines[3] || "";
 		const homeDir = sysLines[4] || "/";
+		const cores = parseInt(sysLines[5] || "1", 10) || 1;
+		const totalMemMb = parseInt(sysLines[6] || "0", 10) || 0;
 
 		const gitLines = (sections["GIT"] || []).filter(Boolean);
 		const gitInstalled = gitLines.length > 0 && gitLines[0] !== "NONE";
@@ -889,6 +963,8 @@ done
 				hostname,
 				user,
 				homeDir,
+				cores,
+				totalMemMb,
 			},
 			tools: {
 				git: { installed: gitInstalled, version: gitVersion },
@@ -1581,6 +1657,45 @@ fi
 			},
 		};
 		return virtualPty;
+	}
+
+	/**
+	 * 为目标主机打开交互式 PTY Shell 通道（返回底层 ClientChannel 流与连接）
+	 */
+	async openShell(
+		target: { host: string; port?: number; username: string; remotePath?: string },
+		options: { cols?: number; rows?: number; term?: string } = {},
+	): Promise<{
+		stream: ClientChannel;
+		conn: ActiveConnection;
+		close: () => void;
+	}> {
+		const port = target.port ?? 22;
+		const conn = await this.getOrConnectHost(target.host, port, target.username);
+		return new Promise((resolve, reject) => {
+			conn.client.shell(
+				{
+					term: options.term ?? "xterm-256color",
+					cols: Math.max(2, Math.floor(options.cols ?? 80)),
+					rows: Math.max(2, Math.floor(options.rows ?? 24)),
+				},
+				(err, stream) => {
+					if (err) return reject(err);
+					if (target.remotePath && target.remotePath !== "~") {
+						stream.write(`cd ${shellQuotePosix(target.remotePath)} && clear\r`);
+					}
+					resolve({
+						stream,
+						conn,
+						close: () => {
+							try {
+								stream.close();
+							} catch {}
+						},
+					});
+				},
+			);
+		});
 	}
 }
 

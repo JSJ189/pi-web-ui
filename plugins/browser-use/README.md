@@ -103,7 +103,34 @@
 | **`brave`**            | Brave Search   | 全球独立新一代隐私引擎，不依赖 Google/Bing 索引                                              | 提取独立卡片并过滤侧栏浮窗                              |
 | **`yahoo`**            | 雅虎搜索       | 经典全球多语言通用搜索                                                                       | 提取自然结果与摘要                                      |
 
-> **通用自适应兜底引擎（Universal Fallback）**：针对市面任意搜索引擎，即使页面样式发生改版，内置的自适应启发式算法依然能在页面主体中自动识别高质量标题+摘要卡片，确保提取永不落空。
+> **通用自适应兜底引擎（Universal Fallback）**：针对市面任意搜索引擎，即使页面样式发生改版，内置的自适应启发式算法依然能在页面主体中自动识别高质量标题+摘要卡片。
+
+### 零结果必须说清「被拦」还是「真没有」
+
+搜索零结果是最容易被误读的场景：**「未找到结果」不等于关键词搜不到**，很可能是反爬验证码或网络不可达。因此 `browser_search` 在零结果时不再输出统一话术，而是逐引擎交代真实原因：
+
+```
+⚠️ 没有拿到任何结果，但这不等于「搜不到」——各引擎实际回报：
+    · baidu — 人机验证/反爬拦截：百度安全验证（页面被重定向到验证页 https://wappass.baidu.com/...）
+    · sogou — 人机验证/反爬拦截：搜狗反爬拦截
+    · google — 网络不可达：浏览器网络错误（ERR_CONNECTION_TIMED_OUT）
+诊断：2 个引擎被人机验证/反爬拦截，1 个网络不可达。
+```
+
+配套的三条硬机制：
+
+1. **拦截识别覆盖真实验证页**：URL 特征（`wappass.baidu.com`、`/antispider/`、`qcaptcha.so.com`、`google.com/sorry`）优先于正文关键词，另加 Chrome 错误页（`ERR_CONNECTION_TIMED_OUT` / 无法访问此网站）与验证码控件探测；引擎自述「没有找到相关结果」时才归为**真的没结果**。
+2. **搜索引擎健康自检（带缓存）**：对每个引擎域名做 TCP 可达性探测，并记住近期被拦截的引擎。非首选引擎若确认不可达/刚被拦，直接跳过并在原因中标注，不再为四个境外引擎各白等一次 6 秒超时（一次搜索可省 20~40 秒）。
+3. **搜索互斥，杜绝并发串味**：所有搜索共用一个 `window.name` 标记的后台 worker 标签页（跨导航存活，不再每次新开标签页导致泄漏），并由进程内队列 + 跨进程文件锁串行化——并发搜索不会互相踩页面导致结果串味或误报「无结果」。
+
+相关环境变量：
+
+| 变量                     | 默认  | 作用                                             |
+| :----------------------- | :---- | :----------------------------------------------- |
+| `DP_ENGINE_HEALTH_TTL`   | `600` | 引擎可达性探测缓存秒数（0 = 每次都探）           |
+| `DP_ENGINE_BLOCK_TTL`    | `900` | 被拦截引擎的冷却秒数（冷却期内非首选时直接跳过） |
+| `DP_SEARCH_LOCK_TIMEOUT` | `90`  | 搜索文件锁最长等待秒数（超时放弃加锁，避免卡死） |
+| `DP_SEARCH_LOCK_STALE`   | `120` | 超过该秒数的锁视为残留锁并被清理                 |
 
 调用示例：
 
@@ -139,6 +166,7 @@ AI 可以直接使用原生 tool call 控制常驻浏览器：
 | `scroll`            | `scroll`                                                                                              | 页面滚动：`"top"`、`"bottom"`、`"up"`、`"down"` 或像素值                                                            |
 | `wait`              | `seconds`                                                                                             | 等待指定秒数                                                                                                        |
 | `js` / `jsx`        | `code`                                                                                                | 执行 JavaScript 代码或获取表达式值                                                                                  |
+| `console`           | `level?`, `clear?`, `limit?`, `query?`                                                                | 查看当前标签页控制台日志（自动捕获 `log`/`warn`/`error` 与未捕获异常，支持按级别过滤与清空）                        |
 | `screenshot`        | `path?`, `fullPage?`                                                                                  | 截取页面截图（支持 fullPage 长图）                                                                                  |
 | `quit`              | -                                                                                                     | 关闭常驻浏览器窗口，结束当前自动化会话                                                                              |
 
@@ -151,3 +179,7 @@ AI 可以直接使用原生 tool call 控制常驻浏览器：
 - _“帮我去 GitHub 搜索热门的 DrissionPage 库并查看正文详情”_  
   → AI 调用 `browser_search(query: "DrissionPage github repo", limit: 3)` 获取候选 URL  
   → AI 调用 `browser_use(action: "read_page", url: "https://github.com/g1879/DrissionPage")` 极速提取干净 README 正文（零垃圾代码与广告，仅消耗约 1,500 tokens）。
+
+- _“看看刚才打开的页面为什么报错，控制台输出了什么”_  
+  → AI 调用 `browser_use(action: "console", level: "error")`  
+  → 立即获取当前网页捕获到的所有未捕获异常（Uncaught Exception）、Promise Rejection 与 `console.error` 输出及文件堆栈。

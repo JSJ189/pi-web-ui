@@ -59,6 +59,10 @@ function stubFetch() {
 				posts.push({ path: u, body: JSON.parse(String(init?.body ?? "{}")) as Record<string, unknown> });
 				return send({ ok: true, action: "added" });
 			}
+			if (u.includes("/profile") || u.includes("/remove") || u.includes("/active")) {
+				posts.push({ path: u, body: JSON.parse(String(init?.body ?? "{}")) as Record<string, unknown> });
+				return send({ ok: true });
+			}
 			if (u.includes("/remote")) return send({ dir: "/home/test", entries: [] });
 			return send({
 				cwd: CWD,
@@ -551,5 +555,54 @@ describe("sftp 密码帮助问号与使用说明", () => {
 
 		const statusEl = c.querySelector<HTMLElement>(".secret-name-status");
 		expect(statusEl?.textContent).toContain("已有同名机密");
+	});
+
+	it("支持在界面手动新建连接与删除当前连接", async () => {
+		document.documentElement.lang = "zh";
+		stubFetch();
+
+		const c = mount();
+		await flush();
+
+		const profileSelect = c.querySelector<HTMLSelectElement>(".profile")!;
+		const addBtn = c.querySelector<HTMLButtonElement>(".btn-add-profile")!;
+		const delBtn = c.querySelector<HTMLButtonElement>(".btn-del-profile")!;
+		const newRow = c.querySelector<HTMLElement>(".new-profile-row")!;
+		const nameInput = c.querySelector<HTMLInputElement>(".f-new-profile-name")!;
+		const confirmBtn = c.querySelector<HTMLButtonElement>(".btn-confirm-add-profile")!;
+
+		expect(profileSelect.innerHTML).toContain("__new__");
+		expect(newRow.classList.contains("hidden")).toBe(true);
+
+		// 点击 ＋ 按钮展开新建行
+		addBtn.click();
+		expect(newRow.classList.contains("hidden")).toBe(false);
+
+		// 输入新名字并确认创建
+		nameInput.value = "prod-server";
+		confirmBtn.click();
+		await flush();
+
+		// 检查发出的 POST 请求
+		const profilePost = posts.find((p) => p.path.includes("/profile"));
+		expect(profilePost).toBeDefined();
+		expect(profilePost?.body).toMatchObject({
+			name: "prod-server",
+			makeActive: true,
+		});
+
+		// 删除当前连接
+		vi.stubGlobal(
+			"confirm",
+			vi.fn(() => true),
+		);
+		delBtn.click();
+		await flush();
+
+		const removePost = posts.find((p) => p.path.includes("/remove"));
+		expect(removePost).toBeDefined();
+		expect(removePost?.body).toMatchObject({
+			name: "mock",
+		});
 	});
 });

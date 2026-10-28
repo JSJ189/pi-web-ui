@@ -1,10 +1,174 @@
 /**
- * 公开 Skill (智能体专项技能) 市场清单
+ * Skill 市场资源与链接清单
  *
- * 遵循 Agent Skills 规范（SKILL.md + YAML frontmatter）。
- * 支持一键安装到全局 (~/.pi/agent/skills) 或当前项目 (.pi/skills)。
+ * 聚合官方标准规范、开放市场、社区精选与生态索引链接，
+ * 供用户浏览、发现并在自己的智能体环境中按 SKILL.md 规范引入能力。
  */
 
+export type SkillMarketCategory = "official" | "marketplace" | "community" | "directory";
+
+export interface SkillMarketItem {
+	id: string;
+	name: string;
+	nameZh: string;
+	description: string;
+	descriptionZh: string;
+	url: string;
+	category: SkillMarketCategory;
+	tags?: string[];
+	author?: string;
+	badge?: string;
+	badgeZh?: string;
+}
+
+export const SKILL_MARKETS: SkillMarketItem[] = [
+	{
+		id: "agentskills-me",
+		name: "Discover Agent Skills",
+		nameZh: "AgentSkills 技能发现市场",
+		description:
+			"Browse and discover 500+ curated AI agent skills with live search, install commands, and GitHub stars.",
+		descriptionZh: "在线浏览与检索 500+ 个实测 Agent Skills，支持搜索筛选、多平台一键安装命令与中文标签。",
+		url: "https://agentskills.me/",
+		category: "marketplace",
+		author: "AgentSkills.me",
+		badge: "Market",
+		badgeZh: "在线市场",
+		tags: ["Marketplace", "500+ Skills", "Multi-Agent"],
+	},
+	{
+		id: "agentskills-to",
+		name: "AgentSkills Marketplace",
+		nameZh: "AgentSkills 开放技能市场",
+		description:
+			"Open marketplace showcasing 4,000+ developer agent skills, trending automations, and category rankings.",
+		descriptionZh: "汇聚 4,000+ 开发者 Agent 技能的开放市场，首页直展 Trending 与最新实战技能卡片。",
+		url: "https://www.agentskills.to/",
+		category: "marketplace",
+		author: "AgentSkills.to",
+		badge: "Market",
+		badgeZh: "开放市场",
+		tags: ["Marketplace", "Claude Code", "Cursor"],
+	},
+	{
+		id: "anthropic-skills",
+		name: "Anthropic Official Skills",
+		nameZh: "Anthropic 官方技能目录",
+		description:
+			"Anthropic's official directory of Agent Skills: docx, pptx, xlsx, canvas-design, mcp-builder, and more.",
+		descriptionZh:
+			"Anthropic 官方核心 skills 目录，直达 docx, pptx, xlsx, canvas-design, mcp-builder 等数十个官方技能。",
+		url: "https://github.com/anthropics/skills/tree/main/skills",
+		category: "official",
+		author: "Anthropic",
+		badge: "Official",
+		badgeZh: "官方规范",
+		tags: ["Official", "Anthropic", "Reference"],
+	},
+	{
+		id: "addyosmani-skills",
+		name: "Addy Osmani's Production Skills",
+		nameZh: "Addy Osmani 生产级工程技能库",
+		description:
+			"Production-grade engineering skills directory: api-design, code-review, performance, security, and TDD.",
+		descriptionZh: "Google 技术总监维护的 25+ 个生产级工程技能目录：架构设计、性能优化、安全加固与测试驱动。",
+		url: "https://github.com/addyosmani/agent-skills/tree/main/skills",
+		category: "community",
+		author: "Addy Osmani",
+		badge: "110k★",
+		badgeZh: "11万星推荐",
+		tags: ["Production", "Engineering", "Best Practices"],
+	},
+	{
+		id: "superpowers-skills",
+		name: "Superpowers Agent Skills",
+		nameZh: "Superpowers 实战技能合集",
+		description:
+			"Battle-tested agent skills directory: subagent-driven development, systematic debugging, writing plans, and worktrees.",
+		descriptionZh: "名声斐然的实战技能目录：子代理编排驱动、系统化调试诊断、计划编写与 Git Worktree 高效协同。",
+		url: "https://github.com/obra/superpowers/tree/main/skills",
+		category: "community",
+		author: "obra & Contributors",
+		badge: "Workflow",
+		badgeZh: "深度工作流",
+		tags: ["Workflows", "Debugging", "Subagents"],
+	},
+	{
+		id: "scientific-skills",
+		name: "Scientific Agent Skills",
+		nameZh: "科研与科学计算技能库",
+		description:
+			"Directory of 150+ validated scientific agent skills for biology, chemistry, data analysis, and literature review.",
+		descriptionZh: "直达 150+ 个面向生物计算、化学建模、学术研读与量化数据分析的专业领域 Agent Skills 目录。",
+		url: "https://github.com/K-Dense-AI/scientific-agent-skills/tree/main/skills",
+		category: "directory",
+		author: "K-Dense-AI",
+		badge: "Science",
+		badgeZh: "科研专区",
+		tags: ["Science", "Research", "Data Analysis"],
+	},
+	{
+		id: "composio-skills",
+		name: "Composio Awesome Claude Skills",
+		nameZh: "Composio Claude 技能精选合集",
+		description:
+			"Curated collection linking directly to hundreds of specialized Claude and agent skills grouped by category.",
+		descriptionZh: "直接锚定直达 #skills 章节，收录涵盖办公、分析、多工具调用等数十个分类的上百个现成技能清单。",
+		url: "https://github.com/ComposioHQ/awesome-claude-skills#skills",
+		category: "community",
+		author: "Composio",
+		badge: "78k★",
+		badgeZh: "社区精选",
+		tags: ["Awesome", "Composio", "Categorized"],
+	},
+	{
+		id: "awesome-claude-skills",
+		name: "Awesome Claude Code Skills",
+		nameZh: "Awesome Claude Code 技能聚合",
+		description:
+			"Direct index of community skills: Archify, thinking protocols, diagram design, and developer automations.",
+		descriptionZh: "直接直达技能列表锚点，汇集社区贡献的思考规约、架构绘图、思维链强化与自动化脚本。",
+		url: "https://github.com/hesreallyhim/awesome-claude-code#skills",
+		category: "community",
+		author: "hesreallyhim",
+		badge: "Curated",
+		badgeZh: "高星榜单",
+		tags: ["Claude Code", "Community", "Tools"],
+	},
+	{
+		id: "marketing-skills",
+		name: "Marketing & Growth Skills",
+		nameZh: "业务营销与产品增长技能库",
+		description:
+			"Agent skills directory for product launches, conversion optimization, email sequences, and copy crafting.",
+		descriptionZh: "面向商业增长的技能目录：涵盖产品发布策略、转化率优化、自动化邮件序列与文案撰写规约。",
+		url: "https://github.com/coreyhaines31/marketingskills/tree/main/skills",
+		category: "directory",
+		author: "coreyhaines31",
+		badge: "Growth",
+		badgeZh: "业务与增长",
+		tags: ["Marketing", "Copywriting", "Growth"],
+	},
+	{
+		id: "github-topic-agent-skills",
+		name: "GitHub: #agent-skills",
+		nameZh: "GitHub #agent-skills 全球仓库列表",
+		description:
+			"Live directory of 38,000+ open-source repositories tagged with #agent-skills, sorted by activity and stars.",
+		descriptionZh: "GitHub 官方标签直达，全球 38,000+ 开源智能体技能与工具仓库实时列表，可按活跃度与星标浏览。",
+		url: "https://github.com/topics/agent-skills",
+		category: "directory",
+		author: "GitHub Community",
+		badge: "38k+ Repos",
+		badgeZh: "3.8万开源库",
+		tags: ["GitHub", "Topics", "Open Source"],
+	},
+];
+
+/**
+ * 历史/内置公共技能规约定义
+ * 保留供画布工作流节点等内部配置与向后兼容引用。
+ */
 export interface PublicSkill {
 	id: string;
 	name: string;

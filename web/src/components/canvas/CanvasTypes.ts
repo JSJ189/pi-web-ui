@@ -5,6 +5,7 @@
  * 触发 → 规划 → 执行(Agent群) → 工具/知识 → 条件/循环 → 人工审批 → 汇聚 → 评估 → 结束。
  */
 import type { CanvasEngineId, CanvasNodeRole, CanvasNodeStatus } from "../../types";
+import { PSTACK_SKILLS } from "./pstack-skills-data";
 
 export interface EngineMeta {
 	id: CanvasEngineId;
@@ -334,6 +335,26 @@ export const ROLE_METAS: Record<CanvasNodeRole, RoleMeta> = {
 		blurb: "汇总所有上游产物形成最终交付",
 		defaultInstruction: "",
 		needsLlm: false,
+	},
+	pstack: {
+		role: "pstack",
+		labelZh: "Pstack 专家 (Pstack)",
+		labelEn: "Pstack Rigorous Agent",
+		icon: "🥔",
+		group: "agent",
+		blurb: "基于 Cursor 核心工程实践：深度优先、直击根因、去 AI 味、严谨实证",
+		defaultInstruction: "遵循所选 Pstack Skill 规约与准则开展工作，拒绝表面修补与 AI 废话，用运行证据证明交付。",
+		needsLlm: true,
+	},
+	skill: {
+		role: "skill",
+		labelZh: "技能注入 (Skill)",
+		labelEn: "Skill / Soul Agent",
+		icon: "✨",
+		group: "agent",
+		blurb: "以安装的 Skill 作为智能体灵魂：注入技能指令、行为模式与领域专长",
+		defaultInstruction: "以指定 Skill 的专业技能规约为灵魂，严格遵循其步骤与标准执行任务。",
+		needsLlm: true,
 	},
 };
 
@@ -668,6 +689,34 @@ export const ROLE_FIELDS: Record<CanvasNodeRole, RoleField[]> = {
 	],
 	end: [],
 	subflow: [{ key: "subflowId", labelZh: "子流程 ID", kind: "text", placeholder: "目标画布工程 id" }],
+	pstack: [
+		{
+			key: "skill",
+			labelZh: "选择工作依据 Skill",
+			kind: "select",
+			default: "poteto-mode",
+			options: PSTACK_SKILLS.map((s) => ({
+				value: s.id,
+				labelZh: `${s.icon} ${s.nameZh} (${s.id})`,
+			})),
+			hint: "选择该 Skill 作为本节点的核心描述、思考准则与工程工作依据",
+		},
+	],
+	skill: [
+		{
+			key: "skillName",
+			labelZh: "注入的技能灵魂 (Skill)",
+			kind: "select",
+			default: "",
+			options: [
+				{
+					value: "",
+					labelZh: "📦 选择已安装的技能...",
+				},
+			],
+			hint: "以此 Skill 作为本节点的灵魂规约与行动标准（仅展示本机已安装技能）",
+		},
+	],
 };
 
 /** 每个角色的输入输出速查（卡片 ? 提示用）：输入要什么 / 输出给什么 / 一句话用法 */
@@ -749,6 +798,16 @@ export const ROLE_IO_HELP: Record<CanvasNodeRole, RoleIoHelp> = {
 	api: { input: "上游参数", output: "HTTP 返回清洗后的摘要", usage: "配 URL + 方法调外部接口" },
 	memory: { input: "写入：上游产物；读取：无", output: "记忆键对应快照", usage: "跨分支共享变量，键名保持一致" },
 	end: { input: "所有上游汇总", output: "最终交付（流程结束）", usage: "放最后汇总展示" },
+	pstack: {
+		input: "业务需求 / 架构规约 / 上游产物",
+		output: "高质量工程交付 + 验证证据（无 AI 废话/无表象修补）",
+		usage: "选择 58 个 Pstack Skill 之一作为角色准则，如 poteto-mode、fix-root-causes、unslop 等",
+	},
+	skill: {
+		input: "业务需求 / 任务契约",
+		output: "严格依据注入技能规约的交付产物",
+		usage: "以已安装技能作为智能体灵魂，继承其专属方法论与领域规约",
+	},
 };
 
 /** 取某角色可见的字段（含 showIf 联动显隐） */

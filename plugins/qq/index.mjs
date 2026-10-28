@@ -9,9 +9,19 @@
  */
 
 import { createHash } from "node:crypto";
-import { existsSync, statSync } from "node:fs";
-import { resolve, sep } from "node:path";
+import { existsSync, mkdirSync, readFileSync, statSync, writeFileSync } from "node:fs";
+import { basename, join, resolve, sep } from "node:path";
 import { chunkMarkdownText } from "./markdown-chunks.mjs";
+import {
+	QQ_INBOUND_MAX,
+	formatInboundMediaLines,
+	inboundFileName,
+	mediaKindOfContentType,
+	mediaKindOfPath,
+	mimeOfPath,
+	sendQqMediaMessage,
+	uploadQqMedia,
+} from "./media.mjs";
 
 export const SECRET_CLIENT_SECRET = "qq.clientSecret";
 const QQ_AUTH_URL = "https://bots.qq.com/app/getAppAccessToken";
@@ -140,6 +150,93 @@ export async function qqApi(
 }
 
 /**
+ * 下载 QQ 附件（腾讯 CDN，url 有时效）。超过上限直接放弃，不把服务内存拖坏。
+ * @param {string} url
+ * @param {number} [declaredSize] 事件里带的 size 字节数（可选，先做一次快判）
+ * @param {number} [maxBytes]
+ */
+export async function downloadInbound(url, declaredSize, maxBytes = QQ_INBOUND_MAX) {
+	if (Number(declaredSize) > maxBytes) {
+		throw new Error(
+			`附件 ${Math.round(Number(declaredSize) / 1024 / 1024)}MB 超过上限 ${Math.round(maxBytes / 1024 / 1024)}MB`,
+		);
+	}
+	const res = await fetch(url, { signal: AbortSignal.timeout(30000) });
+	if (!res.ok) throw new Error(`HTTP ${res.status}`);
+	const buf = Buffer.from(await res.arrayBuffer());
+	if (buf.length === 0) throw new Error("附件为空");
+	if (buf.length > maxBytes) {
+		throw new Error(`附件 ${Math.round(buf.length / 1024 / 1024)}MB 超过上限 ${Math.round(maxBytes / 1024 / 1024)}MB`);
+	}
+	return buf;
+}
+
+/**
+ * 发媒体时的来源解析：http(s) URL 交给平台自己转存（最省事）；本地文件读成字节，
+ * 由 uploadQqMedia 走 base64（≤50MB）或分片上传。相对路径按工作区解析。
+ */
+export function resolveMediaSpec(spec, workspace) {
+	const raw = String(spec ?? "").trim();
+	if (!raw) return null;
+	const kind = mediaKindOfPath(raw);
+	if (/^https?:\/\//i.test(raw)) return { url: raw, kind, fileName: basename(raw.split("?")[0]) || "media" };
+	const base = String(workspace ?? "").trim() || process.cwd();
+	const abs = resolve(base, raw);
+	if (!existsSync(abs) || !statSync(abs).isFile()) throw new Error(`本地文件不存在：${raw}`);
+	const size = statSync(abs).size;
+	if (size === 0) throw new Error(`文件为空：${raw}`);
+	return { buffer: readFileSync(abs), fileName: basename(abs), size, kind: mediaKindOfContentType(mimeOfPath(abs)) };
+}
+
+/**
+ * 向频道/群聊/单聊发一条媒体（图片/视频/语音/文件）。
+ * - 频道（channel_id）：官方只收公网 URL 的 image 字段，本地文件无上传通道；
+ * - 单聊 / 群聊：先传 files 拿 file_info，再 msg_type=7 发（本地文件自动 base64/分片上传）。
+ */
+export async function sendMediaToTarget({ cfg, target, media, content = "" }) {
+	if (!cfg?.appId || !cfg?.clientSecret) throw new Error("QQBot AppID 或 ClientSecret 未配置");
+	const caption = String(content ?? "");
+	const channelId = String(target?.channelId ?? "").trim();
+	const isGuild = Boolean(channelId) && !target?.groupOpenid && !target?.userOpenid;
+	// 先校验再取 token：能本地报错就别发请求（频道只收公网 URL，本地文件没有上传通道）。
+	if (isGuild && !media?.url) throw new Error("QQ 频道只支持公网 http(s) 媒体 URL（本地文件请走单聊/群聊）");
+	if (!isGuild && !target?.groupOpenid && !target?.userOpenid) {
+		throw new Error("缺少目标：channel_id / group_openid / user_openid 至少填一个");
+	}
+
+	const apiBase = cfg.useSandbox ? "https://sandbox.api.sgroup.qq.com" : QQ_API_BASE;
+	const token = await getQqAccessToken(cfg.appId, cfg.clientSecret).then((r) => r.accessToken);
+
+	if (isGuild) {
+		const payload = { content: caption || " ", image: media.url };
+		return qqApi(token, "POST", `/channels/${channelId}/messages`, payload, { apiBase });
+	}
+
+	const scope = target?.groupOpenid
+		? { type: "group", openid: String(target.groupOpenid).trim() }
+		: target?.userOpenid
+			? { type: "user", openid: String(target.userOpenid).trim() }
+			: null;
+	if (!scope) throw new Error("缺少目标：channel_id / group_openid / user_openid 至少填一个");
+	const api = (method, path, body) => qqApi(token, method, path, body ?? null, { apiBase });
+	const fileInfo = await uploadQqMedia({
+		api,
+		scope,
+		source: media?.url ? { url: media.url } : { buffer: media?.buffer },
+		fileName: media?.fileName ?? "media",
+		kind: media?.kind ?? "file",
+	});
+	return sendQqMediaMessage({
+		api,
+		scope,
+		fileInfo,
+		msgId: target?.msgId ?? "",
+		msgSeq: target?.msgSeq,
+		content: caption,
+	});
+}
+
+/**
  * QqBotBridge manages outbound WebSocket duplex exchange with Tencent QQ Open Platform.
  */
 export class QqBotBridge {
@@ -167,6 +264,9 @@ export class QqBotBridge {
 		this.seenMessageIds = new Set();
 		this.pendingRuns = new Map();
 		this.earlyRuns = new Map();
+		/** host.chat 回执的稳定 runId → pendingRuns 的 key（对话被过户 / 撞 id 改名后
+		 *  conversationId 会变，只有 runId 不变；QQ 靠它认领自己那一轮的回包）。 */
+		this.runIdIndex = new Map();
 		this.inFlightConvs = new Set();
 		this.lastInFlightStartedAt = 0;
 
@@ -180,6 +280,11 @@ export class QqBotBridge {
 		this.conversationBindings = new Map(); // convId -> { authorId, replyTarget, updatedAt }
 		this.recentChats = []; // Array<{ conversationId, authorId, lastUserText, lastAssistantText, updatedAt }>
 		this.webRunTexts = new Map(); // convId -> accumulatedText (电脑网页发起的双向同步累积)
+
+		this.notifiedToolCalls = new Set(); // 防止同一 toolCallId 重复触发广播通知
+		this.runStartTimes = new Map(); // convId -> timestamp (耗时统计)
+		this.runTasks = new Map(); // convId -> task (触发词/任务说明)
+		this.recentAssistantTexts = new Map(); // convId -> 最新文本输出 (用于完成广播摘要)
 
 		this.currentIntents = (1 << 30) | (1 << 25); // PUBLIC_GUILD_MESSAGES | GROUP_AND_C2C
 		this.status = {
@@ -325,6 +430,10 @@ export class QqBotBridge {
 		}
 		this.pendingRuns.clear();
 		this.earlyRuns.clear();
+		this.notifiedToolCalls.clear();
+		this.runStartTimes.clear();
+		this.runTasks.clear();
+		this.recentAssistantTexts.clear();
 
 		this.host?.broadcast?.({ type: "bot_status", status: this.getStatus() });
 	}
@@ -470,6 +579,7 @@ export class QqBotBridge {
 				this.host?.broadcast?.({ type: "bot_status", status: this.getStatus() });
 			} else if (
 				t === "AT_MESSAGE_CREATE" ||
+				t === "MESSAGE_CREATE" ||
 				t === "DIRECT_MESSAGE_CREATE" ||
 				t === "GROUP_AT_MESSAGE_CREATE" ||
 				t === "C2C_MESSAGE_CREATE"
@@ -497,10 +607,6 @@ export class QqBotBridge {
 		const authorId = data.author?.id || data.author?.user_openid || "";
 		if (data.author?.bot) return;
 
-		const botId = this.botUser?.id || "";
-		const cleanText = extractQqText(data.content, botId);
-		if (!cleanText) return;
-
 		const cfg = this.getConfig();
 
 		// Access control whitelist check
@@ -525,13 +631,86 @@ export class QqBotBridge {
 			msgId: messageId,
 		};
 
+		const botId = this.botUser?.id || "";
+		const cleanText = extractQqText(data.content, botId);
+		// 图片/语音/视频/文件（QQ 走 attachments，带腾讯 CDN url，有时效）
+		const attachments = Array.isArray(data.attachments) ? data.attachments : [];
+		const mediaLines = attachments.length > 0 ? await this.collectInboundMedia(attachments, { authorId, cfg }) : "";
+		const promptText = [cleanText, mediaLines].filter(Boolean).join("\n\n");
+		if (!promptText) {
+			const promptHint = "👋 您好！我在听，请在 @ 我后面附带具体问题或发送 /help 查看快捷指令。";
+			const tempCid = `qq_${String(authorId).slice(-8)}_0`;
+			this.recordRecentChat(tempCid, authorId, {
+				userText: `@${this.botUser?.username || "机器人"}`,
+				assistantText: promptHint,
+			});
+			await this.replyMessage(replyTarget, promptHint).catch(() => {});
+			return;
+		}
+
 		// Slash command handling (/help, /clear, /new, /status, /model, /thinking...)
 		if (cleanText.startsWith("/") || /^\d+\/.+/.test(cleanText) || /^\d+$/.test(cleanText)) {
 			const handled = await this.handleSlashCommand(cleanText, { authorId, replyTarget, cfg });
 			if (handled) return;
 		}
 
-		await this.driveAuthor(authorId, cleanText, replyTarget);
+		await this.driveAuthor(authorId, promptText, replyTarget);
+	}
+
+	/**
+	 * 收图/收文件落地：QQ 附件的 `url` 是腾讯 CDN（有时效），收到必须立刻下载。
+	 * 落盘到 `<工作区>/.pi-qq-media/`，正文里给绝对路径让 agent 用 read 直接看；
+	 * 关掉 `inboundMedia`（或下载失败/超限）就只给占位文字，绝不吞消息。
+	 */
+	async collectInboundMedia(attachments, { authorId, cfg }) {
+		const items = [];
+		const wantLand = cfg?.inboundMedia !== false;
+		let dir = "";
+		if (wantLand) {
+			const workspace = this.resolveWorkspace(authorId, cfg);
+			const chk = checkCwdValid(workspace);
+			if (chk.ok) {
+				dir = join(chk.abs, ".pi-qq-media");
+				try {
+					mkdirSync(dir, { recursive: true });
+				} catch (err) {
+					this.log("warn", `QQ 媒体目录创建失败：${err.message}`);
+					dir = "";
+				}
+			}
+		}
+		for (let i = 0; i < attachments.length; i++) {
+			const att = attachments[i] || {};
+			const kind = mediaKindOfContentType(att.content_type);
+			const url = String(att.voice_wav_url || att.url || "").trim();
+			const filename = String(att.filename || "").trim();
+			const asrText = String(att.asr_refer_text || "").trim();
+			if (!wantLand || !dir) {
+				items.push({ kind, filename, reason: wantLand ? "未找到可用工作区" : "已关闭接收媒体" });
+				continue;
+			}
+			if (!url) {
+				items.push({ kind, filename, reason: "缺少下载地址" });
+				continue;
+			}
+			try {
+				const buf = await downloadInbound(url, att.size);
+				const name = inboundFileName({
+					contentType: att.content_type,
+					filename,
+					url,
+					index: i,
+					peer: authorId,
+				});
+				const path = join(dir, name);
+				writeFileSync(path, buf);
+				items.push({ kind, filename, path, asrText });
+			} catch (err) {
+				this.log("warn", `QQ 附件下载失败（${filename || url}）：${err.message}`);
+				items.push({ kind, filename, reason: `下载失败：${err.message}` });
+			}
+		}
+		return formatInboundMediaLines(items);
 	}
 
 	async driveAuthor(authorId, cleanText, replyTarget) {
@@ -627,6 +806,7 @@ export class QqBotBridge {
 					}
 				}
 			}
+			this.rememberRunId(r?.conversationId || conversationId, r?.runId);
 		} catch (err) {
 			this.log("warn", `QQBot host.chat dispatch failed: ${err.message}`);
 			const run = this.pendingRuns.get(conversationId);
@@ -966,21 +1146,60 @@ export class QqBotBridge {
 		}
 	}
 
+	/** 记住某个对话「本轮」的稳定 runId（host.chat 回执给出；旧宿主没有就跳过）。 */
+	rememberRunId(conversationId, runId) {
+		const rid = typeof runId === "string" ? runId.trim() : "";
+		if (!rid || !conversationId || !this.pendingRuns.has(conversationId)) return;
+		this.pendingRuns.get(conversationId).runId = rid;
+		this.runIdIndex.set(rid, conversationId);
+	}
+
+	/** 事件归属的 pendingRuns key：优先稳定 runId（过户改名后 conversationId 已对不上）。 */
+	resolveRunKey(ev) {
+		const rid = typeof ev?.runId === "string" ? ev.runId.trim() : "";
+		const mapped = rid ? this.runIdIndex.get(rid) : undefined;
+		// 映射已失效（该轮已收尾/被清理）时回落当前 conversationId，别拿旧 key 误吞事件。
+		return mapped && this.pendingRuns.has(mapped) ? mapped : ev.conversationId;
+	}
+
+	/** 某轮收尾/作废：连同 runId 索引一起清，防陈旧映射把后续运行认错。 */
+	forgetRun(key, ...aliasKeys) {
+		const keys = [key, ...aliasKeys].filter(Boolean);
+		for (const k of keys) this.pendingRuns.delete(k);
+		const keySet = new Set(keys);
+		for (const [rid, k] of this.runIdIndex) {
+			if (keySet.has(k)) this.runIdIndex.delete(rid);
+		}
+	}
+
 	async handleRunEvent(ev) {
-		const convId = ev.conversationId;
+		const convId = this.resolveRunKey(ev);
 		if (!convId) return;
 
-		// 关键安全守卫（与微信通道同级）：只有确定是由 QQ 机器人当前发起的调用、
-		// 或已明确与 QQ 建立绑定关系的会话，才由本插件处理；
-		// 严禁收录用户在电脑网页端自己手动发起的其他无关日常对话！
-		const isPending = this.pendingRuns.has(convId);
-		const isBound = this.conversationBindings.has(convId);
-		const isInFlight = this.inFlightConvs.has(convId) || Date.now() - this.lastInFlightStartedAt < 5000;
-
-		if (!isPending && !isBound && !isInFlight) {
-			return; // 绝不让网页端普通对话进入 earlyRuns 或 recentChats！
+		// 1. 全局运行轨迹监听：用于频道广播通知与统计
+		if (ev.type === "run_start") {
+			this.runStartTimes.set(convId, ev.at || Date.now());
+			if (ev.task) {
+				this.runTasks.set(convId, String(ev.task).slice(0, 150));
+			}
+			this.recentAssistantTexts.delete(convId);
+		} else if (ev.type === "tool_start" && ev.toolName === "ask_user_question") {
+			const cfg = this.getConfig?.() || {};
+			if (cfg.notifyOnQuestion !== false) {
+				const toolCallId = ev.toolCallId || `${convId}_${Date.now()}`;
+				if (!this.notifiedToolCalls.has(toolCallId)) {
+					this.notifiedToolCalls.add(toolCallId);
+					if (this.notifiedToolCalls.size > 200) {
+						const first = this.notifiedToolCalls.values().next().value;
+						this.notifiedToolCalls.delete(first);
+					}
+					const msg = this.formatQuestionNotification(convId, ev.argsText);
+					this.broadcastToChannel(msg).catch(() => {});
+				}
+			}
 		}
 
+		// 2. 收集助手消息文本，供广播摘要与同步使用
 		if (ev.type === "message" && ev.message) {
 			const m = ev.message;
 			let content = "";
@@ -993,13 +1212,19 @@ export class QqBotBridge {
 			}
 
 			if (content && (m.role === "assistant" || m.author === "assistant")) {
+				this.recentAssistantTexts.set(convId, content);
+				if (this.recentAssistantTexts.size > 50) {
+					const first = this.recentAssistantTexts.keys().next().value;
+					this.recentAssistantTexts.delete(first);
+				}
+
 				if (this.pendingRuns.has(convId)) {
 					const r = this.pendingRuns.get(convId);
 					r.accumulatedText += (r.accumulatedText ? "\n" : "") + content;
 				} else if (this.conversationBindings.has(convId)) {
 					const prev = this.webRunTexts.get(convId) || "";
 					this.webRunTexts.set(convId, (prev ? "\n" : "") + content);
-				} else {
+				} else if (this.inFlightConvs.has(convId)) {
 					let early = this.earlyRuns.get(convId);
 					if (!early) {
 						early = { accumulatedText: "" };
@@ -1011,19 +1236,45 @@ export class QqBotBridge {
 			return;
 		}
 
+		// 3. 关键安全守卫（与微信通道同级）：区分 QQ 自身会话 与 宿主普通网页会话
+		const isPending = this.pendingRuns.has(convId);
+		const isBound = this.conversationBindings.has(convId);
+		const isInFlight = this.inFlightConvs.has(convId) || Date.now() - this.lastInFlightStartedAt < 5000;
+
+		if (!isPending && !isBound && !isInFlight) {
+			// 普通网页端会话结束：检查是否开启了任务完成广播通知
+			if (ev.type === "run_end") {
+				const cfg = this.getConfig?.() || {};
+				if (cfg.notifyOnRunEnd === true) {
+					const durationSec = this.runStartTimes.has(convId)
+						? Math.max(1, Math.round((Date.now() - this.runStartTimes.get(convId)) / 1000))
+						: null;
+					const task = this.runTasks.get(convId) || "";
+					const lastText = this.recentAssistantTexts.get(convId) || "";
+					const msg = this.formatRunEndNotification(convId, {
+						task,
+						assistantText: lastText,
+						stopReason: ev.stopReason,
+						durationSec,
+					});
+					this.broadcastToChannel(msg).catch(() => {});
+				}
+				this.runStartTimes.delete(convId);
+				this.runTasks.delete(convId);
+				this.recentAssistantTexts.delete(convId);
+			}
+			return; // 绝不让网页端普通对话进入 earlyRuns 或 recentChats！
+		}
+
 		if (ev.type === "run_end") {
 			const run = this.pendingRuns.get(convId) || this.earlyRuns.get(convId);
 			if (run) {
 				if (run.timeoutTimer) {
 					clearTimeout(run.timeoutTimer);
 				}
-				this.pendingRuns.delete(convId);
+				this.forgetRun(convId, run.aliasId, run.canonicalId);
 				if (run.aliasId) {
-					this.pendingRuns.delete(run.aliasId);
 					this.conversationBindings.delete(run.aliasId);
-				}
-				if (run.canonicalId) {
-					this.pendingRuns.delete(run.canonicalId);
 				}
 				this.earlyRuns.delete(convId);
 
@@ -1078,6 +1329,94 @@ export class QqBotBridge {
 				}
 			}
 		}
+	}
+	/**
+	 * Send proactive notification message to a QQ guild channel.
+	 * Used for broadcast notifications (e.g. AI ask_user_question or run_end).
+	 */
+	async broadcastToChannel(text) {
+		const clean = stripInternalMarkers(text);
+		if (!clean) return false;
+		const cfg = this.getConfig?.() || {};
+		const channelId = String(cfg.broadcastChannelId || cfg.defaultChannelId || "").trim();
+		if (!channelId) return false;
+		if (!cfg.appId || !cfg.clientSecret) return false;
+
+		const apiBase = cfg.useSandbox ? "https://sandbox.api.sgroup.qq.com" : QQ_API_BASE;
+		try {
+			const token = await this.ensureAccessToken();
+			if (!token) return false;
+			const safeText = clean.length > 2000 ? `${clean.slice(0, 1990)}…` : clean;
+			await qqApi(token, "POST", `/channels/${channelId}/messages`, { content: safeText }, { apiBase });
+			this.log("info", `Broadcast notification sent to QQ channel ${channelId}`);
+			return true;
+		} catch (err) {
+			this.log("warn", `Failed to send broadcast notification to channel ${channelId}: ${err?.message || err}`);
+			return false;
+		}
+	}
+
+	formatQuestionNotification(conversationId, argsText) {
+		let qLines = [];
+		try {
+			const parsed = typeof argsText === "string" ? JSON.parse(argsText) : argsText;
+			const questions = Array.isArray(parsed?.questions) ? parsed.questions : [];
+			if (questions.length > 0) {
+				for (let i = 0; i < questions.length; i++) {
+					const q = questions[i];
+					const prefix = questions.length > 1 ? `${i + 1}. ` : "";
+					const title = q.header ? `【${q.header}】` : "";
+					qLines.push(`${prefix}${title}${q.question || ""}`);
+					if (Array.isArray(q.options) && q.options.length > 0) {
+						const optStrs = q.options
+							.map((o) => {
+								if (typeof o === "string") return o;
+								const rec = o.recommended ? " (推荐)" : "";
+								return `${o.label || ""}${rec}`;
+							})
+							.filter(Boolean);
+						if (optStrs.length > 0) {
+							qLines.push(`   👉 选项：${optStrs.join(" / ")}`);
+						}
+					}
+				}
+			}
+		} catch {}
+
+		const contentPart = qLines.length > 0 ? qLines.join("\n") : "AI 正在等待您的确认回复";
+		return [
+			"🔔 【AI 提问待确认】",
+			conversationId ? `💬 对话：${conversationId}` : "",
+			`❓ 内容：\n${contentPart}`,
+			"💡 请前往网页端查看并确认",
+		]
+			.filter(Boolean)
+			.join("\n");
+	}
+
+	formatRunEndNotification(conversationId, { task, assistantText, stopReason, durationSec } = {}) {
+		const isAborted = stopReason === "aborted" || stopReason === "user_interrupt";
+		const statusLine = isAborted ? "⚠️ 【AI 任务已中止】" : "✅ 【AI 任务已完成】";
+		const durLine = durationSec ? `⏱️ 耗时：${durationSec} 秒` : "";
+
+		const cleanText = stripInternalMarkers(assistantText);
+		let summaryLine = "";
+		if (cleanText) {
+			const snippet = cleanText.length > 200 ? `${cleanText.slice(0, 197)}…` : cleanText;
+			summaryLine = `📝 结果摘要：\n${snippet}`;
+		} else if (!isAborted) {
+			summaryLine = "📝 任务已顺利执行完毕。";
+		}
+
+		return [
+			statusLine,
+			conversationId ? `💬 对话：${conversationId}` : "",
+			task ? `🎯 任务：${task}` : "",
+			durLine,
+			summaryLine,
+		]
+			.filter(Boolean)
+			.join("\n");
 	}
 }
 
@@ -1138,10 +1477,12 @@ export default async function activate(host) {
 	// Register AI tool "qq" adhering strictly to tool-prompt-hygiene
 	host.registerTool?.({
 		name: "qq",
-		description: "Send messages or notifications to QQ guild channels via Tencent QQBot Open API.",
-		promptSnippet: "send messages to QQ channels",
+		description:
+			"Send text or media (image/video/audio/file) to QQ: guild channel via channel_id, or C2C/group via user_openid/group_openid. Local file paths are uploaded automatically.",
+		promptSnippet: "send QQ messages or media",
 		promptGuidelines: [
-			"Confirm target channel_id and message text with the user once before action=send",
+			"Confirm the target and content with the user once before sending",
+			"Guild channels accept only public http(s) URLs for media; local files need user_openid or group_openid",
 			"Use action=status to query bot connection status",
 		],
 		parameters: {
@@ -1154,11 +1495,27 @@ export default async function activate(host) {
 				},
 				channel_id: {
 					type: "string",
-					description: "send: target QQ guild channel ID.",
+					description: "send: target QQ guild sub-channel ID (text or public-URL media).",
+				},
+				user_openid: {
+					type: "string",
+					description: "send: target C2C user openid (required for local-file media).",
+				},
+				group_openid: {
+					type: "string",
+					description: "send: target group openid (required for local-file media).",
 				},
 				text: {
 					type: "string",
-					description: "send: text content to send.",
+					description: "send: text content to send (also used as media caption).",
+				},
+				image: {
+					type: "string",
+					description: "send: image path or http(s) URL.",
+				},
+				file: {
+					type: "string",
+					description: "send: any other attachment path or http(s) URL (video/audio/document).",
 				},
 			},
 			required: ["action"],
@@ -1168,9 +1525,29 @@ export default async function activate(host) {
 			switch (action) {
 				case "send": {
 					const channelId = args.channel_id?.trim() || localConfig.defaultChannelId?.trim();
-					if (!channelId) throw new Error("channel_id is required.");
+					const userOpenid = args.user_openid?.trim() || "";
+					const groupOpenid = args.group_openid?.trim() || "";
+					if (!channelId && !userOpenid && !groupOpenid)
+						throw new Error("channel_id / user_openid / group_openid 至少填一个。");
 					if (!localConfig.appId || !localConfig.clientSecret) {
 						throw new Error("QQBot AppID or ClientSecret is not configured.");
+					}
+					// 带媒体就先走富媒体链路（本地文件自动上传）；否则保持原来的纯文本行为。
+					const mediaSpec = String(args.image || args.file || "").trim();
+					if (mediaSpec) {
+						const workspace = String(localConfig.workspace || host.cwd || "").trim();
+						const media = resolveMediaSpec(mediaSpec, workspace);
+						const res = await sendMediaToTarget({
+							cfg: localConfig,
+							target: { channelId: userOpenid || groupOpenid ? "" : channelId, userOpenid, groupOpenid },
+							media,
+							content: args.text || "",
+						});
+						return JSON.stringify(
+							{ ok: true, sent: media.kind, target: userOpenid || groupOpenid || channelId, res },
+							null,
+							2,
+						);
 					}
 					const token = await getQqAccessToken(localConfig.appId, localConfig.clientSecret).then((r) => r.accessToken);
 					const apiBase = localConfig.useSandbox ? "https://sandbox.api.sgroup.qq.com" : QQ_API_BASE;
@@ -1212,6 +1589,9 @@ export default async function activate(host) {
 						config: {
 							appId: localConfig.appId || "",
 							defaultChannelId: localConfig.defaultChannelId || "",
+							broadcastChannelId: localConfig.broadcastChannelId || "",
+							notifyOnQuestion: localConfig.notifyOnQuestion !== false,
+							notifyOnRunEnd: Boolean(localConfig.notifyOnRunEnd),
 							workspace: localConfig.workspace || "",
 							model: localConfig.model || "",
 							thinkingLevel: localConfig.thinkingLevel || "",
@@ -1220,6 +1600,7 @@ export default async function activate(host) {
 							useSandbox: Boolean(localConfig.useSandbox),
 							botEnabled: Boolean(localConfig.botEnabled),
 							allowedUsers: localConfig.allowedUsers || [],
+							inboundMedia: localConfig.inboundMedia !== false,
 							hasClientSecret: Boolean(secrets[SECRET_CLIENT_SECRET] || localConfig.clientSecret),
 						},
 						botStatus: botBridge.getStatus(),
@@ -1297,12 +1678,70 @@ export default async function activate(host) {
 					break;
 				}
 
+				case "list_channels": {
+					if (!localConfig.appId || !localConfig.clientSecret) {
+						reply({ type: "list_channels_done", success: false, message: "未配置 AppID 或 ClientSecret" });
+						break;
+					}
+					try {
+						const token = await getQqAccessToken(localConfig.appId, localConfig.clientSecret).then(
+							(r) => r.accessToken,
+						);
+						const apiBase = localConfig.useSandbox ? "https://sandbox.api.sgroup.qq.com" : QQ_API_BASE;
+						const guilds = await qqApi(token, "GET", "/users/@me/guilds", null, { apiBase });
+						const result = [];
+						if (Array.isArray(guilds)) {
+							for (const g of guilds) {
+								const channels = await qqApi(token, "GET", `/guilds/${g.id}/channels`, null, { apiBase }).catch(
+									() => [],
+								);
+								result.push({
+									guildId: g.id,
+									guildName: g.name,
+									channels: Array.isArray(channels)
+										? channels.map((c) => ({
+												id: c.id,
+												name: c.name,
+												type: c.type,
+											}))
+										: [],
+								});
+							}
+						}
+						reply({ type: "list_channels_done", success: true, guilds: result });
+					} catch (err) {
+						reply({ type: "list_channels_done", success: false, message: err?.message || String(err) });
+					}
+					break;
+				}
+
 				case "send_message": {
 					const channelId = msg.channelId?.trim() || localConfig.defaultChannelId?.trim();
-					if (!channelId) throw new Error("channelId is required.");
+					const openid = String(msg.openid ?? "").trim();
+					const openidType = msg.openidType === "group" ? "group" : "user";
+					const mediaSpec = String(msg.media ?? "").trim();
+					if (!channelId && !openid) throw new Error("channelId is required.");
 					if (!localConfig.appId || !localConfig.clientSecret) {
 						throw new Error("QQBot AppID or ClientSecret is not configured.");
 					}
+					if (mediaSpec) {
+						// 富媒体：频道只收公网 URL；单聊/群聊支持本地文件（自动 base64/分片上传）。
+						const workspace = String(localConfig.workspace || host.cwd || "").trim();
+						const media = resolveMediaSpec(mediaSpec, workspace);
+						const res = await sendMediaToTarget({
+							cfg: localConfig,
+							target: {
+								channelId: openid ? "" : channelId,
+								userOpenid: openid && openidType === "user" ? openid : "",
+								groupOpenid: openid && openidType === "group" ? openid : "",
+							},
+							media,
+							content: msg.text || "",
+						});
+						reply({ type: "send_done", success: true, res });
+						break;
+					}
+					if (!channelId) throw new Error("发纯文本需要子频道 Channel ID（单聊/群聊目前只支持富媒体）");
 					const token = await getQqAccessToken(localConfig.appId, localConfig.clientSecret).then((r) => r.accessToken);
 					const apiBase = localConfig.useSandbox ? "https://sandbox.api.sgroup.qq.com" : QQ_API_BASE;
 					const res = await qqApi(

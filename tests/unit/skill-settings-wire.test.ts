@@ -2,8 +2,8 @@ import { describe, expect, it, vi } from "vitest";
 import { handleSettingsMessage } from "../../server/dispatch-domain-handlers.js";
 import type { ClientMessage } from "../../server/protocol.js";
 import type { DispatchSession } from "../../server/index.js";
-import { PUBLIC_SKILLS } from "../../web/src/skill-catalog.js";
-import { PUBLIC_MCP_SERVERS } from "../../web/src/mcp-catalog.js";
+import { PUBLIC_SKILLS, SKILL_MARKETS } from "../../web/src/skill-catalog.js";
+import { MCP_MARKETS, PUBLIC_MCP_SERVERS } from "../../web/src/mcp-catalog.js";
 
 describe("Skill 技能市场消息分发与清单体检", () => {
 	it("分发 install_skill 消息", () => {
@@ -54,14 +54,61 @@ describe("Skill 技能市场消息分发与清单体检", () => {
 		}
 	});
 
+	it("SKILL_MARKETS 链接列表规范性校验", () => {
+		expect(SKILL_MARKETS.length).toBeGreaterThanOrEqual(10);
+		const validCategories = new Set(["official", "marketplace", "community", "directory"]);
+		for (const market of SKILL_MARKETS) {
+			expect(/^[a-zA-Z0-9_-]+$/.test(market.id)).toBe(true);
+			expect(market.name.trim().length).toBeGreaterThan(0);
+			expect(market.nameZh.trim().length).toBeGreaterThan(0);
+			expect(market.description.trim().length).toBeGreaterThan(0);
+			expect(market.descriptionZh.trim().length).toBeGreaterThan(0);
+			expect(market.url.startsWith("https://")).toBe(true);
+			expect(() => new URL(market.url)).not.toThrow();
+			expect(validCategories.has(market.category)).toBe(true);
+			if (market.tags) {
+				expect(Array.isArray(market.tags)).toBe(true);
+				for (const tag of market.tags) {
+					expect(tag.trim().length).toBeGreaterThan(0);
+				}
+			}
+		}
+	});
+
 	it("PUBLIC_MCP_SERVERS 目录清单规范性校验", () => {
-		expect(PUBLIC_MCP_SERVERS.length).toBeGreaterThanOrEqual(12);
+		expect(PUBLIC_MCP_SERVERS.length).toBeGreaterThanOrEqual(10);
+		const validRegions = new Set(["cn", "global"]);
 		for (const srv of PUBLIC_MCP_SERVERS) {
 			expect(/^[a-zA-Z0-9_-]+$/.test(srv.id)).toBe(true);
 			expect(srv.name.trim().length).toBeGreaterThan(0);
+			expect(srv.nameZh.trim().length).toBeGreaterThan(0);
 			expect(srv.package.trim().length).toBeGreaterThan(0);
 			expect(srv.description.trim().length).toBeGreaterThan(0);
 			expect(srv.descriptionZh.trim().length).toBeGreaterThan(0);
+			expect(srv.homepage.startsWith("https://")).toBe(true);
+			expect(() => new URL(srv.homepage)).not.toThrow();
+			expect(validRegions.has(srv.region)).toBe(true);
+		}
+	});
+
+	it("MCP_MARKETS 链接列表规范性校验", () => {
+		expect(MCP_MARKETS.length).toBeGreaterThanOrEqual(10);
+		const validCategories = new Set(["official", "marketplace", "community", "directory"]);
+		for (const market of MCP_MARKETS) {
+			expect(/^[a-zA-Z0-9_-]+$/.test(market.id)).toBe(true);
+			expect(market.name.trim().length).toBeGreaterThan(0);
+			expect(market.nameZh.trim().length).toBeGreaterThan(0);
+			expect(market.description.trim().length).toBeGreaterThan(0);
+			expect(market.descriptionZh.trim().length).toBeGreaterThan(0);
+			expect(market.url.startsWith("https://")).toBe(true);
+			expect(() => new URL(market.url)).not.toThrow();
+			expect(validCategories.has(market.category)).toBe(true);
+			if (market.tags) {
+				expect(Array.isArray(market.tags)).toBe(true);
+				for (const tag of market.tags) {
+					expect(tag.trim().length).toBeGreaterThan(0);
+				}
+			}
 		}
 	});
 });

@@ -50,7 +50,7 @@ const rehypePlugins: PluggableList = [
 	// KaTeX 在 highlight 之前：两者目标节点不相交（.math vs pre code），
 	// 公式解析失败时只显示红色源码（throwOnError: false），不打断整条消息。
 	[rehypeKatex, { strict: false, throwOnError: false }],
-	[rehypeHighlight, { detect: true, ignoreMissing: true }],
+	[rehypeHighlight, { detect: false, ignoreMissing: true }],
 ];
 
 /**

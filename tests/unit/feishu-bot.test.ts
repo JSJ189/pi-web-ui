@@ -308,3 +308,61 @@ describe("FeishuBotBridge 双工通信流程测试", () => {
 		await bridge.stop();
 	});
 });
+
+describe("飞书：对话被过户（改名 + 换客户端）后仍按 runId 回包", () => {
+	it("conversationId 改名、clientId 变成浏览器后，run_end 仍回发 AI 回复", async () => {
+		// 过户回归：用户在网页左栏点开 running 对话 = take_over_conversation —— 对话搬到浏览器
+		// 会话（clientId 变），目标会话已有同名 id（各会话独立从 c1 编号）时还会改名（conversationId
+		// 也变）。两个键全失效，只有 host.chat 回执里的 runId 不变，插件必须按它认领回包。
+		let registeredRunHandler: ((ev: any) => void) | null = null;
+		const chatSpy = vi.fn().mockResolvedValue({ conversationId: "c1", clientId: "plugin:feishu:x", runId: "pr-fs-9" });
+		const replySpy = vi.fn().mockResolvedValue({ success: true });
+		const reactSpy = vi.fn().mockResolvedValue({ success: true });
+
+		const bridge = new FeishuBotBridge({
+			host: {
+				chat: chatSpy,
+				onRunEvent: (fn: any) => {
+					registeredRunHandler = fn;
+					return () => {};
+				},
+			},
+			getConfig: () => ({ appId: "cli_123", appSecret: "sec_123" }),
+			sendMessage: vi.fn(),
+			replyMessage: replySpy,
+			reactMessage: reactSpy,
+		} as any);
+
+		await bridge.start();
+		await bridge.onInboundMessage({
+			message: {
+				message_id: "om_takeover",
+				chat_id: "oc_1",
+				message_type: "text",
+				content: JSON.stringify({ text: "查一下磁盘占用" }),
+			},
+			sender: { sender_type: "user", sender_id: { open_id: "ou_user1" } },
+		});
+
+		registeredRunHandler!({
+			conversationId: "c7",
+			clientId: "client_browser_tab1",
+			runId: "pr-fs-9",
+			type: "message",
+			message: { role: "assistant", content: "磁盘还剩 42GB。" },
+		});
+		await registeredRunHandler!({
+			conversationId: "c7",
+			clientId: "client_browser_tab1",
+			runId: "pr-fs-9",
+			type: "run_end",
+		});
+
+		expect(replySpy).toHaveBeenCalledWith(
+			expect.anything(),
+			expect.objectContaining({ messageId: "om_takeover", text: expect.stringContaining("磁盘还剩 42GB") }),
+		);
+
+		await bridge.stop();
+	});
+});

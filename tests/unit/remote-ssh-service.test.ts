@@ -131,8 +131,8 @@ apk
 			// 密码绝对不能在 Summary 中返回
 			expect((profiles[0] as any).password).toBeUndefined();
 
-			// 检查磁盘落盘文件，必须是加密的密文，绝对不能包含明文密码
-			const diskRaw = await fs.readFile(path.join(testDataDir, "ssh-profiles.json"), "utf8");
+			// 检查磁盘落盘文件（global-hosts.json），必须是加密的密文，绝对不能包含明文密码
+			const diskRaw = await fs.readFile(path.join(testDataDir, "global-hosts.json"), "utf8");
 			expect(diskRaw).not.toContain("super-secret-password-12345");
 			expect(diskRaw).toContain("encryptedPassword");
 
@@ -140,6 +140,43 @@ apk
 			await svc.deleteProfile("test-server");
 			const profilesAfter = await svc.listProfiles();
 			expect(profilesAfter).toHaveLength(0);
+		} finally {
+			await fs.rm(testDataDir, { recursive: true, force: true }).catch(() => {});
+		}
+	});
+
+	it("旧 ssh-profiles.json 自动无损迁移至 global-hosts.json", async () => {
+		const testDataDir = path.join(
+			os.tmpdir(),
+			`remote-ssh-migrate-${Date.now()}-${Math.random().toString(36).slice(2)}`,
+		);
+		await fs.mkdir(testDataDir, { recursive: true });
+		try {
+			// 先用旧路径写一份测试 profile
+			const legacyContent = {
+				version: 1,
+				profiles: {
+					"legacy-host": {
+						name: "legacy-host",
+						host: "10.0.0.1",
+						port: 22,
+						username: "root",
+						authType: "key",
+						privateKeyPath: "~/.ssh/id_rsa",
+						lastConnected: 1000,
+					},
+				},
+			};
+			await fs.writeFile(path.join(testDataDir, "ssh-profiles.json"), JSON.stringify(legacyContent, null, 2), "utf8");
+
+			const svc = new RemoteSshService(testDataDir);
+			const profiles = await svc.listProfiles();
+			expect(profiles).toHaveLength(1);
+			expect(profiles[0].name).toBe("legacy-host");
+
+			// 检查新 global-hosts.json 是否已生成
+			const migratedRaw = await fs.readFile(path.join(testDataDir, "global-hosts.json"), "utf8");
+			expect(migratedRaw).toContain("legacy-host");
 		} finally {
 			await fs.rm(testDataDir, { recursive: true, force: true }).catch(() => {});
 		}
@@ -363,5 +400,94 @@ describe("serveRemoteWorkspaceFile 与 present_files 远程工作区支持", () 
 		// 5. 跨界 ssh:// URI 拦截
 		const resOutside = resolveRemoteWorkspacePath(root, "ssh://root@39.99.235.208:22/etc/passwd");
 		expect(resOutside).toBeNull();
+	});
+});
+
+describe("probe 活跃连接复用与 CPU/内存指标解析", () => {
+	it("parseProbeOutput 应正确提取 cores 与 totalMemMb", () => {
+		const svc = new RemoteSshService(os.tmpdir());
+		const mockOutput = `
+===SYSTEM===
+Linux
+x86_64
+prod-server-01
+root
+/root
+8
+16384
+===GIT===
+/usr/bin/git
+git version 2.34.1
+===NODE===
+/usr/local/bin/node
+v20.10.0
+===BASH===
+/bin/bash
+===PYTHON===
+/usr/bin/python3
+Python 3.10.12
+===PKG===
+apt-get
+`;
+		// @ts-expect-error testing private parseProbeOutput
+		const parsed = svc.parseProbeOutput(mockOutput);
+		expect(parsed.system.os).toBe("Linux");
+		expect(parsed.system.arch).toBe("x86_64");
+		expect(parsed.system.cores).toBe(8);
+		expect(parsed.system.totalMemMb).toBe(16384);
+		expect(parsed.tools.git.installed).toBe(true);
+		expect(parsed.tools.node.installed).toBe(true);
+	});
+
+	it("probe 在已有存活连接时应直接复用，不重复握手", async () => {
+		const svc = new RemoteSshService(os.tmpdir());
+		let createClientCalled = false;
+		// @ts-expect-error override private method for testing
+		svc.createClient = async () => {
+			createClientCalled = true;
+			throw new Error("不应调用 createClient");
+		};
+
+		let execCommandCalled = false;
+		// @ts-expect-error override private method for testing
+		svc.execCommand = async () => {
+			execCommandCalled = true;
+			return `===SYSTEM===\nLinux\nx86_64\nhost\nroot\n/root\n4\n8192\n===GIT===\nNONE\n===NODE===\nNONE\n===BASH===\nNONE\n===PYTHON===\nNONE\n===PKG===\napt-get\n`;
+		};
+
+		// 模拟存活连接已注册
+		const fakeConn = {
+			id: "conn-active-1",
+			hostKey: "root@192.168.1.100:22",
+			alive: true,
+			client: {} as any,
+			params: {
+				host: "192.168.1.100",
+				port: 22,
+				username: "root",
+				auth: { type: "password" as const, password: "secret" },
+			},
+			timer: setTimeout(() => {}, 10000),
+		};
+		// @ts-expect-error testing private map
+		svc.connections.set("conn-active-1", fakeConn);
+		// @ts-expect-error testing private map
+		svc.hostConnections.set("root@192.168.1.100:22", "conn-active-1");
+
+		const res = await svc.probe({
+			host: "192.168.1.100",
+			port: 22,
+			username: "root",
+			auth: { type: "password" },
+			saveProfile: false,
+		});
+
+		clearTimeout(fakeConn.timer);
+
+		expect(createClientCalled).toBe(false);
+		expect(execCommandCalled).toBe(true);
+		expect(res.ok).toBe(true);
+		expect(res.system?.cores).toBe(4);
+		expect(res.system?.totalMemMb).toBe(8192);
 	});
 });

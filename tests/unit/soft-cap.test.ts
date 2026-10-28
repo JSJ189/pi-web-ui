@@ -4,6 +4,7 @@ import {
 	effectiveSoftCap,
 	normalizeSoftCapByModel,
 	normalizeSoftCapTokens,
+	softCapReserveFor,
 	softCapToReserve,
 } from "../../server/soft-cap.js";
 
@@ -76,5 +77,31 @@ describe("softCapToReserve", () => {
 	});
 	it("默认 reserve 常量与 SDK 一致", () => {
 		expect(DEFAULT_COMPACTION_RESERVE_TOKENS).toBe(16384);
+	});
+});
+
+describe("softCapReserveFor（注入 SDK 的 reserveTokens，issue #773）", () => {
+	it("软上限合法 → cw - cap（1M 窗口 + 256K 上限 → 744K）", () => {
+		expect(softCapReserveFor(1_000_000, 256_000)).toBe(744_000);
+		expect(softCapReserveFor(500_000, 190_000, 20_000)).toBe(310_000);
+	});
+	it("软上限关闭/非法 → null（回落默认 reserve，物理朱底不变）", () => {
+		expect(softCapReserveFor(1_000_000, 0)).toBeNull();
+		expect(softCapReserveFor(1_000_000, 1500)).toBeNull();
+		expect(softCapReserveFor(0, 256_000)).toBeNull();
+		expect(softCapReserveFor(200_000, 199_500)).toBeNull();
+	});
+	it("reserve 永不小于 SDK 默认 16384（触发点永不晚于物理线）", () => {
+		// cw - cap = 190000 - 175000 = 15000 < 16384
+		expect(softCapReserveFor(190_000, 175_000, 20_000)).toBe(DEFAULT_COMPACTION_RESERVE_TOKENS);
+	});
+	it("cap 压不下来（≤ keepRecent + headroom）→ 不注射，否则每个工具间隙都会重压一次", () => {
+		expect(softCapReserveFor(1_000_000, 20_000, 20_000)).toBeNull();
+		expect(softCapReserveFor(1_000_000, 22_000, 20_000)).toBeNull();
+		// 刚好越过 keepRecent + 2048 → 放行
+		expect(softCapReserveFor(1_000_000, 22_049, 20_000)).toBe(1_000_000 - 22_049);
+		// keepRecent 未知（0/非数）不做该守卫
+		expect(softCapReserveFor(1_000_000, 20_000)).toBe(980_000);
+		expect(softCapReserveFor(1_000_000, 20_000, Number.NaN)).toBe(980_000);
 	});
 });

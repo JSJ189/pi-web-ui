@@ -29,6 +29,7 @@ interface CanvasNodeCardProps {
 	models: ModelInfo[];
 	/** 全局默认模型（"provider/model-id"），列表中找不到节点模型时的显示回退 */
 	defaultModel?: string | null;
+	installedSkills?: { name: string; description: string }[];
 	projects: ProjectSummary[];
 	workspaceRoots?: string[];
 	pathCompletions?: { name: string; path: string; type: "dir" | "file" }[];
@@ -61,6 +62,7 @@ export function CanvasNodeCard({
 	hasOutgoing,
 	models,
 	defaultModel,
+	installedSkills = [],
 	projects,
 	workspaceRoots = [],
 	pathCompletions = [],
@@ -172,20 +174,44 @@ export function CanvasNodeCard({
 				/>
 			);
 		} else if (f.kind === "select") {
-			control = (
-				<select
-					className="canvas-select"
-					style={{ width: "100%" }}
-					value={strVal}
-					onChange={(e) => setCfg({ [f.key]: e.target.value })}
-				>
-					{(f.options ?? []).map((o) => (
-						<option key={o.value} value={o.value}>
-							{o.labelZh}
-						</option>
-					))}
-				</select>
-			);
+			if (f.key === "skillName") {
+				control = (
+					<select
+						className="canvas-select"
+						style={{ width: "100%" }}
+						value={strVal}
+						onChange={(e) => setCfg({ [f.key]: e.target.value })}
+					>
+						{installedSkills && installedSkills.length > 0 ? (
+							installedSkills.map((s) => (
+								<option key={s.name} value={s.name} title={s.description}>
+									📦 {s.name}
+								</option>
+							))
+						) : (
+							<option value="" disabled>
+								（暂未检测到已安装技能）
+							</option>
+						)}
+						{strVal && !installedSkills?.some((s) => s.name === strVal) && <option value={strVal}>📦 {strVal}</option>}
+					</select>
+				);
+			} else {
+				control = (
+					<select
+						className="canvas-select"
+						style={{ width: "100%" }}
+						value={strVal}
+						onChange={(e) => setCfg({ [f.key]: e.target.value })}
+					>
+						{(f.options ?? []).map((o) => (
+							<option key={o.value} value={o.value}>
+								{o.labelZh}
+							</option>
+						))}
+					</select>
+				);
+			}
 		} else {
 			// 文本一律用 AI 指令同款多行框（3 行），不再用又短又矮的单行框
 			control = (
@@ -362,6 +388,41 @@ export function CanvasNodeCard({
 				>
 					{engineMeta.badge}
 				</div>
+
+				{node.role === "pstack" && (
+					<div
+						className="canvas-engine-badge"
+						style={{
+							color: "var(--amber, #f97316)",
+							backgroundColor: "color-mix(in srgb, var(--amber, #f97316) 15%, transparent)",
+							borderColor: "var(--amber, #f97316)",
+							maxWidth: "120px",
+							overflow: "hidden",
+							textOverflow: "ellipsis",
+							whiteSpace: "nowrap",
+						}}
+						title={`Pstack Skill: ${String(node.config?.skill || "poteto-mode")}`}
+					>
+						🥔 {String(node.config?.skill || "poteto-mode")}
+					</div>
+				)}
+				{node.role === "skill" && node.config?.skillName && (
+					<div
+						className="canvas-engine-badge"
+						style={{
+							color: "var(--accent, #a855f7)",
+							backgroundColor: "color-mix(in srgb, var(--accent, #a855f7) 15%, transparent)",
+							borderColor: "var(--accent, #a855f7)",
+							maxWidth: "120px",
+							overflow: "hidden",
+							textOverflow: "ellipsis",
+							whiteSpace: "nowrap",
+						}}
+						title={`Skill 灵魂: ${String(node.config?.skillName)}`}
+					>
+						✨ {String(node.config?.skillName)}
+					</div>
+				)}
 			</div>
 
 			{/* 节点配置面板：引擎、模型、目录 */}
