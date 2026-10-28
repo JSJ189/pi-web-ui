@@ -13,10 +13,10 @@
  */
 
 import { execFile, spawn, type ChildProcess } from "node:child_process";
-import { existsSync, writeFileSync } from "node:fs";
+import { existsSync, readdirSync, writeFileSync } from "node:fs";
 import { createInterface } from "node:readline";
 import { homedir } from "node:os";
-import { join } from "node:path";
+import { delimiter, isAbsolute, join } from "node:path";
 import { BaseAgentDriver, type AgentCapabilities, type AgentEventSink, type AgentTurnMeta } from "../driver-base.js";
 import type { PromptAttachment, SlashCommandInfo } from "../../protocol.js";
 import {
@@ -38,6 +38,74 @@ export interface ClaudeCodeDriverOptions {
 }
 
 /**
+ * 探测可执行文件路径：若传入了绝对路径或在系统 PATH 中找到则直接使用；
+ * 若未找到（尤其在 macOS launchd/GUI 等精简 PATH 环境），则自动扫描系统及版本管理器的常见安装目录。
+ */
+export function resolveClaudeExecutable(cmd = "claude"): string {
+	if (isAbsolute(cmd)) {
+		if (existsSync(cmd)) return cmd;
+		if (process.platform === "win32") {
+			for (const ext of [".cmd", ".exe", ".bat"]) {
+				if (existsSync(cmd + ext)) return cmd + ext;
+			}
+		}
+		return cmd;
+	}
+
+	const isWin = process.platform === "win32";
+	const exts = isWin ? [".cmd", ".exe", ".bat", ""] : [""];
+
+	// 1. 优先从当前 process.env.PATH 寻找
+	const pathDirs = (process.env.PATH || "").split(delimiter).filter(Boolean);
+	for (const dir of pathDirs) {
+		for (const ext of exts) {
+			const target = join(dir, cmd + ext);
+			if (existsSync(target)) return target;
+		}
+	}
+
+	// 2. 针对 macOS/Linux，自动扫描常见全局包管理器与 Homebrew 路径
+	if (!isWin) {
+		const home = homedir();
+		const candidateDirs = [
+			// macOS Homebrew (Apple Silicon & Intel)
+			"/opt/homebrew/bin",
+			"/usr/local/bin",
+			// 用户目录下的标准与包管理器 bin 路径
+			join(home, ".local", "bin"),
+			join(home, "bin"),
+			join(home, ".npm-global", "bin"),
+			join(home, ".config", "yarn", "global", "node_modules", ".bin"),
+			join(home, ".yarn", "bin"),
+			join(home, ".pnpm-global", "bin"),
+			join(home, "Library", "pnpm"),
+			join(home, ".bun", "bin"),
+			join(home, ".local", "share", "fnm", "current", "bin"),
+		];
+
+		// nvm 当前或各 node 版本的 bin 目录
+		const nvmVersionsDir = join(home, ".nvm", "versions", "node");
+		if (existsSync(nvmVersionsDir)) {
+			try {
+				const vers = readdirSync(nvmVersionsDir);
+				for (const v of vers) {
+					candidateDirs.push(join(nvmVersionsDir, v, "bin"));
+				}
+			} catch {
+				/* ignore */
+			}
+		}
+
+		for (const dir of candidateDirs) {
+			const target = join(dir, cmd);
+			if (existsSync(target)) return target;
+		}
+	}
+
+	return cmd;
+}
+
+/**
  * 快速异步探测系统中是否安装了可用的 Claude Code CLI。
  */
 export async function probeClaudeCode(executablePath = "claude"): Promise<{
@@ -45,10 +113,11 @@ export async function probeClaudeCode(executablePath = "claude"): Promise<{
 	version?: string;
 	error?: string;
 }> {
+	const resolvedPath = resolveClaudeExecutable(executablePath);
 	return new Promise((resolve) => {
 		try {
 			execFile(
-				executablePath,
+				resolvedPath,
 				["--version"],
 				{
 					timeout: 4000,
@@ -100,7 +169,7 @@ export class ClaudeCodeDriver extends BaseAgentDriver {
 
 	constructor(cwd: string, opts?: ClaudeCodeDriverOptions) {
 		super(cwd);
-		this.executablePath = opts?.executablePath ?? "claude";
+		this.executablePath = resolveClaudeExecutable(opts?.executablePath ?? "claude");
 		// 默认添加 --dangerously-skip-permissions，防止无头模式下因等待交互式 y/n 确认导致整个生成假死
 		this.extraArgs = opts?.extraArgs ?? ["--dangerously-skip-permissions"];
 		this.currentModel = opts?.defaultModel ?? "claude-3-7-sonnet-20250219";

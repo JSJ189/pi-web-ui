@@ -1296,7 +1296,18 @@ function serviceEnv(port, cwd, dataDir, engine, host, agentDir, service = {}) {
 	}
 	// Interactive Windows tasks inherit the user's PATH; only systemd/launchd
 	// run with a minimal environment that needs an explicit PATH.
-	if (!isWin) env.PATH = process.env.PATH ?? "/usr/local/bin:/usr/bin:/bin";
+	if (!isWin) {
+		const defaultPath =
+			process.platform === "darwin"
+				? "/opt/homebrew/bin:/usr/local/bin:/usr/bin:/bin:/usr/sbin:/sbin"
+				: "/usr/local/bin:/usr/bin:/bin";
+		const currentPath = process.env.PATH ?? defaultPath;
+		if (process.platform === "darwin" && !currentPath.includes("/opt/homebrew/bin")) {
+			env.PATH = `/opt/homebrew/bin:/usr/local/bin:${currentPath}`;
+		} else {
+			env.PATH = currentPath;
+		}
+	}
 	// Same for the locale: launchd/systemd drop LANG/LC_ALL, and a C-locale
 	// shell garbles multibyte input in the terminal (UTF-8 continuation
 	// bytes 0x80–0x9F rendered as C1 control chars). Bake the installing

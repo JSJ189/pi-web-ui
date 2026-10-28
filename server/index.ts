@@ -288,6 +288,22 @@ if (proxyInfo.active) {
 if (process.platform === "win32") {
 	process.env.PATH = `${windowsBashDir()}${delimiter}${process.env.PATH ?? ""}`;
 	void ensureWindowsBash();
+} else if (process.platform === "darwin") {
+	// macOS launchd 用户代理或 GUI 下，PATH 默认仅 /usr/bin:/bin:/usr/sbin:/sbin。
+	// 自动补齐 Homebrew 与常见本地工具目录，确保 claude / git / node 等安装后开箱可用。
+	const macPaths = [
+		"/opt/homebrew/bin",
+		"/usr/local/bin",
+		join(homedir(), ".local", "bin"),
+		join(homedir(), "Library", "pnpm"),
+		join(homedir(), ".bun", "bin"),
+	];
+	const curParts = (process.env.PATH ?? "").split(delimiter).filter(Boolean);
+	const curSet = new Set(curParts);
+	const toAdd = macPaths.filter((p) => existsSync(p) && !curSet.has(p));
+	if (toAdd.length > 0) {
+		process.env.PATH = `${toAdd.join(delimiter)}${delimiter}${process.env.PATH ?? ""}`;
+	}
 }
 
 const app = express();

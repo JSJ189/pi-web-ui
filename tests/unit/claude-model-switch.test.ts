@@ -8,8 +8,8 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { UniversalSession } from "../../server/universal/universal-session.js";
 import { UniversalSessionStore } from "../../server/universal/session-store.js";
-import { ClaudeCodeDriver } from "../../server/universal/drivers/claude-code.js";
-import type { ServerMessage, UiState, ModelInfo } from "../../server/protocol.js";
+import { ClaudeCodeDriver, resolveClaudeExecutable } from "../../server/universal/drivers/claude-code.js";
+import type { ServerMessage, UiState } from "../../server/protocol.js";
 
 describe("Claude 引擎模型切换与状态联动", () => {
 	let testAgentDir: string;
@@ -187,7 +187,7 @@ describe("Claude 引擎模型切换与状态联动", () => {
 					{ id: "claude-3-7-sonnet-20250219", name: "Claude 3.7 Sonnet" },
 					{ id: "claude-3-5-sonnet-20241022", name: "Claude 3.5 Sonnet" },
 				],
-				setModel: async (m: string) => {},
+				setModel: async (_m: string) => {},
 				setCwd: () => {},
 				dispose: () => {},
 			} as any;
@@ -281,8 +281,8 @@ describe("Claude 引擎模型切换与状态联动", () => {
 					{ id: "claude-3-7-sonnet-20250219", name: "Claude 3.7 Sonnet" },
 					{ id: "claude-3-5-sonnet-20241022", name: "Claude 3.5 Sonnet" },
 				],
-				setModel: async (m: string) => {
-					currentModelInDriver = m;
+				setModel: async (_m: string) => {
+					currentModelInDriver = _m;
 				},
 				setCwd: () => {},
 				dispose: () => {},
@@ -368,6 +368,16 @@ describe("Claude 引擎模型切换与状态联动", () => {
 			expect((driver as any).lastErrorHint).toBe("Invalid API key · Fix external API key");
 
 			driver.dispose();
+		});
+
+		it("resolveClaudeExecutable 支持在常见安装路径与 PATH 中解析 claude 路径", () => {
+			const res = resolveClaudeExecutable("claude");
+			expect(typeof res).toBe("string");
+			expect(res.length).toBeGreaterThan(0);
+
+			// 绝对路径测试
+			const dummyPath = process.cwd();
+			expect(resolveClaudeExecutable(dummyPath)).toBe(dummyPath);
 		});
 	});
 });
