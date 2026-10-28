@@ -1141,13 +1141,21 @@ export default {
 			}
 		}
 
-		function dropRunByConv(convId) {
-			for (const [k, p] of st.pendingRuns.entries()) {
-				if (p.conversationId === convId || k === convId) {
-					dropRun(k);
-				}
+		/**
+		 * 新指令投递前清掉该会话可能残留的旧轮文本（防跨轮叠加），但**绝不动**在跑的
+		 * pendingRuns：上一条微信消息那一轮可能还在流式中，把它的登记丢了一旦
+		 * run_end 到达就无人回包（bindActive 模式下连发两条必现「只有还在执行，没有结果」）。
+		 */
+		function resetStaleRunText(convId) {
+			const active = new Set();
+			for (const [k, p] of st.pendingRuns) {
+				if (p.conversationId === convId || k === convId) active.add(k);
 			}
-			earlyRuns.delete(convId);
+			for (const k of [...st.runText.keys()]) {
+				if (active.has(k)) continue;
+				if (k === convId || k.endsWith(`:${convId}`)) st.runText.delete(k);
+			}
+			// earlyRuns 不在这里动：trackRun 还要靠它消费「回执前已到达」的事件（issue #345）。
 			inFlightConvs.delete(convId);
 		}
 
@@ -1173,8 +1181,8 @@ export default {
 					if (typeof cid === "string" && cid.trim()) {
 						bindCid = cid.trim();
 						req.conversationId = bindCid;
-						// 在投递前先彻底清空该会话历史残留的 runText 和 earlyRuns，杜绝跨轮叠加
-						dropRunByConv(bindCid);
+						// 投递前清掉旧轮残留文本，杜绝跨轮叠加（在跑的那一轮登记保留）
+						resetStaleRunText(bindCid);
 					}
 				} catch {
 					/* 无打开对话则走无头，不阻断 */
@@ -1194,9 +1202,9 @@ export default {
 				if (conversationId) {
 					inFlightConvs.delete(conversationId);
 					inFlightClients.delete(expectedPseudoClientId);
-					const key = makeRunKey(clientId, conversationId);
-					st.runText.delete(key);
-					st.runText.delete(conversationId);
+					// 上一轮若还在跑（steer 并入在途运行），它的已累积正文必须保留：
+					// 整轮只会在最后结算一次 run_end，清掉就只剩「任务完成（无文本输出）」。
+					resetStaleRunText(conversationId);
 					trackRun({ conversationId, clientId, to: peer, contextToken, startedAt, runId });
 				}
 			} catch (err) {

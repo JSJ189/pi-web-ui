@@ -931,6 +931,145 @@ describe("wechat-ilink: 斜杠快捷指令 (Slash Commands)", () => {
 		}
 	});
 
+	it("bindActive 连发两条指令时，先前那一轮已产出的正文不会丢（run_end 只来一次）", async () => {
+		// 实测反馈（issue #770）：投递到网页活跃会话模式下来回聊几句后就没回包了。
+		// 连发场景下宿主把第二条消息 steer 进**同一个**在跑的 run（run_end 只来一次，runId
+		// 是最新的那条）；旧实现在投递第二条前用 dropRunByConv 把该会话的登记与已累积正文
+		// 一起清掉，于是最终回包只剩「任务完成（无文本输出）」。
+		let runHandler: ((ev: unknown) => void) | undefined;
+		const storageMap = new Map<string, unknown>();
+		storageMap.set("account", { base: "https://ilinkai.weixin.qq.com", botId: "bot1", loginAt: Date.now() });
+		storageMap.set("allowedPeers", ["peer_frank"]);
+
+		const mockSecrets = {
+			get: vi.fn((k) => (k === "bot_token" ? "fake_token" : undefined)),
+			set: vi.fn(),
+			delete: vi.fn(),
+		};
+		const mockStorage = {
+			get: vi.fn((k, def) => (storageMap.has(k) ? storageMap.get(k) : def)),
+			set: vi.fn((k, v) => storageMap.set(k, v)),
+		};
+
+		const sentMessages: string[] = [];
+		// 第二条消息要等第一轮正文落地后再投（模拟真人一来一回，不是同 tick 连抷）
+		let firstTextEmitted = false;
+		let delivered = 0;
+
+		const origFetch = globalThis.fetch;
+		globalThis.fetch = vi.fn(async (url: string | URL | Request, init?: RequestInit) => {
+			const urlStr = String(url);
+			if (urlStr.includes("getupdates")) {
+				const text = delivered === 0 ? "第一条" : delivered === 1 && firstTextEmitted ? "第二条" : "";
+				if (text) {
+					delivered++;
+					return {
+						ok: true,
+						json: async () => ({
+							ret: 0,
+							msgs: [
+								{
+									message_type: 1,
+									from_user_id: "peer_frank",
+									context_token: `ctx_frank_${delivered}`,
+									item_list: [{ type: 1, text_item: { text } }],
+								},
+							],
+						}),
+					} as Response;
+				}
+				await new Promise((r) => setTimeout(r, 50));
+				return { ok: true, json: async () => ({ ret: 0, msgs: [] }) } as Response;
+			}
+			if (urlStr.includes("sendmessage")) {
+				const body = JSON.parse(String(init?.body ?? "{}"));
+				sentMessages.push(body?.msg?.item_list?.[0]?.text_item?.text ?? "");
+				return { ok: true, json: async () => ({ ret: 0 }) } as Response;
+			}
+			return { ok: true, json: async () => ({}) } as Response;
+		});
+
+		try {
+			const browserClientId = "client_browser_tab7";
+			let seq = 0;
+			const hostChatSpy = vi.fn(async (_req: unknown) => {
+				seq++;
+				return { conversationId: "c1", clientId: browserClientId, runId: `pr-bind-${seq}` };
+			});
+
+			const host = {
+				getSettings: () => ({ autoDrive: true, typing: false, bindActive: true }),
+				onSettingsChanged: () => () => {},
+				storage: mockStorage,
+				secrets: mockSecrets,
+				cwd: process.cwd(),
+				log: vi.fn(),
+				notify: vi.fn(),
+				broadcast: vi.fn(),
+				sendTo: vi.fn(),
+				onRunEvent: (h: (ev: unknown) => void) => {
+					runHandler = h;
+					return () => {};
+				},
+				onMessage: () => () => {},
+				onAttach: () => () => {},
+				registerAgentTool: vi.fn(),
+				registerBackgroundTask: vi.fn(() => ({ update: vi.fn(), unregister: vi.fn() })),
+				getActiveConversation: () => ({ conversationId: "c1" }),
+				chat: hostChatSpy,
+			};
+
+			const cleanup = wechatPlugin.activate(host as never);
+
+			// 第一条投递并被 steer 进同一轮
+			await vi.waitFor(() => {
+				expect(hostChatSpy).toHaveBeenCalledTimes(1);
+			});
+			expect(runHandler).toBeDefined();
+			runHandler!({
+				type: "message",
+				conversationId: "c1",
+				clientId: browserClientId,
+				runId: "pr-bind-1",
+				at: Date.now(),
+				message: { role: "assistant", content: [{ type: "text", text: "答复第一条" }] },
+			});
+			firstTextEmitted = true;
+
+			// 第二条消息进来（同一会话、同一轮仍在跑）
+			await vi.waitFor(() => {
+				expect(hostChatSpy).toHaveBeenCalledTimes(2);
+			});
+			runHandler!({
+				type: "message",
+				conversationId: "c1",
+				clientId: browserClientId,
+				runId: "pr-bind-2",
+				at: Date.now(),
+				message: { role: "assistant", content: [{ type: "text", text: "答复第二条" }] },
+			});
+			// 整轮只结算一次，runId 是最新那条
+			runHandler!({
+				type: "run_end",
+				conversationId: "c1",
+				clientId: browserClientId,
+				runId: "pr-bind-2",
+				at: Date.now(),
+			});
+
+			await vi.waitFor(() => {
+				expect(sentMessages.length).toBe(1);
+			});
+			// 两轮正文都在：先前那一轮的产出绝不能被新消息清掉
+			expect(sentMessages[0]).toContain("答复第一条");
+			expect(sentMessages[0]).toContain("答复第二条");
+
+			cleanup?.();
+		} finally {
+			globalThis.fetch = origFetch;
+		}
+	});
+
 	it("runId 不同则不认领（不会把别处的运行回合错发给微信）", async () => {
 		let runHandler: ((ev: unknown) => void) | undefined;
 		const storageMap = new Map<string, unknown>();
