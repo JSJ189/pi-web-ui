@@ -10,6 +10,42 @@
 
 ## [Unreleased]
 
+## [0.113.0] — 2026-10-28
+
+### Added
+
+- **QQ 通道富媒体双向（图片/语音/视频/文件）**：入站附件（`attachments`，腾讯 CDN）下载到工作区 `.pi-qq-media/` 并给 agent 本地路径（语音优先 `voice_wav_url` + 官方 ASR 文本），单件 25MB 上限、失败降级占位；出站给 `qq` 工具补 `image`/`file` 与 `user_openid`/`group_openid`，本地文件自动上传（≤5MB 走 base64 `file_data`，更大走 `upload_prepare` → 分片 PUT → `upload_part_finish` → 合并拿 `file_info`，再 `msg_type=7` 发送），超软限制降级为文件卡片；工作台新增媒体发送与「接收图片/文件落地」开关。频道（子频道）受官方限制只收公网 URL，本地文件明确报错。
+- **通道插件运行归属根治（`host.chat` 回执新增稳定 `runId`）**：微信/钉钉/QQ/Discord/飞书此前靠 `clientId + conversationId` 认领回包，而「过户」会把两者同时改掉（`clientId` 换成浏览器标签页、撞 id 时对话就地改名），导致整轮事件无人认领、只剩「还在执行」后再无下文。现在运行轨迹事件携带不随过户/改名变化的 `runId`，`chatWait` 亦按它唤醒；钉钉/Discord 顺带修复「忽略 `host.chat` 回执、用本地编造会话 id 当键」导致正文从来发不出去的老问题。
+- **画布工作室与技能/工具工作台升级**：P-Stack 技能包、节点抽屉与模板、审查卡点续跑；工具检查器（Tool Inspector）重构与文件差异可视化（统一/分屏/原始三视图、全屏、复制 patch）；设置面板重排与 MCP / 技能市场（分类、复制链接、空态引导）。
+- **远程工作台插件（remote-workbench）**：SSH 远程会话、xterm 终端、紧凑视图与工作区 URI，配套 sftp 插件增强。
+- **技能发现与维护**：`skill-discovery` 重写 + `universal-skill-scanner`（`.pi/skills`、`.claude/skills` 目录型/单文件型统一扫描）+ `skill-maintenance` 清理能力。
+- **用户终端持久化**：用户直接创建的交互式终端按客户端/工作区存活，不受单个对话切换与生命周期影响（快照、回放、退出广播都独立登记）。
+- **`subagent(action="dismiss")`**：批量/单个回收已结束的子代理（含 `finished_all`、worktree 脏检查、持久化子代理保护），并同步 UI 列表（#767, #768）。
+- **模型级 `thinkingLevelMap` 推导与保留**：候选采纳器默认勾选现有模型，切换/采纳后不丢思考强度映射（#771, #772）。
+
+### Changed
+
+- **工具门控改为声明式「管辖权分界」（Authority Boundary）**：`tool-manager` 重构门控合成，恢复会话与重放时保留扩展主动禁用的工具状态，避免重连后被悄悄打开（#777, #779）。
+- **Durable 引擎工具卡改由 `watchEvents` 事件流投影**：新增 `durable-event-projector`，工具卡入参与结果不再读 `pi.live` 私有槽位（原来为空并污染落盘会话），正文与工具卡按提交时间对齐（#774, #775）。
+- **官方插件体系**：browser-use 探测脚本与文档更新；QQ / 微信 / 钉钉 / Discord / 飞书 / sftp 版本号递增（随包热同步生效）。
+
+### Fixed
+
+- **微信通道连发丢答**：`bindActive`（投递到网页活跃会话）模式下第二条消息会把同一会话里**还在跑那一轮已产出的正文**一起清掉，最终只回「任务完成（无文本输出）」；改为只清没有在跑登记的残留文本（#770）。
+- **Claude Code 引擎 macOS 定位**：自动解析 CLI 可执行路径并完善全局检测与 PATH 扫描（含 nvm/homebrew 场景）。
+- **界面细节**：设置面板格式化、composer 高度自适应与拖拽手柄文案、文件差异卡在流式期间的渲染稳定性。
+
+<!-- auto-i18n:start -->
+### i18n
+
+- 前端新增 key（36）：`composerResizeFixed`、`mcpMarketVisit`、`mcpMarketCopyLink`、`mcpMarketCopied`、`mcpMarketEmpty`、`mcpMarketEmptyClear`、`mcpCatAll`、`mcpCatCn`、`mcpCatMarketplace`、`mcpCatCommunity`、`mcpCatOfficial`、`skillMarketNoticeTitle`、`skillMarketNoticeDesc`、`skillMarketVisit`、`skillMarketCopyLink`、`skillMarketCopied`、`skillMarketEmpty`、`skillMarketEmptyClear`、`skillCatOfficial`、`skillCatMarketplace`、`skillCatCommunity`、`skillCatDirectory`、`diffViewUnified`、`diffViewSplit`、`diffViewRaw`、`diffNewFile`、`diffOpenFile`、`diffCopyContent`、`diffCopyPatch`、`diffStreaming`、`diffEmptyHunks`、`diffFullscreen`、`diffRestoreScreen`、`skillClickToInspect`、`copySkillContent`、`copiedSkillContent`
+- 前端删除 key（34）：`mcpBadgeOfficial`、`mcpConfigured`、`mcpAddGlobal`、`mcpAddProject`、`mcpAddGlobalHint`、`mcpAddProjectHint`、`skillCatQuality`、`skillCatWorkflow`、`skillCatArchitecture`、`skillCatDevops`、`skillCatStack`、`skillInspectPrompt`、`skillInstalled`、`skillInstallGlobal`、`skillInstallProject`、`skillInstallGlobalHint`、`skillInstallProjectHint`、`mcpSourceSelectLabel`、`mcpSourceSmithery`、`mcpSourceGithub`、`mcpSourceCustom`、`mcpSourceCustomPlaceholder`、`mcpMarketLoading`、`mcpMarketRetry`、`skillRepoSelect`、`skillRepoDefault`、`skillRepoCustom`、`skillRepoCustomPlaceholder`、`skillMarketLoading`、`skillMarketRetry`、`toolInspectorOutput`、`toolInspectorError`、`toolInspectorToggleRaw`、`toolInspectorTogglePreview`
+- 前端中文变更（8）：`composerResize`、`mcpMarketSearchPlaceholder`、`skillEmptyDesc`、`skillMarketSearchPlaceholder`、`skillCatAll`、`skillFullTextShort`、`skillInspectModalTitle`、`skillContentLoading`
+- 前端英文变更（7）：`composerResize`、`mcpMarketSearchPlaceholder`、`skillEmptyDesc`、`skillMarketSearchPlaceholder`、`skillCatAll`、`skillFullTextShort`、`skillContentLoading`
+- 服务端新增 key（14）：`subagents.dismiss.unsupported`、`subagents.dismiss.missing.target`、`subagents.dismiss.finished_all.empty`、`subagents.dismiss.not_found`、`subagents.dismiss.self`、`subagents.dismiss.active`、`subagents.dismiss.not_descendant`、`subagents.dismiss.persisted`、`subagents.dismiss.running`、`subagents.dismiss.worktree.dirty`、`subagents.dismiss.failed`、`subagents.dismiss.success.single`、`subagents.dismiss.none`、`subagents.dismiss.success.batch`
+- 服务端文案变更（2）：`subagents.action.missing`、`subagents.action.unknown`
+<!-- auto-i18n:end -->
+
 ## [0.112.0] — 2026-10-26
 
 ### Added
@@ -1959,7 +1995,8 @@ when?, children?}`，也收 `topbar` / `settings` 这类简写别名）；宿主
 - 0.35.1（2026-08-27）：编辑重问保留附件（#18）+ 全窗口拖放（#19）。
 - 0.29.0（2026-08-23）：全局搜索弹窗（Ctrl+K）+ 消息列表惰性窗口化。
 
-[Unreleased]: https://github.com/xing-shuyin/pi-web-ui/compare/v0.112.0...main
+[Unreleased]: https://github.com/xing-shuyin/pi-web-ui/compare/v0.113.0...main
+[0.113.0]: https://github.com/xing-shuyin/pi-web-ui/releases/tag/v0.113.0
 [0.112.0]: https://github.com/xing-shuyin/pi-web-ui/releases/tag/v0.112.0
 [0.111.0]: https://github.com/xing-shuyin/pi-web-ui/releases/tag/v0.111.0
 [0.108.0]: https://github.com/xing-shuyin/pi-web-ui/releases/tag/v0.108.0
