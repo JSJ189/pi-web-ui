@@ -83,6 +83,30 @@ export function resolveClaudeExecutable(cmd = "claude"): string {
 			join(home, ".local", "share", "fnm", "current", "bin"),
 		];
 
+		// fnm 当前或各 node 版本的 bin 目录与 multishells
+		const fnmVersionsDir = join(home, ".local", "share", "fnm", "node-versions");
+		if (existsSync(fnmVersionsDir)) {
+			try {
+				const vers = readdirSync(fnmVersionsDir);
+				for (const v of vers) {
+					candidateDirs.push(join(fnmVersionsDir, v, "installation", "bin"));
+				}
+			} catch {
+				/* ignore */
+			}
+		}
+		const fnmStateDir = join(home, ".local", "state", "fnm_multishells");
+		if (existsSync(fnmStateDir)) {
+			try {
+				const shells = readdirSync(fnmStateDir);
+				for (const s of shells) {
+					candidateDirs.push(join(fnmStateDir, s, "bin"));
+				}
+			} catch {
+				/* ignore */
+			}
+		}
+
 		// nvm 当前或各 node 版本的 bin 目录
 		const nvmVersionsDir = join(home, ".nvm", "versions", "node");
 		if (existsSync(nvmVersionsDir)) {

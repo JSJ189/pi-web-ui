@@ -19,7 +19,7 @@
 // MUST be imported before the SDK is loaded so on-disk patches apply cleanly.
 import "./patch-remote-catalog.js";
 import "./patch-turn-end-boundary.js";
-import { existsSync, mkdirSync, readFileSync, statSync } from "node:fs";
+import { existsSync, mkdirSync, readFileSync, readdirSync, statSync } from "node:fs";
 import { readFile, stat } from "node:fs/promises";
 import { createServer, request as proxyRequest, type IncomingMessage } from "node:http";
 import { createConnection } from "node:net";
@@ -297,7 +297,29 @@ if (process.platform === "win32") {
 		join(homedir(), ".local", "bin"),
 		join(homedir(), "Library", "pnpm"),
 		join(homedir(), ".bun", "bin"),
+		join(homedir(), ".local", "share", "fnm", "current", "bin"),
 	];
+	// fnm / nvm 在 macOS 下版本目录自动扫入 PATH
+	const fnmVersions = join(homedir(), ".local", "share", "fnm", "node-versions");
+	if (existsSync(fnmVersions)) {
+		try {
+			for (const v of readdirSync(fnmVersions)) {
+				macPaths.push(join(fnmVersions, v, "installation", "bin"));
+			}
+		} catch {
+			/* ignore */
+		}
+	}
+	const nvmVersions = join(homedir(), ".nvm", "versions", "node");
+	if (existsSync(nvmVersions)) {
+		try {
+			for (const v of readdirSync(nvmVersions)) {
+				macPaths.push(join(nvmVersions, v, "bin"));
+			}
+		} catch {
+			/* ignore */
+		}
+	}
 	const curParts = (process.env.PATH ?? "").split(delimiter).filter(Boolean);
 	const curSet = new Set(curParts);
 	const toAdd = macPaths.filter((p) => existsSync(p) && !curSet.has(p));

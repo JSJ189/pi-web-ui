@@ -259,19 +259,39 @@ export async function probeDsh(): Promise<EngineStatus> {
 /**
  * 探测 Claude Code 引擎状态。
  */
-export async function probeClaude(): Promise<EngineStatus> {
+export async function probeClaude(force = false): Promise<EngineStatus> {
 	const pkgName = ENGINE_PACKAGES.claude.packageName;
 	try {
 		const res = await probeClaudeCode();
-		return {
-			id: "claude",
-			installed: res.installed,
-			packageName: pkgName,
-			version: res.version,
-		};
+		if (res.installed) {
+			return {
+				id: "claude",
+				installed: true,
+				packageName: pkgName,
+				version: res.version,
+			};
+		}
 	} catch {
-		return { id: "claude", installed: false, packageName: pkgName };
+		/* ignore */
 	}
+
+	// 降级兜底：某些环境（如 fnm/nvm 目录未生成直接软链，或全局通过 npm 安装了包但 postinstall 尚未就绪）
+	// 尝试通过全局包管理器探测是否已安装该包
+	try {
+		const globalProbe = probeGlobalPackage(pkgName, { refresh: force });
+		if (globalProbe.installed) {
+			return {
+				id: "claude",
+				installed: true,
+				packageName: pkgName,
+				version: globalProbe.version,
+			};
+		}
+	} catch {
+		/* ignore */
+	}
+
+	return { id: "claude", installed: false, packageName: pkgName };
 }
 
 /**
@@ -309,9 +329,9 @@ export async function probeEngine(id: string, force = false): Promise<EngineStat
 	if (id === "dsh") {
 		result = await probeDsh();
 	} else if (id === "claude") {
-		result = await probeClaude();
+		result = await probeClaude(force);
 	} else if (id === "durable") {
-		result = await probeDurable();
+		result = await probeDurable(force);
 	} else {
 		result = { id: id as any, installed: false };
 	}
@@ -335,7 +355,12 @@ export async function probeAllEngines(force = false): Promise<EngineStatus[]> {
 	if (!force && allFresh && entries.length > 0) {
 		return entries.map(toPublicStatus);
 	}
-	const [pi, dsh, claude, durable] = await Promise.all([probePi(), probeDsh(), probeClaude(), probeDurable()]);
+	const [pi, dsh, claude, durable] = await Promise.all([
+		probePi(),
+		probeDsh(),
+		probeClaude(force),
+		probeDurable(force),
+	]);
 	await Promise.all([
 		enrichWithUpdateInfo(pi, force),
 		enrichWithUpdateInfo(dsh, force),
