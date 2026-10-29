@@ -17,7 +17,7 @@ import { createHash } from "node:crypto";
 import { mkdirSync, readFileSync, rmSync, statSync, utimesSync } from "node:fs";
 import { homedir } from "node:os";
 import { join } from "node:path";
-import { writeJsonAtomicSync } from "./atomic-file.js";
+import { writeAtomicSync } from "./atomic-file.js";
 
 /** 离过期这么近的 access token 先刷新再发出去（与 pi 同口径）。 */
 export const MCP_REFRESH_SKEW_MS = 30_000;
@@ -141,9 +141,12 @@ export function readMcpAuthStore(options: McpAuthStoreOptions = {}): McpAuthStor
 	return {};
 }
 
-/** 按 pi 的格式写回（2 空格 JSON + 换行，仅本人可读写）—— pi 与本模块共用这一个文件。 */
+/**
+ * 按 pi 的格式写回（2 空格 JSON + 换行，仅本人可读写）—— pi 与本模块共用这一个文件。
+ * 新建文件必须显式给 0600：默认的 0666 & umask 在常见 umask 下会写出 0644，凭据就变成可读了。
+ */
 export function writeMcpAuthStore(store: McpAuthStore, options: McpAuthStoreOptions = {}): void {
-	writeJsonAtomicSync(getMcpAuthStorePath(options), store, 2);
+	writeAtomicSync(getMcpAuthStorePath(options), `${JSON.stringify(store, null, 2)}\n`, { mode: 0o600 });
 }
 
 /** 单个服务器已存的状态：优先新键，回落旧版 URL 键。 */
