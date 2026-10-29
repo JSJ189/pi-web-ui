@@ -1,18 +1,17 @@
 /**
- * OAuth credentials for remote MCP servers (Issue #786).
+ * OAuth 保护的远端 MCP 服务器的凭据（Issue #786）。
  *
- * pi's built-in MCP integration signs in to OAuth-protected servers and keeps the result in
- * `<agent-dir>/mcp-auth.json`, keyed `mcp__<server>|<url>` (older versions wrote the bare URL as key;
- * such state is taken over here too). pi-web-ui's own bridge never signs in — it used to ignore those
- * credentials entirely, so every OAuth-protected server ended in `HTTP 401`.
+ * pi 的内置 MCP 集成会把登录结果存进 `<agent-dir>/mcp-auth.json`，键为 `mcp__<服务器名>|<url>`
+ * （旧版本只写 URL 做键；那种状态这里同样接管）。pi-web-ui 自己的桥从不登录，以前也完全无视这份
+ * 凭据，于是每个 OAuth 保护的服务器都止步于 `HTTP 401`。
  *
- * This module shares pi's store instead of adding a second one:
- *  - read the stored access token and send it as `Authorization: Bearer …`;
- *  - refresh it with the stored refresh token when it is about to expire, or after a 401;
- *  - write the refreshed tokens back in pi's format, under the same refresh lock as pi.
+ * 本模块**复用 pi 的凭据库**，而不是再建一份：
+ *  - 读出存好的 access token，随请求发 `Authorization: Bearer …`；
+ *  - 临近过期或收到 401 时，用存好的 refresh token 换新的；
+ *  - 刷新结果按 pi 的格式写回，并复用 pi 的刷新锁（两个进程不会同时刷新）。
  *
- * Sign-in itself (authorization code + PKCE + browser callback) stays with `pi mcp login <server>`
- * until pi-web-ui gets a sign-in UI of its own; see Issue #786 for that follow-up.
+ * 登录本身（授权码 + PKCE + 浏览器回调）仍由 `pi mcp login <服务器>` 负责，直到 pi-web-ui 有了
+ * 自己的登录界面 —— 见 Issue #786 的后续步骤。
  */
 import { createHash } from "node:crypto";
 import { mkdirSync, readFileSync, rmSync, statSync, utimesSync } from "node:fs";
@@ -20,17 +19,17 @@ import { homedir } from "node:os";
 import { join } from "node:path";
 import { writeJsonAtomicSync } from "./atomic-file.js";
 
-/** Access tokens this close to expiry are refreshed before they are sent (pi uses the same skew). */
+/** 离过期这么近的 access token 先刷新再发出去（与 pi 同口径）。 */
 export const MCP_REFRESH_SKEW_MS = 30_000;
-/** A refresh held longer than this is considered abandoned (its owner was killed) and is taken over. */
+/** 刷新锁被持有超过这个时间就视为遗弃（持锁进程被杀），后来者接管。 */
 const REFRESH_LOCK_STALE_MS = 20_000;
-/** How long to wait for another process's refresh; longer than a stale lock lives. */
+/** 等别的进程刷新的最长时间；比一个过期锁的寿命更长。 */
 const REFRESH_LOCK_WAIT_MS = 25_000;
 const REFRESH_LOCK_RETRY_MS = 100;
-/** Bounds a single request to the authorization server, so an unresponsive one cannot hold the lock. */
+/** 单次授权服务器请求的上限：不响应的服务器不能一直占着锁。 */
 const REFRESH_REQUEST_TIMEOUT_MS = 20_000;
 
-/** OAuth tokens as stored by pi (`expires_in` is what the server returned, `tokensExpireAt` is absolute ms). */
+/** pi 存下的 OAuth 令牌（`expires_in` 是服务器原样返回的，`tokensExpireAt` 是绝对毫秒）。 */
 export interface McpOAuthTokens {
 	access_token?: string;
 	refresh_token?: string;
@@ -39,10 +38,10 @@ export interface McpOAuthTokens {
 	scope?: string;
 }
 
-/** Per-server OAuth state in `mcp-auth.json`. Only the fields this module needs are typed. */
+/** `mcp-auth.json` 里单个服务器的 OAuth 状态；只标注本模块用到的字段。 */
 export interface McpOAuthState {
 	tokens?: McpOAuthTokens;
-	/** Absolute expiry of `tokens.access_token` in epoch milliseconds. */
+	/** `tokens.access_token` 的绝对过期时间（epoch 毫秒）。 */
 	tokensExpireAt?: number;
 	clientInformation?: {
 		client_id?: string;
@@ -60,7 +59,7 @@ export interface McpOAuthState {
 
 export type McpAuthStore = Record<string, McpOAuthState>;
 
-/** The OAuth-protected server needs a sign-in (no usable refresh token, or the refresh was rejected). */
+/** 该 OAuth 服务器需要重新登录（没有可用的刷新令牌，或刷新被拒绝）。 */
 export class McpOAuthSignInRequiredError extends Error {
 	constructor(message: string) {
 		super(message);
@@ -69,44 +68,44 @@ export class McpOAuthSignInRequiredError extends Error {
 }
 
 export interface McpAuthStoreOptions {
-	/** Agent directory holding `mcp-auth.json`; defaults to pi's (`PI_CODING_AGENT_DIR` or `~/.pi/agent`). */
+	/** 放着 `mcp-auth.json` 的 agent 目录；缺省用 pi 的口径（`PI_CODING_AGENT_DIR` 或 `~/.pi/agent`）。 */
 	agentDir?: string;
-	/** Explicit store path, for tests. Wins over `agentDir`. */
+	/** 显式指定凭据库路径（测试用）；优先于 `agentDir`。 */
 	storePath?: string;
 }
 
 export interface McpOAuthTokenOptions extends McpAuthStoreOptions {
-	/** Server name as configured in `mcp.json` (the namespace, not the tool prefix). */
+	/** `mcp.json` 里配置的服务器名（是命名空间，不是工具名前缀）。 */
 	name: string;
 	serverUrl: string;
-	/** Injectable for tests; defaults to the global `fetch`. */
+	/** 可注入（测试用）；缺省用全局 `fetch`。 */
 	fetch?: typeof fetch;
-	/** Injectable clock for tests; defaults to `Date.now`. */
+	/** 可注入的时钟（测试用）；缺省 `Date.now`。 */
 	now?: () => number;
 }
 
 export interface McpRefreshOptions extends McpOAuthTokenOptions {
 	/**
-	 * The access token the caller just used (or read). When the stored token already changed, another
-	 * process refreshed it, and its result is used instead of a second refresh — refresh tokens rotate.
+	 * 调用方刚用（或刚读到）的 access token。库里已经换过就说明别的进程刷过了，直接用它的结果，
+	 * 不再刷第二次 —— 刷新令牌会轮换，二次刷新会毁掉授权。
 	 */
 	staleToken?: string;
 }
 
-/** Default agent directory, matching `getGlobalMcpPath`'s resolution order. */
+/** 缺省 agent 目录，与 `getGlobalMcpPath` 的解析顺序一致。 */
 export function defaultMcpAgentDir(): string {
 	return process.env.PI_CODING_AGENT_DIR || join(homedir(), ".pi", "agent");
 }
 
-/** Absolute path of pi's MCP credential store. */
+/** pi 的 MCP 凭据库绝对路径。 */
 export function getMcpAuthStorePath(options: McpAuthStoreOptions = {}): string {
 	if (options.storePath) return options.storePath;
 	return join(options.agentDir || defaultMcpAgentDir(), "mcp-auth.json");
 }
 
 /**
- * URL as used in the store key. pi normalizes through `new URL()`, so `…/mcp` and `…/mcp/` stay
- * different keys but a missing trailing slash on an origin becomes `/`.
+ * 凭据库键里用的 URL。pi 走 `new URL()` 归一化：`…/mcp` 与 `…/mcp/` 仍是不同的键，但
+ * origin 上缺的斜杠会补成 `/`。
  */
 function normalizeServerUrl(serverUrl: string): string {
 	try {
@@ -116,22 +115,22 @@ function normalizeServerUrl(serverUrl: string): string {
 	}
 }
 
-/** Namespace pi derives from a server name: dashes become underscores (`mcp__my_server`). */
+/** pi 从服务器名推导出的命名空间：连字符换成下划线（`mcp__my_server`）。 */
 function mcpNamespace(name: string): string {
 	return `mcp__${name.replace(/-/g, "_")}`;
 }
 
-/** Store key of a server: name and URL, so two accounts on one URL stay separate. */
+/** 一个服务器的存储键：名字 + URL，同一 URL 上的两个账号各存各的。 */
 export function mcpAuthStoreKey(name: string, serverUrl: string): string {
 	return `${mcpNamespace(name)}|${normalizeServerUrl(serverUrl)}`;
 }
 
-/** Key older pi versions wrote (URL only); still read, and replaced on the next write. */
+/** 旧版本 pi 写的键（只有 URL）；照样读，下一次写入时被替换。 */
 export function mcpAuthLegacyKey(serverUrl: string): string {
 	return normalizeServerUrl(serverUrl);
 }
 
-/** Read the whole store; a missing or unreadable file is an empty store, never an error. */
+/** 读整个凭据库；文件缺失或读不出来就当空库，绝不抛错。 */
 export function readMcpAuthStore(options: McpAuthStoreOptions = {}): McpAuthStore {
 	try {
 		const parsed = JSON.parse(readFileSync(getMcpAuthStorePath(options), "utf8")) as unknown;
@@ -142,12 +141,12 @@ export function readMcpAuthStore(options: McpAuthStoreOptions = {}): McpAuthStor
 	return {};
 }
 
-/** Write the store in pi's format (2-space JSON + newline, owner-only) — pi and this module share it. */
+/** 按 pi 的格式写回（2 空格 JSON + 换行，仅本人可读写）—— pi 与本模块共用这一个文件。 */
 export function writeMcpAuthStore(store: McpAuthStore, options: McpAuthStoreOptions = {}): void {
 	writeJsonAtomicSync(getMcpAuthStorePath(options), store, 2);
 }
 
-/** Stored state of one server, preferring the current key and falling back to the legacy URL key. */
+/** 单个服务器已存的状态：优先新键，回落旧版 URL 键。 */
 export function loadMcpAuthState(options: McpAuthStoreOptions & { name: string; serverUrl: string }): {
 	key: string;
 	legacyKey: string;
@@ -171,8 +170,8 @@ function lockPathFor(storePath: string, key: string): string {
 }
 
 /**
- * Serialize refreshes across processes with a lock directory next to the store — the same name and
- * staleness window pi's store uses, so a refresh from pi and one from pi-web-ui cannot both run.
+ * 用凭据库旁边的锁目录把跨进程刷新串行化 —— 名字与过期窗口都与 pi 的存储一致，因此 pi 与
+ * pi-web-ui 的刷新不会同时发生。
  */
 async function withRefreshLock<T>(storePath: string, key: string, fn: () => Promise<T>): Promise<T> {
 	const lockPath = lockPathFor(storePath, key);
@@ -192,11 +191,12 @@ async function withRefreshLock<T>(storePath: string, key: string, fn: () => Prom
 			} catch {
 				continue; // the holder released it in the meantime
 			}
-			if (Date.now() > deadline) throw new Error("MCP 刷新令牌锁等待超时（另一个进程正在刷新）");
+			if (Date.now() > deadline)
+				throw new Error("Timed out waiting for the MCP refresh lock (another process is refreshing)");
 			await new Promise((resolve) => setTimeout(resolve, REFRESH_LOCK_RETRY_MS));
 		}
 	}
-	// Keep the lock fresh while the refresh runs, so a slow authorization server is not taken over.
+	// 刷新期间持续续期锁，慢的授权服务器不会被别人当成遗弃锁接管。
 	const renewal = setInterval(
 		() => {
 			try {
@@ -223,15 +223,17 @@ interface RefreshResponseTokens extends McpOAuthTokens {
 
 function parseTokenResponse(value: unknown, fallbackRefreshToken: string): RefreshResponseTokens {
 	if (!value || typeof value !== "object") {
-		throw new McpOAuthSignInRequiredError("MCP 授权服务器的刷新应答不是 JSON 对象");
+		throw new McpOAuthSignInRequiredError(
+			"The authorization server answered the refresh with something that is not a JSON object",
+		);
 	}
 	const raw = value as Record<string, unknown>;
 	if (typeof raw.error === "string") {
 		const description = typeof raw.error_description === "string" ? raw.error_description : String(raw.error);
-		throw new McpOAuthSignInRequiredError(`MCP 刷新令牌被授权服务器拒绝：${description}`);
+		throw new McpOAuthSignInRequiredError(`The authorization server rejected the refresh token: ${description}`);
 	}
 	if (typeof raw.access_token !== "string" || !raw.access_token) {
-		throw new McpOAuthSignInRequiredError("MCP 授权服务器的刷新应答里没有 access_token");
+		throw new McpOAuthSignInRequiredError("The authorization server answered the refresh without an access_token");
 	}
 	return {
 		access_token: raw.access_token,
@@ -252,21 +254,20 @@ function selectClientAuthMethod(state: McpOAuthState): "client_secret_basic" | "
 }
 
 /**
- * Exchange the stored refresh token for a new access token (RFC 6749 §6), picking client
- * authentication the way the authorization server's registration did.
+ * 用存好的 refresh token 换新的 access token（RFC 6749 §6），客户端认证方式跟随注册时的选择。
  */
 async function requestRefreshToken(state: McpOAuthState, options: McpRefreshOptions): Promise<RefreshResponseTokens> {
 	const tokenEndpoint = state.discovery?.authorizationServerMetadata?.token_endpoint;
 	const clientId = state.clientInformation?.client_id;
 	const refreshToken = state.tokens?.refresh_token;
 	if (!tokenEndpoint) {
-		throw new McpOAuthSignInRequiredError("MCP 凭据里没有授权服务器令牌端点，需要重新登录");
+		throw new McpOAuthSignInRequiredError("The stored credentials have no token endpoint; sign in again");
 	}
 	if (!clientId) {
-		throw new McpOAuthSignInRequiredError("MCP 凭据里没有 client_id，需要重新登录");
+		throw new McpOAuthSignInRequiredError("The stored credentials have no client_id; sign in again");
 	}
 	if (!refreshToken) {
-		throw new McpOAuthSignInRequiredError("MCP 凭据里没有刷新令牌，需要重新登录");
+		throw new McpOAuthSignInRequiredError("The stored credentials have no refresh token; sign in again");
 	}
 
 	const params = new URLSearchParams({ grant_type: "refresh_token", refresh_token: refreshToken });
@@ -292,7 +293,7 @@ async function requestRefreshToken(state: McpOAuthState, options: McpRefreshOpti
 		response = await doFetch(tokenEndpoint, { method: "POST", headers, body: params.toString(), signal: timeout });
 	} catch (err) {
 		const detail = err instanceof Error ? err.message : String(err);
-		throw new Error(`MCP 刷新令牌请求失败：${detail}`);
+		throw new Error(`MCP token refresh request failed: ${detail}`);
 	}
 	const text = await response.text().catch(() => "");
 	let parsed: unknown;
@@ -306,15 +307,15 @@ async function requestRefreshToken(state: McpOAuthState, options: McpRefreshOpti
 		return parseTokenResponse(parsed, refreshToken);
 	}
 	if (!response.ok) {
-		throw new McpOAuthSignInRequiredError(`MCP 刷新令牌失败（HTTP ${response.status}）：${text.slice(0, 200)}`);
+		throw new McpOAuthSignInRequiredError(`MCP token refresh failed (HTTP ${response.status}): ${text.slice(0, 200)}`);
 	}
 	return parseTokenResponse(parsed, refreshToken);
 }
 
 /**
- * Force a refresh (after a 401, or for a token that is about to expire) and persist the result.
- * Returns the new access token. With `staleToken` set, a token that another process already replaced
- * is used as-is instead of refreshing twice — a rotated refresh token makes the second attempt fail.
+ * 强制刷新（401 之后，或 token 即将过期）并把结果落盘。返回新的 access token。
+ * 带 `staleToken` 时，若库里已被别的进程换掉就直接用那个 token，不再刷第二次 —— 刷新令牌轮换后
+ * 第二次尝试会失败。
  */
 export async function refreshMcpAccessToken(options: McpRefreshOptions): Promise<string | null> {
 	const storePath = getMcpAuthStorePath(options);
@@ -324,7 +325,9 @@ export async function refreshMcpAccessToken(options: McpRefreshOptions): Promise
 		const legacyKey = mcpAuthLegacyKey(options.serverUrl);
 		const state = store[key] ?? store[legacyKey];
 		if (!state?.tokens?.access_token && !state?.tokens?.refresh_token) {
-			throw new McpOAuthSignInRequiredError(`MCP 服务器「${options.name}」需要 OAuth 登录（找不到已保存的凭据）`);
+			throw new McpOAuthSignInRequiredError(
+				`MCP server "${options.name}" needs an OAuth sign-in (no stored credentials found)`,
+			);
 		}
 		const storedToken = state?.tokens?.access_token;
 		if (options.staleToken && storedToken && storedToken !== options.staleToken) {
@@ -355,9 +358,8 @@ function trimUndefined(tokens: McpOAuthTokens): McpOAuthTokens {
 }
 
 /**
- * The access token to send, or `null` when this server has no stored credentials (anonymous server).
- * A token that is about to expire is refreshed; when that fails the old token is returned, so the
- * server's own 401 decides what happens next.
+ * 该发的 access token；这个服务器没有凭据（匿名服务器）时返回 `null`。
+ * 即将过期的会先刷新；刷新失败则返回旧 token，交给服务器自己的 401 定论。
  */
 export async function getMcpAccessToken(options: McpOAuthTokenOptions): Promise<string | null> {
 	const { state } = loadMcpAuthState(options);

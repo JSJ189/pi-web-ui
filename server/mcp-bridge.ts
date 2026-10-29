@@ -187,7 +187,7 @@ export class McpClient {
 	/** 401 的可操作错误：告诉用户这一台服务器需要登录，以及怎么登录。 */
 	private signInRequiredError(detail: string): Error {
 		return new Error(
-			`MCP_OAUTH_SIGN_IN_REQUIRED: HTTP 401: ${detail || "unauthorized"} — OAuth 登录已过期或缺失，先运行 \`pi mcp login ${this.name}\` 再重试`,
+			`MCP_OAUTH_SIGN_IN_REQUIRED: HTTP 401: ${detail || "unauthorized"} — OAuth sign-in is missing or has expired; run \`pi mcp login ${this.name}\` and try again`,
 		);
 	}
 
