@@ -1,141 +1,129 @@
-# 桌面版（Electron sidecar）
+# pi-web-ui 桌面版（Electron）
 
-网页版零改动。桌面壳只是“本地 server + 本地窗口”的组合：
+桌面版把 pi-web-ui 本地服务和应用窗口放在一起，适合希望直接打开桌面应用的用户；聊天、文件、终端等功能复用网页版。运行已打包的桌面应用无需另装 Node.js 来启动服务，但 Git/Bash、额外引擎及其依赖是否可用，取决于包内运行时和本机环境。
 
-```
-Electron 主进程 (desktop/main.ts)
-  └─ spawn(ELECTRON_RUN_AS_NODE) → node dist/server/index.js --host 127.0.0.1 --port <随机>
-  └─ BrowserWindow → http://127.0.0.1:<随机>/
-```
+- [官网](https://xing-shuyin.github.io/pi-web-ui-site/) · [完整安装与模型配置](https://xing-shuyin.github.io/pi-web-ui-site/docs.html#installation)
+- [启动参数](https://xing-shuyin.github.io/pi-web-ui-site/docs.html#cli-and-env) · [本地 /setup 配置指南](https://xing-shuyin.github.io/pi-web-ui-site/docs.html#setup-page)
+- [下载最新 Release](https://github.com/xing-shuyin/pi-web-ui/releases/latest)
 
-前端继续走 `appUrl("/ws")` + `location.host`（见 `web/src/use-chat.ts`），
-和浏览器连远端 server 同一条路，`server/protocol.ts` 不动。
+## 选择与运行
 
-## 跑起来
+| 形式                                            | 适用场景                 | 安装和启动                                                                                                  |
+| ----------------------------------------------- | ------------------------ | ----------------------------------------------------------------------------------------------------------- |
+| Windows NSIS 安装包 `*-setup.exe`               | 固定电脑使用             | 运行安装程序，选择安装目录，再打开应用                                                                      |
+| macOS `.dmg`                                    | Mac 桌面应用             | 将 `.app` 拖入 Applications 后打开                                                                          |
+| Linux `.AppImage`                               | Linux 桌面应用           | 赋予执行权限后运行，如 `chmod +x ./文件名.AppImage`                                                         |
+| Windows `pi-web-ui-desktop-<版本>-portable.zip` | 随移动硬盘携带程序和数据 | 完整解压到可写目录，运行根目录的 `启动Pi.bat` 或 `PiPortable.bat`，详见 [便携版说明](../launcher/README.md) |
 
-```bash
-npm ci                   # 拉 electron + electron-builder（devDeps）
-npm run build            # 先产出 dist/server + web/dist（桌面壳直接复用）
-npm run desktop:dev      # Electron 指到本地 sidecar（http://127.0.0.1:<随机>）
-# 联调前端：另开 npm run dev:server(:8788) + vite(:5173)，再
-PI_WEB_DESKTOP_URL=http://localhost:5173 npm run desktop:dev
-npm run desktop:dist     # 本地打包（产物在 release/，已 gitignore）
-npm run desktop:portable # 制作 U 盘便携版（产物在 release/PiWebUI-Portable/）
-```
+Windows 便携 ZIP 是 Electron 应用加 `.bat` 启动脚本，运行它不需要 Python；它与 Python launcher 不是同一种分发形式。当前仓库的 `launcher/` 不含 Python 启动器。macOS 的更新用 ZIP 也不是 Windows 便携包。
 
-## 便携版（U 盘即插即用）
+首次进入应用后配置模型与认证。`/setup` 用于服务访问与网络配置，模型 API Key 在工作区设置中配置；需要打开 setup 时使用实际服务地址，例如默认端口下的 `http://127.0.0.1:8790/setup`，不要照搬网页版的 `8787`。
 
-支持完全自包含的便携模式（见 `desktop/portable.ts` 与 `launcher/` 启动器）：
-
-- **特性**：
-  1. 动态自适应：基于执行文件相对路径动态计算所有路径，免疫 U 盘盘符浮动；
-  2. 100% 数据隔离自包含：Electron 缓存、WebUI 数据、Agent 模型认证（auth.json/models.json）、会话历史、Git 全局配置全部重定向至 `data/` 目录，拔掉 U 盘不污染宿主机系统；
-  3. PortableGit 自动发现：在 `runtime/git` 下放入 PortableGit 即可自带完整 Linux 工具链与 Git/Bash，目标机无需安装任何开发环境。
-- **制作命令**：
-  - `npm run desktop:portable`：制作基础便携版目录（产出 `release/PiWebUI-Portable/`）；
-  - `npm run desktop:portable:full`：制作**完整便携版**（自动下载并内置 PortableGit，开箱即用零依赖）；
-  - CI 自动化发版：在推送 tag 时，GitHub Actions 会自动带 `--with-git` 打包出完整内置 Git 的便携 zip 压缩包（`pi-web-ui-desktop-<版本号>-portable.zip`）并挂载到 Release 资产中。
-- **运行方式**：直接把 `PiWebUI-Portable/` 文件夹拷入 U 盘，双击根目录下的 `启动Pi.bat`（或 `PiPortable.bat`）。
-
-## 约定
-
-- 端口：随机空闲口，不抢 `8787`，可与网页版/全局安装并存。`PI_WEB_PORT` 显式指定时优先，
-  但**已占用就退回随机口**（从 pi-web-ui 自己的终端里跑 `desktop:dev` 会继承它的 `PI_WEB_PORT=8787`）。
-- 启动就绪等待：默认等待 sidecar `/api/health` 最多 60 秒（`PI_WEB_HEALTH_TIMEOUT_MS` 可覆盖，毫秒；兼顾企业杀软实时扫描下的慢启动）。若 sidecar 提前退出或超时，桌面壳以非零退出码（`1`）退出；若环境中设置了 `PI_WEB_TOKEN`，窗口首跳 URL 会自动附带 `?token=` 完成鉴权并落盘 Cookie。
-- 图标：复用网页版的 `web/public/icons/icon-1024.png`，electron-builder 自己转 `.ico`/`.icns`，
-  换图标只改这一处（网页版 PWA 图标同步变）。
-- 数据：`PI_WEB_DATA_DIR` 默认 `<userData>/data`，和 `~/.pi-web` 隔离；
-  `PI_WEB_CWD` 默认用户主目录，可用同名 env 覆盖。
-- 单实例锁：`requestSingleInstanceLock()`。
-- 安全：`contextIsolation + sandbox`，renderer 无 node，外链走系统浏览器。
-- 导航守卫（issue #154）：`setWindowOpenHandler` 只拦新窗口请求，同帧导航（对话里的链接、JS 跳转）
-  另由 `will-navigate` 守卫拦 —— 应用自身 origin 放行，其余转系统浏览器，窗口永远不会被带走。
-- 已知限制（issue #153）：**浏览器操作（browser_page）在桌面版里不可用** —— 窗口里没有 Chrome
-  扩展运行时，page-picker 扩展装不上。面板里会直接给结论 + 「用默认浏览器打开当前地址」按钮，
-  不再引导用户走那四步；模型调 `browser_page` 会立刻收到「改用网页版」的错误，不干等 3 秒。
-- **ESM 主进程禁止顶层 `await app.whenReady()`**：Electron 要等入口模块求值完成才发 ready
-  事件，顶层 await 它 = 互相死等——进程卡在 `waiting for app ready…`、窗口永远不开。
-  在模块求值结束后（`app.whenReady().then(...)` 回调里）await 才是安全的，其它顶层 await 无影响。
-- 与网页版共存：端口（随机口）、数据目录（`<userData>/data`）、控制 socket（按端口命名）、单实例锁都隔开，
-  唯一共享的是 `~/.pi/agent`（`agentDir`：pi 配置、认证、**会话记录**）——好处是桌面版不用重新配置，
-  代价是**别在两边同时操作同一个对话**（两个 server 写同一份 transcript）。想彻底隔离就给桌面版设
-  `PI_CODING_AGENT_DIR`（`server/agent-service.ts` 读这个 env）。
-- `electron-builder.yml` 里 `npmRebuild: false`：node-pty 1.1.0 是 N-API 预编译，
-  在 `ELECTRON_RUN_AS_NODE` 下能直接 `require`，不需要按 Electron ABI 重编（否则打包强依赖本机 Visual Studio）。
-
-## 发布（当前无证书）
-
-CI 负责出包并挂到 GitHub Release：`.github/workflows/desktop-release.yml`
-在 tag 推送后并行跑三个 job（都是 `npm run build` + `build:desktop` + `electron-builder`）：
-
-| job               | runner           | 目标               | 产物                                            |
-| ----------------- | ---------------- | ------------------ | ----------------------------------------------- |
-| windows-installer | `windows-latest` | `--win`（NSIS）    | `*.exe` + `.blockmap` + `latest.yml`            |
-| macos-installer   | `macos-latest`   | `--mac`（dmg+zip） | `*.dmg` + `*.zip` + `latest-mac.yml`            |
-| linux-installer   | `ubuntu-latest`  | `--linux AppImage` | `*.AppImage` + `.blockmap` + `latest-linux.yml` |
-
-三者都把产物附到该 tag 的 Release（`--clobber`，可重推 tag 重跑）——
-**签名必须发生在这个 workflow 里**，SignPath 只签 CI 产物，本地 `npm run desktop:dist` 永远签不上。
-手动空跑（只出 workflow artifact、不动 Release 资产）：Actions → Desktop installer → Run workflow。
-
-现在三平台产物都**未签名**：Windows 首启有 SmartScreen「未知发布者」提示；
-Linux AppImage 无签名概念。功能都不受影响，但 **macOS 要单独说**：
-
-mac 产物是 **ad-hoc 签名**（`Signature=adhoc`，bundle 里没有 `_CodeSignature/`，
-既无 Developer ID 也无公证），而浏览器下载的 dmg 会给 bundle 打上
-`com.apple.quarantine`。两者叠加时 Gatekeeper 判的是**「已损坏，无法打开。你应该将它
-移到废纸篓。」**，而**不是**「身份不明的开发者」——后者才有右键 → 打开这条路。
-所以 mac 首次安装请直接清隔离属性（一次性，`-r` 覆盖 bundle 内的 Helper）：
+未经签名或公证的包可能被系统拦截，具体以下载产物为准。Windows 可能显示 SmartScreen 提示。macOS 若提示“已损坏”或被 Gatekeeper 拦截，在确认来源可信并将应用放入 Applications 后，可清除隔离属性再打开：
 
 ```bash
 xattr -dr com.apple.quarantine /Applications/pi-web-ui-desktop.app
+open -a /Applications/pi-web-ui-desktop.app
 ```
 
-验证：`open -a /Applications/pi-web-ui-desktop.app` 从 `error -128`（静默失败）
-变为正常启动。
+## 数据、端口与使用限制
 
-**dmg 与 zip 两种手动安装路径都一样**：隔离属性会被解出来的 `.app` 继承（实测 zip 文件与
-解出的 app 上 `xattr -p com.apple.quarantine` 取到**相同的 UUID**，`ditto`/`unzip` 均如此）。
-App 内自动更新不受影响——它走 zip，Squirrel 的 ShipIt 会自己清隔离属性
-（`clearQuarantineForDirectory:`）。
+非便携模式下，Electron 自身状态位于系统的 Electron `userData` 目录；服务数据默认在其 `data/` 子目录。`userData` 的具体位置受系统与应用名影响，应结合启动日志确认，不要将安装目录当成数据目录。
 
-## 签名
+| 配置                       | 实际行为                                                                                              |
+| -------------------------- | ----------------------------------------------------------------------------------------------------- |
+| `PI_WEB_DATA_DIR`          | 覆盖 WebUI 配置、插件等数据目录；非便携默认 `<userData>/data`，与 CLI 的 `~/.pi-web` 分开             |
+| `PI_CODING_AGENT_DIR`      | 覆盖 pi 配置、认证与会话目录；非便携默认共享 `~/.pi/agent`                                            |
+| `PI_WEB_CWD`               | 覆盖初始工作区；非便携代码默认用户主目录，建议显式指定项目目录，避免把整个家目录作为工作区            |
+| `PI_WEB_PORT`              | 显式指定时优先尝试该端口；未设时优先 `8790`，所选端口占用则退回随机空闲口                             |
+| `PI_WEB_HEALTH_TIMEOUT_MS` | 等待 `/api/health` 的毫秒数，默认 `60000`；正数最少 `1000`，非法值或非正数回落默认值                  |
+| 访问口令环境变量           | 设置服务访问口令；桌面窗口首次加载时带 `?token=` 完成鉴权，随后前端清除 URL 中的 token                |
+| `PI_WEB_DESKTOP_URL`       | 仅开发模式可将窗口指向已有服务；打包版忽略，见下文联调方式                                            |
+| `PI_WEB_SDK=bundled`       | 强制使用自带 pi SDK；默认会在检测到机器上更新的 pi 副本时跟随，详情见 [环境变量](../docs/env-vars.md) |
 
-本地打包时 electron-builder 认环境变量，给了就自动签（不改配置）：
+固定端口让 Chromium 的 Origin 保持稳定，有助于保留主题、面板宽度等 localStorage 设置；回落随机端口后，这些按 Origin 保存的界面状态可能不同。桌面 sidecar 固定监听 `127.0.0.1`；需要远程部署请参考[部署文档](../docs/deployment.md)。
+
+- 与 CLI/网页版并用时，默认共享的 `~/.pi/agent` 包含会话记录，避免两个服务同时操作同一对话；要隔离可设置 `PI_CODING_AGENT_DIR`。不要让两个服务同时写同一 WebUI data-dir。
+- `browser_page` 依赖浏览器 page-picker 扩展，在 Electron 窗口中不可用；请在支持该扩展的浏览器中打开服务地址并授权页面。其他浏览器工具有各自的运行条件。
+- renderer 开启 `contextIsolation`、`sandbox`，关闭 Node 集成；应用外部导航经过 URL 守卫，允许的外链交给系统浏览器。工具和外部程序仍可能访问本机资源，这些设置不等于操作系统级隔离。
+- 便携模式重定向主要应用数据，不保证操作系统、临时目录、外部 CLI 或用户选择的工作区不留下痕迹。
+
+## 升级与备份
+
+安装版可在应用更新面板检查、下载并安装更新。主进程通过 `electron-updater` 读取 GitHub Release 的 `latest*.yml`：启动时仅检查元数据，不自动下载；用户下载完成后可“安装并重启”，退出时也允许安装。能否更新取决于对应平台的产物、feed、网络和系统签名要求，不能保证每一种解包目录都支持原地更新。
+
+`npm i -g pi-web-ui@latest` 更新的是全局 npm 包，不会替换桌面应用内部的 `dist/server`。更新失败时，从 Release 下载对应平台的新包安装；先退出应用并备份 WebUI 数据目录及 Agent 目录。便携 ZIP 应按[便携版手动升级步骤](../launcher/README.md#升级与迁移)操作，避免更新后改变便携布局。
+
+## 从源码运行与构建
+
+以下命令均在仓库根目录执行。需要 Node.js **>=22.19.0**、npm，以及包含 devDependencies 的依赖安装。桌面 scripts 定义在根 [package.json](../package.json)，没有独立的 `desktop/package.json`。
 
 ```bash
-# Windows（.pfx；CSC_LINK 也接受 base64 串或 https URL）
-CSC_LINK=/abs/path/cert.pfx CSC_KEY_PASSWORD=xxx npm run desktop:dist
-
-# macOS（.p12）+ 公证，需 Apple 账号三件套（后两项用 App 专用密码）
-CSC_LINK=/abs/path/cert.p12 CSC_KEY_PASSWORD=xxx \
-APPLE_ID=you@example.com APPLE_APP_SPECIFIC_PASSWORD=xxxx APPLE_TEAM_ID=XXXXXXXXXX \
-  npm run desktop:dist
+npm ci
+npm run build           # 生成服务端、前端和配套运行资源
+npm run desktop:dev     # 编译桌面壳，再以 Electron 启动本地 sidecar
 ```
 
-[SignPath Foundation](https://signpath.org)（免费给 OSS）：**证书签发给 Foundation 本身**，
-所以 Windows 上显示的发布者是 “SignPath Foundation”，不是本项目作者；条款、Code of Conduct、
-首页「Code signing policy」段（见仓库 README）与 MFA 都是硬要求。获批后按
-`desktop-release.yml` 里那段 TODO 注释接线（参数以他们给的文档为准），届时会有签名版本。
+`desktop:dev` 只执行 `build:desktop` 后启动 Electron，不会重建服务端或前端；修改这些内容后需要重新 `npm run build`。需要 Vite 热更新时，在一个终端执行 `npm run dev`（服务端 `8788`、前端 `5173`），另一个终端启动桌面壳：
 
-其它来源：商业 CA（OV/EV）、Azure Trusted Signing（按量付费）。
-**自签名证书不解决问题**——SmartScreen 判的是「可追溯到受信任根的发布者」，自签一样会拦。
-macOS 的 Gatekeeper/公证 SignPath 帮不上，只能走 Apple Developer ID。
+```bash
+# POSIX shell
+PI_WEB_DESKTOP_URL=http://localhost:5173 npm run desktop:dev
+```
 
-## 应用内更新（issue #180）
+```powershell
+# PowerShell
+$env:PI_WEB_DESKTOP_URL = 'http://localhost:5173'
+npm run desktop:dev
+Remove-Item Env:PI_WEB_DESKTOP_URL
+```
 
-- 打包后的服务来自包内 `dist/server`，`npm i -g pi-web-ui@latest` 对它无效 ——
-  所以更新面板在桌面壳里不走 npm：主进程经 `electron-updater` 直连 GitHub
-  releases 的 `latest*.yml`，查到→下载→「安装并重启」（`desktop/main.ts` 的
-  `wireAutoUpdater`，进度经 preload 的 `window.piDesktop.updater` 透给前端）。
-- 构建要点（`desktop/electron-builder.yml`）：`publish` 显式声明 github 仓库
-  （feed 不再是 GH_TOKEN 下的意外产物）；mac target 必须是 `[dmg, zip]`
-  （Squirrel.Mac 只吃 zip，只有 dmg 接上 updater 也更新不了）；NSIS 的
-  `artifactName` 不能带空格（GitHub 会把 asset 名里的空格转成点，feed 随即 404）。
-- 未签名现状：Windows/Linux 未签名也能原地更新；macOS 首次安装要先清 quarantine（见上）。
+此 override 直接使用已有地址，不另起 sidecar；联调数据与端口由单独启动的开发服务决定。
 
-## 下一步（不在本骨架里）
+| 命令                            | 构建内容与输出                                                                                |
+| ------------------------------- | --------------------------------------------------------------------------------------------- |
+| `npm run build:desktop`         | 仅用 `desktop/tsconfig.json` 编译桌面壳到 `dist/desktop/`                                     |
+| `npm run desktop:dist`          | 先构建应用与桌面壳，再按 electron-builder 配置生成当前平台产物，输出到 `release/`             |
+| `npm run desktop:portable`      | 构建应用与桌面壳，再组装 Windows `release/PiWebUI-Portable/`；默认不下载 Git/Node，不生成 ZIP |
+| `npm run desktop:portable:full` | 同上，但增加 `--with-git`；名称中的 full 不表示包含独立 Node.js                               |
 
-1. `server/index.ts` 拆 `startServer(opts)` → 主进程可 in-process 内嵌，
-   省掉 sidecar 进程（大改，需另起 PR，先保证冒烟全过）。
-2. `node-pty` 换 `@lydell/node-pty` + `electron-rebuild`，删 `patch-node-pty.ts`。
+Windows 便携组装建议在 Windows 上执行。已完成 `npm run build` 和 `npm run build:desktop` 后，可直接传组装参数：
+
+```bash
+node scripts/make-portable.mjs --with-git --with-node --zip
+# 仅当 release/win-unpacked 已确认是本次目标构建时：
+node scripts/make-portable.mjs --skip-pack --with-git --with-node --zip
+```
+
+组装脚本不是升级器：每次都会替换输出的 `app/` 并清空 `data/` 下的八个标准子目录，勿在使用中的便携目录上重跑。它还会复用已有 `runtime/`，所以无下载参数不代表输出一定不含旧运行时。electron-builder 失败时，脚本可能回落到已有 `release/win-unpacked`；分发前确认版本与运行时内容。
+
+`--with-git` / `PI_BUNDLE_PORTABLE_GIT=1` 下载 PortableGit，`--with-node` / `PI_BUNDLE_PORTABLE_NODE=1` 下载独立 Node.js；下载和解压需要网络及可用的 `curl`、解压工具。`--zip` 额外生成 `release/pi-web-ui-desktop-<版本>-portable.zip`。当前脚本固定下载 Windows x64 的 Git/Node，不是通用跨平台运行时。完整布局与手动补充方法见[便携版说明](../launcher/README.md)。
+
+## 开发架构与打包配置
+
+```text
+Electron 主进程（desktop/main.ts）
+  ├─ Electron 二进制 + ELECTRON_RUN_AS_NODE=1
+  │    └─ dist/server/index.js --host 127.0.0.1 --port <选定端口>
+  └─ /api/health 就绪后，BrowserWindow 加载本地服务
+```
+
+服务端以 sidecar 子进程运行，复用 `dist/server` 和 `web/dist`；前端继续使用 `appUrl("/ws")` 与 `location.host`，无需另起桌面 wire 协议。启动超时或 sidecar 在就绪前退出会使桌面应用非零退出。应用退出时清理 sidecar；macOS 关闭所有窗口后应用仍可驻留；当前实现再次点击 Dock 时会退出，需重新启动应用。完全退出才结束服务。单实例锁用于再次启动时聚焦已有窗口。
+
+维护时需保留这些约束：
+
+- [main.ts](./main.ts) 是主进程入口，[preload.cts](./preload.cts) 提供窗口和更新 IPC，[startup.ts](./startup.ts) 负责启动辅助逻辑，[portable.ts](./portable.ts) 负责便携路径探测与环境注入。
+- ESM 入口不能顶层 `await app.whenReady()`：Electron 等入口求值结束才发 ready，会互相等待。保持 `app.whenReady().then(...)` 的启动方式。
+- [electron-builder.yml](./electron-builder.yml) 用 `extraMetadata.main` 覆盖根包的 CLI 入口为 `dist/desktop/main.js`；`asar: false` 让 sidecar 和原生模块直接从文件系统运行。
+- `npmRebuild: false` 基于当前 `node-pty` 的 N-API 预编译产物；升级原生依赖时需重新核实目标平台支持，不能据此承诺所有平台都不需要编译工具。
+- 图标来源为 `web/public/icons/icon-1024.png`。Windows 目标为 NSIS + dir，macOS 为 DMG + ZIP，Linux 为 AppImage。macOS ZIP 用于 updater；Windows NSIS 产物名保持无空格，避免 feed 与 Release 资产 URL 不一致。
+
+## 发布与签名
+
+[desktop-release.yml](../.github/workflows/desktop-release.yml) 在 `v*` tag 推送时，分别在 Windows/macOS/Linux runner 构建并上传 Release 资产；手动运行只生成 workflow artifact。electron-builder 使用 `--publish never` 生成产物与更新元数据，随后由 `gh release upload` 上传。
+
+当前 Windows CI 另执行 `make-portable.mjs --skip-pack --zip --with-git --with-node`，因此该工作流成功生成的便携 ZIP 会尝试捆绑 Git 与独立 Node；本地基础构建没有这两个默认下载选项。分发前仍需核实 `runtime/git/cmd/git.exe` 和 `runtime/node/node.exe`，脚本部分解压失败仅发出警告。
+
+Windows CI 已接入 SignPath，但签名步骤允许失败，且当前配置使用 `test-signing`；不能把所有 Release 产物视为已受信任签名。便携目录在签名替换安装器之前组装，也不能从安装器签名推断 ZIP 内应用的签名状态。
+
+本地 electron-builder 可通过 `CSC_LINK` 和 `CSC_KEY_PASSWORD` 提供签名证书。macOS 的 Developer ID 签名和公证需要相应 Apple 凭据与环境，例如 `APPLE_ID`、`APPLE_APP_SPECIFIC_PASSWORD`、`APPLE_TEAM_ID`；是否成功应检查构建输出及实际产物。SignPath 不替代 macOS 签名/公证，自签名证书也不等于获得系统信任。完整发布流程见[发布文档](../docs/release.md)。

@@ -1,316 +1,187 @@
 <div align="center">
 
-# 💬 pi-web-ui
+# pi-web-ui
 
-**English** | [简体中文](https://github.com/xing-shuyin/pi-web-ui/blob/main/README.zh-CN.md) · [繁體中文](https://github.com/xing-shuyin/pi-web-ui/blob/main/README.zh-TW.md) · 🌐 [**Official Website**](https://xing-shuyin.github.io/pi-web-ui-site/) · 📖 [**Documentation Portal**](https://xing-shuyin.github.io/pi-web-ui-site/docs.html)
+A browser and desktop workspace for AI coding agents.
 
-_Just open your browser to get all your work done — browser cockpit for AI coding agents._
+**English** · [简体中文](./README.zh-CN.md) · [繁體中文](./README.zh-TW.md)
 
-<p>
-  <a href="https://www.npmjs.com/package/pi-web-ui"><img src="https://img.shields.io/npm/v/pi-web-ui?color=cb3837&logo=npm&label=pi-web-ui" alt="npm version"></a>
-  <a href="https://nodejs.org/"><img src="https://img.shields.io/node/v/pi-web-ui?logo=node.js&logoColor=white" alt="node compatibility"></a>
-  <a href="LICENSE"><img src="https://img.shields.io/badge/license-MIT-blue" alt="MIT license"></a>
-</p>
+[Website](https://xing-shuyin.github.io/pi-web-ui-site/) · [Documentation](https://xing-shuyin.github.io/pi-web-ui-site/docs.html) · [Downloads](https://github.com/xing-shuyin/pi-web-ui/releases/latest)
+
+[![npm version](https://img.shields.io/npm/v/pi-web-ui)](https://www.npmjs.com/package/pi-web-ui)
+[![Node version](https://img.shields.io/node/v/pi-web-ui)](https://nodejs.org/)
+[![License: MIT](https://img.shields.io/badge/license-MIT-blue)](./LICENSE)
 
 </div>
 
-pi-web-ui is a full-featured web interface and desktop workspace for the pi coding agent SDK (`@earendil-works/pi-coding-agent`) and DeepSeek Harness (DSH). It turns your local AI coding agent into a responsive, visual cockpit featuring real-time chat, workspace file management, in-line code editing, terminal execution, visual Git control, and multi-agent workflows — and natively supports opening and developing on remote SSH server projects in a single browser tab.
+pi-web-ui brings chat, files, terminals, Git and agent workflows into one workspace. Run it locally in a browser, use the Electron desktop app, or connect to remote SSH projects. The pi SDK and DeepSeek Harness (DSH) have different capabilities; choose the engine and model that suit your task.
 
----
+## Quick start
 
-## 🌟 Comprehensive Features
-
-### 💬 Intelligent Dialogue & Interaction
-
-- **Snapshot-Driven Real-time Streaming**: Sub-60ms incremental snapshots via WebSocket. Displays live agent thought chains (Thinking/Reasoning), tool calls, elapsed execution times, and interactive terminal output.
-- **Human-in-the-Loop Questionnaires (`ask_user_question`)**: The model can pose structured questions (single/multi-select, rich option previews, freeform text) in interactive dialogs, exempt from watchdog timeouts and recoverable across page refreshes.
-- **Visual Web Element Selection (`Page Picker`)**: Companion Chrome browser extension enables clicking DOM elements in any webpage to seamlessly bring visual captures and CSS selectors into chat for agent analysis.
-- **Multi-Conversation Concurrency**: Run multiple parallel agent conversations in the same workspace; conversations run continuously in the background with support for edit-and-fork, message withdrawal (↩), and live migration.
-- **Rich Workflow Ergonomics**: Global slash commands picker (`/new`, `/model`, `/compact`, `/resume`, etc.), prompt template library, visual context compression summaries, automatic error retries, and audio/desktop notifications.
-
-### 📁 Workspace, Multimodal & 🌐 Remote SSH Projects
-
-- **Multi-Root Workspaces & Context-Rich File Tree**: Manage primary and up to 8 secondary workspace roots with live file watching and instant search (`Ctrl/Cmd+K`); full-featured file context menu supporting opening as project root, adding to workspace, reveal in file manager, directory zip-and-download, and instant path referencing in chat.
-- **🌐 Remote SSH Server Projects**: Connect directly to remote Linux servers (`ssh://user@host:port/path`):
-  - **Credentials & Auth**: Supports passwords, SSH private keys (`~/.ssh/id_rsa` / `id_ed25519`), and SSH-Agent; credentials are encrypted locally with AES-256-GCM.
-  - **Remote Environment Probe**: Automatically detects server architecture and installs missing dependencies (Git, Node.js, Bash, etc.).
-  - **Seamless Remote Development**: SFTP-driven file browsing, preview and real-time editing (`Ctrl+S`), remote AI tool execution, and remote interactive PTY terminal; chat transcripts are securely persisted locally.
-- **Rich Media Preview & In-line Editing**: Syntax-highlighted code viewer, Markdown renderer, audio/video/image players, and direct file editing with instant save (`Ctrl+S`).
-- **Intelligent Attachments & Vision Bridge**: Drag-and-drop file uploads; local image paths are automatically converted to multimodal vision payloads, with text-reference and line-slicing modes.
-- **Interactive Artifact Cards (`present_files`)**: Visually surface charts, reports, web pages, and generated files as rich cards with native reveal and quick opening.
-
-### 💻 Integrated Terminal & Visual Git Cockpit
-
-- **Server PTY Terminals**: Built on `node-pty` and `xterm.js` with multi-tab support and persistent `ai-bash` sessions, allowing the AI to run commands in visible, interactive terminals.
-- **Visual Git Source Control**: Track repository changes with inline diffs, staging/unstaging, one-click commit, branch switching, and fast-forward pull operations.
-- **Seamless Theme Integration**: Terminal colors automatically align with the active theme; supports native text selection and drag-and-drop file path pasting.
-
-### 🤖 Multi-Engine & Model Management
-
-- **Seamless Multi-Agent Engine Hot-Switching**: Out-of-the-box native integration with pi coding agent SDK, DeepSeek Harness (DSH), and Claude official coding agent runtime. Hot-swap agent engines instantly without restarts; run different engines concurrently across separate browser tabs and sessions.
-- **Universal Provider Compatibility**: Works seamlessly with OpenAI, Anthropic (Claude), Google Gemini, DeepSeek, Ollama, OpenRouter, Azure, and custom API endpoints.
-- **Zero-Leak Credential Security**: API keys and authorization headers remain securely on the server and are never exposed to client browsers.
-- **Dynamic Context Budgeting**: Soft-cap threshold token compression and a 20-minute watchdog timer to prevent agent hangs and context overflow.
-
-### 🧭 Advanced Agent Collaboration Modes
-
-- **Hard-Fenced Sandbox Project Mode**: Experiment freely with prototypes, destructive refactorings, or untrusted scripts in an isolated sandbox clone without touching your original workspace; supports project snapshot cloning or clean blank environments, with both ephemeral (auto-cleanup) and persistent lifecycles.
-- **Goal Mode 2.0**: The main conversation acts as a Reviewer while an automated Executor session carries out tasks, backed by evidence injection and stagnation circuit-breakers.
-- **Delegate Mode**: The main chat focuses on review and instructions while delegating execution to a background worker session with strict write gates.
-- **Plan Mode**: Enforces planning-only constraints, intercepting write tools and code dumping until the plan is approved.
-- **Subagents**: Spawn independent background subagents with customizable role templates for parallel research and delegated tasks.
-
-### 🧩 Plugin Ecosystem & Extensibility
-
-- **Official Plugin Market**: One-click installation and hot-reloading for chatbots (Slack, Discord, DingTalk, Feishu, WeChat), database clients, Mermaid diagrams, office document previews, and more.
-- **33+ Host UI Extension Slots**: Modular layout slots across top bar, side dock, footer, panels, and composer tools.
-- **On-Demand Lazy Tool Loading**: Loads specialized tools on the fly without breaking model prompt prefix caching.
-- **Settings & Preset Sharing**: Import/export configuration presets with strict whitelist sanitization.
-
-### 🎨 Themes & Internationalization
-
-- **25+ Built-in Color Schemes & Wallpaper Engine Integration**: Dark (default), Light (White), Cyberpunk, Nord, Dracula, and custom CSS stylesheets with live reloading; native integration with **Wallpaper Engine** dynamic wallpapers, frosted glass blur, adjustable interface opacity, and audio visualizer spectrums.
-- **Comprehensive Internationalization**: Built-in support for English, Simplified Chinese, Traditional Chinese (TW/HK), and custom community locale packs.
-
----
-
-## 🖼️ Screenshots
-
-### 🎬 Demo Video
-
-https://github.com/user-attachments/assets/ddb911ca-eb94-4adf-9455-2f15a64e835e
-
-### 📸 Feature Highlights
-
-<p align="center">
-  <img src="https://raw.githubusercontent.com/xing-shuyin/pi-web-ui/main/assets/portable-edition.png" alt="Portable edition cockpit interface" width="100%" style="max-width: 900px; border-radius: 8px; box-shadow: 0 4px 16px rgba(0,0,0,0.25);" />
-  <br>
-  <em>Portable Edition desktop cockpit (with frosted-glass dynamic wallpaper and prompt templates)</em>
-</p>
-
-|                                              Chat with Prompt Templates                                              |                                             Run Trajectory Timeline                                             |
-| :------------------------------------------------------------------------------------------------------------------: | :-------------------------------------------------------------------------------------------------------------: |
-| ![Chat with prompt templates](https://raw.githubusercontent.com/xing-shuyin/pi-web-ui/main/assets/chat-prompts.jpeg) | ![Run trajectory timeline](https://raw.githubusercontent.com/xing-shuyin/pi-web-ui/main/assets/trajectory.jpeg) |
-
-|                                             Multi-Agent Engine Hot-Switching                                              |                                             Hard-Fenced Sandbox Projects                                              |
-| :-----------------------------------------------------------------------------------------------------------------------: | :-------------------------------------------------------------------------------------------------------------------: |
-| ![Multi-Agent Engine Hot-Switching](https://raw.githubusercontent.com/xing-shuyin/pi-web-ui/main/assets/multi-engine.png) | ![Hard-Fenced Sandbox Projects](https://raw.githubusercontent.com/xing-shuyin/pi-web-ui/main/assets/sandbox-mode.png) |
-
-|                                                Full File Context Menu                                                |                                               Wallpaper Engine Integration                                                |
-| :------------------------------------------------------------------------------------------------------------------: | :-----------------------------------------------------------------------------------------------------------------------: |
-| ![Full File Context Menu](https://raw.githubusercontent.com/xing-shuyin/pi-web-ui/main/assets/file-context-menu.png) | ![Wallpaper Engine Integration](https://raw.githubusercontent.com/xing-shuyin/pi-web-ui/main/assets/wallpaper-engine.png) |
-
-|                                            Settings Panel                                            |                                            Built-in Terminal                                            |                                            Git Source Control                                             |
-| :--------------------------------------------------------------------------------------------------: | :-----------------------------------------------------------------------------------------------------: | :-------------------------------------------------------------------------------------------------------: |
-| ![Settings panel](https://raw.githubusercontent.com/xing-shuyin/pi-web-ui/main/assets/settings.jpeg) | ![Built-in terminal](https://raw.githubusercontent.com/xing-shuyin/pi-web-ui/main/assets/terminal.jpeg) | ![Git source control panel](https://raw.githubusercontent.com/xing-shuyin/pi-web-ui/main/assets/git.jpeg) |
-
----
-
-## 📦 Installation
-
-### System Requirements
-
-- **Node.js**: `>= 22.19.0` (except the Portable Edition, which requires no pre-installed Node.js or Git)
-- Supported Platforms: Linux, macOS, Windows (or Android via Termux)
-
-### 1. Global Installation via npm (Recommended)
+For the command-line version, install **Node.js 22.19.0 or newer**. Desktop installers include their runtime. Git and shell availability affect terminal and repository features.
 
 ```bash
-npm i -g pi-web-ui
+npm install -g pi-web-ui@latest
+cd /path/to/your/project
+pi-web-ui
 ```
 
-> **Note for npm ≥ 12**: npm 12+ blocks dependency install scripts by default. Since `node-pty` is a native binary module, allow its installation scripts:
->
-> ```bash
-> npm i -g --allow-scripts=node-pty,@google/genai,protobufjs pi-web-ui@latest
-> ```
+Open `http://127.0.0.1:8787` if the browser does not open automatically. Configure a model provider and its credentials in workspace settings, select a model, and send your first task. Stop a foreground process with Ctrl+C.
 
-### 2. Run Instantly with npx
-
-Run the latest version directly without installing:
+For a first try without a global installation:
 
 ```bash
-npx pi-web-ui
+npx pi-web-ui@latest
 ```
 
-### 3. 🖥️ Windows USB Portable Edition (Plug & Play, Zero Dependencies)
+If npm blocks native dependency scripts, follow the installed npm version's script-approval instructions. See the [installation guide](https://xing-shuyin.github.io/pi-web-ui-site/docs.html#installation) for platform dependencies and troubleshooting.
 
-A completely self-contained portable distribution designed for USB drives and external SSDs:
+## Choose an installation
 
-<p align="center">
-  <img src="https://raw.githubusercontent.com/xing-shuyin/pi-web-ui/main/assets/portable-edition.png" alt="Windows USB Portable Edition" width="100%" style="max-width: 800px; border-radius: 8px; box-shadow: 0 4px 16px rgba(0,0,0,0.25);" />
-</p>
+| Method               | When to use it                                      | Instructions                                                                                                                                                                     |
+| -------------------- | --------------------------------------------------- | -------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| npm / npx            | Local development or a server with Node.js          | Commands above; [complete guide](https://xing-shuyin.github.io/pi-web-ui-site/docs.html#npm-install)                                                                             |
+| Desktop installers   | A desktop app with an included runtime              | Download the matching Windows, macOS or Linux asset from [Releases](https://github.com/xing-shuyin/pi-web-ui/releases/latest)                                                    |
+| Windows portable ZIP | Keep the app and portable data together             | Extract `pi-web-ui-desktop-<version>-portable.zip`; follow its included launcher instructions. Bundled Git/Node depend on the build; see [portable details](./desktop/README.md) |
+| Docker Compose       | Container deployment built from source              | See the commands below                                                                                                                                                           |
+| Android / Termux     | Browser access from an Android terminal environment | [Termux prerequisites and commands](https://xing-shuyin.github.io/pi-web-ui-site/docs.html#termux-install)                                                                       |
+| Source checkout      | Contributing or testing local changes               | [Development](#development)                                                                                                                                                      |
 
-- **[⬇️ Download `pi-web-ui-desktop-<version>-portable.zip` from Releases](https://github.com/xing-shuyin/pi-web-ui/releases/latest)**
-- **Zero Environment Dependencies**: Bundles PortableGit and bash/Linux CLI tools. **No pre-installed Node.js, Git, or Python is required** on the target computer.
-- **100% Data Isolation**: All configs, model credentials (`auth.json` / `models.json`), chat transcripts, plugins, and caches reside in the `data/` folder inside the portable directory. Unplugging the drive leaves zero traces on the host.
-- **Drive-Letter Agnostic**: All paths are computed dynamically relative to the executable, allowing seamless operation across varying drive letters.
-- **Startup**: Extract and double-click **`启动Pi.bat`** (or `PiPortable.bat`). Includes `CreateDesktopShortcut.bat` to optionally create a clean desktop shortcut.
-- **Build Locally**: Run `npm run desktop:portable:full` to create the full portable bundle with embedded Git locally.
+On Linux, native dependency compilation may require Python, make and a C++ compiler. On Windows, install Git for Windows when Bash-based workflows are needed. Portable data placement does not guarantee that the operating system, browser or external tools leave no traces.
 
-### 4. Desktop Application Installers (Electron)
+### Run as a background service
 
-Download standalone installers automatically built by GitHub Actions:
-
-- **[⬇️ Download Desktop Installers from Releases](https://github.com/xing-shuyin/pi-web-ui/releases/latest)**
-- Available for Windows (`.exe` installer), macOS (`.dmg`), and Linux (`.AppImage`).
-
-### 5. Docker Container
+After global npm installation, install **and start** the service with explicit project and data paths. Stop any foreground process already using the port first.
 
 ```bash
-docker run -d \
-  --name pi-web-ui \
-  -p 8787:8787 \
-  -v ~/.pi-web:/root/.pi-web \
-  -v ~/.pi/agent:/root/.pi/agent \
-  -v $(pwd):/workspace \
-  -e PI_WEB_HOST=0.0.0.0 \
-  xing-shuyin/pi-web-ui:latest
+pi-web-ui server install --cwd "/path/to/project" --data-dir "/path/to/pi-data" --port 8787
+pi-web-ui server status
 ```
 
-### 🐧 Linux Build Prerequisites
+Windows PowerShell example:
 
-The `node-pty` module requires C/C++ compilation tools on Linux. If installation fails with `g++` or `make` errors, install the build toolchain:
-
-```bash
-# Ubuntu / Debian
-sudo apt-get install -y build-essential python3
-# Fedora / RHEL
-sudo dnf install -y python3 make gcc-c++
-# Arch Linux
-sudo pacman -S --needed base-devel python
+```powershell
+pi-web-ui server install --cwd "D:\Projects\app" --data-dir "D:\pi-data" --port 8787
+pi-web-ui server status
 ```
 
----
-
-## 🚀 Quick Start & Usage
-
-### Starting the Server
+Visit `http://127.0.0.1:8787` and verify the project and a model response. macOS uses a user launchd agent, Linux systemd, and Windows the current user's login Run key. Linux installation may require elevated privileges; Windows login autostart is not a system-level Windows Service.
 
 ```bash
-pi-web-ui                                 # Starts in current folder, opens http://127.0.0.1:8787
-pi-web-ui --port 9000 --cwd /path/to/repo # Specify port and workspace path
-pi-web-ui --no-browser                    # Start server without auto-opening a browser tab
-```
-
-### 🌐 Opening Remote SSH Server Projects
-
-You can develop on remote servers through two simple ways:
-
-1. **From Web UI**: In the top-bar workspace dropdown, click "Switch Directory" → select the **"Remote (SSH)"** tab, fill in the host (e.g. `192.168.1.100`), port, username, and password or SSH private key, then click "Connect & Probe". Browse and pick any remote folder. Profiles are encrypted and saved locally for one-click reconnection.
-2. **From Command Line**:
-   ```bash
-   pi-web-ui --cwd ssh://ubuntu@192.168.1.100:22/var/www/my-project
-   ```
-
-### Common Flags & Environment Variables
-
-| CLI Flag             | Environment Variable | Default           | Description                                                                 |
-| :------------------- | :------------------- | :---------------- | :-------------------------------------------------------------------------- |
-| `--port <n>`         | `PI_WEB_PORT`        | `8787`            | HTTP port to listen on                                                      |
-| `--host <addr>`      | `PI_WEB_HOST`        | `127.0.0.1`       | Listen address (`0.0.0.0` for remote/LAN access)                            |
-| `--cwd <dir>`        | `PI_WEB_CWD`         | Current directory | Workspace root (local path or `ssh://user@host:port/path`)                  |
-| `--data-dir <dir>`   | `PI_WEB_DATA_DIR`    | `~/.pi-web`       | Directory for state, plugins, themes, and uploads                           |
-| `--engine <pi\|dsh>` | `PI_WEB_ENGINE`      | `pi`              | Agent engine: `pi` native or `dsh` (DeepSeek Harness)                       |
-| `--no-browser`       | —                    | off               | Do not auto-launch system browser on startup                                |
-| _Env only_           | `PI_WEB_TOKEN`       | empty             | Optional shared authentication token                                        |
-| _Env only_           | `PI_WEB_SDK`         | `global`          | Auto-follow newer pi SDK on ancestor path; set to `bundled` to pin built-in |
-
-### System Background Service (`pi-web-ui server`)
-
-Manage pi-web-ui as a background daemon with auto-start on boot (launchd on macOS, systemd on Linux, Windows Run key):
-
-```bash
-pi-web-ui server install --port 9000 --cwd /path/to/project  # Install and start background service
-pi-web-ui server status                                    # Inspect live status, PID, and connections
-pi-web-ui server restart                                   # Restart background server
-pi-web-ui server stop                                      # Stop background server
-pi-web-ui server uninstall                                 # Remove system service
-```
-
-### FRP Reverse Proxy Tunnel (`pi-web-ui frp` / `piwebui frp`)
-
-Automatically deploy and configure FRP (Fast Reverse Proxy) to forward your local pi-web-ui port to a remote server with a public IP:
-
-```bash
-pi-web-ui frp                                              # Interactive setup wizard
-pi-web-ui frp deploy --server <ip> --remote-port 8787      # Auto-deploy remote frps and local frpc
-pi-web-ui frp status                                       # Check client status and public URL
-pi-web-ui frp start|stop|restart                           # Manage local frpc service
-pi-web-ui frp run                                          # Run frpc in foreground with live logs
-pi-web-ui frp script --server <ip>                         # Generate standalone remote deploy bash script
-```
-
-### Updating & Uninstalling
-
-```bash
-# Update to latest version
-npm i -g pi-web-ui@latest
+pi-web-ui server stop
+pi-web-ui server start
 pi-web-ui server restart
-
-# Uninstall (conversations in ~/.pi/agent/ and state in ~/.pi-web/ are safely preserved)
-npm uninstall -g pi-web-ui
+pi-web-ui server status
+pi-web-ui server shortcut
+# Remove the service only when it is no longer needed:
+pi-web-ui server uninstall
 ```
 
----
+Use `--name my-pi` consistently when installing and managing named services. Services may not inherit interactive-shell credentials or PATH. See [service configuration](https://xing-shuyin.github.io/pi-web-ui-site/docs.html#daemon-service).
 
-## 🧩 Plugins & Extensions
+### Common startup options
 
-- **Plugin Market**: Browse, install, and configure built-in and community-contributed extensions directly within the web UI (`Settings` → `Plugins`).
-- **CLI Plugin Installation**: Install directly from any GitHub repository or local directory:
-  ```bash
-  pi-web-ui install owner/repo
-  ```
-- **Page Picker Extension**: Download `page-picker-extension.zip` from [Releases](https://github.com/xing-shuyin/pi-web-ui/releases/latest), unpack, and load it into Chrome/Edge as an unpacked extension.
+```bash
+pi-web-ui --cwd "/path/to/project" --port 9000 --no-browser
+pi-web-ui --host 0.0.0.0 --port 9000 --cwd "/path/to/project"
+pi-web-ui --help
+```
 
-### 🚀 Submit Third-Party Community Plugins (Fully Automated CI Review & Instant Publish)
+| Flag                 | Environment           | Purpose / default                                                                  |
+| -------------------- | --------------------- | ---------------------------------------------------------------------------------- |
+| `--cwd <dir>`        | `PI_WEB_CWD`          | Workspace: current directory in foreground; `~/pi-web-ui` for service installation |
+| `--port <n>`         | `PI_WEB_PORT`         | HTTP and WebSocket port; 8787                                                      |
+| `--host <addr>`      | `PI_WEB_HOST`         | Listen address; 127.0.0.1 is local-only                                            |
+| `--data-dir <dir>`   | `PI_WEB_DATA_DIR`     | Service data; `~/.pi-web` under the running account                                |
+| `--agent-dir <dir>`  | `PI_CODING_AGENT_DIR` | pi agent configuration; `~/.pi/agent`                                              |
+| `--engine <pi\|dsh>` | `PI_WEB_ENGINE`       | Execution engine; pi                                                               |
+| `--no-browser`       | —                     | Do not automatically open a browser                                                |
 
-Whether you develop custom AI tools, workspace views, platform bots (Telegram, Discord, Slack, etc.), or themes, you are warmly invited to submit your plugin to the official community registry!
+Paths with spaces need quoting. `0.0.0.0` is a listen address; other devices connect using the server's actual IP or domain. Configure authentication and appropriate network protection before sharing access. [Full startup reference](https://xing-shuyin.github.io/pi-web-ui-site/docs.html#cli-and-env).
 
-- 📦 **Community Plugin Registry Repository**: 👉 [**xing-shuyin/pi-web-ui-plugins**](https://github.com/xing-shuyin/pi-web-ui-plugins)
-- 📖 **Quick 4-Step Submission (Supports Web-Only Submission)**:
-  1. Prepare your open-source GitHub repository with a standard open-source license and a valid `manifest.json`;
-  2. Visit and Fork [xing-shuyin/pi-web-ui-plugins](https://github.com/xing-shuyin/pi-web-ui-plugins);
-  3. Create `plugins/<your-plugin-id>/plugin.json` with metadata (name, source, description, icon) — you can do this directly on GitHub web via "Add file";
-  4. Submit a Pull Request!
+### Local `/setup` page
 
-#### 🌟 Key Benefits of Publishing to the Official Registry
+Open **`http://127.0.0.1:8787/setup` on the server's machine**, substituting the actual port. This page configures server access and networking; API keys and models belong in workspace settings.
 
-| Benefit                                  | Description                                                                                                                                                                                                                   |
-| :--------------------------------------- | :---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| ⚡ **Zero-Touch Auto-Merge**             | Low-risk plugins (standard tools/views without privileged permissions) are audited by the GitHub Actions bot in real time. **Once checks pass, the bot automatically approves and auto-merges the PR** with zero manual wait! |
-| 🌐 **Global Instant Exposure**           | This registry is the **out-of-the-box default catalog** for `pi-web-ui`. Within ~1 minute after merge, your plugin is searchable and installable with one click across all running `pi-web-ui` client markets worldwide.      |
-| 🛡️ **Continuous Security Audit & Trust** | Every submission and **subsequent PR update** automatically triggers strict CI security scanning (JSON Schema compliance, SVG icon XSS filtering, permission boundary checks, and author anti-tampering verification).        |
-| 🧩 **Zero Merge Conflicts**              | Each plugin uses an isolated `plugins/<id>/plugin.json` directory structure, ensuring parallel PRs from multiple authors never conflict.                                                                                      |
+- Set or generate an access token, then **save**. Token changes apply immediately; an empty saved token disables token authentication.
+- Configure listen address, port, Host allowlist and extra Origins; these require a restart.
+- Check the displayed `<dataDir>/server-config.json` path. Startup flags and environment take precedence over saved settings on restart.
+- LAN and proxy access to `/setup` is restricted. A remote server can be reached through an SSH local port forward; see the [step-by-step setup guide](https://xing-shuyin.github.io/pi-web-ui-site/docs.html#setup-page).
 
----
+### Docker from source
 
-## 📖 Complete Documentation
+```bash
+git clone https://github.com/xing-shuyin/pi-web-ui.git
+cd pi-web-ui
+# Review docker-compose.yml: authentication, ports, project and credential mounts.
+docker compose up -d --build
+docker compose logs -f
+```
 
-For detailed deployment guides, plugin development SDKs, and deep architectural specifications, visit the official documentation portal:
+The repository Compose configuration builds the image locally. Persist service data at **`/app/.pi-web`** in the container. Mount projects and credentials deliberately; container paths differ from host paths. Do not assume a published container port satisfies `/setup`'s loopback checks. See [container installation](https://xing-shuyin.github.io/pi-web-ui-site/docs.html#docker-source-install) and [deployment](./docs/deployment.md).
 
-👉 **[Documentation Portal](https://xing-shuyin.github.io/pi-web-ui-site/docs.html)**
+### Update and remove
 
-- 🌐 [Official Website & Feature Tour](https://xing-shuyin.github.io/pi-web-ui-site/)
-- 🌐 [Remote SSH Workspaces & Server Setup Guide](https://xing-shuyin.github.io/pi-web-ui-site/docs.html#remote-ssh)
-- 🖥️ [Desktop Portable Edition & Custom Build Guide](https://xing-shuyin.github.io/pi-web-ui-site/docs.html#portable)
-- 🛡️ [Reverse Proxy & Remote Access (Nginx / frp / SSL)](https://xing-shuyin.github.io/pi-web-ui-site/docs.html#reverse-proxy)
-- 🔌 [Plugin System & Plugin SDK Guide](https://xing-shuyin.github.io/pi-web-ui-site/docs.html#plugin-sdk)
-- ⚙️ [Full Environment Variables & Configuration Reference](https://xing-shuyin.github.io/pi-web-ui-site/docs.html#environment-variables)
-- 🏗️ [Core Architecture & WebSocket Protocol Specs](https://xing-shuyin.github.io/pi-web-ui-site/docs.html#architecture)
-- 🐋 [Docker, Systemd, and Production Deployment](https://xing-shuyin.github.io/pi-web-ui-site/docs.html#deployment)
+```bash
+npm install -g pi-web-ui@latest
+pi-web-ui server restart  # For an installed service; restart foreground processes yourself.
+```
 
----
+Desktop and portable users should follow the matching package's update instructions and retain their actual data directories. Before removal, back up needed conversations, settings and credentials. For npm users, uninstall the service first if installed, then run `npm uninstall -g pi-web-ui`. Removing the package does not remove separately stored user data.
 
-## 🤝 Contributing & Community
+## What you can do
 
-Contributions are warmly welcomed! Every pull request, bug report, and feature idea helps make pi-web-ui better.
+- **Chat and context:** streaming responses, tool outputs, attachments, file references, structured questions and multiple conversations.
+- **Work on projects:** file browsing and previews, uploads, integrated terminals, Git diffs, staging and commits. Remote SSH capabilities depend on the engine, host tools and connection configuration.
+- **Organize agent work:** planning, goal review/execution, delegated work and subagents. File claims coordinate parallel edits through advisory notices; they are not edit locks.
+- **Extend the workspace:** plugins, MCP tools, skills, configuration presets and customizable layouts and themes. Availability depends on installed components and permissions.
 
-- 💡 **Issues & Feature Requests**: [GitHub Issues](https://github.com/xing-shuyin/pi-web-ui/issues)
-- 🗣️ **Discussions**: [GitHub Discussions](https://github.com/xing-shuyin/pi-web-ui/discussions)
-- 💬 **Community QQ Group**: `1126050727`
-- 🔗 **Companion Project**: [dsh-ui-tools](https://github.com/xing-shuyin/dsh-ui-tools)
+Approval controls, task modes and isolated project directories have specific implementation boundaries; they are not universal operating-system security sandboxes. See [approval and security](https://xing-shuyin.github.io/pi-web-ui-site/docs.html#approval-and-security).
 
-## 📄 License
+## See the workspace
 
-[MIT](LICENSE)
+| Chat                                          | Terminal                                       |
+| --------------------------------------------- | ---------------------------------------------- |
+| ![Chat workspace](./assets/chat-prompts.jpeg) | ![Integrated terminal](./assets/terminal.jpeg) |
+
+| Git                               | Settings                                                |
+| --------------------------------- | ------------------------------------------------------- |
+| ![Git changes](./assets/git.jpeg) | ![Model and workspace settings](./assets/settings.jpeg) |
+
+## Plugins and documentation
+
+Browse plugins in the workspace or install from a repository:
+
+```bash
+pi-web-ui install owner/repo
+pi-web-ui plugins
+pi-web-ui plugin create my-plugin
+```
+
+Plugin permissions and external-service requirements vary. For submissions, follow the [community registry](https://github.com/xing-shuyin/pi-web-ui-plugins); automation is governed by that repository's current checks and policies.
+
+- [Getting started and installation](https://xing-shuyin.github.io/pi-web-ui-site/docs.html#installation)
+- [Remote SSH projects](https://xing-shuyin.github.io/pi-web-ui-site/docs.html#remote-ssh-projects)
+- [Plan, goal and review workflows](https://xing-shuyin.github.io/pi-web-ui-site/docs.html#modes-guide)
+- [MCP and browser tools](https://xing-shuyin.github.io/pi-web-ui-site/docs.html#mcp-and-browser)
+- [Plugin SDK](./plugin-sdk/README.md) · [Desktop](./desktop/README.md) · [Windows portable launcher](./launcher/README.md)
+- [Environment variables](./docs/env-vars.md) · [Deployment](./docs/deployment.md) · [Architecture](./docs/architecture-core.md)
+
+## Development
+
+```bash
+git clone https://github.com/xing-shuyin/pi-web-ui.git
+cd pi-web-ui
+npm ci
+npm run dev
+```
+
+Node.js 22.19.0+ and the platform's native build dependencies are required. The dev frontend is normally on port 5173 and the backend on 8788. For a production checkout, run `npm run build`, then `npm start`.
+
+Before submitting a change, follow [development guidelines](./docs/development.md) and run the applicable formatting, type, lint and test checks. Desktop build details live in [desktop/README.md](./desktop/README.md).
+
+## Community and license
+
+[Issues](https://github.com/xing-shuyin/pi-web-ui/issues) · [Discussions](https://github.com/xing-shuyin/pi-web-ui/discussions) · QQ group: `1126050727` · [dsh-ui-tools](https://github.com/xing-shuyin/dsh-ui-tools)
+
+[MIT License](./LICENSE)

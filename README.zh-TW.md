@@ -1,299 +1,227 @@
 # pi-web-ui
 
-[English](https://github.com/xing-shuyin/pi-web-ui/blob/main/README.md) | [簡體中文](https://github.com/xing-shuyin/pi-web-ui/blob/main/README.zh-CN.md) · **繁體中文** · 🌐 [**官方網站**](https://xing-shuyin.github.io/pi-web-ui-site/) · 📖 [**詳細文件中心**](https://xing-shuyin.github.io/pi-web-ui-site/docs.html)
+[English](https://github.com/xing-shuyin/pi-web-ui/blob/main/README.md) · [简体中文](https://github.com/xing-shuyin/pi-web-ui/blob/main/README.zh-CN.md) · **繁體中文**
 
 [![npm 版本](https://img.shields.io/npm/v/pi-web-ui?color=cb3837&logo=npm)](https://www.npmjs.com/package/pi-web-ui)
 [![Node.js](https://img.shields.io/node/v/pi-web-ui?logo=node.js&logoColor=white)](https://nodejs.org/)
 [![License: MIT](https://img.shields.io/badge/License-MIT-blue.svg)](LICENSE)
 
-> 開啟瀏覽器，完成所有工作 —— 面向 AI 編碼代理的全功能 Web 駕駛艙（對話、程式碼、檔案樹、終端機、Git 盡在一屏）。
+pi-web-ui 是面向 AI 程式開發代理的 Web 工作台，將對話、檔案、終端機與 Git 放在同一個介面。它基於 [pi coding agent](https://github.com/badlogic/pi-mono)，支援在瀏覽器中使用，也提供 Electron 桌面版與 Windows 可攜版。
 
-pi-web-ui 是基於 pi 代理 SDK（`@earendil-works/pi-coding-agent`）與 DeepSeek Harness (DSH) 的現代 Web 介面與桌面端工作臺。它將本地命令列代理轉化為具備豐富視覺化、多工併發、完整檔案與終端機互動的一站式程式設計座艙，並原生支援直接開啟與協同遠端 SSH 伺服器專案。
+**[官方網站](https://xing-shuyin.github.io/pi-web-ui-site/)** · **[文件中心](https://xing-shuyin.github.io/pi-web-ui-site/docs.html)** · [下載發行版](https://github.com/xing-shuyin/pi-web-ui/releases/latest) · [更新紀錄](CHANGELOG.md)
 
----
+## 快速開始
 
-## 🌟 全面功能特性
-
-### 💬 智慧對話與互動體驗
-
-- **快照驅動與毫秒級流式回應**：基於 WebSocket 的快照增量推流，思考鏈（Thinking/Reasoning）、工具呼叫狀態、執行耗時與終端機輸出即時呈現。
-- **人機協同結構化問卷 (`ask_user_question`)**：模型可主動向使用者發起結構化問卷（單選/多選/富文字選項/自由輸入），以優雅對話框展示；支援逾時豁免與頁面重新整理自動恢復。
-- **網頁元素互動 (`Page Picker`)**：配套 Chrome 瀏覽器擴充功能，一鍵在真實網頁中點選 DOM 元素，將視覺快照與精確選擇器無縫帶入對話供代理分析。
-- **並行多工作階段與獨立執行態**：單專案支援多對話平行執行，背景工作階段持續執行；支援對話分支重問（Fork）、排隊訊息撤回（↩）與工作階段轉移。
-- **豐富對話輔助**：全域斜槓命令 picker（`/new`、`/model`、`/compact` 等）、一鍵提示詞範本庫、上下文壓縮卡片、錯誤自動重試與桌面聲音提醒。
-
-### 📁 工作區、多模態與 🌐 遠端 SSH 專案
-
-- **多根工作區（Multi-Root）與豐富檔案樹**：支援主工作區及最多 8 個外部根目錄，即時監控工作區變動與快速檔案過濾；配備全功能檔案右鍵選單，支援一鍵在資源管理器中顯示、作為新專案/工作區根開啟、整目錄打包壓縮並下載、路徑一鍵連結到對話等。
-- **🌐 遠端 SSH 伺服器專案**：支援直接開啟遠端 Linux 伺服器專案（`ssh://user@host:port/path`）：
-  - **憑據與連線**：支援密碼、SSH 私鑰（`~/.ssh/id_rsa` / `id_ed25519`）及 SSH-Agent，設定經 AES-256-GCM 本地加密儲存；
-  - **遠端環境探針**：自動探測遠端 OS 架構及 Git/Node/Bash 依賴，缺失工具一鍵遠端安裝；
-  - **無縫遠端全棧開發**：SFTP 驅動的檔案樹瀏覽、線上預覽與即時編輯（`Ctrl+S`）、AI 工具遠端執行、互動式遠端 PTY 終端機；本地自動持久化對話記錄。
-- **多功能富媒體檔案預覽**：支援語法高亮、Markdown 渲染、圖片/音影片媒體播放，並在預覽視窗中直接編輯與一鍵儲存（`Ctrl+S`）。
-- **智慧附件與多模態視覺橋（Vision Bridge）**：拖曳任意檔案上傳；對圖片及文件自動轉寫為多模態視覺載荷，兼具純文字引用模式與區域性行擷取。
-- **成果卡片呈現 (`present_files`)**：代理產出的圖表、報告、網頁及編譯產物自動產生互動式預覽卡片，支援本地喚起與一鍵匯出。
-
-### 💻 內建終端機與 Git 原始碼管理
-
-- **服務端 PTY 終端機**：基於 node-pty 與 xterm.js，提供多分頁、全功能互動式終端機，代理可在可見的 `ai-bash` 終端機中互動式執行命令。
-- **視覺化 Git 駕駛艙**：程式碼變更一覽無餘，支援單檔案 Diff 檢視、Stage/Unstage 暫存、一鍵 Commit 提交、分支切換與快進合併（Fetch/Pull）。
-- **終端機樣式與主題統一**：終端機配色即時跟隨選定主題，支援選擇文字自動複製、拖曳檔案直接貼上路徑。
-
-### 🤖 多引擎與模型靈活路由
-
-- **多代理引擎無縫熱切換**：原生深度整合 pi 編碼代理 SDK、DeepSeek Harness (DSH) 引擎以及 Claude 官方代理底座，支援零重新啟動秒級切換引擎，不同分頁與工作階段可併發執行不同引擎。
-- **多供應商通用相容**：支援 OpenAI、Anthropic (Claude)、Google Gemini、DeepSeek、Ollama、OpenRouter、Azure 等任意標準 API。
-- **零洩密憑據架構**：API Key 與敏感鑑權 Header 僅在服務端持久化並注入請求，絕對不下發至瀏覽器端。
-- **智慧上下文預算與軟上限**：動態注入軟上限壓縮閾值（Soft-Cap），配合 20 分鐘死鎖看門狗守護，避免工作階段卡死與 Token 浪費。
-
-### 🧭 進階代理協作模式
-
-- **硬圍欄安全沙盒模式 (Sandbox Project)**：在受保護的獨立副本中自由實驗原型、執行破壞性命令或測試重構，一切修改絕不觸碰原專案；支援從現有專案快照克隆或建立純淨空白沙盒，提供臨時（用完即刪）與永久雙重生命週期。
-- **目標模式 2.0 (Goal Mode)**：主工作階段擔任審查者（Reviewer），服務端自動編排背景寫入磁碟執行者（Executor）；具備執行證據注入與停滯熔斷機制。
-- **審查者委派模式 (Delegate Mode)**：主工作階段專注規劃與審查，Prompt 自動委派至常駐執行對話，寫操作實施硬閘門攔截。
-- **計畫模式 (Plan Mode)**：目標條一鍵開啟「只規劃」模式，硬閘門動態攔截寫工具與大段程式碼傾倒，確認計畫後一鍵轉入實施。
-- **子代理系統 (Subagents)**：支援背景派發多角色平行子代理，內建標準化範本體系與獨立工作階段隔離。
-
-### 🧩 外掛生態與高度可擴充套件性
-
-- **官方外掛市集與一鍵安裝**：內建應用程式市集，覆蓋通訊機器人（飛書/釘釘/微信/Slack/Discord）、資料庫用戶端、Mermaid 流程圖、Office 預覽等擴充套件。
-- **33+ 宿主 UI 擴充套件插槽**：提供靈活的 UI 插槽體系，支援外掛注入側邊欄、頂欄、底欄、浮層及快捷工具。
-- **工具按需延遲載入 (Lazy Loading)**：保持模型 Prompt Cache 字首硬約束的前提下，按需掛載工具能力，降低上下文開銷。
-- **預設集安全分享**：支援設定與環境的一鍵匯出/匯入，具備嚴格白名單欄位淨化。
-
-### 🎨 主題與無縫多語言
-
-- **25+ 套內建調色盤與桌布引擎聯動**：內建深色、淺色、Cyberpunk、Dracula 等豐富主題，支援自訂 CSS 熱重新載入；深度支援 **Wallpaper Engine** 動態桌布庫外掛，介面透明度、毛玻璃模糊度、自動輪播與音樂頻譜隨心定製。
-- **全介面國際化**：內建簡體中文、繁體中文（臺灣/香港/通用）、English 等語言支援，語言包自動回落。
-
----
-
-## 🖼️ 介面預覽
-
-### 🎬 演示影片
-
-https://github.com/user-attachments/assets/ddb911ca-eb94-4adf-9455-2f15a64e835e
-
-### 📸 功能截圖
-
-<p align="center">
-  <img src="https://raw.githubusercontent.com/xing-shuyin/pi-web-ui/main/assets/portable-edition.png" alt="便攜版全功能駕駛艙介面" width="100%" style="max-width: 900px; border-radius: 8px; box-shadow: 0 4px 16px rgba(0,0,0,0.25);" />
-  <br>
-  <em>便攜版全功能桌面工作臺（毛玻璃動態桌布與提示詞面板）</em>
-</p>
-
-|                                              智慧對話與提示詞範本                                              |                                             執行軌跡時間線                                             |
-| :------------------------------------------------------------------------------------------------------------: | :----------------------------------------------------------------------------------------------------: |
-| ![智慧對話與提示詞範本](https://raw.githubusercontent.com/xing-shuyin/pi-web-ui/main/assets/chat-prompts.jpeg) | ![執行軌跡時間線](https://raw.githubusercontent.com/xing-shuyin/pi-web-ui/main/assets/trajectory.jpeg) |
-
-|                                             多代理引擎無縫切換                                              |                                             獨立硬圍欄安全沙盒                                              |
-| :---------------------------------------------------------------------------------------------------------: | :---------------------------------------------------------------------------------------------------------: |
-| ![多代理引擎無縫切換](https://raw.githubusercontent.com/xing-shuyin/pi-web-ui/main/assets/multi-engine.png) | ![獨立硬圍欄安全沙盒](https://raw.githubusercontent.com/xing-shuyin/pi-web-ui/main/assets/sandbox-mode.png) |
-
-|                                                檔案列表全功能右鍵選單                                                |                                               Wallpaper Engine 桌布聯動                                                |
-| :------------------------------------------------------------------------------------------------------------------: | :--------------------------------------------------------------------------------------------------------------------: |
-| ![檔案列表全功能右鍵選單](https://raw.githubusercontent.com/xing-shuyin/pi-web-ui/main/assets/file-context-menu.png) | ![Wallpaper Engine 桌布聯動](https://raw.githubusercontent.com/xing-shuyin/pi-web-ui/main/assets/wallpaper-engine.png) |
-
-|                                       設定面板與模型管理                                       |                                         內建 PTY 終端機                                          |                                         Git 原始碼管理                                          |
-| :--------------------------------------------------------------------------------------------: | :----------------------------------------------------------------------------------------------: | :---------------------------------------------------------------------------------------------: |
-| ![設定面板](https://raw.githubusercontent.com/xing-shuyin/pi-web-ui/main/assets/settings.jpeg) | ![內建終端機](https://raw.githubusercontent.com/xing-shuyin/pi-web-ui/main/assets/terminal.jpeg) | ![Git 原始碼管理](https://raw.githubusercontent.com/xing-shuyin/pi-web-ui/main/assets/git.jpeg) |
-
----
-
-## 📦 安裝方式
-
-### 環境要求
-
-- **Node.js**：`>= 22.19.0`（便攜版除外，便攜版免裝 Node.js 與 Git）
-- 支援系統：Linux、macOS、Windows（或 Android Termux）
-
-### 1. npm 全域安裝（推薦）
+npm、npx 和原始碼安裝需要 **Node.js ≥ 22.19.0** 與 npm。Windows 請先安裝 [Git for Windows](https://git-scm.com/downloads/win)，保留 Git Bash；Linux 請準備 Python 3、make 和 C++ 編譯工具鏈。
 
 ```bash
-npm i -g pi-web-ui
+npm install -g pi-web-ui@latest
+cd /path/to/your-project
+pi-web-ui
 ```
 
-> **提示（npm ≥ 12）**：npm 12+ 預設阻止本地原生模組的編譯腳本。`node-pty` 是終端機原生模組，安裝時請允許腳本執行：
->
-> ```bash
-> npm i -g --allow-scripts=node-pty,@google/genai,protobufjs pi-web-ui@latest
-> ```
+預設開啟瀏覽器，網址為 `http://127.0.0.1:8787`。在工作台設定中配置模型供應商、憑證與模型，再開始對話。安裝完成不代表模型已經可用。
 
-### 2. npx 免安裝即時執行
-
-無需預先安裝，每次自動取得最新版本啟動：
+不安裝全域命令也可在專案目錄執行：
 
 ```bash
-npx pi-web-ui
+npx pi-web-ui@latest
 ```
 
-### 3. 🖥️ Windows U 盤便攜版（Portable Edition，開箱即用零依賴）
-
-專為隨身攜帶（U 盤、行動硬碟）打造的完全自包含便攜版：
-
-<p align="center">
-  <img src="https://raw.githubusercontent.com/xing-shuyin/pi-web-ui/main/assets/portable-edition.png" alt="Windows 便攜版" width="100%" style="max-width: 800px; border-radius: 8px; box-shadow: 0 4px 16px rgba(0,0,0,0.25);" />
-</p>
-
-- **[⬇️ 前往 Releases 下載 `pi-web-ui-desktop-<版本>-portable.zip`](https://github.com/xing-shuyin/pi-web-ui/releases/latest)**
-- **開箱即用 / 零開發環境依賴**：內建完整 PortableGit 與 bash/Linux 工具鏈，目標電腦**無需安裝 Node.js、Git 或任何開發環境**。
-- **100% 資料隔離自包含**：所有設定、模型憑據（`auth.json` / `models.json`）、工作階段歷史、外掛與快取統統存放在便攜目錄下的 `data/` 目錄，完全不寫入宿主機的登錄檔或使用者目錄，拔掉 U 盤不留任何痕跡。
-- **動態磁碟機代號自適應**：相對路徑動態計算，換插不同電腦即使磁碟機代號變動也能直接執行。
-- **啟動方式**：解壓縮後按兩下根目錄下的 **`啟動Pi.bat`**（或 `PiPortable.bat`）；附帶 `建立桌面快捷方式.bat` 可一鍵在宿主機桌面產生無黑框官方快捷方式。
-- **本地製作**：執行 `npm run desktop:portable:full` 即可在本地製作內建 Git 的完整便攜版。
-
-### 4. 桌面用戶端安裝包（Electron 獨立應用程式）
-
-偏好獨立桌面視窗的使用者可下載自動建置的安裝程式：
-
-- **[⬇️ 前往 Releases 頁面下載安裝包](https://github.com/xing-shuyin/pi-web-ui/releases/latest)**
-- 提供 Windows 安裝程式（`.exe`）、macOS（`.dmg`）及 Linux（`.AppImage`）。
-
-### 5. Docker 容器部署
+若 npm 12+ 阻擋相依套件安裝指令碼，視需要使用以下命令；舊版 npm 使用上面的普通命令：
 
 ```bash
-docker run -d \
-  --name pi-web-ui \
-  -p 8787:8787 \
-  -v ~/.pi-web:/root/.pi-web \
-  -v ~/.pi/agent:/root/.pi/agent \
-  -v $(pwd):/workspace \
-  -e PI_WEB_HOST=0.0.0.0 \
-  xing-shuyin/pi-web-ui:latest
+npm install -g --allow-scripts=node-pty,@google/genai,protobufjs pi-web-ui@latest
+# npx 對應寫法：
+npx --allow-scripts=node-pty,@google/genai,protobufjs pi-web-ui@latest
 ```
 
-### 🐧 Linux 編譯依賴說明
+`node-pty` 需要安裝指令碼支援終端機功能，請勿用 `--ignore-scripts` 跳過。原生模組建置失敗時，參閱[安裝指南](https://xing-shuyin.github.io/pi-web-ui-site/docs.html#installation)補齊平台工具鏈。
 
-`node-pty` 原生模組在 Linux 上需要 C/C++ 編譯工具鏈，若安裝時提示找不到 `g++` 或 `make`，請先安裝：
+## 選擇安裝方式
+
+| 方式              | 適用情境                   | 入口與說明                                                                                                            |
+| ----------------- | -------------------------- | --------------------------------------------------------------------------------------------------------------------- |
+| npm 全域安裝      | 經常使用 CLI、管理背景服務 | `npm install -g pi-web-ui@latest`                                                                                     |
+| npx               | 快速試用、按需啟動         | `npx pi-web-ui@latest`；仍會使用 npm 快取與應用程式資料目錄                                                           |
+| Electron 桌面版   | 獨立桌面視窗               | [Releases](https://github.com/xing-shuyin/pi-web-ui/releases/latest)：按系統與架構選安裝包；啟動應用程式無需另裝 Node |
+| Windows 可攜版    | 解壓縮後使用、攜帶設定     | 同一 Releases 頁選擇 portable zip；解壓縮後執行 `启动Pi.bat` / `PiPortable.bat`，設定與工作區放在可攜目錄中           |
+| Docker 原始碼建置 | 容器部署                   | 使用儲存庫的 `docker-compose.yml`，見下方步驟                                                                         |
+| 原始碼執行        | 開發或自行建置             | `npm ci` → `npm run build` → `npm start`                                                                              |
+| Android / Termux  | 手機本機執行               | 按[安裝指南的 Termux 一節](https://xing-shuyin.github.io/pi-web-ui-site/docs.html#termux-install)準備原生建置環境     |
+
+桌面安裝包、可攜包的具體平台與架構以該次 Release 附件為準。桌面應用程式中的外掛安裝和外部命令仍可能需要 Node/npm、Git 等工具；可攜版也可能使用系統網路、快取或外部工具。
+
+## 前景執行與背景服務
+
+前景預設使用目前目錄作為工作區；按 `Ctrl+C` 停止。伺服器上可停用自動開啟瀏覽器：
 
 ```bash
-# Ubuntu / Debian
-sudo apt-get install -y build-essential python3
-# Fedora / RHEL
-sudo dnf install -y python3 make gcc-c++
-# Arch Linux
-sudo pacman -S --needed base-devel python
+pi-web-ui --cwd "/path/to/project" --port 9000 --no-browser
 ```
 
----
-
-## 🚀 啟動與使用
-
-### 常用啟動命令
+確認專案、模型和終端機可用後，再安裝背景服務。**`server install` 會安裝並立即啟動服務**；`server start` 用於啟動已經安裝但停止的服務。
 
 ```bash
-pi-web-ui                                 # 預設在目前目錄啟動，監聽 http://127.0.0.1:8787
-pi-web-ui --port 9000 --cwd /path/to/repo # 指定埠與工作區目錄
-pi-web-ui --no-browser                    # 啟動服務但不自動彈出瀏覽器
+pi-web-ui server install --cwd "/path/to/project" --data-dir "/path/to/pi-data"
+pi-web-ui server status
 ```
 
-### 🌐 開啟遠端 SSH 伺服器專案
-
-可以通過兩種方式直接協同遠端伺服器專案：
-
-1. **介面操作**：在頁面頂欄工作區下拉選單中點選「切換目錄」→ 切換到「遠端 (SSH)」選項卡，輸入伺服器位址（如 `192.168.1.100`）、埠、使用者名稱及密碼/私鑰，點選「連線並探測環境」，隨後瀏覽並選定遠端專案目錄即可。已存設定會自動加密儲存在本地設定列表中，下次一鍵連線。
-2. **命令列啟動**：
-   ```bash
-   pi-web-ui --cwd ssh://ubuntu@192.168.1.100:22/var/www/my-project
-   ```
-
-### 核心參數與環境變數
-
-| CLI 參數             | 環境變數          | 預設值      | 說明                                                                     |
-| :------------------- | :---------------- | :---------- | :----------------------------------------------------------------------- |
-| `--port <n>`         | `PI_WEB_PORT`     | `8787`      | HTTP 服務監聽埠                                                          |
-| `--host <addr>`      | `PI_WEB_HOST`     | `127.0.0.1` | 監聽位址（遠端/區域網存取設為 `0.0.0.0`）                                |
-| `--cwd <dir>`        | `PI_WEB_CWD`      | 目前目錄    | 工作區根（支援本地路徑或 `ssh://user@host:port/path`）                   |
-| `--data-dir <dir>`   | `PI_WEB_DATA_DIR` | `~/.pi-web` | 資料目錄（設定、外掛、上傳、主題等）                                     |
-| `--engine <pi\|dsh>` | `PI_WEB_ENGINE`   | `pi`        | 代理引擎：`pi` 原生或 `dsh` (DeepSeek Harness)                           |
-| `--no-browser`       | —                 | 否          | 啟動後不自動在系統瀏覽器中開啟網頁                                       |
-| _僅環境變數_         | `PI_WEB_TOKEN`    | 空          | 存取共享口令鑑權                                                         |
-| _僅環境變數_         | `PI_WEB_SDK`      | `global`    | 預設跟隨祖先鏈上更新的 pi SDK（多份取最高）；設為 `bundled` 鎖定內建副本 |
-
-### 背景守護服務管理 (`pi-web-ui server`)
-
-pi-web-ui 內建系統服務管理，免配開機自啟（macOS launchd / Linux systemd / Windows 登入自啟）：
+日常管理已安裝的服務：
 
 ```bash
-pi-web-ui server install --port 9000 --cwd /path/to/project  # 安裝並開機自啟
-pi-web-ui server status                                    # 檢視服務執行狀態與連線數
-pi-web-ui server restart                                   # 重新啟動背景服務
-pi-web-ui server stop                                      # 停止執行中的服務
-pi-web-ui server uninstall                                 # 徹底解除安裝系統服務
-```
-
-### 版本升級與解除安裝
-
-```bash
-# 升級到最新版
-npm i -g pi-web-ui@latest
+pi-web-ui server start    # 僅在已安裝且停止時使用
+pi-web-ui server status
 pi-web-ui server restart
-
-# 解除安裝程式（保留對話歷史與設定資料）
-npm uninstall -g pi-web-ui
+pi-web-ui server stop
 ```
 
----
+不再需要背景服務時，另行執行：
 
-## 🧩 外掛生態與擴充套件
+```bash
+pi-web-ui server uninstall
+```
 
-pi-web-ui 擁有完整的外掛開發與擴充套件執行時：
+解除安裝服務不會解除安裝 npm 套件，也不會自動清理使用者資料。
 
-- **外掛市集**：在網頁端「設定」→「外掛市集」一鍵搜尋、安裝與啟用官方內建與社群貢獻的外掛。
-- **CLI 一鍵安裝**：支援直接從 GitHub 儲存庫或本地目錄安裝外掛：
-  ```bash
-  pi-web-ui install owner/repo
-  ```
-- **Page Picker 網頁拾取器**：前往 [Releases](https://github.com/xing-shuyin/pi-web-ui/releases/latest) 下載 `page-picker-extension.zip`，解壓縮後在 Chrome/Edge 的擴充功能中「載入已解壓縮的擴充功能」即可使用。
+macOS 使用使用者 launchd，Linux 使用 systemd，Windows 使用目前使用者登入自啟動 Run 登錄機碼。Windows 的實作不等同於系統層級 Windows Service；Linux 安裝所需權限取決於系統設定。
 
-### 🚀 歡迎提交第三方社群外掛（全自動審查 · 秒級上架）
+- 服務預設工作區為 **`~/pi-web-ui`**；前景預設目前目錄。
+- CLI 服務資料預設放在 **`~/.pi-web`**，以執行帳戶的家目錄為準。
+- pi Agent 設定預設放在 **`~/.pi/agent`**，與工作區、服務資料目錄不同。
+- 建議明確固定工作區與資料目錄；服務環境未必繼承互動式終端機中的憑證和環境變數。
+- `server install --print` 可預覽設定；使用 `--name my-pi` 安裝多個實例時，後續管理命令帶相同名稱。
 
-無論你開發了特色 AI 工具、自訂檢視、第三方通訊機器人（Telegram/Discord/Slack等）還是主題桌布，都非常歡迎將外掛提交至官方社群清單！
+更多部署與疑難排解說明見[啟動參數、服務與 /setup](https://xing-shuyin.github.io/pi-web-ui-site/docs.html#cli-and-env)。
 
-- 📦 **社群外掛清單官方儲存庫**：👉 [**xing-shuyin/pi-web-ui-plugins**](https://github.com/xing-shuyin/pi-web-ui-plugins)
-- 📖 **極簡提交流程（支援網頁端一鍵提交）**：
-  1. 準備你的開源外掛 GitHub 儲存庫（包含合法的開源協定與 `manifest.json`）；
-  2. 造訪並 Fork [xing-shuyin/pi-web-ui-plugins](https://github.com/xing-shuyin/pi-web-ui-plugins) 儲存庫；
-  3. 新增目錄 `plugins/<你的外掛id>/plugin.json` 並填寫元資料（名稱、來源、功能描述，可直接在 GitHub 網頁端點選「Add file」完成）；
-  4. 發起 Pull Request 即可！
+## 常用參數與 /setup
 
-#### 🌟 提交到官方社群清單的核心優勢
+| 參數                   | 用途與預設值                                                 |
+| ---------------------- | ------------------------------------------------------------ |
+| `--cwd <dir>`          | 專案工作區；包含空格的路徑請加引號                           |
+| `--port <n>`           | HTTP / WebSocket 連接埠，預設 `8787`                         |
+| `--host <addr>`        | 監聽位址，預設 `127.0.0.1`；`0.0.0.0` 監聽所有 IPv4 網路介面 |
+| `--data-dir <dir>`     | 服務資料目錄，預設 `~/.pi-web`                               |
+| `--agent-dir <dir>`    | pi Agent 設定目錄，預設 `~/.pi/agent`                        |
+| `--engine <pi\|dsh>`   | 執行引擎，預設 `pi`；DSH 需滿足其執行與模型設定要求          |
+| `--no-browser`         | 前景啟動時不自動開啟瀏覽器                                   |
+| `--help` / `--version` | 查看目前安裝版本支援的參數或版本號                           |
 
-| 優勢特性                               | 說明                                                                                                                                                                         |
-| :------------------------------------- | :--------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| ⚡ **無人值守全自動合併 (Auto-Merge)** | 普通工具/檢視外掛（低風險）提交 PR 後，GitHub Actions 機器人即時觸發全自動安全審計，**校驗通過後機器人自動 Approve 並秒級自動合併**，無需等待人工排隊審批。                  |
-| 🌐 **全球用戶端即時曝光上架**          | 本清單是 `pi-web-ui` 伺服器端的**原廠預設訂閱源**。PR 一經合併，約 1 分鐘內全球所有使用者的「外掛市集」便能直接搜尋並一鍵安裝你的外掛，享受龐大的使用者生態。                |
-| 🛡️ **全流程安全審查與信譽背書**        | 提交以及後續的**每一次修改與更新**，CI 機器人均會自動執行嚴格的程式碼安全掃描（JSON Schema 檢驗、SVG 圖示 XSS 過濾、敏感權限審查及原作者防冒用篡改保護），讓使用者放心安裝。 |
-| 🧩 **獨立目錄架構零衝突**              | 採用 `plugins/<id>/plugin.json` 獨立隔離設計，多位開發者同時提交或更新不同外掛絕不產生 Git 合併衝突。                                                                        |
+常用環境變數對應 `PI_WEB_CWD`、`PI_WEB_PORT`、`PI_WEB_HOST`、`PI_WEB_DATA_DIR`、`PI_CODING_AGENT_DIR` 與 `PI_WEB_ENGINE`。`PI_WEB_SDK=bundled` 可固定使用隨套件提供的 SDK；沒有 `--sdk` 參數。
 
----
+### 本機設定入口
 
-## 📖 完整線上文件
+啟動後，在執行服務的機器上開啟 **`http://127.0.0.1:8787/setup`**，連接埠按實際設定替換。`/setup` 是瀏覽器路徑，用來設定存取通行碼與網路；模型 API Key、登入與模型選擇在工作台設定中完成。
 
-更詳盡的進階設定、部署方案與二次開發指南，請查閱官方文件中心：
+`/setup` 僅接受回環連線和本機 Host，區域網路 IP、公開網域及帶代理轉送標頭的請求會被拒絕。遠端伺服器可透過 SSH 本機轉送存取：
 
-👉 **[前往詳細文件中心 (Documentation Portal)](https://xing-shuyin.github.io/pi-web-ui-site/docs.html)**
+```bash
+ssh -N -L 18787:127.0.0.1:8787 user@your-server
+# 保持連線，在本機瀏覽器開啟 http://127.0.0.1:18787/setup
+```
 
-- 🌐 [官方主頁與功能導覽](https://xing-shuyin.github.io/pi-web-ui-site/)
-- 🌐 [遠端 SSH 工作區與伺服器設定指南](https://xing-shuyin.github.io/pi-web-ui-site/docs.html#remote-ssh)
-- 🖥️ [桌面便攜版與定製製作手冊](https://xing-shuyin.github.io/pi-web-ui-site/docs.html#portable)
-- 🛡️ [安全規範與反向代理部署 (Nginx / frp / SSL)](https://xing-shuyin.github.io/pi-web-ui-site/docs.html#reverse-proxy)
-- 🔌 [外掛系統與 Plugin SDK 開發手冊](https://xing-shuyin.github.io/pi-web-ui-site/docs.html#plugin-sdk)
-- ⚙️ [全量環境變數與高階參數參考表](https://xing-shuyin.github.io/pi-web-ui-site/docs.html#environment-variables)
-- 🏗️ [系統架構與即時 WebSocket 協定設計](https://xing-shuyin.github.io/pi-web-ui-site/docs.html#architecture)
-- 🐋 [Docker、Systemd 與守護行程進階部署](https://xing-shuyin.github.io/pi-web-ui-site/docs.html#deployment)
+1. 核對頁面顯示的設定檔路徑，確認實例正確。
+2. 設定存取通行碼、監聽位址、連接埠及按需使用的 Host / Origin 允許清單。
+3. 點擊「儲存設定」，確認儲存成功；隨機產生或複製連結本身不會儲存。
+4. **通行碼儲存後立即熱更新；網路設定儲存後需重新啟動**對應程序或服務。
 
----
+留空通行碼並儲存會關閉通行碼驗證。該頁面位於通行碼驗證前，本機使用者可在忘記通行碼時重設。帶通行碼的入口連結應按憑證保管。
 
-## 🤝 參與貢獻與社群交流
+設定儲存在 `<dataDir>/server-config.json`。支援對映的設定按 **命令列參數 → 環境變數 → 設定檔 → 預設值** 取值；CLI 不自動讀取任意 `.env` 檔案。工作區與引擎仍由啟動參數或環境設定。
 
-歡迎提交 Issue、功能建議或貢獻程式碼！每一個改進與回饋都讓 pi-web-ui 變得更好。
+例如啟動命令仍帶 `--port 9000`，重新啟動後就會覆寫 `/setup` 儲存的連接埠。通行碼雖能在目前實例熱更新，重新啟動時也需檢查 存取通行碼環境變數 是否覆寫儲存值。
 
-- 💬 **QQ 交流群**：`1126050727`
-- 💡 **問題回饋與需求建議**：[GitHub Issues](https://github.com/xing-shuyin/pi-web-ui/issues)
-- 🗣️ **社群探討**：[GitHub Discussions](https://github.com/xing-shuyin/pi-web-ui/discussions)
-- 🔗 **作者相關專案**：[dsh-ui-tools](https://github.com/xing-shuyin/dsh-ui-tools)（DSH 生態 UI 工具集）
+跨裝置存取前設定通行碼、網路存取範圍與按需使用的 HTTPS。Host 允許清單檢查請求主機名稱，並非用戶端 IP 允許清單；不能當作額外的存取隔離保證。Docker 的連接埠對映也不等同於容器內回環連線，通常透過 Compose 設定網路與通行碼。
 
-## 📄 開源許可證
+## 使用儲存庫 Compose 建置 Docker
 
-本專案採用 [MIT License](LICENSE) 開源協定。
+```bash
+git clone https://github.com/xing-shuyin/pi-web-ui.git
+cd pi-web-ui
+# 先編輯 docker-compose.yml，替換預設存取通行碼並按需設定掛載
+docker compose up -d --build
+docker compose ps
+docker compose logs --tail=100 pi-web-ui
+```
+
+Compose 使用 `build: .` 從本機原始碼建置，`pi-web-ui:latest` 是本機映像標籤。首次啟動前，將 存取通行碼環境變數 的範例值 `change-me` 換成自己的通行碼。
+
+- 服務對映連接埠為 `8787:8787`，容器監聽 `0.0.0.0`；透過主機位址存取。
+- 具名磁碟區 `pi-web-data` 掛載到 **`/app/.pi-web`**，儲存服務資料。
+- 操作主機專案時，新增綁定掛載，例如 `/host/project:/workspace`，並設定 `PI_WEB_CWD: /workspace`。
+- 如需重用 pi 設定，可按 Compose 註解掛載 Agent 目錄，並設定 `PI_CODING_AGENT_DIR`；模型憑證另行準備。
+
+更新原始碼後再次執行 `docker compose up -d --build`。`docker compose down` 保留具名磁碟區；加 `--volumes` 會刪除磁碟區內資料。升級前備份資料，專案檔案也應放在持久掛載中。
+
+更多步驟見 [Docker 原始碼安裝](https://xing-shuyin.github.io/pi-web-ui-site/docs.html#docker-source-install)。
+
+## 更新與移除
+
+```bash
+npm install -g pi-web-ui@latest
+pi-web-ui server restart  # 已安裝服務時執行；前景程序自行重新啟動
+```
+
+桌面與可攜版請依對應套件的更新方式操作，保留實際資料目錄。移除前備份需要的對話、設定與憑證；npm 使用者先解除安裝服務，再執行 `npm uninstall -g pi-web-ui`。移除套件不會刪除另外儲存的使用者資料。
+
+## 可以做什麼
+
+- **對話與任務**：串流回覆、Markdown、圖片與附件、提示詞範本、歷史搜尋，以及多對話和子代理協作。
+- **專案工作台**：檔案瀏覽與編輯、預覽、內建 PTY 終端機、Git 狀態和差異檢視，在對話旁完成日常專案操作。
+- **執行控制**：工具審批、計畫模式、目標模式與審查委派，按任務選擇執行方式；實際權限取決於執行帳戶、工具與部署環境。
+- **模型與擴充**：管理供應商和模型，使用 pi / DSH 引擎及各自支援的能力；透過外掛、MCP、技能和 UI 擴充點自訂工作台。
+- **介面與部署**：多語言、主題、行動版面、瀏覽器與桌面入口，以及背景服務部署。
+
+各引擎的對話格式、工具和設定能力存在差異，切換前請參閱[文件中心](https://xing-shuyin.github.io/pi-web-ui-site/docs.html)。介面中的審批與執行控制應結合實際系統權限使用。
+
+## 介面預覽
+
+以下為儲存庫現有截圖；具體介面隨版本與主題變化。
+
+| 對話與提示詞                              | 設定面板                          |
+| ----------------------------------------- | --------------------------------- |
+| ![對話與提示詞](assets/chat-prompts.jpeg) | ![設定面板](assets/settings.jpeg) |
+
+| 內建終端機                          | Git 工作區                     |
+| ----------------------------------- | ------------------------------ |
+| ![內建終端機](assets/terminal.jpeg) | ![Git 工作區](assets/git.jpeg) |
+
+## 文件與外掛
+
+- [完整安裝指南](https://xing-shuyin.github.io/pi-web-ui-site/docs.html#installation) · [啟動與服務](https://xing-shuyin.github.io/pi-web-ui-site/docs.html#cli-and-env)
+- [遠端 SSH 專案](https://xing-shuyin.github.io/pi-web-ui-site/docs.html#remote-ssh-projects) · [計畫、目標與審查流程](https://xing-shuyin.github.io/pi-web-ui-site/docs.html#modes-guide)
+- [MCP 與瀏覽器工具](https://xing-shuyin.github.io/pi-web-ui-site/docs.html#mcp-and-browser) · [外掛 SDK](plugin-sdk/README.md)
+- [社群外掛目錄](https://github.com/xing-shuyin/pi-web-ui-plugins) · [環境變數](docs/env-vars.md) · [部署指南](docs/deployment.md)
+
+可在工作台瀏覽外掛，或用 `pi-web-ui install owner/repo` 安裝、`pi-web-ui plugins` 檢視；權限與外部服務需求依外掛而異。
+
+## 開發與貢獻
+
+```bash
+git clone https://github.com/xing-shuyin/pi-web-ui.git
+cd pi-web-ui
+npm ci
+npm run dev
+```
+
+開發時存取 `http://localhost:5173`（Vite），後端預設連接埠為 `8788`。建置後執行：
+
+```bash
+npm run build
+npm start
+```
+
+原始碼執行預設連接埠為 `8787`，`npm start` 不自動開啟瀏覽器。開發規範、測試與架構入口見 [AGENTS.md](AGENTS.md) 和[開發指南](docs/development.md)；桌面開發見 [desktop/README.md](desktop/README.md)。
+
+歡迎透過 [Issues](https://github.com/xing-shuyin/pi-web-ui/issues) 回報問題或提出需求，透過 Pull Request 提交改進。回報問題時請附版本、系統、安裝方式、重現步驟與移除敏感資訊的日誌。
+
+## 社群與聯絡
+
+- QQ 交流群：`1126050727`
+- [GitHub Discussions](https://github.com/xing-shuyin/pi-web-ui/discussions)：交流用法與想法
+- [GitHub Issues](https://github.com/xing-shuyin/pi-web-ui/issues)：問題回報與需求建議
+- [dsh-ui-tools](https://github.com/xing-shuyin/dsh-ui-tools)：作者相關專案，DSH 生態 UI 工具集
+
+## 授權條款
+
+本專案採用 [MIT License](LICENSE)。
