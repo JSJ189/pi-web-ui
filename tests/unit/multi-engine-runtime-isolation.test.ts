@@ -10,6 +10,7 @@ import { UniversalSession } from "../../server/universal/universal-session.js";
 import { MockAgentDriver } from "../../server/universal/drivers/mock-driver.js";
 import { DshRuntime } from "../../server/dsh/dsh-client.js";
 import { DshClientSession } from "../../server/dsh/dsh-agent-service.js";
+import { SandboxManager } from "../../server/sandbox-service.js";
 import type { AgentEventSink } from "../../server/universal/driver-base.js";
 
 const roots: string[] = [];
@@ -177,6 +178,7 @@ describe("DSH workspace transaction", () => {
 			runtime,
 			clientId: "test",
 			workspaceGeneration: 0,
+			sandboxes: new SandboxManager(root),
 			stateStore: {
 				getProjectModel: () => undefined,
 				getDefaultModel: () => undefined,
@@ -214,6 +216,7 @@ describe("DSH workspace transaction", () => {
 			runtime,
 			clientId: "test",
 			workspaceGeneration: 0,
+			sandboxes: new SandboxManager(root),
 			stateStore: { getProjectModel: () => undefined, getDefaultModel: () => undefined, remember },
 			emit,
 		});

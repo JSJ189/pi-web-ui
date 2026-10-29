@@ -1,21 +1,10 @@
-import {
-	existsSync,
-	mkdirSync,
-	readFileSync,
-	realpathSync,
-	lstatSync,
-	renameSync,
-	writeFileSync,
-	openSync,
-	fsyncSync,
-	closeSync,
-	unlinkSync,
-} from "node:fs";
+import { existsSync, mkdirSync, readFileSync, realpathSync, lstatSync } from "node:fs";
 import { copyFile, chmod, lstat, mkdir, readdir, readFile, rename, rm, rmdir } from "node:fs/promises";
 import { createHash, randomUUID } from "node:crypto";
 import { dirname, join, resolve, basename, parse } from "node:path";
 import { homedir } from "node:os";
 import type { SandboxInfo } from "./protocol.js";
+import { writeAtomicSync } from "./atomic-file.js";
 import { SANDBOX_IGNORED_DIRS, isSameOrSubpath } from "./sandbox-service.js";
 
 type Tree = Record<string, string>;
@@ -38,19 +27,7 @@ function atomic(path: string, value: unknown) {
 	mkdirSync(dirname(path), { recursive: true });
 	safeRoot(dirname(path));
 	if (existsSync(path) && lstatSync(path).isSymbolicLink()) throw new Error(`Linked metadata refused: ${path}`);
-	const tmp = `${path}.${randomUUID()}.tmp`;
-	try {
-		writeFileSync(tmp, JSON.stringify(value), { flag: "wx" });
-		const fd = openSync(tmp, "r+");
-		try {
-			fsyncSync(fd);
-		} finally {
-			closeSync(fd);
-		}
-		renameSync(tmp, path);
-	} finally {
-		if (existsSync(tmp)) unlinkSync(tmp);
-	}
+	writeAtomicSync(path, JSON.stringify(value), { fsync: true });
 }
 function safeRoot(path: string) {
 	const abs = resolve(path);

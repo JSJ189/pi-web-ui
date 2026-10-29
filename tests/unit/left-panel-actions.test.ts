@@ -396,20 +396,22 @@ describe("LeftPanel P2：分区顺序 / 显隐 / 分隔条 / 行内槽位拆分"
 					? "convs"
 					: el.classList.contains("panel-sessions")
 						? "sessions"
-						: "?",
+						: el.classList.contains("dg-side-section")
+							? "groups"
+							: "?",
 		);
 
-	it("uiSections 决定分区先后（布局页调序的结果）", () => {
+	it("uiSections 决定可调分区先后，群组始终紧随项目分区", () => {
 		setAppGlobals({ cwd: "/test", ready: true, status: "open", workspaceRoots: [] });
 		const { container } = mountLeftPanel({
 			projects: oneProject,
 			conversations: runningConv,
 			uiSections: [hostSection("host:lp-history"), hostSection("host:lp-projects"), hostSection("host:lp-running")],
 		});
-		expect(sectionOrder(container)).toEqual(["sessions", "projects", "convs"]);
+		expect(sectionOrder(container)).toEqual(["sessions", "projects", "groups", "convs"]);
 	});
 
-	it("隐藏的分区不渲染，分隔条按剩余展开分区重新配对", () => {
+	it("隐藏项目分区时群组置顶，分隔条按剩余展开分区重新配对", () => {
 		setAppGlobals({ cwd: "/test", ready: true, status: "open", workspaceRoots: [] });
 		const all = mountLeftPanel({ projects: oneProject, conversations: runningConv });
 		expect(all.container.querySelectorAll(".lp-sash")).toHaveLength(2);
@@ -426,14 +428,14 @@ describe("LeftPanel P2：分区顺序 / 显隐 / 分隔条 / 行内槽位拆分"
 				hostSection("host:lp-history"),
 			],
 		});
-		expect(sectionOrder(container)).toEqual(["convs", "sessions"]);
+		expect(sectionOrder(container)).toEqual(["groups", "convs", "sessions"]);
 		expect(container.querySelectorAll(".lp-sash")).toHaveLength(1);
 	});
 
-	it("默认（无 uiSections）三区全显示、两条分隔条，与改造前一致", () => {
+	it("默认（无 uiSections）显示项目、群组、运行与历史分区，群组不增加分隔条", () => {
 		setAppGlobals({ cwd: "/test", ready: true, status: "open", workspaceRoots: [] });
 		const { container } = mountLeftPanel({ projects: oneProject, conversations: runningConv });
-		expect(sectionOrder(container)).toEqual(["projects", "convs", "sessions"]);
+		expect(sectionOrder(container)).toEqual(["projects", "groups", "convs", "sessions"]);
 		expect(container.querySelectorAll(".lp-sash")).toHaveLength(2);
 	});
 

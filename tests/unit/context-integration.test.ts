@@ -3,6 +3,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { AgentSession } from "@earendil-works/pi-coding-agent";
 import { ClientSession } from "../../server/agent-service.js";
+import { SandboxManager } from "../../server/sandbox-service.js";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import {
 	buildContextEvidenceIndex,
@@ -225,16 +226,31 @@ it.each(["fallback", "composeWith"])(
 		await externalizeRequestEvidence(messages(), file);
 		const h = harness(file);
 		const specMethod = (ClientSession.prototype as any).toolOverrideSpecs;
-		const makeOwner = (id: string): any => ({
-			settingsSvc: { current: {} },
-			convs: new Map([[id, { id, cwd: directory }]]),
-			getLang: () => "en",
-			roots: [],
-			approvalRules: { list: () => [] },
-			auditLogger: { record: vi.fn() },
-			askApproval: vi.fn(async () => ({ decision: "allow" })),
-			toolOverrideSpecs: specMethod,
-		});
+		const makeOwner = (id: string): any =>
+			Object.assign(
+				{},
+				Object.fromEntries(
+					[
+						"awaitPendingWorkspaceSnapshot",
+						"planModeOf",
+						"delegateModeOf",
+						"goalReviewTurnOf",
+						"subagentSecurityModeOf",
+						"subagentAllowedToolsOf",
+					].map((name) => [name, (ClientSession.prototype as any)[name]]),
+				),
+				{
+					sandboxes: new SandboxManager(directory),
+					settingsSvc: { current: {} },
+					convs: new Map([[id, { id, cwd: directory }]]),
+					getLang: () => "en",
+					roots: [],
+					approvalRules: { list: () => [] },
+					auditLogger: { record: vi.fn() },
+					askApproval: vi.fn(async () => ({ decision: "allow" })),
+					toolOverrideSpecs: specMethod,
+				},
+			);
 		const oldOwner = makeOwner("old");
 		const newOwner = makeOwner("new");
 		let home = { client: oldOwner, conv: oldOwner.convs.get("old") };

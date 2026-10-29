@@ -51,11 +51,13 @@ describe("sandbox engine admission and execution", () => {
 	});
 
 	it("blocks universal prompt, restore, cwd switching and subagent execution before driver calls", async () => {
-		const driver = { resumeSession: vi.fn(), setCwd: vi.fn(), prompt: vi.fn() };
+		const driver = { resumeSession: vi.fn(), setCwd: vi.fn(), sendPrompt: vi.fn() };
 		const session = Object.assign(Object.create(UniversalSession.prototype), {
 			sandboxes: manager,
 			cwd: sandboxPath,
 			engine: "claude",
+			activeConvId: "active",
+			conversations: new Map([["active", { id: "active" }]]),
 			driver,
 		});
 		await expect(session.prompt("run")).rejects.toThrow("does not support");

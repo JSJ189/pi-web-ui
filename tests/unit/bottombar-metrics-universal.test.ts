@@ -3,7 +3,7 @@
  * 验证：底座优先规范化会话累计指标（Token、成本、缓存、上下文环），上层特定 Driver 遵循该规范。
  */
 
-import { describe, it, expect, beforeEach, afterEach } from "vitest";
+import { describe, it, expect, beforeEach, afterEach, vi } from "vitest";
 import { mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -173,6 +173,10 @@ describe("通用 Agent 底座会话统计与底栏指标适配", () => {
 	it("ClaudeCodeDriver 的真实 NDJSON result 事件正确解析出成本与 Token，并由底座吸收", async () => {
 		const emitted: ServerMessage[] = [];
 		const driver = new ClaudeCodeDriver(process.cwd(), { agentDir: testAgentDir });
+		let sink: any;
+		vi.spyOn(driver, "sendPrompt").mockImplementation(async (_prompt, _attachments, turnSink) => {
+			sink = turnSink;
+		});
 		const session = new UniversalSession({
 			clientId: "claude-ndjson-client",
 			cwd: process.cwd(),
@@ -186,14 +190,7 @@ describe("通用 Agent 底座会话统计与底栏指标适配", () => {
 
 		// 模拟 Claude Code CLI 输出的真实 result 帧
 		const activeTools = new Map<string, string>();
-		const sink = (session as any)["sink"] || {
-			onTextDelta: () => {},
-			onThinkingDelta: () => {},
-			onToolStart: () => {},
-			onToolEnd: () => {},
-			onTurnComplete: (meta: any) => (session as any).finalizeTurn(meta),
-			onError: () => {},
-		};
+		expect(sink).toBeDefined();
 
 		// 模拟 CLI 返回带有 total_cost_usd 与 4 桶 usage 的 result 事件
 		(driver as any).handleClaudeEvent(
