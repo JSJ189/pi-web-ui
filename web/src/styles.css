@@ -2698,6 +2698,90 @@
 		text-overflow: ellipsis;
 		white-space: nowrap;
 	}
+	/* gw: device-local group workspace binding. */
+	.gw-root {
+		min-width: 0;
+		max-width: 100%;
+		margin-left: auto;
+	}
+	.gw-trigger {
+		display: flex;
+		align-items: center;
+		gap: 6px;
+		min-width: 0;
+		max-width: min(100%, 320px);
+		font-size: 12px;
+	}
+	.gw-status {
+		min-width: 0;
+		overflow: hidden;
+		text-overflow: ellipsis;
+		white-space: nowrap;
+	}
+	.gw-panel {
+		z-index: 1600;
+		box-sizing: border-box;
+		width: min(380px, calc(100vw - 24px));
+		max-height: calc(100dvh - 24px);
+		min-width: 0;
+		max-width: 100%;
+		overflow-y: auto;
+		overscroll-behavior: contain;
+		padding: 14px;
+		border: 1px solid var(--border);
+		border-radius: 12px;
+		background: var(--bg-elev);
+		color: var(--text);
+		box-shadow: 0 8px 32px #0004;
+		font-size: 12.5px;
+	}
+	.gw-heading,
+	.gw-actions {
+		display: flex;
+		align-items: center;
+		gap: 8px;
+		min-width: 0;
+		max-width: 100%;
+	}
+	.gw-heading {
+		justify-content: space-between;
+	}
+	.gw-current,
+	.gw-note,
+	.gw-error {
+		margin: 10px 0;
+		overflow-wrap: anywhere;
+		word-break: break-word;
+	}
+	.gw-note {
+		color: var(--text-dim);
+	}
+	.gw-error {
+		color: var(--err-text);
+	}
+	.gw-panel label {
+		display: block;
+		margin-bottom: 6px;
+	}
+	.gw-panel input {
+		box-sizing: border-box;
+		width: 100%;
+		min-width: 0;
+		padding: 8px;
+		border: 1px solid var(--border);
+		border-radius: 6px;
+		background: var(--bg);
+		color: var(--text);
+		font: inherit;
+	}
+	.gw-actions {
+		margin-top: 8px;
+	}
+	.gw-default {
+		margin-top: 10px;
+		max-width: 100%;
+		white-space: normal;
+	}
 	/* Group clients share Hub state; these styles are isolated from message actions. */
 	.dg-root {
 		display: grid;

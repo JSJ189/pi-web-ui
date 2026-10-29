@@ -100,7 +100,7 @@ async function fixture(
 		onSession: opts.onSession,
 	});
 	cleanup.push(async () => {
-		executor.close();
+		void executor.close().catch(() => {});
 		for (const socket of server.clients) socket.terminate();
 		await new Promise<void>((done) => server.close(() => done()));
 	});
@@ -213,10 +213,57 @@ describe("device task executor", () => {
 			await vi.waitFor(() => expect(f.received.some((m) => m.type === "abort")).toBe(true));
 			expect(f.received.map((m) => m.type)).not.toEqual(expect.arrayContaining(["tool_approval_answer"]));
 			expect(
-				f.received.every((m) => ["hello", "new_chat", "rename_conversation", "prompt", "abort"].includes(m.type)),
+				f.received.every((m) =>
+					["hello", "new_chat", "rename_conversation", "prompt", "abort", "get_state"].includes(m.type),
+				),
 			).toBe(true);
 		},
 	);
+
+	it("close waits for the same SDK session to acknowledge idle after abort", async () => {
+		let socket!: WebSocket;
+		const f = await fixture((ws) => {
+			socket = ws;
+			f.push(ws, { isStreaming: true });
+		});
+		const running = f.executor.run(task());
+		const rejected = expect(running).rejects.toThrow("cancelled");
+		await vi.waitFor(() => expect(socket).toBeDefined());
+		let stopped = false;
+		const closing = f.executor.close().then(() => {
+			stopped = true;
+		});
+		await rejected;
+		await vi.waitFor(() => expect(f.received.some((m) => m.type === "get_state")).toBe(true));
+		expect(stopped).toBe(false);
+		f.push(socket, { isStreaming: false });
+		await closing;
+		expect(stopped).toBe(true);
+	});
+
+	it("close times out after 20 seconds without an idle acknowledgement", async () => {
+		let started = false;
+		const f = await fixture((socket) => {
+			started = true;
+			f.push(socket, { isStreaming: true });
+		});
+		const running = f.executor.run(task());
+		const rejected = expect(running).rejects.toThrow("cancelled");
+		await vi.waitFor(() => expect(started).toBe(true));
+		vi.useFakeTimers();
+		const closing = f.executor.close();
+		const uncertain = expect(closing).rejects.toThrow("stop unconfirmed");
+		await rejected;
+		await vi.advanceTimersByTimeAsync(20_000);
+		await uncertain;
+		vi.useRealTimers();
+	});
+
+	it("close rejects uncertain disconnect instead of confirming idle", async () => {
+		const f = await fixture((socket) => socket.close());
+		await expect(f.executor.run(task())).rejects.toThrow("uncertain");
+		await expect(f.executor.close()).rejects.toThrow("stop unconfirmed");
+	});
 
 	it("reports disconnect as uncertain and never reconnects or reruns", async () => {
 		const f = await fixture((socket) => socket.close());

@@ -11,7 +11,11 @@ afterEach(async () => {
 	vi.useRealTimers();
 	for (const cleanup of cleanups.splice(0).reverse()) await cleanup();
 });
-async function fixture(publicUrl = "https://hub.test", deviceDomain: string | undefined = "devices.test") {
+async function fixture(
+	publicUrl = "https://hub.test",
+	deviceDomain: string | undefined = "devices.test",
+	extra: Partial<Parameters<typeof createDeviceHub>[0]> = {},
+) {
 	const dataDir = await mkdtemp(join(tmpdir(), "device-hub-test-"));
 	cleanups.push(() => rm(dataDir, { recursive: true, force: true }));
 	const onTask = vi.fn();
@@ -22,6 +26,7 @@ async function fixture(publicUrl = "https://hub.test", deviceDomain: string | un
 		deviceDomain: deviceDomain || undefined,
 		onTask,
 		onRevoke,
+		...extra,
 	});
 	await new Promise<void>((resolve) => hub.server.listen(0, "127.0.0.1", resolve));
 	cleanups.push(() => hub.close());
@@ -87,6 +92,29 @@ async function fixture(publicUrl = "https://hub.test", deviceDomain: string | un
 }
 
 describe("device center hub", () => {
+	it("provides a stable path for every owned device without requiring an alias", async () => {
+		const assign = vi.fn(async () => ({}));
+		const f = await fixture("https://hub.test", "devices.test", {
+			portals: { assign, getOrigin: () => undefined, getAlias: () => undefined } as any,
+		});
+		const owner = await f.register("device-owner");
+		const other = await f.register("other-owner");
+		const first = await f.pair(owner, "Mac");
+		const second = await f.pair(owner, "Linux");
+		f.hub.setRelay({
+			handleAliasOpen: async (_req, res, id) => {
+				res.setHeader("Content-Type", "application/json");
+				res.end(JSON.stringify({ opened: id }));
+			},
+		});
+		for (const device of [first, second]) {
+			const opened = await f.request(`/device/${device.deviceId}`, undefined, owner);
+			expect(opened.status).toBe(200);
+			expect(opened.body.opened).toBe(device.deviceId);
+			expect(assign).toHaveBeenCalledWith(device.deviceId, expect.any(String));
+		}
+		expect((await f.request(`/device/${first.deviceId}`, undefined, other)).status).toBe(404);
+	});
 	it("supports public IP HTTP accounts, pairing and tasks without device web access", async () => {
 		const { request, register, pair, onTask } = await fixture("http://82.156.246.55:8790", "");
 		expect((await request("/api/info")).body).toEqual({ transport: "http", deviceWebAccess: false });

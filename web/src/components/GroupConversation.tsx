@@ -1,6 +1,7 @@
 import { useEffect, useMemo, useRef, useState } from "react";
 import { MessageList } from "./MessageList";
 import { ChatInput } from "./ChatInput";
+import { GroupWorkspace } from "./GroupWorkspace";
 import { appUrl } from "../base-url";
 import { randomUuid } from "../uuid";
 import { withToken } from "../auth-token";
@@ -157,6 +158,7 @@ function GroupRoom({ roomId, active, onBack }: { roomId: string; active: boolean
 		<>
 			<div className="dg-head">
 				<strong>{detail?.room.name ?? (zh ? "群聊" : "Group")}</strong>
+				<GroupWorkspace roomId={roomId} active={active && !unavailable} />
 				{onBack && (
 					<button type="button" className="btn" onClick={onBack}>
 						{zh ? "返回对话" : "Back to chat"}

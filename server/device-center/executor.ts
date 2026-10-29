@@ -90,6 +90,7 @@ export function createDeviceTaskExecutor(options: DeviceTaskExecutorOptions) {
 	const cwd = resolve(options.cwd);
 	let closed = false;
 	let cancel: (() => void) | undefined;
+	let stopped: Promise<void> = Promise.resolve();
 
 	return {
 		run(task: DeviceExecutorTask): Promise<string> {
@@ -128,6 +129,42 @@ export function createDeviceTaskExecutor(options: DeviceTaskExecutorOptions) {
 				let prompted = false;
 				let sawRunning = false;
 				let settled = false;
+				let idleConfirmed = false;
+				let stopBaselineRev = -1;
+				let stopTimer: ReturnType<typeof setTimeout> | undefined;
+				let resolveStopped!: () => void;
+				let rejectStopped!: (error: Error) => void;
+				stopped = new Promise<void>((resolve, reject) => {
+					resolveStopped = resolve;
+					rejectStopped = reject;
+				});
+				void stopped.catch(() => {});
+				const uncertain = () => {
+					clearTimeout(stopTimer);
+					rejectStopped(
+						new DeviceTaskError(
+							"无法确认群任务已停止，项目已隔离。请在本机确认后重启服务。 / Task stop unconfirmed; workspace blocked until service restart.",
+						),
+					);
+					ws?.terminate();
+				};
+				const confirmStopped = () => {
+					clearTimeout(stopTimer);
+					idleConfirmed = true;
+					if (!ws || ws.readyState === WebSocket.CLOSED) {
+						busyOrigins.delete(origin.origin);
+						resolveStopped();
+						return;
+					}
+					ws.once("close", () => {
+						busyOrigins.delete(origin.origin);
+						resolveStopped();
+					});
+					ws.close();
+					const cleanup = setTimeout(() => ws.terminate(), 1000);
+					cleanup.unref();
+					ws.once("close", () => clearTimeout(cleanup));
+				};
 				let cwdDone = false;
 				let baselineRev = -1;
 				const send = (message: ClientMessage) => {
@@ -148,17 +185,16 @@ export function createDeviceTaskExecutor(options: DeviceTaskExecutorOptions) {
 					clearTimeout(timer);
 					// abort has no conversationId in the wire protocol. Only send while
 					// the private connection still points at the conversation we prompted.
-					if (error && prompted && currentId === conversationId) send({ type: "abort" });
 					cancel = undefined;
-					// Keep the origin busy until the socket has flushed abort and closed.
-					if (ws) {
-						ws.once("close", () => busyOrigins.delete(origin.origin));
-						if (ws.readyState === WebSocket.CLOSED) busyOrigins.delete(origin.origin);
-						else ws.close();
-						const cleanup = setTimeout(() => ws.terminate(), 1000);
-						cleanup.unref();
-						ws.once("close", () => clearTimeout(cleanup));
-					} else busyOrigins.delete(origin.origin);
+					if (!prompted || idleConfirmed) confirmStopped();
+					else if (currentId !== conversationId || ws.readyState !== WebSocket.OPEN) uncertain();
+					else {
+						stopBaselineRev = state?.rev ?? -1;
+						send({ type: "abort" });
+						send({ type: "get_state" });
+						stopTimer = setTimeout(uncertain, 20_000);
+						stopTimer.unref();
+					}
 					const result = error ? report(`${context()}\n\nExecution interrupted: ${error}`) : report(body);
 					if (error)
 						rejectRun(
@@ -185,9 +221,11 @@ export function createDeviceTaskExecutor(options: DeviceTaskExecutorOptions) {
 				}
 				ws.on("open", () => send({ type: "hello", clientId }));
 				ws.on("error", () => finish("Local WebSocket error; no automatic retry"));
-				ws.on("close", () => finish("Local WebSocket disconnected; execution outcome uncertain; no automatic retry"));
+				ws.on("close", () => {
+					finish("Local WebSocket disconnected; execution outcome uncertain; no automatic retry");
+					if (prompted && !idleConfirmed) uncertain();
+				});
 				ws.on("message", (data) => {
-					if (settled) return;
 					let message: ServerMessage;
 					try {
 						message = JSON.parse(data.toString()) as ServerMessage;
@@ -195,6 +233,7 @@ export function createDeviceTaskExecutor(options: DeviceTaskExecutorOptions) {
 						finish("Invalid local protocol frame");
 						return;
 					}
+					if (settled && message.type !== "snapshot" && message.type !== "snapshot_delta") return;
 					if (message.type === "ready") {
 						if (phase !== "hello" || message.clientId !== clientId) {
 							finish("Unexpected handshake");
@@ -233,6 +272,20 @@ export function createDeviceTaskExecutor(options: DeviceTaskExecutorOptions) {
 						return;
 					}
 					currentId = state.conversationId;
+					if (settled) {
+						if (
+							state.rev > stopBaselineRev &&
+							currentId === conversationId &&
+							state.sessionId === sdkSessionId &&
+							!state.isStreaming &&
+							!state.retry &&
+							!state.streamingMessage &&
+							!state.pendingQuestion &&
+							!state.pendingApproval
+						)
+							confirmStopped();
+						return;
+					}
 					if (phase === "initial" || (phase === "cwd" && cwdDone)) {
 						if (resolve(state.cwd) !== cwd) {
 							if (phase === "cwd") {
@@ -306,6 +359,7 @@ export function createDeviceTaskExecutor(options: DeviceTaskExecutorOptions) {
 					if (state.isStreaming || state.retry || state.streamingMessage) return;
 					const assistant = state.messages.filter((m) => m.role === "assistant");
 					if (!assistant.length && !sawRunning) return;
+					idleConfirmed = true;
 					const last = assistant.at(-1);
 					if (last?.errorMessage || last?.stopReason === "error" || last?.stopReason === "aborted") {
 						finish(last.errorMessage ?? `Assistant ${last.stopReason}`);
@@ -325,9 +379,10 @@ export function createDeviceTaskExecutor(options: DeviceTaskExecutorOptions) {
 				});
 			});
 		},
-		close() {
+		close(): Promise<void> {
 			closed = true;
 			cancel?.();
+			return stopped;
 		},
 	};
 }

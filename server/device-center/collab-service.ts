@@ -8,17 +8,28 @@ import { checkedUrl } from "./relay.js";
 type Config = { hubUrl: string; deviceId: string; credential: string; allowExecution: boolean };
 export function createDeviceCollabService(options: {
 	getConfig: () => Config | undefined;
-	root: string;
-	files: ReturnType<typeof createDeviceFileSync>;
+	root?: string;
+	files?: ReturnType<typeof createDeviceFileSync>;
+	workspaceResolver?: (input: {
+		roomId: string;
+		context: DeviceCollabContext;
+		signal?: AbortSignal;
+	}) => Promise<{ root: string; files: ReturnType<typeof createDeviceFileSync>; release(): void }>;
 	fetch?: typeof fetch;
 	getParentTask?: (context?: DeviceCollabContext) => string | undefined;
 }): DeviceCollabService {
-	const root = resolve(options.root);
+	const root = options.root === undefined ? undefined : resolve(options.root);
 	return {
 		async execute(action, args, signal, context) {
+			let workspace: { root: string; files: ReturnType<typeof createDeviceFileSync>; release(): void } | undefined;
 			try {
 				signal?.throwIfAborted();
-				if (!context || resolve(context.cwd) !== root) throw new Error("Invalid workspace");
+				if (!context) throw new Error("Invalid workspace");
+				if (options.workspaceResolver && !["list_devices", "list_rooms", "create_room"].includes(action)) {
+					if (!args.roomId) throw new Error("Room required");
+					workspace = await options.workspaceResolver({ roomId: args.roomId, context, signal });
+					if (resolve(context.cwd) !== resolve(workspace.root)) throw new Error("Invalid workspace");
+				} else if (!options.workspaceResolver && resolve(context.cwd) !== root) throw new Error("Invalid workspace");
 				const config = options.getConfig();
 				if (!config || !config.deviceId || !config.credential) throw new Error("Device unavailable");
 				if (!["list_devices", "list_rooms"].includes(action) && !config.allowExecution)
@@ -74,7 +85,9 @@ export function createDeviceCollabService(options: {
 					case "sync_files": {
 						if (!args.targetDeviceId || !args.roomId || !args.paths?.length)
 							throw new Error("Transfer fields required");
-						const bundle = await options.files.prepare({ paths: args.paths, signal });
+						const files = workspace?.files ?? options.files;
+						if (!files) throw new Error("File workspace unavailable");
+						const bundle = await files.prepare({ paths: args.paths, signal });
 						const response = await request("transfers", {
 							action: "stage",
 							roomId: args.roomId,
@@ -106,6 +119,8 @@ export function createDeviceCollabService(options: {
 			} catch {
 				// Remote errors, URLs, fetch errors and local file errors may contain secrets.
 				throw new Error(signal?.aborted ? "Device collaboration cancelled." : "Device collaboration request failed.");
+			} finally {
+				workspace?.release();
 			}
 		},
 	};

@@ -188,7 +188,7 @@ export async function installDeviceTransfers(options: Options) {
 					result = await options.relay.callDevice(
 						body.targetDeviceId,
 						"transfer_stage",
-						{ bundle: body.bundle },
+						{ roomId: body.roomId, bundle: body.bundle },
 						{ signal: controller.signal },
 					);
 					controller.signal.throwIfAborted();
@@ -246,6 +246,7 @@ export async function installDeviceTransfers(options: Options) {
 						receipt.targetDeviceId,
 						body.action === "apply" ? "transfer_apply" : "transfer_preview",
 						{
+							roomId: receipt.roomId,
 							transferId: receipt.localTransferId,
 							...(body.action === "apply" ? { revision: body.revision, overwritePaths: body.overwritePaths } : {}),
 						},

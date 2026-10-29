@@ -6,6 +6,7 @@ import { randomBytes, randomUUID } from "node:crypto";
 import { DeviceHubStore, hashSecret, isTerminal, publicDevice, secretMatches } from "./store.js";
 import type { HubTask, Handoff, TaskStatus } from "./store.js";
 import { createAccountAuth, hashPassword, verifyPassword, SESSION_TTL, HubRateLimiter } from "./hub-auth.js";
+import type { DevicePortals } from "./device-portals.js";
 
 export interface HubTaskEvent {
 	taskId: string;
@@ -16,6 +17,7 @@ export interface HubTaskEvent {
 export interface HubRelay {
 	handleOpen?: (req: Request, res: Response, deviceId: string) => Promise<void>;
 	handleRequest?: (req: IncomingMessage, res: ServerResponse) => boolean;
+	handleAliasOpen?: (req: IncomingMessage, res: ServerResponse, deviceId: string) => Promise<void>;
 	onRevoke?: (deviceId: string) => unknown;
 	onTask?: (deviceId: string, task: HubTask) => unknown;
 }
@@ -23,6 +25,7 @@ export interface DeviceHubOptions {
 	dataDir: string;
 	publicUrl: string;
 	deviceDomain?: string;
+	portals?: DevicePortals;
 	allowRegistration?: boolean;
 	relay?: HubRelay;
 	onRevoke?: (deviceId: string) => unknown;
@@ -196,10 +199,16 @@ export async function createDeviceHub(options: DeviceHubOptions) {
 		for (const [key, value] of pairs) if (value.expiresAt <= Date.now()) pairs.delete(key);
 	};
 	const ip = (req: Request) => req.socket.remoteAddress ?? "unknown";
-	const visibleDevice = (device: Parameters<typeof publicDevice>[0]) => ({
-		...publicDevice(device),
+	const visibleDevice = (device: ReturnType<typeof publicDevice>) => ({
+		id: device.id,
+		accountId: device.accountId,
+		name: device.name,
+		createdAt: device.createdAt,
 		online: options.isOnline?.(device.id) ?? false,
-		url: options.deviceDomain ? `${origin.protocol}//${device.id}.${options.deviceDomain}` : null,
+		url:
+			options.portals?.getOrigin(device.id) ??
+			(options.deviceDomain ? `${origin.protocol}//${device.id}.${options.deviceDomain}` : null),
+		alias: options.portals?.getAlias(device.id) ?? null,
 	});
 	for (const route of ["/api/me", "/api/auth/me"]) app.get(route, (req, res) => res.json({ account: account(req) }));
 	app.post("/api/auth/register", async (req, res) => {
@@ -339,6 +348,7 @@ export async function createDeviceHub(options: DeviceHubOptions) {
 		});
 		for (const [key, pair] of pairs) if (pair.deviceId === id) pairs.delete(key);
 		await (options.onRevoke ?? options.relay?.onRevoke)?.(id);
+		await options.portals?.retire(id);
 		res.json({ ok: true });
 	});
 	app.get("/api/rooms", (req, res) =>
@@ -584,6 +594,55 @@ export async function createDeviceHub(options: DeviceHubOptions) {
 				(task) => state.tasks.find((entry) => entry.id === task.id && entry.attemptId === task.attemptId) ?? task,
 			),
 		});
+	});
+	for (const action of ["alias", "portal"])
+		app.post(`/api/devices/:id/${action}`, async (req, res) => {
+			const owner = account(req);
+			const id = String(req.params.id);
+			if (store.getDeviceOwner(id) !== owner.id) fail(404, "Device missing");
+			if (!options.portals) fail(409, "Device portals unavailable");
+			if (action === "alias" && typeof req.body?.alias !== "string") fail(400, "Invalid alias");
+			await options.portals.assign(id, owner.id, action === "alias" ? req.body.alias : undefined);
+			res.json({ device: visibleDevice(store.getDevice(id)!) });
+		});
+	app.get("/device/:id", async (req, res) => {
+		const owner = getAccount(req);
+		res.setHeader("Cache-Control", "no-store");
+		res.setHeader("Referrer-Policy", "no-referrer");
+		if (!owner) {
+			res
+				.status(401)
+				.type("html")
+				.send(
+					'<!doctype html><meta charset="utf-8"><p>请先登录设备中心，再打开设备链接。</p><a href="/">Sign in / 登录设备中心</a>',
+				);
+			return;
+		}
+		const id = String(req.params.id);
+		if (store.getDeviceOwner(id) !== owner.id) fail(404, "Device missing");
+		if (!options.portals) fail(409, "Device portals unavailable");
+		if (!options.relay?.handleAliasOpen) fail(503, "Relay unavailable");
+		await options.portals.assign(id, owner.id);
+		await options.relay.handleAliasOpen(req, res, id);
+	});
+	app.get("/:alias", async (req, res, next) => {
+		const entry = options.portals?.resolveAlias(String(req.params.alias));
+		if (!entry) return next();
+		const owner = getAccount(req);
+		res.setHeader("Cache-Control", "no-store");
+		res.setHeader("Referrer-Policy", "no-referrer");
+		if (!owner) {
+			res
+				.status(401)
+				.type("html")
+				.send(
+					'<!doctype html><meta charset="utf-8"><p>Sign in to the device hub, then open this address again.</p><a href="/">Sign in / 登录设备中心</a>',
+				);
+			return;
+		}
+		if (owner.id !== entry.accountId || store.getDeviceOwner(entry.deviceId) !== owner.id) fail(404, "Device missing");
+		if (!options.relay?.handleAliasOpen) fail(503, "Relay unavailable");
+		await options.relay.handleAliasOpen(req, res, entry.deviceId);
 	});
 	app.post("/api/devices/:id/open", async (req, res) => {
 		if (!options.relay?.handleOpen) fail(503, "Relay unavailable");

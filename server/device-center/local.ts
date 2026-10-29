@@ -4,6 +4,7 @@ import { hostname } from "node:os";
 import { join } from "node:path";
 import { randomUUID } from "node:crypto";
 import { isIP } from "node:net";
+import { DeviceWorkspaceError, type DeviceWorkspaces } from "./workspaces.js";
 
 export interface LocalDeviceConfig {
 	hubUrl: string;
@@ -21,6 +22,8 @@ interface Options {
 	app: Express;
 	dataDir: string;
 	connect(config: LocalDeviceConfig): Connection | Promise<Connection>;
+	/** Share this scope-cached factory with the task/transfer runtime. */
+	workspaceRegistry?(config: { hubUrl: string; deviceId: string }): Promise<DeviceWorkspaces>;
 }
 
 /** Hub enrollment accepts HTTP(S) origins, including public IP addresses. */
@@ -248,6 +251,114 @@ export async function installLocalDeviceCenter(options: Options) {
 			}
 		});
 	}
+	// Local project paths never pass through the hub proxy.
+	function workspaceRoute(method: "get" | "post", suffix: string, operation: "read" | "set" | "remove") {
+		options.app[method](`/api/device-center/${suffix}`, async (req, res) => {
+			const captured = config;
+			const capturedGeneration = generation;
+			if (!captured) return res.status(409).json({ code: "NOT_PAIRED", error: "Pair this computer first" });
+			if (!options.workspaceRegistry)
+				return res
+					.status(409)
+					.json({ code: "WORKSPACES_UNAVAILABLE", error: "Local project bindings are unavailable" });
+			if (closed || inFlight >= 8) return res.status(429).json({ code: "BUSY", error: "Device center busy" });
+			inFlight++;
+			const controller = new AbortController();
+			const cancel = () => {
+				if (!res.writableEnded) controller.abort();
+			};
+			const check = () => {
+				if (closed || config !== captured || generation !== capturedGeneration)
+					throw new DeviceWorkspaceError(409, "DEVICE_CHANGED", "Device binding changed; refresh");
+				if (controller.signal.aborted)
+					throw new DeviceWorkspaceError(409, "REQUEST_CANCELLED", "Project binding request cancelled");
+			};
+			activeRequests.add(controller);
+			req.once("aborted", cancel);
+			res.once("close", cancel);
+			try {
+				const fields = operation === "set" ? ["roomId", "path"] : ["roomId"];
+				const input = method === "get" ? req.query : req.body;
+				if (
+					!input ||
+					typeof input !== "object" ||
+					Array.isArray(input) ||
+					Object.keys(input).some((key) => !fields.includes(key))
+				)
+					throw new DeviceWorkspaceError(400, "INVALID_BODY", "Invalid project binding request");
+				const roomId = input.roomId;
+				if (
+					(operation !== "read" || roomId !== undefined) &&
+					(typeof roomId !== "string" || !roomId.trim() || roomId.length > 256)
+				)
+					throw new DeviceWorkspaceError(400, "INVALID_ROOM", "Invalid room ID");
+				if (operation === "set" && (typeof input.path !== "string" || input.path.length > 32768))
+					throw new DeviceWorkspaceError(400, "WORKSPACE_INVALID", "Invalid project path");
+				const data = await serialize(async () => {
+					check();
+					if (operation !== "read") {
+						if (!captured.uiCredential)
+							throw new DeviceWorkspaceError(409, "REPAIR_REQUIRED", "Pair this computer again to enable group chat");
+						let response: globalThis.Response;
+						try {
+							response = await fetch(
+								`${captured.hubUrl}/api/device-user/rooms/${encodeURIComponent(roomId as string)}`,
+								{
+									redirect: "error",
+									signal: AbortSignal.any([controller.signal, AbortSignal.timeout(15000)]),
+									headers: { "X-Device-Id": captured.deviceId, Authorization: `Bearer ${captured.uiCredential}` },
+								},
+							);
+							await response.body?.cancel();
+						} catch {
+							check();
+							throw new DeviceWorkspaceError(502, "HUB_UNAVAILABLE", "Could not verify group membership");
+						}
+						check();
+						if (!response.ok)
+							throw new DeviceWorkspaceError(
+								response.status === 404 ? 404 : 403,
+								"HUB_FORBIDDEN",
+								"Group membership verification rejected",
+							);
+					}
+					const registry = await options.workspaceRegistry!({ hubUrl: captured.hubUrl, deviceId: captured.deviceId });
+					check();
+					if (operation === "read")
+						return typeof roomId === "string"
+							? { binding: registry.get(roomId), defaultRoot: registry.defaultRoot }
+							: { bindings: registry.list(), defaultRoot: registry.defaultRoot };
+					if (operation === "set")
+						return {
+							binding: await registry.set({
+								roomId: roomId as string,
+								path: input.path as string,
+								signal: controller.signal,
+							}),
+						};
+					await registry.remove(roomId as string, { signal: controller.signal });
+					return { removed: true };
+				});
+				if (!res.destroyed) res.json(data);
+			} catch (error) {
+				if (!res.destroyed) {
+					const known = error instanceof DeviceWorkspaceError;
+					res.status(known ? error.status : 500).json({
+						code: known ? error.code : "WORKSPACE_FAILED",
+						error: known ? error.message : "Local project binding operation failed",
+					});
+				}
+			} finally {
+				inFlight--;
+				activeRequests.delete(controller);
+				req.off("aborted", cancel);
+				res.off("close", cancel);
+			}
+		});
+	}
+	workspaceRoute("get", "workspaces", "read");
+	workspaceRoute("post", "workspaces", "set");
+	workspaceRoute("post", "workspaces/remove", "remove");
 	userRoute("get", "devices", []);
 	userRoute("get", "rooms", []);
 	userRoute("get", "rooms/:id", []);

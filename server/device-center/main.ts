@@ -4,6 +4,8 @@ import { createDeviceHub } from "./hub.js";
 import { createDeviceRelay } from "./relay.js";
 import { renderDeviceHubPage } from "./hub-page.js";
 import { installDeviceTransfers } from "./transfers.js";
+import { createServer, type Server } from "node:http";
+import { DevicePortals, parsePortalPorts } from "./device-portals.js";
 
 /** Separate process: never shares a pi-web-ui data directory or SDK runtime. */
 export async function startDeviceHub(env: NodeJS.ProcessEnv = process.env) {
@@ -12,11 +14,21 @@ export async function startDeviceHub(env: NodeJS.ProcessEnv = process.env) {
 	if (!publicUrl) throw new Error("Set PI_DEVICE_HUB_PUBLIC_URL; see docs/device-center.md");
 	const port = Number(env.PI_DEVICE_HUB_PORT ?? 8790);
 	if (!Number.isInteger(port) || port < 1 || port > 65535) throw new Error("Invalid hub port");
+	const dataDir = resolve(env.PI_DEVICE_HUB_DATA_DIR ?? join(homedir(), ".pi-device-hub"));
+	const portalPorts = parsePortalPorts(env.PI_DEVICE_HUB_PORTAL_PORTS);
+	if (
+		portalPorts.includes(port) ||
+		portalPorts.includes(Number(new URL(publicUrl).port || (new URL(publicUrl).protocol === "https:" ? 443 : 80)))
+	)
+		throw new Error("Portal port must differ from hub port");
+	const portals = await DevicePortals.open(dataDir, publicUrl, portalPorts);
+	const portalServers: Server[] = [];
 	let relay: ReturnType<typeof createDeviceRelay> | undefined;
 	const hub = await createDeviceHub({
 		dataDir: resolve(env.PI_DEVICE_HUB_DATA_DIR ?? join(homedir(), ".pi-device-hub")),
 		publicUrl,
 		deviceDomain,
+		portals,
 		allowRegistration: env.PI_DEVICE_HUB_ALLOW_REGISTRATION === "1",
 		isOnline: (id) => relay?.isOnline(id) ?? false,
 		onTask: (id, task) => {
@@ -30,6 +42,7 @@ export async function startDeviceHub(env: NodeJS.ProcessEnv = process.env) {
 		server: hub.server,
 		publicUrl,
 		deviceDomain,
+		deviceOrigins: () => portals.origins(),
 		authenticateDevice: (id, credential) => hub.store.authenticateDevice(id, credential),
 		getAccount: (req) => hub.getAccount(req),
 		ownsDevice: (accountId, id) => hub.store.getDeviceOwner(id) === accountId,
@@ -50,20 +63,64 @@ export async function startDeviceHub(env: NodeJS.ProcessEnv = process.env) {
 		res.setHeader("Cache-Control", "no-store");
 		res.type("html").send(renderDeviceHubPage());
 	});
-	await new Promise<void>((done, reject) => {
-		hub.server.once("error", reject);
-		hub.server.listen(port, env.PI_DEVICE_HUB_HOST ?? "127.0.0.1", () => {
-			hub.server.off("error", reject);
-			done();
+	const closePortals = async () => {
+		await Promise.all(
+			portalServers.map(
+				(server) =>
+					new Promise<void>((done) => {
+						server.closeAllConnections();
+						if (!server.listening) return done();
+						server.close(() => done());
+					}),
+			),
+		);
+	};
+	try {
+		for (const portalPort of portalPorts) {
+			const server = createServer((req, res) => {
+				if (
+					req.headers.host !==
+						new URL(`${new URL(publicUrl).protocol}//${new URL(publicUrl).hostname}:${portalPort}`).host ||
+					!relay?.handleRequest(req, res)
+				)
+					res.writeHead(403).end();
+			});
+			server.on("upgrade", (req, socket, head) => {
+				if (
+					req.headers.host !==
+					new URL(`${new URL(publicUrl).protocol}//${new URL(publicUrl).hostname}:${portalPort}`).host
+				)
+					return socket.destroy();
+				relay!.handleUpgrade(req, socket, head);
+			});
+			portalServers.push(server);
+			await listen(server, portalPort);
+		}
+		await listen(hub.server, port);
+	} catch (error) {
+		relay.close();
+		await closePortals();
+		await hub.close();
+		throw error;
+	}
+	function listen(server: Server, listenPort: number) {
+		return new Promise<void>((done, reject) => {
+			server.once("error", reject);
+			server.listen(listenPort, env.PI_DEVICE_HUB_HOST ?? "127.0.0.1", () => {
+				server.off("error", reject);
+				done();
+			});
 		});
-	});
+	}
 	console.log(
 		`[device-hub] ${publicUrl} (listen ${port}; registration ${env.PI_DEVICE_HUB_ALLOW_REGISTRATION === "1" ? "enabled" : "disabled"})`,
 	);
 	return {
 		...hub,
+		portals,
 		async close() {
 			relay?.close();
+			await closePortals();
 			await hub.close();
 		},
 	};

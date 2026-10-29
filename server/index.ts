@@ -84,9 +84,8 @@ import type { ServerLang } from "./i18n.js";
 import { McpProjectRuntimeRegistry } from "./mcp-project-runtime.js";
 import { installLocalDeviceCenter } from "./device-center/local.js";
 import { createDeviceConnector } from "./device-center/connector.js";
-import { createDeviceTaskExecutor } from "./device-center/executor.js";
-import { createDeviceFileSync } from "./device-center/file-sync.js";
-import { createDeviceCollabService } from "./device-center/collab-service.js";
+import { createDeviceRuntime } from "./device-center/runtime.js";
+import { createDeviceWorkspaces } from "./device-center/workspaces.js";
 import { setDeviceCollabService } from "./device-center/collab-tool.js";
 import { createDeviceDesktop } from "./device-center/desktop.js";
 
@@ -1114,79 +1113,45 @@ app.get("/plugins-shared/*splat", (req, res) => {
 const RESTART_CHILD_ENV = "PI_WEB_RESTART_CHILD";
 // Local-only device enrollment stays behind host authentication and ahead of the SPA fallback.
 const deviceDesktop = createDeviceDesktop({ app, authorize: (req) => !AUTH_TOKEN || tokenOk(req) });
+const deviceWorkspaceRegistries = new Map<string, ReturnType<typeof createDeviceWorkspaces>>();
+function deviceWorkspaces(config: { hubUrl: string; deviceId: string }) {
+	const scope = JSON.stringify([config.hubUrl, config.deviceId]);
+	let registry = deviceWorkspaceRegistries.get(scope);
+	if (!registry) {
+		registry = createDeviceWorkspaces({ dataDir: DATA_DIR, defaultRoot: CWD, scope });
+		deviceWorkspaceRegistries.set(scope, registry);
+		void registry.catch(() => {
+			if (deviceWorkspaceRegistries.get(scope) === registry) deviceWorkspaceRegistries.delete(scope);
+		});
+	}
+	return registry;
+}
 const deviceCenter = await installLocalDeviceCenter({
 	app,
 	dataDir: DATA_DIR,
-	connect(config) {
+	workspaceRegistry: deviceWorkspaces,
+	async connect(config) {
 		const localOrigin = `http://127.0.0.1:${PORT}`;
-		const taskSessions = new Map<string, string>();
-		const makeExecutor = () =>
-			createDeviceTaskExecutor({
-				localOrigin,
-				localAuthToken: AUTH_TOKEN,
-				cwd: CWD,
-				allowExecution: config.allowExecution,
-				onSession(taskId, sessionId) {
-					for (const [id, owner] of taskSessions) if (owner === taskId) taskSessions.delete(id);
-					if (sessionId) taskSessions.set(sessionId, taskId);
-				},
-			});
-		let executor: ReturnType<typeof createDeviceTaskExecutor> | undefined;
-		const files = createDeviceFileSync({ root: CWD, dataDir: DATA_DIR, allowReceive: config.allowExecution });
-		let activeTaskId: string | undefined;
-		setDeviceCollabService(
-			createDeviceCollabService({
-				getConfig: () => config,
-				root: CWD,
-				files,
-				getParentTask: (context) => (context?.sessionId ? taskSessions.get(context.sessionId) : undefined),
-			}),
-		);
+		const runtime = createDeviceRuntime({
+			config,
+			localOrigin,
+			localAuthToken: AUTH_TOKEN,
+			dataDir: DATA_DIR,
+			workspaces: await deviceWorkspaces(config),
+		});
+		setDeviceCollabService(runtime.collabService);
 		const connector = createDeviceConnector({
 			hubUrl: config.hubUrl,
 			deviceId: config.deviceId,
 			credential: config.credential,
 			localOrigin,
 			localAuthToken: AUTH_TOKEN,
-			async onTask(task) {
-				if (activeTaskId) throw new Error("This device is already running a group task");
-				activeTaskId = task.id;
-				const current = (executor ??= makeExecutor());
-				try {
-					return await current.run(task);
-				} finally {
-					if (activeTaskId === task.id) activeTaskId = undefined;
-				}
-			},
-			onDisconnect() {
-				executor?.close();
-				executor = undefined;
-				taskSessions.clear();
-				activeTaskId = undefined;
-			},
-			async onCommand(action, payload, signal) {
-				if (!config.allowExecution) throw new Error("Receiving files is disabled on this device");
-				if (!payload || typeof payload !== "object" || Array.isArray(payload))
-					throw new Error("Invalid transfer command");
-				const command = payload as Record<string, unknown>;
-				if (action === "transfer_stage") return files.stage(command.bundle, { signal });
-				if (action === "transfer_preview" && typeof command.transferId === "string")
-					return files.preview(command.transferId, { signal });
-				if (
-					action === "transfer_apply" &&
-					typeof command.transferId === "string" &&
-					typeof command.revision === "string"
-				) {
-					if (!Array.isArray(command.overwritePaths) || command.overwritePaths.some((path) => typeof path !== "string"))
-						throw new Error("Invalid overwrite paths");
-					return files.apply({
-						id: command.transferId,
-						revision: command.revision,
-						decisions: Object.fromEntries(command.overwritePaths.map((path) => [path, "overwrite" as const])),
-						signal,
-					});
-				}
-				throw new Error("Unsupported device command");
+			onTask: runtime.onTask,
+			onCommand: runtime.onCommand,
+			onDisconnect: () => {
+				void runtime
+					.onDisconnect()
+					.catch(() => console.warn("[device-center] Task stop was not confirmed; project remains locked"));
 			},
 		});
 		return {
@@ -1194,8 +1159,7 @@ const deviceCenter = await installLocalDeviceCenter({
 			async close() {
 				setDeviceCollabService(undefined);
 				connector.close();
-				await executor?.close();
-				await files.close();
+				await runtime.close();
 			},
 		};
 	},

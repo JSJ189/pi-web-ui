@@ -221,10 +221,13 @@ describe("standalone device Hub", () => {
 		const replace = vi.fn();
 		const tab = { opener: {}, location: { replace }, close: vi.fn() };
 		f.dom.window.open = vi.fn(() => tab) as any;
-		expect(f.document.querySelectorAll("#devices a")).toHaveLength(2);
-		const link = f.document.querySelector("#devices a")!;
+		expect(
+			f.document.querySelectorAll('#devices a[data-action="device-open"], #devices a[data-action="desktop-open"]'),
+		).toHaveLength(2);
+		expect(f.document.querySelectorAll('#devices a[data-action="device-entry"]')).toHaveLength(2);
+		const link = f.document.querySelector('#devices a[data-action="device-open"]')!;
 		expect(link.getAttribute("rel")).toContain("noopener");
-		f.click("#devices a");
+		f.click('#devices a[data-action="device-open"]');
 		await flush();
 		expect(
 			f.fetch.mock.calls.some(
@@ -240,11 +243,11 @@ describe("standalone device Hub", () => {
 		const replace = vi.fn();
 		const tab = { opener: {}, location: { replace }, close: vi.fn() };
 		f.dom.window.open = vi.fn(() => tab) as any;
-		const link = f.document.querySelectorAll("#devices a")[1];
+		const link = f.document.querySelector('#devices a[data-action="desktop-open"]')!;
 		expect(link.textContent).toBe("远程桌面");
 		expect(link.getAttribute("target")).toBe("_blank");
 		expect(link.getAttribute("rel")).toContain("noopener");
-		f.click("#devices a:nth-child(2)");
+		f.click('#devices a[data-action="desktop-open"]');
 		await flush();
 		const target = new URL(replace.mock.calls[0][0]);
 		expect(target.origin).toBe("https://win.example");
@@ -252,7 +255,7 @@ describe("standalone device Hub", () => {
 		expect(target.searchParams.get("next")).toBe("/desktop");
 		expect(f.fetch.mock.calls.some(([path]) => path.endsWith("/open"))).toBe(true);
 		f.click("#language");
-		expect(f.document.querySelectorAll("#devices a")[1].textContent).toBe("Remote desktop");
+		expect(f.document.querySelector('#devices a[data-action="desktop-open"]')?.textContent).toBe("Remote desktop");
 	});
 	it("requires target confirmation for revoke and clears selected IDs even if refreshed data is stale", async () => {
 		const f = fixture();
@@ -263,14 +266,14 @@ describe("standalone device Hub", () => {
 		f.click("#suggestions button");
 		const confirm = vi.fn((_message?: string) => false);
 		f.dom.window.confirm = confirm;
-		f.click("#devices .card button");
+		f.click("#devices .card button[data-action=revoke]");
 		await flush();
 		expect(confirm).toHaveBeenCalledWith(expect.stringContaining(f.devices[0].id));
 		expect(confirm.mock.calls[0][0]).toContain(f.devices[0].name);
 		expect(f.fetch.mock.calls.some(([path]) => path.endsWith("/revoke"))).toBe(false);
 		expect(f.document.querySelectorAll("#mentions .chip")).toHaveLength(1);
 		confirm.mockReturnValue(true);
-		f.click("#devices .card button");
+		f.click("#devices .card button[data-action=revoke]");
 		await flush();
 		const call = f.fetch.mock.calls.find(([path]) => path.endsWith("/revoke"))!;
 		expect(call[0]).toBe("/api/devices/" + f.devices[0].id + "/revoke");
@@ -296,7 +299,7 @@ describe("standalone device Hub", () => {
 				? { ok: false, status: 503, json: async () => ({ error: "Revoke unavailable" }) }
 				: original(path, options),
 		);
-		f.click("#devices .card button");
+		f.click("#devices .card button[data-action=revoke]");
 		await flush();
 		expect(f.document.getElementById("error")!.textContent).toBe("Revoke unavailable");
 		expect(f.document.querySelectorAll("#mentions .chip")).toHaveLength(1);

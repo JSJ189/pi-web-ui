@@ -390,6 +390,7 @@ export interface DeviceRelayOptions {
 	server: Server;
 	publicUrl: string;
 	deviceDomain?: string;
+	deviceOrigins?: () => ReadonlyMap<string, string>;
 	authenticateDevice: (deviceId: string, credential: string) => boolean | Promise<boolean>;
 	getAccount: (
 		req: IncomingMessage,
@@ -432,9 +433,14 @@ export function createDeviceRelay(options: DeviceRelayOptions) {
 	let revision = 0;
 	let authenticating = 0;
 	const alive = new WeakSet<WebSocket>();
-	const origin = (id: string) => `${hub.protocol}//${id}.${domain}`;
-	const deviceCookie = hub.protocol === "https:" ? "__Host-device" : "device";
+	const origin = (id: string) =>
+		options.deviceOrigins?.().get(id) ?? (domain ? `${hub.protocol}//${id}.${domain}` : undefined);
+	const deviceCookie = (id: string) =>
+		`${hub.protocol === "https:" ? "__Host-device" : "device"}${options.deviceOrigins?.().has(id) ? `-${new URL(origin(id)!).port}-${id}` : ""}`;
 	const deviceId = (req: IncomingMessage) => {
+		for (const [id, value] of options.deviceOrigins?.() ?? []) {
+			if (req.headers.host?.toLowerCase() === new URL(value).host.toLowerCase()) return id;
+		}
 		if (!domain) return null;
 		const host = req.headers.host?.toLowerCase() || "";
 		const suffix = `.${domain}`;
@@ -443,11 +449,12 @@ export function createDeviceRelay(options: DeviceRelayOptions) {
 		return /^[a-z0-9][a-z0-9-]{0,62}$/.test(id) ? id : null;
 	};
 	function authorized(req: IncomingMessage, id: string, websocket = false) {
+		const cookieName = deviceCookie(id);
 		const cookie = req.headers.cookie
 			?.split(";")
 			.map((x) => x.trim())
-			.find((x) => x.startsWith(`${deviceCookie}=`))
-			?.slice(deviceCookie.length + 1);
+			.find((x) => x.startsWith(`${cookieName}=`))
+			?.slice(cookieName.length + 1);
 		const session = cookie ? sessions.get(cookie) : undefined;
 		if (!session || session.deviceId !== id || session.expiresAt <= Date.now()) return false;
 		if (req.headers.origin && req.headers.origin !== origin(id)) return false;
@@ -495,22 +502,22 @@ export function createDeviceRelay(options: DeviceRelayOptions) {
 		entry.streams.set(id, item);
 		return item;
 	}
-	async function handleOpen(req: IncomingMessage, res: ServerResponse, id: string) {
+	async function handleOpen(req: IncomingMessage, res: ServerResponse, id: string, redirect = false) {
 		const generation = revision;
 		const account = await options.getAccount(req);
 		const accountId = typeof account === "string" ? account : account?.id;
 		if (
 			closed ||
-			req.method !== "POST" ||
+			(redirect ? req.method !== "GET" : req.method !== "POST") ||
 			req.headers.host !== hub.host ||
-			req.headers.origin !== hub.origin ||
+			(!redirect && req.headers.origin !== hub.origin) ||
 			!accountId ||
 			!(await options.ownsDevice(accountId, id))
 		) {
 			res.writeHead(403).end();
 			return;
 		}
-		if (!domain) {
+		if (!origin(id)) {
 			res.writeHead(409, { "content-type": "application/json", "cache-control": "no-store" }).end(
 				JSON.stringify({
 					error: "Device web access requires an independent origin",
@@ -530,9 +537,13 @@ export function createDeviceRelay(options: DeviceRelayOptions) {
 		const ticket = randomBytes(32).toString("hex");
 		const expiresAt = Date.now() + 30_000;
 		tickets.set(ticket, { deviceId: id, expiresAt });
-		res
-			.writeHead(200, { "content-type": "application/json", "cache-control": "no-store" })
-			.end(JSON.stringify({ url: `${origin(id)}/__device/open?ticket=${ticket}`, expiresAt }));
+		const url = `${origin(id)}/__device/open?ticket=${ticket}`;
+		if (redirect)
+			res.writeHead(302, { location: url, "cache-control": "no-store", "referrer-policy": "no-referrer" }).end();
+		else
+			res
+				.writeHead(200, { "content-type": "application/json", "cache-control": "no-store" })
+				.end(JSON.stringify({ url, expiresAt }));
 	}
 	function handleRequest(req: IncomingMessage, res: ServerResponse): boolean {
 		const id = deviceId(req);
@@ -545,7 +556,7 @@ export function createDeviceRelay(options: DeviceRelayOptions) {
 		}
 		res.setHeader("Cache-Control", "no-store");
 		res.setHeader("Referrer-Policy", "no-referrer");
-		const url = new URL(req.url || "/", origin(id));
+		const url = new URL(req.url || "/", origin(id)!);
 		if (url.pathname === "/__device/open") {
 			const key = url.searchParams.get("ticket") || "";
 			const ticket = tickets.get(key);
@@ -565,7 +576,7 @@ export function createDeviceRelay(options: DeviceRelayOptions) {
 			sessions.set(token, { deviceId: id, expiresAt: Date.now() + 15 * 60_000 });
 			res
 				.writeHead(302, {
-					"set-cookie": `${deviceCookie}=${token}; Path=/; Max-Age=900;${hub.protocol === "https:" ? " Secure;" : ""} HttpOnly; SameSite=Lax`,
+					"set-cookie": `${deviceCookie(id)}=${token}; Path=/; Max-Age=900;${hub.protocol === "https:" ? " Secure;" : ""} HttpOnly; SameSite=Lax`,
 					location: url.searchParams.get("next") === "/desktop" ? "/desktop" : "/",
 				})
 				.end();
@@ -790,7 +801,16 @@ export function createDeviceRelay(options: DeviceRelayOptions) {
 		},
 		handleRequest,
 		handleOpen,
-		isDeviceRequest: (req: IncomingMessage) => !!req.headers.host?.toLowerCase().endsWith(`.${domain}`),
+		handleAliasOpen: (req: IncomingMessage, res: ServerResponse, id: string) => handleOpen(req, res, id, true),
+		handleUpgrade: (req: IncomingMessage, socket: Duplex, head: Buffer) => {
+			if (!deviceId(req)) {
+				socket.destroy();
+				return;
+			}
+			void upgrade(req, socket, head);
+		},
+		isDeviceRequest: (req: IncomingMessage) =>
+			!!deviceId(req) || !!(domain && req.headers.host?.toLowerCase().endsWith(`.${domain}`)),
 		isOnline: (id: string) => devices.get(id)?.ws.readyState === WebSocket.OPEN,
 		sendTask(id: string, task: any) {
 			const entry = devices.get(id);
