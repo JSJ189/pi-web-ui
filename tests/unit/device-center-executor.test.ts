@@ -1,6 +1,5 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { once } from "node:events";
-import os from "node:os";
 import { resolve } from "node:path";
 import WebSocket, { WebSocketServer } from "ws";
 import { createDeviceTaskExecutor } from "../../server/device-center/executor.js";
@@ -147,8 +146,8 @@ describe("device task executor", () => {
 		};
 		const result = await f.executor.run(t);
 		expect(result).toContain("Verified command: exit 0; repair commit abc123");
-		expect(result).toContain(`${os.platform()} / ${os.arch()}`);
-		expect(result).toContain("Conversation: task-chat");
+		expect(result).not.toContain("Local system:");
+		expect(result).not.toContain("Conversation: task-chat");
 		expect(result).not.toMatch(/OLD HISTORY|RESUMED HISTORY|SECRET TOOL OUTPUT|HIDDEN THINKING/);
 		expect(f.authorization()).toBe("Bearer test-token");
 		expect(f.received.map((m) => m.type)).toEqual([
@@ -164,6 +163,8 @@ describe("device task executor", () => {
 		expect(prompt?.text).toContain("deadbeef");
 		expect(prompt?.text).toContain("dirty state");
 		expect(prompt?.text).toContain("isolated worktree");
+		expect(prompt?.text).toContain("greetings, questions and ordinary conversation");
+		expect(prompt?.text).toContain("final answer is delivered automatically to the group");
 	});
 
 	it("is disabled by default and rejects non-loopback, credentials and non-origin URLs", async () => {
