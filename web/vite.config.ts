@@ -11,6 +11,9 @@ const buildId = process.env.PI_WEB_BUILD_ID ?? new Date().toISOString().replace(
 function swBuildIdPlugin(id: string) {
 	return {
 		name: "sw-build-id",
+		transformIndexHtml() {
+			return [{ tag: "meta", attrs: { name: "pi-web-build-id", content: id }, injectTo: "head" as const }];
+		},
 		closeBundle() {
 			const swPath = join(__dirname, "dist", "sw.js");
 			if (existsSync(swPath)) {
@@ -27,6 +30,8 @@ function swBuildIdPlugin(id: string) {
 // collides with a globally-installed pi-web-ui running on the default :8787.
 export default defineConfig({
 	root: __dirname,
+	// Keep chunks and preload dependencies relative when served through a device path.
+	base: "./",
 	plugins: [react(), swBuildIdPlugin(buildId)],
 	define: {
 		// Build id baked into the bundle: the server compares it against the

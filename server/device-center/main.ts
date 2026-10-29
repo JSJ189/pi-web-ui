@@ -11,6 +11,7 @@ import { DevicePortals, parsePortalPorts } from "./device-portals.js";
 export async function startDeviceHub(env: NodeJS.ProcessEnv = process.env) {
 	const publicUrl = env.PI_DEVICE_HUB_PUBLIC_URL;
 	const deviceDomain = env.PI_DEVICE_HUB_DEVICE_DOMAIN || undefined;
+	const pathAccess = env.PI_DEVICE_HUB_PATH_ACCESS !== "0";
 	if (!publicUrl) throw new Error("Set PI_DEVICE_HUB_PUBLIC_URL; see docs/device-center.md");
 	const port = Number(env.PI_DEVICE_HUB_PORT ?? 8790);
 	if (!Number.isInteger(port) || port < 1 || port > 65535) throw new Error("Invalid hub port");
@@ -21,13 +22,14 @@ export async function startDeviceHub(env: NodeJS.ProcessEnv = process.env) {
 		portalPorts.includes(Number(new URL(publicUrl).port || (new URL(publicUrl).protocol === "https:" ? 443 : 80)))
 	)
 		throw new Error("Portal port must differ from hub port");
-	const portals = await DevicePortals.open(dataDir, publicUrl, portalPorts);
+	const portals = await DevicePortals.open(dataDir, publicUrl, portalPorts, { pathAccess });
 	const portalServers: Server[] = [];
 	let relay: ReturnType<typeof createDeviceRelay> | undefined;
 	const hub = await createDeviceHub({
 		dataDir: resolve(env.PI_DEVICE_HUB_DATA_DIR ?? join(homedir(), ".pi-device-hub")),
 		publicUrl,
 		deviceDomain,
+		pathAccess,
 		portals,
 		allowRegistration: env.PI_DEVICE_HUB_ALLOW_REGISTRATION === "1",
 		isOnline: (id) => relay?.isOnline(id) ?? false,
@@ -43,6 +45,7 @@ export async function startDeviceHub(env: NodeJS.ProcessEnv = process.env) {
 		publicUrl,
 		deviceDomain,
 		deviceOrigins: () => portals.origins(),
+		pathAccess,
 		authenticateDevice: (id, credential) => hub.store.authenticateDevice(id, credential),
 		getAccount: (req) => hub.getRelayAccount(req),
 		ownsDevice: (accountId, id) => hub.store.getDeviceOwner(id) === accountId,
@@ -76,7 +79,7 @@ export async function startDeviceHub(env: NodeJS.ProcessEnv = process.env) {
 		);
 	};
 	try {
-		for (const portalPort of portalPorts) {
+		for (const portalPort of pathAccess ? [] : portalPorts) {
 			const server = createServer((req, res) => {
 				if (
 					req.headers.host !==

@@ -278,7 +278,10 @@ function buildId(): string {
 	if (buildIdCache === null) {
 		try {
 			const html = readFileSync(join(webDistPath(), "index.html"), "utf8");
-			buildIdCache = html.match(/\/assets\/index-([A-Za-z0-9_-]+)\.js/)?.[1] ?? "";
+			buildIdCache =
+				html.match(/<meta\s+name="pi-web-build-id"\s+content="([^"]+)"/)?.[1] ??
+				html.match(/(?:\/|\.\/)assets\/index-([A-Za-z0-9_-]+)\.js/)?.[1] ??
+				"";
 		} catch {
 			buildIdCache = "";
 		}

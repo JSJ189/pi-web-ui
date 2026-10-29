@@ -25,6 +25,7 @@ export interface DeviceHubOptions {
 	dataDir: string;
 	publicUrl: string;
 	deviceDomain?: string;
+	pathAccess?: boolean;
 	portals?: DevicePortals;
 	allowRegistration?: boolean;
 	relay?: HubRelay;
@@ -208,6 +209,7 @@ export async function createDeviceHub(options: DeviceHubOptions) {
 		createdAt: device.createdAt,
 		online: options.isOnline?.(device.id) ?? false,
 		url:
+			(options.pathAccess ? `${origin.origin}/device/${encodeURIComponent(device.id)}/` : undefined) ??
 			options.portals?.getOrigin(device.id) ??
 			(options.deviceDomain ? `${origin.protocol}//${device.id}.${options.deviceDomain}` : null),
 		alias: options.portals?.getAlias(device.id) ?? null,
@@ -324,7 +326,10 @@ export async function createDeviceHub(options: DeviceHubOptions) {
 		res.json({ deviceId: pair.deviceId, credential: pair.credential, uiCredential: pair.uiCredential });
 	});
 	app.get("/api/info", (_req, res) => {
-		res.json({ transport: origin.protocol === "https:" ? "https" : "http", deviceWebAccess: !!options.deviceDomain });
+		res.json({
+			transport: origin.protocol === "https:" ? "https" : "http",
+			deviceWebAccess: !!options.pathAccess || !!options.deviceDomain,
+		});
 	});
 	app.get("/api/devices", (req, res) =>
 		res.json({
@@ -622,9 +627,9 @@ export async function createDeviceHub(options: DeviceHubOptions) {
 		}
 		const id = String(req.params.id);
 		if (store.getDeviceOwner(id) !== owner.id) fail(404, "Device missing");
-		if (!options.portals) fail(409, "Device portals unavailable");
+		if (!options.portals && !options.pathAccess) fail(409, "Device portals unavailable");
 		if (!options.relay?.handleAliasOpen) fail(503, "Relay unavailable");
-		await options.portals.assign(id, owner.id);
+		if (!options.pathAccess) await options.portals!.assign(id, owner.id);
 		await options.relay.handleAliasOpen(req, res, id);
 	});
 	app.get("/:alias", async (req, res, next) => {
@@ -650,7 +655,7 @@ export async function createDeviceHub(options: DeviceHubOptions) {
 		const owner = account(req);
 		const id = String(req.params.id);
 		if (store.getDeviceOwner(id) !== owner.id) fail(404, "Device missing");
-		if (options.portals && !options.deviceDomain) {
+		if (options.portals && !options.deviceDomain && !options.pathAccess) {
 			try {
 				await options.portals.assign(id, owner.id);
 			} catch (error) {

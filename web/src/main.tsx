@@ -1,3 +1,5 @@
+// ESM evaluates dependencies in source order; this dependency has no application imports.
+import { opaquePortalEnvironment } from "./portal-environment";
 import { Component, StrictMode, type ReactNode } from "react";
 import { createRoot } from "react-dom/client";
 import { App } from "./App";
@@ -111,7 +113,7 @@ createRoot(document.getElementById("root")!).render(
 // server (live reload / HMR) is never intercepted or cached. The scope is
 // derived from the page URL (appBase), so sub-path deployments like /pi/ get
 // a worker scoped to the app root instead of the site root.
-if (import.meta.env.PROD && "serviceWorker" in navigator) {
+if (import.meta.env.PROD && !opaquePortalEnvironment && "serviceWorker" in navigator) {
 	// Register after load so it never blocks first paint.
 	window.addEventListener("load", () => {
 		const base = appBase();

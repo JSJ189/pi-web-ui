@@ -82,8 +82,8 @@ export function DeviceDirectory({ hubUrl, currentDeviceId }: { hubUrl: string; c
 			if (!response.ok)
 				throw new Error(
 					zh
-						? "无法打开设备，请确认设备在线、已配置访问端口且本机绑定有效。"
-						: "Could not open the device. Check connectivity, portal capacity and local pairing.",
+						? "无法打开设备，请确认设备在线且本机绑定有效。"
+						: "Could not open the device. Check connectivity and local pairing.",
 				);
 			const data = await response.json();
 			const url = new URL(data.url);
@@ -92,7 +92,10 @@ export function DeviceDirectory({ hubUrl, currentDeviceId }: { hubUrl: string; c
 				url.hostname !== new URL(hubUrl).hostname ||
 				url.username ||
 				url.password ||
-				url.pathname !== "/__device/open"
+				!(
+					url.pathname === "/__device/open" ||
+					(url.origin === new URL(hubUrl).origin && url.pathname === `/device/${encodeURIComponent(id)}/__open`)
+				)
 			)
 				throw new Error("Invalid device access URL");
 			tab.location.replace(url.href);

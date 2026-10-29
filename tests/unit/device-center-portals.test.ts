@@ -43,6 +43,81 @@ describe("parsePortalPorts", () => {
 });
 
 describe("DevicePortals", () => {
+	it("persists stable path aliases without ports or exhaustion and retires them safely", async () => {
+		const dir = await directory();
+		let registry = await DevicePortals.open(dir, origin, [], { pathAccess: true });
+		const ids = ["device /?#中文", ...Array.from({ length: 12 }, (_, index) => `device-${index}`)];
+		await Promise.all(ids.map((id, index) => registry.assign(id, "owner", `alias-${index}`)));
+		const state = JSON.parse(await readFile(join(dir, "device-portals.json"), "utf8"));
+		expect(state.version).toBe(1);
+		expect(state.ports).toEqual([]);
+		expect(state.allocations).toHaveLength(ids.length);
+		for (const entry of state.allocations) {
+			expect(entry.pathAccess).toBe(true);
+			expect(entry).not.toHaveProperty("port");
+		}
+		registry = await DevicePortals.open(dir, origin, [], { pathAccess: true });
+		expect(registry.getOrigin(ids[0])).toBe(`${origin}/device/${encodeURIComponent(ids[0])}/`);
+		expect(registry.getOrigin("missing")).toBeUndefined();
+		expect(registry.origins().size).toBe(0);
+		expect(await registry.assign(ids[0], "owner")).toEqual({ deviceId: ids[0], accountId: "owner", alias: "alias-0" });
+		expect(registry.getAlias(ids[0])).toBe("alias-0");
+		expect(registry.resolveAlias("alias-0")).toEqual({ deviceId: ids[0], accountId: "owner" });
+		await expect(registry.assign(ids[0], "intruder")).rejects.toMatchObject({ status: 409 });
+		await expect(registry.assign("other", "owner", "alias-0")).rejects.toMatchObject({ status: 409 });
+		await registry.retire(ids[0]);
+		expect(registry.getOrigin(ids[0])).toBeUndefined();
+		expect(registry.resolveAlias("alias-0")).toBeUndefined();
+		registry = await DevicePortals.open(dir, origin, [], { pathAccess: true });
+		expect(registry.getAlias(ids[0])).toBeUndefined();
+		await registry.assign("other", "owner", "alias-0");
+		expect(await registry.assign(ids[0], "owner")).toEqual({ deviceId: ids[0], accountId: "owner" });
+	});
+	it("preserves legacy allocations when switching modes and allocates ports only on legacy assignment", async () => {
+		const dir = await directory();
+		let registry = await DevicePortals.open(dir, origin, [19001, 19002]);
+		await registry.assign("legacy", "owner", "old");
+		const path = join(dir, "device-portals.json");
+		const before = await readFile(path, "utf8");
+		registry = await DevicePortals.open(dir, origin, [19001, 19002], { pathAccess: true });
+		expect(await readFile(path, "utf8")).toBe(before);
+		expect(registry.getOrigin("legacy")).toBe(`${origin}/device/legacy/`);
+		expect(await registry.assign("legacy", "owner")).toMatchObject({ port: 19001 });
+		await registry.assign("path-one", "owner", "first");
+		await registry.assign("path-two", "owner", "second");
+		expect(registry.origins().size).toBe(0);
+		registry = await DevicePortals.open(dir, origin, [19001, 19002]);
+		expect(registry.getOrigin("legacy")).toBe(`${origin}:19001`);
+		expect(registry.getOrigin("path-one")).toBeUndefined();
+		expect([...registry.origins()]).toEqual([["legacy", `${origin}:19001`]]);
+		expect(registry.resolveAlias("first")).toEqual({ deviceId: "path-one", accountId: "owner" });
+		expect(await registry.assign("path-one", "owner")).toMatchObject({ port: 19002 });
+		const allocated = await readFile(path, "utf8");
+		await expect(registry.assign("path-two", "owner", "changed")).rejects.toMatchObject({ status: 409 });
+		expect(await readFile(path, "utf8")).toBe(allocated);
+		expect(registry.getAlias("path-two")).toBe("second");
+		registry = await DevicePortals.open(dir, origin, [19001, 19002], { pathAccess: true });
+		expect(registry.getOrigin("path-two")).toBe(`${origin}/device/path-two/`);
+		expect(await registry.assign("path-two", "owner")).not.toHaveProperty("port");
+		await expect(DevicePortals.open(dir, origin, [], { pathAccess: true })).rejects.toThrow(/configuration/);
+	});
+	it("requires an explicit path marker for portless records and still validates any persisted port", async () => {
+		const dir = await directory();
+		const registry = await DevicePortals.open(dir, origin, ports, { pathAccess: true });
+		await registry.assign("one", "owner");
+		const path = join(dir, "device-portals.json");
+		const state = JSON.parse(await readFile(path, "utf8"));
+		for (const entry of [
+			{ deviceId: "one", accountId: "owner", retired: false },
+			{ ...state.allocations[0], pathAccess: false },
+			{ ...state.allocations[0], pathAccess: "true" },
+			{ ...state.allocations[0], port: null },
+			{ ...state.allocations[0], port: 19999 },
+		]) {
+			await writeFile(path, JSON.stringify({ ...state, allocations: [entry] }));
+			await expect(DevicePortals.open(dir, origin, ports, { pathAccess: true })).rejects.toThrow(/malformed/);
+		}
+	});
 	it("persists ports, aliases and detached origin snapshots", async () => {
 		const dir = await directory();
 		let registry = await DevicePortals.open(dir, `${origin}/`, ports);

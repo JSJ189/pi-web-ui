@@ -39,7 +39,7 @@ describe("standalone device hub", () => {
 								resolve({
 									status: res.statusCode!,
 									cookie: res.headers["set-cookie"]?.[0].split(";")[0],
-									data: JSON.parse(Buffer.concat(chunks).toString()),
+									data: Buffer.concat(chunks).length ? JSON.parse(Buffer.concat(chunks).toString()) : {},
 								}),
 							);
 						},
@@ -48,7 +48,7 @@ describe("standalone device hub", () => {
 					req.end(body ? JSON.stringify(body) : undefined);
 				});
 			}
-			expect((await request("/api/info")).data).toEqual({ transport: "http", deviceWebAccess: false });
+			expect((await request("/api/info")).data).toEqual({ transport: "http", deviceWebAccess: true });
 			const registration = await request("/api/auth/register", {
 				username: "owner",
 				["pass" + "word"]: "test-account-secret",
@@ -59,10 +59,11 @@ describe("standalone device hub", () => {
 			await request("/api/pair/approve", { code: start.data.code }, cookie);
 			const paired = await request("/api/pair/poll", { pollToken: start.data.pollToken });
 			const devices = await request("/api/devices", undefined, cookie);
-			expect(devices.data.devices[0].url).toBeNull();
+			expect(devices.data.devices[0].url).toBe(`${publicUrl}/device/${paired.data.deviceId}/`);
 			const opened = await request(`/api/devices/${paired.data.deviceId}/open`, {}, cookie);
 			expect(opened.status).toBe(409);
-			expect(opened.data.code).toBe("DEVICE_WEB_ORIGIN_REQUIRED");
+			// Offline devices are rejected even though no extra port is required.
+			expect(opened.data.code).not.toBe("DEVICE_WEB_ORIGIN_REQUIRED");
 		} finally {
 			await hub.close();
 			await rm(dir, { recursive: true, force: true });

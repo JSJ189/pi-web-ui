@@ -5,10 +5,11 @@ import { join } from "node:path";
 export interface DevicePortal {
 	deviceId: string;
 	accountId: string;
-	port: number;
+	port?: number;
 	alias?: string;
 }
 interface Allocation extends DevicePortal {
+	pathAccess?: boolean;
 	retired: boolean;
 }
 interface Registry {
@@ -67,9 +68,15 @@ export class DevicePortals {
 	private constructor(
 		private readonly path: string,
 		private state: Registry,
+		private readonly pathAccess: boolean,
 	) {}
 
-	static async open(dataDir: string, publicUrl: string, ports: number[]): Promise<DevicePortals> {
+	static async open(
+		dataDir: string,
+		publicUrl: string,
+		ports: number[],
+		options: { pathAccess?: boolean } = {},
+	): Promise<DevicePortals> {
 		let url: URL;
 		try {
 			url = new URL(publicUrl);
@@ -98,7 +105,11 @@ export class DevicePortals {
 			raw = await readFile(path, "utf8");
 		} catch (error) {
 			if ((error as NodeJS.ErrnoException).code !== "ENOENT") throw error;
-			const registry = new DevicePortals(path, { version: 1, publicUrl, ports: pool, allocations: [] });
+			const registry = new DevicePortals(
+				path,
+				{ version: 1, publicUrl, ports: pool, allocations: [] },
+				options.pathAccess === true,
+			);
 			await registry.persist(registry.state);
 			return registry;
 		}
@@ -122,27 +133,30 @@ export class DevicePortals {
 					!entry ||
 					!validId(entry.deviceId) ||
 					!validId(entry.accountId) ||
-					!validPort(entry.port) ||
-					!pool.includes(entry.port) ||
+					(entry.pathAccess !== undefined && typeof entry.pathAccess !== "boolean") ||
+					(entry.port === undefined
+						? entry.pathAccess !== true
+						: !validPort(entry.port) || !pool.includes(entry.port) || usedPorts.has(entry.port)) ||
 					typeof entry.retired !== "boolean" ||
 					devices.has(entry.deviceId) ||
-					usedPorts.has(entry.port) ||
 					(entry.alias !== undefined && (!validAlias(entry.alias) || entry.retired || aliases.has(entry.alias)))
 				)
 					throw new Error("Invalid allocation");
 				devices.add(entry.deviceId);
-				usedPorts.add(entry.port);
+				if (entry.port !== undefined) usedPorts.add(entry.port);
 				if (entry.alias !== undefined) aliases.add(entry.alias);
 			}
 		} catch {
 			throw new Error("Portal registry is malformed or configuration does not match");
 		}
-		return new DevicePortals(path, state);
+		return new DevicePortals(path, state, options.pathAccess === true);
 	}
 
 	getOrigin(deviceId: string): string | undefined {
 		const entry = this.state.allocations.find((item) => item.deviceId === deviceId && !item.retired);
 		if (!entry) return undefined;
+		if (this.pathAccess) return `${this.state.publicUrl}/device/${encodeURIComponent(deviceId)}/`;
+		if (entry.port === undefined) return undefined;
 		const url = new URL(this.state.publicUrl);
 		url.port = String(entry.port);
 		return url.origin;
@@ -154,9 +168,10 @@ export class DevicePortals {
 		const entry = this.state.allocations.find((item) => !item.retired && item.alias === alias);
 		return entry ? { deviceId: entry.deviceId, accountId: entry.accountId } : undefined;
 	}
-	/** A detached snapshot: relay callers cannot mutate the registry. */
+	/** Detached legacy origins only; path access must not enter the relay origin map. */
 	origins(): ReadonlyMap<string, string> {
 		const origins = new Map<string, string>();
+		if (this.pathAccess) return origins;
 		for (const entry of this.state.allocations) {
 			const origin = this.getOrigin(entry.deviceId);
 			if (origin) origins.set(entry.deviceId, origin);
@@ -174,10 +189,16 @@ export class DevicePortals {
 			if (alias !== undefined && draft.allocations.some((item) => item.deviceId !== deviceId && item.alias === alias))
 				fail(409, "Portal unavailable");
 			if (!entry) {
+				entry = { deviceId, accountId, retired: false };
+				draft.allocations.push(entry);
+			}
+			if (this.pathAccess) {
+				if (entry.port === undefined) entry.pathAccess = true;
+			} else if (entry.port === undefined) {
 				const port = draft.ports.find((port) => !draft.allocations.some((item) => item.port === port));
 				if (port === undefined) fail(409, "Portal unavailable");
-				entry = { deviceId, accountId, port, retired: false };
-				draft.allocations.push(entry);
+				entry.port = port;
+				delete entry.pathAccess;
 			}
 			entry.retired = false;
 			if (alias !== undefined) entry.alias = alias;
@@ -186,7 +207,7 @@ export class DevicePortals {
 			return {
 				deviceId: entry.deviceId,
 				accountId: entry.accountId,
-				port: entry.port,
+				...(entry.port === undefined ? {} : { port: entry.port }),
 				...(entry.alias === undefined ? {} : { alias: entry.alias }),
 			};
 		});

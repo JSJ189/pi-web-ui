@@ -3,6 +3,8 @@ import type { IncomingMessage, Server, ServerResponse } from "node:http";
 import type { Duplex } from "node:stream";
 import { WebSocket, WebSocketServer } from "ws";
 
+import { capabilityBase, createPortalResponse, parseDevicePath, portalHeaders, wrapperHtml } from "./path-portal.js";
+
 export const RELAY_LIMITS = {
 	frame: 128 * 1024,
 	chunk: 32 * 1024,
@@ -397,6 +399,7 @@ export interface DeviceRelayOptions {
 	server: Server;
 	publicUrl: string;
 	deviceDomain?: string;
+	pathAccess?: boolean;
 	deviceOrigins?: () => ReadonlyMap<string, string>;
 	authenticateDevice: (deviceId: string, credential: string) => boolean | Promise<boolean>;
 	getAccount: (
@@ -426,14 +429,39 @@ export function createDeviceRelay(options: DeviceRelayOptions) {
 		string,
 		{
 			ws: WebSocket;
-			streams: Map<string, { res?: ServerResponse; ws?: WebSocket; bytes: number; timer: NodeJS.Timeout }>;
+			streams: Map<
+				string,
+				{
+					res?: ServerResponse;
+					ws?: WebSocket;
+					portal?: ReturnType<typeof createPortalResponse>;
+					bytes: number;
+					timer: NodeJS.Timeout;
+				}
+			>;
 			tasks: Map<string, string>;
 			rpc: ReturnType<typeof createCommandChannel>;
 			messages: ReturnType<typeof createWsMessageChannel>;
 		}
 	>();
-	const tickets = new Map<string, { deviceId: string; expiresAt: number }>();
+	const tickets = new Map<string, { deviceId: string; accountId: string; generation: number; expiresAt: number }>();
 	const sessions = new Map<string, { deviceId: string; expiresAt: number }>();
+	const capabilities = new Map<string, { deviceId: string; accountId: string; expiresAt: number }>();
+	const pathRequest = (req: IncomingMessage) =>
+		options.pathAccess && req.headers.host?.toLowerCase() === hub.host.toLowerCase() ? parseDevicePath(req.url) : null;
+	function pathAuthorized(req: IncomingMessage, id: string, websocket = false) {
+		const path = pathRequest(req);
+		const session = path?.token ? capabilities.get(path.token) : undefined;
+		return !!(
+			session &&
+			session.deviceId === id &&
+			session.expiresAt > Date.now() &&
+			path?.path &&
+			safePath(path.path, websocket ? "WS" : req.method) &&
+			(!req.headers.origin || req.headers.origin === "null") &&
+			(!websocket || req.headers.origin === "null")
+		);
+	}
 	const wss = new WebSocketServer({ noServer: true, maxPayload: RELAY_LIMITS.frame, perMessageDeflate: false });
 	const browserWss = new WebSocketServer({ noServer: true, maxPayload: WS_MESSAGE_BYTES, perMessageDeflate: false });
 	let closed = false;
@@ -445,6 +473,8 @@ export function createDeviceRelay(options: DeviceRelayOptions) {
 	const deviceCookie = (id: string) =>
 		`${hub.protocol === "https:" ? "__Host-device" : "device"}${options.deviceOrigins?.().has(id) ? `-${new URL(origin(id)!).port}-${id}` : ""}`;
 	const deviceId = (req: IncomingMessage) => {
+		const path = pathRequest(req);
+		if (path) return path.id;
 		for (const [id, value] of options.deviceOrigins?.() ?? []) {
 			if (req.headers.host?.toLowerCase() === new URL(value).host.toLowerCase()) return id;
 		}
@@ -496,7 +526,7 @@ export function createDeviceRelay(options: DeviceRelayOptions) {
 	function addStream(
 		entry: typeof devices extends Map<string, infer T> ? T : never,
 		id: string,
-		stream: { res?: ServerResponse; ws?: WebSocket },
+		stream: { res?: ServerResponse; ws?: WebSocket; portal?: ReturnType<typeof createPortalResponse> },
 	) {
 		const timer = setTimeout(() => {
 			stream.res?.destroy();
@@ -524,7 +554,7 @@ export function createDeviceRelay(options: DeviceRelayOptions) {
 			res.writeHead(403).end();
 			return;
 		}
-		if (!origin(id)) {
+		if (!options.pathAccess && !origin(id)) {
 			res.writeHead(409, { "content-type": "application/json", "cache-control": "no-store" }).end(
 				JSON.stringify({
 					error: "Device web access requires an independent origin",
@@ -543,14 +573,65 @@ export function createDeviceRelay(options: DeviceRelayOptions) {
 		}
 		const ticket = randomBytes(32).toString("hex");
 		const expiresAt = Date.now() + 30_000;
-		tickets.set(ticket, { deviceId: id, expiresAt });
-		const url = `${origin(id)}/__device/open?ticket=${ticket}`;
+		tickets.set(ticket, { deviceId: id, accountId, generation, expiresAt });
+		const url = options.pathAccess
+			? `${hub.origin}/device/${id}/__open?ticket=${ticket}`
+			: `${origin(id)}/__device/open?ticket=${ticket}`;
 		if (redirect)
 			res.writeHead(302, { location: url, "cache-control": "no-store", "referrer-policy": "no-referrer" }).end();
 		else
 			res
 				.writeHead(200, { "content-type": "application/json", "cache-control": "no-store" })
 				.end(JSON.stringify({ url, expiresAt }));
+	}
+	function sendWrapper(res: ServerResponse, id: string, accountId: string, initialPath = "") {
+		if (closed || !devices.has(id)) {
+			res.writeHead(503).end();
+			return;
+		}
+		if (capabilities.size >= RELAY_LIMITS.sessions) {
+			res.writeHead(503).end();
+			return;
+		}
+		const token = randomBytes(32).toString("hex");
+		capabilities.set(token, { deviceId: id, accountId, expiresAt: Date.now() + 8 * 60 * 60_000 });
+		const wrapper = wrapperHtml(capabilityBase(id, token), initialPath);
+		res
+			.writeHead(200, {
+				"content-type": "text/html; charset=utf-8",
+				"content-security-policy": wrapper.csp,
+				"cache-control": "no-store",
+				"referrer-policy": "no-referrer",
+				"x-content-type-options": "nosniff",
+			})
+			.end(wrapper.html);
+	}
+	async function accountWrapper(req: IncomingMessage, res: ServerResponse, id: string) {
+		const generation = revision;
+		try {
+			if (
+				req.headers.origin === "null" ||
+				req.headers["sec-fetch-dest"] === "iframe" ||
+				(req.headers.origin && req.headers.origin !== hub.origin)
+			) {
+				res.writeHead(401).end();
+				return;
+			}
+			const account = await options.getAccount(req);
+			const accountId = typeof account === "string" ? account : account?.id;
+			if (!accountId || !(await options.ownsDevice(accountId, id))) {
+				res.writeHead(401).end();
+				return;
+			}
+			if (generation !== revision || closed || res.destroyed) {
+				res.writeHead(403).end();
+				return;
+			}
+			sendWrapper(res, id, accountId);
+		} catch {
+			if (!res.headersSent) res.writeHead(401).end();
+			else res.destroy();
+		}
 	}
 	function handleRequest(req: IncomingMessage, res: ServerResponse): boolean {
 		const id = deviceId(req);
@@ -563,14 +644,21 @@ export function createDeviceRelay(options: DeviceRelayOptions) {
 		}
 		res.setHeader("Cache-Control", "no-store");
 		res.setHeader("Referrer-Policy", "no-referrer");
-		const url = new URL(req.url || "/", origin(id)!);
-		if (url.pathname === "/__device/open") {
+		const path = pathRequest(req);
+		const url = new URL(req.url || "/", path ? hub.origin : origin(id)!);
+		if (path && !path.token && path.tail !== "/__open") {
+			if (path.tail !== "/" || req.method !== "GET") res.writeHead(404).end();
+			else void accountWrapper(req, res, id);
+			return true;
+		}
+		if ((path && path.tail === "/__open") || (!path && url.pathname === "/__device/open")) {
 			const key = url.searchParams.get("ticket") || "";
 			const ticket = tickets.get(key);
 			if (
 				req.method !== "GET" ||
 				!ticket ||
 				ticket.deviceId !== id ||
+				ticket.generation !== revision ||
 				ticket.expiresAt <= Date.now() ||
 				!devices.has(id) ||
 				sessions.size >= RELAY_LIMITS.sessions
@@ -579,6 +667,10 @@ export function createDeviceRelay(options: DeviceRelayOptions) {
 				return true;
 			}
 			tickets.delete(key);
+			if (path) {
+				sendWrapper(res, id, ticket.accountId, url.searchParams.get("next") === "/desktop" ? "desktop" : "");
+				return true;
+			}
 			const token = randomBytes(32).toString("hex");
 			sessions.set(token, { deviceId: id, expiresAt: Date.now() + 15 * 60_000 });
 			res
@@ -589,8 +681,12 @@ export function createDeviceRelay(options: DeviceRelayOptions) {
 				.end();
 			return true;
 		}
-		if (!authorized(req, id)) {
+		if (!(path ? pathAuthorized(req, id) : authorized(req, id))) {
 			res.writeHead(403).end();
+			return true;
+		}
+		if (path && req.method === "OPTIONS") {
+			res.writeHead(204, portalHeaders(hub, capabilityBase(id, path.token!))).end();
 			return true;
 		}
 		const entry = devices.get(id);
@@ -598,19 +694,32 @@ export function createDeviceRelay(options: DeviceRelayOptions) {
 			res.writeHead(503).end();
 			return true;
 		}
-		if (!safePath(req.url, req.method)) {
+		const forwardPath = path ? path.path! : req.url;
+		if (!safePath(forwardPath, req.method)) {
 			res.writeHead(400).end();
 			return true;
 		}
 		const streamId = randomBytes(12).toString("hex");
-		addStream(entry, streamId, { res });
+		addStream(entry, streamId, {
+			res,
+			...(path
+				? {
+						portal: createPortalResponse(
+							res,
+							hub,
+							capabilityBase(id, path.token!),
+							["/", "/desktop"].includes(path.path!.split("?")[0]),
+						),
+					}
+				: {}),
+		});
 		let bytes = 0;
 		sendFrame(entry.ws, {
 			type: "request",
 			id: streamId,
 			method: req.method,
-			path: req.url,
-			headers: cleanHeaders(req.headers),
+			path: forwardPath,
+			headers: { ...cleanHeaders(req.headers), ...(path ? { "accept-encoding": "identity" } : {}) },
 		});
 		req.on("data", (chunk: Buffer) => {
 			bytes += chunk.length;
@@ -639,12 +748,13 @@ export function createDeviceRelay(options: DeviceRelayOptions) {
 			return;
 		}
 		if (id) {
+			const path = pathRequest(req);
 			const entry = devices.get(id);
 			if (
 				!entry ||
-				!authorized(req, id, true) ||
+				!(path ? pathAuthorized(req, id, true) : authorized(req, id, true)) ||
 				entry.streams.size >= RELAY_LIMITS.streams ||
-				!safePath(req.url, "WS")
+				!safePath(path ? path.path : req.url, "WS")
 			) {
 				socket.destroy();
 				return;
@@ -656,7 +766,7 @@ export function createDeviceRelay(options: DeviceRelayOptions) {
 				sendFrame(entry.ws, {
 					type: "ws_open",
 					id: streamId,
-					path: req.url,
+					path: path ? path.path : req.url,
 					headers: cleanHeaders(req.headers),
 					protocols: req.headers["sec-websocket-protocol"],
 				});
@@ -750,15 +860,22 @@ export function createDeviceRelay(options: DeviceRelayOptions) {
 							const status = Number(frame.status);
 							if (!Number.isInteger(status) || status < 200 || status > 599 || !item.res || item.res.headersSent)
 								throw new Error("Invalid response");
-							item.res.writeHead(status, cleanHeaders((frame.headers || {}) as Record<string, unknown>));
-							item.res.flushHeaders();
+							const headers = cleanHeaders((frame.headers || {}) as Record<string, unknown>);
+							if (item.portal) item.portal.start(status, headers);
+							else {
+								item.res.writeHead(status, headers);
+								item.res.flushHeaders();
+							}
 						} else if (frame.type === "response_body") {
 							const data = decodeChunk(frame.data);
 							item.bytes += data.length;
-							if (item.res?.headersSent && item.bytes <= RELAY_LIMITS.body) item.res.write(data);
+							if (item.bytes <= RELAY_LIMITS.body) {
+								if (item.portal) item.portal.write(data);
+								else if (item.res?.headersSent) item.res.write(data);
+							}
 							if (
 								item.bytes > RELAY_LIMITS.body ||
-								!item.res?.headersSent ||
+								(!item.portal && !item.res?.headersSent) ||
 								item.res.writableLength > RELAY_LIMITS.queue
 							) {
 								item.res?.destroy();
@@ -766,6 +883,7 @@ export function createDeviceRelay(options: DeviceRelayOptions) {
 							}
 						} else if (frame.type === "response_end" || frame.type === "error") {
 							if (frame.type === "error") item.res?.destroy();
+							else if (item.portal) item.portal.end();
 							else item.res?.end();
 							item.ws?.terminate();
 							clearTimeout(item.timer);
@@ -795,7 +913,8 @@ export function createDeviceRelay(options: DeviceRelayOptions) {
 	options.server.on("upgrade", upgradeListener);
 	const heartbeat = setInterval(() => {
 		const now = Date.now();
-		for (const map of [tickets, sessions]) for (const [key, value] of map) if (value.expiresAt <= now) map.delete(key);
+		for (const map of [tickets, sessions, capabilities])
+			for (const [key, value] of map) if (value.expiresAt <= now) map.delete(key);
 		for (const entry of devices.values()) {
 			if (!alive.has(entry.ws)) {
 				entry.ws.terminate();
@@ -843,7 +962,8 @@ export function createDeviceRelay(options: DeviceRelayOptions) {
 		},
 		revoke(id: string) {
 			revision++;
-			for (const map of [tickets, sessions]) for (const [key, value] of map) if (value.deviceId === id) map.delete(key);
+			for (const map of [tickets, sessions, capabilities])
+				for (const [key, value] of map) if (value.deviceId === id) map.delete(key);
 			const entry = devices.get(id);
 			if (entry) {
 				drop(id, entry);
@@ -860,6 +980,7 @@ export function createDeviceRelay(options: DeviceRelayOptions) {
 			}
 			tickets.clear();
 			sessions.clear();
+			capabilities.clear();
 			wss.close();
 			browserWss.close();
 		},

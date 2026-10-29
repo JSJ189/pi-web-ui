@@ -19,11 +19,20 @@
 
 let cachedBase: string | null = null;
 
+/** Capability root, including when the page is a nested resource or index.html. */
+export function relayBase(pathname: string): string | null {
+	return pathname.match(/^\/device\/[^/]+\/__relay\/[^/]+\//)?.[0] ?? null;
+}
+
 /** 从页面路径纯函数推导应用根："" / "/" → "/"，"/pi/" / "/pi" / "/pi/index.html"
  *  → "/pi/"。无参时读 document.baseURI（浏览器环境），读不到则退回 Vite 构建
  *  期的 base（根部署固定为 "/"）。 */
 export function resolveBase(pathname?: string): string {
 	if (pathname === undefined) {
+		// The actual capability URL takes precedence over inherited/re-written base metadata.
+		const location = (globalThis as unknown as { location?: { pathname?: string } }).location;
+		const capability = location?.pathname && relayBase(location.pathname);
+		if (capability) return capability;
 		const doc = (
 			globalThis as unknown as {
 				document?: { baseURI?: string };
@@ -46,6 +55,8 @@ export function resolveBase(pathname?: string): string {
 			return viteBase || "/";
 		}
 	}
+	const capability = relayBase(pathname);
+	if (capability) return capability;
 	if (!pathname || pathname === "/") return "/";
 	// /pi/index.html → /pi/；/pi（无尾斜杠）→ /pi/
 	let p = pathname.replace(/index\.html$/i, "");
