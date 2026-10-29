@@ -15,14 +15,11 @@
 	--accent-contrast: #0f1419;
 	--accent-soft: rgba(242, 151, 24, 0.14);
 	--green: #587600;
-	--on-green: #ffffff;
 	--green-soft: rgba(134, 179, 0, 0.12);
 	--red: #da1717;
-	--on-red: #ffffff;
 	--red-soft: rgba(240, 113, 113, 0.1);
 	--amber: #9f5b16;
 	--blue: #0b63f3;
-	--blue-soft: rgba(59, 130, 246, 0.12);
 	--term-bg: #fcfcfc;
 	--term-fg: #5c6166;
 	--term-cursor: #f29718;
@@ -43,15 +40,9 @@
 	--term-bright-blue: #22a4e6;
 	--term-bright-magenta: #a37acc;
 	--term-bright-cyan: #4cbf99;
-	--term-bright-white: #ffffff;
-	--mono: "SF Mono", "JetBrains Mono", ui-monospace, Menlo, Consolas, monospace;
-	--mermaid-font-size: 12px;
 	--tooltip-bg: #f8f9fa;
 	--code-bg: #f0f1f3;
 	--code-text: #5c6166;
-	--code-border: var(--border-soft);
-	--code-pad: 8px 10px;
-	--card-body-pad: 4px 14px 12px;
 	--err-text: #d62222;
 	--red-text: #d62222;
 	--amber-text: #97601b;
@@ -72,32 +63,18 @@
 	--notice-warn-border: var(--amber);
 	--notice-info-border: var(--info-blue);
 	--send-blue: #f29718;
-	--on-send-blue: #1a1a1a;
 	--send-blue-hover: #e08a0d;
-	--stop-red: #ef4444;
-	--stop-red-hover: #dc2626;
 	--brand-grad-a: #f29718;
 	--brand-grad-b: #f07171;
+	--on-green: #ffffff;
+	--on-red: #ffffff;
 	--on-amber: #ffffff;
-	--search-active-fg: #1a1d26;
-	--switch-knob: #ffffff;
-	--bg-elev3: rgba(255, 255, 255, 0.06);
-	--sunken-bg: rgba(0, 0, 0, 0.15);
-	--glow-015: rgba(255, 255, 255, 0.015);
-	--glow-025: rgba(255, 255, 255, 0.025);
-	--glow-03: rgba(255, 255, 255, 0.03);
-	--glow-04: rgba(255, 255, 255, 0.04);
-	--glow-05: rgba(255, 255, 255, 0.05);
-	--glow-12: rgba(255, 255, 255, 0.12);
-	--glow-18: rgba(255, 255, 255, 0.18);
-	--glow-22: rgba(255, 255, 255, 0.22);
-	--glow-38: rgba(255, 255, 255, 0.38);
+	--on-send-blue: #1a1a1a;
+	--on-send-blue-hover: #1a1a1a;
+	--on-stop-red-hover: #ffffff;
 	--control-fg: #6b7d8f;
 	--control-bg: #f0f1f3;
 	--control-border: #e0e1e3;
-	--bg-image: none;
-	--bg-image-dim: 0.78;
-	--bg-image-blur: 0px;
 	--wallpaper-panel-alpha: 100%;
 	--topbar-bg: #f8f9fa;
 	--statusbar-bg: #fcfcfc;
@@ -106,7 +83,6 @@
 	--chip-bg: #f0f1f3;
 	--msgs-bg: #fcfcfc;
 	--inputbox-bg: #f0f1f3;
-	--menu-bg: var(--bg-elev2);
 }
 
 /* ---- syntax highlighting (Ayu Light) ---- */

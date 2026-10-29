@@ -59,6 +59,7 @@ describe("Subagent Worktree Isolation (Issue #728)", () => {
 		});
 
 		it("传入 isolation: 'worktree' 时透传给 host.spawnSubagent", async () => {
+			const controller = new AbortController();
 			const host: SubagentToolHost = {
 				spawnSubagent: vi.fn(async () => "sa-test-123"),
 				getSubagent: vi.fn(() => undefined),
@@ -73,7 +74,7 @@ describe("Subagent Worktree Isolation (Issue #728)", () => {
 			const res = (await tool.execute!(
 				"call_1",
 				{ action: "spawn", prompt: "test task", isolation: "worktree" } as any,
-				undefined,
+				controller.signal,
 				undefined,
 				{ cwd: "/test" } as any,
 			)) as any;
@@ -88,6 +89,8 @@ describe("Subagent Worktree Isolation (Issue #728)", () => {
 				undefined,
 				undefined,
 				"worktree",
+				undefined,
+				controller.signal,
 			);
 			expect(res.content[0].text).toContain("工作树隔离：已启用");
 			expect(res.details.isolation).toBe("worktree");

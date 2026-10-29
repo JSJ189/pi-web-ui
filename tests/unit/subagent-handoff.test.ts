@@ -28,7 +28,8 @@ describe("subagent_handoff (Peer-to-Peer Hand-off)", () => {
 		const tools = makeSubagentTools(host, () => "zh", "sa-source-1111");
 		const tool = tools.find((t) => t.name === "subagent");
 		expect(tool).toBeDefined();
-		expect(tool?.label).toBe("Subagent manager");
+		expect(tool?.label).toBe("Conversation collaboration (legacy alias)");
+		expect(tools.find((t) => t.name === "conversation")?.execute).toBe(tool?.execute);
 	});
 
 	it("不能交接给自身，交接给自身时应拒绝并返回错误提示", async () => {

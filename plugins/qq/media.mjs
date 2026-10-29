@@ -58,13 +58,22 @@ const MIME_BY_EXT = {
 	".wav": "audio/wav",
 	".ogg": "audio/ogg",
 	".flac": "audio/flac",
+	".m4a": "audio/mp4",
+	".aac": "audio/aac",
+	".amr": "audio/amr",
+	".opus": "audio/ogg",
+	".webm": "video/webm",
+	".mov": "video/quicktime",
+	".avif": "image/avif",
 };
 
 /** 附件 content_type（MIME 或 `voice`/`file` 标记）→ 媒体种类。 */
 export function mediaKindOfContentType(contentType) {
 	const ct = String(contentType ?? "")
 		.trim()
-		.toLowerCase();
+		.toLowerCase()
+		.split(";")[0]
+		.trim();
 	if (!ct) return "file";
 	if (ct.startsWith("image/")) return "image";
 	if (ct.startsWith("video/")) return "video";
@@ -90,9 +99,13 @@ export function qqFileTypeOfKind(kind) {
 export function extOfMedia({ contentType = "", filename = "", url = "" } = {}) {
 	const ct = String(contentType ?? "")
 		.trim()
-		.toLowerCase();
+		.toLowerCase()
+		.split(";")[0]
+		.trim();
 	if (IMAGE_MIME[ct]) return IMAGE_MIME[ct];
 	if (ct === "video/mp4") return ".mp4";
+	if (ct === "audio/mp4") return ".m4a";
+	if (ct === "audio/x-wav") return ".wav";
 	if (ct.startsWith("audio/")) {
 		const sub = ct.slice("audio/".length).replace(/[^a-z0-9]/g, "");
 		if (sub) return `.${sub === "mpeg" ? "mp3" : sub}`;
@@ -121,7 +134,7 @@ export function mediaKindOfPath(spec) {
 	if (/^https?:\/\//i.test(s)) {
 		const bare = s.split("?")[0].split("#")[0];
 		const kind = mediaKindOfContentType(mimeOfPath(bare));
-		return kind === "file" ? "image" : kind;
+		return kind;
 	}
 	return mediaKindOfContentType(mimeOfPath(s));
 }
@@ -169,14 +182,19 @@ export function formatInboundMediaLines(items = []) {
 	const lines = [];
 	for (const it of items) {
 		const label = mediaLabel(it.kind);
+		const asr = it.asrText ? `（语音转写：${it.asrText}）` : "";
 		if (it.path) {
-			const asr = it.asrText ? `（语音转写：${it.asrText}）` : "";
 			lines.push(`[${label}] 已保存到：${it.path}${asr}`);
 		} else {
 			const reason = it.reason ? `（${it.reason}）` : "";
 			const name = it.filename ? ` ${it.filename}` : "";
-			lines.push(`[${label}${name}]${reason}`);
+			lines.push(`[${label}${name}]${reason}${asr}`);
 		}
+		if (it.kind === "voice" && !it.asrText)
+			lines.push(
+				"未获得平台语音转写；当前插件不提供 ASR，音频路径不代表已理解内容，请用户补充文字或使用可用的转写工具。",
+			);
+		if (it.kind === "video") lines.push("视频尚未解析；文件路径不代表已理解画面或声音。");
 	}
 	return lines.join("\n");
 }

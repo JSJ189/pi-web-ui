@@ -4,9 +4,12 @@
  * 功能区：工程管理 | 通用节点库 + 战队模板 | 调度控制 | 视口缩放
  */
 import { useState, useRef, useEffect } from "react";
+import { createPortal } from "react-dom";
+import { useCanvasT } from "./canvas-i18n";
+import { useFloatingPanel } from "../../use-floating-panel";
 import type { CanvasCustomCard, CanvasGraph, CanvasGraphSummary, CanvasNodeRole } from "../../types";
 import { SQUAD_TEMPLATES } from "./CanvasTemplates";
-import { NODE_GROUPS, ROLE_METAS } from "./CanvasTypes";
+import { NODE_GROUPS, ROLE_METAS, isRoleImplemented } from "./CanvasTypes";
 import {
 	FiPlus,
 	FiPlay,
@@ -24,7 +27,7 @@ import {
 	FiTarget,
 } from "react-icons/fi";
 
-interface CanvasToolbarProps {
+export interface CanvasToolbarProps {
 	graph: CanvasGraph;
 	graphList: CanvasGraphSummary[];
 	onSelectGraph: (id: string) => void;
@@ -81,6 +84,7 @@ export function CanvasToolbar({
 	onResetViewport,
 	hasUnsavedChanges,
 }: CanvasToolbarProps) {
+	const t = useCanvasT();
 	const [showSquadMenu, setShowSquadMenu] = useState(false);
 	const [showGraphMenu, setShowGraphMenu] = useState(false);
 	const [showNodeMenu, setShowNodeMenu] = useState(false);
@@ -95,24 +99,24 @@ export function CanvasToolbar({
 	const renameInputRef = useRef<HTMLInputElement>(null);
 	const createInputRef = useRef<HTMLInputElement>(null);
 
-	// 点击外部关闭下拉菜单
-	useEffect(() => {
-		if (!showSquadMenu && !showGraphMenu && !showNodeMenu) return;
-		const handleClick = (e: MouseEvent) => {
-			if (showSquadMenu && squadMenuRef.current && !squadMenuRef.current.contains(e.target as Node)) {
-				setShowSquadMenu(false);
-			}
-			if (showGraphMenu && graphMenuRef.current && !graphMenuRef.current.contains(e.target as Node)) {
-				setShowGraphMenu(false);
-			}
-			if (showNodeMenu && nodeMenuRef.current && !nodeMenuRef.current.contains(e.target as Node)) {
-				setShowNodeMenu(false);
-			}
-		};
-		document.addEventListener("mousedown", handleClick);
-		return () => document.removeEventListener("mousedown", handleClick);
-	}, [showSquadMenu, showGraphMenu, showNodeMenu]);
-
+	const graphPanel = useFloatingPanel({
+		open: showGraphMenu,
+		anchor: graphMenuRef,
+		align: "left",
+		onClose: () => setShowGraphMenu(false),
+	});
+	const nodePanel = useFloatingPanel({
+		open: showNodeMenu,
+		anchor: nodeMenuRef,
+		align: "left",
+		onClose: () => setShowNodeMenu(false),
+	});
+	const squadPanel = useFloatingPanel({
+		open: showSquadMenu,
+		anchor: squadMenuRef,
+		align: "left",
+		onClose: () => setShowSquadMenu(false),
+	});
 	// 自动聚焦重命名输入框
 	useEffect(() => {
 		if (renamingGraph && renameInputRef.current) {
@@ -196,82 +200,86 @@ export function CanvasToolbar({
 					>
 						▾
 					</button>
-					{showGraphMenu && (
-						<div
-							className="canvas-dropdown-menu"
-							onPointerDown={(e) => e.stopPropagation()}
-							onMouseDown={(e) => e.stopPropagation()}
-							onWheel={(e) => e.stopPropagation()}
-						>
-							{creatingGraph ? (
-								<div className="canvas-dropdown-item canvas-inline-create" onPointerDown={(e) => e.stopPropagation()}>
-									<input
-										ref={createInputRef}
-										className="canvas-inline-input"
-										value={createValue}
-										onChange={(e) => setCreateValue(e.target.value)}
-										onKeyDown={(e) => {
-											if (e.key === "Enter") {
+					{showGraphMenu &&
+						createPortal(
+							<div
+								ref={graphPanel.panelRef}
+								style={graphPanel.style}
+								className="canvas-dropdown-menu"
+								onPointerDown={(e) => e.stopPropagation()}
+								onMouseDown={(e) => e.stopPropagation()}
+								onWheel={(e) => e.stopPropagation()}
+							>
+								{creatingGraph ? (
+									<div className="canvas-dropdown-item canvas-inline-create" onPointerDown={(e) => e.stopPropagation()}>
+										<input
+											ref={createInputRef}
+											className="canvas-inline-input"
+											value={createValue}
+											onChange={(e) => setCreateValue(e.target.value)}
+											onKeyDown={(e) => {
+												if (e.key === "Enter") {
+													handleCreateSubmit();
+													setShowGraphMenu(false);
+												} else if (e.key === "Escape") {
+													setCreatingGraph(false);
+												}
+											}}
+											placeholder="输入新工程名称..."
+											onClick={(e) => e.stopPropagation()}
+										/>
+										<button
+											type="button"
+											className="canvas-inline-confirm"
+											onClick={(e) => {
+												e.stopPropagation();
 												handleCreateSubmit();
 												setShowGraphMenu(false);
-											} else if (e.key === "Escape") {
-												setCreatingGraph(false);
-											}
-										}}
-										placeholder="输入新工程名称..."
-										onClick={(e) => e.stopPropagation()}
-									/>
-									<button
-										type="button"
-										className="canvas-inline-confirm"
-										onClick={(e) => {
-											e.stopPropagation();
-											handleCreateSubmit();
-											setShowGraphMenu(false);
-										}}
-									>
-										✓
+											}}
+										>
+											✓
+										</button>
+									</div>
+								) : (
+									<button type="button" className="canvas-dropdown-item" onClick={() => setCreatingGraph(true)}>
+										<b>
+											<FiFilePlus style={{ verticalAlign: "middle" }} /> 新建画布工程
+										</b>
+										<small>创建一个全新的空白画布</small>
 									</button>
-								</div>
-							) : (
-								<button type="button" className="canvas-dropdown-item" onClick={() => setCreatingGraph(true)}>
+								)}
+								<button
+									type="button"
+									className="canvas-dropdown-item"
+									onClick={() => {
+										setRenameValue(graph.name);
+										setRenamingGraph(true);
+										setShowGraphMenu(false);
+									}}
+								>
 									<b>
-										<FiFilePlus style={{ verticalAlign: "middle" }} /> 新建画布工程
+										<FiEdit3 style={{ verticalAlign: "middle" }} /> 重命名当前工程
 									</b>
-									<small>创建一个全新的空白画布</small>
+									<small>修改「{graph.name}」的名称</small>
 								</button>
-							)}
-							<button
-								type="button"
-								className="canvas-dropdown-item"
-								onClick={() => {
-									setRenameValue(graph.name);
-									setRenamingGraph(true);
-									setShowGraphMenu(false);
-								}}
-							>
-								<b>
-									<FiEdit3 style={{ verticalAlign: "middle" }} /> 重命名当前工程
-								</b>
-								<small>修改「{graph.name}」的名称</small>
-							</button>
-							<button
-								type="button"
-								className="canvas-dropdown-item canvas-dropdown-item-danger"
-								onClick={() => {
-									handleDeleteCurrentGraph();
-									setShowGraphMenu(false);
-								}}
-								disabled={graphList.length <= 1}
-								title={graphList.length <= 1 ? "至少需保留一个画布工程" : ""}
-							>
-								<b>
-									<FiTrash2 style={{ verticalAlign: "middle" }} /> 删除当前工程
-								</b>
-								<small>{graphList.length <= 1 ? "仅剩一个工程，无法删除" : `永久删除「${graph.name}」`}</small>
-							</button>
-						</div>
-					)}
+								<button
+									type="button"
+									className="canvas-dropdown-item canvas-dropdown-item-danger"
+									onClick={() => {
+										handleDeleteCurrentGraph();
+										setShowGraphMenu(false);
+									}}
+									disabled={graphList.length <= 1}
+									title={graphList.length <= 1 ? "至少需保留一个画布工程" : ""}
+								>
+									<b>
+										<FiTrash2 style={{ verticalAlign: "middle" }} /> 删除当前工程
+									</b>
+									<small>{graphList.length <= 1 ? "仅剩一个工程，无法删除" : `永久删除「${graph.name}」`}</small>
+								</button>
+							</div>,
+							document.body,
+						)}
 				</div>
 
 				<button
@@ -294,7 +302,7 @@ export function CanvasToolbar({
 					onClick={() => onAddNode("coder")}
 					title="快速新增一个研发工程师节点，更多类型请点右侧节点库"
 				>
-					<FiPlus /> 新增队友
+					<FiPlus /> {t("新增队友", "Add teammate")}
 				</button>
 
 				<div className="canvas-dropdown-wrap" ref={nodeMenuRef}>
@@ -302,78 +310,82 @@ export function CanvasToolbar({
 						type="button"
 						className="canvas-toolbar-btn"
 						onClick={() => setShowNodeMenu(!showNodeMenu)}
-						title="通用节点库：触发 / 智能体 / 逻辑控制 / 工具数据 / 评估收尾（对标 LangGraph / n8n / Dify）"
+						title={t("可用节点；未实现角色已隐藏", "Available nodes; unimplemented roles are hidden")}
 					>
-						节点库 ▾
+						{t("节点库", "Node library")} ▾
 					</button>
 
-					{showNodeMenu && (
-						<div
-							className="canvas-dropdown-menu canvas-node-palette"
-							onPointerDown={(e) => e.stopPropagation()}
-							onMouseDown={(e) => e.stopPropagation()}
-							onWheel={(e) => e.stopPropagation()}
-						>
-							{customCards.length > 0 && (
-								<div className="canvas-palette-group">
-									<div className="canvas-palette-group-title">自定义卡片（{customCards.length}）</div>
-									{customCards.map((c) => (
-										<div
-											key={c.id}
-											className="canvas-dropdown-item"
-											style={{ display: "flex", alignItems: "center", gap: 6 }}
-										>
-											<button
-												type="button"
-												style={{ flex: 1, textAlign: "left", background: "none", border: "none", cursor: "pointer" }}
-												onClick={() => {
-													onPlaceCard?.(c);
-													setShowNodeMenu(false);
-												}}
-												title={c.role + (c.instruction ? "：" + c.instruction.slice(0, 80) : "")}
-											>
-												<b>🧩 {c.title}</b>
-												<small>{c.role}</small>
-											</button>
-											<button
-												type="button"
-												className="canvas-toolbar-btn"
-												onClick={() => onDeleteCard?.(c.id)}
-												title={"删除卡片 " + c.title}
-											>
-												×
-											</button>
-										</div>
-									))}
-								</div>
-							)}
-							{NODE_GROUPS.map((g) => (
-								<div key={g.id} className="canvas-palette-group">
-									<div className="canvas-palette-group-title">{g.labelZh}</div>
-									{(Object.values(ROLE_METAS) as (typeof ROLE_METAS)[keyof typeof ROLE_METAS][])
-										.filter((m) => m.group === g.id)
-										.map((m) => (
-											<button
-												key={m.role}
-												type="button"
+					{showNodeMenu &&
+						createPortal(
+							<div
+								ref={nodePanel.panelRef}
+								style={nodePanel.style}
+								className="canvas-dropdown-menu canvas-node-palette"
+								onPointerDown={(e) => e.stopPropagation()}
+								onMouseDown={(e) => e.stopPropagation()}
+								onWheel={(e) => e.stopPropagation()}
+							>
+								{customCards.length > 0 && (
+									<div className="canvas-palette-group">
+										<div className="canvas-palette-group-title">自定义卡片（{customCards.length}）</div>
+										{customCards.map((c) => (
+											<div
+												key={c.id}
 												className="canvas-dropdown-item"
-												onClick={() => {
-													onAddNode(m.role);
-													setShowNodeMenu(false);
-												}}
-												title={m.blurb}
+												style={{ display: "flex", alignItems: "center", gap: 6 }}
 											>
-												<b>
-													<span style={{ marginRight: 6 }}>{m.icon}</span>
-													{m.labelZh}
-												</b>
-												<small>{m.blurb}</small>
-											</button>
+												<button
+													type="button"
+													style={{ flex: 1, textAlign: "left", background: "none", border: "none", cursor: "pointer" }}
+													onClick={() => {
+														onPlaceCard?.(c);
+														setShowNodeMenu(false);
+													}}
+													title={c.role + (c.instruction ? "：" + c.instruction.slice(0, 80) : "")}
+												>
+													<b>🧩 {c.title}</b>
+													<small>{c.role}</small>
+												</button>
+												<button
+													type="button"
+													className="canvas-toolbar-btn"
+													onClick={() => onDeleteCard?.(c.id)}
+													title={"删除卡片 " + c.title}
+												>
+													×
+												</button>
+											</div>
 										))}
-								</div>
-							))}
-						</div>
-					)}
+									</div>
+								)}
+								{NODE_GROUPS.map((g) => (
+									<div key={g.id} className="canvas-palette-group">
+										<div className="canvas-palette-group-title">{t(g.labelZh, g.labelEn)}</div>
+										{(Object.values(ROLE_METAS) as (typeof ROLE_METAS)[keyof typeof ROLE_METAS][])
+											.filter((m) => m.group === g.id && isRoleImplemented(m.role))
+											.map((m) => (
+												<button
+													key={m.role}
+													type="button"
+													className="canvas-dropdown-item"
+													onClick={() => {
+														onAddNode(m.role);
+														setShowNodeMenu(false);
+													}}
+													title={m.blurb}
+												>
+													<b>
+														<span style={{ marginRight: 6 }}>{m.icon}</span>
+														{t(m.labelZh, m.labelEn)}
+													</b>
+													<small>{m.blurb}</small>
+												</button>
+											))}
+									</div>
+								))}
+							</div>,
+							document.body,
+						)}
 				</div>
 
 				<div className="canvas-dropdown-wrap" ref={squadMenuRef}>
@@ -381,34 +393,41 @@ export function CanvasToolbar({
 						type="button"
 						className="canvas-toolbar-btn"
 						onClick={() => setShowSquadMenu(!showSquadMenu)}
-						title="加载官方开箱即用战队模板"
+						title={t(
+							"加载串行工作流，运行前检查任务与验收标准",
+							"Load a sequential workflow; review tasks and acceptance criteria before running",
+						)}
 					>
-						<FiUsers /> 战队模板 ▾
+						<FiUsers /> {t("串行模板", "Sequential templates")} ▾
 					</button>
 
-					{showSquadMenu && (
-						<div
-							className="canvas-dropdown-menu"
-							onPointerDown={(e) => e.stopPropagation()}
-							onMouseDown={(e) => e.stopPropagation()}
-							onWheel={(e) => e.stopPropagation()}
-						>
-							{SQUAD_TEMPLATES.map((tmpl) => (
-								<button
-									key={tmpl.id}
-									type="button"
-									className="canvas-dropdown-item"
-									onClick={() => {
-										onApplyTemplate(tmpl.createGraph());
-										setShowSquadMenu(false);
-									}}
-								>
-									<b>{tmpl.title}</b>
-									<small>{tmpl.desc}</small>
-								</button>
-							))}
-						</div>
-					)}
+					{showSquadMenu &&
+						createPortal(
+							<div
+								ref={squadPanel.panelRef}
+								style={squadPanel.style}
+								className="canvas-dropdown-menu"
+								onPointerDown={(e) => e.stopPropagation()}
+								onMouseDown={(e) => e.stopPropagation()}
+								onWheel={(e) => e.stopPropagation()}
+							>
+								{SQUAD_TEMPLATES.map((tmpl) => (
+									<button
+										key={tmpl.id}
+										type="button"
+										className="canvas-dropdown-item"
+										onClick={() => {
+											onApplyTemplate(tmpl.createGraph());
+											setShowSquadMenu(false);
+										}}
+									>
+										<b>{tmpl.title}</b>
+										<small>{tmpl.desc}</small>
+									</button>
+								))}
+							</div>,
+							document.body,
+						)}
 				</div>
 			</div>
 
@@ -418,11 +437,17 @@ export function CanvasToolbar({
 			<div className="canvas-toolbar-group">
 				{graph.status === "running" ? (
 					<button type="button" className="canvas-toolbar-btn stop" onClick={onStopAll} title="全部停止">
-						<FiSquare /> 全部停止
+						<FiSquare /> {t("全部停止", "Stop all")}
 					</button>
 				) : (
-					<button type="button" className="canvas-toolbar-btn run" onClick={onRunAll} title="启动全队流水线">
-						<FiPlay /> 启动流水线
+					<button
+						type="button"
+						className="canvas-toolbar-btn run"
+						disabled={graph.nodes.some((n) => !isRoleImplemented(n.role))}
+						onClick={onRunAll}
+						title="启动全队流水线"
+					>
+						<FiPlay /> {t("运行流程", "Run workflow")}
 					</button>
 				)}
 

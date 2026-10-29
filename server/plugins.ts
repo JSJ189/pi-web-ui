@@ -26,11 +26,13 @@ import {
 	type PluginAssetResult,
 	type PluginAssetProgress,
 } from "./plugin-assets.js";
+import { AsyncLocalStorage } from "node:async_hooks";
 import { mkdir, readdir, readFile, rm, stat, writeFile } from "node:fs/promises";
 import { cpSync, existsSync, lstatSync, readFileSync, readdirSync, watch as fsWatch, writeFileSync } from "node:fs";
 import { dirname, isAbsolute, join, relative, resolve, sep } from "node:path";
 import { pathToFileURL } from "node:url";
 import { writeJsonAtomicSync } from "./atomic-file.js";
+import { normalizePluginChatAttachments } from "./plugin-chat-attachments.js";
 import {
 	type ServerMessage,
 	type UiMessage,
@@ -48,12 +50,19 @@ import {
 	type PluginBusEvent,
 	type PluginModelInfo,
 	type PluginStats,
+	type PromptAttachment,
 } from "./protocol.js";
 import { UI_SLOTS } from "./plugin-ui-slots.js";
 import { LeftPanelRunningStore } from "./left-panel-running.js";
 import type { PluginPanelGroup } from "./protocol.js";
 import { pick, type ServerLang } from "./i18n.js";
-import { PluginStorage, PluginSecrets, ensurePluginDeps, WorkspaceFS, withFileRmwLock } from "./plugin-facilities.js";
+import {
+	PluginStorage,
+	PluginSecrets,
+	ensurePluginDeps,
+	WorkspaceFS,
+	withFileRmwLockSync,
+} from "./plugin-facilities.js";
 import {
 	parseCronSpec,
 	armDelay,
@@ -102,7 +111,7 @@ import {
 	type McpInstallSpec,
 	type McpInstallResult,
 } from "./mcp-manager.js";
-import type { McpBridge } from "./mcp-bridge.js";
+import type { McpProjectRuntimeRegistry } from "./mcp-project-runtime.js";
 import type { UiMcpServer } from "./protocol.js";
 import type { Request, Response } from "express";
 import { createHash } from "node:crypto";
@@ -244,6 +253,8 @@ export interface PluginRunEvent {
  *  issue #226：对齐定时任务（chatFromScheduler）的四件套——cwd 不传时回落
  *  该伪客户端当前目录（首次即宿主启动目录），传了则做存在性 + 系统目录校验。 */
 export interface PluginChatRequest {
+	/** Image bytes or file references, validated before delivery (8 items, 10 MiB each, 20 MiB total). */
+	attachments?: PromptAttachment[];
 	/** 送给 agent 的任务文本（插件应已拼好发送者前缀、裁剪封顶）。 */
 	text: string;
 	/** 通道内的账号标识（多账号隔离：每个 accountId 独立伪客户端/会话）。 */
@@ -505,7 +516,7 @@ export interface PluginHost {
 	): Promise<{ ok: boolean; error?: string }>;
 	/** 插队指定对话的当前运行（经 runSteerer 注入点；无注入回 {ok:false}）。 */
 	steer(conversationId: string, text: string): Promise<{ ok: boolean; error?: string }>;
-	/** 中止指定对话的运行（经 runAborter 注入点；无注入回 {ok:false}）。 */
+	/** Abort a stable plugin runId (pr- prefix, safe after takeover) or a legacy local conversationId. */
 	abortRun(conversationId: string): Promise<{ ok: boolean; error?: string }>;
 	/** 订阅「当前打开对话变了」（切历史会话 / 切 running 对话 / 新对话——
 	 *  轨迹类插件靠它重拉时间线，否则切会话后视图一直是旧的）。返回注销函数。 */
@@ -888,8 +899,20 @@ export class PluginEffectStack {
 	/** 登记一条副作用；返回「只撤这一条」的注销函数（幂等，重复调用无副作用）。 */
 	add(label: string, dispose: () => void): () => void {
 		const item: PluginEffect = { label, dispose };
+		if (this.released) {
+			try {
+				dispose();
+			} catch (err) {
+				this.report(label, err);
+			}
+			return () => {};
+		}
 		this.items.push(item);
 		return () => this.remove(item);
+	}
+
+	get isReleased(): boolean {
+		return this.released;
 	}
 
 	/** 当前未回卷的副作用数（单测断言「activate → deactivate 后栈空」）。 */
@@ -1709,7 +1732,7 @@ function cleanNonSecretSettingsField(
 }
 
 /** 校验并写回 settings（storage.json 的 settings 键，原子写）；返回错误信息或 null。
- *  secret 字段写加密 secrets（明文永不落盘、不进 storage.json）：空串/缺省 = 不改；
+ *  secret 字段加密后与 settings 同文件原子提交（明文永不落盘）：空串/缺省 = 不改；
  *  返回的 clean 含 secret 真值（给 onSettingsChanged 用），调用方不得下发浏览器。 */
 function saveSettingsValues(
 	dir: string,
@@ -1721,57 +1744,60 @@ function saveSettingsValues(
 ): { error?: string; clean: Record<string, unknown> } {
 	const l = lang?.() ?? "en";
 	const clean: Record<string, unknown> = {};
-	for (const f of schema) {
-		const v = values?.[f.key];
-		if (f.type !== "secret") {
-			const r = cleanNonSecretSettingsField(f, v, l);
-			if (r.error) return { error: r.error, clean };
-			clean[f.key] = r.value;
-		} else if (f.type === "secret") {
-			// 空串/缺省 = 不改（浏览器侧回显的本来就是有无布尔，前端把“没碰”发成空串）。
-			if (v === undefined || v === "") {
-				clean[f.key] = secrets?.get(secretSettingKey(f.key)) ?? f.default ?? "";
-			} else {
-				const s = String(v);
-				if (s.length > 4096) {
-					return {
-						error: pick(l, `${f.label} 过长`, `${f.label} too long`, "plugins.settings.too.long", {
-							"f.label": f.label,
-						}),
-						clean,
-					};
-				}
-				try {
-					secrets?.set(secretSettingKey(f.key), s);
-				} catch (err) {
-					return { error: (err as Error).message, clean };
-				}
-				clean[f.key] = s;
-			}
-		} else {
-			clean[f.key] = v === undefined ? (f.default ?? "") : String(v);
-		}
-	}
+	const secretUpdates: Record<string, string> = {};
 	try {
+		for (const f of schema) {
+			const v = values?.[f.key];
+			if (f.type !== "secret") {
+				const r = cleanNonSecretSettingsField(f, v, l);
+				if (r.error) return { error: r.error, clean };
+				clean[f.key] = r.value;
+			} else if (f.type === "secret") {
+				// 空串/缺省 = 不改（浏览器侧回显的本来就是有无布尔，前端把“没碰”发成空串）。
+				if (v === undefined || v === "") {
+					clean[f.key] = secrets?.get(secretSettingKey(f.key)) ?? f.default ?? "";
+				} else {
+					const s = String(v);
+					if (s.length > 4096) {
+						return {
+							error: pick(l, `${f.label} 过长`, `${f.label} too long`, "plugins.settings.too.long", {
+								"f.label": f.label,
+							}),
+							clean,
+						};
+					}
+					secretUpdates[secretSettingKey(f.key)] = s;
+					clean[f.key] = s;
+				}
+			} else {
+				clean[f.key] = v === undefined ? (f.default ?? "") : String(v);
+			}
+		}
 		// 保留 storage.json 里其它键（插件自己的数据），只动 settings。
-		// secret 真值永不进 storage.json（只进加密 secrets），这里整份剥掉。
+		// settings 只存普通值，secret 密文由 commitSettings 写入宿主保留容器。
 		const secretKeys = new Set(schema.filter((f) => f.type === "secret").map((f) => f.key));
 		const persist: Record<string, unknown> = {};
 		for (const [k, v] of Object.entries(clean)) if (!secretKeys.has(k)) persist[k] = v;
 		const file = join(dir, "storage.json");
 		// 与 PluginStorage.set/delete 同一把按文件路径的 RMW 锁（见 plugin-facilities.ts
 		// 的 withFileRmwLock）：两个「读-改-写」者串行，谁也不会拿旧快照抹掉对方刚写的键。
-		withFileRmwLock(file, () => {
-			let existing: Record<string, unknown> = {};
-			try {
-				existing = JSON.parse(readFileSync(file, "utf8")) as Record<string, unknown>;
-			} catch {
-				/* 首次 */
+		withFileRmwLockSync(file, () => {
+			if (secrets) secrets.commitSettings(persist, secretUpdates);
+			else {
+				let existing: Record<string, unknown> = {};
+				try {
+					const parsed: unknown = JSON.parse(readFileSync(file, "utf8"));
+					if (!parsed || typeof parsed !== "object" || Array.isArray(parsed)) throw new Error("Invalid plugin storage");
+					existing = parsed as Record<string, unknown>;
+				} catch (err) {
+					if ((err as NodeJS.ErrnoException).code !== "ENOENT") throw err;
+				}
+				writeJsonAtomicSync(file, { ...existing, settings: persist }, 0);
 			}
-			writeJsonAtomicSync(file, { ...existing, settings: persist }, 0);
 		});
 	} catch (err) {
 		console.error(`[plugins] settings persist failed (${dir}):`, err);
+		return { error: (err as Error).message, clean };
 	}
 	return { clean };
 }
@@ -1804,14 +1830,32 @@ export class PluginManager {
 	private panelSweepTimer: ReturnType<typeof setInterval> | null = null;
 	/** 服务端重载纪元：每次 reload() +1，前端用作 import 缓存击穿参数。 */
 	private epochCounter = 0;
+	/** 生命周期代次独立于客户端缓存 epoch（授权变化不会取消激活）。 */
+	private lifecycleGeneration = 0;
+	private loading: Promise<UiPluginInfo[]> | undefined;
+	private reloading: Promise<UiPluginInfo[]> | undefined;
+	private activatingEffects = new Set<PluginEffectStack>();
 	/** 插件市场列表纪元：每次 add/remove +1，前端据此重渲。 */
 	private catalogEpoch = 0;
 	/** 当前全局工作区（host.cwd 的背后存储）——随 notifyCwd 更新。 */
-	private cwdValue: string;
+	private globalCwd!: string;
+	private readonly httpWorkspace = new AsyncLocalStorage<{ cwd: string; roots: string[] }>();
+	private get cwdValue(): string {
+		return this.httpWorkspace.getStore()?.cwd ?? this.globalCwd;
+	}
+	private set cwdValue(value: string) {
+		this.globalCwd = value;
+	}
 	/** 当前项目的**额外工作区根**（宿主侧多根，见 protocol 的 set_workspace_roots）——
 	 *  由 index.ts 在 set_cwd / set_workspace_roots 后调 notifyWorkspaceRoots 同步。
 	 *  它们只影响「哪些路径算工作区内」（免授权的受支持路径），不改变 cwd 本身。 */
-	private workspaceRoots: string[] = [];
+	private globalWorkspaceRoots: string[] = [];
+	private get workspaceRoots(): string[] {
+		return this.httpWorkspace.getStore()?.roots ?? this.globalWorkspaceRoots;
+	}
+	private set workspaceRoots(value: string[]) {
+		this.globalWorkspaceRoots = value;
+	}
 	/** 插件目录授权表（<dataDir>/plugin-grants.json，issue #146）。 */
 	readonly grants: PluginGrantsStore;
 	/** 特权 DOM 授权表（<dataDir>/plugin-dom.json）：wantsDom 插件的 bundle 门禁。 */
@@ -1965,7 +2009,13 @@ export class PluginManager {
 					"plugins.settings.no.declarative",
 				),
 			};
-		const { error, clean } = saveSettingsValues(dir, schema, values, lang, new PluginSecrets(this.dataDir, dir));
+		let result: ReturnType<typeof saveSettingsValues>;
+		try {
+			result = saveSettingsValues(dir, schema, values, lang, new PluginSecrets(this.dataDir, dir));
+		} catch (err) {
+			return { error: (err as Error).message };
+		}
+		const { error, clean } = result;
 		if (error) return { error };
 		// 通知插件（异常隔离）
 		for (const h of this.loaded.get(pluginId)?.settingsHandlers ?? []) {
@@ -2136,7 +2186,22 @@ export class PluginManager {
 
 	/** index.ts 的 /plugins-api/:id/* 挂载点转发到这里：找到对应插件的已注册
 	 *  路由并执行；未知插件/路径 → 404，handler 抛错 → 500（不炸进程）。 */
-	handleHttp(pluginId: string, method: string, pathIn: string, req: Request, res: Response): void {
+	handleHttp(
+		pluginId: string,
+		method: string,
+		pathIn: string,
+		req: Request,
+		res: Response,
+		workspace?: { cwd: string; roots?: readonly string[] },
+	): void {
+		const context = {
+			cwd: resolve(workspace?.cwd ?? this.globalCwd),
+			roots: [...(workspace?.roots ?? (workspace ? [] : this.globalWorkspaceRoots))],
+		};
+		this.httpWorkspace.run(context, () => this.handleHttpInWorkspace(pluginId, method, pathIn, req, res));
+	}
+
+	private handleHttpInWorkspace(pluginId: string, method: string, pathIn: string, req: Request, res: Response): void {
 		if (!ID_RE.test(pluginId)) {
 			res.status(404).end("plugin not found");
 			return;
@@ -2358,16 +2423,25 @@ export class PluginManager {
 	/** 服务端热重载：反激活全部 → 清缓存 → 重扫重激活 → epoch+1。
 	 *  返回新目录清单（含激活结果）。重激活后的插件实例是新模块，
 	 *  内存状态为初始值——逐个客户端触发 onAttach 让它们重推自身状态。 */
-	async reload(lang?: () => ServerLang): Promise<UiPluginInfo[]> {
+	reload(lang?: () => ServerLang): Promise<UiPluginInfo[]> {
+		if (this.reloading) return this.reloading;
 		this.dispose();
-		this.attempted.clear();
 		this.epochCounter += 1;
-		const list = await this.ensureLoaded(lang);
-		for (const s of this.senders) {
-			const cid = s.cid();
-			if (cid) this.notifyAttach(cid);
-		}
-		return list;
+		const generation = this.lifecycleGeneration;
+		const pending = this.ensureLoaded(lang)
+			.then((list) => {
+				if (generation !== this.lifecycleGeneration) return [];
+				for (const s of this.senders) {
+					const cid = s.cid();
+					if (cid) this.notifyAttach(cid);
+				}
+				return list;
+			})
+			.finally(() => {
+				if (this.reloading === pending) this.reloading = undefined;
+			});
+		this.reloading = pending;
+		return pending;
 	}
 
 	/** 每个客户端 attach 后调用：让各插件向该客户端推送自身完整状态。
@@ -2549,7 +2623,7 @@ export class PluginManager {
 	/** 由 index.ts 接入 agent-service：模型列表（host.models.list 的底层）。无注入回 []。 */
 	modelLister: (() => PluginModelInfo[] | Promise<PluginModelInfo[]>) | undefined = undefined;
 	/** 由 index.ts 接入 McpBridge：供 host.mcp 读取实时运行状态与热重载。 */
-	mcpBridge: McpBridge | undefined = undefined;
+	mcpProjects: McpProjectRuntimeRegistry | undefined = undefined;
 	/** 插件能力动态授权表（host.requestPermission 的底层，见 server/plugin-permissions.ts）。 */
 	readonly permGrants: PluginPermissionStore;
 	/** 由 index.ts 注入：向浏览器请求能力授权的用户确认（{ok, remember}）。
@@ -3094,9 +3168,19 @@ export class PluginManager {
 	 * attach 时调用：重扫目录 + 激活尚未加载的新插件。
 	 * 返回给浏览器的目录（含激活失败的条目，前端显示为不可用）。
 	 */
-	async ensureLoaded(lang?: () => ServerLang): Promise<UiPluginInfo[]> {
+	ensureLoaded(lang?: () => ServerLang): Promise<UiPluginInfo[]> {
+		if (this.loading) return this.loading;
+		const pending = this.loadGeneration(this.lifecycleGeneration, lang).finally(() => {
+			if (this.loading === pending) this.loading = undefined;
+		});
+		this.loading = pending;
+		return pending;
+	}
+
+	private async loadGeneration(generation: number, lang?: () => ServerLang): Promise<UiPluginInfo[]> {
 		const l = lang?.() ?? "en";
 		const found = await this.scan(lang);
+		if (generation !== this.lifecycleGeneration) return [];
 		const byId = new Map(found.map((f) => [f.id, f]));
 		const scannedIds = new Set(byId.keys());
 		// P2-8：依赖拓扑排序激活（被依赖者先行；决定启动时机的是依赖，不是目录顺序）。
@@ -3122,6 +3206,7 @@ export class PluginManager {
 			if (this.loaded.has(info.id) || this.attempted.has(info.id)) continue;
 			if (!existsSync(join(this.pluginsDir, info.id, "index.mjs"))) continue; // 纯前端插件
 			await this.activate(info, lang);
+			if (generation !== this.lifecycleGeneration) return [];
 		}
 		// 已被删除的插件：调用 deactivate 并移出缓存
 		// eslint-disable-next-line unicorn/no-useless-spread -- snapshot: handlers may unsubscribe mid-emit
@@ -3176,6 +3261,17 @@ export class PluginManager {
 		}
 	}
 
+	/** 插件可返回 async cleanup：观察拒绝，避免旧代清理变成未处理的 rejection。 */
+	private runDeactivate(id: string, deactivate?: () => void): void {
+		try {
+			void Promise.resolve(deactivate?.()).catch((err: unknown) => {
+				console.error(`[plugin:${id}] deactivate failed:`, err);
+			});
+		} catch (err) {
+			console.error(`[plugin:${id}] deactivate failed:`, err);
+		}
+	}
+
 	/** 反激活单个插件：deactivate + 注销 AI 工具 + 清缓存。
 	 *
 	 *  注意这里必须把 id 从 attempted 里摘掉：目录一时不在（`pi-web-ui install --force`
@@ -3184,11 +3280,7 @@ export class PluginManager {
 	 *  前端只会看到「代理请求失败 404 <url>」（插件的 /proxy 路由不存在），且 CLI 承诺的
 	 *  「刷新浏览器即可加载」失效，必须重启服务才能恢复。 */
 	private deactivateEntry(id: string, p: LoadedPlugin): void {
-		try {
-			p.deactivate?.();
-		} catch (err) {
-			console.error(`[plugin:${id}] deactivate failed:`, err);
-		}
+		this.runDeactivate(id, p.deactivate);
 		this.releaseEntry(p);
 		this.loaded.delete(id);
 		this.messageHandlers.delete(id);
@@ -3210,14 +3302,17 @@ export class PluginManager {
 
 	/** 关机 / reload 时反激活全部插件（dispose 后 loaded 为空，后续 releaseEntry 是 no-op）。 */
 	dispose(): void {
+		this.lifecycleGeneration += 1;
+		this.loading = undefined;
+		this.reloading = undefined;
+		this.attempted.clear();
+		this.activatingGates.clear();
+		for (const effects of this.activatingEffects) effects.release();
+		this.activatingEffects.clear();
 		const pluginIds = new Set<string>();
 		for (const [id, p] of this.loaded) {
 			pluginIds.add(id);
-			try {
-				p.deactivate?.();
-			} catch (err) {
-				console.error(`[plugin:${id}] deactivate failed:`, err);
-			}
+			this.runDeactivate(id, p.deactivate);
 		}
 		// ① 先回卷全部 effect 栈（含 bgTask 停表、工具/命令/路由/watch/UI 条目注销），
 		//    并把 loaded 清掉 —— 之后逐个走 releaseEntry 的兜底回收。
@@ -3346,11 +3441,13 @@ export class PluginManager {
 
 	/** 读 manifest 清单；坏目录（无 manifest/id 非法）直接跳过。 */
 	private async scan(lang?: () => ServerLang): Promise<UiPluginInfo[]> {
+		const generation = this.lifecycleGeneration;
 		this.syncBuiltinPlugins();
 		const l = lang?.() ?? "en";
 		let names: string[];
 		try {
 			names = await readdir(this.pluginsDir);
+			if (generation !== this.lifecycleGeneration) return [];
 		} catch {
 			return []; // 目录不存在 = 没装任何插件
 		}
@@ -3360,6 +3457,7 @@ export class PluginManager {
 			const dir = join(this.pluginsDir, name);
 			try {
 				const st = await stat(dir);
+				if (generation !== this.lifecycleGeneration) return [];
 				if (!st.isDirectory()) continue;
 			} catch {
 				// 目录不存在（如失效的软链接）或非目录/不可访问，跳过
@@ -3367,6 +3465,7 @@ export class PluginManager {
 			}
 			try {
 				const raw = await readFile(join(dir, "manifest.json"), "utf8");
+				if (generation !== this.lifecycleGeneration) return [];
 				// wantsDom 快照供静态门禁用（manifest 坏了 → JSON.parse 抛 → catch 跳过，旧快照残留无害：门禁只拦「快照里要且没授权」的）。
 				const m = JSON.parse(raw) as {
 					id?: string;
@@ -3583,6 +3682,7 @@ export class PluginManager {
 						})
 						.catch(() => undefined),
 				});
+				if (generation !== this.lifecycleGeneration) return [];
 				// 诊断随清单下发：manifest 解析 + 到目前为止的运行时诊断。
 				this.manifestDiags.set(name, uiDiags);
 				const agentTools = this.agentToolsSnapshot(name);
@@ -3595,6 +3695,7 @@ export class PluginManager {
 					else delete lp.info.diagnostics;
 				}
 			} catch {
+				if (generation !== this.lifecycleGeneration) return [];
 				// 无 manifest.json / JSON 解析失败 —— 占位行展示（坏插件不跳过，
 				// 设置面板清单标红 + 给原因；ensureLoaded 照例跳过激活）。
 				const msg = pick(
@@ -3744,7 +3845,11 @@ export class PluginManager {
 		// UI 条目/事件订阅…）都经 effects.add 登记，反激活时**逆序**回卷 —— 插件忘写
 		// 注销也不会留下孤儿订阅/定时器/路由（热重载后事件双触发、定时器叠加、watcher
 		// 堆积都是这个漏法的症状）。cleanup 抛错只记诊断，不阻断回卷。
-		const effects = new PluginEffectStack(info.id, (m) => this.pushRuntimeDiag(info.id, m));
+		const generation = this.lifecycleGeneration;
+		const effects = new PluginEffectStack(info.id, (m) => {
+			if (generation === this.lifecycleGeneration) this.pushRuntimeDiag(info.id, m);
+		});
+		const isCurrent = () => generation === this.lifecycleGeneration && !effects.isReleased;
 		// 宿主 API 版本协商：插件要的比宿主新 → 明确拒绝（而不是让它在运行期
 		// 撞 undefined 接口莫名其妙地坏）。与激活失败同一处理：error 字段 + 置灰。
 		let apiVersion = 1;
@@ -4071,6 +4176,12 @@ export class PluginManager {
 			// issue #226：透传定时任务对齐的四件套（各按长度封顶，语义校验归宿主 chatFromPlugin）。
 			const r = ((req as PluginChatRequest | undefined) ?? {}) as PluginChatRequest;
 			const passthrough: PluginChatRequest = { text, accountId };
+			try {
+				const attachments = normalizePluginChatAttachments(r.attachments);
+				if (attachments?.length) passthrough.attachments = attachments;
+			} catch (err) {
+				return Promise.reject(err);
+			}
 			const cwd = String(r.cwd ?? "").trim();
 			if (cwd) passthrough.cwd = cwd.slice(0, 1024);
 			const conversationId = String(r.conversationId ?? "").trim();
@@ -4594,6 +4705,7 @@ export class PluginManager {
 						inFlight = true;
 						try {
 							const res = await checkFn();
+							if (!isCurrent() || !bgTaskTable.has(id)) return;
 							let alive = false;
 							let nextStatus: string | undefined;
 							if (typeof res === "boolean") {
@@ -4619,6 +4731,7 @@ export class PluginManager {
 							inFlight = false;
 						}
 
+						if (!isCurrent() || !bgTaskTable.has(id)) return;
 						if (consecutiveFailures >= maxFailures) {
 							removeEffect();
 							try {
@@ -4933,21 +5046,21 @@ export class PluginManager {
 				 *  - 延迟走 `armDelay` 分片（默认 ≤6 小时），因为 Node 的 setTimeout 延迟超过
 				 *    2^31-1ms（≈24.8 天）会**溢出成 1ms**，配上「下次在 42 天/一年后」的
 				 *    合法 cron 就是「1ms 后再触发」的死循环（触发还会回调插件 → 写盘 + 广播）。
-				 *    分片醒来后重新计算，真到点才 fire。
+				 *    分片保持 dueAt，真到点才 fire，然后计算下一次。
 				 */
+				let dueAt = parts ? nextCronFire(parts, Date.now()) : null;
 				const armCron = (): void => {
-					if (cancelled || !parts) return;
-					const next = nextCronFire(parts, Date.now());
-					if (next === null) return;
+					if (cancelled || !parts || dueAt === null) return;
 					timer = setTimeout(
 						() => {
-							if (cancelled) return;
-							const at = nextCronFire(parts, Date.now());
-							if (at === null) return;
-							if (at <= Date.now() + 1000) fire();
+							if (cancelled || dueAt === null) return;
+							if (Date.now() >= dueAt) {
+								fire();
+								dueAt = nextCronFire(parts, Date.now());
+							}
 							armCron();
 						},
-						armDelay(next, Date.now()),
+						armDelay(dueAt, Date.now()),
 					);
 					timer.unref?.();
 				};
@@ -4981,6 +5094,7 @@ export class PluginManager {
 					if (grace !== undefined) clearTimeout(grace);
 				};
 				const off = (): void => {
+					if (!isCurrent()) return;
 					cancelTimer();
 					bgUnreg?.();
 					if (persistent) {
@@ -5015,11 +5129,13 @@ export class PluginManager {
 			mcp: {
 				list: async () => {
 					try {
+						const cwd = self.cwdValue;
+						const bridge = await self.mcpProjects?.prepare(cwd);
 						const res = listAllMcpServers({
-							agentDir: self.mcpBridge?.getAgentDir(),
-							cwd: self.cwdValue,
+							agentDir: bridge?.getAgentDir(),
+							cwd,
 							dataDir: self.dataDir,
-							bridge: self.mcpBridge,
+							bridge,
 						});
 						return res.servers;
 					} catch (err) {
@@ -5029,11 +5145,13 @@ export class PluginManager {
 				},
 				check: async (query) => {
 					try {
+						const cwd = self.cwdValue;
+						const bridge = await self.mcpProjects?.prepare(cwd);
 						return checkMcpServer({
-							agentDir: self.mcpBridge?.getAgentDir(),
-							cwd: self.cwdValue,
+							agentDir: bridge?.getAgentDir(),
+							cwd,
 							dataDir: self.dataDir,
-							bridge: self.mcpBridge,
+							bridge,
 							query: String(query ?? ""),
 						});
 					} catch (err) {
@@ -5046,14 +5164,25 @@ export class PluginManager {
 						return { ok: false, error: '插件未声明能力 "tools"（manifest.permissions）——请求被拒' };
 					}
 					try {
+						const cwd = self.cwdValue;
+						const bridge = await self.mcpProjects?.prepare(cwd);
 						const res = await installMcpServer({
-							agentDir: self.mcpBridge?.getAgentDir(),
-							cwd: self.cwdValue,
+							agentDir: bridge?.getAgentDir(),
+							cwd,
 							dataDir: self.dataDir,
-							bridge: self.mcpBridge,
 							spec: spec ?? {},
 						});
 						if (res.ok) {
+							await self.mcpProjects?.reload(cwd, res.scope ?? "project");
+							const server = checkMcpServer({
+								agentDir: bridge?.getAgentDir(),
+								cwd,
+								dataDir: self.dataDir,
+								bridge,
+								query: res.name!,
+							}).matches.find((s) => s.name === res.name && s.scope === res.scope);
+							if (server)
+								Object.assign(res, { server, status: server.status, tools: server.tools, error: server.error });
 							try {
 								self.onAgentToolsChanged?.();
 							} catch {
@@ -5237,6 +5366,32 @@ export class PluginManager {
 				status: (spec) => getPluginAssetStatus(dir, spec),
 			},
 		};
+		// 每个 facade 方法都绑定本次激活；旧异步 continuation 不得借同 id 操作新注册表。
+		// effect 是例外：过期后仍立即执行 cleanup，回收插件刚创建的外部资源。
+		const facades = new WeakMap<object, object>();
+		const guard = <T extends object>(target: T): T => {
+			const cached = facades.get(target);
+			if (cached) return cached as T;
+			const proxy = new Proxy(target, {
+				get: (obj, key) => {
+					const value = Reflect.get(obj, key);
+					if (typeof value === "function")
+						return (...args: unknown[]) => {
+							if (obj === host && key === "log" && !isCurrent()) return;
+							if (!(obj === host && key === "effect") && !isCurrent())
+								throw new Error(`Plugin ${info.id} activation has been disposed`);
+							return Reflect.apply(value, obj, args);
+						};
+					if (value && typeof value === "object" && Object.getPrototypeOf(value) === Object.prototype)
+						return guard(value);
+					return value;
+				},
+			});
+			facades.set(target, proxy);
+			return proxy;
+		};
+		const guardedHost = guard(host);
+		this.activatingEffects.add(effects);
 		try {
 			// Node 对同一 URL 的 import() 永远返回缓存模块——追加 epoch 作查询串
 			// 击穿缓存，让 plugins_reload 后的重新激活能拿到磁盘上的新代码。
@@ -5247,8 +5402,13 @@ export class PluginManager {
 							activate?: (host: PluginHost) => void | (() => void) | Promise<void | (() => void)>;
 					  };
 			};
+			if (!isCurrent()) return;
 			const activateFn = typeof mod.default === "function" ? mod.default : mod.default?.activate;
-			const ret = await activateFn?.(host);
+			const ret = await activateFn?.(guardedHost);
+			if (!isCurrent()) {
+				if (typeof ret === "function") this.runDeactivate(info.id, ret);
+				return;
+			}
 			const gateWarned = self.activatingGates.get(info.id)?.legacyWarned;
 			self.activatingGates.delete(info.id);
 			// activate() 执行期间经 host 注册产生的运行时诊断（重复工具/命令、ui 丢弃等）
@@ -5283,6 +5443,7 @@ export class PluginManager {
 			// 定时器不能留着 —— 插件已经坏了，谁也不会来撤它们），再留一条错误占位行。
 			const failed = effects.release();
 			httpRoutes.clear();
+			if (generation !== this.lifecycleGeneration) return;
 			self.activatingGates.delete(info.id);
 			this.pushRuntimeDiag(info.id, `activate failed: ${(err as Error).message}`);
 			if (failed.length > 0)
@@ -5301,6 +5462,8 @@ export class PluginManager {
 				settingsHandlers: new Set(),
 			});
 			console.error(`[plugin:${info.id}] activate failed:`, err);
+		} finally {
+			this.activatingEffects.delete(effects);
 		}
 	}
 }

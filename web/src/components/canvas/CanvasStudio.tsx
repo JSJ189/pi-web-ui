@@ -20,15 +20,17 @@ import type {
 	UiMessage,
 } from "../../types";
 import { CanvasSvgEdges } from "./CanvasSvgEdges";
-import { buildSmartPrompt, dagToGraph, extractDagJson, parseDagJson } from "./canvas-dag";
+import { CanvasDraftState, graphRuntimeStatus, mergeGraphRuntime, nodeLogKey, parseGraphImport } from "./canvas-state";
+import { composeToComposer, focusComposer } from "../../composer-bridge";
+import { randomUuid } from "../../uuid";
 import { CanvasAiBar } from "./CanvasAiBar";
 import { CanvasTimeline } from "./CanvasTimeline";
-import { autoLayout, HistoryStack } from "./canvas-p0";
+import { autoLayout, HistoryStack, computeMinimap, fitCanvasViewport } from "./canvas-p0";
 import { CanvasNodeCard } from "./CanvasNodeCard";
 import { CanvasNodeDrawer } from "./CanvasNodeDrawer";
 import { CanvasToolbar } from "./CanvasToolbar";
 import { SQUAD_TEMPLATES } from "./CanvasTemplates";
-import { ROLE_METAS, ROLE_FIELDS } from "./CanvasTypes";
+import { ROLE_METAS, ROLE_FIELDS, isRoleImplemented } from "./CanvasTypes";
 import { CanvasClient } from "./canvas-client";
 import { appSend } from "../../app-globals";
 import { FiPlus, FiUsers } from "react-icons/fi";
@@ -61,9 +63,21 @@ export function CanvasStudio({
 	active = true,
 }: CanvasStudioProps) {
 	const clientRef = useRef<CanvasClient | null>(null);
+	const requestTimers = useRef(new Map<string, ReturnType<typeof setTimeout>>());
 
 	// 画布工程全量状态
-	const [graph, setGraph] = useState<CanvasGraph>(() => SQUAD_TEMPLATES[0].createGraph());
+	const [graph, setGraph] = useState<CanvasGraph>(() => ({
+		id: CanvasClient.readLastGraphId(),
+		name: "加载中…",
+		nodes: [],
+		edges: [],
+		viewport: { x: 60, y: 60, zoom: 1 },
+		status: "idle",
+		executionMode: "real",
+		createdAt: 0,
+		updatedAt: 0,
+	}));
+	const initialLoadComplete = useRef(false);
 	const graphRef = useRef(graph);
 	graphRef.current = graph;
 	/** 当前工程 id 镜像：canvas_node_event 按 graphId 过滤，跨工程事件直接丢弃（#706） */
@@ -76,7 +90,7 @@ export function CanvasStudio({
 	const [drawerNodeId, setDrawerNodeId] = useState<string | null>(null);
 	const [showTimeline, setShowTimeline] = useState(false);
 	const [smartPending, setSmartPending] = useState(false);
-	const [smartDag, setSmartDag] = useState<{ graph: CanvasGraph; error?: string } | null>(null);
+	const [, setSmartDag] = useState<null>(null);
 	/** 节点对话流复用：entries=协同事件（steer/handoff/review/tool/error)，messages=与主对话同构的 UiMessage[] */
 	const [nodeLogEntries, setNodeLogEntries] = useState<Record<string, CanvasNodeLogEntry[]>>({});
 	const [nodeMessages, setNodeMessages] = useState<Record<string, UiMessage[]>>({});
@@ -106,7 +120,15 @@ export function CanvasStudio({
 
 	// 未保存更改追踪
 	const [hasUnsavedChanges, setHasUnsavedChanges] = useState(false);
-	const lastSavedRef = useRef<string>("");
+	const draftState = useRef(new CanvasDraftState(typeof localStorage === "undefined" ? undefined : localStorage));
+	if (!draftState.current.baseline) draftState.current.loaded(graph);
+	const afterSaveRef = useRef<{ graphId: string; action: () => void } | null>(null);
+	const [saveNotice, setSaveNotice] = useState("");
+	const [draftConflict, setDraftConflict] = useState<CanvasGraph | null>(null);
+	const viewportRef = useRef(viewport);
+	viewportRef.current = viewport;
+	const incomingRef = useRef<(msg: ServerMessage) => void>(() => {});
+	const smartTextRef = useRef("");
 	/** 未保存标记镜像：远端推送（AI 改图广播）时有本地编辑则不覆盖，防丢用户改动 */
 	const unsavedRef = useRef(false);
 	useEffect(() => {
@@ -114,6 +136,25 @@ export function CanvasStudio({
 	}, [hasUnsavedChanges]);
 
 	const canvasRef = useRef<HTMLDivElement>(null);
+	const [nodeHeights, setNodeHeights] = useState<Record<string, number>>({});
+	const [canvasSize, setCanvasSize] = useState({ width: 1, height: 1 });
+	useEffect(() => {
+		const root = canvasRef.current;
+		if (!root || typeof ResizeObserver === "undefined") return;
+		const observer = new ResizeObserver(() => {
+			setCanvasSize({ width: root.clientWidth, height: root.clientHeight });
+			const heights: Record<string, number> = {};
+			root.querySelectorAll<HTMLElement>(".canvas-node-card").forEach((el) => {
+				if (el.dataset.canvasNodeId)
+					heights[el.dataset.canvasNodeId] = el.getBoundingClientRect().height / viewportRef.current.zoom;
+			});
+			setNodeHeights((prev) => (JSON.stringify(prev) === JSON.stringify(heights) ? prev : heights));
+		});
+		observer.observe(root);
+		root.querySelectorAll(".canvas-node-card").forEach((el) => observer.observe(el));
+		return () => observer.disconnect();
+	}, [graph.id, graph.nodes.length]);
+	const minimap = useMemo(() => computeMinimap(graph.nodes, 160, 100, nodeHeights), [graph.nodes, nodeHeights]);
 
 	// P0：撤销/重做栈（只记录结构性变更）
 	const historyRef = useRef(new HistoryStack(50));
@@ -145,8 +186,20 @@ export function CanvasStudio({
 	// 主 WS 只做工程 id 同步追踪，保证重连恢复当前工程（#704）。
 	const sendMessage = useCallback(
 		(msg: ClientMessage): boolean => {
-			if (msg.type === "canvas_load") clientRef.current?.setCurrentGraphId(msg.id);
-			else if (msg.type === "canvas_save") clientRef.current?.setCurrentGraphId(msg.graph.id);
+			if (msg.type === "canvas_load" && !msg.requestId) msg = draftState.current.beginLoad(msg.id, randomUuid());
+			if ((msg.type === "canvas_save" || msg.type === "canvas_load") && msg.requestId) {
+				const requestId = msg.requestId;
+				requestTimers.current.set(
+					requestId,
+					setTimeout(() => {
+						requestTimers.current.delete(requestId);
+						if (draftState.current.fail(requestId, "服务器确认超时")) {
+							afterSaveRef.current = null;
+							setSaveNotice("服务器确认超时，草稿已保留。请重试保存或重新选择工程。");
+						}
+					}, 15000),
+				);
+			}
 			if (clientRef.current?.send(msg)) {
 				return true;
 			}
@@ -163,14 +216,27 @@ export function CanvasStudio({
 	useEffect(() => {
 		const client = new CanvasClient();
 		clientRef.current = client;
-		client.connect();
-
-		const unsubscribe = client.subscribe((msg) => {
-			handleIncomingServerMessage(msg);
+		const unsubscribe = client.subscribe((msg) => incomingRef.current(msg));
+		const unsubscribeConnection = client.subscribeConnection((connected) => {
+			if (connected) return;
+			draftState.current.retain({ ...graphRef.current, viewport: viewportRef.current });
+			draftState.current.disconnected();
+			client.setCurrentGraphId(graphRef.current.id);
+			afterSaveRef.current = null;
+			for (const timer of requestTimers.current.values()) clearTimeout(timer);
+			requestTimers.current.clear();
+			setSaveNotice("画布连接已断开，保存结果未知；草稿已保留，重连后将核对服务器版本。");
 		});
+		client.onLoadRequest = (request) => {
+			draftState.current.pendingLoad = { graphId: request.id, requestId: request.requestId! };
+		};
+		client.connect();
 
 		return () => {
 			unsubscribe();
+			unsubscribeConnection();
+			for (const timer of requestTimers.current.values()) clearTimeout(timer);
+			requestTimers.current.clear();
 			client.dispose();
 			clientRef.current = null;
 		};
@@ -184,37 +250,121 @@ export function CanvasStudio({
 		if (active && !was) {
 			sendMessage({ type: "canvas_list" });
 			sendMessage({ type: "canvas_cards" });
-			sendMessage({ type: "canvas_load", id: graphIdRef.current });
+			if (
+				initialLoadComplete.current &&
+				!draftState.current.pendingLoad &&
+				!draftState.current.dirty({ ...graphRef.current, viewport: viewportRef.current })
+			)
+				sendMessage({ type: "canvas_load", id: graphIdRef.current });
 		}
 	}, [active, sendMessage]);
 
 	const handleIncomingServerMessage = (msg: ServerMessage) => {
+		if ((msg.type === "canvas_graph_state" || msg.type === "canvas_error") && msg.requestId) {
+			const timer = requestTimers.current.get(msg.requestId);
+			if (timer) clearTimeout(timer);
+			requestTimers.current.delete(msg.requestId);
+		}
 		if (msg.type === "canvas_list_result") {
 			setGraphList(msg.graphs);
 		} else if (msg.type === "canvas_cards_state") {
 			setCustomCards(msg.cards ?? []);
+		} else if (msg.type === "canvas_error") {
+			if (!msg.requestId && msg.code === "execution_error" && msg.graphId === graphIdRef.current) {
+				setSaveNotice("运行失败：" + msg.message);
+				return;
+			}
+			const pendingLoad = draftState.current.pendingLoad;
+			if (
+				msg.code === "not_found" &&
+				pendingLoad &&
+				pendingLoad.requestId === msg.requestId &&
+				pendingLoad.graphId !== "default"
+			) {
+				draftState.current.fail(msg.requestId, msg.message);
+				clientRef.current?.setCurrentGraphId("default");
+				setSaveNotice("上次工程已不存在，正在加载默认工程。原工程草稿仍保留。");
+				sendMessage(draftState.current.beginLoad("default", randomUuid()));
+				return;
+			}
+			if (draftState.current.fail(msg.requestId, msg.message)) {
+				afterSaveRef.current = null;
+				if (msg.code === "rev_conflict" && msg.graph?.id === graphIdRef.current) setDraftConflict(msg.graph);
+				setSaveNotice("操作失败：" + msg.message + "。草稿已保留，请导出备份并核对远端版本。");
+			}
 		} else if (msg.type === "canvas_graph_state") {
-			clientRef.current?.setCurrentGraphId(msg.graph.id);
-			// AI 改图广播 vs 本地未保存编辑：本地优先，不覆盖用户手头改动（下次切回/保存后再对齐）
-			if (unsavedRef.current && msg.graph.id === graphIdRef.current) return;
-			// 切换工程时清理撤销栈，防止跨工程回滚
+			const state = draftState.current;
+			const priorBaseline = state.baseline;
+			if (state.acceptSave(msg.graph, msg.requestId)) {
+				const current = { ...graphRef.current, viewport: viewportRef.current };
+				if (current.id !== msg.graph.id) {
+					state.baseline = priorBaseline;
+					return;
+				}
+				clientRef.current?.setCurrentGraphId(msg.graph.id);
+				setGraph((prev) => ({ ...mergeGraphRuntime(prev, msg.graph), rev: msg.graph.rev }));
+				const dirty = state.dirty(current);
+				unsavedRef.current = dirty;
+				setHasUnsavedChanges(dirty);
+				if (dirty) state.retain({ ...current, rev: msg.graph.rev });
+				if (!dirty) {
+					state.clearDraft(current.id);
+					const queued = afterSaveRef.current;
+					afterSaveRef.current = null;
+					if (queued?.graphId === current.id) queued.action();
+				}
+				setSaveNotice(dirty ? "已保存上一版本；仍有新编辑待保存。" : "保存成功");
+				return;
+			}
+			const loading = state.acceptsLoad(msg.graph, msg.requestId);
+			if (msg.requestId && !loading) return;
+			if (!loading && (msg.graph.id !== graphIdRef.current || state.pendingLoad)) return;
+			if (!loading && state.dirty({ ...graphRef.current, viewport: viewportRef.current })) {
+				setGraph((prev) => mergeGraphRuntime(prev, msg.graph));
+				return;
+			}
 			if (msg.graph.id !== graphIdRef.current) {
 				historyRef.current.clear();
 				setHistoryVersion((v) => v + 1);
 			}
-			// 演练模式已下线：旧存量图若还是 simulate，一律纠正为真实执行
-			const normalized =
-				msg.graph.executionMode === "real" ? msg.graph : { ...msg.graph, executionMode: "real" as const };
-			// 若同一工程中图结构被远端实际变更（例如 AI 助手调用 canvas 工具改图），记录快照支持用户一键撤回
-			if (msg.graph.id === graphIdRef.current && JSON.stringify(graphRef.current) !== JSON.stringify(normalized)) {
-				pushHistory(graphRef.current);
+			if (loading) initialLoadComplete.current = true;
+			const normalized = { ...msg.graph, executionMode: "real" as const };
+			const local =
+				normalized.id === graphRef.current.id
+					? { ...graphRef.current, viewport: viewportRef.current }
+					: state.draft(normalized.id);
+			const reconciled = loading && local ? state.reconcileSave(normalized, local) : null;
+			state.loaded(normalized);
+			const recovered = loading ? state.draft(normalized.id) : null;
+			const next = recovered ? mergeGraphRuntime(recovered, normalized) : normalized;
+			clientRef.current?.setCurrentGraphId(next.id);
+			setGraph(next);
+			graphRef.current = next;
+			graphIdRef.current = next.id;
+			if (loading) {
+				setSelectedNodeId(null);
+				setDrawerNodeId(null);
+				setConnectingSource(null);
+				setPortPositions({});
 			}
-			setGraph(normalized);
-			lastSavedRef.current = JSON.stringify(normalized);
-			setHasUnsavedChanges(false);
-			if (msg.graph.viewport) {
-				setViewport(msg.graph.viewport);
-			}
+			unsavedRef.current = state.dirty(next);
+			setHasUnsavedChanges(unsavedRef.current);
+			const conflict =
+				reconciled === "conflict" ||
+				(reconciled !== "saved" && recovered && (recovered.rev ?? 0) !== (normalized.rev ?? 0));
+			setDraftConflict(conflict ? normalized : null);
+			setSaveNotice(
+				conflict
+					? "保存结果核对存在差异，本地草稿已保留。请明确选择本地或远端版本。"
+					: reconciled === "saved"
+						? recovered
+							? "重连核对：上一版本已保存，后续编辑仍保留在草稿。"
+							: "重连核对：保存成功。"
+						: recovered
+							? "已恢复本地未保存草稿，请检查后保存。"
+							: "",
+			);
+			setViewport(next.viewport);
 		} else if (msg.type === "canvas_node_event") {
 			// 跨工程事件隔离：只处理当前画布工程的节点事件，非同工程直接丢弃（#706）
 			if (msg.graphId !== graphIdRef.current) return;
@@ -239,35 +389,38 @@ export function CanvasStudio({
 											: n.status,
 					};
 				});
-				return { ...prev, nodes: nextNodes };
+				return { ...prev, nodes: nextNodes, status: graphRuntimeStatus(nextNodes) };
 			});
 		} else if (msg.type === "canvas_node_log") {
 			if (msg.graphId !== graphIdRef.current) return;
 			setNodeLogEntries((prev) => ({
 				...prev,
-				[msg.nodeId]: [...(prev[msg.nodeId] ?? []), msg.entry].slice(-300),
+				[nodeLogKey(msg.graphId, msg.nodeId)]: [...(prev[nodeLogKey(msg.graphId, msg.nodeId)] ?? []), msg.entry].slice(
+					-300,
+				),
 			}));
 		} else if (msg.type === "canvas_node_log_state") {
 			if (msg.graphId !== graphIdRef.current) return;
-			setNodeLogEntries((prev) => ({ ...prev, [msg.nodeId]: msg.entries ?? [] }));
-			setNodeMessages((prev) => ({ ...prev, [msg.nodeId]: msg.messages ?? [] }));
+			setNodeLogEntries((prev) => ({ ...prev, [nodeLogKey(msg.graphId, msg.nodeId)]: msg.entries ?? [] }));
+			setNodeMessages((prev) => ({ ...prev, [nodeLogKey(msg.graphId, msg.nodeId)]: msg.messages ?? [] }));
 		} else if (msg.type === "canvas_node_messages") {
 			if (msg.graphId !== graphIdRef.current) return;
 			const incoming = [...(msg.messages ?? []), ...(msg.appended ?? [])];
 			if (incoming.length === 0) return;
 			setNodeMessages((prev) => {
-				const seen = new Set((prev[msg.nodeId] ?? []).map((m) => m.id));
-				const merged = [...(prev[msg.nodeId] ?? [])];
+				const seen = new Set((prev[nodeLogKey(msg.graphId, msg.nodeId)] ?? []).map((m) => m.id));
+				const merged = [...(prev[nodeLogKey(msg.graphId, msg.nodeId)] ?? [])];
 				for (const m of incoming) {
 					if (!m || seen.has(m.id)) continue;
 					seen.add(m.id);
 					merged.push(m);
 				}
-				return { ...prev, [msg.nodeId]: merged.slice(-200) };
+				return { ...prev, [nodeLogKey(msg.graphId, msg.nodeId)]: merged.slice(-200) };
 			});
 		}
 	};
 
+	incomingRef.current = handleIncomingServerMessage;
 	// 也响应 props 传入的消息
 	useEffect(() => {
 		if (propLastMessage) {
@@ -275,31 +428,33 @@ export function CanvasStudio({
 		}
 	}, [propLastMessage]);
 
-	// 方案A：把生成请求发给当前对话 AI，回包 snapshot 里捞 ```canvas-dag 落图
-	const handleSmartGenerate = useCallback(
-		(text: string) => {
-			setSmartDag(null);
-			setSmartPending(true);
-			sendMessage({ type: "prompt", text: buildSmartPrompt(text) });
-		},
-		[sendMessage],
-	);
-	// 追踪未保存更改（切换工程哨兵期间不误报）
+	const handleSmartGenerate = useCallback((text: string) => {
+		smartTextRef.current = text;
+		setSmartPending(true);
+		setSmartDag(null);
+	}, []);
 	useEffect(() => {
-		if (lastSavedRef.current === "__switching__") return;
-		if (lastSavedRef.current && JSON.stringify(graph) !== lastSavedRef.current) {
-			setHasUnsavedChanges(true);
-		}
-	}, [graph]);
-
+		const current = { ...graph, viewport };
+		const dirty = draftState.current.dirty(current);
+		unsavedRef.current = dirty;
+		setHasUnsavedChanges(dirty);
+		if (dirty && !draftState.current.retain(current)) setSaveNotice(draftState.current.error);
+	}, [graph, viewport]);
 	// 自动保存（30 秒无操作后）
 	useEffect(() => {
-		if (!hasUnsavedChanges) return;
+		if (
+			!hasUnsavedChanges ||
+			draftConflict ||
+			draftState.current.unknownSaves.has(graph.id) ||
+			draftState.current.pendingSave ||
+			draftState.current.pendingLoad
+		)
+			return;
 		const timer = setTimeout(() => {
 			handleSave();
 		}, 30000);
 		return () => clearTimeout(timer);
-	}, [hasUnsavedChanges, graph]);
+	}, [hasUnsavedChanges, graph, draftConflict]);
 
 	// 处理画布缩放 (以鼠标光标所在点为中心平滑缩放)
 	const handleWheel = useCallback((e: React.WheelEvent) => {
@@ -394,6 +549,11 @@ export function CanvasStudio({
 	const handleCanvasPointerUp = (e: React.PointerEvent) => {
 		// 结束连线操作
 		if (connectingSource) {
+			const port = document
+				.elementFromPoint(e.clientX, e.clientY)
+				?.closest<HTMLElement>("[data-canvas-port-direction='in']");
+			if (port?.dataset.canvasNodeId && canvasRef.current?.contains(port))
+				handleEndConnect(port.dataset.canvasNodeId, port.dataset.canvasPort);
 			setConnectingSource(null);
 			setMousePos(null);
 		}
@@ -457,64 +617,8 @@ export function CanvasStudio({
 		[connectingSource, graph, pushHistory],
 	);
 
-	/**
-	 * 解析节点模型：绝不杜撰不存在的模型。
-	 * 优先级：请求的模型（若在模型列表中存在）→ 全局默认模型（若存在）→ 模型列表第一个 → ""（列表未加载时保持原值）。
-	 */
-	const resolveNodeModel = useCallback(
-		(requested: string): string => {
-			if (models.length === 0) return requested; // 模型列表尚未加载，不做任何改写
-			const inList = (m: string) => models.some((info) => `${info.provider}/${info.id}` === m || info.id === m);
-			if (requested && inList(requested)) return requested;
-			if (defaultModel && inList(defaultModel)) return defaultModel;
-			return `${models[0].provider}/${models[0].id}`;
-		},
-		[models, defaultModel],
-	);
-
-	// 模型列表加载完成后，自动修复图中所有不存在的杜撰模型（存量脏数据自愈）
-	useEffect(() => {
-		if (models.length === 0) return;
-		setGraph((prev) => {
-			let changed = false;
-			const nodes = prev.nodes.map((n) => {
-				const resolved = resolveNodeModel(n.model);
-				if (resolved !== n.model) {
-					changed = true;
-					return { ...n, model: resolved };
-				}
-				return n;
-			});
-			return changed ? { ...prev, nodes } : prev;
-		});
-	}, [models, defaultModel, resolveNodeModel]);
-
-	// 方案A回包监听：snapshot 里捞最近 6 条助手消息的 ```canvas-dag 块
-	useEffect(() => {
-		if (!smartPending || !propLastMessage || propLastMessage.type !== "snapshot") return;
-		const msgs = propLastMessage.state.messages ?? [];
-		for (let i = msgs.length - 1; i >= Math.max(0, msgs.length - 6); i--) {
-			const m = msgs[i] as unknown as { role?: string; content?: { type?: string; text?: string }[] };
-			if (m?.role !== "assistant" || !Array.isArray(m?.content)) continue;
-			const text = m.content
-				.filter((b) => b?.type === "text" && typeof b?.text === "string")
-				.map((b) => b.text as string)
-				.join("\n");
-			if (!text.includes("canvas-dag")) continue;
-			const raw = extractDagJson(text);
-			if (!raw) continue;
-			try {
-				const parsed = parseDagJson(raw);
-				setSmartDag({
-					graph: dagToGraph(parsed, "AI 智能流水线", resolveNodeModel(""), autoLayout, currentCwd || "."),
-				});
-			} catch (e) {
-				setSmartDag({ graph, error: e instanceof Error ? e.message : "DAG 解析失败" });
-			}
-			setSmartPending(false);
-			break;
-		}
-	}, [propLastMessage, smartPending, resolveNodeModel, graph]);
+	/** Only new Pi nodes may inherit the selected default. Explicit values, including engine default "", remain unchanged. */
+	const resolveNodeModel = useCallback((requested?: string): string => requested ?? defaultModel ?? "", [defaultModel]);
 
 	// 新增节点：支持从通用节点库按角色创建，优先使用全局默认模型。
 	// AI 指令（instruction）与角色预设一并落盘，可输入可复用。
@@ -531,7 +635,7 @@ export function CanvasStudio({
 				y: Math.round(-viewport.y / viewport.zoom + 200 + Math.random() * 100),
 				width: 300,
 				engine: "pi",
-				model: resolveNodeModel(""),
+				model: resolveNodeModel(),
 				cwd: currentCwd || ".",
 				useWorktree: false,
 				status: "idle",
@@ -561,7 +665,7 @@ export function CanvasStudio({
 				y: Math.round(-viewport.y / viewport.zoom + 200 + Math.random() * 100),
 				width: 300,
 				engine: card.engine ?? "pi",
-				model: resolveNodeModel(card.model ?? ""),
+				model: card.model ?? (card.engine && card.engine !== "pi" ? "" : resolveNodeModel()),
 				cwd: currentCwd || ".",
 				useWorktree: false,
 				status: "idle",
@@ -584,7 +688,7 @@ export function CanvasStudio({
 		[sendMessage],
 	);
 
-	// 套用战队模板：模板内写死的示例模型一律映射为真实可用模型
+	// 模板和导入工程保留显式模型及空字符串引擎默认值。
 	const handleApplyTemplate = useCallback(
 		(tmpl: CanvasGraph) => {
 			pushHistory(graph);
@@ -592,8 +696,19 @@ export function CanvasStudio({
 				...tmpl,
 				nodes: tmpl.nodes.map((n) => ({ ...n, model: resolveNodeModel(n.model) })),
 			};
+			const current = { ...graphRef.current, viewport: viewportRef.current };
+			if (draftState.current.dirty(current) && !draftState.current.retain(current)) {
+				setSaveNotice(draftState.current.error);
+				return;
+			}
+			if (draftState.current.pendingSave || draftState.current.pendingLoad) {
+				setSaveNotice("请等待当前保存或加载确认后再应用模板。");
+				return;
+			}
 			setGraph(remapped);
-			sendMessage({ type: "canvas_save", graph: remapped });
+			graphRef.current = remapped;
+			setViewport(remapped.viewport);
+			sendMessage(draftState.current.beginSave(remapped, randomUuid()));
 		},
 		[graph, pushHistory, resolveNodeModel, sendMessage],
 	);
@@ -665,13 +780,10 @@ export function CanvasStudio({
 			const reader = new FileReader();
 			reader.onload = () => {
 				try {
-					const g = JSON.parse(String(reader.result)) as CanvasGraph;
-					if (!g || !Array.isArray(g.nodes) || !Array.isArray(g.edges)) return;
-					const nodeIds = new Set(g.nodes.map((n) => n.id));
-					const validEdges = g.edges.filter((e) => nodeIds.has(e.sourceNodeId) && nodeIds.has(e.targetNodeId));
-					handleApplyTemplate({ ...g, edges: validEdges, id: `graph_${Date.now()}`, updatedAt: Date.now() });
+					const g = parseGraphImport(String(reader.result));
+					handleApplyTemplate(g);
 				} catch (e) {
-					console.error("import json failed", e);
+					setSaveNotice(`导入失败：${e instanceof Error ? e.message : String(e)}`);
 				}
 			};
 			reader.readAsText(f);
@@ -700,8 +812,8 @@ export function CanvasStudio({
 	// 一键自动布局
 	const handleAutoLayout = useCallback(() => {
 		pushHistory(graph);
-		setGraph((p) => ({ ...p, nodes: autoLayout(p.nodes, p.edges), updatedAt: Date.now() }));
-	}, [graph, pushHistory]);
+		setGraph((p) => ({ ...p, nodes: autoLayout(p.nodes, p.edges, nodeHeights), updatedAt: Date.now() }));
+	}, [graph, pushHistory, nodeHeights]);
 
 	// 删除节点
 	const handleDeleteNode = useCallback(
@@ -755,12 +867,23 @@ export function CanvasStudio({
 
 	// 保存工程
 	const handleSave = useCallback(() => {
-		const fullGraph: CanvasGraph = { ...graph, viewport };
-		setGraph(fullGraph);
-		sendMessage({ type: "canvas_save", graph: fullGraph });
-		lastSavedRef.current = JSON.stringify(fullGraph);
-		setHasUnsavedChanges(false);
-	}, [graph, viewport, sendMessage]);
+		if (draftState.current.unknownSaves.has(graphRef.current.id)) {
+			setSaveNotice("保存结果未知，请等待重连核对服务器版本。");
+			return;
+		}
+		if (draftConflict) {
+			setSaveNotice("请先处理草稿版本冲突。");
+			return;
+		}
+		if (draftState.current.pendingSave) return;
+		const fullGraph: CanvasGraph = { ...graphRef.current, viewport: viewportRef.current };
+		const request = draftState.current.beginSave(fullGraph, randomUuid());
+		setSaveNotice("正在保存，等待服务器确认…");
+		if (!sendMessage(request)) {
+			draftState.current.fail(request.requestId, "连接不可用");
+			setSaveNotice("保存失败：连接不可用。草稿已保留。");
+		}
+	}, [graph, viewport, sendMessage, draftConflict]);
 
 	// 创建新画布工程
 	const handleCreateGraph = useCallback(
@@ -776,7 +899,19 @@ export function CanvasStudio({
 				createdAt: Date.now(),
 				updatedAt: Date.now(),
 			};
-			sendMessage({ type: "canvas_save", graph: newGraph });
+			const current = { ...graphRef.current, viewport: viewportRef.current };
+			if (draftState.current.dirty(current) && !draftState.current.retain(current)) {
+				setSaveNotice(draftState.current.error);
+				return;
+			}
+			if (draftState.current.pendingSave || draftState.current.pendingLoad) {
+				setSaveNotice("请等待当前保存或加载确认后再新建。");
+				return;
+			}
+			setGraph(newGraph);
+			graphRef.current = newGraph;
+			setViewport(newGraph.viewport);
+			sendMessage(draftState.current.beginSave(newGraph, randomUuid()));
 		},
 		[sendMessage],
 	);
@@ -801,50 +936,16 @@ export function CanvasStudio({
 		(name: string) => {
 			const renamedGraph = { ...graph, name, updatedAt: Date.now() };
 			setGraph(renamedGraph);
-			sendMessage({ type: "canvas_save", graph: renamedGraph });
+			if (!draftState.current.pendingSave) sendMessage(draftState.current.beginSave(renamedGraph, randomUuid()));
 		},
 		[graph, sendMessage],
 	);
 
 	// Fit-to-View：自动缩放和平移以适配所有节点
 	const handleFitView = useCallback(() => {
-		if (graph.nodes.length === 0) {
-			setViewport({ x: 60, y: 60, zoom: 1 });
-			return;
-		}
-		if (!canvasRef.current) return;
-		const rect = canvasRef.current.getBoundingClientRect();
-		const padding = 80;
-
-		let minX = Infinity,
-			minY = Infinity,
-			maxX = -Infinity,
-			maxY = -Infinity;
-		for (const n of graph.nodes) {
-			const w = n.width || 300;
-			const h = 280; // 估计节点高度
-			if (n.x < minX) minX = n.x;
-			if (n.y < minY) minY = n.y;
-			if (n.x + w > maxX) maxX = n.x + w;
-			if (n.y + h > maxY) maxY = n.y + h;
-		}
-
-		const contentW = maxX - minX;
-		const contentH = maxY - minY;
-		if (contentW <= 0 || contentH <= 0) {
-			setViewport({ x: 60, y: 60, zoom: 1 });
-			return;
-		}
-
-		const availW = rect.width - padding * 2;
-		const availH = rect.height - padding * 2;
-		const fitZoom = Math.min(Math.max(Math.min(availW / contentW, availH / contentH), 0.25), 1.5);
-
-		const centerX = padding + (availW - contentW * fitZoom) / 2 - minX * fitZoom;
-		const centerY = padding + (availH - contentH * fitZoom) / 2 - minY * fitZoom;
-
-		setViewport({ x: Math.round(centerX), y: Math.round(centerY), zoom: Number(fitZoom.toFixed(3)) });
-	}, [graph.nodes]);
+		const rect = canvasRef.current?.getBoundingClientRect();
+		if (rect) setViewport(fitCanvasViewport(graph.nodes, rect.width, rect.height, nodeHeights));
+	}, [graph.nodes, nodeHeights]);
 
 	// 启动单节点：直接用卡片内已填的 AI 指令 / 启动载荷启动（无弹窗）
 	const handleRunNodeDirect = useCallback(
@@ -852,15 +953,26 @@ export function CanvasStudio({
 			// 服务端 canvas_run_node 读的是**磁盘上的图**（loadCanvasGraph），而模型/指令/cwd
 			// 的修改只在本地乐观状态 + 30s 后自动保存 —— 不先刷盘就会用旧模型跑
 			// （典型现象：换成 Gemini 后仍报 opencode-go 的错）。
-			handleSave();
-			sendMessage({ type: "canvas_run_node", graphId: graph.id, nodeId });
+			if (!isRoleImplemented(graph.nodes.find((n) => n.id === nodeId)?.role ?? "subflow")) {
+				setSaveNotice("该节点尚未实现，不能运行。");
+				return;
+			}
+			const action = () => sendMessage({ type: "canvas_run_node", graphId: graph.id, nodeId });
+			if (
+				draftState.current.dirty({ ...graphRef.current, viewport: viewportRef.current }) ||
+				draftState.current.pendingSave
+			) {
+				afterSaveRef.current = { graphId: graph.id, action };
+				handleSave();
+			} else action();
 		},
-		[graph.id, sendMessage, handleSave],
+		[graph, sendMessage, handleSave],
 	);
 
 	// 停止单节点
 	const handleStopNode = useCallback(
 		(nodeId: string) => {
+			afterSaveRef.current = null;
 			sendMessage({ type: "canvas_stop_node", graphId: graph.id, nodeId });
 		},
 		[graph.id, sendMessage],
@@ -868,13 +980,23 @@ export function CanvasStudio({
 
 	// 全图启动
 	const handleRunAll = useCallback(() => {
-		// 先保存再启动
-		handleSave();
-		sendMessage({ type: "canvas_run_all", graphId: graph.id });
-	}, [graph.id, sendMessage, handleSave]);
+		if (graph.nodes.some((n) => !isRoleImplemented(n.role))) {
+			setSaveNotice("包含尚未实现的节点，不能运行全图。");
+			return;
+		}
+		const action = () => sendMessage({ type: "canvas_run_all", graphId: graph.id });
+		if (
+			draftState.current.dirty({ ...graphRef.current, viewport: viewportRef.current }) ||
+			draftState.current.pendingSave
+		) {
+			afterSaveRef.current = { graphId: graph.id, action };
+			handleSave();
+		} else action();
+	}, [graph, sendMessage, handleSave]);
 
 	// 全图停止
 	const handleStopAll = useCallback(() => {
+		afterSaveRef.current = null;
 		sendMessage({ type: "canvas_stop_all", graphId: graph.id });
 	}, [graph.id, sendMessage]);
 
@@ -927,8 +1049,8 @@ export function CanvasStudio({
 
 	const handleClearNodeLog = useCallback(
 		(nodeId: string) => {
-			setNodeLogEntries((prev) => ({ ...prev, [nodeId]: [] }));
-			setNodeMessages((prev) => ({ ...prev, [nodeId]: [] }));
+			setNodeLogEntries((prev) => ({ ...prev, [nodeLogKey(graph.id, nodeId)]: [] }));
+			setNodeMessages((prev) => ({ ...prev, [nodeLogKey(graph.id, nodeId)]: [] }));
 			sendMessage({ type: "canvas_clear_log", graphId: graph.id, nodeId });
 		},
 		[graph.id, sendMessage],
@@ -937,6 +1059,7 @@ export function CanvasStudio({
 	// 全局键盘快捷键
 	useEffect(() => {
 		const handleKeyDown = (e: KeyboardEvent) => {
+			if (!active || e.repeat || (e.target instanceof HTMLElement && e.target.isContentEditable)) return;
 			// 如果焦点在输入框里，不劫持快捷键
 			const tag = (e.target as HTMLElement)?.tagName?.toLowerCase();
 			if (tag === "input" || tag === "textarea" || tag === "select") return;
@@ -999,6 +1122,7 @@ export function CanvasStudio({
 		window.addEventListener("keydown", handleKeyDown);
 		return () => window.removeEventListener("keydown", handleKeyDown);
 	}, [
+		active,
 		connectingSource,
 		selectedNodeId,
 		drawerNodeId,
@@ -1020,12 +1144,20 @@ export function CanvasStudio({
 	// 切换工程：先冻结自动保存避免旧图回写弹回 (#switch-race)
 	const handleSelectGraph = useCallback(
 		(id: string) => {
-			if (id === graphIdRef.current) return;
-			setHasUnsavedChanges(false);
-			lastSavedRef.current = "__switching__";
+			if (id === graphIdRef.current && !draftState.current.pendingLoad) return;
+			afterSaveRef.current = null;
+			const current = { ...graphRef.current, viewport: viewportRef.current };
+			if (draftState.current.dirty(current)) {
+				if (!draftState.current.retain(current)) {
+					setSaveNotice(draftState.current.error);
+					return;
+				}
+				if (!draftConflict && !draftState.current.pendingSave)
+					sendMessage(draftState.current.beginSave(current, randomUuid()));
+			}
 			sendMessage({ type: "canvas_load", id });
 		},
-		[sendMessage],
+		[sendMessage, draftConflict],
 	);
 
 	return (
@@ -1033,9 +1165,23 @@ export function CanvasStudio({
 			className="canvas-studio-root"
 			ref={canvasRef}
 			onWheel={handleWheel}
+			onPointerDownCapture={(e) => {
+				if ((e.target as HTMLElement).closest("[data-canvas-port-direction='out']"))
+					canvasRef.current?.setPointerCapture(e.pointerId);
+			}}
 			onPointerDown={handleCanvasPointerDown}
 			onPointerMove={handleCanvasPointerMove}
 			onPointerUp={handleCanvasPointerUp}
+			onPointerCancel={() => {
+				setConnectingSource(null);
+				setMousePos(null);
+				setIsPanning(false);
+			}}
+			onLostPointerCapture={() => {
+				setConnectingSource(null);
+				setMousePos(null);
+				setIsPanning(false);
+			}}
 		>
 			{/* 浮动顶栏控制条 */}
 			<CanvasToolbar
@@ -1093,6 +1239,7 @@ export function CanvasStudio({
 						<CanvasNodeCard
 							key={node.id}
 							node={node}
+							zoom={viewport.zoom}
 							isSelected={node.id === selectedNodeId}
 							hasIncoming={incomingSet.has(node.id)}
 							hasOutgoing={outgoingSet.has(node.id)}
@@ -1128,34 +1275,70 @@ export function CanvasStudio({
 					onApply={handleApplyTemplate}
 					onSmartGenerate={handleSmartGenerate}
 					smartPending={smartPending}
-					defaultModel={resolveNodeModel("")}
+					defaultModel={resolveNodeModel()}
 					defaultCwd={currentCwd || "."}
 				/>
-				{smartDag && !smartDag.error && (
-					<div className="canvas-smart-banner">
-						<span>
-							🤖 AI 已生成 {smartDag.graph.nodes.length} 节点 / {smartDag.graph.edges.length} 条边，确认落图？
-						</span>
+				{saveNotice && <div role="status">{saveNotice}</div>}
+				{draftConflict && (
+					<div className="canvas-smart-banner" role="alert">
+						<span>本地草稿与远端版本冲突。保留本地将用当前远端 revision 保存，覆盖远端的结构编辑。</span>
 						<button
-							type="button"
-							className="canvas-btn primary"
+							className="canvas-btn"
 							onClick={() => {
-								handleApplyTemplate(smartDag.graph);
-								setSmartDag(null);
+								setGraph((prev) => ({ ...prev, rev: draftConflict.rev }));
+								setDraftConflict(null);
+								setSaveNotice("已选择保留本地草稿，请检查后保存。");
 							}}
 						>
-							应用到画布
+							保留本地草稿
 						</button>
-						<button type="button" className="canvas-btn" onClick={() => setSmartDag(null)}>
-							丢弃
+						<button
+							className="canvas-btn"
+							onClick={() => {
+								const remote = draftConflict;
+								draftState.current.clearDraft(remote.id);
+								draftState.current.loaded(remote);
+								setGraph(remote);
+								setViewport(remote.viewport);
+								setDraftConflict(null);
+								setSaveNotice("已采用远端版本。");
+							}}
+						>
+							采用远端版本
 						</button>
 					</div>
 				)}
-				{smartDag?.error && (
-					<div className="canvas-smart-banner error">
-						<span>AI 返回的 DAG 校验失败：{smartDag.error}，已保留当前画布。</span>
-						<button type="button" className="canvas-btn" onClick={() => setSmartDag(null)}>
-							关闭
+				{smartPending && (
+					<div className="canvas-smart-banner" role="dialog" aria-label="智能建图">
+						<span>
+							需求将放入主聊天草稿，由你检查并发送；AI 用 canvas 工具新建画布，不运行工作流。需求：
+							{smartTextRef.current}
+						</span>
+						<button
+							className="canvas-btn primary"
+							onClick={() => {
+								const text =
+									"请使用 canvas 工具新建工作流画布，先检查可用角色，保留端口与配置；完成后说明节点和连线供我核对。不要运行或覆盖已有图。工作目录：" +
+									currentCwd +
+									"\n需求：" +
+									smartTextRef.current;
+								if (composeToComposer({ text })) {
+									setSmartPending(false);
+									setSaveNotice("已放入主聊天草稿，请切回聊天检查并发送。尚未请求 AI 建图。");
+									focusComposer();
+								} else setSaveNotice("主聊天输入框尚未就绪，需求已保留；请打开聊天后重试。");
+							}}
+						>
+							放入主聊天草稿
+						</button>
+						<button
+							className="canvas-btn"
+							onClick={() => {
+								setSmartPending(false);
+								setSaveNotice("已取消，未提交建图请求。");
+							}}
+						>
+							取消
 						</button>
 					</div>
 				)}
@@ -1219,7 +1402,7 @@ export function CanvasStudio({
 				<CanvasTimeline
 					nodes={graph.nodes}
 					edges={graph.edges}
-					logs={nodeLogEntries}
+					logs={Object.fromEntries(graph.nodes.map((n) => [n.id, nodeLogEntries[nodeLogKey(graph.id, n.id)] ?? []]))}
 					onRunNode={handleRunNodeDirect}
 					onLocate={(id) => {
 						setSelectedNodeId(id);
@@ -1228,25 +1411,44 @@ export function CanvasStudio({
 				/>
 			)}
 
-			{/* P0 小地图：节点分布缩略 + 点击定位 */}
 			{graph.nodes.length > 0 && (
-				<div className="canvas-minimap" title="小地图">
-					{graph.nodes.map((n) => (
-						<button
+				<svg
+					className="canvas-minimap"
+					width={160}
+					height={100}
+					viewBox="0 0 160 100"
+					role="img"
+					aria-label="画布小地图"
+					style={{ cursor: "crosshair" }}
+					onPointerDown={(e) => {
+						e.stopPropagation();
+						const r = e.currentTarget.getBoundingClientRect();
+						const x = (((e.clientX - r.left) * 160) / r.width - minimap.offsetX) / minimap.scale;
+						const y = (((e.clientY - r.top) * 100) / r.height - minimap.offsetY) / minimap.scale;
+						setViewport((v) => ({ ...v, x: canvasSize.width / 2 - x * v.zoom, y: canvasSize.height / 2 - y * v.zoom }));
+					}}
+				>
+					{minimap.nodes.map((n) => (
+						<rect
 							key={n.id}
-							type="button"
-							className={"canvas-minimap-dot" + (n.id === selectedNodeId ? " active" : "") + " st-" + n.status}
-							title={n.title}
-							onClick={() => setSelectedNodeId(n.id)}
-							style={{
-								left: `${10 + ((n.x % 800) / 800) * 120}px`,
-								top: `${10 + ((n.y % 800) / 800) * 80}px`,
-							}}
+							x={n.x}
+							y={n.y}
+							width={n.width}
+							height={n.height}
+							fill={n.id === selectedNodeId ? "var(--accent)" : "var(--text-faint)"}
 						/>
 					))}
-				</div>
+					<rect
+						x={minimap.offsetX - (viewport.x / viewport.zoom) * minimap.scale}
+						y={minimap.offsetY - (viewport.y / viewport.zoom) * minimap.scale}
+						width={(canvasSize.width / viewport.zoom) * minimap.scale}
+						height={(canvasSize.height / viewport.zoom) * minimap.scale}
+						fill="none"
+						stroke="var(--accent)"
+						strokeWidth={1}
+					/>
+				</svg>
 			)}
-
 			{/* 单个数字员工审查与深控抽屉（仅选中节点时挂载） */}
 			{drawerNode && (
 				<CanvasNodeDrawer
@@ -1261,8 +1463,8 @@ export function CanvasStudio({
 					pathCompletions={pathCompletions}
 					baseCwd={currentCwd}
 					onMakeDir={(p) => sendMessage({ type: "make_dir", path: p })}
-					logEntries={drawerNode ? (nodeLogEntries[drawerNode.id] ?? []) : []}
-					logMessages={drawerNode ? (nodeMessages[drawerNode.id] ?? []) : []}
+					logEntries={drawerNode ? (nodeLogEntries[nodeLogKey(graph.id, drawerNode.id)] ?? []) : []}
+					logMessages={drawerNode ? (nodeMessages[nodeLogKey(graph.id, drawerNode.id)] ?? []) : []}
 					onClearLog={handleClearNodeLog}
 					onUpdateEdge={handleUpdateEdge}
 					onClose={() => setDrawerNodeId(null)}

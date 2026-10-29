@@ -148,7 +148,6 @@
 }
 
 /* 亮底上的按钮/徽标：内置写死 color:#fff，压亮青只有 1.9:1 → 统一换近黑墨色（只改颜色） */
-.btn.primary,
 .dialog-submit,
 .goalbar-btn,
 .template-btn.send,

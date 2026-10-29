@@ -7,17 +7,18 @@
  *
  * 只做三件事：
  *   1. `snapshot`：把 `state.messages`（全量）裁成尾部窗口，回填
- *      `historyStart`（窗口首条在全量里的下标）与 `historyTotal`；
- *   2. `snapshot_delta`：把新追加的消息并入缓存，并回填同样两个字段；
+ *      `historyStart`（窗口首条在全量里的下标）、`historyTotal` 与 `historyGeneration`；
+ *   2. `snapshot_delta`：把新追加的消息并入缓存，并回填同样的窗口元数据；
  *   3. `load_earlier_messages`：把窗口往前扩一页，回 `earlier_messages`。
  *
  * 刻意**不碰** `rev` / `baseRev`：各引擎的增量语义（DSH 的 baseRev 算法、
  * durable 的消息结构）完全不同，一旦在这里改写版本号就会把它们的自愈逻辑搞坏。
  * 往前翻页只是给客户端「补齐更早的一段」，不影响任何 rev 链。
  *
- * 兼容性：两个字段都是可选的（缺省 = 全量），老前端连新服务端、新前端连老服务端
- * 都只是退化成本来的「全量下发」，不会坏。
+ * 窗口元数据可选以兼容旧端；新前端对带代次的分页同时校验代次与接缝，
+ * 服务端发现失效代次或锚点时回 resyncRequired，由前端 get_state 重建基线。
  */
+import { randomUUID } from "node:crypto";
 import type { ServerMessage, UiMessage } from "./protocol.js";
 
 /** 尾部窗口条数（缺省 300 条）。 */
@@ -42,6 +43,7 @@ export interface LoadEarlierOptions {
 	conversationId?: string;
 	beforeId?: string;
 	before?: number;
+	historyGeneration?: string;
 }
 
 export interface MessageWindowConfig {
@@ -129,6 +131,9 @@ interface ConvWindow {
 	full: UiMessage[];
 	/** 已下发窗口的起点下标。 */
 	start: number;
+	generation: string;
+	/** Copy IDs so in-place source array edits cannot conceal a history rewrite. */
+	ids: string[];
 }
 
 /**
@@ -159,12 +164,7 @@ export class MessageWindowTap {
 			const state = msg.state;
 			const full = state.messages;
 			const entry = this.entry(state.conversationId);
-			entry.full = full;
-			// 首次按「条数 + 字符预算」算；之后只允许单调不增（已翻过的页不能被全量快照推回去）。
-			entry.start =
-				entry.start < 0
-					? pickWindowStart(full, this.cfg)
-					: computeWindowStart(entry.start, full.length, this.cfg.windowSize);
+			this.updateBaseline(entry, full);
 			this.lastConversationId = state.conversationId;
 			this.send({
 				...msg,
@@ -173,6 +173,7 @@ export class MessageWindowTap {
 					messages: entry.start > 0 ? full.slice(entry.start) : full,
 					historyStart: entry.start,
 					historyTotal: full.length,
+					historyGeneration: entry.generation,
 				},
 			});
 			return;
@@ -186,11 +187,17 @@ export class MessageWindowTap {
 			}
 			if (msg.appended.length > 0) {
 				entry.full = entry.full.concat(msg.appended);
+				entry.ids.push(...msg.appended.map((m) => m.id));
 			}
 			this.lastConversationId = msg.conversationId;
 			this.send({
 				...msg,
-				state: { ...msg.state, historyStart: entry.start, historyTotal: entry.full.length },
+				state: {
+					...msg.state,
+					historyStart: entry.start,
+					historyTotal: entry.full.length,
+					historyGeneration: entry.generation,
+				},
 			});
 			return;
 		}
@@ -203,11 +210,12 @@ export class MessageWindowTap {
 	 */
 	rehydrate(convId: string, full: UiMessage[], start?: number): void {
 		const entry = this.entry(convId);
-		entry.full = full;
-		if (start !== undefined && Number.isFinite(start) && start >= 0) {
+		const fresh = entry.start < 0;
+		this.updateBaseline(entry, full);
+		// Legacy clients may restore a numeric cursor on a fresh cache. Modern
+		// clients must first obtain its new generation through get_state.
+		if (fresh && start !== undefined && Number.isFinite(start) && start >= 0) {
 			entry.start = Math.min(full.length, start);
-		} else if (entry.start < 0) {
-			entry.start = pickWindowStart(full, this.cfg);
 		}
 	}
 
@@ -233,16 +241,33 @@ export class MessageWindowTap {
 		if (!entry || !convId) return false;
 
 		const total = entry.full.length;
+		const anchor = opts.beforeId === undefined ? undefined : entry.full.findIndex((m) => m.id === opts.beforeId);
+		const invalid =
+			(opts.historyGeneration !== undefined && opts.historyGeneration !== entry.generation) ||
+			anchor === -1 ||
+			(opts.before !== undefined && (!Number.isInteger(opts.before) || opts.before < 0 || opts.before > total)) ||
+			(anchor !== undefined && opts.before !== undefined && anchor !== opts.before);
+		if (invalid) {
+			this.send({
+				type: "earlier_messages",
+				conversationId: convId,
+				messages: [],
+				historyStart: entry.start,
+				historyTotal: total,
+				historyGeneration: entry.generation,
+				beforeId: opts.beforeId,
+				before: opts.before,
+				resyncRequired: true,
+			});
+			return true;
+		}
 		// 确定翻页右边界（end）：
-		// 1. 优先使用不可变消息 ID beforeId 定位（防数组位移）；
-		// 2. 其次使用客户端自描述下标 before（自描述游标）；
+		// 1. 使用已校验的消息 ID beforeId 定位（失效锚点已在上方拒绝）；
+		// 2. 未提供锚点时兼容客户端自描述下标 before；
 		// 3. 最后回退服务端自身记录的 entry.start（若小于 0 则说明未初始化，回退 total）。
 		let end = entry.start >= 0 ? entry.start : total;
-		if (opts.beforeId) {
-			const idx = entry.full.findIndex((m) => m.id === opts.beforeId);
-			if (idx >= 0) {
-				end = idx;
-			}
+		if (anchor !== undefined) {
+			end = anchor;
 		} else if (typeof opts.before === "number" && Number.isFinite(opts.before) && opts.before >= 0) {
 			end = Math.min(total, opts.before);
 		}
@@ -250,15 +275,28 @@ export class MessageWindowTap {
 		const page = opts.all ? end : Math.min(MAX_PAGE, Math.max(1, Math.floor(opts.count ?? this.cfg.pageSize) || 1));
 		const start = opts.all ? 0 : Math.max(0, end - page);
 		const messages = start < end ? entry.full.slice(start, end) : [];
-		entry.start = start;
+		entry.start = Math.min(entry.start, start);
 		this.send({
 			type: "earlier_messages",
 			conversationId: convId,
 			messages,
 			historyStart: start,
 			historyTotal: total,
+			historyGeneration: entry.generation,
+			beforeId: entry.full[end]?.id,
+			before: end,
 		});
 		return true;
+	}
+
+	private updateBaseline(entry: ConvWindow, full: UiMessage[]): void {
+		const rewritten = entry.ids.length > full.length || entry.ids.some((id, i) => full[i]?.id !== id);
+		if (rewritten) entry.generation = randomUUID();
+		// Appends and repeated snapshots must not re-expand a character-limited
+		// baseline. Only explicit pagination expands it; rewrites start afresh.
+		if (entry.start < 0 || rewritten) entry.start = pickWindowStart(full, this.cfg);
+		entry.full = full;
+		entry.ids = full.map((m) => m.id);
 	}
 
 	/** 取（或建）对话窗口；LRU 超限时淘汰最久未用的那个。 */
@@ -269,7 +307,7 @@ export class MessageWindowTap {
 			this.convs.set(convId, hit);
 			return hit;
 		}
-		const created: ConvWindow = { full: [], start: -1 };
+		const created: ConvWindow = { full: [], start: -1, generation: randomUUID(), ids: [] };
 		this.convs.set(convId, created);
 		while (this.convs.size > MAX_CACHED_CONVERSATIONS) {
 			const oldest = this.convs.keys().next();

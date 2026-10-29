@@ -31,6 +31,8 @@ import { Type } from "typebox";
 import { pick, type ServerLang } from "./i18n.js";
 import { type SubagentSpawnExtra, resolveSecurityMode } from "./subagent-security-gate.js";
 import { THINKING_LEVELS } from "./subagent-templates.js";
+import { CONVERSATION_TOOL_NAME, SUBAGENT_TOOL_NAME } from "./tool-manager.js";
+export { CONVERSATION_TOOL_NAME, SUBAGENT_TOOL_NAME } from "./tool-manager.js";
 
 /** 子代理的状态（由 conversation 派生的轻量视图）。 */
 export type SubagentState = "running" | "queued" | "done" | "canceled";
@@ -137,6 +139,7 @@ export interface SubagentToolHost {
 		notifyOnDone?: boolean,
 		isolation?: string,
 		extra?: SubagentSpawnExtra,
+		signal?: AbortSignal,
 	): Promise<string>;
 	/** 取单个子代理快照（按 convId）。 */
 	getSubagent(convId: string): SubagentSnapshot | undefined;
@@ -193,7 +196,11 @@ export function subagentTitle(prompt: string): string {
  * 可能已切到别的项目，直接读 activeId 会把孩子记到无关会话名下（错组/沉底）。
  * 每个会话创建 runtime 时用本函数包一层，让它的 spawn 天然带自己的会话 id。
  */
-export function withSubagentOwner(host: SubagentToolHost, ownerId: string): SubagentToolHost {
+export function withSubagentOwner(
+	host: SubagentToolHost,
+	ownerId: string,
+	resolveOwner: () => string = () => ownerId,
+): SubagentToolHost {
 	return {
 		...host,
 		spawnSubagent: (
@@ -208,14 +215,17 @@ export function withSubagentOwner(host: SubagentToolHost, ownerId: string): Suba
 			notifyOnDone,
 			isolation,
 			extra,
+			signal,
 		) => {
-			const args: unknown[] = [prompt, type, cwd, templateName, model, ownerId, persist, thinking, notifyOnDone];
-			if (isolation !== undefined || extra !== undefined) {
+			signal?.throwIfAborted();
+			const args: unknown[] = [prompt, type, cwd, templateName, model, resolveOwner(), persist, thinking, notifyOnDone];
+			if (isolation !== undefined || extra !== undefined || signal !== undefined) {
 				args.push(isolation);
 			}
-			if (extra !== undefined) {
+			if (extra !== undefined || signal !== undefined) {
 				args.push(extra);
 			}
+			if (signal !== undefined) args.push(signal);
 			return host.spawnSubagent(...(args as Parameters<SubagentToolHost["spawnSubagent"]>));
 		},
 		handoffSubagent: (fromRunId, toRunId, payload) => host.handoffSubagent(fromRunId || ownerId, toRunId, payload),
@@ -226,8 +236,6 @@ export function withSubagentOwner(host: SubagentToolHost, ownerId: string): Suba
 			host.dismissSubagent?.(convId, opts) ?? Promise.resolve({ ok: false, reason: "unsupported" }),
 	};
 }
-
-export const SUBAGENT_TOOL_NAME = "subagent";
 
 export const SUBAGENT_ACTIONS = [
 	"spawn",
@@ -327,12 +335,12 @@ export function makeSubagentTool(
 	const capSeconds = Math.floor(currentWaitCapMs / 1000);
 
 	return defineTool({
-		name: SUBAGENT_TOOL_NAME,
-		label: "Subagent manager",
+		name: CONVERSATION_TOOL_NAME,
+		label: "Conversation collaboration",
 		description:
-			"Manage background subagent conversations for parallel delegation, research, and execution. " +
+			"Create and manage collaborative conversations, including temporary subagents and persistent sessions, for delegation, research, and execution. " +
 			"Each action's arguments are documented on the parameters below.",
-		promptSnippet: "manage background subagents (spawn/steer/wait/dismiss)",
+		promptSnippet: "delegate and coordinate conversations (spawn/steer/wait/handoff/dismiss)",
 		parameters: Type.Object({
 			action: Type.Unsafe<SubagentAction>({
 				type: "string",
@@ -533,6 +541,7 @@ export function makeSubagentTool(
 							boolean?,
 							string?,
 							SubagentSpawnExtra?,
+							AbortSignal?,
 						] = [
 							p.prompt,
 							subagentType,
@@ -544,12 +553,14 @@ export function makeSubagentTool(
 							p.thinking,
 							p.notifyOnDone,
 						];
-						if (isolationMode === "worktree" || extra !== undefined) {
+						if (isolationMode === "worktree" || extra !== undefined || signal !== undefined) {
 							spawnArgs.push(isolationMode === "worktree" ? "worktree" : undefined);
 						}
-						if (extra !== undefined) {
+						if (extra !== undefined || signal !== undefined) {
 							spawnArgs.push(extra);
 						}
+						if (signal !== undefined) spawnArgs.push(signal);
+						signal?.throwIfAborted();
 						convId = await host.spawnSubagent(...spawnArgs);
 					} catch (err) {
 						const msg = err instanceof Error ? err.message : String(err);
@@ -1405,7 +1416,18 @@ export function makeSubagentTools(
 	lang?: () => ServerLang,
 	selfConvId?: string | (() => string | undefined),
 ): ToolDefinition[] {
-	return [makeSubagentTool(host, lang, selfConvId)];
+	const primary = makeSubagentTool(host, lang, selfConvId);
+	return [
+		primary,
+		{
+			...primary,
+			name: SUBAGENT_TOOL_NAME,
+			label: "Conversation collaboration (legacy alias)",
+			description:
+				"Compatibility alias for conversation. Prefer conversation for new calls; parameters and behavior are identical.",
+			promptSnippet: "support existing subagent calls; prefer conversation",
+		},
+	];
 }
 
 /** 短 id 前缀（前端展示/日志用）。 */

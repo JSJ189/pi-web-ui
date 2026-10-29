@@ -123,20 +123,20 @@ export function installToolOverrides(
 export function syncSubagentOverride(
 	session: OverrideSessionLike,
 	subagentDisabled: boolean,
-	builtinSubagentTool?: () => AnyToolDefinition,
+	builtinSubagentTool?: (name: string) => AnyToolDefinition,
 ): void {
 	if (!Array.isArray(session._customTools) || typeof session._refreshToolRegistry !== "function") return;
-	const hasExtensionTool = Boolean(extensionToolDefinition(session, "subagent"));
-	if (!hasExtensionTool) return;
-
-	const idx = session._customTools.findIndex((t) => t.name === "subagent");
-	if (subagentDisabled) {
-		if (idx !== -1) {
-			session._customTools = session._customTools.filter((t) => t.name !== "subagent");
-			session._refreshToolRegistry();
+	let changed = false;
+	for (const name of ["conversation", "subagent"]) {
+		if (!extensionToolDefinition(session, name)) continue;
+		const idx = session._customTools.findIndex((t) => t.name === name);
+		if (subagentDisabled && idx !== -1) {
+			session._customTools = session._customTools.filter((t) => t.name !== name);
+			changed = true;
+		} else if (!subagentDisabled && idx === -1 && builtinSubagentTool) {
+			session._customTools = [builtinSubagentTool(name), ...session._customTools];
+			changed = true;
 		}
-	} else if (idx === -1 && builtinSubagentTool) {
-		session._customTools = [builtinSubagentTool(), ...session._customTools];
-		session._refreshToolRegistry();
 	}
+	if (changed) session._refreshToolRegistry();
 }

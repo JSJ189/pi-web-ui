@@ -13,6 +13,7 @@
  */
 
 import { createServer } from "node:http";
+import { randomBytes, timingSafeEqual } from "node:crypto";
 import { enhanceMarkdownHtml } from "./md-toc.mjs";
 
 const PREFIXES = ["/liveserver", "/md"];
@@ -61,7 +62,7 @@ export function toRelPath(pathname) {
 	p = p.split("?")[0].split("#")[0];
 	if (!p.startsWith("/")) return null;
 	const segs = p.split("/").filter((s) => s && s !== ".");
-	if (segs.some((s) => s === "..")) return null;
+	if (p.includes("\\") || p.includes("\0") || segs.some((s) => s === "..")) return null;
 	// EVENTS_SUFFIX 允许出现在任意层级（iframe 子目录页的相对 SSE 回落）。
 	return segs.join("/");
 }
@@ -229,6 +230,11 @@ function dirListing(rel, entries, prefix) {
 }
 
 /** 自动刷新脚本：meta 基址来自代理透传头（子路径反代也对），直连回环口时回落相对路径。 */
+function withReload(html, prefix, version) {
+	const snippet = reloadSnippet(prefix, version);
+	return /<\/body\s*>/i.test(html) ? html.replace(/<\/body\s*>/i, `${snippet}</body>`) : html + snippet;
+}
+
 function reloadSnippet(prefix, version) {
 	const base = prefix ? `<meta name="live-preview-base" content="${escHtml(prefix)}">` : "";
 	return `${base}<script>(function(){var v=${version};function base(){try{var m=document.querySelector('meta[name="live-preview-base"]');if(m&&m.content)return m.content;}catch(_){}return \"\";}try{var es=new EventSource(base()+\"/__livepreview/events\");es.onmessage=function(e){try{var d=JSON.parse(e.data);if(d&&d.version!==v)location.reload();}catch(_){}};}catch(_){}})();</script>`;
@@ -247,6 +253,8 @@ export default {
 				return {};
 			}
 		};
+		// Separate bearer capability, revoked with this activation's proxy registrations.
+		const capabilityPrefix = `/__live-preview/${randomBytes(32).toString("hex")}`;
 		const state = { version: 0, sse: new Set() };
 		const bump = () => {
 			state.version += 1;
@@ -270,18 +278,14 @@ export default {
 
 		/** 内建静态服务处理器（收到的已是去前缀路径）。 */
 		async function handle(req, res) {
-			const u = new URL(req.url ?? "/", "http://localhost");
-			const pathname = u.pathname;
-			// SSE：任意目录层级后缀命中（子目录页用相对地址回落时也可用）。
-			if (pathname === "/__livepreview/events" || pathname.endsWith(EVENTS_SUFFIX)) {
-				res.writeHead(200, {
-					"Content-Type": "text/event-stream; charset=utf-8",
-					"Cache-Control": "no-cache",
-					Connection: "keep-alive",
-				});
-				res.write(`data: ${JSON.stringify({ version: state.version })}\n\n`);
-				state.sse.add(res);
-				req.on("close", () => state.sse.delete(res));
+			res.setHeader("Content-Security-Policy", "sandbox allow-scripts");
+			res.setHeader("X-Content-Type-Options", "nosniff");
+			res.setHeader("Referrer-Policy", "no-referrer");
+			res.setHeader("Cache-Control", "no-store");
+			const pathname = (req.url || "/").split("?")[0];
+			const rel = toRelPath(pathname);
+			if (rel === null) {
+				res.writeHead(400).end("bad path");
 				return;
 			}
 			if (req.method !== "GET" && req.method !== "HEAD") {
@@ -289,9 +293,33 @@ export default {
 				return;
 			}
 			const prefix = String(req.headers["x-pi-proxy-prefix"] ?? "");
-			const rel = toRelPath(pathname);
-			if (rel === null) {
-				res.writeHead(400).end("bad path");
+			if (PREFIXES.includes(prefix)) {
+				// The ordinary proxy is authenticated by the host. Drop query credentials.
+				res.writeHead(302, { Location: capabilityPrefix + pathname }).end();
+				return;
+			}
+			const provided = Buffer.from(prefix);
+			const expected = Buffer.from(capabilityPrefix);
+			if (provided.length !== expected.length || !timingSafeEqual(provided, expected)) {
+				res.writeHead(403).end("invalid preview capability");
+				return;
+			}
+			// Opaque origins need CORS for modules and SSE; never allow credentials.
+			res.setHeader("Access-Control-Allow-Origin", "*");
+			// SSE：任意目录层级后缀命中（子目录页用相对地址回落时也可用）。
+			if (pathname === "/__livepreview/events" || pathname.endsWith(EVENTS_SUFFIX)) {
+				res.writeHead(200, {
+					"Content-Type": "text/event-stream; charset=utf-8",
+					"Cache-Control": "no-cache",
+					Connection: "keep-alive",
+				});
+				if (req.method === "HEAD") {
+					res.end();
+					return;
+				}
+				res.write(`data: ${JSON.stringify({ version: state.version })}\n\n`);
+				state.sse.add(res);
+				req.on("close", () => state.sse.delete(res));
 				return;
 			}
 			const headOnly = req.method === "HEAD";
@@ -326,12 +354,16 @@ export default {
 			}
 			// 目录：优先 index.html / index.htm，否则列目录。
 			if (st.type === "dir") {
+				if (!pathname.endsWith("/")) {
+					res.writeHead(302, { Location: `${prefix}${pathname}/` }).end();
+					return;
+				}
 				const base = rel ? `${rel}/` : "";
 				for (const idx of ["index.html", "index.htm"]) {
 					try {
 						const text = await host.fs.readText(`${base}${idx}`, MAX_BYTES);
 						const live = settings().liveReload !== false;
-						const html = live ? text.replace(/<\/body\s*>/i, `${reloadSnippet(prefix, state.version)}</body>`) : text;
+						const html = live ? withReload(text, prefix, state.version) : text;
 						send(200, { "Content-Type": MIME.html, "Cache-Control": "no-store" }, Buffer.from(html));
 						return;
 					} catch {
@@ -369,7 +401,7 @@ export default {
 				if (ext === "html" || ext === "htm") {
 					const text = await host.fs.readText(rel, MAX_BYTES);
 					const live = settings().liveReload !== false;
-					const html = live ? text.replace(/<\/body\s*>/i, `${reloadSnippet(prefix, state.version)}</body>`) : text;
+					const html = live ? withReload(text, prefix, state.version) : text;
 					send(200, { "Content-Type": MIME.html, "Cache-Control": "no-store" }, Buffer.from(html));
 					return;
 				}
@@ -398,19 +430,12 @@ export default {
 		const port = server.address()?.port ?? 0;
 		if (!port) throw new Error("内建预览服务起不来（回环口监听失败）");
 
-		for (const p of PREFIXES) off(host.registerProxy(p, port));
+		for (const p of [...PREFIXES, capabilityPrefix]) off(host.registerProxy(p, port));
 		const task = host.registerBackgroundTask?.({
 			id: "preview-server",
 			label: "🌐 实时预览",
 			status: `127.0.0.1:${port} → /liveserver /md`,
-			stop: () => {
-				try {
-					server.close();
-				} catch {
-					/* already closed */
-				}
-				task?.update?.({ status: "已停止（重载插件恢复）" });
-			},
+			stop: () => shutdown(),
 		});
 		if (task) off(() => task.unregister?.());
 		// 工作区文件变化 → 推 SSE 自动刷新（目录监听失败不阻断激活）。
@@ -423,7 +448,7 @@ export default {
 			host.registerAgentTool({
 				name: "live_preview",
 				description:
-					"Open a Live Server-style preview of a workspace file or folder: HTML (relative assets, auto-refresh) is served under /liveserver/, Markdown rendering under /md/. path may be a file or a directory (defaults to the workspace root). Returns a same-origin preview URL; the browser opens it in a new tab automatically (click the link in the result if the popup was blocked).",
+					"Open a Live Server-style preview of a workspace file or folder: HTML (relative assets, auto-refresh) is served under /liveserver/, Markdown rendering under /md/. path may be a file or a directory (defaults to the workspace root). Returns a sandboxed preview URL; the browser opens it in a new tab automatically (click the link in the result if the popup was blocked).",
 				parameters: {
 					type: "object",
 					properties: {
@@ -444,14 +469,16 @@ export default {
 					// 末尾的确定性链接行：渲染出来是可点兜底，前端 effect 认它做自动打开标记。
 					const auto =
 						params?.open !== false && settings().autoOpen !== false ? `\n[🔗 已自动在浏览器打开](${primary})` : "";
-					const text = `预览地址（同源）：\n- HTML：/liveserver${seg}\n- Markdown：/md${seg}\n当前工作区：${host.cwd}${auto}`;
+					const text = `预览地址（隔离沙箱）：\n- HTML：/liveserver${seg}\n- Markdown：/md${seg}\n当前工作区：${host.cwd}${auto}`;
 					return { content: [{ type: "text", text }] };
 				},
 			}),
 		);
 		host.log?.(`实时预览已启动 127.0.0.1:${port}（/liveserver /md，根=${host.cwd}）`);
 
-		return () => {
+		function shutdown() {
+			if (deb) clearTimeout(deb);
+			deb = null;
 			for (const fn of cleanups.splice(0)) {
 				try {
 					fn();
@@ -466,11 +493,13 @@ export default {
 					/* ignore */
 				}
 			}
+			state.sse.clear();
 			try {
 				server.close();
 			} catch {
 				/* already closed */
 			}
-		};
+		}
+		return shutdown;
 	},
 };

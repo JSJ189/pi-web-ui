@@ -18,20 +18,35 @@ export interface EarlierPage {
 	messages: UiMessage[];
 	historyStart: number;
 	historyTotal: number;
+	historyGeneration?: string;
+	beforeId?: string;
+	before?: number;
+	resyncRequired?: boolean;
+}
+
+/** Reject stale lineages and broken seams, including empty pages. */
+export function earlierPageNeedsResync(ui: UiState, page: EarlierPage): boolean {
+	const start = ui.historyStart ?? 0;
+	return (
+		page.resyncRequired === true ||
+		page.historyGeneration !== ui.historyGeneration ||
+		page.historyStart + page.messages.length !== start ||
+		(page.before !== undefined && page.before !== start) ||
+		(page.historyGeneration !== undefined && (page.before !== start || page.beforeId !== ui.messages[0]?.id))
+	);
 }
 
 /**
  * 合并一页更早历史；返回 `null` = 该页不可用（错位或空转），调用方保持原状态。
  */
 export function mergeEarlierPage(ui: UiState, page: EarlierPage): UiState | null {
+	if (earlierPageNeedsResync(ui, page)) return null;
 	const curStart = ui.historyStart ?? 0;
 	const curTotal = ui.historyTotal ?? ui.messages.length;
 	if (page.messages.length === 0) {
 		if (page.historyStart === curStart && page.historyTotal === curTotal) return null;
 		return { ...ui, historyStart: page.historyStart, historyTotal: page.historyTotal };
 	}
-	// 接缝校验：这一页的末尾必须正好接在当前窗口的第一条之前
-	if (page.historyStart + page.messages.length !== curStart) return null;
 	// 总数更新：流式生成或在途新消息会增加总数，保留已返回消息并同步最新总数，
 	// 绝不因总数更新而丢弃整页导致服务端游标前移后历史永久不可达（issue #703）
 	return {

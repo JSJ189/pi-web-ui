@@ -452,6 +452,7 @@ div.chead[role="button"]:hover,
 
 .btn.send:hover {
 	background: var(--send-blue-hover);
+	color: var(--on-send-blue-hover);
 }
 
 .btn.stop {

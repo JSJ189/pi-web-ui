@@ -100,6 +100,17 @@ export function findBranchCandidates(entries: AnySessionEntry[]): BranchCandidat
 	if (leaves.length === 0) return [];
 
 	const candidates: BranchCandidate[] = [];
+	// Shared ancestors are visited for every leaf. Cache by object (not ID, which
+	// may be duplicated), and only for this call so later entry edits stay visible.
+	// Path traversal and pathIds output still cost the sum of all branch depths.
+	const timestamps = new WeakMap<AnySessionEntry, number>();
+	const timestampOf = (entry: AnySessionEntry): number => {
+		const cached = timestamps.get(entry);
+		if (cached !== undefined) return cached;
+		const timestamp = parseEntryTimestamp(entry.timestamp);
+		timestamps.set(entry, timestamp);
+		return timestamp;
+	};
 
 	for (const leaf of leaves) {
 		const leafId = leaf.id as string;
@@ -122,14 +133,14 @@ export function findBranchCandidates(entries: AnySessionEntry[]): BranchCandidat
 		for (const node of path) {
 			if (node.type === "message") {
 				messageCount += 1;
-				const ts = parseEntryTimestamp(node.timestamp);
+				const ts = timestampOf(node);
 				if (ts > lastMessageTimestamp) {
 					lastMessageTimestamp = ts;
 				}
 			}
 		}
 
-		const tailTimestamp = parseEntryTimestamp(leaf.timestamp);
+		const tailTimestamp = timestampOf(leaf);
 
 		candidates.push({
 			leafId,
@@ -173,8 +184,18 @@ export function selectBestSessionLeaf(
 	entries: AnySessionEntry[],
 	currentLeafId?: string | null,
 ): LeafCalibrationResult | null {
-	const candidates = findBranchCandidates(entries);
+	let candidates = findBranchCandidates(entries);
 	if (candidates.length === 0) return null;
+
+	// An edit/reask explicitly discards the later history in this same file.
+	// Honor the latest durable selection, even when abandoned history is longer.
+	const reask = [...entries]
+		.reverse()
+		.find((entry) => entry.type === "custom" && entry.customType === "pi-web-ui:reask");
+	if (reask?.id) {
+		const selected = candidates.filter((candidate) => candidate.pathIds.includes(reask.id!));
+		if (selected.length > 0) candidates = selected;
+	}
 
 	if (candidates.length === 1) {
 		const single = candidates[0];

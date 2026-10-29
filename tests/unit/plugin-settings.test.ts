@@ -2,7 +2,9 @@
  * 插件声明式设置（manifest "settings" schema）单测：schema 解析校验、
  * 默认值合并、savePluginSettings 持久化 + 通知、host.getSettings 读取。
  */
-import { describe, expect, it, beforeEach, afterEach } from "vitest";
+import { describe, expect, it, beforeEach, afterEach, vi } from "vitest";
+import * as atomicFile from "../../server/atomic-file.js";
+import { withFileRmwLock } from "../../server/plugin-facilities.js";
 import { existsSync, mkdtempSync, mkdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -173,6 +175,74 @@ describe("secret 类型（P0-4 加密存、浏览器只见有无）", () => {
 			{ key: "name", type: "text", label: "名字", default: "demo" },
 		],
 	};
+	it("异步 storage 写锁未释放时拒绝同步保存，不提前通知成功", async () => {
+		const h = await makePlugin("sec", SECRET_PLUGIN);
+		mgr.savePluginSettings("sec", { apiKey: "old", name: "before" });
+		const received: unknown[] = [];
+		h.onSettingsChanged((v) => received.push(v));
+		let release!: () => void;
+		const held = withFileRmwLock(
+			join(dir, "plugins", "sec", "storage.json"),
+			() =>
+				new Promise<void>((resolve) => {
+					release = resolve;
+				}),
+		);
+		expect(mgr.savePluginSettings("sec", { apiKey: "new", name: "after" }).error).toContain("busy");
+		expect(received).toEqual([]);
+		release();
+		await held;
+		expect(h.getSettings()).toEqual({ apiKey: "old", name: "before" });
+	});
+	it.each(["{broken", "[]", "null"])("读取旧 secret 遇损坏 storage 返回 error 且不覆盖：%s", async (broken) => {
+		const h = await makePlugin("sec", SECRET_PLUGIN);
+		mgr.savePluginSettings("sec", { apiKey: "old", name: "before" });
+		const received: unknown[] = [];
+		h.onSettingsChanged((value) => received.push(value));
+		const file = join(dir, "plugins", "sec", "storage.json");
+		writeFileSync(file, broken);
+		let result: { error?: string } = {};
+		expect(() => {
+			result = mgr.savePluginSettings("sec", { apiKey: "", name: "after" });
+		}).not.toThrow();
+		expect(result.error).toBeTruthy();
+		expect(received).toEqual([]);
+		expect(readFileSync(file, "utf8")).toBe(broken);
+	});
+	it("后续字段校验失败不会提交前面的 secret", async () => {
+		const h = await makePlugin("sec", {
+			settings: [
+				{ key: "apiKey", type: "secret", label: "key" },
+				{ key: "count", type: "number", label: "count", min: 1, max: 10 },
+			],
+		});
+		expect(mgr.savePluginSettings("sec", { apiKey: "old", count: 2 }).error).toBeUndefined();
+		expect(mgr.savePluginSettings("sec", { apiKey: "new", count: 20 }).error).toBeTruthy();
+		expect(h.getSettings()).toEqual({ apiKey: "old", count: 2 });
+	});
+	it("原子提交失败保留旧 secret 和配置，不通知成功", async () => {
+		const h = await makePlugin("sec", SECRET_PLUGIN);
+		expect(mgr.savePluginSettings("sec", { apiKey: "old", name: "before" }).error).toBeUndefined();
+		const received: unknown[] = [];
+		h.onSettingsChanged((value) => received.push(value));
+		const file = join(dir, "plugins", "sec", "storage.json");
+		const original = readFileSync(file, "utf8");
+		const write = atomicFile.writeJsonAtomicSync;
+		const fail = vi.spyOn(atomicFile, "writeJsonAtomicSync").mockImplementation((target, data, indent) => {
+			if (target === file) throw new Error("injected atomic replace failure");
+			return write(target, data, indent);
+		});
+		try {
+			expect(mgr.savePluginSettings("sec", { apiKey: "new", name: "after" }).error).toContain(
+				"injected atomic replace failure",
+			);
+			expect(received).toEqual([]);
+			expect(readFileSync(file, "utf8")).toBe(original);
+		} finally {
+			fail.mockRestore();
+		}
+		expect(h.getSettings()).toEqual({ apiKey: "old", name: "before" });
+	});
 	it("清单 settingsValues：secret 只给有无布尔，不给明文", async () => {
 		await makePlugin("sec", SECRET_PLUGIN);
 		const list = await mgr.list();

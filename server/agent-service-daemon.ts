@@ -26,6 +26,7 @@ import { isRemoteWorkspaceUri, resolveWorkspaceSessionDir } from "./remote-ssh-s
 import { getMaxOpenConversations } from "./agent-formatters.js";
 import { collectSubagentDescendantIds } from "./subagents.js";
 import { pickLatestClientSnapshot } from "./plugin-conversation-view.js";
+import { normalizePluginChatAttachments } from "./plugin-chat-attachments.js";
 import type { ToolGuardHook } from "./tool-guards.js";
 import type {
 	ServerMessage,
@@ -74,7 +75,7 @@ export class AgentService {
 	/** index.ts 注入：模型切换成功通知钩子（#542），attach 时拷贝到每个新会话。 */
 	onClientModelChanged: ((snap: PluginConversationSnapshot) => void) | undefined = undefined;
 	/** index.ts 注入：读取插件当前注册的 AI 工具（attach 时拷贝到每个新会话）。 */
-	pluginToolsProvider: (() => PluginAgentTool[]) | undefined = undefined;
+	pluginToolsProvider: ((cwd?: string) => PluginAgentTool[]) | undefined = undefined;
 	/** index.ts 注入：读取插件当前注册的斜杠命令（attach 时拷贝到每个新会话）。 */
 	pluginCommandsProvider: (() => PluginCommandDef[]) | undefined = undefined;
 	/** index.ts 注入：读取插件注册的常驻后台任务（并入 bg_servers 面板）。 */
@@ -624,6 +625,7 @@ export class AgentService {
 		const acct = String(req?.accountId ?? "default").replace(/[^A-Za-z0-9_-]/g, "") || "default";
 		const clientId = `plugin:${safe}:${acct}`;
 		const text = String(req?.text ?? "");
+		const attachments = normalizePluginChatAttachments(req?.attachments);
 		if (!text.trim()) throw new Error("chatFromPlugin: text 为空");
 		if (this.quiesced) throw new QuiesceRejectedError("插件无头调用被拒绝，请等服务器恢复后重试");
 		// 本轮运行的稳定标识：随该轮所有 run 事件下发。为何需要：过户会把对话搬到
@@ -634,19 +636,36 @@ export class AgentService {
 		// miss/已回收时不抛错，回落无头伪客户端（浏览器关着时微信照常可用）。
 		const target = String(req?.conversationId ?? "").trim();
 		if (target) {
-			const w = await this.wakeConversation(target, text);
-			if (w.ok) {
-				// 投递成功：给该对话打上运行 token（过户后事件依旧带它）。
-				const owner = w.clientId ? this.clients.get(w.clientId) : undefined;
-				if (owner) {
-					try {
-						const conv = w.conversationId ? owner.getConversation(w.conversationId) : undefined;
-						owner.markPluginRun(runId, conv);
-					} catch {
-						/* 打标尽力而为，不影响已投递的请求 */
-					}
+			// Conversation ids are local to a client. Prefer this channel's own
+			// client; otherwise require an unambiguous target instead of guessing.
+			const own = this.clients.get(clientId);
+			const ownConv = own?.getConversation(target);
+			const hits: { owner: ClientSession; conv: Conversation; ownerId: string }[] = [];
+			if (own && ownConv) hits.push({ owner: own, conv: ownConv, ownerId: clientId });
+			else {
+				for (const [ownerId, owner] of this.clients) {
+					const conv = owner.getConversation(target);
+					if (conv) hits.push({ owner, conv, ownerId });
 				}
-				return { conversationId: w.conversationId ?? target, clientId: w.clientId ?? clientId, runId };
+			}
+			if (hits.length > 1) throw new Error("chatFromPlugin: ambiguous conversation id; rebind the channel");
+			if (hits.length === 1) {
+				const { owner, conv, ownerId } = hits[0];
+				if (req.cwd && resolve(req.cwd) !== resolve(conv.cwd))
+					throw new Error("chatFromPlugin: bound conversation cwd differs; start a new channel conversation");
+				if (req.model || req.thinkingLevel) {
+					// Apply overrides only when the captured conversation is active;
+					// these APIs address the owner's active conversation.
+					if (owner.readConversationForPlugins()?.conversationId !== conv.id)
+						throw new Error("chatFromPlugin: cannot change settings of an inactive bound conversation");
+					if (req.model) await owner.switchModelOrThrow(req.model);
+					if (req.thinkingLevel) owner.setThinking(req.thinkingLevel);
+				}
+				owner.markPluginRun(runId, conv);
+				void owner
+					.prompt(text, attachments, false, conv)
+					.catch((err) => console.error("[plugin chat] prompt failed", err));
+				return { conversationId: conv.id, clientId: ownerId, runId };
 			}
 		}
 		// 2. 工作空间：不传回落伪客户端当前目录；传了必须存在且非系统目录。
@@ -687,8 +706,17 @@ export class AgentService {
 			/* 打标尽力而为 */
 		}
 		const conversationId = stampedId || (cs.readConversationForPlugins()?.conversationId ?? "");
-		void cs.prompt(text);
+		const conv = cs.getConversation(conversationId);
+		void cs.prompt(text, attachments, false, conv).catch((err) => console.error("[plugin chat] prompt failed", err));
 		return { conversationId, clientId, runId };
+	}
+
+	/** Abort by the stable plugin run token, including after conversation takeover. */
+	async abortPluginRun(runId: string): Promise<{ ok: boolean; error?: string }> {
+		for (const owner of this.clients.values()) {
+			if (owner.findPluginRun(runId)) return owner.abortPluginRun(runId);
+		}
+		return { ok: false, error: "Plugin run is no longer active" };
 	}
 
 	/** 内置定时任务的无头执行（issue #184，server/scheduler-tasks.ts 的 executor）。
@@ -1287,6 +1315,19 @@ export class AgentService {
 	/** 插件 AI 工具集合变化（注册/注销）时由 index.ts 触发：推送到所有客户端的全部会话。 */
 	applyPluginAgentTools(): void {
 		for (const cs of this.clients.values()) cs.refreshPluginTools();
+	}
+
+	mcpProjectCwds(): string[] {
+		return [...new Set([...this.clients.values()].flatMap((cs) => cs.mcpProjectCwds()))];
+	}
+
+	/** Runtime initialization/reload also updates management UI, including clients without conversations. */
+	refreshMcpProject(cwd: string): void {
+		for (const cs of this.clients.values()) {
+			if (resolve(cs.cwd) !== resolve(cwd)) continue;
+			cs.broadcastMcpServers();
+			cs.pushSettings();
+		}
 	}
 
 	/** Browser UI locale report (hello.locale / set_locale): persist per client

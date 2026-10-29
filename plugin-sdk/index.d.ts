@@ -179,6 +179,26 @@ export type ToolGuardPreDecision =
 	| { decision: "deny"; reason?: string; reasonEn?: string }
 	| { decision: "ask"; reason?: string; reasonEn?: string };
 
+export interface PluginChatAttachment {
+	path: string;
+	mode?: "reference" | "inline";
+	name?: string;
+	mimeType?: string;
+	imageData?: string;
+	fileData?: string;
+}
+
+export interface PluginChatRequest {
+	text: string;
+	accountId?: string;
+	conversationId?: string;
+	cwd?: string;
+	model?: string;
+	thinkingLevel?: string;
+	/** Up to 8 attachments, 10 MiB each and 20 MiB total. Images use imageData (base64). */
+	attachments?: PluginChatAttachment[];
+}
+
 /** 插件服务端入口拿到的宿主接口（精简：全量见 server/plugins.ts PluginHost）。 */
 export interface PluginHost {
 	broadcast(payload: unknown): void;
@@ -340,14 +360,16 @@ export interface PluginHost {
 	};
 	/** 无头调用：把外部通道文本投给 agent（要 "chat" 能力；宿主未接 chatProvider
 	 *  时 reject（由 chatWait 包成 {ok:false}，插件侧用 chatWait 更省心）。 */
-	chat(req: { text: string; accountId?: string }): Promise<{
-		ok: boolean;
-		conversationId?: string;
-		error?: string;
+	chat(req: PluginChatRequest): Promise<{
+		/** Present only on mock hosts or older integrations; real failures reject. */
+		ok?: boolean;
+		conversationId: string;
+		clientId: string;
+		runId?: string;
 	}>;
 	/** 等待无头调用的运行结束（默认 120s 超时；无注入/超时/失败一律回 {ok:false}，绝不抛错）。 */
 	chatWait(
-		req: { text: string; accountId?: string },
+		req: PluginChatRequest,
 		opts?: { timeoutMs?: number },
 	): Promise<{ ok: boolean; conversationId?: string; error?: string }>;
 	/** 对话读写：无注入时 list/search 回 []、get 回 null，绝不抛错。 */
@@ -366,7 +388,7 @@ export interface PluginHost {
 	): Promise<{ ok: boolean; error?: string }>;
 	/** 插队指定对话的当前运行（无注入回 {ok:false}，绝不抛错）。 */
 	steer(conversationId: string, text: string): Promise<{ ok: boolean; error?: string }>;
-	/** 中止指定对话的运行（无注入回 {ok:false}，绝不抛错）。 */
+	/** Abort by stable plugin runId (pr- prefix, survives takeover), or legacy local conversationId. */
 	abortRun(conversationId: string): Promise<{ ok: boolean; error?: string }>;
 	/** 项目组装：在已授权目录里建目录/clone 仓库/写文件（失败回 {ok:false,error}，不留半成品）。 */
 	project: {

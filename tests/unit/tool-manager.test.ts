@@ -44,8 +44,21 @@ import {
 	setAgentToolsEnabled,
 	SUBAGENT_TOOL_NAMES,
 	TERMINAL_TOOL_NAMES,
+	LEGACY_TERMINAL_TOOL_NAMES,
+	resolveDisabledAgentToolsFromEnabled,
+	resolveEnabledAgentTools,
 	TOOL_SEARCH_TOOL_NAME,
 } from "../../server/tool-manager.js";
+
+it("migrates legacy terminal switches and explicit allowlists conservatively", () => {
+	for (const name of LEGACY_TERMINAL_TOOL_NAMES) {
+		expect(normalizeDisabledAgentTools([name])).toEqual(["terminal"]);
+		expect(resolveEnabledAgentTools([name])).not.toContain("terminal");
+		expect(resolveDisabledAgentToolsFromEnabled([name])).toContain("terminal");
+	}
+	expect(resolveDisabledAgentToolsFromEnabled([...LEGACY_TERMINAL_TOOL_NAMES])).not.toContain("terminal");
+	expect(resolveDisabledAgentToolsFromEnabled(["terminal"])).not.toContain("terminal");
+});
 
 /** 假 ActiveSet（只记录名字集合，不碰 SDK；getAllTools 与活跃集同源 = 初始全集）。 */
 function fakeSet(initial: string[] = []) {
@@ -69,8 +82,10 @@ describe("catalog", () => {
 		expect(CORE_TOOL_CATALOG.filter((c) => c.name !== "powershell").every((c) => c.defaultOn)).toBe(true);
 	});
 
-	it("ALL_AGENT_TOOL_ENTRIES 汇总 36 个工具，defaultDisabledAgentTools 纯声明式派生", () => {
-		expect(ALL_AGENT_TOOL_ENTRIES).toHaveLength(36);
+	it("ALL_AGENT_TOOL_ENTRIES 汇总核心与可开关目录，默认禁用声明式派生", () => {
+		expect(ALL_AGENT_TOOL_ENTRIES.map((tool) => tool.name)).toEqual(
+			[...CORE_TOOL_CATALOG, ...AGENT_TOOL_CATALOG].map((tool) => tool.name),
+		);
 		const expectedOff = ALL_AGENT_TOOL_ENTRIES.filter((t) => !t.defaultOn).map((t) => t.name);
 		expect(defaultDisabledAgentTools()).toEqual(expectedOff);
 	});
@@ -95,10 +110,10 @@ describe("catalog", () => {
 		expect(isKnownAgentTool("edit_soft")).toBe(true);
 	});
 
-	it("共 28 个可开关工具（终端 7＋子代理 1＋其他 20）", () => {
-		expect(AGENT_TOOL_CATALOG).toHaveLength(28);
-		expect(TERMINAL_TOOL_NAMES).toHaveLength(7);
-		expect(SUBAGENT_TOOL_NAMES).toHaveLength(1);
+	it("对话协作同时登记主名称与兼容名称", () => {
+		expect(new Set(AGENT_TOOL_CATALOG.map((tool) => tool.name)).size).toBe(AGENT_TOOL_CATALOG.length);
+		expect(TERMINAL_TOOL_NAMES).toEqual(["terminal"]);
+		expect(SUBAGENT_TOOL_NAMES).toEqual(["conversation", "subagent"]);
 	});
 
 	it("默认：终端组/edit_soft/eval 关，其余开（与改动前行为一致）", () => {
@@ -192,6 +207,7 @@ describe("legacy sync", () => {
 		const cur = ["edit_soft", "subagent"];
 		expect(foldLegacyIntoDisabled(cur, { terminalToolsEnabled: false })).toEqual([
 			"edit_soft",
+			"conversation",
 			"subagent",
 			...TERMINAL_TOOL_NAMES,
 		]);
@@ -210,7 +226,7 @@ describe("legacy sync", () => {
 	it("终端引导只在组内有启用工具时注入", () => {
 		expect(isTerminalGuidanceOn([])).toBe(true);
 		expect(isTerminalGuidanceOn([...TERMINAL_TOOL_NAMES])).toBe(false);
-		expect(isTerminalGuidanceOn([TERMINAL_TOOL_NAMES[0]])).toBe(true);
+		expect(isTerminalGuidanceOn([TERMINAL_TOOL_NAMES[0]])).toBe(false);
 	});
 });
 
@@ -237,7 +253,7 @@ describe("tool_manage 出入口", () => {
 
 	it("setAgentToolsEnabled 批量（组头全开/全关），返回处理数", () => {
 		const s = fakeSet();
-		expect(setAgentToolsEnabled(s, [...TERMINAL_TOOL_NAMES], true)).toBe(7);
+		expect(setAgentToolsEnabled(s, [...TERMINAL_TOOL_NAMES], true)).toBe(1);
 		expect(s.peek()).toEqual([...TERMINAL_TOOL_NAMES]);
 		expect(setAgentToolsEnabled(s, ["bash"], true)).toBe(0);
 	});
@@ -271,6 +287,27 @@ describe("tool_manage 出入口", () => {
 		expect(activeWithExtension).not.toContain("url_context");
 		expect(activeWithExtension).toContain("bash");
 		expect(activeWithExtension).toContain("read");
+	});
+
+	it("applies lazy-loading exclusions to active external tools without reactivating extension-disabled tools", () => {
+		let active = ["bash", "read", "mcp__files__read", "url_context", "loaded_tool"];
+		const all = [...active, "extension_disabled", "load_tools"];
+		const session = {
+			getAllTools: () => all.map((name) => ({ name })),
+			getActiveToolNames: () => [...active],
+			setActiveToolsByName: (names: string[]) => {
+				active = names;
+			},
+		};
+		const disabled = lazyLoadingDisabledTools(all, ["loaded_tool"]);
+		applyAgentToolsGating(session, disabled, undefined, { forceActive: ["load_tools"] });
+		expect(active).toContain("loaded_tool");
+		expect(active).toContain("load_tools");
+		expect(active).not.toContain("mcp__files__read");
+		expect(active).not.toContain("url_context");
+		expect(active).not.toContain("extension_disabled");
+		applyAgentToolsGating(session, []);
+		expect(active).not.toContain("extension_disabled");
 	});
 
 	it("applyAgentToolsGating forceActive：预设白名单外也强制加回，非延迟加载时不暴露 load_tools", () => {
@@ -347,7 +384,7 @@ describe("预设语义总表（见 tool-manager.ts 语义注释）", () => {
 		// 开关全关时预设也救不回来。
 		expect(isTerminalGuidanceOn([...TERMINAL_TOOL_NAMES], "standard")).toBe(false);
 		expect(isTerminalGuidanceOn([...TERMINAL_TOOL_NAMES], "reader")).toBe(false);
-		// 缺省 preset = 只看开关（旧语义不变）。
-		expect(isTerminalGuidanceOn([TERMINAL_TOOL_NAMES[0]])).toBe(true);
+		// 缺省 preset = 只看开关。
+		expect(isTerminalGuidanceOn([TERMINAL_TOOL_NAMES[0]])).toBe(false);
 	});
 });

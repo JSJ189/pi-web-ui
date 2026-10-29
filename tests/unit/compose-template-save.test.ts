@@ -68,6 +68,7 @@ function makeMockHost(savedSettings: Record<string, unknown> = {}) {
 				...savedSettings,
 			}),
 			saveSettings: (_id: string, s: any) => {
+				Object.assign(savedSettings, structuredClone(s));
 				saved.push(structuredClone(s));
 			},
 			getPresets: () => [],

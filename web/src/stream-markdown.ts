@@ -9,8 +9,8 @@
  * Solution: split the text into FROZEN segments (complete, append-only blocks)
  * plus one ACTIVE tail. Frozen segment text never changes again, so each is
  * rendered by its own memoized <ReactMarkdown> exactly ONCE; only the small
- * active tail re-parses. At message end the parent does ONE authoritative
- * full-document parse, so any segmentation imperfection is transient.
+ * active tail re-parses. Streamed messages retain their segmented renderer
+ * after finalization; switching to a full-document renderer would rebuild DOM.
  *
  * Splitting rules (CommonMark-aware enough for live preview):
  *  - Split points are blank lines OUTSIDE fenced code blocks.

@@ -7,8 +7,23 @@
  *   3. 跨 Agent 技能物理同步/软链维护（一键汇聚外部技能至当前工作区或全局目录）。
  */
 
-import { copyFileSync, existsSync, mkdirSync, readFileSync, statSync, symlinkSync } from "node:fs";
-import { basename, dirname, join } from "node:path";
+import {
+	closeSync,
+	constants,
+	copyFileSync,
+	existsSync,
+	lstatSync,
+	mkdirSync,
+	openSync,
+	readdirSync,
+	readFileSync,
+	realpathSync,
+	rmSync,
+	statSync,
+	symlinkSync,
+	writeFileSync,
+} from "node:fs";
+import { basename, dirname, isAbsolute, join, relative, resolve, sep } from "node:path";
 import {
 	discoverDiskSkills,
 	getMultiAgentSkillCandidateDirs,
@@ -247,6 +262,56 @@ export function verifySkillFile(filePath: string): SkillHealthCheck {
 	};
 }
 
+/** Path-segment comparison also handles sibling prefixes and Windows drive boundaries. */
+function isWithin(root: string, path: string): boolean {
+	const rel = relative(root, path);
+	return rel === "" || (rel !== ".." && !rel.startsWith(`..${sep}`) && !isAbsolute(rel));
+}
+
+/** Resolve existing ancestors too, so a missing target below a junction cannot hide recursion. */
+function physicalPath(path: string): string {
+	try {
+		return realpathSync(path);
+	} catch (err) {
+		if ((err as NodeJS.ErrnoException).code !== "ENOENT") throw err;
+		const parent = dirname(path);
+		if (parent === path) throw err;
+		return join(physicalPath(parent), basename(path));
+	}
+}
+
+function destinationExists(path: string): boolean {
+	try {
+		lstatSync(path); // Dangling links are conflicts as well.
+		return true;
+	} catch (err) {
+		if ((err as NodeJS.ErrnoException).code !== "ENOENT") throw err;
+		return false;
+	}
+}
+
+/** Copy internal links as resources; reject escapes and cycles before following them. */
+function copySkillDirectory(source: string, destination: string, root: string, ancestors = new Set<string>()): void {
+	const physical = realpathSync(source);
+	if (!isWithin(root, physical)) throw new Error("Skill resource escapes source directory");
+	if (ancestors.has(physical)) throw new Error("Recursive skill resource link");
+	const nextAncestors = new Set(ancestors).add(physical);
+	for (const entry of readdirSync(source)) {
+		const from = join(source, entry);
+		const to = join(destination, entry);
+		if (!isWithin(root, realpathSync(from))) throw new Error("Skill resource escapes source directory");
+		const stat = statSync(from);
+		if (stat.isDirectory()) {
+			mkdirSync(to);
+			copySkillDirectory(from, to, root, nextAncestors);
+		} else if (stat.isFile()) {
+			copyFileSync(from, to, constants.COPYFILE_EXCL);
+		} else {
+			throw new Error("Unsupported skill resource type");
+		}
+	}
+}
+
 /**
  * 跨 Agent 技能物理同步/软链维护：
  * 将外部 Agent（如 Claude Code 或通用 Agents）的技能同步或软链至工作区或指定目录中。
@@ -255,7 +320,7 @@ export function syncAgentSkills(opts: SyncAgentSkillsOptions): {
 	synced: Array<{ name: string; from: string; to: string }>;
 	skipped: Array<{ name: string; reason: string }>;
 } {
-	const targetDir = opts.targetDir ? opts.targetDir : join(opts.cwd, ".pi", "skills");
+	const targetDir = resolve(opts.targetDir || join(opts.cwd, ".pi", "skills"));
 	const mode = opts.mode || "copy";
 	const dryRun = !!opts.dryRun;
 
@@ -265,43 +330,72 @@ export function syncAgentSkills(opts: SyncAgentSkillsOptions): {
 	const synced: Array<{ name: string; from: string; to: string }> = [];
 	const skipped: Array<{ name: string; reason: string }> = [];
 
-	if (!dryRun && !existsSync(targetDir)) {
-		mkdirSync(targetDir, { recursive: true });
-	}
-
 	for (const skill of scan.skills) {
 		if (targetSources && skill.source && !targetSources.has(skill.source)) {
 			continue;
 		}
 
-		// 如果目标技能已经在目标目录中，跳过
-		if (skill.filePath.startsWith(targetDir)) {
+		// Names come from untrusted frontmatter, not necessarily from a directory name.
+		if (
+			!skill.name ||
+			skill.name === "." ||
+			skill.name === ".." ||
+			/[<>:"/\\|?*\x00-\x1f]/.test(skill.name) ||
+			/[. ]$/.test(skill.name)
+		) {
+			skipped.push({ name: skill.name, reason: "Invalid skill name" });
+			continue;
+		}
+
+		if (isWithin(targetDir, resolve(skill.filePath))) {
 			skipped.push({ name: skill.name, reason: "Already in target directory" });
 			continue;
 		}
 
 		const isDirSkill = basename(skill.filePath).toLowerCase() === "skill.md";
-		const destPath = isDirSkill ? join(targetDir, skill.name, "SKILL.md") : join(targetDir, `${skill.name}.md`);
-
-		if (existsSync(destPath)) {
-			skipped.push({ name: skill.name, reason: "Destination already exists" });
-			continue;
-		}
-
-		if (!dryRun) {
-			try {
-				if (isDirSkill) {
-					mkdirSync(dirname(destPath), { recursive: true });
-				}
-				if (mode === "symlink") {
-					symlinkSync(skill.filePath, destPath);
-				} else {
-					copyFileSync(skill.filePath, destPath);
-				}
-			} catch (err) {
-				skipped.push({ name: skill.name, reason: `FS Error: ${(err as Error).message}` });
+		const destination = join(targetDir, isDirSkill ? skill.name : `${skill.name}.md`);
+		const destPath = isDirSkill ? join(destination, "SKILL.md") : destination;
+		let ownedDestination = false;
+		try {
+			const physicalTarget = physicalPath(targetDir);
+			const source = realpathSync(isDirSkill ? dirname(skill.filePath) : skill.filePath);
+			if (isWithin(physicalTarget, source)) {
+				skipped.push({ name: skill.name, reason: "Already in target directory" });
 				continue;
 			}
+			if (isDirSkill && isWithin(source, physicalTarget)) {
+				skipped.push({ name: skill.name, reason: "Target directory is inside source skill" });
+				continue;
+			}
+			if (destinationExists(destination)) {
+				skipped.push({ name: skill.name, reason: "Destination already exists" });
+				continue;
+			}
+			if (!dryRun) {
+				mkdirSync(targetDir, { recursive: true });
+				if (mode === "symlink") {
+					symlinkSync(source, destination, isDirSkill ? (process.platform === "win32" ? "junction" : "dir") : "file");
+				} else {
+					// Exclusively claim the destination; cleanup must never remove a conflicting entry.
+					if (isDirSkill) {
+						mkdirSync(destination);
+						ownedDestination = true;
+						copySkillDirectory(source, destination, source);
+					} else {
+						const fd = openSync(destination, "wx");
+						ownedDestination = true;
+						try {
+							writeFileSync(fd, readFileSync(source));
+						} finally {
+							closeSync(fd);
+						}
+					}
+				}
+			}
+		} catch (err) {
+			if (ownedDestination) rmSync(destination, { recursive: isDirSkill, force: true });
+			skipped.push({ name: skill.name, reason: `FS Error: ${(err as Error).message}` });
+			continue;
 		}
 
 		synced.push({ name: skill.name, from: skill.filePath, to: destPath });

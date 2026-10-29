@@ -9,10 +9,10 @@
  *   不依赖转录文件落盘（SDK 的 _persist 门控要等首轮 assistant 才写盘）。
  * - 每会话只留最新一条（last-write-wins，按 ts，比 marker-store 的扫描模式更轻）。
  * - 与 per-client 的 client-state.json 不同：按 sessionId 全局存，跨标签页可见。
- * - 文件 I/O 一律 best-effort：持久化故障绝不能弄崩 server（同 subagent-templates）。
+ * - 同文件实例共享状态；写盘成功后提交内存，失败抛给调用者反馈。
  */
 import { readFileSync, renameSync } from "node:fs";
-import { basename } from "node:path";
+import { basename, resolve } from "node:path";
 import { writeJsonAtomicSync } from "./atomic-file.js";
 
 /** 单条草稿上限字符数：超出截断再存（快照全量下发时携带，太大浪费流量）。 */
@@ -51,34 +51,51 @@ function isValidDraft(d: unknown): d is ComposerDraft {
 }
 
 /** clear 水位：sessionId → clear 时刻（max(旧条目 ts, Date.now())）。
- *  模块级（非实例级）：同进程每个 ClientSession 各有一个 ComposerDraftsStore
- *  实例（agent-service.ts:1922），跨 tab 的 prompt-clear 与陈旧写落在不同
- *  实例上，水位必须跨实例可见。进程重启即失 —— 重启后文件态本身已干净
+ *  按文件共享（非实例级）：同进程各 ClientSession 的 prompt-clear 与陈旧写
+ *  落在不同实例上，水位与数据必须一起共享；不同 dataDir 相互隔离。
+ *  进程重启即失 —— 重启后文件态本身已干净
  *  （clear 落盘删 key），late-save 无处可达。
- *  ponytail: 内存水位，TTL/持久化按需加（当前重启语义已够用）。 */
-const clearedAt = new Map<string, number>();
+ *  内存水位，TTL/持久化按需加（当前重启语义已够用）。 */
+interface DraftFileState {
+	cache: Record<string, ComposerDraft> | null;
+	clearedAt: Map<string, number>;
+}
+const draftFiles = new Map<string, DraftFileState>();
 
 export class ComposerDraftsStore {
-	private cache: Record<string, ComposerDraft> | null = null;
+	private readonly filePath: string;
+	private readonly state: DraftFileState;
 
-	constructor(private readonly filePath: string) {}
+	constructor(filePath: string) {
+		this.filePath = resolve(filePath);
+		const key = process.platform === "win32" ? this.filePath.toLowerCase() : this.filePath;
+		let state = draftFiles.get(key);
+		if (!state) {
+			state = { cache: null, clearedAt: new Map() };
+			draftFiles.set(key, state);
+		}
+		this.state = state;
+	}
 
 	private load(): Record<string, ComposerDraft> {
-		if (this.cache) return this.cache;
+		if (this.state.cache) return this.state.cache;
 		let raw: Record<string, unknown> = {};
 		try {
 			raw = JSON.parse(readFileSync(this.filePath, "utf8")) as Record<string, unknown>;
-		} catch {
+		} catch (error) {
+			if (!(error instanceof SyntaxError) && (error as NodeJS.ErrnoException).code !== "ENOENT") throw error;
 			// 坏文件改名留存而非直接覆盖：先有留存，后续 save 落盘的才是新数据
 			//（否则一次解析失败 → 空表 → 下次 save 把全部草稿的原始记录抹掉）。
 			try {
 				renameSync(this.filePath, `${this.filePath}.corrupt-${Date.now()}`);
 				console.warn(`[composer-drafts] 草稿文件解析失败，已改名留存：${this.filePath}（丢草稿可重打，不留坏副本）`);
-			} catch {
-				// 改名失败（占用等）也无妨：空表继续，save 时照常覆盖
+			} catch (renameError) {
+				// Never overwrite a corrupt original unless its recovery copy is secured.
+				if ((error as NodeJS.ErrnoException).code !== "ENOENT") throw renameError;
 			}
 			raw = {};
 		}
+		if (!raw || typeof raw !== "object" || Array.isArray(raw)) throw new Error("Invalid composer drafts file");
 		const now = Date.now();
 		const kept: Record<string, ComposerDraft> = {};
 		let pruned = false;
@@ -93,19 +110,15 @@ export class ComposerDraftsStore {
 			}
 			kept[k] = v;
 		}
-		this.cache = kept;
 		// 读到过期/脏条目才回写：正常加载不碰磁盘。
-		if (pruned) this.persist();
-		return this.cache;
+		if (pruned) this.persist(kept);
+		else this.state.cache = kept;
+		return kept;
 	}
 
-	private persist(): void {
-		if (!this.cache) return;
-		try {
-			writeJsonAtomicSync(this.filePath, this.cache);
-		} catch {
-			// best-effort：草稿丢了可以重打，server 绝不能因此崩。
-		}
+	private persist(next: Record<string, ComposerDraft>): void {
+		writeJsonAtomicSync(this.filePath, next);
+		this.state.cache = next;
 	}
 
 	/** 读一条草稿（{text, ts}；没有返回 undefined）。 */
@@ -121,38 +134,39 @@ export class ComposerDraftsStore {
 	 *  （防抖延迟 / 跨 tab 陈旧写，ts <= clearTs）直接丢弃，不复活存储
 	 *  （reload-resurrect，见 clearedAt）。*/
 	save(sessionId: string, text: string, ts: number): void {
-		if (!sessionId) return;
-		const cut = clearedAt.get(sessionId);
+		if (!sessionId || !Number.isFinite(ts)) return;
+		const cut = this.state.clearedAt.get(sessionId);
 		if (cut !== undefined && ts <= cut) return;
-		const map = this.load();
+		const map = { ...this.load() };
+		const prev = map[sessionId];
+		if (prev && prev.ts > ts) return;
 		const norm = normalizeDraftText(text);
 		if (norm === undefined) {
 			if (map[sessionId] !== undefined) {
 				delete map[sessionId];
-				this.persist();
+				this.persist(map);
 			}
+			this.state.clearedAt.set(sessionId, ts);
 			return;
 		}
-		const prev = map[sessionId];
-		if (prev && prev.ts > ts) return;
 		if (prev && prev.ts === ts && prev.text === norm) return;
 		map[sessionId] = { text: norm, ts, updatedAt: Date.now() };
-		this.persist();
+		this.persist(map);
 	}
 
 	/** 发送成功 / 会话删除后清掉（有 key 才写盘）。同时记录 clear 时间戳
 	 *  （max(旧条目 ts, Date.now())）：之后 ts <= 该水位的 save 一律丢弃，
 	 *  拦住 prompt() 清掉之后才 landing 的旧 `draft_update`。
-	 *  模块级共享：同进程多 ClientSession（多 tab）共用同一水位。 */
+	 *  同文件共享：同进程多 ClientSession（多 tab）共用同一水位。 */
 	clear(sessionId: string): void {
 		if (!sessionId) return;
-		const map = this.load();
+		const map = { ...this.load() };
 		const prevTs = map[sessionId]?.ts ?? 0;
-		clearedAt.set(sessionId, Math.max(prevTs, Date.now()));
 		if (map[sessionId] !== undefined) {
 			delete map[sessionId];
-			this.persist();
+			this.persist(map);
 		}
+		this.state.clearedAt.set(sessionId, Math.max(this.state.clearedAt.get(sessionId) ?? 0, prevTs, Date.now()));
 	}
 
 	/** delete_session 用：按转录文件路径反解 sessionId 并清掉（形状对不上就跳过）。 */

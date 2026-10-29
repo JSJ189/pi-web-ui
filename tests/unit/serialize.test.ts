@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
 import type { UiMessage } from "../../server/protocol.js";
-import { stripTransientRetryErrors, serializeMessage } from "../../server/serialize.js";
+import { stripTransientRetryErrors, serializeMessage, TOOL_OUTPUT_CAP, truncate } from "../../server/serialize.js";
 
 function assistantError(id: string): UiMessage {
 	return { id, role: "assistant", content: [], stopReason: "error", errorMessage: "500 overloaded" };
@@ -159,6 +159,86 @@ describe("serializeMessage: toolResult 的图片", () => {
 		const texts = (msg?.content ?? []).filter((b) => b.type === "text");
 		expect(images).toHaveLength(8);
 		expect(texts.map((b) => (b as { text: string }).text).join("\n")).toBe("[image result]\n[image result]");
+	});
+});
+
+describe("serializeMessage: toolResult 文本预算", () => {
+	const serialize = (content: unknown[]) =>
+		serializeMessage(
+			{
+				role: "toolResult",
+				toolCallId: "budget",
+				toolName: "test",
+				content,
+				isError: false,
+				timestamp: 1,
+			} as unknown as Parameters<typeof serializeMessage>[0],
+			0,
+		);
+	const text = (value: string) => ({ type: "text", text: value });
+	const image = { type: "image", data: "eA==", mimeType: "image/png" };
+	const uiImage = { type: "image", dataUrl: "data:image/png;base64,eA==", mimeType: "image/png" };
+
+	it.each([
+		["无文本段", []],
+		["单个空段", [""]],
+		["多个空段", ["", "", ""]],
+		["保留段内及段间换行", ["", "a\n", "", "\nb", ""]],
+		["上限前一字符", ["x".repeat(TOOL_OUTPUT_CAP - 1)]],
+		["恰好上限", ["x".repeat(TOOL_OUTPUT_CAP)]],
+		["超限一字符", ["x".repeat(TOOL_OUTPUT_CAP + 1)]],
+		["分隔符恰好填满预算", ["x".repeat(TOOL_OUTPUT_CAP - 1), ""]],
+		["分隔符超过预算", ["x".repeat(TOOL_OUTPUT_CAP), ""]],
+		["多个空段在预算边界", ["x".repeat(TOOL_OUTPUT_CAP - 1), "", "", ""]],
+		["多块超限", ["a".repeat(TOOL_OUTPUT_CAP - 2), "bbbb", "c".repeat(TOOL_OUTPUT_CAP * 2), "tail"]],
+		["UTF-16 截断保持一致", ["x".repeat(TOOL_OUTPUT_CAP - 2), "😀"]],
+	] satisfies [string, string[]][])("%s 与原 join 后 truncate 一致", (_name, parts) => {
+		expect(serialize(parts.map(text))?.content).toEqual([
+			{ type: "text", ...truncate(parts.join("\n"), TOOL_OUTPUT_CAP) },
+		]);
+	});
+
+	it("空文本与有效图片混合时，仅多个空段产生的换行生成文本块", () => {
+		expect(serialize([text(""), image])?.content).toEqual([uiImage]);
+		expect(serialize([text(""), image, text(""), text("")])?.content).toEqual([
+			{ type: "text", text: "\n\n", truncated: false },
+			uiImage,
+		]);
+	});
+
+	it("无效图片和未知块继续贡献占位及换行", () => {
+		expect(serialize([text(""), { type: "image" }, { type: "unknown" }, text(""), image])?.content).toEqual([
+			{ type: "text", text: "\n[image result]\n[image result]\n", truncated: false },
+			uiImage,
+		]);
+	});
+
+	it("文本超限后仍处理后段图片、超大图片和超数图片", () => {
+		const parts = ["a".repeat(TOOL_OUTPUT_CAP + 1), "b".repeat(TOOL_OUTPUT_CAP * 2)];
+		const msg = serialize([
+			...parts.map(text),
+			{ type: "image", data: "x".repeat(2_000_001), mimeType: "image/png" },
+			...Array.from({ length: 10 }, () => image),
+			text("tail"),
+		]);
+		expect(msg?.content).toEqual([
+			{
+				type: "text",
+				...truncate(
+					[...parts, "[image result]", "[image result]", "[image result]", "tail"].join("\n"),
+					TOOL_OUTPUT_CAP,
+				),
+			},
+			...Array.from({ length: 8 }, () => uiImage),
+		]);
+	});
+
+	it("图片占位跨越文本预算边界，后续有效图片仍下发", () => {
+		const prefix = "x".repeat(TOOL_OUTPUT_CAP - 5);
+		expect(serialize([text(prefix), { type: "image" }, image])?.content).toEqual([
+			{ type: "text", ...truncate(`${prefix}\n[image result]`, TOOL_OUTPUT_CAP) },
+			uiImage,
+		]);
 	});
 });
 

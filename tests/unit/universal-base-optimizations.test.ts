@@ -8,7 +8,7 @@
  *   4. 输入框草稿跨会话持久化记忆（Composer Draft Update）。
  */
 
-import { describe, it, expect, beforeEach, afterEach } from "vitest";
+import { describe, it, expect, beforeEach, afterEach, vi } from "vitest";
 import { mkdtempSync, rmSync, existsSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -244,7 +244,7 @@ describe("Universal Agent 底座核心优化单测", () => {
 			session.dispose();
 		});
 
-		it("editMessage 截断历史并在新分支上投递编辑后的提示词", async () => {
+		it("editMessage 截断历史并在同一对话投递编辑后的提示词", async () => {
 			const store = new UniversalSessionStore(tempDir);
 			const sentMessages: ServerMessage[] = [];
 			const driver = new MockAgentDriver(tempDir);
@@ -265,15 +265,24 @@ describe("Universal Agent 底座核心优化单测", () => {
 			const userMsgs = origSnapshot!.state.messages.filter((m: UiMessage) => m.role === "user");
 			const targetMsg = userMsgs[1];
 
+			const fork = vi.spyOn(driver, "forkSession");
+			const resume = vi.spyOn(driver, "resumeSession");
+			const create = vi.spyOn(driver, "createSession");
+			const send = vi.spyOn(driver, "sendPrompt");
 			// 编辑第二轮提问
 			await session.editMessage(targetMsg.id, "修改后的提问 2 内容");
+			expect(fork).not.toHaveBeenCalled();
+			expect(resume).not.toHaveBeenCalled();
+			expect(create).toHaveBeenCalledOnce();
+			expect(send.mock.calls[0][0]).toContain("历史提问 1");
+			expect(send.mock.calls[0][0]).not.toContain("历史提问 2");
 
 			session.flushSnapshot();
 			const editedSnapshot = sentMessages.filter((m): m is SnapshotMsg => m.type === "snapshot").pop();
 			expect(editedSnapshot).toBeDefined();
-			expect(editedSnapshot!.state.conversationId).not.toBe(origSnapshot!.state.conversationId);
+			expect(editedSnapshot!.state.conversationId).toBe(origSnapshot!.state.conversationId);
 
-			// 新会话消息验证：第一轮历史保留，第二轮变成修改后的提问
+			// 同一会话消息验证：第一轮历史保留，第二轮变成修改后的提问
 			const newMsgs: UiMessage[] = editedSnapshot!.state.messages;
 			const newUsers = newMsgs.filter((m: UiMessage) => m.role === "user");
 			expect(newUsers.length).toBe(2);

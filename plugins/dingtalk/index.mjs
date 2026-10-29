@@ -7,7 +7,9 @@
  */
 
 import { createHash, createHmac } from "node:crypto";
-import { chunkMarkdownText } from "./markdown-chunks.mjs";
+import { DingtalkBotBridge } from "./bridge.mjs";
+import { sendMedia } from "./media.mjs";
+import { DingTalkStream } from "./stream.mjs";
 
 export const SECRET_APP_SECRET = "dingtalk.appSecret";
 export const SECRET_WEBHOOK_SECRET = "dingtalk.webhookSecret";
@@ -74,387 +76,7 @@ export function buildDingtalkMessage({ msgType = "markdown", title = "通知", t
 	};
 }
 
-/**
- * DingtalkBotBridge manages duplex message exchange between DingTalk and pi-web-ui agent host.
- */
-export class DingtalkBotBridge {
-	/**
-	 * @param {object} options
-	 * @param {any} options.host
-	 * @param {() => any} options.getConfig
-	 * @param {(level: string, msg: string) => void} [options.log]
-	 */
-	constructor({ host, getConfig, log } = {}) {
-		this.host = host;
-		this.getConfig = getConfig;
-		this.log = log || ((level, msg) => console.log(`[dingtalk-bot:${level}] ${msg}`));
-
-		this.running = false;
-		this.offRunEvent = null;
-
-		this.seenMessageIds = new Set();
-		this.pendingRuns = new Map();
-		this.earlyRuns = new Map();
-		/** host.chat 回执的稳定 runId → pendingRuns 的 key（对话被过户 / 撞 id 改名后
-		 *  conversationId 会变，只有 runId 不变；钉钉靠它认领自己那一轮的回包）。 */
-		this.runIdIndex = new Map();
-		this.userConversations = new Map();
-		this.userWorkspaces = new Map();
-
-		this.status = {
-			enabled: false,
-			connected: false,
-			state: "idle", // 'idle' | 'connected' | 'error'
-			messagesReceived: 0,
-			messagesReplied: 0,
-			lastMessageAt: null,
-			lastReplyAt: null,
-			lastError: null,
-		};
-	}
-
-	getStatus() {
-		return { ...this.status };
-	}
-
-	resolveWorkspace(senderId, cfg) {
-		return String(this.userWorkspaces.get(senderId) || cfg?.workspace || this.host?.cwd || "").trim();
-	}
-
-	async start() {
-		if (this.running) return;
-		this.running = true;
-		this.status.enabled = true;
-		this.status.connected = true;
-		this.status.state = "connected";
-
-		if (this.host.onRunEvent) {
-			this.offRunEvent = this.host.onRunEvent((ev) => this.handleRunEvent(ev));
-		}
-		this.log("info", "DingTalk Bot duplex bridge started");
-	}
-
-	async stop() {
-		this.running = false;
-		this.status.enabled = false;
-		this.status.connected = false;
-		this.status.state = "idle";
-
-		if (this.offRunEvent) {
-			try {
-				this.offRunEvent();
-			} catch {}
-			this.offRunEvent = null;
-		}
-	}
-
-	async onInboundMessage(event) {
-		if (!event) return;
-		const msgId = event.msgId || event.messageId;
-		if (msgId) {
-			if (this.seenMessageIds.has(msgId)) return;
-			this.seenMessageIds.add(msgId);
-			if (this.seenMessageIds.size > 500) {
-				const first = this.seenMessageIds.values().next().value;
-				this.seenMessageIds.delete(first);
-			}
-		}
-
-		const senderId = event.senderStaffId || event.senderId || "";
-		const sessionWebhook = event.sessionWebhook || "";
-		const rawText = String(event.text?.content || event.text || event.content || "").trim();
-		const cleanText = rawText.replace(/@\S+/g, "").trim();
-		if (!cleanText) return;
-
-		const cfg = this.getConfig();
-
-		// Whitelist check
-		const allowedSenders = Array.isArray(cfg.allowedSenders)
-			? cfg.allowedSenders.map((s) => String(s).trim()).filter(Boolean)
-			: [];
-		if (allowedSenders.length > 0 && senderId && !allowedSenders.includes(senderId)) {
-			if (sessionWebhook) {
-				await fetch(sessionWebhook, {
-					method: "POST",
-					headers: { "content-type": "application/json; charset=utf-8" },
-					body: JSON.stringify(
-						buildDingtalkMessage({
-							msgType: "text",
-							text: "【访问受限】您当前不在该机器人的白名单中，请联系管理员在 Web 控制台添加您的 Staff ID。",
-						}),
-					),
-				}).catch(() => {});
-			}
-			return;
-		}
-
-		this.status.messagesReceived++;
-		this.status.lastMessageAt = Date.now();
-
-		// Slash command handling (/help, /cwd, /clear, /new, /status)
-		if (cleanText.startsWith("/")) {
-			const handled = await this.handleSlashCommand(cleanText, { sessionWebhook, senderId, cfg });
-			if (handled) return;
-		}
-
-		// Prepare isolated agent session for this user
-		const accountId = peerAccountId(senderId);
-		let conversationId = this.userConversations.get(senderId);
-		if (!conversationId) {
-			conversationId = `dt_${senderId.slice(-8)}_${Date.now().toString(36)}`;
-			this.userConversations.set(senderId, conversationId);
-		}
-
-		this.pendingRuns.set(conversationId, {
-			sessionWebhook,
-			senderId,
-			accumulatedText: "",
-			startedAt: Date.now(),
-		});
-
-		try {
-			const workspace = this.resolveWorkspace(senderId, cfg);
-			const chatReq = {
-				text: cleanText,
-				accountId,
-				conversationId,
-			};
-			if (workspace) chatReq.cwd = workspace;
-			if (cfg.model) chatReq.model = cfg.model;
-			if (cfg.thinkingLevel) chatReq.thinkingLevel = cfg.thinkingLevel;
-			const res = await this.host.chat(chatReq);
-			// 回执里的宿主会话 id 才是真实键（本地编的 dt_xxx 只是占位）：
-			// 以前忽略回执，pendingRuns 永远等不到事件 → 只在超时后回一句就没了下文。
-			const hostConvId = String(res?.conversationId ?? "").trim();
-			if (hostConvId && hostConvId !== conversationId) {
-				const pending = this.pendingRuns.get(conversationId);
-				if (pending) {
-					// 回执前已到达的事件记在宿主 id 下，先并回本条运行
-					const early = this.earlyRuns.get(hostConvId);
-					if (early) {
-						if (early.accumulatedText) {
-							pending.accumulatedText = pending.accumulatedText
-								? `${early.accumulatedText}
-${pending.accumulatedText}`
-								: early.accumulatedText;
-						}
-						this.earlyRuns.delete(hostConvId);
-					}
-					this.pendingRuns.delete(conversationId);
-					this.pendingRuns.set(hostConvId, pending);
-				}
-				this.userConversations.set(senderId, hostConvId);
-			}
-			this.rememberRunId(hostConvId || conversationId, res?.runId);
-		} catch (err) {
-			this.log("warn", `DingTalk host.chat dispatch failed: ${err.message}`);
-			this.pendingRuns.delete(conversationId);
-			if (sessionWebhook) {
-				await fetch(sessionWebhook, {
-					method: "POST",
-					headers: { "content-type": "application/json; charset=utf-8" },
-					body: JSON.stringify(buildDingtalkMessage({ msgType: "text", text: `任务启动失败：${err.message}` })),
-				}).catch(() => {});
-			}
-		}
-	}
-
-	async handleSlashCommand(cmdText, { sessionWebhook, senderId, cfg }) {
-		const parts = cmdText.trim().split(/\s+/);
-		const cmd = parts[0].toLowerCase();
-		if (!sessionWebhook) return false;
-
-		switch (cmd) {
-			case "/help": {
-				const helpText = [
-					"### 🤖 钉钉机器人帮助",
-					"- 直接发送文本即可与 AI 助手对话，支持多轮上下文",
-					"- `/cwd [路径]` 或 `/workspace [路径]`：查看或切换当前项目根目录",
-					"- `/model`：查看当前配置的 AI 模型与思考强度",
-					"- `/clear` 或 `/new`：清空当前上下文，开启全新对话",
-					"- `/status`：查看机器人运行状态与指标",
-					"- `/help`：展示本帮助信息",
-				].join("\n\n");
-				await fetch(sessionWebhook, {
-					method: "POST",
-					headers: { "content-type": "application/json; charset=utf-8" },
-					body: JSON.stringify(buildDingtalkMessage({ msgType: "markdown", title: "钉钉机器人帮助", text: helpText })),
-				}).catch(() => {});
-				return true;
-			}
-			case "/model": {
-				const currentModel = cfg.model || "(默认跟随全局)";
-				const currentThinking = cfg.thinkingLevel || "(跟随全局)";
-				await fetch(sessionWebhook, {
-					method: "POST",
-					headers: { "content-type": "application/json; charset=utf-8" },
-					body: JSON.stringify(
-						buildDingtalkMessage({
-							msgType: "markdown",
-							title: "模型配置",
-							text: `### 🤖 当前模型与思考配置\n- 模型 (Model)：\`${currentModel}\`\n- 思考强度 (Thinking)：\`${currentThinking}\``,
-						}),
-					),
-				}).catch(() => {});
-				return true;
-			}
-			case "/cwd":
-			case "/workspace": {
-				const argPath = cmdText.replace(/^\/\S+/, "").trim();
-				if (!argPath) {
-					const currentWs = this.resolveWorkspace(senderId, cfg) || "(默认跟随宿主当前项目)";
-					await fetch(sessionWebhook, {
-						method: "POST",
-						headers: { "content-type": "application/json; charset=utf-8" },
-						body: JSON.stringify(
-							buildDingtalkMessage({
-								msgType: "text",
-								text: `📂 当前项目根目录：${currentWs}\n提示：发送 /cwd <目录路径> 可切换项目根目录。`,
-							}),
-						),
-					}).catch(() => {});
-					return true;
-				}
-				this.userWorkspaces.set(senderId, argPath);
-				const newId = `dt_${senderId.slice(-8)}_${Date.now().toString(36)}`;
-				this.userConversations.set(senderId, newId);
-				await fetch(sessionWebhook, {
-					method: "POST",
-					headers: { "content-type": "application/json; charset=utf-8" },
-					body: JSON.stringify(
-						buildDingtalkMessage({
-							msgType: "text",
-							text: `📂 已将项目根目录切换为：${argPath}\n✨ 已自动为您开启该目录下的全新会话！`,
-						}),
-					),
-				}).catch(() => {});
-				return true;
-			}
-			case "/clear":
-			case "/new": {
-				const newId = `dt_${senderId.slice(-8)}_${Date.now().toString(36)}`;
-				this.userConversations.set(senderId, newId);
-				await fetch(sessionWebhook, {
-					method: "POST",
-					headers: { "content-type": "application/json; charset=utf-8" },
-					body: JSON.stringify(
-						buildDingtalkMessage({ msgType: "text", text: "✨ 对话上下文已清空，已为您开启全新会话！" }),
-					),
-				}).catch(() => {});
-				return true;
-			}
-			case "/status": {
-				const s = this.status;
-				const statusText = [
-					`### 🟢 钉钉机器人状态`,
-					`- 连接状态：在线`,
-					`- 已接收消息：${s.messagesReceived} 条`,
-					`- 已回复消息：${s.messagesReplied} 条`,
-				].join("\n\n");
-				await fetch(sessionWebhook, {
-					method: "POST",
-					headers: { "content-type": "application/json; charset=utf-8" },
-					body: JSON.stringify(buildDingtalkMessage({ msgType: "markdown", title: "状态信息", text: statusText })),
-				}).catch(() => {});
-				return true;
-			}
-			default:
-				return false;
-		}
-	}
-
-	/** 记住某个对话「本轮」的稳定 runId（host.chat 回执给出；旧宿主没有就跳过）。 */
-	rememberRunId(conversationId, runId) {
-		const rid = typeof runId === "string" ? runId.trim() : "";
-		if (!rid || !conversationId || !this.pendingRuns.has(conversationId)) return;
-		this.pendingRuns.get(conversationId).runId = rid;
-		this.runIdIndex.set(rid, conversationId);
-	}
-
-	/** 事件归属的 pendingRuns key：优先稳定 runId（过户改名后 conversationId 已对不上）。 */
-	resolveRunKey(ev) {
-		const rid = typeof ev?.runId === "string" ? ev.runId.trim() : "";
-		const mapped = rid ? this.runIdIndex.get(rid) : undefined;
-		// 映射已失效（该轮已收尾/被清理）时回落当前 conversationId，别拿旧 key 误吞事件。
-		return mapped && this.pendingRuns.has(mapped) ? mapped : ev.conversationId;
-	}
-
-	/** 运行收尾：清掉该 key 关联的 runId 索引，防陈旧映射把后续运行认错。 */
-	forgetRun(key) {
-		if (key) this.pendingRuns.delete(key);
-		for (const [rid, k] of this.runIdIndex) {
-			if (k === key) this.runIdIndex.delete(rid);
-		}
-	}
-
-	async handleRunEvent(ev) {
-		const convId = this.resolveRunKey(ev);
-		if (!convId) return;
-
-		if (ev.type === "message" && ev.message) {
-			const m = ev.message;
-			let content = "";
-			if (typeof m.content === "string") content = m.content;
-			else if (Array.isArray(m.content)) {
-				content = m.content
-					.map((c) => (typeof c === "string" ? c : c.text || ""))
-					.join("\n")
-					.trim();
-			}
-
-			if (content && (m.role === "assistant" || m.author === "assistant")) {
-				if (this.pendingRuns.has(convId)) {
-					const r = this.pendingRuns.get(convId);
-					r.accumulatedText += (r.accumulatedText ? "\n" : "") + content;
-				} else {
-					let early = this.earlyRuns.get(convId);
-					if (!early) {
-						early = { accumulatedText: "" };
-						this.earlyRuns.set(convId, early);
-					}
-					early.accumulatedText += (early.accumulatedText ? "\n" : "") + content;
-				}
-			}
-			return;
-		}
-
-		if (ev.type === "run_end") {
-			const run = this.pendingRuns.get(convId) || this.earlyRuns.get(convId);
-			if (!run) return;
-
-			this.forgetRun(convId);
-			this.earlyRuns.delete(convId);
-
-			const rawText = run.accumulatedText || "";
-			const cleanText = stripInternalMarkers(rawText);
-			const finalText = cleanText || "✅ 任务已完成（无文本输出）。";
-
-			const chunks = chunkMarkdownText(finalText, 3500);
-
-			if (run.sessionWebhook) {
-				try {
-					for (const chunk of chunks) {
-						await fetch(run.sessionWebhook, {
-							method: "POST",
-							headers: { "content-type": "application/json; charset=utf-8" },
-							body: JSON.stringify(
-								buildDingtalkMessage({
-									msgType: "markdown",
-									title: "AI 回复",
-									text: chunk,
-								}),
-							),
-						});
-					}
-					this.status.messagesReplied++;
-					this.status.lastReplyAt = Date.now();
-				} catch (err) {
-					this.log("warn", `DingTalk sessionWebhook delivery failed: ${err.message}`);
-				}
-			}
-		}
-	}
-}
+export { DingtalkBotBridge } from "./bridge.mjs";
 
 /**
  * Strip secrets from config before plaintext storage.
@@ -508,11 +130,37 @@ export default async function activate(host) {
 		log: (lvl, msg) => host.log?.(lvl, msg),
 	});
 
-	if (localConfig.botEnabled) {
-		botBridge.start().catch((err) => {
-			host.log?.("warn", `DingTalk bot start note: ${err.message}`);
+	let stream;
+	async function startBot() {
+		if (stream) return;
+		await botBridge.start();
+		botBridge.status.connected = false;
+		stream = new DingTalkStream({
+			config: () => localConfig,
+			onMessage: (event) => botBridge.onInboundMessage(event),
+			onState: (connected) => {
+				botBridge.status.connected = connected;
+				botBridge.status.state = connected ? "connected" : "reconnecting";
+			},
+			log: (message) => {
+				botBridge.error(new Error(message));
+			},
 		});
+		try {
+			await stream.connect();
+		} catch (error) {
+			stream.close();
+			stream = null;
+			await botBridge.stop();
+			throw error;
+		}
 	}
+	async function stopBot() {
+		stream?.close();
+		stream = null;
+		await botBridge.stop();
+	}
+	if (localConfig.botEnabled) startBot().catch((error) => botBridge.error(error));
 
 	async function sendWebhookMessage(cfg, { msgType = "markdown", title = "通知", text = "" } = {}) {
 		const url = cfg.webhookUrl?.trim();
@@ -551,7 +199,8 @@ export default async function activate(host) {
 	// Register AI tool "dingtalk" adhering strictly to tool-prompt-hygiene
 	host.registerTool?.({
 		name: "dingtalk",
-		description: "Post notifications, markdown alerts, or status cards to DingTalk via webhook or bot API.",
+		description:
+			"Send text, markdown, images, AMR audio, files, or MP4 video to DingTalk. Native media requires an enterprise robot, recipient, and a local file; video also requires a cover image.",
 		promptSnippet: "send alerts or status messages to DingTalk group chats",
 		promptGuidelines: [
 			"Confirm recipient and message text with the user once before action=send or webhook",
@@ -562,9 +211,15 @@ export default async function activate(host) {
 			properties: {
 				action: {
 					type: "string",
-					enum: ["webhook", "status"],
-					description: "action to perform (webhook: send message; status: query connection status).",
+					enum: ["webhook", "media", "status"],
+					description: "Send a configured webhook notification, native robot media, or query bridge status.",
 				},
+				mediaType: { type: "string", enum: ["image", "audio", "file", "video"] },
+				path: { type: "string", description: "Local media file path, up to 20MB." },
+				coverPath: { type: "string", description: "Local video cover image path." },
+				duration: { type: "number", description: "Audio or video duration in seconds." },
+				openConversationId: { type: "string", description: "Target group conversation ID; exclusive with userId." },
+				userId: { type: "string", description: "Target staff ID for a direct message." },
 				text: {
 					type: "string",
 					description: "webhook: text or markdown body to send.",
@@ -586,6 +241,8 @@ export default async function activate(host) {
 					});
 					return JSON.stringify(res, null, 2);
 				}
+				case "media":
+					return JSON.stringify(await sendMedia(localConfig, args), null, 2);
 				case "status": {
 					return JSON.stringify(botBridge.getStatus(), null, 2);
 				}
@@ -642,11 +299,8 @@ export default async function activate(host) {
 
 					await host.storage.set("config", stripSecretsFromConfig(localConfig));
 
-					if (localConfig.botEnabled) {
-						await botBridge.start().catch(() => {});
-					} else {
-						await botBridge.stop().catch(() => {});
-					}
+					await stopBot();
+					if (localConfig.botEnabled) await startBot();
 
 					reply({ type: "save_config_done", success: true, botStatus: botBridge.getStatus() });
 					break;
@@ -693,6 +347,12 @@ export default async function activate(host) {
 					break;
 				}
 
+				case "send_media": {
+					const res = await sendMedia(localConfig, msg.payload || {});
+					reply({ type: "send_done", success: true, res });
+					break;
+				}
+
 				case "send_webhook": {
 					const res = await sendWebhookMessage(localConfig, msg.payload || {});
 					reply({ type: "send_done", success: true, res });
@@ -702,7 +362,7 @@ export default async function activate(host) {
 				case "start_bot": {
 					localConfig.botEnabled = true;
 					await host.storage.set("config", stripSecretsFromConfig(localConfig));
-					await botBridge.start();
+					await startBot();
 					reply({ type: "bot_status", success: true, status: botBridge.getStatus() });
 					break;
 				}
@@ -710,7 +370,7 @@ export default async function activate(host) {
 				case "stop_bot": {
 					localConfig.botEnabled = false;
 					await host.storage.set("config", stripSecretsFromConfig(localConfig));
-					await botBridge.stop();
+					await stopBot();
 					reply({ type: "bot_status", success: true, status: botBridge.getStatus() });
 					break;
 				}
@@ -725,6 +385,6 @@ export default async function activate(host) {
 	});
 
 	return async () => {
-		await botBridge.stop().catch(() => {});
+		await stopBot();
 	};
 }

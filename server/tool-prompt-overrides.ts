@@ -90,7 +90,35 @@ export function normalizeToolPromptOverrides(
 		if (knownTools instanceof Set) return knownTools.has(key);
 		return (knownTools as readonly string[]).includes(key);
 	};
-	for (const [name, raw] of Object.entries(v as Record<string, unknown>)) {
+	const source = { ...(v as Record<string, unknown>) };
+	const conversationOverride =
+		normalizeToolPromptOverride(source.conversation) ?? normalizeToolPromptOverride(source.subagent);
+	if (conversationOverride) {
+		source.conversation = conversationOverride;
+		source.subagent = conversationOverride;
+	}
+	// Explicit merged settings win; otherwise select the first valid legacy override
+	// in this stable order, independent of JSON insertion order.
+	const legacyNames = [
+		"terminal_create",
+		"terminal_list",
+		"terminal_close",
+		"terminal_input",
+		"terminal_key",
+		"terminal_read",
+		"terminal_wait",
+	];
+	if (!normalizeToolPromptOverride(source.terminal)) {
+		for (const name of legacyNames) {
+			const legacy = normalizeToolPromptOverride(source[name]);
+			if (legacy) {
+				source.terminal = legacy;
+				break;
+			}
+		}
+	}
+	for (const name of legacyNames) delete source[name];
+	for (const [name, raw] of Object.entries(source)) {
 		const key = name.trim();
 		if (!key || !isKnown(key)) continue;
 		const ov = normalizeToolPromptOverride(raw);
@@ -107,7 +135,9 @@ export function toolPromptOverrideOf(
 	map: ToolPromptOverrideMap | undefined,
 	name: string,
 ): UiToolPromptOverride | null {
-	const ov = map?.[name];
+	const ov = ["terminal", "conversation", "subagent"].includes(name)
+		? normalizeToolPromptOverrides(map)[name]
+		: map?.[name];
 	return ov && Object.keys(ov).length > 0 ? ov : null;
 }
 

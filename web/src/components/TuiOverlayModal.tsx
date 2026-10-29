@@ -67,14 +67,13 @@ export function TuiOverlayModal({ overlay }: TuiOverlayModalProps) {
 		// Try fitting container size
 		try {
 			fit.fit();
-			if (term.cols !== overlay.cols || term.rows !== overlay.rows) {
-				appSend({
-					type: "tui_overlay_resize",
-					id: overlay.id,
-					cols: term.cols,
-					rows: term.rows,
-				});
-			}
+			// Always refresh after loading: renders may have arrived before mounting.
+			appSend({
+				type: "tui_overlay_resize",
+				id: overlay.id,
+				cols: term.cols,
+				rows: term.rows,
+			});
 		} catch {
 			// ignore fit error before layout settles
 		}

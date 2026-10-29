@@ -55,7 +55,11 @@ export default defineConfig({
 						{ name: "react", test: /node_modules[\\/](react|react-dom)[\\/]/ },
 						{
 							name: "markdown",
-							test: /node_modules[\\/](react-markdown|remark-gfm|remark-math|remark-breaks|rehype-katex|rehype-highlight|rehype-raw|katex|highlight\.js)[\\/]/,
+							test: /node_modules[\\/](react-markdown|remark-gfm|remark-math|remark-breaks|rehype-highlight|rehype-raw|highlight\.js)[\\/]/,
+						},
+						{
+							name: "math",
+							test: /(?:node_modules[\\/](rehype-katex|katex)[\\/]|[\\/]markdown-math-renderer\.ts$)/,
 						},
 						{ name: "xterm", test: /node_modules[\\/]@xterm[\\/](xterm|addon-fit)[\\/]/ },
 					],

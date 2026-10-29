@@ -27,6 +27,12 @@ import { fileURLToPath } from "node:url";
 
 const ROOT = fileURLToPath(new URL("../..", import.meta.url));
 
+it("bash guidance routes interactive input through the merged terminal tool", () => {
+	const prompts = readFileSync(join(ROOT, "server/tool-prompts.ts"), "utf8");
+	expect(prompts).toContain("terminal(action='input'/'key')");
+	expect(prompts).not.toMatch(/terminal_(?:input|key)/);
+});
+
 /** 仍允许使用 bilingual() 的文件（面向用户的 relay 文案，非工具定义）。 */
 const BILINGUAL_ALLOW = new Set(["i18n.ts", "dsh-client.ts", "dsh-agent-service.ts"]);
 

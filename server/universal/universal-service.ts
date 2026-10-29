@@ -50,7 +50,7 @@ export class UniversalAgentService implements EngineService {
 		this.dataDir = opts.dataDir;
 		this.agentDir = opts.agentDir;
 		this.engine = opts.engine ?? "claude";
-		this.store = new UniversalSessionStore(opts.dataDir);
+		this.store = new UniversalSessionStore(opts.dataDir, this.engine);
 		this.stateStore = opts.stateStore;
 		// 默认使用 MockDriver；接入 Claude Code 时可替换
 		this.driverFactory = opts.driverFactory ?? ((cwd: string) => new MockAgentDriver(cwd));

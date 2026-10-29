@@ -1,8 +1,13 @@
-import { describe, expect, it } from "vitest";
+import { beforeAll, describe, expect, it } from "vitest";
 import { renderToStaticMarkup } from "react-dom/server";
 import { createElement } from "react";
 import { MarkdownBody } from "../../web/src/components/Markdown.js";
+import { loadMathRenderer } from "../../web/src/markdown-math-loader.js";
 import { LanguageProvider } from "../../web/src/i18n.js";
+
+beforeAll(async () => {
+	await loadMathRenderer();
+});
 
 /**
  * Markdown.rawHtml 的「HTML 渲染」专项冒烟测试。

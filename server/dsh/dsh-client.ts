@@ -63,6 +63,10 @@ export function loadDeepSeekKey(agentDir?: string): string | undefined {
 }
 
 export interface DshRuntimeOptions {
+	/** Host admission check, including implicit starts and restarts. */
+	beforeStart?: (cwd: string) => void;
+	/** Revoke bridged execution before kill/restart/close. */
+	onStopping?: () => void;
 	/** 智能体工作区（initialize.cwd + DSH_CWD）。 */
 	cwd: string;
 	/** provider 路由（deepseek-official）。 */
@@ -108,7 +112,7 @@ export interface DshAgentPreset {
  * prompt() 按需隐式建会话；kill() 强杀进程树（中止）；restart() 换模型。
  */
 export class DshRuntime {
-	readonly cwd: string;
+	cwd: string;
 	provider: string;
 	model: string;
 	modelProvider?: string;
@@ -122,6 +126,8 @@ export class DshRuntime {
 	private jsonrpcEntry: string;
 
 	private proc: ReturnType<typeof spawn> | null = null;
+	private readonly beforeStart?: (cwd: string) => void;
+	private readonly onStopping?: () => void;
 	private startPromise: Promise<void> | null = null;
 	private buffer = "";
 	private nextId = 1;
@@ -147,6 +153,8 @@ export class DshRuntime {
 	onStarted: (() => void) | null = null;
 
 	constructor(opts: DshRuntimeOptions) {
+		this.beforeStart = opts.beforeStart;
+		this.onStopping = opts.onStopping;
 		this.cwd = resolve(opts.cwd);
 		this.provider = opts.provider ?? "deepseek-official";
 		this.model = opts.model ?? "deepseek-v4-flash";
@@ -237,6 +245,7 @@ export class DshRuntime {
 
 	/** 启动子进程 + initialize 握手（幂等；并发调用共享同一个启动任务）。 */
 	start(): Promise<void> {
+		this.beforeStart?.(this.cwd);
 		if (this.disposed) {
 			return Promise.reject(new DshTransportError(bilingual("client has been disposed", "客户端已销毁")));
 		}
@@ -658,6 +667,7 @@ export class DshRuntime {
 
 	/** 优雅关闭：shutdown 握手 → stdin EOF → SIGTERM → SIGKILL 阶梯。 */
 	async close(): Promise<void> {
+		this.onStopping?.();
 		if (this.disposed) return;
 		this.disposed = true;
 		this.closed = true;
@@ -716,6 +726,7 @@ export class DshRuntime {
 	 * win32: taskkill /pid X /T /F；posix: SIGKILL(-pid)（detached 进程组）。
 	 */
 	async kill(): Promise<void> {
+		this.onStopping?.();
 		const proc = this.proc;
 		this.debug("kill", { pid: proc?.pid });
 		this.closed = true;
@@ -789,7 +800,8 @@ export class DshRuntime {
 	}
 
 	/** 换模型：关掉当前运行时（若活着），下次 start() 用新 model 重新 spawn。 */
-	async restart(newModel?: string, newProvider?: string): Promise<void> {
+	async restart(newModel?: string, newProvider?: string, cwd?: string): Promise<void> {
+		this.beforeStart?.(cwd ? resolve(cwd) : this.cwd);
 		const wasAlive = this.alive;
 		this.debug("restart", { newModel, newProvider, wasAlive });
 		if (wasAlive) {
@@ -803,6 +815,7 @@ export class DshRuntime {
 				this.modelProvider = newModel.slice(0, newModel.indexOf("/"));
 			}
 		}
+		if (cwd) this.cwd = resolve(cwd);
 		if (newProvider) {
 			if (newProvider === "deepseek-official") {
 				this.provider = newProvider;
@@ -811,7 +824,7 @@ export class DshRuntime {
 			}
 		}
 		this.initialized = false;
-		if (wasAlive) await this.start();
+		if (wasAlive || cwd) await this.start();
 	}
 
 	/** stderr 尾部（诊断用）。 */

@@ -4,26 +4,20 @@
  * 架构：
  * 1. 采用纯插件化解耦设计，不随 npm 发布大体积二进制包；
  * 2. 首次使用时支持按需自动流式下载解压 ~34MB 运行时资产（artifacts）；
- * 3. 激活时拉起本地隔离的 Univer Gateway 守护进程（动态端口）；
- * 4. 注册 fileHandlers 接管 .pptx / .docx / .xlsx 文件的 1:1 Canvas 渲染与双向编辑；
- * 5. 注册 AI 专属工具 office，支持结构化表格查询、读写与无损写回磁盘。
+ * 3. 按需拉起实例隔离的 Univer Gateway 守护进程（动态端口）；
+ * 4. 注册 fileHandlers 提供本机 Canvas 编辑与远程结构化只读预览；
+ * 5. 注册 AI 工具 office，支持结构化查询、读写与冲突检测导出。
  */
-import { execSync, spawn } from "node:child_process";
-import {
-	createReadStream,
-	createWriteStream,
-	existsSync,
-	mkdirSync,
-	readFileSync,
-	renameSync,
-	rmSync,
-	statSync,
-	unlinkSync,
-	writeFileSync,
-} from "node:fs";
+import { spawn } from "node:child_process";
+import { AsyncLocalStorage } from "node:async_hooks";
+import { mkdtempSync } from "node:fs";
+import { rm } from "node:fs/promises";
+import { documentKey, fileVersion, resolvePreviewPath, safeWorkspacePath, writeDocumentAtomic } from "./runtime.mjs";
+import { registerRemoteCanvas } from "./remote-service.mjs";
+import { existsSync, lstatSync, readFileSync, realpathSync, rmSync, statSync, unlinkSync } from "node:fs";
 import { createServer } from "node:net";
 import { tmpdir } from "node:os";
-import { basename, dirname, extname, join, resolve, sep } from "node:path";
+import { basename, delimiter, dirname, extname, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
@@ -50,14 +44,7 @@ const UNIVER_ASSET_SPEC = {
 /** 工作区边界：relPath/targetPath 解析后必须落在 cwd 内，防越界读写
  *  （`../../secret` 之类可借路由读写工作区外任意文件）。 */
 export function assertInWorkspace(absPath, cwd) {
-	const root = resolve(cwd);
-	const abs = resolve(absPath);
-	if (abs !== root && !abs.startsWith(root + sep)) {
-		const err = new Error("路径超出工作区范围");
-		err.statusCode = 403;
-		throw err;
-	}
-	return abs;
+	return safeWorkspacePath(absPath, cwd);
 }
 
 function getUnitTypeAndFormat(extOrPath) {
@@ -96,11 +83,12 @@ function getFreePort(start = 9520) {
 	});
 }
 
-async function waitForGateway(origin, timeoutMs = 15000) {
+async function waitForGateway(origin, signal, timeoutMs = 15000) {
 	const start = Date.now();
 	while (Date.now() - start < timeoutMs) {
+		if (signal.aborted) return false;
 		try {
-			const r = await fetch(`${origin}/`, { signal: AbortSignal.timeout(1000) });
+			const r = await fetch(`${origin}/`, { signal: AbortSignal.any([signal, AbortSignal.timeout(1000)]) });
 			if (r.ok) return true;
 		} catch {}
 		await new Promise((r) => setTimeout(r, 200));
@@ -110,8 +98,24 @@ async function waitForGateway(origin, timeoutMs = 15000) {
 
 export default {
 	async activate(host) {
-		const cacheDir = join(tmpdir(), "pi-univer-cache");
-		mkdirSync(cacheDir, { recursive: true });
+		const cacheDir = mkdtempSync(join(tmpdir(), "pi-univer-"));
+		const lifecycle = new AbortController();
+		const nativeFetch = globalThis.fetch;
+		async function fetch(url, options = {}) {
+			const response = await nativeFetch(url, {
+				...options,
+				signal: AbortSignal.any([
+					lifecycle.signal,
+					AbortSignal.timeout(60_000),
+					...(options.signal ? [options.signal] : []),
+				]),
+			});
+			if (!response.ok) throw new Error(`Office gateway HTTP ${response.status}`);
+			return response;
+		}
+		let startPromise = null;
+		let generation = 0;
+		let activeOperations = 0;
 
 		let gatewayPort = 0;
 		let gatewayOrigin = "";
@@ -131,7 +135,7 @@ export default {
 			if (!idleTimer) {
 				idleTimer = setInterval(() => {
 					if (!gatewayReady || !gatewayProc) return;
-					if (Date.now() - lastActivityTime >= IDLE_TIMEOUT_MS) {
+					if (activeOperations === 0 && Date.now() - lastActivityTime >= IDLE_TIMEOUT_MS) {
 						stopGateway("idle");
 					}
 				}, 15_000);
@@ -139,6 +143,7 @@ export default {
 		}
 
 		function stopGateway(reason = "manual") {
+			generation++;
 			if (gatewayProc) {
 				try {
 					gatewayProc.kill();
@@ -162,6 +167,16 @@ export default {
 		};
 
 		async function startGateway() {
+			if (lifecycle.signal.aborted) throw new Error("Office plugin stopped");
+			if (startPromise) return startPromise;
+			startPromise = launchGateway().finally(() => {
+				startPromise = null;
+			});
+			return startPromise;
+		}
+
+		async function launchGateway() {
+			const currentGeneration = generation;
 			touchActivity();
 			if (gatewayReady) return true;
 			if (!existsSync(GATEWAY_ENTRY) || !existsSync(VIEWER_ROOT)) {
@@ -169,25 +184,36 @@ export default {
 			}
 
 			gatewayPort = await getFreePort();
+			if (lifecycle.signal.aborted || generation !== currentGeneration) return false;
 			gatewayOrigin = `http://127.0.0.1:${gatewayPort}`;
 
 			const childEnv = {
 				...process.env,
 				UNIVER_COLLAB_GATEWAY_PORT: String(gatewayPort),
 				UNIVER_VIEW_ASSETS_ROOT: VIEWER_ROOT,
-				NODE_PATH: [PLUGIN_NODE_MODULES, process.env.NODE_PATH].filter(Boolean).join(";"),
+				UNIVER_ALLOWED_ROOT: cacheDir,
+				NODE_PATH: [PLUGIN_NODE_MODULES, process.env.NODE_PATH].filter(Boolean).join(delimiter),
 			};
 
-			gatewayProc = spawn(process.execPath, [GATEWAY_ENTRY], {
+			gatewayProc = spawn(process.execPath, ["--require", join(__dirname, "gateway-guard.cjs"), GATEWAY_ENTRY], {
 				env: childEnv,
 				stdio: ["ignore", "ignore", "ignore"],
 				windowsHide: true,
 			});
-			gatewayProc.on("error", (err) => {
+			const child = gatewayProc;
+			child.on("error", (err) => {
 				host.log(`Univer Gateway 进程错误: ${err.message}`);
 			});
-
-			gatewayReady = await waitForGateway(gatewayOrigin);
+			child.once("exit", () => {
+				if (gatewayProc === child) {
+					gatewayProc = null;
+					gatewayReady = false;
+				}
+			});
+			const ready = await waitForGateway(gatewayOrigin, lifecycle.signal);
+			if (currentGeneration !== generation || gatewayProc !== child) return false;
+			gatewayReady = ready;
+			if (!ready) stopGateway("timeout");
 			if (gatewayReady) {
 				host.log(`Univer 真实画布渲染网关已就绪: ${gatewayOrigin}`);
 			} else {
@@ -205,104 +231,37 @@ export default {
 
 		/** 确保运行时资产就绪（优先走宿主重资产流水线，支持国内镜像加速与 SHA-256 强校验） */
 		async function ensureRuntime() {
+			lifecycle.signal.throwIfAborted();
 			touchActivity();
-			if (existsSync(GATEWAY_ENTRY) && existsSync(VIEWER_ROOT)) {
-				return { ok: true, message: "Runtime already present" };
-			}
-
-			if (host.assets?.ensure) {
-				return await host.assets.ensure(UNIVER_ASSET_SPEC, {
-					onProgress: (p) => {
-						provisioningState.downloading = true;
-						provisioningState.downloaded = p.downloaded;
-						provisioningState.total = p.total;
-						provisioningState.progress = p.percent;
-					},
-				});
-			}
-
-			// 宿主未接入时的纯净自愈降级回落
-			if (activeDownloadPromise) {
-				return await activeDownloadPromise;
-			}
-
+			if (existsSync(GATEWAY_ENTRY) && existsSync(VIEWER_ROOT) && existsSync(WORKER_ENTRY)) return { ok: true };
+			if (activeDownloadPromise) return activeDownloadPromise;
+			if (!host.assets?.ensure)
+				throw new Error(
+					"Office requires a host with the verified asset installer. Update pi-web-ui before installing the runtime.",
+				);
 			activeDownloadPromise = (async () => {
 				provisioningState.downloading = true;
-				provisioningState.progress = 0;
 				provisioningState.error = null;
-
-				const targetTar = join(__dirname, "univer-artifacts.tar.gz");
 				try {
-					const dlUrl = UNIVER_ASSET_SPEC.urls[0] || UNIVER_ASSET_SPEC.urls[1];
-					host.log(`正在下载 Univer 运行时压缩包 (${dlUrl})...`);
-					const fetchFn = typeof host.fetch === "function" ? host.fetch.bind(host) : fetch;
-					const res = await fetchFn(dlUrl, { timeoutMs: 600_000, signal: AbortSignal.timeout(600_000) });
-					if (!res.ok) throw new Error(`下载 Univer 运行时失败: HTTP ${res.status}`);
-
-					const total = Number(res.headers.get("content-length") || 0);
-					provisioningState.total = total;
-
-					const fileStream = createWriteStream(targetTar);
-					let streamError = null;
-					fileStream.on("error", (e) => {
-						streamError = e;
+					const result = await host.assets.ensure(UNIVER_ASSET_SPEC, {
+						onProgress: (p) =>
+							Object.assign(provisioningState, { downloaded: p.downloaded, total: p.total, progress: p.percent }),
 					});
-					const reader = res.body?.getReader();
-					if (!reader) throw new Error("无法读取响应体流");
-
-					let downloaded = 0;
-					while (true) {
-						if (streamError) throw streamError;
-						const { done, value } = await reader.read();
-						if (done) break;
-						if (value) {
-							if (!fileStream.write(Buffer.from(value))) {
-								await new Promise((r) => fileStream.once("drain", r));
-							}
-							downloaded += value.length;
-							provisioningState.downloaded = downloaded;
-							if (total > 0) {
-								provisioningState.progress = Math.round((downloaded / total) * 100);
-							}
-						}
-					}
-					await new Promise((r) => fileStream.end(r));
-					if (streamError) throw streamError;
-
-					host.log("下载完成，正在解压 Univer 运行时组件...");
-					const stagingDir = join(__dirname, `.univer-staging-${Date.now()}`);
-					mkdirSync(stagingDir, { recursive: true });
-					try {
-						execSync(`tar --force-local -xzf "${targetTar}" -C "${stagingDir}"`, { windowsHide: true });
-						const extracted = existsSync(join(stagingDir, "artifacts")) ? join(stagingDir, "artifacts") : stagingDir;
-						rmSync(join(__dirname, "artifacts"), { recursive: true, force: true });
-						renameSync(extracted, join(__dirname, "artifacts"));
-					} catch (e) {
-						rmSync(join(__dirname, "artifacts"), { recursive: true, force: true });
-						throw e;
-					} finally {
-						rmSync(stagingDir, { recursive: true, force: true });
-					}
-					try {
-						unlinkSync(targetTar);
-					} catch {}
-
+					lifecycle.signal.throwIfAborted();
+					if (!result.ok) throw new Error(result.error || "Office runtime installation failed");
+					if (!existsSync(GATEWAY_ENTRY) || !existsSync(VIEWER_ROOT) || !existsSync(WORKER_ENTRY))
+						throw new Error("Office runtime installation is incomplete");
+					return result;
+				} catch (error) {
+					provisioningState.error = error.message;
+					throw error;
+				} finally {
 					provisioningState.downloading = false;
-					provisioningState.progress = 100;
-					return { ok: true };
-				} catch (err) {
-					provisioningState.downloading = false;
-					provisioningState.error = err.message || String(err);
-					try {
-						unlinkSync(targetTar);
-					} catch {}
-					throw err;
 				}
 			})().finally(() => {
 				activeDownloadPromise = null;
 			});
-
-			return await activeDownloadPromise;
+			return activeDownloadPromise;
 		}
 
 		async function ensureGatewayReady() {
@@ -321,20 +280,68 @@ export default {
 
 		// 内存缓存：filePath:mtime -> { univerPath, unitId }
 		const conversionCache = new Map();
+		const operationContext = new AsyncLocalStorage();
+		const operationQueues = new Map();
+		async function withDocument(inputPath, task) {
+			const path = resolvePreviewPath(inputPath, host.cwd);
+			if (operationContext.getStore() === path) return task(path);
+			const previous = operationQueues.get(path) || Promise.resolve();
+			const pending = previous
+				.catch(() => {})
+				.then(async () => {
+					lifecycle.signal.throwIfAborted();
+					activeOperations++;
+					touchActivity();
+					try {
+						return await operationContext.run(path, () => task(path));
+					} finally {
+						activeOperations--;
+						touchActivity();
+					}
+				});
+			operationQueues.set(path, pending);
+			try {
+				return await pending;
+			} finally {
+				if (operationQueues.get(path) === pending) operationQueues.delete(path);
+			}
+		}
 
 		/** 将工作区 Office 文件转换并注册为 Univer Unit */
-		async function prepareUniverDoc(absPath) {
+		const pendingConversions = new Map();
+		const MAX_FILE_BYTES = 64 * 1024 * 1024;
+		const MAX_DOCUMENTS = 32;
+		async function prepareUniverDoc(inputPath) {
+			return withDocument(inputPath, prepareDocument);
+		}
+		async function prepareDocument(absPath) {
+			if (pendingConversions.has(absPath)) return pendingConversions.get(absPath);
+			const pending = convertDocument(absPath).finally(() => pendingConversions.delete(absPath));
+			pendingConversions.set(absPath, pending);
+			return pending;
+		}
+		async function convertDocument(absPath) {
 			await ensureGatewayReady();
-
-			const st = statSync(absPath);
-			const cacheKey = `${absPath}:${st.mtimeMs}`;
-			if (conversionCache.has(cacheKey)) {
-				return conversionCache.get(cacheKey);
+			const existing = conversionCache.get(absPath);
+			if (existing) {
+				if (existing.generation !== generation) {
+					await fetch(`${gatewayOrigin}/uf/${existing.fileKey}`, { method: "POST" });
+					existing.generation = generation;
+					existing.viewerUrl = `${gatewayOrigin}/?file=${encodeURIComponent(existing.univerPath)}&unit=${encodeURIComponent(existing.unitId)}&mode=embedded&editable=true`;
+				}
+				return existing;
 			}
-
-			const fileName = basename(absPath);
-			const ext = extname(absPath).toLowerCase();
-			const hash = Buffer.from(absPath).toString("hex").slice(0, 16);
+			if (conversionCache.size >= MAX_DOCUMENTS)
+				throw new Error("Office document limit reached (32). Close and reload the plugin to release documents.");
+			const st = statSync(absPath);
+			if (!st.isFile() || st.size > MAX_FILE_BYTES) throw new Error("Office requires a regular file of at most 64 MiB");
+			const version = fileVersion(absPath);
+			if (![".xlsx", ".docx", ".pptx", ".csv", ".tsv"].includes(extname(absPath).toLowerCase()))
+				throw new Error(
+					"Unsupported format. Convert to .xlsx, .docx or .pptx first; macro and legacy formats cannot be safely round-tripped.",
+				);
+			const fileName = basename(absPath).replace(/[\r\n"\\]/g, "_");
+			const hash = documentKey(absPath);
 			const univerPath = join(cacheDir, `doc_${hash}.univer`);
 
 			try {
@@ -373,12 +380,15 @@ export default {
 			});
 			const iData = await iRes.json();
 			const taskID = iData.taskID;
+			if (!taskID) throw new Error("Office import did not return a task ID");
 
 			let unitId = null;
-			for (let i = 0; i < 30; i++) {
+			for (let i = 0; i < 200; i++) {
 				await new Promise((r) => setTimeout(r, 150));
 				const tRes = await fetch(`${gatewayOrigin}/uf/${fileKey}/universer-api/exchange/task/${taskID}`);
 				const tData = await tRes.json();
+				if (tData.status === "failed")
+					throw new Error(`Office import failed: ${tData.error?.message || "unknown error"}`);
 				if (tData.status === "done") {
 					unitId = tData.import?.unitID || tData.result?.unitID;
 					break;
@@ -396,6 +406,8 @@ export default {
 			const { unitType, format } = getUnitTypeAndFormat(absPath);
 			const result = {
 				univerPath,
+				version,
+				generation,
 				unitId,
 				viewerUrl: `${gatewayOrigin}/?file=${encodeURIComponent(univerPath)}&unit=${encodeURIComponent(unitId)}&mode=embedded&editable=true`,
 				fileKey,
@@ -403,17 +415,29 @@ export default {
 				format,
 			};
 
-			conversionCache.set(cacheKey, result);
+			if (JSON.stringify(fileVersion(absPath)) !== JSON.stringify(version))
+				throw new Error("File changed during import; reopen the document");
+			conversionCache.set(absPath, result);
 			return result;
 		}
 
 		/** 将 Univer 单元反向编译导出写回磁盘文件 */
 		async function saveUniverDoc(absPath, targetPath) {
+			return withDocument(absPath, (path) => exportDocument(path, targetPath));
+		}
+		async function exportDocument(absPath, targetPath) {
 			const doc = await prepareUniverDoc(absPath);
+			let options;
+			if (["csv", "tsv"].includes(doc.format)) {
+				const workbook = await inspectUniverDoc(absPath, { kind: "workbook" });
+				const sheetId = workbook?.worksheets?.[0]?.id;
+				if (!sheetId) throw new Error("Delimited export requires a worksheet");
+				options = { sheet: { csv: { sheetId } } };
+			}
 			const expRes = await fetch(`${gatewayOrigin}/uf/${doc.fileKey}/universer-api/exchange/${doc.unitType}/export`, {
 				method: "POST",
 				headers: { "Content-Type": "application/json" },
-				body: JSON.stringify({ unitID: doc.unitId, format: doc.format }),
+				body: JSON.stringify({ unitID: doc.unitId, format: doc.format, ...(options ? { options } : {}) }),
 			});
 			const expData = await expRes.json();
 			if (!expData.taskID) {
@@ -421,7 +445,7 @@ export default {
 			}
 
 			let expFileId = null;
-			for (let i = 0; i < 40; i++) {
+			for (let i = 0; i < 250; i++) {
 				await new Promise((r) => setTimeout(r, 120));
 				const tRes = await fetch(`${gatewayOrigin}/uf/${doc.fileKey}/universer-api/exchange/task/${expData.taskID}`);
 				const tData = await tRes.json();
@@ -439,16 +463,22 @@ export default {
 			const dlRes = await fetch(`${gatewayOrigin}/uf/${doc.fileKey}/universer-api/file/${expFileId}/content`);
 			if (!dlRes.ok) throw new Error(`下载 Univer 导出文件失败: HTTP ${dlRes.status}`);
 
-			const buf = Buffer.from(await dlRes.arrayBuffer());
-			const outPath = targetPath ? assertInWorkspace(resolve(host.cwd, targetPath)) : absPath;
-			const tmpOut = `${outPath}.${Date.now()}.tmp`;
-			writeFileSync(tmpOut, buf);
-			renameSync(tmpOut, outPath);
-
-			try {
-				const newSt = statSync(outPath);
-				conversionCache.set(`${absPath}:${newSt.mtimeMs}`, doc);
-			} catch {}
+			const chunks = [];
+			let bytes = 0;
+			for await (const chunk of dlRes.body) {
+				bytes += chunk.length;
+				if (bytes > MAX_FILE_BYTES) throw new Error("Office export exceeds 64 MiB");
+				chunks.push(chunk);
+			}
+			const buf = Buffer.concat(chunks);
+			const outPath = assertInWorkspaceLocal(targetPath ? resolve(host.cwd, targetPath) : absPath);
+			if (extname(outPath).toLowerCase() !== extname(absPath).toLowerCase())
+				throw new Error("Save As must preserve the document extension");
+			const newVersion = writeDocumentAtomic(outPath, buf, {
+				expectedVersion: outPath === absPath ? doc.version : null,
+				overwrite: outPath === absPath,
+			});
+			if (outPath === absPath) doc.version = newVersion;
 
 			return { ok: true, path: outPath, size: buf.length };
 		}
@@ -462,13 +492,28 @@ export default {
 						...process.env,
 						UNIVER_COLLAB_GATEWAY_PORT: String(gatewayPort),
 						UNIVER_VIEW_ASSETS_ROOT: VIEWER_ROOT,
-						NODE_PATH: [PLUGIN_NODE_MODULES, process.env.NODE_PATH].filter(Boolean).join(";"),
+						UNIVER_ALLOWED_ROOT: cacheDir,
+						NODE_PATH: [PLUGIN_NODE_MODULES, process.env.NODE_PATH].filter(Boolean).join(delimiter),
 					},
 					stdio: ["pipe", "pipe", "pipe"],
 					windowsHide: true,
 				});
 				let out = "";
 				let err = "";
+				const cancel = () => {
+					wp.kill();
+					reject(new Error("Office operation cancelled"));
+				};
+				lifecycle.signal.addEventListener("abort", cancel, { once: true });
+				if (lifecycle.signal.aborted) {
+					cancel();
+					return;
+				}
+				wp.once("error", (error) => {
+					clearTimeout(timer);
+					lifecycle.signal.removeEventListener("abort", cancel);
+					reject(error);
+				});
 				const timer = setTimeout(() => {
 					try {
 						wp.kill();
@@ -476,10 +521,19 @@ export default {
 					reject(new Error(`Univer Worker 执行超时 (${timeoutMs}ms)`));
 				}, timeoutMs);
 
-				wp.stdout?.on("data", (d) => (out += String(d)));
-				wp.stderr?.on("data", (d) => (err += String(d)));
+				wp.stdout?.on("data", (d) => {
+					out += String(d);
+					if (out.length > 1_000_000) {
+						wp.kill();
+						reject(new Error("Office output too large; query a smaller range"));
+					}
+				});
+				wp.stderr?.on("data", (d) => {
+					err = (err + String(d)).slice(-8192);
+				});
 				wp.on("close", (code) => {
 					clearTimeout(timer);
+					lifecycle.signal.removeEventListener("abort", cancel);
 					try {
 						const res = JSON.parse(out);
 						if (res.ok) resolveResult(res.result);
@@ -488,6 +542,10 @@ export default {
 						reject(new Error(`Worker 解析失败 (code ${code}): ${out} ${err}`));
 					}
 				});
+				wp.stdin?.on("error", (error) => {
+					wp.kill();
+					reject(error);
+				});
 				wp.stdin?.write(JSON.stringify(payload));
 				wp.stdin?.end();
 			});
@@ -495,9 +553,12 @@ export default {
 
 		/** 结构化查询文档 */
 		async function inspectUniverDoc(absPath, query) {
+			return withDocument(absPath, (path) => inspectDocument(path, query));
+		}
+		async function inspectDocument(absPath, query) {
 			const doc = await prepareUniverDoc(absPath);
 			const defaultKind = doc.unitType === 2 ? "workbook" : doc.unitType === 1 ? "document" : "presentation";
-			return await runWorker({
+			const inspection = await runWorker({
 				operation: "inspect",
 				gatewayOrigin,
 				commitTimeoutMs: 10000,
@@ -507,10 +568,24 @@ export default {
 				unitType: doc.unitType,
 				query: query || { kind: defaultKind },
 			});
+			if (inspection?.ok === false) throw new Error(inspection.error?.message || "Office inspection failed");
+			return inspection?.ok === true && Object.hasOwn(inspection, "value") ? inspection.value : inspection;
 		}
 
 		/** 读取表格区域 */
 		async function readSheetRange(absPath, params) {
+			if (!/^[A-Z]{1,3}[1-9]\d{0,6}(?::[A-Z]{1,3}[1-9]\d{0,6})?$/i.test(params.range || ""))
+				throw new Error("A bounded cell range such as A1:D100 is required");
+			const cells = params.range
+				.toUpperCase()
+				.split(":")
+				.map((cell) => {
+					const [, col, row] = cell.match(/^([A-Z]+)(\d+)$/);
+					return [Array.from(col).reduce((n, c) => n * 26 + c.charCodeAt(0) - 64, 0), Number(row)];
+				});
+			const end = cells[1] || cells[0];
+			if ((Math.abs(end[0] - cells[0][0]) + 1) * (Math.abs(end[1] - cells[0][1]) + 1) > 10_000)
+				throw new Error("Query at most 10,000 cells at a time");
 			const query = {
 				kind: "worksheet-range",
 				ranges: [
@@ -532,6 +607,9 @@ export default {
 
 		/** 在独立分支执行代码并 merge 写回 */
 		async function executeOnUniverDoc(absPath, code, options) {
+			return withDocument(absPath, (path) => executeDocument(path, code, options));
+		}
+		async function executeDocument(absPath, code, options) {
 			const doc = await prepareUniverDoc(absPath);
 			const wtRes = await fetch(`${gatewayOrigin}/uf/${doc.fileKey}/worktrees`, {
 				method: "POST",
@@ -596,6 +674,12 @@ export default {
 
 		/** 便捷修改工作表 */
 		async function editSheetRange(absPath, params) {
+			if (
+				params.values &&
+				(params.values.length > 10_000 ||
+					params.values.reduce((count, row) => count + (Array.isArray(row) ? row.length : 10_001), 0) > 10_000)
+			)
+				throw new Error("Edit at most 10,000 cells at a time");
 			const lines = [];
 			if (params.addSheet) {
 				lines.push(`workbook.create(${JSON.stringify(params.addSheet)}, 100, 26);`);
@@ -617,10 +701,37 @@ export default {
 			});
 		}
 
+		const remoteCanvas = registerRemoteCanvas(host, {
+			prepare: (path) => prepareUniverDoc(resolve(host.cwd, path)),
+			viewerRoot: VIEWER_ROOT,
+			getOrigin: () => gatewayOrigin,
+			signal: lifecycle.signal,
+			touch: touchActivity,
+		});
+
 		// 路由：查询运行时就绪状态与下载进度
 		function assertInWorkspaceLocal(absPath) {
 			if (typeof host.resolveInWorkspace === "function") {
-				return host.resolveInWorkspace(absPath);
+				const allowed = host.resolveInWorkspace(absPath);
+				let ancestor = allowed;
+				const suffix = [];
+				while (true) {
+					try {
+						return host.resolveInWorkspace(join(realpathSync(ancestor), ...suffix));
+					} catch (error) {
+						if (error.code !== "ENOENT") throw error;
+						try {
+							lstatSync(ancestor);
+							throw new Error("Cannot resolve existing Office path");
+						} catch (statError) {
+							if (statError.code !== "ENOENT") throw statError;
+						}
+						const parent = dirname(ancestor);
+						if (parent === ancestor) throw error;
+						suffix.unshift(basename(ancestor));
+						ancestor = parent;
+					}
+				}
 			}
 			return assertInWorkspace(absPath, host.cwd);
 		}
@@ -673,10 +784,18 @@ export default {
 				const relPath = String(req.query?.path ?? "").trim();
 				if (!relPath) return void res.status(400).json({ ok: false, error: "缺少 path 参数" });
 
-				const absPath = assertInWorkspaceLocal(resolve(host.cwd, relPath));
+				const absPath = resolve(host.cwd, relPath);
 				if (!existsSync(absPath)) return void res.status(404).json({ ok: false, error: "文件不存在" });
 
-				const docInfo = await prepareUniverDoc(absPath);
+				const docInfo = await withDocument(absPath, async (path) => {
+					if (req.query?.reload === "1") {
+						const old = conversionCache.get(path);
+						if (old) remoteCanvas.closeDocument(old.fileKey);
+						conversionCache.delete(path);
+						if (old) rmSync(old.univerPath, { force: true });
+					}
+					return prepareUniverDoc(path);
+				});
 				res.json({ ok: true, ...docInfo });
 			} catch (err) {
 				res.status(err?.statusCode || 500).json({ ok: false, error: err.message || String(err) });
@@ -713,6 +832,16 @@ export default {
 			}
 		});
 
+		host.route("POST", "/read-sheet", async (req, res) => {
+			try {
+				const path = assertInWorkspaceLocal(resolve(host.cwd, String(req.body?.path || "")));
+				const result = await readSheetRange(path, { sheet: req.body?.sheet, range: req.body?.range });
+				res.json({ ok: true, result });
+			} catch (error) {
+				res.status(error.statusCode || 500).json({ ok: false, error: error.message });
+			}
+		});
+
 		// 路由：结构化编辑或 Facade 脚本
 		host.route("POST", "/edit", async (req, res) => {
 			try {
@@ -744,17 +873,19 @@ export default {
 		// 路由：列出工作区支持的文件
 		host.route("GET", "/list", async (_req, res) => {
 			try {
-				const supported = new Set([".pptx", ".pptm", ".ppsx", ".potx", ".xlsx", ".xlsm", ".docx"]);
+				const supported = new Set([".pptx", ".xlsx", ".docx", ".csv", ".tsv"]);
 				const files = [];
-				for (const pat of ["*.pptx", "*.xlsx", "*.docx", "**/*.pptx", "**/*.xlsx", "**/*.docx"]) {
+				for (const pat of [...supported].map((ext) => `**/*${ext}`)) {
 					try {
 						for (const f of await host.fs.glob(pat)) {
 							const ext = extname(f).toLowerCase();
-							if (supported.has(ext)) files.push(f);
+							if (supported.has(ext) && files.length < 2000) files.push(f);
 						}
-					} catch {}
+					} catch (error) {
+						host.log("warn", `Office list: ${error.message}`);
+					}
 				}
-				res.json({ ok: true, files: [...new Set(files)].sort() });
+				res.json({ ok: true, files: [...new Set(files)].sort(), truncated: files.length >= 2000 });
 			} catch (err) {
 				res.status(err?.statusCode || 500).json({ ok: false, error: err.message });
 			}
@@ -764,7 +895,7 @@ export default {
 		host.registerTool?.({
 			name: "office",
 			description:
-				"Inspect structure, read cells, batch update tables, or execute Univer scripts on Office files (.xlsx, .docx, .pptx) with lossless save back to disk.",
+				"Inspect structure, read cells, batch update tables, or execute Univer scripts on Office files (.xlsx, .docx, .pptx) with explicit export and conflict-checked save to disk.",
 			promptSnippet: "inspect structure, read or edit cells and sheets in .xlsx/.docx/.pptx files",
 			promptGuidelines: [
 				"Use action='inspect' to discover sheets, dimensions, or outline structure before editing.",
@@ -798,6 +929,11 @@ export default {
 						items: { type: "array" },
 						description: "2D array of row values for batch cell updates.",
 					},
+					addSheet: { type: "string", description: "Name of a new worksheet for edit_sheet." },
+					targetPath: {
+						type: "string",
+						description: "New workspace-relative destination for save; must not exist and must preserve the extension.",
+					},
 					code: {
 						type: "string",
 						description: "JavaScript code executing on workbook/doc/presentation via Univer Facade API.",
@@ -812,7 +948,12 @@ export default {
 			async execute(args) {
 				const relPath = String(args.path ?? "").trim();
 				if (!relPath) return "Error: path parameter is required.";
-				const absPath = resolve(host.cwd, relPath);
+				let absPath;
+				try {
+					absPath = assertInWorkspaceLocal(resolve(host.cwd, relPath));
+				} catch (error) {
+					return `Error: ${error.message}`;
+				}
 				if (!existsSync(absPath)) return `Error: file not found at ${relPath}`;
 
 				const action = String(args.action ?? "").trim();
@@ -827,7 +968,7 @@ export default {
 											`- **${w.name}** (id: ${w.id}): ${w.rowCount} rows x ${w.columnCount} cols, used: ${w.valueUsedRanges?.join(", ") || "(empty)"}`,
 									)
 									.join("\n");
-								return `### Workbook Structure: ${basename(absPath)}\n${sheets}\n\nRaw metadata:\n\`\`\`json\n${JSON.stringify(res, null, 2)}\n\`\`\``;
+								return `### Workbook Structure: ${basename(absPath)}\n${sheets}`;
 							}
 							return `### Document Inspection: ${basename(absPath)}\n\`\`\`json\n${JSON.stringify(res, null, 2)}\n\`\`\``;
 						}
@@ -840,7 +981,7 @@ export default {
 								displayRows.length > 0
 									? displayRows.map((row) => `| ${row.map((c) => String(c ?? "")).join(" | ")} |`).join("\n")
 									: "(No data in range)";
-							return `### Read Range: ${r.sheet}!${r.range}\n\n${mdTable}\n\nJSON:\n\`\`\`json\n${JSON.stringify(r.values, null, 2)}\n\`\`\``;
+							return `### Read Range: ${r.sheet}!${r.range}\n\n${mdTable}`;
 						}
 						case "edit_sheet": {
 							const values = Array.isArray(args.values) ? args.values : undefined;
@@ -864,7 +1005,7 @@ export default {
 							return `Successfully executed Univer script on ${relPath}:\n- Revision: ${res.revision}\n- Saved: ${res.saved ? "Yes" : "No"}\n- Value: ${JSON.stringify(res.value)}`;
 						}
 						case "save": {
-							const res = await saveUniverDoc(absPath);
+							const res = await saveUniverDoc(absPath, args.targetPath);
 							return `Successfully exported and saved ${relPath} (${res.size} bytes).`;
 						}
 						default:
@@ -877,11 +1018,26 @@ export default {
 		});
 
 		return () => {
+			const child = gatewayProc;
+			const closed =
+				child && child.exitCode == null
+					? new Promise((done) => {
+							child.once("exit", done);
+							const timer = setTimeout(done, 5000);
+							timer.unref?.();
+							child.once("exit", () => clearTimeout(timer));
+						})
+					: Promise.resolve();
 			if (idleTimer) {
 				clearInterval(idleTimer);
 				idleTimer = null;
 			}
+			lifecycle.abort();
 			stopGateway("shutdown");
+			conversionCache.clear();
+			void Promise.allSettled([closed, ...operationQueues.values(), ...pendingConversions.values()])
+				.then(() => rm(cacheDir, { recursive: true, force: true, maxRetries: 8, retryDelay: 250 }))
+				.catch((error) => host.log("warn", `Office cache cleanup failed: ${error.message}`));
 		};
 	},
 };

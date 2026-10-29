@@ -6,6 +6,7 @@
 
 import { createHmac } from "node:crypto";
 import { FeishuBotBridge } from "./bot-bridge.mjs";
+import { createMedia } from "./media.mjs";
 import { chunkMarkdownText } from "./markdown-chunks.mjs";
 
 export { FeishuBotBridge, chunkMarkdownText };
@@ -365,7 +366,9 @@ export default async function activate(host) {
 
 	let isPolling = false;
 
+	const media = createMedia({ host, getToken: getTenantAccessToken, getBaseUrl });
 	const botBridge = new FeishuBotBridge({
+		downloadResource: (cfg, opts) => media.download(cfg, opts),
 		host,
 		getConfig: () => localConfig,
 		sendMessage: (cfg, opts) => sendMessage(cfg, opts),
@@ -621,6 +624,8 @@ export default async function activate(host) {
 		cfg,
 		{ webhookUrl = "", webhookSecret = "", msgType = "text", text = "", title = "", cardTemplate = "blue" } = {},
 	) {
+		if (!["text", "post", "interactive"].includes(msgType))
+			throw new Error("Webhook 不支持媒体发送，请使用自建应用 send/reply。");
 		const targetUrl = webhookUrl?.trim() || cfg.webhookUrl?.trim();
 		const secret = webhookSecret?.trim() || cfg.webhookSecret?.trim();
 		if (!targetUrl) throw new Error("Webhook URL is not configured.");
@@ -676,7 +681,16 @@ export default async function activate(host) {
 
 	async function sendMessage(
 		cfg,
-		{ receiveId = "", receiveIdType = "chat_id", msgType = "text", text = "", title = "", cardTemplate = "blue" } = {},
+		{
+			receiveId = "",
+			receiveIdType = "chat_id",
+			msgType = "text",
+			text = "",
+			title = "",
+			cardTemplate = "blue",
+			filePath = "",
+			duration,
+		} = {},
 	) {
 		if (receiveId === "__webhook__" || (!receiveId && !hasAppConfig(cfg) && hasWebhookConfig(cfg))) {
 			return sendWebhook(cfg, { msgType, text, title, cardTemplate });
@@ -699,7 +713,9 @@ export default async function activate(host) {
 		else if (targetId.startsWith("oc_")) idType = "chat_id";
 		else if (targetId.includes("@")) idType = "email";
 
-		const payload = buildMessageContent({ msgType, text, title, cardTemplate });
+		const payload = ["image", "audio", "file", "media"].includes(msgType)
+			? await media.upload(cfg, { filePath, msgType, duration })
+			: buildMessageContent({ msgType, text, title, cardTemplate });
 		const body = {
 			receive_id: targetId,
 			...payload,
@@ -720,12 +736,23 @@ export default async function activate(host) {
 
 	async function replyMessage(
 		cfg,
-		{ messageId, msgType = "text", text = "", title = "", cardTemplate = "blue", replyInThread = false } = {},
+		{
+			messageId,
+			msgType = "text",
+			text = "",
+			title = "",
+			cardTemplate = "blue",
+			replyInThread = false,
+			filePath = "",
+			duration,
+		} = {},
 	) {
 		if (!messageId) throw new Error("messageId is required.");
 		if (!hasAppConfig(cfg)) throw new Error("Feishu app credentials are required to reply to messages.");
 
-		const payload = buildMessageContent({ msgType, text, title, cardTemplate });
+		const payload = ["image", "audio", "file", "media"].includes(msgType)
+			? await media.upload(cfg, { filePath, msgType, duration })
+			: buildMessageContent({ msgType, text, title, cardTemplate });
 		const body = {
 			...payload,
 			reply_in_thread: Boolean(replyInThread),
@@ -889,9 +916,14 @@ export default async function activate(host) {
 				},
 				msg_type: {
 					type: "string",
-					enum: ["text", "post", "interactive"],
-					description: "send/reply/webhook: message type (text, post, interactive card).",
+					enum: ["text", "post", "interactive", "image", "audio", "file", "media"],
+					description: "send/reply: text, card, image, opus audio, file or mp4 video; webhook supports text/cards.",
 				},
+				file_path: {
+					type: "string",
+					description: "send/reply: local media path; absolute paths require host filesystem authorization.",
+				},
+				duration: { type: "number", description: "send/reply audio/video: actual duration in milliseconds." },
 				text: {
 					type: "string",
 					description: "send/reply/webhook: message body (plain text or markdown for cards).",
@@ -998,6 +1030,8 @@ export default async function activate(host) {
 						receiveId: args.receive_id || args.chat_id || "",
 						receiveIdType: args.receive_id_type || "chat_id",
 						msgType: args.msg_type || "text",
+						filePath: args.file_path || "",
+						duration: args.duration,
 						text: args.text || "",
 						title: args.title || "",
 						cardTemplate: args.card_template || "blue",
@@ -1009,6 +1043,8 @@ export default async function activate(host) {
 					const res = await replyMessage(cfg, {
 						messageId: args.message_id,
 						msgType: args.msg_type || "text",
+						filePath: args.file_path || "",
+						duration: args.duration,
 						text: args.text || "",
 						title: args.title || "",
 						cardTemplate: args.card_template || "blue",

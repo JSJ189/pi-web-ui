@@ -80,7 +80,7 @@ describe("WecomBotBridge 双工逻辑测试", () => {
 			expect.stringContaining("key=mock-key"),
 			expect.objectContaining({
 				method: "POST",
-				body: expect.stringContaining("企业微信助手帮助"),
+				body: expect.stringContaining("/thinking"),
 			}),
 		);
 
@@ -125,7 +125,7 @@ describe("WecomBotBridge 双工逻辑测试", () => {
 			}),
 		);
 
-		const convId = chatSpy.mock.calls[0][0].conversationId;
+		const convId = "conv_wc_1";
 
 		runHandler!({
 			conversationId: convId,
@@ -181,7 +181,7 @@ describe("WecomBotBridge 双工逻辑测试", () => {
 			content: "超长中文回复测试",
 		});
 
-		const convId = chatSpy.mock.calls[0][0].conversationId;
+		const convId = "conv_wc_bytes";
 
 		// 构造 2000 个中文字符，每个 3 字节，共 6000 字节，必拆成至少 2 块
 		const chineseLong = "测".repeat(2000);

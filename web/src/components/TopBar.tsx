@@ -328,6 +328,7 @@ export function TopBar({
 		"host:browser",
 		"host:tasks",
 		"host:zen-mode",
+		"host:device-center",
 		"host:settings",
 		"host:language",
 		"host:theme",
@@ -406,6 +407,9 @@ export function TopBar({
 				return true;
 			case "host:zen-mode":
 				onToggleZenMode?.();
+				return true;
+			case "host:device-center":
+				onViewChange("devices");
 				return true;
 			case "host:settings":
 				onOpenSettings();
@@ -1207,6 +1211,18 @@ export function TopBar({
 			>
 				<FiFeather />
 				<span className="chip-sub">{t("zenMode")}</span>
+			</button>
+		),
+		"host:device-center": (
+			<button
+				type="button"
+				className="chip"
+				data-tip={t("deviceCenterTip")}
+				onClick={() => onViewChange("devices")}
+				aria-pressed={view === "devices"}
+			>
+				<FiGlobe />
+				<span className="chip-sub">{t("deviceCenter")}</span>
 			</button>
 		),
 		"host:settings": (

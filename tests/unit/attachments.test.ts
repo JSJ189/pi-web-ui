@@ -394,7 +394,7 @@ describe("buildAttachmentMessages — 对话引用（mode:conversation）", () =
 		const text = out[0].message.content[0].text ?? "";
 		expect(text).toContain("<conversation-ref");
 		expect(text).toContain('id="c3"');
-		expect(text).toContain("conversation_read");
+		expect(text).toContain('conversation tool with action="read"');
 	});
 
 	it("历史会话：ref 带 path，卡片 path 保留转录路径", async () => {
@@ -407,7 +407,7 @@ describe("buildAttachmentMessages — 对话引用（mode:conversation）", () =
 		expect(out[0].message.details.path).toBe("/s/1.jsonl");
 		const text = out[0].message.content[0].text ?? "";
 		expect(text).toContain('path="/s/1.jsonl"');
-		expect(text).toContain("conversation_read");
+		expect(text).toContain('conversation tool with action="read"');
 	});
 
 	it("既无 id 又无 path → 跳过 + warning notice", async () => {

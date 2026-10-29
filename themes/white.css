@@ -13,14 +13,11 @@
 	--accent: #0969da;
 	--accent-soft: rgba(9, 105, 218, 0.1);
 	--green: #04825b;
-	--on-green: #ffffff;
 	--green-soft: rgba(5, 150, 105, 0.12);
 	--red: #dc2626;
-	--on-red: #ffffff;
 	--red-soft: rgba(220, 38, 38, 0.1);
 	--amber: #a75c05;
 	--blue: #1469f4;
-	--blue-soft: rgba(59, 130, 246, 0.12);
 	--term-bg: #ffffff;
 	--term-fg: #1f2328;
 	--term-cursor: #0969da;
@@ -42,14 +39,9 @@
 	--term-bright-magenta: #9333ea;
 	--term-bright-cyan: #0e7490;
 	--term-bright-white: #000000;
-	--mono: "SF Mono", "JetBrains Mono", ui-monospace, Menlo, Consolas, monospace;
-	--mermaid-font-size: 12px;
 	--tooltip-bg: #ffffff;
 	--code-bg: #f6f8fa;
 	--code-text: #1f2937;
-	--code-border: var(--border-soft);
-	--code-pad: 8px 10px;
-	--card-body-pad: 4px 14px 12px;
 	--err-text: #dc2626;
 	--red-text: #dc2626;
 	--amber-text: #b45309;
@@ -71,13 +63,11 @@
 	--notice-info-border: #2563eb;
 	--send-blue: #0969da;
 	--send-blue-hover: #0550ae;
-	--stop-red: #ef4444;
-	--stop-red-hover: #dc2626;
-	--brand-grad-a: #8b5cf6;
-	--brand-grad-b: #6366f1;
+	--on-green: #ffffff;
+	--on-red: #ffffff;
 	--on-amber: #ffffff;
-	--search-active-fg: #1a1d26;
-	--switch-knob: #ffffff;
+	--on-send-blue-hover: #ffffff;
+	--on-stop-red-hover: #ffffff;
 	--bg-elev3: rgba(0, 0, 0, 0.03);
 	--sunken-bg: rgba(0, 0, 0, 0.04);
 	--glow-015: rgba(0, 0, 0, 0.02);
@@ -92,18 +82,6 @@
 	--control-fg: #59636e;
 	--control-bg: #f6f8fa;
 	--control-border: #d0d7de;
-	--bg-image: none;
-	--bg-image-dim: 0.78;
-	--bg-image-blur: 0px;
-	--wallpaper-panel-alpha: 62%;
-	--topbar-bg: color-mix(in srgb, var(--bg-elev) var(--wallpaper-panel-alpha, 62%), transparent);
-	--statusbar-bg: color-mix(in srgb, var(--bg-elev) var(--wallpaper-panel-alpha, 62%), transparent);
-	--panel-bg: color-mix(in srgb, var(--bg-elev) var(--wallpaper-panel-alpha, 62%), transparent);
-	--card-bg: color-mix(in srgb, var(--bg-elev) var(--wallpaper-panel-alpha, 62%), transparent);
-	--chip-bg: color-mix(in srgb, var(--bg-elev2) var(--wallpaper-panel-alpha, 62%), transparent);
-	--msgs-bg: color-mix(in srgb, var(--bg-elev) var(--wallpaper-panel-alpha, 62%), transparent);
-	--inputbox-bg: color-mix(in srgb, var(--bg-elev2) var(--wallpaper-panel-alpha, 62%), transparent);
-	--menu-bg: var(--bg-elev2);
 }
 
 /* ---- syntax highlighting (overrides static github-dark import) ---- */

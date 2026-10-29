@@ -50,7 +50,10 @@ const check = (name, cond, extra = "") => {
 	const line = buildTerminalBashLine("ls -la");
 	check(
 		"单行命令追加哨兵序列",
-		line.includes("ls -la") && /\[pi-exit-[0-9a-f]{12}:%s\]/.test(line) && line.includes("PIPESTATUS"),
+		line.startsWith("eval $'ls -la'") &&
+			/\[pi-exit-[0-9a-f]{12}:%s\]/.test(line) &&
+			line.includes("__pi_rc=$?") &&
+			!line.includes("\n"),
 	);
 	const ml = buildTerminalBashLine("for i in 1 2\ndo\n echo $i\ndone");
 	check("多行脚本包进 eval $'...'", ml.startsWith("eval $'") && ml.includes("\\n") && !ml.includes("\n"));
@@ -110,10 +113,10 @@ const tool = makeTerminalBashTool(mgr, {
 	},
 });
 
-// 从持久终端工具集中取 terminal_wait（解阻后重新阻塞等完成，无需轮询）
+// 从持久终端工具集中取 terminal(action=wait)（解阻后重新阻塞等完成，无需轮询）
 const persistentTools = makePersistentTerminalTools(mgr, workdir);
-const waitTool = persistentTools.find((t) => t.name === "terminal_wait");
-check("terminal_wait 已注册", waitTool !== undefined);
+const waitTool = persistentTools.find((t) => t.name === "terminal");
+check("terminal(action=wait) 已注册", waitTool !== undefined);
 
 async function run(commandOrParams, timeout) {
 	const params = typeof commandOrParams === "string" ? { command: commandOrParams } : { ...commandOrParams };
@@ -194,7 +197,7 @@ try {
 		await sleep(300); // 等 shell 提示符稳定
 	}
 
-	// ---- 4b. terminal_wait：解阻后重新阻塞等完成，无需轮询 ----
+	// ---- 4b. terminal(action=wait)：解阻后重新阻塞等完成，无需轮询 ----
 	{
 		idleMsOverride = 500;
 		mgr.kill("ai-bash"); // 全新终端，排除上一用例残留
@@ -202,26 +205,27 @@ try {
 		const t0 = Date.now();
 		let wr = null;
 		try {
-			wr = await waitTool.execute("tw", { terminalId: "ai-bash", maxWaitMs: 8000 });
+			wr = await waitTool.execute("tw", { action: "wait", terminalId: "ai-bash", maxWaitMs: 8000 });
 		} catch (e) {
 			wr = { error: e };
 		}
 		const parsed = JSON.parse(wr?.content?.[0]?.text ?? "{}");
-		check("terminal_wait 阻塞到命令真正结束", parsed.finished === true && Date.now() - t0 >= 1200);
-		check("terminal_wait 拿到退出码 0", parsed.exitCode === 0);
-		check("terminal_wait 附带等待期间的输出", (parsed.outputTail ?? "").includes("w-end"));
+		check("terminal(action=wait) 阻塞到命令真正结束", parsed.finished === true && Date.now() - t0 >= 1200);
+		check("terminal(action=wait) 拿到退出码 0", parsed.exitCode === 0);
+		check("terminal(action=wait) 附带等待期间的输出", (parsed.outputTail ?? "").includes("w-end"));
 		// 显式 cursor=0：存量哨兵可命中（预扫描路径），应秒回不空等
 		const t2 = Date.now();
 		const wr2 = JSON.parse(
-			(await waitTool.execute("tw2", { terminalId: "ai-bash", cursor: 0, maxWaitMs: 3000 }))?.content?.[0]?.text ??
-				"{}",
+			(await waitTool.execute("tw2", { action: "wait", terminalId: "ai-bash", cursor: 0, maxWaitMs: 3000 }))
+				?.content?.[0]?.text ?? "{}",
 		);
 		check("存量哨兵预扫描立即返回", wr2.finished === true && Date.now() - t2 < 1500);
 		// 超时路径：等待一个不会结束的静默命令
 		await run("sleep 5");
 		const t1 = Date.now();
 		const wr3 = JSON.parse(
-			(await waitTool.execute("tw3", { terminalId: "ai-bash", maxWaitMs: 800 }))?.content?.[0]?.text ?? "{}",
+			(await waitTool.execute("tw3", { action: "wait", terminalId: "ai-bash", maxWaitMs: 800 }))?.content?.[0]?.text ??
+				"{}",
 		);
 		check(
 			"超时返回 finished:false 且耗时≈阈值",
@@ -231,17 +235,18 @@ try {
 		await sleep(5500); // 让 sleep 5 跑完，避免污染后续用例
 	}
 
-	// ---- 4c. 空闲终端调用 terminal_wait：立即返回说明，不挂起 ----
+	// ---- 4c. 空闲终端调用 terminal(action=wait)：立即返回说明，不挂起 ----
 	{
 		idleMsOverride = 0;
 		mgr.kill("ai-bash");
 		await run("echo idle-probe"); // 正常完成 → 哨兵已消费，无待决命令
 		const t3 = Date.now();
 		const wr4 = JSON.parse(
-			(await waitTool.execute("tw4", { terminalId: "ai-bash", maxWaitMs: 60000 }))?.content?.[0]?.text ?? "{}",
+			(await waitTool.execute("tw4", { action: "wait", terminalId: "ai-bash", maxWaitMs: 60000 }))?.content?.[0]
+				?.text ?? "{}",
 		);
 		check(
-			"空闲终端 terminal_wait 秒回 applicable:false",
+			"空闲终端 terminal(action=wait) 秒回 applicable:false",
 			wr4.applicable === false && Date.now() - t3 < 1500,
 			JSON.stringify(wr4),
 		);
@@ -326,7 +331,7 @@ try {
 		}
 		check("abort 后快速返回", abortedErr !== null && Date.now() - t0 < 2000);
 		check("报 Command aborted", /aborted/i.test(abortedErr?.message ?? ""));
-		check("终端本身未被杀（会话保留）", mgr.read("ai-bash", 0, 1)?.running !== false);
+		check("取消后终端不再运行（下次创建新 shell）", !mgr.list().some((t) => t.id === "ai-bash" && t.running));
 	}
 
 	// ---- 7. 一次性（persist:false）：新建终端、跑完 shell 退出、输出保留在 history ----
@@ -497,7 +502,7 @@ try {
 	}
 } finally {
 	mgr.killAll();
-	await sleep(200);
+	await sleep(800);
 	// Windows 上 PTY 进程释放 cwd 句柄可能滞后：给删除留重试余量（EPERM/EBUSY）。
 	try {
 		rmSync(workdir, { recursive: true, force: true, maxRetries: 10, retryDelay: 300 });

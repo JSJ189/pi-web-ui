@@ -44,6 +44,7 @@ import { groupByAlign } from "../ui-slots";
 import { nextSearchReqId } from "../search-req-id";
 
 import { ModelThinking } from "./ModelThinking";
+import { groupDeviceHits, groupMessageTargets } from "../device-group-messages";
 import { DshPresetBar, type DshPresetInfo } from "./DshPresetBar";
 import { DshPermissionBar } from "./DshPermissionBar";
 import type { DshPermissionOption, UiAgentPreset } from "../types";
@@ -75,6 +76,9 @@ function getComposerSafeMaxH(): number {
  *  by the server when the persisted set is unchanged), so the shallow-compared
  *  memo() below skips this input bar on every text delta. */
 interface ChatInputProps {
+	groupDevices?: readonly import("../device-group-messages").GroupDevice[];
+	groupReady?: boolean;
+	onGroupSend?: (text: string, targets: string[]) => Promise<boolean>;
 	/** 输入框前置区条目（composer.leading 槽位：纯插件，无内置条目；渲染在文件上传按钮左侧）。 */
 	composerLeading?: import("../ui-slots").UiSlotEntry[];
 	/** 输入框动作区条目（composer.actions 槽位：内置 + 插件的最终结果）。 */
@@ -178,6 +182,9 @@ interface ChatInputProps {
 }
 
 export const ChatInput = memo(function ChatInput({
+	groupDevices,
+	groupReady,
+	onGroupSend,
 	streaming,
 	planMode,
 	messages,
@@ -217,7 +224,8 @@ export const ChatInput = memo(function ChatInput({
 }: ChatInputProps) {
 	const t = useT();
 	/** 连接/会话就绪：走全局（web/src/app-globals.ts），不再从 App 传。 */
-	const ready = useAppField("ready");
+	const localReady = useAppField("ready");
+	const ready = groupDevices ? Boolean(groupReady) : localReady;
 	/** DSH 无 mid-run steering（isStreaming 时 prompt 全部走 followUp，
 	 *  见 server/dsh/dsh-agent-service.ts）—— 只渲染「排队」半段，不摆一个说了不算的「插队」。 */
 	const isDsh = useIsDsh();
@@ -307,6 +315,7 @@ export const ChatInput = memo(function ChatInput({
 	// 合并语义与撤回完全一致（空则填入、非空追加、绝不覆盖），所以直接复用同一个纯函数。
 	// 挂载时装一次：setText 是 useState 的稳定引用，不依赖任何会变的闭包。
 	useEffect(() => {
+		if (groupDevices) return;
 		registerDraftSink((incoming) => {
 			setMenu(null);
 			setText((prev) => {
@@ -344,6 +353,7 @@ export const ChatInput = memo(function ChatInput({
 	const textRef = useRef("");
 	textRef.current = text;
 	useEffect(() => {
+		if (groupDevices) return;
 		registerInsertSink((textToInsert) => {
 			// 第二道防线：正文里已有同一 @提及（重复点同一文件等）→ 跳过不重复插。
 			// 同 tick 的双通道（@ 选单 acceptAt + attach）由 silent 分工，这里管跨 tick。
@@ -386,6 +396,7 @@ export const ChatInput = memo(function ChatInput({
 
 	// 宿主触发移除特定提及（用户点击附件 chip 的 ✕ 时联动从正文中删除对应的 @文件名）
 	useEffect(() => {
+		if (groupDevices) return;
 		registerRemoveMentionSink((mention) => {
 			setText((prev) => {
 				const special = new Set([
@@ -465,7 +476,7 @@ export const ChatInput = memo(function ChatInput({
 		} catch {
 			// 配额满等：L2 还在，不崩
 		}
-		appSend({ type: "draft_update", sessionId: sid, text: capped, ts });
+		if (!groupDevices) appSend({ type: "draft_update", sessionId: sid, text: capped, ts });
 	};
 
 	/** 把镜像里的当前内容刷出去（timer 到期 / blur / 切会话 / 快捷短语发送后回存）。 */
@@ -480,7 +491,12 @@ export const ChatInput = memo(function ChatInput({
 	};
 
 	/** 用户一次键盘编辑：镜像 + L1 同步写 + L2 防抖。 */
+	const selectedGroupDevices = useRef(new Set<string>());
 	const noteComposerEdit = (value: string) => {
+		if (groupDevices) {
+			const present = new Set(groupMessageTargets(value, groupDevices));
+			for (const id of selectedGroupDevices.current) if (!present.has(id)) selectedGroupDevices.current.delete(id);
+		}
 		textMirrorRef.current = value;
 		touchedRef.current = true;
 		lastEditTsRef.current = Date.now();
@@ -636,7 +652,7 @@ export const ChatInput = memo(function ChatInput({
 		// Match the RAW value (no trim): a trailing space must close the picker
 		// so Enter right after it submits instead of completing the command.
 		const m = value.match(/^\/([^\s]*)$/);
-		if (m && ready) {
+		if (m && ready && !groupDevices) {
 			const prefix = m[1].toLowerCase();
 			// skill 条目名是 `skill:<name>`，这里额外用裸名匹配（见 ../slash-filter）。
 			const matches = filterSlashCommands(slashCommands, prefix);
@@ -651,6 +667,12 @@ export const ChatInput = memo(function ChatInput({
 		const tok = matchAtToken(value, cursor);
 		if (!tok) {
 			setMenu(null);
+			return;
+		}
+		if (groupDevices) {
+			const items = groupDeviceHits(groupDevices, tok.query);
+			setMenu(items.length ? { kind: "at", start: tok.start, end: cursor, items } : null);
+			setMenuIndex(0);
 			return;
 		}
 		// 查询作业 = 插件注册表 + 内置文件提供方（宿主自带，零插件也可用；
@@ -815,6 +837,8 @@ export const ChatInput = memo(function ChatInput({
 		const replaceEnd = cur?.end !== undefined && cur.end >= at ? cur.end : cursor;
 		const atts = pick.attachments ?? [];
 		const rawText = pick.text ?? pick.title;
+		if (groupDevices && pick.providerId === "host:group-devices" && pick.hint)
+			selectedGroupDevices.current.add(pick.hint);
 		// 附件型命中（文件/目录/页签…）统一插 `@提及` 形式：正文里的 `@x` 与附件 chip
 		// 双向联动（点 ✕ 双向删、退格整块删）；纯文本命中保持原样。
 		const insert = atts.length > 0 && !rawText.startsWith("@") ? `@${rawText} ` : `${rawText} `;
@@ -912,6 +936,7 @@ export const ChatInput = memo(function ChatInput({
 	};
 
 	const handleFiles = (files: FileList | File[] | null) => {
+		if (groupDevices) return;
 		if (!files || files.length === 0) {
 			// A folder drag lands here with an empty FileList — tell the user.
 			onNotice("warning", t("foldersNotSupported"));
@@ -978,6 +1003,7 @@ export const ChatInput = memo(function ChatInput({
 		requestAnimationFrame(() => taRef.current?.focus());
 	};
 	useEffect(() => {
+		if (groupDevices) return;
 		const onFill = (e: Event) => {
 			const detail = (e as CustomEvent<string>).detail;
 			if (typeof detail !== "string") return;
@@ -1149,6 +1175,7 @@ export const ChatInput = memo(function ChatInput({
 		lastEditTsRef.current = 0;
 	};
 
+	const groupSending = useRef(false);
 	const submit = (queue = false) => {
 		const trimmed = text.trim();
 		const hasAttach = attachments.length > 0;
@@ -1161,6 +1188,27 @@ export const ChatInput = memo(function ChatInput({
 		}
 		if (!sessionReady) {
 			onNotice("warning", t("sessionInitializingNotice"));
+			return;
+		}
+		if (groupDevices) {
+			if (!onGroupSend || groupSending.current) return;
+			groupSending.current = true;
+			void onGroupSend(
+				trimmed,
+				groupMessageTargets(trimmed, groupDevices).filter((id) => selectedGroupDevices.current.has(id)),
+			)
+				.then((ok) => {
+					if (ok && textMirrorRef.current.trim() === trimmed) {
+						setText("");
+						selectedGroupDevices.current.clear();
+						clearDraftAfterConsume();
+						onSent();
+					}
+				})
+				.catch((error: unknown) => onNotice("error", String(error)))
+				.finally(() => {
+					groupSending.current = false;
+				});
 			return;
 		}
 		if (!capabilities.conversationRef && attachments.some((a) => a.mode === "conversation")) {
@@ -1229,6 +1277,7 @@ export const ChatInput = memo(function ChatInput({
 	/** 快捷短语一键发送：直接发出短语文本（带上当前文件附件），不碰输入框草稿。
 	 *  左键 = 立即发送（运行中为插队 steer）；右键 = 排队发送（followUp，整轮结束后才发）。 */
 	const sendPhrase = (phrase: string, queue = false) => {
+		if (groupDevices) return;
 		const trimmed = phrase.trim();
 		if (!trimmed) return;
 		if (!connected) {
@@ -1323,7 +1372,7 @@ export const ChatInput = memo(function ChatInput({
 		// 不绑定到特定会话；存储在 localStorage，跨对话全局共享。
 		// 多行编辑时：仅当光标在首/末**视觉行**才进入历史（自动折行的长草稿同样算多行，
 		// 见 caret-visual-line.ts），否则交给浏览器做普通光标移动，避免打断行内编辑。
-		if (e.key === "ArrowUp" || e.key === "ArrowDown") {
+		if (!groupDevices && (e.key === "ArrowUp" || e.key === "ArrowDown")) {
 			// 修饰键组合不触发历史（避免与快捷键冲突）。
 			if (e.ctrlKey || e.metaKey || e.altKey) return;
 			const ta = taRef.current;
@@ -1943,7 +1992,9 @@ export const ChatInput = memo(function ChatInput({
 				{/* 底部工具条（ChatGPT 风格）：附件 / 模型 / 思考强度 在左，
 				    发送 / 停止 在右，全部收进输入框容器内。 */}
 				<div className="composer-tools">
-					{composerWired ? (
+					{groupDevices ? (
+						<div className="composer-tools-right">{renderActions()}</div>
+					) : composerWired ? (
 						<>
 							<div className="composer-tools-left">
 								{leadingActions.map(renderPluginAction)}

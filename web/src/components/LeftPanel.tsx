@@ -1,4 +1,5 @@
 import { memo, useEffect, useState, useCallback, useRef, useMemo, Fragment } from "react";
+import { DeviceGroupSection } from "./DeviceGroupSection";
 import {
 	FiCheck,
 	FiChevronDown,
@@ -1758,9 +1759,11 @@ export const LeftPanel = memo(function LeftPanel({
 					<FiChevronLeft />
 				</button>
 			)}
+			{!shownPlan.some(({ key }) => key === "projects") && <DeviceGroupSection active={active} />}
 			{shownPlan.map(({ key }) => (
 				<Fragment key={key}>
 					{renderSection(key)}
+					{key === "projects" && <DeviceGroupSection active={active} />}
 					{sashAfter.get(key) ?? null}
 				</Fragment>
 			))}

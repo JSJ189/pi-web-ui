@@ -71,6 +71,8 @@ export function createMcpHotReload(deps: McpHotReloadDeps): McpHotReload {
 	const pollIntervalMs = deps.pollIntervalMs ?? 2000;
 	/** 上次应用到运行时的内容指纹；null = 还没播种。 */
 	let applied: string | null = null;
+	let disposed = false;
+	let applyTail: Promise<unknown> = Promise.resolve();
 	let debounce: NodeJS.Timeout | null = null;
 	let poller: NodeJS.Timeout | null = null;
 	let watchers: FSWatcher[] = [];
@@ -138,7 +140,8 @@ export function createMcpHotReload(deps: McpHotReloadDeps): McpHotReload {
 		};
 	}
 
-	async function apply(): Promise<McpReloadOutcome> {
+	async function applyOnce(): Promise<McpReloadOutcome> {
+		if (disposed) return "unchanged";
 		const { fp, servers } = readOnce();
 		if (fp === applied) return "unchanged";
 		// 先记账再动手：同一个坏文件不反复刷屏，配置没再变也不重试。
@@ -152,18 +155,39 @@ export function createMcpHotReload(deps: McpHotReloadDeps): McpHotReload {
 			);
 			return "invalid";
 		}
-		const summary = await deps.reload();
+		let summary: McpReloadSummary;
+		try {
+			summary = await deps.reload();
+		} catch (err) {
+			applied = null;
+			throw err;
+		}
+		if (disposed) return "unchanged";
 		deps.onToolsChanged?.();
 		log(
 			`[mcp] 配置已热加载：${summary.servers} 个服务器 / ${summary.tools} 个工具` +
 				`（沿用 ${summary.kept}、启动 ${summary.started}、关闭 ${summary.stopped}、失败 ${summary.failed}）`,
 		);
-		deps.onNotice?.(
-			"info",
-			`mcp.json 已热加载：${summary.servers} 个服务器 / ${summary.tools} 个工具`,
-			`mcp.json reloaded: ${summary.servers} server(s) / ${summary.tools} tool(s)`,
-		);
+		if (summary.failed > 0) {
+			deps.onNotice?.(
+				"warning",
+				`MCP 配置应用失败：${summary.failed} 个服务器未能启动，已有实例已保留；请查看服务器错误详情`,
+				`MCP configuration failed for ${summary.failed} server(s); previous instances were retained where available. Check server error details.`,
+			);
+		} else {
+			deps.onNotice?.(
+				"info",
+				`mcp.json 已热加载：${summary.servers} 个服务器 / ${summary.tools} 个工具`,
+				`mcp.json reloaded: ${summary.servers} server(s) / ${summary.tools} tool(s)`,
+			);
+		}
 		return "reloaded";
+	}
+
+	function apply(): Promise<McpReloadOutcome> {
+		const run = applyTail.then(applyOnce);
+		applyTail = run.catch(() => {});
+		return run;
 	}
 
 	function run(): void {
@@ -171,7 +195,7 @@ export function createMcpHotReload(deps: McpHotReloadDeps): McpHotReload {
 	}
 
 	function schedule(): void {
-		if (debounce) return;
+		if (disposed || debounce) return;
 		debounce = setTimeout(() => {
 			debounce = null;
 			run();
@@ -180,6 +204,7 @@ export function createMcpHotReload(deps: McpHotReloadDeps): McpHotReload {
 
 	/** fs.watch 用不了（目录还不存在、网络盘、容器）→ 回落到轮询：单文件不值得上更重的机制。 */
 	function fallBackToPolling(): void {
+		if (disposed) return;
 		for (const w of watchers) {
 			try {
 				w.close();
@@ -193,7 +218,7 @@ export function createMcpHotReload(deps: McpHotReloadDeps): McpHotReload {
 	}
 
 	function start(): void {
-		if (watchers.length > 0 || poller) return;
+		if (disposed || watchers.length > 0 || poller) return;
 		// 播种：启动时 load() 已按同一份文件启动过服务器，别在第一个事件里白重载一次。
 		applied = readOnce().fp;
 
@@ -217,6 +242,7 @@ export function createMcpHotReload(deps: McpHotReloadDeps): McpHotReload {
 	}
 
 	function dispose(): void {
+		disposed = true;
 		if (debounce) clearTimeout(debounce);
 		debounce = null;
 		if (poller) clearInterval(poller);

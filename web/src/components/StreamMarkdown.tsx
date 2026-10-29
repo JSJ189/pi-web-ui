@@ -9,25 +9,19 @@ import { MarkdownBody } from "./Markdown";
  * cumulative parse + highlight work that janks long code-heavy replies.
  *
  * Structure:
- *  - frozen[] segments: append-only complete blocks. Each is its own memoized
- *    <ReactMarkdown> keyed by stable index → parsed exactly ONCE ever; React
- *    reuses their DOM subtrees across frames (copy buttons don't remount).
+ *  - All blocks share one flat list of memoized Segment components keyed by
+ *    stable index. Freezing a non-fence tail preserves its MarkdownBody and DOM;
+ *    unchanged frozen blocks skip parent-driven renders (copy buttons stay mounted).
  *  - active tail inside an unclosed fence: rendered as PLAIN code — no
  *    highlighting a growing block (that would be O(n²) within the block).
- *  - active tail otherwise: full markdown, throttled to ~200ms with a
- *    trailing-edge timer so the last text always renders.
+ *  - active tail otherwise: full markdown, rendered immediately below 600 chars;
+ *    longer tails throttle to 32ms with a trailing-edge timer. Freezing bypasses
+ *    the throttle immediately so the complete block always renders.
  *
  * The parent switches to the authoritative one-shot <Markdown> at message end,
  * correcting any segmentation imperfection (setext headings, forward link
  * reference definitions) in the final render.
  */
-
-/** One frozen segment: immutable input → parses exactly once thanks to memo. */
-const FrozenSegment = memo(function FrozenSegment({ text }: { text: string }) {
-	// Must go through MarkdownBody — the shared pipeline config (codeblock chrome +
-	// mermaid interception). A bare <ReactMarkdown> here silently skipped mermaid.
-	return <MarkdownBody text={text} />;
-});
 
 /** 恒定步进时间间隔（ms）：锚定约 45 步/秒的细腻节奏，防止在 120Hz/144Hz/240Hz 高刷屏上因 rAF 频率翻倍导致吐字过快。 */
 const SMOOTH_PACE_MS = 22;
@@ -176,12 +170,11 @@ export function useSmoothStreamText(text: string, active = true, finishing = fal
 const LONG_TAIL_THRESHOLD = 600;
 const LONG_TAIL_INTERVAL_MS = 32;
 
-/** Active (still-growing) tail:
- *  - Normal paragraphs (< 600 chars) and fenced code render immediately at 60FPS
- *    alongside useSmoothStreamText's per-frame character pacer;
- *  - Extremely long unbroken single paragraphs (>= 600 chars) throttle to 32ms (~30FPS). */
-function ActiveTail({ text, inFence }: { text: string; inFence: boolean }) {
-	const isLong = !inFence && text.length >= LONG_TAIL_THRESHOLD;
+/** Stable identity from active tail to frozen block. Only long active non-fence
+ *  tails throttle to 32ms; short tails follow the smooth character pacer directly.
+ *  Frozen blocks use current text immediately and memo skips unchanged props. */
+const Segment = memo(function Segment({ text, active, inFence }: { text: string; active: boolean; inFence: boolean }) {
+	const isLong = active && !inFence && text.length >= LONG_TAIL_THRESHOLD;
 	const [rendered, setRendered] = useState(text);
 	const lastRef = useRef(0);
 	const timerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
@@ -203,7 +196,7 @@ function ActiveTail({ text, inFence }: { text: string; inFence: boolean }) {
 		};
 	}, [text, isLong]);
 
-	if (inFence) {
+	if (active && inFence) {
 		// Growing fenced code: plain <pre>, zero highlight cost while typing.
 		return (
 			<div className="codeblock">
@@ -213,8 +206,9 @@ function ActiveTail({ text, inFence }: { text: string; inFence: boolean }) {
 			</div>
 		);
 	}
+	// Keep the shared pipeline and component type when a non-fence tail freezes.
 	return <MarkdownBody text={isLong ? rendered : text} />;
-}
+});
 
 export const StreamMarkdown = memo(function StreamMarkdown({
 	text,
@@ -229,12 +223,11 @@ export const StreamMarkdown = memo(function StreamMarkdown({
 	const { frozen, active, inFence } = useMemo(() => segmentStream(smoothed), [smoothed]);
 	return (
 		<div className="md">
-			{frozen.map((seg, i) => (
-				<FrozenSegment key={i} text={seg} />
+			{/* One flat keyed list preserves identity across the active/frozen boundary.
+			    A new tail gets a fresh key and its own immediate initial render. */}
+			{[...frozen, ...(active.length > 0 ? [active] : [])].map((seg, i) => (
+				<Segment key={i} text={seg} active={i === frozen.length} inFence={i === frozen.length && inFence} />
 			))}
-			{/* key restarts the throttle whenever a block freezes — the fresh tail
-			    renders immediately instead of waiting out the previous interval. */}
-			{active.length > 0 && <ActiveTail key={frozen.length} text={active} inFence={inFence} />}
 		</div>
 	);
 });

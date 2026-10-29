@@ -6,7 +6,7 @@
  * isolated multi-turn sessions, access control whitelist, and webhook delivery.
  */
 
-import { createHash } from "node:crypto";
+import { createHash, randomUUID } from "node:crypto";
 import { chunkMarkdownText } from "./markdown-chunks.mjs";
 
 export const SECRET_CORP_SECRET = "wecom.corpSecret";
@@ -93,11 +93,15 @@ export class WecomBotBridge {
 		this.earlyRuns = new Map();
 		this.userConversations = new Map();
 		this.userWorkspaces = new Map();
+		this.preferences = new Map();
+		this.dispatching = new Set();
+		this.epochs = new Map();
+		this.instanceId = randomUUID();
 
 		this.status = {
 			enabled: false,
 			connected: false,
-			state: "idle", // 'idle' | 'connected' | 'error'
+			state: "idle", // 'idle' | 'waiting_callback' | 'error'
 			messagesReceived: 0,
 			messagesReplied: 0,
 			lastMessageAt: null,
@@ -118,8 +122,8 @@ export class WecomBotBridge {
 		if (this.running) return;
 		this.running = true;
 		this.status.enabled = true;
-		this.status.connected = true;
-		this.status.state = "connected";
+		this.status.connected = false;
+		this.status.state = "waiting_callback";
 
 		if (this.host.onRunEvent) {
 			this.offRunEvent = this.host.onRunEvent((ev) => this.handleRunEvent(ev));
@@ -141,153 +145,211 @@ export class WecomBotBridge {
 		}
 	}
 
+	async reply(key, content) {
+		if (!key) throw new Error("未配置回复 Webhook");
+		const res = await fetch(`https://qyapi.weixin.qq.com/cgi-bin/webhook/send?key=${encodeURIComponent(key)}`, {
+			method: "POST",
+			headers: { "content-type": "application/json" },
+			body: JSON.stringify(buildWecomMessage({ msgType: "markdown", text: content })),
+		});
+		const json = await res.json();
+		if (!res.ok || json.errcode !== 0) throw new Error(json.errmsg || "企微发送失败");
+	}
+
 	async onInboundMessage(event) {
 		if (!event) return;
+		const cfg = this.getConfig();
+		const sender = String(event.fromUserName || event.FromUserName || event.userId || "");
+		if (!sender) return;
+		const allowed = (cfg.allowedUsers || []).map(String);
+		if (allowed.length && !allowed.includes(sender)) return;
+		const webhookKey = event.webhookKey || cfg.webhookKey || "";
+		const scope = createHash("sha256")
+			.update(JSON.stringify([sender, webhookKey, event.chatId || event.ChatId || "", event.threadId || ""]))
+			.digest("hex")
+			.slice(0, 24);
 		const msgId = event.msgId || event.MsgId;
 		if (msgId) {
-			if (this.seenMessageIds.has(msgId)) return;
-			this.seenMessageIds.add(msgId);
-			if (this.seenMessageIds.size > 500) {
-				const first = this.seenMessageIds.values().next().value;
-				this.seenMessageIds.delete(first);
-			}
+			const id = scope + ":" + msgId;
+			if (this.seenMessageIds.has(id)) return;
+			this.seenMessageIds.add(id);
+			if (this.seenMessageIds.size > 500) this.seenMessageIds.delete(this.seenMessageIds.values().next().value);
 		}
-
-		const userId = event.fromUserName || event.FromUserName || event.userId || "";
-		const webhookKey = event.webhookKey || "";
-		const rawText = String(event.content || event.Content || event.text || "").trim();
-		const cleanText = rawText.replace(/@\S+/g, "").trim();
-		if (!cleanText) return;
-
-		const cfg = this.getConfig();
-
-		// Whitelist check
-		const allowedUsers = Array.isArray(cfg.allowedUsers)
-			? cfg.allowedUsers.map((u) => String(u).trim()).filter(Boolean)
-			: [];
-		if (allowedUsers.length > 0 && userId && !allowedUsers.includes(userId)) {
-			this.log("info", `WeCom user ${userId} blocked by whitelist`);
-			return;
-		}
-
 		this.status.messagesReceived++;
 		this.status.lastMessageAt = Date.now();
-
-		// Slash command handling (/help, /clear, /new, /status)
-		if (cleanText.startsWith("/")) {
-			const handled = await this.handleSlashCommand(cleanText, { userId, webhookKey, cfg });
-			if (handled) return;
+		const type = String(event.msgType || event.MsgType || "text").toLowerCase();
+		let text = String(event.content || event.Content || event.text || "").trim();
+		if (type !== "text") {
+			const recognition = event.recognition || event.Recognition;
+			if (type === "voice" && typeof recognition === "string" && recognition.trim())
+				text = "[平台提供的语音识别文本]\n" + recognition.trim();
+			else {
+				await this.reply(
+					webhookKey,
+					"收到" +
+						({ image: "图片", voice: "语音", file: "文件", video: "视频" }[type] || "未知媒体") +
+						"。当前企微接入无法下载或解码该媒体" +
+						(type === "voice" ? "，未配置 ASR 转写" : "") +
+						"，请发送文字说明。",
+				);
+				return;
+			}
 		}
-
-		// Prepare isolated agent session for this user
-		const accountId = peerAccountId(userId);
-		let conversationId = this.userConversations.get(userId);
-		if (!conversationId) {
-			conversationId = `wc_${userId.slice(-8)}_${Date.now().toString(36)}`;
-			this.userConversations.set(userId, conversationId);
+		if (!text) return;
+		if (text.startsWith("/") && (await this.handleSlashCommand(text, { userId: scope, webhookKey, cfg }))) return;
+		if (this.dispatching.has(scope) || [...this.pendingRuns.values()].some((r) => r.scope === scope)) {
+			await this.reply(webhookKey, "当前会话正在处理，请等待或使用 /stop。");
+			return;
 		}
-
-		this.pendingRuns.set(conversationId, {
-			userId,
-			webhookKey: webhookKey || cfg.webhookKey || "",
-			accumulatedText: "",
-			startedAt: Date.now(),
-		});
-
+		const prefs = this.preferences.get(scope) || {};
+		const req = {
+			text: text.slice(0, 8000),
+			accountId: peerAccountId(this.instanceId + ":" + scope + ":" + (this.epochs.get(scope) || 0)),
+		};
+		const conversationId = this.userConversations.get(scope);
+		if (conversationId) req.conversationId = conversationId;
+		const cwd = this.resolveWorkspace(scope, cfg);
+		if (cwd) req.cwd = cwd;
+		if (prefs.model ?? cfg.model) req.model = prefs.model ?? cfg.model;
+		if (prefs.thinkingLevel ?? cfg.thinkingLevel) req.thinkingLevel = prefs.thinkingLevel ?? cfg.thinkingLevel;
+		this.dispatching.add(scope);
 		try {
-			const workspace = this.resolveWorkspace(userId, cfg);
-			const chatReq = {
-				text: cleanText,
-				accountId,
-				conversationId,
-			};
-			if (workspace) chatReq.cwd = workspace;
-			if (cfg.model) chatReq.model = cfg.model;
-			if (cfg.thinkingLevel) chatReq.thinkingLevel = cfg.thinkingLevel;
-			await this.host.chat(chatReq);
+			const result = await this.host.chat(req);
+			if (!result?.conversationId) throw new Error("宿主未返回真实会话 ID");
+			this.userConversations.set(scope, result.conversationId);
+			const key = result.runId || result.conversationId;
+			this.pendingRuns.set(key, {
+				scope,
+				webhookKey,
+				conversationId: result.conversationId,
+				runId: result.runId,
+				accumulatedText: "",
+			});
+			const early = this.earlyRuns.get(key) || [];
+			this.earlyRuns.delete(key);
+			for (const ev of early) await this.handleRunEvent(ev);
 		} catch (err) {
-			this.log("warn", `WeCom host.chat dispatch failed: ${err.message}`);
-			this.pendingRuns.delete(conversationId);
+			this.log("warn", "WeCom dispatch failed: " + err.message);
+			await this.reply(webhookKey, "投递失败：" + err.message);
+		} finally {
+			this.dispatching.delete(scope);
+			if (!this.dispatching.size) this.earlyRuns.clear();
 		}
 	}
 
 	async handleSlashCommand(cmdText, { userId, webhookKey, cfg }) {
-		const parts = cmdText.trim().split(/\s+/);
-		const cmd = parts[0].toLowerCase();
-		const targetKey = webhookKey || cfg.webhookKey;
-		if (!targetKey) return false;
-
-		const sendWebhook = async (content) => {
-			const url = `https://qyapi.weixin.qq.com/cgi-bin/webhook/send?key=${targetKey}`;
-			await fetch(url, {
-				method: "POST",
-				headers: { "content-type": "application/json" },
-				body: JSON.stringify(buildWecomMessage({ msgType: "markdown", title: "企微助手", text: content })),
-			}).catch(() => {});
-		};
-
+		const [raw, ...args] = cmdText.trim().split(/\s+/);
+		const cmd = raw.toLowerCase(),
+			arg = args.join(" ");
+		const send = (text) => this.reply(webhookKey || cfg.webhookKey, text);
+		const busy = this.dispatching.has(userId) || [...this.pendingRuns.values()].some((r) => r.scope === userId);
+		if (
+			busy &&
+			["/new", "/clear", "/cwd", "/workspace", "/model", "/thinking"].includes(cmd) &&
+			(arg || ["/new", "/clear"].includes(cmd))
+		) {
+			await send("当前会话正在处理，请先 /stop 并等待结束后再切换配置。");
+			return true;
+		}
 		switch (cmd) {
-			case "/help": {
-				const helpText = [
-					"### 🤖 企业微信助手帮助",
-					"- 直接发送文本即可与 AI 助手对话，支持多轮上下文",
-					"- `/cwd [路径]` 或 `/workspace [路径]`：查看或切换当前项目根目录",
-					"- `/model`：查看当前配置的 AI 模型与思考强度",
-					"- `/clear` 或 `/new`：清空当前上下文，开启全新对话",
-					"- `/status`：查看机器人运行状态与指标",
-					"- `/help`：展示本帮助信息",
-				].join("\n\n");
-				await sendWebhook(helpText);
+			case "/help":
+				await send(
+					"/help 帮助\n/new 或 /clear 新会话\n/status 状态\n/stop 或 /abort 停止\n/model [provider/id|default]\n/thinking [off|minimal|low|medium|high|xhigh|default]\n/cwd [路径]（/workspace 别名）\n媒体：仅支持平台已有的语音识别文本；当前接入无法下载或解码图片、文件、视频及原始语音。",
+				);
+				return true;
+			case "/abort":
+			case "/stop": {
+				if (this.dispatching.has(userId)) {
+					await send("正在投递，请稍后重试 /stop。");
+					return true;
+				}
+				const run = [...this.pendingRuns.values()].find((r) => r.scope === userId);
+				if (!run) {
+					await send("当前没有运行中的任务。");
+					return true;
+				}
+				const result = await this.host.abortRun?.(run.runId || run.conversationId);
+				await send(result?.ok ? "已请求停止当前任务。" : "停止失败：" + (result?.error || "宿主不支持中止"));
 				return true;
 			}
-			case "/model": {
-				const currentModel = cfg.model || "(默认跟随全局)";
-				const currentThinking = cfg.thinkingLevel || "(跟随全局)";
-				await sendWebhook(
-					`### 🤖 当前模型与思考配置\n- 模型 (Model)：\`${currentModel}\`\n- 思考强度 (Thinking)：\`${currentThinking}\``,
+			case "/model":
+			case "/thinking": {
+				const prefs = this.preferences.get(userId) || {};
+				if (arg) {
+					if (cmd === "/thinking" && !["off", "minimal", "low", "medium", "high", "xhigh", "default"].includes(arg)) {
+						await send("无效思考强度：off/minimal/low/medium/high/xhigh/default");
+						return true;
+					}
+					if (cmd === "/model" && arg !== "default" && !/^[^\s/]+\/[^\s]+$/.test(arg)) {
+						await send("模型格式：/model provider/id（或 default）");
+						return true;
+					}
+					prefs[cmd === "/model" ? "model" : "thinkingLevel"] = arg === "default" ? undefined : arg;
+					this.preferences.set(userId, prefs);
+				}
+				await send(
+					"模型：" +
+						(prefs.model ?? cfg.model ?? "跟随全局") +
+						"\n思考强度：" +
+						(prefs.thinkingLevel ?? cfg.thinkingLevel ?? "跟随全局") +
+						"\n配置于下次投递生效，实际可用性由宿主校验。",
 				);
 				return true;
 			}
+			case "/workspace":
 			case "/cwd":
-			case "/workspace": {
-				const argPath = cmdText.replace(/^\/\S+/, "").trim();
-				if (!argPath) {
-					const currentWs = this.resolveWorkspace(userId, cfg) || "(默认跟随宿主当前项目)";
-					await sendWebhook(`📂 当前项目根目录：${currentWs}\n提示：发送 /cwd <目录路径> 可切换项目根目录。`);
+				if (!arg) {
+					await send(
+						"当前项目根目录：" + (this.resolveWorkspace(userId, cfg) || "跟随宿主") + "\n/cwd <目录路径> 切换项目",
+					);
 					return true;
 				}
-				this.userWorkspaces.set(userId, argPath);
-				const newId = `wc_${userId.slice(-8)}_${Date.now().toString(36)}`;
-				this.userConversations.set(userId, newId);
-				await sendWebhook(`📂 已将项目根目录切换为：${argPath}\n✨ 已自动为您开启该目录下的全新会话！`);
+				this.userWorkspaces.set(userId, arg);
+				this.epochs.set(userId, (this.epochs.get(userId) || 0) + 1);
+				this.userConversations.delete(userId);
+				await send("项目根目录已设置：" + arg + "\n下次投递由宿主验证路径并创建新会话。");
 				return true;
-			}
 			case "/clear":
-			case "/new": {
-				const newId = `wc_${userId.slice(-8)}_${Date.now().toString(36)}`;
-				this.userConversations.set(userId, newId);
-				await sendWebhook("✨ 对话上下文已清空，已为您开启全新会话！");
+			case "/new":
+				this.epochs.set(userId, (this.epochs.get(userId) || 0) + 1);
+				this.userConversations.delete(userId);
+				await send("已清空当前上下文，下次消息开启全新会话。");
 				return true;
-			}
-			case "/status": {
-				const s = this.status;
-				const statusText = [
-					`### 🟢 企业微信机器人状态`,
-					`- 运行状态：在线`,
-					`- 已接收消息：${s.messagesReceived} 条`,
-					`- 已回复消息：${s.messagesReplied} 条`,
-				].join("\n\n");
-				await sendWebhook(statusText);
+			case "/status":
+				await send(
+					"内部桥接状态：" +
+						(this.running ? "已启用，需外部回调适配器" : "未启动") +
+						"\n已接收消息：" +
+						this.status.messagesReceived +
+						"\n已回复消息：" +
+						this.status.messagesReplied +
+						"\n当前会话：" +
+						(busy ? "处理中" : "空闲"),
+				);
 				return true;
-			}
 			default:
-				return false;
+				await send("未知命令，请发送 /help 查看帮助。");
+				return true;
 		}
 	}
 
 	async handleRunEvent(ev) {
-		const convId = ev.conversationId;
+		const convId = ev.runId || ev.conversationId;
 		if (!convId) return;
+		if (!this.pendingRuns.has(convId)) {
+			if (this.dispatching.size && ["message", "run_end"].includes(ev.type)) {
+				if (!this.earlyRuns.has(convId) && this.earlyRuns.size >= 64) return;
+				const early = this.earlyRuns.get(convId) || [];
+				if (early.length < 128) early.push(ev);
+				this.earlyRuns.set(convId, early);
+			}
+			return;
+		}
+		const owner = this.pendingRuns.get(convId);
+		if (ev.conversationId) {
+			owner.conversationId = ev.conversationId;
+			this.userConversations.set(owner.scope, ev.conversationId);
+		}
 
 		if (ev.type === "message" && ev.message) {
 			const m = ev.message;
@@ -304,20 +366,13 @@ export class WecomBotBridge {
 				if (this.pendingRuns.has(convId)) {
 					const r = this.pendingRuns.get(convId);
 					r.accumulatedText += (r.accumulatedText ? "\n" : "") + content;
-				} else {
-					let early = this.earlyRuns.get(convId);
-					if (!early) {
-						early = { accumulatedText: "" };
-						this.earlyRuns.set(convId, early);
-					}
-					early.accumulatedText += (early.accumulatedText ? "\n" : "") + content;
 				}
 			}
 			return;
 		}
 
 		if (ev.type === "run_end") {
-			const run = this.pendingRuns.get(convId) || this.earlyRuns.get(convId);
+			const run = this.pendingRuns.get(convId);
 			if (!run) return;
 
 			this.pendingRuns.delete(convId);
@@ -325,7 +380,13 @@ export class WecomBotBridge {
 
 			const rawText = run.accumulatedText || "";
 			const cleanText = stripInternalMarkers(rawText);
-			const finalText = cleanText || "✅ 任务已完成（无文本输出）。";
+			const finalText =
+				cleanText ||
+				(ev.stopReason === "aborted"
+					? "任务已停止。"
+					: ev.stopReason === "error"
+						? "任务执行失败（无文本输出）。"
+						: "✅ 任务已完成（无文本输出）。");
 
 			// 企微群机器人 markdown content 上限 4096 **字节**：按 2048 字符切块，
 			// 纯中文时 2048 字 ≈ 6KB UTF-8 → 平台返回 errcode≠0 直接丢——按字节数

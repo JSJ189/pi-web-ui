@@ -2,6 +2,7 @@ import { useEffect, useState } from "react";
 import { FiBookmark, FiCheck, FiClock, FiFilePlus, FiFolder, FiPackage, FiUpload, FiX } from "react-icons/fi";
 import { LuFlaskConical } from "react-icons/lu";
 import { useT } from "../i18n";
+import { randomUuid } from "../uuid";
 import type { ClientMessage, ProjectSummary, SandboxDiffView, SandboxInfo } from "../types";
 
 export interface SandboxModalProps {
@@ -20,6 +21,31 @@ function baseNameOf(p: string): string {
 			.replace(/[\\/]+$/, "")
 			.split(/[\\/]/)
 			.pop() || p
+	);
+}
+
+export function matchesSandboxPreview(
+	diff: SandboxDiffView | null | undefined,
+	sandbox: SandboxInfo | null | undefined,
+	request: { requestId: string; path: string } | null,
+): diff is SandboxDiffView {
+	return !!(
+		request &&
+		sandbox &&
+		diff &&
+		request.path === sandbox.path &&
+		diff.path === sandbox.path &&
+		(diff.sandboxId === sandbox.id || (!!diff.error && diff.sandboxId === "")) &&
+		diff.requestId === request.requestId
+	);
+}
+
+export function canApplySandboxPreview(diff: SandboxDiffView | null | undefined): boolean {
+	return !!(
+		diff &&
+		!diff.error &&
+		diff.expectedRevision &&
+		diff.added.length + diff.modified.length + diff.deleted.length > 0
 	);
 }
 
@@ -51,6 +77,13 @@ export function SandboxModal({
 		: `~/projects/${(currentSandbox?.name || "sandbox-app").replace(/[^a-zA-Z0-9_-]+/g, "-").replace(/^-|-$/g, "") || "sandbox-app"}`;
 	const [targetPath, setTargetPath] = useState<string>(suggestedTarget);
 	const [switchToTarget, setSwitchToTarget] = useState<boolean>(true);
+	const [previewRequest, setPreviewRequest] = useState<{ requestId: string; path: string } | null>(null);
+	const requestPreview = () => {
+		if (!currentSandbox) return;
+		const request = { requestId: randomUuid(), path: currentSandbox.path };
+		setPreviewRequest(request);
+		send({ type: "diff_sandbox", ...request });
+	};
 
 	useEffect(() => {
 		const onKey = (e: KeyboardEvent) => {
@@ -61,8 +94,11 @@ export function SandboxModal({
 	}, [onClose]);
 
 	useEffect(() => {
+		setPreviewRequest(null);
 		if (mode === "apply" && currentSandbox?.path) {
-			send({ type: "diff_sandbox", path: currentSandbox.path });
+			const request = { requestId: randomUuid(), path: currentSandbox.path };
+			setPreviewRequest(request);
+			send({ type: "diff_sandbox", ...request });
 		}
 	}, [mode, currentSandbox?.path, send]);
 
@@ -96,18 +132,23 @@ export function SandboxModal({
 
 	const handleSubmitApply = (e: React.FormEvent) => {
 		e.preventDefault();
-		if (!currentSandbox?.path) return;
+		if (
+			!currentSandbox?.path ||
+			!diffMatchesCurrent ||
+			!canApplySandboxPreview(sandboxDiff) ||
+			!sandboxDiff.expectedRevision
+		)
+			return;
+		setPreviewRequest(null);
 		send({
 			type: "apply_sandbox_to_source",
 			path: currentSandbox.path,
+			expectedRevision: sandboxDiff.expectedRevision,
 		});
 		onClose();
 	};
 
-	const diffMatchesCurrent =
-		sandboxDiff &&
-		currentSandbox &&
-		(sandboxDiff.sandboxId === currentSandbox.id || sandboxDiff.path === currentSandbox.path);
+	const diffMatchesCurrent = mode === "apply" && matchesSandboxPreview(sandboxDiff, currentSandbox, previewRequest);
 	const totalChangedCount = diffMatchesCurrent
 		? sandboxDiff.added.length + sandboxDiff.modified.length + sandboxDiff.deleted.length
 		: 0;
@@ -320,9 +361,7 @@ export function SandboxModal({
 										))}
 									</div>
 								)}
-								{sandboxDiff.deleted.length > 0 && (
-									<div className="sandbox-diff-note">{t("sandboxDiffDeletedNote")}</div>
-								)}
+								<div className="sandbox-diff-note">{t("sandboxDiffDeletedNote")}</div>
 							</div>
 						)}
 
@@ -330,7 +369,14 @@ export function SandboxModal({
 							<button type="button" className="btn" onClick={onClose}>
 								{t("cancel")}
 							</button>
-							<button type="submit" className="btn primary" disabled={!diffMatchesCurrent || totalChangedCount === 0}>
+							<button type="button" className="btn" onClick={requestPreview}>
+								{t("sandboxDiffRefresh")}
+							</button>
+							<button
+								type="submit"
+								className="btn primary"
+								disabled={!diffMatchesCurrent || !canApplySandboxPreview(sandboxDiff)}
+							>
 								<FiCheck aria-hidden style={{ marginRight: 5, verticalAlign: "-2px" }} />
 								{t("sandboxApplySubmit", { count: totalChangedCount })}
 							</button>

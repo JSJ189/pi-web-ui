@@ -15,8 +15,7 @@
  *   - 威胁模型：防「 casually 复制/查看文件」（混淆级保护）与「密文外泄」，
  *     不能防同一用户账号下的完整进程妥协——本地个人工具的合理折衷。
  */
-import { createCipheriv, createDecipheriv, randomBytes } from "node:crypto";
-import { chmodSync, existsSync, readFileSync, statSync } from "node:fs";
+import { existsSync, readFileSync } from "node:fs";
 import {
 	readFile as fspReadFile,
 	readdir as fspReaddir,
@@ -28,6 +27,7 @@ import {
 } from "node:fs/promises";
 import { dirname, join, relative, resolve } from "node:path";
 import { writeAtomicSync } from "./atomic-file.js";
+import { SETTINGS_SECRETS_KEY } from "./plugin-secrets.js";
 import { createRequire } from "node:module";
 import { spawnSync } from "node:child_process";
 // 与 plugin-project 共用同一套 realpath 越界复核（isInsideRoot / realPathOfNearest），
@@ -57,32 +57,30 @@ const rmwChains = new Map<string, Promise<unknown>>();
  *  - 空链 + 同步 fn：原地直跑（不引入微任务延迟，set() 后同步 get() 立即可见，
  *    语义与未加锁完全一致）；fn 若返回 promise（异步写者）则占住链尾，后续排队；
  *  - 链忙：挂到链尾串行（前一个成功/失败都放行下一个）。
- * Map 不主动清理：键数量 = 有 storage.json 的插件数，天然有界。
+ * 每个链尾完成后仅在仍是当前尾部时清理，避免删掉后续排队任务的锁。
  */
+/** Synchronous settings commits cannot report success while queued behind an async writer. */
+export function withFileRmwLockSync<T>(file: string, fn: () => T): T {
+	if (rmwChains.has(resolve(file))) throw new Error("Plugin storage is busy; retry settings save");
+	return fn();
+}
+
 export function withFileRmwLock<T>(file: string, fn: () => T): T | Promise<T> {
 	const key = resolve(file);
 	const prev = rmwChains.get(key);
-	if (prev) {
-		const queued = prev.then(fn, fn) as Promise<T>;
-		rmwChains.set(
-			key,
-			queued.then(
-				() => undefined,
-				() => undefined,
-			),
-		);
-		return queued;
-	}
-	const result = fn();
+	const result = prev ? (prev.then(fn, fn) as Promise<T>) : fn();
 	if (result instanceof Promise) {
-		const tail = result.then(
-			() => undefined,
-			() => undefined,
-		);
+		const tail = result
+			.then(
+				() => undefined,
+				() => undefined,
+			)
+			.finally(() => {
+				if (rmwChains.get(key) === tail) rmwChains.delete(key);
+			});
 		rmwChains.set(key, tail);
-		void tail.then(() => {
-			if (rmwChains.get(key) === tail) rmwChains.delete(key);
-		});
+		// Return after cleanup, preserving the caller's result or rejection.
+		return tail.then(() => result);
 	}
 	return result;
 }
@@ -91,113 +89,84 @@ export function withFileRmwLock<T>(file: string, fn: () => T): T | Promise<T> {
 // storage
 // ---------------------------------------------------------------------------
 
-/** 每插件的 JSON 文件 KV。所有方法同步（数据量小，避免并发写乱序）。
- *
- * 缓存按文件 mtimeMs 失效（而非「首次读入后永不失效」）：storage.json 有两个
- * 写入者 —— 本类，以及宿主 settings 面板的 saveSettingsValues（直写磁盘的
- * settings 键，不经过本缓存）。插件长轮询里每隔几秒就 store.set("cursor", …)
- * 一次，若缓存永不失效，set() 会把整份旧快照回写，把面板刚保存的 settings
- * 抹掉 —— 表现为「设置重启即丢」。mtime 失效让下一次 load() 重读，两个写入者
- * 各自保留自己的键。 */
+/** 每插件的同步 JSON KV。读写都重读权威文件，拒绝损坏/不可读文件；
+ * 写入使用独立候选，原子提交成功后才发布缓存。同步 API 遇异步写锁占用直接抛错。 */
 export class PluginStorage {
 	private cache: Record<string, unknown> | undefined;
-	/** 缓存对应的文件 mtimeMs（undefined = 文件尚不存在或不可 stat）。 */
-	private cacheMtimeMs: number | undefined;
+	/** Only ENOENT means an empty store; unreadable or malformed data must never be overwritten. */
 	constructor(private readonly file: string) {}
 
-	private mtime(): number | undefined {
+	private readFromDisk(): Record<string, unknown> {
+		let text: string;
 		try {
-			return statSync(this.file).mtimeMs;
-		} catch {
-			return undefined; // 不存在 / 不可 stat
+			text = readFileSync(this.file, "utf8");
+		} catch (err) {
+			if ((err as NodeJS.ErrnoException).code === "ENOENT") return {};
+			throw err;
 		}
-	}
-
-	/** 从磁盘重读（不存在 / 损坏 = 空表）并同步缓存与 mtime。 */
-	private readFromDisk(mtimeMs: number | undefined = this.mtime()): Record<string, unknown> {
-		let parsed: Record<string, unknown> = {};
-		if (mtimeMs !== undefined) {
-			try {
-				const raw = JSON.parse(readFileSync(this.file, "utf8")) as unknown;
-				if (raw && typeof raw === "object") parsed = raw as Record<string, unknown>;
-			} catch {
-				parsed = {}; // 损坏 = 空表（不致命，重新积累）
-			}
-		}
-		this.cache = parsed;
-		this.cacheMtimeMs = mtimeMs;
-		return parsed;
+		const parsed: unknown = JSON.parse(text);
+		if (!parsed || typeof parsed !== "object" || Array.isArray(parsed)) throw new Error("Invalid plugin storage");
+		return parsed as Record<string, unknown>;
 	}
 
 	private load(): Record<string, unknown> {
-		const mtimeMs = this.mtime();
-		if (this.cache && this.cacheMtimeMs === mtimeMs) return this.cache;
-		return this.readFromDisk(mtimeMs);
+		// Re-read to observe settings commits even when filesystem timestamps are unchanged.
+		const committed = this.readFromDisk();
+		this.cache = committed;
+		return this.cache;
+	}
+
+	private commit(candidate: Record<string, unknown>): void {
+		const serialized = JSON.stringify(candidate);
+		const committed = JSON.parse(serialized) as Record<string, unknown>;
+		atomicWrite(this.file, serialized);
+		this.cache = committed;
 	}
 
 	get<T>(key: string, fallback?: T): T | undefined {
+		if (key === SETTINGS_SECRETS_KEY) return fallback;
 		const v = this.load()[key];
 		return v === undefined ? fallback : (v as T);
 	}
 
 	all(): Record<string, unknown> {
-		return { ...this.load() };
+		return Object.fromEntries(Object.entries(this.load()).filter(([key]) => key !== SETTINGS_SECRETS_KEY));
 	}
 
 	set(key: string, value: unknown): void {
 		if (!key) throw new Error("storage.set: key 不能为空");
-		// 与宿主 saveSettingsValues 同一把按文件路径的 RMW 锁（见 withFileRmwLock）：
-		// 两段「读-改-写」互斥，谁也不会拿旧快照抹掉对方刚写的键。当前关键区是同步的
-		// （空链直跑），set() 后同步 get() 立即可见，行为与未加锁一致。
-		void withFileRmwLock(this.file, () => {
-			// 写前必重读磁盘：宿主 settings 面板的 saveSettingsValues 直写同一文件的
-			// settings 键（不经过本缓存），拿旧快照整份回写会把它抹掉。写是低频路径，
-			// 重读的代价可忽略；mtime 粒度即使同毫秒也抹不掉（这里是无条件重读）。
-			const store = this.readFromDisk();
-			store[key] = value;
-			try {
-				atomicWrite(this.file, JSON.stringify(store));
-			} catch (err) {
-				console.error(`[plugin-storage] 写入失败 (${this.file}):`, err);
-			}
+		if (key === SETTINGS_SECRETS_KEY) throw new Error("Reserved plugin storage key");
+		withFileRmwLockSync(this.file, () => {
+			const candidate = { ...this.readFromDisk(), [key]: value };
+			this.commit(candidate);
 		});
 	}
 
 	has(key: string): boolean {
-		return key in this.load();
+		return key !== SETTINGS_SECRETS_KEY && key in this.load();
 	}
 
 	keys(): string[] {
-		return Object.keys(this.load());
+		return Object.keys(this.load()).filter((key) => key !== SETTINGS_SECRETS_KEY);
 	}
 
 	clear(preserveSettings = true): void {
-		void withFileRmwLock(this.file, () => {
+		withFileRmwLockSync(this.file, () => {
 			const store = this.readFromDisk();
-			const newStore: Record<string, unknown> = {};
-			if (preserveSettings && "settings" in store) {
-				newStore.settings = store.settings;
-			}
-			try {
-				atomicWrite(this.file, JSON.stringify(newStore));
-				this.cache = newStore;
-			} catch (err) {
-				console.error(`[plugin-storage] 写入失败 (${this.file}):`, err);
-			}
+			const candidate: Record<string, unknown> = {};
+			if (SETTINGS_SECRETS_KEY in store) candidate[SETTINGS_SECRETS_KEY] = store[SETTINGS_SECRETS_KEY];
+			if (preserveSettings && "settings" in store) candidate.settings = store.settings;
+			this.commit(candidate);
 		});
 	}
 
 	delete(key: string): void {
-		// 同 set：写前重读 + RMW 锁，不拿旧快照回写。
-		void withFileRmwLock(this.file, () => {
-			const store = this.readFromDisk();
-			if (!(key in store)) return;
-			delete store[key];
-			try {
-				atomicWrite(this.file, JSON.stringify(store));
-			} catch (err) {
-				console.error(`[plugin-storage] 写入失败 (${this.file}):`, err);
-			}
+		if (key === SETTINGS_SECRETS_KEY) throw new Error("Reserved plugin storage key");
+		withFileRmwLockSync(this.file, () => {
+			const candidate = this.readFromDisk();
+			if (!Object.hasOwn(candidate, key)) return;
+			delete candidate[key];
+			this.commit(candidate);
 		});
 	}
 }
@@ -206,148 +175,7 @@ export class PluginStorage {
 // secrets
 // ---------------------------------------------------------------------------
 
-interface SealedBlob {
-	iv: string;
-	tag: string;
-	ct: string;
-}
-type SecretFile = { v: 1; items: Record<string, SealedBlob> };
-
-function seal(key: Buffer, plaintext: string): SealedBlob {
-	const iv = randomBytes(12);
-	const cipher = createCipheriv("aes-256-gcm", key, iv);
-	const ct = Buffer.concat([cipher.update(plaintext, "utf8"), cipher.final()]);
-	return { iv: iv.toString("hex"), tag: cipher.getAuthTag().toString("hex"), ct: ct.toString("hex") };
-}
-
-function unseal(key: Buffer, blob: SealedBlob): string {
-	const decipher = createDecipheriv("aes-256-gcm", key, Buffer.from(blob.iv, "hex"));
-	decipher.setAuthTag(Buffer.from(blob.tag, "hex"));
-	return Buffer.concat([decipher.update(Buffer.from(blob.ct, "hex")), decipher.final()]).toString("utf8");
-}
-
-/** 读或创建全局密钥文件（懒加载一次）。
- *
- * 曾有一个 bug：`readFileSync` 拿到的缓冲直接 `.toString("hex")`（把 hex 文本
- * 又做了一次 hex 编码），导致重启后 key 变成 65 字节，AES-256-GCM 全线报
- * "Invalid key length”。此处按 UTF-8 读 hex 文本再解码，并校验 32 字节——
- * 长度不对即视为损坏，重新生成（旧 secrets.bin 用旧 key 解不开→按 fail closed
- * 丢弃，总比所有机密操作全炸好；见 tests/unit/plugin-facilities.test.ts 回归）。 */
-function loadOrCreateKey(dataDir: string): Buffer {
-	const keyFile = join(dataDir, "secrets.key");
-	try {
-		if (existsSync(keyFile)) {
-			const loaded = Buffer.from(readFileSync(keyFile, "utf8").trim(), "hex");
-			if (loaded.length === 32) return loaded;
-			console.warn(`[secrets] ${keyFile} 长度异常（${loaded.length} 字节），重新生成密钥（旧机密将不可读）`);
-		}
-	} catch {
-		/* fallthrough → regenerate */
-	}
-	const key = randomBytes(32);
-	atomicWrite(keyFile, `${key.toString("hex")}\n`);
-	try {
-		chmodSync(keyFile, 0o600); // best-effort（win 无效，不抛错）
-	} catch {}
-	return key;
-}
-
-/** 每插件的加密 KV。所有方法同步；任何读写失败都静默回退（机密丢失优于崩进程）。 */
-export class PluginSecrets {
-	private store: SecretFile | undefined;
-	private readonly file: string;
-
-	constructor(dataDir: string, pluginDir: string) {
-		this.file = join(pluginDir, "secrets.bin");
-		this.key = PluginSecrets.keyFor(dataDir);
-	}
-
-	private key: Buffer;
-
-	private static keys = new Map<string, Buffer>();
-	/** 按 dataDir 惰性生成/复用密钥（同进程内共享，避免重复 IO）。 */
-	static keyFor(dataDir: string): Buffer {
-		let k = PluginSecrets.keys.get(dataDir);
-		if (!k) {
-			k = loadOrCreateKey(dataDir);
-			PluginSecrets.keys.set(dataDir, k);
-		}
-		return k;
-	}
-
-	/** 同一密文文件的跨实例共享缓存（按绝对路径）：设置面板的保存与插件运行时的
-	 *  读取走的是两个实例（savePluginSettings 现场 new，host 闭包里一个），实例级缓存
-	 *  会让“刚保存完立刻 getSettings”读到旧值。共享后同进程内永远一致；文件被删
-	 *  （卸载插件）时重置，避免重装同 id 读到旧机密。 */
-	private static shared = new Map<string, SecretFile>();
-
-	private load(): SecretFile {
-		if (this.store) return this.store;
-		const hit = PluginSecrets.shared.get(this.file);
-		if (hit && existsSync(this.file)) {
-			this.store = hit;
-			return hit;
-		}
-		try {
-			const parsed = JSON.parse(readFileSync(this.file, "utf8")) as SecretFile;
-			this.store =
-				parsed && parsed.v === 1 && parsed.items && typeof parsed.items === "object" ? parsed : { v: 1, items: {} };
-		} catch {
-			this.store = { v: 1, items: {} };
-		}
-		PluginSecrets.shared.set(this.file, this.store);
-		return this.store;
-	}
-
-	set(name: string, value: string): void {
-		if (!name) throw new Error("secrets.set: name 不能为空");
-		const s = this.load();
-		s.items[name] = seal(this.key, value);
-		try {
-			atomicWrite(this.file, JSON.stringify(s));
-		} catch (err) {
-			console.error("[plugin-secrets] 写入失败:", err);
-		}
-	}
-
-	get(name: string): string | undefined {
-		const blob = this.load().items[name];
-		if (!blob) return undefined;
-		try {
-			return unseal(this.key, blob);
-		} catch {
-			return undefined; // 换机器 / 密钥轮换 → 解不开返回空（fail closed）
-		}
-	}
-
-	has(name: string): boolean {
-		return name in this.load().items;
-	}
-
-	delete(name: string): void {
-		const s = this.load();
-		if (!(name in s.items)) return;
-		delete s.items[name];
-		try {
-			atomicWrite(this.file, JSON.stringify(s));
-		} catch (err) {
-			console.error("[plugin-secrets] 写入失败:", err);
-		}
-	}
-
-	list(): string[] {
-		return Object.keys(this.load().items);
-	}
-
-	getAll(): Record<string, string> {
-		const out: Record<string, string> = {};
-		for (const name of this.list()) {
-			const val = this.get(name);
-			if (val !== undefined) out[name] = val;
-		}
-		return out;
-	}
-}
+export { PluginSecrets } from "./plugin-secrets.js";
 
 // ---------------------------------------------------------------------------
 // deps（宿主代插件自动补装运行时依赖）

@@ -298,6 +298,89 @@ describe("qq 媒体：入站落地", () => {
 		expect(chats[0].text).toContain("[图片] 已保存到：");
 	});
 
+	it("图片以 imageData 进入 host.chat，音视频以引用进入且明确无 ASR", async () => {
+		const workspace = makeTmp();
+		vi.stubGlobal(
+			"fetch",
+			vi.fn(async () => ({ ok: true, arrayBuffer: async () => Buffer.from("media") })),
+		);
+		const { bridge, chats } = makeBridge({ workspace });
+		await bridge.onInboundMessage(
+			{
+				id: "actual-media",
+				group_openid: "g",
+				author: { id: "u" },
+				content: "看附件",
+				attachments: [
+					{ url: "https://cdn/a.png", content_type: "image/png", filename: "a.png" },
+					{ url: "https://cdn/v.silk", voice_wav_url: "https://cdn/v.wav", content_type: "voice" },
+					{ url: "https://cdn/v.webm", content_type: "application/octet-stream" },
+				],
+			},
+			"GROUP_AT_MESSAGE_CREATE",
+		);
+		expect(chats[0].attachments[0]).toEqual({
+			path: "",
+			imageData: Buffer.from("media").toString("base64"),
+			mimeType: "image/png",
+			name: "a.png",
+		});
+		expect(chats[0].attachments[1]).toMatchObject({ path: expect.stringMatching(/\.wav$/), mode: "reference" });
+		expect(chats[0].text).toContain("当前插件不提供 ASR");
+		expect(chats[0].text).toContain("视频尚未解析");
+		await bridge.stop();
+	});
+
+	it("下载失败和关闭落地时仍保留平台 ASR", async () => {
+		vi.stubGlobal(
+			"fetch",
+			vi.fn(async () => {
+				throw new Error("offline");
+			}),
+		);
+		for (const inboundMedia of [true, false]) {
+			const { bridge, chats } = makeBridge({ workspace: makeTmp(), inboundMedia });
+			await bridge.onInboundMessage(
+				{
+					id: `asr-${inboundMedia}`,
+					author: { id: "u" },
+					content: "",
+					attachments: [{ url: "https://cdn/v.silk", content_type: "voice", asr_refer_text: "打开灯" }],
+				},
+				"C2C_MESSAGE_CREATE",
+			);
+			expect(chats[0].text).toContain("语音转写：打开灯");
+			expect(chats[0].attachments).toBeUndefined();
+			await bridge.stop();
+		}
+	});
+
+	it("限制图片数量，未知格式明确提示转换", async () => {
+		vi.stubGlobal(
+			"fetch",
+			vi.fn(async () => ({ ok: true, arrayBuffer: async () => Buffer.from("image") })),
+		);
+		const { bridge, chats } = makeBridge({ workspace: makeTmp() });
+		await bridge.onInboundMessage(
+			{
+				id: "limits",
+				author: { id: "u" },
+				content: "",
+				attachments: [
+					...Array.from({ length: 9 }, (_, i) => ({ url: `https://cdn/${i}.png`, content_type: "image/png" })),
+					{ url: "https://cdn/a.bmp", content_type: "image/bmp" },
+				],
+			},
+			"C2C_MESSAGE_CREATE",
+		);
+		expect(chats[0].attachments).toHaveLength(8);
+		expect(chats[0].text).toContain("图片未注入模型");
+		expect(chats[0].text).toContain("不支持此图片格式");
+		expect(mediaKindOfPath("https://cdn/a.zip")).toBe("file");
+		expect(extOfMedia({ contentType: "audio/mp4; codecs=aac" })).toBe(".m4a");
+		await bridge.stop();
+	});
+
 	it("语音优先用 voice_wav_url 并带上 ASR 文本", async () => {
 		const workspace = makeTmp();
 		const fetchMock = vi.fn(

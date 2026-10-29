@@ -5,7 +5,10 @@
  * 全部为无状态 fs 操作 + 两个自持的 watcher（当前列出目录、git dir），
  * 经 FilesHost 回调与 ClientSession 解耦。
  */
-import { Dirent, existsSync, mkdirSync, readFileSync, statSync, writeFileSync, watch } from "node:fs";
+import { Dirent, existsSync, mkdirSync, readFileSync, statSync, watch } from "node:fs";
+import { saveFilePreservingMetadata } from "./file-save.js";
+import { isUploadDataTooLong, uploadLimitBytes } from "./payload-limits.js";
+import { writeUploadExclusiveSync, writeRemoteUploadExclusive } from "./uploads.js";
 import { homedir } from "node:os";
 import { resolve, relative, sep, isAbsolute, posix } from "node:path";
 import type { ServerMessage, FileEntry, FileSearchResult } from "./protocol.js";
@@ -95,17 +98,12 @@ export function absoluteParent(wire: string): string | null {
 /** 预览只读文件前 512KB。 */
 export const MAX_PREVIEW_BYTES = 512 * 1024;
 
-/** 右键上传单文件上限（内存中转 base64 → Buffer）。 */
-export const MAX_UPLOAD_BYTES = 100 * 1024 * 1024;
-/** 上传 cap 对应的 base64 文本长度上限（4/3 膨胀，向上取整到 4 字符边界）。 */
-export const MAX_UPLOAD_BASE64_CHARS = Math.ceil(MAX_UPLOAD_BYTES / 3) * 4;
-/** WS 入站帧上限：base64 上限 + 1MB JSON 包络余量（dirPath/name/type）。
- *  server/index.ts 的 maxPayload 由此取值，两处上限保持对齐。 */
-export const WS_MAX_PAYLOAD_BYTES = MAX_UPLOAD_BASE64_CHARS + 1024 * 1024;
-/** base64 文本长度是否必定超 cap（解码前快拒，不分配 Buffer）。 */
-export function isUploadDataTooLong(dataLength: number, capBytes: number = MAX_UPLOAD_BYTES): boolean {
-	return dataLength > Math.ceil(capBytes / 3) * 4;
-}
+export {
+	MAX_UPLOAD_BYTES,
+	MAX_UPLOAD_BASE64_CHARS,
+	WS_MAX_PAYLOAD_BYTES,
+	isUploadDataTooLong,
+} from "./payload-limits.js";
 
 // mac/linux: hide build & dependency noise (original behavior).
 const IGNORED_ENTRIES = new Set([
@@ -263,6 +261,7 @@ export interface FilesHost {
 	 * 缺省英文。agent-service 接线 () => this.getLang()。
 	 */
 	getLang?: () => ServerLang;
+	getUploadMaxBytes?: () => number;
 }
 
 export class FilesService {
@@ -1016,7 +1015,7 @@ export class FilesService {
 				});
 				return;
 			}
-			writeFileSync(abs, text, "utf8");
+			await saveFilePreservingMetadata(abs, text);
 			this.host.emit({
 				type: "notice",
 				level: "info",
@@ -1043,13 +1042,17 @@ export class FilesService {
 	 * malicious payload can't escape the directory. Emits notice + file_changed
 	 * for the target dir (the recursive watcher may not cover it on posix).
 	 */
-	async uploadFile(relDir: string, name: string, data: string): Promise<void> {
+	async uploadFile(relDir: string, name: string, data: string, uploadId?: string): Promise<void> {
 		const root = this.host.getCwd();
 		if (isRemoteWorkspaceUri(root)) {
-			await this.uploadRemoteFile(root, relDir, name, data);
+			await this.uploadRemoteFile(root, relDir, name, data, uploadId);
 			return;
 		}
-		const emitErr = (text: string, textEn?: string) => this.host.emit({ type: "notice", level: "error", text, textEn });
+		const emitErr = (text: string, textEn?: string) => {
+			this.host.emit({ type: "notice", level: "error", text, textEn });
+			if (typeof uploadId === "string")
+				this.host.emit({ type: "file_upload_result", uploadId, ok: false, error: textEn ?? text });
+		};
 		try {
 			const absDir = relDir ? isAbsoluteWirePath(relDir) : false;
 			let wp: { abs: string; rel: string } | null;
@@ -1086,10 +1089,11 @@ export class FilesService {
 				}
 				uploadRel = rawRel.split(sep).join("/");
 			}
-			if (isUploadDataTooLong(data.length)) {
+			const maxBytes = this.host.getUploadMaxBytes?.() ?? uploadLimitBytes({}, "workspace");
+			if (isUploadDataTooLong(data.length, maxBytes)) {
 				emitErr(
-					`文件过大：${name}（上限 ${Math.round(MAX_UPLOAD_BYTES / 1024 / 1024)}MB）`,
-					`File too large: ${name} (max ${Math.round(MAX_UPLOAD_BYTES / 1024 / 1024)}MB)`,
+					`文件过大：${name}（上限 ${Math.round(maxBytes / 1024 / 1024)}MB）`,
+					`File too large: ${name} (max ${Math.round(maxBytes / 1024 / 1024)}MB)`,
 				);
 				return;
 			}
@@ -1098,10 +1102,10 @@ export class FilesService {
 				emitErr(`空文件：${name}`, `Empty file: ${name}`);
 				return;
 			}
-			if (buf.length > MAX_UPLOAD_BYTES) {
+			if (buf.length > maxBytes) {
 				emitErr(
-					`文件过大：${name}（上限 ${Math.round(MAX_UPLOAD_BYTES / 1024 / 1024)}MB）`,
-					`File too large: ${name} (max ${Math.round(MAX_UPLOAD_BYTES / 1024 / 1024)}MB)`,
+					`文件过大：${name}（上限 ${Math.round(maxBytes / 1024 / 1024)}MB）`,
+					`File too large: ${name} (max ${Math.round(maxBytes / 1024 / 1024)}MB)`,
 				);
 				return;
 			}
@@ -1113,7 +1117,7 @@ export class FilesService {
 			// wx：与预检之间存在窗口（TOCTOU），并发同名上传走 EEXIST 落到 catch
 			// 报错 —— 两个上传路径语义统一为「目标已存在拒绝」，绝不静默截断覆盖
 			// （/api/file-transfer/upload 一直是 open(dest, "wx") 拒绝）。
-			writeFileSync(abs, buf, { flag: "wx" });
+			writeUploadExclusiveSync(abs, buf);
 			this.host.emit({
 				type: "notice",
 				level: "info",
@@ -1127,6 +1131,7 @@ export class FilesService {
 				type: "file_changed",
 				path: wp.rel,
 			});
+			if (typeof uploadId === "string") this.host.emit({ type: "file_upload_result", uploadId, ok: true });
 		} catch (err) {
 			emitErr(`上传文件失败：${(err as Error).message}`, `Upload failed: ${(err as Error).message}`);
 		}
@@ -2015,6 +2020,11 @@ export class FilesService {
 				});
 				return;
 			}
+			// Preserve the existing SFTP file object (ACLs, xattrs and symlink target).
+			// Keep the established SFTP save path rather than GNU shell replacement.
+			const info = await sshSvc.sftpStat(rawCwd, t.abs);
+			if (!info.isFile || info.size > 2 * 1024 * 1024)
+				throw new Error("Remote save target must be a regular file no larger than 2MB");
 			await sshSvc.sftpWriteFile(rawCwd, t.abs, text);
 			this.host.emit({
 				type: "notice",
@@ -2033,8 +2043,18 @@ export class FilesService {
 		}
 	}
 
-	private async uploadRemoteFile(rawCwd: string, relDir: string, name: string, data: string): Promise<void> {
-		const emitErr = (text: string, textEn?: string) => this.host.emit({ type: "notice", level: "error", text, textEn });
+	private async uploadRemoteFile(
+		rawCwd: string,
+		relDir: string,
+		name: string,
+		data: string,
+		uploadId?: string,
+	): Promise<void> {
+		const emitErr = (text: string, textEn?: string) => {
+			this.host.emit({ type: "notice", level: "error", text, textEn });
+			if (typeof uploadId === "string")
+				this.host.emit({ type: "file_upload_result", uploadId, ok: false, error: textEn ?? text });
+		};
 		try {
 			const sshSvc = getGlobalRemoteSshService();
 			if (!sshSvc) throw new Error("Remote SSH service not initialized");
@@ -2048,12 +2068,13 @@ export class FilesService {
 				emitErr(`文件名不合法：${name}`, `Invalid file name: ${name}`);
 				return;
 			}
-			if (isUploadDataTooLong(data.length)) {
+			const maxBytes = this.host.getUploadMaxBytes?.() ?? uploadLimitBytes({}, "workspace");
+			if (isUploadDataTooLong(data.length, maxBytes)) {
 				emitErr(`文件过大：${name}`, `File too large: ${name}`);
 				return;
 			}
 			const buf = Buffer.from(data, "base64");
-			if (buf.length === 0 || buf.length > MAX_UPLOAD_BYTES) {
+			if (buf.length === 0 || buf.length > maxBytes) {
 				emitErr(`文件大小不合法：${name}`, `Invalid file size: ${name}`);
 				return;
 			}
@@ -2063,7 +2084,7 @@ export class FilesService {
 				emitErr(`已存在：${safe}`, `Already exists: ${safe}`);
 				return;
 			}
-			await sshSvc.sftpWriteFile(rawCwd, destAbs, buf, { createParents: true });
+			await writeRemoteUploadExclusive(sshSvc, rawCwd, destAbs, buf);
 			const uploadRel = dirTarget.rel ? `${dirTarget.rel}/${safe}` : safe;
 			this.host.emit({
 				type: "notice",
@@ -2075,6 +2096,7 @@ export class FilesService {
 				type: "file_changed",
 				path: dirTarget.rel,
 			});
+			if (typeof uploadId === "string") this.host.emit({ type: "file_upload_result", uploadId, ok: true });
 		} catch (err) {
 			emitErr(`上传文件失败：${(err as Error).message}`, `Upload failed: ${(err as Error).message}`);
 		}

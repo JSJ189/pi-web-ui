@@ -9,6 +9,18 @@ import {
 import type { ToolDefinition } from "@earendil-works/pi-coding-agent";
 
 describe("subagent-security-gate", () => {
+	it("keeps legacy terminal allowlists action scoped", () => {
+		const allowed = new Set(["terminal_read"]);
+		expect(parseRequiredTools("terminal_read", ["terminal"]).allowedTools).toEqual(["terminal_read"]);
+		expect(subagentSecurityDenial("normal", "terminal", { action: "read" }, allowed)).toBeUndefined();
+		expect(subagentSecurityDenial("normal", "terminal", { action: "input" }, allowed)).toBeDefined();
+		for (const mode of ["readonly", "verify"] as const) {
+			for (const action of ["list", "read", "wait"])
+				expect(subagentSecurityDenial(mode, "terminal", { action })).toBeUndefined();
+			for (const action of ["create", "close", "input", "key", "unknown"])
+				expect(subagentSecurityDenial(mode, "terminal", { action, command: "pwd" })).toBeDefined();
+		}
+	});
 	describe("resolveSecurityMode", () => {
 		it("prefers template securityMode when explicitly configured", () => {
 			expect(resolveSecurityMode("custom", { securityMode: "readonly" })).toBe("readonly");
@@ -46,9 +58,9 @@ describe("subagent-security-gate", () => {
 			expect(res.allowedTools).toEqual(["read", "grep", "find"]);
 		});
 
-		it("handles aliases like terminal -> bash", () => {
+		it("keeps terminal distinct from bash", () => {
 			const res = parseRequiredTools("read, terminal, grep");
-			expect(res.allowedTools).toEqual(["read", "bash", "grep"]);
+			expect(res.allowedTools).toEqual(["read", "terminal", "grep"]);
 		});
 
 		it("identifies read-only request phrases", () => {
@@ -58,9 +70,9 @@ describe("subagent-security-gate", () => {
 		});
 
 		it("filters against available tools list", () => {
-			const available = ["read", "grep", "bash"];
+			const available = ["read", "grep", "terminal"];
 			const res = parseRequiredTools("read, grep, write, terminal", available);
-			expect(res.allowedTools).toEqual(["read", "grep", "bash"]);
+			expect(res.allowedTools).toEqual(["read", "grep", "terminal"]);
 			expect(res.unrecognized).toEqual(["write"]);
 		});
 
@@ -84,6 +96,26 @@ describe("subagent-security-gate", () => {
 				expect(denied).toBeDefined();
 				expect(denied?.kind).toBe("not-allowed-tool");
 			});
+		});
+
+		it("restricted modes reject unknown tools even when named in an explicit allowlist", () => {
+			for (const mode of ["readonly", "verify"] as const) {
+				for (const name of ["plugin_write", "mcp_delete", "", "eval"]) {
+					expect(subagentSecurityDenial(mode, name, {}, new Set([name]))).toBeDefined();
+				}
+				expect(subagentSecurityDenial(mode, "notes", { op: "note_add" })).toBeDefined();
+				expect(subagentSecurityDenial(mode, "notes", { op: "list" })).toBeUndefined();
+				expect(subagentSecurityDenial(mode, "load_tools", {})).toBeUndefined();
+				expect(subagentSecurityDenial(mode, "lsp", { action: "references" })).toBeUndefined();
+				for (const command of [
+					"npm test & touch pwned & pwd",
+					'npm test "$(touch x)"',
+					"npm test &&",
+					"npm test\\\n; pwd",
+				]) {
+					expect(subagentSecurityDenial(mode, "bash", { command }), command).toBeDefined();
+				}
+			}
 		});
 
 		describe("readonly mode", () => {

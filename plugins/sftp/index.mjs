@@ -50,6 +50,7 @@ import {
 } from "./lib/engine.mjs";
 import * as remote from "./lib/remote.mjs";
 import { createSshManager } from "./lib/ssh.mjs";
+import { createTrustChallenges } from "./lib/host-trust.mjs";
 
 const DEFAULTS = {
 	delete: "none",
@@ -78,6 +79,7 @@ export default {
 			}
 		};
 		const ssh = createSshManager({ host, log, secrets: host.secrets });
+		const trustChallenges = createTrustChallenges();
 		// 引擎的非致命降级（快扫/批量打包用不了）只报一次，不然每次同步都刷屏
 		onEngineNote((msg) => log(msg, "warn"));
 
@@ -491,21 +493,40 @@ export default {
 
 		// ── HTTP 路由（视图走这些） ─────────────────────────────────────────
 		const routes = [];
+		const trustNotices = new Map();
 		const route = (method, p, fn) => {
 			routes.push(
 				host.route(method, p, async (req, res) => {
 					try {
+						req.sftpCwd = host.cwd;
 						const data = await fn(req);
 						res.json({ ok: true, data: data ?? null });
 					} catch (err) {
 						const msg = String(err?.message ?? err);
-						log(`${method} ${p} 失败：${msg}`, "warn");
-						res.status(400).json({ ok: false, error: msg });
+						const hostTrust = trustChallenges.capture(err, req.sftpCwd);
+						if (hostTrust) {
+							const key = JSON.stringify([req.sftpCwd, hostTrust.host, hostTrust.port, hostTrust.fingerprint]);
+							const now = Date.now();
+							if (!trustNotices.has(key) || now - trustNotices.get(key) >= 60_000) {
+								if (trustNotices.size >= 64) trustNotices.delete(trustNotices.keys().next().value);
+								trustNotices.set(key, now);
+								log(
+									`SSH ${hostTrust.host}:${hostTrust.port} (${hostTrust.status}): ${hostTrust.fingerprint} — 请在 SFTP 面板核对主机指纹 / Verify the host fingerprint in the SFTP panel.`,
+									"warn",
+								);
+							}
+						} else log(`${method} ${p} 失败：${msg}`, "warn");
+						res.status(400).json({ ok: false, error: msg, ...(hostTrust ? { hostTrust } : {}) });
 					}
 				}),
 			);
 		};
 
+		route("POST", "/host-trust", async (req) => {
+			await trustChallenges.accept(req.body, host.cwd);
+			ssh.dropAll();
+			return { saved: true };
+		});
 		route("GET", "/state", () => publicState());
 
 		route("GET", "/secrets", () => ({

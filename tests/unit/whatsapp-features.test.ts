@@ -126,7 +126,7 @@ describe("WhatsappBotBridge 双工逻辑测试", () => {
 		vi.stubGlobal("fetch", fetchMock);
 
 		let runHandler: ((ev: any) => void) | null = null;
-		const chatSpy = vi.fn().mockResolvedValue({ conversationId: "conv_wa_1" });
+		const chatSpy = vi.fn().mockResolvedValue({ conversationId: "conv_wa_1", runId: "run_wa_1" });
 
 		const bridge = new WhatsappBotBridge({
 			host: {
@@ -158,9 +158,10 @@ describe("WhatsappBotBridge 双工逻辑测试", () => {
 			}),
 		);
 
-		const convId = chatSpy.mock.calls[0][0].conversationId;
+		const convId = "conv_wa_1";
 
 		runHandler!({
+			runId: "run_wa_1",
 			conversationId: convId,
 			type: "message",
 			message: {
@@ -170,6 +171,7 @@ describe("WhatsappBotBridge 双工逻辑测试", () => {
 		});
 
 		await runHandler!({
+			runId: "run_wa_1",
 			conversationId: convId,
 			type: "run_end",
 		});

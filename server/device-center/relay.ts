@@ -1,0 +1,836 @@
+import { randomBytes, randomUUID } from "node:crypto";
+import type { IncomingMessage, Server, ServerResponse } from "node:http";
+import type { Duplex } from "node:stream";
+import { WebSocket, WebSocketServer } from "ws";
+
+export const RELAY_LIMITS = {
+	frame: 128 * 1024,
+	chunk: 32 * 1024,
+	queue: 2 * 1024 * 1024,
+	body: 64 * 1024 * 1024,
+	streams: 32,
+	devices: 128,
+	sessions: 2048,
+};
+export type RelayFrame = { type: string; id?: string; [key: string]: unknown };
+export function loopback(host: string) {
+	return host === "localhost" || host.endsWith(".localhost") || host === "127.0.0.1" || host === "[::1]";
+}
+export function checkedUrl(value: string) {
+	const url = new URL(value);
+	if (
+		url.username ||
+		url[("pass" + "word") as keyof URL] ||
+		url.hash ||
+		!["https:", "wss:", "http:", "ws:"].includes(url.protocol)
+	)
+		throw new Error("HTTP(S) or WS(S) URL required, without credentials or fragment");
+	return url;
+}
+export function sendFrame(ws: WebSocket, frame: RelayFrame): boolean {
+	const data = JSON.stringify(frame);
+	if (ws.readyState !== WebSocket.OPEN) return false;
+	if (
+		Buffer.byteLength(data) > RELAY_LIMITS.frame ||
+		ws.bufferedAmount + Buffer.byteLength(data) > RELAY_LIMITS.queue
+	) {
+		ws.terminate();
+		return false;
+	}
+	ws.send(data, (error) => {
+		if (error) ws.terminate();
+	});
+	return true;
+}
+export function parseFrame(data: Buffer): RelayFrame {
+	if (data.length > RELAY_LIMITS.frame) throw new Error("Frame too large");
+	const frame = JSON.parse(data.toString());
+	if (!frame || typeof frame !== "object" || typeof frame.type !== "string") throw new Error("Invalid frame");
+	return frame;
+}
+export function decodeChunk(value: unknown): Buffer {
+	if (
+		typeof value !== "string" ||
+		value.length > Math.ceil(RELAY_LIMITS.chunk / 3) * 4 ||
+		!/^(?:[A-Za-z0-9+/]{4})*(?:[A-Za-z0-9+/]{2}==|[A-Za-z0-9+/]{3}=)?$/.test(value)
+	)
+		throw new Error("Invalid chunk");
+	return Buffer.from(value, "base64");
+}
+export function sendChunks(ws: WebSocket, type: string, id: string, data: Buffer, extra: Record<string, unknown> = {}) {
+	for (let offset = 0; offset < data.length; offset += RELAY_LIMITS.chunk)
+		if (
+			!sendFrame(ws, {
+				type,
+				id,
+				data: data.subarray(offset, offset + RELAY_LIMITS.chunk).toString("base64"),
+				...extra,
+			})
+		)
+			return false;
+	return true;
+}
+const blocked =
+	/^(host|cookie|authorization|proxy-.*|origin|referer|forwarded|x-forwarded-.*|connection|upgrade|keep-alive|transfer-encoding|te|trailer|sec-websocket-.*|set-cookie)$/i;
+export function cleanHeaders(headers: Record<string, unknown>): Record<string, string> {
+	const result: Record<string, string> = {};
+	const connection = String(headers.connection || "")
+		.toLowerCase()
+		.split(",")
+		.map((x) => x.trim());
+	for (const [key, value] of Object.entries(headers))
+		if (
+			!blocked.test(key) &&
+			!connection.includes(key.toLowerCase()) &&
+			typeof value === "string" &&
+			!/[\r\n]/.test(value)
+		)
+			result[key.toLowerCase()] = value;
+	return result;
+}
+export function safePath(path: unknown): path is string {
+	if (typeof path !== "string" || !path.startsWith("/") || path.startsWith("//") || /[\r\n\\]/.test(path)) return false;
+	try {
+		let decoded = path.split("?")[0];
+		for (let i = 0; i < 8; i++) {
+			const next = decodeURIComponent(decoded);
+			if (next === decoded) break;
+			decoded = next;
+		}
+		if (/%|[\\\x00-\x20]/.test(decoded)) return false;
+		const normalized = new URL(decoded, "http://local").pathname.toLowerCase();
+		return !["/devices", "/api/device-center", "/setup", "/api/setup"].some(
+			(prefix) => normalized === prefix || normalized.startsWith(prefix + "/"),
+		);
+	} catch {
+		return false;
+	}
+}
+
+export const COMMANDS = ["transfer_stage", "transfer_preview", "transfer_apply"] as const;
+export type DeviceCommand = (typeof COMMANDS)[number];
+const RPC_BYTES = 12 * 1024 * 1024;
+/** Bounded chunked RPC, scoped to exactly one authenticated connection. */
+export function createCommandChannel(
+	ws: WebSocket,
+	handler?: (action: DeviceCommand, payload: unknown, signal: AbortSignal) => Promise<unknown>,
+) {
+	const pending = new Map<
+		string,
+		{
+			chunks: Buffer[];
+			bytes: number;
+			incoming: boolean;
+			executing?: boolean;
+			action?: DeviceCommand;
+			controller: AbortController;
+			timer: NodeJS.Timeout;
+			resolve?: (value: unknown) => void;
+			reject?: (error: Error) => void;
+			detach?: () => void;
+		}
+	>();
+	let ended = false;
+	function remove(id: string, error?: Error) {
+		const item = pending.get(id);
+		if (!item) return;
+		pending.delete(id);
+		clearTimeout(item.timer);
+		item.detach?.();
+		item.controller.abort();
+		if (error) item.reject?.(error);
+	}
+	function add(id: string, incoming: boolean) {
+		if (ended || pending.size >= 4 || pending.has(id)) throw new Error("Command capacity exceeded");
+		const timer = setTimeout(() => {
+			sendFrame(ws, { type: "rpc_cancel", id });
+			remove(id, new Error("Command timed out"));
+		}, 60_000);
+		timer.unref();
+		const item = {
+			chunks: [] as Buffer[],
+			bytes: 0,
+			incoming,
+			controller: new AbortController(),
+			timer,
+		} as NonNullable<ReturnType<typeof pending.get>>;
+		pending.set(id, item);
+		return item;
+	}
+	async function transmit(id: string, type: string, value: unknown, signal: AbortSignal) {
+		const json = JSON.stringify(value ?? null);
+		if (json.length > RPC_BYTES) throw new Error("Command payload too large");
+		const bytes = Buffer.from(json);
+		if (bytes.length > RPC_BYTES) throw new Error("Command payload too large");
+		for (let offset = 0; offset < bytes.length; offset += RELAY_LIMITS.chunk) {
+			while (ws.bufferedAmount > RELAY_LIMITS.queue / 2) {
+				await new Promise<void>((resolve) => {
+					const timer = setTimeout(resolve, 5);
+					timer.unref();
+				});
+				if (signal.aborted || ended || ws.readyState !== WebSocket.OPEN) throw new Error("Command cancelled");
+			}
+			if (
+				signal.aborted ||
+				ended ||
+				!sendFrame(ws, {
+					type: `${type}_chunk`,
+					id,
+					data: bytes.subarray(offset, offset + RELAY_LIMITS.chunk).toString("base64"),
+				})
+			)
+				throw new Error("Command cancelled");
+		}
+		if (!sendFrame(ws, { type: `${type}_end`, id })) throw new Error("Command disconnected");
+	}
+	return {
+		call(action: DeviceCommand, payload: unknown, options: { signal?: AbortSignal } = {}): Promise<unknown> {
+			if (!COMMANDS.includes(action)) return Promise.reject(new Error("Command forbidden"));
+			if (options.signal?.aborted) return Promise.reject(new Error("Command cancelled"));
+			return new Promise((resolve, reject) => {
+				const id = randomUUID();
+				let item: ReturnType<typeof add>;
+				try {
+					item = add(id, false);
+				} catch (error) {
+					reject(error);
+					return;
+				}
+				item.resolve = resolve;
+				item.reject = reject;
+				const abort = () => {
+					sendFrame(ws, { type: "rpc_cancel", id });
+					remove(id, new Error("Command cancelled"));
+				};
+				options.signal?.addEventListener("abort", abort, { once: true });
+				item.detach = () => options.signal?.removeEventListener("abort", abort);
+				if (!sendFrame(ws, { type: "rpc_start", id, action })) {
+					remove(id, new Error("Command disconnected"));
+					return;
+				}
+				void transmit(id, "rpc_request", payload, item.controller.signal).catch((error) => {
+					sendFrame(ws, { type: "rpc_cancel", id });
+					remove(id, error);
+				});
+			});
+		},
+		handle(frame: RelayFrame): boolean {
+			if (!frame.type.startsWith("rpc_")) return false;
+			const id = frame.id;
+			if (typeof id !== "string" || !/^[a-f0-9]{8}-[a-f0-9]{4}-4[a-f0-9]{3}-[89ab][a-f0-9]{3}-[a-f0-9]{12}$/.test(id))
+				throw new Error("Invalid command id");
+			if (frame.type === "rpc_start") {
+				if (!handler || !COMMANDS.includes(frame.action as DeviceCommand)) {
+					sendFrame(ws, { type: "rpc_error", id });
+					return true;
+				}
+				const item = add(id, true);
+				item.action = frame.action as DeviceCommand;
+				return true;
+			}
+			const item = pending.get(id);
+			if (!item) return true;
+			if (frame.type === "rpc_cancel" || frame.type === "rpc_error") {
+				remove(id, new Error("Remote command rejected"));
+				return true;
+			}
+			if (item.executing) throw new Error("Command already executing");
+			const prefix = item.incoming ? "rpc_request" : "rpc_response";
+			if (frame.type === `${prefix}_chunk`) {
+				const data = decodeChunk(frame.data);
+				item.bytes += data.length;
+				if (!data.length || item.bytes > RPC_BYTES || item.chunks.length >= Math.ceil(RPC_BYTES / RELAY_LIMITS.chunk))
+					throw new Error("Command too large");
+				item.chunks.push(data);
+				return true;
+			}
+			if (frame.type !== `${prefix}_end`) throw new Error("Invalid command frame");
+			const value = JSON.parse(Buffer.concat(item.chunks, item.bytes).toString("utf8"));
+			item.chunks = [];
+			item.bytes = 0;
+			if (!item.incoming) {
+				item.resolve?.(value);
+				remove(id);
+				return true;
+			}
+			item.executing = true;
+			const run = async () => {
+				try {
+					const result = await handler!(item.action!, value, item.controller.signal);
+					if (pending.get(id) !== item) return;
+					await transmit(id, "rpc_response", result, item.controller.signal);
+				} catch {
+					if (pending.get(id) === item) sendFrame(ws, { type: "rpc_error", id });
+				} finally {
+					remove(id);
+				}
+			};
+			void run();
+			return true;
+		},
+		close() {
+			ended = true;
+			for (const id of pending.keys()) remove(id, new Error("Device disconnected"));
+		},
+	};
+}
+
+export const WS_MESSAGE_BYTES = 16 * 1024 * 1024;
+/** Connection-scoped, bounded message assembly and outbound queue. */
+export function createWsMessageChannel(transport: WebSocket) {
+	const assemblies = new Map<
+		string,
+		{ messageId: string; binary: boolean; chunks: Buffer[]; bytes: number; timer: NodeJS.Timeout }
+	>();
+	let aggregate = 0;
+	let queued = 0;
+	let queuedMessages = 0;
+	let ended = false;
+	let tail = Promise.resolve();
+	function discard(id: string) {
+		const item = assemblies.get(id);
+		if (item) {
+			clearTimeout(item.timer);
+			aggregate -= item.bytes;
+			assemblies.delete(id);
+		}
+	}
+	return {
+		send(id: string, data: Buffer, binary: boolean): boolean {
+			if (
+				ended ||
+				queuedMessages >= 128 ||
+				data.length > WS_MESSAGE_BYTES ||
+				queued + data.length > 2 * WS_MESSAGE_BYTES
+			)
+				return false;
+			queuedMessages++;
+			queued += Math.max(1, data.length);
+			tail = tail
+				.then(async () => {
+					const messageId = randomUUID();
+					for (let offset = 0; offset < data.length; offset += RELAY_LIMITS.chunk) {
+						while (transport.bufferedAmount > RELAY_LIMITS.queue / 2) {
+							await new Promise<void>((resolve) => {
+								const timer = setTimeout(resolve, 5);
+								timer.unref();
+							});
+							if (ended || transport.readyState !== WebSocket.OPEN) throw new Error("Disconnected");
+						}
+						if (
+							ended ||
+							!sendFrame(transport, {
+								type: "ws_chunk",
+								id,
+								messageId,
+								binary,
+								data: data.subarray(offset, offset + RELAY_LIMITS.chunk).toString("base64"),
+							})
+						)
+							throw new Error("Disconnected");
+					}
+					if (ended || !sendFrame(transport, { type: "ws_end", id, messageId, binary }))
+						throw new Error("Disconnected");
+				})
+				.catch(() => transport.terminate())
+				.finally(() => {
+					queued -= Math.max(1, data.length);
+					queuedMessages--;
+				});
+			return true;
+		},
+		receive(frame: RelayFrame, target: WebSocket) {
+			const id = frame.id!;
+			if (typeof frame.messageId !== "string" || frame.messageId.length > 64 || typeof frame.binary !== "boolean")
+				throw new Error("Invalid WS message");
+			let item = assemblies.get(id);
+			if (!item) {
+				if (assemblies.size >= RELAY_LIMITS.streams) throw new Error("Too many WS messages");
+				const timer = setTimeout(() => {
+					discard(id);
+					target.terminate();
+				}, 60_000);
+				timer.unref();
+				item = { messageId: frame.messageId, binary: frame.binary, chunks: [], bytes: 0, timer };
+				assemblies.set(id, item);
+			}
+			if (item.messageId !== frame.messageId || item.binary !== frame.binary) throw new Error("Interleaved WS message");
+			if (frame.type === "ws_chunk") {
+				const data = decodeChunk(frame.data);
+				if (
+					!data.length ||
+					item.bytes + data.length > WS_MESSAGE_BYTES ||
+					aggregate + data.length > 2 * WS_MESSAGE_BYTES ||
+					item.chunks.length >= WS_MESSAGE_BYTES / RELAY_LIMITS.chunk
+				)
+					throw new Error("WS assembly exceeded");
+				item.chunks.push(data);
+				item.bytes += data.length;
+				aggregate += data.length;
+				return;
+			}
+			if (frame.type !== "ws_end") throw new Error("Invalid WS frame");
+			const data = Buffer.concat(item.chunks, item.bytes);
+			discard(id);
+			if (target.readyState !== WebSocket.OPEN || target.bufferedAmount + data.length > 2 * WS_MESSAGE_BYTES)
+				throw new Error("WS target queue exceeded");
+			target.send(data, { binary: item.binary }, (error) => {
+				if (error) target.terminate();
+			});
+		},
+		discard,
+		close() {
+			ended = true;
+			for (const id of assemblies.keys()) discard(id);
+		},
+	};
+}
+
+export interface DeviceRelayOptions {
+	server: Server;
+	publicUrl: string;
+	deviceDomain?: string;
+	authenticateDevice: (deviceId: string, credential: string) => boolean | Promise<boolean>;
+	getAccount: (
+		req: IncomingMessage,
+	) => string | { id: string } | null | undefined | Promise<string | { id: string } | null | undefined>;
+	ownsDevice: (accountId: string, deviceId: string) => boolean | Promise<boolean>;
+	onTaskEvent?: (deviceId: string, event: any) => void | Promise<void>;
+}
+export function createDeviceRelay(options: DeviceRelayOptions) {
+	const hub = checkedUrl(options.publicUrl);
+	const domain = options.deviceDomain?.toLowerCase();
+	if (domain !== undefined) {
+		if (!/^[a-z0-9.-]+(?::\d+)?$/.test(domain)) throw new Error("Invalid device domain");
+		const parsed = new URL(`${hub.protocol}//${domain}`);
+		if (parsed.host !== domain) throw new Error("Invalid device domain");
+		const domainHost = parsed.hostname;
+		if (
+			hub.hostname === domainHost ||
+			hub.hostname.endsWith(`.${domainHost}`) ||
+			domainHost.endsWith(`.${hub.hostname}`)
+		)
+			throw new Error("Device domain must be independent of hub domain");
+	}
+	if (!["http:", "https:"].includes(hub.protocol) || hub.pathname !== "/" || hub.search)
+		throw new Error("publicUrl must be an HTTP(S) root origin");
+	const devices = new Map<
+		string,
+		{
+			ws: WebSocket;
+			streams: Map<string, { res?: ServerResponse; ws?: WebSocket; bytes: number; timer: NodeJS.Timeout }>;
+			tasks: Map<string, string>;
+			rpc: ReturnType<typeof createCommandChannel>;
+			messages: ReturnType<typeof createWsMessageChannel>;
+		}
+	>();
+	const tickets = new Map<string, { deviceId: string; expiresAt: number }>();
+	const sessions = new Map<string, { deviceId: string; expiresAt: number }>();
+	const wss = new WebSocketServer({ noServer: true, maxPayload: RELAY_LIMITS.frame, perMessageDeflate: false });
+	const browserWss = new WebSocketServer({ noServer: true, maxPayload: WS_MESSAGE_BYTES, perMessageDeflate: false });
+	let closed = false;
+	let revision = 0;
+	let authenticating = 0;
+	const alive = new WeakSet<WebSocket>();
+	const origin = (id: string) => `${hub.protocol}//${id}.${domain}`;
+	const deviceCookie = hub.protocol === "https:" ? "__Host-device" : "device";
+	const deviceId = (req: IncomingMessage) => {
+		if (!domain) return null;
+		const host = req.headers.host?.toLowerCase() || "";
+		const suffix = `.${domain}`;
+		if (!host.endsWith(suffix)) return null;
+		const id = host.slice(0, -suffix.length);
+		return /^[a-z0-9][a-z0-9-]{0,62}$/.test(id) ? id : null;
+	};
+	function authorized(req: IncomingMessage, id: string, websocket = false) {
+		const cookie = req.headers.cookie
+			?.split(";")
+			.map((x) => x.trim())
+			.find((x) => x.startsWith(`${deviceCookie}=`))
+			?.slice(deviceCookie.length + 1);
+		const session = cookie ? sessions.get(cookie) : undefined;
+		if (!session || session.deviceId !== id || session.expiresAt <= Date.now()) return false;
+		if (req.headers.origin && req.headers.origin !== origin(id)) return false;
+		if (websocket && req.headers.origin !== origin(id)) return false;
+		if (!["GET", "HEAD", "OPTIONS"].includes(req.method || "GET") && req.headers.origin !== origin(id)) return false;
+		return true;
+	}
+	function drop(id: string, entry: typeof devices extends Map<string, infer T> ? T : never) {
+		entry.rpc.close();
+		entry.messages.close();
+		for (const [taskId, attemptId] of entry.tasks) {
+			Promise.resolve()
+				.then(() =>
+					options.onTaskEvent?.(id, {
+						taskId,
+						attemptId,
+						status: "interrupted",
+						report: "Device connection lost; task is not replayed",
+					}),
+				)
+				.catch(() => {});
+		}
+		entry.tasks.clear();
+		for (const stream of entry.streams.values()) {
+			clearTimeout(stream.timer);
+			stream.res?.destroy();
+			stream.ws?.terminate();
+		}
+		entry.streams.clear();
+		if (devices.get(id) === entry) devices.delete(id);
+	}
+	function addStream(
+		entry: typeof devices extends Map<string, infer T> ? T : never,
+		id: string,
+		stream: { res?: ServerResponse; ws?: WebSocket },
+	) {
+		const timer = setTimeout(() => {
+			stream.res?.destroy();
+			stream.ws?.terminate();
+			entry.streams.delete(id);
+			sendFrame(entry.ws, { type: "cancel", id });
+		}, 30 * 60_000);
+		timer.unref();
+		const item = { ...stream, bytes: 0, timer };
+		entry.streams.set(id, item);
+		return item;
+	}
+	async function handleOpen(req: IncomingMessage, res: ServerResponse, id: string) {
+		const generation = revision;
+		const account = await options.getAccount(req);
+		const accountId = typeof account === "string" ? account : account?.id;
+		if (
+			closed ||
+			req.method !== "POST" ||
+			req.headers.host !== hub.host ||
+			req.headers.origin !== hub.origin ||
+			!accountId ||
+			!(await options.ownsDevice(accountId, id))
+		) {
+			res.writeHead(403).end();
+			return;
+		}
+		if (!domain) {
+			res.writeHead(409, { "content-type": "application/json", "cache-control": "no-store" }).end(
+				JSON.stringify({
+					error: "Device web access requires an independent origin",
+					code: "DEVICE_WEB_ORIGIN_REQUIRED",
+				}),
+			);
+			return;
+		}
+		if (generation !== revision || closed || !/^[a-z0-9][a-z0-9-]{0,62}$/.test(id) || !devices.has(id)) {
+			res.writeHead(409).end();
+			return;
+		}
+		if (tickets.size >= RELAY_LIMITS.sessions) {
+			res.writeHead(503).end();
+			return;
+		}
+		const ticket = randomBytes(32).toString("hex");
+		const expiresAt = Date.now() + 30_000;
+		tickets.set(ticket, { deviceId: id, expiresAt });
+		res
+			.writeHead(200, { "content-type": "application/json", "cache-control": "no-store" })
+			.end(JSON.stringify({ url: `${origin(id)}/__device/open?ticket=${ticket}`, expiresAt }));
+	}
+	function handleRequest(req: IncomingMessage, res: ServerResponse): boolean {
+		const id = deviceId(req);
+		if (!id) {
+			if (domain && req.headers.host?.toLowerCase().endsWith(`.${domain}`)) {
+				res.writeHead(403).end();
+				return true;
+			}
+			return false;
+		}
+		res.setHeader("Cache-Control", "no-store");
+		res.setHeader("Referrer-Policy", "no-referrer");
+		const url = new URL(req.url || "/", origin(id));
+		if (url.pathname === "/__device/open") {
+			const key = url.searchParams.get("ticket") || "";
+			const ticket = tickets.get(key);
+			if (
+				req.method !== "GET" ||
+				!ticket ||
+				ticket.deviceId !== id ||
+				ticket.expiresAt <= Date.now() ||
+				!devices.has(id) ||
+				sessions.size >= RELAY_LIMITS.sessions
+			) {
+				res.writeHead(403).end();
+				return true;
+			}
+			tickets.delete(key);
+			const token = randomBytes(32).toString("hex");
+			sessions.set(token, { deviceId: id, expiresAt: Date.now() + 15 * 60_000 });
+			res
+				.writeHead(302, {
+					"set-cookie": `${deviceCookie}=${token}; Path=/; Max-Age=900;${hub.protocol === "https:" ? " Secure;" : ""} HttpOnly; SameSite=Lax`,
+					location: url.searchParams.get("next") === "/desktop" ? "/desktop" : "/",
+				})
+				.end();
+			return true;
+		}
+		if (!authorized(req, id)) {
+			res.writeHead(403).end();
+			return true;
+		}
+		const entry = devices.get(id);
+		if (!entry || entry.streams.size >= RELAY_LIMITS.streams) {
+			res.writeHead(503).end();
+			return true;
+		}
+		if (!safePath(req.url)) {
+			res.writeHead(400).end();
+			return true;
+		}
+		const streamId = randomBytes(12).toString("hex");
+		addStream(entry, streamId, { res });
+		let bytes = 0;
+		sendFrame(entry.ws, {
+			type: "request",
+			id: streamId,
+			method: req.method,
+			path: req.url,
+			headers: cleanHeaders(req.headers),
+		});
+		req.on("data", (chunk: Buffer) => {
+			bytes += chunk.length;
+			if (bytes > RELAY_LIMITS.body || !sendChunks(entry.ws, "request_body", streamId, chunk)) {
+				sendFrame(entry.ws, { type: "cancel", id: streamId });
+				req.destroy();
+			}
+		});
+		req.on("end", () => sendFrame(entry.ws, { type: "request_end", id: streamId }));
+		res.on("close", () => {
+			const item = entry.streams.get(streamId);
+			if (item) {
+				clearTimeout(item.timer);
+				entry.streams.delete(streamId);
+				sendFrame(entry.ws, { type: "cancel", id: streamId });
+			}
+		});
+		req.on("error", () => res.destroy());
+		req.on("aborted", () => res.destroy());
+		return true;
+	}
+	async function upgrade(req: IncomingMessage, socket: Duplex, head: Buffer) {
+		const id = deviceId(req);
+		if (!id && domain && req.headers.host?.toLowerCase().endsWith(`.${domain}`)) {
+			socket.destroy();
+			return;
+		}
+		if (id) {
+			const entry = devices.get(id);
+			if (!entry || !authorized(req, id, true) || entry.streams.size >= RELAY_LIMITS.streams || !safePath(req.url)) {
+				socket.destroy();
+				return;
+			}
+			browserWss.handleUpgrade(req, socket, head, (ws) => {
+				const streamId = randomBytes(12).toString("hex");
+				addStream(entry, streamId, { ws });
+				ws.pause();
+				sendFrame(entry.ws, {
+					type: "ws_open",
+					id: streamId,
+					path: req.url,
+					headers: cleanHeaders(req.headers),
+					protocols: req.headers["sec-websocket-protocol"],
+				});
+				ws.on("message", (data, binary) => {
+					const buffer = Buffer.from(data as Buffer);
+					if (!entry.messages.send(streamId, buffer, binary)) ws.terminate();
+				});
+				ws.on("close", () => {
+					const item = entry.streams.get(streamId);
+					if (item) {
+						clearTimeout(item.timer);
+						entry.messages.discard(streamId);
+						entry.streams.delete(streamId);
+						sendFrame(entry.ws, { type: "ws_close", id: streamId });
+					}
+				});
+				ws.on("error", () => ws.terminate());
+			});
+			return;
+		}
+		let url: URL;
+		try {
+			url = new URL(req.url || "/", hub);
+		} catch {
+			socket.destroy();
+			return;
+		}
+		if (url.pathname !== "/device-connect") return;
+		const device = url.searchParams.get("deviceId") || "";
+		const credential = req.headers.authorization?.match(/^Bearer (\S+)$/)?.[1];
+		if (authenticating >= RELAY_LIMITS.devices) {
+			socket.destroy();
+			return;
+		}
+		authenticating++;
+		const generation = revision;
+		try {
+			if (
+				closed ||
+				req.headers.host !== hub.host ||
+				req.headers.origin ||
+				!/^[a-z0-9][a-z0-9-]{0,62}$/.test(device) ||
+				!credential ||
+				credential.length > 4096 ||
+				!(await options.authenticateDevice(device, credential)) ||
+				(devices.size >= RELAY_LIMITS.devices && !devices.has(device)) ||
+				socket.destroyed ||
+				generation !== revision ||
+				closed
+			) {
+				socket.destroy();
+				return;
+			}
+			wss.handleUpgrade(req, socket, head, (ws) => {
+				const old = devices.get(device);
+				if (old) {
+					drop(device, old);
+					old.ws.terminate();
+				}
+				const entry = {
+					ws,
+					streams: new Map(),
+					tasks: new Map<string, string>(),
+					rpc: createCommandChannel(ws),
+					messages: createWsMessageChannel(ws),
+				};
+				devices.set(device, entry);
+				alive.add(ws);
+				ws.on("pong", () => alive.add(ws));
+				ws.on("message", (raw) => {
+					try {
+						if (devices.get(device) !== entry) return;
+						const frame = parseFrame(Buffer.from(raw as Buffer));
+						if (entry.rpc.handle(frame)) return;
+						if (frame.type === "task_event") {
+							if (
+								typeof frame.taskId !== "string" ||
+								entry.tasks.get(frame.taskId) !== frame.attemptId ||
+								!["running", "completed", "failed"].includes(String(frame.status))
+							)
+								throw new Error("Unknown task");
+							if (frame.status === "completed" || frame.status === "failed") entry.tasks.delete(frame.taskId);
+							Promise.resolve()
+								.then(() => options.onTaskEvent?.(device, frame))
+								.catch(() => ws.terminate());
+							return;
+						}
+						const item = entry.streams.get(frame.id);
+						if (!item) return;
+						if (frame.type === "response") {
+							const status = Number(frame.status);
+							if (!Number.isInteger(status) || status < 200 || status > 599 || !item.res || item.res.headersSent)
+								throw new Error("Invalid response");
+							item.res.writeHead(status, cleanHeaders((frame.headers || {}) as Record<string, unknown>));
+							item.res.flushHeaders();
+						} else if (frame.type === "response_body") {
+							const data = decodeChunk(frame.data);
+							item.bytes += data.length;
+							if (item.res?.headersSent && item.bytes <= RELAY_LIMITS.body) item.res.write(data);
+							if (
+								item.bytes > RELAY_LIMITS.body ||
+								!item.res?.headersSent ||
+								item.res.writableLength > RELAY_LIMITS.queue
+							) {
+								item.res?.destroy();
+								sendFrame(ws, { type: "cancel", id: frame.id });
+							}
+						} else if (frame.type === "response_end" || frame.type === "error") {
+							if (frame.type === "error") item.res?.destroy();
+							else item.res?.end();
+							item.ws?.terminate();
+							clearTimeout(item.timer);
+							entry.streams.delete(frame.id);
+						} else if (frame.type === "ws_ready") {
+							item.ws?.resume();
+						} else if (frame.type === "ws_chunk" || frame.type === "ws_end") {
+							if (!item.ws) throw new Error("Missing WS stream");
+							entry.messages.receive(frame, item.ws);
+						} else if (frame.type === "ws_close") item.ws?.close();
+					} catch {
+						ws.terminate();
+					}
+				});
+				ws.on("close", () => drop(device, entry));
+				ws.on("error", () => ws.terminate());
+			});
+		} catch {
+			socket.destroy();
+		} finally {
+			authenticating--;
+		}
+	}
+	const upgradeListener = (req: IncomingMessage, socket: Duplex, head: Buffer) => {
+		void upgrade(req, socket, head);
+	};
+	options.server.on("upgrade", upgradeListener);
+	const heartbeat = setInterval(() => {
+		const now = Date.now();
+		for (const map of [tickets, sessions]) for (const [key, value] of map) if (value.expiresAt <= now) map.delete(key);
+		for (const entry of devices.values()) {
+			if (!alive.has(entry.ws)) {
+				entry.ws.terminate();
+				continue;
+			}
+			alive.delete(entry.ws);
+			entry.ws.ping();
+		}
+	}, 15_000);
+	heartbeat.unref();
+	return {
+		callDevice(id: string, action: DeviceCommand, payload: unknown, options?: { signal?: AbortSignal }) {
+			const entry = devices.get(id);
+			return entry ? entry.rpc.call(action, payload, options) : Promise.reject(new Error("Device offline"));
+		},
+		handleRequest,
+		handleOpen,
+		isDeviceRequest: (req: IncomingMessage) => !!req.headers.host?.toLowerCase().endsWith(`.${domain}`),
+		isOnline: (id: string) => devices.get(id)?.ws.readyState === WebSocket.OPEN,
+		sendTask(id: string, task: any) {
+			const entry = devices.get(id);
+			if (
+				!entry ||
+				typeof task?.id !== "string" ||
+				typeof task.attemptId !== "string" ||
+				entry.tasks.has(task.id) ||
+				entry.tasks.size >= RELAY_LIMITS.streams
+			)
+				return false;
+			entry.tasks.set(task.id, task.attemptId);
+			if (!sendFrame(entry.ws, { type: "task", task })) {
+				entry.tasks.delete(task.id);
+				return false;
+			}
+			return true;
+		},
+		revoke(id: string) {
+			revision++;
+			for (const map of [tickets, sessions]) for (const [key, value] of map) if (value.deviceId === id) map.delete(key);
+			const entry = devices.get(id);
+			if (entry) {
+				drop(id, entry);
+				entry.ws.terminate();
+			}
+		},
+		close() {
+			closed = true;
+			clearInterval(heartbeat);
+			options.server.off("upgrade", upgradeListener);
+			for (const [id, entry] of devices) {
+				drop(id, entry);
+				entry.ws.terminate();
+			}
+			tickets.clear();
+			sessions.clear();
+			wss.close();
+			browserWss.close();
+		},
+	};
+}
+export type DeviceRelay = ReturnType<typeof createDeviceRelay>;

@@ -14,14 +14,11 @@
 	--accent: #1e66f5;
 	--accent-soft: rgba(30, 102, 245, 0.12);
 	--green: #2d701e;
-	--on-green: #ffffff;
 	--green-soft: rgba(64, 160, 43, 0.12);
 	--red: #c40e35;
-	--on-red: #ffffff;
 	--red-soft: rgba(210, 15, 57, 0.1);
 	--amber: #895712;
 	--blue: #0a59da;
-	--blue-soft: rgba(59, 130, 246, 0.12);
 	--term-bg: #eff1f5;
 	--term-fg: #4c4f69;
 	--term-cursor: #dc8a78;
@@ -43,14 +40,9 @@
 	--term-bright-magenta: #8839ef;
 	--term-bright-cyan: #179299;
 	--term-bright-white: #3c3e53;
-	--mono: "SF Mono", "JetBrains Mono", ui-monospace, Menlo, Consolas, monospace;
-	--mermaid-font-size: 12px;
 	--tooltip-bg: #ffffff;
 	--code-bg: #e6e9ef;
 	--code-text: #4c4f69;
-	--code-border: var(--border-soft);
-	--code-pad: 8px 10px;
-	--card-body-pad: 4px 14px 12px;
 	--err-text: #c40e35;
 	--red-text: #c40e35;
 	--amber-text: #895712;
@@ -72,30 +64,16 @@
 	--notice-info-border: var(--info-blue);
 	--send-blue: #1e66f5;
 	--send-blue-hover: #7287fd;
-	--stop-red: #ef4444;
-	--stop-red-hover: #dc2626;
 	--brand-grad-a: #1e66f5;
 	--brand-grad-b: #8839ef;
+	--on-green: #ffffff;
+	--on-red: #ffffff;
 	--on-amber: #ffffff;
-	--search-active-fg: #1a1d26;
-	--switch-knob: #ffffff;
-	--bg-elev3: rgba(255, 255, 255, 0.06);
-	--sunken-bg: rgba(0, 0, 0, 0.15);
-	--glow-015: rgba(255, 255, 255, 0.015);
-	--glow-025: rgba(255, 255, 255, 0.025);
-	--glow-03: rgba(255, 255, 255, 0.03);
-	--glow-04: rgba(255, 255, 255, 0.04);
-	--glow-05: rgba(255, 255, 255, 0.05);
-	--glow-12: rgba(255, 255, 255, 0.12);
-	--glow-18: rgba(255, 255, 255, 0.18);
-	--glow-22: rgba(255, 255, 255, 0.22);
-	--glow-38: rgba(255, 255, 255, 0.38);
+	--on-send-blue-hover: #ffffff;
+	--on-stop-red-hover: #ffffff;
 	--control-fg: #6c6f85;
 	--control-bg: #dce0e8;
 	--control-border: #ccd0da;
-	--bg-image: none;
-	--bg-image-dim: 0.78;
-	--bg-image-blur: 0px;
 	--wallpaper-panel-alpha: 100%;
 	--topbar-bg: #e6e9ef;
 	--statusbar-bg: #e6e9ef;
@@ -104,7 +82,6 @@
 	--chip-bg: #dce0e8;
 	--msgs-bg: #eff1f5;
 	--inputbox-bg: #dce0e8;
-	--menu-bg: var(--bg-elev2);
 }
 
 /* ---- syntax highlighting (Catppuccin Latte) ---- */

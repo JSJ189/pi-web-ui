@@ -16,7 +16,8 @@
  * 同样被包裹；但之后经 refreshPluginTools 动态补入已有会话的不在覆盖面。
  * 自研插件若绕过 wrapper 直接写文件同样拦不住 —— 只读是硬闸门，不是安全边界。
  */
-import { bashCommandIsReadOnly, SESSION_DISPATCH_TOOLS } from "./plan-mode.js";
+import { bashCommandIsReadOnly, readOnlyToolCallAllowed, SESSION_DISPATCH_TOOLS } from "./plan-mode.js";
+import { isReadOnlyConversationAction, isConversationTool } from "./conversation-tool-names.js";
 
 /** 审查回合禁写的工具：与计划/审查者模式同名单（写 / 改 / 增删 / git 写 / 形态变换）。 */
 const WRITE_TOOLS = new Set([
@@ -70,13 +71,13 @@ const WRITE_TOOLS = new Set([
  * 别的对话、排程、改模式 / 开新目标都会绕开「一轮 = 派活 + 判定」的口径。
  * 名单 = 三闸门共用的真实注册派发工具（SESSION_DISPATCH_TOOLS，#436 前是一堆
  * 幽灵名）。subagent 不在此列：上面的按 action 判定已拦掉全部写向 action，
- * 只读的 `conversation_read` / subagent get_result/list/templates 放行 ——
+ * conversation 的只读操作（read/files/status/get_result/list/templates）放行 ——
  * 审查者可以按需看执行者的转录（契约要求看实际状态，而不是信描述）。
  */
 const DISPATCH_TOOLS = SESSION_DISPATCH_TOOLS;
 
 /** bash 家族（要逐条判命令是否只读；与审查者模式同名单）。 */
-const BASH_TOOLS = new Set(["bash", "shell", "sh", "zsh", "terminal", "terminal_bash", "run_command", "exec"]);
+const BASH_TOOLS = new Set(["bash", "shell", "sh", "zsh", "terminal_bash", "run_command", "exec"]);
 
 /** 引号感知的命令切分（按 | ; && || 换行拆段；含 $( / 反引号时整条视为一段交白名单判
  *  —— 白名单必拒，方向是 fail-closed，这里的拆分只会让判定更严不会放宽）。 */
@@ -220,12 +221,12 @@ export function goalReviewDenial(toolName: string, params: unknown): GoalReviewD
 				"Goal review round: do not ask the user anything (this round is server-driven; dialogs go unanswered). Just review this round and reply with only the verdict JSON.",
 		};
 	}
-	if (name === "subagent") {
+	if (isConversationTool(name)) {
 		const action =
 			typeof params === "object" && params !== null ? (params as Record<string, unknown>).action : undefined;
 		const act = typeof action === "string" ? action.trim().toLowerCase() : "";
-		// 只读 action（get_result, list, templates）放行；其余（spawn, steer, stop, wait_all, handoff）或未传 action 均拒绝
-		if (act === "get_result" || act === "list" || act === "templates") {
+		// Transcript inspection and collaboration queries are read-only; mutations and missing actions are rejected.
+		if (isReadOnlyConversationAction(act)) {
 			return undefined;
 		}
 		return {
@@ -239,6 +240,14 @@ export function goalReviewDenial(toolName: string, params: unknown): GoalReviewD
 			kind: "dispatch-tool",
 			reason: `目标审查回合：不能调用 ${name} —— 轮次由服务端控制。请只做本轮审查、只回 verdict JSON。`,
 			reasonEn: `Goal review round: ${name} is unavailable — the server owns the rounds. Just review this round and reply with only the verdict JSON.`,
+		};
+	}
+	if (name === "terminal") {
+		if (readOnlyToolCallAllowed(name, params)) return undefined;
+		return {
+			kind: "write-tool",
+			reason: "只读审查仅允许 terminal 的 list/read/wait。",
+			reasonEn: "Read-only review permits only terminal list/read/wait actions.",
 		};
 	}
 	if (BASH_TOOLS.has(name)) {

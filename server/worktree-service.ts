@@ -127,9 +127,9 @@ export function parseWorktreePorcelain(text: string): RawWorktreeItem[] {
 }
 
 /** 快速检测指定工作树目录中的未提交更改数（status --porcelain）。 */
-async function getUncommittedCount(worktreePath: string): Promise<{ isDirty: boolean; count: number }> {
+async function getUncommittedCount(worktreePath: string): Promise<{ isDirty: boolean; count: number; error?: string }> {
 	if (!existsSync(worktreePath)) {
-		return { isDirty: false, count: 0 };
+		return { isDirty: true, count: 0, error: `Worktree does not exist: ${worktreePath}` };
 	}
 	try {
 		const out = await runGit(worktreePath, ["status", "--porcelain"], FAST_GIT_TIMEOUT_MS);
@@ -141,8 +141,9 @@ async function getUncommittedCount(worktreePath: string): Promise<{ isDirty: boo
 			isDirty: lines.length > 0,
 			count: lines.length,
 		};
-	} catch {
-		return { isDirty: false, count: 0 };
+	} catch (error) {
+		// Unknown status must never authorize removal, including in list consumers.
+		return { isDirty: true, count: 0, error: (error as Error).message };
 	}
 }
 
@@ -266,7 +267,8 @@ export async function removeWorktree(
 	const targetPath = normalizeWirePath(resolve(cwd, targetPathInput));
 
 	if (!force) {
-		const { isDirty, count } = await getUncommittedCount(targetPath);
+		const { isDirty, count, error } = await getUncommittedCount(targetPath);
+		if (error) throw new Error(`Cannot verify worktree status: ${error}`);
 		if (isDirty) {
 			throw new Error(
 				pick(
@@ -337,16 +339,14 @@ export async function withRepoLock<T>(repoPath: string, task: () => Promise<T>):
 	const gate = new Promise<void>((resolve) => {
 		release = resolve;
 	});
-	repoLocks.set(
-		key,
-		prev.catch(() => {}).then(() => gate),
-	);
+	const queued = prev.catch(() => {}).then(() => gate);
+	repoLocks.set(key, queued);
 	try {
 		await prev.catch(() => {});
 		return await task();
 	} finally {
 		release!();
-		if (repoLocks.get(key) === gate) {
+		if (repoLocks.get(key) === queued) {
 			repoLocks.delete(key);
 		}
 	}
@@ -492,19 +492,13 @@ export async function finalizeSubagentWorktree(
 	}
 
 	try {
-		const { isDirty, count: uncommittedCount } = await getUncommittedCount(wt.worktreePath);
-		let aheadCount = 0;
-		try {
-			const currentHead = (await runGit(wt.worktreePath, ["rev-parse", "HEAD"])).trim();
-			if (currentHead !== wt.baseCommit) {
-				aheadCount = await getAheadCount(wt.worktreePath, wt.baseCommit);
-				if (aheadCount === 0 && currentHead !== wt.baseCommit) {
-					aheadCount = 1;
-				}
-			}
-		} catch {
-			aheadCount = 0;
-		}
+		const { isDirty, count: uncommittedCount, error } = await getUncommittedCount(wt.worktreePath);
+		if (error) throw new Error(`Cannot verify worktree status: ${error}`);
+		const currentHead = (await runGit(wt.worktreePath, ["rev-parse", "HEAD"])).trim();
+		if (!currentHead) throw new Error("Cannot verify worktree HEAD");
+		// A changed HEAD always requires review, even if it is not ahead of base.
+		const aheadCount =
+			currentHead === wt.baseCommit ? 0 : Math.max(1, await getAheadCount(wt.worktreePath, wt.baseCommit));
 
 		wt.isDirty = isDirty;
 		wt.uncommittedCount = uncommittedCount;
@@ -524,9 +518,13 @@ export async function finalizeSubagentWorktree(
 						} catch {}
 					}
 				}
-				await removeWorktree(wt.mainRepoPath, wt.worktreePath, true, lang);
+				// Recheck under the repository lock and let Git reject concurrent changes.
+				const head = (await runGit(wt.worktreePath, ["rev-parse", "HEAD"])).trim();
+				if (head !== wt.baseCommit) throw new Error("Worktree HEAD changed during cleanup");
+				await removeWorktree(wt.mainRepoPath, wt.worktreePath, false, lang);
 				try {
-					await runGit(wt.mainRepoPath, ["branch", "-D", wt.branch]);
+					// Compare-and-delete: a concurrent commit must preserve its branch.
+					await runGit(wt.mainRepoPath, ["update-ref", "-d", `refs/heads/${wt.branch}`, wt.baseCommit]);
 				} catch {}
 			});
 			wt.cleanedUp = true;
@@ -537,6 +535,7 @@ export async function finalizeSubagentWorktree(
 		wt.finalized = true;
 	} catch (err) {
 		wt.finalized = true;
+		wt.cleanedUp = false;
 		wt.error = (err as Error).message;
 	}
 

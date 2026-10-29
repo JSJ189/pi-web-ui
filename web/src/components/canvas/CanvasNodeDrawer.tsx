@@ -15,7 +15,10 @@ import {
 	inPortLabel,
 	outPortLabel,
 	visibleRoleFields,
+	roleCapabilityNotice,
+	isRoleImplemented,
 } from "./CanvasTypes";
+import { useCanvasT } from "./canvas-i18n";
 import { ModelThinking } from "../ModelThinking";
 import { UniversalPathPicker } from "../UniversalPathPicker";
 import {
@@ -33,7 +36,7 @@ import {
 import { Message } from "../Message";
 import { PSTACK_SKILLS_MAP, PSTACK_CATEGORIES } from "./pstack-skills-data";
 
-interface CanvasNodeDrawerProps {
+export interface CanvasNodeDrawerProps {
 	node: CanvasNode | null;
 	edges: CanvasEdge[];
 	allNodes: CanvasNode[];
@@ -85,6 +88,7 @@ export function CanvasNodeDrawer({
 	onClearLog,
 	onUpdateEdge,
 }: CanvasNodeDrawerProps) {
+	const t = useCanvasT();
 	const [steerInput, setSteerInput] = useState("");
 	const [logTab, setLogTab] = useState<"chat" | "events">("chat");
 	const [showSkillDoc, setShowSkillDoc] = useState(false);
@@ -306,6 +310,27 @@ export function CanvasNodeDrawer({
 
 				{/* 抽屉内容区 */}
 				<div className="canvas-drawer-body">
+					{roleCapabilityNotice(node.role) && (
+						<p
+							className="canvas-muted-note"
+							role="alert"
+							style={{
+								color: "var(--amber-text)",
+								fontWeight: 600,
+								border: "1px solid var(--amber)",
+								padding: 8,
+								borderRadius: 6,
+							}}
+						>
+							{!isRoleImplemented(node.role) && (
+								<strong>
+									{t("未实现 · 禁止运行", "Not implemented · Run disabled")}
+									<br />
+								</strong>
+							)}
+							{roleCapabilityNotice(node.role, t("zh", "en") === "en")}
+						</p>
+					)}
 					{roleNeedsInstruction(node.role) && (
 						<>
 							{/* 模型与思考强度配置（通用 ModelThinking 控件） */}
@@ -829,7 +854,12 @@ export function CanvasNodeDrawer({
 							<FiSquare /> 停止当前任务
 						</button>
 					) : (
-						<button type="button" className="canvas-btn run" onClick={() => onRun(node.id)}>
+						<button
+							type="button"
+							className="canvas-btn run"
+							disabled={!isRoleImplemented(node.role)}
+							onClick={() => onRun(node.id)}
+						>
 							<FiPlay /> 启动该节点
 						</button>
 					)}

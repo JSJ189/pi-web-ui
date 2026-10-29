@@ -28,8 +28,9 @@ import { DshQuestionDialog } from "./components/DshQuestionDialog";
 import { presetText } from "./components/DshPresetBar";
 // 终端视图懒加载：xterm.js 体积大且只在切到终端时才需要，拆出主包
 const TerminalPanel = lazy(() => import("./components/TerminalPanel").then((m) => ({ default: m.TerminalPanel })));
-import { ScmPanel } from "./components/SCMPanel";
-import { CanvasStudio } from "./components/canvas/CanvasStudio";
+const ScmPanel = lazy(() => import("./components/SCMPanel").then((m) => ({ default: m.ScmPanel })));
+const DeviceCenter = lazy(() => import("./components/DeviceCenter").then((m) => ({ default: m.DeviceCenter })));
+const CanvasStudio = lazy(() => import("./components/canvas/CanvasStudio").then((m) => ({ default: m.CanvasStudio })));
 import { PluginView } from "./components/PluginView";
 import { PluginViewFallback } from "./components/PluginViewFallback";
 import {
@@ -73,32 +74,45 @@ import {
 } from "./plugin-loader";
 import { setFenceSend, syncFenceRenderers, syncMessageWidgets } from "./plugin-fence";
 import { findFileHandler, syncFileHandlers, type FileHandlerPlugin } from "./plugin-file-handlers";
-import { PiSetupModal } from "./components/PiSetupModal";
+const PiSetupModal = lazy(() => import("./components/PiSetupModal").then((m) => ({ default: m.PiSetupModal })));
 import { isDesktopShell } from "./desktop";
-import { ModelConfigModal } from "./components/ModelConfigModal";
+const ModelConfigModal = lazy(() =>
+	import("./components/ModelConfigModal").then((m) => ({ default: m.ModelConfigModal })),
+);
 import { DirectoryBrowser } from "./components/DirectoryBrowser";
 import { ModelPickerModal } from "./components/ModelPickerModal";
 
-import { SettingsModal } from "./components/SettingsModal";
-import { BgTasksModal } from "./components/BgTasksModal";
+const SettingsModal = lazy(() => import("./components/SettingsModal").then((m) => ({ default: m.SettingsModal })));
+const BgTasksModal = lazy(() => import("./components/BgTasksModal").then((m) => ({ default: m.BgTasksModal })));
 import { PluginPage } from "./components/PluginPage";
 import { RollbackDialog } from "./components/RollbackDialog";
 import { openRollbackDialog } from "./rollback-state";
 import { ToolApprovalDialog } from "./components/ToolApprovalDialog";
-import { TuiOverlayModal } from "./components/TuiOverlayModal";
+const TuiOverlayModal = lazy(() =>
+	import("./components/TuiOverlayModal").then((m) => ({ default: m.TuiOverlayModal })),
+);
 import { PlanBoard } from "./components/PlanBoard";
 // 工具定义说明弹窗（工具卡右键 → 「显示工具详细信息」）：状态在 tool-info-state.ts 的模块级 store 里，
 // 这里只挂一份渲染（触发点在消息流里的每张工具卡）。
 import { ToolInfoDialog } from "./components/ToolInfoDialog";
 import { ToolInspectorModal } from "./components/ToolInspectorModal";
-import { GlobalSearchModal } from "./components/GlobalSearchModal";
+const GlobalSearchModal = lazy(() =>
+	import("./components/GlobalSearchModal").then((m) => ({ default: m.GlobalSearchModal })),
+);
 import { PluginModal } from "./components/PluginModal";
 import { TemplateProvider } from "./components/PromptTemplates";
-import { FilePreview, type PreviewFile } from "./components/FilePreview";
+import type { PreviewFile } from "./components/FilePreview";
+const FilePreview = lazy(() => import("./components/FilePreview").then((m) => ({ default: m.FilePreview })));
+import { DeferredMount } from "./components/DeferredMount";
 import { PluginFilePreview } from "./components/PluginFilePreview";
 import { useChat } from "./use-chat";
+import { useAppField } from "./app-globals";
 import { useSwipeDrawer } from "./use-swipe-drawer";
 import { appUrl } from "./base-url";
+import { openDeviceGroup } from "./device-group-navigation";
+const GroupConversation = lazy(() =>
+	import("./components/GroupConversation").then((m) => ({ default: m.GroupConversation })),
+);
 import type { ClientMessage, CommandDef, PromptAttachment, UiMessage, UiTextBlock } from "./types";
 import { isZhLocale, useT, useI18n } from "./i18n";
 import { QUICK_PHRASE_DEFAULTS } from "./quick-phrases";
@@ -294,7 +308,7 @@ function PanelRail({ side, onClick }: { side: PanelSide; onClick: () => void }) 
 }
 
 /** 顶栏视图：内置三个 + 每个已装插件一个 `plugin:<id>`。 */
-type ViewName = "chat" | "terminal" | "git" | "canvas" | `plugin:${string}`;
+type ViewName = import("./components/BarItem").ViewName;
 
 /**
  * 插件项目会话的目录授权（issue #146）：插件经 host.openSession 打开一个新目录的会话前，
@@ -433,13 +447,36 @@ export function App() {
 		window.addEventListener("drop", clear, true);
 		return () => window.removeEventListener("drop", clear, true);
 	}, []);
-	const [viewChosen, setView] = useState<ViewName>("chat");
+	const [viewChosen, setView] = useState<ViewName>(() =>
+		new URLSearchParams(window.location.search).get("view") === "devices" ? "devices" : "chat",
+	);
+	const [activeGroupId, setActiveGroupId] = useState<string | null>(null);
+	useEffect(() => {
+		const open = (event: Event) => {
+			const detail = (event as CustomEvent).detail;
+			if (!detail || typeof detail !== "object") return;
+			openDeviceGroup({
+				roomId: typeof detail.roomId === "string" ? detail.roomId : undefined,
+				create: detail.create === true,
+				manage: detail.manage === true,
+			});
+			if (typeof detail.roomId === "string" && !detail.manage && !detail.create) {
+				setActiveGroupId(detail.roomId);
+				setView("chat");
+			} else {
+				setActiveGroupId(null);
+				setView("devices");
+			}
+		};
+		window.addEventListener("pi-web-ui:device-group-open", open);
+		return () => window.removeEventListener("pi-web-ui:device-group-open", open);
+	}, []);
 	/* PI_WEB_TABS: a tab this instance does not offer cannot be shown, even if
 	   something else asks for it — a plugin firing pi-web-ui:plugin-run-command,
 	   or a panel's "open this in a terminal" button. The server refuses those
 	   messages anyway, so the pane would sit there empty. No list means every
 	   tab, which is the default. */
-	const tabOn = (tab: string) => !chat.tabs || tab === "chat" || chat.tabs.includes(tab);
+	const tabOn = (tab: string) => !chat.tabs || tab === "chat" || tab === "devices" || chat.tabs.includes(tab);
 	const viewTab = viewChosen.startsWith("plugin:") ? "plugins" : viewChosen;
 	const view: ViewName = tabOn(viewTab) ? viewChosen : "chat";
 	// 已安装且未在设置面板禁用的插件（决定 tab 与视图加载）。
@@ -1675,6 +1712,7 @@ export function App() {
 				setDrawer(null);
 			}
 			if (msg.type === "new_chat" || msg.type === "switch_conversation" || msg.type === "switch_session") {
+				setActiveGroupId(null);
 				setView((prev) => (prev !== "chat" ? "chat" : prev));
 				focusComposer();
 			}
@@ -1741,6 +1779,9 @@ export function App() {
 	}, [chat.conversations, activeConvId, panelSend, t]);
 
 	// -- pasted / dropped / uploaded images (no workspace path) ---------------
+	const chatUploadMaxMb = useAppField("chatUploadMaxMb");
+	const [attachmentProgress, setAttachmentProgress] = useState<Record<string, { name: string; percent?: number }>>({});
+	const preparationId = useRef(0);
 	const pasteImageId = useRef(0);
 	const lastVisionWarn = useRef(0);
 	// 以下四个函数都要作为 props 传给 memo 化的 ChatInput：流式重渲染期间引用必须
@@ -1776,20 +1817,32 @@ export function App() {
 	const addImageFiles = useCallback(
 		async (files: File[]) => {
 			for (const f of files) {
-				const img = await fileToProcessedImage(f);
-				if (!img) {
-					pushNotice("error", t("imageLoadFailed", { name: f.name }));
+				if (f.size > chatUploadMaxMb * 1024 * 1024) {
+					pushNotice("warning", t("fileTooLarge", { name: f.name, size: chatUploadMaxMb }));
 					continue;
 				}
-				attachImage(img);
+				const id = String(++preparationId.current);
+				setAttachmentProgress((prev) => ({ ...prev, [id]: { name: f.name } }));
+				try {
+					const img = await fileToProcessedImage(f);
+					if (!img) pushNotice("error", t("imageLoadFailed", { name: f.name }));
+					else attachImage(img);
+				} catch {
+					pushNotice("error", t("imageLoadFailed", { name: f.name }));
+				} finally {
+					setAttachmentProgress((prev) => {
+						const next = { ...prev };
+						delete next[id];
+						return next;
+					});
+				}
 			}
 		},
-		[attachImage, pushNotice, t],
+		[attachImage, pushNotice, t, chatUploadMaxMb],
 	);
 
 	// -- dropped / uploaded files (any type, no workspace path) ---------------
-	/** Keep in sync with MAX_UPLOAD_BYTES in agent-service.ts. */
-	const MAX_UPLOAD_BYTES = 20 * 1024 * 1024;
+	const MAX_UPLOAD_BYTES = chatUploadMaxMb * 1024 * 1024;
 	const uploadId = useRef(0);
 	const attachLocalFile = useCallback(
 		async (f: File) => {
@@ -1797,18 +1850,34 @@ export function App() {
 				pushNotice("warning", t("fileTooLarge", { name: f.name, size: MAX_UPLOAD_BYTES / 1024 / 1024 }));
 				return;
 			}
+			const id = String(++preparationId.current);
+			setAttachmentProgress((prev) => ({ ...prev, [id]: { name: f.name, percent: 0 } }));
 			let base64: string;
 			try {
 				const dataUrl = await new Promise<string>((res, rej) => {
 					const r = new FileReader();
+					r.onprogress = (event) => {
+						if (event.lengthComputable)
+							setAttachmentProgress((prev) => ({
+								...prev,
+								[id]: { name: f.name, percent: Math.round((event.loaded / event.total) * 100) },
+							}));
+					};
 					r.onload = () => res(r.result as string);
 					r.onerror = () => rej(r.error ?? new Error("read failed"));
+					r.onabort = () => rej(new Error("read aborted"));
 					r.readAsDataURL(f);
 				});
 				base64 = dataUrl.replace(/^data:[^;]*;base64,/, "");
 			} catch {
 				pushNotice("error", t("fileLoadFailed", { name: f.name }));
 				return;
+			} finally {
+				setAttachmentProgress((prev) => {
+					const next = { ...prev };
+					delete next[id];
+					return next;
+				});
 			}
 			const key = `upload-${++uploadId.current}`;
 			setAttachments((prev) => [
@@ -2260,463 +2329,490 @@ export function App() {
 								chat.transition && !chat.transition.previewMessages?.length ? " main-transitioning" : ""
 							}${isMinimalEmpty ? " main-minimal-empty" : ""}`}
 						>
-							{chat.transition && (
-								<div
-									className={`workspace-transition-bar phase-${chat.transition.phase}`}
-									role="status"
-									aria-live="polite"
-								>
-									<div className="workspace-transition-track">
-										<div
-											className="workspace-transition-fill"
-											style={{ width: `${Math.min(100, Math.max(8, chat.transition.progress))}%` }}
-										/>
-									</div>
-									<div className="workspace-transition-pill">
-										<span className="workspace-transition-spinner" aria-hidden="true" />
-										<span className="workspace-transition-text">
-											{!isZhLocale(locale) && chat.transition.textEn ? chat.transition.textEn : chat.transition.text}
-										</span>
-										<span className="workspace-transition-pct">{chat.transition.progress}%</span>
-									</div>
-								</div>
-							)}
-							{/* 对话头部条（chat.header 槽位）：纯插件新增位，无条目时不渲染。 */}
-							{uiChatHeader.length > 0 && (
-								<div className="chat-header" role="toolbar">
-									{renderSlotToolbar(uiChatHeader, onUiAction)}
-								</div>
-							)}
-							{chat.state ? (
-								<>
-									{chat.state.sandbox && (
-										<div className="sandbox-banner" role="region" aria-label={chat.state.sandbox.name}>
-											<div className="sandbox-banner-info">
-												<span className="sandbox-banner-title">
-													<LuFlaskConical className="sandbox-banner-icon" aria-hidden />
-													{t("sandboxBannerTitle", { name: chat.state.sandbox.name })}
-													<span
-														className={`lp-sandbox-badge ${chat.state.sandbox.ephemeral ? "ephemeral" : "permanent"}`}
-													>
-														{chat.state.sandbox.ephemeral ? t("sandboxBadgeEphemeral") : t("sandboxBadgePermanent")}
-													</span>
-												</span>
-												<span className="sandbox-banner-desc">
-													{chat.state.sandbox.sourcePath
-														? t("sandboxBannerSourceDesc", { source: chat.state.sandbox.sourcePath })
-														: t("sandboxBannerBlankDesc")}
-												</span>
-											</div>
-											<div className="sandbox-banner-actions">
-												{chat.state.sandbox.ephemeral && (
-													<button
-														type="button"
-														className="sandbox-banner-btn"
-														title={t("sandboxActionPersistTip")}
-														onClick={() => send({ type: "persist_sandbox", path: chat.state?.sandbox?.path })}
-													>
-														<FiBookmark aria-hidden /> {t("sandboxActionPersist")}
-													</button>
-												)}
-												{chat.state.sandbox.sourcePath && (
-													<button
-														type="button"
-														className="sandbox-banner-btn primary"
-														title={t("sandboxActionApplySourceTip")}
-														onClick={() => setSandboxModalMode("apply")}
-													>
-														<FiCheck aria-hidden /> {t("sandboxActionApplySource")}
-													</button>
-												)}
-												<button
-													type="button"
-													className="sandbox-banner-btn"
-													title={t("sandboxActionPromoteTip")}
-													onClick={() => setSandboxModalMode("promote")}
-												>
-													<FiUpload aria-hidden /> {t("sandboxActionPromote")}
-												</button>
-												<button
-													type="button"
-													className="sandbox-banner-btn"
-													title={t("sandboxActionResetTip")}
-													onClick={() => {
-														const sbx = chat.state?.sandbox;
-														if (!sbx) return;
-														if (window.confirm(t("sandboxActionResetConfirm", { name: sbx.name }))) {
-															send({ type: "reset_sandbox", path: sbx.path });
-														}
-													}}
-												>
-													<FiRefreshCw aria-hidden /> {t("sandboxActionReset")}
-												</button>
-												<button
-													type="button"
-													className="sandbox-banner-btn danger"
-													title={t("sandboxActionDestroyTip")}
-													onClick={() => {
-														const sbx = chat.state?.sandbox;
-														if (!sbx) return;
-														if (window.confirm(t("sandboxActionDestroyConfirm", { name: sbx.name }))) {
-															send({ type: "destroy_sandbox", path: sbx.path });
-														}
-													}}
-												>
-													<FiTrash2 aria-hidden /> {t("sandboxActionDestroy")}
-												</button>
-											</div>
-										</div>
-									)}
-									{chat.state.worktree && (
-										<WorktreeBanner
-											worktree={chat.state.worktree}
-											onSwitch={(path) => send({ type: "switch_worktree", path })}
-											onRemove={(path, force) => send({ type: "remove_worktree", path, force })}
-										/>
-									)}
-									{chat.state.isEphemeral && (
-										<div className="ephemeral-banner">
-											<span>🎭 {t("ephemeralBannerText")}</span>
-											<button
-												type="button"
-												className="ephemeral-save"
-												onClick={() => send({ type: "persist_conversation", id: activeConvId })}
-											>
-												💾 {t("saveEphemeral")}
-											</button>
-										</div>
-									)}
-									<MessageList
-										uiMessageActions={uiSlots["message.actions"]}
-										uiContextMessage={uiSlots["contextmenu.message"]}
-										/* 工具调用卡片的工具名右键菜单（contextmenu.toolcall）：条目已合并好，
-										   工具卡只管开菜单 + 分派它自己的 host:tool-info。 */
-										uiContextToolCall={uiSlots["contextmenu.toolcall"]}
-										uiToolCardFooter={uiSlots["tool.card.footer"]}
-										uiChatEmpty={uiChatEmpty}
-										onUiAction={onUiAction}
-										key={
-											chat.transition?.previewMessages?.length
-												? chat.transition.target
-												: (chat.state.conversationId ?? "boot")
-										}
-										preview={Boolean(chat.transition?.previewMessages?.length)}
-										state={
-											chat.transition?.previewMessages?.length
-												? {
-														...chat.state,
-														conversationId: chat.transition.target,
-														sessionFile: undefined,
-														historyStart: 0,
-														historyTotal: chat.transition.previewMessages.length,
-														messages: chat.transition.previewMessages,
-														streamingMessage: null,
-														isStreaming: false,
-														pendingQuestion: null,
-														pendingApproval: null,
-													}
-												: chat.state
-										}
-										liveOutputs={chat.liveOutputs}
-										toolStatuses={chat.toolStatuses}
-										onEdit={onEditMessage}
-										onKillBash={() => send({ type: "abort_bash" })}
-										onRetry={() => {
-											// 重试沿用当前模型续跑上一轮请求，同样算一次模型使用（下拉按次数排序）。
-											if (send({ type: "retry_last" })) {
-												const m = chat.state?.model;
-												if (m) recordModelUsage(`${m.provider}/${m.id}`);
-											}
-										}}
-										onRemoveQueued={onRemoveQueued}
-										onRecallQueued={onRecallQueued}
-										thinkingWrap={chat.settings?.thinkingWrap ?? true}
-										toolsWrap={chat.settings?.toolsWrap ?? true}
-										toolImages={chat.settings?.toolImagesEnabled ?? true}
-										keepRecent={chat.settings?.keepRecentMessages}
-										reversePagination={chat.settings?.reversePagination ?? false}
-										minimalNewChat={chat.settings?.minimalNewChat ?? false}
-										jumpTarget={searchJump}
-										onJumpDone={() => setSearchJump(null)}
-										urlJumpMessageId={urlJump && urlJump.sessionId === chat.state.sessionId ? urlJump.messageId : null}
-										onUrlJumpDone={() => setUrlJump(null)}
+							{activeGroupId ? (
+								<Suspense fallback={null}>
+									<GroupConversation
+										key={activeGroupId}
+										roomId={activeGroupId}
+										active={view === "chat"}
+										onBack={() => setActiveGroupId(null)}
 									/>
-								</>
+								</Suspense>
 							) : (
-								<div className="boot-wait">{chat.ready ? t("loadingSession") : t("connectingServer")}</div>
-							)}
-
-							{/* 目标条宿主槽：只包 GoalBar。折叠态时槽高 0（药丸脱离文档流），
-							    展开态就是原来那一条（.goalbar 自带 margin）。 */}
-							{chat.settings?.goalModeEnabled !== false && (
-								<div className="goalbar-slot">
-									<GoalBar
-										goal={chat.goal}
-										models={chat.models}
-										modelsLoading={chat.modelsLoading}
-										activeConversationId={chat.activeConversationId}
-										uiGoalbarActions={uiGoalbarActions}
-										onUiAction={onUiAction}
-									/>
-								</div>
-							)}
-							{/* 扩展问卷：非模态内联面板，插在输入框上方，对话内容保持可见 */}
-							{/* 通用右键菜单（contextmenu.* 槽位）：各处的 onContextMenu 打开它。 */}
-							<ContextMenu onAction={(entry, target, value) => onUiAction(entry, value, target)} />
-							{chat.dialog && <Dialog dialog={chat.dialog} />}
-							{/* 本地插件对话框（host.dialogs.*）：复用 .dialog-inline 样式，按钮 resolve 后清态 */}
-							{pluginDialog && (
-								<div className="dialog-inline" data-dialog-kind={pluginDialog.kind}>
-									<div className="dialog-head">
-										<span className="dialog-badge">{t("pluginRequest")}</span>
-										{pluginDialog.title && <span className="dialog-title">{pluginDialog.title}</span>}
-										<button
-											type="button"
-											className="dialog-dismiss"
-											title={t("cancel")}
-											onClick={() => {
-												const cur = pluginDialogRef.current;
-												pluginDialogRef.current = null;
-												setPluginDialog(null);
-												try {
-													if (cur?.kind === "confirm") cur.resolve(false);
-													else cur?.resolve({ ok: false });
-												} catch {
-													/* 忽略 */
-												}
-											}}
+								<>
+									{chat.transition && (
+										<div
+											className={`workspace-transition-bar phase-${chat.transition.phase}`}
+											role="status"
+											aria-live="polite"
 										>
-											✕
-										</button>
-									</div>
-									{pluginDialog.kind === "select" && (
-										<div className="dialog-options">
-											{(pluginDialog.options ?? []).map((opt, i) => {
-												const sel = pluginDialog.multi ? pluginDialogSel.includes(i) : false;
-												return (
+											<div className="workspace-transition-track">
+												<div
+													className="workspace-transition-fill"
+													style={{ width: `${Math.min(100, Math.max(8, chat.transition.progress))}%` }}
+												/>
+											</div>
+											<div className="workspace-transition-pill">
+												<span className="workspace-transition-spinner" aria-hidden="true" />
+												<span className="workspace-transition-text">
+													{!isZhLocale(locale) && chat.transition.textEn
+														? chat.transition.textEn
+														: chat.transition.text}
+												</span>
+												<span className="workspace-transition-pct">{chat.transition.progress}%</span>
+											</div>
+										</div>
+									)}
+									{/* 对话头部条（chat.header 槽位）：纯插件新增位，无条目时不渲染。 */}
+									{uiChatHeader.length > 0 && (
+										<div className="chat-header" role="toolbar">
+											{renderSlotToolbar(uiChatHeader, onUiAction)}
+										</div>
+									)}
+									{chat.state ? (
+										<>
+											{chat.state.sandbox && (
+												<div className="sandbox-banner" role="region" aria-label={chat.state.sandbox.name}>
+													<div className="sandbox-banner-info">
+														<span className="sandbox-banner-title">
+															<LuFlaskConical className="sandbox-banner-icon" aria-hidden />
+															{t("sandboxBannerTitle", { name: chat.state.sandbox.name })}
+															<span
+																className={`lp-sandbox-badge ${chat.state.sandbox.ephemeral ? "ephemeral" : "permanent"}`}
+															>
+																{chat.state.sandbox.ephemeral ? t("sandboxBadgeEphemeral") : t("sandboxBadgePermanent")}
+															</span>
+														</span>
+														<span className="sandbox-banner-desc">
+															{chat.state.sandbox.sourcePath
+																? t("sandboxBannerSourceDesc", { source: chat.state.sandbox.sourcePath })
+																: t("sandboxBannerBlankDesc")}
+														</span>
+													</div>
+													<div className="sandbox-banner-actions">
+														{chat.state.sandbox.ephemeral && (
+															<button
+																type="button"
+																className="sandbox-banner-btn"
+																title={t("sandboxActionPersistTip")}
+																onClick={() => send({ type: "persist_sandbox", path: chat.state?.sandbox?.path })}
+															>
+																<FiBookmark aria-hidden /> {t("sandboxActionPersist")}
+															</button>
+														)}
+														{chat.state.sandbox.sourcePath && (
+															<button
+																type="button"
+																className="sandbox-banner-btn primary"
+																title={t("sandboxActionApplySourceTip")}
+																onClick={() => setSandboxModalMode("apply")}
+															>
+																<FiCheck aria-hidden /> {t("sandboxActionApplySource")}
+															</button>
+														)}
+														<button
+															type="button"
+															className="sandbox-banner-btn"
+															title={t("sandboxActionPromoteTip")}
+															onClick={() => setSandboxModalMode("promote")}
+														>
+															<FiUpload aria-hidden /> {t("sandboxActionPromote")}
+														</button>
+														<button
+															type="button"
+															className="sandbox-banner-btn"
+															title={t("sandboxActionResetTip")}
+															onClick={() => {
+																const sbx = chat.state?.sandbox;
+																if (!sbx) return;
+																if (window.confirm(t("sandboxActionResetConfirm", { name: sbx.name }))) {
+																	send({ type: "reset_sandbox", path: sbx.path });
+																}
+															}}
+														>
+															<FiRefreshCw aria-hidden /> {t("sandboxActionReset")}
+														</button>
+														<button
+															type="button"
+															className="sandbox-banner-btn danger"
+															title={t("sandboxActionDestroyTip")}
+															onClick={() => {
+																const sbx = chat.state?.sandbox;
+																if (!sbx) return;
+																if (window.confirm(t("sandboxActionDestroyConfirm", { name: sbx.name }))) {
+																	send({ type: "destroy_sandbox", path: sbx.path });
+																}
+															}}
+														>
+															<FiTrash2 aria-hidden /> {t("sandboxActionDestroy")}
+														</button>
+													</div>
+												</div>
+											)}
+											{chat.state.worktree && (
+												<WorktreeBanner
+													worktree={chat.state.worktree}
+													onSwitch={(path) => send({ type: "switch_worktree", path })}
+													onRemove={(path, force) => send({ type: "remove_worktree", path, force })}
+												/>
+											)}
+											{chat.state.isEphemeral && (
+												<div className="ephemeral-banner">
+													<span>🎭 {t("ephemeralBannerText")}</span>
 													<button
 														type="button"
-														key={i}
-														className={`dialog-option ${sel ? "sel" : ""}`}
-														title={opt.description}
-														onClick={() => {
-															if (pluginDialog.multi) {
-																setPluginDialogSel((prev) =>
-																	prev.includes(i) ? prev.filter((x) => x !== i) : [...prev, i],
-																);
-																return;
+														className="ephemeral-save"
+														onClick={() => send({ type: "persist_conversation", id: activeConvId })}
+													>
+														💾 {t("saveEphemeral")}
+													</button>
+												</div>
+											)}
+											<MessageList
+												uiMessageActions={uiSlots["message.actions"]}
+												uiContextMessage={uiSlots["contextmenu.message"]}
+												/* 工具调用卡片的工具名右键菜单（contextmenu.toolcall）：条目已合并好，
+										   工具卡只管开菜单 + 分派它自己的 host:tool-info。 */
+												uiContextToolCall={uiSlots["contextmenu.toolcall"]}
+												uiToolCardFooter={uiSlots["tool.card.footer"]}
+												uiChatEmpty={uiChatEmpty}
+												onUiAction={onUiAction}
+												key={
+													chat.transition?.previewMessages?.length
+														? chat.transition.target
+														: (chat.state.conversationId ?? "boot")
+												}
+												preview={Boolean(chat.transition?.previewMessages?.length)}
+												state={
+													chat.transition?.previewMessages?.length
+														? {
+																...chat.state,
+																conversationId: chat.transition.target,
+																sessionFile: undefined,
+																historyStart: 0,
+																historyTotal: chat.transition.previewMessages.length,
+																messages: chat.transition.previewMessages,
+																streamingMessage: null,
+																isStreaming: false,
+																pendingQuestion: null,
+																pendingApproval: null,
 															}
-															const cur = pluginDialogRef.current;
-															pluginDialogRef.current = null;
-															setPluginDialog(null);
-															try {
-																cur?.resolve({ ok: true, selected: [opt.label] });
-															} catch {
-																/* 忽略 */
+														: chat.state
+												}
+												liveOutputs={chat.liveOutputs}
+												toolStatuses={chat.toolStatuses}
+												onEdit={onEditMessage}
+												onKillBash={() => send({ type: "abort_bash" })}
+												onRetry={() => {
+													// 重试沿用当前模型续跑上一轮请求，同样算一次模型使用（下拉按次数排序）。
+													if (send({ type: "retry_last" })) {
+														const m = chat.state?.model;
+														if (m) recordModelUsage(`${m.provider}/${m.id}`);
+													}
+												}}
+												onRemoveQueued={onRemoveQueued}
+												onRecallQueued={onRecallQueued}
+												thinkingWrap={chat.settings?.thinkingWrap ?? true}
+												toolsWrap={chat.settings?.toolsWrap ?? true}
+												toolImages={chat.settings?.toolImagesEnabled ?? true}
+												keepRecent={chat.settings?.keepRecentMessages}
+												reversePagination={chat.settings?.reversePagination ?? false}
+												minimalNewChat={chat.settings?.minimalNewChat ?? false}
+												jumpTarget={searchJump}
+												onJumpDone={() => setSearchJump(null)}
+												urlJumpMessageId={
+													urlJump && urlJump.sessionId === chat.state.sessionId ? urlJump.messageId : null
+												}
+												onUrlJumpDone={() => setUrlJump(null)}
+											/>
+										</>
+									) : (
+										<div className="boot-wait">{chat.ready ? t("loadingSession") : t("connectingServer")}</div>
+									)}
+
+									{/* 目标条宿主槽：只包 GoalBar。折叠态时槽高 0（药丸脱离文档流），
+							    展开态就是原来那一条（.goalbar 自带 margin）。 */}
+									{chat.settings?.goalModeEnabled !== false && (
+										<div className="goalbar-slot">
+											<GoalBar
+												goal={chat.goal}
+												models={chat.models}
+												modelsLoading={chat.modelsLoading}
+												activeConversationId={chat.activeConversationId}
+												uiGoalbarActions={uiGoalbarActions}
+												onUiAction={onUiAction}
+											/>
+										</div>
+									)}
+									{/* 扩展问卷：非模态内联面板，插在输入框上方，对话内容保持可见 */}
+									{/* 通用右键菜单（contextmenu.* 槽位）：各处的 onContextMenu 打开它。 */}
+									<ContextMenu onAction={(entry, target, value) => onUiAction(entry, value, target)} />
+									{chat.dialog && <Dialog dialog={chat.dialog} />}
+									{/* 本地插件对话框（host.dialogs.*）：复用 .dialog-inline 样式，按钮 resolve 后清态 */}
+									{pluginDialog && (
+										<div className="dialog-inline" data-dialog-kind={pluginDialog.kind}>
+											<div className="dialog-head">
+												<span className="dialog-badge">{t("pluginRequest")}</span>
+												{pluginDialog.title && <span className="dialog-title">{pluginDialog.title}</span>}
+												<button
+													type="button"
+													className="dialog-dismiss"
+													title={t("cancel")}
+													onClick={() => {
+														const cur = pluginDialogRef.current;
+														pluginDialogRef.current = null;
+														setPluginDialog(null);
+														try {
+															if (cur?.kind === "confirm") cur.resolve(false);
+															else cur?.resolve({ ok: false });
+														} catch {
+															/* 忽略 */
+														}
+													}}
+												>
+													✕
+												</button>
+											</div>
+											{pluginDialog.kind === "select" && (
+												<div className="dialog-options">
+													{(pluginDialog.options ?? []).map((opt, i) => {
+														const sel = pluginDialog.multi ? pluginDialogSel.includes(i) : false;
+														return (
+															<button
+																type="button"
+																key={i}
+																className={`dialog-option ${sel ? "sel" : ""}`}
+																title={opt.description}
+																onClick={() => {
+																	if (pluginDialog.multi) {
+																		setPluginDialogSel((prev) =>
+																			prev.includes(i) ? prev.filter((x) => x !== i) : [...prev, i],
+																		);
+																		return;
+																	}
+																	const cur = pluginDialogRef.current;
+																	pluginDialogRef.current = null;
+																	setPluginDialog(null);
+																	try {
+																		cur?.resolve({ ok: true, selected: [opt.label] });
+																	} catch {
+																		/* 忽略 */
+																	}
+																}}
+															>
+																{opt.label}
+																{opt.description && <span className="dialog-hint">{opt.description}</span>}
+															</button>
+														);
+													})}
+													{(pluginDialog.options ?? []).length === 0 && (
+														<div className="dialog-hint">{t("noOptions")}</div>
+													)}
+													{pluginDialog.multi && (
+														<div className="dialog-actions">
+															<button
+																type="button"
+																className="btn primary"
+																onClick={() => {
+																	const cur = pluginDialogRef.current;
+																	const labels = (cur?.options ?? [])
+																		.filter((_, idx) => pluginDialogSel.includes(idx))
+																		.map((o) => o.label);
+																	pluginDialogRef.current = null;
+																	setPluginDialog(null);
+																	try {
+																		cur?.resolve({ ok: true, selected: labels });
+																	} catch {
+																		/* 忽略 */
+																	}
+																}}
+															>
+																{t("ok")}
+															</button>
+														</div>
+													)}
+												</div>
+											)}
+											{pluginDialog.kind === "confirm" && (
+												<div className="dialog-body">
+													<div className="dialog-actions">
+														<button
+															type="button"
+															className="btn"
+															onClick={() => {
+																const cur = pluginDialogRef.current;
+																pluginDialogRef.current = null;
+																setPluginDialog(null);
+																try {
+																	cur?.resolve(false);
+																} catch {
+																	/* 忽略 */
+																}
+															}}
+														>
+															{t("cancel")}
+														</button>
+														<button
+															type="button"
+															className="btn primary"
+															onClick={() => {
+																const cur = pluginDialogRef.current;
+																pluginDialogRef.current = null;
+																setPluginDialog(null);
+																try {
+																	cur?.resolve(true);
+																} catch {
+																	/* 忽略 */
+																}
+															}}
+														>
+															{t("ok")}
+														</button>
+													</div>
+												</div>
+											)}
+											{pluginDialog.kind === "input" && (
+												<div className="dialog-body">
+													<input
+														className="dialog-input"
+														value={pluginDialogInput}
+														placeholder={pluginDialog.placeholder || t("inputPlaceholder")}
+														autoFocus
+														onChange={(e) => setPluginDialogInput(e.target.value)}
+														onKeyDown={(e) => {
+															if (e.key === "Enter" && !e.nativeEvent.isComposing) {
+																const cur = pluginDialogRef.current;
+																pluginDialogRef.current = null;
+																setPluginDialog(null);
+																try {
+																	cur?.resolve({ ok: true, value: pluginDialogInput });
+																} catch {
+																	/* 忽略 */
+																}
 															}
 														}}
-													>
-														{opt.label}
-														{opt.description && <span className="dialog-hint">{opt.description}</span>}
-													</button>
-												);
-											})}
-											{(pluginDialog.options ?? []).length === 0 && <div className="dialog-hint">{t("noOptions")}</div>}
-											{pluginDialog.multi && (
-												<div className="dialog-actions">
-													<button
-														type="button"
-														className="btn primary"
-														onClick={() => {
-															const cur = pluginDialogRef.current;
-															const labels = (cur?.options ?? [])
-																.filter((_, idx) => pluginDialogSel.includes(idx))
-																.map((o) => o.label);
-															pluginDialogRef.current = null;
-															setPluginDialog(null);
-															try {
-																cur?.resolve({ ok: true, selected: labels });
-															} catch {
-																/* 忽略 */
-															}
-														}}
-													>
-														{t("ok")}
-													</button>
+													/>
+													<div className="dialog-actions">
+														<button
+															type="button"
+															className="btn"
+															onClick={() => {
+																const cur = pluginDialogRef.current;
+																pluginDialogRef.current = null;
+																setPluginDialog(null);
+																try {
+																	cur?.resolve({ ok: false });
+																} catch {
+																	/* 忽略 */
+																}
+															}}
+														>
+															{t("cancel")}
+														</button>
+														<button
+															type="button"
+															className="btn primary"
+															onClick={() => {
+																const cur = pluginDialogRef.current;
+																pluginDialogRef.current = null;
+																setPluginDialog(null);
+																try {
+																	cur?.resolve({ ok: true, value: pluginDialogInput });
+																} catch {
+																	/* 忽略 */
+																}
+															}}
+														>
+															{t("ok")}
+														</button>
+													</div>
 												</div>
 											)}
 										</div>
 									)}
-									{pluginDialog.kind === "confirm" && (
-										<div className="dialog-body">
-											<div className="dialog-actions">
-												<button
-													type="button"
-													className="btn"
-													onClick={() => {
-														const cur = pluginDialogRef.current;
-														pluginDialogRef.current = null;
-														setPluginDialog(null);
-														try {
-															cur?.resolve(false);
-														} catch {
-															/* 忽略 */
-														}
-													}}
-												>
-													{t("cancel")}
-												</button>
-												<button
-													type="button"
-													className="btn primary"
-													onClick={() => {
-														const cur = pluginDialogRef.current;
-														pluginDialogRef.current = null;
-														setPluginDialog(null);
-														try {
-															cur?.resolve(true);
-														} catch {
-															/* 忽略 */
-														}
-													}}
-												>
-													{t("ok")}
-												</button>
-											</div>
-										</div>
+									{chat.question && (
+										<DshQuestionDialog
+											question={chat.question}
+											conversationTitle={
+												chat.question.conversationTitle ||
+												chat.conversations.find((c) => c.id === (chat.question?.conversationId || activeConvId))?.title
+											}
+										/>
 									)}
-									{pluginDialog.kind === "input" && (
-										<div className="dialog-body">
-											<input
-												className="dialog-input"
-												value={pluginDialogInput}
-												placeholder={pluginDialog.placeholder || t("inputPlaceholder")}
-												autoFocus
-												onChange={(e) => setPluginDialogInput(e.target.value)}
-												onKeyDown={(e) => {
-													if (e.key === "Enter" && !e.nativeEvent.isComposing) {
-														const cur = pluginDialogRef.current;
-														pluginDialogRef.current = null;
-														setPluginDialog(null);
-														try {
-															cur?.resolve({ ok: true, value: pluginDialogInput });
-														} catch {
-															/* 忽略 */
-														}
-													}
-												}}
-											/>
-											<div className="dialog-actions">
-												<button
-													type="button"
-													className="btn"
-													onClick={() => {
-														const cur = pluginDialogRef.current;
-														pluginDialogRef.current = null;
-														setPluginDialog(null);
-														try {
-															cur?.resolve({ ok: false });
-														} catch {
-															/* 忽略 */
-														}
-													}}
-												>
-													{t("cancel")}
-												</button>
-												<button
-													type="button"
-													className="btn primary"
-													onClick={() => {
-														const cur = pluginDialogRef.current;
-														pluginDialogRef.current = null;
-														setPluginDialog(null);
-														try {
-															cur?.resolve({ ok: true, value: pluginDialogInput });
-														} catch {
-															/* 忽略 */
-														}
-													}}
-												>
-													{t("ok")}
-												</button>
-											</div>
-										</div>
+									{/* 跨页作答：别处会话的问卷在本页弹框（id 对方会话作用域，提交带 owner）。 */}
+									{chat.remoteQuestion && (
+										<DshQuestionDialog
+											question={chat.remoteQuestion}
+											owner={chat.remoteQuestion.owner}
+											conversationTitle={
+												chat.remoteQuestion.conversationTitle ||
+												chat.conversations.find((c) => c.id === chat.remoteQuestion?.convId)?.title
+											}
+										/>
 									)}
-								</div>
+									{/* 任务执行看板 (Plan Mode) */}
+									<PlanBoard
+										plan={
+											chat.activeConversationId && chat.state?.conversationId !== chat.activeConversationId
+												? null
+												: chat.state?.plan
+										}
+									/>
+									{Object.entries(attachmentProgress).map(([id, item]) => (
+										<div key={id} role="status">
+											{item.percent === undefined
+												? t("uploadPreparing", { name: item.name })
+												: t("uploadReading", { name: item.name, percent: item.percent })}
+											<progress max={100} value={item.percent} aria-label={item.name} />
+										</div>
+									))}
+									<ChatInput
+										composerLeading={uiSlots["composer.leading"]}
+										composerActions={uiSlots["composer.actions"]}
+										onUiAction={onUiAction}
+										streaming={chat.state?.isStreaming ?? false}
+										planMode={chat.state?.planMode ?? false}
+										messages={chat.state?.messages ?? EMPTY_MESSAGES}
+										slashCommands={chat.slashCommands}
+										modelState={modelState}
+										models={chat.models}
+										modelsLoading={chat.modelsLoading}
+										providerKeys={chat.providerKeys}
+										defaultModel={chat.defaultModel ?? undefined}
+										attachments={attachments}
+										onRemoveAttachment={removeAttachmentCb}
+										onAddImageFiles={addImageFilesCb}
+										onAddLocalFiles={addLocalFilesCb}
+										onAddPathAttachment={addPathAttachmentCb}
+										fileSearch={chat.fileSearch}
+										onSearchFiles={searchFilesCb}
+										onNotice={pushNotice}
+										onManageModels={openManageModels}
+										onSent={clearAttachments}
+										quickPhrases={chat.settings?.quickPhrases ?? []}
+										quickPhrasesEnabled={
+											zenMode
+												? false
+												: (chat.settings?.quickPhrasesEnabled ?? true) &&
+													(!chat.settings?.minimalNewChat ||
+														(chat.state?.messages?.length ?? 0) > 0 ||
+														!!chat.state?.streamingMessage)
+										}
+										recallDrafts={recallDrafts}
+										dshPermCurrent={chat.state?.permission ?? null}
+										dshPermOptions={chat.dshPermission?.options ?? undefined}
+										dshPermDefault={chat.dshPermission?.defaultPreset}
+										dshPreset={chat.state?.agentPreset ?? null}
+										dshPresets={chat.dshPresets?.presets ?? undefined}
+										dshPresetDefault={chat.dshPresets?.defaultPreset}
+										dshBlank={(chat.state?.messages?.length ?? 0) === 0}
+										conversationId={chat.activeConversationId || chat.state?.conversationId || ""}
+										sessionDraft={chat.state?.draft ?? null}
+										sessionId={chat.state?.sessionId ?? ""}
+										preserveDraftAcrossConversations={chat.settings?.preserveDraftAcrossConversations ?? false}
+									/>
+								</>
 							)}
-							{chat.question && (
-								<DshQuestionDialog
-									question={chat.question}
-									conversationTitle={
-										chat.question.conversationTitle ||
-										chat.conversations.find((c) => c.id === (chat.question?.conversationId || activeConvId))?.title
-									}
-								/>
-							)}
-							{/* 跨页作答：别处会话的问卷在本页弹框（id 对方会话作用域，提交带 owner）。 */}
-							{chat.remoteQuestion && (
-								<DshQuestionDialog
-									question={chat.remoteQuestion}
-									owner={chat.remoteQuestion.owner}
-									conversationTitle={
-										chat.remoteQuestion.conversationTitle ||
-										chat.conversations.find((c) => c.id === chat.remoteQuestion?.convId)?.title
-									}
-								/>
-							)}
-							{/* 任务执行看板 (Plan Mode) */}
-							<PlanBoard
-								plan={
-									chat.activeConversationId && chat.state?.conversationId !== chat.activeConversationId
-										? null
-										: chat.state?.plan
-								}
-							/>
-							<ChatInput
-								composerLeading={uiSlots["composer.leading"]}
-								composerActions={uiSlots["composer.actions"]}
-								onUiAction={onUiAction}
-								streaming={chat.state?.isStreaming ?? false}
-								planMode={chat.state?.planMode ?? false}
-								messages={chat.state?.messages ?? EMPTY_MESSAGES}
-								slashCommands={chat.slashCommands}
-								modelState={modelState}
-								models={chat.models}
-								modelsLoading={chat.modelsLoading}
-								providerKeys={chat.providerKeys}
-								defaultModel={chat.defaultModel ?? undefined}
-								attachments={attachments}
-								onRemoveAttachment={removeAttachmentCb}
-								onAddImageFiles={addImageFilesCb}
-								onAddLocalFiles={addLocalFilesCb}
-								onAddPathAttachment={addPathAttachmentCb}
-								fileSearch={chat.fileSearch}
-								onSearchFiles={searchFilesCb}
-								onNotice={pushNotice}
-								onManageModels={openManageModels}
-								onSent={clearAttachments}
-								quickPhrases={chat.settings?.quickPhrases ?? []}
-								quickPhrasesEnabled={
-									zenMode
-										? false
-										: (chat.settings?.quickPhrasesEnabled ?? true) &&
-											(!chat.settings?.minimalNewChat ||
-												(chat.state?.messages?.length ?? 0) > 0 ||
-												!!chat.state?.streamingMessage)
-								}
-								recallDrafts={recallDrafts}
-								dshPermCurrent={chat.state?.permission ?? null}
-								dshPermOptions={chat.dshPermission?.options ?? undefined}
-								dshPermDefault={chat.dshPermission?.defaultPreset}
-								dshPreset={chat.state?.agentPreset ?? null}
-								dshPresets={chat.dshPresets?.presets ?? undefined}
-								dshPresetDefault={chat.dshPresets?.defaultPreset}
-								dshBlank={(chat.state?.messages?.length ?? 0) === 0}
-								conversationId={chat.activeConversationId || chat.state?.conversationId || ""}
-								sessionDraft={chat.state?.draft ?? null}
-								sessionId={chat.state?.sessionId ?? ""}
-								preserveDraftAcrossConversations={chat.settings?.preserveDraftAcrossConversations ?? false}
-							/>
 						</main>
 						{!isMobile && !rightCollapsed && <ResizeHandle side="right" width={rightWidth} onResize={resizeRight} />}
 						<div
@@ -2752,37 +2848,46 @@ export function App() {
 						{!isMobile && rightCollapsed && <PanelRail side="right" onClick={toggleRight} />}
 					</div>
 					<div className={`view-pane ${view === "terminal" ? "" : "hidden"}`}>
-						<Suspense fallback={null}>
+						<DeferredMount active={view === "terminal"}>
 							<TerminalPanel
 								chat={chat}
 								terminal={terminal}
 								uiTerminalToolbar={uiTerminalToolbar}
 								onUiAction={onUiAction}
 							/>
-						</Suspense>
+						</DeferredMount>
 					</div>
 					<div className={`view-pane ${view === "git" ? "" : "hidden"}`}>
-						<ScmPanel
-							chat={chat}
-							terminal={terminal}
-							active={view === "git"}
-							onSwitchToTerminal={() => setView("terminal")}
-							uiScmToolbar={uiScmToolbar}
-							onUiAction={onUiAction}
-						/>
+						<DeferredMount active={view === "git"}>
+							<ScmPanel
+								chat={chat}
+								terminal={terminal}
+								active={view === "git"}
+								onSwitchToTerminal={() => setView("terminal")}
+								uiScmToolbar={uiScmToolbar}
+								onUiAction={onUiAction}
+							/>
+						</DeferredMount>
 					</div>
 					<div className={`view-pane ${view === "canvas" ? "" : "hidden"}`}>
-						<CanvasStudio
-							send={send}
-							active={view === "canvas"}
-							models={chat.models}
-							defaultModel={chat.defaultModel}
-							installedSkills={chat.settings?.skills}
-							projects={chat.projects}
-							workspaceRoots={chat.state?.workspaceRoots ?? []}
-							pathCompletions={chat.pathCompletions}
-							currentCwd={chat.state?.cwd || "."}
-						/>
+						<DeferredMount active={view === "canvas"}>
+							<CanvasStudio
+								send={send}
+								active={view === "canvas"}
+								models={chat.models}
+								defaultModel={chat.defaultModel}
+								installedSkills={chat.settings?.skills}
+								projects={chat.projects}
+								workspaceRoots={chat.state?.workspaceRoots ?? []}
+								pathCompletions={chat.pathCompletions}
+								currentCwd={chat.state?.cwd || "."}
+							/>
+						</DeferredMount>
+					</div>
+					<div className={`view-pane ${view === "devices" ? "" : "hidden"}`}>
+						<DeferredMount active={view === "devices"}>
+							<DeviceCenter />
+						</DeferredMount>
 					</div>
 					{pluginViews.map((entry) => {
 						const name = `plugin:${entry.info.id}` as ViewName;
@@ -2857,15 +2962,17 @@ export function App() {
 				onOpenBgTasks={() => setBgTasksOpen(true)}
 			/>
 			{previewFile && (
-				<FilePreview
-					file={previewFile}
-					content={chat.fileContent}
-					onAddLines={(path, name, start, end) => attach(path, name, "lines", false, { start, end })}
-					onAttach={(path, name, mode) => attach(path, name, mode)}
-					onClose={() => setPreviewFile(null)}
-					uiFilePreviewToolbar={uiFilePreviewToolbar}
-					onUiAction={onUiAction}
-				/>
+				<Suspense fallback={null}>
+					<FilePreview
+						file={previewFile}
+						content={chat.fileContent}
+						onAddLines={(path, name, start, end) => attach(path, name, "lines", false, { start, end })}
+						onAttach={(path, name, mode) => attach(path, name, mode)}
+						onClose={() => setPreviewFile(null)}
+						uiFilePreviewToolbar={uiFilePreviewToolbar}
+						onUiAction={onUiAction}
+					/>
+				</Suspense>
 			)}
 			{pluginFile && (
 				<PluginFilePreview
@@ -2887,63 +2994,71 @@ export function App() {
 				!setupDismissed &&
 				!manageModelsOpen &&
 				!isDesktopShell() && (
-					<PiSetupModal
-						piConfigured={chat.state.piConfigured}
-						piAgentInstalled={chat.state.piAgentInstalled}
-						providers={chat.providers}
-						providerOAuthFlows={chat.providerOAuthFlows}
-						providerOAuthResults={chat.providerOAuthResults}
-						installResult={chat.installResult}
-						onClose={dismissSetup}
-					/>
+					<Suspense fallback={null}>
+						<PiSetupModal
+							piConfigured={chat.state.piConfigured}
+							piAgentInstalled={chat.state.piAgentInstalled}
+							providers={chat.providers}
+							providerOAuthFlows={chat.providerOAuthFlows}
+							providerOAuthResults={chat.providerOAuthResults}
+							installResult={chat.installResult}
+							onClose={dismissSetup}
+						/>
+					</Suspense>
 				)}
 			{manageModelsOpen && (
-				<ModelConfigModal
-					providers={chat.modelsConfig}
-					providerStatus={chat.providers}
-					providerKeys={chat.providerKeys}
-					providerOAuthFlows={chat.providerOAuthFlows}
-					providerOAuthResults={chat.providerOAuthResults}
-					fetchModelsResult={chat.fetchModelsResult}
-					testModelConnectionResult={chat.testModelConnectionResult}
-					enrichModelsResult={chat.enrichModelsResult}
-					enrichModelsProgress={chat.enrichModelsProgress}
-					refreshBuiltinResult={chat.refreshBuiltinResult}
-					refreshProviderResult={chat.refreshProviderResult}
-					appendBuiltinResult={chat.appendBuiltinResult}
-					cloneProviderResult={chat.cloneProviderResult}
-					defaultModel={chat.defaultModel}
-					onClose={() => setManageModelsOpen(false)}
-				/>
+				<Suspense fallback={null}>
+					<ModelConfigModal
+						providers={chat.modelsConfig}
+						providerStatus={chat.providers}
+						providerKeys={chat.providerKeys}
+						providerOAuthFlows={chat.providerOAuthFlows}
+						providerOAuthResults={chat.providerOAuthResults}
+						fetchModelsResult={chat.fetchModelsResult}
+						testModelConnectionResult={chat.testModelConnectionResult}
+						enrichModelsResult={chat.enrichModelsResult}
+						enrichModelsProgress={chat.enrichModelsProgress}
+						refreshBuiltinResult={chat.refreshBuiltinResult}
+						refreshProviderResult={chat.refreshProviderResult}
+						appendBuiltinResult={chat.appendBuiltinResult}
+						cloneProviderResult={chat.cloneProviderResult}
+						defaultModel={chat.defaultModel}
+						onClose={() => setManageModelsOpen(false)}
+					/>
+				</Suspense>
 			)}
 			{settingsOpen && (
-				<SettingsModal
-					chat={chat}
-					terminal={terminal}
-					initialSection={settingsInitialSection}
-					onSwitchToTerminal={() => setView("terminal")}
-					onClose={() => setSettingsOpen(false)}
-					onOpenIconEdit={() => setIconEditOpen(true)}
-					onOpenManageModels={() => {
-						setSettingsOpen(false);
-						setManageModelsOpen(true);
-					}}
-					sound={sound}
-					onSoundChange={setSound}
-					tts={tts}
-					onTtsChange={setTts}
-				/>
+				<Suspense fallback={null}>
+					<SettingsModal
+						chat={chat}
+						terminal={terminal}
+						initialSection={settingsInitialSection}
+						onSwitchToTerminal={() => setView("terminal")}
+						onClose={() => setSettingsOpen(false)}
+						onOpenIconEdit={() => setIconEditOpen(true)}
+						onOpenManageModels={() => {
+							setSettingsOpen(false);
+							setManageModelsOpen(true);
+						}}
+						sound={sound}
+						onSoundChange={setSound}
+						tts={tts}
+						onTtsChange={setTts}
+					/>
+				</Suspense>
 			)}
 			{bgTasksOpen && (
-				<BgTasksModal
-					servers={chat.bgServers}
-					plugins={chat.plugins}
-					epoch={chat.pluginsEpoch}
-					send={send}
-					onUiAction={onUiAction}
-					autoCleanupMin={chat.settings?.bgAutoCleanupMin ?? 0}
-					onClose={() => setBgTasksOpen(false)}
-				/>
+				<Suspense fallback={null}>
+					<BgTasksModal
+						servers={chat.bgServers}
+						plugins={chat.plugins}
+						epoch={chat.pluginsEpoch}
+						send={send}
+						onUiAction={onUiAction}
+						autoCleanupMin={chat.settings?.bgAutoCleanupMin ?? 0}
+						onClose={() => setBgTasksOpen(false)}
+					/>
+				</Suspense>
 			)}
 			{/* 工具定义说明弹窗（工具卡右键菜单 host:tool-info）：自己订阅 store，无 props。 */}
 			<ToolInfoDialog />
@@ -2954,7 +3069,11 @@ export function App() {
 			{/* 人机协同拦截与「改写执行」审批弹窗 */}
 			<ToolApprovalDialog approval={chat.approval} />
 			{/* TUI 扩展模态弹窗（ctx.ui.custom 虚拟终端桥） */}
-			{chat.tuiOverlay && <TuiOverlayModal overlay={chat.tuiOverlay} />}
+			{chat.tuiOverlay && (
+				<Suspense fallback={null}>
+					<TuiOverlayModal overlay={chat.tuiOverlay} />
+				</Suspense>
+			)}
 			{/* 插件弹窗（modal.dialog 槽位）：action 点即分发 + 关弹窗，view 挂插件视图。 */}
 			{openModalEntry && (
 				<PluginModal
@@ -2967,25 +3086,27 @@ export function App() {
 					onClose={() => setOpenModalId(null)}
 				/>
 			)}
-			<GlobalSearchModal
-				open={globalSearchOpen}
-				projects={chat.projects}
-				fileSearch={chat.fileSearch}
-				sessionSearch={chat.sessionSearch}
-				onClose={() => setGlobalSearchOpen(false)}
-				onSwitchSession={(path, anchors) => {
-					void send({ type: "switch_session", path });
-					// 跳到命中消息位置（锚点取自服务端返回；无锚点则只切换会话）
-					const a = anchors && anchors[0];
-					setSearchJump(a ? { path, role: a.role, timestamp: a.timestamp } : null);
-				}}
-				onSwitchProject={(path) => {
-					void send({ type: "set_cwd", path });
-				}}
-				onPreviewFile={(path, name) => {
-					openFile(path, name);
-				}}
-			/>
+			<DeferredMount active={globalSearchOpen}>
+				<GlobalSearchModal
+					open={globalSearchOpen}
+					projects={chat.projects}
+					fileSearch={chat.fileSearch}
+					sessionSearch={chat.sessionSearch}
+					onClose={() => setGlobalSearchOpen(false)}
+					onSwitchSession={(path, anchors) => {
+						void send({ type: "switch_session", path });
+						// 跳到命中消息位置（锚点取自服务端返回；无锚点则只切换会话）
+						const a = anchors && anchors[0];
+						setSearchJump(a ? { path, role: a.role, timestamp: a.timestamp } : null);
+					}}
+					onSwitchProject={(path) => {
+						void send({ type: "set_cwd", path });
+					}}
+					onPreviewFile={(path, name) => {
+						openFile(path, name);
+					}}
+				/>
+			</DeferredMount>
 			{pluginDirPicker && (
 				<DirectoryBrowser
 					currentCwd={pluginDirPicker.initialPath || chat.state?.cwd || ""}

@@ -7,6 +7,7 @@
  * 从 agent-service.ts 抽出，行为保持不变。
  */
 import { readFileSync } from "node:fs";
+import { normalizeUploadMaxMb } from "./payload-limits.js";
 import * as fsPromises from "node:fs/promises";
 import { dirname, isAbsolute, resolve } from "node:path";
 import { writeJsonAtomicSync } from "./atomic-file.js";
@@ -371,6 +372,9 @@ export interface ClientSettings {
 	 *  隐藏、无法设目标/启动调研/触发审查。纯运行开关，不进预设、不需 reload。 */
 	goalModeEnabled: boolean;
 	/** Vision bridge on/off (default on). Off → images are sent as-is. */
+	chatUploadMaxMb?: number;
+	workspaceUploadMaxMb?: number;
+	folderUploadMaxMb?: number;
 	visionBridgeEnabled: boolean;
 	/** Preferred vision model as "provider/id", or null = auto-detect first. */
 	visionBridgeModel: string | null;
@@ -475,12 +479,15 @@ export interface ClientSettings {
  */
 export interface SettingsPreset extends Partial<ClientSettings> {
 	name: string;
+	/** Portable requirements, never merged into runtime settings. */
+	plugins?: import("./protocol.js").UiPresetPluginDependency[];
 }
 
 /** 预设 → 设置面板列表用的 UI 形状（协议要求字段完整：旧/部分预设用默认值补齐）。 */
 export function settingsPresetToUi(p: SettingsPreset): import("./protocol.js").UiSettingsPreset {
 	return {
 		name: p.name,
+		...(p.plugins ? { plugins: p.plugins } : {}),
 		promptMode: p.promptMode === "replace" ? "replace" : "append",
 		customSystemPrompt: p.customSystemPrompt ?? "",
 		promptTemplate: p.promptTemplate ?? "",
@@ -720,11 +727,47 @@ export const CLIENT_STATE_SWEEP_INTERVAL_MS = 60 * 60 * 1000;
 /**
  * Persists which workspace each browser client last used + which workspaces it
  * has opened, so a server restart / page reload restores the same project and
- * the UI can offer a one-click recent-project list. File I/O is best-effort:
- * persistence problems must never crash the server or block a session.
+ * the UI can offer a one-click recent-project list. Failed writes invalidate
+ * uncommitted cache state and propagate to callers for user-visible feedback.
  */
+export interface SharedSettingsChange {
+	readonly version: number;
+	readonly clientId: string;
+	/** Detached, deeply frozen snapshots; listeners must not mutate them. */
+	readonly before: ClientSettings;
+	readonly settings: ClientSettings;
+}
+
+function freezeSettings<T>(value: T): T {
+	if (value && typeof value === "object" && !Object.isFrozen(value)) {
+		for (const child of Object.values(value)) freezeSettings(child);
+		Object.freeze(value);
+	}
+	return value;
+}
+
 export class ClientStateStore {
 	private cache: Record<string, ClientState> | null = null;
+	private settingsVersion = 0;
+	private settingsSnapshot: ClientSettings | undefined;
+	private readonly settingsListeners = new Set<(change: SharedSettingsChange) => void | Promise<void>>();
+
+	/** Subscribe to durable settings commits. Observer failures never turn a successful write into a failure. */
+	subscribeSettings(listener: (change: SharedSettingsChange) => void | Promise<void>): () => void {
+		this.settingsListeners.add(listener);
+		return () => {
+			this.settingsListeners.delete(listener);
+		};
+	}
+
+	/** O(1) between commits. This frozen snapshot is detached from the writable store. */
+	getSettingsSnapshot(clientId: string): ClientSettings {
+		return (this.settingsSnapshot ??= freezeSettings(this.readSettings(clientId)));
+	}
+
+	getSettingsVersion(): number {
+		return this.settingsVersion;
+	}
 
 	/** 上次死键清理扫描的时间戳（epoch ms；0 = 尚未扫过，首次 load 必扫）。 */
 	private lastSweepAt = 0;
@@ -843,8 +886,10 @@ export class ClientStateStore {
 	private save(): void {
 		try {
 			writeJsonAtomicSync(this.filePath, this.cache);
-		} catch {
-			// best effort
+		} catch (error) {
+			// Discard uncommitted mutations; callers must surface persistence failures.
+			this.cache = null;
+			throw error;
 		}
 	}
 
@@ -1106,9 +1151,14 @@ export class ClientStateStore {
 	}
 
 	/** 设置面板状态（系统提示词模式/文字 + 禁用技能/扩展）——全局共享同一套配置。 */
-	getSettings(_clientId: string): ClientSettings {
+	getSettings(clientId: string): ClientSettings {
+		return structuredClone(this.getSettingsSnapshot(clientId));
+	}
+
+	private readSettings(_clientId: string): ClientSettings {
 		const s = this.load()[ClientStateStore.GLOBAL_SETTINGS_KEY];
-		const stored = s?.settings;
+		// Never lend mutable nested objects from the authoritative cache to a client.
+		const stored = structuredClone(s?.settings);
 		// 旧存档（promptMode/customSystemPrompt）迁移到 compose：追加文字成为独立
 		// {{append}} 覆盖、替换文字成为 {{soul}} 覆盖；无自定义则用默认模板。
 		let promptTemplate = "";
@@ -1171,6 +1221,9 @@ export class ClientStateStore {
 			skillsCatalogMaxDesc: normalizeSkillsCatalogMaxDesc(stored?.skillsCatalogMaxDesc),
 			skillsCatalogShowLocation: Boolean(stored?.skillsCatalogShowLocation ?? false),
 			skillsCatalogBudget: normalizeSkillsCatalogBudget(stored?.skillsCatalogBudget),
+			chatUploadMaxMb: normalizeUploadMaxMb(stored?.chatUploadMaxMb, 20),
+			workspaceUploadMaxMb: normalizeUploadMaxMb(stored?.workspaceUploadMaxMb, 100),
+			folderUploadMaxMb: normalizeUploadMaxMb(stored?.folderUploadMaxMb, 32),
 			visionBridgeEnabled: stored?.visionBridgeEnabled ?? true,
 			visionBridgeModel: stored?.visionBridgeModel ?? null,
 			visionBridgePromptMode: stored?.visionBridgePromptMode === "replace" ? "replace" : "append",
@@ -1205,7 +1258,8 @@ export class ClientStateStore {
 	}
 
 	/** Persist the settings-panel state (partial merge) — global shared config. */
-	saveSettings(_clientId: string, settings: Partial<ClientSettings>): void {
+	saveSettings(_clientId: string, settings: Partial<ClientSettings>): ClientSettings {
+		const before = this.getSettingsSnapshot(_clientId);
 		const all = this.load();
 		const state = (all[ClientStateStore.GLOBAL_SETTINGS_KEY] ??= { projects: [] });
 		const cur = state.settings ?? ({} as ClientSettings);
@@ -1263,6 +1317,9 @@ export class ClientStateStore {
 			skillsCatalogBudget: normalizeSkillsCatalogBudget(
 				settings.skillsCatalogBudget ?? cur.skillsCatalogBudget ?? DEFAULT_SKILLS_CATALOG_BUDGET,
 			),
+			chatUploadMaxMb: normalizeUploadMaxMb(settings.chatUploadMaxMb ?? cur.chatUploadMaxMb, 20),
+			workspaceUploadMaxMb: normalizeUploadMaxMb(settings.workspaceUploadMaxMb ?? cur.workspaceUploadMaxMb, 100),
+			folderUploadMaxMb: normalizeUploadMaxMb(settings.folderUploadMaxMb ?? cur.folderUploadMaxMb, 32),
 			visionBridgeEnabled: settings.visionBridgeEnabled ?? cur.visionBridgeEnabled ?? true,
 			// 按键存在性合并：null 是合法值（清除语义），`null ?? cur` 会把旧值
 			// 复活到磁盘（设置面板清空后重启又回来）。settings-service 持久化
@@ -1301,25 +1358,45 @@ export class ClientStateStore {
 			defaultPermissionPreset:
 				settings.defaultPermissionPreset ?? cur.defaultPermissionPreset ?? "workspace-write-never",
 		};
+		state.settings = structuredClone(state.settings);
 		this.save();
+		this.settingsSnapshot = undefined;
+		const committed = this.getSettingsSnapshot(_clientId);
+		const change: SharedSettingsChange = Object.freeze({
+			version: ++this.settingsVersion,
+			clientId: _clientId,
+			before,
+			settings: committed,
+		});
+		// Snapshot: a subscriber may release its subscription while handling the event.
+		// eslint-disable-next-line unicorn/no-useless-spread
+		for (const listener of [...this.settingsListeners]) {
+			try {
+				const result = listener(change);
+				if (result)
+					void Promise.resolve(result).catch((error) => console.error("[settings] subscriber failed:", error));
+			} catch (error) {
+				console.error("[settings] subscriber failed:", error);
+			}
+		}
+		return structuredClone(committed);
 	}
 
 	/** Named settings presets for a client (empty if never saved) — global shared. */
 	getPresets(_clientId: string): SettingsPreset[] {
-		return (this.load()[ClientStateStore.GLOBAL_SETTINGS_KEY]?.presets ?? []).map((p) => ({
-			...p,
-			// Older client-state files predate review settings.
-			reviewPrompt: p.reviewPrompt ?? "",
-			reviewDisabledSkills: p.reviewDisabledSkills ?? [],
-			// Older presets predate the configurable retry count.
-			retryMaxAttempts: normalizeRetryMaxAttempts(p.retryMaxAttempts),
-			// Older presets predate the compaction soft cap (issue #229).
-			softCapTokens: normalizeSoftCapTokens((p as { softCapTokens?: unknown }).softCapTokens),
-			subagentAutoWakeMaxTurns: normalizeSubagentAutoWakeMaxTurns(
-				(p as { subagentAutoWakeMaxTurns?: unknown }).subagentAutoWakeMaxTurns,
-			),
-			softCapByModel: normalizeSoftCapByModel((p as { softCapByModel?: unknown }).softCapByModel),
-		}));
+		return (this.load()[ClientStateStore.GLOBAL_SETTINGS_KEY]?.presets ?? []).map((p) => {
+			const preset = { ...p };
+			// Missing fields in partial/older presets must keep the current settings on apply.
+			if (Object.hasOwn(p, "reviewPrompt")) preset.reviewPrompt = p.reviewPrompt ?? "";
+			if (Object.hasOwn(p, "reviewDisabledSkills")) preset.reviewDisabledSkills = p.reviewDisabledSkills ?? [];
+			if (Object.hasOwn(p, "retryMaxAttempts")) preset.retryMaxAttempts = normalizeRetryMaxAttempts(p.retryMaxAttempts);
+			if (Object.hasOwn(p, "softCapTokens")) preset.softCapTokens = normalizeSoftCapTokens(p.softCapTokens);
+			if (Object.hasOwn(p, "subagentAutoWakeMaxTurns")) {
+				preset.subagentAutoWakeMaxTurns = normalizeSubagentAutoWakeMaxTurns(p.subagentAutoWakeMaxTurns);
+			}
+			if (Object.hasOwn(p, "softCapByModel")) preset.softCapByModel = normalizeSoftCapByModel(p.softCapByModel);
+			return preset;
+		});
 	}
 
 	/** Persist the named settings presets — global shared config. */

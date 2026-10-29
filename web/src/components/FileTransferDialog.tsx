@@ -2,7 +2,15 @@ import { useEffect, useRef, useState } from "react";
 import { createPortal } from "react-dom";
 import { FiX } from "react-icons/fi";
 import { useT } from "../i18n";
-import { archiveAction, uploadFolder, pickFolder, type ArchiveAction, type FolderEntry } from "../file-transfer";
+import { useAppField } from "../app-globals";
+import {
+	archiveAction,
+	uploadFolder,
+	pickFolder,
+	type ArchiveAction,
+	type FolderEntry,
+	type FolderUploadProgress,
+} from "../file-transfer";
 
 export interface FileTransferRequest {
 	action: ArchiveAction | "upload";
@@ -20,10 +28,11 @@ export function FileTransferDialog({
 	onComplete: () => void;
 }) {
 	const t = useT();
+	const folderUploadMaxMb = useAppField("folderUploadMaxMb");
 	const [destination, setDestination] = useState(request.dir);
 	const [policy, setPolicy] = useState("skip");
 	const [files, setFiles] = useState<FolderEntry[]>([]);
-	const [done, setDone] = useState(0);
+	const [uploadProgress, setUploadProgress] = useState<FolderUploadProgress | null>(null);
 	const folderInput = useRef<HTMLInputElement | null>(null);
 	const [busy, setBusy] = useState(false);
 	const [error, setError] = useState("");
@@ -43,18 +52,20 @@ export function FileTransferDialog({
 	async function chooseFolder() {
 		try {
 			const entries = await pickFolder();
-			if (entries) setFiles(entries);
-			else folderInput.current?.click();
+			if (entries) {
+				setFiles(entries);
+				setUploadProgress(null);
+			} else folderInput.current?.click();
 		} catch (err) {
 			if (!(err instanceof DOMException && err.name === "AbortError")) setError(String(err));
 		}
 	}
 	async function run() {
-		setDone(0);
+		setUploadProgress(null);
 		setBusy(true);
 		setError("");
 		try {
-			if (request.action === "upload") await uploadFolder(request.dir, files, setDone);
+			if (request.action === "upload") await uploadFolder(request.dir, files, setUploadProgress, folderUploadMaxMb);
 			else await archiveAction(request.action, request.path, { destination, policy });
 			onComplete();
 			onClose();
@@ -128,15 +139,38 @@ export function FileTransferDialog({
 								folderInput.current = input;
 								input?.setAttribute("webkitdirectory", "");
 							}}
-							onChange={(e) =>
+							onChange={(e) => {
 								setFiles(
 									Array.from(e.target.files ?? [], (file) => ({ path: file.webkitRelativePath || file.name, file })),
-								)
-							}
+								);
+								setUploadProgress(null);
+							}}
 						/>
 						<p aria-live="polite">
-							{done} / {files.length}
+							{uploadProgress?.done ?? 0} / {files.length}
 						</p>
+						{uploadProgress && (
+							<>
+								{uploadProgress.totalBytes > 0 && (
+									<>
+										<progress aria-label={title} value={uploadProgress.uploadedBytes} max={uploadProgress.totalBytes} />
+										<p>
+											{uploadProgress.uploadedBytes.toLocaleString()} / {uploadProgress.totalBytes.toLocaleString()} B
+										</p>
+									</>
+								)}
+								{busy && uploadProgress.phase !== "confirmed" && (
+									<p className="file-transfer-path" role="status">
+										{uploadProgress.phase === "waiting"
+											? t("folderUploadWaiting", { name: uploadProgress.path })
+											: t("folderUploadSending", {
+													name: uploadProgress.path,
+													percent: Math.floor((uploadProgress.uploadedBytes / uploadProgress.totalBytes) * 100),
+												})}
+									</p>
+								)}
+							</>
+						)}
 					</>
 				)}
 				{error && <p role="alert">{t("fileTransferFailed", { error })}</p>}

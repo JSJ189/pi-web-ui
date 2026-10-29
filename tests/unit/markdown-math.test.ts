@@ -1,10 +1,15 @@
 import { readFileSync } from "node:fs";
-import { describe, expect, it, vi } from "vitest";
+import { beforeAll, describe, expect, it, vi } from "vitest";
 
 vi.mock("../../web/src/components/copy-button.js", () => ({ CopyButton: () => null }));
 import { createElement } from "react";
 import { renderToStaticMarkup } from "react-dom/server";
 import { MarkdownBody } from "../../web/src/components/Markdown.js";
+import { loadMathRenderer } from "../../web/src/markdown-math-loader.js";
+
+beforeAll(async () => {
+	await loadMathRenderer();
+});
 
 function render(text: string, props = {}) {
 	return renderToStaticMarkup(createElement(MarkdownBody, { text, ...props }));

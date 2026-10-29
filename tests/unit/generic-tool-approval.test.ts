@@ -101,6 +101,7 @@ describe("通用工具审批门禁 (withApprovalGate - Issue #722)", () => {
 			undefined,
 			expect.any(Object),
 			expect.any(Array),
+			undefined,
 		);
 		expect(executeMock).toHaveBeenCalledWith("call-2", { sql: "DROP TABLE users;" }, undefined, undefined, undefined);
 		expect(res.content[0].text).toBe("table dropped");

@@ -1,3 +1,4 @@
+import { defaultUrlTransform } from "react-markdown";
 import { appUrl } from "./base-url";
 import { withToken } from "./auth-token";
 import { getClientId } from "./use-chat";
@@ -22,8 +23,17 @@ export function isLoopbackAccess(
 export function isExternalOrProtocolLink(target: string): boolean {
 	if (!target) return true;
 	const t = target.trim();
-	if (t.startsWith("#") || t.startsWith("pi-file://")) return true;
-	return /^(https?:|mailto:|tel:)/i.test(t);
+	if (!t || t.startsWith("#") || t.startsWith("?") || t.startsWith("//") || t.startsWith("pi-file://")) return true;
+	if (/^[a-z]:[\\/]/i.test(t) || /^file:\/\//i.test(t)) return false;
+	return /^[a-z][a-z\d+.-]*:/i.test(t);
+}
+
+/** Preserve only file targets handled by MdLink/MdImage; retain the default protocol guard elsewhere. */
+export function markdownFileUrlTransform(url: string, key: string): string {
+	if ((key === "href" || key === "src") && /^(?:[a-z]:[\\/]|file:\/\/|pi-file:\/\/)/i.test(url)) {
+		return url;
+	}
+	return defaultUrlTransform(url);
 }
 
 /**
@@ -31,26 +41,22 @@ export function isExternalOrProtocolLink(target: string): boolean {
  */
 export function normalizeTargetFilePath(raw: string, currentCwd?: string): string {
 	let p = raw.trim();
-	// 清洗 file:/// 前缀
-	if (p.startsWith("file:///")) {
-		p = p.slice("file:///".length);
-		// Windows 盘符路径（如 C:/...）由 file:/// 剥离后可能不需要最前方的斜杠
-		if (/^[a-zA-Z]:[/\\]/.test(p)) {
-			// e.g. C:/foo
-		} else if (/^\/[a-zA-Z]:[/\\]/.test(p)) {
-			p = p.slice(1);
-		}
-	} else if (p.startsWith("file://")) {
-		p = p.slice("file://".length);
+	// Decode Markdown URL escaping once; preserve the POSIX leading slash in file:///tmp/….
+	p = p.replace(/^file:\/\/(?:localhost(?=\/))?/i, "");
+	try {
+		p = decodeURIComponent(p);
+	} catch {
+		// Malformed escapes can be literal filename characters.
 	}
-
-	// 统一斜杠
-	p = p.replace(/\\/g, "/");
+	p = p.replace(/\\/g, "/").replace(/^\/([a-z]:\/)/i, "$1");
+	// Source citations are paths plus a line location, not filenames containing ':123'.
+	p = p.replace(/:\d+(?::\d+)?$/, "");
 
 	// 若匹配当前工作区绝对路径（且有 currentCwd），尝试剥离为工作区相对路径
 	if (currentCwd) {
 		const normCwd = currentCwd.replace(/\\/g, "/").replace(/\/+$/, "");
-		if (p.toLowerCase().startsWith(normCwd.toLowerCase() + "/")) {
+		const windows = /^[a-z]:\//i.test(normCwd);
+		if ((windows ? p.toLowerCase() : p).startsWith((windows ? normCwd.toLowerCase() : normCwd) + "/")) {
 			p = p.slice(normCwd.length + 1);
 		}
 	}

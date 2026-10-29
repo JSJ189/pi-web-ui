@@ -1,9 +1,10 @@
 import { useState } from "react";
 import type { CanvasGraph, CanvasNode, CanvasNodeRole } from "../../types";
 import { ROLE_METAS, ROLE_FIELDS } from "./CanvasTypes";
+import { useCanvasT } from "./canvas-i18n";
 import { autoLayout } from "./canvas-p0";
 
-interface Props {
+export interface CanvasAiBarProps {
 	onApply: (graph: CanvasGraph) => void;
 	onSmartGenerate: (text: string) => void;
 	smartPending: boolean;
@@ -21,13 +22,13 @@ const RULES: { keys: string[]; role: CanvasNodeRole }[] = [
 	{ keys: ["文档", "readme", "doc", "writer"], role: "writer" },
 	{ keys: ["评估", "打分", "eval"], role: "evaluator" },
 	{ keys: ["审批", "人工", "approve", "human"], role: "human" },
-	{ keys: ["条件", "分支", "if ", "如果"], role: "condition" },
-	{ keys: ["循环", "loop", "重试", "迭代"], role: "loop" },
+
+	// A keyword alone cannot safely configure a loop or branch.
 	{ keys: ["汇总", "合并", "merge"], role: "merge" },
 	{ keys: ["编码", "开发", "实现", "重构", "code", "coder", "实现"], role: "coder" },
 ];
 
-function pickRole(seg: string): CanvasNodeRole {
+export function pickRole(seg: string): CanvasNodeRole {
 	const s = seg.toLowerCase();
 	for (const r of RULES) {
 		if (r.keys.some((k) => s.includes(k))) return r.role;
@@ -36,7 +37,7 @@ function pickRole(seg: string): CanvasNodeRole {
 }
 
 /** “调研-编码-审查” / “先A再B然后C” / 换行 / 逗号分段 */
-function splitSteps(text: string): string[] {
+export function splitSteps(text: string): string[] {
 	return text
 		.split(/[\n；;。]+|[-–>→]+\s*|\s*(?:然后|接着|再|最后)\s*/g)
 		.map((s) => s.trim())
@@ -45,7 +46,14 @@ function splitSteps(text: string): string[] {
 }
 
 /** P2：一句话生成 DAG（纯前端启发式，零 token、离线可用） */
-export function CanvasAiBar({ onApply, onSmartGenerate, smartPending, defaultModel, defaultCwd = "." }: Props) {
+export function CanvasAiBar({
+	onApply,
+	onSmartGenerate,
+	smartPending,
+	defaultModel,
+	defaultCwd = ".",
+}: CanvasAiBarProps) {
+	const t = useCanvasT();
 	const [text, setText] = useState("");
 	const [open, setOpen] = useState(false);
 	const handleGenerate = () => {
@@ -123,8 +131,16 @@ export function CanvasAiBar({ onApply, onSmartGenerate, smartPending, defaultMod
 	};
 	if (!open) {
 		return (
-			<button type="button" className="canvas-ai-fab" onClick={() => setOpen(true)} title="一句话生成工作流">
-				✨ AI 生成
+			<button
+				type="button"
+				className="canvas-ai-fab"
+				onClick={() => setOpen(true)}
+				title={t(
+					"按关键词生成串行步骤，执行前请检查指令",
+					"Generate sequential steps from keywords; review instructions before running",
+				)}
+			>
+				{t("✨ 生成流程", "✨ Generate workflow")}
 			</button>
 		);
 	}
@@ -141,7 +157,7 @@ export function CanvasAiBar({ onApply, onSmartGenerate, smartPending, defaultMod
 				autoFocus
 			/>
 			<button type="button" className="canvas-btn primary" onClick={handleGenerate} disabled={!text.trim()}>
-				秒出
+				{t("关键词生成", "From keywords")}
 			</button>
 			<button
 				type="button"
@@ -154,10 +170,10 @@ export function CanvasAiBar({ onApply, onSmartGenerate, smartPending, defaultMod
 				disabled={!text.trim() || smartPending}
 				title="发给当前对话的 AI，按需求智能拆工作流（回包确认后落图）"
 			>
-				{smartPending ? "等AI…" : "🤖智能"}
+				{smartPending ? t("等待 AI…", "Waiting for AI…") : t("🤖 AI 生成", "🤖 From AI")}
 			</button>
 			<button type="button" className="canvas-btn" onClick={() => setOpen(false)}>
-				取消
+				{t("取消", "Cancel")}
 			</button>
 		</div>
 	);

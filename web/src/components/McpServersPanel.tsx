@@ -25,6 +25,7 @@ import { HintTip } from "./HintTip";
 import { isZhLocale, useI18n, useT } from "../i18n";
 import type { McpScope, UiMcpServer, UiMcpToolInfo, UiSettingsState } from "../types";
 import { MCP_MARKETS } from "../mcp-catalog";
+import { createMcpDraft, getMcpServerDisplayState, serializeMcpDraft, type McpDraft } from "../mcp-server-draft";
 
 export type McpMarketCategoryFilter = "all" | "cn" | "marketplace" | "community" | "official";
 
@@ -41,31 +42,13 @@ export interface McpServersPanelProps {
 	};
 }
 
-interface McpDraft {
-	name: string;
-	scope: McpScope;
-	transport: "stdio" | "http";
-	command: string;
-	args: string;
-	cwd: string;
-	env: Array<{ key: string; value: string }>;
-	url: string;
-	headers: Array<{ key: string; value: string }>;
-	timeout: string;
-	description: string;
-	enabled: boolean;
-	isNew: boolean;
-	prevName?: string;
-	prevScope?: McpScope;
-}
-
 interface McpPresetTemplate {
 	id: string;
 	label: string;
 	description: string;
 	transport: "stdio" | "http";
 	command?: string;
-	args?: string;
+	args?: string[];
 	env?: Array<{ key: string; value: string }>;
 	url?: string;
 }
@@ -83,7 +66,7 @@ const MCP_PRESETS: McpPresetTemplate[] = [
 		description: "mcpPresetFilesystemDesc",
 		transport: "stdio",
 		command: "npx",
-		args: "-y @modelcontextprotocol/server-filesystem .",
+		args: ["-y", "@modelcontextprotocol/server-filesystem", "."],
 	},
 	{
 		id: "fetch",
@@ -91,7 +74,7 @@ const MCP_PRESETS: McpPresetTemplate[] = [
 		description: "mcpPresetFetchDesc",
 		transport: "stdio",
 		command: "uvx",
-		args: "mcp-server-fetch",
+		args: ["mcp-server-fetch"],
 	},
 	{
 		id: "memory",
@@ -99,7 +82,7 @@ const MCP_PRESETS: McpPresetTemplate[] = [
 		description: "mcpPresetMemoryDesc",
 		transport: "stdio",
 		command: "npx",
-		args: "-y @modelcontextprotocol/server-memory",
+		args: ["-y", "@modelcontextprotocol/server-memory"],
 	},
 	{
 		id: "github",
@@ -107,7 +90,7 @@ const MCP_PRESETS: McpPresetTemplate[] = [
 		description: "mcpPresetGithubDesc",
 		transport: "stdio",
 		command: "npx",
-		args: "-y @modelcontextprotocol/server-github",
+		args: ["-y", "@modelcontextprotocol/server-github"],
 		env: [{ key: "GITHUB_PERSONAL_ACCESS_TOKEN", value: "" }],
 	},
 	{
@@ -116,7 +99,7 @@ const MCP_PRESETS: McpPresetTemplate[] = [
 		description: "mcpPresetSqliteDesc",
 		transport: "stdio",
 		command: "uvx",
-		args: "mcp-server-sqlite --db-path ./app.db",
+		args: ["mcp-server-sqlite", "--db-path", "./app.db"],
 	},
 ];
 
@@ -211,7 +194,7 @@ export function McpServersPanel({ settings, chat: _chat }: McpServersPanelProps)
 			scope,
 			transport: preset.transport,
 			command: preset.command ?? "",
-			args: preset.args ?? "",
+			args: [...(preset.args ?? [])],
 			cwd: "",
 			env: preset.env ? [...preset.env] : [],
 			url: preset.url ?? "",
@@ -224,36 +207,8 @@ export function McpServersPanel({ settings, chat: _chat }: McpServersPanelProps)
 	};
 
 	const openEditServerModal = (s: UiMcpServer) => {
-		const envList: Array<{ key: string; value: string }> = [];
-		if (s.env) {
-			for (const [k, v] of Object.entries(s.env)) {
-				envList.push({ key: k, value: String(v) });
-			}
-		}
-		const headerList: Array<{ key: string; value: string }> = [];
-		if (s.headers) {
-			for (const [k, v] of Object.entries(s.headers)) {
-				headerList.push({ key: k, value: String(v) });
-			}
-		}
 		setSelectedPresetId("custom");
-		setDraft({
-			name: s.name,
-			scope: s.scope,
-			transport: s.url ? "http" : "stdio",
-			command: s.command ?? "",
-			args: Array.isArray(s.args) ? s.args.join(" ") : "",
-			cwd: s.cwd ?? "",
-			env: envList,
-			url: s.url ?? "",
-			headers: headerList,
-			timeout: s.timeout !== undefined ? String(s.timeout) : "",
-			description: s.description ?? "",
-			enabled: s.enabled !== false,
-			isNew: false,
-			prevName: s.name,
-			prevScope: s.scope,
-		});
+		setDraft(createMcpDraft(s));
 	};
 
 	const handleApplyPreset = (presetId: string) => {
@@ -268,7 +223,7 @@ export function McpServersPanel({ settings, chat: _chat }: McpServersPanelProps)
 				name: d.name ? d.name : preset.id,
 				transport: preset.transport,
 				command: preset.command ?? d.command,
-				args: preset.args ?? d.args,
+				args: preset.args ? [...preset.args] : d.args,
 				env: preset.env ? [...preset.env] : d.env,
 				url: preset.url ?? d.url,
 			};
@@ -280,38 +235,7 @@ export function McpServersPanel({ settings, chat: _chat }: McpServersPanelProps)
 		const name = draft.name.trim();
 		if (!name) return;
 
-		const envMap: Record<string, string> = {};
-		for (const item of draft.env) {
-			const k = item.key.trim();
-			if (k) envMap[k] = item.value;
-		}
-
-		const headerMap: Record<string, string> = {};
-		for (const item of draft.headers) {
-			const k = item.key.trim();
-			if (k) headerMap[k] = item.value;
-		}
-
-		const argsArr = draft.args
-			.trim()
-			.split(/\s+/)
-			.filter((x) => x.length > 0);
-		const timeoutNum = Number(draft.timeout);
-
-		const server: UiMcpServer = {
-			name,
-			scope: draft.scope,
-			type: draft.transport,
-			command: draft.transport === "stdio" ? draft.command.trim() || undefined : undefined,
-			args: draft.transport === "stdio" && argsArr.length > 0 ? argsArr : undefined,
-			cwd: draft.transport === "stdio" && draft.cwd.trim() ? draft.cwd.trim() : undefined,
-			env: draft.transport === "stdio" && Object.keys(envMap).length > 0 ? envMap : undefined,
-			url: draft.transport === "http" && draft.url.trim() ? draft.url.trim() : undefined,
-			headers: draft.transport === "http" && Object.keys(headerMap).length > 0 ? headerMap : undefined,
-			timeout: !isNaN(timeoutNum) && timeoutNum > 0 ? timeoutNum : undefined,
-			description: draft.description.trim() || undefined,
-			enabled: draft.enabled,
-		};
+		const server = serializeMcpDraft(draft);
 
 		appSend({
 			type: "save_mcp_server",
@@ -462,7 +386,7 @@ export function McpServersPanel({ settings, chat: _chat }: McpServersPanelProps)
 							{filteredServers.map((s) => {
 								const cardKey = `${s.scope}:${s.name}`;
 								const isExpanded = !!expandedTools[cardKey];
-								const toolsCount = s.tools?.length ?? 0;
+								const { status, label, toolsCount } = getMcpServerDisplayState(s);
 								return (
 									<div key={cardKey} className={`mcp-server-card${s.enabled ? "" : " disabled"}`}>
 										<div className="mcp-card-head">
@@ -472,13 +396,10 @@ export function McpServersPanel({ settings, chat: _chat }: McpServersPanelProps)
 													{s.scope === "global" ? t("mcpScopeGlobal") : t("mcpScopeProject")}
 												</span>
 												<span className="mcp-transport-badge">{s.url ? "HTTP" : "stdio"}</span>
-												<span className={`mcp-status-pill status-${s.status ?? (s.enabled ? "running" : "stopped")}`}>
+												<span className={`mcp-status-pill status-${status}`}>
 													<span className="mcp-status-dot" />
-													{s.status === "error"
-														? t("mcpStatusError")
-														: s.enabled
-															? `${t("mcpStatusRunning")}${toolsCount > 0 ? ` (${toolsCount})` : ""}`
-															: t("mcpStatusStopped")}
+													{t(label)}
+													{status === "running" && toolsCount > 0 ? ` (${toolsCount})` : ""}
 												</span>
 											</div>
 											<div className="mcp-card-actions">
@@ -553,7 +474,7 @@ export function McpServersPanel({ settings, chat: _chat }: McpServersPanelProps)
 											)}
 
 											{/* 错误提示 */}
-											{s.status === "error" && s.error && (
+											{s.error && (
 												<div className="mcp-error-box">
 													<FiAlertTriangle className="mcp-error-icon" />
 													<div className="mcp-error-text">{s.error}</div>
@@ -891,14 +812,44 @@ export function McpServersPanel({ settings, chat: _chat }: McpServersPanelProps)
 									</div>
 
 									<div className="set-field">
-										<label className="set-field-label">{t("mcpArgsLabel")}</label>
-										<textarea
-											className="set-input mcp-args-input"
-											rows={2}
-											placeholder={t("mcpArgsPlaceholder")}
-											value={draft.args}
-											onChange={(e) => setDraft((d) => (d ? { ...d, args: e.target.value } : null))}
-										/>
+										<div className="mcp-field-header">
+											<label className="set-field-label">{t("mcpArgsLabel")}</label>
+											<button
+												type="button"
+												className="mcp-mini-btn"
+												aria-label={`${t("mcpArgsLabel")} +`}
+												onClick={() => setDraft((d) => (d ? { ...d, args: [...d.args, ""] } : null))}
+											>
+												<FiPlus />
+											</button>
+										</div>
+										{draft.args.map((arg, index) => (
+											<div className="mcp-kv-row" key={index}>
+												<textarea
+													className="set-input"
+													rows={1}
+													aria-label={`${t("mcpArgsLabel")} ${index + 1}`}
+													value={arg}
+													onChange={(e) =>
+														setDraft((d) =>
+															d
+																? { ...d, args: d.args.map((value, i) => (i === index ? e.target.value : value)) }
+																: null,
+														)
+													}
+												/>
+												<button
+													type="button"
+													className="mcp-mini-btn"
+													aria-label={`${t("delete")} ${t("mcpArgsLabel")} ${index + 1}`}
+													onClick={() =>
+														setDraft((d) => (d ? { ...d, args: d.args.filter((_, i) => i !== index) } : null))
+													}
+												>
+													<FiX />
+												</button>
+											</div>
+										))}
 									</div>
 
 									<div className="set-field">

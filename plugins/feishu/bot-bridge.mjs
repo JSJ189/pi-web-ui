@@ -9,6 +9,7 @@
 
 import { createHash } from "node:crypto";
 import { chunkMarkdownText } from "./markdown-chunks.mjs";
+import { runtime, scopeKey, inboundResources, receiveAttachments } from "./runtime.mjs";
 
 /** Strips internal system markers from assistant response text before delivery. */
 export function stripInternalMarkers(text) {
@@ -85,7 +86,8 @@ export class FeishuBotBridge {
 	 * @param {any} options.reactMessage
 	 * @param {(level: string, msg: string) => void} [options.log]
 	 */
-	constructor({ host, getConfig, sendMessage, replyMessage, reactMessage, log }) {
+	constructor({ host, getConfig, sendMessage, replyMessage, reactMessage, downloadResource, log }) {
+		this.downloadResource = downloadResource;
 		this.host = host;
 		this.getConfig = getConfig;
 		this.sendMessage = sendMessage;
@@ -127,6 +129,18 @@ export class FeishuBotBridge {
 		};
 	}
 
+	dispatch(text, attachments, ctx) {
+		return runtime.dispatch.call(this, text, attachments, ctx);
+	}
+
+	handleSlashCommand(text, ctx) {
+		return runtime.handleSlashCommand.call(this, text, ctx);
+	}
+
+	handleRunEvent(event) {
+		return runtime.handleRunEvent.call(this, event);
+	}
+
 	getStatus() {
 		return { ...this.status };
 	}
@@ -160,6 +174,9 @@ export class FeishuBotBridge {
 	/** Stop bot duplex bridge service. */
 	async stop() {
 		this.running = false;
+		this.generation = (this.generation || 0) + 1;
+		this.pendingRuns.clear();
+		this.earlyRuns.clear();
 		this.status.enabled = false;
 		this.status.connected = false;
 		this.status.state = "idle";
@@ -371,269 +388,47 @@ export class FeishuBotBridge {
 			}
 		}
 
-		// Extract content
-		const rawText = extractInboundText(msg.content, msg.message_type);
-		const cleanText = stripMentions(rawText).trim();
-		if (!cleanText) return;
-
-		this.status.messagesReceived++;
-		this.status.lastMessageAt = Date.now();
-
-		// Handle slash commands (/help, /clear, /new, /status, /model)
-		if (cleanText.startsWith("/")) {
-			const handled = await this.handleSlashCommand(cleanText, { messageId, openId, chatId, cfg });
-			if (handled) return;
-		}
-
-		// Provide immediate visual reaction (e.g. THUMBSUP / EYES)
+		if (!openId) return;
+		const threadId = msg.thread_id || msg.root_id || "";
+		const scope = scopeKey(openId, chatId, threadId);
+		const ctx = { messageId, openId, chatId, cfg, scope, replyInThread: Boolean(threadId) };
 		try {
-			await this.reactMessage(cfg, messageId, "THUMBSUP");
-		} catch {}
-
-		// Prepare isolated agent session for this user
-		const accountId = peerAccountId(openId);
-		let conversationId = this.userConversations.get(openId);
-		if (!conversationId) {
-			conversationId = `fs_${openId.slice(-8)}_${Date.now().toString(36)}`;
-			this.userConversations.set(openId, conversationId);
-		}
-
-		// Record pending run（先用本地临时 id 占位；host.chat 返回后改键成宿主会话 id）
-		this.pendingRuns.set(conversationId, {
-			messageId,
-			chatId,
-			openId,
-			accumulatedText: "",
-			startedAt: Date.now(),
-		});
-
-		// Dispatch to host.chat
-		try {
-			const workspace = this.resolveWorkspace(openId, cfg);
-			const chatReq = {
-				text: cleanText,
-				accountId,
-				conversationId,
-			};
-			if (workspace) chatReq.cwd = workspace;
-			if (cfg.model) chatReq.model = cfg.model;
-			if (cfg.thinkingLevel) chatReq.thinkingLevel = cfg.thinkingLevel;
-			// 宿主 host.chat 是 fire-and-forget：运行结果经 onRunEvent(run_end) 按
-			// 【宿主返回的】conversationId 关联。以前忽略回执、用本地编的 id 等事件，
-			// 所以永远等不到 → 只回一个 👍 就没下文（也不报错）。
-			const receipt = await this.host.chat(chatReq);
-			const hostConvId = receipt && typeof receipt === "object" ? String(receipt.conversationId ?? "").trim() : "";
-			if (hostConvId) {
-				const pending = this.pendingRuns.get(conversationId);
-				if (pending) {
-					this.pendingRuns.delete(conversationId);
-					const early = this.earlyRuns.get(hostConvId);
-					if (early) {
-						if (early.accumulatedText) {
-							pending.accumulatedText = pending.accumulatedText
-								? `${early.accumulatedText}\n${pending.accumulatedText}`
-								: early.accumulatedText;
-						}
-						this.earlyRuns.delete(hostConvId);
-						if (early.ended) {
-							// 回执之前这轮就已经结束（极快/失败收尾）：直接补发
-							await this.deliverReply(pending);
-							this.userConversations.set(openId, hostConvId);
-							this.log("info", `host.chat 已结束并补发 → conversationId=${hostConvId}`);
-							return;
-						}
-					}
-					this.pendingRuns.set(hostConvId, pending);
-					this.rememberRunId(hostConvId, receipt.runId);
-				}
-				this.userConversations.set(openId, hostConvId);
-				this.log("info", `host.chat 已投递 → conversationId=${hostConvId}`);
-			}
-		} catch (err) {
-			this.log("warn", `host.chat dispatch failed: ${err.message}`);
-			this.pendingRuns.delete(conversationId);
-			await this.replyMessage(cfg, {
-				messageId,
-				msgType: "text",
-				text: `任务启动失败：${err.message}`,
-			}).catch(() => {});
-		}
-	}
-
-	/** Handles slash commands without calling AI model. */
-	async handleSlashCommand(cmdText, { messageId, openId, cfg }) {
-		const parts = cmdText.trim().split(/\s+/);
-		const cmd = parts[0].toLowerCase();
-
-		switch (cmd) {
-			case "/help": {
-				const helpText = [
-					"🤖 **pi-web-ui 飞书机器人帮助**",
-					"",
-					"- 直接发送文本即可与 AI 助手对话，支持多轮上下文",
-					"- `/cwd` 或 `/workspace [路径]`：查看或切换当前项目根目录",
-					"- `/clear` 或 `/new`：清空当前上下文，开启全新对话",
-					"- `/status`：查看机器人运行状态与连接指标",
-					"- `/model`：查看当前配置的 AI 模型",
-					"- `/help`：展示本帮助信息",
-				].join("\n");
-				await this.replyMessage(cfg, {
-					messageId,
-					msgType: "interactive",
-					title: "飞书机器人帮助",
-					text: helpText,
-					cardTemplate: "blue",
-				});
-				return true;
-			}
-			case "/cwd":
-			case "/workspace": {
-				const argPath = cmdText.replace(/^\/\S+/, "").trim();
-				if (!argPath) {
-					const currentWs = this.resolveWorkspace(openId, cfg) || "(默认跟随宿主当前项目)";
-					await this.replyMessage(cfg, {
-						messageId,
-						msgType: "text",
-						text: `📂 当前项目根目录：${currentWs}\n提示：发送 \`/cwd <目录绝对路径>\` 可切换项目根目录。`,
-					});
-					return true;
-				}
-				this.userWorkspaces.set(openId, argPath);
-				const newId = `fs_${openId.slice(-8)}_${Date.now().toString(36)}`;
-				this.userConversations.set(openId, newId);
-				await this.replyMessage(cfg, {
-					messageId,
-					msgType: "text",
-					text: `📂 已将项目根目录切换为：${argPath}\n✨ 已自动为您开启该目录下的全新会话！`,
-				});
-				return true;
-			}
-			case "/clear":
-			case "/new": {
-				// Reset conversation ID for user
-				const newId = `fs_${openId.slice(-8)}_${Date.now().toString(36)}`;
-				this.userConversations.set(openId, newId);
-				await this.replyMessage(cfg, {
-					messageId,
-					msgType: "text",
-					text: "✨ 对话上下文已清空，已为您开启全新会话！",
-				});
-				return true;
-			}
-			case "/status": {
-				const s = this.status;
-				const currentWs = this.resolveWorkspace(openId, cfg) || "(跟随当前项目)";
-				const statusText = [
-					`🟢 **连接状态**：${s.state === "connected" ? "已连接 (在线)" : s.state}`,
-					`📂 **项目根目录**：${currentWs}`,
-					`📥 **已接收消息**：${s.messagesReceived} 条`,
-					`📤 **已回复消息**：${s.messagesReplied} 条`,
-					`⏱️ **运行状态**：正常工作`,
-				].join("\n");
-				await this.replyMessage(cfg, {
-					messageId,
-					msgType: "interactive",
-					title: "机器人运行状态",
-					text: statusText,
-					cardTemplate: "green",
-				});
-				return true;
-			}
-			case "/model": {
-				const currentModel = cfg.model || "(默认跟随全局)";
-				const currentThinking = cfg.thinkingLevel || "(跟随全局)";
-				await this.replyMessage(cfg, {
-					messageId,
-					msgType: "text",
-					text: `🤖 当前模型配置：\n- 模型 (Model)：${currentModel}\n- 思考强度 (Thinking)：${currentThinking}`,
-				});
-				return true;
-			}
-			default:
-				return false;
-		}
-	}
-
-	/** Handle run events from host agent runtime. */
-	/** 记住某个对话「本轮」的稳定 runId（host.chat 回执给出；旧宿主没有就跳过）。 */
-	rememberRunId(conversationId, runId) {
-		const rid = typeof runId === "string" ? runId.trim() : "";
-		if (!rid || !conversationId || !this.pendingRuns.has(conversationId)) return;
-		this.pendingRuns.get(conversationId).runId = rid;
-		this.runIdIndex.set(rid, conversationId);
-	}
-
-	/** 事件归属的 pendingRuns key：优先稳定 runId（过户改名后 conversationId 已对不上）。 */
-	resolveRunKey(ev) {
-		const rid = typeof ev?.runId === "string" ? ev.runId.trim() : "";
-		const mapped = rid ? this.runIdIndex.get(rid) : undefined;
-		// 映射已失效（该轮已收尾/被清理）时回落当前 conversationId，别拿旧 key 误吞事件。
-		return mapped && this.pendingRuns.has(mapped) ? mapped : ev.conversationId;
-	}
-
-	/** 某轮收尾/作废：连同 runId 索引一起清，防陈旧映射把后续运行认错。 */
-	forgetRun(key) {
-		if (key) this.pendingRuns.delete(key);
-		for (const [rid, k] of this.runIdIndex) {
-			if (k === key) this.runIdIndex.delete(rid);
-		}
-	}
-
-	async handleRunEvent(ev) {
-		const convId = this.resolveRunKey(ev);
-		if (!convId) return;
-
-		// 1. Accumulate assistant message delta or text
-		if (ev.type === "message" && ev.message) {
-			const m = ev.message;
-			let content = "";
-			if (typeof m.content === "string") content = m.content;
-			else if (Array.isArray(m.content)) {
-				content = m.content
-					.map((c) => (typeof c === "string" ? c : c.text || ""))
-					.join("\n")
-					.trim();
-			}
-
-			if (content && (m.role === "assistant" || m.author === "assistant")) {
-				if (this.pendingRuns.has(convId)) {
-					const r = this.pendingRuns.get(convId);
-					r.accumulatedText += (r.accumulatedText ? "\n" : "") + content;
-				} else {
-					// Store early arrival
-					let early = this.earlyRuns.get(convId);
-					if (!early) {
-						early = { accumulatedText: "", ended: false };
-						this.earlyRuns.set(convId, early);
-					}
-					early.accumulatedText += (early.accumulatedText ? "\n" : "") + content;
-				}
-			}
-			return;
-		}
-
-		// 2. Run completed
-		if (ev.type === "run_end") {
-			const run = this.pendingRuns.get(convId) || this.earlyRuns.get(convId);
-			if (!run) {
-				// run_end 先于 host.chat 回执到达：记「已结束」，回执到手时补发
-				const early = this.earlyRuns.get(convId) || { accumulatedText: "", ended: false };
-				early.ended = true;
-				this.earlyRuns.set(convId, early);
+			const cleanText = stripMentions(extractInboundText(msg.content, msg.message_type));
+			this.status.messagesReceived++;
+			this.status.lastMessageAt = Date.now();
+			if (cleanText.startsWith("/")) {
+				await this.handleSlashCommand(cleanText, ctx);
 				return;
 			}
-			this.forgetRun(convId);
-			this.earlyRuns.delete(convId);
-			await this.deliverReply(run);
+			const cancellation = this.cancellations?.get(scope) || 0;
+			const epoch = this.epochs?.get(scope) || 0;
+			const resources = inboundResources(msg.content, msg.message_type);
+			const attachments = await receiveAttachments(resources, this.downloadResource, cfg, messageId);
+			if (cancellation !== (this.cancellations?.get(scope) || 0) || epoch !== (this.epochs?.get(scope) || 0)) return;
+			if (!cleanText && !attachments.length) throw new Error("消息为空或无法解码");
+			if (resources.some((r) => ["audio", "media", "video"].includes(r.kind)))
+				await this.replyMessage(cfg, {
+					...ctx,
+					msgType: "text",
+					text: "已收到音视频文件；当前通道不自带转写或视频解码，将交给模型工具处理，无法解码时会明确告知。",
+				});
+			try {
+				await this.reactMessage(cfg, messageId, "THUMBSUP");
+			} catch {}
+			await this.dispatch(cleanText, attachments, ctx);
+		} catch (err) {
+			this.status.lastError = err.message;
+			this.log("warn", err.message);
+			await this.replyMessage(cfg, { ...ctx, msgType: "text", text: `消息处理失败：${err.message}` }).catch(() => {});
 		}
 	}
 
 	/** 把一次运行累积的文本分块回发到飞书（run_end，或「回执前已结束」的补发）。 */
 	async deliverReply(run) {
-		const cfg = this.getConfig();
+		const cfg = run.cfg || this.getConfig();
 		const rawText = run.accumulatedText || "";
 		const cleanText = stripInternalMarkers(rawText);
-		const finalText = cleanText || "✅ 任务已完成（无文本输出）。";
+		const finalText = cleanText || "任务未返回可显示内容。";
 
 		// Use structure-aware chunking to protect code fences and respect Feishu char limits
 		const chunks = chunkMarkdownText(finalText, 3800);
@@ -641,7 +436,7 @@ export class FeishuBotBridge {
 		try {
 			for (let i = 0; i < chunks.length; i++) {
 				const chunk = chunks[i];
-				if (i === 0 && run.messageId) {
+				if (run.messageId) {
 					// Reply to initial message
 					await this.replyMessage(cfg, {
 						messageId: run.messageId,
@@ -649,7 +444,7 @@ export class FeishuBotBridge {
 						title: "AI 助手回复",
 						text: chunk,
 						cardTemplate: "blue",
-						replyInThread: false,
+						replyInThread: Boolean(run.replyInThread),
 					});
 				} else {
 					// Follow-up chunks sent to same chat
@@ -673,7 +468,18 @@ export class FeishuBotBridge {
 				} catch {}
 			}
 		} catch (err) {
+			this.status.lastError = err.message;
 			this.log("warn", `Feishu reply delivery failed: ${err.message}`);
+			try {
+				await this.replyMessage(cfg, {
+					messageId: run.messageId,
+					replyInThread: run.replyInThread,
+					msgType: "text",
+					text: `回复发送失败：${err.message}`,
+				});
+			} catch (failure) {
+				this.log("warn", `Feishu failure notice failed: ${failure.message}`);
+			}
 		}
 	}
 }

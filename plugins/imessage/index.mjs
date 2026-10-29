@@ -9,7 +9,8 @@
 import { execFile } from "node:child_process";
 import { createHash } from "node:crypto";
 import { promisify } from "node:util";
-import { chunkMarkdownText } from "./markdown-chunks.mjs";
+import { stat } from "node:fs/promises";
+import { resolve } from "node:path";
 
 const execFileAsync = promisify(execFile);
 export const IMESSAGE_BOT_PREFIX = "🤖 PI\n";
@@ -42,11 +43,14 @@ export function cleanIMessageText(textRaw = "") {
 /**
  * Send an iMessage via macOS AppleScript (/usr/bin/osascript).
  */
-export async function sendMacOSIMessage(address, text, { execFileImpl } = {}) {
-	const safeAddress = String(address || "").trim();
+export async function sendMacOSIMessage(address, text, { execFileImpl, file } = {}) {
+	const chatId = typeof address === "object" ? String(address?.chatId || "").trim() : "";
+	const safeAddress = chatId || String(address || "").trim();
 	const safeText = String(text || "").trim();
 	if (!safeAddress) throw new Error("iMessage recipient address is required.");
-	if (!safeText) throw new Error("Message text is required.");
+	if (!safeText && !file) throw new Error("Message text or file is required.");
+	const filePath = file ? resolve(file) : "";
+	if (filePath && !(await stat(filePath)).isFile()) throw new Error("Attachment must be a regular local file.");
 
 	if (process.platform !== "darwin" && !execFileImpl) {
 		// 非 macOS 且未注入执行实现时明确报错——假成功会让用户以为消息已发出
@@ -57,9 +61,9 @@ export async function sendMacOSIMessage(address, text, { execFileImpl } = {}) {
 	const runExec = execFileImpl || execFileAsync;
 	const script = `
 		tell application "Messages"
-			set targetService to 1st service whose service type = iMessage
-			set targetBuddy to buddy ${JSON.stringify(safeAddress)} of targetService
-			send ${JSON.stringify(safeText)} to targetBuddy
+			${chatId ? `set targetBuddy to chat id ${JSON.stringify(chatId)}` : `set targetService to 1st service whose service type = iMessage\nset targetBuddy to buddy ${JSON.stringify(safeAddress)} of targetService`}
+			${safeText ? `send ${JSON.stringify(safeText)} to targetBuddy` : ""}
+			${filePath ? `send (POSIX file ${JSON.stringify(filePath)}) to targetBuddy` : ""}
 		end tell
 	`;
 
@@ -67,304 +71,8 @@ export async function sendMacOSIMessage(address, text, { execFileImpl } = {}) {
 	return { success: true };
 }
 
-/**
- * IMessageBotBridge manages duplex message exchange between macOS Messages and pi-web-ui agent host.
- */
-export class IMessageBotBridge {
-	/**
-	 * @param {object} options
-	 * @param {any} options.host
-	 * @param {() => any} options.getConfig
-	 * @param {(level: string, msg: string) => void} [options.log]
-	 * @param {any} [options.execFileImpl]
-	 */
-	constructor({ host, getConfig, log, execFileImpl } = {}) {
-		this.host = host;
-		this.getConfig = getConfig;
-		this.log = log || ((level, msg) => console.log(`[imessage-bot:${level}] ${msg}`));
-		this.execFileImpl = execFileImpl;
-
-		this.running = false;
-		this.pollTimer = null;
-		this.offRunEvent = null;
-
-		this.seenMessageIds = new Set();
-		this.pendingRuns = new Map();
-		this.earlyRuns = new Map();
-		this.userConversations = new Map();
-		this.userWorkspaces = new Map();
-
-		this.status = {
-			enabled: false,
-			connected: false,
-			state: "idle", // 'idle' | 'connected' | 'error' | 'unsupported'
-			platform: process.platform,
-			messagesReceived: 0,
-			messagesReplied: 0,
-			lastMessageAt: null,
-			lastReplyAt: null,
-			lastError: null,
-		};
-	}
-
-	getStatus() {
-		return { ...this.status, platform: process.platform };
-	}
-
-	resolveWorkspace(sender, cfg) {
-		return String(this.userWorkspaces.get(sender) || cfg?.workspace || this.host?.cwd || "").trim();
-	}
-
-	async start() {
-		if (this.running) return;
-		this.running = true;
-		this.status.enabled = true;
-
-		if (process.platform !== "darwin") {
-			// 非 macOS 明确置 unsupported——假"在线"误导排障
-			this.status.state = "unsupported";
-			this.status.connected = false;
-			this.status.lastError = `iMessage bridge requires macOS (current platform: ${process.platform}).`;
-			this.log("warn", this.status.lastError);
-		} else {
-			this.status.state = "connected";
-			this.status.connected = true;
-			this.log("info", "iMessage native macOS bridge started");
-		}
-
-		if (this.host.onRunEvent) {
-			this.offRunEvent = this.host.onRunEvent((ev) => this.handleRunEvent(ev));
-		}
-	}
-
-	async stop() {
-		this.running = false;
-		this.status.enabled = false;
-		this.status.connected = false;
-		this.status.state = "idle";
-
-		if (this.pollTimer) {
-			clearInterval(this.pollTimer);
-			this.pollTimer = null;
-		}
-
-		if (this.offRunEvent) {
-			try {
-				this.offRunEvent();
-			} catch {}
-			this.offRunEvent = null;
-		}
-	}
-
-	async onInboundMessage(event) {
-		if (!event) return;
-		const msgId = event.id || event.guid;
-		if (msgId) {
-			if (this.seenMessageIds.has(msgId)) return;
-			this.seenMessageIds.add(msgId);
-			if (this.seenMessageIds.size > 500) {
-				const first = this.seenMessageIds.values().next().value;
-				this.seenMessageIds.delete(first);
-			}
-		}
-
-		const sender = String(event.sender || event.from || "").trim();
-		const rawText = String(event.text || event.content || "").trim();
-		const cleanText = cleanIMessageText(rawText);
-		if (!cleanText) return;
-
-		const cfg = this.getConfig();
-
-		// Whitelist check
-		const allowedUsers = Array.isArray(cfg.allowedUsers)
-			? cfg.allowedUsers.map((u) => String(u).trim()).filter(Boolean)
-			: [];
-		if (allowedUsers.length > 0 && sender && !allowedUsers.includes(sender)) {
-			this.log("info", `iMessage user ${sender} blocked by whitelist`);
-			await sendMacOSIMessage(
-				sender,
-				`${IMESSAGE_BOT_PREFIX}【访问受限】您当前不在该 iMessage 机器人的白名单中，请联系管理员在 Web 控制台添加您的 Apple ID 或手机号。`,
-				{ execFileImpl: this.execFileImpl },
-			).catch(() => {});
-			return;
-		}
-
-		this.status.messagesReceived++;
-		this.status.lastMessageAt = Date.now();
-
-		// Slash command handling (/help, /clear, /new, /status)
-		if (cleanText.startsWith("/")) {
-			const handled = await this.handleSlashCommand(cleanText, { sender, cfg });
-			if (handled) return;
-		}
-
-		// Prepare isolated agent session for this user
-		const accountId = peerAccountId(sender);
-		let conversationId = this.userConversations.get(sender);
-		if (!conversationId) {
-			conversationId = `im_${sender.slice(-8)}_${Date.now().toString(36)}`;
-			this.userConversations.set(sender, conversationId);
-		}
-
-		this.pendingRuns.set(conversationId, {
-			sender,
-			accumulatedText: "",
-			startedAt: Date.now(),
-		});
-
-		try {
-			const workspace = this.resolveWorkspace(sender, cfg);
-			const chatReq = {
-				text: cleanText,
-				accountId,
-				conversationId,
-			};
-			if (workspace) chatReq.cwd = workspace;
-			if (cfg.model) chatReq.model = cfg.model;
-			if (cfg.thinkingLevel) chatReq.thinkingLevel = cfg.thinkingLevel;
-			await this.host.chat(chatReq);
-		} catch (err) {
-			this.log("warn", `iMessage host.chat dispatch failed: ${err.message}`);
-			this.pendingRuns.delete(conversationId);
-			await sendMacOSIMessage(sender, `${IMESSAGE_BOT_PREFIX}任务启动失败：${err.message}`, {
-				execFileImpl: this.execFileImpl,
-			}).catch(() => {});
-		}
-	}
-
-	async handleSlashCommand(cmdText, { sender, cfg }) {
-		const parts = cmdText.trim().split(/\s+/);
-		const cmd = parts[0].toLowerCase();
-
-		switch (cmd) {
-			case "/help": {
-				const helpText = [
-					`${IMESSAGE_BOT_PREFIX}🤖 pi-web-ui iMessage 机器人帮助`,
-					"- 直接发送文本即可与 AI 助手对话，支持多轮上下文",
-					"- /cwd [路径] 或 /workspace [路径]：查看或切换当前项目根目录",
-					"- /model：查看当前配置的 AI 模型与思考强度",
-					"- /clear 或 /new：清空当前上下文，开启全新会话",
-					"- /status：查看机器人运行状态与指标",
-					"- /help：展示本帮助信息",
-				].join("\n");
-				await sendMacOSIMessage(sender, helpText, { execFileImpl: this.execFileImpl }).catch(() => {});
-				return true;
-			}
-			case "/model": {
-				const currentModel = cfg.model || "(默认跟随全局)";
-				const currentThinking = cfg.thinkingLevel || "(跟随全局)";
-				await sendMacOSIMessage(
-					sender,
-					`${IMESSAGE_BOT_PREFIX}🤖 当前模型与思考配置：\n- 模型 (Model)：${currentModel}\n- 思考强度 (Thinking)：${currentThinking}`,
-					{ execFileImpl: this.execFileImpl },
-				).catch(() => {});
-				return true;
-			}
-			case "/cwd":
-			case "/workspace": {
-				const argPath = cmdText.replace(/^\/\S+/, "").trim();
-				if (!argPath) {
-					const currentWs = this.resolveWorkspace(sender, cfg) || "(默认跟随宿主当前项目)";
-					await sendMacOSIMessage(
-						sender,
-						`${IMESSAGE_BOT_PREFIX}📂 当前项目根目录：${currentWs}\n提示：发送 /cwd <目录路径> 可切换项目根目录。`,
-						{ execFileImpl: this.execFileImpl },
-					).catch(() => {});
-					return true;
-				}
-				this.userWorkspaces.set(sender, argPath);
-				const newId = `im_${sender.slice(-8)}_${Date.now().toString(36)}`;
-				this.userConversations.set(sender, newId);
-				await sendMacOSIMessage(
-					sender,
-					`${IMESSAGE_BOT_PREFIX}📂 已将项目根目录切换为：${argPath}\n✨ 已自动为您开启该目录下的全新会话！`,
-					{ execFileImpl: this.execFileImpl },
-				).catch(() => {});
-				return true;
-			}
-			case "/clear":
-			case "/new": {
-				const newId = `im_${sender.slice(-8)}_${Date.now().toString(36)}`;
-				this.userConversations.set(sender, newId);
-				await sendMacOSIMessage(sender, `${IMESSAGE_BOT_PREFIX}✨ 对话上下文已清空，已为您开启全新会话！`, {
-					execFileImpl: this.execFileImpl,
-				}).catch(() => {});
-				return true;
-			}
-			case "/status": {
-				const s = this.status;
-				const statusText = [
-					`${IMESSAGE_BOT_PREFIX}🟢 iMessage 机器人状态`,
-					`- 系统平台：${s.platform}`,
-					`- 运行状态：在线`,
-					`- 已接收消息：${s.messagesReceived} 条`,
-					`- 已回复消息：${s.messagesReplied} 条`,
-				].join("\n");
-				await sendMacOSIMessage(sender, statusText, { execFileImpl: this.execFileImpl }).catch(() => {});
-				return true;
-			}
-			default:
-				return false;
-		}
-	}
-
-	async handleRunEvent(ev) {
-		const convId = ev.conversationId;
-		if (!convId) return;
-
-		if (ev.type === "message" && ev.message) {
-			const m = ev.message;
-			let content = "";
-			if (typeof m.content === "string") content = m.content;
-			else if (Array.isArray(m.content)) {
-				content = m.content
-					.map((c) => (typeof c === "string" ? c : c.text || ""))
-					.join("\n")
-					.trim();
-			}
-
-			if (content && (m.role === "assistant" || m.author === "assistant")) {
-				if (this.pendingRuns.has(convId)) {
-					const r = this.pendingRuns.get(convId);
-					r.accumulatedText += (r.accumulatedText ? "\n" : "") + content;
-				} else {
-					let early = this.earlyRuns.get(convId);
-					if (!early) {
-						early = { accumulatedText: "" };
-						this.earlyRuns.set(convId, early);
-					}
-					early.accumulatedText += (early.accumulatedText ? "\n" : "") + content;
-				}
-			}
-			return;
-		}
-
-		if (ev.type === "run_end") {
-			const run = this.pendingRuns.get(convId) || this.earlyRuns.get(convId);
-			if (!run) return;
-
-			this.pendingRuns.delete(convId);
-			this.earlyRuns.delete(convId);
-
-			const rawText = run.accumulatedText || "";
-			const cleanText = stripInternalMarkers(rawText);
-			const finalText = cleanText || "✅ 任务已完成（无文本输出）。";
-
-			const chunks = chunkMarkdownText(finalText, 3000);
-
-			try {
-				for (let i = 0; i < chunks.length; i++) {
-					const chunk = `${IMESSAGE_BOT_PREFIX}${chunks[i]}`;
-					await sendMacOSIMessage(run.sender, chunk, { execFileImpl: this.execFileImpl });
-				}
-				this.status.messagesReplied++;
-				this.status.lastReplyAt = Date.now();
-			} catch (err) {
-				this.log("warn", `iMessage reply delivery failed: ${err.message}`);
-			}
-		}
-	}
-}
+export { IMessageBotBridge } from "./bridge.mjs";
+import { IMessageBotBridge } from "./bridge.mjs";
 
 /** Strip secrets from config before plaintext storage. */
 export function stripSecretsFromConfig(cfg) {
@@ -395,7 +103,8 @@ export default async function activate(host) {
 	// Register AI tool "imessage" adhering strictly to tool-prompt-hygiene
 	host.registerTool?.({
 		name: "imessage",
-		description: "Send text messages or notifications to Apple iMessage recipients via macOS Messages.",
+		description:
+			"Send text or local image, audio, video and file attachments via macOS Messages. Requires Apple automation permission.",
 		promptSnippet: "send messages to iMessage recipients",
 		promptGuidelines: [
 			"Confirm recipient address (Apple ID or phone number) and message text with the user once before action=send",
@@ -413,6 +122,7 @@ export default async function activate(host) {
 					type: "string",
 					description: "send: target Apple ID email or phone number.",
 				},
+				file: { type: "string", description: "Absolute path to a local file, image, audio or video attachment." },
 				text: {
 					type: "string",
 					description: "send: message content to send.",
@@ -426,7 +136,7 @@ export default async function activate(host) {
 				case "send": {
 					const to = args.address?.trim() || localConfig.defaultRecipient?.trim();
 					if (!to) throw new Error("recipient address is required.");
-					const res = await sendMacOSIMessage(to, args.text || "");
+					const res = await sendMacOSIMessage(to, args.text || "", { file: args.file });
 					return JSON.stringify(res, null, 2);
 				}
 				case "status": {
@@ -461,11 +171,12 @@ export default async function activate(host) {
 
 				case "save_config": {
 					const incoming = msg.config || {};
-					localConfig = mergeSavedSecrets(incoming, localConfig);
-					await host.storage.set("config", stripSecretsFromConfig(localConfig));
+					const nextConfig = mergeSavedSecrets(incoming, localConfig);
+					await host.storage.set("config", stripSecretsFromConfig(nextConfig));
+					localConfig = nextConfig;
 
 					if (localConfig.botEnabled) {
-						await botBridge.start().catch(() => {});
+						await botBridge.start();
 					} else {
 						await botBridge.stop().catch(() => {});
 					}
@@ -478,10 +189,10 @@ export default async function activate(host) {
 					const isDarwin = process.platform === "darwin";
 					reply({
 						type: "test_config_done",
-						success: true,
+						success: isDarwin,
 						message: isDarwin
 							? "环境检测通过：运行于 macOS 原生环境，支持通过 Apple Messages 自动化收发。"
-							: `当前运行平台为 ${process.platform}（支持兼容测试模式）。`,
+							: `当前运行平台为 ${process.platform}，不支持 iMessage；须在 macOS 授予完整磁盘访问及 Messages 自动化权限。`,
 					});
 					break;
 				}
@@ -489,7 +200,7 @@ export default async function activate(host) {
 				case "send_message": {
 					const to = msg.address?.trim() || localConfig.defaultRecipient?.trim();
 					if (!to) throw new Error("recipient address is required.");
-					const res = await sendMacOSIMessage(to, msg.text || "");
+					const res = await sendMacOSIMessage(to, msg.text || "", { file: msg.file });
 					reply({ type: "send_done", success: true, res });
 					break;
 				}

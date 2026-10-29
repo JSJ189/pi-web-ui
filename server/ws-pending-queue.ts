@@ -1,67 +1,114 @@
-/**
- * attach 完成前暂存客户端命令的队列 —— 独立成模块是为了可单测
- * （`server/index.ts` 起 WS + SDK，不适合在单测里 import）。
- *
- * 背景：hello 先回 ready（issue #295）后，attach/插件链就绪前收到的命令一律进
- * pending 队列等重放；attach 挂死（坏挂载/家目录扫描数十秒）或失败保活时队列
- * 原先无上限——失控/恶意连接可在此期间灌消息把内存顶爆。加上限后超限丢最旧并
- * 计数（做法对齐 ws-unknown-types 的「上限 + 溢出计数 + 节流 warn」先例）。
- */
-
+import { Buffer } from "node:buffer";
 import type { ClientMessage } from "./protocol.js";
+import { WS_MAX_PAYLOAD_BYTES } from "./payload-limits.js";
 
-/** 队列上限：正常前端在 attach 窗口内只发 get_state 等零星几条，256 绰绰有余。 */
 export const MAX_PENDING_WS_MESSAGES = 256;
+export const MAX_PENDING_WS_BYTES = 8 * 1024 * 1024;
+export const MAX_PRE_HELLO_WS_BYTES = 16 * 1024;
+export const MAX_CONTROL_WS_BYTES = 1024 * 1024;
+/** Matches the 100MiB file upload's base64 expansion + JSON envelope allowance. */
+export const MAX_ATTACHMENT_WS_BYTES = WS_MAX_PAYLOAD_BYTES;
 
-/** 同一进程两次超限告警的最小间隔（防刷屏，对齐 ws-unknown-types 的节流思路）。 */
+/** Envelope check only; individual command handlers must still validate their payloads. */
+export function isClientMessageEnvelope(value: unknown): value is { type: string } {
+	if (value === null || typeof value !== "object" || Array.isArray(value)) return false;
+	const prototype = Object.getPrototypeOf(value);
+	if (prototype !== Object.prototype && prototype !== null) return false;
+	return (
+		Object.hasOwn(value, "type") &&
+		"type" in value &&
+		typeof value.type === "string" &&
+		value.type.length > 0 &&
+		value.type.length <= 128
+	);
+}
+
+/** Apply the pre-hello limit before parsing; then use the type budget after parsing. */
+export function clientMessageByteLimit(type: string, helloReceived = true): number {
+	if (!helloReceived || type === "hello") return MAX_PRE_HELLO_WS_BYTES;
+	switch (type) {
+		case "upload_file":
+		case "prompt":
+		case "edit_message":
+			return MAX_ATTACHMENT_WS_BYTES;
+		default:
+			return MAX_CONTROL_WS_BYTES;
+	}
+}
+
+export function isClientMessageWithinByteLimit(type: string, wireBytes: number, helloReceived = true): boolean {
+	return Number.isSafeInteger(wireBytes) && wireBytes >= 0 && wireBytes <= clientMessageByteLimit(type, helloReceived);
+}
+
+/** Legacy names retained for callers; drops now mean rejected incoming commands. */
 export const PENDING_DROP_WARN_INTERVAL_MS = 60_000;
+let lastWarnAt = Number.NEGATIVE_INFINITY;
 
-let lastWarnAt = 0;
-
-/** 超限丢弃的节流告警：`PENDING_DROP_WARN_INTERVAL_MS` 内最多一条。log 注入便于单测。 */
 export function warnPendingDrop(totalDropped: number, log: (line: string) => void): void {
 	const now = Date.now();
 	if (now - lastWarnAt < PENDING_DROP_WARN_INTERVAL_MS) return;
 	lastWarnAt = now;
-	log(`[ws] attach 未完成，命令队列超限丢最旧（累计 ${totalDropped} 条）`);
+	log(`[ws] attach 未完成，命令队列超限拒绝新消息（累计 ${totalDropped} 条）`);
 }
 
-/** 单测隔离用。 */
 export function resetPendingDropWarn(): void {
-	lastWarnAt = 0;
+	lastWarnAt = Number.NEGATIVE_INFINITY;
 }
 
-/** attach 前的命令暂存队列：超限丢最旧（shift），丢弃只计数，不阻断新消息入队。 */
+/** Bounded attach-time FIFO. Callers must handle false explicitly (e.g. close with 1009). */
 export class PendingCommandQueue {
 	private items: ClientMessage[] = [];
 	private droppedTotal = 0;
+	private queuedBytes = 0;
 
-	constructor(readonly cap: number = MAX_PENDING_WS_MESSAGES) {}
-
-	push(msg: ClientMessage): void {
-		if (this.items.length >= this.cap) {
-			this.items.shift();
-			this.droppedTotal++;
-			warnPendingDrop(this.droppedTotal, (line) => console.warn(line));
+	constructor(
+		readonly cap: number = MAX_PENDING_WS_MESSAGES,
+		readonly byteCap: number = MAX_PENDING_WS_BYTES,
+	) {
+		if (!Number.isSafeInteger(cap) || cap < 0 || !Number.isSafeInteger(byteCap) || byteCap < 0) {
+			throw new RangeError("Pending queue limits must be non-negative safe integers");
 		}
-		this.items.push(msg);
 	}
 
-	/** 取走全部并清空（attach 完成后的重放）。 */
+	/** Supply the raw UTF-8 wire length to avoid allocating a second JSON serialization. */
+	push(msg: ClientMessage, wireBytes?: number): boolean {
+		if (this.items.length >= this.cap) return this.reject();
+		let bytes: number;
+		try {
+			bytes = wireBytes ?? Buffer.byteLength(JSON.stringify(msg), "utf8");
+		} catch {
+			return this.reject();
+		}
+		if (!Number.isSafeInteger(bytes) || bytes < 0 || bytes > this.byteCap - this.queuedBytes) return this.reject();
+		this.items.push(msg);
+		this.queuedBytes += bytes;
+		return true;
+	}
+
+	private reject(): false {
+		this.droppedTotal++;
+		warnPendingDrop(this.droppedTotal, (line) => console.warn(line));
+		return false;
+	}
+
 	drain(): ClientMessage[] {
 		const out = this.items;
-		this.items = [];
+		this.clear();
 		return out;
 	}
 
-	/** attach 失败保活 / 连接关闭时清空（用户修好后重发的 get_state 会重新入队）。 */
 	clear(): void {
 		this.items = [];
+		this.queuedBytes = 0;
 	}
 
-	/** 累计丢弃条数（排障用）。 */
+	/** Lifetime count of rejected pushes (legacy property name). */
 	get dropped(): number {
 		return this.droppedTotal;
+	}
+
+	get bytes(): number {
+		return this.queuedBytes;
 	}
 
 	get size(): number {

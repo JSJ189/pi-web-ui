@@ -6,6 +6,11 @@ import { describe, expect, it } from "vitest";
 import { delegationDenial, DELEGATION_SYSTEM_PROMPT, delegateNoticeText } from "../../server/delegate-mode.js";
 
 describe("delegationDenial", () => {
+	it("limits merged terminal to observation", () => {
+		for (const action of ["list", "read", "wait"]) expect(delegationDenial("terminal", { action })).toBeUndefined();
+		for (const action of ["create", "close", "input", "key", "unknown"])
+			expect(delegationDenial("terminal", { action })).toBeDefined();
+	});
 	it("写类工具一律拒（主对话只审阅不施工）", () => {
 		for (const name of ["write", "edit", "edit_soft", "patch", "rm", "mkdir", "git", "notebook_edit"]) {
 			const d = delegationDenial(name, {});
@@ -46,7 +51,7 @@ describe("delegationDenial", () => {
 		expect(delegationDenial("bash", { command: "ls -la" })).toBeUndefined();
 		expect(delegationDenial("bash", { command: "npm test" })?.kind).toBe("bash");
 		expect(delegationDenial("bash", { command: "rm -rf dist" })?.kind).toBe("bash");
-		expect(delegationDenial("terminal", { command: "npm run build" })?.kind).toBe("bash");
+		expect(delegationDenial("terminal", { command: "npm run build" })?.kind).toBe("write-tool");
 		// 空命令 → 直接拒（不给「空跑」留口子）
 		expect(delegationDenial("bash", { command: "  " })?.kind).toBe("bash");
 		expect(delegationDenial("bash", {})?.kind).toBe("bash");

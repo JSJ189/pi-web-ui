@@ -3,7 +3,7 @@
  * cron 解析/下次触发是纯函数；持久行为走真实 PluginManager（不启 server）。
  * 注意：测试用的声明火期都在未来，真实 timer 永不触发（且 unref，不吊住进程）。
  */
-import { describe, expect, it, beforeEach, afterEach } from "vitest";
+import { describe, expect, it, beforeEach, afterEach, vi } from "vitest";
 import { mkdtempSync, mkdirSync, rmSync, readFileSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -150,7 +150,25 @@ describe("host.schedule 持久版", () => {
 	});
 	afterEach(() => {
 		mgr.dispose();
+		vi.useRealTimers();
 		rmSync(dir, { recursive: true, force: true });
+	});
+
+	it.each(["* * * * *", "0 0 1 3 *"])("cron %s 到期执行，分片不提前、不跳过", async (spec) => {
+		makePlugin("s");
+		const h = await hostOf("s");
+		vi.useFakeTimers();
+		vi.setSystemTime(new Date(2026, 0, 1, 0, 0, 0));
+		const dueAt = nextCronFire(parseCronSpec(spec)!, Date.now())!;
+		const fire = vi.fn();
+		const off = h.schedule(spec, fire);
+		vi.advanceTimersByTime(dueAt - Date.now() - 1);
+		expect(fire).not.toHaveBeenCalled();
+		vi.advanceTimersByTime(1);
+		expect(fire).toHaveBeenCalledTimes(1);
+		off();
+		vi.advanceTimersByTime(60_000);
+		expect(fire).toHaveBeenCalledTimes(1);
 	});
 
 	it("persistent 必须给合法 id", async () => {

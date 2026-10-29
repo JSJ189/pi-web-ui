@@ -14,16 +14,27 @@ export class CanvasClient {
 	private ws: WebSocket | null = null;
 	private readonly clientId = `canvas:${randomUuid().slice(0, 8)}`;
 	private readonly listeners = new Set<CanvasMessageListener>();
+	private readonly connectionListeners = new Set<(connected: boolean) => void>();
+	subscribeConnection(fn: (connected: boolean) => void): () => void {
+		this.connectionListeners.add(fn);
+		return () => {
+			this.connectionListeners.delete(fn);
+		};
+	}
+	private notifyConnection(connected: boolean) {
+		for (const listener of this.connectionListeners) listener(connected);
+	}
 	private disposed = false;
 	private reconnectTimer: ReturnType<typeof setTimeout> | null = null;
 	/** 当前正在编辑的工程：重连/刷新后恢复它而非硬编码 default（#704，跨会话落 localStorage）。 */
 	private currentGraphId = CanvasClient.readLastGraphId();
+	onLoadRequest?: (request: Extract<ClientMessage, { type: "canvas_load" }>) => void;
 
 	private static lastGraphKey(): string {
 		return "pi-web-ui.canvas.lastGraphId";
 	}
 
-	private static readLastGraphId(): string {
+	static readLastGraphId(): string {
 		try {
 			const saved = localStorage.getItem(CanvasClient.lastGraphKey());
 			if (saved && /^[A-Za-z0-9._-]{1,64}$/.test(saved)) return saved;
@@ -55,6 +66,7 @@ export class CanvasClient {
 
 			ws.onopen = () => {
 				if (this.ws !== ws) return;
+				this.notifyConnection(true);
 				this.send({
 					type: "hello",
 					clientId: this.clientId,
@@ -62,7 +74,9 @@ export class CanvasClient {
 				});
 				this.send({ type: "canvas_list" });
 				this.send({ type: "canvas_cards" });
-				this.send({ type: "canvas_load", id: this.currentGraphId });
+				const request = { type: "canvas_load" as const, id: this.currentGraphId, requestId: randomUuid() };
+				this.onLoadRequest?.(request);
+				this.send(request);
 			};
 
 			ws.onmessage = (ev) => {
@@ -78,9 +92,9 @@ export class CanvasClient {
 			};
 
 			ws.onclose = () => {
-				if (this.ws === ws) {
-					this.ws = null;
-				}
+				if (this.ws !== ws) return;
+				this.ws = null;
+				if (!this.disposed) this.notifyConnection(false);
 				if (!this.disposed && !this.reconnectTimer) {
 					this.reconnectTimer = setTimeout(() => {
 						this.reconnectTimer = null;
@@ -94,12 +108,6 @@ export class CanvasClient {
 	}
 
 	send(msg: ClientMessage): boolean {
-		// 跟踪当前工程：canvas_load / canvas_save 均以显式 id 为准（#704，顺带持久化）
-		if (msg.type === "canvas_load" && typeof (msg as { id?: unknown }).id === "string") {
-			this.setCurrentGraphId((msg as { id: string }).id);
-		} else if (msg.type === "canvas_save" && typeof (msg as { graph?: { id?: unknown } }).graph?.id === "string") {
-			this.setCurrentGraphId((msg as { graph: { id: string } }).graph.id);
-		}
 		if (this.ws && this.ws.readyState === WebSocket.OPEN) {
 			this.ws.send(JSON.stringify(msg));
 			return true;
@@ -122,5 +130,6 @@ export class CanvasClient {
 			this.ws = null;
 		}
 		this.listeners.clear();
+		this.connectionListeners.clear();
 	}
 }

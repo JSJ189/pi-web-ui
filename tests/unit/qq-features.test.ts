@@ -17,6 +17,111 @@ import activate, {
 	stripInternalMarkers,
 } from "../../plugins/qq/index.mjs";
 
+describe("QQ 运行归属行为", () => {
+	it("回执前事件按稳定 runId 重放，跨群不串话并用真实 ID 续聊", async () => {
+		let bridge: any;
+		const chat = vi.fn(async (req: any) => {
+			const n = chat.mock.calls.length;
+			await bridge.handleRunEvent({
+				type: "message",
+				conversationId: `real-${n}`,
+				runId: `r-${n}`,
+				message: { role: "assistant", content: `answer-${n}` },
+			});
+			await bridge.handleRunEvent({ type: "run_end", conversationId: `real-${n}`, runId: `r-${n}` });
+			return { conversationId: `real-${n}`, runId: `r-${n}` };
+		});
+		bridge = new QqBotBridge({ host: { chat }, getConfig: () => ({}) });
+		bridge.replyMessage = vi.fn(async () => {});
+		for (const group of ["a", "b", "a"]) {
+			await bridge.onInboundMessage(
+				{ id: String(chat.mock.calls.length), group_openid: group, author: { id: "same" }, content: "hello" },
+				"GROUP_AT_MESSAGE_CREATE",
+			);
+		}
+		expect(chat.mock.calls[0][0].accountId).not.toBe(chat.mock.calls[1][0].accountId);
+		expect(chat.mock.calls[2][0].conversationId).toBe("real-1");
+		expect(bridge.replyMessage.mock.calls.map(([target, text]: any[]) => [target.groupOpenid, text])).toEqual([
+			["a", "answer-1"],
+			["b", "answer-2"],
+			["a", "answer-3"],
+		]);
+		expect(bridge.pendingRuns.size).toBe(0);
+		expect(bridge.runIdIndex.size).toBe(0);
+		await bridge.stop();
+	});
+
+	it.each(["/new", "/clear", "/cwd default"])("%s 更换 accountId epoch，不复用宿主旧上下文", async (command) => {
+		const chat = vi.fn(async (_req: any) => ({
+			conversationId: `real-${chat.mock.calls.length}`,
+			runId: `run-${chat.mock.calls.length}`,
+		}));
+		const bridge = new QqBotBridge({ host: { chat }, getConfig: () => ({}) });
+		bridge.replyMessage = vi.fn(async () => {});
+		await bridge.driveAuthor("u", "first", { userOpenid: "u" });
+		await bridge.handleRunEvent({ type: "run_end", conversationId: "real-1", runId: "run-1" });
+		await bridge.handleSlashCommand(command, { authorId: "u", replyTarget: {}, cfg: {} });
+		await bridge.driveAuthor("u", "second", { userOpenid: "u" });
+		expect(chat.mock.calls[1][0].accountId).not.toBe(chat.mock.calls[0][0].accountId);
+		expect(chat.mock.calls[1][0].conversationId).not.toBe("real-1");
+		await bridge.stop();
+	});
+
+	it("/stop 在附件下载前执行", async () => {
+		const bridge = new QqBotBridge({ host: {}, getConfig: () => ({}) });
+		bridge.replyMessage = vi.fn(async () => {});
+		const collect = vi.spyOn(bridge, "collectInboundMedia");
+		await bridge.onInboundMessage(
+			{ id: "stop-media", author: { id: "u" }, content: "/stop", attachments: [{ url: "https://cdn/slow.png" }] },
+			"C2C_MESSAGE_CREATE",
+		);
+		expect(collect).not.toHaveBeenCalled();
+		await bridge.stop();
+	});
+
+	it("同用户不同 thread 使用不同会话键", () => {
+		const bridge = new QqBotBridge({ host: {}, getConfig: () => ({}) });
+		expect(bridge.sessionPeer("u", { channelId: "c", threadId: "a" })).not.toBe(
+			bridge.sessionPeer("u", { channelId: "c", threadId: "b" }),
+		);
+	});
+
+	it("旧宿主回执没有 runId 时中止真实 conversationId", async () => {
+		const abortRun = vi.fn(async (_id: string) => ({ ok: true }));
+		const bridge = new QqBotBridge({
+			host: { chat: vi.fn(async () => ({ conversationId: "legacy-real" })), abortRun },
+			getConfig: () => ({}),
+		});
+		bridge.replyMessage = vi.fn(async () => {});
+		await bridge.driveAuthor("u", "work", { userOpenid: "u" });
+		await bridge.handleSlashCommand("/abort", { authorId: "u", replyTarget: {}, cfg: {} });
+		expect(abortRun).toHaveBeenCalledExactlyOnceWith("legacy-real");
+		await bridge.stop();
+	});
+
+	it("/abort、/stop、/8 优先中止稳定 runId，失败保留运行并诚实提示", async () => {
+		const abortRun = vi.fn().mockResolvedValue({ ok: false, error: "拒绝" });
+		const bridge = new QqBotBridge({
+			host: { chat: vi.fn(async () => ({ conversationId: "real", runId: "pr-qq-stable" })), abortRun },
+			getConfig: () => ({}),
+		});
+		bridge.replyMessage = vi.fn(async () => {});
+		await bridge.driveAuthor("u", "work", { userOpenid: "u" });
+		await bridge.handleSlashCommand("/abort", { authorId: "u", replyTarget: {}, cfg: {} });
+		expect(abortRun).toHaveBeenCalledWith("pr-qq-stable");
+		expect(bridge.pendingRuns.size).toBeGreaterThan(0);
+		expect(bridge.replyMessage).toHaveBeenCalledWith({}, expect.stringContaining("中止失败"));
+		abortRun.mockResolvedValue({ ok: true });
+		await bridge.handleSlashCommand("/stop", { authorId: "u", replyTarget: {}, cfg: {} });
+		expect(bridge.pendingRuns.size).toBe(0);
+		expect(bridge.runIdIndex.size).toBe(0);
+		await bridge.driveAuthor("u", "again", { userOpenid: "u" });
+		await bridge.handleSlashCommand("/8", { authorId: "u", replyTarget: {}, cfg: {} });
+		expect(abortRun.mock.calls.map(([id]) => id)).toEqual(["pr-qq-stable", "pr-qq-stable", "pr-qq-stable"]);
+		await bridge.stop();
+	});
+});
+
 describe("QQ 纯函数与辅助方法测试", () => {
 	it("stripInternalMarkers 剥离内部标记与清理空行", () => {
 		const raw = "这是回答[[plan:123]]中间内容[[conv:xyz]]结尾。\n\n\n新行";
@@ -461,7 +566,7 @@ describe("QqBotBridge 双工逻辑测试", () => {
 			"AT_MESSAGE_CREATE",
 		);
 
-		expect(bridge.userModels.get("USER_A")).toBe("deepseek/deepseek-chat");
+		expect(bridge.userModels.get(bridge.sessionPeer("USER_A", { channelId: "c_123" }))).toBe("deepseek/deepseek-chat");
 
 		// 2. 发送 /5 thinking high
 		await bridge.onInboundMessage(
@@ -474,7 +579,7 @@ describe("QqBotBridge 双工逻辑测试", () => {
 			"AT_MESSAGE_CREATE",
 		);
 
-		expect(bridge.userThinkingLevels.get("USER_A")).toBe("high");
+		expect(bridge.userThinkingLevels.get(bridge.sessionPeer("USER_A", { channelId: "c_123" }))).toBe("high");
 
 		// 3. 用户发送普通消息，验证 chatSpy 接收到了 model 与 thinkingLevel
 		await bridge.onInboundMessage(
@@ -683,7 +788,7 @@ describe("QqBotBridge 双工逻辑测试", () => {
 		expect(chats.length).toBe(1);
 		expect(chats[0].conversationId).toBe("c5");
 		expect(chats[0].lastUserText).toBe("今日新闻");
-		expect(bridge.userActiveConvs.get("E009F0BF1B068C38C46CF14EA50FCCA3")).toBe("c5");
+		expect([...bridge.userActiveConvs.values()]).toContain("c5");
 
 		// 运行结束
 		await runHandler!({

@@ -21,7 +21,10 @@ import type { UiAgentPreset, DshPermissionOption } from "./protocol.js";
 /** 画布流水线编辑工具（定义见 canvas/canvas-agent-tool.ts，单 action：list/get/add_node/update_node/delete_node/add_edge/delete_edge/apply_dag）。 */
 export const CANVAS_TOOL_NAME = "canvas";
 /** 持久终端工具（定义见 terminals.ts，工具名在此唯一登记）。 */
-export const TERMINAL_TOOL_NAMES = [
+export const TERMINAL_TOOL_NAME = "terminal";
+export const TERMINAL_TOOL_NAMES = [TERMINAL_TOOL_NAME] as const;
+/** Persisted names only; never register these as active tools. */
+export const LEGACY_TERMINAL_TOOL_NAMES = [
 	"terminal_create",
 	"terminal_list",
 	"terminal_close",
@@ -32,8 +35,9 @@ export const TERMINAL_TOOL_NAMES = [
 ] as const;
 
 /** 第一方子代理工具（定义见 subagents.ts，统一为单 action 工具）。 */
+export const CONVERSATION_TOOL_NAME = "conversation";
 export const SUBAGENT_TOOL_NAME = "subagent";
-export const SUBAGENT_TOOL_NAMES = [SUBAGENT_TOOL_NAME] as const;
+export const SUBAGENT_TOOL_NAMES = [CONVERSATION_TOOL_NAME, SUBAGENT_TOOL_NAME] as const;
 
 /** 旧版 8 个独立子代理工具名（持久化配置迁移用）。 */
 export const LEGACY_SUBAGENT_TOOL_NAMES = [
@@ -56,9 +60,8 @@ export const ASK_USER_QUESTION_TOOL_NAME = "ask_user_question";
 /** 浏览器页面操作工具（定义见 agent-service.ts makeBrowserPageTool）：模型经
  *  page-picker 浏览器扩展读/操作用户已授权的页面。 */
 export const BROWSER_PAGE_TOOL_NAME = "browser_page";
-/** 别的对话读取工具（定义见 conversation-read-tool.ts）：运行中对话（含子代理）+
- *  历史会话转录，只读。 */
-export const CONVERSATION_READ_TOOL_NAME = "conversation_read";
+/** Compatibility constant: running/history transcript inspection is part of conversation. */
+export const CONVERSATION_READ_TOOL_NAME = CONVERSATION_TOOL_NAME;
 /** 技能全文按名加载工具（定义见 skill-tool.ts）：名录见 {{skills}} 段，
  *  全文走本工具按需取，不再让模型拼路径调 read。 */
 export const SKILL_TOOL_NAME = "skill";
@@ -90,6 +93,8 @@ export const MCP_MANAGE_TOOL_NAME = "mcp_manage";
 export const SANDBOX_TOOL_NAME = "sandbox";
 /** Git 工作树管理工具（定义见 worktree-tool.ts）：创建/切换/清理工作树，保持多 PR 开发与界面工作区同步。 */
 export const WORKTREE_TOOL_NAME = "worktree";
+/** Bound local device collaboration service. */
+export const DEVICE_COLLAB_TOOL_NAME = "device_collab";
 /** QuickJS WASM 沙箱代码执行与批量调用工具（SDK 内置 codemode 扩展）。 */
 export const CODEMODE_TOOL_NAME = "codemode";
 /** 基于 BM25 算法的延迟工具检索与激活工具（SDK 内置 tool-search 扩展）。 */
@@ -174,15 +179,6 @@ export const AGENT_TOOL_CATALOG: AgentToolEntry[] = [
 		dshVisible: false,
 		descKey: "browserPageEnabledDesc",
 		offHintKey: "browserPageOffHint",
-	},
-	// 只读别的对话（含子代理实时消息与历史转录），默认开；DSH 引擎没有该 customTool。
-	{
-		name: CONVERSATION_READ_TOOL_NAME,
-		group: "other",
-		defaultOn: true,
-		dshVisible: false,
-		descKey: "conversationReadEnabledDesc",
-		offHintKey: "conversationReadOffHint",
 	},
 	// 文件认领（事前打招呼，纯 advisory）：默认开，不打开 AI 不知道能认领；
 	// 关掉只少一路提醒（事后触碰集照常工作）；DSH 引擎没有该 customTool
@@ -317,6 +313,14 @@ export const AGENT_TOOL_CATALOG: AgentToolEntry[] = [
 		offHintKey: "toolsWorktreeOffHint",
 	},
 	{
+		name: DEVICE_COLLAB_TOOL_NAME,
+		group: "other",
+		defaultOn: false,
+		dshVisible: false,
+		descKey: "toolsDeviceCollabDesc",
+		offHintKey: "toolsDeviceCollabOffHint",
+	},
+	{
 		name: CANVAS_TOOL_NAME,
 		group: "other",
 		defaultOn: true,
@@ -425,7 +429,7 @@ export function isConfigurableAgentTool(name: string): boolean {
 
 /** 根据禁用名单计算出当前系统中真正启用的可用工具列表（只取当前系统可用的配置）。 */
 export function resolveEnabledAgentTools(disabled: readonly string[]): string[] {
-	const disabledSet = new Set(disabled);
+	const disabledSet = new Set(normalizeDisabledAgentTools(disabled));
 	return ALL_KNOWN_AGENT_TOOL_NAMES.filter((name) => !disabledSet.has(name));
 }
 
@@ -435,6 +439,8 @@ export function resolveEnabledAgentTools(disabled: readonly string[]): string[] 
  */
 export function resolveDisabledAgentToolsFromEnabled(enabled: readonly string[]): string[] {
 	const enabledSet = new Set(enabled);
+	// An old per-action allowlist grants the merged tool only when all actions were enabled.
+	if (LEGACY_TERMINAL_TOOL_NAMES.every((name) => enabledSet.has(name))) enabledSet.add(TERMINAL_TOOL_NAME);
 	return ALL_KNOWN_AGENT_TOOL_NAMES.filter((name) => !enabledSet.has(name));
 }
 
@@ -445,9 +451,17 @@ export function normalizeDisabledAgentTools(v: unknown): string[] {
 	const out: string[] = [];
 	for (const x of v) {
 		let name = x;
+		if (typeof name === "string" && (LEGACY_TERMINAL_TOOL_NAMES as readonly string[]).includes(name)) {
+			name = TERMINAL_TOOL_NAME;
+		}
 		// 旧版子代理工具迁移：任意旧 subagent_* 关闭均迁移为关闭 subagent 工具。
 		if (typeof name === "string" && (LEGACY_SUBAGENT_TOOL_NAMES as readonly string[]).includes(name)) {
-			name = SUBAGENT_TOOL_NAME;
+			name = CONVERSATION_TOOL_NAME;
+		}
+		if (name === "conversation_read") name = CONVERSATION_TOOL_NAME;
+		if (typeof name === "string" && (SUBAGENT_TOOL_NAMES as readonly string[]).includes(name)) {
+			for (const alias of SUBAGENT_TOOL_NAMES) if (!out.includes(alias)) out.push(alias);
+			continue;
 		}
 		// 旧版定时任务三件套迁移：任意旧 schedule_* 关闭均迁移为关闭 schedule 工具（#193）。
 		if (typeof name === "string" && (LEGACY_SCHEDULE_TOOL_NAMES as readonly string[]).includes(name)) {
@@ -525,8 +539,8 @@ export function setAgentToolsEnabled(session: ActiveToolSet, names: readonly str
  * 1. 宿主受管工具（Host-Managed Tools，即核心内置工具 + AGENT_TOOL_CATALOG 工具）：
  *    由 Web UI 的 disabledAgentTools 开关、模式硬闸门与预设白名单完全掌控状态。
  * 2. 扩展自主工具（Extension-Owned Tools，如 pi-web-search 的 url_context 等）：
- *    Web UI 默认信任其在活跃集中的既有状态（getActiveToolNames），绝不擅自重新启用
- *    已被扩展主动关闭的外部工具，避免破坏模型的 Prompt 缓存前缀。
+ *    Web UI 继承其既有活跃状态（getActiveToolNames），同时应用本次禁用集（延迟加载、
+ *    子代理白名单等）；绝不擅自重新启用已被扩展主动关闭的外部工具。
  * 3. 预设安全过滤：预设（Preset）只对最终候选集做安全收缩（例如 ask 纯对话清空所有工具，
  *    minimal 仅保留 bash+read 等）。
  *
@@ -554,7 +568,7 @@ export function applyAgentToolsGating(
 		for (const name of allNames) {
 			if (isHostManagedTool(name)) {
 				names.add(name);
-			} else if (initialActiveNames.has(name)) {
+			} else if (initialActiveNames.has(name) && !off.has(name)) {
 				names.add(name);
 			}
 		}
@@ -563,7 +577,7 @@ export function applyAgentToolsGating(
 			if (off.has(t.name)) {
 				// issue #481: 若第三方扩展注册了同名工具（如 nicobailon/pi-subagents 的 subagent），
 				// 关闭内置工具时允许扩展工具透传，不从活跃名单删除；其余由扩展自身注册的工具（如 codemode）正常随禁用名单剔除
-				const isShadowedCustomTool = t.name === "subagent";
+				const isShadowedCustomTool = (SUBAGENT_TOOL_NAMES as readonly string[]).includes(t.name);
 				const hasExtensionTool =
 					isShadowedCustomTool &&
 					Boolean(

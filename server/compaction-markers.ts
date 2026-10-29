@@ -269,12 +269,15 @@ export function repairSessionTranscript(raw: string): TranscriptRepairResult {
 	if (live.length > 0) {
 		const byId = new Map<string, Slot>();
 		for (const s of live) if (s.finalId !== null) byId.set(s.finalId, s);
+		// 每条已完成路径均已到根、悬空引用或已截断的环，后续无需重复回溯。
+		// 保留 live 的遍历顺序与路径内的重复检测，确保断环位置与原实现一致。
+		const completed = new Set<string>();
 		for (const s of live) {
-			if (!s.entry) continue;
+			if (!s.entry || completed.has(s.finalId as string)) continue;
 			const seen = new Set<string>([s.finalId as string]);
 			let prev = s;
 			let cur = parentIdOf(s.entry);
-			while (cur !== null) {
+			while (cur !== null && !completed.has(cur)) {
 				if (seen.has(cur)) {
 					prev.entry!.parentId = null;
 					prev.dirty = true;
@@ -287,6 +290,7 @@ export function repairSessionTranscript(raw: string): TranscriptRepairResult {
 				prev = next;
 				cur = parentIdOf(next.entry);
 			}
+			for (const id of seen) completed.add(id);
 		}
 	}
 

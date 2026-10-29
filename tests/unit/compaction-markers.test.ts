@@ -1,7 +1,7 @@
 import { existsSync, mkdtempSync, readFileSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { describe, expect, it } from "vitest";
+import { describe, expect, it, vi } from "vitest";
 import { SessionManager } from "@earendil-works/pi-coding-agent";
 import {
 	COMPACTION_DONE_TYPE,
@@ -86,6 +86,107 @@ describe("repairSessionTranscript", () => {
 		const r = repairSessionTranscript(raw);
 		expect(r.changed).toBe(false);
 		expect(r.text).toBe(raw);
+	});
+
+	it.each([1000, 4000])("健康 %i 节点长链原样返回且 Map 查找次数线性有界", (size) => {
+		const raw =
+			[HEADER, ...Array.from({ length: size }, (_, i) => msg(`n${i}`, i === 0 ? null : `n${i - 1}`))].join("\n") + "\n";
+		// 统计结构操作而非耗时；覆盖整个修复入口，避免恢复逐节点回溯而测试仍通过。
+		const get = vi.spyOn(Map.prototype, "get");
+		let lookups: number;
+		let result: ReturnType<typeof repairSessionTranscript>;
+		try {
+			result = repairSessionTranscript(raw);
+			lookups = get.mock.calls.length;
+		} finally {
+			get.mockRestore();
+		}
+		expect(result.changed).toBe(false);
+		expect(result.text).toBe(raw);
+		expect(result.cyclesBroken).toBe(0);
+		expect(lookups).toBeLessThan(size * 20);
+	});
+
+	it("长前向路径进入真正环时仅截断原算法选择的边，保留长正文", () => {
+		const size = 4000;
+		const rows = Array.from({ length: size }, (_, i) =>
+			JSON.parse(msg(`n${i}`, i === size - 1 ? "n2000" : `n${i + 1}`)),
+		);
+		rows[size - 1].message.content = "z".repeat(1200);
+		const raw = [HEADER, ...rows.map((row) => JSON.stringify(row))].join("\n") + "\n";
+		const get = vi.spyOn(Map.prototype, "get");
+		let lookups: number;
+		let result: ReturnType<typeof repairSessionTranscript>;
+		try {
+			result = repairSessionTranscript(raw);
+			lookups = get.mock.calls.length;
+		} finally {
+			get.mockRestore();
+		}
+		expect(lookups).toBeLessThan(size * 20);
+		expect(result.cyclesBroken).toBe(1);
+		expect(result.removedPending).toBe(0);
+		expect(result.renamedIds).toBe(0);
+		expect(result.rewiredParents).toBe(0);
+		const actual = new Map(
+			result.text
+				.split("\n")
+				.filter(Boolean)
+				.map((line) => {
+					const row = JSON.parse(line);
+					return [row.id, row];
+				}),
+		);
+		rows[size - 1].parentId = null;
+		for (const row of rows) expect(actual.get(row.id)).toEqual(row);
+		expect(repairSessionTranscript(result.text).changed).toBe(false);
+	});
+
+	it("穷举四节点父图，与旧逐节点回溯的断边和次数一致", () => {
+		const ids = ["a", "b", "c", "d"];
+		const targets = [null, "missing", ...ids];
+		// 包含自环、多独立环、共享祖先、前向引用、悬空引用及路径进入环。
+		for (let code = 0; code < targets.length ** ids.length; code++) {
+			let digits = code;
+			const rows = ids.map((id) => {
+				const parent = targets[digits % targets.length];
+				digits = Math.floor(digits / targets.length);
+				return JSON.parse(msg(id, parent));
+			});
+			const raw = [HEADER, ...rows.map((row) => JSON.stringify(row))].join("\n") + "\n";
+			const byId = new Map(rows.map((row) => [row.id, row]));
+			let cycles = 0;
+			// 原实现作为独立语义参照，按物理行序选择重复边的前驱。
+			for (const row of rows) {
+				const seen = new Set([row.id]);
+				let prev = row;
+				let cur = row.parentId;
+				while (cur !== null) {
+					if (seen.has(cur)) {
+						prev.parentId = null;
+						cycles++;
+						break;
+					}
+					seen.add(cur);
+					const next = byId.get(cur);
+					if (!next) break;
+					prev = next;
+					cur = next.parentId;
+				}
+			}
+			const result = repairSessionTranscript(raw);
+			expect(result.cyclesBroken, `graph ${code}`).toBe(cycles);
+			const repaired = new Map(
+				result.text
+					.split("\n")
+					.filter(Boolean)
+					.map((line) => {
+						const row = JSON.parse(line);
+						return [row.id, row];
+					}),
+			);
+			for (const row of rows) expect(repaired.get(row.id), `graph ${code}`).toEqual(row);
+		}
 	});
 
 	it("移除残留 pending：子节点旁路到 pending 的 parent，interrupted=true", () => {

@@ -325,7 +325,7 @@ export async function startMockSsh(pluginDir, port, opts = {}) {
 	const { createRequire } = await import("node:module");
 	const { generateKeyPairSync } = await import("node:crypto");
 	const req = createRequire(join(pluginDir, "package.json"));
-	const { Server } = req("ssh2");
+	const { Server, utils } = req("ssh2");
 	// RSA PKCS#1 PEM（ed25519 只能导出 PKCS#8，ssh2 的 parseKey 不认）
 	const HOST_KEY = generateKeyPairSync("rsa", { modulusLength: 2048 }).privateKey.export({
 		type: "pkcs1",
@@ -584,6 +584,7 @@ export async function startMockSsh(pluginDir, port, opts = {}) {
 			srv.on("error", reject);
 			srv.listen(port, "127.0.0.1", () =>
 				resolve({
+					hostPublicKey: utils.parseKey(HOST_KEY).getPublicSSH(),
 					latency,
 					failTar,
 					close() {

@@ -378,7 +378,11 @@ describe("wechat-ilink: 斜杠快捷指令 (Slash Commands)", () => {
 			return { ok: true, json: async () => ({}) } as Response;
 		});
 
-		const hostChatSpy = vi.fn(async () => ({ conversationId: "conv_test_123", clientId: "client_test" }));
+		const hostChatSpy = vi.fn(async () => ({
+			conversationId: "conv_test_123",
+			clientId: "client_test",
+			runId: "pr-wechat-stop",
+		}));
 		const hostAbortSpy = vi.fn(async () => ({ ok: true }));
 		const hostExecCommandSpy = vi.fn(async (name: string, args: string) => {
 			if (name === "todo") return { ok: true, result: `✅ 已加入待办：${args}` };
@@ -495,7 +499,7 @@ describe("wechat-ilink: 斜杠快捷指令 (Slash Commands)", () => {
 			enqueueMsg("/stop");
 			await vi.waitFor(() => expect(replies.length).toBeGreaterThanOrEqual(14));
 			expect(replies[replies.length - 1]).toContain("已中止当前正在执行的任务");
-			expect(hostAbortSpy).toHaveBeenCalledWith("conv_test_123");
+			expect(hostAbortSpy).toHaveBeenCalledWith("pr-wechat-stop");
 
 			// 10. 测试未知斜杠指令不被拦截，透传给 agent 执行
 			hostChatSpy.mockClear();
@@ -1154,19 +1158,19 @@ describe("wechat-ilink: 斜杠快捷指令 (Slash Commands)", () => {
 			});
 			expect(runHandler).toBeDefined();
 
-			// 别人的运行（runId 不同、clientId 也不同、id 也被改过）：绝不认领。
+			// 同一客户端/会话的另一运行仍不能认领。
 			runHandler!({
 				type: "message",
-				conversationId: "c9",
-				clientId: "client_browser_tab3",
+				conversationId: "c1",
+				clientId: wechatClientId,
 				runId: "pr-someone-else",
 				at: Date.now(),
 				message: { role: "assistant", content: [{ type: "text", text: "不该发给微信的内容" }] },
 			});
 			runHandler!({
 				type: "run_end",
-				conversationId: "c9",
-				clientId: "client_browser_tab3",
+				conversationId: "c1",
+				clientId: wechatClientId,
 				runId: "pr-someone-else",
 				at: Date.now(),
 			});
@@ -1176,6 +1180,160 @@ describe("wechat-ilink: 斜杠快捷指令 (Slash Commands)", () => {
 			cleanup?.();
 		} finally {
 			globalThis.fetch = origFetch;
+		}
+	});
+});
+
+describe("wechat-ilink: 回执与入站边界行为", () => {
+	async function runInbound(
+		messages: Record<string, unknown>[],
+		chatImpl?: (req: any, emit: (ev: any) => void) => any,
+	) {
+		const replies: string[] = [];
+		let emit = (_ev: any) => {};
+		let polled = false;
+		const storage = new Map<string, unknown>();
+		const original = globalThis.fetch;
+		globalThis.fetch = vi.fn(async (url: any, init?: RequestInit) => {
+			if (String(url).includes("getupdates")) {
+				if (!polled) {
+					polled = true;
+					return { ok: true, json: async () => ({ ret: 0, msgs: messages }) } as Response;
+				}
+				await new Promise<void>((resolve) => init?.signal?.addEventListener("abort", () => resolve(), { once: true }));
+				return { ok: true, json: async () => ({ ret: 0, msgs: [] }) } as Response;
+			}
+			if (String(url).includes("sendmessage"))
+				replies.push(JSON.parse(String(init?.body)).msg.item_list[0].text_item?.text ?? "");
+			return { ok: true, json: async () => ({ ret: 0 }) } as Response;
+		});
+		const chat = vi.fn(async (req: any) =>
+			chatImpl ? chatImpl(req, emit) : { conversationId: "real-conv", clientId: "real-client", runId: "pr-stable-run" },
+		);
+		const abortRun = vi.fn(async (_id: string) => ({ ok: true }));
+		const host = {
+			getSettings: () => ({ autoDrive: true, typing: false, allowFrom: "*", respondGroups: true }),
+			onSettingsChanged: () => () => {},
+			storage: {
+				get: (k: string, d: unknown) => (storage.has(k) ? storage.get(k) : d),
+				set: (k: string, v: unknown) => storage.set(k, v),
+			},
+			secrets: { get: () => "token", set: vi.fn(), delete: vi.fn() },
+			cwd: process.cwd(),
+			log: vi.fn(),
+			notify: vi.fn(),
+			broadcast: vi.fn(),
+			sendTo: vi.fn(),
+			onRunEvent: (fn: typeof emit) => {
+				emit = fn;
+				return () => {};
+			},
+			onMessage: () => () => {},
+			onAttach: () => () => {},
+			registerAgentTool: vi.fn(),
+			registerBackgroundTask: () => ({ update: vi.fn(), unregister: vi.fn() }),
+			chat,
+			abortRun,
+		};
+		const cleanup = wechatPlugin.activate(host as never);
+		return {
+			chat,
+			abortRun,
+			replies,
+			emit: (ev: any) => emit(ev),
+			close: () => {
+				cleanup?.();
+				globalThis.fetch = original;
+			},
+		};
+	}
+	const msg = (extra = {}) => ({
+		message_type: 1,
+		from_user_id: "same-user",
+		item_list: [{ type: 1, text_item: { text: "你好" } }],
+		...extra,
+	});
+	it.each(["/stop", "/abort", "/new", "/clear"])("%s 中止优先回执中的稳定 runId", async (command) => {
+		const h = await runInbound([msg(), msg({ item_list: [{ type: 1, text_item: { text: command } }] })]);
+		try {
+			await vi.waitFor(() => expect(h.abortRun).toHaveBeenCalledWith("pr-stable-run"));
+			expect(h.abortRun).not.toHaveBeenCalledWith("real-conv");
+		} finally {
+			h.close();
+		}
+	});
+	it.each(["/new", "/clear", `/cwd ${process.cwd()}`])("%s 后下一次 host.chat 使用独立 accountId", async (command) => {
+		const h = await runInbound([msg(), msg({ item_list: [{ type: 1, text_item: { text: command } }] }), msg()]);
+		try {
+			await vi.waitFor(() => expect(h.chat).toHaveBeenCalledTimes(2));
+			expect(h.chat.mock.calls[0]![0].accountId).not.toBe(h.chat.mock.calls[1]![0].accountId);
+		} finally {
+			h.close();
+		}
+	});
+	it("媒体下载未完成时 /stop 立即响应，下载完成也不再发起运行", async () => {
+		const original = globalThis.fetch;
+		const h = await runInbound([
+			msg({ item_list: [{ type: 2, image_item: { media: { full_url: "https://slow-media.test/image" } } }] }),
+			msg({ item_list: [{ type: 1, text_item: { text: "/stop" } }] }),
+		]);
+		const network = globalThis.fetch;
+		let finish: ((response: Response) => void) | undefined;
+		globalThis.fetch = vi.fn((url: any, init?: RequestInit) =>
+			String(url).startsWith("https://slow-media.test")
+				? new Promise<Response>((r) => {
+						finish = r;
+					})
+				: network(url, init),
+		);
+		try {
+			await vi.waitFor(() => expect(h.replies).toContain("当前没有正在执行的任务。"));
+			expect(h.chat).not.toHaveBeenCalled();
+			finish?.({ ok: true, arrayBuffer: async () => new Uint8Array([1, 2, 3]).buffer } as Response);
+			await new Promise((r) => setTimeout(r, 20));
+			expect(h.chat).not.toHaveBeenCalled();
+		} finally {
+			h.close();
+			globalThis.fetch = original;
+		}
+	});
+	it("仅私聊：同用户群/thread 不创建运行且不污染私聊", async () => {
+		const h = await runInbound([msg({ group_id: "g1" }), msg({ group_id: "g2" }), msg({ thread_id: "t1" }), msg()]);
+		try {
+			await vi.waitFor(() => expect(h.chat).toHaveBeenCalledTimes(1));
+			expect(h.chat.mock.calls[0]![0].accountId).toBe(peerAccountId("same-user"));
+		} finally {
+			h.close();
+		}
+	});
+	it("回执前完成的稳定 runId 事件在真实会话回执后只回复一次", async () => {
+		const h = await runInbound([msg()], (req, emit) => {
+			const ev = { conversationId: "real-conv", clientId: `plugin:wechat-ilink:${req.accountId}`, runId: "stable-run" };
+			emit({
+				...ev,
+				type: "message",
+				message: { role: "assistant", content: [{ type: "text", text: "早到的真实结果" }] },
+			});
+			emit({ ...ev, type: "run_end" });
+			return { conversationId: "real-conv", clientId: ev.clientId, runId: "stable-run" };
+		});
+		try {
+			await vi.waitFor(() => expect(h.replies).toEqual(["早到的真实结果"]));
+		} finally {
+			h.close();
+		}
+	});
+	it("宿主拒绝不静默成功，语音无 ASR 直接诚实告知", async () => {
+		const h = await runInbound([msg({ item_list: [{ type: 3, voice_item: {} }] })], () => ({
+			ok: false,
+			error: "attachment unsupported",
+		}));
+		try {
+			await vi.waitFor(() => expect(h.replies.some((t) => t.includes("执行失败：attachment unsupported"))).toBe(true));
+			expect(h.replies.some((t) => t.includes("未接入语音识别（ASR）"))).toBe(true);
+			expect(h.chat.mock.calls[0]![0].text).toContain("无法听取内容");
+		} finally {
+			h.close();
 		}
 	});
 });
@@ -1428,6 +1586,45 @@ describe("wechat-ilink: 媒体双向链路（CDN 上传/下载）", () => {
 			expect(savedPath).toContain(".pi-wechat-media");
 			expect(existsSync(savedPath)).toBe(true);
 			expect(readFileSync(savedPath).equals(png)).toBe(true);
+			expect(host.chat).toHaveBeenLastCalledWith(
+				expect.objectContaining({
+					attachments: [
+						expect.objectContaining({ path: "", imageData: png.toString("base64"), mimeType: "image/png" }),
+					],
+				}),
+			);
+			// 相同一秒内图片/文件/视频都交付真实附件，文件名不能碰撞覆盖。
+			for (const [type, kind] of [
+				[4, "file"],
+				[5, "video"],
+			] as const) {
+				inboundQueue.push({
+					message_type: 1,
+					from_user_id: "peer_zed",
+					item_list: [
+						{
+							type,
+							[`${kind}_item`]: {
+								file_name: "clip.mp4",
+								media: { full_url: "https://cdn.test/download?x=1", aes_key: inboundKey.toString("base64") },
+							},
+						},
+					],
+				});
+				ctl.wake?.();
+				await vi.waitFor(() => expect(host.chat).toHaveBeenCalledTimes(type === 4 ? 2 : 3));
+				expect(host.chat).toHaveBeenLastCalledWith(
+					expect.objectContaining({
+						attachments: [
+							expect.objectContaining({
+								mode: "reference",
+								name: expect.any(String),
+								path: expect.stringContaining(".pi-wechat-media"),
+							}),
+						],
+					}),
+				);
+			}
 		} finally {
 			cleanup?.();
 			globalThis.fetch = origFetch;

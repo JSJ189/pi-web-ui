@@ -33,6 +33,7 @@ import type {
 	SlashCommandInfo,
 } from "../protocol.js";
 import { FilesService } from "../files-service.js";
+import { uploadLimitBytes } from "../payload-limits.js";
 import { TerminalManager, makePersistentTerminalTools } from "../terminals.js";
 import { TERMINAL_TOOL_NAMES } from "../tool-manager.js";
 import type { ToolDefinition } from "@earendil-works/pi-coding-agent";
@@ -44,6 +45,7 @@ import { ClaudeCodeDriver, probeClaudeCode } from "./drivers/claude-code.js";
 import type { UniversalSessionStore } from "./session-store.js";
 import type { UniversalConversation } from "./universal-types.js";
 import { type ClientStateStore, normalizeUiLayout, type ClientSettings, settingsPresetToUi } from "../client-state.js";
+import { messageTextWithQuotes } from "../text-quote.js";
 import {
 	readModelsJson,
 	getModelThinkingLevelFromSettings,
@@ -52,6 +54,7 @@ import {
 import { DEFAULT_UNIVERSAL_CAPABILITIES } from "../engine-capabilities.js";
 import { unsupportedToolInfo } from "../tool-info.js";
 import { SandboxManager } from "../sandbox-service.js";
+import { assertEngineWorkspaceSupported } from "../sandbox-engines.js";
 import { getWorktreeContext, removeWorktree } from "../worktree-service.js";
 import { MarkerService } from "../marker-service.js";
 import { SlashCommandsService, parseSlash } from "../slash-commands.js";
@@ -91,6 +94,7 @@ import {
 	importPresetFromUrlVia,
 	pushPresetCatalogVia,
 	sharePresetVia,
+	sanitizePresetSettings,
 	type PresetSharePort,
 } from "../preset-share.js";
 
@@ -144,6 +148,11 @@ export class UniversalSession implements DispatchSession {
 	/** 在途回合归属的会话 id（#700/#701）：prompt 开始时锚定，finalizeTurn 收尾时消费并清空。
 	 *  会话切换/回滚不再让流式回写与回合收尾锚错会话，避免跨对话内容污染落盘。 */
 	private turnConvId: string | null = null;
+	private turn: { conv: UniversalConversation; cwd: string } | null = null;
+	private projectGeneration = 0;
+	private switchingProject = false;
+	private abortPromise: Promise<void> | null = null;
+	private markerOrigins = new Map<string, { conv: UniversalConversation; cwd: string }>();
 	private streamingMessage: UiMessage | null = null;
 	private streamingThinking = "";
 	private streamingText = "";
@@ -194,6 +203,7 @@ export class UniversalSession implements DispatchSession {
 		this.pluginCommandsProvider = opts.pluginCommandsProvider;
 		this.onQuit = opts.onQuit;
 		this.sandboxes = new SandboxManager(this.dataDir);
+		assertEngineWorkspaceSupported(this.sandboxes, this.cwd, this.engine);
 		void this.refreshWorktreeInfo();
 		this.lang = opts.lang ?? "zh";
 		this.webUi = new WebUIContext((msg) => this.send(msg));
@@ -353,7 +363,12 @@ export class UniversalSession implements DispatchSession {
 			getActiveConversationId: () => this.activeConvId,
 			getSessionManager: () => undefined,
 			renameConversation: (convId, title) => {
-				void this.renameConversation(convId, title);
+				const origin = this.markerOrigins.get(convId);
+				if (!origin || this.disposed) return;
+				origin.conv.title = title;
+				origin.conv.updatedAt = Date.now();
+				if (!origin.conv.isEphemeral) this.store.saveConversation(origin.cwd, origin.conv);
+				if (this.cwd === origin.cwd) this.flushSnapshot();
 			},
 			refreshMarkers: () => this.flushSnapshot(),
 			onActionsChange: (convId) => {
@@ -409,12 +424,14 @@ export class UniversalSession implements DispatchSession {
 			isDisposed: () => this.disposed,
 			getCwd: () => this.cwd,
 			getActiveCwd: () => this.cwd,
+			getUploadMaxBytes: () => uploadLimitBytes(this.stateStore?.getSettings(this.clientId) ?? {}, "workspace"),
 		});
 
 		this.terminals = new TerminalManager(
 			(msg) => this.send(msg),
-			this.cwd,
+			() => this.cwd,
 			() => this.getLang(),
+			"client",
 		);
 
 		this.bg = new BgServerTracker({
@@ -573,8 +590,16 @@ export class UniversalSession implements DispatchSession {
 			send({ type: "default_model", modelId: defModel });
 		}
 		const terminals = this.terminals.list();
-		if (terminals.length > 0) {
-			this.send({ type: "terminal_list", conversationId: this.activeConvId, terminals });
+		this.send({ type: "terminal_list", conversationId: this.activeConvId, terminals });
+		for (const output of this.terminals.replay()) {
+			this.send({
+				type: "terminal_output",
+				conversationId: this.activeConvId,
+				ownerKind: "client",
+				terminalId: output.terminalId,
+				data: output.data,
+				reset: true,
+			});
 		}
 		this.bg.push();
 		void this.refreshSessions();
@@ -695,7 +720,16 @@ export class UniversalSession implements DispatchSession {
 		return !t || t === "新对话" || t === "New chat" || t === "New Chat" || t === "对话" || t === "Chat";
 	}
 
-	async prompt(text: string, attachments?: PromptAttachment[], _queue?: boolean): Promise<void> {
+	async prompt(
+		text: string,
+		attachments?: PromptAttachment[],
+		_queue?: boolean,
+		targetConv = this.activeConv,
+		rebuiltContext = "",
+	): Promise<void> {
+		assertEngineWorkspaceSupported(this.sandboxes, this.cwd, this.engine);
+		if (this.switchingProject || this.disposed || this.abortPromise) return;
+		const generation = this.projectGeneration;
 		if (this.isStreaming) {
 			if (_queue === true) {
 				const entry = createQueuedEntry(text, { attachments });
@@ -757,154 +791,180 @@ export class UniversalSession implements DispatchSession {
 					const skillPrompt = instruction
 						? `[Skill: ${found.name}]\n${instruction}\n\n[User Prompt]\n${slash.args || "执行此技能"}`
 						: slash.args || text;
-					return this.prompt(skillPrompt, attachments, _queue);
+					return this.prompt(skillPrompt, attachments, _queue, targetConv, rebuiltContext);
 				}
 			}
 			const handled = await this.slash.exec(slash.name, slash.args);
 			if (handled) return;
 		}
 
+		if (this.switchingProject || this.disposed || this.abortPromise || generation !== this.projectGeneration) return;
 		this.isStreaming = true;
-		const conv = this.activeConv;
+		if (this.activeConv !== targetConv) return;
+		const conv = targetConv;
+		const turn = { conv, cwd: this.cwd };
+		this.turn = turn;
+		const isCurrent = () => this.turn === turn && !this.disposed;
 		this.turnConvId = conv.id;
 		const now = Date.now();
 
 		// 2. 扫描用户文本中的 @ 提及（文件路径与技能指令）
-		const availableSkills = await this.collectUniversalSkills();
-		const scanResult = scanAtMentions(text, this.cwd, availableSkills, attachments ?? []);
-		const effectiveAttachments = [...(attachments ?? []), ...scanResult.detectedAttachments];
-		const finalPrompt = formatPromptWithSkills(text, scanResult.detectedSkills);
-
-		// 3. 自动根据首条提问为新会话命名（首条提问立即刷新左侧栏运行与历史列表）
-		const hasNoUserMessages = !conv.messages.some((m) => m.role === "user");
-		if (UniversalSession.isDefaultTitle(conv.title) && hasNoUserMessages && text.trim()) {
-			const trimmed = text.trim().replace(/\s+/g, " ");
-			const cleanTitle = trimmed.length > 30 ? `${trimmed.slice(0, 30)}…` : trimmed;
-			conv.title = cleanTitle;
-			if (this.stateStore) {
-				this.stateStore.saveSessionTitle(this.cwd, conv.id, cleanTitle);
-			}
-			if (!conv.isEphemeral) {
-				this.store.saveConversation(this.cwd, conv);
-			}
-			void this.refreshSessions();
-		}
-
-		// 4. 插入用户消息以及附件卡片（保证 Web UI 附件卡片折叠呈现与历史复原）
-		const userMsg: UiMessage = {
-			id: `u-${now}-${randomUUID().slice(0, 6)}`,
-			role: "user",
-			content: [{ type: "text", text }],
-			timestamp: now,
-		};
-		conv.messages.push(userMsg);
-
-		if (effectiveAttachments.length > 0) {
-			const attCards = createAttachmentUiMessages(effectiveAttachments, now);
-			for (const card of attCards) {
-				conv.messages.push(card);
-			}
-		}
-
-		conv.updatedAt = now;
-		if (!conv.isEphemeral) {
-			this.store.saveConversation(this.cwd, conv);
-		}
-
-		// 用户发送了提示词，消费并清除当前会话的草稿
-		this.sessionDrafts.delete(conv.id);
-
-		// 确保底层驱动与当前对话的 driverSessionId 上下文同步（保证多轮对话连续且新建对话隔离）
-		if (conv.driverSessionId) {
-			await this.driver.resumeSession(conv.driverSessionId);
-		} else {
-			const sid = await this.driver.createSession();
-			conv.driverSessionId = sid;
-			if (!conv.isEphemeral) {
-				this.store.saveConversation(this.cwd, conv);
-			}
-		}
-
-		// 3. 准备助手流式消息
-		const assistantMsgId = `a-${now}-${randomUUID().slice(0, 6)}`;
-		this.streamingThinking = "";
-		this.streamingText = "";
-		this.streamingMessage = {
-			id: assistantMsgId,
-			role: "assistant",
-			content: [],
-			timestamp: now,
-			model: this.currentModel,
-		};
-
-		this.flushSnapshot();
-
-		// 4. 构建 AgentEventSink（时序保真：思考 -> 前置正文 -> 工具调用 -> 总结正文）
-		const sink: AgentEventSink = {
-			onThinkingDelta: (delta: string) => {
-				this.streamingThinking += delta;
-				if (!this.streamingMessage) return;
-				let thinkBlock = this.streamingMessage.content.find((b) => b.type === "thinking") as
-					UiThinkingBlock | undefined;
-				if (!thinkBlock) {
-					thinkBlock = { type: "thinking", thinking: "" };
-					this.streamingMessage.content.unshift(thinkBlock);
-				}
-				thinkBlock.thinking = this.streamingThinking;
-				this.emitDelta({ type: "thinking_delta", delta });
-				this.scheduleThrottledSnapshot();
-			},
-			onTextDelta: (delta: string) => {
-				this.streamingText += delta;
-				if (!this.streamingMessage) return;
-				const lastBlock = this.streamingMessage.content[this.streamingMessage.content.length - 1];
-				if (lastBlock && lastBlock.type === "text" && !lastBlock.truncated) {
-					(lastBlock as UiTextBlock).text += delta;
-				} else {
-					this.streamingMessage.content.push({ type: "text", text: delta });
-				}
-				this.emitDelta({ type: "text_delta", delta });
-				this.scheduleThrottledSnapshot();
-			},
-			onToolStart: (callId: string, toolName: string, args: Record<string, unknown>) => {
-				if (!this.streamingMessage) return;
-				const toolBlock: UiContentBlock = {
-					type: "toolCall",
-					id: callId,
-					name: toolName,
-					argumentsText: JSON.stringify(args, null, 2),
-				};
-				this.streamingMessage.content.push(toolBlock);
-				this.scheduleThrottledSnapshot();
-			},
-			onToolEnd: (callId: string, result: { output?: string; error?: string }) => {
-				const toolMsg: UiMessage = {
-					id: `t-${callId}`,
-					role: "toolResult",
-					toolCallId: callId,
-					content: [{ type: "text", text: result.output ?? result.error ?? "" }],
-					isError: Boolean(result.error),
-					timestamp: Date.now(),
-				};
-				this.pendingToolResults.push(toolMsg);
-				this.scheduleThrottledSnapshot();
-			},
-			onTurnComplete: (meta) => {
-				this.finalizeTurn(meta);
-			},
-			onError: (err) => {
-				const errText = typeof err === "string" ? err : err.message;
-				this.emitNotice("error", `执行出错: ${errText}`, `Execution error: ${errText}`);
-				this.finalizeTurn();
-			},
-		};
-
 		try {
-			await this.driver.sendPrompt(finalPrompt, effectiveAttachments, sink);
-		} catch (err: unknown) {
-			const msg = err instanceof Error ? err.message : String(err);
-			this.emitNotice("error", `驱动执行异常: ${msg}`, `Driver execution error: ${msg}`);
+			const availableSkills = await this.collectUniversalSkills();
+			if (!isCurrent()) return;
+			const scanResult = scanAtMentions(text, turn.cwd, availableSkills, attachments ?? []);
+			const effectiveAttachments = [...(attachments ?? []), ...scanResult.detectedAttachments];
+			const finalPrompt = formatPromptWithSkills(text, scanResult.detectedSkills);
+
+			// 3. 自动根据首条提问为新会话命名（首条提问立即刷新左侧栏运行与历史列表）
+			const hasNoUserMessages = !conv.messages.some((m) => m.role === "user");
+			if (UniversalSession.isDefaultTitle(conv.title) && hasNoUserMessages && text.trim()) {
+				const trimmed = text.trim().replace(/\s+/g, " ");
+				const cleanTitle = trimmed.length > 30 ? `${trimmed.slice(0, 30)}…` : trimmed;
+				conv.title = cleanTitle;
+				if (this.stateStore) {
+					this.stateStore.saveSessionTitle(this.cwd, conv.id, cleanTitle);
+				}
+				if (!conv.isEphemeral) {
+					this.store.saveConversation(this.cwd, conv);
+				}
+				void this.refreshSessions();
+			}
+
+			// 4. 插入用户消息以及附件卡片（保证 Web UI 附件卡片折叠呈现与历史复原）
+			const userMsg: UiMessage = {
+				id: `u-${now}-${randomUUID().slice(0, 6)}`,
+				role: "user",
+				content: [{ type: "text", text }],
+				timestamp: now,
+			};
+			conv.messages.push(userMsg);
+
+			if (effectiveAttachments.length > 0) {
+				const attCards = createAttachmentUiMessages(effectiveAttachments, now);
+				for (const card of attCards) {
+					conv.messages.push(card);
+				}
+			}
+
+			conv.updatedAt = now;
+			if (!conv.isEphemeral) {
+				this.store.saveConversation(this.cwd, conv);
+			}
+
+			// 用户发送了提示词，消费并清除当前会话的草稿
+			this.sessionDrafts.delete(conv.id);
+
+			// 确保底层驱动与当前对话的 driverSessionId 上下文同步（保证多轮对话连续且新建对话隔离）
+			if (conv.driverSessionId) {
+				await this.driver.resumeSession(conv.driverSessionId);
+				if (!isCurrent()) return;
+			} else {
+				const sid = await this.driver.createSession();
+				if (!isCurrent()) return;
+				conv.driverSessionId = sid;
+				if (!conv.isEphemeral) {
+					this.store.saveConversation(turn.cwd, conv);
+				}
+			}
+
+			// 3. 准备助手流式消息
+			const assistantMsgId = `a-${now}-${randomUUID().slice(0, 6)}`;
+			this.streamingThinking = "";
+			this.streamingText = "";
+			this.streamingMessage = {
+				id: assistantMsgId,
+				role: "assistant",
+				content: [],
+				timestamp: now,
+				model: this.currentModel,
+			};
+
+			this.flushSnapshot();
+
+			// 4. 构建 AgentEventSink（时序保真：思考 -> 前置正文 -> 工具调用 -> 总结正文）
+			const sink: AgentEventSink = {
+				onThinkingDelta: (delta: string) => {
+					this.streamingThinking += delta;
+					if (!this.streamingMessage) return;
+					let thinkBlock = this.streamingMessage.content.find((b) => b.type === "thinking") as
+						UiThinkingBlock | undefined;
+					if (!thinkBlock) {
+						thinkBlock = { type: "thinking", thinking: "" };
+						this.streamingMessage.content.unshift(thinkBlock);
+					}
+					thinkBlock.thinking = this.streamingThinking;
+					this.emitDelta({ type: "thinking_delta", delta });
+					this.scheduleThrottledSnapshot();
+				},
+				onTextDelta: (delta: string) => {
+					this.streamingText += delta;
+					if (!this.streamingMessage) return;
+					const lastBlock = this.streamingMessage.content[this.streamingMessage.content.length - 1];
+					if (lastBlock && lastBlock.type === "text" && !lastBlock.truncated) {
+						(lastBlock as UiTextBlock).text += delta;
+					} else {
+						this.streamingMessage.content.push({ type: "text", text: delta });
+					}
+					this.emitDelta({ type: "text_delta", delta });
+					this.scheduleThrottledSnapshot();
+				},
+				onToolStart: (callId: string, toolName: string, args: Record<string, unknown>) => {
+					if (!this.streamingMessage) return;
+					const toolBlock: UiContentBlock = {
+						type: "toolCall",
+						id: callId,
+						name: toolName,
+						argumentsText: JSON.stringify(args, null, 2),
+					};
+					this.streamingMessage.content.push(toolBlock);
+					this.scheduleThrottledSnapshot();
+				},
+				onToolEnd: (callId: string, result: { output?: string; error?: string }) => {
+					const toolMsg: UiMessage = {
+						id: `t-${callId}`,
+						role: "toolResult",
+						toolCallId: callId,
+						content: [{ type: "text", text: result.output ?? result.error ?? "" }],
+						isError: Boolean(result.error),
+						timestamp: Date.now(),
+					};
+					this.pendingToolResults.push(toolMsg);
+					this.scheduleThrottledSnapshot();
+				},
+				onTurnComplete: (meta) => {
+					this.finalizeTurn(meta);
+				},
+				onError: (err) => {
+					const errText = typeof err === "string" ? err : err.message;
+					this.emitNotice("error", `执行出错: ${errText}`, `Execution error: ${errText}`);
+					this.finalizeTurn();
+				},
+			};
+
+			try {
+				const guardedSink = new Proxy(sink, {
+					get:
+						(target, key: keyof AgentEventSink) =>
+						(...args: unknown[]) => {
+							if (isCurrent()) (target[key] as (...args: unknown[]) => void)?.(...args);
+						},
+				});
+				await this.driver.sendPrompt(
+					rebuiltContext ? `${rebuiltContext}\n\n${finalPrompt}` : finalPrompt,
+					effectiveAttachments,
+					guardedSink,
+				);
+			} catch (err: unknown) {
+				if (!isCurrent()) return;
+				const msg = err instanceof Error ? err.message : String(err);
+				this.emitNotice("error", `驱动执行异常: ${msg}`, `Driver execution error: ${msg}`);
+				this.finalizeTurn();
+			}
+		} catch (err) {
+			if (!isCurrent()) return;
 			this.finalizeTurn();
+			this.emitNotice("error", String(err), String(err));
 		}
 	}
 
@@ -944,10 +1004,11 @@ export class UniversalSession implements DispatchSession {
 			this.snapshotTimer = null;
 		}
 
-		// 回合收尾锚定回合归属会话：中途切走/回滚不再把本轮内容写进别的会话（#700/#701）
-		const turnId = this.turnConvId;
+		const turn = this.turn;
+		if (!turn) return;
+		this.turn = null;
 		this.turnConvId = null;
-		const conv = (turnId && this.conversations.get(turnId)) || this.activeConv;
+		const conv = turn.conv;
 
 		if (this.streamingMessage) {
 			conv.messages.push(this.streamingMessage);
@@ -1008,17 +1069,18 @@ export class UniversalSession implements DispatchSession {
 		this.streamingText = "";
 		conv.updatedAt = Date.now();
 		if (!conv.isEphemeral) {
-			this.store.saveConversation(this.cwd, conv);
+			this.store.saveConversation(turn.cwd, conv);
 		}
 		// 解析本轮生成的内联标记（如 [[conv:rename:...]] / [[action:suggest:...]]）
 		if (finalText && finalText.includes("[[")) {
+			this.markerOrigins.set(conv.id, turn);
 			void this.markerSvc.handleAssistantText(conv.id, finalText);
 		}
 		this.flushSnapshot();
 		void this.refreshSessions();
 
 		// 检查排队消息并自动处理
-		if (this.followUpQueue.length > 0) {
+		if (!this.switchingProject && !this.disposed && this.followUpQueue.length > 0) {
 			const next = this.followUpQueue.shift()!;
 			this.flushSnapshot(true);
 			void this.prompt(next.text, next.attachments);
@@ -1026,10 +1088,18 @@ export class UniversalSession implements DispatchSession {
 	}
 
 	async abort(): Promise<void> {
-		if (this.isStreaming) {
-			await this.driver.abort();
+		if (this.abortPromise) return this.abortPromise;
+		if (!this.isStreaming) return;
+		// Install the gate before finalizeTurn can dispatch a queued prompt.
+		this.abortPromise = Promise.resolve().then(async () => {
 			this.finalizeTurn();
+			await this.driver.abort();
 			this.emitNotice("info", "已停止生成", "Generation stopped");
+		});
+		try {
+			await this.abortPromise;
+		} finally {
+			this.abortPromise = null;
 		}
 	}
 
@@ -1079,6 +1149,7 @@ export class UniversalSession implements DispatchSession {
 	}
 
 	async switchConversation(id: string): Promise<void> {
+		assertEngineWorkspaceSupported(this.sandboxes, this.cwd, this.engine);
 		let conv = this.conversations.get(id);
 		if (!conv) {
 			conv = this.store.loadConversation(this.cwd, id) ?? undefined;
@@ -1373,8 +1444,7 @@ export class UniversalSession implements DispatchSession {
 			return;
 		}
 
-		// 截断到编辑点之前的所有历史消息（跳过属于本轮提问的前置附件卡片，避免 prompt 重新注入后附件重复），
-		// fork 一个新的 UniversalConversation
+		// Remove the question, its file asides and the abandoned suffix in place.
 		let cutIdx = idx;
 		while (
 			cutIdx > 0 &&
@@ -1383,35 +1453,21 @@ export class UniversalSession implements DispatchSession {
 		) {
 			cutIdx--;
 		}
-		const headMessages = structuredClone(conv.messages.slice(0, cutIdx));
-		const forkedConv = this.createEmptyConversation(conv.title, Boolean(conv.isEphemeral));
-		forkedConv.messages = headMessages;
-		if (headMessages.length > 0) {
-			forkedConv.updatedAt = Date.now();
+		conv.messages.splice(cutIdx);
+		// Drivers expose no in-place history replacement. A fresh backend handle
+		// prevents resume from restoring the discarded suffix; the UI identity stays.
+		conv.driverSessionId = undefined;
+		const context = conv.messages.map((m) => `[${m.role}] ${messageTextWithQuotes(m)}`).join("\n");
+		conv.updatedAt = Date.now();
+		this.followUpQueue.length = 0;
+		if (!conv.isEphemeral) {
+			this.store.saveConversation(this.cwd, conv);
 		}
-
-		// 若底层驱动支持原生会话分叉（如 Durable 引擎），继承前序不可变记录
-		if (conv.driverSessionId && typeof this.driver.forkSession === "function") {
-			try {
-				const forkedSid = await this.driver.forkSession(conv.driverSessionId);
-				if (forkedSid) {
-					forkedConv.driverSessionId = forkedSid;
-				}
-			} catch {
-				/* fallback */
-			}
-		}
-
-		this.conversations.set(forkedConv.id, forkedConv);
-		if (!forkedConv.isEphemeral) {
-			this.store.saveConversation(this.cwd, forkedConv);
-		}
-		this.activeConvId = forkedConv.id;
 		this.flushSnapshot(true);
 		void this.refreshSessions();
 
-		// 将编辑后的内容作为新 prompt 投递执行，实现无缝编辑重试
-		await this.prompt(text, attachments);
+		// Capture the destination before any asynchronous slash/skill lookup.
+		await this.prompt(text, attachments, undefined, conv, context ? `Previous conversation context:\n${context}` : "");
 	}
 
 	async refreshSessions(): Promise<void> {
@@ -1599,8 +1655,8 @@ export class UniversalSession implements DispatchSession {
 		await this.files.writeFile(path, text);
 	}
 
-	async uploadFile(dirPath: string, name: string, data: string): Promise<void> {
-		await this.files.uploadFile(dirPath, name, data);
+	async uploadFile(dirPath: string, name: string, data: string, uploadId?: string): Promise<void> {
+		await this.files.uploadFile(dirPath, name, data, uploadId);
 	}
 
 	async createEntry(dir: string, name: string, kind: "file" | "dir"): Promise<void> {
@@ -1643,8 +1699,13 @@ export class UniversalSession implements DispatchSession {
 		return this.terminals;
 	}
 
-	findTerminalManager(): TerminalManagerLike {
-		return this.terminals;
+	findTerminalManager(
+		terminalId: string,
+		_conversationId?: string,
+		ownerKind?: "client" | "conversation",
+	): TerminalManagerLike | undefined {
+		if (ownerKind === "conversation") return undefined;
+		return this.terminals.has(terminalId) ? this.terminals : undefined;
 	}
 
 	getTerminalCwd(): string {
@@ -1782,39 +1843,51 @@ export class UniversalSession implements DispatchSession {
 	}
 
 	async setCwd(path: string): Promise<void> {
-		this.cwd = path;
-		this.driver.setCwd(path);
+		assertEngineWorkspaceSupported(this.sandboxes, path, this.engine);
+		if (this.switchingProject) throw new Error("Workspace switch already in progress");
+		this.switchingProject = true;
+		try {
+			// Finish the captured old turn before replacing the driver's workspace.
+			this.followUpQueue = [];
+			await this.abort();
+			for (const id of this.subagentDrivers.keys()) await this.stopSubagent(id);
+			this.projectGeneration++;
+			this.cwd = path;
+			this.driver.setCwd(path);
 
-		// 切换工作区 CWD：清空旧目录会话缓存与草稿，并加载属于新目录的会话
-		this.conversations.clear();
-		this.sessionDrafts.clear();
-		const existing = this.store.listConversations(this.cwd);
-		if (existing.length > 0) {
-			for (const conv of existing) {
-				this.conversations.set(conv.id, conv);
+			// 切换工作区 CWD：清空旧目录会话缓存与草稿，并加载属于新目录的会话
+			this.conversations.clear();
+			this.sessionDrafts.clear();
+			const existing = this.store.listConversations(this.cwd);
+			if (existing.length > 0) {
+				for (const conv of existing) {
+					this.conversations.set(conv.id, conv);
+				}
+				this.activeConvId = existing[0].id;
+			} else {
+				const initialConv = this.createEmptyConversation("新对话");
+				this.activeConvId = initialConv.id;
+				this.conversations.set(initialConv.id, initialConv);
+				this.store.saveConversation(this.cwd, initialConv);
 			}
-			this.activeConvId = existing[0].id;
-		} else {
-			const initialConv = this.createEmptyConversation("新对话");
-			this.activeConvId = initialConv.id;
-			this.conversations.set(initialConv.id, initialConv);
-			this.store.saveConversation(this.cwd, initialConv);
-		}
 
-		await this.refreshSessions();
-		await this.refreshWorktreeInfo();
-		if (typeof this.stateStore?.remember === "function") {
-			this.stateStore.remember(this.clientId, path);
+			await this.refreshSessions();
+			await this.refreshWorktreeInfo();
+			if (typeof this.stateStore?.remember === "function") {
+				this.stateStore.remember(this.clientId, path);
+			}
+			void this.pushProjects();
+			// 切换目录后恢复该目录按引擎隔离的项目记忆模型
+			const savedModel =
+				this.stateStore?.getProjectModel(this.clientId, path, this.engine) ??
+				this.stateStore?.getDefaultModel(this.engine);
+			if (savedModel && savedModel !== this.currentModel) {
+				void this.setModel(savedModel).catch(() => {});
+			}
+			this.flushSnapshot(true);
+		} finally {
+			this.switchingProject = false;
 		}
-		void this.pushProjects();
-		// 切换目录后恢复该目录按引擎隔离的项目记忆模型
-		const savedModel =
-			this.stateStore?.getProjectModel(this.clientId, path, this.engine) ??
-			this.stateStore?.getDefaultModel(this.engine);
-		if (savedModel && savedModel !== this.currentModel) {
-			void this.setModel(savedModel).catch(() => {});
-		}
-		this.flushSnapshot(true);
 	}
 
 	async setWorkspaceRoots(roots?: string[]): Promise<void> {
@@ -1939,16 +2012,10 @@ export class UniversalSession implements DispatchSession {
 		});
 	}
 
-	async createSandbox(opts: { name?: string; sourcePath?: string; ephemeral?: boolean }): Promise<void> {
+	async createSandbox(_opts: { name?: string; sourcePath?: string; ephemeral?: boolean }): Promise<void> {
 		try {
-			const { sandbox, copiedFiles } = await this.sandboxes.create(opts);
-			await this.setCwd(sandbox.path);
-			const modeZh = sandbox.sourcePath ? `已从源项目导入 ${copiedFiles} 个文件` : "空白隔离环境";
-			const modeEn = sandbox.sourcePath ? `imported ${copiedFiles} files from source` : "blank isolated workspace";
-			this.emitNotice(
-				"info",
-				`🧪 沙盒「${sandbox.name}」已启动（${modeZh}，一切修改与原项目完全隔离）`,
-				`🧪 Sandbox "${sandbox.name}" started (${modeEn}; all changes are strictly isolated)`,
+			throw new Error(
+				`引擎 ${this.engine} 不支持受管沙盒执行，请使用 pi。 Engine "${this.engine}" does not support managed sandbox execution; use pi.`,
 			);
 		} catch (err) {
 			this.emitNotice(
@@ -1962,7 +2029,9 @@ export class UniversalSession implements DispatchSession {
 	async resetSandbox(path?: string): Promise<void> {
 		const target = path?.trim() || this.cwd;
 		try {
-			const { sandbox, copiedFiles } = await this.sandboxes.reset(target);
+			const { sandbox, copiedFiles } = await this.sandboxes.withLifecycle(target, async (_info, lifecycle) =>
+				lifecycle.reset(),
+			);
 			this.flushSnapshot();
 			this.emitNotice(
 				"info",
@@ -2022,19 +2091,21 @@ export class UniversalSession implements DispatchSession {
 		}
 	}
 
-	async diffSandbox(path?: string): Promise<void> {
+	async diffSandbox(path?: string, requestId?: string): Promise<void> {
 		const target = path?.trim() || this.cwd;
 		try {
 			const res = await this.sandboxes.diffWithSource(target);
 			this.send({
 				type: "sandbox_diff",
 				diff: {
+					requestId,
+					expectedRevision: res.expectedRevision,
 					sandboxId: res.sandbox.id,
 					path: res.sandbox.path,
 					sourcePath: res.sourcePath,
-					added: res.added.slice(0, 200),
-					modified: res.modified.slice(0, 200),
-					deleted: res.deleted.slice(0, 200),
+					added: res.added,
+					modified: res.modified,
+					deleted: res.deleted,
 					unchangedCount: res.unchangedCount,
 				},
 			});
@@ -2042,6 +2113,7 @@ export class UniversalSession implements DispatchSession {
 			this.send({
 				type: "sandbox_diff",
 				diff: {
+					requestId,
 					sandboxId: "",
 					path: target,
 					added: [],
@@ -2054,10 +2126,13 @@ export class UniversalSession implements DispatchSession {
 		}
 	}
 
-	async applySandboxToSource(path?: string): Promise<void> {
+	async applySandboxToSource(path: string | undefined, expectedRevision: string): Promise<void> {
 		const target = path?.trim() || this.cwd;
 		try {
-			const { sandbox, sourcePath, copiedFiles, deletedFiles } = await this.sandboxes.applyToSource(target);
+			const { sandbox, sourcePath, copiedFiles, deletedFiles } = await this.sandboxes.withLifecycle(
+				target,
+				async (_info, lifecycle) => lifecycle.applyToSource(expectedRevision),
+			);
 			const delSuffixZh = deletedFiles ? `，清理 ${deletedFiles} 个已删除文件` : "";
 			const delSuffixEn = deletedFiles ? `, pruned ${deletedFiles} deleted files` : "";
 			this.emitNotice(
@@ -2076,14 +2151,15 @@ export class UniversalSession implements DispatchSession {
 
 	async destroySandbox(path: string): Promise<void> {
 		const target = path?.trim() || this.cwd;
-		const sbx = this.sandboxes.get(target) ?? this.sandboxes.getByCwd(target);
-		if (!sbx) return;
 		try {
-			if (this.cwd === sbx.path || this.cwd.startsWith(sbx.path + "/")) {
-				const fallback = sbx.sourcePath && existsSync(sbx.sourcePath) ? sbx.sourcePath : homedir();
-				await this.setCwd(fallback);
-			}
-			await this.sandboxes.destroy(sbx.path);
+			const sbx = await this.sandboxes.withLifecycle(target, async (sbx, lifecycle) => {
+				if (this.cwd === sbx.path || this.cwd.startsWith(sbx.path + "/")) {
+					const fallback = sbx.sourcePath && existsSync(sbx.sourcePath) ? sbx.sourcePath : homedir();
+					await this.setCwd(fallback);
+				}
+				await lifecycle.destroy();
+				return sbx;
+			});
 			this.emitNotice("info", `🗑️ 已销毁沙盒「${sbx.name}」`, `🗑️ Destroyed sandbox "${sbx.name}"`);
 		} catch (err) {
 			this.emitNotice(
@@ -2278,6 +2354,9 @@ export class UniversalSession implements DispatchSession {
 			skillsCatalogMaxDesc: 250,
 			skillsCatalogShowLocation: false,
 			skillsCatalogBudget: 20000,
+			chatUploadMaxMb: s?.chatUploadMaxMb ?? 20,
+			workspaceUploadMaxMb: s?.workspaceUploadMaxMb ?? 100,
+			folderUploadMaxMb: s?.folderUploadMaxMb ?? 32,
 			visionBridgeEnabled: false,
 			visionBridgeModel: null,
 			visionBridgePromptMode: "append",
@@ -2528,18 +2607,9 @@ export class UniversalSession implements DispatchSession {
 			this.emitNotice("error", `未找到名为「${name}」的设置预设`, `Settings preset "${name}" not found`);
 			return;
 		}
-		this.stateStore.saveSettings(this.clientId, {
-			promptMode: found.promptMode,
-			customSystemPrompt: found.customSystemPrompt,
-			promptDisabled: [...(found.promptDisabled ?? [])],
-			disabledSkills: [...(found.disabledSkills ?? [])],
-			disabledExtensions: [...(found.disabledExtensions ?? [])],
-			reviewPrompt: found.reviewPrompt ?? "",
-			reviewDisabledSkills: [...(found.reviewDisabledSkills ?? [])],
-			retryMaxAttempts: found.retryMaxAttempts,
-			softCapTokens: found.softCapTokens,
-			softCapByModel: found.softCapByModel,
-		});
+		// Missing settings retain their current values; metadata never enters settings.
+		const { settings } = sanitizePresetSettings(found);
+		this.stateStore.saveSettings(this.clientId, settings);
 		this.pushSettings();
 		this.emitNotice("info", `已应用设置预设「${name}」`, `Settings preset "${name}" applied`);
 	}
@@ -2796,6 +2866,9 @@ export class UniversalSession implements DispatchSession {
 		_thinking?: string,
 		_notifyOnDone?: boolean,
 	): Promise<{ convId: string }> {
+		assertEngineWorkspaceSupported(this.sandboxes, cwd, this.engine);
+		if (this.switchingProject || this.disposed) throw new Error("Workspace is switching");
+		const generation = this.projectGeneration;
 		const maxSubagents = Number(process.env.PI_WEB_MAX_SUBAGENTS) || 8;
 		const liveCount = this.getLiveSubagentsCount();
 		if (liveCount >= maxSubagents) {
@@ -2895,6 +2968,8 @@ export class UniversalSession implements DispatchSession {
 			}
 		}
 
+		if (this.disposed || generation !== this.projectGeneration || this.subagentDrivers.get(convId) !== subDriver)
+			return { convId };
 		// 异步启动子代理执行流程
 		void this.runSubagent(convId, subDriver, effectivePrompt, targetCwd);
 
@@ -2905,6 +2980,9 @@ export class UniversalSession implements DispatchSession {
 	private async runSubagent(convId: string, subDriver: BaseAgentDriver, prompt: string, cwd: string): Promise<void> {
 		const conv = this.conversations.get(convId);
 		if (!conv) return;
+		const generation = this.projectGeneration;
+		const isCurrent = () =>
+			!this.disposed && generation === this.projectGeneration && this.subagentDrivers.get(convId) === subDriver;
 
 		const now = Date.now();
 		const assistantMsgId = `a-${now}-${randomUUID().slice(0, 6)}`;
@@ -3032,8 +3110,17 @@ export class UniversalSession implements DispatchSession {
 				const sid = await subDriver.createSession();
 				conv.driverSessionId = sid;
 			}
-			await subDriver.sendPrompt(prompt, undefined, sink);
+			if (!isCurrent()) return;
+			const guardedSink = new Proxy(sink, {
+				get:
+					(target, key: keyof AgentEventSink) =>
+					(...args: unknown[]) => {
+						if (isCurrent()) (target[key] as (...args: unknown[]) => void)?.(...args);
+					},
+			});
+			await subDriver.sendPrompt(prompt, undefined, guardedSink);
 		} catch (err: unknown) {
+			if (!isCurrent()) return;
 			const msg = err instanceof Error ? err.message : String(err);
 			sink.onError(msg);
 		}
@@ -3251,6 +3338,8 @@ export class UniversalSession implements DispatchSession {
 
 	dispose(): void {
 		this.disposed = true;
+		this.finalizeTurn();
+		this.projectGeneration++;
 		if (this.snapshotTimer) {
 			clearTimeout(this.snapshotTimer);
 			this.snapshotTimer = null;

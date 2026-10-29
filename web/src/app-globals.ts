@@ -89,6 +89,9 @@ export interface AppGlobals {
 	homeDir: string;
 	/** 桌面目录（快照 UiState.desktopDir 的镜像）：空串 = 不存在/旧服务 → 🖥️ 不渲染。 */
 	desktopDir: string;
+	chatUploadMaxMb: number;
+	workspaceUploadMaxMb: number;
+	folderUploadMaxMb: number;
 	/** 当前底座能力声明（Capabilities）—— 前端据此自适应隐藏不支持的入口。 */
 	engineCapabilities: AgentEngineCapabilities;
 	/** 引擎安装探测结果列表（包含各引擎是否已在宿主中安装、对应包名与版本）。 */
@@ -104,6 +107,9 @@ export const DEFAULT_APP_GLOBALS: AppGlobals = {
 	workspaceRoots: [],
 	homeDir: "",
 	desktopDir: "",
+	chatUploadMaxMb: 20,
+	workspaceUploadMaxMb: 100,
+	folderUploadMaxMb: 32,
 	engineCapabilities: DEFAULT_ENGINE_CAPABILITIES,
 };
 
@@ -151,6 +157,9 @@ function same(a: AppGlobals, b: AppGlobals): boolean {
 		sameArray(a.workspaceRoots, b.workspaceRoots) &&
 		a.homeDir === b.homeDir &&
 		a.desktopDir === b.desktopDir &&
+		a.chatUploadMaxMb === b.chatUploadMaxMb &&
+		a.workspaceUploadMaxMb === b.workspaceUploadMaxMb &&
+		a.folderUploadMaxMb === b.folderUploadMaxMb &&
 		sameArray(a.tabs, b.tabs) &&
 		sameShallow(a.engineCapabilities, b.engineCapabilities) &&
 		sameEngines(a.engines, b.engines) &&

@@ -15,7 +15,8 @@
  *
  * 判定全部是纯函数（无 IO），单测见 tests/unit/delegate-mode.test.ts。
  */
-import { bashCommandIsReadOnly, SESSION_DISPATCH_TOOLS } from "./plan-mode.js";
+import { bashCommandIsReadOnly, readOnlyToolCallAllowed, SESSION_DISPATCH_TOOLS } from "./plan-mode.js";
+import { isReadOnlyConversationAction, CONVERSATION_TOOL_NAMES } from "./conversation-tool-names.js";
 
 /** 审查者模式下确定禁止的工具名单（写 / 改 / 增删 / git 写 / 派发类）。 */
 export const DELEGATE_MODE_BLOCKED_TOOL_NAMES: readonly string[] = [
@@ -52,12 +53,13 @@ export const DELEGATE_MODE_BLOCKED_TOOL_NAMES: readonly string[] = [
 	"eval",
 	"codemode",
 	"mcp_manage",
+	"device_collab",
 	"sandbox",
 	"format",
 	"prettier",
 	"lint_fix",
 	"autofix",
-	"subagent",
+	...CONVERSATION_TOOL_NAMES,
 	...SESSION_DISPATCH_TOOLS,
 ];
 
@@ -71,10 +73,10 @@ const BLOCKED_TOOLS = new Set(DELEGATE_MODE_BLOCKED_TOOL_NAMES);
  * 名单 = 三闸门共用的真实注册派发工具（SESSION_DISPATCH_TOOLS，#436 前是一堆
  * 幽灵名）+ subagent 整工具（这里不分 action，审查者对话一概不派不问）。
  */
-const DISPATCH_TOOLS = new Set([...SESSION_DISPATCH_TOOLS, "subagent"]);
+const DISPATCH_TOOLS = new Set([...SESSION_DISPATCH_TOOLS, ...CONVERSATION_TOOL_NAMES]);
 
 /** bash 家族（要逐条判命令是否只读）。 */
-const BASH_TOOLS = new Set(["bash", "shell", "sh", "zsh", "terminal", "terminal_bash", "run_command", "exec"]);
+const BASH_TOOLS = new Set(["bash", "shell", "sh", "zsh", "terminal_bash", "run_command", "exec"]);
 
 /** 从工具参数里取命令文本（各工具字段名不同）。 */
 function commandOf(params: unknown): string {
@@ -103,11 +105,21 @@ export interface DelegationDenial {
 export function delegationDenial(toolName: string, params: unknown): DelegationDenial | undefined {
 	const name = (toolName ?? "").trim();
 	if (!name) return undefined;
+	if (CONVERSATION_TOOL_NAMES.some((alias) => alias === name) && isReadOnlyConversationAction((params as any)?.action))
+		return undefined;
 	if (DISPATCH_TOOLS.has(name)) {
 		return {
 			kind: "dispatch-tool",
 			reason: `审查者模式：不能调用 ${name} —— 派活由服务端统一做（一个常驻执行对话）。请只描述需求、审阅结果或提问。`,
 			reasonEn: `Reviewer mode: ${name} is unavailable — dispatching is done by the server (one persistent executor conversation). Describe the work, review the result, or ask questions.`,
+		};
+	}
+	if (name === "terminal") {
+		if (readOnlyToolCallAllowed(name, params)) return undefined;
+		return {
+			kind: "write-tool",
+			reason: "只读审查仅允许 terminal 的 list/read/wait。",
+			reasonEn: "Read-only review permits only terminal list/read/wait actions.",
 		};
 	}
 	if (BASH_TOOLS.has(name)) {

@@ -31,6 +31,14 @@ describe("safeCwd：远程 ssh:// 工作区（0.103 审计修复）", () => {
 		expect(safeCwd("ssh://root@dev:2222/srv")).toBeNull();
 	});
 
+	it("同主机绝对 URI 也不能越出远程项目根", () => {
+		const safeCwd = safeCwdOf("ssh://root@dev:22/srv/app");
+		expect(safeCwd("ssh://root@dev:22/etc")).toBeNull();
+		expect(safeCwd("ssh://root@dev:22/srv/app/../../etc")).toBeNull();
+		expect(safeCwd("ssh://root@dev:22/srv/application")).toBeNull();
+		expect(safeCwd("ssh://root@dev:22/srv/app/sub/..")).toBe("ssh://root@dev:22/srv/app");
+	});
+
 	it("相对路径越出远程根拒绝", () => {
 		const safeCwd = safeCwdOf("ssh://root@dev:22/srv/app");
 		expect(safeCwd("../../etc")).toBeNull();

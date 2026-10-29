@@ -317,6 +317,14 @@ describe("Canvas & Picker 事件隔离与关闭防护", () => {
 			root!.render(createElement(TestCanvas));
 		});
 
+		// Fresh Studio is empty until its correlated server load; explicitly add the node under test.
+		const addFirst = Array.from(document.body.querySelectorAll("button")).find((b) =>
+			b.textContent?.includes("添加第一个队友"),
+		);
+		expect(addFirst).toBeTruthy();
+		act(() => {
+			addFirst!.click();
+		});
 		// 找到一个节点卡片上的浏览图标按钮（UniversalPathPicker，纯图标）
 		const browseBtns = document.body.querySelectorAll(".universal-path-browse-btn");
 		expect(browseBtns.length).toBeGreaterThan(0);

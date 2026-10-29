@@ -7,7 +7,8 @@
  */
 
 import { createHash } from "node:crypto";
-import { chunkMarkdownText } from "./markdown-chunks.mjs";
+import { WhatsappBotBridge as Bridge } from "./bridge.mjs";
+import { sendMedia } from "./media.mjs";
 
 export const SECRET_ACCESS_TOKEN = "whatsapp.accessToken";
 const GRAPH_API_BASE = "https://graph.facebook.com/v20.0";
@@ -97,332 +98,16 @@ export async function whatsappApi(
 /**
  * WhatsappBotBridge manages duplex message exchange between WhatsApp and pi-web-ui agent host.
  */
-export class WhatsappBotBridge {
-	/**
-	 * @param {object} options
-	 * @param {any} options.host
-	 * @param {() => any} options.getConfig
-	 * @param {(level: string, msg: string) => void} [options.log]
-	 */
-	constructor({ host, getConfig, log } = {}) {
-		this.host = host;
-		this.getConfig = getConfig;
-		this.log = log || ((level, msg) => console.log(`[whatsapp-bot:${level}] ${msg}`));
-
-		this.running = false;
-		this.offRunEvent = null;
-
-		this.seenMessageIds = new Set();
-		this.pendingRuns = new Map();
-		this.earlyRuns = new Map();
-		this.userConversations = new Map();
-		this.userWorkspaces = new Map();
-
-		this.status = {
-			enabled: false,
-			connected: false,
-			state: "idle", // 'idle' | 'connected' | 'error'
-			displayPhone: "",
-			messagesReceived: 0,
-			messagesReplied: 0,
-			lastMessageAt: null,
-			lastReplyAt: null,
-			lastError: null,
-		};
-	}
-
-	getStatus() {
-		return { ...this.status };
-	}
-
-	resolveWorkspace(senderPhone, cfg) {
-		return String(this.userWorkspaces.get(senderPhone) || cfg?.workspace || this.host?.cwd || "").trim();
-	}
-
-	async start() {
-		if (this.running) return;
-		this.running = true;
-		this.status.enabled = true;
-		this.status.state = "connecting";
-
-		const cfg = this.getConfig();
-		if (!cfg.accessToken || !cfg.phoneNumberId) {
-			this.status.state = "idle";
-			this.status.lastError = "Missing WhatsApp Access Token or Phone Number ID";
-			return;
-		}
-
-		// Verify credentials via Meta Graph API
-		try {
-			const info = await whatsappApi(cfg.accessToken, cfg.phoneNumberId, "", null, { method: "GET", timeoutMs: 10000 });
-			this.status.displayPhone = info.display_phone_number || info.verified_name || cfg.phoneNumberId;
-			this.status.connected = true;
-			this.status.state = "connected";
-			this.status.lastError = null;
-			this.log("info", `WhatsApp verified for ${this.status.displayPhone}`);
-		} catch (err) {
-			this.status.state = "error";
-			this.status.lastError = err.message;
-			this.log("warn", `WhatsApp verification failed: ${err.message}`);
-			return;
-		}
-
-		if (this.host.onRunEvent) {
-			this.offRunEvent = this.host.onRunEvent((ev) => this.handleRunEvent(ev));
-		}
-	}
-
-	async stop() {
-		this.running = false;
-		this.status.enabled = false;
-		this.status.connected = false;
-		this.status.state = "idle";
-
-		if (this.offRunEvent) {
-			try {
-				this.offRunEvent();
-			} catch {}
-			this.offRunEvent = null;
-		}
-	}
-
-	async onInboundMessage(event) {
-		if (!event) return;
-		const msgId = event.id || event.messageId;
-		if (msgId) {
-			if (this.seenMessageIds.has(msgId)) return;
-			this.seenMessageIds.add(msgId);
-			if (this.seenMessageIds.size > 500) {
-				const first = this.seenMessageIds.values().next().value;
-				this.seenMessageIds.delete(first);
-			}
-		}
-
-		const senderPhone = event.from || event.sender || "";
-		const rawText = extractWhatsappText(event);
-		const cleanText = rawText.replace(/@\S+/g, "").trim();
-		if (!cleanText) return;
-
-		const cfg = this.getConfig();
-
-		// Access control whitelist check
-		const allowedUsers = Array.isArray(cfg.allowedUsers)
-			? cfg.allowedUsers.map((u) => String(u).trim()).filter(Boolean)
-			: [];
-		if (allowedUsers.length > 0 && senderPhone && !allowedUsers.includes(String(senderPhone))) {
-			if (cfg.accessToken && cfg.phoneNumberId) {
-				const replyPayload = buildWhatsappPayload(
-					senderPhone,
-					"【Access Restricted】You are not in the authorized whitelist for this WhatsApp AI Assistant. Please contact the administrator.",
-				);
-				await whatsappApi(cfg.accessToken, cfg.phoneNumberId, "/messages", replyPayload).catch(() => {});
-			}
-			return;
-		}
-
-		this.status.messagesReceived++;
-		this.status.lastMessageAt = Date.now();
-
-		// Slash command handling (/help, /clear, /new, /status)
-		if (cleanText.startsWith("/")) {
-			const handled = await this.handleSlashCommand(cleanText, { senderPhone, cfg });
-			if (handled) return;
-		}
-
-		// Prepare isolated agent session for this user
-		const accountId = peerAccountId(senderPhone);
-		let conversationId = this.userConversations.get(senderPhone);
-		if (!conversationId) {
-			conversationId = `wa_${String(senderPhone).slice(-8)}_${Date.now().toString(36)}`;
-			this.userConversations.set(senderPhone, conversationId);
-		}
-
-		this.pendingRuns.set(conversationId, {
-			senderPhone,
-			accumulatedText: "",
-			startedAt: Date.now(),
+export class WhatsappBotBridge extends Bridge {
+	constructor(options = {}) {
+		super({
+			...options,
+			api: whatsappApi,
+			payload: buildWhatsappPayload,
+			extractText: extractWhatsappText,
+			stripMarkers: stripInternalMarkers,
+			accountId: peerAccountId,
 		});
-
-		try {
-			const workspace = this.resolveWorkspace(senderPhone, cfg);
-			const chatReq = {
-				text: cleanText,
-				accountId,
-				conversationId,
-			};
-			if (workspace) chatReq.cwd = workspace;
-			if (cfg.model) chatReq.model = cfg.model;
-			if (cfg.thinkingLevel) chatReq.thinkingLevel = cfg.thinkingLevel;
-			await this.host.chat(chatReq);
-		} catch (err) {
-			this.log("warn", `WhatsApp host.chat dispatch failed: ${err.message}`);
-			this.pendingRuns.delete(conversationId);
-			if (cfg.accessToken && cfg.phoneNumberId) {
-				const replyPayload = buildWhatsappPayload(senderPhone, `Failed to start session: ${err.message}`);
-				await whatsappApi(cfg.accessToken, cfg.phoneNumberId, "/messages", replyPayload).catch(() => {});
-			}
-		}
-	}
-
-	async handleSlashCommand(cmdText, { senderPhone, cfg }) {
-		const parts = cmdText.trim().split(/\s+/);
-		const cmd = parts[0].toLowerCase();
-		if (!cfg.accessToken || !cfg.phoneNumberId) return false;
-
-		switch (cmd) {
-			case "/help": {
-				const helpText = [
-					"🤖 *pi-web-ui WhatsApp Bot Help*",
-					"",
-					"- Send any text message to chat with your AI assistant",
-					"- `/cwd [path]` or `/workspace [path]`: view or switch current workspace root",
-					"- `/model`: view current AI model and thinking level",
-					"- `/clear` or `/new`: reset context and start a fresh session",
-					"- `/status`: inspect bot connection and metrics",
-					"- `/help`: display this help guide",
-				].join("\n");
-				await whatsappApi(
-					cfg.accessToken,
-					cfg.phoneNumberId,
-					"/messages",
-					buildWhatsappPayload(senderPhone, helpText),
-				).catch(() => {});
-				return true;
-			}
-			case "/model": {
-				const currentModel = cfg.model || "(default follows host global)";
-				const currentThinking = cfg.thinkingLevel || "(follows global)";
-				await whatsappApi(
-					cfg.accessToken,
-					cfg.phoneNumberId,
-					"/messages",
-					buildWhatsappPayload(
-						senderPhone,
-						`🤖 *Current Model & Thinking Config*\n- Model: \`${currentModel}\`\n- Thinking Level: \`${currentThinking}\``,
-					),
-				).catch(() => {});
-				return true;
-			}
-			case "/cwd":
-			case "/workspace": {
-				const argPath = cmdText.replace(/^\/\S+/, "").trim();
-				if (!argPath) {
-					const currentWs = this.resolveWorkspace(senderPhone, cfg) || "(following host current project)";
-					await whatsappApi(
-						cfg.accessToken,
-						cfg.phoneNumberId,
-						"/messages",
-						buildWhatsappPayload(
-							senderPhone,
-							`📂 Current workspace root: ${currentWs}\nTip: send /cwd <path> to switch workspace.`,
-						),
-					).catch(() => {});
-					return true;
-				}
-				this.userWorkspaces.set(senderPhone, argPath);
-				const newId = `wa_${String(senderPhone).slice(-8)}_${Date.now().toString(36)}`;
-				this.userConversations.set(senderPhone, newId);
-				await whatsappApi(
-					cfg.accessToken,
-					cfg.phoneNumberId,
-					"/messages",
-					buildWhatsappPayload(senderPhone, `📂 Switched workspace root to: ${argPath}\n✨ Started a fresh session!`),
-				).catch(() => {});
-				return true;
-			}
-			case "/clear":
-			case "/new": {
-				const newId = `wa_${String(senderPhone).slice(-8)}_${Date.now().toString(36)}`;
-				this.userConversations.set(senderPhone, newId);
-				await whatsappApi(
-					cfg.accessToken,
-					cfg.phoneNumberId,
-					"/messages",
-					buildWhatsappPayload(senderPhone, "✨ Context cleared! Started a fresh conversation session."),
-				).catch(() => {});
-				return true;
-			}
-			case "/status": {
-				const s = this.status;
-				const statusText = [
-					`🟢 *WhatsApp Bot Status*`,
-					`- Phone: ${s.displayPhone || "Connected"}`,
-					`- Status: Online (Cloud API)`,
-					`- Received: ${s.messagesReceived} messages`,
-					`- Replied: ${s.messagesReplied} messages`,
-				].join("\n");
-				await whatsappApi(
-					cfg.accessToken,
-					cfg.phoneNumberId,
-					"/messages",
-					buildWhatsappPayload(senderPhone, statusText),
-				).catch(() => {});
-				return true;
-			}
-			default:
-				return false;
-		}
-	}
-
-	async handleRunEvent(ev) {
-		const convId = ev.conversationId;
-		if (!convId) return;
-
-		if (ev.type === "message" && ev.message) {
-			const m = ev.message;
-			let content = "";
-			if (typeof m.content === "string") content = m.content;
-			else if (Array.isArray(m.content)) {
-				content = m.content
-					.map((c) => (typeof c === "string" ? c : c.text || ""))
-					.join("\n")
-					.trim();
-			}
-
-			if (content && (m.role === "assistant" || m.author === "assistant")) {
-				if (this.pendingRuns.has(convId)) {
-					const r = this.pendingRuns.get(convId);
-					r.accumulatedText += (r.accumulatedText ? "\n" : "") + content;
-				} else {
-					let early = this.earlyRuns.get(convId);
-					if (!early) {
-						early = { accumulatedText: "" };
-						this.earlyRuns.set(convId, early);
-					}
-					early.accumulatedText += (early.accumulatedText ? "\n" : "") + content;
-				}
-			}
-			return;
-		}
-
-		if (ev.type === "run_end") {
-			const run = this.pendingRuns.get(convId) || this.earlyRuns.get(convId);
-			if (!run) return;
-
-			this.pendingRuns.delete(convId);
-			this.earlyRuns.delete(convId);
-
-			const rawText = run.accumulatedText || "";
-			const cleanText = stripInternalMarkers(rawText);
-			const finalText = cleanText || "✅ Task completed (no text output).";
-
-			const cfg = this.getConfig();
-			// WhatsApp single message limit is ~4096 chars, using 3800 safe limit
-			const chunks = chunkMarkdownText(finalText, 3800);
-
-			if (cfg.accessToken && cfg.phoneNumberId) {
-				try {
-					for (const chunk of chunks) {
-						const payload = buildWhatsappPayload(run.senderPhone, chunk);
-						await whatsappApi(cfg.accessToken, cfg.phoneNumberId, "/messages", payload);
-					}
-					this.status.messagesReplied++;
-					this.status.lastReplyAt = Date.now();
-				} catch (err) {
-					this.log("warn", `WhatsApp reply delivery failed: ${err.message}`);
-				}
-			}
-		}
 	}
 }
 
@@ -472,7 +157,7 @@ export default async function activate(host) {
 	// Register AI tool "whatsapp" adhering strictly to tool-prompt-hygiene
 	host.registerTool?.({
 		name: "whatsapp",
-		description: "Send text messages or notifications to WhatsApp phone numbers via WhatsApp Cloud API.",
+		description: "Send text, images, audio, documents or videos to WhatsApp phone numbers via WhatsApp Cloud API.",
 		promptSnippet: "send messages to WhatsApp contacts",
 		promptGuidelines: [
 			"Confirm target phone number and message text with the user once before action=send",
@@ -483,13 +168,18 @@ export default async function activate(host) {
 			properties: {
 				action: {
 					type: "string",
-					enum: ["send", "status"],
+					enum: ["send", "send_media", "status"],
 					description: "action to perform (send: send message; status: query connection status).",
 				},
 				phone_number: {
 					type: "string",
 					description: "send: target recipient phone number with country code (e.g. 8613800000000).",
 				},
+				media_type: { type: "string", enum: ["image", "audio", "document", "video"] },
+				path: { type: "string", description: "Workspace file path to upload." },
+				media_id: { type: "string", description: "Existing WhatsApp media ID instead of path." },
+				mime_type: { type: "string", description: "Upload MIME type." },
+				filename: { type: "string" },
 				text: {
 					type: "string",
 					description: "send: text content to send.",
@@ -510,6 +200,20 @@ export default async function activate(host) {
 					const res = await whatsappApi(localConfig.accessToken, localConfig.phoneNumberId, "/messages", payload);
 					return JSON.stringify(res, null, 2);
 				}
+				case "send_media": {
+					const to = args.phone_number?.trim() || localConfig.defaultRecipient?.trim();
+					if (!to) throw new Error("phone_number is required.");
+					return JSON.stringify(
+						await sendMedia(host, localConfig, to, {
+							type: args.media_type,
+							path: args.path,
+							mediaId: args.media_id,
+							caption: args.text,
+							filename: args.filename,
+							mimeType: args.mime_type,
+						}),
+					);
+				}
 				case "status": {
 					return JSON.stringify(botBridge.getStatus(), null, 2);
 				}
@@ -517,6 +221,16 @@ export default async function activate(host) {
 					throw new Error(`Unknown action: ${action}`);
 			}
 		},
+	});
+
+	// Authenticated host route: configure the provider relay to POST Meta webhook JSON here.
+	host.route?.("POST", "/inbox", async (req, res) => {
+		if (!botBridge.running || !localConfig.botEnabled) return res.status(503).json({ error: "Bot is stopped" });
+		const messages =
+			req.body?.entry?.flatMap((entry) => entry.changes?.flatMap((change) => change.value?.messages || []) || []) || [];
+		if (messages.length > 100) return res.status(413).json({ error: "Too many messages" });
+		for (const message of messages) await botBridge.onInboundMessage(message);
+		res.json({ ok: true });
 	});
 
 	// Handle UI client messages
@@ -596,6 +310,13 @@ export default async function activate(host) {
 					break;
 				}
 
+				case "send_media": {
+					const to = msg.to?.trim() || localConfig.defaultRecipient?.trim();
+					if (!to) throw new Error("to recipient is required.");
+					const result = await sendMedia(host, localConfig, to, { ...msg, type: msg.mediaType });
+					reply({ type: "send_done", success: true, res: result });
+					break;
+				}
 				case "send_message": {
 					const to = msg.to?.trim() || localConfig.defaultRecipient?.trim();
 					if (!to) throw new Error("to recipient is required.");
@@ -612,7 +333,7 @@ export default async function activate(host) {
 					localConfig.botEnabled = true;
 					await host.storage.set("config", stripSecretsFromConfig(localConfig));
 					await botBridge.start();
-					reply({ type: "bot_status", success: true, status: botBridge.getStatus() });
+					reply({ type: "bot_status", success: botBridge.getStatus().connected, status: botBridge.getStatus() });
 					break;
 				}
 

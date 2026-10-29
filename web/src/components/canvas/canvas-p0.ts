@@ -1,52 +1,102 @@
 import type { CanvasEdge, CanvasNode } from "../../types";
-
-/** P0 小助手：分层自动布局 + 歷史快照（轻量，不引新依赖） */
-export function autoLayout(nodes: CanvasNode[], edges: CanvasEdge[]): CanvasNode[] {
-	const W = 300;
-	const H = 220;
-	const indeg = new Map<string, number>();
-	nodes.forEach((n) => indeg.set(n.id, 0));
-	edges.forEach((e) => indeg.set(e.targetNodeId, (indeg.get(e.targetNodeId) ?? 0) + 1));
-	// BFS 分层
-	const layers = new Map<string, number>();
-	const queue: string[] = nodes.filter((n) => (indeg.get(n.id) ?? 0) === 0).map((n) => n.id);
-	if (queue.length === 0 && nodes.length > 0) queue.push(nodes[0].id);
+export type NodeHeights = ReadonlyMap<string, number> | Record<string, number>;
+function nodeHeight(n: CanvasNode, heights?: NodeHeights): number {
+	const h =
+		heights &&
+		("get" in heights && typeof heights.get === "function"
+			? heights.get(n.id)
+			: (heights as Record<string, number>)[n.id]);
+	return typeof h === "number" && Number.isFinite(h) && h > 0 ? h : n.height && n.height > 0 ? n.height : 460;
+}
+export function computeCanvasBounds(nodes: CanvasNode[], heights?: NodeHeights) {
+	if (!nodes.length) return { x: 0, y: 0, width: 1, height: 1 };
+	const x = Math.min(...nodes.map((n) => n.x)),
+		y = Math.min(...nodes.map((n) => n.y));
+	return {
+		x,
+		y,
+		width: Math.max(1, ...nodes.map((n) => n.x + (n.width ?? 300) - x)),
+		height: Math.max(1, ...nodes.map((n) => n.y + nodeHeight(n, heights) - y)),
+	};
+}
+export function computeMinimap(nodes: CanvasNode[], width = 160, height = 100, heights?: NodeHeights) {
+	const bounds = computeCanvasBounds(nodes, heights);
+	const padding = 8;
+	const scale = Math.max(
+		0,
+		Math.min(Math.max(1, width - padding * 2) / bounds.width, Math.max(1, height - padding * 2) / bounds.height),
+	);
+	const offsetX = (width - bounds.width * scale) / 2 - bounds.x * scale,
+		offsetY = (height - bounds.height * scale) / 2 - bounds.y * scale;
+	return {
+		bounds,
+		scale,
+		offsetX,
+		offsetY,
+		nodes: nodes.map((n) => ({
+			id: n.id,
+			x: n.x * scale + offsetX,
+			y: n.y * scale + offsetY,
+			width: (n.width ?? 300) * scale,
+			height: nodeHeight(n, heights) * scale,
+		})),
+	};
+}
+export function fitCanvasViewport(
+	nodes: CanvasNode[],
+	width: number,
+	height: number,
+	heights?: NodeHeights,
+	padding = 40,
+) {
+	const b = computeCanvasBounds(nodes, heights);
+	const zoom = Math.min(
+		2,
+		Math.max(0.05, Math.min(Math.max(1, width - 2 * padding) / b.width, Math.max(1, height - 2 * padding) / b.height)),
+	);
+	return { x: (width - b.width * zoom) / 2 - b.x * zoom, y: (height - b.height * zoom) / 2 - b.y * zoom, zoom };
+}
+/** Topological longest-path layers, with measured card heights and widths. */
+export function autoLayout(nodes: CanvasNode[], edges: CanvasEdge[], heights?: NodeHeights): CanvasNode[] {
+	const ids = new Set(nodes.map((n) => n.id));
+	const indeg = new Map(nodes.map((n) => [n.id, 0]));
 	const adj = new Map<string, string[]>();
-	edges.forEach((e) => {
-		if (!adj.has(e.sourceNodeId)) adj.set(e.sourceNodeId, []);
-		adj.get(e.sourceNodeId)!.push(e.targetNodeId);
-	});
-	queue.forEach((id) => layers.set(id, 0));
-	const visited = new Set(queue);
-	while (queue.length > 0) {
-		const cur = queue.shift()!;
-		const depth = layers.get(cur) ?? 0;
-		for (const nxt of adj.get(cur) ?? []) {
-			if (!visited.has(nxt)) {
-				visited.add(nxt);
-				layers.set(nxt, depth + 1);
-				queue.push(nxt);
-			}
+	for (const e of edges) {
+		if (!ids.has(e.sourceNodeId) || !ids.has(e.targetNodeId)) continue;
+		indeg.set(e.targetNodeId, indeg.get(e.targetNodeId)! + 1);
+		adj.set(e.sourceNodeId, [...(adj.get(e.sourceNodeId) ?? []), e.targetNodeId]);
+	}
+	const layers = new Map(nodes.map((n) => [n.id, 0]));
+	const queue = nodes.filter((n) => !indeg.get(n.id)).map((n) => n.id);
+	const visited = new Set<string>();
+	for (let i = 0; i < queue.length; i++) {
+		const id = queue[i];
+		visited.add(id);
+		for (const next of adj.get(id) ?? []) {
+			layers.set(next, Math.max(layers.get(next)!, layers.get(id)! + 1));
+			indeg.set(next, indeg.get(next)! - 1);
+			if (!indeg.get(next)) queue.push(next);
 		}
 	}
-	// 未连通的节点按原顺序追加层
-	nodes.forEach((n, i) => {
-		if (!layers.has(n.id)) layers.set(n.id, Math.floor(i / 3));
-	});
-	const byLayer = new Map<number, string[]>();
-	layers.forEach((l, id) => {
-		if (!byLayer.has(l)) byLayer.set(l, []);
-		byLayer.get(l)!.push(id);
-	});
+	// Cyclic legacy graphs still get a finite, deterministic layout.
+	let fallback = Math.max(0, ...layers.values()) + 1;
+	for (const n of nodes) if (!visited.has(n.id)) layers.set(n.id, fallback++);
+	const groups = new Map<number, CanvasNode[]>();
+	for (const n of nodes) {
+		const l = layers.get(n.id)!;
+		groups.set(l, [...(groups.get(l) ?? []), n]);
+	}
 	const pos = new Map<string, { x: number; y: number }>();
-	[...byLayer.entries()]
-		.sort((a, b) => a[0] - b[0])
-		.forEach(([l, ids]) => {
-			ids.forEach((id, idx) => {
-				pos.set(id, { x: 80 + l * (W + 60), y: 80 + idx * (H + 40) });
-			});
-		});
-	return nodes.map((n) => ({ ...n, x: pos.get(n.id)?.x ?? n.x, y: pos.get(n.id)?.y ?? n.y }));
+	let x = 80;
+	for (const [, group] of [...groups].sort((a, b) => a[0] - b[0])) {
+		let y = 80;
+		for (const n of group) {
+			pos.set(n.id, { x, y });
+			y += nodeHeight(n, heights) + 40;
+		}
+		x += Math.max(...group.map((n) => n.width ?? 300)) + 60;
+	}
+	return nodes.map((n) => ({ ...n, ...pos.get(n.id) }));
 }
 
 export interface GraphSnap {

@@ -36,7 +36,7 @@ import { BROWSER_PAGE_TOOL_NAME } from "../../../server/tool-manager.js";
 import { EnginePicker } from "./EnginePicker";
 import { appUrl } from "../base-url";
 
-export type ViewName = "chat" | "terminal" | "git" | "canvas" | `plugin:${string}`;
+export type ViewName = "chat" | "terminal" | "git" | "canvas" | "devices" | `plugin:${string}`;
 
 export interface BarItemTheme {
 	id: string;
@@ -921,6 +921,15 @@ export function BarItem({
 			isActive = Boolean(zenMode);
 			tipOverride = t("zenModeTip");
 			onClick = () => onToggleZenMode?.();
+			break;
+		case "host:device-center":
+			iconNode = <FiGlobe className="bar-item-icon" />;
+			labelText = named(t("deviceCenter"));
+			extraClasses = "chip";
+			tipOverride = t("deviceCenterTip");
+			isTab = true;
+			isActive = view === "devices";
+			onClick = () => onViewChange?.("devices");
 			break;
 		case "host:settings":
 			iconNode = <FiSettings className="bar-item-icon" />;

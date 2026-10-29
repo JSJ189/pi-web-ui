@@ -194,8 +194,10 @@ describe("强调色实底的前景对比度", () => {
 
 	it(".cwd-choose-btn.primary 具备强调色实底与反色前景，且纯白主题不误伤非实底按钮", () => {
 		const stylesCss = readFileSync(STYLES_PATH, "utf8");
-		expect(stylesCss).toMatch(/\.cwd-choose-btn\.primary\s*\{[^}]*background:\s*var\(--accent\)/);
-		expect(stylesCss).toMatch(/\.cwd-choose-btn\.primary\s*\{[^}]*color:\s*var\(--accent-contrast/);
+		expect(stylesCss).toMatch(/\.cwd-choose-btn\.primary\s*\{[^}]*background:\s*var\(--button-primary-bg\)/);
+		expect(stylesCss).toMatch(/\.cwd-choose-btn\.primary\s*\{[^}]*color:\s*var\(--button-primary-fg\)/);
+		expect(stylesCss).toMatch(/--button-primary-bg:\s*var\(--accent\)/);
+		expect(stylesCss).toMatch(/--button-primary-fg:\s*var\(--accent-contrast\)/);
 
 		const flowFiles = ["themes/flow.css", "themes/wallpaper-flow.css"];
 		for (const rel of flowFiles) {

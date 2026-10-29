@@ -342,14 +342,14 @@ export class SchedulerStore {
 			if (next <= now && task.catchUp === "once" && lastAt < now) {
 				// 重启发现漏跑：补一次，补完按这次重排。
 				this.nextFire.set(task.id, now + 5000);
-				void this.fire(task.id, false);
+				void this.fire(task.id, false).catch((err) => this.reportFailure(err));
 			} else if (next <= now) {
 				this.nextFire.set(task.id, computeNextFire(task, now) ?? now + TICK_MS);
 			} else {
 				this.nextFire.set(task.id, next);
 			}
 		}
-		this.timer = setInterval(() => void this.tick(), TICK_MS);
+		this.timer = setInterval(() => void this.tick().catch((err) => this.reportFailure(err)), TICK_MS);
 		this.timer.unref?.();
 	}
 
@@ -407,13 +407,21 @@ export class SchedulerStore {
 		}
 	}
 
-	private save(): void {
+	private save(next: Map<string, StoredTask>): void {
+		const tasks: Record<string, StoredTask> = Object.fromEntries(next);
+		writeJsonAtomicSync(schedulerFile(this.dataDir), { v: 1, tasks });
+		this.tasks = next;
+	}
+
+	private reportFailure(err: unknown): void {
+		console.error("[scheduler] execution failed:", err);
+	}
+
+	private notify(...args: Parameters<NonNullable<typeof this.opts.notify>>): void {
 		try {
-			const tasks: Record<string, StoredTask> = {};
-			for (const [id, t] of this.tasks) tasks[id] = t;
-			writeJsonAtomicSync(schedulerFile(this.dataDir), { v: 1, tasks });
+			this.opts.notify?.(...args);
 		} catch (err) {
-			console.error("[scheduler] persist failed:", err);
+			this.reportFailure(err);
 		}
 	}
 
@@ -472,19 +480,20 @@ export class SchedulerStore {
 			}
 		}
 		const history = prev?.history ? sanitizeHistory(prev.history) : [];
-		this.tasks.set(task.id, { ...task, history });
+		this.save(new Map(this.tasks).set(task.id, { ...task, history }));
 		// spec/cwd/开关变了 → 按现在重排下次触发
 		this.nextFire.set(task.id, computeNextFire(task, Date.now()) ?? Date.now() + TICK_MS);
-		this.save();
 		this.changed();
 		return task;
 	}
 
 	remove(id: string): boolean {
-		const ok = this.tasks.delete(id);
-		this.nextFire.delete(id);
+		const ok = this.tasks.has(id);
 		if (ok) {
-			this.save();
+			const next = new Map(this.tasks);
+			next.delete(id);
+			this.save(next);
+			this.nextFire.delete(id);
 			this.changed();
 			try {
 				this.opts.onTaskRemoved?.(id);
@@ -496,22 +505,22 @@ export class SchedulerStore {
 	}
 
 	setEnabled(id: string, enabled: boolean): SchedulerTask | null {
-		const t = this.tasks.get(id);
-		if (!t) return null;
-		t.enabled = enabled;
-		t.updatedAt = Date.now();
+		const prev = this.tasks.get(id);
+		if (!prev) return null;
+		const t = { ...prev, enabled, updatedAt: Date.now() };
+		this.save(new Map(this.tasks).set(id, t));
 		this.nextFire.set(id, computeNextFire(t, Date.now()) ?? Date.now() + TICK_MS);
-		this.save();
 		this.changed();
-		return t;
+		return { ...t };
 	}
 
 	/** 会话重绑定（issue #231）：触发时按稳定键找到了新的对话句柄，把任务的
 	 *  投递目标迁移过去（只改 conversationId/sessionFile/updatedAt，不碰下次触发
 	 *  与历史）。无变化回 false（调用方免一次落盘+推送）；未知任务回 false。 */
 	rebind(id: string, binding: { conversationId?: string; sessionFile?: string }): boolean {
-		const t = this.tasks.get(id);
-		if (!t) return false;
+		const prev = this.tasks.get(id);
+		if (!prev) return false;
+		const t = { ...prev };
 		let dirty = false;
 		if (binding.conversationId !== undefined) {
 			const v = String(binding.conversationId ?? "")
@@ -533,7 +542,7 @@ export class SchedulerStore {
 		}
 		if (!dirty) return false;
 		t.updatedAt = Date.now();
-		this.save();
+		this.save(new Map(this.tasks).set(id, t));
 		this.changed();
 		return true;
 	}
@@ -563,58 +572,65 @@ export class SchedulerStore {
 		const task = this.tasks.get(id);
 		if (!task) return { ok: false, error: "任务不存在" };
 		const executor = this.opts.executor;
-		if (!executor) {
-			const err = "调度器执行器未接入（当前引擎不支持定时任务）";
-			this.recordRun(id, { at: Date.now(), ok: false, durationMs: 0, error: err, ...(manual ? { manual } : {}) });
-			return { ok: false, error: err };
-		}
 		this.running.add(id);
 		this.changed();
 		const startedAt = Date.now();
 		let result: SchedulerExecutorResult;
 		try {
-			result = await executor({ ...task });
+			result = executor
+				? await executor({ ...task })
+				: { ok: false, error: "调度器执行器未接入（当前引擎不支持定时任务）" };
 		} catch (err) {
-			result = { ok: false, error: (err as Error).message };
+			result = { ok: false, error: String(err instanceof Error ? err.message : err) };
 		}
 		const durationMs = Date.now() - startedAt;
-		this.running.delete(id);
-		this.recordRun(id, {
-			at: Date.now(),
-			ok: result.ok,
-			durationMs,
-			...(result.conversationId ? { conversationId: result.conversationId } : {}),
-			...(result.error ? { error: result.error.slice(0, 500) } : {}),
-			...(manual ? { manual } : {}),
-		});
-		// 按这次完成时间重排下次触发（间隔任务从完成起算，避免长任务连击）。
-		const cur = this.tasks.get(id);
-		if (cur && cur.enabled && !manual) {
-			this.nextFire.set(id, computeNextFire(cur, Date.now()) ?? Date.now() + TICK_MS);
-			this.save();
+		try {
+			this.recordRun(id, {
+				at: Date.now(),
+				ok: result.ok,
+				durationMs,
+				...(result.conversationId ? { conversationId: result.conversationId } : {}),
+				...(result.error ? { error: result.error.slice(0, 500) } : {}),
+				...(manual ? { manual } : {}),
+			});
+		} catch (err) {
+			result = {
+				ok: false,
+				error: `Failed to persist scheduled-task run: ${String(err instanceof Error ? err.message : err)}`,
+			};
+			this.reportFailure(err);
+		} finally {
+			// 执行可能已产生外部副作用；记录写失败也不能在每个 tick 立即重试。
+			// 仅推进内存调度，使用执行期间更新后的配置，不伪造成功历史。
+			// 进程重启后仍可能补跑：本地记录与外部副作用不保证跨进程 exactly-once。
+			const cur = this.tasks.get(id);
+			if (cur && cur.enabled && !manual) {
+				this.nextFire.set(id, computeNextFire(cur, Date.now()) ?? Date.now() + TICK_MS);
+			}
+			this.running.delete(id);
+			this.changed();
 		}
 		const label = `⏰ ${task.name}`;
 		if (result.ok) {
-			this.opts.notify?.(
+			this.notify(
 				"info",
 				`定时任务「${task.name}」${manual ? "手动" : "定时"}触发完成（${(durationMs / 1000).toFixed(0)}s）——${label}`,
 				`Scheduled task "${task.name}" ${manual ? "manually" : "automatically"} finished (${Math.round(durationMs / 1000)}s) — ${label}`,
 			);
 		} else {
-			this.opts.notify?.(
+			this.notify(
 				"warning",
 				`定时任务「${task.name}」${manual ? "手动" : "定时"}触发失败：${result.error ?? "未知错误"}`,
 				`Scheduled task "${task.name}" ${manual ? "manual" : "automatic"} run failed: ${result.error ?? "unknown error"}`,
 			);
 		}
-		this.changed();
 		return result;
 	}
 
 	private recordRun(id: string, run: SchedulerRunRecord): void {
 		const t = this.tasks.get(id);
 		if (!t) return;
-		t.history = [run, ...sanitizeHistory(t.history)].slice(0, SCHEDULER_HISTORY_MAX);
-		this.save();
+		const next = { ...t, history: [run, ...sanitizeHistory(t.history)].slice(0, SCHEDULER_HISTORY_MAX) };
+		this.save(new Map(this.tasks).set(id, next));
 	}
 }

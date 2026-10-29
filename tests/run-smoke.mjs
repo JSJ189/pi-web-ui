@@ -45,6 +45,8 @@ process.env.LEGADO_ALLOW_PRIVATE_HOSTS = process.env.LEGADO_ALLOW_PRIVATE_HOSTS 
 const WIN32_KNOWN_ENV_FAIL = new Set(["terminal-smoke-test", "restart-handoff-test"]);
 
 const ALL = [
+	"theme-buttons-test",
+	"stream-stability-ui-test",
 	"clear-provider-key-test",
 	"conv-cross-project-test",
 	"conv-cwd-test",

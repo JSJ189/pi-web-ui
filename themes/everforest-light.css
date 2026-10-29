@@ -14,14 +14,11 @@
 	--accent: #3382ad;
 	--accent-soft: rgba(58, 148, 197, 0.14);
 	--green: #616e01;
-	--on-green: #ffffff;
 	--green-soft: rgba(141, 161, 1, 0.12);
 	--red: #d10c08;
-	--on-red: #ffffff;
 	--red-soft: rgba(248, 85, 82, 0.1);
 	--amber: #886200;
 	--blue: #0b5fe9;
-	--blue-soft: rgba(59, 130, 246, 0.12);
 	--term-bg: #fdf6e3;
 	--term-fg: #5c6a72;
 	--term-cursor: #3a94c5;
@@ -43,14 +40,9 @@
 	--term-bright-magenta: #df69ba;
 	--term-bright-cyan: #35a77c;
 	--term-bright-white: #fdf6e3;
-	--mono: "SF Mono", "JetBrains Mono", ui-monospace, Menlo, Consolas, monospace;
-	--mermaid-font-size: 12px;
 	--tooltip-bg: #f4f0d9;
 	--code-bg: #f4f0d9;
 	--code-text: #5c6a72;
-	--code-border: var(--border-soft);
-	--code-pad: 8px 10px;
-	--card-body-pad: 4px 14px 12px;
 	--err-text: #b5433c;
 	--red-text: #b5433c;
 	--amber-text: #856100;
@@ -72,30 +64,16 @@
 	--notice-info-border: var(--info-blue);
 	--send-blue: #3a94c5;
 	--send-blue-hover: #2e7aa6;
-	--stop-red: #ef4444;
-	--stop-red-hover: #dc2626;
 	--brand-grad-a: #8da101;
 	--brand-grad-b: #3a94c5;
+	--on-green: #ffffff;
+	--on-red: #ffffff;
 	--on-amber: #ffffff;
-	--search-active-fg: #1a1d26;
-	--switch-knob: #ffffff;
-	--bg-elev3: rgba(255, 255, 255, 0.06);
-	--sunken-bg: rgba(0, 0, 0, 0.15);
-	--glow-015: rgba(255, 255, 255, 0.015);
-	--glow-025: rgba(255, 255, 255, 0.025);
-	--glow-03: rgba(255, 255, 255, 0.03);
-	--glow-04: rgba(255, 255, 255, 0.04);
-	--glow-05: rgba(255, 255, 255, 0.05);
-	--glow-12: rgba(255, 255, 255, 0.12);
-	--glow-18: rgba(255, 255, 255, 0.18);
-	--glow-22: rgba(255, 255, 255, 0.22);
-	--glow-38: rgba(255, 255, 255, 0.38);
+	--on-send-blue-hover: #ffffff;
+	--on-stop-red-hover: #ffffff;
 	--control-fg: #7a8478;
 	--control-bg: #f4f0d9;
 	--control-border: #e6e2cc;
-	--bg-image: none;
-	--bg-image-dim: 0.78;
-	--bg-image-blur: 0px;
 	--wallpaper-panel-alpha: 100%;
 	--topbar-bg: #f4f0d9;
 	--statusbar-bg: #fdf6e3;
@@ -104,7 +82,6 @@
 	--chip-bg: #efebd4;
 	--msgs-bg: #fdf6e3;
 	--inputbox-bg: #efebd4;
-	--menu-bg: var(--bg-elev2);
 }
 
 /* ---- syntax highlighting (Everforest Light) ---- */

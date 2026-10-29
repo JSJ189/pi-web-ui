@@ -62,13 +62,12 @@ import {
 } from "../tts";
 import { openExportImage, toggleExportImageSelect, useExportImage } from "../export-image-state";
 import { hasMessageWidget } from "../plugin-fence";
-import { openRollbackDialog } from "../rollback-state";
+import { MessageActionButton } from "./MessageActionTooltip";
+import { createPortal } from "react-dom";
+import { useFloatingPanel } from "../use-floating-panel";
 import { BUILTIN_UI_ITEMS, type UiSlotEntry } from "../ui-slots";
-import { appSend } from "../app-globals";
+import { appSend, useAppField } from "../app-globals";
 import { isAbortedTurn } from "../aborted-turn";
-
-/** 编辑重问编辑器里直接拖入/粘贴文件的上限（与服务端 MAX_UPLOAD_BYTES 一致）。 */
-const MAX_EDIT_UPLOAD_BYTES = 20 * 1024 * 1024;
 
 // ---------------------------------------------------------------------------
 // Narrowing guards. UiContentBlock is an open union (its last member is
@@ -244,6 +243,11 @@ interface MessageProps {
 	 *  (path+mode) — restored in the editor because fork(entry.parent) drops
 	 *  the persisted attachment asides. */
 	questionAttachments?: PromptAttachment[];
+	messageLabel?: string;
+	/** Opens the nearest preceding user question, resolved against the full transcript. */
+	onRollbackEdit?: (messageId: string) => void;
+	canRollbackEdit?: boolean;
+	editRequest?: object;
 	/** Kill the running bash command from its tool card (agent run continues). */
 	onKillBash?: () => void;
 	/** Manually retry the last failed model call (red error on the LAST message
@@ -304,6 +308,10 @@ export const Message = memo(function Message({
 	onRetry,
 	onCollapse,
 	questionAttachments,
+	messageLabel,
+	onRollbackEdit,
+	canRollbackEdit = false,
+	editRequest,
 
 	qnIndex,
 	qnActive,
@@ -331,6 +339,10 @@ export const Message = memo(function Message({
 	// (newly added files) and path+mode (workspace attachments).
 	const [editAttachments, setEditAttachments] = useState<PromptAttachment[]>([]);
 	const [editDragOver, setEditDragOver] = useState(false);
+	const chatUploadMaxMb = useAppField("chatUploadMaxMb");
+	const editReadId = useRef(0);
+	const [editReads, setEditReads] = useState<{ id: number; name: string; percent: number | null }[]>([]);
+	const finishEditRead = (id: number) => setEditReads((prev) => prev.filter((read) => read.id !== id));
 	// Transient inline notice for the editor (oversized/unreadable dropped
 	// files) — Message has no toast access, so it renders under the chips.
 	const [editNotice, setEditNotice] = useState<string | null>(null);
@@ -413,36 +425,63 @@ export const Message = memo(function Message({
 		const added: PromptAttachment[] = [];
 		for (const f of files) {
 			if (!isRasterImage(f.type)) continue;
-			const img = await fileToProcessedImage(f);
-			if (!img) continue;
-			added.push({
-				path: "",
-				imageData: img.data,
-				mimeType: img.mimeType,
-				name: img.name,
-			});
+			if (f.size > chatUploadMaxMb * 1024 * 1024) {
+				pushEditNotice(t("fileTooLarge", { name: f.name, size: chatUploadMaxMb }));
+				continue;
+			}
+			const id = ++editReadId.current;
+			setEditReads((prev) => [...prev, { id, name: f.name, percent: null }]);
+			try {
+				const img = await fileToProcessedImage(f);
+				if (!img) {
+					pushEditNotice(t("fileLoadFailed", { name: f.name }));
+					continue;
+				}
+				added.push({
+					path: "",
+					imageData: img.data,
+					mimeType: img.mimeType,
+					name: img.name,
+				});
+			} catch {
+				pushEditNotice(t("fileLoadFailed", { name: f.name }));
+			} finally {
+				finishEditRead(id);
+			}
 		}
 		if (added.length > 0) setEditAttachments((prev) => [...prev, ...added]);
 	};
 	/** Add a raw uploaded file (non-image, dropped in the editor) — read into
-	 *  base64 fileData, same 20MB cap as the main input bar. */
+	 *  base64 fileData, sharing the main input bar’s configured cap. */
 	const addEditFile = async (f: File) => {
-		if (f.size > MAX_EDIT_UPLOAD_BYTES) {
-			pushEditNotice(t("fileTooLarge", { name: f.name, size: 20 }));
+		if (f.size > chatUploadMaxMb * 1024 * 1024) {
+			pushEditNotice(t("fileTooLarge", { name: f.name, size: chatUploadMaxMb }));
 			return;
 		}
+		const id = ++editReadId.current;
+		setEditReads((prev) => [...prev, { id, name: f.name, percent: 0 }]);
 		let base64: string;
 		try {
 			const dataUrl = await new Promise<string>((res, rej) => {
 				const r = new FileReader();
 				r.onload = () => res(r.result as string);
 				r.onerror = () => rej(r.error ?? new Error("read failed"));
+				r.onabort = () => rej(new Error("read aborted"));
+				r.onprogress = (event) => {
+					const percent =
+						event.lengthComputable && event.total > 0
+							? Math.min(100, Math.round((event.loaded / event.total) * 100))
+							: null;
+					setEditReads((prev) => prev.map((read) => (read.id === id ? { ...read, percent } : read)));
+				};
 				r.readAsDataURL(f);
 			});
 			base64 = dataUrl.replace(/^data:[^;]*;base64,/, "");
 		} catch {
 			pushEditNotice(t("fileLoadFailed", { name: f.name }));
 			return;
+		} finally {
+			finishEditRead(id);
 		}
 		setEditAttachments((prev) => [
 			...prev,
@@ -489,6 +528,14 @@ export const Message = memo(function Message({
 		setEditAttachments(questionAttachments ?? []);
 		setEditing(true);
 	};
+	useEffect(() => {
+		if (editRequest && canEdit) startEdit();
+	}, [editRequest]);
+	const rollbackEdit = () => {
+		if (canEdit) startEdit();
+		else onRollbackEdit?.(message.id);
+	};
+	const canRollback = !readOnly && !streaming && !editing && (canEdit || canRollbackEdit);
 	const submitEdit = () => {
 		const text = draft.trim();
 		if (!text && !editAttachments.some((a) => a.mode === "quote" && readTextQuote(a.quote))) return;
@@ -574,27 +621,15 @@ export const Message = memo(function Message({
 	const [copyDropdownOpen, setCopyDropdownOpen] = useState(false);
 	const copyGroupRef = useRef<HTMLDivElement>(null);
 
-	useEffect(() => {
-		if (!copyDropdownOpen) return;
-		const onDocClick = (e: MouseEvent) => {
-			if (copyGroupRef.current && !copyGroupRef.current.contains(e.target as Node)) {
-				setCopyDropdownOpen(false);
-			}
-		};
-		const onKey = (e: KeyboardEvent) => {
-			if (e.key === "Escape") setCopyDropdownOpen(false);
-		};
-		document.addEventListener("mousedown", onDocClick);
-		document.addEventListener("keydown", onKey);
-		return () => {
-			document.removeEventListener("mousedown", onDocClick);
-			document.removeEventListener("keydown", onKey);
-		};
-	}, [copyDropdownOpen]);
+	const copyPanel = useFloatingPanel({
+		open: copyDropdownOpen,
+		anchor: copyGroupRef,
+		onClose: () => setCopyDropdownOpen(false),
+	});
 
 	const speakNode = (key: string): ReactNode =>
 		canSpeak ? (
-			<button
+			<MessageActionButton
 				key={key}
 				type="button"
 				className={`msg-action${speakActive ? " msg-action-speaking" : ""}`}
@@ -604,7 +639,7 @@ export const Message = memo(function Message({
 			>
 				{speakActive ? <FiSquare /> : <FiVolume2 />}{" "}
 				<span className="msg-action-label">{speakActive ? t("stopSpeakingMsg") : t("speakMsg")}</span>
-			</button>
+			</MessageActionButton>
 		) : null;
 
 	/** 右键菜单兜底条目：直接取 BUILTIN_UI_ITEMS 的 contextmenu.message 内置清单
@@ -641,22 +676,23 @@ export const Message = memo(function Message({
 			uiContextMessage && uiContextMessage.length > 0 ? uiContextMessage : msgCtxFallback();
 
 		const entries = rawEntries.map((entry) => {
-			if (entry.source !== "host") return entry;
+			if (entry.source !== "host") return readOnly ? { ...entry, hidden: true } : entry;
 			switch (entry.id) {
 				case "host:msg-ctx-copy-markdown":
 				case "host:msg-ctx-copy-text":
 					return canCopyWhole ? entry : { ...entry, hidden: true };
 				case "host:msg-ctx-copy-image":
-					return canCopyWhole && !readOnly ? entry : { ...entry, hidden: true };
+					return canCopyWhole ? entry : { ...entry, hidden: true };
 				case "host:msg-ctx-copy-link": {
 					const sid = parseSessionHash(window.location.hash)?.sessionId;
-					return !streaming && Boolean(sid && message.id) ? entry : { ...entry, hidden: true };
+					return !readOnly && !streaming && Boolean(sid && message.id) ? entry : { ...entry, hidden: true };
 				}
 				case "host:msg-ctx-reask":
 				case "host:msg-ctx-edit-reask":
 					return canEdit ? entry : { ...entry, hidden: true };
-				case "host:msg-ctx-fork":
 				case "host:msg-ctx-rollback":
+					return canRollback ? entry : { ...entry, hidden: true };
+				case "host:msg-ctx-fork":
 					return !readOnly && !streaming && !editing ? entry : { ...entry, hidden: true };
 				case "host:msg-ctx-speak":
 					if (!canSpeak) return { ...entry, hidden: true };
@@ -704,10 +740,10 @@ export const Message = memo(function Message({
 						startEdit();
 						return undefined;
 					case "host:msg-ctx-fork":
-						appSend({ type: "fork_session", messageId: message.id, position: "before" });
+						appSend({ type: "fork_session", messageId: message.id, position: "at" });
 						return undefined;
 					case "host:msg-ctx-rollback":
-						openRollbackDialog({ messageId: message.id });
+						rollbackEdit();
 						return undefined;
 					case "host:msg-ctx-speak":
 						toggleSpeak();
@@ -744,7 +780,7 @@ export const Message = memo(function Message({
 
 		return (
 			<div key={key} ref={copyGroupRef} className={`msg-copy-group${copyDropdownOpen ? " has-open-dropdown" : ""}`}>
-				<button
+				<MessageActionButton
 					type="button"
 					className={`msg-action msg-copy-main-btn${ok ? " msg-copy-success" : ""}`}
 					title={ok ? t("copied") : isFailed ? t("copyFailed") : t("copyMarkdown")}
@@ -753,12 +789,12 @@ export const Message = memo(function Message({
 				>
 					{ok ? <FiCheckCircle /> : <FiCopy />}
 					<span className="msg-action-label">{ok ? t("copied") : t("copy")}</span>
-				</button>
-				<button
+				</MessageActionButton>
+				<MessageActionButton
 					type="button"
 					className={`msg-action msg-copy-caret-btn${copyDropdownOpen ? " active" : ""}`}
-					title={t("copyMessage")}
-					aria-label={t("copyMessage")}
+					title={t("moreCopyOptions")}
+					aria-label={t("moreCopyOptions")}
 					aria-expanded={copyDropdownOpen}
 					onClick={(e) => {
 						e.stopPropagation();
@@ -766,26 +802,29 @@ export const Message = memo(function Message({
 					}}
 				>
 					<FiChevronDown className={`msg-copy-caret-icon${copyDropdownOpen ? " open" : ""}`} />
-				</button>
-				{copyDropdownOpen && (
-					<div className="msg-copy-dropdown" role="menu">
-						{activeItems.map((item) => (
-							<button
-								key={item.id}
-								type="button"
-								className="msg-copy-menu-item"
-								role="menuitem"
-								onClick={() => {
-									setCopyDropdownOpen(false);
-									void doWholeCopy(item.id);
-								}}
-							>
-								{item.icon}
-								<span>{item.label}</span>
-							</button>
-						))}
-					</div>
-				)}
+				</MessageActionButton>
+				{copyDropdownOpen &&
+					createPortal(
+						<div ref={copyPanel.panelRef} style={copyPanel.style} className="msg-copy-dropdown" role="menu">
+							{activeItems.map((item) => (
+								<MessageActionButton
+									key={item.id}
+									type="button"
+									className="msg-copy-menu-item"
+									title={item.label}
+									role="menuitem"
+									onClick={() => {
+										setCopyDropdownOpen(false);
+										void doWholeCopy(item.id);
+									}}
+								>
+									{item.icon}
+									<span>{item.label}</span>
+								</MessageActionButton>
+							))}
+						</div>,
+						document.body,
+					)}
 			</div>
 		);
 	};
@@ -799,7 +838,7 @@ export const Message = memo(function Message({
 			if (canEdit) {
 				children.push(
 					<Fragment key="fb-reask">
-						<button
+						<MessageActionButton
 							type="button"
 							className="msg-action"
 							title={t("reaskDirectlyTip")}
@@ -807,8 +846,8 @@ export const Message = memo(function Message({
 							onClick={directReask}
 						>
 							<FiRefreshCw /> <span className="msg-action-label">{t("reaskDirectly")}</span>
-						</button>
-						<button
+						</MessageActionButton>
+						<MessageActionButton
 							type="button"
 							className="msg-action"
 							title={t("editReaskTip")}
@@ -816,7 +855,7 @@ export const Message = memo(function Message({
 							onClick={startEdit}
 						>
 							<FiEdit3 /> <span className="msg-action-label">{t("editReask")}</span>
-						</button>
+						</MessageActionButton>
 					</Fragment>,
 				);
 			}
@@ -852,7 +891,7 @@ export const Message = memo(function Message({
 			if (entry.id === "host:msg-reask") {
 				if (!canEdit) return;
 				nodes.push(
-					<button
+					<MessageActionButton
 						key={key}
 						type="button"
 						className="msg-action"
@@ -861,53 +900,60 @@ export const Message = memo(function Message({
 						onClick={directReask}
 					>
 						{slotIcon(entry.icon)} <span className="msg-action-label">{label}</span>
-					</button>,
+					</MessageActionButton>,
 				);
 				return;
 			}
 			if (entry.id === "host:msg-edit-reask") {
 				if (!canEdit) return;
 				nodes.push(
-					<button key={key} type="button" className="msg-action" title={t("editReaskTip")} onClick={startEdit}>
+					<MessageActionButton
+						key={key}
+						type="button"
+						className="msg-action"
+						title={t("editReaskTip")}
+						onClick={startEdit}
+					>
 						{slotIcon(entry.icon)} <span className="msg-action-label">{label}</span>
-					</button>,
+					</MessageActionButton>,
 				);
 				return;
 			}
 			if (entry.id === "host:msg-fork") {
-				if (streaming || editing) return;
+				if (readOnly || streaming || editing) return;
 				nodes.push(
-					<button
+					<MessageActionButton
 						key={key}
 						type="button"
 						className="msg-action"
 						title={t("forkSessionTip")}
 						aria-label={label}
-						onClick={() => appSend({ type: "fork_session", messageId: message.id, position: "before" })}
+						onClick={() => appSend({ type: "fork_session", messageId: message.id, position: "at" })}
 					>
 						{slotIcon(entry.icon)} <span className="msg-action-label">{label}</span>
-					</button>,
+					</MessageActionButton>,
 				);
 				return;
 			}
 			if (entry.id === "host:msg-rollback") {
-				if (readOnly || streaming || editing) return;
+				if (!canRollback) return;
 				nodes.push(
-					<button
+					<MessageActionButton
 						key={key}
 						type="button"
 						className="msg-action"
 						title={t("rollbackSessionTip")}
 						aria-label={label}
 						onClick={() => {
-							openRollbackDialog({ messageId: message.id });
+							rollbackEdit();
 						}}
 					>
 						{slotIcon(entry.icon)} <span className="msg-action-label">{label}</span>
-					</button>,
+					</MessageActionButton>,
 				);
 				return;
 			}
+			if (readOnly) return;
 			if (entry.kind === "divider") {
 				nodes.push(<span key={key} className="msg-action-divider" aria-hidden="true" />);
 				return;
@@ -942,7 +988,7 @@ export const Message = memo(function Message({
 				return;
 			}
 			nodes.push(
-				<button
+				<MessageActionButton
 					key={key}
 					type="button"
 					className="msg-action"
@@ -952,7 +998,7 @@ export const Message = memo(function Message({
 				>
 					{slotIcon(entry.icon)} <span className="msg-action-label">{label}</span>
 					{entry.badge ? <span className="msg-action-count">{entry.badge}</span> : null}
-				</button>,
+				</MessageActionButton>,
 			);
 		});
 		if (nodes.length === 0) return null;
@@ -1051,6 +1097,7 @@ export const Message = memo(function Message({
 									: `${t("plugin")} · ${message.customType ?? t("unknown")}`
 						: roleLabel(message.role, t)}
 				</span>
+				{messageLabel && <span className="msg-model">{messageLabel}</span>}
 				{message.model && <span className="msg-model">{message.model}</span>}
 				{message.timestamp && <span className="msg-time">{formatTime(message.timestamp)}</span>}
 				{qnIndex !== undefined && onJump && (
@@ -1130,6 +1177,25 @@ export const Message = memo(function Message({
 										</span>
 									);
 								})}
+							</div>
+						)}
+						{editReads.length > 0 && (
+							<div className="msg-editor-notice" role="status" aria-live="polite" aria-atomic="true">
+								{editReads.map(({ id, name, percent }) => (
+									<div key={id} style={{ display: "flex", alignItems: "center", gap: 6, minWidth: 0 }}>
+										<progress
+											max={100}
+											value={percent ?? undefined}
+											aria-label={
+												percent === null ? t("uploadPreparing", { name }) : t("uploadReading", { name, percent })
+											}
+											style={{ width: 64, flexShrink: 0 }}
+										/>
+										<span style={{ overflowWrap: "anywhere", minWidth: 0 }}>
+											{percent === null ? t("uploadPreparing", { name }) : t("uploadReading", { name, percent })}
+										</span>
+									</div>
+								))}
 							</div>
 						)}
 						{editNotice && <div className="msg-editor-notice">{editNotice}</div>}
@@ -1238,7 +1304,7 @@ export const Message = memo(function Message({
 								{message.content.map((block, i) =>
 									block.type === "text" ? null : (
 										<Block
-											key={`${message.id}-${i}`}
+											key={i}
 											block={block}
 											toolResults={toolResults}
 											liveOutputs={liveOutputs}
@@ -1266,7 +1332,7 @@ export const Message = memo(function Message({
 							<PluginWidgetBlock type={message.customType ?? ""} code={widgetPayload}>
 								{message.content.map((block, i) => (
 									<Block
-										key={`${message.id}-${i}`}
+										key={i}
 										block={block}
 										toolResults={toolResults}
 										liveOutputs={liveOutputs}
@@ -1290,8 +1356,10 @@ export const Message = memo(function Message({
 								))}
 							</PluginWidgetBlock>
 						) : (
+							// Block positions stay stable when stream-* becomes a persisted ID.
+							// Including message.id here remounts StreamMarkdown after finalization.
 							message.content.map((block, i) => (
-								<Fragment key={`${message.id}-${i}`}>
+								<Fragment key={i}>
 									<Block
 										block={block}
 										toolResults={toolResults}

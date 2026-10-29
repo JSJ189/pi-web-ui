@@ -62,7 +62,10 @@ export interface ToolGuardHook {
 	) => Promise<{ content?: Array<{ type: string; text?: string }>; pluginIds: string[] } | undefined>;
 }
 
-/** 人机协同审批回调（第 7 参数 = 命中的规则档位，供「允许同类」记忆；第 8 参数 = 命中清单，用于高危片段定位）。 */
+/** Approval callback: category/hits classify requests; signal owns their lifetime.
+ * Implementations must settle and remove pending requests on abort, including
+ * already-aborted signals and cancellation during listener registration.
+ */
 export type AskApprovalFn = (
 	toolCallId: string,
 	toolName: string,
@@ -72,7 +75,12 @@ export type AskApprovalFn = (
 	conversationId?: string,
 	category?: UiApprovalCategory,
 	hits?: UiApprovalHit[],
+	signal?: AbortSignal,
 ) => Promise<ToolApprovalResolution>;
+
+function checkCancellation(signal: unknown): asserts signal is AbortSignal | undefined {
+	(signal as AbortSignal | undefined)?.throwIfAborted();
+}
 
 /**
  * 计划模式闸门装饰（通用）：套在任何工具定义外层，只在**执行前**判定一次。
@@ -88,6 +96,7 @@ export function withPlanModeGate(
 	return {
 		...def,
 		execute: (async (...args: unknown[]) => {
+			checkCancellation(args[2]);
 			if (planMode()) {
 				const params = args[1];
 				const denied = planModeDenial(def.name, params);
@@ -102,6 +111,7 @@ export function withPlanModeGate(
 					throw err;
 				}
 			}
+			checkCancellation(args[2]);
 			return (def.execute as (...a: unknown[]) => unknown)(...args);
 		}) as ToolDefinition["execute"],
 	};
@@ -122,6 +132,7 @@ export function withGoalReviewGate(
 	return {
 		...def,
 		execute: (async (...args: unknown[]) => {
+			checkCancellation(args[2]);
 			if (reviewTurn()) {
 				const params = args[1];
 				const denied = goalReviewDenial(def.name, params);
@@ -133,6 +144,7 @@ export function withGoalReviewGate(
 					} as never;
 				}
 			}
+			checkCancellation(args[2]);
 			return (def.execute as (...a: unknown[]) => unknown)(...args);
 		}) as ToolDefinition["execute"],
 	};
@@ -169,6 +181,7 @@ export function withApprovalGate(
 	const wrapped: ToolDefinition = {
 		...def,
 		execute: (async (toolCallId: string, params: unknown, signal: unknown, onUpdate: unknown, ctx: unknown) => {
+			checkCancellation(signal);
 			const lang = opts.getLang();
 			const conversationId = opts.conversationId?.();
 			const cwd = opts.cwd();
@@ -211,7 +224,9 @@ export function withApprovalGate(
 					conversationId,
 					danger.category,
 					danger.hits,
+					signal,
 				);
+				checkCancellation(signal);
 				if (res.decision === "deny") {
 					const reasonText = res.reason ? ` 原因：${res.reason}` : "";
 					const reasonTextEn = res.reason ? ` Reason: ${res.reason}` : "";
@@ -230,6 +245,7 @@ export function withApprovalGate(
 				}
 			}
 
+			checkCancellation(signal);
 			return (def.execute as (...args: unknown[]) => unknown)(toolCallId, effectiveParams, signal, onUpdate, ctx);
 		}) as ToolDefinition["execute"],
 	};
@@ -252,6 +268,7 @@ export function withDelegationGate(
 	return {
 		...def,
 		execute: (async (...args: unknown[]) => {
+			checkCancellation(args[2]);
 			if (delegateMode()) {
 				const params = args[1];
 				const denied = delegationDenial(def.name, params);
@@ -263,6 +280,7 @@ export function withDelegationGate(
 					} as never;
 				}
 			}
+			checkCancellation(args[2]);
 			return (def.execute as (...a: unknown[]) => unknown)(...args);
 		}) as ToolDefinition["execute"],
 	};
@@ -306,6 +324,7 @@ export function withToolGuard(
 	return {
 		...def,
 		execute: (async (toolCallId: string, params: unknown, signal: unknown, onUpdate: unknown, ctx: unknown) => {
+			checkCancellation(signal);
 			const lang = opts.getLang();
 			const conversationId = opts.conversationId?.();
 			let pre: Awaited<ReturnType<ToolGuardHook["pre"]>> | undefined;
@@ -315,6 +334,7 @@ export function withToolGuard(
 				} catch {
 					pre = { verdict: { decision: "allow" } };
 				}
+				checkCancellation(signal);
 			}
 
 			// 检查是否需要人工协同审批（Human-in-the-Loop）
@@ -390,7 +410,9 @@ export function withToolGuard(
 					conversationId,
 					approvalCategory,
 					approvalHits,
+					signal,
 				);
+				checkCancellation(signal);
 				if (res.decision === "deny") {
 					const reasonText = res.reason ? ` 原因：${res.reason}` : "";
 					const reasonTextEn = res.reason ? ` Reason: ${res.reason}` : "";
@@ -418,6 +440,7 @@ export function withToolGuard(
 				} as never;
 			}
 
+			checkCancellation(signal);
 			const result = (await (def.execute as (...a: never[]) => Promise<unknown>)(
 				toolCallId as never,
 				effectiveParams as never,
@@ -429,6 +452,7 @@ export function withToolGuard(
 				details?: Record<string, unknown>;
 				[k: string]: unknown;
 			};
+			checkCancellation(signal);
 
 			if (userEdited && result && typeof result === "object") {
 				result.details = {
@@ -446,6 +470,7 @@ export function withToolGuard(
 				} catch {
 					post = undefined;
 				}
+				checkCancellation(signal);
 				if (post?.content) return { ...result, content: post.content } as never;
 			}
 			return result as never;
@@ -488,6 +513,7 @@ export function wrapWriteToolWithPermission(
 	return {
 		...effectiveBase,
 		execute: async (toolCallId, params, signal, onUpdate, ctx) => {
+			checkCancellation(signal);
 			const perm = getPermission();
 			if (perm === "read-only") {
 				return {
@@ -554,7 +580,9 @@ export function wrapWriteToolWithPermission(
 						getConversationId?.(),
 						danger.category,
 						danger.hits,
+						signal,
 					);
+					checkCancellation(signal);
 					if (res.decision === "deny") {
 						return {
 							content: [
@@ -577,6 +605,7 @@ export function wrapWriteToolWithPermission(
 				}
 			}
 
+			checkCancellation(signal);
 			const result = (await effectiveBase.execute(
 				toolCallId,
 				effectiveParams as never,
@@ -587,6 +616,7 @@ export function wrapWriteToolWithPermission(
 				details?: Record<string, unknown>;
 				[k: string]: unknown;
 			};
+			checkCancellation(signal);
 			if (userEdited && result && typeof result === "object") {
 				result.details = {
 					...result.details,
@@ -638,6 +668,7 @@ export function wrapEditToolWithPermission(
 	return {
 		...effectiveBase,
 		execute: async (toolCallId, params, signal, onUpdate, ctx) => {
+			checkCancellation(signal);
 			const perm = getPermission();
 			if (perm === "read-only") {
 				return {
@@ -704,7 +735,9 @@ export function wrapEditToolWithPermission(
 						getConversationId?.(),
 						danger.category,
 						danger.hits,
+						signal,
 					);
+					checkCancellation(signal);
 					if (res.decision === "deny") {
 						return {
 							content: [
@@ -727,6 +760,7 @@ export function wrapEditToolWithPermission(
 				}
 			}
 
+			checkCancellation(signal);
 			const result = (await effectiveBase.execute(
 				toolCallId,
 				effectiveParams as never,
@@ -737,6 +771,7 @@ export function wrapEditToolWithPermission(
 				details?: Record<string, unknown>;
 				[k: string]: unknown;
 			};
+			checkCancellation(signal);
 			if (userEdited && result && typeof result === "object") {
 				result.details = {
 					...result.details,
@@ -765,6 +800,7 @@ export function wrapEditSoftToolWithPermission(
 	return {
 		...tool,
 		execute: async (toolCallId, params, signal, onUpdate, ctx) => {
+			checkCancellation(signal);
 			const perm = getPermission();
 			if (perm === "read-only") {
 				return {
@@ -831,7 +867,9 @@ export function wrapEditSoftToolWithPermission(
 						getConversationId?.(),
 						danger.category,
 						danger.hits,
+						signal,
 					);
+					checkCancellation(signal);
 					if (res.decision === "deny") {
 						return {
 							content: [
@@ -854,10 +892,12 @@ export function wrapEditSoftToolWithPermission(
 				}
 			}
 
+			checkCancellation(signal);
 			const result = (await tool.execute(toolCallId, effectiveParams as never, signal, onUpdate, ctx)) as unknown as {
 				details?: Record<string, unknown>;
 				[k: string]: unknown;
 			};
+			checkCancellation(signal);
 			if (userEdited && result && typeof result === "object") {
 				result.details = {
 					...result.details,
@@ -892,6 +932,7 @@ export function wrapPatchToolWithPermission(
 	return {
 		...tool,
 		execute: async (toolCallId, params, signal, onUpdate, ctx) => {
+			checkCancellation(signal);
 			const patchText =
 				typeof (params as { patch?: unknown })?.patch === "string" ? (params as { patch: string }).patch : "";
 			// 解析失败/空补丁不拦：引擎自己会报错，不会发生任何写。
@@ -991,7 +1032,9 @@ export function wrapPatchToolWithPermission(
 						getConversationId?.(),
 						asked.category,
 						asked.hits,
+						signal,
 					);
+					checkCancellation(signal);
 					if (res.decision === "deny") {
 						return {
 							content: [
@@ -1017,10 +1060,12 @@ export function wrapPatchToolWithPermission(
 				}
 			}
 
+			checkCancellation(signal);
 			const result = (await tool.execute(toolCallId, effectiveParams as never, signal, onUpdate, ctx)) as unknown as {
 				details?: Record<string, unknown>;
 				[k: string]: unknown;
 			};
+			checkCancellation(signal);
 			if (userEdited && result && typeof result === "object") {
 				result.details = {
 					...result.details,
@@ -1044,6 +1089,7 @@ export function wrapBashToolWithPermission(
 	return {
 		...tool,
 		execute: async (toolCallId, params, signal, onUpdate, ctx) => {
+			checkCancellation(signal);
 			const perm = getPermission();
 			if (perm === "read-only") {
 				return {
@@ -1060,6 +1106,7 @@ export function wrapBashToolWithPermission(
 					isError: true,
 				} as never;
 			}
+			checkCancellation(signal);
 			return tool.execute(toolCallId, params as never, signal, onUpdate, ctx);
 		},
 	};

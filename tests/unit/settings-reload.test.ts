@@ -89,7 +89,7 @@ afterEach(() => {
 describe("目标模式总开关 on→off", () => {
 	it("只在 on→off 跃迁时调一次 onGoalModeDisabled", async () => {
 		const cb = vi.fn();
-		const store = { saved: 0 };
+		const store = { saved: 0, goalModeEnabled: true };
 		const host = makeHost({
 			onGoalModeDisabled: cb,
 			stateStore: {
@@ -108,7 +108,7 @@ describe("目标模式总开关 on→off", () => {
 					terminalBashMaxForegroundMs: 60_000,
 					editSoftEnabled: false,
 					questionnaireEnabled: true,
-					goalModeEnabled: true,
+					goalModeEnabled: store.goalModeEnabled,
 					thinkingWrap: false,
 					toolsWrap: true,
 					skillsFullText: [],
@@ -131,7 +131,8 @@ describe("目标模式总开关 on→off", () => {
 				}),
 				getPresets: () => [],
 				getQuickPhrasesSeeded: () => false,
-				saveSettings: () => {
+				saveSettings: (_id: string, patch: { goalModeEnabled?: boolean }) => {
+					if (patch.goalModeEnabled !== undefined) store.goalModeEnabled = patch.goalModeEnabled;
 					store.saved++;
 				},
 			} as unknown as ClientStateStore,

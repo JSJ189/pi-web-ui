@@ -153,7 +153,7 @@ describe("showForkedParentSessions 设置持久化与联动（#621）", () => {
 		expect(state?.settings.showForkedParentSessions).toBe(true);
 	});
 
-	it("editMessage 提示文案与 showForkedParentSessions 实际行为一致，并刷新会话缓存", async () => {
+	it("editMessage 在原会话重问，提示不受 showForkedParentSessions 影响，并刷新会话缓存", async () => {
 		const runEdit = async (showForkedParentSessions: boolean) => {
 			const emitted: unknown[] = [];
 			const session = Object.create(ClientSession.prototype) as any;
@@ -161,17 +161,23 @@ describe("showForkedParentSessions 设置持久化与联动（#621）", () => {
 			session.emit = (msg: unknown) => emitted.push(msg);
 			session.flushSnapshot = vi.fn();
 			session.resolveUserMessageEntryId = vi.fn().mockReturnValue("entry-1");
-			session.bindSession = vi.fn().mockResolvedValue(undefined);
+			session.applySessionOverrides = vi.fn();
 			session.invalidateSessionInfos = vi.fn();
 			session.scheduleSessionsRefresh = vi.fn();
 			session.prompt = vi.fn().mockResolvedValue(undefined);
 			session.settingsSvc = { current: { showForkedParentSessions } };
 			const conv = {
+				id: "c1",
 				session: {
-					agent: { state: { model: null } },
+					agent: { state: { model: null }, replaceMessages: vi.fn() },
+					clearQueue: vi.fn(),
+					reload: vi.fn().mockResolvedValue(undefined),
 					thinkingLevel: null,
 					sessionManager: {
 						getEntry: () => ({ id: "entry-1", type: "message", message: { role: "user" }, parentId: null }),
+						resetLeaf: vi.fn(),
+						appendCustomEntry: vi.fn(),
+						buildSessionContext: () => ({ messages: [] }),
 					},
 					sessionFile: "/sessions/parent.jsonl",
 				},
@@ -188,10 +194,16 @@ describe("showForkedParentSessions 设置持久化与联动（#621）", () => {
 				queueSteering: [],
 				queueFollowUp: [],
 			};
+			(conv.runtime as any).session = conv.session;
 			session.activeId = "c1";
 			session.convs = new Map([["c1", conv]]);
 
 			await ClientSession.prototype.editMessage.call(session, "msg-1", "修改后的问题");
+			expect(conv.runtime.fork).not.toHaveBeenCalled();
+			expect(conv.runtime.newSession).not.toHaveBeenCalled();
+			expect(session.prompt).toHaveBeenCalledExactlyOnceWith("修改后的问题", undefined, false, conv);
+			expect(conv.session.sessionFile).toBe("/sessions/parent.jsonl");
+			expect(session.convs.size).toBe(1);
 			expect(session.invalidateSessionInfos).toHaveBeenCalledTimes(1);
 			expect(session.scheduleSessionsRefresh).toHaveBeenCalledTimes(1);
 			return emitted;
@@ -202,7 +214,7 @@ describe("showForkedParentSessions 设置持久化与联动（#621）", () => {
 			expect.objectContaining({
 				type: "notice",
 				level: "info",
-				text: "已从该问题重新提问（原对话已保留，但默认不在历史列表中显示）",
+				text: "已在当前对话重新提问，后续历史已移除",
 			}),
 		]);
 
@@ -211,7 +223,7 @@ describe("showForkedParentSessions 设置持久化与联动（#621）", () => {
 			expect.objectContaining({
 				type: "notice",
 				level: "info",
-				text: "已从该问题重新提问（原对话保留在会话列表中）",
+				text: "已在当前对话重新提问，后续历史已移除",
 			}),
 		]);
 	});

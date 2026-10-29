@@ -4,36 +4,29 @@ import { buildTerminalBashLine, detectTrailingLimiter, sentinelUnsafeReason } fr
 /** 哨兵 printf 格式串（回显里出现的那一份）：nonce 每次随机，只校验形状。 */
 const SENTINEL_FMT = /\[pi-exit-[0-9a-f]{12}:%s\]/;
 
-/** 终端接管 bash 的哨兵注入（audit fix #2/#6）：
- *  - 旧实现把 `; printf '\n[pi-exit:%s]\n' "$__pi_rc"` 与命令拼在同一物理行，
- *    尾注释/尾管道/续行符/未闭合引号都会吞掉哨兵或造成语法错误；
- *  - 新实现单行命令的哨兵独占一行，多行命令保持 $'...' 转义单行 + 行内拼接。 */
-
-describe("buildTerminalBashLine：哨兵独占一行（audit fix #2）", () => {
-	it("单行命令：哨兵独占一行追加（命令 + 换行 + 退出码捕获行）", () => {
+/** One physical eval line protects the control suffix from stdin readers and comments. */
+describe("buildTerminalBashLine：单物理行执行与退出捕获", () => {
+	it("单行命令使用 eval 转义并保留 shell 退出语义", () => {
 		const line = buildTerminalBashLine("ls -la");
-		const lines = line.split("\n");
-		expect(lines).toHaveLength(2);
-		expect(lines[0]).toBe("ls -la");
-		expect(lines[1]).toMatch(SENTINEL_FMT);
-		expect(lines[1]).toContain("PIPESTATUS");
-		// 命令行本身不再拼哨兵序列
-		expect(lines[0]).not.toContain("printf");
+		expect(line.split("\n")).toHaveLength(1);
+		expect(line).toContain("eval $'ls -la'");
+		expect(line).toMatch(SENTINEL_FMT);
+		expect(line).toContain("__pi_rc=$?");
+		expect(line).not.toContain("PIPESTATUS");
 	});
 
-	it("尾注释不再吞哨兵：哨兵行独立于注释所在行", () => {
+	it("尾注释被限制在 eval 脚本内，不能吞哨兵", () => {
 		const line = buildTerminalBashLine("echo done # note");
-		const lines = line.split("\n");
-		expect(lines[0]).toBe("echo done # note");
-		expect(lines[1]).toMatch(/^__pi_rc=/);
-		expect(lines[1]).toMatch(SENTINEL_FMT);
+		expect(line).toContain("eval $'echo done # note'; __pi_rc=$?");
+		expect(line).not.toContain("\n");
+		expect(line).toMatch(SENTINEL_FMT);
 	});
 
-	it("尾管道不再吞哨兵：哨兵行仍是独立的一行", () => {
+	it("eval 中的语法错误仍留下外层完成哨兵", () => {
 		const line = buildTerminalBashLine("echo hi |");
-		const lines = line.split("\n");
-		expect(lines[0]).toBe("echo hi |");
-		expect(lines[1]).toMatch(SENTINEL_FMT);
+		expect(line).toContain("eval $'echo hi |'; __pi_rc=$?");
+		expect(line).not.toContain("\n");
+		expect(line).toMatch(SENTINEL_FMT);
 	});
 
 	it("尾随续行符：无法安全注入，原样返回（无哨兵）", () => {
@@ -58,10 +51,9 @@ describe("buildTerminalBashLine：哨兵独占一行（audit fix #2）", () => {
 
 	it("tailFile：tail 补看段落在哨兵行内，退出码仍是底层命令的", () => {
 		const line = buildTerminalBashLine("make", { file: "build.log", lines: 20 });
-		const lines = line.split("\n");
-		expect(lines).toHaveLength(2);
-		expect(lines[1]).toContain("tail -n 20 -- 'build.log'");
-		expect(lines[1]).toMatch(SENTINEL_FMT);
+		expect(line.split("\n")).toHaveLength(1);
+		expect(line).toContain("tail -n 20 -- 'build.log'");
+		expect(line).toMatch(SENTINEL_FMT);
 	});
 });
 

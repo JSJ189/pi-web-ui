@@ -1,72 +1,165 @@
-import { describe, expect, it, vi, beforeEach, afterEach } from "vitest";
-import { MAX_PENDING_WS_MESSAGES, PendingCommandQueue, resetPendingDropWarn } from "../../server/ws-pending-queue.js";
+import { Buffer } from "node:buffer";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+import {
+	MAX_PENDING_WS_MESSAGES,
+	MAX_PENDING_WS_BYTES,
+	MAX_PRE_HELLO_WS_BYTES,
+	MAX_CONTROL_WS_BYTES,
+	MAX_ATTACHMENT_WS_BYTES,
+	PendingCommandQueue,
+	clientMessageByteLimit,
+	isClientMessageEnvelope,
+	isClientMessageWithinByteLimit,
+	resetPendingDropWarn,
+} from "../../server/ws-pending-queue.js";
+import { WS_MAX_PAYLOAD_BYTES } from "../../server/payload-limits.js";
 
-/** 最小 ClientMessage 构造：pending 队列只存引用不解释内容。 */
 const msg = (n: number) =>
 	({ type: "get_state" as const, seq: n }) as unknown as Parameters<PendingCommandQueue["push"]>[0];
 
 beforeEach(() => {
 	resetPendingDropWarn();
+	vi.spyOn(console, "warn").mockImplementation(() => {});
 });
+afterEach(() => vi.restoreAllMocks());
 
-afterEach(() => {
-	vi.restoreAllMocks();
-});
-
-describe("attach 前 pending 命令队列上限", () => {
-	it("默认上限 256（对齐任务建议值）", () => {
-		expect(MAX_PENDING_WS_MESSAGES).toBe(256);
-	});
-
-	it("未超限时先进先出，drain 取走全部并清空", () => {
+describe("attach-time pending command queue", () => {
+	it("defaults to 256 messages and 8MiB", () => {
 		const q = new PendingCommandQueue();
-		for (let i = 0; i < 3; i++) q.push(msg(i));
-		expect(q.size).toBe(3);
-		expect(q.dropped).toBe(0);
-		const out = q.drain();
-		expect(out).toHaveLength(3);
-		expect(q.size).toBe(0);
-		// drain 再次调用返回空（重放后不会重复分发）。
-		expect(q.drain()).toHaveLength(0);
+		expect(q.cap).toBe(MAX_PENDING_WS_MESSAGES);
+		expect(q.cap).toBe(256);
+		expect(q.byteCap).toBe(MAX_PENDING_WS_BYTES);
+		expect(q.byteCap).toBe(8 * 1024 * 1024);
 	});
 
-	it(`超限（${256} 条）丢最旧：新消息入队、队头被挤掉、dropped 计数`, () => {
-		vi.spyOn(console, "warn").mockImplementation(() => {});
-		const q = new PendingCommandQueue();
-		const total = MAX_PENDING_WS_MESSAGES + 5;
-		for (let i = 0; i < total; i++) q.push(msg(i));
-		expect(q.size).toBe(MAX_PENDING_WS_MESSAGES);
-		expect(q.dropped).toBe(5);
-		// 队头应是最旧的存活消息（i=5，前 5 条被丢），队尾是最新一条。
-		const out = q.drain();
-		expect((out[0] as unknown as { seq: number }).seq).toBe(5);
-		expect((out[out.length - 1] as unknown as { seq: number }).seq).toBe(total - 1);
-	});
-
-	it("超限告警 60s 内节流为一条，drain/clear 后可继续使用", () => {
-		const warn = vi.spyOn(console, "warn").mockImplementation(() => {});
-		const q = new PendingCommandQueue();
-		for (let i = 0; i < MAX_PENDING_WS_MESSAGES + 2; i++) q.push(msg(i)); // 队列填满 + 溢出 2 条
-		// 队列已满，这一整轮每次 push 都挤掉队头：drop = 2 + (256 + 3)。
-		for (let i = 0; i < MAX_PENDING_WS_MESSAGES + 3; i++) q.push(msg(i));
-		expect(warn).toHaveBeenCalledTimes(1); // 节流：连续超限只 warn 一次
-		expect(q.dropped).toBe(2 + (MAX_PENDING_WS_MESSAGES + 3));
-		q.clear();
-		expect(q.size).toBe(0);
-		q.push(msg(99));
-		expect(q.size).toBe(1);
-		expect(q.drain()[0]).toBeDefined();
-	});
-
-	it("自定义容量（构造参数）同样生效", () => {
-		vi.spyOn(console, "warn").mockImplementation(() => {});
+	it("rejects new commands at the count limit without evicting business operations", () => {
 		const q = new PendingCommandQueue(2);
-		q.push(msg(1));
-		q.push(msg(2));
-		q.push(msg(3));
+		const first = msg(1);
+		const second = msg(2);
+		expect(q.push(first)).toBe(true);
+		expect(q.push(second)).toBe(true);
+		const bytes = q.bytes;
+		expect(q.push(msg(3))).toBe(false);
+		expect(q.bytes).toBe(bytes);
 		expect(q.size).toBe(2);
 		expect(q.dropped).toBe(1);
-		const out = q.drain();
-		expect((out[0] as unknown as { seq: number }).seq).toBe(2);
+		expect(q.drain()).toEqual([first, second]);
+		expect(q.size).toBe(0);
+		expect(q.bytes).toBe(0);
+		expect(q.drain()).toEqual([]);
+	});
+
+	it("enforces cumulative bytes inclusively and leaves room after rejecting an oversized message", () => {
+		const q = new PendingCommandQueue(10, 100);
+		expect(q.push(msg(1), 60)).toBe(true);
+		expect(q.push(msg(2), 41)).toBe(false);
+		expect(q.bytes).toBe(60);
+		expect(q.push(msg(3), 40)).toBe(true);
+		expect(q.push(msg(4), 1)).toBe(false);
+		expect(q.drain()).toEqual([msg(1), msg(3)]);
+		expect(q.bytes).toBe(0);
+		expect(q.push(msg(5), 100)).toBe(true);
+		q.clear();
+		expect(q.size).toBe(0);
+		expect(q.bytes).toBe(0);
+		expect(q.dropped).toBe(2);
+		expect(q.push(msg(6), 100)).toBe(true);
+	});
+
+	it("uses UTF-8 byte length for legacy push(msg) calls", () => {
+		const command = { type: "prompt" as const, text: "你好🌍" };
+		const bytes = Buffer.byteLength(JSON.stringify(command), "utf8");
+		const q = new PendingCommandQueue(10, bytes);
+		expect(q.push(command)).toBe(true);
+		expect(q.bytes).toBe(bytes);
+		expect(q.push(msg(1))).toBe(false);
+	});
+
+	it("does not stringify when raw wire bytes are supplied or the count budget is full", () => {
+		const command = msg(1);
+		Object.defineProperty(command, "toJSON", {
+			value: () => {
+				throw new Error("must not serialize");
+			},
+		});
+		const q = new PendingCommandQueue(1, 100);
+		expect(q.push(command, 30)).toBe(true);
+		expect(q.bytes).toBe(30);
+		expect(q.push(command)).toBe(false);
+		expect(q.drain()).toEqual([command]);
+	});
+
+	it.each([NaN, Infinity, -1, 1.5, Number.MAX_SAFE_INTEGER + 1])("rejects invalid wire byte count %s", (bytes) => {
+		const q = new PendingCommandQueue();
+		expect(q.push(msg(1), bytes)).toBe(false);
+		expect(q.size).toBe(0);
+		expect(q.bytes).toBe(0);
+	});
+
+	it("rejects unserializable messages without mutating the queue", () => {
+		const command = msg(1);
+		Object.assign(command, { circular: command });
+		const q = new PendingCommandQueue();
+		expect(q.push(command)).toBe(false);
+		expect(q.bytes).toBe(0);
+	});
+
+	it.each([-1, NaN, Infinity, 0.5])("rejects invalid constructor budgets %s", (cap) => {
+		expect(() => new PendingCommandQueue(cap)).toThrow(RangeError);
+		expect(() => new PendingCommandQueue(1, cap)).toThrow(RangeError);
+	});
+
+	it("supports zero capacity and throttles rejection warnings", () => {
+		vi.spyOn(Date, "now").mockReturnValue(0);
+		const q = new PendingCommandQueue(0);
+		expect(q.push(msg(1))).toBe(false);
+		expect(q.push(msg(2))).toBe(false);
+		expect(console.warn).toHaveBeenCalledTimes(1);
+		expect(console.warn).toHaveBeenLastCalledWith(expect.stringContaining("拒绝新消息"));
+		vi.mocked(Date.now).mockReturnValue(60_000);
+		q.push(msg(3));
+		expect(console.warn).toHaveBeenCalledTimes(2);
+	});
+});
+
+describe("client message envelope and type budgets", () => {
+	it.each([null, undefined, true, 1, "hello", [], ["hello"], {}, { type: 1 }, { type: "" }, { type: "x".repeat(129) }])(
+		"rejects malformed envelope %j",
+		(value) => expect(isClientMessageEnvelope(value)).toBe(false),
+	);
+
+	it("requires an own type and accepts unknown string types for existing unknown-type handling", () => {
+		expect(isClientMessageEnvelope(Object.create({ type: "hello" }))).toBe(false);
+		expect(isClientMessageEnvelope({ type: "future_command", arbitrary: true })).toBe(true);
+		expect(isClientMessageEnvelope(Object.assign(Object.create(null), { type: "hello" }))).toBe(true);
+		// The envelope helper must not claim that command-specific fields were validated.
+		expect(isClientMessageEnvelope({ type: "prompt" })).toBe(true);
+	});
+
+	it("limits every pre-hello message and hello itself to the handshake budget", () => {
+		for (const type of ["hello", "prompt", "upload_file", "get_state", "unknown"]) {
+			expect(clientMessageByteLimit(type, false)).toBe(MAX_PRE_HELLO_WS_BYTES);
+		}
+		expect(clientMessageByteLimit("hello")).toBe(MAX_PRE_HELLO_WS_BYTES);
+		expect(clientMessageByteLimit("get_state")).toBe(MAX_CONTROL_WS_BYTES);
+		expect(clientMessageByteLimit("unknown")).toBe(MAX_CONTROL_WS_BYTES);
+	});
+
+	it.each(["upload_file", "prompt", "edit_message"])("preserves the 100MiB upload wire budget for %s", (type) => {
+		const wireBytes = 4 * Math.ceil((100 * 1024 * 1024) / 3) + 1024;
+		expect(MAX_ATTACHMENT_WS_BYTES).toBe(WS_MAX_PAYLOAD_BYTES);
+		expect(clientMessageByteLimit(type)).toBe(MAX_ATTACHMENT_WS_BYTES);
+		expect(isClientMessageWithinByteLimit(type, wireBytes)).toBe(true);
+		expect(isClientMessageWithinByteLimit(type, wireBytes, false)).toBe(false);
+		expect(isClientMessageWithinByteLimit("get_state", wireBytes)).toBe(false);
+	});
+
+	it.each(["hello", "get_state", "upload_file", "prompt", "edit_message"])("checks the exact %s boundary", (type) => {
+		const limit = clientMessageByteLimit(type);
+		expect(isClientMessageWithinByteLimit(type, limit)).toBe(true);
+		expect(isClientMessageWithinByteLimit(type, limit + 1)).toBe(false);
+		for (const invalid of [-1, NaN, Infinity, 1.5]) {
+			expect(isClientMessageWithinByteLimit(type, invalid)).toBe(false);
+		}
 	});
 });

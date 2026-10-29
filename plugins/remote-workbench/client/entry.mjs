@@ -5,9 +5,9 @@
  * 1. 深度适配主题色盘（--term-* 与宿主色彩动态同步）；
  * 2. 交互式多会话 Web SSH 终端 + 快捷重连 + 一键全屏；
  * 3. 类似画布的多终端矩阵查看模式（单标签 Tabs、双列平铺 Split、四宫格 Quad、自适应画布 Canvas 卡片）；
- * 4. 多机广播同步输入（Cluster Broadcast：一处输入，全网同步）；
- * 5. 凭据外带直通（Sudo / 敏感密码安全弹框，直接注入 PTY，不入日志）；
- * 6. 终端输出清洗与 Token 瘦身导出（Termcp 式 ansi.Compact 98% 压缩）；
+ * 4. 明确选择终端与环境后的多机广播输入；
+ * 5. 凭据输入绑定触发提示的终端，发送后清空输入框；
+ * 6. 清理终端 ANSI 与覆盖进度后导出文本；
  * 7. 常用运维指令快捷条（Ctrl+C/D、top、htop、df -h、docker ps 等）；
  * 8. 主机资产搜索过滤、~/.ssh/config 本机自动发现与批量导入；
  * 9. 内置轻量 SFTP 远程文件树浏览抽屉（双击文件快速预览、文件上传）；
@@ -16,14 +16,31 @@
  * 12. 联动 SFTP 插件与远程工作区。
  */
 
+import {
+	appPath,
+	decodeBytes,
+	expandSnippet,
+	findBuffer,
+	readSessions,
+	saveSessions,
+	matchesHost,
+	importableHosts,
+} from "./lib/workbench-state.mjs";
+import { createInputQueue } from "./lib/input-queue.mjs";
+import { createOperations } from "./lib/operations.mjs";
 import { compact } from "./lib/compact.mjs";
-import { buildRemoteWorkspaceUri, normalizeRemotePath } from "./lib/workspace-uri.mjs";
+import { buildRemoteWorkspaceUri } from "./lib/workspace-uri.mjs";
 import { esc as escapeHtml } from "@pi-web-ui/plugin-sdk/client";
 
 let xtermModule = null;
 async function loadXterm() {
 	if (!xtermModule) {
-		xtermModule = await import("./vendor/xterm.bundle.mjs");
+		try {
+			xtermModule = await import("./vendor/xterm.bundle.mjs");
+		} catch (error) {
+			xtermModule = null;
+			throw error;
+		}
 	}
 	return xtermModule;
 }
@@ -682,6 +699,19 @@ export default {
 				margin-top: 10px;
 			}
 		`;
+		styleEl.textContent += `
+			.rw-root *, .rw-root *::before, .rw-root *::after { box-sizing: border-box; }
+			.rw-root :is(.rw-header-left,.rw-header-right,.rw-host-main,.rw-host-ops,.rw-term-tools,.rw-host-head,.rw-term-tabs,.rw-modal,.rw-task-card) { min-width:0; max-width:100%; }
+			.rw-root :is(.rw-header-right,.rw-host-ops,.rw-term-tools,.rw-host-head) { flex-wrap:wrap; }
+			.rw-root :is(pre,.rw-host-name,.rw-host-meta,.rw-task-card,.rw-btn) { overflow-wrap:anywhere; word-break:break-word; }
+			.rw-root pre { white-space:pre-wrap; max-height:300px; overflow:auto; }
+			.rw-root :is(.rw-modal,.rw-hosts-pane,.rw-tunnels-pane) { overscroll-behavior:contain; }
+			.rw-root .rw-modal { max-height:90vh; overflow:auto; }
+			.rw-root textarea { width:100%; background:var(--bg); color:var(--text); border:1px solid var(--border); }
+			.rw-task-targets { display:flex; flex-direction:column; max-height:160px; overflow:auto; }
+			.rw-task-card { margin-top:12px; border:1px solid var(--border); padding:10px; border-radius:6px; }
+			.rw-root button:disabled { opacity:.55; cursor:default; }
+		`;
 		root.appendChild(styleEl);
 
 		// 运行状态
@@ -694,8 +724,20 @@ export default {
 		let activeShells = []; // [{ id, shellId, host, port, username, remotePath, title, term, fit, dom, cell, connected }]
 		let activeShellIndex = -1;
 		let modalVisible = false;
-		let activePopmenu = null;
+		let activePopmenu = null,
+			popmenuTimer,
+			popmenuListener;
 		let showSnippetBar = true;
+		let disposed = false,
+			fitTimer;
+		const lifecycle = new AbortController();
+		const broadcastTargets = new Set();
+		let groupFilter = "",
+			environmentFilter = "";
+		const sessionKey = `remote-workbench:sessions:${appPath(ctx, "/", import.meta.url)}`;
+		const persistSessions = () => saveSessions(sessionStorage, sessionKey, activeShells);
+		const post = (path, payload) => api(path, { method: "POST", body: JSON.stringify(payload) });
+		const operations = createOperations({ root, api, post, hosts: () => hosts });
 
 		// 顶栏构建
 		const header = document.createElement("div");
@@ -715,6 +757,11 @@ export default {
 			</div>
 		`;
 		root.appendChild(header);
+		const tasksButton = document.createElement("button");
+		tasksButton.className = "rw-btn";
+		tasksButton.textContent = "多机任务中心";
+		tasksButton.onclick = () => operations.tasks();
+		header.querySelector(".rw-header-right").append(tasksButton);
 
 		// 主体构建
 		const body = document.createElement("div");
@@ -742,7 +789,7 @@ export default {
 						<button class="rw-layout-btn" data-layout="canvas" title="自适应画布多卡片平铺">🎨 画布</button>
 					</div>
 					<!-- 多机广播输入开关 -->
-					<button class="rw-btn sm" id="rw-tool-broadcast" title="开启后，在一个终端输入的内容将同步广播到所有已连接终端">⚡ 广播输入: 关</button>
+					<button class="rw-btn sm" id="rw-tool-broadcast" title="明确选择目标与环境后广播到所选终端">⚡ 广播输入: 关</button>
 					<button class="rw-btn sm" id="rw-tool-export" title="清理 ANSI 与进度条后导出纯净文本日志 (Termcp Compact)">📄 导出日志</button>
 					<button class="rw-btn sm" id="rw-tool-clear" title="清除屏幕 (clear)">🧹 清屏</button>
 					<button class="rw-btn sm" id="rw-tool-reconnect" title="重新连接当前终端">🔄 重连</button>
@@ -772,7 +819,7 @@ export default {
 				</div>
 				<!-- 凭据外带直通输入条（检测到 Sudo/Password 时滑出） -->
 				<div class="rw-secure-bar" id="rw-secure-bar" style="display: none;">
-					<span>🔒 <b>凭据/Sudo 提权请求</b>（直接注入 PTY，不入日志）:</span>
+					<span>🔒 <b>凭据/Sudo 提权请求</b>（发送到下方明确标记的终端）:</span>
 					<input type="password" class="rw-secure-input" id="rw-secure-input" placeholder="输入密码 / Key 口令" />
 					<button class="rw-btn primary sm" id="rw-secure-send">发送</button>
 					<button class="rw-btn sm" id="rw-secure-cancel">取消 (Ctrl+C)</button>
@@ -793,12 +840,14 @@ export default {
 
 		// API 请求封装
 		async function api(path, options = {}) {
-			const res = await fetch(`/plugins-api/remote-workbench${path}`, {
+			const res = await fetch(appPath(ctx, `/plugins-api/remote-workbench${path}`, import.meta.url), {
+				signal: lifecycle.signal,
 				headers: { "Content-Type": "application/json" },
 				...options,
 			});
 			const json = await res.json();
-			if (!json.ok) throw new Error(json.error || "请求失败");
+			if (!res.ok || !json.ok) throw new Error(json.error || `请求失败 (${res.status})`);
+			if (disposed) throw new Error("工作台已卸载");
 			return json.data;
 		}
 
@@ -839,6 +888,36 @@ export default {
 				<div style="font-size: 12px; color: var(--text-faint);">共 ${hosts.length} 台全局主机</div>
 			`;
 			hostsPane.appendChild(toolbar);
+			for (const [field, selected, setter] of [
+				[
+					"group",
+					groupFilter,
+					(v) => {
+						groupFilter = v;
+					},
+				],
+				[
+					"environment",
+					environmentFilter,
+					(v) => {
+						environmentFilter = v;
+					},
+				],
+			]) {
+				const select = document.createElement("select");
+				select.className = "rw-search-input";
+				select.innerHTML =
+					`<option value="">${field === "group" ? "所有分组" : "所有环境"}</option>` +
+					[...new Set(hosts.map((h) => h[field]).filter(Boolean))]
+						.map((v) => `<option value="${escapeHtml(v)}">${escapeHtml(v)}</option>`)
+						.join("");
+				select.value = selected;
+				select.onchange = () => {
+					setter(select.value);
+					renderHostCards();
+				};
+				toolbar.append(select);
+			}
 
 			toolbar.querySelector("#rw-search").addEventListener("input", (e) => {
 				filterKeyword = e.target.value.trim().toLowerCase();
@@ -854,11 +933,15 @@ export default {
 				}
 				termLayout = "canvas";
 				switchTab("term");
-				hosts.forEach((h) => {
-					// 避免重复连接
-					const existing = activeShells.find((s) => s.host === h.host && s.username === h.username);
-					if (!existing) openTerminal(h);
-				});
+				hosts
+					.filter((h) => matchesHost(h, filterKeyword, groupFilter, environmentFilter))
+					.forEach((h) => {
+						// 避免重复连接
+						const existing = activeShells.find(
+							(s) => s.host === h.host && s.username === h.username && s.port === (h.port || 22),
+						);
+						if (!existing) openTerminal(h);
+					});
 			});
 
 			const listContainer = document.createElement("div");
@@ -876,15 +959,7 @@ export default {
 			if (!listContainer) return;
 			listContainer.innerHTML = "";
 
-			const filtered = hosts.filter((h) => {
-				if (!filterKeyword) return true;
-				return (
-					(h.name || "").toLowerCase().includes(filterKeyword) ||
-					(h.host || "").toLowerCase().includes(filterKeyword) ||
-					(h.username || "").toLowerCase().includes(filterKeyword) ||
-					(h.description || "").toLowerCase().includes(filterKeyword)
-				);
-			});
+			const filtered = hosts.filter((h) => matchesHost(h, filterKeyword, groupFilter, environmentFilter));
 
 			if (!filtered.length) {
 				listContainer.innerHTML = `
@@ -908,7 +983,7 @@ export default {
 					<div class="rw-host-main">
 						<div class="rw-host-head">
 							<span style="font-size: 16px;">💻</span>
-							<span class="rw-host-name">${escapeHtml(h.name)}</span>
+							<span class="rw-host-name">${escapeHtml(h.name)}</span><span class="rw-host-badge">${escapeHtml(h.group || "未分组")} · ${escapeHtml(h.environment || "未标记环境")}</span>
 							<span class="rw-host-badge">${authText}</span>
 							${h.reviewMode ? `<span class="rw-host-badge" style="color: var(--amber, #f59e0b); border-color: var(--amber, #f59e0b);">🛡️ 生产保护</span>` : ""}
 							<span class="rw-host-badge" id="rw-probe-badge-${escapeHtml(h.name)}" style="display: none;"></span>
@@ -923,6 +998,7 @@ export default {
 					<div class="rw-host-ops">
 						<button class="rw-btn primary rw-op-term" title="打开 Web SSH 终端">⚡ 终端</button>
 						<button class="rw-btn rw-op-files" title="轻量浏览远端目录树与文件">📂 文件</button>
+						<button class="rw-btn rw-op-health">健康</button><button class="rw-btn rw-op-meta">分组/环境</button><button class="rw-btn rw-op-tmux">tmux</button>
 						<button class="rw-btn rw-op-probe" title="探测服务器配置与在线状态">🔍 探测</button>
 						<button class="rw-btn rw-op-tunnel" title="建立本地到远端的端口转发隧道 (-L)">🔀 转发</button>
 						<button class="rw-btn rw-op-sftp" title="在 SFTP 插件中联动使用">☁️ SFTP</button>
@@ -932,6 +1008,28 @@ export default {
 					</div>
 				`;
 
+				card.querySelector(".rw-op-health").onclick = () => operations.health(h);
+				card.querySelector(".rw-op-tmux").onclick = () => {
+					const tmuxSession = prompt("tmux 会话名（字母、数字、_、-；留空自动生成）", "");
+					if (tmuxSession === null) return;
+					if (tmuxSession && !/^[a-zA-Z0-9_-]{1,64}$/.test(tmuxSession)) {
+						alert("会话名格式无效");
+						return;
+					}
+					openTerminal({ ...h, tmux: true, tmuxSession });
+				};
+				card.querySelector(".rw-op-meta").onclick = async () => {
+					const group = prompt("主机分组", h.group || "");
+					if (group === null) return;
+					const environment = prompt("环境（例如 production / staging）", h.environment || "");
+					if (environment === null) return;
+					try {
+						await post("/hosts/metadata", { name: h.name, group, environment });
+						await refreshHosts();
+					} catch (err) {
+						alert(err.message);
+					}
+				};
 				card.querySelector(".rw-op-term").addEventListener("click", () => openTerminal(h));
 				card.querySelector(".rw-op-files").addEventListener("click", () => showFileExplorerModal(h));
 				card.querySelector(".rw-op-probe").addEventListener("click", () => probeHostCard(h, card));
@@ -971,18 +1069,18 @@ export default {
 				contentEl.style.display = "flex";
 
 				if (!res.exists || !res.list.length) {
-					contentEl.innerHTML = `<div style="color: var(--text-faint); padding: 20px 0; text-align: center;">未在「${res.path || "~/.ssh/config"}」中发现可用的 Host 主机块。</div>`;
+					contentEl.innerHTML = `<div style="color: var(--text-faint); padding: 20px 0; text-align: center;">未在「${escapeHtml(res.path || "~/.ssh/config")}」中发现可用的 Host 主机块。</div>`;
 					return;
 				}
 
-				let html = "";
+				let html = (res.warnings || []).map((warning) => `<div role="alert">⚠ ${escapeHtml(warning)}</div>`).join("");
 				res.list.forEach((item, idx) => {
 					html += `
 						<label style="display: flex; align-items: center; justify-content: space-between; padding: 8px 12px; background: var(--bg); border: 1px solid var(--border); border-radius: 6px; cursor: ${item.imported ? "default" : "pointer"};">
 							<div style="display: flex; align-items: center; gap: 10px;">
-								<input type="checkbox" class="rw-cfg-cb" data-idx="${idx}" ${item.imported ? "disabled" : "checked"} />
+								<input type="checkbox" class="rw-cfg-cb" data-idx="${idx}" ${item.imported || item.importable === false ? "disabled" : "checked"} />
 								<div>
-									<div style="font-weight: 600; font-size: 13px;">${escapeHtml(item.alias)}</div>
+									<div style="font-weight: 600; font-size: 13px;">${escapeHtml(item.alias)}</div><div role="alert">${(item.warnings || []).map((warning) => escapeHtml(warning)).join(" · ")}${item.importable === false ? " · 不支持此连接配置，禁止导入" : ""}</div>
 									<div style="font-size: 11.5px; color: var(--text-faint);">${escapeHtml(item.username)}@${escapeHtml(item.host)}:${item.port} ${item.privateKeyPath ? `(Key: ${escapeHtml(item.privateKeyPath)})` : ""}</div>
 								</div>
 							</div>
@@ -1002,7 +1100,7 @@ export default {
 					const selected = [];
 					contentEl.querySelectorAll(".rw-cfg-cb:checked:not(:disabled)").forEach((cb) => {
 						const i = Number(cb.dataset.idx);
-						if (res.list[i]) selected.push(res.list[i]);
+						if (res.list[i] && importableHosts([res.list[i]]).length) selected.push(res.list[i]);
 					});
 					if (!selected.length) return;
 					importBtn.disabled = true;
@@ -1242,7 +1340,7 @@ export default {
 				card.innerHTML = `
 					<div class="rw-host-main">
 						<div class="rw-host-head">
-							<span class="rw-host-badge success">● 运行中</span>
+							<span class="rw-host-badge">● ${escapeHtml(t.status || "未知")}</span>${t.error ? `<span role="alert">${escapeHtml(t.error)}</span>` : ""}
 							<span class="rw-host-name">127.0.0.1:${t.localPort} ➔ ${escapeHtml(t.targetHost)}:${t.targetPort}</span>
 						</div>
 						<div class="rw-host-meta">
@@ -1251,10 +1349,28 @@ export default {
 						</div>
 					</div>
 					<div class="rw-host-ops">
-						<button class="rw-btn danger rw-op-stoptun" title="停止该端口转发">停止隧道</button>
+						<button class="rw-btn rw-op-starttun">恢复隧道</button><button class="rw-btn rw-op-deletetun">删除配置</button><button class="rw-btn danger rw-op-stoptun" title="停止该端口转发">停止隧道</button>
 					</div>
 				`;
 
+				card.querySelector(".rw-op-starttun").disabled = ["listening", "connecting", "reconnecting"].includes(t.status);
+				card.querySelector(".rw-op-starttun").onclick = async () => {
+					try {
+						await post("/tunnels/start", { id: t.id });
+						await refreshTunnels();
+					} catch (err) {
+						alert(err.message);
+					}
+				};
+				card.querySelector(".rw-op-deletetun").onclick = async () => {
+					if (!confirm(`删除隧道配置 ${t.hostName}:${t.localPort}？`)) return;
+					try {
+						await post("/tunnels/delete", { tunnelId: t.id });
+						await refreshTunnels();
+					} catch (err) {
+						alert(err.message);
+					}
+				};
 				card.querySelector(".rw-op-stoptun").addEventListener("click", async () => {
 					if (!confirm(`确定要停止 127.0.0.1:${t.localPort} 的转发吗？`)) return;
 					try {
@@ -1353,10 +1469,17 @@ export default {
 		// ── 打开远程交互终端 ──────────────────────────────────────────────────
 		async function openTerminal(hostInfo) {
 			switchTab("term");
+			if (disposed) return;
 			const reqId = `r_${Date.now()}_${Math.random().toString(36).slice(2, 6)}`;
 
 			const waitingItem = {
 				id: `pending_${reqId}`,
+				reqId,
+				tmux: hostInfo.tmux,
+				tmuxSession: hostInfo.tmuxSession,
+				resumeToken: hostInfo.resumeToken,
+				disposables: [],
+				closed: false,
 				title: `${hostInfo.username}@${hostInfo.host}`,
 				host: hostInfo.host,
 				port: hostInfo.port || 22,
@@ -1366,9 +1489,11 @@ export default {
 			};
 			activeShells.push(waitingItem);
 			activeShellIndex = activeShells.length - 1;
+			renderTermTabs();
 
 			try {
 				const xterm = await loadXterm();
+				if (disposed || waitingItem.closed) return;
 				const theme = buildTermTheme();
 				const term = new xterm.Terminal({
 					cursorBlink: true,
@@ -1409,6 +1534,12 @@ export default {
 				term.open(containerEl);
 
 				waitingItem.term = term;
+				waitingItem.inputQueue = createInputQueue(
+					(reqId, b64) => ctx.send({ action: "shell_input", shellId: waitingItem.shellId, reqId, b64 }),
+					(message) => {
+						if (!disposed) alert(message);
+					},
+				);
 				waitingItem.fit = fit;
 				waitingItem.dom = containerEl;
 				waitingItem.cell = cell;
@@ -1422,12 +1553,18 @@ export default {
 				cell.querySelector(".rw-cell-clear").addEventListener("click", () => {
 					term.clear();
 					if (waitingItem.shellId) {
-						ctx.send({ action: "shell_input", shellId: waitingItem.shellId, b64: btoa("clear\r") });
+						waitingItem.inputQueue.enqueue("clear\r");
 					}
 				});
 				cell.querySelector(".rw-cell-reconnect").addEventListener("click", () => {
+					const reconnectHost = {
+						...hostInfo,
+						resumeToken: undefined,
+						tmux: waitingItem.tmux,
+						tmuxSession: waitingItem.tmuxSession,
+					};
 					closeTerminal(waitingItem);
-					openTerminal(hostInfo);
+					openTerminal(reconnectHost);
 				});
 				cell.querySelector(".rw-cell-close").addEventListener("click", () => {
 					closeTerminal(waitingItem);
@@ -1439,7 +1576,10 @@ export default {
 
 				// 发起建立终端请求
 				ctx.send({
-					action: "shell_open",
+					action: hostInfo.resumeToken ? "shell_attach" : "shell_open",
+					resumeToken: hostInfo.resumeToken,
+					tmux: hostInfo.tmux,
+					tmuxSession: hostInfo.tmuxSession,
 					reqId,
 					host: hostInfo.host,
 					port: hostInfo.port || 22,
@@ -1450,36 +1590,34 @@ export default {
 				});
 
 				// 输入监听（支持多机广播同步输入）
-				term.onData((data) => {
-					const b64Data = btoa(unescape(encodeURIComponent(data)));
-					if (broadcastInput) {
-						// 广播给所有已连接终端
-						activeShells.forEach((sh) => {
-							if (sh.shellId && sh.connected) {
-								ctx.send({ action: "shell_input", shellId: sh.shellId, b64: b64Data });
-							}
-						});
-					} else {
+				waitingItem.disposables.push(term.onData((data) => sendInput(data, waitingItem)));
+				waitingItem.resizeObserver = new ResizeObserver(() => refitActiveTerm());
+				waitingItem.resizeObserver.observe(containerEl);
+				containerEl.addEventListener(
+					"paste",
+					(event) => {
+						const text = event.clipboardData?.getData("text/plain");
+						if (text && /[\r\n]/.test(text)) {
+							event.preventDefault();
+							event.stopImmediatePropagation();
+							previewPaste(text, waitingItem);
+						}
+					},
+					true,
+				);
+
+				waitingItem.disposables.push(
+					term.onResize(({ cols, rows }) => {
 						if (waitingItem.shellId) {
 							ctx.send({
-								action: "shell_input",
+								action: "shell_resize",
 								shellId: waitingItem.shellId,
-								b64: b64Data,
+								cols,
+								rows,
 							});
 						}
-					}
-				});
-
-				term.onResize(({ cols, rows }) => {
-					if (waitingItem.shellId) {
-						ctx.send({
-							action: "shell_resize",
-							shellId: waitingItem.shellId,
-							cols,
-							rows,
-						});
-					}
-				});
+					}),
+				);
 
 				renderTermTabs();
 				refitActiveTerm();
@@ -1499,6 +1637,8 @@ export default {
 				port: current.port,
 				username: current.username,
 				remotePath: current.remotePath,
+				tmux: current.tmux,
+				tmuxSession: current.tmuxSession,
 			};
 			closeTerminal(current);
 			openTerminal(hostInfo);
@@ -1506,6 +1646,9 @@ export default {
 
 		// 新建终端弹窗（实底背景，防透底）
 		function closePopmenu() {
+			clearTimeout(popmenuTimer);
+			if (popmenuListener) document.removeEventListener("click", popmenuListener);
+			popmenuListener = null;
 			if (activePopmenu) {
 				activePopmenu.remove();
 				activePopmenu = null;
@@ -1596,7 +1739,10 @@ export default {
 					document.removeEventListener("click", onDocClick);
 				}
 			};
-			setTimeout(() => document.addEventListener("click", onDocClick), 10);
+			popmenuListener = onDocClick;
+			popmenuTimer = setTimeout(() => {
+				if (!disposed && activePopmenu === menu) document.addEventListener("click", onDocClick);
+			}, 10);
 		}
 
 		// 渲染终端 Tab 与多布局矩阵
@@ -1675,7 +1821,9 @@ export default {
 
 		// 重新自适应所有可见终端窗口
 		function refitActiveTerm() {
-			setTimeout(() => {
+			clearTimeout(fitTimer);
+			fitTimer = setTimeout(() => {
+				if (disposed) return;
 				activeShells.forEach((sh) => {
 					if (sh.fit && sh.cell && sh.cell.style.display !== "none") {
 						try {
@@ -1687,6 +1835,13 @@ export default {
 		}
 
 		function closeTerminal(sh) {
+			sh.closed = true;
+			sh.inputQueue?.dispose();
+			if (secureTarget === sh) hideSecureBar();
+			broadcastTargets.delete(sh.id);
+			sh.resizeObserver?.disconnect();
+			for (const disposable of sh.disposables || []) disposable.dispose();
+			if (!sh.shellId) ctx.send({ action: "shell_cancel", openReqId: sh.reqId });
 			if (sh.shellId) {
 				ctx.send({ action: "shell_close", shellId: sh.shellId });
 			}
@@ -1701,6 +1856,7 @@ export default {
 				} catch {}
 			}
 			activeShells = activeShells.filter((item) => item !== sh);
+			persistSessions();
 			if (activeShellIndex >= activeShells.length) {
 				activeShellIndex = activeShells.length - 1;
 			}
@@ -1713,30 +1869,30 @@ export default {
 		const secureInput = termPane.querySelector("#rw-secure-input");
 		const secureSend = termPane.querySelector("#rw-secure-send");
 		const secureCancel = termPane.querySelector("#rw-secure-cancel");
+		let secureTarget = null;
 
-		function showSecureBar() {
-			if (secureBar.style.display === "flex") return;
+		function showSecureBar(target = activeShells[activeShellIndex]) {
+			if (!target?.connected || target.closed) return;
+			secureTarget = target;
+			secureBar.querySelector("span").textContent = `凭据目标: ${target.title} (${target.port})`;
 			secureBar.style.display = "flex";
 			secureInput.value = "";
-			setTimeout(() => secureInput.focus(), 20);
+			if (!disposed) secureInput.focus();
 		}
 
 		function hideSecureBar() {
 			secureBar.style.display = "none";
 			secureInput.value = "";
-			const current = activeShells[activeShellIndex];
-			current?.term?.focus();
+			const target = secureTarget;
+			secureTarget = null;
+			if (!target?.closed) target?.term?.focus();
 		}
 
 		function submitSecurePassword() {
-			const current = activeShells[activeShellIndex];
-			if (current?.shellId) {
+			const current = secureTarget;
+			if (current?.shellId && current.connected && !current.closed) {
 				const val = secureInput.value;
-				ctx.send({
-					action: "shell_input",
-					shellId: current.shellId,
-					b64: btoa(unescape(encodeURIComponent(val + "\r"))),
-				});
+				current.inputQueue.enqueue(val + "\r");
 			}
 			hideSecureBar();
 		}
@@ -1751,9 +1907,9 @@ export default {
 			}
 		});
 		secureCancel.addEventListener("click", () => {
-			const current = activeShells[activeShellIndex];
-			if (current?.shellId) {
-				ctx.send({ action: "shell_input", shellId: current.shellId, b64: btoa("\x03") });
+			const current = secureTarget;
+			if (current?.shellId && current.connected && !current.closed) {
+				current.inputQueue.enqueue("\x03");
 			}
 			hideSecureBar();
 		});
@@ -1772,10 +1928,67 @@ export default {
 		// 多机广播输入切换
 		const broadcastBtn = termPane.querySelector("#rw-tool-broadcast");
 		broadcastBtn.addEventListener("click", () => {
-			broadcastInput = !broadcastInput;
-			broadcastBtn.classList.toggle("primary", broadcastInput);
-			broadcastBtn.textContent = broadcastInput ? "⚡ 广播输入: 开" : "⚡ 广播输入: 关";
+			if (broadcastInput) {
+				broadcastInput = false;
+				broadcastTargets.clear();
+				updateBroadcast();
+				return;
+			}
+			const overlay = document.createElement("div");
+			overlay.className = "rw-modal-overlay";
+			overlay.innerHTML = `<div class="rw-modal"><div class="rw-modal-title">选择广播目标（输入将发送到以下环境）</div>${activeShells
+				.filter((s) => s.connected)
+				.map(
+					(s) =>
+						`<label><input type="checkbox" value="${escapeHtml(s.id)}">${escapeHtml(s.title)}:${s.port} · ${escapeHtml(hosts.find((h) => h.host === s.host && h.username === s.username && (h.port || 22) === s.port)?.environment || "未标记环境")}</label>`,
+				)
+				.join(
+					"",
+				)}<button class="rw-btn primary rw-confirm">启用所选目标</button><button class="rw-btn rw-cancel">取消</button></div>`;
+			root.append(overlay);
+			overlay.querySelector(".rw-cancel").onclick = () => overlay.remove();
+			overlay.querySelector(".rw-confirm").onclick = () => {
+				broadcastTargets.clear();
+				overlay.querySelectorAll("input:checked").forEach((el) => broadcastTargets.add(el.value));
+				broadcastInput = broadcastTargets.size > 0;
+				updateBroadcast();
+				overlay.remove();
+			};
 		});
+		function updateBroadcast() {
+			broadcastBtn.classList.toggle("primary", broadcastInput);
+			broadcastBtn.textContent = broadcastInput
+				? `⚡ 广播: ${activeShells
+						.filter((s) => broadcastTargets.has(s.id))
+						.map((s) => s.title)
+						.join(", ")}`
+				: "⚡ 广播输入: 关";
+		}
+		function sendInput(data, source, targets = null) {
+			if (disposed) return;
+			const recipients =
+				targets || (broadcastInput ? activeShells.filter((s) => broadcastTargets.has(s.id)) : [source]);
+			for (const sh of recipients) if (sh?.connected && !sh.closed && sh.shellId) sh.inputQueue.enqueue(data);
+		}
+		function previewPaste(text, source) {
+			if (!source?.connected || source.closed) {
+				alert("请先连接终端");
+				return;
+			}
+			const recipients = broadcastInput
+				? activeShells.filter((s) => broadcastTargets.has(s.id) && s.connected)
+				: [source];
+			const overlay = document.createElement("div");
+			overlay.className = "rw-modal-overlay";
+			overlay.innerHTML = `<div class="rw-modal"><div class="rw-modal-title">多行粘贴预览</div><div>${recipients.map((s) => `${escapeHtml(s.title)}:${s.port} [${escapeHtml(hosts.find((h) => h.host === s.host && h.username === s.username && (h.port || 22) === s.port)?.environment || "未标记环境")}]`).join("<br>")}</div><textarea rows="10"></textarea><button class="rw-btn primary rw-confirm">发送以上内容</button><button class="rw-btn rw-cancel">取消</button></div>`;
+			overlay.querySelector("textarea").value = text;
+			root.append(overlay);
+			overlay.querySelector(".rw-cancel").onclick = () => overlay.remove();
+			overlay.querySelector(".rw-confirm").onclick = () => {
+				sendInput(overlay.querySelector("textarea").value, source, recipients);
+				overlay.remove();
+			};
+		}
 
 		// 导出净化后的终端文本（Termcp Compact 压缩）
 		termPane.querySelector("#rw-tool-export").addEventListener("click", () => {
@@ -1805,11 +2018,7 @@ export default {
 			if (current?.term) {
 				current.term.clear();
 				if (current.shellId) {
-					ctx.send({
-						action: "shell_input",
-						shellId: current.shellId,
-						b64: btoa("clear\r"),
-					});
+					current.inputQueue.enqueue("clear\r");
 				}
 			}
 		});
@@ -1838,22 +2047,36 @@ export default {
 				else if (cmd === "TAB") payload = "\t";
 				else payload = `${cmd}\r`;
 
-				const b64Data = btoa(unescape(encodeURIComponent(payload)));
-				if (broadcastInput) {
-					activeShells.forEach((sh) => {
-						if (sh.shellId && sh.connected) {
-							ctx.send({ action: "shell_input", shellId: sh.shellId, b64: b64Data });
-						}
-					});
-				} else {
-					const current = activeShells[activeShellIndex];
-					if (current?.shellId) {
-						ctx.send({ action: "shell_input", shellId: current.shellId, b64: b64Data });
-						current.term?.focus();
-					}
-				}
+				sendInput(payload, activeShells[activeShellIndex]);
 			});
 		});
+
+		const searchBar = document.createElement("div");
+		searchBar.className = "rw-snippet-bar";
+		searchBar.innerHTML = `<input class="rw-search-input" placeholder="搜索终端缓冲" aria-label="搜索终端缓冲"><button class="rw-btn rw-search-prev">上一个</button><button class="rw-btn rw-search-next">下一个</button><span role="status"></span><button class="rw-btn rw-param-command">参数化命令</button>`;
+		termPane.insertBefore(searchBar, termPane.querySelector("#rw-term-viewport"));
+		function search(backwards) {
+			const sh = activeShells[activeShellIndex];
+			if (!sh?.term) return;
+			sh.searchRow = findBuffer(sh.term, searchBar.querySelector("input").value, sh.searchRow ?? -1, backwards);
+			searchBar.querySelector("span").textContent = sh.searchRow < 0 ? "未找到" : `第 ${sh.searchRow + 1} 行`;
+		}
+		searchBar.querySelector(".rw-search-prev").onclick = () => search(true);
+		searchBar.querySelector(".rw-search-next").onclick = () => search(false);
+		searchBar.querySelector("input").onkeydown = (e) => {
+			if (e.key === "Enter") search(e.shiftKey);
+		};
+		searchBar.querySelector(".rw-param-command").onclick = () => {
+			const template = prompt("命令模板（{{name}} 参数会按 Shell 字面量转义）", "tail -n {{lines}} {{path}}");
+			if (!template) return;
+			const values = {};
+			for (const key of new Set([...template.matchAll(/\{\{([a-zA-Z_][a-zA-Z0-9_]*)\}\}/g)].map((m) => m[1]))) {
+				const value = prompt(`参数 ${key}`);
+				if (value === null) return;
+				values[key] = value;
+			}
+			previewPaste(expandSnippet(template, values) + "\r", activeShells[activeShellIndex]);
+		};
 
 		// 全屏切换
 		termPane.querySelector("#rw-tool-fullscreen").addEventListener("click", () => {
@@ -1861,58 +2084,92 @@ export default {
 			refitActiveTerm();
 		});
 
-		document.addEventListener("keydown", (e) => {
+		const onKeydown = (e) => {
 			if (e.key === "Escape" && root.classList.contains("rw-fullscreen")) {
 				root.classList.remove("rw-fullscreen");
 				refitActiveTerm();
 			}
-		});
+		};
+		document.addEventListener("keydown", onKeydown);
 
 		// 监听 WebSocket 数据推送
-		ctx.onData((msg) => {
+		const unsubscribeData = ctx.onData((msg) => {
+			if (disposed) return;
 			if (!msg || typeof msg !== "object") return;
 
-			if ((msg.res && msg.action === "shell_open") || msg.reqId) {
-				const target = activeShells.find((s) => s.id === `pending_${msg.reqId}`);
+			if (msg.event === "shell_drain") {
+				activeShells.find((s) => s.shellId === msg.shellId)?.inputQueue?.drain();
+				return;
+			}
+			if (msg.reqId) {
+				if (activeShells.some((s) => s.inputQueue?.reply(msg))) return;
+				const target = activeShells.find((s) => !s.shellId && s.id === `pending_${msg.reqId}`);
 				if (target) {
 					if (msg.ok && msg.shellId) {
 						target.shellId = msg.shellId;
+						target.resumeToken = msg.resumeToken;
+						target.tmuxSession = msg.tmuxSession || target.tmuxSession;
+						target.tmux = msg.tmux ?? target.tmux;
 						target.connected = true;
+						persistSessions();
 						renderTermTabs();
 						refitActiveTerm();
 					} else {
+						target.resumeToken = null;
+						persistSessions();
+						if (target.tmux && target.tmuxSession)
+							target.term?.write(`\r\n[tmux ${target.tmuxSession}: 点击重连可重新附着远端会话]\r\n`);
 						target.term?.write(`\r\n\x1b[31m连接失败: ${msg.error}\x1b[0m\r\n`);
 					}
 				}
+				if (!target && msg.ok && msg.shellId && ["shell_open", "shell_attach"].includes(msg.action))
+					ctx.send({ action: "shell_close", shellId: msg.shellId });
 				return;
 			}
 
 			if (msg.event === "shell_data" && msg.shellId && msg.b64) {
 				const target = activeShells.find((s) => s.shellId === msg.shellId);
 				if (target?.term) {
-					let decoded = "";
-					try {
-						decoded = decodeURIComponent(escape(atob(msg.b64)));
-					} catch {
-						decoded = atob(msg.b64);
-					}
-					target.term.write(decoded);
+					const bytes = decodeBytes(msg.b64);
+					target.term.write(bytes, () => {
+						if (disposed || target.closed || !target.connected) return;
+						target.lastSeq = msg.seq;
+						ctx.send({ action: "shell_ack", shellId: target.shellId, seq: msg.seq });
+					});
+					target.decoder ||= new TextDecoder();
+					const decoded = target.decoder.decode(bytes, { stream: true });
 
 					// 嗅探是否为 Sudo 提权或密码输入提示（触发凭据外带输入条）
-					const checkText = decoded.trim();
+					target.promptTail = ((target.promptTail || "") + decoded).slice(-512);
+					const checkText = target.promptTail.trim();
 					if (
-						/(?:\[sudo\]\s+password\s+for|password\s*:|\bpassphrase\b|verification\s+code\s*:?)\s*$/i.test(checkText)
+						new RegExp(
+							"(?:\\bpass" + "word\\s*(?:for[^:]*)?:|\\bpassphrase\\b[^:]*:|verification\\s+code\\s*:?)\\s*$",
+							"i",
+						).test(checkText)
 					) {
-						showSecureBar();
+						showSecureBar(target);
 					}
 				}
 				return;
 			}
 
+			if (msg.event === "shell_gap") {
+				activeShells
+					.find((s) => s.shellId === msg.shellId)
+					?.term?.write(`\r\n[恢复缓冲丢失 ${msg.droppedBytes} 字节]\r\n`);
+				return;
+			}
 			if (msg.event === "shell_close" && msg.shellId) {
 				const target = activeShells.find((s) => s.shellId === msg.shellId);
 				if (target) {
+					if (msg.tailB64) target.term?.write(decodeBytes(msg.tailB64));
+					if (msg.droppedBytes) target.term?.write(`\r\n[丢失 ${msg.droppedBytes} 字节]\r\n`);
+					target.inputQueue?.dispose();
 					target.connected = false;
+					if (secureTarget === target) hideSecureBar();
+					target.resumeToken = null;
+					persistSessions();
 					target.term?.write("\r\n\x1b[33m[远程连接已断开]\x1b[0m\r\n");
 					renderTermTabs();
 				}
@@ -1934,9 +2191,15 @@ export default {
 		themeObserver.observe(document.documentElement, { attributes: true, attributeFilter: ["class", "data-theme"] });
 
 		// 窗口自适应
-		window.addEventListener("resize", () => {
+		const onResize = () => {
 			if (currentTab === "term") refitActiveTerm();
-		});
+		};
+		window.addEventListener("resize", onResize);
+		const heartbeat = setInterval(() => {
+			for (const sh of activeShells)
+				if (sh.connected) ctx.send({ action: "shell_ack", shellId: sh.shellId, seq: sh.lastSeq || 0 });
+			if (currentTab === "tunnels") refreshTunnels();
+		}, 10000);
 
 		// ── 联动能力 ──────────────────────────────────────────────────────────
 		async function linkSftp(h) {
@@ -1945,7 +2208,8 @@ export default {
 			);
 			if (!ok) return;
 			try {
-				const res = await fetch("/plugins-api/sftp/use-global", {
+				const res = await fetch(appPath(ctx, "/plugins-api/sftp/use-global", import.meta.url), {
+					signal: lifecycle.signal,
 					method: "POST",
 					headers: { "Content-Type": "application/json" },
 					body: JSON.stringify({ globalName: h.name, remotePath: h.remotePath || "/" }),
@@ -2057,7 +2321,7 @@ export default {
 
 					<div class="rw-modal-footer">
 						<button class="rw-btn" id="rw-tun-cancel">取消</button>
-						<button class="rw-btn primary" id="rw-tun-start">开启转发</button>
+						<label><input type="checkbox" id="rw-tun-auto">断线自动恢复</label><label><input type="checkbox" id="rw-tun-save-only">仅保存配置</label><button class="rw-btn primary" id="rw-tun-start">保存并开启转发</button>
 					</div>
 				</div>
 			`;
@@ -2088,10 +2352,15 @@ export default {
 				startBtn.textContent = "启动中…";
 
 				try {
-					await api("/tunnels/start", {
-						method: "POST",
-						body: JSON.stringify({ hostName, localPort, targetHost, targetPort }),
+					const saved = await post("/tunnels/save", {
+						hostName,
+						localPort,
+						targetHost,
+						targetPort,
+						autoReconnect: overlay.querySelector("#rw-tun-auto").checked,
 					});
+					if (!overlay.querySelector("#rw-tun-save-only").checked)
+						await post("/tunnels/start", { id: saved.tunnel.id });
 					overlay.remove();
 					switchTab("tunnels");
 				} catch (err) {
@@ -2246,7 +2515,7 @@ export default {
 						const osStr = res.system?.distro || res.system?.os || "Linux";
 						const coresStr = `${res.system?.cores || 1} 核`;
 						alert(
-							`✓ 连接测试成功！\n系统: ${osStr} (${res.system?.arch || "x64"})\nCPU: ${coresStr}${memStr ? ` | 内存: ${memStr}` : ""}`,
+							`✓ 连接可用（可能复用已建立 SSH，不能验证新输入凭据）！\n系统: ${osStr} (${res.system?.arch || "x64"})\nCPU: ${coresStr}${memStr ? ` | 内存: ${memStr}` : ""}`,
 						);
 					} else {
 						errBox.textContent = `连接失败: ${res.error || "未知原因"}`;
@@ -2304,11 +2573,45 @@ export default {
 		refreshTunnels();
 		container.appendChild(root);
 
+		for (const session of readSessions(sessionStorage, sessionKey)) if (session.resumeToken) openTerminal(session);
+		const tmuxRecovery = readSessions(sessionStorage, sessionKey).filter((s) => !s.resumeToken && s.tmuxSession);
+		if (tmuxRecovery.length) {
+			const recover = document.createElement("button");
+			recover.className = "rw-btn";
+			recover.textContent = "重新连接保存的 tmux 会话";
+			recover.onclick = () => {
+				for (const session of tmuxRecovery) openTerminal(session);
+				recover.remove();
+			};
+			header.querySelector(".rw-header-right").append(recover);
+		}
+
 		return () => {
+			const queuedInput = activeShells.filter((sh) => sh.inputQueue?.bytes > 0);
+			if (queuedInput.length)
+				alert(
+					`工作台已脱离，以下输入仍未发送或未获接受确认，恢复后请核对终端再决定是否重输：\n${queuedInput.map((sh) => `${sh.title}:${sh.port} · ${sh.inputQueue.bytes} 字节`).join("\n")}`,
+				);
+			disposed = true;
+			persistSessions();
+			lifecycle.abort();
+			clearTimeout(fitTimer);
+			clearInterval(heartbeat);
+			operations.dispose();
+			closePopmenu();
+			unsubscribeData?.();
+			document.removeEventListener("keydown", onKeydown);
+			window.removeEventListener("resize", onResize);
 			root.remove();
 			window.removeEventListener("pi-web-ui:theme-change", syncTheme);
 			themeObserver.disconnect();
 			for (const sh of activeShells) {
+				sh.closed = true;
+				sh.inputQueue?.dispose();
+				if (sh.shellId) ctx.send({ action: "shell_detach", shellId: sh.shellId });
+				else ctx.send({ action: "shell_cancel", openReqId: sh.reqId });
+				sh.resizeObserver?.disconnect();
+				for (const disposable of sh.disposables || []) disposable.dispose();
 				try {
 					sh.term?.dispose();
 				} catch {}

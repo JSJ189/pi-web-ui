@@ -1015,6 +1015,8 @@ export interface McpBridgeOptions {
 /** MCP 服务器管理器：自管多服务器生命周期 + 聚合工具。 */
 export class McpBridge {
 	private clients: McpClient[] = [];
+	private pendingClients = new Set<McpClient>();
+	private disposed = false;
 	private tools: PluginAgentTool[] = [];
 	private serverErrors = new Map<string, string>();
 	/** reload 串行化链：重入的 reload 排在前一个之后，杜绝交叠留下的孤儿进程。 */
@@ -1048,11 +1050,13 @@ export class McpBridge {
 		status: "running" | "stopped" | "error";
 		error?: string;
 		tools: UiMcpToolInfo[];
+		usingPreviousConfig?: boolean;
 	} {
 		const client = this.clients.find((c) => c.name === name);
 		if (client) {
 			return {
 				status: "running",
+				...(this.serverErrors.has(name) ? { error: this.serverErrors.get(name), usingPreviousConfig: true } : {}),
 				tools: client.getTools().map((t) => ({ name: t.name, description: t.description })),
 			};
 		}
@@ -1068,6 +1072,7 @@ export class McpBridge {
 
 	/** 读取配置并启动全部服务器（顺序 fail-fast：单个失败记日志不拖垮其它）。 */
 	async load(): Promise<void> {
+		if (this.disposed) return;
 		this.serverErrors.clear();
 		const cfg = optsOverrideOrRead(this.opts, this.dataDir);
 		await Promise.all(
@@ -1075,6 +1080,10 @@ export class McpBridge {
 				if (spec.enabled === false) return;
 				const client = await this.startOne(name, spec);
 				if (!client) return;
+				if (this.disposed) {
+					client.close();
+					return;
+				}
 				this.clients.push(client);
 				for (const t of client.getTools()) this.tools.push(adaptMcpTool(name, t, client));
 			}),
@@ -1083,21 +1092,33 @@ export class McpBridge {
 
 	/** 启动单个服务器：失败只记日志并返回 null（load / reload 共用）。 */
 	private async startOne(name: string, spec: McpServerSpec): Promise<McpClient | null> {
+		if (this.disposed) return null;
+		const client = new McpClient(name, spec, this.log);
+		this.pendingClients.add(client);
 		try {
-			const client = new McpClient(name, spec, this.log);
 			client.onToolsChanged = () => this.reaggregateTools();
 			await client.start();
+			if (this.disposed) {
+				client.close();
+				return null;
+			}
 			this.serverErrors.delete(name);
 			return client;
 		} catch (err) {
-			const msg = err instanceof Error ? err.message : String(err);
-			this.serverErrors.set(name, msg);
-			this.log(`[mcp] 服务器「${name}」启动失败：`, msg);
+			client.close();
+			if (!this.disposed) {
+				const msg = err instanceof Error ? err.message : String(err);
+				this.serverErrors.set(name, msg);
+				this.log(`[mcp] 服务器「${name}」启动失败：`, msg);
+			}
 			return null;
+		} finally {
+			this.pendingClients.delete(client);
 		}
 	}
 
 	private reaggregateTools(): void {
+		if (this.disposed) return;
 		this.tools = [];
 		for (const c of this.clients) {
 			for (const t of c.getTools()) {
@@ -1123,6 +1144,7 @@ export class McpBridge {
 	}
 
 	private async reloadOnce(): Promise<McpReloadSummary> {
+		if (this.disposed) return { kept: 0, started: 0, stopped: 0, failed: 0, servers: 0, tools: 0 };
 		const cfg = optsOverrideOrRead(this.opts, this.dataDir);
 		const next = new Map<string, McpClient>();
 		let kept = 0;
@@ -1130,6 +1152,7 @@ export class McpBridge {
 			const spec = cfg.servers[client.name];
 			if (!spec || spec.enabled === false || !sameMcpSpec(spec, client.spec)) continue;
 			next.set(client.name, client);
+			this.serverErrors.delete(client.name);
 			kept++;
 		}
 		let started = 0;
@@ -1153,6 +1176,13 @@ export class McpBridge {
 					}
 				}),
 		);
+		if (this.disposed) {
+			for (const client of next.values()) client.close();
+			return { kept: 0, started: 0, stopped: 0, failed: 0, servers: 0, tools: 0 };
+		}
+		for (const name of this.serverErrors.keys()) {
+			if (!cfg.servers[name] || cfg.servers[name].enabled === false) this.serverErrors.delete(name);
+		}
 		const stale = this.clients.filter((c) => next.get(c.name) !== c);
 		this.clients = [...next.values()];
 		this.tools = [];
@@ -1177,6 +1207,9 @@ export class McpBridge {
 	}
 
 	dispose(): void {
+		this.disposed = true;
+		for (const c of this.pendingClients) c.close();
+		this.pendingClients.clear();
 		for (const c of this.clients) c.close();
 		this.clients = [];
 		this.tools = [];

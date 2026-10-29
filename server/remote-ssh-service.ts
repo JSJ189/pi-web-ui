@@ -16,6 +16,8 @@ import { existsSync, mkdirSync, readFileSync, writeFileSync, promises as fs } fr
 import os from "node:os";
 import path from "node:path";
 import { Readable } from "node:stream";
+import { pathToFileURL } from "node:url";
+import { resolveDefaultPkgRoot } from "./plugin-updater.js";
 import { isAudioFile, previewKind } from "./text-sniff.js";
 import type {
 	RemoteSshDirItem,
@@ -666,8 +668,16 @@ export class RemoteSshService {
 		rawParams: RemoteSshProbeParams,
 	): Promise<{ client: Client; hydrated: RemoteSshProbeParams }> {
 		const params = await this.hydrateAuthParams(rawParams);
+		// plugin-sdk ships in both source and npm layouts; SFTP imports the same verifier.
+		const packageRoot = resolveDefaultPkgRoot();
+		if (!packageRoot) throw new Error("Cannot locate SSH host verification module");
+		const { createHostVerifier } = await import(
+			pathToFileURL(path.join(packageRoot, "plugin-sdk", "ssh-host-trust.mjs")).href
+		);
+		const trust = await createHostVerifier(params.host, params.port ?? 22);
 		const client = new Client();
 		const connectConfig: Record<string, unknown> = {
+			hostVerifier: trust.hostVerifier,
 			host: params.host,
 			port: params.port ?? 22,
 			username: params.username,
@@ -721,7 +731,7 @@ export class RemoteSshService {
 			};
 			const onError = (err: Error) => {
 				cleanup();
-				reject(err);
+				reject(trust.getError() ?? err);
 			};
 
 			client.once("ready", onReady);
@@ -1274,74 +1284,82 @@ fi
 			onData?: (chunk: Buffer) => void;
 		},
 	): Promise<{ stdout: string; stderr: string; exitCode: number }> {
-		const { conn, parsed } = await this.getOrConnectByUri(uri);
-		const targetDir = opts?.cwd || parsed.remotePath || "/";
-		const fullCmd = `cd ${shellQuotePosix(targetDir)} && ${command}`;
-
 		return new Promise((resolve, reject) => {
-			if (opts?.signal?.aborted) {
-				return reject(new Error("Command aborted"));
-			}
-			conn.client.exec(fullCmd, (err, stream) => {
-				if (err) return reject(err);
+			let stream: ClientChannel | undefined;
+			let stdout = "";
+			let stderr = "";
+			let settled = false;
+			let timer: NodeJS.Timeout | undefined;
+			const signal = opts?.signal;
+			const finish = (exitCode: number, error?: unknown) => {
+				if (settled) return;
+				settled = true;
+				clearTimeout(timer);
+				signal?.removeEventListener("abort", onAbort);
+				if (error) reject(error);
+				else resolve({ stdout, stderr, exitCode });
+			};
+			const closeChannel = (channel: ClientChannel, killSignal: "TERM" | "KILL") => {
+				// Closing must still happen when the remote rejects the signal request.
+				try {
+					channel.signal(killSignal);
+				} catch {}
+				try {
+					channel.close();
+				} catch {}
+			};
+			const onAbort = () => {
+				// Settle before closing: close() may synchronously emit a successful exit.
+				finish(130, signal?.reason instanceof Error ? signal.reason : new Error("Command aborted"));
+				if (stream) closeChannel(stream, "TERM");
+			};
+			signal?.addEventListener("abort", onAbort, { once: true });
+			if (signal?.aborted) return onAbort();
 
-				let stdout = "";
-				let stderr = "";
-				let settled = false;
-				let timer: NodeJS.Timeout | null = null;
-
-				const finish = (res: { stdout: string; stderr: string; exitCode: number }, error?: Error) => {
+			// The connection is pooled/shared: abort this operation, not other users' connections.
+			void this.getOrConnectByUri(uri)
+				.then(({ conn, parsed }) => {
 					if (settled) return;
-					settled = true;
-					if (timer) clearTimeout(timer);
-					opts?.signal?.removeEventListener("abort", onAbort);
-					if (error) reject(error);
-					else resolve(res);
-				};
-
-				const onAbort = () => {
-					try {
-						stream.signal("TERM");
-						stream.close();
-					} catch {}
-					finish({ stdout, stderr, exitCode: 130 }, new Error("Command aborted"));
-				};
-				opts?.signal?.addEventListener("abort", onAbort, { once: true });
-
-				if (opts?.timeoutMs && opts.timeoutMs > 0) {
-					timer = setTimeout(() => {
-						try {
-							stream.signal("KILL");
-							stream.close();
-						} catch {}
-						finish({ stdout, stderr, exitCode: 124 }, new Error(`Command timed out after ${opts.timeoutMs}ms`));
-					}, opts.timeoutMs);
-				}
-
-				stream.on("data", (chunk: Buffer) => {
-					stdout += chunk.toString("utf8");
-					opts?.onData?.(chunk);
-				});
-				stream.stderr.on("data", (chunk: Buffer) => {
-					stderr += chunk.toString("utf8");
-					opts?.onData?.(chunk);
-				});
-				stream.on("close", (code: number | null) => {
-					// 连接中断/远端被 kill -9 时没有 exit-status：本地 SDK 路径对此显式
-					// 抛错——这里同样按错误处理，否则 bash 工具会把断线谎报成「命令成功」
-					if (typeof code === "number") {
-						finish({ stdout, stderr, exitCode: code });
-					} else {
-						finish(
-							{ stdout, stderr, exitCode: 1 },
-							new Error("Remote command terminated without an exit code (connection lost or process killed)"),
-						);
-					}
-				});
-				stream.on("error", (e: Error) => {
-					finish({ stdout, stderr, exitCode: 1 }, e);
-				});
-			});
+					if (signal?.aborted) return onAbort();
+					const targetDir = opts?.cwd || parsed.remotePath || "/";
+					const fullCmd = `cd ${shellQuotePosix(targetDir)} && ${command}`;
+					conn.client.exec(fullCmd, (err, channel) => {
+						if (err) return finish(1, err);
+						stream = channel;
+						// Keep an error handler even on a late channel, including during close().
+						channel.on("error", (error: Error) => finish(1, error));
+						if (settled || signal?.aborted) {
+							if (!settled) onAbort();
+							else closeChannel(channel, "TERM");
+							return;
+						}
+						if (opts?.timeoutMs && opts.timeoutMs > 0) {
+							timer = setTimeout(() => {
+								finish(124, new Error(`Command timed out after ${opts.timeoutMs}ms`));
+								closeChannel(channel, "KILL");
+							}, opts.timeoutMs);
+						}
+						channel.on("data", (chunk: Buffer) => {
+							if (settled) return;
+							stdout += chunk.toString("utf8");
+							opts?.onData?.(chunk);
+						});
+						channel.stderr.on("data", (chunk: Buffer) => {
+							if (settled) return;
+							stderr += chunk.toString("utf8");
+							opts?.onData?.(chunk);
+						});
+						channel.on("close", (code: number | null) => {
+							if (typeof code === "number") finish(code);
+							else
+								finish(
+									1,
+									new Error("Remote command terminated without an exit code (connection lost or process killed)"),
+								);
+						});
+					});
+				})
+				.catch((error: unknown) => finish(1, error));
 		});
 	}
 
@@ -1458,21 +1476,78 @@ fi
 		uri: string,
 		remoteAbsPath: string,
 		content: Buffer | string,
-		opts?: { createParents?: boolean; flag?: string },
+		opts?: { createParents?: boolean; flag?: string; signal?: AbortSignal; timeoutMs?: number },
 	): Promise<void> {
+		const signal = opts?.signal;
+		const timeoutMs = opts?.timeoutMs ?? 30_000;
+		signal?.throwIfAborted();
 		if (opts?.createParents) {
 			const parentDir = path.posix.dirname(remoteAbsPath);
 			if (parentDir && parentDir !== "/") {
-				await this.sftpMkdirRecursive(uri, parentDir);
+				signal?.throwIfAborted();
+				const res = await this.execInWorkspace(uri, `mkdir -p ${shellQuotePosix(parentDir)}`, {
+					cwd: "/",
+					signal,
+					timeoutMs,
+				});
+				signal?.throwIfAborted();
+				if (res.exitCode !== 0) {
+					throw new Error(res.stderr || res.stdout || `Remote mkdir failed for ${parentDir}`);
+				}
 			}
 		}
+		signal?.throwIfAborted();
 		const { sftp } = await this.getOrConnectByUri(uri);
+		signal?.throwIfAborted();
 		const buf = typeof content === "string" ? Buffer.from(content, "utf8") : content;
 		return new Promise((resolve, reject) => {
 			const stream = sftp.createWriteStream(remoteAbsPath, opts?.flag ? { flags: opts.flag as any } : undefined);
-			stream.on("error", (err: Error) => reject(err));
-			stream.on("close", () => resolve());
-			stream.end(buf);
+			// ssh2 disables Node's close emission and omits its own close on errors.
+			// Restore it so even failed _destroy callbacks signal resource release.
+			const state = (stream as typeof stream & { _writableState?: { emitClose: boolean } })._writableState;
+			if (state) state.emitClose = true;
+			let failure: unknown;
+			let failed = false;
+			let finished = false;
+			let settled = false;
+			let timer: NodeJS.Timeout | undefined;
+			const stop = (error: unknown) => {
+				if (settled) return;
+				if (!failed) {
+					failed = true;
+					failure = error;
+				}
+				stream.destroy();
+			};
+			const abort = () => stop(signal?.reason ?? new Error("SFTP write aborted"));
+			// Keep this listener after close as ssh2 may still report a late error.
+			stream.on("error", stop);
+			stream.on("finish", () => {
+				finished = true;
+			});
+			stream.on("close", () => {
+				// ssh2 may close synchronously inside _final, before finish is emitted.
+				queueMicrotask(() => {
+					if (settled) return;
+					settled = true;
+					clearTimeout(timer);
+					signal?.removeEventListener("abort", abort);
+					if (failed) reject(failure);
+					else if (finished || stream.writableFinished) resolve();
+					else reject(new Error("SFTP write closed before finishing"));
+				});
+			});
+			signal?.addEventListener("abort", abort, { once: true });
+			if (signal?.aborted) {
+				abort();
+				return;
+			}
+			timer = setTimeout(() => stop(new Error(`SFTP write timed out after ${timeoutMs}ms`)), timeoutMs);
+			try {
+				stream.end(buf);
+			} catch (error) {
+				stop(error);
+			}
 		});
 	}
 

@@ -919,8 +919,8 @@ export default {
 			const ext = sniffImageExt(buf) || extname(String(inner?.url ?? "")).toLowerCase() || ".jpg";
 			const name =
 				part.kind === "image"
-					? `wx-${tag}-${stamp}-img${ext}`
-					: `wx-${tag}-${stamp}-${safeName(inner?.file_name, "file")}`;
+					? `wx-${tag}-${stamp}-${randomBytes(6).toString("hex")}-img${ext}`
+					: `wx-${tag}-${stamp}-${randomBytes(6).toString("hex")}-${safeName(inner?.file_name, part.kind === "video" ? "video.mp4" : "file")}`;
 			const abs = join(mediaDir(peer), safeName(name, "media"));
 			writeFileSync(abs, buf);
 			return { kind: part.kind, path: abs, size: buf.length };
@@ -930,19 +930,48 @@ export default {
 		async function buildInboundPrompt(parts, peer) {
 			const wantMedia = settings().inboundMedia !== false;
 			const lines = [];
+			const attachments = [];
 			for (const p of parts) {
 				if (p.kind === "text") {
 					lines.push(p.text);
 					continue;
 				}
 				const label = MEDIA_LABEL[p.kind] ?? MEDIA_LABEL.unknown;
-				// 语音仍是占位（silk 转码未接）；其余媒体按开关落地。
-				if (!wantMedia || (p.kind !== "image" && p.kind !== "file")) {
-					lines.push(`[${label}]`);
+				if (p.kind === "voice") {
+					const notice = "收到语音，但当前通道未接入语音识别（ASR），无法听取内容，请改发文字。";
+					await sendText(peer, notice, st.peerCtx[peer]).catch((err) =>
+						host.log("voice notice failed:", err?.message ?? err),
+					);
+					lines.push(`[${notice}]`);
+					continue;
+				}
+				if (!wantMedia || !["image", "file", "video"].includes(p.kind)) {
+					lines.push(`[${label}（未下载，无法读取内容）]`);
 					continue;
 				}
 				try {
 					const saved = await saveInboundMedia(p, peer);
+					if (saved.kind === "image") {
+						const data = readFileSync(saved.path);
+						const ext = sniffImageExt(data);
+						if (!ext) throw new Error("不支持的图片格式，请改发 PNG/JPEG/GIF/WebP");
+						const images = attachments.filter((a) => a.imageData);
+						const total = images.reduce((n, a) => n + Buffer.from(a.imageData, "base64").length, 0);
+						if (images.length >= 8 || data.length > 10 * 1024 * 1024 || total + data.length > 20 * 1024 * 1024)
+							throw new Error("图片超过 8 张、单张 10MiB 或合计 20MiB 限制");
+						attachments.push({
+							path: "",
+							imageData: data.toString("base64"),
+							mimeType: mimeOfPath(saved.path),
+							name: safeName(saved.path.split(/[\\/]/).pop(), "image"),
+						});
+					} else {
+						attachments.push({
+							path: saved.path,
+							mode: "reference",
+							name: safeName(saved.path.split(/[\\/]/).pop(), "file"),
+						});
+					}
 					lines.push(
 						saved.kind === "image"
 							? `[图片已保存：${saved.path}（用 read 工具可直接查看）]`
@@ -951,10 +980,12 @@ export default {
 				} catch (err) {
 					const msg = err?.message ?? String(err);
 					host.log(`[wechat-ilink] 入站${label}处理失败：${msg}`);
-					lines.push(`[${label}（下载失败：${msg}）]`);
+					const notice = `${label}处理失败：${msg}，未读取内容。`;
+					lines.push(`[${notice}]`);
+					await sendText(peer, notice, st.peerCtx[peer]).catch(() => {});
 				}
 			}
-			return lines.join("\n").trim();
+			return { text: lines.join("\n").trim(), attachments };
 		}
 
 		/** 出站媒体源 → 本地绝对路径（支持 http(s) URL 先落地；相对路径以当前工作区为基准）。 */
@@ -1078,8 +1109,10 @@ export default {
 
 			// issue #345：检查在 host.chat() 结果返回前是否已提前收到运行事件
 			// 优先精确 runKey 匹配，未命中时尝试 conversationId 匹配（兼容 ev 未带 clientId 的测试 mock）
-			const early = earlyRuns.get(key) ?? earlyRuns.get(conversationId);
+			const earlyKey = runId ? `run:${runId}` : key;
+			const early = earlyRuns.get(earlyKey) ?? (!runId ? earlyRuns.get(conversationId) : undefined);
 			if (early && (!startedAt || early.at >= startedAt - 500)) {
+				earlyRuns.delete(earlyKey);
 				earlyRuns.delete(key);
 				earlyRuns.delete(conversationId);
 				if (early.text) {
@@ -1159,7 +1192,7 @@ export default {
 			inFlightConvs.delete(convId);
 		}
 
-		async function drivePeer(peer, text, contextToken) {
+		async function drivePeer(peer, text, contextToken, attachments = []) {
 			const label = `微信:${peer}`;
 			// issue #226：透传宿主 host.chat 四件套（工作空间/模型/思考强度/绑定网页会话）。
 			// issue #345：按微信用户 ID 与会话序号隔离 accountId，避免全员共享同一伪客户端与无头会话。
@@ -1167,6 +1200,7 @@ export default {
 			const acct = peerAccountId(peer, seq);
 			const expectedPseudoClientId = `plugin:wechat-ilink:${acct}`;
 			const req = { text: `[${label}] ${text}`, accountId: acct };
+			if (attachments.length) req.attachments = attachments;
 			const workspace = resolveWorkspace(peer);
 			if (workspace) req.cwd = workspace;
 			const model = resolveModel(peer);
@@ -1195,11 +1229,13 @@ export default {
 
 			try {
 				const r = await host.chat(req);
+				if (!r?.conversationId) throw new Error(r?.error || "宿主未返回实际会话 ID，消息未确认执行");
 				const conversationId = r?.conversationId;
 				const clientId = r?.clientId || expectedPseudoClientId;
 				// 宿主给的稳定运行 id（过户换持有客户端 / 对话撞 id 改名后仍然不变）。
 				const runId = typeof r?.runId === "string" ? r.runId.trim() : "";
 				if (conversationId) {
+					if (bindCid) inFlightConvs.delete(bindCid);
 					inFlightConvs.delete(conversationId);
 					inFlightClients.delete(expectedPseudoClientId);
 					// 上一轮若还在跑（steer 并入在途运行），它的已累积正文必须保留：
@@ -1239,12 +1275,13 @@ export default {
 				}
 				if (!matchedKey && evClientId) {
 					const key = makeRunKey(evClientId, convId);
-					if (st.pendingRuns.has(key)) {
+					const candidate = st.pendingRuns.get(key);
+					if (candidate && (!evRunId || !candidate.runId || candidate.runId === evRunId)) {
 						matchedKey = key;
-						matchedRun = st.pendingRuns.get(key);
+						matchedRun = candidate;
 					}
 				}
-				if (!matchedKey && !evClientId) {
+				if (!matchedKey && !evClientId && !evRunId) {
 					if (st.pendingRuns.has(convId)) {
 						matchedKey = convId;
 						matchedRun = st.pendingRuns.get(convId);
@@ -1291,7 +1328,7 @@ export default {
 					: inFlightConvs.has(convId) || inFlightClients.size > 0;
 				if (!isRelevant) return;
 
-				const earlyKey = evClientId ? makeRunKey(evClientId, convId) : convId;
+				const earlyKey = evRunId ? `run:${evRunId}` : evClientId ? makeRunKey(evClientId, convId) : convId;
 
 				if (ev.type === "message" && ev.message) {
 					const t = assistantTextOf(ev.message);
@@ -1458,7 +1495,7 @@ export default {
 					save();
 					for (const [runKey, run] of st.pendingRuns.entries()) {
 						if (run.to === peer) {
-							void host.abortRun?.(run.conversationId || runKey);
+							void host.abortRun?.(run.runId || run.conversationId || runKey);
 							dropRun(runKey);
 						}
 					}
@@ -1488,7 +1525,7 @@ export default {
 					}
 					const currentWs = resolveWorkspace(peer) || "(跟随宿主当前项目)";
 					const currentModel = resolveModel(peer) || "(跟随全局默认)";
-					const currentThinking = String(settings().thinkingLevel ?? "").trim() || "(跟随全局设置)";
+					const currentThinking = resolveThinkingLevel(peer) || "(跟随全局设置)";
 					const bindActive = settings().bindActive === true ? "投递到网页活跃会话" : "独立无头会话";
 					const statusText = [
 						"🟢 微信通道运行状态",
@@ -1624,15 +1661,30 @@ export default {
 				}
 				case "stop":
 				case "abort": {
+					mediaGeneration.set(peer, (mediaGeneration.get(peer) || 0) + 1);
 					let stopped = 0;
+					let failed = 0;
 					for (const [runKey, run] of st.pendingRuns.entries()) {
 						if (run.to === peer) {
-							void host.abortRun?.(run.conversationId || runKey);
-							dropRun(runKey);
-							stopped++;
+							try {
+								const result = await host.abortRun?.(run.runId || run.conversationId || runKey);
+								if (!result?.ok) {
+									failed++;
+									continue;
+								}
+								dropRun(runKey);
+								stopped++;
+							} catch {
+								failed++;
+							}
 						}
 					}
-					const msg = stopped > 0 ? "⏹️ 已中止当前正在执行的任务。" : "当前没有正在执行的任务。";
+					const msg =
+						failed > 0
+							? "⚠️ 未能确认中止任务，请在网页端查看运行状态。"
+							: stopped > 0
+								? "⏹️ 已中止当前正在执行的任务。"
+								: "当前没有正在执行的任务。";
 					await sendText(peer, msg, ctx).catch((err) => host.log("reply slash failed:", err?.message ?? err));
 					return true;
 				}
@@ -1641,7 +1693,7 @@ export default {
 					if (host.execCommand) {
 						try {
 							const execRes = await host.execCommand(cmd, args, {
-								clientId: `plugin:wechat-ilink:${peerAccountId(peer)}`,
+								clientId: `plugin:wechat-ilink:${peerAccountId(peer, st.peerSessionSeq[peer] || 0)}`,
 							});
 							if (execRes?.ok && typeof execRes.result === "string" && execRes.result.trim()) {
 								await sendText(peer, execRes.result.trim(), ctx).catch((err) =>
@@ -1668,13 +1720,15 @@ export default {
 			for (const k of keys.slice(0, keys.length - PEER_LASTAT_CAP)) delete st.peerLastAt[k];
 		}
 
+		const mediaGeneration = new Map();
+		const inboundMediaTasks = new Set();
 		async function handleInbound(m) {
 			try {
 				if (!m || typeof m !== "object") return;
 				if (m.message_type !== 1) return; // 只要用户消息
 				const peer = String(m.from_user_id ?? "");
 				if (!peer) return;
-				if (m.group_id && settings().respondGroups !== true) return; // 默认不回群
+				if (m.group_id || m.thread_id) return; // iLink 仅私聊，禁止按发送者合并群/thread 上下文
 				const ctx = typeof m.context_token === "string" ? m.context_token : undefined;
 				if (ctx) {
 					st.peerCtx[peer] = ctx;
@@ -1699,7 +1753,14 @@ export default {
 				}
 
 				// 媒体落地（下载 + 解密 + 写本地文件）：只对已配对用户做，不替陌生人取文件。
-				const text = await buildInboundPrompt(parts, peer);
+				const epoch = st.peerSessionSeq[peer] || 0;
+				const generation = mediaGeneration.get(peer) || 0;
+				const { text, attachments } = await buildInboundPrompt(parts, peer);
+				if (
+					hasMedia &&
+					(st.disposed || epoch !== (st.peerSessionSeq[peer] || 0) || generation !== (mediaGeneration.get(peer) || 0))
+				)
+					return;
 				if (!text) return;
 
 				// Slash command handling (/help, /clear, /new, /status, /cwd, /workspace, /model, /stop, /abort)
@@ -1710,7 +1771,7 @@ export default {
 				}
 
 				if (settings().autoDrive === false) return; // 只收不执行
-				await drivePeer(peer, text, ctx);
+				await drivePeer(peer, text, ctx, attachments);
 			} catch (err) {
 				host.log("inbound failed:", err?.message ?? err);
 			}
@@ -1734,7 +1795,17 @@ export default {
 			}
 			st.lastPollAt = Date.now();
 			st.lastError = "";
-			for (const m of r?.msgs ?? []) await handleInbound(m);
+			for (const m of r?.msgs ?? []) {
+				if (inboundPartsOf(m?.item_list).some((p) => p.kind !== "text")) {
+					if (inboundMediaTasks.size >= 4) {
+						void sendText(String(m.from_user_id ?? ""), "媒体处理繁忙，请稍后重发。", m.context_token).catch(() => {});
+						continue;
+					}
+					const task = handleInbound(m);
+					inboundMediaTasks.add(task);
+					void task.finally(() => inboundMediaTasks.delete(task));
+				} else await handleInbound(m);
+			}
 		}
 
 		async function pollLoop() {

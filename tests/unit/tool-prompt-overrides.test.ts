@@ -14,6 +14,20 @@ import {
 	type ToolPromptSessionLike,
 } from "../../server/tool-prompt-overrides.js";
 
+it("migrates legacy terminal overrides deterministically before filtering known names", () => {
+	expect(
+		normalizeToolPromptOverrides(
+			{ terminal_read: { description: "read" }, terminal_create: { description: "create" } },
+			["terminal"],
+		),
+	).toEqual({ terminal: { description: "create" } });
+	expect(
+		normalizeToolPromptOverrides({ terminal: { description: "merged" }, terminal_create: { description: "create" } }, [
+			"terminal",
+		]),
+	).toEqual({ terminal: { description: "merged" } });
+});
+
 /** 造一个 SDK 会话结构子集：注册表 + 出厂定义 + snippet/guidelines 表。 */
 function fakeSession() {
 	const registry = new Map<string, { name?: string; description?: string }>([

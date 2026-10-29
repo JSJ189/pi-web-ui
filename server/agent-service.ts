@@ -20,17 +20,7 @@ import { spawn } from "node:child_process";
 import { createHash, randomUUID } from "node:crypto";
 import * as fsPromises from "node:fs/promises";
 import { DEFAULT_PI_CAPABILITIES } from "./engine-capabilities.js";
-import {
-	appendFileSync,
-	existsSync,
-	readFileSync,
-	readdirSync,
-	rmSync,
-	mkdirSync,
-	statSync,
-	watch,
-	writeFileSync,
-} from "node:fs";
+import { existsSync, readFileSync, readdirSync, rmSync, mkdirSync, statSync, watch, writeFileSync } from "node:fs";
 import { homedir } from "node:os";
 import { basename, delimiter, join, resolve } from "node:path";
 import {
@@ -74,14 +64,14 @@ import {
 	hasRunningBackgroundTask,
 	shouldRetainActive,
 } from "./wait-subscription-scan.js";
-import {
-	COMPACTION_PENDING_TYPE,
-	looksLikeChainCorruption,
-	makeCompactionMarkerId,
-	repairSessionFile,
-	type SessionFileRepair,
-} from "./compaction-markers.js";
+import { looksLikeChainCorruption, repairSessionFile, type SessionFileRepair } from "./compaction-markers.js";
 import { calibrateSessionLeaf } from "./session-branch.js";
+import { startLoadTiming } from "./load-timing.js";
+import {
+	mark as markCompactionState,
+	finish as finishCompactionState,
+	consumeInterrupted as consumeInterruptedCompaction,
+} from "./compaction-state.js";
 import {
 	danglingToolResultText,
 	findDanglingToolCalls,
@@ -185,6 +175,15 @@ import { fillSkillContents } from "./skill-content-filler.js";
 import { estimateNonSystemTokens, renderMainCompose } from "./prompt-assembler.js";
 import { formatSubagentHandoffMessage, recordSubagentHandoff, type SubagentHandoffRecord } from "./subagent-handoff.js";
 import { executeContextBudgetPruning } from "./context-budget-runner.js";
+import { requestContextExtension, enableRequestEvidence } from "./request-context.js";
+import {
+	removeContextEvidence,
+	withContextEvidenceRead,
+	copyContextEvidence,
+	buildContextEvidenceIndex,
+} from "./context-evidence.js";
+import { installCompactionInstructions } from "./compaction-instructions.js";
+import { installEvidenceToolHooks } from "./evidence-tool-hooks.js";
 import {
 	approvalSuppressionReason,
 	checkDangerousToolCall,
@@ -197,7 +196,13 @@ import {
 import { PlanManager } from "./plan-manager.js";
 import { ApprovalAuditLogger } from "./approval-audit.js";
 export { ApprovalAuditLogger };
-import { buildPlanModePrompt, planModeDenial, planModeNoticeText, PLAN_MODE_BLOCKED_TOOL_NAMES } from "./plan-mode.js";
+import {
+	buildPlanModePrompt,
+	planModeDenial,
+	planModeNoticeText,
+	PLAN_MODE_BLOCKED_TOOL_NAMES,
+	syncTerminalReadOnlySchema,
+} from "./plan-mode.js";
 import { DELEGATE_MODE_BLOCKED_TOOL_NAMES, DELEGATION_SYSTEM_PROMPT, delegateNoticeText } from "./delegate-mode.js";
 import { goalReviewDenial, shouldDeferPromptForReview } from "./goal-review-gate.js";
 import { readPlanModeFromSession, readPlanFromSession } from "./permission-preset.js";
@@ -254,6 +259,7 @@ import {
 	type SubagentSpawnExtra,
 	resolveSecurityMode,
 	subagentSecurityDenial,
+	subagentAllowedToolVisible,
 	withSubagentSecurityGate,
 	SUBAGENT_WRITE_TOOL_NAMES,
 } from "./subagent-security-gate.js";
@@ -287,6 +293,7 @@ import {
 	type SubagentToolHost,
 } from "./subagents.js";
 import { makeDelegateTaskTool } from "./delegate-task.js";
+import { mergeConversationTools } from "./conversation-tool.js";
 import {
 	makeConversationReadTool,
 	toTranscriptInput,
@@ -303,7 +310,9 @@ import { makePatchTool } from "./patch-tool.js";
 import { makeLspTool } from "./lsp-tool.js";
 import { makeMcpManageTool, type McpManageToolHost } from "./mcp-agent-tool.js";
 import { makeSandboxTool } from "./sandbox-tool.js";
+import { createSandboxRuntimeGate, sandboxExtensionOptions } from "./sandbox-runtime-gate.js";
 import { makeWorktreeTool } from "./worktree-tool.js";
+import { makeDeviceCollabTool } from "./device-center/collab-tool.js";
 import { makeCanvasTool } from "./canvas/canvas-agent-tool.js";
 import { getWorktreeContext, removeWorktree, normalizeWirePath } from "./worktree-service.js";
 import type { WorktreeInfo } from "./protocol.js";
@@ -361,7 +370,7 @@ import {
 	toggleMcpServer as toggleMcpServerFile,
 } from "./mcp-manager.js";
 import { fetchRemoteMcpMarket, fetchRemoteSkillMarket, fetchRemoteSkillContent } from "./market-service.js";
-import type { McpBridge } from "./mcp-bridge.js";
+import type { McpProjectRuntimeRegistry } from "./mcp-project-runtime.js";
 import {
 	serializeMessage,
 	serializeStreamingMessage,
@@ -530,7 +539,6 @@ import {
 	DEFAULT_CONV_TITLE,
 	truncRun,
 	previewToolResult,
-	atomicWriteFileSync,
 	conversationTitle,
 	pluginToolToDefinition,
 	contentFingerprint,
@@ -767,12 +775,8 @@ export interface Conversation {
 	lastTurnBaseTokens?: number;
 }
 
-import {
-	sessionMatchesMetadata,
-	collectSessionAnchors,
-	piSessionsRoot,
-	isInsideSessionsDir,
-} from "./session-search.js";
+import { mapSessionsConcurrent } from "./session-scan.js";
+import { searchSessions as searchSessionTranscripts, piSessionsRoot, isInsideSessionsDir } from "./session-search.js";
 export { piSessionsRoot, isInsideSessionsDir };
 
 import {
@@ -817,6 +821,8 @@ export interface TakeoverPageCall {
 }
 
 /** 手动过户时跟着对话一起搬走的待审批（id 在目标会话重排）. */
+const settledApprovalRequests = new WeakSet<object>();
+
 export interface TakeoverApproval {
 	resolve: (res: ToolApprovalResolution) => void;
 	toolCallId: string;
@@ -874,7 +880,7 @@ let ephemeralCleanupScheduled = false;
 export { processTreeKillPlan, resolveCwdTarget };
 
 export class ClientSession {
-	static mcpBridge: McpBridge | null = null;
+	static mcpProjects: McpProjectRuntimeRegistry | null = null;
 	readonly clientId: string;
 	/** Set by AgentService.attach: reflects the SERVICE-wide quiesce flag
 	 *  (server draining — new work rejected). Default false for direct use. */
@@ -938,6 +944,7 @@ export class ClientSession {
 		getActiveCwd: () => this.convs.get(this.activeId)?.cwd ?? this.cwd,
 		// issue #91：文件服务错误文案按客户端 UI 语言出中英（英文默认）。
 		getLang: () => this.getLang(),
+		getUploadMaxBytes: () => (this.settingsSvc.current.workspaceUploadMaxMb ?? 100) * 1024 * 1024,
 	});
 	private readonly bg = new BgServerTracker({
 		emit: (msg) => this.emit(msg),
@@ -980,7 +987,7 @@ export class ClientSession {
 	 *  PluginManager.emitClientModelChanged（插件用 host.onClientModelChanged 订阅）。 */
 	onClientModelChanged: ((snap: PluginConversationSnapshot) => void) | undefined = undefined;
 	/** index.ts 注入：读取插件当前注册的 AI 工具（attach 时拷贝到每个新会话）。 */
-	pluginToolsProvider: (() => PluginAgentTool[]) | undefined = undefined;
+	pluginToolsProvider: ((cwd?: string) => PluginAgentTool[]) | undefined = undefined;
 	/** index.ts 经 AgentService 注入：内置调度存储（定时任务 Agent 工具用；未注入时工具直接报错）。 */
 	schedulerStore: SchedulerStore | undefined = undefined;
 	/** index.ts 注入：读取插件当前注册的斜杠命令（目录展示 + prompt 拦截执行）。 */
@@ -990,7 +997,7 @@ export class ClientSession {
 	/** index.ts 注入：停止插件任务（kill_background_server with taskId）。 */
 	pluginStopBgTask: ((taskId: string) => boolean) | undefined = undefined;
 	/** 上一轮注入会话的插件工具名集合（用于检测注销/移除）。 */
-	private appliedPluginToolNames = new Set<string>();
+	private appliedPluginToolNames = new WeakMap<AgentSession, Set<string>>();
 
 	/** The active conversation (all session operations target it). */
 	private get conv(): Conversation {
@@ -1037,7 +1044,16 @@ export class ClientSession {
 		return this.userTerminals;
 	}
 
-	findTerminalManager(terminalId: string, conversationId?: string): TerminalManager | undefined {
+	findTerminalManager(
+		terminalId: string,
+		conversationId?: string,
+		ownerKind?: "client" | "conversation",
+	): TerminalManager | undefined {
+		if (ownerKind === "client") return this.userTerminals?.has(terminalId) ? this.userTerminals : undefined;
+		if (ownerKind === "conversation") {
+			const manager = this.getTerminalManager(conversationId);
+			return manager?.has(terminalId) ? manager : undefined;
+		}
 		if (this.userTerminals?.has(terminalId)) {
 			return this.userTerminals;
 		}
@@ -1072,8 +1088,9 @@ export class ClientSession {
 				// 用户终端的输出、退出无条件向前端广播，绝不受 activeId 限制
 				this.emit(msg);
 			},
-			this.cwd,
+			() => this.cwd,
 			() => this.getLang(),
+			"client",
 		);
 		return mgr;
 	}
@@ -1111,8 +1128,8 @@ export class ClientSession {
 			.sendUserMessage(
 				`（系统自动提醒：你启动的终端「${title}」（id=${terminalId}）已连续 ${seconds} 秒没有任何新输出。` +
 					`进程可能在等待输入、卡住或已挂起。\n最近输出：\n${lastLines || "（无输出）"}\n` +
-					`请用 terminal_read(terminalId="${terminalId}") 查看/搜索它的当前状态；` +
-					`若在等交互就用 terminal_input / terminal_key 回应；确认不再需要就 terminal_close 关掉它。）`,
+					`请用 terminal(action="read", terminalId="${terminalId}") 查看/搜索它的当前状态；` +
+					`若在等交互就用 terminal(action="input"/"key") 回应；确认不再需要就 terminal(action="close") 关掉它。）`,
 			)
 			.catch(() => {
 				// best effort —— 注入失败不影响终端本身
@@ -1164,6 +1181,23 @@ export class ClientSession {
 
 	/** 正在创建 runtime 尚未注册进 convs 的轻量子代理数量（防并发 spawn 绕过并发名额，#589）。 */
 	private spawningSubagents = 0;
+	private creatingConversations = new Map<string, number>();
+
+	/** Reserve before any await; creation paths share the same in-flight slots. */
+	private reserveConversationSlot(cwd: string): () => void {
+		const pending = this.creatingConversations.get(cwd) ?? 0;
+		const open = [...this.convs.values()].filter((c) => c.cwd === cwd && !c.isSubagent && !c.isEphemeral).length;
+		if (open + pending >= getMaxOpenConversations()) throw new Error("Project conversation limit reached");
+		this.creatingConversations.set(cwd, pending + 1);
+		let released = false;
+		return () => {
+			if (released) return;
+			released = true;
+			const remaining = (this.creatingConversations.get(cwd) ?? 1) - 1;
+			if (remaining > 0) this.creatingConversations.set(cwd, remaining);
+			else this.creatingConversations.delete(cwd);
+		};
+	}
 
 	/** 创建子代理 conversation（inMemory runtime + 独立 terminals），listed 入左栏，
 	 *  并在其上触发一次完整回合。返回 convId（= 工具 runId）。
@@ -1184,7 +1218,30 @@ export class ClientSession {
 		notifyOnDone?: boolean,
 		isolation?: string,
 		extra?: SubagentSpawnExtra,
+		signal?: AbortSignal,
 	): Promise<string> {
+		signal?.throwIfAborted();
+		const parent = parentId ? this.convs.get(parentId) : undefined;
+		const parentRuntime = parent?.runtime;
+		const parentSession = parent?.session;
+		const inheritedSandbox = this.sandboxes.getExecutionIdentity(parent?.cwd ?? this.cwd);
+		if (inheritedSandbox) {
+			const requestedCwd = cwd ? resolve(parent?.cwd ?? this.cwd, cwd) : (parent?.cwd ?? this.cwd);
+			if (!isSameOrSubpath(requestedCwd, inheritedSandbox.path) || isolation === "worktree") {
+				throw new Error("Subagents must remain inside their parent's sandbox; worktrees are unavailable");
+			}
+			this.sandboxes.getExecutionIdentity(requestedCwd, inheritedSandbox);
+		}
+		const assertCurrent = () => {
+			signal?.throwIfAborted();
+			if (inheritedSandbox) this.sandboxes.getExecutionIdentity(parent?.cwd ?? this.cwd, inheritedSandbox);
+			const home = parentSession && this.findConversationHome?.(parentSession);
+			const holder = home?.session ?? this;
+			if (parentId && (!parent || holder.convs.get(parent.id) !== parent || parent.runtime !== parentRuntime)) {
+				throw new Error("Subagent parent runtime is no longer current");
+			}
+		};
+		assertCurrent();
 		// 数量上限先行：每个子代理都是完整 runtime + TerminalManager，无上限时一次
 		// 并行派发几十个会把服务进程拖垮。持久化普通对话则受项目会话上限限制。
 		if (persist) {
@@ -1222,11 +1279,19 @@ export class ClientSession {
 				);
 			}
 		}
+		const quotaBase = parentId ? (this.convs.get(parentId)?.cwd ?? this.cwd) : this.cwd;
+		const quotaCwd = isRemoteWorkspaceUri(quotaBase) ? quotaBase : cwd ? resolve(quotaBase, cwd) : quotaBase;
+		const releaseSlot = persist ? this.reserveConversationSlot(quotaCwd) : undefined;
 		const isEphemeralSubagent = !persist;
 		if (isEphemeralSubagent) {
 			this.spawningSubagents++;
 		}
 		let handedOffToConv = false;
+		let pendingRuntime: AgentSessionRuntime | undefined;
+		let pendingTerminals: TerminalManager | undefined;
+		let registered: Conversation | undefined;
+		let createdWorktree: import("./worktree-service.js").SubagentWorktreeContext | undefined;
+		let ephemeralDir: string | undefined;
 		try {
 			// 真正的派发者（withSubagentOwner 按 runtime 归属填入）：cwd 基准 / 跟随模型 /
 			// 跟随思考强度一律读它，而不是派发瞬间的 active——后台对话产出时用户可能正
@@ -1237,6 +1302,12 @@ export class ClientSession {
 			// 相对 cwd 按派发者所在目录解析：直接透传会相对 server 进程 cwd 落到别处。
 			const resolvedCwd = isRemoteWorkspaceUri(baseCwd) ? baseCwd : cwd ? resolve(baseCwd, cwd) : baseCwd;
 			const conversationId = persist ? `conv-${randomUUID().slice(0, 8)}` : `sa-${randomUUID().slice(0, 8)}`;
+			if (inheritedSandbox) {
+				if (!isSameOrSubpath(resolvedCwd, inheritedSandbox.path) || isolation === "worktree") {
+					throw new Error("Subagents must remain inside their parent's sandbox; worktrees are unavailable");
+				}
+				this.sandboxes.getExecutionIdentity(resolvedCwd, inheritedSandbox);
+			}
 			let effectiveCwd = resolvedCwd;
 			let worktreeContext: import("./worktree-service.js").SubagentWorktreeContext | undefined;
 
@@ -1253,42 +1324,44 @@ export class ClientSession {
 				}
 				const { createSubagentWorktree } = await import("./worktree-service.js");
 				worktreeContext = await createSubagentWorktree(resolvedCwd, conversationId, () => this.getLang());
+				createdWorktree = worktreeContext;
 				effectiveCwd = worktreeContext.subagentCwd;
 			}
+			assertCurrent();
 
 			const sessionBaseDir = resolveWorkspaceSessionDir(this.stateStore?.dataDir, effectiveCwd);
 			const terminals = this.makeTerminalManager(conversationId, effectiveCwd);
+			pendingTerminals = terminals;
 			const sessionManager = persist ? SessionManager.create(sessionBaseDir) : SessionManager.inMemory(sessionBaseDir);
 			if (!persist) {
 				// 为内存子代理提供隔离的临时运行目录（供 SoL-Pi 等依赖 getSessionDir 的扩展正常放置缓存），
 				// 但保持 persist = false（不写 .jsonl 对话文件、不污染历史记录）
-				const ephemeralDir = join(this.agentDir, "subagent-sessions", conversationId);
+				ephemeralDir = join(this.agentDir, "subagent-sessions", conversationId);
 				try {
 					mkdirSync(ephemeralDir, { recursive: true });
 					(sessionManager as unknown as { sessionDir: string }).sessionDir = ephemeralDir;
 				} catch {}
 			}
 			const noSpawnTools = !persist && this.subagentAtDepthLimit(parentId ?? this.activeId ?? undefined);
-			let runtime: AgentSessionRuntime;
-			try {
-				runtime = await createAgentSessionRuntime(
-					this.makeRuntimeFactory(terminals, apply, conversationId, undefined, undefined, noSpawnTools),
-					{
-						cwd: sessionBaseDir,
-						agentDir: this.agentDir,
-						sessionManager,
-					},
-				);
-			} catch (runtimeErr) {
-				if (worktreeContext) {
-					const { removeWorktree } = await import("./worktree-service.js");
-					try {
-						await removeWorktree(worktreeContext.mainRepoPath, worktreeContext.worktreePath, true);
-					} catch {}
-				}
-				throw runtimeErr;
-			}
+			const runtime = await createAgentSessionRuntime(
+				this.makeRuntimeFactory(terminals, apply, conversationId, undefined, undefined, noSpawnTools),
+				{
+					cwd: sessionBaseDir,
+					agentDir: this.agentDir,
+					sessionManager,
+				},
+			);
+			pendingRuntime = runtime;
+			assertCurrent();
 			const conv = this.makeConversation(runtime, conversationId, terminals);
+			const assertChildCurrent = () => {
+				assertCurrent();
+				const home = this.findConversationHome?.(runtime.session);
+				const holder = home?.session ?? this;
+				if (holder.convs.get(conv.id) !== conv || conv.runtime !== runtime)
+					throw new Error("Subagent was removed during initialization");
+				return holder;
+			};
 			conv.cwd = effectiveCwd;
 			if (worktreeContext) {
 				conv.subagentWorktree = worktreeContext;
@@ -1302,7 +1375,7 @@ export class ClientSession {
 			// 父对话 = 真正派发它的会话（按会话归属的 host 包装填入）。直接用 active
 			// 会错：后台对话运行时用户可能正看着别的项目对话，孩子会被记到无关
 			// 对话名下、沉到别的项目组底部（issue #95）。缺省才回退到 active。
-			conv.parentId = parentId ?? this.activeId ?? undefined;
+			conv.parentId = parent?.id ?? parentId ?? this.activeId ?? undefined;
 			conv.subagentType = type;
 			conv.subagentPrompt = prompt;
 			conv.subagentThinking = thinking;
@@ -1325,7 +1398,11 @@ export class ClientSession {
 			conv.subagentBarsPluginTools = !!apply && apply.enabledExtensions.length > 0;
 			conv.listed = true;
 			conv.title = title ?? subagentTitle(prompt);
-			this.convs.set(conv.id, conv);
+			const spawnOwner = (parentSession && this.findConversationHome?.(parentSession)?.session) || this;
+			if (spawnOwner.convs.has(conv.id)) conv.id = spawnOwner.nextConversationId();
+			spawnOwner.convs.set(conv.id, conv);
+			registered = conv;
+			releaseSlot?.();
 			if (isEphemeralSubagent) {
 				handedOffToConv = true;
 				this.spawningSubagents = Math.max(0, this.spawningSubagents - 1);
@@ -1333,7 +1410,7 @@ export class ClientSession {
 			// 子代理会话同样订阅 SDK 事件：否则 onEvent 永不触发，点开查看时没有
 			// message_delta 流式增量、快照也不刷新，只能靠切走切回时的 flushSnapshot
 			// 看到新内容（dismiss/释放流程本来就会 unsubscribe，不泄漏）。
-			conv.unsubscribe = conv.session.subscribe((event) => this.onEvent(conv, event));
+			conv.unsubscribe = conv.session.subscribe((event) => spawnOwner.onEvent(conv, event));
 			// 扩展绑定（rpc 模式）；用 headless 的 Web UI context：
 			// 扩展绑定时不会因缺方法崩，UI 输出也不下发（不会与主对话的 widget/status 冲突）。
 			try {
@@ -1351,6 +1428,7 @@ export class ClientSession {
 			} catch {
 				// 绑定失败不阻断运行。
 			}
+			assertChildCurrent();
 			// 指定模型（显式 model 参数 → 模板 model → 设置面板默认）时，在首回合前
 			// 给子代理会话换模型；全都不给 = 跟随主对话：把发起会话当前的模型也
 			// 显式搬过来（新 runtime 的默认模型未必等于主对话刚选的模型）。
@@ -1372,7 +1450,8 @@ export class ClientSession {
 						// 先恢复该 provider 的项目密钥（setModel 的鉴权检查要用），再换模型。
 						// 按子代理自己的目录恢复（跨目录派发时派发者的密钥不一定适用）。
 						await this.restoreKeyForModel(followModel, resolvedCwd);
-						await this.applySessionModel(conv.session, m);
+						assertChildCurrent();
+						await this.applySessionModel(runtime.session, m);
 					} catch (err) {
 						if (explicitModel) {
 							throw new Error(
@@ -1413,6 +1492,7 @@ export class ClientSession {
 					});
 				}
 			}
+			assertChildCurrent();
 			// 思考强度：显式 thinking 参数 > 模板指定 > 派发者当前强度
 			const thinkingLevel = thinking?.trim() || apply?.thinkingLevel?.trim() || spawnerSession.thinkingLevel;
 			if (thinkingLevel) {
@@ -1431,10 +1511,17 @@ export class ClientSession {
 			// 子代理不走 bindSession——统一收口注入配置覆盖与工具门控。
 			// 必须在上面换模型（followModel 块）之后调：压缩 reserveTokens 按会话当前
 			// 模型的窗口算，提前调就会把子代理的判定线钉在派发者模型上（issue #773）。
-			this.applySessionOverrides(conv);
+			const holder = assertChildCurrent();
+			holder.applySessionOverrides(conv);
+			assertChildCurrent();
 			// 触发回合（后台执行；失败转识为通知）。把 Promise 挂在对话上：目标模式的
 			// 「等本回合结束」要先等它落定，才能区分「还没开跑」与「已跑完」。
-			conv.kickoff = conv.session
+			const onSpawnAbort = () => {
+				// SDK sendUserMessage has no signal option; abort only the captured child session.
+				void runtime.session.abort().catch(() => {});
+			};
+			signal?.addEventListener("abort", onSpawnAbort, { once: true });
+			conv.kickoff = runtime.session
 				.sendUserMessage(prompt)
 				.catch((err) => {
 					this.emit({
@@ -1445,14 +1532,58 @@ export class ClientSession {
 					});
 				})
 				.finally(() => {
+					signal?.removeEventListener("abort", onSpawnAbort);
 					conv.promptInFlight = false;
 				});
 			if (persist) {
-				this.pushProjects().catch(() => {});
+				holder.pushProjects().catch(() => {});
 			}
-			this.emitConversations();
+			holder.emitConversations();
 			return conv.id;
+		} catch (error) {
+			if (registered) {
+				const home = pendingRuntime && this.findConversationHome?.(pendingRuntime.session);
+				const holder = home?.session ?? this;
+				if (holder.convs.get(registered.id) === registered && registered.runtime === pendingRuntime) {
+					registered.promptInFlight = false;
+					if (holder.activeId === registered.id) {
+						const fallback =
+							holder.convs.get(registered.parentId ?? "") ?? [...holder.convs.values()].find((c) => c !== registered);
+						if (fallback) holder.activeId = fallback.id;
+					}
+					holder.removeConversation(registered.id);
+					if (registered.isSubagent) {
+						// removeConversation already owns the ephemeral directory and worktree finalization.
+						createdWorktree = undefined;
+						ephemeralDir = undefined;
+					}
+				} else {
+					// A removed/replaced runtime owns its own cleanup; never touch a reused ID or migrated resources.
+					createdWorktree = undefined;
+					ephemeralDir = undefined;
+				}
+			} else {
+				try {
+					await pendingRuntime?.dispose();
+				} catch {}
+				try {
+					pendingTerminals?.killAll();
+				} catch {}
+			}
+			if (createdWorktree) {
+				try {
+					const { finalizeSubagentWorktree } = await import("./worktree-service.js");
+					await finalizeSubagentWorktree(createdWorktree, () => this.getLang());
+				} catch {}
+			}
+			if (ephemeralDir) {
+				try {
+					await (await import("node:fs/promises")).rm(ephemeralDir, { recursive: true, force: true });
+				} catch {}
+			}
+			throw error;
 		} finally {
+			releaseSlot?.();
 			if (isEphemeralSubagent && !handedOffToConv) {
 				this.spawningSubagents = Math.max(0, this.spawningSubagents - 1);
 			}
@@ -1560,6 +1691,7 @@ export class ClientSession {
 		notifyOnDone?: boolean,
 		isolation?: string,
 		extra?: SubagentSpawnExtra,
+		signal?: AbortSignal,
 	): Promise<string> {
 		// 模板：存在且启用时应用；传了名字但不可用 → 抛错让工具转给 AI。
 		const tpl = templateName ? this.subagentTemplates.get(templateName) : undefined;
@@ -1590,7 +1722,16 @@ export class ClientSession {
 			notifyOnDone,
 			isolation,
 			extra,
+			signal,
 		);
+	}
+
+	private requireSubagentOwner(anchor: { session?: AgentSession }, ownerId: string): string {
+		const home = anchor.session && this.findConversationHome?.(anchor.session);
+		const holder = home?.session ?? this;
+		const conv = holder.convs.get(home?.convId ?? ownerId);
+		if (!conv || conv.session !== anchor.session) throw new Error("Subagent parent runtime is no longer current");
+		return conv.id;
 	}
 
 	private subagentRunOutcome(conv: Conversation) {
@@ -1936,8 +2077,10 @@ export class ClientSession {
 				this.emit({
 					type: "terminal_output",
 					conversationId: conversation?.id,
+					ownerKind: "client",
 					terminalId: output.terminalId,
 					data: output.data,
+					reset: true,
 				});
 			}
 		}
@@ -1946,8 +2089,10 @@ export class ClientSession {
 				this.emit({
 					type: "terminal_output",
 					conversationId: conversation.id,
+					ownerKind: "conversation",
 					terminalId: output.terminalId,
 					data: output.data,
+					reset: true,
 				});
 			}
 		}
@@ -2596,7 +2741,14 @@ export class ClientSession {
 		if (!toConv) {
 			throw new Error(`Target subagent ${toRunId} not found`);
 		}
-		const fromConv = this.convs.get(fromRunId);
+		const fromConv = this.subagentOwnerOf(fromRunId).convs.get(fromRunId);
+		if (fromConv) {
+			const inherited = this.sandboxes.getExecutionIdentity(fromConv.cwd);
+			if (inherited) {
+				if (!isSameOrSubpath(toConv.cwd, inherited.path)) throw new Error("Sandbox handoff cannot leave its sandbox");
+				this.sandboxes.getExecutionIdentity(toConv.cwd, inherited);
+			}
+		}
 		const fromType = fromConv?.subagentType ?? "peer";
 		const toType = toConv.subagentType ?? "peer";
 
@@ -2674,6 +2826,7 @@ export class ClientSession {
 			notifyOnDone,
 			isolation,
 			extra,
+			signal,
 		) => {
 			// B20：过户后 parentId 的主对话可能已搬去另一个 ClientSession ——
 			// 委托给真正持有父对话的会话 spawn（模板/上限/注册/左栏全随它），
@@ -2691,6 +2844,7 @@ export class ClientSession {
 				notifyOnDone,
 				isolation,
 				extra,
+				signal,
 			);
 		},
 		finalizeSubagentWorktree: async (convId: string) => {
@@ -3376,6 +3530,7 @@ export class ClientSession {
 		conv.cwd = cwd;
 		cs.convs.set(conv.id, conv);
 		cs.activeId = conv.id;
+		cs.noticeInterruptedCompaction(conv);
 		for (const d of runtime.diagnostics) {
 			if (d.type !== "info") {
 				cs.pendingNotices.push({
@@ -3457,6 +3612,7 @@ export class ClientSession {
 				pinnedConv.listed = true;
 				pinnedConv.promptedSinceActive = true;
 				cs.convs.set(pinnedConv.id, pinnedConv);
+				cs.noticeInterruptedCompaction(pinnedConv);
 				pinnedConv.unsubscribe = pinnedConv.session.subscribe((event) => cs.onEvent(pinnedConv, event));
 				try {
 					await pinnedConv.session.bindExtensions({
@@ -3476,6 +3632,7 @@ export class ClientSession {
 			}
 		}
 
+		cs.settingsSvc.subscribeSharedSettings();
 		void cs.refreshWorktreeInfo();
 		return cs;
 	}
@@ -3498,334 +3655,370 @@ export class ClientSession {
 		noSpawnTools?: boolean,
 	): CreateAgentSessionRuntimeFactory {
 		return async ({ cwd: effectiveCwd, sessionManager }) => {
-			const sdkBuiltins = await getSdkBuiltinExtensionFactories();
-			const services = await createAgentSessionServices({
-				cwd: effectiveCwd,
-				modelRuntime: this.sharedModelRuntime,
-				// 设置面板钩子（官方 SDK 的 resourceLoader overrides）：三个 override
-				// 在每次 resourceLoader.reload() 时重放，且读取 this.settings 的当前
-				// 值——因此 session.reload() 即可让系统提示词 / 技能 / 插件开关生效，
-				// 新对话（新 runtime）也会自动带上当前设置。
-				// 子代理带模板（apply）时：prompt/skills/extensions 改读模板视图——
-				// replace 模式：无 SYSTEM.md 时把灵魂段替换为模板提示词（见下方
-				// pi-webui-persona 内联扩展）；有 SYSTEM.md 时仍由 systemPromptOverride
-				// 整体替换 base。append 模式把模板提示词追加到
-				// 末尾（此时主会话的自定义 prompt 不再叠加，角色由模板定义）；非空
-				// 白名单取代主会话开关（只启用这些），空白名单 = 跟随主会话。
-				resourceLoaderOptions: {
-					// 系统提示词 base：主会话（组合模板）恒返回 undefined → SDK 走默认分支，
-					// 工具列表/Guidelines/文档指引等自动段照常拼装；SYSTEM.md 内容仅在
-					// 此处捕获（lastBaseSystemPrompt）作 {{soul}} 自动内容。子代理模板
-					// replace 在存在 SYSTEM.md base 时整体替换该 base。
-					systemPromptOverride: (base?: string) => {
-						if (typeof base === "string" && base) {
-							this.lastBaseSystemPrompt = base;
-							if (apply && apply.promptMode === "replace" && this.templatePrompt(apply).trim()) {
-								return this.templatePrompt(apply);
+			const sandboxIdentity = this.sandboxes.getExecutionIdentity(effectiveCwd);
+			const releaseMcp = sandboxIdentity ? undefined : ClientSession.mcpProjects?.retain(effectiveCwd);
+			try {
+				if (!sandboxIdentity) await ClientSession.mcpProjects?.prepare(effectiveCwd);
+				const sdkBuiltins = sandboxIdentity ? [] : await getSdkBuiltinExtensionFactories();
+				const sandboxRuntimeGate = createSandboxRuntimeGate(
+					() => this.sandboxes.getExecutionIdentity(effectiveCwd, sandboxIdentity),
+					effectiveCwd,
+				);
+				const services = await createAgentSessionServices({
+					cwd: effectiveCwd,
+					modelRuntime: this.sharedModelRuntime,
+					// 设置面板钩子（官方 SDK 的 resourceLoader overrides）：三个 override
+					// 在每次 resourceLoader.reload() 时重放，且读取 this.settings 的当前
+					// 值——因此 session.reload() 即可让系统提示词 / 技能 / 插件开关生效，
+					// 新对话（新 runtime）也会自动带上当前设置。
+					// 子代理带模板（apply）时：prompt/skills/extensions 改读模板视图——
+					// replace 模式：无 SYSTEM.md 时把灵魂段替换为模板提示词（见下方
+					// pi-webui-persona 内联扩展）；有 SYSTEM.md 时仍由 systemPromptOverride
+					// 整体替换 base。append 模式把模板提示词追加到
+					// 末尾（此时主会话的自定义 prompt 不再叠加，角色由模板定义）；非空
+					// 白名单取代主会话开关（只启用这些），空白名单 = 跟随主会话。
+					resourceLoaderOptions: {
+						// Filter before import: extensionsOverride runs after arbitrary module initialization.
+						...sandboxExtensionOptions(Boolean(sandboxIdentity)),
+						// 系统提示词 base：主会话（组合模板）恒返回 undefined → SDK 走默认分支，
+						// 工具列表/Guidelines/文档指引等自动段照常拼装；SYSTEM.md 内容仅在
+						// 此处捕获（lastBaseSystemPrompt）作 {{soul}} 自动内容。子代理模板
+						// replace 在存在 SYSTEM.md base 时整体替换该 base。
+						systemPromptOverride: (base?: string) => {
+							if (typeof base === "string" && base) {
+								this.lastBaseSystemPrompt = base;
+								if (apply && apply.promptMode === "replace" && this.templatePrompt(apply).trim()) {
+									return this.templatePrompt(apply);
+								}
 							}
-						}
-						return undefined;
-					},
-					appendSystemPromptOverride: (base: string[]) => {
-						// 记录 SDK APPEND_SYSTEM.md base（composer {{append}} 自动内容）。
-						if (!apply) this.lastSdkAppendFiles = base.slice();
-						const out = [...base];
-						if (apply && apply.promptMode === "append" && this.templatePrompt(apply).trim()) {
-							out.push(this.templatePrompt(apply));
-						}
-						// 主会话自定义「追加」已并入组合模板的 {{append}} 覆盖，不再在此注入。
-						// 计划模式：只规划不实施 —— 硬闸门（server/plan-mode.ts 拒写类/旁路
-						// 工具与非常规 bash）之外再补一段软约束，每轮重建提示词时读当前
-						// 会话状态，切换后下一次 reload 生效。提示词正文可在设置面板改
-						// （追加/替换内置默认，见 buildPlanModePrompt）。
-						// ⚠️ 这一段与平台无关（曾在 win32 分支里被误嵌套，导致非 Windows
-						// 上计划模式的软约束从来没进过提示词，只有硬闸门在挡）。
-						if (this.planModeOf(ownerId)) {
-							const planPrefs = this.settingsSvc.current;
-							out.push(buildPlanModePrompt(planPrefs.planModePromptMode, planPrefs.planModePrompt));
-						}
-						// 审查者模式（自动委派）：本对话只审阅，活由服务端派给常驻执行对话。
-						// 与计划模式**互斥优先级**：计划模式开着时以计划模式为准，不派活。
-						if (this.delegateModeOf(ownerId) && !this.planModeOf(ownerId)) {
-							out.push(DELEGATION_SYSTEM_PROMPT);
-						}
-						const activeSandbox = this.sandboxes.getByCwd(effectiveCwd);
-						if (activeSandbox) {
-							out.push(
-								`[Sandbox Isolation Mode] You are operating inside an isolated sandbox workspace "${activeSandbox.name}" at "${activeSandbox.path}".` +
-									(activeSandbox.sourcePath
-										? ` This sandbox is an isolated copy of "${activeSandbox.sourcePath}". NEVER read from or modify "${activeSandbox.sourcePath}" directly; make all changes exclusively within the current sandbox directory "${activeSandbox.path}".`
-										: ` Keep all file writes, edits, and command side effects strictly inside "${activeSandbox.path}".`),
-							);
-						}
-						const realCwd = restoreWorkspaceUriFromSessionDir(effectiveCwd);
-						if (isRemoteWorkspaceUri(realCwd)) {
-							// 远程 SSH 工作区：明确告知 AI 当前处于远程主机以及所有工具已透明桥接至远端，
-							// 绝不注入本地 WINDOWS_PERSONA 以免误导模型以为在本地 Windows 环境。
-							out.push(buildRemoteWorkspacePersona(realCwd));
-						} else if (process.platform === "win32") {
-							// Windows 专属 persona：bash 工具跑 Git Bash 且无默认超时、终端
-							// 是交互式 TTY——注入约束避免 heredoc/交互/长驻命令挂死整个会话；
-							// GBK 老中文文件让模型改用终端按正确编码读（iconv/chcp/Get-Content）。
-							out.push(WINDOWS_PERSONA);
-						}
-						// 终端引导只教「开关开着且预设下仍可用」的工具（见 tool-manager.ts 语义总表）。
-						const presetForGuidance =
-							this.convs.get(ownerId ?? "")?.agentPreset ?? this.settingsSvc.current.defaultAgentPreset ?? "standard";
-						if (isTerminalGuidanceOn(effectiveDisabledAgentTools(this.settingsSvc.current), presetForGuidance)) {
-							// 终端工具使用引导（全平台）：告诉模型什么场景该用持久终端
-							// 而不是一次性 bash——没有这段模型几乎从不主动选终端工具。
-							// 组内工具全关时不注入（不教 AI 用不存在的工具）。
-							out.push(TERMINAL_TOOLS_GUIDANCE);
-						}
-						// bash 管道限制已并入 bash 工具自身的 description，不再作为独立提示段注入。
-						// 内置标记工具引导（按总开关/分组开关过滤）
-						const markerGuidance = this.markerSvc.buildGuidance();
-						if (markerGuidance) out.push(markerGuidance);
-						return out;
-					},
-					// 技能：模板非空白名单时只启用白名单里的（显式配置优先于预设）；
-					// 否则按主会话禁用集过滤。预设拿掉 skill 加载器时（minimal/code/ask）
-					// 名录同步隐藏——列出来但调不动只是噪音（见 tool-manager.ts 语义总表）。
-					skillsOverride: (res) => {
-						const discovered = discoverDiskSkills({
-							cwd: effectiveCwd,
-							agentDir: this.agentDir,
-							workspaceRoots: this.roots,
-						});
-						const allSkills = mergeSkillCollections(res.skills, discovered);
-						if (apply && apply.enabledSkills.length > 0) {
-							const set = new Set(apply.enabledSkills);
-							return { ...res, skills: allSkills.filter((s) => set.has(s.name)) };
-						}
-						const preset =
-							this.convs.get(ownerId ?? "")?.agentPreset ?? this.settingsSvc.current.defaultAgentPreset ?? "standard";
-						if (!presetShowsSkillCatalog(preset)) return { ...res, skills: [] };
-						return {
-							...res,
-							skills: allSkills.filter((s) => !this.settingsSvc.current.disabledSkills.includes(s.name)),
-						};
-					},
-					// 插件：模板非空扩展白名单时只加载白名单里的；否则按主会话禁用集过滤。
-					// 注意 SDK 在 extensionsOverride 之后才补 sourceInfo，包扩展此处只能靠路径
-					// 匹配 —— isExtensionDisabled / isExtensionEnabled 同时比对 npm:<pkg> 候选键。
-					extensionsOverride: (res) => {
-						// 内部基础设施扩展（codemode、tool-search、persona 等）不参与白名单/禁用过滤。
-						const keepOwn = (e: { path: string; hidden?: boolean }) => isInternalExtension(e);
-						if (apply && apply.enabledExtensions.length > 0) {
-							const set = new Set(apply.enabledExtensions);
+							return undefined;
+						},
+						appendSystemPromptOverride: (base: string[]) => {
+							// 记录 SDK APPEND_SYSTEM.md base（composer {{append}} 自动内容）。
+							if (!apply) this.lastSdkAppendFiles = base.slice();
+							const out = [...base];
+							if (apply && apply.promptMode === "append" && this.templatePrompt(apply).trim()) {
+								out.push(this.templatePrompt(apply));
+							}
+							// 主会话自定义「追加」已并入组合模板的 {{append}} 覆盖，不再在此注入。
+							// 计划模式：只规划不实施 —— 硬闸门（server/plan-mode.ts 拒写类/旁路
+							// 工具与非常规 bash）之外再补一段软约束，每轮重建提示词时读当前
+							// 会话状态，切换后下一次 reload 生效。提示词正文可在设置面板改
+							// （追加/替换内置默认，见 buildPlanModePrompt）。
+							// ⚠️ 这一段与平台无关（曾在 win32 分支里被误嵌套，导致非 Windows
+							// 上计划模式的软约束从来没进过提示词，只有硬闸门在挡）。
+							if (this.planModeOf(ownerId)) {
+								const planPrefs = this.settingsSvc.current;
+								out.push(buildPlanModePrompt(planPrefs.planModePromptMode, planPrefs.planModePrompt));
+							}
+							// 审查者模式（自动委派）：本对话只审阅，活由服务端派给常驻执行对话。
+							// 与计划模式**互斥优先级**：计划模式开着时以计划模式为准，不派活。
+							if (this.delegateModeOf(ownerId) && !this.planModeOf(ownerId)) {
+								out.push(DELEGATION_SYSTEM_PROMPT);
+							}
+							const activeSandbox = this.sandboxes.getExecutionIdentity(effectiveCwd, sandboxIdentity);
+							if (activeSandbox) {
+								out.push(
+									`[Sandbox Isolation Mode] You are operating inside an isolated sandbox workspace "${activeSandbox.name}" at "${activeSandbox.path}".` +
+										(activeSandbox.sourcePath
+											? ` This sandbox is an isolated copy of "${activeSandbox.sourcePath}". NEVER read from or modify "${activeSandbox.sourcePath}" directly; make all changes exclusively within the current sandbox directory "${activeSandbox.path}".`
+											: ` Keep all file operations strictly inside "${activeSandbox.path}".`) +
+										" Only restricted local file editing is supported. Shell commands, scripts, terminals, evaluation, and unknown tools are unavailable without an OS isolation backend.",
+								);
+							}
+							const realCwd = restoreWorkspaceUriFromSessionDir(effectiveCwd);
+							if (isRemoteWorkspaceUri(realCwd)) {
+								// 远程 SSH 工作区：明确告知 AI 当前处于远程主机以及所有工具已透明桥接至远端，
+								// 绝不注入本地 WINDOWS_PERSONA 以免误导模型以为在本地 Windows 环境。
+								out.push(buildRemoteWorkspacePersona(realCwd));
+							} else if (process.platform === "win32") {
+								// Windows 专属 persona：bash 工具跑 Git Bash 且无默认超时、终端
+								// 是交互式 TTY——注入约束避免 heredoc/交互/长驻命令挂死整个会话；
+								// GBK 老中文文件让模型改用终端按正确编码读（iconv/chcp/Get-Content）。
+								out.push(WINDOWS_PERSONA);
+							}
+							// 终端引导只教「开关开着且预设下仍可用」的工具（见 tool-manager.ts 语义总表）。
+							const presetForGuidance =
+								this.convs.get(ownerId ?? "")?.agentPreset ?? this.settingsSvc.current.defaultAgentPreset ?? "standard";
+							if (isTerminalGuidanceOn(effectiveDisabledAgentTools(this.settingsSvc.current), presetForGuidance)) {
+								// 终端工具使用引导（全平台）：告诉模型什么场景该用持久终端
+								// 而不是一次性 bash——没有这段模型几乎从不主动选终端工具。
+								// 组内工具全关时不注入（不教 AI 用不存在的工具）。
+								out.push(TERMINAL_TOOLS_GUIDANCE);
+							}
+							// bash 管道限制已并入 bash 工具自身的 description，不再作为独立提示段注入。
+							// 内置标记工具引导（按总开关/分组开关过滤）
+							const markerGuidance = this.markerSvc.buildGuidance();
+							if (markerGuidance) out.push(markerGuidance);
+							return out;
+						},
+						// 技能：模板非空白名单时只启用白名单里的（显式配置优先于预设）；
+						// 否则按主会话禁用集过滤。预设拿掉 skill 加载器时（minimal/code/ask）
+						// 名录同步隐藏——列出来但调不动只是噪音（见 tool-manager.ts 语义总表）。
+						skillsOverride: (res) => {
+							const discovered = discoverDiskSkills({
+								cwd: effectiveCwd,
+								agentDir: this.agentDir,
+								workspaceRoots: this.roots,
+							});
+							const allSkills = mergeSkillCollections(res.skills, discovered);
+							if (apply && apply.enabledSkills.length > 0) {
+								const set = new Set(apply.enabledSkills);
+								return { ...res, skills: allSkills.filter((s) => set.has(s.name)) };
+							}
+							const preset =
+								this.convs.get(ownerId ?? "")?.agentPreset ?? this.settingsSvc.current.defaultAgentPreset ?? "standard";
+							if (!presetShowsSkillCatalog(preset)) return { ...res, skills: [] };
 							return {
 								...res,
-								extensions: res.extensions.filter((e) => keepOwn(e) || isExtensionEnabled(e, [...set])),
+								skills: allSkills.filter((s) => !this.settingsSvc.current.disabledSkills.includes(s.name)),
 							};
-						}
-						return {
-							...res,
-							extensions: res.extensions.filter(
-								(e) => keepOwn(e) || !isExtensionDisabled(e, this.settingsSvc.current.disabledExtensions),
-							),
-						};
-					},
-					// 组合模板渲染（主会话）+ 模板灵魂替换（子代理）：before_agent_start 在每个
-					// agent run 前触发，SDK 此时已用最新工具/资源拼好基础提示词；若配置了模板或
-					// 覆盖，则用 composer 把 {{token}} 展开为各来源文本（工具列表/项目上下文/技能
-					// 等都取自本次 run 的 systemPromptOptions，永远最新）。
-					disabledBuiltinExtensions: SDK_DISABLED_BUILTIN_EXTENSIONS,
-					extensionFactories: [
-						...sdkBuiltins,
-						{
-							name: "pi-webui-persona",
-							hidden: true,
-							factory: (pi) => {
-								pi.on("before_agent_start", (event) => {
-									// 我们是链上最后一个 handler：先把早前扩展的首尾增补摘出来（pre/post），
-									// 只在 SDK 原始提示词 core 上做事，最后原样套回去——否则返回 systemPrompt
-									// 会整体替换，把别的扩展注入的内容（如 <invoked_skill>）一起丢掉。
-									const { pre, core, post } = splitAgentStartPrompt(event);
-									const rewrap = (next: string) => pre + next + post;
-									// 子代理模板 replace（无 SYSTEM.md 时）：默认分支拼好的提示词里
-									// 把灵魂段换成模板提示词，自动段保留；SYSTEM.md 情形已在
-									// systemPromptOverride 整体替换，此处边界不存在会自然跳过。
-									if (apply) {
-										const tplPrompt = this.templatePrompt(apply).trim();
-										if (apply.promptMode !== "replace" || !tplPrompt) return undefined;
-										const boundary = core.indexOf("\n\nAvailable tools:");
-										// 边界串是 SDK 提示词的内部格式：版本一变就可能对不上。
-										// 对不上时不再静默回退默认 persona（模板等于没生效），而是把模板
-										// 提示词前置拼接——角色约束仍在，只是灵魂段没被精确替换。
-										const swapped = rewrap(
-											boundary === -1 ? `${tplPrompt}\n\n${core}` : tplPrompt + core.slice(boundary),
-										);
-										return swapped === event.systemPrompt ? undefined : { systemPrompt: swapped };
-									}
-									// 主会话：按当前会话归属预设与工具组装系统提示词。
-									// 延迟加载打开时，提示词内容刻意**不依赖已加载集合**（否则每次 load_tools
-									// 都会改系统提示词，供应商前缀缓存整段失效）：工具列表 = 完整目录，
-									// guidelines 只取基线；加载后的 schema 追加在 tools 数组里（前缀不变）。
-									const conv = this.convs.get(ownerId ?? this.activeId) ?? this.conv;
-									const sess = conv?.session;
-									const activeToolNames = sess ? sess.getActiveToolNames() : [];
-									const lazyOn = this.lazyLoadingOn();
-									const catalog =
-										lazyOn && sess
-											? this.promptToolCatalog(sess, conv)
-											: {
-													names: activeToolNames,
-													snippets: {},
-													signatures: {},
-												};
-									const baseNames = lazyOn && sess ? this.lazyBaselineNames(sess) : activeToolNames;
-									const baseSet = new Set(baseNames);
-									const activeSnippets: Record<string, string> = {};
-									const activeSignatures: Record<string, string> = catalog.signatures ?? {};
-									const activeGuidelines: string[] = [];
-									if (sess) {
-										for (const name of catalog.names) {
-											const def = sess.getToolDefinition(name);
-											if (!def) continue;
-											const ov = toolPromptOverrideOf(this.settingsSvc.current.toolPromptOverrides, name);
-											const eff = effectiveToolPrompt(def, ov);
-											// 非延迟模式不展开完整目录（省 token）：只列出被用户覆盖过的
-											// snippet，保证覆盖文案能到达模型（活体链路恒走自渲染）。
-											if (eff.promptSnippet && eff.promptSnippet.trim() && (lazyOn || ov?.promptSnippet)) {
-												activeSnippets[name] = eff.promptSnippet.trim();
-											}
-											if (baseSet.has(name) && eff.promptGuidelines) {
-												activeGuidelines.push(...eff.promptGuidelines);
-											}
-										}
-									}
-									const currentPreset =
-										conv?.agentPreset ?? targetPreset ?? this.settingsSvc.current.defaultAgentPreset ?? "standard";
-									const opts = event.systemPromptOptions as
-										| {
-												cwd?: string;
-												forceSystemPrompt?: string;
-												selectedTools?: string[];
-												toolSnippets?: Record<string, string>;
-												promptGuidelines?: string[];
-												contextFiles?: { path: string; content: string }[];
-												skills?: { name: string; description?: string; filePath?: string }[];
-										  }
-										| undefined;
-									const rawCwdForPrompt =
-										typeof opts?.cwd === "string" ? opts.cwd : (conv?.cwd ?? effectiveCwd ?? this.cwd);
-									const realCwdForPrompt = restoreWorkspaceUriFromSessionDir(rawCwdForPrompt);
-									const rendered = this.renderMainCompose({
-										cwd: realCwdForPrompt,
-										selectedTools: baseNames.length > 0 ? baseNames : (opts?.selectedTools ?? []),
-										toolSnippets: activeSnippets,
-										toolSignatures: activeSignatures,
-										toolGuidelines: activeGuidelines,
-										...(lazyOn ? { lazy: true, catalogTools: catalog.names } : {}),
-										contextFiles: opts?.contextFiles ?? [],
-										skills: (opts?.skills ?? []).map((s) => ({
-											name: s.name,
-											description: s.description ?? "",
-											filePath: s.filePath ?? "",
-										})),
-										preset: currentPreset,
-									});
-									if (rendered) {
-										return { systemPrompt: rewrap(rendered) };
-									}
-									// 未自定义模板但处于远程工作区时，将 SDK 默认提示词里的本地缓存目录替换为远程真实目录
-									if (isRemoteWorkspaceUri(realCwdForPrompt)) {
-										const patchedCore = core.replace(
-											/Current working directory:\s*[^\r\n]+/,
-											`Current working directory: ${formatCwdForPrompt(realCwdForPrompt)}`,
-										);
-										if (patchedCore !== core) {
-											return { systemPrompt: rewrap(patchedCore) };
-										}
-									}
-									return undefined;
-								});
-							},
 						},
-					],
-				},
-			});
-			// 桥接工具目标（问卷 / 页面）：每次调用都解析「现在谁持有这条对话」，
-			// 而不是认这个 runtime 是在哪个 ClientSession 里建出来的（过户会换主）。
-			// anchor 在拿到 created.session 后回填（SDK 的 runtime.session 就是它）。
-			const bridgeAnchor: { session?: AgentSession } = {};
-			const bridge = this.bridgeTarget(bridgeAnchor, ownerId);
+						// 插件：模板非空扩展白名单时只加载白名单里的；否则按主会话禁用集过滤。
+						// 注意 SDK 在 extensionsOverride 之后才补 sourceInfo，包扩展此处只能靠路径
+						// 匹配 —— isExtensionDisabled / isExtensionEnabled 同时比对 npm:<pkg> 候选键。
+						extensionsOverride: (res) => {
+							// 内部基础设施扩展（codemode、tool-search、persona 等）不参与白名单/禁用过滤。
+							const keepOwn = (e: { path: string; hidden?: boolean }) => isInternalExtension(e);
+							if (apply && apply.enabledExtensions.length > 0) {
+								const set = new Set(apply.enabledExtensions);
+								return {
+									...res,
+									extensions: res.extensions.filter((e) => keepOwn(e) || isExtensionEnabled(e, [...set])),
+								};
+							}
+							return {
+								...res,
+								extensions: res.extensions.filter(
+									(e) => keepOwn(e) || !isExtensionDisabled(e, this.settingsSvc.current.disabledExtensions),
+								),
+							};
+						},
+						// 组合模板渲染（主会话）+ 模板灵魂替换（子代理）：before_agent_start 在每个
+						// agent run 前触发，SDK 此时已用最新工具/资源拼好基础提示词；若配置了模板或
+						// 覆盖，则用 composer 把 {{token}} 展开为各来源文本（工具列表/项目上下文/技能
+						// 等都取自本次 run 的 systemPromptOptions，永远最新）。
+						disabledBuiltinExtensions: SDK_DISABLED_BUILTIN_EXTENSIONS,
+						extensionFactories: [
+							...sdkBuiltins,
+							requestContextExtension,
+							{
+								name: "pi-webui-sandbox-final-gate",
+								hidden: true,
+								factory: (pi) => {
+									pi.on("tool_call", (event) => sandboxRuntimeGate.check(event));
+								},
+							},
+							{
+								name: "pi-webui-persona",
+								hidden: true,
+								factory: (pi) => {
+									pi.on("before_agent_start", (event) => {
+										// 我们是链上最后一个 handler：先把早前扩展的首尾增补摘出来（pre/post），
+										// 只在 SDK 原始提示词 core 上做事，最后原样套回去——否则返回 systemPrompt
+										// 会整体替换，把别的扩展注入的内容（如 <invoked_skill>）一起丢掉。
+										const { pre, core, post } = splitAgentStartPrompt(event);
+										const rewrap = (next: string) => pre + next + post;
+										// 子代理模板 replace（无 SYSTEM.md 时）：默认分支拼好的提示词里
+										// 把灵魂段换成模板提示词，自动段保留；SYSTEM.md 情形已在
+										// systemPromptOverride 整体替换，此处边界不存在会自然跳过。
+										if (apply) {
+											const tplPrompt = this.templatePrompt(apply).trim();
+											if (apply.promptMode !== "replace" || !tplPrompt) return undefined;
+											const boundary = core.indexOf("\n\nAvailable tools:");
+											// 边界串是 SDK 提示词的内部格式：版本一变就可能对不上。
+											// 对不上时不再静默回退默认 persona（模板等于没生效），而是把模板
+											// 提示词前置拼接——角色约束仍在，只是灵魂段没被精确替换。
+											const swapped = rewrap(
+												boundary === -1 ? `${tplPrompt}\n\n${core}` : tplPrompt + core.slice(boundary),
+											);
+											return swapped === event.systemPrompt ? undefined : { systemPrompt: swapped };
+										}
+										// 主会话：按当前会话归属预设与工具组装系统提示词。
+										// 延迟加载打开时，提示词内容刻意**不依赖已加载集合**（否则每次 load_tools
+										// 都会改系统提示词，供应商前缀缓存整段失效）：工具列表 = 完整目录，
+										// guidelines 只取基线；加载后的 schema 追加在 tools 数组里（前缀不变）。
+										const conv = this.convs.get(ownerId ?? this.activeId) ?? this.conv;
+										const sess = conv?.session;
+										const activeToolNames = sess ? sess.getActiveToolNames() : [];
+										const lazyOn = this.lazyLoadingOn();
+										const catalog =
+											lazyOn && sess
+												? this.promptToolCatalog(sess, conv)
+												: {
+														names: activeToolNames,
+														snippets: {},
+														signatures: {},
+													};
+										const baseNames = lazyOn && sess ? this.lazyBaselineNames(sess) : activeToolNames;
+										const baseSet = new Set(baseNames);
+										const activeSnippets: Record<string, string> = {};
+										const activeSignatures: Record<string, string> = catalog.signatures ?? {};
+										const activeGuidelines: string[] = [];
+										if (sess) {
+											for (const name of catalog.names) {
+												const def = sess.getToolDefinition(name);
+												if (!def) continue;
+												const ov = toolPromptOverrideOf(this.settingsSvc.current.toolPromptOverrides, name);
+												const eff = effectiveToolPrompt(def, ov);
+												// 非延迟模式不展开完整目录（省 token）：只列出被用户覆盖过的
+												// snippet，保证覆盖文案能到达模型（活体链路恒走自渲染）。
+												if (eff.promptSnippet && eff.promptSnippet.trim() && (lazyOn || ov?.promptSnippet)) {
+													activeSnippets[name] = eff.promptSnippet.trim();
+												}
+												if (baseSet.has(name) && eff.promptGuidelines) {
+													activeGuidelines.push(...eff.promptGuidelines);
+												}
+											}
+										}
+										const currentPreset =
+											conv?.agentPreset ?? targetPreset ?? this.settingsSvc.current.defaultAgentPreset ?? "standard";
+										const opts = event.systemPromptOptions as
+											| {
+													cwd?: string;
+													forceSystemPrompt?: string;
+													selectedTools?: string[];
+													toolSnippets?: Record<string, string>;
+													promptGuidelines?: string[];
+													contextFiles?: { path: string; content: string }[];
+													skills?: { name: string; description?: string; filePath?: string }[];
+											  }
+											| undefined;
+										const rawCwdForPrompt =
+											typeof opts?.cwd === "string" ? opts.cwd : (conv?.cwd ?? effectiveCwd ?? this.cwd);
+										const realCwdForPrompt = restoreWorkspaceUriFromSessionDir(rawCwdForPrompt);
+										const rendered = this.renderMainCompose({
+											cwd: realCwdForPrompt,
+											selectedTools: baseNames.length > 0 ? baseNames : (opts?.selectedTools ?? []),
+											toolSnippets: activeSnippets,
+											toolSignatures: activeSignatures,
+											toolGuidelines: activeGuidelines,
+											...(lazyOn ? { lazy: true, catalogTools: catalog.names } : {}),
+											contextFiles: opts?.contextFiles ?? [],
+											skills: (opts?.skills ?? []).map((s) => ({
+												name: s.name,
+												description: s.description ?? "",
+												filePath: s.filePath ?? "",
+											})),
+											preset: currentPreset,
+										});
+										if (rendered) {
+											return { systemPrompt: rewrap(rendered) };
+										}
+										// 未自定义模板但处于远程工作区时，将 SDK 默认提示词里的本地缓存目录替换为远程真实目录
+										if (isRemoteWorkspaceUri(realCwdForPrompt)) {
+											const patchedCore = core.replace(
+												/Current working directory:\s*[^\r\n]+/,
+												`Current working directory: ${formatCwdForPrompt(realCwdForPrompt)}`,
+											);
+											if (patchedCore !== core) {
+												return { systemPrompt: rewrap(patchedCore) };
+											}
+										}
+										return undefined;
+									});
+								},
+							},
+						],
+					},
+				});
+				// 桥接工具目标（问卷 / 页面）：每次调用都解析「现在谁持有这条对话」，
+				// 而不是认这个 runtime 是在哪个 ClientSession 里建出来的（过户会换主）。
+				// anchor 在拿到 created.session 后回填（SDK 的 runtime.session 就是它）。
+				const bridgeAnchor: { session?: AgentSession } = {};
+				const bridge = this.bridgeTarget(bridgeAnchor, ownerId);
 
-			// 为全新会话（0 条消息的空白对话/新对话）提前解析目标模型并注入，
-			// 避免 SDK findInitialModel 在无 model 时回退到内置硬编码默认（如 deepseek-v4-pro）：
-			let sessionModel: Parameters<AgentSession["setModel"]>[0] | undefined = initialModel;
-			if (!sessionModel) {
-				const isBlank =
-					typeof sessionManager.getEntries === "function"
-						? !sessionManager.getEntries().some((e) => e.type === "message")
-						: sessionManager.buildSessionContext().messages.length === 0;
-				if (isBlank) {
-					const savedModelId =
-						this.stateStore.getProjectModel(this.clientId, effectiveCwd, "pi") ?? this.stateStore.getDefaultModel("pi");
-					if (savedModelId) {
-						const slash = savedModelId.indexOf("/");
-						if (slash > 0 && slash < savedModelId.length - 1) {
-							const p = savedModelId.slice(0, slash);
-							const id = savedModelId.slice(slash + 1);
-							const found = services.modelRuntime.getModel(p, id);
-							if (found) {
-								try {
-									await this.restoreKeyForModel(savedModelId, effectiveCwd);
-									if (services.modelRuntime.hasConfiguredAuth(p)) {
-										sessionModel = found;
+				// 为全新会话（0 条消息的空白对话/新对话）提前解析目标模型并注入，
+				// 避免 SDK findInitialModel 在无 model 时回退到内置硬编码默认（如 deepseek-v4-pro）：
+				let sessionModel: Parameters<AgentSession["setModel"]>[0] | undefined = initialModel;
+				if (!sessionModel) {
+					const isBlank =
+						typeof sessionManager.getEntries === "function"
+							? !sessionManager.getEntries().some((e) => e.type === "message")
+							: sessionManager.buildSessionContext().messages.length === 0;
+					if (isBlank) {
+						const savedModelId =
+							this.stateStore.getProjectModel(this.clientId, effectiveCwd, "pi") ??
+							this.stateStore.getDefaultModel("pi");
+						if (savedModelId) {
+							const slash = savedModelId.indexOf("/");
+							if (slash > 0 && slash < savedModelId.length - 1) {
+								const p = savedModelId.slice(0, slash);
+								const id = savedModelId.slice(slash + 1);
+								const found = services.modelRuntime.getModel(p, id);
+								if (found) {
+									try {
+										await this.restoreKeyForModel(savedModelId, effectiveCwd);
+										if (services.modelRuntime.hasConfiguredAuth(p)) {
+											sessionModel = found;
+										}
+									} catch {
+										/* 密钥恢复失败则由 SDK 自行解析 */
 									}
-								} catch {
-									/* 密钥恢复失败则由 SDK 自行解析 */
 								}
 							}
 						}
 					}
 				}
-			}
 
-			const created = await createAgentSessionFromServices({
-				services,
-				sessionManager,
-				model: sessionModel,
-				// bash / read / write / edit 四处覆盖统一在会话建好后另注入（见 installToolOverrides）。
-				// 原因是创建时的 customTools 恒顶掉第三方扩展注册的同名工具（SDK 的合并链是
-				// [...扩展注册的工具, ...customTools] 后写赢，issue #750）。
-				customTools: [
-					...makePersistentTerminalTools(terminals, effectiveCwd, () => this.getLang(), {
-						checkSafety: async (cmd, ctx) => {
-							// 沙盒硬围栏：禁止引用源项目路径或跳出沙盒根。
-							const activeSbx = this.sandboxes.getByCwd(effectiveCwd);
-							if (activeSbx) {
-								const sbxDenied = evaluateSandboxJail(activeSbx, "bash", { command: cmd }, effectiveCwd);
-								if (sbxDenied) return { blocked: true, reason: sbxDenied.reason, reasonEn: sbxDenied.reasonEn };
-							}
-							// 计划模式：终端只放行只读命令（常驻终端也走这条，与 bash 覆盖同口径）。
-							if (this.planModeOf(ownerId)) {
-								const denied = planModeDenial("bash", { command: cmd });
-								if (denied) return { blocked: true, reason: denied.reason, reasonEn: denied.reasonEn };
-							}
-							// 目标审查回合：常驻终端同样只放只读命令（审查者跑测试可以，改文件不行）。
-							if (this.goalReviewTurnOf(ownerId)) {
-								const denied = goalReviewDenial("bash", { command: cmd });
-								if (denied) return { blocked: true, reason: denied.reason, reasonEn: denied.reasonEn };
-							}
-							// 子代理安全规格硬闸门（issue #727）：受限子代理（readonly/verify）或工具白名单
-							const subagentMode = this.subagentSecurityModeOf(ownerId);
-							if (subagentMode !== "normal" || this.subagentAllowedToolsOf(ownerId)) {
-								const denied = subagentSecurityDenial(
-									subagentMode,
-									"bash",
-									{ command: cmd },
-									this.subagentAllowedToolsOf(ownerId),
-								);
-								if (denied) return { blocked: true, reason: denied.reason, reasonEn: denied.reasonEn };
-							}
-							const perm =
-								(ownerId ? this.convs.get(ownerId)?.permissionPreset : undefined) ??
-								this.settingsSvc.current.defaultPermissionPreset ??
-								"workspace-write-never";
-							if (perm === "read-only") {
+				const created = await createAgentSessionFromServices({
+					services,
+					sessionManager,
+					model: sessionModel,
+					// bash / read / write / edit 四处覆盖统一在会话建好后另注入（见 installToolOverrides）。
+					// 原因是创建时的 customTools 恒顶掉第三方扩展注册的同名工具（SDK 的合并链是
+					// [...扩展注册的工具, ...customTools] 后写赢，issue #750）。
+					customTools: mergeConversationTools([
+						...makePersistentTerminalTools(terminals, effectiveCwd, () => this.getLang(), {
+							checkSafety: async (cmd, ctx) => {
+								// 沙盒硬围栏：禁止引用源项目路径或跳出沙盒根。
+								const activeSbx = this.sandboxes.getByCwd(effectiveCwd);
+								if (activeSbx) {
+									const sbxDenied = evaluateSandboxJail(activeSbx, "bash", { command: cmd }, effectiveCwd);
+									if (sbxDenied) return { blocked: true, reason: sbxDenied.reason, reasonEn: sbxDenied.reasonEn };
+								}
+								// 计划模式：终端只放行只读命令（常驻终端也走这条，与 bash 覆盖同口径）。
+								if (this.planModeOf(ownerId)) {
+									const denied = planModeDenial("bash", { command: cmd });
+									if (denied) return { blocked: true, reason: denied.reason, reasonEn: denied.reasonEn };
+								}
+								// 目标审查回合：常驻终端同样只放只读命令（审查者跑测试可以，改文件不行）。
+								if (this.goalReviewTurnOf(ownerId)) {
+									const denied = goalReviewDenial("bash", { command: cmd });
+									if (denied) return { blocked: true, reason: denied.reason, reasonEn: denied.reasonEn };
+								}
+								// 子代理安全规格硬闸门（issue #727）：受限子代理（readonly/verify）或工具白名单
+								const subagentMode = this.subagentSecurityModeOf(ownerId);
+								if (subagentMode !== "normal" || this.subagentAllowedToolsOf(ownerId)) {
+									const denied = subagentSecurityDenial(
+										subagentMode,
+										"bash",
+										{ command: cmd },
+										this.subagentAllowedToolsOf(ownerId),
+									);
+									if (denied) return { blocked: true, reason: denied.reason, reasonEn: denied.reasonEn };
+								}
+								const perm =
+									(ownerId ? this.convs.get(ownerId)?.permissionPreset : undefined) ??
+									this.settingsSvc.current.defaultPermissionPreset ??
+									"workspace-write-never";
+								if (perm === "read-only") {
+									const danger = checkDangerousToolCall(
+										"bash",
+										{ command: cmd },
+										effectiveCwd,
+										this.roots,
+										this.approvalRules.list(),
+									);
+									if (danger.denied || danger.dangerous) {
+										return {
+											blocked: true,
+											reason: danger.reason || "只读模式禁止执行高危/破坏性命令",
+											reasonEn: danger.reasonEn || "Read-only mode forbids dangerous or destructive commands",
+										};
+									}
+								}
+								// 1. 系统核心安全：内置高危操作检测与自定义审批规则先行（优先级最高，防绕过）
 								const danger = checkDangerousToolCall(
 									"bash",
 									{ command: cmd },
@@ -3833,334 +4026,359 @@ export class ClientSession {
 									this.roots,
 									this.approvalRules.list(),
 								);
-								if (danger.denied || danger.dangerous) {
+								if (danger.denied) {
 									return {
 										blocked: true,
-										reason: danger.reason || "只读模式禁止执行高危/破坏性命令",
-										reasonEn: danger.reasonEn || "Read-only mode forbids dangerous or destructive commands",
+										reason: danger.reason || "命中系统阻断规则",
+										reasonEn: danger.reasonEn || "Blocked by system approval rule",
 									};
 								}
-							}
-							// 1. 系统核心安全：内置高危操作检测与自定义审批规则先行（优先级最高，防绕过）
-							const danger = checkDangerousToolCall(
-								"bash",
-								{ command: cmd },
-								effectiveCwd,
-								this.roots,
-								this.approvalRules.list(),
-							);
-							if (danger.denied) {
-								return {
-									blocked: true,
-									reason: danger.reason || "命中系统阻断规则",
-									reasonEn: danger.reasonEn || "Blocked by system approval rule",
-								};
-							}
-							// 2. 插件前置守卫 deny 拦截
-							let pre: Awaited<ReturnType<ToolGuardHook["pre"]>> | undefined;
-							if (this.lateToolGuard) {
-								try {
-									pre = await this.lateToolGuard.pre(
-										{ toolName: "bash", params: { command: cmd }, conversationId: ownerId },
-										this.getLang(),
+								// 2. 插件前置守卫 deny 拦截
+								let pre: Awaited<ReturnType<ToolGuardHook["pre"]>> | undefined;
+								if (this.lateToolGuard) {
+									try {
+										pre = await this.lateToolGuard.pre(
+											{ toolName: "bash", params: { command: cmd }, conversationId: ownerId },
+											this.getLang(),
+										);
+									} catch {
+										pre = { verdict: { decision: "allow" } };
+									}
+								}
+								if (pre?.verdict.decision === "deny") {
+									return {
+										blocked: true,
+										reason: pre.verdict.reason ?? "插件拒绝执行此命令",
+										reasonEn: pre.verdict.reasonEn ?? "Plugin denied execution of this command",
+									};
+								}
+
+								// 3. 决定是否需要弹窗审批（系统高危 ask 优先于插件通用 ask，issue #721）
+								let needApproval = false;
+								let approvalReason: string | undefined;
+								let approvalReasonEn: string | undefined;
+								let approvalCategory: UiApprovalCategory | undefined;
+								let approvalHits: UiApprovalHit[] | undefined;
+
+								if (danger.dangerous) {
+									needApproval = true;
+									approvalReason = danger.reason;
+									approvalReasonEn = danger.reasonEn;
+									approvalCategory = danger.category;
+									approvalHits = danger.hits;
+								} else if (pre?.verdict.decision === "ask") {
+									needApproval = true;
+									approvalReason = pre.verdict.reason ?? "插件要求确认本次操作";
+									approvalReasonEn = pre.verdict.reasonEn ?? "Plugin requested confirmation for this operation";
+									approvalCategory = pluginApprovalCategory(pre.pluginId ?? "plugin");
+								}
+
+								if (needApproval) {
+									const res = await this.askApproval(
+										ctx.toolCallId,
+										"bash",
+										{ command: cmd, terminalId: ctx.terminalId },
+										approvalReason,
+										approvalReasonEn,
+										ownerId,
+										approvalCategory,
+										approvalHits,
 									);
-								} catch {
-									pre = { verdict: { decision: "allow" } };
+									if (res.decision === "deny") {
+										return {
+											blocked: true,
+											userDenied: true,
+											reason: res.reason || "操作被用户拒绝",
+											reasonEn: res.reason || "Operation denied by user",
+										};
+									}
+									if (res.decision === "edit") {
+										const editedCmd =
+											typeof (res.editedParams as any)?.command === "string" ? (res.editedParams as any).command : cmd;
+										return { editedCommand: editedCmd };
+									}
 								}
-							}
-							if (pre?.verdict.decision === "deny") {
-								return {
-									blocked: true,
-									reason: pre.verdict.reason ?? "插件拒绝执行此命令",
-									reasonEn: pre.verdict.reasonEn ?? "Plugin denied execution of this command",
-								};
-							}
-
-							// 3. 决定是否需要弹窗审批（系统高危 ask 优先于插件通用 ask，issue #721）
-							let needApproval = false;
-							let approvalReason: string | undefined;
-							let approvalReasonEn: string | undefined;
-							let approvalCategory: UiApprovalCategory | undefined;
-							let approvalHits: UiApprovalHit[] | undefined;
-
-							if (danger.dangerous) {
-								needApproval = true;
-								approvalReason = danger.reason;
-								approvalReasonEn = danger.reasonEn;
-								approvalCategory = danger.category;
-								approvalHits = danger.hits;
-							} else if (pre?.verdict.decision === "ask") {
-								needApproval = true;
-								approvalReason = pre.verdict.reason ?? "插件要求确认本次操作";
-								approvalReasonEn = pre.verdict.reasonEn ?? "Plugin requested confirmation for this operation";
-								approvalCategory = pluginApprovalCategory(pre.pluginId ?? "plugin");
-							}
-
-							if (needApproval) {
-								const res = await this.askApproval(
-									ctx.toolCallId,
-									"bash",
-									{ command: cmd, terminalId: ctx.terminalId },
-									approvalReason,
-									approvalReasonEn,
-									ownerId,
-									approvalCategory,
-									approvalHits,
-								);
-								if (res.decision === "deny") {
-									return {
-										blocked: true,
-										userDenied: true,
-										reason: res.reason || "操作被用户拒绝",
-										reasonEn: res.reason || "Operation denied by user",
-									};
-								}
-								if (res.decision === "edit") {
-									const editedCmd =
-										typeof (res.editedParams as any)?.command === "string" ? (res.editedParams as any).command : cmd;
-									return { editedCommand: editedCmd };
-								}
-							}
-							return {};
-						},
-					}).map((tool) => withWorkspaceSnapshotGate(tool, () => this.awaitPendingWorkspaceSnapshot(ownerId))),
-					// bash / read / write / edit 四处覆盖**不在这里注册**：创建时的 customTools 恒胜、与
-					// 扩展加载顺序无关，直接塞进来会静默顶掉第三方扩展注册的同名工具（见
-					// tool-overrides.ts）；它们改在会话建好后由 installToolOverrides 注入。
-					// 不覆盖内置 edit 的独立宽松编辑工具（缩进不敏感匹配；开关看设置；带权限沙箱拦截与人机协同）。
-					// 目标审查闸门包在最外层：审查回合的理由最贴合此刻（跟模型说「这是审查回合」）。
-					withGoalReviewGate(
-						withDelegationGate(
-							withPlanModeGate(
-								withSandboxJailGate(
-									wrapEditSoftToolWithPermission(
-										makeEditSoftTool(effectiveCwd, () => this.getLang()),
-										effectiveCwd,
-										() =>
-											(ownerId ? this.convs.get(ownerId)?.permissionPreset : undefined) ??
-											this.settingsSvc.current.defaultPermissionPreset ??
-											"workspace-write-never",
-										() => this.roots,
+								return {};
+							},
+						}).map((tool) => withWorkspaceSnapshotGate(tool, () => this.awaitPendingWorkspaceSnapshot(ownerId))),
+						// bash / read / write / edit 四处覆盖**不在这里注册**：创建时的 customTools 恒胜、与
+						// 扩展加载顺序无关，直接塞进来会静默顶掉第三方扩展注册的同名工具（见
+						// tool-overrides.ts）；它们改在会话建好后由 installToolOverrides 注入。
+						// 不覆盖内置 edit 的独立宽松编辑工具（缩进不敏感匹配；开关看设置；带权限沙箱拦截与人机协同）。
+						// 目标审查闸门包在最外层：审查回合的理由最贴合此刻（跟模型说「这是审查回合」）。
+						withGoalReviewGate(
+							withDelegationGate(
+								withPlanModeGate(
+									withSandboxJailGate(
+										wrapEditSoftToolWithPermission(
+											makeEditSoftTool(effectiveCwd, () => this.getLang()),
+											effectiveCwd,
+											() =>
+												(ownerId ? this.convs.get(ownerId)?.permissionPreset : undefined) ??
+												this.settingsSvc.current.defaultPermissionPreset ??
+												"workspace-write-never",
+											() => this.roots,
+											() => this.getLang(),
+											(toolCallId, toolName, params, reason, reasonEn, convId, category) =>
+												this.askApproval(toolCallId, toolName, params, reason, reasonEn, convId, category),
+											() => ownerId,
+											() => this.approvalRules.list(),
+										),
+										() => this.sandboxes.getExecutionIdentity(effectiveCwd, sandboxIdentity),
+										() => effectiveCwd,
 										() => this.getLang(),
-										(toolCallId, toolName, params, reason, reasonEn, convId, category) =>
-											this.askApproval(toolCallId, toolName, params, reason, reasonEn, convId, category),
-										() => ownerId,
-										() => this.approvalRules.list(),
+										{ trustedTool: true },
+										() => this.sandboxes.acquireExecution(effectiveCwd, sandboxIdentity),
 									),
-									() => this.sandboxes.getByCwd(effectiveCwd),
-									() => effectiveCwd,
+									() => this.planModeOf(ownerId),
 									() => this.getLang(),
 								),
-								() => this.planModeOf(ownerId),
+								() => this.delegateModeOf(ownerId),
 								() => this.getLang(),
 							),
-							() => this.delegateModeOf(ownerId),
+							() => this.goalReviewTurnOf(ownerId),
 							() => this.getLang(),
 						),
-						() => this.goalReviewTurnOf(ownerId),
-						() => this.getLang(),
-					),
-					// 插件注册的 AI 工具（创建时刻的实时快照，已按 disabledPluginTools 过滤；
-					// 后续注册经 refreshPluginTools 动态补入已有会话）。
-					// 子代理模板带非空扩展白名单时不注入：插件/MCP 工具没有 SDK extensionKey
-					// 身份、无法参与白名单匹配，全放行等于白名单没关门，全收编才符合「只加载这些」。
-					// 空白名单 = 跟随主会话（插件工具照常进入子代理）。
-					...(apply && apply.enabledExtensions.length > 0 ? [] : this.enabledPluginToolDefs()),
-					// 第一方子代理工具（spawn/get_result/steer/list/stop）。子代理会话
-					// 默认也注册了它们，因此可自然嵌套派发；设置了 subagentMaxDepth 且子代理
-					// 已到上限层时 noSpawnTools=true，连同下面的 delegate_task 一起不注入。host 按 ownerId 包装：子代理的
-					// 父对话 = 真正调用 spawn 的那个会话（本 runtime 所属会话），而不是
-					// 派发瞬间的 active——后台对话继续产出时用户可能已切到别的项目，用
-					// activeId 会把孩子记到无关会话名下、沉到别的组/底部（issue #95）。
-					// ownerId 即本 runtime 所属会话（创建时就已知，见各调用点），一身二任：
-					// spawn 的 parentId（子代理记到真正的派发会话名下）+ wait_all 的
-					// selfConvId（调用者自身永不计入等待，防 self-wait deadlock）。
-					...(noSpawnTools
-						? []
-						: ownerId
-							? makeSubagentTools(
-									withSubagentOwner(this.subagentHost, ownerId),
-									undefined,
-									// B20：selfId 必须调用时刻解析，不能死用建时旧 id —— 过户撞 id
-									// 改名后 wait_all 的「排除自身/展开后代」要按 runtime 的当前归属查。
-									() =>
-										bridgeAnchor.session
-											? (this.findConversationHome?.(bridgeAnchor.session)?.convId ?? ownerId)
-											: ownerId,
-								)
-							: makeSubagentTools(this.subagentHost)),
-					// 结构化派单（六段式 + 服务端校验；执行体复用子代理 spawn 通道）。
-					// owner 包装与上面同理：子代理记到真正的派发会话名下。
-					...(noSpawnTools
-						? []
-						: ownerId
-							? [makeDelegateTaskTool(withSubagentOwner(this.subagentHost, ownerId))]
-							: [makeDelegateTaskTool(this.subagentHost)]),
-					// 结构化任务计划更新（Plan Mode / Step State Machine）。
-					makePlanUpdateTool(
-						this.planManager,
-						() => {
-							const id = ownerId ?? this.activeId;
-							const c = this.convs.get(id);
-							return {
-								id,
-								sessionId: c?.session?.sessionId,
-								sessionManager: c?.session?.sessionManager,
-							};
-						},
-						(msg) => this.emit(msg),
-						() => this.flushSnapshot(),
-					),
-					// 标准引擎的 ask_user_question：模型调用 → 浏览器富渲染问卷（复用 DSH
-					// 的 question_pending/question_answer 协议，前端 DshQuestionDialog）。
-					// DSH 引擎不经此（它走 goal-rpc 的 userQuestions provider）。
-					makeAskUserQuestionTool(bridge, ownerId),
-					// 浏览器页面工具：模型调用 → page_request 给浏览器 → page-picker 扩展
-					// 操作用户授权的页面 → page_response 回来。ownerId 语义同上（本 runtime
-					// 所属会话，不是派发瞬间的 active）。
-					makeBrowserPageTool(bridge, ownerId),
-					// 别的对话读取（运行中含子代理 + 历史转录，只读）：用户引用了别的
-					// 对话（引用 chip / 粘过来的 id / “看看之前那个对话”）时用。子代理
-					// 会话同样注册了它，可自然嵌套读取。不需要 ownerId——读的是本
-					// 客户端的 conversation 体系与落盘历史，与派发者无关。
-					// extras 认领表：files/status 顺带展示（AgentService 级共享）。
-					makeConversationReadTool(this.conversationReadHost(), () => this.getLang(), {
-						listClaims: (cwd) =>
-							(this.getClaimStore?.().list(cwd) ?? []).map((c) => ({
-								path: c.path,
-								ownerTitle: c.ownerTitle,
-								...(c.note ? { note: c.note } : {}),
-							})),
-					}),
-					// 文件认领（claim_files）：开关走统一工具 tab（ActiveSet 门控）。
-					// ownerId 语义同 subagent/skill（本 runtime 所属会话）。
-					// DSH 引擎无 customTool 注册面，不接（提醒里照样能看到认领）。
-					makeClaimFilesTool(this.claimToolHost(ownerId), () => this.getLang()),
-					// 展示文件给用户（present_files，issue #231）：模型给路径清单，服务端
-					// 只做只读探测（stat + 未知扩展嗅探 + 文本摘录），结构化 items 走 tool
-					// result 的 details 下发，前端渲染成图片/视频内联 + 预览/本地打开/
-					// 在文件夹中显示/下载/复制路径的卡片。不打开任何窗口，系统级动作
-					// 一律由用户点卡片触发（file_open_default / file_reveal）。
-					// 开关走统一工具 tab（ActiveSet 门控；enabled 兜底只做报错文案）。
-					// DSH 引擎无 customTool 注册面，不接。
-					makePresentFilesTool(effectiveCwd, {
-						enabled: () =>
-							isAgentToolEnabled(PRESENT_FILES_TOOL_NAME, effectiveDisabledAgentTools(this.settingsSvc.current)),
-						getLang: () => this.getLang(),
-					}),
-					// 延迟加载入口（延迟加载模式默认开）：系统提示词只给未加载工具的
-					// 名字 + 一行摘要，模型用本工具把要用的工具拉进本对话（schema 才随之下发）。
-					// 延迟加载开启时常驻在活跃集（见 applyToolGating 的 forceActive）；
-					// 延迟加载未开启时不激活、不暴露给模型。
-					makeLoadToolsTool(this.loadToolsHost(ownerId), () => this.getLang()),
-					// 技能全文按名加载（名录在 {{skills}} 段）：模型不再拼路径调 read。
-					// 子代理会话同样注册（owner 即真正派发的父对话，读该会话 loader）。
-					// DSH 引擎无 customTool 注册面，不接。开关走统一工具 tab。
-					makeSkillTool(this.skillToolHost(ownerId), () => this.getLang()),
-					// 主动压缩上下文工具（compact_context）：AI 主动根据当前问题精简上下文。
-					// 开关走统一工具 tab（ActiveSet 门控）。DSH 引擎无 customTool 注册面，不接。
-					makeCompactContextTool(this.compactContextHost(ownerId), () => this.getLang()),
-					// 定时唤醒（单 action：create/list/cancel，issue #193）：默认绑定
-					// 发起对话（ownerId，无则活动对话），到期 steer 语义唤醒它；子代理
-					// 会话同样注册（owner 即真正派发的父对话）。开关走统一工具 tab。
-					// DSH 引擎无 customTool 注册面，不接。
-					makeScheduleTool(this.scheduleToolHost(), ownerId, () => this.getLang()),
-					// 持久代码求值沙箱（eval）：开关走统一工具 tab（ActiveSet 门控，默认关）。
-					// ownerId 绑定当前会话；DSH 引擎无 customTool 注册面，不接。
-					makeEvalTool({
-						cwd: effectiveCwd,
-						ownerId,
-						lang: () => this.getLang(),
-					}),
-					// 高可靠行补丁工具（patch，基于内容哈希与语法块级替换）。写目标
-					// （含 REM/MV）内嵌在补丁文本里，权限预设与敏感文件审批规则要靠
-					// 包装器解析段头后求值——否则 read-only/workspace 沙箱与 .env 等
-					// 规则会被 patch 整体旁路（write/edit 会拦的操作改走 patch 即落地）。
-					wrapPatchToolWithPermission(
-						makePatchTool({ cwd: effectiveCwd, ownerId, lang: () => this.getLang() }),
-						effectiveCwd,
-						() =>
-							(ownerId ? this.convs.get(ownerId)?.permissionPreset : undefined) ??
-							this.settingsSvc.current.defaultPermissionPreset ??
-							"workspace-write-never",
-						() => this.roots,
-						() => this.getLang(),
-						(toolCallId, toolName, params, reason, reasonEn, convId, category, hits) =>
-							this.askApproval(toolCallId, toolName, params, reason, reasonEn, convId, category, hits),
-						() => ownerId,
-						() => this.approvalRules.list(),
-					),
-					// 原生语言服务器工具（lsp，定义跳转/引用/悬停/诊断）。
-					makeLspTool({ cwd: effectiveCwd, ownerId, lang: () => this.getLang() }),
-					// MCP 服务器检测与安装管理工具（mcp_manage：list/check/install/remove/reload）。
-					makeMcpManageTool(this.mcpManageToolHost(effectiveCwd), () => this.getLang()),
-					// 隔离沙盒项目管理工具（sandbox：list/create/diff/reset/persist/promote/apply_to_source/destroy）。
-					makeSandboxTool(
-						{
-							sandboxes: this.sandboxes,
-							getCwd: () => (ownerId ? this.convs.get(ownerId)?.cwd : undefined) ?? effectiveCwd,
-							setCwd: (newCwd) => this.setCwd(newCwd),
-							onSandboxesChanged: async () => {
-								this.invalidateProjectsCache();
-								await this.pushProjects();
-								this.flushSnapshot();
+						// 插件注册的 AI 工具（创建时刻的实时快照，已按 disabledPluginTools 过滤；
+						// 后续注册经 refreshPluginTools 动态补入已有会话）。
+						// 子代理模板带非空扩展白名单时不注入：插件/MCP 工具没有 SDK extensionKey
+						// 身份、无法参与白名单匹配，全放行等于白名单没关门，全收编才符合「只加载这些」。
+						// 空白名单 = 跟随主会话（插件工具照常进入子代理）。
+						...(sandboxIdentity || (apply && apply.enabledExtensions.length > 0)
+							? []
+							: this.enabledPluginToolDefs(undefined, effectiveCwd)),
+						// 第一方子代理工具（spawn/get_result/steer/list/stop）。子代理会话
+						// 默认也注册了它们，因此可自然嵌套派发；设置了 subagentMaxDepth 且子代理
+						// 已到上限层时 noSpawnTools=true，连同下面的 delegate_task 一起不注入。host 按 ownerId 包装：子代理的
+						// 父对话 = 真正调用 spawn 的那个会话（本 runtime 所属会话），而不是
+						// 派发瞬间的 active——后台对话继续产出时用户可能已切到别的项目，用
+						// activeId 会把孩子记到无关会话名下、沉到别的组/底部（issue #95）。
+						// ownerId 即本 runtime 所属会话（创建时就已知，见各调用点），一身二任：
+						// spawn 的 parentId（子代理记到真正的派发会话名下）+ wait_all 的
+						// selfConvId（调用者自身永不计入等待，防 self-wait deadlock）。
+						...(noSpawnTools
+							? []
+							: ownerId
+								? makeSubagentTools(
+										withSubagentOwner(this.subagentHost, ownerId, () =>
+											this.requireSubagentOwner(bridgeAnchor, ownerId),
+										),
+										undefined,
+										// B20：selfId 必须调用时刻解析，不能死用建时旧 id —— 过户撞 id
+										// 改名后 wait_all 的「排除自身/展开后代」要按 runtime 的当前归属查。
+										() =>
+											bridgeAnchor.session
+												? (this.findConversationHome?.(bridgeAnchor.session)?.convId ?? ownerId)
+												: ownerId,
+									)
+								: makeSubagentTools(this.subagentHost)),
+						// 结构化派单（六段式 + 服务端校验；执行体复用子代理 spawn 通道）。
+						// owner 包装与上面同理：子代理记到真正的派发会话名下。
+						...(noSpawnTools
+							? []
+							: ownerId
+								? [
+										makeDelegateTaskTool(
+											withSubagentOwner(this.subagentHost, ownerId, () =>
+												this.requireSubagentOwner(bridgeAnchor, ownerId),
+											),
+										),
+									]
+								: [makeDelegateTaskTool(this.subagentHost)]),
+						// 结构化任务计划更新（Plan Mode / Step State Machine）。
+						makePlanUpdateTool(
+							this.planManager,
+							() => {
+								const id = ownerId ?? this.activeId;
+								const c = this.convs.get(id);
+								return {
+									id,
+									sessionId: c?.session?.sessionId,
+									sessionManager: c?.session?.sessionManager,
+								};
 							},
-							askApproval: (toolCallId, toolName, params, reason, reasonEn, convId, category) =>
-								this.askApproval(toolCallId, toolName, params, reason, reasonEn, convId, category),
-							getConversationId: () => ownerId,
-						},
-						() => this.getLang(),
-					),
-					// Git 工作树管理工具（worktree：list/create/switch/remove）。
-					makeWorktreeTool(
-						{
-							getCwd: () => (ownerId ? this.convs.get(ownerId)?.cwd : undefined) ?? effectiveCwd,
-							setCwd: (newCwd) => this.setCwd(newCwd),
-							onWorktreeChanged: async () => {
-								await this.refreshWorktreeInfo();
+							(msg) => this.emit(msg),
+							() => this.flushSnapshot(),
+						),
+						// 标准引擎的 ask_user_question：模型调用 → 浏览器富渲染问卷（复用 DSH
+						// 的 question_pending/question_answer 协议，前端 DshQuestionDialog）。
+						// DSH 引擎不经此（它走 goal-rpc 的 userQuestions provider）。
+						makeAskUserQuestionTool(bridge, ownerId),
+						// 浏览器页面工具：模型调用 → page_request 给浏览器 → page-picker 扩展
+						// 操作用户授权的页面 → page_response 回来。ownerId 语义同上（本 runtime
+						// 所属会话，不是派发瞬间的 active）。
+						makeBrowserPageTool(bridge, ownerId),
+						// 别的对话读取（运行中含子代理 + 历史转录，只读）：用户引用了别的
+						// 对话（引用 chip / 粘过来的 id / “看看之前那个对话”）时用。子代理
+						// 会话同样注册了它，可自然嵌套读取。不需要 ownerId——读的是本
+						// 客户端的 conversation 体系与落盘历史，与派发者无关。
+						// extras 认领表：files/status 顺带展示（AgentService 级共享）。
+						makeConversationReadTool(this.conversationReadHost(), () => this.getLang(), {
+							listClaims: (cwd) =>
+								(this.getClaimStore?.().list(cwd) ?? []).map((c) => ({
+									path: c.path,
+									ownerTitle: c.ownerTitle,
+									...(c.note ? { note: c.note } : {}),
+								})),
+						}),
+						// 文件认领（claim_files）：开关走统一工具 tab（ActiveSet 门控）。
+						// ownerId 语义同 subagent/skill（本 runtime 所属会话）。
+						// DSH 引擎无 customTool 注册面，不接（提醒里照样能看到认领）。
+						makeClaimFilesTool(this.claimToolHost(ownerId), () => this.getLang()),
+						// 展示文件给用户（present_files，issue #231）：模型给路径清单，服务端
+						// 只做只读探测（stat + 未知扩展嗅探 + 文本摘录），结构化 items 走 tool
+						// result 的 details 下发，前端渲染成图片/视频内联 + 预览/本地打开/
+						// 在文件夹中显示/下载/复制路径的卡片。不打开任何窗口，系统级动作
+						// 一律由用户点卡片触发（file_open_default / file_reveal）。
+						// 开关走统一工具 tab（ActiveSet 门控；enabled 兜底只做报错文案）。
+						// DSH 引擎无 customTool 注册面，不接。
+						makePresentFilesTool(effectiveCwd, {
+							enabled: () =>
+								isAgentToolEnabled(PRESENT_FILES_TOOL_NAME, effectiveDisabledAgentTools(this.settingsSvc.current)),
+							getLang: () => this.getLang(),
+						}),
+						// 延迟加载入口（延迟加载模式默认开）：系统提示词只给未加载工具的
+						// 名字 + 一行摘要，模型用本工具把要用的工具拉进本对话（schema 才随之下发）。
+						// 延迟加载开启时常驻在活跃集（见 applyToolGating 的 forceActive）；
+						// 延迟加载未开启时不激活、不暴露给模型。
+						makeLoadToolsTool(this.loadToolsHost(ownerId), () => this.getLang()),
+						// 技能全文按名加载（名录在 {{skills}} 段）：模型不再拼路径调 read。
+						// 子代理会话同样注册（owner 即真正派发的父对话，读该会话 loader）。
+						// DSH 引擎无 customTool 注册面，不接。开关走统一工具 tab。
+						makeSkillTool(this.skillToolHost(ownerId), () => this.getLang()),
+						// 主动压缩上下文工具（compact_context）：AI 主动根据当前问题精简上下文。
+						// 开关走统一工具 tab（ActiveSet 门控）。DSH 引擎无 customTool 注册面，不接。
+						makeCompactContextTool(this.compactContextHost(ownerId), () => this.getLang()),
+						// 定时唤醒（单 action：create/list/cancel，issue #193）：默认绑定
+						// 发起对话（ownerId，无则活动对话），到期 steer 语义唤醒它；子代理
+						// 会话同样注册（owner 即真正派发的父对话）。开关走统一工具 tab。
+						// DSH 引擎无 customTool 注册面，不接。
+						makeScheduleTool(this.scheduleToolHost(), ownerId, () => this.getLang()),
+						// 持久代码求值沙箱（eval）：开关走统一工具 tab（ActiveSet 门控，默认关）。
+						// ownerId 绑定当前会话；DSH 引擎无 customTool 注册面，不接。
+						makeEvalTool({
+							cwd: effectiveCwd,
+							ownerId,
+							lang: () => this.getLang(),
+						}),
+						// 高可靠行补丁工具（patch，基于内容哈希与语法块级替换）。写目标
+						// （含 REM/MV）内嵌在补丁文本里，权限预设与敏感文件审批规则要靠
+						// 包装器解析段头后求值——否则 read-only/workspace 沙箱与 .env 等
+						// 规则会被 patch 整体旁路（write/edit 会拦的操作改走 patch 即落地）。
+						wrapPatchToolWithPermission(
+							makePatchTool({ cwd: effectiveCwd, ownerId, lang: () => this.getLang() }),
+							effectiveCwd,
+							() =>
+								(ownerId ? this.convs.get(ownerId)?.permissionPreset : undefined) ??
+								this.settingsSvc.current.defaultPermissionPreset ??
+								"workspace-write-never",
+							() => this.roots,
+							() => this.getLang(),
+							(toolCallId, toolName, params, reason, reasonEn, convId, category, hits) =>
+								this.askApproval(toolCallId, toolName, params, reason, reasonEn, convId, category, hits),
+							() => ownerId,
+							() => this.approvalRules.list(),
+						),
+						// 原生语言服务器工具（lsp，定义跳转/引用/悬停/诊断）。
+						makeLspTool({ cwd: effectiveCwd, ownerId, lang: () => this.getLang() }),
+						// MCP 服务器检测与安装管理工具（mcp_manage：list/check/install/remove/reload）。
+						makeMcpManageTool(this.mcpManageToolHost(effectiveCwd), () => this.getLang()),
+						// 隔离沙盒项目管理工具（sandbox：list/create/diff/reset/persist/promote/apply_to_source/destroy）。
+						makeSandboxTool(
+							{
+								sandboxes: this.sandboxes,
+								resetSandbox: (target) => this.coordinateSandboxLifecycle(target, "reset"),
+								destroySandbox: (target) => this.coordinateSandboxLifecycle(target, "destroy"),
+								applySandboxToSource: (target, revision) => this.coordinateSandboxLifecycle(target, "apply", revision),
+								getCwd: () => (ownerId ? this.convs.get(ownerId)?.cwd : undefined) ?? effectiveCwd,
+								setCwd: (newCwd) => this.setCwd(newCwd),
+								onSandboxesChanged: async () => {
+									this.invalidateProjectsCache();
+									await this.pushProjects();
+									this.flushSnapshot();
+								},
+								askApproval: (toolCallId, toolName, params, reason, reasonEn, convId, category) =>
+									this.askApproval(toolCallId, toolName, params, reason, reasonEn, convId, category),
+								getConversationId: () => ownerId,
 							},
-						},
-						() => this.getLang(),
-					),
-					// 画布流水线编辑工具（canvas：增删改查/重排/运行/调试；新节点 cwd 跟随当前项目）。
-					makeCanvasTool({
-						dataDir: this.stateStore.dataDir,
-						lang: () => this.getLang(),
-						getCwd: () => (ownerId ? this.convs.get(ownerId)?.cwd : undefined) ?? effectiveCwd,
-					}),
-				].map((t) => this.wrapGenericTool(t, ownerId, effectiveCwd)),
-			});
-			// 桥接工具归属锚点：SDK 会话对象在本 runtime 生命周期内稳定，过户只搬对话
-			// 不改它（见 ClientSession.findConversationHome）。
-			bridgeAnchor.session = created.session;
-			if (noSpawnTools) SPAWN_TOOLS_BARRED.add(created.session);
-			// bash / read / write / edit 四处覆盖在会话建好后注入（见 tool-overrides.ts）：SDK 的合并链是
-			// [...扩展工具, ...customTools] 后写赢 ⇒ 创建时塞进 customTools 会**恒定顶掉**第三方
-			// 扩展注册的同名工具（官方 docs/extensions.md 明写扩展可覆盖 bash/read/write/edit，issue #750）。
-			installToolOverrides(
-				created.session as unknown as OverrideSessionLike,
-				this.toolOverrideSpecs(ownerId, effectiveCwd, terminals),
-				{
-					onComposed: (name) => {
-						if (name === "bash") {
-							this.emit({
-								type: "notice",
-								level: "info",
-								text: "已接入第三方扩展注册的 bash 工具（扩展审查/沙箱已生效，内置终端接管已让位）。",
-								textEn:
-									"Third-party extension bash tool is active (extension review/sandbox enabled; built-in terminal takeover yielded).",
-							});
-						}
+							() => this.getLang(),
+						),
+						makeDeviceCollabTool(),
+						// Git 工作树管理工具（worktree：list/create/switch/remove）。
+						makeWorktreeTool(
+							{
+								getCwd: () => (ownerId ? this.convs.get(ownerId)?.cwd : undefined) ?? effectiveCwd,
+								setCwd: (newCwd) => this.setCwd(newCwd),
+								onWorktreeChanged: async () => {
+									await this.refreshWorktreeInfo();
+								},
+							},
+							() => this.getLang(),
+						),
+						// 画布流水线编辑工具（canvas：增删改查/重排/运行/调试；新节点 cwd 跟随当前项目）。
+						makeCanvasTool({
+							dataDir: this.stateStore.dataDir,
+							lang: () => this.getLang(),
+							getCwd: () => (ownerId ? this.convs.get(ownerId)?.cwd : undefined) ?? effectiveCwd,
+						}),
+					]).map((t) => this.wrapGenericTool(t, ownerId, effectiveCwd, bridgeAnchor, true)),
+				});
+				// 桥接工具归属锚点：SDK 会话对象在本 runtime 生命周期内稳定，过户只搬对话
+				// 不改它（见 ClientSession.findConversationHome）。
+				bridgeAnchor.session = created.session;
+				this.appliedPluginToolNames.set(
+					created.session,
+					new Set((this.pluginToolsProvider?.(effectiveCwd) ?? []).map((tool) => tool.name)),
+				);
+				const evidenceHooksReady = installEvidenceToolHooks(created.session);
+				const compactionReady = installCompactionInstructions(created.session, {
+					getEvidenceIndex: async () => {
+						const file = created.session.sessionManager.getSessionFile();
+						return file ? buildContextEvidenceIndex(file) : "";
 					},
-				},
-			);
-			// 终端工具开关与预设门控从创建起就生效（工具始终注册进注册表，只调活跃集）。
-			this.applyToolGating(created.session, targetPreset);
-			return {
-				...created,
-				services,
-				diagnostics: services.diagnostics,
-			};
+				});
+				if (evidenceHooksReady && compactionReady) enableRequestEvidence(created.session.sessionManager);
+				if (noSpawnTools) SPAWN_TOOLS_BARRED.add(created.session);
+				// bash / read / write / edit 四处覆盖在会话建好后注入（见 tool-overrides.ts）：SDK 的合并链是
+				// [...扩展工具, ...customTools] 后写赢 ⇒ 创建时塞进 customTools 会**恒定顶掉**第三方
+				// 扩展注册的同名工具（官方 docs/extensions.md 明写扩展可覆盖 bash/read/write/edit，issue #750）。
+				installToolOverrides(
+					created.session as unknown as OverrideSessionLike,
+					this.toolOverrideSpecs(ownerId, effectiveCwd, terminals, bridgeAnchor),
+					{
+						onComposed: (name) => {
+							if (name === "bash") {
+								this.emit({
+									type: "notice",
+									level: "info",
+									text: "已接入第三方扩展注册的 bash 工具（扩展审查/沙箱已生效，内置终端接管已让位）。",
+									textEn:
+										"Third-party extension bash tool is active (extension review/sandbox enabled; built-in terminal takeover yielded).",
+								});
+							}
+						},
+					},
+				);
+				if (sandboxIdentity) {
+					// With disk/SDK extensions disabled, only these initial host definitions may be sealed.
+					// Never bless later registrations or a same-named extension's implementation.
+					sandboxRuntimeGate.seal(
+						created.session,
+						(created.session as unknown as { _customTools: ToolDefinition[] })._customTools.filter(
+							(tool) => !this.appliedPluginToolNames.get(created.session)?.has(tool.name),
+						),
+					);
+				}
+				// 终端工具开关与预设门控从创建起就生效（工具始终注册进注册表，只调活跃集）。
+				this.applyToolGating(created.session, targetPreset);
+				return {
+					...created,
+					services,
+					diagnostics: services.diagnostics,
+				};
+			} finally {
+				releaseMcp?.();
+			}
 		};
 	}
 
@@ -4804,7 +5022,7 @@ export class ClientSession {
 		}
 		try {
 			const infos = await this.loadSessionInfos();
-			const matched = await ClientSession.filterSessionsForSearch(q, infos);
+			const matched = (await searchSessionTranscripts(infos, q, { anchorCap: 0 })).map((r) => r.session);
 			for (const s of matched) {
 				out.push({
 					id: s.path,
@@ -4828,6 +5046,24 @@ export class ClientSession {
 			if (!text.trim()) return { ok: false, error: "投递文本为空" };
 			if (id !== this.activeId) await this.switchConversation(id);
 			await this.prompt(text);
+			return { ok: true };
+		} catch (err) {
+			return { ok: false, error: (err as Error).message };
+		}
+	}
+
+	/** Resolve a plugin run by its token, independently of active/local conversation IDs. */
+	findPluginRun(runId: string): Conversation | undefined {
+		if (!runId) return undefined;
+		return [...this.convs.values()].find((conv) => conv.pluginRunId === runId || conv.pendingPluginRunId === runId);
+	}
+
+	async abortPluginRun(runId: string): Promise<{ ok: boolean; error?: string }> {
+		const conv = this.findPluginRun(runId);
+		if (!conv) return { ok: false, error: `Unknown plugin run: ${runId}` };
+		try {
+			await this.interruptRun(conv, "插件已中止运行");
+			this.flushSnapshot();
 			return { ok: true };
 		} catch (err) {
 			return { ok: false, error: (err as Error).message };
@@ -6178,9 +6414,10 @@ export class ClientSession {
 		conversationId?: string,
 		category?: UiApprovalCategory,
 		hits?: UiApprovalHit[],
+		signal?: AbortSignal,
 	): Promise<ToolApprovalResolution> {
 		return new Promise((resolve) => {
-			if (this.disposed) {
+			if (this.disposed || signal?.aborted) {
 				resolve({ decision: "deny", reason: "会话已关闭" });
 				return;
 			}
@@ -6188,6 +6425,10 @@ export class ClientSession {
 			const targetConv = conversationId ? this.convs.get(conversationId) : this.conv;
 			const resolvedConvId = conversationId ?? targetConv?.id ?? this.activeId;
 			const conv = (resolvedConvId ? this.convs.get(resolvedConvId) : undefined) ?? targetConv;
+			if (!conv) {
+				resolve({ decision: "deny", reason: "目标对话不存在" });
+				return;
+			}
 			const suppression = approvalSuppressionReason(
 				conv?.approvalPolicy,
 				this.settingsSvc.current.toolApprovalEnabled !== false,
@@ -6225,10 +6466,23 @@ export class ClientSession {
 					}
 				}
 			}
-			if (!conv) {
-				resolve({ decision: "deny", reason: "目标对话不存在" });
-				return;
-			}
+			const approvalSession = conv.session;
+			let settled = false;
+			const onAbort = () => {
+				if (settled) return;
+				finish({ decision: "deny", reason: "Operation canceled" });
+				const home = this.findConversationHome?.(approvalSession);
+				(home?.session ?? this).emit({ type: "tool_approval_resolved", id: entry.id });
+				(home?.session ?? this).flushSnapshot();
+			};
+			const finish = (result: ToolApprovalResolution) => {
+				if (settled) return;
+				settled = true;
+				settledApprovalRequests.add(entry);
+				signal?.removeEventListener("abort", onAbort);
+				if (conv.pendingApprovals?.get(entry.id) === entry) conv.pendingApprovals.delete(entry.id);
+				resolve(result);
+			};
 			const entry: PendingApprovalEntry = {
 				id,
 				toolCallId,
@@ -6241,10 +6495,15 @@ export class ClientSession {
 				...(parentTool ? { parentTool } : {}),
 				conversationId: conv.id,
 				conversationTitle,
-				resolve,
+				resolve: finish,
 				createdAt: Date.now(),
 			};
 			this.ensurePendingApprovals(conv).set(id, entry);
+			signal?.addEventListener("abort", onAbort, { once: true });
+			if (signal?.aborted) {
+				onAbort();
+				return;
+			}
 			this.emit({
 				type: "tool_approval_pending",
 				id,
@@ -7920,6 +8179,9 @@ export class ClientSession {
 		skillsCatalogMaxDesc?: number;
 		skillsCatalogShowLocation?: boolean;
 		skillsCatalogBudget?: number;
+		chatUploadMaxMb?: number;
+		workspaceUploadMaxMb?: number;
+		folderUploadMaxMb?: number;
 		visionBridgeEnabled?: boolean;
 		visionBridgeModel?: string | null;
 		visionBridgePromptMode?: PromptMode;
@@ -8062,19 +8324,21 @@ export class ClientSession {
 
 	/** 查询全部 MCP 服务器及配置路径（全局 + 项目级） */
 	listMcpServers(): { servers: UiMcpServer[]; globalPath: string; projectPath: string } {
+		const cwd = this.cwd;
 		return listAllMcpServers({
 			agentDir: this.agentDir,
-			cwd: this.cwd,
+			cwd,
 			dataDir: this.stateStore.dataDir,
-			bridge: ClientSession.mcpBridge ?? undefined,
+			bridge: ClientSession.mcpProjects?.getBridge(cwd),
 		});
 	}
 
 	/** 保存或更新 MCP 服务器 */
 	async saveMcpServer(server: UiMcpServer, prevName?: string, prevScope?: McpScope): Promise<void> {
+		const cwd = this.cwd;
 		const res = saveMcpServerFile({
 			agentDir: this.agentDir,
-			cwd: this.cwd,
+			cwd,
 			dataDir: this.stateStore.dataDir,
 			server,
 			prevName,
@@ -8089,18 +8353,20 @@ export class ClientSession {
 			});
 			return;
 		}
-		if (ClientSession.mcpBridge) {
-			await ClientSession.mcpBridge.reload();
-		}
+		await ClientSession.mcpProjects?.reload(
+			cwd,
+			server.scope === "global" || prevScope === "global" ? "global" : "project",
+		);
 		this.broadcastMcpServers();
 		this.pushSettings();
 	}
 
 	/** 删除指定作用域下的 MCP 服务器 */
 	async deleteMcpServer(name: string, scope: McpScope): Promise<void> {
+		const cwd = this.cwd;
 		const res = deleteMcpServerFile({
 			agentDir: this.agentDir,
-			cwd: this.cwd,
+			cwd,
 			dataDir: this.stateStore.dataDir,
 			name,
 			scope,
@@ -8114,18 +8380,17 @@ export class ClientSession {
 			});
 			return;
 		}
-		if (ClientSession.mcpBridge) {
-			await ClientSession.mcpBridge.reload();
-		}
+		await ClientSession.mcpProjects?.reload(cwd, scope);
 		this.broadcastMcpServers();
 		this.pushSettings();
 	}
 
 	/** 切换指定作用域下的 MCP 服务器启用/停用状态 */
 	async toggleMcpServer(name: string, scope: McpScope, enabled: boolean): Promise<void> {
+		const cwd = this.cwd;
 		const res = toggleMcpServerFile({
 			agentDir: this.agentDir,
-			cwd: this.cwd,
+			cwd,
 			dataDir: this.stateStore.dataDir,
 			name,
 			scope,
@@ -8140,18 +8405,15 @@ export class ClientSession {
 			});
 			return;
 		}
-		if (ClientSession.mcpBridge) {
-			await ClientSession.mcpBridge.reload();
-		}
+		await ClientSession.mcpProjects?.reload(cwd, scope);
 		this.broadcastMcpServers();
 		this.pushSettings();
 	}
 
 	/** 手动触发重新加载全部 MCP 服务器 */
 	async reloadMcp(): Promise<void> {
-		if (ClientSession.mcpBridge) {
-			await ClientSession.mcpBridge.reload();
-		}
+		const cwd = this.cwd;
+		await ClientSession.mcpProjects?.reload(cwd, "global");
 		this.broadcastMcpServers();
 		this.pushSettings();
 		this.emit({
@@ -8181,25 +8443,33 @@ export class ClientSession {
 					agentDir: this.agentDir,
 					cwd,
 					dataDir: this.stateStore.dataDir,
-					bridge: ClientSession.mcpBridge ?? undefined,
+					bridge: ClientSession.mcpProjects?.getBridge(cwd),
 				}),
 			checkServer: (query: string) =>
 				checkMcpServer({
 					agentDir: this.agentDir,
 					cwd,
 					dataDir: this.stateStore.dataDir,
-					bridge: ClientSession.mcpBridge ?? undefined,
+					bridge: ClientSession.mcpProjects?.getBridge(cwd),
 					query,
 				}),
 			installServer: async (spec) => {
+				await ClientSession.mcpProjects?.prepare(cwd);
 				const res = await installMcpServer({
 					agentDir: this.agentDir,
 					cwd,
 					dataDir: this.stateStore.dataDir,
-					bridge: ClientSession.mcpBridge ?? undefined,
 					spec,
 				});
 				if (res.ok) {
+					await ClientSession.mcpProjects?.reload(cwd, res.scope ?? "project");
+					const server = listAllMcpServers({
+						agentDir: this.agentDir,
+						cwd,
+						dataDir: this.stateStore.dataDir,
+						bridge: ClientSession.mcpProjects?.getBridge(cwd),
+					}).servers.find((s) => s.name === res.name && s.scope === res.scope);
+					if (server) Object.assign(res, { server, status: server.status, tools: server.tools, error: server.error });
 					this.refreshPluginTools();
 					this.broadcastMcpServers();
 					this.pushSettings();
@@ -8213,7 +8483,7 @@ export class ClientSession {
 						agentDir: this.agentDir,
 						cwd,
 						dataDir: this.stateStore.dataDir,
-						bridge: ClientSession.mcpBridge ?? undefined,
+						bridge: ClientSession.mcpProjects?.getBridge(cwd),
 						query: name,
 					}).server?.scope ||
 						"project");
@@ -8225,9 +8495,7 @@ export class ClientSession {
 					scope: targetScope,
 				});
 				if (res.ok) {
-					if (ClientSession.mcpBridge) {
-						await ClientSession.mcpBridge.reload();
-					}
+					await ClientSession.mcpProjects?.reload(cwd, targetScope);
 					this.refreshPluginTools();
 					this.broadcastMcpServers();
 					this.pushSettings();
@@ -8235,9 +8503,7 @@ export class ClientSession {
 				return res;
 			},
 			reloadServers: async () => {
-				if (ClientSession.mcpBridge) {
-					await ClientSession.mcpBridge.reload();
-				}
+				await ClientSession.mcpProjects?.reload(cwd, "global");
 				this.refreshPluginTools();
 				this.broadcastMcpServers();
 				this.pushSettings();
@@ -8245,7 +8511,7 @@ export class ClientSession {
 					agentDir: this.agentDir,
 					cwd,
 					dataDir: this.stateStore.dataDir,
-					bridge: ClientSession.mcpBridge ?? undefined,
+					bridge: ClientSession.mcpProjects?.getBridge(cwd),
 				});
 			},
 		};
@@ -8438,13 +8704,39 @@ export class ClientSession {
 	 * （见 tool-overrides.ts —— 这四处覆盖不能塞进创建时的 `customTools`，那会静默顶掉扩展的
 	 * 同名工具，而官方 docs/extensions.md 明写扩展可覆盖 bash/read/write/edit，issue #750）。
 	 */
-	private toolOverrideSpecs(ownerId: string | undefined, cwd: string, terminals?: TerminalManager): ToolOverrideSpec[] {
+	private toolConversationHome(session: AgentSession): { client: ClientSession; conv: Conversation } | undefined {
+		const found = this.findConversationHome?.(session);
+		const client = found?.session ?? this;
+		const conv = found ? client.convs.get(found.convId) : client.convOfSession(session);
+		return conv ? { client, conv } : undefined;
+	}
+
+	private toolOverrideSpecs(
+		ownerId: string | undefined,
+		cwd: string,
+		terminals?: TerminalManager,
+		anchor?: { session?: AgentSession },
+		evidenceSession?: AgentSession,
+	): ToolOverrideSpec[] {
 		const currentPermission = (): string =>
 			(ownerId ? this.convs.get(ownerId)?.permissionPreset : undefined) ??
 			this.settingsSvc.current.defaultPermissionPreset ??
 			"workspace-write-never";
-		const approve: AskApprovalFn = (toolCallId, toolName, params, reason, reasonEn, convId, category, hits) =>
-			this.askApproval(toolCallId, toolName, params, reason, reasonEn, convId, category, hits);
+		const approve: AskApprovalFn = (toolCallId, toolName, params, reason, reasonEn, convId, category, hits, signal) => {
+			const home = anchor?.session ? this.toolConversationHome(anchor.session) : undefined;
+			if (anchor?.session && !home) return Promise.resolve({ decision: "deny" as const });
+			return (home?.client ?? this).askApproval(
+				toolCallId,
+				toolName,
+				params,
+				reason,
+				reasonEn,
+				home?.conv.id ?? convId,
+				category,
+				hits,
+				signal,
+			);
+		};
 		// 行为开关（read 本体不可关）：每次调用实时读设置 —— 不进 tool-manager 的 ActiveSet 目录。
 		const readDirOptions: ReadDirToolOptions = {
 			dirEnabled: (): boolean => this.settingsSvc.current.readDirEnabled !== false,
@@ -8464,6 +8756,7 @@ export class ClientSession {
 		// 写/编/终端的权限沙箱包装：同一个函数，有扩展同名工具时把它的定义当基底（末参）。
 		// 目标审查闸门包在**最外层**（权限沙箱之前）：审查回合只读核实，写类直接拒。
 		// 快照并发门禁包裹在工具执行最前沿，确保写操作前快照必定已就绪。
+		const sandboxIdentity = this.sandboxes.getExecutionIdentity(cwd);
 		const planGate = (def: ToolDefinition): ToolDefinition =>
 			withWorkspaceSnapshotGate(
 				withSubagentSecurityGate(
@@ -8472,9 +8765,11 @@ export class ClientSession {
 							withPlanModeGate(
 								withSandboxJailGate(
 									def,
-									() => this.sandboxes.getByCwd(cwd),
+									() => this.sandboxes.getExecutionIdentity(cwd, sandboxIdentity),
 									() => cwd,
 									() => this.getLang(),
+									{ trustedTool: !remoteOps },
+									() => this.sandboxes.acquireExecution(cwd, sandboxIdentity),
 								),
 								() => this.planModeOf(ownerId),
 								() => this.getLang(),
@@ -8582,7 +8877,7 @@ export class ClientSession {
 
 			const permissionWrapped = wrapBashToolWithPermission(guarded, currentPermission, () => this.getLang());
 
-			return this.wrapGenericTool(permissionWrapped, ownerId, cwd);
+			return this.wrapGenericTool(permissionWrapped, ownerId, cwd, anchor);
 		};
 		const remoteOps = createRemoteSdkOperations(cwd);
 		const specs: ToolOverrideSpec[] = [
@@ -8594,9 +8889,17 @@ export class ClientSession {
 			{
 				name: "read",
 				// 没有扩展 read：完整覆盖（内置基底 + 英文描述 + file_path 别名）。
-				fallback: () => withToolGuard(makeReadDirTool(cwd, readDirOptions), readGuardOptions),
+				fallback: () =>
+					planGate(
+						withContextEvidenceRead(withToolGuard(makeReadDirTool(cwd, readDirOptions), readGuardOptions), () =>
+							(evidenceSession ?? anchor?.session)?.sessionManager.getSessionFile(),
+						),
+					),
 				// 有扩展 read：只叠「目录列条目」，它的锚协议/独有参数/渲染全保留（行为委托它）。
-				composeWith: (base) => withToolGuard(withReadDirSupport(base, cwd, readDirOptions), readGuardOptions),
+				composeWith: (base) =>
+					withContextEvidenceRead(withToolGuard(withReadDirSupport(base, cwd, readDirOptions), readGuardOptions), () =>
+						(evidenceSession ?? anchor?.session)?.sessionManager.getSessionFile(),
+					),
 			},
 			{ name: "write", fallback: () => composeWrite(), composeWith: (base) => composeWrite(base) },
 			{
@@ -8638,7 +8941,30 @@ export class ClientSession {
 				},
 			);
 		}
-		return specs;
+		if (!anchor) return specs;
+		return specs.map((spec) => {
+			const bindOwner = (initial: AnyToolDefinition, base?: AnyToolDefinition): AnyToolDefinition => ({
+				...initial,
+				execute: async (...args) => {
+					const home = anchor.session ? this.toolConversationHome(anchor.session) : undefined;
+					if (!home) throw new Error("Tool conversation is no longer available");
+					this.sandboxes.getExecutionIdentity(home.conv.cwd, sandboxIdentity);
+					const current = home.client
+						.toolOverrideSpecs(home.conv.id, home.conv.cwd, home.conv.terminals, undefined, anchor.session)
+						.find((entry) => entry.name === spec.name);
+					if (!current) throw new Error("Tool is no longer available");
+					const implementation = base && current.composeWith ? current.composeWith(base) : current.fallback();
+					return implementation.execute(...args);
+				},
+			});
+			return {
+				...spec,
+				fallback: () => bindOwner(spec.fallback()),
+				...(spec.composeWith
+					? { composeWith: (base: AnyToolDefinition) => bindOwner(spec.composeWith!(base), base) }
+					: {}),
+			};
+		});
 	}
 
 	/** 统一工具门控（tool_manage 唯一落点）：按 disabledAgentTools 把目录内工具
@@ -8654,6 +8980,7 @@ export class ClientSession {
 			this.presetOfSession(session) ??
 			this.settingsSvc.current.defaultAgentPreset ??
 			"standard";
+		this.syncPluginTools(session, targetPreset);
 		const isPlanMode = conv?.planMode === true;
 		const isDelegateMode = conv?.delegateMode === true;
 		const disabled = new Set(effectiveDisabledAgentTools(this.settingsSvc.current));
@@ -8669,7 +8996,7 @@ export class ClientSession {
 		if (conv?.subagentAllowedTools && conv.subagentAllowedTools.size > 0) {
 			try {
 				for (const t of session.getAllTools()) {
-					if (!conv.subagentAllowedTools.has(t.name)) {
+					if (!subagentAllowedToolVisible(conv.subagentAllowedTools, t.name)) {
 						disabled.add(t.name);
 					}
 				}
@@ -8708,16 +9035,29 @@ export class ClientSession {
 			forceActive: lazy && targetPreset !== "ask" ? [LOAD_TOOLS_TOOL_NAME, ...loadedNames] : [],
 		});
 		const ownerId = conv?.id;
-		const subagentOff = disabled.has("subagent") || SPAWN_TOOLS_BARRED.has(session);
-		syncSubagentOverride(session as unknown as OverrideSessionLike, subagentOff, () =>
-			ownerId
-				? makeSubagentTools(withSubagentOwner(this.subagentHost, ownerId), undefined, ownerId)[0]
-				: makeSubagentTools(this.subagentHost)[0],
+		const subagentOff = disabled.has("conversation") || disabled.has("subagent") || SPAWN_TOOLS_BARRED.has(session);
+		syncSubagentOverride(session as unknown as OverrideSessionLike, subagentOff, (name) =>
+			mergeConversationTools([
+				...(ownerId
+					? makeSubagentTools(
+							withSubagentOwner(this.subagentHost, ownerId, () => this.requireSubagentOwner({ session }, ownerId)),
+							undefined,
+							() => this.requireSubagentOwner({ session }, ownerId),
+						)
+					: makeSubagentTools(this.subagentHost)),
+				makeConversationReadTool(this.conversationReadHost(), () => this.getLang()),
+			]).find((tool) => tool.name === name)!,
 		);
-		this.syncPluginTools(session, targetPreset);
 		// 逐工具文案覆盖（设置页「工具」区）：在插件 sync / 工具刷新之后重放——
 		// `_refreshToolRegistry()` 会用出厂定义重建注册表，覆盖必须重新打上去。
 		// 只改模型可见的 description / snippet / guidelines，不碰执行体。
+		syncTerminalReadOnlySchema(
+			session as unknown as { _toolRegistry?: Map<string, any> },
+			isPlanMode ||
+				targetPreset === "reader" ||
+				conv?.subagentSecurityMode === "readonly" ||
+				conv?.subagentSecurityMode === "verify",
+		);
 		applyToolPromptOverrides(session as unknown as ToolPromptSessionLike, this.settingsSvc.current.toolPromptOverrides);
 		this.sessionStatsCache = null;
 		this.cachedBaseTokens = null;
@@ -8809,7 +9149,6 @@ export class ClientSession {
 			});
 			return;
 		}
-		this.settingsSvc.current.defaultAgentPreset = hit.id;
 		this.stateStore.saveSettings(this.clientId, { defaultAgentPreset: hit.id });
 		this.pushSettings();
 		this.refreshAgentPresets();
@@ -9235,7 +9574,6 @@ export class ClientSession {
 			});
 			return;
 		}
-		this.settingsSvc.current.defaultPermissionPreset = hit.value;
 		this.stateStore.saveSettings(this.clientId, { defaultPermissionPreset: hit.value });
 		this.refreshPermission();
 		this.flushSnapshot();
@@ -9252,7 +9590,25 @@ export class ClientSession {
 	 * 6. withSubagentSecurityGate：子代理安全规格拦截（只读/审查/工具白名单，issue #727）。
 	 * 无论是会话创建时的静态 customTools 还是 syncPluginTools 动态注入的工具，均无差别经由此管道。
 	 */
-	private wrapGenericTool(def: ToolDefinition, ownerId?: string, cwdOverride?: string): ToolDefinition {
+	private wrapGenericTool(
+		def: ToolDefinition,
+		ownerId?: string,
+		cwdOverride?: string,
+		anchor?: { session?: AgentSession },
+		trustedTool = false,
+	): ToolDefinition {
+		const capturedSandbox = this.sandboxes.getExecutionIdentity(cwdOverride ?? this.cwd);
+		if (anchor) {
+			return {
+				...def,
+				execute: async (...args) => {
+					const home = anchor.session ? this.toolConversationHome(anchor.session) : undefined;
+					if (!home) throw new Error("Tool conversation is no longer available");
+					this.sandboxes.getExecutionIdentity(home.conv.cwd, capturedSandbox);
+					return home.client.wrapGenericTool(def, home.conv.id, home.conv.cwd, undefined, trustedTool).execute(...args);
+				},
+			};
+		}
 		const getEffectiveCwd = () => (ownerId ? this.convs.get(ownerId)?.cwd : undefined) ?? cwdOverride ?? this.cwd;
 		return withSubagentSecurityGate(
 			withGoalReviewGate(
@@ -9265,15 +9621,21 @@ export class ClientSession {
 								getRules: () => this.approvalRules.list(),
 								getLang: () => this.getLang(),
 								conversationId: () => ownerId,
-								askApproval: (toolCallId, toolName, params, reason, reasonEn, convId, category, hits) =>
-									this.askApproval(toolCallId, toolName, params, reason, reasonEn, convId, category, hits),
+								askApproval: (toolCallId, toolName, params, reason, reasonEn, convId, category, hits, signal) =>
+									this.askApproval(toolCallId, toolName, params, reason, reasonEn, convId, category, hits, signal),
 								onAudit: (entry) => this.auditLogger.record(entry),
 							}),
-							() => this.sandboxes.getByCwd(getEffectiveCwd()),
+							() => this.sandboxes.getExecutionIdentity(getEffectiveCwd(), capturedSandbox),
 							getEffectiveCwd,
 							() => this.getLang(),
+							{ trustedTool },
+							() => this.sandboxes.acquireExecution(getEffectiveCwd(), capturedSandbox),
 						),
-						() => this.planModeOf(ownerId),
+						() =>
+							this.planModeOf(ownerId) ||
+							(def.name === "terminal" &&
+								((ownerId ? this.convs.get(ownerId)?.agentPreset : undefined) ??
+									this.settingsSvc.current.defaultAgentPreset) === "reader"),
 						() => this.getLang(),
 					),
 					() => this.delegateModeOf(ownerId),
@@ -9294,11 +9656,11 @@ export class ClientSession {
 	 *  未知/已卸载插件的禁用条目保留但不影响现有工具）。
 	 *  预设是第二层门控（见 tool-manager.ts 语义总表）：非 standard 预设下插件工具
 	 *  一律不可用（读写未知，保守处理），此时返回空表，调用方负责从会话移除。 */
-	private enabledPluginToolDefs(preset?: string): ToolDefinition[] {
+	private enabledPluginToolDefs(preset?: string, cwd?: string): ToolDefinition[] {
 		if (!presetAllowsPluginTools(preset)) return [];
 		const off = new Set(normalizeDisabledPluginTools(this.settingsSvc.current.disabledPluginTools));
 		const disabledPlugins = new Set(this.settingsSvc.current.disabledPlugins ?? []);
-		return (this.pluginToolsProvider?.() ?? [])
+		return (this.pluginToolsProvider?.(cwd) ?? [])
 			.filter((t) => {
 				if (t.pluginId && disabledPlugins.has(t.pluginId)) return false;
 				return !off.has(t.name);
@@ -9314,34 +9676,45 @@ export class ClientSession {
 	private syncPluginTools(session: AgentSession, preset?: string): void {
 		let targetPreset = preset;
 		let ownerId: string | undefined;
+		let cwd: string | undefined;
 		for (const [id, conv] of this.convs.entries()) {
 			if (conv.session !== session) continue;
 			ownerId = id;
+			cwd = conv.cwd;
 			if (conv.subagentBarsPluginTools) return;
 			targetPreset ??= conv.agentPreset;
 		}
 		try {
-			const defs = this.enabledPluginToolDefs(targetPreset).map((t) => this.wrapGenericTool(t, ownerId));
+			if (!cwd) return;
+			if (this.sandboxes.getExecutionIdentity(cwd)) return;
+			const defs = this.enabledPluginToolDefs(targetPreset, cwd).map((t) =>
+				this.wrapGenericTool(t, ownerId, undefined, { session }),
+			);
 			// 移除口径 = 已同步过的 ∪ 全量插件宇宙：创建时工厂直接注册进
 			// _customTools 的工具不在 applied 表里，首轮同步（defs 为空时）否则删不掉。
 			const universe = new Set([
-				...this.appliedPluginToolNames,
-				...(this.pluginToolsProvider?.() ?? []).map((t) => t.name),
+				...(this.appliedPluginToolNames.get(session) ?? []),
+				...(this.pluginToolsProvider?.(cwd) ?? []).map((t) => t.name),
 			]);
 			const next = syncPluginToolsIntoSession(
 				session as unknown as Parameters<typeof syncPluginToolsIntoSession>[0],
 				defs as unknown as Parameters<typeof syncPluginToolsIntoSession>[1],
 				universe,
 			);
-			if (next) this.appliedPluginToolNames = new Set(next);
+			if (next) this.appliedPluginToolNames.set(session, new Set(next));
 		} catch (err) {
 			console.error("[plugins] sync tools to session failed:", err);
 		}
 	}
 
+	/** Includes idle/background/subagent conversations: any retained tool table pins its project. */
+	mcpProjectCwds(): string[] {
+		return [...new Set([...this.convs.values()].map((conv) => conv.cwd))];
+	}
+
 	/** index.ts 经 pluginMgr.onAgentToolsChanged 触发：把插件 AI 工具推入全部会话。 */
 	refreshPluginTools(): void {
-		for (const conv of this.convs.values()) this.syncPluginTools(conv.session);
+		for (const conv of this.convs.values()) this.applyToolGating(conv.session, conv.agentPreset);
 	}
 
 	/** index.ts 经 pluginMgr.onMarkersChanged 触发：刷新客户端 markers 设置与小部件。 */
@@ -9637,12 +10010,16 @@ export class ClientSession {
 		 * after the current turn settles, skipping remaining planned tool calls.
 		 */
 		queue = false,
+		targetConversation?: Conversation,
 	): Promise<void> {
 		// Captured at the START (before any await): the conversation being
 		// addressed by this prompt. See the naming block below — a concurrent
 		// switch/new_chat while prompt() is in flight must never target a
 		// different conversation.
-		const conv = this.conv;
+		const conv = targetConversation ?? this.conv;
+		if (targetConversation && this.convs.get(conv.id) !== conv) {
+			throw new Error("Prompt conversation is no longer available");
+		}
 		// 人类用户发送新消息，重置自主轮次与空转计数器（issue #726）
 		conv.autonomousTurnsWithoutUser = 0;
 		conv.consecutiveIdleWakeTurns = 0;
@@ -9749,9 +10126,13 @@ export class ClientSession {
 		try {
 			this.drafts.clear(conv.session.sessionId);
 		} catch {
-			// ignore
+			this.emitNotice(
+				"warning",
+				"消息将继续发送，但已发送草稿未能从磁盘清理。",
+				"The message will still be sent, but its saved draft could not be cleared.",
+			);
 		}
-		const s = this.session;
+		const s = conv.session;
 		try {
 			// Native slash commands (see NATIVE_COMMANDS) are executed here and
 			// never reach the SDK. Extension / skill / template commands fall
@@ -10056,7 +10437,7 @@ export class ClientSession {
 			// Attach files as independent nextTurn context messages (asides) so the
 			// user message stays clean; they render as separate attachment cards.
 			// SDK 的流式队列只消费用户消息；引用须与对应队列项一起入队和撤回。
-			const scan = scanAtMentions(trimmedText, this.cwd, [], attachments ?? []);
+			const scan = scanAtMentions(trimmedText, conv.cwd, [], attachments ?? []);
 			const effectiveAttachments =
 				scan.detectedAttachments.length > 0 ? [...(attachments ?? []), ...scan.detectedAttachments] : attachments;
 			const streamingQuotes = s.isStreaming
@@ -10072,11 +10453,11 @@ export class ClientSession {
 				nonQuoteAttachments && nonQuoteAttachments.length > 0
 					? await buildAttachmentMessages(
 							{
-								cwd: this.cwd,
+								cwd: conv.cwd,
 								clientId: this.clientId,
 								emit: (msg) => this.emit(msg),
 								settings: this.settingsSvc.current,
-								session: this.session,
+								session: s,
 								// issue #91：附件/视觉桥文案按客户端 UI 语言出中英（英文默认）。
 								getLang: () => this.getLang(),
 							},
@@ -10518,7 +10899,11 @@ export class ClientSession {
 			if (!sessionId) return;
 			this.drafts.save(sessionId, text, ts);
 		} catch {
-			// best-effort：草稿丢了可以重打
+			this.emitNotice(
+				"error",
+				"草稿保存失败，请保留输入内容并检查磁盘空间和文件权限。",
+				"Draft could not be saved. Keep your input and check disk space and file permissions.",
+			);
 		}
 	}
 
@@ -10623,8 +11008,27 @@ export class ClientSession {
 		this.flushSnapshot();
 	}
 
-	/** Interrupt a run: abort, with a force-reset fallback on timeout. */
-	private async interruptRun(conv: Conversation, reason: string): Promise<void> {
+	private interruptFlights = new WeakMap<Conversation, Promise<void>>();
+	private resetFlights = new WeakMap<Conversation, Promise<void>>();
+
+	/** Interrupts and resets share one flight per conversation. */
+	private interruptRun(conv: Conversation, reason: string): Promise<void> {
+		this.interruptFlights ??= new WeakMap();
+		const existing = this.interruptFlights.get(conv);
+		if (existing) return existing;
+		const runtime = conv.runtime;
+		const flight = Promise.resolve()
+			.then(() => this.performInterruptRun(conv, reason, runtime))
+			.finally(() => {
+				if (this.interruptFlights.get(conv) === flight) this.interruptFlights.delete(conv);
+			});
+		this.interruptFlights.set(conv, flight);
+		return flight;
+	}
+
+	private async performInterruptRun(conv: Conversation, reason: string, runtime: AgentSessionRuntime): Promise<void> {
+		const session = runtime.session;
+		if (this.convs.get(conv.id) !== conv || conv.runtime !== runtime) return;
 		// 正在投递的消息前置阶段（附件构建 / 影子快照）立即打断
 		if (conv.activePromptAc) {
 			conv.activePromptAc.abort();
@@ -10644,26 +11048,30 @@ export class ClientSession {
 		// begins), so we watch for agent_end and force-reset when it never
 		// comes — abort 卡住（超时）或空转（结算窗口）两条路都覆盖。
 		let ended = false;
-		let forced = false;
-		const off = conv.session.subscribe((e) => {
+		let forced: Promise<void> | undefined;
+		const off = session.subscribe((e) => {
 			if (e.type === "agent_end") {
 				ended = true;
 			}
 		});
 		const force = () => {
-			if (forced) return;
-			forced = true;
-			void this.forceResetConversation(conv, `${reason}：运行未终止，已强制重置当前对话`);
+			if (forced || this.convs.get(conv.id) !== conv || conv.runtime !== runtime) return;
+			forced = this.forceResetConversation(conv, `${reason}：运行未终止，已强制重置当前对话`);
 		};
 		// 1) abort itself hangs (model stream ignores the signal) → hard kill.
+		let releaseAbortWait!: () => void;
+		const abortDeadline = new Promise<void>((resolve) => {
+			releaseAbortWait = resolve;
+		});
 		const abortTimer = setTimeout(() => {
 			if (!ended) force();
+			releaseAbortWait();
 		}, ClientSession.HARD_ABORT_TIMEOUT_MS);
 		abortTimer.unref?.();
 		// 2) abort itself (Stop semantics: kills the process tree, emits
 		//    agent_end with stopReason "aborted" on the normal path).
 		try {
-			await conv.runtime.session.abort();
+			await Promise.race([session.abort(), abortDeadline]);
 		} catch (err) {
 			this.emit({
 				type: "notice",
@@ -10674,19 +11082,40 @@ export class ClientSession {
 		}
 		// 3) abort returned but no agent_end within the settle window:
 		//    仅在 session 依然处于非 idle 状态（即真正卡住）时才等待并强制重置
-		if (!ended && !conv.session.isIdle) {
+		if (!ended && !session.isIdle && !forced) {
 			await new Promise((r) => setTimeout(r, ClientSession.HARD_ABORT_SETTLE_MS));
 		}
 		clearTimeout(abortTimer);
 		off();
-		if (!ended && !conv.session.isIdle) force();
+		if (!ended && !session.isIdle) force();
+		await forced;
 	}
 
 	/** Force-reset a conversation: dispose the stuck runtime (kills the hung
 	 *  model stream / child processes) and rebuild it from the most recent
 	 *  persisted session. The conversation record itself is kept (same id,
 	 *  same cwd, same serialization caches), so the UI stays attached. */
-	private async forceResetConversation(conv: Conversation, reason: string): Promise<void> {
+	private forceResetConversation(conv: Conversation, reason: string): Promise<void> {
+		this.resetFlights ??= new WeakMap();
+		const existing = this.resetFlights.get(conv);
+		if (existing) return existing;
+		const runtime = conv.runtime;
+		const flight = Promise.resolve()
+			.then(() => this.performForceResetConversation(conv, reason, runtime))
+			.finally(() => {
+				if (this.resetFlights.get(conv) === flight) this.resetFlights.delete(conv);
+			});
+		this.resetFlights.set(conv, flight);
+		return flight;
+	}
+
+	private async performForceResetConversation(
+		conv: Conversation,
+		reason: string,
+		expectedRuntime: AgentSessionRuntime,
+	): Promise<void> {
+		const current = () => this.convs.get(conv.id) === conv && conv.runtime === expectedRuntime;
+		if (!current()) return;
 		// #280：先记下本次对话自己的会话文件——重建必须回到同一个文件，
 		// 不能用 continueRecent(cwd) 按 mtime 取「最近」（同 cwd 多会话时会接错文件）。
 		const ownFile = (() => {
@@ -10706,11 +11135,11 @@ export class ClientSession {
 			conv.pluginRunId = undefined;
 			conv.pendingPluginRunId = undefined;
 			disposeEvalSession(conv.id);
-			await conv.runtime.dispose();
+			await expectedRuntime.dispose();
 			// #485：dispose 挂起期间会话可能已被强行关闭移出（forceDismiss 走
 			// removeConversation）——此时绝不能幽灵重建，否则新 runtime 挂在已脱离
 			// this.convs 的 conv 对象上，无人持有、永不回收。
-			if (!this.convs.has(conv.id)) return;
+			if (!current()) return;
 			// #280：dispose 丢弃了内存里的在飞状态（未落盘的工具结果蒸发），
 			// 文件尾可能留下一个悬空 toolCall——先补合成 toolResult 再重建，
 			// 否则重建后的 prompt 会把非法转录链喂给 provider（零落盘黑洞）。
@@ -10757,7 +11186,7 @@ export class ClientSession {
 			const runtime = opened.runtime;
 			// #485：openManagerAndRuntime 的长 await 期间会话被移出的同一守卫——
 			// 刚建好的 runtime 无人认领，就地 dispose 防止扩展宿主子进程泄漏。
-			if (!this.convs.has(conv.id)) {
+			if (!current()) {
 				try {
 					await runtime.dispose();
 				} catch {
@@ -10870,6 +11299,7 @@ export class ClientSession {
 				return false;
 			}
 		}
+		const releaseSlot = ephemeral ? undefined : this.reserveConversationSlot(this.cwd);
 		// The outgoing conversation is left behind — apply the running-list
 		// lifecycle. Removal is deferred until the new chat exists so the active
 		// conversation stays valid during the (async) runtime creation.
@@ -11006,6 +11436,8 @@ export class ClientSession {
 				text: `新建对话失败：${(err as Error).message}`,
 				textEn: `Failed to create chat: ${(err as Error).message}`,
 			});
+		} finally {
+			releaseSlot?.();
 		}
 		this.flushSnapshot();
 		return ready;
@@ -11025,42 +11457,32 @@ export class ClientSession {
 	 *   caller must drop it (returns it so removal happens only after the
 	 *   active conversation has been switched away).
 	 */
-	/** Write a pending-compaction marker into the session file. The SDK treats
-	 *  unknown custom entries as inert data, so a crash/restart-safe "we were
-	 *  compacting" record survives in the transcript itself — no sidecar file
-	 *  to orphan or clean up. Removed on compaction_end. */
+	/** Recovery state belongs to the host; transcript entries belong to the SDK. */
+	private compactionFile(conv: Conversation): string | undefined {
+		return conv.session.sessionManager.isPersisted() ? conv.session.sessionFile : undefined;
+	}
+
+	private compactionPersistenceFailed(error: unknown): void {
+		console.error("[compaction] recovery state persistence failed:", error);
+		this.emit({
+			type: "notice",
+			level: "warning",
+			text: "压缩恢复状态保存失败，重启后可能无法提示中断。",
+			textEn: "Failed to save compaction recovery state; interruption detection after restart may be unavailable.",
+		});
+	}
+
 	private markCompactionPending(conv: Conversation): void {
 		try {
-			const file = conv.session.sessionFile;
-			if (!file) return;
-			// parentId joins the live chain: a null-parent marker would become a
-			// second root and hijack the leaf, corrupting the transcript.
-			// #235: id 必须唯一——硬编码共享 id ＋ SDK byId last-wins ＋ 标记恰为末行
-			// 时新消息 parent 记成共享 id ＝ 下次 open 回溯成环，整个会话打不开。
-			const marker = {
-				type: "custom",
-				id: makeCompactionMarkerId("pending"),
-				parentId: conv.session.sessionManager.getLeafId(),
-				timestamp: new Date().toISOString(),
-				customType: "pi-web-ui/compaction-pending",
-				data: {
-					reason: conv.compactionState?.reason ?? "manual",
-					startedAt: conv.compactionState?.startedAt ?? Date.now(),
-				},
-			};
-			appendFileSync(file, `${JSON.stringify(marker)}\n`);
-		} catch {
-			// Marker is best-effort: compaction still runs without it, only the
-			// restart-detection below is lost.
+			markCompactionState(this.compactionFile(conv), {
+				reason: conv.compactionState?.reason ?? "manual",
+				startedAt: conv.compactionState?.startedAt ?? Date.now(),
+			});
+		} catch (error) {
+			this.compactionPersistenceFailed(error);
 		}
 	}
 
-	/** Close out the pending-compaction marker (called on compaction_end). The
-	 *  session file is append-only through the SDK, so rewrite the file with the
-	 *  pending marker replaced by a completion marker carrying the outcome
-	 *  (completed / failed / cancelled + token counts). The transcript then holds
-	 *  a durable started→finished record instead of a silent gap. No-op when the
-	 *  file or marker is absent. */
 	private clearCompactionPending(
 		conv: Conversation,
 		outcome?: {
@@ -11071,76 +11493,35 @@ export class ClientSession {
 		},
 	): void {
 		try {
-			const file = conv.session.sessionFile;
-			if (!file || !existsSync(file)) return;
-			const raw = readFileSync(file, "utf8");
-			const lines = raw.split("\n");
-			// #235：按 customType 定位（id 自本 fix 起唯一，老文件仍是硬编码 id，
-			// 按 id 找已不可靠）。取最后一个：重叠压缩时它属于本次，旧残留留给
-			// 下次 open 的 repair/notice 处理。
-			let idx = -1;
-			for (let i = lines.length - 1; i >= 0; i--) {
-				if (lines[i].includes(`"${COMPACTION_PENDING_TYPE}"`)) {
-					idx = i;
-					break;
-				}
-			}
-			if (idx < 0) return;
-			// ponytail: full-file rewrite on compaction end — compactions are rare
-			// (seconds apart at most), session files are KBs; no streaming needed.
-			if (!outcome) {
-				lines.splice(idx, 1);
-			} else {
-				let parentId: string | null = null;
-				try {
-					parentId = conv.session.sessionManager.getLeafId();
-				} catch {
-					// fall through with null parent
-				}
-				const done = {
-					type: "custom",
-					id: makeCompactionMarkerId("done"),
-					parentId,
-					timestamp: new Date().toISOString(),
-					customType: "pi-web-ui/compaction-done",
-					data: { reason: conv.compactionState?.reason ?? "manual", ...outcome },
-				};
-				lines[idx] = JSON.stringify(done);
-			}
-			atomicWriteFileSync(file, lines.join("\n"));
-		} catch {
-			// Best-effort, same as the write path.
+			if (outcome)
+				conv.session.sessionManager.appendCustomEntry("pi-web-ui/compaction-done", {
+					reason: conv.compactionState?.reason ?? "manual",
+					...outcome,
+				});
+			finishCompactionState(this.compactionFile(conv));
+		} catch (error) {
+			this.compactionPersistenceFailed(error);
 		}
 	}
 
-	/** Check a freshly opened session for a leftover compaction-pending marker.
-	 *  A marker with no matching compaction_end means the server died mid-compaction
-	 *  (restart/crash): the in-flight summary is gone, but the session is intact.
-	 *  Surface a warning notice with a one-click retry (/compact) instead of
-	 *  silently dropping it. Consumes the marker either way. */
 	private noticeInterruptedCompaction(conv: Conversation): void {
 		try {
-			const file = conv.session.sessionFile;
-			if (!file || !existsSync(file)) return;
-			// Match on the stable customType (conversation ids change every restart).
-			const raw = readFileSync(file, "utf8");
-			if (!raw.includes('"pi-web-ui/compaction-pending"')) return;
-			const kept = raw.split("\n").filter((line) => !line.includes("pi-web-ui/compaction-pending"));
-			atomicWriteFileSync(file, kept.join("\n"));
-			this.emitCompactionInterruptedNotice();
-		} catch {
-			// Best-effort, same as the write path.
+			if (consumeInterruptedCompaction(this.compactionFile(conv))) this.emitCompactionInterruptedNotice();
+		} catch (error) {
+			this.compactionPersistenceFailed(error);
 		}
 	}
 
 	private emitCompactionInterruptedNotice(): void {
-		this.emit({
+		const notice: ServerMessage = {
 			type: "notice",
 			level: "warning",
 			text: "上次压缩上下文被服务端重启打断，未完成。可发送 /compact 重试。",
 			textEn:
 				"The last context compaction was interrupted by a server restart and did not finish. Send /compact to retry.",
-		});
+		};
+		if (this.sinks?.size === 0) this.pendingNotices.push(notice);
+		else this.emit(notice);
 	}
 
 	/** #235 修复产生的提示（调用方决定 emit 还是进 pendingNotices）。 */
@@ -11301,6 +11682,8 @@ export class ClientSession {
 	}
 
 	private displaceActive(): Conversation | null {
+		// Lifecycle coordination may have awaited and removed every sandbox runtime.
+		if (this.convs.size === 0) return null;
 		const conv = this.conv;
 		// 正在过户给其他会话：绝不就地释放（runtime/终端等整体搬迁给 target）。
 		if (conv.transferring) return null;
@@ -11370,7 +11753,7 @@ export class ClientSession {
 	/** Remove a conversation from the running list and free its runtime. The
 	 *  session stays persisted on disk, so it remains recoverable from the
 	 *  history list. Never removes the active conversation. */
-	private removeConversation(id: string): void {
+	private removeConversation(id: string, runtimeDisposed = false): void {
 		const conv = this.convs.get(id);
 		if (!conv || id === this.activeId) return;
 		// #487：会话没了，挂起的提问/审批永远等不到人点——按 dispose 口径就地结算。
@@ -11438,7 +11821,7 @@ export class ClientSession {
 				rmSync(ephemeralDir, { recursive: true, force: true });
 			} catch {}
 		}
-		void conv.runtime.dispose().catch(() => {});
+		if (!runtimeDisposed) void conv.runtime.dispose().catch(() => {});
 	}
 
 	/** 本会话是否持有这个 SDK 会话对应的对话；命中则给出它的**当前** id
@@ -11560,19 +11943,7 @@ export class ClientSession {
 		for (const conv of convs) {
 			if (conv.pendingApprovals && conv.pendingApprovals.size > 0) {
 				for (const [, a] of conv.pendingApprovals) {
-					approvals.push({
-						resolve: a.resolve,
-						toolCallId: a.toolCallId,
-						toolName: a.toolName,
-						params: a.params,
-						reason: a.reason,
-						reasonEn: a.reasonEn,
-						...(a.category ? { category: a.category } : {}),
-						...(a.hits ? { hits: a.hits } : {}),
-						conversationId: a.conversationId ?? conv.id,
-						...(a.conversationTitle ? { conversationTitle: a.conversationTitle } : {}),
-						createdAt: a.createdAt,
-					});
+					approvals.push(Object.assign(a, { conversationId: a.conversationId ?? conv.id }));
 				}
 				conv.pendingApprovals.clear();
 			}
@@ -11693,24 +12064,13 @@ export class ClientSession {
 		// 迁入的待审批按新 id 重新挂上（等待中的 Promise 未动，模型还在等）。
 		// 主对话的立即弹窗（子代理的靠角标与快照呈现，与问卷同一口径）。
 		for (const a of payload.approvals) {
+			if (settledApprovalRequests.has(a)) continue;
 			const nid = `appr-${++this.approvalSeq}`;
 			const aConvId = fix(a.conversationId);
 			const targetConv = this.convs.get(aConvId);
 			if (targetConv) {
-				this.ensurePendingApprovals(targetConv).set(nid, {
-					id: nid,
-					toolCallId: a.toolCallId,
-					toolName: a.toolName,
-					params: a.params,
-					reason: a.reason,
-					reasonEn: a.reasonEn,
-					...(a.category ? { category: a.category } : {}),
-					...(a.hits ? { hits: a.hits } : {}),
-					conversationId: aConvId,
-					...(a.conversationTitle ? { conversationTitle: a.conversationTitle } : {}),
-					resolve: a.resolve,
-					createdAt: a.createdAt,
-				});
+				const entry = Object.assign(a, { id: nid, conversationId: aConvId }) as PendingApprovalEntry;
+				this.ensurePendingApprovals(targetConv).set(nid, entry);
 				if (aConvId === mainId) {
 					this.emit({
 						type: "tool_approval_pending",
@@ -12009,21 +12369,6 @@ export class ClientSession {
 	private static sessionFileCache = new Map<string, { mtime: number; size: number; info: SessionInfo }>();
 	private static readonly SESSION_FILE_CACHE_MAX = 512;
 
-	/**
-	 * 转录全文缓存（path -> { text, at }）：仅供 searchSessions / searchForPlugins 的
-	 * 全文命中判定按需加载（issue #440 拆分）。与列表缓存分离的原因：列表路径
-	 * （pushSessions / 插件列表 / 删除后切换）只需要元信息，而全文单条可达 MB 级，
-	 * 随列表常驻会让每个曾进过列表的文件都占住内存。
-	 *
-	 * 容量依据：256 ≥ 单项目候选上限 200，键入查询的其余按键在 TTL 窗口内全程免读盘；
-	 * 单条在 parseSessionInfoFast 里按 MAX_SEARCH_TEXT_CHARS（256K 字符）封顶。
-	 * TTL 只在访问时判断（无定时器），每次载入顺手清扫过期项 —— 搜索空闲后不长期
-	 * 占内存。删除/更名经 invalidateSessionInfos 同步清理。
-	 */
-	private static sessionTextCache = new Map<string, { text: string; at: number }>();
-	private static readonly SESSION_TEXT_CACHE_MAX = 256;
-	private static readonly SESSION_TEXT_CACHE_TTL = 30_000;
-
 	/** sessionFileCache LRU 读取：命中即重插到最新端（续期），未命中返回 undefined。 */
 	private static sessionFileCacheLookup(key: string): { mtime: number; size: number; info: SessionInfo } | undefined {
 		const entry = ClientSession.sessionFileCache.get(key);
@@ -12042,68 +12387,6 @@ export class ClientSession {
 			if (oldest.done) break;
 			ClientSession.sessionFileCache.delete(oldest.value);
 		}
-	}
-
-	/** sessionTextCache 读取：TTL 内命中即重插续期；过期即清并按未命中处理。 */
-	private static sessionTextCacheLookup(key: string, now: number): string | undefined {
-		const entry = ClientSession.sessionTextCache.get(key);
-		if (!entry) return undefined;
-		ClientSession.sessionTextCache.delete(key);
-		if (now - entry.at >= ClientSession.SESSION_TEXT_CACHE_TTL) return undefined;
-		ClientSession.sessionTextCache.set(key, entry);
-		return entry.text;
-	}
-
-	/** sessionTextCache 写入：放最新端，超上限从最旧端淘汰。 */
-	private static sessionTextCacheStore(key: string, text: string, at: number): void {
-		ClientSession.sessionTextCache.delete(key);
-		ClientSession.sessionTextCache.set(key, { text, at });
-		while (ClientSession.sessionTextCache.size > ClientSession.SESSION_TEXT_CACHE_MAX) {
-			const oldest = ClientSession.sessionTextCache.keys().next();
-			if (oldest.done) break;
-			ClientSession.sessionTextCache.delete(oldest.value);
-		}
-	}
-
-	/** 惰性清扫 sessionTextCache 过期项：TTL 只在访问时判断，没有定时器兜底，
-	 *  靠每次全文载入顺手扫一遍，保证搜索空闲后全文不会无限期滞留内存。 */
-	private static sessionTextCacheSweep(now: number): void {
-		for (const [key, entry] of ClientSession.sessionTextCache) {
-			if (now - entry.at >= ClientSession.SESSION_TEXT_CACHE_TTL) ClientSession.sessionTextCache.delete(key);
-		}
-	}
-
-	/**
-	 * 转录全文按需加载（搜索专用）：TTL 缓存命中直接回；未命中读盘提取全文
-	 * （与 parseSessionInfoFast 同口径：user/assistant 消息文本，MAX_SEARCH_TEXT_CHARS
-	 * 截断）。解析失败回空串且不缓存 —— 与列表路径一样下次重试。
-	 */
-	private static async loadSessionSearchText(filePath: string): Promise<string> {
-		const now = Date.now();
-		ClientSession.sessionTextCacheSweep(now);
-		const hit = ClientSession.sessionTextCacheLookup(filePath, now);
-		if (hit !== undefined) return hit;
-		const info = await parseSessionInfoFast(filePath, 0, true);
-		const text = info?.allMessagesText ?? "";
-		if (text) ClientSession.sessionTextCacheStore(filePath, text, now);
-		return text;
-	}
-
-	/**
-	 * searchSessions / searchForPlugins 共用的全文匹配：先比元信息（零 IO，覆盖绝大多数
-	 * 按标题/文件名/首条消息的查询），元信息未命中的会话再按需加载转录全文判定
-	 * （小容量短 TTL 缓存，见 sessionTextCache）。保序返回命中子集。
-	 * issue #440：全文不再随列表缓存常驻，改在这里按需加载。
-	 */
-	private static async filterSessionsForSearch(q: string, infos: SessionInfo[]): Promise<SessionInfo[]> {
-		const flags = await Promise.all(
-			infos.map(async (s) => {
-				if (sessionMatchesMetadata(q, s)) return true;
-				const text = await ClientSession.loadSessionSearchText(s.path);
-				return text.toLowerCase().includes(q);
-			}),
-		);
-		return infos.filter((_, i) => flags[i]);
 	}
 
 	/** 会话列表缓存（按 cwdKey 隔离，30s TTL）。 */
@@ -12178,24 +12461,22 @@ export class ClientSession {
 				const validStats = stats.filter((s): s is { path: string; mtime: number; size: number } => s !== null);
 				validStats.sort((a, b) => b.mtime - a.mtime);
 
-				const results = await Promise.all(
-					validStats.map(async (file) => {
-						const cached = ClientSession.sessionFileCacheLookup(file.path);
-						if (cached && cached.mtime === file.mtime && cached.size === file.size) {
-							return cached.info;
-						}
-						// 列表路径不收集转录全文（issue #440）——全文只在搜索时按需加载
-						const info = await parseSessionInfoFast(file.path, file.mtime);
-						if (info) {
-							ClientSession.sessionFileCacheStore(file.path, {
-								mtime: file.mtime,
-								size: file.size,
-								info,
-							});
-						}
-						return info;
-					}),
-				);
+				const results = await mapSessionsConcurrent(validStats, async (file) => {
+					const cached = ClientSession.sessionFileCacheLookup(file.path);
+					if (cached && cached.mtime === file.mtime && cached.size === file.size) {
+						return cached.info;
+					}
+					// 列表路径不收集转录全文（issue #440）——全文只在搜索时按需加载
+					const info = await parseSessionInfoFast(file.path, file.mtime);
+					if (info) {
+						ClientSession.sessionFileCacheStore(file.path, {
+							mtime: file.mtime,
+							size: file.size,
+							info,
+						});
+					}
+					return info;
+				});
 
 				const validInfos = results.filter((info): info is SessionInfo => info !== null);
 				const baseDirKey = normalizePathKey(sessionBaseDir);
@@ -12212,7 +12493,7 @@ export class ClientSession {
 					}
 					dedupedOwnInfos.push(info);
 				}
-				const candidates = dedupedOwnInfos.slice(0, 200);
+				const candidates = dedupedOwnInfos;
 				candidates.sort((a, b) => b.modified.getTime() - a.modified.getTime());
 				ClientSession.sessionInfosCache.set(cwdKey, { infos: candidates, at: Date.now() });
 				return candidates;
@@ -12260,8 +12541,6 @@ export class ClientSession {
 		if (filePath) {
 			const abs = resolve(filePath);
 			ClientSession.sessionFileCache.delete(abs);
-			// 全文缓存一并清（issue #440）：文件已删/更名，正文不该再被搜索命中
-			ClientSession.sessionTextCache.delete(abs);
 		}
 	}
 
@@ -12427,6 +12706,7 @@ export class ClientSession {
 				return;
 			}
 			rmSync(abs, { force: true });
+			await removeContextEvidence(abs);
 			// 转录删了，钉住记录一起清理（issue #433）。
 			this.stateStore?.cleanPinnedSession(abs);
 			// 转录删了，sidecar 再留着就是孤儿，一起清掉（不存在不报错）。
@@ -13165,6 +13445,8 @@ export class ClientSession {
 	 */
 	async switchSession(path: string, sessionId?: string): Promise<void> {
 		if (this.quiesceBlocked()) return;
+		const timing = startLoadTiming();
+		let outcome: "loaded" | "reused" | "stopped" | "error" = "stopped";
 		let openedRuntime: AgentSessionRuntime | null = null;
 		let openedTerminals: TerminalManager | null = null;
 		try {
@@ -13179,6 +13461,7 @@ export class ClientSession {
 					}
 					if (sid === wantSid || conv.id === wantSid) {
 						await this.switchConversation(conv.id);
+						outcome = "reused";
 						return;
 					}
 				}
@@ -13213,6 +13496,7 @@ export class ClientSession {
 				const sessionFile = conv.session.sessionFile;
 				if (sessionFile && resolve(sessionFile) === targetPath) {
 					await this.switchConversation(conv.id);
+					outcome = "reused";
 					this.emit({
 						type: "transition_progress",
 						kind: "session",
@@ -13256,6 +13540,7 @@ export class ClientSession {
 				}
 				if (this.takeOverConversationElsewhere) {
 					await this.takeOverConversationElsewhere(owner.clientId, owner.convId);
+					outcome = "reused";
 					return;
 				}
 			}
@@ -13272,9 +13557,13 @@ export class ClientSession {
 				textEn: "Reading session transcript…",
 			});
 			await new Promise<void>((r) => setImmediate(r));
+			timing.mark("resolve-and-ownership");
 			this.repairTranscriptFileBeforeOpen(targetPath);
+			timing.mark("repair");
 			const sessionManager = SessionManager.open(targetPath);
+			timing.mark("sdk-open");
 			calibrateSessionLeaf(sessionManager);
+			timing.mark("branch-calibration");
 			{
 				const { totalMessages, previewMessages } = this.extractTranscriptPreview(sessionManager, 16);
 				this.emit({
@@ -13296,6 +13585,7 @@ export class ClientSession {
 				});
 				await new Promise<void>((r) => setImmediate(r));
 			}
+			timing.mark("preview");
 			const rawSessionCwd = sessionManager.getCwd();
 			const targetCwd = restoreWorkspaceUriFromSessionDir(rawSessionCwd);
 			const runtimeCwd = resolveWorkspaceSessionDir(this.stateStore?.dataDir, targetCwd);
@@ -13310,12 +13600,15 @@ export class ClientSession {
 				},
 			);
 
+			timing.mark("runtime-init");
+
 			// Only displace the old active conversation after the replacement runtime
 			// is known-good. This keeps a failed history open entirely non-destructive.
 			const oldListed = this.conv.listed;
 			const displaced = this.displaceActive();
 			const openInProject =
 				[...this.convs.values()].filter((c) => c.cwd === targetCwd && !c.isSubagent && !c.isEphemeral).length +
+				(this.creatingConversations?.get(targetCwd) ?? 0) +
 				1 -
 				(displaced?.cwd === targetCwd && !displaced?.isSubagent && !displaced?.isEphemeral ? 1 : 0);
 			const maxOpenConversations = getMaxOpenConversations();
@@ -13362,6 +13655,7 @@ export class ClientSession {
 			openedTerminals = null;
 			if (displaced) this.removeConversation(displaced.id);
 			await this.bindSession();
+			timing.mark("bind-session");
 			this.cwd = targetCwd;
 			this.files.unwatchGit();
 			// 打开的历史会话可能属于另一个项目 —— 工作区跟随面（roots/文件树/
@@ -13401,7 +13695,12 @@ export class ClientSession {
 				text: "会话加载完成",
 				textEn: "Session loaded",
 			});
+			outcome = "loaded";
+			timing.mark("workspace-and-settings");
+			this.flushSnapshot();
+			timing.mark("snapshot-send");
 		} catch (err) {
+			outcome = "error";
 			openedTerminals?.killAll();
 			if (openedRuntime) await openedRuntime.dispose().catch(() => {});
 			this.emit({
@@ -13419,8 +13718,10 @@ export class ClientSession {
 				text: `切换会话失败：${(err as Error).message}`,
 				textEn: `Failed to switch session: ${(err as Error).message}`,
 			});
+		} finally {
+			timing.finish(outcome);
 		}
-		this.flushSnapshot();
+		if (outcome !== "loaded") this.flushSnapshot();
 	}
 
 	/**
@@ -13487,7 +13788,10 @@ export class ClientSession {
 
 		const targetLeafId =
 			position === "at" ? entry.id : (findTurnBaseEntryId(targetConv.session.sessionManager, entry.id) ?? undefined);
-
+		let pendingForkFile: string | undefined;
+		let pendingForkRuntime: AgentSessionRuntime | undefined;
+		let pendingForkTerminals: TerminalManager | undefined;
+		let forkPublished = false;
 		try {
 			const currentSessionFile = targetConv.session.sessionFile;
 			const isPersisted =
@@ -13497,6 +13801,7 @@ export class ClientSession {
 			const prevThinking = targetConv.session.thinkingLevel ?? null;
 			const conversationId = this.nextConversationId();
 			const terminals = this.makeTerminalManager(conversationId, targetConv.cwd);
+			pendingForkTerminals = terminals;
 
 			const sessionBaseDir = resolveWorkspaceSessionDir(this.stateStore?.dataDir, targetConv.cwd);
 			let forkedManager: SessionManager;
@@ -13514,6 +13819,8 @@ export class ClientSession {
 				if (!forkedSessionPath) {
 					throw new Error("Failed to create forked session file");
 				}
+				pendingForkFile = forkedSessionPath;
+				await copyContextEvidence(currentSessionFile, forkedSessionPath);
 				forkedManager = SessionManager.open(forkedSessionPath, sessionDir);
 				calibrateSessionLeaf(forkedManager);
 			} else {
@@ -13543,6 +13850,7 @@ export class ClientSession {
 				},
 			);
 
+			pendingForkRuntime = runtime;
 			const newConv = this.makeConversation(runtime, conversationId, terminals);
 			if (targetConv.agentPreset) newConv.agentPreset = targetConv.agentPreset;
 			if (targetConv.permissionPreset) newConv.permissionPreset = targetConv.permissionPreset;
@@ -13560,6 +13868,7 @@ export class ClientSession {
 			const displaced = this.displaceActive();
 			const openInProject =
 				[...this.convs.values()].filter((c) => c.cwd === targetConv.cwd && !c.isSubagent && !c.isEphemeral).length +
+				(this.creatingConversations?.get(targetConv.cwd) ?? 0) +
 				1 -
 				(displaced?.cwd === targetConv.cwd && !displaced?.isSubagent && !displaced?.isEphemeral ? 1 : 0);
 			const maxOpenConversations = getMaxOpenConversations();
@@ -13569,6 +13878,10 @@ export class ClientSession {
 				this.conv.listed = oldListed;
 				terminals.killAll();
 				await runtime.dispose();
+				if (pendingForkFile) {
+					rmSync(pendingForkFile, { force: true });
+					await removeContextEvidence(pendingForkFile);
+				}
 				const notice = this.maxOpenConversationsNotice(maxOpenConversations);
 				this.emit({
 					type: "notice",
@@ -13580,6 +13893,7 @@ export class ClientSession {
 			}
 
 			this.convs.set(conversationId, newConv);
+			forkPublished = true;
 			this.activeId = conversationId;
 			if (displaced) this.removeConversation(displaced.id);
 			await this.bindSession();
@@ -13610,6 +13924,14 @@ export class ClientSession {
 				textEn: "🌱 Forked new branch session and switched to it (original preserved)",
 			});
 		} catch (err) {
+			if (!forkPublished) {
+				await pendingForkRuntime?.dispose().catch(() => {});
+				pendingForkTerminals?.killAll();
+				if (pendingForkFile) {
+					rmSync(pendingForkFile, { force: true });
+					await removeContextEvidence(pendingForkFile).catch(() => {});
+				}
+			}
 			this.emit({
 				type: "notice",
 				level: "error",
@@ -13767,16 +14089,8 @@ export class ClientSession {
 	}
 
 	/**
-	 * Edit a past user question and re-ask it: forks a NEW session file that
-	 * keeps everything up to (but not including) that question, then sends the
-	 * edited text there. The original thread is untouched and stays in the
-	 * session list, so nothing is ever lost.
-	 *
-	 * Attachments (attachments) travel through the SAME pipeline as prompt()
-	 * — the fork intentionally drops the original attachment asides because
-	 * they live on the old branch past the fork point, so the browser re-sends
-	 * the images it kept in the edit composer (original image blocks + any
-	 * newly pasted/dropped ones). Text-only edits pass undefined.
+	 * Replace a past question and its later history in the same SDK session/file.
+	 * Attachments are re-sent through prompt() after removing the original turn.
 	 */
 	async editMessage(
 		messageId: string,
@@ -13807,67 +14121,79 @@ export class ClientSession {
 			this.flushSnapshot();
 			return;
 		}
+		const target = this.conv;
+		const runtime = target.runtime;
+		const session = target.session;
+		const sessionFile = session.sessionFile;
+		const current = () =>
+			this.convs.get(target.id) === target &&
+			target.runtime === runtime &&
+			target.session === session &&
+			runtime.session === session &&
+			session.sessionFile === sessionFile;
 		try {
-			// Preserve the model the user had selected — fork() seeds a new
-			// branch with the ModelRuntime default model otherwise.
-			const prevModel = this.session.agent.state.model ?? null;
-			const prevThinking = this.session.thinkingLevel ?? null;
-			const baseEntryId = findTurnBaseEntryId(this.session.sessionManager, entryId);
-			const result = baseEntryId
-				? await this.runtime.fork(baseEntryId, { position: "at" })
-				: await this.runtime.newSession({ parentSession: this.session.sessionFile ?? undefined });
-			if (result.cancelled) {
-				this.emit({
-					type: "notice",
-					level: "info",
-					text: "已取消编辑重问",
-					textEn: "Edit-and-reask cancelled",
-				});
-				this.flushSnapshot();
-				return;
-			}
-			await this.bindSession();
+			// Capture the selected settings before rebuilding the earlier context.
+			const prevModel = target.session.agent.state.model ?? null;
+			const prevThinking = target.session.thinkingLevel ?? null;
+			// Stop queued work before abort can finish the current turn and drain it.
+			session.clearQueue();
+			target.queueSteering = [];
+			target.queueFollowUp = [];
+			target.queuedSteeringEntries = [];
+			target.queuedFollowUpEntries = [];
+			if (session.isStreaming) await session.abort();
+			if (!current()) return;
+			const manager = session.sessionManager;
+			const baseEntryId = findTurnBaseEntryId(manager, entryId);
+			if (baseEntryId) manager.branch(baseEntryId);
+			else manager.resetLeaf();
+			// Persist the explicit selection: calibration must not resurrect the
+			// abandoned, longer history when this same JSONL file is reopened.
+			manager.appendCustomEntry("pi-web-ui:reask", { version: 1 });
+			session.agent.state.messages = manager.buildSessionContext().messages;
+			// reload() refreshes resources; it does not replace the manager/leaf.
+			await session.reload();
+			if (!current()) return;
+			this.applySessionOverrides(target);
 			this.invalidateSessionInfos();
 			this.scheduleSessionsRefresh();
-			this.conv.uiMessageCache.clear();
-			this.conv.msgIds.clear();
-			this.conv.userSeqByTs.clear();
-			this.conv.nextMsgId = 1;
-			this.conv.lastMessagesSig = "";
-			this.conv.lastMessagesArray = [];
-			this.conv.queueSteering = [];
-			this.conv.queueFollowUp = [];
-			this.conv.queuedSteeringEntries = [];
-			this.conv.queuedFollowUpEntries = [];
-			// Restore the previously-selected model on the forked branch.
+			target.uiMessageCache.clear();
+			target.msgIds.clear();
+			target.userSeqByTs.clear();
+			target.nextMsgId = 1;
+			target.lastMessagesSig = "";
+			target.lastMessagesArray = [];
+			target.queueSteering = [];
+			target.queueFollowUp = [];
+			target.queuedSteeringEntries = [];
+			target.queuedFollowUpEntries = [];
+			// Persist the selected model on the retained history as well.
 			if (prevModel && this.sharedModelRuntime) {
 				try {
 					const pm = prevModel as unknown as { provider: string; id: string };
 					// 先恢复 provider key，再 setModel（否则 checkAuth 鉴权失败）
-					await this.restoreKeyForModel(`${pm.provider}/${pm.id}`, this.cwd);
-					await this.applySessionModel(this.session, prevModel);
+					await this.restoreKeyForModel(`${pm.provider}/${pm.id}`, target.cwd);
+					if (!current()) return;
+					await this.applySessionModel(session, prevModel);
 				} catch {
 					// model no longer resolvable — keep the default
 				}
 			}
+			if (!current()) return;
 			if (prevThinking) {
 				try {
-					this.session.setThinkingLevel(prevThinking as Parameters<AgentSession["setThinkingLevel"]>[0]);
+					target.session.setThinkingLevel(prevThinking as Parameters<AgentSession["setThinkingLevel"]>[0]);
 				} catch {
 					// model no longer supports previous thinking level
 				}
 			}
-			await this.prompt(trimmed, attachments);
-			const showParents = this.settingsSvc.current.showForkedParentSessions === true;
+			await this.prompt(trimmed, attachments, false, target);
+			if (!current()) return;
 			this.emit({
 				type: "notice",
 				level: "info",
-				text: showParents
-					? "已从该问题重新提问（原对话保留在会话列表中）"
-					: "已从该问题重新提问（原对话已保留，但默认不在历史列表中显示）",
-				textEn: showParents
-					? "Re-asked from that question (the original stays in the session list)"
-					: "Re-asked from that question (the original is kept, but hidden from the history list by default)",
+				text: "已在当前对话重新提问，后续历史已移除",
+				textEn: "Re-asked in the same conversation; later history removed",
 			});
 		} catch (err) {
 			this.emit({
@@ -14011,22 +14337,29 @@ export class ClientSession {
 	/** 全局搜索：在当前工作区的会话转录全文里做大小写不敏感匹配 ——
 	 *  不止首条消息，而是每一段 user 与 assistant 文本（AI 输出也在内）。
 	 *  结果经 session_search_results 回推（reqId 匹配）；元信息复用 loadSessionInfos()
-	 *  缓存，转录全文按需加载（issue #440，小容量短 TTL 缓存），避免每个按键都重新
-	 *  解析全部转录文件、也不让全文长期驻留内存。 */
+	 *  缓存；转录流式扫描并限制并发，新查询取消旧查询，不保留截断的正文缓存。 */
+	private sessionSearchController?: AbortController;
 	async searchSessions(query: string, reqId: number): Promise<void> {
+		this.sessionSearchController?.abort();
+		const controller = new AbortController();
+		this.sessionSearchController = controller;
+		const cwd = this.cwd;
 		const q = query.trim().toLowerCase();
 		if (!q) {
+			this.sessionSearchController = undefined;
 			this.emit({ type: "session_search_results", reqId, query, ok: true, results: [] });
 			return;
 		}
 		try {
-			const infos = await this.loadSessionInfos();
-			const matched = await ClientSession.filterSessionsForSearch(q, infos);
+			const infos = await this.loadSessionInfos(cwd);
+			controller.signal.throwIfAborted();
+			const matched = await searchSessionTranscripts(infos, q, { signal: controller.signal });
+			if (controller.signal.aborted || this.cwd !== cwd) return;
 			const results = matched
-				.sort((a, b) => b.modified.getTime() - a.modified.getTime())
+				.sort((a, b) => b.session.modified.getTime() - a.session.modified.getTime())
 				.slice(0, 50)
-				.map((s) => {
-					const isPinned = this.stateStore?.isSessionPinned(this.cwd, s.path);
+				.map(({ session: s, anchors }) => {
+					const isPinned = this.stateStore?.isSessionPinned(cwd, s.path);
 					const displayName =
 						s.name?.trim() || (s.firstMessage ? s.firstMessage.trim().replace(/\s+/g, " ") : undefined);
 					const base: SessionSummary = {
@@ -14040,12 +14373,15 @@ export class ClientSession {
 						source: "web",
 						...(isPinned ? { pinned: true } : {}),
 					};
-					// 命中会话里再定位具体消息（供点击跳转）；仅元数据命中则无锚点
-					return { ...base, anchors: collectSessionAnchors(s.path, q) };
+					// Anchors were collected in the same streaming scan as the match.
+					return { ...base, anchors };
 				});
 			this.emit({ type: "session_search_results", reqId, query, ok: true, results });
 		} catch {
-			this.emit({ type: "session_search_results", reqId, query, ok: false, results: [] });
+			if (!controller.signal.aborted && this.cwd === cwd)
+				this.emit({ type: "session_search_results", reqId, query, ok: false, results: [] });
+		} finally {
+			if (this.sessionSearchController === controller) this.sessionSearchController = undefined;
 		}
 	}
 
@@ -14115,8 +14451,8 @@ export class ClientSession {
 		return this.files.writeFile(relPath, text);
 	}
 
-	async uploadFile(relDir: string, name: string, data: string): Promise<void> {
-		return this.files.uploadFile(relDir, name, data);
+	async uploadFile(relDir: string, name: string, data: string, uploadId?: string): Promise<void> {
+		return this.files.uploadFile(relDir, name, data, uploadId);
 	}
 
 	/** 文件树右键菜单：新建（空文件/空文件夹）。 */
@@ -14351,6 +14687,7 @@ export class ClientSession {
 				conv.cwd = abs;
 				this.convs.set(conv.id, conv);
 				this.activeId = conv.id;
+				this.noticeInterruptedCompaction(conv);
 				if (displaced) this.removeConversation(displaced.id);
 				for (const d of newRuntime.diagnostics) {
 					if (d.type !== "info") {
@@ -14451,8 +14788,8 @@ export class ClientSession {
 			this.emit({
 				type: "notice",
 				level: "info",
-				text: `🧪 沙盒「${sandbox.name}」已启动（${modeZh}，一切修改与原项目完全隔离）`,
-				textEn: `🧪 Sandbox "${sandbox.name}" started (${modeEn}; all changes are strictly isolated)`,
+				text: `🧪 沙盒「${sandbox.name}」已启动（${modeZh}；仅支持受限文件编辑，禁止任意脚本执行）`,
+				textEn: `🧪 Sandbox "${sandbox.name}" started (${modeEn}; restricted file editing only, arbitrary scripts are disabled)`,
 			});
 		} catch (err) {
 			this.emit({
@@ -14464,11 +14801,67 @@ export class ClientSession {
 		}
 	}
 
+	/** All sandbox mutations quiesce every owner while the manager holds its lifecycle lock. */
+	private async coordinateSandboxLifecycle<T extends "reset" | "destroy" | "apply">(
+		target: string,
+		action: T,
+		expectedRevision?: string,
+	): Promise<
+		T extends "reset"
+			? Awaited<ReturnType<SandboxManager["reset"]>>
+			: T extends "destroy"
+				? Awaited<ReturnType<SandboxManager["destroy"]>>
+				: Awaited<ReturnType<SandboxManager["applyToSource"]>>
+	> {
+		const restoreOwners: Array<{ owner: ClientSession; cwd: string }> = [];
+		const outcome = await this.sandboxes.withLifecycle(target, async (info, lifecycle) => {
+			const owners = new Set([this, ...(this.allSubagentSessions?.() ?? [])]);
+			for (const owner of owners) {
+				if (owner.sandboxes.sandboxesRoot !== this.sandboxes.sandboxesRoot) continue;
+				for (const terminal of owner.userTerminals?.list() ?? []) {
+					if (isSameOrSubpath(terminal.cwd, info.path)) owner.userTerminals.kill(terminal.id);
+				}
+				const conversations = [...owner.convs.values()].filter((conv) => isSameOrSubpath(conv.cwd, info.path));
+				for (const conv of conversations) {
+					conv.activePromptAc?.abort();
+					owner.settlePendingsForConv(conv.id);
+					conv.terminals.killAll();
+					owner.clearConversationToolStates(conv);
+					owner.goalSvc.notifyConversationRemoved(conv as unknown as import("./goal-service.js").GoalConversation);
+					await conv.session.abort();
+					await conv.runtime.dispose();
+					conv.unsubscribe?.();
+					conv.unsubscribe = undefined;
+					disposeEvalSession(conv.id);
+					conv.promptInFlight = false;
+					if (owner.activeId === conv.id) owner.activeId = "";
+					owner.removeConversation(conv.id, true);
+				}
+				if (isSameOrSubpath(owner.cwd, info.path)) {
+					const previousCwd = owner.cwd;
+					await owner.setCwd(info.sourcePath && existsSync(info.sourcePath) ? info.sourcePath : homedir());
+					if (isSameOrSubpath(owner.cwd, info.path))
+						throw new Error("Failed to move sandbox owner to a safe workspace");
+					if (action !== "destroy") restoreOwners.push({ owner, cwd: previousCwd });
+				}
+			}
+			const result =
+				action === "reset"
+					? await lifecycle.reset()
+					: action === "destroy"
+						? await lifecycle.destroy()
+						: await lifecycle.applyToSource(expectedRevision);
+			return result as never;
+		});
+		for (const { owner, cwd } of restoreOwners) await owner.setCwd(cwd);
+		return outcome;
+	}
+
 	/** 重置沙盒工作区到初始状态（空白或重新从源项目复制）。 */
 	async resetSandbox(path?: string): Promise<void> {
 		const target = path?.trim() || this.cwd;
 		try {
-			const { sandbox, copiedFiles } = await this.sandboxes.reset(target);
+			const { sandbox, copiedFiles } = await this.coordinateSandboxLifecycle(target, "reset");
 			await this.listFiles();
 			this.flushSnapshot();
 			this.emit({
@@ -14543,7 +14936,7 @@ export class ClientSession {
 	}
 
 	/** 对比沙盒与源项目之间的新增/修改/删除文件清单并推送给前端。 */
-	async diffSandbox(path?: string): Promise<void> {
+	async diffSandbox(path?: string, requestId?: string): Promise<void> {
 		const target = path?.trim() || this.cwd;
 		try {
 			const res = await this.sandboxes.diffWithSource(target);
@@ -14551,11 +14944,13 @@ export class ClientSession {
 				type: "sandbox_diff",
 				diff: {
 					sandboxId: res.sandbox.id,
+					requestId,
+					expectedRevision: res.expectedRevision,
 					path: res.sandbox.path,
 					sourcePath: res.sourcePath,
-					added: res.added.slice(0, 200),
-					modified: res.modified.slice(0, 200),
-					deleted: res.deleted.slice(0, 200),
+					added: res.added,
+					modified: res.modified,
+					deleted: res.deleted,
 					unchangedCount: res.unchangedCount,
 				},
 			});
@@ -14564,6 +14959,7 @@ export class ClientSession {
 				type: "sandbox_diff",
 				diff: {
 					sandboxId: "",
+					requestId,
 					path: target,
 					added: [],
 					modified: [],
@@ -14576,10 +14972,14 @@ export class ClientSession {
 	}
 
 	/** 将导入型沙盒的改动写回源项目（保留源项目 .git 与依赖缓存，并清理已删除文件）。 */
-	async applySandboxToSource(path?: string): Promise<void> {
+	async applySandboxToSource(path: string | undefined, expectedRevision: string): Promise<void> {
 		const target = path?.trim() || this.cwd;
 		try {
-			const { sandbox, sourcePath, copiedFiles, deletedFiles } = await this.sandboxes.applyToSource(target);
+			const { sandbox, sourcePath, copiedFiles, deletedFiles } = await this.coordinateSandboxLifecycle(
+				target,
+				"apply",
+				expectedRevision,
+			);
 			const delSuffixZh = deletedFiles ? `，清理 ${deletedFiles} 个已删除文件` : "";
 			const delSuffixEn = deletedFiles ? `, pruned ${deletedFiles} deleted files` : "";
 			this.emit({
@@ -14609,28 +15009,7 @@ export class ClientSession {
 			return;
 		}
 		try {
-			const activeInSbx = isSameOrSubpath(this.cwd, sbx.path);
-			if (activeInSbx) {
-				// 挑选回退目录：优先源项目 → 最近非当前沙盒项目 → homedir
-				let fallbackCwd = sbx.sourcePath && existsSync(sbx.sourcePath) ? sbx.sourcePath : "";
-				if (!fallbackCwd) {
-					const recent = await this.stateStore.getRecentProjects(this.clientId);
-					const other = recent.find((p) => {
-						const pk = normalizePathKey(p.path);
-						return pk !== normalizePathKey(sbx.path) && existsSync(p.path);
-					});
-					fallbackCwd = other?.path || homedir();
-				}
-				await this.setCwd(fallbackCwd);
-			}
-			// 清理仍挂在该沙盒下的后台会话（cwd 在沙盒**子目录**的也算——
-			// 精确相等比较会让 <sandbox>/src 里的子代理/后台对话销毁后悬空）
-			for (const [cid, c] of this.convs) {
-				if (cid !== this.activeId && isSameOrSubpath(c.cwd, sbx.path)) {
-					this.removeConversation(cid);
-				}
-			}
-			await this.sandboxes.destroy(sbx.id);
+			await this.coordinateSandboxLifecycle(sbx.id, "destroy");
 			this.stateStore.removeProject(this.clientId, sbx.path);
 			this.invalidateProjectsCache();
 			await this.pushProjects();
@@ -14984,7 +15363,9 @@ export class ClientSession {
 	}
 
 	async dispose(): Promise<void> {
+		this.sessionSearchController?.abort();
 		this.disposed = true;
+		this.settingsSvc.dispose();
 		this.pluginModelKeys?.clear();
 		this.modelAdmin.dispose();
 		// 关机路径：Windows 下跳过 pty.kill()（issue #215 ConPTY 死锁），只做

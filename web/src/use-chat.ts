@@ -1,5 +1,6 @@
 import { useCallback, useEffect, useReducer, useRef } from "react";
 import { randomUuid } from "./uuid";
+import { makeTerminalBridge, type TerminalWriter, type TerminalOwnerKind } from "./terminal-bridge";
 import { withToken } from "./auth-token";
 import { appUrl } from "./base-url";
 import { notifySessionSwitch } from "./composer-bridge";
@@ -67,7 +68,7 @@ import {
 	type OptimisticQueueTracker,
 } from "./optimistic-queue";
 import { resolvePendingQuestion, type QuestionSource } from "./pending-question";
-import { emitTuiOverlayRender } from "./tui-overlay-bridge";
+import { emitTuiOverlayRender, resetTuiOverlayRender } from "./tui-overlay-bridge";
 import { setAppGlobals, setAppSend } from "./app-globals";
 import { currentUiLocale, UI_LOCALE_EVENT } from "./ui-locale.js";
 // 工具定义说明弹窗（工具卡右键 → 「显示工具详细信息」）：应答直接回模块级 store，
@@ -81,7 +82,7 @@ import { emitPluginData } from "./plugin-loader";
 import { ingestPluginLogsData } from "./plugin-logs";
 import { resolveCatalogSyncResult } from "./plugin-host";
 import { PROTOCOL_VERSION } from "./protocol-version";
-import { mergeEarlierPage } from "./history-window";
+import { earlierPageNeedsResync, mergeEarlierPage } from "./history-window";
 import { enqueueNotice } from "./notice-policy";
 import { dispatchRemoteSshMessage } from "./remote-ssh-client";
 import {
@@ -193,6 +194,8 @@ export interface PresetImportState {
 	dryRun: boolean;
 	preview?: UiPresetImportPreview;
 	applied?: boolean;
+	applyError?: string;
+	applyDeferred?: boolean;
 	error?: string;
 	source: "paste" | "file" | "url";
 	receivedAt: number;
@@ -756,9 +759,15 @@ type Action =
 	| { type: "commands"; commands: CommandDef[]; path: string }
 	| { type: "slash_commands"; commands: SlashCommandInfo[] }
 	| { type: "terminal_add"; meta: TerminalMeta }
-	| { type: "terminal_remove"; id: string }
-	| { type: "terminal_exit"; conversationId?: string; terminalId: string; exitCode: number | null }
-	| { type: "terminal_restart"; terminalId: string }
+	| { type: "terminal_remove"; id: string; ownerKind?: TerminalOwnerKind; conversationId?: string }
+	| {
+			type: "terminal_exit";
+			conversationId?: string;
+			ownerKind?: TerminalOwnerKind;
+			terminalId: string;
+			exitCode: number | null;
+	  }
+	| { type: "terminal_restart"; terminalId: string; ownerKind?: TerminalOwnerKind; conversationId?: string }
 	| { type: "terminal_list"; conversationId?: string; terminals: TerminalInfo[] }
 	| { type: "terminal_active"; id: string }
 	| {
@@ -869,7 +878,6 @@ type Action =
 	| { type: "optimistic_queue_remove"; kind: "steer" | "followUp"; text: string; index?: number };
 
 const MAX_LIVE_OUTPUT = 200_000;
-const MAX_TERM_BUFFER = 200_000;
 /** Marker for truncated live output (was "…[前 N 字符已省略]…" / "…[N chars omitted above]…").
  *  ToolCallBlock maps it through the liveOutputOmitted i18n key so only one language shows. */
 const LIVE_OMIT_MARK = "LIVE_OMIT";
@@ -894,107 +902,6 @@ const DEFAULT_GOAL: GoalStatus = {
 		status: "",
 	},
 };
-
-/**
- * Bridges terminal output from the socket to live xterm instances. Output for
- * a terminal whose component isn't mounted yet (or that this tab doesn't know
- * about) is buffered (capped) so nothing is lost during mount/reconnect.
- */
-interface TerminalWriter {
-	write: (data: string) => void;
-	dispose: () => void;
-}
-
-function makeTerminalBridge() {
-	/** Multiple writers may subscribe to the same (conversation, terminal) pair —
-	 *  e.g. the SCM panel's hidden query terminal parses output through its own
-	 *  writer while a (hidden) xterm instance may also be registered for it.
-	 *  A Set keeps them all: later registrations no longer shadow earlier ones. */
-	const writers = new Map<string, Set<TerminalWriter>>();
-	const buffers = new Map<string, string>();
-	const key = (conversationId: string, terminalId: string) => `${conversationId}:${terminalId}`;
-	return {
-		write(conversationId: string, terminalId: string, data: string): void {
-			const writerKey = key(conversationId, terminalId);
-			const set = writers.get(writerKey);
-			if (set && set.size > 0) {
-				for (const w of set) {
-					try {
-						w.write(data);
-					} catch {
-						// best effort
-					}
-				}
-				return;
-			}
-			// 若按 (conversationId, terminalId) 未命中精确 writer，
-			// 在已注册的 writers 中按 terminalId 兜底派发（支持用户直接创建的终端跨对话持续接收输出）
-			let dispatched = false;
-			for (const [k, wSet] of writers.entries()) {
-				if (k.endsWith(`:${terminalId}`) && wSet.size > 0) {
-					for (const w of wSet) {
-						try {
-							w.write(data);
-						} catch {
-							// best effort
-						}
-					}
-					dispatched = true;
-				}
-			}
-			if (dispatched) return;
-
-			const prev = buffers.get(writerKey) ?? "";
-			const next = prev.length + data.length > MAX_TERM_BUFFER ? data : prev + data;
-			buffers.set(writerKey, next);
-		},
-		/** Register a writer (xterm instance / output parser); flushes buffered
-		 *  output to the new subscriber. Returns an unregister fn. */
-		register(conversationId: string, terminalId: string, writer: TerminalWriter): () => void {
-			const writerKey = key(conversationId, terminalId);
-			let set = writers.get(writerKey);
-			if (!set) {
-				set = new Set();
-				writers.set(writerKey, set);
-			}
-			set.add(writer);
-			const buffered = buffers.get(writerKey);
-			if (buffered) {
-				try {
-					writer.write(buffered);
-				} catch {
-					// best effort
-				}
-				buffers.delete(writerKey);
-			} else {
-				// 检查是否有以 :${terminalId} 结尾的缓冲（例如在其他 conversationId 下缓冲的数据）
-				for (const [k, buf] of buffers.entries()) {
-					if (k.endsWith(`:${terminalId}`) && buf) {
-						try {
-							writer.write(buf);
-						} catch {
-							// best effort
-						}
-						buffers.delete(k);
-						break;
-					}
-				}
-			}
-			return () => {
-				const s = writers.get(writerKey);
-				if (s) {
-					s.delete(writer);
-					if (s.size === 0) writers.delete(writerKey);
-				}
-				buffers.delete(writerKey);
-			};
-		},
-		clear(): void {
-			writers.clear();
-			buffers.clear();
-		},
-	};
-}
 
 function pruneLiveOutputs(
 	live: Map<string, { toolName: string; text: string }>,
@@ -1539,13 +1446,24 @@ function reducer(state: ChatState, action: Action): ChatState {
 		case "terminal_remove":
 			return {
 				...state,
-				terminals: state.terminals.filter((t) => t.id !== action.id),
+				terminals: state.terminals.filter(
+					(t) =>
+						!(
+							t.id === action.id &&
+							(t.ownerKind ?? "client") === (action.ownerKind ?? "client") &&
+							((t.ownerKind ?? "client") === "client" || t.conversationId === action.conversationId)
+						),
+				),
 			};
 		case "terminal_exit":
 			return {
 				...state,
 				terminals: state.terminals.map((t) =>
-					t.id === action.terminalId ? { ...t, running: false, exitCode: action.exitCode } : t,
+					t.id === action.terminalId &&
+					(t.ownerKind ?? "client") === (action.ownerKind ?? "client") &&
+					((t.ownerKind ?? "client") === "client" || t.conversationId === action.conversationId)
+						? { ...t, running: false, exitCode: action.exitCode }
+						: t,
 				),
 			};
 		case "terminal_restart":
@@ -1553,53 +1471,22 @@ function reducer(state: ChatState, action: Action): ChatState {
 			return {
 				...state,
 				terminals: state.terminals.map((t) =>
-					t.id === action.terminalId ? { ...t, running: true, exitCode: null } : t,
+					t.id === action.terminalId &&
+					(t.ownerKind ?? "client") === (action.ownerKind ?? "client") &&
+					((t.ownerKind ?? "client") === "client" || t.conversationId === action.conversationId)
+						? { ...t, running: true, exitCode: null }
+						: t,
 				),
 			};
 		case "terminal_list": {
-			const incomingMap = new Map(action.terminals.map((t) => [t.id, t]));
-			const userTerms: TerminalMeta[] = [];
-
-			// 1. 保留并更新本地已有的用户终端（不受对话切换或过滤影响）
-			for (const current of state.terminals) {
-				if (!current.agentBash) {
-					const incoming = incomingMap.get(current.id);
-					if (incoming) {
-						userTerms.push({
-							...current,
-							...incoming,
-							conversationId: current.conversationId,
-						});
-					} else {
-						userTerms.push(current);
-					}
-				}
-			}
-
-			// 2. 将服务端推来的新用户终端加入列表
-			for (const incoming of action.terminals) {
-				if (!incoming.agentBash && !state.terminals.some((t) => t.id === incoming.id)) {
-					if (incoming.running || state.terminals.length === 0) {
-						userTerms.push({
-							...incoming,
-							conversationId: action.conversationId ?? state.state?.conversationId ?? "",
-						});
-					}
-				}
-			}
-
-			// 3. AI 终端（agentBash: true）仅保留属于当前推送对话的
-			const agentTerms: TerminalMeta[] = action.terminals
-				.filter((t) => t.agentBash)
-				.map((terminal) => ({
-					...terminal,
-					conversationId: action.conversationId ?? state.state?.conversationId ?? "",
-				}));
-
-			return {
-				...state,
-				terminals: [...userTerms, ...agentTerms],
-			};
+			const activeId = state.activeConversationId || state.state?.conversationId || "";
+			const listConversationId = action.conversationId ?? activeId;
+			// This is the authoritative list, including stopped history. Purpose
+			// (agentBash) never determines ownership or whether a tab survives.
+			const terminals: TerminalMeta[] = action.terminals
+				.filter((t) => (t.ownerKind ?? "client") === "client" || listConversationId === activeId)
+				.map((t) => ({ ...t, ownerKind: t.ownerKind ?? "client", conversationId: listConversationId }));
+			return { ...state, terminals };
 		}
 		case "terminal_active":
 			return { ...state, terminalActiveId: action.id };
@@ -2088,7 +1975,33 @@ export function useChat() {
 			return false;
 		}
 		// 切换工作目录 / 历史会话 / 运行中对话 / 新建对话：0ms 乐观启动流式进度指示
-		const curState = chatApi.current.chat.state;
+		const currentChat = chatApi.current.chat;
+		// Legacy SCM/settings callers only address client terminals. Never infer
+		// ownership from a matching conversation terminal or agentBash purpose.
+		if (
+			(msg.type === "terminal_input" ||
+				msg.type === "terminal_resize" ||
+				msg.type === "terminal_kill" ||
+				msg.type === "rename_terminal" ||
+				msg.type === "terminal_attach") &&
+			!msg.ownerKind
+		) {
+			msg = { ...msg, ownerKind: "client" };
+		}
+		const curState = currentChat.state;
+		if (
+			msg.type === "load_earlier_messages" &&
+			curState &&
+			(!msg.conversationId || msg.conversationId === curState.conversationId)
+		) {
+			msg = {
+				...msg,
+				conversationId: curState.conversationId,
+				historyGeneration: msg.historyGeneration ?? curState.historyGeneration,
+				beforeId: msg.beforeId ?? curState.messages[0]?.id,
+				before: msg.before ?? curState.historyStart,
+			};
+		}
 		if (msg.type === "set_cwd" && msg.path) {
 			const cur = (curState?.cwd ?? "")
 				.trim()
@@ -2401,10 +2314,16 @@ export function useChat() {
 					syncPendingQuestion(msg.state.pendingQuestion, activeId || msg.conversationId);
 					break;
 				}
-				case "earlier_messages":
-					// 历史窗口按需加载的回执（前插更早一段，不动 rev 链）。
+				case "earlier_messages": {
+					const ui = chatApi.current.chat.state;
+					if (ui?.conversationId !== msg.conversationId) break;
+					if (earlierPageNeedsResync(ui, msg)) {
+						scheduleResync();
+						break;
+					}
 					dispatch({ type: "earlier_messages", msg });
 					break;
+				}
 				case "tool_delta":
 					noteDeltaSeq(msg.conversationId, msg.seq);
 					dispatch({
@@ -2464,6 +2383,9 @@ export function useChat() {
 					break;
 				case "files":
 					dispatch({ type: "files", files: msg });
+					break;
+				case "file_upload_result":
+					window.dispatchEvent(new CustomEvent("pi:file-upload-result", { detail: msg }));
 					break;
 				case "file_changed":
 					dispatch({ type: "file_changed", path: msg.path });
@@ -2662,6 +2584,7 @@ export function useChat() {
 					dispatch({ type: "dialog", dialog: null });
 					break;
 				case "tui_overlay_open":
+					resetTuiOverlayRender(msg.id);
 					dispatch({
 						type: "tui_overlay",
 						overlay: {
@@ -2677,6 +2600,7 @@ export function useChat() {
 					emitTuiOverlayRender(msg.id, msg.ansi);
 					break;
 				case "tui_overlay_close":
+					resetTuiOverlayRender();
 					dispatch({ type: "tui_overlay", overlay: null });
 					break;
 				case "question_pending":
@@ -2788,20 +2712,24 @@ export function useChat() {
 				}
 				case "terminal_output":
 					bridgeRef.current.write(
-						msg.conversationId ?? chatApi.current.chat.activeConversationId,
+						msg.conversationId ?? "",
 						msg.terminalId,
 						msg.data,
+						msg.reset,
+						msg.ownerKind ?? "client",
 					);
 					break;
 				case "terminal_exit":
 					dispatch({
 						type: "terminal_exit",
 						conversationId: msg.conversationId,
+						ownerKind: msg.ownerKind,
 						terminalId: msg.terminalId,
 						exitCode: msg.exitCode,
 					});
 					break;
 				case "terminal_list":
+					bridgeRef.current.reconcile(msg.conversationId ?? chatApi.current.chat.activeConversationId, msg.terminals);
 					dispatch({
 						type: "terminal_list",
 						conversationId: msg.conversationId,
@@ -2988,7 +2916,9 @@ export function useChat() {
 							ok: msg.ok === true,
 							dryRun: msg.dryRun === true,
 							...(msg.preview ? { preview: msg.preview } : {}),
-							...(msg.applied ? { applied: true } : {}),
+							...(msg.applied !== undefined ? { applied: msg.applied } : {}),
+							...(msg.applyError ? { applyError: msg.applyError } : {}),
+							...(msg.applyDeferred ? { applyDeferred: true } : {}),
 							...(msg.error ? { error: msg.error } : {}),
 						},
 					});
@@ -3050,15 +2980,13 @@ export function useChat() {
 		};
 
 		ws.onclose = () => {
-			if (wsRef.current === ws) wsRef.current = null;
+			// Only the owning socket may clear shared terminal state or reconnect.
+			if (wsRef.current !== ws) return;
+			wsRef.current = null;
 			// Terminals died with the server-side PTYs — drop writers/buffers.
 			bridgeRef.current.clear();
 			// Cleanup closed this socket on purpose — do not reconnect.
 			if (!aliveRef.current) return;
-			// A newer socket already took over (e.g. a StrictMode remount raced
-			// this socket's close) — do not spawn a third connection that would
-			// shadow the live one and drop its incoming messages.
-			if (wsRef.current && wsRef.current !== ws) return;
 			dispatch({ type: "status", status: "closed" });
 			// Reconnect with exponential backoff (1s → 2s → 4s → … capped at 10s).
 			const delay = Math.min(1000 * 2 ** retryRef.current, 10_000);
@@ -3161,6 +3089,9 @@ export function useChat() {
 			}
 			wsRef.current?.close();
 			wsRef.current = null;
+			// Drop cached output while this effect owns the socket; mounted writers
+			// unregister themselves and survive reconnects. The late onclose is stale.
+			bridgeRef.current.clear();
 		};
 	}, [connect]);
 
@@ -3203,6 +3134,9 @@ export function useChat() {
 			homeDir: chat.state?.homeDir ?? "",
 			// 桌面目录（右栏 🖥️）：与 cwd 同源，空串 = 不存在/旧服务 → 不渲染 🖥️。
 			desktopDir: chat.state?.desktopDir ?? "",
+			chatUploadMaxMb: chat.settings?.chatUploadMaxMb ?? 20,
+			workspaceUploadMaxMb: chat.settings?.workspaceUploadMaxMb ?? 100,
+			folderUploadMaxMb: chat.settings?.folderUploadMaxMb ?? 32,
 			...(chat.state?.engineCapabilities ? { engineCapabilities: chat.state.engineCapabilities } : {}),
 		});
 	}, [
@@ -3212,6 +3146,9 @@ export function useChat() {
 		chat.state?.workspaceRoots,
 		chat.state?.homeDir,
 		chat.state?.desktopDir,
+		chat.settings?.chatUploadMaxMb,
+		chat.settings?.workspaceUploadMaxMb,
+		chat.settings?.folderUploadMaxMb,
 		chat.state?.engineCapabilities,
 	]);
 
@@ -3219,14 +3156,58 @@ export function useChat() {
 
 	// -- terminal tab management ----------------------------------------------
 
-	const terminalCreate = useCallback((meta: TerminalMeta) => dispatch({ type: "terminal_add", meta }), []);
-	const terminalClose = useCallback((id: string) => dispatch({ type: "terminal_remove", id }), []);
-	const terminalRestart = useCallback((id: string) => dispatch({ type: "terminal_restart", terminalId: id }), []);
+	const terminalCreate = useCallback(
+		(meta: TerminalMeta) => {
+			// All UI creation paths (commands, SCM, settings and bare shells) enter
+			// here once. Displays only attach, even when remounted or reconnected.
+			const current = chatApi.current.chat;
+			if (
+				!current.ready ||
+				current.terminals.some(
+					(t) =>
+						t.id === meta.id &&
+						(t.ownerKind ?? "client") === (meta.ownerKind ?? "client") &&
+						((meta.ownerKind ?? "client") === "client" || t.conversationId === meta.conversationId),
+				)
+			)
+				return;
+			const ownerKind = meta.ownerKind ?? "client";
+			const route = {
+				terminalId: meta.id,
+				conversationId: meta.conversationId,
+				ownerKind,
+				cols: meta.cols,
+				rows: meta.rows,
+			};
+			const sent = meta.command
+				? send({ type: "run_command", ...route, command: meta.command })
+				: send({
+						type: "terminal_create",
+						...route,
+						title: meta.title,
+						cwd: meta.cwd,
+						agentBash: meta.agentBash,
+						locale: readUiLocale(),
+					});
+			if (sent) dispatch({ type: "terminal_add", meta: { ...meta, ownerKind } });
+		},
+		[send],
+	);
+	const terminalClose = useCallback(
+		(id: string, ownerKind: TerminalOwnerKind = "client", conversationId?: string) =>
+			dispatch({ type: "terminal_remove", id, ownerKind, conversationId }),
+		[],
+	);
+	const terminalRestart = useCallback(
+		(id: string, ownerKind: TerminalOwnerKind = "client", conversationId?: string) =>
+			dispatch({ type: "terminal_restart", terminalId: id, ownerKind, conversationId }),
+		[],
+	);
 
 	const terminalSelect = useCallback((id: string) => dispatch({ type: "terminal_active", id }), []);
 	const terminalRegister = useCallback(
-		(conversationId: string, id: string, writer: TerminalWriter) =>
-			bridgeRef.current.register(conversationId, id, writer),
+		(conversationId: string, id: string, writer: TerminalWriter, ownerKind: TerminalOwnerKind = "client") =>
+			bridgeRef.current.register(conversationId, id, writer, ownerKind),
 		[],
 	);
 

@@ -10,6 +10,11 @@ import { describe, expect, it } from "vitest";
 import { goalReviewDenial, shouldDeferPromptForReview } from "../../server/goal-review-gate.js";
 
 describe("目标审查闸门 goalReviewDenial", () => {
+	it("limits merged terminal to observation", () => {
+		for (const action of ["list", "read", "wait"]) expect(goalReviewDenial("terminal", { action })).toBeUndefined();
+		for (const action of ["create", "close", "input", "key", "unknown"])
+			expect(goalReviewDenial("terminal", { action })).toBeDefined();
+	});
 	it("写类工具一律拒（write/edit/edit_soft/git 工具/形态变换）", () => {
 		for (const name of ["write", "edit", "edit_soft", "apply_patch", "rm", "mkdir", "git", "format"]) {
 			const d = goalReviewDenial(name, {});

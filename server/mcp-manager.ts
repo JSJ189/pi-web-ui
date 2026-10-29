@@ -5,8 +5,10 @@
  * 与工作区项目级 (.pi/mcp.json) MCP 服务器配置的读写、合并与生命周期。
  */
 
-import { existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
-import { dirname } from "node:path";
+import { readFileSync, unlinkSync } from "node:fs";
+import { resolve } from "node:path";
+import { isDeepStrictEqual } from "node:util";
+import { writeAtomicSync } from "./atomic-file.js";
 import type { McpScope, UiMcpServer, UiMcpToolInfo } from "./protocol.js";
 import {
 	getGlobalMcpPath,
@@ -24,31 +26,40 @@ export function readMcpConfigFile(filePath: string): {
 	raw: Record<string, unknown> | null;
 	legacy: boolean;
 	exists: boolean;
+	error?: string;
 } {
-	if (!existsSync(filePath)) {
-		return { servers: {}, raw: null, legacy: false, exists: false };
-	}
 	try {
-		const text = readFileSync(filePath, "utf8");
-		let raw: Record<string, unknown> | null = null;
-		try {
-			const parsed = JSON.parse(text);
-			if (parsed && typeof parsed === "object" && !Array.isArray(parsed)) {
-				raw = parsed as Record<string, unknown>;
-			}
-		} catch {
-			/* invalid json */
-		}
-		const legacy = !!raw && raw.servers !== undefined && raw.mcpServers === undefined;
-		const parsedConfig = parseMcpConfig(text);
+		const raw = readWritableConfig(filePath);
+		if (!raw) return { servers: {}, raw: null, legacy: false, exists: false };
+		const legacy = raw.servers !== undefined && raw.mcpServers === undefined;
+		return { servers: parseMcpConfig(JSON.stringify(raw))?.servers ?? {}, raw, legacy, exists: true };
+	} catch (error) {
 		return {
-			servers: parsedConfig ? parsedConfig.servers : {},
-			raw,
-			legacy,
+			servers: {},
+			raw: null,
+			legacy: false,
 			exists: true,
+			error: `MCP 配置 ${filePath}: ${mutationError(error).error}`,
 		};
-	} catch {
-		return { servers: {}, raw: null, legacy: false, exists: true };
+	}
+}
+
+/** Only ENOENT is an empty configuration. All other read/shape errors stop mutations. */
+function readWritableConfig(filePath: string): Record<string, unknown> | null {
+	try {
+		const raw = JSON.parse(readFileSync(filePath, "utf8"));
+		if (!isRecord(raw)) throw new Error("MCP 配置必须是 JSON 对象");
+		for (const key of ["servers", "mcpServers"]) {
+			if (raw[key] !== undefined && (!isRecord(raw[key]) || Object.values(raw[key]).some((v) => !isRecord(v)))) {
+				throw new Error(`MCP 配置 ${key} 格式无效`);
+			}
+		}
+		if (raw.servers !== undefined && raw.mcpServers !== undefined)
+			throw new Error("MCP 配置包含两份服务器清单，禁止覆盖");
+		return raw;
+	} catch (error) {
+		if ((error as NodeJS.ErrnoException).code === "ENOENT") return null;
+		throw error;
 	}
 }
 
@@ -58,19 +69,7 @@ export function writeMcpConfigFile(
 	servers: Record<string, McpServerSpec>,
 	preferLegacy = false,
 ): void {
-	mkdirSync(dirname(filePath), { recursive: true });
-	let raw: Record<string, unknown> = {};
-	if (existsSync(filePath)) {
-		try {
-			const text = readFileSync(filePath, "utf8");
-			const parsed = JSON.parse(text);
-			if (parsed && typeof parsed === "object" && !Array.isArray(parsed)) {
-				raw = parsed as Record<string, unknown>;
-			}
-		} catch {
-			/* ignore corrupt file, rewrite cleanly */
-		}
-	}
+	const raw = readWritableConfig(filePath) ?? {};
 
 	const legacy = raw.servers !== undefined && raw.mcpServers === undefined ? true : preferLegacy;
 	const next = { ...raw };
@@ -82,7 +81,30 @@ export function writeMcpConfigFile(
 		next.mcpServers = servers;
 	}
 
-	writeFileSync(filePath, JSON.stringify(next, null, 2) + "\n", "utf8");
+	atomicWrite(filePath, next);
+}
+
+function isRecord(value: unknown): value is Record<string, any> {
+	return !!value && typeof value === "object" && !Array.isArray(value);
+}
+
+/** MCP configs and recovery intents may contain credentials. */
+function atomicWrite(filePath: string, value: unknown): void {
+	writeAtomicSync(filePath, JSON.stringify(value, null, 2) + "\n", { mode: 0o600, fsync: true });
+}
+
+/** Keep unrecognized server fields intact when editing a different entry. */
+function editableConfig(filePath: string) {
+	const cfg = readMcpConfigFile(filePath);
+	if (cfg.error) throw new Error(cfg.error);
+	return {
+		...cfg,
+		servers: { ...(cfg.raw?.[cfg.legacy ? "servers" : "mcpServers"] as Record<string, McpServerSpec> | undefined) },
+	};
+}
+
+function mutationError(error: unknown): { ok: false; error: string } {
+	return { ok: false, error: error instanceof Error ? error.message : String(error) };
 }
 
 /** 校验 MCP 服务器名称合法性（字母、数字、下划线、短横线） */
@@ -103,13 +125,21 @@ export function listAllMcpServers(opts: { agentDir?: string; cwd?: string; dataD
 	const projectCfg = readMcpConfigFile(projectPath);
 
 	const result: UiMcpServer[] = [];
+	for (const [scope, path, cfg] of [
+		["global", globalPath, globalCfg],
+		["project", projectPath, projectCfg],
+	] as const) {
+		if (cfg.error) result.push({ name: path, scope, enabled: false, status: "error", error: cfg.error });
+	}
 
 	// 全局服务器
 	for (const [name, spec] of Object.entries(globalCfg.servers)) {
-		const status = getRuntimeStatus(name, spec, opts.bridge);
+		const overridden = Object.hasOwn(projectCfg.servers, name);
+		const status = getRuntimeStatus(name, spec, overridden ? undefined : opts.bridge);
 		result.push({
 			name,
 			scope: "global",
+			...(overridden ? { overriddenBy: "project" as const } : {}),
 			command: spec.command,
 			args: spec.args,
 			cwd: spec.cwd,
@@ -121,9 +151,7 @@ export function listAllMcpServers(opts: { agentDir?: string; cwd?: string; dataD
 			protocolVersion: spec.protocolVersion,
 			enabled: spec.enabled !== false,
 			description: spec.description,
-			status: status.status,
-			error: status.error,
-			tools: status.tools,
+			...status,
 		});
 	}
 
@@ -144,9 +172,7 @@ export function listAllMcpServers(opts: { agentDir?: string; cwd?: string; dataD
 			protocolVersion: spec.protocolVersion,
 			enabled: spec.enabled !== false,
 			description: spec.description,
-			status: status.status,
-			error: status.error,
-			tools: status.tools,
+			...status,
 		});
 	}
 
@@ -157,7 +183,7 @@ function getRuntimeStatus(
 	name: string,
 	spec: McpServerSpec,
 	bridge?: McpBridge,
-): { status: "running" | "stopped" | "error"; error?: string; tools: UiMcpToolInfo[] } {
+): { status: "running" | "stopped" | "error"; error?: string; tools: UiMcpToolInfo[]; usingPreviousConfig?: boolean } {
 	if (spec.enabled === false) {
 		return { status: "stopped", tools: [] };
 	}
@@ -186,42 +212,108 @@ export function saveMcpServer(opts: {
 	const projectPath = getProjectMcpPath(opts.cwd);
 	const targetPath = targetScope === "global" ? globalPath : projectPath;
 
-	// 若存在旧名称或作用域移动，从原作用域文件中移除
-	if (opts.prevName && opts.prevScope) {
-		const prevCleanName = opts.prevName.trim();
-		if (prevCleanName !== name || opts.prevScope !== targetScope) {
-			const oldPath = opts.prevScope === "global" ? globalPath : projectPath;
-			const oldCfg = readMcpConfigFile(oldPath);
-			if (oldCfg.servers[prevCleanName]) {
-				delete oldCfg.servers[prevCleanName];
-				writeMcpConfigFile(oldPath, oldCfg.servers, oldCfg.legacy);
-			}
+	try {
+		const targetCfg = editableConfig(targetPath);
+		const spec: McpServerSpec = {
+			command: opts.server.command?.trim() || undefined,
+			args: Array.isArray(opts.server.args) && opts.server.args.length > 0 ? opts.server.args.map(String) : undefined,
+			cwd: opts.server.cwd?.trim() || undefined,
+			env:
+				opts.server.env && Object.keys(opts.server.env).length > 0
+					? (opts.server.env as Record<string, string>)
+					: undefined,
+			url: opts.server.url?.trim() || undefined,
+			headers:
+				opts.server.headers && Object.keys(opts.server.headers).length > 0
+					? (opts.server.headers as Record<string, string>)
+					: undefined,
+			type: opts.server.type,
+			timeout: typeof opts.server.timeout === "number" ? opts.server.timeout : undefined,
+			protocolVersion: opts.server.protocolVersion?.trim() || undefined,
+			enabled: opts.server.enabled !== false,
+			description: opts.server.description?.trim() || undefined,
+		};
+
+		const prevName = opts.prevName?.trim();
+		const oldPath = opts.prevScope === "global" ? globalPath : projectPath;
+		const moving = prevName && opts.prevScope && (prevName !== name || resolve(oldPath) !== resolve(targetPath));
+		if (moving) {
+			if (resolve(oldPath) !== resolve(targetPath)) return migrateMcpServer(oldPath, targetPath, prevName, name, spec);
+			if (!Object.hasOwn(targetCfg.servers, prevName)) throw new Error(`源服务器 ${prevName} 不存在`);
+			if (Object.hasOwn(targetCfg.servers, name)) throw new Error(`目标服务器 ${name} 已存在`);
+			delete targetCfg.servers[prevName];
 		}
+		targetCfg.servers[name] = spec;
+		writeMcpConfigFile(targetPath, targetCfg.servers, targetCfg.legacy);
+		return { ok: true };
+	} catch (error) {
+		return mutationError(error);
 	}
+}
 
-	const targetCfg = readMcpConfigFile(targetPath);
-	const spec: McpServerSpec = {
-		command: opts.server.command?.trim() || undefined,
-		args: Array.isArray(opts.server.args) && opts.server.args.length > 0 ? opts.server.args.map(String) : undefined,
-		cwd: opts.server.cwd?.trim() || undefined,
-		env:
-			opts.server.env && Object.keys(opts.server.env).length > 0
-				? (opts.server.env as Record<string, string>)
-				: undefined,
-		url: opts.server.url?.trim() || undefined,
-		headers:
-			opts.server.headers && Object.keys(opts.server.headers).length > 0
-				? (opts.server.headers as Record<string, string>)
-				: undefined,
-		type: opts.server.type,
-		timeout: typeof opts.server.timeout === "number" ? opts.server.timeout : undefined,
-		protocolVersion: opts.server.protocolVersion?.trim() || undefined,
-		enabled: opts.server.enabled !== false,
-		description: opts.server.description?.trim() || undefined,
-	};
-
-	targetCfg.servers[name] = spec;
-	writeMcpConfigFile(targetPath, targetCfg.servers, targetCfg.legacy);
+/** Durable intent distinguishes a partially committed move from a name collision.
+ * Retry the same save after restart to finish. Never roll back a committed target,
+ * or delete an entry edited since the intent was recorded.
+ */
+function migrateMcpServer(
+	sourcePath: string,
+	targetPath: string,
+	sourceName: string,
+	targetName: string,
+	spec: McpServerSpec,
+): { ok: boolean; error?: string } {
+	const journalPath = `${sourcePath}.migration.json`;
+	const source = editableConfig(sourcePath);
+	const target = editableConfig(targetPath);
+	const desired = JSON.parse(JSON.stringify(spec));
+	let journal: Record<string, any>;
+	try {
+		journal = JSON.parse(readFileSync(journalPath, "utf8"));
+	} catch (error) {
+		if ((error as NodeJS.ErrnoException).code !== "ENOENT") throw error;
+		if (!Object.hasOwn(source.servers, sourceName)) throw new Error(`源服务器 ${sourceName} 不存在`);
+		if (Object.hasOwn(target.servers, targetName)) throw new Error(`目标服务器 ${targetName} 已存在`);
+		journal = {
+			version: 1,
+			sourcePath: resolve(sourcePath),
+			targetPath: resolve(targetPath),
+			sourceName,
+			targetName,
+			sourceSpec: source.servers[sourceName],
+			targetSpec: desired,
+		};
+		atomicWrite(journalPath, journal);
+	}
+	if (
+		!isRecord(journal) ||
+		journal.version !== 1 ||
+		journal.sourcePath !== resolve(sourcePath) ||
+		journal.targetPath !== resolve(targetPath) ||
+		journal.sourceName !== sourceName ||
+		journal.targetName !== targetName ||
+		!isRecord(journal.sourceSpec) ||
+		!isDeepStrictEqual(journal.targetSpec, desired)
+	) {
+		throw new Error(`存在不同或损坏的 MCP 迁移事务：${journalPath}`);
+	}
+	const hasSource = Object.hasOwn(source.servers, sourceName);
+	const hasTarget = Object.hasOwn(target.servers, targetName);
+	if (
+		(hasSource && !isDeepStrictEqual(source.servers[sourceName], journal.sourceSpec)) ||
+		(hasTarget && !isDeepStrictEqual(target.servers[targetName], desired))
+	) {
+		throw new Error(`MCP 迁移期间配置已变更，保留两端并停止：${journalPath}`);
+	}
+	if (!hasSource && !hasTarget) throw new Error(`MCP 迁移两端记录均不存在：${journalPath}`);
+	if (!hasTarget) {
+		target.servers[targetName] = desired;
+		writeMcpConfigFile(targetPath, target.servers, target.legacy);
+	}
+	if (hasSource) {
+		delete source.servers[sourceName];
+		writeMcpConfigFile(sourcePath, source.servers, source.legacy);
+	}
+	unlinkSync(journalPath);
 	return { ok: true };
 }
 
@@ -238,14 +330,18 @@ export function deleteMcpServer(opts: {
 	const projectPath = getProjectMcpPath(opts.cwd);
 	const targetPath = opts.scope === "global" ? globalPath : projectPath;
 
-	const targetCfg = readMcpConfigFile(targetPath);
-	if (!targetCfg.servers[name]) {
-		return { ok: false, error: `服务器 ${name} 在 ${opts.scope === "global" ? "全局" : "项目"} 配置中不存在` };
-	}
+	try {
+		const targetCfg = editableConfig(targetPath);
+		if (!targetCfg.servers[name]) {
+			return { ok: false, error: `服务器 ${name} 在 ${opts.scope === "global" ? "全局" : "项目"} 配置中不存在` };
+		}
 
-	delete targetCfg.servers[name];
-	writeMcpConfigFile(targetPath, targetCfg.servers, targetCfg.legacy);
-	return { ok: true };
+		delete targetCfg.servers[name];
+		writeMcpConfigFile(targetPath, targetCfg.servers, targetCfg.legacy);
+		return { ok: true };
+	} catch (error) {
+		return mutationError(error);
+	}
 }
 
 /** 切换指定作用域下的 MCP 服务器启用/停用状态 */
@@ -262,24 +358,28 @@ export function toggleMcpServer(opts: {
 	const projectPath = getProjectMcpPath(opts.cwd);
 	const targetPath = opts.scope === "global" ? globalPath : projectPath;
 
-	const targetCfg = readMcpConfigFile(targetPath);
-	if (targetCfg.servers[name]) {
-		targetCfg.servers[name].enabled = opts.enabled;
-		writeMcpConfigFile(targetPath, targetCfg.servers, targetCfg.legacy);
-		return { ok: true };
-	}
-
-	// 若在项目级切换全局服务器的启用状态（项目级覆盖）：写入仅带 enabled 的配置项
-	if (opts.scope === "project") {
-		const globalCfg = readMcpConfigFile(globalPath);
-		if (globalCfg.servers[name]) {
-			targetCfg.servers[name] = { enabled: opts.enabled };
+	try {
+		const targetCfg = editableConfig(targetPath);
+		if (targetCfg.servers[name]) {
+			targetCfg.servers[name].enabled = opts.enabled;
 			writeMcpConfigFile(targetPath, targetCfg.servers, targetCfg.legacy);
 			return { ok: true };
 		}
-	}
 
-	return { ok: false, error: `服务器 ${name} 不存在` };
+		// 若在项目级切换全局服务器的启用状态（项目级覆盖）：写入仅带 enabled 的配置项
+		if (opts.scope === "project") {
+			const globalCfg = editableConfig(globalPath);
+			if (globalCfg.servers[name]) {
+				targetCfg.servers[name] = { enabled: opts.enabled };
+				writeMcpConfigFile(targetPath, targetCfg.servers, targetCfg.legacy);
+				return { ok: true };
+			}
+		}
+
+		return { ok: false, error: `服务器 ${name} 不存在` };
+	} catch (error) {
+		return mutationError(error);
+	}
 }
 
 /** 从 npm 包名、URL 或命令自动推导合法的 MCP 服务器名称 */

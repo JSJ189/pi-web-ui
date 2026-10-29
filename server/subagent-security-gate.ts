@@ -10,8 +10,13 @@
  */
 import type { ToolDefinition } from "@earendil-works/pi-coding-agent";
 import { pick, type ServerLang } from "./i18n.js";
-import { bashCommandIsReadOnly } from "./plan-mode.js";
+import { bashCommandHasSupportedSyntax, bashCommandIsReadOnly, readOnlyToolCallAllowed } from "./plan-mode.js";
 import { goalReviewBashAllowed } from "./goal-review-gate.js";
+import {
+	isReadOnlyConversationAction,
+	conversationToolAllowed,
+	isConversationTool,
+} from "./conversation-tool-names.js";
 
 /** 子代理安全规格模式：
  * - normal: 全功能（默认，受主会话设置与审批规则约束）
@@ -60,7 +65,7 @@ export function resolveSecurityMode(
 
 /** 别名映射：将调用方可能传入的泛称归一化为实际注册的工具名。 */
 const TOOL_NAME_ALIASES: Record<string, string> = {
-	terminal: "bash",
+	terminal: "terminal",
 	shell: "bash",
 	sh: "bash",
 	cmd: "bash",
@@ -135,7 +140,12 @@ export function parseRequiredTools(
 		seen.add(mapped);
 
 		if (availableSet) {
-			if (availableSet.has(mapped)) {
+			if (
+				availableSet.has(mapped) ||
+				(mapped.startsWith("terminal_") &&
+					availableSet.has("terminal") &&
+					["create", "list", "close", "input", "key", "read", "wait"].includes(mapped.slice(9)))
+			) {
 				allowedTools.push(mapped);
 			} else {
 				unrecognized.push(token);
@@ -196,7 +206,7 @@ export const SUBAGENT_TERMINAL_INPUT_TOOLS = new Set<string>([
 export const SUBAGENT_DISPATCH_TOOLS = new Set<string>(["delegate_task"]);
 
 /** bash 类工具名。 */
-const BASH_TOOL_NAMES = new Set(["bash", "bash_execute", "run_command", "shell", "terminal", "terminal_exec"]);
+const BASH_TOOL_NAMES = new Set(["bash", "bash_execute", "run_command", "shell", "terminal_exec"]);
 
 /** 取工具参数中的命令字段。 */
 function commandOf(params: unknown): string {
@@ -223,6 +233,27 @@ export interface SubagentSecurityDenial {
  * @param params 调用参数
  * @param allowedTools 显式工具白名单集合（若设置）
  */
+/** Keep legacy allowlists action-scoped; never upgrade terminal_read to unrestricted terminal. */
+export function subagentAllowedToolCall(allowed: ReadonlySet<string>, name: string, params: unknown): boolean {
+	if (conversationToolAllowed(allowed, name)) return true;
+	if (name !== "terminal" || !params || typeof params !== "object") return false;
+	const action = (params as Record<string, unknown>).action;
+	return (
+		typeof action === "string" &&
+		["create", "list", "close", "input", "key", "read", "wait"].includes(action) &&
+		allowed.has(`terminal_${action}`)
+	);
+}
+
+/** Visibility only; execution must still call subagentAllowedToolCall with actual params. */
+export function subagentAllowedToolVisible(allowed: ReadonlySet<string>, name: string): boolean {
+	return (
+		conversationToolAllowed(allowed, name) ||
+		(name === "terminal" &&
+			["create", "list", "close", "input", "key", "read", "wait"].some((action) => allowed.has(`terminal_${action}`)))
+	);
+}
+
 export function subagentSecurityDenial(
 	mode: SubagentSecurityMode,
 	toolName: string,
@@ -230,10 +261,9 @@ export function subagentSecurityDenial(
 	allowedTools?: Set<string>,
 ): SubagentSecurityDenial | undefined {
 	const name = (toolName ?? "").trim();
-	if (!name) return undefined;
 
 	// 1. 显式白名单门控（若配置了 allowedTools）
-	if (allowedTools && allowedTools.size > 0 && !allowedTools.has(name)) {
+	if (allowedTools && allowedTools.size > 0 && !subagentAllowedToolCall(allowedTools, name, params)) {
 		return {
 			kind: "not-allowed-tool",
 			reason: `受限子代理：工具 "${name}" 不在本次任务允许的工具白名单内（仅限：${[...allowedTools].join(", ")}）。`,
@@ -254,12 +284,12 @@ export function subagentSecurityDenial(
 			reasonEn: `Restricted subagent (${mode}): dispatch tool "${name}" is blocked. Complete inspection and return findings within this session.`,
 		};
 	}
-	if (name === "subagent") {
+	if (isConversationTool(name)) {
 		const action =
 			typeof params === "object" && params !== null ? (params as Record<string, unknown>).action : undefined;
 		const act = typeof action === "string" ? action.trim().toLowerCase() : "";
-		// 只放行只读查询类 action，拦截 spawn/steer/stop/handoff/wait_all
-		if (act !== "get_result" && act !== "list" && act !== "templates") {
+		// Allow transcript inspection and collaboration queries; block dispatch and mutations.
+		if (!isReadOnlyConversationAction(act)) {
 			return {
 				kind: "dispatch-tool",
 				reason: `受限子代理（${mode}）：禁止调用 subagent(action="${act || "spawn"}") 派生或操控其他子代理。`,
@@ -308,7 +338,7 @@ export function subagentSecurityDenial(
 			}
 		} else if (mode === "verify") {
 			// 审查验证模式：允许只读命令 + 测试套件（goalReviewBashAllowed）
-			if (!goalReviewBashAllowed(cmd)) {
+			if (!bashCommandHasSupportedSyntax(cmd) || !goalReviewBashAllowed(cmd)) {
 				return {
 					kind: "bash-write",
 					reason: `审查验证子代理（verify）：命令被阻断（仅允许只读命令与测试套件，禁止重定向写或破坏性操作）：\`${cmd.slice(0, 160)}\`。`,
@@ -316,8 +346,16 @@ export function subagentSecurityDenial(
 				};
 			}
 		}
+		return undefined;
 	}
 
+	if (!readOnlyToolCallAllowed(name, params)) {
+		return {
+			kind: "not-allowed-tool",
+			reason: `受限子代理（${mode}）：工具 "${name}" 的本次调用未声明为只读，已拒绝。请使用 read/grep 或结构化查询。`,
+			reasonEn: `Restricted subagent (${mode}): tool "${name}" is not an explicitly supported read-only call. Use read/grep or structured queries.`,
+		};
+	}
 	return undefined;
 }
 

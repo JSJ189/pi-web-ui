@@ -98,7 +98,7 @@ describe("MatrixBotBridge 双工逻辑测试", () => {
 		vi.stubGlobal("fetch", fetchMock);
 
 		let runHandler: ((ev: any) => void) | null = null;
-		const chatSpy = vi.fn().mockResolvedValue({ conversationId: "conv_mtx_1" });
+		const chatSpy = vi.fn().mockResolvedValue({ conversationId: "conv_mtx_1", runId: "run_mtx_1" });
 
 		const bridge = new MatrixBotBridge({
 			host: {
@@ -129,10 +129,11 @@ describe("MatrixBotBridge 双工逻辑测试", () => {
 			}),
 		);
 
-		const convId = chatSpy.mock.calls[0][0].conversationId;
+		const convId = "conv_mtx_1";
 
 		runHandler!({
 			conversationId: convId,
+			runId: "run_mtx_1",
 			type: "message",
 			message: {
 				role: "assistant",
@@ -141,7 +142,8 @@ describe("MatrixBotBridge 双工逻辑测试", () => {
 		});
 
 		await runHandler!({
-			conversationId: convId,
+			conversationId: "renamed_mtx_1",
+			runId: "run_mtx_1",
 			type: "run_end",
 		});
 

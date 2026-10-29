@@ -9,6 +9,7 @@
 
 import { createHash } from "node:crypto";
 import { chunkMarkdownText } from "./markdown-chunks.mjs";
+import { ChannelBehavior, uploadMedia } from "./channel-behavior.mjs";
 
 export const SECRET_BOT_TOKEN = "telegram.botToken";
 
@@ -45,15 +46,15 @@ export async function telegramApi(
 	token,
 	method,
 	payload = {},
-	{ apiBase = "https://api.telegram.org", timeoutMs = 35000 } = {},
+	{ apiBase = "https://api.telegram.org", timeoutMs = 35000, signal } = {},
 ) {
 	if (!token) throw new Error("Telegram Bot Token is required.");
 	const url = `${apiBase.replace(/\/+$/, "")}/bot${token}/${method}`;
 	const res = await fetch(url, {
 		method: "POST",
-		headers: { "content-type": "application/json; charset=utf-8" },
-		body: JSON.stringify(payload),
-		signal: AbortSignal.timeout(timeoutMs),
+		headers: payload instanceof FormData ? undefined : { "content-type": "application/json; charset=utf-8" },
+		body: payload instanceof FormData ? payload : JSON.stringify(payload),
+		signal: signal ? AbortSignal.any([signal, AbortSignal.timeout(timeoutMs)]) : AbortSignal.timeout(timeoutMs),
 	});
 	if (!res.ok) {
 		const errJson = await res.json().catch(() => ({}));
@@ -67,7 +68,7 @@ export async function telegramApi(
 /**
  * TelegramBotBridge manages outbound long-polling duplex exchange with Telegram.
  */
-export class TelegramBotBridge {
+export class TelegramBotBridge extends ChannelBehavior {
 	/**
 	 * @param {object} options
 	 * @param {any} options.host
@@ -75,6 +76,10 @@ export class TelegramBotBridge {
 	 * @param {(level: string, msg: string) => void} [options.log]
 	 */
 	constructor({ host, getConfig, log } = {}) {
+		super();
+		this.api = telegramApi;
+		this.cleanText = stripInternalMarkers;
+		this.chunkText = chunkMarkdownText;
 		this.host = host;
 		this.getConfig = getConfig;
 		this.log = log || ((level, msg) => console.log(`[telegram-bot:${level}] ${msg}`));
@@ -122,6 +127,7 @@ export class TelegramBotBridge {
 		if (!cfg.botToken) {
 			this.status.state = "idle";
 			this.status.lastError = "Missing Bot Token";
+			this.running = false;
 			return;
 		}
 
@@ -143,6 +149,7 @@ export class TelegramBotBridge {
 			this.status.state = "error";
 			this.status.lastError = err.message;
 			this.log("warn", `Telegram getMe failed: ${err.message}`);
+			this.running = false;
 			return;
 		}
 
@@ -151,7 +158,8 @@ export class TelegramBotBridge {
 		}
 
 		// Start outbound long-polling loop
-		this.startPollingLoop();
+		this.pollAbort = new AbortController();
+		this.startPollingLoop(this.pollAbort.signal);
 	}
 
 	async stop() {
@@ -159,6 +167,8 @@ export class TelegramBotBridge {
 		this.status.enabled = false;
 		this.status.connected = false;
 		this.status.state = "idle";
+		for (const controller of this.peerCancels?.values() || []) controller.abort();
+		this.peerCancels?.clear();
 
 		if (this.pollAbort) {
 			try {
@@ -175,8 +185,8 @@ export class TelegramBotBridge {
 		}
 	}
 
-	async startPollingLoop() {
-		while (this.running) {
+	async startPollingLoop(signal) {
+		while (this.running && !signal.aborted) {
 			const cfg = this.getConfig();
 			if (!cfg.botToken) break;
 
@@ -189,16 +199,17 @@ export class TelegramBotBridge {
 						timeout: 25,
 						allowed_updates: ["message"],
 					},
-					{ apiBase: cfg.apiBase || "https://api.telegram.org", timeoutMs: 35000 },
+					{ apiBase: cfg.apiBase || "https://api.telegram.org", timeoutMs: 35000, signal },
 				);
 
+				if (signal.aborted) break;
 				if (Array.isArray(updates) && updates.length > 0) {
 					for (const u of updates) {
 						if (u.update_id > this.lastUpdateId) {
 							this.lastUpdateId = u.update_id;
 						}
 						if (u.message) {
-							await this.onInboundMessage(u.message).catch((err) => {
+							this.onInboundMessage(u.message).catch((err) => {
 								this.log("warn", `Inbound message handling error: ${err.message}`);
 							});
 						}
@@ -206,322 +217,14 @@ export class TelegramBotBridge {
 				}
 				this.status.connected = true;
 				this.status.state = "connected";
+				// Empty immediate responses (proxies or mocks) must not create a hot loop.
+				if (!Array.isArray(updates) || !updates.length) await new Promise((r) => setTimeout(r, 50));
 			} catch (err) {
-				if (!this.running) break;
+				if (!this.running || signal.aborted) break;
 				this.status.state = "connecting";
 				this.log("info", `Telegram poll retry notice: ${err.message}`);
 				// Wait 3 seconds backoff before retrying
 				await new Promise((r) => setTimeout(r, 3000));
-			}
-		}
-	}
-
-	async onInboundMessage(message) {
-		if (!message || message.from?.is_bot) return;
-		const chatId = message.chat?.id;
-		const userId = message.from?.id;
-		const isGroup = message.chat?.type === "group" || message.chat?.type === "supergroup";
-
-		const cfg = this.getConfig();
-		const botUsername = this.status.botUsername || "";
-
-		// In group chats, only respond if mentioned BY NAME —— mention 实体必须
-		// 指向机器人自身（entity.value === @botUsername 或按 offset/length 切片匹配），
-		// 否则群里 @任何人（entities 里存在任意 mention）都会触发 AI 插话
-		if (isGroup) {
-			const targetName = `@${botUsername}`.toLowerCase();
-			const namedMention = !!botUsername && message.text?.toLowerCase().includes(targetName);
-			const entityMention =
-				!!botUsername &&
-				Array.isArray(message.entities) &&
-				message.entities.some((e) => {
-					if (e.type !== "mention") return false;
-					if (e.value && String(e.value).toLowerCase() === targetName) return true;
-					if (typeof e.offset === "number" && typeof e.length === "number" && message.text) {
-						const slice = message.text.slice(e.offset, e.offset + e.length).toLowerCase();
-						return slice === targetName;
-					}
-					return false;
-				});
-			if (botUsername && !namedMention && !entityMention) return;
-		}
-
-		const cleanText = extractTelegramText(message, botUsername);
-		if (!cleanText) return;
-
-		// Access control whitelist
-		const allowedUsers = Array.isArray(cfg.allowedUsers)
-			? cfg.allowedUsers.map((u) => String(u).trim()).filter(Boolean)
-			: [];
-		if (allowedUsers.length > 0 && userId && !allowedUsers.includes(String(userId))) {
-			await telegramApi(
-				cfg.botToken,
-				"sendMessage",
-				{
-					chat_id: chatId,
-					text: "【访问受限】您当前不在该 Telegram 机器人的允许用户白名单中。请联系管理员在 Web 控制台添加您的 User ID。",
-				},
-				{ apiBase: cfg.apiBase || "https://api.telegram.org" },
-			).catch(() => {});
-			return;
-		}
-
-		this.status.messagesReceived++;
-		this.status.lastMessageAt = Date.now();
-
-		// Handle slash commands (/help, /clear, /new, /status)
-		if (cleanText.startsWith("/")) {
-			const handled = await this.handleSlashCommand(cleanText, { chatId, userId, cfg });
-			if (handled) return;
-		}
-
-		// Send typing action
-		telegramApi(
-			cfg.botToken,
-			"sendChatAction",
-			{
-				chat_id: chatId,
-				action: "typing",
-			},
-			{ apiBase: cfg.apiBase || "https://api.telegram.org" },
-		).catch(() => {});
-
-		// Prepare isolated agent session for this user
-		const accountId = peerAccountId(userId);
-		let conversationId = this.userConversations.get(userId);
-		if (!conversationId) {
-			conversationId = `tg_${String(userId).slice(-8)}_${Date.now().toString(36)}`;
-			this.userConversations.set(userId, conversationId);
-		}
-
-		this.pendingRuns.set(conversationId, {
-			chatId,
-			userId,
-			replyToMessageId: message.message_id,
-			accumulatedText: "",
-			startedAt: Date.now(),
-		});
-
-		try {
-			const workspace = this.resolveWorkspace(userId, cfg);
-			const chatReq = {
-				text: cleanText,
-				accountId,
-				conversationId,
-			};
-			if (workspace) chatReq.cwd = workspace;
-			if (cfg.model) chatReq.model = cfg.model;
-			if (cfg.thinkingLevel) chatReq.thinkingLevel = cfg.thinkingLevel;
-			await this.host.chat(chatReq);
-		} catch (err) {
-			this.log("warn", `Telegram host.chat dispatch failed: ${err.message}`);
-			this.pendingRuns.delete(conversationId);
-			await telegramApi(
-				cfg.botToken,
-				"sendMessage",
-				{
-					chat_id: chatId,
-					reply_to_message_id: message.message_id,
-					text: `任务启动失败：${err.message}`,
-				},
-				{ apiBase: cfg.apiBase || "https://api.telegram.org" },
-			).catch(() => {});
-		}
-	}
-
-	async handleSlashCommand(cmdText, { chatId, userId, cfg }) {
-		const parts = cmdText.trim().split(/\s+/);
-		const cmd = parts[0].toLowerCase();
-
-		switch (cmd) {
-			case "/help": {
-				const helpText = [
-					"🤖 *pi-web-ui Telegram 机器人帮助*",
-					"",
-					"- 直接发送文本即可与 AI 助手对话，支持多轮上下文",
-					"- `/cwd [路径]` 或 `/workspace [路径]`：查看或切换当前项目根目录",
-					"- `/model`：查看当前配置的 AI 模型与思考强度",
-					"- `/clear` 或 `/new`：清空当前上下文，开启全新对话",
-					"- `/status`：查看机器人运行状态与指标",
-					"- `/help`：展示本帮助信息",
-				].join("\n");
-				await telegramApi(
-					cfg.botToken,
-					"sendMessage",
-					{
-						chat_id: chatId,
-						text: helpText,
-						parse_mode: "Markdown",
-					},
-					{ apiBase: cfg.apiBase || "https://api.telegram.org" },
-				).catch(() => {});
-				return true;
-			}
-			case "/model": {
-				const currentModel = cfg.model || "(默认跟随全局)";
-				const currentThinking = cfg.thinkingLevel || "(跟随全局)";
-				await telegramApi(
-					cfg.botToken,
-					"sendMessage",
-					{
-						chat_id: chatId,
-						text: `🤖 *当前模型与思考配置*\n- 模型 (Model)：\`${currentModel}\`\n- 思考强度 (Thinking)：\`${currentThinking}\``,
-						parse_mode: "Markdown",
-					},
-					{ apiBase: cfg.apiBase || "https://api.telegram.org" },
-				).catch(() => {});
-				return true;
-			}
-			case "/cwd":
-			case "/workspace": {
-				const argPath = cmdText.replace(/^\/\S+/, "").trim();
-				if (!argPath) {
-					const currentWs = this.resolveWorkspace(userId, cfg) || "(默认跟随宿主当前项目)";
-					await telegramApi(
-						cfg.botToken,
-						"sendMessage",
-						{
-							chat_id: chatId,
-							text: `📂 当前项目根目录：${currentWs}\n提示：发送 /cwd <目录路径> 可切换项目根目录。`,
-						},
-						{ apiBase: cfg.apiBase || "https://api.telegram.org" },
-					).catch(() => {});
-					return true;
-				}
-				this.userWorkspaces.set(userId, argPath);
-				const newId = `tg_${String(userId).slice(-8)}_${Date.now().toString(36)}`;
-				this.userConversations.set(userId, newId);
-				await telegramApi(
-					cfg.botToken,
-					"sendMessage",
-					{
-						chat_id: chatId,
-						text: `📂 已将项目根目录切换为：${argPath}\n✨ 已自动为您开启该目录下的全新会话！`,
-					},
-					{ apiBase: cfg.apiBase || "https://api.telegram.org" },
-				).catch(() => {});
-				return true;
-			}
-			case "/clear":
-			case "/new": {
-				const newId = `tg_${String(userId).slice(-8)}_${Date.now().toString(36)}`;
-				this.userConversations.set(userId, newId);
-				await telegramApi(
-					cfg.botToken,
-					"sendMessage",
-					{
-						chat_id: chatId,
-						text: "✨ 对话上下文已清空，已为您开启全新会话！",
-					},
-					{ apiBase: cfg.apiBase || "https://api.telegram.org" },
-				).catch(() => {});
-				return true;
-			}
-			case "/status": {
-				const s = this.status;
-				const statusText = [
-					`🟢 *Telegram 机器人状态*`,
-					`- 机器人账号：@${s.botUsername || "未连接"}`,
-					`- 运行状态：在线 (长轮询)`,
-					`- 已接收消息：${s.messagesReceived} 条`,
-					`- 已回复消息：${s.messagesReplied} 条`,
-				].join("\n");
-				await telegramApi(
-					cfg.botToken,
-					"sendMessage",
-					{
-						chat_id: chatId,
-						text: statusText,
-						parse_mode: "Markdown",
-					},
-					{ apiBase: cfg.apiBase || "https://api.telegram.org" },
-				).catch(() => {});
-				return true;
-			}
-			default:
-				return false;
-		}
-	}
-
-	async handleRunEvent(ev) {
-		const convId = ev.conversationId;
-		if (!convId) return;
-
-		if (ev.type === "message" && ev.message) {
-			const m = ev.message;
-			let content = "";
-			if (typeof m.content === "string") content = m.content;
-			else if (Array.isArray(m.content)) {
-				content = m.content
-					.map((c) => (typeof c === "string" ? c : c.text || ""))
-					.join("\n")
-					.trim();
-			}
-
-			if (content && (m.role === "assistant" || m.author === "assistant")) {
-				if (this.pendingRuns.has(convId)) {
-					const r = this.pendingRuns.get(convId);
-					r.accumulatedText += (r.accumulatedText ? "\n" : "") + content;
-				} else {
-					let early = this.earlyRuns.get(convId);
-					if (!early) {
-						early = { accumulatedText: "" };
-						this.earlyRuns.set(convId, early);
-					}
-					early.accumulatedText += (early.accumulatedText ? "\n" : "") + content;
-				}
-			}
-			return;
-		}
-
-		if (ev.type === "run_end") {
-			const run = this.pendingRuns.get(convId) || this.earlyRuns.get(convId);
-			if (!run) return;
-
-			this.pendingRuns.delete(convId);
-			this.earlyRuns.delete(convId);
-
-			const rawText = run.accumulatedText || "";
-			const cleanText = stripInternalMarkers(rawText);
-			const finalText = cleanText || "✅ 任务已完成（无文本输出）。";
-
-			const cfg = this.getConfig();
-			// Telegram max length 4096, using 3800 safe limit
-			const chunks = chunkMarkdownText(finalText, 3800);
-
-			try {
-				for (let i = 0; i < chunks.length; i++) {
-					const chunk = chunks[i];
-					const payload = {
-						chat_id: run.chatId,
-						text: chunk,
-					};
-					if (i === 0 && run.replyToMessageId) {
-						payload.reply_to_message_id = run.replyToMessageId;
-					}
-
-					// Try sending as Markdown; if Telegram Markdown parser rejects, fallback to plain text
-					try {
-						await telegramApi(
-							cfg.botToken,
-							"sendMessage",
-							{
-								...payload,
-								parse_mode: "Markdown",
-							},
-							{ apiBase: cfg.apiBase || "https://api.telegram.org" },
-						);
-					} catch {
-						await telegramApi(cfg.botToken, "sendMessage", payload, {
-							apiBase: cfg.apiBase || "https://api.telegram.org",
-						});
-					}
-				}
-
-				this.status.messagesReplied++;
-				this.status.lastReplyAt = Date.now();
-			} catch (err) {
-				this.log("warn", `Telegram reply delivery failed: ${err.message}`);
 			}
 		}
 	}
@@ -573,7 +276,7 @@ export default async function activate(host) {
 	// Register AI tool "telegram" adhering strictly to tool-prompt-hygiene
 	host.registerTool?.({
 		name: "telegram",
-		description: "Send text or notifications to Telegram users or group chats via Telegram Bot API.",
+		description: "Send text or local/URL images, audio, voice, video, animations and files to Telegram chats.",
 		promptSnippet: "send messages or notifications to Telegram chats",
 		promptGuidelines: [
 			"Confirm target chat_id and message text with the user once before action=send",
@@ -591,10 +294,10 @@ export default async function activate(host) {
 					type: "string",
 					description: "send: target Telegram chat ID or @channel username.",
 				},
-				text: {
-					type: "string",
-					description: "send: text body to send.",
-				},
+				text: { type: "string", description: "Text or media caption." },
+				media: { type: "string", description: "Local media path or HTTP(S) URL." },
+				media_type: { type: "string", enum: ["photo", "document", "audio", "voice", "video", "animation"] },
+				message_thread_id: { type: "number", description: "Optional forum topic ID." },
 			},
 			required: ["action"],
 		},
@@ -605,6 +308,17 @@ export default async function activate(host) {
 					const chatId = args.chat_id?.trim() || localConfig.defaultChatId?.trim();
 					if (!chatId) throw new Error("chat_id is required.");
 					if (!localConfig.botToken) throw new Error("Telegram Bot Token is not configured.");
+					if (args.media)
+						return JSON.stringify(
+							await uploadMedia(
+								telegramApi,
+								localConfig.botToken,
+								{ ...args, chat_id: chatId },
+								{ apiBase: localConfig.apiBase },
+							),
+							null,
+							2,
+						);
 					const res = await telegramApi(
 						localConfig.botToken,
 						"sendMessage",

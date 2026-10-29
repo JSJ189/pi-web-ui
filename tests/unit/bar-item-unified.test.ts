@@ -1,5 +1,5 @@
 // @vitest-environment jsdom
-import { describe, expect, it } from "vitest";
+import { describe, expect, it, vi } from "vitest";
 import { createElement } from "react";
 import { createRoot } from "react-dom/client";
 import { act } from "react-dom/test-utils";
@@ -41,7 +41,11 @@ const chatStub = {
 	updatesAll: [],
 } as unknown as ChatState;
 
-function renderBarItem(entry: UiSlotEntry, bar: "top" | "bottom" | "left" | "right") {
+function renderBarItem(
+	entry: UiSlotEntry,
+	bar: "top" | "bottom" | "left" | "right",
+	onViewChange?: (view: import("../../web/src/components/BarItem.js").ViewName) => void,
+) {
 	localStorage.setItem("pi-web-ui:lang", "zh");
 	const container = document.createElement("div");
 	document.body.appendChild(container);
@@ -56,6 +60,7 @@ function renderBarItem(entry: UiSlotEntry, bar: "top" | "bottom" | "left" | "rig
 					bar,
 					chat: chatStub,
 					view: "chat",
+					onViewChange,
 				}),
 			),
 		);
@@ -64,6 +69,30 @@ function renderBarItem(entry: UiSlotEntry, bar: "top" | "bottom" | "left" | "rig
 }
 
 describe("上下左右四栏通用 BarItem 渲染测试", () => {
+	it.each(["top", "bottom", "left", "right"] as const)("设备中心在 %s 栏显示图标和名称", (bar) => {
+		const entry: UiSlotEntry = {
+			id: "host:device-center",
+			slot: "topbar.primary",
+			source: "host",
+			label: "设备中心",
+			kind: "action",
+			order: 59,
+			align: "end",
+			hidden: false,
+			userOverrides: [],
+			arrangedBy: [],
+		};
+		const onViewChange = vi.fn();
+		const { container, root } = renderBarItem(entry, bar, onViewChange);
+		expect(container.querySelector("svg.bar-item-icon")).not.toBeNull();
+		expect(container.textContent).toContain("设备中心");
+		const button = container.querySelector<HTMLButtonElement>('[data-bar-item="host:device-center"]')!;
+		expect(button.getAttribute("role")).toBe("tab");
+		act(() => button.click());
+		expect(onViewChange).toHaveBeenCalledWith("devices");
+		act(() => root.unmount());
+		container.remove();
+	});
 	it("底栏条目拖到顶部（bar='top'）：上下文进度 host:ctx 正常渲染出 svg 环与文字，不再消失", () => {
 		const entry: UiSlotEntry = {
 			id: "host:ctx",

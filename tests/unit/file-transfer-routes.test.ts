@@ -1,5 +1,5 @@
 import express from "express";
-import { createServer, type Server } from "node:http";
+import { createServer, request, type Server } from "node:http";
 import { randomBytes } from "node:crypto";
 import { mkdtemp, mkdir, readdir, readFile, rm, writeFile } from "node:fs/promises";
 import { join } from "node:path";
@@ -8,14 +8,24 @@ import { afterEach, describe, expect, it } from "vitest";
 import { registerFileTransferRoutes } from "../../server/file-transfer-routes.js";
 
 const cleanup: { server: Server; root: string }[] = [];
-async function fixture() {
+async function fixture(limit?: number) {
 	const root = await mkdtemp(join(tmpdir(), "pi-transfer-http-"));
 	const temporary = join(root, "temporary");
 	await mkdir(temporary);
 	await writeFile(join(root, "a.txt"), "archive me");
 	const app = express();
 	app.use(express.json());
-	registerFileTransferRoutes(app, (id) => (id === "test-client" ? root : undefined), temporary);
+	registerFileTransferRoutes(
+		app,
+		(id) => (id === "test-client" ? root : undefined),
+		temporary,
+		limit === undefined
+			? undefined
+			: (clientId) => {
+					expect(clientId).toBe("test-client");
+					return limit;
+				},
+	);
 	const server = createServer(app);
 	await new Promise<void>((ok) => server.listen(0, "127.0.0.1", ok));
 	cleanup.push({ server, root });
@@ -67,6 +77,178 @@ describe("file transfer HTTP routes", () => {
 		expect(await readFile(join(f.root, "folder/nested/中文.txt"), "utf8")).toBe("hello");
 		expect((await f.upload("../escape")).status).toBe(400);
 		expect((await f.upload("C:/escape")).status).toBe(400);
+	});
+	it("rejects invalid clients, paths, types and declared sizes before receiving the body", async () => {
+		const f = await fixture();
+		for (const [query, type, size, status] of [
+			["clientId=unknown&dir=&name=a", "application/octet-stream", 1, 400],
+			["clientId=test-client&dir=&name=../escape", "application/octet-stream", 1, 400],
+			["clientId=test-client&dir=../escape&name=a", "application/octet-stream", 1, 400],
+			["clientId=test-client&dir=&name=a", "text/plain", 1, 400],
+			["clientId=test-client&dir=&name=a", "application/octet-stream", 32 * 1024 * 1024 + 1, 413],
+		] as const) {
+			const response = await new Promise<number>((ok, fail) => {
+				const req = request(
+					`${f.url}/upload?${query}`,
+					{
+						method: "POST",
+						headers: {
+							"X-File-Operation": "1",
+							"Content-Type": type,
+							"Content-Length": size,
+						},
+					},
+					(res) => {
+						res.resume();
+						ok(res.statusCode!);
+						req.destroy();
+					},
+				);
+				req.on("error", fail);
+				req.flushHeaders(); // deliberately never send the declared body
+			});
+			expect(response).toBe(status);
+		}
+	});
+	it.each([false, true])(
+		"enforces a custom upload byte limit (chunked: %s) without leaving residue",
+		async (chunked) => {
+			const f = await fixture(8);
+			async function upload(name: string, body: string) {
+				if (!chunked) return (await f.upload(name, body)).status;
+				return new Promise<number>((ok, fail) => {
+					const req = request(
+						`${f.url}/upload?clientId=test-client&dir=&name=${name}`,
+						{
+							method: "POST",
+							headers: {
+								"X-File-Operation": "1",
+								"Content-Type": "application/octet-stream",
+								"Transfer-Encoding": "chunked",
+							},
+						},
+						(res) => {
+							res.resume();
+							res.on("end", () => ok(res.statusCode!));
+						},
+					);
+					req.on("error", fail);
+					req.end(body);
+				});
+			}
+			// Multibyte text verifies the cap counts bytes, rather than characters.
+			expect(await upload("too-large.txt", "ééééx")).toBe(413);
+			await expect.poll(() => readdir(f.root)).toEqual(["a.txt", "temporary"]);
+			expect(await upload("at-limit.txt", "éééé")).toBe(200);
+			expect(await readFile(join(f.root, "at-limit.txt"))).toEqual(Buffer.from("éééé"));
+			expect(await upload("empty.txt", "")).toBe(200);
+			expect(await readFile(join(f.root, "empty.txt"))).toHaveLength(0);
+			await expect
+				.poll(async () => (await readdir(f.root)).sort())
+				.toEqual(["a.txt", "at-limit.txt", "empty.txt", "temporary"]);
+			expect(await readdir(f.temporary)).toEqual([]);
+		},
+	);
+	it("bounds chunked in-flight bytes and releases reservations after disconnect", async () => {
+		const f = await fixture(100 * 1024 * 1024);
+		const pending = (name: string) => {
+			const req = request(`${f.url}/upload?clientId=test-client&dir=&name=${name}`, {
+				method: "POST",
+				headers: { "X-File-Operation": "1", "Content-Type": "application/octet-stream" },
+			});
+			req.on("error", () => {});
+			req.write("partial");
+			return req;
+		};
+		const a = pending("a.bin");
+		const b = pending("b.bin");
+		try {
+			await expect.poll(async () => (await readdir(f.root)).filter((n) => n.startsWith(".pi-upload-")).length).toBe(2);
+			expect(await readdir(f.root)).not.toContain("a.bin");
+			const rejected = await fetch(`${f.url}/upload?clientId=test-client&dir=&name=c.bin`, {
+				method: "POST",
+				headers: { "X-File-Operation": "1", "Content-Type": "application/octet-stream", "Content-Length": "1" },
+				body: "x",
+			});
+			expect(rejected.status).toBe(429);
+		} finally {
+			a.destroy();
+			b.destroy();
+		}
+		await expect.poll(async () => (await readdir(f.root)).filter((n) => n.startsWith(".pi-upload-"))).toEqual([]);
+		expect((await f.upload("after.bin")).status).toBe(200);
+		expect(await readdir(f.root)).not.toContain("a.bin");
+		expect(await readdir(f.root)).not.toContain("b.bin");
+	});
+	it("limits concurrent uploads even when their reserved bytes are small", async () => {
+		const f = await fixture();
+		const requests = Array.from({ length: 4 }, (_, i) => {
+			const req = request(`${f.url}/upload?clientId=test-client&dir=&name=pending-${i}`, {
+				method: "POST",
+				headers: {
+					"X-File-Operation": "1",
+					"Content-Type": "application/octet-stream",
+					"Content-Length": "2",
+				},
+			});
+			req.on("error", () => {});
+			req.write("x");
+			return req;
+		});
+		try {
+			await expect.poll(async () => (await readdir(f.root)).filter((n) => n.startsWith(".pi-upload-")).length).toBe(4);
+			expect((await f.upload("fifth")).status).toBe(429);
+		} finally {
+			for (const req of requests) req.destroy();
+		}
+		await expect.poll(async () => (await readdir(f.root)).filter((n) => n.startsWith(".pi-upload-"))).toEqual([]);
+		expect((await f.upload("released")).status).toBe(200);
+	});
+	it("rejects an oversized chunked body and cleans its staging file", async () => {
+		const f = await fixture();
+		const status = await new Promise<number>((ok, fail) => {
+			const req = request(
+				`${f.url}/upload?clientId=test-client&dir=&name=large.bin`,
+				{
+					method: "POST",
+					headers: {
+						"X-File-Operation": "1",
+						"Content-Type": "application/octet-stream",
+					},
+				},
+				(res) => {
+					res.resume();
+					ok(res.statusCode!);
+					req.destroy();
+				},
+			);
+			req.on("error", fail);
+			const chunk = Buffer.alloc(1024 * 1024);
+			let sent = 0;
+			const send = () => {
+				while (sent < 33) {
+					sent++;
+					if (!req.write(chunk)) {
+						req.once("drain", send);
+						return;
+					}
+				}
+				req.end();
+			};
+			send();
+		});
+		expect(status).toBe(413);
+		await expect
+			.poll(async () => (await readdir(f.root)).filter((n) => n.startsWith(".pi-upload-") || n === "large.bin"))
+			.toEqual([]);
+		expect((await f.upload("next.bin")).status).toBe(200);
+	});
+	it("publishes only one winner for concurrent same-name uploads", async () => {
+		const f = await fixture();
+		const responses = await Promise.all([f.upload("race.txt", "first"), f.upload("race.txt", "second")]);
+		expect(responses.map((r) => r.status).sort()).toEqual([200, 409]);
+		expect(["first", "second"]).toContain(await readFile(join(f.root, "race.txt"), "utf8"));
+		await expect.poll(async () => (await readdir(f.root)).filter((n) => n.startsWith(".pi-upload-"))).toEqual([]);
 	});
 	it("downloads a temporary archive and deletes it after sending", async () => {
 		const f = await fixture();

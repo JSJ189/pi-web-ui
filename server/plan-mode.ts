@@ -87,6 +87,12 @@ const TERMINAL_WRITE_TOOLS = new Set(["terminal_input", "terminal_key"]);
  * 的判定函数）；schedule（create/list/cancel）则整工具拒——调度面在计划/审查
  * 回合都不需要，宁可保守。
  */
+import {
+	isReadOnlyConversationAction,
+	CONVERSATION_TOOL_NAMES,
+	isConversationTool,
+} from "./conversation-tool-names.js";
+
 export const SESSION_DISPATCH_TOOLS = new Set<string>(["delegate_task", "schedule"]);
 
 /**
@@ -102,91 +108,14 @@ export const PLAN_MODE_BLOCKED_TOOL_NAMES = new Set<string>([
 	...BLOCKED_TOOLS,
 	...BYPASS_TOOLS,
 	...TERMINAL_WRITE_TOOLS,
-	"subagent",
+	...CONVERSATION_TOOL_NAMES,
 ]);
 
 /** bash 类工具名（terminalBash 开关分流后可能是这几个）。 */
-const BASH_TOOLS = new Set(["bash", "bash_execute", "run_command", "shell", "terminal", "terminal_exec"]);
+const BASH_TOOLS = new Set(["bash", "bash_execute", "run_command", "shell", "terminal_exec"]);
 
-/** 计划模式放行的只读命令（basename，无参数）。刻意保守：宁可拒一次让模型换命令。 */
-const READ_ONLY_COMMANDS = new Set([
-	// 目录 / 文件查看
-	"ls",
-	"ll",
-	"pwd",
-	"cat",
-	"bat",
-	"head",
-	"tail",
-	"wc",
-	"file",
-	"stat",
-	"du",
-	"df",
-	"tree",
-	"find",
-	"fd",
-	"realpath",
-	"readlink",
-	"basename",
-	"dirname",
-	"which",
-	"type",
-	// 检索与文本处理（只读变体；sed 的 -i 在段内另行拒绝）
-	"grep",
-	"egrep",
-	"fgrep",
-	"rg",
-	"ag",
-	"ack",
-	"sed",
-	"awk",
-	"cut",
-	"tr",
-	"sort",
-	"uniq",
-	"jq",
-	"yq",
-	"diff",
-	"cmp",
-	// 环境 / 版本
-	"env",
-	"printenv",
-	"date",
-	"uname",
-	"whoami",
-	"node",
-	"npm",
-	"python",
-	"python3",
-	// 校验和（只读）
-	"md5sum",
-	"sha256sum",
-]);
-
-/** git 的只读子命令（写子命令一律禁）。 */
-const READ_ONLY_GIT_SUBCOMMANDS = new Set([
-	"status",
-	"diff",
-	"log",
-	"show",
-	"blame",
-	"rev-parse",
-	"rev-list",
-	"ls-files",
-	"ls-tree",
-	"describe",
-	"shortlog",
-	"grep",
-	"cat-file",
-	"whatchanged",
-]);
-
-/** 解释器的「只读例外」：只有这些参数组合放行，其余（-e/--eval/run script/子命令）拒。 */
-const INTERPRETER_SAFE_ARGS = new Set(["--version", "-v", "-V", "--help", "-h", "--revision"]);
-
-/** 段内出现即判写：重定向、命令替换、后台、heredoc。 */
-const WRITE_SHELL_TOKENS = /[><`]|&\s*$/;
+/** Reject expansion/escaping even inside quotes: unsupported syntax fails closed. */
+const UNSUPPORTED_SHELL = /[$`\\<>\x00-\x08\x0b-\x1f\x7f]/;
 
 /** 引号感知的命令切分：把一条命令按 ; && || | 换行 拆成独立段。 */
 function splitShellSegments(cmd: string): string[] {
@@ -205,8 +134,9 @@ function splitShellSegments(cmd: string): string[] {
 			cur += ch;
 			continue;
 		}
-		// 命令替换 $( … ) 一律视为写（能跑任意代码），整条拒。
-		if (ch === "$" && cmd[i + 1] === "(") return [""];
+		// Globbing can inject option-like filenames (e.g. --pre=...). Use quoted patterns
+		// with structured search tools instead. All unsupported expansions fail closed.
+		if (/[(){}~#*?[\]]/.test(ch)) return [""];
 		if (ch === ";" || ch === "\n") {
 			out.push(cur);
 			cur = "";
@@ -223,76 +153,263 @@ function splitShellSegments(cmd: string): string[] {
 			cur = "";
 			continue;
 		}
+		if (ch === "&") return [""];
 		cur += ch;
 	}
+	if (quote) return [""];
 	out.push(cur);
-	return out.map((s) => s.trim()).filter((s) => s !== "");
+	return out.map((s) => s.trim());
 }
 
-/** 取一段里的命令 token：跳过 `FOO=bar` 前缀、`/usr/bin/env`、路径前缀。 */
-function commandToken(segment: string): string {
-	const tokens = segment.split(/\s+/);
-	let i = 0;
-	while (i < tokens.length) {
-		const tok = tokens[i]!;
-		if (/^[A-Za-z_][A-Za-z0-9_]*=/.test(tok)) {
-			i++;
+/** Only named options are accepted; arguments are tokenized before validation. */
+interface ReadOnlyOptions {
+	short?: string;
+	flags?: string[];
+	values?: string[];
+	shortValues?: string;
+	numeric?: boolean;
+}
+function readOnlyArgs(args: string[], spec: ReadOnlyOptions): boolean {
+	for (let i = 0; i < args.length; i++) {
+		const arg = args[i]!;
+		if (arg === "--") return true;
+		if (!arg.startsWith("-") || arg === "-") continue;
+		if (spec.flags?.includes(arg)) continue;
+		const eq = arg.indexOf("=");
+		if (arg.startsWith("--")) {
+			const option = eq < 0 ? arg : arg.slice(0, eq);
+			if (!spec.values?.includes(option)) return false;
+			if (eq < 0 && (args[++i] === undefined || args[i]!.startsWith("-"))) return false;
 			continue;
 		}
-		if (tok === "env" || tok === "command" || tok === "nohup" || tok === "time") {
-			i++;
-			continue;
+		if (spec.numeric && /^-\d+$/.test(arg)) continue;
+		for (let j = 1; j < arg.length; j++) {
+			const flag = arg[j]!;
+			if (spec.shortValues?.includes(flag)) {
+				if (j === arg.length - 1 && (args[++i] === undefined || args[i]!.startsWith("-"))) return false;
+				break;
+			}
+			if (!spec.short?.includes(flag)) return false;
 		}
-		return tok;
-	}
-	return "";
-}
-
-function basenameOf(token: string): string {
-	const idx = token.lastIndexOf("/");
-	return idx >= 0 ? token.slice(idx + 1) : token;
-}
-
-/** 单段是否只读（不含管道/重定向/命令替换，命令在白名单内）。 */
-function segmentIsReadOnly(segment: string): boolean {
-	if (WRITE_SHELL_TOKENS.test(segment)) return false;
-	// `>` 重定向在别处已覆盖；这里补 `2>&1` 之外的 fd 复制与 `<<<`/`2>`。
-	if (/<<|&\s*\d|\d\s*>/.test(segment)) return false;
-	const cmd = commandToken(segment);
-	if (!cmd) return false;
-	const name = basenameOf(cmd);
-	const rest = segment.slice(segment.indexOf(cmd) + cmd.length).trim();
-	const args = rest.split(/\s+/).filter(Boolean);
-	if (name === "git") {
-		const sub = args.find((a) => !a.startsWith("-"));
-		return sub !== undefined && READ_ONLY_GIT_SUBCOMMANDS.has(sub);
-	}
-	if (!READ_ONLY_COMMANDS.has(name)) return false;
-	// sed -i / awk 的 system() 之类写路径。
-	if (name === "sed" && args.some((a) => /^-[a-z]*i/.test(a) || a === "--in-place")) return false;
-	if (name === "awk" && /system\s*\(/.test(rest)) return false;
-	// find 的 -exec/-delete/-fprintf 族有写副作用（issue #483）：白名单命中不等于只读，
-	// `find . -name '*.log' -delete` / `-exec touch x {} +` 无任何重定向特征，必须显式拒。
-	if (name === "find" && args.some((a) => /^-(exec|execdir|ok|okdir|delete|fprint0|fprint|fprintf|fls)$/.test(a)))
-		return false;
-	// 解释器：只放行 --version/--help 这类无副作用调用。
-	if (name === "node" || name === "python" || name === "python3" || name === "npm") {
-		return args.length > 0 && args.every((a) => INTERPRETER_SAFE_ARGS.has(a));
 	}
 	return true;
 }
 
+const READ_ONLY_OPTIONS: Record<string, ReadOnlyOptions> = {
+	ls: { short: "aAlhRtdrS1Fipn", flags: ["--all", "--almost-all", "--human-readable"] },
+	pwd: { short: "LP" },
+	cat: { short: "nbsETAv" },
+	head: { short: "qv", shortValues: "nc", numeric: true },
+	tail: { short: "qv", shortValues: "nc", numeric: true },
+	wc: { short: "clmwL", flags: ["--bytes", "--lines", "--words", "--chars"] },
+	stat: { short: "Lf", shortValues: "c", values: ["--format"] },
+	du: { short: "ahskm", values: ["--max-depth"] },
+	df: { short: "hkiPT" },
+	realpath: { short: "emqs" },
+	readlink: { short: "femqns" },
+	basename: { short: "a", shortValues: "s" },
+	dirname: {},
+	uname: { short: "asnrvmpio" },
+	whoami: {},
+	printenv: {},
+	md5sum: { short: "bct", flags: ["--check"] },
+	sha256sum: { short: "bct", flags: ["--check"] },
+	grep: {
+		short: "EFGPivwnrlLchsoqRH",
+		shortValues: "efABCm",
+		numeric: true,
+		flags: ["--line-number", "--recursive", "--ignore-case", "--fixed-strings"],
+	},
+	rg: {
+		short: "nNliwsvqocUFHL",
+		shortValues: "egtfmABC",
+		flags: [
+			"--files",
+			"--hidden",
+			"--no-ignore",
+			"--no-heading",
+			"--heading",
+			"--line-number",
+			"--count",
+			"--fixed-strings",
+			"--ignore-case",
+			"--files-with-matches",
+			"--files-without-match",
+			"--stats",
+			"--json",
+		],
+		values: [
+			"--glob",
+			"--type",
+			"--max-count",
+			"--max-depth",
+			"--context",
+			"--before-context",
+			"--after-context",
+			"--regexp",
+			"--file",
+		],
+	},
+	fd: {
+		short: "HILais0",
+		shortValues: "etEd",
+		flags: ["--hidden", "--no-ignore", "--absolute-path", "--full-path"],
+		values: ["--extension", "--type", "--exclude", "--max-depth"],
+	},
+	cut: { short: "sn", shortValues: "bcfd", values: ["--bytes", "--characters", "--fields", "--delimiter"] },
+};
+
+const GIT_OPTIONS: Record<string, ReadOnlyOptions> = {
+	status: {
+		short: "sbz",
+		flags: [
+			"--short",
+			"--branch",
+			"--porcelain",
+			"--porcelain=v1",
+			"--porcelain=v2",
+			"--untracked-files=no",
+			"--untracked-files=all",
+		],
+	},
+	diff: {
+		short: "pwb",
+		shortValues: "U",
+		flags: [
+			"--stat",
+			"--numstat",
+			"--shortstat",
+			"--name-only",
+			"--name-status",
+			"--cached",
+			"--staged",
+			"--check",
+			"--no-ext-diff",
+			"--no-textconv",
+			"--no-color",
+			"--color=never",
+			"--no-renames",
+		],
+	},
+	log: {
+		short: "p",
+		shortValues: "n",
+		numeric: true,
+		flags: [
+			"--oneline",
+			"--stat",
+			"--name-only",
+			"--name-status",
+			"--all",
+			"--graph",
+			"--decorate",
+			"--no-decorate",
+			"--no-color",
+			"--no-show-signature",
+		],
+		values: ["--max-count", "--since", "--until", "--author", "--grep", "--format", "--pretty"],
+	},
+	show: {
+		short: "ps",
+		flags: ["--stat", "--name-only", "--name-status", "--oneline", "--no-ext-diff", "--no-textconv", "--no-color"],
+		values: ["--format", "--pretty"],
+	},
+	blame: { short: "w", shortValues: "L", flags: ["--line-porcelain", "--porcelain"] },
+	"rev-parse": {
+		flags: [
+			"--show-toplevel",
+			"--show-prefix",
+			"--git-dir",
+			"--short",
+			"--verify",
+			"--abbrev-ref",
+			"--is-inside-work-tree",
+		],
+	},
+	"rev-list": { shortValues: "n", numeric: true, flags: ["--count", "--all"], values: ["--max-count"] },
+	"ls-files": { short: "zcmot", flags: ["--cached", "--modified", "--others", "--exclude-standard", "--stage"] },
+	"ls-tree": { short: "rdtz", flags: ["--name-only", "--name-status", "--full-tree"] },
+	describe: { flags: ["--tags", "--always", "--long", "--dirty"] },
+	"cat-file": { short: "ptse" },
+	grep: READ_ONLY_OPTIONS.grep!,
+};
+
+/** No assignment prefixes, command wrappers, arbitrary programs or executable paths. */
+function segmentIsReadOnly(segment: string): boolean {
+	const words: string[] = [];
+	let word = "";
+	let quote = "";
+	let started = false;
+	for (const ch of segment) {
+		if (quote) {
+			if (ch === quote) quote = "";
+			else word += ch;
+		} else if (ch === "'" || ch === '"') {
+			quote = ch;
+			started = true;
+		} else if (/\s/.test(ch)) {
+			if (started) words.push(word);
+			word = "";
+			started = false;
+		} else {
+			word += ch;
+			started = true;
+		}
+	}
+	if (quote) return false;
+	if (started) words.push(word);
+	const [name, ...args] = words;
+	if (!name || !/^[a-z][a-z0-9-]*$/.test(name)) return false;
+	if (["node", "npm", "python", "python3"].includes(name)) {
+		const versionFlag = name === "python" || name === "python3" ? "-V" : "-v";
+		return args.length === 1 && ["--version", versionFlag, "--help", "-h"].includes(args[0]!);
+	}
+	if (name === "git") {
+		if (args[0] === "--no-pager") args.shift();
+		const sub = args.shift() ?? "";
+		return Object.hasOwn(GIT_OPTIONS, sub) && readOnlyArgs(args, GIT_OPTIONS[sub]!);
+	}
+	if (name === "jq") {
+		// Accept field/index projections, not arbitrary programs or module loading.
+		if (args[0] === "-r" || args[0] === "-c") args.shift();
+		return (
+			args.length > 0 &&
+			/^\.(?:[A-Za-z_][\w]*(?:\.[A-Za-z_][\w]*|\[\d*\])*)?$/.test(args[0]!) &&
+			args.slice(1).every((a) => !a.startsWith("-"))
+		);
+	}
+	if (name === "find") {
+		let i = 0;
+		while (i < args.length && !args[i]!.startsWith("-")) i++;
+		while (i < args.length) {
+			const arg = args[i++]!;
+			if (["-print", "-print0", "-a", "-o"].includes(arg)) continue;
+			if (!["-name", "-iname", "-path", "-type", "-maxdepth", "-mindepth", "-newer", "-mtime", "-size"].includes(arg))
+				return false;
+			if (args[i] === undefined || args[i++]!.startsWith("-")) return false;
+		}
+		return true;
+	}
+	return Object.hasOwn(READ_ONLY_OPTIONS, name) && readOnlyArgs(args, READ_ONLY_OPTIONS[name]!);
+}
+
 /**
- * bash 命令是否只读（纯函数）。规则：按 `;` `&&` `||` `|` 切段，**每段**都要
- * 只读；段内禁重定向 / 命令替换 / 后台 / heredoc；命令在白名单内，
- * git 只放只读子命令，解释器只放行 --version/--help。
+ * Accept only the supported foreground shell grammar and per-command option allowlists.
+ * This is a capability filter, not an OS sandbox: executable resolution and inherited
+ * environment/configuration must be trusted by the execution layer.
  */
 export function bashCommandIsReadOnly(cmd: string): boolean {
 	const text = (cmd ?? "").trim();
-	if (!text) return false;
+	if (!bashCommandHasSupportedSyntax(text)) return false;
+	return splitShellSegments(text).every(segmentIsReadOnly);
+}
+
+/** Shared syntax boundary for readonly commands and the explicit test-runner exception. */
+export function bashCommandHasSupportedSyntax(cmd: string): boolean {
+	const text = (cmd ?? "").trim();
+	if (!text || UNSUPPORTED_SHELL.test(text)) return false;
 	const segments = splitShellSegments(text);
-	if (segments.length === 0) return false;
-	return segments.every(segmentIsReadOnly);
+	return segments.length > 0 && segments.every((segment) => segment.length > 0);
 }
 
 /** 从工具参数里取命令文本（各工具字段名不同）。 */
@@ -304,6 +421,79 @@ function commandOf(params: unknown): string {
 		if (typeof v === "string" && v.trim() !== "") return v;
 	}
 	return "";
+}
+
+/** Narrow the existing action enum without changing execution or other parameters. */
+export function restrictTerminalToolToReadOnly<T extends { parameters: unknown }>(tool: T): T {
+	const parameters = tool.parameters as Record<string, any>;
+	return {
+		...tool,
+		parameters: {
+			...parameters,
+			properties: {
+				...parameters.properties,
+				action: { type: "string", enum: ["list", "read", "wait"] },
+			},
+		},
+	};
+}
+
+const terminalSchemas = new WeakMap<object, unknown>();
+/** Call after registry refresh and before setActiveToolsByName; false restores the full schema. */
+export function syncTerminalReadOnlySchema(session: { _toolRegistry?: Map<string, any> }, readOnly: boolean): void {
+	const tool = session._toolRegistry?.get("terminal");
+	if (!tool) return;
+	if (!terminalSchemas.has(tool)) terminalSchemas.set(tool, tool.parameters);
+	const parameters = terminalSchemas.get(tool);
+	tool.parameters = readOnly ? restrictTerminalToolToReadOnly({ parameters }).parameters : parameters;
+}
+
+/** Structured queries are preferred to shell; unknown tools/actions fail closed. */
+export function readOnlyToolCallAllowed(name: string, params: unknown): boolean {
+	const p = params && typeof params === "object" ? (params as Record<string, unknown>) : {};
+	if (name === "terminal") return ["list", "read", "wait"].includes(String(p.action ?? ""));
+	if (
+		[
+			"read",
+			"grep",
+			"find",
+			"ls",
+			"obs_recall",
+			"present_files",
+			"conversation_read",
+			"terminal_read",
+			"terminal_list",
+			"terminal_wait",
+			"load_tools",
+			"tool_search",
+			"compact_context",
+			"ask_user_question",
+			"browser_search",
+		].includes(name)
+	)
+		return true;
+	const action = typeof p.action === "string" ? p.action : "";
+	if (name === "skill") return !action || ["read", "list", "report"].includes(action);
+	if (name === "scm") return !action || ["status", "diff", "log", "history", "branches", "show"].includes(action);
+	if (isConversationTool(name)) return isReadOnlyConversationAction(action);
+	if (name === "claim_files") return !action || action === "list";
+	if (name === "notes") return p.op === "list";
+	if (name === "remote_term") return action === "list";
+	if (name === "canvas") return ["list", "get", "get_log", "card_list"].includes(action);
+	if (name === "worktree") return action === "list";
+	if (name === "lsp")
+		return [
+			"definition",
+			"references",
+			"hover",
+			"diagnostics",
+			"documentSymbol",
+			"workspaceSymbol",
+			"read_symbol",
+			"cascade",
+		].includes(action);
+	if (name === "browser_page") return ["pages", "read", "shot"].includes(String(p.op));
+	return false;
 }
 
 /** 计划模式对一次工具调用的裁决：undefined = 放行。 */
@@ -323,8 +513,7 @@ export interface PlanModeDenial {
  */
 export function planModeDenial(toolName: string, params: unknown): PlanModeDenial | undefined {
 	const name = (toolName ?? "").trim();
-	if (!name) return undefined;
-	if (name === "subagent") {
+	if (isConversationTool(name)) {
 		const action =
 			typeof params === "object" && params !== null ? (params as Record<string, unknown>).action : undefined;
 		const act = typeof action === "string" ? action.trim().toLowerCase() : "";
@@ -333,7 +522,7 @@ export function planModeDenial(toolName: string, params: unknown): PlanModeDenia
 		// SUBAGENT_ACTIONS）或未传 action 一律拒 —— steer/handoff 会向运行中的子代理
 		// 会话投指令驱动它继续写代码，子代理会话 planMode=false 工具齐全，等于绕过
 		// 本会话的只读约束（#436 此前只拒了 spawn）。
-		if (act !== "get_result" && act !== "list" && act !== "templates") {
+		if (!isReadOnlyConversationAction(act)) {
 			return {
 				kind: "bypass-tool",
 				reason: `计划模式：不能调用 subagent(action="${act || "spawn"}")（它会在别的会话里执行，绕过本会话的只读约束）。请在本对话内用只读工具完成调研。`,
@@ -371,7 +560,7 @@ export function planModeDenial(toolName: string, params: unknown): PlanModeDenia
 			reasonEn: `Plan mode: only read-only commands are allowed; rejected: \`${cmd.slice(0, 200)}\`. Use read/grep or read-only git (status/diff/log). Put proposed changes in the plan and wait for the user's go-ahead.`,
 		};
 	}
-	if (BLOCKED_TOOLS.has(name)) {
+	if (BLOCKED_TOOLS.has(name) || (name !== "plan_update" && !readOnlyToolCallAllowed(name, params))) {
 		return {
 			kind: "write-tool",
 			reason: `计划模式：只规划不实施，${name} 被拒。请把这一步写进计划（plan_update 步骤 + 计划正文），等用户确认后在新一轮里实施。`,

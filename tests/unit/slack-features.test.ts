@@ -38,7 +38,7 @@ describe("SlackBotBridge 双工逻辑测试", () => {
 		vi.stubGlobal("fetch", fetchMock);
 
 		const chatSpy = vi.fn();
-		const bridge = new SlackBotBridge({
+		const bridge: any = new SlackBotBridge({
 			host: { chat: chatSpy },
 			getConfig: () => ({
 				botToken: "xoxb-mock",
@@ -50,6 +50,7 @@ describe("SlackBotBridge 双工逻辑测试", () => {
 		await bridge.onInboundEvent({
 			user: "U_STRANGER",
 			channel: "C_123",
+			channel_type: "im",
 			text: "你好",
 			ts: "123456.789",
 		});
@@ -59,7 +60,7 @@ describe("SlackBotBridge 双工逻辑测试", () => {
 			expect.stringContaining("/chat.postMessage"),
 			expect.objectContaining({
 				method: "POST",
-				body: expect.stringContaining("Access Restricted"),
+				body: expect.stringContaining("Access restricted"),
 			}),
 		);
 
@@ -75,7 +76,7 @@ describe("SlackBotBridge 双工逻辑测试", () => {
 		vi.stubGlobal("fetch", fetchMock);
 
 		const chatSpy = vi.fn();
-		const bridge = new SlackBotBridge({
+		const bridge: any = new SlackBotBridge({
 			host: { chat: chatSpy },
 			getConfig: () => ({
 				botToken: "xoxb-mock",
@@ -86,6 +87,7 @@ describe("SlackBotBridge 双工逻辑测试", () => {
 		await bridge.onInboundEvent({
 			user: "U_ALLOWED_1",
 			channel: "C_123",
+			channel_type: "im",
 			text: "/help",
 			ts: "123456.789",
 		});
@@ -94,7 +96,7 @@ describe("SlackBotBridge 双工逻辑测试", () => {
 		expect(fetchMock).toHaveBeenCalledWith(
 			expect.stringContaining("/chat.postMessage"),
 			expect.objectContaining({
-				body: expect.stringContaining("Slack Bot Help"),
+				body: expect.stringContaining("/help /new"),
 			}),
 		);
 
@@ -110,9 +112,9 @@ describe("SlackBotBridge 双工逻辑测试", () => {
 		vi.stubGlobal("fetch", fetchMock);
 
 		let runHandler: ((ev: any) => void) | null = null;
-		const chatSpy = vi.fn().mockResolvedValue({ conversationId: "conv_sl_1" });
+		const chatSpy = vi.fn().mockResolvedValue({ conversationId: "conv_sl_1", runId: "sl-run" });
 
-		const bridge = new SlackBotBridge({
+		const bridge: any = new SlackBotBridge({
 			host: {
 				chat: chatSpy,
 				onRunEvent: (fn: any) => {
@@ -131,6 +133,7 @@ describe("SlackBotBridge 双工逻辑测试", () => {
 		await bridge.onInboundEvent({
 			user: "U_ALLOWED_1",
 			channel: "C_123",
+			channel_type: "im",
 			text: "帮我写一个函数",
 			ts: "123456.789",
 		});
@@ -138,14 +141,15 @@ describe("SlackBotBridge 双工逻辑测试", () => {
 		expect(chatSpy).toHaveBeenCalledWith(
 			expect.objectContaining({
 				text: "帮我写一个函数",
-				accountId: expect.stringMatching(/^sl_/),
+				accountId: expect.stringMatching(/^slack_/),
 			}),
 		);
 
-		const convId = chatSpy.mock.calls[0][0].conversationId;
+		const convId = "conv_sl_1";
 
 		runHandler!({
 			conversationId: convId,
+			runId: "sl-run",
 			type: "message",
 			message: {
 				role: "assistant",
@@ -155,6 +159,7 @@ describe("SlackBotBridge 双工逻辑测试", () => {
 
 		await runHandler!({
 			conversationId: convId,
+			runId: "sl-run",
 			type: "run_end",
 		});
 
@@ -170,8 +175,8 @@ describe("SlackBotBridge 双工逻辑测试", () => {
 	});
 
 	it("Slack 频道门控：非私聊频道下，未 @ 机器人的消息被忽略，@ 机器人的消息正常触发", async () => {
-		const chatSpy = vi.fn().mockResolvedValue({ conversationId: "conv_sl_channel" });
-		const bridge = new SlackBotBridge({
+		const chatSpy = vi.fn().mockResolvedValue({ conversationId: "conv_sl_channel", runId: "channel-run" });
+		const bridge: any = new SlackBotBridge({
 			host: { chat: chatSpy },
 			getConfig: () => ({ botToken: "xoxb-mock", appToken: "xapp-mock" }),
 		});

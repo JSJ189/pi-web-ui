@@ -3,9 +3,8 @@
  *
  * 动作：list（工程摘要）/ get（整图 JSON）/ create_graph（新建工程）/ delete_graph（删除工程）/
  * add_node / update_node / delete_node / add_edge / delete_edge / apply_dag（整图节点边替换，角色白名单+环检测）。
- * 运行与调试（run_all/run_node/stop/steer/review/get_log）暂不在 AI 工具内：运行态活在 CanvasOrchestrator
- * 内存里，工具 host 只有 dataDir，够不着；前端 Canvas Studio 已有全套运行/日志/审查 UI，见 canvas-dispatch.ts。
- * 直接读写 canvas-store 落盘文件；前端画布下次 load 即见，聊天里即时回执。
+ * 运行与调试通过注入的 CanvasOrchestrator；编辑走版本检查与严格校验，成功后广播。
+ * 运行失败广播明确错误，状态与证据由调度器统一持久化。
  */
 import { Type } from "typebox";
 import { defineTool, type ToolDefinition } from "@earendil-works/pi-coding-agent";
@@ -14,6 +13,7 @@ import { CANVAS_TOOL_NAME } from "../tool-manager.js";
 import { deleteCanvasGraph, listCanvasGraphs, loadCanvasGraph, saveCanvasGraph } from "./canvas-store.js";
 import { addCustomCard, deleteCustomCard, listCustomCards, updateCustomCard } from "./canvas-cards.js";
 import type { CanvasEdge, CanvasGraph, CanvasNode, CanvasNodeRole, ServerMessage } from "../protocol.js";
+import { assertCanvasGraph } from "./canvas-validation.js";
 
 export interface CanvasToolHost {
 	dataDir: string;
@@ -41,7 +41,8 @@ interface CanvasRuntime {
 	runNode(graph: CanvasGraph, nodeId: string, prompt?: string, runBase?: string): Promise<void>;
 	stopNode(graphId: string, nodeId: string): void;
 	stopAll(graphId: string): void;
-	steerNode(graphId: string, nodeId: string, message: string): void;
+	deleteGraph(graphId: string): boolean;
+	steerNode(graphId: string, nodeId: string, message: string): void | Promise<void>;
 	reviewNode(graphId: string, nodeId: string, decision: "approve" | "reject", comment?: string): unknown;
 	getNodeLog(graphId: string, nodeId: string): unknown;
 	getNodeMessages(graphId: string, nodeId: string): unknown;
@@ -72,7 +73,9 @@ function pushCards(dataDir: string): void {
 }
 
 function saveAndPush(dataDir: string, graph: CanvasGraph): void {
-	saveCanvasGraph(dataDir, graph);
+	assertCanvasGraph(graph);
+	const result = saveCanvasGraph(dataDir, graph, { expectedRev: graph.rev ?? 0 });
+	if (result.conflict) throw new Error("Canvas changed; get the latest graph before editing again");
 	try {
 		canvasBroadcaster?.({ type: "canvas_graph_state", graph });
 	} catch {
@@ -181,10 +184,16 @@ function hasCycle(n: number, edges: { from: number; to: number }[]): boolean {
 
 export function makeCanvasTool(host: CanvasToolHost, lang?: () => ServerLang): ToolDefinition {
 	const getLang: () => ServerLang = lang ?? host.lang ?? (() => "en");
-	const text = (t: string, details: unknown = {}) => ({
-		content: [{ type: "text" as const, text: t }],
-		details,
-	});
+	const text = (t: string, details: unknown = {}) => {
+		const encoded = JSON.stringify(details);
+		const oversized = Buffer.byteLength(encoded, "utf8") > 60_000;
+		return {
+			content: [{ type: "text" as const, text: oversized ? `${t}\n${encoded}` : t }],
+			details: oversized
+				? { truncated: true, note: "Full graph is included in text; details exceeded the UI budget" }
+				: details,
+		};
+	};
 	return defineTool({
 		name: CANVAS_TOOL_NAME,
 		label: "Canvas pipeline",
@@ -381,7 +390,7 @@ export function makeCanvasTool(host: CanvasToolHost, lang?: () => ServerLang): T
 							pick(getLang(), "默认工程不可删。", "The default graph cannot be deleted.", "canvas.graph.protected", {}),
 							{ ok: false },
 						);
-					const ok = deleteCanvasGraph(dataDir, graphId);
+					const ok = canvasRuntime ? canvasRuntime.deleteGraph(graphId) : deleteCanvasGraph(dataDir, graphId);
 					if (ok) {
 						try {
 							canvasBroadcaster?.({ type: "canvas_list_result", graphs: listCanvasGraphs(dataDir) });
@@ -515,7 +524,25 @@ export function makeCanvasTool(host: CanvasToolHost, lang?: () => ServerLang): T
 						);
 					const patch = (p.patch ?? {}) as Record<string, unknown>;
 					for (const [k, v] of Object.entries(patch)) {
-						if (["id", "status", "activeConvId"].includes(k)) continue;
+						if (
+							![
+								"title",
+								"role",
+								"x",
+								"y",
+								"width",
+								"height",
+								"engine",
+								"model",
+								"thinkingLevel",
+								"cwd",
+								"useWorktree",
+								"systemPromptOverride",
+								"instruction",
+								"config",
+							].includes(k)
+						)
+							continue;
 						if (k === "role" && typeof v === "string" && !VALID_ROLES.has(v)) continue;
 						(n as unknown as Record<string, unknown>)[k] = v;
 					}
@@ -622,7 +649,11 @@ export function makeCanvasTool(host: CanvasToolHost, lang?: () => ServerLang): T
 						}
 					}
 					const idx = rawNodes.map((_, i) => i);
-					const normEdges = rawEdges.map((e) => ({ from: Number(e.from ?? e.source), to: Number(e.to ?? e.target) }));
+					const normEdges = rawEdges.map((e): Record<string, unknown> & { from: number; to: number } => ({
+						...e,
+						from: Number(e.from ?? e.source),
+						to: Number(e.to ?? e.target),
+					}));
 					for (const e of normEdges) {
 						if (!idx.includes(e.from) || !idx.includes(e.to) || e.from === e.to) {
 							return text(pick(getLang(), "边下标非法。", "Invalid edge indices.", "canvas.dag.edge", {}), {
@@ -648,12 +679,16 @@ export function makeCanvasTool(host: CanvasToolHost, lang?: () => ServerLang): T
 						useWorktree: false,
 						status: "idle",
 						...(typeof n.instruction === "string" && n.instruction ? { instruction: n.instruction } : {}),
+						...(n.config && typeof n.config === "object" ? { config: n.config as CanvasNode["config"] } : {}),
 					}));
 					const edges: CanvasEdge[] = normEdges.map((e, i) => ({
 						id: `e_${now}_${i}`,
 						sourceNodeId: nodes[e.from].id,
 						targetNodeId: nodes[e.to].id,
-						type: "handoff",
+						type: (e.type ?? "handoff") as CanvasEdge["type"],
+						...(typeof e.sourcePort === "string" ? { sourcePort: e.sourcePort } : {}),
+						...(typeof e.targetPort === "string" ? { targetPort: e.targetPort } : {}),
+						...(typeof e.label === "string" ? { label: e.label } : {}),
 					}));
 					const next: CanvasGraph = { ...graph, nodes, edges, updatedAt: now };
 					saveAndPush(dataDir, next);
@@ -694,7 +729,16 @@ export function makeCanvasTool(host: CanvasToolHost, lang?: () => ServerLang): T
 						);
 					const nodeId = typeof p.nodeId === "string" ? p.nodeId : "";
 					if (action === "run_all") {
-						void canvasRuntime.runAll(graph, typeof p.prompt === "string" ? p.prompt : undefined, host.getCwd?.());
+						void canvasRuntime
+							.runAll(graph, typeof p.prompt === "string" ? p.prompt : undefined, host.getCwd?.())
+							.catch((error) => {
+								canvasBroadcaster?.({
+									type: "canvas_error",
+									code: "execution_error",
+									graphId,
+									message: (error as Error).message,
+								});
+							});
 						return text(
 							pick(
 								getLang(),
@@ -711,12 +755,16 @@ export function makeCanvasTool(host: CanvasToolHost, lang?: () => ServerLang): T
 							return text(pick(getLang(), "缺少 nodeId。", "Missing nodeId.", "canvas.node.missing", {}), {
 								ok: false,
 							});
-						void canvasRuntime.runNode(
-							graph,
-							nodeId,
-							typeof p.prompt === "string" ? p.prompt : undefined,
-							host.getCwd?.(),
-						);
+						void canvasRuntime
+							.runNode(graph, nodeId, typeof p.prompt === "string" ? p.prompt : undefined, host.getCwd?.())
+							.catch((error) => {
+								canvasBroadcaster?.({
+									type: "canvas_error",
+									code: "execution_error",
+									graphId,
+									message: (error as Error).message,
+								});
+							});
 						return text(
 							pick(
 								getLang(),
@@ -754,7 +802,7 @@ export function makeCanvasTool(host: CanvasToolHost, lang?: () => ServerLang): T
 								),
 								{ ok: false },
 							);
-						canvasRuntime.steerNode(graphId, nodeId, message);
+						await canvasRuntime.steerNode(graphId, nodeId, message);
 						return text(
 							pick(getLang(), `已向节点 ${nodeId} 追问/转向。`, `Steered node ${nodeId}.`, "canvas.steered", {}),
 							{ ok: true },

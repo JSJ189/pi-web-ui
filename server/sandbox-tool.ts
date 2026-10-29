@@ -90,6 +90,9 @@ export interface SandboxToolHost {
 	onSandboxesChanged: () => Promise<void>;
 	askApproval?: AskApprovalFn;
 	getConversationId?: () => string | undefined;
+	resetSandbox: (target: string) => ReturnType<SandboxManager["reset"]>;
+	destroySandbox: (target: string) => ReturnType<SandboxManager["destroy"]>;
+	applySandboxToSource: (target: string, expectedRevision: string) => ReturnType<SandboxManager["applyToSource"]>;
 }
 
 /** details 摘录中最多携带的文件路径条目数（严格守卫 details ≤ 64KB 预算）。 */
@@ -117,9 +120,18 @@ export function makeSandboxTool(
 			const activeSbx = host.sandboxes.getByCwd(cwd);
 
 			try {
+				if (activeSbx) {
+					if (!["list", "persist"].includes(params.action)) {
+						throw new Error("Sandbox control and source comparison must be requested from outside the sandbox");
+					}
+					const target = params.sandbox?.trim();
+					if (target && target !== activeSbx.id && target !== activeSbx.path) {
+						throw new Error("Sandbox tools cannot access another sandbox");
+					}
+				}
 				switch (params.action) {
 					case "list": {
-						const list = host.sandboxes.list();
+						const list = activeSbx ? [activeSbx] : host.sandboxes.list();
 						if (list.length === 0) {
 							return {
 								content: [
@@ -251,7 +263,8 @@ export function makeSandboxTool(
 
 					case "reset": {
 						const target = params.sandbox?.trim() || activeSbx?.id || cwd;
-						const { sandbox, copiedFiles } = await host.sandboxes.reset(target);
+						if (activeSbx) throw new Error("Reset must be requested from outside the sandbox");
+						const { sandbox, copiedFiles } = await host.resetSandbox(target);
 						await host.onSandboxesChanged();
 						return {
 							content: [
@@ -406,7 +419,8 @@ export function makeSandboxTool(
 							}
 						}
 
-						const res = await host.sandboxes.applyToSource(diff.sandbox.id);
+						if (activeSbx) throw new Error("Apply must be requested from outside the sandbox");
+						const res = await host.applySandboxToSource(diff.sandbox.id, diff.expectedRevision!);
 						await host.onSandboxesChanged();
 						return {
 							content: [
@@ -506,7 +520,9 @@ export function makeSandboxTool(
 								targetInfo.sourcePath && existsSync(targetInfo.sourcePath) ? targetInfo.sourcePath : homedir(),
 							);
 						}
-						const destroyed = await host.sandboxes.destroy(targetInfo.id);
+						if (activeSbx) throw new Error("Destroy must be requested from outside the sandbox");
+						const destroyed = await host.destroySandbox(targetInfo.id);
+						if (!destroyed) throw new Error("Sandbox was not destroyed");
 						await host.onSandboxesChanged();
 						return {
 							content: [

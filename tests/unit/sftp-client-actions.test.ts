@@ -530,9 +530,9 @@ describe("sftp 密码帮助问号与使用说明", () => {
 								port: 22,
 								remotePath: "/home/test",
 								ready: true,
-								auth: { method: "password", password: "secret:legacy-secret" },
+								auth: { password: "secret:legacy-secret" },
 							},
-							profiles: [{ name: "mock", ready: true, auth: { method: "password", password: "secret:legacy-secret" } }],
+							profiles: [{ name: "mock", ready: true, auth: { password: "secret:legacy-secret" } }],
 							// 没有 secrets 字段！
 						},
 					}),
@@ -555,6 +555,56 @@ describe("sftp 密码帮助问号与使用说明", () => {
 
 		const statusEl = c.querySelector<HTMLElement>(".secret-name-status");
 		expect(statusEl?.textContent).toContain("已有同名机密");
+	});
+
+	it("保存密钥认证后，残留密码引用不会覆盖明确的认证方式", async () => {
+		stubFetch();
+		const originalFetch = globalThis.fetch;
+		let method = "password";
+		vi.stubGlobal(
+			"fetch",
+			vi.fn(async (url: string, init?: { method?: string; body?: string }) => {
+				if (String(url).includes("/profile")) {
+					const body = JSON.parse(String(init?.body ?? "{}"));
+					method = body.patch.method;
+					expect(body.patch.privateKeyPath).toBe("~/.ssh/id_ed25519");
+					return { ok: true, json: async () => ({ ok: true, data: {} }) };
+				}
+				if (String(url).endsWith("/state")) {
+					return {
+						ok: true,
+						json: async () => ({
+							ok: true,
+							data: {
+								cwd: CWD,
+								active: "mock",
+								profiles: [{ name: "mock", ready: true }],
+								connection: {
+									name: "mock",
+									ready: true,
+									host: "example.test",
+									remotePath: "/",
+									auth: { method, password: "secret:old-password", privateKeyPath: "~/.ssh/id_ed25519" },
+								},
+								secrets: ["old-password"],
+							},
+						}),
+					};
+				}
+				return originalFetch(url, init);
+			}),
+		);
+		const c = mount();
+		await flush();
+		const auth = c.querySelector<HTMLSelectElement>(".f-auth")!;
+		expect(auth.value).toBe("password");
+		auth.value = "key";
+		auth.dispatchEvent(new Event("change"));
+		c.querySelector<HTMLButtonElement>(".btn-save")!.click();
+		await flush();
+		expect(method).toBe("key");
+		expect(auth.value).toBe("key");
+		expect(c.querySelector<HTMLInputElement>(".f-keypath")!.value).toBe("~/.ssh/id_ed25519");
 	});
 
 	it("支持在界面手动新建连接与删除当前连接", async () => {

@@ -2,15 +2,10 @@
  * canvas-dispatch.ts — 画布协作 WebSocket 客户端消息分发器。
  */
 import type { ClientMessage, ServerMessage } from "../protocol.js";
-import {
-	deleteCanvasGraph,
-	isSafeGraphId,
-	listCanvasGraphs,
-	loadCanvasGraph,
-	saveCanvasGraph,
-} from "./canvas-store.js";
+import { isSafeGraphId, listCanvasGraphs, loadCanvasGraph, saveCanvasGraph } from "./canvas-store.js";
 import { deleteCustomCard, listCustomCards } from "./canvas-cards.js";
 import type { CanvasOrchestrator } from "./canvas-orchestrator.js";
+import { assertCanvasGraph } from "./canvas-validation.js";
 
 export function handleCanvasMessage(
 	msg: ClientMessage,
@@ -19,6 +14,14 @@ export function handleCanvasMessage(
 	send: (msg: ServerMessage) => void,
 	opts?: { runBase?: string },
 ): boolean {
+	const fail = (error: unknown, graphId?: string, requestId?: string) =>
+		send({
+			type: "canvas_error",
+			code: "execution_error",
+			message: error instanceof Error ? error.message : String(error),
+			graphId,
+			requestId,
+		});
 	switch (msg.type) {
 		case "canvas_list": {
 			const graphs = listCanvasGraphs(dataDir);
@@ -45,11 +48,14 @@ export function handleCanvasMessage(
 			if (!isSafeGraphId(msg.id)) return true;
 			try {
 				const graph = loadCanvasGraph(dataDir, msg.id);
-				send({ type: "canvas_graph_state", graph });
-			} catch {
+				send({ type: "canvas_graph_state", graph, requestId: msg.requestId });
+			} catch (error) {
 				send({
-					type: "canvas_graph_state",
-					graph: loadCanvasGraph(dataDir, "default"),
+					type: "canvas_error",
+					code: "not_found",
+					message: error instanceof Error ? error.message : String(error),
+					graphId: msg.id,
+					requestId: msg.requestId,
 				});
 			}
 			return true;
@@ -57,7 +63,31 @@ export function handleCanvasMessage(
 
 		case "canvas_save": {
 			if (!isSafeGraphId(msg.graph?.id)) return true;
-			const res = saveCanvasGraph(dataDir, msg.graph, { expectedRev: msg.baseRev });
+			try {
+				assertCanvasGraph(msg.graph);
+			} catch (error) {
+				send({
+					type: "canvas_error",
+					code: "invalid_graph",
+					message: (error as Error).message,
+					graphId: msg.graph.id,
+					requestId: msg.requestId,
+				});
+				return true;
+			}
+			let res: ReturnType<typeof saveCanvasGraph>;
+			try {
+				res = saveCanvasGraph(dataDir, msg.graph, { expectedRev: msg.baseRev ?? msg.graph.rev ?? 0 });
+			} catch (error) {
+				send({
+					type: "canvas_error",
+					code: "save_failed",
+					message: (error as Error).message,
+					graphId: msg.graph.id,
+					requestId: msg.requestId,
+				});
+				return true;
+			}
 			if (res.conflict) {
 				send({
 					type: "canvas_error",
@@ -67,10 +97,10 @@ export function handleCanvasMessage(
 					graph: res.graph,
 					requestId: msg.requestId,
 				});
-				send({ type: "canvas_graph_state", graph: res.graph });
+				send({ type: "canvas_graph_state", graph: res.graph, requestId: msg.requestId });
 				return true;
 			}
-			send({ type: "canvas_graph_state", graph: msg.graph });
+			send({ type: "canvas_graph_state", graph: res.graph, requestId: msg.requestId });
 			const graphs = listCanvasGraphs(dataDir);
 			send({ type: "canvas_list_result", graphs });
 			return true;
@@ -78,7 +108,7 @@ export function handleCanvasMessage(
 
 		case "canvas_delete": {
 			if (!isSafeGraphId(msg.id)) return true;
-			deleteCanvasGraph(dataDir, msg.id);
+			orchestrator.deleteGraph(msg.id);
 			const graphs = listCanvasGraphs(dataDir);
 			send({ type: "canvas_list_result", graphs });
 			return true;
@@ -87,9 +117,10 @@ export function handleCanvasMessage(
 		case "canvas_run_all": {
 			try {
 				const graph = loadCanvasGraph(dataDir, msg.graphId);
-				void orchestrator.runAll(graph, msg.initialPrompt, opts?.runBase);
-			} catch {
-				// 忽略
+				assertCanvasGraph(graph);
+				void orchestrator.runAll(graph, msg.initialPrompt, opts?.runBase).catch((error) => fail(error, msg.graphId));
+			} catch (error) {
+				fail(error, msg.graphId);
 			}
 			return true;
 		}
@@ -97,9 +128,12 @@ export function handleCanvasMessage(
 		case "canvas_run_node": {
 			try {
 				const graph = loadCanvasGraph(dataDir, msg.graphId);
-				void orchestrator.runNode(graph, msg.nodeId, msg.prompt, opts?.runBase);
-			} catch {
-				// 忽略
+				assertCanvasGraph(graph);
+				void orchestrator
+					.runNode(graph, msg.nodeId, msg.prompt, opts?.runBase)
+					.catch((error) => fail(error, msg.graphId));
+			} catch (error) {
+				fail(error, msg.graphId);
 			}
 			return true;
 		}
@@ -116,7 +150,7 @@ export function handleCanvasMessage(
 
 		case "canvas_steer_node": {
 			if (!isSafeGraphId(msg.graphId)) return true;
-			orchestrator.steerNode(msg.graphId, msg.nodeId, msg.message);
+			void orchestrator.steerNode(msg.graphId, msg.nodeId, msg.message).catch((error) => fail(error, msg.graphId));
 			return true;
 		}
 
@@ -151,8 +185,8 @@ export function handleCanvasMessage(
 			try {
 				const graph = orchestrator.reviewNode(msg.graphId, msg.nodeId, msg.decision, msg.comment);
 				if (graph) send({ type: "canvas_graph_state", graph });
-			} catch {
-				// 忽略
+			} catch (error) {
+				fail(error, msg.graphId);
 			}
 			return true;
 		}
@@ -162,8 +196,8 @@ export function handleCanvasMessage(
 				const graph = loadCanvasGraph(dataDir, msg.graphId);
 				orchestrator.resetStatus(graph);
 				send({ type: "canvas_graph_state", graph });
-			} catch {
-				// 忽略
+			} catch (error) {
+				fail(error, msg.graphId);
 			}
 			return true;
 		}

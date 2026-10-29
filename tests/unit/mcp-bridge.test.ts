@@ -309,6 +309,45 @@ describe("McpBridge.reload（mcp.json 热替换）", () => {
 		const summary = await b.reload();
 		expect(summary).toEqual({ kept: 1, started: 0, stopped: 0, failed: 1, servers: 1, tools: 10 });
 		expect(await callBridge(b, "pid")).toBe(before);
+		expect(b.getServerStatus("srv")).toMatchObject({
+			status: "running",
+			usingPreviousConfig: true,
+			error: expect.any(String),
+		});
+
+		// Restoring the original configuration clears the failed-apply warning without restarting.
+		writeMcpConfig(dir, { srv: { command: process.execPath, args: [FIXTURE] } });
+		await b.reload();
+		expect(await callBridge(b, "pid")).toBe(before);
+		expect(b.getServerStatus("srv").usingPreviousConfig).toBeUndefined();
+		expect(b.getServerStatus("srv").error).toBeUndefined();
+	});
+
+	it("dispose during initial loading prevents late tools and subsequent reload revival", async () => {
+		const dir = tempDir();
+		writeMcpConfig(dir, { srv: { command: process.execPath, args: [FIXTURE] } });
+		const b = bridge(dir);
+		const loading = b.load();
+		b.dispose();
+		await loading;
+		expect(b.getTools()).toEqual([]);
+		expect(b.getServerStatus("srv")).toEqual({ status: "stopped", tools: [] });
+		expect(await b.reload()).toEqual({ kept: 0, started: 0, stopped: 0, failed: 0, servers: 0, tools: 0 });
+	});
+
+	it("dispose during replacement prevents an in-flight reload from restoring clients", async () => {
+		const dir = tempDir();
+		writeMcpConfig(dir, { srv: { command: process.execPath, args: [FIXTURE] } });
+		const b = bridge(dir);
+		await b.load();
+		writeMcpConfig(dir, { srv: { command: process.execPath, args: [FIXTURE], env: { MCP_SLOW_MS: "0" } } });
+		const replacing = b.reload();
+		await Promise.resolve();
+		b.dispose();
+		await replacing;
+		expect(b.hasServers()).toBe(false);
+		expect(b.getTools()).toEqual([]);
+		expect(b.getServerStatus("srv").error).toBeUndefined();
 	});
 
 	it("配置里删掉服务器 → 关掉它并清空工具表", async () => {

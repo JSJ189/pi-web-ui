@@ -1,4 +1,5 @@
-import { readFileSync } from "node:fs";
+import { readFileSync, mkdtempSync, rmSync, existsSync } from "node:fs";
+import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
 import { describe, expect, it } from "vitest";
 
@@ -9,8 +10,8 @@ describe("office plugin verification (plugins/office)", () => {
 		const manifest = JSON.parse(readFileSync(join(pluginDir, "manifest.json"), "utf8"));
 		const pkg = JSON.parse(readFileSync(join(pluginDir, "package.json"), "utf8"));
 
-		expect(manifest.version).toBe("0.3.6");
-		expect(pkg.version).toBe("0.3.6");
+		expect(manifest.version).toMatch(/^\d+\.\d+\.\d+$/);
+		expect(pkg.version).toBe(manifest.version);
 		expect(manifest.apiVersion).toBe(2);
 		expect(manifest.permissions).toContain("tools");
 		expect(manifest.permissions).toContain("http");
@@ -20,7 +21,7 @@ describe("office plugin verification (plugins/office)", () => {
 
 	it("assertInWorkspace 纯函数工作区边界防护（无 ReferenceError 且拦截越界路径）", async () => {
 		const { assertInWorkspace } = await import(join(pluginDir, "index.mjs"));
-		const mockCwd = resolve("/fake/workspace");
+		const mockCwd = mkdtempSync(join(tmpdir(), "office-boundary-"));
 
 		// 正常工作区内文件与工作区根路径放行
 		const normalFile = join(mockCwd, "sub", "test.xlsx");
@@ -39,6 +40,7 @@ describe("office plugin verification (plugins/office)", () => {
 			expect(err.statusCode).toBe(403);
 			expect(err.message).toContain("工作区");
 		}
+		rmSync(mockCwd, { recursive: true });
 	});
 
 	it("host.resolveInWorkspace 平台原语优先被插件路由与处理器委托接入", async () => {
@@ -52,7 +54,6 @@ describe("office plugin verification (plugins/office)", () => {
 			},
 		};
 
-		const mod = await import(join(pluginDir, "index.mjs"));
 		// 路由中委托的 assertInWorkspaceLocal 会检测 host.resolveInWorkspace
 		expect(typeof mockHost.resolveInWorkspace).toBe("function");
 		const resolved = mockHost.resolveInWorkspace("data.xlsx");
@@ -78,11 +79,13 @@ describe("office plugin verification (plugins/office)", () => {
 		};
 
 		const cleanup = await mod.default.activate(mockHost);
-		expect(logs.some((l) => l.includes("按需下载"))).toBe(true);
+		const hasArtifacts =
+			existsSync(join(pluginDir, "artifacts", "gateway.cjs")) && existsSync(join(pluginDir, "artifacts", "viewer"));
+		expect(logs.some((l) => l.includes("按需下载"))).toBe(!hasArtifacts);
 		expect(typeof routes["GET /status"]).toBe("function");
 		expect(typeof routes["POST /provision-runtime"]).toBe("function");
 
-		// 验证 /status 路由报告 hasArtifacts 为 false
+		// 本地可能已安装运行时；激活始终保持冷启动，状态反映实际资产。
 		let jsonResult: any = null;
 		const mockRes = {
 			json: (data: any) => {
@@ -93,7 +96,7 @@ describe("office plugin verification (plugins/office)", () => {
 		expect(jsonResult).toBeTruthy();
 		expect(jsonResult.ok).toBe(true);
 		expect(jsonResult.ready).toBe(false);
-		expect(jsonResult.hasArtifacts).toBe(false);
+		expect(jsonResult.hasArtifacts).toBe(hasArtifacts);
 
 		// 工具正确注册
 		expect(registeredTool).toBeTruthy();
@@ -105,7 +108,6 @@ describe("office plugin verification (plugins/office)", () => {
 	it("宿主重资产流水线接入：host.assets.ensure 与 status 协同联动", async () => {
 		const mod = await import(join(pluginDir, "index.mjs"));
 		const routes: Record<string, Function> = {};
-		let assetEnsureCalled = false;
 		let assetStatusCalled = false;
 
 		const mockHost = {
@@ -117,7 +119,6 @@ describe("office plugin verification (plugins/office)", () => {
 			registerTool: () => {},
 			assets: {
 				ensure: async (spec: any) => {
-					assetEnsureCalled = true;
 					expect(spec.id).toBe("univer-runtime");
 					expect(spec.sha256).toBeTruthy();
 					return { ok: true, targetDir: "/fake/artifacts" };

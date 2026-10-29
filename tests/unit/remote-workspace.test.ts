@@ -47,7 +47,7 @@ describe("Remote Workspace & SSH URI", () => {
 		await fs.mkdir(testDir, { recursive: true });
 
 		try {
-			const store = new ClientStateStore(testDir);
+			const store = new ClientStateStore(path.join(testDir, "client-state.json"));
 			const clientId = "client_test_remote";
 			const remoteUri = "ssh://developer@192.168.50.2:22/home/developer/app";
 

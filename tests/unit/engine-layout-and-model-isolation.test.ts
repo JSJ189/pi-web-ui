@@ -15,7 +15,7 @@ describe("engine layout sharing, history transition and model isolation", () => 
 
 	beforeEach(() => {
 		testDir = mkdtempSync(join(tmpdir(), "pi-engine-test-"));
-		stateStore = new ClientStateStore(testDir);
+		stateStore = new ClientStateStore(join(testDir, "client-state.json"));
 		universalStore = new UniversalSessionStore(testDir);
 	});
 

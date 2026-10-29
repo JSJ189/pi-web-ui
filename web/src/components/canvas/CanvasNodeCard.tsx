@@ -14,14 +14,19 @@ import {
 	outPortsForRole,
 	IN_PORT_DEFS,
 	visibleRoleFields,
+	roleCapabilityNotice,
+	isRoleImplemented,
 } from "./CanvasTypes";
 import type { RoleField } from "./CanvasTypes";
 import type { ReactNode } from "react";
+import { useCanvasT } from "./canvas-i18n";
 import { ModelThinking } from "../ModelThinking";
 import { UniversalPathPicker } from "../UniversalPathPicker";
 import { FiPlay, FiSquare, FiSliders, FiTrash2, FiGitBranch, FiCpu } from "react-icons/fi";
 
-interface CanvasNodeCardProps {
+export interface CanvasNodeCardProps {
+	/** Screen-to-canvas scale used by header dragging. */
+	zoom?: number;
 	node: CanvasNode;
 	isSelected: boolean;
 	hasIncoming?: boolean;
@@ -57,6 +62,7 @@ interface CanvasNodeCardProps {
 
 export function CanvasNodeCard({
 	node,
+	zoom = 1,
 	isSelected,
 	hasIncoming,
 	hasOutgoing,
@@ -81,6 +87,7 @@ export function CanvasNodeCard({
 	incomingPreview,
 	onDragStart,
 }: CanvasNodeCardProps) {
+	const t = useCanvasT();
 	const [isDragging, setIsDragging] = useState(false);
 	const [dragStart, setDragStart] = useState({ x: 0, y: 0, nodeX: 0, nodeY: 0 });
 	const hasMovedRef = useRef(false);
@@ -231,6 +238,9 @@ export function CanvasNodeCard({
 						<div
 							className={"canvas-row-port in" + (activePorts?.in.includes("config") ? " connected" : "")}
 							data-cport="config"
+							data-canvas-node-id={node.id}
+							data-canvas-port="config"
+							data-canvas-port-direction="in"
 							title={inPortTip("config")}
 							onPointerUp={(e) => handleInUp(e, "config")}
 						>
@@ -287,6 +297,7 @@ export function CanvasNodeCard({
 
 	const handleOutDown = (e: ReactPointerEvent<HTMLElement>, portKey: string) => {
 		e.stopPropagation();
+		e.preventDefault();
 		onStartConnect(node.id, node.x + (node.width || 300), node.y + portCenterY(e.currentTarget), portKey);
 	};
 	const handleInUp = (e: ReactPointerEvent<HTMLElement>, portKey: string) => {
@@ -296,7 +307,7 @@ export function CanvasNodeCard({
 
 	// 处理按住卡头拖拽节点位置
 	const handlePointerDown = (e: ReactPointerEvent<HTMLDivElement>) => {
-		if (e.button !== 0) return; // 仅左键拖拽
+		if (e.button !== 0 || (e.target as HTMLElement).closest("input, button, select, textarea, a")) return;
 		e.stopPropagation();
 		onSelect(node.id);
 		setIsDragging(true);
@@ -320,8 +331,8 @@ export function CanvasNodeCard({
 		}
 		if (hasMovedRef.current) {
 			onUpdate(node.id, {
-				x: Math.round(dragStart.nodeX + dx),
-				y: Math.round(dragStart.nodeY + dy),
+				x: Math.round(dragStart.nodeX + dx / (Number.isFinite(zoom) && zoom > 0 ? zoom : 1)),
+				y: Math.round(dragStart.nodeY + dy / (Number.isFinite(zoom) && zoom > 0 ? zoom : 1)),
 			});
 		}
 	};
@@ -340,6 +351,7 @@ export function CanvasNodeCard({
 	return (
 		<div
 			ref={cardRef}
+			data-canvas-node-id={node.id}
 			className={`canvas-node-card ${isSelected ? "selected" : ""} ${node.status === "running" ? "running" : ""}`}
 			style={{
 				transform: `translate3d(${node.x}px, ${node.y}px, 0)`,
@@ -364,6 +376,8 @@ export function CanvasNodeCard({
 				onPointerDown={handlePointerDown}
 				onPointerMove={handlePointerMove}
 				onPointerUp={handlePointerUp}
+				onPointerCancel={handlePointerUp}
+				onLostPointerCapture={() => setIsDragging(false)}
 			>
 				<div className="canvas-node-title-group">
 					<span className="canvas-role-icon">{roleMeta.icon}</span>
@@ -427,6 +441,27 @@ export function CanvasNodeCard({
 
 			{/* 节点配置面板：引擎、模型、目录 */}
 			<div className="canvas-node-body">
+				{roleCapabilityNotice(node.role) && (
+					<p
+						className="canvas-muted-note"
+						role="alert"
+						style={{
+							color: "var(--amber-text)",
+							fontWeight: 600,
+							border: "1px solid var(--amber)",
+							padding: 8,
+							borderRadius: 6,
+						}}
+					>
+						{!isRoleImplemented(node.role) && (
+							<strong>
+								{t("未实现 · 禁止运行", "Not implemented · Run disabled")}
+								<br />
+							</strong>
+						)}
+						{roleCapabilityNotice(node.role, t("zh", "en") === "en")}
+					</p>
+				)}
 				{/* 通用节点类型（对标 LangGraph/n8n 前沿范式） */}
 				<div className="canvas-node-field-row">
 					<span className="canvas-field-label">
@@ -456,11 +491,13 @@ export function CanvasNodeCard({
 						onChange={(e) => onUpdate(node.id, { role: e.target.value as typeof node.role })}
 						title={roleMeta.blurb}
 					>
-						{Object.values(ROLE_METAS).map((m) => (
-							<option key={m.role} value={m.role}>
-								{m.icon} {m.labelZh}
-							</option>
-						))}
+						{Object.values(ROLE_METAS)
+							.filter((m) => isRoleImplemented(m.role) || m.role === node.role)
+							.map((m) => (
+								<option key={m.role} value={m.role}>
+									{m.icon} {t(m.labelZh, m.labelEn)}
+								</option>
+							))}
 					</select>
 				</div>
 
@@ -474,6 +511,9 @@ export function CanvasNodeCard({
 							}}
 							title="输入端子 · 任务契约（主输入）：拖入连线，上游交付产物将作为任务契约注入本节点"
 							data-cport="contract"
+							data-canvas-node-id={node.id}
+							data-canvas-port="contract"
+							data-canvas-port-direction="in"
 							onPointerUp={(e) => handleInUp(e, "contract")}
 						>
 							<span className="canvas-port-dot" />
@@ -492,6 +532,9 @@ export function CanvasNodeCard({
 							<div
 								className={"canvas-row-port in" + (activePorts?.in.includes("instruction") ? " connected" : "")}
 								data-cport="instruction"
+								data-canvas-node-id={node.id}
+								data-canvas-port="instruction"
+								data-canvas-port-direction="in"
 								title={inPortTip("instruction")}
 								onPointerUp={(e) => handleInUp(e, "instruction")}
 							>
@@ -515,6 +558,9 @@ export function CanvasNodeCard({
 							<div
 								className={"canvas-row-port in" + (activePorts?.in.includes("system") ? " connected" : "")}
 								data-cport="system"
+								data-canvas-node-id={node.id}
+								data-canvas-port="system"
+								data-canvas-port-direction="in"
 								title={inPortTip("system")}
 								onPointerUp={(e) => handleInUp(e, "system")}
 							>
@@ -634,6 +680,9 @@ export function CanvasNodeCard({
 								<div
 									className={"canvas-row-port out" + (activePorts?.out.includes(bd.key) ? " connected" : "")}
 									data-cport={bd.key}
+									data-canvas-node-id={node.id}
+									data-canvas-port={bd.key}
+									data-canvas-port-direction="out"
 									onPointerDown={(e) => handleOutDown(e, bd.key)}
 								>
 									<span className="canvas-row-port-dot" />
@@ -672,6 +721,9 @@ export function CanvasNodeCard({
 							}}
 							title="输出端子 · 交付产物（主输出）：按住拖拽连线至目标节点的某个输入端子"
 							data-cport="result"
+							data-canvas-node-id={node.id}
+							data-canvas-port="result"
+							data-canvas-port-direction="out"
 							onPointerDown={(e) => handleOutDown(e, "result")}
 						>
 							<span
@@ -692,7 +744,9 @@ export function CanvasNodeCard({
 						<span className="canvas-muted-note canvas-output-preview">
 							{node.lastOutputSummary
 								? node.lastOutputSummary.slice(0, 120) + (node.lastOutputSummary.length > 120 ? "…" : "")
-								: `将输出：${(ROLE_IO_HELP[node.role] ?? ROLE_IO_HELP.custom).output}`}
+								: !isRoleImplemented(node.role)
+									? t("未实现 · 无执行产物", "Not implemented · No execution output")
+									: `将输出：${(ROLE_IO_HELP[node.role] ?? ROLE_IO_HELP.custom).output}`}
 						</span>
 					)}
 				</div>
@@ -714,8 +768,16 @@ export function CanvasNodeCard({
 									: node.status === "waiting_approval"
 										? "待人工审批"
 										: node.status === "done"
-											? "任务交付完成"
-											: "执行出错")}
+											? t("任务交付完成", "Completed")
+											: node.status === "skipped"
+												? t("已跳过", "Skipped")
+												: node.status === "cancelled"
+													? t("已取消", "Cancelled")
+													: node.status === "queued"
+														? t("排队中", "Queued")
+														: node.status === "paused"
+															? t("已暂停", "Paused")
+															: t("执行出错", "Failed"))}
 					</span>
 				</div>
 			</div>
@@ -738,6 +800,7 @@ export function CanvasNodeCard({
 					<button
 						type="button"
 						className="canvas-btn run"
+						disabled={!isRoleImplemented(node.role)}
 						title="启动该节点"
 						onClick={(e) => {
 							e.stopPropagation();

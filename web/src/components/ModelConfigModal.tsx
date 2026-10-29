@@ -1,4 +1,5 @@
 import { useEffect, useMemo, useRef, useState } from "react";
+import { syncModelDraft } from "../model-config-sync";
 import {
 	FiActivity,
 	FiCheck,
@@ -505,6 +506,24 @@ export function ModelConfigModal({
 		if (providerStatus.length > 0) return null;
 		return emptyDraft();
 	});
+
+	// Keep the open editor in sync with server pushes while preserving unsaved edits.
+	const previousProviders = useRef(providers);
+	useEffect(() => {
+		const previous = previousProviders.current;
+		previousProviders.current = providers;
+		setEditing((draft) => {
+			if (!draft) return draft;
+			const incoming = providers.find((p) => p.providerId === draft.providerId);
+			const old = previous.find((p) => p.providerId === draft.providerId);
+			if (!incoming || incoming === old) return draft;
+			return {
+				...draft,
+				hasApiKey: incoming.hasApiKey ?? false,
+				models: syncModelDraft(draft.models, old ? toDraft(old).models : [], toDraft(incoming).models),
+			};
+		});
+	}, [providers]);
 
 	// 候选模型采纳器弹窗状态
 	const [candidateList, setCandidateList] = useState<UiModelConfigEntry[] | null>(null);

@@ -1,0 +1,70 @@
+import { resolve, join } from "node:path";
+import { homedir } from "node:os";
+import { createDeviceHub } from "./hub.js";
+import { createDeviceRelay } from "./relay.js";
+import { renderDeviceHubPage } from "./hub-page.js";
+import { installDeviceTransfers } from "./transfers.js";
+
+/** Separate process: never shares a pi-web-ui data directory or SDK runtime. */
+export async function startDeviceHub(env: NodeJS.ProcessEnv = process.env) {
+	const publicUrl = env.PI_DEVICE_HUB_PUBLIC_URL;
+	const deviceDomain = env.PI_DEVICE_HUB_DEVICE_DOMAIN || undefined;
+	if (!publicUrl) throw new Error("Set PI_DEVICE_HUB_PUBLIC_URL; see docs/device-center.md");
+	const port = Number(env.PI_DEVICE_HUB_PORT ?? 8790);
+	if (!Number.isInteger(port) || port < 1 || port > 65535) throw new Error("Invalid hub port");
+	let relay: ReturnType<typeof createDeviceRelay> | undefined;
+	const hub = await createDeviceHub({
+		dataDir: resolve(env.PI_DEVICE_HUB_DATA_DIR ?? join(homedir(), ".pi-device-hub")),
+		publicUrl,
+		deviceDomain,
+		allowRegistration: env.PI_DEVICE_HUB_ALLOW_REGISTRATION === "1",
+		isOnline: (id) => relay?.isOnline(id) ?? false,
+		onTask: (id, task) => {
+			if (!relay?.sendTask(id, task)) throw new Error("Device unavailable; task was not delivered");
+		},
+		onRevoke: (id) => {
+			relay?.revoke(id);
+		},
+	});
+	relay = createDeviceRelay({
+		server: hub.server,
+		publicUrl,
+		deviceDomain,
+		authenticateDevice: (id, credential) => hub.store.authenticateDevice(id, credential),
+		getAccount: (req) => hub.getAccount(req),
+		ownsDevice: (accountId, id) => hub.store.getDeviceOwner(id) === accountId,
+		onTaskEvent: (id, event) => hub.acceptTaskEvent(id, event).then(() => undefined),
+	});
+	hub.setRelay(relay);
+	await installDeviceTransfers({
+		app: hub.app,
+		hub,
+		dataDir: resolve(env.PI_DEVICE_HUB_DATA_DIR ?? join(homedir(), ".pi-device-hub")),
+		relay,
+	});
+	hub.app.get("/", (_req, res) => {
+		res.setHeader(
+			"Content-Security-Policy",
+			"default-src 'none'; script-src 'unsafe-inline'; style-src 'unsafe-inline'; connect-src 'self'; base-uri 'none'; frame-ancestors 'none'; form-action 'self'",
+		);
+		res.setHeader("Cache-Control", "no-store");
+		res.type("html").send(renderDeviceHubPage());
+	});
+	await new Promise<void>((done, reject) => {
+		hub.server.once("error", reject);
+		hub.server.listen(port, env.PI_DEVICE_HUB_HOST ?? "127.0.0.1", () => {
+			hub.server.off("error", reject);
+			done();
+		});
+	});
+	console.log(
+		`[device-hub] ${publicUrl} (listen ${port}; registration ${env.PI_DEVICE_HUB_ALLOW_REGISTRATION === "1" ? "enabled" : "disabled"})`,
+	);
+	return {
+		...hub,
+		async close() {
+			relay?.close();
+			await hub.close();
+		},
+	};
+}

@@ -41,31 +41,43 @@ pi-web-ui 是 pi 编码智能体（`@earendil-works/pi-coding-agent` SDK）的 W
 
 `docs/` 索引（找详细文档先看这里，均为 `docs/<名>.md`）：**architecture-core** 快照驱动/协议单源/安全边界/主题/多对话并发 · **architecture-attachments** 附件/图片/视觉桥/上传预览下载 · **architecture-terminal** 终端 PTY/SCM/活力检测/bash 接管 · **architecture-plugins** 插件形态/协议/宿主扩展点/MCP 桥/多根工作区 · **architecture-system-prompt** 系统提示词组装链路与 override 钩子 · **tool-context-budget** 工具上下文预算（文案精简 / 逐工具覆盖 / **延迟加载** + 前缀缓存硬约束）· **dsh-engine** DSH 预设/问卷/底栏统计/工具桥 · **goal-conversation-design** 目标模式 2.0（把目标审查变成对话：执行对话干活 + 当前对话当审查者；**已实施且只剩这一条路径** —— v1 的隐藏隔离审查会话 + 自治标记路径已删除，轮次/熔断/代次全在服务端，见该文档 §4/§11）· **development** 开发工作流/CI/编码约定/测试规范 · **release** 发布流程 · **deployment** 部署 · **env-vars** 环境变量全表 · **preset-sharing** 预设导入/导出/社区共享仓库（交换格式 / 白名单净化 / 一键分享 / 浏览列表）· **antigravity-proxy** 反代接入 · **directory-reference** 完整注释版目录树
 
-| 主题                  | 文档                               | 一句话                                                                                                                                                                                                                               |
-| --------------------- | ---------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------ |
-| 快照驱动              | `docs/architecture-core.md`        | 服务端唯一事实源，60ms 节流；`snapshot_delta` 增量 + `message_delta` 实时通道；`send()` 背压超阈丢 snapshot（幂等，250ms 重试）；`get_state`/`flushSnapshot` 立即推一次                                                              |
-| 协议单源              | 同上                               | 只改 `server/protocol.ts`，两端 switch 各加分支；`web/src/types.ts` 是 shim                                                                                                                                                          |
-| 全局运行态            | 同上                               | 整树共享放 `app-globals.ts`（`useAppField` 单字段订阅，组件不收 `send` prop 用 `appSend`）；快照流数据禁入 store                                                                                                                     |
-| 安全边界              | 同上                               | 默认 loopback；WS Origin/Host 校验；quiesce 准入；provider headers 不下发浏览器                                                                                                                                                      |
-| 主题                  | 同上                               | styles.css 是共享基线；主题=完整样式表可覆盖一切；终端跟随主题                                                                                                                                                                       |
-| 多对话并发            | 同上                               | 每对话独立 runtime，上限 8/项目（子代理不计）；运行列表口径 listed ∪ 有内容的当前对话；clientId 存 sessionStorage，每标签页独立                                                                                                      |
-| 附件/预览             | `docs/architecture-attachments.md` | 只给路径引用（`reference`/`lines`，内容不注入）；预览 512KB 上限+嗅探+GBK 回退；媒体走 HTTP Range；下载绕 Safe Browsing                                                                                                              |
-| 终端/SCM              | `docs/architecture-terminal.md`    | 用户终端归 ClientSession（始终显示/不受对话切换影响）；Agent 终端归 Conversation；`terminalBash` 开关分流（`persist` 决定一次性/ai-bash 持久）；SCM 只读走 execFile，写操作走可见终端                                                |
-| 工具开关/read 目录    | `docs/architecture-core.md`        | `AGENT_TOOL_CATALOG` 唯一事实源；`read` 覆盖目录走 ls 口径（`readDirEnabled` 是行为开关，不入目录；仅 pi 引擎）；`bash`/`read`/`write`/`edit` 四处覆盖与第三方扩展同名工具的共存（基底 = 扩展实现优先）见 `server/tool-overrides.ts` |
-| 审批                  | `server/tool-approval.ts`          | 规则库 `<dataDir>/approval-rules.json`（ask/deny/allow）；三档放行：全局关→本对话全部允许→允许同类；记忆只在内存，随过户搬                                                                                                           |
-| 问卷/草稿进快照       | `docs/architecture-core.md`        | `UiState.pendingQuestion`（刷新恢复）+ `UiState.draft`（只跟全量快照，`draft_update` 自带 sessionId）                                                                                                                                |
-| 临时对话              | `server/agent-service.ts`          | `new_chat {ephemeral:true}`→内存不落盘；`UiState.isEphemeral` 恒存在于 light state；`persist_conversation` 一键转正（id 不变）                                                                                                       |
-| 插件/UI 扩展点        | `docs/architecture-plugins.md`     | `<dataDir>/plugins/<id>/`；manifest `ui` 与 `host.ui.register()` 同一套别名+枚举；合并「宿主<插件<arrange<用户偏好」；插件不碰 DOM；`PLUGIN_API_VERSION=2`                                                                           |
-| 多根工作区            | 同上                               | `set_workspace_roots` 按项目 cwd 存（上限 8）；**额外根=工作区内**，插件读免授权；AI 只在主 cwd 干活                                                                                                                                 |
-| 子代理模板            | `server/subagent-templates.ts`     | 全局共享；append/replace + 白名单 + 可选模型/强度（空=跟随）；停用对 AI 不可见                                                                                                                                                       |
-| DSH                   | `docs/dsh-engine.md`               | 四预设 file: 克隆 mount；问卷/技能钩子挂 agent scope（host 收不到 scoped 事件）；底栏统计吃直播帧+usage（`dsh-usage.ts`）                                                                                                            |
-| 压缩软上限            | `server/soft-cap.ts`               | 双层管控：回合内逐会话重算 SDK reserve（=`cw-cap`，下限 16384，工具间隙即压，救自治长跑/子代理）+ 空闲态 pi-web-ui 主动 compact；cap 关闭/压不下时回落物理兜底；pi 引擎独有                                                          |
-| 看门狗                | `docs/architecture-core.md`        | 20 分钟 abort 会话（不碰后台服务）；`ask_user_question` 豁免                                                                                                                                                                         |
-| present_files         | `server/present-files-tool.ts`     | 只读探测+摘录预算走 `details`；前端无 details 也能渲染（参数解析+合并）；远端本地打开报不支持                                                                                                                                        |
-| browser_page/对话引用 | `docs/architecture-core.md`        | 闸门在扩展侧；对话引用只发 `<conversation-ref>` aside，模型经 `conversation_read` 按需取                                                                                                                                             |
-| 历史消息按需加载      | `server/message-window.ts`         | 每连接 send 漏斗外包一层：首份快照只带尾部窗口（条数 + 字符预算），更早的按 `load_earlier_messages` 翻页；不碰 rev/baseRev，四引擎通吃                                                                                               |
-| 计划模式              | `server/plan-mode.ts`              | 目标条展开行「只规划」触发；动态剔除写工具并施加硬闸门拦截；禁倾倒大段代码；必须通过计划看板「开始实施」退出；回归 `plan-mode-test`。                                                                                                |
-| 审查者模式            | `server/delegate-mode.ts`          | 开启后主会话只审不干，Prompt 自动投递常驻执行对话；硬闸门拦截一切写类与派发工具；计划模式优先级高于委派；回归 `delegate-mode-test`。                                                                                                 |
+| 主题                  | 文档                               | 一句话                                                                                                                                                                                                                                             |
+| --------------------- | ---------------------------------- | -------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| 快照驱动              | `docs/architecture-core.md`        | 服务端唯一事实源，60ms 节流；`snapshot_delta` 增量 + `message_delta` 实时通道；`send()` 背压超阈丢 snapshot（幂等，250ms 重试）；`get_state`/`flushSnapshot` 立即推一次                                                                            |
+| 协议单源              | 同上                               | 只改 `server/protocol.ts`，两端 switch 各加分支；`web/src/types.ts` 是 shim                                                                                                                                                                        |
+| 全局运行态            | 同上                               | 整树共享放 `app-globals.ts`（`useAppField` 单字段订阅，组件不收 `send` prop 用 `appSend`）；快照流数据禁入 store                                                                                                                                   |
+| 安全边界              | 同上                               | 默认 loopback；WS Origin/Host 校验；quiesce 准入；provider headers 不下发浏览器                                                                                                                                                                    |
+| 主题                  | 同上                               | styles.css 是共享基线；主题=完整样式表可覆盖一切；终端跟随主题                                                                                                                                                                                     |
+| 多对话并发            | 同上                               | 每对话独立 runtime，上限 8/项目（子代理不计）；运行列表口径 listed ∪ 有内容的当前对话；clientId 存 sessionStorage，每标签页独立                                                                                                                    |
+| 附件/预览             | `docs/architecture-attachments.md` | 只给路径引用（`reference`/`lines`，内容不注入）；预览 512KB 上限+嗅探+GBK 回退；媒体走 HTTP Range；下载绕 Safe Browsing                                                                                                                            |
+| 终端/SCM              | `docs/architecture-terminal.md`    | `terminal(action)` 单工具；`ownerKind` 明确 ClientSession/Conversation 归属；UI 挂载仅 attach，不重跑；后台任务持续持有取消/超时，pending 按 nonce 归属；`terminalBash` 分流（`persist` 控制 ai-bash 复用）；SCM 只读走 execFile，写操作走可见终端 |
+| 工具开关/read 目录    | `docs/architecture-core.md`        | `AGENT_TOOL_CATALOG` 唯一事实源；`read` 覆盖目录走 ls 口径（`readDirEnabled` 是行为开关，不入目录；仅 pi 引擎）；`bash`/`read`/`write`/`edit` 四处覆盖与第三方扩展同名工具的共存（基底 = 扩展实现优先）见 `server/tool-overrides.ts`               |
+| 审批                  | `server/tool-approval.ts`          | 规则库 `<dataDir>/approval-rules.json`（ask/deny/allow）；三档放行：全局关→本对话全部允许→允许同类；记忆只在内存，随过户搬                                                                                                                         |
+| 问卷/草稿进快照       | `docs/architecture-core.md`        | `UiState.pendingQuestion`（刷新恢复）+ `UiState.draft`（只跟全量快照，`draft_update` 自带 sessionId）                                                                                                                                              |
+| 临时对话              | `server/agent-service.ts`          | `new_chat {ephemeral:true}`→内存不落盘；`UiState.isEphemeral` 恒存在于 light state；`persist_conversation` 一键转正（id 不变）                                                                                                                     |
+| 插件/UI 扩展点        | `docs/architecture-plugins.md`     | `<dataDir>/plugins/<id>/`；manifest `ui` 与 `host.ui.register()` 同一套别名+枚举；合并「宿主<插件<arrange<用户偏好」；插件不碰 DOM；`PLUGIN_API_VERSION=2`                                                                                         |
+| 多根工作区            | 同上                               | `set_workspace_roots` 按项目 cwd 存（上限 8）；**额外根=工作区内**，插件读免授权；AI 只在主 cwd 干活                                                                                                                                               |
+| 子代理模板            | `server/subagent-templates.ts`     | 全局共享；append/replace + 白名单 + 可选模型/强度（空=跟随）；停用对 AI 不可见                                                                                                                                                                     |
+| DSH                   | `docs/dsh-engine.md`               | 四预设 file: 克隆 mount；问卷/技能钩子挂 agent scope（host 收不到 scoped 事件）；底栏统计吃直播帧+usage（`dsh-usage.ts`）                                                                                                                          |
+| 压缩软上限            | `server/soft-cap.ts`               | 双层管控：回合内逐会话重算 SDK reserve（=`cw-cap`，下限 16384，工具间隙即压，救自治长跑/子代理）+ 空闲态 pi-web-ui 主动 compact；cap 关闭/压不下时回落物理兜底；pi 引擎独有                                                                        |
+| 看门狗                | `docs/architecture-core.md`        | 20 分钟 abort 会话（不碰后台服务）；`ask_user_question` 豁免                                                                                                                                                                                       |
+| present_files         | `server/present-files-tool.ts`     | 只读探测+摘录预算走 `details`；前端无 details 也能渲染（参数解析+合并）；远端本地打开报不支持                                                                                                                                                      |
+| browser_page/对话引用 | `docs/architecture-core.md`        | 闸门在扩展侧；对话引用只发 `<conversation-ref>` aside，模型经 `conversation(action="read"/"files"/"status")` 按需取                                                                                                                                |
+| 历史消息按需加载      | `server/message-window.ts`         | 每连接 send 漏斗外包一层：首份快照只带尾部窗口（条数 + 字符预算），更早的按 `load_earlier_messages` 翻页；不碰 rev/baseRev，四引擎通吃                                                                                                             |
+| 计划模式              | `server/plan-mode.ts`              | 目标条展开行「只规划」触发；动态剔除写工具并施加硬闸门拦截；禁倾倒大段代码；必须通过计划看板「开始实施」退出；回归 `plan-mode-test`。                                                                                                              |
+| 审查者模式            | `server/delegate-mode.ts`          | 开启后主会话只审不干，Prompt 自动投递常驻执行对话；硬闸门拦截一切写类与派发工具；计划模式优先级高于委派；回归 `delegate-mode-test`。                                                                                                               |
+
+### MCP 项目运行态
+
+`server/mcp-project-runtime.ts` 按项目 cwd 隔离 Bridge 与配置监视器；管理操作捕获项目归属，对话按自身 cwd 获取工具，禁止通过修改共享 Bridge 的 cwd 切换项目。全局配置修改须刷新各项目实例；列表需区分被覆盖配置与旧实例回退。目录 Skill 同步必须携带脚本和资源。详见 `docs/architecture-plugins.md`。
+
+### 设备中心与跨设备协作
+
+独立 Hub 与本机连接器位于 `server/device-center/`，部署与边界见 `docs/device-center.md`。主界面「设备中心」为原生 `devices` 视图（`DeviceCenter.tsx`），旧 `/devices` 重定向到该视图；配对接口仅允许回环来源与同源写入；群任务仅派给显式 @ 的稳定设备 ID，机器人接力继承父任务预算，禁止无界互派。`device_collab` 文件同步固定项目根、先暂存预览后按 revision 导入，已有差异必须显式覆盖；凭据不得进入工具回执。中心与设备页面使用独立域，跨设备代理不得暴露本机绑定与设置接口。
+
+### 画布协同
+
+画布编辑版本、运行代次和产物边界见 `docs/architecture-canvas.md`。拓扑保存必须带 revision 并等待 ACK；运行态不得覆盖拓扑或复活删除的工程。分支按本轮激活边汇聚，返工必须有明确决策和次数边界。隔离产物通过 `server/canvas/canvas-workspace.ts` 进入集成 worktree 验证，不得静默回落或自动写回主树。
 
 ## 5. 开发工作流
 
@@ -181,12 +193,14 @@ npm publish
 - **拖拽与触控交互标准**：
   - 图标编辑与拖拽必须监听 Pointer 事件，严禁使用 HTML5 DnD（移动端触屏不触发）；内置图标须在 `host-icon.tsx` 登记；菜单行文字统一 12.5px（守卫：`host-icon.test.ts`、`topbar-overflow-menu.test.ts`）。
   - 手机端横滑手势（`swipe-drawer.ts`）必须避开系统侧滑区，手势期间直写内联 transform 禁用动画过渡，松手后清理内联值交由 CSS 类过渡；移动端遮罩常驻（守卫：`swipe-drawer.test.ts`）。
+- **消息操作语义**：提示悬浮即显且简短；重新提问和编辑后重问在当前会话截断原问题及后续内容后重发；分叉包含所选消息并创建新对话；回退打开对应用户问题的编辑框，提交后在当前会话重问，取消不改历史。详见 `docs/architecture-core.md`。
 - **新会话初始化交互**：切换或新建会话须经 `focusComposer()` 聚焦（触屏除外），非 chat 视图自动切回，待发附件 chips 随新会话清空（守卫：`composer-draft.test.ts`）。
 
 ### 4. 架构与运行态约束
 
 - **目标模式 2.0 运行铁律**：主对话作为审查者，服务端另起落盘执行者；轮次、代次与停滞熔断全由服务端管控，严禁模型自行调用 wait/spawn；审查指令必须注入执行证据（`goal-evidence.ts`）；会话中止或关闭即停止循环，不得无限续轮（守卫：`goal-delegated.test.ts`、`goal-evidence.test.ts`，文档：`docs/goal-conversation-design.md`）。
 - **审查者委派模式（Delegate Mode）**：开启后主对话只审不干，用户输入自动派发给常驻执行会话；闸门强制拦截写操作与子代理派发；计划模式优先级高于委派。
+- **预设依赖与部分应用**：交换文档顶层 `plugins` 仅携带插件需求元数据，不含配置、密钥、存储或授权；安装复用显式 `plugin_job`。部分预设未携带的字段不得补默认或清空当前设置，`plugins` 不得进入运行设置；保存、应用、延后加载和应用失败分别回执（见 `docs/preset-sharing.md`）。
 - **预设分享必须白名单严格净化**：导入外部 JSON 必须通过 `server/preset-share.ts` 白名单校验（`preset-fields.ts`），丢弃未知字段，执行 dryRun 确认，严禁未经校验直接摊入 `ClientSettings`（守卫：`preset-share.test.ts`，文档：`docs/preset-sharing.md`）。
 - **Windows 最小化通知**：Windows 最小化时页面 visibility 状态不准确，必须通过窗口尺寸矩形判断（`isCollapsedWindow`）；通知禁止携带 `tag` 字段，防止被系统静默吞并。
 - **压缩软上限必须双层监控，换模型必须走 `applySessionModel`**：SDK 的 `compaction.reserveTokens` 是**回合内**唯一的检查点（工具调用间隙 `_compactBeforeNextAssistantResponse`），必须逐会话算成 `cw - cap`，否则自治长跑（子代理 / 单回合几十次工具调用）全程无空闲态，永不会压（`#773`）；且 reserve 依赖会话**当前**模型，任何裸 `session.setModel()` 都会让判定线卡在上一模型的 `W - C` 上，换模型一律走 `applySessionModel`；cap ≤ keepRecent + headroom 时不注射（否则每个工具间隙重压一次）。
@@ -198,6 +212,37 @@ npm publish
 - **插件修改必须递增版本号（Bump Version）**：内置官方插件（`plugins/<id>/`）凡修改了代码/功能/静态资源（非纯文档），必须同步递增 `manifest.json` 中的 `version`（若有 `package.json` 的 `version` 须保持一致）。原因：随包热同步（`syncBuiltinPlugins`）与更新器（`plugin-updater`）均以 `compareVersions(srcVer, tgtVer) > 0` 作为升级判定的唯一权威事实源；若漏改版本号，老用户更新主程序后数据目录中的旧插件代码永远不会被热更新覆盖，导致缺陷滞留（守卫：`tests/unit/plugin-version-bump-guard.test.ts`）。
 - **修改测试插件一定要及时更新本地插件**：本地实际运行加载的插件位于数据目录（`<dataDir>/plugins/<id>/`，如 `~/.pi-web/plugins/<id>/`）。修改或测试工作区内置插件时，除递增版本号外，必须及时将最新源码同步覆盖至本地数据目录的对应插件中，防止开发调试时因旧代码缓存导致行为脱节。
 - **国际化字面量要求**：`i18n.tsx` 的词条值必须使用字符串字面量（仅允许 `+` 拼接），确保 `scripts/i18n-diff.mjs` 静态解析器正常运行。
+
+### pi 请求上下文与证据
+
+- `request-context.ts` 仅改本次 pi 模型请求视图，不改写转录；近期工具结果保留全文，按估算预算外置较早的大段只读输出。只读精确去重遇用户介入、修改或未知工具即失效。
+- 证据使用 `context-evidence:<sha256>` / `context-evidence:index`，`evidence-tool-hooks.ts` 在 SDK 权限 hook 前解析，宿主 read 仍校验大小、完整性与权限；只有 SDK 适配器全部兼容才启用外置，取消必须传播。
+- `compaction-instructions.ts` 统一默认压缩的任务保留指令并确定性附加证据索引；证据与会话同生命周期，分支复制、删除清理，迁移须携带 `.evidence` 目录。详见 `docs/tool-context-budget.md`。
+
+### 异步归属、权限与持久化补充约束
+
+- 跨 await 的会话操作必须捕获 Conversation/runtime 并贯穿实际 SDK 调用，禁止恢复后重新读取 active；工具审批/权限按稳定 SDK session 动态解析过户后的持有方。
+- 工具执行及审批等待绑定取消信号，异步恢复与最终执行前检查；插件激活/reload 使用代次，过期实例只能清理，不能重新注册或覆盖新实例。
+- 共享设置按字段 patch、草稿按会话条目更新权威状态；原子写失败不得降级截断目标文件。保存失败必须反馈。只支持单服务进程写同一 data-dir。
+- 历史分页验证 historyGeneration 和锚点，失效触发全量同步；重复快照不得绕过字符预算。插件工具已应用集合按 SDK session 保存。
+- 文件预览统一 CSP sandbox，allowJs 也不得 allow-same-origin；live-preview 仅以可撤销的预览 capability 支持模块/SSE，严禁转发宿主凭据。
+- SSH 必须校验 known_hosts，未知/变更主机拒绝；`PI_WEB_SSH_KNOWN_HOSTS` 指定信任文件，操作说明见 `docs/env-vars.md`。
+
+### 命令、文件与恢复状态边界
+
+- WS 限额统一在 `server/payload-limits.ts`；attach 队列必须同时约束条数和累计字节，拒绝超限不得静默丢旧操作。
+- 历史搜索不得复用列表展示截断或截断正文缓存判定命中；流式扫描限制并发，新查询取消旧查询，切项目不发布过期结果。
+- 压缩恢复状态走 `compaction-state.ts` sidecar，运行中转录只有 SDK 可以写；恢复入口均须消费中断提示。终端历史用 `terminal_output.reset` 替换显示，回放前 flush 实时输出。
+- 本地文件保存走 `file-save.ts` 保留元数据后替换；上传完整后排他提交，正文读取前准入并预留累计预算。取消后实际写流释放才可归还额度。详见 `docs/architecture-attachments.md`。
+- 配置与任务先持久化再发布运行态；任务执行后记录写失败仍推进内存触发时间，禁止每秒重复副作用。
+
+### 沙盒工作区
+
+沙盒身份必须绑定执行会话并继承到派生执行者，不能仅靠 cwd 或可消失的注册项解除限制。无操作系统隔离后端时禁止宿主任意代码与未知工具；不支持执行前拒绝的引擎不得在沙盒启动任务。写回须以导入基线进行三方比较、验证预览版本并拒绝冲突与目标软链接越界；生命周期操作须冻结准入并等待全部持有者停止。注册变更共享、串行、原子持久化，失败不得假成功。详见 `docs/architecture-sandbox.md`。
+
+### 根因整改边界
+
+跨模块操作的稳定归属、取消代次、持久提交与安全清理约束见 `docs/root-cause-boundaries.md`。工作树状态查询失败不得按无改动处理或授权自动删除；清理使用非强制删除及条件分支删除。审查与整改证据见 `docs/audits/root-cause-review-2026-10-29.md`。
 
 ### 5. 提交前三连验（防 CI 失败铁律）
 

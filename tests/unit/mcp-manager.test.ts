@@ -1,5 +1,28 @@
-import { describe, expect, it } from "vitest";
-import { mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { afterEach, describe, expect, it, vi } from "vitest";
+import {
+	existsSync,
+	fsyncSync,
+	mkdtempSync,
+	readFileSync,
+	readdirSync,
+	renameSync,
+	rmSync,
+	unlinkSync,
+	writeFileSync,
+} from "node:fs";
+
+vi.mock("node:fs", async (importOriginal) => {
+	const actual = await importOriginal<typeof import("node:fs")>();
+	return {
+		...actual,
+		readFileSync: vi.fn(actual.readFileSync),
+		writeFileSync: vi.fn(actual.writeFileSync),
+		renameSync: vi.fn(actual.renameSync),
+		fsyncSync: vi.fn(actual.fsyncSync),
+		unlinkSync: vi.fn(actual.unlinkSync),
+	};
+});
+afterEach(() => vi.resetAllMocks());
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import {
@@ -14,10 +37,281 @@ import {
 	writeMcpConfigFile,
 } from "../../server/mcp-manager.js";
 import type { UiMcpServer } from "../../server/protocol.js";
+import type { McpBridge } from "../../server/mcp-bridge.js";
 
 function makeTempDir(prefix: string): string {
 	return mkdtempSync(join(tmpdir(), prefix));
 }
+
+describe("mcp-manager effective runtime status", () => {
+	it.each([true, false])("does not assign the project instance to an overridden global row (enabled=%s)", (enabled) => {
+		const dir = makeTempDir("mcp-overridden-");
+		try {
+			const agentDir = join(dir, "agent");
+			const cwd = join(dir, "project");
+			writeMcpConfigFile(getGlobalMcpPath(agentDir), { same: { command: "global" } });
+			writeMcpConfigFile(getProjectMcpPath(cwd), { same: { command: "project", enabled } });
+			const getServerStatus = vi.fn(() => ({ status: "running", tools: [{ name: "project-tool" }] }));
+			const { servers } = listAllMcpServers({ agentDir, cwd, bridge: { getServerStatus } as unknown as McpBridge });
+			expect(servers[0]).toMatchObject({ scope: "global", status: "stopped", overriddenBy: "project", tools: [] });
+			expect(servers[1]).toMatchObject({ scope: "project", status: enabled ? "running" : "stopped" });
+			expect(getServerStatus).toHaveBeenCalledTimes(enabled ? 1 : 0);
+		} finally {
+			rmSync(dir, { recursive: true, force: true });
+		}
+	});
+
+	it("preserves a failed configuration warning while the old instance still runs", () => {
+		const dir = makeTempDir("mcp-previous-");
+		try {
+			const agentDir = join(dir, "agent");
+			writeMcpConfigFile(getGlobalMcpPath(agentDir), { same: { command: "new-command" } });
+			const bridge = {
+				getServerStatus: () => ({ status: "running", usingPreviousConfig: true, error: "spawn failed", tools: [] }),
+			} as unknown as McpBridge;
+			expect(listAllMcpServers({ agentDir, cwd: join(dir, "project"), bridge }).servers[0]).toMatchObject({
+				status: "running",
+				usingPreviousConfig: true,
+				error: "spawn failed",
+			});
+		} finally {
+			rmSync(dir, { recursive: true, force: true });
+		}
+	});
+});
+
+describe("mcp-manager transactions", () => {
+	function fixture() {
+		const dir = makeTempDir("mcp-transaction-");
+		const agentDir = join(dir, "agent");
+		const cwd = join(dir, "project");
+		const source = join(agentDir, "mcp.json");
+		const target = join(cwd, ".pi", "mcp.json");
+		writeMcpConfigFile(source, { old: { command: "node", args: ["old.js"], enabled: true } });
+		writeMcpConfigFile(target, {});
+		const move = {
+			agentDir,
+			cwd,
+			prevName: "old",
+			prevScope: "global" as const,
+			server: { name: "new", scope: "project" as const, command: "node", args: ["new.js"], enabled: true },
+		};
+		return { dir, source, target, move };
+	}
+
+	it.each(["write", "sync", "rename"])(
+		"same-file rename is one atomic commit; %s failure preserves original bytes",
+		(phase) => {
+			const f = fixture();
+			try {
+				const before = readFileSync(f.source, "utf8");
+				if (phase === "write")
+					vi.mocked(writeFileSync).mockImplementationOnce(() => {
+						throw new Error("write fault");
+					});
+				if (phase === "sync")
+					vi.mocked(fsyncSync).mockImplementationOnce(() => {
+						throw new Error("sync fault");
+					});
+				if (phase === "rename")
+					vi.mocked(renameSync).mockImplementationOnce(() => {
+						throw new Error("rename fault");
+					});
+				const opts = { ...f.move, server: { ...f.move.server, scope: "global" as const } };
+				expect(saveMcpServer(opts).ok).toBe(false);
+				expect(readFileSync(f.source, "utf8")).toBe(before);
+				expect(readdirSync(join(f.dir, "agent"))).toEqual(["mcp.json"]);
+				vi.mocked(renameSync).mockClear();
+				expect(saveMcpServer(opts).ok).toBe(true);
+				expect(vi.mocked(renameSync)).toHaveBeenCalledTimes(1);
+				expect(readMcpConfigFile(f.source).servers.old).toBeUndefined();
+				expect(readMcpConfigFile(f.source).servers.new.command).toBe("node");
+			} finally {
+				rmSync(f.dir, { recursive: true, force: true });
+			}
+		},
+	);
+
+	it.each(["journal", "target", "source", "cleanup"])(
+		"migration resumes safely after %s commit failure and module reload",
+		async (phase) => {
+			const f = fixture();
+			try {
+				const rename = vi.mocked(renameSync).getMockImplementation()!;
+				const unlink = vi.mocked(unlinkSync).getMockImplementation()!;
+				vi.mocked(renameSync).mockImplementation((from, to) => {
+					if (
+						String(to) ===
+						(phase === "journal"
+							? `${f.source}.migration.json`
+							: phase === "target"
+								? f.target
+								: phase === "source"
+									? f.source
+									: "")
+					)
+						throw new Error(`${phase} fault`);
+					return rename(from, to);
+				});
+				vi.mocked(unlinkSync).mockImplementation((path) => {
+					if (phase === "cleanup" && String(path) === `${f.source}.migration.json`) throw new Error("cleanup fault");
+					return unlink(path);
+				});
+				expect(saveMcpServer(f.move).ok).toBe(false);
+				const src = readMcpConfigFile(f.source).servers.old;
+				const dst = readMcpConfigFile(f.target).servers.new;
+				expect(!!src || !!dst).toBe(true);
+				expect(!!dst).toBe(phase === "source" || phase === "cleanup");
+				expect(!!src).toBe(phase !== "cleanup");
+				vi.mocked(renameSync).mockImplementation(rename);
+				vi.mocked(unlinkSync).mockImplementation(unlink);
+				vi.resetModules();
+				const reloaded = await import("../../server/mcp-manager.js");
+				expect(reloaded.saveMcpServer(f.move)).toEqual({ ok: true });
+				expect(readMcpConfigFile(f.source).servers.old).toBeUndefined();
+				expect(readMcpConfigFile(f.target).servers.new.args).toEqual(["new.js"]);
+				expect(existsSync(`${f.source}.migration.json`)).toBe(false);
+			} finally {
+				rmSync(f.dir, { recursive: true, force: true });
+			}
+		},
+	);
+
+	it.each(["source", "target"])("retry refuses an intervening %s edit", (side) => {
+		const f = fixture();
+		try {
+			const rename = vi.mocked(renameSync).getMockImplementation()!;
+			vi.mocked(renameSync).mockImplementation((from, to) => {
+				if (String(to) === f.source) throw new Error("source fault");
+				return rename(from, to);
+			});
+			expect(saveMcpServer(f.move).ok).toBe(false);
+			vi.mocked(renameSync).mockImplementation(rename);
+			writeMcpConfigFile(side === "source" ? f.source : f.target, {
+				[side === "source" ? "old" : "new"]: { command: "edited" },
+			});
+			const before = [readFileSync(f.source, "utf8"), readFileSync(f.target, "utf8")];
+			expect(saveMcpServer(f.move).ok).toBe(false);
+			expect([readFileSync(f.source, "utf8"), readFileSync(f.target, "utf8")]).toEqual(before);
+		} finally {
+			rmSync(f.dir, { recursive: true, force: true });
+		}
+	});
+
+	it.each(["global", "project"] as const)("refuses existing target names in %s scope even if identical", (scope) => {
+		const f = fixture();
+		try {
+			const path = scope === "global" ? f.source : f.target;
+			writeMcpConfigFile(path, {
+				...readMcpConfigFile(path).servers,
+				new: { command: "node", args: ["new.js"], enabled: true },
+			});
+			const before = [readFileSync(f.source, "utf8"), readFileSync(f.target, "utf8")];
+			expect(saveMcpServer({ ...f.move, server: { ...f.move.server, scope } }).ok).toBe(false);
+			expect([readFileSync(f.source, "utf8"), readFileSync(f.target, "utf8")]).toEqual(before);
+		} finally {
+			rmSync(f.dir, { recursive: true, force: true });
+		}
+	});
+
+	it.each([
+		"{broken",
+		"[]",
+		"null",
+		'{"mcpServers":[]}',
+		'{"mcpServers":{"x":null}}',
+		'{"servers":{},"mcpServers":{}}',
+	])("never overwrites damaged config: %s", (text) => {
+		const f = fixture();
+		try {
+			writeFileSync(f.source, text);
+			expect(readMcpConfigFile(f.source).error).toBeTruthy();
+			expect(listAllMcpServers(f.move).servers).toContainEqual(
+				expect.objectContaining({ name: f.source, scope: "global", status: "error", error: expect.any(String) }),
+			);
+			expect(() => writeMcpConfigFile(f.source, {})).toThrow();
+			expect(saveMcpServer({ ...f.move, server: { ...f.move.server, scope: "global" } }).ok).toBe(false);
+			expect(deleteMcpServer({ ...f.move, name: "old", scope: "global" }).ok).toBe(false);
+			expect(toggleMcpServer({ ...f.move, name: "old", scope: "global", enabled: false }).ok).toBe(false);
+			expect(readFileSync(f.source, "utf8")).toBe(text);
+		} finally {
+			rmSync(f.dir, { recursive: true, force: true });
+		}
+	});
+
+	it.each(["source", "target"])("unreadable %s stops migration before touching source", (side) => {
+		const f = fixture();
+		try {
+			const read = vi.mocked(readFileSync).getMockImplementation()!;
+			const before = readFileSync(f.source, "utf8");
+			vi.mocked(readFileSync).mockImplementation(((path: any, ...args: any[]) => {
+				if (String(path) === (side === "source" ? f.source : f.target))
+					throw Object.assign(new Error("denied"), { code: "EACCES" });
+				return (read as any)(path, ...args);
+			}) as typeof readFileSync);
+			expect(saveMcpServer(f.move).ok).toBe(false);
+			expect(() => writeMcpConfigFile(side === "source" ? f.source : f.target, {})).toThrow("denied");
+			expect(listAllMcpServers(f.move).servers).toContainEqual(
+				expect.objectContaining({ status: "error", error: expect.stringContaining("denied") }),
+			);
+			vi.mocked(readFileSync).mockImplementation(read);
+			expect(readFileSync(f.source, "utf8")).toBe(before);
+		} finally {
+			rmSync(f.dir, { recursive: true, force: true });
+		}
+	});
+
+	it.each(["{broken", "null", '{"version":2}'])("refuses damaged or unknown recovery intent: %s", (journal) => {
+		const f = fixture();
+		try {
+			writeFileSync(`${f.source}.migration.json`, journal);
+			const before = [readFileSync(f.source, "utf8"), readFileSync(f.target, "utf8")];
+			expect(saveMcpServer(f.move).ok).toBe(false);
+			expect([readFileSync(f.source, "utf8"), readFileSync(f.target, "utf8")]).toEqual(before);
+			expect(readFileSync(`${f.source}.migration.json`, "utf8")).toBe(journal);
+		} finally {
+			rmSync(f.dir, { recursive: true, force: true });
+		}
+	});
+
+	it("damaged destination and missing source never remove or create records", () => {
+		const f = fixture();
+		try {
+			const before = readFileSync(f.source, "utf8");
+			writeFileSync(f.target, "{broken");
+			expect(saveMcpServer(f.move).ok).toBe(false);
+			expect(readFileSync(f.source, "utf8")).toBe(before);
+			expect(readFileSync(f.target, "utf8")).toBe("{broken");
+			writeFileSync(f.target, "{}");
+			writeMcpConfigFile(f.source, {});
+			expect(saveMcpServer(f.move).ok).toBe(false);
+			expect(readFileSync(f.target, "utf8")).toBe("{}");
+			expect(existsSync(`${f.source}.migration.json`)).toBe(false);
+		} finally {
+			rmSync(f.dir, { recursive: true, force: true });
+		}
+	});
+
+	it("preserves legacy format, metadata and unrecognized server fields", () => {
+		const f = fixture();
+		try {
+			writeFileSync(
+				f.source,
+				JSON.stringify({
+					metadata: { custom: true },
+					servers: { old: { command: "node" }, extra: { custom: "keep", command: "python" } },
+				}),
+			);
+			expect(saveMcpServer({ ...f.move, server: { ...f.move.server, scope: "global" } }).ok).toBe(true);
+			expect(JSON.parse(readFileSync(f.source, "utf8"))).toMatchObject({
+				metadata: { custom: true },
+				servers: { extra: { custom: "keep" }, new: { command: "node" } },
+			});
+		} finally {
+			rmSync(f.dir, { recursive: true, force: true });
+		}
+	});
+});
 
 describe("mcp-manager", () => {
 	it("isValidMcpServerName 校验服务器名", () => {

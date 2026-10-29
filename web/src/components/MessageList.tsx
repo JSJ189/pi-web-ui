@@ -18,6 +18,7 @@ import { Message, asText } from "./Message";
 import { Markdown } from "./Markdown";
 
 import { collectQuestionAttachments } from "../question-attachments";
+import { questionNavLayout } from "../question-nav";
 
 import { parseSkillBlock } from "../skill-block";
 import { computeEarlierCount } from "../history-window";
@@ -229,7 +230,9 @@ export function syncStreamRenderKeys(
 		}
 		tracker.pending = null;
 	}
-	if (streamingMessage) {
+	// The persisted copy can arrive while the old stream is still present. Preserve its
+	// original boundary until that stream disappears or the next stream replaces it.
+	if (streamingMessage && tracker.pending?.streamKey !== streamingMessage.id) {
 		tracker.pending = { index: persistedMessages.length, streamKey: streamingMessage.id };
 	}
 	return tracker.finalizedMap;
@@ -324,7 +327,7 @@ interface LazyToolClusterProps {
 	onMeasured?: (id: string, h: number) => void;
 	/** 容器形态：trail = 逐消息块级壳外的工具流集群（普通主题，纵向卡片流）；
 	 *  flow = 极简行文的 `字级输入流`回合容器（壳透明化，正文与胶囊连排）。 */
-	variant?: "trail" | "flow";
+	variant?: "trail" | "flow" | "contents";
 	children: ReactNode;
 }
 
@@ -343,9 +346,14 @@ const LazyToolCluster = memo(function LazyToolCluster({
 		if (!show) return;
 		const el = trailRef.current;
 		if (!el) return;
-		const h = el.offsetHeight;
+		// display:contents has no own box; measure its message boxes for virtualization.
+		const boxes = Array.from(el.children, (child) => child.getBoundingClientRect());
+		const h =
+			variant === "contents" && boxes.length
+				? Math.max(...boxes.map((box) => box.bottom)) - Math.min(...boxes.map((box) => box.top))
+				: el.offsetHeight;
 		if (h > 0) onMeasured?.(id, h);
-	}, [show, id, onMeasured]);
+	}, [show, id, onMeasured, variant]);
 
 	if (!show) {
 		return (
@@ -366,7 +374,8 @@ const LazyToolCluster = memo(function LazyToolCluster({
 				trailRef.current = el;
 				attachEl(el);
 			}}
-			className={variant === "flow" ? "flow-turn" : "turn-tools-trail"}
+			className={variant === "flow" ? "flow-turn" : variant === "trail" ? "turn-tools-trail" : undefined}
+			style={variant === "contents" ? { display: "contents" } : undefined}
 			data-cluster-id={id}
 			data-lazy-id={id}
 		>
@@ -376,6 +385,8 @@ const LazyToolCluster = memo(function LazyToolCluster({
 });
 
 interface MessageListProps {
+	messageLabels?: ReadonlyMap<string, string>;
+	readOnly?: boolean;
 	/** 消息工具条条目（message.actions 槽位：内置 + 插件的最终结果）。 */
 	uiMessageActions?: import("../ui-slots").UiSlotEntry[];
 	/** 消息右键菜单条目（contextmenu.message 槽位）。 */
@@ -445,6 +456,8 @@ export function MessageList({
 	urlJumpMessageId,
 	onUrlJumpDone,
 	preview = false,
+	messageLabels,
+	readOnly = false,
 	uiMessageActions,
 	uiContextMessage,
 	uiContextToolCall,
@@ -486,6 +499,16 @@ export function MessageList({
 	 * question-attachments.ts (unit-tested).
 	 */
 	const questionAttachments = useMemo(() => collectQuestionAttachments(state.messages), [state.messages]);
+	const precedingQuestions = useMemo(() => {
+		const targets = new Map<string, string>();
+		let questionId: string | undefined;
+		for (const message of state.messages) {
+			if (message.role === "user") questionId = message.id;
+			if (questionId) targets.set(message.id, questionId);
+		}
+		return targets;
+	}, [state.messages]);
+	const [editRequest, setEditRequest] = useState<{ id: string; session: typeof state.sessionFile } | null>(null);
 	// system 消息不进渲染(见 serialize.ts)：从末尾逆向找第一条非 system 消息，零数组拷贝。
 	const lastId = useMemo(() => {
 		for (let i = messages.length - 1; i >= 0; i--) {
@@ -519,13 +542,10 @@ export function MessageList({
 	// ---- 惰性窗口化（lazy windowing，纯函数见 lazy-window.ts）----------------
 	// 视口缓冲带之外的重型消息替换为等高占位 div；滚动临近时换回真实内容并
 	// 在同一帧内补偿 scrollTop。占位保留 data-msg-id，导航/跳转/搜索不受影响。
-	/** 极简行文（字级输入流）：按回合合并助手产出，正文与胶囊连成一条流。
-	 *  其它主题为 false —— 分组/容器/外观全部走原有路径，零改动。 */
 	const flowStream = useFlowStreamMode();
-	const clusterOptions = useMemo<ClusterOptions | undefined>(
-		() => (flowStream ? { mergeTurns: true } : undefined),
-		[flowStream],
-	);
+	// Keep the same React parent from the empty assistant frame through tools, prose
+	// and finalization. Ordinary prose gets a transparent wrapper, not tool-trail styling.
+	const clusterOptions = useMemo<ClusterOptions>(() => ({ mergeTurns: true }), []);
 	/** 当前处于占位状态的消息 id。长对话首帧即预置非可见区，避免大会话初次挂载时全量绘制导致卡顿。 */
 	const [hidden, setHidden] = useState<Set<string>>(() => {
 		// 向上分页模式下没有占位符，开机即不必全量扫描预置（大会话首帧提速）。
@@ -817,7 +837,7 @@ export function MessageList({
 	/** 向服务端要一页更早的历史（窗口化扫码，前插到 messages 头部）。 */
 	const requestServerPage = useCallback(
 		(opts: { count?: number; all?: boolean }) => {
-			if (preview) return;
+			if (preview || readOnly) return;
 			if (pagePendingRef.current) return;
 			pagePendingRef.current = true;
 			cancelSettle();
@@ -846,7 +866,7 @@ export function MessageList({
 				pagePendingRef.current = false;
 			}, 3000);
 		},
-		[preview, messages, earlierPageSize, cancelSettle, capturePrependAnchor, state.conversationId],
+		[preview, readOnly, messages, earlierPageSize, cancelSettle, capturePrependAnchor, state.conversationId],
 	);
 
 	const loadEarlier = useCallback(
@@ -1307,6 +1327,16 @@ export function MessageList({
 		[expand],
 	);
 
+	const rollbackEdit = useCallback(
+		(messageId: string) => {
+			const id = precedingQuestions.get(messageId);
+			if (!id || !onEdit) return;
+			jumpTo(id);
+			setEditRequest({ id, session: state.sessionFile });
+		},
+		[precedingQuestions, onEdit, jumpTo, state.sessionFile],
+	);
+
 	// ---- 新压缩摘要到达：自动展开 + 滚动定位 ------------------------------
 	// 压缩动辄数十秒，用户很可能已上滚回看；完成 toast 出现时新摘要卡在下方
 	// 看不见。检测到同对话新增 compactionSummary → 展开该卡 + jumpTo 定位闪光。
@@ -1408,27 +1438,27 @@ export function MessageList({
 		scheduleSweep,
 	});
 
-	// Visible height of the scroll area — drives the adaptive row gap so the
-	// centered tick cluster always fits (no top/bottom clipping).
+	// Observe the actual rail, including composer/panel changes without a window resize.
 	const [railH, setRailH] = useState(0);
-	useEffect(() => {
-		const update = () => {
-			setRailH(scrollRef.current?.clientHeight ?? 0);
-			scheduleSweep(); // 宽高变化后旧占位高度可能失准，重新评估窗口
-		};
+	const hasQuestions = questions.length > 0;
+	useLayoutEffect(() => {
+		const rail = railRef.current;
+		if (!rail) return;
+		const update = () => setRailH(rail.clientHeight);
 		update();
-		window.addEventListener("resize", update);
-		return () => window.removeEventListener("resize", update);
+		const observer = new ResizeObserver(update);
+		observer.observe(rail);
+		return () => observer.disconnect();
+	}, [hasQuestions, railRef]);
+	useEffect(() => {
+		window.addEventListener("resize", scheduleSweep);
+		return () => window.removeEventListener("resize", scheduleSweep);
 	}, [scheduleSweep]);
-	const n = questions.length;
-	const railGap = useMemo(() => {
-		if (n === 0) return 27;
-		const h = railH || 600;
-		return Math.max(4, Math.min(27, Math.floor((h - 16) / n) - 3));
-	}, [n, railH]);
-	/** Many questions: per-tick chips would overlap (pitch < ~24px), so the
-	 *  hover panel becomes a scrollable list instead. */
-	const many = railGap < 20;
+	const {
+		indices: railIndices,
+		gap: railGap,
+		many,
+	} = useMemo(() => questionNavLayout(questions.length, railH, activeIdx), [questions.length, railH, activeIdx]);
 
 	return (
 		<div className={`messages-wrap${exportImage.open ? " messages-exporting" : ""}`}>
@@ -1453,7 +1483,7 @@ export function MessageList({
 				{state.messages.length === 0 && !state.streamingMessage && !minimalNewChat && (
 					<div className="empty-state">
 						<EmptyTemplateCards />
-						{uiChatEmpty && uiChatEmpty.length > 0 && (
+						{!readOnly && uiChatEmpty && uiChatEmpty.length > 0 && (
 							<div className="chat-empty-slots">{renderSlotToolbar(uiChatEmpty, onUiAction)}</div>
 						)}
 					</div>
@@ -1468,16 +1498,17 @@ export function MessageList({
 						const isClusterPinned = item.messages.some((m) => pinned.has(m.id));
 						const isClusterAlways = item.messages.some((m) => alwaysSet.has(m.id));
 						const isClusterHidden = effectiveHidden.has(item.id);
+						const transparent = !flowStream && !item.messages.every(isPureToolMessage);
 						const showCluster =
 							!virtualOn || isStreamingCluster || isClusterPinned || isClusterAlways || !isClusterHidden;
 						// 密集批量工具流智能收敛：同一回合连续调用 ≥ 4 个工具时，
 						// 已完成的历史工具默认折叠为单行卡头（避免数万像素大卡片撑爆视口）；
 						// 正在实时生成的流式工具保持展开显示实时输出；少量工具（< 4）保持用户 toolsWrap 设置。
-						const isDenseCluster = item.messages.length >= 4;
+						const isDenseCluster = item.messages.filter(isPureToolMessage).length >= 4;
 
 						return (
 							<LazyToolCluster
-								key={item.id}
+								key={`cluster-${stableKeyMap.get(item.messages[0].id) ?? item.messages[0].id}`}
 								id={item.id}
 								show={showCluster}
 								placeholderHeight={getPlaceholderHeight(
@@ -1488,7 +1519,7 @@ export function MessageList({
 								)}
 								attachEl={attachEl}
 								onMeasured={storeHeight}
-								variant={flowStream ? "flow" : "trail"}
+								variant={flowStream ? "flow" : transparent ? "contents" : "trail"}
 							>
 								{item.messages.map((m) => {
 									const isStreamingThis =
@@ -1505,19 +1536,30 @@ export function MessageList({
 											uiContextMessage={uiContextMessage}
 											uiContextToolCall={uiContextToolCall}
 											uiToolCardFooter={uiToolCardFooter}
-											onUiAction={onUiAction}
+											onUiAction={readOnly ? undefined : onUiAction}
 											key={renderKey}
 											message={m}
 											toolResults={toolResults}
 											liveOutputs={hasToolCall(m) ? liveOutputs : EMPTY_LIVE}
 											toolStatuses={toolStatuses}
 											streaming={isStreamingThis}
-											onKillBash={onKillBash}
+											onKillBash={readOnly ? undefined : onKillBash}
+											onRetry={!readOnly && m.id === lastId ? onRetry : undefined}
 											toolsWrap={effectiveToolsWrap}
 											toolImages={toolImages}
 											thinkingWrap={thinkingWrap}
 											isLast={m.id === lastId}
-											onEdit={onEdit}
+											onEdit={readOnly ? undefined : onEdit}
+											readOnly={readOnly}
+											messageLabel={messageLabels?.get(m.id)}
+											onRollbackEdit={rollbackEdit}
+											canRollbackEdit={!readOnly && !!onEdit && precedingQuestions.has(m.id)}
+											questionAttachments={questionAttachments.get(m.id)}
+											editRequest={
+												editRequest && editRequest.session === state.sessionFile && editRequest.id === m.id
+													? editRequest
+													: undefined
+											}
 											searchActive={searchOpen}
 										/>
 									);
@@ -1572,7 +1614,7 @@ export function MessageList({
 								uiContextMessage={uiContextMessage}
 								uiContextToolCall={uiContextToolCall}
 								uiToolCardFooter={uiToolCardFooter}
-								onUiAction={onUiAction}
+								onUiAction={readOnly ? undefined : onUiAction}
 								key={renderKey}
 								message={m}
 								qnIndex={qIdx}
@@ -1582,13 +1624,22 @@ export function MessageList({
 								liveOutputs={hasToolCall(m) ? liveOutputs : EMPTY_LIVE}
 								toolStatuses={toolStatuses}
 								streaming={isStreamingThis}
-								onKillBash={onKillBash}
-								onRetry={m.id === lastId ? onRetry : undefined}
+								onKillBash={readOnly ? undefined : onKillBash}
+								onRetry={!readOnly && m.id === lastId ? onRetry : undefined}
 								toolsWrap={toolsWrap}
 								toolImages={toolImages}
 								thinkingWrap={thinkingWrap}
 								isLast={m.id === lastId}
-								onEdit={onEdit}
+								onEdit={readOnly ? undefined : onEdit}
+								readOnly={readOnly}
+								messageLabel={messageLabels?.get(m.id)}
+								onRollbackEdit={rollbackEdit}
+								canRollbackEdit={!readOnly && !!onEdit && precedingQuestions.has(m.id)}
+								editRequest={
+									editRequest && editRequest.session === state.sessionFile && editRequest.id === m.id
+										? editRequest
+										: undefined
+								}
 								questionAttachments={questionAttachments.get(m.id)}
 								onCollapse={fold ? collapse : undefined}
 								searchActive={searchOpen}
@@ -1629,8 +1680,8 @@ export function MessageList({
 							text={text}
 							index={i}
 							id={id}
-							onRemoveQueued={onRemoveQueued}
-							onRecallQueued={onRecallQueued}
+							onRemoveQueued={readOnly ? undefined : onRemoveQueued}
+							onRecallQueued={readOnly ? undefined : onRecallQueued}
 						/>
 					);
 				})}
@@ -1645,12 +1696,12 @@ export function MessageList({
 							text={text}
 							index={i}
 							id={id}
-							onRemoveQueued={onRemoveQueued}
-							onRecallQueued={onRecallQueued}
+							onRemoveQueued={readOnly ? undefined : onRemoveQueued}
+							onRecallQueued={readOnly ? undefined : onRecallQueued}
 						/>
 					);
 				})}
-				{state.actionSuggestions && state.actionSuggestions.length > 0 && (
+				{!readOnly && state.actionSuggestions && state.actionSuggestions.length > 0 && (
 					<div className="action-suggestions" aria-label={t("actionSuggestions")}>
 						<div className="action-suggestions-list">
 							{state.actionSuggestions.map((action) => (
@@ -1711,19 +1762,22 @@ export function MessageList({
 					aria-label={t("questionNavTitle")}
 					style={{ "--rail-gap": `${railGap}px` } as CSSProperties}
 				>
-					{questions.map((q, i) => (
-						<button
-							type="button"
-							key={q.id}
-							className={`qn-bar ${i === activeIdx ? "active" : ""}`}
-							aria-label={`${i + 1}. ${q.text}`}
-							onClick={() => jumpTo(q.id)}
-						>
-							<span className="qn-bar-text">
-								{i + 1}. {q.text}
-							</span>
-						</button>
-					))}
+					{railIndices.map((i) => {
+						const q = questions[i];
+						return (
+							<button
+								type="button"
+								key={q.id}
+								className={`qn-bar ${i === activeIdx ? "active" : ""}`}
+								aria-label={`${i + 1}. ${q.text}`}
+								onClick={() => jumpTo(q.id)}
+							>
+								<span className="qn-bar-text">
+									{i + 1}. {q.text}
+								</span>
+							</button>
+						);
+					})}
 					{many && (
 						<div className="qn-list">
 							{questions.map((q, i) => (

@@ -486,6 +486,17 @@ export const BUILTIN_UI_ITEMS: BuiltinUiItem[] = [
 	// 常驻只留「切视图 / 起新活 / 看运行态 / 进设置」四类：实测溢出丢的是**尾部**，
 	// 常驻项越多，核心动作越容易被挤进 ⋯。
 	{
+		id: "host:device-center",
+		slot: "topbar.primary",
+		labelKey: "deviceCenter",
+		icon: "globe",
+		kind: "view",
+		view: "devices",
+		order: 59,
+		group: "system",
+		align: "end",
+	},
+	{
 		id: "host:settings",
 		slot: "topbar.primary",
 		labelKey: "settingsTitle",

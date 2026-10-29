@@ -131,7 +131,7 @@ describe("FeishuBotBridge 双工通信流程测试", () => {
 
 	it("正常入站消息派发到 host.chat，并在 run_end 时回发 AI 回复", async () => {
 		let registeredRunHandler: ((ev: any) => void) | null = null;
-		const chatSpy = vi.fn().mockResolvedValue({ conversationId: "conv_test_1" });
+		const chatSpy = vi.fn().mockResolvedValue({ conversationId: "conv_test_1", runId: "run_test_1" });
 		const replySpy = vi.fn().mockResolvedValue({ success: true });
 		const reactSpy = vi.fn().mockResolvedValue({ success: true });
 
@@ -179,6 +179,7 @@ describe("FeishuBotBridge 双工通信流程测试", () => {
 		// 模拟模型输出消息增量
 		registeredRunHandler!({
 			conversationId: convId,
+			runId: "run_test_1",
 			type: "message",
 			message: {
 				role: "assistant",
@@ -189,6 +190,7 @@ describe("FeishuBotBridge 双工通信流程测试", () => {
 		// 模拟会话完成
 		await registeredRunHandler!({
 			conversationId: convId,
+			runId: "run_test_1",
 			type: "run_end",
 		});
 

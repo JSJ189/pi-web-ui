@@ -8,7 +8,28 @@ import {
 	planModeDenial,
 	PLAN_MODE_BLOCKED_TOOL_NAMES,
 	PLAN_MODE_SYSTEM_PROMPT,
+	syncTerminalReadOnlySchema,
 } from "../../server/plan-mode.js";
+
+describe("merged terminal", () => {
+	it("allows only read actions and restores the original schema", () => {
+		for (const action of ["list", "read", "wait"]) expect(planModeDenial("terminal", { action })).toBeUndefined();
+		for (const action of ["create", "close", "input", "key", "", "unknown"])
+			expect(planModeDenial("terminal", { action, command: "pwd" })).toBeDefined();
+		expect(PLAN_MODE_BLOCKED_TOOL_NAMES.has("terminal")).toBe(false);
+		const parameters = {
+			type: "object",
+			properties: { action: { enum: ["create", "list", "close", "input", "key", "read", "wait"] } },
+		};
+		const tool = { parameters };
+		const session = { _toolRegistry: new Map([["terminal", tool]]) };
+		syncTerminalReadOnlySchema(session, true);
+		syncTerminalReadOnlySchema(session, true);
+		expect(tool.parameters.properties.action.enum).toEqual(["list", "read", "wait"]);
+		syncTerminalReadOnlySchema(session, false);
+		expect(tool.parameters).toBe(parameters);
+	});
+});
 
 describe("bashCommandIsReadOnly", () => {
 	it("放行只读命令", () => {
@@ -20,13 +41,15 @@ describe("bashCommandIsReadOnly", () => {
 			"git log --oneline -5",
 			"rg -n set_plan_mode server",
 			"grep -rn foo . | head -20",
-			"wc -l *.ts",
+			"wc -l server/index.ts",
 			"jq .name package.json",
 			"find . -name '*.ts' -newer package.json",
 			"node --version",
 			"pwd && ls",
 			"cat a.txt | grep x | wc -l",
-			"LC_ALL=C sort f.txt",
+			"rg --glob '*.ts' --max-count=3 'hello world' server",
+			"git --no-pager diff --name-only",
+			"find . -name '*.ts' -maxdepth 3 -print",
 		]) {
 			expect(bashCommandIsReadOnly(cmd), cmd).toBe(true);
 		}
@@ -54,9 +77,60 @@ describe("bashCommandIsReadOnly", () => {
 			"sleep 5 &",
 			"cat <<EOF",
 			"python3 script.py",
+			"python -v",
+			"python3 -v",
 		]) {
 			expect(bashCommandIsReadOnly(cmd), cmd).toBe(false);
 		}
+	});
+
+	it("rejects unsupported syntax and command capabilities, not just known payloads", () => {
+		for (const cmd of [
+			'ls "$(touch pwned)"',
+			'cat "`touch pwned`"',
+			"ls & touch pwned & pwd",
+			"ls &&",
+			"| ls",
+			"ls || || pwd",
+			"ls 'unfinished",
+			"ls \\\n&& pwd",
+			"ls\r\npwd",
+			"ls # comment",
+			"ls (pwd)",
+			"env ls",
+			"command ls",
+			"nohup ls",
+			"time ls",
+			"PATH=evil ls",
+			"rg * foo .",
+			"git log *",
+			"wc -l *.ts",
+			"LC_ALL=C sort f.txt",
+			"/tmp/ls x",
+			"awk 'BEGIN { system(\"touch x\") }'",
+			"sed '1e touch x' f",
+			"sed -n '1w x' f",
+			"sort -o output input",
+			"uniq input output",
+			"fd -x touch x",
+			"fd --exec=touch x",
+			"rg --pre=touch foo .",
+			"rg --hostname-bin touch foo",
+			"yq -i '.a=1' f",
+			"git diff --output=x",
+			"git log --output x",
+			"git -c core.pager=touch log",
+			"git --exec-path=/tmp status",
+			"git show --ext-diff",
+			"git grep --open-files-in-pager=touch foo",
+			"git cat-file --filters HEAD:f",
+			"find . -fprint x",
+			"jq -L /tmp 'include \"evil\"' f",
+			"jq 'input' f",
+			"rg --new-side-effect-option foo",
+			"ls --unknown-option",
+		])
+			expect(bashCommandIsReadOnly(cmd), cmd).toBe(false);
 	});
 
 	it("任何一段写命令即整条拒绝", () => {
@@ -71,6 +145,38 @@ describe("planModeDenial", () => {
 		for (const t of ["read", "grep", "ls", "plan_update", "present_files", "scm", "conversation_read", "skill"]) {
 			expect(planModeDenial(t, {}), t).toBeUndefined();
 		}
+	});
+
+	it("fails closed for unknown tools and action tools while retaining query entry points", () => {
+		for (const [name, params] of [
+			["plugin_delete", {}],
+			["mcp_write", {}],
+			["", {}],
+			["notes", { op: "note_add" }],
+			["canvas", { action: "run_all" }],
+			["worktree", { action: "create" }],
+			["browser_page", { op: "eval" }],
+			["browser_page", { op: "click" }],
+			["remote_term", { action: "run", cmd: "ls" }],
+			["skill", { action: "unknown" }],
+			["scm", { action: "commit" }],
+			["lsp", { action: "rename" }],
+		] as const)
+			expect(planModeDenial(name, params), name).toBeDefined();
+		for (const [name, params] of [
+			["load_tools", {}],
+			["tool_search", {}],
+			["ask_user_question", {}],
+			["notes", { op: "list" }],
+			["canvas", { action: "get" }],
+			["worktree", { action: "list" }],
+			["browser_page", { op: "read" }],
+			["skill", { action: "list" }],
+			["lsp", { action: "references" }],
+			["terminal_wait", {}],
+			["claim_files", { action: "list" }],
+		] as const)
+			expect(planModeDenial(name, params), name).toBeUndefined();
 	});
 
 	it("拒绝写类工具并给出计划替代路径", () => {

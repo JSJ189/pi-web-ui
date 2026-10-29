@@ -44,9 +44,10 @@ import {
 	resolveEnabledAgentTools,
 } from "./tool-manager.js";
 import { normalizeToolPromptOverrides } from "./tool-prompt-overrides.js";
-import { isNativeGlobalFetch, resolveAndValidateUrl, validateFetchUrl, type LookupAllFn } from "./net-guard.js";
+import { FetchUrlError, readBeforeAbort, safeFetch, validateFetchUrl, type LookupAllFn } from "./net-guard.js";
 import { PRESET_FIELD_NAMES, normalizePresetFieldSelection } from "./preset-fields.js";
 import { defaultFetcher } from "./update-check.js";
+import { normalizePresetPlugins } from "./preset-plugin-dependencies.js";
 
 const execFileAsync = promisify(execFile);
 
@@ -115,6 +116,7 @@ export type TextFetcher = (
 		getReader(): {
 			read(): Promise<{ done: boolean; value?: Uint8Array }>;
 			cancel(): Promise<void>;
+			releaseLock?(): void;
 		};
 	} | null;
 }>;
@@ -201,10 +203,12 @@ export interface PresetShareDoc {
 	appVersion: string;
 	/** 预设显式启用的工具白名单（默认没开的工具就是关，跨版本防错）。 */
 	enabledTools?: string[];
+	plugins?: import("./protocol.js").UiPresetPluginDependency[];
 	settings: Record<string, unknown>;
 }
 
 export interface PresetShareMeta {
+	plugins?: import("./protocol.js").UiPresetPluginDependency[];
 	description?: string;
 	author?: string;
 	tags?: string[];
@@ -254,6 +258,8 @@ export function buildShareDoc(
 		appVersion: clampText(meta.appVersion, 40),
 		settings,
 	};
+	const plugins = normalizePresetPlugins(meta.plugins);
+	if (plugins.length) doc.plugins = plugins;
 	if (Array.isArray(settings["disabledAgentTools"])) {
 		doc.enabledTools = resolveEnabledAgentTools(settings["disabledAgentTools"] as string[]);
 	}
@@ -313,6 +319,9 @@ const PRESET_FIELD_KINDS = {
 	codemodeMode: "codemodeMode",
 	codemodeInlineBudget: "number",
 	readDirEnabled: "bool",
+	chatUploadMaxMb: "number",
+	workspaceUploadMaxMb: "number",
+	folderUploadMaxMb: "number",
 	bgAutoCleanupMin: "number",
 	toolApprovalEnabled: "bool",
 	toolWatchdogTimeoutMs: "number",
@@ -642,6 +651,7 @@ export function parseShareDoc(raw: string, lang: ServerLang = "en"): PresetParse
 			createdAt: clampText(doc["createdAt"], 40),
 			appVersion: clampText(doc["appVersion"], 40),
 			...(rawEnabled ? { enabledTools: rawEnabled } : {}),
+			plugins: normalizePresetPlugins(doc["plugins"]),
 			settings: sanitized.settings,
 		},
 		sanitized,
@@ -675,59 +685,38 @@ export async function fetchText(
 		maxRedirects?: number;
 	} = {},
 ): Promise<{ ok: true; text: string } | { ok: false; error: string; errorKey: string }> {
-	const fetcher = opts.fetcher ?? defaultTextFetcher;
-	const timeoutMs = opts.timeoutMs ?? FETCH_TIMEOUT_MS;
 	const maxBytes = opts.maxBytes ?? PRESET_JSON_MAX_BYTES;
-	const maxRedirects = opts.maxRedirects ?? 5;
-	// 真实抓取或显式注入 lookup 时执行 DNS 解析后内网 IP 校验（防 DNS rebinding）；
-	// 纯内存 mock fetcher（未传 lookup）仅执行 URL 校验与重定向逐跳校验。
-	const useDns = !!opts.lookup || (!opts.fetcher && isNativeGlobalFetch());
-
-	let currentUrl = url;
-	let res: Awaited<ReturnType<TextFetcher>> | null = null;
-	for (let hop = 0; hop <= maxRedirects; hop++) {
-		const check = useDns
-			? await resolveAndValidateUrl(currentUrl, { lookup: opts.lookup })
-			: validateFetchUrl(currentUrl);
-		if (!check.ok) {
+	const signal = AbortSignal.timeout(opts.timeoutMs ?? FETCH_TIMEOUT_MS);
+	let res: Awaited<ReturnType<TextFetcher>>;
+	try {
+		res = await safeFetch(
+			url,
+			{ signal },
+			{
+				lookup: opts.lookup,
+				maxRedirects: opts.maxRedirects,
+				timeoutMs: opts.timeoutMs ?? FETCH_TIMEOUT_MS,
+				// Only explicit injection selects a mock transport; global fetch does not affect policy.
+				fetcher: opts.fetcher
+					? (u, init) => opts.fetcher!(u, init as Parameters<TextFetcher>[1]) as Promise<Response>
+					: undefined,
+			},
+		);
+	} catch (error) {
+		if (error instanceof FetchUrlError) {
 			return {
 				ok: false,
-				errorKey: check.reason === "scheme" ? "presets.url.scheme" : "presets.url.host",
-				error:
-					check.reason === "scheme"
-						? "Only http:// and https:// URLs are supported"
-						: "Private, loopback, or internal addresses are blocked",
+				errorKey: error.reason === "scheme" ? "presets.url.scheme" : "presets.url.host",
+				error: error.message,
 			};
 		}
-		currentUrl = check.url;
-		res = await fetcher(currentUrl, { signal: AbortSignal.timeout(timeoutMs), redirect: "manual" });
-		if (res.status === 301 || res.status === 302 || res.status === 303 || res.status === 307 || res.status === 308) {
-			const location = res.headers?.get?.("location");
-			if (!location) break;
-			if (hop === maxRedirects) {
-				return {
-					ok: false,
-					errorKey: "presets.fetch.status",
-					error: `Too many redirects (> ${maxRedirects})`,
-				};
-			}
-			try {
-				currentUrl = new URL(location, currentUrl).toString();
-			} catch {
-				return {
-					ok: false,
-					errorKey: "presets.url.scheme",
-					error: "Invalid redirect URL",
-				};
-			}
-			continue;
+		if (error instanceof Error && error.message.startsWith("Too many redirects")) {
+			return { ok: false, errorKey: "presets.fetch.status", error: error.message };
 		}
-		break;
-	}
-	if (!res) {
-		return { ok: false, errorKey: "presets.fetch.status", error: "Empty response" };
+		throw error;
 	}
 	if (!res.ok) {
+		if (res.body) await res.body.getReader().cancel();
 		return {
 			ok: false,
 			errorKey: "presets.fetch.status",
@@ -742,24 +731,29 @@ export async function fetchText(
 		const decoder = new TextDecoder();
 		let received = 0;
 		const chunks: Uint8Array[] = [];
-		for (;;) {
-			const { done, value } = await reader.read();
-			if (done) break;
-			if (!value) continue;
-			received += value.byteLength;
-			if (received > maxBytes) {
-				try {
-					await reader.cancel();
-				} catch {
-					/* body already consumed/closed */
+		try {
+			for (;;) {
+				const { done, value } = await readBeforeAbort(reader.read(), signal);
+				if (done) break;
+				if (!value) continue;
+				received += value.byteLength;
+				if (received > maxBytes) {
+					try {
+						await reader.cancel();
+					} catch {
+						/* body already consumed/closed */
+					}
+					return {
+						ok: false,
+						errorKey: "presets.fetch.tooLarge",
+						error: `Content too large (> ${Math.round(maxBytes / 1024)} KB)`,
+					};
 				}
-				return {
-					ok: false,
-					errorKey: "presets.fetch.tooLarge",
-					error: `Content too large (> ${Math.round(maxBytes / 1024)} KB)`,
-				};
+				chunks.push(value);
 			}
-			chunks.push(value);
+		} finally {
+			void reader.cancel().catch(() => {});
+			reader.releaseLock?.();
 		}
 		const merged = new Uint8Array(received);
 		let offset = 0;
@@ -769,7 +763,7 @@ export async function fetchText(
 		}
 		return { ok: true, text: decoder.decode(merged) };
 	}
-	const text = await res.text();
+	const text = await readBeforeAbort(res.text(), signal);
 	if (Buffer.byteLength(text, "utf8") > maxBytes) {
 		return {
 			ok: false,
@@ -1130,6 +1124,7 @@ export interface PresetSharePort {
 	upsertPreset(preset: SettingsPreset): void;
 	/** 应用预设（import 的 apply=true）。 */
 	applyPreset(name: string): Promise<void>;
+	isApplyPending?: () => boolean;
 	/** 推送设置状态（presets 列表跟着走）。 */
 	pushSettings(): void;
 	/** 发协议消息。 */
@@ -1152,6 +1147,7 @@ function buildDocFromPort(
 	const n = (opts.name ?? "").trim();
 	let settings: Record<string, unknown>;
 	let name: string;
+	let savedPlugins: import("./protocol.js").UiPresetPluginDependency[] | undefined;
 	if (current) {
 		settings = port.currentSettings();
 		name = n || pick(lang, "当前设置", "Current settings", "presets.share.currentName");
@@ -1163,11 +1159,13 @@ function buildDocFromPort(
 				error: pick(lang, `预设不存在：${n}`, `Preset does not exist: ${n}`, "presets.share.missing", { name: n }),
 			};
 		}
-		const { name: _drop, ...rest } = hit as SettingsPreset & Record<string, unknown>;
+		const { name: _drop, plugins, ...rest } = hit as SettingsPreset & Record<string, unknown>;
+		savedPlugins = plugins;
 		settings = { ...rest };
 		name = hit.name;
 	}
-	const doc = buildShareDoc(name, settings, {
+	const doc = buildShareDoc(name, sanitizePresetSettings(settings).settings, {
+		plugins: opts.plugins ?? savedPlugins,
 		description: opts.description,
 		author: opts.author,
 		tags: opts.tags,
@@ -1189,6 +1187,7 @@ export function buildImportPreview(
 		description: doc.description,
 		author: doc.author,
 		tags: doc.tags,
+		plugins: normalizePresetPlugins(doc.plugins),
 		format: doc.format,
 		version: doc.version,
 		fields: sanitized.fields,
@@ -1213,7 +1212,7 @@ async function applyImport(
 	opts: { dryRun?: boolean; name?: string; apply?: boolean; requestId?: string; fields?: unknown },
 ): Promise<void> {
 	const lang = port.lang();
-	const name = (opts.name ?? "").trim() || parsed.doc.name;
+	const name = normalizePresetName(opts.name) || parsed.doc.name;
 	const replaces = port.presets().some((p) => p.name === name);
 	const preview = buildImportPreview(name, parsed.doc, parsed.sanitized, replaces);
 	if (opts.dryRun) {
@@ -1237,14 +1236,37 @@ async function applyImport(
 		return;
 	}
 	const applied: string[] = Object.keys(settings).sort();
-	port.upsertPreset(toSettingsPreset(name, settings));
+	const plugins = normalizePresetPlugins(parsed.doc.plugins);
+	try {
+		port.upsertPreset({ ...toSettingsPreset(name, settings), ...(plugins.length ? { plugins } : {}) });
+	} catch (error) {
+		port.emit({
+			type: "preset_import_result",
+			requestId: opts.requestId,
+			ok: false,
+			dryRun: false,
+			error: error instanceof Error ? error.message : String(error),
+		});
+		return;
+	}
 	port.pushSettings();
+	let applyError: string | undefined;
+	if (opts.apply) {
+		try {
+			await port.applyPreset(name);
+		} catch (error) {
+			applyError = error instanceof Error ? error.message : String(error);
+		}
+	}
 	port.emit({
 		type: "preset_import_result",
 		requestId: opts.requestId,
 		ok: true,
 		dryRun: false,
 		preview: { ...preview, fields: applied },
+		applied: opts.apply === true && !applyError && !port.isApplyPending?.(),
+		...(opts.apply && !applyError && port.isApplyPending?.() ? { applyDeferred: true } : {}),
+		...(applyError ? { applyError } : {}),
 	});
 	port.emit({
 		type: "notice",
@@ -1252,7 +1274,6 @@ async function applyImport(
 		text: replaces ? `预设已更新：${name}` : `预设已导入：${name}`,
 		textEn: replaces ? `Preset updated: ${name}` : `Preset imported: ${name}`,
 	});
-	if (opts.apply) await port.applyPreset(name);
 }
 
 /** preset_export：把预设（或当前设置）导成可复制/可下载的 JSON 文本。 */

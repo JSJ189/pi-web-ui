@@ -157,6 +157,8 @@ import {
  * （文案走目录项的 descKey/offHintKey）；不再手写 ToggleRow。
  */
 const OTHER_AGENT_TOOLS = AGENT_TOOL_CATALOG.filter((e) => e.group === "other");
+// The legacy alias shares conversation's switch; keep other subagent tools visible.
+const CONVERSATION_TOOL_NAMES = [...new Set(SUBAGENT_TOOL_NAMES.map((n) => (n === "subagent" ? "conversation" : n)))];
 
 /** Minimal terminal-tab bridge (same shape SCMPanel uses). */
 interface SettingsTerminalBridge {
@@ -611,6 +613,9 @@ type SettingsTab =
 
 /** set_settings 允许的字段（原 setPartial 内联类型提出为具名类型，供乐观合并层复用）。 */
 interface SettingsPatch {
+	chatUploadMaxMb?: number;
+	workspaceUploadMaxMb?: number;
+	folderUploadMaxMb?: number;
 	promptMode?: "append" | "replace";
 	customSystemPrompt?: string;
 	promptTemplate?: string;
@@ -940,11 +945,20 @@ export function SettingsModal({
 		});
 	};
 	/** 工具行右端的「编辑文案」按钮（三个工具列表共用）。DSH 引擎无 pi 工具注册面，不显示。 */
-	const toolEditAction = (name: string) =>
-		isDsh ? null : <ToolPromptButton name={name} edited={editedToolNames.has(name)} onEdit={setEditingToolPrompt} />;
+	const toolEditAction = (name: string) => {
+		const canonical = name === "subagent" ? "conversation" : name;
+		return isDsh ? null : (
+			<ToolPromptButton name={canonical} edited={editedToolNames.has(canonical)} onEdit={setEditingToolPrompt} />
+		);
+	};
 	/** 保存/清除某工具的文案覆盖（空对象 = 清除，服务端逐工具合并）。 */
 	const applyToolPromptOverride = (name: string, override: UiToolPromptOverride | null) =>
-		setPartial({ toolPromptOverrides: { [name]: override ?? {} } });
+		setPartial({
+			toolPromptOverrides:
+				name === "conversation" || name === "subagent"
+					? { conversation: override ?? {}, subagent: override ?? {} }
+					: { [name]: override ?? {} },
+		});
 	// 当前生效提示词与工具 schema 的 token 占用（估算值，非精确分词）。
 	const promptTokenEstimate = useMemo(
 		() => estimatePromptTokens(settings?.effectiveSystemPrompt ?? ""),
@@ -1663,7 +1677,7 @@ export function SettingsModal({
 
 	// 子代理各工具的「?」说明（key 与 tool-manager.ts 的 SUBAGENT_TOOL_NAMES 对齐）。
 	const SUBAGENT_TOOL_TIPS: Record<string, string> = {
-		subagent: t("toolDescSubagent"),
+		conversation: t("toolDescSubagent"),
 		subagent_spawn: t("toolDescSubagentSpawn"),
 		subagent_get_result: t("toolDescSubagentGetResult"),
 		subagent_steer: t("toolDescSubagentSteer"),
@@ -1679,8 +1693,12 @@ export function SettingsModal({
 	// 统一工具开关（工具 tab 逐工具；与 toggleSkill 同模式）。
 	const toggleAgentTool = (name: string) => {
 		const next = new Set(disabledTools);
-		if (next.has(name)) next.delete(name);
-		else next.add(name);
+		const names = name === "conversation" || name === "subagent" ? ["conversation", "subagent"] : [name];
+		const disabled = names.some((n) => next.has(n));
+		for (const n of names) {
+			if (disabled) next.delete(n);
+			else next.add(n);
+		}
 		setPartial({ disabledAgentTools: [...next] });
 	};
 	// 插件 AI 工具开关（插件 tab 按插件分组 + 工具 tab 汇总区共用；live 生效）。
@@ -3676,8 +3694,9 @@ export function SettingsModal({
 								<div className="set-field-label">
 									{t("toolsSectionSubagent")} <HintTip text={t("toolsSubagentDepHint")} />
 								</div>
-								{SUBAGENT_TOOL_NAMES.map((n) => {
-									const blocked = isBlockedByPreset(n);
+								{CONVERSATION_TOOL_NAMES.map((n) => {
+									const names = n === "conversation" ? [n, "subagent"] : [n];
+									const blocked = names.some(isBlockedByPreset);
 									return (
 										<ToggleRow
 											key={n}
@@ -3685,7 +3704,7 @@ export function SettingsModal({
 											tip={SUBAGENT_TOOL_TIPS[n]}
 											action={toolEditAction(n)}
 											subtitle={blocked ? t("toolsBlockedByPreset", { name: piPresetName }) : undefined}
-											enabled={!blocked && !disabledTools.has(n)}
+											enabled={!blocked && !names.some((name) => disabledTools.has(name))}
 											disabled={blocked}
 											onToggle={() => toggleAgentTool(n)}
 										/>
@@ -3873,6 +3892,29 @@ export function SettingsModal({
 									<FiMessageSquare className="set-section-icon" />
 									{t("settingsMessageDisplay")}
 								</div>
+								{(
+									[
+										["chatUploadMaxMb", 20],
+										["workspaceUploadMaxMb", 100],
+										["folderUploadMaxMb", 32],
+									] as const
+								).map(([key, fallback]) => (
+									<FieldRow key={key} label={t(key)} tip={t("uploadMaxMbHint")} htmlFor={key}>
+										<input
+											id={key}
+											className="set-input"
+											type="number"
+											min={1}
+											max={100}
+											step={1}
+											value={settings[key] ?? fallback}
+											onChange={(e) => {
+												const n = e.target.valueAsNumber;
+												if (Number.isInteger(n) && n >= 1 && n <= 100) setPartial({ [key]: n });
+											}}
+										/>
+									</FieldRow>
+								))}
 								<FieldRow label={t("softCapTokens")} tip={t("softCapHint")} htmlFor="soft-cap-max">
 									<input
 										id="soft-cap-max"
@@ -7517,7 +7559,11 @@ export function SettingsModal({
 			{/* 预设分享面板（导入 / 导出 / 浏览共享仓库）—— 自己一层 portal，盖在设置页上。 */}
 			{presetShareFor !== null && (
 				<PresetShareModal
-					presets={settings.presets.map((p) => p.name)}
+					presets={settings.presets}
+					plugins={chat.plugins}
+					pluginCatalog={chat.pluginCatalog}
+					pluginJobs={chat.pluginJobs}
+					disabledPlugins={settings.disabledPlugins}
 					presetExport={chat.presetExport}
 					presetImport={chat.presetImport}
 					presetCatalog={chat.presetCatalog}

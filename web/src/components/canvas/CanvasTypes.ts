@@ -180,8 +180,8 @@ export const ROLE_METAS: Record<CanvasNodeRole, RoleMeta> = {
 		labelEn: "QA & DevOps",
 		icon: "🧪",
 		group: "agent",
-		blurb: "测试编写、运行与自愈修复",
-		defaultInstruction: "编写并运行测试，失败时自动修复，直至全部通过。",
+		blurb: "编写并运行测试，报告结果与失败证据",
+		defaultInstruction: "编写并运行相关测试，报告真实结果、失败证据与未验证范围。",
 		needsLlm: true,
 	},
 	devops: {
@@ -271,7 +271,7 @@ export const ROLE_METAS: Record<CanvasNodeRole, RoleMeta> = {
 		labelEn: "Sub-workflow",
 		icon: "📦",
 		group: "logic",
-		blurb: "引用另一个画布工程作为子流程",
+		blurb: "未实现：说明节点，不执行嵌套工作流",
 		defaultInstruction: "汇总上游产物，形成给子流程的输入摘要。",
 		needsLlm: true,
 	},
@@ -292,7 +292,7 @@ export const ROLE_METAS: Record<CanvasNodeRole, RoleMeta> = {
 		labelEn: "Knowledge Retrieval",
 		icon: "📚",
 		group: "data",
-		blurb: "检索本地知识库/文档后增强回答",
+		blurb: "智能体按指令检索文件；无独立知识库索引",
 		defaultInstruction: "基于知识库检索回答：先列出检索到依据，再综合作答并标注来源。",
 		needsLlm: true,
 	},
@@ -302,7 +302,7 @@ export const ROLE_METAS: Record<CanvasNodeRole, RoleMeta> = {
 		labelEn: "Code Execution",
 		icon: "🧩",
 		group: "data",
-		blurb: "运行一段脚本做数据加工/校验",
+		blurb: "智能体按指令编写和运行脚本；依赖可用工具",
 		defaultInstruction: "编写并执行必要的脚本完成数据加工，把运行结果摘要交接下游。",
 		needsLlm: true,
 	},
@@ -312,7 +312,7 @@ export const ROLE_METAS: Record<CanvasNodeRole, RoleMeta> = {
 		labelEn: "HTTP Request",
 		icon: "🌍",
 		group: "data",
-		blurb: "调用外部 HTTP / Webhook 接口",
+		blurb: "智能体按指令请求 HTTP 接口；依赖可用工具",
 		defaultInstruction: "调用配置中的外部 API，把返回结果清洗为摘要后交接下游。",
 		needsLlm: true,
 	},
@@ -322,7 +322,7 @@ export const ROLE_METAS: Record<CanvasNodeRole, RoleMeta> = {
 		labelEn: "Memory Read/Write",
 		icon: "🧠",
 		group: "data",
-		blurb: "跨节点共享变量 / 长期记忆",
+		blurb: "未实现：说明节点，无持久记忆存储",
 		defaultInstruction: "",
 		needsLlm: false,
 	},
@@ -391,10 +391,12 @@ export function isPassthroughRole(role: CanvasNodeRole): boolean {
 
 /** 该角色是否展示「任务指令」输入框（LLM 型节点展示，纯控制节点展示配置项） */
 export function roleNeedsInstruction(role: CanvasNodeRole): boolean {
-	return ROLE_METAS[role]?.needsLlm ?? true;
+	return isRoleImplemented(role) && (ROLE_METAS[role]?.needsLlm ?? true);
 }
 
 export const STATUS_COLORS: Record<CanvasNodeStatus, { text: string; bg: string; dot: string }> = {
+	skipped: { text: "var(--text-faint)", bg: "var(--bg-elev)", dot: "var(--text-faint)" },
+	cancelled: { text: "var(--text-faint)", bg: "var(--bg-elev)", dot: "var(--text-faint)" },
 	idle: { text: "var(--text-faint)", bg: "var(--bg-elev)", dot: "#94a3b8" },
 	queued: { text: "var(--amber-text)", bg: "color-mix(in srgb, var(--amber) 12%, transparent)", dot: "var(--amber)" },
 	running: {
@@ -441,7 +443,10 @@ export function outPortsForRole(role: CanvasNodeRole): CanvasPortDef[] {
 		);
 	}
 	if (role === "human") {
-		extra.push({ key: "approve", labelZh: "批准", desc: "人工批准后走这条边（approve）" });
+		extra.push(
+			{ key: "approve", labelZh: "批准", desc: "人工批准后走这条边（approve）" },
+			{ key: "reject", labelZh: "驳回返工", desc: "人工驳回后走这条边（reject）" },
+		);
 	}
 	if (role === "evaluator" || role === "reviewer") {
 		extra.push(
@@ -815,6 +820,7 @@ export function visibleRoleFields(
 	role: CanvasNodeRole,
 	config: Record<string, string | number | boolean | undefined> | undefined,
 ): RoleField[] {
+	if (!isRoleImplemented(role)) return [{ key: "capability", kind: "hint", labelZh: roleCapabilityNotice(role) }];
 	return (ROLE_FIELDS[role] ?? []).filter(
 		(f) => !f.showIf || String(config?.[f.showIf.key] ?? "") === String(f.showIf.value),
 	);
@@ -822,3 +828,20 @@ export function visibleRoleFields(
 
 /** 节点输入与输出端口相对于节点顶部的 Y 轴圆心位置（单位 px） */
 export const PORT_Y_OFFSET = 72;
+
+/** These legacy roles only pass text through; no scheduler, endpoint or store exists. */
+export const UNIMPLEMENTED_ROLES: ReadonlySet<CanvasNodeRole> = new Set(["cron", "webhook", "memory", "subflow"]);
+export function isRoleImplemented(role: CanvasNodeRole): boolean {
+	return !UNIMPLEMENTED_ROLES.has(role);
+}
+export function roleCapabilityNotice(role: CanvasNodeRole, english = false): string {
+	if (!isRoleImplemented(role))
+		return english
+			? "Description only: scheduled execution, webhook endpoints, persistent memory and nested workflows are not implemented. Execution is disabled for this description node."
+			: "仅说明节点：尚未实现定时调度、Webhook 接入、持久记忆或嵌套工作流；此说明节点已禁用运行。";
+	if (["tool", "code", "api", "knowledge"].includes(role))
+		return english
+			? "Agent instruction: execution depends on the model and its enabled tools; no dedicated runtime is provided."
+			: "由智能体按指令执行，依赖当前模型及已启用工具；没有独立的专用运行时。";
+	return "";
+}

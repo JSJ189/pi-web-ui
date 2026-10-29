@@ -28,7 +28,7 @@ export function handleFileMessage(msg: ClientMessage, cs: DispatchSession): bool
 			void cs.writeFile(msg.path, msg.text);
 			return true;
 		case "upload_file":
-			void cs.uploadFile(msg.dirPath, msg.name, msg.data);
+			void cs.uploadFile(msg.dirPath, msg.name, msg.data, msg.uploadId);
 			return true;
 		case "file_create":
 			void cs.createEntry(msg.dir, msg.name, msg.kind);
@@ -107,10 +107,10 @@ export function handleFileMessage(msg: ClientMessage, cs: DispatchSession): bool
 			void cs.promoteSandbox?.(msg.targetPath, msg.path, msg.switchToTarget);
 			return true;
 		case "diff_sandbox":
-			void cs.diffSandbox?.(msg.path);
+			void cs.diffSandbox?.(msg.path, msg.requestId);
 			return true;
 		case "apply_sandbox_to_source":
-			void cs.applySandboxToSource?.(msg.path);
+			void cs.applySandboxToSource?.(msg.path, msg.expectedRevision);
 			return true;
 		case "destroy_sandbox":
 			void cs.destroySandbox?.(msg.path);
@@ -366,6 +366,15 @@ export function handleModelAndProviderMessage(msg: ClientMessage, cs: DispatchSe
 /** 终端 (PTY) 管理与输入控制 */
 export function handleTerminalMessage(msg: ClientMessage, cs: DispatchSession): boolean {
 	switch (msg.type) {
+		case "terminal_attach": {
+			const tm = cs.findTerminalManager
+				? cs.findTerminalManager(msg.terminalId, msg.conversationId, msg.ownerKind)
+				: msg.ownerKind === "client"
+					? cs.getUserTerminalManager?.()
+					: cs.getTerminalManager(msg.conversationId);
+			tm?.attach?.(msg.terminalId, msg.cols, msg.rows);
+			return true;
+		}
 		case "terminal_create": {
 			const isAgentBash = msg.agentBash === true;
 			// 用户直接创建的终端（!agentBash）进入会话/工作区级用户终端管理器，
@@ -393,28 +402,28 @@ export function handleTerminalMessage(msg: ClientMessage, cs: DispatchSession): 
 		}
 		case "terminal_input": {
 			const tm = cs.findTerminalManager
-				? cs.findTerminalManager(msg.terminalId, msg.conversationId)
+				? cs.findTerminalManager(msg.terminalId, msg.conversationId, msg.ownerKind)
 				: cs.getTerminalManager(msg.conversationId);
 			tm?.input(msg.terminalId, msg.data);
 			return true;
 		}
 		case "terminal_resize": {
 			const tm = cs.findTerminalManager
-				? cs.findTerminalManager(msg.terminalId, msg.conversationId)
+				? cs.findTerminalManager(msg.terminalId, msg.conversationId, msg.ownerKind)
 				: cs.getTerminalManager(msg.conversationId);
 			tm?.resize(msg.terminalId, msg.cols, msg.rows);
 			return true;
 		}
 		case "terminal_kill": {
 			const tm = cs.findTerminalManager
-				? cs.findTerminalManager(msg.terminalId, msg.conversationId)
+				? cs.findTerminalManager(msg.terminalId, msg.conversationId, msg.ownerKind)
 				: cs.getTerminalManager(msg.conversationId);
 			tm?.kill(msg.terminalId);
 			return true;
 		}
 		case "rename_terminal": {
 			const tm = cs.findTerminalManager
-				? cs.findTerminalManager(msg.terminalId, msg.conversationId)
+				? cs.findTerminalManager(msg.terminalId, msg.conversationId, msg.ownerKind)
 				: cs.getTerminalManager(msg.conversationId);
 			tm?.rename(msg.terminalId, msg.title);
 			return true;
@@ -583,35 +592,42 @@ export function handleScheduleMessage(
 			}
 			return true;
 		case "schedule_delete":
-			if (!scheduler.remove(msg.id)) {
+		case "schedule_toggle":
+			try {
+				const found =
+					msg.type === "schedule_delete"
+						? scheduler.remove(msg.id)
+						: scheduler.setEnabled(msg.id, msg.enabled === true);
+				if (!found) {
+					send({
+						type: "notice",
+						level: "warning",
+						text: `定时任务不存在：${msg.id}`,
+						textEn: `No such scheduled task: ${msg.id}`,
+					});
+				}
+			} catch (err) {
 				send({
 					type: "notice",
-					level: "warning",
-					text: `定时任务不存在：${msg.id}`,
-					textEn: `No such scheduled task: ${msg.id}`,
+					level: "error",
+					text: `更新定时任务失败：${(err as Error).message}`,
+					textEn: `Failed to update scheduled task: ${(err as Error).message}`,
 				});
 			}
 			return true;
 		case "schedule_run":
-			void scheduler.runNow(msg.id).then((r) => {
-				if (!r.ok)
-					send({
-						type: "notice",
-						level: "warning",
-						text: `定时任务手动触发失败：${r.error ?? "未知错误"}`,
-						textEn: `Manual scheduled-task run failed: ${r.error ?? "unknown error"}`,
-					});
-			});
-			return true;
-		case "schedule_toggle":
-			if (!scheduler.setEnabled(msg.id, msg.enabled === true)) {
-				send({
-					type: "notice",
-					level: "warning",
-					text: `定时任务不存在：${msg.id}`,
-					textEn: `No such scheduled task: ${msg.id}`,
-				});
-			}
+			void scheduler
+				.runNow(msg.id)
+				.then((r) => {
+					if (!r.ok)
+						send({
+							type: "notice",
+							level: "warning",
+							text: `定时任务手动触发失败：${r.error ?? "未知错误"}`,
+							textEn: `Manual scheduled-task run failed: ${r.error ?? "unknown error"}`,
+						});
+				})
+				.catch((err) => console.error("[scheduler] manual run failed:", err));
 			return true;
 		default:
 			return false;
@@ -669,6 +685,11 @@ export function handleSettingsMessage(msg: ClientMessage, cs: DispatchSession): 
 				devNoCache: (msg as { devNoCache?: boolean }).devNoCache,
 				autoReload: (msg as { autoReload?: boolean }).autoReload,
 				skillsFullText: (msg as { skillsFullText?: string[] }).skillsFullText,
+				skillsCatalogMaxDesc: msg.skillsCatalogMaxDesc,
+				skillsCatalogShowLocation: msg.skillsCatalogShowLocation,
+				skillsCatalogBudget: msg.skillsCatalogBudget,
+				codemodeMode: msg.codemodeMode,
+				codemodeInlineBudget: msg.codemodeInlineBudget,
 				visionBridgeEnabled: msg.visionBridgeEnabled,
 				visionBridgeModel: msg.visionBridgeModel,
 				visionBridgePromptMode: msg.visionBridgePromptMode,

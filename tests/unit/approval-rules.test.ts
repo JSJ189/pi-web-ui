@@ -17,6 +17,33 @@ import {
 } from "../../server/approval-rules.js";
 
 describe("审批规则引擎纯函数与匹配逻辑 (Approval Rules Engine)", () => {
+	it("maps legacy terminal rules without widening actions or preempting new denials", () => {
+		const legacy: ApprovalRule = {
+			id: "legacy",
+			enabled: true,
+			tools: ["terminal_input"],
+			field: "params",
+			match: "prefix",
+			value: '{"terminalId":',
+			action: "allow",
+			label: "old",
+		};
+		const params = { action: "input", terminalId: "t1", data: "hello" };
+		expect(matchApprovalRule(legacy, "terminal", params, "/project")).toBe(true);
+		expect(matchApprovalRule(legacy, "terminal", { ...params, action: "key" }, "/project")).toBe(false);
+		const deny: ApprovalRule = {
+			...legacy,
+			id: "new",
+			tools: ["terminal"],
+			match: "contains",
+			value: '"action":"input"',
+			action: "deny",
+		};
+		expect(evaluateApprovalRules([legacy, deny], "terminal", params, "/project").action).toBe("deny");
+		expect(evaluateApprovalRules([legacy, { ...deny, action: "ask" }], "terminal", params, "/project").action).toBe(
+			"ask",
+		);
+	});
 	const cwd = "/workspace/project";
 
 	describe("globToRegex 通配符转换", () => {

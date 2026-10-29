@@ -35,7 +35,7 @@ export default {
 						</div>
 						<div style="grid-template-columns: repeat(auto-fit, minmax(180px, 1fr)); display: grid; gap: 12px;">
 							<div style="border: 1px solid var(--border); padding: 10px; border-radius: 4px; background: var(--bg);">
-								<div style="color: var(--text-dim); font-size: 11px; margin-bottom: 4px;">双工状态</div>
+								<div style="color: var(--text-dim); font-size: 11px; margin-bottom: 4px;">回调桥接状态</div>
 								<div class="wecom-metric-state" style="font-size: 14px; font-weight: 600;">⚪ 未启动</div>
 							</div>
 							<div style="border: 1px solid var(--border); padding: 10px; border-radius: 4px; background: var(--bg);">
@@ -106,10 +106,10 @@ export default {
 							</div>
 
 							<div style="border-top: 1px solid var(--border); padding-top: 12px;">
-								<div style="font-weight: 600; margin-bottom: 8px;">🤖 机器人双工与白名单控制</div>
+								<div style="font-weight: 600; margin-bottom: 8px;">🤖 回调桥接与白名单控制</div>
 								<div style="display: flex; align-items: center; gap: 8px; margin-bottom: 8px;">
 									<input type="checkbox" id="wecom-cfg-bot-enabled" class="wecom-cfg-bot-enabled" style="cursor: pointer;" />
-									<label for="wecom-cfg-bot-enabled" style="font-size: 12px; cursor: pointer; user-select: none;">启用企业微信机器人双向对话回复服务</label>
+									<label for="wecom-cfg-bot-enabled" style="font-size: 12px; cursor: pointer; user-select: none;">启用内部会话桥接（需另接可信回调适配器）</label>
 								</div>
 								<div style="margin-bottom: 8px;">
 									<label style="display: block; margin-bottom: 4px; color: var(--text-dim);">安全白名单 (用户账号/UserId，逗号分隔，留空不限制):</label>
@@ -185,11 +185,11 @@ export default {
 			currentState = res;
 
 			const b = res.botStatus || {};
-			if (b.state === "connected") {
-				statusBadge.textContent = "🟢 在线";
-				statusBadge.style.color = "var(--green, #22c55e)";
-				metricState.textContent = "🟢 已连接 (在线)";
-				metricState.style.color = "var(--green, #22c55e)";
+			if (b.state === "waiting_callback" || b.state === "connected") {
+				statusBadge.textContent = "🟡 桥接已启用";
+				statusBadge.style.color = "var(--amber, #eab308)";
+				metricState.textContent = "🟡 需外部回调接入（Webhook 仅发送）";
+				metricState.style.color = "var(--amber, #eab308)";
 			} else if (b.state === "connecting") {
 				statusBadge.textContent = "🟡 连接中";
 				statusBadge.style.color = "var(--amber, #eab308)";
@@ -325,7 +325,7 @@ export default {
 		});
 
 		q(".wecom-btn-toggle-bot").addEventListener("click", async () => {
-			const isRunning = currentState.botStatus?.state === "connected";
+			const isRunning = Boolean(currentState.botStatus?.enabled);
 			const action = isRunning ? "stop_bot" : "start_bot";
 			await sendHost(action);
 			refresh();

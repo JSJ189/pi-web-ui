@@ -6,6 +6,10 @@ import type { CommandDef } from "../types";
 import { TermXterm } from "./TermXterm";
 import { useT } from "../i18n";
 import { appSend } from "../app-globals";
+import type { TerminalOwnerKind } from "../terminal-bridge";
+
+const tabKey = (t: TerminalMeta) =>
+	JSON.stringify([t.ownerKind ?? "client", t.ownerKind === "conversation" ? t.conversationId : "", t.id]);
 import type { UiSlotEntry } from "../ui-slots";
 // 工具条通用渲染已抽到 ../slot-toolbar（本模块静态 import 会把 xterm 拉进主包）；
 // 这里 re-export 保持旧 import 路径兼容。
@@ -17,11 +21,12 @@ interface TerminalPanelProps {
 	chat: ChatState;
 	terminal: {
 		create: (meta: TerminalMeta) => void;
-		close: (id: string) => void;
+		close: (id: string, ownerKind?: TerminalOwnerKind, conversationId?: string) => void;
 		register: (
 			conversationId: string,
 			id: string,
 			writer: { write(data: string): void; dispose(): void },
+			ownerKind?: TerminalOwnerKind,
 		) => () => void;
 		restart: (id: string) => void;
 		select: (id: string) => void;
@@ -64,12 +69,11 @@ export function TerminalPanel({ chat, terminal, uiTerminalToolbar, onUiAction }:
 	const [renamingTab, setRenamingTab] = useState<string | null>(null);
 	const [renameDraft, setRenameDraft] = useState("");
 
-	// When the connection drops the server kills all PTYs and the reducer clears
-	// the tab list — make sure the active selection doesn't dangle.
+	// Follow the authoritative list after reconnect, close and conversation switches.
 	useEffect(() => {
 		if (chat.terminals.length === 0) setActiveId(null);
-		else if (!chat.terminals.some((t) => t.id === activeId)) {
-			setActiveId(chat.terminals[chat.terminals.length - 1].id);
+		else if (!chat.terminals.some((t) => tabKey(t) === activeId)) {
+			setActiveId(tabKey(chat.terminals[chat.terminals.length - 1]));
 		}
 	}, [chat.terminals, activeId]);
 
@@ -77,7 +81,8 @@ export function TerminalPanel({ chat, terminal, uiTerminalToolbar, onUiAction }:
 	// ops, uninstall runs) — follow the request so the user sees the command run.
 	useEffect(() => {
 		if (chat.terminalActiveId) {
-			setActiveId(chat.terminalActiveId);
+			const tab = chat.terminals.find((t) => t.id === chat.terminalActiveId && (t.ownerKind ?? "client") === "client");
+			if (tab) setActiveId(tabKey(tab));
 			setSideOpen(false);
 		}
 	}, [chat.terminalActiveId]);
@@ -110,7 +115,7 @@ export function TerminalPanel({ chat, terminal, uiTerminalToolbar, onUiAction }:
 			running: true,
 			exitCode: null,
 		});
-		setActiveId(id);
+		setActiveId(JSON.stringify(["client", "", id]));
 		setSideOpen(false);
 	};
 
@@ -125,10 +130,10 @@ export function TerminalPanel({ chat, terminal, uiTerminalToolbar, onUiAction }:
 		// Reuse a terminal with the same title (VSCode-style task reuse): the
 		// command is re-run in the SAME tab — a running process is interrupted
 		// first (the server kills the PTY's process group and starts fresh).
-		const existing = chat.terminals.find((t) => t.title === title);
+		const existing = chat.terminals.find((t) => t.title === title && (t.ownerKind ?? "client") === "client");
 		if (existing) {
 			terminal.restart(existing.id);
-			setActiveId(existing.id);
+			setActiveId(tabKey(existing));
 			appSend({
 				type: "run_command",
 				terminalId: existing.id,
@@ -142,32 +147,35 @@ export function TerminalPanel({ chat, terminal, uiTerminalToolbar, onUiAction }:
 		openTab({ title, cwd: chat.state?.cwd ?? "", command: cmd });
 	};
 
-	const closeTab = (id: string) => {
-		const tab = chat.terminals.find((item) => item.id === id);
-		if (tab) appSend({ type: "terminal_kill", terminalId: id, conversationId: tab.conversationId });
-		terminal.close(id);
-		if (activeId === id) {
-			const rest = chat.terminals.filter((t) => t.id !== id);
-			setActiveId(rest.length > 0 ? rest[rest.length - 1].id : null);
-		}
+	const closeTab = (key: string) => {
+		const tab = chat.terminals.find((item) => tabKey(item) === key);
+		if (!tab) return;
+		appSend({
+			type: "terminal_kill",
+			terminalId: tab.id,
+			conversationId: tab.conversationId,
+			ownerKind: tab.ownerKind ?? "client",
+		});
+		terminal.close(tab.id, tab.ownerKind ?? "client", tab.conversationId);
+		if (activeId === key) setActiveId(null);
 	};
 
 	// 单个终端标签（用户终端 + ai-bash 分组共用）。
 	const renderTab = (tab: TerminalMeta) => (
-		<div key={tab.id} className={`term-tab ${tab.id === activeId ? "active" : ""}`}>
+		<div key={tabKey(tab)} className={`term-tab ${tabKey(tab) === activeId ? "active" : ""}`}>
 			<button
 				type="button"
 				className="term-tab-main"
 				title={`${tab.cwd}${tab.command ? `\n> ${tab.command.command}` : ""}`}
 				onClick={() => {
 					if (renamingTab) return;
-					setActiveId(tab.id);
+					setActiveId(tabKey(tab));
 					setSideOpen(false);
 				}}
 			>
 				<span className={`term-tab-dot ${tab.running ? "run" : "exit"}`} />
 				<span className="term-tab-title">
-					{renamingTab === tab.id ? (
+					{renamingTab === tabKey(tab) ? (
 						<input
 							autoFocus
 							className="term-tab-rename-input"
@@ -180,7 +188,13 @@ export function TerminalPanel({ chat, terminal, uiTerminalToolbar, onUiAction }:
 								if (e.key === "Enter" && !e.nativeEvent.isComposing) {
 									const title = renameDraft.trim();
 									if (title)
-										appSend({ type: "rename_terminal", terminalId: tab.id, conversationId: tab.conversationId, title });
+										appSend({
+											type: "rename_terminal",
+											terminalId: tab.id,
+											conversationId: tab.conversationId,
+											ownerKind: tab.ownerKind ?? "client",
+											title,
+										});
 									setRenamingTab(null);
 								} else if (e.key === "Escape") {
 									setRenamingTab(null);
@@ -207,12 +221,12 @@ export function TerminalPanel({ chat, terminal, uiTerminalToolbar, onUiAction }:
 				onClick={(e) => {
 					e.stopPropagation();
 					setRenameDraft(tab.title);
-					setRenamingTab(tab.id);
+					setRenamingTab(tabKey(tab));
 				}}
 			>
 				<FiEdit2 />
 			</button>
-			<button type="button" className="term-tab-close" title={t("closeTerminal")} onClick={() => closeTab(tab.id)}>
+			<button type="button" className="term-tab-close" title={t("closeTerminal")} onClick={() => closeTab(tabKey(tab))}>
 				<FiX />
 			</button>
 		</div>
@@ -460,14 +474,15 @@ export function TerminalPanel({ chat, terminal, uiTerminalToolbar, onUiAction }:
 				) : (
 					chat.terminals.map((t) => (
 						<TermXterm
-							key={t.id}
+							key={tabKey(t)}
+							ownerKind={t.ownerKind ?? "client"}
 							conversationId={t.conversationId}
 							terminalId={t.id}
 							command={t.command}
 							cwd={t.cwd}
 							title={t.title}
 							agentBash={t.agentBash}
-							active={t.id === activeId}
+							active={tabKey(t) === activeId}
 							running={t.running}
 							exitCode={t.exitCode}
 							register={terminal.register}

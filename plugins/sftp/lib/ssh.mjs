@@ -11,11 +11,13 @@
  */
 
 import { once } from "node:events";
+import { createHash } from "node:crypto";
 import { StringDecoder } from "node:string_decoder";
 import { promises as fs } from "node:fs";
 import os from "node:os";
 import path from "node:path";
 import { resolveRef } from "./refs.mjs";
+import { createHostVerifier } from "../../../plugin-sdk/ssh-host-trust.mjs";
 
 const IDLE_CLOSE_MS = 5 * 60 * 1000; // 空闲多久断开（远端 sshd 一般 10 分钟掐 idle，留点余量）
 const READY_TIMEOUT_MS = 20_000;
@@ -102,6 +104,8 @@ export function createSshManager({ host, log = () => {}, secrets }) {
 	// 防止「两个并发各开一条、后完成者覆盖池位」——输者成孤儿（dropAll/drop 都
 	// 摸不到，永久泄漏），且其 5 分钟空闲定时器到期时会误杀正在使用的后到连接
 	const inflight = new Map();
+	// 每个连接键独立代次：清理时取消旧请求，保留 exceptCwd 的在建连接。
+	const generations = new Map();
 
 	/** 惰性加载 ssh2；缺了就装上。并发调用共享同一个 Promise。 */
 	function library() {
@@ -151,8 +155,9 @@ export function createSshManager({ host, log = () => {}, secrets }) {
 
 		// 若连接引用了全局主机（global-hosts.json），自动回填全局凭据
 		const remoteSsh = typeof host?.get === "function" ? host.get("remoteSsh") : null;
+		const globalDecrypted =
+			conn.useGlobal && remoteSsh ? await remoteSsh.getDecryptedProfile(conn.useGlobal).catch(() => null) : null;
 		if (conn.useGlobal && remoteSsh) {
-			const globalDecrypted = await remoteSsh.getDecryptedProfile(conn.useGlobal).catch(() => null);
 			if (globalDecrypted) {
 				if (!conn.host && globalDecrypted.profile.host) conn.host = globalDecrypted.profile.host;
 				if (!conn.port && globalDecrypted.profile.port) conn.port = globalDecrypted.profile.port;
@@ -191,26 +196,24 @@ export function createSshManager({ host, log = () => {}, secrets }) {
 		let key = privateKey.value;
 		let keySource = privateKey.source;
 
-		// 若密码或私钥尚未就绪，且指定了 useGlobal，尝试使用全局解密凭据
-		if (conn.useGlobal && remoteSsh && !password.value && !key) {
-			const globalDecrypted = await remoteSsh.getDecryptedProfile(conn.useGlobal).catch(() => null);
-			if (globalDecrypted) {
-				if (globalDecrypted.password && !password.value) {
-					password = { value: globalDecrypted.password, source: "global" };
-				}
-				if (globalDecrypted.passphrase && !passphrase.value) {
-					passphrase = { value: globalDecrypted.passphrase, source: "global" };
-				}
-				if (globalDecrypted.profile.privateKeyPath && !key) {
-					const file = expandHome(globalDecrypted.profile.privateKeyPath);
-					try {
-						key = await fs.readFile(file, "utf8");
-						keySource = "global-path";
-					} catch {}
-				}
+		const allowKey = !method || method === "key";
+		const allowPassword = !method || method === "password" || method === "secret";
+		if (globalDecrypted) {
+			if (allowPassword && globalDecrypted.password && !password.value) {
+				password = { value: globalDecrypted.password, source: "global" };
+			}
+			if (allowKey && globalDecrypted.passphrase && !passphrase.value) {
+				passphrase = { value: globalDecrypted.passphrase, source: "global" };
+			}
+			if (allowKey && !a.privateKeyPath && globalDecrypted.profile.privateKeyPath && !key) {
+				const file = expandHome(globalDecrypted.profile.privateKeyPath);
+				try {
+					key = await fs.readFile(file, "utf8");
+					keySource = "global-path";
+				} catch {}
 			}
 		}
-		if (!key && a.privateKeyPath) {
+		if (allowKey && !key && a.privateKeyPath) {
 			const file = expandHome(a.privateKeyPath);
 			try {
 				key = await fs.readFile(file, "utf8");
@@ -218,7 +221,7 @@ export function createSshManager({ host, log = () => {}, secrets }) {
 			} catch (err) {
 				throw new Error(`私钥文件读不到（${file}）：${err?.code ?? err?.message ?? err}`);
 			}
-		} else if (!key && (method === "key" || (!password.value && !agent.value))) {
+		} else if (allowKey && !key && (method === "key" || (!password.value && !agent.value))) {
 			// 选了密钥方式或没有任何可用凭据时，默认尝试 ~/.ssh 用户目录的标准密钥
 			const found = await findDefaultPrivateKey();
 			if (found) {
@@ -244,18 +247,26 @@ export function createSshManager({ host, log = () => {}, secrets }) {
 
 	/** 影响连接的字段指纹 —— 变了就重连。 */
 	function fingerprint(conn, auth) {
-		return JSON.stringify([
-			conn.host,
-			conn.port,
-			conn.username,
-			auth.password,
-			auth.passphrase,
-			auth.privateKey ? auth.privateKey.length : 0,
-			auth.agent,
-		]);
+		return createHash("sha256")
+			.update(
+				JSON.stringify([
+					conn.host,
+					conn.port,
+					conn.username,
+					auth.password,
+					auth.passphrase,
+					auth.privateKey,
+					auth.agent,
+				]),
+			)
+			.digest("hex");
 	}
 
 	function drop(key) {
+		const generation = generations.get(key);
+		generations.delete(key);
+		inflight.delete(key);
+		generation?.abort(new Error("SSH connection cancelled"));
 		const entry = pool.get(key);
 		if (!entry) return;
 		pool.delete(key);
@@ -270,7 +281,7 @@ export function createSshManager({ host, log = () => {}, secrets }) {
 
 	function dropAll(exceptCwd) {
 		// Map 迭代中删除当前项是安全的（不会跳过未访问的项）
-		for (const key of pool.keys()) {
+		for (const key of new Set([...pool.keys(), ...generations.keys()])) {
 			if (exceptCwd && key.startsWith(`${exceptCwd}\u0000`)) continue;
 			drop(key);
 		}
@@ -280,7 +291,7 @@ export function createSshManager({ host, log = () => {}, secrets }) {
 		clearTimeout(entry.timer);
 		entry.timer = setTimeout(() => {
 			if (entry.alive) log(`空闲回收连接 ${entry.key}`);
-			drop(entry.key);
+			if (pool.get(entry.key) === entry) drop(entry.key);
 		}, IDLE_CLOSE_MS);
 		if (typeof entry.timer.unref === "function") entry.timer.unref();
 	}
@@ -290,94 +301,130 @@ export function createSshManager({ host, log = () => {}, secrets }) {
 	 * @returns {Promise<{ client: any, sftp: any, key: string }>}
 	 */
 	async function getSftp(conn) {
-		const { Client } = await library();
-		if (!conn?.host) throw new Error("尚未配置连接（缺 host）——先在 .pi/sftp.json 或界面里配好");
-		const auth = await resolveAuth(conn);
-		const fp = fingerprint(conn, auth);
 		const key = `${conn.__cwd ?? ""}\u0000${conn.name}`;
-		const existing = pool.get(key);
-		if (existing && existing.fp === fp && existing.alive) {
-			existing.lastUsed = Date.now();
-			shorten(existing);
-			return { client: existing.client, sftp: existing.sftp, key };
-		}
-		if (existing) drop(key);
+		let generation = generations.get(key);
+		if (!generation) generations.set(key, (generation = new AbortController()));
+		const check = () => generation.signal.throwIfAborted();
+		const { Client } = await library();
+		check();
+		const auth = await resolveAuth(conn);
+		check();
+		if (!conn?.host) throw new Error("尚未配置连接（缺 host）——先在 .pi/sftp.json 或界面里配好");
+		const fp = fingerprint(conn, auth);
+		while (true) {
+			check();
+			const pending = inflight.get(key);
+			if (pending) {
+				try {
+					await pending;
+				} catch (err) {
+					check();
+					// 另一份配置建连失败，不阻止本请求用自己的凭据重试。
+					if (pending.fp === fp) throw err;
+				}
+				continue;
+			}
+			const existing = pool.get(key);
+			if (existing && existing.fp === fp && existing.alive) {
+				existing.lastUsed = Date.now();
+				shorten(existing);
+				return { client: existing.client, sftp: existing.sftp, key };
+			}
+			if (existing) {
+				// 配置替换仅回收已建连接，不取消当前代次中的等待者。
+				pool.delete(key);
+				clearTimeout(existing.timer);
+				existing.alive = false;
+				existing.client.end();
+			}
 
-		const pending = inflight.get(key);
-		if (pending) {
-			const entry = await pending;
+			const opening = (async () => {
+				const trust = await createHostVerifier(conn.host, conn.port || 22);
+				check();
+				const opened = await new Promise((resolve, reject) => {
+					const client = new Client();
+					const opts = {
+						hostVerifier: trust.hostVerifier,
+						host: conn.host,
+						port: conn.port || 22,
+						username: conn.username || "root",
+						readyTimeout: READY_TIMEOUT_MS,
+						keepaliveInterval: 10_000,
+						keepaliveCountMax: 3,
+					};
+					if (auth.password) {
+						opts.password = auth.password;
+						opts.tryKeyboard = true;
+					} else if (auth.agent) opts.agent = auth.agent;
+					else if (auth.privateKey) {
+						opts.privateKey = auth.privateKey;
+						if (auth.passphrase) opts.passphrase = auth.passphrase;
+					} else {
+						return reject(
+							new Error(
+								`${conn.name}: 没有任何可用凭据 —— 配 auth.password / auth.privateKeyPath / auth.agent 之一（或在 ~/.ssh/ 放置 id_ed25519/id_rsa 私钥）`,
+							),
+						);
+					}
+					let settled = false;
+					const fail = (err) => {
+						if (settled) return;
+						settled = true;
+						generation.signal.removeEventListener("abort", onAbort);
+						try {
+							client.end();
+						} catch {
+							/* ignore */
+						}
+						reject(trust.getError() ?? err);
+					};
+					const onAbort = () => fail(generation.signal.reason);
+					generation.signal.addEventListener("abort", onAbort, { once: true });
+					if (auth.password) {
+						client.on("keyboard-interactive", (_name, _instr, _lang, prompts, finish) => {
+							finish(Array.isArray(prompts) ? prompts.map(() => auth.password) : [auth.password]);
+						});
+					}
+					client.on("error", fail);
+					client.on("close", () => {
+						if (!settled) fail(new Error("SSH connection closed before SFTP ready"));
+						const cur = pool.get(key);
+						if (cur?.client === client) drop(key);
+					});
+					client.on("ready", () => {
+						if (settled) return;
+						client.sftp((err, sftp) => {
+							if (settled) return;
+							if (err) return fail(err);
+							settled = true;
+							generation.signal.removeEventListener("abort", onAbort);
+							resolve({ client, sftp });
+						});
+					});
+					try {
+						client.connect(opts);
+					} catch (err) {
+						fail(err);
+					}
+				});
+
+				if (generation.signal.aborted) {
+					opened.client.end();
+					check();
+				}
+				const entry = { ...opened, fp, key, lastUsed: Date.now(), alive: true, conn };
+				entry.timer = null;
+				pool.set(key, entry);
+				shorten(entry);
+				return entry;
+			})().finally(() => {
+				if (inflight.get(key) === opening) inflight.delete(key);
+			});
+			opening.fp = fp;
+			inflight.set(key, opening);
+			const entry = await opening;
 			return { client: entry.client, sftp: entry.sftp, key };
 		}
-
-		const opening = (async () => {
-			const opened = await new Promise((resolve, reject) => {
-				const client = new Client();
-				const opts = {
-					host: conn.host,
-					port: conn.port || 22,
-					username: conn.username || "root",
-					readyTimeout: READY_TIMEOUT_MS,
-					keepaliveInterval: 10_000,
-					keepaliveCountMax: 3,
-				};
-				if (auth.password) {
-					opts.password = auth.password;
-					opts.tryKeyboard = true;
-				} else if (auth.agent) opts.agent = auth.agent;
-				else if (auth.privateKey) {
-					opts.privateKey = auth.privateKey;
-					if (auth.passphrase) opts.passphrase = auth.passphrase;
-				} else {
-					return reject(
-						new Error(
-							`${conn.name}: 没有任何可用凭据 —— 配 auth.password / auth.privateKeyPath / auth.agent 之一（或在 ~/.ssh/ 放置 id_ed25519/id_rsa 私钥）`,
-						),
-					);
-				}
-				let settled = false;
-				const fail = (err) => {
-					if (settled) return;
-					settled = true;
-					try {
-						client.end();
-					} catch {
-						/* ignore */
-					}
-					reject(err);
-				};
-				if (auth.password) {
-					client.on("keyboard-interactive", (_name, _instr, _lang, prompts, finish) => {
-						finish(Array.isArray(prompts) ? prompts.map(() => auth.password) : [auth.password]);
-					});
-				}
-				client.on("error", fail);
-				client.on("close", () => {
-					const cur = pool.get(key);
-					if (cur?.client === client) drop(key);
-				});
-				client.on("ready", () => {
-					client.sftp((err, sftp) => {
-						if (err) return fail(err);
-						settled = true;
-						resolve({ client, sftp });
-					});
-				});
-				try {
-					client.connect(opts);
-				} catch (err) {
-					fail(err);
-				}
-			});
-
-			const entry = { ...opened, fp, key, lastUsed: Date.now(), alive: true, conn };
-			entry.timer = null;
-			pool.set(key, entry);
-			shorten(entry);
-			return entry;
-		})().finally(() => inflight.delete(key));
-		inflight.set(key, opening);
-		const entry = await opening;
-		return { client: entry.client, sftp: entry.sftp, key };
 	}
 
 	/**

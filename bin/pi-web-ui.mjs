@@ -3994,6 +3994,16 @@ async function main() {
 		console.log(HELP);
 		return;
 	}
+	if (first === "hub") {
+		if (argv.includes("--help") || argv.includes("-h")) {
+			console.log(
+				"pi-web-ui hub — standalone device and collaboration hub\nSet PI_DEVICE_HUB_PUBLIC_URL (HTTP/IP or HTTPS), PI_DEVICE_HUB_HOST, PI_DEVICE_HUB_DATA_DIR, PI_DEVICE_HUB_PORT (8790).\nPI_DEVICE_HUB_DEVICE_DOMAIN is optional; needed for remote device web/desktop access.\nSet PI_DEVICE_HUB_ALLOW_REGISTRATION=1 to allow account registration. See docs/device-center.md.",
+			);
+			return;
+		}
+		await import("./pi-device-hub.mjs");
+		return;
+	}
 	if (first === "server") {
 		await serverCmd(argv.slice(1));
 		return;

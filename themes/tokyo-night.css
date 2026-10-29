@@ -20,7 +20,6 @@
 	--red-soft: rgba(247, 118, 142, 0.12);
 	--amber: #e0af68;
 	--blue: #4588f6;
-	--blue-soft: rgba(59, 130, 246, 0.12);
 	--term-bg: #16161e;
 	--term-fg: #c0caf5;
 	--term-cursor: #c0caf5;
@@ -42,14 +41,9 @@
 	--term-bright-magenta: #bb9af7;
 	--term-bright-cyan: #7dcfff;
 	--term-bright-white: #c0caf5;
-	--mono: "SF Mono", "JetBrains Mono", ui-monospace, Menlo, Consolas, monospace;
-	--mermaid-font-size: 12px;
 	--tooltip-bg: #24283b;
 	--code-bg: #16161e;
 	--code-text: #c0caf5;
-	--code-border: var(--border-soft);
-	--code-pad: 8px 10px;
-	--card-body-pad: 4px 14px 12px;
 	--err-text: #f7768e;
 	--red-text: #f7768e;
 	--amber-text: #e0af68;
@@ -59,43 +53,19 @@
 	--link-soft: #7aa2f7;
 	--md-strong: #c0caf5;
 	--skill-blue: #7aa2f7;
-	--plugin-purple: #b58cff;
 	--auth-green: #9ece6a;
 	--scroll-thumb: #3b4261;
 	--scroll-thumb-hover: #565f89;
-	--notice-err-bg: #401d23;
-	--notice-warn-bg: #38251f;
-	--notice-info-bg: #1b2544;
-	--notice-err-border: #ef4444;
-	--notice-warn-border: #f59e0b;
-	--notice-info-border: #3b82f6;
 	--send-blue: #7aa2f7;
-	--on-send-blue: #1a1a1a;
 	--send-blue-hover: #89ddff;
-	--stop-red: #ef4444;
-	--stop-red-hover: #dc2626;
 	--brand-grad-a: #7aa2f7;
 	--brand-grad-b: #bb9af7;
-	--on-amber: #1a1a1a;
-	--search-active-fg: #1a1d26;
-	--switch-knob: #ffffff;
-	--bg-elev3: rgba(255, 255, 255, 0.06);
-	--sunken-bg: rgba(0, 0, 0, 0.15);
-	--glow-015: rgba(255, 255, 255, 0.015);
-	--glow-025: rgba(255, 255, 255, 0.025);
-	--glow-03: rgba(255, 255, 255, 0.03);
-	--glow-04: rgba(255, 255, 255, 0.04);
-	--glow-05: rgba(255, 255, 255, 0.05);
-	--glow-12: rgba(255, 255, 255, 0.12);
-	--glow-18: rgba(255, 255, 255, 0.18);
-	--glow-22: rgba(255, 255, 255, 0.22);
-	--glow-38: rgba(255, 255, 255, 0.38);
+	--on-send-blue: #1a1a1a;
+	--on-send-blue-hover: #1a1a1a;
+	--on-stop-red-hover: #ffffff;
 	--control-fg: #9aa5ce;
 	--control-bg: #24283b;
 	--control-border: #414868;
-	--bg-image: none;
-	--bg-image-dim: 0.78;
-	--bg-image-blur: 0px;
 	--wallpaper-panel-alpha: 100%;
 	--topbar-bg: #24283b;
 	--statusbar-bg: #16161e;
@@ -104,7 +74,6 @@
 	--chip-bg: #1f2335;
 	--msgs-bg: #1a1b26;
 	--inputbox-bg: #1f2335;
-	--menu-bg: var(--bg-elev2);
 }
 
 /* ---- syntax highlighting (Tokyo Night) ---- */

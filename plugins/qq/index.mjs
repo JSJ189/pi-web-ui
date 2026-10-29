@@ -269,6 +269,7 @@ export class QqBotBridge {
 		this.runIdIndex = new Map();
 		this.inFlightConvs = new Set();
 		this.lastInFlightStartedAt = 0;
+		this.earlyRunEvents = new Map();
 
 		this.userWorkspaces = new Map();
 		this.userModels = new Map();
@@ -276,6 +277,7 @@ export class QqBotBridge {
 		this.userPlanMode = new Map();
 		this.userActiveConvs = new Map(); // authorId -> conversationId (真实会话ID)
 		this.peerSessionSeq = new Map();
+		this.userActiveSeq = new Map();
 
 		this.conversationBindings = new Map(); // convId -> { authorId, replyTarget, updatedAt }
 		this.recentChats = []; // Array<{ conversationId, authorId, lastUserText, lastAssistantText, updatedAt }>
@@ -429,7 +431,10 @@ export class QqBotBridge {
 			if (run.timeoutTimer) clearTimeout(run.timeoutTimer);
 		}
 		this.pendingRuns.clear();
+		this.runIdIndex.clear();
 		this.earlyRuns.clear();
+		this.earlyRunEvents.clear();
+		this.inFlightConvs.clear();
 		this.notifiedToolCalls.clear();
 		this.runStartTimes.clear();
 		this.runTasks.clear();
@@ -626,6 +631,7 @@ export class QqBotBridge {
 			eventType,
 			channelId: data.channel_id,
 			guildId: data.guild_id,
+			threadId: data.thread_id,
 			groupOpenid: data.group_openid,
 			userOpenid: data.author?.user_openid,
 			msgId: messageId,
@@ -633,10 +639,19 @@ export class QqBotBridge {
 
 		const botId = this.botUser?.id || "";
 		const cleanText = extractQqText(data.content, botId);
+		// Keep direct messages compatible; scope group/channel sessions to their actual destination.
+		const sessionPeer = this.sessionPeer(authorId, replyTarget);
+		// Commands must run before media downloads, especially cancellation.
+		if (cleanText.startsWith("/") || /^\d+\/.+/.test(cleanText) || /^\d+$/.test(cleanText)) {
+			if (await this.handleSlashCommand(cleanText, { authorId: sessionPeer, replyTarget, cfg })) return;
+		}
 		// 图片/语音/视频/文件（QQ 走 attachments，带腾讯 CDN url，有时效）
 		const attachments = Array.isArray(data.attachments) ? data.attachments : [];
-		const mediaLines = attachments.length > 0 ? await this.collectInboundMedia(attachments, { authorId, cfg }) : "";
-		const promptText = [cleanText, mediaLines].filter(Boolean).join("\n\n");
+		const media =
+			attachments.length > 0
+				? await this.collectInboundMedia(attachments, { authorId: sessionPeer, cfg })
+				: { text: "", attachments: [] };
+		const promptText = [cleanText, media.text].filter(Boolean).join("\n\n");
 		if (!promptText) {
 			const promptHint = "👋 您好！我在听，请在 @ 我后面附带具体问题或发送 /help 查看快捷指令。";
 			const tempCid = `qq_${String(authorId).slice(-8)}_0`;
@@ -648,13 +663,7 @@ export class QqBotBridge {
 			return;
 		}
 
-		// Slash command handling (/help, /clear, /new, /status, /model, /thinking...)
-		if (cleanText.startsWith("/") || /^\d+\/.+/.test(cleanText) || /^\d+$/.test(cleanText)) {
-			const handled = await this.handleSlashCommand(cleanText, { authorId, replyTarget, cfg });
-			if (handled) return;
-		}
-
-		await this.driveAuthor(authorId, promptText, replyTarget);
+		await this.driveAuthor(sessionPeer, promptText, replyTarget, media.attachments);
 	}
 
 	/**
@@ -664,6 +673,9 @@ export class QqBotBridge {
 	 */
 	async collectInboundMedia(attachments, { authorId, cfg }) {
 		const items = [];
+		const hostAttachments = [];
+		let imageBytes = 0;
+		let imageCount = 0;
 		const wantLand = cfg?.inboundMedia !== false;
 		let dir = "";
 		if (wantLand) {
@@ -681,22 +693,24 @@ export class QqBotBridge {
 		}
 		for (let i = 0; i < attachments.length; i++) {
 			const att = attachments[i] || {};
-			const kind = mediaKindOfContentType(att.content_type);
 			const url = String(att.voice_wav_url || att.url || "").trim();
+			const contentType = att.voice_wav_url ? "audio/wav" : att.content_type;
+			const declaredKind = mediaKindOfContentType(contentType);
+			const kind = declaredKind !== "file" ? declaredKind : mediaKindOfPath(att.filename || url);
 			const filename = String(att.filename || "").trim();
 			const asrText = String(att.asr_refer_text || "").trim();
 			if (!wantLand || !dir) {
-				items.push({ kind, filename, reason: wantLand ? "未找到可用工作区" : "已关闭接收媒体" });
+				items.push({ kind, filename, asrText, reason: wantLand ? "未找到可用工作区" : "已关闭接收媒体" });
 				continue;
 			}
 			if (!url) {
-				items.push({ kind, filename, reason: "缺少下载地址" });
+				items.push({ kind, filename, asrText, reason: "缺少下载地址" });
 				continue;
 			}
 			try {
 				const buf = await downloadInbound(url, att.size);
 				const name = inboundFileName({
-					contentType: att.content_type,
+					contentType,
 					filename,
 					url,
 					index: i,
@@ -705,20 +719,46 @@ export class QqBotBridge {
 				const path = join(dir, name);
 				writeFileSync(path, buf);
 				items.push({ kind, filename, path, asrText });
+				if (kind === "image") {
+					const mimeType = mimeOfPath(path);
+					if (!["image/png", "image/jpeg", "image/gif", "image/webp"].includes(mimeType)) {
+						items.push({ kind, filename, reason: "当前模型附件接口不支持此图片格式，请转换为 PNG/JPEG/GIF/WebP" });
+					} else if (imageCount >= 8 || buf.length > 10 * 1024 * 1024 || imageBytes + buf.length > 20 * 1024 * 1024) {
+						items.push({ kind, filename, reason: "图片未注入模型：最多 8 张、单张 10MiB、合计 20MiB" });
+					} else {
+						hostAttachments.push({ path: "", imageData: buf.toString("base64"), mimeType, name: filename || name });
+						imageCount++;
+						imageBytes += buf.length;
+					}
+				} else hostAttachments.push({ path, mode: "reference", name: filename || name });
 			} catch (err) {
 				this.log("warn", `QQ 附件下载失败（${filename || url}）：${err.message}`);
-				items.push({ kind, filename, reason: `下载失败：${err.message}` });
+				items.push({ kind, filename, asrText, reason: `下载失败：${err.message}` });
 			}
 		}
-		return formatInboundMediaLines(items);
+		return {
+			text: formatInboundMediaLines(items),
+			attachments: hostAttachments,
+		};
 	}
 
-	async driveAuthor(authorId, cleanText, replyTarget) {
+	sessionPeer(authorId, target) {
+		const scope = target.groupOpenid
+			? `group:${target.groupOpenid}`
+			: target.channelId
+				? `channel:${target.guildId || ""}:${target.channelId}`
+				: "";
+		return scope ? peerAccountId(`${authorId}:${scope}:thread:${target.threadId || ""}`) : authorId;
+	}
+
+	async driveAuthor(authorId, cleanText, replyTarget, attachments = []) {
 		const cfg = this.getConfig();
 		const seq = this.peerSessionSeq.get(authorId) || 0;
 		const accountId = peerAccountId(authorId, seq);
 
-		let conversationId = `qq_${String(authorId).slice(-8)}_${seq}`;
+		let conversationId =
+			(this.userActiveSeq.get(authorId) === seq && this.userActiveConvs.get(authorId)) ||
+			`qq_${String(authorId).slice(-8)}_${seq}`;
 		let bindCid = null;
 
 		if (cfg.bindActive === true) {
@@ -731,6 +771,13 @@ export class QqBotBridge {
 			} catch {}
 		}
 
+		if (
+			[...this.pendingRuns.values()].some((run) => run.authorId === authorId || run.canonicalId === conversationId) ||
+			this.pendingRuns.has(conversationId)
+		) {
+			await this.replyMessage(replyTarget, "⏳ 当前会话仍在执行，请等待完成或发送 /abort。").catch(() => {});
+			return;
+		}
 		const timeoutSec = Math.max(15, Number(cfg.replyTimeoutSec) || 90);
 		const timeoutTimer = setTimeout(() => {
 			const run = this.pendingRuns.get(conversationId);
@@ -767,6 +814,7 @@ export class QqBotBridge {
 				accountId,
 				conversationId,
 			};
+			if (attachments.length) chatReq.attachments = attachments;
 			if (workspace) chatReq.cwd = workspace;
 			if (model) chatReq.model = model;
 			if (thinkingLevel) chatReq.thinkingLevel = thinkingLevel;
@@ -777,10 +825,12 @@ export class QqBotBridge {
 			this.lastInFlightStartedAt = startedAt;
 
 			const r = await this.host.chat(chatReq);
+			this.inFlightConvs.delete(conversationId);
 			if (r?.conversationId) {
 				this.inFlightConvs.delete(r.conversationId);
 				this.inFlightConvs.delete(conversationId);
 				this.userActiveConvs.set(authorId, r.conversationId);
+				this.userActiveSeq.set(authorId, seq);
 				if (r.conversationId !== conversationId) {
 					const curRun = this.pendingRuns.get(conversationId);
 					if (curRun) {
@@ -806,12 +856,21 @@ export class QqBotBridge {
 					}
 				}
 			}
-			this.rememberRunId(r?.conversationId || conversationId, r?.runId);
+			const runKey = r?.conversationId || conversationId;
+			const pending = this.pendingRuns.get(runKey);
+			if (pending) pending.runId = r?.runId;
+			this.rememberRunId(runKey, r?.runId);
+			const early = r?.runId ? this.earlyRunEvents.get(r.runId) || [] : [];
+			if (r?.runId) this.earlyRunEvents.delete(r.runId);
+			for (const event of early) await this.handleRunEvent(event);
+			if (!this.inFlightConvs.size) this.earlyRunEvents.clear();
 		} catch (err) {
 			this.log("warn", `QQBot host.chat dispatch failed: ${err.message}`);
 			const run = this.pendingRuns.get(conversationId);
 			if (run?.timeoutTimer) clearTimeout(run.timeoutTimer);
-			this.pendingRuns.delete(conversationId);
+			this.forgetRun(conversationId, run?.canonicalId);
+			this.inFlightConvs.delete(conversationId);
+			if (!this.inFlightConvs.size) this.earlyRunEvents.clear();
 			this.conversationBindings.delete(conversationId);
 			this.recentChats = this.recentChats.filter((c) => c.conversationId !== conversationId);
 			this.host?.broadcast?.({ type: "recent_chats", recentChats: this.getRecentChats() });
@@ -927,7 +986,7 @@ export class QqBotBridge {
 					"5/thinking : 设置思考强度 <off|low|medium|high|max>",
 					"6/plan : 开启或关闭计划模式 [on|off]",
 					"7/compact : 压缩当前会话上下文 [说明]",
-					"8/stop : 中止当前正在执行的任务",
+					"8/abort : 中止当前正在执行的任务（/stop 同义）",
 					"9/reload : 重新加载扩展与配置",
 					"10/help : 显示全部命令 (或发 /)",
 				];
@@ -972,13 +1031,14 @@ export class QqBotBridge {
 			}
 			case "clear":
 			case "new": {
+				if ([...this.pendingRuns.values()].some((run) => run.authorId === authorId)) {
+					await this.handleSlashCommand("/abort", { authorId, replyTarget, cfg });
+					if ([...this.pendingRuns.values()].some((run) => run.authorId === authorId)) return true;
+				}
 				this.peerSessionSeq.set(authorId, (this.peerSessionSeq.get(authorId) || 0) + 1);
-				for (const [convId, run] of this.pendingRuns.entries()) {
-					if (run.authorId === authorId) {
-						if (run.timeoutTimer) clearTimeout(run.timeoutTimer);
-						void this.host.abortRun?.(convId);
-						this.pendingRuns.delete(convId);
-					}
+				this.userActiveConvs.delete(authorId);
+				for (const [key, binding] of this.conversationBindings) {
+					if (binding.authorId === authorId) this.conversationBindings.delete(key);
 				}
 				if (args) {
 					await this.replyMessage(replyTarget, "✨ 已为您开启全新会话，正在执行指令…").catch(() => {});
@@ -1120,14 +1180,21 @@ export class QqBotBridge {
 				}
 				return true;
 			}
+			case "abort":
 			case "stop": {
 				let stopped = 0;
-				for (const [convId, run] of this.pendingRuns.entries()) {
-					if (run.authorId === authorId) {
+				for (const run of new Set(this.pendingRuns.values())) {
+					if (run.authorId !== authorId) continue;
+					const key = [...this.pendingRuns].find(([, value]) => value === run)?.[0];
+					try {
+						const result = await this.host.abortRun?.(run.runId || run.canonicalId || key);
+						if (!result?.ok) throw new Error(result?.error || "宿主未确认中止");
 						if (run.timeoutTimer) clearTimeout(run.timeoutTimer);
-						void this.host.abortRun?.(convId);
-						this.pendingRuns.delete(convId);
+						this.forgetRun(key, run.aliasId, run.canonicalId);
 						stopped++;
+					} catch (err) {
+						await this.replyMessage(replyTarget, `⚠️ 中止失败：${err.message}`).catch(() => {});
+						return true;
 					}
 				}
 				if (stopped > 0) {
@@ -1175,6 +1242,17 @@ export class QqBotBridge {
 	async handleRunEvent(ev) {
 		const convId = this.resolveRunKey(ev);
 		if (!convId) return;
+		const pending = this.pendingRuns.get(convId);
+		if (pending?.runId && ev.runId && pending.runId !== ev.runId) return;
+		// A receipt is the only authority for a run whose canonical ID is not known yet.
+		if (ev.runId && !this.runIdIndex.has(ev.runId) && this.inFlightConvs.size && (!pending || !pending.runId)) {
+			if (!this.earlyRunEvents.has(ev.runId) && this.earlyRunEvents.size >= 64)
+				this.earlyRunEvents.delete(this.earlyRunEvents.keys().next().value);
+			const events = this.earlyRunEvents.get(ev.runId) || [];
+			if (events.length < 256) events.push(ev);
+			this.earlyRunEvents.set(ev.runId, events);
+			return;
+		}
 
 		// 1. 全局运行轨迹监听：用于频道广播通知与统计
 		if (ev.type === "run_start") {
@@ -1239,7 +1317,7 @@ export class QqBotBridge {
 		// 3. 关键安全守卫（与微信通道同级）：区分 QQ 自身会话 与 宿主普通网页会话
 		const isPending = this.pendingRuns.has(convId);
 		const isBound = this.conversationBindings.has(convId);
-		const isInFlight = this.inFlightConvs.has(convId) || Date.now() - this.lastInFlightStartedAt < 5000;
+		const isInFlight = this.inFlightConvs.has(convId);
 
 		if (!isPending && !isBound && !isInFlight) {
 			// 普通网页端会话结束：检查是否开启了任务完成广播通知

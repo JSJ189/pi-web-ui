@@ -57,6 +57,7 @@ const TOOL_ICONS: Record<string, ReactNode> = {
 	eval: <FiCode />,
 	lsp: <FiCode />,
 	tool_search: <FiSearch />,
+	conversation: <FiUsers />,
 	subagent: <FiUsers />,
 	delegate_task: <FiLayers />,
 	present_files: <FiPackage />,

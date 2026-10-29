@@ -564,6 +564,7 @@ describe("subagent-notify (Issue #713)", () => {
 				startWorkspaceSnapshot: vi.fn(),
 				activeSessionFileResolved: () => undefined,
 				triggerSoftCapCompactionIfExceeded: vi.fn().mockResolvedValue(false),
+				drafts: { clear: vi.fn() },
 				drainSuspendedSubagents: (ClientSession.prototype as any).drainSuspendedSubagents,
 				prompt: (ClientSession.prototype as any).prompt,
 			};
@@ -639,6 +640,7 @@ describe("subagent-notify (Issue #713)", () => {
 				startWorkspaceSnapshot: vi.fn(),
 				activeSessionFileResolved: () => undefined,
 				triggerSoftCapCompactionIfExceeded: vi.fn().mockResolvedValue(false),
+				drafts: { clear: vi.fn() },
 				drainSuspendedSubagents: (ClientSession.prototype as any).drainSuspendedSubagents,
 				prompt: (ClientSession.prototype as any).prompt,
 			};

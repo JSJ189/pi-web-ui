@@ -23,7 +23,6 @@
 import { defineTool, type ToolDefinition } from "@earendil-works/pi-coding-agent";
 import { Type } from "typebox";
 import { pick, type ServerLang } from "./i18n.js";
-import { CONVERSATION_READ_TOOL_NAME } from "./tool-manager.js";
 import type { AgentMessage } from "./serialize.js";
 import {
 	extractTouches,
@@ -518,7 +517,7 @@ export function makeConversationReadTool(
 		details,
 	});
 	return defineTool({
-		name: CONVERSATION_READ_TOOL_NAME,
+		name: "conversation_read",
 		label: "Read another conversation",
 		description:
 			"Read ANOTHER conversation: a running conversation of this client (incl. subagents — id from action=list) " +
@@ -676,8 +675,8 @@ export function makeConversationReadTool(
 				const empty = L === "zh" ? "（无）" : "(none)";
 				const tail =
 					L === "zh"
-						? `读某一份：conversation_read(action="read", id="c…") 或 conversation_read(action="read", path="…")，长转录用 offset/limit 翻页；只看文件用 action="files"，先看摘要再决定读不读用 action="status"。`
-						: `To read one: conversation_read(action="read", id="c…") or conversation_read(action="read", path="…"); page long transcripts with offset/limit; action="files" lists touched files, action="status" summarizes before you decide to read.`;
+						? `读某一份：conversation(action="read", id="c…") 或 conversation(action="read", path="…")，长转录用 offset/limit 翻页；只看文件用 action="files"，先看摘要再决定读不读用 action="status"。`
+						: `To read one: conversation(action="read", id="c…") or conversation(action="read", path="…"); page long transcripts with offset/limit; action="files" lists touched files, action="status" summarizes before you decide to read.`;
 				const sections =
 					kind === "history"
 						? `${head}\n${histHead}\n${histLines.join("\n") || empty}`

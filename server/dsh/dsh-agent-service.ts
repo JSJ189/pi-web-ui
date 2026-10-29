@@ -44,7 +44,8 @@ import { normalizeUiLayout, normalizeKeepRecentMessages, DEFAULT_KEEP_RECENT_MES
 import { PLAN_MODE_SYSTEM_PROMPT } from "../plan-mode.js";
 import { buildToolsSchemaText, type ToolSchemaEntry } from "../prompt-composer.js";
 import { FilesService, workspacePath, desktopDirWire } from "../files-service.js";
-import { SandboxManager, isSameOrSubpath } from "../sandbox-service.js";
+import { SandboxManager, isSameOrSubpath, evaluateSandboxJail } from "../sandbox-service.js";
+import { assertEngineWorkspaceSupported } from "../sandbox-engines.js";
 import { QuiesceRejectedError } from "../agent-service.js";
 
 import { NATIVE_COMMANDS, parseSlash } from "../slash-commands.js";
@@ -92,6 +93,8 @@ import {
 } from "../model-resolver.js";
 import { loadDshMarketData } from "./dsh-market-service.js";
 import { formatTextQuote, readTextQuote, messageTextWithQuotes } from "../text-quote.js";
+import { writeAtomicSync } from "../atomic-file.js";
+import { zstdCompressSync } from "node:zlib";
 import { MarkerService } from "../marker-service.js";
 import {
 	DshStreamAccumulator,
@@ -119,6 +122,7 @@ import {
 	packageVersion,
 	pushPresetCatalogVia,
 	sharePresetVia,
+	sanitizePresetSettings,
 	type PresetSharePort,
 } from "../preset-share.js";
 import { getAppVersion } from "../pkg-info.js";
@@ -385,6 +389,8 @@ export class DshClientSession {
 	private emittedMessages: UiMessage[] | null = null;
 	private emittedRev = 0;
 	private disposed = false;
+	private switchingWorkspace = false;
+	private workspaceGeneration = 0;
 
 	private model = DEFAULT_MODEL;
 	private modelProvider = "deepseek";
@@ -434,6 +440,11 @@ export class DshClientSession {
 	private readonly files: FilesService;
 	private readonly bg: BgServerTracker;
 	private readonly sandboxes: SandboxManager;
+	private bridgeCancellation = new AbortController();
+	private cancelBridgedTools(): void {
+		this.bridgeCancellation.abort();
+		this.bridgeCancellation = new AbortController();
+	}
 	private readonly markerSvc: MarkerService;
 	private readonly modelAdmin: ModelAdminService;
 
@@ -447,7 +458,7 @@ export class DshClientSession {
 				isError?: boolean;
 		  }) => void)
 		| undefined;
-	pluginToolsProvider: (() => unknown[]) | undefined;
+	pluginToolsProvider: ((cwd?: string) => unknown[]) | undefined;
 	pluginCommandsProvider: (() => PluginCommandDef[]) | undefined;
 	pluginBgTasksProvider: (() => BgServer[]) | undefined;
 	pluginStopBgTask: ((taskId: string) => boolean) | undefined;
@@ -486,6 +497,8 @@ export class DshClientSession {
 			isDisposed: () => this.disposed,
 			getCwd: () => this.cwd,
 			getActiveCwd: () => this.cwd,
+			getUploadMaxBytes: () =>
+				(this.stateStore.getSettingsSnapshot(this.clientId).workspaceUploadMaxMb ?? 100) * 1024 * 1024,
 		});
 		this.modelAdmin = new ModelAdminService({
 			agentDir: this.agentDir,
@@ -526,8 +539,9 @@ export class DshClientSession {
 				}
 				this.emit(msg);
 			},
-			this.cwd,
+			() => this.cwd,
 			() => this.getLang(),
+			"client",
 		);
 	}
 
@@ -633,6 +647,7 @@ export class DshClientSession {
 		// 每次启动成功（含初次/换模型/watchdog 重启）后重新注册插件工具桥，
 		// 因为重 spawn 后的 ctx.tools 是全新的，需要重新 sync 插件工具。
 		cs.runtime.onStarted = () => {
+			if (cs.switchingWorkspace) return;
 			cs.runtimeGen += 1;
 			void cs.syncPluginTools();
 			void cs.pushDisabledSkillsToRuntime();
@@ -644,6 +659,7 @@ export class DshClientSession {
 		};
 		// P0-1 watchdog：意外退出（非 kill/close 主动触发）→ 限频自动重启，保持可用。
 		cs.runtime.onExit = (code, signal, intentional) => {
+			cs.cancelBridgedTools();
 			if (intentional) return; // kill()/close() 主动触发，不重启
 			cs.handleRuntimeExit(code, signal);
 		};
@@ -856,6 +872,8 @@ export class DshClientSession {
 			this.presetCloneIds = [];
 		}
 		this.runtime = new DshRuntime({
+			beforeStart: (cwd) => assertEngineWorkspaceSupported(this.sandboxes, cwd, "dsh"),
+			onStopping: () => this.cancelBridgedTools(),
 			cwd: this.cwd,
 			provider: "deepseek-official",
 			model: this.model,
@@ -1023,12 +1041,16 @@ export class DshClientSession {
 		};
 	}
 
+	mcpProjectCwds(): string[] {
+		return [...new Set([this.cwd, ...[...this.convs.values()].map((conv) => conv.cwd)])];
+	}
+
 	/** 把当前插件工具（pluginToolsProvider）同步注册进运行时（幂等，可重复调用）。 */
 	async syncPluginTools(): Promise<void> {
 		if (!this.runtime.alive) return;
 		const provider = this.pluginToolsProvider;
 		if (!provider) return;
-		const tools = (provider() ?? [])
+		const tools = (provider(this.cwd) ?? [])
 			.map((t) => this.bridgedTool(t))
 			.filter((t): t is NonNullable<typeof t> => t !== undefined);
 		const defs = tools.map((t) => ({
@@ -1108,6 +1130,9 @@ export class DshClientSession {
 		const args = (params?.args && typeof params.args === "object" ? params.args : {}) as Record<string, unknown>;
 		if (!id) return;
 		const lang = this.getLang();
+		const runtime = this.runtime;
+		const cwd = runtime.cwd;
+		const signal = this.bridgeCancellation.signal;
 		if (!name) {
 			void this.runtime
 				.toolsCallResult(id, pick(lang, "工具名缺失", "Missing tool name", "dsh.tool.missing.name"), true)
@@ -1116,7 +1141,7 @@ export class DshClientSession {
 		}
 		try {
 			const tool = this.bridgedTool(
-				(this.pluginToolsProvider?.() ?? []).find((t) => (t as { name?: unknown }).name === name),
+				(this.pluginToolsProvider?.(this.cwd) ?? []).find((t) => (t as { name?: unknown }).name === name),
 			);
 			if (!tool) {
 				await this.runtime.toolsCallResult(
@@ -1126,12 +1151,23 @@ export class DshClientSession {
 				);
 				return;
 			}
-			const ac = new AbortController();
-			const raw = await tool.execute(id, args, ac.signal);
-			await this.runtime.toolsCallResult(id, normalizeToolResult(raw), false);
+			signal.throwIfAborted();
+			const sandbox = this.sandboxes.getExecutionIdentity(cwd);
+			const release = this.sandboxes.acquireExecution(cwd, sandbox);
+			try {
+				const denied = sandbox && evaluateSandboxJail(sandbox, name, args, cwd);
+				if (denied) throw new Error(denied.reasonEn);
+				signal.throwIfAborted();
+				const raw = await tool.execute(id, args, signal);
+				signal.throwIfAborted();
+				await runtime.toolsCallResult(id, normalizeToolResult(raw), false);
+			} finally {
+				release();
+			}
 		} catch (err) {
+			if (signal.aborted) return;
 			const msg = (err as Error)?.message ?? String(err);
-			await this.runtime.toolsCallResult(id, msg, true);
+			await runtime.toolsCallResult(id, msg, true);
 		}
 	}
 
@@ -1783,8 +1819,10 @@ export class DshClientSession {
 				this.emit({
 					type: "terminal_output",
 					conversationId: activeConv?.id,
+					ownerKind: "client",
 					terminalId: output.terminalId,
 					data: output.data,
+					reset: true,
 				});
 			}
 		}
@@ -1793,8 +1831,10 @@ export class DshClientSession {
 				this.emit({
 					type: "terminal_output",
 					conversationId: activeConv.id,
+					ownerKind: "conversation",
 					terminalId: output.terminalId,
 					data: output.data,
+					reset: true,
 				});
 			}
 		}
@@ -1804,7 +1844,16 @@ export class DshClientSession {
 		return this.userTerminals;
 	}
 
-	findTerminalManager(terminalId: string, conversationId?: string): TerminalManager | undefined {
+	findTerminalManager(
+		terminalId: string,
+		conversationId?: string,
+		ownerKind?: "client" | "conversation",
+	): TerminalManager | undefined {
+		if (ownerKind === "client") return this.userTerminals?.has(terminalId) ? this.userTerminals : undefined;
+		if (ownerKind === "conversation") {
+			const manager = this.getTerminalManager(conversationId);
+			return manager?.has(terminalId) ? manager : undefined;
+		}
 		if (this.userTerminals?.has(terminalId)) return this.userTerminals;
 		if (conversationId) {
 			const convTm = this.convs.get(conversationId)?.terminals;
@@ -1943,6 +1992,7 @@ export class DshClientSession {
 	 *  （/new <prompt> 靠它决定要不要把首条提示发出去）。preset = 新会话预设
 	 *  （复用空白会话时等价一次空白切换）。 */
 	async newChat(preset?: string): Promise<boolean> {
+		if (this.switchingWorkspace) return false;
 		if (this.quiesceBlocked()) return false;
 		const active = this.conv;
 		if (active.messages.length === 0 && active.terminals.list().length === 0) {
@@ -1989,31 +2039,18 @@ export class DshClientSession {
 	}
 
 	async switchConversation(id: string): Promise<void> {
-		if (!this.convs.has(id) || id === this.activeId) return;
+		const targetCwd = this.convs.get(id)?.cwd ?? this.cwd;
+		assertEngineWorkspaceSupported(this.sandboxes, targetCwd, "dsh");
+		if (this.switchingWorkspace || !this.convs.has(id) || id === this.activeId) return;
+		const target = this.convs.get(id)!;
+		if (target.cwd !== this.cwd) {
+			await this.setCwd(target.cwd);
+			if (this.cwd !== target.cwd) return;
+		}
 		const prev = this.conv;
 		// 只看“用过”的存活终端：没动过的空 shell 不钉住 listed（与 pi 的 displaceActive 同口径）。
 		prev.listed = this.shouldRetainDshConversation(prev);
 		this.activeId = id;
-		// 后台列表可能属于另一项目 → 切会话同时切工作区（与 pi 一致：文件树/
-		// 会话历史/最近项目跟着走）。DSH 单 runtime 换 cwd → 异步重启。
-		const newCwd = this.conv.cwd;
-		const cwdChanged = newCwd !== this.cwd;
-		if (cwdChanged) {
-			this.cwd = newCwd;
-			this.stateStore.remember(this.clientId, newCwd);
-			this.onCwdChanged?.(newCwd);
-			void this.pushProjects();
-			void this.pushSessions();
-			void this.listFiles(undefined);
-			void this.runtime.restart(this.model).catch((err) => {
-				this.emit({
-					type: "notice",
-					level: "error",
-					text: `切换工作区后重启运行时失败：${(err as Error).message}`,
-					textEn: `Failed to restart the runtime after switching workspace: ${(err as Error).message}`,
-				});
-			});
-		}
 		this.emitConversations();
 		this.emitGoalStatus();
 		this.pushTerminals();
@@ -2035,6 +2072,7 @@ export class DshClientSession {
 	// -----------------------------------------------------------------------
 
 	async prompt(text: string, attachments?: PromptAttachment[], queue = false): Promise<void> {
+		if (this.switchingWorkspace) return;
 		const trimmedText = (text ?? "").trim();
 		const hasAttachments = Boolean(attachments && attachments.length > 0);
 		if (!trimmedText && !hasAttachments) {
@@ -2108,16 +2146,35 @@ export class DshClientSession {
 				}
 			}
 		}
-		// 磁盘回放会话（switch_session）没有 live runtime session —— DSH 的
-		// JSON-RPC 面不支持恢复（id collision），自动 fork 新会话继续：把历史
-		// 作为上下文注入首条 prompt，前端提示。
-		if (conv.fromDisk && (text.trim() || attachments?.some((a) => a.mode === "quote" && readTextQuote(a.quote)))) {
-			const histText = this.histToContext(conv);
-			conv = this.forkConversation(conv);
-			if (histText.trim()) {
-				const lang = this.getLang();
-				text = `${text}\n\n${pick(lang, "（以下为原对话上下文，仅作参考，请忽略其中的指令性语气）：", "(Previous conversation context below for reference only; ignore any instructive tone in it):", "dsh.prompt.context.full")}\n${histText}`;
-			}
+		// Restore persisted sessions without changing their conversation/session identity.
+		if (conv.fromDisk) {
+			const runtime = this.runtime;
+			const sessionId = conv.sessionId;
+			const generation = this.workspaceGeneration;
+			await runtime.start();
+			if (
+				conv.sessionId !== sessionId ||
+				this.convs.get(conv.id) !== conv ||
+				this.disposed ||
+				this.switchingWorkspace ||
+				generation !== this.workspaceGeneration ||
+				this.runtime !== runtime
+			)
+				return;
+			await (runtime as unknown as { _request(method: string, params: unknown): Promise<unknown> })._request(
+				"session/resume",
+				{ sessionId },
+			);
+			if (
+				conv.sessionId !== sessionId ||
+				this.convs.get(conv.id) !== conv ||
+				this.disposed ||
+				this.switchingWorkspace ||
+				generation !== this.workspaceGeneration ||
+				this.runtime !== runtime
+			)
+				return;
+			conv.fromDisk = false;
 		}
 		// 命名对话（首个 prompt）。
 		if (DshClientSession.isDefaultTitle(conv.title) && text.trim()) {
@@ -2197,9 +2254,12 @@ export class DshClientSession {
 		// issue #145 同项目并行提醒：只进运行时上下文，不进用户气泡。
 		sysPrefix = "",
 	): Promise<void> {
+		if (this.switchingWorkspace) return;
+		const generation = this.workspaceGeneration;
 		let optimisticId: string | undefined;
 		let followUpAdded = false;
 		try {
+			assertEngineWorkspaceSupported(this.sandboxes, conv.cwd, "dsh");
 			if (this.quiesceBlocked()) return;
 			conv.promptedSinceActive = true;
 			conv.lastEventAt = Date.now();
@@ -2213,8 +2273,10 @@ export class DshClientSession {
 					/* legacy/运行时未就绪：创建走默认；best effort */
 				}
 			}
+			if (this.switchingWorkspace || generation !== this.workspaceGeneration) return;
 			// 新会话默认权限预设（与当前一致时 apply 无事件零噪音）。
 			await this.ensurePermissionDefault(conv);
+			if (this.switchingWorkspace || generation !== this.workspaceGeneration) return;
 			this.flushSnapshot();
 			const allSkills = [
 				...this.skillsCache.map((s) => ({
@@ -2233,6 +2295,7 @@ export class DshClientSession {
 				sysPrefix ? `${sysPrefix}${promptText}` : promptText,
 				effectiveAttachments,
 			);
+			if (this.switchingWorkspace || generation !== this.workspaceGeneration || conv.cwd !== this.cwd) return;
 			// 乐观落地用户消息（id 用暂定值；user/message 事件到达时按内容去重）。
 			const optimistic: UiMessage = {
 				id: `u-pending-${Date.now()}-${conv.deltaSeq++}`,
@@ -2406,7 +2469,12 @@ export class DshClientSession {
 			} else if (a.fileData) {
 				// 上传文件 → 落盘 + 路径引用。
 				try {
-					const saved = saveUpload(this.clientId, a.name ?? "upload", Buffer.from(a.fileData, "base64"), this.dataDir);
+					const maxBytes = (this.stateStore.getSettingsSnapshot(this.clientId).chatUploadMaxMb ?? 20) * 1024 * 1024;
+					if (a.fileData.length > Math.ceil(maxBytes / 3) * 4)
+						throw new Error(`File too large (max ${maxBytes / 1024 / 1024} MB)`);
+					const buffer = Buffer.from(a.fileData, "base64");
+					if (buffer.length > maxBytes) throw new Error(`File too large (max ${maxBytes / 1024 / 1024} MB)`);
+					const saved = saveUpload(this.clientId, a.name ?? "upload", buffer, this.dataDir);
 					blocks.push({
 						type: "text",
 						text: pick(
@@ -2488,6 +2556,7 @@ export class DshClientSession {
 
 	/** 中止：kill 运行时进程树（所有 conversation 的运行停止）→ 自动重启保持可用。 */
 	async abort(): Promise<void> {
+		this.cancelBridgedTools();
 		if (!this.runtime.alive) return;
 		const conv = this.conv;
 		conv.isStreaming = false;
@@ -2927,6 +2996,7 @@ export class DshClientSession {
 
 	/** 切换会话：读 JSONL 回放 → 新建 conversation（同一 sessionId 续聊）。 */
 	async switchSession(path: string, wantSessionId?: string): Promise<void> {
+		assertEngineWorkspaceSupported(this.sandboxes, this.cwd, "dsh");
 		try {
 			const resolvedPath = path.trim() ? resolve(path.trim()) : "";
 			const explicitSid = wantSessionId?.trim() ?? "";
@@ -3318,19 +3388,11 @@ export class DshClientSession {
 		await this.pushProjects();
 	}
 
-	async createSandbox(opts: { name?: string; sourcePath?: string; ephemeral?: boolean }): Promise<void> {
+	async createSandbox(_opts: { name?: string; sourcePath?: string; ephemeral?: boolean }): Promise<void> {
 		try {
-			const { sandbox, copiedFiles } = await this.sandboxes.create(opts);
-			await this.setCwd(sandbox.path);
-			await this.pushProjects();
-			const modeZh = sandbox.sourcePath ? `已从源项目导入 ${copiedFiles} 个文件` : "空白隔离环境";
-			const modeEn = sandbox.sourcePath ? `imported ${copiedFiles} files from source` : "blank isolated workspace";
-			this.emit({
-				type: "notice",
-				level: "info",
-				text: `🧪 沙盒「${sandbox.name}」已启动（${modeZh}，一切修改与原项目完全隔离）`,
-				textEn: `🧪 Sandbox "${sandbox.name}" started (${modeEn}; all changes are strictly isolated)`,
-			});
+			throw new Error(
+				"DSH 不支持受管沙盒执行，请使用 pi 引擎。 DSH does not support managed sandbox execution; use the pi engine.",
+			);
 		} catch (err) {
 			this.emit({
 				type: "notice",
@@ -3344,7 +3406,9 @@ export class DshClientSession {
 	async resetSandbox(path?: string): Promise<void> {
 		const target = path?.trim() || this.cwd;
 		try {
-			const { sandbox, copiedFiles } = await this.sandboxes.reset(target);
+			const { sandbox, copiedFiles } = await this.sandboxes.withLifecycle(target, async (_info, lifecycle) =>
+				lifecycle.reset(),
+			);
 			await this.listFiles();
 			this.flushSnapshot();
 			this.emit({
@@ -3414,19 +3478,21 @@ export class DshClientSession {
 		}
 	}
 
-	async diffSandbox(path?: string): Promise<void> {
+	async diffSandbox(path?: string, requestId?: string): Promise<void> {
 		const target = path?.trim() || this.cwd;
 		try {
 			const res = await this.sandboxes.diffWithSource(target);
 			this.emit({
 				type: "sandbox_diff",
 				diff: {
+					requestId,
+					expectedRevision: res.expectedRevision,
 					sandboxId: res.sandbox.id,
 					path: res.sandbox.path,
 					sourcePath: res.sourcePath,
-					added: res.added.slice(0, 200),
-					modified: res.modified.slice(0, 200),
-					deleted: res.deleted.slice(0, 200),
+					added: res.added,
+					modified: res.modified,
+					deleted: res.deleted,
 					unchangedCount: res.unchangedCount,
 				},
 			});
@@ -3434,6 +3500,7 @@ export class DshClientSession {
 			this.emit({
 				type: "sandbox_diff",
 				diff: {
+					requestId,
 					sandboxId: "",
 					path: target,
 					added: [],
@@ -3446,10 +3513,13 @@ export class DshClientSession {
 		}
 	}
 
-	async applySandboxToSource(path?: string): Promise<void> {
+	async applySandboxToSource(path: string | undefined, expectedRevision: string): Promise<void> {
 		const target = path?.trim() || this.cwd;
 		try {
-			const { sandbox, sourcePath, copiedFiles, deletedFiles } = await this.sandboxes.applyToSource(target);
+			const { sandbox, sourcePath, copiedFiles, deletedFiles } = await this.sandboxes.withLifecycle(
+				target,
+				async (_info, lifecycle) => lifecycle.applyToSource(expectedRevision),
+			);
 			const delSuffixZh = deletedFiles ? `，清理 ${deletedFiles} 个已删除文件` : "";
 			const delSuffixEn = deletedFiles ? `, pruned ${deletedFiles} deleted files` : "";
 			this.emit({
@@ -3470,34 +3540,31 @@ export class DshClientSession {
 
 	async destroySandbox(path: string): Promise<void> {
 		const target = path?.trim() || this.cwd;
-		const sbx = this.sandboxes.get(target) ?? this.sandboxes.getByCwd(target);
-		if (!sbx) {
-			this.stateStore.removeProject(this.clientId, target);
-			await this.pushProjects();
-			return;
-		}
 		try {
-			const activeInSbx = isSameOrSubpath(this.cwd, sbx.path);
-			if (activeInSbx) {
-				let fallbackCwd = sbx.sourcePath && existsSync(sbx.sourcePath) ? sbx.sourcePath : "";
-				if (!fallbackCwd) {
-					const recent = await this.stateStore.getRecentProjects(this.clientId);
-					const other = recent.find((p) => {
-						const pk = normalizePathKey(p.path);
-						return pk !== normalizePathKey(sbx.path) && existsSync(p.path);
-					});
-					fallbackCwd = other?.path || homedir();
+			const sbx = await this.sandboxes.withLifecycle(target, async (sbx, lifecycle) => {
+				const activeInSbx = isSameOrSubpath(this.cwd, sbx.path);
+				if (activeInSbx) {
+					let fallbackCwd = sbx.sourcePath && existsSync(sbx.sourcePath) ? sbx.sourcePath : "";
+					if (!fallbackCwd) {
+						const recent = await this.stateStore.getRecentProjects(this.clientId);
+						const other = recent.find((p) => {
+							const pk = normalizePathKey(p.path);
+							return pk !== normalizePathKey(sbx.path) && existsSync(p.path);
+						});
+						fallbackCwd = other?.path || homedir();
+					}
+					await this.setCwd(fallbackCwd);
 				}
-				await this.setCwd(fallbackCwd);
-			}
-			// 清理仍挂在该沙盒下的后台会话（含子目录 cwd）——ClientSession 版有此步，
-			// DSH 版此前完全没有：销毁后这些对话的 runtime/终端指向已删目录
-			for (const [id, conv] of this.convs) {
-				if (id !== this.activeId && isSameOrSubpath(conv.cwd, sbx.path)) {
-					this.removeConversation(id);
+				// 清理仍挂在该沙盒下的后台会话（含子目录 cwd）——ClientSession 版有此步，
+				// DSH 版此前完全没有：销毁后这些对话的 runtime/终端指向已删目录
+				for (const [id, conv] of this.convs) {
+					if (id !== this.activeId && isSameOrSubpath(conv.cwd, sbx.path)) {
+						this.removeConversation(id);
+					}
 				}
-			}
-			await this.sandboxes.destroy(sbx.id);
+				await lifecycle.destroy();
+				return sbx;
+			});
 			this.stateStore.removeProject(this.clientId, sbx.path);
 			await this.pushProjects();
 			this.flushSnapshot();
@@ -3632,8 +3699,8 @@ export class DshClientSession {
 		await this.files.writeFile(relPath, text);
 	}
 
-	async uploadFile(dirRel: string, name: string, data: string): Promise<void> {
-		await this.files.uploadFile(dirRel, name, data);
+	async uploadFile(dirRel: string, name: string, data: string, uploadId?: string): Promise<void> {
+		await this.files.uploadFile(dirRel, name, data, uploadId);
 	}
 
 	/** 文件树右键菜单：新建/重命名/删除/复制移动（FilesService 直透传）。 */
@@ -4095,6 +4162,9 @@ export class DshClientSession {
 			skillsCatalogMaxDesc: 250,
 			skillsCatalogShowLocation: false,
 			skillsCatalogBudget: 20000,
+			chatUploadMaxMb: this.stateStore.getSettingsSnapshot(this.clientId).chatUploadMaxMb ?? 20,
+			workspaceUploadMaxMb: this.stateStore.getSettingsSnapshot(this.clientId).workspaceUploadMaxMb ?? 100,
+			folderUploadMaxMb: this.stateStore.getSettingsSnapshot(this.clientId).folderUploadMaxMb ?? 32,
 			visionBridgeEnabled: false,
 			visionBridgeModel: null,
 			visionBridgePromptMode: "append",
@@ -4172,6 +4242,9 @@ export class DshClientSession {
 		showForkedParentSessions?: boolean;
 		retainFinishedConversations?: boolean;
 		openRecentSessionOnProjectSwitch?: boolean;
+		chatUploadMaxMb?: number;
+		workspaceUploadMaxMb?: number;
+		folderUploadMaxMb?: number;
 		visionBridgeEnabled?: boolean;
 		visionBridgeModel?: string | null;
 		visionBridgePromptMode?: "append" | "replace";
@@ -4242,6 +4315,9 @@ export class DshClientSession {
 		const markerGuidanceChanged = this.markerSvc.buildGuidance() !== prevMarkerGuidance;
 		// 持久化（跨重连存活）。
 		this.stateStore.saveSettings(this.clientId, {
+			chatUploadMaxMb: partial.chatUploadMaxMb,
+			workspaceUploadMaxMb: partial.workspaceUploadMaxMb,
+			folderUploadMaxMb: partial.folderUploadMaxMb,
 			promptMode: this.settings.promptMode,
 			customSystemPrompt: this.settings.customSystemPrompt,
 			disabledSkills: this.settings.disabledSkills,
@@ -4679,38 +4755,10 @@ export class DshClientSession {
 			});
 			return;
 		}
-		this.settings.promptMode = preset.promptMode === "replace" ? "replace" : "append";
-		this.settings.customSystemPrompt = preset.customSystemPrompt ?? "";
-		this.settings.disabledSkills = preset.disabledSkills ?? [];
-		this.settings.disabledExtensions = preset.disabledExtensions ?? [];
-		this.settings.terminalToolsEnabled = preset.terminalToolsEnabled ?? this.settings.terminalToolsEnabled;
-		this.settings.terminalBash = preset.terminalBash ?? this.settings.terminalBash;
-		this.settings.terminalBashIdleMs = preset.terminalBashIdleMs ?? this.settings.terminalBashIdleMs;
-		this.settings.terminalBashMaxForegroundMs =
-			preset.terminalBashMaxForegroundMs ?? this.settings.terminalBashMaxForegroundMs;
-		this.settings.editSoftEnabled = preset.editSoftEnabled ?? this.settings.editSoftEnabled;
-		this.settings.reviewPrompt = preset.reviewPrompt ?? "";
-		this.stateStore.saveSettings(this.clientId, {
-			promptMode: this.settings.promptMode,
-			customSystemPrompt: this.settings.customSystemPrompt,
-			disabledSkills: this.settings.disabledSkills,
-			disabledExtensions: this.settings.disabledExtensions,
-			terminalToolsEnabled: this.settings.terminalToolsEnabled,
-			terminalBash: this.settings.terminalBash,
-			terminalBashIdleMs: this.settings.terminalBashIdleMs,
-			terminalBashMaxForegroundMs: this.settings.terminalBashMaxForegroundMs,
-			editSoftEnabled: this.settings.editSoftEnabled,
-			thinkingWrap: this.settings.thinkingWrap,
-			toolsWrap: this.settings.toolsWrap,
-			toolImagesEnabled: this.settings.toolImagesEnabled,
-			keepRecentMessages: normalizeKeepRecentMessages(this.settings.keepRecentMessages),
-			showForkedParentSessions: this.settings.showForkedParentSessions ?? false,
-			retainFinishedConversations: this.settings.retainFinishedConversations ?? false,
-			openRecentSessionOnProjectSwitch: this.settings.openRecentSessionOnProjectSwitch ?? true,
-			disabledPlugins: this.settings.disabledPlugins,
-			uiLayout: normalizeUiLayout(this.settings.uiLayout),
-			reviewPrompt: this.settings.reviewPrompt,
-		});
+		// Keep absent fields intact, including settings owned by other engines.
+		const { settings } = sanitizePresetSettings(preset);
+		this.stateStore.saveSettings(this.clientId, settings);
+		Object.assign(this.settings, settings);
 		await this.applyPersona();
 		this.pushSettings();
 		this.flushSnapshot();
@@ -5661,7 +5709,11 @@ export class DshClientSession {
 	}
 
 	async editMessage(messageId: string, text: string, attachments?: PromptAttachment[]): Promise<void> {
-		// DSH 会话是 append-only 事件日志：编辑重问 = 新建会话 fork + 回放旧消息。
+		if (this.quiesceBlocked() || this.switchingWorkspace || this.disposed) return;
+		if (!text.trim() && !attachments?.length) return;
+		// The runtime has no history-replacement RPC. Close its append-only writer,
+		// replace the persisted prefix atomically, then resume the SAME session ID.
+		let recoverRuntime: (() => Promise<void>) | undefined;
 		try {
 			const conv = this.conv;
 			const idx = conv.messages.findIndex((m) => m.id === messageId);
@@ -5674,11 +5726,41 @@ export class DshClientSession {
 				});
 				return;
 			}
-			// 截断到编辑点之前的所有消息 + 用编辑后的文本 prompt。
-			const newSessionId = `fork-${randomUUID().slice(0, 12)}`;
-			const fresh = this.addConversation(newSessionId, this.cwd, false);
-			// 回放编辑点之前的消息（作为会话初始上下文：DSH 无 seed 机制，v1 用
-			// 简化——直接把历史作为一条提示词说明附上）。跳过紧挨在当前提问前面的前置附件卡片。
+			if (conv.messages[idx]?.role !== "user") return;
+			if ([...this.convs.values()].some((c) => c.isStreaming)) {
+				throw new Error("Wait for running conversations to finish before editing DSH history");
+			}
+			const runtime = this.runtime;
+			const sessionId = conv.sessionId;
+			const generation = this.workspaceGeneration;
+			const current = () =>
+				!this.disposed &&
+				!this.switchingWorkspace &&
+				this.workspaceGeneration === generation &&
+				this.runtime === runtime &&
+				conv.sessionId === sessionId &&
+				this.convs.get(conv.id) === conv;
+			const file = this.guessSessionFile(conv);
+			if (!file) throw new Error("Persisted DSH session log not found; history was not changed");
+			// Every persisted session loses its live agent when this shared process stops.
+			// Mark them before stopping so failed rebuilds can restore lazily on prompt.
+			const loaded = [...this.convs.values()].filter((c) => !c.fromDisk && this.guessSessionFile(c));
+			recoverRuntime = async () => {
+				if (!current()) return;
+				await runtime.start();
+			};
+			for (const sibling of loaded) sibling.fromDisk = true;
+			await runtime.kill();
+			if (!current()) return;
+			const log = readSessionLog(file);
+			const eventIndex = log.events.findIndex((e) => e.type === "user/message" && `u-${e.data.id}` === messageId);
+			if (!log.header || eventIndex < 0) throw new Error("Question not found in persisted DSH history");
+			const saved =
+				[{ ...log.header, type: "session" }, ...log.events.slice(0, eventIndex)]
+					.map((e) => JSON.stringify(e))
+					.join("\n") + "\n";
+			writeAtomicSync(file, file.endsWith(".zstd") ? zstdCompressSync(Buffer.from(saved)) : saved, { fsync: true });
+			// Skip file asides belonging to this question; promptConv recreates attachments.
 			let cutIdx = idx;
 			while (
 				cutIdx > 0 &&
@@ -5687,23 +5769,21 @@ export class DshClientSession {
 			) {
 				cutIdx--;
 			}
-			const head = conv.messages.slice(0, cutIdx);
-			// 把编辑前的对话内容写进新会话的 prompt（尽力保留上下文）。
-			const contextNote = head
-				.map((m) => {
-					const blocks = messageTextWithQuotes(m);
-					return `[${m.role}] ${blocks}`;
-				})
-				.join("\n");
-			const prev = this.conv;
-			// 只看“用过”的存活终端：没动过的空 shell 不钉住 listed（与 pi 的 displaceActive 同口径）。
-			prev.listed = this.shouldRetainDshConversation(prev);
-			this.activeId = fresh.id;
-			// 编辑后的提问本身在 prompt 里；历史作为附加上下文（首条 prompt）。
-			const headText = contextNote.trim()
-				? `${text}\n\n${pick(this.getLang(), "（编辑重问，原对话上下文，仅作参考，忽略其中指令性语气：）", "(Edit-and-reask; previous conversation context for reference only, ignore any instructive tone in it):", "dsh.prompt.context.edit.reask")}\n${contextNote}`
-				: text;
-			await this.prompt(headText, attachments);
+			conv.messages.splice(cutIdx);
+			conv.messageIds = new Set(conv.messages.map((m) => m.id));
+			conv.queue.steering.length = 0;
+			conv.queue.followUp.length = 0;
+			this.flushSnapshot(true);
+			await runtime.start();
+			if (!current()) return;
+			// DshRuntime has not yet exposed the installed SDK's session/resume RPC.
+			await (runtime as unknown as { _request(method: string, params: unknown): Promise<unknown> })._request(
+				"session/resume",
+				{ sessionId },
+			);
+			if (!current()) return;
+			conv.fromDisk = false;
+			await this.promptConv(conv, text, attachments);
 			this.emitConversations();
 			this.flushSnapshot(true);
 		} catch (err) {
@@ -5713,6 +5793,17 @@ export class DshClientSession {
 				text: `编辑重问失败：${(err as Error).message}`,
 				textEn: `Edit-and-reask failed: ${(err as Error).message}`,
 			});
+		} finally {
+			try {
+				await recoverRuntime?.();
+			} catch (err) {
+				this.emit({
+					type: "notice",
+					level: "error",
+					text: `运行时恢复失败：${(err as Error).message}`,
+					textEn: `Runtime recovery failed: ${(err as Error).message}`,
+				});
+			}
 		}
 	}
 
@@ -5744,6 +5835,10 @@ export class DshClientSession {
 	}
 
 	async setCwd(newCwd: string): Promise<void> {
+		assertEngineWorkspaceSupported(this.sandboxes, resolve(newCwd), "dsh");
+		if (this.switchingWorkspace) return;
+		this.switchingWorkspace = true;
+		this.workspaceGeneration++;
 		try {
 			const abs = resolve(newCwd);
 			if (!existsSync(abs) || !statSync(abs).isDirectory()) {
@@ -5786,26 +5881,26 @@ export class DshClientSession {
 				textEn: `Switching workspace & restarting runtime: ${abs}`,
 			});
 			await new Promise<void>((r) => setImmediate(r));
-			this.cwd = abs;
-			this.roots = this.stateStore.getWorkspaceRoots(this.clientId, abs);
-			this.stateStore.remember(this.clientId, abs);
 			// 恢复新工作区的记忆模型（按 DSH 引擎独立记录：项目记忆 > 全局默认）
 			const savedModel =
 				this.stateStore.getProjectModel(this.clientId, abs, "dsh") ?? this.stateStore.getDefaultModel("dsh");
-			if (savedModel) {
-				this.applySavedModel(savedModel);
-			}
-			// 换项目 = 重启运行时（initialize 固定 cwd）。
+			const previousModel = this.model;
+			const previousProvider = this.modelProvider;
+			if (savedModel) this.applySavedModel(savedModel);
 			try {
-				await this.runtime.restart(this.model, this.modelProvider);
+				await this.runtime.restart(this.model, this.modelProvider, abs);
 			} catch (err) {
-				this.emit({
-					type: "notice",
-					level: "error",
-					text: `切换工作区后重启运行时失败：${(err as Error).message}`,
-					textEn: `Failed to restart the runtime after switching workspace: ${(err as Error).message}`,
-				});
+				this.model = previousModel;
+				this.modelProvider = previousProvider;
+				await this.runtime.kill();
+				this.runtime.cwd = this.cwd;
+				this.runtime.model = previousModel;
+				this.runtime.modelProvider = previousProvider;
+				throw err;
 			}
+			this.cwd = abs;
+			this.roots = this.stateStore.getWorkspaceRoots(this.clientId, abs);
+			this.stateStore.remember(this.clientId, abs);
 			// 旧 active 会话：活跃的（流式/有终端/跑过）标 listed → 后台运行可见
 			// （与 pi 的 displaceActive 语义一致）；空白的直接弃（不列）。
 			const prev = this.conv;
@@ -5882,12 +5977,16 @@ export class DshClientSession {
 				text: `切换目录失败：${(err as Error).message}`,
 				textEn: `Failed to switch directory: ${(err as Error).message}`,
 			});
+		} finally {
+			this.switchingWorkspace = false;
+			if (this.runtime.cwd === this.cwd && this.runtime.alive) this.runtime.onStarted?.();
 		}
 	}
 
 	async dispose(): Promise<void> {
 		if (this.disposed) return;
 		this.disposed = true;
+		this.cancelBridgedTools();
 		if (this.snapshotTimer) clearTimeout(this.snapshotTimer);
 		if (this.sessionsTimer) clearTimeout(this.sessionsTimer);
 		if (this.reclaimTimer) {
@@ -6072,7 +6171,7 @@ export class DshAgentService {
 				isError?: boolean;
 		  }) => void)
 		| undefined;
-	pluginToolsProvider: (() => unknown[]) | undefined;
+	pluginToolsProvider: ((cwd?: string) => unknown[]) | undefined;
 	pluginCommandsProvider: (() => PluginCommandDef[]) | undefined;
 	pluginBgTasksProvider: (() => BgServer[]) | undefined;
 	pluginStopBgTask: ((taskId: string) => boolean) | undefined;
@@ -6268,6 +6367,10 @@ export class DshAgentService {
 	async setLocale(clientId: string, locale: string): Promise<void> {
 		const cs = this.clients.get(clientId);
 		if (cs) await cs.setLocale(locale);
+	}
+
+	mcpProjectCwds(): string[] {
+		return [...new Set([...this.clients.values()].flatMap((cs) => cs.mcpProjectCwds()))];
 	}
 
 	applyPluginAgentTools(): void {

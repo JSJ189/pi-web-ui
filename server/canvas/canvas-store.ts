@@ -9,12 +9,12 @@ import { join } from "node:path";
 import { writeJsonAtomicSync } from "../atomic-file.js";
 import type { CanvasGraph, CanvasGraphSummary } from "../protocol.js";
 
-/** 创建系统出厂默认画布（全栈多引擎敏捷协同工程） */
+/** Reliable first-run template: explicit input, implementation, verification, and human acceptance. */
 export function createDefaultCanvasGraph(id = "default"): CanvasGraph {
 	const now = Date.now();
 	return {
 		id,
-		name: "全栈多引擎协同流水线",
+		name: "开发 · 测试 · 人工验收",
 		viewport: { x: 50, y: 50, zoom: 1 },
 		status: "idle",
 		createdAt: now,
@@ -22,65 +22,61 @@ export function createDefaultCanvasGraph(id = "default"): CanvasGraph {
 		nodes: [
 			{
 				id: "node_architect",
-				title: "架构总指挥 (Lead)",
-				role: "architect",
+				title: "需求与验收条件",
+				role: "trigger",
 				x: 80,
 				y: 180,
 				width: 300,
 				engine: "pi",
-				model: "anthropic/claude-3-7-sonnet",
+				model: "",
 				cwd: ".",
 				useWorktree: false,
-				systemPromptOverride:
-					"你是团队首席架构师。负责拆解需求、明确模块边界与接口契约，向前后端开发派发清晰的任务卡。",
-				instruction: "把业务需求拆解为前后端清晰的技术规约与数据契约，可用 {{上游摘要}} 引用输入，派发任务卡给下游。",
+				config: { payload: "请填写任务目标、修改范围与验收条件，再运行流程。" },
+				instruction: "将任务目标与验收条件交接下游。",
 				status: "idle",
 			},
 			{
 				id: "node_fe",
-				title: "前端界面工程师",
+				title: "实现工程师",
 				role: "coder",
 				x: 480,
 				y: 60,
 				width: 300,
-				engine: "dsh",
-				model: "deepseek/deepseek-chat",
-				cwd: "web",
-				useWorktree: true,
-				systemPromptOverride: "你是前端专家。使用 DSH 极速 Hashline 补丁引擎，根据契约编写 React/Vite 界面与交互。",
-				instruction: "基于上游契约 {{上游摘要}} 快速编写组件与交互，保持最小改动。",
+				engine: "pi",
+				model: "",
+				cwd: ".",
+				useWorktree: false,
+				systemPromptOverride: "根据任务与验收条件实现最小必要改动，检查现有约定并提供文件、验证命令和结果。",
+				instruction: "完成上游任务 {{上游摘要}}，交付可验证的实现与完整证据。",
 				status: "idle",
 			},
 			{
 				id: "node_be",
-				title: "后端与核心引擎",
-				role: "coder",
-				x: 480,
-				y: 320,
-				width: 300,
-				engine: "claude",
-				model: "deepseek/deepseek-chat",
-				cwd: "server",
-				useWorktree: true,
-				systemPromptOverride:
-					"你是后端服务专家。使用 Claude Code 引擎负责 Node/Express/WS 路由实现、数据持久化与核心逻辑处理。",
-				instruction: "按上游数据契约 {{上游摘要}} 实现后端路由与核心逻辑，保证可运行。",
-				status: "idle",
-			},
-			{
-				id: "node_qa",
-				title: "测试与自愈运维",
+				title: "测试与代码审查",
 				role: "tester",
 				x: 880,
 				y: 180,
 				width: 300,
-				engine: "durable",
-				model: "anthropic/claude-3-5-haiku",
+				engine: "pi",
+				model: "",
 				cwd: ".",
 				useWorktree: false,
-				systemPromptOverride:
-					"你是测试与自愈运维专家。使用 Durable 引擎持久化运行单元测试、类型检查与端到端验证，发现 Bug 即时自愈纠错。",
-				instruction: "运行测试套件并自动修复失败项，把验证结论交接归档。",
+				systemPromptOverride: "审查实现，运行相关检查，明确记录通过、失败和未验证项。不得编造测试结果。",
+				instruction: "验证上游产物 {{上游摘要}}，提供检查命令、结果和剩余风险交给人工验收。",
+				status: "idle",
+			},
+			{
+				id: "node_qa",
+				title: "人工验收",
+				role: "human",
+				x: 1280,
+				y: 180,
+				width: 300,
+				engine: "pi",
+				model: "",
+				cwd: ".",
+				useWorktree: false,
+				instruction: "检查实现与测试证据，批准完成或手动调整流程后重跑。",
 				status: "idle",
 			},
 		],
@@ -90,28 +86,21 @@ export function createDefaultCanvasGraph(id = "default"): CanvasGraph {
 				sourceNodeId: "node_architect",
 				targetNodeId: "node_fe",
 				type: "handoff",
-				label: "派发前端需求与 UI 契约",
+				label: "任务与验收条件",
 			},
 			{
-				id: "edge_arch_to_be",
-				sourceNodeId: "node_architect",
+				id: "edge_fe_to_be",
+				sourceNodeId: "node_fe",
 				targetNodeId: "node_be",
 				type: "handoff",
-				label: "派发后端路由与数据契约",
-			},
-			{
-				id: "edge_fe_to_qa",
-				sourceNodeId: "node_fe",
-				targetNodeId: "node_qa",
-				type: "handoff",
-				label: "前端产物提交验证",
+				label: "实现与验证证据",
 			},
 			{
 				id: "edge_be_to_qa",
 				sourceNodeId: "node_be",
 				targetNodeId: "node_qa",
 				type: "handoff",
-				label: "后端接口提交测试",
+				label: "检查结果与待验收产物",
 			},
 		],
 	};
@@ -205,15 +194,35 @@ export function saveCanvasGraph(
 	const dir = ensureCanvasDir(dataDir);
 	const path = join(dir, `${graph.id}.json`);
 	let diskRev = 0;
+	let disk: CanvasGraph | undefined;
 	if (existsSync(path)) {
 		try {
-			diskRev = (JSON.parse(readFileSync(path, "utf8")) as CanvasGraph).rev ?? 0;
+			disk = JSON.parse(readFileSync(path, "utf8")) as CanvasGraph;
+			diskRev = disk.rev ?? 0;
 		} catch {
 			diskRev = 0;
 		}
 	}
 	if (opts?.expectedRev !== undefined && opts.expectedRev !== diskRev) {
-		return { conflict: true, graph: JSON.parse(readFileSync(path, "utf8")) as CanvasGraph };
+		return { conflict: true, graph: disk ?? graph };
+	}
+	if (disk) {
+		// Topology saves never replace authoritative execution state with a browser's stale snapshot.
+		graph.status = disk.status;
+		graph.run = disk.run;
+		const existingNodes = new Map(disk.nodes.map((node) => [node.id, node]));
+		for (const node of graph.nodes) {
+			const prior = existingNodes.get(node.id);
+			if (!prior) continue;
+			for (const field of RUNTIME_FIELDS) (node as unknown as Record<string, unknown>)[field] = prior[field];
+		}
+		const existingEdges = new Map(disk.edges.map((edge) => [edge.id, edge]));
+		for (const edge of graph.edges) {
+			const prior = existingEdges.get(edge.id);
+			if (!prior) continue;
+			for (const field of ["lastHandoffSummary", "currentLoopCount", "runId", "active"] as const)
+				(edge as unknown as Record<string, unknown>)[field] = prior[field];
+		}
 	}
 	graph.rev = diskRev + 1;
 	graph.updatedAt = Date.now();
@@ -225,10 +234,13 @@ const RUNTIME_FIELDS = [
 	"status",
 	"currentAction",
 	"lastOutputSummary",
-	"lastError",
-	"loopCount",
-	"needsReview",
-	"reviewDecision",
+	"error",
+	"aiVerdict",
+	"runId",
+	"attempt",
+	"artifact",
+	"actualEngine",
+	"actualModel",
 ] as const;
 
 /** 运行态落盘：只合并运行字段，拓扑（nodes 增删/edges/坐标/指令）以磁盘版为准，防 stale 回滚（F1）。不推进 rev。 */
@@ -236,12 +248,8 @@ export function saveCanvasRuntimeState(dataDir: string, runtime: CanvasGraph): v
 	assertSafeGraphId(runtime.id);
 	const dir = ensureCanvasDir(dataDir);
 	const path = join(dir, `${runtime.id}.json`);
-	if (!existsSync(path)) {
-		runtime.rev = runtime.rev ?? 1;
-		runtime.updatedAt = Date.now();
-		writeJsonAtomicSync(path, runtime);
-		return;
-	}
+	// Runtime updates never create a graph: deletion is authoritative.
+	if (!existsSync(path)) return;
 	let disk: CanvasGraph;
 	try {
 		disk = JSON.parse(readFileSync(path, "utf8")) as CanvasGraph;
@@ -255,11 +263,48 @@ export function saveCanvasRuntimeState(dataDir: string, runtime: CanvasGraph): v
 		for (const f of RUNTIME_FIELDS)
 			(n as unknown as Record<string, unknown>)[f] = (r as unknown as Record<string, unknown>)[f];
 	}
+	const runtimeEdges = new Map(runtime.edges.map((e) => [e.id, e]));
+	for (const edge of disk.edges) {
+		const source = runtimeEdges.get(edge.id);
+		if (!source) continue;
+		for (const key of ["lastHandoffSummary", "currentLoopCount", "runId", "active"] as const) {
+			(edge as unknown as Record<string, unknown>)[key] = source[key];
+		}
+	}
 	disk.status = runtime.status;
+	disk.run = runtime.run;
 	disk.updatedAt = Date.now();
 	writeJsonAtomicSync(path, disk);
 	// 回填调用方，使广播带上最新 rev/拓扑
 	runtime.rev = disk.rev;
+}
+
+/** Called once when the server starts; persisted runs cannot still own a live engine session. */
+export function markInterruptedCanvasRuns(dataDir: string): void {
+	const dir = ensureCanvasDir(dataDir);
+	for (const file of readdirSync(dir).filter((name) => name.endsWith(".json"))) {
+		const path = join(dir, file);
+		try {
+			const graph = JSON.parse(readFileSync(path, "utf8")) as CanvasGraph;
+			const interrupted =
+				graph.status === "running" ||
+				graph.nodes?.some((node) => node.status === "running" || node.status === "queued");
+			if (!interrupted) continue;
+			graph.status = "paused";
+			if (graph.run) {
+				graph.run.error = "Server restarted; the previous run was interrupted. Restart the run to continue.";
+				graph.run.finishedAt = Date.now();
+			}
+			for (const node of graph.nodes)
+				if (node.status === "running" || node.status === "queued") {
+					node.status = "paused";
+					node.currentAction = "Server restarted; run interrupted";
+				}
+			writeJsonAtomicSync(path, graph);
+		} catch (error) {
+			console.error(`[canvas] Could not recover ${file}:`, error);
+		}
+	}
 }
 
 /** 删除画布工程 */

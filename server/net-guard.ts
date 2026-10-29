@@ -20,16 +20,10 @@
 
 import { lookup as dnsLookup } from "node:dns/promises";
 import { isIP } from "node:net";
+import { Agent, buildConnector, fetch as undiciFetch } from "undici";
 
 export type LookupAddress = { address: string; family?: number };
 export type LookupAllFn = (hostname: string) => Promise<LookupAddress[]>;
-
-const initialGlobalFetch = globalThis.fetch;
-
-/** 判断全局 fetch 是否仍为进程启动时的原生 fetch（未被 vi.stubGlobal 替换）。 */
-export function isNativeGlobalFetch(): boolean {
-	return globalThis.fetch === initialGlobalFetch;
-}
 
 const defaultLookupAll: LookupAllFn = async (hostname: string) => {
 	return await dnsLookup(hostname, { all: true, verbatim: true });
@@ -235,7 +229,7 @@ export async function resolveAndValidateUrl(
 		const addresses: string[] = [];
 		for (const rec of records) {
 			const addr = typeof rec?.address === "string" ? rec.address.trim() : "";
-			if (!addr || isBlockedHost(addr)) {
+			if (!isIP(addr) || isBlockedHost(addr)) {
 				return { ok: false, reason: "host" };
 			}
 			addresses.push(addr);
@@ -249,8 +243,10 @@ export async function resolveAndValidateUrl(
 export interface SafeFetchOptions {
 	fetcher?: (url: string, init: RequestInit) => Promise<Response>;
 	lookup?: LookupAllFn;
-	/** 是否跳过默认 DNS 解析校验（仅当注入了纯内存 mock fetcher 且未显式提供 lookup 时默认跳过）。 */
+	/** Explicit in-memory test transports may omit DNS; production always pins it. */
 	skipDnsLookup?: boolean;
+	/** Whole operation deadline, including DNS, redirects and body consumption. */
+	timeoutMs?: number;
 	maxRedirects?: number;
 }
 
@@ -259,29 +255,107 @@ const REDIRECT_STATUSES = new Set([301, 302, 303, 307, 308]);
 /**
  * 带 SSRF 收口（URL 校验 + DNS 解析后 IP 校验 + 重定向逐跳校验）的安全 fetch 封装。
  */
+export class FetchUrlError extends Error {
+	constructor(
+		public readonly reason: "scheme" | "host",
+		url: string,
+	) {
+		super(reason === "scheme" ? `Blocked URL scheme: ${url}` : `Blocked private or internal host: ${url}`);
+	}
+}
+
+/** Abort also bounds DNS and injected transports that do not implement signals. */
+export function readBeforeAbort<T>(work: Promise<T>, signal: AbortSignal): Promise<T> {
+	return new Promise((resolve, reject) => {
+		const abort = () => {
+			signal.removeEventListener("abort", abort);
+			reject(signal.reason);
+		};
+		work.then(resolve, reject).finally(() => signal.removeEventListener("abort", abort));
+		if (signal.aborted) abort();
+		else signal.addEventListener("abort", abort, { once: true });
+	});
+}
+
+async function resolveWithoutDns(raw: string): ReturnType<typeof resolveAndValidateUrl> {
+	const check = validateFetchUrl(raw);
+	return check.ok ? { ...check, addresses: [] } : check;
+}
+
+async function pinnedFetch(url: string, init: RequestInit, addresses: string[]): Promise<Response> {
+	const hostname = new URL(url).hostname.replace(/^\[|\]$/g, "");
+	const connect = buildConnector({
+		lookup: (_host, options, callback) => {
+			const family = typeof options === "number" ? options : options.family;
+			const records = addresses
+				.map((address) => ({ address, family: isIP(address) }))
+				.filter((record) => !family || record.family === Number(family));
+			if (!records.length) return callback(new Error("No validated address for requested family"), "", 0);
+			if (typeof options === "object" && options.all) callback(null, records);
+			else callback(null, records[0].address, records[0].family);
+		},
+	});
+	// A private dispatcher prevents proxy/global-dispatcher DNS resolution and cross-hop pooling.
+	// Keep the original hostname in the URL and connector for Host, SNI and certificate checks.
+	const dispatcher = new Agent({
+		connect: (options, callback) => {
+			if (options.hostname.replace(/^\[|\]$/g, "") !== hostname) {
+				callback(new Error("Unexpected connection hostname"), null);
+				return;
+			}
+			connect(options, callback);
+		},
+	});
+	const signal = init.signal!;
+	const destroy = () => {
+		void dispatcher.destroy().catch(() => {});
+	};
+	signal.addEventListener("abort", destroy, { once: true });
+	try {
+		signal.throwIfAborted();
+		const headers = new Headers(init.headers);
+		headers.delete("host");
+		const response = await undiciFetch(url, {
+			...init,
+			headers: Array.from(headers.entries()),
+			dispatcher,
+		} as unknown as Parameters<typeof undiciFetch>[1]);
+		// Graceful close waits for the response stream; abort/cancel still destroys the connection.
+		void dispatcher
+			.close()
+			.catch(() => dispatcher.destroy())
+			.catch(() => {})
+			.finally(() => {
+				signal.removeEventListener("abort", destroy);
+			});
+		return response as unknown as Response;
+	} catch (error) {
+		signal.removeEventListener("abort", destroy);
+		await dispatcher.destroy().catch(() => {});
+		throw error;
+	}
+}
+
 export async function safeFetch(url: string, init: RequestInit = {}, opts: SafeFetchOptions = {}): Promise<Response> {
-	const fetcher = opts.fetcher ?? ((u: string, i: RequestInit) => fetch(u, i));
-	const useDns =
-		opts.skipDnsLookup !== undefined ? !opts.skipDnsLookup : !!opts.lookup || (!opts.fetcher && isNativeGlobalFetch());
+	const useDns = !opts.fetcher || !!opts.lookup || opts.skipDnsLookup === false;
+	const deadline = AbortSignal.timeout(opts.timeoutMs ?? 10_000);
+	const signal = init.signal ? AbortSignal.any([init.signal, deadline]) : deadline;
 	const maxRedirects = opts.maxRedirects ?? 5;
 
 	let currentUrl = url;
-	let currentInit: RequestInit = { ...init, redirect: "manual" };
+	let currentInit: RequestInit = { ...init, signal, redirect: "manual" };
 
 	for (let hop = 0; hop <= maxRedirects; hop++) {
+		signal.throwIfAborted();
 		const check = useDns
-			? await resolveAndValidateUrl(currentUrl, { lookup: opts.lookup })
-			: validateFetchUrl(currentUrl);
-		if (!check.ok) {
-			throw new Error(
-				check.reason === "scheme"
-					? `Blocked URL scheme: ${currentUrl}`
-					: `Blocked private or internal host: ${currentUrl}`,
-			);
-		}
+			? await readBeforeAbort(resolveAndValidateUrl(currentUrl, { lookup: opts.lookup }), signal)
+			: await resolveWithoutDns(currentUrl);
+		if (!check.ok) throw new FetchUrlError(check.reason, currentUrl);
 		currentUrl = check.url;
 
-		const res = await fetcher(currentUrl, currentInit);
+		const res = opts.fetcher
+			? await readBeforeAbort(opts.fetcher(currentUrl, currentInit), signal)
+			: await pinnedFetch(currentUrl, currentInit, check.addresses);
 		if (!REDIRECT_STATUSES.has(res.status)) {
 			return res;
 		}
@@ -290,14 +364,36 @@ export async function safeFetch(url: string, init: RequestInit = {}, opts: SafeF
 		if (!location) {
 			return res;
 		}
+		if (res.body) await readBeforeAbort(res.body.getReader().cancel(), signal);
 		if (hop === maxRedirects) {
 			throw new Error(`Too many redirects (> ${maxRedirects})`);
 		}
 
-		const nextUrl = new URL(location, currentUrl).toString();
+		let nextUrl: string;
+		try {
+			nextUrl = new URL(location, currentUrl).toString();
+		} catch {
+			throw new FetchUrlError("scheme", location);
+		}
+		if (new URL(nextUrl).origin !== new URL(currentUrl).origin) {
+			const headers = new Headers(currentInit.headers);
+			for (const name of ["authorization", "cookie", "proxy-authorization", "host"]) headers.delete(name);
+			currentInit = { ...currentInit, headers };
+		}
 		// 303 或 301/302 POST 重定向按规范退化为 GET
-		if (res.status === 303 || ((res.status === 301 || res.status === 302) && currentInit.method === "POST")) {
-			currentInit = { ...currentInit, method: "GET", body: undefined };
+		if (
+			res.status === 303 ||
+			((res.status === 301 || res.status === 302) && currentInit.method?.toUpperCase() === "POST")
+		) {
+			const headers = new Headers(currentInit.headers);
+			headers.delete("content-length");
+			headers.delete("content-type");
+			currentInit = {
+				...currentInit,
+				method: currentInit.method?.toUpperCase() === "HEAD" ? "HEAD" : "GET",
+				body: undefined,
+				headers,
+			};
 		}
 		currentUrl = nextUrl;
 	}

@@ -46,7 +46,7 @@ describe("DiscordBotBridge 双工逻辑测试", () => {
 		vi.stubGlobal("fetch", fetchMock);
 
 		const chatSpy = vi.fn();
-		const bridge = new DiscordBotBridge({
+		const bridge: any = new DiscordBotBridge({
 			host: { chat: chatSpy },
 			getConfig: () => ({
 				botToken: "test_bot_token",
@@ -66,7 +66,7 @@ describe("DiscordBotBridge 双工逻辑测试", () => {
 			expect.stringContaining("/channels/c_123/messages"),
 			expect.objectContaining({
 				method: "POST",
-				body: expect.stringContaining("访问受限"),
+				body: expect.stringContaining("Access restricted"),
 			}),
 		);
 
@@ -82,7 +82,7 @@ describe("DiscordBotBridge 双工逻辑测试", () => {
 		vi.stubGlobal("fetch", fetchMock);
 
 		const chatSpy = vi.fn();
-		const bridge = new DiscordBotBridge({
+		const bridge: any = new DiscordBotBridge({
 			host: { chat: chatSpy },
 			getConfig: () => ({
 				botToken: "test_bot_token",
@@ -100,7 +100,7 @@ describe("DiscordBotBridge 双工逻辑测试", () => {
 		expect(fetchMock).toHaveBeenCalledWith(
 			expect.stringContaining("/channels/c_123/messages"),
 			expect.objectContaining({
-				body: expect.stringContaining("Discord 机器人帮助"),
+				body: expect.stringContaining("/help /new"),
 			}),
 		);
 
@@ -118,7 +118,7 @@ describe("DiscordBotBridge 双工逻辑测试", () => {
 		let runHandler: ((ev: any) => void) | null = null;
 		const chatSpy = vi.fn().mockResolvedValue({ conversationId: "c1", clientId: "plugin:discord:x", runId: "pr-dc-1" });
 
-		const bridge = new DiscordBotBridge({
+		const bridge: any = new DiscordBotBridge({
 			host: {
 				chat: chatSpy,
 				onRunEvent: (fn: any) => {
@@ -143,7 +143,7 @@ describe("DiscordBotBridge 双工逻辑测试", () => {
 		expect(chatSpy).toHaveBeenCalledWith(
 			expect.objectContaining({
 				text: "帮我写一个函数",
-				accountId: expect.stringMatching(/^dc_/),
+				accountId: expect.stringMatching(/^discord_/),
 			}),
 		);
 
@@ -189,7 +189,7 @@ describe("Discord：对话被过户（改名 + 换客户端）后仍按 runId �
 		let runHandler: ((ev: any) => void) | null = null;
 		const chatSpy = vi.fn().mockResolvedValue({ conversationId: "c1", clientId: "plugin:discord:x", runId: "pr-dc-9" });
 
-		const bridge = new DiscordBotBridge({
+		const bridge: any = new DiscordBotBridge({
 			host: {
 				chat: chatSpy,
 				onRunEvent: (fn: any) => {

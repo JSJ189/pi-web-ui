@@ -29,6 +29,8 @@
 		"plugin-sdk/",
 		"plugins/catalog.json",
 		"docs/dsh-engine.md",
+		"docs/device-center.md",
+		"docs/device-desktop.md",
 		"CHANGELOG.md",
 		"README.md",
 		"LICENSE"
@@ -99,6 +101,7 @@
 	"dependencies": {
 		"@deepseek-ai/dsh-sdk-jsonrpc-server": "^0.2.1-rc.2",
 		"@deepseek-ai/dsh-sdk-protocol": "^0.2.1-rc.2",
+		"@novnc/novnc": "^1.7.0",
 		"compression": "^1.8.2",
 		"electron-updater": "^6.8.9",
 		"express": "^5.2.1",

@@ -1,19 +1,27 @@
-# Apple iMessage 机器人与工作台 (iMessage Plugin)
+# iMessage
 
-> Apple iMessage 机器人插件，专为 Apple macOS 平台设计，基于 AppleScript 自动化驱动 Messages 原生应用，支持双向会话对话（零公网 IP / 苹果生态随身触达）、结构感知 Markdown 智能分块、白名单安全准入与消息推送。零外部第三方包依赖。
+通过 macOS Messages 发送文字及本地图片、语音、文件、视频，并只读轮询 `~/Library/Messages/chat.db` 接收消息。无需公网入口。
 
-## 功能特性
+## 运行条件
 
-- 🤖 **Apple Messages 原生自动化双工对话**：基于 macOS Messages 应用自动化，客户端主动发起通信，**零公网 IP、免域名备案、免反向代理、免开放入站端口**，无需申请商业 API 凭据，使用 iPhone / iPad / Mac 即可直接与 AI 对话！
-- 📦 **结构感知 Markdown 分块**：针对消息长度限制，采用类似 `dsh-im` 的智能分块算法，保证代码块（\`\`\`）自动闭合与语法高亮不破损。
-- ⚡ **斜杠快捷指令**：支持 `/help`、`/clear` 或 `/new`（清空上下文开启全新会话）、`/status`（查看机器人在线指标）。
-- 🛡️ **安全白名单控制**：支持设置允许对话的 Apple ID 邮箱或手机号码白名单，未授权人员友好拦截，防止 Bot 被陌生人滥用。
-- 💬 **防回声死循环标记**：自动追加 `🤖 PI\n` 回复标记，防止在自身账号对话时触发回声循环。
-- 🛠️ **AI 工具**：向 AI 助手注册 `imessage` 工具，AI 可自主向 Apple 设备联系人推送消息与通知。
+仅支持 macOS，Messages 必须登录 Apple ID。运行 pi-web-ui 的终端或应用须获「完整磁盘访问权限」（读取 chat.db）和「自动化 → Messages」权限（发送消息）。系统须提供 `/usr/bin/sqlite3`、`/usr/bin/osascript`。不满足条件会显示错误或 unsupported，不能在 Windows/Linux 假装在线。
 
-## 配置指南
+启动时以数据库最新记录为游标，仅接收之后到达的消息，每两秒只读查询一次。停机期间消息不补发。Apple 未提供公开的 Messages 接收 API，数据库 schema 和 AppleScript 行为可能随系统更新变化；此实现并非苹果官方机器人 API。数据库仅含 attributedBody 而无 text 的富文本消息会收到明确的纯文本重发提示。
 
-1. 确保 pi-web-ui 运行于 macOS 机器上，且系统的「信息 (Messages)」应用已登录有效的 Apple ID；
-2. 在 macOS「系统设置」→「隐私与安全性」→「自动化」中，确保终端或运行环境允许控制「信息」；
-3. 在 pi-web-ui 的 iMessage 面板点击「⚙️ 配置凭证」，配置白名单与默认接收者，勾选「启用 iMessage 双向对话服务」；
-4. 点击「🔌 环境检测」验证通过后点击「💾 保存配置」即可开始对话。
+## 命令
+
+支持 `/help`、`/new`、`/clear`、`/status`、`/stop`（`/abort`）、`/model [provider/id]`、`/thinking [off|minimal|low|medium|high|xhigh]`、`/cwd [目录]`。`/workspace` 为兼容别名。未知命令及无效参数直接反馈，不送模型。
+
+`/new` 与 `/clear` 创建新上下文，不删除历史；运行中须先停止并等待结束再切换。模型、思考强度和工作目录按发送者与群聊/thread 隔离，设置在下一次运行生效；宿主拒绝模型/目录会反馈启动失败。会话关联使用宿主真实 conversationId 和稳定 runId，支持早于 chat 回执到达的结束事件及会话过户。
+
+## 媒体
+
+接收 PNG/JPEG/GIF/WebP 时，以真实 `attachments.imageData` 传给宿主：最多 8 张，单张 10 MiB，总计 20 MiB。HEIC 等未知或不支持图像明确反馈，不伪装为已理解。
+
+音频、视频、文本及常见 application 文件以绝对本地路径 reference 附件送入宿主。音视频会提示「是否可转录/理解取决于模型与工具」；插件没有内置 ASR 或视频解码器。附件读取失败会回复错误。
+
+AI `imessage` 工具和插件 `send_message` 接口支持 `file` 本地路径，可与 `text` 一起发送。Messages 决定具体格式、压缩和大小限制，AppleScript 成功仅表示系统接受发送请求，不表示收件人已送达/已读。助手输出的文件不会自动发送，应明确调用工具。群聊回复使用原始 chat GUID 定向发送，避免错发为私聊；Apple Messages 不提供此桥接可用的 thread 定向发送接口，同群不同 thread 会话隔离，但回复落在原群。
+
+## 验证范围
+
+命令、早到事件、runId 归属、跨群/thread、图片附件、文件引用、发送 AppleScript、轮询和错误反馈均有模拟行为测试。真实 macOS 端到端验证仍需有 Apple ID 与上述权限的机器。

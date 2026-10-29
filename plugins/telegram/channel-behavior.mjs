@@ -1,0 +1,368 @@
+import { createHash, randomUUID } from "node:crypto";
+import { mkdir, writeFile, stat, realpath, readFile } from "node:fs/promises";
+import { homedir, tmpdir } from "node:os";
+import path from "node:path";
+
+const HELP =
+	"Telegram 机器人帮助: /help /new /clear /status /stop (/abort) /model [provider/id] /thinking [off|minimal|low|medium|high|xhigh] /cwd [absolute path]";
+const LIMIT = 20 * 1024 * 1024;
+export async function validateWorkspace(value) {
+	if (!path.isAbsolute(value)) throw new Error("Workspace must be an absolute path.");
+	const resolved = await realpath(value);
+	if (!(await stat(resolved)).isDirectory()) throw new Error("Workspace must be a directory.");
+	const forbidden = [
+		path.parse(resolved).root,
+		homedir(),
+		process.env.SystemRoot,
+		"/etc",
+		"/usr",
+		"/bin",
+		"/sbin",
+		"/proc",
+		"/sys",
+		"/dev",
+	].filter(Boolean);
+	if (forbidden.some((p) => path.resolve(p).toLowerCase() === resolved.toLowerCase()))
+		throw new Error("Home roots and system directories cannot be workspaces.");
+	return resolved;
+}
+async function bytes(response) {
+	if (!response.ok) throw new Error(`Media HTTP ${response.status}`);
+	if (Number(response.headers?.get("content-length")) > LIMIT) throw new Error("Media exceeds 20 MiB.");
+	const chunks = [];
+	let size = 0;
+	for await (const chunk of response.body) {
+		size += chunk.length;
+		if (size > LIMIT) {
+			await response.body.cancel?.().catch(() => {});
+			throw new Error("Media exceeds 20 MiB.");
+		}
+		chunks.push(chunk);
+	}
+	return Buffer.concat(chunks);
+}
+export async function uploadMedia(api, token, args, options) {
+	const kind =
+		args.media_type ||
+		(args.photo ? "photo" : args.video ? "video" : args.audio ? "audio" : args.voice ? "voice" : "document");
+	const types = {
+		photo: "sendPhoto",
+		video: "sendVideo",
+		audio: "sendAudio",
+		voice: "sendVoice",
+		document: "sendDocument",
+		animation: "sendAnimation",
+	};
+	if (!types[kind]) throw new Error("Unsupported media_type.");
+	const source = args.media || args[kind] || args.file;
+	if (!source) throw new Error("Media path or URL is required.");
+	let data, name;
+	if (/^https?:\/\//i.test(source)) {
+		const url = new URL(source);
+		name = path.basename(url.pathname) || "media";
+		data = await bytes(await fetch(url, { signal: AbortSignal.timeout(35000) }));
+	} else {
+		if (!(await stat(source)).isFile()) throw new Error("Media must be a file.");
+		if ((await stat(source)).size > LIMIT) throw new Error("Media exceeds 20 MiB.");
+		data = await readFile(source);
+		name = path.basename(source);
+	}
+	const form = new FormData();
+	form.set("chat_id", args.chat_id);
+	if (args.message_thread_id) form.set("message_thread_id", String(args.message_thread_id));
+	if (args.text) form.set("caption", args.text);
+	form.set(kind, new Blob([data]), name);
+	return api(token, types[kind], form, options);
+}
+export class ChannelBehavior {
+	peer(msg) {
+		return `${msg.chat.id}:${msg.message_thread_id || 0}:${msg.from.id}`;
+	}
+	async send(msg, text) {
+		const cfg = this.getConfig();
+		return this.api(
+			cfg.botToken,
+			"sendMessage",
+			{
+				chat_id: msg.chat.id,
+				...(msg.message_thread_id ? { message_thread_id: msg.message_thread_id } : {}),
+				reply_to_message_id: msg.message_id,
+				text,
+			},
+			{ apiBase: cfg.apiBase },
+		);
+	}
+	async onInboundMessage(msg) {
+		const cfg = this.getConfig();
+		if (!msg?.chat?.id || !msg.from?.id || msg.from.is_bot) return;
+		const user = String(msg.from.id);
+		if (Array.isArray(cfg.allowedUsers) && cfg.allowedUsers.length && !cfg.allowedUsers.map(String).includes(user)) {
+			await this.send(msg, "访问受限：你的账号不在允许列表中。");
+			return;
+		}
+		let text = String(msg.text || msg.caption || "").trim();
+		const bot = this.status.botUsername;
+		const command = text.match(/^\/([a-z]+)(?:@([\w]+))?(?:\s+([\s\S]*))?$/i);
+		if (command?.[2] && command[2].toLowerCase() !== bot.toLowerCase()) return;
+		if (msg.chat.type !== "private") {
+			const mentioned = bot && text.toLowerCase().includes(`@${bot.toLowerCase()}`);
+			const replying = Boolean(this.botInfo?.id && msg.reply_to_message?.from?.id === this.botInfo.id);
+			if (!mentioned && !replying) return;
+		}
+		if (bot) text = text.replace(new RegExp(`@${bot}\\b`, "gi"), "").trim();
+		const peer = this.peer(msg);
+		this.preferences ||= new Map();
+		this.peerQueues ||= new Map();
+		this.peerEpochs ||= new Map();
+		this.peerCancels ||= new Map();
+		if (/^\/(?:stop|abort|new|clear)(?:\s|$)/i.test(text)) {
+			this.peerCancels.get(peer)?.abort();
+			this.peerCancels.delete(peer);
+			try {
+				await this.handleCommand(msg, peer, text);
+			} catch (err) {
+				await this.send(msg, `❌ ${err.message}`);
+			}
+			return;
+		}
+		const controller = this.peerCancels.get(peer) || new AbortController();
+		this.peerCancels.set(peer, controller);
+		// Serialize dispatch while stop/reset bypasses downloads immediately.
+		const previous = this.peerQueues.get(peer) || Promise.resolve();
+		const work = previous
+			.catch(() => {})
+			.then(async () => {
+				try {
+					if (controller.signal.aborted) return;
+					if (text.startsWith("/")) {
+						await this.handleCommand(msg, peer, text);
+						return;
+					}
+					const media =
+						msg.photo?.at(-1) || msg.voice || msg.audio || msg.document || msg.video || msg.video_note || msg.animation;
+					if (!text && !media) {
+						await this.send(msg, "Unsupported message. Send text, a photo, voice, audio, document or video.");
+						return;
+					}
+					let attachments;
+					if (media) {
+						const downloaded = await this.downloadMedia(media, msg, controller.signal);
+						text += downloaded.prompt;
+						attachments = [downloaded.attachment];
+					}
+					const pref = this.preferences.get(peer) || {};
+					const cwd = await validateWorkspace(pref.cwd || cfg.workspace || this.host.cwd || process.cwd());
+					const current = this.userConversations.get(peer);
+					const req = {
+						text,
+						attachments,
+						accountId: `tg_${createHash("sha256")
+							.update(`${peer}:${this.peerEpochs.get(peer) || 0}`)
+							.digest("hex")
+							.slice(0, 16)}`,
+						cwd,
+						model: pref.model || cfg.model || undefined,
+						thinkingLevel: pref.thinking || cfg.thinkingLevel || undefined,
+					};
+					if (current) req.conversationId = current;
+					if (controller.signal.aborted) return;
+					this.inflight = (this.inflight || 0) + 1;
+					try {
+						const receipt = await this.host.chat(req);
+						if (!receipt?.conversationId || !receipt?.runId || receipt.ok === false)
+							throw new Error(receipt?.error || "Host did not return conversationId and runId.");
+						if (controller.signal.aborted) {
+							await this.host.abortRun(receipt.runId || receipt.conversationId);
+							return;
+						}
+						this.userConversations.set(peer, receipt.conversationId);
+						const run = { peer, msg, conversationId: receipt.conversationId, accumulatedText: "" };
+						this.pendingRuns.set(receipt.runId, run);
+						const events = this.earlyRuns.get(receipt.runId) || [];
+						this.earlyRuns.delete(receipt.runId);
+						for (const ev of events) if (ev) await this.handleRunEvent(ev);
+					} finally {
+						this.inflight--;
+						if (!this.inflight) this.earlyRuns.clear();
+					}
+					this.status.messagesReceived++;
+					this.status.lastMessageAt = Date.now();
+				} catch (err) {
+					if (controller.signal.aborted) return;
+					this.status.lastError = err.message;
+					this.log("warn", `Telegram request failed: ${err.message}`);
+					await this.send(msg, `❌ ${err.message}`).catch((e) =>
+						this.log("warn", `Telegram failure delivery failed: ${e.message}`),
+					);
+				}
+			});
+		this.peerQueues.set(peer, work);
+		try {
+			await work;
+		} finally {
+			if (this.peerQueues.get(peer) === work) this.peerQueues.delete(peer);
+		}
+	}
+	async downloadMedia(media, msg, signal) {
+		if (media.file_size > LIMIT) throw new Error("Media exceeds 20 MiB.");
+		const cfg = this.getConfig();
+		const meta = await this.api(cfg.botToken, "getFile", { file_id: media.file_id }, { apiBase: cfg.apiBase, signal });
+		if (signal?.aborted) throw new Error("Cancelled");
+		if (!meta?.file_path) throw new Error("Telegram did not return a file path.");
+		const base = (cfg.apiBase || "https://api.telegram.org").replace(/\/+$/, "");
+		const data = await bytes(
+			await fetch(`${base}/file/bot${cfg.botToken}/${meta.file_path}`, {
+				signal: signal ? AbortSignal.any([signal, AbortSignal.timeout(35000)]) : AbortSignal.timeout(35000),
+			}),
+		);
+		const dir = path.join(tmpdir(), "pi-telegram-media");
+		await mkdir(dir, { recursive: true, mode: 0o700 });
+		const name = path.basename(media.file_name || meta.file_path).replace(/[^a-zA-Z0-9._-]/g, "_");
+		const file = path.join(dir, `${randomUUID()}-${name}`);
+		await writeFile(file, data, { flag: "wx", mode: 0o600 });
+		const audiovisual = msg.voice || msg.audio || msg.video || msg.video_note;
+		const mimeType = media.mime_type || (msg.photo ? "image/jpeg" : "application/octet-stream");
+		const image = Boolean(msg.photo) || ["image/jpeg", "image/png", "image/gif", "image/webp"].includes(mimeType);
+		if (image && data.length > 10 * 1024 * 1024) throw new Error("Image exceeds 10 MiB.");
+		const attachment = image
+			? { path: "", imageData: data.toString("base64"), mimeType, name }
+			: { path: file, mode: "reference", name };
+		return {
+			attachment,
+			prompt: `\nTelegram media saved locally: ${JSON.stringify(file)}. Use read with this local file path when needed.${audiovisual ? " Audio/video is not decoded or transcribed by this plugin. If your tools cannot decode it, explicitly tell the user and request a transcript or supported still image." : " If the file cannot be decoded, explicitly tell the user."}`,
+		};
+	}
+	async handleCommand(msg, peer, text) {
+		const [raw, ...parts] = text.split(/\s+/);
+		const cmd = raw.toLowerCase();
+		const value = parts.join(" ").trim();
+		const pref = { ...(this.preferences.get(peer) || {}) };
+		const runs = [...this.pendingRuns.entries()].filter(([, r]) => r.peer === peer);
+		if (["/new", "/clear", "/stop", "/abort"].includes(cmd)) {
+			for (const [id, run] of runs) {
+				const result = await this.host.abortRun(id || run.conversationId);
+				if (result?.ok === false) throw new Error(result.error || "Abort failed");
+				this.pendingRuns.delete(id);
+			}
+			if (cmd === "/new" || cmd === "/clear") {
+				this.userConversations.delete(peer);
+				this.peerEpochs.set(peer, randomUUID());
+			}
+			await this.send(
+				msg,
+				cmd === "/new" || cmd === "/clear"
+					? "✅ New conversation. Peer preferences retained; stored history was not deleted."
+					: "✅ Stopped.",
+			);
+			return;
+		}
+		if (cmd === "/help" || cmd === "/start") {
+			await this.send(msg, HELP);
+			return;
+		}
+		if (cmd === "/status") {
+			await this.send(
+				msg,
+				`Conversation: ${this.userConversations.get(peer) || "new"}\nRunning: ${runs.length}\nModel: ${pref.model || this.getConfig().model || "default"}\nThinking: ${pref.thinking || this.getConfig().thinkingLevel || "default"}\nCwd: ${pref.cwd || this.getConfig().workspace || this.host.cwd || process.cwd()}`,
+			);
+			return;
+		}
+		if (cmd === "/model") {
+			if (value) {
+				const models = await this.host.models?.list();
+				if (!models?.some((m) => `${m.provider}/${m.id}` === value))
+					throw new Error("Unknown model. Use provider/id from the model list.");
+				pref.model = value;
+			} else {
+				const models = await this.host.models?.list();
+				await this.send(
+					msg,
+					`Model: ${pref.model || this.getConfig().model || "default"}\n${(models || []).map((m) => `${m.provider}/${m.id}`).join("\n")}`,
+				);
+				return;
+			}
+		} else if (cmd === "/thinking") {
+			if (value && !["off", "minimal", "low", "medium", "high", "xhigh"].includes(value))
+				throw new Error("Invalid thinking level.");
+			if (value) pref.thinking = value;
+			else {
+				await this.send(msg, `Thinking: ${pref.thinking || this.getConfig().thinkingLevel || "default"}`);
+				return;
+			}
+		} else if (cmd === "/cwd") {
+			if (value) pref.cwd = await validateWorkspace(value);
+			else {
+				await this.send(msg, `Cwd: ${pref.cwd || this.getConfig().workspace || this.host.cwd || process.cwd()}`);
+				return;
+			}
+		} else {
+			await this.send(msg, `Unknown command. ${HELP}`);
+			return;
+		}
+		if (runs.length) throw new Error("Stop the current run before changing preferences.");
+		this.preferences.set(peer, pref);
+		this.peerEpochs.set(peer, randomUUID());
+		this.userConversations.delete(peer);
+		await this.send(msg, `✅ ${cmd.slice(1)} updated for this peer. Next message starts a new conversation.`);
+	}
+	async handleRunEvent(ev) {
+		if (!ev.runId) return;
+		const run = this.pendingRuns.get(ev.runId);
+		if (!run) {
+			if (this.inflight && (ev.type === "run_end" || (ev.type === "message" && ev.message?.role === "assistant"))) {
+				const queue = this.earlyRuns.get(ev.runId) || [];
+				// Reserve terminal state independently of the text budget. A burst of tool
+				// events or assistant messages must never lose run_end and leave a peer busy.
+				if (ev.type === "run_end") queue[1] = ev;
+				else {
+					const content =
+						typeof ev.message.content === "string"
+							? ev.message.content
+							: (ev.message.content || []).map((p) => p.text || "").join("\n");
+					const previous = queue[0]?.message.content || "";
+					queue[0] = {
+						...ev,
+						message: { role: "assistant", content: (previous + (previous ? "\n" : "") + content).slice(-256000) },
+					};
+				}
+				this.earlyRuns.set(ev.runId, queue);
+			}
+			return;
+		}
+		if (ev.conversationId) {
+			run.conversationId = ev.conversationId;
+			this.userConversations.set(run.peer, ev.conversationId);
+		}
+		if (ev.type === "message" && ev.message?.role === "assistant") {
+			const c = ev.message.content;
+			const text = typeof c === "string" ? c : (c || []).map((p) => p.text || "").join("\n");
+			if (text) run.accumulatedText += (run.accumulatedText ? "\n" : "") + text;
+		}
+		if (ev.type === "message" && ev.message?.role === "assistant") {
+			if (ev.message.stopReason === "error") run.failure = ev.message.errorMessage || "Agent run failed.";
+			if (ev.message.stopReason === "aborted") run.failure = "Agent run stopped before completion.";
+		}
+		if (ev.type !== "run_end") return;
+		this.pendingRuns.delete(ev.runId);
+		const text = this.cleanText(run.accumulatedText);
+		const error =
+			ev.error ||
+			run.failure ||
+			(ev.aborted || ev.cancelled || ev.reason === "aborted" || ev.stopReason === "aborted"
+				? "Agent run stopped before completion."
+				: ev.isError || ev.stopReason === "error"
+					? "Agent run failed."
+					: "");
+		const final = error
+			? `❌ ${typeof error === "string" ? error : JSON.stringify(error)}${text ? `\n${text}` : ""}`
+			: text || "✅ Task completed (no text output).";
+		try {
+			for (const chunk of this.chunkText(final, 3800)) await this.send(run.msg, chunk);
+			this.status.messagesReplied++;
+			this.status.lastReplyAt = Date.now();
+		} catch (e) {
+			this.status.lastError = e.message;
+			this.log("warn", `Telegram reply delivery failed: ${e.message}`);
+		}
+	}
+}

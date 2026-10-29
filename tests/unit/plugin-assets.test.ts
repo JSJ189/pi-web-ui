@@ -1,5 +1,5 @@
 import { createServer } from "node:http";
-import { execSync } from "node:child_process";
+import { execFileSync } from "node:child_process";
 import { createHash } from "node:crypto";
 import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
@@ -29,7 +29,10 @@ describe("plugin-assets 重资产流水线单元测试", () => {
 		mkdirSync(join(packDir, "artifacts"), { recursive: true });
 		writeFileSync(join(packDir, "artifacts", "test-gateway.cjs"), 'console.log("ready");\n');
 		const tarOut = join(testDir, "test-pack.tar.gz");
-		execSync(`tar --force-local -czf "${tarOut}" -C "${packDir}" artifacts`, { windowsHide: true });
+		execFileSync("tar", ["-czf", "./test-pack.tar.gz", "-C", packDir, "artifacts"], {
+			cwd: testDir,
+			windowsHide: true,
+		});
 		validTarGzBuf = readFileSync(tarOut);
 		validTarGzSha = createHash("sha256").update(validTarGzBuf).digest("hex");
 
@@ -111,7 +114,8 @@ describe("plugin-assets 重资产流水线单元测试", () => {
 	});
 
 	it("ensurePluginAsset: SHA-256 强验签与多源回落", async () => {
-		const pluginDir = mkdtempSync(join(testDir, "plugin-"));
+		// Exercise real tar with spaces and shell metacharacters in the plugin path.
+		const pluginDir = mkdtempSync(join(testDir, "plugin space & (runtime)-"));
 		const spec: PluginAssetSpec = {
 			id: "runtime-demo",
 			targetDir: "artifacts",

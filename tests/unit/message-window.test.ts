@@ -231,6 +231,93 @@ describe("MessageWindowTap", () => {
 		expect(page.messages.at(-1)?.id).toBe("m699");
 	});
 
+	it("keeps character-limited snapshots stable, including appended messages and explicit pages", () => {
+		const out: ServerMessage[] = [];
+		const tap = new MessageWindowTap((m) => out.push(m), { windowSize: 300, charBudget: 15, pageSize: 2 });
+		const full = Array.from({ length: 10 }, (_, i) => msg(`message-${i}`));
+		const latest = () => (out.at(-1) as Extract<ServerMessage, { type: "snapshot" }>).state;
+		tap.accept(snapshot("c1", full));
+		expect(latest().historyStart).toBe(9);
+		const generation = latest().historyGeneration;
+		for (let i = 0; i < 3; i++) {
+			tap.accept(snapshot("c1", [...full]));
+			expect(latest().historyStart).toBe(9);
+		}
+		tap.accept(snapshot("c1", [...full, msg("new")]));
+		expect(latest().historyStart).toBe(9);
+		expect(latest().historyGeneration).toBe(generation);
+		tap.loadEarlier({ conversationId: "c1", beforeId: "message-9", before: 9, historyGeneration: generation });
+		tap.accept(snapshot("c1", [...full, msg("new")]));
+		expect(latest().historyStart).toBe(7);
+	});
+
+	it("rotates history generation on same-length rewrites and refuses stale pages", () => {
+		const { tap, out, full } = makeTap(10, 3);
+		tap.accept(snapshot("c1", full));
+		const generation = (out[0] as Extract<ServerMessage, { type: "snapshot" }>).state.historyGeneration;
+		// Retain the seam ID, but replace an earlier message in the same source array.
+		full[0] = msg("replacement");
+		tap.accept(snapshot("c1", full));
+		const next = (out[1] as Extract<ServerMessage, { type: "snapshot" }>).state;
+		expect(next.historyGeneration).not.toBe(generation);
+		tap.loadEarlier({ conversationId: "c1", historyGeneration: generation, beforeId: "m7", before: 7 });
+		expect(out.at(-1)).toMatchObject({ type: "earlier_messages", resyncRequired: true, messages: [] });
+	});
+
+	it("compaction resets the window and only pages from the new baseline", () => {
+		const { tap, out, full } = makeTap(1000, 3);
+		tap.accept(snapshot("c1", full));
+		const old = (out[0] as Extract<ServerMessage, { type: "snapshot" }>).state;
+		const compacted = Array.from({ length: 20 }, (_, i) => msg(`compacted-${i}`));
+		tap.accept(snapshot("c1", compacted));
+		const next = (out[1] as Extract<ServerMessage, { type: "snapshot" }>).state;
+		expect(next.historyStart).toBe(17);
+		expect(next.historyGeneration).not.toBe(old.historyGeneration);
+		tap.loadEarlier({
+			conversationId: "c1",
+			beforeId: old.messages[0].id,
+			before: old.historyStart,
+			historyGeneration: old.historyGeneration,
+		});
+		expect(out.at(-1)).toMatchObject({ resyncRequired: true, messages: [] });
+		tap.loadEarlier({
+			conversationId: "c1",
+			count: 2,
+			beforeId: next.messages[0].id,
+			before: next.historyStart,
+			historyGeneration: next.historyGeneration,
+		});
+		expect(out.at(-1)).toMatchObject({
+			historyGeneration: next.historyGeneration,
+			before: 17,
+			beforeId: "compacted-17",
+			historyStart: 15,
+			messages: [compacted[15], compacted[16]],
+		});
+	});
+
+	it("rejects missing and displaced anchors instead of falling back to numeric cursors", () => {
+		const { tap, out, full } = makeTap(10, 3);
+		tap.accept(snapshot("c1", full));
+		for (const opts of [
+			{ beforeId: "deleted", before: 7 },
+			{ beforeId: "m7", before: 6 },
+		]) {
+			tap.loadEarlier({ conversationId: "c1", ...opts });
+			expect(out.at(-1)).toMatchObject({ resyncRequired: true, messages: [], historyStart: 7 });
+		}
+	});
+
+	it("rehydrated caches have a new lineage and require a snapshot before paging", () => {
+		const { tap, out, full } = makeTap(10, 3);
+		tap.accept(snapshot("c1", full));
+		const generation = (out[0] as Extract<ServerMessage, { type: "snapshot" }>).state.historyGeneration;
+		const restored = new MessageWindowTap((m) => out.push(m), { windowSize: 3, charBudget: 0, pageSize: 2 });
+		restored.rehydrate("c1", full, 7);
+		restored.loadEarlier({ conversationId: "c1", historyGeneration: generation, beforeId: "m7", before: 7 });
+		expect(out.at(-1)).toMatchObject({ resyncRequired: true, messages: [] });
+	});
+
 	it("before 下标自描述游标截取", () => {
 		const { tap, out, full } = makeTap(1000, 300);
 		tap.accept(snapshot("c1", full));

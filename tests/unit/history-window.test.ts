@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { computeEarlierCount, mergeEarlierPage } from "../../web/src/history-window.js";
+import { computeEarlierCount, earlierPageNeedsResync, mergeEarlierPage } from "../../web/src/history-window.js";
 import type { UiMessage, UiState } from "../../web/src/types.js";
 
 const m = (id: string): UiMessage => ({ id, role: "user", content: [] }) as UiMessage;
@@ -41,10 +41,34 @@ describe("mergeEarlierPage", () => {
 		expect(merged?.historyTotal).toBe(99);
 	});
 
-	it("空页 = 已到最早：对齐计数，即使起点没变也返回（用于收起加载态）", () => {
+	it("empty pages cannot silently erase an unfilled history gap", () => {
 		expect(mergeEarlierPage(ui(["m4"], 0, 5), { messages: [], historyStart: 0, historyTotal: 5 })).toBeNull();
-		const aligned = mergeEarlierPage(ui(["m4"], 3, 5), { messages: [], historyStart: 0, historyTotal: 5 });
-		expect(aligned?.historyStart).toBe(0);
+		expect(mergeEarlierPage(ui(["m4"], 3, 5), { messages: [], historyStart: 0, historyTotal: 5 })).toBeNull();
+	});
+
+	it("requires matching generation, numeric seam and anchor before prepending", () => {
+		const current = { ...ui(["m10", "m11"], 10, 12), historyGeneration: "new" };
+		const page = {
+			messages: [m("m8"), m("m9")],
+			historyStart: 8,
+			historyTotal: 12,
+			historyGeneration: "new",
+			beforeId: "m10",
+			before: 10,
+		};
+		expect(mergeEarlierPage(current, page)?.messages).toHaveLength(4);
+		for (const patch of [
+			{ historyGeneration: "old" },
+			{ historyGeneration: undefined },
+			{ beforeId: "replaced" },
+			{ before: 9 },
+			{ resyncRequired: true },
+			{ messages: [], historyStart: 0 },
+		]) {
+			const invalid = { ...page, ...patch };
+			expect(earlierPageNeedsResync(current, invalid)).toBe(true);
+			expect(mergeEarlierPage(current, invalid)).toBeNull();
+		}
 	});
 
 	it("老服务端（无窗口字段）视为起点 0，不接受任何更早页", () => {

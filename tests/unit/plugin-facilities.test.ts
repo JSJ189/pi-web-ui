@@ -2,7 +2,8 @@
  * 插件宿主设施单测（零依赖、毫秒级）：storage / secrets / deps 探测 /
  * apiVersion 门控 / 斜杠命令注册表。不启 server、不碰网络。
  */
-import { describe, expect, it, beforeEach, afterEach } from "vitest";
+import { describe, expect, it, beforeEach, afterEach, vi } from "vitest";
+import * as atomicFile from "../../server/atomic-file.js";
 import { randomBytes } from "node:crypto";
 import { existsSync, mkdtempSync, mkdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
@@ -10,7 +11,14 @@ import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 
 const repoRoot = join(dirname(fileURLToPath(import.meta.url)), "..", "..");
-import { PluginSecrets, PluginStorage, depName, globToRegExp, isDepAvailable } from "../../server/plugin-facilities.js";
+import {
+	PluginSecrets,
+	PluginStorage,
+	depName,
+	globToRegExp,
+	isDepAvailable,
+	withFileRmwLock,
+} from "../../server/plugin-facilities.js";
 import { PLUGIN_API_VERSION, PluginManager, type PluginHost } from "../../server/plugins.js";
 
 let dir: string;
@@ -45,6 +53,31 @@ afterEach(() => {
 });
 
 describe("host.storage", () => {
+	it.each([false, true])("异步 prev + queued 完成后释放同步锁（reject=%s）", async (rejectQueued) => {
+		const file = join(dir, "queued.json");
+		const store = new PluginStorage(file);
+		let release!: () => void;
+		const first = withFileRmwLock(
+			file,
+			() =>
+				new Promise<void>((resolve) => {
+					release = resolve;
+				}),
+		);
+		const queued = withFileRmwLock(file, async () => {
+			if (rejectQueued) throw new Error("queued failure");
+			return "done";
+		});
+		expect(() => store.set("early", true)).toThrow("busy");
+		const checked = rejectQueued
+			? expect(queued).rejects.toThrow("queued failure")
+			: expect(queued).resolves.toBe("done");
+		release();
+		await first;
+		await checked;
+		expect(() => store.set("after", true)).not.toThrow();
+		expect(store.get("after")).toBe(true);
+	});
 	it("get/set/all/delete 往返 + 落盘 <pluginDir>/storage.json", async () => {
 		const h = await activate("a");
 		h.storage.set("layout", { split: 0.3 });
@@ -84,7 +117,84 @@ describe("host.storage", () => {
 		expect(after.cursor).toBe("b");
 	});
 
-	it("同实例内连续 set/get 仍走缓存语义（mtime 变化才重读）", () => {
+	it.each(["set", "delete", "clear"] as const)("%s 写失败同步抛错且候选不进入缓存", (operation) => {
+		const file = join(dir, "storage.json");
+		const secrets = new PluginSecrets(dir, dir);
+		secrets.commitSettings({ model: "old" }, { "setting:key": "old-secret" });
+		const store = new PluginStorage(file);
+		store.set("cursor", "old");
+		const original = readFileSync(file, "utf8");
+		const committed = store.all();
+		const fail = vi.spyOn(atomicFile, "writeAtomicSync").mockImplementation(() => {
+			throw new Error("injected write failure");
+		});
+		try {
+			expect(() =>
+				operation === "set"
+					? store.set("cursor", "new")
+					: operation === "delete"
+						? store.delete("cursor")
+						: store.clear(false),
+			).toThrow("injected write failure");
+			expect((store as any).cache).toEqual(JSON.parse(original));
+			expect(store.all()).toEqual(committed);
+			expect(new PluginStorage(file).all()).toEqual(committed);
+			expect(secrets.get("setting:key")).toBe("old-secret");
+			expect(readFileSync(file, "utf8")).toBe(original);
+		} finally {
+			fail.mockRestore();
+		}
+	});
+
+	it.each(["{broken", "null", "[]", "1"])("损坏 storage %s 不得被任何写路径覆盖", (broken) => {
+		const file = join(dir, "storage.json");
+		const store = new PluginStorage(file);
+		store.set("cursor", "old");
+		store.get("cursor");
+		writeFileSync(file, broken);
+		for (const mutate of [() => store.set("cursor", "new"), () => store.delete("cursor"), () => store.clear(false)]) {
+			expect(mutate).toThrow();
+			expect(readFileSync(file, "utf8")).toBe(broken);
+		}
+		expect(() => store.all()).toThrow();
+	});
+
+	it("不可读文件不会作为空表覆盖；缺失文件可以创建", () => {
+		const file = join(dir, "storage.json");
+		mkdirSync(file);
+		const store = new PluginStorage(file);
+		expect(() => store.set("a", 1)).toThrow();
+		expect(() => store.delete("a")).toThrow();
+		expect(() => store.clear()).toThrow();
+		rmSync(file, { recursive: true });
+		store.set("a", 1);
+		expect(store.get("a")).toBe(1);
+	});
+
+	it("同步 storage API 遇异步写锁占用立即抛错，不排队发布候选", async () => {
+		const file = join(dir, "storage.json");
+		const store = new PluginStorage(file);
+		store.set("cursor", "old");
+		let release!: () => void;
+		const held = withFileRmwLock(
+			file,
+			() =>
+				new Promise<void>((resolve) => {
+					release = resolve;
+				}),
+		);
+		try {
+			expect(() => store.set("cursor", "new")).toThrow("busy");
+			expect(() => store.delete("cursor")).toThrow("busy");
+			expect(() => store.clear()).toThrow("busy");
+		} finally {
+			release();
+			await held;
+		}
+		expect(store.get("cursor")).toBe("old");
+	});
+
+	it("同实例内连续 set/get 保留已提交数据", () => {
 		const file = join(dir, "self.json");
 		const store = new PluginStorage(file);
 		store.set("a", 1);

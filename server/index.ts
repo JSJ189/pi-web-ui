@@ -21,7 +21,9 @@ import "./patch-remote-catalog.js";
 import "./patch-turn-end-boundary.js";
 import { existsSync, mkdirSync, readFileSync, readdirSync, statSync } from "node:fs";
 import { readFile, stat } from "node:fs/promises";
-import { createServer, request as proxyRequest, type IncomingMessage } from "node:http";
+import { createServer, type IncomingMessage } from "node:http";
+import { proxyHttp, type ProxyHit } from "./http-proxy.js";
+import { saveSetupConfig } from "./setup-config.js";
 import { createConnection } from "node:net";
 import { basename, delimiter, join, resolve, sep } from "node:path";
 import { homedir } from "node:os";
@@ -34,10 +36,11 @@ import { sdkCopies, sdkOriginNote } from "./sdk-origin.js";
 import { PROTOCOL_VERSION } from "./protocol-version.js";
 import { AgentService, workspacePath, QuiesceRejectedError, ClientSession } from "./agent-service.js";
 import { ClientStateStore } from "./client-state.js";
-import { WS_MAX_PAYLOAD_BYTES, isAbsoluteWirePath, wireToAbs } from "./files-service.js";
+import { isAbsoluteWirePath, wireToAbs } from "./files-service.js";
+import { WS_MAX_PAYLOAD_BYTES } from "./payload-limits.js";
 import { httpHostAllowed, isLoopbackHost, hostWithoutPort } from "./host-guard.js";
 import { registerFileTransferRoutes } from "./file-transfer-routes.js";
-import { initAttachmentStore, readAttachment } from "./attachment-store.js";
+import { initAttachmentStore, findAttachment } from "./attachment-store.js";
 import { isOfficeFile, OFFICE_MAX_FILE_BYTES, unzipFiles } from "./office-parse.js";
 import { startControlServer } from "./control-socket.js";
 import { scheduleUploadCleanup } from "./uploads.js";
@@ -49,7 +52,12 @@ import { parseTabs, tabsRefusal } from "./tabs.js";
 import { recordUnknownWsType } from "./ws-unknown-types.js";
 import { MessageWindowTap, readMessageWindowConfig } from "./message-window.js";
 import { validateClientId } from "./ws-client-id.js";
-import { PendingCommandQueue } from "./ws-pending-queue.js";
+import {
+	PendingCommandQueue,
+	MAX_PRE_HELLO_WS_BYTES,
+	isClientMessageEnvelope,
+	isClientMessageWithinByteLimit,
+} from "./ws-pending-queue.js";
 import {
 	installPack,
 	isKnownPack,
@@ -73,8 +81,15 @@ import type { ToolPostRequest, ToolPreRequest } from "./plugin-tool-guard.js";
 import { confirmPluginInstall, PluginInstaller } from "./plugin-installer.js";
 import { syncPluginCatalog } from "./plugin-catalog-sync.js";
 import type { ServerLang } from "./i18n.js";
-import { McpBridge } from "./mcp-bridge.js";
-import { createMcpHotReload } from "./mcp-hot-reload.js";
+import { McpProjectRuntimeRegistry } from "./mcp-project-runtime.js";
+import { installLocalDeviceCenter } from "./device-center/local.js";
+import { createDeviceConnector } from "./device-center/connector.js";
+import { createDeviceTaskExecutor } from "./device-center/executor.js";
+import { createDeviceFileSync } from "./device-center/file-sync.js";
+import { createDeviceCollabService } from "./device-center/collab-service.js";
+import { setDeviceCollabService } from "./device-center/collab-tool.js";
+import { createDeviceDesktop } from "./device-center/desktop.js";
+
 import { createHostMetricsSampler } from "./host-metrics.js";
 import { SchedulerStore } from "./scheduler-tasks.js";
 import { initHttpProxy } from "./http-proxy.js";
@@ -426,82 +441,27 @@ app.get("/api/setup/status", setupGate, (_req, res) => {
 });
 
 app.post("/api/setup/save", setupGate, (req, res) => {
-	const body = (req.body ?? {}) as Record<string, unknown>;
-	const prev = loadServerFileConfig(DATA_DIR);
-	const next: Record<string, unknown> = { ...prev };
-	let tokenChanged = false;
-	if (typeof body.token === "string") {
-		const t = body.token.trim();
-		if (t) next.token = t;
-		else delete next.token;
-		tokenChanged = t !== AUTH_TOKEN;
-		AUTH_TOKEN = t;
-	}
-	const setStr = (
-		key: "host" | "allowHosts" | "allowOrigins",
-		v: unknown,
-		valid: (s: string) => boolean,
-		what: string,
-	): boolean => {
-		if (v === undefined) return true;
-		if (typeof v !== "string") {
-			res.status(400).json({ ok: false, error: `${what} 必须是字符串` });
-			return false;
-		}
-		const s = v.trim();
-		if (s && !valid(s)) {
-			res.status(400).json({ ok: false, error: `${what} 格式不合法：${s}` });
-			return false;
-		}
-		if (s) next[key] = s;
-		else delete next[key];
-		return true;
-	};
-	if (!setStr("host", body.host, (s) => /^[A-Za-z0-9.:_-]+$/.test(s) && s.length <= 253, "host")) return;
-	if (!setStr("allowHosts", body.allowHosts, (s) => /^[A-Za-z0-9.,:_\-\s]+$/.test(s), "allowHosts")) return;
-	if (!setStr("allowOrigins", body.allowOrigins, (s) => s.length <= 2000, "allowOrigins")) return;
-	if (body.port !== undefined && body.port !== "" && body.port !== null) {
-		const p = Number(body.port);
-		if (!Number.isInteger(p) || p <= 0 || p > 65535) {
-			res.status(400).json({ ok: false, error: `port 必须是 1-65535：${String(body.port)}` });
-			return;
-		}
-		next.port = p;
-	} else if (body.port === "") {
-		delete next.port;
-	}
-	try {
-		saveServerFileConfig(DATA_DIR, next);
-	} catch (err) {
-		res.status(500).json({ ok: false, error: `写入配置失败：${(err as Error).message}` });
+	const result = saveSetupConfig(
+		req.body,
+		loadServerFileConfig(DATA_DIR),
+		{ token: AUTH_TOKEN, host: HOST, port: PORT, allowHosts: ALLOW_HOSTS, allowOrigins: ALLOW_ORIGINS },
+		(next) => saveServerFileConfig(DATA_DIR, next),
+	);
+	if (!result.ok) {
+		res.status(result.status).json({ ok: false, error: result.error });
 		return;
 	}
-	const norm = (s: string) =>
-		s
-			.split(",")
-			.map((x) => x.trim().toLowerCase())
-			.filter(Boolean)
-			.join(",");
-	const restartRequired =
-		(typeof body.host === "string" && body.host.trim() !== HOST) ||
-		(body.port !== undefined && body.port !== "" && body.port !== null && Number(body.port) !== PORT) ||
-		(typeof body.allowHosts === "string" && norm(body.allowHosts) !== ALLOW_HOSTS.join(",")) ||
-		(typeof body.allowOrigins === "string" && norm(body.allowOrigins) !== ALLOW_ORIGINS.join(","));
-
-	// 如果设置了新 token，直接给当前回环浏览器下发匹配的 cookie，避免保存后直接 401
+	AUTH_TOKEN = result.nextToken;
 	if (AUTH_TOKEN) {
-		const secure = isTlsRequest(req);
-		res.setHeader("Set-Cookie", buildPiWebTokenCookie(encodeURIComponent(AUTH_TOKEN), 31536000, secure));
-	} else if (tokenChanged && !AUTH_TOKEN) {
-		// 清除了 token，同时清理旧 cookie
+		res.setHeader("Set-Cookie", buildPiWebTokenCookie(encodeURIComponent(AUTH_TOKEN), 31536000, isTlsRequest(req)));
+	} else if (result.tokenApplied) {
 		res.setHeader("Set-Cookie", [buildPiWebTokenCookie("", 0, false), buildPiWebTokenCookie("", 0, true)]);
 	}
-
 	res.json({
 		ok: true,
-		tokenApplied: tokenChanged,
-		restartRequired,
-		saved: next,
+		tokenApplied: result.tokenApplied,
+		restartRequired: result.restartRequired,
+		saved: result.saved,
 	});
 });
 
@@ -570,9 +530,29 @@ function splatParam(req: { params: unknown }): string {
 	return String(v ?? "");
 }
 
+/** Preview capabilities authorize only a currently registered live-preview proxy.
+ * Forward here, never call next(): capability paths cannot reach any host API. */
+function livePreviewCapability(req: { method: string; path: string }): ProxyHit | undefined {
+	if (req.method !== "GET" && req.method !== "HEAD") return undefined;
+	const candidate = /^\/__live-preview\/[a-f0-9]{64}(?=\/|$)/.exec(req.path)?.[0];
+	if (!candidate) return undefined;
+	const hit = pluginMgr.findProxy(req.path);
+	if (!hit || hit.pluginId !== "live-preview" || !/^\/__live-preview\/[a-f0-9]{64}$/.test(hit.prefix)) return undefined;
+	if (
+		!timingSafeEqual(createHash("sha256").update(candidate).digest(), createHash("sha256").update(hit.prefix).digest())
+	)
+		return undefined;
+	return hit;
+}
+
 // 常挂载：本地 /setup 页支持运行时设置/清除口令（AUTH_TOKEN 是 let，热旋转）。
 // 无口令时直接放行，保持原有行为不变。
 app.use((req, res, next) => {
+	const preview = livePreviewCapability(req);
+	if (preview) {
+		proxyHttp(preview, req, res);
+		return;
+	}
 	if (!AUTH_TOKEN) {
 		next();
 		return;
@@ -666,7 +646,12 @@ const SERVICE_INFO = toServiceInfo(ORIGIN);
 /** PI_WEB_TABS: the tabs this instance offers. null = all of them, as before. */
 const TABS = parseTabs();
 
-registerFileTransferRoutes(app, (clientId) => service.get(clientId)?.cwd);
+registerFileTransferRoutes(
+	app,
+	(clientId) => service.get(clientId)?.cwd,
+	undefined,
+	(clientId) => (sharedStateStore.getSettingsSnapshot(clientId).folderUploadMaxMb ?? 32) * 1024 * 1024,
+);
 
 app.get("/api/health", (_req, res) => {
 	// 审查 #352：该端点对未鉴权开放（监控探针需要），故只保留版本/引擎与 SDK
@@ -684,6 +669,14 @@ app.get("/api/health", (_req, res) => {
 	});
 });
 
+/** Every inline file response is untrusted active content, regardless of MIME.
+ * This runs before local/remote dispatch and covers HEAD, Range and 304 too. */
+app.use(["/api/file", "/api/attachment/:hash", "/api/preview"], (req, res, next) => {
+	res.setHeader("Content-Security-Policy", req.query.allowJs === "1" ? "sandbox allow-scripts" : "sandbox");
+	res.setHeader("X-Content-Type-Options", "nosniff");
+	next();
+});
+
 /**
  * 基于 SHA-256 内容寻址的附件静态服务：
  * 永久强缓存（immutable），支持图片和文件读取。
@@ -691,24 +684,19 @@ app.get("/api/health", (_req, res) => {
 app.get("/api/attachment/:hash", async (req, res) => {
 	try {
 		const hash = String(req.params.hash ?? "").trim();
-		const hit = await readAttachment(hash);
+		const hit = await findAttachment(hash);
 		if (!hit) {
 			res.status(404).end("attachment not found");
 			return;
 		}
 		res.setHeader("Content-Type", hit.mimeType);
-		res.setHeader("Content-Length", hit.buffer.length);
 		res.setHeader("Cache-Control", "public, max-age=31536000, immutable");
-		if (hit.mimeType === "image/svg+xml") {
-			// SVG 以文档形态打开（顶层导航/iframe）时内嵌 <script> 会在本应用
-			// origin 执行——附件内容可来自剪贴板/工作区文件，等同存储型 XSS
-			// （审查 #352 P0-1）。sandbox CSP 让文档形态降级到不透明 origin；
-			// <img> 引用不受影响（子资源响应的 CSP 不作用于引用页，且
-			// SVG-as-image 本就不执行脚本）。
-			res.setHeader("Content-Security-Policy", "sandbox");
-			res.setHeader("X-Content-Type-Options", "nosniff");
-		}
-		res.end(hit.buffer);
+		// Hash-located attachments may reside under a hidden dataDir (e.g. .pi-web).
+		res.sendFile(hit.filePath, { dotfiles: "allow" }, (err) => {
+			if (!err) return;
+			if (!res.headersSent) res.status((err as { statusCode?: number }).statusCode ?? 500).end();
+			else res.destroy(err);
+		});
 	} catch (err) {
 		res.status(500).end((err as Error).message);
 	}
@@ -762,11 +750,6 @@ app.get("/api/file", async (req, res) => {
 		}
 		const name = basename(abs);
 		const isDownload = req.query.download === "1";
-		// HTML files preview through a sandboxed <iframe> in the file modal
-		// (FilePreview.tsx). They are text as far as previewKind goes, so
-		// allowlist them explicitly here.
-		const lower = name.toLowerCase();
-		const isHtmlPreview = lower.endsWith(".html") || lower.endsWith(".htm") || lower.endsWith(".xhtml");
 		const st = await stat(abs);
 		if (!st.isFile()) {
 			res.status(400).end("not a file");
@@ -782,25 +765,6 @@ app.get("/api/file", async (req, res) => {
 			// 不受工作区约束——别被注释误导（审查 #352）。
 			res.download(abs, name, { dotfiles: "allow" });
 		} else {
-			if (isHtmlPreview) {
-				// Sandbox even a top-level navigation to this URL: a workspace
-				// HTML file must never get our origin (it could otherwise read
-				// the token cookie). The modal iframe carries its own sandbox
-				// attribute as well (defense in depth).
-				//
-				// ?allowJs=1 is the explicit per-file opt-in from the preview
-				// modal ("启用脚本"): scripts run, but still in an opaque
-				// origin — no DOM/cookie/storage access to our app, no forms,
-				// no top-navigation. NEVER add allow-same-origin here.
-				const allowJs = req.query.allowJs === "1";
-				res.setHeader("Content-Security-Policy", allowJs ? "sandbox allow-scripts" : "sandbox");
-				res.setHeader("X-Content-Type-Options", "nosniff");
-			} else if (lower.endsWith(".svg")) {
-				// 与 /api/attachment 同理：SVG 文档形态的 <script> 沙箱化
-				// （审查 #352 P0-1），<img> 内嵌用法不受影响。
-				res.setHeader("Content-Security-Policy", "sandbox");
-				res.setHeader("X-Content-Type-Options", "nosniff");
-			}
 			res.sendFile(abs, { dotfiles: "allow" });
 		}
 	} catch {
@@ -942,20 +906,10 @@ app.get("/api/preview/*splat", async (req, res) => {
 			}
 			abs = wp.abs;
 		}
-		const name = basename(abs);
 		const st = await stat(abs);
 		if (!st.isFile()) {
 			res.status(400).end("not a file");
 			return;
-		}
-		res.setHeader("X-Content-Type-Options", "nosniff");
-		const lower = name.toLowerCase();
-		if (lower.endsWith(".html") || lower.endsWith(".htm") || lower.endsWith(".xhtml")) {
-			const allowJs = req.query.allowJs === "1";
-			res.setHeader("Content-Security-Policy", allowJs ? "sandbox allow-scripts" : "sandbox");
-		} else if (lower.endsWith(".svg")) {
-			// 与 /api/attachment 同理：SVG 文档形态的 <script> 沙箱化（审查 #352 P0-1）。
-			res.setHeader("Content-Security-Policy", "sandbox");
 		}
 		res.sendFile(abs, { dotfiles: "allow" });
 	} catch {
@@ -1081,62 +1035,25 @@ const PLUGINS_DIR = join(DATA_DIR, "plugins");
 app.all(["/plugins-api/:id/*splat", "/plugins-api/:id"], (req, res) => {
 	// 多段子路径的 splat 是数组（见 splatParam），拼回 "/" 后再交插件路由。
 	const rest = splatParam(req);
-	pluginMgr.handleHttp(String(req.params.id ?? ""), req.method, rest, req, res);
+	const cid = typeof req.query.clientId === "string" ? req.query.clientId : "";
+	const cs = cid ? service.get(cid) : undefined;
+	if (cid && !cs) {
+		res.status(400).json({ error: "Unknown client workspace" });
+		return;
+	}
+	pluginMgr.handleHttp(
+		String(req.params.id ?? ""),
+		req.method,
+		rest,
+		req,
+		res,
+		cs ? { cwd: cs.cwd, roots: cs.workspaceRoots } : undefined,
+	);
 });
 /** 通用插件代理（host.registerProxy 注册的前缀落到这里）：去前缀后原样透传到
  *  127.0.0.1:port——相对路径/Range/SSE 天然可用。PI_WEB_TOKEN 鉴权已在上方覆盖。
  *  必须站在静态资源与 SPA catch-all 之前，否则子路径被 index.html 吞掉。 */
-type ProxyHit = { prefix: string; pluginId: string; host: string; port: number };
-function proxyForwardPath(hit: ProxyHit, url: string): string {
-	let fwd = String(url ?? "/").slice(hit.prefix.length);
-	if (!fwd.startsWith("/")) fwd = `/${fwd}`;
-	return fwd || "/";
-}
-function proxyHttp(hit: ProxyHit, req: express.Request, res: express.Response): void {
-	const fwdPath = proxyForwardPath(hit, req.url ?? "/");
-	const headers: Record<string, string | string[]> = {};
-	for (const [k, v] of Object.entries(req.headers)) {
-		if (v === undefined) continue;
-		if (k.toLowerCase() === "host") continue;
-		if (k.toLowerCase() === "content-length" && req.method !== "GET" && req.method !== "HEAD") continue;
-		headers[k] = v as string | string[];
-	}
-	// 内页拼 SSE/资源绝对地址用（子路径反代下 import.meta 推导不到前缀，靠这个头）。
-	headers["x-pi-proxy-prefix"] = hit.prefix;
-	let body: Buffer | undefined;
-	if (req.method !== "GET" && req.method !== "HEAD" && (req as unknown as { body?: unknown }).body !== undefined) {
-		const b = (req as unknown as { body?: unknown }).body;
-		if (Buffer.isBuffer(b)) body = b;
-		else if (typeof b === "string") body = Buffer.from(b);
-		else if (b !== undefined) {
-			body = Buffer.from(JSON.stringify(b));
-			if (!headers["content-type"]) headers["content-type"] = "application/json";
-		}
-		if (body) headers["content-length"] = String(body.length);
-	}
-	const up = proxyRequest(
-		{ host: hit.host, port: hit.port, method: req.method, path: fwdPath, headers, timeout: 30000 },
-		(upRes) => {
-			const out: Record<string, string | string[]> = {};
-			for (const [k, v] of Object.entries(upRes.headers)) {
-				if (v === undefined) continue;
-				const lk = k.toLowerCase();
-				if (lk === "connection" || lk === "keep-alive" || lk === "transfer-encoding" || lk === "upgrade") continue;
-				out[k] = v as string | string[];
-			}
-			res.writeHead(upRes.statusCode ?? 502, out);
-			upRes.pipe(res);
-		},
-	);
-	up.on("timeout", () => up.destroy(new Error("proxy timeout")));
-	up.on("error", (err) => {
-		console.error(`[proxy:${hit.prefix}] → 127.0.0.1:${hit.port}${fwdPath} failed:`, err);
-		if (!res.headersSent) res.status(502).end("proxy target unreachable");
-		else res.end();
-	});
-	if (body) up.end(body);
-	else req.pipe(up);
-}
+
 app.use((req, res, next) => {
 	const hit = pluginMgr.findProxy(req.path);
 	if (!hit) {
@@ -1195,6 +1112,94 @@ app.get("/plugins-shared/*splat", (req, res) => {
 });
 /** Set in the env of the replacement child spawned by a self-update restart. */
 const RESTART_CHILD_ENV = "PI_WEB_RESTART_CHILD";
+// Local-only device enrollment stays behind host authentication and ahead of the SPA fallback.
+const deviceDesktop = createDeviceDesktop({ app, authorize: (req) => !AUTH_TOKEN || tokenOk(req) });
+const deviceCenter = await installLocalDeviceCenter({
+	app,
+	dataDir: DATA_DIR,
+	connect(config) {
+		const localOrigin = `http://127.0.0.1:${PORT}`;
+		const taskSessions = new Map<string, string>();
+		const makeExecutor = () =>
+			createDeviceTaskExecutor({
+				localOrigin,
+				localAuthToken: AUTH_TOKEN,
+				cwd: CWD,
+				allowExecution: config.allowExecution,
+				onSession(taskId, sessionId) {
+					for (const [id, owner] of taskSessions) if (owner === taskId) taskSessions.delete(id);
+					if (sessionId) taskSessions.set(sessionId, taskId);
+				},
+			});
+		let executor: ReturnType<typeof createDeviceTaskExecutor> | undefined;
+		const files = createDeviceFileSync({ root: CWD, dataDir: DATA_DIR, allowReceive: config.allowExecution });
+		let activeTaskId: string | undefined;
+		setDeviceCollabService(
+			createDeviceCollabService({
+				getConfig: () => config,
+				root: CWD,
+				files,
+				getParentTask: (context) => (context?.sessionId ? taskSessions.get(context.sessionId) : undefined),
+			}),
+		);
+		const connector = createDeviceConnector({
+			hubUrl: config.hubUrl,
+			deviceId: config.deviceId,
+			credential: config.credential,
+			localOrigin,
+			localAuthToken: AUTH_TOKEN,
+			async onTask(task) {
+				if (activeTaskId) throw new Error("This device is already running a group task");
+				activeTaskId = task.id;
+				const current = (executor ??= makeExecutor());
+				try {
+					return await current.run(task);
+				} finally {
+					if (activeTaskId === task.id) activeTaskId = undefined;
+				}
+			},
+			onDisconnect() {
+				executor?.close();
+				executor = undefined;
+				taskSessions.clear();
+				activeTaskId = undefined;
+			},
+			async onCommand(action, payload, signal) {
+				if (!config.allowExecution) throw new Error("Receiving files is disabled on this device");
+				if (!payload || typeof payload !== "object" || Array.isArray(payload))
+					throw new Error("Invalid transfer command");
+				const command = payload as Record<string, unknown>;
+				if (action === "transfer_stage") return files.stage(command.bundle, { signal });
+				if (action === "transfer_preview" && typeof command.transferId === "string")
+					return files.preview(command.transferId, { signal });
+				if (
+					action === "transfer_apply" &&
+					typeof command.transferId === "string" &&
+					typeof command.revision === "string"
+				) {
+					if (!Array.isArray(command.overwritePaths) || command.overwritePaths.some((path) => typeof path !== "string"))
+						throw new Error("Invalid overwrite paths");
+					return files.apply({
+						id: command.transferId,
+						revision: command.revision,
+						decisions: Object.fromEntries(command.overwritePaths.map((path) => [path, "overwrite" as const])),
+						signal,
+					});
+				}
+				throw new Error("Unsupported device command");
+			},
+		});
+		return {
+			isConnected: connector.isOnline,
+			async close() {
+				setDeviceCollabService(undefined);
+				connector.close();
+				await executor?.close();
+				await files.close();
+			},
+		};
+	},
+});
 const webDist = join(pkgRoot, "web", "dist");
 /** webDist accessor for buildId() (declared above webDist's const). */
 function webDistPath(): string {
@@ -1328,6 +1333,7 @@ function originAllowed(req: IncomingMessage): boolean {
 }
 
 httpServer.on("upgrade", (req, socket, head) => {
+	if (deviceDesktop.handleUpgrade(req, socket, head)) return;
 	let pathname = "/";
 	try {
 		pathname = new URL(req.url ?? "/", "http://localhost").pathname;
@@ -1500,6 +1506,7 @@ import type { EngineId, EngineStatus } from "./protocol.js";
 
 /** TerminalManager 的 dispatch 面（两个引擎共用同一实现类）。 */
 export interface TerminalManagerLike {
+	attach?(id: string, cols: number, rows: number): boolean;
 	create(
 		id: string,
 		cwd: string,
@@ -1518,6 +1525,7 @@ export interface TerminalManagerLike {
 
 export interface DispatchSession {
 	cwd: string;
+	readonly workspaceRoots?: readonly string[];
 	prompt(text: string, attachments?: PromptAttachment[], queue?: boolean): Promise<void>;
 	/** Remove one queued prompt (steer/followUp) — the ✕ on a pending bubble.
 	 *  `id` is the item unique ID (highest priority); `index` is the bubble position
@@ -1565,8 +1573,8 @@ export interface DispatchSession {
 	resetSandbox?(path?: string): Promise<void>;
 	persistSandbox?(path?: string): Promise<void>;
 	promoteSandbox?(targetPath: string, path?: string, switchToTarget?: boolean): Promise<void>;
-	diffSandbox?(path?: string): Promise<void>;
-	applySandboxToSource?(path?: string): Promise<void>;
+	diffSandbox?(path?: string, requestId?: string): Promise<void>;
+	applySandboxToSource?(path: string | undefined, expectedRevision: string): Promise<void>;
 	destroySandbox?(path: string): Promise<void>;
 	switchWorktree?(path: string): Promise<void>;
 	removeWorktree?(path: string, force?: boolean): Promise<void>;
@@ -1597,7 +1605,7 @@ export interface DispatchSession {
 	scmGenCommitMessage?(reqId: number): Promise<void>;
 	readFile(path: string): Promise<void>;
 	writeFile(path: string, text: string): Promise<void>;
-	uploadFile(dirPath: string, name: string, data: string): Promise<void>;
+	uploadFile(dirPath: string, name: string, data: string, uploadId?: string): Promise<void>;
 	/** 文件树右键菜单的文件操作（contextmenu.file：新建/重命名/删除/复制移动）。 */
 	createEntry(dir: string, name: string, kind: "file" | "dir"): Promise<void>;
 	renameEntry(path: string, newName: string): Promise<void>;
@@ -1664,7 +1672,11 @@ export interface DispatchSession {
 	abortEnrichModels(reqId?: number): void;
 	getTerminalManager(conversationId?: string): TerminalManagerLike | undefined;
 	getUserTerminalManager?(): TerminalManagerLike | undefined;
-	findTerminalManager?(terminalId: string, conversationId?: string): TerminalManagerLike | undefined;
+	findTerminalManager?(
+		terminalId: string,
+		conversationId?: string,
+		ownerKind?: "client" | "conversation",
+	): TerminalManagerLike | undefined;
 	getTerminalCwd(conversationId?: string): string;
 	listCommands(): Promise<void>;
 	saveCommands(commands: CommandDef[]): Promise<void>;
@@ -1828,6 +1840,8 @@ export interface EngineService {
 	activeConversations(): number;
 	pendingMessages(): number;
 	applyPluginAgentTools(): void;
+	refreshMcpProject?(cwd: string): void;
+	mcpProjectCwds?(): string[];
 	applyPluginCommandCatalog(): void;
 	applyPluginMarkers?(): void;
 	refreshBackgroundServers(): void;
@@ -1888,7 +1902,7 @@ export interface EngineService {
 	/** 插件无头调用 agent（pi 引擎；dsh 引擎暂无，host.chat 明确拒绝）。 */
 	chatFromPlugin?:
 		((pluginId: string, req: PluginChatRequest) => Promise<{ conversationId: string; clientId: string }>) | undefined;
-	pluginToolsProvider?: (() => unknown[]) | undefined;
+	pluginToolsProvider?: ((cwd?: string) => unknown[]) | undefined;
 	pluginCommandsProvider?: (() => unknown[]) | undefined;
 	pluginBgTasksProvider?: (() => BgServer[]) | undefined;
 	pluginStopBgTask?: ((taskId: string) => boolean) | undefined;
@@ -2499,29 +2513,22 @@ function pushNoticeToAll(level: "info" | "warning" | "error", text: string, text
 
 // MCP 工具桥：读取配置启动外部 MCP 服务器（stdio / HTTP streamable-http），把它们的
 // 工具并入与插件工具相同的 customTools 管线；单服务器失败不炸进程。
-const mcpBridge = new McpBridge(DATA_DIR, (...a) => console.log("[mcp]", ...a), {
-	agentDir: getAgentDir(),
-	cwd: CWD,
-	onToolsChanged: () => service.applyPluginAgentTools(),
-});
-ClientSession.mcpBridge = mcpBridge;
-pluginMgr.mcpBridge = mcpBridge;
-// mcp.json 热加载：保存文件即生效，改完不必再重启服务。两半都在这里收口 —— reload 换入
-// 新的服务器集合（只重启规格真变了的），applyPluginAgentTools 把新工具推给已有会话。
-const mcpHotReload = createMcpHotReload({
+const mcpProjects = new McpProjectRuntimeRegistry({
 	dataDir: DATA_DIR,
+	isProjectInUse: (cwd) => {
+		const key = (value: string) => (process.platform === "win32" ? resolve(value).toLowerCase() : resolve(value));
+		return activeEngines().some((svc) => svc.mcpProjectCwds?.().some((project) => key(project) === key(cwd)));
+	},
 	agentDir: getAgentDir(),
-	cwd: CWD,
-	reload: () => mcpBridge.reload(),
-	onToolsChanged: () => service.applyPluginAgentTools(),
-	onNotice: (level, text, textEn) => pushNoticeToAll(level, text, textEn),
-	log: (...a) => console.log(...a),
+	onToolsChanged: (cwd) => {
+		service.applyPluginAgentTools();
+		for (const svc of activeEngines()) svc.refreshMcpProject?.(cwd);
+	},
+	onNotice: (_cwd, level, text, textEn) => pushNoticeToAll(level, text, textEn),
+	log: (...a) => console.log("[mcp]", ...a),
 });
-void mcpBridge.load().then(() => {
-	if (mcpBridge.getTools().length) service.applyPluginAgentTools();
-	// 播种在 load 之后：否则指纹可能记在 load 读到的版本之前，白重载一次。
-	mcpHotReload.start();
-});
+ClientSession.mcpProjects = mcpProjects;
+pluginMgr.mcpProjects = mcpProjects;
 // 插件与宿主钩子统一挂载器：无论引擎在启动时预热还是运行期按需懒加载，都一致注入全部回调。
 wireEngineHooks = (svc: EngineService) => {
 	svc.onToolEvent = (ev) => pluginMgr.emitToolEvent(ev);
@@ -2532,7 +2539,7 @@ wireEngineHooks = (svc: EngineService) => {
 	svc.onRunEvent = (ev) => pluginMgr.emitRunEvent(ev);
 	svc.onConversationChanged = () => pluginMgr.emitConversationChanged();
 	svc.onClientModelChanged = (snap) => pluginMgr.emitClientModelChanged(snap);
-	svc.pluginToolsProvider = () => [...pluginMgr.getAgentTools(), ...mcpBridge.getTools()];
+	svc.pluginToolsProvider = (cwd) => [...pluginMgr.getAgentTools(), ...(cwd ? mcpProjects.getTools(cwd) : [])];
 	svc.pluginCommandsProvider = () => pluginMgr.listCommands();
 	svc.pluginBgTasksProvider = () => pluginMgr.bgTasks();
 	svc.pluginStopBgTask = (taskId) => pluginMgr.stopPluginBgTask(taskId);
@@ -2665,6 +2672,10 @@ pluginMgr.onBgTasksChanged = () => service.refreshBackgroundServers();
 	// runAborter：有现成 abort 路径（interruptRun，卡住/空转强制重置语义继承）。
 	(pm as any).runAborter = async (id: string) => {
 		try {
+			if (id.startsWith("pr-")) {
+				if (!piServiceInstance) return { ok: false, error: "not supported" };
+				return await piServiceInstance.abortPluginRun(id);
+			}
 			const cs = pickClient() as PluginAbortClient | undefined;
 			if (!cs || typeof cs.abortForPlugins !== "function") return { ok: false, error: "not supported" };
 			return await cs.abortForPlugins(id);
@@ -2782,10 +2793,14 @@ wss.on("connection", (ws) => {
 	service.noteSocketOpen();
 	let clientId: string | null = null;
 	let closed = false;
+	const helloTimer = setTimeout(() => {
+		if (!clientId) ws.close(1008, "Handshake timed out");
+	}, 15_000);
+	helloTimer.unref?.();
 	/** 最近一份全量 snapshot 的估算字节数（UTF-16 ×2），供背压相对阈值用（issue #11）。 */
 	let lastSnapshotBytes = 0;
 	/** Commands received while the session is still being created — replayed after attach.
-	 *  带上限（256 条）：attach 挂死/失败保活期间队列不再无界增长，超限丢最旧并告警。 */
+	 *  按条数和累计字节限制；超限关闭连接，避免静默丢弃已接收的命令。 */
 	const pending = new PendingCommandQueue();
 	/** attach 完成（含插件链 + 首快照）前一律排队（见 hello 分支的 replayQueued）：
 	 *  ready 先行后，ready 只代表传输通，插件命令目录/首快照都还没好，直接分发
@@ -3103,9 +3118,9 @@ wss.on("connection", (ws) => {
 		}
 	};
 
-	const dispatch = (msg: ClientMessage): void => {
+	const dispatch = (msg: ClientMessage, wireBytes?: number): void => {
 		if (!clientId) {
-			pending.push(msg);
+			if (!pending.push(msg, wireBytes)) ws.close(1009, "Pending command budget exceeded");
 			return;
 		}
 
@@ -3130,7 +3145,7 @@ wss.on("connection", (ws) => {
 		const cs = service.get(clientId);
 		if (!cs || !attachDone) {
 			// Session not ready yet (hello processing / plugin chain) — hold the command.
-			pending.push(msg);
+			if (!pending.push(msg, wireBytes)) ws.close(1009, "Pending command budget exceeded");
 			return;
 		}
 		// 历史窗口按需加载：连接级窗口化直接服务（四个引擎通吃，不依赖引擎实现）。
@@ -3142,6 +3157,7 @@ wss.on("connection", (ws) => {
 				conversationId: msg.conversationId,
 				beforeId: msg.beforeId,
 				before: msg.before,
+				historyGeneration: msg.historyGeneration,
 			});
 			if (!handled && cs) {
 				const activeId = typeof cs.activeConversationId === "function" ? cs.activeConversationId() : undefined;
@@ -3155,6 +3171,7 @@ wss.on("connection", (ws) => {
 						conversationId: convId,
 						beforeId: msg.beforeId,
 						before: msg.before,
+						historyGeneration: msg.historyGeneration,
 					});
 				}
 				if (!handled && (!msg.conversationId || msg.conversationId === activeId)) {
@@ -3389,14 +3406,26 @@ wss.on("connection", (ws) => {
 	ws.on("message", (data) => {
 		tracked.isAlive = true;
 		tracked.missedPings = 0;
-		let msg: ClientMessage;
+		const wireBytes = Array.isArray(data) ? data.reduce((n, chunk) => n + chunk.length, 0) : data.byteLength;
+		if (!clientId && wireBytes > MAX_PRE_HELLO_WS_BYTES) {
+			ws.close(1009, "Handshake message too large");
+			return;
+		}
+		let parsed: unknown;
 		try {
-			msg = JSON.parse(data.toString()) as ClientMessage;
+			parsed = JSON.parse(data.toString());
 		} catch {
 			return;
 		}
+		if (!isClientMessageEnvelope(parsed)) return;
+		if (!isClientMessageWithinByteLimit(parsed.type, wireBytes, !!clientId)) {
+			ws.close(1009, "Message budget exceeded");
+			return;
+		}
+		const msg = parsed as ClientMessage;
 
 		if (msg.type === "hello") {
+			clearTimeout(helloTimer);
 			// 重放守卫：一条连接只允许 attach 一次。clientId 已赋值说明 hello 处理过
 			//（或进行中），再来的 hello 幂等回一条 ready 即可——否则重复 hello 会把
 			// service.attach 整个再跑一遍：重型 ClientSession 重复创建 + 旧 send sink
@@ -3574,10 +3603,11 @@ wss.on("connection", (ws) => {
 			return;
 		}
 
-		dispatch(msg);
+		dispatch(msg, wireBytes);
 	});
 
 	ws.on("close", () => {
+		clearTimeout(helloTimer);
 		service.noteSocketClose();
 		closed = true;
 		pending.clear();
@@ -3785,12 +3815,13 @@ async function shutdown(signal: "SIGINT" | "SIGTERM" = "SIGINT"): Promise<void> 
 	let code = 0;
 	try {
 		clearInterval(heartbeatTimer);
+		await deviceCenter.close();
+		await deviceDesktop.close();
 		stopControl();
 		scheduler.stop();
 		pluginMgr.dispose();
 		pluginInstaller.dispose();
-		mcpHotReload.dispose();
-		mcpBridge.dispose();
+		await mcpProjects.dispose();
 		await globalLspPool.shutdownAll();
 		await service.disposeAll();
 		// Don't let dead browsers hold the exit open: half-open WebSocket /

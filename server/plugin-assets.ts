@@ -9,10 +9,10 @@
  * 5. Staging 隔离解压与原子安全替换；
  * 6. 细粒度下载进度透传与日志归因。
  */
-import { execSync } from "node:child_process";
+import { execFileSync } from "node:child_process";
 import { createHash } from "node:crypto";
 import { createWriteStream, existsSync, mkdirSync, renameSync, rmSync, unlinkSync } from "node:fs";
-import { isAbsolute, join, resolve } from "node:path";
+import { basename, dirname, isAbsolute, join, resolve } from "node:path";
 
 export interface PluginAssetSpec {
 	/** 资产唯一标识，如 "univer-runtime" */
@@ -270,8 +270,12 @@ export async function ensurePluginAsset(
 			mkdirSync(stagingDir, { recursive: true });
 
 			try {
-				// 调用跨平台 tar 工具解压（--force-local 防 Windows 盘符冒号被识别为远程主机）
-				execSync(`tar --force-local -xzf "${tempTar}" -C "${stagingDir}"`, { windowsHide: true });
+				// Relative archive names avoid GNU tar treating drive letters as remote hosts.
+				// BSD/Windows tar does not support GNU-only --force-local.
+				execFileSync("tar", ["-xzf", `./${basename(tempTar)}`, "-C", resolve(stagingDir)], {
+					cwd: dirname(resolve(tempTar)),
+					windowsHide: true,
+				});
 
 				// 检查 staging 内部形态（若内部包装了同名子目录，取子目录内容）
 				const subDir = join(stagingDir, spec.targetDir);

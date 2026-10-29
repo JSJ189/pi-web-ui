@@ -133,11 +133,8 @@ describe("loadSessionInfos — 扁平布局 cwd 过滤（issue #438）", () => {
 		expect(infos.map((i) => i.path)).toEqual([own.path]);
 	});
 
-	// ⚠️ 这里真的有 211 个文件要落盘 + 211 个文件要被真实扫描：全量套件并行跑（4 个 worker，
-	// 且 Windows 上有实时杀毒扫描）时 5s 默认超时不够 —— 那是超时，不是断言失败，会连带
-	// 让 afterEach 在文件还在写时清理。给足超时，不要用缩小用例规模换速度：201 与 200 的
-	// 边界正是这个用例要验的东西。
-	it("200 截断发生在 cwd 过滤之后：名额只分给本项目（issue #438 附带问题）", { timeout: 60_000 }, async () => {
+	// Keep every matching candidate for full-history search; display pagination is separate.
+	it("超过 200 个本项目会话仍完整保留，其他项目不混入", { timeout: 60_000 }, async () => {
 		const root = await makeTmpDir("flat-cap");
 		const cwdA = await makeTmpDir("proj-a");
 		const cwdB = await makeTmpDir("proj-b");
@@ -145,7 +142,7 @@ describe("loadSessionInfos — 扁平布局 cwd 过滤（issue #438）", () => {
 
 		// 本项目 201 个 + 其他项目 10 个；其他项目的 mtime 全部更新（抢占名额）。
 		// 修复前：mtime 前 200 = other×10 + own 最新的 190 → 本项目丢 10 个名额还混入异项目。
-		// 修复后：先过滤（剩 201 个 own）再截 200 → 只丢 own 中 mtime 最旧的 1 个。
+		// 搜索候选先按 cwd 过滤，并保留包括最旧会话在内的全部 201 个。
 		const baseMs = 1_000_000;
 		const ownFiles: { id: string }[] = [];
 		for (let i = 0; i < 201; i++) {
@@ -158,10 +155,10 @@ describe("loadSessionInfos — 扁平布局 cwd 过滤（issue #438）", () => {
 		}
 
 		const infos = await loadSessionInfos.call(fakeThis(cwdA));
-		expect(infos).toHaveLength(200);
+		expect(infos).toHaveLength(201);
 		const ids = infos.map((i) => i.id);
 		expect(ids.some((id) => id.startsWith("other-"))).toBe(false);
-		expect(ids).not.toContain("own-000"); // mtime 最旧的被截掉
+		expect(ids).toContain("own-000"); // 旧会话仍可搜索
 		expect(ids).toContain("own-200"); // mtime 最新的保留
 		expect(infos.every((i) => normalizePathKey(i.cwd) === normalizePathKey(cwdA))).toBe(true);
 	});

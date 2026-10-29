@@ -9,12 +9,18 @@ import {
 	FiUploadCloud,
 	FiX,
 } from "react-icons/fi";
-import type { UiPresetCatalogEntry } from "../types";
+import type { UiPresetCatalogEntry, UiPresetPluginDependency, UiSettingsPreset } from "../types";
+import {
+	clearsPresetField,
+	pendingPresetPluginJob,
+	presetPluginDependency,
+	presetPluginStatus,
+} from "../preset-plugins";
 import { isZhLocale, useI18n, useT } from "../i18n";
 import { appSend } from "../app-globals";
 import { saveDownloadBlob } from "../download";
 import { randomUuid } from "../uuid";
-import { useCopyFeedback, copyTextToClipboard } from "../use-copy-feedback";
+import { useCopyFeedback } from "../use-copy-feedback";
 import {
 	groupPresetFields,
 	presetFieldLabel,
@@ -23,13 +29,23 @@ import {
 	type PresetFieldGroup,
 } from "../../../server/preset-fields.js";
 import { Modal } from "./Modal";
-import type { PresetCatalogState, PresetExportState, PresetImportState, PresetShareState } from "../use-chat";
+import type {
+	ChatState,
+	PresetCatalogState,
+	PresetExportState,
+	PresetImportState,
+	PresetShareState,
+} from "../use-chat";
 
 interface PresetShareModalProps {
 	/** 本地预设名（设置状态里的预设列表视图）。 */
-	presets: string[];
+	presets: UiSettingsPreset[];
+	plugins: ChatState["plugins"];
+	pluginCatalog: ChatState["pluginCatalog"];
+	pluginJobs: ChatState["pluginJobs"];
+	disabledPlugins: string[];
 	presetExport: PresetExportState | null;
-	presetImport: PresetImportState | null;
+	presetImport: (PresetImportState & { applyError?: string }) | null;
 	presetCatalog: PresetCatalogState | null;
 	presetShare: PresetShareState | null;
 	/** 打开时预选的预设名（"" = 当前设置）。 */
@@ -91,10 +107,14 @@ function presetGroupLabelKey(g: PresetFieldGroup): string {
  */
 export function PresetShareModal({
 	presets,
-	presetExport,
-	presetImport,
-	presetCatalog,
-	presetShare,
+	plugins,
+	pluginCatalog,
+	pluginJobs,
+	disabledPlugins,
+	presetExport: exportReceipt,
+	presetImport: importReceipt,
+	presetCatalog: catalogReceipt,
+	presetShare: shareReceipt,
 	initialPreset = "",
 	initialTab = "export",
 	onClose,
@@ -110,6 +130,24 @@ export function PresetShareModal({
 	const [author, setAuthor] = useState("");
 	const copyFeedback = useCopyFeedback({ duration: 1500 });
 	const [sharing, setSharing] = useState(false);
+	const [exporting, setExporting] = useState(false);
+	const [importing, setImporting] = useState(false);
+	const [importName, setImportName] = useState("");
+	const [selectedPlugins, setSelectedPlugins] = useState<UiPresetPluginDependency[]>(
+		() => presets.find((p) => p.name === initialPreset)?.plugins ?? [],
+	);
+	const [installJobs, setInstallJobs] = useState<Record<string, string>>({});
+	const installLocks = useRef(new Set<string>());
+	const requestLocks = useRef(new Set<string>());
+	const [requests, setRequests] = useState({ export: "", share: "", import: "", catalog: "" });
+	const request = (kind: keyof typeof requests, id: string) => {
+		setRequests((prev) => ({ ...prev, [kind]: id }));
+		return id;
+	};
+	const presetExport = exportReceipt?.requestId === requests.export ? exportReceipt : null;
+	const presetShare = shareReceipt?.requestId === requests.share ? shareReceipt : null;
+	const presetImport = importReceipt?.requestId === requests.import ? importReceipt : null;
+	const presetCatalog = catalogReceipt?.requestId === requests.catalog ? catalogReceipt : null;
 
 	// ---- 导入页签 ----------------------------------------------------------
 	const [text, setText] = useState("");
@@ -122,6 +160,13 @@ export function PresetShareModal({
 	/** 字段详情展开状态。 */
 	const [expandedFields, setExpandedFields] = useState<Set<string>>(new Set());
 	const fileRef = useRef<HTMLInputElement | null>(null);
+	const importGeneration = useRef(0);
+	useEffect(
+		() => () => {
+			importGeneration.current++;
+		},
+		[],
+	);
 
 	// ---- 浏览页签 ----------------------------------------------------------
 	const [query, setQuery] = useState("");
@@ -129,38 +174,38 @@ export function PresetShareModal({
 
 	// 打开时先把目录拉一遍（列表是这一页的主内容，早拉早显示）。
 	useEffect(() => {
-		appSend({ type: "preset_catalog", requestId: `catalog:${randomUuid()}` });
+		appSend({ type: "preset_catalog", requestId: request("catalog", `catalog:${randomUuid()}`) });
 	}, []);
 
 	// 目录回执到达 = 不再加载中。
-	const lastCatalog = useRef(0);
+	const lastCatalog = useRef<PresetCatalogState | null>(null);
 	useEffect(() => {
-		if (!presetCatalog || presetCatalog.receivedAt === lastCatalog.current) return;
-		lastCatalog.current = presetCatalog.receivedAt;
+		if (!presetCatalog || presetCatalog === lastCatalog.current) return;
+		lastCatalog.current = presetCatalog;
 		setBrowsing(false);
 	}, [presetCatalog]);
 
-	// 分享回执：gh 成功直接开 Issue；回落路径先复制 JSON 再开预填页面。
-	const lastShare = useRef(0);
+	// A receipt updates status only; opening links and copying require an explicit click.
+	const lastShare = useRef<PresetShareState | null>(null);
 	useEffect(() => {
-		if (!presetShare || presetShare.receivedAt === lastShare.current) return;
-		lastShare.current = presetShare.receivedAt;
+		if (!presetShare || presetShare === lastShare.current) return;
+		lastShare.current = presetShare;
 		setSharing(false);
-		if (presetShare.method === "browser") {
-			if (presetShare.json) void copyTextToClipboard(presetShare.json);
-			if (presetShare.url) window.open(presetShare.url, "_blank", "noopener,noreferrer");
-			return;
-		}
-		if (presetShare.ok && presetShare.url) window.open(presetShare.url, "_blank", "noopener,noreferrer");
+		requestLocks.current.delete("share");
 	}, [presetShare]);
 
 	// 导入回执：非 dryRun 成功 = 这一单已经落盘（清掉预览，避免重复点）。
-	const lastImport = useRef(0);
+	const lastImport = useRef<PresetImportState | null>(null);
 	useEffect(() => {
-		if (!presetImport || presetImport.receivedAt === lastImport.current) return;
-		lastImport.current = presetImport.receivedAt;
+		if (!presetImport || presetImport === lastImport.current) return;
+		lastImport.current = presetImport;
 		// 新预览到达（dryRun）时把「可选导入」重置成全选，避免上一次的勾选残留误事。
-		if (presetImport.dryRun && presetImport.preview) setPicked(new Set(presetImport.preview.fields));
+		setImporting(false);
+		requestLocks.current.delete("import");
+		if (presetImport.dryRun && presetImport.preview) {
+			setPicked(new Set(presetImport.preview.fields));
+			setImportName(presetImport.preview.name);
+		}
 		if (presetImport.ok && !presetImport.dryRun) {
 			setText("");
 			setUrl("");
@@ -168,6 +213,13 @@ export function PresetShareModal({
 			setPicked(null);
 		}
 	}, [presetImport]);
+
+	useEffect(() => {
+		if (presetExport) {
+			setExporting(false);
+			requestLocks.current.delete("export");
+		}
+	}, [presetExport]);
 
 	const shareArgs = useMemo(() => {
 		const list = tags
@@ -177,16 +229,26 @@ export function PresetShareModal({
 		return {
 			source: shareName ? ("preset" as const) : ("current" as const),
 			name: shareName,
+			plugins: selectedPlugins
+				.map((p) => presetPluginDependency(p, pluginCatalog))
+				.filter((p): p is UiPresetPluginDependency => !!p),
 			...(description.trim() ? { description: description.trim() } : {}),
 			...(author.trim() ? { author: author.trim() } : {}),
 			...(list.length > 0 ? { tags: list } : {}),
 		};
-	}, [shareName, description, tags, author]);
+	}, [shareName, description, tags, author, selectedPlugins, pluginCatalog]);
 
-	const doExport = () => appSend({ type: "preset_export", ...shareArgs, requestId: `export:${randomUuid()}` });
+	const doExport = () => {
+		if (requestLocks.current.has("export")) return;
+		requestLocks.current.add("export");
+		setExporting(true);
+		appSend({ type: "preset_export", ...shareArgs, requestId: request("export", `export:${randomUuid()}`) });
+	};
 	const doShare = () => {
+		if (requestLocks.current.has("share")) return;
+		requestLocks.current.add("share");
 		setSharing(true);
-		appSend({ type: "preset_share", ...shareArgs, requestId: `share:${randomUuid()}` });
+		appSend({ type: "preset_share", ...shareArgs, requestId: request("share", `share:${randomUuid()}`) });
 	};
 
 	const downloadExport = () => {
@@ -203,41 +265,50 @@ export function PresetShareModal({
 
 	/** 发一次 dryRun 预览（粘贴/文件 → preset_import；网址 → preset_import_url）。 */
 	const previewText = (json: string, src: ImportSource) => {
-		if (!json.trim()) return;
+		if (!json.trim() || requestLocks.current.has("import")) return;
+		requestLocks.current.add("import");
+		setImporting(true);
 		setPending({ source: src, json });
-		appSend({ type: "preset_import", json, dryRun: true, requestId: reqId(src) });
+		appSend({ type: "preset_import", json, dryRun: true, requestId: request("import", reqId(src)) });
 	};
 	const previewUrl = (target: string, src: ImportSource = "url") => {
-		if (!target.trim()) return;
+		if (!target.trim() || requestLocks.current.has("import")) return;
+		requestLocks.current.add("import");
+		setImporting(true);
 		setPending({ source: src, url: target });
-		appSend({ type: "preset_import_url", url: target, dryRun: true, requestId: reqId(src) });
+		appSend({ type: "preset_import_url", url: target, dryRun: true, requestId: request("import", reqId(src)) });
 	};
 
 	/** 确认导入：把预览用的载荷原样重发（dryRun:false），可选导入后立即应用；
 	 *  同时带上**勾选的字段**（可选导入 —— 只写用户要的那部分）。 */
 	const confirmImport = () => {
-		if (!pending || chosen.size === 0) return;
+		if (!pending || chosen.size === 0 || !importName.trim() || requestLocks.current.has("import")) return;
+		requestLocks.current.add("import");
+		setImporting(true);
 		const base = {
 			dryRun: false,
-			name: presetImport?.preview?.name,
+			name: importName.trim(),
 			apply: applyAfter,
 			fields: [...chosen],
-			requestId: reqId(pending.source),
+			requestId: request("import", reqId(pending.source)),
 		};
 		if (pending.url) appSend({ type: "preset_import_url", url: pending.url, ...base });
 		else if (pending.json) appSend({ type: "preset_import", json: pending.json, ...base });
 	};
 
 	const pickFile = (file: File | undefined) => {
-		if (!file) return;
+		if (!file || importing) return;
 		const reader = new FileReader();
-		reader.onload = () => previewText(String(reader.result ?? ""), "file");
+		const generation = ++importGeneration.current;
+		reader.onload = () => {
+			if (generation === importGeneration.current) previewText(String(reader.result ?? ""), "file");
+		};
 		reader.readAsText(file);
 	};
 
 	const refreshCatalog = () => {
 		setBrowsing(true);
-		appSend({ type: "preset_catalog", refresh: true, requestId: `catalog:${randomUuid()}` });
+		appSend({ type: "preset_catalog", refresh: true, requestId: request("catalog", `catalog:${randomUuid()}`) });
 	};
 
 	const entries = presetCatalog?.entries ?? [];
@@ -249,7 +320,36 @@ export function PresetShareModal({
 		);
 	}, [entries, query]);
 
+	const installPlugin = (dependency: UiPresetPluginDependency) => {
+		if (
+			!dependency.source ||
+			plugins.some((p) => p.id === dependency.id) ||
+			pendingPresetPluginJob(dependency.id, pluginJobs) ||
+			installLocks.current.has(dependency.id)
+		)
+			return;
+		if (
+			!window.confirm(t("presetPluginsConfirm", { name: dependency.name || dependency.id, source: dependency.source }))
+		)
+			return;
+		installLocks.current.add(dependency.id);
+		const jobId = randomUuid();
+		setInstallJobs((prev) => ({ ...prev, [dependency.id]: jobId }));
+		appSend({ type: "plugin_job", action: "install", jobId, id: dependency.id, source: dependency.source });
+	};
+	useEffect(() => {
+		for (const [id, jobId] of Object.entries(installJobs)) {
+			if (pluginJobs[jobId]?.phase === "done") installLocks.current.delete(id);
+		}
+	}, [installJobs, pluginJobs]);
+	const invalidateImport = () => {
+		importGeneration.current++;
+		setRequests((prev) => ({ ...prev, import: "" }));
+		setPending(null);
+		setPicked(null);
+	};
 	const preview = presetImport?.dryRun ? presetImport.preview : undefined;
+	const dependencyPreview = preview ?? (presetImport?.ok ? presetImport.preview : undefined);
 	const importDone = presetImport?.ok && !presetImport.dryRun ? presetImport.preview : undefined;
 	// 按界面语言判断（中文系含 zh-TW；旧做法比对 t("ok") 的简中译文，繁中会被误判为英文）
 	const isZh = isZhLocale(locale);
@@ -315,45 +415,81 @@ export function PresetShareModal({
 
 			<div className="preset-share-body">
 				{tab === "export" && (
-					<div className="preset-share-pane">
-						<label className="preset-share-field">
-							<span>{t("presetShareSource")}</span>
-							<select className="set-input" value={shareName} onChange={(e) => setShareName(e.target.value)}>
-								<option value="">{t("presetShareSourceCurrent")}</option>
-								{presets.map((n) => (
-									<option key={n} value={n}>
-										{n}
-									</option>
-								))}
-							</select>
-						</label>
-						<label className="preset-share-field">
-							<span>{t("presetShareDescription")}</span>
-							<input
-								className="set-input"
-								value={description}
-								placeholder={t("presetShareDescriptionPlaceholder")}
-								onChange={(e) => setDescription(e.target.value)}
-							/>
-						</label>
-						<label className="preset-share-field">
-							<span>{t("presetShareTags")}</span>
-							<input
-								className="set-input"
-								value={tags}
-								placeholder={t("presetShareTagsPlaceholder")}
-								onChange={(e) => setTags(e.target.value)}
-							/>
-						</label>
-						<label className="preset-share-field">
-							<span>{t("presetShareAuthor")}</span>
-							<input className="set-input" value={author} onChange={(e) => setAuthor(e.target.value)} />
-						</label>
+					<div
+						className="preset-share-pane"
+						onChange={() => setRequests((prev) => ({ ...prev, export: "", share: "" }))}
+					>
+						<fieldset disabled={sharing || exporting} style={{ border: 0, padding: 0, margin: 0, minWidth: 0 }}>
+							<label className="preset-share-field">
+								<span>{t("presetShareSource")}</span>
+								<select
+									className="set-input"
+									value={shareName}
+									onChange={(e) => {
+										setShareName(e.target.value);
+										setSelectedPlugins(presets.find((p) => p.name === e.target.value)?.plugins ?? []);
+									}}
+								>
+									<option value="">{t("presetShareSourceCurrent")}</option>
+									{presets.map((n) => (
+										<option key={n.name} value={n.name}>
+											{n.name}
+										</option>
+									))}
+								</select>
+							</label>
+							<label className="preset-share-field">
+								<span>{t("presetShareDescription")}</span>
+								<input
+									className="set-input"
+									value={description}
+									placeholder={t("presetShareDescriptionPlaceholder")}
+									onChange={(e) => setDescription(e.target.value)}
+								/>
+							</label>
+							<label className="preset-share-field">
+								<span>{t("presetShareTags")}</span>
+								<input
+									className="set-input"
+									value={tags}
+									placeholder={t("presetShareTagsPlaceholder")}
+									onChange={(e) => setTags(e.target.value)}
+								/>
+							</label>
+							<label className="preset-share-field">
+								<span>{t("presetShareAuthor")}</span>
+								<input className="set-input" value={author} onChange={(e) => setAuthor(e.target.value)} />
+							</label>
+							<div className="preset-share-pick">
+								<strong>{t("presetPluginsTitle")}</strong>
+								<p className="set-note">{t("presetPluginsExportHint")}</p>
+								{[...plugins, ...selectedPlugins.filter((p) => !plugins.some((i) => i.id === p.id))].map((plugin) => {
+									const portable = presetPluginDependency(plugin, pluginCatalog);
+									return (
+										<label className="preset-share-check" key={plugin.id}>
+											<input
+												type="checkbox"
+												disabled={!portable}
+												checked={!!portable && selectedPlugins.some((p) => p.id === plugin.id)}
+												onChange={(e) =>
+													setSelectedPlugins((prev) =>
+														e.target.checked
+															? [...prev.filter((p) => p.id !== plugin.id), portable!]
+															: prev.filter((p) => p.id !== plugin.id),
+													)
+												}
+											/>
+											{plugin.name || plugin.id} {plugin.version} · {portable?.source ?? t("presetPluginsLocal")}
+										</label>
+									);
+								})}
+							</div>
+						</fieldset>
 						<div className="preset-share-actions">
-							<button type="button" className="btn" onClick={doExport}>
+							<button type="button" className="btn" disabled={exporting || sharing} onClick={doExport}>
 								<FiDownload /> {t("presetExportJson")}
 							</button>
-							<button type="button" className="btn primary" onClick={doShare} disabled={sharing}>
+							<button type="button" className="btn primary" onClick={doShare} disabled={sharing || exporting}>
 								{sharing ? <FiRefreshCw className="preset-share-spin" /> : <FiShare2 />}
 								{sharing ? t("presetShareSubmitting") : t("presetShareSubmit")}
 							</button>
@@ -366,10 +502,7 @@ export function PresetShareModal({
 									<FiExternalLink /> <strong>{t("presetShareOpenWebTitle")}</strong>
 								</div>
 								{presetShare.error && <p className="preset-share-warn">{presetShare.error}</p>}
-								<p className="preset-share-hint">
-									{t("presetShareBrowserCopied")}
-									{presetShare.url && ` ${t("presetSharePopupBlocked")}`}
-								</p>
+								<p className="preset-share-hint">{t("presetShareManualSubmission")}</p>
 								<div className="preset-share-actions">
 									{presetShare.url && (
 										<a href={presetShare.url} target="_blank" rel="noopener noreferrer" className="btn primary">
@@ -395,7 +528,7 @@ export function PresetShareModal({
 
 						{presetShare?.ok && (presetShare.method === "gh" || presetShare.method === "api") && presetShare.url && (
 							<div className="preset-share-result-box preset-share-result-success">
-								<p className="preset-share-ok">{t("presetImportImported", { name: presetShare.name || "" })}</p>
+								<p className="preset-share-ok">{t("presetShareCreated")}</p>
 								<div className="preset-share-actions">
 									<a href={presetShare.url} target="_blank" rel="noopener noreferrer" className="btn">
 										<FiExternalLink /> {t("presetShareOpenIssueBtn")}
@@ -435,15 +568,23 @@ export function PresetShareModal({
 								value={text}
 								placeholder={t("presetImportTextPlaceholder")}
 								spellCheck={false}
-								onChange={(e) => setText(e.target.value)}
-								onBlur={() => previewText(text, "paste")}
+								disabled={importing}
+								onChange={(e) => {
+									setText(e.target.value);
+									invalidateImport();
+								}}
 							/>
 						</label>
 						<div className="preset-share-actions">
-							<button type="button" className="btn" onClick={() => previewText(text, "paste")} disabled={!text.trim()}>
+							<button
+								type="button"
+								className="btn"
+								onClick={() => previewText(text, "paste")}
+								disabled={importing || !text.trim()}
+							>
 								<FiUploadCloud /> {t("preview")}
 							</button>
-							<button type="button" className="btn" onClick={() => fileRef.current?.click()}>
+							<button type="button" className="btn" disabled={importing} onClick={() => fileRef.current?.click()}>
 								<FiFilePlus /> {t("presetImportPickFile")}
 							</button>
 							<input
@@ -462,12 +603,16 @@ export function PresetShareModal({
 								className="set-input"
 								value={url}
 								placeholder={t("presetImportUrlPlaceholder")}
-								onChange={(e) => setUrl(e.target.value)}
+								disabled={importing}
+								onChange={(e) => {
+									setUrl(e.target.value);
+									invalidateImport();
+								}}
 								onKeyDown={(e) => {
 									if (e.key === "Enter") previewUrl(url);
 								}}
 							/>
-							<button type="button" className="btn" onClick={() => previewUrl(url)} disabled={!url.trim()}>
+							<button type="button" className="btn" onClick={() => previewUrl(url)} disabled={importing || !url.trim()}>
 								<FiGlobe /> {t("presetImportFromUrl")}
 							</button>
 						</div>
@@ -477,116 +622,219 @@ export function PresetShareModal({
 						)}
 						{preview && (
 							<div className="preset-share-preview">
-								<div className="preset-share-preview-head">
-									<strong>{t("presetImportPreview")}</strong>
-									<span className="preset-share-preview-name">{preview.name}</span>
-								</div>
-								{preview.description && <p className="preset-share-preview-desc">{preview.description}</p>}
-								<ul className="preset-share-meta">
-									<li>{t("presetImportFields", { n: preview.fields.length })}</li>
-									{preview.author && <li>{preview.author}</li>}
-									{preview.tags.length > 0 && <li>{preview.tags.join(" · ")}</li>}
-									{preview.summary.skills > 0 && <li>{`${t("settingsSkills")} ${preview.summary.skills}`}</li>}
-									{preview.summary.agentTools > 0 && <li>{`${t("settingsTools")} ${preview.summary.agentTools}`}</li>}
-								</ul>
-								{preview.ignored.length > 0 && (
-									<p className="preset-share-warn">{t("presetImportIgnored", { list: preview.ignored.join(", ") })}</p>
-								)}
-								{preview.rejected.length > 0 && (
-									<p className="preset-share-warn">
-										{t("presetImportRejected", { list: preview.rejected.join(", ") })}
-									</p>
-								)}
-								{preview.customSystemPrompt && <pre className="preset-share-snippet">{preview.customSystemPrompt}</pre>}
-								{preview.reviewPrompt && <pre className="preset-share-snippet">{preview.reviewPrompt}</pre>}
-								{preview.replaces && <p className="preset-share-warn">{t("presetImportReplaces")}</p>}
-								{/* 可选导入：按分组/按字段勾选（默认全选）。字段名用原始键名，
-								    与设置页/文档一一对应，不另建 47 条翻译。 */}
-								{previewFields.length > 0 && (
-									<div className="preset-share-pick">
-										<div className="preset-share-pick-head">
-											<strong>{t("presetImportPick")}</strong>
-											<button type="button" className="chip" onClick={() => setPicked(new Set(previewFields))}>
-												{t("presetImportSelectAll")}
-											</button>
-											<button type="button" className="chip" onClick={() => setPicked(new Set())}>
-												{t("presetImportSelectNone")}
-											</button>
-										</div>
-										<p className="set-note">{t("presetImportPickHint")}</p>
-										{allChosen && <span className="preset-share-pick-all">{t("presetImportAllSelected")}</span>}
-										{previewGroups.map(({ group, fields }) => (
-											<div key={group} className="preset-share-pick-group">
-												<label className="preset-share-check preset-share-pick-grouptitle">
-													<input
-														type="checkbox"
-														checked={fields.every((f) => chosen.has(f))}
-														onChange={(e) => setPresetGroup(fields, e.target.checked)}
-													/>
-													{t(presetGroupLabelKey(group) as Parameters<typeof t>[0])}
-													<span className="set-count">
-														{fields.filter((f) => chosen.has(f)).length}/{fields.length}
-													</span>
-												</label>
-												<div className="preset-share-pick-fields">
-													{fields.map((f) => {
-														const val = preview.settings?.[f];
-														const { summary, detail } = formatPresetFieldValue(f, val, lang);
-														const label = presetFieldLabel(f, lang);
-														const hint = presetFieldHint(f, lang);
-														const isExpanded = expandedFields.has(f);
-														return (
-															<div key={f} className="preset-share-pick-item">
-																<div className="preset-share-pick-item-head">
-																	<label className="preset-share-check">
-																		<input
-																			type="checkbox"
-																			checked={chosen.has(f)}
-																			onChange={() => togglePresetField(f)}
-																		/>
-																		<span className="preset-share-pick-label">{label}</span>
-																	</label>
-																	<code className="preset-share-pick-code">{f}</code>
-																	{summary && <span className="preset-share-pick-summary">{summary}</span>}
-																	{detail && (
-																		<button
-																			type="button"
-																			className="preset-share-pick-toggle"
-																			onClick={() => toggleFieldExpand(f)}
-																		>
-																			{isExpanded
-																				? isZh
-																					? "收起 ▲"
-																					: "Collapse ▲"
-																				: isZh
-																					? "查看详情 ▼"
-																					: "Details ▼"}
-																		</button>
-																	)}
-																</div>
-																{hint && <p className="preset-share-pick-hint">{hint}</p>}
-																{detail && isExpanded && <pre className="preset-share-pick-detail">{detail}</pre>}
-															</div>
-														);
-													})}
-												</div>
-											</div>
-										))}
-										{chosen.size === 0 && <p className="preset-share-warn">{t("presetImportNoneSelected")}</p>}
+								<fieldset disabled={importing} style={{ border: 0, padding: 0, margin: 0, minWidth: 0 }}>
+									<div className="preset-share-preview-head">
+										<strong>{t("presetImportPreview")}</strong>
+										<input
+											className="set-input"
+											aria-label={t("presetImportName")}
+											disabled={importing}
+											value={importName}
+											onChange={(e) => setImportName(e.target.value)}
+										/>
 									</div>
-								)}
-								<label className="preset-share-check">
-									<input type="checkbox" checked={applyAfter} onChange={(e) => setApplyAfter(e.target.checked)} />
-									{t("presetImportApply")}
-								</label>
-								<div className="preset-share-actions">
-									<button type="button" className="btn primary" disabled={chosen.size === 0} onClick={confirmImport}>
-										{t("presetImportConfirm")}
-									</button>
-								</div>
+									{preview.description && <p className="preset-share-preview-desc">{preview.description}</p>}
+									<ul className="preset-share-meta">
+										<li>{t("presetImportFields", { n: preview.fields.length })}</li>
+										{preview.author && <li>{preview.author}</li>}
+										{preview.tags.length > 0 && <li>{preview.tags.join(" · ")}</li>}
+										{preview.summary.skills > 0 && <li>{`${t("settingsSkills")} ${preview.summary.skills}`}</li>}
+										{preview.summary.agentTools > 0 && <li>{`${t("settingsTools")} ${preview.summary.agentTools}`}</li>}
+									</ul>
+									{preview.ignored.length > 0 && (
+										<p className="preset-share-warn">
+											{t("presetImportIgnored", { list: preview.ignored.join(", ") })}
+										</p>
+									)}
+									{preview.rejected.length > 0 && (
+										<p className="preset-share-warn">
+											{t("presetImportRejected", { list: preview.rejected.join(", ") })}
+										</p>
+									)}
+									{preview.customSystemPrompt && (
+										<pre className="preset-share-snippet">{preview.customSystemPrompt}</pre>
+									)}
+									{preview.reviewPrompt && <pre className="preset-share-snippet">{preview.reviewPrompt}</pre>}
+									{presets.some((p) => p.name === importName.trim()) && (
+										<p className="preset-share-warn">{t("presetImportReplaces")}</p>
+									)}
+									{preview.fields.includes("promptTemplate") && (
+										<p className="preset-share-warn">{t("presetImportTemplateWarning")}</p>
+									)}
+									{/* 可选导入：按分组/按字段勾选（默认全选）。字段名用原始键名，
+								    与设置页/文档一一对应，不另建 47 条翻译。 */}
+									{previewFields.length > 0 && (
+										<div className="preset-share-pick">
+											<div className="preset-share-pick-head">
+												<strong>{t("presetImportPick")}</strong>
+												<button type="button" className="chip" onClick={() => setPicked(new Set(previewFields))}>
+													{t("presetImportSelectAll")}
+												</button>
+												<button type="button" className="chip" onClick={() => setPicked(new Set())}>
+													{t("presetImportSelectNone")}
+												</button>
+											</div>
+											<p className="set-note">{t("presetImportPickHint")}</p>
+											{allChosen && <span className="preset-share-pick-all">{t("presetImportAllSelected")}</span>}
+											{previewGroups.map(({ group, fields }) => (
+												<div key={group} className="preset-share-pick-group">
+													<label className="preset-share-check preset-share-pick-grouptitle">
+														<input
+															type="checkbox"
+															checked={fields.every((f) => chosen.has(f))}
+															onChange={(e) => setPresetGroup(fields, e.target.checked)}
+														/>
+														{t(presetGroupLabelKey(group) as Parameters<typeof t>[0])}
+														<span className="set-count">
+															{fields.filter((f) => chosen.has(f)).length}/{fields.length}
+														</span>
+													</label>
+													<div className="preset-share-pick-fields">
+														{fields.map((f) => {
+															const val = preview.settings?.[f];
+															const { summary, detail } = formatPresetFieldValue(f, val, lang);
+															const label = presetFieldLabel(f, lang);
+															const hint = presetFieldHint(f, lang);
+															const isExpanded = expandedFields.has(f);
+															return (
+																<div key={f} className="preset-share-pick-item">
+																	<div className="preset-share-pick-item-head">
+																		<label className="preset-share-check">
+																			<input
+																				type="checkbox"
+																				checked={chosen.has(f)}
+																				onChange={() => togglePresetField(f)}
+																			/>
+																			<span className="preset-share-pick-label">{label}</span>
+																		</label>
+																		<code className="preset-share-pick-code">{f}</code>
+																		{summary && <span className="preset-share-pick-summary">{summary}</span>}
+																		{detail && (
+																			<button
+																				type="button"
+																				className="preset-share-pick-toggle"
+																				onClick={() => toggleFieldExpand(f)}
+																			>
+																				{isExpanded
+																					? isZh
+																						? "收起 ▲"
+																						: "Collapse ▲"
+																					: isZh
+																						? "查看详情 ▼"
+																						: "Details ▼"}
+																			</button>
+																		)}
+																	</div>
+																	{hint && <p className="preset-share-pick-hint">{hint}</p>}
+																	{clearsPresetField(val) && (
+																		<p className="preset-share-warn">{t("presetImportClears")}</p>
+																	)}
+																	{detail && isExpanded && <pre className="preset-share-pick-detail">{detail}</pre>}
+																</div>
+															);
+														})}
+													</div>
+												</div>
+											))}
+											{chosen.size === 0 && <p className="preset-share-warn">{t("presetImportNoneSelected")}</p>}
+										</div>
+									)}
+									<label className="preset-share-check">
+										<input type="checkbox" checked={applyAfter} onChange={(e) => setApplyAfter(e.target.checked)} />
+										{t("presetImportApply")}
+									</label>
+									<div className="preset-share-actions">
+										<button
+											type="button"
+											className="btn primary"
+											disabled={importing || chosen.size === 0 || !importName.trim()}
+											onClick={confirmImport}
+										>
+											{t("presetImportConfirm")}
+										</button>
+									</div>
+								</fieldset>
 							</div>
 						)}
-						{importDone && <p className="preset-share-ok">{t("presetImportImported", { name: importDone.name })}</p>}
+						{importing && <p role="status">{t("presetImportWorking")}</p>}
+						{importDone && (
+							<>
+								<p className="preset-share-ok">{t("presetImportSaved", { name: importDone.name })}</p>
+								{presetImport?.applied === true && <p className="preset-share-ok">{t("presetImportApplied")}</p>}
+								{presetImport?.applyDeferred && <p className="set-note">{t("presetImportApplyDeferred")}</p>}
+								{presetImport?.applyError && (
+									<p className="preset-share-error">
+										{t("presetImportApplyFailed", { error: presetImport.applyError })}
+									</p>
+								)}
+							</>
+						)}
+						{dependencyPreview?.plugins && dependencyPreview.plugins.length > 0 && (
+							<div className="preset-share-pick">
+								<strong>{t("presetPluginsTitle")}</strong>
+								<p className="set-note">{t("presetPluginsInstallHint")}</p>
+								{dependencyPreview.plugins.map((dependency) => {
+									const status = presetPluginStatus(dependency, plugins, disabledPlugins);
+									const job =
+										pluginJobs[installJobs[dependency.id]] ?? pendingPresetPluginJob(dependency.id, pluginJobs);
+									const running = (!!installJobs[dependency.id] && !job) || (job && job.phase !== "done");
+									return (
+										<div className="preset-share-pick-item" key={dependency.id}>
+											<strong>{dependency.name || dependency.id}</strong> <code>{dependency.id}</code>
+											<p className="set-note">
+												{status.missing
+													? t("presetPluginsMissing")
+													: status.disabled
+														? t("presetPluginsDisabled")
+														: t("presetPluginsInstalled")}
+												{status.versionMismatch &&
+													" · " +
+														t("presetPluginsVersion", {
+															installed: status.plugin?.version || "?",
+															requested: dependency.version || "?",
+														})}
+											</p>
+											<p className="set-note">
+												{dependency.source || t("presetPluginsNoSource")}
+												{dependency.version && " · " + dependency.version}
+											</p>
+											{status.plugin?.error && <p className="preset-share-error">{status.plugin.error}</p>}
+											{job && (
+												<p
+													role="status"
+													className={
+														job.phase === "done" ? (job.ok ? "preset-share-ok" : "preset-share-error") : "set-note"
+													}
+												>
+													{job.phase === "done"
+														? job.ok
+															? t("presetPluginsInstalledCode")
+															: job.error || t("presetPluginsFailed")
+														: t("presetPluginsInstalling")}
+												</p>
+											)}
+											{job?.lines.length || job?.output ? (
+												<pre className="preset-share-snippet">{job.output || job.lines.join("\n")}</pre>
+											) : null}
+											{status.missing && (
+												<button
+													type="button"
+													className="btn"
+													disabled={!dependency.source || !!running || job?.ok === true}
+													onClick={() => installPlugin(dependency)}
+												>
+													{running
+														? t("presetPluginsInstalling")
+														: job?.ok === false
+															? t("presetPluginsRetry")
+															: t("presetPluginsInstall")}
+												</button>
+											)}
+										</div>
+									);
+								})}
+							</div>
+						)}
 					</div>
 				)}
 
@@ -636,6 +884,7 @@ export function PresetShareModal({
 											<button
 												type="button"
 												className="btn primary"
+												disabled={importing}
 												onClick={() => {
 													setTab("import");
 													setUrl(e.url);

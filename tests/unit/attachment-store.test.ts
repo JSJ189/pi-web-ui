@@ -1,6 +1,7 @@
 import { describe, it, expect, beforeEach, vi } from "vitest";
-import { mkdtempSync, readdirSync, rmSync, writeFileSync } from "node:fs";
+import { mkdtempSync, mkdirSync, readdirSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
+import { createHash } from "node:crypto";
 import { join } from "node:path";
 import { initAttachmentStore, saveAttachment, findAttachment, readAttachment } from "../../server/attachment-store.js";
 
@@ -78,6 +79,113 @@ describe("attachment-store 内容寻址附件存储（CAS）", () => {
 		expect(hit?.ext).toBe(rec.ext);
 		const read = await readAttachment(rec.hash);
 		expect(read?.buffer.equals(data)).toBe(true);
+	});
+});
+
+describe("附件目录索引与异步写失败", () => {
+	it("首次并发读取兼容旧目录，后续命中、缺失与新增均不重扫", async () => {
+		const tempDir = mkdtempSync(join(tmpdir(), "pi-attachment-index-"));
+		const dir = join(tempDir, "attachments");
+		mkdirSync(dir);
+		const data = Buffer.from("legacy attachment");
+		const hash = createHash("sha256").update(data).digest("hex");
+		writeFileSync(join(dir, `${hash}.png`), data);
+		writeFileSync(join(dir, `${hash}.jpg`), data);
+		writeFileSync(join(dir, `${hash}.deadbeef.tmp`), "partial");
+		mkdirSync(join(dir, `${hash}.gif`));
+		const tmpOnlyHash = "a".repeat(64);
+		writeFileSync(join(dir, `${tmpOnlyHash}.png.uuid.tmp`), "partial only");
+		const scan = vi.fn();
+		vi.resetModules();
+		vi.doMock("node:fs/promises", async (importOriginal) => {
+			const mod = await importOriginal<typeof import("node:fs/promises")>();
+			return {
+				...mod,
+				readdir: (...args: Parameters<typeof mod.readdir>) => {
+					scan();
+					return mod.readdir(...args);
+				},
+			};
+		});
+		try {
+			const fresh = await import("../../server/attachment-store.js");
+			fresh.initAttachmentStore(tempDir);
+			const hits = await Promise.all([fresh.findAttachment(hash), fresh.findAttachment(hash)]);
+			expect(hits.map((hit) => hit?.ext)).toEqual([".jpg", ".jpg"]);
+			expect(hits[0]?.size).toBe(data.length);
+			expect(hits[0]?.mimeType).toBe("image/jpeg");
+			rmSync(join(dir, `${hash}.jpg`));
+			expect((await fresh.findAttachment(hash))?.ext).toBe(".png");
+			expect(await fresh.findAttachment("0".repeat(64))).toBeNull();
+			expect(await fresh.findAttachment(tmpOnlyHash)).toBeNull();
+			const saved = await fresh.saveAttachment(Buffer.from("new async"), "image/webp");
+			expect((await fresh.findAttachment(saved.hash))?.filePath).toBe(saved.filePath);
+			const sync = fresh.saveAttachmentSync(Buffer.from("new sync"), "image/png");
+			expect((await fresh.findAttachment(sync.hash))?.filePath).toBe(sync.filePath);
+			expect(scan).toHaveBeenCalledTimes(1);
+			fresh.initAttachmentStore(join(tempDir, "another-store"));
+			expect(await fresh.findAttachment(hash)).toBeNull();
+			expect(scan).toHaveBeenCalledTimes(2);
+		} finally {
+			vi.doUnmock("node:fs/promises");
+			vi.resetModules();
+			rmSync(tempDir, { recursive: true, force: true });
+		}
+	});
+
+	it.each(["EPERM", "EEXIST"])("并发 rename %s 且无目标时全部失败并清理临时文件", async (code) => {
+		const tempDir = mkdtempSync(join(tmpdir(), "pi-attachment-failure-"));
+		const error = Object.assign(new Error(code), { code });
+		vi.resetModules();
+		vi.doMock("node:fs/promises", async (importOriginal) => {
+			const mod = await importOriginal<typeof import("node:fs/promises")>();
+			return { ...mod, rename: vi.fn().mockRejectedValue(error) };
+		});
+		try {
+			const fresh = await import("../../server/attachment-store.js");
+			const dir = fresh.initAttachmentStore(tempDir);
+			const results = await Promise.allSettled([
+				fresh.saveAttachment(Buffer.from("same")),
+				fresh.saveAttachment(Buffer.from("same")),
+			]);
+			expect(results).toEqual([
+				{ status: "rejected", reason: error },
+				{ status: "rejected", reason: error },
+			]);
+			expect(readdirSync(dir)).toEqual([]);
+			expect(await fresh.findAttachment(createHash("sha256").update("same").digest("hex"))).toBeNull();
+		} finally {
+			vi.doUnmock("node:fs/promises");
+			vi.resetModules();
+			rmSync(tempDir, { recursive: true, force: true });
+		}
+	});
+
+	it.each(["EPERM", "EEXIST"])("rename %s 但并发方已写入目标时成功", async (code) => {
+		const tempDir = mkdtempSync(join(tmpdir(), "pi-attachment-race-"));
+		const data = Buffer.from("winner");
+		vi.resetModules();
+		vi.doMock("node:fs/promises", async (importOriginal) => {
+			const mod = await importOriginal<typeof import("node:fs/promises")>();
+			return {
+				...mod,
+				rename: async (_from: string, to: string) => {
+					writeFileSync(to, data);
+					throw Object.assign(new Error(code), { code });
+				},
+			};
+		});
+		try {
+			const fresh = await import("../../server/attachment-store.js");
+			const dir = fresh.initAttachmentStore(tempDir);
+			const record = await fresh.saveAttachment(data);
+			expect((await fresh.readAttachment(record.hash))?.buffer).toEqual(data);
+			expect(readdirSync(dir)).toEqual([`${record.hash}.bin`]);
+		} finally {
+			vi.doUnmock("node:fs/promises");
+			vi.resetModules();
+			rmSync(tempDir, { recursive: true, force: true });
+		}
 	});
 });
 

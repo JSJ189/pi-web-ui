@@ -75,7 +75,7 @@ describe("Durable 引擎项目记录与对话持久化真实测试", () => {
 
 	it("2. 对话正常保存，移出运行中列表 (dismiss) 不会误删磁盘记录", async () => {
 		const stateStore = new ClientStateStore(join(dataDir, "client-state.json"));
-		const store = new UniversalSessionStore(dataDir);
+		const store = new UniversalSessionStore(dataDir, "durable");
 		const service = new DurableAgentService({
 			cwd: workspace1,
 			dataDir,

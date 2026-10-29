@@ -635,15 +635,21 @@ export class GoalService {
 			execModel?: string;
 			/** Apply the goal to this conversation instead of the active one. */
 			targetConvId?: string;
-			/** Kick the main agent into generating as soon as the goal is set.
-			 *  Default true (set from the goal bar). The wizard passes false — it
-			 *  kicks off its own generation after auto-setting the refined goal. */
+			/** Start delegated execution after committing the goal (default true). */
 			autoStart?: boolean;
 		},
 	): Promise<void> {
+		await this.commitGoal(goalText, opts);
+	}
+
+	/** Return the exact committed request so callers can guard follow-up work. */
+	private async commitGoal(
+		goalText: string,
+		opts?: NonNullable<Parameters<GoalService["setGoal"]>[1]>,
+	): Promise<{ conv: GoalConversation; generation: number } | undefined> {
 		const text = (goalText ?? "").trim();
 		if (!text) {
-			await this.clearGoal();
+			await this.clearGoal(opts?.targetConvId);
 			return;
 		}
 		if (!this.goalEnabled()) {
@@ -688,12 +694,13 @@ export class GoalService {
 		}
 		const conv = targetConv ?? this.host.activeConv();
 		const goalConversationId = conv.id;
-		conv.goalGeneration += 1;
+		const gen = ++conv.goalGeneration;
 		// 上一轮目标可能还留着常驻执行者子代理（委托执行）：先停掉再开新的，
 		// 否则旧循环会在新目标上继续派活（代次已作废，但角色对话得收）。
 		// await 到 dismiss 完全落定：后面的 spawn 名额检查才不会数到还在收尾的
 		// 旧执行者而误报上限（issue #464；stopDelegated 自身已按会话串行化）。
 		await this.stopDelegated(conv);
+		if (!this.isCurrentGoalRequest(conv, gen)) return;
 		const goal = conv.goal;
 		goal.reviewing = false;
 		goal.conversationId = goalConversationId;
@@ -742,11 +749,8 @@ export class GoalService {
 			text: `🎯 已设目标：${text.slice(0, 80)}${text.length > 80 ? "…" : ""}`,
 			textEn: `🎯 Goal set: ${text.slice(0, 80)}${text.length > 80 ? "…" : ""}`,
 		});
-		// Auto-start generation right after setting the goal (unless this setGoal is
-		// the wizard's internal one, which kicks off itself). This makes the direct
-		// goal-bar path behave like the AI-提炼 path: set a target → agent begins.
+		// Direct requests auto-start; the wizard commits its plan before starting.
 		if (opts?.autoStart !== false) {
-			const gen = conv.goalGeneration;
 			// #591：主对话若仍在跑设目标前的旧任务，首轮派发执行者前先中断让位，
 			// 避免主对话与目标执行者在同一工作区并行动工、污染采样 diff。
 			await this.preemptMainRunForGoal(conv, gen);
@@ -757,6 +761,7 @@ export class GoalService {
 			this.startDelegatedLoop(conv, gen, text);
 			this.host.flushSnapshot();
 		}
+		return { conv, generation: gen };
 	}
 
 	/**
@@ -793,6 +798,7 @@ export class GoalService {
 		// new active conversation while the wizard is still finishing.
 		const wizardConversationId = this.host.activeConvId();
 		const wizardConversation = this.host.activeConv();
+		const wizardGeneration = wizardConversation.goalGeneration;
 		// Human-readable name for notices that must say WHICH conversation the survey
 		// belongs to (issue #292: the user is expected to switch away mid-survey).
 		const wizardConversationTitle = wizardConversation.title;
@@ -1293,16 +1299,16 @@ export class GoalService {
 			});
 			return;
 		}
-		const switchedAway = this.host.activeConvId() !== wizardConversationId;
-		if (parsedSteps.length > 0) {
-			this.host.setPlan?.(wizardConversationId, parsedSteps);
+		if (targetConv !== wizardConversation || !this.isCurrentGoalRequest(wizardConversation, wizardGeneration)) {
+			return;
 		}
+		const switchedAway = this.host.activeConvId() !== wizardConversationId;
 		// Auto-set the refined goal. The wizard workflow implies "set a goal and
 		// work until it passes", so default LOCKED=true unless the user explicitly
 		// turned the lock off (a lock lets the review loop keep revising to pass;
 		// without it the review is single-shot).
 		const wantLocked = opts?.locked === undefined ? true : opts.locked;
-		await this.setGoal(refinedGoal, {
+		const committed = await this.commitGoal(refinedGoal, {
 			reviewModel: wgoal.reviewModel ?? undefined,
 			maxRounds: opts?.maxRounds,
 			locked: wantLocked,
@@ -1311,9 +1317,18 @@ export class GoalService {
 			// Land the goal on the conversation that launched the survey, even if the
 			// user is looking at another one right now (issue #292).
 			targetConvId: wizardConversationId,
-			// The wizard kicks off generation itself below — avoid a double kick.
 			autoStart: false,
 		});
+		if (!committed || !this.isCurrentDelegated(committed.conv, committed.generation)) return;
+		if (parsedSteps.length > 0) {
+			this.host.setPlan?.(wizardConversationId, parsedSteps);
+		}
+		// Preserve plan-before-execution ordering, and retain the commit token across preemption.
+		if (!this.isCurrentDelegated(committed.conv, committed.generation)) return;
+		await this.preemptMainRunForGoal(committed.conv, committed.generation);
+		if (!this.isCurrentDelegated(committed.conv, committed.generation)) return;
+		this.startDelegatedLoop(committed.conv, committed.generation, refinedGoal);
+		this.host.flushSnapshot();
 		this.wizardCancelled = false;
 		this.host.emit({
 			type: "notice",
@@ -1325,12 +1340,6 @@ export class GoalService {
 				? `🎯 Survey done in "${wizardConversationTitle}", goal set: ${refinedGoal.slice(0, 80)}${refinedGoal.length > 80 ? "…" : ""} (switch back to that conversation to watch it generate)`
 				: `🎯 Survey done, goal set: ${refinedGoal.slice(0, 80)}${refinedGoal.length > 80 ? "…" : ""}`,
 		});
-		// 目标模式 2.0（唯一路径）：不向主对话注入「开始实现」——它在目标模式下是审查者，
-		// 干活的另有执行对话，改由服务端循环驱动（setGoal 已把 goal 落在发起会话上）。
-		if (targetConv.goal.goal) {
-			this.startDelegatedLoop(targetConv, targetConv.goalGeneration, targetConv.goal.goal);
-			this.host.flushSnapshot();
-		}
 	}
 
 	/** Persist goal/review preference defaults (model, rounds cap, locked) without
@@ -1378,19 +1387,22 @@ export class GoalService {
 		this.emitGoalStatus();
 	}
 
-	/** Clear the active goal (cancels the review loop AND aborts a running
-	 *  goal wizard — truly terminating its in-flight dialog + agent run). */
-	async clearGoal(): Promise<void> {
-		const conv = this.host.activeConv();
-		conv.goalGeneration += 1;
+	/** Clear the specified conversation's goal, or the active one by default.
+	 *  Cancels its review loop and any running goal wizard. */
+	async clearGoal(target?: GoalConversation | string): Promise<void> {
+		const conv = typeof target === "string" ? this.host.getConv(target) : (target ?? this.host.activeConv());
+		// Missing/stale explicit targets must never fall back to the active conversation.
+		if (!conv || this.host.isDisposed() || this.host.getConv(conv.id) !== conv) return;
+		const gen = ++conv.goalGeneration;
 		// 委托执行：停掉在飞的执行者（循环靠代次作废 + 代次守卫退出）。
 		// await 落定，保证旧执行者已移出会话表，后续重设目标不再误报名额（issue #464）。
 		await this.stopDelegated(conv);
+		if (!this.isCurrentGoalRequest(conv, gen)) return;
 		this.resetLoopCounters(conv);
 		this.clearGoalFields(conv);
 		this.emitGoalStatus();
 		// Abort a running wizard for real (✗ in the goal bar while scoping).
-		if (this.wizardOwnerId === this.host.activeConvId()) {
+		if (this.wizardOwnerId === conv.id) {
 			await this.abortWizard();
 		}
 	}
@@ -1424,10 +1436,11 @@ export class GoalService {
 		for (const convId of Array.from(this.delegatedLoops.keys())) {
 			const conv = this.host.getConv(convId);
 			if (!conv) continue;
-			conv.goalGeneration += 1; // 作废在飞回调（循环靠代次守卫退出）
+			const gen = ++conv.goalGeneration; // 作废在飞回调（循环靠代次守卫退出）
 			// 逐个 await 停/收落定（stopDelegated 已按会话串行化，issue #464）：
 			// 停执行者 + 唤醒 verdict 等待者 + 清 roles/phase
 			await this.stopDelegated(conv);
+			if (!this.isCurrentGoalRequest(conv, gen)) continue;
 			this.resetLoopCounters(conv);
 			this.clearGoalFields(conv);
 			stopped++;
@@ -1551,15 +1564,14 @@ export class GoalService {
 		return typeof v === "number" && v > 0 ? v : 20 * 60_000;
 	}
 
+	/** Mutation requests remain valid even before a goal exists. Never adopt a newer generation. */
+	private isCurrentGoalRequest(conv: GoalConversation, goalGeneration: number): boolean {
+		return !this.host.isDisposed() && this.host.getConv(conv.id) === conv && conv.goalGeneration === goalGeneration;
+	}
+
 	/** 代次守卫：目标没被改/清、会话还在才算本轮有效。 */
 	private isCurrentDelegated(conv: GoalConversation, goalGeneration: number): boolean {
-		return (
-			!this.host.isDisposed() &&
-			this.host.getConv(conv.id) === conv &&
-			conv.goal.conversationId === conv.id &&
-			conv.goalGeneration === goalGeneration &&
-			!!conv.goal.goal
-		);
+		return this.isCurrentGoalRequest(conv, goalGeneration) && conv.goal.conversationId === conv.id && !!conv.goal.goal;
 	}
 
 	private isConvStreaming(conv: GoalConversation): boolean {
@@ -1580,6 +1592,7 @@ export class GoalService {
 	 * 仅在首轮派发前生效（按 goalGeneration 去重），委托执行期间用户在主对话发起的新聊天不受影响。
 	 */
 	private async preemptMainRunForGoal(conv: GoalConversation, goalGeneration: number): Promise<void> {
+		if (!this.isCurrentDelegated(conv, goalGeneration)) return;
 		if (!this.isConvStreaming(conv)) return;
 		if (conv.preemptedGoalGen === goalGeneration) return;
 		conv.preemptedGoalGen = goalGeneration;
@@ -1606,6 +1619,7 @@ export class GoalService {
 
 	/** 启动委托循环（同一对话同时只允许一个在飞；旧循环退场中到来的请求排队接力）。 */
 	private startDelegatedLoop(conv: GoalConversation, goalGeneration: number, goalText: string): void {
+		if (!this.isCurrentDelegated(conv, goalGeneration)) return;
 		if (this.delegatedLoops.has(conv.id)) {
 			this.delegatedPending.set(conv.id, { goalGeneration, goalText });
 			return;
@@ -1741,6 +1755,7 @@ export class GoalService {
 	}
 
 	private async stopDelegatedNow(conv: GoalConversation): Promise<void> {
+		const gen = conv.goalGeneration;
 		// 排队的启动请求一并作废：setGoal 会在后面按新代次重新排，clearGoal 则不需要。
 		this.delegatedPending.delete(conv.id);
 		conv.awaitingVerdict = undefined;
@@ -1762,7 +1777,7 @@ export class GoalService {
 				await this.host.dismissRoleAgent?.(execId);
 			} catch {}
 		}
-		conv.goal.phase = "idle";
+		if (this.isCurrentGoalRequest(conv, gen)) conv.goal.phase = "idle";
 	}
 
 	/** 会话过户时清理目标审查态并唤醒等待者（issue #457）。 */

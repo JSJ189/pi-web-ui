@@ -1,20 +1,8 @@
-/**
- * 会话缓存上限与转录全文拆分的单元测试（issue #440，零 server、零 token）。
- *
- * 覆盖四类行为：
- * 1. sessionFileCache LRU：条目超上限淘汰最旧；命中续期后不被淘汰；
- * 2. invalidateSessionInfos：仍能清理指定文件的元信息缓存与全文缓存；
- * 3. 全文拆分：列表路径（loadSessionInfos）的缓存条目与返回值都不带转录全文，
- *    mtime/size 未变时仍复用同一 info 对象（原行为保持）；
- * 4. 全文按需加载：loadSessionSearchText 走 TTL 缓存 + 256K 字符封顶，
- *    filterSessionsForSearch 元信息命中不读全文、全文命中走按需加载。
- *
- * 磁盘用例经 PI_CODING_AGENT_SESSION_DIR 指向临时目录（扁平布局），fake-this
- * 模式与 soft-cap-apply.test.ts 一致：Object.create(ClientSession.prototype) +
- * 原型/静态方法 .call；私有静态经 Record cast 访问。
- */
+/** Metadata LRU, invalidation and file-stat reuse; streaming search never retains full text. */
 import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, it } from "vitest";
-import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import { mkdtempSync, rmSync, writeFileSync, statSync, utimesSync } from "node:fs";
+import type { SessionInfo } from "@earendil-works/pi-coding-agent";
+import { searchSessions } from "../../server/session-search.js";
 import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
 import { ClientSession } from "../../server/agent-service.js";
@@ -66,7 +54,7 @@ beforeAll(() => {
 		]),
 	);
 	// 大转录：全文 > 256K 字符。首条消息（进 firstMessage 元信息）只含 head_marker，
-	// tail_marker 在第二条消息的封顶之外 —— 确保截断判定不被元信息命中短路。
+	// tail_marker 位于第二条消息尾部，不进入 firstMessage 元信息。
 	writeFileSync(
 		join(tmp, "big.jsonl"),
 		transcript("sess-big", [
@@ -84,8 +72,14 @@ afterAll(() => {
 });
 
 beforeEach(() => {
+	writeFileSync(
+		join(tmp, "a.jsonl"),
+		transcript("sess-a", [
+			{ role: "user", text: "hello world" },
+			{ role: "assistant", text: "hi there" },
+		]),
+	);
 	CS.sessionFileCache.clear();
-	CS.sessionTextCache.clear();
 	CS.sessionInfosCache.clear();
 	CS.sessionInfosInFlight.clear();
 });
@@ -93,7 +87,6 @@ beforeEach(() => {
 afterEach(() => {
 	// 防止用例内对上限常量的临时改写泄漏
 	CS.SESSION_FILE_CACHE_MAX = 512;
-	CS.SESSION_TEXT_CACHE_MAX = 256;
 });
 
 describe("sessionFileCache LRU（issue #440）", () => {
@@ -132,25 +125,21 @@ describe("invalidateSessionInfos 清理语义（issue #440 后保持）", () => 
 	const invalidate = (ClientSession.prototype as unknown as Record<string, (this: unknown, filePath?: string) => void>)
 		.invalidateSessionInfos;
 
-	it("带 filePath：清该文件的元信息缓存 + 全文缓存，并清列表缓存", () => {
+	it("带 filePath：清该文件的元信息缓存，并清列表缓存", () => {
 		CS.sessionFileCache.set(p1, { mtime: 1, size: 1, info: dummyInfo(p1) });
 		CS.sessionFileCache.set(p2, { mtime: 1, size: 1, info: dummyInfo(p2) });
-		CS.sessionTextCache.set(p1, { text: "全文", at: Date.now() });
 		CS.sessionInfosCache.set("somecwd", { infos: [], at: Date.now() });
 		invalidate.call(svcWith("/x"), p1);
 		expect(CS.sessionFileCache.has(p1)).toBe(false);
-		expect(CS.sessionTextCache.has(p1)).toBe(false);
 		expect(CS.sessionFileCache.has(p2)).toBe(true); // 其他文件不受影响
 		expect(CS.sessionInfosCache.size).toBe(0);
 	});
 
-	it("不带 filePath：只清列表缓存，文件与全文缓存保留（原语义）", () => {
+	it("不带 filePath：只清列表缓存，文件元信息缓存保留", () => {
 		CS.sessionFileCache.set(p1, { mtime: 1, size: 1, info: dummyInfo(p1) });
-		CS.sessionTextCache.set(p1, { text: "全文", at: Date.now() });
 		CS.sessionInfosCache.set("somecwd", { infos: [], at: Date.now() });
 		invalidate.call(svcWith("/x"));
 		expect(CS.sessionFileCache.has(p1)).toBe(true);
-		expect(CS.sessionTextCache.has(p1)).toBe(true);
 		expect(CS.sessionInfosCache.size).toBe(0);
 	});
 });
@@ -183,57 +172,54 @@ describe("转录全文拆分与按需加载（issue #440）", () => {
 		expect(second.find((i) => i.id === "sess-a")).toBe(first.find((i) => i.id === "sess-a"));
 	});
 
-	it("loadSessionSearchText：按需提取全文进 TTL 缓存；单条 256K 字符封顶", async () => {
-		const pathA = resolve(join(tmp, "a.jsonl"));
-		const pathBig = resolve(join(tmp, "big.jsonl"));
-		const textA: string = await CS.loadSessionSearchText(pathA);
-		expect(textA).toContain("hello world");
-		expect(textA).toContain("hi there");
-		expect(CS.sessionTextCache.has(pathA)).toBe(true);
-		const textBig: string = await CS.loadSessionSearchText(pathBig);
-		expect(textBig.length).toBe(256 * 1024);
-		expect(textBig).toContain("head_marker");
-		expect(textBig).not.toContain("tail_marker"); // 封顶影响面：截断点之后不参与命中
+	it("mtime changes invalidate metadata even with unchanged size", async () => {
+		const path = join(tmp, "a.jsonl");
+		const proto = ClientSession.prototype as unknown as { loadSessionInfos: () => Promise<SessionInfo[]> };
+		const first = await proto.loadSessionInfos.call(svcWith(tmp));
+		const stat = statSync(path);
+		utimesSync(path, stat.atime, new Date(stat.mtimeMs + 5000));
+		CS.sessionInfosCache.clear();
+		const second = await proto.loadSessionInfos.call(svcWith(tmp));
+		expect(second.find((i) => i.id === "sess-a")).not.toBe(first.find((i) => i.id === "sess-a"));
 	});
 
-	it("sessionTextCache：TTL 过期按未命中处理，未过期命中续期", () => {
-		CS.sessionTextCacheStore("t1", "过期内容", 1); // at=1 → 必然过期
-		expect(CS.sessionTextCacheLookup("t1", Date.now())).toBeUndefined();
-		expect(CS.sessionTextCache.has("t1")).toBe(false);
-		CS.sessionTextCacheStore("t2", "新鲜内容", Date.now());
-		expect(CS.sessionTextCacheLookup("t2", Date.now())).toBe("新鲜内容");
-		expect(CS.sessionTextCache.has("t2")).toBe(true);
+	it("size changes invalidate metadata even when mtime is preserved", async () => {
+		const path = join(tmp, "a.jsonl");
+		const proto = ClientSession.prototype as unknown as { loadSessionInfos: () => Promise<SessionInfo[]> };
+		const first = await proto.loadSessionInfos.call(svcWith(tmp));
+		const stat = statSync(path);
+		writeFileSync(path, "\n", { flag: "a" });
+		utimesSync(path, stat.atime, stat.mtime);
+		// Filesystem timestamp precision varies; pin the cached stat to the actual restored value.
+		CS.sessionFileCache.get(resolve(path)).mtime = statSync(path).mtimeMs;
+		CS.sessionInfosCache.clear();
+		const second = await proto.loadSessionInfos.call(svcWith(tmp));
+		expect(second.find((i) => i.id === "sess-a")).not.toBe(first.find((i) => i.id === "sess-a"));
 	});
 
-	it("sessionTextCache：条目超上限从最旧端淘汰", () => {
-		CS.SESSION_TEXT_CACHE_MAX = 2;
-		CS.sessionTextCacheStore("t1", "1", Date.now());
-		CS.sessionTextCacheStore("t2", "2", Date.now());
-		CS.sessionTextCacheStore("t3", "3", Date.now());
-		expect(CS.sessionTextCache.size).toBe(2);
-		expect(CS.sessionTextCache.has("t1")).toBe(false);
-		expect(CS.sessionTextCache.has("t3")).toBe(true);
-	});
-
-	it("filterSessionsForSearch：元信息命中不读全文；全文命中走按需加载；保序返回", async () => {
-		const infos = await (
-			ClientSession.prototype as unknown as {
-				loadSessionInfos: () => Promise<{ id: string; path: string }[]>;
-			}
-		).loadSessionInfos.call(svcWith(tmp));
-		// 元信息命中（首条消息）——命中的会话不读全文（未命中的 big.jsonl 会按需加载）
-		const byFirst: { id: string }[] = await CS.filterSessionsForSearch.call(ClientSession, "hello world", infos);
-		expect(byFirst.map((s) => s.id)).toEqual(["sess-a"]);
-		expect(CS.sessionTextCache.has(resolve(join(tmp, "a.jsonl")))).toBe(false);
-		// 全文命中（assistant 回复只在全文里）——按需加载后进缓存
-		const byText: { id: string }[] = await CS.filterSessionsForSearch.call(ClientSession, "hi there", infos);
-		expect(byText.map((s) => s.id)).toEqual(["sess-a"]);
-		expect(CS.sessionTextCache.size).toBeGreaterThan(0);
-		// 封顶外尾段不命中（记录在案的影响面）
-		const byTail: { id: string }[] = await CS.filterSessionsForSearch.call(ClientSession, "tail_marker", infos);
-		expect(byTail).toHaveLength(0);
-		// 无命中
-		const none: { id: string }[] = await CS.filterSessionsForSearch.call(ClientSession, "zzz-no-such", infos);
-		expect(none).toHaveLength(0);
+	it("search reads current body without a full-text cache, leaving metadata reusable", async () => {
+		const proto = ClientSession.prototype as unknown as { loadSessionInfos: () => Promise<SessionInfo[]> };
+		const infos = await proto.loadSessionInfos.call(svcWith(tmp));
+		const path = join(tmp, "a.jsonl");
+		const stat = statSync(path);
+		const byText = await searchSessions(infos, "hi there");
+		expect(byText.map((hit) => hit.session.id)).toEqual(["sess-a"]);
+		expect(byText[0].anchors).toEqual([{ role: "assistant", timestamp: 1700000000000 }]);
+		// Same-size rewrite and restored mtime: a stale metadata object cannot serve body text.
+		writeFileSync(
+			path,
+			transcript("sess-a", [
+				{ role: "user", text: "hello world" },
+				{ role: "assistant", text: "new body" },
+			]),
+		);
+		utimesSync(path, stat.atime, stat.mtime);
+		expect(await searchSessions(infos, "hi there")).toEqual([]);
+		expect((await searchSessions(infos, "new body")).map((hit) => hit.session.id)).toEqual(["sess-a"]);
+		for (const { info } of CS.sessionFileCache.values()) expect(info.allMessagesText).toBe("");
+		for (const { infos: cached } of CS.sessionInfosCache.values()) {
+			for (const info of cached) expect(info.allMessagesText).toBe("");
+		}
+		expect(await proto.loadSessionInfos.call(svcWith(tmp))).toBe(infos);
 	});
 });

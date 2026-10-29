@@ -85,6 +85,7 @@ type KillBashHandler = () => void;
 const TOOL_ICONS: Record<string, ReactNode> = {
 	bash: <FiTerminal />,
 	delegate_task: <FiLayers />,
+	conversation: <FiUsers />,
 	subagent: <FiUsers />,
 	read: <FiFileText />,
 	write: <FiEdit3 />,
@@ -141,6 +142,7 @@ const TOOL_ICON_CLASSES: Record<string, string> = {
 	skill: "toolcall-icon tc-tone-code",
 	compact_context: "toolcall-icon tc-tone-code",
 	delegate_task: "toolcall-icon tc-tone-agent",
+	conversation: "toolcall-icon tc-tone-agent",
 	subagent: "toolcall-icon tc-tone-agent",
 	worktree: "toolcall-icon tc-tone-agent",
 	plan_update: "toolcall-icon tc-tone-agent",

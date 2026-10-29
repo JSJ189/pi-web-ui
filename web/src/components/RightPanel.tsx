@@ -97,6 +97,15 @@ function isAbsoluteWire(p: string): boolean {
 /** Props are deliberately NARROW (no whole-ChatState object): every field is
  *  stable while tokens stream in, so the shallow-compared memo() below skips
  *  re-reconciling the file tree on every delta. */
+interface FileUploadProgress {
+	id: string;
+	name: string;
+	dir: string;
+	phase: "reading" | "waiting" | "unknown" | "success" | "error";
+	percent: number;
+	error?: string;
+}
+
 interface RightPanelProps {
 	files: FileListing | null;
 	/** Last dir-changed push (path = listed directory) — triggers a refresh. */
@@ -314,9 +323,45 @@ export const RightPanel = memo(function RightPanel({
 		[cwd],
 	);
 
-	/** 与服务端 files-service.ts 的 MAX_UPLOAD_BYTES 对齐：超限帧到不了 handler，前端先拦给中文提示。 */
-	const WS_UPLOAD_MAX_BYTES = 100 * 1024 * 1024;
-	/** 把一批 File 上传到指定目录（文件右键菜单的「上传文件」与窗口拖放共用）。 */
+	const workspaceUploadMaxMb = useAppField("workspaceUploadMaxMb");
+	const WS_UPLOAD_MAX_BYTES = workspaceUploadMaxMb * 1024 * 1024;
+	const [fileUploads, setFileUploads] = useState<FileUploadProgress[]>([]);
+	const connectionStatus = useAppField("status");
+	useEffect(() => {
+		if (connectionStatus === "open") return;
+		setFileUploads((rows) =>
+			rows.some((row) => row.phase === "waiting")
+				? rows.map((row) => (row.phase === "waiting" ? { ...row, phase: "unknown" } : row))
+				: rows,
+		);
+	}, [connectionStatus]);
+	const uploadReaders = useRef(new Map<string, FileReader>());
+	useEffect(() => {
+		const onResult = (event: Event) => {
+			const result = (event as CustomEvent<unknown>).detail;
+			if (!result || typeof result !== "object") return;
+			const { uploadId, ok, error } = result as Record<string, unknown>;
+			if (typeof uploadId !== "string" || typeof ok !== "boolean") return;
+			setFileUploads((rows) =>
+				rows.map((row) =>
+					row.id === uploadId && (row.phase === "waiting" || row.phase === "unknown")
+						? { ...row, phase: ok ? "success" : "error", error: typeof error === "string" ? error : undefined }
+						: row,
+				),
+			);
+		};
+		window.addEventListener("pi:file-upload-result", onResult);
+		const readers = uploadReaders.current;
+		return () => {
+			window.removeEventListener("pi:file-upload-result", onResult);
+			for (const reader of readers.values()) {
+				reader.onload = reader.onprogress = reader.onerror = reader.onabort = null;
+				reader.abort();
+			}
+			readers.clear();
+		};
+	}, []);
+	/** Percentages describe local reading only; WS send acceptance is not a server acknowledgement. */
 	const uploadFilesTo = useCallback(
 		(dir: string, files: File[]) => {
 			for (const f of files) {
@@ -324,16 +369,46 @@ export const RightPanel = memo(function RightPanel({
 					onNotice("warning", t("fileTooLarge", { name: f.name, size: WS_UPLOAD_MAX_BYTES / 1024 / 1024 }));
 					continue;
 				}
+				const id = crypto.randomUUID();
+				const update = (patch: Partial<FileUploadProgress>) =>
+					setFileUploads((rows) => rows.map((row) => (row.id === id ? { ...row, ...patch } : row)));
+				setFileUploads((rows) => [...rows, { id, name: f.name, dir, phase: "reading", percent: 0 }]);
 				const fr = new FileReader();
-				fr.onload = () => {
-					const dataUrl = fr.result as string;
-					const b64 = dataUrl.slice(dataUrl.indexOf(",") + 1);
-					if (b64) panelSend({ type: "upload_file", dirPath: dir, name: f.name, data: b64 });
+				uploadReaders.current.set(id, fr);
+				const readFailed = () => {
+					uploadReaders.current.delete(id);
+					update({ phase: "error", error: t("fileUploadReadFailed", { name: f.name }) });
 				};
-				fr.readAsDataURL(f);
+				fr.onprogress = (event) => {
+					if (event.lengthComputable && event.total > 0) {
+						update({ percent: Math.min(100, Math.floor((event.loaded / event.total) * 100)) });
+					}
+				};
+				fr.onerror = readFailed;
+				fr.onabort = readFailed;
+				fr.onload = () => {
+					uploadReaders.current.delete(id);
+					if (typeof fr.result !== "string" || !fr.result.includes(",")) {
+						readFailed();
+						return;
+					}
+					const b64 = fr.result.slice(fr.result.indexOf(",") + 1);
+					update({ phase: "waiting", percent: 100 });
+					try {
+						if (panelSend({ type: "upload_file", dirPath: dir, name: f.name, data: b64, uploadId: id })) return;
+					} catch {
+						// A closed connection or serialization failure cannot confirm delivery.
+					}
+					update({ phase: "error", error: t("fileUploadSendFailed", { name: f.name }) });
+				};
+				try {
+					fr.readAsDataURL(f);
+				} catch {
+					readFailed();
+				}
 			}
 		},
-		[panelSend, onNotice, t],
+		[panelSend, onNotice, t, WS_UPLOAD_MAX_BYTES],
 	);
 
 	// ---- 文件右键菜单（contextmenu.file 槽位） -------------------------
@@ -1127,6 +1202,88 @@ export const RightPanel = memo(function RightPanel({
 													{/* 隐藏的文件选择器：右键菜单的「上传文件」用它（每次清空 value，选同一个
 										    文件两次也会触发 change；落点目录见 uploadPicked）。 */}
 													<input ref={fileInput} type="file" multiple hidden onChange={uploadPicked} />
+													{fileUploads.length > 0 && (
+														<div style={{ minWidth: 0, maxWidth: "100%", padding: "4px 8px" }}>
+															{fileUploads.map((upload) => {
+																const status =
+																	upload.phase === "reading"
+																		? t("fileUploadReading", { name: upload.name, percent: upload.percent })
+																		: upload.phase === "waiting"
+																			? t("fileUploadWaiting", { name: upload.name })
+																			: upload.phase === "success"
+																				? t("fileUploadConfirmed")
+																				: upload.phase === "unknown"
+																					? t("fileUploadOutcomeUnknown")
+																					: t("fileUploadFailed", { error: upload.error || upload.name });
+																return (
+																	<div
+																		key={upload.id}
+																		style={{ minWidth: 0, maxWidth: "100%", padding: "3px 0", fontSize: 12 }}
+																	>
+																		<div
+																			style={{
+																				display: "flex",
+																				alignItems: "center",
+																				gap: 4,
+																				minWidth: 0,
+																				maxWidth: "100%",
+																			}}
+																		>
+																			<span
+																				title={`${upload.dir}/${upload.name}`}
+																				style={{
+																					minWidth: 0,
+																					overflow: "hidden",
+																					textOverflow: "ellipsis",
+																					whiteSpace: "nowrap",
+																					flex: 1,
+																				}}
+																			>
+																				{upload.name}
+																			</span>
+																			{upload.phase !== "reading" && (
+																				<button
+																					type="button"
+																					className="btn"
+																					aria-label={`${t("fileUploadDismiss")}: ${upload.name}`}
+																					title={t("fileUploadDismiss")}
+																					onClick={() =>
+																						setFileUploads((rows) => rows.filter((row) => row.id !== upload.id))
+																					}
+																					style={{ flex: "none", padding: 2 }}
+																				>
+																					<FiX aria-hidden="true" />
+																				</button>
+																			)}
+																		</div>
+																		{upload.phase === "reading" && (
+																			<progress
+																				max={100}
+																				value={upload.percent}
+																				aria-label={t("fileUploadReading", {
+																					name: upload.name,
+																					percent: upload.percent,
+																				})}
+																				style={{ width: "100%", height: 4, display: "block" }}
+																			/>
+																		)}
+																		<div
+																			role="status"
+																			aria-live="polite"
+																			aria-atomic="true"
+																			style={{
+																				overflowWrap: "anywhere",
+																				wordBreak: "break-word",
+																				color: upload.phase === "error" ? "var(--err-text)" : "var(--text-dim)",
+																			}}
+																		>
+																			{status}
+																		</div>
+																	</div>
+																);
+															})}
+														</div>
+													)}
 													{transfer && (
 														<FileTransferDialog
 															request={transfer}

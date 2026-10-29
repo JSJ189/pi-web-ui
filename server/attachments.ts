@@ -11,6 +11,7 @@
  */
 import type { AgentSession } from "@earendil-works/pi-coding-agent";
 import type { PromptAttachment, ServerMessage } from "./protocol.js";
+import { uploadLimitBytes, isUploadDataTooLong } from "./payload-limits.js";
 import { formatTextQuote, readTextQuote } from "./text-quote.js";
 import type { ServerLang } from "./i18n.js";
 import { sniffImageMime } from "./text-sniff.js";
@@ -358,7 +359,7 @@ export async function buildAttachmentMessages(
 		// `path` is unused — the reference travels in conversationId (running
 		// conversation, incl. subagents) or sessionPath (history transcript).
 		// The transcript is NOT inlined here (it can be huge and goes stale);
-		// the model fetches it on demand with the conversation_read tool.
+		// the model fetches it on demand with the conversation tool.
 		if ((att as { mode?: string }).mode === "conversation") {
 			const convId = (att as { conversationId?: unknown }).conversationId;
 			const sessPath = (att as { sessionPath?: unknown }).sessionPath;
@@ -376,15 +377,15 @@ export async function buildAttachmentMessages(
 			}
 			const ref = id ? `id="${attr(id)}"` : `path="${attr(sp!)}"`;
 			const how = id
-				? `Use the conversation_read tool with id="${attr(id)}" to read its messages.`
-				: `Use the conversation_read tool with path="${attr(sp!)}" to read its transcript.`;
+				? `Use the conversation tool with action="read", id="${attr(id)}" to read its messages.`
+				: `Use the conversation tool with action="read", path="${attr(sp!)}" to read its transcript.`;
 			out.push({
 				message: {
 					customType: "file",
 					content: [
 						{
 							type: "text",
-							text: `\n<conversation-ref ${ref} title="${attr(title)}">\nThe user quoted another conversation "${attr(title)}". ${how} Do not guess its contents.\n用户引用了另一个对话，别猜它的内容，用 conversation_read 去读。\n</conversation-ref>`,
+							text: `\n<conversation-ref ${ref} title="${attr(title)}">\nThe user quoted another conversation "${attr(title)}". ${how} Do not guess its contents.\n用户引用了另一个对话，别猜它的内容，用 conversation 去读。\n</conversation-ref>`,
 						},
 					],
 					display: true,
@@ -523,8 +524,17 @@ export async function buildAttachmentMessages(
 		// them on demand with its read tool (absolute path, no traversal guard
 		// needed — the path is server-generated). Always a path reference.
 		if (att.fileData) {
+			const maxBytes = uploadLimitBytes(ctx.settings, "chat");
+			if (isUploadDataTooLong(att.fileData.length, maxBytes)) {
+				ctx.emit({
+					type: "notice",
+					level: "warning",
+					text: `文件过大已跳过（>${maxBytes / 1024 / 1024}MB）：${att.name ?? "上传文件"}`,
+					textEn: `File too large, skipped (>${maxBytes / 1024 / 1024}MB): ${att.name ?? "uploaded file"}`,
+				});
+				continue;
+			}
 			const buf = Buffer.from(att.fileData, "base64");
-			const MAX_UPLOAD_BYTES = 20 * 1024 * 1024;
 			if (buf.length === 0) {
 				ctx.emit({
 					type: "notice",
@@ -534,12 +544,12 @@ export async function buildAttachmentMessages(
 				});
 				continue;
 			}
-			if (buf.length > MAX_UPLOAD_BYTES) {
+			if (buf.length > maxBytes) {
 				ctx.emit({
 					type: "notice",
 					level: "warning",
-					text: `文件过大已跳过（>20MB）：${att.name ?? "上传文件"}`,
-					textEn: `File too large, skipped (>20MB): ${att.name ?? "uploaded file"}`,
+					text: `文件过大已跳过（>${maxBytes / 1024 / 1024}MB）：${att.name ?? "上传文件"}`,
+					textEn: `File too large, skipped (>${maxBytes / 1024 / 1024}MB): ${att.name ?? "uploaded file"}`,
 				});
 				continue;
 			}

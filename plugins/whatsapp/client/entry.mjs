@@ -52,7 +52,7 @@ export default {
 							</div>
 						</div>
 						<div style="margin-top: 10px; font-size: 12px; color: var(--text-dim); line-height: 1.5;">
-							基于 Meta 官方 WhatsApp Cloud API，稳定可靠零封号风险。支持多用户独立上下文隔离，自动结构化分块，代码块完整闭合，支持 <code>/help</code>、<code>/clear</code>、<code>/status</code> 等斜杠快捷指令。
+							基于 Meta 官方 WhatsApp Cloud API，需配置经过鉴权的 webhook 转发。支持多用户独立上下文隔离，自动结构化分块，代码块完整闭合，支持 <code>/help</code>、<code>/clear</code>、<code>/status</code> 等斜杠快捷指令。
 						</div>
 					</div>
 
@@ -68,6 +68,9 @@ export default {
 								<label style="display: block; margin-bottom: 4px; color: var(--text-dim);">消息文本内容:</label>
 								<textarea class="whatsapp-send-text" rows="3" placeholder="输入要发送的消息内容..." style="width: 100%; box-sizing: border-box; padding: 8px 10px; border-radius: 4px; border: 1px solid var(--border); background: var(--bg); color: var(--text); resize: vertical; font-family: inherit;"></textarea>
 							</div>
+							<select class="whatsapp-send-kind" aria-label="消息类型" style="background: var(--bg); color: var(--text);"><option value="">文本</option><option value="image">图片</option><option value="audio">语音/音频</option><option value="document">文件</option><option value="video">视频</option></select>
+							<input class="whatsapp-send-path" placeholder="媒体文件的工作区相对路径（20 MiB 以内）" aria-label="媒体文件路径" style="min-width: 0; max-width: 100%; background: var(--bg); color: var(--text);" />
+							<input class="whatsapp-send-mime" placeholder="MIME 类型，例如 image/png、audio/ogg" aria-label="媒体 MIME 类型" style="min-width: 0; max-width: 100%; background: var(--bg); color: var(--text);" />
 							<div style="display: flex; justify-content: flex-end; gap: 8px;">
 								<button class="whatsapp-btn-send" style="padding: 6px 16px; border-radius: 4px; border: none; background: var(--accent); color: var(--accent-contrast, #fff); cursor: pointer; font-weight: 500;">🚀 发送消息</button>
 							</div>
@@ -133,7 +136,8 @@ export default {
 											<option value="low">思考：低 (low)</option>
 											<option value="medium">思考：中 (medium)</option>
 											<option value="high">思考：高 (high)</option>
-											<option value="max">思考：最大 (max)</option>
+											<option value="minimal">思考：最小 (minimal)</option>
+											<option value="xhigh">思考：极高 (xhigh)</option>
 										</select>
 									</div>
 								</div>
@@ -324,8 +328,10 @@ export default {
 			const phoneInput = q(".whatsapp-send-phone");
 			const textInput = q(".whatsapp-send-text");
 			const text = textInput.value.trim();
-			if (!text) {
-				alert?.("请输入要发送的消息文本");
+			const type = q(".whatsapp-send-kind").value;
+			const path = q(".whatsapp-send-path").value.trim();
+			if (type ? !path : !text) {
+				alert?.(type ? "请输入媒体文件的工作区路径" : "请输入要发送的消息文本");
 				return;
 			}
 
@@ -333,9 +339,13 @@ export default {
 			btn.disabled = true;
 			btn.textContent = "发送中...";
 			try {
-				const res = await sendHost("send_message", {
+				const res = await sendHost(type ? "send_media" : "send_message", {
 					to: phoneInput.value.trim(),
 					text,
+					mediaType: type,
+					path,
+					caption: text,
+					mimeType: q(".whatsapp-send-mime").value.trim(),
 				});
 				if (res?.success) {
 					alert?.("✅ WhatsApp 消息发送成功！");
@@ -343,6 +353,8 @@ export default {
 				} else {
 					alert?.(`发送失败: ${res?.message || "未知错误"}`);
 				}
+			} catch (err) {
+				alert?.(`发送失败: ${err.message}`);
 			} finally {
 				btn.disabled = false;
 				btn.textContent = "🚀 发送消息";

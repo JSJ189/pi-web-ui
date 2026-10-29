@@ -7,10 +7,9 @@ import remarkBreaks from "remark-breaks";
 import remarkMath from "remark-math";
 import remarkBackslashMath from "../remark-backslash-math";
 import rehypeHighlight from "rehype-highlight";
-import rehypeKatex from "rehype-katex";
+import { getMathRenderer, loadMathRenderer, subscribeMathRenderer } from "../markdown-math-loader";
 import rehypeRaw from "rehype-raw";
 import rehypeSanitize from "rehype-sanitize";
-import "katex/dist/katex.min.css";
 import { CopyButton } from "./copy-button";
 import { splitCodeLines } from "../code-lines";
 import { childrenText, fenceLanguage } from "./mermaid";
@@ -27,7 +26,12 @@ import { isZhLocale, useLocale } from "../i18n";
 import { PluginFenceBlock } from "./PluginFenceBlock";
 import { openFilePreview } from "../file-preview-bridge";
 import { useAppField } from "../app-globals";
-import { isExternalOrProtocolLink, resolveWorkspaceFileUrl, normalizeTargetFilePath } from "../workspace-file-url";
+import {
+	isExternalOrProtocolLink,
+	resolveWorkspaceFileUrl,
+	normalizeTargetFilePath,
+	markdownFileUrlTransform,
+} from "../workspace-file-url";
 
 interface MarkdownProps {
 	text: string;
@@ -54,12 +58,6 @@ const remarkPluginsNoMath = [remarkGfm];
  *  multi-line text keeps every line break (see MarkdownProps.hardBreaks). */
 const remarkPluginsHardBreaks = [remarkGfm, remarkBreaks, remarkMath, remarkBackslashMath];
 const remarkPluginsHardBreaksNoMath = [remarkGfm, remarkBreaks];
-const rehypePlugins: PluggableList = [
-	// KaTeX 在 highlight 之前：两者目标节点不相交（.math vs pre code），
-	// 公式解析失败时只显示红色源码（throwOnError: false），不打断整条消息。
-	[rehypeKatex, { strict: false, throwOnError: false }],
-	[rehypeHighlight, { detect: false, ignoreMissing: true }],
-];
 const rehypePluginsNoMath: PluggableList = [[rehypeHighlight, { detect: false, ignoreMissing: true }]];
 
 /**
@@ -100,7 +98,16 @@ export function MarkdownBody({
 	// 常用标签与 markdown 生成的结构（含 language-* 类名，KaTeX 的 language-math
 	// 走同一前缀）保留。sanitize 必须在 katex/highlight 之前：它们后续添加的
 	// class/元素不会被白名单误伤。非 rawHtml 路径本来就没有原始 HTML，不接 sanitize。
-	const baseRehype = disableMath ? rehypePluginsNoMath : rehypePlugins;
+	const mathRenderer = useSyncExternalStore(subscribeMathRenderer, getMathRenderer, getMathRenderer);
+	// Conservative candidates include raw HTML and language-math fences.
+	const mathCandidate = !disableMath && (rawHtml || /[$\\\\]|math/i.test(text));
+	useEffect(() => {
+		if (mathCandidate && !mathRenderer) void loadMathRenderer();
+	}, [mathCandidate, mathRenderer]);
+	const baseRehype: PluggableList =
+		!disableMath && mathRenderer
+			? [[mathRenderer, { strict: false, throwOnError: false }], ...rehypePluginsNoMath]
+			: rehypePluginsNoMath;
 	const rh: PluggableList = rawHtml ? [rehypeRaw, rehypeSanitize, ...baseRehype] : baseRehype;
 	const processedText = useMemo(() => linkifyFileMentions(text), [text]);
 	const activeRemarks = disableMath
@@ -114,6 +121,7 @@ export function MarkdownBody({
 		<ReactMarkdown
 			remarkPlugins={activeRemarks}
 			rehypePlugins={rh}
+			urlTransform={markdownFileUrlTransform}
 			components={{ pre: PreWithCopy, a: MdLink, img: MdImage }}
 		>
 			{processedText}
@@ -179,8 +187,7 @@ function MdLink({ node: _node, href, children, ...rest }: JSX.IntrinsicElements[
 	if (!isExternalOrProtocolLink(target)) {
 		// 本地/工作区相对路径或绝对路径链接：点击唤起内置文件预览弹窗，并提供在新标签页打开作为兜底
 		const cleanPath = normalizeTargetFilePath(target, cwd);
-		const fileName =
-			typeof children === "string" && children.trim() ? children.trim() : (cleanPath.split("/").pop() ?? cleanPath);
+		const fileName = cleanPath.split("/").pop() || cleanPath;
 		const webUrl = resolveWorkspaceFileUrl(target, cwd);
 		return (
 			<a
@@ -189,9 +196,10 @@ function MdLink({ node: _node, href, children, ...rest }: JSX.IntrinsicElements[
 				onClick={(e) => {
 					// 仅拦截普通左键单击（非 Ctrl/Cmd/Shift/中键点击）
 					if (e.button === 0 && !e.ctrlKey && !e.metaKey && !e.shiftKey && !e.altKey) {
-						e.preventDefault();
-						e.stopPropagation();
-						openFilePreview({ path: cleanPath, name: fileName });
+						if (openFilePreview({ path: cleanPath, name: fileName })) {
+							e.preventDefault();
+							e.stopPropagation();
+						}
 					}
 				}}
 				target="_blank"

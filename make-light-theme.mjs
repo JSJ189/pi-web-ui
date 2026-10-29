@@ -37,9 +37,9 @@ const srcPath = join(here, "web", "src", "styles.css");
 const css = readFileSync(srcPath, "utf8").replace(/\r\n/g, "\n");
 
 // --- 1) parse the :root variable list (name → default value) from styles.css
-// A theme only overrides the entries it wants; the generator emits the FULL
-// list so styles.css adding a new variable automatically flows into every
-// builtin theme (default value), keeping them in sync forever.
+// Themes inherit unchanged values from styles.css. Keep the full effective map
+// for contrast calculations, but emit only differences so shared component
+// tokens keep following the host rather than being frozen into every palette.
 const rootBlock = css.match(/:root \{[^}]*\}/);
 if (!rootBlock) throw new Error("make-light-theme: :root block not found in styles.css");
 const defaults = new Map();
@@ -48,25 +48,42 @@ for (const line of rootBlock[0].split("\n")) {
 	if (m) defaults.set(m[1], m[2]);
 }
 
-/** Emit a theme file: full :root (defaults + overrides) + optional tail. */
-const emitTheme = (name, overrides = {}, tail = "", nameEn = "", group = "") => {
+// Shared light surfaces must remain palette-relative when a theme omits them.
+const LIGHT_NOTICE_COLORS = {
+	"--notice-err-bg": "color-mix(in srgb, var(--bg-elev) 90%, var(--red))",
+	"--notice-warn-bg": "color-mix(in srgb, var(--bg-elev) 90%, var(--amber))",
+	"--notice-info-bg": "color-mix(in srgb, var(--bg) 95%, var(--info-blue))",
+	"--notice-err-border": "var(--red)",
+	"--notice-warn-border": "var(--amber)",
+	"--notice-info-border": "var(--info-blue)",
+};
+
+/** Emit a theme file: palette differences + optional shared structure and tail. */
+const emitTheme = (name, overrides = {}, tail = "", nameEn = "", group = "", base = "") => {
 	// 1) 有效变量表 = styles.css 默认值 ∪ 调色板覆盖
 	const vars = new Map(defaults);
+	if ((overrides["color-scheme"] ?? "light") === "light") {
+		for (const [k, v] of Object.entries(LIGHT_NOTICE_COLORS)) vars.set(k, v);
+	}
 	for (const [k, v] of Object.entries(overrides)) if (k !== "color-scheme") vars.set(k, v);
 	// 2) 文字令牌可读性下限（与 themes/ 手写主题的压暗规则同一算法）
 	applyTextFloors(vars);
 	const lines = ["/* theme-name: " + name + " */"];
 	if (nameEn) lines.push("/* theme-name-en: " + nameEn + " */");
 	if (group) lines.push("/* theme-group: " + group + " */");
+	if (base) lines.push(`@import "./bases/${base}.css";`);
 	lines.push(":root {");
 	// color-scheme: themes default to light unless told otherwise.
 	lines.push("\tcolor-scheme: " + (overrides["color-scheme"] ?? "light") + ";");
+	for (const token of Object.keys(SEMANTIC_ON_TOKENS)) {
+		if (!vars.has(token)) vars.set(token, "");
+	}
 	for (const [k, v] of vars) {
 		const val =
 			k === "--accent-contrast"
 				? (overrides["--accent-contrast"] ?? accentContrast(vars))
 				: (semanticForeground(k, vars, overrides) ?? v);
-		lines.push(`\t${k}: ${val};`);
+		if (val !== defaults.get(k)) lines.push(`\t${k}: ${val};`);
 	}
 	lines.push("}", "");
 	return lines.join("\n") + tail;
@@ -215,6 +232,8 @@ const SEMANTIC_ON_TOKENS = {
 	"--on-blue": ["--blue", "whiteFirst"],
 	"--on-send-blue": ["--send-blue", "whiteFirst"],
 	"--on-stop-red": ["--stop-red", "whiteFirst"],
+	"--on-send-blue-hover": ["--send-blue-hover", "whiteFirst"],
+	"--on-stop-red-hover": ["--stop-red-hover", "whiteFirst"],
 };
 const ON_DARK = "#1a1a1a";
 function semanticForeground(token, vars, overrides) {
@@ -2408,7 +2427,11 @@ writeTheme("白色", "white.css", emitTheme("白色", WHITE, hljsLight, "White")
 writeTheme("暖纸", "paper.css", emitTheme("暖纸", PAPER, hljsPaper, "Warm Paper"));
 writeTheme("雾蓝灰", "mist.css", emitTheme("雾蓝灰", MIST, hljsMist, "Misty Blue Gray"));
 writeTheme("樱粉", "sakura.css", emitTheme("樱粉", SAKURA, hljsSakura, "Sakura Pink"));
-writeTheme("紫晕", "md-preview.css", emitTheme("紫晕", { "color-scheme": "dark" }, MD_PREVIEW_TAIL, "Purple Haze"));
+writeTheme(
+	"紫晕",
+	"md-preview.css",
+	emitTheme("紫晕", { "color-scheme": "dark" }, MD_PREVIEW_TAIL, "Purple Haze", "", "statusbar-flat-base"),
+);
 writeTheme("赛博朋克", "cyberpunk.css", emitTheme("赛博朋克", CYBERPUNK, "", "Cyberpunk"));
 writeTheme("炫彩", "dazzle.css", emitTheme("炫彩", DAZZLE, "", "Dazzle"));
 

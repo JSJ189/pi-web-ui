@@ -1,7 +1,7 @@
 /**
  * session-store.ts — 通用 Agent 会话的轻量级磁盘持久化。
  *
- * 会话存储在 <dataDir>/universal-sessions/<cwdHash>/<convId>.json 下。
+ * 会话存储在 <dataDir>/universal-sessions/<engine>/<cwdHash>/<convId>.json 下。
  * 格式为纯 JSON，严格线性结构，便于直读、回放与恢复。
  */
 
@@ -15,8 +15,12 @@ import type { UniversalConversation } from "./universal-types.js";
 export class UniversalSessionStore {
 	private readonly baseDir: string;
 
-	constructor(dataDir: string) {
-		this.baseDir = join(dataDir, "universal-sessions");
+	constructor(
+		dataDir: string,
+		private readonly engine = "claude",
+	) {
+		if (!/^[a-zA-Z0-9_-]+$/.test(engine)) throw new Error("Invalid engine namespace");
+		this.baseDir = join(dataDir, "universal-sessions", engine);
 		try {
 			mkdirSync(this.baseDir, { recursive: true });
 		} catch {
@@ -40,6 +44,7 @@ export class UniversalSessionStore {
 	}
 
 	listConversations(cwd: string): UniversalConversation[] {
+		this.importLegacy(cwd);
 		const dir = this.cwdDir(cwd);
 		if (!existsSync(dir)) return [];
 		const list: UniversalConversation[] = [];
@@ -48,7 +53,7 @@ export class UniversalSessionStore {
 			try {
 				const full = join(dir, file);
 				const data = JSON.parse(readFileSync(full, "utf-8")) as UniversalConversation;
-				if (data && data.id && Array.isArray(data.messages)) {
+				if (data && data.engine === this.engine && data.id && Array.isArray(data.messages)) {
 					list.push(data);
 				}
 			} catch {
@@ -60,10 +65,12 @@ export class UniversalSessionStore {
 	}
 
 	loadConversation(cwd: string, convId: string): UniversalConversation | null {
+		this.importLegacy(cwd);
 		const p = this.convPath(cwd, convId);
 		if (!existsSync(p)) return null;
 		try {
-			return JSON.parse(readFileSync(p, "utf-8")) as UniversalConversation;
+			const data = JSON.parse(readFileSync(p, "utf-8")) as UniversalConversation;
+			return data.engine === this.engine && data.id === convId && Array.isArray(data.messages) ? data : null;
 		} catch {
 			return null;
 		}
@@ -71,10 +78,39 @@ export class UniversalSessionStore {
 
 	saveConversation(cwd: string, conv: UniversalConversation): void {
 		const p = this.convPath(cwd, conv.id);
-		writeJsonAtomicSync(p, conv);
+		writeJsonAtomicSync(p, { ...conv, engine: this.engine });
+	}
+
+	/** Import legacy messages; ambiguous driver identities never cross engine boundaries. */
+	private importLegacy(cwd: string): void {
+		const hash = createHash("sha256").update(normalizePathKey(cwd)).digest("hex").slice(0, 16);
+		const legacyDir = join(this.baseDir, "..", hash);
+		if (!existsSync(legacyDir)) return;
+		for (const file of readdirSync(legacyDir)) {
+			if (!file.endsWith(".json")) continue;
+			const path = join(legacyDir, file);
+			try {
+				const conv = JSON.parse(readFileSync(path, "utf-8")) as UniversalConversation;
+				if ((conv.engine && conv.engine !== this.engine) || !conv.id || !Array.isArray(conv.messages)) continue;
+				if (!conv.engine) {
+					// Ambiguous legacy transcripts are message-only imports. Never resume a foreign driver.
+					const marker = `${this.convPath(cwd, conv.id)}.legacy-imported`;
+					if (existsSync(marker)) continue;
+					const imported = { ...conv, driverSessionId: undefined };
+					if (!existsSync(this.convPath(cwd, conv.id))) this.saveConversation(cwd, imported);
+					writeJsonAtomicSync(marker, { imported: true });
+					continue;
+				}
+				if (!existsSync(this.convPath(cwd, conv.id))) this.saveConversation(cwd, conv);
+				unlinkSync(path);
+			} catch {
+				/* Leave unreadable or failed imports untouched. */
+			}
+		}
 	}
 
 	deleteConversation(cwd: string, convId: string): void {
+		this.importLegacy(cwd);
 		const p = this.convPath(cwd, convId);
 		if (existsSync(p)) {
 			try {

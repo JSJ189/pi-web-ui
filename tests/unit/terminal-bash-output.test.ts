@@ -1,5 +1,6 @@
 import { describe, expect, it } from "vitest";
 import {
+	buildTerminalBashLine,
 	cleanBashOutput,
 	detectTrailingLimiter,
 	makeTerminalBashTool,
@@ -207,6 +208,69 @@ describe("语法不完整：直接拒绝，不注入、不建终端（#571）", 
 
 	it("detectTrailingLimiter：注释里的 | tail 不被当成管道拆掉", () => {
 		expect(detectTrailingLimiter("echo a # x | tail -3")).toBeNull();
+	});
+});
+
+describe("cleanBashOutput：真实 ConPTY wrapped eval 回显", () => {
+	it("read-with-answer：清除跨行 printf 尾部，保留输入回显和 ANSWER 正文", () => {
+		// artifacts/terminal-audit/results.json read-with-answer: actual 120-column
+		// ConPTY wrap between the literal \\n and printf's closing quote.
+		const nonce = "1794550003c0";
+		const command = 'read -r AUDIT_ANSWER; printf "ANSWER=%s\\n" "$AUDIT_ANSWER"';
+		const raw =
+			"\x1b[?2004h\x1b[32m\r\nc@DESKTOP-S1QKEI6 \x1b[35mMINGW64 \x1b[33m/tmp/pi-terminal-audit-WsJzKx\x1b[m\r\n" +
+			'$ \x1b[53X\x1b[?2004l\r$ eval $\'read -r AUDIT_ANSWER; printf "ANSWER=%s\\\\n" "$AUDIT_ANSWER"\'; __pi_rc=$?; printf \'\\n[pi-exit-1794550003c0:%s]\\n\r\n' +
+			'\' "$__pi_rc"\x1b[K\r\nU\rUSER_ANSWER\x1b[13X\r\nANSWER=USER_ANSWER      \r\n\x1b[24X\r\n[pi-exit-1794550003c0:0]\r\n\x1b[?2004h';
+		expect(cleanBashOutput(raw, nonce, command)).toBe("UUSER_ANSWER\nANSWER=USER_ANSWER");
+	});
+
+	it("interactive partial：回显折在最终变量中且尚无完成哨兵", () => {
+		const command = 'read -r AUDIT_INPUT; printf "INPUT=%s\\n" "$AUDIT_INPUT"';
+		const raw =
+			"c@DESKTOP-S1QKEI6 MINGW64 /tmp/pi-terminal-audit-GHqntY\r\n" +
+			'$ \x1b[53X\x1b[?2004l\r$ eval $\'read -r AUDIT_INPUT; printf "INPUT=%s\\\\n" "$AUDIT_INPUT"\'; __pi_rc=$?; printf \'\\n[pi-exit-e80a841bc3e1:%s]\\n\' "\r\n' +
+			'$__pi_rc"\x1b[K\r\n';
+		expect(cleanBashOutput(raw, "e80a841bc3e1", command)).toBe("");
+	});
+
+	it("每个字符位置的折行（含 nonce 内部）都按完整注入文本匹配", () => {
+		const command = 'printf "hello\\n" # comment';
+		const injected = buildTerminalBashLine(command, undefined, NONCE);
+		for (let split = 1; split < injected.length; split++) {
+			const raw = `$ ${injected.slice(0, split)}\r\n${injected.slice(split)}\r\nhello\r\n` + sentinelExit(NONCE);
+			// A split inside the initial eval prefix is not a recognizable echo start.
+			if (split < "eval $'".length) continue;
+			expect(cleanBashOutput(raw, NONCE, command), `split ${split}`).toBe("hello");
+		}
+	});
+
+	it("带 tailFile 的实际注入行支持多次折行和屏幕行尾填充", () => {
+		const command = "make > build.log 2>&1";
+		const injected = buildTerminalBashLine(command, { file: "build.log", lines: 20 }, NONCE);
+		const chunks = injected.match(/.{1,40}/g)!;
+		const raw = `$ ${chunks.join("\r\n")}\x1b[8X\r\nbuild failed\r\n` + sentinelExit(NONCE, 2);
+		expect(cleanBashOutput(raw, NONCE, command, injected)).toBe("build failed");
+	});
+
+	it("真实正文里的控制尾部字面量保留，即使紧接完整回显", () => {
+		const command = "echo payload";
+		const body = "' \"$__pi_rc\"\n$__pi_rc\"\neval $'user text'\n[pi-term-exit:7] is literal text";
+		const raw = `$ ${buildTerminalBashLine(command, undefined, NONCE)}\r\n${toCRLF(body)}\r\n` + sentinelExit(NONCE);
+		expect(cleanBashOutput(raw, NONCE, command)).toBe(body);
+	});
+
+	it("与注入尾部不逐字衔接的下一行保守保留", () => {
+		const command = "echo payload";
+		const injected = buildTerminalBashLine(command, undefined, NONCE);
+		const split = injected.indexOf(' "$__pi_rc"');
+		const raw = `$ ${injected.slice(0, split)}\r\nUSER OUTPUT "$__pi_rc"\r\n` + sentinelExit(NONCE);
+		expect(cleanBashOutput(raw, NONCE, command)).toBe('USER OUTPUT "$__pi_rc"');
+	});
+
+	it("shell-exit：去除独立机器退出标记，保留 shell 输出", () => {
+		const command = "exit 7";
+		const raw = `$ ${buildTerminalBashLine(command, undefined, NONCE)}\r\nexit\r\n\r\n[pi-term-exit:7]\r\n`;
+		expect(cleanBashOutput(raw, NONCE, command)).toBe("exit");
 	});
 });
 

@@ -34,6 +34,8 @@ import { existsSync, readFileSync, statSync } from "node:fs";
 import { isAbsolute, relative, resolve, sep } from "node:path";
 import { writeJsonAtomicSync } from "./atomic-file.js";
 import { DEFAULT_APPROVAL_RULES } from "./approval-default-rules.js";
+import { LEGACY_TERMINAL_TOOL_NAMES } from "./tool-manager.js";
+import { conversationToolAllowed } from "./conversation-tool-names.js";
 
 export { DEFAULT_APPROVAL_RULES };
 import type { UiApprovalCategory } from "./protocol.js";
@@ -202,6 +204,18 @@ export function extractRuleFieldValue(field: ApprovalRuleField, toolName: string
  * 匹配成功时返回匹配区间信息 { index, length, text }，否则返回 null。
  */
 /** 单条规则在一段字段文本里的全部命中区间（issue #578）。regex 规则逐次扫描、不只取首个。 */
+/** Keep persisted per-action rules scoped to exactly the corresponding merged action. */
+function legacyTerminalRuleCall(rule: ApprovalRule, toolName: string, params: unknown) {
+	if (toolName.trim().toLowerCase() !== "terminal" || !params || typeof params !== "object") return null;
+	const { action, ...legacyParams } = params as Record<string, unknown>;
+	const legacyName = `terminal_${String(action ?? "")}`;
+	const names = rule.tools.map((name) => name.trim().toLowerCase());
+	if (names.includes("terminal") || names.includes("*")) return null;
+	if (!(LEGACY_TERMINAL_TOOL_NAMES as readonly string[]).includes(legacyName) || !names.includes(legacyName))
+		return null;
+	return { toolName: legacyName, params: legacyParams };
+}
+
 export function matchApprovalRuleDetails(
 	rule: ApprovalRule,
 	toolName: string,
@@ -209,9 +223,12 @@ export function matchApprovalRuleDetails(
 	cwd: string,
 	workspaceRoots: string[] = [],
 ): { index: number; length: number; text: string }[] {
+	const legacy = legacyTerminalRuleCall(rule, toolName, params);
+	if (legacy) return matchApprovalRuleDetails(rule, legacy.toolName, legacy.params, cwd, workspaceRoots);
 	if (!rule.enabled) return [];
 	const targetTools = rule.tools.map((t) => t.trim().toLowerCase());
-	const toolMatches = targetTools.includes("*") || targetTools.includes(toolName.trim().toLowerCase());
+	const toolMatches =
+		targetTools.includes("*") || conversationToolAllowed(new Set(targetTools), toolName.trim().toLowerCase());
 	if (!toolMatches) return [];
 	if (rule.match === "regex") {
 		const fieldValue = extractRuleFieldValue(rule.field, toolName, params);
@@ -247,11 +264,14 @@ export function matchApprovalRuleDetail(
 	cwd: string,
 	workspaceRoots: string[] = [],
 ): { index: number; length: number; text: string } | null {
+	const legacy = legacyTerminalRuleCall(rule, toolName, params);
+	if (legacy) return matchApprovalRuleDetail(rule, legacy.toolName, legacy.params, cwd, workspaceRoots);
 	if (!rule.enabled) return null;
 
 	// 1. 工具名匹配
 	const targetTools = rule.tools.map((t) => t.trim().toLowerCase());
-	const toolMatches = targetTools.includes("*") || targetTools.includes(toolName.trim().toLowerCase());
+	const toolMatches =
+		targetTools.includes("*") || conversationToolAllowed(new Set(targetTools), toolName.trim().toLowerCase());
 	if (!toolMatches) return null;
 
 	// 2. 特殊匹配方式：outside_workspace（工作区外路径）
@@ -382,7 +402,14 @@ export function evaluateApprovalRules(
 	for (const rule of rules) {
 		// 同一规则可在一段命令里出现多次（如 `git reset --hard && git clean -fd`），全部列出（#578）。
 		for (const detail of matchApprovalRuleDetails(rule, toolName, params, cwd, workspaceRoots)) {
-			if (!primary) {
+			// A migrated allow must never preempt a new terminal deny/ask rule.
+			if (
+				!primary ||
+				(primary.action === "allow" &&
+					legacyTerminalRuleCall(primary.matchedRule, toolName, params) &&
+					!legacyTerminalRuleCall(rule, toolName, params) &&
+					rule.action !== "allow")
+			) {
 				primary = {
 					action: rule.action,
 					matchedRule: rule,

@@ -114,8 +114,12 @@ try {
 	if (r.status !== 200 || !html.includes("./style.css") || !html.includes("__livepreview/events"))
 		fail(`GET /liveserver/ 异常：${r.status}`);
 	else ok("GET /liveserver/ → index.html（含相对引用 + 刷新脚本）");
-	if (!html.includes('content="/liveserver"')) fail("刷新脚本基址 meta 缺失（x-pi-proxy-prefix 未透传？）");
-	else ok("代理前缀头透传 → meta 基址正确");
+	const previewPrefix = new URL(r.url).pathname.replace(/\/$/, "");
+	if (!/^\/__live-preview\/[a-f0-9]{64}$/.test(previewPrefix) || !html.includes(`content="${previewPrefix}"`))
+		fail("刷新脚本未使用重定向后的专用预览路径");
+	else ok("认证入口重定向到专用预览路径，meta 基址一致");
+	if (r.headers.get("content-security-policy") !== "sandbox allow-scripts") fail("预览缺少 opaque-origin 沙箱");
+	else ok("预览脚本在 opaque-origin 沙箱执行");
 
 	// -- 相对子资源 ----------------------------------------------------------------
 	r = await fetch(`${BASE}/liveserver/style.css`);

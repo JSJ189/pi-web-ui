@@ -1,4 +1,5 @@
 import { describe, expect, it, vi } from "vitest";
+import { COMPACTION_RETENTION_INSTRUCTIONS } from "../../server/compaction-instructions.js";
 import {
 	buildCompactionInstructions,
 	calculateEffectiveKeepRecentTokens,
@@ -40,9 +41,9 @@ describe("compact-context-tool", () => {
 	});
 
 	describe("buildCompactionInstructions", () => {
-		it("无 customSummary 时直接返回 focus", () => {
+		it("无 customSummary 时保留 focus 并追加共享指令", () => {
 			const res = buildCompactionInstructions("聚焦当前重构任务，去除调试日志");
-			expect(res).toBe("聚焦当前重构任务，去除调试日志");
+			expect(res).toBe(`聚焦当前重构任务，去除调试日志\n\n${COMPACTION_RETENTION_INSTRUCTIONS}`);
 		});
 
 		it("有 customSummary 时将自主摘要合并到提示中", () => {

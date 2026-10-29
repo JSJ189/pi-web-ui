@@ -96,7 +96,7 @@ describe("IMessageBotBridge 双工逻辑测试", () => {
 			execFileImpl: execMock,
 		});
 
-		await bridge.start();
+		runHandler = (ev: any) => bridge.handleRunEvent(ev);
 
 		await bridge.onInboundMessage({
 			id: "im_msg_3",
@@ -111,7 +111,7 @@ describe("IMessageBotBridge 双工逻辑测试", () => {
 			}),
 		);
 
-		const convId = chatSpy.mock.calls[0][0].conversationId;
+		const convId = "conv_im_1";
 
 		runHandler!({
 			conversationId: convId,

@@ -321,6 +321,7 @@ const TEXT = {
 
 /** 从 bundle 自己的 URL 推 API 前缀：<base>/plugins/sftp/client/entry.mjs → <base>/plugins-api/sftp */
 import { esc } from "@pi-web-ui/plugin-sdk/client";
+import { authFormState } from "./auth-form.mjs";
 
 function resolveApiBase(importMetaUrl) {
 	const s = String(importMetaUrl);
@@ -494,6 +495,9 @@ export default {
 		let state = null;
 		let pollTimer = null;
 		let busy = false;
+		let trustChallenge = null;
+		const trustContext = () =>
+			JSON.stringify([state?.cwd, state?.active, state?.connection?.host, state?.connection?.port]);
 		/** 远端浏览器路径栈 */
 		let remoteDir = "";
 		let editor = { path: "", text: "", binary: false };
@@ -509,6 +513,12 @@ export default {
 <div class="sfx">
 	<style>
 		.sfx { max-width: 1180px; margin: 0 auto; font-size: 13px; display: grid; gap: 10px; }
+		.sfx .host-trust { border: 1px solid var(--amber, #fbbf24); border-radius: 8px; padding: 12px; min-width: 0; max-width: 100%; overflow-wrap: anywhere; word-break: break-word; }
+		.sfx .host-trust dl { margin: 8px 0; }
+		.sfx .host-trust dt { opacity: .7; }
+		.sfx .host-trust dd { margin: 0 0 8px; font-family: monospace; }
+		.sfx .host-trust label { display: flex; align-items: center; gap: 6px; }
+		.sfx .trust-error { color: var(--red-text, #f87171); }
 		.sfx h2 { margin: 0; display: flex; align-items: center; gap: 10px; flex-wrap: wrap; }
 		.sfx h3 { margin: 0 0 6px; font-size: 13px; display: flex; align-items: center; gap: 8px; }
 		.sfx .sub { opacity: .55; font-size: 11px; font-weight: normal; }
@@ -668,6 +678,7 @@ export default {
 				<button class="btn-secret hidden"></button>
 				<span class="hint grow hint-settings"></span>
 			</div>
+			<section class="host-trust hidden" aria-live="polite"></section>
 			<div class="msg err hidden"></div>
 			<div class="msg ok hidden"></div>
 		</section>
@@ -808,6 +819,7 @@ export default {
 
 		/** fetch 包装：统一解 `{ok,data}` / `{ok:false,error}`。 */
 		async function api(p, { method = "GET", body } = {}) {
+			const requestContext = trustContext();
 			const init = { method };
 			if (body !== undefined) {
 				init.headers = { "content-type": "application/json" };
@@ -820,8 +832,75 @@ export default {
 			} catch {
 				throw new Error(`${method} ${p} → HTTP ${res.status}`);
 			}
-			if (!json?.ok) throw new Error(json?.error ?? `HTTP ${res.status}`);
+			if (!json?.ok) {
+				if (json?.hostTrust && !disposed && requestContext === trustContext()) showHostTrust(json.hostTrust);
+				throw new Error(
+					json?.hostTrust
+						? detectLang() === "zh"
+							? "请在主机信任面板中核对指纹。"
+							: "Review the fingerprint in the host trust panel."
+						: (json?.error ?? `HTTP ${res.status}`),
+				);
+			}
 			return json.data;
+		}
+
+		function showHostTrust(challenge) {
+			trustChallenge = challenge;
+			const zh = detectLang() === "zh";
+			const changed = challenge.status === "changed";
+			const revoked = challenge.status === "revoked";
+			const panel = $(".host-trust");
+			panel.classList.remove("hidden");
+			panel.innerHTML = `
+				<h3>${esc(zh ? (revoked ? "主机密钥已撤销" : changed ? "主机密钥已变更" : "首次连接：确认主机身份") : revoked ? "Host key revoked" : changed ? "Host key changed" : "First connection: verify host identity")}</h3>
+				<p>${esc(zh ? "请通过服务器控制台或管理员核对以下指纹。确认后，插件会保存到运行服务的电脑上的 known_hosts。" : "Verify this fingerprint through the server console or administrator. Confirmation saves it to known_hosts on the computer running this service.")}</p>
+				<dl><dt>${zh ? "主机" : "Host"}</dt><dd>${esc(challenge.host)}:${esc(challenge.port)}</dd>
+				<dt>${zh ? "密钥类型" : "Key type"}</dt><dd>${esc(challenge.algorithm)}</dd>
+				<dt>${zh ? "指纹" : "Fingerprint"}</dt><dd>${esc(challenge.fingerprint)}</dd>
+				<dt>${zh ? "保存位置" : "Save location"}</dt><dd>${esc(challenge.knownHostsFile)}</dd></dl>
+				${changed ? `<p>${esc(zh ? "已有记录与当前密钥不一致。请先确认服务器重装或密钥轮换，再替换。" : "The saved key differs. Confirm a server rebuild or key rotation before replacing it.")}</p>` : ""}
+				${revoked ? `<p>${esc(zh ? "该密钥已被标记撤销，插件不能信任它，请联系管理员。" : "This key is marked revoked and cannot be trusted here. Contact your administrator.")}</p>` : `<label><input class="trust-verified" type="checkbox"> ${esc(zh ? "我已通过独立渠道核对，指纹一致" : "I independently verified that this fingerprint matches")}</label>`}
+				<div class="row"><button class="btn-trust-save" ${revoked ? "hidden" : "disabled"}>${esc(zh ? (changed ? "替换并重新连接" : "信任并重新连接") : changed ? "Replace and reconnect" : "Trust and reconnect")}</button><button class="btn-trust-cancel">${esc(zh ? "取消" : "Cancel")}</button></div>
+				<div class="trust-error" role="alert"></div>`;
+			panel.scrollIntoView({ block: "center", behavior: "smooth" });
+			panel.querySelector(".trust-verified")?.focus({ preventScroll: true });
+			panel.querySelector(".trust-verified")?.addEventListener("change", (event) => {
+				panel.querySelector(".btn-trust-save").disabled = !event.target.checked;
+			});
+			panel.querySelector(".btn-trust-cancel").onclick = () => {
+				trustChallenge = null;
+				panel.classList.add("hidden");
+			};
+			panel.querySelector(".btn-trust-save").onclick = async (event) => {
+				if (trustChallenge !== challenge || !panel.querySelector(".trust-verified")?.checked) return;
+				if (
+					changed &&
+					!confirm(
+						zh
+							? `确认已核实 ${challenge.host}:${challenge.port} 的密钥轮换，替换旧记录？`
+							: `Confirm verified key rotation for ${challenge.host}:${challenge.port} and replace the old entry?`,
+					)
+				)
+					return;
+				event.target.disabled = true;
+				try {
+					await api("/host-trust", {
+						method: "POST",
+						body: { token: challenge.token, fingerprint: challenge.fingerprint, confirmed: true, replace: changed },
+					});
+					if (disposed || trustChallenge !== challenge) return;
+					trustChallenge = null;
+					panel.classList.add("hidden");
+					showError(".msg.err", "");
+					await loadRemote(remoteDir || state?.connection?.remotePath || "/");
+				} catch (err) {
+					if (trustChallenge === challenge && !disposed) {
+						panel.querySelector(".trust-error").textContent = String(err.message ?? err);
+						event.target.disabled = false;
+					}
+				}
+			};
 		}
 
 		function showError(sel, msg) {
@@ -1045,19 +1124,7 @@ export default {
 			$(".f-user").value = c.username ?? "";
 			$(".f-remote").value = c.remotePath ?? "";
 
-			const passSafe = String(c.auth?.password ?? "");
-			let authMethod = c.auth?.method ?? "";
-			let secretName = "";
-
-			if (passSafe.startsWith("secret:")) {
-				authMethod = "secret";
-				secretName = passSafe.slice(7);
-			} else if (authMethod === "secret") {
-				secretName = passSafe.startsWith("secret:") ? passSafe.slice(7) : c.name ? `${c.name}-password` : "";
-			} else if (!authMethod) {
-				authMethod = "secret";
-				secretName = c.name ? `${c.name}-password` : "";
-			}
+			const { method: authMethod, secretName } = authFormState(c);
 
 			$(".f-auth").value = authMethod || "secret";
 			$(".f-secret-name").value = secretName;
@@ -1335,7 +1402,12 @@ export default {
 		async function refresh(fill = true) {
 			if (disposed) return;
 			try {
+				const previousContext = trustContext();
 				state = await api("/state");
+				if (previousContext !== trustContext() && trustChallenge) {
+					trustChallenge = null;
+					$(".host-trust").classList.add("hidden");
+				}
 			} catch (err) {
 				paintChips();
 				showError(".msg.err", String(err.message ?? err));

@@ -2,6 +2,34 @@
 
 > 改代码前必读。本文档覆盖快照驱动、协议单源、安全边界、主题切换、多对话并发等全局架构决策。
 
+## 对话协作工具兼容
+
+对话协作主工具名为 `conversation`，支持子代理及持久对话；转录、文件与状态按需读取统一使用 `conversation(action="read"/"files"/"status")`，原 `conversation_read` 不再独立注册。旧名 `subagent` 保持兼容。设置页只展示一个 `conversation` 开关，禁用状态统一包含新旧两个名字，启用时同时移除；历史工具调用的新旧名称均使用协作图标展示。模板等子代理专属概念保留原有术语。
+
+工具注册仍以 `server/tool-manager.ts` 的 `AGENT_TOOL_CATALOG` 为事实源，`SUBAGENT_TOOL_NAMES = ["conversation", "subagent"]` 同时登记主名与兼容别名；`agent-service.ts` 注册两名工具，注册守卫覆盖两名，前端展示时合并为一个开关。逐工具文案统一编辑 `conversation`，保存和重置均同时提交两名覆盖（空对象表示删除），防止旧名覆盖在归一化时回填。
+
+## 异步归属与持久化边界
+
+- 编辑重问在入口捕获 Conversation/runtime，历史截断、缓存清理及实际 SDK prompt 全程使用该目标；异步恢复后验证对象仍被持有，禁止重新取活动会话。工具按稳定 SDK session 解析当前持有方，过户后审批与权限均使用新持有方。
+- 工具守卫及审批等待绑定 AbortSignal，每个异步守卫/审批恢复点和执行前检查取消；取消会移除 pending 审批，不能仅扫描取消当时的待办。
+- 持久化子代理和新建会话在异步初始化前预留项目名额；历史打开与派生分支提交时计入在途预留。子代理初始化失败清理已注册会话、runtime、终端和临时目录，并回收本次空工作树。
+- ClientStateStore 共享设置按实际字段 patch 合并，保存成功才发布版本事件；SettingsService 订阅并串行应用运行态变更，读取冻结快照，销毁时退订。ComposerDraftsStore 按文件共享状态，避免各客户端整表覆盖。两者均是进程内协调，不支持多个独立服务进程同时写同一 data-dir。
+- 原子写只允许同目录临时文件替换；重命名失败有限重试后报错，禁止回退截断原文件。设置/草稿保存失败必须反馈，内存与磁盘不得假装同时成功。
+- 历史窗口携带 historyGeneration；历史重写或缓存重建使旧分页请求失效，锚点不存在/错位返回 resyncRequired，客户端请求全量同步。重复全量快照保留字符预算确定的窗口，只有翻页向前扩展。旧 socket 回调必须先验证身份，才可清理共享终端桥。
+
+## 命令、搜索与恢复状态
+
+- WS 握手限时 15 秒，握手消息最多 16KiB；普通控制消息最多 1MiB，附件消息沿用上传预算。attach 队列最多 256 条且累计不超过 8MiB，超限关闭连接，不静默丢弃已排队操作。限额单源为 `server/payload-limits.ts`。
+- 设置保存先校验并写盘，成功后才更新运行口令。定时任务配置先持久化再发布内存及通知；运行记录写失败反馈错误，但推进内存触发时间以避免重复执行。外部副作用不保证跨进程恰好一次。
+- 历史搜索与列表展示上限分离，搜索全部候选；转录按流读取，限制并发，匹配和锚点单次扫描完成，不以 256K 正文缓存决定命中。新查询取消旧查询，切项目后不发布旧结果。极大的单条普通文本记录仍需单记录内存。
+- 压缩恢复状态由宿主写入 `<sessionFile>.compaction-state.json`，完成事件仅经 SDK `appendCustomEntry` 写入转录，禁止直接改写运行中的 SDK 会话文件。所有恢复入口消费中断状态，无接收端时通知进入待发队列；旧转录损坏修复仍保留。
+- `terminal_output.reset` 表示历史替换；实时输出继续追加。回放前先 flush 合并中的实时输出；显示终端支持重置，SCM 解析器跳过历史替换帧。
+- 插件 HTTP 代理把下游提前关闭传递到上游；上游截断终止下游，完整响应正常完成。
+
+## 消息操作
+
+消息操作栏的提示应悬浮即显，使用简短动作名。复制主键复制 Markdown，下拉选择其他格式。重新提问通过 `edit_message` 在当前会话移除原问题及后续内容，原样重发问题和附件；编辑后重问先打开编辑框，提交时执行同一路径。分叉通过 `fork_session { position: "at" }` 保留所选消息及之前的上下文，建立新对话且不自动发送。回退按钮打开当前问题（助手消息则定位到对应用户问题）的编辑框，提交后在当前会话重问；取消编辑不改变历史。消息回退编辑与可选工作区文件还原是独立操作。
+
 ## 快照驱动
 
 - **服务端是唯一事实源**：每次 SDK 事件后节流 60ms 推快照（`UiState`），浏览器只按快照渲染。重连只需重发 `get_state`。
@@ -96,12 +124,13 @@
 - **机制**：`web/src/styles.css` 是**共享基线**（默认深色主题 + 全局布局，抽离出来只为方便复用，不是对主题的限制）；主题文件是**完整样式表**，可覆盖任何东西（`:root` 变量、任意选择器、布局改动、自带新 token 皆可——主题 link 后加载，在层叠中胜出）。选主题时前端注入 `<link id="theme-stylesheet" href="/themes/<id>.css">`（`web/src/theme.ts` 的 `applyTheme`，localStorage 键 `pi-web-ui:theme`，`main.tsx` 首帧前应用防闪烁）。唯一硬性要求：`var()` 引用的 token 必须在某处有定义（主题自带定义也算，见下“变量必须先有定义”）。
 - **服务端**：`GET /api/themes` 列主题（`server/themes.ts` 的 `listThemes`），`GET /themes/:id.css` 发文件（`resolveThemeFile`，用户目录优先）。id 必须匹配 `ID_RE`（`^[A-Za-z0-9_-]+$`）防路径穿越。两个路由在 `server/index.ts` 注册于 SPA catch-all 之前（否则被吞返回 index.html）。dev 模式 Vite 需在 `web/vite.config.ts` 代理 `/themes`（已加）。
 - **主题来源**：内置 `<pkgRoot>/themes/*.css`（随 npm 包分发，`package.json` files 白名单含 `themes/`）；用户自定义直接往 `<dataDir>/themes/` 丢 CSS 文件即可（id 冲突时用户覆盖内置）。`pkgRoot` 经 `resolvePkgRoot()` 向上找含 package.json 的祖先解析，dev(server/) 与 prod(dist/server/) 均正确。
-- **浅色主题**：`themes/white.css`（显示名「白色」：纯白底 + GitHub 蓝强调）与 `themes/paper.css`（显示名「暖纸」：暖纸米黄底 + 赭石强调，护眼）与 `themes/mist.css`（显示名「雾蓝灰」：雾蓝灰底 + 天青蓝强调，冷淡风）与 `themes/sakura.css`（显示名「樱粉」：粉白底 + 樱粉强调，柔和风）与 `themes/md-preview.css`（显示名「紫晕」）+ `themes/cyberpunk.css`（赛博朋克）+ `themes/dazzle.css`（炫彩）均由根目录脚本 `make-light-theme.mjs` 从 `styles.css` 的 `:root` 变量清单生成**纯调色板文件**（生成器读 styles.css 解析全部变量名，主题只覆盖差异值，输出完整 `:root` + 可选非布局 tail：white/paper/mist/sakura 带 `.hljs` 浅色高亮覆盖、md-preview 带 body 渐变 + chrome 透明）。styles.css 新增变量后重跑 `node make-light-theme.mjs` 即自动同步进所有内置主题（新变量默认用深色值）。
+- **浅色主题**：`themes/white.css`（显示名「白色」：纯白底 + GitHub 蓝强调）与 `themes/paper.css`（显示名「暖纸」：暖纸米黄底 + 赭石强调，护眼）与 `themes/mist.css`（显示名「雾蓝灰」：雾蓝灰底 + 天青蓝强调，冷淡风）与 `themes/sakura.css`（显示名「樱粉」：粉白底 + 樱粉强调，柔和风）与 `themes/md-preview.css`（显示名「紫晕」）+ `themes/cyberpunk.css`（赛博朋克）+ `themes/dazzle.css`（炫彩）均由根目录脚本 `make-light-theme.mjs` 从 `styles.css` 的 `:root` 变量清单生成**纯调色板文件**（生成器读 styles.css 解析全部变量名，主题只覆盖差异值，仅输出与宿主默认值不同的 `:root` 变量 + 可选公共样式 import / 非布局 tail：white/paper/mist/sakura 带 `.hljs` 浅色高亮覆盖、md-preview 带 body 渐变 + chrome 透明）。styles.css 新增共享变量后主题自动继承；重跑 `node make-light-theme.mjs` 更新调色板派生值。相同的底栏结构集中在 `themes/bases/statusbar-flat-base.css`，生成器保留对应 import，避免手工补丁在重新生成后丢失。
 - **主题显示名**：css 首行 `/* theme-name: 中文名 */` 即为下拉里的显示名（`listThemes` 读文件头 300 字节解析），缺省回退文件 id——文件名必须是 ASCII（id 校验 `ID_RE`），中文靠这个标记。第二行可选 `/* theme-name-en: English Name */`（英文 UI 用，无则回退中文名）；两行都由 `make-light-theme.mjs` 生成，手改主题文件头会被下次重跑覆盖——改英文名要改生成器。
 - **面板收起/展开按钮对照色（issue #100）**：`.panel-collapse-btn` resting 态即带底色 + 边框（与窄屏顶栏 `.panel-toggle` 同级），前景/底/边框走专用 `--control-fg/--control-bg/--control-border`（默认取正文次级色而非 `--text-faint`），展开条 `.panel-rail` 加宽到 26px、图标套「药丸」底——在浅色/自定义主题下也不再隐形。主题可独立覆盖这三个变量；浅色默认值在生成器的 `LIGHT_DERIVED` 里。
 - **聊天背景图/壁纸（issue #100）**：`--bg-image: none`（主题可写成 `url(...)` 自带一张）+ `--bg-image-dim`（`--bg` 压暗不透明度，默认 0.78）+ `--bg-image-blur`。`body.has-wallpaper` 时 body 全屏铺两层 fixed 壁纸：`body::before` 放图（cover 居中 + 模糊）/`body::after` 压暗；`.app` 抬 z-index 1 到壁纸之上，消息区/输入区透明直接见壁纸。**容器背景优先**：顶栏/底栏/左右面板背景是独立变量 `--topbar-bg`/`--statusbar-bg`/`--panel-bg`（默认 `color-mix` 半透明 → 壁纸从两侧与顶/底栏下透出），主题把某变量覆盖回实色（如 `var(--bg-elev)`）即关闭该区壁纸、设 `transparent` 即完全透图；统一透图率调 `--wallpaper-panel-alpha`（默认 62%，越小透图越多）。同层还有两类组件底板：卡片级 `--card-bg`（工具调用卡 `.toolcall`、快捷短语 `.quick-chip`、新对话提示词模板卡 `.empty-template`、展开条 `.panel-rail`、全部消息气泡 `.thinking`/`.bashblock`/`.skillcard`/`.attachcard`/`.queued-bubble`/`.retry-notice`）与控件级 `--chip-bg`（顶栏 `.chip`/`.tb-tab`/下拉菜单 `.dd-menu`、goalbar 收起态提示 `.goalbar-hint`、折叠钮 `.panel-collapse-btn`、代码面 `.codeblock pre`/`.termline`/`.toolcall-output pre`、工具参数块 `.toolcall-args pre`），默认同样半透明、共用 `--wallpaper-panel-alpha`，主题可单独覆盖回实色；整块聊天面板（`.main`：消息区 + goalbar / 问卷面板占的那一段 + 输入区）共用 `--msgs-bg`（同式半透明，气泡立在统一玻璃面上略实一层形成层次，覆盖回 `transparent` 恢复全透）。**只涂在容器上**：消息区 / 输入区 / goalbar / 问卷面板再各自上色的话，元素之间的间隙与列外区域会露裸背景 —— 浅色与壁纸主题下就是一条横跨整个面板、比聊天区差一档的带子（goalbar 一出现特别明显），所以 goalbar 与问卷面板不带自己的底色（只留边框与投影）；无壁纸时两层 `display:none`，且背景变量默认半透明叠在纯色上色差极小。输入框盒子 `--inputbox-bg` 默认与 `--chip-bg` 同式跟随 `--wallpaper-panel-alpha`。下拉弹窗（声音/语言/主题/模型/思考强度等 `.dd-menu`）背景走 `--menu-bg`：默认跟随 `--chip-bg` 半透，两个透明主题覆盖回 `var(--bg-elev2)` 实色保密集列表可读。终端视图读 `--term-bg`（xterm canvas + 容器）：默认实色不参与（终端可读性优先），半透明主题可覆盖成 `color-mix` 半透明随整体透图。内置「半透明」主题（`themes/translucent.css`）专配壁纸：`--wallpaper-panel-alpha: 45%` 整体统一容器色（顶栏/底栏/面板/卡片/控件/输入框全部联动）+ `--term-bg: color-mix(#0b0d12 45%, transparent)` 终端也透 + `--bg-image-dim: 0.72`，不配壁纸时观感偏暗属预期。「全透明」主题（`themes/transparent.css`）是极致版：`--wallpaper-panel-alpha: 0%`（全部 color-mix 表面 = transparent，含 `--term-bg`），只留边框与文字；文字靠压暗加重（`--bg-image-dim: 0.85`），尾段把实色 hover/浮动反馈（菜单项、折叠摘要、展开条、折叠键、复制键、滚到底按钮）统一改 25% 半透底保可用性，并再减一层代码面噪音：`--code-border: transparent` / `--code-pad: 0`（工具参数块 `.toolcall-args pre`、工具输出块 `.toolcall-output pre`、终端行 `.termline` 的边框与内边距）＋隐藏与卡头重复的终端图标 `.termline-icon`。代码面边框/内边距走 `--code-border`/`--code-pad`（默认 `var(--border-soft)`/`8px 10px`），卡片正文内边距 `--card-body-pad`（思考块 `.thinking-body` 与工具卡 `.toolcall-body` 共用 `4px 14px 12px`，保证同一条消息里两种卡片文字左缘对齐）。用户自定义地址存浏览器 localStorage（`pi-web-ui:wallpaper`，`web/src/wallpaper.ts`：URL 白名单 http(s)/blob/data:image/站内相对路径，内联变量覆盖主题，`useWallpaperEffect` 在 App 顶层应用并监听主题切换重算）， UI 在设置 → 消息显示（地址框失焦/回车提交，压暗/模糊滑杆即时预览；也可点「上传图片」选本地文件——复用粘贴图片管线等比缩 ≤1568px + 重编码为 data: URL 存 localStorage，上传失败/过大时行内提示；data: 图不回填输入框，下方缩略图即表示生效中，清除按钮同时清掉地址与预览）。
 - **变量必须先有定义（幽灵 token 陷阱）**：`var(--x)` 引用一个全仓没有任何 `--x:` 声明的自定义属性，按规范是 guaranteed-invalid —— 整条声明在计算值阶段失效（不带 fallback 的 `background` 直接**没有背景**；`box-shadow` 连投影与聚焦光环一起丢；带 fallback 的静默用硬编码值，浅色主题下必是深色块）。`--bg-elev1`（正确名是 `--bg-elev`）全史未定义却被 10 处引用，goalbar 因此一直没有填充。新增/改名变量后跑 `tests/unit/css-tokens.test.ts`（静态体检：扫 `web/src` + `plugins` + `themes` + `web/index.html` 的每个 `var()` 引用，带 fallback 的也查；运行时注入的变量与刻意写的中性兜底在该测试的豁免表里登记并写明理由——新增豁免要一并写理由）。
 - **终端跟随主题**：xterm 画布经 `web/src/theme.ts` 的 `buildTermTheme()` 读 `--term-*` 变量，主题切换时 `TermXterm.tsx` 监听 `pi-web-ui:theme-change` 事件用 `term.options.theme` 热更新画布；CSS 容器 `.term-main` / `.term-xterm .xterm-viewport` 用 `var(--term-bg)`，与画布自动融合。styles.css 改动后重跑 `node make-light-theme.mjs` 重新生成。
+- **按钮状态契约**：普通按钮统一用 `--button-bg/fg/border`、`--button-hover-bg/fg/border`；实底主按钮统一用 `--button-primary-bg/fg` 与 `--button-primary-hover-bg/fg`；危险按钮用 `--button-danger-bg/fg` 与 `--button-danger-hover-bg/fg`。主题优先覆盖成对变量，避免重复复制组件选择器。主按钮默认保持悬浮文字/底色配对，以外圈提示悬浮，禁止整体 brightness 滤镜同时改字与底。发送/停止的悬浮底色分别配 `--on-send-blue-hover` / `--on-stop-red-hover`，不能假设普通状态前景仍可读。`node tests/theme-buttons-test.mjs` 无需构建或启动服务，在真实 Chrome 中逐主题验证十类按钮普通/悬浮态的最终层叠与透明背景合成，对比度下限 3:1；无 Chrome 明确 SKIP，已加入全量冒烟。
 - **回归**：`theme-test.mjs`（端口 8937，隔离 data-dir）：列表/内置/用户主题、注入 link、浅色生效、刷新持久、用户主题可应用、回默认移除 link。
 
 ## CSS 分层（`@layer guard, base, theme;`）

@@ -118,7 +118,7 @@ export interface AgentEngineCapabilities {
 	/** 智能体运行时是否原生感知额外工作区根（多根工作区） */
 	workspaceRoots: boolean;
 
-	/** 是否支持跨会话上下文引用（包含配套的 conversation_read 等工具按需回拉转录） */
+	/** 是否支持跨会话上下文引用（包含配套的 conversation(action="read") 等工具按需回拉转录） */
 	conversationRef: boolean;
 	/** 是否支持网页/页面捕获引用 */
 	pageRef: boolean;
@@ -214,6 +214,8 @@ export interface UiState {
 	historyStart?: number;
 	/** 窗口覆盖到的全量消息总数——「还有 N 条更早消息」的计数基准。缺省 = 未知。 */
 	historyTotal?: number;
+	/** Opaque history lineage; changes when messages are rewritten or the window cache is rebuilt. */
+	historyGeneration?: string;
 	/**
 	 * Live partial assistant message while a run is streaming. The SDK keeps the
 	 * in-progress message in agent.state.streamingMessage — it only enters
@@ -373,7 +375,7 @@ export interface CommandDef {
 	cwd?: string;
 }
 
-/** Metadata for a persistent PTY owned by one conversation. */
+/** Metadata for a PTY; ownership is independent of its execution purpose. */
 export interface TerminalInfo {
 	id: string;
 	title: string;
@@ -387,6 +389,8 @@ export interface TerminalInfo {
 	/** true = 终端接管 bash 的持久终端（'ai-bash'）：不计入终端数量上限，
 	 *  前端把它单独归到「AI bash」折叠分组里。缺省 false = 用户终端。 */
 	agentBash?: boolean;
+	/** Client terminals survive conversation changes; conversation terminals do not. */
+	ownerKind?: "client" | "conversation";
 }
 
 /** A slash command available in the chat input (the web counterpart of the
@@ -435,7 +439,7 @@ export interface PromptAttachment {
 	 *  "conversation" = another conversation quoted by the user (left-panel
 	 *  right-click / global-search quote): the server emits a small
 	 *  <conversation-ref> aside pointing at it, and the model fetches the
-	 *  transcript on demand with the conversation_read tool. */
+	 *  transcript on demand with conversation(action="read"). */
 	mode?: "inline" | "reference" | "lines" | "page" | "conversation" | "quote";
 	/** mode "quote"：path 留空，引用原文和来源保存在 quote。 */
 	quote?: TextQuote;
@@ -525,7 +529,37 @@ export type CanvasNodeRole =
 	// —— 严谨工程与技能注入角色 ——
 	| "pstack"
 	| "skill";
-export type CanvasNodeStatus = "idle" | "queued" | "running" | "waiting_approval" | "done" | "error" | "paused";
+export type CanvasNodeStatus =
+	"idle" | "queued" | "running" | "waiting_approval" | "done" | "error" | "paused" | "skipped" | "cancelled";
+
+export interface CanvasArtifact {
+	runId: string;
+	attempt: number;
+	summary: string;
+	text?: string;
+	files?: string[];
+	patchPath?: string;
+	baseCommit?: string;
+	workspace?: {
+		repoRoot: string;
+		baseCommit: string;
+		patchPath: string;
+		outputTree: string;
+		layers: { id: string; patchPath: string; sha256: string }[];
+	};
+	cwd?: string;
+	createdAt: number;
+}
+
+export interface CanvasRun {
+	id: string;
+	graphRev: number;
+	startedAt: number;
+	finishedAt?: number;
+	scope: "all" | "node";
+	nodeId?: string;
+	error?: string;
+}
 export type CanvasEdgeType =
 	"handoff" | "review" | "parallel" | "condition_true" | "condition_false" | "loop_back" | "approve" | "reject";
 
@@ -565,6 +599,11 @@ export interface CanvasNode {
 	/** AI 裁决结论（condition 开 aiJudge 后由模型写入）：true=成立边，false=不成立边；与关键词判定完全独立，不混用 */
 	aiVerdict?: boolean;
 	error?: string;
+	runId?: string;
+	attempt?: number;
+	artifact?: CanvasArtifact;
+	actualEngine?: CanvasEngineId;
+	actualModel?: string;
 }
 
 export type CanvasPortKey = string;
@@ -582,6 +621,8 @@ export interface CanvasEdge {
 	maxLoopRetries?: number;
 	currentLoopCount?: number;
 	lastHandoffSummary?: string;
+	runId?: string;
+	active?: boolean;
 }
 
 export interface CanvasGraph {
@@ -590,7 +631,8 @@ export interface CanvasGraph {
 	viewport: { x: number; y: number; zoom: number };
 	nodes: CanvasNode[];
 	edges: CanvasEdge[];
-	status: "idle" | "running" | "paused" | "completed";
+	status: "idle" | "running" | "paused" | "completed" | "error" | "blocked" | "waiting_approval";
+	run?: CanvasRun;
 	/** 恒为 real。simulate（演练模式）已下线，仅为兼容旧存量数据保留，服务端与前端一律按真实执行处理。 */
 	executionMode?: "real" | "simulate";
 	createdAt: number;
@@ -625,7 +667,7 @@ export type ClientMessage =
 	| { type: "hello"; clientId: string; protocolVersion?: number; locale?: string }
 	// -- canvas studio (多引擎多模型多目录画布协作工作室) --------------------
 	| { type: "canvas_list" }
-	| { type: "canvas_load"; id: string }
+	| { type: "canvas_load"; id: string; requestId?: string }
 	| { type: "canvas_save"; graph: CanvasGraph; baseRev?: number; requestId?: string }
 	| { type: "canvas_delete"; id: string }
 	| { type: "canvas_run_all"; graphId: string; initialPrompt?: string }
@@ -710,10 +752,38 @@ export type ClientMessage =
 			 *  inherits the prior value from history for old clients. */
 			agentBash?: boolean;
 	  }
-	| { type: "terminal_input"; terminalId: string; data: string; conversationId?: string }
-	| { type: "terminal_resize"; terminalId: string; cols: number; rows: number; conversationId?: string }
-	| { type: "terminal_kill"; terminalId: string; conversationId?: string }
-	| { type: "rename_terminal"; terminalId: string; title: string; conversationId?: string }
+	/** Attach an existing display without spawning or restarting its process. */
+	| {
+			type: "terminal_attach";
+			terminalId: string;
+			cols: number;
+			rows: number;
+			conversationId?: string;
+			ownerKind?: "client" | "conversation";
+	  }
+	| {
+			type: "terminal_input";
+			terminalId: string;
+			data: string;
+			conversationId?: string;
+			ownerKind?: "client" | "conversation";
+	  }
+	| {
+			type: "terminal_resize";
+			terminalId: string;
+			cols: number;
+			rows: number;
+			conversationId?: string;
+			ownerKind?: "client" | "conversation";
+	  }
+	| { type: "terminal_kill"; terminalId: string; conversationId?: string; ownerKind?: "client" | "conversation" }
+	| {
+			type: "rename_terminal";
+			terminalId: string;
+			title: string;
+			conversationId?: string;
+			ownerKind?: "client" | "conversation";
+	  }
 	// Runs a command in a new shell; if the terminal already exists it is
 	// RESTARTED in place (current process killed, fresh shell runs it again).
 	| {
@@ -776,6 +846,7 @@ export type ClientMessage =
 			conversationId?: string;
 			beforeId?: string;
 			before?: number;
+			historyGeneration?: string;
 	  }
 	// -- source-control panel (read-only git queries, server-side execFile) --
 	/** SCM refresh payload: status + branches + numstat (history loads
@@ -793,7 +864,7 @@ export type ClientMessage =
 	 *  carries the generated single-line message; ok:false on any failure. */
 	| { type: "scm_commitmsg"; reqId: number }
 	| { type: "new_chat"; preset?: string; ephemeral?: boolean }
-	/** Edit a past user question and re-ask it (forks a new session at that point). */
+	/** Replace a past user question and re-ask in the same session, discarding later turns. */
 	| {
 			type: "edit_message";
 			messageId: string;
@@ -802,8 +873,8 @@ export type ClientMessage =
 			 * Attachments to send along with the re-asked question. The editor
 			 * pre-fills it with the original message's attachments (images →
 			 * imageData, uploaded files → uploadPath, workspace paths →
-			 * path+mode; fork drops the persisted attachment asides — they live
-			 * on the old branch, past the fork point) and accepts newly
+			 * path+mode; replacing the question also removes its persisted
+			 * attachment asides) and accepts newly
 			 * pasted/dropped images and files.
 			 */
 			attachments?: PromptAttachment[];
@@ -854,9 +925,10 @@ export type ClientMessage =
 	 * Upload one file INTO a workspace directory (file manager right-click
 	 * context menu — blank area or a folder entry). data = raw base64 with
 	 * NO data: prefix; name is basename-sanitized server-side. The server
-	 * answers with a notice (+ file_changed so the listing refreshes).
+	 * answers with a notice (+ file_changed so the listing refreshes). When
+	 * uploadId is supplied, file_upload_result confirms success or failure.
 	 */
-	| { type: "upload_file"; dirPath: string; name: string; data: string }
+	| { type: "upload_file"; dirPath: string; name: string; data: string; uploadId?: string }
 	/**
 	 * 文件树右键菜单的文件操作（`contextmenu.file` 槽位，见 RightPanel.tsx）。
 	 * path/dir/src/destDir 接受工作区相对路径与绝对 wire 路径（Windows "C:/…"、
@@ -1173,6 +1245,9 @@ export type ClientMessage =
 			/** 子代理无人类干预连续自动唤醒上限轮数（默认 5；0 = 不限制）。达到上限后挂起唤醒并暂存通知。 */
 			subagentAutoWakeMaxTurns?: number;
 			/** Vision bridge on/off + preferred "provider/id" model (null = auto). */
+			chatUploadMaxMb?: number;
+			workspaceUploadMaxMb?: number;
+			folderUploadMaxMb?: number;
 			visionBridgeEnabled?: boolean;
 			visionBridgeModel?: string | null;
 			/** Vision-bridge transcription prompt: mode (append/replace, same
@@ -1499,6 +1574,8 @@ export type ClientMessage =
 	 *  meta 只影响外壳字段（description/author/tags），不回写本地预设。 */
 	| {
 			type: "preset_export";
+			/** Explicitly selected plugin requirements; excludes plugin settings and secrets. */
+			plugins?: UiPresetPluginDependency[];
 			/** 导出来源：preset（name 命名的预设）或 current（当前设置）。缺省按 preset。 */
 			source?: "preset" | "current";
 			name?: string;
@@ -1538,6 +1615,8 @@ export type ClientMessage =
 	/** 一键分享到社区共享仓库（gh issue create；失败回落预填网页）。 */
 	| {
 			type: "preset_share";
+			/** Optional portable plugin requirements, installed separately with user consent. */
+			plugins?: UiPresetPluginDependency[];
 			/** 分享来源：preset（name 命名的预设）或 current（当前设置）。缺省按 preset。 */
 			source?: "preset" | "current";
 			name?: string;
@@ -1558,10 +1637,10 @@ export type ClientMessage =
 	| { type: "persist_sandbox"; path?: string }
 	/** Export / promote a sandbox project to a formal project directory outside sandboxes. */
 	| { type: "promote_sandbox"; path?: string; targetPath: string; switchToTarget?: boolean }
-	/** Compare a sandbox project against its sourcePath and push a `sandbox_diff` summary. */
-	| { type: "diff_sandbox"; path?: string }
-	/** Sync modified/added files and prune deleted files from an imported sandbox back to its original sourcePath. */
-	| { type: "apply_sandbox_to_source"; path?: string }
+	/** Preview changes relative to the imported baseline and push a `sandbox_diff` summary. */
+	| { type: "diff_sandbox"; path?: string; requestId?: string }
+	/** Apply the approved content revision to the source, rejecting stale previews and conflicts. */
+	| { type: "apply_sandbox_to_source"; path?: string; expectedRevision: string }
 	/** Permanently destroy a sandbox project directory and remove it from the registry. */
 	| { type: "destroy_sandbox"; path: string }
 	| { type: "switch_worktree"; path: string }
@@ -1757,6 +1836,10 @@ export interface SandboxInfo {
  * <dataDir>/client-state.json, merged with cwds found in the session store).
  */
 export interface SandboxDiffView {
+	/** Correlates this preview with the requesting approval dialog. */
+	requestId?: string;
+	/** Content-bound revision; required for applying this exact preview. */
+	expectedRevision?: string;
 	sandboxId: string;
 	path: string;
 	sourcePath?: string;
@@ -3057,6 +3140,7 @@ export interface UiExtensionInfo {
  *  per client. promptMode/customSystemPrompt 是遗留字段（旧预设）。 */
 export interface UiSettingsPreset {
 	name: string;
+	plugins?: UiPresetPluginDependency[];
 	promptMode: "append" | "replace";
 	customSystemPrompt: string;
 	promptTemplate: string;
@@ -3097,7 +3181,17 @@ export interface UiPresetCatalogEntry {
 
 /** 导入预览（preset_import / preset_import_url 的 dryRun 回执）。解析与净化都
  *  在服务端做，前端只负责展示——用户点「导入」前没有任何东西落盘。 */
+/** Portable requirements only: no plugin configuration, storage or permission grants. */
+export interface UiPresetPluginDependency {
+	id: string;
+	name?: string;
+	source?: string;
+	/** Exporter's version for comparison; not a guaranteed install version. */
+	version?: string;
+}
+
 export interface UiPresetImportPreview {
+	plugins?: UiPresetPluginDependency[];
 	/** 写入后的预设名（文档 name；导入时可用 name 覆盖）。 */
 	name: string;
 	description: string;
@@ -3205,6 +3299,10 @@ export interface UiMcpServer {
 	description?: string;
 	/** 运行时状态：running = 运行中/就绪；stopped = 已停用；error = 启动或握手失败 */
 	status?: "running" | "stopped" | "error";
+	/** 配置被更高优先级作用域覆盖，当前行不代表运行实例。 */
+	overriddenBy?: McpScope;
+	/** 新配置应用失败，当前仍在运行上一份配置。 */
+	usingPreviousConfig?: boolean;
 	/** 启动失败或运行报错详情 */
 	error?: string;
 	/** 运行时成功发现的工具清单 */
@@ -3349,6 +3447,9 @@ export interface UiSettingsState {
 	/** 技能名录总字符预算（默认 20000，超限自动降级为紧凑 names-only 模式；0 = 不设限）。 */
 	skillsCatalogBudget: number;
 	/** Vision bridge on/off (default on). Off → images are sent as-is. */
+	chatUploadMaxMb?: number;
+	workspaceUploadMaxMb?: number;
+	folderUploadMaxMb?: number;
 	visionBridgeEnabled: boolean;
 	/** Preferred vision model as "provider/id", or null = auto-detect first. */
 	visionBridgeModel: string | null;
@@ -3477,6 +3578,7 @@ export type ServerMessage =
 	| {
 			type: "canvas_graph_state";
 			graph: CanvasGraph;
+			requestId?: string;
 	  }
 	| {
 			type: "canvas_cards_state";
@@ -3484,7 +3586,7 @@ export type ServerMessage =
 	  }
 	| {
 			type: "canvas_error";
-			code: "rev_conflict" | "not_found";
+			code: "rev_conflict" | "not_found" | "invalid_graph" | "execution_error" | "save_failed";
 			message: string;
 			graphId?: string;
 			graph?: CanvasGraph;
@@ -3674,8 +3776,23 @@ export type ServerMessage =
 			durationMs?: number;
 	  }
 	// -- terminal ------------------------------------------------------------
-	| { type: "terminal_output"; conversationId?: string; terminalId: string; data: string }
-	| { type: "terminal_exit"; conversationId?: string; terminalId: string; exitCode: number | null }
+	| {
+			type: "terminal_output";
+			conversationId?: string;
+			ownerKind?: "client" | "conversation";
+			terminalId: string;
+			data: string;
+			/** Complete retained history replacing the display, including empty history.
+			 * Streaming parsers ignore this frame to preserve in-flight state. */
+			reset?: boolean;
+	  }
+	| {
+			type: "terminal_exit";
+			conversationId?: string;
+			terminalId: string;
+			exitCode: number | null;
+			ownerKind?: "client" | "conversation";
+	  }
 	| { type: "terminal_list"; conversationId?: string; terminals: TerminalInfo[] }
 	// -- command list (.pi/commands.json) ------------------------------------
 	| { type: "commands"; commands: CommandDef[]; path: string }
@@ -3733,6 +3850,8 @@ export type ServerMessage =
 	 *  (path = the listed directory; unknown/unsupported fs falls back to the
 	 *  10s polling). */
 	| { type: "file_changed"; path: string }
+	/** Terminal confirmation for a correlated upload, including validation failures. */
+	| { type: "file_upload_result"; uploadId: string; ok: boolean; error?: string }
 	| {
 			type: "file_content";
 			path: string;
@@ -4041,6 +4160,10 @@ export type ServerMessage =
 			preview?: UiPresetImportPreview;
 			/** 导入成功且 apply=true 时，是否已经应用到当前设置。 */
 			applied?: boolean;
+			/** Runtime reload will happen after the active reply. */
+			applyDeferred?: boolean;
+			/** Preset was saved, but applying it failed. */
+			applyError?: string;
 			error?: string;
 	  }
 	/** preset_catalog 的回执（失败时 entries 是上一次成功的缓存，cached=true）。 */
@@ -4307,6 +4430,12 @@ export type ServerMessage =
 			messages: UiMessage[];
 			historyStart: number;
 			historyTotal: number;
+			historyGeneration?: string;
+			/** Right edge of this page, echoed for client seam validation. */
+			beforeId?: string;
+			before?: number;
+			/** Invalid lineage/anchor: discard this page and request get_state. */
+			resyncRequired?: boolean;
 	  }
 	// -- remote SSH & probe results ------------------------------------------
 	| {

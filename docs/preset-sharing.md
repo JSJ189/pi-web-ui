@@ -25,6 +25,14 @@ name/promptMode/customSystemPrompt/promptTemplate/promptOverrides/disabledSkills
 reviewPrompt/reviewDisabledSkills），完整字段只存在服务端的 `SettingsPreset` 里；而且浏览器直接抓
 raw.githubusercontent.com 会撞 CORS。所以「解析 → 净化 → 落盘」全在服务端做，前端只负责展示与确认。
 
+## 插件依赖与应用结果
+
+分享面板允许显式勾选需要随预设携带的插件。交换文档顶层 `plugins` 最多 32 项，仅保留 `id`、显示名 `name`、参考 `version` 和可移植的 GitHub `source`。本地路径、带凭据 URL、插件配置、密钥、存储与权限授权均不导出。来源白名单在 `server/preset-plugin-dependencies.ts`，与设置字段净化分开；缺少可用来源的依赖仍可展示，但不能直接安装。
+
+依赖与预设一起保存，之后再导出不会丢失；`plugins` 只属于预设元数据，不能合并到 `ClientSettings`。预览和普通导入不执行安装。前端显式安装缺失插件时复用 `plugin_job`（含安装确认、托管模式限制、日志、失败结果及重试）；已安装插件不会自动升级或重新授权。参考版本用于提醒差异，不是版本锁定。插件安装和预设保存/应用是独立操作，不承诺事务回滚。
+
+导入回执 `ok: true` 表示预设已经保存。勾选立即应用时，服务端等应用完成才返回 `applied`；应用抛错仍保留已保存预设，并返回 `applyError`。界面必须区分保存与应用结果。部分预设在存储读取时必须保持缺失字段，不补重试/压缩/审查默认值；只有实际携带的字段才能改变设置。
+
 ## 2. 交换格式（`pi-web-ui-preset` v1）
 
 ```jsonc
@@ -37,6 +45,7 @@ raw.githubusercontent.com 会撞 CORS。所以「解析 → 净化 → 落盘」
 	"tags": ["编程", "极简"], // ≤8 个，单条 ≤24 字
 	"createdAt": "2026-01-01T00:00:00.000Z",
 	"appVersion": "0.99.0", // 生成端的包版本
+	"plugins": [{ "id": "notes", "name": "Notes", "source": "owner/repo/plugins/notes", "version": "1.0.0" }], // 可选依赖
 	"settings": {/* 见下 */},
 }
 ```

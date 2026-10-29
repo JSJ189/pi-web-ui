@@ -10,7 +10,7 @@
  */
 
 import { existsSync, mkdirSync } from "node:fs";
-import { isAbsolute, resolve, sep } from "node:path";
+import { isAbsolute, resolve } from "node:path";
 import { isRemoteWorkspaceUri } from "../remote-ssh-service.js";
 import type {
 	CanvasEngineId,
@@ -23,12 +23,27 @@ import type {
 } from "../protocol.js";
 import { existsSync as fsExistsSync, mkdirSync as fsMkdirSync, readFileSync, unlinkSync, writeFileSync } from "node:fs";
 import { join as pathJoin } from "node:path";
-import { saveCanvasRuntimeState, loadCanvasGraph, saveCanvasGraph, isSafeGraphId } from "./canvas-store.js";
-import { isInsideGitRepo, normalizeWirePath } from "../worktree-service.js";
+import {
+	saveCanvasRuntimeState,
+	loadCanvasGraph,
+	saveCanvasGraph,
+	isSafeGraphId,
+	deleteCanvasGraph,
+	markInterruptedCanvasRuns,
+} from "./canvas-store.js";
+import { prepareCanvasWorkspace, captureCanvasWorkspaceArtifact, type CanvasWorkspace } from "./canvas-workspace.js";
 import { execFile } from "node:child_process";
 import { promisify } from "node:util";
 import { PSTACK_SKILLS_MAP } from "./pstack-skills-data.js";
 import { discoverDiskSkills, readSkillInstruction } from "../skill-discovery.js";
+import { randomUUID } from "node:crypto";
+import {
+	CanvasExecutionQueue,
+	canvasCondition,
+	canvasReadiness,
+	isCanvasBackedge,
+	validateCanvasTopology,
+} from "./canvas-scheduler.js";
 
 const exec = promisify(execFile);
 
@@ -58,11 +73,19 @@ export class CanvasOrchestrator {
 	private broadcaster: CanvasEventBroadcaster | null = null;
 	private readonly activeExecutions = new Map<string, ActiveNodeExecution>();
 	private readonly runningGraphs = new Map<string, CanvasGraph>();
+	private readonly graphGenerations = new Map<string, number>();
+	private readonly nodeGenerations = new Map<string, number>();
+	private readonly executionQueue = new CanvasExecutionQueue(4);
+	private static readonly sharedWorkspaceQueue = new CanvasExecutionQueue(1);
+	/** Immutable rejection inputs survive resetting the producer and its forward region. */
+	private readonly feedbackArtifacts = new Map<string, NonNullable<CanvasNode["artifact"]>["workspace"]>();
+	private readonly runDeadlines = new Map<string, ReturnType<typeof setTimeout>>();
 
 	constructor(baseCwd: string, dataDir: string, engineGetter?: EngineServiceGetter) {
 		this.baseCwd = baseCwd;
 		this.dataDir = dataDir;
 		this.engineGetter = engineGetter;
+		markInterruptedCanvasRuns(dataDir);
 	}
 
 	setBroadcaster(broadcaster: CanvasEventBroadcaster): void {
@@ -74,6 +97,15 @@ export class CanvasOrchestrator {
 			this.broadcaster?.(msg);
 		} catch {
 			// 背压/断连导致广播失败不得污染调度主路径（故障注入 S3 命中）
+		}
+	}
+
+	/** Reload after the store merges runtime fields so stale execution topology never reaches clients. */
+	private broadcastCanvasRuntime(graph: CanvasGraph): void {
+		try {
+			this.broadcast({ type: "canvas_graph_state", graph: loadCanvasGraph(this.dataDir, graph.id) });
+		} catch {
+			// Deletion wins over late runtime publication.
 		}
 	}
 
@@ -137,7 +169,9 @@ export class CanvasOrchestrator {
 		list.push(entry);
 		while (list.length > 300) list.shift();
 		this.nodeLogs.set(key, list);
+		const generation = this.graphGenerations.get(graphId) ?? 0;
 		this.broadcast({ type: "canvas_node_log", graphId, nodeId, entry });
+		if ((this.graphGenerations.get(graphId) ?? 0) !== generation) return;
 		// 每 10 条落盘一次，避免高频 IO
 		if (list.length % 10 === 0 || kind === "error" || kind === "done") {
 			try {
@@ -182,76 +216,146 @@ export class CanvasOrchestrator {
 	}
 
 	async resolveNodeCwd(node: CanvasNode, runBase?: string): Promise<string> {
-		// node.id 用于 worktree 目录名与 git 分支名；node.cwd 允许工作区外任意绝对路径。
-		if (!isSafeGraphId(node.id)) throw new Error(`Invalid canvas node id: ${JSON.stringify(node.id)}`);
+		if (!isSafeGraphId(node.id)) throw new Error(`Invalid canvas node id: ${node.id}`);
+		if (node.useWorktree)
+			return (
+				await prepareCanvasWorkspace({
+					baseCwd: this.pickRunBase(runBase),
+					dataDir: this.dataDir,
+					graphId: "standalone",
+					runId: randomUUID(),
+					nodeId: node.id,
+					cwd: node.cwd,
+					useWorktree: true,
+				})
+			).cwd;
 		const raw = (node.cwd ?? "").trim();
-		// 远程 SSH 工作区路径（如 ssh://user@host:22/path）原生透传给引擎，不走本地目录与 worktree
-		if (isRemoteWorkspaceUri(raw)) {
-			return raw;
-		}
+		if (isRemoteWorkspaceUri(raw)) return raw;
 		const base = this.pickRunBase(runBase);
-		if (isRemoteWorkspaceUri(base)) {
+		if (isRemoteWorkspaceUri(base))
 			return !raw || raw === "." ? base : `${base.replace(/\/+$/, "")}/${raw.replace(/^\/+/, "")}`;
-		}
-		// 空 = 运行基准；相对路径 = 相对运行基准（默认服务工作区，运行时可被当前项目覆盖）；绝对路径 = 原样使用（不再拦截越出工作区）。
-		const targetDir = !raw ? base : isAbsolute(raw) ? resolve(raw) : resolve(base, raw);
-		if (!node.useWorktree) {
-			if (!existsSync(targetDir)) {
-				mkdirSync(targetDir, { recursive: true });
-			}
-			return targetDir;
-		}
+		const cwd = !raw ? base : isAbsolute(raw) ? resolve(raw) : resolve(base, raw);
+		if (!existsSync(cwd)) mkdirSync(cwd, { recursive: true });
+		return cwd;
+	}
 
-		// 启用 Git Worktree 隔离机制（仅工作区内目录才做 worktree；工作区外绝对路径直接使用目标目录）
-		const basePrefix = base.endsWith(sep) ? base : base + sep;
-		const insideBase = targetDir === base || targetDir.startsWith(basePrefix);
-		if (!insideBase) {
-			return targetDir;
-		}
-		const isGit = await isInsideGitRepo(base);
-		if (!isGit) {
-			// 如果不是 git 仓库，回落到普通子目录
-			return targetDir;
-		}
+	private armRunDeadline(graph: CanvasGraph): void {
+		const previous = this.runDeadlines.get(graph.id);
+		if (previous) clearTimeout(previous);
+		const runId = graph.run!.id;
+		const timer = setTimeout(
+			() => {
+				this.runDeadlines.delete(graph.id);
+				if (
+					graph.run?.id !== runId ||
+					!graph.nodes.some((n) => n.status === "running" || n.status === "waiting_approval")
+				)
+					return;
+				this.stopAll(graph.id);
+				graph.status = "error";
+				graph.run.error = "Canvas run exceeded 30 minute deadline";
+				saveCanvasRuntimeState(this.dataDir, graph);
+				this.broadcastCanvasRuntime(graph);
+			},
+			30 * 60 * 1000,
+		);
+		timer.unref();
+		this.runDeadlines.set(graph.id, timer);
+	}
 
-		const worktreeDir = resolve(base, ".worktrees", `canvas-${node.id}`);
-		if (!existsSync(worktreeDir)) {
-			mkdirSync(resolve(base, ".worktrees"), { recursive: true });
-			try {
-				await exec("git", ["worktree", "add", "-B", `canvas/${node.id}`, normalizeWirePath(worktreeDir), "HEAD"], {
-					cwd: base,
-					windowsHide: true,
-				});
-			} catch {
-				// 若创建 worktree 失败（例如已存在锁），回退普通目录
-				return targetDir;
-			}
+	/** Invalidate executions before deleting persistence. */
+	deleteGraph(graphId: string): boolean {
+		if (!isSafeGraphId(graphId)) return false;
+		this.graphGenerations.set(graphId, (this.graphGenerations.get(graphId) ?? 0) + 1);
+		for (const [key, execution] of this.activeExecutions) {
+			if (execution.graphId !== graphId) continue;
+			this.activeExecutions.delete(key);
+			execution.abortController?.abort();
 		}
-		return worktreeDir;
+		clearTimeout(this.runDeadlines.get(graphId));
+		this.runDeadlines.delete(graphId);
+		for (const key of this.feedbackArtifacts.keys())
+			if (key.startsWith(`${graphId}:`)) this.feedbackArtifacts.delete(key);
+		this.runningGraphs.delete(graphId);
+		this.runBaseByGraph.delete(graphId);
+		for (const key of this.nodeLogs.keys()) if (key.startsWith(`${graphId}:`)) this.nodeLogs.delete(key);
+		for (const key of this.nodeMessages.keys()) if (key.startsWith(`${graphId}:`)) this.nodeMessages.delete(key);
+		return deleteCanvasGraph(this.dataDir, graphId);
 	}
 
 	/** 启动单个节点 */
-	async runNode(graph: CanvasGraph, nodeId: string, initialPrompt?: string, runBase?: string): Promise<void> {
+	async runNode(
+		graph: CanvasGraph,
+		nodeId: string,
+		initialPrompt?: string,
+		runBase?: string,
+		scheduled = false,
+	): Promise<void> {
+		if (!fsExistsSync(pathJoin(this.dataDir, "canvas", `${graph.id}.json`))) return;
+		const execKey = `${graph.id}:${nodeId}`;
+		if (this.activeExecutions.has(execKey)) throw new Error(`Canvas node already running: ${nodeId}`);
+		if (!scheduled && ["running", "waiting_approval"].includes(this.runningGraphs.get(graph.id)?.status ?? ""))
+			throw new Error("Canvas graph already running");
+		// A separately loaded run_node must not replace an active graph object.
+		if ([...this.activeExecutions.values()].some((execution) => execution.graphId === graph.id)) {
+			graph = this.runningGraphs.get(graph.id) ?? graph;
+		}
 		const node = graph.nodes.find((n) => n.id === nodeId);
 		if (!node) return;
-
 		this.runningGraphs.set(graph.id, graph);
-		const execKey = `${graph.id}:${nodeId}`;
-		if (this.activeExecutions.has(execKey)) {
-			// 已在运行中
-			return;
-		}
+		const generation = this.graphGenerations.get(graph.id) ?? 0;
+		const nodeGeneration = (this.nodeGenerations.get(execKey) ?? 0) + 1;
+		this.nodeGenerations.set(execKey, nodeGeneration);
+		const lifecycleCurrent = () =>
+			(this.graphGenerations.get(graph.id) ?? 0) === generation && this.nodeGenerations.get(execKey) === nodeGeneration;
 		const controller = new AbortController();
-		this.activeExecutions.set(execKey, {
+		const execution: ActiveNodeExecution = {
 			graphId: graph.id,
 			nodeId,
 			abortController: controller,
-		});
+		};
+		this.activeExecutions.set(execKey, execution);
+		const isCurrent = () =>
+			lifecycleCurrent() && !controller.signal.aborted && this.activeExecutions.get(execKey) === execution;
 
+		if (!scheduled || !graph.run) {
+			for (const key of this.feedbackArtifacts.keys())
+				if (key.startsWith(`${graph.id}:`)) this.feedbackArtifacts.delete(key);
+			graph.run = { id: randomUUID(), graphRev: graph.rev ?? 0, startedAt: Date.now(), scope: "node", nodeId };
+		}
+		graph.status = "running";
+		if (!scheduled) this.armRunDeadline(graph);
+		node.runId = graph.run!.id;
+		node.attempt = (node.attempt ?? 0) + 1;
+		node.artifact = undefined;
+		node.lastOutputSummary = undefined;
+		if (!scheduled) {
+			const scope = new Set(this.runNodes(graph).map((n) => n.id));
+			for (const target of this.runNodes(graph))
+				if (target !== node) {
+					target.status = "idle";
+					target.error = undefined;
+					target.artifact = undefined;
+					target.lastOutputSummary = undefined;
+					target.aiVerdict = undefined;
+					target.runId = graph.run!.id;
+					target.attempt = 0;
+				}
+			for (const edge of graph.edges) {
+				edge.active = scope.has(edge.sourceNodeId) ? undefined : false;
+				edge.runId = graph.run!.id;
+				edge.lastHandoffSummary = undefined;
+				edge.currentLoopCount = 0;
+			}
+		}
+		node.aiVerdict = undefined;
+		node.actualEngine = undefined;
+		node.actualModel = undefined;
 		node.status = "running";
 		node.error = undefined;
 		node.currentAction = `[${node.engine.toUpperCase()}] 正在分配独立环境与工作目录...`;
 		saveCanvasRuntimeState(this.dataDir, graph);
+		this.broadcastCanvasRuntime(graph);
 		this.appendLog(
 			graph.id,
 			nodeId,
@@ -267,13 +371,59 @@ export class CanvasOrchestrator {
 			currentAction: node.currentAction,
 		});
 
+		let releaseSlot = () => {};
+		let releaseCwd = () => {};
+		const releaseCapacity = () => {
+			releaseSlot();
+			releaseCwd();
+		};
 		try {
+			releaseSlot = await this.executionQueue.acquire(controller.signal);
+			if (["cron", "webhook", "memory", "loop"].includes(node.role))
+				throw new Error(`Unsupported canvas executor: ${node.role}`);
 			if ((runBase ?? "").trim()) this.runBaseByGraph.set(graph.id, runBase as string);
-			const resolvedCwd = await this.resolveNodeCwd(node, runBase ?? this.runBaseByGraph.get(graph.id));
-			if (controller.signal.aborted) {
-				this.activeExecutions.delete(execKey);
-				return;
+			const upstreamArtifacts = graph.edges
+				.filter((e) => e.targetNodeId === node.id && e.active === true)
+				.flatMap((e) => {
+					const artifact = graph.nodes.find((n) => n.id === e.sourceNodeId)?.artifact;
+					const feedback = this.feedbackArtifacts.get(`${graph.id}:${graph.run?.id}:${e.id}`);
+					return feedback
+						? [feedback]
+						: artifact && artifact.runId === graph.run?.id && artifact.workspace
+							? [artifact.workspace]
+							: [];
+				});
+			if (!node.useWorktree && upstreamArtifacts.length === 0) {
+				releaseCwd = await CanvasOrchestrator.sharedWorkspaceQueue.acquire(controller.signal);
 			}
+			const workspace: CanvasWorkspace = await prepareCanvasWorkspace({
+				baseCwd: this.pickRunBase(runBase ?? this.runBaseByGraph.get(graph.id)),
+				dataDir: this.dataDir,
+				graphId: graph.id,
+				runId: graph.run!.id,
+				nodeId: node.id + "-" + node.attempt,
+				cwd: node.cwd,
+				useWorktree: node.useWorktree,
+				upstreamArtifacts,
+				signal: controller.signal,
+			});
+			const resolvedCwd = workspace.cwd;
+			if (!isCurrent()) return;
+			const captureControlArtifact = async () => {
+				const workspaceArtifact = workspace.isolated
+					? await captureCanvasWorkspaceArtifact(workspace, { signal: controller.signal })
+					: undefined;
+				if (!isCurrent()) return;
+				node.artifact = {
+					runId: graph.run!.id,
+					attempt: node.attempt!,
+					summary: node.lastOutputSummary ?? "",
+					text: node.lastOutputSummary,
+					cwd: resolvedCwd,
+					createdAt: Date.now(),
+					workspace: workspaceArtifact,
+				};
+			};
 
 			const roleDetail =
 				node.role === "pstack"
@@ -291,7 +441,7 @@ export class CanvasOrchestrator {
 			});
 
 			// 组装前置契约提示词（若上游边有 handoff 产物）
-			const incomingEdges = graph.edges.filter((e) => e.targetNodeId === nodeId);
+			const incomingEdges = graph.edges.filter((e) => e.targetNodeId === nodeId && e.active !== false);
 			let contractContext = "";
 			for (const edge of incomingEdges) {
 				if (edge.lastHandoffSummary) {
@@ -380,8 +530,7 @@ export class CanvasOrchestrator {
 			// 只能回“结论：通过/不通过”，下游按它分流；失败回落关键词。未开启还是零 token 透传。
 			const wantAiJudge =
 				(node.role === "ai_judge" || (node.role === "condition" && node.config?.aiJudge === true)) &&
-				graph.executionMode !== "simulate" &&
-				!!this.engineGetter;
+				graph.executionMode !== "simulate";
 			let judgeModel: string = node.model;
 			if (wantAiJudge) {
 				const condRef = String(node.config?.condition ?? "").trim() || "上游产物符合预期";
@@ -417,9 +566,14 @@ export class CanvasOrchestrator {
 				node.status = "done";
 				node.currentAction = "格式转换完成（本地执行）";
 				node.lastOutputSummary = transformed;
+				await captureControlArtifact();
+				if (!isCurrent()) return;
 				this.appendLog(graph.id, nodeId, "done", transformed.slice(0, 2000));
+				if (!isCurrent()) return;
+				releaseCapacity();
 				this.activeExecutions.delete(execKey);
 				saveCanvasRuntimeState(this.dataDir, graph);
+				this.broadcastCanvasRuntime(graph);
 				this.broadcast({
 					type: "canvas_node_event",
 					graphId: graph.id,
@@ -428,7 +582,12 @@ export class CanvasOrchestrator {
 					currentAction: node.currentAction,
 					summary: node.lastOutputSummary,
 				});
-				await this.handleDownstreamEdges(graph, node);
+				await this.handleDownstreamEdges(
+					graph,
+					node,
+					undefined,
+					() => lifecycleCurrent() && !controller.signal.aborted,
+				);
 				return;
 			}
 			if (!wantAiJudge && isCanvasPassthroughRole(node.role)) {
@@ -438,9 +597,15 @@ export class CanvasOrchestrator {
 					node.currentAction =
 						(node.config?.approvalHint ? String(node.config.approvalHint) + " —— " : "") + "等待人工在抽屉中批准/驳回";
 					node.lastOutputSummary = passthroughSummary;
+					await captureControlArtifact();
+					if (!isCurrent()) return;
 					this.appendLog(graph.id, nodeId, "system", "人工审批节点已就绪，等待批准");
+					if (!isCurrent()) return;
+					releaseCapacity();
 					this.activeExecutions.delete(execKey);
+					this.settleGraph(graph);
 					saveCanvasRuntimeState(this.dataDir, graph);
+					this.broadcastCanvasRuntime(graph);
 					this.broadcast({
 						type: "canvas_node_event",
 						graphId: graph.id,
@@ -454,9 +619,14 @@ export class CanvasOrchestrator {
 				node.status = "done";
 				node.currentAction = `控制节点直通 (${node.role})`;
 				node.lastOutputSummary = passthroughSummary;
+				await captureControlArtifact();
+				if (!isCurrent()) return;
 				this.appendLog(graph.id, nodeId, "done", passthroughSummary.slice(0, 2000));
+				if (!isCurrent()) return;
+				releaseCapacity();
 				this.activeExecutions.delete(execKey);
 				saveCanvasRuntimeState(this.dataDir, graph);
+				this.broadcastCanvasRuntime(graph);
 				this.broadcast({
 					type: "canvas_node_event",
 					graphId: graph.id,
@@ -465,13 +635,19 @@ export class CanvasOrchestrator {
 					currentAction: node.currentAction,
 					summary: node.lastOutputSummary,
 				});
-				await this.handleDownstreamEdges(graph, node);
+				await this.handleDownstreamEdges(
+					graph,
+					node,
+					undefined,
+					() => lifecycleCurrent() && !controller.signal.aborted,
+				);
 				return;
 			}
 
 			// 双模调度：真实引擎执行 (Real Engine) vs 拓扑演练演示 (Simulation)
-			if (graph.executionMode === "simulate" || !this.engineGetter) {
+			if (graph.executionMode === "simulate") {
 				await this.simulateNodeExecution(node, resolvedCwd, prompt, controller.signal, (action) => {
+					if (!isCurrent()) return;
 					node.currentAction = action;
 					this.broadcast({
 						type: "canvas_node_event",
@@ -493,6 +669,7 @@ export class CanvasOrchestrator {
 						prompt,
 						controller.signal,
 						(action) => {
+							if (!isCurrent()) return;
 							node.currentAction = action;
 							this.broadcast({
 								type: "canvas_node_event",
@@ -508,11 +685,21 @@ export class CanvasOrchestrator {
 				}
 			}
 
-			if (controller.signal.aborted) {
-				this.activeExecutions.delete(execKey);
-				return;
-			}
+			if (!isCurrent()) return;
 
+			const workspaceArtifact = workspace.isolated
+				? await captureCanvasWorkspaceArtifact(workspace, { signal: controller.signal })
+				: undefined;
+			if (!isCurrent()) return;
+			node.artifact = {
+				runId: graph.run!.id,
+				attempt: node.attempt!,
+				summary: outputSummary,
+				text: outputSummary,
+				cwd: workspace.cwd,
+				createdAt: Date.now(),
+				workspace: workspaceArtifact,
+			};
 			// 节点完成
 			node.status = "done";
 			node.currentAction = `已完成 (${node.engine.toUpperCase()})`;
@@ -523,6 +710,7 @@ export class CanvasOrchestrator {
 				];
 				const last = hits.length > 0 ? String(hits[hits.length - 1][1]).toLowerCase() : "";
 				node.aiVerdict = last ? ["通过", "成立", "是", "真", "true", "yes"].includes(last) : undefined;
+				if (node.aiVerdict === undefined) throw new Error("AI judge returned no explicit decision");
 				this.appendLog(
 					graph.id,
 					nodeId,
@@ -533,8 +721,11 @@ export class CanvasOrchestrator {
 				);
 			}
 			this.appendLog(graph.id, nodeId, "done", outputSummary.slice(0, 2000));
+			if (!isCurrent()) return;
+			releaseCapacity();
 			this.activeExecutions.delete(execKey);
 			saveCanvasRuntimeState(this.dataDir, graph);
+			this.broadcastCanvasRuntime(graph);
 
 			this.broadcast({
 				type: "canvas_node_event",
@@ -546,19 +737,20 @@ export class CanvasOrchestrator {
 			});
 
 			// 触发下游交接或审查
-			await this.handleDownstreamEdges(graph, node);
+			await this.handleDownstreamEdges(graph, node, undefined, () => lifecycleCurrent() && !controller.signal.aborted);
 		} catch (err: unknown) {
-			if (controller.signal.aborted) {
-				this.activeExecutions.delete(execKey);
-				return;
-			}
+			if (!lifecycleCurrent() || controller.signal.aborted) return;
 			const msg = (err as Error).message || String(err);
 			node.status = "error";
 			node.error = msg;
 			node.currentAction = `执行出错: ${msg}`;
 			this.appendLog(graph.id, node.id, "error", msg.slice(0, 2000));
+			if (!lifecycleCurrent() || controller.signal.aborted) return;
+			releaseCapacity();
 			this.activeExecutions.delete(execKey);
+			this.settleGraph(graph);
 			saveCanvasRuntimeState(this.dataDir, graph);
+			this.broadcastCanvasRuntime(graph);
 
 			this.broadcast({
 				type: "canvas_node_event",
@@ -568,136 +760,214 @@ export class CanvasOrchestrator {
 				currentAction: node.currentAction,
 				error: msg,
 			});
+		} finally {
+			releaseCapacity();
 		}
 	}
 
-	/** 运行全图（从所有入度为 0 的根节点，或者未完成节点并发拉起） */
+	/** Start a fresh run; active and approval-paused runs must be resolved first. */
 	async runAll(graph: CanvasGraph, initialPrompt?: string, runBase?: string): Promise<void> {
-		this.runningGraphs.set(graph.id, graph);
+		if (!fsExistsSync(pathJoin(this.dataDir, "canvas", `${graph.id}.json`))) return;
+		const current = this.runningGraphs.get(graph.id);
+		if (current && ["running", "waiting_approval"].includes(current.status))
+			throw new Error("Canvas graph already running");
+		if ([...this.activeExecutions.values()].some((e) => e.graphId === graph.id))
+			throw new Error("Canvas graph already running");
+		validateCanvasTopology(graph);
+		for (const key of this.feedbackArtifacts.keys())
+			if (key.startsWith(`${graph.id}:`)) this.feedbackArtifacts.delete(key);
+		this.graphGenerations.set(graph.id, (this.graphGenerations.get(graph.id) ?? 0) + 1);
+		graph.run = { id: randomUUID(), graphRev: graph.rev ?? 0, startedAt: Date.now(), scope: "all" };
 		graph.status = "running";
-		saveCanvasRuntimeState(this.dataDir, graph);
-
-		// 找到没有入边或当前状态为 idle/error 的起点节点
-		const targetNodes = new Set(graph.nodes.map((n) => n.id));
+		for (const node of graph.nodes) {
+			node.status = "idle";
+			node.error = undefined;
+			node.currentAction = undefined;
+			node.lastOutputSummary = undefined;
+			node.artifact = undefined;
+			node.aiVerdict = undefined;
+			node.runId = graph.run!.id;
+			node.attempt = 0;
+			node.actualEngine = undefined;
+			node.actualModel = undefined;
+		}
 		for (const edge of graph.edges) {
-			targetNodes.delete(edge.targetNodeId);
+			edge.active = undefined;
+			edge.runId = graph.run!.id;
+			edge.lastHandoffSummary = undefined;
+			edge.currentLoopCount = 0;
 		}
-
-		let startNodes = graph.nodes.filter((n) => targetNodes.has(n.id));
-		if (startNodes.length === 0) {
-			startNodes = graph.nodes.filter((n) => n.status === "idle" || n.status === "error");
-		}
-		if (startNodes.length === 0 && graph.nodes.length > 0) {
-			startNodes = [graph.nodes[0]];
-		}
-
-		if ((runBase ?? "").trim()) this.runBaseByGraph.set(graph.id, runBase as string);
-		await Promise.all(startNodes.map((n) => this.runNode(graph, n.id, initialPrompt, runBase)));
+		this.runningGraphs.set(graph.id, graph);
+		this.armRunDeadline(graph);
+		if ((runBase ?? "").trim()) this.runBaseByGraph.set(graph.id, runBase!);
+		saveCanvasRuntimeState(this.dataDir, graph);
+		this.broadcastCanvasRuntime(graph);
+		const roots = graph.nodes.filter((n) => !graph.edges.some((e) => e.targetNodeId === n.id && !isCanvasBackedge(e)));
+		const generation = this.graphGenerations.get(graph.id);
+		await Promise.all(roots.map((n) => this.runNode(graph, n.id, initialPrompt, runBase, true)));
+		if (this.graphGenerations.get(graph.id) !== generation || this.runningGraphs.get(graph.id) !== graph) return;
+		this.settleGraph(graph);
+		saveCanvasRuntimeState(this.dataDir, graph);
+		this.broadcastCanvasRuntime(graph);
 	}
 
-	/** 处理节点完成后的下游连线流转 */
-	private async handleDownstreamEdges(graph: CanvasGraph, completedNode: CanvasNode, via?: "approve"): Promise<void> {
-		let outEdges = graph.edges.filter((e) => e.sourceNodeId === completedNode.id);
-		if (via === "approve") {
-			// 人工批准只走批准/主线边，不触发驳回回路边（reject / loop_back / review）
-			outEdges = outEdges.filter((e) => e.type !== "reject" && e.type !== "loop_back" && e.type !== "review");
+	/** A node run owns the reachable subgraph, including explicitly requested rework. */
+	private runNodes(graph: CanvasGraph): CanvasNode[] {
+		if (graph.run?.scope !== "node" || !graph.run.nodeId) return graph.nodes;
+		const ids = new Set<string>();
+		const visit = (id: string) => {
+			if (ids.has(id)) return;
+			ids.add(id);
+			for (const edge of graph.edges) if (edge.sourceNodeId === id) visit(edge.targetNodeId);
+		};
+		visit(graph.run.nodeId);
+		return graph.nodes.filter((n) => ids.has(n.id));
+	}
+
+	private settleGraph(graph: CanvasGraph): void {
+		const scoped = this.runNodes(graph);
+		if (scoped.some((n) => n.status === "error")) graph.status = "error";
+		else if (scoped.some((n) => n.status === "waiting_approval")) graph.status = "waiting_approval";
+		else if (scoped.some((n) => n.status === "running")) graph.status = "running";
+		else if (scoped.every((n) => n.status === "done" || n.status === "skipped")) graph.status = "completed";
+		else graph.status = "blocked";
+		if (
+			graph.run &&
+			["completed", "error", "blocked"].includes(graph.status) &&
+			!scoped.some((n) => n.status === "running" || n.status === "waiting_approval")
+		) {
+			clearTimeout(this.runDeadlines.get(graph.id));
+			this.runDeadlines.delete(graph.id);
+			graph.run.finishedAt = Date.now();
+			graph.run.error = scoped.find((n) => n.error)?.error;
 		}
-		if (completedNode.role === "condition" || completedNode.role === "ai_judge") {
-			const aiMode = completedNode.role === "ai_judge" || completedNode.config?.aiJudge === true;
-			const condText = String(completedNode.config?.condition ?? "");
-			const upstreamText =
-				graph.edges
-					.filter((e) => e.targetNodeId === completedNode.id)
-					.map((e) => e.lastHandoffSummary ?? "")
-					.join("\n") ||
-				completedNode.lastOutputSummary ||
-				"";
-			const summary = upstreamText;
-			const tokens = condText
-				.split(/[\s,\uFF0C\u3001/()\u2014\u2014]+/)
-				.map((t) => t.trim())
-				.filter((t) => t.length >= 2);
-			const hit = aiMode
-				? completedNode.aiVerdict === true
-				: tokens.length === 0
-					? true
-					: tokens.some((t) => summary.includes(t));
-			if (aiMode) {
+	}
+
+	private async handleDownstreamEdges(
+		graph: CanvasGraph,
+		completedNode: CanvasNode,
+		via?: "approve" | "reject",
+		lifecycleCurrent: () => boolean = () => true,
+	): Promise<void> {
+		const generation = this.graphGenerations.get(graph.id) ?? 0;
+		const isCurrent = () =>
+			lifecycleCurrent() &&
+			(this.graphGenerations.get(graph.id) ?? 0) === generation &&
+			this.runningGraphs.get(graph.id) === graph &&
+			fsExistsSync(pathJoin(this.dataDir, "canvas", `${graph.id}.json`));
+		if (!isCurrent()) return;
+		completedNode.artifact = {
+			...completedNode.artifact,
+			runId: graph.run?.id ?? "",
+			attempt: completedNode.attempt ?? 1,
+			summary: completedNode.lastOutputSummary ?? "",
+			text: completedNode.lastOutputSummary,
+			cwd: completedNode.artifact?.cwd ?? completedNode.cwd,
+			createdAt: completedNode.artifact?.createdAt ?? Date.now(),
+		};
+		const conditional = completedNode.role === "condition" || completedNode.role === "ai_judge";
+		const hit = conditional ? canvasCondition(completedNode, graph) : undefined;
+		const decision = via ?? (conditional ? (hit ? "approve" : "reject") : undefined);
+		const rework: CanvasNode[] = [];
+		for (const edge of graph.edges.filter((e) => e.sourceNodeId === completedNode.id)) {
+			const back = isCanvasBackedge(edge);
+			const selected = back
+				? decision === "reject"
+				: via !== "reject" &&
+					(edge.type === "approve"
+						? via === "approve" || (conditional && hit === true)
+						: edge.type === "condition_true"
+							? hit === true
+							: edge.type === "condition_false"
+								? hit === false
+								: true);
+			edge.runId = graph.run?.id;
+			edge.active = selected;
+			edge.lastHandoffSummary = selected ? completedNode.artifact.text : undefined;
+			if (selected)
 				this.appendLog(
 					graph.id,
-					completedNode.id,
-					"system",
-					`分支：${hit ? "成立边" : "不成立边"}（AI 独立裁决${completedNode.aiVerdict === undefined ? "，无结论默认不成立" : ""}）。`,
-				);
-			}
-			outEdges = outEdges.filter((e) => {
-				if (e.type === "condition_true") return hit;
-				if (e.type === "condition_false") return !hit;
-				return true;
-			});
-			this.appendLog(
-				graph.id,
-				completedNode.id,
-				"system",
-				"条件分支判定：" + (hit ? "成立，走 true 边" : "不成立，走 false 边"),
-			);
-		}
-		for (const edge of outEdges) {
-			edge.lastHandoffSummary = completedNode.lastOutputSummary;
-
-			if (edge.type === "review" || edge.type === "loop_back" || edge.type === "reject") {
-				// 审查回路：检查是否超出最大驳回重试次数
-				const maxRetries = edge.maxLoopRetries ?? 3;
-				const current = edge.currentLoopCount ?? 0;
-				if (current >= maxRetries) {
-					// 达到熔断上限，暂停并等待人工介入
-					completedNode.status = "waiting_approval";
-					completedNode.currentAction = `已达审查重试上限 (${maxRetries} 次)，暂停等待人工仲裁确认`;
-					saveCanvasRuntimeState(this.dataDir, graph);
-					this.broadcast({
-						type: "canvas_node_event",
-						graphId: graph.id,
-						nodeId: completedNode.id,
-						event: "paused",
-						currentAction: completedNode.currentAction,
-					});
-					continue;
-				}
-				edge.currentLoopCount = current + 1;
-			}
-
-			// 触发下游目标节点
-			const targetNode = graph.nodes.find((n) => n.id === edge.targetNodeId);
-			if (targetNode) {
-				this.appendLog(
-					graph.id,
-					targetNode.id,
+					edge.targetNodeId,
 					"handoff",
-					`收到来自「${completedNode.title}」的交接${edge.label ? `（${edge.label}）` : ""}：${(edge.lastHandoffSummary || "").slice(0, 1500)}`,
+					`收到来自「${completedNode.title}」的交接：${edge.lastHandoffSummary ?? ""}`,
 				);
+			if (!selected || !back) continue;
+			if ((edge.currentLoopCount ?? 0) >= (edge.maxLoopRetries ?? 3)) {
+				completedNode.status = "waiting_approval";
+				completedNode.currentAction = "已达审查重试上限，等待人工仲裁";
+				continue;
 			}
-			if (targetNode) {
-				const execKey = graph.id + ":" + targetNode.id;
-				if (targetNode.status === "running" || this.activeExecutions.has(execKey)) continue;
-				const upstreamIds = graph.edges.filter((e) => e.targetNodeId === targetNode.id).map((e) => e.sourceNodeId);
-				const allUpstreamDone = upstreamIds.every((uid) => graph.nodes.find((n) => n.id === uid)?.status === "done");
-				if (!via && !allUpstreamDone) continue; // 人工批准直放（via=approve）不受合流门限制
-				targetNode.status = "running";
-				void this.runNode(graph, targetNode.id, undefined, this.runBaseByGraph.get(graph.id));
+			const feedbackKey = `${graph.id}:${graph.run?.id}:${edge.id}`;
+			if (completedNode.artifact.workspace) this.feedbackArtifacts.set(feedbackKey, completedNode.artifact.workspace);
+			else this.feedbackArtifacts.delete(feedbackKey);
+			edge.currentLoopCount = (edge.currentLoopCount ?? 0) + 1;
+			const target = graph.nodes.find((n) => n.id === edge.targetNodeId);
+			if (target && !rework.includes(target)) rework.push(target);
+		}
+		if (via === "reject" && rework.length === 0 && completedNode.status !== "waiting_approval") {
+			completedNode.status = "waiting_approval";
+			completedNode.currentAction = "Rejection requires a configured rework edge";
+		}
+		// Reset the forward rework region, retaining the feedback contract and retry counts.
+		const reset = (id: string, seen = new Set<string>()) => {
+			if (seen.has(id)) return;
+			seen.add(id);
+			const node = graph.nodes.find((n) => n.id === id)!;
+			if (this.activeExecutions.has(graph.id + ":" + id)) this.stopNode(graph.id, id);
+			node.status = "idle";
+			node.error = undefined;
+			node.artifact = undefined;
+			node.lastOutputSummary = undefined;
+			node.aiVerdict = undefined;
+			for (const edge of graph.edges.filter((e) => e.sourceNodeId === id && !isCanvasBackedge(e))) {
+				edge.active = undefined;
+				edge.lastHandoffSummary = undefined;
+				reset(edge.targetNodeId, seen);
 			}
+		};
+		for (const target of rework) reset(target.id);
+		const scheduled: Promise<void>[] = [];
+		for (const target of rework) {
+			if (!isCurrent()) return;
+			scheduled.push(this.runNode(graph, target.id, undefined, this.runBaseByGraph.get(graph.id), true));
 		}
-
-		// 检查图上所有节点是否都已经到达完成状态
-		const allDone = graph.nodes.every((n) => n.status === "done");
-		if (allDone) {
-			graph.status = "completed";
-			saveCanvasRuntimeState(this.dataDir, graph);
+		// Resolve skipped branches to a fixed point before scheduling joins.
+		let changed = true;
+		while (changed) {
+			changed = false;
+			for (const node of this.runNodes(graph))
+				if (node.status === "idle" && canvasReadiness(graph, node) === "skip") {
+					node.status = "skipped";
+					changed = true;
+					for (const edge of graph.edges.filter((e) => e.sourceNodeId === node.id && !isCanvasBackedge(e))) {
+						edge.active = false;
+						edge.lastHandoffSummary = undefined;
+					}
+				}
 		}
+		for (const node of this.runNodes(graph)) {
+			if (!isCurrent()) return;
+			if (
+				node.status === "idle" &&
+				graph.edges.some((e) => e.targetNodeId === node.id && !isCanvasBackedge(e) && e.active === true) &&
+				canvasReadiness(graph, node) === "ready"
+			)
+				scheduled.push(this.runNode(graph, node.id, undefined, this.runBaseByGraph.get(graph.id), true));
+		}
+		this.settleGraph(graph);
+		saveCanvasRuntimeState(this.dataDir, graph);
+		this.broadcastCanvasRuntime(graph);
+		await Promise.all(scheduled);
+		if (!isCurrent()) return;
+		this.settleGraph(graph);
+		saveCanvasRuntimeState(this.dataDir, graph);
+		this.broadcastCanvasRuntime(graph);
 	}
 
 	/** 停止单个节点 */
 	stopNode(graphId: string, nodeId: string): void {
 		const execKey = `${graphId}:${nodeId}`;
+		this.nodeGenerations.set(execKey, (this.nodeGenerations.get(execKey) ?? 0) + 1);
 		const execution = this.activeExecutions.get(execKey);
 		if (execution) {
 			execution.abortController?.abort();
@@ -708,10 +978,12 @@ export class CanvasOrchestrator {
 		if (graph) {
 			const node = graph.nodes.find((n) => n.id === nodeId);
 			if (node) {
-				node.status = "idle";
+				node.status = "cancelled";
 				node.currentAction = "已手动中止";
+				this.settleGraph(graph);
 				this.appendLog(graphId, nodeId, "system", "已手动中止当前任务");
 				saveCanvasRuntimeState(this.dataDir, graph);
+				this.broadcastCanvasRuntime(graph);
 				this.broadcast({
 					type: "canvas_node_event",
 					graphId,
@@ -725,6 +997,9 @@ export class CanvasOrchestrator {
 
 	/** 停止全图所有正在运行的节点 */
 	stopAll(graphId: string): void {
+		clearTimeout(this.runDeadlines.get(graphId));
+		this.runDeadlines.delete(graphId);
+		this.graphGenerations.set(graphId, (this.graphGenerations.get(graphId) ?? 0) + 1);
 		this.runBaseByGraph.delete(graphId);
 		for (const [key, execution] of this.activeExecutions.entries()) {
 			if (execution.graphId === graphId) {
@@ -734,14 +1009,16 @@ export class CanvasOrchestrator {
 		}
 		const graph = this.runningGraphs.get(graphId);
 		if (graph) {
-			graph.status = "idle";
+			graph.status = "paused";
+			if (graph.run) graph.run.finishedAt = Date.now();
 			for (const node of graph.nodes) {
-				if (node.status === "running") {
-					node.status = "idle";
+				if (["running", "idle", "waiting_approval"].includes(node.status)) {
+					node.status = "cancelled";
 					node.currentAction = "已手动中止";
 				}
 			}
 			saveCanvasRuntimeState(this.dataDir, graph);
+			this.broadcastCanvasRuntime(graph);
 		}
 	}
 
@@ -758,16 +1035,20 @@ export class CanvasOrchestrator {
 		}
 		const node = graph.nodes.find((n) => n.id === nodeId);
 		if (!node) return null;
-		const cleanComment = (comment ?? "").slice(0, 500);
+		if (node.status !== "waiting_approval") return null;
+		const cleanComment = (comment ?? "").trim();
+		node.lastOutputSummary = `${node.lastOutputSummary ?? ""}\n${decision === "reject" ? "Rework requested" : "Approved"}: ${cleanComment}`;
+		graph.status = "running";
 		if (decision === "approve") {
 			node.status = "done";
 			node.currentAction = cleanComment ? `人工审查批准合流：${cleanComment}` : "人工审查批准合流";
 		} else {
-			node.status = "waiting_approval";
+			node.status = "done";
 			node.currentAction = cleanComment ? `人工驳回：${cleanComment}` : "人工驳回：需补充完善测试与注释";
 		}
 		graph.updatedAt = Date.now();
 		saveCanvasRuntimeState(this.dataDir, graph);
+		this.broadcastCanvasRuntime(graph);
 		this.runningGraphs.set(graphId, graph);
 		this.appendLog(
 			graphId,
@@ -786,9 +1067,13 @@ export class CanvasOrchestrator {
 				summary: node.lastOutputSummary,
 			});
 		}
-		if (decision === "approve") {
-			void this.handleDownstreamEdges(graph, node, "approve");
-		}
+		void this.handleDownstreamEdges(graph, node, decision).catch((error: unknown) => {
+			node.status = "error";
+			node.error = String(error);
+			this.settleGraph(graph);
+			saveCanvasRuntimeState(this.dataDir, graph);
+			this.broadcastCanvasRuntime(graph);
+		});
 		return graph;
 	}
 
@@ -808,6 +1093,7 @@ export class CanvasOrchestrator {
 
 		node.currentAction = `[收到人工插话指导]: ${message.slice(0, 40)}`;
 		saveCanvasRuntimeState(this.dataDir, graph);
+		this.broadcastCanvasRuntime(graph);
 		this.appendLog(graphId, nodeId, "steer", message.slice(0, 2000));
 
 		this.broadcast({
@@ -824,8 +1110,10 @@ export class CanvasOrchestrator {
 		if (execution?.session && typeof execution.session.prompt === "function") {
 			try {
 				await execution.session.prompt(message);
+				if (execution.abortController?.signal.aborted || this.activeExecutions.get(execKey) !== execution) return;
 				this.appendLog(graphId, nodeId, "system", "已将插话实时投递进正在运行的智能体会话。");
 			} catch (err: unknown) {
+				if (execution.abortController?.signal.aborted || this.activeExecutions.get(execKey) !== execution) return;
 				const errMsg = err instanceof Error ? err.message : String(err);
 				this.appendLog(graphId, nodeId, "error", `插话投递底层会话失败: ${errMsg}`);
 			}
@@ -855,6 +1143,7 @@ export class CanvasOrchestrator {
 			edge.lastHandoffSummary = undefined;
 		}
 		saveCanvasRuntimeState(this.dataDir, graph);
+		this.broadcastCanvasRuntime(graph);
 	}
 
 	/** 节点执行过程模拟与调度心跳（具备取消信号响应） */
@@ -902,11 +1191,7 @@ export class CanvasOrchestrator {
 		if (!this.engineGetter) {
 			throw new Error("引擎服务提供者未注入");
 		}
-		let engineSvc = this.engineGetter(node.engine);
-		if (!engineSvc && node.engine !== "pi") {
-			engineSvc = this.engineGetter("pi");
-			this.appendLog(graph.id, node.id, "system", `引擎 ${node.engine} 不可用，已自动切换为 Pi 原生引擎。`);
-		}
+		const engineSvc = this.engineGetter(node.engine);
 		if (!engineSvc) {
 			throw new Error(`找不到智能体引擎：${node.engine}`);
 		}
@@ -938,6 +1223,7 @@ export class CanvasOrchestrator {
 				const messages = ((msg as any).state?.messages || (msg as any).appended || []) as UiMessage[];
 				if (messages.length > 0) this.pushNodeMessages(graph.id, node.id, messages);
 				for (const m of messages) {
+					if (signal.aborted) return;
 					if (m.toolName) {
 						const tid = m.toolCallId || `${m.toolName}:${m.id}`;
 						if (!seenToolIds.has(tid)) {
@@ -963,43 +1249,33 @@ export class CanvasOrchestrator {
 			}
 		};
 
-		const cs = await engineSvc.attach(clientId, sink);
 		const execKey = `${graph.id}:${node.id}`;
 		const execution = this.activeExecutions.get(execKey);
-		if (execution) {
+		const cs = await engineSvc.attach(clientId, sink);
+		const checkCurrent = () => {
+			if (signal.aborted || this.activeExecutions.get(execKey) !== execution) throw new Error("任务已被手动中止");
+		};
+		if (!signal.aborted && this.activeExecutions.get(execKey) === execution && execution) {
 			execution.session = cs;
 		}
 
 		try {
+			checkCurrent();
 			if (cs.cwd !== resolvedCwd) {
 				await cs.setCwd(resolvedCwd);
 			}
 
+			checkCurrent();
+
 			// 真实应用模型切换（若模型不存在或 Key 无效，真实报错）
 			// 归一化双前缀：历史存量可能是 opencode-go/opencode-go/xxx，压成 opencode-go/xxx 再切换。
-			if (node.model && typeof (cs as any).switchModelOrThrow === "function") {
-				try {
-					await (cs as any).switchModelOrThrow(normalizeCanvasModelId(node.model));
-				} catch (err) {
-					// 尝试安全回退到当前引擎默认可用模型，避免特定模型未配置导致整张画布崩溃
-					let fallbackOk = false;
-					if (typeof (cs as any).switchModel === "function") {
-						try {
-							await (cs as any).switchModel("");
-							fallbackOk = true;
-							this.appendLog(
-								graph.id,
-								node.id,
-								"system",
-								`指定模型 [${node.model}] 不可用，已自动回落至引擎默认模型。`,
-							);
-						} catch {}
-					}
-					if (!fallbackOk) {
-						throw new Error(`模型未配置或不可用 [${node.model}]: ${(err as Error).message}`);
-					}
-				}
+			if (node.model) {
+				if (typeof cs.switchModelOrThrow !== "function") throw new Error(`Engine cannot select model: ${node.model}`);
+				await cs.switchModelOrThrow(normalizeCanvasModelId(node.model));
 			}
+			node.actualEngine = node.engine;
+			node.actualModel = node.model;
+			checkCurrent();
 
 			// 真实应用思考强度
 			if (node.thinkingLevel && typeof (cs as any).setThinking === "function") {
@@ -1017,7 +1293,19 @@ export class CanvasOrchestrator {
 			const baselineMsgCount = preRunMsgs.length;
 			captureErrors = true;
 
-			await cs.prompt(prompt);
+			const abortSession = () => {
+				void Promise.resolve()
+					.then(() => cs.abort())
+					.catch(() => {});
+			};
+			signal.addEventListener("abort", abortSession, { once: true });
+			try {
+				checkCurrent();
+				await cs.prompt(prompt);
+			} finally {
+				signal.removeEventListener("abort", abortSession);
+			}
+			checkCurrent();
 
 			// 等待执行完成（带超时和取消监听）
 			const startTime = Date.now();
@@ -1059,6 +1347,8 @@ export class CanvasOrchestrator {
 				}
 			}
 
+			checkCurrent();
+
 			// 真实检测代码变更统计（仅本地项目支持本地 git diff）
 			let diffSummary = "";
 			try {
@@ -1080,7 +1370,7 @@ export class CanvasOrchestrator {
 			const replyText = (
 				collectedText.trim() || extractRunReplyText(canvasSnapshotMessages(cs).slice(baselineMsgCount))
 			).trim();
-			if (replyText) return `${replyText.slice(-300)}${diffSummary}`;
+			if (replyText) return `${replyText}${diffSummary}`;
 			return `[${node.title}] 交付完成${diffSummary || "（未产生文件修改）"}`;
 		} finally {
 			if (execution) {
@@ -1212,7 +1502,7 @@ function buildPassthroughSummary(node: CanvasNode, contractContext: string, init
 		.map(([k, v]) => `${k}=${String(v)}`)
 		.slice(0, 8)
 		.join("；");
-	const contract = contractContext ? contractContext.slice(0, 1500) : "（无上游输入，直接透传）";
+	const contract = contractContext ? contractContext : "（无上游输入，直接透传）";
 	switch (node.role) {
 		case "condition":
 			return `【条件分支 ${node.title}】判定配置：${cfgText || "未配置表达式，默认走 true 边"}\n透传上游产物：\n${contract}`;
@@ -1223,13 +1513,13 @@ function buildPassthroughSummary(node: CanvasNode, contractContext: string, init
 		case "trigger": {
 			const popup = (initialPrompt ?? "").trim();
 			const payload = popup || String(cfg["payload"] ?? "").trim() || String(node.instruction ?? "").trim();
-			const extra = contractContext ? contractContext.slice(0, 1000) : "";
+			const extra = contractContext || "";
 			if (payload)
 				return (
 					"【手动触发 · 业务需求输入 " +
 					node.title +
 					"】任务内容：\n" +
-					payload.slice(0, 1500) +
+					payload +
 					(extra ? "\n上游输入：\n" + extra : "")
 				);
 			return (

@@ -5,6 +5,7 @@ import { loadFileHandler, type FileHandlerPlugin, type FileHandlerDeclaration } 
 import { makePluginContext, type PluginFile, type PluginFileHandlerContext } from "../plugin-loader";
 import { appUrl } from "../base-url";
 import { withToken } from "../auth-token";
+import { getClientId } from "../use-chat";
 
 interface PluginFilePreviewProps {
 	file: PluginFile;
@@ -59,6 +60,7 @@ export function PluginFilePreview({
 						for (const [key, value] of Object.entries(params ?? {})) {
 							if (value !== undefined) query.set(key, String(value));
 						}
+						query.set("clientId", getClientId());
 						const qs = query.toString();
 						return withToken(appUrl(`${base}${suffix}${qs ? `?${qs}` : ""}`));
 					},

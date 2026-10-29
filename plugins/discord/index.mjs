@@ -9,6 +9,7 @@
 
 import { createHash } from "node:crypto";
 import { chunkMarkdownText } from "./markdown-chunks.mjs";
+import { installChannelBehavior, sendMedia } from "./channel-behavior.mjs";
 
 export const SECRET_BOT_TOKEN = "discord.botToken";
 const DISCORD_API_BASE = "https://discord.com/api/v10";
@@ -136,7 +137,9 @@ export class DiscordBotBridge {
 		}
 
 		if (this.host.onRunEvent) {
-			this.offRunEvent = this.host.onRunEvent((ev) => this.handleRunEvent(ev));
+			this.offRunEvent = this.host.onRunEvent((ev) => {
+				this.handleRunEvent(ev).catch((error) => this.log("warn", `Reply delivery failed: ${error.message}`));
+			});
 		}
 
 		try {
@@ -292,277 +295,6 @@ export class DiscordBotBridge {
 			}
 		}
 	}
-
-	async onInboundMessage(message) {
-		if (!message || message.author?.bot) return;
-
-		const channelId = message.channel_id;
-		const authorId = message.author?.id;
-		const isGuild = Boolean(message.guild_id);
-		const botId = this.botUser?.id || "";
-
-		// In guild channels, only respond if bot is mentioned
-		if (isGuild && botId) {
-			const mentions = Array.isArray(message.mentions) ? message.mentions : [];
-			const isMentioned = mentions.some((u) => u.id === botId);
-			if (!isMentioned) return;
-		}
-
-		const cleanText = extractDiscordText(message, botId);
-		if (!cleanText) return;
-
-		const cfg = this.getConfig();
-
-		// Access control whitelist
-		const allowedUsers = Array.isArray(cfg.allowedUsers)
-			? cfg.allowedUsers.map((u) => String(u).trim()).filter(Boolean)
-			: [];
-		if (allowedUsers.length > 0 && authorId && !allowedUsers.includes(String(authorId))) {
-			await discordApi(cfg.botToken, "POST", `/channels/${channelId}/messages`, {
-				content: "【访问受限】您当前不在该 Discord 机器人的白名单中，请联系管理员在 Web 控制台添加您的 User ID。",
-				message_reference: { message_id: message.id },
-			}).catch(() => {});
-			return;
-		}
-
-		this.status.messagesReceived++;
-		this.status.lastMessageAt = Date.now();
-
-		// Handle slash commands (/help, /clear, /new, /status)
-		if (cleanText.startsWith("/")) {
-			const handled = await this.handleSlashCommand(cleanText, { channelId, authorId, replyToId: message.id, cfg });
-			if (handled) return;
-		}
-
-		// Send typing indicator
-		discordApi(cfg.botToken, "POST", `/channels/${channelId}/typing`, null).catch(() => {});
-
-		// Prepare isolated agent session for this user
-		const accountId = peerAccountId(authorId);
-		let conversationId = this.userConversations.get(authorId);
-		if (!conversationId) {
-			conversationId = `dc_${String(authorId).slice(-8)}_${Date.now().toString(36)}`;
-			this.userConversations.set(authorId, conversationId);
-		}
-
-		this.pendingRuns.set(conversationId, {
-			channelId,
-			authorId,
-			replyToMessageId: message.id,
-			accumulatedText: "",
-			startedAt: Date.now(),
-		});
-
-		try {
-			const workspace = this.resolveWorkspace(authorId, cfg);
-			const chatReq = {
-				text: cleanText,
-				accountId,
-				conversationId,
-			};
-			if (workspace) chatReq.cwd = workspace;
-			if (cfg.model) chatReq.model = cfg.model;
-			if (cfg.thinkingLevel) chatReq.thinkingLevel = cfg.thinkingLevel;
-			const res = await this.host.chat(chatReq);
-			// 回执里的宿主会话 id 才是真实键（本地编的 dc_xxx 只是占位）：
-			// 以前忽略回执，pendingRuns 永远等不到事件 → 只在超时后回一句就没了下文。
-			const hostConvId = String(res?.conversationId ?? "").trim();
-			if (hostConvId && hostConvId !== conversationId) {
-				const pending = this.pendingRuns.get(conversationId);
-				if (pending) {
-					const early = this.earlyRuns.get(hostConvId);
-					if (early) {
-						if (early.accumulatedText) {
-							pending.accumulatedText = pending.accumulatedText
-								? `${early.accumulatedText}
-${pending.accumulatedText}`
-								: early.accumulatedText;
-						}
-						this.earlyRuns.delete(hostConvId);
-					}
-					this.pendingRuns.delete(conversationId);
-					this.pendingRuns.set(hostConvId, pending);
-				}
-				this.userConversations.set(authorId, hostConvId);
-			}
-			this.rememberRunId(hostConvId || conversationId, res?.runId);
-		} catch (err) {
-			this.log("warn", `Discord host.chat dispatch failed: ${err.message}`);
-			this.pendingRuns.delete(conversationId);
-			await discordApi(cfg.botToken, "POST", `/channels/${channelId}/messages`, {
-				content: `任务启动失败：${err.message}`,
-				message_reference: { message_id: message.id },
-			}).catch(() => {});
-		}
-	}
-
-	async handleSlashCommand(cmdText, { channelId, authorId, replyToId, cfg }) {
-		const parts = cmdText.trim().split(/\s+/);
-		const cmd = parts[0].toLowerCase();
-
-		switch (cmd) {
-			case "/help": {
-				const helpText = [
-					"### 🤖 pi-web-ui Discord 机器人帮助",
-					"- 直接发送文本即可与 AI 助手对话，支持多轮上下文",
-					"- `/cwd [路径]` 或 `/workspace [路径]`：查看或切换当前项目根目录",
-					"- `/model`：查看当前配置的 AI 模型与思考强度",
-					"- `/clear` 或 `/new`：清空当前上下文，开启全新对话",
-					"- `/status`：查看机器人运行状态与指标",
-					"- `/help`：展示本帮助信息",
-				].join("\n");
-				await discordApi(cfg.botToken, "POST", `/channels/${channelId}/messages`, {
-					content: helpText,
-					message_reference: { message_id: replyToId },
-				}).catch(() => {});
-				return true;
-			}
-			case "/model": {
-				const currentModel = cfg.model || "(默认跟随全局)";
-				const currentThinking = cfg.thinkingLevel || "(跟随全局)";
-				await discordApi(cfg.botToken, "POST", `/channels/${channelId}/messages`, {
-					content: `### 🤖 当前模型与思考配置\n- 模型 (Model)：\`${currentModel}\`\n- 思考强度 (Thinking)：\`${currentThinking}\``,
-					message_reference: { message_id: replyToId },
-				}).catch(() => {});
-				return true;
-			}
-			case "/cwd":
-			case "/workspace": {
-				const argPath = cmdText.replace(/^\/\S+/, "").trim();
-				if (!argPath) {
-					const currentWs = this.resolveWorkspace(authorId, cfg) || "(默认跟随宿主当前项目)";
-					await discordApi(cfg.botToken, "POST", `/channels/${channelId}/messages`, {
-						content: `📂 当前项目根目录：${currentWs}\n提示：发送 /cwd <目录路径> 可切换项目根目录。`,
-						message_reference: { message_id: replyToId },
-					}).catch(() => {});
-					return true;
-				}
-				this.userWorkspaces.set(authorId, argPath);
-				const newId = `dc_${String(authorId).slice(-8)}_${Date.now().toString(36)}`;
-				this.userConversations.set(authorId, newId);
-				await discordApi(cfg.botToken, "POST", `/channels/${channelId}/messages`, {
-					content: `📂 已将项目根目录切换为：${argPath}\n✨ 已自动为您开启该目录下的全新会话！`,
-					message_reference: { message_id: replyToId },
-				}).catch(() => {});
-				return true;
-			}
-			case "/clear":
-			case "/new": {
-				const newId = `dc_${String(authorId).slice(-8)}_${Date.now().toString(36)}`;
-				this.userConversations.set(authorId, newId);
-				await discordApi(cfg.botToken, "POST", `/channels/${channelId}/messages`, {
-					content: "✨ 对话上下文已清空，已为您开启全新会话！",
-					message_reference: { message_id: replyToId },
-				}).catch(() => {});
-				return true;
-			}
-			case "/status": {
-				const s = this.status;
-				const statusText = [
-					`### 🟢 Discord 机器人状态`,
-					`- 机器人账号：@${s.botUsername || "未连接"}`,
-					`- 运行状态：在线 (Gateway WebSocket)`,
-					`- 已接收消息：${s.messagesReceived} 条`,
-					`- 已回复消息：${s.messagesReplied} 条`,
-				].join("\n");
-				await discordApi(cfg.botToken, "POST", `/channels/${channelId}/messages`, {
-					content: statusText,
-					message_reference: { message_id: replyToId },
-				}).catch(() => {});
-				return true;
-			}
-			default:
-				return false;
-		}
-	}
-
-	/** 记住某个对话「本轮」的稳定 runId（host.chat 回执给出；旧宿主没有就跳过）。 */
-	rememberRunId(conversationId, runId) {
-		const rid = typeof runId === "string" ? runId.trim() : "";
-		if (!rid || !conversationId || !this.pendingRuns.has(conversationId)) return;
-		this.pendingRuns.get(conversationId).runId = rid;
-		this.runIdIndex.set(rid, conversationId);
-	}
-
-	/** 事件归属的 pendingRuns key：优先稳定 runId（过户改名后 conversationId 已对不上）。 */
-	resolveRunKey(ev) {
-		const rid = typeof ev?.runId === "string" ? ev.runId.trim() : "";
-		const mapped = rid ? this.runIdIndex.get(rid) : undefined;
-		// 映射已失效（该轮已收尾/被清理）时回落当前 conversationId，别拿旧 key 误吞事件。
-		return mapped && this.pendingRuns.has(mapped) ? mapped : ev.conversationId;
-	}
-
-	/** 运行收尾：清掉该 key 关联的 runId 索引，防陈旧映射把后续运行认错。 */
-	forgetRun(key) {
-		if (key) this.pendingRuns.delete(key);
-		for (const [rid, k] of this.runIdIndex) {
-			if (k === key) this.runIdIndex.delete(rid);
-		}
-	}
-
-	async handleRunEvent(ev) {
-		const convId = this.resolveRunKey(ev);
-		if (!convId) return;
-
-		if (ev.type === "message" && ev.message) {
-			const m = ev.message;
-			let content = "";
-			if (typeof m.content === "string") content = m.content;
-			else if (Array.isArray(m.content)) {
-				content = m.content
-					.map((c) => (typeof c === "string" ? c : c.text || ""))
-					.join("\n")
-					.trim();
-			}
-
-			if (content && (m.role === "assistant" || m.author === "assistant")) {
-				if (this.pendingRuns.has(convId)) {
-					const r = this.pendingRuns.get(convId);
-					r.accumulatedText += (r.accumulatedText ? "\n" : "") + content;
-				} else {
-					let early = this.earlyRuns.get(convId);
-					if (!early) {
-						early = { accumulatedText: "" };
-						this.earlyRuns.set(convId, early);
-					}
-					early.accumulatedText += (early.accumulatedText ? "\n" : "") + content;
-				}
-			}
-			return;
-		}
-
-		if (ev.type === "run_end") {
-			const run = this.pendingRuns.get(convId) || this.earlyRuns.get(convId);
-			if (!run) return;
-
-			this.forgetRun(convId);
-			this.earlyRuns.delete(convId);
-
-			const rawText = run.accumulatedText || "";
-			const cleanText = stripInternalMarkers(rawText);
-			const finalText = cleanText || "✅ 任务已完成（无文本输出）。";
-
-			const cfg = this.getConfig();
-			// Discord limit is 2000 chars, using 1950 safe limit
-			const chunks = chunkMarkdownText(finalText, 1950);
-
-			try {
-				for (let i = 0; i < chunks.length; i++) {
-					const chunk = chunks[i];
-					const payload = { content: chunk };
-					if (i === 0 && run.replyToMessageId) {
-						payload.message_reference = { message_id: run.replyToMessageId };
-					}
-					await discordApi(cfg.botToken, "POST", `/channels/${run.channelId}/messages`, payload);
-				}
-
-				this.status.messagesReplied++;
-				this.status.lastReplyAt = Date.now();
-			} catch (err) {
-				this.log("warn", `Discord reply delivery failed: ${err.message}`);
-			}
-		}
-	}
 }
 
 /** Strip secrets from config before plaintext storage. */
@@ -591,6 +323,15 @@ export function mergeSavedSecrets(incoming, prev = {}, savedSecrets = {}) {
 	return out;
 }
 
+installChannelBehavior(
+	DiscordBotBridge,
+	"discord",
+	discordApi,
+	extractDiscordText,
+	chunkMarkdownText,
+	stripInternalMarkers,
+);
+
 export default async function activate(host) {
 	let localConfig = (await host.storage.get("config")) || {};
 	const savedSecrets = (await host.secrets?.getAll?.()) || {};
@@ -611,7 +352,7 @@ export default async function activate(host) {
 	// Register AI tool "discord" adhering strictly to tool-prompt-hygiene
 	host.registerTool?.({
 		name: "discord",
-		description: "Send text or notifications to Discord channels via Discord Bot API.",
+		description: "Send text and local media files to Discord channels; inspect bot status.",
 		promptSnippet: "send messages or notifications to Discord channels",
 		promptGuidelines: [
 			"Confirm target channel_id and message text with the user once before action=send",
@@ -629,6 +370,7 @@ export default async function activate(host) {
 					type: "string",
 					description: "send: target Discord channel ID.",
 				},
+				file: { type: "string", description: "Local image, audio, video or file path to upload (up to 20 MiB)." },
 				text: {
 					type: "string",
 					description: "send: text content to send.",
@@ -643,6 +385,8 @@ export default async function activate(host) {
 					const channelId = args.channel_id?.trim() || localConfig.defaultChannelId?.trim();
 					if (!channelId) throw new Error("channel_id is required.");
 					if (!localConfig.botToken) throw new Error("Discord Bot Token is not configured.");
+					if (args.file)
+						return JSON.stringify(await sendMedia(host, "discord", discordApi, localConfig, { channelId }, args));
 					const res = await discordApi(localConfig.botToken, "POST", `/channels/${channelId}/messages`, {
 						content: args.text || "",
 					});

@@ -10,27 +10,24 @@
  *
  * 从 agent-service.ts 抽出为独立模块。
  */
-import { readFileSync, statSync } from "node:fs";
 import * as fsPromises from "node:fs/promises";
 import { basename, resolve, sep } from "node:path";
 import type { SessionInfo } from "@earendil-works/pi-coding-agent";
 import type { MessageAnchor } from "./protocol.js";
+import { sessionLines, mapSessionsConcurrent } from "./session-scan.js";
+export { mapSessionsConcurrent } from "./session-scan.js";
 
-/** 转录全文扫描/整读的大小上限（16MB，与 readHistorySession 一致）：
- *  超限文件同步 readFileSync 会卡事件循环数百毫秒起，搜索不值得。 */
+/** Legacy whole-file reader guard, retained for readHistorySession callers only.
+ * Streaming search has no file-size cutoff. */
 export const MAX_TRANSCRIPT_SCAN_BYTES = 16 * 1024 * 1024;
 
-/** 转录全文进入内存/缓存的字符上限（256K 字符）：全文只服务搜索的命中判定
- *  （issue #440 拆分后按需加载），封顶保证单条 worst case 内存可控（缓存 256 条
- *  × 256K 字符 ≈ 64MB 上界，且只在搜索活动期间存在）。
- *  影响面：超长转录在截断点之后的内容不参与「是否命中」判定；命中后的消息级
- *  定位（collectSessionAnchors）仍扫全文件，不受此上限影响。 */
+/** Legacy parser text-preview budget. Search must use scanSessionForSearch. */
 export const MAX_SEARCH_TEXT_CHARS = 256 * 1024;
 
 /** 会话元数据快速匹配（列表初筛）：仅比对 session.name、会话文件名与第一条消息。
  *  显示名、当前项目内的文件名片段、首条消息。
  *  转录全文匹配不在这里：全文单条可达 MB 级，不再随列表缓存常驻（issue #440），
- *  由 filterSessionsForSearch 按需加载后判定（口径不变：user 与 assistant 消息文本）。 */
+ *  由 searchSessions / scanSessionForSearch 流式判定（仅 user 与 assistant 消息文本）。 */
 export function sessionMatchesMetadata(q: string, s: SessionInfo): boolean {
 	if (s.name && s.name.toLowerCase().includes(q)) return true;
 	if (basename(s.path).toLowerCase().includes(q)) return true;
@@ -53,41 +50,87 @@ export function messageSearchText(m: { content?: unknown }): string {
 	return parts.join("\n");
 }
 
-/** 扫描一个会话转录文件，收集文本命中查询的消息锚点（role + timestamp，
- *  按转录顺序，最多 cap 个）。仅 user/assistant 消息参与，与搜索范围一致。
- *  超过大小上限的转录直接跳过（stat 先行，不整读）—— 全局搜索逐会话同步
- *  扫描，无上限时一个大转录就能冻住整个事件循环。 */
-export function collectSessionAnchors(filePath: string, q: string, cap = 10): MessageAnchor[] {
-	const anchors: MessageAnchor[] = [];
-	if (!q) return anchors;
+export interface SessionSearchMatch {
+	matched: boolean;
+	anchors: MessageAnchor[];
+}
+
+/** One asynchronous pass determines the match and collects anchors. Only user and
+ * assistant text participates. A missing timestamp still counts as a text match.
+ * Invalid/unreadable records do not prevent searching other sessions. */
+export async function scanSessionForSearch(
+	filePath: string,
+	query: string,
+	cap = 10,
+	signal?: AbortSignal,
+): Promise<SessionSearchMatch> {
+	signal?.throwIfAborted();
+	const result: SessionSearchMatch = { matched: false, anchors: [] };
+	const q = query.trim().toLowerCase();
+	if (!q) return result;
+	const limit = Number.isFinite(cap) ? Math.max(0, Math.floor(cap)) : 10;
 	try {
-		if (statSync(filePath).size > MAX_TRANSCRIPT_SCAN_BYTES) return anchors;
-		const lines = readFileSync(filePath, "utf8").split("\n");
-		for (const line of lines) {
-			if (!line.trim()) continue;
-			let e: {
-				type?: unknown;
-				message?: { role?: unknown; timestamp?: unknown; content?: unknown };
-			};
+		for await (const line of sessionLines(filePath, signal)) {
+			let entry;
 			try {
-				e = JSON.parse(line);
+				entry = JSON.parse(line);
 			} catch {
 				continue;
 			}
-			if (e?.type !== "message") continue;
-			const m = e.message;
-			if (!m) continue;
-			if (m.role !== "user" && m.role !== "assistant") continue;
-			if (typeof m.timestamp !== "number") continue;
-			const text = messageSearchText(m);
-			if (!text || !text.toLowerCase().includes(q)) continue;
-			anchors.push({ role: m.role, timestamp: m.timestamp });
-			if (anchors.length >= cap) break;
+			if (entry?.type !== "message") continue;
+			const message = entry.message;
+			if (message?.role !== "user" && message?.role !== "assistant") continue;
+			if (!messageSearchText(message).toLowerCase().includes(q)) continue;
+			result.matched = true;
+			if (
+				typeof message.timestamp === "number" &&
+				Number.isFinite(message.timestamp) &&
+				result.anchors.length < limit
+			) {
+				result.anchors.push({ role: message.role, timestamp: message.timestamp });
+			}
+			if (result.anchors.length >= limit) break;
 		}
 	} catch {
-		// 单个转录损坏不影响其余会话
+		// Cancellation must propagate; only transcript errors are best effort.
+		signal?.throwIfAborted();
+		// Keep any matches already read from a partially readable transcript.
 	}
-	return anchors;
+	signal?.throwIfAborted();
+	return result;
+}
+
+/** Async compatibility entry point. Prefer scanSessionForSearch when also filtering. */
+export async function collectSessionAnchors(
+	filePath: string,
+	q: string,
+	cap = 10,
+	signal?: AbortSignal,
+): Promise<MessageAnchor[]> {
+	return (await scanSessionForSearch(filePath, q, cap, signal)).anchors;
+}
+
+/** Search every supplied candidate once, preserving order with bounded I/O.
+ * Metadata hits still scan text to provide anchors; no 200-session list limit.
+ * Empty queries return all candidates without opening their transcripts. */
+export async function searchSessions(
+	sessions: readonly SessionInfo[],
+	query: string,
+	options: { concurrency?: number; anchorCap?: number; signal?: AbortSignal } = {},
+): Promise<Array<{ session: SessionInfo; anchors: MessageAnchor[] }>> {
+	const q = query.trim().toLowerCase();
+	const results = await mapSessionsConcurrent(
+		sessions,
+		async (session) => {
+			const scan = q
+				? await scanSessionForSearch(session.path, q, options.anchorCap, options.signal)
+				: { matched: true, anchors: [] };
+			return scan.matched || sessionMatchesMetadata(q, session) ? { session, anchors: scan.anchors } : null;
+		},
+		options.concurrency ?? 4,
+		options.signal,
+	);
+	return results.filter((result): result is NonNullable<typeof result> => result !== null);
 }
 
 /**

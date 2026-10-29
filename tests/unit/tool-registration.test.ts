@@ -25,6 +25,7 @@ import {
 	COMPACT_CONTEXT_TOOL_NAME,
 	CONVERSATION_READ_TOOL_NAME,
 	DELEGATE_TASK_TOOL_NAME,
+	DEVICE_COLLAB_TOOL_NAME,
 	EDIT_SOFT_TOOL_NAME,
 	EVAL_TOOL_NAME,
 	LSP_TOOL_NAME,
@@ -41,6 +42,17 @@ import {
 	TERMINAL_TOOL_NAMES,
 	TOOL_SEARCH_TOOL_NAME,
 } from "../../server/tool-manager.js";
+
+it("merges transcript inspection into the conversation catalog entry", () => {
+	expect(AGENT_TOOL_CATALOG.some((tool) => tool.name === "conversation_read")).toBe(false);
+	expect(AGENT_TOOL_CATALOG.filter((tool) => tool.name === "conversation")).toHaveLength(1);
+	expect(AGENT_SERVICE_SRC).toContain("customTools: mergeConversationTools([");
+});
+
+it("registers exactly one terminal catalog entry", () => {
+	expect(TERMINAL_TOOL_NAMES).toEqual(["terminal"]);
+	expect(AGENT_TOOL_CATALOG.filter((t) => t.name.startsWith("terminal")).map((t) => t.name)).toEqual(["terminal"]);
+});
 
 const AGENT_SERVICE_SRC = readFileSync(join(__dirname, "..", "..", "server", "agent-service.ts"), "utf8");
 
@@ -77,6 +89,7 @@ const FACTORY_TOOLS: Record<string, string[]> = {
 	makeMcpManageTool: [MCP_MANAGE_TOOL_NAME],
 	makeSandboxTool: [SANDBOX_TOOL_NAME],
 	makeWorktreeTool: [WORKTREE_TOOL_NAME],
+	makeDeviceCollabTool: [DEVICE_COLLAB_TOOL_NAME],
 	makeCanvasTool: [CANVAS_TOOL_NAME],
 	makeLoadToolsTool: [LOAD_TOOLS_TOOL_NAME],
 	createCodemodeExtension: [CODEMODE_TOOL_NAME],

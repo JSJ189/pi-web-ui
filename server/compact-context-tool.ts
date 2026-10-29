@@ -14,6 +14,7 @@ import { defineTool, type ToolDefinition } from "@earendil-works/pi-coding-agent
 import { Type, type Static } from "typebox";
 import { pick, type ServerLang } from "./i18n.js";
 import { COMPACT_CONTEXT_TOOL_NAME } from "./tool-manager.js";
+import { appendCompactionInstructions } from "./compaction-instructions.js";
 
 /** 工具名（唯一登记在 tool-manager.ts，在此 re-export 供外部模块引用）。 */
 export { COMPACT_CONTEXT_TOOL_NAME };
@@ -79,8 +80,9 @@ export function calculateEffectiveKeepRecentTokens(requestedTokens?: number, cur
 export function buildCompactionInstructions(focus: string, customSummary?: string): string {
 	const trimmedFocus = focus.trim();
 	const trimmedSummary = customSummary?.trim();
-	if (!trimmedSummary) return trimmedFocus;
-	return `${trimmedFocus}\n\n[Key Points / Summary to Retain]\n${trimmedSummary}`;
+	return appendCompactionInstructions(
+		trimmedSummary ? `${trimmedFocus}\n\n[Key Points / Summary to Retain]\n${trimmedSummary}` : trimmedFocus,
+	);
 }
 
 export const CompactContextParams = Type.Object({

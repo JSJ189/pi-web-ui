@@ -1,20 +1,29 @@
-# Telegram 机器人与工作台 (Telegram Plugin)
+# Telegram
 
-> Telegram Bot 出站长轮询双工对话插件，支持双向会话对话（零公网 IP / 免反代）、结构感知 Markdown 智能分块、白名单安全准入与消息推送。零外部依赖（Node 内建 fetch + node:crypto）。
+Telegram Bot API long polling integration. Configure a BotFather token in the plugin settings and enable the bot. Tokens are stored through the host secret store; `allowedUsers` accepts numeric Telegram sender IDs. Leave it empty only when all senders should be allowed. The bot requires outbound HTTPS; no public webhook is needed.
 
-## 功能特性
+Private chats accept messages directly. In groups, mention `@yourbot`, use `/command@yourbot`, or reply to the bot. Commands addressed to other bots are ignored. Sessions, model, thinking and workspace preferences are isolated by chat ID, forum topic ID and sender ID. Replies retain the originating topic and message. Preferences are in memory and reset when the plugin restarts. Active runs are tracked by the host's stable `runId`, including events arriving before the chat receipt and conversation renames.
 
-- 🤖 **出站长轮询双工对话**：基于官方原生的 `getUpdates` 长轮询协议，全程客户端主动发起出站长连接，**零公网 IP、免域名、免反向代理、免开放入站端口**，在局域网或个人电脑即可即开即用！
-- 📦 **结构感知 Markdown 分块**：针对 Telegram 单条消息上限（4096 字符），采用类似 `dsh-im` 的智能分块算法，保证代码块（\`\`\`）自动闭合与语法高亮完好。
-- ⚡ **斜杠快捷指令**：支持 `/help`、`/clear` 或 `/new`（清空上下文开新会话）、`/status`（查看机器人在线指标）。
-- 🛡️ **安全白名单控制**：支持设置允许对话的 Telegram User ID 白名单，未授权人员友好提示，防止 Bot 被陌生人滥用。
-- 💬 **即时状态感知**：收到消息自动触发 `typing` 正在输入指示，消除等待焦虑。
-- 🛠️ **AI 工具**：向 AI 助手注册 `telegram` 工具，AI 可自主向 Telegram 用户或频道推送消息。
+Commands:
 
-## 配置指南
+- `/help` (`/start`): list commands.
+- `/new`, `/clear`: stop this peer's active runs and start a fresh conversation on the next message. Stored history is not deleted; peer preferences remain.
+- `/status`: show this peer's conversation, running count and preferences.
+- `/stop`, `/abort`: stop only this peer's active runs.
+- `/model [provider/id]`: show available models or select one from the host model catalog.
+- `/thinking [off|minimal|low|medium|high|xhigh]`: inspect or change thinking effort.
+- `/cwd [absolute path]`: inspect or change workspace. The directory must exist; filesystem roots, the home root and common system directories are rejected. The host applies its own additional workspace validation.
 
-1. 打开 Telegram，在搜索栏查找官方账号 [@BotFather](https://t.me/BotFather)；
-2. 发送 `/newbot` 指令，按照提示为机器人设置名称（Name）和用户名（Username，需以 `bot` 结尾）；
-3. 复制 BotFather 返回的 `Bot Token`（形如 `123456789:ABCdefGHIjklMNOpqrSTUvwxYZ`）；
-4. 在 pi-web-ui 的 Telegram 面板点击「⚙️ 配置凭证」，填入 Bot Token 并勾选「启用 Telegram 机器人双向对话服务」；
-5. 点击「🔌 测试连接」验证通过后点击「💾 保存配置」即可开始对话。
+Preference changes require stopping active runs first and start a fresh conversation. Unknown slash commands return help and never reach the model. Dispatch, attachment download, validation and agent failures are reported in chat. Reply delivery failures are recorded in plugin status/logs.
+
+Incoming photos, voice, audio, documents, videos, video notes and animations are downloaded from Telegram into private temporary files on the server (20 MiB per file). Photos and supported image documents use `host.chat({text, attachments:[{path:"",imageData:base64,mimeType,name}]})`; each image is limited to 10 MiB. The host enforces at most eight images and 20 MiB aggregate decoded image bytes per request. Other files use `{path:absoluteDownloadedPath,mode:"reference",name}`. The prompt includes the local path and instructs the agent to use `read` as needed. Temporary downloads are retained for conversation access and need periodic cleanup by the server operator. Unsupported message types produce explicit feedback.
+
+The plugin does not itself transcribe audio or decode video. The agent is instructed to explicitly report decoding failures and ask for a transcript or supported still image when its available tools cannot decode the attachment. Image understanding depends on the selected model's capabilities. Telegram albums arrive as individual messages; this plugin does not combine albums into one request.
+
+The `telegram` agent tool supports `action:"status"` or `action:"send"`. For text, provide `chat_id` and `text`. For media, provide `media` (local server path or HTTP(S) URL), optional `text` as caption, and `media_type`: `photo`, `document`, `audio`, `voice`, `video`, or `animation`. Optional `message_thread_id` targets a forum topic. The plugin reads/downloads the bytes and uploads multipart data to Telegram rather than sending a path as text. Uploads are limited to 20 MiB; Telegram may impose stricter format and method limits. URL downloads require server network access. Local paths refer to the server, not the Telegram user's device.
+
+Example tool arguments:
+
+```json
+{ "action": "send", "chat_id": "123456", "media": "/srv/report.pdf", "media_type": "document", "text": "Report" }
+```

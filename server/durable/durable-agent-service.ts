@@ -36,7 +36,7 @@ export class DurableAgentService implements EngineService {
 		this.cwd = opts.cwd;
 		this.dataDir = opts.dataDir;
 		this.agentDir = opts.agentDir;
-		this.store = new UniversalSessionStore(opts.dataDir);
+		this.store = new UniversalSessionStore(opts.dataDir, "durable");
 		this.stateStore = opts.stateStore;
 	}
 

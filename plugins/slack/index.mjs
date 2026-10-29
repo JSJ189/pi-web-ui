@@ -9,6 +9,7 @@
 
 import { createHash } from "node:crypto";
 import { chunkMarkdownText } from "./markdown-chunks.mjs";
+import { installChannelBehavior, sendMedia } from "./channel-behavior.mjs";
 
 export const SECRET_BOT_TOKEN = "slack.botToken";
 export const SECRET_APP_TOKEN = "slack.appToken";
@@ -148,7 +149,9 @@ export class SlackBotBridge {
 		}
 
 		if (this.host.onRunEvent) {
-			this.offRunEvent = this.host.onRunEvent((ev) => this.handleRunEvent(ev));
+			this.offRunEvent = this.host.onRunEvent((ev) => {
+				this.handleRunEvent(ev).catch((error) => this.log("warn", `Reply delivery failed: ${error.message}`));
+			});
 		}
 
 		try {
@@ -252,239 +255,6 @@ export class SlackBotBridge {
 			});
 		}
 	}
-
-	async onInboundEvent(event) {
-		if (!event || event.bot_id || event.subtype === "bot_message") return;
-		const userId = event.user;
-		const channelId = event.channel;
-		const threadTs = event.thread_ts || event.ts;
-		const botId = this.botUser?.user_id || "";
-
-		// Filter self
-		if (userId === botId) return;
-
-		// 频道里只响应被 @ 的消息（DM 全收）——否则机器人在的频道里任何人的
-		// 任何一句话都触发一次 agent 运行（烧额度 + 刷屏）
-		const isDirectMessage = event.channel_type === "im";
-		if (!isDirectMessage && botId) {
-			const mentioned = typeof event.text === "string" && event.text.includes(`<@${botId}>`);
-			if (!mentioned) return;
-		}
-
-		const cleanText = extractSlackText(event.text, botId);
-		if (!cleanText) return;
-
-		const cfg = this.getConfig();
-
-		// Access control whitelist
-		const allowedUsers = Array.isArray(cfg.allowedUsers)
-			? cfg.allowedUsers.map((u) => String(u).trim()).filter(Boolean)
-			: [];
-		if (allowedUsers.length > 0 && userId && !allowedUsers.includes(String(userId))) {
-			await slackApi(cfg.botToken, "chat.postMessage", {
-				channel: channelId,
-				thread_ts: threadTs,
-				text: "【Access Restricted】You are not in the whitelist for this Slack AI Assistant.",
-			}).catch(() => {});
-			return;
-		}
-
-		this.status.messagesReceived++;
-		this.status.lastMessageAt = Date.now();
-
-		// Slash command handling (/help, /clear, /new, /status)
-		if (cleanText.startsWith("/")) {
-			const handled = await this.handleSlashCommand(cleanText, { channelId, threadTs, userId, cfg });
-			if (handled) return;
-		}
-
-		// Prepare isolated agent session for this user
-		const accountId = peerAccountId(userId);
-		let conversationId = this.userConversations.get(userId);
-		if (!conversationId) {
-			conversationId = `sl_${String(userId).slice(-8)}_${Date.now().toString(36)}`;
-			this.userConversations.set(userId, conversationId);
-		}
-
-		this.pendingRuns.set(conversationId, {
-			channelId,
-			threadTs,
-			userId,
-			accumulatedText: "",
-			startedAt: Date.now(),
-		});
-
-		try {
-			const workspace = this.resolveWorkspace(userId, cfg);
-			const chatReq = {
-				text: cleanText,
-				accountId,
-				conversationId,
-			};
-			if (workspace) chatReq.cwd = workspace;
-			if (cfg.model) chatReq.model = cfg.model;
-			if (cfg.thinkingLevel) chatReq.thinkingLevel = cfg.thinkingLevel;
-			await this.host.chat(chatReq);
-		} catch (err) {
-			this.log("warn", `Slack host.chat dispatch failed: ${err.message}`);
-			this.pendingRuns.delete(conversationId);
-			await slackApi(cfg.botToken, "chat.postMessage", {
-				channel: channelId,
-				thread_ts: threadTs,
-				text: `Failed to start session: ${err.message}`,
-			}).catch(() => {});
-		}
-	}
-
-	async handleSlashCommand(cmdText, { channelId, threadTs, userId, cfg }) {
-		const parts = cmdText.trim().split(/\s+/);
-		const cmd = parts[0].toLowerCase();
-
-		switch (cmd) {
-			case "/help": {
-				const helpText = [
-					"🤖 *pi-web-ui Slack Bot Help*",
-					"",
-					"- Send any message or mention the bot to chat with AI",
-					"- `/cwd [path]` or `/workspace [path]`: view or switch current workspace root",
-					"- `/model`: view current AI model and thinking level",
-					"- `/clear` or `/new`: reset context and start a fresh session",
-					"- `/status`: inspect bot connection and metrics",
-					"- `/help`: display this help guide",
-				].join("\n");
-				await slackApi(cfg.botToken, "chat.postMessage", {
-					channel: channelId,
-					thread_ts: threadTs,
-					text: helpText,
-				}).catch(() => {});
-				return true;
-			}
-			case "/model": {
-				const currentModel = cfg.model || "(default follows host global)";
-				const currentThinking = cfg.thinkingLevel || "(follows global)";
-				await slackApi(cfg.botToken, "chat.postMessage", {
-					channel: channelId,
-					thread_ts: threadTs,
-					text: `🤖 *Current Model & Thinking Config*\n- Model: \`${currentModel}\`\n- Thinking Level: \`${currentThinking}\``,
-				}).catch(() => {});
-				return true;
-			}
-			case "/cwd":
-			case "/workspace": {
-				const argPath = cmdText.replace(/^\/\S+/, "").trim();
-				if (!argPath) {
-					const currentWs = this.resolveWorkspace(userId, cfg) || "(following host current project)";
-					await slackApi(cfg.botToken, "chat.postMessage", {
-						channel: channelId,
-						thread_ts: threadTs,
-						text: `📂 Current workspace root: ${currentWs}\nTip: send /cwd <path> to switch workspace.`,
-					}).catch(() => {});
-					return true;
-				}
-				this.userWorkspaces.set(userId, argPath);
-				const newId = `sl_${String(userId).slice(-8)}_${Date.now().toString(36)}`;
-				this.userConversations.set(userId, newId);
-				await slackApi(cfg.botToken, "chat.postMessage", {
-					channel: channelId,
-					thread_ts: threadTs,
-					text: `📂 Switched workspace root to: ${argPath}\n✨ Started a fresh session!`,
-				}).catch(() => {});
-				return true;
-			}
-			case "/clear":
-			case "/new": {
-				const newId = `sl_${String(userId).slice(-8)}_${Date.now().toString(36)}`;
-				this.userConversations.set(userId, newId);
-				await slackApi(cfg.botToken, "chat.postMessage", {
-					channel: channelId,
-					thread_ts: threadTs,
-					text: "✨ Context cleared! Started a fresh conversation session.",
-				}).catch(() => {});
-				return true;
-			}
-			case "/status": {
-				const s = this.status;
-				const statusText = [
-					`🟢 *Slack Bot Status*`,
-					`- Bot: @${s.botUsername || "Connected"}`,
-					`- Status: Online (Socket Mode)`,
-					`- Received: ${s.messagesReceived} messages`,
-					`- Replied: ${s.messagesReplied} messages`,
-				].join("\n");
-				await slackApi(cfg.botToken, "chat.postMessage", {
-					channel: channelId,
-					thread_ts: threadTs,
-					text: statusText,
-				}).catch(() => {});
-				return true;
-			}
-			default:
-				return false;
-		}
-	}
-
-	async handleRunEvent(ev) {
-		const convId = ev.conversationId;
-		if (!convId) return;
-
-		if (ev.type === "message" && ev.message) {
-			const m = ev.message;
-			let content = "";
-			if (typeof m.content === "string") content = m.content;
-			else if (Array.isArray(m.content)) {
-				content = m.content
-					.map((c) => (typeof c === "string" ? c : c.text || ""))
-					.join("\n")
-					.trim();
-			}
-
-			if (content && (m.role === "assistant" || m.author === "assistant")) {
-				if (this.pendingRuns.has(convId)) {
-					const r = this.pendingRuns.get(convId);
-					r.accumulatedText += (r.accumulatedText ? "\n" : "") + content;
-				} else {
-					let early = this.earlyRuns.get(convId);
-					if (!early) {
-						early = { accumulatedText: "" };
-						this.earlyRuns.set(convId, early);
-					}
-					early.accumulatedText += (early.accumulatedText ? "\n" : "") + content;
-				}
-			}
-			return;
-		}
-
-		if (ev.type === "run_end") {
-			const run = this.pendingRuns.get(convId) || this.earlyRuns.get(convId);
-			if (!run) return;
-
-			this.pendingRuns.delete(convId);
-			this.earlyRuns.delete(convId);
-
-			const rawText = run.accumulatedText || "";
-			const cleanText = stripInternalMarkers(rawText);
-			const finalText = cleanText || "✅ Task completed (no text output).";
-
-			const cfg = this.getConfig();
-			// Slack single message limit ~4000 chars, using 3800 safe limit
-			const chunks = chunkMarkdownText(finalText, 3800);
-
-			try {
-				for (const chunk of chunks) {
-					await slackApi(cfg.botToken, "chat.postMessage", {
-						channel: run.channelId,
-						thread_ts: run.threadTs,
-						text: chunk,
-						mrkdwn: true,
-					});
-				}
-				this.status.messagesReplied++;
-				this.status.lastReplyAt = Date.now();
-			} catch (err) {
-				this.log("warn", `Slack reply delivery failed: ${err.message}`);
-			}
-		}
-	}
 }
 
 /** Strip secrets from config before plaintext storage. */
@@ -526,6 +296,8 @@ export function mergeSavedSecrets(incoming, prev = {}, savedSecrets = {}) {
 	return out;
 }
 
+installChannelBehavior(SlackBotBridge, "slack", slackApi, extractSlackText, chunkMarkdownText, stripInternalMarkers);
+
 export default async function activate(host) {
 	let localConfig = (await host.storage.get("config")) || {};
 	const savedSecrets = (await host.secrets?.getAll?.()) || {};
@@ -546,7 +318,7 @@ export default async function activate(host) {
 	// Register AI tool "slack" adhering strictly to tool-prompt-hygiene
 	host.registerTool?.({
 		name: "slack",
-		description: "Send messages or notifications to Slack channels or threads via Slack Web API.",
+		description: "Send text and local media files to Slack channels or threads; inspect bot status.",
 		promptSnippet: "send messages to Slack channels",
 		promptGuidelines: [
 			"Confirm target channel_id and message text with the user once before action=send",
@@ -564,6 +336,7 @@ export default async function activate(host) {
 					type: "string",
 					description: "send: target Slack channel ID (e.g. C12345678).",
 				},
+				file: { type: "string", description: "Local image, audio, video or file path to upload (up to 20 MiB)." },
 				text: {
 					type: "string",
 					description: "send: text content to send.",
@@ -582,6 +355,17 @@ export default async function activate(host) {
 					const channel = args.channel_id?.trim() || localConfig.defaultChannelId?.trim();
 					if (!channel) throw new Error("channel_id is required.");
 					if (!localConfig.botToken) throw new Error("Slack Bot Token is not configured.");
+					if (args.file)
+						return JSON.stringify(
+							await sendMedia(
+								host,
+								"slack",
+								slackApi,
+								localConfig,
+								{ channelId: channel, threadTs: args.thread_ts },
+								args,
+							),
+						);
 					const payload = {
 						channel,
 						text: args.text || "",

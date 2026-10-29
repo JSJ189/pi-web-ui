@@ -111,7 +111,7 @@ describe("TelegramBotBridge 双工通信流程测试", () => {
 		vi.stubGlobal("fetch", fetchMock);
 
 		let runHandler: ((ev: any) => void) | null = null;
-		const chatSpy = vi.fn().mockResolvedValue({ conversationId: "conv_tg_1" });
+		const chatSpy = vi.fn().mockResolvedValue({ conversationId: "conv_tg_1", runId: "run_tg_1" });
 
 		const bridge = new TelegramBotBridge({
 			host: {
@@ -142,10 +142,11 @@ describe("TelegramBotBridge 双工通信流程测试", () => {
 			}),
 		);
 
-		const convId = chatSpy.mock.calls[0][0].conversationId;
+		const convId = "conv_tg_1";
 
 		// 模拟流式增量与收尾
 		runHandler!({
+			runId: "run_tg_1",
 			conversationId: convId,
 			type: "message",
 			message: {
@@ -155,6 +156,7 @@ describe("TelegramBotBridge 双工通信流程测试", () => {
 		});
 
 		await runHandler!({
+			runId: "run_tg_1",
 			conversationId: convId,
 			type: "run_end",
 		});
@@ -171,7 +173,7 @@ describe("TelegramBotBridge 双工通信流程测试", () => {
 	});
 
 	it("Telegram 群聊门控：@其他人的消息不触发，只有指名道姓 @机器人自身才触发", async () => {
-		const chatSpy = vi.fn().mockResolvedValue({ conversationId: "conv_tg_group" });
+		const chatSpy = vi.fn().mockResolvedValue({ conversationId: "conv_tg_group", runId: "run_tg_group" });
 		const bridge = new TelegramBotBridge({
 			host: { chat: chatSpy },
 			getConfig: () => ({ botToken: "123:test_token" }),

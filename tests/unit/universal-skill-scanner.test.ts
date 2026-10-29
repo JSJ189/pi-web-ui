@@ -1,8 +1,21 @@
 /**
  * universal-skill-scanner.test.ts — 通用多智能体技能扫描维护体系单元测试。
  */
-import { afterEach, beforeEach, describe, expect, it } from "vitest";
-import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+import * as fs from "node:fs";
+import {
+	existsSync,
+	lstatSync,
+	mkdirSync,
+	mkdtempSync,
+	readFileSync,
+	readdirSync,
+	realpathSync,
+	rmSync,
+	symlinkSync,
+	writeFileSync,
+} from "node:fs";
+import * as discovery from "../../server/skill-discovery.js";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import {
@@ -19,6 +32,16 @@ import {
 	verifySkillFile,
 } from "../../server/skill-maintenance.js";
 import { makeSkillTool } from "../../server/skill-tool.js";
+
+vi.mock("node:fs", async (importOriginal) => {
+	const actual = await importOriginal<typeof import("node:fs")>();
+	return {
+		...actual,
+		mkdirSync: vi.fn(actual.mkdirSync),
+		copyFileSync: vi.fn(actual.copyFileSync),
+		writeFileSync: vi.fn(actual.writeFileSync),
+	};
+});
 
 describe("Universal Multi-Agent Skills Scanner", () => {
 	let tempRoot: string;
@@ -38,7 +61,184 @@ describe("Universal Multi-Agent Skills Scanner", () => {
 	});
 
 	afterEach(() => {
+		vi.restoreAllMocks();
+		vi.mocked(fs.mkdirSync).mockReset();
+		vi.mocked(fs.copyFileSync).mockReset();
+		vi.mocked(fs.writeFileSync).mockReset();
 		rmSync(tempRoot, { recursive: true, force: true });
+	});
+
+	function syncFixture(name = "bundle", standalone = false) {
+		const source = join(projectCwd, ".claude", "skills", "bundle");
+		mkdirSync(join(source, "scripts"), { recursive: true });
+		mkdirSync(join(source, "references"), { recursive: true });
+		mkdirSync(join(source, "assets", "nested"), { recursive: true });
+		const filePath = join(source, standalone ? "legacy.md" : "SKILL.md");
+		writeFileSync(filePath, `---\nname: ${name}\ndescription: Bundle fixture\n---\nRead references/guide.md`);
+		writeFileSync(join(source, "scripts", "run.sh"), "echo bundle");
+		writeFileSync(join(source, "references", "guide.md"), "Bundled guide");
+		writeFileSync(join(source, "assets", "nested", "binary.dat"), Buffer.from([0, 128, 255]));
+		vi.spyOn(discovery, "discoverDiskSkills").mockReturnValue([
+			{ name, description: "Bundle fixture", filePath, dirPath: source, source: "claude", scope: "project" },
+		]);
+		return { source, filePath, targetDir: join(projectCwd, ".pi", "skills") };
+	}
+
+	it("copies the complete skill bundle with relative resources and binary assets", () => {
+		const { source, filePath, targetDir } = syncFixture();
+		const result = syncAgentSkills({ cwd: projectCwd, targetDir });
+		const destination = join(targetDir, "bundle");
+		expect(result.synced).toEqual([{ name: "bundle", from: filePath, to: join(destination, "SKILL.md") }]);
+		for (const resource of ["SKILL.md", "scripts/run.sh", "references/guide.md", "assets/nested/binary.dat"]) {
+			expect(readFileSync(join(destination, resource))).toEqual(readFileSync(join(source, resource)));
+		}
+		expect(lstatSync(destination).isSymbolicLink()).toBe(false);
+	});
+
+	it("links the directory so bundled resources and subsequent edits stay available", () => {
+		const { source, targetDir } = syncFixture();
+		expect(syncAgentSkills({ cwd: projectCwd, targetDir, mode: "symlink" }).synced).toHaveLength(1);
+		const destination = join(targetDir, "bundle");
+		expect(lstatSync(destination).isSymbolicLink()).toBe(true);
+		expect(realpathSync(destination)).toBe(realpathSync(source));
+		writeFileSync(join(source, "references", "guide.md"), "Updated guide");
+		expect(readFileSync(join(destination, "references", "guide.md"), "utf8")).toBe("Updated guide");
+	});
+
+	it("keeps standalone Markdown skills as individual files", () => {
+		const { filePath, targetDir } = syncFixture("legacy", true);
+		expect(syncAgentSkills({ cwd: projectCwd, targetDir }).synced).toEqual([
+			{ name: "legacy", from: filePath, to: join(targetDir, "legacy.md") },
+		]);
+		expect(readdirSync(targetDir)).toEqual(["legacy.md"]);
+		expect(readFileSync(join(targetDir, "legacy.md"))).toEqual(readFileSync(filePath));
+	});
+
+	it.each(["directory", "file", "dangling link"])("does not overwrite a conflicting %s", (kind) => {
+		const { targetDir } = syncFixture();
+		mkdirSync(targetDir, { recursive: true });
+		const destination = join(targetDir, "bundle");
+		if (kind === "directory") {
+			mkdirSync(destination);
+			writeFileSync(join(destination, "keep.txt"), "keep");
+		} else if (kind === "file") writeFileSync(destination, "keep");
+		else symlinkSync(join(tempRoot, "missing"), destination, process.platform === "win32" ? "junction" : "dir");
+		const before = lstatSync(destination);
+		const result = syncAgentSkills({ cwd: projectCwd, targetDir });
+		expect(result.synced).toEqual([]);
+		expect(result.skipped[0].reason).toBe("Destination already exists");
+		expect(lstatSync(destination).isSymbolicLink()).toBe(before.isSymbolicLink());
+		if (kind === "directory") expect(readdirSync(destination)).toEqual(["keep.txt"]);
+		if (kind === "file") expect(readFileSync(destination, "utf8")).toBe("keep");
+	});
+
+	it.each(["../escape", "..\\escape", ".", "..", "/absolute", "C:escape", "trailing."])(
+		"rejects unsafe frontmatter name %s",
+		(name) => {
+			const { targetDir } = syncFixture(name);
+			const result = syncAgentSkills({ cwd: projectCwd, targetDir });
+			expect(result.synced).toEqual([]);
+			expect(result.skipped[0].reason).toBe("Invalid skill name");
+			expect(existsSync(targetDir)).toBe(false);
+		},
+	);
+
+	it("does not confuse a sibling path prefix with a contained source", () => {
+		const { source } = syncFixture();
+		const targetDir = join(projectCwd, ".claude", "skills", "bun");
+		expect(syncAgentSkills({ cwd: projectCwd, targetDir }).synced).toHaveLength(1);
+		expect(readFileSync(join(targetDir, "bundle", "SKILL.md"))).toEqual(readFileSync(join(source, "SKILL.md")));
+	});
+
+	it.each(["copy", "symlink"] as const)(
+		"rejects recursive targets in %s mode, including missing paths below junctions",
+		(mode) => {
+			const { source } = syncFixture();
+			const alias = join(tempRoot, "source-alias");
+			symlinkSync(source, alias, process.platform === "win32" ? "junction" : "dir");
+			for (const base of [source, alias]) {
+				const targetDir = join(base, "not-created", "skills");
+				const result = syncAgentSkills({ cwd: projectCwd, targetDir, mode });
+				expect(result.synced).toEqual([]);
+				expect(result.skipped[0].reason).toBe("Target directory is inside source skill");
+				expect(existsSync(join(source, "not-created"))).toBe(false);
+			}
+		},
+	);
+
+	it("recognizes source skills already contained in a target reached through a junction", () => {
+		const { source } = syncFixture();
+		const targetDir = join(tempRoot, "target-alias");
+		symlinkSync(join(source, ".."), targetDir, process.platform === "win32" ? "junction" : "dir");
+		const result = syncAgentSkills({ cwd: projectCwd, targetDir });
+		expect(result.synced).toEqual([]);
+		expect(result.skipped[0].reason).toBe("Already in target directory");
+	});
+
+	it("copies internal directory links without creating cycles or losing resources", () => {
+		const { source, targetDir } = syncFixture();
+		symlinkSync(
+			join(source, "references"),
+			join(source, "guide-alias"),
+			process.platform === "win32" ? "junction" : "dir",
+		);
+		expect(syncAgentSkills({ cwd: projectCwd, targetDir }).synced).toHaveLength(1);
+		expect(readFileSync(join(targetDir, "bundle", "guide-alias", "guide.md"), "utf8")).toBe("Bundled guide");
+	});
+
+	it("leaves a destination created after the conflict check untouched", () => {
+		const { targetDir } = syncFixture();
+		const destination = join(targetDir, "bundle");
+		const originalMkdir = vi.mocked(fs.mkdirSync).getMockImplementation()!;
+		vi.mocked(fs.mkdirSync).mockImplementation(((path: fs.PathLike, options?: any) => {
+			if (path === destination) {
+				originalMkdir(destination);
+				writeFileSync(join(destination, "keep.txt"), "concurrent writer");
+			}
+			return originalMkdir(path, options);
+		}) as typeof fs.mkdirSync);
+		const result = syncAgentSkills({ cwd: projectCwd, targetDir });
+		expect(result.synced).toEqual([]);
+		expect(readFileSync(join(destination, "keep.txt"), "utf8")).toBe("concurrent writer");
+	});
+
+	it("dry run reports the final instruction path without creating anything", () => {
+		const { targetDir } = syncFixture();
+		const result = syncAgentSkills({ cwd: projectCwd, targetDir, dryRun: true });
+		expect(result.synced[0].to).toBe(join(targetDir, "bundle", "SKILL.md"));
+		expect(existsSync(targetDir)).toBe(false);
+	});
+
+	it.each([false, true])("removes partial copies after an IO failure (standalone=%s)", (standalone) => {
+		const { source, targetDir } = syncFixture("bundle", standalone);
+		if (standalone) {
+			const originalWrite = vi.mocked(fs.writeFileSync).getMockImplementation()!;
+			vi.mocked(fs.writeFileSync).mockImplementation((...args) => {
+				originalWrite(...args);
+				throw new Error("Injected IO failure after write");
+			});
+		} else {
+			const originalCopy = vi.mocked(fs.copyFileSync).getMockImplementation()!;
+			vi.mocked(fs.copyFileSync).mockImplementation((...args) => {
+				originalCopy(...args);
+				throw new Error("Injected IO failure after write");
+			});
+		}
+		const result = syncAgentSkills({ cwd: projectCwd, targetDir });
+		expect(result.synced).toEqual([]);
+		expect(result.skipped[0].reason).toContain("Injected IO failure");
+		expect(readdirSync(targetDir)).toEqual([]);
+		expect(existsSync(join(source, standalone ? "legacy.md" : "SKILL.md"))).toBe(true);
+	});
+
+	it.each(["escape", "cycle"])("rejects resource directory links that %s and cleans up the bundle", (kind) => {
+		const { source, targetDir } = syncFixture();
+		const linked = kind === "cycle" ? source : fakeHome;
+		symlinkSync(linked, join(source, "resources-link"), process.platform === "win32" ? "junction" : "dir");
+		const result = syncAgentSkills({ cwd: projectCwd, targetDir });
+		expect(result.synced).toEqual([]);
+		expect(result.skipped[0].reason).toMatch(/escapes source|Recursive/);
+		expect(readdirSync(targetDir)).toEqual([]);
 	});
 
 	it("Frontmatter 解析与边界回退", () => {

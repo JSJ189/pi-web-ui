@@ -8,6 +8,23 @@ import {
 } from "../../server/session-branch.js";
 
 describe("session-branch (issue #567)", () => {
+	it("honors the latest same-file reask even before a replacement message exists", () => {
+		const entries: AnySessionEntry[] = [
+			{ id: "old1", parentId: null, type: "message" },
+			{ id: "old2", parentId: "old1", type: "message" },
+			{ id: "first-edit", parentId: null, type: "custom", customType: "pi-web-ui:reask" },
+			{ id: "replacement", parentId: "first-edit", type: "message" },
+			{ id: "latest-edit", parentId: null, type: "custom", customType: "pi-web-ui:reask" },
+		];
+		expect(selectBestSessionLeaf(entries, "old2")).toMatchObject({
+			bestLeafId: "latest-edit",
+			changed: true,
+		});
+		expect(selectBestSessionLeaf(entries, "latest-edit")).toMatchObject({
+			bestLeafId: "latest-edit",
+			changed: false,
+		});
+	});
 	it("returns unchanged for linear single-branch conversation", () => {
 		const entries: AnySessionEntry[] = [
 			{ id: "h1", type: "session" },

@@ -14,14 +14,11 @@
 	--accent: #4d699b;
 	--accent-soft: rgba(77, 105, 155, 0.14);
 	--green: #4f6238;
-	--on-green: #ffffff;
 	--green-soft: rgba(111, 137, 78, 0.12);
 	--red: #a53040;
-	--on-red: #ffffff;
 	--red-soft: rgba(200, 64, 83, 0.1);
 	--amber: #785200;
 	--blue: #0953cc;
-	--blue-soft: rgba(59, 130, 246, 0.12);
 	--term-bg: #f2ecbc;
 	--term-fg: #545464;
 	--term-cursor: #4d699b;
@@ -43,14 +40,9 @@
 	--term-bright-magenta: #b35b79;
 	--term-bright-cyan: #597b75;
 	--term-bright-white: #f2ecbc;
-	--mono: "SF Mono", "JetBrains Mono", ui-monospace, Menlo, Consolas, monospace;
-	--mermaid-font-size: 12px;
 	--tooltip-bg: #e5ddb0;
 	--code-bg: #e5ddb0;
 	--code-text: #545464;
-	--code-border: var(--border-soft);
-	--code-pad: 8px 10px;
-	--card-body-pad: 4px 14px 12px;
 	--err-text: #a53040;
 	--red-text: #a53040;
 	--amber-text: #7a5400;
@@ -72,30 +64,16 @@
 	--notice-info-border: var(--info-blue);
 	--send-blue: #4d699b;
 	--send-blue-hover: #3d5680;
-	--stop-red: #ef4444;
-	--stop-red-hover: #dc2626;
 	--brand-grad-a: #4d699b;
 	--brand-grad-b: #624c83;
+	--on-green: #ffffff;
+	--on-red: #ffffff;
 	--on-amber: #ffffff;
-	--search-active-fg: #1a1d26;
-	--switch-knob: #ffffff;
-	--bg-elev3: rgba(255, 255, 255, 0.06);
-	--sunken-bg: rgba(0, 0, 0, 0.15);
-	--glow-015: rgba(255, 255, 255, 0.015);
-	--glow-025: rgba(255, 255, 255, 0.025);
-	--glow-03: rgba(255, 255, 255, 0.03);
-	--glow-04: rgba(255, 255, 255, 0.04);
-	--glow-05: rgba(255, 255, 255, 0.05);
-	--glow-12: rgba(255, 255, 255, 0.12);
-	--glow-18: rgba(255, 255, 255, 0.18);
-	--glow-22: rgba(255, 255, 255, 0.22);
-	--glow-38: rgba(255, 255, 255, 0.38);
+	--on-send-blue-hover: #ffffff;
+	--on-stop-red-hover: #ffffff;
 	--control-fg: #716e61;
 	--control-bg: #e5ddb0;
 	--control-border: #d5cea3;
-	--bg-image: none;
-	--bg-image-dim: 0.78;
-	--bg-image-blur: 0px;
 	--wallpaper-panel-alpha: 100%;
 	--topbar-bg: #e5ddb0;
 	--statusbar-bg: #f2ecbc;
@@ -104,7 +82,6 @@
 	--chip-bg: #dcd5ac;
 	--msgs-bg: #f2ecbc;
 	--inputbox-bg: #dcd5ac;
-	--menu-bg: var(--bg-elev2);
 }
 
 /* ---- syntax highlighting (Kanagawa Lotus) ---- */

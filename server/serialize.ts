@@ -308,6 +308,24 @@ export function findEntryByUiId<T extends UiIdEntryLike>(
 	return null;
 }
 
+function serializeAssistantMessage(
+	m: Extract<AgentMessage, { role: "assistant" }>,
+	id: string,
+	streaming = false,
+): UiMessage {
+	return {
+		id,
+		role: "assistant",
+		content: serializeAssistantContent(m.content, streaming),
+		timestamp: m.timestamp,
+		model: m.model,
+		provider: m.provider,
+		usageCost: typeof m.usage?.cost?.total === "number" ? m.usage.cost.total : undefined,
+		stopReason: m.stopReason,
+		errorMessage: m.errorMessage,
+	};
+}
+
 export function serializeMessage(m: AgentMessage, seq: number): UiMessage | null {
 	// SDK 的 system 消息是 prompt sections 的内部差量
 	// (content 空串 + sections 结构化内存)、compaction 的
@@ -347,27 +365,38 @@ export function serializeMessage(m: AgentMessage, seq: number): UiMessage | null
 		}
 
 		case "assistant":
-			return {
-				id,
-				role: "assistant",
-				content: serializeAssistantContent(m.content),
-				timestamp: m.timestamp,
-				model: m.model,
-				provider: m.provider,
-				usageCost: typeof m.usage?.cost?.total === "number" ? m.usage.cost.total : undefined,
-				stopReason: m.stopReason,
-				errorMessage: m.errorMessage,
-			};
+			return serializeAssistantMessage(m, id);
 
 		case "toolResult": {
 			// 工具结果里的图片（web_shot 截图、read 读到的图……）要下发浏览器：
 			// 卡片里直接显示缩略图、点开放大（见 ToolCallBlock）。以前这里统一丢成
 			// "[image result]"，用户只能看到占位文本。超限/超数的图仍回落占位文本。
 			const textParts: string[] = [];
+			let textLength = 0;
+			let hasTextPart = false;
+			let truncated = false;
+			const appendChunk = (chunk: string) => {
+				if (truncated) return;
+				const remaining = TOOL_OUTPUT_CAP - textLength;
+				if (chunk.length > remaining) {
+					if (remaining > 0) textParts.push(chunk.slice(0, remaining));
+					textLength = TOOL_OUTPUT_CAP;
+					truncated = true;
+				} else if (chunk.length > 0) {
+					textParts.push(chunk);
+					textLength += chunk.length;
+				}
+			};
+			const appendText = (part: string) => {
+				// Empty parts still contribute join separators, even at the cap.
+				if (hasTextPart) appendChunk("\n");
+				hasTextPart = true;
+				appendChunk(part);
+			};
 			const images: UiImageBlock[] = [];
 			for (const c of m.content) {
 				if (c.type === "text") {
-					textParts.push(c.text);
+					appendText(c.text);
 					continue;
 				}
 				if (c.type === "image" && images.length < TOOL_RESULT_IMAGE_MAX) {
@@ -377,10 +406,10 @@ export function serializeMessage(m: AgentMessage, seq: number): UiMessage | null
 						continue;
 					}
 				}
-				textParts.push("[image result]");
+				appendText("[image result]");
 			}
-			const raw = textParts.join("\n");
-			const { text, truncated } = truncate(raw, TOOL_OUTPUT_CAP);
+			const raw = textParts.join("");
+			const text = truncated ? `${raw}\n\n… [truncated]` : raw;
 			const content: UiContentBlock[] =
 				raw || images.length === 0 ? [{ type: "text", text, truncated }, ...images] : [...images];
 			const msg: UiMessage = {
@@ -499,8 +528,9 @@ export function serializeMessage(m: AgentMessage, seq: number): UiMessage | null
  * constant for the whole stream.
  */
 export function serializeStreamingMessage(m: AgentMessage): UiMessage | null {
+	const id = `stream-${m.timestamp ?? 0}`;
+	// Streamed assistant blocks must be converted only once per snapshot.
+	if (m.role === "assistant") return serializeAssistantMessage(m, id, true);
 	const msg = serializeMessage(m, 0);
-	if (!msg) return null;
-	const content = m.role === "assistant" ? serializeAssistantContent(m.content, true) : msg.content;
-	return { ...msg, id: `stream-${m.timestamp ?? 0}`, content };
+	return msg ? { ...msg, id } : null;
 }

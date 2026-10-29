@@ -48,7 +48,7 @@ describe("用户直接创建的终端始终显示且不受对话影响和过滤"
 			latencyMs: null,
 		}) as any as ChatState;
 
-	it("1. 前端 Reducer：切换对话后收到新对话的空 terminal_list，已有的用户直接创建终端绝不被清空", () => {
+	it("1. 前端 Reducer：空权威 terminal_list 移除本地残留的用户终端", () => {
 		const state0 = createInitialState();
 
 		// 用户创建了一个终端
@@ -80,10 +80,8 @@ describe("用户直接创建的终端始终显示且不受对话影响和过滤"
 			},
 		);
 
-		// 核心断言：用户直接创建的终端始终保留！
-		expect(state2.terminals).toHaveLength(1);
-		expect(state2.terminals[0].id).toBe("user-term-1");
-		expect(state2.terminals[0].running).toBe(true);
+		// 每份权威列表都包含全部用户终端；空列表意味着服务端已无此终端。
+		expect(state2.terminals).toEqual([]);
 	});
 
 	it("2. 前端 Reducer：新对话推来的 terminal_list 包含 AI 终端时，用户终端与新对话 AI 终端正确合并，旧对话 AI 终端不残留", () => {

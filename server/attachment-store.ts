@@ -9,20 +9,47 @@
  */
 
 import { createHash, randomUUID } from "node:crypto";
-import { mkdirSync, existsSync, readdirSync } from "node:fs";
-import { readFile, rename, rm, writeFile, stat } from "node:fs/promises";
+import { mkdirSync, existsSync } from "node:fs";
+import { readFile, readdir, rename, rm, writeFile, stat } from "node:fs/promises";
 import { join, extname } from "node:path";
 import { writeAtomicSync } from "./atomic-file.js";
 
-let storeDir = "";
+interface AttachmentStore {
+	dir: string;
+	files: Map<string, Set<string>>;
+	ready?: Promise<void>;
+}
+
+let store: AttachmentStore | undefined;
+
+function indexFile(target: AttachmentStore, fileName: string): void {
+	// Accept legacy hash.ext names, but never unfinished atomic writes.
+	const match = /^([a-f0-9]{64})\..+$/i.exec(fileName);
+	if (!match || fileName.endsWith(".tmp")) return;
+	let files = target.files.get(match[1]);
+	if (!files) target.files.set(match[1], (files = new Set()));
+	files.add(fileName);
+}
+
+function ensureIndex(target: AttachmentStore): Promise<void> {
+	return (target.ready ??= readdir(target.dir, { withFileTypes: true })
+		.then((entries) => {
+			for (const entry of entries) {
+				if (entry.isFile()) indexFile(target, entry.name);
+			}
+		})
+		.catch((error) => {
+			target.ready = undefined;
+			throw error;
+		}));
+}
 
 /** 初始化附件存储目录（服务启动时调用）。 */
 export function initAttachmentStore(dataDir: string): string {
-	storeDir = join(dataDir, "attachments");
-	if (!existsSync(storeDir)) {
-		mkdirSync(storeDir, { recursive: true });
-	}
-	return storeDir;
+	const dir = join(dataDir, "attachments");
+	if (!existsSync(dir)) mkdirSync(dir, { recursive: true });
+	store = { dir, files: new Map() };
+	return dir;
 }
 
 /** 附件元数据。 */
@@ -66,13 +93,14 @@ export async function saveAttachment(
 	mimeType = "application/octet-stream",
 	preferredExt?: string,
 ): Promise<AttachmentRecord> {
-	if (!storeDir) {
+	if (!store) {
 		throw new Error("AttachmentStore has not been initialized with initAttachmentStore(dataDir)");
 	}
 	const hash = createHash("sha256").update(buffer).digest("hex");
 	const ext = preferredExt || MIME_EXT_MAP[mimeType] || ".bin";
 	const fileName = `${hash}${ext}`;
-	const filePath = join(storeDir, fileName);
+	const target = store;
+	const filePath = join(target.dir, fileName);
 
 	if (!existsSync(filePath)) {
 		// 原地 writeFile 有两个问题：a) 同 hash 并发写时两个 writeFileSync
@@ -87,10 +115,11 @@ export async function saveAttachment(
 		} catch (err) {
 			await rm(tmpPath, { force: true }).catch(() => {});
 			const code = (err as NodeJS.ErrnoException).code;
-			if (code !== "EEXIST" && code !== "EPERM") throw err;
+			if ((code !== "EEXIST" && code !== "EPERM") || !existsSync(filePath)) throw err;
 		}
 	}
 
+	indexFile(target, fileName);
 	return {
 		hash,
 		size: buffer.length,
@@ -110,13 +139,14 @@ export function saveAttachmentSync(
 	mimeType = "application/octet-stream",
 	preferredExt?: string,
 ): AttachmentRecord {
-	if (!storeDir) {
+	if (!store) {
 		throw new Error("AttachmentStore has not been initialized with initAttachmentStore(dataDir)");
 	}
 	const hash = createHash("sha256").update(buffer).digest("hex");
 	const ext = preferredExt || MIME_EXT_MAP[mimeType] || ".bin";
 	const fileName = `${hash}${ext}`;
-	const filePath = join(storeDir, fileName);
+	const target = store;
+	const filePath = join(target.dir, fileName);
 
 	if (!existsSync(filePath)) {
 		try {
@@ -140,6 +170,7 @@ export function saveAttachmentSync(
 		}
 	}
 
+	indexFile(target, fileName);
 	return {
 		hash,
 		size: buffer.length,
@@ -151,36 +182,40 @@ export function saveAttachmentSync(
 }
 
 /**
- * 根据哈希查找已存储的附件文件路径及元数据。
+ * 根据哈希定位附件；filePath、size、mimeType 可直接用于 HTTP 流式发送。
+ * 首次有效查询惰性异步扫描旧目录，并发查询共享扫描；后续查询只访问索引。
+ * 保存成功会增量更新索引。外部导入文件后需重新 initAttachmentStore。
  */
 export async function findAttachment(hash: string): Promise<AttachmentRecord | null> {
-	if (!storeDir || !existsSync(storeDir)) return null;
-	// 校验 hash 必须是 64 位十六进制字符串（防止目录遍历）
-	if (!/^[a-f0-9]{64}$/i.test(hash)) return null;
-
+	const target = store;
+	if (!target || !/^[a-f0-9]{64}$/i.test(hash)) return null;
 	try {
-		const files = readdirSync(storeDir);
-		// 跳过原子写（tmp + rename）崩溃时可能残留的 .tmp —— 前缀同为 hash，
-		// 若被命中会拿到错误的后缀与 MIME。
-		const match = files.find((f) => f.startsWith(hash) && !f.endsWith(".tmp"));
-		if (!match) return null;
-
-		const filePath = join(storeDir, match);
-		const st = await stat(filePath);
-		const ext = extname(match).toLowerCase();
-		const mimeType = EXT_MIME_MAP[ext] || "application/octet-stream";
-
-		return {
-			hash,
-			size: st.size,
-			mimeType,
-			ext,
-			url: `/api/attachment/${hash}`,
-			filePath,
-		};
+		await ensureIndex(target);
+		const files = target.files.get(hash);
+		if (!files) return null;
+		for (const fileName of [...files].sort()) {
+			const filePath = join(target.dir, fileName);
+			try {
+				const st = await stat(filePath);
+				if (!st.isFile()) continue;
+				const ext = extname(fileName).toLowerCase();
+				return {
+					hash,
+					size: st.size,
+					mimeType: EXT_MIME_MAP[ext] || "application/octet-stream",
+					ext,
+					url: `/api/attachment/${hash}`,
+					filePath,
+				};
+			} catch (error) {
+				const code = (error as NodeJS.ErrnoException).code;
+				if (code === "ENOENT" || code === "ENOTDIR") files.delete(fileName);
+			}
+		}
 	} catch {
 		return null;
 	}
+	return null;
 }
 
 /**

@@ -1,8 +1,8 @@
 /* Smoke test: boots the real (compiled) server and exercises the terminal +
  * commands protocol over WebSocket (no browser needed).
  * Run:  npm run build:server && node terminal-smoke-test.mjs */
-import { spawn } from "node:child_process";
-import { mkdtempSync, rmSync, realpathSync } from "node:fs";
+import { spawn, execFileSync } from "node:child_process";
+import { mkdtempSync, rmSync, realpathSync, readFileSync, existsSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { fileURLToPath } from "node:url";
@@ -134,14 +134,7 @@ async function main() {
 	// then wait for tool gating to surface them in the snapshot — reload is
 	// async, so poll instead of a fixed sleep (matches waitFor's design intent).
 	send({ type: "set_settings", terminalToolsEnabled: true });
-	const TERM_TOOL_EXPECT = [
-		"terminal_create",
-		"terminal_list",
-		"terminal_close",
-		"terminal_input",
-		"terminal_key",
-		"terminal_read",
-	];
+	const TERM_TOOL_EXPECT = ["terminal"];
 	await waitFor(() => TERM_TOOL_EXPECT.every((name) => snapshotReply?.tools?.includes(name)), 8000, 200);
 	check(
 		"agent exposes persistent terminal tools",
@@ -310,6 +303,29 @@ async function main() {
 	await sleep(600);
 	check("restarted shell accepts input", (outputs.get(t2) ?? "").includes("WS_AFTER_RERUN"));
 
+	// Attach/replay must never repeat the side effect of an existing command.
+	const countPath = join(workdir, "attach-count.txt");
+	send({
+		type: "run_command",
+		terminalId: t2,
+		command: { name: "attach audit", command: "printf 'RUN\\n' >> attach-count.txt", cwd: "${pwd}" },
+		cols: 80,
+		rows: 24,
+	});
+	check("attach setup command completed", await waitFor(() => existsSync(countPath), 5000));
+	const countBeforeAttach = readFileSync(countPath, "utf8");
+	send({ type: "terminal_attach", terminalId: t2, ownerKind: "client", cols: 90, rows: 30 });
+	send({ type: "terminal_attach", terminalId: t2, ownerKind: "client", cols: 100, rows: 40 });
+	await sleep(500);
+	check(
+		"attach does not rerun command side effects",
+		readFileSync(countPath, "utf8") === countBeforeAttach && countBeforeAttach.trim() === "RUN",
+	);
+	check(
+		"attach resizes the existing process",
+		lastTermList?.some((t) => t.id === t2 && t.running && t.ownerKind === "client"),
+	);
+
 	// -- kill / exit -----------------------------------------------------------
 	send({ type: "terminal_kill", terminalId: t1 });
 	await sleep(400);
@@ -338,7 +354,15 @@ async function main() {
 	for (const id of capIds) {
 		send({ type: "terminal_create", terminalId: id, cwd: workdir, cols: 40, rows: 12 });
 	}
-	await sleep(1200);
+	check(
+		"terminal limit setup: sixteen user PTYs are live",
+		await waitFor(
+			() =>
+				capIds.every((id) => lastTermList?.some((t) => t.id === id && t.running)) &&
+				lastTermList?.some((t) => t.id === t2 && t.running),
+			10000,
+		),
+	);
 	send({
 		type: "run_command",
 		terminalId: "cap-overflow",
@@ -346,10 +370,9 @@ async function main() {
 		cols: 40,
 		rows: 12,
 	});
-	await sleep(500);
 	check(
 		"run_command enforces terminal limit",
-		notices.some((text) => text.includes("终端数量已达上限")),
+		await waitFor(() => notices.some((text) => /终端数量已达上限|Terminal limit reached/.test(text)), 8000),
 	);
 	for (const id of capIds) send({ type: "terminal_kill", terminalId: id });
 
@@ -485,7 +508,9 @@ async function main() {
 		const toolManager = new TerminalManager(() => {}, workdir);
 		const tools = new Map(makePersistentTerminalTools(toolManager, workdir).map((tool) => [tool.name, tool]));
 		const invoke = async (name, params) =>
-			tools.get(name).execute("tool-smoke", params, undefined, undefined, undefined);
+			tools
+				.get("terminal")
+				.execute("tool-smoke", { action: name.replace(/^terminal_/, ""), ...params }, undefined, undefined, undefined);
 		try {
 			await invoke("terminal_create", { terminalId: "agent-smoke", cwd: ".", cols: 40, rows: 12 });
 			const listed = await invoke("terminal_list", {});
@@ -608,10 +633,8 @@ async function main() {
 	check("server still alive after bogus messages", true);
 
 	ws.close();
-	try {
-		server.kill();
-	} catch {}
-	await sleep(100);
+	stopServer();
+	await sleep(800);
 	console.log(`\n${passed} checks passed`);
 	process.exit(process.exitCode ?? 0);
 }
@@ -633,19 +656,24 @@ main().catch((err) => {
 	process.exit(1);
 });
 
-// Ensure the spawned server dies even on early crashes.
-// process.kill(-pid) only works on posix (process groups don't exist on
-// win32) — freePort covers Windows via netstat+taskkill (see port-utils.mjs).
-process.on("exit", () => {
+// Stop our exact process tree before its root exits and leaves PTY children orphaned.
+let serverStopped = false;
+function stopServer() {
+	if (serverStopped) return;
+	serverStopped = true;
 	try {
-		server.kill();
-	} catch {}
-	try {
-		process.kill(-server.pid, "SIGKILL");
+		if (process.platform === "win32") {
+			execFileSync("taskkill", ["/F", "/T", "/PID", String(server.pid)], { stdio: "ignore", timeout: 5000 });
+		} else process.kill(-server.pid, "SIGKILL");
 	} catch {
-		/* already gone (or win32: no process groups) */
+		try {
+			server.kill();
+		} catch {}
 	}
-	freePort(PORT);
+}
+process.on("exit", () => {
+	stopServer();
+	if (process.platform !== "win32") freePort(PORT);
 	try {
 		rmSync(workdir, { recursive: true, force: true });
 		rmSync(dataDir, { recursive: true, force: true });

@@ -1,5 +1,8 @@
-import express, { type Express, type Request } from "express";
-import { mkdtemp, mkdir, open, realpath, rm, stat } from "node:fs/promises";
+import { type Express, type Request } from "express";
+import { randomUUID } from "node:crypto";
+import { uploadLimitBytes } from "./payload-limits.js";
+import { writeRemoteUploadExclusive } from "./uploads.js";
+import { mkdtemp, mkdir, open, realpath, rm, stat, link } from "node:fs/promises";
 import { join, dirname, posix } from "node:path";
 import { tmpdir } from "node:os";
 import { createArchive, extractArchive, safeDestination, safeEntryPath, type ConflictPolicy } from "./file-archives.js";
@@ -17,6 +20,7 @@ export function registerFileTransferRoutes(
 	app: Express,
 	getCwd: (clientId: string) => string | undefined,
 	temporaryRoot = tmpdir(),
+	getMaxUploadBytes: (clientId: string) => number = () => uploadLimitBytes({}, "folder"),
 ): void {
 	const busy = new Set<string>();
 	function root(req: Request): string {
@@ -170,59 +174,100 @@ export function registerFileTransferRoutes(
 			if (acquired && cwd) busy.delete(cwd);
 		}
 	});
-	// One binary file per request, sequentially sent by the browser. Avoid base64 and WS message limits.
-	app.post(
-		"/api/file-transfer/upload",
-		express.raw({ type: "application/octet-stream", limit: "32mb" }),
-		async (req, res) => {
-			try {
-				const cwd = root(req);
-				if (isRemoteWorkspaceUri(cwd)) {
-					const sshSvc = getGlobalRemoteSshService();
-					if (!sshSvc) throw new Error("Remote SSH service not available");
-					const remoteDir = remotePath(cwd, typeof req.query.dir === "string" ? req.query.dir : "", true);
-					const name = safeEntryPath(typeof req.query.name === "string" ? req.query.name : "");
-					const remoteDest = posix.join(remoteDir, name.replace(/\\/g, "/"));
-					if (!Buffer.isBuffer(req.body)) throw new Error("Expected a binary file");
-					if (req.query.kind === "directory") {
-						if (req.body.length) throw new Error("Directory requests cannot contain file data");
-						await sshSvc.sftpMkdirRecursive(cwd, remoteDest);
-						res.json({ name });
-						return;
-					}
-					const exists = await sshSvc.sftpStat(cwd, remoteDest).catch(() => null);
-					if (exists) {
-						const e = new Error("File already exists") as NodeJS.ErrnoException;
-						e.code = "EEXIST";
-						throw e;
-					}
-					await sshSvc.sftpWriteFile(cwd, remoteDest, req.body, { createParents: true });
-					res.json({ name });
-					return;
-				}
-				const dir = await realpath(path(cwd, req.query.dir));
-				const name = safeEntryPath(typeof req.query.name === "string" ? req.query.name : "");
-				const dest = await safeDestination(dir, name);
-				if (!Buffer.isBuffer(req.body)) throw new Error("Expected a binary file");
-				if (req.query.kind === "directory") {
-					if (req.body.length) throw new Error("Directory requests cannot contain file data");
-					await mkdir(dest, { recursive: true });
-					res.json({ name });
-					return;
-				}
+	// Reserve worst-case bytes for chunked requests before consuming their body.
+	// Local uploads stream to disk; SFTP's buffer-only API is bounded by the same budget.
+	const maxInFlight = 200 * 1024 * 1024;
+	let uploads = 0;
+	let inFlight = 0;
+	app.post("/api/file-transfer/upload", async (req, res) => {
+		let reserved: number | undefined;
+		let temp: string | undefined;
+		let handle: Awaited<ReturnType<typeof open>> | undefined;
+		const controller = new AbortController();
+		const cancel = () => controller.abort();
+		res.on("close", cancel);
+		try {
+			// Resolve all client/path inputs before reading even the first body chunk.
+			const cwd = root(req);
+			const maxBytes = getMaxUploadBytes(String(req.query.clientId));
+			const name = safeEntryPath(typeof req.query.name === "string" ? req.query.name : "");
+			const directory = req.query.kind === "directory";
+			const remote = isRemoteWorkspaceUri(cwd);
+			const ssh = remote ? getGlobalRemoteSshService() : undefined;
+			if (remote && !ssh) throw new Error("Remote SSH service not available");
+			const dir = remote
+				? remotePath(cwd, typeof req.query.dir === "string" ? req.query.dir : "", true)
+				: await realpath(path(cwd, req.query.dir));
+			const dest = remote ? posix.join(dir, name) : await safeDestination(dir, name);
+			if (!req.is("application/octet-stream")) throw new Error("Expected a binary file");
+			const lengthHeader = req.headers["content-length"];
+			const length = lengthHeader === undefined ? undefined : Number(lengthHeader);
+			if (length !== undefined && (!Number.isSafeInteger(length) || length < 0))
+				throw new Error("Invalid content length");
+			if (length !== undefined && length > (directory ? 0 : maxBytes)) {
+				res.status(413).send("Upload exceeds size limit");
+				return;
+			}
+			const budget = length ?? (directory ? 0 : maxBytes);
+			if (uploads >= 4 || inFlight + budget > maxInFlight) {
+				res.status(429).send("Upload capacity exhausted; retry later");
+				return;
+			}
+			uploads++;
+			inFlight += budget;
+			reserved = budget;
+			if (!remote && !directory) {
 				await mkdir(dirname(dest), { recursive: true });
-				const handle = await open(dest, "wx", 0o600); // Folder uploads never silently overwrite existing data.
-				try {
-					await handle.writeFile(req.body);
-				} finally {
-					await handle.close();
+				// Recheck after mkdir, then stage beside the destination (same volume).
+				await safeDestination(dir, name);
+				temp = join(dirname(dest), `.pi-upload-${randomUUID()}`);
+				handle = await open(temp, "wx", 0o600);
+			}
+			let bytes = 0;
+			const chunks: Buffer[] = [];
+			for await (const chunk of req.iterator({ destroyOnReturn: false })) {
+				controller.signal.throwIfAborted();
+				const data = Buffer.isBuffer(chunk) ? chunk : Buffer.from(chunk);
+				bytes += data.length;
+				if (bytes > budget || (directory && bytes > 0)) {
+					res.status(413).send("Upload exceeds size limit");
+					return;
 				}
-				res.json({ name });
-			} catch (err) {
+				if (handle) await handle.writeFile(data);
+				else if (!directory) chunks.push(data);
+			}
+			if (length !== undefined && bytes !== length) throw new Error("Incomplete upload");
+			controller.signal.throwIfAborted();
+			if (directory) {
+				if (ssh) await ssh.sftpMkdirRecursive(cwd, dest);
+				else await mkdir(dest, { recursive: true });
+			} else if (ssh) {
+				await writeRemoteUploadExclusive(ssh, cwd, dest, Buffer.concat(chunks, bytes), controller.signal);
+			} else {
+				await handle!.close();
+				handle = undefined;
+				await safeDestination(dir, name);
+				controller.signal.throwIfAborted();
+				// link fails with EEXIST even if a competing upload won after validation.
+				await link(temp!, dest);
+			}
+			res.json({ name });
+		} catch (err) {
+			if (!res.headersSent && !res.destroyed)
 				res
 					.status((err as NodeJS.ErrnoException).code === "EEXIST" ? 409 : 400)
 					.send(err instanceof Error ? err.message : String(err));
+		} finally {
+			res.off("close", cancel);
+			await handle?.close().catch(() => {});
+			if (temp)
+				await rm(temp, { force: true, maxRetries: 5, retryDelay: 100 }).catch((err) =>
+					console.error("Upload cleanup failed:", err),
+				);
+			if (reserved !== undefined) {
+				uploads--;
+				inFlight -= reserved;
 			}
-		},
-	);
+		}
+	});
 }

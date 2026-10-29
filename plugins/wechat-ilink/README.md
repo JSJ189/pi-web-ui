@@ -18,22 +18,23 @@
 
 ## v1 范围（诚实版）
 
-- ⚡ **斜杠快捷指令**：支持单独发送 `/`（或 `/h`、`/help`）查看简化序号菜单、`/clear` 或 `/new [提示]`（清空上下文开启全新对话）、`/status`（查看运行状态与指标）、`/cwd [路径]`（查看或切换项目根目录）、`/model [模型]`（查看或切换模型）、`/thinking [强度]`（设置思考强度）、`/plan [on|off]`（计划模式）、`/compact`（上下文压缩）、`/stop`（中止当前任务）、`/reload`（重载扩展与技能）以及插件扩展指令（如 `/todo`、`/note`、`/remind`），支持中文全角 `／` 与数字序号快捷输入。
+- ⚡ **斜杠快捷指令**：支持单独发送 `/`（或 `/h`、`/help`）查看简化序号菜单、`/clear` 或 `/new [提示]`（清空上下文开启全新对话）、`/status`（查看运行状态与指标）、`/cwd [路径]`（查看或切换项目根目录）、`/model [模型]`（查看或切换模型）、`/thinking [强度]`（设置思考强度）、`/plan [on|off]`（计划模式）、`/compact`（上下文压缩）、`/stop` 或 `/abort`（中止当前任务）、`/reload`（重载扩展与技能）以及插件扩展指令（如 `/todo`、`/note`、`/remind`），支持中文全角 `／` 与数字序号快捷输入。
 - 单账号、文本消息全双工。
 - **图片/文件双向**（v0.5.0）：
   - **发**：AI 调 `wechat_send` 带 `image`（图片）或 `file`（其他附件，按扩展名分流 image/video/file），
     本地路径（相对当前工作区）或 `http(s)` URL 都行；链路 = `getuploadurl` → AES-128-ECB 加密
     → CDN `POST`（读 `x-encrypted-param`）→ `sendmessage` 的 `image_item`/`video_item`/`file_item`。
-  - **收**：微信发来的图片/文件下载后按 `image_item.aeskey`（hex）或 `media.aes_key` 解密，
-    落到工作区 `.pi-wechat-media/wx-<peer>-<时间>-*.{jpg,png,...}`，投给 agent 的正文里给本地路径，
-    agent 用 `read` 工具直接看图。设置里可关（`接收图片/文件落地`）。
-  - 单文件上限 25MB；语音仍是 `[语音]` 占位（silk 转码未接）。
-- 默认只回私聊，群聊忽略（可开开关）。
-- 每个已配对微信用户按 ID 隔离独立会话（基于 accountId 独立伪客户端，peer 名拼进任务前缀，防止多用户串扰或关闭冲突）。
+  - **收**：微信发来的图片/文件/视频下载后按 `image_item.aeskey`（hex）或 `media.aes_key` 解密，
+    落到工作区 `.pi-wechat-media/`。图片通过 `host.chat.attachments` 的 `imageData` / `mimeType` 作为真实图片附件进入模型；文件和视频以 `path` / `mode: reference` 附件进入宿主。需要支持该附件契约的宿主版本。
+  - 下载单文件上限 25MB；图片单张 10MiB、最多 8 张、合计 20MiB。格式或限额失败会直接告知用户，不能读取时不宣称已理解内容。
+  - 未接入语音识别（ASR）；收到语音直接提示无法听取、请改发文字，并将此边界传给 agent。视频按文件引用交付，不承诺自动理解画面或声音。
+- 仅私聊：群聊和 thread 一律忽略，旧 `respondGroups` 设置不再放行，避免同用户跨群合并私聊上下文。
+- 每个已配对微信用户按 ID 隔离独立会话；持久化的每用户序号进入 `accountId`，`/new`、`/clear`、`/cwd` 切换会递增，确保宿主不复用上一轮上下文。
+- 媒体下载独立执行（最多 4 个），不会阻塞后续 `/stop`；停止或新建会话后，尚未下载完成的媒体不会重新启动任务。中止操作优先传稳定 `runId`（老宿主回执无该字段才回退实际 `conversationId`），过户后仍可定位运行；等待宿主确认，失败会明确提示。
 - **回包按 `host.chat` 回执的 `runId` 认领**：无头会话跑到一半被网页端「过户」点开时，
   宿主会把对话搬到浏览器会话（`clientId` 变成对方的），目标会话若已有同名 id（各会话
   独立从 c1 编号）还会就地改名（`conversationId` 也变）——这两个键都会失效，只有 `runId`
-  不变。老宿主不回 `runId` 时才回退到 `clientId + conversationId` 匹配。
+  不变。回执前事件也按稳定 `runId` 缓存；不同 `runId` 不得凭相同会话/客户端认领。老宿主不回 `runId` 时才回退到 `clientId + conversationId` 匹配。宿主未返回真实 `conversationId` 会明确反馈执行失败。
 - 过滤内部控制标记（如 [[plan:...]]、[[todo:...]]、[[conv:...]]、[[notify:...]]），只将用户可见正文发送到微信。
 - 设置里可配默认工作空间（显式 pin cwd，防后台启动飘到 system32；
   Windows 下系统目录直接拒绝）、模型 / 思考强度（两个都是**下拉选择**：模型列已配置

@@ -25,6 +25,8 @@ export interface UniversalConversationStats {
 
 /** 线性通用会话结构 */
 export interface UniversalConversation {
+	/** Persisted engine identity; legacy files without it cannot be safely attributed. */
+	engine?: string;
 	/** 内部对话唯一 ID（如 uconv-1712345678-abc） */
 	id: string;
 	/** 标题（显示在左侧会话列表） */

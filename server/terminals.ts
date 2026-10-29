@@ -28,6 +28,7 @@ import { Type } from "typebox";
 import type { CommandDef, ServerMessage, TerminalInfo } from "./protocol.js";
 import { BASH_DESCRIPTION, BASH_PARAMETERS, BASH_PROMPT_GUIDELINES, BASH_PROMPT_SNIPPET } from "./tool-prompts.js";
 import { pick, type ServerLang } from "./i18n.js";
+import { armDelay } from "./plugin-schedule.js";
 import {
 	getGlobalRemoteSshService,
 	isRemoteWorkspaceUri,
@@ -189,6 +190,10 @@ interface TermEntry {
 	/** true = 终端接管 bash 刚发出一条带哨兵的命令且尚未结束（terminal_wait
 	 *  用它区分「有命令在跑」和「shell 空闲在提示符」——后者等哨兵永远等不到）。 */
 	sentinelPending?: boolean;
+	/** Identity of the command currently owning this shell. */
+	sentinelNonce?: string;
+	/** Logically closed; unlike exited this says nothing about native PTY exit. */
+	retired?: boolean;
 	/** true = 终端接管 bash 的持久终端（'ai-bash'）：不计入 MAX_TERMINALS，
 	 *  前端单独归到「AI bash」折叠分组。 */
 	agentBash: boolean;
@@ -265,37 +270,25 @@ export function buildTerminalBashLine(
 	nonce: string = newSentinelNonce(),
 ): string {
 	const trimmed = command.replace(/\s+$/, "");
-	// 退出码取【第一个】命令（真正干活的那个）而非管道末尾命令：`head`/`grep`/`tail`
-	// 在管道末尾会把退出码吞成自己的（head 恒 0、grep 无命恒 1）。`${PIPESTATUS:-$?}`
-	// 在 bash 里取 PIPESTATUS[0]（首命令），busybox ash/dash 无 PIPESTATUS 时退化为 `$?`。
-	// SIGPIPE(141) 归 0：`cmd | head` 里 head 读够 N 行就主动关管道，把首命令“截断杀掉”
-	// 留下的 141 不是真失败，而是“按要求截断=成功”。只有恰好 141 才转 0，真失败照报。
+	// Preserve bash's status, including the caller's pipefail setting and SIGPIPE.
 	// tailFile：`cmd > log 2>&1 | tail -N`——拆掉 tail 后 stdout 进文件、终端为空；
 	// 在哨兵前补一个 `tail -N log` 让模型看到日志尾部，退出码仍是底层命令的。
 	const tailPart = tailFile
 		? `; tail -n ${Math.max(1, Math.floor(tailFile.lines))} -- '${tailFile.file.replace(/'/g, `'\\''`)}'`
 		: "";
 	// eslint-disable-next-line no-useless-escape -- \$? must reach the shell literally
-	const sentinel = `__pi_rc=\${PIPESTATUS:-\$?}; [ "$__pi_rc" -eq 141 ] && __pi_rc=0${tailPart}; printf '\\n[pi-exit-${nonce}:%s]\\n' "$__pi_rc"`;
+	const sentinel = `__pi_rc=$?${tailPart}; printf '\\n[pi-exit-${nonce}:%s]\\n' "$__pi_rc"`;
 
-	if (trimmed.includes("\n")) {
-		// 多行路径（行为保持）：$'...' 转义后是一行物理输入，引号/换行全部字面化，
-		// 以 `'` 收尾——`; ` 同行拼接哨兵不会被尾注释/尾管道/续行吞掉。
-		const body = `eval $'${trimmed
-			.replace(/\\/g, "\\\\")
-			.replace(/'/g, "\\'")
-			.replace(/\r/g, "\\r")
-			.replace(/\n/g, "\\n")
-			.replace(/\t/g, "\\t")}'`;
-		return `${body}; ${sentinel}`;
-	}
-
-	// 单行路径：哨兵独占一行追加。行内 `; ` 拼接会被常见形态吞掉——
-	// 尾注释（`cmd # note; printf…` 整段进注释）、尾管道（`cmd |; …` 语法错误）。
-	// 独占一行后这两类安全；尾随续行符/未闭合引号仍会把哨兵行并入命令或吞进
-	// 字符串——这类形态无法安全续行，直接拒注入（调用方按无退出码模式执行并注明）。
 	if (sentinelUnsafeReason(trimmed)) return trimmed;
-	return `${trimmed}\n${sentinel}`;
+	// Parse the whole physical line before a command can read stdin. The eval
+	// boundary isolates trailing comments, multiline scripts and heredocs.
+	const body = `eval $'${trimmed
+		.replace(/\\/g, "\\\\")
+		.replace(/'/g, "\\'")
+		.replace(/\r/g, "\\r")
+		.replace(/\n/g, "\\n")
+		.replace(/\t/g, "\\t")}'`;
+	return `${body}; ${sentinel}`;
 }
 
 /**
@@ -1071,17 +1064,44 @@ export class TerminalManager {
 		if (entry) entry.agentPendingLine = "";
 	}
 
+	private emit: (msg: ServerMessage) => void;
+
 	constructor(
-		private emit: (msg: ServerMessage) => void,
-		private readonly workspaceRoot: string,
+		emit: (msg: ServerMessage) => void,
+		private readonly rootSource: string | (() => string),
 		// issue #91：按键/输入校验错误按客户端 UI 语言出中英（英文默认）。
 		private readonly lang?: () => ServerLang,
-	) {}
+		readonly ownerKind: "client" | "conversation" = "conversation",
+	) {
+		this.emit = this.ownedEmit(emit);
+	}
+
+	private get workspaceRoot(): string {
+		return typeof this.rootSource === "function" ? this.rootSource() : this.rootSource;
+	}
+
+	private ownedEmit(emit: (msg: ServerMessage) => void): (msg: ServerMessage) => void {
+		return (msg) => {
+			if (msg.type === "terminal_output" || msg.type === "terminal_exit") {
+				emit({ ...msg, ownerKind: this.ownerKind });
+			} else emit(msg);
+		};
+	}
 
 	/** 过户：对话整体搬到另一个 ClientSession 时，把输出/退出事件改发给新宿主。
 	 *  PTY 本体不动（进程不重启，输出缓冲保留），只换投递地址. */
 	rebindEmit(emit: (msg: ServerMessage) => void): void {
-		this.emit = emit;
+		this.emit = this.ownedEmit(emit);
+	}
+
+	/** Attach to an existing PTY or retained history; never spawn or restart. */
+	attach(id: string, cols: number, rows: number): boolean {
+		const entry = this.find(id);
+		if (!entry) return false;
+		this.resize(id, cols, rows);
+		this.flushPending(entry);
+		this.emit({ type: "terminal_output", terminalId: id, data: entry.output, reset: true });
+		return true;
 	}
 
 	/** Start a plain interactive shell in the given directory. */
@@ -1194,8 +1214,7 @@ export class TerminalManager {
 			// process group) and start a fresh shell with the same id. Keep the
 			// last known size so the replacement matches the xterm's dimensions.
 			if (!existing.exited) {
-				this.flushPending(existing);
-				this.killNative(existing);
+				this.retireTaskEntry(existing);
 			}
 			cols = existing.cols || cols;
 			rows = existing.rows || rows;
@@ -1474,9 +1493,9 @@ export class TerminalManager {
 			const hits: { w: Watch; m: RegExpMatchArray }[] = [];
 			for (const w of entry.watches) {
 				w.buf += data;
-				if (w.buf.length > 64_000) w.buf = w.buf.slice(-32_000);
 				w.re.lastIndex = 0;
 				const m = w.re.exec(w.buf);
+				if (w.buf.length > 64_000) w.buf = w.buf.slice(-32_000);
 				if (m)
 					hits.push({ w, m }); // 命中 → 移出（cb 在下面统一触发）
 				else remaining.push(w);
@@ -1528,7 +1547,11 @@ export class TerminalManager {
 				const cand = parseRemoteWorkspaceUri(raw);
 				if (!cand) return null;
 				if (cand.username !== root.username || cand.host !== root.host || cand.port !== root.port) return null;
-				return `ssh://${cand.username}@${cand.host}:${cand.port}${cand.remotePath}`;
+				const candidatePath = posix.normalize(cand.remotePath);
+				const rootPath = posix.normalize(root.remotePath).replace(/\/+$/, "") || "/";
+				if (candidatePath !== rootPath && !candidatePath.startsWith(rootPath === "/" ? "/" : `${rootPath}/`))
+					return null;
+				return `ssh://${cand.username}@${cand.host}:${cand.port}${candidatePath}`;
 			}
 			// 相对/本地写法一律挂到远程根下解析（与本地分支 resolve(root, raw) 同语义）
 			const rel = String(raw).replace(/\\/g, "/").replace(/^\/+/, "");
@@ -1561,6 +1584,7 @@ export class TerminalManager {
 			exitCode: entry.exitCode,
 			command: entry.command,
 			agentBash: entry.agentBash,
+			ownerKind: this.ownerKind,
 		};
 	}
 
@@ -1618,6 +1642,8 @@ export class TerminalManager {
 
 	/** Replay the retained output window after switching back to this conversation. */
 	replay(): { terminalId: string; data: string }[] {
+		// Deliver coalesced live output before resetting viewers to the retained window.
+		for (const entry of this.terms.values()) this.flushPending(entry);
 		return [...this.terms.values(), ...this.history.values()]
 			.filter((entry) => entry.output.length > 0)
 			.map((entry) => ({ terminalId: entry.id, data: entry.output }));
@@ -1735,14 +1761,14 @@ export class TerminalManager {
 			// 命令可能在调用前就已结束：先扫 afterCursor 之后的存量缓冲。
 			const relStart = Math.max(0, afterCursor - entry.outputOffset);
 			const segment = entry.output.slice(relStart);
-			const scan = new RegExp(BASH_SENTINEL_RE.source, BASH_SENTINEL_RE.flags);
-			scan.lastIndex = 0;
-			const existing = [...segment.matchAll(scan)].pop();
+			const completionRe = entry.sentinelNonce ? sentinelReFor(entry.sentinelNonce) : BASH_SENTINEL_RE;
+			const scan = new RegExp(completionRe.source, completionRe.flags);
+			const existing = scan.exec(segment);
 			if (existing) {
 				resolve({ finished: true, exitCode: Number(existing[1]) });
 				return;
 			}
-			if (entry.exited) {
+			if (entry.exited || entry.retired) {
 				resolve({ finished: true, exitCode: entry.exitCode });
 				return;
 			}
@@ -1758,20 +1784,30 @@ export class TerminalManager {
 				unwatch();
 				resolve(r);
 			};
-			unwatch = this.watchOutput(id, BASH_SENTINEL_RE, (m) => {
+			unwatch = this.watchOutput(id, completionRe, (m) => {
 				// m=null = 终端被关闭/退出 → 命令肯定结束了（退出码未知）。
-				done({ finished: true, exitCode: m ? Number(m[1]) : null });
+				done({ finished: true, exitCode: m ? Number(m[1]) : entry.exitCode });
 			});
+			if (settled) return;
 			timer = setTimeout(() => done({ finished: false, exitCode: null }), Math.max(1, Math.min(timeoutMs, 600_000)));
 			timer.unref?.();
 			signal?.addEventListener("abort", onAbort, { once: true });
+			if (signal?.aborted) onAbort();
 		});
 	}
 
 	/** 标记/清除「哨兵待决」状态（终端接管 bash 工具专用）。 */
-	setSentinelPending(id: string, pending: boolean): void {
+	setSentinelPending(id: string, pending: boolean, nonce?: string): void {
 		const entry = this.find(id);
-		if (entry) entry.sentinelPending = pending;
+		if (!entry || (!pending && nonce !== undefined && entry.sentinelNonce !== nonce)) return;
+		entry.sentinelPending = pending;
+		if (pending) entry.sentinelNonce = nonce;
+	}
+
+	/** Snapshot task termination without confusing a closed shell with silence. */
+	bashTaskState(id: string): { exited: boolean; exitCode: number | null } {
+		const entry = this.find(id);
+		return { exited: !entry || entry.exited || entry.retired === true, exitCode: entry?.exitCode ?? null };
 	}
 
 	/** 是否有带哨兵的命令尚未结束（terminal_wait 的适用性判断）。 */
@@ -1782,7 +1818,7 @@ export class TerminalManager {
 	/** 注册一次性输出观察器：命中 re 或终端退出时回调一次。返回注销函数。 */
 	watchOutput(id: string, re: RegExp, cb: (m: RegExpMatchArray | null) => void): () => void {
 		const entry = this.find(id);
-		if (!entry) {
+		if (!entry || entry.exited || entry.retired) {
 			cb(null);
 			return () => {};
 		}
@@ -1791,9 +1827,7 @@ export class TerminalManager {
 		const watch = { re: own, buf: "", cb };
 		entry.watches.push(watch);
 		return () => {
-			const cur = this.find(id);
-			if (!cur) return;
-			cur.watches = cur.watches.filter((w) => w !== watch);
+			entry.watches = entry.watches.filter((w) => w !== watch);
 		};
 	}
 
@@ -1820,11 +1854,11 @@ export class TerminalManager {
 		this.appendOutput(entry, marker);
 		this.emit({ type: "terminal_output", terminalId: id, data: marker });
 		entry.exited = true;
+		entry.exitCode = exitCode;
 		// 终端退出 → 未命中的输出观察器以 null 回调（宿主可据此通知「终端已关闭」）。
 		const pendingWatches = entry.watches;
 		entry.watches = [];
 		for (const w of pendingWatches) w.cb(null);
-		entry.exitCode = exitCode;
 		this.terms.delete(id);
 		// 进程已退出，立即释放底层的 PTY 句柄（Windows ConPTY / HPCON / sockets 等），
 		// 避免已退出的终端长期占用 ConPTY 与 MSYS2 控制台资源（issue #269）。
@@ -1861,16 +1895,26 @@ export class TerminalManager {
 		}
 	}
 
+	/** Retire callbacks against this exact generation without faking native exit. */
+	private retireTaskEntry(entry: TermEntry, shutdown = false): void {
+		if (entry.retired) return;
+		this.disarmIdleWatch(entry);
+		this.flushPending(entry);
+		this.killNative(entry, shutdown);
+		entry.retired = true;
+		entry.sentinelPending = false;
+		const watches = entry.watches;
+		entry.watches = [];
+		for (const wake of entry.waiters) wake();
+		entry.waiters.clear();
+		for (const watch of watches) watch.cb(null);
+	}
+
 	/** Kill one terminal (tab closed), including an exited terminal's retained history. */
 	kill(id: string): void {
 		const entry = this.terms.get(id);
 		if (entry) {
-			this.disarmIdleWatch(entry);
-			const killedWatches = entry.watches;
-			entry.watches = [];
-			for (const w of killedWatches) w.cb(null);
-			this.flushPending(entry);
-			this.killNative(entry);
+			this.retireTaskEntry(entry);
 			this.terms.delete(id);
 			this.emit({ type: "terminal_exit", terminalId: id, exitCode: null });
 			this.emitList();
@@ -1930,7 +1974,6 @@ export class TerminalManager {
 			if (shutdown) return;
 			const t = setTimeout(() => {
 				if (entry.exited) return;
-				entry.exited = true;
 				try {
 					entry.pty.kill();
 				} catch {
@@ -1956,15 +1999,7 @@ export class TerminalManager {
 	killAll(opts?: { shutdown?: boolean }): void {
 		const shutdown = opts?.shutdown === true;
 		for (const entry of this.terms.values()) {
-			this.disarmIdleWatch(entry);
-			if (entry.exited) continue;
-			this.killNative(entry, shutdown);
-		}
-		for (const entry of this.terms.values()) {
-			for (const wake of entry.waiters) wake();
-			entry.waiters.clear();
-			for (const w of entry.watches) w.cb(null);
-			entry.watches = [];
+			this.retireTaskEntry(entry, shutdown);
 		}
 		for (const entry of this.history.values()) {
 			this.killNative(entry, shutdown);
@@ -1999,15 +2034,45 @@ function lastSentinel(collected: string, nonce: string): RegExpMatchArray | null
  * ② 命令回显：第一次出现的命令首行（及其之前的提示符）整段丢弃——它总在真实输出之前。
  * 最后一个本次哨兵之后的内容是 shell 新提示符，整段截掉。
  */
-export function cleanBashOutput(raw: string, nonce: string, command = ""): string {
+export function cleanBashOutput(raw: string, nonce: string, command = "", injectedLine?: string): string {
 	const fmt = `[pi-exit-${nonce}:%s]`;
-	let lines = stripAnsi(raw)
-		.replace(/\r\n/g, "\n")
-		.split("\n")
-		.filter((line) => !line.includes(fmt));
+	const rawLines = stripAnsi(raw).replace(/\r\n/g, "\n").split("\n");
+	// ConPTY wraps a single physical input line at screen columns, including
+	// inside the nonce or printf's final argument. Rejoin only exact fragments
+	// of this invocation's generated input, never a generic control-looking line.
+	if (command) {
+		const injected = injectedLine ?? buildTerminalBashLine(command, undefined, nonce);
+		for (let i = 0; i < rawLines.length; i++) {
+			const start = rawLines[i].indexOf("eval $'");
+			if (start < 0) continue;
+			let matched = 0;
+			let end = i;
+			for (; end < rawLines.length; end++) {
+				let fragment = end === i ? rawLines[end].slice(start) : rawLines[end];
+				// Preserve a real space at the wrap boundary; trim screen padding only
+				// when the untrimmed fragment cannot belong to the injected command.
+				if (!injected.startsWith(fragment, matched)) fragment = fragment.trimEnd();
+				if (!fragment || !injected.startsWith(fragment, matched)) break;
+				matched += fragment.length;
+				if (matched === injected.length) {
+					rawLines.splice(i, end - i + 1, rawLines[i].slice(0, start) + injected);
+					break;
+				}
+			}
+		}
+	}
+	// The complete eval echo includes the printf format and is removed as one
+	// physical line. Capture a preceding two-line prompt before removing it.
+	const echoAt = rawLines.findIndex((line) => line.includes(fmt));
+	const preceding = echoAt > 0 ? rawLines[echoAt - 1].trim() : "";
+	const echoedPrompt = /^[A-Za-z0-9._-]+@[A-Za-z0-9._-]+ /.test(preceding) ? preceding : "";
+	let lines = rawLines.filter(
+		(line, index) =>
+			!line.includes(fmt) && !/^\s*\[pi-term-exit:-?\d+\]\s*$/.test(line) && !(echoedPrompt && index === echoAt - 1),
+	);
 	const anchor = (command.split("\n")[0] ?? "").trim().slice(0, 80);
 	// 命令回显前那一行提示符（如 `user@host MINGW64 /cwd`）：收尾时用它识别「哨兵前残留的新提示符」。
-	let promptLine = "";
+	let promptLine = echoedPrompt;
 	// 锚点找不到（横向滚动只回显尾部 / 回显缺失）时的回落：首个非空行若呈
 	// 提示符形状（`user@host … $ ` / `[user@host dir]$ `），按提示符+回显行剥掉，
 	// 否则命令回显与提示符会整行留在返回给模型的输出里。
@@ -2171,6 +2236,7 @@ export function makeTerminalBashTool(
 		parameters: BASH_PARAMETERS,
 		execute: async (_id, p, signal) => {
 			const lang: ServerLang = opts.lang?.() ?? "en";
+			if (signal?.aborted) throw new Error("Command aborted");
 			// 语法不完整的命令（续行符结尾 / 未闭合引号 / 未闭合括号组）：交互 shell 会停在续行提示符
 			// （PS2）零执行，且无法注入退出码哨兵——没有任何办法得知它何时结束。直接拒绝，不建终端、
 			// 不注入，避免空等 60 秒后回报「仍在后台运行」这种与事实相反的状态（#571）。
@@ -2214,6 +2280,11 @@ export function makeTerminalBashTool(
 			// 也不计入终端数量上限。
 			const termId = persist ? PERSIST_ID : `ai-bash-${++oneShotBashSeq}`;
 			const title = persist ? "AI bash" : `AI bash ${oneShotBashSeq}`;
+			if (terminals.isSentinelPending?.(termId)) {
+				throw new Error(
+					`Terminal ${termId} is busy. Use terminal({action:'wait', terminalId:'${termId}'}) or action:'read', 'input', 'key' for the current task.`,
+				);
+			}
 			if (
 				terminals.create(termId, opts.cwd, 120, 40, opts.cwd, title, {
 					forceBash: true,
@@ -2276,23 +2347,73 @@ export function makeTerminalBashTool(
 						{ limiterSegment, limiterTailZh, limiterTailEn },
 					)
 				: "";
+			const nonce = newSentinelNonce();
+			const injectedLine = buildTerminalBashLine(runCommand, tailFile, nonce);
+			const cleanCollected = (raw: string) => cleanBashOutput(raw, nonce, runCommand, injectedLine);
+			let finished = false;
+			let background = false;
+			let exitCode: number | null = null;
+			let failure: Error | undefined;
+			let unwatch = () => {};
+			let timeout: ReturnType<typeof setTimeout> | undefined;
+			const finish = (code: number | null) => {
+				if (finished) return;
+				finished = true;
+				exitCode = code;
+				if (timeout) clearTimeout(timeout);
+				unwatch();
+				signal?.removeEventListener("abort", onSignalAbort);
+				ac.signal.removeEventListener("abort", onAbort);
+				opts.kills.delete(ac);
+				terminals.setSentinelPending(termId, false, nonce);
+				if (background) opts.notifyBackgroundDone({ terminalId: termId, command: runCommand, exitCode: code });
+				if (!failure && code !== null && !terminals.bashTaskState?.(termId).exited) closeOneShot();
+			};
+			const cancel = (error: Error) => {
+				if (finished) return;
+				failure = error;
+				// Destroy this task's shell rather than leave an unknown foreground reader
+				// alive after Ctrl+C. Completion removes all callbacks before reuse.
+				try {
+					terminals.kill?.(termId);
+				} finally {
+					finish(null);
+				}
+			};
+			const onAbort = () => cancel(new Error("Command aborted"));
+			const onSignalAbort = () => ac.abort();
+			terminals.setSentinelPending(termId, true, nonce);
+			unwatch =
+				terminals.watchOutput?.(termId, sentinelReFor(nonce), (m) => {
+					finish(m ? Number(m[1]) : terminals.bashTaskState(termId).exitCode);
+				}) ?? (() => {});
+			if (!finished) {
+				ac.signal.addEventListener("abort", onAbort, { once: true });
+				signal?.addEventListener("abort", onSignalAbort, { once: true });
+			}
+			if (!finished && deadline !== null) {
+				const checkDeadline = () => {
+					if (finished) return;
+					if (Date.now() >= deadline) cancel(new Error(`Command timed out after ${p.timeout}s`));
+					else {
+						timeout = setTimeout(checkDeadline, armDelay(deadline, Date.now()));
+						timeout.unref?.();
+					}
+				};
+				checkDeadline();
+			}
 			try {
 				let collected = "";
 				let cursor = start;
 				let lastDataAt = Date.now();
-				const nonce = newSentinelNonce();
-				// 标记「有哨兵命令在跑」：terminal_wait / terminal_read 据此区分等待与空闲。
-				terminals.setSentinelPending(termId, true);
-				const inputErr = terminals.inputChecked(termId, buildTerminalBashLine(runCommand, tailFile, nonce) + "\r");
-				if (inputErr) throw new Error(inputErr);
+				if (signal?.aborted) onSignalAbort();
+				if (failure) throw failure;
+				if (!finished) {
+					const inputErr = terminals.inputChecked(termId, injectedLine + "\r");
+					if (inputErr) throw new Error(inputErr);
+				}
 				for (;;) {
-					if (ac.signal.aborted || signal?.aborted) {
-						// Ctrl+C 杀前台进程；一次性终端随之退出，持久终端保留（会话状态还在）。
-						terminals.setSentinelPending(termId, false);
-						terminals.inputChecked(termId, "\x03");
-						closeOneShot();
-						throw new Error(pick(lang, "命令已中止", "Command aborted", "terminals.bash.aborted"));
-					}
+					if (failure) throw failure;
 					await sleep(60);
 					const read = terminals.read(termId, cursor);
 					if (read?.data) {
@@ -2306,43 +2427,33 @@ export function makeTerminalBashTool(
 							collected = collected.slice(collected.length - BASH_COLLECT_MAX / 2);
 						}
 					}
-					const m = lastSentinel(collected, nonce);
-					if (m) {
-						terminals.setSentinelPending(termId, false);
-						closeOneShot();
-						const text = applyHeadTail(cleanBashOutput(collected, nonce, runCommand), p.head, effectiveTail, lang);
+					// Also scan the collected slice: adapters may deliver buffered output
+					// without invoking live watchers. Both paths use the same nonce.
+					const marker = lastSentinel(collected, nonce);
+					if (!finished && marker) finish(Number(marker[1]));
+					if (failure) throw failure;
+					if (finished) {
+						if (exitCode === null) throw new Error("Terminal closed before command completion (exit code unknown)");
+						const text = applyHeadTail(cleanCollected(collected), p.head, effectiveTail, lang);
 						return {
 							content: [
 								{
 									type: "text",
-									text: `${text}${text ? "\n" : ""}${limiterNote}[exit:${m[1]}]`,
+									text: `${text}${text ? "\n" : ""}${limiterNote}[exit:${exitCode}]`,
 								},
 							],
-							details: { exitCode: Number(m[1]), output: text },
+							details: { exitCode, output: text },
 						};
 					}
-					if (deadline !== null && Date.now() > deadline) {
-						terminals.setSentinelPending(termId, false);
-						terminals.inputChecked(termId, "\x03");
-						closeOneShot();
-						const timeoutPartial = truncateMiddle(stripAnsi(collected), 4000);
-						throw new Error(
-							pick(
-								lang,
-								`Command timed out after ${p.timeout}s（已发 Ctrl+C；已有输出：${timeoutPartial}）`,
-								`Command timed out after ${p.timeout}s (sent Ctrl+C; partial output: ${timeoutPartial})`,
-								"terminals.bash.timeout",
-								{ "p.timeout": p.timeout, timeout: p.timeout, timeoutPartial, sentinelNote: "" },
-							),
-						);
-					}
+
 					// 静默解阻（仅持久终端）：转后台 + 注册完成观察器，立即把控制权还给模型。
 					if (persist && idleMs > 0 && Date.now() - lastDataAt >= idleMs) {
+						background = true;
 						return backgroundResult(
 							terminals,
 							opts,
 							runCommand,
-							applyHeadTail(cleanBashOutput(collected, nonce, runCommand), p.head, effectiveTail, lang),
+							applyHeadTail(cleanCollected(collected), p.head, effectiveTail, lang),
 							Math.round((Date.now() - lastDataAt) / 1000),
 							lang,
 							nonce,
@@ -2353,11 +2464,12 @@ export function makeTerminalBashTool(
 					}
 					// 总时长解阻（持久与一次性终端）：前台运行达到上限，转入后台继续执行，避免卡死。
 					if (maxForegroundMs > 0 && Date.now() - startTime >= maxForegroundMs) {
+						background = true;
 						return backgroundResult(
 							terminals,
 							opts,
 							runCommand,
-							applyHeadTail(cleanBashOutput(collected, nonce, runCommand), p.head, effectiveTail, lang),
+							applyHeadTail(cleanCollected(collected), p.head, effectiveTail, lang),
 							Math.round((Date.now() - startTime) / 1000),
 							lang,
 							nonce,
@@ -2367,8 +2479,11 @@ export function makeTerminalBashTool(
 						);
 					}
 				}
+			} catch (error) {
+				cancel(error instanceof Error ? error : new Error(String(error)));
+				throw error;
 			} finally {
-				opts.kills.delete(ac);
+				if (!background && !finished) finish(null);
 			}
 		},
 	});
@@ -2387,18 +2502,7 @@ function backgroundResult(
 	persist: boolean = true,
 	reason: "idle" | "elapsed" = "idle",
 ): { content: { type: "text"; text: string }[]; details: unknown } {
-	terminals.watchOutput(termId, sentinelReFor(nonce), (m) => {
-		// 后台命令最终结束（或终端被关）→ 清除待决标记，terminal_wait 不再适用。
-		terminals.setSentinelPending(termId, false);
-		opts.notifyBackgroundDone({
-			terminalId: termId,
-			command,
-			exitCode: m ? Number(m[1]) : null,
-		});
-		if (!persist) {
-			void terminals.inputChecked(termId, "exit\r");
-		}
-	});
+	// The task controller retains completion, cancellation and deadline ownership.
 	// partialText 已在调用方做过 cleanBashOutput + applyTail。
 	const partial = truncateMiddle(partialText, 6000);
 	// 空输出占位按语言预渲染（issue #91 v2：vars 只收干净标识）。
@@ -2429,11 +2533,11 @@ function backgroundResult(
 	}
 
 	if (persist) {
-		descZh += `要重新阻塞等它结束就用 terminal_wait(terminalId="${termId}")（无需反复轮询）；需要交互用 terminal_input / terminal_key（Ctrl+C 可终止）。`;
-		descEn += `To block until it finishes, use terminal_wait(terminalId="${termId}") (no polling needed); use terminal_input / terminal_key to interact (Ctrl+C aborts).`;
+		descZh += `要重新阻塞等它结束就用 terminal(action='wait', terminalId='${termId}')（无需反复轮询）；需要交互用 terminal(action='input'/'key', terminalId='${termId}')（Ctrl+C 可终止）。`;
+		descEn += `To block until it finishes, use terminal(action='wait', terminalId='${termId}') (no polling needed); use terminal(action='input'/'key', terminalId='${termId}') to interact (Ctrl+C aborts).`;
 	} else {
-		descZh += `命令完成后该终端将自动退出并发送通知；如需查看输出可用 terminal_read(terminalId="${termId}")。`;
-		descEn += `When completed, this terminal will exit automatically and notify; to inspect output, use terminal_read(terminalId="${termId}").`;
+		descZh += `命令完成后该终端将自动退出并发送通知；如需查看输出可用 terminal(action='read', terminalId='${termId}')。`;
+		descEn += `When completed, this terminal will exit automatically and notify; to inspect output, use terminal(action='read', terminalId='${termId}').`;
 	}
 
 	if (reason === "elapsed") {
@@ -2473,14 +2577,8 @@ function backgroundResult(
 /** Agent 持久终端工具名（唯一登记见 tool-manager.ts；此处 re-export 保兼容）。 */
 export { TERMINAL_TOOL_NAMES } from "./tool-manager.js";
 
-/** System-prompt guidance teaching the model WHEN to prefer the terminal tools
- *  over one-shot bash. Without it models almost never pick them — bash returns
- *  complete output in a single call, so it always wins on convenience. */
-export const TERMINAL_TOOLS_GUIDANCE = `Persistent interactive terminal tools are available (terminal_create / terminal_list / terminal_close / terminal_input / terminal_key / terminal_read / terminal_wait). The bash tool stays the DEFAULT for ordinary commands. Switch to bash({persist:true}) or the terminal tools when:
-- The program is interactive or TUI-based (REPLs, vim/htop, y/n installers, anything waiting on stdin): prefer bash({persist:true}), which runs it in the persistent 'ai-bash' terminal and returns immediately; then drive it with terminal_input / terminal_key / terminal_read on terminalId='ai-bash'.
-- You start a long-running server or watcher and want to watch its output (terminal_read with waitMs), send keys later (e.g. Ctrl+c via terminal_key), or block until a backgrounded command finishes without polling (terminal_wait).
-- The user asks you to work in the visible terminal panel.
-Liveness watchdog: terminals you touched are monitored — if one goes silent while you are working (default 15s), a system reminder prompts you to check it (terminal_read), answer its input prompt, or close it (terminal_close) if no longer needed.`;
+/** Guidance for choosing the persistent terminal over ordinary bash calls. */
+export const TERMINAL_TOOLS_GUIDANCE = `Use terminal(action) for interactive programs, REPLs, TUIs, persistent servers, or work in the visible terminal panel. Prefer bash for ordinary commands. Use create/list to select a terminal, input/key to drive it, and close when finished. read supports incremental cursors, output waiting, head/tail, and literal search. wait blocks for a tracked bash command's exit marker; commands submitted through input/key have no such marker, so observe them with read(waitMs). bash({persist:true}) uses terminalId='ai-bash' and may wait before returning. read/wait are read-only; other actions are write operations. When a liveness reminder arrives, read the terminal, answer its prompt, or close it.`;
 
 export interface TerminalSafetyCheckResult {
 	blocked?: boolean;
@@ -2496,16 +2594,16 @@ export interface PersistentTerminalToolsOptions {
 		ctx: {
 			terminalId: string;
 			toolCallId: string;
-			toolName: "terminal_input" | "terminal_key";
+			toolName: "terminal";
+			action: "input" | "key";
 		},
 	) => Promise<TerminalSafetyCheckResult> | TerminalSafetyCheckResult;
 }
 
-/** Build the agent-facing persistent terminal tools for one conversation. */
+/** Build the single agent-facing persistent terminal tool for one conversation. */
 export function makePersistentTerminalTools(
 	terminals: TerminalManager,
 	cwd: string,
-	/** per-call 返回文本的服务端语言（默认英文）；工具 definition 为纯英文。 */
 	lang?: () => ServerLang,
 	options?: PersistentTerminalToolsOptions,
 ): ToolDefinition[] {
@@ -2546,175 +2644,30 @@ export function makePersistentTerminalTools(
 
 	return [
 		defineTool({
-			name: "terminal_create",
-			label: "Create terminal",
+			name: "terminal",
+			label: "Terminal",
 			description:
-				"Create a named persistent interactive PTY. Interact via terminal_input / terminal_key; inspect output via terminal_read.",
-			promptSnippet: "drive interactive programs or long-running servers in a PTY",
+				"Manage persistent interactive PTYs. Actions: create/list/close/input/key/read/wait. terminalId is required except for list; input requires data and key requires key. read returns incremental output and cursor, with optional waiting and head/tail/search filters. wait blocks for a tracked bash command's completion marker or timeout; input/key commands have no completion marker. read/wait are read-only; all other actions are write operations.",
+			promptSnippet: "drive interactive programs or inspect persistent terminal output",
 			promptGuidelines: [
-				"Use this for full-screen TUIs (vim/htop) and servers you need to observe or interrupt; prefer bash for one-shot commands",
+				"Prefer bash for ordinary commands. Use read(waitMs) for output from input/key; use wait only for tracked bash commands. Retain the returned cursor for incremental reads.",
 			],
 			parameters: Type.Object({
-				terminalId: Type.String({ description: "Stable terminal name" }),
-				cwd: Type.Optional(Type.String({ description: "Workspace-relative directory" })),
+				action: Type.Union([
+					Type.Literal("create"),
+					Type.Literal("list"),
+					Type.Literal("close"),
+					Type.Literal("input"),
+					Type.Literal("key"),
+					Type.Literal("read"),
+					Type.Literal("wait"),
+				]),
+				terminalId: Type.Optional(Type.String({ minLength: 1, description: "Required except for list" })),
+				cwd: Type.Optional(Type.String({ description: "Workspace-relative directory for create" })),
 				cols: Type.Optional(Type.Integer({ minimum: 2, maximum: 500 })),
 				rows: Type.Optional(Type.Integer({ minimum: 2, maximum: 200 })),
-			}),
-			execute: async (_id, p) => {
-				const lang = getLang();
-				const safeCols = Math.max(2, Math.min(500, Math.floor(p.cols ?? 120)));
-				const safeRows = Math.max(2, Math.min(200, Math.floor(p.rows ?? 40)));
-				const info = terminals.create(p.terminalId, p.cwd ?? cwd, safeCols, safeRows, cwd, p.terminalId);
-				const infoJson = JSON.stringify(info);
-				if (!info)
-					throw new Error(
-						pick(
-							lang,
-							`创建终端失败：${p.terminalId}`,
-							`Failed to create terminal: ${p.terminalId}`,
-							"terminals.create.failed",
-							{ "p.terminalId": p.terminalId },
-						),
-					);
-				// AI 创建 → 启动活力检测纪元（静默提醒只针对 agent 触碰过的终端）。
-				terminals.noteAgentActivity(p.terminalId);
-				return result(
-					pick(lang, `终端已创建：${infoJson}`, `Terminal created: ${infoJson}`, "terminals.create.done", { infoJson }),
-					info,
-				);
-			},
-		}),
-		defineTool({
-			name: "terminal_list",
-			label: "List terminals",
-			description: "List all persistent PTY terminals owned by this conversation.",
-			promptSnippet: "list persistent terminals",
-			parameters: Type.Object({}),
-			execute: async () => result(JSON.stringify(terminals.list()), terminals.list()),
-		}),
-		defineTool({
-			name: "terminal_close",
-			label: "Close terminal",
-			description: "Close a persistent PTY and terminate its process tree.",
-			parameters: Type.Object({ terminalId: Type.String() }),
-			execute: async (_id, p) => {
-				const lang = getLang();
-				if (!terminals.has(p.terminalId))
-					throw new Error(
-						pick(
-							lang,
-							`终端不存在：${p.terminalId}`,
-							`Terminal not found: ${p.terminalId}`,
-							"terminals.close.not.found",
-							{ "p.terminalId": p.terminalId },
-						),
-					);
-				terminals.kill(p.terminalId);
-				return result(
-					pick(lang, `终端已关闭：${p.terminalId}`, `Terminal closed: ${p.terminalId}`, "terminals.close.done", {
-						"p.terminalId": p.terminalId,
-					}),
-				);
-			},
-		}),
-		defineTool({
-			name: "terminal_input",
-			label: "Send terminal input",
-			description: "Send arbitrary text to a persistent PTY. Include newline when a command should be submitted.",
-			parameters: Type.Object({ terminalId: Type.String(), data: Type.String() }),
-			execute: async (_id, p) => {
-				const lang = getLang();
-				const prevPending = getPending(p.terminalId);
-				const parsed = parseTerminalLineStream(prevPending, p.data);
-
-				if (options?.checkSafety && parsed.completedLines.length > 0) {
-					for (const line of parsed.completedLines) {
-						const cleanCmd = stripAnsi(line).trim();
-						if (!cleanCmd) continue;
-						const safety = await options.checkSafety(cleanCmd, {
-							terminalId: p.terminalId,
-							toolCallId: _id,
-							toolName: "terminal_input",
-						});
-						if (safety.blocked) {
-							// 发现阻断：若终端此前已留有未提交字符，发送 \x03 取消当前行
-							if (prevPending) {
-								try {
-									terminals.inputChecked(p.terminalId, "\x03");
-								} catch {
-									// ignore
-								}
-							}
-							clearPending(p.terminalId);
-							const reason = pick(lang, safety.reason ?? "", safety.reasonEn ?? safety.reason ?? "");
-							const reasonSuffix = reason ? (lang === "zh" ? ` 原因：${reason}` : ` Reason: ${reason}`) : "";
-							throw new Error(
-								safety.userDenied
-									? pick(
-											lang,
-											`【操作被用户拒绝】${reasonSuffix}`,
-											`[Operation denied by user]${reasonSuffix}`,
-											"terminals.operation.denied",
-											{ reasonSuffix },
-										)
-									: pick(
-											lang,
-											`【终端输入命令被安全规则阻断】${reasonSuffix}`,
-											`[Terminal command blocked by safety rule]${reasonSuffix}`,
-											"terminals.command.blocked",
-											{ reasonSuffix },
-										),
-							);
-						}
-						if (safety.editedCommand !== undefined) {
-							// 用户通过审批改写了命令
-							if (prevPending) {
-								try {
-									terminals.inputChecked(p.terminalId, "\x03");
-								} catch {
-									// ignore
-								}
-							}
-							clearPending(p.terminalId);
-							failIf(terminals.inputChecked(p.terminalId, safety.editedCommand + "\r"));
-							terminals.noteAgentActivity(p.terminalId);
-							return result(
-								pick(
-									lang,
-									`已发送改写后的命令到 ${p.terminalId}：${safety.editedCommand}`,
-									`Sent edited command to ${p.terminalId}: ${safety.editedCommand}`,
-									"terminals.input.edited_sent",
-									{ command: safety.editedCommand, "p.terminalId": p.terminalId },
-								),
-							);
-						}
-					}
-				}
-
-				failIf(terminals.inputChecked(p.terminalId, p.data));
-				setPending(p.terminalId, parsed.remainingPending);
-				// AI 发了输入 = 在等结果，重开一个静默纪元。
-				terminals.noteAgentActivity(p.terminalId);
-				return result(
-					pick(
-						lang,
-						`已发送 ${p.data.length} 个字符到 ${p.terminalId}`,
-						`Sent ${p.data.length} chars to ${p.terminalId}`,
-						"terminals.input.sent",
-						{ "p.data.length": p.data.length, "p.terminalId": p.terminalId },
-					),
-				);
-			},
-		}),
-		defineTool({
-			name: "terminal_key",
-			label: "Send terminal key",
-			description: "Send Enter, Tab, arrows, function keys, or Ctrl/Alt combinations to a persistent PTY.",
-			parameters: Type.Object({
-				terminalId: Type.String(),
-				key: Type.String({
-					description: "Enter, Tab, ArrowUp, c, etc.",
-				}),
+				data: Type.Optional(Type.String({ description: "Required for input; include newline to submit" })),
+				key: Type.Optional(Type.String({ description: "Required for key, e.g. Enter or c" })),
 				modifiers: Type.Optional(
 					Type.Object({
 						ctrl: Type.Optional(Type.Boolean()),
@@ -2722,198 +2675,330 @@ export function makePersistentTerminalTools(
 						shift: Type.Optional(Type.Boolean()),
 					}),
 				),
+				cursor: Type.Optional(
+					Type.Integer({ minimum: 0, description: "Absolute output offset; pass returned cursor on next read" }),
+				),
+				maxBytes: Type.Optional(Type.Integer({ minimum: 1, maximum: 100000 })),
+				waitMs: Type.Optional(Type.Integer({ minimum: 0, maximum: 120000 })),
+				maxWaitMs: Type.Optional(Type.Integer({ minimum: 100, maximum: 600000 })),
+				head: Type.Optional(Type.Integer({ minimum: 1, description: "Read: first N matching lines" })),
+				tail: Type.Optional(
+					Type.Integer({ minimum: 1, description: "Read: last N matching lines; exclusive with head" }),
+				),
+				search: Type.Optional(
+					Type.String({ description: "Read: literal, case-sensitive line filter after stripping ANSI" }),
+				),
 			}),
-			execute: async (_id, p) => {
-				const lang = getLang();
-				const encoded = encodeTerminalKey(p.key, p.modifiers);
-				if ("error" in encoded) throw new Error(encoded.error);
-
-				const isEnter = encoded.data.includes("\r") || encoded.data.includes("\n");
-				if (isEnter) {
-					const pending = getPending(p.terminalId);
-					const cleanCmd = stripAnsi(pending).trim();
-					if (options?.checkSafety && cleanCmd) {
-						const safety = await options.checkSafety(cleanCmd, {
-							terminalId: p.terminalId,
-							toolCallId: _id,
-							toolName: "terminal_key",
-						});
-						if (safety.blocked) {
-							// 阻断 Enter 提交：发送 \x03 冲刷取消终端屏幕残留的脏命令
-							try {
-								terminals.inputChecked(p.terminalId, "\x03");
-							} catch {
-								// ignore
-							}
-							clearPending(p.terminalId);
-							const reason = pick(lang, safety.reason ?? "", safety.reasonEn ?? safety.reason ?? "");
-							const reasonSuffix = reason ? (lang === "zh" ? ` 原因：${reason}` : ` Reason: ${reason}`) : "";
+			execute: async (_id, args, signal) => {
+				signal?.throwIfAborted();
+				if (!["create", "list", "close", "input", "key", "read", "wait"].includes(args.action))
+					throw new Error("Unknown terminal action");
+				if (args.action !== "list" && (typeof args.terminalId !== "string" || !args.terminalId.trim()))
+					throw new Error("terminalId is required for " + args.action);
+				if (args.action === "input" && typeof args.data !== "string") throw new Error("data is required for input");
+				if (args.action === "key" && (typeof args.key !== "string" || !args.key))
+					throw new Error("key is required for key");
+				if (args.action === "read" && args.head !== undefined && args.tail !== undefined)
+					throw new Error("head and tail are mutually exclusive");
+				const p = { ...args, terminalId: args.terminalId ?? "", data: args.data ?? "", key: args.key ?? "" };
+				switch (p.action) {
+					case "create": {
+						const lang = getLang();
+						const safeCols = Math.max(2, Math.min(500, Math.floor(p.cols ?? 120)));
+						const safeRows = Math.max(2, Math.min(200, Math.floor(p.rows ?? 40)));
+						const info = terminals.create(p.terminalId, p.cwd ?? cwd, safeCols, safeRows, cwd, p.terminalId);
+						const infoJson = JSON.stringify(info);
+						if (!info)
 							throw new Error(
-								safety.userDenied
-									? pick(
-											lang,
-											`【操作被用户拒绝】${reasonSuffix}`,
-											`[Operation denied by user]${reasonSuffix}`,
-											"terminals.operation.denied",
-											{ reasonSuffix },
-										)
-									: pick(
-											lang,
-											`【终端输入命令被安全规则阻断】${reasonSuffix}`,
-											`[Terminal command blocked by safety rule]${reasonSuffix}`,
-											"terminals.command.blocked",
-											{ reasonSuffix },
-										),
+								pick(
+									lang,
+									`创建终端失败：${p.terminalId}`,
+									`Failed to create terminal: ${p.terminalId}`,
+									"terminals.create.failed",
+									{ "p.terminalId": p.terminalId },
+								),
 							);
-						}
-						if (safety.editedCommand !== undefined) {
-							// 用户在审批弹窗中改写了命令：先取消原行，再提交改写后的命令
-							try {
-								terminals.inputChecked(p.terminalId, "\x03");
-							} catch {
-								// ignore
+						// AI 创建 → 启动活力检测纪元（静默提醒只针对 agent 触碰过的终端）。
+						terminals.noteAgentActivity(p.terminalId);
+						return result(
+							pick(lang, `终端已创建：${infoJson}`, `Terminal created: ${infoJson}`, "terminals.create.done", {
+								infoJson,
+							}),
+							info,
+						);
+					}
+					case "list": {
+						const list = terminals.list();
+						return result(JSON.stringify(list), list);
+					}
+					case "close": {
+						const lang = getLang();
+						if (!terminals.has(p.terminalId))
+							throw new Error(
+								pick(
+									lang,
+									`终端不存在：${p.terminalId}`,
+									`Terminal not found: ${p.terminalId}`,
+									"terminals.close.not.found",
+									{ "p.terminalId": p.terminalId },
+								),
+							);
+						terminals.kill(p.terminalId);
+						return result(
+							pick(lang, `终端已关闭：${p.terminalId}`, `Terminal closed: ${p.terminalId}`, "terminals.close.done", {
+								"p.terminalId": p.terminalId,
+							}),
+						);
+					}
+					case "input": {
+						const lang = getLang();
+						const prevPending = getPending(p.terminalId);
+						const parsed = parseTerminalLineStream(prevPending, p.data);
+
+						if (options?.checkSafety && parsed.completedLines.length > 0) {
+							for (const line of parsed.completedLines) {
+								const cleanCmd = stripAnsi(line).trim();
+								if (!cleanCmd) continue;
+								const safety = await options.checkSafety(cleanCmd, {
+									terminalId: p.terminalId,
+									toolCallId: _id,
+									toolName: "terminal",
+									action: "input",
+								});
+								signal?.throwIfAborted();
+								if (safety.blocked) {
+									// 发现阻断：若终端此前已留有未提交字符，发送 \x03 取消当前行
+									if (prevPending) {
+										try {
+											terminals.inputChecked(p.terminalId, "\x03");
+										} catch {
+											// ignore
+										}
+									}
+									clearPending(p.terminalId);
+									const reason = pick(lang, safety.reason ?? "", safety.reasonEn ?? safety.reason ?? "");
+									const reasonSuffix = reason ? (lang === "zh" ? ` 原因：${reason}` : ` Reason: ${reason}`) : "";
+									throw new Error(
+										safety.userDenied
+											? pick(
+													lang,
+													`【操作被用户拒绝】${reasonSuffix}`,
+													`[Operation denied by user]${reasonSuffix}`,
+													"terminals.operation.denied",
+													{ reasonSuffix },
+												)
+											: pick(
+													lang,
+													`【终端输入命令被安全规则阻断】${reasonSuffix}`,
+													`[Terminal command blocked by safety rule]${reasonSuffix}`,
+													"terminals.command.blocked",
+													{ reasonSuffix },
+												),
+									);
+								}
+								if (safety.editedCommand !== undefined) {
+									// 用户通过审批改写了命令
+									if (prevPending) {
+										try {
+											terminals.inputChecked(p.terminalId, "\x03");
+										} catch {
+											// ignore
+										}
+									}
+									clearPending(p.terminalId);
+									failIf(terminals.inputChecked(p.terminalId, safety.editedCommand + "\r"));
+									terminals.noteAgentActivity(p.terminalId);
+									return result(
+										pick(
+											lang,
+											`已发送改写后的命令到 ${p.terminalId}：${safety.editedCommand}`,
+											`Sent edited command to ${p.terminalId}: ${safety.editedCommand}`,
+											"terminals.input.edited_sent",
+											{ command: safety.editedCommand, "p.terminalId": p.terminalId },
+										),
+									);
+								}
 							}
+						}
+
+						failIf(terminals.inputChecked(p.terminalId, p.data));
+						setPending(p.terminalId, parsed.remainingPending);
+						// AI 发了输入 = 在等结果，重开一个静默纪元。
+						terminals.noteAgentActivity(p.terminalId);
+						return result(
+							pick(
+								lang,
+								`已发送 ${p.data.length} 个字符到 ${p.terminalId}`,
+								`Sent ${p.data.length} chars to ${p.terminalId}`,
+								"terminals.input.sent",
+								{ "p.data.length": p.data.length, "p.terminalId": p.terminalId },
+							),
+						);
+					}
+					case "key": {
+						const lang = getLang();
+						const encoded = encodeTerminalKey(p.key, p.modifiers);
+						if ("error" in encoded) throw new Error(encoded.error);
+
+						const isEnter = encoded.data.includes("\r") || encoded.data.includes("\n");
+						if (isEnter) {
+							const pending = getPending(p.terminalId);
+							const cleanCmd = stripAnsi(pending).trim();
+							if (options?.checkSafety && cleanCmd) {
+								const safety = await options.checkSafety(cleanCmd, {
+									terminalId: p.terminalId,
+									toolCallId: _id,
+									toolName: "terminal",
+									action: "key",
+								});
+								signal?.throwIfAborted();
+								if (safety.blocked) {
+									// 阻断 Enter 提交：发送 \x03 冲刷取消终端屏幕残留的脏命令
+									try {
+										terminals.inputChecked(p.terminalId, "\x03");
+									} catch {
+										// ignore
+									}
+									clearPending(p.terminalId);
+									const reason = pick(lang, safety.reason ?? "", safety.reasonEn ?? safety.reason ?? "");
+									const reasonSuffix = reason ? (lang === "zh" ? ` 原因：${reason}` : ` Reason: ${reason}`) : "";
+									throw new Error(
+										safety.userDenied
+											? pick(
+													lang,
+													`【操作被用户拒绝】${reasonSuffix}`,
+													`[Operation denied by user]${reasonSuffix}`,
+													"terminals.operation.denied",
+													{ reasonSuffix },
+												)
+											: pick(
+													lang,
+													`【终端输入命令被安全规则阻断】${reasonSuffix}`,
+													`[Terminal command blocked by safety rule]${reasonSuffix}`,
+													"terminals.command.blocked",
+													{ reasonSuffix },
+												),
+									);
+								}
+								if (safety.editedCommand !== undefined) {
+									// 用户在审批弹窗中改写了命令：先取消原行，再提交改写后的命令
+									try {
+										terminals.inputChecked(p.terminalId, "\x03");
+									} catch {
+										// ignore
+									}
+									clearPending(p.terminalId);
+									failIf(terminals.inputChecked(p.terminalId, safety.editedCommand + "\r"));
+									terminals.noteAgentActivity(p.terminalId);
+									return result(
+										pick(
+											lang,
+											`已发送改写后的命令到 ${p.terminalId}：${safety.editedCommand}`,
+											`Sent edited command to ${p.terminalId}: ${safety.editedCommand}`,
+											"terminals.key.edited_sent",
+											{ command: safety.editedCommand, "p.terminalId": p.terminalId },
+										),
+									);
+								}
+							}
+							// 提交回车成功
+							failIf(terminals.inputChecked(p.terminalId, encoded.data));
 							clearPending(p.terminalId);
-							failIf(terminals.inputChecked(p.terminalId, safety.editedCommand + "\r"));
 							terminals.noteAgentActivity(p.terminalId);
 							return result(
 								pick(
 									lang,
-									`已发送改写后的命令到 ${p.terminalId}：${safety.editedCommand}`,
-									`Sent edited command to ${p.terminalId}: ${safety.editedCommand}`,
-									"terminals.key.edited_sent",
-									{ command: safety.editedCommand, "p.terminalId": p.terminalId },
+									`已发送按键 ${p.key} 到 ${p.terminalId}`,
+									`Sent key ${p.key} to ${p.terminalId}`,
+									"terminals.key.sent",
+									{ "p.key": p.key, "p.terminalId": p.terminalId },
 								),
 							);
 						}
-					}
-					// 提交回车成功
-					failIf(terminals.inputChecked(p.terminalId, encoded.data));
-					clearPending(p.terminalId);
-					terminals.noteAgentActivity(p.terminalId);
-					return result(
-						pick(
-							lang,
-							`已发送按键 ${p.key} 到 ${p.terminalId}`,
-							`Sent key ${p.key} to ${p.terminalId}`,
-							"terminals.key.sent",
-							{ "p.key": p.key, "p.terminalId": p.terminalId },
-						),
-					);
-				}
 
-				// 非回车按键：若为退格或清除键，更新 pending 缓冲
-				const prev = getPending(p.terminalId);
-				const parsed = parseTerminalLineStream(prev, encoded.data);
-				failIf(terminals.inputChecked(p.terminalId, encoded.data));
-				setPending(p.terminalId, parsed.remainingPending);
-				terminals.noteAgentActivity(p.terminalId);
-				return result(
-					pick(
-						lang,
-						`已发送按键 ${p.key} 到 ${p.terminalId}`,
-						`Sent key ${p.key} to ${p.terminalId}`,
-						"terminals.key.sent",
-						{ "p.key": p.key, "p.terminalId": p.terminalId },
-					),
-				);
-			},
-		}),
-		defineTool({
-			name: "terminal_read",
-			label: "Read terminal output",
-			description:
-				"Read incremental output from a persistent PTY. " +
-				"Keep the returned cursor and pass it on the next read; " +
-				"optionally wait for new output or process exit. " +
-				"commandPending=true means a bash-tool command has not reported its exit code yet " +
-				"(manual terminal_input commands are not tracked).",
-			parameters: Type.Object({
-				terminalId: Type.String(),
-				cursor: Type.Optional(Type.Integer({ minimum: 0 })),
-				maxBytes: Type.Optional(Type.Integer({ minimum: 1, maximum: 100000 })),
-				waitMs: Type.Optional(Type.Integer({ minimum: 0, maximum: 120000 })),
-			}),
-			execute: async (_id, p, signal) => {
-				const lang = getLang();
-				const cursor = Math.max(0, Math.floor(p.cursor ?? 0));
-				const waitMs = p.waitMs !== undefined ? Math.max(0, Math.min(120_000, Math.floor(p.waitMs))) : undefined;
-				const maxBytes = Math.max(1, Math.min(100_000, Math.floor(p.maxBytes ?? 20000)));
-				if (waitMs) await terminals.waitForOutput(p.terminalId, cursor, waitMs, signal);
-				const read = terminals.read(p.terminalId, cursor, maxBytes);
-				if (!read)
-					throw new Error(
-						pick(
-							lang,
-							`终端不存在：${p.terminalId}`,
-							`Terminal not found: ${p.terminalId}`,
-							"terminals.read.not.found",
-							{ "p.terminalId": p.terminalId },
-						),
-					);
-				return result(JSON.stringify(read), read);
-			},
-		}),
-		defineTool({
-			name: "terminal_wait",
-			label: "Wait for terminal command",
-			description:
-				"Block until a bash-tool command finishes (exit marker) or timeout — no polling. " +
-				"Returns {finished, exitCode} plus output produced meanwhile; finished=false = still running (call again). " +
-				"terminal_input commands have no completion marker — use terminal_read(waitMs=…) for those.",
-			promptSnippet: "avoid polling: wait for a long bash command to finish",
-			parameters: Type.Object({
-				terminalId: Type.String(),
-				cursor: Type.Optional(
-					Type.Integer({
-						minimum: 0,
-						description: "Ignore exit markers before this absolute offset (default: now)",
-					}),
-				),
-				maxWaitMs: Type.Optional(
-					Type.Integer({
-						minimum: 100,
-						maximum: 600000,
-						description: "Max wait in ms (default 300000)",
-					}),
-				),
-			}),
-			execute: async (_id, p, signal) => {
-				const lang = getLang();
-				if (!terminals.has(p.terminalId)) {
-					throw new Error(
-						pick(
-							lang,
-							`终端不存在：${p.terminalId}（可能已被关闭或会话重置，请先 terminal_create）`,
-							`Terminal not found: ${p.terminalId} (it may have been closed or the session was reset — run terminal_create first)`,
-							"terminals.wait.not.found",
-							{ "p.terminalId": p.terminalId },
-						),
-					);
+						// 非回车按键：若为退格或清除键，更新 pending 缓冲
+						const prev = getPending(p.terminalId);
+						const parsed = parseTerminalLineStream(prev, encoded.data);
+						failIf(terminals.inputChecked(p.terminalId, encoded.data));
+						setPending(p.terminalId, parsed.remainingPending);
+						terminals.noteAgentActivity(p.terminalId);
+						return result(
+							pick(
+								lang,
+								`已发送按键 ${p.key} 到 ${p.terminalId}`,
+								`Sent key ${p.key} to ${p.terminalId}`,
+								"terminals.key.sent",
+								{ "p.key": p.key, "p.terminalId": p.terminalId },
+							),
+						);
+					}
+					case "read": {
+						const lang = getLang();
+						const cursor = Math.max(0, Math.floor(p.cursor ?? 0));
+						const waitMs = p.waitMs !== undefined ? Math.max(0, Math.min(120_000, Math.floor(p.waitMs))) : undefined;
+						const maxBytes = Math.max(1, Math.min(100_000, Math.floor(p.maxBytes ?? 20000)));
+						if (waitMs) await terminals.waitForOutput(p.terminalId, cursor, waitMs, signal);
+						const read = terminals.read(p.terminalId, cursor, maxBytes);
+						if (!read)
+							throw new Error(
+								pick(
+									lang,
+									`终端不存在：${p.terminalId}`,
+									`Terminal not found: ${p.terminalId}`,
+									"terminals.read.not.found",
+									{ "p.terminalId": p.terminalId },
+								),
+							);
+						if (p.head !== undefined || p.tail !== undefined || p.search !== undefined) {
+							let lines = stripAnsi(read.data).split("\n");
+							if (lines.at(-1) === "") lines.pop();
+							if (p.search !== undefined) lines = lines.filter((line) => line.includes(p.search!));
+							if (p.head !== undefined) lines = lines.slice(0, p.head);
+							if (p.tail !== undefined) lines = lines.slice(-p.tail);
+							const filtered = { ...read, data: lines.join("\n") };
+							return result(JSON.stringify(filtered), filtered);
+						}
+						return result(JSON.stringify(read), read);
+					}
+					case "wait": {
+						const lang = getLang();
+						if (!terminals.has(p.terminalId)) {
+							throw new Error(
+								pick(
+									lang,
+									`终端不存在：${p.terminalId}（可能已被关闭或会话重置，请先 terminal(action='create')）`,
+									`Terminal not found: ${p.terminalId} (it may have been closed or the session was reset — run terminal(action='create') first)`,
+									"terminals.wait.not.found",
+									{ "p.terminalId": p.terminalId },
+								),
+							);
+						}
+						// 没有带哨兵的待决命令：shell 空闲在提示符，或该终端的命令是经
+						// terminal(action='input') 手动发的（无完成标记）——等哨兵永远等不到，直接
+						// 说明并引导改用 terminal(action='read')，避免 AI 无限重试。（显式传 cursor
+						// 的调用是有目的的追溯查询，不拦。）
+						if (p.cursor === undefined && !terminals.isSentinelPending(p.terminalId)) {
+							const why = pick(
+								lang,
+								`终端 ${p.terminalId} 当前没有正在等待完成的 bash 工具命令（shell 空闲，或该命令是通过 terminal(action='input') 发出的、没有完成标记）。terminal(action='wait') 不适用；要观察输出请用 terminal(action='read', terminalId="${p.terminalId}", waitMs=…)。`,
+								`Terminal ${p.terminalId} has no pending bash-tool command to wait for (the shell is idle, or the command was sent via terminal(action='input') and has no completion marker). terminal(action='wait') does not apply; use terminal(action='read', terminalId="${p.terminalId}", waitMs=…) to observe output.`,
+								"terminals.wait.no.pending",
+								{ "p.terminalId": p.terminalId },
+							);
+							return result(JSON.stringify({ applicable: false, reason: why }), { applicable: false });
+						}
+						const cursor = p.cursor ?? terminals.endCursor(p.terminalId) ?? 0;
+						const maxWait = Math.max(100, Math.min(600_000, Math.floor(p.maxWaitMs ?? 300_000)));
+						const wait = await terminals.waitForCompletion(p.terminalId, maxWait, signal, cursor);
+						const read = terminals.read(p.terminalId, cursor, 20_000);
+						const outputTail = read?.data ? stripAnsi(read.data).slice(-4000) : "";
+						return result(JSON.stringify({ ...wait, outputTail }), {
+							...wait,
+							outputTail,
+						});
+					}
 				}
-				// 没有带哨兵的待决命令：shell 空闲在提示符，或该终端的命令是经
-				// terminal_input 手动发的（无完成标记）——等哨兵永远等不到，直接
-				// 说明并引导改用 terminal_read，避免 AI 无限重试。（显式传 cursor
-				// 的调用是有目的的追溯查询，不拦。）
-				if (p.cursor === undefined && !terminals.isSentinelPending(p.terminalId)) {
-					const why = pick(
-						lang,
-						`终端 ${p.terminalId} 当前没有正在等待完成的 bash 工具命令（shell 空闲，或该命令是通过 terminal_input 发出的、没有完成标记）。terminal_wait 不适用；要观察输出请用 terminal_read(terminalId="${p.terminalId}", waitMs=…)。`,
-						`Terminal ${p.terminalId} has no pending bash-tool command to wait for (the shell is idle, or the command was sent via terminal_input and has no completion marker). terminal_wait does not apply; use terminal_read(terminalId="${p.terminalId}", waitMs=…) to observe output.`,
-						"terminals.wait.no.pending",
-						{ "p.terminalId": p.terminalId },
-					);
-					return result(JSON.stringify({ applicable: false, reason: why }), { applicable: false });
-				}
-				const cursor = p.cursor ?? terminals.endCursor(p.terminalId) ?? 0;
-				const maxWait = Math.max(100, Math.min(600_000, Math.floor(p.maxWaitMs ?? 300_000)));
-				const wait = await terminals.waitForCompletion(p.terminalId, maxWait, signal, cursor);
-				const read = terminals.read(p.terminalId, cursor, 20_000);
-				const outputTail = read?.data ? stripAnsi(read.data).slice(-4000) : "";
-				return result(JSON.stringify({ ...wait, outputTail }), {
-					...wait,
-					outputTail,
-				});
+				throw new Error("Unknown terminal action");
 			},
 		}),
 	];

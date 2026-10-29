@@ -14,14 +14,11 @@
 	--accent: #8871a3;
 	--accent-soft: rgba(144, 122, 169, 0.14);
 	--green: #416f77;
-	--on-green: #ffffff;
 	--green-soft: rgba(86, 148, 159, 0.12);
 	--red: #a44f67;
-	--on-red: #ffffff;
 	--red-soft: rgba(180, 99, 122, 0.12);
 	--amber: #945c0f;
 	--blue: #0b5fe9;
-	--blue-soft: rgba(59, 130, 246, 0.12);
 	--term-bg: #faf4ed;
 	--term-fg: #464261;
 	--term-cursor: #907aa9;
@@ -42,15 +39,9 @@
 	--term-bright-blue: #907aa9;
 	--term-bright-magenta: #b4637a;
 	--term-bright-cyan: #56949f;
-	--term-bright-white: #ffffff;
-	--mono: "SF Mono", "JetBrains Mono", ui-monospace, Menlo, Consolas, monospace;
-	--mermaid-font-size: 12px;
 	--tooltip-bg: #fffaf3;
 	--code-bg: #f2e9e1;
 	--code-text: #464261;
-	--code-border: var(--border-soft);
-	--code-pad: 8px 10px;
-	--card-body-pad: 4px 14px 12px;
 	--err-text: #a44f67;
 	--red-text: #a44f67;
 	--amber-text: #9a5b1a;
@@ -72,30 +63,16 @@
 	--notice-info-border: var(--info-blue);
 	--send-blue: #907aa9;
 	--send-blue-hover: #79759c;
-	--stop-red: #ef4444;
-	--stop-red-hover: #dc2626;
 	--brand-grad-a: #907aa9;
 	--brand-grad-b: #d7827e;
+	--on-green: #ffffff;
+	--on-red: #ffffff;
 	--on-amber: #ffffff;
-	--search-active-fg: #1a1d26;
-	--switch-knob: #ffffff;
-	--bg-elev3: rgba(255, 255, 255, 0.06);
-	--sunken-bg: rgba(0, 0, 0, 0.15);
-	--glow-015: rgba(255, 255, 255, 0.015);
-	--glow-025: rgba(255, 255, 255, 0.025);
-	--glow-03: rgba(255, 255, 255, 0.03);
-	--glow-04: rgba(255, 255, 255, 0.04);
-	--glow-05: rgba(255, 255, 255, 0.05);
-	--glow-12: rgba(255, 255, 255, 0.12);
-	--glow-18: rgba(255, 255, 255, 0.18);
-	--glow-22: rgba(255, 255, 255, 0.22);
-	--glow-38: rgba(255, 255, 255, 0.38);
+	--on-send-blue-hover: #ffffff;
+	--on-stop-red-hover: #ffffff;
 	--control-fg: #797593;
 	--control-bg: #f2e9e1;
 	--control-border: #e4dcd3;
-	--bg-image: none;
-	--bg-image-dim: 0.78;
-	--bg-image-blur: 0px;
 	--wallpaper-panel-alpha: 100%;
 	--topbar-bg: #fffaf3;
 	--statusbar-bg: #faf4ed;
@@ -104,7 +81,6 @@
 	--chip-bg: #f2e9e1;
 	--msgs-bg: #faf4ed;
 	--inputbox-bg: #f2e9e1;
-	--menu-bg: var(--bg-elev2);
 }
 
 /* ---- syntax highlighting (Rosé Pine Dawn) ---- */

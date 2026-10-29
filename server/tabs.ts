@@ -36,7 +36,15 @@ export type Tab = (typeof ALL_TABS)[number];
  * is exactly the failure this module exists to prevent.
  */
 const OWNED: Partial<Record<Tab, readonly string[]>> = {
-	terminal: ["terminal_create", "terminal_input", "terminal_resize", "terminal_kill", "rename_terminal", "run_command"],
+	terminal: [
+		"terminal_attach",
+		"terminal_create",
+		"terminal_input",
+		"terminal_resize",
+		"terminal_kill",
+		"rename_terminal",
+		"run_command",
+	],
 	git: ["scm_status", "scm_history", "scm_filediff", "scm_commit"],
 	tasks: ["list_bg_servers", "kill_background_server", "kill_background_servers"],
 	search: ["search_files", "search_sessions"],

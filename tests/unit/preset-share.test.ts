@@ -5,6 +5,17 @@
  * 的 ghPath 验证失败回落路径）。
  */
 import { describe, expect, it, vi } from "vitest";
+
+// Orchestration fixtures explicitly inject their in-memory transport at the shared boundary.
+// Production never inspects global fetch identity to select its security policy.
+vi.mock("../../server/net-guard.js", async (importOriginal) => {
+	const actual = await importOriginal<typeof import("../../server/net-guard.js")>();
+	return {
+		...actual,
+		safeFetch: (url: string, init: RequestInit, opts: import("../../server/net-guard.js").SafeFetchOptions) =>
+			actual.safeFetch(url, init, { ...opts, fetcher: opts.fetcher ?? ((u, i) => fetch(u, i)) }),
+	};
+});
 import { readFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -963,8 +974,8 @@ describe("编排：分享与目录", () => {
 		expect(perm).toContain("issues: write required");
 	});
 
-	it("PRESET_FIELD_META：63 个预设字段全部具有人类可读的中英文名称与说明", () => {
-		expect(PRESET_FIELD_NAMES.length).toBe(63);
+	it("PRESET_FIELD_META：66 个预设字段全部具有人类可读的中英文名称与说明", () => {
+		expect(PRESET_FIELD_NAMES.length).toBe(66);
 		for (const name of PRESET_FIELD_NAMES) {
 			const meta = PRESET_FIELD_META[name];
 			expect(meta, `meta for ${name}`).toBeDefined();
@@ -1051,7 +1062,7 @@ describe("编排：分享与目录", () => {
 		expect(disabled).not.toContain("edit");
 		expect(disabled).not.toContain("write");
 		// 其余所有已知工具均应被自动归入 disabled（默认没开即关）
-		expect(disabled).toContain("terminal_create");
+		expect(disabled).toContain("terminal");
 		expect(disabled).toContain("eval");
 		expect(disabled).toContain("patch");
 		expect(disabled).toContain("lsp");
@@ -1083,7 +1094,7 @@ describe("编排：分享与目录", () => {
 		expect(doc.enabledTools).toBeDefined();
 		expect(doc.enabledTools).toContain("bash");
 		expect(doc.enabledTools).toContain("read");
-		expect(doc.enabledTools).not.toContain("terminal_create");
+		expect(doc.enabledTools).not.toContain("terminal");
 		expect(doc.enabledTools).not.toContain("eval");
 	});
 

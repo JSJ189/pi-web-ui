@@ -7,6 +7,7 @@ import { buildTermTheme, THEME_CHANGE_EVENT } from "../theme";
 import { shouldStartTouchScroll, touchWheelDeltaY } from "../term-touch";
 import { useI18n } from "../i18n";
 import { appSend } from "../app-globals";
+import type { TerminalOwnerKind } from "../terminal-bridge";
 
 /** Strip exit sentinels/baked banners; the banner itself renders on terminal_exit. */
 function stripExitBanner(data: string): { clean: string; exitCode: number | null } {
@@ -31,28 +32,30 @@ interface TermXtermProps {
 	title?: string;
 	/** true = 终端接管 bash 的 AI 终端：重建时回传给服务端以保留名额豁免（issue #147）。 */
 	agentBash?: boolean;
+	ownerKind?: TerminalOwnerKind;
 	/** Whether this terminal is the visible one. */
 	active: boolean;
 	/** Live running flag (banner renders when this flips false). */
 	running?: boolean;
 	/** Exit code (banner text). */
 	exitCode?: number | null;
-	register: (conversationId: string, id: string, writer: { write(data: string): void; dispose(): void }) => () => void;
+	register: (
+		conversationId: string,
+		id: string,
+		writer: { write(data: string): void; dispose(): void; reset?(): void },
+		ownerKind?: TerminalOwnerKind,
+	) => () => void;
 }
 
 /**
- * One xterm instance per terminal tab. Owns the PTY lifecycle: creates it on
- * mount (bare shell or run_command), forwards input/resize, streams output via
- * the bridge, and kills the PTY on unmount. Kept mounted while hidden so
- * scrollback survives tab switches.
+ * One display per terminal tab. Mount only attaches to an existing PTY;
+ * creation and explicit restart belong to the terminal actions. Kept mounted
+ * while hidden so scrollback survives tab switches.
  */
 export function TermXterm({
 	conversationId,
 	terminalId,
-	command,
-	cwd,
-	title,
-	agentBash,
+	ownerKind = "client",
 	active,
 	running,
 	exitCode,
@@ -65,22 +68,10 @@ export function TermXterm({
 	// — and, for run_command terminals, make the server kill the running
 	// process and re-execute the command). The exit banner instead follows the
 	// LIVE locale via a small effect keyed on the running→stopped edge.
-	const { locale } = useI18n();
-	const localeRef = useRef(locale);
-	localeRef.current = locale;
-	// Metadata snapshots recreate the command object; use a value key so a
-	// terminal is not torn down when only its running/exit metadata changes.
-	const commandKey = command ? JSON.stringify(command) : "";
-	// 已退出的终端只做展示（保留输出由服务端 replay 推送进来），挂载时不再重建
-	// PTY：刷新/重连/切对话后面板会为 history 里的每条记录挂载一个实例，重建会
-	// 丢弃保留的输出、白白拉起进程，AI 一次性终端还会占满 16 个用户名额并反复
-	// 弹全局通知（issue #147）。running 在挂载时已由 terminal_list 确定
-	//（history 记录为 false）；存活终端退出后该 effect 不重跑，故只取挂载时刻的值。
-	const deadOnMountRef = useRef(running === false);
+	// Client terminals survive conversation switches; their display identity does too.
+	const routeConversationId = ownerKind === "conversation" ? conversationId : "";
 
-	// Mount/unmount: create the xterm, register with the output bridge, spawn
-	// the server-side PTY, wire input + resize. Never re-runs on tab switches
-	// (command identity is stable — the meta object is only ever spread).
+	// Mount/unmount only owns the display and its subscription, never the PTY.
 	useEffect(() => {
 		const container = containerRef.current;
 		if (!container) return;
@@ -132,10 +123,19 @@ export function TermXterm({
 			return true;
 		});
 
-		const unregister = register(conversationId, terminalId, {
-			write: (data) => term.write(stripExitBanner(data).clean),
-			dispose: () => term.dispose(),
-		});
+		const unregister = register(
+			conversationId,
+			terminalId,
+			{
+				write: (data) => term.write(stripExitBanner(data).clean),
+				// reset() rebuilds both buffers, including scrollback, without clearing
+				// xterm's write queue. Its empty-write callback runs after older output
+				// and before queued replay/live writes, so none can cross the reset.
+				reset: () => term.write("", () => term.reset()),
+				dispose: () => term.dispose(),
+			},
+			typeof ownerKind === "undefined" ? "client" : ownerKind,
+		);
 
 		const sendDims = () => {
 			try {
@@ -143,7 +143,8 @@ export function TermXterm({
 				appSend({
 					type: "terminal_resize",
 					terminalId,
-					conversationId,
+					conversationId: routeConversationId,
+					ownerKind,
 					cols: term.cols,
 					rows: term.rows,
 				});
@@ -152,42 +153,25 @@ export function TermXterm({
 			}
 		};
 
-		// Spawn the PTY with the real fitted size (80x24 until layout settles).
-		// Dead-on-mount terminals (running === false in the list) skip the spawn:
-		// their retained output arrives via the server replay, nothing to restart.
+		// Attach also replays retained output for exited terminals, without spawning.
 		const raf = requestAnimationFrame(() => {
 			try {
 				fit.fit();
 			} catch {
 				// ignore
 			}
-			if (deadOnMountRef.current) return;
-			if (command) {
-				appSend({
-					type: "run_command",
-					terminalId,
-					conversationId,
-					command,
-					cols: term.cols,
-					rows: term.rows,
-				});
-			} else {
-				appSend({
-					type: "terminal_create",
-					terminalId,
-					title,
-					locale: localeRef.current,
-					agentBash,
-					conversationId,
-					cwd,
-					cols: term.cols,
-					rows: term.rows,
-				});
-			}
+			appSend({
+				type: "terminal_attach",
+				terminalId,
+				conversationId: routeConversationId,
+				ownerKind,
+				cols: term.cols,
+				rows: term.rows,
+			});
 		});
 
 		const onData = term.onData((data) => {
-			appSend({ type: "terminal_input", terminalId, conversationId, data });
+			appSend({ type: "terminal_input", terminalId, conversationId: routeConversationId, ownerKind, data });
 		});
 
 		// 手机端触摸滚动兜底（issue #218）：xterm 6.0.0 自身无任何 touch
@@ -286,7 +270,7 @@ export function TermXterm({
 			termRef.current = null;
 		};
 		// eslint-disable-next-line react-hooks/exhaustive-deps
-	}, [conversationId, terminalId, commandKey, register]);
+	}, [routeConversationId, ownerKind, terminalId, register]);
 
 	// Becoming visible: re-fit (size may have changed while hidden) and focus.
 	useEffect(() => {
@@ -299,7 +283,8 @@ export function TermXterm({
 				appSend({
 					type: "terminal_resize",
 					terminalId,
-					conversationId,
+					conversationId: routeConversationId,
+					ownerKind,
 					cols: inst.term.cols,
 					rows: inst.term.rows,
 				});

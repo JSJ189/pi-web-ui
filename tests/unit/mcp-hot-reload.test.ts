@@ -74,6 +74,20 @@ afterEach(() => {
 });
 
 describe("mcp.json 热加载：什么时候该动、什么时候不该动", () => {
+	it("reports partial application failure as a warning rather than success", async () => {
+		const dir = tempDir();
+		writeConfig(dir, { srv: SPEC });
+		const notices: Array<{ level: string; text: string }> = [];
+		const hot = createMcpHotReload({
+			dataDir: dir,
+			reload: async () => ({ ...SUMMARY, failed: 1 }),
+			onNotice: (level, _text, textEn) => notices.push({ level, text: textEn }),
+		});
+		disposables.push(() => hot.dispose());
+		expect(await hot.apply()).toBe("reloaded");
+		expect(notices).toEqual([{ level: "warning", text: expect.stringContaining("failed for 1") }]);
+	});
+
 	it("内容真的变了 → 应用一次，并刷新已有会话的工具列表", async () => {
 		const dir = tempDir();
 		writeConfig(dir, { srv: SPEC });

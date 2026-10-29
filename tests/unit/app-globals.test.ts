@@ -21,6 +21,21 @@ afterEach(() => {
 });
 
 describe("app-globals", () => {
+	it("publishes each upload limit independently and preserves defaults", () => {
+		expect(getAppGlobals().chatUploadMaxMb).toBe(20);
+		expect(getAppGlobals().workspaceUploadMaxMb).toBe(100);
+		expect(getAppGlobals().folderUploadMaxMb).toBe(32);
+		let hits = 0;
+		const off = subscribeAppGlobals(() => hits++);
+		setAppGlobals({ chatUploadMaxMb: 1 });
+		setAppGlobals({ workspaceUploadMaxMb: 50 });
+		setAppGlobals({ folderUploadMaxMb: 100 });
+		expect(hits).toBe(3);
+		expect(getAppGlobals()).toMatchObject({ chatUploadMaxMb: 1, workspaceUploadMaxMb: 50, folderUploadMaxMb: 100 });
+		setAppGlobals({ chatUploadMaxMb: 1, workspaceUploadMaxMb: 50, folderUploadMaxMb: 100 });
+		expect(hits).toBe(3);
+		off();
+	});
 	it("默认值：pi 引擎、非受管、未连接/未就绪、无工作目录、无 tabs / 版本号", () => {
 		resetAppGlobals();
 		expect(getAppGlobals()).toBe(DEFAULT_APP_GLOBALS);

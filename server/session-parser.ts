@@ -8,6 +8,7 @@
  * 从 agent-service.ts 抽出为独立模块。
  */
 import { existsSync } from "node:fs";
+import { sessionLines } from "./session-scan.js";
 import * as fsPromises from "node:fs/promises";
 import { basename, join, resolve } from "node:path";
 import { SessionManager, type SessionInfo } from "@earendil-works/pi-coding-agent";
@@ -149,8 +150,9 @@ export async function discoverRecentProjectsFromDisk(sessionRoots: string[], lim
  * 以及可选的转录全文 allMessagesText）。仅用于会话列表发现与搜索，避免调用 SDK 重型的全量树解析。
  *
  * withAllMessagesText=false（默认，列表路径）时不收集转录全文，allMessagesText 返回空串 ——
- * 全文单条可达 MB 级，绝不随列表进任何缓存（issue #440）；true（搜索路径）时收集全文并在
- * MAX_SEARCH_TEXT_CHARS 处截断。
+ * 全文单条可达 MB 级，绝不随列表进任何缓存（issue #440）；true 仅兼容旧调用，返回
+ * MAX_SEARCH_TEXT_CHARS 内的文本预览。全文搜索请使用 scanSessionForSearch，避免截断漏查。
+ * 逐行异步读取，内存仅保留当前 JSONL 记录及列表字段。
  */
 export async function parseSessionInfoFast(
 	filePath: string,
@@ -158,8 +160,6 @@ export async function parseSessionInfoFast(
 	withAllMessagesText = false,
 ): Promise<SessionInfo | null> {
 	try {
-		const content = await fsPromises.readFile(filePath, "utf8");
-		const lines = content.split("\n");
 		let id = "";
 		let cwd = "";
 		let name: string | undefined;
@@ -171,7 +171,7 @@ export async function parseSessionInfoFast(
 		const allMessages: string[] | null = withAllMessagesText ? [] : null;
 		let collectedChars = 0;
 
-		for (const line of lines) {
+		for await (const line of sessionLines(filePath)) {
 			if (!line.trim()) continue;
 			// 列表路径（withAllMessagesText=false）已拿到 id 与首条消息后，跳过对大块长行
 			// （如数百 KB 的 toolResult/assistant 消息）的全量 JSON.parse：仅轻量计数并提取时间戳
@@ -223,8 +223,10 @@ export async function parseSessionInfoFast(
 						if (text) {
 							if (!firstMessage && msg.role === "user") firstMessage = text;
 							if (allMessages && collectedChars < MAX_SEARCH_TEXT_CHARS) {
-								allMessages.push(text);
-								collectedChars += text.length + 1;
+								const remaining = MAX_SEARCH_TEXT_CHARS - collectedChars;
+								const excerpt = text.slice(0, remaining);
+								allMessages.push(excerpt);
+								collectedChars += excerpt.length + 1;
 							}
 						}
 					}
@@ -287,25 +289,33 @@ export function filterForkedParentSessions<T extends { path: string; parentSessi
 	}
 	if (childrenOf.size === 0) return infos;
 
+	// 从去重后的边构建反向关系；重复 path 可能让同一节点有多个父节点。
+	const parentsOf = new Map<string, string[]>();
+	for (const [parentKey, children] of childrenOf) {
+		for (const childKey of children) {
+			let parents = parentsOf.get(childKey);
+			if (!parents) {
+				parents = [];
+				parentsOf.set(childKey, parents);
+			}
+			parents.push(parentKey);
+		}
+	}
 	const canReachLeaf = new Set<string>();
+	const queue: string[] = [];
 	for (const key of byKey.keys()) {
 		const children = childrenOf.get(key);
 		if (!children || children.size === 0) {
 			canReachLeaf.add(key);
+			queue.push(key);
 		}
 	}
-	let changed = true;
-	while (changed) {
-		changed = false;
-		for (const [parentKey, children] of childrenOf.entries()) {
+	// 每个节点最多入队一次，每条反向边最多访问一次，避免长链反复全图扫描。
+	for (let head = 0; head < queue.length; head++) {
+		for (const parentKey of parentsOf.get(queue[head]) ?? []) {
 			if (canReachLeaf.has(parentKey)) continue;
-			for (const childKey of children) {
-				if (canReachLeaf.has(childKey)) {
-					canReachLeaf.add(parentKey);
-					changed = true;
-					break;
-				}
-			}
+			canReachLeaf.add(parentKey);
+			queue.push(parentKey);
 		}
 	}
 
