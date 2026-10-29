@@ -283,7 +283,7 @@ export async function installLocalDeviceCenter(options: Options) {
 					!input ||
 					typeof input !== "object" ||
 					Array.isArray(input) ||
-					Object.keys(input).some((key) => !fields.includes(key))
+					Object.keys(input).some((key) => !fields.includes(key) && !(method === "get" && key === "token"))
 				)
 					throw new DeviceWorkspaceError(400, "INVALID_BODY", "Invalid project binding request");
 				const roomId = input.roomId;

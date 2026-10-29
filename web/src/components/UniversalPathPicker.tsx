@@ -33,6 +33,9 @@ export interface UniversalPathPickerProps {
 	onCreateProject?: (path: string) => void;
 	className?: string;
 	placeholder?: string;
+	inputId?: string;
+	disabled?: boolean;
+	onPickerOpenChange?: (open: boolean) => void;
 }
 
 export function UniversalPathPicker({
@@ -47,6 +50,9 @@ export function UniversalPathPicker({
 	onCreateProject,
 	className = "",
 	placeholder = "如 . 或 web 或绝对路径",
+	inputId,
+	disabled = false,
+	onPickerOpenChange,
 }: UniversalPathPickerProps) {
 	const [menuOpen, setMenuOpen] = useState(false);
 	const [pickerOpen, setPickerOpen] = useState(false);
@@ -76,12 +82,18 @@ export function UniversalPathPicker({
 		{ label: "docs (文档目录)", value: "docs" },
 	];
 
+	const closePicker = () => {
+		setPickerOpen(false);
+		onPickerOpenChange?.(false);
+	};
 	const openPicker = () => {
+		if (disabled) return;
 		if (onOpenProjectPicker) {
 			onOpenProjectPicker();
 		} else {
 			setMenuOpen(false);
 			setPickerOpen(true);
+			onPickerOpenChange?.(true);
 		}
 	};
 
@@ -96,6 +108,8 @@ export function UniversalPathPicker({
 					type="text"
 					className="universal-path-input"
 					value={cwd}
+					id={inputId}
+					disabled={disabled}
 					onChange={(e) => onSelectCwd(e.target.value)}
 					placeholder={placeholder}
 					title={`工作目录: ${cwd || "."}`}
@@ -103,6 +117,7 @@ export function UniversalPathPicker({
 				<button
 					type="button"
 					className="universal-path-dropdown-toggle"
+					disabled={disabled}
 					onClick={() => setMenuOpen(!menuOpen)}
 					title="选择推荐子目录或最近项目"
 				>
@@ -110,7 +125,12 @@ export function UniversalPathPicker({
 				</button>
 			</div>
 
-			<TipButton className="universal-path-browse-btn" tip={t("projectPickerTitle")} onClick={openPicker}>
+			<TipButton
+				className="universal-path-browse-btn"
+				tip={t("projectPickerTitle")}
+				disabled={disabled}
+				onClick={openPicker}
+			>
 				<FiFolderPlus />
 			</TipButton>
 
@@ -190,16 +210,16 @@ export function UniversalPathPicker({
 					currentCwd={pickerCwd}
 					pathCompletions={pathCompletions}
 					workspaceRoots={workspaceRoots}
-					onClose={() => setPickerOpen(false)}
+					onClose={closePicker}
 					onSelectDirectory={(p) => {
 						onSelectCwd(p);
-						setPickerOpen(false);
+						closePicker();
 					}}
 					onCreateProject={
 						onCreateProject
 							? (p) => {
 									onCreateProject(p);
-									setPickerOpen(false);
+									closePicker();
 								}
 							: undefined
 					}

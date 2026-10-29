@@ -1,4 +1,4 @@
-import type { Express } from "express";
+import express, { type Express } from "express";
 import type { IncomingMessage } from "node:http";
 import type { Duplex } from "node:stream";
 import { createConnection } from "node:net";
@@ -8,6 +8,7 @@ import { dirname, resolve, relative, isAbsolute, extname } from "node:path";
 import { WebSocket, WebSocketServer } from "ws";
 import { getPkgRoot } from "../pkg-info.js";
 import { desktopPage } from "./desktop-page.js";
+import { createDesktopSetup, probeDesktopVnc, type DesktopInstaller } from "./desktop-setup.js";
 
 export const DESKTOP_LIMITS = Object.freeze({
 	frame: 1024 * 1024,
@@ -63,10 +64,15 @@ export function resolveDesktopAsset(path: string, root = desktopAssetRoot()): st
 		return;
 	}
 }
-function desktopAssetRoot(): string | undefined {
+/** Both core/rfb.js and lib/rfb.js are used as package entrypoints in published versions. */
+export function desktopAssetRoot(packageRoot = getPkgRoot(), resolveEntry?: () => string): string | undefined {
 	try {
-		const require = createRequire(resolve(getPkgRoot(), "package.json"));
-		return realpathSync(resolve(dirname(require.resolve("@novnc/novnc")), ".."));
+		const require = createRequire(resolve(packageRoot, "package.json"));
+		const entry = realpathSync(resolveEntry ? resolveEntry() : require.resolve("@novnc/novnc"));
+		const root = realpathSync(resolve(dirname(entry), ".."));
+		// Verify the package structure rather than relying on its entrypoint directory name.
+		if (!statSync(resolve(root, "core")).isDirectory() || !resolveDesktopAsset("core/rfb.js", root)) return;
+		return root;
 	} catch {
 		return;
 	}
@@ -77,16 +83,31 @@ export interface DeviceDesktopOptions {
 	/** Required even when the parent HTTP app has another authentication middleware. */
 	authorize: (req: IncomingMessage) => boolean;
 	env?: NodeJS.ProcessEnv;
+	/** Application data directory; runtime packages live in its desktop-runtime subdirectory. */
+	dataDir?: string;
+	/** Test seam; production always uses the fixed noVNC npm installer. */
+	installer?: DesktopInstaller;
 }
 
 /** Register before SPA fallback; call handleUpgrade before the parent's existing WS dispatcher. */
-export function createDeviceDesktop({ app, authorize, env = process.env }: DeviceDesktopOptions) {
-	const enabled = env.PI_DEVICE_DESKTOP === "1";
+export function createDeviceDesktop({ app, authorize, env = process.env, dataDir, installer }: DeviceDesktopOptions) {
+	const setup = createDesktopSetup({ dataDir, environmentEnabled: env.PI_DEVICE_DESKTOP === "1", installer });
 	const rawPort = env.PI_DEVICE_VNC_PORT ?? "5900";
 	const port = /^\d{1,5}$/.test(rawPort) ? Number(rawPort) : 0;
 	const host = env.PI_DEVICE_VNC_HOST ?? "127.0.0.1";
 	const configured = port >= 1 && port <= 65535 && ["127.0.0.1", "::1"].includes(host);
-	const assetsRoot = desktopAssetRoot();
+	const assetsRoot = () => desktopAssetRoot() ?? desktopAssetRoot(setup.runtimeDir);
+	const status = () => ({
+		os: process.platform,
+		enabled: setup.enabled,
+		environmentEnabled: env.PI_DEVICE_DESKTOP === "1",
+		endpointConfigured: configured,
+		assetsAvailable: !!assetsRoot(),
+		// Availability of the bridge is not proof of a listening VNC service or a successful RFB login.
+		available: setup.enabled && configured && !!assetsRoot(),
+		readOnlyEnforcement: "vnc-server",
+		clientViewOnlyIsPermission: false,
+	});
 	let closed = false;
 	const bridges = new Set<() => void>();
 	const wss = new WebSocketServer({ noServer: true, maxPayload: DESKTOP_LIMITS.frame, perMessageDeflate: false });
@@ -98,7 +119,12 @@ export function createDeviceDesktop({ app, authorize, env = process.env }: Devic
 		}
 	};
 	app.use((req, res, next) => {
-		if (req.path !== "/desktop" && req.path !== "/api/device-desktop/status" && !req.path.startsWith(ASSETS))
+		if (
+			req.path !== "/desktop" &&
+			req.path !== "/api/device-desktop/status" &&
+			!req.path.startsWith("/api/device-desktop/setup/") &&
+			!req.path.startsWith(ASSETS)
+		)
 			return next();
 		res.setHeader("Cache-Control", "no-store");
 		res.setHeader("X-Content-Type-Options", "nosniff");
@@ -107,20 +133,13 @@ export function createDeviceDesktop({ app, authorize, env = process.env }: Devic
 			res.status(403).end("Desktop authorization required");
 			return;
 		}
+		if (req.path.startsWith("/api/device-desktop/setup/")) return next();
 		if (req.method !== "GET") {
 			res.status(405).end();
 			return;
 		}
 		if (req.path === "/api/device-desktop/status") {
-			res.json({
-				os: process.platform,
-				enabled,
-				endpointConfigured: configured,
-				assetsAvailable: !!assetsRoot,
-				available: enabled && configured && !!assetsRoot,
-				readOnlyEnforcement: "vnc-server",
-				clientViewOnlyIsPermission: false,
-			});
+			res.json(status());
 			return;
 		}
 		if (req.path === "/desktop") {
@@ -131,16 +150,49 @@ export function createDeviceDesktop({ app, authorize, env = process.env }: Devic
 			res.type("html").send(desktopPage());
 			return;
 		}
-		if (!enabled) {
+		if (!setup.enabled) {
 			res.status(503).end("Desktop disabled");
 			return;
 		}
-		const file = resolveDesktopAsset(req.path.slice(ASSETS.length), assetsRoot);
+		const file = resolveDesktopAsset(req.path.slice(ASSETS.length), assetsRoot());
 		if (!file) {
 			res.status(404).end();
 			return;
 		}
 		res.type(extname(file) === ".wasm" ? "application/wasm" : "text/javascript").sendFile(file);
+	});
+	app.get("/api/device-desktop/setup/status", async (_req, res) => {
+		const reachable = configured ? await probeDesktopVnc(host, port) : false;
+		res.json({ ...status(), installation: setup.installation, vncReachable: reachable });
+	});
+	// Mutations require an explicit exact local Origin as well as the shared authorization gate.
+	const setupGuard: express.RequestHandler = (req, res, next) => {
+		if (!allowed(req) || !req.headers.origin) {
+			res.status(403).end("Desktop authorization and Origin required");
+			return;
+		}
+		next();
+	};
+	app.post("/api/device-desktop/setup/install", setupGuard, (req, res) => {
+		try {
+			setup.install();
+			res.status(202).json({ installation: setup.installation });
+		} catch {
+			res.status(500).json({ error: "Could not start browser component installation" });
+		}
+	});
+	app.post("/api/device-desktop/setup/enable", setupGuard, express.json({ limit: 256 }), (req, res) => {
+		if (!req.body || typeof req.body.enabled !== "boolean" || Object.keys(req.body).length !== 1) {
+			res.status(400).json({ error: "Expected only enabled boolean" });
+			return;
+		}
+		try {
+			setup.setEnabled(req.body.enabled);
+			if (!setup.enabled) for (const cleanup of bridges) cleanup();
+			res.json(status());
+		} catch {
+			res.status(500).json({ error: "Could not save desktop settings" });
+		}
 	});
 	function bridge(ws: WebSocket) {
 		const tcp = createConnection({ host, port });
@@ -223,7 +275,7 @@ export function createDeviceDesktop({ app, authorize, env = process.env }: Devic
 				socket.end(`HTTP/1.1 ${code} ${reason}\r\nConnection: close\r\nContent-Length: 0\r\n\r\n`);
 			};
 			if (!allowed(req)) reject(403, "Forbidden");
-			else if (!enabled || !configured || !assetsRoot) reject(503, "Unavailable");
+			else if (!setup.enabled || !configured || !assetsRoot()) reject(503, "Unavailable");
 			else if (bridges.size >= DESKTOP_LIMITS.connections) reject(429, "Too Many Requests");
 			else wss.handleUpgrade(req, socket, head, bridge);
 			return true;
@@ -231,6 +283,7 @@ export function createDeviceDesktop({ app, authorize, env = process.env }: Devic
 		close() {
 			if (closed) return;
 			closed = true;
+			setup.close();
 			for (const cleanup of bridges) cleanup();
 			wss.close();
 		},

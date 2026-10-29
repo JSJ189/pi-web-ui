@@ -1115,7 +1115,7 @@ app.get("/plugins-shared/*splat", (req, res) => {
 /** Set in the env of the replacement child spawned by a self-update restart. */
 const RESTART_CHILD_ENV = "PI_WEB_RESTART_CHILD";
 // Local-only device enrollment stays behind host authentication and ahead of the SPA fallback.
-const deviceDesktop = createDeviceDesktop({ app, authorize: (req) => !AUTH_TOKEN || tokenOk(req) });
+const deviceDesktop = createDeviceDesktop({ app, dataDir: DATA_DIR, authorize: (req) => !AUTH_TOKEN || tokenOk(req) });
 const deviceWorkspaceRegistries = new Map<string, ReturnType<typeof createDeviceWorkspaces>>();
 function deviceWorkspaces(config: { hubUrl: string; deviceId: string }) {
 	const scope = JSON.stringify([config.hubUrl, config.deviceId]);

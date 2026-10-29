@@ -177,6 +177,11 @@ describe("device group project bindings", () => {
 			binding,
 			defaultRoot: root,
 		});
+		expect(await (await fetch(`${base}/api/device-center/workspaces?roomId=member&token=test-token`)).json()).toEqual({
+			binding,
+			defaultRoot: root,
+		});
+		expect((await fetch(`${base}/api/device-center/workspaces?roomId=member&unknown=1`)).status).toBe(400);
 		const lease = await registry.acquire("member");
 		expect((await post("workspaces", { roomId: "member", path: other })).status).toBe(409);
 		expect((await post("workspaces/remove", { roomId: "member" })).status).toBe(409);

@@ -4,6 +4,7 @@ import { appUrl, relayBase } from "../base-url";
 import { withToken } from "../auth-token";
 import { isZhLocale, useI18n } from "../i18n";
 import { useFloatingPanel } from "../use-floating-panel";
+import { UniversalPathPicker } from "./UniversalPathPicker";
 
 type Binding = { roomId: string; root: string; revision: number };
 type Workspace = { binding?: Binding; defaultRoot: string };
@@ -89,6 +90,7 @@ function WorkspacePanel({ roomId, active }: { roomId: string; active: boolean })
 	const [draft, setDraft] = useState("");
 	const dirty = useRef(false);
 	const [open, setOpen] = useState(false);
+	const [pickerOpen, setPickerOpen] = useState(false);
 	const [loading, setLoading] = useState(false);
 	const [busy, setBusy] = useState(false);
 	const [error, setError] = useState("");
@@ -99,7 +101,7 @@ function WorkspacePanel({ roomId, active }: { roomId: string; active: boolean })
 	const mutation = useRef<AbortController | null>(null);
 	const anchor = useRef<HTMLButtonElement>(null);
 	const id = useId();
-	const floating = useFloatingPanel({ open: open && active, anchor, onClose: () => setOpen(false) });
+	const floating = useFloatingPanel({ open: open && active && !pickerOpen, anchor, onClose: () => setOpen(false) });
 	function explain(cause: unknown) {
 		return cause instanceof WorkspaceError && cause.status === 409 && (!cause.code || cause.code === "WORKSPACE_BUSY")
 			? labels.current.busy
@@ -223,16 +225,18 @@ function WorkspacePanel({ roomId, active }: { roomId: string; active: boolean })
 							}}
 						>
 							<label htmlFor={`${id}-path`}>{w.path}</label>
-							<input
-								id={`${id}-path`}
-								value={draft}
+							<UniversalPathPicker
+								inputId={`${id}-path`}
+								cwd={draft}
+								baseCwd={workspace?.defaultRoot}
+								workspaceRoots={workspace?.defaultRoot ? [workspace.defaultRoot] : []}
+								mode="folder"
 								disabled={busy || remote}
 								placeholder="C:\\projects\\app / /Users/me/projects/app"
-								autoComplete="off"
-								spellCheck={false}
-								onChange={(event) => {
+								onPickerOpenChange={setPickerOpen}
+								onSelectCwd={(path) => {
 									dirty.current = true;
-									setDraft(event.target.value);
+									setDraft(path);
 									setSaved(false);
 								}}
 							/>

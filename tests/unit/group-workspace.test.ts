@@ -4,10 +4,22 @@ import { createRoot, type Root } from "react-dom/client";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { GroupWorkspace } from "../../web/src/components/GroupWorkspace";
 
-vi.mock("../../web/src/i18n", () => ({ useI18n: () => ({ locale: "zh" }), isZhLocale: () => true }));
+vi.mock("../../web/src/i18n", () => ({
+	useI18n: () => ({ locale: "zh" }),
+	isZhLocale: () => true,
+	useT: () => (key: string) => key,
+}));
 vi.mock("../../web/src/auth-token", () => ({ withToken: (url: string) => url }));
 vi.mock("../../web/src/use-floating-panel", () => ({
 	useFloatingPanel: () => ({ panelRef: { current: null }, style: { position: "fixed" } }),
+}));
+vi.mock("../../web/src/components/ProjectPicker", () => ({
+	ProjectPicker: ({ onSelectDirectory, mode }: { onSelectDirectory: (path: string) => void; mode: string }) =>
+		createElement(
+			"button",
+			{ type: "button", onClick: () => onSelectDirectory("/Users/me/selected project"), "data-mode": mode },
+			"选定测试目录",
+		),
 }));
 const response = (data: unknown, status = 200) => ({ ok: status < 400, status, json: async () => data }) as Response;
 let root: Root | undefined;
@@ -47,6 +59,29 @@ afterEach(() => {
 	vi.restoreAllMocks();
 });
 describe("group local workspace", () => {
+	it("selects a directory through the shared picker and saves it without switching projects", async () => {
+		const fetcher = vi.fn(async (_url: string, init: RequestInit) =>
+			response(
+				init.method === "POST"
+					? { binding: { roomId: "one", root: "/Users/me/selected project", revision: 1 } }
+					: { defaultRoot: "/Users/me" },
+			),
+		);
+		vi.stubGlobal("fetch", fetcher);
+		await render();
+		await click("本机项目");
+		expect(document.querySelector(".universal-path-picker-root")).toBeTruthy();
+		await act(async () => document.querySelector<HTMLButtonElement>(".universal-path-browse-btn")!.click());
+		expect(document.querySelector('[data-mode="folder"]')).toBeTruthy();
+		await click("选定测试目录");
+		expect(document.querySelector("input")!.value).toBe("/Users/me/selected project");
+		expect(document.querySelector("form")).toBeTruthy();
+		await submit();
+		expect(JSON.parse(fetcher.mock.calls[1][1].body as string)).toEqual({
+			roomId: "one",
+			path: "/Users/me/selected project",
+		});
+	});
 	it("requires explicit default selection and announces a device-local POST", async () => {
 		const defaultRoot = "C:\\projects\\default";
 		const fetcher = vi.fn(async (_url: string, init: RequestInit) =>

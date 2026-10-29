@@ -31,11 +31,15 @@ async function fixture(env: NodeJS.ProcessEnv = { PI_DEVICE_DESKTOP: "1" }) {
 	const peers = new Set<Socket>();
 	tcp.on("connection", (socket) => {
 		peers.add(socket);
+		socket.on("error", () => {}); // Setup TCP probes may close while the mock writes its RFB greeting.
 		socket.on("close", () => peers.delete(socket));
 	});
 	const vncPort = await listen(tcp);
 	const app = express();
+	const dataDir = mkdtempSync(join(tmpdir(), "desktop-route-"));
+	cleanups.push(() => rmSync(dataDir, { recursive: true, force: true }));
 	const desktop = createDeviceDesktop({
+		dataDir,
 		app,
 		authorize: (req) => req.headers.authorization === "Bearer test",
 		env: { PI_DEVICE_VNC_PORT: String(vncPort), ...env },
@@ -122,9 +126,11 @@ describe("device desktop local bridge", () => {
 				});
 			try {
 				await page.waitForFunction(
-					() => document.getElementById("status")?.textContent === "已连接 Connected",
+					() => ["Connected", "已连接"].includes(document.getElementById("status")?.textContent ?? ""),
 					undefined,
-					{ timeout: 5000 },
+					{
+						timeout: 5000,
+					},
 				);
 			} catch (error) {
 				throw new Error(
@@ -145,7 +151,7 @@ describe("device desktop local bridge", () => {
 			expect(await page.locator("#cad").isEnabled()).toBe(true);
 			expect(await page.evaluate(() => document.documentElement.scrollWidth <= innerWidth)).toBe(true);
 			await page.locator("#disconnect").click();
-			expect(await page.locator("#status").textContent()).toBe("已断开 Disconnected");
+			expect(["Disconnected", "已断开"]).toContain(await page.locator("#status").textContent());
 			expect(errors).toEqual([]);
 		},
 		15_000,

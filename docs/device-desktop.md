@@ -4,7 +4,7 @@
 
 ## 本机启用与权限
 
-默认关闭。只在设备本机设置环境变量并重启服务：
+默认关闭。远程桌面页面提供组件检查、安装和明确的启用/关闭按钮。组件缺失时，安装器将固定版本的 noVNC 安装到设备数据目录的专用缓存，不修改项目依赖；不执行安装脚本，不安装操作系统 VNC 服务，也不更改系统权限或密码。启用状态原子保存在设备数据目录，修改后无需重启。也可在设备本机设置兼容环境变量并重启服务：
 
 ```text
 PI_DEVICE_DESKTOP=1
@@ -12,7 +12,7 @@ PI_DEVICE_VNC_PORT=5900
 PI_DEVICE_VNC_HOST=127.0.0.1
 ```
 
-端口允许 1–65535，默认 5900；host 仅允许字面量 `127.0.0.1` 或 `::1`，默认 IPv4。不能从中心、页面或远端 API 改写这些配置。VNC 服务应只监听回环，并启用其自身认证。明文 RFB 只在本机回环传输；浏览器到设备中心的公网连接应使用 HTTPS/WSS。
+端口允许 1–65535，默认 5900；host 仅允许字面量 `127.0.0.1` 或 `::1`，默认 IPv4。VNC host 与端口不能从中心、页面或远端 API 改写；界面仅管理应用启用状态和浏览器组件。VNC 服务应只监听回环，并启用其自身认证。明文 RFB 只在本机回环传输；浏览器到设备中心的公网连接应使用 HTTPS/WSS。
 
 **页面「客户端只读 / View only」只是 noVNC 的客户端输入限制，不是权限。** 有设备访问权限的人可以实现自己的 RFB 客户端。如果用户只能看画面，必须在可信 VNC 服务端配置 view-only 用户、密码或只读实例；此桥不会解析或过滤 RFB 输入，也不会宣称强制只读。即使处于客户端只读，RFB 仍须发送协议握手和画面请求。
 
@@ -23,7 +23,7 @@ VNC 凭据由页面按 noVNC 的 `credentialsrequired` 提示输入，调用 `se
 `server/device-center/desktop.ts` 导出同步工厂，无需提前创建 HTTP server：
 
 ```ts
-const desktop = createDeviceDesktop({ app, authorize: tokenOk });
+const desktop = createDeviceDesktop({ app, dataDir, authorize: tokenOk });
 // 在 SPA fallback 前注册以上路由，然后创建同一个 httpServer。
 // 放在现有 upgrade 分发器最前面；不要另起一个会销毁未知 socket 的监听器。
 if (desktop.handleUpgrade(req, socket, head)) return;
