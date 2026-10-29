@@ -434,7 +434,11 @@ describe("device reverse relay", () => {
 		await vi.waitFor(() =>
 			expect(f.events).toHaveBeenCalledWith(
 				"dev1",
-				expect.objectContaining({ taskId: "failed", status: "failed", report: "Device task failed" }),
+				expect.objectContaining({
+					taskId: "failed",
+					status: "failed",
+					report: expect.stringContaining("Device task failed"),
+				}),
 			),
 		);
 		const disconnected = once(ws, "close");

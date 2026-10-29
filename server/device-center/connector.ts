@@ -1,6 +1,7 @@
 import http, { type ClientRequest } from "node:http";
 import https from "node:https";
 import { WebSocket } from "ws";
+import { deviceTaskFailure } from "./task-error.js";
 import {
 	checkedUrl,
 	createCommandChannel,
@@ -171,7 +172,7 @@ export function createDeviceConnector(options: DeviceConnectorOptions) {
 						})
 						.then(
 							(result) => emit("completed", typeof result === "string" ? result : undefined),
-							() => emit("failed", "Device task failed"),
+							(error) => emit("failed", deviceTaskFailure(error)),
 						)
 						.finally(() => {
 							if (socket === ws) runningTasks.delete(task.id);

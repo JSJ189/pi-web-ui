@@ -76,6 +76,19 @@ afterEach(() => {
 	vi.restoreAllMocks();
 });
 describe("group stream lifecycle", () => {
+	it("keeps the device picker open across repeated Hub refreshes", async () => {
+		vi.stubGlobal(
+			"fetch",
+			vi.fn(async (url: string) => response(url.includes("/devices") ? { devices: [{ ...device }] } : { ...detail })),
+		);
+		await mount();
+		await type("@");
+		expect(host.querySelector(".slash-menu")).not.toBeNull();
+		await act(async () => vi.advanceTimersByTimeAsync(6000));
+		expect(host.querySelector("textarea")?.value).toBe("@");
+		expect(host.querySelector(".slash-menu")).not.toBeNull();
+		expect(host.querySelector(".slash-menu")?.textContent).toContain("Twin");
+	});
 	it("clears stale messages when the device binding requires repair", async () => {
 		let repair = false;
 		vi.stubGlobal(

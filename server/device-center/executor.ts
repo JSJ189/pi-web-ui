@@ -3,6 +3,7 @@ import os from "node:os";
 import { isAbsolute, resolve } from "node:path";
 import WebSocket from "ws";
 import type { ClientMessage, ServerMessage, UiState } from "../protocol.js";
+import { DeviceTaskError } from "./task-error.js";
 
 export interface DeviceExecutorTask {
 	id: string;
@@ -26,6 +27,18 @@ const attempted = new Set<string>();
 const busyOrigins = new Set<string>();
 const TIMEOUT_MS = 20 * 60 * 1000;
 const REPORT_BYTES = 16 * 1024;
+function safeExecutionFailure(reason: string): string {
+	if (reason.includes("human") || reason.includes("approval"))
+		return "需要在目标设备处理提问或审批。 / Local human input or approval is required.";
+	if (reason.includes("WebSocket"))
+		return "无法保持与目标设备本机智能体的连接，请检查服务状态。 / Local agent connection failed or disconnected.";
+	if (reason.includes("timeout")) return "任务超时，未自动重试。 / Task timed out; no automatic retry.";
+	if (reason.includes("ownership") || reason.includes("SDK session"))
+		return "任务会话归属验证失败，已停止。 / Task session ownership validation failed.";
+	if (reason.includes("cwd") || reason.includes("Workspace"))
+		return "目标设备的任务工作目录初始化失败。 / Task workspace initialization failed.";
+	return "请在目标设备保留的任务对话中查看模型或执行错误。 / Inspect the retained task conversation for model or execution errors.";
+}
 
 function originUrl(value: string): URL {
 	const url = new URL(value);
@@ -80,9 +93,21 @@ export function createDeviceTaskExecutor(options: DeviceTaskExecutorOptions) {
 	return {
 		run(task: DeviceExecutorTask): Promise<string> {
 			if (closed) return Promise.reject(new Error("Executor closed"));
-			if (options.allowExecution !== true) return Promise.reject(new Error("Local task execution is disabled"));
+			if (options.allowExecution !== true)
+				return Promise.reject(
+					new DeviceTaskError(
+						"目标设备未开启群任务执行权限。请在该设备的设备中心 → 连接设置中开启“允许智能体任务与文件导入”。 / Local task execution is disabled.",
+						"Local task execution is disabled",
+					),
+				);
 			if (!task.id || !task.attemptId || !task.text?.trim()) return Promise.reject(new Error("Invalid task"));
-			if (busyOrigins.has(origin.origin)) return Promise.reject(new Error("Local task executor busy"));
+			if (busyOrigins.has(origin.origin))
+				return Promise.reject(
+					new DeviceTaskError(
+						"目标设备正在执行另一个群任务，请稍后再试。 / Local task executor busy.",
+						"Local task executor busy",
+					),
+				);
 			const key = JSON.stringify([origin.origin, task.id]);
 			if (attempted.has(key)) return Promise.reject(new Error("Duplicate task: execution will not be repeated"));
 			const prompt = taskPrompt(task);
@@ -134,7 +159,15 @@ export function createDeviceTaskExecutor(options: DeviceTaskExecutorOptions) {
 						ws.once("close", () => clearTimeout(cleanup));
 					} else busyOrigins.delete(origin.origin);
 					const result = report(`${context()}\n\n${error ? `Execution interrupted: ${error}` : body}`);
-					if (error) rejectRun(new Error(result));
+					if (error)
+						rejectRun(
+							new DeviceTaskError(
+								report(
+									`${context()}\n\nExecution interrupted. Check the retained task conversation on the target device.\n${safeExecutionFailure(error)}`,
+								),
+								result,
+							),
+						);
 					else resolveRun(result);
 				};
 				const timer = setTimeout(() => finish("20 minute timeout; no automatic retry"), TIMEOUT_MS);

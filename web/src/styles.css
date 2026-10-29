@@ -2948,7 +2948,22 @@
 	.dg-side-error {
 		color: var(--red-text);
 	}
+	.dg-side-body {
+		padding: 3px 8px 7px;
+	}
+	.dg-side-item {
+		min-width: 0;
+		max-width: 100%;
+	}
 	.dg-side-row {
+		appearance: none;
+		width: 100%;
+		box-sizing: border-box;
+		border: 1px solid transparent;
+		background: transparent;
+		text-align: start;
+		font-family: inherit;
+		line-height: 1.5;
 		display: flex;
 		align-items: center;
 		gap: 7px;
@@ -2963,6 +2978,15 @@
 	.dg-side-row:hover {
 		background: var(--bg-elev2);
 		color: var(--text);
+	}
+	.dg-side-row.is-selected {
+		background: color-mix(in srgb, var(--accent) 10%, var(--bg-elev));
+		border-color: var(--border);
+		color: var(--text);
+	}
+	.dg-side-row:focus-visible {
+		outline: 2px solid var(--accent);
+		outline-offset: -2px;
 	}
 	.dg-side-row svg {
 		width: 14px;

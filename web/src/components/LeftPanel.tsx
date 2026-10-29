@@ -57,6 +57,7 @@ interface LeftPanelProps {
 	sessions: SessionSummary[];
 	projects: ProjectSummary[];
 	activeConversationId: string;
+	activeGroupId?: string | null;
 	panelSend: (
 		msg:
 			| { type: "new_chat" }
@@ -266,6 +267,7 @@ export const LeftPanel = memo(function LeftPanel({
 	sessions,
 	projects,
 	activeConversationId,
+	activeGroupId,
 	panelSend,
 	active,
 	collapsible,
@@ -1759,11 +1761,13 @@ export const LeftPanel = memo(function LeftPanel({
 					<FiChevronLeft />
 				</button>
 			)}
-			{!shownPlan.some(({ key }) => key === "projects") && <DeviceGroupSection active={active} />}
+			{!shownPlan.some(({ key }) => key === "projects") && (
+				<DeviceGroupSection active={active} selectedRoomId={activeGroupId} />
+			)}
 			{shownPlan.map(({ key }) => (
 				<Fragment key={key}>
 					{renderSection(key)}
-					{key === "projects" && <DeviceGroupSection active={active} />}
+					{key === "projects" && <DeviceGroupSection active={active} selectedRoomId={activeGroupId} />}
 					{sashAfter.get(key) ?? null}
 				</Fragment>
 			))}

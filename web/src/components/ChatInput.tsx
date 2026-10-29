@@ -983,7 +983,9 @@ export const ChatInput = memo(function ChatInput({
 		lastTextRef.current = text;
 	}, [text]);
 	useEffect(() => {
-		updateCompletions(lastTextRef.current);
+		// Catalog updates only affect slash completion. Recomputing arbitrary text
+		// with a null cursor would dismiss an open @ picker during polling.
+		if (!groupDevices && /^\/[^\s]*$/.test(lastTextRef.current)) updateCompletions(lastTextRef.current);
 		// eslint-disable-next-line react-hooks/exhaustive-deps
 	}, [slashCommands]);
 

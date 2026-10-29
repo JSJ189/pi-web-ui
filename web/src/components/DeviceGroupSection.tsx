@@ -139,7 +139,13 @@ function openGroup(detail: { roomId?: string; create?: boolean; manage?: boolean
 	window.dispatchEvent(new CustomEvent("pi-web-ui:device-group-open", { detail }));
 }
 
-export function DeviceGroupSection({ active = true }: { active?: boolean }) {
+export function DeviceGroupSection({
+	active = true,
+	selectedRoomId,
+}: {
+	active?: boolean;
+	selectedRoomId?: string | null;
+}) {
 	const { locale } = useI18n();
 	const w = words[isZhLocale(locale) ? "zh" : "en"];
 	const [collapsed, setCollapsed] = useState(false);
@@ -304,16 +310,24 @@ export function DeviceGroupSection({ active = true }: { active?: boolean }) {
 					{!error && rooms.length === 0 && <div className="dg-side-empty">{loading ? w.loading : w.empty}</div>}
 					{rooms.map((room) => (
 						<div key={room.id} className="dg-side-item">
-							<button
-								type="button"
-								className="lp-row dg-side-row"
+							<div
+								role="button"
+								tabIndex={0}
+								className={`dg-side-row${selectedRoomId === room.id ? " is-selected" : ""}`}
+								aria-current={selectedRoomId === room.id ? "page" : undefined}
 								title={room.name}
 								onClick={() => openGroup({ roomId: room.id })}
+								onKeyDown={(event) => {
+									if (event.key === "Enter" || event.key === " ") {
+										event.preventDefault();
+										openGroup({ roomId: room.id });
+									}
+								}}
 								onContextMenu={(event) => menu(event, room)}
 							>
 								<FiUsers />
 								<span className="dg-side-name">{room.name}</span>
-							</button>
+							</div>
 							{renaming === room.id && (
 								<form
 									className="dg-side-rename"
