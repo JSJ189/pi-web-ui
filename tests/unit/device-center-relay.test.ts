@@ -375,6 +375,14 @@ describe("device reverse relay", () => {
 			])
 				expect(safePath(path, method), `${method} ${path}`).toBe(false);
 		}
+		expect(safePath("/api/device-center/workspaces?roomId=member", "GET")).toBe(true);
+		for (const path of [
+			"/api/device-center/workspaces?roomId=",
+			"/api/device-center/workspaces?roomId=a&roomId=b",
+			"/api/device-center/workspaces?roomId=a&extra=1",
+		])
+			expect(safePath(path, "GET")).toBe(false);
+		expect(safePath("/api/device-center/workspaces?roomId=member", "POST")).toBe(false);
 		expect(safePath("/api/device-center/rooms", "WS")).toBe(false);
 		expect(safePath("/api/device-center/rooms/team/messages", "GET")).toBe(false);
 		expect(checkedUrl("http://82.156.246.55:8790").origin).toBe("http://82.156.246.55:8790");

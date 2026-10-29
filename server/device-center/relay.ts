@@ -103,7 +103,19 @@ export function safePath(path: unknown, method = "GET"): path is string {
 		const normalized = new URL(decoded, "http://local").pathname.toLowerCase();
 		if (normalized === "/api/device-center" || normalized.startsWith("/api/device-center/")) {
 			// Only account-scoped chat routes may cross a device portal.
-			if (method === "GET") return /^\/api\/device-center\/(devices|rooms(?:\/[^/]+)?)$/.test(normalized);
+			if (method === "GET") {
+				if (normalized === "/api/device-center/workspaces") {
+					const query = new URL(path, "http://local").searchParams;
+					const ids = query.getAll("roomId");
+					return (
+						[...query.keys()].every((key) => key === "roomId") &&
+						ids.length === 1 &&
+						!!ids[0].trim() &&
+						ids[0].length <= 256
+					);
+				}
+				return /^\/api\/device-center\/(devices|rooms(?:\/[^/]+)?)$/.test(normalized);
+			}
 			if (method === "POST")
 				return /^\/api\/device-center\/rooms(?:\/[^/]+\/(messages|rename|members|delete))?$/.test(normalized);
 			return false;

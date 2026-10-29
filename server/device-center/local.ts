@@ -296,7 +296,7 @@ export async function installLocalDeviceCenter(options: Options) {
 					throw new DeviceWorkspaceError(400, "WORKSPACE_INVALID", "Invalid project path");
 				const data = await serialize(async () => {
 					check();
-					if (operation !== "read") {
+					if (operation !== "read" || typeof roomId === "string") {
 						if (!captured.uiCredential)
 							throw new DeviceWorkspaceError(409, "REPAIR_REQUIRED", "Pair this computer again to enable group chat");
 						let response: globalThis.Response;

@@ -1,6 +1,6 @@
 import { useEffect, useId, useRef, useState } from "react";
 import { createPortal } from "react-dom";
-import { appUrl } from "../base-url";
+import { appUrl, relayBase } from "../base-url";
 import { withToken } from "../auth-token";
 import { isZhLocale, useI18n } from "../i18n";
 import { useFloatingPanel } from "../use-floating-panel";
@@ -14,6 +14,7 @@ const words = {
 		loading: "加载中…",
 		hint: "选择本机项目后此设备才能执行本群任务",
 		local: "仅保存到本机；其他设备使用各自的项目路径。",
+		remote: "远程访问仅查看已绑定项目；请在这台设备本机打开 pi-web-ui 修改路径。",
 		path: "本机项目绝对路径",
 		save: "保存",
 		saving: "保存中…",
@@ -30,6 +31,7 @@ const words = {
 		loading: "Loading…",
 		hint: "Select a local project before this device can execute tasks in this group.",
 		local: "Saved only on this device. Other devices use their own project paths.",
+		remote: "Remote access shows the saved project. Open pi-web-ui locally on this device to change its path.",
 		path: "Absolute local project path",
 		save: "Save",
 		saving: "Saving…",
@@ -79,6 +81,7 @@ export function GroupWorkspace({ roomId, active = true }: { roomId: string; acti
 }
 function WorkspacePanel({ roomId, active }: { roomId: string; active: boolean }) {
 	const { locale } = useI18n();
+	const remote = !!relayBase(globalThis.location?.pathname);
 	const w = words[isZhLocale(locale) ? "zh" : "en"];
 	const labels = useRef(w);
 	labels.current = w;
@@ -139,7 +142,7 @@ function WorkspacePanel({ roomId, active }: { roomId: string; active: boolean })
 		if (!active) setBusy(false);
 	}, [active]);
 	async function save(path: string) {
-		if (!active || mutation.current || !path.trim()) return;
+		if (remote || !active || mutation.current || !path.trim()) return;
 		reading.current?.abort();
 		const token = ++generation.current;
 		const controller = new AbortController();
@@ -202,7 +205,7 @@ function WorkspacePanel({ roomId, active }: { roomId: string; active: boolean })
 						<p className="gw-current" title={workspace?.binding?.root}>
 							{workspace?.binding?.root ?? w.hint}
 						</p>
-						<p className="gw-note">{w.local}</p>
+						<p className="gw-note">{remote ? w.remote : w.local}</p>
 						{error && (
 							<p className="gw-error" role="alert">
 								{error}
@@ -223,7 +226,7 @@ function WorkspacePanel({ roomId, active }: { roomId: string; active: boolean })
 							<input
 								id={`${id}-path`}
 								value={draft}
-								disabled={busy}
+								disabled={busy || remote}
 								placeholder="C:\\projects\\app / /Users/me/projects/app"
 								autoComplete="off"
 								spellCheck={false}
@@ -234,7 +237,7 @@ function WorkspacePanel({ roomId, active }: { roomId: string; active: boolean })
 								}}
 							/>
 							<div className="gw-actions">
-								<button type="submit" className="btn primary" disabled={busy || !draft.trim()}>
+								<button type="submit" className="btn primary" disabled={remote || busy || !draft.trim()}>
 									{busy ? w.saving : w.save}
 								</button>
 								<button
@@ -253,7 +256,7 @@ function WorkspacePanel({ roomId, active }: { roomId: string; active: boolean })
 						<button
 							type="button"
 							className="btn gw-default"
-							disabled={busy || loading || !workspace?.defaultRoot}
+							disabled={remote || busy || loading || !workspace?.defaultRoot}
 							title={workspace?.defaultRoot}
 							onClick={() => void save(workspace!.defaultRoot)}
 						>
