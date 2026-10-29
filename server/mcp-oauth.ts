@@ -16,7 +16,8 @@
 import { createHash } from "node:crypto";
 import { mkdirSync, readFileSync, rmSync, statSync, utimesSync } from "node:fs";
 import { homedir } from "node:os";
-import { join } from "node:path";
+import { dirname, join } from "node:path";
+import { setTimeout as sleep } from "node:timers/promises";
 import { writeAtomicSync } from "./atomic-file.js";
 
 /** 离过期这么近的 access token 先刷新再发出去（与 pi 同口径）。 */
@@ -28,6 +29,11 @@ const REFRESH_LOCK_WAIT_MS = 25_000;
 const REFRESH_LOCK_RETRY_MS = 100;
 /** 单次授权服务器请求的上限：不响应的服务器不能一直占着锁。 */
 const REFRESH_REQUEST_TIMEOUT_MS = 20_000;
+/** 凭据库锁只在「读-合并-写」这一小段持有；等别的进程的最长时间远小于刷新锁。 */
+const STORE_LOCK_WAIT_MS = 2_000;
+/** pi 的 proper-lockfile 默认把超过 10 s 没续期的锁视为遗弃，这里保持一致。 */
+const STORE_LOCK_STALE_MS = 10_000;
+const STORE_LOCK_RETRY_MS = 20;
 
 /** pi 存下的 OAuth 令牌（`expires_in` 是服务器原样返回的，`tokensExpireAt` 是绝对毫秒）。 */
 export interface McpOAuthTokens {
@@ -220,6 +226,45 @@ async function withRefreshLock<T>(storePath: string, key: string, fn: () => Prom
 	}
 }
 
+/**
+ * 用 pi 自己的文件锁（`mcp-auth.json.lock`）保护整份凭据库的读-改-写。
+ *
+ * pi 的 `FileAuthStorageBackend.withLock` 对**每次**读写都用 proper-lockfile 锁住这个路径，
+ * 所以我们也用同名目录锁，两边互斥。两条约束：
+ *  - 锁只覆盖读、合并、写这一小段，**绝不跨网络请求** —— pi 抢锁只重试 10 × 20 ms，
+ *    超时就抛错，会把 pi 自己的 MCP 调用拖挂；
+ *  - mtime 超过 10 s 没续期就按遗弃处理（与 proper-lockfile 的默认 stale 一致），
+ *    崩溃留下的空锁目录不会永久堵住 pi。
+ */
+async function withStoreLock<T>(storePath: string, fn: () => T): Promise<T> {
+	const lockPath = `${storePath}.lock`;
+	mkdirSync(dirname(storePath), { recursive: true, mode: 0o700 });
+	const deadline = Date.now() + STORE_LOCK_WAIT_MS;
+	for (;;) {
+		try {
+			mkdirSync(lockPath, { mode: 0o700 });
+			break;
+		} catch (err) {
+			if ((err as NodeJS.ErrnoException).code !== "EEXIST") throw err;
+			try {
+				if (Date.now() - statSync(lockPath).mtimeMs > STORE_LOCK_STALE_MS) {
+					rmSync(lockPath, { recursive: true, force: true });
+					continue;
+				}
+			} catch {
+				continue; // the holder released it in the meantime
+			}
+			if (Date.now() > deadline) throw new Error(`Timed out waiting for the MCP credential store lock (${lockPath})`);
+			await sleep(STORE_LOCK_RETRY_MS);
+		}
+	}
+	try {
+		return fn();
+	} finally {
+		rmSync(lockPath, { recursive: true, force: true });
+	}
+}
+
 interface RefreshResponseTokens extends McpOAuthTokens {
 	access_token: string;
 }
@@ -324,9 +369,11 @@ export async function refreshMcpAccessToken(options: McpRefreshOptions): Promise
 	const storePath = getMcpAuthStorePath(options);
 	const key = mcpAuthStoreKey(options.name, options.serverUrl);
 	return withRefreshLock(storePath, key, async () => {
-		const store = readMcpAuthStore(options);
 		const legacyKey = mcpAuthLegacyKey(options.serverUrl);
-		const state = store[key] ?? store[legacyKey];
+		const state = await withStoreLock(storePath, () => {
+			const store = readMcpAuthStore(options);
+			return store[key] ?? store[legacyKey];
+		});
 		if (!state?.tokens?.access_token && !state?.tokens?.refresh_token) {
 			throw new McpOAuthSignInRequiredError(
 				`MCP server "${options.name}" needs an OAuth sign-in (no stored credentials found)`,
@@ -337,17 +384,26 @@ export async function refreshMcpAccessToken(options: McpRefreshOptions): Promise
 			return storedToken; // refreshed by another process while we waited for the lock
 		}
 		if (!state) return null;
+		// 网络请求期间不持任何锁：pi 可能同时写入别的服务器（甚至同一台）。
 		const tokens = await requestRefreshToken(state, options);
 		const nowMs = (options.now ?? Date.now)();
-		const expireAt = typeof tokens.expires_in === "number" ? nowMs + tokens.expires_in * 1000 : undefined;
-		const next: McpOAuthState = {
-			...state,
-			tokens: { ...state.tokens, ...trimUndefined(tokens) },
-			...(expireAt === undefined ? {} : { tokensExpireAt: expireAt }),
-		};
-		store[key] = next;
-		if (legacyKey !== key) delete store[legacyKey];
-		writeMcpAuthStore(store, options);
+		const expiresAt = typeof tokens.expires_in === "number" ? nowMs + tokens.expires_in * 1000 : undefined;
+		await withStoreLock(storePath, () => {
+			// 重新读一遍再合并：刷新期间 pi 写的其它键（以及这台服务器的其它字段）不能被旧快照覆盖。
+			const fresh = readMcpAuthStore(options);
+			const base = fresh[key] ?? fresh[legacyKey] ?? state;
+			const next: McpOAuthState = {
+				...base,
+				tokens: { ...base.tokens, ...trimUndefined(tokens) },
+			};
+			// 授权服务器没给 `expires_in` 时必须删掉旧的绝对过期时间：否则它一直是「已过期」，
+			// 每个请求都会再走一次刷新（pi 的 provider 也是这么处理的）。
+			if (expiresAt === undefined) delete next.tokensExpireAt;
+			else next.tokensExpireAt = expiresAt;
+			fresh[key] = next;
+			if (legacyKey !== key) delete fresh[legacyKey];
+			writeMcpAuthStore(fresh, options);
+		});
 		return tokens.access_token;
 	});
 }

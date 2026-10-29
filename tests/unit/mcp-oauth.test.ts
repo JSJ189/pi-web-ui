@@ -5,7 +5,7 @@
  */
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import { createServer, type IncomingMessage, type Server, type ServerResponse } from "node:http";
-import { mkdtempSync, readFileSync, rmSync, statSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, statSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import type { AddressInfo } from "node:net";
@@ -181,6 +181,20 @@ describe("取 token：临近过期时刷新", () => {
 		);
 	});
 
+	it("刷新响应没有 expires_in 时清掉旧的过期时间，后续请求不再重复刷新", async () => {
+		seedState({ accessToken: "access-stale", expiresInMs: -1 });
+		const { impl, calls } = mockFetch(() => ({ body: { access_token: "access-no-expiry" } }));
+		const options = { agentDir, name: "suno", serverUrl: SERVER_URL, fetch: impl };
+
+		expect(await getMcpAccessToken(options)).toBe("access-no-expiry");
+		// 旧的绝对过期时间必须被删掉：否则它一直是「已过期」，每个请求都会再刷一次
+		expect(readMcpAuthStore({ agentDir })[mcpAuthStoreKey("suno", SERVER_URL)].tokensExpireAt).toBeUndefined();
+
+		expect(await getMcpAccessToken(options)).toBe("access-no-expiry");
+		expect(await getMcpAccessToken(options)).toBe("access-no-expiry");
+		expect(calls).toHaveLength(1);
+	});
+
 	it("旧版 URL 键在刷新后迁移到新键并被删除", async () => {
 		seedState({ accessToken: "access-stale", expiresInMs: -1, key: mcpAuthLegacyKey(SERVER_URL) });
 		const { impl } = mockFetch(() => ({ body: { access_token: "access-new", expires_in: 900 } }));
@@ -206,6 +220,45 @@ describe("取 token：临近过期时刷新", () => {
 			refreshMcpAccessToken({ agentDir, name: "suno", serverUrl: SERVER_URL, fetch: impl }),
 		).rejects.toBeInstanceOf(McpOAuthSignInRequiredError);
 		expect(readFileSync(storePath(), "utf8")).toBe(before);
+	});
+
+	it("凭据库锁只包住读-写，不跨网络请求；刷新期间 pi 写入的其它服务器不会丢", async () => {
+		seedState({ accessToken: "access-stale", expiresInMs: -1 });
+		const otherKey = mcpAuthStoreKey("other", "https://other.example.test/mcp");
+		let lockHeldDuringTokenCall: boolean | undefined;
+		const { impl } = mockFetch(() => {
+			lockHeldDuringTokenCall = existsSync(`${storePath()}.lock`);
+			// pi 在这段时间登录另一台服务器：它自己持锁读-改-写整份库
+			const store = JSON.parse(readFileSync(storePath(), "utf8")) as Record<string, unknown>;
+			store[otherKey] = { tokens: { access_token: "other-token" } };
+			writeFileSync(storePath(), `${JSON.stringify(store, null, 2)}\n`, { mode: 0o600 });
+			return { body: { access_token: "access-new", expires_in: 900 } };
+		});
+
+		await getMcpAccessToken({ agentDir, name: "suno", serverUrl: SERVER_URL, fetch: impl });
+
+		// 持锁跨越 20 s 的网络请求会让 pi 自己的 MCP 调用超时（它只重试 10 × 20 ms）
+		expect(lockHeldDuringTokenCall).toBe(false);
+		const store = readMcpAuthStore({ agentDir });
+		expect(store[otherKey].tokens?.access_token).toBe("other-token");
+		expect(store[mcpAuthStoreKey("suno", SERVER_URL)].tokens?.access_token).toBe("access-new");
+		// 锁已释放
+		expect(existsSync(`${storePath()}.lock`)).toBe(false);
+	});
+
+	it("别的进程（pi）正持锁时先等它释放，不抢写", async () => {
+		seedState({ accessToken: "access-stale", expiresInMs: -1 });
+		const lockPath = `${storePath()}.lock`;
+		mkdirSync(lockPath);
+		const { impl, calls } = mockFetch(() => ({ body: { access_token: "access-new", expires_in: 900 } }));
+		const pending = refreshMcpAccessToken({ agentDir, name: "suno", serverUrl: SERVER_URL, fetch: impl });
+
+		await new Promise((resolve) => setTimeout(resolve, 100));
+		expect(calls).toHaveLength(0);
+		rmSync(lockPath, { recursive: true, force: true });
+
+		expect(await pending).toBe("access-new");
+		expect(calls).toHaveLength(1);
 	});
 
 	it("没有刷新令牌 → 强制刷新抛「需要登录」", async () => {
