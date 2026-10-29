@@ -18,6 +18,7 @@ import { spawn, type ChildProcess } from "node:child_process";
 import { existsSync, readFileSync } from "node:fs";
 import { homedir } from "node:os";
 import { join } from "node:path";
+import { getMcpAccessToken, refreshMcpAccessToken } from "./mcp-oauth.js";
 import type { PluginAgentTool } from "./plugins.js";
 import type { UiMcpToolInfo } from "./protocol.js";
 
@@ -137,12 +138,16 @@ export class McpClient {
 	private initialized = false;
 	/** 工具列表动态更新回调（收到 notifications/tools/list_changed 时触发）。 */
 	onToolsChanged?: () => void;
+	/** 最近一次随请求发出的 OAuth access token（401 后据此判断是否已被别的进程换掉）。 */
+	private lastAccessToken: string | null = null;
 
 	constructor(
 		name: string,
 		/** 启动规格；热加载按它判断「这个服务器要不要重启」（见 McpBridge.reload）。 */
 		readonly spec: McpServerSpec,
 		log?: (...a: unknown[]) => void,
+		/** OAuth：`agentDir` 指向 pi 的凭据库（`mcp-auth.json`），见 mcp-oauth.ts 与 Issue #786。 */
+		private readonly clientOpts: McpClientOptions = {},
 	) {
 		this.name = name;
 		this.log = log ?? (() => {});
@@ -150,6 +155,40 @@ export class McpClient {
 
 	get isHttp(): boolean {
 		return !this.spec.command && !!this.spec.url;
+	}
+
+	/** 显式配置了 Authorization 头 → 用配置的静态凭据，不碰 OAuth 凭据库。 */
+	private hasStaticAuthorization(): boolean {
+		const headers = this.spec.headers ?? {};
+		return Object.keys(headers).some((k) => k.toLowerCase() === "authorization");
+	}
+
+	/**
+	 * 该服务器要发的 `Authorization` 值（OAuth 保护的远端服务器用），没有凭据时返回 null。
+	 * `isRetry` = 上一次请求收到 401：强制刷新一次（凭据库里的 access token 可能没过期但已被吊销）。
+	 */
+	private async resolveAuthHeader(isRetry: boolean): Promise<string | null> {
+		if (!this.isHttp || !this.spec.url || this.hasStaticAuthorization()) return null;
+		const options = { agentDir: this.clientOpts.agentDir, name: this.name, serverUrl: this.spec.url };
+		try {
+			const token = isRetry
+				? await refreshMcpAccessToken({ ...options, staleToken: this.lastAccessToken ?? undefined })
+				: await getMcpAccessToken(options);
+			if (!token) return null;
+			this.lastAccessToken = token;
+			return `Bearer ${token}`;
+		} catch (err) {
+			// 刷新失败不该让请求烂在这里：照旧发出去，由服务端的 401 给出最终结论（或失败原因）。
+			this.log(`[mcp:${this.name}] oauth:`, err instanceof Error ? err.message : err);
+			return null;
+		}
+	}
+
+	/** 401 的可操作错误：告诉用户这一台服务器需要登录，以及怎么登录。 */
+	private signInRequiredError(detail: string): Error {
+		return new Error(
+			`MCP_OAUTH_SIGN_IN_REQUIRED: HTTP 401: ${detail || "unauthorized"} — OAuth 登录已过期或缺失，先运行 \`pi mcp login ${this.name}\` 再重试`,
+		);
 	}
 
 	/** 启动子进程或 HTTP 连接 + 握手 + 拉取工具列表。可安全重入：退出后再次调用即全新启动。 */
@@ -548,6 +587,8 @@ export class McpClient {
 				headers[k] = expandEnvVars(v);
 			}
 		}
+		const authHeader = await this.resolveAuthHeader(false);
+		if (authHeader) headers.Authorization = authHeader;
 
 		let timedOut = false;
 		let reqResolve!: (v: unknown) => void;
@@ -585,12 +626,31 @@ export class McpClient {
 		});
 
 		try {
-			const res = await fetch(url, {
+			const body = JSON.stringify({ jsonrpc: "2.0", id, method, params });
+			let res = await fetch(url, {
 				method: "POST",
 				headers,
-				body: JSON.stringify({ jsonrpc: "2.0", id, method, params }),
+				body,
 				signal: abortController.signal,
 			});
+
+			// 401 → 凭据库里的 token 可能已被吊销/轮换：强制刷新一次再重试同一请求（OAuth 保护的服务器）。
+			if (res.status === 401 && !this.hasStaticAuthorization()) {
+				const retriedHeader = await this.resolveAuthHeader(true);
+				if (retriedHeader && retriedHeader !== authHeader) {
+					headers.Authorization = retriedHeader;
+					res = await fetch(url, {
+						method: "POST",
+						headers,
+						body,
+						signal: abortController.signal,
+					});
+				}
+				if (res.status === 401) {
+					const detail = await res.text().catch(() => "");
+					throw this.signInRequiredError(detail);
+				}
+			}
 
 			const newSid = res.headers.get("mcp-session-id");
 			if (newSid) this.sessionId = newSid;
@@ -691,6 +751,8 @@ export class McpClient {
 				headers[k] = expandEnvVars(v);
 			}
 		}
+		const authHeader = await this.resolveAuthHeader(false);
+		if (authHeader) headers.Authorization = authHeader;
 		try {
 			const res = await fetch(url, {
 				method: "POST",
@@ -1005,6 +1067,12 @@ export interface McpReloadSummary {
 	tools: number;
 }
 
+/** McpClient 的可选项（OAuth 凭据库位置，见 Issue #786）。 */
+export interface McpClientOptions {
+	/** pi 的 agent 目录（含 `mcp-auth.json`）；缺省按 `PI_CODING_AGENT_DIR` / `~/.pi/agent` 解析。 */
+	agentDir?: string;
+}
+
 export interface McpBridgeOptions {
 	agentDir?: string;
 	cwd?: string;
@@ -1093,7 +1161,7 @@ export class McpBridge {
 	/** 启动单个服务器：失败只记日志并返回 null（load / reload 共用）。 */
 	private async startOne(name: string, spec: McpServerSpec): Promise<McpClient | null> {
 		if (this.disposed) return null;
-		const client = new McpClient(name, spec, this.log);
+		const client = new McpClient(name, spec, this.log, { agentDir: this.agentDir });
 		this.pendingClients.add(client);
 		try {
 			client.onToolsChanged = () => this.reaggregateTools();
