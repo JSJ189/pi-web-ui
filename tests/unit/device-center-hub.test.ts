@@ -353,7 +353,8 @@ describe("device center hub", () => {
 			res.json({ url: "https://device.test", expiresAt: 1 });
 		});
 		hub.setRelay({ handleOpen });
-		expect((await request("/api/devices/test/open", {}, cookie)).body.url).toBe("https://device.test");
+		const id = hub.store.snapshot().devices[0].id;
+		expect((await request(`/api/devices/${id}/open`, {}, cookie)).body.url).toBe("https://device.test");
 		expect(handleOpen).toHaveBeenCalledTimes(1);
 	});
 	it("limits login attempts and JSON payload size", async () => {

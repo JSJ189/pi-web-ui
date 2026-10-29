@@ -3113,6 +3113,47 @@
 		}
 	}
 
+	.dd-list {
+		display: flex;
+		flex-direction: column;
+		min-width: 0;
+	}
+	.dd-device {
+		display: flex;
+		align-items: center;
+		gap: 12px;
+		padding: 16px 0;
+		border-top: 1px solid var(--border);
+		min-width: 0;
+		max-width: 100%;
+	}
+	.dd-identity {
+		display: flex;
+		flex: 1;
+		flex-direction: column;
+		gap: 5px;
+		min-width: 0;
+	}
+	.dd-identity strong {
+		font-size: 13px;
+		font-weight: 550;
+		overflow-wrap: anywhere;
+	}
+	.dd-identity > span {
+		font-size: 11px;
+		color: var(--text-faint);
+		overflow: hidden;
+		text-overflow: ellipsis;
+		white-space: nowrap;
+	}
+	@media (max-width: 650px) {
+		.dd-device {
+			flex-wrap: wrap;
+		}
+		.dd-device > .dc-button {
+			margin-inline-start: 56px;
+		}
+	}
 	/* Native device workspace. All colors follow the active application theme. */
 	.dc-page {
 		flex: 1;

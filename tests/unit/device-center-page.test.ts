@@ -330,6 +330,87 @@ describe("standalone device Hub", () => {
 		expect(f.document.getElementById("room-title")!.textContent).toBe("Room two");
 		expect(renderDeviceHubPage()).toContain("setTimeout(refresh,3000)");
 	});
+	it("keeps unsaved aliases, focus and management expansion through polling and language changes", async () => {
+		const f = fixture();
+		await flush();
+		const firstCard = () => f.document.querySelector("#devices .card")!;
+		const management = firstCard().querySelector("details")!;
+		management.open = true;
+		const alias = management.querySelector("input")!;
+		alias.value = "unfinished-alias";
+		alias.focus();
+		alias.setSelectionRange(3, 7);
+		alias.dispatchEvent(new f.dom.window.Event("input", { bubbles: true }));
+		const timer = vi.spyOn(f.dom.window, "setTimeout");
+		f.click("#room-list button");
+		await flush();
+		const poll = timer.mock.calls.find((call: any[]) => call[1] === 3000)!;
+		expect(poll).toBeDefined();
+		await (poll[0] as unknown as () => Promise<void>)();
+		await flush();
+		let current = firstCard().querySelector("input")!;
+		expect(current.value).toBe("unfinished-alias");
+		expect(current).toBe(alias);
+		expect(f.document.activeElement).toBe(current);
+		expect([current.selectionStart, current.selectionEnd]).toEqual([3, 7]);
+		expect(firstCard().querySelector("details")!.open).toBe(true);
+		f.click("#language");
+		current = firstCard().querySelector("input")!;
+		expect(current.value).toBe("unfinished-alias");
+		expect(firstCard().querySelector("details")!.open).toBe(true);
+		expect(firstCard().querySelector("summary")!.textContent).toBe("Manage device");
+		expect(f.document.querySelectorAll("#devices details")[1].hasAttribute("open")).toBe(false);
+		firstCard().querySelector("details")!.open = false;
+		f.click("#language");
+		expect(firstCard().querySelector("details")!.open).toBe(false);
+	});
+	it("shows compact empty states, sender bubbles and timestamps while keeping creation forms collapsed", async () => {
+		const f = fixture("http://hub.example:8790");
+		await flush();
+		expect(f.document.getElementById("chat-empty")!.hidden).toBe(false);
+		expect(f.document.querySelector("#chat-empty svg")).not.toBeNull();
+		expect(f.document.querySelector("#pair-details")!.hasAttribute("open")).toBe(false);
+		expect(f.document.querySelector("#room-details")!.hasAttribute("open")).toBe(false);
+		expect(f.document.querySelector("#devices .device-head .device-id")).toBeNull();
+		expect(f.document.querySelector("#devices .device-id")!.getAttribute("title")).toBe(f.devices[0].id);
+		expect(f.document.getElementById("transport-note")!.textContent).not.toContain("域");
+		const original = f.fetch.getMockImplementation()!;
+		let empty = false;
+		f.fetch.mockImplementation(async (path, options) => {
+			if (path === "/api/rooms/one")
+				return {
+					ok: true,
+					status: 200,
+					json: async () => ({
+						room: { id: "one", name: "Room one", deviceIds: [] },
+						tasks: [],
+						messages: empty
+							? []
+							: [
+									{ sender: { type: "human", name: "Owner <script>" }, text: "Hello", createdAt: 0 },
+									{ sender: { type: "device", name: "Work" }, text: "<svg onload=alert(1)>", createdAt: 1000 },
+								],
+					}),
+				};
+			return original(path, options);
+		});
+		f.click("#room-list button");
+		await flush();
+		expect(f.document.getElementById("chat-empty")!.hidden).toBe(true);
+		expect(f.document.querySelectorAll("#messages .human")).toHaveLength(1);
+		expect(f.document.querySelectorAll("#messages .device")).toHaveLength(1);
+		expect(f.document.querySelectorAll("#messages time[datetime]")).toHaveLength(2);
+		expect(f.document.querySelector("#messages script, #messages svg")).toBeNull();
+		empty = true;
+		f.click("#room-list button:nth-child(2)");
+		await flush();
+		f.click("#room-list button");
+		await flush();
+		expect(f.document.getElementById("chat-empty")!.hidden).toBe(false);
+		expect(f.document.getElementById("empty-title")!.textContent).toBe("开始一段对话");
+		f.click("#language");
+		expect(f.document.getElementById("empty-title")!.textContent).toBe("Start a conversation");
+	});
 	it("surfaces connection failures instead of claiming online", async () => {
 		const f = fixture();
 		await flush();

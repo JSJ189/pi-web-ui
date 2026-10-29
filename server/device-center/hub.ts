@@ -143,7 +143,9 @@ export async function createDeviceHub(options: DeviceHubOptions) {
 		if (!(
 			(req.method === "GET" && (["/devices", "/rooms"].includes(suffix) || /^\/rooms\/[^/]+$/.test(suffix))) ||
 			(req.method === "POST" &&
-				(suffix === "/rooms" || /^\/rooms\/[^/]+\/(messages|rename|members|delete)$/.test(suffix)))
+				(suffix === "/rooms" ||
+					/^\/rooms\/[^/]+\/(messages|rename|members|delete)$/.test(suffix) ||
+					/^\/devices\/[^/]+\/open$/.test(suffix)))
 		))
 			fail(404, "User route missing");
 		users.set(req, { device, account: { id: owner.id, username: owner.username } });
@@ -645,6 +647,20 @@ export async function createDeviceHub(options: DeviceHubOptions) {
 		await options.relay.handleAliasOpen(req, res, entry.deviceId);
 	});
 	app.post("/api/devices/:id/open", async (req, res) => {
+		const owner = account(req);
+		const id = String(req.params.id);
+		if (store.getDeviceOwner(id) !== owner.id) fail(404, "Device missing");
+		if (options.portals && !options.deviceDomain) {
+			try {
+				await options.portals.assign(id, owner.id);
+			} catch (error) {
+				if ((error as { status?: number }).status !== 409) throw error;
+				return res
+					.status(409)
+					.json({ code: "DEVICE_WEB_ORIGIN_REQUIRED", error: "No device portal port is available" });
+			}
+		}
+		if (users.has(req)) req.headers.origin = origin.origin;
 		if (!options.relay?.handleOpen) fail(503, "Relay unavailable");
 		await options.relay.handleOpen(req, res, String(req.params.id));
 	});
@@ -719,6 +735,7 @@ export async function createDeviceHub(options: DeviceHubOptions) {
 		server,
 		store,
 		getAccount,
+		getRelayAccount: (req: IncomingMessage) => users.get(req as Request)?.account ?? getAccount(req),
 		authenticateAgent,
 		acceptTaskEvent,
 		setRelay(relay: HubRelay) {

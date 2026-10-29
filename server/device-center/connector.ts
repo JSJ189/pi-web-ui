@@ -188,7 +188,11 @@ export function createDeviceConnector(options: DeviceConnectorOptions) {
 					return;
 				}
 				if (frame.type === "request" || frame.type === "ws_open") {
-					if (streams.has(id) || streams.size >= RELAY_LIMITS.streams || !safePath(frame.path))
+					if (
+						streams.has(id) ||
+						streams.size >= RELAY_LIMITS.streams ||
+						!safePath(frame.path, frame.type === "ws_open" ? "WS" : String(frame.method))
+					)
 						throw new Error("Invalid request");
 					const timer = setTimeout(() => {
 						dispose(id);

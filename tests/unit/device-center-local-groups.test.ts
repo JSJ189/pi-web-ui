@@ -26,6 +26,52 @@ async function listen(server: Server) {
 	return `http://127.0.0.1:${(server.address() as { port: number }).port}`;
 }
 describe("device user group authority", () => {
+	it("authorizes a device portal through paired UI credentials without a browser hub login", async () => {
+		const hub = await createDeviceHub({ dataDir: await directory(), publicUrl: "http://127.0.0.1" });
+		cleanup.push(() => hub.close());
+		await hub.store.transact((state) => {
+			state.accounts.push({ id: "owner", username: "owner", passwordHash: "unused", createdAt: 1 });
+			for (const id of ["source", "target"])
+				state.devices.push({
+					id,
+					accountId: "owner",
+					name: id,
+					createdAt: 1,
+					credentialHash: hashSecret("agent-secret"),
+					uiCredentialHash: hashSecret("ui-secret"),
+				});
+		});
+		hub.setRelay({
+			handleOpen: async (req, res, id) => {
+				expect(hub.getRelayAccount(req)?.id).toBe("owner");
+				expect(req.headers.origin).toBe("http://127.0.0.1");
+				res.setHeader("Content-Type", "application/json");
+				res.end(JSON.stringify({ url: `http://127.0.0.1:50002/__device/open?ticket=${id}` }));
+			},
+		});
+		const base = await listen(hub.server);
+		const result = await new Promise<number>((resolve, reject) => {
+			const request = httpRequest(
+				`${base}/api/device-user/devices/target/open`,
+				{
+					method: "POST",
+					headers: {
+						Host: "127.0.0.1",
+						"X-Device-Id": "source",
+						Authorization: "Bearer ui-secret",
+						"Content-Type": "application/json",
+					},
+				},
+				(response) => {
+					response.resume();
+					response.on("end", () => resolve(response.statusCode!));
+				},
+			);
+			request.on("error", reject);
+			request.end("{}");
+		});
+		expect(result).toBe(200);
+	});
 	it("settles rejected deliveries, continues later targets and preserves terminal or replaced attempts on retries", async () => {
 		const dataDir = await directory();
 		const hub = await createDeviceHub({ dataDir, publicUrl: "http://hub.test" });

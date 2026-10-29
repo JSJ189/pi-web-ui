@@ -360,6 +360,7 @@ export async function installLocalDeviceCenter(options: Options) {
 	workspaceRoute("post", "workspaces", "set");
 	workspaceRoute("post", "workspaces/remove", "remove");
 	userRoute("get", "devices", []);
+	userRoute("post", "devices/:id/open", []);
 	userRoute("get", "rooms", []);
 	userRoute("get", "rooms/:id", []);
 	userRoute("post", "rooms", ["name", "deviceIds"]);

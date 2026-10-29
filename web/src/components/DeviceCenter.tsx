@@ -14,6 +14,7 @@ import { appUrl } from "../base-url";
 import { withToken } from "../auth-token";
 import { useT } from "../i18n";
 import { DeviceGroups } from "./DeviceGroups";
+import { DeviceDirectory } from "./DeviceDirectory";
 import { useDeviceGroupNavigation } from "../device-group-navigation";
 
 type DeviceStatus = { name: string; hubUrl?: string; deviceId?: string; allowExecution: boolean; connected: boolean };
@@ -566,6 +567,13 @@ export function DeviceCenter() {
 								</details>
 							)}
 						</>
+					)}
+					{bound && status?.hubUrl && status.deviceId && !localOnly && view !== "groups" && (
+						<DeviceDirectory
+							key={`${status.hubUrl}:${status.deviceId}`}
+							hubUrl={status.hubUrl}
+							currentDeviceId={status.deviceId}
+						/>
 					)}
 					{view === "groups" && <DeviceGroups navigation={navigation} />}
 					<aside className="dc-help">

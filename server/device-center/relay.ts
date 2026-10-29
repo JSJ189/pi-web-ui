@@ -88,7 +88,7 @@ export function cleanHeaders(headers: Record<string, unknown>): Record<string, s
 			result[key.toLowerCase()] = value;
 	return result;
 }
-export function safePath(path: unknown): path is string {
+export function safePath(path: unknown, method = "GET"): path is string {
 	if (typeof path !== "string" || !path.startsWith("/") || path.startsWith("//") || /[\r\n\\]/.test(path)) return false;
 	try {
 		let decoded = path.split("?")[0];
@@ -99,7 +99,14 @@ export function safePath(path: unknown): path is string {
 		}
 		if (/%|[\\\x00-\x20]/.test(decoded)) return false;
 		const normalized = new URL(decoded, "http://local").pathname.toLowerCase();
-		return !["/devices", "/api/device-center", "/setup", "/api/setup"].some(
+		if (normalized === "/api/device-center" || normalized.startsWith("/api/device-center/")) {
+			// Only account-scoped chat routes may cross a device portal.
+			if (method === "GET") return /^\/api\/device-center\/(devices|rooms(?:\/[^/]+)?)$/.test(normalized);
+			if (method === "POST")
+				return /^\/api\/device-center\/rooms(?:\/[^/]+\/(messages|rename|members|delete))?$/.test(normalized);
+			return false;
+		}
+		return !["/devices", "/setup", "/api/setup"].some(
 			(prefix) => normalized === prefix || normalized.startsWith(prefix + "/"),
 		);
 	} catch {
@@ -591,7 +598,7 @@ export function createDeviceRelay(options: DeviceRelayOptions) {
 			res.writeHead(503).end();
 			return true;
 		}
-		if (!safePath(req.url)) {
+		if (!safePath(req.url, req.method)) {
 			res.writeHead(400).end();
 			return true;
 		}
@@ -633,7 +640,12 @@ export function createDeviceRelay(options: DeviceRelayOptions) {
 		}
 		if (id) {
 			const entry = devices.get(id);
-			if (!entry || !authorized(req, id, true) || entry.streams.size >= RELAY_LIMITS.streams || !safePath(req.url)) {
+			if (
+				!entry ||
+				!authorized(req, id, true) ||
+				entry.streams.size >= RELAY_LIMITS.streams ||
+				!safePath(req.url, "WS")
+			) {
 				socket.destroy();
 				return;
 			}

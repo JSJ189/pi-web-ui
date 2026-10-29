@@ -354,6 +354,29 @@ describe("device reverse relay", () => {
 		])
 			expect(safePath(path), path).toBe(false);
 		expect(safePath("/api/health?q=yes")).toBe(true);
+		for (const path of ["/api/device-center/devices", "/api/device-center/rooms", "/api/device-center/rooms/team"])
+			expect(safePath(path, "GET"), path).toBe(true);
+		for (const path of [
+			"/api/device-center/rooms",
+			"/api/device-center/rooms/team/messages",
+			"/api/device-center/rooms/team/members",
+			"/api/device-center/rooms/team/rename",
+			"/api/device-center/rooms/team/delete",
+		])
+			expect(safePath(path, "POST"), path).toBe(true);
+		for (const method of ["GET", "POST", "WS", "DELETE"]) {
+			for (const path of [
+				"/api/device-center/workspaces",
+				"/api/device-center/config",
+				"/api/device-center/status",
+				"/api/device-center/devices/target/open",
+				"/api/device-center/pair",
+				"/api/device-center/rooms/team/messages/extra",
+			])
+				expect(safePath(path, method), `${method} ${path}`).toBe(false);
+		}
+		expect(safePath("/api/device-center/rooms", "WS")).toBe(false);
+		expect(safePath("/api/device-center/rooms/team/messages", "GET")).toBe(false);
 		expect(checkedUrl("http://82.156.246.55:8790").origin).toBe("http://82.156.246.55:8790");
 		expect(checkedUrl("ws://82.156.246.55:8790").protocol).toBe("ws:");
 		for (const url of ["file:///tmp/a", "http://user:password@example.com", "ws://example.com/#fragment"])
