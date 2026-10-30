@@ -114,8 +114,16 @@ export class Live2DWidget {
 		const bubble = document.createElement("div");
 		bubble.className = "pi-l2d-bubble";
 		bubble.innerHTML = `
+			<div class="pi-l2d-bubble-badge" style="display: none;">
+				<span class="pi-l2d-bubble-badge-icon">💭</span>
+				<span class="pi-l2d-bubble-badge-label">${this.t("bubble.thought_label")}</span>
+			</div>
 			<span class="pi-l2d-bubble-text">${this.t("bubble.default")}</span>
 			<button class="pi-l2d-bubble-close">✕</button>
+			<div class="pi-l2d-thought-dots" aria-hidden="true">
+				<span class="pi-l2d-thought-dot pi-l2d-dot-1"></span>
+				<span class="pi-l2d-thought-dot pi-l2d-dot-2"></span>
+			</div>
 		`;
 		bubble.querySelector(".pi-l2d-bubble-close").addEventListener("click", (e) => {
 			e.stopPropagation();
@@ -491,10 +499,28 @@ export class Live2DWidget {
 		this.showBubble(randomQuote, 4000);
 	}
 
-	showBubble(text, duration = 4000) {
+	showBubble(text, duration = 4000, options = {}) {
 		if (!this.bubbleEl || !this.visible) return;
+		const isThought = Boolean(options?.isThought || options?.thought);
 		const textSpan = this.bubbleEl.querySelector(".pi-l2d-bubble-text");
 		if (textSpan) textSpan.textContent = text;
+
+		const badgeEl = this.bubbleEl.querySelector(".pi-l2d-bubble-badge");
+		const badgeLabel = this.bubbleEl.querySelector(".pi-l2d-bubble-badge-label");
+		if (badgeEl) {
+			if (isThought) {
+				badgeEl.style.display = "inline-flex";
+				if (badgeLabel) badgeLabel.textContent = this.t("bubble.thought_label");
+			} else {
+				badgeEl.style.display = "none";
+			}
+		}
+
+		if (isThought) {
+			this.bubbleEl.classList.add("pi-l2d-bubble-thought");
+		} else {
+			this.bubbleEl.classList.remove("pi-l2d-bubble-thought");
+		}
 
 		this.bubbleEl.classList.add("pi-l2d-bubble-visible");
 
@@ -506,9 +532,19 @@ export class Live2DWidget {
 		}
 	}
 
+	showThought(text, duration = 5000, emotion) {
+		if (emotion && this.stage?.playExpression) {
+			this.stage.playExpression(emotion);
+		}
+		this.showBubble(text, duration, { isThought: true });
+	}
+
 	hideBubble() {
 		if (this.bubbleEl) {
 			this.bubbleEl.classList.remove("pi-l2d-bubble-visible");
+			this.bubbleEl.classList.remove("pi-l2d-bubble-thought");
+			const badgeEl = this.bubbleEl.querySelector(".pi-l2d-bubble-badge");
+			if (badgeEl) badgeEl.style.display = "none";
 		}
 		if (this.bubbleTimer) {
 			clearTimeout(this.bubbleTimer);

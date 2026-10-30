@@ -12,10 +12,10 @@ func fail(_ message: String) -> Never {
     exit(1)
 }
 guard #available(macOS 14.0, *) else { fail("Native capture requires macOS 14 or newer.") }
-let readOnly = CommandLine.arguments.last != "control"
-// Preflight alone never requests access or creates an entry in System Settings.
-// Trigger TCC from the same process that captures/injects, preserving its actual
-// responsible host identity (Terminal, desktop app or service, as chosen by macOS).
+let mode = CommandLine.arguments.last ?? "view"
+let readOnly = mode != "control"
+// Only an explicit local permission action may trigger TCC or open Settings.
+// Use the same Swift process identity as capture and input injection.
 func openPrivacy(_ pane: String) {
     let settings = Process()
     settings.executableURL = URL(fileURLWithPath: "/usr/bin/open")
@@ -24,19 +24,27 @@ func openPrivacy(_ pane: String) {
     settings.standardError = FileHandle.nullDevice
     try? settings.run()
 }
-if !CGPreflightScreenCaptureAccess() {
-    let granted = CGRequestScreenCaptureAccess()
-    if !granted || !CGPreflightScreenCaptureAccess() {
-        openPrivacy("Privacy_ScreenCapture")
-        fail("MAC_SCREEN_PERMISSION_REQUIRED: On the controlled Mac, enable the app macOS identifies in System Settings > Privacy & Security > Screen & System Audio Recording. A request was made and Settings was opened; macOS may suppress repeat prompts. If launched in Terminal/iTerm, authorize that host; if launched as a desktop app, authorize that app. Restart the actual server after granting access, then reconnect. Background services may require launching from a local terminal to request permission interactively.")
+if mode == "permissions-screen" || mode == "permissions-control" {
+    if !CGPreflightScreenCaptureAccess() {
+        _ = CGRequestScreenCaptureAccess()
+        if !CGPreflightScreenCaptureAccess() { openPrivacy("Privacy_ScreenCapture") }
     }
+    // Request both permissions for control even if Screen Recording was denied.
+    if mode == "permissions-control" && !AXIsProcessTrusted() {
+        let prompt = [kAXTrustedCheckOptionPrompt.takeUnretainedValue() as String: true] as CFDictionary
+        _ = AXIsProcessTrustedWithOptions(prompt)
+        if !AXIsProcessTrusted() { openPrivacy("Privacy_Accessibility") }
+    }
+    let result: [String: Bool] = ["screen": CGPreflightScreenCaptureAccess(), "accessibility": AXIsProcessTrusted()]
+    guard let data = try? JSONSerialization.data(withJSONObject: result) else { fail("Cannot serialize permission status.") }
+    FileHandle.standardOutput.write(data)
+    exit(0)
+}
+if !CGPreflightScreenCaptureAccess() {
+    fail("MAC_SCREEN_PERMISSION_REQUIRED: On this Mac, open the local Device Center and request Screen Recording permission for the app macOS identifies. Restart the actual server after granting access, then reconnect.")
 }
 if !readOnly && !AXIsProcessTrusted() {
-    let prompt = [kAXTrustedCheckOptionPrompt.takeUnretainedValue() as String: true] as CFDictionary
-    if !AXIsProcessTrustedWithOptions(prompt) {
-        openPrivacy("Privacy_Accessibility")
-        fail("MAC_ACCESSIBILITY_PERMISSION_REQUIRED: On the controlled Mac, enable the app macOS identifies in System Settings > Privacy & Security > Accessibility, then restart the actual server and reconnect. Viewing only needs Screen Recording permission; control additionally needs Accessibility. macOS may suppress repeat prompts.")
-    }
+    fail("MAC_ACCESSIBILITY_PERMISSION_REQUIRED: On this Mac, open the local Device Center and request Accessibility permission for the app macOS identifies. Restart the actual server after granting access, then reconnect.")
 }
 let lock = NSLock()
 let acknowledged = DispatchSemaphore(value: 0)

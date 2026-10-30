@@ -206,6 +206,56 @@ describe("ClientSession communication runtime", () => {
 		expect(b.subagentHost.completeSubagent).toHaveBeenCalledWith(moved.id, "moved summary");
 		expect(stale.subagentTask).toBeUndefined();
 	});
+	it("spawns on the runtime holder after takeover renames into a source-local id", async () => {
+		const a = holder("a"),
+			b = holder("b");
+		const moved = endpoint(a, "c1");
+		let home = { session: a, convId: moved.id };
+		a.findConversationHome = (session: unknown) => (session === moved.session ? home : undefined);
+		a.spawnSubagentViaHost = vi.fn().mockResolvedValue("wrong-child");
+		b.spawnSubagentViaHost = vi.fn().mockResolvedValue("new-child");
+		const bound = a.communicationBoundSubagentHost({ session: moved.session });
+		a.convs.delete(moved.id);
+		moved.id = "c2";
+		b.convs.set(moved.id, moved);
+		endpoint(a, "c2"); // Source's replacement active conversation collides.
+		home = { session: b, convId: moved.id };
+		const signal = new AbortController().signal;
+		await expect(
+			bound.spawnSubagent(
+				"task",
+				"probe",
+				"/project",
+				undefined,
+				null,
+				"c1",
+				false,
+				"off",
+				"manual",
+				"none",
+				undefined,
+				signal,
+			),
+		).resolves.toBe("new-child");
+		expect(a.spawnSubagentViaHost).not.toHaveBeenCalled();
+		expect(b.spawnSubagentViaHost).toHaveBeenCalledWith(
+			"task",
+			"probe",
+			"/project",
+			undefined,
+			null,
+			"c2",
+			false,
+			"off",
+			"manual",
+			"none",
+			undefined,
+			signal,
+		);
+		a.findConversationHome = () => undefined;
+		expect(() => bound.spawnSubagent("task", "probe", "/project")).toThrow("no longer available");
+		expect(b.spawnSubagentViaHost).toHaveBeenCalledOnce();
+	});
 	it("stopping idle manual task cancels its request and inbox without interrupting descendants", async () => {
 		const a = holder("a"),
 			b = holder("b");

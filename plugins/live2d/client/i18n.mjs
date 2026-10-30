@@ -6,6 +6,7 @@ const DICT = {
 	zh: {
 		"topbar.toggle": "显示/隐藏看板娘 (Alt+L)",
 		"bubble.default": "你好呀！今天想写点什么代码呢？",
+		"bubble.thought_label": "心声",
 		"bubble.thinking": "正在认真思考中...",
 		"bubble.done": "回答完成啦！",
 		"bubble.error": "呜，好像遇到了一点小麻烦...",
@@ -90,6 +91,7 @@ const DICT = {
 	en: {
 		"topbar.toggle": "Toggle Live2D Companion (Alt+L)",
 		"bubble.default": "Hello! What are we coding today?",
+		"bubble.thought_label": "Inner Voice",
 		"bubble.thinking": "Thinking carefully...",
 		"bubble.done": "Done! Hope it helps!",
 		"bubble.error": "Oops, something went wrong...",

@@ -1,5 +1,5 @@
 import { execFileSync, spawn, type ChildProcessWithoutNullStreams } from "node:child_process";
-import { existsSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import { existsSync, mkdtempSync, rm, writeFileSync } from "node:fs";
 import { release, tmpdir } from "node:os";
 import { join } from "node:path";
 import { windowsDesktopScript } from "./native-desktop/windows.js";
@@ -142,6 +142,113 @@ export function nativeDesktopStatus(): { supported: boolean; backend: string; re
 	};
 }
 
+/** Explicit local permission action; callers must enforce local-device access. */
+export async function requestNativeDesktopPermissions(
+	kind: "screen" | "control",
+	signal?: AbortSignal,
+): Promise<{ screen: boolean; accessibility: boolean }> {
+	if (signal?.aborted) throw new Error("Native desktop permission request aborted.");
+	if (process.platform !== "darwin") throw new Error("Native desktop permission requests require macOS.");
+	if (kind !== "screen" && kind !== "control") throw new Error("Invalid native desktop permission kind.");
+	const status = nativeDesktopStatus();
+	if (!status.supported) throw new Error(status.reason);
+	return new Promise((resolve, reject) => {
+		let directory: string | undefined;
+		let child: ChildProcessWithoutNullStreams | undefined;
+		let settled = false;
+		let closed = false;
+		let stdout = Buffer.alloc(0);
+		let stderr = Buffer.alloc(0);
+		let timeout: ReturnType<typeof setTimeout> | undefined;
+		let killTimer: ReturnType<typeof setTimeout> | undefined;
+		function cleanup() {
+			closed = true;
+			clearTimeout(timeout);
+			clearTimeout(killTimer);
+			signal?.removeEventListener("abort", abort);
+			// Never remove a running helper's script, or block the event loop on retries.
+			if (directory) rm(directory, { recursive: true, force: true, maxRetries: 2 }, () => {});
+		}
+		function fail(error: Error) {
+			if (settled) return;
+			settled = true;
+			clearTimeout(timeout);
+			signal?.removeEventListener("abort", abort);
+			if (child && !closed) {
+				child.kill("SIGTERM");
+				if (!closed) {
+					killTimer = setTimeout(() => child?.kill("SIGKILL"), 1500);
+					killTimer.unref();
+				}
+			}
+			reject(error);
+		}
+		function abort() {
+			fail(new Error("Native desktop permission request aborted."));
+		}
+		try {
+			directory = mkdtempSync(join(tmpdir(), "pi-native-desktop-"));
+			const path = join(directory, "capture.swift");
+			writeFileSync(path, macDesktopScript, { mode: 0o600 });
+			child = spawn("/usr/bin/swift", [path, `permissions-${kind}`], {
+				stdio: ["pipe", "pipe", "pipe"],
+				windowsHide: true,
+			});
+			child.stdout.on("data", (chunk: Buffer) => {
+				if (settled) return;
+				if (stdout.length + chunk.length > 4096) {
+					fail(new Error("Native desktop permission response exceeds 4 KB."));
+					return;
+				}
+				stdout = Buffer.concat([stdout, chunk]);
+			});
+			child.stderr.on("data", (chunk: Buffer) => {
+				if (!settled) stderr = Buffer.concat([stderr, chunk.subarray(-8192)]).subarray(-8192);
+			});
+			child.stdout.on("error", (error) => fail(error));
+			child.stderr.on("error", (error) => fail(error));
+			child.stdin.on("error", (error) => fail(error));
+			child.on("error", (error) => fail(error));
+			child.on("close", (code, exitSignal) => {
+				cleanup();
+				if (settled) return;
+				settled = true;
+				if (code !== 0 || exitSignal) {
+					reject(
+						new Error(
+							stderr.toString("utf8").trim() || `Native desktop permission helper exited (${exitSignal || code}).`,
+						),
+					);
+					return;
+				}
+				try {
+					const result: unknown = JSON.parse(stdout.toString("utf8"));
+					if (
+						!result ||
+						typeof result !== "object" ||
+						!("screen" in result) ||
+						!("accessibility" in result) ||
+						typeof result.screen !== "boolean" ||
+						typeof result.accessibility !== "boolean"
+					) {
+						throw new Error("Invalid native desktop permission response.");
+					}
+					resolve({ screen: result.screen, accessibility: result.accessibility });
+				} catch {
+					reject(new Error("Invalid native desktop permission response."));
+				}
+			});
+			timeout = setTimeout(() => fail(new Error("Native desktop permission request timed out.")), 120000);
+			timeout.unref();
+			signal?.addEventListener("abort", abort, { once: true });
+			if (signal?.aborted) abort();
+		} catch (error) {
+			if (!child) cleanup();
+			fail(error instanceof Error ? error : new Error(String(error)));
+		}
+	});
+}
+
 /** Main-display JPEG stream. Read-only is immutable per handle and defaults to true. */
 export function startNativeDesktop(options: {
 	onFrame: (jpeg: Buffer) => void;
@@ -170,13 +277,7 @@ export function startNativeDesktop(options: {
 		closing = true;
 		clearTimeout(timer);
 		clearTimeout(watchdog);
-		if (directory) {
-			try {
-				rmSync(directory, { recursive: true, force: true, maxRetries: 2 });
-			} catch {
-				/* OS may retain a helper file briefly after exit. */
-			}
-		}
+		if (directory) rm(directory, { recursive: true, force: true, maxRetries: 2 }, () => {});
 		options.onClose();
 	}
 	function close() {

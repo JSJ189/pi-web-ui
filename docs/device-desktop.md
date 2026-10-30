@@ -13,7 +13,7 @@
 | Linux X11     | ffmpeg x11grab 采集，xdotool 输入                                         | DISPLAY/XAUTHORITY，ffmpeg，xdpyinfo 或 xrandr；仅查看可不安装 xdotool     |
 | Linux Wayland | 暂不支持                                                                  | 后续需接入 Portal/PipeWire，不能把 XWayland 当完整桌面                     |
 
-旧 `PI_DEVICE_VNC_*` 配置不再读取。macOS 在连接时由采集助手调用系统屏幕录制授权请求；开启控制时另请求辅助功能授权。未授权则尝试在被控 Mac 打开对应的隐私设置页，网页显示双语步骤。系统可能不重复弹窗；授权对象以 macOS 识别的实际宿主为准（终端、桌面应用或服务），不要在“＋”文件选择器中猜选程序。后台启动无法交互时，在本机先停原服务，再从终端运行项目的 `npm start` 并连接以触发授权。授权后重启实际服务，再连接。当前 Windows 已实机验证，macOS/Linux 尚需目标机器实机验证。
+旧 `PI_DEVICE_VNC_*` 配置不再读取。macOS 权限申请由被控 Mac 本机的「设备中心 → 本机远程桌面」发起：点击“授予屏幕录制权限”或“授予远程控制权限”，再在 macOS 弹窗或设置中确认。仅查看需要屏幕录制，控制还需辅助功能。远端连接仅检查权限，不请求授权或打开系统设置。本机申请会尝试打开未获授权的对应设置页；系统可能不重复弹窗，授权对象以 macOS 识别的实际宿主为准。请勿在“＋”文件选择器中猜选程序。系统要求重启时，重启实际服务再连接。当前 Windows 已实机验证，macOS/Linux 尚需目标机器实机验证。
 
 ## 宿主接入和权限
 
@@ -21,14 +21,17 @@
 
 HTTP/WS 独立检查物理回环来源、回环 Host、本机鉴权与存在时的精确 Origin。设置写入另要求 Origin；连接器重写固定的本机 Host/Origin 并注入本机凭据，Hub 校验账号和设备归属。公网建议使用 HTTPS/WSS。
 
-| 路径                                   | 用途                               |
-| -------------------------------------- | ---------------------------------- |
-| GET /desktop                           | 自包含浏览器页面                   |
-| GET /api/device-desktop/status         | 平台支持、启用状态和诊断原因       |
-| GET /api/device-desktop/setup/status   | 兼容状态入口                       |
-| POST /api/device-desktop/setup/enable  | 持久设置 `{enabled:boolean}`       |
-| POST /api/device-desktop/setup/install | 兼容入口，报告无需安装组件         |
-| WS /desktop-ws?viewOnly=1              | 默认只读；显式 viewOnly=0 开启控制 |
+| 路径                                       | 用途                               |
+| ------------------------------------------ | ---------------------------------- |
+| GET /desktop                               | 自包含浏览器页面                   |
+| GET /api/device-desktop/status             | 平台支持、启用状态和诊断原因       |
+| GET /api/device-desktop/setup/status       | 兼容状态入口                       |
+| GET /api/device-desktop/local/status       | 仅设备本机设置页的状态             |
+| POST /api/device-desktop/local/permissions | 仅本机请求 screen/control 系统权限 |
+| POST /api/device-desktop/local/enable      | 仅本机启用或关闭远程桌面           |
+| POST /api/device-desktop/setup/enable      | 持久设置 `{enabled:boolean}`       |
+| POST /api/device-desktop/setup/install     | 兼容入口，报告无需安装组件         |
+| WS /desktop-ws?viewOnly=1                  | 默认只读；显式 viewOnly=0 开启控制 |
 
 只读由服务端和原生助手按连接强制；有设备访问权限的用户可显式创建控制连接，因此它不是账号级只读授权。切换只读会重新连接。状态 `available` 只表示已启用且运行时可用；系统权限和图形会话仍需捕获启动验证。
 

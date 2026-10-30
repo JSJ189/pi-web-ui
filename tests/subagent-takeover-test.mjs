@@ -30,6 +30,10 @@ import { spawn } from "node:child_process";
 import { setTimeout as sleep } from "node:timers/promises";
 import WebSocket from "ws";
 import { freePort } from "./lib/port-utils.mjs";
+import { ensureBuild } from "./lib/ensure-build.mjs";
+
+const repoRoot = realpathSync(new URL("../", import.meta.url));
+ensureBuild(repoRoot, "subagent-takeover-test");
 
 const PORT = Number(process.argv[2] || 8997);
 const MOCK_PORT = PORT + 1;
@@ -182,7 +186,6 @@ writeFileSync(
 	}),
 );
 
-const repoRoot = realpathSync(new URL("../", import.meta.url));
 const server = spawn(process.execPath, ["dist/server/index.js"], {
 	cwd: repoRoot,
 	env: {
@@ -289,7 +292,7 @@ const waitRow = async (c, pred, what, timeout = 20000) => {
 		if (row) return row;
 		await sleep(100);
 	}
-	throw new Error(`[${c.name}] timeout waiting for row: ${what}`);
+	throw new Error(`[${c.name}] timeout waiting for row: ${what}; rows=${JSON.stringify(c.conversations)}`);
 };
 const waitLines = async (f, pred, what, timeout = 60000) => {
 	const started = Date.now();

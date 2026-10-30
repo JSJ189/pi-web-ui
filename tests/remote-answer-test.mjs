@@ -12,7 +12,7 @@
 //   3. 问卷已不在时再 peek → 明确通知（答案不吞不丢）；
 //   4. 本页 answered 集合不受跨页 id 污染（回归：两边计数器都从 q1 起）。
 //
-// Usage: npm run build && node tests/remote-answer-test.mjs [port]
+// Usage: node tests/remote-answer-test.mjs [port]（已有构建时设置 PI_WEB_SMOKE_PREBUILT=1）
 import { createServer } from "node:http";
 import { mkdtempSync, mkdirSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
@@ -22,6 +22,10 @@ import { spawn } from "node:child_process";
 import { setTimeout as sleep } from "node:timers/promises";
 import WebSocket from "ws";
 import { freePort } from "./lib/port-utils.mjs";
+import { ensureBuild } from "./lib/ensure-build.mjs";
+
+const repoRoot = realpathSync(new URL("../", import.meta.url));
+ensureBuild(repoRoot, "remote-answer-test");
 
 const PORT = Number(process.argv[2] || 8992);
 const MOCK_PORT = PORT + 1;
@@ -124,12 +128,12 @@ writeFileSync(
 	}),
 );
 
-const repoRoot = realpathSync(new URL("../", import.meta.url));
 const server = spawn(process.execPath, ["dist/server/index.js"], {
 	cwd: repoRoot,
 	env: {
 		...process.env,
 		PI_WEB_PORT: String(PORT),
+		PI_WEB_SDK: "bundled",
 		// 本测试只验其它功能；工具延迟加载默认开会让非核心工具不活跃，这里按部署默认关掉它。
 		PI_WEB_TOOL_LAZY_LOADING: "0",
 		PI_WEB_DATA_DIR: dataDir,
@@ -252,7 +256,19 @@ try {
 	// A 提问挂起（run 阻塞在等人类回答）→ 已打开的 B 页必须实时看到 `?`。
 	// 回归：问卷挂起/解决不改变流式集合，签名不变就不推，别处页面永远看不到。
 	clientA.send({ type: "prompt", text: "先问我几个问题" });
-	const pendingA = await clientA.waitForType("question_pending", () => true, 40000);
+	const queueA = await clientA.waitForType(
+		"question_queue",
+		(m) => m.questions.some((q) => q.conversationId === clientA.state.conversationId && q.audience === "user"),
+		40000,
+	);
+	const pendingA = queueA.questions.find(
+		(q) => q.conversationId === clientA.state.conversationId && q.audience === "user",
+	);
+	const queueB = await clientB.waitForType("question_queue", (m) => m.questions.some((q) => q.id === pendingA.id));
+	check(
+		"B 的项目队列收到同一问卷及持有方",
+		queueB.questions.some((q) => q.id === pendingA.id && q.owner === "remote-A"),
+	);
 	check("A 问卷挂起", pendingA.questions?.length === 2, `id=${pendingA.id}`);
 	await clientA.waitForState((s) => s.isStreaming === true, 15000);
 	const convA = clientA.state.conversationId;
@@ -314,6 +330,8 @@ try {
 		}
 		check("A 页旧对话框同步收起", retracted);
 	}
+	await clientB.waitForType("question_queue", (m) => !m.questions.some((q) => q.id === pendingA.id));
+	check("跨页回答后 B 的项目队列移除问卷", true);
 	{
 		const started = Date.now();
 		let cleared = false;

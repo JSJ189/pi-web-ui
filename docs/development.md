@@ -67,6 +67,10 @@ GitHub Actions ubuntu-latest（`.github/workflows/ci.yml`，push/PR → main 触
 
 **绝对不要杀全局进程/占 8787**：禁止 `pkill -f "dist/server/index.js"`——它会命中全局 server（端口 8787），把用户正在用的会话打断。清理只针对**自己启动的测试 server**。
 
+### 单测并发与浏览器等待
+
+`vitest.config.ts` 将 worker 上限设为 4，避免全量测试中的 Chrome、文件扫描与子进程争用 runner 资源。浏览器启动预算应独立于业务断言；跨 frame 的消息、URL 或 DOM 更新须等待对应可观察状态，不以另一个异步事件完成代替目标状态已更新。
+
 ### 隔离端口
 
 每个 `*-test.mjs` 用独立端口（≥8900，避开 8787/5173/3300），并在启动 server 前先 `lsof -ti :PORT -sTCP:LISTEN` 确认空闲；若被占，改端口而非硬杀。

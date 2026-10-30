@@ -42,9 +42,12 @@ function onPluginData(e) {
 		if (action === "expression") {
 			widget.stage?.playExpression(payload.name);
 			if (payload.text) widget.showBubble(payload.text, payload.duration || 4000);
+		} else if (action === "thought") {
+			if (payload.expression) widget.stage?.playExpression(payload.expression);
+			widget.showThought(payload.text, payload.duration || 5000);
 		} else if (action === "bubble" || action === "message") {
 			if (payload.expression) widget.stage?.playExpression(payload.expression);
-			widget.showBubble(payload.text, payload.duration || 4000);
+			widget.showBubble(payload.text, payload.duration || 4000, { isThought: Boolean(payload.thought) });
 		} else if (action === "mode") {
 			if (payload.mode === "mouse" || payload.mode === "idle") {
 				widget.config.mode = payload.mode;

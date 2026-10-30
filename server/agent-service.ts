@@ -6694,6 +6694,38 @@ export class ClientSession {
 		};
 		return {
 			...this.subagentHost,
+			spawnSubagent: (
+				prompt,
+				type,
+				cwd,
+				templateName,
+				model,
+				_parentId,
+				persist,
+				thinking,
+				notifyOnDone,
+				isolation,
+				extra,
+				signal,
+			) => {
+				// Resolve by runtime identity: a moved parent's new id can also name
+				// the replacement conversation in the original client.
+				const home = current();
+				return home.session.spawnSubagentViaHost(
+					prompt,
+					type,
+					cwd,
+					templateName,
+					model,
+					home.convId,
+					persist,
+					thinking,
+					notifyOnDone,
+					isolation,
+					extra,
+					signal,
+				);
+			},
 			handoffSubagent: async (_from, to, payload) => {
 				const home = current();
 				await home.session.communicate(home.convId, "send", { to, message: payload });

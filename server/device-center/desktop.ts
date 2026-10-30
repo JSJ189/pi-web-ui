@@ -4,7 +4,12 @@ import type { Duplex } from "node:stream";
 import { WebSocket, WebSocketServer } from "ws";
 import { desktopPage } from "./desktop-page.js";
 import { createDesktopSetup } from "./desktop-setup.js";
-import { nativeDesktopStatus, startNativeDesktop, type NativeDesktopInput } from "./desktop-native.js";
+import {
+	nativeDesktopStatus,
+	startNativeDesktop,
+	requestNativeDesktopPermissions,
+	type NativeDesktopInput,
+} from "./desktop-native.js";
 import { linuxDesktopStatus, startLinuxDesktop } from "./desktop-linux.js";
 
 export const DESKTOP_LIMITS = Object.freeze({
@@ -56,6 +61,10 @@ export interface DeviceDesktopOptions {
 	native?: {
 		status: () => { supported: boolean; backend: string; reason?: string };
 		start: (options: CaptureOptions) => Capture;
+		permissions?: (
+			kind: "screen" | "control",
+			signal?: AbortSignal,
+		) => Promise<{ screen: boolean; accessibility: boolean }>;
 	};
 }
 
@@ -109,6 +118,8 @@ export function createDeviceDesktop({ app, authorize, env = process.env, dataDir
 		(process.platform === "linux"
 			? { status: linuxDesktopStatus, start: startLinuxDesktop }
 			: { status: nativeDesktopStatus, start: startNativeDesktop });
+	const requestPermissions = native?.permissions ?? requestNativeDesktopPermissions;
+	const permissionControllers = new Set<AbortController>();
 	const installation = {
 		state: "not-required",
 		log: "Native desktop capture does not require browser component installation.",
@@ -145,7 +156,8 @@ export function createDeviceDesktop({ app, authorize, env = process.env, dataDir
 			res.status(403).end("Desktop authorization required");
 			return;
 		}
-		if (req.path.startsWith("/api/device-desktop/setup/")) return next();
+		if (req.path.startsWith("/api/device-desktop/local/") || req.path.startsWith("/api/device-desktop/setup/"))
+			return next();
 		if (req.method !== "GET") {
 			res.status(405).end();
 			return;
@@ -172,6 +184,68 @@ export function createDeviceDesktop({ app, authorize, env = process.env, dataDir
 		}
 		next();
 	};
+	// Both Hub and connector reject these routes. Require a loopback browser as well.
+	const localGuard: express.RequestHandler = (req, res, next) => {
+		if (!allowed(req) || req.headers["sec-fetch-site"] === "cross-site") {
+			res.status(403).json({ error: "Open Device Center on this device to manage desktop permissions." });
+			return;
+		}
+		next();
+	};
+	app.get("/api/device-desktop/local/status", localGuard, (_req, res) =>
+		res.json({ ...status(), permissions: { supported: process.platform === "darwin" } }),
+	);
+	app.post(
+		"/api/device-desktop/local/permissions",
+		localGuard,
+		setupGuard,
+		express.json({ limit: 256 }),
+		async (req, res) => {
+			if (!req.body || !["screen", "control"].includes(req.body.kind) || Object.keys(req.body).length !== 1) {
+				res.status(400).json({ error: "Expected screen or control permission kind" });
+				return;
+			}
+			if (process.platform !== "darwin" && !native?.permissions) {
+				res.status(400).json({ error: "System permission requests are available on macOS only." });
+				return;
+			}
+			if (permissionControllers.size) {
+				res.status(409).json({ error: "A system permission request is already running." });
+				return;
+			}
+			const controller = new AbortController();
+			permissionControllers.add(controller);
+			const abort = () => {
+				if (!res.writableEnded) controller.abort();
+			};
+			res.on("close", abort);
+			try {
+				const permissions = await requestPermissions(req.body.kind, controller.signal);
+				if (!controller.signal.aborted && !closed) res.json(permissions);
+			} catch (error) {
+				if (!controller.signal.aborted && !closed)
+					res
+						.status(500)
+						.json({ error: error instanceof Error ? error.message : "Could not request system permissions." });
+			} finally {
+				res.off("close", abort);
+				permissionControllers.delete(controller);
+			}
+		},
+	);
+	app.post("/api/device-desktop/local/enable", localGuard, setupGuard, express.json({ limit: 256 }), (req, res) => {
+		if (!req.body || typeof req.body.enabled !== "boolean" || Object.keys(req.body).length !== 1) {
+			res.status(400).json({ error: "Expected only enabled boolean" });
+			return;
+		}
+		try {
+			setup.setEnabled(req.body.enabled);
+			if (!setup.enabled) for (const cleanup of bridges) cleanup();
+			res.json(status());
+		} catch {
+			res.status(500).json({ error: "Could not save desktop settings" });
+		}
+	});
 	app.post("/api/device-desktop/setup/install", setupGuard, (_req, res) => res.json({ installation }));
 	app.post("/api/device-desktop/setup/enable", setupGuard, express.json({ limit: 256 }), (req, res) => {
 		if (!req.body || typeof req.body.enabled !== "boolean" || Object.keys(req.body).length !== 1) {
@@ -323,6 +397,7 @@ export function createDeviceDesktop({ app, authorize, env = process.env, dataDir
 			if (closed) return;
 			closed = true;
 			setup.close();
+			for (const controller of permissionControllers) controller.abort();
 			for (const cleanup of bridges) cleanup();
 			wss.close();
 		},

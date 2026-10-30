@@ -7,6 +7,8 @@
  * - Outbound Markdown chunk delivery on run_end
  */
 
+import { tmpdir } from "node:os";
+import { join } from "node:path";
 import { describe, expect, it, vi } from "vitest";
 import {
 	extractInboundText,
@@ -207,19 +209,21 @@ describe("FeishuBotBridge 双工通信流程测试", () => {
 	});
 
 	it("支持配置默认项目根目录 workspace 以及通过 /cwd 指令动态切换工作目录并透传给 host.chat", async () => {
-		const chatSpy = vi.fn().mockResolvedValue({ conversationId: "conv_cwd_1" });
+		const configuredWorkspace = join(tmpdir(), "feishu-configured-workspace");
+		const customWorkspace = join(tmpdir(), "feishu-custom-user-project");
+		const chatSpy = vi.fn().mockResolvedValue({ conversationId: "conv_cwd_1", runId: "run_cwd_1" });
 		const replySpy = vi.fn().mockResolvedValue({ success: true });
 
 		const bridge = new FeishuBotBridge({
 			host: {
-				cwd: "E:/default-host-cwd",
+				cwd: join(tmpdir(), "feishu-default-host-cwd"),
 				chat: chatSpy,
 				onRunEvent: () => () => {},
 			},
 			getConfig: () => ({
 				appId: "cli_123",
 				appSecret: "sec_123",
-				workspace: "E:/configured-workspace",
+				workspace: configuredWorkspace,
 			}),
 			sendMessage: vi.fn(),
 			replyMessage: replySpy,
@@ -246,17 +250,17 @@ describe("FeishuBotBridge 双工通信流程测试", () => {
 			expect.anything(),
 			expect.objectContaining({
 				messageId: "om_cwd_1",
-				text: expect.stringContaining("E:/configured-workspace"),
+				text: expect.stringContaining(configuredWorkspace),
 			}),
 		);
 
-		// 2. 发送 /cwd E:/custom-user-project 切换项目根目录
+		// 2. 使用宿主平台的绝对路径切换项目根目录
 		await bridge.onInboundMessage({
 			message: {
 				message_id: "om_cwd_2",
 				chat_id: "oc_1",
 				message_type: "text",
-				content: JSON.stringify({ text: "/cwd E:/custom-user-project" }),
+				content: JSON.stringify({ text: `/cwd ${customWorkspace}` }),
 			},
 			sender: {
 				sender_type: "user",
@@ -267,7 +271,7 @@ describe("FeishuBotBridge 双工通信流程测试", () => {
 			expect.anything(),
 			expect.objectContaining({
 				messageId: "om_cwd_2",
-				text: expect.stringContaining("E:/custom-user-project"),
+				text: expect.stringContaining(customWorkspace),
 			}),
 		);
 
@@ -287,7 +291,7 @@ describe("FeishuBotBridge 双工通信流程测试", () => {
 		expect(chatSpy).toHaveBeenCalledWith(
 			expect.objectContaining({
 				text: "请列出当前目录下的文件",
-				cwd: "E:/custom-user-project",
+				cwd: customWorkspace,
 			}),
 		);
 

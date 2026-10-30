@@ -198,8 +198,12 @@ try {
 		"缺省取用 = 全局回落（不认识 clientId 也一样）",
 		fb.fallback?.sessionFile === a1.sessionFile || fb.fallback?.sessionFile === a2.sessionFile,
 	);
-	const scopedUnknown = (await active("no-such-tab")).scoped;
-	check("clientId 不认识 → 回落全局", scopedUnknown?.sessionFile === fb.fallback?.sessionFile);
+	const unknown = await active("no-such-tab");
+	check(
+		"clientId 不认识 → 回落全局",
+		unknown.scoped?.sessionFile === unknown.fallback?.sessionFile,
+		JSON.stringify({ scoped: unknown.scoped, fallback: unknown.fallback }),
+	);
 
 	// --- 模型切换事件（不发任何消息） ---
 	const ofTab = (list, cid) => list.filter((e) => e.clientId === cid);

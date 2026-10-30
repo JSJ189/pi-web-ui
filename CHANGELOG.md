@@ -12,6 +12,42 @@
 
 暂无未发布内容。
 
+## [0.114.0] — 2026-10-30
+
+### Added
+
+- **设备中心与跨设备协作**：新增独立 Hub、本机连接器与设备配对引导；通过单端口访问隔离的设备页面，支持群组项目工作区、目录选择与跨设备文件预览导入。
+- **项目 Bot 群任务**：群成员使用固定项目根的 Bot，可选择模型、工具、Skill 与 MCP 能力；显式 @ 派发任务，回复标识来源并隔离执行会话。
+- **原生远程桌面**：Windows、macOS 与 Linux X11 通过现有 WebSocket 传输桌面画面，提供本机权限设置入口及安装引导。
+- **远程 MCP OAuth**：支持登录授权并复用 pi 的 OAuth 凭据，覆盖刷新、取消与共享凭据持久化（#786）。
+- **对话通信与问卷队列**：统一会话消息、请求和答复，增加项目问卷队列、展示方式与超时设置。
+- **Live2D 心声气泡**：插件升级至 v0.1.16，支持心声内联标记、情绪与显示时长配置。
+
+### Fixed
+
+- **待发消息投递**：支持同批投递排队的 steering 与 follow-up 消息，避免遗漏（#790）。
+- **设备群组与运行态**：修复群组选中、提及菜单、远端工作区访问、重复目录卡片及已完成 Bot 的工具刷新归属问题。
+- **MCP 凭据一致性**：共享凭据文件仅限所有者访问，串行更新并阻止取消或过期刷新覆盖有效凭据。
+- **工作区与沙盒持久化**：修复工作区回归问题，统一沙盒原子保存并强化运行态边界。
+
+### Changed
+
+- **远程桌面传输**：替换 VNC 桥接，采用原生采集与输入控制；macOS 权限仅由设备本机设置发起。
+- **使用与安装文档**：精简多语言 README，补充设备中心、桌面权限与安装说明。
+
+<!-- auto-i18n:start -->
+
+### i18n
+
+- 前端新增 key（221）：`presetPluginsTitle`、`presetPluginsExportHint`、`presetPluginsLocal`、`presetPluginsInstallHint`、`presetPluginsConfirm`、`presetPluginsMissing`、`presetPluginsDisabled`、`presetPluginsInstalled`、`presetPluginsVersion`、`presetPluginsNoSource`、`presetPluginsInstalledCode`、`presetPluginsFailed`、`presetPluginsInstalling`、`presetPluginsRetry`、`presetPluginsInstall`、`presetImportName`、`presetImportTemplateWarning`、`presetImportClears`、`presetImportWorking`、`presetImportSaved`、`presetImportApplyDeferred`、`presetImportApplied`、`presetImportApplyFailed`、`presetShareManualSubmission`、`presetShareCreated`、`moreCopyOptions`、`mcpOAuthLogin`、`mcpOAuthStarting`、`mcpOAuthComplete`、`mcpOAuthError`、`mcpOAuthInstructions`、`mcpOAuthOpen`、`mcpOAuthWaiting`、`mcpOAuthFinishing`、`mcpOAuthRedirect`、`mcpOAuthFinish`、`mcpOAuthInvalidRedirect`、`mcpStatusOverridden`、`mcpStatusPreviousConfig`、`notifyEventSettings`、`notifyEventSettingsDesc`、`notifyEventFollow`、`notifyEventOn`、`notifyEventOff`、`notifyStartTitle`、`notifyStartBody`、`sound.subagentDone`、`sound.subagentDone.desc`、`steeringDeliverAll`、`steeringDeliverAllDesc`、`followUpDeliverAll`、`followUpDeliverAllDesc`、`deviceCenter`、`deviceCenterTip`、`deviceSetupBackground`、`deviceSetupRestored`、`deviceSetupUnhealthy`、`deviceSetupRecovery`、`deviceSetupAiCreating`、`deviceSetupAiFailed`、`deviceSetupWelcome`、`deviceSetupIntro`、`deviceSetupConnect`、`deviceSetupCreate`、`deviceSetupTarget`、`deviceSetupCurrent`、`deviceSetupRemote`、`deviceSetupNoServer`、`deviceSetupNoServerHint`、`deviceSetupCurrentHint`、`deviceSetupRemoteHint`、`deviceSetupPlan`、`deviceSetupPlanHint`、`deviceSetupEnvironment`、`deviceSetupDataDir`、`deviceSetupCli`、`deviceSetupLocalOnly`、`deviceSetupRetry`、`deviceSetupHost`、`deviceSetupPort`、`deviceSetupReachable`、`deviceSetupRegistration`、`deviceSetupInvalid`、`deviceSetupCliHint`、`deviceSetupInstalling`、`deviceSetupInstall`、`deviceSetupAi`、`deviceSetupAiHint`、`deviceSetupFailed`、`deviceSetupSuccess`、`deviceSetupPair`、`deviceSetupNext`、`deviceSetupNextHint`、`deviceSetupManage`、`deviceSetupBusy`、`deviceHubTitle`、`deviceHubSubtitle`、`deviceHubOverview`、`deviceHubSettings`、`deviceHubGroups`、`localBotSyncFailed`、`localBotSaved`、`localBotTitle`、`localBotCreate`、`localBotHint`、`localBotEnabled`、`localBotDisabled`、`localBotName`、`localBotDescription`、`localBotSystemPrompt`、`localBotCwd`、`localBotTools`、`localBotSkills`、`localBotMcpServers`、`localBotPermissions`、`localBotIdentityHint`、`localBotRuntimeHint`、`localBotPermissionsHint`、`localBotPrivatePrompt`、`localBotIdentity`、`localBotRuntime`、`localBotModel`、`localBotInheritModel`、`localBotSelected`、`localBotSearch`、`localBotSelectAll`、`localBotClear`、`localBotUnavailable`、`localBotUnverified`、`localBotOptionsLoading`、`localBotNoOptions`、`localBotMcpDisabled`、`localBotSelectVisible`、`localBotReload`、`localBotMcpNotLoaded`、`localBotOptionsInvalid`、`localBotEnable`、`localBotSave`、`localBotCancel`、`localBotDeleteConfirm`、`localBotDelete`、`deviceHubUnpaired`、`deviceHubOnline`、`deviceHubOffline`、`deviceHubLoading`、`deviceHubLocalOnly`、`deviceHubRetry`、`deviceHubPairTitle`、`deviceHubPairHint`、`deviceHubHubUrl`、`deviceHubHubPlaceholder`、`deviceHubName`、`deviceHubNamePlaceholder`、`deviceHubGetCode`、`deviceHubWorking`、`deviceHubStepDetails`、`deviceHubStepApprove`、`deviceHubStepWait`、`deviceHubCode`、`deviceHubCopy`、`deviceHubCopied`、`deviceHubCopyFailed`、`deviceHubOpenHub`、`deviceHubWaiting`、`deviceHubExpires`、`deviceHubExpired`、`deviceHubNewCode`、`deviceHubDeviceTitle`、`deviceHubDeviceId`、`deviceHubPermissions`、`deviceHubPermissionLabel`、`deviceHubPermissionHint`、`deviceHubSaving`、`deviceHubSaved`、`deviceHubReadOnly`、`deviceHubEnabled`、`deviceHubAdvanced`、`deviceHubDisconnect`、`deviceHubDisconnectHint`、`deviceHubDisconnectConfirm`、`deviceHubHelpTitle`、`deviceHubHelpText`、`deviceHubInvalidUrl`、`deviceHubInvalidName`、`deviceHubRequestFailed`、`deviceHubNetworkError`、`deviceHubStatusError`、`deviceHubPairError`、`deviceHubPollError`、`deviceHubPermissionError`、`deviceHubDisconnectError`、`questionQueueTitle`、`questionQueueOpen`、`questionQueueNavigate`、`questionQueueDefer`、`questionPresentation`、`questionPresentationDesc`、`questionPresentationQueue`、`questionPresentationAll`、`questionPresentationManual`、`questionTimeoutSeconds`、`questionTimeoutSecondsDesc`、`folderUploadWaiting`、`folderUploadSending`、`fileUploadReading`、`fileUploadWaiting`、`fileUploadFailed`、`fileUploadReadFailed`、`fileUploadSendFailed`、`fileUploadDismiss`、`fileUploadConfirmed`、`fileUploadOutcomeUnknown`、`uploadReading`、`uploadPreparing`、`chatUploadMaxMb`、`workspaceUploadMaxMb`、`folderUploadMaxMb`、`uploadMaxMbHint`、`toolsDeviceCollabDesc`、`toolsDeviceCollabOffHint`、`sandboxDiffRefresh`
+- 前端删除 key（6）：`mcpArgsPlaceholder`、`conversationReadEnabledDesc`、`conversationReadOffHint`、`presetSharePopupBlocked`、`presetShareBrowserCopied`、`presetImportImported`
+- 前端中文变更（21）：`reaskDirectly`、`reaskDirectlyTip`、`editReaskTip`、`forkSessionTip`、`rollbackSessionTip`、`mcpStatusStopped`、`sound.done.desc`、`toolsSectionSubagent`、`toolsSubagentDepHint`、`toolDescSubagent`、`sandboxModalSubtitle`、`sandboxModeBlankDesc`、`sandboxModeImportDesc`、`sandboxBannerSourceDesc`、`sandboxBannerBlankDesc`、`sandboxActionApplySourceTip`、`sandboxActionApplyConfirm`、`sandboxDiffStats`、`sandboxDiffEmpty`、`sandboxDiffDeletedNote`、`sandboxEnabledDesc`
+- 前端英文变更（19）：`reaskDirectlyTip`、`editReaskTip`、`forkSessionTip`、`rollbackSessionTip`、`sound.done.desc`、`toolsSectionSubagent`、`toolsSubagentDepHint`、`toolDescSubagent`、`sandboxModalSubtitle`、`sandboxModeBlankDesc`、`sandboxModeImportDesc`、`sandboxBannerSourceDesc`、`sandboxBannerBlankDesc`、`sandboxActionApplySourceTip`、`sandboxActionApplyConfirm`、`sandboxDiffStats`、`sandboxDiffEmpty`、`sandboxDiffDeletedNote`、`sandboxEnabledDesc`
+- 服务端文案变更（4）：`subagents.action.missing`、`subagents.action.unknown`、`terminals.wait.not.found`、`terminals.wait.no.pending`
+- 服务端删除 key（4）：`dsh.prompt.context.full`、`dsh.prompt.context.edit.reask`、`terminals.bash.aborted`、`terminals.bash.timeout`
+
+<!-- auto-i18n:end -->
+
 ## [0.113.1] — 2026-10-29
 
 ### Added
@@ -32,6 +68,7 @@
 - **全局文件搜索与路径嗅探**：支持带波浪号（`~`）主目录路径与绝对路径的精确探测；修复长输出卡顿与控制台多余告警。
 
 <!-- auto-i18n:start -->
+
 ### i18n
 
 - 本版无文案增量（相对 v0.113.0，已核查）。
@@ -62,6 +99,7 @@
 - **界面细节**：设置面板格式化、composer 高度自适应与拖拽手柄文案、文件差异卡在流式期间的渲染稳定性。
 
 <!-- auto-i18n:start -->
+
 ### i18n
 
 - 前端新增 key（36）：`composerResizeFixed`、`mcpMarketVisit`、`mcpMarketCopyLink`、`mcpMarketCopied`、`mcpMarketEmpty`、`mcpMarketEmptyClear`、`mcpCatAll`、`mcpCatCn`、`mcpCatMarketplace`、`mcpCatCommunity`、`mcpCatOfficial`、`skillMarketNoticeTitle`、`skillMarketNoticeDesc`、`skillMarketVisit`、`skillMarketCopyLink`、`skillMarketCopied`、`skillMarketEmpty`、`skillMarketEmptyClear`、`skillCatOfficial`、`skillCatMarketplace`、`skillCatCommunity`、`skillCatDirectory`、`diffViewUnified`、`diffViewSplit`、`diffViewRaw`、`diffNewFile`、`diffOpenFile`、`diffCopyContent`、`diffCopyPatch`、`diffStreaming`、`diffEmptyHunks`、`diffFullscreen`、`diffRestoreScreen`、`skillClickToInspect`、`copySkillContent`、`copiedSkillContent`
@@ -70,6 +108,7 @@
 - 前端英文变更（7）：`composerResize`、`mcpMarketSearchPlaceholder`、`skillEmptyDesc`、`skillMarketSearchPlaceholder`、`skillCatAll`、`skillFullTextShort`、`skillContentLoading`
 - 服务端新增 key（14）：`subagents.dismiss.unsupported`、`subagents.dismiss.missing.target`、`subagents.dismiss.finished_all.empty`、`subagents.dismiss.not_found`、`subagents.dismiss.self`、`subagents.dismiss.active`、`subagents.dismiss.not_descendant`、`subagents.dismiss.persisted`、`subagents.dismiss.running`、`subagents.dismiss.worktree.dirty`、`subagents.dismiss.failed`、`subagents.dismiss.success.single`、`subagents.dismiss.none`、`subagents.dismiss.success.batch`
 - 服务端文案变更（2）：`subagents.action.missing`、`subagents.action.unknown`
+
 <!-- auto-i18n:end -->
 
 ## [0.112.0] — 2026-10-26
@@ -98,6 +137,7 @@
 - **界面与交互**：修复引擎切换死键、滚轮翻页闭包、问卷串台、断线过渡遮罩与 TTS 卡顿（#740, #744）；历史按需加载不可变锚点翻页与过渡期沙箱隔离（#719, #735）；工具文案覆盖 snippet 预览与实发对齐；会话目录兼收专属子目录与扁平旧会话（#711）。
 
 <!-- auto-i18n:start -->
+
 ### i18n
 
 - 前端新增 key（27）：`dismissTerminalsConfirm`、`toolApprovalDshNotice`、`cmdInspectorTitle`、`cmdInspectorLines`、`cmdInspectorExpand`、`cmdInspectorCollapse`、`cmdInspectorRisk`、`cmdCopied`、`rejectWithNote`、`rejectWithNoteSubmit`、`rejectNotePlaceholder`、`rejectFeedbackPrefix`、`promptToggleEnabled`、`instanceName`、`instanceNameDesc`、`instanceNamePh`、`faviconColor`、`faviconColorDesc`、`faviconColorAuto`、`customColor`、`uiLayoutToolCardFooter`、`subagentMaxDepth`、`subagentMaxDepthDesc`、`subagentMaxDepthUnlimited`、`subagentAutoWakeMaxTurns`、`subagentAutoWakeMaxTurnsDesc`、`subagentAutoWakeMaxTurnsUnlimited`
@@ -107,6 +147,7 @@
 - 服务端新增 key（25）：`agent.subagent.worktree.remote_unsupported`、`agent.subagent.model.failed`、`agent.subagent.model.not.found`、`canvas.edge.self`、`canvas.edge.duplicate`、`subagents.notify.fallback`、`subagents.notify.header`、`subagents.notify.status.failed`、`subagents.notify.status.canceled`、`subagents.notify.status.done`、`subagents.notify.goal`、`subagents.notify.worktree`、`subagents.notify.worktree.cleaned`、`subagents.notify.worktree.preserved`、`subagents.notify.worktree.path`、`subagents.notify.summary`、`subagents.notify.footer`、`subagents.spawn.thinking.invalid`、`subagents.spawn.isolation.invalid`、`subagents.get.worktree.cleaned`、`subagents.get.worktree.preserved`、`terminals.operation.denied`、`terminals.input.edited_sent`、`terminals.key.edited_sent`、`worktree.isolation.not_git`
 - 服务端文案变更（5）：`delegate.started`、`subagents.spawn.started`、`subagents.get.running`、`subagents.get.done`、`terminals.command.blocked`
 - 服务端删除 key（2）：`prompt.guidelines.be.concise`、`prompt.guidelines.show.paths`
+
 <!-- auto-i18n:end -->
 
 ## [0.111.0] — 2026-10-24
@@ -2021,7 +2062,8 @@ when?, children?}`，也收 `topbar` / `settings` 这类简写别名）；宿主
 - 0.35.1（2026-08-27）：编辑重问保留附件（#18）+ 全窗口拖放（#19）。
 - 0.29.0（2026-08-23）：全局搜索弹窗（Ctrl+K）+ 消息列表惰性窗口化。
 
-[Unreleased]: https://github.com/xing-shuyin/pi-web-ui/compare/v0.113.0...main
+[Unreleased]: https://github.com/xing-shuyin/pi-web-ui/compare/v0.114.0...main
+[0.114.0]: https://github.com/xing-shuyin/pi-web-ui/compare/v0.113.1...v0.114.0
 [0.113.0]: https://github.com/xing-shuyin/pi-web-ui/releases/tag/v0.113.0
 [0.112.0]: https://github.com/xing-shuyin/pi-web-ui/releases/tag/v0.112.0
 [0.111.0]: https://github.com/xing-shuyin/pi-web-ui/releases/tag/v0.111.0

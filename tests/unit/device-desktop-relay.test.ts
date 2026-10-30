@@ -160,27 +160,27 @@ describe("desktop page macOS permission guidance", () => {
 		const p = await page("darwin", language);
 		expect(p.guide.hidden).toBe(false);
 		const guide = p.guide.textContent!;
-		for (const host of ["Terminal/iTerm", "pi-web-ui", "npm start", "+"]) expect(guide).toContain(host);
+		for (const host of ["pi-web-ui", "+"]) expect(guide).toContain(host);
 		for (const text of language === "zh-CN"
 			? [
 					"被控 Mac",
-					"隐私与安全性",
-					"屏幕录制与系统音频",
+					"设备中心",
+					"授予屏幕录制权限",
 					"辅助功能",
 					"仅查看",
-					"先停原服务",
-					"不一定显示弹窗",
-					"重启实际服务",
+					"远端连接不会触发授权",
+					"可能不重复弹窗",
+					"重启服务",
 				]
 			: [
 					"controlled Mac",
-					"Privacy & Security",
-					"Screen & System Audio Recording",
+					"Device Center",
+					"Grant screen recording permission",
 					"Accessibility",
-					"View only",
-					"stop the original service",
-					"may not show a prompt",
-					"restart the actual service",
+					"Viewing",
+					"Remote connections never request permission",
+					"may suppress repeat prompts",
+					"restart the service",
 				])
 			expect(guide).toContain(text);
 		expect(p.window.document.getElementById("setup-status")!.textContent).toContain(
@@ -229,7 +229,7 @@ describe("native desktop through device relay and connector", () => {
 			const browser = await chromium.launch({
 				executablePath: CHROME_PATH,
 				headless: true,
-				timeout: 5000,
+				timeout: 15_000,
 				args: ["--no-sandbox"],
 			});
 			cleanups.push(() => browser.close());
@@ -262,7 +262,7 @@ describe("native desktop through device relay and connector", () => {
 			await page.locator("#disconnect").click();
 			await vi.waitFor(() => expect(session.close).toHaveBeenCalledTimes(1));
 		},
-		15_000,
+		30_000,
 	);
 	it("rewrites local authorization and transports binary frames and read-only ACKs through the full tunnel", async () => {
 		const f = await fixture();
