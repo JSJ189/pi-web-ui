@@ -101,6 +101,8 @@ export function safePath(path: unknown, method = "GET"): path is string {
 		}
 		if (/%|[\\\x00-\x20]/.test(decoded)) return false;
 		const normalized = new URL(decoded, "http://local").pathname.toLowerCase();
+		// OS authorization is initiated only on the device itself, never through a Hub portal.
+		if (normalized === "/api/device-desktop/local" || normalized.startsWith("/api/device-desktop/local/")) return false;
 		if (normalized === "/api/device-center" || normalized.startsWith("/api/device-center/")) {
 			// Only account-scoped chat routes may cross a device portal.
 			if (method === "GET") {

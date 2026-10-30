@@ -12,7 +12,7 @@ import {
 } from "react-icons/fi";
 import { appUrl } from "../base-url";
 import { withToken } from "../auth-token";
-import { useT } from "../i18n";
+import { useLocale, useT } from "../i18n";
 import { DeviceGroups } from "./DeviceGroups";
 import { LocalBots } from "./LocalBots";
 import { DeviceCenterSetup } from "./DeviceCenterSetup";
@@ -36,6 +36,199 @@ function safeHub(value: string): string | null {
 	} catch {
 		return null;
 	}
+}
+
+type LocalDesktopStatus = {
+	os: string;
+	enabled: boolean;
+	environmentEnabled: boolean;
+	supported: boolean;
+	backend: string;
+	reason?: string;
+	permissions?: { supported: boolean; screen?: boolean; accessibility?: boolean };
+};
+
+function LocalDesktopSettings() {
+	const t = useT();
+	const zh = useLocale().startsWith("zh");
+	const [status, setStatus] = useState<LocalDesktopStatus | null>(null);
+	const [busy, setBusy] = useState(false);
+	const [error, setError] = useState(false);
+	const [localOnly, setLocalOnly] = useState(false);
+	const [requested, setRequested] = useState(false);
+	const generation = useRef(0);
+	const controller = useRef<AbortController | null>(null);
+
+	async function load(path: "status" | "enable" | "permissions", body?: object) {
+		if (controller.current) return;
+		const token = ++generation.current;
+		const pending = new AbortController();
+		controller.current = pending;
+		setBusy(true);
+		setError(false);
+		try {
+			const response = await fetch(withToken(appUrl(`/api/device-desktop/local/${path}`)), {
+				method: body ? "POST" : "GET",
+				credentials: "same-origin",
+				signal: pending.signal,
+				...(body ? { headers: { "Content-Type": "application/json" }, body: JSON.stringify(body) } : {}),
+			});
+			if (generation.current !== token || pending.signal.aborted) return;
+			if (response.status === 403) {
+				setLocalOnly(true);
+				setStatus(null);
+				return;
+			}
+			if (!response.ok) throw new Error("Request failed");
+			const next = await response.json();
+			if (generation.current !== token || pending.signal.aborted) return;
+			if (path === "permissions") {
+				if (typeof next?.screen !== "boolean" || typeof next?.accessibility !== "boolean")
+					throw new Error("Invalid permission status");
+				setStatus((previous) =>
+					previous
+						? { ...previous, permissions: { supported: true, screen: next.screen, accessibility: next.accessibility } }
+						: previous,
+				);
+				setRequested(true);
+			} else {
+				if (
+					typeof next?.os !== "string" ||
+					typeof next.enabled !== "boolean" ||
+					typeof next.environmentEnabled !== "boolean" ||
+					typeof next.supported !== "boolean"
+				)
+					throw new Error("Invalid desktop status");
+				setStatus(next);
+			}
+		} catch {
+			if (generation.current === token && !pending.signal.aborted) setError(true);
+		} finally {
+			if (generation.current === token && !pending.signal.aborted) {
+				controller.current = null;
+				setBusy(false);
+			}
+		}
+	}
+
+	useEffect(() => {
+		void load("status");
+		return () => {
+			generation.current++;
+			controller.current?.abort();
+			controller.current = null;
+		};
+	}, []);
+
+	return (
+		<section className="dc-card" aria-label={zh ? "本机远程桌面" : "Local remote desktop"} aria-busy={busy}>
+			<div className="dc-card-header">
+				<span className="dc-icon">
+					<FiMonitor aria-hidden />
+				</span>
+				<div>
+					<h2>{zh ? "本机远程桌面" : "Local remote desktop"}</h2>
+					<p>
+						{zh
+							? "管理这台设备的远程桌面与系统权限，无需连接设备中心。"
+							: "Manage remote desktop and system permissions on this device, even while the device center is offline."}
+					</p>
+				</div>
+			</div>
+			{localOnly ? (
+				<p role="status">
+					{zh
+						? "请在设备本机打开此页面以管理远程桌面权限。"
+						: "Open this page on the device itself to manage remote desktop permissions."}
+				</p>
+			) : (
+				<>
+					{status && (
+						<>
+							<div className="dc-permission-row">
+								<div>
+									<h3 id="dc-desktop-label">{zh ? "启用远程桌面" : "Enable remote desktop"}</h3>
+									<p>{status.enabled ? (zh ? "已启用" : "Enabled") : zh ? "未启用" : "Disabled"}</p>
+								</div>
+								<button
+									type="button"
+									className={`dc-toggle${status.enabled ? " is-on" : ""}`}
+									role="switch"
+									aria-checked={status.enabled}
+									aria-labelledby="dc-desktop-label"
+									disabled={busy || status.environmentEnabled || (!status.supported && !status.enabled)}
+									onClick={() => void load("enable", { enabled: !status.enabled })}
+								>
+									<span className="dc-toggle-thumb" />
+								</button>
+							</div>
+							{!status.supported && (
+								<p>{zh ? "这台设备暂不支持远程桌面。" : "Remote desktop is currently unavailable on this device."}</p>
+							)}
+							{status.environmentEnabled && (
+								<p>
+									{zh
+										? "远程桌面由本机服务设置保持启用。"
+										: "Remote desktop is kept enabled by the service settings on this device."}
+								</p>
+							)}
+							{status.os === "darwin" && (
+								<>
+									<p>
+										{zh
+											? "点击下方按钮发起系统授权，请在这台 Mac 的系统设置中确认。授权后可能需要重启服务。"
+											: "Use the buttons below to request system permission, then confirm in System Settings on this Mac. You may need to restart the service afterward."}
+									</p>
+									<div className="dc-actions">
+										<button
+											type="button"
+											className="dc-button"
+											disabled={busy || status.permissions?.supported === false}
+											onClick={() => void load("permissions", { kind: "screen" })}
+										>
+											{zh ? "授予屏幕录制权限" : "Grant screen recording permission"}
+										</button>
+										<button
+											type="button"
+											className="dc-button"
+											disabled={busy || status.permissions?.supported === false}
+											onClick={() => void load("permissions", { kind: "control" })}
+										>
+											{zh ? "授予远程控制权限" : "Grant remote control permission"}
+										</button>
+									</div>
+									{status.permissions?.screen === true && (
+										<p>{zh ? "屏幕录制：已授权" : "Screen recording: granted"}</p>
+									)}
+									{status.permissions?.accessibility === true && (
+										<p>{zh ? "远程控制：已授权" : "Remote control: granted"}</p>
+									)}
+									{requested && (
+										<p role="status">
+											{zh
+												? "已发起授权请求，请确认系统设置后刷新状态。"
+												: "Permission requested. Confirm in System Settings, then refresh the status."}
+										</p>
+									)}
+								</>
+							)}
+						</>
+					)}
+					{error && (
+						<p className="dc-notice is-error" role="alert">
+							{zh
+								? "无法更新本机远程桌面设置，请重试。"
+								: "Unable to update local remote desktop settings. Please retry."}
+						</p>
+					)}
+					<button type="button" className="dc-button" disabled={busy} onClick={() => void load("status")}>
+						<FiRefreshCw aria-hidden />
+						{busy ? t("deviceHubWorking") : zh ? "刷新远程桌面状态" : "Refresh remote desktop status"}
+					</button>
+				</>
+			)}
+		</section>
+	);
 }
 
 export function DeviceCenter({
@@ -380,6 +573,7 @@ export function DeviceCenter({
 							</button>
 						</section>
 					)}
+					{view === "settings" && <LocalDesktopSettings />}
 					{status && !localOnly && !bound && view === "settings" && (
 						<section className="dc-card">
 							<div className="dc-card-header">

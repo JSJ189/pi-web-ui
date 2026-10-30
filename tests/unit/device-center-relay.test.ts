@@ -459,6 +459,31 @@ describe("device reverse relay", () => {
 		await new Promise((resolve) => setTimeout(resolve, 30));
 		expect(f.relay.isOnline("dev1")).toBe(true);
 	});
+	it("blocks local desktop authorization routes for every relay transport after normalization", () => {
+		for (const method of ["GET", "POST", "WS"]) {
+			for (const path of [
+				"/api/device-desktop/local",
+				"/api/device-desktop/local/",
+				"/api/device-desktop/local/status",
+				"/api/device-desktop/local/permissions",
+				"/api/device-desktop/local/enable",
+				"/api/device-desktop/local/status?kind=screen",
+				"/api/device-desktop/%6cocal/status",
+				"/api/%64evice-desktop/local/permissions",
+				"/api/device-desktop/%256cocal/enable",
+				"/api/device-desktop/local%2fpermissions",
+				"/api/device-desktop/local%252fpermissions",
+				"/api/device-desktop/setup/../local/status",
+				"/api/device-desktop/setup/%2e%2e/local/status",
+				"/api/device-desktop/local/../local/permissions",
+				"/API/DEVICE-DESKTOP/LOCAL/STATUS",
+			])
+				expect(safePath(path, method), `${method} ${path}`).toBe(false);
+		}
+		for (const path of ["/desktop", "/desktop?viewOnly=1", "/api/device-desktop/status"])
+			expect(safePath(path, "GET"), path).toBe(true);
+		for (const path of ["/desktop-ws", "/desktop-ws?viewOnly=1"]) expect(safePath(path, "WS"), path).toBe(true);
+	});
 	it("blocks ambiguous paths, management endpoints and insecure public URLs", () => {
 		for (const path of [
 			"/devices",

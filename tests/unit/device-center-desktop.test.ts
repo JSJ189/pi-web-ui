@@ -27,12 +27,15 @@ async function listen(server: Server) {
 	cleanups.push(() => new Promise<void>((resolve) => server.close(() => resolve())));
 	return (server.address() as { port: number }).port;
 }
-async function fixture(options: { env?: NodeJS.ProcessEnv; supported?: boolean; dataDir?: string } = {}) {
+async function fixture(
+	options: { env?: NodeJS.ProcessEnv; supported?: boolean; dataDir?: string; permissions?: Native["permissions"] } = {},
+) {
 	const app = express();
 	const dataDir = options.dataDir ?? mkdtempSync(join(tmpdir(), "desktop-route-"));
 	if (!options.dataDir) cleanups.push(() => rmSync(dataDir, { recursive: true, force: true }));
 	const sessions: { options: CaptureOptions; input: ReturnType<typeof vi.fn>; close: ReturnType<typeof vi.fn> }[] = [];
 	const native: Native = {
+		permissions: options.permissions,
 		status: () => ({
 			supported: options.supported !== false,
 			backend: "fake",
@@ -69,6 +72,23 @@ async function fixture(options: { env?: NodeJS.ProcessEnv; supported?: boolean; 
 		port,
 		url,
 		dataDir,
+		localPost: (path: string, body?: unknown, extra: Record<string, string> = { ...headers, origin: url }) =>
+			new Promise<Response>((resolve, reject) => {
+				const req = request(
+					url + "/api/device-desktop/local/" + path,
+					{
+						method: "POST",
+						headers: { "content-type": "application/json", ...extra },
+					},
+					(res) => {
+						const chunks: Buffer[] = [];
+						res.on("data", (chunk) => chunks.push(chunk));
+						res.on("end", () => resolve(new Response(Buffer.concat(chunks), { status: res.statusCode })));
+					},
+				);
+				req.on("error", reject);
+				req.end(body === undefined ? undefined : JSON.stringify(body));
+			}),
 		post: (path: string, body?: unknown) =>
 			fetch(url + "/api/device-desktop/setup/" + path, {
 				method: "POST",
@@ -112,6 +132,167 @@ const tinyImage = Buffer.from(
 	"/9j/4AAQSkZJRgABAQAAAQABAAD/4gHYSUNDX1BST0ZJTEUAAQEAAAHIAAAAAAQwAABtbnRyUkdCIFhZWiAH4AABAAEAAAAAAABhY3NwAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAQAA9tYAAQAAAADTLQAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAlkZXNjAAAA8AAAACRyWFlaAAABFAAAABRnWFlaAAABKAAAABRiWFlaAAABPAAAABR3dHB0AAABUAAAABRyVFJDAAABZAAAAChnVFJDAAABZAAAAChiVFJDAAABZAAAAChjcHJ0AAABjAAAADxtbHVjAAAAAAAAAAEAAAAMZW5VUwAAAAgAAAAcAHMAUgBHAEJYWVogAAAAAAAAb6IAADj1AAADkFhZWiAAAAAAAABimQAAt4UAABjaWFlaIAAAAAAAACSgAAAPhAAAts9YWVogAAAAAAAA9tYAAQAAAADTLXBhcmEAAAAAAAQAAAACZmYAAPKnAAANWQAAE9AAAApbAAAAAAAAAABtbHVjAAAAAAAAAAEAAAAMZW5VUwAAACAAAAAcAEcAbwBvAGcAbABlACAASQBuAGMALgAgADIAMAAxADb/2wBDAAMCAgICAgMCAgIDAwMDBAYEBAQEBAgGBgUGCQgKCgkICQkKDA8MCgsOCwkJDRENDg8QEBEQCgwSExIQEw8QEBD/2wBDAQMDAwQDBAgEBAgQCwkLEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBD/wAARCAABAAEDASIAAhEBAxEB/8QAFQABAQAAAAAAAAAAAAAAAAAAAAj/xAAUEAEAAAAAAAAAAAAAAAAAAAAA/8QAFQEBAQAAAAAAAAAAAAAAAAAABwn/xAAUEQEAAAAAAAAAAAAAAAAAAAAA/9oADAMBAAIRAxEAPwCdAAYqm//Z",
 	"base64",
 );
+
+describe("device desktop local authorization", () => {
+	it("reports desktop status and native permission support without requesting permissions", async () => {
+		const permissions = vi.fn<NonNullable<Native["permissions"]>>();
+		const f = await fixture({ permissions });
+		const response = await fetch(f.url + "/api/device-desktop/local/status", { headers });
+		expect(response.status).toBe(200);
+		const status = await (await fetch(f.url + "/api/device-desktop/status", { headers })).json();
+		expect(await response.json()).toEqual({ ...status, permissions: { supported: process.platform === "darwin" } });
+		expect(permissions).not.toHaveBeenCalled();
+	});
+	it("requires authorization, exact Origin and a local browser for local operations", async () => {
+		const permissions = vi.fn<NonNullable<Native["permissions"]>>();
+		const f = await fixture({ permissions });
+		for (const path of ["permissions", "enable"]) {
+			for (const extra of [
+				{ origin: f.url },
+				headers,
+				{ ...headers, origin: "https://evil.example" },
+				{ ...headers, origin: f.url + "/path" },
+				{ ...headers, origin: f.url + "/" },
+				{ ...headers, origin: f.url, host: "192.168.0.4" },
+				{ ...headers, origin: f.url, "sec-fetch-site": "cross-site" },
+			]) {
+				const response = await f.localPost(
+					path,
+					path === "permissions" ? { kind: "screen" } : { enabled: true },
+					extra,
+				);
+				expect(response.status, `${path} ${JSON.stringify(extra)}`).toBe(403);
+			}
+		}
+		for (const extra of [
+			{},
+			{ ...headers, origin: "https://evil.example" },
+			{ ...headers, host: "192.168.0.4" },
+			{ ...headers, "sec-fetch-site": "cross-site" },
+		]) {
+			const status = await new Promise<number | undefined>((resolve, reject) => {
+				const req = request(f.url + "/api/device-desktop/local/status", { headers: extra }, (res) => {
+					res.resume();
+					resolve(res.statusCode);
+				});
+				req.on("error", reject);
+				req.end();
+			});
+			expect(status).toBe(403);
+		}
+		expect(permissions).not.toHaveBeenCalled();
+	});
+	it("rejects malformed permission bodies before invoking native permissions", async () => {
+		const permissions = vi.fn<NonNullable<Native["permissions"]>>();
+		const f = await fixture({ permissions });
+		for (const body of [
+			undefined,
+			{},
+			[],
+			{ kind: "other" },
+			{ kind: 1 },
+			{ kind: ["screen"] },
+			{ kind: "screen", extra: true },
+		]) {
+			expect((await f.localPost("permissions", body)).status, JSON.stringify(body)).toBe(400);
+		}
+		expect(permissions).not.toHaveBeenCalled();
+	});
+	it.each(["screen", "control"] as const)("passes %s and returns actual denied permissions", async (kind) => {
+		const result = { screen: false, accessibility: false };
+		const permissions = vi.fn<NonNullable<Native["permissions"]>>().mockResolvedValue(result);
+		const f = await fixture({ permissions });
+		const response = await f.localPost("permissions", { kind });
+		expect(response.status).toBe(200);
+		expect(await response.json()).toEqual(result);
+		expect(permissions).toHaveBeenCalledExactlyOnceWith(kind, expect.any(AbortSignal));
+		expect(permissions.mock.calls[0][1]?.aborted).toBe(false);
+	});
+	it.skipIf(process.platform === "darwin")("rejects permission requests without native support off macOS", async () => {
+		const f = await fixture();
+		expect((await f.localPost("permissions", { kind: "screen" })).status).toBe(400);
+	});
+	it("returns 409 while a permission request is pending and releases the lock on completion", async () => {
+		let finish!: (result: { screen: boolean; accessibility: boolean }) => void;
+		const permissions = vi.fn<NonNullable<Native["permissions"]>>().mockImplementation(
+			() =>
+				new Promise((resolve) => {
+					finish = resolve;
+				}),
+		);
+		const f = await fixture({ permissions });
+		const first = f.localPost("permissions", { kind: "screen" });
+		await vi.waitFor(() => expect(permissions).toHaveBeenCalledTimes(1));
+		expect((await f.localPost("permissions", { kind: "control" })).status).toBe(409);
+		expect(permissions).toHaveBeenCalledTimes(1);
+		finish({ screen: false, accessibility: false });
+		expect((await first).status).toBe(200);
+		permissions.mockResolvedValue({ screen: true, accessibility: false });
+		expect((await f.localPost("permissions", { kind: "control" })).status).toBe(200);
+	});
+	it.each(["disconnect", "service close"])("aborts native permission work on %s", async (reason) => {
+		let signal: AbortSignal | undefined;
+		const aborted = vi.fn();
+		const permissions = vi.fn<NonNullable<Native["permissions"]>>().mockImplementation((_kind, current) => {
+			signal = current;
+			return new Promise((_resolve, reject) =>
+				current!.addEventListener(
+					"abort",
+					() => {
+						aborted();
+						reject(new Error("aborted"));
+					},
+					{ once: true },
+				),
+			);
+		});
+		const f = await fixture({ permissions });
+		const req = request(f.url + "/api/device-desktop/local/permissions", {
+			method: "POST",
+			headers: { ...headers, origin: f.url, "content-type": "application/json" },
+		});
+		req.on("error", () => {});
+		cleanups.push(() => {
+			req.destroy();
+		});
+		req.end(JSON.stringify({ kind: "screen" }));
+		await vi.waitFor(() => expect(permissions).toHaveBeenCalledTimes(1));
+		expect(signal?.aborted).toBe(false);
+		if (reason === "disconnect") req.destroy();
+		else f.desktop.close();
+		await vi.waitFor(() => expect(aborted).toHaveBeenCalledTimes(1));
+		expect(signal?.aborted).toBe(true);
+		req.destroy();
+		if (reason === "disconnect") {
+			permissions.mockResolvedValue({ screen: false, accessibility: false });
+			expect((await f.localPost("permissions", { kind: "control" })).status).toBe(200);
+		}
+	});
+	it("validates, persists and applies local enablement like setup enablement", async () => {
+		const f = await fixture({ env: {} });
+		for (const body of [undefined, {}, [], { enabled: "true" }, { enabled: true, extra: true }]) {
+			expect((await f.localPost("enable", body)).status).toBe(400);
+		}
+		const response = await f.localPost("enable", { enabled: true });
+		expect(response.status).toBe(200);
+		expect(await response.json()).toMatchObject({ enabled: true, available: true });
+		const client = await connected(f.port);
+		await vi.waitFor(() => expect(f.sessions).toHaveLength(1));
+		const closed = once(client.ws, "close");
+		const disabled = await f.localPost("enable", { enabled: false });
+		expect(disabled.status).toBe(200);
+		expect(await disabled.json()).toEqual(
+			await (await fetch(f.url + "/api/device-desktop/setup/status", { headers })).json(),
+		);
+		await closed;
+		expect(f.sessions[0].close).toHaveBeenCalledTimes(1);
+		const restored = await fixture({ dataDir: f.dataDir, env: {} });
+		expect(await (await fetch(restored.url + "/api/device-desktop/local/status", { headers })).json()).toMatchObject({
+			enabled: false,
+			available: false,
+		});
+	});
+});
 
 describe("device desktop native route", () => {
 	it("reports native support and server permissions consistently without installing packages", async () => {

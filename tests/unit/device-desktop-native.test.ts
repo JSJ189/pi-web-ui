@@ -16,10 +16,11 @@ vi.mock("node:fs", () => ({
 	existsSync: mocks.exists,
 	mkdtempSync: () => "/tmp/native-test",
 	writeFileSync: mocks.write,
-	rmSync: mocks.remove,
+	rm: mocks.remove,
 }));
 import {
 	nativeDesktopStatus,
+	requestNativeDesktopPermissions,
 	startNativeDesktop,
 	type NativeDesktopInput,
 } from "../../server/device-center/desktop-native.js";
@@ -206,6 +207,155 @@ describe("native desktop lifecycle and framed capture", () => {
 		child.emit("close", 0);
 		vi.advanceTimersByTime(60000);
 		expect(o.onError).toHaveBeenCalledTimes(1);
+	});
+});
+
+describe("local macOS permission requests", () => {
+	beforeEach(() => {
+		vi.spyOn(process, "platform", "get").mockReturnValue("darwin");
+		mocks.exec.mockReturnValue("/usr/bin/swift\n");
+	});
+
+	it.each(["screen", "control"] as const)(
+		"uses the capture identity and %s mode, returning actual status",
+		async (kind) => {
+			const { child } = processFixture();
+			const result = requestNativeDesktopPermissions(kind);
+			expect(mocks.spawn).toHaveBeenCalledWith(
+				"/usr/bin/swift",
+				[expect.stringContaining("capture.swift"), `permissions-${kind}`],
+				expect.objectContaining({ stdio: ["pipe", "pipe", "pipe"] }),
+			);
+			expect(mocks.write).toHaveBeenCalledWith(
+				expect.any(String),
+				expect.stringContaining('mode == "permissions-screen" || mode == "permissions-control"'),
+				{ mode: 0o600 },
+			);
+			child.stdout.write('{"screen":false,');
+			child.stdout.write('"accessibility":true}');
+			expect(mocks.remove).not.toHaveBeenCalled();
+			child.emit("close", 0);
+			await expect(result).resolves.toEqual({ screen: false, accessibility: true });
+			expect(mocks.remove).toHaveBeenCalledWith(
+				"/tmp/native-test",
+				expect.objectContaining({ recursive: true }),
+				expect.any(Function),
+			);
+			expect(vi.getTimerCount()).toBe(0);
+		},
+	);
+
+	it("keeps all prompting inside permission modes and checks capture permissions without prompting", () => {
+		const { child } = processFixture();
+		startNativeDesktop(options(false));
+		const script = mocks.write.mock.calls[0][1] as string;
+		const branch = script.indexOf('if mode == "permissions-screen" || mode == "permissions-control"');
+		const end = script.indexOf("exit(0)", branch);
+		for (const call of [
+			"CGRequestScreenCaptureAccess()",
+			"AXIsProcessTrustedWithOptions(prompt)",
+			'openPrivacy("Privacy_ScreenCapture")',
+			'openPrivacy("Privacy_Accessibility")',
+		]) {
+			expect(script.indexOf(call)).toBeGreaterThan(branch);
+			expect(script.lastIndexOf(call)).toBeLessThan(end);
+		}
+		expect(script.slice(branch, end)).toContain('if mode == "permissions-control" && !AXIsProcessTrusted()');
+		expect(script.slice(branch, end)).not.toContain('fail("MAC_');
+		expect(script.slice(end)).toContain("MAC_SCREEN_PERMISSION_REQUIRED");
+		expect(script.slice(end)).toContain("MAC_ACCESSIBILITY_PERMISSION_REQUIRED");
+		expect(script.slice(end)).toContain("local Device Center");
+		child.emit("close", 1);
+	});
+
+	it.each(["not json", '{"screen":true}', '{"screen":"true","accessibility":true}', "null"])(
+		"rejects malformed result %s",
+		async (json) => {
+			const { child } = processFixture();
+			const result = requestNativeDesktopPermissions("screen");
+			child.stdout.write(json);
+			child.emit("close", 0);
+			await expect(result).rejects.toThrow("Invalid native desktop permission response");
+		},
+	);
+
+	it("rejects exit errors with bounded stderr", async () => {
+		const { child } = processFixture();
+		const result = requestNativeDesktopPermissions("control");
+		child.stderr.write("x".repeat(20000) + "DENIED");
+		child.emit("close", 1);
+		const error = await result.catch((error: Error) => error);
+		expect(error).toBeInstanceOf(Error);
+		expect((error as Error).message).toHaveLength(8192);
+		expect((error as Error).message.endsWith("DENIED")).toBe(true);
+	});
+
+	it("bounds stdout and kills only its helper, cleaning up after close", async () => {
+		const { child } = processFixture();
+		const result = requestNativeDesktopPermissions("screen");
+		child.stdout.write(Buffer.alloc(4097));
+		await expect(result).rejects.toThrow("exceeds 4 KB");
+		expect(child.kill).toHaveBeenCalledWith("SIGTERM");
+		expect(mocks.remove).not.toHaveBeenCalled();
+		vi.advanceTimersByTime(1500);
+		expect(child.kill).toHaveBeenLastCalledWith("SIGKILL");
+		child.emit("close", null, "SIGKILL");
+		expect(mocks.remove).toHaveBeenCalledTimes(1);
+		expect(vi.getTimerCount()).toBe(0);
+	});
+
+	it("aborts in flight without accepting a later successful result", async () => {
+		const { child } = processFixture();
+		const controller = new AbortController();
+		const result = requestNativeDesktopPermissions("control", controller.signal);
+		controller.abort();
+		await expect(result).rejects.toThrow("aborted");
+		expect(child.kill).toHaveBeenCalledWith("SIGTERM");
+		expect(mocks.remove).not.toHaveBeenCalled();
+		child.stdout.write('{"screen":true,"accessibility":true}');
+		child.emit("close", 0);
+		expect(mocks.remove).toHaveBeenCalledTimes(1);
+		expect(vi.getTimerCount()).toBe(0);
+	});
+
+	it("allows system prompts 120 seconds then times out", async () => {
+		const { child } = processFixture();
+		const result = requestNativeDesktopPermissions("screen");
+		vi.advanceTimersByTime(119999);
+		expect(child.kill).not.toHaveBeenCalled();
+		vi.advanceTimersByTime(1);
+		await expect(result).rejects.toThrow("timed out");
+		expect(child.kill).toHaveBeenCalledWith("SIGTERM");
+		child.emit("close", null, "SIGTERM");
+		expect(vi.getTimerCount()).toBe(0);
+	});
+
+	it("handles asynchronous spawn failure and waits for close before cleanup", async () => {
+		const { child } = processFixture();
+		const result = requestNativeDesktopPermissions("screen");
+		child.emit("error", new Error("spawn failed"));
+		await expect(result).rejects.toThrow("spawn failed");
+		expect(mocks.remove).not.toHaveBeenCalled();
+		child.emit("close", -1);
+		expect(mocks.remove).toHaveBeenCalledTimes(1);
+	});
+
+	it("cleans up if spawning throws synchronously", async () => {
+		mocks.spawn.mockImplementationOnce(() => {
+			throw new Error("cannot spawn");
+		});
+		await expect(requestNativeDesktopPermissions("screen")).rejects.toThrow("cannot spawn");
+		expect(mocks.remove).toHaveBeenCalledTimes(1);
+	});
+
+	it("does not spawn for pre-aborted requests or other platforms", async () => {
+		const controller = new AbortController();
+		controller.abort();
+		await expect(requestNativeDesktopPermissions("screen", controller.signal)).rejects.toThrow("aborted");
+		vi.spyOn(process, "platform", "get").mockReturnValue("win32");
+		await expect(requestNativeDesktopPermissions("screen")).rejects.toThrow("require macOS");
+		expect(mocks.spawn).not.toHaveBeenCalled();
+		expect(mocks.write).not.toHaveBeenCalled();
 	});
 });
 
