@@ -7,6 +7,7 @@ export function desktopPage(): string {
 </style></head><body><main>
 <header><h1 data-i18n="title"></h1><button id="connect" disabled data-i18n="connect"></button><button id="disconnect" disabled data-i18n="disconnect"></button></header>
 <section id="setup" aria-label="Desktop setup"><p id="setup-status" role="status" aria-live="polite"></p><div class="actions"><button id="check" data-i18n="check"></button><button id="enable" disabled data-i18n="enable"></button><button id="disable" disabled data-i18n="disable"></button></div></section>
+<aside id="mac-permission-guide" hidden aria-label="macOS permissions"><p data-i18n="macGuide"></p></aside>
 <nav id="controls"><label><input id="viewonly" type="checkbox" checked><span data-i18n="viewonly"></span></label><label><input id="scale" type="checkbox" checked><span data-i18n="scale"></span></label><button id="fullscreen" data-i18n="fullscreen"></button></nav>
 <p id="status" role="status" aria-live="polite"></p><p id="hint" data-i18n="hint"></p>
 <div id="screen"><canvas id="canvas" width="1" height="1" tabindex="0" aria-describedby="hint"></canvas></div>
@@ -22,7 +23,10 @@ const messages = {
  text:['文字输入（支持中文）','Text input (including Chinese)'],send:['发送','Send'],
  hint:['控制模式：点击画面后使用键盘；触屏可拖动，中文请用下方输入框发送。','Control mode: focus the image to use the keyboard; drag with touch. Use the text field for composed text.'],
  checking:['正在检查…','Checking…'],saving:['正在保存…','Saving…'],enabled:['已启用','Enabled'],disabled:['已停用','Disabled'],
- available:['后端可用','Backend available'],unavailable:['后端不可用','Backend unavailable'],unsupported:['此系统不支持桌面共享','Desktop sharing is unsupported on this system'],
+ macGuide:['请在被控 Mac 上操作：系统设置 → 隐私与安全性 → 屏幕录制与系统音频（部分版本称“屏幕录制”），以及辅助功能。仅查看只需屏幕录制；远程控制还需辅助功能。不要在“+”选文件窗口中盲选应用。连接时，Mac 本机将尝试请求授权，但系统不一定显示弹窗。请按实际启动宿主授权：从终端启动通常是 Terminal/iTerm，从桌面壳启动可能是 pi-web-ui；以 Mac 实际显示的宿主为准。后台服务没有弹窗时，请先停原服务，避免连接到旧进程，再在被控 Mac 的终端 cd 到项目目录并运行 npm start，然后在本页连接以触发授权。授权后重启实际服务，再手动连接。','On the controlled Mac, open System Settings → Privacy & Security → Screen & System Audio Recording (called Screen Recording on some versions), and Accessibility. View only needs screen recording; remote control also needs Accessibility. Do not blindly select an app in the “+” file picker. Connecting will attempt to request permission on the Mac, but macOS may not show a prompt. Authorize the actual host: terminal launches commonly use Terminal/iTerm; the desktop shell may use pi-web-ui. Follow the host actually shown by macOS. If a background service shows no prompt, stop the original service first to avoid connecting to an old process. In a terminal on the controlled Mac, cd to the project directory and run npm start, then connect from this page to trigger authorization. After granting permission, restart the actual service and connect again manually.'],
+ macScreenPermission:['被控 Mac 缺少屏幕录制权限。请在该 Mac 的系统设置 → 隐私与安全性 → 屏幕录制与系统音频（或“屏幕录制”）中授权实际启动宿主，然后重启实际服务并手动连接。详见下方 macOS 权限指导。','Screen recording permission is required on the controlled Mac. In System Settings → Privacy & Security → Screen & System Audio Recording (or Screen Recording), authorize the actual launch host, restart the actual service, and reconnect manually. See the macOS permission guide below.'],
+ macAccessibilityPermission:['被控 Mac 缺少辅助功能权限。请在该 Mac 的系统设置 → 隐私与安全性 → 辅助功能中授权实际启动宿主，然后重启实际服务并手动连接；仅查看可勾选只读，只需屏幕录制权限。详见下方 macOS 权限指导。','Accessibility permission is required on the controlled Mac. In System Settings → Privacy & Security → Accessibility, authorize the actual launch host, restart the actual service, and reconnect manually. For view only, select View only; only screen recording permission is needed. See the macOS permission guide below.'],
+ available:['后端可用（未验证系统权限）','Backend available (system permissions not verified)'],unavailable:['后端不可用','Backend unavailable'],unsupported:['此系统不支持桌面共享','Desktop sharing is unsupported on this system'],
  environment:['环境变量强制启用；需在设备本机修改环境变量并重启才能停用。','Enabled by the environment; change the environment on the device and restart to disable.'],
  ready:['可以连接。','Ready to connect.'],connecting:['正在连接…','Connecting…'],waiting:['已连接，等待画面…','Connected; waiting for an image…'],
  viewing:['已连接 · 只读','Connected · view only'],controlling:['已连接 · 可控制','Connected · control enabled'],
@@ -40,6 +44,12 @@ let ready = false, hasFrame = false, connectionViewOnly = true, pendingFrame = n
 let activePointer = null;
 const browserSupported = !!context && typeof createImageBitmap === 'function' && typeof WebSocket === 'function';
 function status(message, error = false) { $('status').textContent = message; $('status').dataset.error = String(error); }
+function desktopError(message) {
+ if (typeof message !== 'string') return t('connectionError');
+ if (message.startsWith('MAC_SCREEN_PERMISSION_REQUIRED')) return t('macScreenPermission');
+ if (message.startsWith('MAC_ACCESSIBILITY_PERMISSION_REQUIRED')) return t('macAccessibilityPermission');
+ return message;
+}
 function canConnect() { return browserSupported && config?.enabled === true && config?.available === true && config?.supported === true; }
 function canInput() { return ready && hasFrame && !connectionViewOnly && socket?.readyState === WebSocket.OPEN; }
 function controls() {
@@ -110,7 +120,7 @@ function connect() {
   if (typeof event.data === 'string') {
    try {
     const message = JSON.parse(event.data);
-    if (message.type === 'error') fail(typeof message.message === 'string' ? message.message : t('connectionError'));
+    if (message.type === 'error') fail(desktopError(message.message));
     else if (message.type === 'ready') { ready = true; controls(); }
    } catch { fail(t('connectionError')); }
   } else if (event.data instanceof Blob) {
@@ -128,6 +138,7 @@ async function request(path, options = {}) {
 function applyConfig(next) {
  if (!next || ['enabled','available','environmentEnabled','supported'].some(key => typeof next[key] !== 'boolean')) throw new Error(t('requestError'));
  config = next;
+ $('mac-permission-guide').hidden = next.os !== 'darwin';
  const details = [t(next.enabled ? 'enabled' : 'disabled'),t(next.supported ? next.available ? 'available' : 'unavailable' : 'unsupported')];
  if (typeof next.os === 'string') details.push(next.os);
  if (typeof next.backend === 'string') details.push(next.backend);

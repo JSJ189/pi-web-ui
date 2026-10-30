@@ -13,7 +13,7 @@
 | Linux X11     | ffmpeg x11grab 采集，xdotool 输入                                         | DISPLAY/XAUTHORITY，ffmpeg，xdpyinfo 或 xrandr；仅查看可不安装 xdotool     |
 | Linux Wayland | 暂不支持                                                                  | 后续需接入 Portal/PipeWire，不能把 XWayland 当完整桌面                     |
 
-旧 `PI_DEVICE_VNC_*` 配置不再读取。macOS 需要在系统设置的隐私与安全性中授权实际运行服务/Swift 的宿主，并在授权后重新启动服务。当前 Windows 已实机验证，macOS/Linux 尚需目标机器实机验证。
+旧 `PI_DEVICE_VNC_*` 配置不再读取。macOS 在连接时由采集助手调用系统屏幕录制授权请求；开启控制时另请求辅助功能授权。未授权则尝试在被控 Mac 打开对应的隐私设置页，网页显示双语步骤。系统可能不重复弹窗；授权对象以 macOS 识别的实际宿主为准（终端、桌面应用或服务），不要在“＋”文件选择器中猜选程序。后台启动无法交互时，在本机先停原服务，再从终端运行项目的 `npm start` 并连接以触发授权。授权后重启实际服务，再连接。当前 Windows 已实机验证，macOS/Linux 尚需目标机器实机验证。
 
 ## 宿主接入和权限
 

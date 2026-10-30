@@ -13,11 +13,30 @@ func fail(_ message: String) -> Never {
 }
 guard #available(macOS 14.0, *) else { fail("Native capture requires macOS 14 or newer.") }
 let readOnly = CommandLine.arguments.last != "control"
-guard CGPreflightScreenCaptureAccess() else {
-    fail("Screen Recording permission is required. Enable it for the server/Swift host in System Settings > Privacy & Security > Screen Recording, then restart the server.")
+// Preflight alone never requests access or creates an entry in System Settings.
+// Trigger TCC from the same process that captures/injects, preserving its actual
+// responsible host identity (Terminal, desktop app or service, as chosen by macOS).
+func openPrivacy(_ pane: String) {
+    let settings = Process()
+    settings.executableURL = URL(fileURLWithPath: "/usr/bin/open")
+    settings.arguments = ["x-apple.systempreferences:com.apple.preference.security?" + pane]
+    settings.standardOutput = FileHandle.nullDevice
+    settings.standardError = FileHandle.nullDevice
+    try? settings.run()
+}
+if !CGPreflightScreenCaptureAccess() {
+    let granted = CGRequestScreenCaptureAccess()
+    if !granted || !CGPreflightScreenCaptureAccess() {
+        openPrivacy("Privacy_ScreenCapture")
+        fail("MAC_SCREEN_PERMISSION_REQUIRED: On the controlled Mac, enable the app macOS identifies in System Settings > Privacy & Security > Screen & System Audio Recording. A request was made and Settings was opened; macOS may suppress repeat prompts. If launched in Terminal/iTerm, authorize that host; if launched as a desktop app, authorize that app. Restart the actual server after granting access, then reconnect. Background services may require launching from a local terminal to request permission interactively.")
+    }
 }
 if !readOnly && !AXIsProcessTrusted() {
-    fail("Accessibility permission is required for control. Enable it for the server/Swift host in System Settings > Privacy & Security > Accessibility, then restart the server.")
+    let prompt = [kAXTrustedCheckOptionPrompt.takeUnretainedValue() as String: true] as CFDictionary
+    if !AXIsProcessTrustedWithOptions(prompt) {
+        openPrivacy("Privacy_Accessibility")
+        fail("MAC_ACCESSIBILITY_PERMISSION_REQUIRED: On the controlled Mac, enable the app macOS identifies in System Settings > Privacy & Security > Accessibility, then restart the actual server and reconnect. Viewing only needs Screen Recording permission; control additionally needs Accessibility. macOS may suppress repeat prompts.")
+    }
 }
 let lock = NSLock()
 let acknowledged = DispatchSemaphore(value: 0)

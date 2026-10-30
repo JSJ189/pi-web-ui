@@ -1,5 +1,8 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
 import express from "express";
+// @ts-expect-error jsdom is installed without declaration files in this project.
+import { JSDOM } from "jsdom";
+import { desktopPage } from "../../server/device-center/desktop-page.js";
 import { chromium } from "playwright-core";
 import { CHROME_PATH } from "../lib/chrome.mjs";
 import http, { type Server } from "node:http";
@@ -116,6 +119,107 @@ async function fixture() {
 const jpeg = Buffer.alloc(8192, 0xab);
 jpeg.writeUInt16BE(0xffd8, 0);
 jpeg.writeUInt16BE(0xffd9, jpeg.length - 2);
+
+describe("desktop page macOS permission guidance", () => {
+	async function page(os: string, language: string) {
+		const dom = new JSDOM(desktopPage(), { url: "http://localhost/desktop", runScripts: "outside-only" });
+		cleanups.push(() => dom.window.close());
+		const { window } = dom;
+		Object.defineProperty(window.navigator, "language", { value: language });
+		window.HTMLCanvasElement.prototype.getContext = vi.fn(() => ({ clearRect: vi.fn() })) as any;
+		Object.assign(window, { createImageBitmap: vi.fn() });
+		const sockets: any[] = [];
+		class Socket {
+			static OPEN = 1;
+			readyState = 1;
+			onmessage: ((event: { data: string }) => void) | null = null;
+			close = vi.fn();
+			constructor() {
+				sockets.push(this);
+			}
+		}
+		const fetch = vi.fn(async () => ({
+			ok: true,
+			json: async () => ({
+				enabled: true,
+				available: true,
+				environmentEnabled: false,
+				supported: true,
+				os,
+			}),
+		}));
+		Object.assign(window, { fetch, WebSocket: Socket });
+		const script = window.document.querySelector('script[type="module"]')!.textContent!;
+		window.eval(script);
+		const connect = window.document.getElementById("connect") as HTMLButtonElement;
+		await vi.waitFor(() => expect(connect.disabled).toBe(false));
+		return { window, sockets, connect, fetch, guide: window.document.getElementById("mac-permission-guide")! };
+	}
+
+	it.each(["zh-CN", "en"])("shows actionable Mac guidance and translates permission errors in %s", async (language) => {
+		const p = await page("darwin", language);
+		expect(p.guide.hidden).toBe(false);
+		const guide = p.guide.textContent!;
+		for (const host of ["Terminal/iTerm", "pi-web-ui", "npm start", "+"]) expect(guide).toContain(host);
+		for (const text of language === "zh-CN"
+			? [
+					"被控 Mac",
+					"隐私与安全性",
+					"屏幕录制与系统音频",
+					"辅助功能",
+					"仅查看",
+					"先停原服务",
+					"不一定显示弹窗",
+					"重启实际服务",
+				]
+			: [
+					"controlled Mac",
+					"Privacy & Security",
+					"Screen & System Audio Recording",
+					"Accessibility",
+					"View only",
+					"stop the original service",
+					"may not show a prompt",
+					"restart the actual service",
+				])
+			expect(guide).toContain(text);
+		expect(p.window.document.getElementById("setup-status")!.textContent).toContain(
+			language === "zh-CN" ? "未验证系统权限" : "permissions not verified",
+		);
+		for (const [prefix, expected] of [
+			[
+				"MAC_SCREEN_PERMISSION_REQUIRED",
+				language === "zh-CN" ? "缺少屏幕录制权限" : "Screen recording permission is required",
+			],
+			[
+				"MAC_ACCESSIBILITY_PERMISSION_REQUIRED",
+				language === "zh-CN" ? "缺少辅助功能权限" : "Accessibility permission is required",
+			],
+			["Unrelated backend error", "Unrelated backend error"],
+		]) {
+			p.connect.click();
+			const socket = p.sockets.at(-1)!;
+			socket.onmessage({
+				data: JSON.stringify({
+					type: "error",
+					message: prefix.startsWith("MAC_") ? prefix + " Permission denied on Mac" : prefix,
+				}),
+			});
+			expect(p.window.document.getElementById("status")!.textContent).toContain(expected);
+			expect(socket.close).toHaveBeenCalledOnce();
+			expect(p.guide.hidden).toBe(false);
+			expect(p.guide.textContent).toBe(guide);
+			expect(p.connect.disabled).toBe(false);
+		}
+		expect(p.sockets).toHaveLength(3);
+		expect(p.fetch).toHaveBeenCalledOnce();
+	});
+
+	it.each(["win32", "linux"])("hides Mac guidance on %s", async (os) => {
+		const p = await page(os, "en");
+		expect(p.guide.hidden).toBe(true);
+	});
+});
 
 describe("native desktop through device relay and connector", () => {
 	it.skipIf(!CHROME_PATH)(

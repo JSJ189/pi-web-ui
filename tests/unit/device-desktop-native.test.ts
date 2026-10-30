@@ -93,6 +93,21 @@ describe("native desktop lifecycle and framed capture", () => {
 		expect(mocks.exec).not.toHaveBeenCalled();
 	});
 
+	it("preserves macOS permission guidance from the actual capture host and releases its process", () => {
+		vi.spyOn(process, "platform", "get").mockReturnValue("darwin");
+		mocks.exec.mockReturnValue("/usr/bin/swift\n");
+		const { child } = processFixture();
+		const o = options();
+		startNativeDesktop(o);
+		const message = "MAC_SCREEN_PERMISSION_REQUIRED: Authorize the responsible host on the controlled Mac.";
+		child.stderr.write(message);
+		child.emit("close", 1);
+		expect(o.onError).toHaveBeenCalledWith(message);
+		expect(o.onClose).toHaveBeenCalledTimes(1);
+		vi.advanceTimersByTime(60000);
+		expect(o.onError).toHaveBeenCalledTimes(1);
+	});
+
 	it("reassembles arbitrary header/payload splits and coalesced frames using one persistent process", () => {
 		const { child, writes } = processFixture();
 		const o = options();
