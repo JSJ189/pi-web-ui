@@ -321,7 +321,7 @@ describe("toolOverrideSpecs approval ownership after takeover", () => {
 					getExecutionIdentity: () => undefined,
 					acquireExecution: () => () => {},
 				},
-				bashKills: new Set<AbortController>(),
+				bashKills: new Map<string, Set<AbortController>>(),
 			});
 			// Object.create does not initialize #lateGuard; no plugin hooks are needed here.
 			Object.defineProperty(owner, "lateToolGuard", { value: undefined });

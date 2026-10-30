@@ -970,9 +970,21 @@ export class ClientSession {
 	 *  considered stopped once its agent_end event arrives. If it doesn't
 	 *  (model stream stuck before the run even started), force-reset. */
 	private static readonly HARD_ABORT_SETTLE_MS = 8_000;
-	/** Live AbortControllers of THIS client's running bash tool calls — aborting
-	 *  them kills only the command (agent run and conversation continue). */
-	private bashKills = new Set<AbortController>();
+	/** Live AbortControllers of running bash tool calls, bucketed per conversation
+	 *  (see {@link bashKillsOf}). Aborting one bucket kills only that conversation's
+	 *  command — the agent run and every other conversation keep going. */
+	private bashKills = new Map<string, Set<AbortController>>();
+
+	/** The bash-cancel bucket of one conversation, created on demand. */
+	private bashKillsOf(convId: string | undefined): Set<AbortController> {
+		const key = convId || this.activeId || "";
+		let set = this.bashKills.get(key);
+		if (!set) {
+			set = new Set<AbortController>();
+			this.bashKills.set(key, set);
+		}
+		return set;
+	}
 	/** Background-server tracking (port snapshots + 后台任务 panel state) —
 	 *  自包含模块，见 bg-servers.ts。列表按 CLIENT 存活，不随对话切换/结束消失。 */
 	/** 用户直接创建的交互式终端（按 CLIENT/工作区 存活，始终显示，不受单个对话切换、生命周期与过滤影响） */
@@ -9584,6 +9596,7 @@ export class ClientSession {
 				),
 			);
 		const composeBash = (base?: AnyToolDefinition): ToolDefinition => {
+			const convKills = this.bashKillsOf(ownerId);
 			let core: ToolDefinition;
 			if (base) {
 				// 扩展提供了同名 bash：以扩展定义为基底，保留其 schema/描述/guidelines，
@@ -9592,7 +9605,7 @@ export class ClientSession {
 					...base,
 					execute: async (toolCallId, params, signal, onUpdate, ctx) => {
 						const ac = new AbortController();
-						this.bashKills.add(ac);
+						convKills.add(ac);
 						try {
 							const signals = [signal, ac.signal].filter((s): s is AbortSignal => s !== undefined);
 							const combinedSignal = signals.length > 1 ? AbortSignal.any(signals) : signals[0];
@@ -9605,14 +9618,14 @@ export class ClientSession {
 							}
 							return result as never;
 						} finally {
-							this.bashKills.delete(ac);
+							convKills.delete(ac);
 						}
 					},
 				};
 			} else {
 				// 没有扩展 bash：完整的原生与终端自适应分流 bash（行为与改动前逐字一致）。
 				core = makeAdaptiveBashTool(
-					makeKillableBashTool(cwd, this.bashKills, () => this.getLang()),
+					makeKillableBashTool(cwd, convKills, () => this.getLang()),
 					terminals
 						? makeTerminalBashTool(terminals, {
 								cwd,
@@ -9620,11 +9633,11 @@ export class ClientSession {
 								idleMs: () => Math.max(0, Math.floor(this.settingsSvc.current.terminalBashIdleMs) || 0),
 								maxForegroundMs: () =>
 									Math.max(0, Math.floor(this.settingsSvc.current.terminalBashMaxForegroundMs) || 0),
-								kills: this.bashKills,
+								kills: convKills,
 								notifyBackgroundDone: (info) => this.notifyTerminalBashDone(terminals, info),
 								lang: () => this.getLang(),
 							})
-						: makeKillableBashTool(cwd, this.bashKills, () => this.getLang()),
+						: makeKillableBashTool(cwd, convKills, () => this.getLang()),
 					() => Boolean(terminals && this.settingsSvc.current.terminalBash),
 				);
 			}
@@ -11847,12 +11860,27 @@ export class ClientSession {
 		return this.bg.cleanStale(thresholdMs, { manual: true });
 	}
 
-	/** Kill only the running bash command(s) — the agent run itself continues
-	 *  (the bash tool returns an aborted error and the model moves on). Uses
-	 *  the per-client AbortController set registered by the bash tool paths
-	 *  ({@link makeKillableBashTool} / {@link makeTerminalBashTool}). */
-	async abortBash(): Promise<void> {
-		if (this.bashKills.size === 0) {
+	/** Kill only the running bash command(s) of ONE conversation — the agent run and
+	 *  every other conversation continue (the bash tool returns an aborted error and
+	 *  the model moves on). Targets the per-conversation bucket registered by the
+	 *  bash tool paths ({@link makeKillableBashTool} / {@link makeTerminalBashTool});
+	 *  without an explicit id it falls back to the active conversation, and to the
+	 *  single live bucket when that one has nothing running. */
+	async abortBash(convId?: string): Promise<void> {
+		const targetId = convId || this.activeId || "";
+		let kills = this.bashKills.get(targetId);
+		let ownerId = targetId;
+		// 前端 abort_bash 可以不带对话 id：没点名、当前对话又没有命令在跑时，若整个
+		// 客户端只有一处命令在跑，就停那一处（子代理详情页的「停止」仍可用）。只有
+		// 一处 ≈ 唯一目标，所以永远不会一次杀掉多个对话。
+		if (!convId && (!kills || kills.size === 0)) {
+			const live = [...this.bashKills.entries()].filter(([, set]) => set.size > 0);
+			if (live.length === 1) {
+				ownerId = live[0][0];
+				kills = live[0][1];
+			}
+		}
+		if (!kills || kills.size === 0) {
 			this.emit({
 				type: "notice",
 				level: "info",
@@ -11863,7 +11891,7 @@ export class ClientSession {
 			return;
 		}
 		// eslint-disable-next-line unicorn/no-useless-spread -- snapshot: handlers may unsubscribe mid-emit
-		for (const ac of [...this.bashKills]) ac.abort();
+		for (const ac of [...kills]) ac.abort();
 		this.emit({
 			type: "notice",
 			level: "info",
@@ -11873,9 +11901,11 @@ export class ClientSession {
 		// 让 AI 明确知道是用户手动停止：sendUserMessage 触发下一轮，agent
 		// 会看到「命令被用户中止」而不是普通失败，并据此继续（不会困惑于
 		// 为什么命令失败了）。
+		// 停止提示发给命令真正所属的那个对话，别写进用户正在看的另一个对话。
+		const ownerConv = this.convs.get(ownerId) ?? this.convs.get(this.activeId);
 		try {
-			this.assertSubagentWorktreeAdmission(this.conv);
-			await this.conv.runtime.session.sendUserMessage(
+			if (ownerConv) this.assertSubagentWorktreeAdmission(ownerConv);
+			await ownerConv?.runtime.session.sendUserMessage(
 				"（系统：用户手动停止了刚才的 bash 命令——命令被中止，终止前已输出的内容在对应工具结果里。请据此继续，不要重跑被中止的命令，除非确实必要。）",
 			);
 		} catch {
