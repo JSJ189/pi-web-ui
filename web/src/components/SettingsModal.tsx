@@ -690,6 +690,8 @@ interface SettingsPatch {
 	subagentMaxDepth?: number;
 	subagentAutoWakeMaxTurns?: number;
 	retryMaxAttempts?: number;
+	steeringMode?: "all" | "one-at-a-time";
+	followUpMode?: "all" | "one-at-a-time";
 	softCapTokens?: number;
 	softCapByModel?: Record<string, number>;
 	reviewPrompt?: string;
@@ -4077,6 +4079,22 @@ export function SettingsModal({
 										}}
 									/>
 								</FieldRow>
+								<ToggleRow
+									title={t("steeringDeliverAll")}
+									tip={t("steeringDeliverAllDesc")}
+									enabled={settings.steeringMode !== "one-at-a-time"}
+									onToggle={() =>
+										setPartial({ steeringMode: settings.steeringMode === "one-at-a-time" ? "all" : "one-at-a-time" })
+									}
+								/>
+								<ToggleRow
+									title={t("followUpDeliverAll")}
+									tip={t("followUpDeliverAllDesc")}
+									enabled={settings.followUpMode !== "one-at-a-time"}
+									onToggle={() =>
+										setPartial({ followUpMode: settings.followUpMode === "one-at-a-time" ? "all" : "one-at-a-time" })
+									}
+								/>
 								<ToggleRow
 									title={t("thinkingWrap")}
 									tip={t("thinkingWrapDesc")}

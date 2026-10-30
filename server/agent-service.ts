@@ -14,6 +14,7 @@
 // provider so built-in model lists follow the official pi.dev catalog
 // wholesale (no union merge / no stale built-in leftovers).
 import "./patch-remote-catalog.js";
+import { applyQueueModesToSession } from "./queue-modes.js";
 import "./patch-turn-end-boundary.js";
 import { startTurnTiming, finishTurnTiming } from "./turn-timing.js";
 import { PendingQuestion, type QuestionResult } from "./pending-question.js";
@@ -3430,6 +3431,7 @@ export class ClientSession {
 				applyCompactionOverrides: () => this.applyCompactionOverrides(),
 				applyCodemodeOverrides: () => this.applyCodemodeOverrides(),
 				applySessionOverrides: () => this.applySessionOverrides(),
+				applyQueueModes: () => this.applyQueueModes(),
 				applyToolGating: () => {
 					for (const conv of this.convs.values()) {
 						this.applyToolGating(conv.session, conv.agentPreset);
@@ -8663,6 +8665,7 @@ export class ClientSession {
 		const conv = target ?? this.conv;
 		if (!conv?.session) return;
 		try {
+			this.applyQueueModes(conv);
 			this.applyRetryOverrides();
 			this.applyCompactionOverrides();
 			this.applyCodemodeOverrides();
@@ -8677,6 +8680,15 @@ export class ClientSession {
 	 *  且 SDK 每次退避前都重读 getRetrySettings()——即时生效、无需 reload。
 	 *  但 session.reload() 会重读磁盘丢掉覆盖，每次 reload 后必须重放
 	 *  （reloadSession / afterReload / 标记开关直载路径均已接）。 */
+	/** Update live queue delivery and the settings view used on SDK reload. */
+	applyQueueModes(target?: Conversation): void {
+		const conversations = new Set(this.convs.values());
+		if (target) conversations.add(target);
+		for (const conv of conversations) {
+			if (conv.session) applyQueueModesToSession(conv.session, this.settingsSvc.current);
+		}
+	}
+
 	applyRetryOverrides(): void {
 		const n = normalizeRetryMaxAttempts(this.settingsSvc.current.retryMaxAttempts);
 		for (const c of this.convs.values()) {

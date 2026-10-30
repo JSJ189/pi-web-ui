@@ -916,6 +916,12 @@ export const zh = {
 	waitingResponse: "正在等待模型响应…",
 	retryingApi: "大模型 API 出错，正在自动重试（{attempt}/{max}）：{error}",
 	retryingApiSoon: "大模型 API 出错，正在自动重试：{error}",
+	steeringDeliverAll: "插队消息一次全部送达",
+	steeringDeliverAllDesc:
+		"默认开启：在下一个插队交付点按顺序送达全部插队消息。关闭后每次只送达一条。仅适用于 pi 引擎。",
+	followUpDeliverAll: "排队消息一次全部送达",
+	followUpDeliverAllDesc:
+		"默认开启：当前运行结束后按顺序送达全部排队消息。关闭后每轮只执行一条，适合排入多个独立任务。仅适用于 pi 引擎。",
 	modelRetryAttempts: "模型报错自动重试次数",
 	modelRetryHint:
 		"大模型 API 调用出错时自动重试的次数。次数用完后本轮停止并标红，可点「重试」手动再试；设为 0 则失败即停。修改即时生效，无需重载。",
@@ -3536,6 +3542,12 @@ export const en: Record<keyof typeof zh, string> = {
 	waitingResponse: "Waiting for model response…",
 	retryingApi: "Model API error, auto-retrying ({attempt}/{max}): {error}",
 	retryingApiSoon: "Model API error, auto-retrying: {error}",
+	steeringDeliverAll: "Deliver all steering messages together",
+	steeringDeliverAllDesc:
+		"On by default: deliver all steering messages in order at the next steering checkpoint. Turn off to deliver one at a time. Applies to the pi engine.",
+	followUpDeliverAll: "Deliver all queued messages together",
+	followUpDeliverAllDesc:
+		"On by default: deliver all queued messages in order after the current run ends. Turn off to run one message per round, useful for independent tasks. Applies to the pi engine.",
 	modelRetryAttempts: "Auto-retry attempts on model errors",
 	modelRetryHint:
 		"How many times a failed model API call is retried automatically. When the budget runs out the turn stops with a red error and you can retry manually; 0 stops at the first failure. Applies immediately, no reload needed.",

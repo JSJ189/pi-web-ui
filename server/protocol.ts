@@ -8,6 +8,8 @@
 // Serialized messages (server -> client snapshot)
 // ---------------------------------------------------------------------------
 
+export type QueueMode = "all" | "one-at-a-time";
+
 export interface UiTextBlock {
 	type: "text";
 	text: string;
@@ -1275,6 +1277,9 @@ export type ClientMessage =
 			/** Extra instructions and independently disabled skills for review. */
 			reviewPrompt?: string;
 			reviewDisabledSkills?: string[];
+			/** Message queue delivery modes; both default to all. */
+			steeringMode?: QueueMode;
+			followUpMode?: QueueMode;
 			/** 大模型 API 出错自动重试次数（默认 6；0 = 失败即停）。即时生效，无需 reload。 */
 			retryMaxAttempts?: number;
 			/** 上下文压缩软上限（tokens，0 = 关闭）+ 按模型覆盖（"provider/id" → tokens）。
@@ -3542,6 +3547,9 @@ export interface UiSettingsState {
 	subagentMaxDepth?: number;
 	/** 子代理无人类干预连续自动唤醒上限轮数（默认 5；0 = 不限制）。 */
 	subagentAutoWakeMaxTurns?: number;
+	/** Message queue delivery modes; both default to all. */
+	steeringMode: QueueMode;
+	followUpMode: QueueMode;
 	/** 大模型 API 出错自动重试次数（默认 6；0 = 失败即停）。 */
 	retryMaxAttempts: number;
 	/** 上下文压缩软上限（tokens，0 = 关闭）：达到即触发压缩（issue #229）。 */

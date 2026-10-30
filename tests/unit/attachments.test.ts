@@ -57,6 +57,8 @@ function makeCtx(opts: {
 		emit: (m: { level?: string; text?: string; [k: string]: unknown }) =>
 			notices.push({ level: m.level ?? "", text: m.text ?? "" }),
 		settings: {
+			steeringMode: "all",
+			followUpMode: "all",
 			promptMode: "append" as const,
 			customSystemPrompt: "",
 			promptTemplate: "",

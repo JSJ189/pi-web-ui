@@ -68,6 +68,8 @@ export const PRESET_FIELD_GROUPS = {
 	],
 	// 模型侧行为与各专用提示词
 	ai: [
+		"steeringMode",
+		"followUpMode",
 		"retryMaxAttempts",
 		"softCapTokens",
 		"softCapByModel",
@@ -368,6 +370,18 @@ export const PRESET_FIELD_META = {
 		hintEn: "Total catalog character limit (default 20000), falls back to compact name index when exceeded",
 	},
 	// ai
+	steeringMode: {
+		labelZh: "插话队列模式",
+		labelEn: "Steering Queue Mode",
+		hintZh: "一次处理全部插话或每次一条",
+		hintEn: "Process all queued steering messages or one at a time",
+	},
+	followUpMode: {
+		labelZh: "追问队列模式",
+		labelEn: "Follow-Up Queue Mode",
+		hintZh: "一次处理全部追问或每次一条",
+		hintEn: "Process all queued follow-up messages or one at a time",
+	},
 	retryMaxAttempts: {
 		labelZh: "网络重试上限",
 		labelEn: "Network Retry Attempts",

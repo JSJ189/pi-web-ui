@@ -4130,6 +4130,8 @@ export class DshClientSession {
 		const promptSections =
 			this.cachedPromptSections.length > 0 ? this.cachedPromptSections : this.buildFallbackPromptSections();
 		const settings: UiSettingsState = {
+			steeringMode: "all",
+			followUpMode: "all",
 			promptMode: this.settings.promptMode,
 			customSystemPrompt: this.settings.customSystemPrompt,
 			disabledSkills: this.settings.disabledSkills,

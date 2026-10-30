@@ -342,6 +342,8 @@ const PRESET_FIELD_KINDS = {
 	skillsCatalogShowLocation: "bool",
 	skillsCatalogBudget: "number",
 	// -- ai --------------------------------------------------------------
+	steeringMode: "queueMode",
+	followUpMode: "queueMode",
 	retryMaxAttempts: "retry",
 	softCapTokens: "softCap",
 	softCapByModel: "softCapByModel",
@@ -482,6 +484,10 @@ export function sanitizePresetSettings(input: unknown, opts?: { enabledTools?: u
 				break;
 			case "number":
 				if (typeof raw === "number" && Number.isFinite(raw) && raw >= 0) settings[key] = Math.floor(raw);
+				else rejected.push(key);
+				break;
+			case "queueMode":
+				if (raw === "all" || raw === "one-at-a-time") settings[key] = raw;
 				else rejected.push(key);
 				break;
 			case "retry":

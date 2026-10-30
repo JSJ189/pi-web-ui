@@ -15,12 +15,17 @@ import { normalizeSoftCapByModel, normalizeSoftCapTokens } from "./soft-cap.js";
 import { deriveLegacy, legacyToDisabled, normalizeDisabledAgentTools } from "./tool-manager.js";
 import { normalizeToolPromptOverrides, type ToolPromptOverrideMap } from "./tool-prompt-overrides.js";
 import { UI_SLOTS } from "./plugin-ui-slots.js";
-import type { EngineId, UiAlign, UiLayoutPrefs, UiSlotId } from "./protocol.js";
+import type { EngineId, QueueMode, UiAlign, UiLayoutPrefs, UiSlotId } from "./protocol.js";
 
 /** System-prompt mode: append the custom text to the built prompt, or replace
  *  the whole system prompt with it. (遗留字段：主会话已迁移到 compose 模板，
  *  仅 DSH 子系统与旧存档仍读写它。) */
 export type PromptMode = "append" | "replace";
+
+/** Persisted queue modes fall back to processing all queued messages. */
+export function normalizeQueueMode(value: unknown): QueueMode {
+	return value === "one-at-a-time" ? value : "all";
+}
 
 /** 大模型 API 出错自动重试次数的默认值（SDK 默认 3）。 */
 export const DEFAULT_RETRY_MAX_ATTEMPTS = 6;
@@ -446,6 +451,9 @@ export interface ClientSettings {
 	/** 子代理无人类干预连续自动唤醒上限轮数（默认 5；0 = 不限制）。
 	 *  达到上限后挂起后续唤醒并暂存通知，等待人类回复或介入后自动合并投递（issue #726）。 */
 	subagentAutoWakeMaxTurns?: number;
+	/** Message queue delivery modes; both default to all. */
+	steeringMode: QueueMode;
+	followUpMode: QueueMode;
 	/** 大模型 API 出错自动重试次数（默认 6；0 = 失败即停）。SDK
 	 *  settings.retry.maxRetries 的按客户端覆盖（SDK 默认 3），经
 	 *  applyOverrides 注入各会话的 SettingsManager（session.reload()
@@ -1245,6 +1253,8 @@ export class ClientStateStore {
 			subagentDefaultModel: stored?.subagentDefaultModel ?? null,
 			subagentMaxDepth: stored?.subagentMaxDepth ?? 0,
 			subagentAutoWakeMaxTurns: normalizeSubagentAutoWakeMaxTurns(stored?.subagentAutoWakeMaxTurns),
+			steeringMode: normalizeQueueMode(stored?.steeringMode),
+			followUpMode: normalizeQueueMode(stored?.followUpMode),
 			retryMaxAttempts: normalizeRetryMaxAttempts(stored?.retryMaxAttempts),
 			softCapTokens: normalizeSoftCapTokens(stored?.softCapTokens),
 			softCapByModel: normalizeSoftCapByModel(stored?.softCapByModel),
@@ -1346,6 +1356,8 @@ export class ClientStateStore {
 			subagentAutoWakeMaxTurns: normalizeSubagentAutoWakeMaxTurns(
 				settings.subagentAutoWakeMaxTurns ?? cur.subagentAutoWakeMaxTurns,
 			),
+			steeringMode: normalizeQueueMode(settings.steeringMode ?? cur.steeringMode),
+			followUpMode: normalizeQueueMode(settings.followUpMode ?? cur.followUpMode),
 			retryMaxAttempts: normalizeRetryMaxAttempts(
 				settings.retryMaxAttempts ?? cur.retryMaxAttempts ?? DEFAULT_RETRY_MAX_ATTEMPTS,
 			),
@@ -1401,6 +1413,8 @@ export class ClientStateStore {
 			// Missing fields in partial/older presets must keep the current settings on apply.
 			if (Object.hasOwn(p, "reviewPrompt")) preset.reviewPrompt = p.reviewPrompt ?? "";
 			if (Object.hasOwn(p, "reviewDisabledSkills")) preset.reviewDisabledSkills = p.reviewDisabledSkills ?? [];
+			if (Object.hasOwn(p, "steeringMode")) preset.steeringMode = normalizeQueueMode(p.steeringMode);
+			if (Object.hasOwn(p, "followUpMode")) preset.followUpMode = normalizeQueueMode(p.followUpMode);
 			if (Object.hasOwn(p, "retryMaxAttempts")) preset.retryMaxAttempts = normalizeRetryMaxAttempts(p.retryMaxAttempts);
 			if (Object.hasOwn(p, "softCapTokens")) preset.softCapTokens = normalizeSoftCapTokens(p.softCapTokens);
 			if (Object.hasOwn(p, "subagentAutoWakeMaxTurns")) {

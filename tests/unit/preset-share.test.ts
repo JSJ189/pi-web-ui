@@ -974,8 +974,8 @@ describe("编排：分享与目录", () => {
 		expect(perm).toContain("issues: write required");
 	});
 
-	it("PRESET_FIELD_META：68 个预设字段全部具有人类可读的中英文名称与说明", () => {
-		expect(PRESET_FIELD_NAMES.length).toBe(68);
+	it("PRESET_FIELD_META：70 个预设字段全部具有人类可读的中英文名称与说明", () => {
+		expect(PRESET_FIELD_NAMES.length).toBe(70);
 		for (const name of PRESET_FIELD_NAMES) {
 			const meta = PRESET_FIELD_META[name];
 			expect(meta, `meta for ${name}`).toBeDefined();

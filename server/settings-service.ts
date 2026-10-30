@@ -12,6 +12,7 @@ import { fileURLToPath } from "node:url";
 import type { AgentSession } from "@earendil-works/pi-coding-agent";
 import type {
 	ClientMessage,
+	QueueMode,
 	ServerMessage,
 	UiApprovalPolicyState,
 	UiApprovalRule,
@@ -89,6 +90,8 @@ export interface SettingsHost {
 	/** 把设置面板的出错重试次数即时注入各会话（无需 reload；reload 后由
 	 *  调用方重放，见 agent-service applyRetryOverrides）。 */
 	applyRetryOverrides: () => void;
+	/** Replay current steering/follow-up queue modes on every live session. */
+	applyQueueModes?: () => void;
 	/** 把压缩软上限逐会话重算成 compaction reserveTokens 覆盖（各用自己当前模型
 	 *  与生效软上限，不累加、不残留；无需 reload；reload/建会话/换模型后由调用方
 	 *  重放，见 agent-service applyCompactionOverrides，issue #229/#773）。 */
@@ -203,6 +206,7 @@ export class SettingsService {
 		const changed = (...keys: (keyof ClientSettings)[]) =>
 			keys.some((key) => JSON.stringify(before[key]) !== JSON.stringify(after[key]));
 		if (changed("retryMaxAttempts")) this.host.applyRetryOverrides();
+		if (changed("steeringMode", "followUpMode")) this.host.applyQueueModes?.();
 		if (changed("softCapTokens", "softCapByModel")) this.host.applyCompactionOverrides();
 		if (changed("codemodeMode", "codemodeInlineBudget")) this.host.applyCodemodeOverrides?.();
 		if (
@@ -579,6 +583,8 @@ export class SettingsService {
 				questionPresentation: this.settings.questionPresentation ?? "queue",
 				questionTimeoutSeconds: this.settings.questionTimeoutSeconds ?? 240,
 				subagentAutoWakeMaxTurns: this.settings.subagentAutoWakeMaxTurns ?? defaultSubagentAutoWakeMaxTurns(),
+				steeringMode: this.settings.steeringMode,
+				followUpMode: this.settings.followUpMode,
 				retryMaxAttempts: this.settings.retryMaxAttempts,
 				softCapTokens: this.settings.softCapTokens,
 				softCapByModel: { ...this.settings.softCapByModel },
@@ -714,6 +720,8 @@ export class SettingsService {
 		subagentMaxDepth?: number;
 		/** 子代理连续自动唤醒上限轮数（0 = 不限制，默认 5；实时生效，无需 reload）。 */
 		subagentAutoWakeMaxTurns?: number;
+		steeringMode?: QueueMode;
+		followUpMode?: QueueMode;
 		retryMaxAttempts?: number;
 		softCapTokens?: number;
 		softCapByModel?: Record<string, number>;
@@ -964,6 +972,12 @@ export class SettingsService {
 		if (partial.subagentAutoWakeMaxTurns !== undefined) {
 			next.subagentAutoWakeMaxTurns = normalizeSubagentAutoWakeMaxTurns(partial.subagentAutoWakeMaxTurns);
 		}
+		for (const key of ["steeringMode", "followUpMode"] as const) {
+			const mode = partial[key];
+			if (mode === undefined) continue;
+			if (mode !== "all" && mode !== "one-at-a-time") throw new Error(`Invalid ${key}`);
+			next[key] = mode;
+		}
 		if (partial.retryMaxAttempts !== undefined) {
 			// 出错重试次数：持久化 + 即时注入各会话（SDK 在每次退避前都重读
 			// getRetrySettings，无需 reload runtime；见宿主 applyRetryOverrides）。
@@ -1015,6 +1029,8 @@ export class SettingsService {
 		if (codemodeChanged) this.host.applyCodemodeOverrides?.();
 		if (before.goalModeEnabled !== false && next.goalModeEnabled === false) this.host.onGoalModeDisabled?.();
 		if (partial.retryMaxAttempts !== undefined) this.host.applyRetryOverrides();
+		if (before.steeringMode !== next.steeringMode || before.followUpMode !== next.followUpMode)
+			this.host.applyQueueModes?.();
 		if (partial.softCapTokens !== undefined || partial.softCapByModel !== undefined)
 			this.host.applyCompactionOverrides();
 		if (toolGatingChanged) this.host.applyToolGating();
@@ -1102,6 +1118,7 @@ export class SettingsService {
 			this.host.applySessionOverrides();
 		} else {
 			this.host.applyRetryOverrides();
+			this.host.applyQueueModes?.();
 			this.host.applyCompactionOverrides();
 			this.host.applyCodemodeOverrides?.();
 			this.host.applyToolGating();

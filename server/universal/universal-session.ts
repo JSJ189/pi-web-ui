@@ -2325,6 +2325,8 @@ export class UniversalSession implements DispatchSession {
 	pushSettings(): void {
 		const s = this.stateStore?.getSettings(this.clientId);
 		const settings: UiSettingsState = {
+			steeringMode: s?.steeringMode ?? "all",
+			followUpMode: s?.followUpMode ?? "all",
 			promptMode: s?.promptMode ?? "append",
 			customSystemPrompt: s?.customSystemPrompt ?? "",
 			disabledSkills: s?.disabledSkills ?? [],
